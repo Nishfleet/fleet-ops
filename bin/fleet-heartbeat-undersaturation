@@ -237,41 +237,77 @@ reset_failed_pi_issue() {
 # _seat_registry_unit_live + _seat_reap_stale_registry (inlined here so the
 # helper stays self-contained and testable without sourcing seat-lib).
 reap_stale_active_seats() {
-    local f unit sysunit state n=0
-    [ -d "$ACTIVE_SEATS_DIR" ] || { echo 0; return 0; }
-    for f in "$ACTIVE_SEATS_DIR"/pi-*.json; do
-        [ -f "$f" ] || continue
-        unit=$(jq -r '.unit // ""' "$f" 2>/dev/null || true)
-        if [ -z "$unit" ]; then
-            rm -f "$f"; n=$((n+1)); continue
-        fi
-        case "$unit" in
-            pi-issue-*)  sysunit="pi-issue@${unit#pi-issue-}.service" ;;
-            pi-packet-*) sysunit="pi-packet@${unit#pi-packet-}.service" ;;
-            *) rm -f "$f"; n=$((n+1)); continue ;;
-        esac
-        state=$("$SYSTEMCTL" --user is-active "$sysunit" 2>/dev/null || echo inactive)
-        case "$state" in
-            active) : ;;  # live, keep
-            activating)
-                # P15 wedge-age probe: `activating` is normally live (up to
-                # the unit's TimeoutStartSec=45min), but past
-                # PI_SEAT_ACTIVATING_MAX_S it is a wedged pi, not a worker.
-                # Mirrors seat-lib's _seat_registry_unit_live. A SIGKILLed
-                # wedged worker leaves `activating`; age is the honest signal.
-                active_since=$("$SYSTEMCTL" --user show "$sysunit" --property=ActiveEnterTimestampMonotonic --value 2>/dev/null || echo 0)
-                if [[ "$active_since" =~ ^[0-9]+$ ]]; then
-                    now_s=$(awk '{print int($1)}' /proc/uptime)
-                    age_s=$(( now_s - active_since / 1000000 ))
-                    if (( age_s > ${PI_SEAT_ACTIVATING_MAX_S:-3300} )); then
-                        rm -f "$f"; n=$((n+1))
-                        log "repair: reaped wedged active-seat $f ($sysunit activating ${age_s}s)"
+    local f unit sysunit state n=0 base seat active_since now_s age_s
+    # Phase 1: reap stale seat files. When a seat is reaped because its unit
+    # is `activating` past the wedge-age bound, ALSO cancel the stuck systemd
+    # start job (fleet-ops#3213) — otherwise the unit stays activating with a
+    # pending start job forever, count_running keeps counting it, and the wedge
+    # recurs every tick.
+    if [ -d "$ACTIVE_SEATS_DIR" ]; then
+        for f in "$ACTIVE_SEATS_DIR"/pi-*.json; do
+            [ -f "$f" ] || continue
+            unit=$(jq -r '.unit // ""' "$f" 2>/dev/null || true)
+            if [ -z "$unit" ]; then
+                rm -f "$f"; n=$((n+1)); continue
+            fi
+            case "$unit" in
+                pi-issue-*)  sysunit="pi-issue@${unit#pi-issue-}.service" ;;
+                pi-packet-*) sysunit="pi-packet@${unit#pi-packet-}.service" ;;
+                *) rm -f "$f"; n=$((n+1)); continue ;;
+            esac
+            state=$("$SYSTEMCTL" --user is-active "$sysunit" 2>/dev/null || echo inactive)
+            case "$state" in
+                active) : ;;  # live, keep
+                activating)
+                    # P15 wedge-age probe: `activating` is normally live (up to
+                    # the unit's TimeoutStartSec=45min), but past
+                    # PI_SEAT_ACTIVATING_MAX_S it is a wedged pi, not a worker.
+                    # Mirrors seat-lib's _seat_registry_unit_live. A SIGKILLed
+                    # wedged worker leaves `activating`; age is the honest signal.
+                    active_since=$("$SYSTEMCTL" --user show "$sysunit" --property=ActiveEnterTimestampMonotonic --value 2>/dev/null || echo 0)
+                    if [[ "$active_since" =~ ^[0-9]+$ ]]; then
+                        now_s=$(awk '{print int($1)}' /proc/uptime)
+                        age_s=$(( now_s - active_since / 1000000 ))
+                        if (( age_s > ${PI_SEAT_ACTIVATING_MAX_S:-3300} )); then
+                            rm -f "$f"; n=$((n+1))
+                            "$SYSTEMCTL" --user stop "$sysunit" 2>/dev/null || true
+                            "$SYSTEMCTL" --user reset-failed "$sysunit" 2>/dev/null || true
+                            log "repair: reaped wedged active-seat $f ($sysunit activating ${age_s}s) + cancelled stuck unit"
+                        fi
                     fi
-                fi
-                ;;
-            *) rm -f "$f"; n=$((n+1)); log "repair: reaped stale active-seat $f ($sysunit $state)" ;;
+                    ;;
+                *) rm -f "$f"; n=$((n+1)); log "repair: reaped stale active-seat $f ($sysunit $state)" ;;
+            esac
+        done
+    fi
+    # Phase 2 (fleet-ops#3213): cancel stuck activating pi-issue@/pi-packet@
+    # units whose seat file was reaped on a PRIOR tick but the systemd start
+    # job was never cancelled. The unit stays `activating` with a pending start
+    # job forever (or until StartLimitBurst), count_running keeps counting it
+    # (line 164: --state=active,activating), and the wedge recurs every tick.
+    # A live worker has a seat file and is under the wedge-age threshold, so
+    # it is not touched (the seat-file check skips it; age skips the rest).
+    while IFS= read -r sysunit; do
+        [ -n "$sysunit" ] || continue
+        case "$sysunit" in
+            pi-issue@*)  base="${sysunit#pi-issue@}";  seat="$ACTIVE_SEATS_DIR/pi-issue-${base%.service}.json" ;;
+            pi-packet@*) base="${sysunit#pi-packet@}"; seat="$ACTIVE_SEATS_DIR/pi-packet-${base%.service}.json" ;;
+            *) continue ;;
         esac
-    done
+        # Has a seat file -> phase 1 owns it; skip here.
+        [ -d "$ACTIVE_SEATS_DIR" ] && [ -f "$seat" ] && continue
+        active_since=$("$SYSTEMCTL" --user show "$sysunit" --property=ActiveEnterTimestampMonotonic --value 2>/dev/null || echo 0)
+        [[ "$active_since" =~ ^[0-9]+$ ]] || continue
+        now_s=$(awk '{print int($1)}' /proc/uptime)
+        age_s=$(( now_s - active_since / 1000000 ))
+        if (( age_s > ${PI_SEAT_ACTIVATING_MAX_S:-3300} )); then
+            "$SYSTEMCTL" --user stop "$sysunit" 2>/dev/null || true
+            "$SYSTEMCTL" --user reset-failed "$sysunit" 2>/dev/null || true
+            n=$((n+1))
+            log "repair: cancelled stuck activating zombie $sysunit (no seat, activating ${age_s}s)"
+        fi
+    done < <("$SYSTEMCTL" --user list-units --type=service --state=activating --no-legend --plain 2>/dev/null \
+        | awk '{print $1}' | grep -E '^pi-(issue|packet)@' || true)
     echo "$n"
 }
 

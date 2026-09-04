@@ -159,6 +159,18 @@ shift  # consume --user
 cmd="$1"; shift
 case "$cmd" in
   list-units)
+    # fleet-ops#3213 phase 2 zombie scan: `--state=activating` (exactly, not
+    # `active,activating`) emits from ACTIVATING_UNITS so the test can stage
+    # stuck-activating zombies with no seat file. count_running's
+    # `--state=active,activating` falls through to the default RUNNING_UNITS.
+    if [[ "$*" == *"--state=activating"* ]] && [[ "$*" != *"active,activating"* ]]; then
+      if [[ -f "${ACTIVATING_UNITS:-/dev/nonexistent}" ]]; then
+        while IFS= read -r u; do
+          [[ -n "$u" ]] && printf '%s loaded activating activating -\n' "$u"
+        done < "${ACTIVATING_UNITS:-/dev/nonexistent}"
+      fi
+      exit 0
+    fi
     # Emit the running units list as no-legend plain output (first token is
     # the unit name; the rest of the line is ignored by awk '{print $1}').
     if [[ -f "${RUNNING_UNITS:-/dev/nonexistent}" ]]; then
@@ -179,6 +191,12 @@ case "$cmd" in
   reset-failed)
     unit="$1"
     printf 'reset-failed %s\n' "$unit" >>"${CALLS:-/dev/null}"
+    exit 0
+    ;;
+  stop)
+    # fleet-ops#3213: cancelling a stuck activating zombie unit.
+    unit="$1"
+    printf 'stop %s\n' "$unit" >>"${CALLS:-/dev/null}"
     exit 0
     ;;
   start)
@@ -317,8 +335,9 @@ FAILED_UNITS="$scratch/failed_units"
 LIVE_SEAT_UNITS="$scratch/live_seat_units"
 WEDGED_UNITS="$scratch/wedged_units"
 FRESH_ACTIVATING_UNITS="$scratch/fresh_activating_units"
-export RUNNING_UNITS FAILED_UNITS LIVE_SEAT_UNITS WEDGED_UNITS FRESH_ACTIVATING_UNITS
-: >"$RUNNING_UNITS"; : >"$FAILED_UNITS"; : >"$LIVE_SEAT_UNITS"; : >"$WEDGED_UNITS"; : >"$FRESH_ACTIVATING_UNITS"
+ACTIVATING_UNITS="$scratch/activating_units"
+export RUNNING_UNITS FAILED_UNITS LIVE_SEAT_UNITS WEDGED_UNITS FRESH_ACTIVATING_UNITS ACTIVATING_UNITS
+: >"$RUNNING_UNITS"; : >"$FAILED_UNITS"; : >"$LIVE_SEAT_UNITS"; : >"$WEDGED_UNITS"; : >"$FRESH_ACTIVATING_UNITS"; : >"$ACTIVATING_UNITS"
 
 run_helper() {
   set +e
@@ -331,7 +350,7 @@ reset_state() {
   rm -f "$log_dir"/* "$triage" "$calls" "$seat_state"/active-seats/*
   : >"$calls"
   : >"$RUNNING_UNITS"; : >"$FAILED_UNITS"; : >"$LIVE_SEAT_UNITS"
-  : >"$WEDGED_UNITS"; : >"$FRESH_ACTIVATING_UNITS"
+  : >"$WEDGED_UNITS"; : >"$FRESH_ACTIVATING_UNITS"; : >"$ACTIVATING_UNITS"
   : >"$WORK_INPROGRESS_NUMBERS"; : >"$WORK_READY_NUMBERS"; : >"$OPEN_PR_ISSUES"
 }
 
@@ -388,7 +407,7 @@ run_helper
 [[ "$env_rc" == 1 ]] || fail "scenario2: expected exit 1, got $env_rc ($env_out)"
 
 # Fail loud must NOT re-attempt repair (that already ran last tick).
-if grep -qE '^(reset-failed|start) ' "$calls"; then
+if grep -qE '^(reset-failed|start|stop) ' "$calls"; then
     fail "scenario2: fail-loud tick must not re-attempt repair, but calls=($(cat "$calls"))"
 fi
 # Marker cleared so the post-failure tick can attempt repair again.
@@ -418,7 +437,7 @@ run_helper
 [[ "$env_rc" == 0 ]] || fail "scenario3: healthy tick must exit 0, got $env_rc ($env_out)"
 
 # No repair actions.
-if grep -qE '^(reset-failed|start) ' "$calls"; then
+if grep -qE '^(reset-failed|start|stop) ' "$calls"; then
     fail "scenario3: healthy tick must not repair, but calls=($(cat "$calls"))"
 fi
 # Live active-seat must be preserved (not reaped — running>0).
@@ -476,7 +495,17 @@ fi
     || fail "scenario4: fresh-activating live seat was wrongly reaped"
 grep -q 'wedged active-seat' <<<"$env_out" \
     || fail "scenario4: stderr missing wedged-reap log line: $env_out"
-ok "scenario4: wedged-activating phantom reaped, fresh-activating kept (P15)"
+# fleet-ops#3213: the wedged unit's stuck systemd start job must be cancelled
+# (stop + reset-failed), not just its seat file reaped. The fresh live unit
+# must NOT be stopped.
+grep -qx 'stop pi-issue@demo-9.service' "$calls" \
+    || fail "scenario4: stop pi-issue@demo-9.service not attempted ($(cat "$calls"))"
+grep -qx 'reset-failed pi-issue@demo-9.service' "$calls" \
+    || fail "scenario4: reset-failed pi-issue@demo-9.service not attempted"
+if grep -qx 'stop pi-issue@demo-10.service' "$calls"; then
+    fail "scenario4: fresh-activating unit must NOT be stopped ($(cat "$calls"))"
+fi
+ok "scenario4: wedged-activating phantom reaped + unit cancelled, fresh-activating kept (P15, fleet-ops#3213)"
 
 # ============================================================================
 # Scenario 5 (auditor-finding-C): a finished worker opened a PR but left the
@@ -513,7 +542,7 @@ if grep -q -- '--add-label agent-ready' "$calls"; then
     fail "scenario5: must NOT add agent-ready (open PR = work done, not re-queue): $(cat "$calls")"
 fi
 # No repair actions (the only "work" was a stale label, now cleared).
-if grep -qE '^(reset-failed|start) ' "$calls"; then
+if grep -qE '^(reset-failed|start|stop) ' "$calls"; then
     fail "scenario5: stale-label tick must not repair, but calls=($(cat "$calls"))"
 fi
 # No fail-loud; the label-hygiene loud line IS emitted so the action is visible.
@@ -580,7 +609,7 @@ printf 'weird-1155-undersaturation.service\n' >"$scratch/running_units"
 run_helper
 [[ "$env_rc" == 0 ]] \
     || fail "scenario7: odd-named live worker must be healthy, got $env_rc ($env_out)"
-if grep -qE '^(reset-failed|start) ' "$calls"; then
+if grep -qE '^(reset-failed|start|stop) ' "$calls"; then
     fail "scenario7: odd-named live worker must not repair, but calls=($(cat "$calls"))"
 fi
 ! grep -q 'UNDERSAT-FAIL-LOUD' "$triage" || fail "scenario7: must not fail-loud on odd-named live worker"
@@ -629,7 +658,7 @@ printf 'pi-issue@demo-1.service\npi-issue@demo-2.service\n' >"$scratch/running_u
 run_helper
 [[ "$env_rc" == 0 ]] \
     || fail "scenario9: at-admit tick must exit 0, got $env_rc ($env_out)"
-if grep -qE '^(reset-failed|start) ' "$calls"; then
+if grep -qE '^(reset-failed|start|stop) ' "$calls"; then
     fail "scenario9: at-admit must not repair, but calls=($(cat "$calls"))"
 fi
 ! grep -q 'UNDERSAT-REPAIR' "$triage" || fail "scenario9: must not UNDERSAT-REPAIR when running>=admit"
@@ -678,10 +707,94 @@ grep -q 'reason=pi-binary-broken' "$triage" \
 grep -q 'UNDERSAT-FAIL-LOUD' "$triage" \
     || fail "scenario10: triage missing UNDERSAT-FAIL-LOUD"
 # No repair actions attempted (futile when pi is broken).
-if grep -qE '^(reset-failed|start) ' "$calls"; then
+if grep -qE '^(reset-failed|start|stop) ' "$calls"; then
     fail "scenario10: broken-pi tick must not repair, but calls=($(cat "$calls"))"
 fi
 # Marker cleared so the post-failure tick starts clean.
 [[ ! -f "$log_dir/undersaturation.flag" ]] \
     || fail "scenario10: marker must be cleared after broken-pi fail-loud"
 ok "scenario10: broken pi binary -> fail LOUD reason=pi-binary-broken, no repair (fleet-ops#3082)"
+
+# ============================================================================
+# Scenario 11 (fleet-ops#3213): a pi-issue unit stuck `activating` with NO
+# seat file (seat was reaped on a prior tick but the systemd start job was
+# never cancelled). The unit stays activating forever, count_running keeps
+# counting it, and the wedge recurs every tick. Phase 2 of
+# reap_stale_active_seats must detect it (no seat + age > threshold) and
+# stop + reset-failed the stuck unit. This is the recurrence vector from the
+# 2026-09-04 senior-auditor trip: 3 zombie units (fleet-ops-3111, 3121, 3188)
+# were stuck activating with no packet files.
+# ============================================================================
+reset_state
+export FLEET_UNDERSAT_ADMIT_CEILING=5
+printf '8\n' >"$scratch/work_ready"          # ready >= admit (below-admit-floor path)
+printf '0\n' >"$scratch/work_inprogress"
+# The zombie is counted by count_running (activating -> running=1 < admit=5),
+# matching the issue's evidence (running=4-6, below-admit-floor not full-wedge).
+printf 'pi-issue@demo-21.service\n' >"$scratch/running_units"
+: >"$scratch/failed_units"
+# Zombie: activating, no seat file, past wedge-age (3600s > 3300s).
+printf 'pi-issue@demo-21.service\n' >"$scratch/activating_units"
+printf 'pi-issue@demo-21.service\n' >"$scratch/wedged_units"
+# NO seat file for demo-21 — it was reaped on a prior tick.
+
+run_helper
+[[ "$env_rc" == 0 ]] \
+    || fail "scenario11: below-admit repair tick must exit 0, got $env_rc ($env_out)"
+
+# Phase 2 must have stop + reset-failed the zombie (no seat file, age > threshold).
+grep -qx 'stop pi-issue@demo-21.service' "$calls" \
+    || fail "scenario11: stop pi-issue@demo-21.service not attempted ($(cat "$calls"))"
+grep -qx 'reset-failed pi-issue@demo-21.service' "$calls" \
+    || fail "scenario11: reset-failed pi-issue@demo-21.service not attempted ($(cat "$calls"))"
+# The zombie-cancellation log line is present.
+grep -q 'cancelled stuck activating zombie' <<<"$env_out" \
+    || fail "scenario11: stderr missing zombie-cancel log line: $env_out"
+# Repair fired (below-admit-floor).
+grep -q 'UNDERSAT-REPAIR' "$triage" \
+    || fail "scenario11: triage missing UNDERSAT-REPAIR"
+ok "scenario11: zombie activating unit (no seat, age>threshold) -> stop+reset-failed (fleet-ops#3213)"
+
+# ============================================================================
+# Scenario 12 (fleet-ops#3213 safety guard): a LIVE activating worker WITH a
+# seat file and UNDER the wedge-age threshold must NOT be stopped. This is
+# the fleet-ops-2925 case from the issue: a live worker in `activating` state
+# with EXTLOAD-OK in .err — NOT a zombie. Phase 1 keeps its seat (age < threshold);
+# phase 2 skips it (seat file exists). No stop+reset-failed.
+# ============================================================================
+reset_state
+export FLEET_UNDERSAT_ADMIT_CEILING=5
+printf '8\n' >"$scratch/work_ready"          # ready >= admit (below-admit-floor path)
+printf '0\n' >"$scratch/work_inprogress"
+# Live worker: counted by count_running (activating -> running=1 < admit=5).
+printf 'pi-issue@demo-22.service\n' >"$scratch/running_units"
+: >"$scratch/failed_units"
+# Live worker: activating, HAS a seat file, UNDER wedge-age (60s < 3300s).
+printf 'pi-issue@demo-22.service\n' >"$scratch/activating_units"
+printf 'pi-issue@demo-22.service\n' >"$scratch/fresh_activating_units"
+printf '{"unit":"pi-issue-demo-22","provider":"devin","model":"glm-5-2"}' \
+    >"$seat_state/active-seats/pi-issue-demo-22.json"
+
+run_helper
+[[ "$env_rc" == 0 ]] \
+    || fail "scenario12: below-admit repair tick must exit 0, got $env_rc ($env_out)"
+
+# The live worker must NOT be stopped or reset-failed.
+if grep -qx 'stop pi-issue@demo-22.service' "$calls"; then
+    fail "scenario12: live activating worker must NOT be stopped ($(cat "$calls"))"
+fi
+if grep -qx 'reset-failed pi-issue@demo-22.service' "$calls"; then
+    fail "scenario12: live activating worker must NOT be reset-failed ($(cat "$calls"))"
+fi
+# Seat file preserved (not reaped — age < threshold).
+[[ -f "$seat_state/active-seats/pi-issue-demo-22.json" ]] \
+    || fail "scenario12: live worker seat file was wrongly reaped"
+# Repair fired (below-admit-floor) but the live worker was not touched.
+grep -q 'UNDERSAT-REPAIR' "$triage" \
+    || fail "scenario12: triage missing UNDERSAT-REPAIR"
+ok "scenario12: live activating worker (seat file, age<threshold) -> NOT touched (fleet-ops#3213 safety guard)"
+
+# Restore the default admit pin.
+export FLEET_UNDERSAT_ADMIT_CEILING=25
+
+ok "undersaturation: zombie activating units cancelled, live workers protected (fleet-ops#3213)"
