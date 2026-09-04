@@ -1484,6 +1484,18 @@ _seat_in_future() {
     (( ts_s > now ))
 }
 
+# Seconds until an ISO timestamp, or return 1 if it is missing / not future.
+# Used by the #3324 minimum-usable floor to pick the shortest remaining bench.
+_seat_remaining_s() {
+    local ts="$1" now ts_s
+    [[ -n "$ts" ]] || return 1
+    now=$(_seat_now_epoch)
+    ts_s=$(date -u -d "$ts" +%s 2>/dev/null || echo 0)
+    [[ "$ts_s" =~ ^[0-9]+$ ]] || return 1
+    (( ts_s > now )) || return 1
+    printf '%s\n' "$((ts_s - now))"
+}
+
 # Seat health: read the per-seat ledger and decide if a SPECIFIC seat is usable
 # right now. Returns 0 if usable, non-zero otherwise.
 #
@@ -2641,6 +2653,186 @@ _seat_is_dead() {
 # only free seats available returns rc=1 instead of leaking to a free lane.
 # Dispatch wrappers derive this from config/repo-privacy.json via repo_privacy
 # / packet_repo.
+# fleet-ops#3324: health_class values the minimum-usable floor may fail-open.
+# A money wall (402 / quota_exhausted / corpse / credentials_bad) is NEVER
+# fail-opened; those stay on the loud-stall path. empty_run is a
+# failure_mode on a transient_fault ledger (mark_seat_empty_run), so the
+# floor matches it via failure_mode as well as health_class.
+SEAT_FLOOR_FAILOPEN_CLASSES="transient_fault rate_limited empty_run overload_bench hang_bench"
+
+# True if this ledger row is a money wall the floor must never lift.
+# Args: health_class seat_dead [failure_mode]
+_seat_floor_is_money_wall() {
+    local hc="$1" dead="$2" fm="${3:-}"
+    [[ "$dead" == "true" ]] && return 0
+    case "$hc" in
+        quota_exhausted|quota_bench|credentials_bad|corpse) return 0 ;;
+    esac
+    case "$fm" in
+        quota_exhausted|quota_cap|credentials_bad) return 0 ;;
+    esac
+    return 1
+}
+
+# True if this ledger row is a recoverable bench the floor may lift.
+# Args: health_class [failure_mode]
+_seat_floor_is_failopen_class() {
+    local hc="$1" fm="${2:-}"
+    case " $SEAT_FLOOR_FAILOPEN_CLASSES " in
+        *" $hc "*) return 0 ;;
+    esac
+    [[ "$fm" == "empty_run" ]] && return 0
+    return 1
+}
+
+# Remaining seconds on a benched seat, or empty if it has no future wall.
+# Prefers bench_until, then usable_at, then the spawn-bench marker, then
+# the #2288 park wall (observed_at + SEAT_PARK_WALL_S) for a parked
+# transient_fault. A missing future timestamp is treated as remaining=0
+# so a class-matching seat with a stale/empty wall still wins over a stall.
+# Prints the remaining seconds (0 if none). Always returns 0.
+_seat_floor_remaining_s() {
+    local p="$1" m="$2" hc="$3" observed="$4" usable_at="$5" bench_until="$6" fail_count="${7:-0}"
+    local rem sb_path sb_usable park_end_iso
+    rem=$(_seat_remaining_s "$bench_until" 2>/dev/null || true)
+    if [[ -z "$rem" ]]; then
+        rem=$(_seat_remaining_s "$usable_at" 2>/dev/null || true)
+    fi
+    if [[ -z "$rem" ]]; then
+        sb_path=$(seat_spawn_bench_path "$p" "$m")
+        if [[ -f "$sb_path" ]]; then
+            sb_usable=$(jq -r '.usable_at // ""' "$sb_path" 2>/dev/null || true)
+            rem=$(_seat_remaining_s "$sb_usable" 2>/dev/null || true)
+        fi
+    fi
+    if [[ -z "$rem" && "$hc" == "transient_fault" && -n "$observed" ]] \
+        && _seat_parked_by_ceiling "$fail_count"; then
+        park_end_iso=$(date -u -d "@$(( $(date -u -d "$observed" +%s 2>/dev/null || echo 0) + SEAT_PARK_WALL_S ))" \
+            +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
+        rem=$(_seat_remaining_s "$park_end_iso" 2>/dev/null || true)
+    fi
+    printf '%s\n' "${rem:-0}"
+    return 0
+}
+
+# Increment fleet_seat_floor_failopen_total in a node-exporter textfile.
+# Counter semantics: read the current value, add 1, rewrite. Fail-open:
+# a write error never bricks pick_seat. Default file is under STATE_DIR so
+# tests cannot poison the live collector; production copies there when
+# STATE_DIR is the live path (same pattern as export_seat_selection_prom).
+_emit_seat_floor_failopen() {
+    local p="$1" m="$2" left="${3:-0}"
+    local out="${SEAT_FLOOR_FAILOPEN_PROM:-$STATE_DIR/fleet-seat-floor-failopen.prom}"
+    local dir pub tmp cur
+    dir=$(dirname "$out")
+    mkdir -p "$dir" 2>/dev/null || return 0
+    cur=0
+    if [[ -f "$out" ]]; then
+        cur=$(awk '/^fleet_seat_floor_failopen_total / {print $2; exit}' "$out" 2>/dev/null || echo 0)
+        [[ "$cur" =~ ^[0-9]+$ ]] || cur=0
+    fi
+    cur=$((cur + 1))
+    tmp="$out.$$.$RANDOM.tmp"
+    {
+        echo "# HELP fleet_seat_floor_failopen_total pick_seat fail-opened the shortest remaining recoverable bench instead of stalling (fleet-ops#3324)."
+        echo "# TYPE fleet_seat_floor_failopen_total counter"
+        printf 'fleet_seat_floor_failopen_total %s\n' "$cur"
+    } >"$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
+    mv "$tmp" "$out" 2>/dev/null || { rm -f "$tmp"; return 0; }
+    if [[ -z "${SEAT_FLOOR_FAILOPEN_PROM:-}" && "$STATE_DIR" == "${HOME}/.local/state/pi-packet" ]]; then
+        pub="/var/lib/prometheus/node-exporter/fleet-seat-floor-failopen.prom"
+        if [[ -d "$(dirname "$pub")" && -w "$(dirname "$pub")" ]]; then
+            cp "$out" "$pub" 2>/dev/null || true
+        fi
+    fi
+    return 0
+}
+
+# Walk the seats that seat_usable just rejected and, if at least one is a
+# recoverable (non-money) bench, return the one with the shortest remaining
+# wall. Prints "provider\tmodel\tremaining_s" and returns 0 on a hit;
+# returns 1 when nothing is eligible (money walls / corpses / cap=0 stay
+# on the loud-stall path). Privacy: a private target never fail-opens a
+# free-class seat. need_capable: a heavy pick never fail-opens a seat that
+# is not capable. tried-file seats stay excluded. Credential, keystone-only,
+# and quality-ban filters match the pick loop so the floor cannot route to
+# a seat pick_seat would refuse even when healthy.
+_seat_floor_shortest_bench() {
+    local privacy="${1:-public}" need_capable="${2:-0}" tried_file="${3:-}" difficulty="${4:-light}"
+    local p m class capable f hc dead observed usable_at bench_until fail_count fm
+    local rem best_rem="" best_p="" best_m="" p_cap m_cap
+    declare -A floor_tried=()
+    if [[ -n "$tried_file" && -f "$tried_file" ]]; then
+        local tp tm
+        while IFS=/ read -r tp tm; do
+            [[ -n "$tp" ]] && floor_tried["$tp/$tm"]=1
+        done <"$tried_file"
+    fi
+    while IFS=$'\t' read -r p m _ capable; do
+        [[ -n "$p" && -n "$m" ]] || continue
+        [[ -n "${floor_tried[$p/$m]:-}" ]] && continue
+        [[ -n "${_EXCLUDED_REASON[$p/$m]:-}" ]] && continue
+        if _seat_is_dead "$p" "$m"; then
+            continue
+        fi
+        [[ -z "${SEAT_PROVIDER_CAP[$p]:-}" ]] && continue
+        p_cap=$(provider_cap "$p")
+        (( p_cap == 0 )) && continue
+        [[ -z "${SEAT_MODEL_CAP[$p/$m]:-}" ]] && continue
+        m_cap=$(model_cap "$p" "$m")
+        (( m_cap == 0 )) && continue
+        if ! provider_has_credential "$p"; then
+            continue
+        fi
+        if _provider_is_keystone_only "$p" && ! _is_keystone_class "$difficulty"; then
+            continue
+        fi
+        if (( need_capable )) && [[ "$capable" != "1" ]]; then
+            continue
+        fi
+        if (( need_capable )) && [[ -n "${QUALITY_HEAVY_BAN[$p/$m]:-}" ]]; then
+            continue
+        fi
+        class=$(model_class_of "$p" "$m")
+        if [[ "$privacy" == "private" && "$class" == "free" ]]; then
+            continue
+        fi
+        f=$(seat_ledger_path "$p" "$m")
+        hc="" dead="false" observed="" usable_at="" bench_until="" fail_count=0 fm=""
+        if [[ -f "$f" ]]; then
+            IFS=$'\x1f'$'\n' read -r hc dead observed usable_at bench_until fail_count fm < <(
+                jq -r '[(.health_class//""),(.seat_dead|tostring),(.observed_at//""),(.usable_at//""),(.bench_until//""),(.consecutive_failure_count//0),(.failure_mode//"")] | join("\u001f")' "$f" 2>/dev/null || true
+            )
+        fi
+        _seat_floor_is_money_wall "$hc" "$dead" "$fm" && continue
+        if ! _seat_floor_is_failopen_class "$hc" "$fm"; then
+            # Wrapper spawn-bench can outlive a healthy ledger clobber
+            # (fleet-ops#1512). empty_run / spawn_fail on the marker are
+            # recoverable; anything else is not a floor candidate.
+            local sb_path sb_usable sb_mode
+            sb_path=$(seat_spawn_bench_path "$p" "$m")
+            [[ -f "$sb_path" ]] || continue
+            sb_usable=$(jq -r '.usable_at // ""' "$sb_path" 2>/dev/null || true)
+            sb_mode=$(jq -r '.failure_mode // ""' "$sb_path" 2>/dev/null || true)
+            _seat_in_future "$sb_usable" || continue
+            case "$sb_mode" in
+                empty_run|spawn_fail|unknown) fm="$sb_mode" ;;
+                *) continue ;;
+            esac
+        fi
+        rem=$(_seat_floor_remaining_s "$p" "$m" "$hc" "$observed" "$usable_at" "$bench_until" "$fail_count")
+        [[ "$rem" =~ ^[0-9]+$ ]] || rem=0
+        if [[ -z "$best_rem" ]] || (( rem < best_rem )); then
+            best_rem="$rem"
+            best_p="$p"
+            best_m="$m"
+        fi
+    done < <(enumerate_seats)
+    [[ -n "$best_p" ]] || return 1
+    printf '%s\t%s\t%s\n' "$best_p" "$best_m" "$best_rem"
+    return 0
+}
+
 # Prints: "provider\tmodel" or nothing if none available.
 pick_seat() {
     local fail_p="$1" fail_m="$2" need_capable="${3:-0}" tried_file="${4:-}" difficulty="${5:-light}"
@@ -3211,6 +3403,29 @@ pick_seat() {
             _su_sample_str=$(printf '%s\n' "${_su_sorted[@]}" | paste -sd, -)
         fi
         seat_log "pick_seat: unusable ${_seat_unusable_n} seats [${_su_sample_str}]"
+    fi
+
+    # fleet-ops#3324: minimum-usable floor. When the capable set is empty
+    # but at least one benched seat is a recoverable class (transient_fault,
+    # rate_limited, empty_run, overload_bench, hang_bench) — not a money wall
+    # (402 / quota_exhausted / quota_bench / corpse / credentials_bad) —
+    # fail-open the one with the shortest remaining bench instead of stalling.
+    # Turns a starved tick into a slightly-early retry. Money-walled seats
+    # stay on the loud-stall path below.
+    local _floor_line _floor_p _floor_m _floor_left
+    if _floor_line=$(_seat_floor_shortest_bench "$privacy" "$need_capable" "$tried_file" "$difficulty"); then
+        IFS=$'\t' read -r _floor_p _floor_m _floor_left <<<"$_floor_line"
+        if [[ -n "$_floor_p" && -n "$_floor_m" ]]; then
+            [[ "$_floor_left" =~ ^[0-9]+$ ]] || _floor_left=0
+            seat_log "seat-floor: fail-open ${_floor_p}/${_floor_m} (bench had ${_floor_left}s left)"
+            _emit_seat_floor_failopen "$_floor_p" "$_floor_m" "$_floor_left"
+            record_seat_selection "$_floor_p" "$_floor_m" "$difficulty"
+            if _is_keystone_class "$difficulty"; then
+                keystone_record_event routed "$_floor_p" "$_floor_m"
+            fi
+            printf '%s\t%s\n' "$_floor_p" "$_floor_m"
+            return 0
+        fi
     fi
 
     # P15: loud stall beats a garbage seat. Every allowlisted seat was dead or
