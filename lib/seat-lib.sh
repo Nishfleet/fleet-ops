@@ -3381,8 +3381,15 @@ EMPTY_RUN_BACKOFF_S="${EMPTY_RUN_BACKOFF_S:-900}"  # 15 min
 # is the only way the failure-ceiling park ever fires for a seat that
 # alternates between empty_run and spawn_fail. EMPTY_RUN_FAILURE_CEILING
 # lowers the chronic-no-op park threshold below the generic
-# SEAT_FAILURE_CEILING (default 10 vs 20) so a free-lane no-op'er parks
+# SEAT_FAILURE_CEILING (default 3 vs 20) so a free-lane no-op'er parks
 # within a following 2h window, not after 20 cycles (~5h at flat 900s).
+# fleet-ops#3046: the prior default of 10 was too high for the live
+# nemotron-3-ultra-free loop — 9 empty runs in 2h on the same issue
+# (fleet-ops-2778) never reached 10 because the count-merge window
+# (EMPTY_RUN_COUNT_WINDOW_S, 2 h) reset the count on every 3rd run as the
+# 2h SLO window slid past the first no-op. A ceiling of 3 parks the seat
+# on the 3rd no-op in the SAME 2h window, so the loop cannot outpace the
+# count-merge window the way 10 did.
 #
 # fleet-ops#2934: the count-merge window for EMPTY RUNS is LONGER than the
 # spawn-fail window. EMPTY_RUN_MARKER_FRESH_S (30 min) was the merge bound
@@ -3407,7 +3414,7 @@ EMPTY_RUN_BACKOFF_S="${EMPTY_RUN_BACKOFF_S:-900}"  # 15 min
 EMPTY_RUN_BACKOFF_S="${EMPTY_RUN_BACKOFF_S:-900}"  # 15 min
 EMPTY_RUN_MARKER_FRESH_S="${EMPTY_RUN_MARKER_FRESH_S:-1800}"  # 30 min — spawn-fail count-merge window (see comment above)
 EMPTY_RUN_COUNT_WINDOW_S="${EMPTY_RUN_COUNT_WINDOW_S:-7200}"  # 2 h — empty-run count-merge window (fleet-ops#2934); matches waste.empty_runs_last_2h
-EMPTY_RUN_FAILURE_CEILING="${EMPTY_RUN_FAILURE_CEILING:-10}"  # default 10 (vs generic 20) parks chronic no-op seats faster
+EMPTY_RUN_FAILURE_CEILING="${EMPTY_RUN_FAILURE_CEILING:-3}"  # default 3 (vs generic 20) parks chronic no-op seats on the 3rd no-op in a 2h window (fleet-ops#3046)
 
 mark_seat_empty_run() {
     local p="$1" m="$2" reason="${3:-empty_run}"
@@ -3461,7 +3468,7 @@ mark_seat_empty_run() {
     # escalation churned healthy seats; a provider no-op is not a wall).
     local backoff
     backoff="$EMPTY_RUN_BACKOFF_S"
-    # fleet-ops#2627: park past the EMPTY_RUN_FAILURE_CEILING (default 10,
+    # fleet-ops#2627: park past the EMPTY_RUN_FAILURE_CEILING (default 3,
     # lower than SEAT_FAILURE_CEILING=20) using the marker-carried count that
     # survives the healthy clobber. Without this override, the chronic no-op
     # path stays at flat 900s forever (live: 18 empty runs/2h with count=1
