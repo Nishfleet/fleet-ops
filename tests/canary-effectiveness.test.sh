@@ -15,6 +15,8 @@
 #      (organ heartbeat) + per-organ zeros including effectiveness_ratio.
 #   3b. --self-test drill injects a fault and proves the full pipeline
 #      detects it (caught=1, ratio=1.0) — fleet-ops#3047.
+#   3c. Two-tick retention drill: attribution survives retention loss via
+#      the durable event store — fleet-ops#3052.
 #   4. Fixture with canary failure → GH bug within 24h = caught; incident
 #      without prior failure = missed; ratio = caught/(caught+missed).
 #   5. MANIFEST installs the helper + the exporter drop-in (no new timer).
@@ -131,6 +133,8 @@ ok "helpers: pre-observe incidents are not missed"
 export FLEET_CANARY_EFF_NOW="2026-09-02T12:00:00Z"
 export FLEET_CANARY_EFF_EVENTS="$scratch/empty.json"
 export FLEET_CANARY_EFF_OUT="$scratch/empty.prom"
+export FLEET_CANARY_EFF_STORE="$scratch/empty-store.jsonl"
+rm -f "$FLEET_CANARY_EFF_STORE"
 printf '%s\n' '{"events":[],"incidents":[]}' >"$FLEET_CANARY_EFF_EVENTS"
 python3 "$helper" --stdout >"$scratch/empty.stdout" \
   || fail "empty export rc nonzero"
@@ -181,6 +185,8 @@ print(json.dumps({"events": events, "incidents": incidents}))
 PY
 export FLEET_CANARY_EFF_EVENTS="$scratch/fixture.json"
 export FLEET_CANARY_EFF_OUT="$scratch/fixture.prom"
+export FLEET_CANARY_EFF_STORE="$scratch/fixture-store.jsonl"
+rm -f "$FLEET_CANARY_EFF_STORE"
 python3 "$helper" --stdout >"$scratch/fixture.stdout" \
   || fail "fixture export rc nonzero"
 
@@ -240,6 +246,72 @@ if [[ -f /var/lib/prometheus/node-exporter/fleet-canary-effectiveness.prom ]]; t
     || fail "self-test must not write the real node-exporter path"
 fi
 ok "self-test: injected fault detected end-to-end (caught=1, ratio=1.0)"
+
+# =========================================================================
+# 3c. Two-tick retention drill (fleet-ops#3052). The exporter's 30d window
+# outlives the ~7d retention of Prometheus/journald, so a real incident
+# older than retention is unclassifiable and effectiveness can never be
+# demonstrated (the escalated CanaryEffectivenessLow/CanarySilentTooLong
+# chains). The durable event store keeps every observed event for the
+# window; this drill proves attribution survives retention loss between
+# ticks: tick 1 observes a failure + bug, tick 2's live source no longer
+# returns the events, and the incident must STILL be caught=1. Without the
+# store, tick 2 would emit caught=0 — the exact silent regression this
+# issue escalated on.
+# =========================================================================
+export FLEET_CANARY_EFF_NOW="2026-09-02T12:00:00Z"
+export FLEET_CANARY_EFF_STORE="$scratch/twotick-store.jsonl"
+rm -f "$FLEET_CANARY_EFF_STORE"
+python3 - <<'PY' >"$scratch/twotick-1.json"
+import json
+end = 1788350400  # 2026-09-02T12:00:00Z
+fail_ts = end - 7200
+inc_ts = end - 3600
+print(json.dumps({
+    "events": [
+        {"organ": "0509-surface-probe", "ts": fail_ts, "kind": "run",
+         "detail": "run"},
+        {"organ": "0509-surface-probe", "ts": fail_ts, "kind": "failure",
+         "detail": "probe=0"},
+    ],
+    "incidents": [
+        {"repo": "Nishfleet/0509", "ts": inc_ts, "number": 999901,
+         "labels": ["bug"], "title": "tick1 regression"},
+    ],
+}))
+PY
+python3 - <<'PY' >"$scratch/twotick-2.json"
+import json
+end = 1788350400  # 2026-09-02T12:00:00Z
+inc_ts = end - 3600
+print(json.dumps({
+    "events": [],  # retention loss: live source no longer returns it
+    "incidents": [
+        {"repo": "Nishfleet/0509", "ts": inc_ts, "number": 999901,
+         "labels": ["bug"], "title": "tick1 regression"},
+    ],
+}))
+PY
+export FLEET_CANARY_EFF_EVENTS="$scratch/twotick-1.json"
+export FLEET_CANARY_EFF_OUT="$scratch/twotick-1.prom"
+python3 "$helper" --stdout >"$scratch/twotick-1.stdout" 2>"$scratch/twotick-1.stderr" \
+  || fail "tick 1 export rc nonzero: $(cat "$scratch/twotick-1.stderr")"
+grep -q 'fleet_canary_caught_regressions_total{organ="0509-surface-probe"} 1' "$FLEET_CANARY_EFF_OUT" \
+  || fail "tick 1 must catch the injected regression"
+export FLEET_CANARY_EFF_EVENTS="$scratch/twotick-2.json"
+export FLEET_CANARY_EFF_OUT="$scratch/twotick-2.prom"
+python3 "$helper" --stdout >"$scratch/twotick-2.stdout" 2>"$scratch/twotick-2.stderr" \
+  || fail "tick 2 export rc nonzero: $(cat "$scratch/twotick-2.stderr")"
+grep -q 'fleet_canary_caught_regressions_total{organ="0509-surface-probe"} 1' "$FLEET_CANARY_EFF_OUT" \
+  || fail "tick 2 lost attribution: the durable store must survive retention loss"
+grep -q 'fleet_canary_effectiveness_ratio{organ="0509-surface-probe"} 1.000000' "$FLEET_CANARY_EFF_OUT" \
+  || fail "tick 2 ratio must stay 1.0"
+# Store dedup: exactly the 2 tick-1 events, no re-observation copy from
+# tick 2, and nothing pruned out of the window.
+[[ $(wc -l < "$FLEET_CANARY_EFF_STORE") -eq 2 ]] \
+  || fail "store dedup broken: $(wc -l < "$FLEET_CANARY_EFF_STORE") lines, want 2"
+unset FLEET_CANARY_EFF_STORE FLEET_CANARY_EFF_EVENTS FLEET_CANARY_EFF_OUT FLEET_CANARY_EFF_NOW 2>/dev/null || true
+ok "two-tick retention drill: attribution survives retention loss via durable store"
 
 # =========================================================================
 # 4. MANIFEST + drop-in + no new timer
