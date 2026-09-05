@@ -716,10 +716,17 @@ if [[ -r "$CLAIMS_LOG" ]]; then
     _claims_log_snapshot=$(cat "$CLAIMS_LOG" 2>/dev/null || true)
 fi
 
-# Step 3: process issues in ascending number order
-mapfile -t numbers < <(jq -r 'sort_by(.number) | .[].number' <<<"$issues_json")
-mapfile -t titles  < <(jq -r 'sort_by(.number) | .[].title'  <<<"$issues_json")
-mapfile -t labels  < <(jq -c 'sort_by(.number) | .[].labels'  <<<"$issues_json")
+# Step 3: process issues critical-path first, then ascending number order
+# (0509#1691, fleet-ops#3710). A plain ascending order let a late, deploy-blocking
+# critical-path issue (0509#1691) sit "skipped-capacity" behind 18 older
+# ready issues for four ticks. Same rule as lib/intake-priority.sh rule 2
+# (critical before the tail; lowest number first inside a tier). ONE
+# expression builds all three arrays so numbers/titles/labels stay aligned.
+# shellcheck disable=SC2016  # jq program: $cp is a jq --arg, not shell
+_claim_order='sort_by([(if (((.labels // []) | map(if type == "object" then (.name // empty) else . end) | index($cp)) != null) then 0 else 1 end), .number])'
+mapfile -t numbers < <(jq -r --arg cp "$CRITICAL_PATH_LABEL" "$_claim_order | .[].number" <<<"$issues_json")
+mapfile -t titles  < <(jq -r --arg cp "$CRITICAL_PATH_LABEL" "$_claim_order | .[].title"  <<<"$issues_json")
+mapfile -t labels  < <(jq -c --arg cp "$CRITICAL_PATH_LABEL" "$_claim_order | .[].labels" <<<"$issues_json")
 
 # Cache the precedence-band phase once (auditor 2026-08-28): with 221 ready
 # issues, calling precedence_band_phase per-issue would re-read the JSON 221

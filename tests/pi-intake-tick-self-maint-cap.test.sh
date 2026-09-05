@@ -116,4 +116,31 @@ else
 fi
 
 echo ""
+# === Test 9: critical-path issues are claimed FIRST (0509#1691, fleet-ops#3710) ===
+# Step 3 used a plain ascending-number order, so a critical-path issue filed
+# late (0509#1691, deploy-blocking, 19:47Z) was "skipped-capacity" behind
+# 18 older ready issues four ticks in a row. The tick must share the model
+# orderer's rule (lib/intake-priority.sh rule 2): critical first, then the
+# tail; lowest number first inside each tier. All three arrays use ONE
+# expression so numbers/titles/labels stay aligned.
+_order_line=$(grep -E '^_claim_order=' "$tick" || true)
+[[ -n "$_order_line" ]] || fail "Test 9: _claim_order= seam not found in tick (Step 3 must sort critical-path first)"
+eval "$_order_line"
+_fixture='[{"number":1576,"title":"tail-old","labels":[]},
+           {"number":1691,"title":"crit-new","labels":[{"name":"critical-path"},{"name":"priority"}]},
+           {"number":1283,"title":"tail-priority-only","labels":[{"name":"priority"}]},
+           {"number":1702,"title":"crit-newest","labels":[{"name":"critical-path"}]}]'
+_got=$(jq -r --arg cp "critical-path" "$_claim_order | .[].number" <<<"$_fixture" | paste -sd,)
+[[ "$_got" == "1691,1702,1283,1576" ]] \
+    || fail "Test 9: claim order must be critical-path first then ascending, want 1691,1702,1283,1576 got $_got"
+# labels may arrive as bare strings (older gh shapes) — same order.
+_got2=$(jq -r --arg cp "critical-path" "$_claim_order | .[].number" \
+    <<<'[{"number":9,"labels":["priority"]},{"number":10,"labels":["critical-path"]},{"number":8,"labels":[]}]' | paste -sd,)
+[[ "$_got2" == "10,8,9" ]] || fail "Test 9: bare-string labels must order the same, want 10,8,9 got $_got2"
+for arr in numbers titles labels; do
+    grep -qE "^mapfile -t $arr < <\(jq -[rc]+ --arg cp \"\\\$CRITICAL_PATH_LABEL\" \"\\\$_claim_order \| " "$tick" \
+        || fail "Test 9: Step 3 array '$arr' must be built from \$_claim_order (arrays must stay aligned)"
+done
+ok "Test 9: Step 3 claims critical-path first, then the ascending tail (1691,1702,1283,1576)"
+
 echo "ALL OK: intake-tick self-maintenance claim cap (fleet-ops#3254)"
