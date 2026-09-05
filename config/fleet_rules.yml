@@ -672,16 +672,19 @@ groups:
       # The ratio gauge is a 14d trailing raw value baked into the
       # exporter, so this is a level check on a trend window. Omitted when
       # runs == 0 (no scout ran — that is the FleetScoutStale rule's job),
-      # so a quiet window never trips it.
+      # so a quiet window never trips it. No repo label: covers every
+      # enrolled scout repo (0509 by scout-candidate, fleet-ops by
+      # agent-ready) so a newly-scouted repo is protected without a rule
+      # edit (fleet-ops#3152).
       - alert: ScoutEffectivenessLow
-        expr: fleet_scout_effectiveness_ratio{repo="0509"} < 0.1 and fleet_scout_runs_total{repo="0509"} > 0
+        expr: fleet_scout_effectiveness_ratio < 0.1 and fleet_scout_runs_total > 0
         for: 6h
         labels:
           severity: warning
           service: fleet
         annotations:
-          summary: "pi-scout@0509 runs but produces no mergeable work (effectiveness_ratio < 0.1 over 14d)"
-          description: "fleet_scout_effectiveness_ratio{repo=\"0509\"} is below 0.1 while fleet_scout_runs_total > 0 (fleet-ops#2756). The scout is running but its output is not translating to merged PRs — the scout-futility green-and-empty pattern, now quantified. Inspect fleet_scout_issues_filed / survive_intake / agent_ready / merged_14d to find where the pipeline leaks (filed but duped at intake, agent-ready but never claimed, claimed but never merged). Compare against the > 0.3 issues/run target."
+          summary: "scout runs but produces no mergeable work (effectiveness_ratio < 0.1 over 14d)"
+          description: "fleet_scout_effectiveness_ratio is below 0.1 while fleet_scout_runs_total > 0 (fleet-ops#2756). The scout is running but its output is not translating to merged PRs — the scout-futility green-and-empty pattern, now quantified. Inspect fleet_scout_issues_filed / survive_intake / agent_ready / merged_14d to find where the pipeline leaks (filed but duped at intake, agent-ready but never claimed, claimed but never merged). Compare against the > 0.3 issues/run target."
 
 
   - name: fleet_product_slo
