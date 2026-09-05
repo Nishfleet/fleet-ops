@@ -116,7 +116,7 @@ In `https://github.com/organizations/Nishfleet/settings/hooks`, add:
 | Content type   | `application/json`                                          |
 | Secret         | The same hex from step 3                                    |
 | SSL verify     | enabled                                                     |
-| Events         | Issues, Workflow runs                                       |
+| Events         | Issues, Workflow runs, Pull requests                       |
 
 Or use `gh api` on a personal token with org-webhook scope:
 
@@ -127,7 +127,7 @@ gh api --method POST /orgs/Nishfleet/hooks \
     -F config[content_type]='json' \
     -F config[secret]="$(cat ~/.config/fleet-ops/gh-webhook.secret)" \
     -F config[insecure_ssl]='false' \
-    -F events[]='issues' -F events[]='workflow_run' \
+    -F events[]='issues' -F events[]='workflow_run' -F events[]='pull_request' \
     -F active=true
 ```
 
@@ -209,6 +209,17 @@ be re-connecting. The poll is the level-triggered catch — when it
 finds ready work, that means the edge-triggered path missed it. The
 `fleet_intake_reconciler_caught_total` counter exposes this to the
 alert rail.
+
+**Why does a closed PR fire the worktree reaper?**
+
+A merged or closed PR leaves its `claim/issue-<N>` worktree behind
+(~440MB each). The reaper's Mode A reaps MERGED immediately and
+CLOSED after the age gate (fleet-ops#3023), so both terminal states
+must trigger it. The receiver dispatches `pull_request/closed` to
+`fleet-worktree-reaper.service` (fleet-ops#3269); `systemctl start` on
+an already-active oneshot is a no-op, so a burst of closes dedupes
+naturally. The daily timer stays as the level-triggered backstop for
+webhooks that never arrive.
 
 **Why 20-min cadence (and not 15 or 30)?**
 

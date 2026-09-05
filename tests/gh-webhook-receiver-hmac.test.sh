@@ -82,6 +82,31 @@ unit, reason = mod.dispatch("workflow_run", "completed", "", "fleet-ops",
                             "success", dry=False)
 assert unit == "fleet-deploy-check.service", unit
 
+# pull_request/closed (merged) → fleet-worktree-reaper (fleet-ops#3269)
+unit, reason = mod.dispatch("pull_request", "closed", "", "fleet-ops",
+                            "", dry=False, pr_merged="true")
+assert unit == "fleet-worktree-reaper.service", unit
+assert "pull_request/closed" in reason, reason
+
+# pull_request/closed (not merged) → fleet-worktree-reaper too (both
+# terminal states leave a claim worktree behind; Mode A reaps CLOSED
+# after the age gate, fleet-ops#3023).
+unit, reason = mod.dispatch("pull_request", "closed", "", "fleet-ops",
+                            "", dry=False, pr_merged="false")
+assert unit == "fleet-worktree-reaper.service", unit
+
+# pull_request/opened → ignored (only the terminal closed state reaps)
+unit, reason = mod.dispatch("pull_request", "opened", "", "fleet-ops",
+                            "", dry=False, pr_merged="false")
+assert unit == "", unit
+assert "ignored" in reason, reason
+
+# pull_request/closed on a bad repo → ignored (defense-in-depth)
+unit, reason = mod.dispatch("pull_request", "closed", "", "bad repo name!",
+                            "", dry=False, pr_merged="true")
+assert unit == "", unit
+assert "bad repo" in reason, reason
+
 unit, reason = mod.dispatch("issues", "labeled", "do-not-route",
                             "fleet-ops", "", dry=False)
 assert unit == "", unit
@@ -224,6 +249,38 @@ echo "$body_resp" | grep -q '"dispatched": "fleet-deploy-check.service"' \
     || fail "7: workflow_run should dispatch fleet-deploy-check: $body_resp"
 ok "7: workflow_run/completed/success → fleet-deploy-check.service"
 
+# --- 7b: pull_request/closed (merged) → fleet-worktree-reaper (fleet-ops#3269) ---
+body_pr='{"action":"closed","pull_request":{"merged":true,"number":3269},"repository":{"name":"fleet-ops"}}'
+sig_pr="sha256=$(printf '%s' "$body_pr" | openssl dgst -sha256 -hmac "$secret" -hex | awk '{print $NF}')"
+resp="$(curl -sS -X POST "http://127.0.0.1:$TEST_PORT/webhook" \
+    -H "Content-Type: application/json" \
+    -H "X-GitHub-Event: pull_request" \
+    -H "X-GitHub-Delivery: test-3269" \
+    -H "X-Hub-Signature-256: $sig_pr" \
+    -w "\n%{http_code}" --data "$body_pr")"
+status="$(printf '%s' "$resp" | tail -n1)"
+body_resp="$(printf '%s' "$resp" | head -n-1)"
+[[ "$status" == "200" ]] || fail "7b: pull_request/closed got $status; body=$body_resp"
+echo "$body_resp" | grep -q '"dispatched": "fleet-worktree-reaper.service"' \
+    || fail "7b: pull_request/closed should dispatch fleet-worktree-reaper: $body_resp"
+ok "7b: pull_request/closed (merged) → fleet-worktree-reaper.service (DRY=1)"
+
+# --- 7c: pull_request/opened → ignored (only terminal closed reaps) ---
+body_propen='{"action":"opened","pull_request":{"merged":false,"number":3269},"repository":{"name":"fleet-ops"}}'
+sig_propen="sha256=$(printf '%s' "$body_propen" | openssl dgst -sha256 -hmac "$secret" -hex | awk '{print $NF}')"
+resp="$(curl -sS -X POST "http://127.0.0.1:$TEST_PORT/webhook" \
+    -H "Content-Type: application/json" \
+    -H "X-GitHub-Event: pull_request" \
+    -H "X-GitHub-Delivery: test-3269-open" \
+    -H "X-Hub-Signature-256: $sig_propen" \
+    -w "\n%{http_code}" --data "$body_propen")"
+status="$(printf '%s' "$resp" | tail -n1)"
+body_resp="$(printf '%s' "$resp" | head -n-1)"
+[[ "$status" == "200" ]] || fail "7c: pull_request/opened got $status; body=$body_resp"
+echo "$body_resp" | grep -q '"ignored"' \
+    || fail "7c: pull_request/opened must be ignored: $body_resp"
+ok "7c: pull_request/opened → 200 + ignored (no reaper)"
+
 # --- 8: /healthz works without auth ---
 healthz="$(curl -sS "http://127.0.0.1:$TEST_PORT/healthz")"
 echo "$healthz" | grep -q '"status": "ok"' || fail "8: /healthz body: $healthz"
@@ -236,13 +293,13 @@ grep -q 'fleet_gh_webhook_receiver_last_green_seconds' "$GH_WEBHOOK_RECEIVER_PRO
     || fail "9: prom file missing heartbeat metric"
 ok "9: receiver wrote heartbeat prom file"
 
-# --- 10: prom counter advanced for each successful dispatch (2 in this
-# test: the issues/labeled/agent-ready + the workflow_run/completed/success).
-# Tampered bodies and ignored events do NOT increment — they fail before
-# the dispatcher runs.
-grep -E '^fleet_gh_webhook_receiver_dispatch_total 2$' "$GH_WEBHOOK_RECEIVER_PROM" \
-    || fail "10: dispatch counter != 2 (expected exactly the two successful events): $(cat "$GH_WEBHOOK_RECEIVER_PROM")"
-ok "10: dispatch counter advanced for every dispatched event (2 verified + dispatched)"
+# --- 10: prom counter advanced for each successful dispatch (3 in this
+# test: the issues/labeled/agent-ready + the workflow_run/completed/success
+# + the pull_request/closed). Tampered bodies and ignored events do NOT
+# increment — they fail before the dispatcher runs.
+grep -E '^fleet_gh_webhook_receiver_dispatch_total 3$' "$GH_WEBHOOK_RECEIVER_PROM" \
+    || fail "10: dispatch counter != 3 (expected exactly the three successful events): $(cat "$GH_WEBHOOK_RECEIVER_PROM")"
+ok "10: dispatch counter advanced for every dispatched event (3 verified + dispatched)"
 
 kill "$server_pid" 2>/dev/null || true
 wait "$server_pid" 2>/dev/null || true
