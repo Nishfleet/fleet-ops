@@ -35,6 +35,46 @@ export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 export HOME="${HOME:-/home/nish}"
 export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH}"
 
+# Use the nishfleet-worker App token for any GitHub write. Fail closed if
+# the App cannot mint and no token was inherited from a parent organ, so a
+# dead App never falls through to the human gh identity (fleet-ops#3445).
+# Human gh is read-only for organs; GH Actions (tests) has no App creds and
+# stubs gh as read-only, so skip minting there.
+if [[ -z "${GH_TOKEN:-}" && "${GITHUB_ACTIONS:-}" != "true" ]]; then
+    export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
+    _wt="${NISHFLEET_WORKER_TOKEN_BIN:-${HOME:-/home/nish}/.local/bin/worker-token}"
+    _minted="$("$_wt" --print)" || { echo "fleet-ops#3445: $_wt --print failed - refusing human-gh writes" >&2; exit 1; }
+    eval "$_minted"
+    unset _wt _minted
+fi
+
+# GitHub secondary rate-limit state (fleet-ops#3445). Written when a write
+# fails with "submitted too quickly"; the gate below holds the whole tick
+# until the 60s x attempt backoff expires instead of failing the tick.
+GH_SECONDARY_STATE_DIR="${PI_INTAKE_GH_SECONDARY_STATE_DIR:-/home/nish/workspaces/agent-state/pi-intake}"
+GH_SECONDARY_STATE="$GH_SECONDARY_STATE_DIR/gh-secondary-rate.json"
+
+_gh_secondary_read() {
+    if [[ -f "$GH_SECONDARY_STATE" ]]; then
+        cat "$GH_SECONDARY_STATE" 2>/dev/null || echo '{}'
+    else
+        echo '{}'
+    fi
+}
+
+_gh_secondary_write() {
+    local attempt="$1" backoff_until="$2"
+    mkdir -p "$GH_SECONDARY_STATE_DIR"
+    python3 -c "import json,sys; json.dump({'submitted_too_quickly':1,'attempt':$attempt,'backoff_until':$backoff_until,'updated_at':$(date +%s)}, sys.stdout)" > "$GH_SECONDARY_STATE.tmp"
+    mv -f "$GH_SECONDARY_STATE.tmp" "$GH_SECONDARY_STATE"
+}
+
+_gh_secondary_clear() {
+    mkdir -p "$GH_SECONDARY_STATE_DIR"
+    python3 -c "import json,sys; json.dump({'submitted_too_quickly':0,'attempt':0,'backoff_until':0,'updated_at':$(date +%s)}, sys.stdout)" > "$GH_SECONDARY_STATE.tmp"
+    mv -f "$GH_SECONDARY_STATE.tmp" "$GH_SECONDARY_STATE"
+}
+
 # SYSTEMCTL seam (fleet-ops#1546): tests inject a fake to drive the
 # start-limit healer + post-condition verification deterministically.
 SYSTEMCTL="${SYSTEMCTL:-systemctl}"
@@ -542,6 +582,24 @@ else
     echo "gh rate-limit state file missing; failing open — gate: gh_rate_limit missing"
 fi
 
+# GitHub secondary rate-limit gate (fleet-ops#3445): the write loops below
+# persist this state when "submitted too quickly" exhausts its retries and
+# give the tick a 60s x attempt backoff. While the backoff is active, hold
+# the whole tick (do not fail it) so the claim push is not orphaned and the
+# human-gh secondary limit is not hammered further.
+_gh_secondary_json=$(_gh_secondary_read)
+_gh_secondary_active=$(printf '%s' "$_gh_secondary_json" | jq -r '.submitted_too_quickly // 0')
+_gh_secondary_backoff=$(printf '%s' "$_gh_secondary_json" | jq -r '.backoff_until // 0')
+_gh_secondary_now=$(date +%s)
+if [[ "$_gh_secondary_active" == "1" && $_gh_secondary_backoff -gt $_gh_secondary_now ]]; then
+    _gh_secondary_attempt=$(printf '%s' "$_gh_secondary_json" | jq -r '.attempt // 0')
+    _gh_secondary_wait=$(( _gh_secondary_backoff - _gh_secondary_now ))
+    echo "gh secondary rate-limit active (attempt=${_gh_secondary_attempt}, back in ${_gh_secondary_wait}s); holding claims this tick — gate: gh_rate_limit secondary"
+    exit 0
+elif [[ "$_gh_secondary_active" == "1" && $_gh_secondary_backoff -le $_gh_secondary_now ]]; then
+    _gh_secondary_clear
+fi
+
 # Seat gate (auditor 2026-08-26T18:1xZ, summon fleet-ops-378 unit-failure):
 # capacity slots are NOT proof a worker can run. With every allowlisted
 # heavy-capable seat benched/quota-exhausted, a claimed issue spawns a
@@ -909,18 +967,36 @@ blocked-on: nish-decision" 2>/dev/null || true
     # Tolerate permanent label-state errors (agent-ready already removed
     # by a prior tick/auditor): if agent-in-progress is already set and
     # agent-ready is gone, the issue is in the desired state — no-op.
+    # Secondary rate limit ("submitted too quickly") backs off 60s x attempt
+    # and, when it exhausts all retries, persists the backoff state so the
+    # gate above holds future ticks instead of hammering the limit (fleet-ops#3445).
+    edit_attempt=0
     edit_out=""
     edit_rc=0
     for _ in 1 2 3; do
+        edit_attempt=$(( edit_attempt + 1 ))
         edit_rc=0
         edit_out=$(gh issue edit "$N" -R "$FULL" --remove-label agent-ready --add-label agent-in-progress 2>&1) || edit_rc=$?
         if [[ $edit_rc -eq 0 ]]; then break; fi
         case "$edit_out" in
-            *"submitted too quickly"*|*"secondary rate"*|*"429"*) sleep 5 ;;
+            *"submitted too quickly"*|*"secondary rate"*|*"429"*) sleep $((60 * edit_attempt)) ;;
             *) break ;;
         esac
     done
     if [[ $edit_rc -ne 0 ]]; then
+        case "$edit_out" in
+            *"submitted too quickly"*|*"secondary rate"*|*"429"*)
+                _ss_state=$(_gh_secondary_read)
+                _ss_attempt=$(printf '%s' "$_ss_state" | jq -r '.attempt // 0')
+                _ss_new_attempt=$(( _ss_attempt + edit_attempt ))
+                _ss_now=$(date +%s)
+                _ss_backoff=$(( _ss_now + 60 * _ss_new_attempt ))
+                _gh_secondary_write "$_ss_new_attempt" "$_ss_backoff"
+                git -C "$REPO_DIR" push origin ":refs/heads/claim/issue-$N" >/dev/null 2>&1 || true
+                echo "issue $N ($title): gh secondary rate limit after $edit_attempt attempts; backing off 60s x $_ss_new_attempt and releasing claim branch — gate: gh_rate_limit secondary" >&2
+                exit 0
+                ;;
+        esac
         labels_json=$(gh issue view "$N" -R "$FULL" --json labels --jq '.labels | map(.name)' 2>/dev/null || true)
         if echo "$labels_json" | grep -q '"agent-in-progress"' && ! echo "$labels_json" | grep -q '"agent-ready"'; then
             echo "issue $N: labels already in target state (agent-in-progress set, agent-ready removed) — idempotent skip"
@@ -931,17 +1007,19 @@ blocked-on: nish-decision" 2>/dev/null || true
     fi
 
     # GitHub secondary rate limits on addComment ("submitted too quickly")
-    # are transient — retry with backoff (fleet-ops#1350 pattern). A
+    # are transient — retry with 60s x attempt backoff (fleet-ops#3445). A
     # permanent failure (auth, 404, etc.) still exits 1 after exhaustion.
     comment_body="claimed by pi-issue-${REPO}-${N} at $(date -u +%FT%TZ)"
     comment_out=""
     comment_rc=0
+    comment_attempt=0
     for _ in 1 2 3; do
+        comment_attempt=$(( comment_attempt + 1 ))
         comment_rc=0
         comment_out=$(gh issue comment "$N" -R "$FULL" --body "$comment_body" 2>&1) || comment_rc=$?
         if [[ $comment_rc -eq 0 ]]; then break; fi
         case "$comment_out" in
-            *"submitted too quickly"*|*"secondary rate"*|*"429"*) sleep 5 ;;
+            *"submitted too quickly"*|*"secondary rate"*|*"429"*) sleep $((60 * comment_attempt)) ;;
             *) break ;;  # permanent error — do not retry
         esac
     done
