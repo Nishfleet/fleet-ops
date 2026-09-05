@@ -88,7 +88,8 @@ grep -q 'class=\$(printf' "$repo_root/bin/nish-boundary-notify" \
 ok "nish-boundary-notify passes --class <detected-boundary> to hermes"
 
 # --- 6. daily-digest passes --class daily-digest to hermes ---
-grep -q 'hermes send -t telegram --urgent --class daily-digest' "$repo_root/libexec/daily-digest" \
+# HERMES_BIN variable is used (test seam); match the --class flag regardless of binary path
+grep -q -- '--class daily-digest' "$repo_root/libexec/daily-digest" \
   || fail "daily-digest must pass --class daily-digest to hermes send"
 ok "daily-digest passes --class daily-digest to hermes"
 
