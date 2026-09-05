@@ -167,3 +167,21 @@ grep -q 'lib/intake-priority.sh' "$repo_root/MANIFEST" \
 ok "contracts: prompt uses the orderer, MANIFEST installs it"
 
 echo "all intake-priority cases passed"
+
+# --- fleet-ops#3313: a non-fleet-ops queue refuses '[fleet-ops#N] ...' chores ----
+issues_chore="$scratch/chore.json"
+cat >"$issues_chore" <<'JSON'
+[
+  {"number": 50, "title": "plain product tail", "labels": [{"name": "agent-ready"}], "createdAt": "2026-08-01T00:00:00Z"},
+  {"number": 7, "title": "[fleet-ops#1137] CI: register staleness-checker.test.sh", "labels": [{"name": "agent-ready"}, {"name": "critical-path"}], "createdAt": "2026-08-26T12:00:00Z"}
+]
+JSON
+out="$("$bin" order --repo 0509 --issues-file "$issues_chore" --ratio-file "$scratch/chore.ratio" --pick-one)"
+num="${out%%$'\t'*}"
+[[ "$num" == "50" ]] || fail "3313: 0509 must skip the '[fleet-ops#' chore and claim #50, got: $out"
+out="$("$bin" order --repo fleet-ops --issues-file "$issues_chore" --ratio-file "$scratch/chore-fo.ratio" --pick-one)"
+num="${out%%$'\t'*}"
+[[ "$num" == "7" ]] || fail "3313: fleet-ops keeps claiming its own chore #7, got: $out"
+out="$("$bin" order --repo 0509 --issues-file <(printf '%s\n' '[{"number": 8, "title": "[fleet-ops#9] CI: only chores", "labels": [{"name": "agent-ready"}], "createdAt": "2026-08-01T00:00:00Z"}]') --ratio-file "$scratch/chore-only.ratio" --pick-one)"
+[[ -z "$out" ]] || fail "3313: a queue holding only '[fleet-ops#' chores must yield nothing, got: $out"
+ok "fleet-ops#3313: non-fleet-ops intake refuses '[fleet-ops#N]' chores; fleet-ops still claims them"
