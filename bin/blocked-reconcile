@@ -642,6 +642,9 @@ count_recent_infra_releases() {
 # selection is recorded; verify the returned seat is actually healthy and
 # capable for the issue's difficulty. Prints "provider/model" and returns 0
 # if a healthy capable seat exists, 1 otherwise.
+# shellcheck disable=SC2030,SC2031
+# The two $(...) subshells below deliberately export PI_PACKET_STATE/HOME into
+# a throwaway scope so seat-lib writes land in a temp dir, never the live state.
 healthy_capable_seat_for_issue() {
     local difficulty="$1"
     local need_capable=0
