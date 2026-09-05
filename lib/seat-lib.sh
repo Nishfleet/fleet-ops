@@ -1015,7 +1015,9 @@ _aimd_probe_admitted() {
     ram_cap=$(ram_governor_cap) || ram_cap=0
     [[ "$ram_cap" =~ ^[0-9]+$ ]] || ram_cap=0
     active_total=$(active_ram_charge)
-    (( ram_cap > active_total )) || return 1
+    # active_ram_charge is fractional (per-repo MemoryHigh / fallback), so
+    # compare in awk, not bash integer math (fleet-ops#3679).
+    awk -v cap="$ram_cap" -v act="$active_total" 'BEGIN{ exit !(cap > act) }' || return 1
     local new=$(( eff + 1 ))
     (( new > ceiling )) && new=$ceiling
     _record_learned_cap "$p" "$new" "probe" ""
@@ -1105,7 +1107,9 @@ _model_probe_admitted() {
     ram_cap=$(ram_governor_cap) || ram_cap=0
     [[ "$ram_cap" =~ ^[0-9]+$ ]] || ram_cap=0
     active_total=$(active_ram_charge)
-    (( ram_cap > active_total )) || return 1
+    # active_ram_charge is fractional (per-repo MemoryHigh / fallback), so
+    # compare in awk, not bash integer math (fleet-ops#3679).
+    awk -v cap="$ram_cap" -v act="$active_total" 'BEGIN{ exit !(cap > act) }' || return 1
     local new=$(( eff + 1 ))
     (( new > ceiling )) && new=$ceiling
     _record_learned_cap "$p/$m" "$new" "probe" ""
@@ -1197,6 +1201,45 @@ admit_ceiling() {
     else
         echo "$ram_cap"
     fi
+}
+
+# Convert a systemd memory quantity (1536M, 1G, 1.25G, 2G) to GB (decimal).
+# Prints 0 if the string is not a plain <number><K|M|G> quantity.
+_systemd_quantity_gb() {
+    local q="$1" num unit
+    [[ "$q" =~ ^([0-9]+(\.[0-9]+)?)([KMG])$ ]] || { echo 0; return; }
+    num="${BASH_REMATCH[1]}"
+    unit="${BASH_REMATCH[3]}"
+    case "$unit" in
+        K) awk -v n="$num" 'BEGIN{ printf "%.3f", n/1024/1024 }' ;;
+        M) awk -v n="$num" 'BEGIN{ printf "%.3f", n/1024 }' ;;
+        G) awk -v n="$num" 'BEGIN{ printf "%.3f", n }' ;;
+    esac
+}
+
+# Per-repo RAM charge in GB for a worker of <repo> at <difficulty>.
+# heavy|keystone -> 1.0 GB (fleet-ops#3495). Else the repo's MemoryHigh
+# from worker_memory.<repo> (0509 2.5G, fleet-ops 1.5G), converted to
+# GB. Repos without a row fall back to ram_gb_per_worker (2.0). This is
+# what admission charges each active worker, so a 0509 browser worker
+# consumes its real 2.5 GB share of MemAvailable instead of the flat
+# 2.0 GB (fleet-ops#3679).
+ram_charge_gb_for() {
+    local repo="$1" difficulty="$2" high gb
+    if [[ "$difficulty" == "heavy" || "$difficulty" == "keystone" ]]; then
+        echo "1.0"
+        return
+    fi
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    high=$(jq -r --arg r "$repo" '.worker_memory[$r].MemoryHigh // empty' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    if [[ -n "$high" ]]; then
+        gb=$(_systemd_quantity_gb "$high")
+        if awk -v g="$gb" 'BEGIN{ exit !(g > 0) }'; then
+            echo "$gb"
+            return
+        fi
+    fi
+    echo "$SEAT_RAM_GB_PER_WORKER"
 }
 
 # Per-repo MemoryMax/MemoryHigh from seat-caps.json worker_memory.<repo>.
@@ -2516,16 +2559,48 @@ count_active_heavy() {
     echo "$n"
 }
 
-# Total RAM charge of active workers in light-worker units. Heavy workers
-# (packet difficulty heavy|keystone) are charged at 1.0 GB = 2x the light
-# 0.5 GB, so they count double; org/repair packets stay at 1x. This is what
-# the RAM governor's cap is compared against so heavy workers consume their
-# real 1.0 GB share of MemAvailable (fleet-ops#3281).
+# Total RAM charge of active workers in light-worker units (1 unit = the
+# fallback ram_gb_per_worker). Each issue worker is charged its repo's
+# MemoryHigh (heavy|keystone at 1.0 GB, fleet-ops#3495) divided by the
+# fallback, so a 0509 browser worker (2.5 GB) charges 1.25 units and a
+# fleet-ops worker (1.5 GB) charges 0.75 units instead of the flat 1
+# (fleet-ops#3679). Org/repair packets stay at 1x (capped at org_reserve).
+# This is what the RAM governor's cap is compared against so heavy/browser
+# workers consume their real share of MemAvailable.
 active_ram_charge() {
-    local total heavy
-    total=$(count_active_total)
-    heavy=$(count_active_heavy)
-    echo $(( total + heavy ))
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    local total=0 f unit inst pkt repo diff gb fallback
+    fallback="$SEAT_RAM_GB_PER_WORKER"
+    # Registry pass (new path).
+    while IFS= read -r f; do
+        unit=$(jq -r '.unit // ""' "$f" 2>/dev/null || true)
+        [[ "$unit" == pi-issue-* ]] || continue
+        inst="${unit#pi-issue-}"
+        pkt="$PI_ISSUES_DIR/${inst}.in"
+        repo=$(packet_repo "$pkt" 2>/dev/null || true)
+        diff=$(packet_difficulty "$pkt" 2>/dev/null || true)
+        gb=$(ram_charge_gb_for "$repo" "$diff")
+        total=$(awk -v t="$total" -v g="$gb" -v f="$fallback" 'BEGIN{ printf "%.3f", t + g/f }')
+    done < <(_seat_live_registry_files)
+    # Legacy ExecStart pass (dedup matches count_active_issue).
+    local u
+    while IFS= read -r u; do
+        [[ "$u" == pi-issue@*.service ]] || continue
+        inst="${u#pi-issue@}"; inst="${inst%.service}"
+        [[ -f "$ACTIVE_SEATS_DIR/pi-issue-${inst}.json" ]] && continue
+        pkt="$PI_ISSUES_DIR/${inst}.in"
+        repo=$(packet_repo "$pkt" 2>/dev/null || true)
+        diff=$(packet_difficulty "$pkt" 2>/dev/null || true)
+        gb=$(ram_charge_gb_for "$repo" "$diff")
+        total=$(awk -v t="$total" -v g="$gb" -v f="$fallback" 'BEGIN{ printf "%.3f", t + g/f }')
+    done < <(_seat_list_pi_exec)
+    # Org/repair packets at 1x, capped at org_reserve.
+    local org reserve
+    org=$(count_active_org)
+    reserve=$(org_reserve)
+    (( org > reserve )) && org=$reserve
+    total=$(awk -v t="$total" -v o="$org" 'BEGIN{ printf "%.3f", t + o }')
+    echo "$total"
 }
 
 # Count workers in `activating/auto-restart` across all fleet worker units.

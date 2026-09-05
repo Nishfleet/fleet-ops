@@ -175,10 +175,34 @@ fleet-ops#489 decided to keep `memory.current` for admission (not process
 VmRSS). fleet-ops#1168 right-sized the live budget from that 1.5 GB p95*3
 clamp to the measured typical-worker value 0.6; fleet-ops#1558 then
 re-measured under per-repo MemoryMax drop-ins and `config/seat-caps.json`
-now holds `ram_gb_per_worker=0.5`. Process VmRSS is much smaller, so using
-it would raise lanes but undercount real cgroup cost.
+holds `ram_gb_per_worker=2.0` as the FALLBACK charge. fleet-ops#3679 changed
+admission to charge each active worker its repo's `MemoryHigh` (0509 2.5G,
+fleet-ops 1.5G, heavy 1.0G from #3495) divided by the fallback, so a 0509
+browser worker charges 1.25 units and a fleet-ops worker charges 0.75 units
+instead of the flat 1 — the flat 2.0 is now only for repos without a
+`worker_memory` row. Process VmRSS is much smaller, so using it would raise
+lanes but undercount real cgroup cost.
 
 Do not cite the 35 MB figure as cgroup cost.
+
+## Per-repo charge model — fleet-ops#3679
+
+Admission (`active_ram_charge` in `lib/seat-lib.sh`) sums each active
+worker's charge in light-worker units (1 unit = the fallback
+`ram_gb_per_worker`). `ram_charge_gb_for <repo> <difficulty>` returns the
+GB charge: heavy|keystone -> 1.0 GB (fleet-ops#3495); else the repo's
+`worker_memory.<repo>.MemoryHigh` converted to GB; else the fallback 2.0.
+The governor's cap (`ram_governor_cap`) is the MemAvailable budget in the
+same units, so a browser-heavy mix self-throttles to its real footprint.
+
+Measured 2026-09-05 (`~/.local/state/ram-measurement/`):
+0509 units peaked at 1.50 GiB == old MemoryHigh 1536M (throttled=1);
+fleet-ops units peaked at 1.00-1.05 GiB == old MemoryHigh 1G (throttled=1).
+MemoryHigh was raised above those p95s (0509 -> 2.5G, fleet-ops -> 1.5G) so
+workers stop living at the clamp; MemoryMax stays the hard stop.
+`target_concurrent` 25 is NOT reachable on 15 GB at 1.0-1.5 GiB per worker;
+the realistic ceiling is ~8-10 concurrent. Do NOT raise the slice
+`MemoryHigh` above 12G.
 
 ## Tuning — read first
 
