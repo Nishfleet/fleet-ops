@@ -84,14 +84,16 @@
       }
     },
     "ollama": {
-      "cap": 4,
+      "cap": 8,
       "class": "prepaid-quota",
       "hard_ceiling": true,
       "quota_window": "weekly",
       "models": {
-        "deepseek-v4-flash:0731": 4
+        "deepseek-v4-flash:0731": 8
       },
-      "_hard_cap": "Nish 2026-08-26: hard 4, never probe above (like devin). Prepaid weekly quota, not free (Nish 2026-08-26, fleet-ops#387)."
+      "_hard_cap": "Nish 2026-08-26: hard 4, never probe above (like devin). Prepaid weekly quota, not free (Nish 2026-08-26, fleet-ops#387).",
+      "max_probe_ceiling": 8,
+      "_cap8_2026_09_05": "2026-09-05 (Nish: ollama cloud sub expiring unused, wow): Ollama Cloud Pro showed 4.4% weekly used / 13.7% of the hourly session budget with 1 day to reset and 1339 requests all week; the seat ran 2 sessions in 12h because every issue was classified heavy (PR #3444) and the seat was not capable (contextWindow 131072 < 200k; corrected to 1,000,000 in models.json). Cap 4 cannot drain the quota at ~15 min/session; 8 concurrent stays under the hourly session budget. hard_ceiling stays true: never probe above 8. Ollama errors now reach the detectors via PR #3475."
     },
     "commandcode": {
       "cap": 4,
