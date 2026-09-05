@@ -231,6 +231,25 @@ bw=$(jq -r '.bench_window_s' "$ledger_file")
 [[ "$bw" == "900" ]] || fail "_dispatch: quota writer must use quota_bench_default_s=900 when no window in body, got '$bw'"
 ok "_dispatch: quota writer resolves quota_bench_default_s=900 from seat-caps.json (backwards-compat)"
 
+# Devin concurrency wall (live 2026-09-05: 133 sessions died at ~40s with this
+# body while 85% of the daily quota was untouched; fleet-ops#3238). The CLI
+# surfaces it as a generic exit 1, so the text is the only signal: bench for the
+# devin default 900s so AIMD backs off instead of re-picking the seat.
+rm -f "$LEDGER"/*.json 2>/dev/null || true
+devin_re='Devin exited with code 1: Error: Agent error: Connection error, send a message to continue retrying (error id: 7a8514c07ad94e8497df677228e2a1e3): { "cognition.ai/errorKind": "resource_exhausted", "cognition.ai/retryable": true }'
+set +e
+bash -c 'source "$0"; load_seat_caps; _dispatch_lane_faults "$1" "$2" "$3" "$4"' \
+    "$lib" "devin" "swe-1-7" "" "$devin_re" >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "_dispatch: devin resource_exhausted body must bench (got $rc)"
+ledger_file="$LEDGER/devin__swe-1-7.json"
+hc=$(jq -r '.health_class' "$ledger_file")
+[[ "$hc" == "quota_bench" ]] || fail "_dispatch: devin resource_exhausted must write health_class=quota_bench, got '$hc'"
+bw=$(jq -r '.bench_window_s' "$ledger_file")
+[[ "$bw" == "900" ]] || fail "_dispatch: devin resource_exhausted must use quota_bench_default_s=900, got '$bw'"
+ok "_dispatch: devin resource_exhausted connection error -> quota_bench 900s (fleet-ops#3238)"
+
 # --- 6. _dispatch_lane_faults is safe with no error_classes block ----------
 cat >"$scratch/seat-caps-no-registry.json" <<'JSON'
 {
