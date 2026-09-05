@@ -19,6 +19,12 @@
 #      class ladder; the ledger is ignored.
 #   5. The pick_seat yield-order log line fires once per product pick.
 #
+# fleet-ops#3323 extends the drill for product_order: "value" — the ledger
+# also carries cost_per_session and product picks rank by value =
+# yield / max(cost_per_session, 0.001): light packets order by value alone
+# (free seats sort first at equal yield), heavy/keystone packets order by
+# yield first (quality) then value.
+#
 # Hosted by tests/seat-lib.test.sh (workers cannot add a ci.yml line).
 # Offline. Scratch models/caps/yield so live state cannot leak.
 
@@ -102,13 +108,9 @@ export PI_SEAT_HEALTH_LEDGER_DIR="$scratch/ledger"
 mkdir -p "$PI_PACKET_STATE" "$PI_SEAT_HEALTH_LEDGER_DIR"
 
 pick() {
-    # pick <role> [tried]
-    local role="${1:-scout}" tried="${2:-}"
-    if [[ -n "$tried" ]]; then
-        bash -c 'source "$0"; load_seat_caps; PI_PICK_ROLE="'"$role"'" pick_seat "" "" 0 "'"$tried"'" light' "$lib" 2>/dev/null
-    else
-        bash -c 'source "$0"; load_seat_caps; PI_PICK_ROLE="'"$role"'" pick_seat "" "" 0 "" light' "$lib" 2>/dev/null
-    fi
+    # pick <role> [tried] [difficulty]
+    local role="${1:-scout}" tried="${2:-}" difficulty="${3:-light}"
+    bash -c 'source "$0"; load_seat_caps; PI_PICK_ROLE="'"$role"'" pick_seat "" "" 0 "'"$tried"'" "'"$difficulty"'"' "$lib" 2>/dev/null
 }
 
 # --- 1. product picks route by yield (highest-yield, not free-first) ------
@@ -167,4 +169,98 @@ grep 'yield-order (product):' "$picklog" | grep -q 'xai-oauth/grok-4.6@0.9' \
   || fail "5: log must show the computed order with yields"
 ok "5: pick_seat logs the yield order once per pick"
 
-ok "seat-lib-yield-order: product-yield ordering, class tie-break, provisional, scout free-first, log line"
+# =========================================================================
+# fleet-ops#3323: product_order=value. The ledger also carries
+# cost_per_session (rolling mean usage.cost); value = yield /
+# max(cost_per_session, 0.001). Light packets order by value alone;
+# heavy/keystone order by yield first (quality) then value.
+# =========================================================================
+cat >"$scratch/seat-caps-value.json" <<'JSON'
+{
+  "ram_gb_per_worker": 1.5,
+  "product_order": "value",
+  "free_providers_in_order": ["commandcode"],
+  "prepaid_providers_in_order": ["devin", "xai-oauth"],
+  "walled_comeback": {
+    "min_probe_interval_s": 900,
+    "rate_limit_s": 900,
+    "daily_quota_s": 3600,
+    "monthly_quota_s": 86400,
+    "free_balance_exhausted_s": 86400,
+    "credentials_bad_s": 604800
+  },
+  "providers": {
+    "devin": { "cap": 2, "class": "prepaid-quota", "models": { "glm-5-2": 1 } },
+    "xai-oauth": { "cap": 2, "class": "prepaid-quota", "models": { "grok-4.6": 1 } },
+    "commandcode": { "cap": 2, "class": "free", "models": { "poolside/laguna-s-2.1-free": 1 } },
+    "openrouter": { "cap": 2, "class": "metered", "models": { "deepseek/deepseek-v4-flash-0731": 1 } }
+  }
+}
+JSON
+
+# Ledger with cost_per_session (fleet-ops#3323 shape). Values:
+#   commandcode 0.50/0.001=500  openrouter 0.50/0.10=5
+#   devin 0.70/2.0=0.35         xai-oauth 0.90/5.0=0.18
+cat >"$scratch/seat-yield-cost.json" <<'JSON'
+{
+  "devin/glm-5-2": { "yield": 0.70, "sessions": 30, "pr_count": 21, "provisional": false, "cost_per_session": 2.0 },
+  "xai-oauth/grok-4.6": { "yield": 0.90, "sessions": 25, "pr_count": 22, "provisional": false, "cost_per_session": 5.0 },
+  "commandcode/poolside/laguna-s-2.1-free": { "yield": 0.50, "sessions": 40, "pr_count": 20, "provisional": false, "cost_per_session": 0 },
+  "openrouter/deepseek/deepseek-v4-flash-0731": { "yield": 0.50, "sessions": 25, "pr_count": 12, "provisional": false, "cost_per_session": 0.10 }
+}
+JSON
+
+# --- 6. light product pick orders by value (cheap beats dear) --------------
+vprod1=$(SEAT_CAPS_JSON="$scratch/seat-caps-value.json" SEAT_YIELD_JSON="$scratch/seat-yield-cost.json" pick product) \
+  || fail "6: value-mode light pick must succeed"
+[[ "$vprod1" == "commandcode	poolside/laguna-s-2.1-free" ]] \
+  || fail "6: light value pick expected commandcode (v=500 > openrouter 5 > devin 0.35 > xai 0.18), got: $vprod1"
+ok "6: light product pick orders by value — free seat beats the 0.90-yield \$5/session seat"
+
+# --- 7. heavy product pick orders yield-first (quality), then value --------
+# Free commandcode drops to 2% yield: its value is still 20 but on heavy the
+# yield key dominates, so the 70%-yield paid seat wins (the issue's example).
+cat >"$scratch/seat-yield-heavy.json" <<'JSON'
+{
+  "devin/glm-5-2": { "yield": 0.70, "sessions": 30, "pr_count": 21, "provisional": false, "cost_per_session": 2.0 },
+  "xai-oauth/grok-4.6": { "yield": 0.40, "sessions": 25, "pr_count": 10, "provisional": false, "cost_per_session": 5.0 },
+  "commandcode/poolside/laguna-s-2.1-free": { "yield": 0.02, "sessions": 40, "pr_count": 0, "provisional": false, "cost_per_session": 0 },
+  "openrouter/deepseek/deepseek-v4-flash-0731": { "yield": 0.50, "sessions": 25, "pr_count": 12, "provisional": false, "cost_per_session": 0.10 }
+}
+JSON
+vprod2=$(SEAT_CAPS_JSON="$scratch/seat-caps-value.json" SEAT_YIELD_JSON="$scratch/seat-yield-heavy.json" pick product "" heavy) \
+  || fail "7: value-mode heavy pick must succeed"
+[[ "$vprod2" == "devin	glm-5-2" ]] \
+  || fail "7: heavy pick expected devin/glm-5-2 (yield 0.70 beats free 0.02 despite free v=20), got: $vprod2"
+ok "7: heavy product pick orders yield-first — free 2%-yield seat loses to paid 70%-yield seat"
+
+# --- 8. keystone product pick under value uses the ledger, yield-first -----
+# Without the ledger the keystone class ladder would pick prepaid[0]=devin.
+# xai-oauth holds the top yield (0.90) so the ledger picks it instead.
+vprod3=$(SEAT_CAPS_JSON="$scratch/seat-caps-value.json" SEAT_YIELD_JSON="$scratch/seat-yield-cost.json" pick product "" keystone) \
+  || fail "8: value-mode keystone pick must succeed"
+[[ "$vprod3" == "xai-oauth	grok-4.6" ]] \
+  || fail "8: keystone value pick expected xai-oauth/grok-4.6 (top yield 0.90, not prepaid-ladder devin), got: $vprod3"
+ok "8: keystone product pick routes by the ledger yield-first, not the prepaid ladder"
+
+# --- 9. scout picks under value config stay free-first ---------------------
+vscout=$(SEAT_CAPS_JSON="$scratch/seat-caps-value.json" SEAT_YIELD_JSON="$scratch/seat-yield-cost.json" pick scout) \
+  || fail "9: scout pick must succeed"
+[[ "$vscout" == "commandcode	poolside/laguna-s-2.1-free" ]] \
+  || fail "9: scout must keep free-first (commandcode) under value config, got: $vscout"
+ok "9: scout role ignores the value ledger and stays free-first"
+
+# --- 10. the value-order log line fires once per product pick --------------
+export PI_PACKET_STATE="$scratch/state-log-value"
+mkdir -p "$PI_PACKET_STATE"
+SEAT_CAPS_JSON="$scratch/seat-caps-value.json" SEAT_YIELD_JSON="$scratch/seat-yield-cost.json" bash -c \
+  'source "$0"; load_seat_caps; PI_PICK_ROLE=product pick_seat "" "" 0 "" light >/dev/null' "$lib" 2>/dev/null || true
+picklog="$PI_PACKET_STATE/watch.log"
+[[ -f "$picklog" ]] || fail "10: missing pick log $picklog"
+grep -c 'value-order (product,light):' "$picklog" | grep -qx '1' \
+  || fail "10: expected exactly one value-order log line, got: $(grep -c 'value-order (product,light):' "$picklog" 2>/dev/null || echo 0)"
+grep 'value-order (product,light):' "$picklog" | grep -q 'commandcode/poolside/laguna-s-2.1-free@y=0.500000,v=500.000000' \
+  || fail "10: log must show the computed order with yield and value"
+ok "10: pick_seat logs the value order once per pick"
+
+ok "seat-lib-yield-order: product-yield ordering, class tie-break, provisional, scout free-first, log line; value ordering light/heavy/keystone"

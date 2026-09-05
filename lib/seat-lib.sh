@@ -252,7 +252,9 @@ SEAT_FREE_ORDER=""
 SEAT_PREPAID_ORDER=""
 # fleet-ops#3125: seat-caps product_order. "yield" routes product picks
 # (PI_PICK_ROLE=product) through the rolling PR-yield ledger instead of the
-# free-first ladder; empty/absent keeps the class-bucket ladder.
+# free-first ladder; "value" (fleet-ops#3323) ranks by yield/cost with a
+# quality-first key on heavy/keystone; empty/absent keeps the class-bucket
+# ladder.
 SEAT_PRODUCT_ORDER=""
 # fleet-ops#3121: the senior (judge/orchestrator/reviewer) role seat ladder,
 # in priority order (provider/model). First usable seat wins. Replaces the
@@ -285,8 +287,11 @@ declare -A QUALITY_HEAVY_BAN=()
 
 # fleet-ops#3250: per-seat rolling PR-yield ledger. Loaded once per pick so
 # downstream gating has fresh data; missing/stale -> empty -> 0.5 fallback.
+# fleet-ops#3323: the same ledger carries cost_per_session (mean usage.cost
+# per session over the window) so product picks can rank by value.
 _seat_yield_loaded=0
 declare -A SEAT_YIELD=()
+declare -A SEAT_COST=()
 
 load_quality_routing() {
     QUALITY_HEAVY_BAN=()
@@ -315,20 +320,23 @@ load_quality_routing() {
 # empty and every seat falls back to the 0.5 provisional yield.
 load_seat_yield() {
     SEAT_YIELD=()
+    SEAT_COST=()
     _seat_yield_loaded=1
     [[ -f "$SEAT_YIELD_JSON" ]] || return 0
     [[ -s "$SEAT_YIELD_JSON" ]] || return 0
     command -v jq >/dev/null 2>&1 || return 0
-    local seat y _sessions _provisional
-    while IFS=$'\t' read -r seat y _sessions _provisional; do
+    local seat y _sessions _provisional c
+    while IFS=$'\t' read -r seat y _sessions _provisional c; do
         [[ -n "$seat" ]] || continue
         SEAT_YIELD["$seat"]="$y"
+        SEAT_COST["$seat"]="$c"
     done < <(
         jq -r 'to_entries[]
                | [ .key,
                    (.value.yield // 0.5 | tostring),
                    (.value.sessions // 0 | tostring),
-                   (.value.provisional // true | tostring) ]
+                   (.value.provisional // true | tostring),
+                   (.value.cost_per_session // 0 | tostring) ]
                | @tsv' "$SEAT_YIELD_JSON" 2>/dev/null || true
     )
 }
@@ -340,6 +348,17 @@ seat_yield_for() {
     [[ -n "$p" && -n "$m" ]] || return 1
     if (( ! _seat_yield_loaded )); then load_seat_yield || true; fi
     echo "${SEAT_YIELD[$p/$m]:-0.5}"
+}
+
+# fleet-ops#3323: return the rolling cost per session for a seat. Unknown
+# seats default to 0 — the value floor clamps cost to 0.001, so an
+# unmeasured seat prices as free and is tried, not starved.
+# Echoes nothing and returns 1 if the seat argument is empty.
+seat_cost_for() {
+    local p="${1:-}" m="${2:-}"
+    [[ -n "$p" && -n "$m" ]] || return 1
+    if (( ! _seat_yield_loaded )); then load_seat_yield || true; fi
+    echo "${SEAT_COST[$p/$m]:-0}"
 }
 
 load_seat_caps() {
@@ -3461,9 +3480,55 @@ pick_seat() {
     # still drain first among equal performers) then by each bucket's
     # existing order. A seat absent from the ledger, or provisional (<20
     # measured sessions), carries 0.5 — new seats are tried, not starved.
-    # Keystone and non-product picks keep the class ladder below.
+    # fleet-ops#3323: product_order=value. The ledger also carries
+    # cost_per_session (rolling mean usage.cost per session); value =
+    # yield / max(cost_per_session, 0.001). For packet_difficulty light the
+    # key is value alone, so free seats (cost ~0, floored to 0.001) sort
+    # first at equal yield. For heavy/keystone the key is yield first
+    # (quality) then value, so a free seat with 2% yield still loses to a
+    # paid seat with 70% yield on heavy work. The value order also covers
+    # keystone-class product picks (the class ladder below only sees
+    # non-product or product_order=yield picks).
     local -a product_seats=()
-    if ! _is_keystone_class "$difficulty" \
+    if [[ "${PI_PICK_ROLE:-scout}" == "product" ]] \
+        && [[ "$SEAT_PRODUCT_ORDER" == "value" ]]; then
+        local _qfirst=0
+        if [[ "$difficulty" == "heavy" ]] || _is_keystone_class "$difficulty"; then
+            _qfirst=1
+        fi
+        local -a _vranked=()
+        mapfile -t _vranked < <(
+            _i=0
+            for _fm in "${prepaid_seats[@]:-}" "${metered_seats[@]:-}" "${free_seats[@]:-}"; do
+                [[ -n "$_fm" ]] || continue
+                _p="${_fm%%$'\t'*}"
+                _m="${_fm#*$'\t'}"
+                _yld=$(seat_yield_for "$_p" "$_m")
+                _cost=$(seat_cost_for "$_p" "$_m")
+                printf '%s\t%s\t%s\t%s\n' "$_yld" "$_cost" "$_i" "$_fm"
+                _i=$((_i + 1))
+            done | awk -F'\t' -v q="$_qfirst" 'BEGIN{OFS="\t"} {
+                y=$1+0; c=$2+0; if (c<0.001) c=0.001; v=y/c;
+                if (q) printf "%.6f\t%.6f\t%s\t%s\t%s\t%.6f\t%.6f\n", y, v, $3, $4, $5, y, v;
+                else   printf "%.6f\t%.6f\t%s\t%s\t%s\t%.6f\t%.6f\n", v, y, $3, $4, $5, y, v;
+            }' | sort -t$'\t' -k1,1nr -k2,2nr -k3,3n
+        )
+        local _vline _vlog="" _vn=0
+        for _vline in "${_vranked[@]:-}"; do
+            [[ -n "$_vline" ]] || continue
+            local _k1 _k2 _vi _vp _vm _vy _vv
+            IFS=$'\t' read -r _k1 _k2 _vi _vp _vm _vy _vv <<<"$_vline"
+            product_seats+=("${_vp}"$'\t'"${_vm}")
+            if (( _vn < 6 )); then
+                _vlog+="${_vp}/${_vm}@y=${_vy},v=${_vv} "
+                _vn=$((_vn + 1))
+            fi
+        done
+        # One line per pick so the operator sees the computed value order.
+        if (( ${#product_seats[@]} > 0 )); then
+            seat_log "pick_seat: value-order (product,${difficulty}): ${_vlog% }"
+        fi
+    elif ! _is_keystone_class "$difficulty" \
         && [[ "${PI_PICK_ROLE:-scout}" == "product" ]] \
         && [[ "$SEAT_PRODUCT_ORDER" == "yield" ]]; then
         local -a _yranked=()
@@ -3501,7 +3566,18 @@ pick_seat() {
     fi
 
     local chosen="" chosen_p="" chosen_m=""
-    if _is_keystone_class "$difficulty"; then
+    if (( ${#product_seats[@]} > 0 )); then
+        chosen="${product_seats[0]}"
+        chosen_p="${chosen%%$'\t'*}"
+        chosen_m="${chosen#*$'\t'}"
+        # Prepaid seats still burn weekly pacing when the ledger picks them.
+        if [[ "$(model_class_of "$chosen_p" "$chosen_m")" == "prepaid-quota" ]]; then
+            _record_prepaid_pick "$chosen_p"
+        fi
+        if _is_keystone_class "$difficulty"; then
+            seat_log "pick_seat: KEYSTONE routing to $chosen (product ledger order, yield-first)"
+        fi
+    elif _is_keystone_class "$difficulty"; then
         if (( ${#prepaid_seats[@]} > 0 )); then
             chosen="${prepaid_seats[0]}"
             chosen_p="${chosen%%$'\t'*}"
@@ -3513,14 +3589,6 @@ pick_seat() {
         elif (( ${#free_seats[@]} > 0 )); then
             chosen="${free_seats[0]}"
             seat_log "pick_seat: KEYSTONE routing to $chosen (free last-resort)"
-        fi
-    elif (( ${#product_seats[@]} > 0 )); then
-        chosen="${product_seats[0]}"
-        chosen_p="${chosen%%$'\t'*}"
-        chosen_m="${chosen#*$'\t'}"
-        # Prepaid seats still burn weekly pacing when yield picks them.
-        if [[ "$(model_class_of "$chosen_p" "$chosen_m")" == "prepaid-quota" ]]; then
-            _record_prepaid_pick "$chosen_p"
         fi
     elif (( ${#free_seats[@]} > 0 )); then
         chosen="${free_seats[0]}"

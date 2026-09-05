@@ -3345,6 +3345,8 @@ bash "$here/token-economy-routing.test.sh" || fail "token-economy-routing tests 
 
 # fleet-ops#3125: product picks route by the rolling PR-yield ledger
 # (product_order=yield); ties break by class; scout picks stay free-first.
+# fleet-ops#3323 extends the same drill for product_order=value (light orders
+# by yield/cost value; heavy/keystone yield-first then value).
 # Hosted here (no workflow edit).
 bash "$here/seat-lib-yield-order.test.sh" || fail "seat-lib-yield-order tests failed"
 
@@ -3492,7 +3494,7 @@ ok "1409-fold: seat_usable per-seat UNUSABLE/'benched until' folded into one sum
 SEAT_YIELD_JSON_TEST="$scratch/seat-yield-test.json"
 cat >"$SEAT_YIELD_JSON_TEST" <<'JSON'
 {
-  "devin/glm-5-2": {"yield": 0.25, "sessions": 20, "pr_count": 5, "provisional": false},
+  "devin/glm-5-2": {"yield": 0.25, "sessions": 20, "pr_count": 5, "provisional": false, "cost_per_session": 1.25},
   "opencode/mimo-v2.5-free": {"yield": 0.5, "sessions": 3, "pr_count": 0, "provisional": true}
 }
 JSON
@@ -3509,6 +3511,20 @@ SEAT_YIELD_JSON="$SEAT_YIELD_JSON_TEST" bash -c 'source "$0"; load_seat_yield; s
   | grep -qE '^0\.5$' \
   || fail "seat_yield_for unknown/missing must default to 0.5"
 ok "3250: load_seat_yield and seat_yield_for read the exporter's seat-yield.json"
+
+# fleet-ops#3323: the same ledger carries cost_per_session; seats without the
+# field (or absent entirely) fall back to 0 so the 0.001 value floor prices
+# them as free.
+SEAT_YIELD_JSON="$SEAT_YIELD_JSON_TEST" bash -c 'source "$0"; load_seat_yield; seat_cost_for devin glm-5-2' "$lib" \
+  | grep -qE '^1\.25$' \
+  || fail "seat_cost_for devin/glm-5-2 must return 1.25"
+SEAT_YIELD_JSON="$SEAT_YIELD_JSON_TEST" bash -c 'source "$0"; load_seat_yield; seat_cost_for opencode mimo-v2.5-free' "$lib" \
+  | grep -qE '^0$' \
+  || fail "seat_cost_for opencode/mimo-v2.5-free (no cost field) must default to 0"
+SEAT_YIELD_JSON="$SEAT_YIELD_JSON_TEST" bash -c 'source "$0"; load_seat_yield; seat_cost_for unknown missing' "$lib" \
+  | grep -qE '^0$' \
+  || fail "seat_cost_for unknown/missing must default to 0"
+ok "3323: seat_cost_for reads cost_per_session, defaults to 0 for unpriced seats"
 
 # --- fleet-ops#3241: stale cap=0 expires to default, never persists silently --
 # A stale cap=0 seat (intentional_cap_zero="stale") with a reason dated older
