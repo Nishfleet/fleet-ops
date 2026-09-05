@@ -5095,6 +5095,8 @@ mark_seat_quota_bench() {
 write_parked_ledger() {
     local p="$1" m="$2" reason="${3:-corpse-retired}"
     local path now_utc now_s far_future tmp
+    # fleet-ops#3661: never write a ledger for a phantom seat key.
+    if ! _seat_key_guard "$p" "$m" "write_parked_ledger"; then return 1; fi
     path=$(seat_ledger_path "$p" "$m")
     mkdir -p "$LEDGER_DIR" 2>/dev/null || true
     now_s=$(date -u +%s)
@@ -5117,7 +5119,8 @@ write_parked_ledger() {
           failure_mode:"corpse_retired",
           bench_until:$usable,
           usable_at:$usable,
-          consecutive_failure_count:0
+          consecutive_failure_count:0,
+          writer:"write_parked_ledger"
         }' > "$tmp" 2>/dev/null; then
         seat_log "parked-ledger: jq compose FAILED for $p/$m — parked ledger NOT written"
         rm -f "$tmp" 2>/dev/null || true
