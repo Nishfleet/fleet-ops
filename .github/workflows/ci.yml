@@ -1,586 +1,293 @@
 name: CI
-        bash tests/pi-issue-run-session-error-feed.test.sh
 
-        bash tests/pi-issue-run-session-error-feed.test.sh
 on:
-        bash tests/pi-issue-run-session-error-feed.test.sh
   pull_request:
-        bash tests/pi-issue-run-session-error-feed.test.sh
   push:
-        bash tests/pi-issue-run-session-error-feed.test.sh
     branches:
-        bash tests/pi-issue-run-session-error-feed.test.sh
       - main
-        bash tests/pi-issue-run-session-error-feed.test.sh
 
-        bash tests/pi-issue-run-session-error-feed.test.sh
 permissions:
-        bash tests/pi-issue-run-session-error-feed.test.sh
   contents: read
-        bash tests/pi-issue-run-session-error-feed.test.sh
 
-        bash tests/pi-issue-run-session-error-feed.test.sh
 concurrency:
-        bash tests/pi-issue-run-session-error-feed.test.sh
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-        bash tests/pi-issue-run-session-error-feed.test.sh
   cancel-in-progress: true
-        bash tests/pi-issue-run-session-error-feed.test.sh
 
-        bash tests/pi-issue-run-session-error-feed.test.sh
 jobs:
-        bash tests/pi-issue-run-session-error-feed.test.sh
   semgrep:
-        bash tests/pi-issue-run-session-error-feed.test.sh
     name: Semgrep
-        bash tests/pi-issue-run-session-error-feed.test.sh
     runs-on: ubuntu-latest
-        bash tests/pi-issue-run-session-error-feed.test.sh
     timeout-minutes: 10
-        bash tests/pi-issue-run-session-error-feed.test.sh
     steps:
-        bash tests/pi-issue-run-session-error-feed.test.sh
       - name: Checkout
-        bash tests/pi-issue-run-session-error-feed.test.sh
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        bash tests/pi-issue-run-session-error-feed.test.sh
         with:
-        bash tests/pi-issue-run-session-error-feed.test.sh
           persist-credentials: false
-        bash tests/pi-issue-run-session-error-feed.test.sh
       - name: Install semgrep (pinned)
-        bash tests/pi-issue-run-session-error-feed.test.sh
         run: |
-        bash tests/pi-issue-run-session-error-feed.test.sh
           set -euo pipefail
-        bash tests/pi-issue-run-session-error-feed.test.sh
           # Pinned to a release >7 days old. Bump SEMGREP_VERSION after vetting.
-        bash tests/pi-issue-run-session-error-feed.test.sh
           SEMGREP_VERSION="1.170.0"
-        bash tests/pi-issue-run-session-error-feed.test.sh
           python3 -m pip install --no-input "semgrep==${SEMGREP_VERSION}"
-        bash tests/pi-issue-run-session-error-feed.test.sh
       # TODO(fleet-ops): add the fleet's orchestration rules config from
-        bash tests/pi-issue-run-session-error-feed.test.sh
       # Nishfleet/siterep-public .semgrep/no-hand-built-orchestration.yml at an
-        bash tests/pi-issue-run-session-error-feed.test.sh
       # exact commit SHA, once packet p56 merges it. Until then, p/default only.
-        bash tests/pi-issue-run-session-error-feed.test.sh
       # Flagged loudly: the orchestration-specific ruleset is NOT yet applied.
-        bash tests/pi-issue-run-session-error-feed.test.sh
       - name: Run semgrep
-        bash tests/pi-issue-run-session-error-feed.test.sh
         run: semgrep --config p/default --error .
-        bash tests/pi-issue-run-session-error-feed.test.sh
 
-        bash tests/pi-issue-run-session-error-feed.test.sh
   shellcheck:
-        bash tests/pi-issue-run-session-error-feed.test.sh
     name: Shellcheck
-        bash tests/pi-issue-run-session-error-feed.test.sh
     runs-on: ubuntu-latest
-        bash tests/pi-issue-run-session-error-feed.test.sh
     timeout-minutes: 5
-        bash tests/pi-issue-run-session-error-feed.test.sh
     steps:
-        bash tests/pi-issue-run-session-error-feed.test.sh
       - name: Checkout
-        bash tests/pi-issue-run-session-error-feed.test.sh
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        bash tests/pi-issue-run-session-error-feed.test.sh
         with:
-        bash tests/pi-issue-run-session-error-feed.test.sh
           persist-credentials: false
-        bash tests/pi-issue-run-session-error-feed.test.sh
       - name: Install shellcheck (pinned binary + sha256)
-        bash tests/pi-issue-run-session-error-feed.test.sh
         run: |
-        bash tests/pi-issue-run-session-error-feed.test.sh
           set -euo pipefail
-        bash tests/pi-issue-run-session-error-feed.test.sh
           SHELLCHECK_VERSION="v0.11.0"
-        bash tests/pi-issue-run-session-error-feed.test.sh
           SHELLCHECK_SHA256="8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198"
-        bash tests/pi-issue-run-session-error-feed.test.sh
           ARCHIVE="shellcheck-v0.11.0.linux.x86_64.tar.xz"
-        bash tests/pi-issue-run-session-error-feed.test.sh
           URL="https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/${ARCHIVE}"
-        bash tests/pi-issue-run-session-error-feed.test.sh
           curl -fsSL -o "${ARCHIVE}" "${URL}"
-        bash tests/pi-issue-run-session-error-feed.test.sh
           echo "${SHELLCHECK_SHA256}  ${ARCHIVE}" | sha256sum -c -
-        bash tests/pi-issue-run-session-error-feed.test.sh
           install -d "${HOME}/.local/bin"
-        bash tests/pi-issue-run-session-error-feed.test.sh
           tar -xJf "${ARCHIVE}" -C "${HOME}/.local/bin" --strip-components=1 "shellcheck-v0.11.0/shellcheck"
-        bash tests/pi-issue-run-session-error-feed.test.sh
           chmod +x "${HOME}/.local/bin/shellcheck"
-        bash tests/pi-issue-run-session-error-feed.test.sh
           echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
-        bash tests/pi-issue-run-session-error-feed.test.sh
       - name: Run shellcheck
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # -x: follow `source` calls. bin/pi-issue-run sources lib/seat-lib.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # through a variable (PI_PACKET_SEAT_LIB override), and the canonical
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # source file lives in the repo (the install symlinks it). Without
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # -x, shellcheck can't resolve the include and emits SC1091 — which
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # is the documented case shellcheck -x exists for.
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # Filter bin/* to skip non-shell files (Python helper, TS extensions).
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # shellcheck decides the language from the extension; feeding it .py
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # emits SC1071 and exits nonzero, which is wrong for our layout.
-        bash tests/pi-issue-run-session-error-feed.test.sh
         run: |
-        bash tests/pi-issue-run-session-error-feed.test.sh
           set -euo pipefail
-        bash tests/pi-issue-run-session-error-feed.test.sh
           shopt -s extglob
-        bash tests/pi-issue-run-session-error-feed.test.sh
           files=(bin/!(*.py|*.ts) install.sh)
-        bash tests/pi-issue-run-session-error-feed.test.sh
           shellcheck -x "${files[@]}"
-        bash tests/pi-issue-run-session-error-feed.test.sh
 
-        bash tests/pi-issue-run-session-error-feed.test.sh
   unit-verify:
-        bash tests/pi-issue-run-session-error-feed.test.sh
     name: systemd-analyze
-        bash tests/pi-issue-run-session-error-feed.test.sh
     runs-on: ubuntu-latest
-        bash tests/pi-issue-run-session-error-feed.test.sh
     timeout-minutes: 5
-        bash tests/pi-issue-run-session-error-feed.test.sh
     steps:
-        bash tests/pi-issue-run-session-error-feed.test.sh
       - name: Checkout
-        bash tests/pi-issue-run-session-error-feed.test.sh
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        bash tests/pi-issue-run-session-error-feed.test.sh
         with:
-        bash tests/pi-issue-run-session-error-feed.test.sh
           persist-credentials: false
-        bash tests/pi-issue-run-session-error-feed.test.sh
       - name: Stub VPS executables
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # `systemd-analyze verify` checks that ExecStart commands exist. The
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # units reference VPS-specific paths (/home/nish/.local/bin/pi, the
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # siterep-* scripts, fleet-console-pi/push.sh) that do not exist on a
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # hosted runner. Create empty executable stubs so verify can check the
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # unit SYNTAX (section headers, directives, key=value validity) without
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # false-positiving on missing host binaries. This is the stubbed
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # environment the packet specifies for verifying unit FILES outside
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # their target host.
-        bash tests/pi-issue-run-session-error-feed.test.sh
         run: |
-        bash tests/pi-issue-run-session-error-feed.test.sh
           set -euo pipefail
-        bash tests/pi-issue-run-session-error-feed.test.sh
           # Hosted runners run as user 'runner', not 'nish' — use sudo to
-        bash tests/pi-issue-run-session-error-feed.test.sh
           # create the VPS paths the units reference.
-        bash tests/pi-issue-run-session-error-feed.test.sh
           for p in \
-        bash tests/pi-issue-run-session-error-feed.test.sh
             /home/nish/.local/bin/pi \
-        bash tests/pi-issue-run-session-error-feed.test.sh
             /home/nish/.local/bin/pi-issue-run \
-        bash tests/pi-issue-run-session-error-feed.test.sh
             /home/nish/.local/bin/pi-packet-run \
-        bash tests/pi-issue-run-session-error-feed.test.sh
             /home/nish/.local/bin/pi-intake-run \
-        bash tests/pi-issue-run-session-error-feed.test.sh
             /home/nish/.local/bin/agent-cron-run \
-        bash tests/pi-issue-run-session-error-feed.test.sh
             /home/nish/.local/bin/intake-reconcile \
-        bash tests/pi-issue-run-session-error-feed.test.sh
             /home/nish/.local/bin/pi-issue-failed-reap \
-        bash tests/pi-issue-run-session-error-feed.test.sh
             /home/nish/.local/bin/siterep-deploy \
-        bash tests/pi-issue-run-session-error-feed.test.sh
             /home/nish/.local/bin/siterep-deploy-verify \
-        bash tests/pi-issue-run-session-error-feed.test.sh
             /home/nish/.local/bin/siterep-deploy-rollback \
-        bash tests/pi-issue-run-session-error-feed.test.sh
             /home/nish/.local/bin/siterep-live-canary \
-        bash tests/pi-issue-run-session-error-feed.test.sh
             /home/nish/.local/bin/siterep-uptime \
-        bash tests/pi-issue-run-session-error-feed.test.sh
             /home/nish/.local/bin/fleet-heartbeat \
-        bash tests/pi-issue-run-session-error-feed.test.sh
             /home/nish/.local/bin/fleet-heartbeat-tier1 \
-        bash tests/pi-issue-run-session-error-feed.test.sh
             /home/nish/.local/bin/fleet-heartbeat-tier2 \
-        bash tests/pi-issue-run-session-error-feed.test.sh
             /home/nish/.local/bin/fleet-blind-audit \
-        bash tests/pi-issue-run-session-error-feed.test.sh
             /home/nish/.local/bin/fleet-blind-audit-panel \
-        bash tests/pi-issue-run-session-error-feed.test.sh
             /home/nish/.local/bin/fleet-deploy-check \
-        bash tests/pi-issue-run-session-error-feed.test.sh
             /home/nish/.local/bin/fleet-seat-recovery \
-        bash tests/pi-issue-run-session-error-feed.test.sh
             /home/nish/.local/bin/fleet-unjustified-wait \
-        bash tests/pi-issue-run-session-error-feed.test.sh
             /home/nish/.local/bin/fleet-escalation-completion \
-        bash tests/pi-issue-run-session-error-feed.test.sh
             /home/nish/.local/bin/fleet-asset-census \
-        bash tests/pi-issue-run-session-error-feed.test.sh
             /home/nish/.local/bin/agent-scheduler-drift-check \
-        bash tests/pi-issue-run-session-error-feed.test.sh
             /home/nish/.local/bin/memory-index-autocompact \
-        bash tests/pi-issue-run-session-error-feed.test.sh
             /home/nish/workspaces/tooling/fleet-console-pi/push.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
           do
-        bash tests/pi-issue-run-session-error-feed.test.sh
             sudo install -D -m 0755 /dev/null "$p"
-        bash tests/pi-issue-run-session-error-feed.test.sh
           done
-        bash tests/pi-issue-run-session-error-feed.test.sh
       - name: Verify unit files
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # Proven to catch breakage: a malformed unit (bad section header /
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # missing '=') makes verify exit nonzero with a clear "failed to load
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # properly" message. Demonstrated locally before this commit.
-        bash tests/pi-issue-run-session-error-feed.test.sh
         run: |
-        bash tests/pi-issue-run-session-error-feed.test.sh
           set -uo pipefail
-        bash tests/pi-issue-run-session-error-feed.test.sh
           systemd-analyze --version
-        bash tests/pi-issue-run-session-error-feed.test.sh
           # Verify each file individually so a failure names the bad file.
-        bash tests/pi-issue-run-session-error-feed.test.sh
           # Do NOT use set -e: we want to collect all failures, then exit.
-        bash tests/pi-issue-run-session-error-feed.test.sh
           shopt -s nullglob
-        bash tests/pi-issue-run-session-error-feed.test.sh
           rc=0
-        bash tests/pi-issue-run-session-error-feed.test.sh
           for f in systemd/*.service systemd/*.timer; do
-        bash tests/pi-issue-run-session-error-feed.test.sh
             if ! systemd-analyze verify --man=no "$f"; then
-        bash tests/pi-issue-run-session-error-feed.test.sh
               rc=1
-        bash tests/pi-issue-run-session-error-feed.test.sh
             fi
-        bash tests/pi-issue-run-session-error-feed.test.sh
           done
-        bash tests/pi-issue-run-session-error-feed.test.sh
           exit "$rc"
-        bash tests/pi-issue-run-session-error-feed.test.sh
 
-        bash tests/pi-issue-run-session-error-feed.test.sh
   gitleaks:
-        bash tests/pi-issue-run-session-error-feed.test.sh
     name: Gitleaks
-        bash tests/pi-issue-run-session-error-feed.test.sh
     runs-on: ubuntu-latest
-        bash tests/pi-issue-run-session-error-feed.test.sh
     timeout-minutes: 5
-        bash tests/pi-issue-run-session-error-feed.test.sh
     steps:
-        bash tests/pi-issue-run-session-error-feed.test.sh
       - name: Checkout
-        bash tests/pi-issue-run-session-error-feed.test.sh
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        bash tests/pi-issue-run-session-error-feed.test.sh
         with:
-        bash tests/pi-issue-run-session-error-feed.test.sh
           fetch-depth: 0
-        bash tests/pi-issue-run-session-error-feed.test.sh
           persist-credentials: false
-        bash tests/pi-issue-run-session-error-feed.test.sh
       - name: Install gitleaks (pinned binary + sha256)
-        bash tests/pi-issue-run-session-error-feed.test.sh
         run: |
-        bash tests/pi-issue-run-session-error-feed.test.sh
           set -euo pipefail
-        bash tests/pi-issue-run-session-error-feed.test.sh
           GITLEAKS_VERSION="v8.30.1"
-        bash tests/pi-issue-run-session-error-feed.test.sh
           GITLEAKS_SHA256="551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
-        bash tests/pi-issue-run-session-error-feed.test.sh
           ARCHIVE="gitleaks_8.30.1_linux_x64.tar.gz"
-        bash tests/pi-issue-run-session-error-feed.test.sh
           URL="https://github.com/gitleaks/gitleaks/releases/download/${GITLEAKS_VERSION}/${ARCHIVE}"
-        bash tests/pi-issue-run-session-error-feed.test.sh
           curl -fsSL -o "${ARCHIVE}" "${URL}"
-        bash tests/pi-issue-run-session-error-feed.test.sh
           echo "${GITLEAKS_SHA256}  ${ARCHIVE}" | sha256sum -c -
-        bash tests/pi-issue-run-session-error-feed.test.sh
           install -d "${HOME}/.local/bin"
-        bash tests/pi-issue-run-session-error-feed.test.sh
           tar -xzf "${ARCHIVE}" -C "${HOME}/.local/bin" gitleaks
-        bash tests/pi-issue-run-session-error-feed.test.sh
           chmod +x "${HOME}/.local/bin/gitleaks"
-        bash tests/pi-issue-run-session-error-feed.test.sh
           echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
-        bash tests/pi-issue-run-session-error-feed.test.sh
       - name: Scan repository
-        bash tests/pi-issue-run-session-error-feed.test.sh
         run: gitleaks git --redact --verbose
-        bash tests/pi-issue-run-session-error-feed.test.sh
 
-        bash tests/pi-issue-run-session-error-feed.test.sh
   tests:
-        bash tests/pi-issue-run-session-error-feed.test.sh
     # Calls the central reusable PR-checks workflow. The four required check
-        bash tests/pi-issue-run-session-error-feed.test.sh
     # names (Gitleaks, Semgrep, Shellcheck, systemd-analyze) stay as local
-        bash tests/pi-issue-run-session-error-feed.test.sh
     # jobs above: a `uses:` job reports as "caller / callee" and would make
-        bash tests/pi-issue-run-session-error-feed.test.sh
     # those required checks wait forever. scan-secrets is false so gitleaks
-        bash tests/pi-issue-run-session-error-feed.test.sh
     # does not run twice while that required job still exists.
-        bash tests/pi-issue-run-session-error-feed.test.sh
     name: P14 tests
-        bash tests/pi-issue-run-session-error-feed.test.sh
     uses: ./.github/workflows/reusable-pr-checks.yml
-        bash tests/pi-issue-run-session-error-feed.test.sh
     permissions:
-        bash tests/pi-issue-run-session-error-feed.test.sh
       contents: read
-        bash tests/pi-issue-run-session-error-feed.test.sh
       pull-requests: read
-        bash tests/pi-issue-run-session-error-feed.test.sh
     with:
-        bash tests/pi-issue-run-session-error-feed.test.sh
       node-version: ""
-        bash tests/pi-issue-run-session-error-feed.test.sh
       install-command: ""
-        bash tests/pi-issue-run-session-error-feed.test.sh
       scan-secrets: false
-        bash tests/pi-issue-run-session-error-feed.test.sh
       timeout-minutes: 10
-        bash tests/pi-issue-run-session-error-feed.test.sh
       verify-command: |
-        bash tests/pi-issue-run-session-error-feed.test.sh
         set -euo pipefail
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # fleet-ops#3235 part six (the follow-up its own commit message planned:
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # "CI workflow change in a follow-up commit — GitHub App cannot push
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # workflow files"). GitHub runners have neither pi-transport-check nor
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # pi, so the #3235 transport gate read every bench writer as
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # transport-down and red'd the suite at the first ledger assertion
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # (seat-lib.test.sh run 33888017048, then pi-issue-run-noop-bench). The
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # suite runs transport-offline by declaration; the gate itself stays ON
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # in live operation where the real probe/bin exist.
-        bash tests/pi-issue-run-session-error-feed.test.sh
         export PI_SEAT_LIB_CHECK_TRANSPORT=0
-        bash tests/pi-issue-run-session-error-feed.test.sh
         for t in jq openssl curl python3 node git flock; do
-        bash tests/pi-issue-run-session-error-feed.test.sh
           command -v "$t" >/dev/null 2>&1 || {
-        bash tests/pi-issue-run-session-error-feed.test.sh
             echo "missing tool: $t" >&2
-        bash tests/pi-issue-run-session-error-feed.test.sh
             exit 1
-        bash tests/pi-issue-run-session-error-feed.test.sh
           }
-        bash tests/pi-issue-run-session-error-feed.test.sh
         done
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/manifest-shape.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/intake-repos-shape.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/worker-token-fail-closed.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/semantic-conflict-detector.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/repeat-deterministic-detector.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/red-on-main-detector.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/ci-failure-escalation-detector.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/staleness-checker.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/required-check-purity.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/pi-packet-guard.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/pi-systemd-run.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/pi-intake-run.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/pi-issue-start.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/pi-issue-start-packet-regen.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/worker-prompt-size-ceiling.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/pi-issue-failed-reap.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # fleet-ops#2133: reclaim cooldown + stale-claim release break the
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # spawn-die-respawn wedge (reaper writes cooldown marker, intake
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # skips for 15min, stale claims with no live worker/PR are released).
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/pi-issue-failed-reap-cooldown.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/pi-intake-tick-reclaim-cooldown.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/pi-intake-tick-difficulty-from-issue.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/repair-rotation.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/alert-repair-seat-walled.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/alert-repair-class-park-skip.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/fleet-claim.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/agent-cron-seat-rotation.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/seat-lib.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/seat-lib-degraded.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/seat-lib-org-reserve.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/stop-escalation-dispatch.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/escalation-units-shape.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # fleet-ops#1164: persist nish-boundary-notify CLASSES in git + lint.
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/nish-boundary-notify-classes.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/system-dropins-shape.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/fleet-ops-deploy.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/fleet-heartbeat-undersaturation.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # fleet-ops#153: lock the product-vs-control-plane throughput split.
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/fleet-heartbeat-throughput-split.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # fleet-ops#153: lock the 0509 scout packet-assembly contract.
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/pi-scout-packet-assembly.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/fleet-heartbeat-low-water-mark.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/fleet-blind-audit.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/fleet-heartbeat-blind-audit-trigger.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/mass-close-guard.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/codex-orphan-reap.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # fleet-ops#1161: orphan-workflow detector (audit findings 3+4).
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/orphan-workflow-detector.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/open-question-sweep-deleted.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/escalation-coverage-canary.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/fleet-unjustified-wait.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/fleet-deploy-check.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/fleet-seat-recovery.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/fleet-escalation-completion.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/rule-enforcement.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/reusable-workflows.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # fleet-ops#359: lock the auto-revert gate and the reopen-on-revert
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # behavior so a reverted merge can no longer leave its issues closed.
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/auto-revert-required-check-gate.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/reopen-reverted-issues.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # The CI-standards audit parses workflow YAML with PyYAML.
-        bash tests/pi-issue-run-session-error-feed.test.sh
         python3 -m pip install --no-input "pyyaml==6.0.1"
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/ci-standards-audit.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # fleet-ops#828: lock the gate-integrity decision script's
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # line-anchored attestation extraction (multi-line attest comments).
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/gate-integrity.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # fleet-ops#1136: pin the self-maintenance ratio, upgrade/repair/churn
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # classification, queue composition, and verified-merges numerator
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # (non-null diff AND delivery evidence) in the metrics exporter, plus
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # the absent/trend alert rules and the self-maintenance config shape.
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/fleet-metrics-export.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # fleet-ops#1235: lock the /etc/default/prometheus retention
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # override (40d) and the deploy restart-vs-reload + headroom guard.
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/prometheus-retention-40d.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # fleet-ops#1460: lock the timer manifest shape (every user timer
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # has a manifest entry with a named reason — schedule-needs-reason).
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/timer-manifest.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # fleet-ops#1534: single chokepoint for messages to Nish's phone.
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # hermes outbound class-gate (--urgent requires sanctioned --class),
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # alertmanager routing matrix (only severity=page -> telegram),
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # RepairDispatchDown is the only severity=page alert, writer class-gate
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # in stop-escalation-dispatch (CAP-REACHED/KILL-ESCALATION -> auditor
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # path, LADDER-WALLED -> MONEY-BOUNDARY), and the integration test
-        bash tests/pi-issue-run-session-error-feed.test.sh
         # proving the two gates together form one phone chokepoint.
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/hermes-outbound-class-gate.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/alertmanager-routing-matrix.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/fleet-rules-severity-page.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/stop-escalation-writer-class-gate.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/phone-chokepoint.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/scout-effectiveness-multirepo.test.sh
-        bash tests/pi-issue-run-session-error-feed.test.sh
