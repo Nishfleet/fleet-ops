@@ -183,3 +183,7 @@ bash "$here/oomd-drill.test.sh"
 # fleet-ops#92: slice syntax. Same CI-list constraint; the dedicated
 # unit-verify job cannot gain systemd/*.slice without a workflow push.
 bash "$here/systemd-analyze-slices.test.sh"
+
+# fleet-ops#3280: fleet-work.slice TasksMax=8000 + spawn-guard 7500/8000.
+# Same CI-list constraint; workers cannot push .github/workflows/**.
+bash "$here/fleet-work-slice-tasksmax.test.sh"
