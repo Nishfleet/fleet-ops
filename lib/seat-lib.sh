@@ -2876,7 +2876,12 @@ _seat_is_dead() {
 # fail-opened; those stay on the loud-stall path. empty_run is a
 # failure_mode on a transient_fault ledger (mark_seat_empty_run), so the
 # floor matches it via failure_mode as well as health_class.
-SEAT_FLOOR_FAILOPEN_CLASSES="transient_fault rate_limited empty_run overload_bench"
+# fleet-ops#3675: empty_run / spawn_fail benches are NO LONGER floor-lifted
+# (see _seat_floor_shortest_bench) — a no-op bench is a HOLD, not a
+# recoverable stall, and lifting it re-burns issues on a seat that just
+# no-op'ed. The classes below are the remaining recoverable benches the
+# floor may lift.
+SEAT_FLOOR_FAILOPEN_CLASSES="transient_fault rate_limited overload_bench"
 
 # True if this ledger row is a money wall the floor must never lift.
 # Args: health_class seat_dead [failure_mode]
@@ -2907,7 +2912,6 @@ _seat_floor_is_failopen_class() {
     case " $SEAT_FLOOR_FAILOPEN_CLASSES " in
         *" $hc "*) return 0 ;;
     esac
-    [[ "$fm" == "empty_run" ]] && return 0
     return 1
 }
 
@@ -3030,10 +3034,20 @@ _seat_floor_shortest_bench() {
             )
         fi
         _seat_floor_is_money_wall "$hc" "$dead" "$fm" "$fail_count" && continue
+        # fleet-ops#3675: a no-op bench (empty_run / spawn_fail) is meant to
+        # HOLD the seat out of rotation. The floor must NOT lift it — running
+        # on a no-op seat burns issues (live: ollama/deepseek-v4-flash:0731
+        # no-op'ed 30x/2h, floor-lifted every bench, count climbed to 13).
+        # Let the bench hold so the count reaches the failure ceiling and
+        # parks the seat.
+        case "$fm" in
+            empty_run|spawn_fail) continue ;;
+        esac
         if ! _seat_floor_is_failopen_class "$hc" "$fm"; then
             # Wrapper spawn-bench can outlive a healthy ledger clobber
-            # (fleet-ops#1512). empty_run / spawn_fail on the marker are
-            # recoverable; anything else is not a floor candidate.
+            # (fleet-ops#1512). A no-op bench (empty_run / spawn_fail) on the
+            # marker is a HOLD, not a floor candidate (fleet-ops#3675) — the
+            # floor must not lift it. Anything else is not a floor candidate.
             local sb_path sb_usable sb_mode
             sb_path=$(seat_spawn_bench_path "$p" "$m")
             [[ -f "$sb_path" ]] || continue
@@ -3041,7 +3055,8 @@ _seat_floor_shortest_bench() {
             sb_mode=$(jq -r '.failure_mode // ""' "$sb_path" 2>/dev/null || true)
             _seat_in_future "$sb_usable" || continue
             case "$sb_mode" in
-                empty_run|spawn_fail|unknown) fm="$sb_mode" ;;
+                empty_run|spawn_fail) continue ;;
+                unknown) fm="$sb_mode" ;;
                 *) continue ;;
             esac
         fi
@@ -4227,7 +4242,6 @@ mark_seat_spawn_fail() {
 # the extension is not wired. Ledger shape is byte-compatible with
 # SeatLedgerEntry (seat-health.ts); seat_usable skips via the generic
 # usable_at check and fail-opens after.
-EMPTY_RUN_BACKOFF_S="${EMPTY_RUN_BACKOFF_S:-900}"  # 15 min
 # fleet-ops#2343: an empty run is a provider NO-OP, not a quota wall, and
 # must NOT escalate by count. The fleet-ops#1408 ladder (900 -> 1800 -> 3600
 # -> 7200s) churned HEALTHY seats: openrouter/deepseek/deepseek-v4-flash-0731
@@ -4271,9 +4285,9 @@ EMPTY_RUN_BACKOFF_S="${EMPTY_RUN_BACKOFF_S:-900}"  # 15 min
 # fleet-ops#3046: the prior default of 10 was too high for the live
 # nemotron-3-ultra-free loop — 9 empty runs in 2h on the same issue
 # (fleet-ops-2778) never reached 10 because the count-merge window
-# (EMPTY_RUN_COUNT_WINDOW_S, 2 h) reset the count on every 3rd run as the
-# 2h SLO window slid past the first no-op. A ceiling of 3 parks the seat
-# on the 3rd no-op in the SAME 2h window, so the loop cannot outpace the
+# (EMPTY_RUN_COUNT_WINDOW_S, 6 h) reset the count on every 3rd run as the
+# 6 h window slid past the first no-op. A ceiling of 3 parks the seat
+# on the 3rd no-op in the SAME 6 h window, so the loop cannot outpace the
 # count-merge window the way 10 did. fleet-ops#3531: the bench now
 # escalates geometrically (base * 2^(n-1), capped at 6 h, 1800 s for
 # remote agents) so a repeat no-op'er is held out of rotation longer even
@@ -4288,19 +4302,29 @@ EMPTY_RUN_BACKOFF_S="${EMPTY_RUN_BACKOFF_S:-900}"  # 15 min
 # fired, the seat re-entered rotation every 900 s and no-op'ed again). A
 # provider no-op is intermittent, not clustered the way a spawn-fail storm
 # is, so the recovery signal (no new empty run for N min) needs a longer
-# N to be trustworthy. EMPTY_RUN_COUNT_WINDOW_S (default 7200 = 2 h,
-# matching the waste.empty_runs_last_2h SLO window) bounds the empty-run
-# count merge: a marker younger than that is still fresh and its count
-# carries forward; a marker older than 2 h means the seat went a full SLO
-# window without no-op'ing — the real recovery signal — so the count
-# resets. spawn_fail keeps the 30-min window (spawn storms are clustered;
-# a 2 h window would let a long-ago spawn_fail inflate a fresh empty-run
-# count). The bench now escalates geometrically (fleet-ops#3531); the
-# COUNT-accumulation window widens, so the failure-ceiling park can engage
-# for a chronic intermittent no-op'er.
+# N to be trustworthy. fleet-ops#3675: EMPTY_RUN_COUNT_WINDOW_S now
+# defaults to the max empty-run bench (SEAT_BENCH_GEOMETRIC_CAP_S, 6 h)
+# so a chronic no-op'er's count survives the bench: a marker younger than
+# that is still fresh and its count carries forward; a marker older than
+# 6 h means the seat went a full window without no-op'ing — the real
+# recovery signal — so the count resets. spawn_fail keeps the 30-min window
+# (spawn storms are clustered; a 6 h spawn-fail window would let a long-ago
+# spawn_fail inflate a fresh empty-run count). The bench now escalates
+# geometrically (fleet-ops#3531); the COUNT-accumulation window widens, so
+# the failure-ceiling park can engage for a chronic intermittent no-op'er.
+# fleet-ops#3675: the empty-run count-merge window must be at least as long
+# as the max empty-run bench (SEAT_BENCH_GEOMETRIC_CAP_S, 6 h) so a chronic
+# no-op'er's count SURVIVES the bench. Before this, the 2 h window was
+# shorter than the 6 h bench cap: a seat benched for 6 h was released with
+# its marker aged past 2 h, the count reset to 1, and the bench dropped
+# back to the 900 s base — the geometric cooldown never escaped (live:
+# ollama/deepseek-v4-flash:0731 no-op'ed 30x/2h, count reset 15->1 after a
+# 6 h bench). The window now defaults to the bench cap so the count climbs
+# to the failure ceiling and parks the seat. The recovery signal (a full
+# window with no no-op) is still honoured, just over the longer window.
 EMPTY_RUN_BACKOFF_S="${EMPTY_RUN_BACKOFF_S:-900}"  # 15 min
 EMPTY_RUN_MARKER_FRESH_S="${EMPTY_RUN_MARKER_FRESH_S:-1800}"  # 30 min — spawn-fail count-merge window (see comment above)
-EMPTY_RUN_COUNT_WINDOW_S="${EMPTY_RUN_COUNT_WINDOW_S:-7200}"  # 2 h — empty-run count-merge window (fleet-ops#2934); matches waste.empty_runs_last_2h
+EMPTY_RUN_COUNT_WINDOW_S="${EMPTY_RUN_COUNT_WINDOW_S:-$SEAT_BENCH_GEOMETRIC_CAP_S}"  # default = max empty-run bench (6 h) so a chronic no-op'er's count survives the bench (fleet-ops#3675)
 
 mark_seat_empty_run() {
     local p="$1" m="$2" reason="${3:-empty_run}"
@@ -4316,8 +4340,8 @@ mark_seat_empty_run() {
     # wrapper's clobber-proof spawn-bench marker FIRST (any failure_mode,
     # written recently), then the (clobberable) ledger. Take the max as
     # the prior count. A STALE marker (older than
-    # EMPTY_RUN_COUNT_WINDOW_S, default 2 h — fleet-ops#2934) means the
-    # seat went a full SLO window without no-op'ing — the real recovery
+    # EMPTY_RUN_COUNT_WINDOW_S, default 6 h — fleet-ops#3675) means the
+    # seat went a full window without no-op'ing — the real recovery
     # signal — so we fall through to the ledger (which seat-health.ts
     # clobbered to count=0) and start fresh. The window is LONGER than
     # mark_seat_spawn_fail's (EMPTY_RUN_MARKER_FRESH_S, 30 min) because a

@@ -126,9 +126,9 @@ wall_s_of_marker() {
 }
 
 # Live shape: opencode/nemotron-3-ultra-free no-op'ed 9 times in 2h on
-# fleet-ops-2778. The count-merge window (2 h) reset the count before it
-# reached 10. With the geometric bench and the failure ceiling at 3 (test
-# isolation), the 3rd no-op parks the seat.
+# fleet-ops-2778. The count-merge window (2 h at the time) reset the count
+# before it reached 10. With the geometric bench and the failure ceiling at
+# 3 (test isolation), the 3rd no-op parks the seat.
 p="opencode"; m="nemotron-3-ultra-free"
 lf=$(ledger_file "$p" "$m")
 mf=$(marker_file "$p" "$m")
