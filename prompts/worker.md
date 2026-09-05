@@ -33,8 +33,9 @@ Steps:
 5. Implement the smallest durable fix. Then run the Execution IS the review inner loop to green, then repo tests/sgscan.
 6. Commit; `git push origin claim/issue-<N>`.
 7. `gh pr create ... Verification: ... run-proof: ... research: ... help-first: ... Closes #<N>`
-8. Arm: `gh pr merge <PR> --auto --squash -R Nishfleet/<repo>`
-9. Print exactly one final line: the PR URL. Exit 0.
+8. Reviewer round (product repos only) — exactly ONE round, before the arm. For repos marked `product` in config/intake-repos.json (0509, siterep-public, inish-site; fleet-ops PRs exempt): run `Use reviewer to review the diff origin/main...HEAD against the issue acceptance and the repo tests` on the first usable entry of `senior_seats_in_order` (#3121, cursor/cursor-grok-4.6-high first, via the existing seat lookup) — passed explicitly to the reviewer subagent call because the extension inherits the parent seat by default; never the worker's own seat. Land every finding in one review-adjudication bucket (Act on / Consider / Noted / Dismissed-with-reason) in the PR body and name the reviewer seat in the body; fix Act-on items before arming. One round only, no loops.
+9. Arm: `gh pr merge <PR> --auto --squash -R Nishfleet/<repo>`
+10. Print exactly one final line: the PR URL. Exit 0.
 
 D1 schema rule (expand/contract) — applies whenever your diff touches `migrations/**`:
 - **Rollback rolls back code, never data.** D1, KV, R2 and Durable Objects sit outside the Worker version, and D1 has no down-migrations anywhere. A migration that breaks the previous code makes the fleet's auto-revert silently impossible. Treat every migration as one-way.
