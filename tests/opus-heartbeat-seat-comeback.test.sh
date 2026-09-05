@@ -110,6 +110,23 @@ cat > "$SEATDIR/opencode__grace-midcycle.json" << EOF
 {"provider":"opencode","model":"grace-midcycle","http_status":429,"retry_after":null,"health_class":"rate_limited","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"$(date -u -d '5 minutes ago' +%Y-%m-%dT%H:%M:%SZ)","source":"after_provider_response","failure_mode":"rate_limit","usable_at":"$(date -u -d '5 minutes ago' +%Y-%m-%dT%H:%M:%SZ)","consecutive_failure_count":2}
 EOF
 
+# 9. fleet-ops#3509: a seat whose LEDGER was clobbered back to healthy by the
+#    pi seat-health extension on a later 200 OK, while a HELD empty-run spawn-
+#    bench marker still benches it (live shape: ollama/deepseek-v4-flash:0731
+#    benched with escalating backoff while the census said healthy/walled=false
+#    and the seat kept getting re-seated, burning empty runs). The empty-run
+#    bencher (mark_seat_empty_run in lib/seat-lib.sh) writes the clobber-proof
+#    .spawn-bench marker (fleet-ops#1512); the extension re-writes the ledger
+#    ONLY. The wrapper bench is authoritative (fleet-ops#2493), so a HELD marker
+#    (usable_at in the future) must make this seat WALLED in the census until
+#    the bench expires, carrying the durable marker count, NOT healthy.
+cat > "$SEATDIR/ollama__deepseek-v4-flash_0731.json" << 'EOF'
+{"provider":"ollama","model":"deepseek-v4-flash:0731","http_status":200,"retry_after":null,"health_class":"healthy","retryable":false,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-09-05T10:29:58.935Z","source":"after_provider_response","failure_mode":"none","usable_at":null,"consecutive_failure_count":0}
+EOF
+cat > "$SEATDIR/ollama__deepseek-v4-flash_0731.spawn-bench.json" << EOF
+{"provider":"ollama","model":"deepseek-v4-flash:0731","usable_at":"$(date -u -d '+30 minutes' +%Y-%m-%dT%H:%M:%SZ)","reason":"pi-issue:0509-1559:provider-no-op:stdout=0B","written_at":"$(date -u +%Y-%m-%dT%H:%M:%SZ)","backoff_s":900,"failure_mode":"empty_run","consecutive_failure_count":2}
+EOF
+
 # --- Run gather in THOROUGH mode with scratch SEATS_DIR ------------------
 # PROM_URL to dead port so promql degrades gracefully (defensive gather).
 # OPUS_HB_THOROUGH=1 so the thorough battery (incl. seat_probes_walled_comebacks)
@@ -126,13 +143,14 @@ snap = json.load(open(sys.argv[1]))
 # --- seat_table assertions ---
 seats = snap.get("seats") or {}
 assert seats.get("present") is True, "seats table must be present"
-# 8 fixture files total, 2 excluded (1 spawn-bench + 1 test__), 1 healthy,
-# 1 corpse -> n = 6 real seats, healthy_n = 1, walled_n = 1, released_n = 3,
-# dead_n = 1, excluded_n = 2 (the medium-cycle fixture is an expired
-# rate_limited wall -> RELEASED, fleet-ops#2407).
-assert seats.get("n") == 6, f"seat n must be 6 (8 fixtures - 2 excluded), got {seats.get('n')}"
+# 9 fixture files total, 3 excluded (2 spawn-bench markers + 1 test__),
+# 1 healthy, 1 corpse -> n = 7 real seats (adds ollama#3509 bench-held),
+# healthy_n = 1, walled_n = 2, released_n = 3, dead_n = 1, excluded_n = 3
+# (the medium-cycle fixture is an expired rate_limited wall -> RELEASED,
+# fleet-ops#2407).
+assert seats.get("n") == 7, f"seat n must be 7 (9 fixtures - 2 excluded), got {seats.get('n')}"
 assert seats.get("healthy_n") == 1, f"healthy_n must be 1, got {seats.get('healthy_n')}"
-assert seats.get("excluded_n") == 2, f"excluded_n must be 2, got {seats.get('excluded_n')}"
+assert seats.get("excluded_n") == 3, f"excluded_n must be 3 (2 spawn-bench markers + 1 test__), got {seats.get('excluded_n')}"
 ids = [r["id"] for r in seats.get("seats", [])]
 assert "healthy__model" in ids, f"healthy seat missing from table: {ids}"
 assert not any("spawn-bench" in i for i in ids), f"spawn-bench leaked into seat table: {ids}"
@@ -152,10 +170,10 @@ print("OK: seat_table excludes spawn-bench and test__ fixtures")
 #   #6 opencode mimo rate_limited, usable_at in PAST         -> RELEASED
 #   #7 opencode muse corpse, seat_dead=true                  -> DEAD (not walled)
 # -> walled_n drops 4 -> 1, released_n = 2, dead_n = 1, healthy_n stays 1,
-#    n stays 5.
-assert seats.get("walled_n") == 1, (
-    f"walled_n must be 1 after release-at-usable_at + corpse-dead "
-    f"(only the future-wall quota seat), got {seats.get('walled_n')}"
+#    n stays 5; plus the fleet-ops#3509 bench-held ollama seat -> walled_n = 2.
+assert seats.get("walled_n") == 2, (
+    f"walled_n must be 2 (future-wall quota seat + bench-held ollama#3509), "
+    f"got {seats.get('walled_n')}"
 )
 assert seats.get("released_n") == 3, f"released_n must be 3, got {seats.get('released_n')}"
 assert seats.get("dead_n") == 1, f"dead_n must be 1, got {seats.get('dead_n')}"
@@ -191,13 +209,48 @@ assert corpse.get("released") is False, f"corpse must not be released: {corpse}"
 assert corpse.get("wall_class") == "corpse", f"wall_class must stay corpse: {corpse}"
 print("OK: seat_table counts seat_dead corpses as dead, not walled (fleet-ops#2435)")
 
+# --- seat_table bench-held overlay (fleet-ops#3509) ---
+# A seat whose LEDGER was clobbered to healthy by the pi seat-health
+# extension on a later 200 OK, but whose clobber-proof .spawn-bench marker
+# (mark_seat_empty_run, fleet-ops#1512) is still HELD (empty-run bench not
+# expired), must be WALLED in the census until the bench passes — carrying
+# the durable marker count + empty_run mode — NOT healthy. Otherwise the
+# census says healthy/walled=false while the router refuses to route to the
+# seat, it keeps getting re-seated, and it burns empty runs (live:
+# ollama/deepseek-v4-flash:0731 benched with escalating backoff). Mirrors
+# fleet-ops#2493 in libexec/fleet-metrics-export.py.
+olla = row_by_id.get("ollama__deepseek-v4-flash_0731")
+assert olla is not None, \
+    f"bench-held ollama seat missing from seat table: {list(row_by_id)}"
+assert olla.get("bench_overlay") is True, \
+    f"bench-held seat must carry bench_overlay=true: {olla}"
+assert olla.get("health_class") == "spawn_bench", \
+    f"effective class must be spawn_bench (non-healthy), got {olla.get('health_class')}"
+assert olla.get("ledger_health_class") == "healthy", \
+    f"ledger_health_class must record the clobbered-to-healthy ledger, got {olla.get('ledger_health_class')}"
+assert olla.get("walled") is True, f"bench-held seat must be walled: {olla}"
+assert olla.get("released") is False, f"bench-held seat must NOT be released: {olla}"
+assert olla.get("wall_class") == "spawn_bench", f"wall_class mismatch: {olla}"
+assert olla.get("usable_at") is not None and olla.get("wall_end") == olla.get("usable_at"), \
+    f"wall_end must equal the marker usable_at: {olla}"
+assert olla.get("consecutive_failure_count") == 2, \
+    f"durable marker count (2) must survive over a clobbered-to-0 ledger, got {olla.get('consecutive_failure_count')}"
+assert olla.get("failure_mode") == "empty_run", f"failure_mode must come from the marker: {olla}"
+assert olla.get("bench_reason", "").startswith("pi-issue:0509-1559:provider-no-op"), \
+    f"bench_reason must carry the provider no-op provenance: {olla}"
+# The bench-held seat must NOT be counted healthy (it was, pre-fix).
+assert not any(r.get("id") == "ollama__deepseek-v4-flash_0731" and r.get("health_class") == "healthy"
+               for r in seats.get("seats", [])), \
+    "bench-held seat must not report healthy in the census"
+print("OK: seat_table overlays a held empty-run spawn-bench onto a clobbered-to-healthy ledger (fleet-ops#3509)")
+
 # --- t_seat_probes_walled_comebacks assertions (thorough) ---
 thorough = snap.get("thorough")
 assert thorough is not None, "thorough snapshot missing (run with OPUS_HB_THOROUGH=1)"
 cb = thorough.get("slots", {}).get("seat_probes_walled_comebacks", {})
 assert cb.get("present") is True, "walled_comebacks slot must be present"
 assert cb.get("walled_n") == 4, f"walled_comebacks walled_n must be 4, got {cb.get('walled_n')}"
-assert cb.get("excluded_n") == 2, f"excluded_n must be 2, got {cb.get('excluded_n')}"
+assert cb.get("excluded_n") == 3, f"excluded_n must be 3 (2 spawn-bench + 1 test__), got {cb.get('excluded_n')}"
 
 # comeback_overdue: only seat #2 (usable_at in past) and seat #6 (retry_after
 # deadline in past) should be overdue. Seat #1 (retry_after=1857600, deadline
