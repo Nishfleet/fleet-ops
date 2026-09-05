@@ -1888,6 +1888,21 @@ def _escalations_24h():
         "escalation-daily-sweep.service",
         "escalation-daily-sweep.timer",
         "resilience-drill-stub*",
+        # fleet-ops#3180: resync with the writer's refuse list. The
+        # 2026-08-30 pi-issue@* exclusion (fleet-ops#2133/#2475 — workers
+        # escalate via their own reaper + re-dispatch lane, never to the
+        # senior auditor) and the drill/probe scaffolding never landed here,
+        # so the unit-escalation@<instance> template START was still counted
+        # even though the writer refused the trip. Measured 2026-09-05:
+        # 868 of 936 counted starts were pi-issue@* no-seat crash-loops,
+        # tripping FleetEscalationStorm (threshold 300; remaining 64).
+        # tests/fleet-metrics-export.test.sh locks this list against the
+        # writer's case line so a future exclusion cannot drift again.
+        "notify-probe.service",
+        "notify-probe.onfail.service",
+        "probe-*.service",
+        "multi-*-sink.service",
+        "pi-issue@*",
         # Canaries / orchestrator organs: their deliberate fail-loud escalations
         # are expected, not a flapping worker.
         "fleet-heartbeat*",
