@@ -58,9 +58,9 @@
 #   5. cross-check: the same `.est.sh` 127 AFTER a harness block stays
 #      a #677 cascade (not a finding). Pins that locking #1254 must
 #      not drop the `had_prior_block` gate.
-#   6. worker.md cites fleet-ops#1254 and the live
+#   6. lib/failed-command-flagged.py cites fleet-ops#1254 and the live
 #      `tests/fleet-failed-command-edit-unmatch.est.sh` wording
-#      (prompt-side lock).
+#      (detector-side lock: case list moved to lib, fleet-ops#3246).
 #   7. lib/failed-command-flagged.py docstring cites fleet-ops#1254
 #      (detector-side lock).
 #   8. seat-lib.test.sh hosts this file (CI cannot gain a P14 line).
@@ -182,13 +182,13 @@ count=$(jq '.findings | length' <<<"$report")
 ok "same .est.sh 127 after a harness block stays a #677 cascade (contrast with #1254)"
 rm -f "$sessions/typo-est-sh-after-block.jsonl"
 
-# --- 6. prompts/worker.md cites fleet-ops#1254 (prompt-side lock) -----------
+# --- 6. prompts/lib/failed-command-flagged.py cites fleet-ops#1254 (detector-side lock: case list moved to lib, fleet-ops#3246) -----------
 [[ -f "$worker" ]] || fail "missing $worker"
-grep -q 'fleet-ops#1254' "$worker" \
-  || fail "prompts/worker.md must cite fleet-ops#1254 (prompt-side lock)"
-grep -q 'tests/fleet-failed-command-edit-unmatch.est.sh' "$worker" \
-  || fail "prompts/worker.md must name the live 'tests/fleet-failed-command-edit-unmatch.est.sh' wording"
-ok "worker.md cites fleet-ops#1254 and the live .est.sh wording"
+grep -q 'fleet-ops#1254' "$lib" \
+  || fail "lib/failed-command-flagged.py must cite fleet-ops#1254 (detector-side lock: case list moved to lib, fleet-ops#3246)"
+grep -q 'tests/fleet-failed-command-edit-unmatch.est.sh' "$lib" \
+  || fail "lib/failed-command-flagged.py must name the live 'tests/fleet-failed-command-edit-unmatch.est.sh' wording"
+ok "lib/failed-command-flagged.py cites fleet-ops#1254 and the live .est.sh wording"
 
 # --- 7. lib/failed-command-flagged.py docstring cites fleet-ops#1254 -------
 grep -q 'fleet-ops#1254' "$lib" \

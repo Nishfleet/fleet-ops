@@ -215,18 +215,18 @@ count=$(jq '.findings | length' <<<"$report")
 ok "ls no-match probe (live #794) is exempt (contrast: live #1061 Permission-denied is NOT)"
 rm -f "$sessions/ls-nomatch-exempt-vs-1061.jsonl"
 
-# --- 5. worker.md cites fleet-ops#1061 (prompt-side lock) -------------------
+# --- 5. lib/failed-command-flagged.py cites fleet-ops#1061 (detector-side lock: case list moved to lib, fleet-ops#3246) -------------------
 # The prompt is the standing-rule contract for the next worker; dropping
 # the #1061 citation is a regression even if the drill still passes.
 worker="$repo_root/prompts/worker.md"
 [[ -f "$worker" ]] || fail "missing $worker"
-grep -q 'fleet-ops#1061' "$worker" \
-  || fail "prompts/worker.md must cite fleet-ops#1061 (prompt-side lock for the live compound-ls Permission-denied shape)"
-grep -q "Permission denied" "$worker" \
-  || fail "prompts/worker.md must name 'Permission denied' so workers flag the live #1061 wording"
-grep -q "compound" "$worker" \
-  || fail "prompts/worker.md must name the 'compound' bash chain shape so workers flag the live #1061"
-ok "worker.md cites fleet-ops#1061 and the live compound-ls Permission-denied wording"
+grep -q 'fleet-ops#1061' "$lib" \
+  || fail "lib/failed-command-flagged.py must cite fleet-ops#1061 (detector-side lock for the live compound-ls Permission-denied shape)"
+grep -q "Permission denied" "$lib" \
+  || fail "lib/failed-command-flagged.py must name 'Permission denied' so workers flag the live #1061 wording"
+grep -q "compound" "$lib" \
+  || fail "lib/failed-command-flagged.py must name the 'compound' bash chain shape so workers flag the live #1061"
+ok "lib/failed-command-flagged.py cites fleet-ops#1061 and the live compound-ls Permission-denied wording"
 
 # --- 6. lib/failed-command-flagged.py docstring cites fleet-ops#1061 -------
 # (detector-side lock). The docstring is the standing-rule contract
