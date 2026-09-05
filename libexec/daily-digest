@@ -233,7 +233,7 @@ fi
 disk_pct=$(df -P / 2>/dev/null | awk 'NR==2 {gsub("%",""); print $5}')
 disk_line="• Disk on / — ${disk_pct}% used."
 
-# --- Section 7: spend last 24h (fleet_seat_spend_usd) -------------------------
+# --- Section 8: spend last 24h (fleet_seat_spend_usd) -------------------------
 # #3283 (sibling of #3285) reads the vendors' own APIs in fleet-metrics-export
 # and exports cumulative USD spent as fleet_seat_spend_usd{provider}; this
 # section reads the same Prometheus the alert section uses. Last-24h spend =
