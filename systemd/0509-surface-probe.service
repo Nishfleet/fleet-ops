@@ -1,0 +1,15 @@
+[Unit]
+Description=Authenticated surface-matrix probe for 0509 (fleet-ops#1150)
+Documentation=file:/home/nish/.local/bin/0509-surface-probe
+
+[Service]
+Type=oneshot
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/nish/.local/bin/0509-surface-probe
+# Exit 1 = the surface matrix failed (real regression on shipped 0509 main).
+# Leave the unit FAILED so the next pass/agent sees it (fail loud). Exit 0 =
+# the matrix is clean. Exit 2 = bad env (checkout/deps missing) — still red.
+SuccessExitStatus=0
+TimeoutStartSec=1200
+Restart=no

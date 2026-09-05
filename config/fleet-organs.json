@@ -245,6 +245,17 @@
         "lib/fleet-product-slo.py",
         "systemd/fleet-metrics-export.service.d/product-slo.conf"
       ]
+    },
+    {
+      "name": "0509-surface-probe",
+      "kind": "canary",
+      "heartbeat_metric": "fleet_surface_probe_last_run_seconds",
+      "absent_alert": "SurfaceProbe0509Absent",
+      "files": [
+        "bin/0509-surface-probe",
+        "systemd/0509-surface-probe.service",
+        "systemd/0509-surface-probe.timer"
+      ]
     }
   ]
 }

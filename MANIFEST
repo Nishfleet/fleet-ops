@@ -984,3 +984,15 @@ systemd/fleet-seat-comeback-release.timer /home/nish/.config/systemd/user/fleet-
 libexec/fleet-baseline-delta.py /home/nish/.local/libexec/fleet-baseline-delta.py
 systemd/fleet-baseline-delta.service /home/nish/.config/systemd/user/fleet-baseline-delta.service
 systemd/fleet-baseline-delta.timer /home/nish/.config/systemd/user/fleet-baseline-delta.timer
+
+# fleet-ops#1150 synthetic user-journey probes for 0509: the authenticated
+# surface matrix (routes × {390,1440,2000} × {light,dark} ×
+# {free,scout,starter,agency,expired}) runs every 10 min against a dedicated
+# 0509-probe checkout reset to origin/main. Exports fleet_probe_success +
+# latency + consecutive-failures + last-run heartbeat to the textfile
+# collector; SurfaceProbeFailing (2 consecutive fails, critical) and
+# SurfaceProbe0509Absent (organ heartbeat) ride the repair-dispatch rail.
+bin/0509-surface-probe /home/nish/.local/bin/0509-surface-probe
+systemd/0509-surface-probe.service /home/nish/.config/systemd/user/0509-surface-probe.service
+systemd/0509-surface-probe.timer /home/nish/.config/systemd/user/0509-surface-probe.timer
+prompts/0509-surface-probe-repair.md /home/nish/.pi/agent/prompts/0509-surface-probe-repair.md
