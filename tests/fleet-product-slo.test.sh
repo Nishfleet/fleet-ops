@@ -327,6 +327,26 @@ assert abs(s.quality_defects_per_100 - 50.0) < 1e-9, s.quality_defects_per_100
 assert s.quality_sessions_to_pr_pct == 0.0, s.quality_sessions_to_pr_pct
 print("OK: compute quality metrics (reverts 50/100, defects 50/100, sessions 0)")
 
+# Direction lock (fleet-ops#3519): sessions_to_pr_pct = 100 * sessions / merges
+# (sessions per 100 merged PRs; high = churning = bad). With 4 in-week session
+# dirs and 2 in-week merges, the metric must be 200.0 — NOT 50.0 (the inverted
+# 100 * merges / sessions shape that previously fired a false ceiling alert).
+sess_root = Path(os.environ.get("FLEET_PRODUCT_SLO_SESSIONS", "/nonexistent-sessions"))
+sess_root.mkdir(parents=True, exist_ok=True)
+m.SESSIONS_DIR = sess_root
+import time as _time
+recent = _time.time()
+for n in (10, 11, 12, 13):
+    d = sess_root / f"pi-issue-0509-{n}"
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / "session.jsonl"
+    p.write_text("{}\n")
+    os.utime(str(p), (recent, recent))
+s2 = m.compute_repo_slo("0509", prs, now_ts=NOW)
+assert s2.sessions_7d == 4, s2.sessions_7d
+assert abs(s2.quality_sessions_to_pr_pct - 200.0) < 1e-9, s2.quality_sessions_to_pr_pct
+print("OK: sessions_to_pr_pct direction = 100 * sessions / merges (200.0 for 4 sessions / 2 merges)")
+
 # Ceilings load from config/quality-ratchet.json.
 ratchet_path = sys.argv[2]
 raw = json.loads(Path(ratchet_path).read_text())
