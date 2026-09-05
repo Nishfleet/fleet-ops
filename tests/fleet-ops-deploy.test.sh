@@ -170,7 +170,7 @@ grep -q 'sudo -n systemctl reload prometheus' "$repo_root/bin/fleet-ops-deploy" 
 
 # --- scratch environment -----------------------------------------------------
 scratch="$(mktemp -d -t fleet-ops-deploy.XXXXXX)"
-trap 'rm -rf "$scratch"' EXIT INT TERM
+trap 'release_clone; rm -rf "$scratch"' EXIT INT TERM
 
 export HOME="$scratch/home"
 # fleet-ops#410: do not let the canary --apply the live products/fleet-ops
@@ -380,6 +380,20 @@ run_deploy() {
     "$deploy" 2>&1
 }
 
+# fleet-ops#3634: a live process holding the clone as its cwd keeps the LOUD
+# block (the deploy must not reset the clone out from under an active worker).
+# These helpers simulate that process so the block path stays covered now that
+# an abandoned clone is self-rescued instead.
+HOLDER=""
+hold_clone() {
+  ( cd "$checkout" && exec sleep 60 ) &
+  HOLDER=$!
+}
+release_clone() {
+  [ -n "${HOLDER:-}" ] && kill "$HOLDER" 2>/dev/null || true
+  HOLDER=""
+}
+
 # --- scenario 1: install+enable, canary is clean -----------------------------
 PATH="$scratch:$PATH" "$install" >/tmp/install.out 2>&1 || {
     cat /tmp/install.out
@@ -554,9 +568,12 @@ git -C "$checkout" commit -q -m "ahead"
 git -C "$checkout" push -q origin HEAD:main
 git -C "$checkout" checkout -q "$block_head"
 echo '# hot patch' >> "$checkout/bin/demo-script"
+hold_clone
 if out=$(run_deploy); then
+    release_clone
     fail "scenario8: deploy should block on dirty tracked files, got: $out"
 fi
+release_clone
 [[ "$out" == *"DEPLOY-BLOCKED"* ]] || fail "scenario8: dirty checkout did not produce DEPLOY-BLOCKED (got: $out)"
 [ "$(git -C "$checkout" rev-parse HEAD)" = "$block_head" ] \
     || fail "scenario8: dirty checkout was mutated (HEAD moved)"
@@ -1195,9 +1212,12 @@ block_head=$(git -C "$checkout" rev-parse HEAD)
 echo '# paper-over-block' >> "$checkout/bin/demo-script"
 mkdir -p "$(dirname "$dropin")"
 printf 'Environment=FLEET_OPS_DRIFT_BIN=/tmp/agent-worktrees/x.py\n' > "$dropin"
+hold_clone
 if out=$(run_deploy); then
+    release_clone
     fail "scenario16: deploy should block on dirty tracked files, got: $out"
 fi
+release_clone
 [[ "$out" == *"DEPLOY-BLOCKED"* ]] || fail "scenario16: expected DEPLOY-BLOCKED (got: $out)"
 [[ ! -e "$dropin" ]] || fail "scenario16: paper-over drop-in survived a blocked deploy"
 ok "scenario16: blocked deploy still removes the paper-over drop-in"
@@ -1247,6 +1267,7 @@ esac
 exit 0
 FAKE
 chmod +x "$off_gh"
+hold_clone
 if out=$(
   GH="$off_gh" \
   GH_LOG="$off_gh_log" \
@@ -1256,8 +1277,10 @@ if out=$(
   FLEET_ISSUE_FILE_LIB="$repo_root/lib/issue-file.py" \
     run_deploy
 ); then
+    release_clone
     fail "scenario17: deploy should block on a named non-main branch, got: $out"
 fi
+release_clone
 [[ "$out" == *"DEPLOY-BLOCKED"* ]] \
     || fail "scenario17: expected DEPLOY-BLOCKED (got: $out)"
 [[ "$out" == *"not main"* ]] \
@@ -1321,6 +1344,7 @@ git -C "$checkout" merge-base --is-ancestor HEAD origin/main \
     || fail "scenario17d: setup expected auditor HEAD to be an ancestor of origin/main"
 : >"$off_gh_log"
 echo '[]' >"$scratch/open-off-main.json"
+hold_clone
 if out=$(
   GH="$off_gh" \
   GH_LOG="$off_gh_log" \
@@ -1329,8 +1353,10 @@ if out=$(
   FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
     run_deploy
 ); then
+    release_clone
     fail "scenario17d: deploy must not fast-forward a named non-main branch, got: $out"
 fi
+release_clone
 [[ "$out" == *"DEPLOY-BLOCKED"* ]] \
     || fail "scenario17d: expected DEPLOY-BLOCKED (got: $out)"
 [ "$(git -C "$checkout" symbolic-ref --short HEAD)" = "auditor/off-main-477" ] \
@@ -1638,6 +1664,7 @@ chmod +x "$dbm_gh"
 
 # 20a: dirty working tree on main -> DEPLOY-BLOCK + auto-file the #2725 class.
 echo '# hot patch on main' >> "$checkout/bin/demo-script"
+hold_clone
 if out=$(
   GH="$dbm_gh" \
   GH_LOG="$dbm_gh_log" \
@@ -1647,8 +1674,10 @@ if out=$(
   FLEET_ISSUE_FILE_LIB="$repo_root/lib/issue-file.py" \
     run_deploy
 ); then
+    release_clone
     fail "scenario20a: deploy should block on dirty tracked files on main, got: $out"
 fi
+release_clone
 [[ "$out" == *"DEPLOY-BLOCKED"* ]] || fail "scenario20a: expected DEPLOY-BLOCKED (got: $out)"
 [[ "$out" == *"dirty tracked files"* ]] || fail "scenario20a: expected dirty reason (got: $out)"
 grep -q 'issue create' "$dbm_gh_log" \
@@ -1705,6 +1734,7 @@ git -C "$checkout" commit -q -m "diverged hot-patch on main"
 # origin/main stays at diverge_base; HEAD is now ahead+diverged.
 : >"$dbm_gh_log"
 echo '[]' >"$scratch/open-dbm.json"
+hold_clone
 if out=$(
   GH="$dbm_gh" \
   GH_LOG="$dbm_gh_log" \
@@ -1714,8 +1744,10 @@ if out=$(
   FLEET_ISSUE_FILE_LIB="$repo_root/lib/issue-file.py" \
     run_deploy
 ); then
+    release_clone
     fail "scenario20d: deploy should block on a diverged HEAD on main, got: $out"
 fi
+release_clone
 [[ "$out" == *"DEPLOY-BLOCKED"* ]] || fail "scenario20d: expected DEPLOY-BLOCKED (got: $out)"
 [[ "$out" == *"not an ancestor of origin/main"* ]] \
     || fail "scenario20d: expected non-ancestor reason (got: $out)"
