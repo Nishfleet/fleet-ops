@@ -264,7 +264,7 @@
         "deepseek/deepseek-v4-pro": 1,
         "minimax/minimax-m3:free": 1
       },
-      "_audition_20260905": "Nish 2026-09-05: audition on the xKiro free plan (the USD 5 wallet must stay at 5). Free tier = 5,000,000 tokens/day on free-tier models; deepseek-v4-flash, deepseek-v4-pro and minimax-m3:free answered a real wc -l tool task correctly in 6-18s; the response echoes the model id (identity rule holds); GET /v1/usage returns free_tokens used/limit/remaining and wallet balance (meter, #3283). Provider block lives in ~/.pi/agent/models.json. Promote or drop by the yield ledger after ~10 WORKING sessions each; paid tiers never without Nish."
+      "_comment_audition_20260905": "Nish 2026-09-05: audition on the xKiro free plan (the USD 5 wallet must stay at 5). Free tier = 5,000,000 tokens/day on free-tier models; probed 2026-09-05 (n=3 models): deepseek-v4-flash, deepseek-v4-pro and minimax-m3:free each answered a real wc -l tool task correctly in 6-18s; the response echoes the model id (identity rule holds); GET /v1/usage returns free_tokens used/limit/remaining and wallet balance (meter, #3283). Provider block lives in ~/.pi/agent/models.json. Promote or drop by the yield ledger after ~10 WORKING sessions each; paid tiers never without Nish."
     }
   },
   "product_order": "yield",
