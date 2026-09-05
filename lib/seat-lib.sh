@@ -3581,6 +3581,49 @@ pick_seat() {
     fi
 
     local chosen="" chosen_p="" chosen_m=""
+    # fleet-ops#3310: seat-class preference (PI_PICK_PREFER_CLASS). When the
+    # WORK reclaim cap fires, intake writes a per-issue .prefer-class marker
+    # and the next claim forces pick_seat onto a DIFFERENT seat CLASS instead
+    # of blocking (prepaid -> metered -> senior ladder). Reuses the existing
+    # class buckets from the loop above plus find_senior_seat (the #3121 senior
+    # ladder). An empty preferred class (depleted bucket / walled senior) falls
+    # through to the normal yield ladder below so a depleted class never stalls
+    # the work item. Skipped for keystone (keystone already pins the strongest
+    # class) and when the variable is empty (normal picks).
+    if [[ -n "${PI_PICK_PREFER_CLASS:-}" ]] && ! _is_keystone_class "$difficulty"; then
+        case "$PI_PICK_PREFER_CLASS" in
+            senior)
+                if _sl=$(find_senior_seat 2>/dev/null); then
+                    chosen="$_sl"
+                    chosen_p="${chosen%%$'\t'*}"
+                    chosen_m="${chosen#*$'\t'}"
+                    seat_log "pick_seat: prefer-class=senior routing to $chosen"
+                fi
+                ;;
+            prepaid|metered|free)
+                local -a _pref_bucket=()
+                case "$PI_PICK_PREFER_CLASS" in
+                    prepaid) _pref_bucket=("${prepaid_seats[@]:-}") ;;
+                    metered) _pref_bucket=("${metered_seats[@]:-}") ;;
+                    free)    _pref_bucket=("${free_seats[@]:-}") ;;
+                esac
+                if (( ${#_pref_bucket[@]} > 0 )); then
+                    chosen="${_pref_bucket[0]}"
+                    chosen_p="${chosen%%$'\t'*}"
+                    chosen_m="${chosen#*$'\t'}"
+                    if [[ "$PI_PICK_PREFER_CLASS" == "prepaid" \
+                        && "$(model_class_of "$chosen_p" "$chosen_m")" == "prepaid-quota" ]]; then
+                        _record_prepaid_pick "$chosen_p"
+                    fi
+                    seat_log "pick_seat: prefer-class=$PI_PICK_PREFER_CLASS routing to $chosen"
+                fi
+                ;;
+        esac
+    fi
+    # The class ladder below runs only when the prefer-class override did not
+    # already pick a seat (an empty preferred bucket / walled senior falls
+    # through to the normal yield ladder).
+    if [[ -z "${chosen:-}" ]]; then
     if (( ${#product_seats[@]} > 0 )); then
         chosen="${product_seats[0]}"
         chosen_p="${chosen%%$'\t'*}"
@@ -3613,6 +3656,7 @@ pick_seat() {
         _record_prepaid_pick "$chosen_p"
     elif (( ${#metered_seats[@]} > 0 )); then
         chosen="${metered_seats[0]}"
+    fi
     fi
     if [[ -n "$chosen" ]]; then
         record_seat_selection "${chosen%%$'\t'*}" "${chosen#*$'\t'}" "$difficulty"

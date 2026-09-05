@@ -212,6 +212,33 @@ export BLOCKED_RECONCILE_REPOS="Nishfleet/0509"
 export BLOCKED_RECONCILE_NOW="2026-08-26T00:00:00Z"
 export BLOCKED_RECONCILE_STICKY_SECS=0
 
+# fleet-ops#3310/#3527: provide the seat-lib data the infra auto-release path
+# needs for a dry-run pick_seat. A real run uses the fleet's live state.
+mkdir -p "$scratch/pi-packet/attempts" "$scratch/pi-packet/active-seats" "$scratch/pi-packet/ledger"
+cat >"$scratch/models.json" <<'JSON'
+{
+  "providers": {
+    "devin":   { "models": [ { "id": "swe-1-7", "cost": { "input": 0 }, "reasoning": true, "contextWindow": 200000 } ] },
+    "opencode":{ "models": [ { "id": "nemotron-3-ultra-free", "cost": { "input": 0 }, "reasoning": false, "contextWindow": 100000 } ] }
+  }
+}
+JSON
+cat >"$scratch/seat-caps.json" <<'JSON'
+{
+  "ram_gb_per_worker": 1.5,
+  "free_providers_in_order": [],
+  "prepaid_providers_in_order": [],
+  "senior_seats_in_order": [],
+  "providers": {
+    "devin":    { "cap": 4, "class": "prepaid-quota", "models": { "swe-1-7": 4 } },
+    "opencode": { "cap": 3, "class": "free", "models": { "nemotron-3-ultra-free": 1 } }
+  }
+}
+JSON
+export PI_PACKET_STATE="$scratch/pi-packet"
+export PI_MODELS_JSON="$scratch/models.json"
+export SEAT_CAPS_JSON="$scratch/seat-caps.json"
+
 # Case 1: closed issue dep → requeue
 cat >"$scratch/list.json" <<'JSON'
 [{"number":50,"title":"do the thing","createdAt":"2026-08-25T06:00:00Z","labels":[{"name":"agent-blocked"}]}]
@@ -423,6 +450,75 @@ grep -q 'requeued=1' <<<"$out" || fail "drill next pass must requeue: $out"
 grep -q 'remove-label agent-blocked' "$scratch/edits.log" || fail "drill missing label remove: $(cat "$scratch/edits.log")"
 grep -q 'add-label agent-ready' "$scratch/edits.log" || fail "drill missing label add: $(cat "$scratch/edits.log")"
 ok "drill: close fixture blocker, next reconcile pass flips the label"
+
+# Case 8a: aged blocked-on: infra re-queues when a healthy capable seat exists
+# (fleet-ops#3310/#3527). The blocked-on: infra comment is 3h old; a healthy
+# opencode free seat is available, so the issue is re-queued and the WORK cap
+# + systemic markers are reset.
+cat >"$scratch/list.json" <<'JSON'
+[{"number":99,"title":"infra block test","createdAt":"2026-08-25T06:00:00Z","labels":[{"name":"agent-blocked"}]}]
+JSON
+cat >"$scratch/view-99.json" <<'JSON'
+{"title":"infra block test","body":"some work\n\nblocked-on: infra\n","createdAt":"2026-08-25T06:00:00Z","labels":[{"name":"agent-blocked"}],"comments":[{"body":"fleet-ops#3310: ...\n\nblocked-on: infra\n","createdAt":"2026-08-25T21:00:00Z"}]}
+JSON
+printf '1' >"$PI_PACKET_STATE/attempts/pi-issue-0509-99.reclaim-count"
+printf '1' >"$PI_PACKET_STATE/attempts/pi-issue-0509-99.systemic"
+: >"$scratch/edits.log"
+: >"$scratch/comments.log"
+
+out=$("$bin" 2>"$scratch/err-infra.txt")
+grep -q 'requeued=1' <<<"$out" || fail "aged infra block must requeue: $out"
+grep -q 'remove-label agent-blocked' "$scratch/edits.log" || fail "infra requeue missing label remove: $(cat "$scratch/edits.log")"
+grep -q 'add-label agent-ready' "$scratch/edits.log" || fail "infra requeue missing label add: $(cat "$scratch/edits.log")"
+grep -q 'blocked-reconcile: infra-block released' "$scratch/comments.log" || fail "infra release marker missing: $(cat "$scratch/comments.log")"
+[[ ! -f "$PI_PACKET_STATE/attempts/pi-issue-0509-99.reclaim-count" ]] || fail "reclaim-count must be reset"
+[[ ! -f "$PI_PACKET_STATE/attempts/pi-issue-0509-99.systemic" ]] || fail "systemic marker must be reset"
+ok "aged blocked-on: infra re-queues when a healthy capable seat exists"
+
+# Case 8b: young blocked-on: infra stays blocked
+# The infra marker is only 1.5h old, so it is too young to release.
+cat >"$scratch/view-99.json" <<'JSON'
+{"title":"infra block test","body":"some work\n\nblocked-on: infra\n","createdAt":"2026-08-25T06:00:00Z","labels":[{"name":"agent-blocked"}],"comments":[{"body":"fleet-ops#3310: ...\n\nblocked-on: infra\n","createdAt":"2026-08-25T22:30:00Z"}]}
+JSON
+: >"$scratch/edits.log"
+: >"$scratch/comments.log"
+
+out=$("$bin" 2>"$scratch/err-infra-young.txt")
+grep -q 'requeued=0' <<<"$out" || fail "young infra block must not requeue: $out"
+grep -q 'remaining=infra (too young' "$scratch/comments.log" || fail "young infra missing too-young sticky: $(cat "$scratch/comments.log")"
+ok "young blocked-on: infra stays blocked"
+
+# Case 8c: second infra-block release inside 24h escalates to senior-review
+# A previous release comment is in the history, so a second aged infra block
+# posts blocked-on: senior-review instead of re-queuing.
+cat >"$scratch/view-99.json" <<'JSON'
+{"title":"infra block test","body":"some work\n\nblocked-on: infra\n","createdAt":"2026-08-25T06:00:00Z","labels":[{"name":"agent-blocked"}],"comments":[{"body":"blocked-reconcile: infra-block released at 2026-08-25T20:00:00Z\n","createdAt":"2026-08-25T20:00:00Z"},{"body":"fleet-ops#3310: ...\n\nblocked-on: infra\n","createdAt":"2026-08-25T21:00:00Z"}]}
+JSON
+: >"$scratch/edits.log"
+: >"$scratch/comments.log"
+
+out=$("$bin" 2>"$scratch/err-infra-escalate.txt")
+grep -q 'requeued=0' <<<"$out" || fail "second infra release must not requeue: $out"
+grep -q 'blocked-on: senior-review' "$scratch/comments.log" || fail "second infra release must escalate: $(cat "$scratch/comments.log")"
+grep -q 'kind=senior-review' "$scratch/comments.log" || fail "escalation sticky must be senior-review: $(cat "$scratch/comments.log")"
+ok "second infra-block release within 24h escalates to senior-review"
+
+# Case 8d: blocked-on: senior-review stays blocked
+# After escalation, the issue is pinned at senior-review and does not auto-release.
+cat >"$scratch/list.json" <<'JSON'
+[{"number":98,"title":"senior review test","createdAt":"2026-08-25T06:00:00Z","labels":[{"name":"agent-blocked"}]}]
+JSON
+cat >"$scratch/view-98.json" <<'JSON'
+{"title":"senior review test","body":"blocked-on: senior-review\n","createdAt":"2026-08-25T06:00:00Z","labels":[{"name":"agent-blocked"}],"comments":[{"body":"escalated.\n\nblocked-on: senior-review\n","createdAt":"2026-08-25T21:00:00Z"}]}
+JSON
+: >"$scratch/edits.log"
+: >"$scratch/comments.log"
+
+out=$("$bin" 2>"$scratch/err-senior.txt")
+grep -q 'requeued=0' <<<"$out" || fail "senior-review must not requeue: $out"
+grep -q 'count=1' <<<"$out" || fail "senior-review must stay in queue: $out"
+grep -q 'remaining=senior-review' "$scratch/comments.log" || fail "senior-review sticky missing: $(cat "$scratch/comments.log")"
+ok "blocked-on: senior-review stays blocked"
 
 # Case 9: overlapping flock no-op
 export BLOCKED_RECONCILE_LOCKDIR="$scratch/lock-overlap"

@@ -265,24 +265,53 @@ if [[ "$issue_state" == "OPEN" ]]; then
         log_to_triage "RECLAIM-COOLDOWN-SET" "instance=$instance repo=$repo_slug issue=$issue cooldown=$cooldown_file"
     fi
 
-    # fleet-ops#2462: reclaim-count increment. Each failed re-claim is one
-    # strike against MAX_RECLAIMS (see pi-intake-tick.sh). The first claim is
-    # counted by pi-issue-run on success; every failed re-claim (this path)
-    # increments the counter. When the count reaches the cap, intake escalates
-    # the issue instead of re-claiming. A successful PR open resets it.
-    _rc_file="$ATTEMPTS_DIR/pi-issue-${instance}.reclaim-count"
-    _rc_prev=0
-    if [[ -f "$_rc_file" ]]; then
-        _rc_prev=$(cat "$_rc_file" 2>/dev/null || echo 0)
-        _rc_prev=${_rc_prev//[^0-9]/}
-        _rc_prev=${_rc_prev:-0}
+    # fleet-ops#2462 + #3310: reclaim-count / infra-death split. Each failed
+    # re-claim is one strike against MAX_RECLAIMS (see pi-intake-tick.sh) —
+    # EXCEPT infrastructure deaths (provider hang/signal/timeout/ceiling), which
+    # the worker could never have avoided. Those increment the separate
+    # .infra-death counter and leave the .reclaim-count WORK cap untouched, so
+    # a provider storm cannot park an issue for a senior conference. The death
+    # class comes from the .last-death-class marker pi-issue-run writes on every
+    # failure exit; an absent marker (back-compat with pre-3310 deaths) counts
+    # as a work failure exactly as before. A successful PR open resets the
+    # counters.
+    _death_class="work"
+    _lc_file="$ATTEMPTS_DIR/pi-issue-${instance}.last-death-class"
+    if [[ -f "$_lc_file" ]]; then
+        _death_class=$(cat "$_lc_file" 2>/dev/null || echo work)
+        _death_class=${_death_class//[^A-Za-z]/}
+        [[ "$_death_class" == "infra" || "$_death_class" == "work" ]] || _death_class="work"
     fi
-    _rc_new=$(( _rc_prev + 1 ))
-    if printf '%s' "$_rc_new" > "$_rc_file" 2>/dev/null; then
-        log "incremented reclaim-count to $_rc_new for $instance (was $_rc_prev)"
-        log_to_triage "RECLAIM-COUNT-INCREMENTED" "instance=$instance count=$_rc_new"
+    if [[ "$_death_class" == "infra" ]]; then
+        _id_file="$ATTEMPTS_DIR/pi-issue-${instance}.infra-death"
+        _id_prev=0
+        if [[ -f "$_id_file" ]]; then
+            _id_prev=$(cat "$_id_file" 2>/dev/null || echo 0)
+            _id_prev=${_id_prev//[^0-9]/}
+            _id_prev=${_id_prev:-0}
+        fi
+        _id_new=$(( _id_prev + 1 ))
+        if printf '%s' "$_id_new" > "$_id_file" 2>/dev/null; then
+            log "incremented infra-death to $_id_new for $instance (was $_id_prev) — reclaim-count WORK cap untouched"
+            log_to_triage "INFRA-DEATH-INCREMENTED" "instance=$instance count=$_id_new death_class=infra"
+        else
+            log "WARN: could not write infra-death $_id_file"
+        fi
     else
-        log "WARN: could not write reclaim-count $_rc_file"
+        _rc_file="$ATTEMPTS_DIR/pi-issue-${instance}.reclaim-count"
+        _rc_prev=0
+        if [[ -f "$_rc_file" ]]; then
+            _rc_prev=$(cat "$_rc_file" 2>/dev/null || echo 0)
+            _rc_prev=${_rc_prev//[^0-9]/}
+            _rc_prev=${_rc_prev:-0}
+        fi
+        _rc_new=$(( _rc_prev + 1 ))
+        if printf '%s' "$_rc_new" > "$_rc_file" 2>/dev/null; then
+            log "incremented reclaim-count to $_rc_new for $instance (was $_rc_prev)"
+            log_to_triage "RECLAIM-COUNT-INCREMENTED" "instance=$instance count=$_rc_new death_class=work"
+        else
+            log "WARN: could not write reclaim-count $_rc_file"
+        fi
     fi
 
     # fleet-ops#2462: systemic-failure detection. When the issue has failed
@@ -341,13 +370,17 @@ elif [[ "$issue_state" == "CLOSED" ]]; then
     fi
     should_archive_packets=1
     log_to_triage "CLAIM-CLOSED-CLEANUP" "instance=$instance repo=$repo_slug branch=$branch_name branch_deleted=$branch_deleted label_removed=$label_ok"
-    # fleet-ops#2462: reset reclaim-count + clear systemic marker on close.
-    # A closed issue means the work shipped (merged PR): the per-issue state
-    # files must clear so a future re-open starts fresh, not inheriting a
-    # stale cap or systemic marker from a prior failure cycle.
+    # fleet-ops#2462 + #3310: reset reclaim-count + clear systemic / ladder
+    # markers on close. A closed issue means the work shipped (merged PR): the
+    # per-issue state files must clear so a future re-open starts fresh, not
+    # inheriting a stale cap, systemic marker, preferred seat class, or
+    # accumulated infra-death count from a prior failure cycle.
     rm -f "$ATTEMPTS_DIR/pi-issue-${instance}.reclaim-count" 2>/dev/null || true
     rm -f "$ATTEMPTS_DIR/pi-issue-${instance}.systemic" 2>/dev/null || true
-    log "reset reclaim-count + cleared systemic marker for $instance (issue closed)"
+    rm -f "$ATTEMPTS_DIR/pi-issue-${instance}.infra-death" 2>/dev/null || true
+    rm -f "$ATTEMPTS_DIR/pi-issue-${instance}.last-death-class" 2>/dev/null || true
+    rm -f "$ATTEMPTS_DIR/pi-issue-${instance}.prefer-class" 2>/dev/null || true
+    log "reset reclaim-count + cleared systemic/ladder markers for $instance (issue closed)"
     log_to_triage "CLAIM-CLOSED-RESET" "instance=$instance repo=$repo_slug"
 else
     log "unknown issue state '$issue_state' for $repo_slug#$issue; leaving labels"
