@@ -976,6 +976,13 @@ bash -c 'source "$0"; is_quota_cap_error "$1" "$2"' "$lib" "" "out of credits, p
 rc=$?
 set -e
 [[ "$rc" != "0" ]] || fail "is_quota: 'out of credits' with no reset window must NOT match (permanent exhaustion -> reactive ledger)"
+# fleet-ops 2026-09-05: xai-oauth Grok Build HTTP 402 'usage balance exhausted' —
+# 15 sessions/24h died at 1s and the seat stayed 'healthy' (no literal matched).
+# Unlike 'out of credits' it IS a periodic prepaid cap (weekly SuperGrok balance,
+# provider default 604800s in seat-caps.json), so the wrapper must bench it.
+bash -c 'source "$0"; is_quota_cap_error "$1" "$2"' "$lib" "" 'session-error: OpenAI API error (402): 402 "Grok Build usage balance exhausted"' >/dev/null 2>&1 \
+  || fail "9b: Grok Build 402 'usage balance exhausted' must be a quota/cap wall (no reset text; provider default applies)"
+ok "9b: Grok Build 402 'usage balance exhausted' -> quota/cap wall"
 set +e
 bash -c 'source "$0"; is_quota_cap_error "$1" "$2"' "$lib" "429 Too Many Requests retry-after: 30" "" >/dev/null 2>&1
 rc=$?
