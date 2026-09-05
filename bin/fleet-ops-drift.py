@@ -640,6 +640,18 @@ def check_canonical_source(checkout: Path, expected_dests: dict[str, Path]) -> N
         # bytes to origin/main, and install.sh still guards cap downgrades.
         if src.name == "seat-caps.json":
             continue
+        # fleet-ops#3263: Pi provider extensions (template/extensions/**) are
+        # installed as file COPIES, not symlinks. A symlink into the deploy-clone
+        # working tree resolves their relative import `../seat-health.ts` against the
+        # repo tree, where that sibling does not live -> runtime import failure on
+        # every extension load (proven: Bun and Node both resolve relative imports
+        # against the symlink's real path). A copy keeps resolution on the live
+        # extensions dir, where seat-health.ts lives. Exempt from the symlink check.
+        # src here is the RESOLVED absolute path; we need the relative src from
+        # the manifest. Check if the dest is an extension path.
+        dest_str = str(dest)
+        if "/.pi/agent/extensions/" in dest_str:
+            continue
         if dest_path.is_symlink():
             try:
                 target = dest_path.resolve()
@@ -949,6 +961,10 @@ def check_live_matches_origin_main(checkout: Path) -> None:
             continue
         src, dest = parts[0], parts[1]
         if dest.startswith("/etc/"):
+            continue
+        # Skip npm-pin entries - these are pinned to the installed pi-coding-agent
+        # package examples, not from the fleet-ops repo origin/main.
+        if src.startswith("npm-pin:"):
             continue
         expected = git_show_bytes(checkout, f"{origin_main}:{src}")
         if expected is None:

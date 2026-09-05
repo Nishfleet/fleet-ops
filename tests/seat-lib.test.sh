@@ -1431,6 +1431,13 @@ cat >"$scratch/seat-caps-cc.json" <<'JSON'
         "deepseek/deepseek-v4-flash": 2,
         "minimax/minimax-m3-free": 1
       }
+    },
+    "cline": {
+      "cap": 2,
+      "class": "subscription",
+      "models": {
+        "cline-pass/deepseek-v4-flash": 2
+      }
     }
   }
 }
@@ -3635,8 +3642,19 @@ ok "3241: SEAT_CAP_ZERO_STALE_EXPIRE=0 disables expiry"
 # kept being re-selected. Each bench path uses its own scratch sidecar + ledger.
 _sidecar_scratch="$scratch/sidecar-3559"
 mkdir -p "$_sidecar_scratch"
+# fleet-ops#3661: the seat-key guard is fail-closed while a caps file exists.
+# The 3559 calls run under the cap0-expire fixture exported above, which has
+# no ollama/devin entries — give these calls a fixture that lists both seats
+# so the bench writes pass the guard.
+cat >"$_sidecar_scratch/caps.json" <<'JSON'
+{ "providers": {
+    "ollama": { "cap": 2, "class": "free", "models": { "deepseek-v4-flash:0731": 2 } },
+    "devin":  { "cap": 2, "class": "prepaid", "models": { "glm-5-2": 2 } }
+} }
+JSON
 _sidecar_q="$(PI_SEAT_HEALTH_SIDECAR="$_sidecar_scratch/empty.json" \
   PI_SEAT_HEALTH_LEDGER_DIR="$_sidecar_scratch/ledger" \
+  SEAT_CAPS_JSON="$_sidecar_scratch/caps.json" \
   bash -c 'source "$0"; mark_seat_empty_run "ollama" "deepseek-v4-flash:0731" "t3559:noop" >/dev/null 2>&1; jq -r .health_class "$PI_SEAT_HEALTH_SIDECAR" 2>/dev/null' "$lib")"
 [[ -f "$_sidecar_scratch/empty.json" ]] \
   || fail "3559: wrapper empty-run bench must co-write the sidecar pi-seat-health.json"
@@ -3662,6 +3680,7 @@ ok "3559: wrapper empty-run bench is visible in pi-seat-health.json (transient_f
 # spawn_fail -> sidecar carries failure_mode=spawn_fail, not healthy.
 _sidecar_q="$(PI_SEAT_HEALTH_SIDECAR="$_sidecar_scratch/spawn.json" \
   PI_SEAT_HEALTH_LEDGER_DIR="$_sidecar_scratch/ledger-spawn" \
+  SEAT_CAPS_JSON="$_sidecar_scratch/caps.json" \
   bash -c 'source "$0"; mark_seat_spawn_fail "devin" "glm-5-2" "t3559:spawn" >/dev/null 2>&1; jq -r .health_class "$PI_SEAT_HEALTH_SIDECAR" 2>/dev/null' "$lib")"
 _sidecar_fm="$(PI_SEAT_HEALTH_SIDECAR="$_sidecar_scratch/spawn.json" \
   PI_SEAT_HEALTH_LEDGER_DIR="$_sidecar_scratch/ledger-spawn" \
@@ -3673,3 +3692,8 @@ _sidecar_fm="$(PI_SEAT_HEALTH_SIDECAR="$_sidecar_scratch/spawn.json" \
 [[ "$_sidecar_q" = "transient_fault" ]] \
   || fail "3559: spawn-fail sidecar must report transient_fault, got $_sidecar_q"
 ok "3559: wrapper spawn-fail bench is visible in pi-seat-health.json (transient_fault/spawn_fail, not healthy)"
+
+# fleet-ops#3723: OpenRouter free-model daily request budget replay drill.
+# Workers cannot add a P14 line in .github/workflows/ci.yml; this file is the
+# listed CI host for the new free-model daily-budget bench test.
+bash "$here/seat-lib-free-daily-budget.test.sh" || fail "seat-lib-free-daily-budget tests failed"

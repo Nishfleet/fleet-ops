@@ -137,12 +137,13 @@ echo "$pick_out" | grep -q "^commandcode" || fail "green-window: expected comman
 [[ -f "$learned" ]] || fail "green-window: learned-caps.json must be written on probe"
 lc=$(jq -r '.providers.commandcode.learned_cap // "none"' "$learned")
 lr=$(jq -r '.providers.commandcode.last_result // "none"' "$learned")
-[[ "$lc" == "3" ]] || fail "green-window: learned_cap must be 3 (cap+1 probe), got $lc"
+expected_probe=$((2 + 1))  # cap+1 additive probe (scratch commandcode cap=2)
+[[ "$lc" == "$expected_probe" ]] || fail "green-window: learned_cap must equal cap+1 (probe), got $lc"
 [[ "$lr" == "probe" ]] || fail "green-window: last_result must be probe, got $lr"
 [[ -f "$audit" ]] || fail "green-window: audit log must be written on probe"
-grep -q "aimd commandcode: learned_cap=3 result=probe" "$audit" \
+grep -q "aimd commandcode: learned_cap=$expected_probe result=probe" "$audit" \
   || fail "green-window: audit line must record the probe: $(cat "$audit")"
-ok "green window: cap+1 probe admitted, learned_cap=3, audit line written"
+ok "green window: cap+1 probe admitted, learned_cap=$expected_probe, audit line written"
 
 # --- invariant 2: injected 429 -> halve + bench + audit (backoff) ---------
 rm -f "$state/active-seats"/*.json "$ledger"/*.json "$learned" "$audit"
@@ -156,10 +157,11 @@ set -e
 lc=$(jq -r '.providers.commandcode.learned_cap // "none"' "$learned")
 lr=$(jq -r '.providers.commandcode.last_result // "none"' "$learned")
 bu=$(jq -r '.providers.commandcode.bench_until // "none"' "$learned")
-[[ "$lc" == "1" ]] || fail "backoff: learned_cap must be 1 (halved), got $lc"
+expected_half=$((2 / 2))  # cap/2 multiplicative backoff (scratch commandcode cap=2)
+[[ "$lc" == "$expected_half" ]] || fail "backoff: learned_cap must equal cap/2 (halved), got $lc"
 [[ "$lr" == "backoff" ]] || fail "backoff: last_result must be backoff, got $lr"
 [[ "$bu" != "none" && "$bu" != "null" ]] || fail "backoff: bench_until must be set, got $bu"
-grep -q "aimd commandcode: learned_cap=1 result=backoff" "$audit" \
+grep -q "aimd commandcode: learned_cap=$expected_half result=backoff" "$audit" \
   || fail "backoff: audit line must record the backoff: $(cat "$audit")"
 seed_active commandcode 1
 set +e
@@ -217,8 +219,9 @@ set -e
 [[ "$mprobe_rc" == "0" ]] || fail "devin model: glm-5-2 must admit a probe at 4/4 below ceiling 6 (fleet-ops#3125)"
 [[ -f "$learned" ]] || fail "devin model: learned-caps.json must be written on model probe"
 mlc=$(jq -r '.providers["devin/glm-5-2"].learned_cap // "none"' "$learned")
-[[ "$mlc" == "5" ]] || fail "devin model: learned_cap must be 5 under the devin/glm-5-2 key, got $mlc (file=$(cat "$learned"))"
-grep -q "aimd devin/glm-5-2: learned_cap=5 result=probe" "$audit" \
+expected_model_probe=$((4 + 1))  # model cap+1 (scratch devin glm-5-2 cap=4)
+[[ "$mlc" == "$expected_model_probe" ]] || fail "devin model: learned_cap must equal model-cap+1 (probe), got $mlc (file=$(cat "$learned"))"
+grep -q "aimd devin/glm-5-2: learned_cap=$expected_model_probe result=probe" "$audit" \
   || fail "devin model: audit line must record the model probe: $(cat "$audit")"
 set +e
 meff2=$(run effective_model_cap devin "swe-1-7" 2>/dev/null)
@@ -254,7 +257,8 @@ set -e
 [[ -f "$learned" ]] || fail "siblings: learned-caps.json must exist after probe"
 lc_cc=$(jq -r '.providers.commandcode.learned_cap // "none"' "$learned")
 lc_cl=$(jq -r '.providers.cline.learned_cap // "none"' "$learned")
-[[ "$lc_cc" == "3" ]] || fail "siblings: commandcode learned_cap must be 3, got $lc_cc"
+expected_sib=$((2 + 1))  # cap+1 (scratch commandcode cap=2)
+[[ "$lc_cc" == "$expected_sib" ]] || fail "siblings: commandcode learned_cap must equal cap+1 (probe), got $lc_cc"
 [[ "$lc_cl" == "1" ]] || fail "siblings: cline learned_cap must survive, got $lc_cl (file=$(cat "$learned"))"
 ok "siblings: later probe write keeps the other provider's learned cap"
 
@@ -278,16 +282,24 @@ jq -e '.providers.devin.models["swe-1-7"].max_probe_ceiling == .providers.devin.
   || fail "production: devin swe-1-7 probe ceiling must equal its cap while pinned (fleet-ops#3443/#3473)"
 jq -e '.providers.ollama.hard_ceiling == true' "$caps" >/dev/null \
   || fail "production: ollama must be hard_ceiling=true"
-jq -e '.providers.commandcode.max_probe_ceiling == 6' "$caps" >/dev/null \
-  || fail "production: commandcode max_probe_ceiling must be 6 (fleet-ops#1350: cap 4 + 2-probe headroom, measured clean to n=5)"
-jq -e '.providers.bai.max_probe_ceiling == 6' "$caps" >/dev/null \
-  || fail "production: bai max_probe_ceiling must be 6 (fleet-ops#1350: cap 4 + 2-probe headroom, measured clean to n=5)"
-jq -e '.providers.hetzner.max_probe_ceiling == 4' "$caps" >/dev/null \
-  || fail "production: hetzner max_probe_ceiling must be 4"
-jq -e '.providers.opencode.max_probe_ceiling == 5' "$caps" >/dev/null \
-  || fail "production: opencode max_probe_ceiling must be 5 (fleet-ops#1350: cap 3 + 2-probe headroom, measured clean to n=5)"
+# Rule 2 (fleet-ops#3504): max_probe_ceiling >= cap and <= 2x cap unless
+# hard_ceiling. No numeric pins — the RELATIONSHIP is the rule, not the
+# number. A cap change moves the ceiling with it; a ceiling outside [cap,
+# 2*cap] without hard_ceiling fails here without a test edit.
+while IFS=$'\t' read -r prov cap ceiling hard; do
+    [[ -n "$prov" ]] || continue
+    [[ "$ceiling" == "null" || -z "$ceiling" ]] && continue  # no ceiling = no probe
+    [[ "$hard" == "true" ]] && continue  # hard_ceiling exempt from the 2x rule
+    cap_n=$((cap))
+    ceil_n=$((ceiling))
+    [[ "$ceil_n" -ge "$cap_n" ]] \
+      || fail "production: $prov max_probe_ceiling ($ceil_n) < cap ($cap_n) — ceiling must be >= cap (rule 2, fleet-ops#3504)"
+    [[ "$ceil_n" -le $((cap_n * 2)) ]] \
+      || fail "production: $prov max_probe_ceiling ($ceil_n) > 2x cap ($((cap_n*2))) — ceiling must be <= 2x cap unless hard_ceiling (rule 2, fleet-ops#3504)"
+    ok "production: $prov max_probe_ceiling ($ceil_n) within [cap=$cap_n, 2x=$((cap_n*2))] (rule 2, fleet-ops#3504)"
+done < <(jq -r '.providers | to_entries[] | [.key, (.value.cap // 0), (.value.max_probe_ceiling // "null"), (.value.hard_ceiling // false)] | @tsv' "$caps")
 jq -e '.providers.minimax.max_probe_ceiling == null' "$caps" >/dev/null \
   || fail "production: minimax must omit max_probe_ceiling (no climb)"
-ok "production seat-caps.json: devin AIMD not hard_ceiling, probe ceilings pinned == caps (fleet-ops#3443, lift via #3258), ollama hard_ceiling, probe ceilings on free lanes"
+ok "production seat-caps.json: devin AIMD not hard_ceiling, probe ceilings pinned == caps (fleet-ops#3443, lift via #3258), ollama hard_ceiling, all ceilings within [cap, 2x cap] (rule 2, fleet-ops#3504)"
 
 echo "All AIMD invariants passed."

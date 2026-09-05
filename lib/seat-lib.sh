@@ -280,6 +280,12 @@ SEAT_RAM_GB_PER_WORKER=1.5
 # running; they just cannot fill the RAM ceiling and skip ready issues.
 SEAT_ORG_RESERVE=2
 SEAT_PACE_PCT="${SEAT_PACE_PCT:-80}"
+# fleet-ops#3723: per-provider daily request budget for free-model accounts
+# whose cap is per-ACCOUNT (OpenRouter free models). When the shared counter
+# of assistant turns across the provider's *:free sessions today (UTC) reaches
+# this, every free model on the provider benches until 00:00 UTC. Keyed on
+# provider name. 0 = no daily budget (default; only OpenRouter carries one).
+declare -A SEAT_FREE_DAILY_REQUEST_BUDGET=()
 
 # fleet-ops#457: lanes whose snapshot metrics exceed quality-routing.json
 # cuts. Empty when the scoreboard is missing/stale. Loaded once per pick.
@@ -552,6 +558,17 @@ load_seat_caps() {
         [[ -n "$p" ]] || continue
         [[ "$obench" =~ ^[0-9]+$ ]] && SEAT_PROVIDER_OVERLOAD_BENCH_DEFAULT["$p"]="$obench"
     done < <(jq -r '.providers | to_entries[] | .key as $k | .value as $v | (if ($v|type)=="object" then [$k, ($v.overload_bench_default_s // $v["503_bench_default_s"] // "")] else [$k, ""] end) | @tsv' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+
+    # fleet-ops#3723: per-provider daily request budget for free-model
+    # accounts whose cap is per-ACCOUNT (OpenRouter free models). The budget
+    # is shared across every *:free model on the provider; seat-lib counts
+    # assistant turns in today's (UTC) Pi session files and benches all free
+    # models on the provider once the counter hits the cap. 0/absent = no
+    # daily budget (only OpenRouter carries one today).
+    while IFS=$'\t' read -r p budget; do
+        [[ -n "$p" ]] || continue
+        [[ "$budget" =~ ^[0-9]+$ ]] && (( budget > 0 )) && SEAT_FREE_DAILY_REQUEST_BUDGET["$p"]="$budget"
+    done < <(jq -r '.providers | to_entries[] | .key as $k | .value as $v | (if ($v|type)=="object" then [$k, ($v.free_model_daily_request_budget // "")] else [$k, ""] end) | @tsv' "$SEAT_CAPS_JSON" 2>/dev/null || true)
 
     # fleet-ops#3111: expire-to-default for stale cap=0 seats. A stale cap=0
     # seat (intentional_cap_zero="stale") has a dated reason — "2026-08-28
@@ -1015,7 +1032,9 @@ _aimd_probe_admitted() {
     ram_cap=$(ram_governor_cap) || ram_cap=0
     [[ "$ram_cap" =~ ^[0-9]+$ ]] || ram_cap=0
     active_total=$(active_ram_charge)
-    (( ram_cap > active_total )) || return 1
+    # active_ram_charge is fractional (per-repo MemoryHigh / fallback), so
+    # compare in awk, not bash integer math (fleet-ops#3679).
+    awk -v cap="$ram_cap" -v act="$active_total" 'BEGIN{ exit !(cap > act) }' || return 1
     local new=$(( eff + 1 ))
     (( new > ceiling )) && new=$ceiling
     _record_learned_cap "$p" "$new" "probe" ""
@@ -1105,7 +1124,9 @@ _model_probe_admitted() {
     ram_cap=$(ram_governor_cap) || ram_cap=0
     [[ "$ram_cap" =~ ^[0-9]+$ ]] || ram_cap=0
     active_total=$(active_ram_charge)
-    (( ram_cap > active_total )) || return 1
+    # active_ram_charge is fractional (per-repo MemoryHigh / fallback), so
+    # compare in awk, not bash integer math (fleet-ops#3679).
+    awk -v cap="$ram_cap" -v act="$active_total" 'BEGIN{ exit !(cap > act) }' || return 1
     local new=$(( eff + 1 ))
     (( new > ceiling )) && new=$ceiling
     _record_learned_cap "$p/$m" "$new" "probe" ""
@@ -1197,6 +1218,45 @@ admit_ceiling() {
     else
         echo "$ram_cap"
     fi
+}
+
+# Convert a systemd memory quantity (1536M, 1G, 1.25G, 2G) to GB (decimal).
+# Prints 0 if the string is not a plain <number><K|M|G> quantity.
+_systemd_quantity_gb() {
+    local q="$1" num unit
+    [[ "$q" =~ ^([0-9]+(\.[0-9]+)?)([KMG])$ ]] || { echo 0; return; }
+    num="${BASH_REMATCH[1]}"
+    unit="${BASH_REMATCH[3]}"
+    case "$unit" in
+        K) awk -v n="$num" 'BEGIN{ printf "%.3f", n/1024/1024 }' ;;
+        M) awk -v n="$num" 'BEGIN{ printf "%.3f", n/1024 }' ;;
+        G) awk -v n="$num" 'BEGIN{ printf "%.3f", n }' ;;
+    esac
+}
+
+# Per-repo RAM charge in GB for a worker of <repo> at <difficulty>.
+# heavy|keystone -> 1.0 GB (fleet-ops#3495). Else the repo's MemoryHigh
+# from worker_memory.<repo> (0509 2.5G, fleet-ops 1.5G), converted to
+# GB. Repos without a row fall back to ram_gb_per_worker (2.0). This is
+# what admission charges each active worker, so a 0509 browser worker
+# consumes its real 2.5 GB share of MemAvailable instead of the flat
+# 2.0 GB (fleet-ops#3679).
+ram_charge_gb_for() {
+    local repo="$1" difficulty="$2" high gb
+    if [[ "$difficulty" == "heavy" || "$difficulty" == "keystone" ]]; then
+        echo "1.0"
+        return
+    fi
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    high=$(jq -r --arg r "$repo" '.worker_memory[$r].MemoryHigh // empty' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    if [[ -n "$high" ]]; then
+        gb=$(_systemd_quantity_gb "$high")
+        if awk -v g="$gb" 'BEGIN{ exit !(g > 0) }'; then
+            echo "$gb"
+            return
+        fi
+    fi
+    echo "$SEAT_RAM_GB_PER_WORKER"
 }
 
 # Per-repo MemoryMax/MemoryHigh from seat-caps.json worker_memory.<repo>.
@@ -1473,6 +1533,32 @@ export_seat_selection_prom() {
     fi
 }
 
+# fleet-ops#3661: reject a provider/model pair that is not a real seat in
+# seat-caps.json (providers.<p>.models.<m>). A phantom key (e.g. a probe
+# output filename fragment like "swe-1-7-.out") must never be written to
+# the ledger, probed, or dispatched. Returns 0 when the pair is a real
+# seat (or the caps file is missing — fail-open so a missing caps file
+# never bricks the ladder); 1 when the pair is not in the caps map.
+_seat_key_in_caps() {
+    local p="$1" m="$2"
+    [[ -f "$SEAT_CAPS_JSON" ]] || return 0
+    jq -e --arg p "$p" --arg m "$m" \
+        '.providers[$p].models[$m] != null' "$SEAT_CAPS_JSON" >/dev/null 2>&1
+}
+
+# fleet-ops#3661: LOUD reject a phantom seat key. Logs the SEAT-KEY-INVALID
+# line naming the writer and returns 1 (so the caller skips the write /
+# probe / dispatch). The writer field is the calling function name so the
+# next phantom names its author.
+_seat_key_guard() {
+    local p="$1" m="$2" writer="$3"
+    if _seat_key_in_caps "$p" "$m"; then
+        return 0
+    fi
+    seat_log "LOUD SEAT-KEY-INVALID $p/$m writer=$writer"
+    return 1
+}
+
 # Mirror of seat-health.ts seatLedgerPath: sanitise provider/model so model
 # ids containing '/' (e.g. deepseek/deepseek-v4-flash) survive on disk.
 seat_ledger_path() {
@@ -1480,6 +1566,153 @@ seat_ledger_path() {
     ps="${p//[^A-Za-z0-9._-]/_}"
     ms="${m//[^A-Za-z0-9._-]/_}"
     printf '%s/%s__%s.json\n' "$LEDGER_DIR" "$ps" "$ms"
+}
+
+# fleet-ops#3723: OpenRouter's free-model request budget is per ACCOUNT, not
+# per key (openrouter.ai/docs/api-reference/limits: "Making additional accounts
+# or API keys will not affect your rate limits, as we govern capacity globally").
+# The documented daily cap (50 req/day with < $10 credits, 1000 with >= $10) is
+# shared across every *:free model on the provider. seat-lib counts assistant
+# turns (each turn = one model request) across the provider's *:free sessions
+# today (UTC) and benches every free model on the provider once the shared
+# counter hits the configured budget, until 00:00 UTC. The bench is NOT charged
+# to the work item: no consecutive_failure_count increment, no yield penalty
+# (it is an account-wide external limit, not a seat fault). Reuses the existing
+# quota_bench/usable_at ledger fields; no new state file.
+#
+# Pi session files live under $FLEET_SESSIONS_DIR (default ~/.pi/agent/sessions)
+# as pi-issue-*/<timestamp>_<id>.jsonl. Each assistant message in a session =
+# one model request. A session's provider/model is the first model_change event.
+# We count only sessions whose model id ends in ":free" on the given provider
+# and whose session timestamp is in the current UTC day.
+#
+# Args: provider
+# Prints: integer request count for today (UTC). 0 on any error (fail-open).
+_provider_free_daily_request_count() {
+    local p="$1"
+    local sessions_dir="${FLEET_SESSIONS_DIR:-$HOME/.pi/agent/sessions}"
+    [[ -d "$sessions_dir" ]] || { printf '0'; return 0; }
+    # Today's UTC date prefix (YYYY-MM-DD). Session timestamps are ISO 8601 UTC
+    # like 2026-09-06T05:11:27.532Z, so a prefix match on the filename's date
+    # is exact and cheap (no per-line parse for the date).
+    local today
+    today=$(date -u +%Y-%m-%d)
+    [[ -n "$today" ]] || { printf '0'; return 0; }
+    # Count assistant messages across every pi-issue session file whose name
+    # starts with today's UTC date. We grep for the provider in model_change
+    # and the :free suffix on the modelId to decide whether the session counts,
+    # then count "role":"assistant" lines in it. A single jq pass per file
+    # would be cleaner but ~hundreds of files per day makes a streaming grep
+    # far cheaper; the assistant-role line is structurally unique per turn.
+    local count=0
+    local f provider model has_free=0
+    while IFS= read -r f; do
+        [[ -n "$f" ]] || continue
+        has_free=0
+        # First model_change with this provider and a :free model id marks the
+        # session as counting. A session is single-provider (pi pins one model),
+        # so the first match is authoritative.
+        while IFS= read -r line; do
+            [[ "$line" == *'"type":"model_change"'* || "$line" == *'"type": "model_change"'* ]] || continue
+            provider=$(printf '%s' "$line" | jq -r '.provider // ""' 2>/dev/null || true)
+            model=$(printf '%s' "$line" | jq -r '.modelId // ""' 2>/dev/null || true)
+            if [[ "$provider" == "$p" && "$model" == *":free" ]]; then
+                has_free=1
+                break
+            fi
+        done < "$f" 2>/dev/null || continue
+        (( has_free )) || continue
+        # Count assistant turns in this session. Each assistant message = one
+        # request to the model. grep -c is a fast byte scan; the role field is
+        # structurally unique per assistant turn.
+        local n
+        n=$(grep -c '"role":"assistant"' "$f" 2>/dev/null || true)
+        [[ "$n" =~ ^[0-9]+$ ]] || n=0
+        count=$((count + n))
+    done < <(find "$sessions_dir" -maxdepth 2 -type f -name "${today}T*.jsonl" 2>/dev/null || true)
+    printf '%s' "$count"
+}
+
+# fleet-ops#3723: bench every free model on a provider for the rest of the
+# UTC day when the shared daily request counter hits the configured budget.
+# Writes a quota_bench ledger entry (reuses the existing fields — no new
+# state file) with bench_until = next 00:00 UTC. NOT charged to the work
+# item: consecutive_failure_count stays at 0 and no yield penalty is applied
+# (the bench writer for daily-budget is separate from mark_seat_quota_bench,
+# which escalates the count). Best-effort: a write failure fails open (the
+# counter re-evaluates next pick).
+# Args: provider model
+_mark_seat_free_daily_budget_bench() {
+    local p="$1" m="$2"
+    local path now_utc now_s midnight_s bench_until
+    path=$(seat_ledger_path "$p" "$m")
+    mkdir -p "$LEDGER_DIR" 2>/dev/null || true
+    now_s=$(date -u +%s)
+    now_utc=$(date -u -d "@$now_s" +%Y-%m-%dT%H:%M:%SZ)
+    # Next 00:00 UTC. If we are exactly at midnight, bench for the full day
+    # (the counter just rolled, so this is defensive; the next pick re-counts).
+    midnight_s=$(date -u -d "$(date -u -d "@$now_s" +%Y-%m-%d) tomorrow" +%s 2>/dev/null || echo $((now_s + 86400)))
+    (( midnight_s <= now_s )) && midnight_s=$((now_s + 86400))
+    bench_until=$(date -u -d "@$midnight_s" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
+    local tmp="$path.bench.$$.$RANDOM.tmp"
+    # consecutive_failure_count is 0 — this is an account-wide external limit,
+    # not a seat fault, so it must NOT escalate the bench or trip the failure
+    # ceiling. The ledger's quota_bench branch in seat_usable holds the seat
+    # until bench_until; once midnight passes the bench expires (fail-open) and
+    # the counter restarts at 0 for the new UTC day.
+    if jq -nc \
+        --arg provider "$p" --arg model "$m" \
+        --arg observed "$now_utc" --arg bench "$bench_until" --arg usable "$bench_until" \
+        --argjson http_status 429 --argjson retry_after null \
+        --argjson retryable true --argjson seat_dead false --argjson poison_ladder false \
+        --argjson count 0 \
+        '{
+          provider:$provider, model:$model,
+          http_status:$http_status, retry_after:$retry_after,
+          health_class:"quota_bench",
+          retryable:$retryable, seat_dead:$seat_dead, poison_ladder:$poison_ladder,
+          observed_at:$observed,
+          source:"free_daily_budget",
+          failure_mode:"quota_cap",
+          bench_until:$bench,
+          usable_at:$usable,
+          consecutive_failure_count:$count
+        }' > "$tmp" 2>/dev/null; then
+        chmod 0644 "$tmp" 2>/dev/null || true
+        if mv "$tmp" "$path" 2>/dev/null; then
+            seat_log "free-daily-budget: benched $p/$m until $bench_until (account-wide free-model daily cap reached; not charged to work item — fleet-ops#3723)"
+            return 0
+        fi
+        rm -f "$tmp" 2>/dev/null || true
+        seat_log "free-daily-budget: ledger rename FAILED for $p/$m — fail-open (counter re-evaluates next pick)"
+        return 1
+    fi
+    rm -f "$tmp" 2>/dev/null || true
+    seat_log "free-daily-budget: jq compose FAILED for $p/$m — marker NOT written"
+    return 1
+}
+
+# fleet-ops#3723: true if the provider has a free-model daily request budget
+# configured AND the shared counter of assistant turns across the provider's
+# *:free sessions today (UTC) has reached it. When true, the caller benches
+# every free model on the provider for the rest of the UTC day. Caches the
+# count per pick (one scan per provider per pick_seat call).
+# Args: provider
+# Returns: 0 if budget reached (bench), 1 otherwise
+_provider_free_daily_budget_reached() {
+    local p="$1"
+    local budget="${SEAT_FREE_DAILY_REQUEST_BUDGET[$p]:-0}"
+    [[ "$budget" =~ ^[0-9]+$ ]] || return 1
+    (( budget > 0 )) || return 1
+    # Per-pick cache so the candidate loop does not re-scan sessions per model.
+    local cache_key="_FRDB_COUNT_$p"
+    local count="${!cache_key:-}"
+    if [[ -z "$count" ]]; then
+        count=$(_provider_free_daily_request_count "$p")
+        [[ "$count" =~ ^[0-9]+$ ]] || count=0
+        printf -v "$cache_key" '%s' "$count"
+    fi
+    (( count >= budget ))
 }
 
 # fleet-ops#1512: separate spawn-fail/empty-run bench marker. The per-seat
@@ -1526,6 +1759,8 @@ _seat_write_spawn_bench() {
     local p="$1" m="$2" usable="$3" reason="$4" backoff="$5"
     local count="${6:-0}" mode="${7:-unknown}"
     local path now_utc tmp
+    # fleet-ops#3661: never write a spawn-bench marker for a phantom seat key.
+    if ! _seat_key_guard "$p" "$m" "_seat_write_spawn_bench"; then return 1; fi
     path=$(seat_spawn_bench_path "$p" "$m")
     [[ "$count" =~ ^[0-9]+$ ]] || count=0
     now_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -1534,9 +1769,10 @@ _seat_write_spawn_bench() {
         --arg provider "$p" --arg model "$m" --arg usable "$usable" \
         --arg reason "$reason" --arg written "$now_utc" --argjson backoff "$backoff" \
         --arg mode "$mode" --argjson count "$count" \
+        --arg writer "_seat_write_spawn_bench" \
         '{provider:$provider, model:$model, usable_at:$usable,
           reason:$reason, written_at:$written, backoff_s:$backoff,
-          failure_mode:$mode, consecutive_failure_count:$count}' \
+          failure_mode:$mode, consecutive_failure_count:$count, writer:$writer}' \
         > "$tmp" 2>/dev/null; then
         chmod 0644 "$tmp" 2>/dev/null || true
         mv "$tmp" "$path" 2>/dev/null || { rm -f "$tmp" 2>/dev/null || true; return 1; }
@@ -2516,16 +2752,48 @@ count_active_heavy() {
     echo "$n"
 }
 
-# Total RAM charge of active workers in light-worker units. Heavy workers
-# (packet difficulty heavy|keystone) are charged at 1.0 GB = 2x the light
-# 0.5 GB, so they count double; org/repair packets stay at 1x. This is what
-# the RAM governor's cap is compared against so heavy workers consume their
-# real 1.0 GB share of MemAvailable (fleet-ops#3281).
+# Total RAM charge of active workers in light-worker units (1 unit = the
+# fallback ram_gb_per_worker). Each issue worker is charged its repo's
+# MemoryHigh (heavy|keystone at 1.0 GB, fleet-ops#3495) divided by the
+# fallback, so a 0509 browser worker (2.5 GB) charges 1.25 units and a
+# fleet-ops worker (1.5 GB) charges 0.75 units instead of the flat 1
+# (fleet-ops#3679). Org/repair packets stay at 1x (capped at org_reserve).
+# This is what the RAM governor's cap is compared against so heavy/browser
+# workers consume their real share of MemAvailable.
 active_ram_charge() {
-    local total heavy
-    total=$(count_active_total)
-    heavy=$(count_active_heavy)
-    echo $(( total + heavy ))
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    local total=0 f unit inst pkt repo diff gb fallback
+    fallback="$SEAT_RAM_GB_PER_WORKER"
+    # Registry pass (new path).
+    while IFS= read -r f; do
+        unit=$(jq -r '.unit // ""' "$f" 2>/dev/null || true)
+        [[ "$unit" == pi-issue-* ]] || continue
+        inst="${unit#pi-issue-}"
+        pkt="$PI_ISSUES_DIR/${inst}.in"
+        repo=$(packet_repo "$pkt" 2>/dev/null || true)
+        diff=$(packet_difficulty "$pkt" 2>/dev/null || true)
+        gb=$(ram_charge_gb_for "$repo" "$diff")
+        total=$(awk -v t="$total" -v g="$gb" -v f="$fallback" 'BEGIN{ printf "%.3f", t + g/f }')
+    done < <(_seat_live_registry_files)
+    # Legacy ExecStart pass (dedup matches count_active_issue).
+    local u
+    while IFS= read -r u; do
+        [[ "$u" == pi-issue@*.service ]] || continue
+        inst="${u#pi-issue@}"; inst="${inst%.service}"
+        [[ -f "$ACTIVE_SEATS_DIR/pi-issue-${inst}.json" ]] && continue
+        pkt="$PI_ISSUES_DIR/${inst}.in"
+        repo=$(packet_repo "$pkt" 2>/dev/null || true)
+        diff=$(packet_difficulty "$pkt" 2>/dev/null || true)
+        gb=$(ram_charge_gb_for "$repo" "$diff")
+        total=$(awk -v t="$total" -v g="$gb" -v f="$fallback" 'BEGIN{ printf "%.3f", t + g/f }')
+    done < <(_seat_list_pi_exec)
+    # Org/repair packets at 1x, capped at org_reserve.
+    local org reserve
+    org=$(count_active_org)
+    reserve=$(org_reserve)
+    (( org > reserve )) && org=$reserve
+    total=$(awk -v t="$total" -v o="$org" 'BEGIN{ printf "%.3f", t + o }')
+    echo "$total"
 }
 
 # Count workers in `activating/auto-restart` across all fleet worker units.
@@ -3346,6 +3614,23 @@ pick_seat() {
             _seat_unusable_sample+=("$p/$m")
             continue
         fi
+        # fleet-ops#3723: per-account free-model daily request budget
+        # (OpenRouter). The budget is shared across every *:free model on the
+        # provider; once today's (UTC) assistant-turn count hits the cap, every
+        # free model on the provider is benched until 00:00 UTC — NOT charged
+        # to the work item (no consecutive_failure_count, no yield penalty).
+        # Only applies to models whose id ends in :free on a provider with a
+        # configured free_model_daily_request_budget. The bench writer is
+        # separate from mark_seat_quota_bench so the count stays at 0 and the
+        # failure ceiling never trips on an account-wide external limit.
+        if [[ "$m" == *":free" ]] \
+            && [[ -n "${SEAT_FREE_DAILY_REQUEST_BUDGET[$p]:-}" ]] \
+            && _provider_free_daily_budget_reached "$p"; then
+            _mark_seat_free_daily_budget_bench "$p" "$m" || true
+            _seat_unusable_n=$((_seat_unusable_n + 1))
+            _seat_unusable_sample+=("$p/$m")
+            continue
+        fi
         # fleet-ops#1379: once a provider is at effective cap for this pick,
         # all of its remaining models share that provider-wide cap. Back off
         # instead of re-running count_active / effective_provider_cap / AIMD
@@ -4123,6 +4408,8 @@ _mark_transport_down() {
 
 mark_seat_spawn_fail() {
     local p="$1" m="$2" reason="${3:-spawn_etimeout}"
+    # fleet-ops#3661: never write a ledger for a phantom seat key.
+    if ! _seat_key_guard "$p" "$m" "mark_seat_spawn_fail"; then return 1; fi
     if _transport_is_down; then _mark_transport_down "$p" "$m"; return 1; fi
     local path
     path=$(seat_ledger_path "$p" "$m")
@@ -4184,6 +4471,7 @@ mark_seat_spawn_fail() {
         --argjson http_status 0 --argjson retry_after null \
         --argjson retryable true --argjson seat_dead false --argjson poison_ladder false \
         --argjson backoff "$backoff" --argjson merged "$merged_count" \
+        --arg writer "mark_seat_spawn_fail" \
         '{
           provider:$provider, model:$model,
           http_status:$http_status, retry_after:$retry_after,
@@ -4195,7 +4483,8 @@ mark_seat_spawn_fail() {
           usable_at:$usable,
           consecutive_failure_count:$merged,
           spawn_fail_reason:$reason,
-          spawn_fail_backoff_s:$backoff
+          spawn_fail_backoff_s:$backoff,
+          writer:$writer
         }' > "$tmp" 2>/dev/null; then
         seat_log "spawn-fail: jq compose FAILED for $p/$m (reason=$reason) — marker NOT written"
         rm -f "$tmp" 2>/dev/null || true
@@ -4328,6 +4617,8 @@ EMPTY_RUN_COUNT_WINDOW_S="${EMPTY_RUN_COUNT_WINDOW_S:-$SEAT_BENCH_GEOMETRIC_CAP_
 
 mark_seat_empty_run() {
     local p="$1" m="$2" reason="${3:-empty_run}"
+    # fleet-ops#3661: never write a ledger for a phantom seat key.
+    if ! _seat_key_guard "$p" "$m" "mark_seat_empty_run"; then return 1; fi
     if _transport_is_down; then _mark_transport_down "$p" "$m"; return 1; fi
     local path
     path=$(seat_ledger_path "$p" "$m")
@@ -4399,6 +4690,7 @@ mark_seat_empty_run() {
         --argjson http_status 200 --argjson retry_after null \
         --argjson retryable true --argjson seat_dead false --argjson poison_ladder false \
         --argjson backoff "$backoff" --argjson merged "$merged_count" \
+        --arg writer "mark_seat_empty_run" \
         '{
           provider:$provider, model:$model,
           http_status:$http_status, retry_after:$retry_after,
@@ -4410,7 +4702,8 @@ mark_seat_empty_run() {
           usable_at:$usable,
           consecutive_failure_count:$merged,
           empty_run_reason:$reason,
-          empty_run_backoff_s:$backoff
+          empty_run_backoff_s:$backoff,
+          writer:$writer
         }' > "$tmp" 2>/dev/null; then
         seat_log "empty-run: jq compose FAILED for $p/$m (reason=$reason) — marker NOT written"
         rm -f "$tmp" 2>/dev/null || true
@@ -4674,6 +4967,8 @@ is_quota_cap_error() {
 # jq/rename failure).
 mark_seat_quota_bench() {
     local p="$1" m="$2" text="${3:-}"
+    # fleet-ops#3661: never write a ledger for a phantom seat key.
+    if ! _seat_key_guard "$p" "$m" "mark_seat_quota_bench"; then return 1; fi
     if _transport_is_down; then _mark_transport_down "$p" "$m"; return 1; fi
     local path
     path=$(seat_ledger_path "$p" "$m")
@@ -4749,6 +5044,7 @@ mark_seat_quota_bench() {
         --argjson window "$window_s" --argjson merged "$merged_count" \
         --argjson http_status 429 --argjson retry_after null \
         --argjson retryable true --argjson seat_dead "$seat_dead" --argjson poison_ladder false \
+        --arg writer "mark_seat_quota_bench" \
         '{
           provider:$provider, model:$model,
           http_status:$http_status, retry_after:$retry_after,
@@ -4760,7 +5056,8 @@ mark_seat_quota_bench() {
           bench_until:$bench,
           usable_at:$usable,
           bench_window_s:$window,
-          consecutive_failure_count:$merged
+          consecutive_failure_count:$merged,
+          writer:$writer
         }' > "$tmp" 2>/dev/null; then
         seat_log "quota-bench: jq compose FAILED for $p/$m — marker NOT written"
         rm -f "$tmp" 2>/dev/null || true
@@ -4798,6 +5095,8 @@ mark_seat_quota_bench() {
 write_parked_ledger() {
     local p="$1" m="$2" reason="${3:-corpse-retired}"
     local path now_utc now_s far_future tmp
+    # fleet-ops#3661: never write a ledger for a phantom seat key.
+    if ! _seat_key_guard "$p" "$m" "write_parked_ledger"; then return 1; fi
     path=$(seat_ledger_path "$p" "$m")
     mkdir -p "$LEDGER_DIR" 2>/dev/null || true
     now_s=$(date -u +%s)
@@ -4820,7 +5119,8 @@ write_parked_ledger() {
           failure_mode:"corpse_retired",
           bench_until:$usable,
           usable_at:$usable,
-          consecutive_failure_count:0
+          consecutive_failure_count:0,
+          writer:"write_parked_ledger"
         }' > "$tmp" 2>/dev/null; then
         seat_log "parked-ledger: jq compose FAILED for $p/$m — parked ledger NOT written"
         rm -f "$tmp" 2>/dev/null || true
@@ -4908,6 +5208,8 @@ is_overload_error() {
 # jq/rename failure).
 mark_seat_overload_bench() {
     local p="$1" m="$2" text="${3:-}"
+    # fleet-ops#3661: never write a ledger for a phantom seat key.
+    if ! _seat_key_guard "$p" "$m" "mark_seat_overload_bench"; then return 1; fi
     if _transport_is_down; then _mark_transport_down "$p" "$m"; return 1; fi
     local path
     path=$(seat_ledger_path "$p" "$m")
@@ -4960,6 +5262,7 @@ mark_seat_overload_bench() {
         --argjson window "$window_s" --argjson merged "$merged_count" \
         --argjson http_status 503 --argjson retry_after null \
         --argjson retryable true --argjson seat_dead "$prev_dead" --argjson poison_ladder false \
+        --arg writer "mark_seat_overload_bench" \
         '{
           provider:$provider, model:$model,
           http_status:$http_status, retry_after:$retry_after,
@@ -4971,7 +5274,8 @@ mark_seat_overload_bench() {
           bench_until:$bench,
           usable_at:$usable,
           bench_window_s:$window,
-          consecutive_failure_count:$merged
+          consecutive_failure_count:$merged,
+          writer:$writer
         }' > "$tmp" 2>/dev/null; then
         seat_log "overload-bench: jq compose FAILED for $p/$m — marker NOT written"
         rm -f "$tmp" 2>/dev/null || true
@@ -5012,6 +5316,8 @@ mark_seat_overload_bench() {
 # "retry after Ns" or "resets in N" window we use it.
 mark_seat_hang_bench() {
     local p="$1" m="$2" text="${3:-}"
+    # fleet-ops#3661: never write a ledger for a phantom seat key.
+    if ! _seat_key_guard "$p" "$m" "mark_seat_hang_bench"; then return 1; fi
     if _transport_is_down; then _mark_transport_down "$p" "$m"; return 1; fi
     local path
     path=$(seat_ledger_path "$p" "$m")
@@ -5043,6 +5349,7 @@ mark_seat_hang_bench() {
     if ! jq -nc \
         --arg provider "$p" --arg model "$m" --arg observed "$now_utc" --arg bench_until "$bench_until" \
         --argjson window_s "$window_s" --argjson merged "$merged_count" \
+        --arg writer "mark_seat_hang_bench" \
         '{
           provider:$provider, model:$model,
           http_status:0, retry_after:null,
@@ -5053,7 +5360,8 @@ mark_seat_hang_bench() {
           failure_mode:"hang_no_response",
           bench_until:$bench_until,
           hang_window_s:$window_s,
-          consecutive_failure_count:$merged
+          consecutive_failure_count:$merged,
+          writer:$writer
         }' > "$tmp" 2>/dev/null; then
         seat_log "hang-bench: jq compose FAILED for $p/$m — marker NOT written"
         rm -f "$tmp" 2>/dev/null || true
