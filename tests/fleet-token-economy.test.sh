@@ -13,7 +13,7 @@
 #   - scout/canary/audit picks keep leftover free lanes
 #     (commandcode/hetzner/opencode) before prepaid; metered
 #     (minimax/straitly/...) last
-#   - devin provider floor 4 probes to 8 (AIMD); glm-5-2 floor 3 / ceiling 6,
+#   - devin provider floor 4, probe ceilings pinned == caps until #3258 (fleet-ops#3443); glm-5-2 floor 3 / ceiling 3,
 #     swe-1-7 floor 4 / ceiling 8
 #   - grok (the legacy grok.com/CLI slug) is cap=0 with a dated reason
 #   - opencode-anthropic (Claude) is cap=0 (Nish-only)
@@ -51,17 +51,26 @@ fi
 devin_hard=$(jq -r '.providers.devin.hard_ceiling // false' "$caps")
 [[ "$devin_hard" == "false" ]] || fail "devin hard_ceiling must be false/absent (fleet-ops#3125), got: $devin_hard"
 
+# fleet-ops#3443 (2026-09-05): probe ceilings 6/8 put 8 devin sessions in
+# flight and Devin answered resource_exhausted on every new one, so until
+# fleet-ops#3258 lifts the pin with evidence every devin probe ceiling equals
+# its declared cap (provider and model). hard_ceiling stays absent (#3125).
 devin_probe=$(jq -r '.providers.devin.max_probe_ceiling // empty' "$caps")
-[[ "$devin_probe" == "8" ]] || fail "devin max_probe_ceiling must be 8 (fleet-ops#3125), got: $devin_probe"
+[[ "$devin_probe" == "$(jq -r '.providers.devin.cap' "$caps")" ]] \
+  || fail "devin max_probe_ceiling must equal its cap while pinned (fleet-ops#3443, lift via #3258), got: $devin_probe"
 
 glm52=$(jq -r '.providers.devin.models["glm-5-2"]' "$caps")
 [[ "$(jq -r '.cap' <<<"$glm52")" == "3" ]] || fail "glm-5-2 declared cap must be 3"
-[[ "$(jq -r '.max_probe_ceiling' <<<"$glm52")" == "6" ]] || fail "glm-5-2 max_probe_ceiling must be 6 (probe to 6)"
+[[ "$(jq -r '.max_probe_ceiling' <<<"$glm52")" == "$(jq -r '.cap' <<<"$glm52")" ]] \
+  || fail "glm-5-2 max_probe_ceiling must equal its cap while pinned (fleet-ops#3443)"
 swe17=$(jq -r '.providers.devin.models["swe-1-7"]' "$caps")
-[[ "$(jq -r '.cap' <<<"$swe17")" == "4" ]] || fail "swe-1-7 declared cap must be 4"
-[[ "$(jq -r '.max_probe_ceiling' <<<"$swe17")" == "8" ]] || fail "swe-1-7 max_probe_ceiling must be 8 (probe to 8)"
+# fleet-ops#3473 (2026-09-05): swe-1-7 retired to cap 0 (0 PRs in 20 sessions,
+# 57 deaths in 3h); re-audition with a real packet after the 14d TTL (#3258).
+[[ "$(jq -r '.cap' <<<"$swe17")" == "0" ]] || fail "swe-1-7 declared cap must be 0 (fleet-ops#3473 zero-yield retirement; re-audition via #3258)"
+[[ "$(jq -r '.intentional_cap_zero // empty' <<<"$swe17")" != "" ]] || fail "swe-1-7 cap 0 must carry intentional_cap_zero (fleet-ops#3473)"
+[[ "$(jq -r '.max_probe_ceiling' <<<"$swe17")" == "0" ]] || fail "swe-1-7 max_probe_ceiling must be 0 while retired (fleet-ops#3473)"
 
-ok "product_order=yield, volume order retired, devin AIMD (provider 8 / glm-5-2 6 / swe-1-7 8)"
+ok "product_order=yield, volume order retired, devin AIMD not hard_ceiling with probe ceilings pinned == caps (provider 4 / glm-5-2 3 / swe-1-7 0; fleet-ops#3443/#3473, lift via #3258)"
 
 # --- prepaid order, then leftover prepaid after (fleet-ops#1178/#3125) ----
 prepaid_order=$(jq -r '.prepaid_providers_in_order | join(" ")' "$caps")

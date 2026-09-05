@@ -222,6 +222,7 @@ jobs:
         # skips for 15min, stale claims with no live worker/PR are released).
         bash tests/pi-issue-failed-reap-cooldown.test.sh
         bash tests/pi-intake-tick-reclaim-cooldown.test.sh
+        bash tests/pi-intake-tick-difficulty-from-issue.test.sh
         bash tests/repair-rotation.test.sh
         bash tests/alert-repair-seat-walled.test.sh
         bash tests/alert-repair-class-park-skip.test.sh
@@ -289,3 +290,4 @@ jobs:
         bash tests/fleet-rules-severity-page.test.sh
         bash tests/stop-escalation-writer-class-gate.test.sh
         bash tests/phone-chokepoint.test.sh
+        bash tests/scout-effectiveness-multirepo.test.sh
