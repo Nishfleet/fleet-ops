@@ -80,8 +80,10 @@ ok "2b: worker_memory_for_difficulty returns heavy class for heavy|keystone"
 scratch=$(mktemp -d -t wmem.XXXXXX)
 trap 'rm -rf "$scratch"' EXIT
 
-# --- 2c. RAM governor charges heavy workers at 1.0 GB (fleet-ops#3281) ------
-# active_ram_charge must count a heavy worker double (1.0 GB = 2x light 0.5 GB).
+# --- 2c. RAM governor charges per-repo MemoryHigh / fallback (fleet-ops#3679) ------
+# active_ram_charge must sum each worker's repo MemoryHigh (GB) divided by
+# ram_gb_per_worker (2.0). A heavy worker is charged 1.0/2.0 = 0.5 units;
+# a fleet-ops light worker is charged 1536M/2.0 = 0.75 units.
 # Run in a subshell with a scratch PI_PACKET_STATE + PI_ISSUES_DIR so the
 # active-seats registry and packet are read from scratch, not the live host.
 (
@@ -99,9 +101,10 @@ trap 'rm -rf "$scratch"' EXIT
     heavy=$(count_active_heavy)
     [[ "$heavy" == "1" ]] || fail "count_active_heavy want 1 got '$heavy'"
     charge=$(active_ram_charge)
-    # 2 issue workers (1 heavy + 1 light) -> 1 + 2 = 3 light-worker units.
-    [[ "$charge" == "3" ]] || fail "active_ram_charge want 3 (1 light + 2 heavy) got '$charge'"
-    ok "2c: active_ram_charge charges heavy workers at 1.0 GB (double)"
+    # 2 issue workers (1 heavy + 1 light fleet-ops): heavy 1.0/2.0=0.5,
+    # fleet-ops 1536M/2.0=0.75, total 1.25 units.
+    [[ "$charge" == "1.250" ]] || fail "active_ram_charge want 1.250 (0.5 heavy + 0.75 fleet-ops) got '$charge'"
+    ok "2c: active_ram_charge charges per-repo MemoryHigh / fallback"
 )
 
 # --- 3. admit_ceiling / target_concurrent ----------------------------------
