@@ -244,6 +244,22 @@ grep -q 'double-wire' <<<"$env_out" || fail "scenario8: must name double-wire ($
 grep -q 'issue create' "$gh_log" || fail "scenario8: must auto-file"
 ok "scenario8: deepseek/deepseek-v4-pro on a second provider fails loud"
 
+# --- 8b. same slug on a FREE-class provider is not a double-wired meter --------
+: >"$gh_log"; : >"$triage"
+write_caps <<'JSON'
+{
+  "providers": {
+    "straitly": { "cap": 2, "class": "metered", "models": { "deepseek/deepseek-v4-pro": 2 } },
+    "xkiro": { "cap": 3, "class": "free", "models": { "deepseek/deepseek-v4-pro": 1 } }
+  }
+}
+JSON
+base_models; base_catalog
+run_canary
+[[ "$env_rc" == "0" ]] || fail "scenario8b: a free-class provider carrying the slug must pass, got rc=$env_rc ($env_out)"
+grep -q 'VIOLATION.*double-wire' <<<"$env_out" && fail "scenario8b: free seat must not be called a double-wire ($env_out)"
+ok "scenario8b: deepseek/deepseek-v4-pro on a free-class seat is not a double-wire"
+
 # --- 9. models.json missing the slug -----------------------------------------
 : >"$gh_log"; : >"$triage"
 base_caps; base_catalog
