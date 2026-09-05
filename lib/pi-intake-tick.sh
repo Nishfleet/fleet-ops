@@ -390,6 +390,29 @@ d1_gate_integrity_needed() {
     return 1
 }
 
+# fleet-ops#3120/#3238 (2026-09-05): difficulty comes from the ISSUE, never from
+# the packet size. The packet is worker.md (~32 KB) + a TARGET line, so
+# seat-lib's task_weight fallback (HEAVY_PKT_BYTES=8192) classified EVERY issue
+# heavy and routed all work to the small capable pool while ollama and the free
+# seats sat idle. Rules: keystone label/title -> keystone; label heavy, or body
+# > DIFFICULTY_HEAVY_BODY_BYTES, or more than DIFFICULTY_HEAVY_REQUIRED
+# `- required:` lines -> heavy; else light. Emitted as the packet's first line,
+# which packet_difficulty already honours.
+DIFFICULTY_HEAVY_BODY_BYTES="${PI_INTAKE_DIFFICULTY_HEAVY_BODY_BYTES:-6000}"
+DIFFICULTY_HEAVY_REQUIRED="${PI_INTAKE_DIFFICULTY_HEAVY_REQUIRED:-2}"
+issue_difficulty() {
+    local labels_json="$1" title="$2" body="$3" lowered bytes req
+    lowered="${title,,} ${labels_json,,}"
+    if [[ "$lowered" == *keystone* ]]; then echo "keystone"; return; fi
+    if [[ "$labels_json" == *'"heavy"'* ]]; then echo "heavy"; return; fi
+    bytes=$(printf '%s' "$body" | wc -c); bytes=${bytes//[^0-9]/}
+    req=$(printf '%s\n' "$body" | grep -ciE '^[[:space:]]*-[[:space:]]*required[^:]*:' || true)
+    if (( ${bytes:-0} > DIFFICULTY_HEAVY_BODY_BYTES )) || (( ${req:-0} > DIFFICULTY_HEAVY_REQUIRED )); then
+        echo "heavy"; return
+    fi
+    echo "light"
+}
+
 geo_aeo_needed() {
     # $1 = labels JSON array (from gh issue list --json labels), e.g.
     # [{"name":"agent-ready",...},{"name":"geo",...}]. Returns 0 when any
@@ -940,6 +963,7 @@ blocked-on: nish-decision" 2>/dev/null || true
     # keystone marker in pi-issue-start).
     packet_path="$ISSUE_STATE_DIR/${REPO}-${N}.in"
     {
+        echo "difficulty: $(issue_difficulty "${labels[$i]}" "$title" "$body")"
         cat "$WORKER_PROMPT"
         if d1_gate_integrity_needed "$body" \
             && [[ -f "$WORKER_BLOCKS_DIR/$D1_GATE_INTEGRITY_BLOCK" ]]; then

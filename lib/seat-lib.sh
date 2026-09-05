@@ -1226,6 +1226,11 @@ task_weight() {
     fi
     sz=$(wc -c < "$pkt" 2>/dev/null || echo 0)
     sz=${sz//[^0-9]/}; sz=${sz:-0}
+    # fleet-ops#3238 (2026-09-05): the packet carries the whole worker prompt
+    # (~32 KB); subtract it so the fallback measures the issue-specific part.
+    local base="${PI_PACKET_BASE_PROMPT:-$HOME/.pi/agent/prompts/worker.md}" bsz=0
+    if [[ -f "$base" ]]; then bsz=$(wc -c < "$base" 2>/dev/null || echo 0); bsz=${bsz//[^0-9]/}; fi
+    (( sz > ${bsz:-0} )) && sz=$((sz - bsz))
     if (( sz > HEAVY_PKT_BYTES )); then
         echo "heavy"; return
     fi
