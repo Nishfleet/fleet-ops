@@ -38,14 +38,14 @@ spec_gate_py() {
 }
 
 issue_passes_spec_gate() {
-    local body="$1"
+    local body="$1" repo="$2"
     local py
     py=$(spec_gate_py)
     if [ ! -f "$py" ]; then
         log "SPEC-GATE missing at $py — refuse agent-ready (fail closed)"
         return 1
     fi
-    printf '%s' "$body" | python3 "$py" check-body >/dev/null
+    printf '%s' "$body" | python3 "$py" check-body --repo "$repo" >/dev/null
 }
 
 # fleet-ops#3121: keyword-only compliance is not a judgement. A PASS reason
@@ -122,7 +122,7 @@ main() {
         fi
         issue_json=$("$GH" issue view "$candidate" -R "Nishfleet/$repo" --json body 2>/dev/null || true)
         issue_body=$(printf '%s' "$issue_json" | jq -r '.body // empty')
-        if ! issue_passes_spec_gate "$issue_body"; then
+        if ! issue_passes_spec_gate "$issue_body" "$repo"; then
             log "$repo/#$candidate SPEC-GATE-REFUSED (2-of-3 PASS but no spec)"
             if [ "$DRY_RUN" = "1" ]; then
                 log "DRY-RUN: would refuse agent-ready for $repo/#$candidate (no spec)"
