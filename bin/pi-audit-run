@@ -567,7 +567,7 @@ main() {
 
     if [ -z "$verdict" ]; then
         log "auditor output did not contain a PASS/FAIL verdict"
-        write_vote "$repo" "$candidate" "$role" "SKIP" "auditor output had no PASS/FAIL verdict on $provider/$model; retry next tick"; exit 0  # 2026-09-05: a non-answer is a SKIP vote, not a dead unit (the 50-failed-audit storm shape)
+        exit 1
     fi
     if [ -z "$reason" ]; then
         log "auditor output did not contain a reason"

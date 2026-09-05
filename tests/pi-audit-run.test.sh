@@ -465,7 +465,7 @@ jq -n \
 export AUDIT_STATE_DIR="$state_dir"
 export PI_SEAT_HEALTH_LEDGER_DIR="$seat_health_dir"
 set +e
-PI_PACKET_SEAT_LIB="$quota_lib" \
+PI_PACKET_SEAT_LIB="$quota_lib" PI_RESPONSE=$'PASS\nNot a duplicate of any open issue; advances the north-star (fallback auditor on the senior ladder).' \
   bash "$bin" 'demo--99--straitly' >"$scratch/scenario9.out" 2>"$scratch/scenario9.err"
 rc9=$?
 set -e
@@ -474,13 +474,12 @@ unset PI_SEAT_HEALTH_LEDGER_DIR
 
 [[ "$rc9" == 0 ]] || fail "scenario9: walled straitly must resolve to the senior fallback and exit 0, got $rc9 ($(cat "$scratch/scenario9.err"))"
 [[ -f "$state_dir/demo/99/straitly.vote" ]] \
-  || fail "scenario9: SKIP vote must be written ($(cat "$scratch/scenario9.err"))"
-[[ $(jq -r '.verdict' "$state_dir/demo/99/straitly.vote") == 'SKIP' ]] \
-  || fail "scenario9: verdict must be SKIP, got $(jq -r '.verdict' "$state_dir/demo/99/straitly.vote")"
+  || fail "scenario9: a vote must be written by the fallback auditor ($(cat "$scratch/scenario9.err"))"
+[[ $(jq -r '.verdict' "$state_dir/demo/99/straitly.vote") == 'PASS' ]] \
+  || fail "scenario9: the fallback auditor's PASS must be recorded, got $(jq -r '.verdict' "$state_dir/demo/99/straitly.vote")"
 # fleet-ops#3121 (senior ladder): a walled straitly role resolves to the first
 # usable senior seat instead of stalling the panel. pi IS called — on the
-# fallback, never on a quota_exhausted straitly seat — and an auditor that
-# returns no PASS/FAIL line yields a SKIP vote (not a dead unit).
+# fallback, never on a quota_exhausted straitly seat — and its verdict counts.
 grep -q 'cursor' "$calls" 2>/dev/null || fail "scenario9: pi must run on the senior fallback seat (calls=$(cat "$calls" 2>/dev/null))"
 ! grep -q 'straitly' "$calls" 2>/dev/null || fail "scenario9: pi must NOT be called on a quota_exhausted straitly seat (calls=$(cat "$calls"))"
 [[ $(jq -r '.observed_at' "$seat_health_dir/straitly__deepseek_deepseek-v4-pro.json") == "$deepseek_observed" ]] \
