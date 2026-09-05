@@ -421,7 +421,10 @@ ok "scenario8: fully-walled lane exits 0, writes NO vote, calls no pi (candidate
 #              (fleet-ops#3351 sibling of #3176).
 # seat_usable fail-opens a 402 once usable_at passes. The auditor must not
 # call that seat and re-anchor observed_at / restart the 1h provider window.
-# Two straitly 402s with usable_at in the past; resolve_seat picks the default
+# Two straitly 402s with usable_at in the past. Since fleet-ops#3121 (#3387)
+# the straitly role resolves through the senior ladder (AUDIT_SENIOR_ORDER,
+# first usable seat wins, cursor by default), so the ladder is pinned to the
+# two straitly seats this scenario writes ledgers for: resolve_seat picks
 # deepseek, seat_health_ok_for_call reads the ledger and writes SKIP, and pi
 # is never invoked.
 # -----------------------------------------------------------------------------
@@ -465,6 +468,7 @@ jq -n \
 export AUDIT_STATE_DIR="$state_dir"
 export PI_SEAT_HEALTH_LEDGER_DIR="$seat_health_dir"
 set +e
+AUDIT_SENIOR_ORDER='straitly/deepseek/deepseek-v4-pro straitly/gpt-5.6-sol' \
 PI_PACKET_SEAT_LIB="$quota_lib" \
   bash "$bin" 'demo--99--straitly' >"$scratch/scenario9.out" 2>"$scratch/scenario9.err"
 rc9=$?
