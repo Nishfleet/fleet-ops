@@ -494,6 +494,8 @@ m._standalone_pi_print_count = lambda u: 0
 m._maintenance_quiescing = lambda: 0
 m._keystone_routing_counts = lambda: (0, 0, None)
 m._ping_healthcheck = lambda: None
+m._fetch_openrouter_credits = lambda: None
+m._fetch_xkiro_usage = lambda: None
 m._GH_FETCHED_THIS_RUN = False
 
 rc = m.main()
@@ -600,6 +602,8 @@ m._keystone_routing_counts = lambda: (0, 0, None)
 m._gh_rate_limit = lambda: None
 m._read_dead_credentials = lambda: (0, [])
 m._ping_healthcheck = lambda: None
+m._fetch_openrouter_credits = lambda: None
+m._fetch_xkiro_usage = lambda: None
 m._GH_FETCHED_THIS_RUN = False
 
 rc = m.main()
@@ -682,6 +686,8 @@ m._keystone_routing_counts = lambda: (0, 0, None)
 m._gh_rate_limit = lambda: None
 m._read_dead_credentials = lambda: (0, [])
 m._ping_healthcheck = lambda: None
+m._fetch_openrouter_credits = lambda: None
+m._fetch_xkiro_usage = lambda: None
 m._GH_FETCHED_THIS_RUN = False
 
 rc = m.main()
@@ -740,6 +746,8 @@ m._keystone_routing_counts = lambda: (0, 0, None)
 m._gh_rate_limit = lambda: None
 m._read_dead_credentials = lambda: (0, [])
 m._ping_healthcheck = lambda: None
+m._fetch_openrouter_credits = lambda: None
+m._fetch_xkiro_usage = lambda: None
 m._GH_FETCHED_THIS_RUN = False
 
 rc = m.main()
@@ -1084,6 +1092,8 @@ m._read_comeback_overdue = lambda: (0, [])
 m._read_never_released = lambda: (0, [])
 m._read_provider_quota_exhausted = lambda: (0, [])
 m._ping_healthcheck = lambda: None
+m._fetch_openrouter_credits = lambda: None
+m._fetch_xkiro_usage = lambda: None
 m._GH_FETCHED_THIS_RUN = False
 rc = m.main()
 assert rc == 0, f"main rc={rc}"
@@ -2026,3 +2036,192 @@ print("OK: Prometheus-unavailable PR is left unevaluated, not filed, not recorde
 PY
 
 ok "fleet-ops#3124 part 4/4: week-later revert-candidate check pinned"
+
+# =========================================================================
+# 18. fleet-ops#3283: seat spend and metered provider balances.
+#     Spend is summed from pi session usage.cost per message, per provider,
+#     per UTC day. OpenRouter and xKiro balances are fetched from their
+#     vendor endpoints when a key is available.
+# =========================================================================
+
+# --- Pure helpers: _day_from_iso, _parse_session_file_for_cost, _compute_spend
+python3 - "$exporter" <<'PY' || fail "3283 spend helpers failed"
+import importlib.util, json, tempfile, os, sys
+from pathlib import Path
+exporter = sys.argv[1]
+spec = importlib.util.spec_from_file_location("fme", exporter)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+
+# _day_from_iso
+assert m._day_from_iso("2026-09-04T07:32:18.303Z") == "2026-09-04"
+assert m._day_from_iso("2026-09-04T23:59:59.000Z") == "2026-09-04"
+assert m._day_from_iso("") is None
+assert m._day_from_iso("not-a-date") is None
+print("OK: _day_from_iso extracts UTC day")
+
+# _parse_session_file_for_cost
+# Real pi session jsonl carries provider ONLY on model_change lines, never on
+# messages. The parser must track it across the file; messages without a
+# provider key must still be attributed. Pin that real shape here.
+td = Path(tempfile.mkdtemp())
+session = td / "2026-09-04T12-00-00Z_s.jsonl"
+session.write_text(
+    json.dumps({"type": "session", "id": "s", "timestamp": "2026-09-04T12:00:00Z"}) + "\n"
+    + json.dumps({"type": "model_change", "provider": "openrouter", "modelId": "x"}) + "\n"
+    + json.dumps({"type": "message", "timestamp": "2026-09-04T12:01:00Z",
+                  "message": {"role": "assistant", "usage": {"cost": {"total": 0.123}}}}) + "\n"
+    + json.dumps({"type": "message", "timestamp": "2026-09-04T12:02:00Z",
+                  "message": {"role": "assistant", "usage": {"cost": {"total": 0.456}}}}) + "\n"
+    + json.dumps({"type": "model_change", "provider": "minimax", "modelId": "y"}) + "\n"
+    + json.dumps({"type": "message", "timestamp": "2026-09-04T12:03:00Z",
+                  "message": {"role": "assistant", "usage": {"cost": {"total": 0.111}}}}) + "\n"
+    + json.dumps({"type": "model_change", "provider": "xkiro", "modelId": "z"}) + "\n"
+    + json.dumps({"type": "message", "timestamp": "2026-09-04T12:04:00Z",
+                  "message": {"role": "assistant", "usage": {"cost": {"total": 0}}}}) + "\n"
+    + json.dumps({"type": "message", "timestamp": "2026-09-05T00:01:00Z",
+                  "message": {"role": "assistant", "usage": {"cost": {"total": 0.789}}}}) + "\n"
+    + json.dumps({"type": "message", "message": {"role": "user", "content": "hi"},
+                  "timestamp": "2026-09-04T12:05:00Z"}) + "\n"
+    + "{not json\n"
+)
+spend = m._parse_session_file_for_cost(session)
+assert spend == {"openrouter": {"2026-09-04": 0.579}, "minimax": {"2026-09-04": 0.111}, "xkiro": {"2026-09-05": 0.789}}, spend
+print("OK: _parse_session_file_for_cost attributes provider via model_change; ignores zero/no-usage/malformed")
+
+# _compute_spend with mtime cache
+sd = td / "sessions" / "pi-issue-fleet-ops-3283"
+sd.mkdir(parents=True)
+(session).rename(sd / "2026-09-04T12-00-00Z_s.jsonl")
+m.SESSIONS_DIR = sd.parent
+m.SPEND_CACHE = td / "spend-cache.json"
+spend = m._compute_spend()
+assert spend == {"openrouter": {"2026-09-04": 0.579}, "minimax": {"2026-09-04": 0.111}, "xkiro": {"2026-09-05": 0.789}}, spend
+# second run: cached by mtime, same result
+spend2 = m._compute_spend()
+assert spend2 == spend, spend2
+print("OK: _compute_spend scans sessions and caches by mtime")
+
+# _read_env_key
+env_file = td / ".env"
+env_file.write_text("# comment\nXKIRO_API_KEY=secret123\nOPENROUTER_API_KEY=or456\n")
+assert m._read_env_key(env_file, ("XKIRO_API_KEY", "API_KEY")) == "secret123"
+assert m._read_env_key(env_file, ("OPENROUTER_API_KEY",)) == "or456"
+assert m._read_env_key(td / "missing.env", ("XKIRO_API_KEY",)) is None
+print("OK: _read_env_key resolves dotenv keys")
+PY
+
+# --- main() emission with stubbed vendor fetches
+SPEND_SCRATCH="$scratch/spend-3283"
+mkdir -p "$SPEND_SCRATCH"
+SPEND_OUT="$SPEND_SCRATCH/fleet.prom"
+python3 - "$exporter" "$SPEND_OUT" "$SPEND_SCRATCH" <<'PY' || fail "3283 main() emission failed"
+import importlib.util, json, os, sys, tempfile
+from pathlib import Path
+exporter, out_path, scratch = sys.argv[1:4]
+spec = importlib.util.spec_from_file_location("fme", exporter)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+
+sd = Path(scratch) / "sessions" / "pi-issue-fleet-ops-3283"
+sd.mkdir(parents=True)
+(sd / "2026-09-04T12-00-00Z_s.jsonl").write_text(
+    json.dumps({"type": "session", "id": "s", "timestamp": "2026-09-04T12:00:00Z"}) + "\n"
+    + json.dumps({"type": "model_change", "provider": "openrouter", "modelId": "x"}) + "\n"
+    + json.dumps({"type": "message", "timestamp": "2026-09-04T12:01:00Z",
+                  "message": {"role": "assistant", "usage": {"cost": {"total": 0.123}}}}) + "\n"
+    + json.dumps({"type": "model_change", "provider": "minimax", "modelId": "y"}) + "\n"
+    + json.dumps({"type": "message", "timestamp": "2026-09-04T12:02:00Z",
+                  "message": {"role": "assistant", "usage": {"cost": {"total": 0.456}}}}) + "\n"
+)
+
+m.OUT = Path(out_path)
+m.PR_CACHE_DIR = Path(scratch) / "cache"
+m.PR_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+m.SESSIONS_DIR = sd.parent
+m.SELF_MAINT_JSON_DEFAULT = Path("/nonexistent/sm.json")
+m.SELF_MAINT_JSON_FALLBACK = Path("/nonexistent/fb.json")
+m.SEAT_HEALTH = Path("/nonexistent/seat.json")
+m.SEAT_LEDGER = Path("/nonexistent/seatdb")
+m.SEAT_CAPS_DEFAULT = Path("/nonexistent/sc.json")
+m.SEAT_CAPS_FALLBACK = Path("/nonexistent/sc2.json")
+m.HC_URL_FILE = Path("/nonexistent/hc.url")
+m.ACTIONS_LOG = Path("/nonexistent/actions.log")
+m.MAINTENANCE_FLAG = Path("/nonexistent/maint.json")
+m.INTAKE_JSON_DEFAULT = Path("/nonexistent/intake.json")
+m.INTAKE_JSON_FALLBACK = Path("/nonexistent/intake2.json")
+m.KEYSTONE_LEDGER = Path("/nonexistent/keystone.jsonl")
+m.STALENESS_CACHE = Path("/nonexistent/stale.json")
+m.DETAIL_CACHE = m.PR_CACHE_DIR / "detail.cache.json"
+m.OPENROUTER_BALANCE_CACHE = m.PR_CACHE_DIR / "openrouter-balance.json"
+m.XKIRO_BALANCE_CACHE = m.PR_CACHE_DIR / "xkiro-balance.json"
+
+m._list_timers = lambda: [{"unit": "fleet-metrics-export.timer", "last_usec": 0}]
+m._timer_active = lambda unit: 1
+m._read_seat = lambda: (1, 0)
+m._merged_prs_detail = lambda: None
+m._repo_snapshot = lambda: None
+m._queue_composition = lambda: {
+    "ready-work": {"total": 5, "self": 1},
+    "agent-ready": {"total": 6, "self": 2},
+}
+m._escalations_24h = lambda: {}
+m._repair_log_counts_24h = lambda: (0, 0)
+m._worker_units = lambda: []
+m._standalone_pi_print_count = lambda u: 0
+m._maintenance_quiescing = lambda: 0
+m._keystone_routing_counts = lambda: (0, 0, None)
+m._ping_healthcheck = lambda: None
+m._fetch_openrouter_credits = lambda: None
+m._fetch_xkiro_usage = lambda: None
+m._gh_rate_limit = lambda: None
+m._read_dead_credentials = lambda: (0, [])
+m._fetch_openrouter_credits = lambda: 6.95
+m._fetch_xkiro_usage = lambda: (999999, 0.0, 0.0)
+m._VENDOR_BALANCE_FETCHED = set()
+
+rc = m.main()
+assert rc == 0, f"main rc={rc}"
+body = Path(out_path).read_text()
+
+assert '# HELP fleet_seat_spend_usd' in body, body
+assert '# TYPE fleet_seat_spend_usd gauge' in body, body
+assert 'fleet_seat_spend_usd{provider="openrouter",day="2026-09-04"} 0.123000' in body, body
+assert 'fleet_seat_spend_usd{provider="minimax",day="2026-09-04"} 0.456000' in body, body
+
+assert '# HELP fleet_seat_credits_remaining_usd' in body, body
+assert '# TYPE fleet_seat_credits_remaining_usd gauge' in body, body
+assert 'fleet_seat_credits_remaining_usd{provider="openrouter"} 6.950000' in body, body
+assert 'fleet_seat_credits_remaining_usd{provider="xkiro"} 0.000000' in body, body
+
+assert '# HELP fleet_seat_free_tokens_remaining' in body, body
+assert '# TYPE fleet_seat_free_tokens_remaining gauge' in body, body
+assert 'fleet_seat_free_tokens_remaining{provider="xkiro"} 999999' in body, body
+
+assert '# HELP fleet_seat_credits_held_usd' in body, body
+assert '# TYPE fleet_seat_credits_held_usd gauge' in body, body
+assert 'fleet_seat_credits_held_usd{provider="xkiro"} 0.000000' in body, body
+
+# HELP/TYPE emitted exactly once per metric family.
+from collections import Counter
+help_counts = Counter()
+type_counts = Counter()
+for line in body.splitlines():
+    if line.startswith("# HELP "):
+        help_counts[line.split()[2]] += 1
+    elif line.startswith("# TYPE "):
+        type_counts[line.split()[2]] += 1
+for fam in (
+    "fleet_seat_spend_usd",
+    "fleet_seat_credits_remaining_usd",
+    "fleet_seat_free_tokens_remaining",
+    "fleet_seat_credits_held_usd",
+):
+    assert help_counts[fam] == 1, f"{fam} HELP count {help_counts[fam]}"
+    assert type_counts[fam] == 1, f"{fam} TYPE count {type_counts[fam]}"
+
+print("OK: main() emits spend, credits, xkiro free tokens and held; HELP/TYPE once")
+PY
+
+ok "fleet-ops#3283: spend, credits, xkiro wallet/free-token metrics"
+
