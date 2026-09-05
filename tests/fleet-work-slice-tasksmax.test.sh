@@ -19,7 +19,8 @@
 #      FLEET_SPAWN_SOFT_CEILING=7500; bash-spawn-hook interpolates those
 #      constants (no hardcoded 2800/3000).
 #   4. MANIFEST installs drop-in + both extension files.
-#   5. seat-caps.json ram_gb_per_worker is unchanged (0.5).
+#   5. seat-caps.json ram_gb_per_worker is the measured admission charge (2.0;
+#      fleet-ops#3679: 0509 workers peak 1.6-2.4 GiB, 140 oom-kills/24h at 0.5).
 #
 # Lock-and-leave. Offline. Hosted from tests/system-dropins-shape.test.sh
 # so P14 runs it without a workflow-file edit.
@@ -95,7 +96,10 @@ ok "MANIFEST installs drop-in + spawn-guard-core + bash-spawn-hook"
 
 # --- 5. RAM governor unchanged ----------------------------------------------
 ram=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["ram_gb_per_worker"])' "$caps")
-[[ "$ram" == "0.5" ]] || fail "ram_gb_per_worker must stay 0.5 (admission authority); got '$ram'"
-ok "seat-caps.json ram_gb_per_worker still 0.5"
+# 2.0 = the measured charge (fleet-ops#3679, PR #3692): journal memory peaks of
+# 0509 workers sit at 1.6-2.4 GiB and 140 units died oom-kill in 24h while the
+# governor charged 0.5. Moving this pin needs a new measurement in the same PR.
+[[ "$ram" == "2.0" ]] || fail "ram_gb_per_worker must be the measured 2.0 (admission authority, fleet-ops#3679); got '$ram'"
+ok "seat-caps.json ram_gb_per_worker is the measured 2.0"
 
 echo "OK: fleet-work.slice TasksMax=8000; spawn-guard 7500/8000; RAM admission unchanged"
