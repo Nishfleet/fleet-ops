@@ -34,6 +34,7 @@
     "devin": {
       "cap": 4,
       "class": "prepaid-quota",
+      "remote_agent": true,
       "max_probe_ceiling": 4,
       "quota_bench_default_s": 900,
       "models": {
@@ -52,6 +53,7 @@
       "_glm52_cred": "2026-08-30 alert-repair FleetDeadCredentialSeats: glm-5-2 set to 0 (was 3) after persistent HTTP 403 credentials_bad (seat_dead=true, ledger observed 2026-08-30T03:05:36Z, fleet-ops#1445). RESTORED to 3 on 2026-09-02: ledger lanes/seats/devin__glm-5-2.json healthy (health_class=healthy, http_status=200, seat_dead=false, observed_at=2026-09-02T17:00:58Z, source=comeback_release); alert-repair dispatches on devin/glm-5-2 succeeded rc=0 (2026-09-01T17:52:15Z, 05:10:42Z). Ledger evidence sha256 b6f069af96d884b8037b64cb29bc36388e7dc72120f4b3b240acf43ef9ef8f66. swe-1-7 restored separately (fleet-ops#2874).",
       "_hard_ceiling_dropped_20260905": "2026-09-05 fable-check (fleet-ops#3486): the hard_ceiling=true from #3443 is dropped. It also stopped AIMD backing off below declared on a fresh devin error (seat-lib: hard_ceiling rows never back off), and the #3125 drills that P14 requires (seat-lib-aimd, fleet-token-economy) assert it absent. The #3443 storm pin is kept as max_probe_ceiling == cap at provider (4) and model level (glm-5-2 3, swe-1-7 0): no probe above declared until fleet-ops#3258 lifts it with evidence.",
       "_ceiling_2026_09_05": "2026-09-05: probe ceilings 6/8 put 8 devin sessions in flight and Devin answered resource_exhausted on every new one (133 deaths in 12h at ~40s, 85% daily quota unused). Ceilings pinned to caps until the resource_exhausted bench proves AIMD backs off; then raise via fleet-ops#3258.",
+      "_devin_remote_2026_09_05": "2026-09-05 fleet-ops#3531: devin is a remote agent (remote_agent: true). Its sessions complete without local tool calls, so empty-run detection judges by session outcome (exit 0, stdout under OUT_MIN, no pull/<n> URL) rather than local tool count. A false empty run on this prepaid seat is capped at 1800 s.",
       "_swe17_20260905": "2026-09-05 CORRECTION (orchestrator): the fable-check retirement read n=20 pr_count=0 from seat-yield.json, but every one of those sessions was an INFRASTRUCTURE death: rc=143/1801s from the devin-provider 30-min spawnSync timeout (raised to 40 min 09:20 IST) and resource_exhausted concurrency errors the detectors could not see until #3443/#3475. Working yield measured before the poisoning: 80% sessions-to-PR. Infra deaths never count as seat yield (#3250/#3310). cap 4 / probe 4 (ceiling==cap while pinned, #3443)."
     },
     "cursor": {

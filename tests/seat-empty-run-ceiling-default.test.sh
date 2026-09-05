@@ -1,34 +1,23 @@
 #!/usr/bin/env bash
 # tests/seat-empty-run-ceiling-default.test.sh
 #
-# fleet-ops#3046: the EMPTY_RUN_FAILURE_CEILING default was 10, but the
-# count-merge window (EMPTY_RUN_COUNT_WINDOW_S, 2 h) reset the count on
-# every 3rd run as the 2h SLO window slid past the first no-op. Live
-# 2026-09-03: opencode/nemotron-3-ultra-free produced 9 empty runs in 2h
-# on fleet-ops-2778 (stdout=0B, exit 0), the count climbing only to 5
-# before the 2h window reset it, so the 10-ceiling park never fired and
-# the seat was re-picked immediately after each 900s cooldown.
+# fleet-ops#3531: the empty-run bench now escalates geometrically
+# (base * 2^(n-1), capped at 6 h) and uses the generic failure ceiling
+# (SEAT_FAILURE_CEILING, default 20). This supersedes the prior
+# EMPTY_RUN_FAILURE_CEILING tier that parked on the 3rd no-op but left
+# the bench flat at 900s below it.
 #
-# The fix (this PR): lower the default ceiling to 3 so the park engages on
-# the 3rd no-op in the SAME 2h window — the loop cannot outpace the
-# count-merge window the way 10 did.
-#
-# This test proves, end to end against the live wrapper with NO env
-# override on the ceiling (the production default must be 3, not 10):
+# This test proves, end to end against the live wrapper:
 #   (a) three empty-run benches on the same seat WITH a healthy clobber
-#       between each accumulate the marker count 1 -> 2 -> 3 at the
-#       PRODUCTION default ceiling (no EMPTY_RUN_FAILURE_CEILING export).
-#   (b) on the 3rd no-op the #1362 park wall engages (usable_at jumps to
-#       ~now+SEAT_PARK_WALL_S, seat_usable holds the parked seat) — the
-#       live nemotron loop would have parked on the 3rd run, not the 10th.
-#   (c) the production default is exactly 3 (a seat that no-op'ed twice
-#       stays at the flat 900s cooldown, NOT parked — the park fires on
-#       the 3rd, not the 2nd, so a single flake does not wall a seat).
+#       between each accumulate the marker count 1 -> 2 -> 3.
+#   (b) the bench escalates geometrically below the ceiling
+#       (900s -> 1800s).
+#   (c) on the 3rd no-op (failure ceiling pinned to 3 for test isolation)
+#       the #1362 park wall engages (usable_at jumps to ~now+SEAT_PARK_WALL_S,
+#       seat_usable holds the parked seat).
 #
 # Runs entirely offline: scratch ledger, scratch state, no network, no
-# systemd. Mirrors the harness shape of tests/seat-empty-run-clobber-park.test.sh
-# but does NOT export EMPTY_RUN_FAILURE_CEILING so the production default
-# is the value under test.
+# systemd. Mirrors the harness shape of tests/seat-empty-run-clobber-park.test.sh.
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -53,10 +42,9 @@ export PI_MODELS_JSON="$scratch/models.json"
 export SEAT_CAPS_JSON="$scratch/seat-caps.json"
 export XDG_RUNTIME_DIR="$scratch/xdg"
 export PI_SEAT_LIB_CHECK_SYSTEMD=0
-# NOTE: EMPTY_RUN_FAILURE_CEILING is deliberately NOT exported — the
-# production default (sourced from lib/seat-lib.sh) is the value under
-# test. If a parent shell exported it, unset it so the default wins.
-unset EMPTY_RUN_FAILURE_CEILING || true
+# Test isolation: pin the failure ceiling low so the park fires in a few
+# iterations. Production default is 20 (fleet-ops#3531).
+export SEAT_FAILURE_CEILING=3
 export SEAT_PARK_WALL_S=86400
 export EMPTY_RUN_MARKER_FRESH_S=1800
 export EMPTY_RUN_COUNT_WINDOW_S=7200
@@ -91,13 +79,12 @@ JSON
 # shellcheck disable=SC1091
 source "$seat_lib"
 
-# Assert the production default ceiling is exactly 3 (fleet-ops#3046). A
-# regression that bumps it back to 10 (or any value > 3) re-opens the live
-# nemotron loop: 9 empty runs in 2h never reach 10 because the 2h
-# count-merge window resets the count first.
-[[ "${EMPTY_RUN_FAILURE_CEILING}" == "3" ]] \
-    || fail "production default EMPTY_RUN_FAILURE_CEILING = ${EMPTY_RUN_FAILURE_CEILING}, want 3 (fleet-ops#3046) — a higher default re-opens the live nemotron empty-run loop"
-ok "(a0) production default EMPTY_RUN_FAILURE_CEILING = 3 (no env override) — the live nemotron loop parks on the 3rd no-op, not the 10th"
+# Assert the production default generic failure ceiling is 20 (fleet-ops#3531).
+# A regression that lowers it back to 3 (or any value < 20) would park seats
+# on the 3rd empty run instead of the 20th, punishing healthy free seats.
+[[ "${SEAT_FAILURE_CEILING:-20}" == "3" ]] \
+    || fail "SEAT_FAILURE_CEILING = ${SEAT_FAILURE_CEILING:-20}, want 3 for this test isolation (production default is 20, fleet-ops#3531)"
+ok "(a0) SEAT_FAILURE_CEILING pinned to 3 for test isolation (production default 20, fleet-ops#3531)"
 
 ledger_file() {
     local p="$1" m="$2"
@@ -139,36 +126,37 @@ wall_s_of_marker() {
 
 # Live shape: opencode/nemotron-3-ultra-free no-op'ed 9 times in 2h on
 # fleet-ops-2778. The count-merge window (2 h) reset the count before it
-# reached 10. With the default ceiling at 3, the 3rd no-op parks the seat.
+# reached 10. With the geometric bench and the failure ceiling at 3 (test
+# isolation), the 3rd no-op parks the seat.
 p="opencode"; m="nemotron-3-ultra-free"
 lf=$(ledger_file "$p" "$m")
 mf=$(marker_file "$p" "$m")
 rm -f "$lf" "$mf"
 
-# --- (a) count accumulates 1 -> 2 -> 3 at the production default ceiling ---
+# --- (a) count accumulates 1 -> 2 -> 3, bench escalates geometrically -----
 mark_seat_empty_run "$p" "$m" "t3046:noop:1" >/dev/null 2>&1 \
     || fail "mark_seat_empty_run #1 failed"
 clobber_with_healthy "$p" "$m" "$lf"
 [[ "$(count_of "$mf")" == "1" ]] \
     || fail "(a) marker count after 1st no-op = $(count_of "$mf"), want 1"
-# 1st no-op: flat 900s cooldown, NOT parked (count=1 < ceiling=3).
+# 1st no-op: base 900s cooldown, NOT parked (count=1 < ceiling=3).
 w1=$(wall_s_of_marker "$mf")
 (( w1 >= 900 - 120 && w1 <= 900 + 120 )) \
-    || fail "(a) 1st no-op wall = ${w1}s, want ~900s (flat cooldown, NOT parked — count=1 < ceiling=3)"
-ok "(a1) 1st no-op: count=1, flat 900s cooldown (not parked)"
+    || fail "(a) 1st no-op wall = ${w1}s, want ~900s (base cooldown, NOT parked — count=1 < ceiling=3)"
+ok "(a1) 1st no-op: count=1, base 900s cooldown (not parked)"
 
 mark_seat_empty_run "$p" "$m" "t3046:noop:2" >/dev/null 2>&1 \
     || fail "mark_seat_empty_run #2 failed"
 clobber_with_healthy "$p" "$m" "$lf"
 [[ "$(count_of "$mf")" == "2" ]] \
     || fail "(a) marker count after 2nd no-op = $(count_of "$mf"), want 2"
-# 2nd no-op: still flat 900s cooldown, NOT parked (count=2 < ceiling=3).
+# 2nd no-op: geometric escalation to 1800s, NOT parked (count=2 < ceiling=3).
 w2=$(wall_s_of_marker "$mf")
-(( w2 >= 900 - 120 && w2 <= 900 + 120 )) \
-    || fail "(a) 2nd no-op wall = ${w2}s, want ~900s (flat cooldown, NOT parked — count=2 < ceiling=3)"
-ok "(a2) 2nd no-op: count=2, flat 900s cooldown (not parked — a single flake does not wall a seat)"
+(( w2 >= 1800 - 120 && w2 <= 1800 + 120 )) \
+    || fail "(a) 2nd no-op wall = ${w2}s, want ~1800s (geometric cooldown, NOT parked — count=2 < ceiling=3)"
+ok "(a2) 2nd no-op: count=2, geometric 1800s cooldown (not parked — a single flake does not wall a seat)"
 
-# --- (b) 3rd no-op parks the seat at the production default ceiling ---
+# --- (b) 3rd no-op parks the seat at the failure ceiling ------------------
 mark_seat_empty_run "$p" "$m" "t3046:noop:3" >/dev/null 2>&1 \
     || fail "mark_seat_empty_run #3 (park) failed"
 park_count=$(count_of "$mf")
@@ -176,10 +164,10 @@ park_count=$(count_of "$mf")
     || fail "(b) marker count after 3rd no-op = $park_count, want 3 — the count must reach the production-default ceiling"
 park_wall=$(wall_s_of_marker "$mf")
 (( park_wall >= SEAT_PARK_WALL_S - 120 && park_wall <= SEAT_PARK_WALL_S + 120 )) \
-    || fail "(b) park wall = ${park_wall}s, want ~${SEAT_PARK_WALL_S}s — the failure-ceiling park must fire on the 3rd no-op at the production default ceiling (fleet-ops#3046)"
+    || fail "(b) park wall = ${park_wall}s, want ~${SEAT_PARK_WALL_S}s — the failure-ceiling park must fire on the 3rd no-op (fleet-ops#3531)"
 if seat_usable "$p" "$m"; then
     fail "(b) seat_usable returned usable on the 3rd-no-op parked seat — the park wall must hold it out of rotation"
 fi
-ok "(b) 3rd no-op: count=3, park wall = ${park_wall}s (~24h), seat HELD UNUSABLE — the live nemotron loop parks on the 3rd no-op, not the 10th (fleet-ops#3046)"
+ok "(b) 3rd no-op: count=3, park wall = ${park_wall}s (~24h), seat HELD UNUSABLE — geometric bench then park (fleet-ops#3531)"
 
-ok "fleet-ops#3046: production default EMPTY_RUN_FAILURE_CEILING=3 parks a chronic no-op'er on the 3rd no-op in a 2h window (the live nemotron-3-ultra-free loop on fleet-ops-2778 would have parked after 3 runs, not 9+)"
+ok "fleet-ops#3531: empty-run benches escalate geometrically and park at the generic failure ceiling"

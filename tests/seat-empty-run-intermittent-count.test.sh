@@ -6,8 +6,8 @@
 # less than the empty-run count-merge window (EMPTY_RUN_COUNT_WINDOW_S, 2 h).
 # Before this fix both classes shared the 30 min window, so a ~1h42m gap
 # aged the marker past 30 min, the count reset to 1, and the
-# EMPTY_RUN_FAILURE_CEILING park never fired — the seat re-entered rotation
-# every 900 s flat cooldown and no-op'ed again. Live 2026-09-02 snapshot:
+# failure-ceiling park never fired — the seat re-entered rotation every
+# 900 s and no-op'ed again. Live 2026-09-02 snapshot:
 # openrouter/deepseek/deepseek-v4-flash-0731 no-op'ed at 18:40:08Z (count=2)
 # then 20:22:31Z (count=1) — the 1h42m gap reset the count; the seat stayed
 # health_class=healthy http_status=200 in the global probe file and kept
@@ -26,8 +26,8 @@
 #       but < EMPTY_RUN_COUNT_WINDOW_S (2 h) — the live #2934 gap shape. The
 #       count accumulates 1 -> 2 across the gap, so the seat trends toward
 #       the ceiling instead of resetting to 1 every cycle.
-#   (b) at EMPTY_RUN_FAILURE_CEILING the park engages from the accumulated
-#       count across the gap — the chronic intermittent no-op'er is demoted
+#   (b) at the failure ceiling the park engages from the accumulated count
+#       across the gap — the chronic intermittent no-op'er is demoted
 #       (held UNUSABLE by seat_usable) instead of re-selected.
 #   (c) a gap > EMPTY_RUN_COUNT_WINDOW_S (2 h) DOES reset the count — the
 #       real recovery signal (a full SLO window with no no-op) is honoured,
@@ -62,9 +62,9 @@ export PI_MODELS_JSON="$scratch/models.json"
 export SEAT_CAPS_JSON="$scratch/seat-caps.json"
 export XDG_RUNTIME_DIR="$scratch/xdg"
 export PI_SEAT_LIB_CHECK_SYSTEMD=0
-# Test isolation: pin the empty-run ceiling low so the park fires in a few
-# iterations. Production default is 3 (fleet-ops#3046).
-export EMPTY_RUN_FAILURE_CEILING=3
+# Test isolation: pin the failure ceiling low so the park fires in a few
+# iterations. Production default is 20 (fleet-ops#3531).
+export SEAT_FAILURE_CEILING=3
 export SEAT_PARK_WALL_S=86400
 # The DEFAULT empty-run count window is 2 h (7200 s) — leave it at the
 # default so this test exercises the production window, NOT a pinned
@@ -182,8 +182,9 @@ ok "(a) empty-run count accumulates 1 -> 2 across a 1h42m gap (> 30min spawn-fai
 
 # --- (b) the chronic intermittent no-op'er reaches the ceiling and parks --
 # Continue the pattern: a third no-op after another < 2 h gap must reach
-# count=3 (EMPTY_RUN_FAILURE_CEILING=3 here) and park the seat. Before the
-# fix the count reset every cycle and the park never fired, so the seat
+# count=3 (SEAT_FAILURE_CEILING=3 here, 20 in production) and park the
+# seat. Before the fix the count reset every cycle and the park never
+# fired, so the seat
 # re-entered rotation every 900 s and no-op'ed again.
 age_marker "$mf" 6120
 mark_seat_empty_run "$p" "$m" "t2934:noop:3" >/dev/null 2>&1 \
