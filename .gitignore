@@ -10,3 +10,6 @@ out/
 
 # Per-job operational caches that workers sometimes leave behind.
 .cache/
+
+# Generated weekly by the WFR model-discovery pre-pass.
+config/model-candidates.json
