@@ -1907,3 +1907,86 @@ print("OK: unreadable seat-caps fail-open counts all dead-cred seats (fleet-ops#
 PY
 
 ok "fleet-ops#3301: cap=0 dead-cred corpses excluded; unreadable caps fail-open"
+
+# =========================================================================
+# 17. fleet-ops#3124 part 4/4: week-later revert-candidate check.
+#     For each fleet-ops PR merged ~7 days ago with a `moves:` metric,
+#     compare the metric's 7d value before vs after; if it did not improve,
+#     file ONE revert-candidate issue (never re-filed). Hermetic: gh and
+#     Prometheus are stubbed; the state ledger is a scratch file.
+# =========================================================================
+WL_SCRATCH="$scratch/week-later"
+mkdir -p "$WL_SCRATCH"
+python3 - "$exporter" "$WL_SCRATCH" <<'PY' || fail "week-later revert check test failed"
+import importlib.util, json, sys, time
+from pathlib import Path
+
+exporter, scratch = sys.argv[1:3]
+spec = importlib.util.spec_from_file_location("fme", exporter)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+
+m.PR_CACHE_DIR = Path(scratch)
+m.WEEK_LATER_CACHE = Path(scratch) / "wl-cache.json"
+m.WEEK_LATER_STATE = Path(scratch) / "wl-state.json"
+
+# --- _MOVES_RE parsing ---
+assert m._MOVES_RE.search("moves: product_merges_per_day\n").group(1) == "product_merges_per_day"
+assert m._MOVES_RE.search("- moves: sessions_to_pr_pct\n").group(1) == "sessions_to_pr_pct"
+assert m._MOVES_RE.search("no moves line here\n") is None
+print("OK: _MOVES_RE parses the moves: line")
+
+# --- metric mapping ---
+assert m._MOVES_METRIC_QUERIES["product_merges_per_day"] == 'sum(fleet_self_maintenance_merges{kind="product"})'
+assert m._metric_7d_value("unknown_metric", 0) is None
+print("OK: moves metric -> Prometheus expression mapping")
+
+# --- _week_later_revert_check: improved vs not-improved vs already-filed ---
+# PR100 merged 2026-08-29 (before=2, improved -> no file).
+# PR101 merged 2026-08-20 (before=8, not improved -> file).
+# PR102 merged 2026-08-20 (before=8, not improved, but already-filed -> skip).
+m._week_later_prs = lambda: [
+    {"number": 100, "title": "feat: x", "moves": "product_merges_per_day", "merged_at": "2026-08-29T00:00:00Z"},
+    {"number": 101, "title": "feat: y", "moves": "product_merges_per_day", "merged_at": "2026-08-20T00:00:00Z"},
+    {"number": 102, "title": "feat: z", "moves": "product_merges_per_day", "merged_at": "2026-08-20T00:00:00Z"},
+]
+now = time.time()
+def fake_metric(metric, t):
+    if metric != "product_merges_per_day":
+        return None
+    if abs(t - now) <= 1:
+        return 5.0  # after (now)
+    return 2.0 if t > 1787500000 else 8.0  # 08-29->2 improved, 08-20->8 not
+m._metric_7d_value = fake_metric
+m._revert_candidate_exists = lambda n, metric: (n == 102)  # 102 already filed
+filed = []
+m._file_revert_candidate = lambda n, metric, b, a, ma: (filed.append((n, metric, b, a)) or True)
+
+summary = m._week_later_revert_check()
+assert filed == [(101, "product_merges_per_day", 8.0, 5.0)], filed
+state = m._read_week_later_state()
+assert state["100"]["verdict"] == "improved", state
+assert state["101"]["verdict"] == "filed", state
+assert state["102"]["verdict"] == "already-filed", state
+print("OK: week-later check files only the not-improved, not-already-filed PR")
+
+# --- state-skip: a PR already in the ledger is never re-evaluated ---
+filed.clear()
+summary2 = m._week_later_revert_check()
+assert filed == [], f"state-skip must not re-file: {filed}"
+print("OK: week-later check never re-evaluates a PR already in the ledger")
+
+# --- Prometheus-unavailable: metric None -> PR left unevaluated (retried) ---
+m._week_later_prs = lambda: [
+    {"number": 200, "title": "feat: w", "moves": "product_merges_per_day", "merged_at": "2026-08-20T00:00:00Z"},
+]
+m._metric_7d_value = lambda metric, t: None  # Prometheus down
+filed.clear()
+summary3 = m._week_later_revert_check()
+assert filed == [], "no file when Prometheus is unavailable"
+state3 = m._read_week_later_state()
+assert "200" not in state3, "unevaluated PR must not be recorded (retried later)"
+print("OK: Prometheus-unavailable PR is left unevaluated, not filed, not recorded")
+PY
+
+ok "fleet-ops#3124 part 4/4: week-later revert-candidate check pinned"
