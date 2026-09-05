@@ -27,6 +27,8 @@ issues, action=opened, label=agent-ready
         → start pi-intake@<repo>.service   (race-safe: the tick will dedupe)
 workflow_run, action=completed, conclusion=success
         → start fleet-deploy-check.service
+pull_request, action=closed (merged OR closed)
+        → start fleet-worktree-reaper.service  (fleet-ops#3269)
 ping    → no-op (200)
 
 Anything else → 200 + "ignored: <reason>" (the worker must always see 200;
@@ -166,7 +168,8 @@ def verify_hmac(secret: bytes, body: bytes, signature_header: str) -> bool:
 
 
 def dispatch(event: str, action: str, label: str, repo: str, conclusion: str,
-             dry: bool, enrolled: set[str] | None = None) -> tuple[str, str]:
+             dry: bool, enrolled: set[str] | None = None,
+             pr_merged: str = "") -> tuple[str, str]:
     """Return (unit, reason). ``unit`` is empty when no-op. ``reason`` is
     human + log friendly.
 
@@ -175,9 +178,27 @@ def dispatch(event: str, action: str, label: str, repo: str, conclusion: str,
     the synthetic canary repo (fleet-ops-canary) is the canonical
     non-enrolled case. fleet-deploy-check is fleet-wide, NOT per-repo,
     so it is never enrollment-gated.
+
+    ``pr_merged`` is the pull_request.merged boolean ("true"/"false")
+    for pull_request events; it is informational only — the reaper fires
+    on ANY closed PR (merged OR closed), because both terminal states
+    leave a claim worktree behind (fleet-ops#3269).
     """
     if event == "ping":
         return "", "ping (no-op)"
+
+    if event == "pull_request":
+        if not repo or not REPO_RE.match(repo):
+            return "", f"pull_request: bad repo {repo!r}"
+        if action == "closed":
+            # A merged OR closed PR leaves its claim/issue-<N> worktree
+            # behind. The reaper's Mode A reaps MERGED immediately and
+            # CLOSED after the age gate (fleet-ops#3023), so both terminal
+            # states must trigger it. systemctl start on an already-active
+            # oneshot is a no-op, so a burst of closes dedupes naturally.
+            return "fleet-worktree-reaper.service", \
+                f"pull_request/{action}/merged={pr_merged} → fleet-worktree-reaper"
+        return "", f"pull_request: ignored (action={action})"
 
     if event == "issues":
         if not repo or not REPO_RE.match(repo):
@@ -345,6 +366,7 @@ def _make_handler(secret: bytes):
 
             action = label = repo = conclusion = ""
             issue_number = ""
+            pr_merged = ""
             try:
                 payload = json.loads(body.decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError):
@@ -361,9 +383,12 @@ def _make_handler(secret: bytes):
                     conclusion = str(
                         ((payload.get("workflow_run") or {}).get("conclusion")) or ""
                     )
+                elif event == "pull_request":
+                    pr = payload.get("pull_request") or {}
+                    pr_merged = str(pr.get("merged", "") or "")
 
             unit, reason = dispatch(event, action, label, repo, conclusion, DRY,
-                                    _State.enrolled)
+                                    _State.enrolled, pr_merged)
             if unit:
                 rc, err = fire_unit(unit, DRY)
                 _State.record(unit, rc, event)
