@@ -350,6 +350,36 @@ grep -q 'issue comment' "$GH_CALLS" || fail "scenario4c: must comment the refusa
 ok "scenario4c: 2-of-3 PASS keyword-only reason -> refused (evidence gate)"
 
 # ============================================================================
+# Scenario 4d (fleet-ops#3573): the auditors run with NO tools (tools=0), so
+# they cannot cite a live path or URL. A keyword-only PASS that cites the
+# candidate issue number AND quotes one concrete repo path from the candidate
+# body is now accepted as repo-specific evidence and admits agent-ready. This
+# is the "passes after" half of the replay drill; scenario 4c is the
+# "keyword-only reasons still fail before" half.
+# ============================================================================
+reset_state
+: >"$GH_CALLS"
+printf 'termination: test -f src/app/page.tsx\naccept: ship the fix\n' \
+    >"$scratch/evid-path-body.txt"
+export GH_ISSUE_BODY="$scratch/evid-path-body.txt"
+write_vote demo 97 devin PASS "fixes src/app/page.tsx in #97; not a duplicate; advances north-star"
+write_vote demo 97 free-glm PASS "customer edge; unique; see src/app/page.tsx (#97)"
+write_vote demo 97 senior FAIL "vague"
+
+set +e
+AUDIT_DRY_RUN=0 AUDIT_GH="$gh_fake" "$tally_bin" demo 97 >"$scratch/tally_evidpath" 2>&1
+tally_rc=$?
+set -e
+unset GH_ISSUE_BODY
+[[ "$tally_rc" == 0 ]] || fail "scenario4d: tally exit $tally_rc ($(cat "$scratch/tally_evidpath"))"
+if grep -q 'EVIDENCE-REFUSED' "$scratch/tally_evidpath"; then
+  fail "scenario4d: body-path citation must not be refused ($(cat "$scratch/tally_evidpath"))"
+fi
+grep -q 'add-label agent-ready' "$GH_CALLS" \
+  || fail "scenario4d: tool-less body-path citation should add agent-ready ($(cat "$GH_CALLS"))"
+ok "scenario4d: 2-of-3 PASS citing candidate# + body path -> admitted (tools=0)"
+
+# ============================================================================
 # Scenario 5: 2 FAIL 1 PASS -> discard
 # ============================================================================
 reset_state
