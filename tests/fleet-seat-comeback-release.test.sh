@@ -315,10 +315,20 @@ grep -qE "^fleet_seat_comeback_release_last_green_seconds [0-9]+$" "$PROM" \
   || fail "prom last-green must be written on a green sweep: $(cat "$PROM")"
 # fleet-ops#2716: the devin corpse (observed 2026-08-29T00:00:00Z, ~36h old)
 # is past the 6h corpse grace — the live sweep must PHYSICALLY retire it out
-# of the live roster: ledger gone from SEATDIR, present in the dated
+# of the live roster: corpse ledger gone from SEATDIR, present in the dated
 # seats-corpse-retired-<ts>/ audit dir, retired_total=1 in prom and state.
-[[ ! -e "$SEATDIR/devin__glm-5-2.json" ]] \
-  || fail "corpse ledger must be retired out of the live roster: $(cat "$SEATDIR/devin__glm-5-2.json")"
+# fleet-ops#3669: retirement must leave the seat UNPICKABLE — a seat_dead=true
+# / health_class=parked parked ledger is written back into the live roster so
+# pick_seat refuses the seat instead of re-picking it via the no-ledger
+# fail-open.
+[[ -f "$SEATDIR/devin__glm-5-2.json" ]] \
+  || fail "corpse retirement must leave a parked ledger in the live roster (fleet-ops#3669)"
+_parked_hc=$(jq -r '.health_class // ""' "$SEATDIR/devin__glm-5-2.json" 2>/dev/null || true)
+[[ "$_parked_hc" == "parked" ]] \
+  || fail "parked ledger must be health_class=parked, got $_parked_hc"
+_parked_dead=$(jq -r '.seat_dead // false' "$SEATDIR/devin__glm-5-2.json" 2>/dev/null || true)
+[[ "$_parked_dead" == "true" ]] \
+  || fail "parked ledger must be seat_dead=true, got $_parked_dead"
 retdir="$TMPD/seats-corpse-retired-$NOW_ISO"
 [[ -f "$retdir/devin__glm-5-2.json" ]] \
   || fail "retired corpse ledger must land in the dated retirement dir ($retdir): $(ls -la "$TMPD" 2>&1)"
@@ -940,14 +950,26 @@ PI_SEAT_HEALTH_LEDGER_DIR="$RETSEAT" \
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "13b: retirement sweep must exit 0, got $rc ($(cat "$TMPD/ret13b.err"))"
-[[ ! -e "$RETSEAT/devin__glm-5-2.json" ]] \
-  || fail "13b: corpse past grace must be moved out of the live roster: $(ls "$RETSEAT")"
+# fleet-ops#3669: retirement must leave the seat UNPICKABLE. The corpse ledger
+# is moved into the dated audit dir AND a seat_dead=true / health_class=parked
+# parked ledger is written back into the live roster (the shared writer in
+# lib/seat-lib.sh), so pick_seat refuses the seat instead of re-picking it
+# via the "NO HEALTH DATA (no ledger file) — assuming usable" fail-open.
+[[ -f "$RETSEAT/devin__glm-5-2.json" ]] \
+  || fail "13b: a parked ledger must be left in the live roster after retirement (fleet-ops#3669): $(ls "$RETSEAT")"
+_parked_hc=$(jq -r '.health_class // ""' "$RETSEAT/devin__glm-5-2.json" 2>/dev/null || true)
+[[ "$_parked_hc" == "parked" ]] \
+  || fail "13b: parked ledger must be health_class=parked, got $_parked_hc"
+_parked_dead=$(jq -r '.seat_dead // false' "$RETSEAT/devin__glm-5-2.json" 2>/dev/null || true)
+[[ "$_parked_dead" == "true" ]] \
+  || fail "13b: parked ledger must be seat_dead=true, got $_parked_dead"
 [[ -f "$RETDIR/devin__glm-5-2.json" ]] \
   || fail "13b: corpse ledger must land in seats-corpse-retired-<ts>/: $(ls -la "$TMPD" 2>&1)"
 grep -q "^fleet_seat_comeback_release_retired_total 1$" "$TMPD/prom13b.prom" \
   || fail "13b: prom retired_total must be 1: $(cat "$TMPD/prom13b.prom")"
-# Idempotence: a second sweep with the ledger already empty must not
-# re-retire (no file to move) and must keep retired_total=1.
+# Idempotence: a second sweep with the parked ledger in the live roster must
+# not re-retire (the parked ledger is health_class=parked, not corpse, so
+# retire_corpse holds it) and must keep retired_total=1.
 set +e
 PI_SEAT_HEALTH_LEDGER_DIR="$RETSEAT" \
     FLEET_SEAT_COMEBACK_STATE="$TMPD/state13b.json" \
@@ -1179,8 +1201,13 @@ grep -q "corpse re-probe opencode/mimo-v2.5-free: no wall, second-chance re-prob
   || fail "17a: no-wall corpse must be re-probed (fleet-ops#3156): $(cat "$TMPD/ret17a.err")"
 grep -q "explicitly retired opencode/mimo-v2.5-free after failed no-wall corpse re-probe" "$TMPD/ret17a.err" \
   || fail "17a: failed re-probe must explicitly retire the corpse: $(cat "$TMPD/ret17a.err")"
-[[ ! -e "$TMPD/seats17/opencode__mimo-v2.5-free.json" ]] \
-  || fail "17a: corpse must leave the live roster on failed re-probe: $(ls "$TMPD/seats17")"
+# fleet-ops#3669: retirement leaves a parked ledger in the live roster so the
+# seat stays UNPICKABLE (the corpse ledger itself is moved to the audit dir).
+[[ -f "$TMPD/seats17/opencode__mimo-v2.5-free.json" ]] \
+  || fail "17a: retirement must leave a parked ledger in the live roster (fleet-ops#3669): $(ls "$TMPD/seats17")"
+_parked_hc=$(jq -r '.health_class // ""' "$TMPD/seats17/opencode__mimo-v2.5-free.json" 2>/dev/null || true)
+[[ "$_parked_hc" == "parked" ]] \
+  || fail "17a: parked ledger must be health_class=parked, got $_parked_hc"
 [[ -f "$TMPD/seats-corpse-retired-$NOW_ISO/opencode__mimo-v2.5-free.json" ]] \
   || fail "17a: retired corpse must land in the dated retirement dir: $(ls -la "$TMPD/seats-corpse-retired-$NOW_ISO" 2>&1)"
 grep -q "^fleet_seat_comeback_release_retired_total 1$" "$TMPD/prom17a.prom" \

@@ -1634,6 +1634,35 @@ _seat_remaining_s() {
     printf '%s\n' "$((ts_s - now))"
 }
 
+# True if a corpse-retired copy of this seat exists in a dated
+# seats-corpse-retired-<UTC-ts>/ audit dir from the last 7 days.
+# fleet-ops#3669: the corpse-retirement caller (bin/fleet-seat-comeback-release)
+# physically MOVES a terminal corpse ledger out of the live roster into a
+# dated audit dir. Before this check, a seat whose ledger was moved away fell
+# through to the "NO HEALTH DATA (no ledger file) — assuming usable" fail-open
+# and pick_seat re-picked the deliberately-retired dead seat, burning claims
+# (hetzner 2 claims in 6 min, 2026-09-05). A corpse-retired copy within the
+# last 7 days means the seat was deliberately retired; it must stay UNPICKABLE.
+# (The primary fix is write_parked_ledger leaving a seat_dead=true parked
+# ledger in the live roster; this is the read-side fence for seats retired
+# before that writer existed.)
+_seat_has_recent_corpse_retired() {
+    local p="$1" m="$2" ps ms base now_e cutoff d ts
+    ps="${p//[^A-Za-z0-9._-]/_}"
+    ms="${m//[^A-Za-z0-9._-]/_}"
+    base="$(dirname "$LEDGER_DIR")"
+    now_e=$(_seat_now_epoch)
+    cutoff=$(( now_e - 604800 ))  # 7 days
+    for d in "$base"/seats-corpse-retired-*; do
+        [[ -d "$d" ]] || continue
+        [[ -f "$d/${ps}__${ms}.json" ]] || continue
+        ts=$(date -u -d "${d##*seats-corpse-retired-}" +%s 2>/dev/null || echo 0)
+        [[ "$ts" =~ ^[0-9]+$ ]] || continue
+        (( ts >= cutoff )) && return 0
+    done
+    return 1
+}
+
 # Seat health: read the per-seat ledger and decide if a SPECIFIC seat is usable
 # right now. Returns 0 if usable, non-zero otherwise.
 #
@@ -1697,6 +1726,15 @@ seat_usable() {
     fi
     f=$(seat_ledger_path "$p" "$m")
     if [[ ! -f "$f" ]]; then
+        # fleet-ops#3669: a seat whose corpse ledger was physically moved into a
+        # dated seats-corpse-retired-<ts>/ audit dir must NOT fall through to
+        # the fail-open below — that re-picked the deliberately-retired dead
+        # seat and burned claims. A corpse-retired copy within the last 7 days
+        # means the seat was retired on purpose; keep it UNPICKABLE.
+        if _seat_has_recent_corpse_retired "$p" "$m"; then
+            (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE (corpse-retired copy within last 7 days — deliberately retired, fleet-ops#3669)"
+            return 1
+        fi
         (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: NO HEALTH DATA (no ledger file) — assuming usable"
         return 0
     fi
@@ -4715,6 +4753,58 @@ mark_seat_quota_bench() {
         return 0
     fi
     seat_log "quota-bench: rename FAILED for $p/$m at $path"
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+}
+
+# --- corpse-retirement parked ledger (fleet-ops#3669) -----------------------
+# Write a terminal "parked" ledger for a seat that the corpse-retirement
+# caller (bin/fleet-seat-comeback-release) has physically moved out of the
+# live roster into a dated seats-corpse-retired-<ts>/ audit dir. Before this
+# writer, the move left NO ledger in the live roster, so seat_usable fell
+# through to the "NO HEALTH DATA (no ledger file) — assuming usable" fail-open
+# and pick_seat re-picked the deliberately-retired dead seat (hetzner burned
+# 2 claims in 6 min, 2026-09-05). The parked ledger keeps the seat UNPICKABLE:
+# seat_usable sees seat_dead=true / health_class=parked / usable_at far future
+# and refuses it. Best-effort: a write failure is logged but must not fail the
+# caller's own exit. Returns 0 if the parked ledger was written, 1 otherwise.
+write_parked_ledger() {
+    local p="$1" m="$2" reason="${3:-corpse-retired}"
+    local path now_utc now_s far_future tmp
+    path=$(seat_ledger_path "$p" "$m")
+    mkdir -p "$LEDGER_DIR" 2>/dev/null || true
+    now_s=$(date -u +%s)
+    now_utc=$(date -u -d "@$now_s" +%Y-%m-%dT%H:%M:%SZ)
+    # Far future: 10 years out, so seat_usable's future-usable_at check always
+    # holds the seat off the ladder (and seat_dead=true is the terminal block).
+    far_future=$(date -u -d "@$((now_s + 315360000))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
+    tmp="$path.park.$$.$RANDOM.tmp"
+    if ! jq -nc \
+        --arg provider "$p" --arg model "$m" \
+        --arg observed "$now_utc" --arg usable "$far_future" \
+        --argjson seat_dead true --argjson poison_ladder false \
+        '{
+          provider:$provider, model:$model,
+          http_status:null, retry_after:null,
+          health_class:"parked",
+          retryable:false, seat_dead:$seat_dead, poison_ladder:$poison_ladder,
+          observed_at:$observed,
+          source:"corpse_retirement",
+          failure_mode:"corpse_retired",
+          bench_until:$usable,
+          usable_at:$usable,
+          consecutive_failure_count:0
+        }' > "$tmp" 2>/dev/null; then
+        seat_log "parked-ledger: jq compose FAILED for $p/$m — parked ledger NOT written"
+        rm -f "$tmp" 2>/dev/null || true
+        return 1
+    fi
+    chmod 0644 "$tmp" 2>/dev/null || true
+    if mv "$tmp" "$path" 2>/dev/null; then
+        seat_log "parked-ledger: $p/$m parked (seat_dead=true, class=parked, usable_at=$far_future, reason=$reason)"
+        return 0
+    fi
+    seat_log "parked-ledger: rename FAILED for $p/$m at $path"
     rm -f "$tmp" 2>/dev/null || true
     return 1
 }
