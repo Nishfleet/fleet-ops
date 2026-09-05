@@ -109,7 +109,14 @@ SKIP_SET = {"Watchdog", "FleetTestAlert", "LoadStorm", "CanaryDrill",
            # worker cannot fix a stale Prometheus gauge — the fix is in the
            # exporter code (emit instrumented=0 on config failure, which this
            # PR already ships). Skip to avoid a verify-stall loop.
-           "FleetSloMainGreenGreenMapDisagree"}
+           "FleetSloMainGreenGreenMapDisagree",
+           # fleet-ops#3180: 24h lagging count / trend alert. The
+           # fleet_escalations_24h metric is a rolling 24-hour gauge; a worker
+           # cannot repair it because it clears only as the 24-hour window ages
+           # out. Dispatching a repair worker re-summons the same unrepairable
+           # alert every 6 hours. Skip it here so the issue worker can fix the
+           # metric/rule at its own pace.
+           "FleetEscalationStorm"}
 
 # Seat selection — pick a healthy lane instead of hardcoding one. The
 # recorded seat in pi-seat-health.json wins if it is healthy AND observed
