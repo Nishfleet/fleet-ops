@@ -118,14 +118,15 @@
       "_laguna_20260905": "2026-09-05 fable-check: seat-yield.json n=20 sessions pr_count=0 yield=0.0; watch.log pi exited fast deaths 48 (23:36-02:36Z) + 28 (01:18-04:18Z), HTTP 503 overload_bench expiring fail-open every 600s then re-dying; fleet_seat_failure_ceiling_parked=18; its last run (pi-issue-fleet-ops-3180, 03:35Z) edited the live deploy clone in place (fleet-ops#3389). cap 1->0 intentional_cap_zero=stale: re-audition after the 14d TTL or when CommandCode reports laguna capacity."
     },
     "hetzner": {
-      "cap": 2,
+      "cap": 1,
       "class": "free",
       "max_probe_ceiling": 4,
       "models": {
-        "Qwen/Qwen3.6-35B-A3B-FP8": 2
+        "Qwen/Qwen3.6-35B-A3B-FP8": 1
       },
       "_note": "2026-08-26 fleet-ops#437: allowlist the live models.json slug. cap=2 with an empty models map made pick_seat skip every hetzner row as not in the cap-map allowlist.",
-      "_comment_1350": "2026-08-29 fleet-ops#1350 concurrency-tolerance probe (load 2.95, 0 active workers): 3 simultaneous pi --print --provider hetzner --model Qwen/Qwen3.6-35B-A3B-FP8 'reply PONG' probes all timed out at 60s (rc=124); a single probe returned rc=0 but took ~120s (PACKET-VERDICT tools=0 class=no-tools). The seat responds but with ~120s latency on a 1-token probe, so concurrent probes all hit the timeout. Cap NOT raised — stays 2. The latency is a live-state observation (possibly transient); re-probe before any future raise. If it persists, file a hetzner-latency issue."
+      "_comment_1350": "2026-08-29 fleet-ops#1350 concurrency-tolerance probe (load 2.95, 0 active workers): 3 simultaneous pi --print --provider hetzner --model Qwen/Qwen3.6-35B-A3B-FP8 'reply PONG' probes all timed out at 60s (rc=124); a single probe returned rc=0 but took ~120s (PACKET-VERDICT tools=0 class=no-tools). The seat responds but with ~120s latency on a 1-token probe, so concurrent probes all hit the timeout. Cap NOT raised — stays 2. The latency is a live-state observation (possibly transient); re-probe before any future raise. If it persists, file a hetzner-latency issue.",
+      "_cap1_2026_09_05": "2026-09-05: hetzner Qwen took 10 of the last 15 light picks and produced 2 PRs from 20 sessions (8 request timeouts, 4 EngineCore errors). Cap 1 until the yield gate (#3251) governs it by data; free, so a single probe slot stays."
     },
     "zenmux": {
       "cap": 2,
