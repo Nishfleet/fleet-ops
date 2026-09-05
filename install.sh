@@ -30,6 +30,11 @@
 #   --check --system     — drift detection for system-scope entries only.
 #                          Useful for "is this box up to date?" without
 #                          changing anything.
+#
+# fleet-ops#3277: a MANIFEST src of `npm-pin:<rel>` is not a repo file. It
+# pins dest as a symlink at $PI_PACKAGE_EXAMPLES/<rel> (the installed pi
+# package examples/). Used for the stock subagent agents.ts + workflow
+# prompts so a pi reinstall cannot silently drop delegation.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; rc=0
 manifest="$here/MANIFEST"
@@ -415,10 +420,24 @@ check_comment_junk() {
 # seat-caps.json copy gets (fleet-ops#2910).
 is_extension_src() { case $1 in template/extensions/*) return 0;; *) return 1;; esac; }
 
+# fleet-ops#3277: resolve npm-pin:<rel> against the installed pi examples dir.
+PI_PACKAGE_EXAMPLES="${PI_PACKAGE_EXAMPLES:-/home/nish/.local/lib/node_modules/@earendil-works/pi-coding-agent/examples}"
+
 process_entry() {
   local src=$1 dest=$2 skip=$3
-  local repo why=""
-  repo=$(readlink -f "$here/$src")
+  local repo why="" npm_pin=0
+  if [[ "$src" == npm-pin:* ]]; then
+    npm_pin=1
+    local pin_rel="${src#npm-pin:}"
+    repo=$(readlink -f "$PI_PACKAGE_EXAMPLES/$pin_rel" 2>/dev/null || true)
+    if [[ -z "$repo" || ! -e "$repo" ]]; then
+      echo "DIFF: $dest (npm-pin missing: $PI_PACKAGE_EXAMPLES/$pin_rel)"
+      rc=1
+      return 0
+    fi
+  else
+    repo=$(readlink -f "$here/$src")
+  fi
 
   if [ "$skip" = 1 ]; then return 0; fi
 
@@ -481,6 +500,8 @@ process_entry() {
             rc=1
             return 0
         fi
+    elif [[ "$npm_pin" = 1 ]]; then
+        : # dest is a pin to the installed package; always retarget
     elif live_newer_than_repo "$dest" "$repo"; then
         echo "REFUSE: $dest is newer than repo copy $repo and the content differs (will not overwrite live config)"
         file_install_refuse "$dest" "$repo"

@@ -111,6 +111,16 @@ else
 fi
 
 # 6. Rebuild script --manifest-check passes on the real repo.
+# fleet-ops#3277: the repo MANIFEST carries `npm-pin:<rel>` srcs that
+# resolve against the installed pi examples dir at install time, not the
+# repo checkout. manifest-check must skip them as "missing" so a bare-metal
+# rebuild does not demand a repo file it will never have. Run the check on
+# the real repo (which carries npm-pin srcs) and assert no npm-pin line is
+# reported as a missing src.
+grep -q '^npm-pin:' "$manifest" || fail "MANIFEST lacks an npm-pin: src to probe (fixture gone?)"
+if "$rebuild" --manifest-check 2>&1 | grep -q 'MANIFEST src missing.*npm-pin:'; then
+  fail "manifest-check must not flag npm-pin: srcs as missing repo files"
+fi
 "$rebuild" --manifest-check || fail "rebuild --manifest-check failed"
 ok "rebuild --manifest-check passes"
 

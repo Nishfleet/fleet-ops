@@ -197,6 +197,28 @@ mkdir -p "$ATTEMPTS_DIR" "$(dirname "$out_file")"
 
 [[ -f "$pkt" ]] || { echo "pi-issue-run: packet file not found: $pkt" >&2; exit 1; }
 
+# fleet-ops#3277: pi-transport-check asserts EXTLOAD for subagent when a
+# worker starts. Capability-detect: a pre-deploy probe has no --subagent
+# and would treat the flag as a cli.js path. Scratch-HOME tests skip when
+# the handshake file is absent (auto). Production HOME=/home/nish fails
+# loud if the dest is missing.
+assert_subagent_extload() {
+    [[ "${PI_SUBAGENT_EXTLOAD_CHECK:-auto}" == "0" ]] && return 0
+    local probe="${PI_TRANSPORT_CHECK:-/home/nish/.local/bin/pi-transport-check}"
+    [[ -x "$probe" ]] || return 0
+    grep -q -- '--subagent' "$probe" 2>/dev/null || return 0
+    local idx="${PI_SUBAGENT_INDEX:-$HOME/.pi/agent/extensions/subagent/index.ts}"
+    if [[ "${PI_SUBAGENT_EXTLOAD_CHECK:-auto}" == "auto" && ! -e "$idx" && "${HOME:-}" != "/home/nish" ]]; then
+        return 0
+    fi
+    if ! "$probe" --subagent; then
+        echo "pi-issue-run: SUBAGENT-EXTLOAD missing (pi-transport-check --subagent failed)" >&2
+        return 1
+    fi
+    return 0
+}
+assert_subagent_extload || exit 1
+
 # --- pick a seat for THIS attempt ------------------------------------------
 weight=$(task_weight "$pkt")
 difficulty="$weight"

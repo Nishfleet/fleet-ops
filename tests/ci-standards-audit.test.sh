@@ -409,6 +409,10 @@ bash "$here/pi-issue-run-hang-stall-bench.test.sh"
 # timeout gate. Hosted here so P14 runs it without a workflow-file edit
 # (workers cannot push .github/workflows/**).
 bash "$here/provider-timeout.test.sh"
+# fleet-ops#3277: subagent extension MANIFEST + pi-transport-check --subagent
+# EXTLOAD gate. Hosted here so P14 runs it without a workflow-file edit
+# (workers cannot push .github/workflows/**).
+bash "$here/subagent-extload.test.sh"
 bash "$here/unit-escalation-write-retry-absorb.test.sh"
 bash "$here/unit-escalation-write-scout-futility-dedupe.test.sh"
 # fleet-ops#2399 added unit-escalation-write-journal-evidence.test.sh (ledger

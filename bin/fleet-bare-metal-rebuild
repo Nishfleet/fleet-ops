@@ -226,6 +226,12 @@ manifest_check() {
       [[ "$line" == \#* ]] && continue
       src="${line%% *}"
       [[ -z "$src" ]] && continue
+      # fleet-ops#3277: an `npm-pin:<rel>` src is not a repo file — it
+      # resolves against the installed pi examples dir at install time, and
+      # that package is fetched by a separate lane. A bare-metal rebuild must
+      # not re-install it from the repo, so do not treat its absence here as
+      # a missing manifest src.
+      [[ "$src" == npm-pin:* ]] && continue
       printf '%s\n' "$src" >> "$manifest_srcs"
       if [[ ! -e "$FLEET_OPS_REPO/$src" ]]; then
         log "manifest-check: MANIFEST src missing: $src"
