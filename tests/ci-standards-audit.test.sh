@@ -462,6 +462,15 @@ bash "$here/unit-escalation-write-pi-issue-exclusion.test.sh"
 # .github/workflows/**).
 bash "$here/fleet-ops-2462-claim-cap.test.sh"
 
+# fleet-ops#3310: infra deaths never count, and the WORK reclaim cap reroutes
+# to a different seat CLASS instead of parking for a senior conference. Hosts
+# the 16-test gate (infra-death classification, .last-death-class marker,
+# .prefer-class ladder, reaper infra-vs-work counter split, CLOSED clears,
+# pick_seat prefer-class, and a replay drill that RUNS the real pi-issue-run /
+# pi-issue-failed-reap against scratch dirs) so P14 covers it without a
+# workflow-file edit (the worker App cannot push .github/workflows/**).
+bash "$here/fleet-ops-3310-infra-death-class-switch.test.sh"
+
 # fleet-ops#2666: 0B-stdout empty-run burst on healthy seats — the 2h
 # burst signal the #902 24h waste-ratio gauge masks (2026-09-01 12:48Z-
 # 14:11Z: empty_runs_last_2h 0 -> 6 on minimax/MiniMax-M3 + openrouter/

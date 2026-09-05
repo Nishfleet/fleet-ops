@@ -183,6 +183,48 @@ is_mid_session_death() {
     grep -qiE 'exited with code 143|code 143|SIGTERM|terminated|Killed' "$err" 2>/dev/null
 }
 
+# fleet-ops#3310: infra-death classification. A death the worker could never
+# have avoided (provider hang watch-dog, signal/OOM kill, spawn-phase
+# ETIMEDOUT, a provider that dies at its own hard session bound) is NOT a real
+# work failure: it must increment the separate .infra-death counter, never the
+# .reclaim-count WORK cap that parks issues for a senior conference. Reuses
+# the detectors seat-lib.sh already has (is_spawn_etimeout, is_mid_session_death)
+# plus the rc=124/143 paths. Callers pass $rc (pi's exit) and the globals
+# $spawn_elapsed_s / $PI_HANG_TIMEOUT_S / $out_file / $err_file must be set.
+is_infra_death() {
+    local rc="${1:-0}"
+    # hang watchdog kill (P15 wedge) — infrastructure by definition.
+    [[ "$rc" == "124" ]] && return 0
+    # provider signal death / OOM kill mid-session (rc=143 / SIGTERM / Killed).
+    is_mid_session_death "$err_file" && return 0
+    # spawn-phase ETIMEDOUT (connect/socket/child timeout before the session
+    # was live) — a lane fault, never a work failure.
+    if (( rc != 0 )) && (( spawn_elapsed_s < SPAWN_FAIL_MAX_S )); then
+        local _io _ie
+        _io=$(cat "$out_file" 2>/dev/null || true)
+        _ie=$(cat "$err_file" 2>/dev/null || true)
+        if is_spawn_etimeout "$_io" "$_ie"; then return 0; fi
+    fi
+    # provider hard session bound: died at/near the run's hard timeout. A
+    # seat that is killed by its provider at ~PI_HANG_TIMEOUT_S (or its own
+    # ~hard bound just under ours) is an infra cut, not the worker failing.
+    if (( PI_HANG_TIMEOUT_S >= 60 && spawn_elapsed_s >= (PI_HANG_TIMEOUT_S - 30) )); then
+        return 0
+    fi
+    return 1
+}
+
+# fleet-ops#3310: record the death class of the LAST failure in this claim
+# burst so pi-issue-failed-reap can split the WORK cap (.reclaim-count) from
+# the separate infra-death counter. Overwritten on every failure exit so the
+# reaper (which runs after the burst exhausts) sees the final death.
+write_death_class() {
+    local cls="${1:-work}"
+    [[ "$cls" == "infra" || "$cls" == "work" ]] || cls="work"
+    printf '%s' "$cls" >"$ATTEMPTS_DIR/pi-issue-${inst}.last-death-class" 2>/dev/null || true
+    seat_log "pi-issue-run: $inst last-death-class=$cls"
+}
+
 [[ $# -ge 1 ]] || { echo "pi-issue-run: need 1 arg: <unit-instance>" >&2; exit 1; }
 inst="$1"
 # PI_ISSUES_DIR lets tests redirect the packet/out/err triplet into a
@@ -281,6 +323,18 @@ fi
 
 while true; do
 
+# fleet-ops#3310: seat-class preference (written by intake's WORK-cap ladder).
+# When set (prepaid/metered/senior), pick_seat forces this claim onto a
+# different seat CLASS; cleared on success/close so a fresh cycle picks normally.
+PI_PICK_PREFER_CLASS=""
+if [[ -f "$ATTEMPTS_DIR/pi-issue-${inst}.prefer-class" ]]; then
+    PI_PICK_PREFER_CLASS=$(cat "$ATTEMPTS_DIR/pi-issue-${inst}.prefer-class" 2>/dev/null || true)
+    [[ "$PI_PICK_PREFER_CLASS" == "prepaid" || "$PI_PICK_PREFER_CLASS" == "metered" \
+      || "$PI_PICK_PREFER_CLASS" == "free" || "$PI_PICK_PREFER_CLASS" == "senior" ]] \
+        || PI_PICK_PREFER_CLASS=""
+fi
+export PI_PICK_PREFER_CLASS
+
 # First attempt: no exclusions. Subsequent attempts (after a restart) carry
 # the previously-tried seats in $tried_file; pick_seat excludes them all.
 seat=$(pick_seat "" "" "$need_capable" "$tried_file" "$difficulty" "$pkt_privacy" || true)
@@ -313,9 +367,11 @@ if [[ -z "$seat" ]]; then
     # summons the senior auditor.
     if [[ "$difficulty" == "keystone" ]]; then
         seat_log "pi-issue-run: $inst KEYSTONE ESCALATION — keeping tried-seats so OnFailure summons senior conference"
+        write_death_class infra
         exit 1
     fi
     : >"$tried_file"
+    write_death_class infra
     exit 1
 fi
 
@@ -579,6 +635,15 @@ if (( rc != 0 )); then
         fi
     fi
     seat_log "pi-issue-run: $inst pi exited $rc on $np/$nm (${spawn_elapsed_s}s, spawn_fail=$spawn_fail_triggered) — systemd will restart with a new seat"
+    # fleet-ops#3310: classify this death. Infra deaths (hang/signal/timeout/
+    # ceiling) increment the separate infra-death counter, not the WORK cap;
+    # only real work failures consume the reclaim-count cap that switches seat
+    # class and, at exhaustion, parks the issue.
+    if is_infra_death "$rc"; then
+        write_death_class infra
+    else
+        write_death_class work
+    fi
     exit 1
 fi
 
@@ -634,6 +699,10 @@ if (( out_bytes < OUT_MIN )); then
     empty_run_attempt=$((empty_run_attempt + 1))
     if (( empty_run_attempt > EMPTY_RUN_RETRY_MAX )); then
         seat_log "pi-issue-run: $inst in-process retries exhausted (${empty_run_attempt} attempts, limit=${EMPTY_RUN_RETRY_MAX}) — exiting 1 so systemd Restart fires"
+        # fleet-ops#3310: a provider empty-run is a SEAT FAULT, but the worker
+        # genuinely shipped nothing after retries — a real failure, not
+        # infrastructure. Count it against the WORK cap.
+        write_death_class work
         exit 1
     fi
     seat_log "pi-issue-run: $inst empty run #${empty_run_attempt}/${EMPTY_RUN_RETRY_MAX} (provider no-op, stdout=${out_bytes}B) — re-seating in-process on a different seat"
@@ -653,6 +722,8 @@ if is_empty_run "$out_file"; then
     empty_run_attempt=$((empty_run_attempt + 1))
     if (( empty_run_attempt > EMPTY_RUN_RETRY_MAX )); then
         seat_log "pi-issue-run: $inst in-process retries exhausted (${empty_run_attempt} attempts, limit=${EMPTY_RUN_RETRY_MAX}) — exiting 1 so systemd Restart fires"
+        # fleet-ops#3310: a verdict empty-run shipped nothing — a real failure.
+        write_death_class work
         exit 1
     fi
     seat_log "pi-issue-run: $inst empty run #${empty_run_attempt}/${EMPTY_RUN_RETRY_MAX} (empty-run, ${noop_reason}) — re-seating in-process on a different seat"
@@ -730,6 +801,12 @@ fi
 if [[ "$_shipped" == "yes" ]]; then
     rm -f "$ATTEMPTS_DIR/pi-issue-${inst}.reclaim-count" 2>/dev/null || true
     rm -f "$ATTEMPTS_DIR/pi-issue-${inst}.systemic" 2>/dev/null || true
+    # fleet-ops#3310: a shipped run clears the seat-class ladder + infra-death
+    # markers so a fresh claim cycle starts normal (no stale prefer-class,
+    # no accumulated infra count).
+    rm -f "$ATTEMPTS_DIR/pi-issue-${inst}.prefer-class" 2>/dev/null || true
+    rm -f "$ATTEMPTS_DIR/pi-issue-${inst}.infra-death" 2>/dev/null || true
+    rm -f "$ATTEMPTS_DIR/pi-issue-${inst}.last-death-class" 2>/dev/null || true
     seat_log "pi-issue-run: $inst SUCCESS reset reclaim-count + systemic marker (shipped: PR open or issue closed)"
 else
     seat_log "pi-issue-run: $inst SUCCESS but no open PR from claim/issue-${issue_num} and issue ${_cl_issue_state:-unknown} — reclaim-count NOT reset (claim-loop cap stays tall)"
