@@ -78,3 +78,7 @@ bash "$here/pstack-worker-prompt.test.sh" || fail "pstack worker prompt contract
 # pi-systemd-run, never nohup. Hosted here for the same CI-host reason
 # (workers have no Workflows permission).
 bash "$here/worker-prompt-systemd-run.test.sh" || fail "worker-prompt-systemd-run tests failed"
+# fleet-ops#3264: product PRs get one reviewer round before the auto-merge
+# arm. Hosted here for the same CI-host reason (workers have no Workflows
+# permission).
+bash "$here/worker-prompt-reviewer-round.test.sh" || fail "worker-prompt-reviewer-round tests failed"
