@@ -174,6 +174,20 @@ lib/fleet-deploy-quality.py /home/nish/.local/lib/pi-packet/fleet-deploy-quality
 systemd/pi-issue@.service /home/nish/.config/systemd/user/pi-issue@.service
 systemd/pi-issue-failed@.service /home/nish/.config/systemd/user/pi-issue-failed@.service
 systemd/app-pi\x2dissue.slice /home/nish/.config/systemd/user/app-pi\x2dissue.slice
+# fleet-ops#3277: install the subagent wrapper BEFORE the probe and
+# pi-issue-run so a mid-deploy worker never asserts EXTLOAD against the
+# pre-wrapper stock symlink. Probe is repo-ized here (was a hand-placed
+# pi-package script).
+template/extensions/subagent/index.ts /home/nish/.pi/agent/extensions/subagent/index.ts
+npm-pin:extensions/subagent/agents.ts /home/nish/.pi/agent/extensions/subagent/agents.ts
+npm-pin:extensions/subagent/prompts/implement.md /home/nish/.pi/agent/prompts/implement.md
+npm-pin:extensions/subagent/prompts/implement-and-review.md /home/nish/.pi/agent/prompts/implement-and-review.md
+npm-pin:extensions/subagent/prompts/scout-and-plan.md /home/nish/.pi/agent/prompts/scout-and-plan.md
+template/agents/planner.md /home/nish/.pi/agent/agents/planner.md
+template/agents/reviewer.md /home/nish/.pi/agent/agents/reviewer.md
+template/agents/scout.md /home/nish/.pi/agent/agents/scout.md
+template/agents/worker.md /home/nish/.pi/agent/agents/worker.md
+bin/pi-transport-check /home/nish/.local/bin/pi-transport-check
 bin/pi-issue-run /home/nish/.local/bin/pi-issue-run
 bin/pi-issue-failed-reap /home/nish/.local/bin/pi-issue-failed-reap
 bin/pi-systemd-run /home/nish/.local/bin/pi-systemd-run
