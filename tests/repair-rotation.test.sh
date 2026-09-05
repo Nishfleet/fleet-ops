@@ -5,8 +5,9 @@
 # when the hardcoded tick seat (minimax/MiniMax-M3) is walled by a 429 / quota,
 # pick_seat returns a DIFFERENT usable seat so the repair agent can re-run the
 # tick on it instead of leaving the unit failed. And when EVERY seat in the
-# ladder is walled, pick_seat returns empty (exit 1) — the genuine "fail loud"
-# escalation path, not a quiet degraded mode.
+# ladder is walled by a RECOVERABLE class (429 / rate_limited), pick_seat
+# fail-opens the shortest remaining bench INSIDE the cap map (fleet-ops#3324,
+# #3371) instead of stalling — it never routes to a seat outside the allowlist.
 #
 # This is the deterministic backing for the prompt change in
 # prompts/intake-repair.md and prompts/scout-repair.md: those prompts instruct
@@ -136,9 +137,20 @@ set +e
 seat=$(pick_seat minimax MiniMax-M3 0 "$tried")
 rc=$?
 set -e
-[[ "$rc" == 1 ]] || fail "all seats walled: pick_seat returned $rc, expected 1 (refuse to route outside cap map)"
-[[ -z "$seat" ]] || fail "all seats walled: pick_seat returned '$seat', expected empty (the fail-loud escalation signal)"
-ok "every seat walled -> pick_seat empty + exit 1 (genuine escalation, not quiet degraded mode)"
+# fleet-ops#3324 (#3371): both allowlisted seats are walled with a RECOVERABLE
+# class (rate_limited, retryable:true, seat_dead:false), so pick_seat fail-opens
+# the shortest remaining bench instead of stalling the tick. The invariant that
+# survives from #27: the fail-open seat is INSIDE the cap map — never a seat
+# outside the allowlist.
+[[ "$rc" == 0 ]] || fail "all seats walled (recoverable): pick_seat returned $rc, expected 0 (seat-floor fail-open, fleet-ops#3324)"
+[[ -n "$seat" ]] || fail "all seats walled (recoverable): pick_seat returned empty, expected the shortest-bench seat (fleet-ops#3324)"
+fp=$(printf '%s' "$seat" | cut -f1)
+fm=$(printf '%s' "$seat" | cut -f2)
+case "$fp/$fm" in
+  minimax/MiniMax-M3|devin/swe-1-7) ;;
+  *) fail "seat-floor fail-open routed OUTSIDE the cap map: $fp/$fm (refuse to route outside cap map)" ;;
+esac
+ok "every seat walled (recoverable) -> seat-floor fail-open to $fp/$fm, inside the cap map (fleet-ops#3324)"
 
 # --- invariant 3: the prompts instruct the agent to use this exact call -----
 # Guard against the prompt drift that caused #27 in the first place: the
