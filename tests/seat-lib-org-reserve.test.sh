@@ -284,7 +284,10 @@ ok "4 systemd org units still charge only the reserve of 2"
 
 # --- intake tick documents the split -------------------------------------
 tick="$repo_root/lib/pi-intake-tick.sh"
-grep -q 'count_active_total' "$tick" || fail "pi-intake-tick.sh must still call count_active_total"
+# fleet-ops#3281: the intake slot computation now uses active_ram_charge, which
+# wraps count_active_total (so the issue/org split is still honoured) and adds
+# the heavy-worker double charge. Assert the wrapper is wired in.
+grep -q 'active_ram_charge' "$tick" || fail "pi-intake-tick.sh must call active_ram_charge"
 grep -q 'count_active_issue\|org_reserve\|count_active_org' "$tick" \
   || fail "pi-intake-tick.sh must name the issue/org split in the capacity line"
 ok "pi-intake-tick.sh reports the issue/org split"

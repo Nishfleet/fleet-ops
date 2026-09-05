@@ -10,8 +10,12 @@
   "ram_gb_per_worker": 0.5,
   "_comment_target_concurrent": "fleet-ops#1558 (Nish standing order 2026-08-28): light-workload ceiling is 25. Undersaturation floor = min(target_concurrent, ram_governor_cap). Below that floor with ready supply is a FAULT. Browser-heavy mix self-throttles via MemAvailable; 25 is not guaranteed when 0509 E2E is in flight.",
   "target_concurrent": 25,
-  "_comment_worker_memory": "fleet-ops#1558 Q1=A: per-repo MemoryMax/MemoryHigh written by intake as a per-instance drop-in (pi-issue@<repo>-<N>.service.d/memory.conf) before systemctl start. Template pi-issue@.service keeps MemoryMax=6G/MemoryHigh=3G as the no-table fallback. fleet-ops light: MemoryMax=1536M (bounds the light tail; live peaks 0.11-0.63G). 0509 browser: MemoryMax=2G/MemoryHigh=1536M (lowered from 3G/2G in fleet-ops#1587 after per-repo Environment drop-in limits vitest forks to 2 and playwright workers to 1). Values are systemd quantity strings.",
+  "_comment_worker_memory": "fleet-ops#1558 Q1=A: per-repo MemoryMax/MemoryHigh written by intake as a per-instance drop-in (pi-issue@<repo>-<N>.service.d/memory.conf) before systemctl start. Template pi-issue@.service keeps MemoryMax=6G/MemoryHigh=3G as the no-table fallback. fleet-ops light: MemoryMax=1536M (bounds the light tail; live peaks 0.11-0.63G). 0509 browser: MemoryMax=2G/MemoryHigh=1536M (lowered from 3G/2G in fleet-ops#1587 after per-repo Environment drop-in limits vitest forks to 2 and playwright workers to 1). heavy class (fleet-ops#3281, part 8/9 of the manager-loop split): MemoryMax=3G/MemoryHigh=2G, written by intake for packet_difficulty heavy|keystone (a manager worker runs 8 parallel scouts + 1 implementer; measured flat worker peaks ~1.0 GB, so the RAM governor charges heavy workers at 1.0 GB = 2x the light 0.5 GB). Values are systemd quantity strings.",
   "worker_memory": {
+    "heavy": {
+      "MemoryMax": "3G",
+      "MemoryHigh": "2G"
+    },
     "fleet-ops": {
       "MemoryMax": "1536M",
       "MemoryHigh": "1G"

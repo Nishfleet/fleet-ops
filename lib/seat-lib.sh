@@ -44,6 +44,9 @@ STATE_DIR="${PI_PACKET_STATE:-$HOME/.local/state/pi-packet}"
 ATTEMPTS_DIR="$STATE_DIR/attempts"
 ACTIVE_SEATS_DIR="$STATE_DIR/active-seats"
 LOG_FILE="$STATE_DIR/watch.log"
+# Worker packet dir (pi-issue-run reads <inst>.in here; intake writes it).
+# Used by count_active_heavy to read each active unit's difficulty line.
+PI_ISSUES_DIR="${PI_ISSUES_DIR:-$HOME/.local/state/pi-issues}"
 
 MODELS_JSON="${PI_MODELS_JSON:-$HOME/.pi/agent/models.json}"
 # Per-seat health ledger (authority). Written atomically by the pi
@@ -954,7 +957,7 @@ _aimd_probe_admitted() {
     local ram_cap active_total
     ram_cap=$(ram_governor_cap) || ram_cap=0
     [[ "$ram_cap" =~ ^[0-9]+$ ]] || ram_cap=0
-    active_total=$(count_active_total)
+    active_total=$(active_ram_charge)
     (( ram_cap > active_total )) || return 1
     local new=$(( eff + 1 ))
     (( new > ceiling )) && new=$ceiling
@@ -1044,7 +1047,7 @@ _model_probe_admitted() {
     local ram_cap active_total
     ram_cap=$(ram_governor_cap) || ram_cap=0
     [[ "$ram_cap" =~ ^[0-9]+$ ]] || ram_cap=0
-    active_total=$(count_active_total)
+    active_total=$(active_ram_charge)
     (( ram_cap > active_total )) || return 1
     local new=$(( eff + 1 ))
     (( new > ceiling )) && new=$ceiling
@@ -1150,6 +1153,25 @@ worker_memory_for_repo() {
     high=$(jq -r --arg r "$repo" '.worker_memory[$r].MemoryHigh // empty' "$SEAT_CAPS_JSON" 2>/dev/null || true)
     [[ -n "$max" || -n "$high" ]] || return 0
     printf '%s\t%s\n' "$max" "$high"
+}
+
+# Per-difficulty MemoryMax/MemoryHigh from seat-caps.json worker_memory.
+# heavy|keystone -> the "heavy" class (MemoryMax=3G/MemoryHigh=2G, fleet-ops#3281)
+# so a manager worker running 8 parallel scouts + 1 implementer is bounded;
+# any other difficulty falls back to worker_memory_for_repo. Prints
+# "MemoryMax\tMemoryHigh" or empty (caller keeps the template defaults).
+worker_memory_for_difficulty() {
+    local repo="$1" difficulty="$2" max high
+    if [[ "$difficulty" == "heavy" || "$difficulty" == "keystone" ]]; then
+        if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+        [[ -f "$SEAT_CAPS_JSON" ]] || return 0
+        max=$(jq -r '.worker_memory["heavy"].MemoryMax // empty' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+        high=$(jq -r '.worker_memory["heavy"].MemoryHigh // empty' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+        [[ -n "$max" || -n "$high" ]] || return 0
+        printf '%s\t%s\n' "$max" "$high"
+        return
+    fi
+    worker_memory_for_repo "$repo"
 }
 
 # Per-repo Environment variables from seat-caps.json worker_env.<repo>.
@@ -2375,6 +2397,48 @@ count_active_total() {
     charge=$org
     (( charge > reserve )) && charge=$reserve
     echo $(( issue + charge ))
+}
+
+# Count active pi-issue workers whose packet difficulty is heavy|keystone.
+# The RAM governor charges these at 1.0 GB (2x the light 0.5 GB, fleet-ops#3281),
+# so the intake slot computation and AIMD probe admission weight them double.
+# Reads the packet's `difficulty:` line (written by intake) for each active
+# unit; a missing/unreadable packet is treated as light (fail-open). Org/
+# repair packets (pi-packet-*) are never heavy and are not counted here.
+count_active_heavy() {
+    local n=0 f unit inst pkt diff
+    while IFS= read -r f; do
+        unit=$(jq -r '.unit // ""' "$f" 2>/dev/null || true)
+        [[ "$unit" == pi-issue-* ]] || continue
+        inst="${unit#pi-issue-}"
+        pkt="$PI_ISSUES_DIR/${inst}.in"
+        diff=$(packet_difficulty "$pkt" 2>/dev/null || true)
+        [[ "$diff" == "heavy" || "$diff" == "keystone" ]] && n=$((n+1))
+    done < <(_seat_live_registry_files)
+    # Legacy ExecStart path: pi-issue@<inst>.service units not already in the
+    # registry (dedup matches count_active_issue).
+    local u
+    while IFS= read -r u; do
+        [[ "$u" == pi-issue@*.service ]] || continue
+        inst="${u#pi-issue@}"; inst="${inst%.service}"
+        [[ -f "$ACTIVE_SEATS_DIR/pi-issue-${inst}.json" ]] && continue
+        pkt="$PI_ISSUES_DIR/${inst}.in"
+        diff=$(packet_difficulty "$pkt" 2>/dev/null || true)
+        [[ "$diff" == "heavy" || "$diff" == "keystone" ]] && n=$((n+1))
+    done < <(_seat_list_pi_exec)
+    echo "$n"
+}
+
+# Total RAM charge of active workers in light-worker units. Heavy workers
+# (packet difficulty heavy|keystone) are charged at 1.0 GB = 2x the light
+# 0.5 GB, so they count double; org/repair packets stay at 1x. This is what
+# the RAM governor's cap is compared against so heavy workers consume their
+# real 1.0 GB share of MemAvailable (fleet-ops#3281).
+active_ram_charge() {
+    local total heavy
+    total=$(count_active_total)
+    heavy=$(count_active_heavy)
+    echo $(( total + heavy ))
 }
 
 # Count workers in `activating/auto-restart` across all fleet worker units.
