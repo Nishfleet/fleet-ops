@@ -306,6 +306,12 @@ template/cursor-rules/fleet-packet-verdict.mdc /home/nish/.cursor/rules/fleet-pa
 # pinned by tests/provider-timeout.test.sh to stay >= 0.9 x PI_HANG_TIMEOUT_S.
 template/extensions/devin-provider/index.ts /home/nish/.pi/agent/extensions/devin-provider/index.ts
 template/extensions/cursor-provider/index.ts /home/nish/.pi/agent/extensions/cursor-provider/index.ts
+# fleet-ops#3280: fleet-work.slice TasksMax=8000 (soft 7500 in spawn-guard-core).
+# Process-count fence; RAM governor remains admission authority. install.sh
+# converges the live Pi spawn-guard so the ceiling cannot drift from the drop-in.
+systemd/fleet-work.slice.d/10-tasksmax.conf /home/nish/.config/systemd/user/fleet-work.slice.d/10-tasksmax.conf
+template/extensions/spawn-guard-core.ts /home/nish/.pi/agent/extensions/spawn-guard-core.ts
+template/extensions/bash-spawn-hook.ts /home/nish/.pi/agent/extensions/bash-spawn-hook.ts
 bin/blocked-reconcile /home/nish/.local/bin/blocked-reconcile
 bin/claim-reconcile /home/nish/.local/bin/claim-reconcile
 bin/lifecycle-label-sweep /home/nish/.local/bin/lifecycle-label-sweep
