@@ -563,3 +563,12 @@ bash "$here/install-manifest-bak-sprawl.test.sh"
 # workflow-file edit (the worker App cannot push .github/workflows/**).
 # Hermetic (scratch vote state + stub gh, no real API).
 bash "$here/pi-audit-tally-escalate-senior.test.sh"
+
+# fleet-ops#3594 (PR #3633 follow-up): the pi-audit-run strip-preamble replay
+# drill landed without a ci.yml listing or a host, so P14 ran red on "1 test
+# file(s) are neither in ci.yml, hosted by a listed test, live/destructive,
+# nor a known orphan: pi-audit-run-strip-preamble.test.sh" (run 33967708485).
+# Hosted here so P14 runs it without a workflow-file edit (the worker App
+# cannot push .github/workflows/**). Hermetic (stub pi + scratch vote dir,
+# no gh/prometheus/systemd).
+bash "$here/pi-audit-run-strip-preamble.test.sh"
