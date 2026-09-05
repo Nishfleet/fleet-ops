@@ -38,9 +38,8 @@
           "max_probe_ceiling": 6
         },
         "swe-1-7": {
-          "cap": 0,
-          "max_probe_ceiling": 8,
-          "intentional_cap_zero": "stale"
+          "cap": 4,
+          "max_probe_ceiling": 8
         }
       },
       "_devin_cap_note": "Nish 2026-08-27 00:20 IST: glm-5-2 max 3 concurrent - burst rate-limit collisions at 4 starved intake ticks (watch.log 18:48Z); provider cap stays 4 (swe-1-7 fills the 4th slot)",
