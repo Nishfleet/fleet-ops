@@ -3509,3 +3509,85 @@ SEAT_YIELD_JSON="$SEAT_YIELD_JSON_TEST" bash -c 'source "$0"; load_seat_yield; s
   | grep -qE '^0\.5$' \
   || fail "seat_yield_for unknown/missing must default to 0.5"
 ok "3250: load_seat_yield and seat_yield_for read the exporter's seat-yield.json"
+
+# --- fleet-ops#3241: stale cap=0 expires to default, never persists silently --
+# A stale cap=0 seat (intentional_cap_zero="stale") with a reason dated older
+# than SEAT_CAP_ZERO_STALE_TTL_S is re-admitted at SEAT_CAP_ZERO_STALE_DEFAULT;
+# a fresh-dated or undated stale seat stays 0, but the undated one is logged
+# loudly (cap0-stale-undated). Intentional cap=0 (corpse/dead_decoy/money_only)
+# never expires. Model-level stale seats expire on their own .reason — the
+# pre-#3241 gap was that model .reason was never loaded, so a model-level
+# stale cap could never expire.
+_cap0_caps="$scratch/seat-caps-cap0expire.json"
+_cap0_today="$(date -u +%F)"
+cat >"$_cap0_caps" <<JSON
+{
+  "ram_gb_per_worker": 1.5,
+  "providers": {
+    "oldstale":   { "cap": 0, "class": "free", "intentional_cap_zero": "stale",
+                    "reason": "2020-01-01 re-audition: endpoint 404" },
+    "freshstale": { "cap": 0, "class": "free", "intentional_cap_zero": "stale",
+                    "reason": "${_cap0_today} re-audition: endpoint 404" },
+    "nodate":     { "cap": 0, "class": "free", "intentional_cap_zero": "stale" },
+    "corpseco":   { "cap": 0, "class": "free", "intentional_cap_zero": "corpse",
+                    "reason": "2020-01-01 retired: slug gone" },
+    "modelprov":  { "cap": 2, "class": "free", "models": {
+      "stale-old":    { "cap": 0, "intentional_cap_zero": "stale",
+                        "reason": "2020-01-01 re-audition: HTTP 400 model unavailable" },
+      "stale-nodate": { "cap": 0, "intentional_cap_zero": "stale" }
+    } }
+  }
+}
+JSON
+
+export SEAT_CAPS_JSON="$_cap0_caps"
+export PI_PACKET_STATE="$scratch/state-cap0expire"
+mkdir -p "$PI_PACKET_STATE"
+_cap0_out=$(bash -c 'source "$0"; load_seat_caps;
+                     echo "oldstale=$(provider_cap oldstale)";
+                     echo "freshstale=$(provider_cap freshstale)";
+                     echo "nodate=$(provider_cap nodate)";
+                     echo "corpseco=$(provider_cap corpseco)";
+                     echo "model-old=$(model_cap modelprov stale-old)";
+                     echo "model-nodate=$(model_cap modelprov stale-nodate)"' "$lib" 2>/dev/null)
+
+grep -qx "oldstale=1" <<<"$_cap0_out" \
+  || fail "3241: dated-old provider stale cap=0 must expire to default 1, got: $_cap0_out"
+grep -qx "freshstale=0" <<<"$_cap0_out" \
+  || fail "3241: fresh-dated stale cap=0 must stay 0 until TTL, got: $_cap0_out"
+grep -qx "nodate=0" <<<"$_cap0_out" \
+  || fail "3241: undated stale cap=0 must stay 0 (no date to age from), got: $_cap0_out"
+grep -qx "corpseco=0" <<<"$_cap0_out" \
+  || fail "3241: intentional (corpse) cap=0 must NEVER expire, got: $_cap0_out"
+grep -qx "model-old=1" <<<"$_cap0_out" \
+  || fail "3241: model-level stale cap=0 must expire on its own .reason date, got: $_cap0_out"
+grep -qx "model-nodate=0" <<<"$_cap0_out" \
+  || fail "3241: model-level undated stale cap=0 must stay 0, got: $_cap0_out"
+
+_cap0_log="$PI_PACKET_STATE/watch.log"
+grep -qE "cap0-stale-expire: oldstale .* re-admitted at cap=1" "$_cap0_log" \
+  || fail "3241: expire must log cap0-stale-expire for oldstale, got: $(cat "$_cap0_log")"
+grep -qE "cap0-stale-expire: modelprov/stale-old .* re-admitted at cap=1" "$_cap0_log" \
+  || fail "3241: expire must log cap0-stale-expire for modelprov/stale-old, got: $(cat "$_cap0_log")"
+grep -q "cap0-stale-undated: nodate " "$_cap0_log" \
+  || fail "3241: undated stale must log cap0-stale-undated (never silent), got: $(cat "$_cap0_log")"
+grep -q "cap0-stale-undated: modelprov/stale-nodate " "$_cap0_log" \
+  || fail "3241: undated model stale must log cap0-stale-undated, got: $(cat "$_cap0_log")"
+grep -q "cap0-stale-expire: freshstale" "$_cap0_log" \
+  && fail "3241: freshstale must not be expired"
+grep -qE "cap0-stale-(expire|undated): corpseco" "$_cap0_log" \
+  && fail "3241: intentional corpse seat must produce neither expire nor undated lines"
+ok "3241: dated stale expires to default, fresh holds, undated logged loudly, intentional never expires, model-level reason honored"
+
+# The kill switch: SEAT_CAP_ZERO_STALE_EXPIRE=0 disables the mechanism.
+export PI_PACKET_STATE="$scratch/state-cap0expire-off"
+mkdir -p "$PI_PACKET_STATE"
+_cap0_off=$(SEAT_CAP_ZERO_STALE_EXPIRE=0 bash -c 'source "$0"; load_seat_caps; provider_cap oldstale' "$lib" 2>/dev/null)
+[[ "$_cap0_off" == "0" ]] \
+  || fail "3241: SEAT_CAP_ZERO_STALE_EXPIRE=0 must disable expiry, got provider_cap=$_cap0_off"
+grep -q "cap0-stale-expire" "$PI_PACKET_STATE/watch.log" 2>/dev/null \
+  && fail "3241: no expire lines expected when the mechanism is disabled"
+ok "3241: SEAT_CAP_ZERO_STALE_EXPIRE=0 disables expiry"
+
+# Back to the shared scratch cap map for any later additions.
+export SEAT_CAPS_JSON="$scratch/seat-caps.json"

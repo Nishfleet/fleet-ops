@@ -457,6 +457,13 @@ load_seat_caps() {
             elif [[ "$icz" == "stale" ]]; then
                 SEAT_CAP_ZERO_CLASS_STALE["$p/$m"]="$icz"
             fi
+            # fleet-ops#3241: a model-level stale cap=0 expires on the date
+            # in its own .reason. Without this load the reason was invisible
+            # to _expire_stale_cap0_seats, so a model-level stale seat could
+            # never expire and persisted at cap=0 silently forever.
+            local mreason
+            mreason=$(jq -r '.reason // ""' <<<"$cap" 2>/dev/null || true)
+            [[ -n "$mreason" ]] && SEAT_PROVIDER_REASON["$p/$m"]="$mreason"
         fi
     # Unit separator (\x1f), not TSV, for the same reason the providers loop
     # uses it: bash `read` collapses consecutive tabs, so an empty per-model
@@ -525,7 +532,9 @@ load_seat_caps() {
     # seat is back; if it did not, the bench writers re-wall it and the
     # operator re-dates the reason. A seat with no parseable date in its
     # reason is NOT expired (we don't know when it was marked stale — expiring
-    # it immediately would break the #1432 classification tests). Intentional
+    # it immediately would break the #1432 classification tests) but it IS
+    # logged loudly as cap0-stale-undated so it can never persist silently
+    # (fleet-ops#3241). Intentional
     # cap=0 seats (dead_decoy, money_only, corpse) are NEVER expired — they
     # are by-design. Tests set SEAT_CAP_ZERO_STALE_EXPIRE=0 to disable.
     _expire_stale_cap0_seats
@@ -563,23 +572,28 @@ _expire_stale_cap0_seats() {
         fi
         [[ "$cap" == "0" ]] || continue
         reason="${SEAT_PROVIDER_REASON[$key]:-}"
-        # Extract the first YYYY-MM-DD from the reason. No date -> SKIP (we
-        # don't know when it was marked stale; expiring immediately would
-        # break the #1432 classification tests and re-probe seats that may
-        # still be genuinely broken).
+        # Extract the first YYYY-MM-DD from the reason. No parseable date ->
+        # do NOT expire (we don't know when it was marked stale; expiring
+        # immediately would re-probe seats that may still be genuinely
+        # broken) but DO log loudly: an undated stale cap can never expire,
+        # so without this line it persists silently forever (fleet-ops#3241).
         date_s=0
+        local date_str=""
         if [[ "$reason" =~ ([0-9]{4})-([0-9]{2})-([0-9]{2}) ]]; then
-            date_s=$(date -u -d "${BASH_REMATCH[1]}-${BASH_REMATCH[2]}-${BASH_REMATCH[3]}" +%s 2>/dev/null || echo 0)
-        else
-            continue  # undated — don't expire
+            date_str="${BASH_REMATCH[0]}"
+            date_s=$(date -u -d "$date_str" +%s 2>/dev/null || echo 0)
         fi
-        if (( date_s > 0 && now_s - date_s >= ttl )); then
+        if (( date_s <= 0 )); then
+            seat_log "cap0-stale-undated: $key stale cap=0 has no dated reason; it can never expire — audit the seat and date the reason (fleet-ops#3241)"
+            continue
+        fi
+        if (( now_s - date_s >= ttl )); then
             if [[ "$key" == */* ]]; then
                 SEAT_MODEL_CAP[$key]="$default"
             else
                 SEAT_PROVIDER_CAP[$key]="$default"
             fi
-            seat_log "cap0-stale-expire: $key stale cap=0 expired (age=$((now_s - date_s))s; reason dated ${BASH_REMATCH[0]}) -> re-admitted at cap=$default for re-probe (fleet-ops#3111)"
+            seat_log "cap0-stale-expire: $key stale cap=0 expired (age=$((now_s - date_s))s; reason dated ${date_str}) -> re-admitted at cap=$default for re-probe (fleet-ops#3111)"
         fi
     done
     return 0
