@@ -141,10 +141,10 @@ probe=$(jq -r '.walled_comeback.min_probe_interval_s' "$caps")
 
 ok "walled_comeback table is present with 15min rate-limit and 15min probe floor"
 
-# --- free lanes are the commandcode/hetzner/opencode allowlist ------------
+# --- free lanes: bai/commandcode/hetzner/opencode + xkiro (free-tier audition, 2026-09-05) ---
 # leftover free after the volume prefix (b.ai wired 2026-08-27, fleet-ops#1272)
 free_order=$(jq -r '.free_providers_in_order | join(" ")' "$caps")
-[[ "$free_order" == "bai commandcode hetzner opencode" ]] \
+[[ "$free_order" == "bai commandcode hetzner opencode xkiro" ]] \
   || fail "free order must be 'bai commandcode hetzner opencode xkiro', got: $free_order"
 
 # prepaid and metered providers must not appear as free lanes
