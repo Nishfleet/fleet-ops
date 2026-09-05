@@ -3673,3 +3673,9 @@ _sidecar_fm="$(PI_SEAT_HEALTH_SIDECAR="$_sidecar_scratch/spawn.json" \
 [[ "$_sidecar_q" = "transient_fault" ]] \
   || fail "3559: spawn-fail sidecar must report transient_fault, got $_sidecar_q"
 ok "3559: wrapper spawn-fail bench is visible in pi-seat-health.json (transient_fault/spawn_fail, not healthy)"
+
+# fleet-ops#3322: audition lane. Same CI constraint (worker token cannot add
+# a P14 line in .github/workflows/ci.yml). Proves the audition-sync helper
+# (injection/retirement/TTL/prepaid-skip), the pick_seat light-only gate, and
+# the yield-ledger cost_usd + fleet_sessions_to_pr_pct additions.
+bash "$here/audition-lane.test.sh" || fail "audition-lane tests failed"
