@@ -158,6 +158,8 @@
       "class": "metered",
       "reason": "2026-09-05 balance USD 0.00 of 90.06 (HTTP 402); Nish decides any top-up; restore cap 2 when credits > 5 (fleet-ops#3283/#3284). fleet-ops#3241: classified stale (was unclassified — the prose sat in intentional_cap_zero, which matches no class token) so the 14d expire re-probes it; a 402 costs nothing, a healthy probe means credits returned.",
       "intentional_cap_zero": "stale",
+      "free_model_daily_request_budget": 50,
+      "_comment_free_daily_budget": "fleet-ops#3723 (2026-09-06): OpenRouter's free-model request budget is per ACCOUNT, not per key (openrouter.ai/docs/api-reference/limits: 'Making additional accounts or API keys will not affect your rate limits, as we govern capacity globally'). Documented caps (verified 2026-09-06 from openrouter.ai/docs/api-reference/limits): FREE_MODEL_RATE_LIMIT_RPM=20, FREE_MODEL_NO_CREDITS_RPD=50 (credits purchased < $10), FREE_MODEL_HAS_CREDITS_RPD=1000 (>= $10), FREE_MODEL_CREDITS_THRESHOLD=10. The account balance is USD 0.00 of 90.06 (HTTP 402, 2026-09-05) so the no-credits tier (50 req/day) is the live cap; raise to 1000 only after Nish tops up credits >= $10. seat-lib.sh counts assistant turns across all openrouter *:free model sessions today (UTC) and benches every openrouter free model once the shared counter hits this cap, until 00:00 UTC. The bench is NOT charged to the work item: no consecutive_failure_count increment, no yield penalty (it is an account-wide external limit, not a seat fault). Reuses the existing quota_bench/usable_at ledger fields; no new state file.",
       "models": {
         "deepseek/deepseek-v4-flash-0731": {
           "cap": 0,
