@@ -962,6 +962,10 @@ def check_live_matches_origin_main(checkout: Path) -> None:
         src, dest = parts[0], parts[1]
         if dest.startswith("/etc/"):
             continue
+        # Skip npm-pin entries - these are pinned to the installed pi-coding-agent
+        # package examples, not from the fleet-ops repo origin/main.
+        if src.startswith("npm-pin:"):
+            continue
         expected = git_show_bytes(checkout, f"{origin_main}:{src}")
         if expected is None:
             findings.append(f"{dest}: origin/main missing {src}")
