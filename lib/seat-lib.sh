@@ -4478,25 +4478,32 @@ mark_seat_quota_bench() {
     # opencode/mimo-v2.5-free at 42 consecutive 429s stayed quota_bench
     # forever, re-offered after each park wall and never terminal. At
     # merged_count >= SEAT_DEAD_CONSECUTIVE_THRESHOLD (default 25, matching
-    # seat-health.ts) the ledger is written with seat_dead=true AND its
-    # bench_until / usable_at are cleared (the fleet-ops#2415/#2422
-    # "no-comeback-clock" convention used by the extension). The quota_bench
-    # branch in seat_usable returns 1 ("no bench_until — defensive block")
-    # for a cleared clock, so the corpse is terminally excluded until a
-    # healthy observation clears seat_dead=false.
+    # seat-health.ts) the ledger is written with seat_dead=true so the roster
+    # and census count the seat dead and the alert surface stays loud.
+    #
+    # fleet-ops#3377: as originally written the corpse branch ALSO cleared
+    # bench_until/usable_at (the fleet-ops#2415/#2422 "no-comeback-clock"
+    # convention). For a quota_cap seat that is wrong: a quota wall is
+    # TIME-BASED and resets, so clearing the clock means no release time is
+    # ever reached — the seat is permanently dead instead of cooling down
+    # (live 2026-09-04: opencode/mimo-v2.5-free at c=33 sat seat_dead=true
+    # with bench_until=""). A concrete bench_until is now KEPT on the corpse
+    # so that (a) seat_usable's quota_bench branch holds the seat benched
+    # while the clock is future and (b) fleet-seat-comeback-release tool-uses
+    # the seat once the clock passes and a healthy observation clears
+    # seat_dead=false (fleet-ops#2638: a quota_cap corpse is not in
+    # _corpse_is_recoverable_mode, so with no wall it would be retired as
+    # permanent). seat_dead=true still flags the corpse to the roster/census;
+    # only the no-comeback-clock clear is dropped.
     local seat_dead=false
-    local corpse_bench_until="$bench_until"
-    local corpse_usable_at="$bench_until"
     if _seat_dead_by_threshold "$merged_count"; then
         seat_dead=true
-        corpse_bench_until=""
-        corpse_usable_at=""
     fi
 
     local tmp="$path.bench.$$.$RANDOM.tmp"
     if ! jq -nc \
         --arg provider "$p" --arg model "$m" \
-        --arg observed "$now_utc" --arg bench "$corpse_bench_until" --arg usable "$corpse_usable_at" \
+        --arg observed "$now_utc" --arg bench "$bench_until" --arg usable "$bench_until" \
         --argjson window "$window_s" --argjson merged "$merged_count" \
         --argjson http_status 429 --argjson retry_after null \
         --argjson retryable true --argjson seat_dead "$seat_dead" --argjson poison_ladder false \
@@ -4520,7 +4527,7 @@ mark_seat_quota_bench() {
     chmod 0644 "$tmp" 2>/dev/null || true
     if mv "$tmp" "$path" 2>/dev/null; then
         if [[ "$seat_dead" == "true" ]]; then
-            seat_log "quota-bench: $p/$m CORPSE reclassified (count=$merged_count >= ${SEAT_DEAD_CONSECUTIVE_THRESHOLD}); bench_until/usable_at cleared (fleet-ops#2415); terminal until a healthy observation clears seat_dead=false (fleet-ops#2594)"
+            seat_log "quota-bench: $p/$m CORPSE reclassified (count=$merged_count >= ${SEAT_DEAD_CONSECUTIVE_THRESHOLD}); bench_until=$bench_until kept as comeback clock (fleet-ops#3377); re-released once it passes / a healthy observation clears seat_dead=false (fleet-ops#2594)"
         else
             seat_log "quota-bench: benched $p/$m until $bench_until (window=${window_s}s, count=$merged_count)"
             if _seat_parked_by_ceiling "$merged_count"; then
