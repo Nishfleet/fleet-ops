@@ -289,10 +289,10 @@ spec_gate_py() {
 }
 
 issue_passes_spec_gate() {
-    local body="$1" py
+    local body="$1" repo="$2" py
     py=$(spec_gate_py)
     [ -f "$py" ] || return 1
-    printf '%s' "$body" | python3 "$py" check-body >/dev/null
+    printf '%s' "$body" | python3 "$py" check-body --repo "$repo" >/dev/null
 }
 
 # fleet-ops#3121: owner-authored admission bypass. Caller has already
@@ -305,7 +305,7 @@ owner_bridges_to_ready() {
     local j body
     j=$("$GH" issue view "$candidate" -R "Nishfleet/$repo" --json body 2>/dev/null || printf '{}')
     body=$(printf '%s\n' "$j" | jq -r '.body // empty')
-    if ! issue_passes_spec_gate "$body"; then
+    if ! issue_passes_spec_gate "$body" "$repo"; then
         log "$repo/#$candidate owner-authored but SPEC-GATE-REFUSED — panel admission"
         return 1
     fi

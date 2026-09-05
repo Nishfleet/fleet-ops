@@ -10,6 +10,8 @@
 #   (e) termination: with no command is refused unless another field is present.
 #   (f) a first-admission script that drops the gate is rejected.
 #   (g) nested CI host so this token does not need a workflow edit.
+#   (h) fleet-ops#3255: repo fleet-ops requires a moves: line naming a product
+#       metric; without it the gate refuses. Non-fleet-ops repos are unaffected.
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -74,6 +76,40 @@ set -e
 [[ "$bare_rc" == "1" ]] || fail "bare termination: must be refused (rc=$bare_rc out=$bare_out)"
 ok "(e) termination: with no command is refused"
 
+# (h) fleet-ops#3255: fleet-ops requires a moves: line naming a product metric.
+printf '%s\n' 'termination: test -f README.md' 'moves: product_merges_per_day' >"$scratch/fo-moves.md"
+set +e
+fo_ok=$(python3 "$py" check-body --body "$scratch/fo-moves.md" --repo fleet-ops 2>&1)
+fo_ok_rc=$?
+set -e
+[[ "$fo_ok_rc" == "0" ]] || fail "fleet-ops with moves: must pass (rc=$fo_ok_rc out=$fo_ok)"
+ok "(h) fleet-ops body with moves: is accepted"
+
+printf '%s\n' 'termination: test -f README.md' >"$scratch/fo-nomoves.md"
+set +e
+fo_no=$(python3 "$py" check-body --body "$scratch/fo-nomoves.md" --repo fleet-ops 2>&1)
+fo_no_rc=$?
+set -e
+[[ "$fo_no_rc" == "1" ]] || fail "fleet-ops without moves: must be refused (rc=$fo_no_rc out=$fo_no)"
+grep -q 'refused' <<<"$fo_no" || fail "fleet-ops refuse output must say refused (out=$fo_no)"
+ok "(h) fleet-ops body without moves: is refused"
+
+printf '%s\n' 'termination: test -f README.md' 'moves: bogus_metric' >"$scratch/fo-badmoves.md"
+set +e
+fo_bad=$(python3 "$py" check-body --body "$scratch/fo-badmoves.md" --repo fleet-ops 2>&1)
+fo_bad_rc=$?
+set -e
+[[ "$fo_bad_rc" == "1" ]] || fail "fleet-ops with invalid moves: must be refused (rc=$fo_bad_rc out=$fo_bad)"
+ok "(h) fleet-ops body with invalid moves: is refused"
+
+printf '%s\n' 'termination: test -f README.md' >"$scratch/other-nomoves.md"
+set +e
+other_ok=$(python3 "$py" check-body --body "$scratch/other-nomoves.md" --repo 0509 2>&1)
+other_ok_rc=$?
+set -e
+[[ "$other_ok_rc" == "0" ]] || fail "non-fleet-ops without moves: must pass (rc=$other_ok_rc out=$other_ok)"
+ok "(h) non-fleet-ops body without moves: is unaffected"
+
 mkdir -p "$scratch/repo/bin" "$scratch/repo/prompts" "$scratch/repo/config"
 cp "$repo_root/bin/lifecycle-label-sweep" "$scratch/repo/bin/"
 cp "$repo_root/bin/pi-audit-tally" "$scratch/repo/bin/"
@@ -94,4 +130,4 @@ grep -Fq 'bash "$here/agent-ready-spec-gate.test.sh"' "$here/rule-enforcement.te
   || fail "rule-enforcement.test.sh must nest this file (CI cannot gain a new workflow line)"
 ok "(g) nested CI host"
 
-ok "agent-ready-spec-gate: live verify, product spec, control-plane spec, refuse, unwired"
+ok "agent-ready-spec-gate: live verify, product spec, control-plane spec, refuse, unwired, fleet-ops moves"
