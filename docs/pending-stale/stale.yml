@@ -1,0 +1,75 @@
+name: Close unclaimed unlabeled issues
+
+# fleet-ops#3311: GitHub's own actions/stale, zero custom code.
+#
+# Nish 2026-09-04: do NOT write this as a heartbeat section. Parked under
+# docs/pending-stale/ because the nishfleet-worker App cannot push
+# .github/workflows/**. A token with Workflows scope (nish3451) lands
+# this file at .github/workflows/stale.yml and attests.
+#
+# Target: unlabeled auto-filed issues. only-issue-labels is empty so the
+# action sees every issue; exempt-issue-labels keep the live queue and
+# landing set out of the drain. PRs are never marked stale.
+#
+# days-before-stale: 2 (48h of inactivity on updated_at).
+# days-before-close: 0 closes in the same run once the stale label lands
+# (actions/stale v11 IssuesProcessor._updatedSince(0) is false for any
+# past timestamp, so the close window is immediate).
+# operations-per-run: 30, the action's own default, under the API budget.
+# The action is stateful: a capped run continues from the first
+# unprocessed issue next schedule.
+#
+# GitHub Actions minutes: public repo, free. Do not make this a required
+# check. It is a queue-hygiene sweep, not a gate.
+
+on:
+  schedule:
+    # Daily 04:17 UTC. Named reason: unlabeled issues older than 2 days
+    # are the unit of work, so a daily sweep is enough; 04:17 sits
+    # between repo-standards-sync (03:17) and ci-standards-audit (05:17)
+    # so the three scheduled jobs do not share a start minute.
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: stale-issues-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  stale:
+    name: Close unclaimed unlabeled issues
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Close unlabeled issues idle 2 days
+        uses: actions/stale@4391f3da665fdf50b6810c1a66712fb9ba21aa93 # v11.0.0
+        with:
+          days-before-stale: 2
+          days-before-close: 0
+          days-before-pr-stale: -1
+          days-before-pr-close: -1
+          # Empty only-issue-labels: unlabeled auto-filed issues are the
+          # target (no allow-list filter). Exempt labels keep the live
+          # queue and the landing set out of the drain.
+          only-issue-labels: ""
+          exempt-issue-labels: >-
+            critical-path,landing-0904,umbrella,agent-in-progress,agent-ready,escalate-senior,research-delta,red-on-main,stop-the-line
+          stale-issue-message: ""
+          close-issue-message: >-
+            triage-closed: unclaimed 48h; re-filed automatically if the
+            condition recurs / re-file with a moves: line if it still
+            matters
+          close-issue-reason: not_planned
+          operations-per-run: 30
+          ascending: true
+          sort-by: created
+          enable-statistics: true
