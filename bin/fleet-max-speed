@@ -27,6 +27,12 @@ set -Eeuo pipefail
 export HOME="${HOME:-/home/nish}"
 export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
 
+# Use the nishfleet-worker App token for any GitHub writes. Fail closed if
+# the App cannot mint and no token has been inherited from a parent organ.
+if [[ -z "${GH_TOKEN:-}" ]]; then
+    eval "$(worker-token --print)"
+fi
+
 here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 ROOT="${FLEET_MAX_SPEED_ROOT:-$(cd "$here/.." && pwd)}"
 SLEEP_MIN="${FLEET_MAX_SPEED_SLEEP_SECS:-5}"

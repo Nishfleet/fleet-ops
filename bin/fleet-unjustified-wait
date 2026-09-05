@@ -67,6 +67,12 @@ set -Eeuo pipefail
 export HOME="${HOME:-/home/nish}"
 export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
 
+# Use the nishfleet-worker App token for any GitHub writes. Fail closed if
+# the App cannot mint and no token has been inherited from a parent organ.
+if [[ -z "${GH_TOKEN:-}" ]]; then
+    eval "$(worker-token --print)"
+fi
+
 AS="${AGENT_STATE:-/home/nish/workspaces/agent-state}"
 TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-$AS/FLEET-HEARTBEAT-TRIAGE.md}"
 LEDGER_DIR="${FLEET_SEAT_LEDGER_DIR:-$AS/lanes/seats}"
