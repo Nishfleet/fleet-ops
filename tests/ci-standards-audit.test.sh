@@ -454,6 +454,14 @@ bash "$here/unit-escalation-write-recurrence-suppress.test.sh"
 # push .github/workflows/**).
 bash "$here/unit-escalation-write-pi-issue-exclusion.test.sh"
 
+# fleet-ops#3368: the FleetEscalationStorm alert must name its dominant
+# producer so a recurrence is actionable without a manual dig. Locks the
+# topk(1, fleet_escalations_24h) expr + {{ $labels.unit }} annotations via
+# a promtool rule-unit test. Runs offline (no live prometheus); skips the
+# promtool section cleanly when promtool is absent. Hosted here so P14
+# runs it without a workflow-file edit.
+bash "$here/fleet-rules-escalation-storm.test.sh"
+
 # fleet-ops#2462: cap re-claims per item (MAX_RECLAIMS in pi-intake-tick.sh)
 # + systemic-failure skip (.systemic marker when every tried seat is benched).
 # Hosts the 11-test gate (MAX_RECLAIMS env var, tick read path, skip+escalate,

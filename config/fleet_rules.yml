@@ -366,15 +366,21 @@ groups:
           summary: "fleet merged fewer than 10 PRs in 24h; investigate stalls."
           description: "sum(fleet_merged_prs_24h) < 10 for 6h. Family omitted (stale gh cache) does not fire this rule."
 
+      # fleet-ops#3368: the expr keeps the total-greater-than-threshold gate
+      # but ANDs it with topk(1, fleet_escalations_24h) so the firing vector
+      # carries the dominant producer as its `unit` label. The description
+      # (and summary) name that unit so a recurrence is actionable without a
+      # manual journal dig. tests/fleet-rules-escalation-storm.test.sh locks
+      # the naming via promtool rule unit test.
       - alert: FleetEscalationStorm
-        expr: sum(fleet_escalations_24h) > 300
+        expr: topk(1, fleet_escalations_24h) and on() (sum(fleet_escalations_24h) > 300)
         for: 30m
         labels:
           severity: warning
           service: fleet
         annotations:
-          summary: "escalation volume abnormal; a unit is flapping."
-          description: "sum(fleet_escalations_24h) > 300 for 30m."
+          summary: "escalation volume abnormal; dominant producer {{ $labels.unit }}"
+          description: "sum(fleet_escalations_24h) > 300 for 30m; top producer {{ $labels.unit }}={{$value}}."
 
       # fleet-ops#1199: tightened from 2h to 30m. The 30m floor is enforced
       # by the alert-repair-dispatch mutex (claim/<alert-scope>-<repo> on
