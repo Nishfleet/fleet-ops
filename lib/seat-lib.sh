@@ -212,6 +212,56 @@ packet_repo() {
     printf '%s' "$repo"
 }
 
+# --- product-repo flag (fleet-ops#3724) -------------------------------------
+# Source of truth: config/intake-repos.json `repos[].product`. A seat marked
+# product_only in seat-caps.json is a metered last-resort seat that may only
+# ever serve a product repo — never fleet-ops (control plane) and never an
+# unclassified repo. Fail-closed: a missing flag, an unlisted repo, or a
+# missing/unparseable config resolves to not-product, so a paid seat can
+# never silently serve a repo that is not a declared product repo.
+INTAKE_REPOS_JSON="${FLEET_INTAKE_REPOS_JSON:-}"
+_intake_repos_loaded=0
+declare -A REPO_PRODUCT_MAP=()
+
+# Resolve the intake-repos.json path: explicit FLEET_INTAKE_REPOS_JSON first,
+# then the known fleet-ops checkouts on this VPS (products first, then the
+# tooling checkouts the deploy/mirror lanes keep).
+_intake_repos_path() {
+    if [[ -n "$INTAKE_REPOS_JSON" && -f "$INTAKE_REPOS_JSON" ]]; then
+        printf '%s' "$INTAKE_REPOS_JSON"
+        return 0
+    fi
+    local c
+    for c in \
+        "$HOME/workspaces/products/fleet-ops/config/intake-repos.json" \
+        "$HOME/workspaces/tooling/fleet-ops/config/intake-repos.json" \
+        "$HOME/workspaces/tooling/fleet-ops-deploy-clone/config/intake-repos.json"; do
+        [[ -f "$c" ]] && { printf '%s' "$c"; return 0; }
+    done
+    return 1
+}
+
+load_repo_product() {
+    REPO_PRODUCT_MAP=()
+    _intake_repos_loaded=1
+    local f
+    f=$(_intake_repos_path) || return 1
+    local repo prod
+    while IFS=$'\t' read -r repo prod; do
+        [[ -n "$repo" ]] || continue
+        [[ "$prod" == "true" ]] && REPO_PRODUCT_MAP["$repo"]=1
+    done < <(jq -r '.repos[]? | [.name, (.product // false | tostring)] | @tsv' "$f" 2>/dev/null || true)
+}
+
+# repo_is_product <repo> -> 0 when <repo> is a declared product repo
+# (intake-repos.json product flag), 1 otherwise. Fail-closed on empty repo,
+# unlisted repo, or missing/unparseable config.
+repo_is_product() {
+    local repo="$1"
+    if (( ! _intake_repos_loaded )); then load_repo_product || true; fi
+    [[ -n "$repo" && "${REPO_PRODUCT_MAP[$repo]:-0}" == "1" ]]
+}
+
 # --- capacity map (P4-A) ----------------------------------------------------
 # Read once per shell. Returns 0 on success, 1 if the map is missing/unreadable.
 # Caller is expected to fall back to "no caps" behaviour (allow everything)
@@ -286,6 +336,21 @@ SEAT_PACE_PCT="${SEAT_PACE_PCT:-80}"
 # this, every free model on the provider benches until 00:00 UTC. Keyed on
 # provider name. 0 = no daily budget (default; only OpenRouter carries one).
 declare -A SEAT_FREE_DAILY_REQUEST_BUDGET=()
+
+# fleet-ops#3724: per-seat routing guard for a metered seat that may only
+# ever serve PRODUCT repos (config/intake-repos.json `product` flag on the
+# repos[] entry — fleet-ops is control plane, never product). Keyed on
+# "provider/model". A seat with SEAT_PRODUCT_ONLY[p/m]=1 is collected in a
+# last-resort bucket pick_seat appends after every other class, so it is
+# offered only when no free/prepaid seat is usable.
+declare -A SEAT_PRODUCT_ONLY=()
+# fleet-ops#3724: per-seat daily USD spend cap measured from Pi session
+# usage.cost (the same source the fleet-ops#3283 fleet_seat_spend_usd export
+# aggregates). When today's (UTC) spend on the seat reaches this, seat-lib
+# benches it until 00:00 UTC with a dated ledger reason — an external budget
+# wall (health_class=quota_bench, consecutive_failure_count=0), never charged
+# to the work item. Keyed on "provider/model". Absent = no daily spend cap.
+declare -A SEAT_DAILY_SPEND_CAP_USD=()
 
 # fleet-ops#457: lanes whose snapshot metrics exceed quality-routing.json
 # cuts. Empty when the scoreboard is missing/stale. Loaded once per pick.
@@ -382,6 +447,8 @@ load_seat_caps() {
     SEAT_PROVIDER_REASON=()
     SEAT_CAP_ZERO_CLASS_INTENTIONAL=()
     SEAT_CAP_ZERO_CLASS_STALE=()
+    SEAT_PRODUCT_ONLY=()
+    SEAT_DAILY_SPEND_CAP_USD=()
     SEAT_FREE_ORDER=""
     SEAT_PREPAID_ORDER=""
     SEAT_PRODUCT_ORDER=""
@@ -502,6 +569,17 @@ load_seat_caps() {
             local mreason
             mreason=$(jq -r '.reason // ""' <<<"$cap" 2>/dev/null || true)
             [[ -n "$mreason" ]] && SEAT_PROVIDER_REASON["$p/$m"]="$mreason"
+            # fleet-ops#3724: product_only + daily_spend_cap_usd model flags.
+            # product_only: pick_seat offers the seat only for a packet whose
+            # repo carries the product flag in config/intake-repos.json, and
+            # only after every free/prepaid seat is unusable (last-resort
+            # bucket). daily_spend_cap_usd: when today's (UTC) Pi usage.cost
+            # on the seat reaches it, the seat benches until 00:00 UTC.
+            local mpo mspend
+            mpo=$(jq -r '.product_only // false' <<<"$cap" 2>/dev/null || true)
+            [[ "$mpo" == "true" ]] && SEAT_PRODUCT_ONLY["$p/$m"]=1
+            mspend=$(jq -r '.daily_spend_cap_usd // ""' <<<"$cap" 2>/dev/null || true)
+            [[ "$mspend" =~ ^[0-9]+(\.[0-9]+)?$ ]] && SEAT_DAILY_SPEND_CAP_USD["$p/$m"]="$mspend"
         fi
     # Unit separator (\x1f), not TSV, for the same reason the providers loop
     # uses it: bash `read` collapses consecutive tabs, so an empty per-model
@@ -1713,6 +1791,130 @@ _provider_free_daily_budget_reached() {
         printf -v "$cache_key" '%s' "$count"
     fi
     (( count >= budget ))
+}
+
+# fleet-ops#3724: today's (UTC) spend in USD on one seat, measured from Pi
+# session usage.cost — the same field the fleet-ops#3283 fleet_seat_spend_usd
+# export aggregates. We scan session jsonl files that can carry today's spend
+# (named today OR modified today — a session started before midnight keeps
+# appending after it, so the filename prefix alone would miss it), keep the
+# sessions pinned to this seat (first model_change provider+modelId match),
+# and sum message.usage.cost.total on messages timestamped today.
+#
+# Args: provider model
+# Prints: today's spend in USD (float). 0 on any error (fail-open).
+_seat_daily_spend_usd() {
+    local p="$1" m="$2"
+    local sessions_dir="${FLEET_SESSIONS_DIR:-$HOME/.pi/agent/sessions}"
+    [[ -d "$sessions_dir" ]] || { printf '0'; return 0; }
+    command -v jq >/dev/null 2>&1 || { printf '0'; return 0; }
+    local today today_s
+    today=$(date -u +%Y-%m-%d)
+    today_s=$(date -u -d "${today}T00:00:00Z" +%s 2>/dev/null || true)
+    [[ -n "$today" && -n "$today_s" ]] || { printf '0'; return 0; }
+    local total=0
+    local f spend hit line provider model
+    while IFS= read -r f; do
+        [[ -n "$f" ]] || continue
+        # Session pinned to this seat? A session is single-model, so the
+        # first model_change event is authoritative (same rule as the
+        # free-model daily budget counter, fleet-ops#3723).
+        hit=0
+        while IFS= read -r line; do
+            [[ "$line" == *'"type":"model_change"'* || "$line" == *'"type": "model_change"'* ]] || continue
+            provider=$(printf '%s' "$line" | jq -r '.provider // ""' 2>/dev/null || true)
+            model=$(printf '%s' "$line" | jq -r '.modelId // ""' 2>/dev/null || true)
+            [[ "$provider" == "$p" && "$model" == "$m" ]] && hit=1
+            break
+        done < "$f" 2>/dev/null || continue
+        (( hit )) || continue
+        # Sum usage.cost.total over message lines timestamped today (UTC).
+        # grep '"cost"' prefilters so jq only parses cost-bearing lines.
+        spend=$(grep '"cost"' "$f" 2>/dev/null \
+            | jq -s --arg d "$today" \
+                '[.[] | select(.type == "message" and ((.timestamp // "") | startswith($d))) | (.message.usage.cost.total // 0)] | add // 0' \
+                2>/dev/null || true)
+        if [[ "$spend" =~ ^[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?$ ]]; then
+            total=$(awk -v a="$total" -v b="$spend" 'BEGIN{printf "%.6f", a+b}')
+        fi
+    done < <(find "$sessions_dir" -type f -name '*.jsonl' \
+                \( -name "${today}T*.jsonl" -o -newermt "@${today_s}" \) 2>/dev/null || true)
+    printf '%s' "$total"
+}
+
+# fleet-ops#3724: true when the seat's configured daily_spend_cap_usd has
+# been reached by today's (UTC) Pi usage.cost on the seat. Caches the sum per
+# pick (one scan per seat per pick_seat call).
+# Args: provider model
+# Returns: 0 if the cap is reached (bench), 1 otherwise.
+_seat_daily_spend_cap_reached() {
+    local p="$1" m="$2"
+    local cap="${SEAT_DAILY_SPEND_CAP_USD[$p/$m]:-0}"
+    [[ "$cap" =~ ^[0-9]+(\.[0-9]+)?$ ]] || return 1
+    local cache_key="_SDSC_${p//[^A-Za-z0-9_]/_}__${m//[^A-Za-z0-9_]/_}"
+    local spend="${!cache_key:-}"
+    if [[ -z "$spend" ]]; then
+        spend=$(_seat_daily_spend_usd "$p" "$m")
+        [[ "$spend" =~ ^[0-9] ]] || spend=0
+        printf -v "$cache_key" '%s' "$spend"
+    fi
+    awk -v s="$spend" -v c="$cap" 'BEGIN{exit !(s+0 >= c+0)}'
+}
+
+# fleet-ops#3724: bench a seat for the rest of the UTC day when its
+# daily_spend_cap_usd is reached. Reuses the quota_bench/usable_at ledger
+# shape (same as the free-model daily budget, fleet-ops#3723): the entry is a
+# money wall (health_class=quota_bench, failure_mode=quota_cap) so the
+# seat-floor fail-open never lifts it, consecutive_failure_count stays 0 (an
+# external budget limit, not a seat fault — never charged to the work item),
+# and the ledger carries a dated `reason` naming the day the cap fired.
+# Best-effort: a write failure fails open (the counter re-evaluates next pick).
+# Args: provider model
+_mark_seat_spend_cap_bench() {
+    local p="$1" m="$2"
+    local cap="${SEAT_DAILY_SPEND_CAP_USD[$p/$m]:-0}"
+    local path now_utc now_s midnight_s bench_until
+    path=$(seat_ledger_path "$p" "$m")
+    mkdir -p "$LEDGER_DIR" 2>/dev/null || true
+    now_s=$(date -u +%s)
+    now_utc=$(date -u -d "@$now_s" +%Y-%m-%dT%H:%M:%SZ)
+    midnight_s=$(date -u -d "$(date -u -d "@$now_s" +%Y-%m-%d) tomorrow" +%s 2>/dev/null || echo $((now_s + 86400)))
+    (( midnight_s <= now_s )) && midnight_s=$((now_s + 86400))
+    bench_until=$(date -u -d "@$midnight_s" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
+    local reason="${now_utc%%T*} daily spend cap USD ${cap}/day reached (Pi usage.cost, fleet-ops#3283 source); seat benched until 00:00 UTC — fleet-ops#3724"
+    local tmp="$path.bench.$$.$RANDOM.tmp"
+    if jq -nc \
+        --arg provider "$p" --arg model "$m" \
+        --arg observed "$now_utc" --arg bench "$bench_until" --arg usable "$bench_until" \
+        --arg reason "$reason" \
+        --argjson http_status 429 --argjson retry_after null \
+        --argjson retryable true --argjson seat_dead false --argjson poison_ladder false \
+        --argjson count 0 \
+        '{
+          provider:$provider, model:$model,
+          http_status:$http_status, retry_after:$retry_after,
+          health_class:"quota_bench",
+          retryable:$retryable, seat_dead:$seat_dead, poison_ladder:$poison_ladder,
+          observed_at:$observed,
+          source:"daily_spend_cap",
+          failure_mode:"quota_cap",
+          bench_until:$bench,
+          usable_at:$usable,
+          reason:$reason,
+          consecutive_failure_count:$count
+        }' > "$tmp" 2>/dev/null; then
+        chmod 0644 "$tmp" 2>/dev/null || true
+        if mv "$tmp" "$path" 2>/dev/null; then
+            seat_log "daily-spend-cap: benched $p/$m until $bench_until (USD ${cap}/day cap reached; not charged to work item — fleet-ops#3724)"
+            return 0
+        fi
+        rm -f "$tmp" 2>/dev/null || true
+        seat_log "daily-spend-cap: ledger rename FAILED for $p/$m — fail-open (counter re-evaluates next pick)"
+        return 1
+    fi
+    rm -f "$tmp" 2>/dev/null || true
+    seat_log "daily-spend-cap: jq compose FAILED for $p/$m — marker NOT written"
+    return 1
 }
 
 # fleet-ops#1512: separate spawn-fail/empty-run bench marker. The per-seat
@@ -3476,6 +3678,12 @@ pick_seat() {
     #      seat cannot be drained dry while others sit idle
     #   3) metered last (per-token; spend after prepaid/free)
     local -a free_seats=() prepaid_seats=() metered_seats=()
+    # fleet-ops#3724: seats flagged product_only in seat-caps.json are kept
+    # out of every class bucket and appended at the very end of whichever
+    # order this pick uses, so a paid last-resort seat is offered only when
+    # no free/prepaid (or other) seat is usable — and only to a packet whose
+    # repo carries the product flag in config/intake-repos.json.
+    local -a product_only_seats=()
 
     # fleet-ops#1624: at-capacity (cap reached, seat busy not broken) skip
     # counter + sample. The per-seat "skipped (provider/model cap=N reached)"
@@ -3691,6 +3899,31 @@ pick_seat() {
         # even when free is the only class with capacity.
         if [[ "$privacy" == "private" && "$class" == "free" ]]; then
             seat_log "seat $p/$m skipped (free-tier privacy: private-repo target, free-class lane blocked)"
+            continue
+        fi
+        # fleet-ops#3724: product_only seat gate. A seat flagged product_only
+        # in seat-caps.json is a metered last-resort seat that may only ever
+        # serve a packet whose repo carries the product flag in
+        # config/intake-repos.json — fleet-ops is control plane and an
+        # unclassified packet repo fails closed, so it can never land here.
+        # The seat joins product_only_seats (appended after every class in
+        # every order) so it is offered only when no free/prepaid seat is
+        # usable. When a daily_spend_cap_usd is configured, reaching today's
+        # (UTC) Pi usage.cost on the seat benches it until 00:00 UTC — a
+        # money wall (quota_bench/quota_cap ledger entry, consecutive
+        # failure count 0), never charged to the work item.
+        if [[ -n "${SEAT_PRODUCT_ONLY[$p/$m]:-}" ]]; then
+            if ! repo_is_product "${PI_PACKET_REPO:-}"; then
+                seat_log "seat $p/$m skipped (product_only: packet repo '${PI_PACKET_REPO:-none}' is not a declared product repo — fleet-ops#3724)"
+                continue
+            fi
+            if _seat_daily_spend_cap_reached "$p" "$m"; then
+                _mark_seat_spend_cap_bench "$p" "$m" || true
+                _seat_unusable_n=$((_seat_unusable_n + 1))
+                _seat_unusable_sample+=("$p/$m")
+                continue
+            fi
+            product_only_seats+=("$p"$'\t'"$m")
             continue
         fi
         case "$class" in
@@ -3985,6 +4218,9 @@ pick_seat() {
         elif (( ${#free_seats[@]} > 0 )); then
             chosen="${free_seats[0]}"
             seat_log "pick_seat: KEYSTONE routing to $chosen (free last-resort)"
+        elif (( ${#product_only_seats[@]} > 0 )); then
+            chosen="${product_only_seats[0]}"
+            seat_log "pick_seat: KEYSTONE routing to $chosen (product_only last-resort — fleet-ops#3724)"
         fi
     elif (( ${#free_seats[@]} > 0 )); then
         chosen="${free_seats[0]}"
@@ -3994,6 +4230,13 @@ pick_seat() {
         _record_prepaid_pick "$chosen_p"
     elif (( ${#metered_seats[@]} > 0 )); then
         chosen="${metered_seats[0]}"
+    elif (( ${#product_only_seats[@]} > 0 )); then
+        # fleet-ops#3724: product_only seats are the seat of last resort —
+        # reached only when every free/prepaid/metered seat was unusable this
+        # pick, and only for a packet repo flagged product in
+        # config/intake-repos.json (the repo gate ran in the loop above).
+        chosen="${product_only_seats[0]}"
+        seat_log "pick_seat: routing to product_only last-resort seat $chosen (no free/prepaid seat usable — fleet-ops#3724)"
     fi
     fi
     if [[ -n "$chosen" ]]; then

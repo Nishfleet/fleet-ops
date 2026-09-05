@@ -53,6 +53,10 @@ need_capable=0
 # (fail-closed: an unclassified repo is treated as private).
 repair_privacy=$(repo_privacy "$repo")
 seat_log "pi-intake-repair-run: $repo privacy=$repair_privacy"
+# fleet-ops#3724: the packet repo also feeds pick_seat's product_only gate —
+# a seat flagged product_only in seat-caps.json is offered only when this
+# repo carries the product flag in config/intake-repos.json.
+export PI_PACKET_REPO="$repo"
 
 seat=$(pick_seat "" "" "$need_capable" "" "$difficulty" "$repair_privacy" || true)
 if [[ -z "$seat" ]]; then
