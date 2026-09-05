@@ -246,6 +246,19 @@
         "deepseek/deepseek-v4-pro": 2
       },
       "_note": "Nish 2026-08-27 00:30 IST: 'ds4 pro from straitly is fire' — approved beyond senior-auditor duty into worker rotation. Metered (~$0.42/M in, real card below the quoted 30%-off). Start cap 2 per metered discipline; AIMD raises only with evidence. gpt-5.6-sol stays orchestration-only (never a worker); qwen3.8-max not approved. Check the straitly meter within minutes of first draws (never-double-wire rule)."
+    },
+    "xkiro": {
+      "cap": 3,
+      "class": "free",
+      "max_probe_ceiling": 3,
+      "quota_bench_default_s": 3600,
+      "audition": true,
+      "models": {
+        "deepseek/deepseek-v4-flash": 1,
+        "deepseek/deepseek-v4-pro": 1,
+        "minimax/minimax-m3:free": 1
+      },
+      "_audition_2026_09_05": "Nish 2026-09-05: audition on the xKiro free plan ($5 wallet untouched). Free tier = 5,000,000 tokens/day across free-tier models; deepseek-v4-flash, deepseek-v4-pro and minimax-m3:free all answered a real wc -l tool task correctly in 6-18s; model id is echoed on every response (identity rule holds); GET /v1/usage returns free_tokens used/limit and wallet balance (meter). Provider block lives in ~/.pi/agent/models.json (not deploy-managed). Promote (raise caps) or drop by the yield ledger after ~10 sessions each; never the paid tiers without Nish."
     }
   },
   "product_order": "yield",
