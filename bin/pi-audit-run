@@ -388,10 +388,23 @@ build_packet() {
     }
 }
 
+# fleet-ops#3594: Pi's stdout carries harness noise around the auditor's text —
+# EXTLOAD-OK/EXTLOAD-FAIL extension lines, the OSC 777 "Ready for input" notify
+# escape and the PACKET-VERDICT trailer. None of it is the verdict or the
+# reason; strip it before either is extracted so the evidence gate in
+# pi-audit-tally judges the auditor's paragraph, not the preamble.
+strip_harness_noise() {
+    local out="$1"
+    sed -E 's/\x1b?\]777;notify;[^\x07\x1b]*(\x07|\x1b\\)?//g' "$out" \
+        | grep -vE '^EXTLOAD-(OK|FAIL)([[:space:]]|$)' \
+        | sed -E 's/PACKET-VERDICT[[:space:]]+tools=[0-9]+[[:space:]]+class=[A-Za-z0-9_-]+//g' \
+        || true
+}
+
 extract_verdict() {
     local out="$1"
-    # Strip markdown bold/italic and look for a standalone PASS or FAIL line.
-    sed -E 's/[*#`_]//g' "$out" | grep -m1 -E '^[[:space:]]*(PASS|FAIL)[[:space:]]*$' | sed -E 's/^[[:space:]]+//;s/[[:space:]]+$//' | tr '[:lower:]' '[:upper:]'
+    # Strip harness noise and markdown bold/italic, then look for a standalone PASS or FAIL line.
+    strip_harness_noise "$out" | sed -E 's/[*#`_]//g' | grep -m1 -E '^[[:space:]]*(PASS|FAIL)[[:space:]]*$' | sed -E 's/^[[:space:]]+//;s/[[:space:]]+$//' | tr '[:lower:]' '[:upper:]'
 }
 
 # fleet-ops#786: do not byte-cap the verdict reason. Starving the reason
@@ -401,11 +414,20 @@ extract_reason() {
     local out="$1" v
     v=$(extract_verdict "$out")
     [ -n "$v" ] || return 0
-    awk -v v="$v" 'BEGIN{out=0} {
-        gsub(/[*#`_]/,"")
-        if (!out && $0 ~ "^[[:space:]]*"v"[[:space:]]*$") { out=1; next }
-        if (out) print
-    }' "$out" | sed '/^$/d'
+    # fleet-ops#3594: the reason is the verdict block only — the paragraph after
+    # the PASS/FAIL line, or the paragraph before it when the auditor wrote the
+    # reason first. Harness noise is stripped before either is read.
+    # The markdown strip is applied to a copy used only to find the verdict
+    # line: the reason itself stays raw, because stripping # and _ turned
+    # "0509#1624" into "05091624" and src/my_file.ts into src/myfile.ts, so the
+    # evidence gate could never match an issue number or a body path.
+    strip_harness_noise "$out" | awk -v v="$v" '{
+        line = $0; gsub(/[*#`_]/, "", line)
+        if (!seen && line ~ "^[[:space:]]*"v"[[:space:]]*$") { seen=1; next }
+        if (seen) after = after $0 "\n"; else before = before $0 "\n"
+    } END {
+        if (after ~ /[^[:space:]]/) printf "%s", after; else printf "%s", before
+    }' | sed '/^$/d'
 }
 
 # Ensures the reason paragraph explicitly addresses duplicates and north-star

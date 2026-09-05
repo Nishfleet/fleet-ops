@@ -418,6 +418,23 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/unit-escalation-write-pi-issue-e
   || fail "unit-escalation-write-pi-issue-exclusion.test.sh must not be a known orphan (fleet-ops#2475)"
 ok "unit-escalation-write-pi-issue-exclusion.test.sh is pinned in the P14 reachable set (fleet-ops#2475)"
 
+# fleet-ops#3368: hard-pin the host line for
+# fleet-rules-escalation-storm. The test landed in this PR without a ci.yml
+# listing and was hosted from tests/ci-standards-audit.test.sh (already in
+# P14) — the worker App cannot push .github/workflows/** so the host was the
+# only path. This named pin is class-prevention so a future drop of the host
+# line cannot park the test on known_orphans to silence the generic $bad[]
+# message — it fails by name here first, same shape as every other hosted
+# test above.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-rules-escalation-storm\.test\.sh"?' \
+  "$here/ci-standards-audit.test.sh" \
+  || fail "ci-standards-audit.test.sh must bash-invoke fleet-rules-escalation-storm.test.sh (fleet-ops#3368)"
+[[ -n "${reachable[fleet-rules-escalation-storm.test.sh]:-}" ]] \
+  || fail "fleet-rules-escalation-storm.test.sh must be hosted by a listed test (fleet-ops#3368)"
+[[ -z "${known_orphan_set[fleet-rules-escalation-storm.test.sh]:-}" ]] \
+  || fail "fleet-rules-escalation-storm.test.sh must not be a known orphan (fleet-ops#3368)"
+ok "fleet-rules-escalation-storm.test.sh is pinned in the P14 reachable set (fleet-ops#3368)"
+
 # fleet-ops#2694 (PR #2796 follow-up): hard-pin the host line for
 # alert-repair-outcome-metric. The test landed on main in PR #2796 (the
 # #2694 fix PR) without a ci.yml listing or a host, leaving this gate red
@@ -710,6 +727,20 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/pi-intake-tick-umbrella-exclusio
   || fail "pi-intake-tick-umbrella-exclusion.test.sh must not be a known orphan (fleet-ops#3295)"
 ok "pi-intake-tick-umbrella-exclusion.test.sh host line in pi-intake-run.test.sh is pinned (fleet-ops#3295)"
 
+# fleet-ops#3254 (part 1/4, PR part of the self-limiting-budget split):
+# hard-pin the host line for pi-intake-tick-self-maint-cap in
+# pi-intake-run (already listed in ci.yml) so a future refactor that drops
+# it is caught by name. Same class-prevention: parking it on known_orphans
+# to silence the generic message must also fail by name below.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/pi-intake-tick-self-maint-cap\.test\.sh"?' \
+  "$here/pi-intake-run.test.sh" \
+  || fail "pi-intake-run.test.sh must bash-invoke pi-intake-tick-self-maint-cap.test.sh (fleet-ops#3254)"
+[[ -n "${reachable[pi-intake-tick-self-maint-cap.test.sh]:-}" ]] \
+  || fail "pi-intake-tick-self-maint-cap.test.sh must be hosted by a listed test (fleet-ops#3254)"
+[[ -z "${known_orphan_set[pi-intake-tick-self-maint-cap.test.sh]:-}" ]] \
+  || fail "pi-intake-tick-self-maint-cap.test.sh must not be a known orphan (fleet-ops#3254)"
+ok "pi-intake-tick-self-maint-cap.test.sh host line in pi-intake-run.test.sh is pinned (fleet-ops#3254)"
+
 # fleet-ops#1520: hard-pin the host line for curator-journal-cap in
 # ci-standards-audit so a future refactor that drops it is caught by
 # name. The live dump was fixed in memory-compound#9; this test is the
@@ -725,5 +756,19 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/curator-journal-cap\.test\.sh"?'
 [[ -z "${known_orphan_set[curator-journal-cap.test.sh]:-}" ]] \
   || fail "curator-journal-cap.test.sh must not be a known orphan (fleet-ops#1520)"
 ok "curator-journal-cap.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#1520)"
+
+# fleet-ops#3273: hard-pin the host line for install-manifest-bak-sprawl in
+# ci-standards-audit so a future refactor that drops it is caught by name.
+# Hosted from tests/ci-standards-audit.test.sh (already listed in ci.yml)
+# because the worker App cannot push .github/workflows/**. Parking it on
+# known_orphans to silence the generic message must also fail by name below.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/install-manifest-bak-sprawl\.test\.sh"?' \
+  "$here/ci-standards-audit.test.sh" \
+  || fail "ci-standards-audit.test.sh must bash-invoke install-manifest-bak-sprawl.test.sh (fleet-ops#3273)"
+[[ -n "${reachable[install-manifest-bak-sprawl.test.sh]:-}" ]] \
+  || fail "install-manifest-bak-sprawl.test.sh must be hosted by a listed test (fleet-ops#3273)"
+[[ -z "${known_orphan_set[install-manifest-bak-sprawl.test.sh]:-}" ]] \
+  || fail "install-manifest-bak-sprawl.test.sh must not be a known orphan (fleet-ops#3273)"
+ok "install-manifest-bak-sprawl.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#3273)"
 
 echo "OK: p14-test-listing-gate.test.sh: P14 test list is closed"

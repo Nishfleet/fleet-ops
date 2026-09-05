@@ -209,6 +209,42 @@ print("OK: no-merge day -> verified ratio omitted, counts 0")
 PY
 
 # =========================================================================
+# 7b. _read_seat parse is TZ-independent (fleet-ops#3329)
+# =========================================================================
+_TEST_SEAT_HEALTH="$scratch/seat-health.json" python3 - "$exporter" <<'PY' || fail "_read_seat UTC parse is TZ-dependent"
+# Reproduce fleet-ops#3329: the exporter used time.mktime (process-local TZ)
+# to parse a UTC observed_at, so under a +5:30 host localtime a fresh feed
+# read ~5.5h stale and fired FleetPiSeatHealthStale (value ~19800s).
+# Fix: calendar.timegm. This test runs in Asia/Kolkata and asserts a fresh
+# observed_at still yields a small age.
+import importlib.util, json, os, sys, time
+from pathlib import Path
+
+# Force the bug's failure mode: a non-UTC process localtime.
+os.environ["TZ"] = "Asia/Kolkata"
+time.tzset()
+
+spec = importlib.util.spec_from_file_location("fme", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+
+seat = Path(os.environ["_TEST_SEAT_HEALTH"])
+ow = int(time.time())
+seat.write_text(json.dumps({
+    "health_class": "healthy",
+    "observed_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(ow)) + ".000Z",
+}), encoding="utf-8")
+m.SEAT_HEALTH = seat
+
+healthy, epoch = m._read_seat()
+age = ow - epoch
+assert healthy == 1, healthy
+# Correct UTC parse: age within a few hundred seconds. The pre-fix mktime
+# path under +5:30 gave ~19800s and fired the stale alert.
+assert age < 600, f"fresh observed_at parsed {age}s stale (expected < 600); TZ-dependent mktime bug"
+print(f"OK: _read_seat epoch fresh under TZ=Asia/Kolkata (age={age}s)")
+PY
+
+# =========================================================================
 # 8. fleet_rules.yml: promtool (if available) + rule presence
 # =========================================================================
 if command -v promtool >/dev/null 2>&1; then
@@ -458,6 +494,8 @@ m._standalone_pi_print_count = lambda u: 0
 m._maintenance_quiescing = lambda: 0
 m._keystone_routing_counts = lambda: (0, 0, None)
 m._ping_healthcheck = lambda: None
+m._fetch_openrouter_credits = lambda: None
+m._fetch_xkiro_usage = lambda: None
 m._GH_FETCHED_THIS_RUN = False
 
 rc = m.main()
@@ -564,6 +602,8 @@ m._keystone_routing_counts = lambda: (0, 0, None)
 m._gh_rate_limit = lambda: None
 m._read_dead_credentials = lambda: (0, [])
 m._ping_healthcheck = lambda: None
+m._fetch_openrouter_credits = lambda: None
+m._fetch_xkiro_usage = lambda: None
 m._GH_FETCHED_THIS_RUN = False
 
 rc = m.main()
@@ -646,6 +686,8 @@ m._keystone_routing_counts = lambda: (0, 0, None)
 m._gh_rate_limit = lambda: None
 m._read_dead_credentials = lambda: (0, [])
 m._ping_healthcheck = lambda: None
+m._fetch_openrouter_credits = lambda: None
+m._fetch_xkiro_usage = lambda: None
 m._GH_FETCHED_THIS_RUN = False
 
 rc = m.main()
@@ -704,6 +746,8 @@ m._keystone_routing_counts = lambda: (0, 0, None)
 m._gh_rate_limit = lambda: None
 m._read_dead_credentials = lambda: (0, [])
 m._ping_healthcheck = lambda: None
+m._fetch_openrouter_credits = lambda: None
+m._fetch_xkiro_usage = lambda: None
 m._GH_FETCHED_THIS_RUN = False
 
 rc = m.main()
@@ -1048,6 +1092,8 @@ m._read_comeback_overdue = lambda: (0, [])
 m._read_never_released = lambda: (0, [])
 m._read_provider_quota_exhausted = lambda: (0, [])
 m._ping_healthcheck = lambda: None
+m._fetch_openrouter_credits = lambda: None
+m._fetch_xkiro_usage = lambda: None
 m._GH_FETCHED_THIS_RUN = False
 rc = m.main()
 assert rc == 0, f"main rc={rc}"
@@ -1672,7 +1718,7 @@ Path(m.SEAT_CAPS_DEFAULT).write_text(json.dumps({
     }
 }))
 
-def session(provider, model, ts, has_pr):
+def session(provider, model, ts, has_pr, cost=None):
     issue = f"pi-issue-{provider}-{model.replace('/', '-')}"
     d = sessions / issue
     d.mkdir(parents=True, exist_ok=True)
@@ -1683,21 +1729,25 @@ def session(provider, model, ts, has_pr):
     )
     content = [{"type": "text", "text": final_text}]
     base = f'2026-09-04T{ts}Z'
+    usage = {"cost": {"total": cost}} if cost is not None else {}
     lines = [
         json.dumps({"type": "session", "version": 3, "timestamp": base, "id": f"{issue}-{ts}"}),
         json.dumps({"type": "model_change", "provider": provider, "modelId": model, "timestamp": base}),
-        json.dumps({"type": "message", "message": {"role": "assistant", "content": content}, "timestamp": base}),
+        json.dumps({"type": "message", "message": {"role": "assistant", "content": content, "usage": usage}, "timestamp": base}),
     ]
     path.write_text("\n".join(lines))
     return path
 
-# devin/glm-5-2: 5 sessions, some with PR -> provisional 0.5 (<20)
+# devin/glm-5-2: 5 sessions, some with PR -> provisional 0.5 (<20).
+# fleet-ops#3323: sessions carry usage.cost so cost_per_session = 0.10.
 for i in range(5):
-    session("devin", "glm-5-2", f"00:00:{i:02d}", i % 2 == 0)
+    session("devin", "glm-5-2", f"00:00:{i:02d}", i % 2 == 0, cost=0.10)
 
-# opencode/mimo-v2.5-free: exactly 20 sessions, 5 with PR -> 0.25
+# opencode/mimo-v2.5-free: exactly 20 sessions, 5 with PR -> 0.25.
+# Odd sessions cost 0.20 -> cost_per_session = 0.10 over the window.
 for i in range(20):
-    session("opencode", "mimo-v2.5-free", f"01:00:{i:02d}", i % 4 == 0)
+    session("opencode", "mimo-v2.5-free", f"01:00:{i:02d}", i % 4 == 0,
+            cost=0.20 if i % 2 == 1 else None)
 
 # devin/swe-1-7: 25 sessions; last 20 (i>=5) all have PR -> 1.0
 for i in range(25):
@@ -1726,6 +1776,18 @@ assert result["opencode/mimo-v2.5-free"]["pr_count"] == 5
 assert result["opencode/mimo-v2.5-free"]["no_pr_count"] == 15
 assert result["opencode/mimo-v2.5-free"]["provisional"] is False
 print("OK: opencode/mimo-v2.5-free rolling-20 yield 0.25")
+
+# fleet-ops#3323: cost_per_session is the mean usage.cost over the window.
+# devin/glm-5-2: 5 sessions x 0.10 -> 0.10 even though yield is provisional.
+assert result["devin/glm-5-2"]["cost_per_session"] == 0.10
+assert j["devin/glm-5-2"]["cost_per_session"] == 0.10
+# opencode/mimo-v2.5-free: 10 of 20 sessions at 0.20 -> 0.10.
+assert abs(result["opencode/mimo-v2.5-free"]["cost_per_session"] - 0.10) < 1e-9
+# devin/swe-1-7 sessions carry no usage.cost -> 0.0 (the value floor
+# 0.001 is applied in pick_seat, not in the ledger).
+assert result["devin/swe-1-7"]["cost_per_session"] == 0.0
+assert result["opencode/nemotron-3.5-lightning-free"]["cost_per_session"] == 0.0
+print("OK: seat-yield ledger carries rolling cost_per_session (fleet-ops#3323)")
 
 # devin/swe-1-7: 25 sessions, last-20 all PR -> 1.0
 assert "devin/swe-1-7" in result
@@ -1990,3 +2052,261 @@ print("OK: Prometheus-unavailable PR is left unevaluated, not filed, not recorde
 PY
 
 ok "fleet-ops#3124 part 4/4: week-later revert-candidate check pinned"
+
+# =========================================================================
+# 18. fleet-ops#3283: seat spend and metered provider balances.
+#     Spend is summed from pi session usage.cost per message, per provider,
+#     per UTC day. OpenRouter and xKiro balances are fetched from their
+#     vendor endpoints when a key is available.
+# =========================================================================
+
+# --- Pure helpers: _day_from_iso, _parse_session_file_for_cost, _compute_spend
+python3 - "$exporter" <<'PY' || fail "3283 spend helpers failed"
+import importlib.util, json, tempfile, os, sys
+from pathlib import Path
+exporter = sys.argv[1]
+spec = importlib.util.spec_from_file_location("fme", exporter)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+
+# _day_from_iso
+assert m._day_from_iso("2026-09-04T07:32:18.303Z") == "2026-09-04"
+assert m._day_from_iso("2026-09-04T23:59:59.000Z") == "2026-09-04"
+assert m._day_from_iso("") is None
+assert m._day_from_iso("not-a-date") is None
+print("OK: _day_from_iso extracts UTC day")
+
+# _parse_session_file_for_cost
+# Real pi session jsonl carries provider ONLY on model_change lines, never on
+# messages. The parser must track it across the file; messages without a
+# provider key must still be attributed. Pin that real shape here.
+td = Path(tempfile.mkdtemp())
+session = td / "2026-09-04T12-00-00Z_s.jsonl"
+session.write_text(
+    json.dumps({"type": "session", "id": "s", "timestamp": "2026-09-04T12:00:00Z"}) + "\n"
+    + json.dumps({"type": "model_change", "provider": "openrouter", "modelId": "x"}) + "\n"
+    + json.dumps({"type": "message", "timestamp": "2026-09-04T12:01:00Z",
+                  "message": {"role": "assistant", "usage": {"cost": {"total": 0.123}}}}) + "\n"
+    + json.dumps({"type": "message", "timestamp": "2026-09-04T12:02:00Z",
+                  "message": {"role": "assistant", "usage": {"cost": {"total": 0.456}}}}) + "\n"
+    + json.dumps({"type": "model_change", "provider": "minimax", "modelId": "y"}) + "\n"
+    + json.dumps({"type": "message", "timestamp": "2026-09-04T12:03:00Z",
+                  "message": {"role": "assistant", "usage": {"cost": {"total": 0.111}}}}) + "\n"
+    + json.dumps({"type": "model_change", "provider": "xkiro", "modelId": "z"}) + "\n"
+    + json.dumps({"type": "message", "timestamp": "2026-09-04T12:04:00Z",
+                  "message": {"role": "assistant", "usage": {"cost": {"total": 0}}}}) + "\n"
+    + json.dumps({"type": "message", "timestamp": "2026-09-05T00:01:00Z",
+                  "message": {"role": "assistant", "usage": {"cost": {"total": 0.789}}}}) + "\n"
+    + json.dumps({"type": "message", "message": {"role": "user", "content": "hi"},
+                  "timestamp": "2026-09-04T12:05:00Z"}) + "\n"
+    + "{not json\n"
+)
+spend = m._parse_session_file_for_cost(session)
+assert spend == {"openrouter": {"2026-09-04": 0.579}, "minimax": {"2026-09-04": 0.111}, "xkiro": {"2026-09-05": 0.789}}, spend
+print("OK: _parse_session_file_for_cost attributes provider via model_change; ignores zero/no-usage/malformed")
+
+# _compute_spend with mtime cache
+sd = td / "sessions" / "pi-issue-fleet-ops-3283"
+sd.mkdir(parents=True)
+(session).rename(sd / "2026-09-04T12-00-00Z_s.jsonl")
+m.SESSIONS_DIR = sd.parent
+m.SPEND_CACHE = td / "spend-cache.json"
+spend = m._compute_spend()
+assert spend == {"openrouter": {"2026-09-04": 0.579}, "minimax": {"2026-09-04": 0.111}, "xkiro": {"2026-09-05": 0.789}}, spend
+# second run: cached by mtime, same result
+spend2 = m._compute_spend()
+assert spend2 == spend, spend2
+print("OK: _compute_spend scans sessions and caches by mtime")
+
+# _read_env_key
+env_file = td / ".env"
+env_file.write_text("# comment\nXKIRO_API_KEY=secret123\nOPENROUTER_API_KEY=or456\n")
+assert m._read_env_key(env_file, ("XKIRO_API_KEY", "API_KEY")) == "secret123"
+assert m._read_env_key(env_file, ("OPENROUTER_API_KEY",)) == "or456"
+assert m._read_env_key(td / "missing.env", ("XKIRO_API_KEY",)) is None
+print("OK: _read_env_key resolves dotenv keys")
+PY
+
+# --- main() emission with stubbed vendor fetches
+SPEND_SCRATCH="$scratch/spend-3283"
+mkdir -p "$SPEND_SCRATCH"
+SPEND_OUT="$SPEND_SCRATCH/fleet.prom"
+python3 - "$exporter" "$SPEND_OUT" "$SPEND_SCRATCH" <<'PY' || fail "3283 main() emission failed"
+import importlib.util, json, os, sys, tempfile
+from pathlib import Path
+exporter, out_path, scratch = sys.argv[1:4]
+spec = importlib.util.spec_from_file_location("fme", exporter)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+
+sd = Path(scratch) / "sessions" / "pi-issue-fleet-ops-3283"
+sd.mkdir(parents=True)
+(sd / "2026-09-04T12-00-00Z_s.jsonl").write_text(
+    json.dumps({"type": "session", "id": "s", "timestamp": "2026-09-04T12:00:00Z"}) + "\n"
+    + json.dumps({"type": "model_change", "provider": "openrouter", "modelId": "x"}) + "\n"
+    + json.dumps({"type": "message", "timestamp": "2026-09-04T12:01:00Z",
+                  "message": {"role": "assistant", "usage": {"cost": {"total": 0.123}}}}) + "\n"
+    + json.dumps({"type": "model_change", "provider": "minimax", "modelId": "y"}) + "\n"
+    + json.dumps({"type": "message", "timestamp": "2026-09-04T12:02:00Z",
+                  "message": {"role": "assistant", "usage": {"cost": {"total": 0.456}}}}) + "\n"
+)
+
+m.OUT = Path(out_path)
+m.PR_CACHE_DIR = Path(scratch) / "cache"
+m.PR_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+m.SESSIONS_DIR = sd.parent
+m.SELF_MAINT_JSON_DEFAULT = Path("/nonexistent/sm.json")
+m.SELF_MAINT_JSON_FALLBACK = Path("/nonexistent/fb.json")
+m.SEAT_HEALTH = Path("/nonexistent/seat.json")
+m.SEAT_LEDGER = Path("/nonexistent/seatdb")
+m.SEAT_CAPS_DEFAULT = Path("/nonexistent/sc.json")
+m.SEAT_CAPS_FALLBACK = Path("/nonexistent/sc2.json")
+m.HC_URL_FILE = Path("/nonexistent/hc.url")
+m.ACTIONS_LOG = Path("/nonexistent/actions.log")
+m.MAINTENANCE_FLAG = Path("/nonexistent/maint.json")
+m.INTAKE_JSON_DEFAULT = Path("/nonexistent/intake.json")
+m.INTAKE_JSON_FALLBACK = Path("/nonexistent/intake2.json")
+m.KEYSTONE_LEDGER = Path("/nonexistent/keystone.jsonl")
+m.STALENESS_CACHE = Path("/nonexistent/stale.json")
+m.DETAIL_CACHE = m.PR_CACHE_DIR / "detail.cache.json"
+m.OPENROUTER_BALANCE_CACHE = m.PR_CACHE_DIR / "openrouter-balance.json"
+m.XKIRO_BALANCE_CACHE = m.PR_CACHE_DIR / "xkiro-balance.json"
+
+m._list_timers = lambda: [{"unit": "fleet-metrics-export.timer", "last_usec": 0}]
+m._timer_active = lambda unit: 1
+m._read_seat = lambda: (1, 0)
+m._merged_prs_detail = lambda: None
+m._repo_snapshot = lambda: None
+m._queue_composition = lambda: {
+    "ready-work": {"total": 5, "self": 1},
+    "agent-ready": {"total": 6, "self": 2},
+}
+m._escalations_24h = lambda: {}
+m._repair_log_counts_24h = lambda: (0, 0)
+m._worker_units = lambda: []
+m._standalone_pi_print_count = lambda u: 0
+m._maintenance_quiescing = lambda: 0
+m._keystone_routing_counts = lambda: (0, 0, None)
+m._ping_healthcheck = lambda: None
+m._fetch_openrouter_credits = lambda: None
+m._fetch_xkiro_usage = lambda: None
+m._gh_rate_limit = lambda: None
+m._read_dead_credentials = lambda: (0, [])
+m._fetch_openrouter_credits = lambda: 6.95
+m._fetch_xkiro_usage = lambda: (999999, 0.0, 0.0)
+m._VENDOR_BALANCE_FETCHED = set()
+
+rc = m.main()
+assert rc == 0, f"main rc={rc}"
+body = Path(out_path).read_text()
+
+assert '# HELP fleet_seat_spend_usd' in body, body
+assert '# TYPE fleet_seat_spend_usd gauge' in body, body
+assert 'fleet_seat_spend_usd{provider="openrouter",day="2026-09-04"} 0.123000' in body, body
+assert 'fleet_seat_spend_usd{provider="minimax",day="2026-09-04"} 0.456000' in body, body
+
+assert '# HELP fleet_seat_credits_remaining_usd' in body, body
+assert '# TYPE fleet_seat_credits_remaining_usd gauge' in body, body
+assert 'fleet_seat_credits_remaining_usd{provider="openrouter"} 6.950000' in body, body
+assert 'fleet_seat_credits_remaining_usd{provider="xkiro"} 0.000000' in body, body
+
+assert '# HELP fleet_seat_free_tokens_remaining' in body, body
+assert '# TYPE fleet_seat_free_tokens_remaining gauge' in body, body
+assert 'fleet_seat_free_tokens_remaining{provider="xkiro"} 999999' in body, body
+
+assert '# HELP fleet_seat_credits_held_usd' in body, body
+assert '# TYPE fleet_seat_credits_held_usd gauge' in body, body
+assert 'fleet_seat_credits_held_usd{provider="xkiro"} 0.000000' in body, body
+
+# HELP/TYPE emitted exactly once per metric family.
+from collections import Counter
+help_counts = Counter()
+type_counts = Counter()
+for line in body.splitlines():
+    if line.startswith("# HELP "):
+        help_counts[line.split()[2]] += 1
+    elif line.startswith("# TYPE "):
+        type_counts[line.split()[2]] += 1
+for fam in (
+    "fleet_seat_spend_usd",
+    "fleet_seat_credits_remaining_usd",
+    "fleet_seat_free_tokens_remaining",
+    "fleet_seat_credits_held_usd",
+):
+    assert help_counts[fam] == 1, f"{fam} HELP count {help_counts[fam]}"
+    assert type_counts[fam] == 1, f"{fam} TYPE count {type_counts[fam]}"
+
+print("OK: main() emits spend, credits, xkiro free tokens and held; HELP/TYPE once")
+PY
+
+ok "fleet-ops#3283: spend, credits, xkiro wallet/free-token metrics"
+
+# =========================================================================
+# fleet-ops#3180: fleet_escalations_24h must not count template starts the
+# escalation pipeline refuses. The metric counts "Starting
+# unit-escalation@<failed-unit>.service" journal lines; unit-escalation-write
+# refuses the units in its first `case "$UNIT" in` block (no STOP-REASON, no
+# auditor dispatch), so their starts are churn, not escalation volume. The
+# list drifted once already: pi-issue@* was refused by the writer on
+# 2026-08-30 (#2133/#2475 — workers self-heal via the reaper + re-dispatch
+# lane) yet stayed counted here, and the seat-famine crash-loop pushed
+# 868 refused pi-issue@ starts into the 936 counted in 24h, tripping
+# FleetEscalationStorm. This section replays EVERY writer-refused glob
+# through the live filter so the two lists can never silently drift again.
+# =========================================================================
+python3 - "$exporter" "$repo_root/bin/unit-escalation-write" <<'PY' || fail "escalation exclusion drift-lock failed"
+import importlib.util, re, sys
+from types import SimpleNamespace
+exp_path, writer_path = sys.argv[1], sys.argv[2]
+spec = importlib.util.spec_from_file_location("fme", exp_path)
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+
+# Pull the FIRST `case "$UNIT" in <globs>)` block — the no-self-trigger /
+# own-lane refuse list. Later case blocks (scout-futility dedupe, class
+# gates) are conditional, not unit-name exclusions, so only the first is
+# mirrored.
+src = open(writer_path).read()
+mm = re.search(r'case "\$UNIT" in\s*\n\s*([^)\n]+)\)', src)
+assert mm, "could not locate refuse-list case block in unit-escalation-write"
+globs = [g for g in mm.group(1).split("|") if g]
+assert "pi-issue@*.service" in globs, globs
+
+# One journal line per refused glob -> none may be counted.
+lines = []
+for g in globs:
+    unit = g.replace("*", "SAMPLE")
+    if not unit.endswith((".service", ".timer", ".path")):
+        unit += ".service"
+    lines.append(
+        f"Starting unit-escalation@{unit}.service - Universal failure escalation"
+    )
+# fleet-ops#3349: the alert-repair-* recovery units (hyphen separator) also
+# escape the *-repair@* glob and must never count toward FleetEscalationStorm.
+# One journal line for a real alert-repair unit -> none may be counted.
+lines.append(
+    "Starting unit-escalation@alert-repair-FleetMainRed-20260904T172208Z.service - Universal failure escalation"
+)
+# Control: a genuinely failing unit must still be counted.
+lines.append(
+    "Starting unit-escalation@pi-intake@ctlrepo.service.service - Universal failure escalation"
+)
+journal = "\n".join(lines) + "\n"
+
+orig = m.subprocess.run
+m.subprocess.run = lambda *a, **k: SimpleNamespace(
+    returncode=0, stdout=journal, stderr=""
+)
+try:
+    counts = m._escalations_24h()
+finally:
+    m.subprocess.run = orig
+
+bad = {u: c for u, c in counts.items() if u != "pi-intake@ctlrepo"}
+assert not bad, f"writer-refused units counted by fleet_escalations_24h: {bad}"
+assert counts.get("pi-intake@ctlrepo") == 1, counts
+print(
+    f"OK: {len(globs)} writer-refused globs replayed through "
+    "_escalations_24h — none counted; control counted once"
+)
+PY
+ok "fleet-ops#3180: fleet_escalations_24h exclusions locked to unit-escalation-write refuse list"

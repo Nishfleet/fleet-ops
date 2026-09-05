@@ -58,6 +58,15 @@ Steps:
       Exit 0 = claim-ok, continue. Exit 1 = bounced (the binary already
       flipped agent-ready → agent-blocked and commented); skip issue N
       and do NOT push `claim/issue-N`. Any other exit is fail-loud.
+   a0b. Size gate (fleet-ops#3309) BEFORE any claim push. Count live
+      `- required:` lines in body+comments (ignore struck-through lines).
+      If more than 2, bounce unless the issue carries the `umbrella`
+      label. Run:
+      `python3 /home/nish/.local/lib/pi-packet/agent-ready-spec-gate.py check-size --body FILE --comments FILE --labels JSON`
+      Exit 0 = size-ok, continue. Exit 1 = oversized; flip
+      agent-ready → agent-blocked and comment `split me: N requirements;
+      one requirement per issue` with `blocked-on: split`; skip issue N
+      and do NOT push `claim/issue-N`. Any other exit is fail-loud.
    b. Hard claim — atomic create-only push; the claim branch IS the work branch:
       `git -C /home/nish/workspaces/products/<repo> ls-remote origin refs/heads/claim/issue-N`
       If that output contains a hash, another agent already holds the claim — skip issue N.
@@ -69,8 +78,8 @@ Steps:
       `gh issue comment N -R Nishfleet/<repo> --body "claimed by pi-issue-<repo>-N at $(date -u +%FT%TZ)"`
    d. Write the worker prompt to a packet file so pi-issue-run (the seat-rotating wrapper) can pick its own seat at run time:
       `mkdir -p /home/nish/.local/state/pi-issues`
-      If the issue title, body, or any label contains "keystone" (case-insensitive), write the packet with the phase-routing manifest as line 1 so pick_seat uses reliability-first routing (fleet-ops#1133 / #1383). The `phases:` line declares the Fryxell harness-loop routing: PLAN and CRITIQUE/PROMOTE phases need a capable (frontier) seat, WORK runs on commodity free lanes. `packet_difficulty` treats a phases manifest as keystone-class — capable seat first, two-strike escalation to senior conference. Always overwrite (`>`), never append:
-      `{ printf 'phases: plan=capable,work=commodity,critique=capable,promote=capable\n'; cat /home/nish/.pi/agent/prompts/worker.md; echo; echo "TARGET: repo Nishfleet/<repo> issue N unit pi-issue-<repo>-N"; } > /home/nish/.local/state/pi-issues/<repo>-N.in`
+      If the issue title, body, or any label contains "keystone" (case-insensitive), write the packet with `difficulty: keystone` as line 1 so `packet_difficulty` uses reliability-first routing (fleet-ops#1133). Capable seat first, two-strike escalation to senior conference. Always overwrite (`>`), never append:
+      `{ printf 'difficulty: keystone\n'; cat /home/nish/.pi/agent/prompts/worker.md; echo; echo "TARGET: repo Nishfleet/<repo> issue N unit pi-issue-<repo>-N"; } > /home/nish/.local/state/pi-issues/<repo>-N.in`
       Otherwise write as today (no marker):
       `{ cat /home/nish/.pi/agent/prompts/worker.md; echo; echo "TARGET: repo Nishfleet/<repo> issue N unit pi-issue-<repo>-N"; } > /home/nish/.local/state/pi-issues/<repo>-N.in`
    e. Activate the template unit via `pi-issue-start` (never a raw

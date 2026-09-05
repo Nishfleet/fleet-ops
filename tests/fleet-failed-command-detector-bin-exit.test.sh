@@ -67,8 +67,8 @@
 #      with `(no output)` stays a probe (not a finding). Pins that
 #      locking #1220 must not collapse into "every empty exit-1 is
 #      a failure".
-#   6. worker.md cites fleet-ops#1220 and the live
-#      `FLEET_FAILED_COMMAND_SESSIONS=/tmp` wording (prompt-side lock).
+#   6. lib/failed-command-flagged.py cites fleet-ops#1220 and the live
+#      `FLEET_FAILED_COMMAND_SESSIONS=/tmp` wording (detector-side lock: case list moved to lib, fleet-ops#3246).
 #   7. lib/failed-command-flagged.py docstring cites fleet-ops#1220
 #      (detector-side lock).
 #   8. seat-lib.test.sh hosts this file (CI cannot gain a P14 line).
@@ -196,13 +196,13 @@ count=$(jq '.findings | length' <<<"$report")
 ok "grep POSIX no-match with the same empty snippet stays a probe (contrast with #1220)"
 rm -f "$sessions/grep-no-match-empty-snippet.jsonl"
 
-# --- 6. prompts/worker.md cites fleet-ops#1220 (prompt-side lock) -----------
+# --- 6. prompts/lib/failed-command-flagged.py cites fleet-ops#1220 (detector-side lock: case list moved to lib, fleet-ops#3246) -----------
 [[ -f "$worker" ]] || fail "missing $worker"
-grep -q 'fleet-ops#1220' "$worker" \
-  || fail "prompts/worker.md must cite fleet-ops#1220 (prompt-side lock)"
-grep -q 'FLEET_FAILED_COMMAND_SESSIONS=/tmp' "$worker" \
-  || fail "prompts/worker.md must name the live 'FLEET_FAILED_COMMAND_SESSIONS=/tmp' wording"
-ok "worker.md cites fleet-ops#1220 and the live detector-bin wording"
+grep -q 'fleet-ops#1220' "$lib" \
+  || fail "lib/failed-command-flagged.py must cite fleet-ops#1220 (detector-side lock: case list moved to lib, fleet-ops#3246)"
+grep -q 'FLEET_FAILED_COMMAND_SESSIONS=/tmp' "$lib" \
+  || fail "lib/failed-command-flagged.py must name the live 'FLEET_FAILED_COMMAND_SESSIONS=/tmp' wording"
+ok "lib/failed-command-flagged.py cites fleet-ops#1220 and the live detector-bin wording"
 
 # --- 7. lib/failed-command-flagged.py docstring cites fleet-ops#1220 -------
 grep -q 'fleet-ops#1220' "$lib" \

@@ -63,6 +63,23 @@ CACHE = Path(
         str(AS / "fleet-metrics" / "product-slo-cache.json"),
     )
 )
+# fleet-ops#3519: per-repo rolling-7d quality ceilings live in
+# config/quality-ratchet.json (`.ceilings`), seeded from the 2026-09-05
+# baseline. The exporter re-exports the committed ceiling alongside each
+# gauge so alert rules pair value vs ceiling in one expression.
+_QUALITY_RATCHET_CANDIDATES = [
+    os.environ.get("FLEET_QUALITY_RATCHET_JSON", ""),
+    str(Path(__file__).resolve().parents[1] / "config" / "quality-ratchet.json"),
+    f"{HOME}/workspaces/tooling/fleet-ops-deploy-clone/config/quality-ratchet.json",
+    f"{HOME}/workspaces/tooling/fleet-ops/config/quality-ratchet.json",
+    f"{HOME}/.local/share/fleet-ops/config/quality-ratchet.json",
+]
+# fleet-ops#3519: per-repo issue-work session dirs. Repo is encoded in the
+# dir name (`pi-issue-<repo>-<N>`), so sessions_to_pr_pct is derivable on
+# the host without a new data source.
+SESSIONS_DIR = Path(
+    os.environ.get("FLEET_PRODUCT_SLO_SESSIONS", f"{HOME}/.pi/agent/sessions")
+)
 FIXTURE = os.environ.get("FLEET_PRODUCT_SLO_FIXTURE", "")
 NOW_ISO = os.environ.get("FLEET_PRODUCT_SLO_NOW", "")
 GH = os.environ.get("FLEET_PRODUCT_SLO_GH", "gh")
@@ -75,6 +92,18 @@ GH_PAGES = 10
 WEEK_S = 7 * 86400
 MONTH_S = 28 * 86400
 DAY_S = 86400
+
+# fleet-ops#3519: the per-repo, rolling-7d quality metric names. Each is a
+# "ceiling" metric — the only enforcement lever this ratchet owns. The
+# rework/red-on-main/act-on rate families are deferred (separate issues:
+# file-overlap data, ci-watch source, #3264 dependency) and are NOT measured
+# yet, though their ceilings are seeded in quality-ratchet.json so the config
+# shape stays complete.
+QUALITY_METRICS = (
+    "reverts_per_100_merges",
+    "post_merge_defects_per_100",
+    "sessions_to_pr_pct",
+)
 
 _INTAKE_CANDIDATES = [
     os.environ.get("FLEET_PRODUCT_SLO_INTAKE", ""),
@@ -112,6 +141,30 @@ HELP_24 = (
     "shipped_24h tile (fleet-ops#2755 / #2690)."
 )
 TYPE_24 = "# TYPE fleet_product_merged_24h gauge"
+# fleet-ops#3519: per-repo rolling-7d quality gauges + committed ceilings.
+HELP_QRV = (
+    "# HELP fleet_product_quality_reverts_per_100 Revert PRs per 100 merged "
+    "PRs in the trailing 7 days per product repo (fleet-ops#3519)."
+)
+TYPE_QRV = "# TYPE fleet_product_quality_reverts_per_100 gauge"
+HELP_QDF = (
+    "# HELP fleet_product_quality_post_merge_defects_per_100 Merged PRs tied "
+    "to an issue filed within the trailing 7 days, per 100 merged PRs "
+    "(desk-triage / red-on-main / customer-facing defects), per product repo "
+    "(fleet-ops#3519)."
+)
+TYPE_QDF = "# TYPE fleet_product_quality_post_merge_defects_per_100 gauge"
+HELP_QSP = (
+    "# HELP fleet_product_quality_sessions_to_pr_pct Issue-work sessions in "
+    "the trailing 7 days per 100 merged PRs per product repo (fleet-ops#3519)."
+)
+TYPE_QSP = "# TYPE fleet_product_quality_sessions_to_pr_pct gauge"
+HELP_QCEIL = (
+    "# HELP fleet_product_quality_ceiling Committed quality ceiling per repo "
+    "per metric from config/quality-ratchet.json (fleet-ops#3519). "
+    "Alert rules pair the gauge above against this by (repo, metric)."
+)
+TYPE_QCEIL = "# TYPE fleet_product_quality_ceiling gauge"
 HELP_HB = (
     "# HELP fleet_product_slo_last_run_seconds Epoch of the last "
     "product-slo export tick (organ heartbeat, fleet-ops#2755)."
@@ -160,6 +213,12 @@ class RepoSLO:
     merges_28d: int = 0
     reverts_28d: int = 0
     lead_samples: list[float] = field(default_factory=list)
+    # fleet-ops#3519: per-repo rolling-7d quality metrics (per 100 merges).
+    quality_reverts_per_100: float = 0.0
+    quality_defects_per_100: float = 0.0
+    quality_sessions_to_pr_pct: float = 0.0
+    merges_7d: int = 0
+    sessions_7d: int = 0
 
 
 # --- helpers ---------------------------------------------------------------
@@ -455,7 +514,8 @@ def compute_repo_slo(
     *,
     now_ts: float,
 ) -> RepoSLO:
-    """Compute weekly throughput, lead time, revert rate, 24h merges.
+    """Compute weekly throughput, lead time, revert rate, 24h merges, and
+    the per-repo rolling-7d quality metrics (fleet-ops#3519).
 
     - throughput_weekly: non-revert merges with merged_ts in (now-7d, now]
     - lead_time_days: median of (merged - issue_created) days for those
@@ -463,12 +523,20 @@ def compute_repo_slo(
       Revert PRs are excluded (accept §6b).
     - revert_rate: reverts_28d / merges_28d (0 when no merges)
     - merged_24h: non-revert merges in trailing 24h
+    - quality_reverts_per_100: 100 * reverts_7d / merges_7d (reverts count in
+      the denominator too — it is "reverts per 100 merges")
+    - quality_defects_per_100: 100 * merges tied to an issue filed within the
+      week / merges_7d (desk-triage / red-on-main / customer-facing issues
+      tied to a merged PR)
+    - quality_sessions_to_pr_pct: 100 * merges_7d / sessions_7d from the
+      host session dir (`pi-issue-<repo>-*`)
     """
     slo = RepoSLO(repo=repo)
     week_cut = now_ts - WEEK_S
     month_cut = now_ts - MONTH_S
     day_cut = now_ts - DAY_S
     lead_samples: list[float] = []
+    defect_merges: int = 0
 
     for pr in prs:
         if pr.repo != repo:
@@ -483,6 +551,13 @@ def compute_repo_slo(
             slo.merges_28d += 1
             if revert:
                 slo.reverts_28d += 1
+        if week_cut < pr.merged_ts <= now_ts:
+            slo.merges_7d += 1
+            # Post-merge defect proxy: the merge is tied to an issue filed
+            # within the week (fresh desk-triage / red-on-main / customer
+            # issue). Reverts count too — a revert of a fresh PR is a defect.
+            if pr.issue_created_ts is not None and pr.issue_created_ts > week_cut:
+                defect_merges += 1
         if revert:
             continue
         if day_cut < pr.merged_ts <= now_ts:
@@ -494,12 +569,62 @@ def compute_repo_slo(
                     (pr.merged_ts - pr.issue_created_ts) / DAY_S
                 )
 
+    # Reverts in the 7d window are counted again here (independent of the
+    # revert-rate 28d path) so the per-100 number is exact for the window.
+    reverts_7d = sum(
+        1
+        for pr in prs
+        if pr.repo == repo
+        and is_revert(pr)
+        and week_cut < pr.merged_ts <= now_ts
+    )
+
+    slo.quality_defects_per_100 = _ratio100(defect_merges, slo.merges_7d)
     if slo.merges_28d > 0:
         slo.revert_rate = slo.reverts_28d / slo.merges_28d
     if lead_samples:
         slo.lead_time_days = float(statistics.median(lead_samples))
         slo.lead_samples = lead_samples
+
+    # fleet-ops#3519 quality metrics (after merges_7d is known).
+    slo.quality_reverts_per_100 = _ratio100(reverts_7d, slo.merges_7d)
+    slo.sessions_7d = _count_recent_sessions(repo, week_cut)
+    slo.quality_sessions_to_pr_pct = _ratio100(slo.merges_7d, slo.sessions_7d)
     return slo
+
+
+def _ratio100(numerator: int, denominator: int) -> float:
+    """100 * numerator / denominator, 0 when the denominator is 0."""
+    if denominator <= 0:
+        return 0.0
+    return round(100.0 * numerator / denominator, 6)
+
+
+def _count_recent_sessions(repo: str, week_cut: float) -> int:
+    """Count issue-work session records (one per jsonl in a
+    `pi-issue-<repo>-*` dir, mtime within the week) for sessions_to_pr_pct.
+    """
+    if not SESSIONS_DIR.is_dir():
+        return 0
+    try:
+        session_dirs = sorted(SESSIONS_DIR.glob(f"pi-issue-{repo}-*"))
+    except OSError:
+        return 0
+    count = 0
+    for d in session_dirs:
+        if not d.is_dir():
+            continue
+        try:
+            for f in d.iterdir():
+                try:
+                    if f.is_file() and f.stat().st_mtime > week_cut:
+                        count += 1
+                        break
+                except OSError:
+                    continue
+        except OSError:
+            continue
+    return count
 
 
 def compute_all(
@@ -513,6 +638,52 @@ def compute_all(
 
 
 # --- export ----------------------------------------------------------------
+
+
+def load_ceilings(repos: list[str]) -> dict[str, dict[str, float]]:
+    """Per-repo, per-metric quality ceilings from config/quality-ratchet.json
+    `.ceilings`. Returns {} when the file/corpus is absent or malformed so a
+    config fault never fails the exporter — the gauges still export with no
+    ceiling series and the ceiling alert rules simply stay silent.
+    """
+    path = _first_existing(_QUALITY_RATCHET_CANDIDATES)
+    if path is None:
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return {}
+        ceilings = data.get("ceilings")
+        if not isinstance(ceilings, dict):
+            return {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+    out: dict[str, dict[str, float]] = {}
+    defaults: dict[str, float] = {}
+    drow = ceilings.get("_default")
+    if isinstance(drow, dict):
+        for metric in QUALITY_METRICS:
+            try:
+                defaults[metric] = float(drow.get(metric))
+            except (TypeError, ValueError):
+                continue
+    for repo in repos:
+        repo_c = ceilings.get(repo)
+        row: dict[str, float] = {}
+        if isinstance(repo_c, dict):
+            for metric in QUALITY_METRICS:
+                val = repo_c.get(metric)
+                try:
+                    row[metric] = float(val)
+                except (TypeError, ValueError):
+                    continue
+        # A repo without its own row inherits the _default seed so the
+        # ceiling alert is armed from day one; the ratchet then tightens it.
+        if not row:
+            row = dict(defaults)
+        if row:
+            out[repo] = row
+    return out
 
 
 def export_prom(slos: list[RepoSLO], *, now: datetime) -> str:
@@ -540,6 +711,32 @@ def export_prom(slos: list[RepoSLO], *, now: datetime) -> str:
             f'fleet_product_merged_24h{{repo="{prom_label(s.repo)}"}} '
             f"{s.merged_24h}"
         )
+    # fleet-ops#3519: per-repo rolling-7d quality gauges + committed ceilings.
+    lines += ["", HELP_QRV, TYPE_QRV]
+    for s in slos:
+        lines.append(
+            f'fleet_product_quality_reverts_per_100{{repo="{prom_label(s.repo)}"}} '
+            f"{s.quality_reverts_per_100:.6f}"
+        )
+    lines += ["", HELP_QDF, TYPE_QDF]
+    for s in slos:
+        lines.append(
+            f'fleet_product_quality_post_merge_defects_per_100{{repo="{prom_label(s.repo)}"}} '
+            f"{s.quality_defects_per_100:.6f}"
+        )
+    lines += ["", HELP_QSP, TYPE_QSP]
+    for s in slos:
+        lines.append(
+            f'fleet_product_quality_sessions_to_pr_pct{{repo="{prom_label(s.repo)}"}} '
+            f"{s.quality_sessions_to_pr_pct:.6f}"
+        )
+    lines += ["", HELP_QCEIL, TYPE_QCEIL]
+    for repo, row in sorted(load_ceilings([s.repo for s in slos]).items()):
+        for metric, val in sorted(row.items()):
+            lines.append(
+                f'fleet_product_quality_ceiling{{repo="{prom_label(repo)}",'
+                f'metric="{prom_label(metric)}"}} {val:.6f}'
+            )
     lines += [
         "",
         HELP_HB,

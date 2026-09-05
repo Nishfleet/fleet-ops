@@ -410,6 +410,37 @@ check_comment_junk() {
   done < "$manifest"
 }
 
+# fleet-ops#3273: config sprawl. A .bak next to a managed MANIFEST file is a
+# leftover copy, not loaded, and it confuses every grep. The manifest check
+# must fail if any such .bak (or .bak-*) exists in the same directory.
+check_bak_sprawl() {
+  local src dest dir base entry
+  while read -r src dest || [ -n "$src" ]; do
+    [ -z "$src" ] && continue
+    # Skip whole-line comments and entries with no destination.
+    case "$src" in '#'*) continue ;; esac
+    [ -n "$dest" ] || continue
+
+    if [[ "$dest" == /* ]]; then
+      dir=$(dirname "$dest")
+      base=$(basename "$dest")
+    else
+      dir=$(dirname "$PWD/$dest")
+      base=$(basename "$dest")
+    fi
+
+    # Look for any file or directory whose name starts with the managed
+    # file's basename followed by '.bak'. A glob that matches nothing still
+    # yields the literal pattern; the existence test filters it out.
+    for entry in "$dir/$base.bak"*; do
+      if [ -e "$entry" ] || [ -L "$entry" ]; then
+        echo "DIFF: $entry (.bak next to managed MANIFEST file $dest)"
+        rc=1
+      fi
+    done
+  done < "$manifest"
+}
+
 # fleet-ops#3263: Pi provider extensions (template/extensions/**) are
 # installed as file COPIES, not symlinks. A symlink into the deploy-clone
 # working tree resolves their relative import `../seat-health.ts` against the
@@ -570,6 +601,7 @@ done < "$manifest"
 
 if [ "$mode" = "--" ]; then
   check_comment_junk
+  check_bak_sprawl
   exit "$rc"
 fi
 

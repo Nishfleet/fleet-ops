@@ -1,4 +1,17 @@
 #!/usr/bin/env bash
+
+# Use the nishfleet-worker App token for any GitHub write. Fail closed if
+# the App cannot mint and no token was inherited from a parent organ, so a
+# dead App never falls through to the human gh identity (fleet-ops#3445).
+# Human gh is read-only for organs; GH Actions (tests) has no App creds and
+# stubs gh as read-only, so skip minting there.
+if [[ -z "${GH_TOKEN:-}" && "${GITHUB_ACTIONS:-}" != "true" ]]; then
+    export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
+    _wt="${NISHFLEET_WORKER_TOKEN_BIN:-${HOME:-/home/nish}/.local/bin/worker-token}"
+    _minted="$("$_wt" --print)" || { echo "fleet-ops#3445: $_wt --print failed - refusing human-gh writes" >&2; exit 1; }
+    eval "$_minted"
+    unset _wt _minted
+fi
 # pi-issue-failed-reap — release a claim after its worker exhausts retries.
 #
 # Triggered by pi-issue@.service OnFailure=pi-issue-failed@%i.service.
@@ -172,7 +185,10 @@ log "state=$issue_state in_progress=$in_progress for $repo_slug#$issue"
 # --- branch cleanup: only if no open PR from this branch --------------------
 # Same REST-vs-GraphQL split: `gh pr list --json` is GraphQL; use `gh api` REST
 # with a head=<branch> filter and count the result.
-open_pr_json=$(gh api "repos/$repo_slug/pulls?state=open&head=${repo_slug#*/}:${branch_name}&per_page=1" 2>&1) || {
+# The REST head filter is owner:branch (Nishfleet:claim/...), NOT repo:branch.
+# 2026-09-05: ${repo_slug#*/} produced "fleet-ops:claim/..." which matches
+# nothing, so the guard saw 0 open PRs and deleted branches with live PRs.
+open_pr_json=$(gh api "repos/$repo_slug/pulls?state=open&head=${repo_slug%/*}:${branch_name}&per_page=1" 2>&1) || {
     log "gh api repos/$repo_slug/pulls failed: $(printf '%s' "$open_pr_json" | head -c 200)"
     log_to_triage "CLAIM-REAP-TRANSIENT-SKIP" "step=pr_list instance=$instance branch=$branch_name reason=gh_api_failed"
     log "transient gh failure on PR list — exiting 0 and letting the 30-min orphan sweep pick this up"

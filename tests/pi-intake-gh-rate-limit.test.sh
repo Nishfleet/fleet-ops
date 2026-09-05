@@ -108,7 +108,12 @@ run_tick() {
     else
         write_state "$low"
     fi
+    # fleet-ops#3445: isolate the secondary-limit state dir and force GH
+    # Actions mode so the offline test never mints a real token or reads the
+    # live VPS secondary-limit state.
+    mkdir -p "$scratch/secondary"
     env \
+        GITHUB_ACTIONS=true \
         PATH="$stubs:${PATH}" \
         HOME="$scratch" \
         XDG_RUNTIME_DIR="$scratch/run" \
@@ -116,6 +121,7 @@ run_tick() {
         PI_INTAKE_RECONCILER_PROM="$scratch/reconciler" \
         PI_INTAKE_GH_RATE_LIMIT_STATE="$scratch/gh-rate-limit.json" \
         PI_INTAKE_GH_RATE_LIMIT_MAX_AGE="$max_age" \
+        PI_INTAKE_GH_SECONDARY_STATE_DIR="$scratch/secondary" \
         PI_INTAKE_ISSUE_STATE_DIR="$scratch/pi-issues" \
         SEAT_LIB="$stubs" \
         PRECEDENCE_BAND_LIB="$stubs" \
@@ -152,3 +158,64 @@ rc=$?
 echo "$out" | grep -qF 'holding claims this tick' && fail "missing state must NOT hold claims (fail-open): $out" || true
 echo "$out" | grep -qF 'gh rate-limit state file missing' || fail "missing state should warn: $out"
 ok "missing gh rate-limit state is fail-open"
+
+# --- fleet-ops#3445 secondary rate-limit gate -----------------------------
+
+write_secondary() {
+    local active="$1" backoff_until="$2"
+    mkdir -p "$scratch/secondary"
+    cat >"$scratch/secondary/gh-secondary-rate.json" <<JSON
+{"submitted_too_quickly": $active, "attempt": 3, "backoff_until": $backoff_until, "updated_at": $(date +%s)}
+JSON
+}
+
+run_tick_quiet() {
+    # like run_tick but suppress the per-issue echo noise by only setting a
+    # single env block (primary gate is low=0 so it reaches the secondary gate)
+    mkdir -p "$scratch/secondary" "$scratch/pi-issues"
+    write_state "0"
+    env \
+        GITHUB_ACTIONS=true \
+        PATH="$stubs:${PATH}" \
+        HOME="$scratch" \
+        XDG_RUNTIME_DIR="$scratch/run" \
+        PI_INTAKE_LOCKDIR="$scratch" \
+        PI_INTAKE_RECONCILER_PROM="$scratch/reconciler" \
+        PI_INTAKE_GH_RATE_LIMIT_STATE="$scratch/gh-rate-limit.json" \
+        PI_INTAKE_GH_RATE_LIMIT_MAX_AGE="120" \
+        PI_INTAKE_GH_SECONDARY_STATE_DIR="$scratch/secondary" \
+        PI_INTAKE_ISSUE_STATE_DIR="$scratch/pi-issues" \
+        SEAT_LIB="$stubs" \
+        PRECEDENCE_BAND_LIB="$stubs" \
+        PRIOR_ART_CLAIM_CHECK="$prior_art_stub" \
+        FLEET_ISSUE_REPO="Nishfleet/fleet-ops" \
+        bash "$tick" fleet-ops 2>&1
+}
+
+# Test 4: active secondary backoff (backoff_until in the future) -> hold the tick
+write_secondary 1 $(( $(date +%s) + 600 ))
+out="$(run_tick_quiet)"
+rc=$?
+[[ "$rc" == "0" ]] || fail "secondary-backoff tick must exit 0, got rc=$rc"
+echo "$out" | grep -qF 'gh secondary rate-limit active' || fail "must log gh secondary rate-limit active: $out"
+echo "$out" | grep -qF 'holding claims this tick' || fail "active secondary backoff must hold claims: $out"
+ok "active secondary backoff holds claims and exits 0"
+
+# Test 5: expired secondary backoff (backoff_until in the past) -> clear and continue
+write_secondary 1 $(( $(date +%s) - 600 ))
+out="$(run_tick_quiet)"
+rc=$?
+[[ "$rc" == "0" ]] || fail "expired-secondary tick must exit 0, got rc=$rc"
+echo "$out" | grep -qF 'gh secondary rate-limit active' && fail "expired secondary backoff must NOT hold: $out" || true
+# expired state must be cleared back to submitted_too_quickly=0
+if [[ -f "$scratch/secondary/gh-secondary-rate.json" ]]; then
+    val=$(jq -r '.submitted_too_quickly' "$scratch/secondary/gh-secondary-rate.json" 2>/dev/null || echo '?')
+    [[ "$val" == "0" ]] || fail "expired secondary backoff must clear state, got submitted_too_quickly=$val"
+fi
+ok "expired secondary backoff clears state and continues"
+
+# fleet-ops#3445: the intake's gh write is one organ; run the class-prevention
+# gate that asserts EVERY fleet writer organ mints the nishfleet-worker App
+# token before any GitHub write (so the human-gh-author regression cannot
+# come back). Hosted here so it runs in CI without a workflow-file edit.
+bash "$here/fleet-writer-token.test.sh"

@@ -1,4 +1,17 @@
 #!/usr/bin/env bash
+
+# Use the nishfleet-worker App token for any GitHub write. Fail closed if
+# the App cannot mint and no token was inherited from a parent organ, so a
+# dead App never falls through to the human gh identity (fleet-ops#3445).
+# Human gh is read-only for organs; GH Actions (tests) has no App creds and
+# stubs gh as read-only, so skip minting there.
+if [[ -z "${GH_TOKEN:-}" && "${GITHUB_ACTIONS:-}" != "true" ]]; then
+    export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
+    _wt="${NISHFLEET_WORKER_TOKEN_BIN:-${HOME:-/home/nish}/.local/bin/worker-token}"
+    _minted="$("$_wt" --print)" || { echo "fleet-ops#3445: $_wt --print failed - refusing human-gh writes" >&2; exit 1; }
+    eval "$_minted"
+    unset _wt _minted
+fi
 # bin/pi-audit-tally
 #
 # Tallies the three senior-auditor votes for one scout candidate and applies
@@ -12,6 +25,7 @@
 #   AUDIT_STATE_DIR    vote file tree
 #   AUDIT_GH           gh override
 #   AUDIT_DRY_RUN      1 = log, do not mutate labels
+#   ESCALATE_AFTER     refuse EVIDENCE-REFUSED N times before escalate-senior (default 3)
 
 set -euo pipefail
 
@@ -22,6 +36,7 @@ export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 GH="${AUDIT_GH:-gh}"
 STATE_DIR="${AUDIT_STATE_DIR:-$HOME/.local/state/fleet-audit}"
 DRY_RUN="${AUDIT_DRY_RUN:-0}"
+ESCALATE_AFTER="${ESCALATE_AFTER:-3}"
 
 spec_gate_py() {
     if [ -n "${AGENT_READY_SPEC_GATE:-}" ]; then
@@ -53,8 +68,24 @@ issue_passes_spec_gate() {
 # or the admission (2-of-3 PASS) is keyword-babble, not a senior verdict.
 # Returns 0 when the reason names evidence, 1 when it is keyword-only.
 reason_has_evidence() {
-    local r="$1"
-    grep -qE '#[0-9]+|[a-z][a-z0-9+.-]*://|[A-Za-z0-9_.]+/[A-Za-z0-9_.]+' <<<"$r"
+    local r="$1" candidate="$2" body="$3"
+    # (1) Existing repo-specific evidence: any issue number, URL, or path.
+    if grep -qE '#[0-9]+|[a-z][a-z0-9+.-]*://|[A-Za-z0-9_.]+/[A-Za-z0-9_.]+' <<<"$r"; then
+        return 0
+    fi
+    # fleet-ops#3573: the auditors run with NO tools (tools=0), so they cannot
+    # cite a live path or URL. Accept a PASS whose reason cites THIS candidate
+    # issue number together with a concrete repo path that appears VERBATIM in
+    # the candidate's own issue body — the body is the only repo specificity a
+    # tool-less auditor is handed, so a body-path citation is still evidence,
+    # not keyword-babble. Without the path it is still refused.
+    grep -qE "#${candidate}([^0-9]|$)" <<<"$r" || return 1
+    local tok
+    while IFS= read -r tok; do
+        [ -n "$tok" ] || continue
+        grep -qF "$tok" <<<"$r" && return 0
+    done <<<"$(printf '%s\n' "$body" | grep -oE '[A-Za-z0-9_.]+(/[A-Za-z0-9_.]+)+' | sort -u 2>/dev/null)"
+    return 1
 }
 
 log() { printf '[%s] [pi-audit-tally] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; }
@@ -99,29 +130,61 @@ main() {
         # fleet-ops#543: 2-of-3 PASS is not enough without a spec.
         # fleet-ops#3121: nor without repo-specific evidence in the PASS
         # reasons — keyword-only compliance is not a judgement.
+        # fleet-ops#3573: fetch the body first so the evidence gate can accept
+        # a tool-less auditor's citation of this candidate# + a body path.
+        issue_json=$("$GH" issue view "$candidate" -R "Nishfleet/$repo" --json body 2>/dev/null || true)
+        issue_body=$(printf '%s' "$issue_json" | jq -r '.body // empty')
         local pass_reasons evidenceless
         pass_reasons=$(printf '%s\n' "$votes" | jq -r '[.[] | select(.verdict == "PASS") | .reason] | join("\n")')
         evidenceless=0
         while IFS= read -r r; do
             [ -n "$r" ] || continue
-            if ! reason_has_evidence "$r"; then
+            if ! reason_has_evidence "$r" "$candidate" "$issue_body"; then
                 evidenceless=1
                 log "$repo/#$candidate PASS reason lacks repo-specific evidence (issue #, path, or URL): $(printf '%s' "$r" | head -c 160)"
             fi
         done <<<"$pass_reasons"
         if [ "$evidenceless" = "1" ]; then
-            log "$repo/#$candidate EVIDENCE-REFUSED (2-of-3 PASS but keyword-only reasons)"
-            if [ "$DRY_RUN" = "1" ]; then
-                log "DRY-RUN: would refuse agent-ready for $repo/#$candidate (keyword-only PASS reasons)"
+            # fleet-ops#3574: a candidate refused for evidence ESCALATE_AFTER
+            # times (default 3) is escalated (escalate-senior + drop
+            # scout-candidate) so the admission queue never re-runs the same
+            # evidence-less panel forever. The counter and refusal-history
+            # ledger live under the candidate's state dir.
+            local refusals reasons_ledger n
+            refusals="$dir/.evidence-refusals"
+            reasons_ledger="$dir/.evidence-refusal-reasons"
+            n=0
+            [ -f "$refusals" ] && n=$(<"$refusals")
+            n=$(( ${n:-0} + 1 ))
+            printf '%s\n' "$n" > "$refusals"
+            printf '\n== evidence refusal #%s (%s) ==\n%s\n' "$n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$pass_reasons" >> "$reasons_ledger" 2>/dev/null || true
+            log "$repo/#$candidate EVIDENCE-REFUSED (2-of-3 PASS but keyword-only reasons) count=$n (escalate at $ESCALATE_AFTER)"
+            if [ "$n" -ge "$ESCALATE_AFTER" ]; then
+                log "$repo/#$candidate escalated: $n evidence refusals, escalate-senior, stop re-queuing (fleet-ops#3574)"
+                if [ "$DRY_RUN" = "1" ]; then
+                    log "DRY-RUN: would add escalate-senior + remove scout-candidate + comment for $repo/#$candidate"
+                else
+                    if ! "$GH" issue edit "$candidate" -R "Nishfleet/$repo" --remove-label scout-candidate --add-label escalate-senior >/dev/null 2>&1; then
+                        log "$repo/#$candidate: gh issue edit FAILED (escalate-senior)"
+                        exit 1
+                    fi
+                    local ledger
+                    ledger=$(cat "$reasons_ledger" 2>/dev/null || printf 'refusal history unavailable')
+                    "$GH" issue comment "$candidate" -R "Nishfleet/$repo" \
+                        --body "escalate-senior (fleet-ops#3574): $repo/#$candidate refused for evidence $n times. Every PASS reason was keyword-only with no repo-specific evidence (issue number, path, or URL), so 2-of-3 PASS could never admit. Escalated rather than re-queued forever. Refusals:$ledger" \
+                        >/dev/null 2>&1 || true
+                fi
             else
-                "$GH" issue comment "$candidate" -R "Nishfleet/$repo" \
-                    --body "evidence-refused (fleet-ops#3121). 2-of-3 PASS, but at least one PASS reason is keyword-only with no repo-specific evidence (issue number, path, or URL). Keyword-only compliance is not a judgement." \
-                    >/dev/null 2>&1 || true
+                if [ "$DRY_RUN" = "1" ]; then
+                    log "DRY-RUN: would refuse agent-ready for $repo/#$candidate (keyword-only PASS reasons)"
+                else
+                    "$GH" issue comment "$candidate" -R "Nishfleet/$repo" \
+                        --body "evidence-refused (fleet-ops#3121). 2-of-3 PASS, but at least one PASS reason is keyword-only with no repo-specific evidence (issue number, path, or URL). Keyword-only compliance is not a judgement." \
+                        >/dev/null 2>&1 || true
+                fi
             fi
             exit 0
         fi
-        issue_json=$("$GH" issue view "$candidate" -R "Nishfleet/$repo" --json body 2>/dev/null || true)
-        issue_body=$(printf '%s' "$issue_json" | jq -r '.body // empty')
         if ! issue_passes_spec_gate "$issue_body" "$repo"; then
             log "$repo/#$candidate SPEC-GATE-REFUSED (2-of-3 PASS but no spec)"
             if [ "$DRY_RUN" = "1" ]; then

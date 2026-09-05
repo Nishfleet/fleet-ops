@@ -454,6 +454,14 @@ bash "$here/unit-escalation-write-recurrence-suppress.test.sh"
 # push .github/workflows/**).
 bash "$here/unit-escalation-write-pi-issue-exclusion.test.sh"
 
+# fleet-ops#3368: the FleetEscalationStorm alert must name its dominant
+# producer so a recurrence is actionable without a manual dig. Locks the
+# topk(1, fleet_escalations_24h) expr + {{ $labels.unit }} annotations via
+# a promtool rule-unit test. Runs offline (no live prometheus); skips the
+# promtool section cleanly when promtool is absent. Hosted here so P14
+# runs it without a workflow-file edit.
+bash "$here/fleet-rules-escalation-storm.test.sh"
+
 # fleet-ops#2462: cap re-claims per item (MAX_RECLAIMS in pi-intake-tick.sh)
 # + systemic-failure skip (.systemic marker when every tried seat is benched).
 # Hosts the 11-test gate (MAX_RECLAIMS env var, tick read path, skip+escalate,
@@ -486,19 +494,18 @@ bash "$here/fleet-scout-leak-canary.test.sh"
 # clobbers (seat-health.ts resets ledger count=0 on every 200 OK, so the
 # wrapper's mark_seat_empty_run must carry the count in the clobber-proof
 # spawn-bench marker — fleet-ops#1512 — and engage the failure-ceiling
-# park from the marker-carried count at EMPTY_RUN_FAILURE_CEILING). The
+# park from the marker-carried count). fleet-ops#3531: the bench now
+# escalates geometrically and uses the generic failure ceiling.
 # live 18 empty runs in 2h on healthy-reporting seats (opencode/nemotron
 # and openrouter/deepseek-v4-flash-0731) was the wrapper-side marker
 # staying at count=1 every cycle. Hosted here so P14 runs it without a
 # workflow-file edit (the worker App cannot push .github/workflows/**).
 bash "$here/seat-empty-run-clobber-park.test.sh"
 
-# fleet-ops#3046: the EMPTY_RUN_FAILURE_CEILING default was 10, but the
-# 2h count-merge window reset the count before it reached 10, so the live
-# nemotron-3-ultra-free loop (9 empty runs in 2h on fleet-ops-2778) never
-# parked. The fix lowers the default to 3 so the park fires on the 3rd
-# no-op in the SAME 2h window. This test asserts the production default
-# (no env override) is exactly 3 and the park engages on the 3rd no-op.
+# fleet-ops#3046 / #3531: the empty-run bench now escalates geometrically
+# and uses the generic failure ceiling. The marker count still accumulates
+# across healthy clobbers and the park engages at the ceiling. This test
+# exercises the default window and the geometric/park behaviour.
 # Hosted here so P14 runs it without a workflow-file edit.
 bash "$here/seat-empty-run-ceiling-default.test.sh"
 
@@ -551,3 +558,26 @@ bash "$here/seat-empty-run-intermittent-count.test.sh"
 # .github/workflows/**). Offline import of memoryctl plus a live layer
 # that skips in hosted CI (no user journal / no vault health file).
 bash "$here/curator-journal-cap.test.sh"
+
+# fleet-ops#3273: config sprawl — .bak next to a managed MANIFEST file.
+# Hosted here so P14 runs it without a workflow-file edit (the worker
+# App cannot push .github/workflows/**). The named pin in
+# tests/p14-test-listing-gate.test.sh is the class-prevention so a
+# future drop of this host line fails by name.
+bash "$here/install-manifest-bak-sprawl.test.sh"
+
+# fleet-ops#3574: the admission tally escalates a candidate refused for
+# evidence 3 times (escalate-senior) instead of re-queuing it forever
+# (split of #3548). Hosted here so P14 runs the drill without a
+# workflow-file edit (the worker App cannot push .github/workflows/**).
+# Hermetic (scratch vote state + stub gh, no real API).
+bash "$here/pi-audit-tally-escalate-senior.test.sh"
+
+# fleet-ops#3594 (PR #3633 follow-up): the pi-audit-run strip-preamble replay
+# drill landed without a ci.yml listing or a host, so P14 ran red on "1 test
+# file(s) are neither in ci.yml, hosted by a listed test, live/destructive,
+# nor a known orphan: pi-audit-run-strip-preamble.test.sh" (run 33967708485).
+# Hosted here so P14 runs it without a workflow-file edit (the worker App
+# cannot push .github/workflows/**). Hermetic (stub pi + scratch vote dir,
+# no gh/prometheus/systemd).
+bash "$here/pi-audit-run-strip-preamble.test.sh"

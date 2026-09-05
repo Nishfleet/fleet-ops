@@ -100,8 +100,8 @@
 #      assistant turns with stopReason=error (503 overloaded).
 #   6. same #1053 shape plus a later "the edit call failed" user-facing
 #      flag -> clean.
-#   7. worker.md cites fleet-ops#1053 and "Found N occurrences"
-#      (prompt-side lock).
+#   7. lib/failed-command-flagged.py cites fleet-ops#1053 and "Found N occurrences"
+#      (detector-side lock: case list moved to lib, fleet-ops#3246).
 #   8. lib/failed-command-flagged.py docstring cites fleet-ops#1053
 #      (detector-side lock).
 #   9. seat-lib.test.sh hosts this file (CI cannot gain a P14 line).
@@ -112,8 +112,8 @@
 #      (guards against a READ_OFFSET_RE-style no-op exemption).
 #  12. same #1139 shape plus a later "the edit call failed" user-facing
 #      flag -> clean.
-#  13. worker.md cites fleet-ops#1139 and the no-op wording
-#      (prompt-side lock).
+#  13. lib/failed-command-flagged.py cites fleet-ops#1139 and the no-op wording
+#      (detector-side lock: case list moved to lib, fleet-ops#3246).
 #  14. lib/failed-command-flagged.py cites fleet-ops#1139
 #      (detector-side lock).
 #  15. live #1140 shape: edit "Could not find the exact text" of
@@ -123,8 +123,8 @@
 #      -> still a finding.
 #  17. same #1140 shape plus a later "the edit call failed" user-facing
 #      flag -> clean.
-#  18. worker.md cites fleet-ops#1140, READY-WORK.md, and `cat >>`
-#      (prompt-side lock).
+#  18. lib/failed-command-flagged.py cites fleet-ops#1140, READY-WORK.md, and `cat >>`
+#      (detector-side lock: case list moved to lib, fleet-ops#3246).
 #  19. lib/failed-command-flagged.py cites fleet-ops#1140, READY-WORK.md,
 #      and `cat >>` (detector-side lock).
 
@@ -283,17 +283,17 @@ count=$(jq '.findings | length' <<<"$report")
 ok "edit 'Found N occurrences' plus later user-facing flag is clean"
 rm -f "$sessions/edit-unmatch-found-occurrences-flagged.jsonl"
 
-# --- 7. worker.md cites fleet-ops#1053 (prompt-side lock) ------------------
+# --- 7. lib/failed-command-flagged.py cites fleet-ops#1053 (detector-side lock: case list moved to lib, fleet-ops#3246) ------------------
 # Dropping the #1053 citation or the live wording from the standing-rule
 # paragraph is a regression even if the drill still passes: workers read
 # worker.md, not this test.
-grep -q 'fleet-ops#1053' "$worker" \
-  || fail "prompts/worker.md must cite fleet-ops#1053 (prompt-side lock for the Found N occurrences sibling shape)"
-grep -q 'Found N occurrences' "$worker" \
-  || fail "prompts/worker.md must name the live #1053 'Found N occurrences' wording so workers flag it"
-grep -q 'AUDITOR-LOG.md' "$worker" \
-  || fail "prompts/worker.md must name AUDITOR-LOG.md as the live #1053 path"
-ok "worker.md cites fleet-ops#1053 and the live Found N occurrences wording"
+grep -q 'fleet-ops#1053' "$lib" \
+  || fail "lib/failed-command-flagged.py must cite fleet-ops#1053 (detector-side lock for the Found N occurrences sibling shape)"
+grep -q 'Found N occurrences' "$lib" \
+  || fail "lib/failed-command-flagged.py must name the live #1053 'Found N occurrences' wording so workers flag it"
+grep -q 'AUDITOR-LOG.md' "$lib" \
+  || fail "lib/failed-command-flagged.py must name AUDITOR-LOG.md as the live #1053 path"
+ok "lib/failed-command-flagged.py cites fleet-ops#1053 and the live Found N occurrences wording"
 
 # --- 8. lib/failed-command-flagged.py docstring cites fleet-ops#1053 ------
 # The docstring is the standing-rule contract for the next detector
@@ -376,14 +376,14 @@ count=$(jq '.findings | length' <<<"$report")
 ok "#1139: no-op edit plus later user-facing flag is clean"
 rm -f "$sessions/edit-noop-flagged.jsonl"
 
-# --- 13. worker.md cites fleet-ops#1139 (prompt-side lock) ----------------
-grep -q 'fleet-ops#1139' "$worker" \
-  || fail "prompts/worker.md must cite fleet-ops#1139 (prompt-side lock for the no-op edit shape)"
-grep -q 'The replacement produced identical content' "$worker" \
-  || fail "prompts/worker.md must name the live #1139 no-op wording so workers flag it"
-grep -q "The text is already the same" "$worker" \
-  || fail "prompts/worker.md must name the live #1139 cause-prose so workers know it is not a flag"
-ok "worker.md cites fleet-ops#1139, the no-op wording, and the cause-prose"
+# --- 13. lib/failed-command-flagged.py cites fleet-ops#1139 (detector-side lock: case list moved to lib, fleet-ops#3246) ----------------
+grep -q 'fleet-ops#1139' "$lib" \
+  || fail "lib/failed-command-flagged.py must cite fleet-ops#1139 (detector-side lock for the no-op edit shape)"
+grep -q 'The replacement produced identical content' "$lib" \
+  || fail "lib/failed-command-flagged.py must name the live #1139 no-op wording so workers flag it"
+grep -q "The text is already the same" "$lib" \
+  || fail "lib/failed-command-flagged.py must name the live #1139 cause-prose so workers know it is not a flag"
+ok "lib/failed-command-flagged.py cites fleet-ops#1139, the no-op wording, and the cause-prose"
 
 # --- 14. lib/failed-command-flagged.py cites fleet-ops#1139 ---------------
 # The comment above READ_OFFSET_RE is where a future maintainer would add
@@ -452,14 +452,14 @@ count=$(jq '.findings | length' <<<"$report")
 ok "live #1140: edit unmatch plus later user-facing flag is clean"
 rm -f "$sessions/edit-unmatch-cat-append-flagged.jsonl"
 
-# --- 18. worker.md cites fleet-ops#1140 (prompt-side lock) ----------------
-grep -q 'fleet-ops#1140' "$worker" \
-  || fail "prompts/worker.md must cite fleet-ops#1140 (prompt-side lock for the READY-WORK.md cat>> append shape)"
-grep -q 'READY-WORK.md' "$worker" \
-  || fail "prompts/worker.md must name READY-WORK.md as the live #1140 path"
-grep -q 'cat >>' "$worker" \
-  || fail "prompts/worker.md must name the live #1140 bash cat >> append recovery so workers know it is not a flag"
-ok "worker.md cites fleet-ops#1140, the live path, and the cat >> append recovery"
+# --- 18. lib/failed-command-flagged.py cites fleet-ops#1140 (detector-side lock: case list moved to lib, fleet-ops#3246) ----------------
+grep -q 'fleet-ops#1140' "$lib" \
+  || fail "lib/failed-command-flagged.py must cite fleet-ops#1140 (detector-side lock for the READY-WORK.md cat>> append shape)"
+grep -q 'READY-WORK.md' "$lib" \
+  || fail "lib/failed-command-flagged.py must name READY-WORK.md as the live #1140 path"
+grep -q 'cat >>' "$lib" \
+  || fail "lib/failed-command-flagged.py must name the live #1140 bash cat >> append recovery so workers know it is not a flag"
+ok "lib/failed-command-flagged.py cites fleet-ops#1140, the live path, and the cat >> append recovery"
 
 # --- 19. lib/failed-command-flagged.py cites fleet-ops#1140 ---------------
 # A future "successful write of the same path" exemption would go next to

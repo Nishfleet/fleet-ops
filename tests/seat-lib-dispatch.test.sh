@@ -275,4 +275,45 @@ shopt -u nullglob
 [[ "${#count[@]}" == "0" ]] || fail "_dispatch: no registry must write zero ledgers (got ${#count[@]}"
 ok "_dispatch: missing error_classes block -> rc=1, no writer fires (graceful degradation)"
 
+# --- 7. overload bench escalates geometrically, capped at 6h, parks at 20 ---
+# fleet-ops#3531: the 503/overload default (600s) must double each cycle,
+# cap at 6h (21600s), and park at SEAT_FAILURE_CEILING (default 20).
+rm -f "$LEDGER"/*.json 2>/dev/null || true
+p_cc="commandcode"; m_cc="minimax/minimax-m3-free"
+expected=(600 1200 2400 4800 9600 19200 21600 21600)
+for i in 1 2 3 4 5 6 7 8; do
+    idx=$((i-1))
+    want=${expected[$idx]}
+    set +e
+    bash -c 'source "$0"; load_seat_caps; _dispatch_lane_faults "$1" "$2" "$3" "$4"' \
+        "$lib" "$p_cc" "$m_cc" "$overload_body" "" >/dev/null 2>&1
+    rc=$?
+    set -e
+    [[ "$rc" == "0" ]] || fail "_dispatch: overload geometric #${i} must fire (got $rc)"
+    ledger_file="$LEDGER/commandcode__minimax_minimax-m3-free.json"
+    bw=$(jq -r '.bench_window_s' "$ledger_file")
+    [[ "$bw" == "$want" ]] || fail "_dispatch: overload #${i} bench_window_s = $bw, want $want (geometric, fleet-ops#3531)"
+done
+ok "_dispatch: overload bench escalates 600->1200->2400...21600 (geometric, capped, fleet-ops#3531)"
+
+# --- 8. quota bench escalates geometrically, capped at 6h, parks at 20 -----
+rm -f "$LEDGER"/*.json 2>/dev/null || true
+p_d="devin"; m_d="swe-1-7"
+quota_no_window2='INFERENCE_CAP_ERROR: weekly Clinepass limit'
+expected_q=(900 1800 3600 7200 14400 21600 21600 21600)
+for i in 1 2 3 4 5 6 7 8; do
+    idx=$((i-1))
+    want=${expected_q[$idx]}
+    set +e
+    bash -c 'source "$0"; load_seat_caps; _dispatch_lane_faults "$1" "$2" "$3" "$4"' \
+        "$lib" "$p_d" "$m_d" "$quota_no_window2" "" >/dev/null 2>&1
+    rc=$?
+    set -e
+    [[ "$rc" == "0" ]] || fail "_dispatch: quota geometric #${i} must fire (got $rc)"
+    ledger_file="$LEDGER/devin__swe-1-7.json"
+    bw=$(jq -r '.bench_window_s' "$ledger_file")
+    [[ "$bw" == "$want" ]] || fail "_dispatch: quota #${i} bench_window_s = $bw, want $want (geometric, fleet-ops#3531)"
+done
+ok "_dispatch: quota bench escalates 900->1800->3600...21600 (geometric, capped, fleet-ops#3531)"
+
 ok "seat-lib-dispatch: registry sorted, trigger-order wins, no-double-bench, backward-compat, graceful no-registry"

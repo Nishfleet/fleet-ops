@@ -1,4 +1,17 @@
 #!/usr/bin/env bash
+
+# Use the nishfleet-worker App token for any GitHub write. Fail closed if
+# the App cannot mint and no token was inherited from a parent organ, so a
+# dead App never falls through to the human gh identity (fleet-ops#3445).
+# Human gh is read-only for organs; GH Actions (tests) has no App creds and
+# stubs gh as read-only, so skip minting there.
+if [[ -z "${GH_TOKEN:-}" && "${GITHUB_ACTIONS:-}" != "true" ]]; then
+    export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
+    _wt="${NISHFLEET_WORKER_TOKEN_BIN:-${HOME:-/home/nish}/.local/bin/worker-token}"
+    _minted="$("$_wt" --print)" || { echo "fleet-ops#3445: $_wt --print failed - refusing human-gh writes" >&2; exit 1; }
+    eval "$_minted"
+    unset _wt _minted
+fi
 # scout-futility-check — green-and-empty + provider-wall crash detector
 # (fleet-ops#454, fleet-ops#2468).
 #
@@ -47,6 +60,7 @@
 #   SCOUT_FUTILITY_REPO        repo to file tickets in (default Nishfleet/fleet-ops)
 #   SCOUT_FUTILITY_FILE        1 (default) file issues; 0 skip gh create
 #   SCOUT_FUTILITY_READY_COUNT override ready count (fixture scout)
+#   SCOUT_FUTILITY_FILED_COUNT override issues-filed-since-begin (fleet-ops#3547)
 #   SCOUT_FUTILITY_CLOSED_JSON closed-issue JSON fixture (file path or literal)
 #   SCOUT_FUTILITY_WS_LIB      path to work-supply.sh (tests/development)
 #   SCOUT_FUTILITY_PROM          textfile path (default
@@ -132,6 +146,25 @@ ready_count() {
     fi
     n=$("$GH" issue list -R "Nishfleet/${repo}" -l agent-ready --state open \
         --json number --limit 200 --jq 'length' 2>/dev/null || true)
+    printf '%s\n' "$n"
+}
+
+# Issues created in Nishfleet/<repo> since begin_at (any state, any label).
+# fleet-ops#3547: the scout files scout-candidate issues, not agent-ready
+# ones (admission panel, fleet-ops#457), so a productive run leaves the
+# agent-ready runway flat and read as "dry" — 2026-09-05 0509 reached
+# consecutive_dry=7 and was parked while its candidates sat in admission.
+# Empty on gh failure or missing begin_at; the caller treats non-numeric as
+# "unknown" (0 filed) so the runway rule still decides.
+filed_since_begin() {
+    local repo="$1" begin_at="$2" n
+    if [[ -n "${SCOUT_FUTILITY_FILED_COUNT:-}" ]]; then
+        printf '%s\n' "$SCOUT_FUTILITY_FILED_COUNT"
+        return 0
+    fi
+    [[ -n "$begin_at" ]] || { printf '\n'; return 0; }
+    n=$("$GH" issue list -R "Nishfleet/${repo}" --state all --limit 200 \
+        --search "created:>=${begin_at}" --json number --jq 'length' 2>/dev/null || true)
     printf '%s\n' "$n"
 }
 
@@ -518,7 +551,7 @@ cmd_end() {
     local repo="$1"
     local exit_code
     exit_code=$(resolve_exit "${2:-}")
-    local file before before_hours after after_hours dry next_dry wall_count next_wall last_run now_s
+    local file before before_hours after after_hours dry next_dry wall_count next_wall last_run now_s begin_at filed
     valid_repo "$repo" || { log "end: invalid repo '$repo'"; return 0; }
     is_uint "$N" || { log "end: SCOUT_FUTILITY_N not a uint: $N"; return 0; }
     is_uint "$BUFFER_H" || { log "end: SCOUT_FUTILITY_BUFFER_H not a uint: $BUFFER_H"; return 0; }
@@ -528,6 +561,7 @@ cmd_end() {
     file=$(state_path "$repo")
     before=$(read_field "$file" before)
     before_hours=$(read_field "$file" before_hours)
+    begin_at=$(read_field "$file" begin_at)
     if ! is_uint "$before"; then
         # fleet-ops#1277: missing/unreadable snapshot is absence-of-evidence,
         # not futility. Seed a snapshot and exit 0 (success-run). Do not
@@ -585,6 +619,13 @@ cmd_end() {
     if ! is_uint "$before_hours"; then
         before_hours=$before
     fi
+    # fleet-ops#3547: what the scout actually filed this tick. Only measured
+    # on a green exit; crash paths keep their own classification below.
+    filed=""
+    if [[ "$exit_code" == "0" ]]; then
+        filed=$(filed_since_begin "$repo" "$begin_at")
+    fi
+    is_uint "$filed" || filed=0
     if [[ "$exit_code" != "0" ]]; then
         # Crash path (fleet-ops#2468): classify the crash by scanning the
         # scout unit's error-priority journal. ALL non-empty error lines
@@ -604,6 +645,12 @@ cmd_end() {
             next_wall=0
             log "end: $repo exit=$exit_code (not green, not provider-wall) — leave consecutive_dry=$dry, consecutive_wall=0"
         fi
+    elif [[ "$filed" -ge 1 ]]; then
+        # fleet-ops#3547: a run that filed issues is productive even when the
+        # agent-ready runway did not move (candidates wait in admission).
+        next_dry=0
+        next_wall=0
+        log "end: $repo filed=$filed issue(s) since begin_at=$begin_at — productive run, reset consecutive_dry + consecutive_wall (fleet-ops#3547)"
     elif [[ "$after_hours" -ge "$BUFFER_H" ]]; then
         next_dry=0
         next_wall=0
@@ -633,6 +680,7 @@ cmd_end() {
         "last_after=${after}" \
         "last_after_hours=${after_hours}" \
         "last_exit=${exit_code}" \
+        "last_filed=${filed}" \
         "last_run_epoch=${last_run}" \
         "updated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     export_last_run

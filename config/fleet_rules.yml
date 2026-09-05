@@ -366,15 +366,21 @@ groups:
           summary: "fleet merged fewer than 10 PRs in 24h; investigate stalls."
           description: "sum(fleet_merged_prs_24h) < 10 for 6h. Family omitted (stale gh cache) does not fire this rule."
 
+      # fleet-ops#3368: the expr keeps the total-greater-than-threshold gate
+      # but ANDs it with topk(1, fleet_escalations_24h) so the firing vector
+      # carries the dominant producer as its `unit` label. The description
+      # (and summary) name that unit so a recurrence is actionable without a
+      # manual journal dig. tests/fleet-rules-escalation-storm.test.sh locks
+      # the naming via promtool rule unit test.
       - alert: FleetEscalationStorm
-        expr: sum(fleet_escalations_24h) > 300
+        expr: topk(1, fleet_escalations_24h) and on() (sum(fleet_escalations_24h) > 300)
         for: 30m
         labels:
           severity: warning
           service: fleet
         annotations:
-          summary: "escalation volume abnormal; a unit is flapping."
-          description: "sum(fleet_escalations_24h) > 300 for 30m."
+          summary: "escalation volume abnormal; dominant producer {{ $labels.unit }}"
+          description: "sum(fleet_escalations_24h) > 300 for 30m; top producer {{ $labels.unit }}={{$value}}."
 
       # fleet-ops#1199: tightened from 2h to 30m. The 30m floor is enforced
       # by the alert-repair-dispatch mutex (claim/<alert-scope>-<repo> on
@@ -738,6 +744,55 @@ groups:
         annotations:
           summary: "0509 product revert rate > 15% over 28d"
           description: "fleet_product_revert_rate{repo=\"0509\"} > 0.15 (fleet-ops#2755). More than one in six product merges is a revert. Pause new product supply and inspect recent reverts before filing more 0509 work."
+
+      # fleet-ops#3519: per-repo rolling-7d quality ceiling breaches. A quality
+      # ceiling is breached only after the same metric sits above its
+      # committed ceiling for 60 minutes (not a spike — a sustained miss), and
+      # severity=warning means it dispatches an am-executor repair worker
+      # (repair-dispatch), NOT a page. The ceiling series is emitted beside
+      # each gauge for a `> on(repo)` pairing. `for: 60m` per accept §4.
+      - alert: FleetProductQualityAbsent
+        expr: absent(fleet_product_quality_reverts_per_100)
+        for: 3h
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "quality metrics absent — the fleet-ops#3519 per-repo quality path is missing or dead"
+          description: "absent(fleet_product_quality_reverts_per_100) — lib/fleet-product-slo.py must export the fleet_product_quality_* family. Repair: check fleet-metrics-export.timer and journalctl --user -u fleet-metrics-export.service; the exporter loads lib/fleet-product-slo.py via systemd/fleet-metrics-export.service.d/product-slo.conf."
+
+      - alert: QualityRevertsCeiling
+        expr: fleet_product_quality_reverts_per_100 > on(repo) fleet_product_quality_ceiling{metric="reverts_per_100_merges"}
+        for: 60m
+        labels:
+          severity: warning
+          service: fleet
+          quality: ceiling
+        annotations:
+          summary: "{{ $labels.repo }} reverts per 100 merges above its committed ceiling for 60m"
+          description: "fleet_product_quality_reverts_per_100{repo=\"{{ $labels.repo }}\"} > its config/quality-ratchet.json ceiling for 60m (fleet-ops#3519). Repair: inspect recent reverts on {{ $labels.repo }} and the merge/review path that shipped breakage."
+
+      - alert: QualityPostMergeDefectsCeiling
+        expr: fleet_product_quality_post_merge_defects_per_100 > on(repo) fleet_product_quality_ceiling{metric="post_merge_defects_per_100"}
+        for: 60m
+        labels:
+          severity: warning
+          service: fleet
+          quality: ceiling
+        annotations:
+          summary: "{{ $labels.repo }} post-merge defects per 100 merges above its committed ceiling for 60m"
+          description: "fleet_product_quality_post_merge_defects_per_100{repo=\"{{ $labels.repo }}\"} > its config/quality-ratchet.json ceiling for 60m (fleet-ops#3519). Repair: desk-triage / red-on-main / customer-facing issues are being filed against fresh merges; inspect review depth and the merge gate."
+
+      - alert: QualitySessionsPrCeiling
+        expr: fleet_product_quality_sessions_to_pr_pct > on(repo) fleet_product_quality_ceiling{metric="sessions_to_pr_pct"}
+        for: 60m
+        labels:
+          severity: warning
+          service: fleet
+          quality: ceiling
+        annotations:
+          summary: "{{ $labels.repo }} sessions per 100 PRs above its committed ceiling for 60m"
+          description: "fleet_product_quality_sessions_to_pr_pct{repo=\"{{ $labels.repo }}\"} > its config/quality-ratchet.json ceiling for 60m (fleet-ops#3519). Too many issue-work sessions per merged PR on {{ $labels.repo }} — work is churning without landing. Inspect claim/queue and review latency."
 
   - name: fleet_console_truth
     rules:

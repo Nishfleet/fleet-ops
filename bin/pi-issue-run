@@ -270,15 +270,6 @@ fi
 need_capable=0
 [[ "$difficulty" == "heavy" || "$difficulty" == "keystone" ]] && need_capable=1
 
-# fleet-ops#1383: capture the packet phases manifest so record_seat_selection
-# in pick_seat can attribute the frontier-token share (#1211) to capable
-# phases vs the commodity work phase. No-arg when the packet has none.
-pi_phases=""
-if declare -f packet_phases >/dev/null 2>&1; then
-    pi_phases=$(packet_phases "$pkt" 2>/dev/null || true)
-fi
-export PI_PACKET_PHASES="${pi_phases:-none}"
-
 # Free-tier privacy line (fleet-ops#520): a private-repo target never routes
 # to a free-class lane. Derive the repo from the packet's TARGET line and
 # resolve its visibility via config/repo-privacy.json (fail-closed: an
@@ -689,64 +680,97 @@ is_empty_run() {
     [[ -z "$rest" ]]
 }
 
+# fleet-ops#3531: remote agents (e.g. devin) may finish with zero local tool
+# calls and a PR URL as the only real output. An empty run is only empty when
+# the session has no https://github.com/<org>/<repo>/pull/<n> URL in the
+# captured stdout, stderr, or session jsonl.
+has_session_pr_url() {
+    local out="${1:-}" err="${2:-}" sdir="${3:-}"
+    local regex='https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[0-9]+'
+    if [[ -n "$out" && -f "$out" ]]; then
+        grep -qE "$regex" "$out" 2>/dev/null && return 0
+    fi
+    if [[ -n "$err" && -f "$err" ]]; then
+        grep -qE "$regex" "$err" 2>/dev/null && return 0
+    fi
+    if [[ -n "$sdir" && -d "$sdir" ]]; then
+        local f
+        while IFS= read -r -d '' f; do
+            grep -qE "$regex" "$f" 2>/dev/null && return 0
+        done < <(find "$sdir" -maxdepth 1 -name '*.jsonl' -type f -print0 2>/dev/null)
+    fi
+    return 1
+}
+
 if (( out_bytes < OUT_MIN )); then
     # fleet-ops#1298: a provider no-op (pi ran, exited 0, stdout < OUT_MIN)
     # is a SEAT FAULT, same class as the verdict tools=0 empty-run
     # (fleet-ops#902). Bench it via mark_seat_empty_run so pick_seat skips
     # it on the next intake re-spawn (fresh claim, empty tried-seats) and
-    # reroutes to a healthy seat. The bench escalates by
-    # consecutive_failure_count (fleet-ops#1408) so a repeat offender
-    # stays benched longer each cycle, and seat-health.ts resets the count
-    # on a healthy observation so a recovered seat is re-tried at the base
-    # backoff (fail-open after usable_at). The tried-seats file still
-    # records this seat for THIS unit so the next in-process iteration
-    # picks a different seat immediately.
+    # reroutes to a healthy seat. The bench escalates geometrically by
+    # consecutive_failure_count (fleet-ops#3531) so a repeat offender
+    # stays benched longer each cycle, capped at 6 h (1800 s for remote
+    # agents), and seat-health.ts resets the count on a healthy observation
+    # so a recovered seat is re-tried at the base backoff. The tried-seats
+    # file still records this seat for THIS unit so the next in-process
+    # iteration picks a different seat immediately.
     # fleet-ops#1378: re-seat in-process (continue) instead of exit 1 so
     # provider no-ops don't burn the item's StartLimitBurst dispatch budget.
     # History: fleet-ops#1416 made this a lane fault (no bench) on the
     # theory a single 0B stdout was a provider hiccup on a healthy seat;
     # without the bench an intake re-spawn re-picked the same no-op'ing
     # seat and burned 8 runs/2h on straitly/deepseek-v4-pro (#1298).
-    # fleet-ops#2343: flat 900s no-op cooldown (mark_seat_empty_run), not
-    # the escalating #1408 ladder — a provider no-op is not a wall.
-    seat_log "pi-issue-run: $inst pi exited 0 but stdout=${out_bytes}B (< ${OUT_MIN}B) — provider no-op, benching seat (empty_run, flat cooldown) and re-seating in-process"
-    if mark_seat_empty_run "$np" "$nm" "pi-issue:$inst:provider-no-op:stdout=${out_bytes}B"; then
-        seat_log "pi-issue-run: $inst seat $np/$nm marked (empty_run); will skip on next in-process re-seat and on intake re-spawn"
+    # fleet-ops#3531: remote agents are judged by session outcome, not local
+    # tool count. A remote session with a pull/<n> URL is a success.
+    if provider_remote_agent "$np" && has_session_pr_url "$out_file" "$err_file" "$session_dir"; then
+        seat_log "pi-issue-run: $inst remote session on $np/$nm produced a PR URL (stdout=${out_bytes}B) — treating as success"
     else
-        seat_log "pi-issue-run: $inst WARN: mark_seat_empty_run marker write FAILED for $np/$nm — relying on tried-seats exclusion for next re-seat"
+        seat_log "pi-issue-run: $inst pi exited 0 but stdout=${out_bytes}B (< ${OUT_MIN}B) — provider no-op, benching seat (empty_run, geometric cooldown) and re-seating in-process"
+        if mark_seat_empty_run "$np" "$nm" "pi-issue:$inst:provider-no-op:stdout=${out_bytes}B"; then
+            seat_log "pi-issue-run: $inst seat $np/$nm marked (empty_run); will skip on next in-process re-seat and on intake re-spawn"
+        else
+            seat_log "pi-issue-run: $inst WARN: mark_seat_empty_run marker write FAILED for $np/$nm — relying on tried-seats exclusion for next re-seat"
+        fi
+        empty_run_attempt=$((empty_run_attempt + 1))
+        if (( empty_run_attempt > EMPTY_RUN_RETRY_MAX )); then
+            seat_log "pi-issue-run: $inst in-process retries exhausted (${empty_run_attempt} attempts, limit=${EMPTY_RUN_RETRY_MAX}) — exiting 1 so systemd Restart fires"
+            # fleet-ops#3310: retries exhausted after empty runs = the worker shipped nothing — a WORK death, not infrastructure.
+            write_death_class work
+            exit 1
+        fi
+        seat_log "pi-issue-run: $inst empty run #${empty_run_attempt}/${EMPTY_RUN_RETRY_MAX} (provider no-op, stdout=${out_bytes}B) — re-seating in-process on a different seat"
+        continue
     fi
-    empty_run_attempt=$((empty_run_attempt + 1))
-    if (( empty_run_attempt > EMPTY_RUN_RETRY_MAX )); then
-        seat_log "pi-issue-run: $inst in-process retries exhausted (${empty_run_attempt} attempts, limit=${EMPTY_RUN_RETRY_MAX}) — exiting 1 so systemd Restart fires"
-        # fleet-ops#3310: a provider empty-run is a SEAT FAULT, but the worker
-        # genuinely shipped nothing after retries — a real failure, not
-        # infrastructure. Count it against the WORK cap.
-        write_death_class work
-        exit 1
-    fi
-    seat_log "pi-issue-run: $inst empty run #${empty_run_attempt}/${EMPTY_RUN_RETRY_MAX} (provider no-op, stdout=${out_bytes}B) — re-seating in-process on a different seat"
-    continue
 fi
 if is_empty_run "$out_file"; then
-    noop_reason="empty-run:tools=0 verdict with no final text (stdout=${out_bytes}B)"
-    # fleet-ops#902: an empty-run (verdict tools=0, no final text) is a SEAT
-    # FAULT; bench it via mark_seat_empty_run (15 min, empty_run mode) before
-    # re-seating in-process. fleet-ops#1378: the in-process continue still
-    # avoids consuming a systemd StartLimitBurst slot for the first empty run.
-    if mark_seat_empty_run "$np" "$nm" "pi-issue:$inst:no-op:${noop_reason}"; then
-        seat_log "pi-issue-run: $inst seat $np/$nm marked (empty_run); will skip on next in-process re-seat"
+    # fleet-ops#3531: for remote agents, a tools=0 verdict with no final
+    # text is only an empty run when the session carries no PR URL. A remote
+    # agent may finish a real session with tools=0 and the PR URL elsewhere
+    # in the session jsonl.
+    if provider_remote_agent "$np" && has_session_pr_url "$out_file" "$err_file" "$session_dir"; then
+        seat_log "pi-issue-run: $inst remote session on $np/$nm produced a PR URL despite tools=0 verdict — treating as success"
     else
-        seat_log "pi-issue-run: $inst WARN: mark_seat_empty_run marker write FAILED for $np/$nm — relying on tried-seats exclusion for next re-seat"
+        noop_reason="empty-run:tools=0 verdict with no final text (stdout=${out_bytes}B)"
+        # fleet-ops#902: an empty-run (verdict tools=0, no final text) is a SEAT
+        # FAULT; bench it via mark_seat_empty_run (15 min base, geometric, capped
+        # at 6 h / 1800 s remote) before re-seating in-process. fleet-ops#1378:
+        # the in-process continue still avoids consuming a systemd
+        # StartLimitBurst slot for the first empty run.
+        if mark_seat_empty_run "$np" "$nm" "pi-issue:$inst:no-op:${noop_reason}"; then
+            seat_log "pi-issue-run: $inst seat $np/$nm marked (empty_run); will skip on next in-process re-seat"
+        else
+            seat_log "pi-issue-run: $inst WARN: mark_seat_empty_run marker write FAILED for $np/$nm — relying on tried-seats exclusion for next re-seat"
+        fi
+        empty_run_attempt=$((empty_run_attempt + 1))
+        if (( empty_run_attempt > EMPTY_RUN_RETRY_MAX )); then
+            seat_log "pi-issue-run: $inst in-process retries exhausted (${empty_run_attempt} attempts, limit=${EMPTY_RUN_RETRY_MAX}) — exiting 1 so systemd Restart fires"
+            # fleet-ops#3310: retries exhausted after empty runs = the worker shipped nothing — a WORK death, not infrastructure.
+            write_death_class work
+            exit 1
+        fi
+        seat_log "pi-issue-run: $inst empty run #${empty_run_attempt}/${EMPTY_RUN_RETRY_MAX} (empty-run, ${noop_reason}) — re-seating in-process on a different seat"
+        continue
     fi
-    empty_run_attempt=$((empty_run_attempt + 1))
-    if (( empty_run_attempt > EMPTY_RUN_RETRY_MAX )); then
-        seat_log "pi-issue-run: $inst in-process retries exhausted (${empty_run_attempt} attempts, limit=${EMPTY_RUN_RETRY_MAX}) — exiting 1 so systemd Restart fires"
-        # fleet-ops#3310: a verdict empty-run shipped nothing — a real failure.
-        write_death_class work
-        exit 1
-    fi
-    seat_log "pi-issue-run: $inst empty run #${empty_run_attempt}/${EMPTY_RUN_RETRY_MAX} (empty-run, ${noop_reason}) — re-seating in-process on a different seat"
-    continue
 fi
 
 # Success: the no-op check above did not continue, so this seat produced real

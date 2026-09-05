@@ -18,8 +18,41 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+# --- Config ----------------------------------------------------------------
+
+def _ensure_worker_token() -> None:
+    """Use the nishfleet-worker App token for any GitHub write (fleet-ops#3445).
+
+    Fail closed if the App cannot mint and no token was inherited from a parent
+    organ, so a dead App never falls through to the human gh identity. Human gh
+    is read-only for organs. GH Actions (tests) has no App creds and stubs gh
+    as read-only, so skip minting there.
+    """
+    if os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_ACTIONS") == "true":
+        return
+    wt = os.environ.get(
+        "NISHFLEET_WORKER_TOKEN_BIN",
+        f"{os.environ.get('HOME', '/home/nish')}/.local/bin/worker-token",
+    )
+    try:
+        out = subprocess.run(
+            [wt, "--print"], capture_output=True, text=True, timeout=30
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print("fleet-ops#3445: worker-token --print failed - refusing human-gh writes: %s" % exc, file=sys.stderr)
+        sys.exit(1)
+    if out.returncode != 0:
+        print("fleet-ops#3445: worker-token --print rc=%s - refusing human-gh writes: %s" % (out.returncode, out.stderr.strip()[:200]), file=sys.stderr)
+        sys.exit(1)
+    for line in out.stdout.splitlines():
+        if line.startswith("export GH_TOKEN="):
+            os.environ["GH_TOKEN"] = line[len("export GH_TOKEN="):].strip()
+            return
+    print("fleet-ops#3445: worker-token --print output not an export GH_TOKEN line - refusing human-gh writes", file=sys.stderr)
+    sys.exit(1)
 
 # --- Config ----------------------------------------------------------------
 
@@ -452,6 +485,27 @@ SEAT_YIELD_JSON = Path(
         str(Path.home() / ".local" / "state" / "pi-packet" / "seat-yield.json"),
     )
 )
+# --- Seat spend + provider balance (fleet-ops#3283) ---
+# Pi session jsonl already carries usage.cost per message; we sum it per
+# provider per UTC day. The per-file mtime cache keeps re-export cheap.
+SPEND_CACHE = PR_CACHE_DIR / "seat-spend-sessions-cache.json"
+# Vendor API credentials. OpenRouter's key lives in the pi provider config
+# models.json (the same config pi itself authenticates with); the xKiro key
+# lives in its dotenv file. We read both with env-var override.
+OPENROUTER_MODELS_JSON = Path(
+    os.environ.get("OPENROUTER_MODELS_JSON", str(Path.home() / ".pi" / "agent" / "models.json"))
+)
+OPENROUTER_ENV_FILE = Path.home() / ".config" / "openrouter" / ".env"
+XKIRO_ENV_FILE = Path.home() / ".config" / "xkiro" / ".env"
+# At most one vendor HTTP fetch per exporter run; cached 30 min, stale 2 h.
+VENDOR_BALANCE_TTL = 1800
+VENDOR_BALANCE_STALE = 7200
+OPENROUTER_BALANCE_CACHE = PR_CACHE_DIR / "openrouter-balance-cache.json"
+XKIRO_BALANCE_CACHE = PR_CACHE_DIR / "xkiro-balance-cache.json"
+# OpenRouter credits response carries total_credits and total_usage but no
+# precomputed remaining field (live 2026-09-05); remaining = credits - usage.
+OPENROUTER_API_KEY_ENV = "OPENROUTER_API_KEY"
+
 SEAT_YIELD_WINDOW = 20
 SEAT_YIELD_PROVISIONAL = 0.5
 # Final assistant text contains a Nishfleet PR URL (http/s optional).
@@ -624,8 +678,14 @@ def _read_seat():
         try:
             # RFC3339 / ISO-8601 with trailing 'Z' for UTC.
             ts = obs.replace("Z", "+00:00")
+            # time.mktime interprets the tuple in the process local timezone,
+            # so on a +05:30 host a fresh UTC observed_at parses ~5.5h in the
+            # past and fires FleetPiSeatHealthStale (fleet-ops#3329). observed_at
+            # is UTC: use calendar.timegm (the same pattern _parse_iso_utc and
+            # the comeback-clock path already use) so the epoch is correct
+            # regardless of TZ.
             epoch = int(
-                time.mktime(time.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S"))
+                calendar.timegm(time.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S"))
             )
         except ValueError:
             epoch = None
@@ -836,16 +896,19 @@ def _extract_text(content):
 
 
 def _parse_session_file(path):
-    """Return {seat, timestamp, has_pr_url} for a pi-issue session .jsonl.
+    """Return {seat, timestamp, has_pr_url, cost} for a pi-issue session .jsonl.
 
     Seat is taken from the first model_change event; the timestamp is the
     session start time. A session counts as PR-producing if the final
-    assistant message text contains a Nishfleet PR URL.
+    assistant message text contains a Nishfleet PR URL. cost is the sum of
+    message.usage.cost.total across the session (fleet-ops#3323) — 0.0 for
+    free lanes and sessions that record no usage.cost.
     """
     session_ts = None
     model_seat = None
     last_assistant_line = None
     fallback_ts = None
+    cost = 0.0
     try:
         with path.open("r", encoding="utf-8", errors="replace") as f:
             for raw in f:
@@ -872,6 +935,17 @@ def _parse_session_file(path):
                     except json.JSONDecodeError:
                         pass
                     continue
+                if '"usage"' in line and '"cost"' in line:
+                    try:
+                        data = json.loads(line)
+                        c = (
+                            ((data.get("message") or {}).get("usage") or {})
+                            .get("cost") or {}
+                        ).get("total")
+                        if c is not None:
+                            cost += float(c)
+                    except (json.JSONDecodeError, ValueError, TypeError):
+                        pass
                 if re.search(r'"role"\s*:\s*"assistant"', line):
                     last_assistant_line = line
     except OSError:
@@ -899,14 +973,18 @@ def _parse_session_file(path):
         "seat": model_seat,
         "timestamp": ts_epoch,
         "has_pr_url": has_pr,
+        "cost": cost,
     }
 
 
 def _compute_seat_yield():
-    """Compute per-seat rolling last-20 issue-work session PR yield.
+    """Compute per-seat rolling last-20 issue-work session PR yield and cost.
 
     Scans FLEET_SESSIONS_DIR/pi-issue-*/**/*.jsonl, caches per-file results
-    by mtime, and returns {seat: {yield, sessions, pr_count, provisional}}.
+    by mtime, and returns {seat: {yield, sessions, pr_count, provisional,
+    cost_per_session}}. cost_per_session is the mean usage.cost over the
+    same rolling window (fleet-ops#3323) so pick_seat can rank by value =
+    yield / max(cost_per_session, 0.001).
     Also writes the JSON sidecar used by lib/seat-lib.sh pick_seat.
     """
     sessions_dir = Path(SESSIONS_DIR)
@@ -916,7 +994,9 @@ def _compute_seat_yield():
     cache = {}
     try:
         data, _age = _read_cache(SEAT_YIELD_CACHE)
-        if isinstance(data, dict) and data.get("v") == 1:
+        # v2: cached entries carry per-session cost (fleet-ops#3323); v1
+        # entries lack it, so they are re-parsed once on this tick.
+        if isinstance(data, dict) and data.get("v") == 2:
             cache = data.get("entries") or {}
     except (OSError, json.JSONDecodeError):
         pass
@@ -935,6 +1015,7 @@ def _compute_seat_yield():
                 "seat": cached["seat"],
                 "timestamp": cached["timestamp"],
                 "has_pr_url": cached["has_pr_url"],
+                "cost": cached.get("cost", 0.0),
             }
         else:
             entry = _parse_session_file(path)
@@ -945,11 +1026,12 @@ def _compute_seat_yield():
             "seat": entry["seat"],
             "timestamp": entry["timestamp"],
             "has_pr_url": entry["has_pr_url"],
+            "cost": entry["cost"],
         }
         sessions.append(entry)
 
     try:
-        _write_cache(SEAT_YIELD_CACHE, {"v": 1, "entries": new_cache})
+        _write_cache(SEAT_YIELD_CACHE, {"v": 2, "entries": new_cache})
     except OSError:
         pass
 
@@ -978,12 +1060,19 @@ def _compute_seat_yield():
         else:
             y = pr_count / total if total > 0 else 0.0
             provisional = False
+        # fleet-ops#3323: mean usage.cost per session over the same window.
+        # Sessions with no recorded cost count 0, so free lanes land on 0 and
+        # pick_seat's value floor (0.001) sorts them first at equal yield.
+        cost_per_session = (
+            sum(e.get("cost", 0.0) for e in window) / total if total > 0 else 0.0
+        )
         result[seat] = {
             "yield": y,
             "sessions": total,
             "pr_count": pr_count,
             "no_pr_count": no_pr,
             "provisional": provisional,
+            "cost_per_session": cost_per_session,
         }
 
     try:
@@ -1015,6 +1104,371 @@ def _emit_seat_yield(lines, seat_yield):
         lines.append(
             f'fleet_sessions_no_pr_total{{seat="{lbl}"}} {y["no_pr_count"]}'
         )
+
+
+def _day_from_iso(s):
+    """Return YYYY-MM-DD UTC day from an ISO timestamp, or None."""
+    if not s:
+        return None
+    epoch = _parse_iso_utc(s)
+    if epoch is None:
+        return None
+    return datetime.fromtimestamp(epoch, timezone.utc).strftime("%Y-%m-%d")
+
+
+def _parse_session_file_for_cost(path):
+    """Return {provider: {day: cost}} for a session jsonl.
+
+    Pi session jsonl carries the provider only on `model_change` lines, not
+    on `message` lines (fleet-ops#3283, live session shape). We track the
+    active provider as we walk the file and attribute each message's
+    usage.cost.total to that provider on the message's UTC day. Messages
+    with no usage.cost, a zero cost, or an unparseable line are ignored;
+    a file with no model_change contributes nothing.
+    """
+    spend = {}
+    provider = None
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line:
+                    continue
+                if not line.startswith("{"):
+                    continue
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(data, dict) or "type" not in data:
+                    continue
+                t = data.get("type")
+                if t == "model_change":
+                    provider = data.get("provider")
+                    continue
+                if t != "message":
+                    continue
+                msg = data.get("message") or {}
+                if not isinstance(msg, dict):
+                    continue
+                # Pi session jsonl nests per-message cost under message.usage
+                # (fleet-ops#3283, live shape). Fall back to the tracked
+                # model_change provider, or the message's own provider key.
+                if not provider:
+                    provider = msg.get("provider")
+                if not provider:
+                    continue
+                cost = ((msg.get("usage") or {}).get("cost") or {}).get("total")
+                if cost is None:
+                    continue
+                try:
+                    cost = float(cost)
+                except (ValueError, TypeError):
+                    continue
+                if cost == 0:
+                    continue
+                ts = data.get("timestamp") or ""
+                day = _day_from_iso(ts)
+                if day is None:
+                    continue
+                spend.setdefault(provider, {}).setdefault(day, 0.0)
+                spend[provider][day] += cost
+    except OSError:
+        return None
+    return spend
+
+
+def _compute_spend():
+    """Compute seat spend per provider per UTC day from session jsonl.
+
+    Scans FLEET_SESSIONS_DIR/**/*.jsonl, caches per-file results by mtime,
+    and returns {provider: {day: cost}}.
+    """
+    sessions_dir = Path(SESSIONS_DIR)
+    if not sessions_dir.is_dir():
+        return {}
+
+    cache = {}
+    try:
+        data, _age = _read_cache(SPEND_CACHE)
+        if isinstance(data, dict) and data.get("v") == 1:
+            cache = data.get("entries") or {}
+    except (OSError, json.JSONDecodeError):
+        pass
+
+    new_cache = {}
+    spend = {}
+    # Scan ALL pi session jsonl (interactive + pi-issue) so metered spend is
+    # not hidden. Live check: ~$188 of minimax spend lives in --home-nish--
+    # (interactive) sessions, not pi-issue-* — restricting to worker dirs
+    # would miss exactly the spend the zero-revenue rule needs to see.
+    # The mtime cache keeps re-scans cheap (first cold scan ~15s, cached ~0s).
+    dirty = False
+    for path in sessions_dir.rglob("*.jsonl"):
+        try:
+            mtime_s = int(path.stat().st_mtime)
+        except OSError:
+            continue
+        key = str(path)
+        cached = cache.get(key)
+        if isinstance(cached, dict) and cached.get("mtime_s") == mtime_s:
+            entry = cached.get("spend") or {}
+        else:
+            entry = _parse_session_file_for_cost(path)
+            dirty = True
+            if entry is None:
+                continue
+        new_cache[key] = {"mtime_s": mtime_s, "spend": entry}
+        for provider, days in entry.items():
+            prov = spend.setdefault(provider, {})
+            for day, cost in days.items():
+                prov[day] = prov.get(day, 0.0) + cost
+
+    # Rewrite the cache only when a file was actually re-parsed, so a quiet
+    # 5-min tick does not churn-write the multi-thousand-entry cache.
+    if dirty:
+        try:
+            _write_cache(SPEND_CACHE, {"v": 1, "entries": new_cache})
+        except OSError:
+            pass
+
+    return spend
+
+
+HELP_SPEND = (
+    "# HELP fleet_seat_spend_usd Seat spend in USD per provider per UTC day "
+    "from pi session usage.cost (fleet-ops#3283)."
+)
+TYPE_SPEND = "# TYPE fleet_seat_spend_usd gauge"
+# Bound the family's cardinality: only the trailing retention window is
+# exported so old days do not accumulate in Prometheus forever.
+SPEND_RETENTION_DAYS = 30
+HELP_CREDITS = (
+    "# HELP fleet_seat_credits_remaining_usd Remaining account balance in USD "
+    "for metered providers from vendor credits/usage endpoints (fleet-ops#3283)."
+)
+TYPE_CREDITS = "# TYPE fleet_seat_credits_remaining_usd gauge"
+HELP_FREE_TOKENS = (
+    "# HELP fleet_seat_free_tokens_remaining Remaining free-tier tokens "
+    "for xkiro (fleet-ops#3283)."
+)
+TYPE_FREE_TOKENS = "# TYPE fleet_seat_free_tokens_remaining gauge"
+HELP_HELD = (
+    "# HELP fleet_seat_credits_held_usd Held/pending spend in USD "
+    "for xkiro wallet (fleet-ops#3283)."
+)
+TYPE_HELD = "# TYPE fleet_seat_credits_held_usd gauge"
+
+
+def _emit_spend(lines, spend):
+    """Append fleet_seat_spend_usd family per provider/day (trailing window)."""
+    if not spend:
+        return
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=SPEND_RETENTION_DAYS)).strftime("%Y-%m-%d")
+    lines.append("")
+    lines.append(HELP_SPEND)
+    lines.append(TYPE_SPEND)
+    for provider in sorted(spend):
+        for day in sorted(spend[provider]):
+            if day < cutoff:
+                continue
+            lines.append(
+                f'fleet_seat_spend_usd{{provider="{_prom_label(provider)}",'
+                f'day="{_prom_label(day)}"}} {spend[provider][day]:.6f}'
+            )
+
+
+def _read_env_key(path, names):
+    """Return the first matching key from a dotenv file or env var, or None."""
+    if path.is_file():
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            text = ""
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key in names and value:
+                return value
+    for name in names:
+        value = os.environ.get(name)
+        if value:
+            return value
+    return None
+
+
+def _openrouter_api_key():
+    """Return the OpenRouter API key, or None.
+
+    Resolution order: env var OPENROUTER_API_KEY, then the pi provider config
+    models.json (providers.openrouter.apiKey), then the dotenv fallback. Never
+    prints the key.
+    """
+    env_key = os.environ.get(OPENROUTER_API_KEY_ENV)
+    if env_key:
+        return env_key
+    try:
+        data = json.loads(OPENROUTER_MODELS_JSON.read_text(encoding="utf-8"))
+        key = (data.get("providers") or {}).get("openrouter", {}).get("apiKey")
+        if key:
+            return key
+    except (OSError, json.JSONDecodeError):
+        pass
+    return _read_env_key(OPENROUTER_ENV_FILE, (OPENROUTER_API_KEY_ENV, "API_KEY"))
+
+
+# Vendors reject urllib's default User-Agent (xkiro 403'd Python-urllib;
+# curl/Mozilla pass, live 2026-09-05). Send an identifiable UA on every fetch.
+_VENDOR_USER_AGENT = "fleet-metrics-export/1.0 (Nishfleet; fleet-ops#3283)"
+
+
+def _fetch_openrouter_credits():
+    """Return remaining USD from OpenRouter /api/v1/credits, or None.
+
+    The endpoint returns total_credits and total_usage but no precomputed
+    remaining, so remaining = total_credits - total_usage. If only
+    total_credits is present we report it as-is (no usage data to subtract).
+    None omits the family (never a frozen/bogus value).
+    """
+    key = _openrouter_api_key()
+    if not key:
+        return None
+    req = urllib.request.Request(
+        "https://openrouter.ai/api/v1/credits",
+        headers={"Authorization": f"Bearer {key}", "User-Agent": _VENDOR_USER_AGENT},
+    )
+    try:
+        # req URL is a hardcoded constant; only the auth header is dynamic.
+        with urllib.request.urlopen(req, timeout=15) as resp:  # nosemgrep
+            payload = json.loads(resp.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, ValueError) as exc:
+        print(f"openrouter credits fetch failed: {exc}", file=sys.stderr)
+        return None
+    data = payload.get("data") or {}
+    if not isinstance(data, dict):
+        return None
+    total = data.get("total_credits")
+    usage = data.get("total_usage")
+    remaining = data.get("total_remaining")
+    try:
+        if remaining is not None:
+            return float(remaining)
+        total = None if total is None else float(total)
+        usage = None if usage is None else float(usage)
+        if total is not None and usage is not None:
+            return total - usage
+        if total is not None:
+            return total
+    except (ValueError, TypeError):
+        return None
+    return None
+
+
+def _fetch_xkiro_usage():
+    """Return (free_tokens, wallet_balance, wallet_held) for xkiro, or None."""
+    key = _read_env_key(XKIRO_ENV_FILE, ("XKIRO_API_KEY", "API_KEY"))
+    if not key:
+        return None
+    req = urllib.request.Request(
+        "https://api.xkiro.com/v1/usage",
+        headers={"Authorization": f"Bearer {key}", "User-Agent": _VENDOR_USER_AGENT},
+    )
+    try:
+        # req URL is a hardcoded constant; only the auth header is dynamic.
+        with urllib.request.urlopen(req, timeout=15) as resp:  # nosemgrep
+            payload = json.loads(resp.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, ValueError) as exc:
+        print(f"xkiro usage fetch failed: {exc}", file=sys.stderr)
+        return None
+    free = payload.get("free_tokens") or {}
+    wallet = payload.get("wallet") or {}
+    try:
+        remaining = free.get("remaining")
+        balance = wallet.get("balance_usd")
+        held = wallet.get("held_usd")
+        remaining = None if remaining is None else int(remaining)
+        balance = None if balance is None else float(balance)
+        held = None if held is None else float(held)
+    except (ValueError, TypeError):
+        return None
+    if remaining is None and balance is None and held is None:
+        return None
+    return (remaining, balance, held)
+
+
+_VENDOR_BALANCE_FETCHED = set()
+
+
+def _cached_vendor_json(path, fetcher, name):
+    """Return fetched/cached vendor data, or None to omit the metric family.
+
+    Fresh cache (<=30 min) skips network. On failure, serve cache up to 2h.
+    One fetch per vendor per exporter run so the 5-min oneshot stays under
+    the rate-limit budget.
+    """
+    global _VENDOR_BALANCE_FETCHED
+    cached, cache_age = _read_cache(path)
+    if cache_age is not None and cache_age <= VENDOR_BALANCE_TTL and cached is not None:
+        return cached
+    if name in _VENDOR_BALANCE_FETCHED:
+        if cached is not None and cache_age is not None and cache_age <= VENDOR_BALANCE_STALE:
+            return cached
+        return None
+    data = fetcher()
+    _VENDOR_BALANCE_FETCHED.add(name)
+    if data is not None:
+        _write_cache(path, data)
+        return data
+    if cached is not None and cache_age is not None and cache_age <= VENDOR_BALANCE_STALE:
+        print(f"{name} vendor fetch failed, serving stale cache (age={int(cache_age)}s)",
+              file=sys.stderr)
+        return cached
+    return None
+
+
+def _emit_credits_remaining(lines, balances):
+    """Append fleet_seat_credits_remaining_usd per provider with a balance."""
+    rows = []
+    for provider, amount in sorted(balances.items()):
+        if amount is not None:
+            rows.append(
+                f'fleet_seat_credits_remaining_usd{{provider="{_prom_label(provider)}"}} '
+                f'{amount:.6f}'
+            )
+    if rows:
+        lines.append("")
+        lines.append(HELP_CREDITS)
+        lines.append(TYPE_CREDITS)
+        lines.extend(rows)
+
+
+def _emit_xkiro_wallet(lines, xkiro):
+    """Append xkiro free tokens and wallet held metrics."""
+    if xkiro is None:
+        return
+    remaining, balance, held = xkiro
+    rows = []
+    if remaining is not None:
+        rows.append(
+            f'fleet_seat_free_tokens_remaining{{provider="xkiro"}} {remaining}'
+        )
+    if held is not None:
+        rows.append(
+            f'fleet_seat_credits_held_usd{{provider="xkiro"}} {held:.6f}'
+        )
+    if rows:
+        lines.append("")
+        lines.append(HELP_FREE_TOKENS)
+        lines.append(TYPE_FREE_TOKENS)
+        lines.append(HELP_HELD)
+        lines.append(TYPE_HELD)
+        lines.extend(rows)
 
 
 _GH_FETCHED_THIS_RUN = False
@@ -1463,13 +1917,32 @@ def _escalations_24h():
         "escalation-daily-sweep.service",
         "escalation-daily-sweep.timer",
         "resilience-drill-stub*",
+        # fleet-ops#3180: resync with the writer's refuse list. The
+        # 2026-08-30 pi-issue@* exclusion (fleet-ops#2133/#2475 — workers
+        # escalate via their own reaper + re-dispatch lane, never to the
+        # senior auditor) and the drill/probe scaffolding never landed here,
+        # so the unit-escalation@<instance> template START was still counted
+        # even though the writer refused the trip. Measured 2026-09-05:
+        # 868 of 936 counted starts were pi-issue@* no-seat crash-loops,
+        # tripping FleetEscalationStorm (threshold 300; remaining 64).
+        # tests/fleet-metrics-export.test.sh locks this list against the
+        # writer's case line so a future exclusion cannot drift again.
+        "notify-probe.service",
+        "notify-probe.onfail.service",
+        "probe-*.service",
+        "multi-*-sink.service",
+        "pi-issue@*",
         # Canaries / orchestrator organs: their deliberate fail-loud escalations
         # are expected, not a flapping worker.
         "fleet-heartbeat*",
         "pi-intake@fleet-ops-canary*",
         # OnFailure repair units are recovery machinery; counting them in the
-        # storm metric double-counts the original failure.
+        # storm metric double-counts the original failure. fleet-ops#3349:
+        # alert-repair-* units use a hyphen separator, so they escaped the
+        # *-repair@* glob and stayed counted (the "alert-repair run hop stalled"
+        # component of the FleetEscalationStorm); exclude them too.
         "*-repair@*",
+        "alert-repair-*",
     )
 
     def _is_excluded(name):
@@ -3478,7 +3951,40 @@ def _week_later_revert_check():
 
 # --- Main ------------------------------------------------------------------
 
+def _ensure_worker_token() -> None:
+    """Use the nishfleet-worker App token for any GitHub write (fleet-ops#3445).
+
+    Fail closed if the App cannot mint and no token was inherited from a parent
+    organ, so a dead App never falls through to the human gh identity. Human gh
+    is read-only for organs. GH Actions (tests) has no App creds and stubs gh
+    as read-only, so skip minting there.
+    """
+    if os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_ACTIONS") == "true":
+        return
+    wt = os.environ.get(
+        "NISHFLEET_WORKER_TOKEN_BIN",
+        f"{os.environ.get('HOME', '/home/nish')}/.local/bin/worker-token",
+    )
+    try:
+        out = subprocess.run(
+            [wt, "--print"], capture_output=True, text=True, timeout=30
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print("fleet-ops#3445: worker-token --print failed - refusing human-gh writes: %s" % exc, file=sys.stderr)
+        sys.exit(1)
+    if out.returncode != 0:
+        print("fleet-ops#3445: worker-token --print rc=%s - refusing human-gh writes: %s" % (out.returncode, out.stderr.strip()[:200]), file=sys.stderr)
+        sys.exit(1)
+    for line in out.stdout.splitlines():
+        if line.startswith("export GH_TOKEN="):
+            os.environ["GH_TOKEN"] = line[len("export GH_TOKEN="):].strip()
+            return
+    print("fleet-ops#3445: worker-token --print output not an export GH_TOKEN line - refusing human-gh writes", file=sys.stderr)
+    sys.exit(1)
+
+
 def main():
+    _ensure_worker_token()
     # fleet-ops#2273: remove the legacy fleet-staleness.prom textfile at the
     # start of every run. The staleness checker used to write there directly;
     # it now emits through this exporter into fleet.prom via the JSON cache.
@@ -3971,6 +4477,25 @@ def main():
     # sidecar for lib/seat-lib.sh pick_seat to consume.
     seat_yield = _compute_seat_yield()
     _emit_seat_yield(lines, seat_yield)
+
+    # --- Seat spend + metered provider balances (fleet-ops#3283) ---
+    # Spend is derived from per-message usage.cost in pi session jsonl.  Balance
+    # is fetched from each vendor's own credits/usage endpoint where one exists.
+    spend = _compute_spend()
+    _emit_spend(lines, spend)
+    openrouter_balance = _cached_vendor_json(
+        OPENROUTER_BALANCE_CACHE, _fetch_openrouter_credits, "openrouter_credits"
+    )
+    xkiro_usage = _cached_vendor_json(
+        XKIRO_BALANCE_CACHE, _fetch_xkiro_usage, "xkiro_usage"
+    )
+    balances = {}
+    if openrouter_balance is not None:
+        balances["openrouter"] = openrouter_balance
+    if xkiro_usage is not None and xkiro_usage[1] is not None:
+        balances["xkiro"] = xkiro_usage[1]
+    _emit_credits_remaining(lines, balances)
+    _emit_xkiro_wallet(lines, xkiro_usage)
 
     # --- Truth staleness (fleet-ops#1137) ---
     # Read the staleness checker's cached results and re-export as Prometheus

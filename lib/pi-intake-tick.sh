@@ -35,6 +35,46 @@ export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 export HOME="${HOME:-/home/nish}"
 export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH}"
 
+# Use the nishfleet-worker App token for any GitHub write. Fail closed if
+# the App cannot mint and no token was inherited from a parent organ, so a
+# dead App never falls through to the human gh identity (fleet-ops#3445).
+# Human gh is read-only for organs; GH Actions (tests) has no App creds and
+# stubs gh as read-only, so skip minting there.
+if [[ -z "${GH_TOKEN:-}" && "${GITHUB_ACTIONS:-}" != "true" ]]; then
+    export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
+    _wt="${NISHFLEET_WORKER_TOKEN_BIN:-${HOME:-/home/nish}/.local/bin/worker-token}"
+    _minted="$("$_wt" --print)" || { echo "fleet-ops#3445: $_wt --print failed - refusing human-gh writes" >&2; exit 1; }
+    eval "$_minted"
+    unset _wt _minted
+fi
+
+# GitHub secondary rate-limit state (fleet-ops#3445). Written when a write
+# fails with "submitted too quickly"; the gate below holds the whole tick
+# until the 60s x attempt backoff expires instead of failing the tick.
+GH_SECONDARY_STATE_DIR="${PI_INTAKE_GH_SECONDARY_STATE_DIR:-/home/nish/workspaces/agent-state/pi-intake}"
+GH_SECONDARY_STATE="$GH_SECONDARY_STATE_DIR/gh-secondary-rate.json"
+
+_gh_secondary_read() {
+    if [[ -f "$GH_SECONDARY_STATE" ]]; then
+        cat "$GH_SECONDARY_STATE" 2>/dev/null || echo '{}'
+    else
+        echo '{}'
+    fi
+}
+
+_gh_secondary_write() {
+    local attempt="$1" backoff_until="$2"
+    mkdir -p "$GH_SECONDARY_STATE_DIR"
+    python3 -c "import json,sys; json.dump({'submitted_too_quickly':1,'attempt':$attempt,'backoff_until':$backoff_until,'updated_at':$(date +%s)}, sys.stdout)" > "$GH_SECONDARY_STATE.tmp"
+    mv -f "$GH_SECONDARY_STATE.tmp" "$GH_SECONDARY_STATE"
+}
+
+_gh_secondary_clear() {
+    mkdir -p "$GH_SECONDARY_STATE_DIR"
+    python3 -c "import json,sys; json.dump({'submitted_too_quickly':0,'attempt':0,'backoff_until':0,'updated_at':$(date +%s)}, sys.stdout)" > "$GH_SECONDARY_STATE.tmp"
+    mv -f "$GH_SECONDARY_STATE.tmp" "$GH_SECONDARY_STATE"
+}
+
 # SYSTEMCTL seam (fleet-ops#1546): tests inject a fake to drive the
 # start-limit healer + post-condition verification deterministically.
 SYSTEMCTL="${SYSTEMCTL:-systemctl}"
@@ -139,6 +179,17 @@ D1_GATE_BODY_NEEDLES="${PI_INTAKE_D1_GATE_BODY_NEEDLES:-migrations/
 SEAT_LIB="${SEAT_LIB:-/home/nish/.local/lib/pi-packet/seat-lib.sh}"
 # fleet-ops#1250: claim-step prior-art gate. Tests override the path.
 PRIOR_ART_BIN="${PRIOR_ART_CLAIM_CHECK:-$HOME/.local/bin/prior-art-claim-check}"
+# fleet-ops#3254: self-maintenance claim budget. In a fleet-ops tick every
+# claim is a self-maintenance (control-plane) claim, so the tick caps them
+# at SELF_MAINT_CLAIM_PCT of the available slots (floor 1) so control-plane
+# work cannot devour the fleet; product ticks (0509) stay uncapped. A
+# critical-path / escalate-senior issue is exempt (claims even past the
+# cap). The fleet-ops#180 gap-audit yield rule (which made product repos
+# yield to fleet-ops gap-audit work) is retired by this cap. Overridable
+# for tests.
+SELF_MAINT_CLAIM_PCT="${PI_INTAKE_SELF_MAINT_CLAIM_PCT:-20}"
+# Label that marks a self-maintenance issue as exempt from the 20% cap.
+CRITICAL_PATH_LABEL="${PI_INTAKE_CRITICAL_PATH_LABEL:-critical-path}"
 # PRECEDENCE_BAND_LIB may be overridden by tests. Checkout fallback so a
 # worktree run still loads the sibling lib before install.sh copies it.
 PRECEDENCE_BAND_LIB="${PRECEDENCE_BAND_LIB:-/home/nish/.local/lib/pi-packet/precedence-band.sh}"
@@ -153,6 +204,17 @@ if [[ ! -d "$WORKER_BLOCKS_DIR" ]]; then
     _blocks_fallback="$_tick_dir/../prompts/worker-blocks"
     if [[ -d "$_blocks_fallback" ]]; then
         WORKER_BLOCKS_DIR="$(cd "$_blocks_fallback" && pwd)"
+    fi
+fi
+# fleet-ops#3309: claim-step size bounce. Tests override the path.
+SPEC_GATE_PY="${AGENT_READY_SPEC_GATE:-}"
+if [[ -z "$SPEC_GATE_PY" ]]; then
+    if [[ -f "$_tick_dir/agent-ready-spec-gate.py" ]]; then
+        SPEC_GATE_PY="$_tick_dir/agent-ready-spec-gate.py"
+    elif [[ -f "$_tick_dir/../lib/agent-ready-spec-gate.py" ]]; then
+        SPEC_GATE_PY="$_tick_dir/../lib/agent-ready-spec-gate.py"
+    else
+        SPEC_GATE_PY="$HOME/.local/lib/pi-packet/agent-ready-spec-gate.py"
     fi
 fi
 [[ -f "$PRECEDENCE_BAND_LIB" ]] || {
@@ -177,6 +239,10 @@ precedence_band_pending_starvation_clear
 
 if [[ ! -x "$PRIOR_ART_BIN" ]]; then
     echo "pi-intake-tick: prior-art-claim-check missing at $PRIOR_ART_BIN" >&2
+    exit 1
+fi
+if [[ ! -f "$SPEC_GATE_PY" ]]; then
+    echo "pi-intake-tick: agent-ready-spec-gate missing at $SPEC_GATE_PY" >&2
     exit 1
 fi
 
@@ -542,6 +608,24 @@ else
     echo "gh rate-limit state file missing; failing open — gate: gh_rate_limit missing"
 fi
 
+# GitHub secondary rate-limit gate (fleet-ops#3445): the write loops below
+# persist this state when "submitted too quickly" exhausts its retries and
+# give the tick a 60s x attempt backoff. While the backoff is active, hold
+# the whole tick (do not fail it) so the claim push is not orphaned and the
+# human-gh secondary limit is not hammered further.
+_gh_secondary_json=$(_gh_secondary_read)
+_gh_secondary_active=$(printf '%s' "$_gh_secondary_json" | jq -r '.submitted_too_quickly // 0')
+_gh_secondary_backoff=$(printf '%s' "$_gh_secondary_json" | jq -r '.backoff_until // 0')
+_gh_secondary_now=$(date +%s)
+if [[ "$_gh_secondary_active" == "1" && $_gh_secondary_backoff -gt $_gh_secondary_now ]]; then
+    _gh_secondary_attempt=$(printf '%s' "$_gh_secondary_json" | jq -r '.attempt // 0')
+    _gh_secondary_wait=$(( _gh_secondary_backoff - _gh_secondary_now ))
+    echo "gh secondary rate-limit active (attempt=${_gh_secondary_attempt}, back in ${_gh_secondary_wait}s); holding claims this tick — gate: gh_rate_limit secondary"
+    exit 0
+elif [[ "$_gh_secondary_active" == "1" && $_gh_secondary_backoff -le $_gh_secondary_now ]]; then
+    _gh_secondary_clear
+fi
+
 # Seat gate (auditor 2026-08-26T18:1xZ, summon fleet-ops-378 unit-failure):
 # capacity slots are NOT proof a worker can run. With every allowlisted
 # heavy-capable seat benched/quota-exhausted, a claimed issue spawns a
@@ -642,6 +726,21 @@ if [[ "$REPO" == "fleet-ops" && "$_band_phase" == "surge" ]]; then
     done
 fi
 
+# fleet-ops#3254: self-maintenance (fleet-ops) claim budget. Product repos
+# (0509) are never capped. For a fleet-ops tick, cap the number of
+# self-maintenance claims at SELF_MAINT_CLAIM_PCT of this tick's available
+# slots (floor 1), so a giant fleet-ops agent-ready backlog cannot flood the
+# fleet while product work waits. A critical-path / escalate-senior issue is
+# exempt from the cap and claims even past the budget. Computed once from the
+# tick-start slots count (slots already includes the per-claim decrement
+# below, so capture the base once here).
+_self_maint_cap=0
+_self_maint_claims=0
+if product_first_is_self_maintenance "$REPO" || [[ "$REPO" == "fleet-ops" ]]; then
+    _self_maint_cap=$(( slots * SELF_MAINT_CLAIM_PCT / 100 ))
+    (( _self_maint_cap < 1 )) && _self_maint_cap=1
+fi
+
 for i in "${!numbers[@]}"; do
     N="${numbers[$i]}"
     title="${titles[$i]}"
@@ -649,6 +748,23 @@ for i in "${!numbers[@]}"; do
     if (( slots <= 0 )); then
         echo "issue $N ($title): skipped-capacity"
         continue
+    fi
+
+    # fleet-ops#3254: self-maintenance (fleet-ops) claim cap. Once this tick
+    # has spent its SELF_MAINT_CLAIM_PCT budget on non-exempt fleet-ops
+    # claims, stop admitting more ordinary control-plane issues so capacity
+    # stays for product. A critical-path label marks the issue exempt (it
+    # claims even past the cap); escalate-senior issues were already dropped
+    # from the ready set above. Checked here (on the cheap labels array)
+    # before the body fetch so a capped-out tick does no per-issue network.
+    if (( _self_maint_cap > 0 && _self_maint_claims >= _self_maint_cap )); then
+        if printf '%s' "${labels[$i]}" | jq -e --arg cp "$CRITICAL_PATH_LABEL" \
+            '[.[]?.name // empty] | index($cp) != null' >/dev/null 2>&1; then
+            : # exempt — claim even past the cap
+        else
+            echo "issue $N ($title): skipped-self-maintenance-cap (claimed $_self_maint_claims >= cap $_self_maint_cap)"
+            continue
+        fi
     fi
 
     # Early surge-phase skip (auditor 2026-08-28, summon unit-failure
@@ -861,6 +977,32 @@ blocked-on: nish-decision" 2>/dev/null || true
         continue
     fi
 
+    # fleet-ops#3309: more than 2 live required: lines bounce (agent-blocked)
+    # and must not push a claim branch. Struck-through lines do not count.
+    # Umbrella-labeled issues are exempt (tracking parents, never claimable).
+    comments=$(gh issue view "$N" -R "$FULL" --json comments --jq '[.comments[]?.body // empty] | join("\n")' 2>/dev/null) || {
+        echo "issue $N ($title): skipped-comments-unreadable"
+        continue
+    }
+    _size_dir=$(mktemp -d)
+    printf '%s' "$body" >"$_size_dir/body"
+    printf '%s' "$comments" >"$_size_dir/comments"
+    set +e
+    size_out=$(python3 "$SPEC_GATE_PY" check-size --body "$_size_dir/body" --comments "$_size_dir/comments" --labels "${labels[$i]:-}" 2>&1)
+    size_rc=$?
+    set -e
+    rm -rf "$_size_dir"
+    if (( size_rc == 1 )); then
+        echo "issue $N ($title): skipped-oversized"
+        gh issue edit "$N" -R "$FULL" --remove-label agent-ready --add-label agent-blocked 2>/dev/null || true
+        gh issue comment "$N" -R "$FULL" --body "$size_out" 2>/dev/null || true
+        continue
+    fi
+    if (( size_rc != 0 )); then
+        echo "agent-ready-spec-gate check-size failed for issue $N (rc=$size_rc): $size_out" >&2
+        exit 1
+    fi
+
     # fleet-ops#1250: build-shaped issues without a Prior art section bounce
     # (agent-blocked) and must not push a claim branch. The checker fetches
     # the body itself unless PRIOR_ART_CLAIM_CHECK is a stub.
@@ -941,18 +1083,36 @@ blocked-on: nish-decision" 2>/dev/null || true
     # Tolerate permanent label-state errors (agent-ready already removed
     # by a prior tick/auditor): if agent-in-progress is already set and
     # agent-ready is gone, the issue is in the desired state — no-op.
+    # Secondary rate limit ("submitted too quickly") backs off 60s x attempt
+    # and, when it exhausts all retries, persists the backoff state so the
+    # gate above holds future ticks instead of hammering the limit (fleet-ops#3445).
+    edit_attempt=0
     edit_out=""
     edit_rc=0
     for _ in 1 2 3; do
+        edit_attempt=$(( edit_attempt + 1 ))
         edit_rc=0
         edit_out=$(gh issue edit "$N" -R "$FULL" --remove-label agent-ready --add-label agent-in-progress 2>&1) || edit_rc=$?
         if [[ $edit_rc -eq 0 ]]; then break; fi
         case "$edit_out" in
-            *"submitted too quickly"*|*"secondary rate"*|*"429"*) sleep 5 ;;
+            *"submitted too quickly"*|*"secondary rate"*|*"429"*) sleep $((60 * edit_attempt)) ;;
             *) break ;;
         esac
     done
     if [[ $edit_rc -ne 0 ]]; then
+        case "$edit_out" in
+            *"submitted too quickly"*|*"secondary rate"*|*"429"*)
+                _ss_state=$(_gh_secondary_read)
+                _ss_attempt=$(printf '%s' "$_ss_state" | jq -r '.attempt // 0')
+                _ss_new_attempt=$(( _ss_attempt + edit_attempt ))
+                _ss_now=$(date +%s)
+                _ss_backoff=$(( _ss_now + 60 * _ss_new_attempt ))
+                _gh_secondary_write "$_ss_new_attempt" "$_ss_backoff"
+                git -C "$REPO_DIR" push origin ":refs/heads/claim/issue-$N" >/dev/null 2>&1 || true
+                echo "issue $N ($title): gh secondary rate limit after $edit_attempt attempts; backing off 60s x $_ss_new_attempt and releasing claim branch — gate: gh_rate_limit secondary" >&2
+                exit 0
+                ;;
+        esac
         labels_json=$(gh issue view "$N" -R "$FULL" --json labels --jq '.labels | map(.name)' 2>/dev/null || true)
         if echo "$labels_json" | grep -q '"agent-in-progress"' && ! echo "$labels_json" | grep -q '"agent-ready"'; then
             echo "issue $N: labels already in target state (agent-in-progress set, agent-ready removed) — idempotent skip"
@@ -963,17 +1123,19 @@ blocked-on: nish-decision" 2>/dev/null || true
     fi
 
     # GitHub secondary rate limits on addComment ("submitted too quickly")
-    # are transient — retry with backoff (fleet-ops#1350 pattern). A
+    # are transient — retry with 60s x attempt backoff (fleet-ops#3445). A
     # permanent failure (auth, 404, etc.) still exits 1 after exhaustion.
     comment_body="claimed by pi-issue-${REPO}-${N} at $(date -u +%FT%TZ)"
     comment_out=""
     comment_rc=0
+    comment_attempt=0
     for _ in 1 2 3; do
+        comment_attempt=$(( comment_attempt + 1 ))
         comment_rc=0
         comment_out=$(gh issue comment "$N" -R "$FULL" --body "$comment_body" 2>&1) || comment_rc=$?
         if [[ $comment_rc -eq 0 ]]; then break; fi
         case "$comment_out" in
-            *"submitted too quickly"*|*"secondary rate"*|*"429"*) sleep 5 ;;
+            *"submitted too quickly"*|*"secondary rate"*|*"429"*) sleep $((60 * comment_attempt)) ;;
             *) break ;;  # permanent error — do not retry
         esac
     done
@@ -1143,6 +1305,18 @@ blocked-on: nish-decision" 2>/dev/null || true
     # a prior claim cycle would have been cleared by the success/reset path
     # -- only write if absent so a re-claim (after cooldown expiry) does not
     # clobber an already-incremented count.
+    # fleet-ops#3254: count this self-maintenance claim toward the 20% cap.
+    # Exempt issues (critical-path label) were admitted past the cap, so skip
+    # the increment for them — only ordinary control-plane claims consume the
+    # budget and eventually cap the tick.
+    if (( _self_maint_cap > 0 )); then
+        if printf '%s' "${labels[$i]}" | jq -e --arg cp "$CRITICAL_PATH_LABEL" \
+            '[.[]?.name // empty] | index($cp) != null' >/dev/null 2>&1; then
+            : # exempt — does not consume the self-maintenance budget
+        else
+            _self_maint_claims=$(( _self_maint_claims + 1 ))
+        fi
+    fi
     _rc_init_file="$ATTEMPTS_DIR/pi-issue-${REPO}-${N}.reclaim-count"
     if [[ ! -f "$_rc_init_file" ]]; then
         printf '1' > "$_rc_init_file" 2>/dev/null || true

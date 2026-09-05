@@ -4,6 +4,8 @@
 # Proves the 24h/12h drain trigger (fleet-ops#540) offline:
 #   1. Hours math: famine, floor drain, go-ham, generate, rest.
 #   2. gate: generate/go-ham exit 0; rest exit 1; gh fail exit 255.
+#   2c. gate supply floor: created-24h<20 or ready<40 -> run=0 despite rest
+#       hours; fleet-ops exempt; unmeasured -> runway rule (fleet-ops#3547).
 #   2b. gate auto-park: consecutive_dry>=N + hours<BUFFER_H -> rest=1;
 #       lifts at hours>=BUFFER_H; no state / dry<N -> run=0 (fleet-ops#3418).
 #   3. Canary clean: wired ExecCondition, prompt, workers ungated,
@@ -289,6 +291,33 @@ set -e
 unset FLEET_WORK_SUPPLY_HOURS SCOUT_FUTILITY_STATE_DIR SCOUT_FUTILITY_N SCOUT_FUTILITY_BUFFER_H
 rm -rf "$park_state_dir"
 ok "scenario2b: auto-park rests when consecutive_dry>=N and hours<BUFFER_H; lifts at hours>=BUFFER_H (fleet-ops#3418)"
+
+# --- 2c. product-supply floor (fleet-ops#3547) ------------------------------
+# Runway alone cannot see "blocked issues re-released, nobody filing":
+# 2026-09-05 the 0509 scout rested at hours=66 while only 5 issues had been
+# created in 24h. Rest now needs BOTH runway >= REST_H AND live supply
+# (created-24h >= 20 and agent-ready >= 40). fleet-ops (control plane) is
+# exempt: its scout must not be pushed harder (#3254 budget).
+export FLEET_WORK_SUPPLY_HOURS=66
+export FLEET_WORK_SUPPLY_READY=65
+export FLEET_WORK_SUPPLY_CREATED_24H=5
+set +e; "$bin" gate 0509 >/dev/null 2>&1; gate_rc=$?; set -e
+[[ "$gate_rc" == "0" ]] || fail "scenario2c: created_24h=5 hours=66 must run=0, got $gate_rc"
+export FLEET_WORK_SUPPLY_CREATED_24H=30
+set +e; "$bin" gate 0509 >/dev/null 2>&1; gate_rc=$?; set -e
+[[ "$gate_rc" == "1" ]] || fail "scenario2c: created_24h=30 ready=65 hours=66 must rest=1, got $gate_rc"
+export FLEET_WORK_SUPPLY_READY=30
+set +e; "$bin" gate 0509 >/dev/null 2>&1; gate_rc=$?; set -e
+[[ "$gate_rc" == "0" ]] || fail "scenario2c: ready=30 (<40) hours=66 must run=0 even at created_24h=30, got $gate_rc"
+export FLEET_WORK_SUPPLY_CREATED_24H=5
+set +e; "$bin" gate fleet-ops >/dev/null 2>&1; gate_rc=$?; set -e
+[[ "$gate_rc" == "1" ]] || fail "scenario2c: fleet-ops is exempt from the floor; hours=66 must rest=1, got $gate_rc"
+unset FLEET_WORK_SUPPLY_CREATED_24H
+export FLEET_WORK_SUPPLY_READY=65
+set +e; "$bin" gate 0509 >/dev/null 2>&1; gate_rc=$?; set -e
+[[ "$gate_rc" == "1" ]] || fail "scenario2c: created-24h unmeasured (fake gh) + ready=65 hours=66 must rest=1 (runway rule), got $gate_rc"
+unset FLEET_WORK_SUPPLY_HOURS FLEET_WORK_SUPPLY_READY
+ok "scenario2c: supply floor runs the scout at created-24h<20 or ready<40; fleet-ops exempt; unmeasured -> runway rule (fleet-ops#3547)"
 
 # --- 3. clean canary --------------------------------------------------------
 write_wired_checkout

@@ -331,6 +331,7 @@ bin/claim-reconcile /home/nish/.local/bin/claim-reconcile
 bin/lifecycle-label-sweep /home/nish/.local/bin/lifecycle-label-sweep
 # fleet-ops#543: agent-ready spec-gate. First admission (sweep + tally)
 # refuses a body without termination:/accept:/required:/metric:.
+# fleet-ops#3309: check-size bounces >2 live required: lines at claim time.
 lib/agent-ready-spec-gate.py /home/nish/.local/lib/pi-packet/agent-ready-spec-gate.py
 bin/stop-escalation-dispatch /home/nish/.local/bin/stop-escalation-dispatch
 bin/unit-escalation-write /home/nish/.local/bin/unit-escalation-write
@@ -595,6 +596,10 @@ systemd/pi-transport-check.service.d/10-no-direct-notify.conf /home/nish/.config
 # (blind-audit fleet-ops#2924 / #1548). Absorb so deploy symlinks it;
 # pure environment override, not new machinery.
 systemd/camofox-browser.service.d/tmpdir.conf /home/nish/.config/systemd/user/camofox-browser.service.d/tmpdir.conf
+# fleet-ops#3318: sibling ExecStartPre drop-in (Xvfb auth gate). Same real-file
+# absorb so deploy symlinks it and the drop-in hunt stays clean. The gate bin
+# it references stays hand-placed as part of the allowlisted infra tool.
+systemd/camofox-browser.service.d/xvfb-auth-gate.conf /home/nish/.config/systemd/user/camofox-browser.service.d/xvfb-auth-gate.conf
 # fleet-ops#3111: self-heal drop-in. Overrides ExecStart with the
 # pi-transport-self-heal wrapper (npm rebuild; no hand-written symlink).
 systemd/pi-transport-check.service.d/20-self-heal.conf /home/nish/.config/systemd/user/pi-transport-check.service.d/20-self-heal.conf
