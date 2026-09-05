@@ -219,6 +219,18 @@ log() {
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
 }
 
+# fleet-ops#3661: phantom-key guard. Uses seat-lib's _seat_key_in_caps when
+# seat-lib is sourced; otherwise fail-open (no caps file / no seat-lib on
+# hosted CI -> treat every key as valid so a missing seat-lib never bricks
+# the sweep).
+_seat_key_valid() {
+    if declare -F _seat_key_in_caps >/dev/null 2>&1; then
+        _seat_key_in_caps "$1" "$2"
+    else
+        return 0
+    fi
+}
+
 now_epoch() {
     if [[ -n "$NOW_ISO" ]]; then
         date -u -d "$NOW_ISO" +%s 2>/dev/null || date -u +%s
@@ -430,7 +442,7 @@ unwall_seat() {
           health_class:"healthy", retryable:false, seat_dead:false,
           poison_ladder:false, failure_mode:"none", observed_at:$now,
           usable_at:null, bench_until:null, consecutive_failure_count:0,
-          source:"comeback_release"}' > "$tmp"
+          source:"comeback_release", writer:"unwall_seat"}' > "$tmp"
     chmod 600 "$tmp" 2>/dev/null || true
     mv "$tmp" "$f"
     log "UNWALLED $p/$m (healthy observation written)"
@@ -514,7 +526,8 @@ rebench_seat() {
           health_class:$hc, retryable:true, seat_dead:false,
           poison_ladder:false, observed_at:$now, source:"comeback_release_rebench",
           failure_mode:$fm, usable_at:$usable, bench_until:$bench,
-          bench_window_s:$backoff, consecutive_failure_count:$merged}'         > "$tmp" 2>/dev/null; then
+          bench_window_s:$backoff, consecutive_failure_count:$merged,
+          writer:"rebench_seat"}'         > "$tmp" 2>/dev/null; then
         log "rebench $p/$m: jq compose FAILED — bench NOT written"
         rm -f "$tmp" 2>/dev/null || true
         return 1
@@ -663,7 +676,7 @@ corpse_seat() {
           failure_mode:"comeback_never_released",
           usable_at:null, bench_until:null,
           consecutive_failure_count:$count,
-          corpse_threshold:$thr}' > "$tmp" 2>/dev/null; then
+          corpse_threshold:$thr, writer:"corpse_seat"}' > "$tmp" 2>/dev/null; then
         log "corpse $p/$m: jq compose FAILED — corpse NOT written"
         rm -f "$tmp" 2>/dev/null || true
         return 1
@@ -711,7 +724,7 @@ reanchor_bounded_comeback() {
           health_class:"rate_limited", retryable:true, seat_dead:false,
           poison_ladder:false, observed_at:$now, source:"comeback_release_corpse",
           failure_mode:"rate_limit", usable_at:$usable, bench_until:null,
-          consecutive_failure_count:$count}' > "$tmp" 2>/dev/null; then
+          consecutive_failure_count:$count, writer:"reanchor_bounded_comeback"}' > "$tmp" 2>/dev/null; then
         log "bounded comeback $p/$m: jq compose FAILED — not written"
         rm -f "$tmp" 2>/dev/null || true
         return 1
@@ -888,6 +901,15 @@ main() {
         [[ -n "$p" && "$p" != "test" ]] || continue
         m=$(jq -r '.model // ""' "$f" 2>/dev/null || true)
         [[ -n "$m" ]] || continue
+        # fleet-ops#3661: a provider/model pair that is not a real seat in
+        # seat-caps.json (providers.<p>.models.<m>) is a PHANTOM key (e.g. a
+        # probe-output filename fragment like "swe-1-7-.out"). It must never
+        # be probed or dispatched — skip it LOUD so the next phantom names
+        # itself instead of burning a probe slot every sweep.
+        if ! _seat_key_valid "$p" "$m"; then
+            log "LOUD SEAT-KEY-INVALID $p/$m writer=fleet-seat-comeback-release"
+            continue
+        fi
         hc=$(jq -r '.health_class // ""' "$f" 2>/dev/null || true)
         # A healthy seat resets this organ's own-failure streak for that
         # seat (recovery happened — via a real worker or a successful
@@ -1216,6 +1238,11 @@ main() {
         p=$(jq -r '.provider // ""' "$f" 2>/dev/null || true)
         [[ "$p" != "test" ]] || continue
         [[ -n "$p" ]] || continue
+        m=$(jq -r '.model // ""' "$f" 2>/dev/null || true)
+        # fleet-ops#3661: a phantom seat key is not a real seat — exclude it
+        # from the expired/breach recounts so it never trips the loud-stall
+        # or interval-breach checks (it was already skipped in the sweep).
+        _seat_key_valid "$p" "$m" || continue
         hc=$(jq -r '.health_class // ""' "$f" 2>/dev/null || true)
         [[ "$hc" != "healthy" ]] || continue
         dead=$(jq -r '(.seat_dead // false)' "$f" 2>/dev/null || true)
@@ -1253,6 +1280,9 @@ main() {
         p=$(jq -r '.provider // ""' "$f" 2>/dev/null || true)
         [[ "$p" != "test" ]] || continue
         [[ -n "$p" ]] || continue
+        m=$(jq -r '.model // ""' "$f" 2>/dev/null || true)
+        # fleet-ops#3661: exclude phantom seat keys from the breach recount.
+        _seat_key_valid "$p" "$m" || continue
         hc=$(jq -r '.health_class // ""' "$f" 2>/dev/null || true)
         [[ "$hc" != "healthy" ]] || continue
         dead=$(jq -r '(.seat_dead // false)' "$f" 2>/dev/null || true)

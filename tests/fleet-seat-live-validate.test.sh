@@ -42,6 +42,21 @@ export FLEET_SEAT_LIVE_VALIDATE_FILE=1
 export GROK_HOME="$scratch/grok"
 export PI_SEAT_HEALTH_LEDGER_DIR="$scratch/ledger"
 mkdir -p "$GROK_HOME" "$PI_SEAT_HEALTH_LEDGER_DIR"
+# fleet-ops#3661: the canary now rejects phantom seat keys (a provider/model
+# pair not present in seat-caps.json providers.<p>.models.<m>) with a LOUD
+# SEAT-KEY-INVALID line and writes nothing. Point it at a scratch caps
+# fixture that includes the grok/xai-oauth models it paints, so the guard is
+# exercised deterministically (the real seat-caps.json is absent on hosted
+# CI and would otherwise fail-open).
+cat > "$scratch/seat-caps.json" <<'CAPS'
+{
+  "providers": {
+    "grok": {"models": {"grok-4.6": 0, "grok-4.5": 0}},
+    "xai-oauth": {"models": {"grok-4.6": 2, "grok-4.5": 0}}
+  }
+}
+CAPS
+export FLEET_SEAT_CAPS_JSON="$scratch/seat-caps.json"
 AUTH_JSON="$GROK_HOME/auth.json"
 
 FAKE_TOKEN="TEST-TOKEN-DO-NOT-LEAK-xyz789"
