@@ -261,14 +261,22 @@ ok "siblings: later probe write keeps the other provider's learned cap"
 # --- production seat-caps.json AIMD fields (the live floor/ceiling) --------
 caps="$repo_root/config/seat-caps.json"
 [[ -f "$caps" ]] || fail "production seat-caps.json missing"
-jq -e '.providers.devin.hard_ceiling == null' "$caps" >/dev/null \
-  || fail "production: devin must NOT be hard_ceiling (fleet-ops#3125: AIMD probes to 8)"
+# fleet-ops#3443 (2a4b4008, 2026-09-05): devin is pinned hard_ceiling again.
+# Probe ceilings 6/8 put 8 devin sessions in flight and Devin answered
+# resource_exhausted on every new one (133 deaths in 12h). The #3125 provider
+# ceiling of 8 stays declared (dormant while hard_ceiling) so fleet-ops#3258
+# can lift the pin once the resource_exhausted bench proves AIMD backs off.
+# While pinned, each model's probe ceiling must equal its declared cap, so a
+# cap change (fleet-ops#3473 retired swe-1-7 to 0) moves the ceiling with it
+# instead of tripping a magic number here.
+jq -e '.providers.devin.hard_ceiling == true' "$caps" >/dev/null \
+  || fail "production: devin must be hard_ceiling=true (fleet-ops#3443: resource_exhausted storm at 8 in flight; lift via fleet-ops#3258)"
 jq -e '.providers.devin.max_probe_ceiling == 8' "$caps" >/dev/null \
-  || fail "production: devin max_probe_ceiling must be 8 (fleet-ops#3125)"
-jq -e '.providers.devin.models["glm-5-2"].max_probe_ceiling == 6' "$caps" >/dev/null \
-  || fail "production: devin glm-5-2 must declare probe ceiling 6 (fleet-ops#3125)"
-jq -e '.providers.devin.models["swe-1-7"].max_probe_ceiling == 8' "$caps" >/dev/null \
-  || fail "production: devin swe-1-7 must declare probe ceiling 8 (fleet-ops#3125)"
+  || fail "production: devin max_probe_ceiling must stay declared at 8 (fleet-ops#3125; dormant under the #3443 pin, lifted by #3258)"
+jq -e '.providers.devin.models["glm-5-2"].max_probe_ceiling == .providers.devin.models["glm-5-2"].cap' "$caps" >/dev/null \
+  || fail "production: devin glm-5-2 probe ceiling must equal its cap while pinned (fleet-ops#3443)"
+jq -e '.providers.devin.models["swe-1-7"].max_probe_ceiling == .providers.devin.models["swe-1-7"].cap' "$caps" >/dev/null \
+  || fail "production: devin swe-1-7 probe ceiling must equal its cap while pinned (fleet-ops#3443/#3473)"
 jq -e '.providers.ollama.hard_ceiling == true' "$caps" >/dev/null \
   || fail "production: ollama must be hard_ceiling=true"
 jq -e '.providers.commandcode.max_probe_ceiling == 6' "$caps" >/dev/null \
@@ -281,6 +289,6 @@ jq -e '.providers.opencode.max_probe_ceiling == 5' "$caps" >/dev/null \
   || fail "production: opencode max_probe_ceiling must be 5 (fleet-ops#1350: cap 3 + 2-probe headroom, measured clean to n=5)"
 jq -e '.providers.minimax.max_probe_ceiling == null' "$caps" >/dev/null \
   || fail "production: minimax must omit max_probe_ceiling (no climb)"
-ok "production seat-caps.json: devin AIMD (ceiling 8, glm-5-2->6, swe-1-7->8), ollama hard_ceiling, probe ceilings on free lanes"
+ok "production seat-caps.json: devin pinned hard_ceiling (fleet-ops#3443; provider ceiling 8 declared, model ceilings == caps), ollama hard_ceiling, probe ceilings on free lanes"
 
 echo "All AIMD invariants passed."
