@@ -34,6 +34,8 @@ Your one-paragraph reason MUST include these exact keywords — the tally script
 
 **You must use at least one word from group 1 AND at least one word from group 2 in your reason paragraph, or the vote will be rejected as incomplete and the unit will fail.** This is not optional — it is enforced by the tally script.
 
+3. **Cite the evidence.** You have NO tools and must work only from the AUDIT CONTEXT below. Always name the candidate issue number (e.g. `#1240`) by spelling the numeral, and quote **one concrete repo path** that appears in the Candidate body (e.g. `src/app/page.tsx`). Without a path the tally refuses the PASS as keyword-only (fleet-ops#3573). A path you copy from the Candidate body is repo-specific evidence; do not invent one.
+
 If the candidate has no clear user-facing product impact, is a duplicate, is refactor-for-its-own-sake, is pure fleet/CI tooling, or is not the smallest durable fix, you MUST return FAIL — unless it is a research-delta (below).
 
 ## Research deltas (fleet-ops#458)

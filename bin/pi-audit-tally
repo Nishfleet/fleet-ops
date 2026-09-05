@@ -66,8 +66,24 @@ issue_passes_spec_gate() {
 # or the admission (2-of-3 PASS) is keyword-babble, not a senior verdict.
 # Returns 0 when the reason names evidence, 1 when it is keyword-only.
 reason_has_evidence() {
-    local r="$1"
-    grep -qE '#[0-9]+|[a-z][a-z0-9+.-]*://|[A-Za-z0-9_.]+/[A-Za-z0-9_.]+' <<<"$r"
+    local r="$1" candidate="$2" body="$3"
+    # (1) Existing repo-specific evidence: any issue number, URL, or path.
+    if grep -qE '#[0-9]+|[a-z][a-z0-9+.-]*://|[A-Za-z0-9_.]+/[A-Za-z0-9_.]+' <<<"$r"; then
+        return 0
+    fi
+    # fleet-ops#3573: the auditors run with NO tools (tools=0), so they cannot
+    # cite a live path or URL. Accept a PASS whose reason cites THIS candidate
+    # issue number together with a concrete repo path that appears VERBATIM in
+    # the candidate's own issue body — the body is the only repo specificity a
+    # tool-less auditor is handed, so a body-path citation is still evidence,
+    # not keyword-babble. Without the path it is still refused.
+    grep -qE "#${candidate}([^0-9]|$)" <<<"$r" || return 1
+    local tok
+    while IFS= read -r tok; do
+        [ -n "$tok" ] || continue
+        grep -qF "$tok" <<<"$r" && return 0
+    done <<<"$(printf '%s\n' "$body" | grep -oE '[A-Za-z0-9_.]+(/[A-Za-z0-9_.]+)+' | sort -u 2>/dev/null)"
+    return 1
 }
 
 log() { printf '[%s] [pi-audit-tally] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; }
@@ -112,12 +128,16 @@ main() {
         # fleet-ops#543: 2-of-3 PASS is not enough without a spec.
         # fleet-ops#3121: nor without repo-specific evidence in the PASS
         # reasons — keyword-only compliance is not a judgement.
+        # fleet-ops#3573: fetch the body first so the evidence gate can accept
+        # a tool-less auditor's citation of this candidate# + a body path.
+        issue_json=$("$GH" issue view "$candidate" -R "Nishfleet/$repo" --json body 2>/dev/null || true)
+        issue_body=$(printf '%s' "$issue_json" | jq -r '.body // empty')
         local pass_reasons evidenceless
         pass_reasons=$(printf '%s\n' "$votes" | jq -r '[.[] | select(.verdict == "PASS") | .reason] | join("\n")')
         evidenceless=0
         while IFS= read -r r; do
             [ -n "$r" ] || continue
-            if ! reason_has_evidence "$r"; then
+            if ! reason_has_evidence "$r" "$candidate" "$issue_body"; then
                 evidenceless=1
                 log "$repo/#$candidate PASS reason lacks repo-specific evidence (issue #, path, or URL): $(printf '%s' "$r" | head -c 160)"
             fi
@@ -133,8 +153,6 @@ main() {
             fi
             exit 0
         fi
-        issue_json=$("$GH" issue view "$candidate" -R "Nishfleet/$repo" --json body 2>/dev/null || true)
-        issue_body=$(printf '%s' "$issue_json" | jq -r '.body // empty')
         if ! issue_passes_spec_gate "$issue_body" "$repo"; then
             log "$repo/#$candidate SPEC-GATE-REFUSED (2-of-3 PASS but no spec)"
             if [ "$DRY_RUN" = "1" ]; then
