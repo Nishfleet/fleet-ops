@@ -401,3 +401,74 @@ shopt -u nullglob
 [[ "${#archived_d[@]}" -eq 0 ]] || fail "dry-run must NOT create ARCHIVED- files, got: ${archived_d[*]}"
 grep -q 'PACKETS-ARCHIVED' "$triage" && fail "dry-run must NOT write PACKETS-ARCHIVED: $(cat "$triage")"
 ok "dry-run leaves packets intact (archive is not a side effect of --dry-run)"
+
+# --- Test E: open-PR guard must query GitHub with owner:branch ---------------
+# 2026-09-05 08:32-08:38Z: the reaper deleted claim/issue-3268, -3254 and
+# -3445 while each had an OPEN PR (#3528, #3538 green-ready, #3539), closing
+# the PRs and destroying finished work. Root cause: the REST `head=` filter
+# was built as `${repo_slug#*/}` (the REPO name, "fleet-ops:claim/...") but
+# GitHub's pulls API expects `owner:branch` ("Nishfleet:claim/..."). A wrong
+# owner matches nothing, the guard sees 0 open PRs and deletes the branch.
+# Live proof: `gh api repos/Nishfleet/0509/pulls?state=open&head=0509:claim/issue-1140`
+# -> 0, `...head=Nishfleet:claim/issue-1140` -> 1 (PR #1509).
+state_e="$fake/state-e"
+mkdir -p "$state_e/attempts"
+ledger_e="$fake/ledger-e"
+mkdir -p "$ledger_e"
+deleted_marker_e="$fake/deleted-claim-issue-3254"
+rm -f "$deleted_marker_e"
+cat >"$gh_bin/gh" <<FAKE_GH
+#!/usr/bin/env bash
+case "\$1" in
+  api)
+    path="\${2:-}"
+    if [[ "\$path" == */issues/* ]]; then
+      printf '%s\n' '{"state":"open","labels":[{"name":"agent-ready"}]}'
+      exit 0
+    fi
+    if [[ "\$path" == */pulls* ]]; then
+      # Only the owner-qualified head filter finds the open PR, exactly as
+      # GitHub behaves; a repo-name-qualified filter matches nothing.
+      if [[ "\$path" == *"head=Nishfleet:claim/issue-3254"* ]]; then
+        printf '%s\n' '[{"number":3538}]'
+      else
+        printf '%s\n' '[]'
+      fi
+      exit 0
+    fi
+    if [[ "\$path" == */git/refs/heads/* ]]; then
+      if [[ "\$*" == *-X*DELETE* ]]; then
+        : >"$deleted_marker_e"
+        exit 0
+      fi
+      exit 0
+    fi
+    echo "unexpected gh api \$*" >&2
+    exit 1
+    ;;
+  issue)
+    case "\$2" in
+      edit|comment) exit 0 ;;
+      *) echo "unexpected gh issue \$*" >&2; exit 1 ;;
+    esac
+    ;;
+  *) echo "unexpected gh \$*" >&2; exit 1 ;;
+esac
+FAKE_GH
+chmod +x "$gh_bin/gh"
+: >"$triage"
+write_fake inactive 0
+set +e
+out="$(PATH="$gh_bin:$PATH" SYSTEMCTL="$fake/systemctl" TRIAGE_FILE="$triage" \
+    PI_PACKET_STATE="$state_e" \
+    SEAT_LIB="$repo_root/lib/seat-lib.sh" \
+    PI_SEAT_HEALTH_LEDGER_DIR="$ledger_e" \
+    PI_SEAT_LIB_CHECK_SYSTEMD=0 \
+    "$bin" fleet-ops-3254 2>&1)"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "open-PR guard reap must exit 0, got $rc ($out)"
+[[ ! -f "$deleted_marker_e" ]] || fail "reaper deleted claim/issue-3254 although PR #3538 is open on it (head filter must be owner:branch): $out"
+grep -q 'CLAIM-REAP-NEEDED' "$triage" || fail "triage missing CLAIM-REAP-NEEDED for the open-PR hold: $(cat "$triage")"
+grep -q 'open_pr_count=1' "$triage" || fail "open-PR hold must report open_pr_count=1: $(cat "$triage")"
+ok "reaper holds the claim branch when an open PR exists (owner:branch head filter)"
