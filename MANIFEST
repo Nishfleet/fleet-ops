@@ -596,6 +596,10 @@ systemd/pi-transport-check.service.d/10-no-direct-notify.conf /home/nish/.config
 # (blind-audit fleet-ops#2924 / #1548). Absorb so deploy symlinks it;
 # pure environment override, not new machinery.
 systemd/camofox-browser.service.d/tmpdir.conf /home/nish/.config/systemd/user/camofox-browser.service.d/tmpdir.conf
+# fleet-ops#3318: sibling ExecStartPre drop-in (Xvfb auth gate). Same real-file
+# absorb so deploy symlinks it and the drop-in hunt stays clean. The gate bin
+# it references stays hand-placed as part of the allowlisted infra tool.
+systemd/camofox-browser.service.d/xvfb-auth-gate.conf /home/nish/.config/systemd/user/camofox-browser.service.d/xvfb-auth-gate.conf
 # fleet-ops#3111: self-heal drop-in. Overrides ExecStart with the
 # pi-transport-self-heal wrapper (npm rebuild; no hand-written symlink).
 systemd/pi-transport-check.service.d/20-self-heal.conf /home/nish/.config/systemd/user/pi-transport-check.service.d/20-self-heal.conf
