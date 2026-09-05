@@ -104,7 +104,8 @@ archive_step() {
         # Administration-gated (worker App token lacks it) or other failure.
         printf 'fleet-close-and-archive-repo: ARCHIVE-ADMIN-GATED %s — archive not performed\n' "$r" >&2
         printf '  requires Administration; run: %s repo archive %s --yes\n' "$GH" "$r" >&2
-        local err="$(printf '%s\n' "$out" | head -1)"
+        local err
+        err="$(printf '%s\n' "$out" | head -1)"
         if [[ -n "$err" && "$err" != *"Resource not accessible"* && "$err" != *"403"* ]]; then
             printf '  archive attempt error: %s\n' "$err" >&2
         fi
