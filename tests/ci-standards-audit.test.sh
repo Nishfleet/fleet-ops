@@ -542,3 +542,10 @@ bash "$here/seat-empty-run-intermittent-count.test.sh"
 # .github/workflows/**). Offline import of memoryctl plus a live layer
 # that skips in hosted CI (no user journal / no vault health file).
 bash "$here/curator-journal-cap.test.sh"
+
+# fleet-ops#3273: config sprawl — .bak next to a managed MANIFEST file.
+# Hosted here so P14 runs it without a workflow-file edit (the worker
+# App cannot push .github/workflows/**). The named pin in
+# tests/p14-test-listing-gate.test.sh is the class-prevention so a
+# future drop of this host line fails by name.
+bash "$here/install-manifest-bak-sprawl.test.sh"
