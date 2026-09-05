@@ -570,6 +570,99 @@ if {
 fi
 echo "reconciler-caught: delta=$reconciler_caught total=$_reconciler_new_total repo=$REPO prom=$reconciler_prom"
 
+# fleet-ops#3322: audition-lane sync. Reads config/model-candidates.json and
+# injects candidates not yet in the LIVE caps as cap-1 audition seats
+# (light-only, measured by the yield ledger). Retires audition seats that hit
+# the 10-session / 7-day / $1 ceiling and files promote/drop verdict issues
+# (deduped by title) via fleet-issue-file — the orchestrator's Q2(c) answer:
+# reuse fleet-issue-file, no new organ, no timer, no auto-PR filer. A normal
+# worker lands the config/seat-caps.json PR from the filed issue.
+audition_sync() {
+    local cand_json="${MODEL_CANDIDATES_JSON:-}"
+    if [[ -z "$cand_json" || ! -f "$cand_json" ]]; then
+        local _here
+        _here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+        if [[ -f "$_here/config/model-candidates.json" ]]; then
+            cand_json="$_here/config/model-candidates.json"
+        elif [[ -f "$_here/../config/model-candidates.json" ]]; then
+            cand_json="$_here/../config/model-candidates.json"
+        else
+            cand_json=""
+        fi
+    fi
+    [[ -n "$cand_json" && -f "$cand_json" ]] || { echo "audition-sync: no model-candidates.json (skip)"; return 0; }
+    local sync_py="${AUDITION_SYNC_PY:-}"
+    if [[ -z "$sync_py" || ! -f "$sync_py" ]]; then
+        local _here2
+        _here2="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+        if [[ -f "$_here2/audition-sync.py" ]]; then
+            sync_py="$_here2/audition-sync.py"
+        elif [[ -f "$_here2/../lib/audition-sync.py" ]]; then
+            sync_py="$_here2/../lib/audition-sync.py"
+        else
+            sync_py=""
+        fi
+    fi
+    [[ -n "$sync_py" && -f "$sync_py" ]] || { echo "audition-sync: helper missing (skip)"; return 0; }
+    local issue_file="${FLEET_ISSUE_FILE:-}"
+    if [[ -z "$issue_file" || ! -x "$issue_file" ]]; then
+        local _here3
+        _here3="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+        if [[ -x "$_here3/fleet-issue-file" ]]; then
+            issue_file="$_here3/fleet-issue-file"
+        elif [[ -x "$_here3/../bin/fleet-issue-file" ]]; then
+            issue_file="$_here3/../bin/fleet-issue-file"
+        else
+            issue_file=""
+        fi
+    fi
+    local verdicts
+    verdicts=$(MODEL_CANDIDATES_JSON="$cand_json" \
+        SEAT_CAPS_JSON="$SEAT_CAPS_JSON" \
+        SEAT_YIELD_JSON="$SEAT_YIELD_JSON" \
+        python3 "$sync_py" 2>/dev/null) || true
+    if [[ -z "$verdicts" ]]; then
+        echo "audition-sync: no verdicts (inject+retire pass done)"
+        return 0
+    fi
+    local v seat kind title body_file
+    while IFS= read -r v; do
+        [[ -n "$v" ]] || continue
+        kind="${v%% *}"
+        seat="${v#* }"; seat="${seat%% *}"
+        echo "audition-sync: verdict $kind $seat ($v)"
+        if [[ -z "$issue_file" ]]; then
+            echo "audition-sync: fleet-issue-file missing — verdict not filed: $v"
+            continue
+        fi
+        if [[ "$kind" == "PROMOTE" ]]; then
+            title="promote $seat into seat-caps (audition $v)"
+        else
+            title="drop $seat — audition-failed ($v)"
+        fi
+        body_file="$(mktemp)"
+        {
+            echo "Audition verdict (fleet-ops#3322)."
+            echo
+            echo "Seat: $seat"
+            echo "Verdict: $v"
+            echo
+            echo "A worker lands the config/seat-caps.json change: promote the"
+            echo "entry (or add the dated audition-failed note) with these numbers."
+        } > "$body_file"
+        if "$issue_file" file -R "$FULL" --title "$title" \
+            --body-file "$body_file" --label agent-ready >/dev/null 2>&1; then
+            echo "audition-sync: filed verdict issue: $title"
+        else
+            echo "audition-sync: fleet-issue-file failed for: $title"
+        fi
+        rm -f "$body_file"
+    done <<< "$verdicts"
+}
+
+audition_sync
+
+
 # Step 2: capacity (P4-A — fleet-ops config/seat-caps.json, not a hardcoded cap)
 caps_sum=$(total_seat_cap 2>/dev/null || echo 0)
 ram_cap=$(ram_governor_cap 2>/dev/null || echo 9999)
