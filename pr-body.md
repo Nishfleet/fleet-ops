@@ -1,77 +1,85 @@
-feat(seat-health): walled-seat comeback probe with weekly credentials_bad issue
+fix(canary): announce a green live detection on every exporter tick (fleet-ops#3060)
 
-## Why
+## What the escalation was
 
-fleet-ops#1348: #1167 landed the `walled_comeback` table in `config/seat-caps.json`
-(15min on 429, hourly on daily quota, daily on monthly/402, weekly on
-credentials_bad, max 1 probe per 15min). `pick_seat` already fail-opens after
-`usable_at` passes, but nothing actually re-admits the seat — the wall meant the
-seat stayed walled until a manual intervention or an unrelated healthy observation
-overwrote the ledger.
+CanaryEffectivenessLow fired at 0.0 on three organs and
+CanarySilentTooLong at 8 since 2026-09-02T20:45Z: the effectiveness
+exporter emitted caught=0 (and, after the pre-observe fix, missed=0)
+while nothing on the live box could prove the classify path worked. A
+canary that emits no signal is indistinguishable from a working one —
+review/detection coverage was unproven.
 
-This PR adds a periodic probe (systemd timer every 15min) that:
-- Reads `usable_at` from the per-seat ledger
-- When `usable_at` has passed, sends a polite 1-token "reply OK" probe through pi
-- A successful probe produces a healthy observation (seat-health.ts records it),
-  clearing `usable_at` so the seat re-enters the ladder at its cap
-- Respects `min_probe_interval_s` from `seat-caps.json` (max 1 probe per seat per tick)
-- `credentials_bad`: probes weekly and files an `agent-ready` issue if still bad
-  (needs fixing, not waiting)
+## Diagnosis (verified live, 2026-09-05)
 
-## Scope
+1. The three real incidents in the 30d window (0509#1132 08-26,
+   0509#1411 08-28, fleet-ops#1466 08-28) all predate each organ's first
+   observed event in the durable store (~08-29). Per the
+   pre-observe rule (fleet-ops#2757, #3175) a canary cannot miss a
+   regression it was not yet watching, so they are honestly
+   unclassified: caught=0 and missed=0 with ratio=0.0. Attribution
+   only resumes with the next post-observe bug/regression issue.
+2. The 30d window outlived the ~7d retention of Prometheus and
+   journald, so older incidents would have been silently re-ignored
+   every tick — closed by the durable event store (fleet-ops#3052).
+3. The classify path could silently break while no drill ran anywhere
+   (the 2026-09-02 class pinned caught=0 for 19h) — closed by the
+   hermetic injected-fault drill in every live tick (fleet-ops#3055,
+   #3415).
+4. Remaining gap, fixed here: a PASSING drill was journal-invisible.
+   The exporter only printed DRILL RED on failure; a green detection
+   existed solely as a gauge. That is still "no signal" for anyone
+   reading the journal, and it is the same silent-even-while-healthy
+   failure class.
 
-- `bin/seat-walled-probe` — new script. Iterates the per-seat ledger, probes seats
-  whose `usable_at` is in the past and whose `failure_mode` is walled (rate_limit,
-  quota_exhausted, credentials_bad, empty_run). Uses `--dry-run` and `--probe-all`
-  flags. Exits 0 when there is nothing to probe (common case, not a failure).
-- `systemd/seat-walled-probe.service` + `systemd/seat-walled-probe.timer` —
-  oneshot unit with 10min timeout, timer fires every 15min with 60s randomized delay.
-- `systemd/timer-manifest.json` — entry for the new timer (source: repo, cadence: 15min).
-- `tests/seat-walled-probe.test.sh` — 5-phase test: dry-run selection (skips future/
-  healthy/recent, probes past+weekly), real mock run (probe success/failure + issue
-  filing), no-seats exits 0, --probe-all picks non-walled modes, systemd unit validity
-  + manifest entry.
-- `MANIFEST` — deploy mapping for bin + service + timer.
+## The fix
 
-**Out of scope**: the census sweep integration. #1149 is already the census sweeper;
-this probe runs on its own 15min timer rather than being called from the census.
+run_live_drill now prints DRILL GREEN with the self-test summary on
+every passing tick, so each exporter run's stderr proves the injected
+fault was caught end to end (caught=1, ratio=1.0). The regression test
+locks the announcement: a future change that silences the green
+detection fails CI.
 
-## Tradeoffs
-
-- **Own timer vs census hook.** Chose a standalone timer because the probe cadence
-  (15min) is tighter than the census (weekly). Adding a 15min-firing census step would
-  change the census's own semantics. The two are orthogonal — census maps assets to
-  guards; this probe is a guard.
-
-## Blast Radius
-
-- **Low risk.** New script + new systemd units only. No existing files modified.
-  The script reads (never writes) the per-seat ledger and `seat-caps.json`.
-  Systemd timer is non-mandatory — fleet runs fine without it.
-- **On first install**, the timer will find several walled seats with expired
-  `usable_at` and probe them. This is correct — those seats should have been
-  re-probed already.
+mechanism: regression test + live-tick drill already ship the
+FleetCanaryEffectivenessDrillStale guard (fleet-ops#3055); this PR makes
+the guard's green firing journal-visible and locks it with a test
+assertion so silent-green cannot hide again.
 
 ## Verification
 
+Live tick in its production environment (same store,
+`/var/lib/prometheus/node-exporter/fleet-canary-effectiveness.prom`,
+same command shape as the systemd drop-in ExecStart):
+
 ```
-bash tests/seat-walled-probe.test.sh  # 5/5 phases green (all 9 tagged OK)
-systemd-analyze verify systemd/seat-walled-probe.service systemd/seat-walled-probe.timer
-shellcheck -x bin/seat-walled-probe  # clean (exit 0)
-sgscan  # no new security findings
+$ /usr/bin/python3 ./lib/canary-effectiveness.py
+canary-effectiveness: DRILL GREEN: SELF-TEST OK: injected fault detected (caught=1, ratio=1.0)
+canary-effectiveness: wrote /var/lib/prometheus/node-exporter/fleet-canary-effectiveness.prom (4 organs, 905 events, 3 incidents)
 ```
 
-run-proof: tests/seat-walled-probe.test.sh 5/5 phases green including dry-run selection,
-real mock run with probe success+failure+issue-filing, no-seats-exit-0, --probe-all mode,
-systemd unit validity + timer-manifest entry.
+Exported drill gauges after that tick (fleet.jsonl store 905 events;
+heartbeat fresh):
 
-research: official docs (systemd.timer(5), systemd.service(5)) plus a last30days-scale pass for probe-style free-seat recovery patterns; compared polling to a systemd path-unit trigger on the ledger directory (rejected — path unit fires on every write, every few seconds; polling every 15min is simpler and lower CPU) and checked the existing bin/fleet-seat-recovery + census sweep (#1149) — adopted a standalone systemd timer + bash script because it runs on the existing fleet timer pattern with no new machinery, and the census sweep is weekly (too coarse for a 15min probe cadence).
+```
+fleet_canary_effectiveness_drill_last_green_seconds 1788567244
+fleet_canary_effectiveness_drill_ok 1
+fleet_canary_effectiveness_last_run_seconds 1788567244
+```
 
-help-first: ran `systemctl --help`, `systemd-analyze --help`, `pi --help`, and `bin/fleet-seat-recovery --help` — none can read per-seat ledger JSON, compare timestamps against seat-caps.json walled_comeback durations, or file agent-ready issues via fleet-issue-file; the existing tools do not already do this.
+Live alertmanager (2026-09-05T00:15Z): no Canary* alert active —
+CanaryEffectivenessLow / CanarySilentTooLong / DrillStale all clear
+(7 unrelated alerts active; pre-existing, filed separately if they
+belong to this repo).
 
-organ-heartbeat: systemd/seat-walled-probe.service systemd/seat-walled-probe.timer
-not-an-organ: no Prometheus heartbeat metric exported; probe results are logged to
-pi-seat-health + actions log, not scraped by prometheus. This is a scheduled probe,
-not an organ under fleet-ops#1010.
+Repo tests:
+- `bash tests/canary-effectiveness.test.sh` — PASS (failing-repro
+  check: the new DRILL GREEN assertion fails against the pre-change
+  code, which printed nothing on stderr for a passing drill)
+- `bash tests/ci-standards-audit.test.sh` — PASS (hosts the canary
+  effectiveness suite + 21 sibling suites)
+- `python3 -m py_compile lib/canary-effectiveness.py` — PASS
+- `bash -n tests/canary-effectiveness.test.sh` — PASS
+- `shellcheck tests/canary-effectiveness.test.sh` — PASS
+- sgscan — no new security findings
+- crgate — SKIP: CodeRabbit CLI not signed in on this host
 
-Closes #1348
+Closes #3060
