@@ -255,6 +255,27 @@ EOF
 STATE="$TMPD/state.json"
 PROM="$TMPD/release.prom"
 
+# fleet-ops#3661: the sweep now rejects phantom seat keys (a provider/model
+# pair not present in seat-caps.json providers.<p>.models.<m>) with a LOUD
+# SEAT-KEY-INVALID line and never probes them. Point the sweep at a scratch
+# caps fixture that includes every seat the fixtures below use, so the guard
+# is exercised deterministically (the real seat-caps.json is absent on hosted
+# CI and would otherwise fail-open).
+cat > "$TMPD/seat-caps.json" <<'CAPS'
+{
+  "providers": {
+    "bai": {"models": {"deepseek-v4-flash": 1}},
+    "cline": {"models": {"z-ai/glm-5.3-flash": 1}},
+    "commandcode": {"models": {"poolside/laguna-s-2.1-free": 1}},
+    "devin": {"models": {"glm-5-2": 1}},
+    "opencode": {"models": {"hy3-free": 1, "mimo-v-2.5-free": 1, "mimo-v2.5-free": 1, "nemotron-3-ultra-free": 1}},
+    "straitly": {"models": {"deepseek/deepseek-v4-pro": 1, "deepseek-v4-pro": 1, "gpt-5.6-sol": 1}},
+    "test": {"models": {"test": 1}}
+  }
+}
+CAPS
+export SEAT_CAPS_JSON="$TMPD/seat-caps.json"
+
 # --- 1. dry-run: selection ------------------------------------------------
 out=$(PI_SEAT_HEALTH_LEDGER_DIR="$SEATDIR" \
     FLEET_SEAT_COMEBACK_STATE="$STATE" \
@@ -1668,4 +1689,65 @@ jq -e '.seat_dead == false and .health_class == "rate_limited" and .failure_mode
   || fail "19: ledger must keep the extension's 429 retry window, not a no-wall corpse: $(cat "$SEATDIR/opencode__mimo-v2.5-free.json")"
 ok "19: extension-reanchored 429 retry window is not wiped by corpse_seat (fleet-ops#3301)"
 
-echo "ALL OK: active come-back release path (fleet-ops#2421) + force-probe-on-overdue-usable_at + corpse-at-threshold + never-released metric (fleet-ops#2638) + own-streak corpse + interval-breach loud check (fleet-ops#2806) + no-wall corpse second-chance re-probe / explicit retire (fleet-ops#3156) + extension-reclassify race (fleet-ops#3179) + PQE 1h==1h deadlock fix (fleet-ops#3176) + skip-corpse-on-reanchored-wall (fleet-ops#3301)"
+# --- 20. phantom seat key (fleet-ops#3661) --------------------------------
+# A stray devin__swe-1-7-.out.json (a probe-output filename fragment, not a
+# real seat) must be SKIPPED by the sweep with a LOUD SEAT-KEY-INVALID line
+# and NEVER probed; and a writer call with model swe-1-7-.out must write
+# nothing and log LOUD.
+PHANTD="$TMPD/seats-phantom"
+mkdir -p "$PHANTD"
+cat > "$PHANTD/devin__swe-1-7-.out.json" <<'EOF'
+{"provider":"devin","model":"swe-1-7-.out","http_status":1,"retry_after":null,"health_class":"transient_other","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T11:00:00Z","source":"cli_spawn","failure_mode":"transient_other","usable_at":"2026-08-30T11:30:00Z","consecutive_failure_count":18}
+EOF
+# A stub pi that records every invocation — the phantom must never reach it.
+cat > "$TMPD/pi-probe-log" <<'EOF'
+#!/usr/bin/env bash
+echo "PROBED $*" >>"${PI_PROBE_LOG:-/dev/null}"
+exit 1
+EOF
+chmod +x "$TMPD/pi-probe-log"
+: >"$TMPD/probe.log"
+PHANT_STATE="$TMPD/state-phantom.json"
+PHANT_PROM="$TMPD/release-phantom.prom"
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$PHANTD" \
+    FLEET_SEAT_COMEBACK_STATE="$PHANT_STATE" \
+    FLEET_SEAT_COMEBACK_PROM="$PHANT_PROM" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" \
+    PI_BIN="$TMPD/pi-probe-log" \
+    PI_PROBE_LOG="$TMPD/probe.log" \
+    bash "$BIN" >/dev/null 2>"$TMPD/phantom.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "20: phantom sweep must exit 0, got $rc ($(cat "$TMPD/phantom.err"))"
+grep -q "LOUD SEAT-KEY-INVALID devin/swe-1-7-.out writer=fleet-seat-comeback-release" "$TMPD/phantom.err" \
+  || fail "20: phantom must be skipped with the LOUD SEAT-KEY-INVALID line: $(cat "$TMPD/phantom.err")"
+[[ ! -s "$TMPD/probe.log" ]] \
+  || fail "20: phantom seat must NEVER be probed: $(cat "$TMPD/probe.log")"
+# The phantom ledger must be untouched (not unwalled, not rebenched).
+jq -e '.health_class == "transient_other" and .consecutive_failure_count == 18' "$PHANTD/devin__swe-1-7-.out.json" >/dev/null \
+  || fail "20: phantom ledger must be left untouched: $(cat "$PHANTD/devin__swe-1-7-.out.json")"
+ok "20: phantom seat key skipped by comeback-release with LOUD line, never probed (fleet-ops#3661)"
+
+# Writer call with a phantom model: mark_seat_spawn_fail must write nothing
+# and log LOUD. Source seat-lib with a scratch ledger + caps fixture.
+PHANT_LEDGER="$TMPD/ledger-writer"
+mkdir -p "$PHANT_LEDGER"
+PHANT_LOG="$TMPD/seat-lib-writer.log"
+: >"$PHANT_LOG"
+set +e
+out=$(PI_SEAT_LIB_CHECK_TRANSPORT=0 \
+    PI_SEAT_HEALTH_LEDGER_DIR="$PHANT_LEDGER" \
+    SEAT_CAPS_JSON="$TMPD/seat-caps.json" \
+    PI_PACKET_STATE="$TMPD/pi-packet-state" \
+    bash -c 'source "$0"; mark_seat_spawn_fail devin "swe-1-7-.out"' "$repo_root/lib/seat-lib.sh" 2>&1)
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "20: writer must reject the phantom key (rc=1), got rc=$rc: $out"
+[[ ! -e "$PHANT_LEDGER/devin__swe-1-7-.out.json" ]] \
+  || fail "20: writer must write NO ledger for the phantom key: $(ls "$PHANT_LEDGER")"
+grep -q "LOUD SEAT-KEY-INVALID devin/swe-1-7-.out writer=mark_seat_spawn_fail" <<<"$out" \
+  || fail "20: writer must log the LOUD SEAT-KEY-INVALID line: $out"
+ok "20: writer call with phantom model writes nothing and logs LOUD (fleet-ops#3661)"
+
+echo "ALL OK: active come-back release path (fleet-ops#2421) + force-probe-on-overdue-usable_at + corpse-at-threshold + never-released metric (fleet-ops#2638) + own-streak corpse + interval-breach loud check (fleet-ops#2806) + no-wall corpse second-chance re-probe / explicit retire (fleet-ops#3156) + extension-reclassify race (fleet-ops#3179) + PQE 1h==1h deadlock fix (fleet-ops#3176) + skip-corpse-on-reanchored-wall (fleet-ops#3301) + phantom seat key rejection (fleet-ops#3661)"

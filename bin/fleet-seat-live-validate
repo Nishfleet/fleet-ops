@@ -80,6 +80,10 @@ AUTH_JSON="$GROK_HOME/auth.json"
 # pi-grok extension actually uses for xai-oauth provider calls.
 PI_AGENT_AUTH_JSON="${PI_AGENT_AUTH_JSON:-$HOME/.pi/agent/auth.json}"
 LEDGER_DIR="${PI_SEAT_HEALTH_LEDGER_DIR:-/home/nish/workspaces/agent-state/lanes/seats}"
+# fleet-ops#3661: the seat-caps allowlist. A provider/model pair that is not
+# present here (providers.<p>.models.<m>) is a PHANTOM seat key and must
+# never be written to the ledger. Overridable for self-tests.
+SEAT_CAPS_JSON="${FLEET_SEAT_CAPS_JSON:-$HOME/.local/state/pi-packet/seat-caps.json}"
 MODELS_JSON="${FLEET_MODELS_JSON:-$HOME/.pi/agent/models.json}"
 TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
 REPO="${FLEET_SEAT_LIVE_VALIDATE_REPO:-Nishfleet/fleet-ops}"
@@ -146,10 +150,36 @@ seat_ledger_path() {
     printf '%s/%s__%s.json\n' "$LEDGER_DIR" "$ps" "$ms"
 }
 
+# fleet-ops#3661: reject a provider/model pair that is not a real seat in
+# seat-caps.json (providers.<p>.models.<m>). A phantom key (e.g. a probe
+# output filename fragment like "swe-1-7-.out") must never be written to
+# the ledger. Returns 0 when the pair is a real seat (or the caps file is
+# missing — fail-open so a missing caps file never bricks the watch); 1
+# when the pair is not in the caps map.
+_seat_key_in_caps() {
+    local p="$1" m="$2"
+    [[ -f "$SEAT_CAPS_JSON" ]] || return 0
+    jq -e --arg p "$p" --arg m "$m" \
+        '.providers[$p].models[$m] != null' "$SEAT_CAPS_JSON" >/dev/null 2>&1
+}
+
+# fleet-ops#3661: LOUD reject a phantom seat key. Logs the SEAT-KEY-INVALID
+# line naming the writer and returns 1 (so the caller skips the write).
+_seat_key_guard() {
+    local p="$1" m="$2" writer="$3"
+    if _seat_key_in_caps "$p" "$m"; then
+        return 0
+    fi
+    log "LOUD SEAT-KEY-INVALID $p/$m writer=$writer"
+    return 1
+}
+
 # Write one per-seat ledger record. Never includes credential material.
 write_ledger() {
     local provider="$1" model="$2" http_status="$3" health_class="$4" seat_dead="$5" failure_mode="$6"
     local path tmp observed retryable
+    # fleet-ops#3661: never write a ledger for a phantom seat key.
+    if ! _seat_key_guard "$provider" "$model" "fleet-seat-live-validate"; then return 1; fi
     mkdir -p "$LEDGER_DIR"
     observed=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     if [[ "$health_class" == "healthy" ]]; then
@@ -168,6 +198,7 @@ write_ledger() {
         --argjson seat_dead "$seat_dead" \
         --arg observed_at "$observed" \
         --arg failure_mode "$failure_mode" \
+        --arg writer "fleet-seat-live-validate" \
         '{
             provider: $provider,
             model: $model,
@@ -181,7 +212,8 @@ write_ledger() {
             source: "cli_spawn",
             failure_mode: $failure_mode,
             usable_at: null,
-            consecutive_failure_count: (if $health_class == "healthy" then 0 else 1 end)
+            consecutive_failure_count: (if $health_class == "healthy" then 0 else 1 end),
+            writer: $writer
         }' >"$tmp"
     chmod 600 "$tmp" 2>/dev/null || true
     mv -f "$tmp" "$path"
