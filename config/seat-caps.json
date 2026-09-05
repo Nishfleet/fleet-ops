@@ -134,6 +134,7 @@
     "openrouter": {
       "cap": 0,
       "class": "metered",
+      "reason": "2026-09-05 balance USD 0.00 of 90.06 (HTTP 402); Nish decides any top-up; restore cap 2 when credits > 5 (fleet-ops#3283/#3284). Provider-row .reason mirrors the model-level intentional_cap_zero; added 2026-09-05 so the entitled-wired canary (fleet-ops#387) sees a dated cap=0 reason (it reads .providers.openrouter.reason, not the model note).",
       "models": {
         "deepseek/deepseek-v4-flash-0731": {
           "cap": 0,
