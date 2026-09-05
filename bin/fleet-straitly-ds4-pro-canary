@@ -198,8 +198,12 @@ fi
 
 # 5. deepseek/deepseek-v4-pro must not be allowlisted on any other provider.
 if (( violations == 0 )) || jq -e '.providers.straitly != null' "$SEAT_CAPS_JSON" >/dev/null 2>&1; then
-    while IFS=$'\t' read -r p m; do
+    while IFS=$'\t' read -r p c m; do
         [[ -n "$p" && -n "$m" ]] || continue
+        # A $0 seat cannot double-wire a meter: the rule is for METERED seats
+        # (2026-09-05, xkiro free-tier audition carries the same slug at $0).
+        # A provider with no class stays checked (fail-closed).
+        [[ "$c" == "free" ]] && continue
         if [[ "$p" != "straitly" && "$m" == "$APPROVED_MODEL" ]]; then
             loud "STRAITLY-DS4PRO-VIOLATION" "double-wire: $APPROVED_MODEL allowlisted on $p"
             file_finding "double-wire" "$p" \
@@ -208,7 +212,7 @@ if (( violations == 0 )) || jq -e '.providers.straitly != null' "$SEAT_CAPS_JSON
             violations=$((violations + 1))
         fi
     done < <(jq -r --arg m "$APPROVED_MODEL" '
-        .providers | to_entries[] | .key as $p | (.value.models // {}) | keys[] | [$p, .] | @tsv' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+        .providers | to_entries[] | .key as $p | (.value.class // "") as $c | (.value.models // {}) | keys[] | [$p, $c, .] | @tsv' "$SEAT_CAPS_JSON" 2>/dev/null || true)
 fi
 
 # 6. The allowlisted slug must exist in models.json.

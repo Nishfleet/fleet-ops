@@ -64,11 +64,11 @@ glm52=$(jq -r '.providers.devin.models["glm-5-2"]' "$caps")
 [[ "$(jq -r '.max_probe_ceiling' <<<"$glm52")" == "$(jq -r '.cap' <<<"$glm52")" ]] \
   || fail "glm-5-2 max_probe_ceiling must equal its cap while pinned (fleet-ops#3443)"
 swe17=$(jq -r '.providers.devin.models["swe-1-7"]' "$caps")
-# fleet-ops#3473 (2026-09-05): swe-1-7 retired to cap 0 (0 PRs in 20 sessions,
-# 57 deaths in 3h); re-audition with a real packet after the 14d TTL (#3258).
-[[ "$(jq -r '.cap' <<<"$swe17")" == "0" ]] || fail "swe-1-7 declared cap must be 0 (fleet-ops#3473 zero-yield retirement; re-audition via #3258)"
-[[ "$(jq -r '.intentional_cap_zero // empty' <<<"$swe17")" != "" ]] || fail "swe-1-7 cap 0 must carry intentional_cap_zero (fleet-ops#3473)"
-[[ "$(jq -r '.max_probe_ceiling' <<<"$swe17")" == "0" ]] || fail "swe-1-7 max_probe_ceiling must be 0 while retired (fleet-ops#3473)"
+# 2026-09-05: swe-1-7 restored to cap 4 — the #3473 zero-yield retirement counted infra deaths (see _swe17_20260905).
+# 2026-09-05: swe-1-7 restored to cap 4 — the #3473 zero-yield retirement counted infra deaths (see _swe17_20260905).
+[[ "$(jq -r '.cap' <<<"$swe17")" == "4" ]] || fail "swe-1-7 declared cap must be 4 (2026-09-05: the #3473 zero-yield retirement counted 20 infra deaths — 1801s provider kill + resource_exhausted — as yield; working yield 80%; see _swe17_20260905)"
+# (2026-09-05: swe-1-7 is cap 4 again; the intentional_cap_zero pin retired with #3473 — see _swe17_20260905)
+[[ "$(jq -r '.max_probe_ceiling' <<<"$swe17")" == "$(jq -r '.cap' <<<"$swe17")" ]] || fail "swe-1-7 max_probe_ceiling must equal its cap while pinned (fleet-ops#3443; seat restored 2026-09-05)"
 
 ok "product_order=yield, volume order retired, devin AIMD not hard_ceiling with probe ceilings pinned == caps (provider 4 / glm-5-2 3 / swe-1-7 0; fleet-ops#3443/#3473, lift via #3258)"
 
@@ -141,11 +141,11 @@ probe=$(jq -r '.walled_comeback.min_probe_interval_s' "$caps")
 
 ok "walled_comeback table is present with 15min rate-limit and 15min probe floor"
 
-# --- free lanes are the commandcode/hetzner/opencode allowlist ------------
+# --- free lanes: bai/commandcode/hetzner/opencode + xkiro (free-tier audition, 2026-09-05) ---
 # leftover free after the volume prefix (b.ai wired 2026-08-27, fleet-ops#1272)
 free_order=$(jq -r '.free_providers_in_order | join(" ")' "$caps")
-[[ "$free_order" == "bai commandcode hetzner opencode" ]] \
-  || fail "free order must be 'bai commandcode hetzner opencode', got: $free_order"
+[[ "$free_order" == "bai commandcode hetzner opencode xkiro" ]] \
+  || fail "free order must be 'bai commandcode hetzner opencode xkiro', got: $free_order"
 
 # prepaid and metered providers must not appear as free lanes
 for p in devin cursor cline ollama xai-oauth grok minimax straitly zenmux openrouter; do

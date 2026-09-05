@@ -496,6 +496,25 @@ fi
 spawn_end_s=$(date -u +%s)
 spawn_elapsed_s=$((spawn_end_s - spawn_start_s))
 
+# --- fleet-ops#3238 (2026-09-05): surface the provider's error text -----------
+# pi --print keeps a provider failure inside the session jsonl (the assistant
+# message with stopReason=error / errorMessage) and prints NOTHING to stderr,
+# so every detector below scanned an empty err file and never benched the
+# seat. Live cost: devin "resource_exhausted" connection errors killed 133
+# sessions in 12h at ~40s each while the seat stayed "healthy". Append the last
+# session error to the err file so the existing detectors (quota/cap, overload,
+# spawn-timeout, mid-session death) see the same text a human would.
+if (( rc != 0 )); then
+    _sess_last=$(find "$session_dir" -maxdepth 1 -name '*.jsonl' -type f -printf '%T@ %p\n' 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2-)
+    if [[ -n "$_sess_last" && -f "$_sess_last" ]]; then
+        _sess_err=$(jq -r 'select(.message.stopReason? == "error") | .message.errorMessage // empty' "$_sess_last" 2>/dev/null | tail -1 | head -c 2000 || true)
+        if [[ -n "$_sess_err" ]]; then
+            printf '\nsession-error: %s\n' "$_sess_err" >>"$err_file"
+            seat_log "pi-issue-run: $inst session error surfaced for detectors: ${_sess_err:0:160}"
+        fi
+    fi
+fi
+
 # --- P13-B spawn-fail marker (P13 visibility gap fix) ----------------------
 # seat-health.ts writes its ledger ONLY via after_provider_response and
 # cli_* — neither fires if pi dies at spawn (e.g. devin / cursor spawnSync

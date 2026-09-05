@@ -14,6 +14,7 @@ import http.client
 import json
 import os
 import subprocess
+import calendar
 import time
 import urllib.parse
 from datetime import datetime, timezone
@@ -429,7 +430,7 @@ def collect_running_pi():
     obs_epoch = None
     if isinstance(obs_raw, str):
         try:
-            obs_epoch = int(time.mktime(time.strptime(
+            obs_epoch = int(calendar.timegm(time.strptime(
                 obs_raw.replace("Z", "+00:00")[:19], "%Y-%m-%dT%H:%M:%S")))
         except ValueError:
             obs_epoch = None
