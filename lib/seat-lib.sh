@@ -4333,7 +4333,7 @@ is_quota_cap_error() {
     local combined="$out"$'\n'"$err"
     [[ -n "$combined" ]] || return 1
     # Quota/cap signal words (hard wall, not a transient retry).
-    if ! grep -qiE 'weekly[[:space:]]+(clinepass[[:space:]]+)?limit|daily[[:space:]]+limit|quota[[:space:]]+(exhausted|exceeded|reached)|INFERENCE_CAP_ERROR|usage[[:space:]]+limit|plan[[:space:]]+limit|out[[:space:]]+of[[:space:]]+credits|message[[:space:]]+rate[[:space:]]+limit|rate[[:space:]]+limit[[:space:]]+(exceeded|reached)|cap[[:space:]]+(exceeded|reached)|exceeded[[:space:]]+your' <<<"$combined"; then
+    if ! grep -qiE 'weekly[[:space:]]+(clinepass[[:space:]]+)?limit|daily[[:space:]]+limit|quota[[:space:]]+(exhausted|exceeded|reached)|resource_exhausted|Connection error, send a message to continue retrying|INFERENCE_CAP_ERROR|usage[[:space:]]+limit|plan[[:space:]]+limit|out[[:space:]]+of[[:space:]]+credits|message[[:space:]]+rate[[:space:]]+limit|rate[[:space:]]+limit[[:space:]]+(exceeded|reached)|cap[[:space:]]+(exceeded|reached)|exceeded[[:space:]]+your' <<<"$combined"; then
         return 1
     fi
     # A reset signal: an explicit window OR a "resets" keyword. The provider
@@ -4346,7 +4346,7 @@ is_quota_cap_error() {
     # text still qualifies: the caller falls back to the provider default.
     # FreeUsageLimitError (opencode/mimo free-tier 429, no reset window) is a
     # provider-side free-quota exhaustion — a hard wall, not a transient retry.
-    if grep -qiE 'weekly[[:space:]]+(clinepass[[:space:]]+)?limit|daily[[:space:]]+limit|INFERENCE_CAP_ERROR|FreeUsageLimitError' <<<"$combined"; then
+    if grep -qiE 'weekly[[:space:]]+(clinepass[[:space:]]+)?limit|daily[[:space:]]+limit|INFERENCE_CAP_ERROR|FreeUsageLimitError|resource_exhausted' <<<"$combined"; then
         return 0
     fi
     return 1
