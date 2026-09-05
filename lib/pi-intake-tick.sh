@@ -298,6 +298,22 @@ issues_json=$(jq -c --arg umb "$UMBRELLA_LABEL" \
     '[.[] | select((.labels // []) | map(if type == "object" then (.name // empty) else . end) | index($umb) == null)]' \
     <<<"$issues_json" 2>/dev/null || printf '[]')
 
+# fleet-ops#3313: the product queue (0509) must hold only product-surface
+# issues. Control-plane work is titled with a '[<owner>#<N>]' prefix (e.g.
+# '[fleet-ops#303] CI: ...') to mark it as fleet-ops-owned work that the
+# worker App cannot push (no Workflows permission). A ready issue carrying
+# that prefix is mis-filed control-plane work — drop it from the dispatch
+# list so product intake never spawns a worker on it. Scope the filter to
+# the product repo; overridable so tests can drive it without touching the
+# real 0509 checkout.
+PI_INTAKE_TITLE_REFUSE_PREFIX="${PI_INTAKE_TITLE_REFUSE_PREFIX:-[fleet-ops#}"
+PI_INTAKE_TITLE_REFUSE_REPO="${PI_INTAKE_TITLE_REFUSE_REPO:-0509}"
+if [[ "$REPO" == "$PI_INTAKE_TITLE_REFUSE_REPO" ]]; then
+    issues_json=$(jq -c --arg pre "$PI_INTAKE_TITLE_REFUSE_PREFIX" \
+        '[.[] | select(((.title // "") | startswith($pre)) | not)]' \
+        <<<"$issues_json" 2>/dev/null || printf '[]')
+fi
+
 # fleet-ops#3295: export fleet_umbrella_dispatch_total — cumulative count
 # of umbrella-labeled issues found in the agent-ready list (the near-
 # dispatch count). With both guards (sweep + intake filter) this trends to
@@ -881,7 +897,11 @@ blocked-on: nish-decision" 2>/dev/null || true
         fi
         # No live worker. Is there an open PR from this branch? If so, the
         # work is done and in review — skip (do not re-claim finished work).
-        _claim_prs=$(gh api "repos/$FULL/pulls?state=open&head=${FULL#*/}:claim/issue-$N&per_page=1" 2>/dev/null || true)
+        # The REST head filter is owner:branch (Nishfleet:claim/...), NOT
+        # repo:branch — ${FULL#*/} produced "0509:claim/..." which matches
+        # nothing, so the guard saw 0 open PRs and deleted claim branches
+        # with live PRs (same class of bug as pi-issue-failed-reap #3549).
+        _claim_prs=$(gh api "repos/$FULL/pulls?state=open&head=${FULL%%/*}:claim/issue-$N&per_page=1" 2>/dev/null || true)
         _claim_pr_count=$(printf '%s' "$_claim_prs" | jq 'length // 0' 2>/dev/null || echo 0)
         if (( _claim_pr_count > 0 )); then
             echo "issue $N ($title): skipped-claim-pr-open (open PR from claim/issue-$N)"

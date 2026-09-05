@@ -739,7 +739,11 @@ fi
 # issue, which is harmless (a closed issue is not re-claimed).
 issue_num="${inst##*-}"
 _shipped=no
-_cl_open_pr=$(gh api "repos/Nishfleet/${pkt_repo}/pulls?state=open&head=${pkt_repo}:claim/issue-${issue_num}&per_page=1" 2>/dev/null || true)
+# The REST head filter is owner:branch (Nishfleet:claim/...), NOT
+# repo:branch — head=${pkt_repo}: produced "0509:claim/..." which matches
+# nothing, so every successful run read "no open PR" and the reclaim-count
+# never reset (same class of bug as pi-issue-failed-reap #3549).
+_cl_open_pr=$(gh api "repos/Nishfleet/${pkt_repo}/pulls?state=open&head=Nishfleet:claim/issue-${issue_num}&per_page=1" 2>/dev/null || true)
 if printf '%s' "$_cl_open_pr" | jq -e 'length > 0' >/dev/null 2>&1; then
     _shipped=yes
 else

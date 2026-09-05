@@ -630,6 +630,44 @@ def _dispatch_line_seen(alertname: str) -> bool:
     return False
 
 
+def _backfill_amx_from_prometheus(env: dict, alertname: str) -> None:
+    """Populate AMX_* env from the live Prometheus alert payload.
+
+    The canary's redispatch path historically only knows the alertname,
+    so alert-repair-dispatch would emit an empty packet. Query the
+    operator-controlled localhost Prometheus for the firing alert's
+    labels and annotations and map them to the AMX env format the
+    dispatcher expects (fleet-ops#3519 / QualityPostMergeDefectsCeiling
+    redispatch-empty-packet class).
+    """
+    if any(k.startswith("AMX_ALERT_1_LABEL_") and k != "AMX_ALERT_1_LABEL_alertname"
+           for k in env):
+        return
+    try:
+        with urllib.request.urlopen(PROM_URL, timeout=5) as resp:
+            payload = json.loads(resp.read().decode())
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError,
+            OSError, ValueError) as exc:
+        log(f"WARN: redispatch {alertname} Prometheus backfill failed: {exc}")
+        return
+    for a in (payload or {}).get("data", {}).get("alerts", []):
+        if a.get("state") != "firing":
+            continue
+        labels = a.get("labels") or {}
+        if labels.get("alertname") != alertname:
+            continue
+        for k, v in labels.items():
+            env[f"AMX_ALERT_1_LABEL_{k}"] = str(v)
+        annotations = a.get("annotations") or {}
+        for k, v in annotations.items():
+            env[f"AMX_ALERT_1_ANNOTATION_{k}"] = str(v)
+        env["AMX_ALERT_1_STATUS"] = a.get("state", "firing")
+        env["AMX_ALERT_1_START"] = a.get("activeAt") or a.get("startsAt") or ""
+        env["AMX_ALERT_1_END"] = a.get("endsAt") or ""
+        env["AMX_ALERT_1_URL"] = a.get("generatorURL") or ""
+        return
+
+
 def redispatch_real(alertname: str) -> tuple[int, bool]:
     """Run the dispatcher. Return (rc, dispatched).
 
@@ -648,6 +686,7 @@ def redispatch_real(alertname: str) -> tuple[int, bool]:
     env["AMX_STATUS"] = "firing"
     env["AMX_RECEIVER"] = "completion-canary-redispatch"
     env["AMX_ALERT_1_LABEL_alertname"] = alertname
+    _backfill_amx_from_prometheus(env, alertname)
     try:
         r = subprocess.run([DISPATCHER], env=env, capture_output=True, text=True,
                            timeout=60, check=False)

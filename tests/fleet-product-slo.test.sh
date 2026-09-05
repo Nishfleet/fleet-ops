@@ -295,7 +295,7 @@ ok "(j) console shipped_24h reads fleet_product_merged_24h"
 export FLEET_PRODUCT_SLO_OUT="$scratch/quality.prom"
 FLEET_PRODUCT_SLO_SESSIONS="$scratch/sessions" \
 python3 - "$helper" "$repo_root/config/quality-ratchet.json" <<'PY' || fail "quality metrics failed"
-import importlib.util, json, os, sys
+import importlib.util, json, os, sys, tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 spec = importlib.util.spec_from_file_location("ps", sys.argv[1])
@@ -327,6 +327,18 @@ assert abs(s.quality_defects_per_100 - 50.0) < 1e-9, s.quality_defects_per_100
 assert s.quality_sessions_to_pr_pct == 0.0, s.quality_sessions_to_pr_pct
 print("OK: compute quality metrics (reverts 50/100, defects 50/100, sessions 0)")
 
+# Direction pin (fleet-ops#3519 repair): with 1 issue-work session dir and
+# merges_7d = 2, sessions-per-100-merges must be 50.0. The inverted yield%
+# form (100*merges/sessions) would give 200.0 — pinning the orientation so
+# the ceiling alert stays meaningful.
+sess = Path(tempfile.mkdtemp()) / "pi-issue-0509-1"
+sess.mkdir()
+(sess / "s.jsonl").write_text("{}")
+m.SESSIONS_DIR = sess.parent
+s2 = m.compute_repo_slo("0509", prs, now_ts=NOW)
+assert abs(s2.quality_sessions_to_pr_pct - 50.0) < 1e-9, s2.quality_sessions_to_pr_pct
+print("OK: sessions_to_pr_pct direction pinned (1 session / 2 merges = 50/100)")
+
 # Ceilings load from config/quality-ratchet.json.
 ratchet_path = sys.argv[2]
 raw = json.loads(Path(ratchet_path).read_text())
@@ -334,7 +346,7 @@ raw = json.loads(Path(ratchet_path).read_text())
 m._QUALITY_RATCHET_CANDIDATES = [ratchet_path]
 ceil = m.load_ceilings(["0509", "futurerepo"])
 assert ceil["0509"]["reverts_per_100_merges"] == 4.5, ceil
-assert ceil["0509"]["sessions_to_pr_pct"] == 33.0, ceil
+assert ceil["0509"]["sessions_to_pr_pct"] == 303.0, ceil
 # _default fallback arms a future repo
 assert ceil["futurerepo"]["post_merge_defects_per_100"] == 40.0, ceil
 print("OK: ceilings loaded from config/quality-ratchet.json (+ _default fallback)")
@@ -345,7 +357,7 @@ assert 'fleet_product_quality_reverts_per_100{repo="0509"} 50.000000' in body
 assert 'fleet_product_quality_post_merge_defects_per_100{repo="0509"} 50.000000' in body
 assert 'fleet_product_quality_sessions_to_pr_pct{repo="0509"} 0.000000' in body
 assert 'fleet_product_quality_ceiling{repo="0509",metric="reverts_per_100_merges"} 4.500000' in body
-assert 'fleet_product_quality_ceiling{repo="0509",metric="sessions_to_pr_pct"} 33.000000' in body
+assert 'fleet_product_quality_ceiling{repo="0509",metric="sessions_to_pr_pct"} 303.000000' in body
 assert 'fleet_product_quality_ceiling{repo="0509",metric="post_merge_defects_per_100"} 40.000000' in body
 print("OK: export carries quality gauges + ceilings")
 PY

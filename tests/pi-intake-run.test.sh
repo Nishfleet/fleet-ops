@@ -150,6 +150,13 @@ bash "$here/pi-intake-tick-repo-conditional-blocks.test.sh"
 # lists this file, so the drill runs here instead of a workflow line.
 bash "$here/pi-intake-tick-umbrella-exclusion.test.sh"
 
+# --- 13b. fleet-ops#3313 product-title refusal (CI hook) ----
+# tests/pi-intake-tick-title-refuse.test.sh locks the intake tick's
+# drop of mis-filed control-plane issues (titled '[fleet-ops#N] ...')
+# from the product queue (0509). ci.yml lists this file, so the drill
+# runs here instead of a workflow line.
+bash "$here/pi-intake-tick-title-refuse.test.sh"
+
 # --- 14. fleet-ops#3248 worker packet size ceiling (CI hook) ------------
 # tests/worker-packet-size.test.sh locks the rendered worker packet
 # (worker.md + TARGET line, assembled as lib/pi-intake-tick.sh writes it)

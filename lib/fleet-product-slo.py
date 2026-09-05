@@ -528,7 +528,7 @@ def compute_repo_slo(
     - quality_defects_per_100: 100 * merges tied to an issue filed within the
       week / merges_7d (desk-triage / red-on-main / customer-facing issues
       tied to a merged PR)
-    - quality_sessions_to_pr_pct: 100 * merges_7d / sessions_7d from the
+    - quality_sessions_to_pr_pct: 100 * sessions_7d / merges_7d from the
       host session dir (`pi-issue-<repo>-*`)
     """
     slo = RepoSLO(repo=repo)
@@ -589,7 +589,12 @@ def compute_repo_slo(
     # fleet-ops#3519 quality metrics (after merges_7d is known).
     slo.quality_reverts_per_100 = _ratio100(reverts_7d, slo.merges_7d)
     slo.sessions_7d = _count_recent_sessions(repo, week_cut)
-    slo.quality_sessions_to_pr_pct = _ratio100(slo.merges_7d, slo.sessions_7d)
+    # fleet-ops#3519: sessions per 100 merges — the HELP/name/alert contract
+    # is sessions_7d / merges_7d (higher = more churn). The inverted form
+    # (merges/sessions, a yield%) made the ceiling alert fire when churn was
+    # LOW and go quiet as churn grew — and made the committed ceiling seed
+    # land on the wrong scale.
+    slo.quality_sessions_to_pr_pct = _ratio100(slo.sessions_7d, slo.merges_7d)
     return slo
 
 
