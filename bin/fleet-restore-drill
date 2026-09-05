@@ -289,6 +289,8 @@ plane_b_fleet_files() {
   fi
 
   # B.3 MANIFEST-installed set — every non-comment entry's <src> exists.
+  # fleet-ops#3277: an `npm-pin:<rel>` src is not a repo file; it resolves
+  # against the installed pi examples dir at install time. Skip those.
   if [[ ! -f "$MANIFEST" ]]; then
     loud "RESTORE-DRILL-FAIL" "MANIFEST missing at $MANIFEST — install.sh cannot rebuild the user-unit install set"
     violations=$((violations + 1))
@@ -298,6 +300,7 @@ plane_b_fleet_files() {
       [[ -z "$entry" ]] && continue
       [[ "$entry" == \#* ]] && continue
       src="${entry%% *}"
+      [[ "$src" == npm-pin:* ]] && continue
       if [[ ! -e "$FLEET_OPS_REPO/$src" ]]; then
         loud "RESTORE-DRILL-FAIL" "MANIFEST entry src '$src' missing in repo — install.sh cannot symlink it after a restore"
         missing=$((missing + 1))

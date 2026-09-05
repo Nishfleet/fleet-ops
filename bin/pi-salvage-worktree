@@ -201,18 +201,23 @@ stamp_packet() {
     local end="<!-- /fleet-ops#1204 salvage resume -->"
     local where="origin"
     [[ "$salvage_status" == "pushed" ]] || where="local"
-    local block
-    block=$(cat <<EOF
-${begin}
-The previous worker died. Continue from \`${branch}\` (${where}). Verify that work, finish it. Do not start from zero.
-${end}
-
-EOF
-)
+    # fleet-ops#??: write the replacement block through a temp file so
+    # trailing newlines are preserved. Command substitution `$(...)` strips
+    # trailing newlines, which caused the next line (e.g. `difficulty:`)
+    # to be concatenated onto the `</...>` end marker and mis-parsed.
+    local block_tmp
+    block_tmp=$(mktemp "${packet}.salvage.XXXXXX") || return 1
+    {
+        printf '%s\n' "$begin"
+        printf 'The previous worker died. Continue from `%s` (%s). Verify that work, finish it. Do not start from zero.\n' "$branch" "$where"
+        printf '%s\n' "$end"
+        printf '\n'
+    } > "$block_tmp"
     python3 -c '
-import sys
-path, begin, end, block = sys.argv[1:5]
+import sys, os
+path, begin, end, block_path = sys.argv[1:5]
 text = open(path).read()
+block = open(block_path).read()
 start = text.find(begin)
 stop = text.find(end)
 if start != -1 and stop != -1 and stop >= start:
@@ -223,7 +228,8 @@ if start != -1 and stop != -1 and stop >= start:
 else:
     text = block + text
 open(path, "w").write(text)
-' "$packet" "$begin" "$end" "$block"
+' "$packet" "$begin" "$end" "$block_tmp"
+    rm -f "$block_tmp"
 }
 
 discover_workdir() {
