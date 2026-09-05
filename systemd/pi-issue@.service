@@ -28,6 +28,12 @@ ConditionPathExists=/home/nish/.local/state/pi-issues/%i.in
 MemoryAccounting=yes
 MemoryHigh=3G
 MemoryMax=6G
+# fleet-ops#3611: never let a runaway worker thrash swap and OOM unrelated
+# fleet units. MemorySwapMax=0 keeps the worker inside its cgroup: when it
+# exceeds MemoryMax it is OOM-killed locally instead of spilling to swap and
+# starving the whole host (systemd-oomd killed codex-remote-control,
+# fleet-deploy-check and an ephemeral Chromium scope on 2026-09-05).
+MemorySwapMax=0
 Type=oneshot
 Environment=HOME=/home/nish
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
