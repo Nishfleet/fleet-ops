@@ -1533,6 +1533,32 @@ export_seat_selection_prom() {
     fi
 }
 
+# fleet-ops#3661: reject a provider/model pair that is not a real seat in
+# seat-caps.json (providers.<p>.models.<m>). A phantom key (e.g. a probe
+# output filename fragment like "swe-1-7-.out") must never be written to
+# the ledger, probed, or dispatched. Returns 0 when the pair is a real
+# seat (or the caps file is missing — fail-open so a missing caps file
+# never bricks the ladder); 1 when the pair is not in the caps map.
+_seat_key_in_caps() {
+    local p="$1" m="$2"
+    [[ -f "$SEAT_CAPS_JSON" ]] || return 0
+    jq -e --arg p "$p" --arg m "$m" \
+        '.providers[$p].models[$m] != null' "$SEAT_CAPS_JSON" >/dev/null 2>&1
+}
+
+# fleet-ops#3661: LOUD reject a phantom seat key. Logs the SEAT-KEY-INVALID
+# line naming the writer and returns 1 (so the caller skips the write /
+# probe / dispatch). The writer field is the calling function name so the
+# next phantom names its author.
+_seat_key_guard() {
+    local p="$1" m="$2" writer="$3"
+    if _seat_key_in_caps "$p" "$m"; then
+        return 0
+    fi
+    seat_log "LOUD SEAT-KEY-INVALID $p/$m writer=$writer"
+    return 1
+}
+
 # Mirror of seat-health.ts seatLedgerPath: sanitise provider/model so model
 # ids containing '/' (e.g. deepseek/deepseek-v4-flash) survive on disk.
 seat_ledger_path() {
@@ -1733,6 +1759,8 @@ _seat_write_spawn_bench() {
     local p="$1" m="$2" usable="$3" reason="$4" backoff="$5"
     local count="${6:-0}" mode="${7:-unknown}"
     local path now_utc tmp
+    # fleet-ops#3661: never write a spawn-bench marker for a phantom seat key.
+    if ! _seat_key_guard "$p" "$m" "_seat_write_spawn_bench"; then return 1; fi
     path=$(seat_spawn_bench_path "$p" "$m")
     [[ "$count" =~ ^[0-9]+$ ]] || count=0
     now_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -1741,9 +1769,10 @@ _seat_write_spawn_bench() {
         --arg provider "$p" --arg model "$m" --arg usable "$usable" \
         --arg reason "$reason" --arg written "$now_utc" --argjson backoff "$backoff" \
         --arg mode "$mode" --argjson count "$count" \
+        --arg writer "_seat_write_spawn_bench" \
         '{provider:$provider, model:$model, usable_at:$usable,
           reason:$reason, written_at:$written, backoff_s:$backoff,
-          failure_mode:$mode, consecutive_failure_count:$count}' \
+          failure_mode:$mode, consecutive_failure_count:$count, writer:$writer}' \
         > "$tmp" 2>/dev/null; then
         chmod 0644 "$tmp" 2>/dev/null || true
         mv "$tmp" "$path" 2>/dev/null || { rm -f "$tmp" 2>/dev/null || true; return 1; }
@@ -4379,6 +4408,8 @@ _mark_transport_down() {
 
 mark_seat_spawn_fail() {
     local p="$1" m="$2" reason="${3:-spawn_etimeout}"
+    # fleet-ops#3661: never write a ledger for a phantom seat key.
+    if ! _seat_key_guard "$p" "$m" "mark_seat_spawn_fail"; then return 1; fi
     if _transport_is_down; then _mark_transport_down "$p" "$m"; return 1; fi
     local path
     path=$(seat_ledger_path "$p" "$m")
@@ -4440,6 +4471,7 @@ mark_seat_spawn_fail() {
         --argjson http_status 0 --argjson retry_after null \
         --argjson retryable true --argjson seat_dead false --argjson poison_ladder false \
         --argjson backoff "$backoff" --argjson merged "$merged_count" \
+        --arg writer "mark_seat_spawn_fail" \
         '{
           provider:$provider, model:$model,
           http_status:$http_status, retry_after:$retry_after,
@@ -4451,7 +4483,8 @@ mark_seat_spawn_fail() {
           usable_at:$usable,
           consecutive_failure_count:$merged,
           spawn_fail_reason:$reason,
-          spawn_fail_backoff_s:$backoff
+          spawn_fail_backoff_s:$backoff,
+          writer:$writer
         }' > "$tmp" 2>/dev/null; then
         seat_log "spawn-fail: jq compose FAILED for $p/$m (reason=$reason) — marker NOT written"
         rm -f "$tmp" 2>/dev/null || true
@@ -4584,6 +4617,8 @@ EMPTY_RUN_COUNT_WINDOW_S="${EMPTY_RUN_COUNT_WINDOW_S:-$SEAT_BENCH_GEOMETRIC_CAP_
 
 mark_seat_empty_run() {
     local p="$1" m="$2" reason="${3:-empty_run}"
+    # fleet-ops#3661: never write a ledger for a phantom seat key.
+    if ! _seat_key_guard "$p" "$m" "mark_seat_empty_run"; then return 1; fi
     if _transport_is_down; then _mark_transport_down "$p" "$m"; return 1; fi
     local path
     path=$(seat_ledger_path "$p" "$m")
@@ -4655,6 +4690,7 @@ mark_seat_empty_run() {
         --argjson http_status 200 --argjson retry_after null \
         --argjson retryable true --argjson seat_dead false --argjson poison_ladder false \
         --argjson backoff "$backoff" --argjson merged "$merged_count" \
+        --arg writer "mark_seat_empty_run" \
         '{
           provider:$provider, model:$model,
           http_status:$http_status, retry_after:$retry_after,
@@ -4666,7 +4702,8 @@ mark_seat_empty_run() {
           usable_at:$usable,
           consecutive_failure_count:$merged,
           empty_run_reason:$reason,
-          empty_run_backoff_s:$backoff
+          empty_run_backoff_s:$backoff,
+          writer:$writer
         }' > "$tmp" 2>/dev/null; then
         seat_log "empty-run: jq compose FAILED for $p/$m (reason=$reason) — marker NOT written"
         rm -f "$tmp" 2>/dev/null || true
@@ -4930,6 +4967,8 @@ is_quota_cap_error() {
 # jq/rename failure).
 mark_seat_quota_bench() {
     local p="$1" m="$2" text="${3:-}"
+    # fleet-ops#3661: never write a ledger for a phantom seat key.
+    if ! _seat_key_guard "$p" "$m" "mark_seat_quota_bench"; then return 1; fi
     if _transport_is_down; then _mark_transport_down "$p" "$m"; return 1; fi
     local path
     path=$(seat_ledger_path "$p" "$m")
@@ -5005,6 +5044,7 @@ mark_seat_quota_bench() {
         --argjson window "$window_s" --argjson merged "$merged_count" \
         --argjson http_status 429 --argjson retry_after null \
         --argjson retryable true --argjson seat_dead "$seat_dead" --argjson poison_ladder false \
+        --arg writer "mark_seat_quota_bench" \
         '{
           provider:$provider, model:$model,
           http_status:$http_status, retry_after:$retry_after,
@@ -5016,7 +5056,8 @@ mark_seat_quota_bench() {
           bench_until:$bench,
           usable_at:$usable,
           bench_window_s:$window,
-          consecutive_failure_count:$merged
+          consecutive_failure_count:$merged,
+          writer:$writer
         }' > "$tmp" 2>/dev/null; then
         seat_log "quota-bench: jq compose FAILED for $p/$m — marker NOT written"
         rm -f "$tmp" 2>/dev/null || true
@@ -5054,6 +5095,8 @@ mark_seat_quota_bench() {
 write_parked_ledger() {
     local p="$1" m="$2" reason="${3:-corpse-retired}"
     local path now_utc now_s far_future tmp
+    # fleet-ops#3661: never write a ledger for a phantom seat key.
+    if ! _seat_key_guard "$p" "$m" "write_parked_ledger"; then return 1; fi
     path=$(seat_ledger_path "$p" "$m")
     mkdir -p "$LEDGER_DIR" 2>/dev/null || true
     now_s=$(date -u +%s)
@@ -5076,7 +5119,8 @@ write_parked_ledger() {
           failure_mode:"corpse_retired",
           bench_until:$usable,
           usable_at:$usable,
-          consecutive_failure_count:0
+          consecutive_failure_count:0,
+          writer:"write_parked_ledger"
         }' > "$tmp" 2>/dev/null; then
         seat_log "parked-ledger: jq compose FAILED for $p/$m — parked ledger NOT written"
         rm -f "$tmp" 2>/dev/null || true
@@ -5164,6 +5208,8 @@ is_overload_error() {
 # jq/rename failure).
 mark_seat_overload_bench() {
     local p="$1" m="$2" text="${3:-}"
+    # fleet-ops#3661: never write a ledger for a phantom seat key.
+    if ! _seat_key_guard "$p" "$m" "mark_seat_overload_bench"; then return 1; fi
     if _transport_is_down; then _mark_transport_down "$p" "$m"; return 1; fi
     local path
     path=$(seat_ledger_path "$p" "$m")
@@ -5216,6 +5262,7 @@ mark_seat_overload_bench() {
         --argjson window "$window_s" --argjson merged "$merged_count" \
         --argjson http_status 503 --argjson retry_after null \
         --argjson retryable true --argjson seat_dead "$prev_dead" --argjson poison_ladder false \
+        --arg writer "mark_seat_overload_bench" \
         '{
           provider:$provider, model:$model,
           http_status:$http_status, retry_after:$retry_after,
@@ -5227,7 +5274,8 @@ mark_seat_overload_bench() {
           bench_until:$bench,
           usable_at:$usable,
           bench_window_s:$window,
-          consecutive_failure_count:$merged
+          consecutive_failure_count:$merged,
+          writer:$writer
         }' > "$tmp" 2>/dev/null; then
         seat_log "overload-bench: jq compose FAILED for $p/$m — marker NOT written"
         rm -f "$tmp" 2>/dev/null || true
@@ -5268,6 +5316,8 @@ mark_seat_overload_bench() {
 # "retry after Ns" or "resets in N" window we use it.
 mark_seat_hang_bench() {
     local p="$1" m="$2" text="${3:-}"
+    # fleet-ops#3661: never write a ledger for a phantom seat key.
+    if ! _seat_key_guard "$p" "$m" "mark_seat_hang_bench"; then return 1; fi
     if _transport_is_down; then _mark_transport_down "$p" "$m"; return 1; fi
     local path
     path=$(seat_ledger_path "$p" "$m")
@@ -5299,6 +5349,7 @@ mark_seat_hang_bench() {
     if ! jq -nc \
         --arg provider "$p" --arg model "$m" --arg observed "$now_utc" --arg bench_until "$bench_until" \
         --argjson window_s "$window_s" --argjson merged "$merged_count" \
+        --arg writer "mark_seat_hang_bench" \
         '{
           provider:$provider, model:$model,
           http_status:0, retry_after:null,
@@ -5309,7 +5360,8 @@ mark_seat_hang_bench() {
           failure_mode:"hang_no_response",
           bench_until:$bench_until,
           hang_window_s:$window_s,
-          consecutive_failure_count:$merged
+          consecutive_failure_count:$merged,
+          writer:$writer
         }' > "$tmp" 2>/dev/null; then
         seat_log "hang-bench: jq compose FAILED for $p/$m — marker NOT written"
         rm -f "$tmp" 2>/dev/null || true
