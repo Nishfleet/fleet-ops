@@ -82,5 +82,10 @@ ok "template callers point at fleet-ops and pass inputs"
 # and .github/scripts/repo-standards.lib.mjs, and checks the parked/callable
 # reusable workflow files.
 bash "$here/p11b-pending-or-callable.test.sh"
+# fleet-ops#3311: the triage-close actions/stale workflow may be parked under
+# docs/pending-stale/ (worker App cannot push .github/workflows/**) or callable
+# from .github/workflows/ once a Workflows-scoped token lands it. Hosted here so
+# it stays in the P14 reachable set without a workflow edit.
+bash "$here/stale-pending-or-callable.test.sh"
 
 echo "OK: reusable workflow set is shape-locked"
