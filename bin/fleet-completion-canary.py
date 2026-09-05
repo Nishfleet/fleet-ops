@@ -212,6 +212,11 @@ SKIP_FIRING = {
     # mechanism-impossible (a stale Prometheus gauge is fixed in the
     # exporter code, not by a repair worker).
     "FleetSloMainGreenGreenMapDisagree",
+    # fleet-ops#3376: 24h rolling count / trend alert. A repair worker
+    # cannot clear fleet_escalations_24h because the count ages out.
+    # The dispatcher already skips it; the canary must not ladder a
+    # firing-without-dispatch chain to STOP-REASON / senior conference.
+    "FleetEscalationStorm",
 }
 SYNTHETIC = {"CanaryDrill"}
 SELF_UNITS = ("fleet-completion-canary",)
