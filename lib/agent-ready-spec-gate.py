@@ -13,9 +13,16 @@ Accepted spec shapes:
   product:     a `termination:` line with a command, or `accept:` / `metric:`
   control-plane: a `required:` line (canary/enforcement issues)
 
+fleet-ops#3255: for repo fleet-ops, the body must ALSO carry a `moves:`
+line naming one of the product metrics (sessions_to_pr_pct,
+product_merges_per_day, reverts_per_100_merges, packet_bytes,
+no_usable_seat_events, scout_candidate_age). No `moves:` line = SPEC-GATE
+refused, the same path as a missing termination:.
+
 Usage:
   python3 lib/agent-ready-spec-gate.py check-body
   python3 lib/agent-ready-spec-gate.py check-body --body FILE
+  python3 lib/agent-ready-spec-gate.py check-body --repo fleet-ops
   python3 lib/agent-ready-spec-gate.py verify --repo-root DIR
 
 Exit codes:
@@ -38,6 +45,18 @@ PROG = "agent-ready-spec-gate"
 # line; the others may introduce a following list.
 FIELD_RE = re.compile(
     r"(?im)^(?:[-*]\s+)*(termination|accept|required|metric)\s*:\s*(.*)$"
+)
+
+# fleet-ops#3255: control-plane work must name the product metric it moves.
+MOVES_RE = re.compile(r"(?im)^(?:[-*]\s+)*moves\s*:\s*(.*)$")
+
+MOVES_METRICS = (
+    "sessions_to_pr_pct",
+    "product_merges_per_day",
+    "reverts_per_100_merges",
+    "packet_bytes",
+    "no_usable_seat_events",
+    "scout_candidate_age",
 )
 
 FIRST_ADMISSION = (
@@ -69,9 +88,25 @@ CAP_NEEDLES = (
 )
 
 
-def issue_has_spec(body: str | None) -> bool:
-    """True when the issue body carries a product or control-plane spec."""
+def _moves_metric(text: str) -> str | None:
+    """Return the named metric when the body carries a valid moves: line."""
+    for match in MOVES_RE.finditer(text):
+        val = (match.group(1) or "").strip()
+        for token in re.split(r"[\s,]+", val):
+            if token in MOVES_METRICS:
+                return token
+    return None
+
+
+def issue_has_spec(body: str | None, repo: str | None = None) -> bool:
+    """True when the issue body carries a product or control-plane spec.
+
+    For repo fleet-ops the body must also carry a `moves:` line naming one
+    of the product metrics (fleet-ops#3255); without it the gate refuses.
+    """
     text = body or ""
+    if repo == "fleet-ops" and not _moves_metric(text):
+        return False
     found_non_termination = False
     for match in FIELD_RE.finditer(text):
         name = match.group(1).lower()
@@ -99,10 +134,17 @@ def cmd_check_body(args: argparse.Namespace) -> int:
         text = args.body_text
     else:
         text = sys.stdin.read()
-    if issue_has_spec(text):
+    if issue_has_spec(text, repo=args.repo):
         print("SPEC-GATE: ok")
         return 0
-    print("SPEC-GATE: refused — body has no termination:/accept:/required:/metric:", file=sys.stderr)
+    if args.repo == "fleet-ops":
+        print(
+            "SPEC-GATE: refused — body has no termination:/accept:/required:/metric: "
+            "or no moves: line naming a product metric (fleet-ops#3255)",
+            file=sys.stderr,
+        )
+    else:
+        print("SPEC-GATE: refused — body has no termination:/accept:/required:/metric:", file=sys.stderr)
     return 1
 
 
@@ -196,6 +238,11 @@ def main(argv: list[str] | None = None) -> int:
     p_check = sub.add_parser("check-body", help="exit 0 iff the body has a spec")
     p_check.add_argument("--body", default="", help="read body from FILE")
     p_check.add_argument("--body-text", default=None, help="body as a string")
+    p_check.add_argument(
+        "--repo",
+        default="",
+        help="repo name; fleet-ops requires a moves: line naming a product metric",
+    )
     p_check.set_defaults(func=cmd_check_body)
 
     p_verify = sub.add_parser(
