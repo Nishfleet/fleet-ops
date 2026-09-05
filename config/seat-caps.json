@@ -111,7 +111,8 @@
         },
         "poolside/laguna-s-2.1-free": {
           "cap": 0,
-          "intentional_cap_zero": "stale"
+          "intentional_cap_zero": "stale",
+          "reason": "2026-09-05 retire (fleet-ops#3389, see _laguna_20260905): zero-yield — seat-yield.json n=20 sessions pr_count=0 yield=0.0; watch.log fast deaths, HTTP 503 overload_bench expiring fail-open every 600s then re-dying. Re-audition after the 14d TTL or when CommandCode reports laguna capacity."
         }
       },
       "_comment_2667": "2026-09-02 fleet-ops#2667 (retire-or-re-auth audit of the 4 seats reported as credentials_bad): commandcode/deepseek/deepseek-v4-flash re-probed live -> HTTP 400 {\"code\":\"BAD_REQUEST\",\"type\":\"invalid_request_error\"} 'You have insufficient credits to make this request'. That is a MONEY wall on a metered slug — not a credential fault and not a dead slug — confirmed by the control probe poolside/laguna-s-2.1-free returning PONG on the same provider in the same window. The seat carries no seat_dead ledger entry (no commandcode__deepseek_deepseek-v4-flash.json in /home/nish/workspaces/agent-state/lanes/seats), so it is not inflating the dead-credential count. Cap deliberately LEFT at 2: fleet-ops#1890 is open and owns the credit exhaustion, and _comment_1350 kept the row warm 'for when its credits recover'. Topping up credits is Nish-only spend, so no agent can clear it. Do not flip this row without closing #1890. 2026-09-02 fleet-ops#2785 re-verification (this ticket; alert fired 04:20:34Z, the 04:17:42Z HTTP 401 escalated a corpse ledger the quarantine path retired): live probes 18:36-19:12Z on commandcode/deepseek/deepseek-v4-flash return HTTP 400 insufficient-credits (n=4) in the same window the control probe poolside/laguna-s-2.1-free returns PONG rc=0 -> the commandcode credential is LIVE and the slug is still the #1890 money wall; no seat_dead ledger entry exists for the seat, so it does not inflate the dead-credential count (fresh exporter run 19:12Z: fleet_pi_seat_dead_credential_total 0). Cap stays 2. Nothing to re-auth (credential live), nothing to retire (money wall, Nish-only spend).",
@@ -148,11 +149,13 @@
     "openrouter": {
       "cap": 0,
       "class": "metered",
-      "reason": "2026-09-05 balance USD 0.00 of 90.06 (HTTP 402); Nish decides any top-up; restore cap 2 when credits > 5 (fleet-ops#3283/#3284). Provider-row .reason mirrors the model-level intentional_cap_zero; added 2026-09-05 so the entitled-wired canary (fleet-ops#387) sees a dated cap=0 reason (it reads .providers.openrouter.reason, not the model note).",
+      "reason": "2026-09-05 balance USD 0.00 of 90.06 (HTTP 402); Nish decides any top-up; restore cap 2 when credits > 5 (fleet-ops#3283/#3284). fleet-ops#3241: classified stale (was unclassified — the prose sat in intentional_cap_zero, which matches no class token) so the 14d expire re-probes it; a 402 costs nothing, a healthy probe means credits returned.",
+      "intentional_cap_zero": "stale",
       "models": {
         "deepseek/deepseek-v4-flash-0731": {
           "cap": 0,
-          "intentional_cap_zero": "2026-09-05 balance USD 0.00 of 90.06 (402); Nish decides any top-up; restore cap 2 when credits > 5 (fleet-ops#3283/#3284)"
+          "intentional_cap_zero": "stale",
+          "reason": "2026-09-05 balance USD 0.00 of 90.06 (402); Nish decides any top-up; restore cap 2 when credits > 5 (fleet-ops#3283/#3284)"
         }
       },
       "_comment_384": "2026-08-29: paid flash lane wired (fleet-ops#384). Live OpenRouter /api/v1/models pricing probed 2026-08-29: deepseek/deepseek-v4-flash-0731 $0.045/M in, $0.09/M out, $0.009/M cache-read — cheapest of the three candidates (z-ai/glm-5.3-flash $0.075/$0.25; qwen/qwen3.8-flash $0.15/$0.47). Quality: deepseek-v4-flash is the proven fleet workhorse on 4 free lanes (bai, commandcode, ollama, cline) so cheapest AND best — no cheapest!=best override needed. Slug confirmed in pi --list-models (openrouter deepseek/deepseek-v4-flash-0731, 1.3M ctx, 32.8K out) and in the OpenRouter /models catalog. ZenMux deepseek/deepseek-v4-flash exists but ZenMux is credit-based ($5 flat per models.json note; /models API returns no per-token pricing) so OpenRouter wins on price transparency and per-token cheapness. Metered class — last-resort overflow after free + prepaid lanes (free lanes stay ahead of metered in the ladder order). cap=2 per metered discipline; AIMD raises only with evidence. Fail-closed: this is a metered lane, spend starts only after Nish merges this PR — never a slug that can bill credits before that. Resolves #1749 (GLM 5.3 flash revisit: wired free on cline #1739, paid lane not needed — DeepSeek V4 flash is cheaper+best)."
@@ -184,11 +187,13 @@
         "nemotron-3-ultra-free": 1,
         "deepseek-v4-flash-free": {
           "cap": 0,
-          "intentional_cap_zero": "stale"
+          "intentional_cap_zero": "stale",
+          "reason": "2026-08-29 re-audition (fleet-ops#744, see _deepseek_v4_flash_free): pi probe returned HTTP 400 'Model is unavailable' (same as 2026-08-27 and 2026-08-28). Cap 0 correct while the API rejects the slug; do not wire the billing sibling deepseek-v4-flash. Re-audition when OpenCode restores the free slug."
         },
         "x-preview-f-free": {
           "cap": 0,
-          "intentional_cap_zero": "stale"
+          "intentional_cap_zero": "stale",
+          "reason": "2026-08-28 re-audition (fleet-ops#1456, see _x_preview_f_free): pi probe returned HTTP 401 'Model x-preview-f-free is not supported' (same as 2026-08-27). Cap 0 correct. Re-audition if OpenCode restores the slug."
         },
         "muse-spark-1.2-contributor-free": {
           "cap": 0,
