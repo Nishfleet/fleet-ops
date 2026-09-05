@@ -757,4 +757,18 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/install-manifest-bak-sprawl\.tes
   || fail "install-manifest-bak-sprawl.test.sh must not be a known orphan (fleet-ops#3273)"
 ok "install-manifest-bak-sprawl.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#3273)"
 
+# fleet-ops#3313: hard-pin the host line for
+# pi-intake-tick-fleetops-title-refusal in pi-intake-run (already listed
+# in ci.yml) so a future refactor that drops it is caught by name. Same
+# class-prevention as the umbrella pin above: parking it on known_orphans
+# to silence the generic message must also fail by name below.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/pi-intake-tick-fleetops-title-refusal\.test\.sh"?' \
+  "$here/pi-intake-run.test.sh" \
+  || fail "pi-intake-run.test.sh must bash-invoke pi-intake-tick-fleetops-title-refusal.test.sh (fleet-ops#3313)"
+[[ -n "${reachable[pi-intake-tick-fleetops-title-refusal.test.sh]:-}" ]] \
+  || fail "pi-intake-tick-fleetops-title-refusal.test.sh must be hosted by a listed test (fleet-ops#3313)"
+[[ -z "${known_orphan_set[pi-intake-tick-fleetops-title-refusal.test.sh]:-}" ]] \
+  || fail "pi-intake-tick-fleetops-title-refusal.test.sh must not be a known orphan (fleet-ops#3313)"
+ok "pi-intake-tick-fleetops-title-refusal.test.sh host line in pi-intake-run.test.sh is pinned (fleet-ops#3313)"
+
 echo "OK: p14-test-listing-gate.test.sh: P14 test list is closed"

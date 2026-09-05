@@ -164,3 +164,14 @@ bash "$here/worker-packet-size.test.sh"
 # self-limiting-budget split. ci.yml lists this file, so the drill runs
 # here instead of a new workflow line.
 bash "$here/pi-intake-tick-self-maint-cap.test.sh"
+
+# --- 16. fleet-ops#3313 '[fleet-ops#' title refusal (CI hook) -----------
+# tests/pi-intake-tick-fleetops-title-refusal.test.sh locks the intake
+# tick's refusal of '[fleet-ops#'-titled issues on product repos (same
+# family as escalate-senior/umbrella exclusion): control-plane work
+# misfiled in the product queue can never land from a worker claim (the
+# App has no Workflows scope) and burns a product seat — the 2026-09-04
+# incident where 10 of 11 ready 0509 issues were fleet-ops CI wiring.
+# ci.yml lists this file, so the drill runs here instead of a workflow
+# line (workers cannot edit .github/workflows/ci.yml).
+bash "$here/pi-intake-tick-fleetops-title-refusal.test.sh"
