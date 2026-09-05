@@ -957,6 +957,17 @@ bash -c 'source "$0"; is_quota_cap_error "$1" "$2"' "$lib" "" "INFERENCE_CAP_ERR
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "is_quota: 'daily limit' (periodic cap, no window) must match -> default fallback (rc=$rc)"
+# fleet-ops 2026-09-05: xKiro free tier's daily wall ("You've reached today's
+# free-model token quota ... wait for the daily reset") was classified as a
+# transient rate_limited 429 and re-picked every 15-30 min: 16 fast deaths on
+# deepseek-v4-pro and 14 on minimax-m3:free in 3h, 0 PRs. It is a hard daily
+# cap -> quota bench (provider default quota_bench_default_s, geometric).
+set +e
+bash -c 'source "$0"; is_quota_cap_error "$1" "$2"' "$lib" "" "429: {\"message\":\"You've reached today's free-model token quota. Your plan's paid allowance is separate — switch to a paid model to keep going, or wait for the daily reset.\"}" >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "is_quota: xKiro 'reached today's free-model token quota' daily wall must match (rc=$rc)"
+ok "9b: xKiro daily free-model token quota wall is a quota cap, not a transient 429"
 # 'out of credits' with NO reset window is permanent exhaustion (the reactive
 # quota_exhausted ledger block handles it), not a periodic cap with a default,
 # so the wrapper must NOT bench it.
