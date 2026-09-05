@@ -28,8 +28,13 @@
 #   Q3  c=25 -> seat_dead=true (corpse — at the threshold).
 #   Q4  c=42 -> seat_dead=true (the live opencode/mimo-v2.5-free snapshot).
 #   Q5  seat_usable on a corpse ledger returns unusable (terminal exclusion).
-#   Q6  a corpse is NOT fail-opened by aging observed_at (fleet-ops#2327
-#       contract: only a healthy observation clears the corpse).
+#   Q6  the writer keeps a concrete bench_until/usable_at (comeback clock) on
+#       a quota_cap corpse (fleet-ops#3377: a quota wall is time-based and
+#       resets — clearing the clock made the seat permanently dead instead of
+#       cooling down). A corpse ledger's bench_until is non-empty and future;
+#       once the clock passes, seat_usable fail-opens and the seat is offered
+#       again (cooling-down re-release), and a healthy observation clears
+#       seat_dead=false.
 #   Q7  a corpse is cleared by a healthy observation (seat_dead=false,
 #       health_class=healthy, count=0 — the recovery contract).
 #   Q8  seat_dead reclassification is independent of the failure-ceiling
@@ -162,31 +167,37 @@ if seat_usable "$p" "$m"; then
 fi
 ok "Q5: seat_usable on a corpse ledger returns unusable (terminal exclusion holds)"
 
-# Q6: a corpse writer clears bench_until/usable_at (fleet-ops#2415/#2422
-# "no-comeback-clock" convention), and the read side holds the corpse
-# terminally via the quota_bench defensive block. This is the writer-side
-# contract: a corpse ledger from mark_seat_quota_bench must carry an EMPTY
-# bench_until and an EMPTY usable_at so seat_usable never has a clock to
-# fail-open on. Test by writing a fresh corpse, ageing the observed_at to
-# 25h ago (past the would-be 24h park wall), and asserting seat_usable
-# still returns 1.
+#   Q6: the writer keeps a concrete bench_until/usable_at on a quota_cap
+#   corpse (fleet-ops#3377) so the seat has a comeback clock and cools down
+#   instead of being permanently dead. The bench_until must be non-empty and
+#   in the future; once it passes, seat_usable fail-opens (the quota wall may
+#   have reset), and a later healthy observation clears seat_dead=false.
 rm -f "$lf"
 seed_ledger "$p" "$m" 24   # next mark_seat_quota_bench -> count=25 -> corpse
 mark_seat_quota_bench "$p" "$m" "429: FreeUsageLimitError" >/dev/null 2>&1 \
     || fail "Q6: mark_seat_quota_bench at corpse threshold failed"
+dead=$(jq -r '.seat_dead' "$lf" 2>/dev/null || echo false)
 bench_until=$(jq -r '.bench_until // empty' "$lf" 2>/dev/null || echo "")
 usable_at=$(jq -r '.usable_at // empty' "$lf" 2>/dev/null || echo "")
-[[ -z "$bench_until" ]] || fail "Q6: corpse bench_until='$bench_until', want empty (fleet-ops#2415 no-comeback-clock)"
-[[ -z "$usable_at" ]] || fail "Q6: corpse usable_at='$usable_at', want empty (fleet-ops#2415 no-comeback-clock)"
-# Age the observed_at past the would-be 24h park wall to prove the defensive
-# block holds (the quota_bench fail-open branch cannot fire on an empty clock).
-old_iso=$(date -u -d '@'$(( $(date -u +%s) - 90000 ))' ' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
-tmp=$(mktemp)
-jq --arg o "$old_iso" '.observed_at = $o' "$lf" >"$tmp" 2>/dev/null && mv "$tmp" "$lf"
+[[ "$dead" == "true" ]] || fail "Q6: corpse seat_dead=$dead, want true (still a corpse)"
+[[ -n "$bench_until" ]] || fail "Q6: corpse bench_until is EMPTY — the fleet-ops#3377 comeback clock was dropped (must be concrete)"
+[[ -n "$usable_at" ]] || fail "Q6: corpse usable_at is EMPTY — the fleet-ops#3377 comeback clock was dropped (must be concrete)"
+bu_s=$(date -u -d "$bench_until" +%s 2>/dev/null || echo 0)
+now_s=$(date -u +%s)
+(( bu_s > now_s )) || fail "Q6: corpse bench_until=$bench_until is NOT in the future (need a future comeback clock)"
+# seat_usable must still hold the fresh corpse benched (future clock).
 if seat_usable "$p" "$m"; then
-    fail "Q6: aged corpse ledger fail-opened — defensive block must hold for an empty bench_until"
+    fail "Q6: fresh corpse ledger (future bench_until) fail-opened — quota_bench branch must hold it benched"
 fi
-ok "Q6: corpse ledger from the writer has empty bench_until/usable_at; aged corpse stays unusable (no-comeback-clock holds, fleet-ops#2415/#2594)"
+# Age the bench_until into the PAST (past the would-be park wall) to prove the
+# seat cools down and fail-opens again instead of being terminally dead.
+tmp=$(mktemp)
+old_bench=$(date -u -d '@'$(( $(date -u +%s) - 90000 ))' ' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
+jq --arg o "$old_bench" '.bench_until = $o | .usable_at = $o | .observed_at = $o' "$lf" >"$tmp" 2>/dev/null && mv "$tmp" "$lf"
+if ! seat_usable "$p" "$m"; then
+    fail "Q6: aged corpse ledger did NOT fail-open — quota_cap corpse must cool down and re-release after bench_until passes (fleet-ops#3377)"
+fi
+ok "Q6: quota_cap corpse keeps a concrete future bench_until (comeback clock, fleet-ops#3377); held benched while future, fail-opens once passed"
 
 # Q7: a healthy observation clears the corpse (recovery contract).
 rm -f "$lf"
@@ -222,4 +233,4 @@ if seat_usable "$p" "$m"; then
 fi
 ok "Q8: c=25 is BOTH parked (bench_window_s=86400, ceiling=20) AND a corpse (seat_dead=true) — both fences engage"
 
-ok "seat quota corpse: mark_seat_quota_bench reclassifies a seat to seat_dead=true at >= SEAT_DEAD_CONSECUTIVE_THRESHOLD (default 25), seat_usable holds it terminally, and only a healthy observation clears the corpse (fleet-ops#2594)"
+ok "seat quota corpse: mark_seat_quota_bench reclassifies a seat to seat_dead=true at >= SEAT_DEAD_CONSECUTIVE_THRESHOLD (default 25) but keeps a concrete comeback bench_until; the seat cools down and fail-opens once the clock passes (fleet-ops#3377), and a healthy observation clears the corpse (fleet-ops#2594)"
