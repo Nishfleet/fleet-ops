@@ -70,9 +70,10 @@ def _ensure_worker_token() -> None:
     Fail closed if the App cannot mint and no token was inherited from a parent
     organ, so a dead App never falls through to the human gh identity. Human gh
     is read-only for organs. GH Actions (tests) has no App creds and stubs gh
-    as read-only, so skip minting there.
+    as read-only, so skip minting there. Also skips when GH is not the literal
+    gh (a test fake is injected, so no human-gh write is possible).
     """
-    if os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_ACTIONS") == "true":
+    if os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_ACTIONS") == "true" or os.environ.get("GH", "gh") != "gh":
         return
     wt = os.environ.get(
         "NISHFLEET_WORKER_TOKEN_BIN",

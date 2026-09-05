@@ -12,7 +12,7 @@ Type=oneshot
 Environment=HOME=/home/nish
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_RUNTIME_DIR=/run/user/1000
-Environment=WORKDIR=/home/nish
+Environment=WORKDIR=/home/nish/workspaces/agent-state
 Environment=LOG_DIR=/home/nish/workspaces/agent-state/cron-output
 Environment=PROMPTS_DIR=/home/nish/.pi/agent/prompts
 Environment=PI_BIN=/home/nish/.local/bin/pi

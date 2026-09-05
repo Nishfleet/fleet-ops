@@ -31,7 +31,7 @@ def _ensure_worker_token() -> None:
     is read-only for organs. GH Actions (tests) has no App creds and stubs gh
     as read-only, so skip minting there.
     """
-    if os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_ACTIONS") == "true":
+    if os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_ACTIONS") == "true" or os.environ.get("GH", "gh") != "gh":
         return
     wt = os.environ.get(
         "NISHFLEET_WORKER_TOKEN_BIN",
@@ -3959,7 +3959,7 @@ def _ensure_worker_token() -> None:
     is read-only for organs. GH Actions (tests) has no App creds and stubs gh
     as read-only, so skip minting there.
     """
-    if os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_ACTIONS") == "true":
+    if os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_ACTIONS") == "true" or os.environ.get("GH", "gh") != "gh":
         return
     wt = os.environ.get(
         "NISHFLEET_WORKER_TOKEN_BIN",
