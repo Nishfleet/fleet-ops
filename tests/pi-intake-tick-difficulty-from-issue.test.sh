@@ -5,7 +5,11 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; repo_root="$(cd "$here/.."
 tick="$repo_root/lib/pi-intake-tick.sh"; lib="$repo_root/lib/seat-lib.sh"
 fail() { echo "FAIL: $*" >&2; exit 1; }; ok() { echo "OK: $*"; }
 grep -qF 'issue_difficulty() {' "$tick" || fail "issue_difficulty() not defined in tick"
-grep -qF 'echo "difficulty: $(issue_difficulty "${labels[$i]}" "$title" "$body")"' "$tick" || fail "tick must emit the difficulty header as the packet's first line"
+# fleet-ops#3281: intake captures the difficulty once (needed for the heavy-class
+# memory drop-in) and emits it as the packet's first line. Assert both the
+# capture and the header write.
+grep -qF 'difficulty="$(issue_difficulty "${labels[$i]}" "$title" "$body")"' "$tick" || fail "tick must capture the difficulty once for the memory drop-in"
+grep -qF 'echo "difficulty: $difficulty"' "$tick" || fail "tick must emit the difficulty header as the packet's first line"
 ok "Test 1: helper defined and wired at packet-write"
 eval "$(sed -n '/^DIFFICULTY_HEAVY_BODY_BYTES=/,/^}/p' "$tick")"
 [[ "$(issue_difficulty '["agent-ready","critical-path"]' 'trim worker.md — part 1/5' '- required: one thing
