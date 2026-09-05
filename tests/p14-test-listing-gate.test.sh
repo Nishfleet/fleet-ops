@@ -790,4 +790,20 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/install-manifest-bak-sprawl\.tes
   || fail "install-manifest-bak-sprawl.test.sh must not be a known orphan (fleet-ops#3273)"
 ok "install-manifest-bak-sprawl.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#3273)"
 
+# fleet-ops#3285: hard-pin the host line for daily-digest in
+# ci-standards-audit so a future refactor that drops it is caught by name.
+# The spend-line replay drill landed in this PR without a ci.yml listing
+# (the worker App cannot push .github/workflows/**), so it is hosted from
+# tests/ci-standards-audit.test.sh (already listed in ci.yml). Parking it
+# on known_orphans to silence the generic message must also fail by name
+# below.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/daily-digest\.test\.sh"?' \
+  "$here/ci-standards-audit.test.sh" \
+  || fail "ci-standards-audit.test.sh must bash-invoke daily-digest.test.sh (fleet-ops#3285)"
+[[ -n "${reachable[daily-digest.test.sh]:-}" ]] \
+  || fail "daily-digest.test.sh must be hosted by a listed test (fleet-ops#3285)"
+[[ -z "${known_orphan_set[daily-digest.test.sh]:-}" ]] \
+  || fail "daily-digest.test.sh must not be a known orphan (fleet-ops#3285)"
+ok "daily-digest.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#3285)"
+
 echo "OK: p14-test-listing-gate.test.sh: P14 test list is closed"
