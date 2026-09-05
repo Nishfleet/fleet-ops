@@ -1,16 +1,30 @@
 #!/usr/bin/env bash
-# prove-one-run-check — reject 'armed' without 'ran' (fleet-ops#378).
+# prove-one-run-check — reject 'armed' without 'ran' (fleet-ops#378) and
+# reject net-positive diffs without a reason (fleet-ops#3256).
 #
 # Standing rule (Nish, 2026-08-18): "Switched on and proven, or it is not
 # done." Any PR that adds a new systemd unit, timer, path unit, or GitHub
 # workflow must carry proof of one real end-to-end run in the PR body.
 #
+# Self-maintenance budget (Nish, 2026-09-04, fleet-ops#3124/#3256): control-
+# plane work is worth doing only when it raises product output, and it must
+# be self-limiting. A PR whose diff is net-positive in lines must carry a
+# `net-positive-because:` line in the body, or this gate REJECTs it.
+#
 # Usage:
-#   prove-one-run-check --body FILE --name-status FILE
+#   prove-one-run-check --body FILE --name-status FILE [--numstat FILE]
 #   git diff --name-status origin/main...HEAD | prove-one-run-check --body FILE --name-status -
 #
-# Exit 0: no new machinery, or proof present.
-# Exit 1: new unit/timer/workflow and no proof (the drill reject).
+# --numstat FILE is the output of `git diff --numstat origin/main...HEAD`
+# (added<TAB>deleted<TAB>path per line). When provided, the gate computes
+# the net line change and REJECTs a net-positive diff whose body lacks a
+# `net-positive-because:` line. Omit it to keep the old machinery-only
+# behaviour (backward compatible).
+#
+# Exit 0: no new machinery, or proof present; and (when --numstat given)
+#        net-negative/neutral, or net-positive with a net-positive-because:.
+# Exit 1: new unit/timer/workflow and no proof (the drill reject), or a
+#         net-positive diff with no net-positive-because: line.
 # Exit 2: usage error.
 #
 # Proof markers (any one is enough):
@@ -25,12 +39,13 @@
 set -euo pipefail
 
 usage() {
-    printf 'usage: prove-one-run-check --body FILE --name-status FILE|-\n' >&2
+    printf 'usage: prove-one-run-check --body FILE --name-status FILE|- [--numstat FILE|-]\n' >&2
     exit 2
 }
 
 body_file=""
 name_status_file=""
+numstat_file=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --body)
@@ -41,6 +56,11 @@ while [ $# -gt 0 ]; do
         --name-status)
             [ $# -ge 2 ] || usage
             name_status_file="$2"
+            shift 2
+            ;;
+        --numstat)
+            [ $# -ge 2 ] || usage
+            numstat_file="$2"
             shift 2
             ;;
         -h|--help)
@@ -54,6 +74,10 @@ done
 
 # shellcheck disable=SC2015  # A && B || C IS the guard pattern here, not "if-then-else" — both clauses are checks that should route to usage().
 if [ -z "$body_file" ] || [ -z "$name_status_file" ]; then
+    usage
+fi
+# Both inputs cannot be stdin at once.
+if [ "$name_status_file" = "-" ] && [ "$numstat_file" = "-" ]; then
     usage
 fi
 [ -f "$body_file" ] || { printf 'prove-one-run-check: body file not found: %s\n' "$body_file" >&2; exit 2; }
@@ -91,50 +115,80 @@ while IFS=$'\t' read -r col1 col2 col3 || [ -n "${col1:-}" ]; do
     fi
 done < <(if [ "$name_status_file" = "-" ]; then cat; else cat "$name_status_file"; fi)
 
-if [ -z "$new_machinery" ]; then
-    printf 'SKIP: no new unit/timer/workflow in the diff\n'
-    exit 0
-fi
-
 # --- proof? ----------------------------------------------------------------
-body="$(cat "$body_file")"
+reject=""
+if [ -n "$new_machinery" ]; then
+    body="$(cat "$body_file")"
 
-if printf '%s\n' "$body" | grep -qE '^[[:space:]]*run-proof:[[:space:]]*\S+'; then
-    printf 'OK: run-proof: marker present (new machinery: %s)\n' "$new_machinery"
-    exit 0
+    if printf '%s\n' "$body" | grep -qE '^[[:space:]]*run-proof:[[:space:]]*\S+'; then
+        printf 'OK: run-proof: marker present (new machinery: %s)\n' "$new_machinery"
+    else
+        set +e
+        printf '%s\n' "$body" | awk '
+            BEGIN { in_v=0; matched=0 }
+            {
+                if ($0 ~ /^#+[[:space:]]+[Vv]erification[[:space:]]*$/ \
+                    || $0 ~ /^#+[[:space:]]+[Vv]erification:[[:space:]]*$/ \
+                    || $0 ~ /\*{2}[[:space:]]*[Vv]erification:?[[:space:]]*\*{0,2}[[:space:]]*$/ \
+                    || $0 ~ /(^|[[:space:]])[Vv]erification:[[:space:]]*/) {
+                    in_v=1
+                }
+                if (!in_v) next
+                if ($0 ~ /(^|[^[:alnum:]_])journalctl([^[:alnum:]_]|$)/ \
+                    || $0 ~ /(^|[^[:alnum:]_])systemctl([^[:alnum:]_]|$)/ \
+                    || $0 ~ /https?:\/\// \
+                    || $0 ~ /exit[[:space:]]+[0-9]/ || $0 ~ /rc=[0-9]/ \
+                    || $0 ~ /```/ \
+                    || $0 ~ /ALL PHASES PASSED/ \
+                    || $0 ~ /^[[:space:]]*\$ / \
+                    || $0 ~ /ok: [0-9]/ ) {
+                    matched=1
+                }
+            }
+            END { exit (matched ? 0 : 1) }
+        '
+        awk_rc=$?
+        set -e
+
+        if [ "$awk_rc" -eq 0 ]; then
+            printf 'OK: Verification: section carries a run-cue (new machinery: %s)\n' "$new_machinery"
+        else
+            reject="new unit/timer/workflow ($new_machinery) with no run-proof"
+            printf 'REJECT: %s. Add a run-proof: line (journal excerpt, run URL, or systemctl/journalctl transcript) or a Verification: section that carries a real run cue. Armed without ran is not done.\n' "$reject" >&2
+        fi
+    fi
 fi
 
-set +e
-printf '%s\n' "$body" | awk '
-    BEGIN { in_v=0; matched=0 }
-    {
-        if ($0 ~ /^#+[[:space:]]+[Vv]erification[[:space:]]*$/ \
-            || $0 ~ /^#+[[:space:]]+[Vv]erification:[[:space:]]*$/ \
-            || $0 ~ /\*{2}[[:space:]]*[Vv]erification:?[[:space:]]*\*{0,2}[[:space:]]*$/ \
-            || $0 ~ /(^|[[:space:]])[Vv]erification:[[:space:]]*/) {
-            in_v=1
+# --- net-positive check (fleet-ops#3256) ------------------------------------
+if [ -n "$numstat_file" ]; then
+    body="$(cat "$body_file")"
+    net=$(awk -F'\t' '
+        {
+            a=$1; d=$2;
+            if (a=="-") a=0;
+            if (d=="-") d=0;
+            net += a - d;
         }
-        if (!in_v) next
-        if ($0 ~ /(^|[^[:alnum:]_])journalctl([^[:alnum:]_]|$)/ \
-            || $0 ~ /(^|[^[:alnum:]_])systemctl([^[:alnum:]_]|$)/ \
-            || $0 ~ /https?:\/\// \
-            || $0 ~ /exit[[:space:]]+[0-9]/ || $0 ~ /rc=[0-9]/ \
-            || $0 ~ /```/ \
-            || $0 ~ /ALL PHASES PASSED/ \
-            || $0 ~ /^[[:space:]]*\$ / \
-            || $0 ~ /ok: [0-9]/ ) {
-            matched=1
-        }
-    }
-    END { exit (matched ? 0 : 1) }
-'
-awk_rc=$?
-set -e
+        END { print net+0 }
+    ' < <(if [ "$numstat_file" = "-" ]; then cat; else cat "$numstat_file"; fi))
 
-if [ "$awk_rc" -eq 0 ]; then
-    printf 'OK: Verification: section carries a run-cue (new machinery: %s)\n' "$new_machinery"
-    exit 0
+    if [ "$net" -gt 0 ]; then
+        if printf '%s\n' "$body" | grep -qE '^[[:space:]]*net-positive-because:[[:space:]]*\S+'; then
+            printf 'OK: net-positive diff (+%s lines) carries net-positive-because:\n' "$net"
+        else
+            reject="net-positive diff (+$net lines) with no net-positive-because:"
+            printf 'REJECT: %s. A PR whose diff is net-positive in lines must carry a net-positive-because: line in the body (fleet-ops#3256).\n' "$reject" >&2
+        fi
+    else
+        printf 'OK: net-negative/neutral diff (%s lines)\n' "$net"
+    fi
 fi
 
-printf 'REJECT: new unit/timer/workflow (%s) with no run-proof. Add a run-proof: line (journal excerpt, run URL, or systemctl/journalctl transcript) or a Verification: section that carries a real run cue. Armed without ran is not done.\n' "$new_machinery" >&2
-exit 1
+if [ -n "$reject" ]; then
+    exit 1
+fi
+
+if [ -z "$new_machinery" ] && [ -z "$numstat_file" ]; then
+    printf 'SKIP: no new unit/timer/workflow in the diff\n'
+fi
+exit 0

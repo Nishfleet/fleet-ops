@@ -110,8 +110,10 @@ a cooldown, or an attempt ledger — that is forbidden hand-built orchestration.
 A PR that adds a systemd unit, timer, path unit, or GitHub workflow is not
 done without a `run-proof:` line in the PR body naming the real end-to-end
 run (journal lines, run URL, or a systemctl/journalctl transcript). Run
-`bin/prove-one-run-check --body <pr-body-file> --name-status <(git diff --name-status origin/main...HEAD)`
+`bin/prove-one-run-check --body <pr-body-file> --name-status <(git diff --name-status origin/main...HEAD) --numstat <(git diff --numstat origin/main...HEAD)`
 before opening the PR. Armed without ran is a failed run (fleet-ops#378).
+
+A net-positive diff needs `net-positive-because:`.
 
 Every worker PR, not only new machinery, must carry a `Verification:` section
 with a real run-cue or a `run-proof:` line. Run
