@@ -139,6 +139,17 @@ D1_GATE_BODY_NEEDLES="${PI_INTAKE_D1_GATE_BODY_NEEDLES:-migrations/
 SEAT_LIB="${SEAT_LIB:-/home/nish/.local/lib/pi-packet/seat-lib.sh}"
 # fleet-ops#1250: claim-step prior-art gate. Tests override the path.
 PRIOR_ART_BIN="${PRIOR_ART_CLAIM_CHECK:-$HOME/.local/bin/prior-art-claim-check}"
+# fleet-ops#3254: self-maintenance claim budget. In a fleet-ops tick every
+# claim is a self-maintenance (control-plane) claim, so the tick caps them
+# at SELF_MAINT_CLAIM_PCT of the available slots (floor 1) so control-plane
+# work cannot devour the fleet; product ticks (0509) stay uncapped. A
+# critical-path / escalate-senior issue is exempt (claims even past the
+# cap). The fleet-ops#180 gap-audit yield rule (which made product repos
+# yield to fleet-ops gap-audit work) is retired by this cap. Overridable
+# for tests.
+SELF_MAINT_CLAIM_PCT="${PI_INTAKE_SELF_MAINT_CLAIM_PCT:-20}"
+# Label that marks a self-maintenance issue as exempt from the 20% cap.
+CRITICAL_PATH_LABEL="${PI_INTAKE_CRITICAL_PATH_LABEL:-critical-path}"
 # PRECEDENCE_BAND_LIB may be overridden by tests. Checkout fallback so a
 # worktree run still loads the sibling lib before install.sh copies it.
 PRECEDENCE_BAND_LIB="${PRECEDENCE_BAND_LIB:-/home/nish/.local/lib/pi-packet/precedence-band.sh}"
@@ -642,6 +653,21 @@ if [[ "$REPO" == "fleet-ops" && "$_band_phase" == "surge" ]]; then
     done
 fi
 
+# fleet-ops#3254: self-maintenance (fleet-ops) claim budget. Product repos
+# (0509) are never capped. For a fleet-ops tick, cap the number of
+# self-maintenance claims at SELF_MAINT_CLAIM_PCT of this tick's available
+# slots (floor 1), so a giant fleet-ops agent-ready backlog cannot flood the
+# fleet while product work waits. A critical-path / escalate-senior issue is
+# exempt from the cap and claims even past the budget. Computed once from the
+# tick-start slots count (slots already includes the per-claim decrement
+# below, so capture the base once here).
+_self_maint_cap=0
+_self_maint_claims=0
+if product_first_is_self_maintenance "$REPO" || [[ "$REPO" == "fleet-ops" ]]; then
+    _self_maint_cap=$(( slots * SELF_MAINT_CLAIM_PCT / 100 ))
+    (( _self_maint_cap < 1 )) && _self_maint_cap=1
+fi
+
 for i in "${!numbers[@]}"; do
     N="${numbers[$i]}"
     title="${titles[$i]}"
@@ -649,6 +675,23 @@ for i in "${!numbers[@]}"; do
     if (( slots <= 0 )); then
         echo "issue $N ($title): skipped-capacity"
         continue
+    fi
+
+    # fleet-ops#3254: self-maintenance (fleet-ops) claim cap. Once this tick
+    # has spent its SELF_MAINT_CLAIM_PCT budget on non-exempt fleet-ops
+    # claims, stop admitting more ordinary control-plane issues so capacity
+    # stays for product. A critical-path label marks the issue exempt (it
+    # claims even past the cap); escalate-senior issues were already dropped
+    # from the ready set above. Checked here (on the cheap labels array)
+    # before the body fetch so a capped-out tick does no per-issue network.
+    if (( _self_maint_cap > 0 && _self_maint_claims >= _self_maint_cap )); then
+        if printf '%s' "${labels[$i]}" | jq -e --arg cp "$CRITICAL_PATH_LABEL" \
+            '[.[]?.name // empty] | index($cp) != null' >/dev/null 2>&1; then
+            : # exempt — claim even past the cap
+        else
+            echo "issue $N ($title): skipped-self-maintenance-cap (claimed $_self_maint_claims >= cap $_self_maint_cap)"
+            continue
+        fi
     fi
 
     # Early surge-phase skip (auditor 2026-08-28, summon unit-failure
@@ -1111,6 +1154,18 @@ blocked-on: nish-decision" 2>/dev/null || true
     # a prior claim cycle would have been cleared by the success/reset path
     # -- only write if absent so a re-claim (after cooldown expiry) does not
     # clobber an already-incremented count.
+    # fleet-ops#3254: count this self-maintenance claim toward the 20% cap.
+    # Exempt issues (critical-path label) were admitted past the cap, so skip
+    # the increment for them — only ordinary control-plane claims consume the
+    # budget and eventually cap the tick.
+    if (( _self_maint_cap > 0 )); then
+        if printf '%s' "${labels[$i]}" | jq -e --arg cp "$CRITICAL_PATH_LABEL" \
+            '[.[]?.name // empty] | index($cp) != null' >/dev/null 2>&1; then
+            : # exempt — does not consume the self-maintenance budget
+        else
+            _self_maint_claims=$(( _self_maint_claims + 1 ))
+        fi
+    fi
     _rc_init_file="$ATTEMPTS_DIR/pi-issue-${REPO}-${N}.reclaim-count"
     if [[ ! -f "$_rc_init_file" ]]; then
         printf '1' > "$_rc_init_file" 2>/dev/null || true
