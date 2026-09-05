@@ -696,6 +696,20 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/pi-intake-tick-umbrella-exclusio
   || fail "pi-intake-tick-umbrella-exclusion.test.sh must not be a known orphan (fleet-ops#3295)"
 ok "pi-intake-tick-umbrella-exclusion.test.sh host line in pi-intake-run.test.sh is pinned (fleet-ops#3295)"
 
+# fleet-ops#3254 (part 1/4, PR part of the self-limiting-budget split):
+# hard-pin the host line for pi-intake-tick-self-maint-cap in
+# pi-intake-run (already listed in ci.yml) so a future refactor that drops
+# it is caught by name. Same class-prevention: parking it on known_orphans
+# to silence the generic message must also fail by name below.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/pi-intake-tick-self-maint-cap\.test\.sh"?' \
+  "$here/pi-intake-run.test.sh" \
+  || fail "pi-intake-run.test.sh must bash-invoke pi-intake-tick-self-maint-cap.test.sh (fleet-ops#3254)"
+[[ -n "${reachable[pi-intake-tick-self-maint-cap.test.sh]:-}" ]] \
+  || fail "pi-intake-tick-self-maint-cap.test.sh must be hosted by a listed test (fleet-ops#3254)"
+[[ -z "${known_orphan_set[pi-intake-tick-self-maint-cap.test.sh]:-}" ]] \
+  || fail "pi-intake-tick-self-maint-cap.test.sh must not be a known orphan (fleet-ops#3254)"
+ok "pi-intake-tick-self-maint-cap.test.sh host line in pi-intake-run.test.sh is pinned (fleet-ops#3254)"
+
 # fleet-ops#1520: hard-pin the host line for curator-journal-cap in
 # ci-standards-audit so a future refactor that drops it is caught by
 # name. The live dump was fixed in memory-compound#9; this test is the
