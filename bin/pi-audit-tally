@@ -25,6 +25,7 @@ fi
 #   AUDIT_STATE_DIR    vote file tree
 #   AUDIT_GH           gh override
 #   AUDIT_DRY_RUN      1 = log, do not mutate labels
+#   ESCALATE_AFTER     refuse EVIDENCE-REFUSED N times before escalate-senior (default 3)
 
 set -euo pipefail
 
@@ -35,6 +36,7 @@ export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 GH="${AUDIT_GH:-gh}"
 STATE_DIR="${AUDIT_STATE_DIR:-$HOME/.local/state/fleet-audit}"
 DRY_RUN="${AUDIT_DRY_RUN:-0}"
+ESCALATE_AFTER="${ESCALATE_AFTER:-3}"
 
 spec_gate_py() {
     if [ -n "${AGENT_READY_SPEC_GATE:-}" ]; then
@@ -143,13 +145,43 @@ main() {
             fi
         done <<<"$pass_reasons"
         if [ "$evidenceless" = "1" ]; then
-            log "$repo/#$candidate EVIDENCE-REFUSED (2-of-3 PASS but keyword-only reasons)"
-            if [ "$DRY_RUN" = "1" ]; then
-                log "DRY-RUN: would refuse agent-ready for $repo/#$candidate (keyword-only PASS reasons)"
+            # fleet-ops#3574: a candidate refused for evidence ESCALATE_AFTER
+            # times (default 3) is escalated (escalate-senior + drop
+            # scout-candidate) so the admission queue never re-runs the same
+            # evidence-less panel forever. The counter and refusal-history
+            # ledger live under the candidate's state dir.
+            local refusals reasons_ledger n
+            refusals="$dir/.evidence-refusals"
+            reasons_ledger="$dir/.evidence-refusal-reasons"
+            n=0
+            [ -f "$refusals" ] && n=$(<"$refusals")
+            n=$(( ${n:-0} + 1 ))
+            printf '%s\n' "$n" > "$refusals"
+            printf '\n== evidence refusal #%s (%s) ==\n%s\n' "$n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$pass_reasons" >> "$reasons_ledger" 2>/dev/null || true
+            log "$repo/#$candidate EVIDENCE-REFUSED (2-of-3 PASS but keyword-only reasons) count=$n (escalate at $ESCALATE_AFTER)"
+            if [ "$n" -ge "$ESCALATE_AFTER" ]; then
+                log "$repo/#$candidate escalated: $n evidence refusals, escalate-senior, stop re-queuing (fleet-ops#3574)"
+                if [ "$DRY_RUN" = "1" ]; then
+                    log "DRY-RUN: would add escalate-senior + remove scout-candidate + comment for $repo/#$candidate"
+                else
+                    if ! "$GH" issue edit "$candidate" -R "Nishfleet/$repo" --remove-label scout-candidate --add-label escalate-senior >/dev/null 2>&1; then
+                        log "$repo/#$candidate: gh issue edit FAILED (escalate-senior)"
+                        exit 1
+                    fi
+                    local ledger
+                    ledger=$(cat "$reasons_ledger" 2>/dev/null || printf 'refusal history unavailable')
+                    "$GH" issue comment "$candidate" -R "Nishfleet/$repo" \
+                        --body "escalate-senior (fleet-ops#3574): $repo/#$candidate refused for evidence $n times. Every PASS reason was keyword-only with no repo-specific evidence (issue number, path, or URL), so 2-of-3 PASS could never admit. Escalated rather than re-queued forever. Refusals:$ledger" \
+                        >/dev/null 2>&1 || true
+                fi
             else
-                "$GH" issue comment "$candidate" -R "Nishfleet/$repo" \
-                    --body "evidence-refused (fleet-ops#3121). 2-of-3 PASS, but at least one PASS reason is keyword-only with no repo-specific evidence (issue number, path, or URL). Keyword-only compliance is not a judgement." \
-                    >/dev/null 2>&1 || true
+                if [ "$DRY_RUN" = "1" ]; then
+                    log "DRY-RUN: would refuse agent-ready for $repo/#$candidate (keyword-only PASS reasons)"
+                else
+                    "$GH" issue comment "$candidate" -R "Nishfleet/$repo" \
+                        --body "evidence-refused (fleet-ops#3121). 2-of-3 PASS, but at least one PASS reason is keyword-only with no repo-specific evidence (issue number, path, or URL). Keyword-only compliance is not a judgement." \
+                        >/dev/null 2>&1 || true
+                fi
             fi
             exit 0
         fi

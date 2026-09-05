@@ -549,3 +549,10 @@ bash "$here/curator-journal-cap.test.sh"
 # tests/p14-test-listing-gate.test.sh is the class-prevention so a
 # future drop of this host line fails by name.
 bash "$here/install-manifest-bak-sprawl.test.sh"
+
+# fleet-ops#3574: the admission tally escalates a candidate refused for
+# evidence 3 times (escalate-senior) instead of re-queuing it forever
+# (split of #3548). Hosted here so P14 runs the drill without a
+# workflow-file edit (the worker App cannot push .github/workflows/**).
+# Hermetic (scratch vote state + stub gh, no real API).
+bash "$here/pi-audit-tally-escalate-senior.test.sh"
