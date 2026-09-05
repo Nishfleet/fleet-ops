@@ -172,7 +172,10 @@ log "state=$issue_state in_progress=$in_progress for $repo_slug#$issue"
 # --- branch cleanup: only if no open PR from this branch --------------------
 # Same REST-vs-GraphQL split: `gh pr list --json` is GraphQL; use `gh api` REST
 # with a head=<branch> filter and count the result.
-open_pr_json=$(gh api "repos/$repo_slug/pulls?state=open&head=${repo_slug#*/}:${branch_name}&per_page=1" 2>&1) || {
+# The REST head filter is owner:branch (Nishfleet:claim/...), NOT repo:branch.
+# 2026-09-05: ${repo_slug#*/} produced "fleet-ops:claim/..." which matches
+# nothing, so the guard saw 0 open PRs and deleted branches with live PRs.
+open_pr_json=$(gh api "repos/$repo_slug/pulls?state=open&head=${repo_slug%/*}:${branch_name}&per_page=1" 2>&1) || {
     log "gh api repos/$repo_slug/pulls failed: $(printf '%s' "$open_pr_json" | head -c 200)"
     log_to_triage "CLAIM-REAP-TRANSIENT-SKIP" "step=pr_list instance=$instance branch=$branch_name reason=gh_api_failed"
     log "transient gh failure on PR list — exiting 0 and letting the 30-min orphan sweep pick this up"
