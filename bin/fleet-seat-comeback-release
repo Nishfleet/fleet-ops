@@ -37,7 +37,14 @@
 #     cli_timeout / transient_other / empty_run / overload, fleet-ops#3229)
 #     — which gets a second-chance re-probe: on success it is unwalled
 #     (transitions out of corpse), on failure it is explicitly retired
-#     immediately. A no-wall corpse from a PERMANENT class (credentials_bad
+#     immediately. fleet-ops#3508: a FAILED re-probe that does NOT establish a
+#     wall is only a terminal retire for permanent classes — a no-wall
+#     rate_limit corpse whose probe failed WITHOUT the extension re-anchoring
+#     (timeout, no HTTP) gets a BOUNDED comeback clock (usable_at = now +
+#     walled_comeback.rate_limit_s, default 900s) instead, because a 429
+#     rate limit resets over a bounded window; the seat re-enters the walled
+#     path and is re-probed when the clock passes. A no-wall corpse from a
+#     PERMANENT class (credentials_bad
 #     401/403, quota_exhausted-by-age 402) and any corpse still owed a
 #     comeback clock (future wall) keep the 6h grace hold before physical
 #     retirement. fleet-ops#3301: if THIS sweep's failed probe already
@@ -160,6 +167,14 @@ SEAT_DEAD_CONSECUTIVE_THRESHOLD="${SEAT_DEAD_CONSECUTIVE_THRESHOLD:-25}"
 # corpse reclassification recover via a healthy observation (seat-lib
 # clears a corpse on a successful probe) before the ledger is retired.
 CORPSE_GRACE_S="${FLEET_SEAT_COMEBACK_CORPSE_GRACE_S:-21600}"
+# fleet-ops#3508: the bounded comeback window for a no-wall rate_limit corpse
+# whose second-chance re-probe failed WITHOUT the extension re-anchoring a
+# wall (probe timeout / no HTTP response). A 429 rate limit resets over a
+# bounded window (seat-caps.json walled_comeback.rate_limit_s, default
+# 900s), so such a corpse gets usable_at = now + RATE_LIMIT_COMEBACK_S and
+# re-enters the normal walled path instead of being force-retired as a
+# terminal corpse the moment one probe fails.
+RATE_LIMIT_COMEBACK_S="${FLEET_SEAT_COMEBACK_RATE_LIMIT_S:-900}"
 # fleet-ops#3176: the provider-quota-exhausted alert window in
 # libexec/fleet-metrics-export.py (PROVIDER_QUOTA_WINDOW_S, default 3600s).
 # A quota_exhausted (HTTP 402) seat whose observed_at is STILL inside this
@@ -664,6 +679,52 @@ corpse_seat() {
     return 0
 }
 
+# fleet-ops#3508: give a no-wall rate_limit corpse a BOUNDED comeback clock
+# instead of immediate terminal retirement. A 429 rate limit resets over a
+# bounded window (walled_comeback.rate_limit_s, default 900s) — force-
+# retiring on a single failed second-chance re-probe (which may be a probe
+# timeout with no HTTP response, so the extension never re-anchors a wall)
+# falsely retires a seat that would clear on its own. Re-write the ledger
+# to health_class=rate_limited / seat_dead=false / usable_at=now +
+# RATE_LIMIT_COMEBACK_S, preserving the failure count, so the seat re-enters
+# the normal walled path and is re-probed when the clock passes (the seat-
+# probe's next snapshot sees a scheduled retry, not a terminal corpse).
+# Returns 0 on write success, 1 on compose/rename failure.
+reanchor_bounded_comeback() {
+    local p="$1" m="$2" f="$3" count now now_e usable
+    [[ -f "$f" ]] || return 1
+    count=$(jq -r '.consecutive_failure_count // 0' "$f" 2>/dev/null || echo 0)
+    [[ "$count" =~ ^[0-9]+$ ]] || count=0
+    now=$(now_iso)
+    now_e=$(now_epoch)
+    usable=$(date -u -d "@$(( now_e + RATE_LIMIT_COMEBACK_S ))" +%Y-%m-%dT%H:%M:%S.000Z 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)
+    if (( DRY_RUN )); then
+        log "DRY-RUN: would re-anchor bounded comeback for $p/$m (usable_at +${RATE_LIMIT_COMEBACK_S}s)"
+        return 0
+    fi
+    local tmp="$f.$$.tmp"
+    if ! jq -nc \
+        --arg provider "$p" --arg model "$m" \
+        --arg now "$now" --arg usable "$usable" \
+        --argjson count "$count" \
+        '{provider:$provider, model:$model, http_status:429, retry_after:null,
+          health_class:"rate_limited", retryable:true, seat_dead:false,
+          poison_ladder:false, observed_at:$now, source:"comeback_release_corpse",
+          failure_mode:"rate_limit", usable_at:$usable, bench_until:null,
+          consecutive_failure_count:$count}' > "$tmp" 2>/dev/null; then
+        log "bounded comeback $p/$m: jq compose FAILED — not written"
+        rm -f "$tmp" 2>/dev/null || true
+        return 1
+    fi
+    chmod 600 "$tmp" 2>/dev/null || true
+    if ! mv "$tmp" "$f" 2>/dev/null; then
+        log "bounded comeback $p/$m: rename FAILED at $f — not written"
+        rm -f "$tmp" 2>/dev/null || true
+        return 1
+    fi
+    return 0
+}
+
 # --- corpse-ledger retirement (fleet-ops#2716) ------------------------------
 # Physically retire a terminal corpse ledger OUT of the live roster. A
 # corpse (seat_dead=true, health_class=corpse) is the TERMINAL seat state
@@ -892,10 +953,27 @@ main() {
                     _post_hc=$(jq -r '.health_class // ""' "$f" 2>/dev/null || true)
                     _post_dead=$(jq -r '(.seat_dead // false)' "$f" 2>/dev/null || true)
                     if [[ "$_post_hc" == "corpse" && "$_post_dead" == "true" ]]; then
-                        if retire_corpse "$p" "$m" "$f" 1; then
-                            log "explicitly retired $p/$m after failed no-wall corpse re-probe (fleet-ops#3156)"
+                        # fleet-ops#3508: a rate_limit corpse is TIME-BASED
+                        # (a 429 resets), so a failed re-probe must not be a
+                        # terminal retire. If the extension did not re-anchor
+                        # (probe timeout, no HTTP), give the corpse a bounded
+                        # comeback clock instead of retiring it out of the
+                        # roster — the next wall-clock sweep re-probes it
+                        # when the window passes. Only the stuck prober-corpse
+                        # (comeback_never_released, non-recoverable) keeps the
+                        # immediate #3156 retire.
+                        if [[ "$_cfm" == "rate_limit" ]]; then
+                            if reanchor_bounded_comeback "$p" "$m" "$f"; then
+                                log "bounded comeback $p/$m: rate_limit corpse re-anchored to usable_at +${RATE_LIMIT_COMEBACK_S}s, seat re-enters the walled path (fleet-ops#3508)"
+                            else
+                                log "bounded comeback $p/$m: re-anchor failed — held"
+                            fi
                         else
-                            log "corpse re-probe $p/$m: retire failed — held"
+                            if retire_corpse "$p" "$m" "$f" 1; then
+                                log "explicitly retired $p/$m after failed no-wall corpse re-probe (fleet-ops#3156)"
+                            else
+                                log "corpse re-probe $p/$m: retire failed — held"
+                            fi
                         fi
                     else
                         log "corpse re-probe $p/$m: extension reclassified to health_class=$_post_hc seat_dead=$_post_dead during probe — no longer a corpse, walled by extension (fleet-ops#3179)"
