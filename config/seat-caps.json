@@ -272,7 +272,8 @@
     "bai",
     "commandcode",
     "hetzner",
-    "opencode"
+    "opencode",
+    "xkiro"
   ],
   "prepaid_providers_in_order": [
     "ollama",
