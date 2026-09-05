@@ -132,7 +132,47 @@ for k in contents pull_requests issues metadata; do
     || fail "manifest missing default_permissions key: $k"
 done
 
+# --- invariant 6: preamble guard still fails closed (fleet-ops#3576) --------
+# Every organ preamble that mints worker-token keeps its fail-closed guard:
+# when GH is unset (a production caller) and the App cannot mint, the organ
+# MUST refuse rather than fall through to a human gh write. The #3576 guard
+# relaxation only skips the mint when GH points at a non-default test fake;
+# a production caller never sets GH, so the refusal path must be unchanged.
+hardened='if [[ -z "${GH_TOKEN:-}" && "${GITHUB_ACTIONS:-}" != "true" && "${GH:-gh}" == "gh" ]]; then'
+stale='if [[ -z "${GH_TOKEN:-}" && "${GITHUB_ACTIONS:-}" != "true" ]]; then'
+for guarded in "$repo_root"/bin/*; do
+  [[ -f "$guarded" ]] || continue
+  grep -qs 'refusing human-gh writes' "$guarded" || continue
+  # Shell organs carry the hardened guard; the Python organ uses its own
+  # GH!=gh early-return. Anything else is a regression.
+  if grep -qsF "$stale" "$guarded"; then
+    fail "organ preamble lost the GH guard (fleet-ops#3576): $guarded"
+  fi
+  grep -qsF "$hardened" "$guarded" \
+    || grep -qs 'GH", "gh") != "gh"' "$guarded" \
+    || fail "organ preamble missing hardened GH guard (fleet-ops#3576): $guarded"
+done
+grep -qsF "$hardened" "$repo_root"/lib/pi-intake-tick.sh \
+  || fail "lib/pi-intake-tick.sh preamble missing hardened GH guard (fleet-ops#3576)"
+grep -qs 'GH", "gh") != "gh"' "$repo_root"/bin/fleet-ops-drift.py \
+  || fail "bin/fleet-ops-drift.py preamble missing hardened GH guard (fleet-ops#3576)"
+
+# Behavioural proof: run one guard-carrying organ in a scratch HOME with GH
+# unset and worker-token missing — it must refuse, not fall through.
+guard_organ="$repo_root/bin/blocked-reconcile"
+[[ -x "$guard_organ" ]] || fail "guard representative missing: $guard_organ"
+guard_home="$scratch/guard-home"
+mkdir -p "$guard_home"
+set +e
+out="$(env -i HOME="$guard_home" PATH="$PATH" "$guard_organ" 2>&1)"
+rc=$?
+set -e
+[[ "$rc" != "0" ]] || fail "guard representative refused nothing; expected non-zero exit, got 0"
+printf '%s' "$out" | grep -q 'refusing human-gh writes' \
+  || fail "guard representative must refuse when GH unset and worker-token missing"
+
 ok "worker-token fails closed on missing/empty/invalid creds"
+ok "preamble guard still refuses when GH unset and worker-token missing (fleet-ops#3576)"
 ok "pi-issue-run scream path is present and indexed"
 ok "manifest permissions exactly match the audit cross-check"
 
