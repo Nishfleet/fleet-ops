@@ -2225,3 +2225,66 @@ PY
 
 ok "fleet-ops#3283: spend, credits, xkiro wallet/free-token metrics"
 
+# =========================================================================
+# fleet-ops#3180: fleet_escalations_24h must not count template starts the
+# escalation pipeline refuses. The metric counts "Starting
+# unit-escalation@<failed-unit>.service" journal lines; unit-escalation-write
+# refuses the units in its first `case "$UNIT" in` block (no STOP-REASON, no
+# auditor dispatch), so their starts are churn, not escalation volume. The
+# list drifted once already: pi-issue@* was refused by the writer on
+# 2026-08-30 (#2133/#2475 — workers self-heal via the reaper + re-dispatch
+# lane) yet stayed counted here, and the seat-famine crash-loop pushed
+# 868 refused pi-issue@ starts into the 936 counted in 24h, tripping
+# FleetEscalationStorm. This section replays EVERY writer-refused glob
+# through the live filter so the two lists can never silently drift again.
+# =========================================================================
+python3 - "$exporter" "$repo_root/bin/unit-escalation-write" <<'PY' || fail "escalation exclusion drift-lock failed"
+import importlib.util, re, sys
+from types import SimpleNamespace
+exp_path, writer_path = sys.argv[1], sys.argv[2]
+spec = importlib.util.spec_from_file_location("fme", exp_path)
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+
+# Pull the FIRST `case "$UNIT" in <globs>)` block — the no-self-trigger /
+# own-lane refuse list. Later case blocks (scout-futility dedupe, class
+# gates) are conditional, not unit-name exclusions, so only the first is
+# mirrored.
+src = open(writer_path).read()
+mm = re.search(r'case "\$UNIT" in\s*\n\s*([^)\n]+)\)', src)
+assert mm, "could not locate refuse-list case block in unit-escalation-write"
+globs = [g for g in mm.group(1).split("|") if g]
+assert "pi-issue@*.service" in globs, globs
+
+# One journal line per refused glob -> none may be counted.
+lines = []
+for g in globs:
+    unit = g.replace("*", "SAMPLE")
+    if not unit.endswith((".service", ".timer", ".path")):
+        unit += ".service"
+    lines.append(
+        f"Starting unit-escalation@{unit}.service - Universal failure escalation"
+    )
+# Control: a genuinely failing unit must still be counted.
+lines.append(
+    "Starting unit-escalation@pi-intake@ctlrepo.service.service - Universal failure escalation"
+)
+journal = "\n".join(lines) + "\n"
+
+orig = m.subprocess.run
+m.subprocess.run = lambda *a, **k: SimpleNamespace(
+    returncode=0, stdout=journal, stderr=""
+)
+try:
+    counts = m._escalations_24h()
+finally:
+    m.subprocess.run = orig
+
+bad = {u: c for u, c in counts.items() if u != "pi-intake@ctlrepo"}
+assert not bad, f"writer-refused units counted by fleet_escalations_24h: {bad}"
+assert counts.get("pi-intake@ctlrepo") == 1, counts
+print(
+    f"OK: {len(globs)} writer-refused globs replayed through "
+    "_escalations_24h — none counted; control counted once"
+)
+PY
+ok "fleet-ops#3180: fleet_escalations_24h exclusions locked to unit-escalation-write refuse list"
