@@ -27,6 +27,8 @@ import {
   collapseAlerts,
   isSkippedWorkflow,
   renderAlert,
+  parseWorkflowMarker,
+  shouldCloseIssue,
 } from "./.github/scripts/red-on-main-detector.mjs";
 
 const run = { id: 10, created_at: "2026-08-25T17:00:00Z", conclusion: "failure" };
@@ -63,7 +65,28 @@ if (collapsed.length !== 1) throw new Error("collapseAlerts must keep one alert 
 if (collapsed[0].status !== "first-ever") throw new Error("collapseAlerts must keep first-ever over never-green");
 if (collapsed[0].run_id !== 11) throw new Error("collapseAlerts must point at the newest run");
 
-console.log("OK: classifyFailure, buildAlert, renderAlert, skip, collapse");
+// --- close-on-green decision (fleet-ops#3507) --------------------------------
+const markerBody = "<!-- red-on-main-detector:workflow=CI -->\n\n**Established workflow went red on main**";
+if (parseWorkflowMarker(markerBody) !== "CI") throw new Error("parseWorkflowMarker must extract workflow name");
+if (parseWorkflowMarker("no marker here") !== null) throw new Error("parseWorkflowMarker must return null without marker");
+if (parseWorkflowMarker(null) !== null) throw new Error("parseWorkflowMarker must return null for non-string");
+
+const firingAlert = { ...alert, workflow: "CI" };
+const greenRun = { conclusion: "success" };
+const redRun = { conclusion: "failure" };
+
+// Green run + not firing -> close
+if (shouldCloseIssue(markerBody, [], greenRun) !== true) throw new Error("green run + not firing must close");
+// Still firing this tick -> leave open even if a green run exists
+if (shouldCloseIssue(markerBody, [firingAlert], greenRun) !== false) throw new Error("still-firing workflow must stay open");
+// Latest run is red -> leave open
+if (shouldCloseIssue(markerBody, [], redRun) !== false) throw new Error("red latest run must stay open");
+// No latest run found -> leave open (cannot confirm green)
+if (shouldCloseIssue(markerBody, [], null) !== false) throw new Error("missing latest run must stay open");
+// No marker -> leave open
+if (shouldCloseIssue("no marker", [], greenRun) !== false) throw new Error("issue without marker must stay open");
+
+console.log("OK: classifyFailure, buildAlert, renderAlert, skip, collapse, close-on-green");
 ' || fail "pure function tests failed"
 
 # --- replay: first ever main run fails ---------------------------------------
