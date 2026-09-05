@@ -290,6 +290,68 @@ grep -q 'sum(fleet_product_merged_24h)' "$verify" \
 ok "(j) console shipped_24h reads fleet_product_merged_24h"
 
 # =========================================================================
+# (k) fleet-ops#3519 per-repo quality metrics + committed ceilings
+# =========================================================================
+export FLEET_PRODUCT_SLO_OUT="$scratch/quality.prom"
+FLEET_PRODUCT_SLO_SESSIONS="$scratch/sessions" \
+python3 - "$helper" "$repo_root/config/quality-ratchet.json" <<'PY' || fail "quality metrics failed"
+import importlib.util, json, os, sys
+from datetime import datetime, timezone
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("ps", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+sys.modules["ps"] = m
+spec.loader.exec_module(m)
+
+# Point sessions at an empty dir so sessions_to_pr_pct == 0 (no host noise).
+m.SESSIONS_DIR = Path(sys.argv[3]) if len(sys.argv) > 3 else Path("/nonexistent-sessions")
+NOW = 1788350400  # 2026-09-02T12:00:00Z
+DAY = 86400
+prs = [
+    # feat merged 2d ago, tied to an issue filed 3d ago (in-week link)
+    m.MergedPR(number=1, repo="0509", title="feat: a", head_ref="claim/1",
+               merged_ts=NOW - 2 * DAY, issue_created_ts=NOW - 3 * DAY),
+    # revert merged 1d ago (in-week) with no linked issue
+    m.MergedPR(number=2, repo="0509", title="Revert feat: a", head_ref="revert/1",
+               merged_ts=NOW - 1 * DAY, issue_created_ts=None),
+    # old merge, outside week
+    m.MergedPR(number=3, repo="0509", title="feat: old", head_ref="claim/3",
+               merged_ts=NOW - 10 * DAY, issue_created_ts=None),
+]
+s = m.compute_repo_slo("0509", prs, now_ts=NOW)
+# merges_7d = #1,#2 = 2; reverts_7d = 1 -> 50/100
+assert s.merges_7d == 2, s.merges_7d
+assert abs(s.quality_reverts_per_100 - 50.0) < 1e-9, s.quality_reverts_per_100
+# defects: only #1 has an in-week linked issue -> 1 defects / 2 merges = 50/100
+assert abs(s.quality_defects_per_100 - 50.0) < 1e-9, s.quality_defects_per_100
+assert s.quality_sessions_to_pr_pct == 0.0, s.quality_sessions_to_pr_pct
+print("OK: compute quality metrics (reverts 50/100, defects 50/100, sessions 0)")
+
+# Ceilings load from config/quality-ratchet.json.
+ratchet_path = sys.argv[2]
+raw = json.loads(Path(ratchet_path).read_text())
+# module reads candidates; force the config path so the test is hermetic
+m._QUALITY_RATCHET_CANDIDATES = [ratchet_path]
+ceil = m.load_ceilings(["0509", "futurerepo"])
+assert ceil["0509"]["reverts_per_100_merges"] == 4.5, ceil
+assert ceil["0509"]["sessions_to_pr_pct"] == 33.0, ceil
+# _default fallback arms a future repo
+assert ceil["futurerepo"]["post_merge_defects_per_100"] == 40.0, ceil
+print("OK: ceilings loaded from config/quality-ratchet.json (+ _default fallback)")
+
+# Export carries the quality families + ceiling series.
+body = m.export_prom([s], now=m.parse_iso("2026-09-02T12:00:00Z"))
+assert 'fleet_product_quality_reverts_per_100{repo="0509"} 50.000000' in body
+assert 'fleet_product_quality_post_merge_defects_per_100{repo="0509"} 50.000000' in body
+assert 'fleet_product_quality_sessions_to_pr_pct{repo="0509"} 0.000000' in body
+assert 'fleet_product_quality_ceiling{repo="0509",metric="reverts_per_100_merges"} 4.500000' in body
+assert 'fleet_product_quality_ceiling{repo="0509",metric="sessions_to_pr_pct"} 33.000000' in body
+assert 'fleet_product_quality_ceiling{repo="0509",metric="post_merge_defects_per_100"} 40.000000' in body
+print("OK: export carries quality gauges + ceilings")
+PY
+ok "(k) per-repo quality metrics + committed ceilings"
+
+# =========================================================================
 # promtool (optional)
 # =========================================================================
 if command -v promtool >/dev/null 2>&1; then

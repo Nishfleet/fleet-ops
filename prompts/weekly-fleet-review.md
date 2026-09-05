@@ -262,6 +262,32 @@ Record shape:
 `hold` may omit `knob` / `from` / `to` / `filed`. Fail loud if the
 file is missing. The next heartbeat tick catches it.
 
+### Per-repo quality ceiling ratchet (fleet-ops#3519)
+
+Same every-week discipline, applied to the per-repo rolling-7d quality
+ceilings in `config/quality-ratchet.json` `.ceilings` (installed at
+`~/.local/state/pi-packet/quality-ratchet.json`). These are the ceilings
+enforced at merge time by `config/fleet_rules.yml` and re-exposed each
+morning in the daily digest. They may only tighten.
+
+1. Pull last week's per-repo, per-metric weekly medians (p50) for the
+   measured metrics (`reverts_per_100_merges`, `post_merge_defects_per_100`,
+   `sessions_to_pr_pct`) from the exported gauge history
+   (`fleet_product_quality_*{repo=...}` in Prometheus) for each product
+   repo. Metrics whose exporter has not landed yet
+   (`rework_rate_pct`, `red_on_main_minutes`, `review_act_on_rate`) are
+   skipped — you cannot ratchet a ceiling you are not measuring.
+2. Assemble one metrics JSON `{repo: {metric: [weekly samples...]}}` and
+   run the ratchet:
+   `python3 lib/quality-ratchet.py tighten-ceilings --ratchet
+   ~/.local/state/pi-packet/quality-ratchet.json --metrics <p50.json>`.
+   It sets each ceiling to `min(current, p50 x 1.1)` — never loosens.
+   `--dry-run` reviews the proposed tighten before writing.
+3. File the tighten(s) as one of the ≤5 Adopt actions with evidence
+   naming the window and the p50. Do NOT loosen a ceiling without a Nish
+   `decisions-ledger` waiver.
+
+
 ### SLO ratchet (fleet-ops#1291)
 
 The SLO ratchet is the SLO analog of the quality ratchet above. It
