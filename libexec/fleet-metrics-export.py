@@ -15,6 +15,7 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections import Counter
 from datetime import datetime, timezone
@@ -3186,6 +3187,295 @@ def _emit_deploy_quality(lines):
         lines.append(f"fleet_deployment_quality_up{{{label}}} 0")
 
 
+# --- Week-later revert check (fleet-ops#3124 part 4/4) ---------------------
+# Self-maintenance budget: a fleet-ops PR that carries a `moves:` metric is
+# expected to move that metric. Seven days after the PR merges, compare the
+# metric's 7d value before vs after the merge; if it did not improve, file
+# ONE revert-candidate issue ("revert candidate: #N did not move <metric>",
+# labeled agent-ready, `termination:` = the revert PR merged). One issue per
+# PR, never re-filed. Runs on the existing fleet-metrics-export tick (no new
+# timer).
+#
+# The `moves:` line is the sibling part 2/4 (fleet-ops#3255) spec-gate
+# requirement; this part consumes it. A PR body carries `moves: <metric>`
+# naming one of the product metrics. Only metrics with a mapped Prometheus
+# expression are comparable; unmapped metrics are skipped (not filed).
+
+# ±6h around the 7-day mark: a PR merged exactly 7 days ago is in the window
+# for 12h, so a tick that misses it (gh hiccup, exporter down) catches it on
+# a later tick. The PR list is cached to WEEK_LATER_CACHE_TTL so the gh
+# search runs at most ~4x/day, not every 5-min tick.
+WEEK_LATER_WINDOW_S = 6 * 3600
+WEEK_LATER_CACHE_TTL = 6 * 3600
+WEEK_LATER_CACHE = PR_CACHE_DIR / "week-later-prs-cache.json"
+# Per-PR evaluation ledger: once a PR is evaluated (improved / already-filed /
+# filed) it is never re-evaluated, so the gh dedup/create calls are bounded to
+# one per PR, not one per tick. Pruned after WEEK_LATER_STATE_TTL.
+WEEK_LATER_STATE = PR_CACHE_DIR / "week-later-state.json"
+WEEK_LATER_STATE_TTL = 14 * 86400
+WEEK_LATER_PROM_URL = "http://127.0.0.1:9090/api/v1/query"
+WEEK_LATER_PROM_TIMEOUT = 10
+
+# moves: metric -> Prometheus expression for the metric's value. The 7d value
+# is the avg_over_time of this expression over a 7d window. Only metrics with
+# a mapping here are comparable; add mappings as the sibling parts land.
+_MOVES_METRIC_QUERIES = {
+    "product_merges_per_day": 'sum(fleet_self_maintenance_merges{kind="product"})',
+}
+
+# Line-anchored `moves:` field (the sibling spec-gate's body line). Leading
+# list markers allowed so a `- moves: ...` body line counts, mirroring the
+# spec-gate's FIELD_RE.
+_MOVES_RE = re.compile(r"(?im)^(?:[-*]\s+)*moves\s*:\s*(\S+)")
+
+
+def _week_later_prs():
+    """Cached list of fleet-ops PRs merged ~7 days ago with a moves: line.
+
+    Returns a list of {"number", "title", "moves", "merged_at"} or [] on
+    failure. The gh search is cached to WEEK_LATER_CACHE_TTL so the exporter
+    does not hammer the API every 5-min tick; a stale cache is served on a
+    gh failure (the window is wide enough that a missed tick is caught later).
+    """
+    cached, age = _read_cache(WEEK_LATER_CACHE)
+    if age is not None and age <= WEEK_LATER_CACHE_TTL and cached is not None:
+        return cached
+    data = _gh_week_later_prs()
+    if data is not None:
+        _write_cache(WEEK_LATER_CACHE, data)
+        return data
+    if cached is not None:
+        print("week-later: gh failed, serving stale PR list", file=sys.stderr)
+        return cached
+    return []
+
+
+def _gh_week_later_prs():
+    """Query GitHub for fleet-ops PRs merged ~7 days ago with a moves: line.
+
+    One paginated GraphQL search across Nishfleet/fleet-ops for PRs merged in
+    [now-7d-WINDOW, now-7d+WINDOW]. Returns a list of {"number", "title",
+    "moves", "merged_at"} for PRs whose body carries a `moves:` line, or None
+    on failure. The cutoff is interpolated as a literal in the search string
+    (GraphQL does not expand variables inside `search(query: ...)`).
+    """
+    now = time.time()
+    start = now - 7 * 86400 - WEEK_LATER_WINDOW_S
+    end = now - 7 * 86400 + WEEK_LATER_WINDOW_S
+    start_iso = datetime.fromtimestamp(start, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    end_iso = datetime.fromtimestamp(end, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    query = (
+        "query($cursor: String) {\n"
+        '  search(query: "repo:Nishfleet/fleet-ops is:pr is:merged '
+        f"merged:>={start_iso} merged:<={end_iso} sort:merged-desc\"" "\n"
+        "    type: ISSUE, first: 100, after: $cursor) {\n"
+        "    pageInfo { hasNextPage endCursor }\n"
+        "    nodes {\n"
+        "      ... on PullRequest {\n"
+        "        number\n"
+        "        title\n"
+        "        body\n"
+        "        mergedAt\n"
+        "      }\n"
+        "    }\n"
+        "  }\n"
+        "}\n"
+    )
+    out = []
+    cursor = None
+    for _ in range(GH_PAGES):
+        payload = _gh_graphql(query, cursor)
+        if payload is None:
+            return None
+        if payload.get("errors"):
+            print(f"week-later gh graphql errors: {payload['errors'][:1]}", file=sys.stderr)
+            return None
+        conn = ((payload.get("data") or {}).get("search") or {})
+        for node in conn.get("nodes") or []:
+            number = node.get("number")
+            if not isinstance(number, int):
+                continue
+            body = node.get("body") or ""
+            m = _MOVES_RE.search(body)
+            if not m:
+                continue
+            out.append({
+                "number": number,
+                "title": node.get("title") or "",
+                "moves": m.group(1).strip(),
+                "merged_at": node.get("mergedAt") or "",
+            })
+        page = conn.get("pageInfo") or {}
+        if not page.get("hasNextPage"):
+            return out
+        cursor = page.get("endCursor")
+        if not cursor:
+            return out
+    print("week-later gh search: hit page cap", file=sys.stderr)
+    return out
+
+
+def _prom_query_value(expr, time_epoch):
+    """Return the value of a Prometheus instant query at time_epoch, or None."""
+    params = urllib.parse.urlencode({"query": expr, "time": str(time_epoch)})
+    url = f"{WEEK_LATER_PROM_URL}?{params}"
+    try:
+        with urllib.request.urlopen(url, timeout=WEEK_LATER_PROM_TIMEOUT) as r:  # nosemgrep
+            payload = json.load(r)
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError,
+            json.JSONDecodeError) as exc:
+        print(f"week-later prom query failed: {exc}", file=sys.stderr)
+        return None
+    if payload.get("status") != "success":
+        return None
+    result = (payload.get("data") or {}).get("result") or []
+    if not result:
+        return None
+    try:
+        return float(result[0].get("value")[1])
+    except (TypeError, ValueError, IndexError):
+        return None
+
+
+def _metric_7d_value(metric, time_epoch):
+    """Return the metric's 7d average value at time_epoch, or None.
+
+    The 7d value is avg_over_time(<metric expr>[7d:1d]) evaluated at
+    time_epoch — the average daily value over the 7 days ending there. None
+    when the metric has no mapped expression or Prometheus cannot answer.
+    """
+    expr = _MOVES_METRIC_QUERIES.get(metric)
+    if not expr:
+        return None
+    return _prom_query_value(f"avg_over_time({expr}[7d:1d])", time_epoch)
+
+
+def _revert_candidate_exists(pr_number, metric):
+    """True when an open revert-candidate issue for this PR already exists.
+
+    Dedup by exact title match against open issues whose title contains
+    "revert candidate". Fail-safe: on any gh failure return True so a PR is
+    never double-filed (a transient gh error must not create a duplicate).
+    """
+    target = f"revert candidate: #{pr_number} did not move {metric}"
+    try:
+        r = subprocess.run(
+            ["gh", "issue", "list", "-R", "Nishfleet/fleet-ops",
+             "--state", "open", "--search", "revert candidate in:title",
+             "--json", "number,title", "--limit", "50"],
+            capture_output=True, text=True, timeout=GH_TIMEOUT,
+            env={**os.environ, "GH": "/usr/bin/gh"},
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"week-later dedup gh issue list failed: {exc}", file=sys.stderr)
+        return True
+    if r.returncode != 0:
+        print(f"week-later dedup gh issue list rc={r.returncode}", file=sys.stderr)
+        return True
+    try:
+        rows = json.loads(r.stdout or "[]")
+    except json.JSONDecodeError:
+        return True
+    return any((row.get("title") or "") == target for row in rows)
+
+
+def _file_revert_candidate(pr_number, metric, before, after, merged_at):
+    """File one revert-candidate issue. Returns True on success."""
+    title = f"revert candidate: #{pr_number} did not move {metric}"
+    marker = f"signal: revert-candidate/{pr_number}/{metric}"
+    body = (
+        f"Revert candidate: PR #{pr_number} (merged {merged_at}) carried "
+        f"`moves: {metric}` but the metric's 7d value did not improve after "
+        f"merge.\n\n"
+        f"before: {before}\n"
+        f"after: {after}\n\n"
+        f"termination: revert PR for #{pr_number} merged\n\n"
+        f"{marker}\n"
+    )
+    try:
+        r = subprocess.run(
+            ["gh", "issue", "create", "-R", "Nishfleet/fleet-ops",
+             "--title", title, "--label", "agent-ready", "--body", body],
+            capture_output=True, text=True, timeout=GH_TIMEOUT,
+            env={**os.environ, "GH": "/usr/bin/gh"},
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"week-later gh issue create failed: {exc}", file=sys.stderr)
+        return False
+    if r.returncode != 0:
+        print(f"week-later gh issue create rc={r.returncode}: {r.stderr.strip()[:200]}",
+              file=sys.stderr)
+        return False
+    return True
+
+
+def _read_week_later_state():
+    """Return the per-PR evaluation ledger dict, or {} on failure."""
+    try:
+        data = json.loads(WEEK_LATER_STATE.read_text())
+        if isinstance(data, dict):
+            return data
+    except (OSError, json.JSONDecodeError):
+        pass
+    return {}
+
+
+def _write_week_later_state(state, now):
+    """Persist the ledger, pruning entries older than WEEK_LATER_STATE_TTL."""
+    pruned = {
+        k: v for k, v in state.items()
+        if isinstance(v, dict) and (now - (v.get("checked_at") or 0)) <= WEEK_LATER_STATE_TTL
+    }
+    try:
+        _atomic_write(WEEK_LATER_STATE, json.dumps(pruned, sort_keys=True))
+    except OSError as exc:
+        print(f"week-later state write: {exc}", file=sys.stderr)
+
+
+def _week_later_revert_check():
+    """Run the week-later revert-candidate check. Returns a summary string.
+
+    Never raises and never fails the exporter: every gh/Prometheus failure is
+    logged and the PR is left unevaluated (retried on a later tick). A PR is
+    evaluated at most once (the state ledger), so the gh dedup/create calls
+    are bounded to one per PR.
+    """
+    prs = _week_later_prs()
+    if not prs:
+        return "week-later: no fleet-ops PRs merged ~7d ago with a moves: line"
+    state = _read_week_later_state()
+    now = time.time()
+    filed = 0
+    skipped = 0
+    for pr in prs:
+        number = pr["number"]
+        metric = pr["moves"]
+        if metric not in _MOVES_METRIC_QUERIES:
+            continue  # metric not yet mapped to a Prometheus query
+        if str(number) in state:
+            skipped += 1
+            continue
+        merged_epoch = _parse_iso_utc(pr["merged_at"])
+        if merged_epoch is None:
+            continue
+        before = _metric_7d_value(metric, merged_epoch)
+        after = _metric_7d_value(metric, now)
+        if before is None or after is None:
+            continue  # Prometheus unavailable; retry on a later tick
+        if after > before:
+            state[str(number)] = {"checked_at": now, "verdict": "improved"}
+            continue
+        if _revert_candidate_exists(number, metric):
+            state[str(number)] = {"checked_at": now, "verdict": "already-filed"}
+            skipped += 1
+            continue
+        if _file_revert_candidate(number, metric, before, after, pr["merged_at"]):
+            state[str(number)] = {"checked_at": now, "verdict": "filed"}
+            filed += 1
+    _write_week_later_state(state, now)
+    return f"week-later: filed={filed} skipped={skipped}"
+
+
 # --- Main ------------------------------------------------------------------
 
 def main():
@@ -3747,6 +4037,13 @@ def main():
     # --- observe-to-close close guard (fleet-ops#3231) ---
     # Per-tick close count by reason; bare-mention and protected must stay 0.
     _emit_observe_to_close(lines)
+
+    # --- Week-later revert check (fleet-ops#3124 part 4/4) ---
+    # For each fleet-ops PR merged ~7 days ago with a `moves:` metric, compare
+    # the metric's 7d value before vs after; if it did not improve, file ONE
+    # revert-candidate issue (never re-filed). Non-fatal: a failure is logged
+    # and the exporter still writes fleet.prom.
+    _week_later_revert_check()
 
     body = "\n".join(lines) + "\n"
     _atomic_write(OUT, body)
