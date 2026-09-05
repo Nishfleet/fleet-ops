@@ -35,11 +35,11 @@
       "models": {
         "glm-5-2": {
           "cap": 3,
-          "max_probe_ceiling": 3
+          "max_probe_ceiling": 6
         },
         "swe-1-7": {
           "cap": 0,
-          "max_probe_ceiling": 0,
+          "max_probe_ceiling": 8,
           "intentional_cap_zero": "stale"
         }
       },
@@ -47,8 +47,7 @@
       "_devin_aimd_20260904": "fleet-ops#3125: hard_ceiling removed (Nish 'cool with your suggestions' + expiry-first standing rule — the Devin weekly sub was ~97% unused 2026-09-04, so a pinned floor wastes prepaid quota). Provider declared cap 4 stays the floor; AIMD may probe to max_probe_ceiling 8. Model-level probe ceilings: glm-5-2 declared 3 / probe to 6, swe-1-7 declared 4 / probe to 8. A fresh provider error backs off to floor/2; learned state resets on deploy of a seat-caps change.",
       "_swe17": "2026-08-30 alert-repair FleetDeadCredentialSeats: swe-1-7 set to 0 (was 4) after persistent HTTP 403 credentials_bad (seat_dead=true, ledger observed 2026-08-29T17:15:33Z, fleet-ops#1445, fleet-ops#2102). RESTORED to 4 on 2026-09-02: live probe pi --print --no-session --provider devin --model swe-1-7 'Reply with exactly: PONG' returned RC=0 PONG PACKET-VERDICT tools=0 class=no-tools; ledger lanes/seats/devin__swe-1-7.json healthy (health_class=healthy, http_status=200, seat_dead=false, observed_at=2026-09-02T17:35:51.020Z, source=cli_spawn). Sibling glm-5-2 on the same Devin credential PONG/200 the same minute (observed_at=2026-09-02T17:35:17.978Z). Ledger evidence sha256 5a437559f27cd1f5f243c64e57431b2613621a6e6945653760969cdec02bb566. The 2026-08-29 403 quarantine copy stays at lanes/seats-deadcred-quarantine-20260830T0135Z/ as audit. fleet-ops#2874.",
       "_glm52_cred": "2026-08-30 alert-repair FleetDeadCredentialSeats: glm-5-2 set to 0 (was 3) after persistent HTTP 403 credentials_bad (seat_dead=true, ledger observed 2026-08-30T03:05:36Z, fleet-ops#1445). RESTORED to 3 on 2026-09-02: ledger lanes/seats/devin__glm-5-2.json healthy (health_class=healthy, http_status=200, seat_dead=false, observed_at=2026-09-02T17:00:58Z, source=comeback_release); alert-repair dispatches on devin/glm-5-2 succeeded rc=0 (2026-09-01T17:52:15Z, 05:10:42Z). Ledger evidence sha256 b6f069af96d884b8037b64cb29bc36388e7dc72120f4b3b240acf43ef9ef8f66. swe-1-7 restored separately (fleet-ops#2874).",
-      "hard_ceiling": true,
-      "_ceiling_2026_09_05": "2026-09-05: probe ceilings 6/8 put 8 devin sessions in flight and Devin answered resource_exhausted on every new one (133 deaths in 12h at ~40s, 85% daily quota unused). Ceilings pinned to caps until the resource_exhausted bench proves AIMD backs off; then raise via fleet-ops#3258.",
+      "_ceiling_2026_09_05": "2026-09-05: AIMD stays as designed (floor 3/4, probe to 6/8; tests/seat-lib-aimd.test.sh pins these). Until 09-05 the probe could not back off because devin resource_exhausted never reached the detectors (empty stderr) — 133 deaths in 12h. #3443 (literal) + #3475 (session error feed) make the bench fire, and a bench decays the learned cap to the floor, so the probe now settles where Devin actually allows.",
       "_swe17_20260905": "2026-09-05 fable-check: seat-yield.json n=20 sessions pr_count=0 yield=0.0; watch.log mid-session-death rc=143 after 20-90s: 36 (23:36-02:36Z) + 29 (01:18-04:18Z); fleet_seat_failure_ceiling_parked=24; the 2026-09-02 PONG probe passes but no real packet completes. cap 4->0 intentional_cap_zero=stale: re-audition after the 14d TTL with a real packet, not PONG (fleet-ops#3258)."
     },
     "cursor": {
@@ -84,14 +83,16 @@
       }
     },
     "ollama": {
-      "cap": 4,
+      "cap": 8,
       "class": "prepaid-quota",
       "hard_ceiling": true,
       "quota_window": "weekly",
       "models": {
-        "deepseek-v4-flash:0731": 4
+        "deepseek-v4-flash:0731": 8
       },
-      "_hard_cap": "Nish 2026-08-26: hard 4, never probe above (like devin). Prepaid weekly quota, not free (Nish 2026-08-26, fleet-ops#387)."
+      "_hard_cap": "Nish 2026-08-26: hard 4, never probe above (like devin). Prepaid weekly quota, not free (Nish 2026-08-26, fleet-ops#387).",
+      "max_probe_ceiling": 8,
+      "_cap8_2026_09_05": "2026-09-05 (Nish: ollama cloud sub expiring unused, wow): Ollama Cloud Pro showed 4.4% weekly used / 13.7% of the hourly session budget with 1 day to reset and 1339 requests all week; the seat ran 2 sessions in 12h because every issue was classified heavy (PR #3444) and the seat was not capable (contextWindow 131072 < 200k; corrected to 1,000,000 in models.json). Cap 4 cannot drain the quota at ~15 min/session; 8 concurrent stays under the hourly session budget. hard_ceiling stays true: never probe above 8. Ollama errors now reach the detectors via PR #3475."
     },
     "commandcode": {
       "cap": 4,
@@ -117,14 +118,15 @@
       "_laguna_20260905": "2026-09-05 fable-check: seat-yield.json n=20 sessions pr_count=0 yield=0.0; watch.log pi exited fast deaths 48 (23:36-02:36Z) + 28 (01:18-04:18Z), HTTP 503 overload_bench expiring fail-open every 600s then re-dying; fleet_seat_failure_ceiling_parked=18; its last run (pi-issue-fleet-ops-3180, 03:35Z) edited the live deploy clone in place (fleet-ops#3389). cap 1->0 intentional_cap_zero=stale: re-audition after the 14d TTL or when CommandCode reports laguna capacity."
     },
     "hetzner": {
-      "cap": 2,
+      "cap": 1,
       "class": "free",
       "max_probe_ceiling": 4,
       "models": {
-        "Qwen/Qwen3.6-35B-A3B-FP8": 2
+        "Qwen/Qwen3.6-35B-A3B-FP8": 1
       },
       "_note": "2026-08-26 fleet-ops#437: allowlist the live models.json slug. cap=2 with an empty models map made pick_seat skip every hetzner row as not in the cap-map allowlist.",
-      "_comment_1350": "2026-08-29 fleet-ops#1350 concurrency-tolerance probe (load 2.95, 0 active workers): 3 simultaneous pi --print --provider hetzner --model Qwen/Qwen3.6-35B-A3B-FP8 'reply PONG' probes all timed out at 60s (rc=124); a single probe returned rc=0 but took ~120s (PACKET-VERDICT tools=0 class=no-tools). The seat responds but with ~120s latency on a 1-token probe, so concurrent probes all hit the timeout. Cap NOT raised — stays 2. The latency is a live-state observation (possibly transient); re-probe before any future raise. If it persists, file a hetzner-latency issue."
+      "_comment_1350": "2026-08-29 fleet-ops#1350 concurrency-tolerance probe (load 2.95, 0 active workers): 3 simultaneous pi --print --provider hetzner --model Qwen/Qwen3.6-35B-A3B-FP8 'reply PONG' probes all timed out at 60s (rc=124); a single probe returned rc=0 but took ~120s (PACKET-VERDICT tools=0 class=no-tools). The seat responds but with ~120s latency on a 1-token probe, so concurrent probes all hit the timeout. Cap NOT raised — stays 2. The latency is a live-state observation (possibly transient); re-probe before any future raise. If it persists, file a hetzner-latency issue.",
+      "_cap1_2026_09_05": "2026-09-05: hetzner Qwen took 10 of the last 15 light picks and produced 2 PRs from 20 sessions (8 request timeouts, 4 EngineCore errors). Cap 1 until the yield gate (#3251) governs it by data; free, so a single probe slot stays."
     },
     "zenmux": {
       "cap": 2,
