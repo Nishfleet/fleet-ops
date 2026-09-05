@@ -64,6 +64,10 @@ need_capable=0
 # (fail-closed: an unclassified repo is treated as private).
 scout_privacy=$(repo_privacy "$repo")
 seat_log "pi-scout-run: $repo/$prompt_name privacy=$scout_privacy"
+# fleet-ops#3724: the packet repo also feeds pick_seat's product_only gate —
+# a seat flagged product_only in seat-caps.json is offered only when this
+# repo carries the product flag in config/intake-repos.json.
+export PI_PACKET_REPO="$repo"
 
 seat=$(pick_seat "" "" "$need_capable" "" "$difficulty" "$scout_privacy" || true)
 if [[ -z "$seat" ]]; then
