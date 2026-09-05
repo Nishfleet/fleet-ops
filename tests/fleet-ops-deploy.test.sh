@@ -1765,6 +1765,98 @@ grep -q 'issue close' "$dbm_gh_log" \
   && fail "scenario20e: must not close on the same tick as the comment (log=$(cat "$dbm_gh_log"))"
 ok "scenario20e: green canary observes-to-close on open deploy-blocked-on-main issue (fleet-ops#620)"
 
+# --- scenario 21: auto-rescue an orphaned named-branch hot-patch (fleet-ops-3389)
+# The 2026-09-04 incident: an alert-repair worker ran git checkout -b on the
+# live deploy-clone and edited files in place through the ~/.local/bin symlinks;
+# its worker died, leaving a named branch + dirty tracked files that blocked
+# merge-to-live every tick for hours (this issue's body). With NO live process
+# cwd inside the clone, fleet-ops-deploy now stashes the orphaned WIP (dated)
+# and detaches to origin/main so the deploy unblocks the SAME tick.
+# First restore the real install.sh onto origin/main (scenario 18b stubbed it
+# to fail --system, and scenario 20 reset to that stub).
+git -C "$checkout" reset --hard -q origin/main
+git -C "$checkout" checkout -q -B main origin/main
+cp "$repo_root/install.sh" "$install" && chmod +x "$install"
+git -C "$checkout" add install.sh
+git -C "$checkout" commit -q -m "restore real install.sh for scenario21 (fleet-ops-3389)"
+git -C "$checkout" push -q origin HEAD:main
+git -C "$checkout" reset --hard -q origin/main
+: >"$enabled_units"
+printf '%s\n' "${expected_units[@]}" merged.timer > "$enabled_units"
+git -C "$checkout" checkout -q -b orphan/alert-worker-3389
+echo '# orphaned hot-patch' >> "$checkout/bin/demo-script"
+[ -n "$(git -C "$checkout" status --porcelain --untracked-files=no)" ] \
+    || fail "scenario21a: setup expected a dirty tracked file"
+: >"$dbm_gh_log"
+echo '[]' >"$scratch/open-dbm.json"
+if out=$(PATH="$scratch:$PATH" \
+  FLEET_OPS_CHECKOUT="$checkout" \
+  FLEET_OPS_DRIFT_BIN="$canary" \
+  FLEET_OPS_SYSTEMCTL="$systemctl_fake" \
+  FLEET_OPS_DEPLOY_AUDIT_LOG="$scratch/deploy-audit.log" \
+  FLEET_OPS_TRIAGE="$scratch/triage.md" \
+  FLEET_OPS_CLONE_IN_USE=0 \
+  GH="$dbm_gh" \
+  GH_LOG="$dbm_gh_log" \
+  FLEET_OPS_DRIFT_FILE=1 \
+  FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+  FLEET_ISSUE_FILE_LIB="$repo_root/lib/issue-file.py" \
+    "$deploy" 2>&1); then
+    :
+else
+    fail "scenario21a: deploy should auto-rescue and succeed, got: $out"
+fi
+[[ "$out" != *"DEPLOY-BLOCKED"* ]] \
+    || fail "scenario21a: auto-rescue must not DEPLOY-BLOCK (got: $out)"
+[[ "$out" == *"auto-rescued"* ]] \
+    || fail "scenario21a: expected auto-rescue log line (got: $out)"
+# The orphaned branch was detached onto origin/main — no named branch now
+# and the deploy proceeded to install (no block).
+! git -C "$checkout" symbolic-ref --short HEAD >/dev/null 2>&1 \
+    || fail "scenario21a: HEAD must be detached after rescue, still on $(git -C "$checkout" symbolic-ref --short HEAD)"
+[ "$(git -C "$checkout" rev-parse HEAD)" = "$(git -C "$checkout" rev-parse origin/main)" ] \
+    || fail "scenario21a: HEAD must be at origin/main after rescue"
+git -C "$checkout" stash list | grep -q "auto-rescue" \
+    || fail "scenario21a: the orphaned WIP must be in a dated stash (got: $(git -C "$checkout" stash list))"
+[ -z "$(git -C "$checkout" status --porcelain --untracked-files=no)" ] \
+    || fail "scenario21a: working tree must be clean after rescue"
+rm -f "$dropin"
+ok "scenario21a: orphaned named-branch hot-patch auto-rescued (stash + detach)"
+
+# 21b: with a live process cwd inside the clone, auto-rescue is REFUSED — it
+# stays a DEPLOY-BLOCK so a real worker/hotfix is never disturbed.
+git -C "$checkout" reset --hard -q origin/main
+git -C "$checkout" checkout -q -B main origin/main
+git -C "$checkout" checkout -q -b hotfix/live-3389
+echo '# live hot-patch' >> "$checkout/bin/demo-script"
+: >"$dbm_gh_log"
+echo '[]' >"$scratch/open-dbm.json"
+if out=$(PATH="$scratch:$PATH" \
+  FLEET_OPS_CHECKOUT="$checkout" \
+  FLEET_OPS_DRIFT_BIN="$canary" \
+  FLEET_OPS_SYSTEMCTL="$systemctl_fake" \
+  FLEET_OPS_DEPLOY_AUDIT_LOG="$scratch/deploy-audit.log" \
+  FLEET_OPS_TRIAGE="$scratch/triage.md" \
+  FLEET_OPS_CLONE_IN_USE=1 \
+  GH="$dbm_gh" \
+  GH_LOG="$dbm_gh_log" \
+  FLEET_OPS_DRIFT_FILE=1 \
+  FLEET_OPS_DRIFT_REPO="Nishfleet/fleet-ops" \
+  FLEET_ISSUE_FILE_LIB="$repo_root/lib/issue-file.py" \
+    "$deploy" 2>&1); then
+    fail "scenario21b: deploy must DEPLOY-BLOCK while a live process is inside, got: $out"
+fi
+[[ "$out" == *"DEPLOY-BLOCKED"* ]] \
+    || fail "scenario21b: expected DEPLOY-BLOCKED (got: $out)"
+[[ "$out" != *"auto-rescued"* ]] \
+    || fail "scenario21b: must NOT auto-rescue while in use (got: $out)"
+[ "$(git -C "$checkout" symbolic-ref --short HEAD)" = "hotfix/live-3389" ] \
+    || fail "scenario21b: live branch must be untouched (got: $(git -C "$checkout" symbolic-ref --short HEAD))"
+ok "scenario21b: auto-rescue refused while a live process has cwd inside (DEPLOY-BLOCK)"
+
+git -C "$checkout" reset --hard -q origin/main
+git -C "$checkout" checkout -q -B main origin/main
+
 ok "fleet-ops deploy step: install, drift detection, merge, and canary pass offline"
 
 # fleet-ops#176: CI lists THIS file explicitly; the worker GitHub App cannot

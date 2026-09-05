@@ -538,3 +538,16 @@ bash "$here/seat-empty-run-intermittent-count.test.sh"
 # .github/workflows/**). Offline import of memoryctl plus a live layer
 # that skips in hosted CI (no user journal / no vault health file).
 bash "$here/curator-journal-cap.test.sh"
+
+# fleet-ops-3389: the alert-repair worktree-seam test. The dispatch now
+# creates a git worktree (repo-targeted alert) or a safe scratch dir
+# (fleet-internal alert) and passes --working-directory to pi-systemd-run,
+# so a weak model never runs with cwd that leads it onto the live
+# deploy-clone. Landed in this PR without a ci.yml listing or a host, so P14
+# would run red on "1 test file(s) are neither ...:
+# alert-repair-worktree-seam.test.sh". Hosted here so P14 runs it without a
+# workflow-file edit (the worker App cannot push .github/workflows/**). The
+# named pin in tests/p14-test-listing-gate.test.sh is the class-prevention
+# so a future drop of this host line fails by name. Hermetic (real git
+# worktree from a scratch checkout; mock pi-systemd-run; no live 9090).
+bash "$here/alert-repair-worktree-seam.test.sh"

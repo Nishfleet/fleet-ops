@@ -75,6 +75,29 @@ auto_file_deploy_blocked_main() {
         || log "WARN: deploy-blocked-on-main auto-file failed"
 }
 
+# fleet-ops-3389: True if any live process has its cwd inside $1 (a worker or
+# hotfix is actively using the checkout). Used to refuse the auto-rescue while
+# a real process owns the clone; an orphaned branch (nobody inside) IS rescued.
+# Same /proc/<pid>/cwd pattern interactive-session-reap uses.
+# FLEET_OPS_CLONE_IN_USE=0/1 forces the answer (drills/tests); unset scans live.
+checkout_cwd_in_use() {
+    local dir="$1" cwd
+    if [ -n "${FLEET_OPS_CLONE_IN_USE:-}" ]; then
+        [ "$FLEET_OPS_CLONE_IN_USE" = "1" ] && return 0
+        return 1
+    fi
+    local d link
+    for d in /proc/[0-9]*; do
+        link="$d/cwd"
+        [ -L "$link" ] || continue
+        cwd=$(readlink "$link" 2>/dev/null || true)
+        case "$cwd" in
+            "$dir"|"$dir"/*) return 0 ;;
+        esac
+    done
+    return 1
+}
+
 log "starting: checkout=$DEPLOY_CHECKOUT"
 
 # fleet-ops#370: the paper-over drop-in must die even when merge is later
@@ -192,6 +215,43 @@ branch=""
 branch=$(git -C "$DEPLOY_CHECKOUT" symbolic-ref --short HEAD 2>/dev/null || true)
 if [ -n "$branch" ] && [ "$branch" != "main" ]; then
     reasons+=("checkout on '$branch' not main (fleet-ops#477)")
+fi
+
+# fleet-ops-3389 auto-rescue: a NAMED non-main branch carrying dirty tracked
+# files with NO live process cwd inside the clone is orphaned WIP — an
+# alert-repair worker edited the live clone in place (git checkout -b + edits
+# through the ~/.local/bin symlinks), then died, leaving merge-to-live blocked
+# every tick for hours. Stash the dirty work with a dated message and detach
+# to origin/main so the deploy unblocks the same tick; the stash keeps the
+# orphaned patch recoverable. A branch with a live process inside (a real
+# worker or hotfix) is never touched — it stays a DEPLOY-BLOCK instead.
+if [ -n "$branch" ] && [ "$branch" != "main" ] && [ -n "$dirty" ] \
+   && ! checkout_cwd_in_use "$DEPLOY_CHECKOUT"; then
+    rescue_ts=$(date -u +%Y%m%dT%H%M%SZ)
+    if git -C "$DEPLOY_CHECKOUT" stash push \
+            -m "fleet-ops-deploy auto-rescue $rescue_ts (fleet-ops-3389)" \
+            >/dev/null 2>&1 \
+       && git -C "$DEPLOY_CHECKOUT" checkout --detach origin/main \
+            >/dev/null 2>&1; then
+        log "auto-rescued orphaned branch '$branch' (stash @ $rescue_ts); detached to origin/main"
+        deploy_audit "fleet-ops" "auto-rescue" "branch=$branch stash=$rescue_ts"
+        # Re-derive state; the rescue leaves a clean checkout at origin/main.
+        ahead=0
+        ahead=$(git -C "$DEPLOY_CHECKOUT" rev-list --count HEAD..origin/main 2>/dev/null || echo 0)
+        dirty=""
+        dirty=$(git -C "$DEPLOY_CHECKOUT" status --porcelain --untracked-files=no 2>/dev/null || true)
+        nonff=0
+        git -C "$DEPLOY_CHECKOUT" merge-base --is-ancestor HEAD origin/main >/dev/null 2>&1 || nonff=1
+        branch=""
+        branch=$(git -C "$DEPLOY_CHECKOUT" symbolic-ref --short HEAD 2>/dev/null || true)
+        reasons=()
+        [ -n "$dirty" ] && reasons+=("dirty tracked files")
+        [ "$nonff" = 1 ] && reasons+=("checkout not an ancestor of origin/main (stale)")
+        [ -n "$branch" ] && reasons+=("checkout on '$branch' not main (fleet-ops#477)")
+    else
+        loud "DEPLOY-RESCUE" \
+            "auto-rescue failed on '$branch' (stash/detach); blocking merge-to-live (fleet-ops-3389)"
+    fi
 fi
 if [ "${#reasons[@]}" -gt 0 ]; then
     why=$(printf '%s; ' "${reasons[@]}")

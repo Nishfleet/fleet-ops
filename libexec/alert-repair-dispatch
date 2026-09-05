@@ -144,6 +144,97 @@ ALERT_REPAIR_CLAIM_BIN = os.environ.get(
     str(Path(__file__).resolve().parent / "alert-repair-claim"),
 )
 
+# fleet-ops-3389 worktree seam. The dispatcher used to spawn its pi worker
+# with NO working directory (cwd=/home/nish), so a weak model found the live
+# deploy-clone symlinks (~/.local/bin/* -> deploy-clone) and edited files in
+# place (git checkout -b + edits), blocking merge-to-live for hours. Give the
+# worker the same seam pi-issue-run uses: name a working directory and create
+# a worktree for it. A repo-targeted alert gets a real git worktree (detached
+# at the repo's origin/main) whose changes pi-salvage-worktree banks on a
+# dirty stop; a fleet-internal alert gets a plain scratch dir. Either way the
+# worker's cwd is never the live clone. Overrides exist for tests only.
+WORKTREE_ROOT = os.environ.get(
+    "ALERT_REPAIR_WORKTREE_ROOT",
+    "/home/nish/workspaces/agent-worktrees",
+)
+REPO_CHECKOUT_ROOT = os.environ.get(
+    "ALERT_REPAIR_REPO_CHECKOUT_ROOT",
+    "/home/nish/workspaces/products",
+)
+CANONICAL_FLEET_OPS = os.environ.get(
+    "ALERT_REPAIR_FLEET_OPS_CLONE",
+    "/home/nish/workspaces/tooling/fleet-ops-deploy-clone",
+)
+DEFAULT_WORKDIR = os.environ.get(
+    "ALERT_REPAIR_WORKDIR",
+    "/home/nish/workspaces/agent-state/alert-repair/worktrees",
+)
+
+
+# fleet-ops-3389: absolute path to the git checkout a target repo's worktree
+# is created from. fleet-ops's canonical checkout is the deploy-clone, not
+# the products/ symlink (which still points at the pre-rewrite worktree parent
+# until fleet-ops#410 retargets it); every other repo uses products/<repo>.
+def _repo_checkout(repo):
+    if repo == "fleet-ops":
+        return CANONICAL_FLEET_OPS
+    return str(Path(REPO_CHECKOUT_ROOT) / repo)
+
+
+def _git(checkout, *args, timeout=30):
+    """Run a git command in `checkout`, raising on any non-zero exit."""
+    env = os.environ.copy()
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    return subprocess.run(
+        ["git", "-C", str(checkout), *args],
+        capture_output=True, text=True, env=env, timeout=timeout,
+        check=True,
+    )
+
+
+def _git_ok(checkout):
+    try:
+        _git(checkout, "rev-parse", "--git-dir", timeout=15)
+        return True
+    except Exception:
+        return False
+
+
+def _make_working_dir(repo, name, log):
+    """Return the absolute working directory the pi worker runs in.
+
+    fleet-ops-3389: always NAME a working directory so the worker never falls
+    back to cwd=/home/nish and stumbles onto the live deploy-clone. For a
+    repo-targeted alert, create a real git worktree (detached at the repo's
+    origin/main) when possible. On any git failure, or for a fleet-internal
+    alert (no repo), fall back to a plain scratch dir that is still named and
+    still away from the live clone. Fail-open: a worktree error never drops
+    the dispatch.
+    """
+    if repo:
+        checkout = Path(_repo_checkout(repo))
+        if checkout.is_dir() and _git_ok(checkout):
+            wt = str(Path(WORKTREE_ROOT) / f"alert-repair-{name}")
+            try:
+                _git(checkout, "fetch", "origin", timeout=60)
+                _git(checkout, "worktree", "add", "--detach", wt, "origin/main")
+                # The worktree dir now exists; pi-systemd-run requires it.
+                if Path(wt).is_dir():
+                    return wt
+            except Exception as exc:
+                log(f"WARN: worktree create failed for {repo}: {exc}; "
+                    "falling back to scratch working dir")
+            try:
+                Path(wt).mkdir(parents=True, exist_ok=True)
+            except OSError:
+                pass
+            return wt
+        log(f"WARN: worktree source missing for {repo} at {checkout}; "
+            "using scratch working dir")
+    d = Path(DEFAULT_WORKDIR) / name
+    d.mkdir(parents=True, exist_ok=True)
+    return str(d)
+
 
 def _target_repo(alertnames, common_labels, alerts):
     """Return the repo this dispatch targets, or "" for fleet-internal alerts.
@@ -582,6 +673,17 @@ def main():
     packet = PACKET_DIR / f"packet-{safe}-{stamp}.md"
     unit = f"alert-repair-{safe}-{stamp}"
 
+    # fleet-ops-3389: name the worker's working directory up front so the
+    # packet can tell it where to work. The dir is actually created at spawn
+    # time (the NO_SPAWN test path never creates a worktree/dir).
+    target_repo = _target_repo(alertnames, common_labels, alerts)
+    if target_repo:
+        working_name = f"{safe}-{target_repo}-{stamp}"
+        workdir_target = str(Path(WORKTREE_ROOT) / f"alert-repair-{working_name}")
+    else:
+        working_name = f"{safe}-{stamp}"
+        workdir_target = str(Path(DEFAULT_WORKDIR) / working_name)
+
     # Render the packet.
     lines = [
         "# Alert repair packet",
@@ -628,6 +730,19 @@ def main():
         "",
         "EXIT CONTRACT: after your fix, re-check `curl -s 127.0.0.1:9090/api/v1/alerts`. If the alert you were dispatched for is no longer firing, exit 0. If it still fires, or you could not repair it, append your full diagnosis to your packet file under '## FAILED-REPAIR CONTEXT' and EXIT NON-ZERO — your unit's failure mechanically escalates to the senior-auditor pipeline, which needs that context. Never exit 0 on an unresolved alert.",
         "",
+        "## Working directory",
+        "",
+        f"Your pi process runs in `{workdir_target}`. Work ONLY inside a git",
+        "worktree you create from the target repo's checkout (e.g. `git -C",
+        "<checkout> worktree add --detach <path>`), and branch/push from there.",
+        "",
+        "NEVER check out a branch on, or edit files in, the live deploy-clone at",
+        "/home/nish/workspaces/tooling/fleet-ops-deploy-clone. NEVER edit files",
+        "through the ~/.local/bin symlinks — they point INTO that live clone;",
+        "editing them in place (git checkout -b + edits) blocks merge-to-live",
+        "for hours (fleet-ops-3389). If you must change a fleet-ops file, create",
+        "a worktree from the deploy-clone and work there.",
+        "",
     ]
     packet.write_text("\n".join(lines))
 
@@ -638,7 +753,6 @@ def main():
     def _log(msg):
         print(f"[{utcnow()}] {msg}", file=sys.stderr)
 
-    target_repo = _target_repo(alertnames, common_labels, alerts)
     if not _acquire_alert_repair_claim(alertnames, target_repo, _log):
         with LOG.open("a") as f:
             f.write(
@@ -697,6 +811,13 @@ def main():
               f"suppressed_by=ALERT_REPAIR_NO_SPAWN", file=sys.stderr)
         return 0
 
+    # fleet-ops-3389: create the worker's working directory and point
+    # pi-systemd-run at it so its cwd is never the live deploy-clone. For a
+    # repo-targeted alert this is a real git worktree (salvageable via
+    # pi-systemd-run's --working-directory -> PI_SALVAGE_WORKDIR hook); for a
+    # fleet-internal alert it is a safe scratch dir. Runs after the NO_SPAWN
+    # guard, so the hermetic tests never create a worktree.
+    working_dir = _make_working_dir(target_repo, working_name, _log)
     env = os.environ.copy()
     env["PATH"] = f"{os.environ.get('HOME', '/home/nish')}/.local/bin:" + env.get("PATH", "")
     env["XDG_RUNTIME_DIR"] = "/run/user/1000"
@@ -704,6 +825,7 @@ def main():
         "pi-systemd-run",
         "--unit", unit,
         "--stdin", str(packet),
+        "--working-directory", working_dir,
         # CLOCK_RUN is 3600s (packet 11). --deadline drives RuntimeMaxSec so
         # the unit self-terminates at the run-hop budget instead of holding
         # fleet_chain_stalled{hop=run} open (fleet-ops#3328). pi-systemd-run's
