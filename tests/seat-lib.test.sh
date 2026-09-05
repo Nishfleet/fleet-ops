@@ -3589,5 +3589,51 @@ grep -q "cap0-stale-expire" "$PI_PACKET_STATE/watch.log" 2>/dev/null \
   && fail "3241: no expire lines expected when the mechanism is disabled"
 ok "3241: SEAT_CAP_ZERO_STALE_EXPIRE=0 disables expiry"
 
-# Back to the shared scratch cap map for any later additions.
-export SEAT_CAPS_JSON="$scratch/seat-caps.json"
+# fleet-ops#3559: a WRAPPER bench (mark_seat_empty_run / mark_seat_spawn_fail)
+# must co-write the legacy single-record seat-health sidecar
+# (pi-seat-health.json), so the seat-health probe honours the empty-run/spawn-fail
+# bench instead of keeping the seat healthy/200 until the out-of-repo
+# seat-health.ts extension's next observation. The live ollama/
+# deepseek-v4-flash:0731 loop benched 4x while pi-seat-health.json stayed
+# health_class=healthy/http 200 — the bench and the probe disagreed and the seat
+# kept being re-selected. Each bench path uses its own scratch sidecar + ledger.
+_sidecar_scratch="$scratch/sidecar-3559"
+mkdir -p "$_sidecar_scratch"
+_sidecar_q="$(PI_SEAT_HEALTH_SIDECAR="$_sidecar_scratch/empty.json" \
+  PI_SEAT_HEALTH_LEDGER_DIR="$_sidecar_scratch/ledger" \
+  bash -c 'source "$0"; mark_seat_empty_run "ollama" "deepseek-v4-flash:0731" "t3559:noop" >/dev/null 2>&1; jq -r .health_class "$PI_SEAT_HEALTH_SIDECAR" 2>/dev/null' "$lib")"
+[[ -f "$_sidecar_scratch/empty.json" ]] \
+  || fail "3559: wrapper empty-run bench must co-write the sidecar pi-seat-health.json"
+[[ "$_sidecar_q" = "transient_fault" ]] \
+  || fail "3559: sidecar must report transient_fault after an empty-run bench, got $_sidecar_q"
+_sidecar_fm="$(PI_SEAT_HEALTH_SIDECAR="$_sidecar_scratch/empty.json" \
+  PI_SEAT_HEALTH_LEDGER_DIR="$_sidecar_scratch/ledger" \
+  bash -c 'source "$0"; jq -r .failure_mode "$PI_SEAT_HEALTH_SIDECAR"' "$lib")"
+[[ "$_sidecar_fm" = "empty_run" ]] \
+  || fail "3559: sidecar failure_mode must be empty_run, got $_sidecar_fm"
+_sidecar_u="$(PI_SEAT_HEALTH_SIDECAR="$_sidecar_scratch/empty.json" \
+  PI_SEAT_HEALTH_LEDGER_DIR="$_sidecar_scratch/ledger" \
+  bash -c 'source "$0"; u="$(jq -r .usable_at "$PI_SEAT_HEALTH_SIDECAR")"; _seat_in_future "$u" && printf "%s" "$u"' "$lib")"
+[[ -n "$_sidecar_u" ]] \
+  || fail "3559: sidecar usable_at must be in the future after a bench, got '$_sidecar_u'"
+_sidecar_http="$(PI_SEAT_HEALTH_SIDECAR="$_sidecar_scratch/empty.json" \
+  PI_SEAT_HEALTH_LEDGER_DIR="$_sidecar_scratch/ledger" \
+  bash -c 'source "$0"; jq -r .http_status "$PI_SEAT_HEALTH_SIDECAR"' "$lib")"
+[[ "$_sidecar_http" = "200" ]] \
+  || fail "3559: empty-run bench sidecar http_status must be 200, got $_sidecar_http"
+ok "3559: wrapper empty-run bench is visible in pi-seat-health.json (transient_fault/empty_run/future usable_at, not healthy)"
+
+# spawn_fail -> sidecar carries failure_mode=spawn_fail, not healthy.
+_sidecar_q="$(PI_SEAT_HEALTH_SIDECAR="$_sidecar_scratch/spawn.json" \
+  PI_SEAT_HEALTH_LEDGER_DIR="$_sidecar_scratch/ledger-spawn" \
+  bash -c 'source "$0"; mark_seat_spawn_fail "devin" "glm-5-2" "t3559:spawn" >/dev/null 2>&1; jq -r .health_class "$PI_SEAT_HEALTH_SIDECAR" 2>/dev/null' "$lib")"
+_sidecar_fm="$(PI_SEAT_HEALTH_SIDECAR="$_sidecar_scratch/spawn.json" \
+  PI_SEAT_HEALTH_LEDGER_DIR="$_sidecar_scratch/ledger-spawn" \
+  bash -c 'source "$0"; jq -r .failure_mode "$PI_SEAT_HEALTH_SIDECAR"' "$lib")"
+[[ -f "$_sidecar_scratch/spawn.json" ]] \
+  || fail "3559: wrapper spawn-fail bench must co-write the sidecar pi-seat-health.json"
+[[ "$_sidecar_fm" = "spawn_fail" ]] \
+  || fail "3559: sidecar failure_mode must be spawn_fail, got $_sidecar_fm"
+[[ "$_sidecar_q" = "transient_fault" ]] \
+  || fail "3559: spawn-fail sidecar must report transient_fault, got $_sidecar_q"
+ok "3559: wrapper spawn-fail bench is visible in pi-seat-health.json (transient_fault/spawn_fail, not healthy)"

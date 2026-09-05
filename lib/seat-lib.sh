@@ -53,6 +53,15 @@ MODELS_JSON="${PI_MODELS_JSON:-$HOME/.pi/agent/models.json}"
 # seat-health extension (one file per provider+model). Read-only here:
 # no polling, no network — file reads only.
 LEDGER_DIR="${PI_SEAT_HEALTH_LEDGER_DIR:-/home/nish/workspaces/agent-state/lanes/seats}"
+# Legacy single-record seat-health sidecar (pi-seat-health.json). The out-of-repo
+# seat-health.ts extension writes it on every observation (including a healthy 200
+# from a simple packet), so when the WRAPPER benches a seat (mark_seat_empty_run /
+# mark_seat_spawn_fail) the sidecar keeps reporting health_class=healthy/http 200
+# until the extension's next observation — the seat-health probe and the wrapper
+# bench disagree, the seat keeps being re-selected and burns issues (fleet-ops#3559).
+# The wrapper co-writes this sidecar on a wrapper bench so the record honours it.
+# Env override matches seat-health.ts (PI_SEAT_HEALTH_SIDECAR); tests stub it.
+SEAT_HEALTH_SIDECAR="${PI_SEAT_HEALTH_SIDECAR:-$HOME/workspaces/agent-state/lanes/pi-seat-health.json}"
 STALE_SECS=21600   # 6h — observed_at older than this counts as no-data
 RATE_LIMIT_FRESH_SECS=1800  # 30 min — a rate_limited marker is only trusted while freshly observed; older than this, retry the seat
 PI_BIN="${PI_BIN:-$HOME/.local/bin/pi}"
@@ -1497,6 +1506,50 @@ _seat_write_spawn_bench() {
         > "$tmp" 2>/dev/null; then
         chmod 0644 "$tmp" 2>/dev/null || true
         mv "$tmp" "$path" 2>/dev/null || { rm -f "$tmp" 2>/dev/null || true; return 1; }
+        _seat_co_write_sidecar "$p" "$m" "$mode" "$usable" "$now_utc" || true
+        return 0
+    fi
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+}
+
+# fleet-ops#3559: co-write the legacy single-record seat-health sidecar
+# (pi-seat-health.json) when the WRAPPER benches a seat. seat-health.ts writes
+# this file on every observation and, on a later simple packet's healthy 200,
+# reports the benched seat as health_class=healthy/http 200 — the sidecar probe
+# and the wrapper's empty_run/spawn_fail bench disagree, so the seat keeps being
+# re-selected and burning issues. The wrapper owns the bench (it ran the packet
+# that no-op'ed), so it projects the bench to the sidecar the same way the
+# per-seat spawn-bench marker is written. Best-effort: a sidecar write failure
+# must not fail the bench (the marker is the routing authority; this is the
+# record).
+# Args: provider model failure_mode usable_at observed_at_utc
+_seat_co_write_sidecar() {
+    local p="$1" m="$2" mode="$3" usable="$4" observed="$5"
+    local http_status retryable source
+    [[ -n "$SEAT_HEALTH_SIDECAR" ]] || return 0
+    case "$mode" in
+        empty_run)  http_status=200; source="cli_spawn" ;;
+        spawn_fail) http_status=0;   source="cli_timeout" ;;
+        *)          http_status=0;   source="cli_timeout" ;;
+    esac
+    retryable=true
+    local tmp="$SEAT_HEALTH_SIDECAR.$$.$RANDOM.tmp"
+    mkdir -p "$(dirname "$SEAT_HEALTH_SIDECAR")" 2>/dev/null || return 1
+    if jq -nc \
+        --arg provider "$p" --arg model "$m" \
+        --argjson http_status "$http_status" --argjson retry_after_null null \
+        --arg health_class "transient_fault" --argjson retryable "$retryable" \
+        --argjson seat_dead false --argjson poison_ladder false \
+        --arg observed "$observed" --arg source "$source" --arg mode "$mode" \
+        --arg usable "$usable" \
+        '{provider:$provider, model:$model, http_status:$http_status,
+          retry_after:$retry_after_null, health_class:$health_class,
+          retryable:$retryable, seat_dead:$seat_dead, poison_ladder:$poison_ladder,
+          observed_at:$observed, source:$source, failure_mode:$mode, usable_at:$usable}' \
+        > "$tmp" 2>/dev/null; then
+        chmod 0644 "$tmp" 2>/dev/null || true
+        mv -f "$tmp" "$SEAT_HEALTH_SIDECAR" 2>/dev/null || { rm -f "$tmp" 2>/dev/null || true; return 1; }
         return 0
     fi
     rm -f "$tmp" 2>/dev/null || true
