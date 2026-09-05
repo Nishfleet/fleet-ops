@@ -1990,3 +1990,66 @@ print("OK: Prometheus-unavailable PR is left unevaluated, not filed, not recorde
 PY
 
 ok "fleet-ops#3124 part 4/4: week-later revert-candidate check pinned"
+
+# =========================================================================
+# 12. fleet-ops#3399: _gh_latest_ci_verdict must NOT treat a 'cancelled'
+#     run as a red verdict on a PENDING rollup. A cancelled run is a
+#     superseded/abandoned run (a newer push replaced it, or auto-revert /
+#     stop-the-line cancelled it while a fresh run was queued) — not a red
+#     trunk. Treating it as red made the PENDING fallback emit
+#     fleet_main_ci_green{repo="Nishfleet/fleet-ops"} 0 (FleetMainRed) even
+#     though the real latest completed verdict on main was green.
+# =========================================================================
+python3 - "$exporter" <<'PY' || fail "ci-verdict cancelled-not-red test failed"
+import importlib.util, json, sys, types
+path = sys.argv[1]
+spec = importlib.util.spec_from_file_location("fme_verdict", path)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+
+class FakeR:
+    def __init__(self, rows):
+        self.returncode = 0
+        self.stdout = json.dumps(rows)
+        self.stderr = ""
+
+def run_latest(rows):
+    def fake_run(*a, **k):
+        return FakeR(rows)
+    m.subprocess.run = fake_run
+    return m._gh_latest_ci_verdict("Nishfleet/fleet-ops", "main")
+
+success = {"status": "completed", "conclusion": "success"}
+failure = {"status": "completed", "conclusion": "failure"}
+cancelled = {"status": "completed", "conclusion": "cancelled"}
+in_progress = {"status": "in_progress", "conclusion": None}
+skipped = {"status": "completed", "conclusion": "skipped"}
+
+# the live 2026-09-05 fleet-ops main shape: in_progress HEAD, then a cancelled
+# superseded run, then the real green run -> must resolve green (was red prior
+# to the fix because the first completed run was 'cancelled').
+assert run_latest([in_progress, cancelled, cancelled, success]) == 1, \
+    "cancelled runs must not mask a later green verdict"
+
+# a genuine failure after the cancelled runs must still be caught -> red.
+assert run_latest([in_progress, cancelled, cancelled, failure]) == 0, \
+    "a real failure must still resolve red behind cancelled runs"
+
+# a genuine failure as the FIRST completed verdict (no cancelled in front)
+# must still be red (unchanged pre-fix behaviour).
+assert run_latest([failure, cancelled]) == 0, \
+    "first-completed genuine red must resolve red"
+
+# a plain latest green with no cancelled in front stays green.
+assert run_latest([success]) == 1, "plain green must resolve green"
+
+# only cancelled/skipped/in_progress completed runs -> no verdict -> None (omit),
+# never a false 0.
+assert run_latest([in_progress, cancelled, skipped, cancelled]) is None, \
+    "no run with a real conclusion must omit, not emit a false red"
+
+print("OK: _gh_latest_ci_verdict treats cancelled as no-verdict (fleet-ops#3399)")
+PY
+
+ok "fleet-ops#3399: cancelled CI runs are not a red verdict"
+

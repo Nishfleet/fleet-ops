@@ -1355,7 +1355,9 @@ def _gh_latest_ci_verdict(repo_full, branch):
     Used to resolve a PENDING statusCheckRollup: the rollup is pending while a
     fresh CI run is in flight, so we fall back to the most recent COMPLETED CI
     run on the default branch (the same signal `gh run list -w CI` gives).
-    Skipped/neutral runs don't count; if none completed, return None (omit).
+    Skipped/neutral/cancelled runs are not verdicts (a cancelled run is a
+    superseded/abandoned run, not a red trunk) so they are skipped; if no run
+    with a real conclusion completed, return None (omit).
     """
     try:
         r = subprocess.run(
@@ -1382,10 +1384,11 @@ def _gh_latest_ci_verdict(repo_full, branch):
         concl = (row.get("conclusion") or "").lower()
         if concl == "success":
             return 1
-        if concl in ("failure", "cancelled", "timed_out",
+        if concl in ("failure", "timed_out",
                      "action_required", "startup_failure"):
             return 0
-        # skipped / neutral → not a verdict, keep looking
+        # skipped / neutral / cancelled → not a verdict (a cancelled run is a
+        # superseded/abandoned run, not a red trunk), keep looking
     return None
 
 
