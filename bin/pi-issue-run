@@ -702,6 +702,35 @@ has_session_pr_url() {
     return 1
 }
 
+# fleet-ops#3714: a session that made tool calls did real work. When the model
+# ends its turn ON a tool call (deepseek-v4-flash:0731 via ollama closes with
+# structured_output and no trailing text), pi --print emits no final text, so
+# stdout is 0B while the verdict on stderr already says tools=N class=worked.
+# Live 2026-09-05: fleet-ops-3268 22:14Z (14 tool calls, 44k tokens, stderr
+# "PACKET-VERDICT tools=35 class=worked"), 22:06Z (19/62k), fleet-ops-3661
+# 22:11Z (96/92k) were each benched 4 h as "provider-no-op:stdout=0B" and
+# the cap-8 seat left the pool. Count tool calls from the verdict line
+# (stdout or stderr) and from toolCall entries in the newest session jsonl;
+# the larger wins. 0 means no evidence of work.
+session_tool_calls() {
+    local out="${1:-}" err="${2:-}" sdir="${3:-}"
+    local n=0 v f
+    for f in "$out" "$err"; do
+        [[ -n "$f" && -f "$f" ]] || continue
+        v=$(grep -aoE 'PACKET-VERDICT[[:space:]]+tools=[0-9]+' "$f" 2>/dev/null | tail -n1 | grep -oE '[0-9]+$' || true)
+        [[ "$v" =~ ^[0-9]+$ ]] && (( v > n )) && n=$v
+    done
+    if [[ -n "$sdir" && -d "$sdir" ]]; then
+        local newest
+        newest=$(find "$sdir" -maxdepth 1 -name '*.jsonl' -type f -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -n1 | cut -d' ' -f2-)
+        if [[ -n "$newest" && -f "$newest" ]]; then
+            v=$(grep -ac '"type":"toolCall"' "$newest" 2>/dev/null || true)
+            [[ "$v" =~ ^[0-9]+$ ]] && (( v > n )) && n=$v
+        fi
+    fi
+    printf '%s\n' "$n"
+}
+
 if (( out_bytes < OUT_MIN )); then
     # fleet-ops#1298: a provider no-op (pi ran, exited 0, stdout < OUT_MIN)
     # is a SEAT FAULT, same class as the verdict tools=0 empty-run
@@ -724,6 +753,11 @@ if (( out_bytes < OUT_MIN )); then
     # tool count. A remote session with a pull/<n> URL is a success.
     if provider_remote_agent "$np" && has_session_pr_url "$out_file" "$err_file" "$session_dir"; then
         seat_log "pi-issue-run: $inst remote session on $np/$nm produced a PR URL (stdout=${out_bytes}B) — treating as success"
+    elif tool_calls=$(session_tool_calls "$out_file" "$err_file" "$session_dir") && (( tool_calls > 0 )); then
+        # fleet-ops#3714: worked-no-text. The seat functioned (tools>0); the
+        # model just ended on a tool call. Not a provider no-op: no bench, no
+        # re-seat. Falls through to the verdict check and the success path.
+        seat_log "pi-issue-run: $inst session on $np/$nm made ${tool_calls} tool calls but printed no final text (stdout=${out_bytes}B) — worked-no-text, NOT a provider no-op; seat not benched (fleet-ops#3714)"
     else
         seat_log "pi-issue-run: $inst pi exited 0 but stdout=${out_bytes}B (< ${OUT_MIN}B) — provider no-op, benching seat (empty_run, geometric cooldown) and re-seating in-process"
         if mark_seat_empty_run "$np" "$nm" "pi-issue:$inst:provider-no-op:stdout=${out_bytes}B"; then
