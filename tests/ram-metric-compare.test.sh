@@ -93,7 +93,8 @@ echo "$out" | grep -q 'mismatch=0' || fail "empty run mismatch must be 0; got: $
 ok "3. zero units exit 0 and write state"
 
 # =========================================================================
-# 4. admission uses cap-map ram_gb_per_worker (0.5), no self-calibrate
+# 4. admission uses cap-map ram_gb_per_worker (2.0), no self-calibrate
+#    2.0 since fleet-ops#3679 (2026-09-05 oom-kill storm: workers sat at MemoryHigh, real footprint 1.0-1.5 GiB+).
 #    The current measured ceiling is 0.5 GB (fleet-ops#1558; prior 0.6 via #1168 / #489).
 #    Drift history: #1246 flagged the 1.5 lock stale after #1168 set 0.6; #1270
 #    locked the assertion at 0.6 and #1284 fixed the docstrings; #1558 later
@@ -104,14 +105,14 @@ ok "3. zero units exit 0 and write state"
 #    SAME commit/PR. The config value is the source of truth; this test exists
 #    to catch a config change that forgets its measurement doc.
 # =========================================================================
-[[ "$(jq -r '.ram_gb_per_worker' "$caps")" == "0.5" ]] \
-    || fail "ram_gb_per_worker must be 0.5 (got $(jq -r '.ram_gb_per_worker' "$caps")) — update this assertion and the scenario-4 comment in the same PR (fleet-ops#1190)"
+[[ "$(jq -r '.ram_gb_per_worker' "$caps")" == "2.0" ]] \
+    || fail "ram_gb_per_worker must be 2.0 (got $(jq -r '.ram_gb_per_worker' "$caps")) — update this assertion and the scenario-4 comment in the same PR (fleet-ops#1190)"
 if grep -q 'ram_governor_recalibrate\|ram_governor_effective_gb' "$lib"; then
     fail "seat-lib.sh must not self-calibrate per_worker from live RSS (#489 keeps the config as the source of truth)"
 fi
 grep -q 'per="$SEAT_RAM_GB_PER_WORKER"' "$lib" \
     || fail "ram_governor_cap must still divide by SEAT_RAM_GB_PER_WORKER"
-ok "4. admission formula is 0.5 G from cap map, no self-calibrate"
+ok "4. admission formula is 2.0 G from cap map, no self-calibrate"
 
 # =========================================================================
 # 5. 35 MB cannot be cited as cgroup memory.current

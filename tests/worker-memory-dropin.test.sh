@@ -4,7 +4,7 @@
 # fleet-ops#1558 + #1587: per-repo MemoryMax/MemoryHigh and Environment
 # variables via intake-written per-instance drop-ins. Proves:
 #   1. seat-caps.json carries worker_memory for fleet-ops + 0509 with the
-#      decided caps (light 1536M/1G, browser 2G/1536M — lowered in #1587).
+#      decided caps (light 2G/1536M, browser 3G/2560M — raised in #3679 after the 2026-09-05 oom-kill storm; #1587 values were 1536M/1G and 2G/1536M).
 #   2. seat-lib.sh worker_memory_for_repo returns those values.
 #   3. pi-intake-tick.sh writes the memory drop-in before systemctl start.
 #   4. pi-issue-start.sh mirrors the same memory drop-in on re-dispatch.
@@ -39,14 +39,14 @@ fo_max=$(jq -r '.worker_memory["fleet-ops"].MemoryMax // empty' "$caps")
 fo_high=$(jq -r '.worker_memory["fleet-ops"].MemoryHigh // empty' "$caps")
 o5_max=$(jq -r '.worker_memory["0509"].MemoryMax // empty' "$caps")
 o5_high=$(jq -r '.worker_memory["0509"].MemoryHigh // empty' "$caps")
-[[ "$fo_max" == "1536M" ]] || fail "fleet-ops MemoryMax want 1536M got '$fo_max'"
-[[ "$fo_high" == "1G" ]] || fail "fleet-ops MemoryHigh want 1G got '$fo_high'"
-[[ "$o5_max" == "2G" ]] || fail "0509 MemoryMax want 2G got '$o5_max'"
-[[ "$o5_high" == "1536M" ]] || fail "0509 MemoryHigh want 1536M got '$o5_high'"
+[[ "$fo_max" == "2G" ]] || fail "fleet-ops MemoryMax want 2G got '$fo_max'"
+[[ "$fo_high" == "1536M" ]] || fail "fleet-ops MemoryHigh want 1536M got '$fo_high'"
+[[ "$o5_max" == "3G" ]] || fail "0509 MemoryMax want 3G got '$o5_max'"
+[[ "$o5_high" == "2560M" ]] || fail "0509 MemoryHigh want 2560M got '$o5_high'"
 tgt=$(jq -r '.target_concurrent // empty' "$caps")
 [[ "$tgt" == "25" ]] || fail "target_concurrent want 25 got '$tgt'"
 ram=$(jq -r '.ram_gb_per_worker // empty' "$caps")
-[[ "$ram" == "0.5" ]] || fail "ram_gb_per_worker want 0.5 got '$ram'"
+[[ "$ram" == "2.0" ]] || fail "ram_gb_per_worker want 2.0 got '$ram'"
 ok "1: seat-caps worker_memory + target_concurrent + ram_gb_per_worker"
 
 # --- 2. worker_memory_for_repo ---------------------------------------------
@@ -54,9 +54,9 @@ export SEAT_CAPS_JSON="$caps"
 # shellcheck source=/dev/null
 source "$seat_lib"
 row=$(worker_memory_for_repo "fleet-ops")
-[[ "$row" == $'1536M\t1G' ]] || fail "fleet-ops row want $'1536M\\t1G' got '$row'"
+[[ "$row" == $'2G\t1536M' ]] || fail "fleet-ops row want $'2G\\t1536M' got '$row'"
 row=$(worker_memory_for_repo "0509")
-[[ "$row" == $'2G\t1536M' ]] || fail "0509 row want $'2G\\t1536M' got '$row'"
+[[ "$row" == $'3G\t2560M' ]] || fail "0509 row want $'3G\\t2560M' got '$row'"
 row=$(worker_memory_for_repo "unknown-repo")
 [[ -z "$row" ]] || fail "unknown-repo must return empty, got '$row'"
 ok "2: worker_memory_for_repo returns per-repo caps"
@@ -71,7 +71,7 @@ row=$(worker_memory_for_difficulty "fleet-ops" "heavy")
 row=$(worker_memory_for_difficulty "fleet-ops" "keystone")
 [[ "$row" == $'3G\t2G' ]] || fail "keystone difficulty want $'3G\t2G' got '$row'"
 row=$(worker_memory_for_difficulty "fleet-ops" "light")
-[[ "$row" == $'1536M\t1G' ]] || fail "light difficulty must fall back to per-repo, got '$row'"
+[[ "$row" == $'2G\t1536M' ]] || fail "light difficulty must fall back to per-repo, got '$row'"
 row=$(worker_memory_for_difficulty "unknown-repo" "light")
 [[ -z "$row" ]] || fail "unknown-repo light must return empty, got '$row'"
 ok "2b: worker_memory_for_difficulty returns heavy class for heavy|keystone"
@@ -168,13 +168,13 @@ mkdir -p "$drop_dir"
     [[ -n "$mem_high" ]] && printf 'MemoryHigh=%s\n' "$mem_high"
     printf 'MemorySwapMax=0\n'
 } > "$drop_dir/memory.conf"
-grep -qE '^MemoryMax=1536M$' "$drop_dir/memory.conf" \
-    || fail "written drop-in missing MemoryMax=1536M"
-grep -qE '^MemoryHigh=1G$' "$drop_dir/memory.conf" \
-    || fail "written drop-in missing MemoryHigh=1G"
+grep -qE '^MemoryMax=2G$' "$drop_dir/memory.conf" \
+    || fail "written drop-in missing MemoryMax=2G"
+grep -qE '^MemoryHigh=1536M$' "$drop_dir/memory.conf" \
+    || fail "written drop-in missing MemoryHigh=1536M"
 grep -qE '^MemorySwapMax=0$' "$drop_dir/memory.conf" \
     || fail "written drop-in missing MemorySwapMax=0 (fleet-ops#3611)"
-ok "7: scratch drop-in write produces MemoryMax=1536M / MemoryHigh=1G / MemorySwapMax=0"
+ok "7: scratch drop-in write produces MemoryMax=2G / MemoryHigh=1536M / MemorySwapMax=0"
 
 # --- 8. worker_env_for_repo -------------------------------------------------
 # fleet-ops#1587: per-repo Environment variables for browser-heavy repos.
