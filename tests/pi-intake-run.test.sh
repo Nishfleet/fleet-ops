@@ -156,3 +156,11 @@ bash "$here/pi-intake-tick-umbrella-exclusion.test.sh"
 # to <=12 KB non-0509 / <=20 KB 0509. ci.yml lists this file, so the
 # drill runs here instead of a new workflow line.
 bash "$here/worker-packet-size.test.sh"
+
+# --- 15. fleet-ops#3254 self-maintenance claim cap (CI hook) -----------
+# tests/pi-intake-tick-self-maint-cap.test.sh locks the deterministic
+# tick's 20% per-tick cap on fleet-ops (self-maintenance) claims (floor 1,
+# critical-path exempt, product repos uncapped) — part 1/4 of the
+# self-limiting-budget split. ci.yml lists this file, so the drill runs
+# here instead of a new workflow line.
+bash "$here/pi-intake-tick-self-maint-cap.test.sh"
