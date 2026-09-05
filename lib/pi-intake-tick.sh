@@ -93,6 +93,26 @@ if ! flock -n 9; then
     echo "pi-intake-tick: $REPO tick already running (no-op)"
     exit 0
 fi
+# fleet-ops#3695: worker-exit top-up debounce. pi-issue@ workers start this
+# tick from their stop path (systemd/pi-issue@.service ExecStopPost) so a
+# freed slot is refilled within a minute instead of at the next 20-minute
+# timer tick. A cohort finishing together must cost ONE tick, not one per
+# worker: a tick that starts within PI_INTAKE_DEBOUNCE_SEC of the previous
+# tick's finish sleeps out the remainder — holding the flock, so the rest of
+# the cohort no-ops above — and then runs once, seeing every slot the cohort
+# freed. It sleeps rather than skips so the last worker of a cohort can never
+# leave its slot idle until the timer. The timer tick pays the delay at most
+# once. The stamp lives in the runtime lockdir (tmpfs, per boot).
+_debounce_sec="${PI_INTAKE_DEBOUNCE_SEC:-60}"
+_debounce_stamp="$lockdir/${REPO}.last-tick"
+if [[ -f "$_debounce_stamp" ]]; then
+    _debounce_age=$(( $(date +%s) - $(stat -c %Y "$_debounce_stamp" 2>/dev/null || echo 0) ))
+    if (( _debounce_age >= 0 && _debounce_age < _debounce_sec )); then
+        echo "pi-intake-tick: $REPO tick finished ${_debounce_age}s ago (debounce ${_debounce_sec}s) — coalescing: sleep $(( _debounce_sec - _debounce_age ))s, then run"
+        sleep $(( _debounce_sec - _debounce_age ))
+    fi
+fi
+trap 'touch "$_debounce_stamp" 2>/dev/null || true' EXIT
 # ISSUE_STATE_DIR is used for the worker packet written for pi-issue-run.
 # It must NOT be named STATE_DIR: seat-lib.sh redefines that for its own
 # pi-packet state (watch.log, active-seats, attempts) when it is sourced below.

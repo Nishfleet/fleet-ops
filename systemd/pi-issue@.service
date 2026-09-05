@@ -56,6 +56,15 @@ Environment=PI_SALVAGE_PACKET=/home/nish/.local/state/pi-issues/%i.in
 # Leading '-' so a missing binary (pre-deploy, or hosted systemd-analyze
 # which cannot stub this path) cannot wedge the worker stop path.
 ExecStopPost=-/home/nish/.local/bin/pi-salvage-worktree
+# fleet-ops#3695: continuous top-up. The intake timer ticks every 20 min and
+# a cohort of workers finishes inside ~10 min, so half of every window sat
+# idle next to ready work (2026-09-05T15:56Z: 0 workers, 72 agent-ready). A
+# finishing worker asks its own repo's intake for a refill; the tick's flock
+# plus its debounce (lib/pi-intake-tick.sh) coalesce a cohort into ONE tick.
+# Instance is <repo>-<issue>; the repo is everything before the last '-'
+# ($$ and %% are systemd escapes for a literal $ and %). --no-block: never
+# wait on intake inside a worker's stop path; '-' so it can never wedge it.
+ExecStopPost=-/bin/sh -c 'i=%i; systemctl --user start --no-block "pi-intake@$${i%%-*}.service"'
 TimeoutStopSec=180
 
 # Retry policy - systemd's own, not a counter in bash.

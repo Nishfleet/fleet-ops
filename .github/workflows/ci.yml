@@ -225,6 +225,7 @@ jobs:
         bash tests/pi-issue-failed-reap-cooldown.test.sh
         bash tests/pi-intake-tick-reclaim-cooldown.test.sh
         bash tests/pi-intake-tick-difficulty-from-issue.test.sh
+        bash tests/pi-intake-topup.test.sh
         bash tests/fleet-console-pi-utc.test.sh
         bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/repair-rotation.test.sh
