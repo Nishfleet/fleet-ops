@@ -8,6 +8,12 @@
 #      or north-star keywords, causing pi-audit-run to exit 1 and the
 #      systemd unit to exhaust StartLimitBurst.
 #
+# fleet-ops#3157 (escalation storm): malformed auditor output (no standalone
+# PASS/FAIL verdict, no reason, or an empty reason) must write a SKIP vote and
+# exit 0, NOT exit 1. An exit 1 under Restart=on-failure + StartLimitBurst=2
+# flips the pi-audit@ unit failed every hour and feeds the global OnFailure
+# escalation storm; SKIP+exit 0 keeps the panel PENDING with no unit failure.
+#
 # This test exercises the full pi-audit-run binary with stubbed gh, pi, and
 # seat-lib. It proves the senior ladder emits a real tab-separated
 # provider/model pair (walled first entry falls through to the next), that
@@ -231,15 +237,21 @@ PI_RESPONSE=$'PASS\nNo duplicate; beats customer edge AI and advances the north 
 ok "scenario3: complete PASS reason writes vote and exits 0"
 
 # -----------------------------------------------------------------------------
-# Scenario 4: missing verdict still exits 1 (systemd may retry once).
+# Scenario 4: missing verdict writes a SKIP vote and exits 0, NOT exit 1.
+# fleet-ops#3157: an exit-1 on malformed output flipped the pi-audit@ unit
+# failed (Restart=on-failure + StartLimitBurst=2) and fed the global OnFailure
+# escalation storm. SKIP+exit 0 leaves the candidate PENDING with no unit
+# failure, so no escalation.
 # -----------------------------------------------------------------------------
 reset_state
 PI_RESPONSE=$'some random text\nwith no verdict' \
   bash "$bin" 'demo--45--devin' >"$scratch/scenario4.out" 2>"$scratch/scenario4.err" || rc=$?
-[[ "${rc:-0}" == "1" ]] || fail "scenario4: missing verdict must exit 1, got rc=${rc:-0}"
-[[ ! -f "$state_dir/demo/45/devin.vote" ]] \
-    || fail "scenario4: vote must not be written when verdict is missing"
-ok "scenario4: missing verdict still exits 1"
+[[ "${rc:-0}" == "0" ]] || fail "scenario4: missing verdict must exit 0 (not storm), got rc=${rc:-0} ($(cat "$scratch/scenario4.err"))"
+[[ -f "$state_dir/demo/45/devin.vote" ]] \
+    || fail "scenario4: a SKIP vote must be written when verdict is missing"
+[[ $(jq -r '.verdict' "$state_dir/demo/45/devin.vote") == "SKIP" ]] \
+    || fail "scenario4: verdict must be SKIP, got $(jq -r '.verdict' "$state_dir/demo/45/devin.vote")"
+ok "scenario4: missing verdict writes SKIP and exits 0 (no unit failure, no escalation)"
 
 # -----------------------------------------------------------------------------
 # Scenario 5: seat-health preflight refuses a transient_fault seat

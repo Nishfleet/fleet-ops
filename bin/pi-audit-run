@@ -3,9 +3,14 @@
 #
 # Runs one SENIOR AUDITOR for a scout candidate. Called as ExecStart of
 # pi-audit@<repo>--<candidate>--<role>.service. Assembles the context packet
-# deterministically, runs the auditor seat, writes a PASS/FAIL vote, and
-# exits 1 when the output does not meet the required shape (so systemd retries
-# once via Restart=on-failure, then the inherited OnFailure ladder takes over).
+# deterministically, runs the auditor seat, and writes a PASS/FAIL vote
+# (or a SKIP vote for a lane/seat-output fault: a provider wall, a walled
+# seat, or malformed auditor output). Malformed output must NOT exit 1: an
+# exit 1 under Restart=on-failure + StartLimitBurst=2 flips the unit failed
+# every hour, and each failure feeds the global escalation storm
+# (fleet-ops#3157). Malformed output instead writes a SKIP vote and exits 0,
+# so the panel re-runs when a seat next produces valid output, without a
+# unit failure.
 #
 # Roles (fleet-ops#3121 three-role blind panel; Nish 2026-09-04):
 #   devin            -> devin/glm-5-2 (judge)
@@ -391,7 +396,12 @@ build_packet() {
 extract_verdict() {
     local out="$1"
     # Strip markdown bold/italic and look for a standalone PASS or FAIL line.
-    sed -E 's/[*#`_]//g' "$out" | grep -m1 -E '^[[:space:]]*(PASS|FAIL)[[:space:]]*$' | sed -E 's/^[[:space:]]+//;s/[[:space:]]+$//' | tr '[:lower:]' '[:upper:]'
+    # `|| true` guards the no-match grep under set -euo pipefail: an absent
+    # verdict yields an empty string (exit 0), which the caller turns into a
+    # SKIP vote. Previously the failing grep made the $(...) assignment in
+    # main exit 1 silently under set -e, failing the pi-audit@ unit and
+    # feeding the escalation storm (fleet-ops#3157).
+    sed -E 's/[*#`_]//g' "$out" | grep -m1 -E '^[[:space:]]*(PASS|FAIL)[[:space:]]*$' | sed -E 's/^[[:space:]]+//;s/[[:space:]]+$//' | tr '[:lower:]' '[:upper:]' || true
 }
 
 # fleet-ops#786: do not byte-cap the verdict reason. Starving the reason
@@ -562,17 +572,32 @@ main() {
     verdict=$(extract_verdict "$combined")
     reason=$(extract_reason "$combined")
 
+    # fleet-ops#3157 (escalation storm): malformed auditor output (a provider
+    # that ran pi but returned no standalone PASS/FAIL verdict, no reason, or
+    # an empty reason) must NOT become a unit failure. These branches used to
+    # `exit 1`; under Restart=on-failure + StartLimitBurst=2 the pi-audit@ unit
+    # flipped failed every hour, and each failure fed the global OnFailure
+    # escalation (unit-escalation@). A busy audit panel therefore became a
+    # unit-escalation storm (1261 pi-audit escalations / 24h; FleetEscalation
+    # Storm gauge 552 > 300 threshold). A malformed verdict is a seat-output
+    # fault, not a candidate-quality judgement, so fail like the provider wall
+    # and the seat-health preflight: write a SKIP vote and exit 0. The tally
+    # ignores SKIP (candidate stays PENDING, no false admit or discard) and a
+    # clean exit means no unit failure, no StartLimitBurst, no escalation.
     if [ -z "$verdict" ]; then
-        log "auditor output did not contain a PASS/FAIL verdict"
-        exit 1
+        log "auditor output did not contain a PASS/FAIL verdict; writing SKIP (no escalation)"
+        write_vote "$repo" "$candidate" "$role" "SKIP" "auditor output malformed: no PASS/FAIL verdict line"
+        exit 0
     fi
     if [ -z "$reason" ]; then
-        log "auditor output did not contain a reason"
-        exit 1
+        log "auditor output did not contain a reason; writing SKIP (no escalation)"
+        write_vote "$repo" "$candidate" "$role" "SKIP" "auditor output malformed: missing reason"
+        exit 0
     fi
     if ! reason=$(ensure_reason_complete "$reason"); then
-        log "auditor reason empty after extraction"
-        exit 1
+        log "auditor reason empty after extraction; writing SKIP (no escalation)"
+        write_vote "$repo" "$candidate" "$role" "SKIP" "auditor output malformed: empty reason"
+        exit 0
     fi
 
     write_vote "$repo" "$candidate" "$role" "$verdict" "$reason"
