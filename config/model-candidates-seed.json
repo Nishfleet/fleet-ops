@@ -1,0 +1,23 @@
+{
+  "_comment": "fleet-ops#3322 audition lane curated seed. The generated roster (config/model-candidates.json, written weekly by the WFR model-discovery pre-pass fleet-ops#3321, gitignored) is the canonical feed; this file is the hand-picked seed the audition sync (lib/audition-sync.py, invoked by lib/pi-intake-tick.sh) reads alongside it so curated picks survive a weekly regeneration. Each entry: provider must be a pi provider slug wired in ~/.pi/agent/models.json and model must be in that provider's catalog — unwired candidates are skipped at read time. class is free or metered, never prepaid-quota. Seeded from ~/Documents/Last30Days/best-value-coding-agent-models-*-raw-v3.md (last30days v3.18.4), non-prepaid only, excluding anything already in config/seat-caps.json (xkiro's three free-tier models audition via fleet-ops#3505) and OpenRouter free models (fleet-ops#3316 owns those).",
+  "candidates": [
+    {
+      "provider": "mergegateway",
+      "model": "deepseek/deepseek-v4-flash",
+      "class": "metered",
+      "source": "Last30Days v3.18.4 best-value (DeepSeek V4 Flash); Merge Gateway $10 free credits, wired in models.json, not in seat-caps"
+    },
+    {
+      "provider": "mergegateway",
+      "model": "minimax/minimax-m3",
+      "class": "metered",
+      "source": "Last30Days v3.18.4 best-value (MiniMax M3); Merge Gateway $10 free credits, wired in models.json, not in seat-caps"
+    },
+    {
+      "provider": "mergegateway",
+      "model": "google/gemini-3.7-flash",
+      "class": "metered",
+      "source": "Last30Days v3.18.4 best-value (Gemini flash tier); Merge Gateway $10 free credits, wired in models.json, not in seat-caps"
+    }
+  ]
+}

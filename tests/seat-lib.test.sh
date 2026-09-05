@@ -3697,3 +3697,9 @@ ok "3559: wrapper spawn-fail bench is visible in pi-seat-health.json (transient_
 # Workers cannot add a P14 line in .github/workflows/ci.yml; this file is the
 # listed CI host for the new free-model daily-budget bench test.
 bash "$here/seat-lib-free-daily-budget.test.sh" || fail "seat-lib-free-daily-budget tests failed"
+
+# fleet-ops#3322: audition lane. Same CI constraint (worker token cannot add
+# a P14 line in .github/workflows/ci.yml). Proves the audition-sync helper
+# (injection/retirement/TTL/prepaid-skip), the pick_seat light-only gate, and
+# the yield-ledger cost_usd + fleet_sessions_to_pr_pct additions.
+bash "$here/audition-lane.test.sh" || fail "audition-lane tests failed"

@@ -570,6 +570,133 @@ if {
 fi
 echo "reconciler-caught: delta=$reconciler_caught total=$_reconciler_new_total repo=$REPO prom=$reconciler_prom"
 
+# fleet-ops#3322: audition-lane sync. Reads config/model-candidates.json and
+# injects candidates not yet in the LIVE caps as cap-1 audition seats
+# (light-only, measured by the yield ledger). Retires audition seats that hit
+# the 10-session / 7-day / $1 ceiling and files promote/drop verdict issues
+# (deduped by title) via fleet-issue-file — the orchestrator's Q2(c) answer:
+# reuse fleet-issue-file, no new organ, no timer, no auto-PR filer. A normal
+# worker lands the config/seat-caps.json PR from the filed issue.
+audition_sync() {
+    local cand_json="${MODEL_CANDIDATES_JSON:-}"
+    if [[ -z "$cand_json" || ! -f "$cand_json" ]]; then
+        local _here
+        _here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+        if [[ -f "$_here/config/model-candidates.json" ]]; then
+            cand_json="$_here/config/model-candidates.json"
+        elif [[ -f "$_here/../config/model-candidates.json" ]]; then
+            cand_json="$_here/../config/model-candidates.json"
+        else
+            cand_json=""
+        fi
+    fi
+    # The tracked seed rides beside the generated roster: model-candidates.json
+    # is gitignored + regenerated weekly by the WFR pre-pass, so the curated
+    # picks live in model-candidates-seed.json (fleet-ops#3322). The lane runs
+    # when EITHER file exists — a seed-only lane works before the first WFR
+    # write.
+    local seed_json="${MODEL_CANDIDATES_SEED_JSON:-}"
+    if [[ -z "$seed_json" || ! -f "$seed_json" ]]; then
+        seed_json=""
+        if [[ -n "$cand_json" && -f "${cand_json%/*}/model-candidates-seed.json" ]]; then
+            seed_json="${cand_json%/*}/model-candidates-seed.json"
+        else
+            local _here_s="${_here:-}"
+            if [[ -z "$_here_s" ]]; then
+                _here_s="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+            fi
+            if [[ -f "$_here_s/config/model-candidates-seed.json" ]]; then
+                seed_json="$_here_s/config/model-candidates-seed.json"
+            elif [[ -f "$_here_s/../config/model-candidates-seed.json" ]]; then
+                seed_json="$_here_s/../config/model-candidates-seed.json"
+            fi
+        fi
+    fi
+    if [[ ( -z "$cand_json" || ! -f "$cand_json" ) && ( -z "$seed_json" || ! -f "$seed_json" ) ]]; then
+        echo "audition-sync: no model-candidates.json or -seed.json (skip)"
+        return 0
+    fi
+    local sync_py="${AUDITION_SYNC_PY:-}"
+    if [[ -z "$sync_py" || ! -f "$sync_py" ]]; then
+        local _here2
+        _here2="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+        if [[ -f "$_here2/audition-sync.py" ]]; then
+            sync_py="$_here2/audition-sync.py"
+        elif [[ -f "$_here2/../lib/audition-sync.py" ]]; then
+            sync_py="$_here2/../lib/audition-sync.py"
+        else
+            sync_py=""
+        fi
+    fi
+    [[ -n "$sync_py" && -f "$sync_py" ]] || { echo "audition-sync: helper missing (skip)"; return 0; }
+    local issue_file="${FLEET_ISSUE_FILE:-}"
+    if [[ -z "$issue_file" || ! -x "$issue_file" ]]; then
+        local _here3
+        _here3="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+        if [[ -x "$_here3/fleet-issue-file" ]]; then
+            issue_file="$_here3/fleet-issue-file"
+        elif [[ -x "$_here3/../bin/fleet-issue-file" ]]; then
+            issue_file="$_here3/../bin/fleet-issue-file"
+        else
+            issue_file=""
+        fi
+    fi
+    local verdicts
+    # seat-lib supplies SEAT_CAPS_JSON / SEAT_YIELD_JSON / MODELS_JSON when it
+    # is sourced live; the test stub path may not, so bind defaults here
+    # (same class of unbound-variable crash as fleet-ops#2281).
+    verdicts=$(MODEL_CANDIDATES_JSON="$cand_json" \
+        MODEL_CANDIDATES_SEED_JSON="$seed_json" \
+        SEAT_CAPS_JSON="${SEAT_CAPS_JSON:-$HOME/.local/state/pi-packet/seat-caps.json}" \
+        SEAT_YIELD_JSON="${SEAT_YIELD_JSON:-$HOME/.local/state/pi-packet/seat-yield.json}" \
+        PI_MODELS_JSON="${MODELS_JSON:-$HOME/.pi/agent/models.json}" \
+        python3 "$sync_py") || true
+    if [[ -z "$verdicts" ]]; then
+        echo "audition-sync: no verdicts (inject+retire pass done)"
+        return 0
+    fi
+    local v seat kind title body_file
+    while IFS= read -r v; do
+        [[ -n "$v" ]] || continue
+        kind="${v%% *}"
+        seat="${v#* }"; seat="${seat%% *}"
+        echo "audition-sync: verdict $kind $seat ($v)"
+        if [[ -z "$issue_file" ]]; then
+            echo "audition-sync: fleet-issue-file missing — verdict not filed: $v"
+            continue
+        fi
+        if [[ "$kind" == "PROMOTE" ]]; then
+            title="promote $seat into seat-caps (audition $v)"
+        else
+            title="drop $seat — audition-failed ($v)"
+        fi
+        body_file="$(mktemp)"
+        {
+            echo "Audition verdict (fleet-ops#3322)."
+            echo
+            echo "Seat: $seat"
+            echo "Verdict: $v"
+            echo
+            echo "A worker lands the config/seat-caps.json change: promote the"
+            echo "entry (or add the dated audition-failed note) with these numbers."
+        } > "$body_file"
+        # Verdicts always land on fleet-ops: the seat-caps config PR belongs
+        # there no matter which repo's tick ran the sync (fleet-ops#3322).
+        # fleet-issue-file carries the filing-time same-problem dedupe, so a
+        # verdict is filed once even when several repo ticks see it.
+        if "$issue_file" file -R "Nishfleet/fleet-ops" --title "$title" \
+            --body-file "$body_file" --label agent-ready >/dev/null 2>&1; then
+            echo "audition-sync: filed verdict issue: $title"
+        else
+            echo "audition-sync: fleet-issue-file failed for: $title"
+        fi
+        rm -f "$body_file"
+    done <<< "$verdicts"
+}
+
+audition_sync
+
+
 # Step 2: capacity (P4-A — fleet-ops config/seat-caps.json, not a hardcoded cap)
 caps_sum=$(total_seat_cap 2>/dev/null || echo 0)
 ram_cap=$(ram_governor_cap 2>/dev/null || echo 9999)

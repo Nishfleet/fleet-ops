@@ -523,6 +523,12 @@ HELP_SNPR = (
     "last-20 window that did not produce a PR URL, per seat (fleet-ops#3250)."
 )
 TYPE_SNPR = "# TYPE fleet_sessions_no_pr_total gauge"
+HELP_STP = (
+    "# HELP fleet_sessions_to_pr_pct Sessions-to-PR percentage per seat "
+    "(pr_count / sessions over the last-20 window, 0..1). The fleet-wide "
+    "sessions-to-PR ratio the issue's moves: names, per seat (fleet-ops#3322)."
+)
+TYPE_STP = "# TYPE fleet_sessions_to_pr_pct gauge"
 
 # Self-maintenance repo set (fleet-ops#1136). PR-tunable; never hardcoded in
 # the classifier. Default ["fleet-ops"] when the file is missing/unparseable
@@ -1066,6 +1072,11 @@ def _compute_seat_yield():
         cost_per_session = (
             sum(e.get("cost", 0.0) for e in window) / total if total > 0 else 0.0
         )
+        # fleet-ops#3322: total usage.cost over the same window (cost_usd).
+        # The audition lane retires a candidate once its cumulative spend
+        # reaches the $1 cap, so the ledger must carry the SUM, not just the
+        # per-session mean. Recorded for every seat, exactly like any seat.
+        cost_usd = sum(e.get("cost", 0.0) for e in window)
         result[seat] = {
             "yield": y,
             "sessions": total,
@@ -1073,6 +1084,7 @@ def _compute_seat_yield():
             "no_pr_count": no_pr,
             "provisional": provisional,
             "cost_per_session": cost_per_session,
+            "cost_usd": cost_usd,
         }
 
     try:
@@ -1097,6 +1109,9 @@ def _emit_seat_yield(lines, seat_yield):
     lines.append("")
     lines.append(HELP_SNPR)
     lines.append(TYPE_SNPR)
+    lines.append("")
+    lines.append(HELP_STP)
+    lines.append(TYPE_STP)
     for seat in sorted(seat_yield):
         y = seat_yield[seat]
         lbl = _prom_label(seat)
@@ -1104,6 +1119,13 @@ def _emit_seat_yield(lines, seat_yield):
         lines.append(
             f'fleet_sessions_no_pr_total{{seat="{lbl}"}} {y["no_pr_count"]}'
         )
+        # fleet-ops#3322: per-seat sessions-to-PR percentage (pr_count/sessions).
+        # 0 sessions -> 0 (no data), matching the fleet-wide measure's empty
+        # handling. Two-line addition; the fleet-wide ratio stays in
+        # agent-state/fleet-landing-watch/measure.sh.
+        _s = y["sessions"]
+        _pct = (y["pr_count"] / _s) if _s > 0 else 0.0
+        lines.append(f'fleet_sessions_to_pr_pct{{seat="{lbl}"}} {_pct:.6f}')
 
 
 def _day_from_iso(s):

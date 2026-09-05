@@ -868,6 +868,9 @@ systemd/fleet-seat-recovery.path /home/nish/.config/systemd/user/fleet-seat-reco
 bin/fleet-unjustified-wait /home/nish/.local/bin/fleet-unjustified-wait
 bin/fleet-escalation-completion /home/nish/.local/bin/fleet-escalation-completion
 lib/pi-intake-tick.sh /home/nish/.local/lib/pi-packet/pi-intake-tick.sh
+# fleet-ops#3322: audition-lane sync helper invoked by pi-intake-tick (not a
+# standalone organ — no unit/timer; the tick owns the verdict filing).
+lib/audition-sync.py /home/nish/.local/lib/pi-packet/audition-sync.py
 # fleet-ops#1204 salvage pre-push secret-scan helper (p1204-scan)
 bin/salvage-secret-scan /home/nish/.local/bin/salvage-secret-scan
 # fleet-ops#796 sgscan wrapper — semgrep diff-scan review gate
