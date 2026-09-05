@@ -34,7 +34,7 @@
     "devin": {
       "cap": 4,
       "class": "prepaid-quota",
-      "max_probe_ceiling": 8,
+      "max_probe_ceiling": 4,
       "quota_bench_default_s": 900,
       "models": {
         "glm-5-2": {
@@ -51,7 +51,7 @@
       "_devin_aimd_20260904": "fleet-ops#3125: hard_ceiling removed (Nish 'cool with your suggestions' + expiry-first standing rule — the Devin weekly sub was ~97% unused 2026-09-04, so a pinned floor wastes prepaid quota). Provider declared cap 4 stays the floor; AIMD may probe to max_probe_ceiling 8. Model-level probe ceilings: glm-5-2 declared 3 / probe to 6, swe-1-7 declared 4 / probe to 8. A fresh provider error backs off to floor/2; learned state resets on deploy of a seat-caps change.",
       "_swe17": "2026-08-30 alert-repair FleetDeadCredentialSeats: swe-1-7 set to 0 (was 4) after persistent HTTP 403 credentials_bad (seat_dead=true, ledger observed 2026-08-29T17:15:33Z, fleet-ops#1445, fleet-ops#2102). RESTORED to 4 on 2026-09-02: live probe pi --print --no-session --provider devin --model swe-1-7 'Reply with exactly: PONG' returned RC=0 PONG PACKET-VERDICT tools=0 class=no-tools; ledger lanes/seats/devin__swe-1-7.json healthy (health_class=healthy, http_status=200, seat_dead=false, observed_at=2026-09-02T17:35:51.020Z, source=cli_spawn). Sibling glm-5-2 on the same Devin credential PONG/200 the same minute (observed_at=2026-09-02T17:35:17.978Z). Ledger evidence sha256 5a437559f27cd1f5f243c64e57431b2613621a6e6945653760969cdec02bb566. The 2026-08-29 403 quarantine copy stays at lanes/seats-deadcred-quarantine-20260830T0135Z/ as audit. fleet-ops#2874.",
       "_glm52_cred": "2026-08-30 alert-repair FleetDeadCredentialSeats: glm-5-2 set to 0 (was 3) after persistent HTTP 403 credentials_bad (seat_dead=true, ledger observed 2026-08-30T03:05:36Z, fleet-ops#1445). RESTORED to 3 on 2026-09-02: ledger lanes/seats/devin__glm-5-2.json healthy (health_class=healthy, http_status=200, seat_dead=false, observed_at=2026-09-02T17:00:58Z, source=comeback_release); alert-repair dispatches on devin/glm-5-2 succeeded rc=0 (2026-09-01T17:52:15Z, 05:10:42Z). Ledger evidence sha256 b6f069af96d884b8037b64cb29bc36388e7dc72120f4b3b240acf43ef9ef8f66. swe-1-7 restored separately (fleet-ops#2874).",
-      "hard_ceiling": true,
+      "_hard_ceiling_dropped_20260905": "2026-09-05 fable-check (fleet-ops#3486): the hard_ceiling=true from #3443 is dropped. It also stopped AIMD backing off below declared on a fresh devin error (seat-lib: hard_ceiling rows never back off), and the #3125 drills that P14 requires (seat-lib-aimd, fleet-token-economy) assert it absent. The #3443 storm pin is kept as max_probe_ceiling == cap at provider (4) and model level (glm-5-2 3, swe-1-7 0): no probe above declared until fleet-ops#3258 lifts it with evidence.",
       "_ceiling_2026_09_05": "2026-09-05: probe ceilings 6/8 put 8 devin sessions in flight and Devin answered resource_exhausted on every new one (133 deaths in 12h at ~40s, 85% daily quota unused). Ceilings pinned to caps until the resource_exhausted bench proves AIMD backs off; then raise via fleet-ops#3258.",
       "_swe17_20260905": "2026-09-05 fable-check: seat-yield.json n=20 sessions pr_count=0 yield=0.0; watch.log mid-session-death rc=143 after 20-90s: 36 (23:36-02:36Z) + 29 (01:18-04:18Z); fleet_seat_failure_ceiling_parked=24; the 2026-09-02 PONG probe passes but no real packet completes. cap 4->0 intentional_cap_zero=stale: re-audition after the 14d TTL with a real packet, not PONG (fleet-ops#3258)."
     },
