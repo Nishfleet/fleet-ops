@@ -125,7 +125,9 @@ echo ""
 # expression so numbers/titles/labels stay aligned.
 _order_line=$(grep -E '^_claim_order=' "$tick" || true)
 [[ -n "$_order_line" ]] || fail "Test 9: _claim_order= seam not found in tick (Step 3 must sort critical-path first)"
+_claim_order=""
 eval "$_order_line"
+[[ -n "$_claim_order" ]] || fail "Test 9: _claim_order= seam is empty"
 _fixture='[{"number":1576,"title":"tail-old","labels":[]},
            {"number":1691,"title":"crit-new","labels":[{"name":"critical-path"},{"name":"priority"}]},
            {"number":1283,"title":"tail-priority-only","labels":[{"name":"priority"}]},
@@ -138,7 +140,7 @@ _got2=$(jq -r --arg cp "critical-path" "$_claim_order | .[].number" \
     <<<'[{"number":9,"labels":["priority"]},{"number":10,"labels":["critical-path"]},{"number":8,"labels":[]}]' | paste -sd,)
 [[ "$_got2" == "10,8,9" ]] || fail "Test 9: bare-string labels must order the same, want 10,8,9 got $_got2"
 for arr in numbers titles labels; do
-    grep -qE "^mapfile -t $arr < <\(jq -[rc]+ --arg cp \"\\\$CRITICAL_PATH_LABEL\" \"\\\$_claim_order \| " "$tick" \
+    grep -qE "^mapfile -t $arr +< <\(jq -[rc]+ --arg cp \"\\\$CRITICAL_PATH_LABEL\" \"\\\$_claim_order \| " "$tick" \
         || fail "Test 9: Step 3 array '$arr' must be built from \$_claim_order (arrays must stay aligned)"
 done
 ok "Test 9: Step 3 claims critical-path first, then the ascending tail (1691,1702,1283,1576)"
