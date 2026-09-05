@@ -24,6 +24,7 @@ DEPLOY_CHECKOUT="${FLEET_OPS_CHECKOUT:-$(cd "$(dirname "$self")/.." && pwd)}"
 DEPLOY_AUDIT_LOG="${FLEET_OPS_DEPLOY_AUDIT_LOG:-$HOME/.local/state/fleet-heartbeat/deploy-audit.log}"
 TRIAGE="${FLEET_OPS_TRIAGE:-${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}}"
 CANARY="${FLEET_OPS_DRIFT_BIN:-$HOME/.local/bin/fleet-ops-drift}"
+AGENT_STATE="${FLEET_OPS_AGENT_STATE:-/home/nish/workspaces/agent-state}"
 
 mkdir -p "$(dirname "$DEPLOY_AUDIT_LOG")"
 
@@ -73,6 +74,102 @@ auto_file_deploy_blocked_main() {
     fi
     python3 "$py" --file-deploy-blocked-main "$why" \
         || log "WARN: deploy-blocked-on-main auto-file failed"
+}
+
+# fleet-ops#3634: detect whether any live process other than this deploy run
+# has its cwd inside the deploy checkout. If one does, the clone is actively
+# in use and must not be reset out from under it — keep the LOUD block.
+# Otherwise the clone is abandoned and we can self-rescue.
+clone_held_as_cwd() {
+    local clone="$1"
+    local canon
+    canon=$(readlink -f "$clone" 2>/dev/null || printf '%s' "$clone")
+    local self=$$
+    local p pid tgt
+    for p in /proc/[0-9]*/cwd; do
+        [ -e "$p" ] || continue
+        tgt=$(readlink "$p" 2>/dev/null) || continue
+        case "$tgt" in
+            "$canon"|"$canon"/*)
+                pid=${p#/proc/}; pid=${pid%/cwd}
+                [ "$pid" = "$self" ] && continue
+                return 0
+                ;;
+        esac
+    done
+    return 1
+}
+
+# fleet-ops#3634: self-rescue an abandoned deploy clone. The merge-to-live
+# gate blocks when the clone is on a non-main branch and/or has dirty tracked
+# or untracked files. Historically that block sat until a human/orchestrator
+# rescued by hand (2 incidents 2026-09-05). When no live process holds the
+# clone as its cwd, the clone is abandoned: commit the WIP onto the current
+# branch (or a rescue/<ts> branch when detached/on main), push it to origin
+# as backup, snapshot the patch under agent-state/deploy-clone-rescue-<ts>/,
+# log one audit line, then reset the clone to a clean origin/main and
+# continue the deploy in the same tick.
+rescue_deploy_clone() {
+    local why="$1"
+    local ts
+    ts=$(date -u +%Y%m%dT%H%M%SZ)
+    local rescue_dir="${FLEET_OPS_RESCUE_DIR:-$AGENT_STATE/deploy-clone-rescue-$ts}"
+    local rescue_branch="$branch"
+
+    # Detached HEAD or on main with dirty files: park the WIP on a rescue
+    # branch rather than polluting origin/main.
+    if [ -z "$rescue_branch" ] || [ "$rescue_branch" = "main" ]; then
+        rescue_branch="rescue/$ts"
+        if ! git -C "$DEPLOY_CHECKOUT" checkout -q -b "$rescue_branch" 2>/dev/null; then
+            loud "DEPLOY-RESCUE" "could not create rescue branch $rescue_branch"
+            return 1
+        fi
+    fi
+
+    # Snapshot the WIP before committing so the patch survives even if the
+    # commit/push fails.
+    mkdir -p "$rescue_dir"
+    git -C "$DEPLOY_CHECKOUT" diff HEAD > "$rescue_dir/tracked.patch" 2>/dev/null || true
+    local untracked
+    untracked=$(git -C "$DEPLOY_CHECKOUT" ls-files --others --exclude-standard 2>/dev/null || true)
+    if [ -n "$untracked" ]; then
+        mkdir -p "$rescue_dir/untracked"
+        while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            [ -f "$DEPLOY_CHECKOUT/$f" ] || continue
+            mkdir -p "$rescue_dir/untracked/$(dirname "$f")"
+            cp -a "$DEPLOY_CHECKOUT/$f" "$rescue_dir/untracked/$f"
+        done <<< "$untracked"
+    fi
+
+    # Commit the WIP onto the rescue branch. A clean-but-diverged or clean
+    # named branch has nothing to commit — its tip is still backed up below.
+    git -C "$DEPLOY_CHECKOUT" add -A
+    if ! git -C "$DEPLOY_CHECKOUT" diff --cached --quiet; then
+        if ! git -C "$DEPLOY_CHECKOUT" commit -q -m "deploy-clone rescue WIP $ts (fleet-ops#3634)" 2>/dev/null; then
+            loud "DEPLOY-RESCUE" "WIP commit failed on $rescue_branch"
+            return 1
+        fi
+    fi
+    local newhead
+    newhead=$(git -C "$DEPLOY_CHECKOUT" rev-parse HEAD)
+    printf '%s\n%s\n' "$rescue_branch" "$newhead" > "$rescue_dir/branch"
+
+    # Push the branch to origin as backup. A push failure is not fatal — the
+    # patch is already saved locally under $rescue_dir.
+    if ! git -C "$DEPLOY_CHECKOUT" push -q origin "$rescue_branch" 2>/dev/null; then
+        loud "DEPLOY-RESCUE" "push of $rescue_branch to origin failed; WIP saved locally at $rescue_dir"
+    fi
+
+    # Reset the clone to a clean origin/main and continue the deploy.
+    git -C "$DEPLOY_CHECKOUT" checkout -q -B main origin/main 2>/dev/null \
+        || git -C "$DEPLOY_CHECKOUT" checkout -q main 2>/dev/null
+    git -C "$DEPLOY_CHECKOUT" reset -q --hard origin/main
+    git -C "$DEPLOY_CHECKOUT" clean -fd
+
+    log "rescued deploy clone: WIP on $rescue_branch ($newhead), patch at $rescue_dir, reset to origin/main"
+    deploy_audit "fleet-ops" "rescue" "$why -> $rescue_branch $newhead patch=$rescue_dir"
+    return 0
 }
 
 log "starting: checkout=$DEPLOY_CHECKOUT"
@@ -180,6 +277,12 @@ if ! dirty=$(git -C "$DEPLOY_CHECKOUT" status --porcelain --untracked-files=no 2
     exit 1
 fi
 
+untracked=""
+if ! untracked=$(git -C "$DEPLOY_CHECKOUT" ls-files --others --exclude-standard 2>/dev/null); then
+    loud "DEPLOY-STATUS" "git ls-files failed at $DEPLOY_CHECKOUT"
+    exit 1
+fi
+
 nonff=0
 if ! git -C "$DEPLOY_CHECKOUT" merge-base --is-ancestor HEAD origin/main >/dev/null 2>&1; then
     nonff=1
@@ -187,6 +290,7 @@ fi
 
 reasons=()
 [ -n "$dirty" ] && reasons+=("dirty tracked files")
+[ -n "$untracked" ] && reasons+=("untracked files")
 [ "$nonff" = 1 ] && reasons+=("checkout not an ancestor of origin/main (hot-patch/diverged)")
 branch=""
 branch=$(git -C "$DEPLOY_CHECKOUT" symbolic-ref --short HEAD 2>/dev/null || true)
@@ -196,17 +300,40 @@ fi
 if [ "${#reasons[@]}" -gt 0 ]; then
     why=$(printf '%s; ' "${reasons[@]}")
     why=${why%; }
-    if [ -n "$branch" ] && [ "$branch" != "main" ]; then
-        auto_file_off_main "$why"
-    else
-        # fleet-ops#2725: on main but dirty/diverged — file the distinct
-        # deploy-blocked-on-main class so it does not sit silent until the
-        # blind-audit catches it 30+ min later.
-        auto_file_deploy_blocked_main "$why"
+    # fleet-ops#3634: if no live process holds the clone as its cwd, the
+    # clone is abandoned — self-rescue instead of blocking. Keep the LOUD
+    # block only when a live process is actively working inside the clone.
+    if clone_held_as_cwd "$DEPLOY_CHECKOUT"; then
+        if [ -n "$branch" ] && [ "$branch" != "main" ]; then
+            auto_file_off_main "$why"
+        else
+            # fleet-ops#2725: on main but dirty/diverged — file the distinct
+            # deploy-blocked-on-main class so it does not sit silent until the
+            # blind-audit catches it 30+ min later.
+            auto_file_deploy_blocked_main "$why"
+        fi
+        loud "DEPLOY-BLOCKED" "merge-to-live blocked at $DEPLOY_CHECKOUT: $why (live process holds the clone as cwd)"
+        deploy_audit "fleet-ops" "deploy-blocked" "$why"
+        exit 1
     fi
-    loud "DEPLOY-BLOCKED" "merge-to-live blocked at $DEPLOY_CHECKOUT: $why"
-    deploy_audit "fleet-ops" "deploy-blocked" "$why"
-    exit 1
+    if ! rescue_deploy_clone "$why"; then
+        # Rescue failed — fall back to the LOUD block so the block is never
+        # silent.
+        if [ -n "$branch" ] && [ "$branch" != "main" ]; then
+            auto_file_off_main "$why"
+        else
+            auto_file_deploy_blocked_main "$why"
+        fi
+        loud "DEPLOY-BLOCKED" "merge-to-live blocked at $DEPLOY_CHECKOUT: $why (rescue failed)"
+        deploy_audit "fleet-ops" "deploy-blocked" "$why"
+        exit 1
+    fi
+    # Recompute state after the rescue: the clone is now clean on origin/main.
+    ahead=0
+    dirty=""
+    untracked=""
+    nonff=0
+    branch="main"
 fi
 
 if [ "${ahead:-0}" -gt 0 ]; then

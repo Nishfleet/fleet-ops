@@ -241,6 +241,9 @@ jobs:
         bash tests/nish-boundary-notify-classes.test.sh
         bash tests/system-dropins-shape.test.sh
         bash tests/fleet-ops-deploy.test.sh
+        # fleet-ops#3634: self-rescue a deploy clone left on a named branch or
+        # dirty instead of blocking every merge (2 incidents 2026-09-05).
+        bash tests/fleet-ops-deploy-rescue.test.sh
         bash tests/fleet-heartbeat-undersaturation.test.sh
         # fleet-ops#153: lock the product-vs-control-plane throughput split.
         bash tests/fleet-heartbeat-throughput-split.test.sh
