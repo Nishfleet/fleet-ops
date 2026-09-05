@@ -242,3 +242,21 @@ grep -qiE 'pi --list-models|/models|catalog' <<<"$or_cite" || fail "openrouter _
 # cheapest+best evidence: the citation must name DeepSeek V4 flash as cheapest vs the two alternatives
 grep -qiE 'cheapest' <<<"$or_cite" || fail "openrouter _comment_384 must state cheapest+best verdict"
 ok "openrouter: deepseek/deepseek-v4-flash-0731 wired (metered, cap=$or_dsv4f) with dated measured _comment_384 citation"
+
+# 8. fable-check 2026-09-05: zero-yield seats retired (fleet-ops#3389 for the
+#    laguna incident). Both seats ran n=20 sessions with pr_count=0 in
+#    seat-yield.json and died 57 times in the 3h window; cap=0 stale so the
+#    14d TTL re-audition (fleet-ops#3111) re-probes them with a real packet.
+echo "--- scenario 8: laguna + swe-1-7 are cap=0 stale with a dated n=20 yield-0 reason ---"
+for pm in "commandcode|poolside/laguna-s-2.1-free|_laguna_20260905" "devin|swe-1-7|_swe17_20260905"; do
+    IFS='|' read -r prov model field <<<"$pm"
+    mcap=$(jq -r --arg p "$prov" --arg m "$model" '.providers[$p].models[$m] | if type=="object" then (.cap // 0) else . end' "$caps")
+    [[ "$mcap" == "0" ]] || fail "$prov/$model cap must be 0 (n=20 sessions, pr_count=0 in seat-yield.json on 2026-09-05). Got: $mcap"
+    micz=$(jq -r --arg p "$prov" --arg m "$model" '.providers[$p].models[$m] | if type=="object" then (.intentional_cap_zero // "") else "" end' "$caps")
+    [[ "$micz" == "stale" ]] || fail "$prov/$model intentional_cap_zero must be 'stale' (14d TTL re-audition). Got: '$micz'"
+    mreason=$(jq -r --arg p "$prov" --arg f "$field" '.providers[$p][$f] // ""' "$caps")
+    grep -qE "$date_pat" <<<"$mreason" || fail "$prov.$field must carry a YYYY-MM-DD date"
+    grep -qE 'n=20' <<<"$mreason" || fail "$prov.$field must name the sample size n=20"
+    grep -qE 'yield=0\.0' <<<"$mreason" || fail "$prov.$field must name yield=0.0"
+    ok "$prov/$model: cap=0 stale with dated n=20 yield=0.0 reason in $field"
+done
