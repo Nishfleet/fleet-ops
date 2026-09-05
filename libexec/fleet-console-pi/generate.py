@@ -32,6 +32,7 @@ OUT_JSON = Path(
 )
 CADENCE_MIN = 12
 PROM = "http://127.0.0.1:9090"
+AM = "http://127.0.0.1:9093"
 PROM_STALE_S = 15 * 60          # exporter fires every 5 min; 2+ misses = stale
 SEAT_STALE_S = 30 * 60
 PROC_STALE_S = 5 * 60
@@ -277,27 +278,64 @@ def collect_main_ci():
                  explain=explain)
 
 
-def collect_firing_alerts():
-    src = "prometheus:/api/v1/alerts"
-    explain = ("Prometheus HTTP API /api/v1/alerts, currently firing, "
-               "Watchdog (dead-man heartbeat) excluded. This is live "
-               "Alertmanager state, not a scraped gauge.")
-    try:
-        alerts = _prom_alerts()
-    except PromError as e:
-        return _unknown(src, PROM_STALE_S, f"alerts API failed: {e}",
-                        explain=explain)
+def _am_alerts(timeout=5):
+    """Active Alertmanager alerts (respects silences/inhibitions).
+
+    Returns a list of {alertname, severity, labels}. Raises PromError on
+    failure. AM /api/v2/alerts is the honest source for "firing alerts":
+    Prometheus /api/v1/alerts ignores Alertmanager silences, so a silenced
+    alert (e.g. a parked SystemUnitFailed) would be over-counted here while
+    the verify pass (which reads AM) disagrees -> ConsoleLying.
+    """
+    url = AM.rstrip("/") + "/api/v2/alerts"
+    payload = _loopback_json(url, timeout=timeout)
+    if not isinstance(payload, list):
+        raise PromError("am /api/v2/alerts was not a list")
     items = []
-    for a in alerts:
-        if a.get("state") != "firing":
-            continue
-        name = (a.get("labels") or {}).get("alertname") or ""
+    for a in payload:
+        labels = a.get("labels") or {}
+        name = labels.get("alertname") or ""
         if name == "Watchdog":
             continue
-        sev = (a.get("labels") or {}).get("severity") or ""
-        items.append({"alertname": name, "severity": sev,
-                      "labels": a.get("labels") or {}})
+        status = a.get("status") or {}
+        state = status.get("state") or a.get("status") or ""
+        if state not in ("active", "firing"):
+            continue
+        sev = labels.get("severity") or ""
+        items.append({"alertname": name, "severity": sev, "labels": labels})
     items.sort(key=lambda x: x["alertname"])
+    return items
+
+
+def collect_firing_alerts():
+    src = "alertmanager:/api/v2/alerts"
+    explain = ("Alertmanager GET /api/v2/alerts, state=active, Watchdog "
+               "excluded (respects silences/inhibitions; independent of "
+               "Prometheus /api/v1/alerts).")
+    try:
+        items = _am_alerts()
+    except PromError as e:
+        # AM down: fall back to Prometheus alerts API (weaker independence).
+        src = "prometheus:/api/v1/alerts"
+        explain = ("Prometheus HTTP API /api/v1/alerts, currently firing, "
+                   "Watchdog (dead-man heartbeat) excluded. AM was down; "
+                   "this fallback ignores silences.")
+        try:
+            alerts = _prom_alerts()
+        except PromError as e2:
+            return _unknown(src, PROM_STALE_S, f"alerts API failed: {e2}",
+                            explain=explain)
+        items = []
+        for a in alerts:
+            if a.get("state") != "firing":
+                continue
+            name = (a.get("labels") or {}).get("alertname") or ""
+            if name == "Watchdog":
+                continue
+            sev = (a.get("labels") or {}).get("severity") or ""
+            items.append({"alertname": name, "severity": sev,
+                          "labels": a.get("labels") or {}})
+        items.sort(key=lambda x: x["alertname"])
     return _tile(src, PROM_STALE_S, True, time.time(), count=len(items),
                  items=items, explain=explain)
 

@@ -109,7 +109,15 @@ SKIP_SET = {"Watchdog", "FleetTestAlert", "LoadStorm", "CanaryDrill",
            # worker cannot fix a stale Prometheus gauge — the fix is in the
            # exporter code (emit instrumented=0 on config failure, which this
            # PR already ships). Skip to avoid a verify-stall loop.
-           "FleetSloMainGreenGreenMapDisagree"}
+           "FleetSloMainGreenGreenMapDisagree",
+           # fleet-ops#3176/#3351: provider-level quota exhaustion (one billing
+           # wall painting multiple seats). Repair is mechanism-impossible — an
+           # alert-repair worker cannot top up a billing account (money is
+           # Nish-reserved) and the wall self-resolves when the quota resets.
+           # Without the skip, every firing dispatches a worker that hits the
+           # same wall and fails (2026-09-05 15:26Z unit-failure trip). Skip to
+           # avoid the re-summon loop; the wall clears on quota reset.
+           "FleetProviderQuotaExhausted"}
 
 # Seat selection — pick a healthy lane instead of hardcoding one. The
 # recorded seat in pi-seat-health.json wins if it is healthy AND observed
@@ -347,9 +355,16 @@ def _seat_walled(provider, model):
     hc = d.get("health_class") or ""
     if hc in {"credentials_bad", "quota_exhausted"}:
         return True
-    bench = d.get("bench_until") or ""
+    # The shell marker writers record a bench wall as bench_until while the
+    # pi seat-health writer records it as usable_at — the wall end is the
+    # first present of the two, matching lib/seat-lib.sh seat_usable()
+    # (bu=bench_until, fallback usable_at) and _provider_overload_wedged().
+    # Without the usable_at fallback a pi-written overload_bench ledger (no
+    # bench_until key) is NEVER walled and gets re-selected into the same
+    # 503 every dispatch (live: commandcode/poolside, 2026-09-05).
+    bench = d.get("bench_until") or d.get("usable_at") or ""
     if hc in {"quota_bench", "overload_bench", "hang_bench"}:
-        # Bench classes are walled while bench_until is in the future;
+        # Bench classes are walled while the wall end is in the future;
         # once it passes the seat is retried (fail-open).
         return _in_future(bench)
     if hc == "rate_limited":
