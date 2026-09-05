@@ -352,6 +352,100 @@ PY
 ok "(k) per-repo quality metrics + committed ceilings"
 
 # =========================================================================
+# (l) fleet-ops#3532 --repo-check: arm-gate verdict vs committed ceiling
+# =========================================================================
+cat >"$scratch/ratchet-3532.json" <<'JSON'
+{
+  "ceilings": {
+    "_default": {"reverts_per_100_merges": 10.0, "red_on_main_minutes": 360.0},
+    "calm": {"reverts_per_100_merges": 60.0, "red_on_main_minutes": 360.0}
+  }
+}
+JSON
+cat >"$scratch/repo-check-fixture.json" <<'JSON'
+{
+  "repos": ["0509", "calm"],
+  "prs": [
+    {"number": 1, "repo": "0509", "title": "feat: a", "head_ref": "claim/1",
+     "merged_ts": 1788300000, "issue_created_ts": null},
+    {"number": 2, "repo": "0509", "title": "Revert feat: a", "head_ref": "revert/1",
+     "merged_ts": 1788326400, "issue_created_ts": null},
+    {"number": 3, "repo": "calm", "title": "feat: x", "head_ref": "claim/3",
+     "merged_ts": 1788330000, "issue_created_ts": null},
+    {"number": 4, "repo": "calm", "title": "feat: y", "head_ref": "claim/4",
+     "merged_ts": 1788340000, "issue_created_ts": null}
+  ]
+}
+JSON
+# 0509: merges_7d=2, reverts_7d=1 -> 50/100 vs _default ceiling 10 -> breach.
+FLEET_PRODUCT_SLO_FIXTURE="$scratch/repo-check-fixture.json" \
+FLEET_PRODUCT_SLO_NOW="$NOW_ISO" \
+FLEET_QUALITY_RATCHET_JSON="$scratch/ratchet-3532.json" \
+FLEET_PRODUCT_SLO_SESSIONS="$scratch/sessions" \
+  python3 "$helper" --repo-check 0509 >"$scratch/v0509.json" \
+  || fail "--repo-check 0509 exited nonzero"
+jq -e '.ok == false
+  and .breached == ["reverts_per_100_merges"]
+  and .measured.reverts_per_100_merges == 50
+  and .ceiling.reverts_per_100_merges == 10
+  and .ceiling.red_on_main_minutes == 360
+  and .merges_7d == 2
+  and (.unmeasured | index("red_on_main_minutes") != null)' \
+  "$scratch/v0509.json" >/dev/null \
+  || fail "--repo-check 0509 verdict wrong: $(cat "$scratch/v0509.json")"
+
+# calm: merges_7d=2, reverts=0 -> 0/100 vs ceiling 60 -> arms.
+FLEET_PRODUCT_SLO_FIXTURE="$scratch/repo-check-fixture.json" \
+FLEET_PRODUCT_SLO_NOW="$NOW_ISO" \
+FLEET_QUALITY_RATCHET_JSON="$scratch/ratchet-3532.json" \
+FLEET_PRODUCT_SLO_SESSIONS="$scratch/sessions" \
+  python3 "$helper" --repo-check calm >"$scratch/vcalm.json" \
+  || fail "--repo-check calm exited nonzero"
+jq -e '.ok == true and .breached == []
+  and .measured.reverts_per_100_merges == 0
+  and .ceiling.reverts_per_100_merges == 60
+  and .merges_7d == 2' "$scratch/vcalm.json" >/dev/null \
+  || fail "--repo-check calm verdict wrong: $(cat "$scratch/vcalm.json")"
+
+# Unenrolled repo: no merges and the _default ceiling row -> arms.
+FLEET_PRODUCT_SLO_FIXTURE="$scratch/repo-check-fixture.json" \
+FLEET_PRODUCT_SLO_NOW="$NOW_ISO" \
+FLEET_QUALITY_RATCHET_JSON="$scratch/ratchet-3532.json" \
+FLEET_PRODUCT_SLO_SESSIONS="$scratch/sessions" \
+  python3 "$helper" --repo-check futurerepo >"$scratch/vfuture.json" \
+  || fail "--repo-check futurerepo exited nonzero"
+jq -e '.ok == true and .breached == [] and .merges_7d == 0
+  and .ceiling.reverts_per_100_merges == 10' \
+  "$scratch/vfuture.json" >/dev/null \
+  || fail "--repo-check futurerepo verdict wrong: $(cat "$scratch/vfuture.json")"
+
+# Measurement failure (no gh) -> exit 1, no verdict on stdout: the workflow
+# step reads that as fail-open.
+if FLEET_PRODUCT_SLO_GH="$scratch/no-such-gh" \
+   FLEET_QUALITY_RATCHET_JSON="$scratch/ratchet-3532.json" \
+   FLEET_PRODUCT_SLO_NOW="$NOW_ISO" \
+   python3 "$helper" --repo-check 0509 >"$scratch/vfail.json" 2>/dev/null; then
+  fail "--repo-check with no gh must exit nonzero"
+fi
+[[ ! -s "$scratch/vfail.json" ]] \
+  || fail "--repo-check failure must not print a verdict"
+
+# The workflow gate shape: fetch pinned lib + ceiling, run --repo-check,
+# refuse to arm on breach.
+arm_wf="$repo_root/.github/workflows/reusable-auto-merge-arm.yml"
+grep -q 'id: quality' "$arm_wf" \
+  || fail "reusable-auto-merge-arm.yml must define the quality step"
+grep -q -- '--repo-check' "$arm_wf" \
+  || fail "reusable-auto-merge-arm.yml must call --repo-check"
+grep -q 'config/quality-ratchet.json' "$arm_wf" \
+  || fail "reusable-auto-merge-arm.yml must read the committed ceiling"
+grep -q 'stop-the-line: quality ceiling breached' "$arm_wf" \
+  || fail "reusable-auto-merge-arm.yml must print the stop-the-line verdict"
+grep -q "steps.quality.outputs.breached == 'false'" "$arm_wf" \
+  || fail "Arm auto-merge must gate on steps.quality.outputs.breached"
+ok "(l) --repo-check verdict + arm-gate wiring (fleet-ops#3532)"
+
+# =========================================================================
 # promtool (optional)
 # =========================================================================
 if command -v promtool >/dev/null 2>&1; then

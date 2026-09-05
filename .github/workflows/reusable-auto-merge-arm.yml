@@ -19,6 +19,14 @@
 # required for the auto-unfreeze). The state of the line is visible to
 # operators in the same place every other halt already lives — the GitHub
 # issue tracker — so the alert path is unchanged.
+#
+# fleet-ops#3532 (quality ratchet): a second check refuses to arm when the
+# repo's measured quality metric is above the ceiling committed in
+# fleet-ops config/quality-ratchet.json — stop-the-line: quality ceiling
+# breached. The metric definition is lib/fleet-product-slo.py
+# --repo-check, the same code the fleet-metrics exporter runs, fetched at
+# the fleet-ops ref this workflow file came from. A fetch/measure fault
+# warns and arms (fail-open, same as the freeze gate).
 
 name: Reusable auto-merge arm
 
@@ -64,8 +72,65 @@ jobs:
           fi
           echo "frozen=false" >> "$GITHUB_OUTPUT"
 
+      # ---- quality ceiling check (fleet-ops#3532) -------------------------
+      # Per-repo quality ceilings are committed in fleet-ops
+      # config/quality-ratchet.json (.ceilings, repo row else _default); the
+      # measurement is the same code the fleet-metrics exporter runs —
+      # lib/fleet-product-slo.py --repo-check — fetched at the exact
+      # fleet-ops ref this workflow file came from (github.workflow_sha), so
+      # gate, metric definition, and ceiling can never drift apart.
+      # fleet-ops is public, so raw.githubusercontent.com fetch needs no
+      # token and no extra permission. A metric enforces only when a
+      # measurement source exists (today: reverts_per_100_merges;
+      # red_on_main_minutes lands with fleet-ops#3534 and is reported as
+      # unmeasured until then). A fetch or measure failure warns and arms —
+      # fail-open, the same posture as the freeze gate above.
+      - name: Check quality ceiling
+        id: quality
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          FLEET_OPS_REF: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "$REPO_NAME" ]; then
+            echo "::warning::quality ceiling check has no repo name — arming proceeds (fail-open)"
+            echo "breached=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          base="https://raw.githubusercontent.com/Nishfleet/fleet-ops/${FLEET_OPS_REF}"
+          if ! curl -fsSL --retry 2 -o "$tmp/quality-ratchet.json" "$base/config/quality-ratchet.json" \
+            || ! curl -fsSL --retry 2 -o "$tmp/fleet-product-slo.py" "$base/lib/fleet-product-slo.py"; then
+            echo "::warning::quality ceiling fetch failed — arming proceeds (fail-open, mirrors the freeze gate)"
+            echo "breached=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          verdict="$(
+            FLEET_QUALITY_RATCHET_JSON="$tmp/quality-ratchet.json" \
+            FLEET_PRODUCT_SLO_ORG="$REPO_OWNER" \
+            python3 "$tmp/fleet-product-slo.py" --repo-check "$REPO_NAME" \
+              2>"$tmp/repo-check.err" || true
+          )"
+          if [ -z "$verdict" ] || ! jq -e . >/dev/null 2>&1 <<<"$verdict"; then
+            echo "::warning::quality ceiling check failed: $(cat "$tmp/repo-check.err") — arming proceeds (fail-open)"
+            echo "breached=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          breached="$(jq -r '.breached | join(", ")' <<<"$verdict")"
+          if [ -n "$breached" ]; then
+            detail="$(jq -r '[.breached[] as $m | "\($m) measured \(.measured[$m]) > ceiling \(.ceiling[$m])"] | join("; ")' <<<"$verdict")"
+            echo "stop-the-line: quality ceiling breached ($detail); auto-merge arming skipped (fleet-ops#3532)"
+            echo "breached=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "quality: $(jq -c . <<<"$verdict")"
+          echo "breached=false" >> "$GITHUB_OUTPUT"
+
       - name: Arm auto-merge
-        if: steps.freeze.outputs.frozen == 'false'
+        if: steps.freeze.outputs.frozen == 'false' && steps.quality.outputs.breached == 'false'
         env:
           GH_TOKEN: ${{ secrets.AUTO_REVERT_PAT }}
           PR: ${{ github.event.pull_request.number }}
