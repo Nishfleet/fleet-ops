@@ -896,16 +896,19 @@ def _extract_text(content):
 
 
 def _parse_session_file(path):
-    """Return {seat, timestamp, has_pr_url} for a pi-issue session .jsonl.
+    """Return {seat, timestamp, has_pr_url, cost} for a pi-issue session .jsonl.
 
     Seat is taken from the first model_change event; the timestamp is the
     session start time. A session counts as PR-producing if the final
-    assistant message text contains a Nishfleet PR URL.
+    assistant message text contains a Nishfleet PR URL. cost is the sum of
+    message.usage.cost.total across the session (fleet-ops#3323) — 0.0 for
+    free lanes and sessions that record no usage.cost.
     """
     session_ts = None
     model_seat = None
     last_assistant_line = None
     fallback_ts = None
+    cost = 0.0
     try:
         with path.open("r", encoding="utf-8", errors="replace") as f:
             for raw in f:
@@ -932,6 +935,17 @@ def _parse_session_file(path):
                     except json.JSONDecodeError:
                         pass
                     continue
+                if '"usage"' in line and '"cost"' in line:
+                    try:
+                        data = json.loads(line)
+                        c = (
+                            ((data.get("message") or {}).get("usage") or {})
+                            .get("cost") or {}
+                        ).get("total")
+                        if c is not None:
+                            cost += float(c)
+                    except (json.JSONDecodeError, ValueError, TypeError):
+                        pass
                 if re.search(r'"role"\s*:\s*"assistant"', line):
                     last_assistant_line = line
     except OSError:
@@ -959,14 +973,18 @@ def _parse_session_file(path):
         "seat": model_seat,
         "timestamp": ts_epoch,
         "has_pr_url": has_pr,
+        "cost": cost,
     }
 
 
 def _compute_seat_yield():
-    """Compute per-seat rolling last-20 issue-work session PR yield.
+    """Compute per-seat rolling last-20 issue-work session PR yield and cost.
 
     Scans FLEET_SESSIONS_DIR/pi-issue-*/**/*.jsonl, caches per-file results
-    by mtime, and returns {seat: {yield, sessions, pr_count, provisional}}.
+    by mtime, and returns {seat: {yield, sessions, pr_count, provisional,
+    cost_per_session}}. cost_per_session is the mean usage.cost over the
+    same rolling window (fleet-ops#3323) so pick_seat can rank by value =
+    yield / max(cost_per_session, 0.001).
     Also writes the JSON sidecar used by lib/seat-lib.sh pick_seat.
     """
     sessions_dir = Path(SESSIONS_DIR)
@@ -976,7 +994,9 @@ def _compute_seat_yield():
     cache = {}
     try:
         data, _age = _read_cache(SEAT_YIELD_CACHE)
-        if isinstance(data, dict) and data.get("v") == 1:
+        # v2: cached entries carry per-session cost (fleet-ops#3323); v1
+        # entries lack it, so they are re-parsed once on this tick.
+        if isinstance(data, dict) and data.get("v") == 2:
             cache = data.get("entries") or {}
     except (OSError, json.JSONDecodeError):
         pass
@@ -995,6 +1015,7 @@ def _compute_seat_yield():
                 "seat": cached["seat"],
                 "timestamp": cached["timestamp"],
                 "has_pr_url": cached["has_pr_url"],
+                "cost": cached.get("cost", 0.0),
             }
         else:
             entry = _parse_session_file(path)
@@ -1005,11 +1026,12 @@ def _compute_seat_yield():
             "seat": entry["seat"],
             "timestamp": entry["timestamp"],
             "has_pr_url": entry["has_pr_url"],
+            "cost": entry["cost"],
         }
         sessions.append(entry)
 
     try:
-        _write_cache(SEAT_YIELD_CACHE, {"v": 1, "entries": new_cache})
+        _write_cache(SEAT_YIELD_CACHE, {"v": 2, "entries": new_cache})
     except OSError:
         pass
 
@@ -1038,12 +1060,19 @@ def _compute_seat_yield():
         else:
             y = pr_count / total if total > 0 else 0.0
             provisional = False
+        # fleet-ops#3323: mean usage.cost per session over the same window.
+        # Sessions with no recorded cost count 0, so free lanes land on 0 and
+        # pick_seat's value floor (0.001) sorts them first at equal yield.
+        cost_per_session = (
+            sum(e.get("cost", 0.0) for e in window) / total if total > 0 else 0.0
+        )
         result[seat] = {
             "yield": y,
             "sessions": total,
             "pr_count": pr_count,
             "no_pr_count": no_pr,
             "provisional": provisional,
+            "cost_per_session": cost_per_session,
         }
 
     try:

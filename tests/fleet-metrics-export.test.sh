@@ -1718,7 +1718,7 @@ Path(m.SEAT_CAPS_DEFAULT).write_text(json.dumps({
     }
 }))
 
-def session(provider, model, ts, has_pr):
+def session(provider, model, ts, has_pr, cost=None):
     issue = f"pi-issue-{provider}-{model.replace('/', '-')}"
     d = sessions / issue
     d.mkdir(parents=True, exist_ok=True)
@@ -1729,21 +1729,25 @@ def session(provider, model, ts, has_pr):
     )
     content = [{"type": "text", "text": final_text}]
     base = f'2026-09-04T{ts}Z'
+    usage = {"cost": {"total": cost}} if cost is not None else {}
     lines = [
         json.dumps({"type": "session", "version": 3, "timestamp": base, "id": f"{issue}-{ts}"}),
         json.dumps({"type": "model_change", "provider": provider, "modelId": model, "timestamp": base}),
-        json.dumps({"type": "message", "message": {"role": "assistant", "content": content}, "timestamp": base}),
+        json.dumps({"type": "message", "message": {"role": "assistant", "content": content, "usage": usage}, "timestamp": base}),
     ]
     path.write_text("\n".join(lines))
     return path
 
-# devin/glm-5-2: 5 sessions, some with PR -> provisional 0.5 (<20)
+# devin/glm-5-2: 5 sessions, some with PR -> provisional 0.5 (<20).
+# fleet-ops#3323: sessions carry usage.cost so cost_per_session = 0.10.
 for i in range(5):
-    session("devin", "glm-5-2", f"00:00:{i:02d}", i % 2 == 0)
+    session("devin", "glm-5-2", f"00:00:{i:02d}", i % 2 == 0, cost=0.10)
 
-# opencode/mimo-v2.5-free: exactly 20 sessions, 5 with PR -> 0.25
+# opencode/mimo-v2.5-free: exactly 20 sessions, 5 with PR -> 0.25.
+# Odd sessions cost 0.20 -> cost_per_session = 0.10 over the window.
 for i in range(20):
-    session("opencode", "mimo-v2.5-free", f"01:00:{i:02d}", i % 4 == 0)
+    session("opencode", "mimo-v2.5-free", f"01:00:{i:02d}", i % 4 == 0,
+            cost=0.20 if i % 2 == 1 else None)
 
 # devin/swe-1-7: 25 sessions; last 20 (i>=5) all have PR -> 1.0
 for i in range(25):
@@ -1772,6 +1776,18 @@ assert result["opencode/mimo-v2.5-free"]["pr_count"] == 5
 assert result["opencode/mimo-v2.5-free"]["no_pr_count"] == 15
 assert result["opencode/mimo-v2.5-free"]["provisional"] is False
 print("OK: opencode/mimo-v2.5-free rolling-20 yield 0.25")
+
+# fleet-ops#3323: cost_per_session is the mean usage.cost over the window.
+# devin/glm-5-2: 5 sessions x 0.10 -> 0.10 even though yield is provisional.
+assert result["devin/glm-5-2"]["cost_per_session"] == 0.10
+assert j["devin/glm-5-2"]["cost_per_session"] == 0.10
+# opencode/mimo-v2.5-free: 10 of 20 sessions at 0.20 -> 0.10.
+assert abs(result["opencode/mimo-v2.5-free"]["cost_per_session"] - 0.10) < 1e-9
+# devin/swe-1-7 sessions carry no usage.cost -> 0.0 (the value floor
+# 0.001 is applied in pick_seat, not in the ledger).
+assert result["devin/swe-1-7"]["cost_per_session"] == 0.0
+assert result["opencode/nemotron-3.5-lightning-free"]["cost_per_session"] == 0.0
+print("OK: seat-yield ledger carries rolling cost_per_session (fleet-ops#3323)")
 
 # devin/swe-1-7: 25 sessions, last-20 all PR -> 1.0
 assert "devin/swe-1-7" in result

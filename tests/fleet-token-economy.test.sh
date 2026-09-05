@@ -6,8 +6,9 @@
 # Nish: measured yield supersedes the volume prefix). Locks the seat-cap
 # configuration that implements the economy from live meters:
 #   - product picks (PI_PICK_ROLE=product, pi-issue-run/pi-packet-run)
-#     route by product_order:yield — rolling PR-yield ledger, ties broken
-#     by class prepaid -> metered -> free (fleet-ops#3125)
+#     route by product_order:value — rolling yield / rolling cost per
+#     session; light packets order by value, heavy/keystone yield-first
+#     (fleet-ops#3323, superseding the #3125 pure-yield order)
 #   - xai-oauth (SuperGrok) provider cap 2, grok-4.6 cap 2, grok-4.5 cap 0
 #   - cursor is capped at 1, keystone/senior-review only (not a free lane)
 #   - scout/canary/audit picks keep leftover free lanes
@@ -36,10 +37,10 @@ command -v jq >/dev/null || fail "jq required"
 
 jq -e . "$caps" >/dev/null || fail "seat-caps.json does not parse"
 
-# --- product order + devin AIMD (fleet-ops#3125) -------------------------
+# --- product order + devin AIMD (fleet-ops#3125/#3323) -------------------
 product_order=$(jq -r '.product_order // empty' "$caps")
-[[ "$product_order" == "yield" ]] \
-  || fail "product_order must be 'yield' (fleet-ops#3125), got: $product_order"
+[[ "$product_order" == "value" ]] \
+  || fail "product_order must be 'value' (fleet-ops#3323), got: $product_order"
 
 if jq -e '.volume_providers_in_order' "$caps" >/dev/null 2>&1; then
   fail "volume_providers_in_order must be retired (fleet-ops#3125)"
@@ -70,7 +71,7 @@ swe17=$(jq -r '.providers.devin.models["swe-1-7"]' "$caps")
 # (2026-09-05: swe-1-7 is cap 4 again; the intentional_cap_zero pin retired with #3473 — see _swe17_20260905)
 [[ "$(jq -r '.max_probe_ceiling' <<<"$swe17")" == "$(jq -r '.cap' <<<"$swe17")" ]] || fail "swe-1-7 max_probe_ceiling must equal its cap while pinned (fleet-ops#3443; seat restored 2026-09-05)"
 
-ok "product_order=yield, volume order retired, devin AIMD not hard_ceiling with probe ceilings pinned == caps (provider 4 / glm-5-2 3 / swe-1-7 0; fleet-ops#3443/#3473, lift via #3258)"
+ok "product_order=value, volume order retired, devin AIMD not hard_ceiling with probe ceilings pinned == caps (provider 4 / glm-5-2 3 / swe-1-7 0; fleet-ops#3443/#3473, lift via #3258)"
 
 # --- prepaid order, then leftover prepaid after (fleet-ops#1178/#3125) ----
 prepaid_order=$(jq -r '.prepaid_providers_in_order | join(" ")' "$caps")
@@ -180,13 +181,17 @@ done
 
 ok "minimax and straitly are metered (last bucket)"
 
-# --- lib/seat-lib.sh enforces product yield-order + class ladder ---------
+# --- lib/seat-lib.sh enforces product value-order + class ladder ---------
 grep -q 'yield-order (product)' "$lib" \
   || fail "lib/seat-lib.sh must log the computed yield order per product pick (fleet-ops#3125)"
+grep -q 'value-order (product' "$lib" \
+  || fail "lib/seat-lib.sh must log the computed value order per product pick (fleet-ops#3323)"
 grep -q 'SEAT_PRODUCT_ORDER' "$lib" \
   || fail "lib/seat-lib.sh must read product_order (fleet-ops#3125)"
 grep -q 'seat_yield_for' "$lib" \
   || fail "lib/seat-lib.sh must read the per-seat PR-yield ledger (fleet-ops#3250/#3125)"
+grep -q 'seat_cost_for' "$lib" \
+  || fail "lib/seat-lib.sh must read the per-seat cost ledger (fleet-ops#3323)"
 grep -q 'prepaid_providers_in_order' "$lib" \
   || fail "lib/seat-lib.sh must read prepaid_providers_in_order"
 grep -q 'free_providers_in_order' "$lib" \
@@ -199,6 +204,6 @@ grep -q 'record_seat_selection' "$lib" \
 grep -q 'fleet_seat_selection_24h' "$lib" \
   || fail "lib/seat-lib.sh must export fleet_seat_selection_24h"
 
-ok "lib/seat-lib.sh enforces product yield-order + class ladder, cursor keystone-only, and seat-selection export"
+ok "lib/seat-lib.sh enforces product value-order + class ladder, cursor keystone-only, and seat-selection export"
 
-ok "token economy: product_order=yield, xai-oauth cap 2, cursor keystone-only, devin AIMD floors/ceilings, leftover-free before metered, grok/Claude cap 0"
+ok "token economy: product_order=value, xai-oauth cap 2, cursor keystone-only, devin AIMD floors/ceilings, leftover-free before metered, grok/Claude cap 0"
