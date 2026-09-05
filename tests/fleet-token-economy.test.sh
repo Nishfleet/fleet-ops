@@ -67,7 +67,7 @@ swe17=$(jq -r '.providers.devin.models["swe-1-7"]' "$caps")
 # fleet-ops#3473 (2026-09-05): swe-1-7 retired to cap 0 (0 PRs in 20 sessions,
 # 57 deaths in 3h); re-audition with a real packet after the 14d TTL (#3258).
 [[ "$(jq -r '.cap' <<<"$swe17")" == "4" ]] || fail "swe-1-7 declared cap must be 4 (2026-09-05: the #3473 zero-yield retirement counted 20 infra deaths — 1801s provider kill + resource_exhausted — as yield; working yield 80%; see _swe17_20260905)"
-[[ "$(jq -r '.intentional_cap_zero // empty' <<<"$swe17")" != "" ]] || fail "swe-1-7 cap 0 must carry intentional_cap_zero (fleet-ops#3473)"
+# (2026-09-05: swe-1-7 is cap 4 again; the intentional_cap_zero pin retired with #3473 — see _swe17_20260905)
 [[ "$(jq -r '.max_probe_ceiling' <<<"$swe17")" == "0" ]] || fail "swe-1-7 max_probe_ceiling must be 0 while retired (fleet-ops#3473)"
 
 ok "product_order=yield, volume order retired, devin AIMD not hard_ceiling with probe ceilings pinned == caps (provider 4 / glm-5-2 3 / swe-1-7 0; fleet-ops#3443/#3473, lift via #3258)"
