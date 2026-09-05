@@ -3673,3 +3673,8 @@ _sidecar_fm="$(PI_SEAT_HEALTH_SIDECAR="$_sidecar_scratch/spawn.json" \
 [[ "$_sidecar_q" = "transient_fault" ]] \
   || fail "3559: spawn-fail sidecar must report transient_fault, got $_sidecar_q"
 ok "3559: wrapper spawn-fail bench is visible in pi-seat-health.json (transient_fault/spawn_fail, not healthy)"
+
+# fleet-ops#3723: OpenRouter free-model daily request budget replay drill.
+# Workers cannot add a P14 line in .github/workflows/ci.yml; this file is the
+# listed CI host for the new free-model daily-budget bench test.
+bash "$here/seat-lib-free-daily-budget.test.sh" || fail "seat-lib-free-daily-budget tests failed"

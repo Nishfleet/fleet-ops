@@ -280,6 +280,12 @@ SEAT_RAM_GB_PER_WORKER=1.5
 # running; they just cannot fill the RAM ceiling and skip ready issues.
 SEAT_ORG_RESERVE=2
 SEAT_PACE_PCT="${SEAT_PACE_PCT:-80}"
+# fleet-ops#3723: per-provider daily request budget for free-model accounts
+# whose cap is per-ACCOUNT (OpenRouter free models). When the shared counter
+# of assistant turns across the provider's *:free sessions today (UTC) reaches
+# this, every free model on the provider benches until 00:00 UTC. Keyed on
+# provider name. 0 = no daily budget (default; only OpenRouter carries one).
+declare -A SEAT_FREE_DAILY_REQUEST_BUDGET=()
 
 # fleet-ops#457: lanes whose snapshot metrics exceed quality-routing.json
 # cuts. Empty when the scoreboard is missing/stale. Loaded once per pick.
@@ -552,6 +558,17 @@ load_seat_caps() {
         [[ -n "$p" ]] || continue
         [[ "$obench" =~ ^[0-9]+$ ]] && SEAT_PROVIDER_OVERLOAD_BENCH_DEFAULT["$p"]="$obench"
     done < <(jq -r '.providers | to_entries[] | .key as $k | .value as $v | (if ($v|type)=="object" then [$k, ($v.overload_bench_default_s // $v["503_bench_default_s"] // "")] else [$k, ""] end) | @tsv' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+
+    # fleet-ops#3723: per-provider daily request budget for free-model
+    # accounts whose cap is per-ACCOUNT (OpenRouter free models). The budget
+    # is shared across every *:free model on the provider; seat-lib counts
+    # assistant turns in today's (UTC) Pi session files and benches all free
+    # models on the provider once the counter hits the cap. 0/absent = no
+    # daily budget (only OpenRouter carries one today).
+    while IFS=$'\t' read -r p budget; do
+        [[ -n "$p" ]] || continue
+        [[ "$budget" =~ ^[0-9]+$ ]] && (( budget > 0 )) && SEAT_FREE_DAILY_REQUEST_BUDGET["$p"]="$budget"
+    done < <(jq -r '.providers | to_entries[] | .key as $k | .value as $v | (if ($v|type)=="object" then [$k, ($v.free_model_daily_request_budget // "")] else [$k, ""] end) | @tsv' "$SEAT_CAPS_JSON" 2>/dev/null || true)
 
     # fleet-ops#3111: expire-to-default for stale cap=0 seats. A stale cap=0
     # seat (intentional_cap_zero="stale") has a dated reason — "2026-08-28
@@ -1480,6 +1497,153 @@ seat_ledger_path() {
     ps="${p//[^A-Za-z0-9._-]/_}"
     ms="${m//[^A-Za-z0-9._-]/_}"
     printf '%s/%s__%s.json\n' "$LEDGER_DIR" "$ps" "$ms"
+}
+
+# fleet-ops#3723: OpenRouter's free-model request budget is per ACCOUNT, not
+# per key (openrouter.ai/docs/api-reference/limits: "Making additional accounts
+# or API keys will not affect your rate limits, as we govern capacity globally").
+# The documented daily cap (50 req/day with < $10 credits, 1000 with >= $10) is
+# shared across every *:free model on the provider. seat-lib counts assistant
+# turns (each turn = one model request) across the provider's *:free sessions
+# today (UTC) and benches every free model on the provider once the shared
+# counter hits the configured budget, until 00:00 UTC. The bench is NOT charged
+# to the work item: no consecutive_failure_count increment, no yield penalty
+# (it is an account-wide external limit, not a seat fault). Reuses the existing
+# quota_bench/usable_at ledger fields; no new state file.
+#
+# Pi session files live under $FLEET_SESSIONS_DIR (default ~/.pi/agent/sessions)
+# as pi-issue-*/<timestamp>_<id>.jsonl. Each assistant message in a session =
+# one model request. A session's provider/model is the first model_change event.
+# We count only sessions whose model id ends in ":free" on the given provider
+# and whose session timestamp is in the current UTC day.
+#
+# Args: provider
+# Prints: integer request count for today (UTC). 0 on any error (fail-open).
+_provider_free_daily_request_count() {
+    local p="$1"
+    local sessions_dir="${FLEET_SESSIONS_DIR:-$HOME/.pi/agent/sessions}"
+    [[ -d "$sessions_dir" ]] || { printf '0'; return 0; }
+    # Today's UTC date prefix (YYYY-MM-DD). Session timestamps are ISO 8601 UTC
+    # like 2026-09-06T05:11:27.532Z, so a prefix match on the filename's date
+    # is exact and cheap (no per-line parse for the date).
+    local today
+    today=$(date -u +%Y-%m-%d)
+    [[ -n "$today" ]] || { printf '0'; return 0; }
+    # Count assistant messages across every pi-issue session file whose name
+    # starts with today's UTC date. We grep for the provider in model_change
+    # and the :free suffix on the modelId to decide whether the session counts,
+    # then count "role":"assistant" lines in it. A single jq pass per file
+    # would be cleaner but ~hundreds of files per day makes a streaming grep
+    # far cheaper; the assistant-role line is structurally unique per turn.
+    local count=0
+    local f provider model has_free=0
+    while IFS= read -r f; do
+        [[ -n "$f" ]] || continue
+        has_free=0
+        # First model_change with this provider and a :free model id marks the
+        # session as counting. A session is single-provider (pi pins one model),
+        # so the first match is authoritative.
+        while IFS= read -r line; do
+            [[ "$line" == *'"type":"model_change"'* || "$line" == *'"type": "model_change"'* ]] || continue
+            provider=$(printf '%s' "$line" | jq -r '.provider // ""' 2>/dev/null || true)
+            model=$(printf '%s' "$line" | jq -r '.modelId // ""' 2>/dev/null || true)
+            if [[ "$provider" == "$p" && "$model" == *":free" ]]; then
+                has_free=1
+                break
+            fi
+        done < "$f" 2>/dev/null || continue
+        (( has_free )) || continue
+        # Count assistant turns in this session. Each assistant message = one
+        # request to the model. grep -c is a fast byte scan; the role field is
+        # structurally unique per assistant turn.
+        local n
+        n=$(grep -c '"role":"assistant"' "$f" 2>/dev/null || true)
+        [[ "$n" =~ ^[0-9]+$ ]] || n=0
+        count=$((count + n))
+    done < <(find "$sessions_dir" -maxdepth 2 -type f -name "${today}T*.jsonl" 2>/dev/null || true)
+    printf '%s' "$count"
+}
+
+# fleet-ops#3723: bench every free model on a provider for the rest of the
+# UTC day when the shared daily request counter hits the configured budget.
+# Writes a quota_bench ledger entry (reuses the existing fields — no new
+# state file) with bench_until = next 00:00 UTC. NOT charged to the work
+# item: consecutive_failure_count stays at 0 and no yield penalty is applied
+# (the bench writer for daily-budget is separate from mark_seat_quota_bench,
+# which escalates the count). Best-effort: a write failure fails open (the
+# counter re-evaluates next pick).
+# Args: provider model
+_mark_seat_free_daily_budget_bench() {
+    local p="$1" m="$2"
+    local path now_utc now_s midnight_s bench_until
+    path=$(seat_ledger_path "$p" "$m")
+    mkdir -p "$LEDGER_DIR" 2>/dev/null || true
+    now_s=$(date -u +%s)
+    now_utc=$(date -u -d "@$now_s" +%Y-%m-%dT%H:%M:%SZ)
+    # Next 00:00 UTC. If we are exactly at midnight, bench for the full day
+    # (the counter just rolled, so this is defensive; the next pick re-counts).
+    midnight_s=$(date -u -d "$(date -u -d "@$now_s" +%Y-%m-%d) tomorrow" +%s 2>/dev/null || echo $((now_s + 86400)))
+    (( midnight_s <= now_s )) && midnight_s=$((now_s + 86400))
+    bench_until=$(date -u -d "@$midnight_s" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
+    local tmp="$path.bench.$$.$RANDOM.tmp"
+    # consecutive_failure_count is 0 — this is an account-wide external limit,
+    # not a seat fault, so it must NOT escalate the bench or trip the failure
+    # ceiling. The ledger's quota_bench branch in seat_usable holds the seat
+    # until bench_until; once midnight passes the bench expires (fail-open) and
+    # the counter restarts at 0 for the new UTC day.
+    if jq -nc \
+        --arg provider "$p" --arg model "$m" \
+        --arg observed "$now_utc" --arg bench "$bench_until" --arg usable "$bench_until" \
+        --argjson http_status 429 --argjson retry_after null \
+        --argjson retryable true --argjson seat_dead false --argjson poison_ladder false \
+        --argjson count 0 \
+        '{
+          provider:$provider, model:$model,
+          http_status:$http_status, retry_after:$retry_after,
+          health_class:"quota_bench",
+          retryable:$retryable, seat_dead:$seat_dead, poison_ladder:$poison_ladder,
+          observed_at:$observed,
+          source:"free_daily_budget",
+          failure_mode:"quota_cap",
+          bench_until:$bench,
+          usable_at:$usable,
+          consecutive_failure_count:$count
+        }' > "$tmp" 2>/dev/null; then
+        chmod 0644 "$tmp" 2>/dev/null || true
+        if mv "$tmp" "$path" 2>/dev/null; then
+            seat_log "free-daily-budget: benched $p/$m until $bench_until (account-wide free-model daily cap reached; not charged to work item — fleet-ops#3723)"
+            return 0
+        fi
+        rm -f "$tmp" 2>/dev/null || true
+        seat_log "free-daily-budget: ledger rename FAILED for $p/$m — fail-open (counter re-evaluates next pick)"
+        return 1
+    fi
+    rm -f "$tmp" 2>/dev/null || true
+    seat_log "free-daily-budget: jq compose FAILED for $p/$m — marker NOT written"
+    return 1
+}
+
+# fleet-ops#3723: true if the provider has a free-model daily request budget
+# configured AND the shared counter of assistant turns across the provider's
+# *:free sessions today (UTC) has reached it. When true, the caller benches
+# every free model on the provider for the rest of the UTC day. Caches the
+# count per pick (one scan per provider per pick_seat call).
+# Args: provider
+# Returns: 0 if budget reached (bench), 1 otherwise
+_provider_free_daily_budget_reached() {
+    local p="$1"
+    local budget="${SEAT_FREE_DAILY_REQUEST_BUDGET[$p]:-0}"
+    [[ "$budget" =~ ^[0-9]+$ ]] || return 1
+    (( budget > 0 )) || return 1
+    # Per-pick cache so the candidate loop does not re-scan sessions per model.
+    local cache_key="_FRDB_COUNT_$p"
+    local count="${!cache_key:-}"
+    if [[ -z "$count" ]]; then
+        count=$(_provider_free_daily_request_count "$p")
+        [[ "$count" =~ ^[0-9]+$ ]] || count=0
+        printf -v "$cache_key" '%s' "$count"
+    fi
+    (( count >= budget ))
 }
 
 # fleet-ops#1512: separate spawn-fail/empty-run bench marker. The per-seat
@@ -3342,6 +3506,23 @@ pick_seat() {
             # fleet-ops#1409: seat_usable runs silent (per-seat log suppressed)
             # when _SEAT_USABLE_SILENT=1. Count the UNUSABLE seat + keep a
             # sample for the per-pick summary emitted below.
+            _seat_unusable_n=$((_seat_unusable_n + 1))
+            _seat_unusable_sample+=("$p/$m")
+            continue
+        fi
+        # fleet-ops#3723: per-account free-model daily request budget
+        # (OpenRouter). The budget is shared across every *:free model on the
+        # provider; once today's (UTC) assistant-turn count hits the cap, every
+        # free model on the provider is benched until 00:00 UTC — NOT charged
+        # to the work item (no consecutive_failure_count, no yield penalty).
+        # Only applies to models whose id ends in :free on a provider with a
+        # configured free_model_daily_request_budget. The bench writer is
+        # separate from mark_seat_quota_bench so the count stays at 0 and the
+        # failure ceiling never trips on an account-wide external limit.
+        if [[ "$m" == *":free" ]] \
+            && [[ -n "${SEAT_FREE_DAILY_REQUEST_BUDGET[$p]:-}" ]] \
+            && _provider_free_daily_budget_reached "$p"; then
+            _mark_seat_free_daily_budget_bench "$p" "$m" || true
             _seat_unusable_n=$((_seat_unusable_n + 1))
             _seat_unusable_sample+=("$p/$m")
             continue
