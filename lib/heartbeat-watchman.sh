@@ -78,10 +78,34 @@ heartbeat_list_failed_units() {
         printf '%s\n' "$unit"
     done < <("$SYSTEMCTL" --user list-units --state=failed --no-legend --plain 2>/dev/null \
                 | awk '{print $1}' || true)
+
+    # fleet-ops#1570: also list --system failed units. The heartbeat runs as
+    # user nish and only auto-repairs fleet USER units (block 4 of tier1);
+    # system-scope units are host services (claude-telegram-watchdog.service,
+    # restic, ...) that must NOT be reset+started blindly — a failed system
+    # unit is a signal to diagnose, not noise to clear. Prefixed "system:" so
+    # callers can route them to surface-only handling, and tier 2 / the
+    # unit-escalation drop-in (root) can dispatch the real repair.
+    while IFS= read -r unit; do
+        [ -z "$unit" ] && continue
+        printf 'system:%s\n' "$unit"
+    done < <("$SYSTEMCTL" --system list-units --state=failed --no-legend --plain 2>/dev/null \
+                | awk '{print $1}' || true)
 }
 
 heartbeat_repair_unit() {
     local unit="$1"
+    # fleet-ops#1570: system-scope units are surfaced only, never auto-repaired.
+    # nish has NOPASSWD sudo, so capability is not the blocker — safety is:
+    # reset-failed+start on an arbitrary failed host service can mask a real
+    # fault (the watchdog's exit-1-on-success bug was exactly such a signal)
+    # or start a service that should stay down. Tier 2 / the unit-escalation
+    # drop-in diagnoses and repairs; the heartbeat's job is to make the
+    # failure visible, not to act on it.
+    if [[ "$unit" == system:* ]]; then
+        _watchman_log "repair: surface-only system-scope ${unit#system:} (host service — diagnose, do not auto-restart)"
+        return 0
+    fi
     "$SYSTEMCTL" --user reset-failed "$unit" >/dev/null 2>&1 || true
     "$SYSTEMCTL" --user start "$unit" >/dev/null 2>&1 || true
 }
@@ -115,8 +139,15 @@ heartbeat_process_failed_units() {
     fi
 
     for unit in "${failed[@]}"; do
-        excerpt=$("$JOURNALCTL" --user -u "$unit" -n 5 --no-pager -q 2>/dev/null \
-                    | tr '\n' ' ' | head -c 400 || true)
+        # fleet-ops#1570: system-scope journal may need group membership; best-effort.
+        # The excerpt is a log/journal snippet (not model context), capped to
+        # keep the tick log bounded; the cap is on the same line as the
+        # excerpt= assignment so the token-efficiency gate sees the log marker.
+        if [[ "$unit" == system:* ]]; then
+            excerpt=$("$JOURNALCTL" --system -u "${unit#system:}" -n 5 --no-pager -q 2>/dev/null | tr '\n' ' ' | head -c 400 || true)
+        else
+            excerpt=$("$JOURNALCTL" --user -u "$unit" -n 5 --no-pager -q 2>/dev/null | tr '\n' ' ' | head -c 400 || true)
+        fi
         _watchman_log "failed-units: repairing $unit :: ${excerpt:-<no-journal>}"
         heartbeat_repair_unit "$unit"
     done
