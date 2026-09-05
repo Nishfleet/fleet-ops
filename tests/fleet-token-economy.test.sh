@@ -145,7 +145,7 @@ ok "walled_comeback table is present with 15min rate-limit and 15min probe floor
 # leftover free after the volume prefix (b.ai wired 2026-08-27, fleet-ops#1272)
 free_order=$(jq -r '.free_providers_in_order | join(" ")' "$caps")
 [[ "$free_order" == "bai commandcode hetzner opencode" ]] \
-  || fail "free order must be 'bai commandcode hetzner opencode', got: $free_order"
+  || fail "free order must be 'bai commandcode hetzner opencode xkiro', got: $free_order"
 
 # prepaid and metered providers must not appear as free lanes
 for p in devin cursor cline ollama xai-oauth grok minimax straitly zenmux openrouter; do
