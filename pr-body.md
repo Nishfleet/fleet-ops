@@ -1,77 +1,34 @@
-feat(seat-health): walled-seat comeback probe with weekly credentials_bad issue
+Trim `prompts/worker.md` from 271 lines / ~32 KB to 36 lines (well under the
+<= 80-line ceiling, fleet-ops#3245, child of #3120).
 
-## Why
+Kept the essential contract:
+- identity + token note (5 lines)
+- hard rules (never close/merge/push main, no attribution, stay in scope, flag failed commands in one sentence)
+- workspace steps
+- Execution-IS-the-review inner loop
+- PR body contract (Verification / run-proof / research / help-first, one line each)
+- auto-merge arm
+- final line = PR URL
+- the two single-session-waste lines: (1) todo-list pacing via the loaded todo extension, one item per acceptance bullet, stop-at-10-min; (2) the bar is 'extremely well', never 'perfect'.
 
-fleet-ops#1348: #1167 landed the `walled_comeback` table in `config/seat-caps.json`
-(15min on 429, hourly on daily quota, daily on monthly/402, weekly on
-credentials_bad, max 1 probe per 15min). `pick_seat` already fail-opens after
-`usable_at` passes, but nothing actually re-admits the seat — the wall meant the
-seat stayed walled until a manual intervention or an unrelated healthy observation
-overwrote the ledger.
+The D1/gate-integrity and GEO/AEO blocks are no longer inline; they ship as
+conditional fragments via fleet-ops#3247's intake assembly.
 
-This PR adds a periodic probe (systemd timer every 15min) that:
-- Reads `usable_at` from the per-seat ledger
-- When `usable_at` has passed, sends a polite 1-token "reply OK" probe through pi
-- A successful probe produces a healthy observation (seat-health.ts records it),
-  clearing `usable_at` so the seat re-enters the ladder at its cap
-- Respects `min_probe_interval_s` from `seat-caps.json` (max 1 probe per seat per tick)
-- `credentials_bad`: probes weekly and files an `agent-ready` issue if still bad
-  (needs fixing, not waiting)
+Mechanism (fleet-ops#366): `tests/worker-prompt-size-ceiling.test.sh` now asserts
+worker.md stays <= 80 lines (new assertion), so the trim cannot re-bloat past
+the ceiling.
 
-## Scope
+Verification: ran `bash tests/worker-prompt-size-ceiling.test.sh` -> all OK
+(worker.md is 36 lines, under 80-line ceiling; 6107B packet under 12288B/32768B;
+per-line cap ok). Ran `bash tests/worker-packet-size.test.sh` -> PASS (live
+6107B non-0509 / 6095B 0509). Ran `bash tests/worker-prompt-systemd-run.test.sh`
+and `bash tests/pstack-worker-prompt.test.sh` -> both PASS (worker.md still names
+pi-systemd-run and pstack playbooks).
 
-- `bin/seat-walled-probe` — new script. Iterates the per-seat ledger, probes seats
-  whose `usable_at` is in the past and whose `failure_mode` is walled (rate_limit,
-  quota_exhausted, credentials_bad, empty_run). Uses `--dry-run` and `--probe-all`
-  flags. Exits 0 when there is nothing to probe (common case, not a failure).
-- `systemd/seat-walled-probe.service` + `systemd/seat-walled-probe.timer` —
-  oneshot unit with 10min timeout, timer fires every 15min with 60s randomized delay.
-- `systemd/timer-manifest.json` — entry for the new timer (source: repo, cadence: 15min).
-- `tests/seat-walled-probe.test.sh` — 5-phase test: dry-run selection (skips future/
-  healthy/recent, probes past+weekly), real mock run (probe success/failure + issue
-  filing), no-seats exits 0, --probe-all picks non-walled modes, systemd unit validity
-  + manifest entry.
-- `MANIFEST` — deploy mapping for bin + service + timer.
+run-proof: transcript above (worker-prompt-size-ceiling: PASS, exit 0).
 
-**Out of scope**: the census sweep integration. #1149 is already the census sweeper;
-this probe runs on its own 15min timer rather than being called from the census.
+net-positive-because: 235 lines and ~26 KB of prompt context removed from every
+worker packet; fewer tokens per packet, fewer context-pressure hangs, and a
+mechanical re-bloat guard.
 
-## Tradeoffs
-
-- **Own timer vs census hook.** Chose a standalone timer because the probe cadence
-  (15min) is tighter than the census (weekly). Adding a 15min-firing census step would
-  change the census's own semantics. The two are orthogonal — census maps assets to
-  guards; this probe is a guard.
-
-## Blast Radius
-
-- **Low risk.** New script + new systemd units only. No existing files modified.
-  The script reads (never writes) the per-seat ledger and `seat-caps.json`.
-  Systemd timer is non-mandatory — fleet runs fine without it.
-- **On first install**, the timer will find several walled seats with expired
-  `usable_at` and probe them. This is correct — those seats should have been
-  re-probed already.
-
-## Verification
-
-```
-bash tests/seat-walled-probe.test.sh  # 5/5 phases green (all 9 tagged OK)
-systemd-analyze verify systemd/seat-walled-probe.service systemd/seat-walled-probe.timer
-shellcheck -x bin/seat-walled-probe  # clean (exit 0)
-sgscan  # no new security findings
-```
-
-run-proof: tests/seat-walled-probe.test.sh 5/5 phases green including dry-run selection,
-real mock run with probe success+failure+issue-filing, no-seats-exit-0, --probe-all mode,
-systemd unit validity + timer-manifest entry.
-
-research: official docs (systemd.timer(5), systemd.service(5)) plus a last30days-scale pass for probe-style free-seat recovery patterns; compared polling to a systemd path-unit trigger on the ledger directory (rejected — path unit fires on every write, every few seconds; polling every 15min is simpler and lower CPU) and checked the existing bin/fleet-seat-recovery + census sweep (#1149) — adopted a standalone systemd timer + bash script because it runs on the existing fleet timer pattern with no new machinery, and the census sweep is weekly (too coarse for a 15min probe cadence).
-
-help-first: ran `systemctl --help`, `systemd-analyze --help`, `pi --help`, and `bin/fleet-seat-recovery --help` — none can read per-seat ledger JSON, compare timestamps against seat-caps.json walled_comeback durations, or file agent-ready issues via fleet-issue-file; the existing tools do not already do this.
-
-organ-heartbeat: systemd/seat-walled-probe.service systemd/seat-walled-probe.timer
-not-an-organ: no Prometheus heartbeat metric exported; probe results are logged to
-pi-seat-health + actions log, not scraped by prometheus. This is a scheduled probe,
-not an organ under fleet-ops#1010.
-
-Closes #1348
+Closes #3245
