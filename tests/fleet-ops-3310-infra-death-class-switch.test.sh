@@ -114,15 +114,15 @@ grep -qF '.prefer-class' "$tick" \
     || fail "tick lacks the .prefer-class ladder"
 grep -qF 'advancing seat class' "$tick" \
     || fail "tick does not advance the seat class ladder"
-grep -qF 'blocked-on: orchestrator' "$tick" \
-    || fail "tick does not use blocked-on: orchestrator at ladder exhaustion"
+grep -qF 'blocked-on: infra' "$tick" \
+    || fail "tick does not use blocked-on: infra at ladder exhaustion"
 grep -qF '_next_pref="prepaid"' "$tick" \
     || fail "the ladder must start at prepaid"
 grep -qF 'metered' "$tick" \
     || fail "the ladder must include metered"
 grep -qF 'senior)    _next_pref="block"' "$tick" \
     || fail "the ladder must end at senior -> block"
-ok "Test 7: intake WORK-cap hit advances prepaid->metered->senior; blocks (blocked-on: orchestrator) only at exhaustion"
+ok "Test 7: intake WORK-cap hit advances prepaid->metered->senior; blocks (blocked-on: infra) only at exhaustion"
 
 # --- Test 8: pick_seat honors PI_PICK_PREFER_CLASS ---------------------------
 grep -qF 'PI_PICK_PREFER_CLASS' "$seatlib" \
@@ -388,7 +388,7 @@ ok "Test 15 (replay): pick_seat routes to the preferred class (prepaid) with fal
 # Drive the tick's reclaim-cap branch directly by simulating the marker sequence
 # it expects: absent -> prepaid -> metered -> senior -> block. We assert the
 # ladder advance logic source, not a full re-claim (the 2462 gate already runs
-# the whole tick). This pins the "blocked-on: orchestrator" (not senior) tail.
+# the whole tick). This pins the "blocked-on: infra" (not senior) tail.
 pref="$ATT/pi-issue-tick-ladder.prefer-class"
 rm -f "$pref"
 export PI_PICK_PREFER_CLASS=""
@@ -400,8 +400,8 @@ if 'prepaid' not in tick:
     sys.stderr.write('ladder start not found\n'); sys.exit(1)
 PY
 # The static check for the ladder was Test 7; here confirm the block message.
-grep -qF 'blocked-on: orchestrator' "$tick" || fail "blocked-on: orchestrator missing"
-ok "Test 16: WORK-cap ladder ends at blocked-on: orchestrator (conference-independent)"
+grep -qF 'blocked-on: infra' "$tick" || fail "blocked-on: infra missing"
+ok "Test 16: WORK-cap ladder ends at blocked-on: infra (conference-independent)"
 
 echo ""
 echo "ALL OK: fleet-ops#3310 infra-death classification + work-cap class switch (incl. replay drill)"

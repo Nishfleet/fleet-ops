@@ -714,9 +714,12 @@ for i in "${!numbers[@]}"; do
         # a per-issue .prefer-class ladder (prepaid -> metered -> senior),
         # resetting reclaim-count to 1 so the new class gets a fresh budget.
         # Only when every class has been tried (ladder exhausted) does intake
-        # block — and then with a machine-readable blocked-on: orchestrator
+        # block — and then with a machine-readable blocked-on: infra
         # (the senior conference is the orchestrator's job, and a conference
-        # that never runs must not be the only unblocking path). Infra deaths
+        # that never runs must not be the only unblocking path; blocked-reconcile
+        # auto-releases an infra block after 2h when a healthy capable seat
+        # exists, and escalates to blocked-on: senior-review on a second release
+        # within 24h). Infra deaths
         # never reach this cap at all (pi-issue-run / -failed-reap split them
         # onto .infra-death), so a provider storm can no longer park the issue.
         _pref_file="$ATTEMPTS_DIR/pi-issue-${REPO}-${N}.prefer-class"
@@ -742,7 +745,7 @@ for i in "${!numbers[@]}"; do
         gh issue edit "$N" -R "$FULL" --add-label agent-blocked --remove-label agent-ready 2>/dev/null || true
         gh issue comment "$N" -R "$FULL" --body "fleet-ops#3310: issue $N has been re-claimed $_rc_current times (work-cap=$MAX_RECLAIMS) across every seat class (prepaid/metered/senior). Real work failures have exhausted the seat pool; re-queuing is the orchestrator's decision, not a senior conference that never runs.
 
-blocked-on: orchestrator" 2>/dev/null || true
+blocked-on: infra" 2>/dev/null || true
         continue
     fi
 

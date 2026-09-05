@@ -366,6 +366,10 @@ LOCKDIR="${BLOCKED_RECONCILE_LOCKDIR:-${XDG_RUNTIME_DIR}/blocked-reconcile}"
 STICKY_SECS="${BLOCKED_RECONCILE_STICKY_SECS:-21600}"
 DRY="${BLOCKED_RECONCILE_DRY_RUN:-0}"
 
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PI_PACKET_STATE="${PI_PACKET_STATE:-$HOME/.local/state/pi-packet}"
+ATTEMPTS_DIR="$PI_PACKET_STATE/attempts"
+
 log() {
     printf '[%s] [blocked-reconcile] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
 }
@@ -568,6 +572,122 @@ with open(path, "w", encoding="utf-8") as f:
 PY
 }
 
+# fleet-ops#3310/#3527: per-issue difficulty mirror of pi-intake-tick's logic.
+# Defaults are the same as the tick; test overrides via env.
+DIFFICULTY_HEAVY_BODY_BYTES="${PI_INTAKE_DIFFICULTY_HEAVY_BODY_BYTES:-6000}"
+DIFFICULTY_HEAVY_REQUIRED="${PI_INTAKE_DIFFICULTY_HEAVY_REQUIRED:-2}"
+
+issue_difficulty() {
+    local labels_json="$1" title="$2" body="$3" lowered bytes req
+    lowered="${title,,}"
+    if [[ "$labels_json" == *'"keystone"'* || "$lowered" == keystone:* ]]; then echo "keystone"; return; fi
+    if [[ "$labels_json" == *'"heavy"'* ]]; then echo "heavy"; return; fi
+    bytes=$(printf '%s' "$body" | wc -c); bytes=${bytes//[^0-9]/}
+    req=$(printf '%s\n' "$body" | grep -ciE '^[[:space:]]*-[[:space:]]*required[^:]*:' || true)
+    if (( ${bytes:-0} > DIFFICULTY_HEAVY_BODY_BYTES )) || (( ${req:-0} > DIFFICULTY_HEAVY_REQUIRED )); then
+        echo "heavy"; return
+    fi
+    echo "light"
+}
+
+# fleet-ops#3310/#3527: latest live blocked-on: <marker> timestamp from the
+# issue body or a non-struck comment. Returns empty if none.
+latest_live_blocked_on_ts() {
+    local view_json_text="$1" marker="$2"
+    python3 - "$view_json_text" "$marker" <<'PY'
+import json, re, sys
+text, marker = sys.argv[1], sys.argv[2]
+pat = re.compile(r"(?im)^blocked-on:\s*" + re.escape(marker) + r"\s*$")
+struck = re.compile(r"^\s*(?:[-*]\s+)?~~.+~~\s*$")
+issue = json.loads(text)
+latest = None
+
+def is_live(body):
+    return bool(pat.search("\n".join(
+        line for line in (body or "").splitlines() if not struck.match(line)
+    )))
+
+def consider(ts, body):
+    global latest
+    if not ts or not is_live(body):
+        return
+    if latest is None or ts > latest:
+        latest = ts
+
+consider(issue.get("createdAt"), issue.get("body"))
+for c in issue.get("comments") or []:
+    consider(c.get("createdAt"), c.get("body"))
+print(latest or "")
+PY
+}
+
+# fleet-ops#3310/#3527: count previous infra-block auto-releases within 24h.
+# The marker is in the release comment body.
+count_recent_infra_releases() {
+    local view_json_text="$1" now_s="$2"
+    local cutoff=$(( now_s - 86400 ))
+    local count=0 ts ts_s
+    while IFS= read -r ts; do
+        [[ -n "$ts" ]] || continue
+        ts_s=$(date -u -d "$ts" +%s 2>/dev/null || echo 0)
+        [[ "$ts_s" =~ ^[0-9]+$ ]] || continue
+        if (( ts_s >= cutoff )); then
+            count=$((count + 1))
+        fi
+    done < <(printf '%s' "$view_json_text" | jq -r '[.comments[]? // [] | select(.body | test("blocked-reconcile: infra-block released"; "i")) | .createdAt] | .[]')
+    echo "$count"
+}
+
+# fleet-ops#3310/#3527: dry-run pick_seat with a temp state dir so no real
+# selection is recorded; verify the returned seat is actually healthy and
+# capable for the issue's difficulty. Prints "provider/model" and returns 0
+# if a healthy capable seat exists, 1 otherwise.
+healthy_capable_seat_for_issue() {
+    local difficulty="$1"
+    local need_capable=0
+    [[ "$difficulty" == "heavy" || "$difficulty" == "keystone" ]] && need_capable=1
+    local _state _out _p _m _seat
+    _state=$(mktemp -d)
+    mkdir -p "$_state/active-seats"
+    # Re-use live active-seats so the cap check is realistic; all other writes
+    # (prepaid-usage, seat-selection.jsonl, keystone-events) stay in the temp.
+    if [[ -d "$PI_PACKET_STATE/active-seats" ]]; then
+        cp -R "$PI_PACKET_STATE/active-seats/"* "$_state/active-seats/" 2>/dev/null || true
+    fi
+    _out=$(
+        export PI_PACKET_STATE="$_state"
+        export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+        export HOME="${HOME:-/home/nish}"
+        source "$REPO_ROOT/lib/seat-lib.sh"
+        pick_seat "" "" "$need_capable" "" "$difficulty" public 2>/dev/null || true
+    )
+    rm -rf "$_state"
+    [[ -n "$_out" ]] || return 1
+    _p="${_out%%$'\t'*}"
+    _m="${_out#*$'\t'}"
+    [[ -n "$_p" && -n "$_m" ]] || return 1
+    _state=$(mktemp -d)
+    _seat=$(
+        export PI_PACKET_STATE="$_state"
+        source "$REPO_ROOT/lib/seat-lib.sh"
+        if seat_usable "$_p" "$_m" >/dev/null 2>&1; then
+            printf '%s/%s' "$_p" "$_m"
+        fi
+    )
+    rm -rf "$_state"
+    [[ -n "$_seat" ]] || return 1
+    printf '%s\n' "$_seat"
+}
+
+# fleet-ops#3310/#3527: reset the WORK cap and systemic-failure markers so the
+# re-queued issue gets a fresh claim budget.
+reset_reclaim_and_systemic() {
+    local repo="$1" num="$2"
+    local inst="${repo#*/}-${num}"
+    rm -f "$ATTEMPTS_DIR/pi-issue-${inst}.reclaim-count" \
+          "$ATTEMPTS_DIR/pi-issue-${inst}.systemic" 2>/dev/null || true
+}
+
 log "sweep starting now=$NOW_ISO"
 
 while IFS= read -r repo; do
@@ -590,7 +710,7 @@ while IFS= read -r repo; do
             continue
         fi
 
-        if ! view_json=$(gh issue view "$num" -R "$repo" --json title,body,createdAt,comments 2>/dev/null); then
+        if ! view_json=$(gh issue view "$num" -R "$repo" --json title,body,createdAt,comments,labels 2>/dev/null); then
             log "  $repo#$num: gh issue view FAILED — skip"
             skipped=$((skipped + 1))
             continue
@@ -684,6 +804,92 @@ while IFS= read -r repo; do
                 remaining="$remaining, orchestrator"
             else
                 remaining="orchestrator"
+            fi
+        fi
+
+        # fleet-ops#3310/#3527: handle blocked-on: infra and blocked-on: senior-review.
+        # Infra blocks are auto-released after 2h when a healthy capable seat
+        # exists; a second release within 24h escalates to senior-review.
+        _infra_ts=$(latest_live_blocked_on_ts "$view_json" "infra")
+        _senior_ts=$(latest_live_blocked_on_ts "$view_json" "senior-review")
+        _infra_age_s=0
+        _infra_age_h=0
+        if [ -n "$_infra_ts" ]; then
+            _infra_epoch=$(date -u -d "$_infra_ts" +%s 2>/dev/null || echo 0)
+            _infra_age_s=$((NOW_S - _infra_epoch))
+            _infra_age_h=$((_infra_age_s / 3600))
+        fi
+        _senior_epoch=0
+        _senior_age_s=0
+        if [ -n "$_senior_ts" ]; then
+            _senior_epoch=$(date -u -d "$_senior_ts" +%s 2>/dev/null || echo 0)
+            _senior_age_s=$((NOW_S - _senior_epoch))
+        fi
+        _infra_block=0
+        _senior_block=0
+        if [ -n "$_senior_ts" ] && { [ -z "$_infra_ts" ] || [ "$_senior_epoch" -ge "$_infra_epoch" ]; }; then
+            _senior_block=1
+        elif [ -n "$_infra_ts" ]; then
+            _infra_block=1
+        fi
+
+        if [ "$_senior_block" -eq 1 ]; then
+            kind="senior-review"
+            machine=1
+            all_cleared=0
+            remaining="senior-review"
+        elif [ "$_infra_block" -eq 1 ]; then
+            kind="infra"
+            machine=1
+            all_cleared=0
+            if [ -n "$_infra_ts" ] && [ "$_infra_age_s" -ge 7200 ]; then
+                _recent_releases=$(count_recent_infra_releases "$view_json" "$NOW_S")
+                if [ "$_recent_releases" -ge 1 ]; then
+                    # Second infra release within 24h: escalate to senior-review.
+                    kind="senior-review"
+                    remaining="senior-review (escalated from infra after second release within 24h)"
+                    _escalate_body="fleet-ops#3310/#3527: this issue was auto-released from an infra block within the last 24h and is now blocked again. A second release is not safe; escalating to senior review.
+
+blocked-on: senior-review"
+                    if [ "$DRY" = "1" ]; then
+                        log "DRY $repo#$num: escalate infra -> senior-review (second release within 24h)"
+                    else
+                        gh issue comment "$num" -R "$repo" --body "$_escalate_body" >/dev/null
+                    fi
+                    log "  $repo#$num: ESCALATED infra -> senior-review (second release within 24h)"
+                    sticky="blocked-checked: ${NOW_ISO} still-blocked kind=${kind} age=${age_h}h remaining=${remaining}"
+                    upsert_sticky "$repo" "$num" "$sticky"
+                    still=$((still + 1))
+                    jq -nc --arg ref "${repo}#${num}" --arg kind "$kind" --argjson age "$age_h" \
+                        --arg remaining "$remaining" \
+                        '{ref:$ref, kind:$kind, age_h:$age, remaining:$remaining}' >>"$remaining_file"
+                    continue
+                fi
+
+                # Aged infra block: re-queue if a healthy capable seat exists.
+                _labels_json=$(printf '%s' "$view_json" | jq -c '.labels // []')
+                _title=$(printf '%s' "$view_json" | jq -r '.title // ""')
+                _body=$(printf '%s' "$view_json" | jq -r '.body // ""')
+                _difficulty=$(issue_difficulty "$_labels_json" "$_title" "$_body")
+                _seat=$(healthy_capable_seat_for_issue "$_difficulty" 2>/dev/null || true)
+                if [ -n "$_seat" ]; then
+                    reset_reclaim_and_systemic "$repo" "$num"
+                    _reason="fleet-ops#3310/#3527: infra block aged ${_infra_age_h}h and a healthy capable seat exists (${_seat}). Re-claiming should now use a recovered seat instead of parking. Re-set reclaim-count and .systemic; re-queued as agent-ready.
+
+blocked-reconcile: infra-block released at ${NOW_ISO}"
+                    if [ "$DRY" = "1" ]; then
+                        log "DRY $repo#$num: requeue infra block (aged ${_infra_age_h}h, seat ${_seat})"
+                    else
+                        requeue_issue "$repo" "$num" "$_reason"
+                    fi
+                    log "  $repo#$num: REQUEUED infra block (aged ${_infra_age_h}h, seat ${_seat})"
+                    requeued=$((requeued + 1))
+                    continue
+                else
+                    remaining="infra (no healthy capable seat for ${_difficulty})"
+                fi
+            else
+                remaining="infra (too young: ${_infra_age_h}h < 2h)"
             fi
         fi
 

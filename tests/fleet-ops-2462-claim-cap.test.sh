@@ -57,15 +57,15 @@ grep -qF 'agent-blocked' "$tick" \
 # The WORK cap no longer blocks on first hit: it advances a .prefer-class
 # ladder (prepaid -> metered -> senior) and resets reclaim-count to 1 so the
 # new class gets a fresh budget. Blocking (agent-blocked) happens only after
-# every class has been tried, with a machine-readable blocked-on: orchestrator
+# every class has been tried, with a machine-readable blocked-on: infra
 # (never the old nish-decision / senior-conference park).
 grep -qF '.prefer-class' "$tick" \
     || fail "tick does not write the per-issue .prefer-class ladder on max-reclaims skip"
 grep -qF 'advancing seat class' "$tick" \
     || fail "tick does not advance the seat class ladder on max-reclaims skip"
-grep -qF 'blocked-on: orchestrator' "$tick" \
-    || fail "tick does not emit blocked-on: orchestrator when every seat class is exhausted"
-ok "Test 4: WORK-cap skip advances the seat-class ladder; blocks only at exhaustion with blocked-on: orchestrator"
+grep -qF 'blocked-on: infra' "$tick" \
+    || fail "tick does not emit blocked-on: infra when every seat class is exhausted"
+ok "Test 4: WORK-cap skip advances the seat-class ladder; blocks only at exhaustion with blocked-on: infra"
 
 # === Test 5: tick allows claims when count < MAX_RECLAIMS ===
 # The reclaim-count file is only written on the claim+spawned path (after
