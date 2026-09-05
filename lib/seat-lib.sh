@@ -4415,7 +4415,7 @@ is_quota_cap_error() {
     # text still qualifies: the caller falls back to the provider default.
     # FreeUsageLimitError (opencode/mimo free-tier 429, no reset window) is a
     # provider-side free-quota exhaustion — a hard wall, not a transient retry.
-    if grep -qiE 'weekly[[:space:]]+(clinepass[[:space:]]+)?limit|daily[[:space:]]+limit|INFERENCE_CAP_ERROR|FreeUsageLimitError|resource_exhausted' <<<"$combined"; then
+    if grep -qiE 'weekly[[:space:]]+(clinepass[[:space:]]+)?limit|daily[[:space:]]+limit|INFERENCE_CAP_ERROR|FreeUsageLimitError|usage[[:space:]]+limit[[:space:]]+for[[:space:]]+the[[:space:]]+current[[:space:]]+free[[:space:]]+model|resource_exhausted' <<<"$combined"; then
         return 0
     fi
     return 1

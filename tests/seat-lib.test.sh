@@ -1038,6 +1038,23 @@ rc=$?
 set -e
 [[ "$rc" != "0" ]] || fail "is_quota: bare transient 429 with no quota keyword must NOT match (rc=$rc)"
 
+# 9b-zenmux: zenmux free-model daily usage cap (HTTP 429 type=rate_limit, no
+# reset window, "Please try again later"). 2026-09-05: z-ai/glm-4.7-flash-free
+# died 21 times in 3h on this body (watch.log, pi exited 1 in 18-19s). Stage 1
+# matched 'usage limit' but stage 2b did not, so mark_seat_quota_bench failed
+# open and the seat was re-picked until the 25-failure corpse threshold, burning
+# StartLimitBurst on landing-set packets (#3254, #3519).
+zenmux_429='429: {"code":"429","type":"rate_limit","message":"You have reached the usage limit for the current free model. Please try again later, or use a different model. For details, see: https://zenmux.ai/pricing/pay-as-you-go (request_id: c8bb1690762c40bbb25c34c60f3bf2a8)"}'
+set +e
+bash -c 'source "$0"; is_quota_cap_error "$1" "$2"' "$lib" "$zenmux_429" "" >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "is_quota: zenmux 'usage limit for the current free model' (no window) must match (rc=$rc)"
+# The writer needs a provider default or it fails open (no marker written).
+prod_caps="$(cd "$(dirname "$lib")/.." && pwd)/config/seat-caps.json"
+jq -e '.providers.zenmux.quota_bench_default_s >= 900' "$prod_caps" >/dev/null 2>&1 \
+  || fail "seat-caps: zenmux needs quota_bench_default_s (>=900s) or mark_seat_quota_bench fails open on the free-model usage cap"
+
 # 9b-cursor-heavy: cursor composer stays light-only even with a 200k window;
 # cursor-grok-4.6-high is the only cursor model admitted as heavy-capable
 # (live hot-patch + Nish 2026-08-27 overrule; fleet-ops#381).
