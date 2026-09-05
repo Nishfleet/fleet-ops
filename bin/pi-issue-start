@@ -110,14 +110,18 @@ if [[ -f "$SEAT_LIB" ]]; then
     # shellcheck source=/dev/null
     . "$SEAT_LIB"
     repo_for_mem="${instance%-*}"
-    mem_row=$(worker_memory_for_repo "$repo_for_mem" 2>/dev/null || true)
+    # fleet-ops#3281: mirror intake's per-difficulty heavy class on re-dispatch.
+    # Read the packet's difficulty line (written by intake); a missing packet
+    # or one without a marker falls back to per-repo via worker_memory_for_difficulty.
+    mem_difficulty="$(packet_difficulty "$PI_ISSUES_DIR/${instance}.in" 2>/dev/null || true)"
+    mem_row=$(worker_memory_for_difficulty "$repo_for_mem" "$mem_difficulty" 2>/dev/null || true)
     if [[ -n "$mem_row" ]]; then
         IFS=$'\t' read -r mem_max mem_high <<<"$mem_row"
         drop_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/${unit}.d"
         mkdir -p "$drop_dir"
         drop_tmp="$drop_dir/memory.conf.tmp.$$"
         {
-            printf '# fleet-ops#1558: per-repo memory cap (written by pi-issue-start)\n'
+            printf '# fleet-ops#1558/#3281: per-repo/per-difficulty memory cap (written by pi-issue-start)\n'
             printf '[Service]\n'
             [[ -n "$mem_max" ]] && printf 'MemoryMax=%s\n' "$mem_max"
             [[ -n "$mem_high" ]] && printf 'MemoryHigh=%s\n' "$mem_high"

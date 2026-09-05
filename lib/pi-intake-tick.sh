@@ -489,7 +489,7 @@ if (( caps_sum > 0 && caps_sum < ram_cap )); then
 else
     total_cap=$ram_cap
 fi
-active=$(count_active_total 2>/dev/null || echo 0)
+active=$(active_ram_charge 2>/dev/null || echo 0)
 issue=$(count_active_issue 2>/dev/null || echo 0)
 org=$(count_active_org 2>/dev/null || echo 0)
 org_res=$(org_reserve 2>/dev/null || echo 2)
@@ -962,8 +962,9 @@ blocked-on: nish-decision" 2>/dev/null || true
     # so the worker runs rather than not at all (same fail-open posture as the
     # keystone marker in pi-issue-start).
     packet_path="$ISSUE_STATE_DIR/${REPO}-${N}.in"
+    difficulty="$(issue_difficulty "${labels[$i]}" "$title" "$body")"
     {
-        echo "difficulty: $(issue_difficulty "${labels[$i]}" "$title" "$body")"
+        echo "difficulty: $difficulty"
         cat "$WORKER_PROMPT"
         if d1_gate_integrity_needed "$body" \
             && [[ -f "$WORKER_BLOCKS_DIR/$D1_GATE_INTEGRITY_BLOCK" ]]; then
@@ -992,19 +993,20 @@ blocked-on: nish-decision" 2>/dev/null || true
         continue
     fi
 
-    # fleet-ops#1558: per-repo MemoryMax/MemoryHigh via per-instance drop-in
-    # before start. Template keeps MemoryMax=6G/MemoryHigh=3G; this overrides
-    # for known repos (fleet-ops light 1536M/1G, 0509 browser 2G/1536M). Missing
-    # table row = keep template. daemon-reload so the fresh drop-in is seen
-    # on the subsequent start (oneshot units are not lingering-loaded).
-    mem_row=$(worker_memory_for_repo "$REPO" 2>/dev/null || true)
+    # fleet-ops#1558 + #3281: per-repo MemoryMax/MemoryHigh via per-instance
+    # drop-in before start. Template keeps MemoryMax=6G/MemoryHigh=3G; this
+    # overrides for known repos (fleet-ops light 1536M/1G, 0509 browser
+    # 2G/1536M) and for heavy|keystone issues (heavy class 3G/2G, fleet-ops#3281).
+    # Missing table row = keep template. daemon-reload so the fresh drop-in is
+    # seen on the subsequent start (oneshot units are not lingering-loaded).
+    mem_row=$(worker_memory_for_difficulty "$REPO" "$difficulty" 2>/dev/null || true)
     if [[ -n "$mem_row" ]]; then
         IFS=$'\t' read -r mem_max mem_high <<<"$mem_row"
         drop_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/${unit}.d"
         mkdir -p "$drop_dir"
         drop_tmp="$drop_dir/memory.conf.tmp.$$"
         {
-            printf '# fleet-ops#1558: per-repo memory cap (written by intake)\n'
+            printf '# fleet-ops#1558/#3281: per-repo/per-difficulty memory cap (written by intake)\n'
             printf '[Service]\n'
             [[ -n "$mem_max" ]] && printf 'MemoryMax=%s\n' "$mem_max"
             [[ -n "$mem_high" ]] && printf 'MemoryHigh=%s\n' "$mem_high"

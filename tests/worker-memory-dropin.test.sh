@@ -61,11 +61,52 @@ row=$(worker_memory_for_repo "unknown-repo")
 [[ -z "$row" ]] || fail "unknown-repo must return empty, got '$row'"
 ok "2: worker_memory_for_repo returns per-repo caps"
 
+# --- 2b. heavy class (fleet-ops#3281) ---------------------------------------
+hv_max=$(jq -r '.worker_memory["heavy"].MemoryMax // empty' "$caps")
+hv_high=$(jq -r '.worker_memory["heavy"].MemoryHigh // empty' "$caps")
+[[ "$hv_max" == "3G" ]] || fail "heavy MemoryMax want 3G got '$hv_max'"
+[[ "$hv_high" == "2G" ]] || fail "heavy MemoryHigh want 2G got '$hv_high'"
+row=$(worker_memory_for_difficulty "fleet-ops" "heavy")
+[[ "$row" == $'3G\t2G' ]] || fail "heavy difficulty want $'3G\t2G' got '$row'"
+row=$(worker_memory_for_difficulty "fleet-ops" "keystone")
+[[ "$row" == $'3G\t2G' ]] || fail "keystone difficulty want $'3G\t2G' got '$row'"
+row=$(worker_memory_for_difficulty "fleet-ops" "light")
+[[ "$row" == $'1536M\t1G' ]] || fail "light difficulty must fall back to per-repo, got '$row'"
+row=$(worker_memory_for_difficulty "unknown-repo" "light")
+[[ -z "$row" ]] || fail "unknown-repo light must return empty, got '$row'"
+ok "2b: worker_memory_for_difficulty returns heavy class for heavy|keystone"
+
+# Scratch dir for the heavy-charge + drop-in write sections.
+scratch=$(mktemp -d -t wmem.XXXXXX)
+trap 'rm -rf "$scratch"' EXIT
+
+# --- 2c. RAM governor charges heavy workers at 1.0 GB (fleet-ops#3281) ------
+# active_ram_charge must count a heavy worker double (1.0 GB = 2x light 0.5 GB).
+# Run in a subshell with a scratch PI_PACKET_STATE + PI_ISSUES_DIR so the
+# active-seats registry and packet are read from scratch, not the live host.
+(
+    export PI_SEAT_LIB_CHECK_SYSTEMD=0
+    export PI_PACKET_STATE="$scratch/state"
+    export PI_ISSUES_DIR="$scratch/issues"
+    mkdir -p "$PI_PACKET_STATE/active-seats" "$PI_ISSUES_DIR"
+    # One heavy issue worker + one light issue worker in the registry.
+    printf 'difficulty: heavy\nTARGET: repo Nishfleet/fleet-ops issue 1 unit pi-issue-fleet-ops-1\n' > "$PI_ISSUES_DIR/fleet-ops-1.in"
+    printf 'difficulty: light\nTARGET: repo Nishfleet/fleet-ops issue 2 unit pi-issue-fleet-ops-2\n' > "$PI_ISSUES_DIR/fleet-ops-2.in"
+    jq -nc --arg u 'pi-issue-fleet-ops-1' --arg t 'x' '{unit:$u,provider:"p",model:"m",started_at:$t}' > "$PI_PACKET_STATE/active-seats/pi-issue-fleet-ops-1.json"
+    jq -nc --arg u 'pi-issue-fleet-ops-2' --arg t 'x' '{unit:$u,provider:"p",model:"m",started_at:$t}' > "$PI_PACKET_STATE/active-seats/pi-issue-fleet-ops-2.json"
+    # shellcheck source=/dev/null
+    source "$seat_lib"
+    heavy=$(count_active_heavy)
+    [[ "$heavy" == "1" ]] || fail "count_active_heavy want 1 got '$heavy'"
+    charge=$(active_ram_charge)
+    # 2 issue workers (1 heavy + 1 light) -> 1 + 2 = 3 light-worker units.
+    [[ "$charge" == "3" ]] || fail "active_ram_charge want 3 (1 light + 2 heavy) got '$charge'"
+    ok "2c: active_ram_charge charges heavy workers at 1.0 GB (double)"
+)
+
 # --- 3. admit_ceiling / target_concurrent ----------------------------------
 [[ "$(target_concurrent)" == "25" ]] || fail "target_concurrent() want 25"
 # With a tiny fake MemAvailable, admit_ceiling must self-reduce below 25.
-scratch=$(mktemp -d -t wmem.XXXXXX)
-trap 'rm -rf "$scratch"' EXIT
 # Force a low MemAvailable by stubbing /proc/meminfo via a wrapper is hard;
 # instead pin SEAT_RAM_GB_PER_WORKER high enough that spare/per < 25, OR just
 # assert the function exists and returns a positive integer on the live host.
@@ -79,8 +120,10 @@ ram_cap=$(ram_governor_cap)
 ok "3: admit_ceiling=$admit (target=25, ram_governor=$ram_cap)"
 
 # --- 4. intake tick writes the drop-in block -------------------------------
-grep -qF 'worker_memory_for_repo' "$tick" \
-    || fail "pi-intake-tick.sh missing worker_memory_for_repo call"
+grep -qF 'worker_memory_for_difficulty' "$tick" \
+    || fail "pi-intake-tick.sh missing worker_memory_for_difficulty call"
+grep -qF 'active_ram_charge' "$tick" \
+    || fail "pi-intake-tick.sh missing active_ram_charge call"
 grep -qF 'memory.conf' "$tick" \
     || fail "pi-intake-tick.sh missing memory.conf write"
 grep -qF 'MemoryMax=' "$tick" \
@@ -88,11 +131,11 @@ grep -qF 'MemoryMax=' "$tick" \
 ok "4: intake tick writes per-instance memory.conf"
 
 # --- 5. pi-issue-start mirrors the drop-in ---------------------------------
-grep -qF 'worker_memory_for_repo' "$start_bin" \
-    || fail "pi-issue-start missing worker_memory_for_repo call"
+grep -qF 'worker_memory_for_difficulty' "$start_bin" \
+    || fail "pi-issue-start missing worker_memory_for_difficulty call"
 grep -qF 'memory.conf' "$start_bin" \
     || fail "pi-issue-start missing memory.conf write"
-ok "5: pi-issue-start mirrors per-repo memory drop-in"
+ok "5: pi-issue-start mirrors per-repo/per-difficulty memory drop-in"
 
 # --- 6. template keeps the 6G/3G fallback (NOT a universal 1.5G) -----------
 grep -qE '^MemoryMax=6G$' "$template" \
