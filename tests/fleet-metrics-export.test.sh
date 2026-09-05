@@ -209,6 +209,42 @@ print("OK: no-merge day -> verified ratio omitted, counts 0")
 PY
 
 # =========================================================================
+# 7b. _read_seat parse is TZ-independent (fleet-ops#3329)
+# =========================================================================
+_TEST_SEAT_HEALTH="$scratch/seat-health.json" python3 - "$exporter" <<'PY' || fail "_read_seat UTC parse is TZ-dependent"
+# Reproduce fleet-ops#3329: the exporter used time.mktime (process-local TZ)
+# to parse a UTC observed_at, so under a +5:30 host localtime a fresh feed
+# read ~5.5h stale and fired FleetPiSeatHealthStale (value ~19800s).
+# Fix: calendar.timegm. This test runs in Asia/Kolkata and asserts a fresh
+# observed_at still yields a small age.
+import importlib.util, json, os, sys, time
+from pathlib import Path
+
+# Force the bug's failure mode: a non-UTC process localtime.
+os.environ["TZ"] = "Asia/Kolkata"
+time.tzset()
+
+spec = importlib.util.spec_from_file_location("fme", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+
+seat = Path(os.environ["_TEST_SEAT_HEALTH"])
+ow = int(time.time())
+seat.write_text(json.dumps({
+    "health_class": "healthy",
+    "observed_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(ow)) + ".000Z",
+}), encoding="utf-8")
+m.SEAT_HEALTH = seat
+
+healthy, epoch = m._read_seat()
+age = ow - epoch
+assert healthy == 1, healthy
+# Correct UTC parse: age within a few hundred seconds. The pre-fix mktime
+# path under +5:30 gave ~19800s and fired the stale alert.
+assert age < 600, f"fresh observed_at parsed {age}s stale (expected < 600); TZ-dependent mktime bug"
+print(f"OK: _read_seat epoch fresh under TZ=Asia/Kolkata (age={age}s)")
+PY
+
+# =========================================================================
 # 8. fleet_rules.yml: promtool (if available) + rule presence
 # =========================================================================
 if command -v promtool >/dev/null 2>&1; then

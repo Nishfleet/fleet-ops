@@ -657,8 +657,14 @@ def _read_seat():
         try:
             # RFC3339 / ISO-8601 with trailing 'Z' for UTC.
             ts = obs.replace("Z", "+00:00")
+            # time.mktime interprets the tuple in the process local timezone,
+            # so on a +05:30 host a fresh UTC observed_at parses ~5.5h in the
+            # past and fires FleetPiSeatHealthStale (fleet-ops#3329). observed_at
+            # is UTC: use calendar.timegm (the same pattern _parse_iso_utc and
+            # the comeback-clock path already use) so the epoch is correct
+            # regardless of TZ.
             epoch = int(
-                time.mktime(time.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S"))
+                calendar.timegm(time.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S"))
             )
         except ValueError:
             epoch = None
