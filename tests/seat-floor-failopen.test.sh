@@ -293,4 +293,45 @@ print("OK: FleetSeatFloorFailopen is warning/30m")
 PY
 ok "FleetSeatFloorFailopen alert: increase() over 5m, for 30m, severity=warning"
 
+# --- N. fleet-ops#3531: a seat parked past SEAT_FAILURE_CEILING is a wall, never floor-lifted
+# Live 2026-09-05: hetzner/Qwen (count=31) and xkiro (count=84-99) carried a
+# recoverable class + seat_dead:false after a co-writer flip and were
+# floor-lifted 6x in 40s; every lift burned a claim and tripped StartLimitBurst.
+reset_ledger
+rm -f "$SEAT_FLOOR_FAILOPEN_PROM"
+jq -n --arg obs "$fresh_obs" --arg bu "$short_bu" \
+  '{health_class:"overload_bench",seat_dead:false,observed_at:$obs,bench_until:$bu,failure_mode:"overload_503",consecutive_failure_count:31}' \
+  > "$scratch/ledger/commandcode__minimax-m3-free.json"
+jq -n --arg obs "$fresh_obs" \
+  '{health_class:"quota_exhausted",http_status:402,seat_dead:false,observed_at:$obs,usable_at:"2099-01-01T00:00:00Z"}' \
+  > "$scratch/ledger/commandcode__deepseek-v4-flash.json"
+jq -n --arg obs "$fresh_obs" \
+  '{health_class:"quota_exhausted",http_status:402,seat_dead:false,observed_at:$obs,usable_at:"2099-01-01T00:00:00Z"}' \
+  > "$scratch/ledger/cline__cline-pass_minimax-m3.json"
+export PI_PACKET_STATE="$scratch/state-ceiling"
+set +e
+out=$(pick 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" != "0" ]] || fail "ceiling: a seat at count>=SEAT_FAILURE_CEILING must NOT be floor-lifted, got rc=0 out='$out'"
+grep -q "seat-floor: fail-open commandcode/minimax-m3-free" "$PI_PACKET_STATE/watch.log" \
+  && fail "ceiling: floor must not log a fail-open for the parked seat; log: $(cat "$PI_PACKET_STATE/watch.log")"
+[[ -f "$SEAT_FLOOR_FAILOPEN_PROM" ]] && fail "ceiling: counter must not be bumped for a parked seat"
+ok "seat parked past the failure ceiling is a wall for the floor (fleet-ops#3531)"
+
+# --- N+1. fleet-ops#3531: a 503 on a corpse keeps seat_dead=true
+reset_ledger
+jq -n --arg obs "$fresh_obs" \
+  '{health_class:"corpse",seat_dead:true,observed_at:$obs,consecutive_failure_count:31}' \
+  > "$scratch/ledger/commandcode__minimax-m3-free.json"
+export PI_PACKET_STATE="$scratch/state-overload-corpse"
+mkdir -p "$PI_PACKET_STATE"
+export PI_SEAT_HEALTH_LEDGER_DIR="$scratch/ledger"
+bash -c 'source "$0"; load_seat_caps; mark_seat_overload_bench commandcode minimax-m3-free "retry-after: 60"' "$lib" >/dev/null 2>&1 || true
+dead_after=$(jq -r '.seat_dead' "$scratch/ledger/commandcode__minimax-m3-free.json")
+hc_after=$(jq -r '.health_class' "$scratch/ledger/commandcode__minimax-m3-free.json")
+[[ "$hc_after" == "overload_bench" ]] || fail "overload-corpse: writer must have run (health_class=$hc_after)"
+[[ "$dead_after" == "true" ]] || fail "overload-corpse: mark_seat_overload_bench must keep seat_dead=true on a corpse, got $dead_after"
+ok "mark_seat_overload_bench preserves seat_dead on a corpse (fleet-ops#3531)"
+
 echo "OK: seat-floor fail-open replay drill (fleet-ops#3324)"

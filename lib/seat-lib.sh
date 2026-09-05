@@ -2809,8 +2809,16 @@ SEAT_FLOOR_FAILOPEN_CLASSES="transient_fault rate_limited empty_run overload_ben
 # True if this ledger row is a money wall the floor must never lift.
 # Args: health_class seat_dead [failure_mode]
 _seat_floor_is_money_wall() {
-    local hc="$1" dead="$2" fm="${3:-}"
+    local hc="$1" dead="$2" fm="${3:-}" fail_count="${4:-0}"
     [[ "$dead" == "true" ]] && return 0
+    # fleet-ops#3531: a seat parked past SEAT_FAILURE_CEILING is a corpse in
+    # all but label. The ledger is co-written (wrapper bench writers + the
+    # seat-health.ts extension), so a corpse's class/seat_dead flip back to a
+    # recoverable bench on the next 503/429 while the count keeps climbing
+    # (live 2026-09-05: hetzner/Qwen count=31 and xkiro count=84-99 were
+    # floor-lifted 6x in 40s, each lift a burned claim + StartLimitBurst).
+    # The count is the one field every writer merges, so it is the wall.
+    _seat_parked_by_ceiling "$fail_count" && return 0
     case "$hc" in
         quota_exhausted|quota_bench|credentials_bad|corpse) return 0 ;;
     esac
@@ -2949,7 +2957,7 @@ _seat_floor_shortest_bench() {
                 jq -r '[(.health_class//""),(.seat_dead|tostring),(.observed_at//""),(.usable_at//""),(.bench_until//""),(.consecutive_failure_count//0),(.failure_mode//"")] | join("\u001f")' "$f" 2>/dev/null || true
             )
         fi
-        _seat_floor_is_money_wall "$hc" "$dead" "$fm" && continue
+        _seat_floor_is_money_wall "$hc" "$dead" "$fm" "$fail_count" && continue
         if ! _seat_floor_is_failopen_class "$hc" "$fm"; then
             # Wrapper spawn-bench can outlive a healthy ledger clobber
             # (fleet-ops#1512). empty_run / spawn_fail on the marker are
@@ -4665,6 +4673,14 @@ mark_seat_overload_bench() {
     # fleet-ops#1362: park past the failure ceiling (long wall override).
     window_s=$(_failure_ceiling_wall "$merged_count" "$window_s")
     bench_until=$(date -u -d "@$((now_s + window_s))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
+    # fleet-ops#3531: a 503 on a corpse must not resurrect it. Keep the
+    # existing seat_dead (same rule as mark_seat_quota_bench); a fresh
+    # ledger starts false.
+    local prev_dead=false
+    if [[ -f "$path" ]]; then
+        prev_dead=$(jq -r 'if .seat_dead == true then "true" else "false" end' "$path" 2>/dev/null || echo false)
+        [[ "$prev_dead" == "true" ]] || prev_dead=false
+    fi
 
     local tmp="$path.overload.$$.$RANDOM.tmp"
     if ! jq -nc \
@@ -4672,7 +4688,7 @@ mark_seat_overload_bench() {
         --arg observed "$now_utc" --arg bench "$bench_until" --arg usable "$bench_until" \
         --argjson window "$window_s" --argjson merged "$merged_count" \
         --argjson http_status 503 --argjson retry_after null \
-        --argjson retryable true --argjson seat_dead false --argjson poison_ladder false \
+        --argjson retryable true --argjson seat_dead "$prev_dead" --argjson poison_ladder false \
         '{
           provider:$provider, model:$model,
           http_status:$http_status, retry_after:$retry_after,
