@@ -33,7 +33,7 @@
 #      "full picture" prose bundled with todos -> finding.
 #   2. same shape plus a later user-facing flag that NAMES the
 #      failure -> clean.
-#   3. worker.md cites fleet-ops#958 (prompt-side lock).
+#   3. lib/failed-command-flagged.py cites fleet-ops#958 (detector-side lock: case list moved to lib, fleet-ops#3246).
 #   4. seat-lib.test.sh hosts this file (CI cannot gain a new P14 line).
 #   5. guard-fires drill: a worker.md copy stripped of the locked
 #      wording fails the scenario-3 checks (fleet-ops#2101 prevention).
@@ -116,14 +116,14 @@ count=$(jq '.findings | length' <<<"$report")
 ok "live #958 positive: skip-then-todos shape plus later named flag is clean"
 rm -f "$sessions/read-enoent-skip-todos-flagged.jsonl"
 
-# --- 3. worker.md cites fleet-ops#958 (prompt-side lock) -------------------
+# --- 3. lib/failed-command-flagged.py cites fleet-ops#958 (detector-side lock: case list moved to lib, fleet-ops#3246) -------------------
 worker="$repo_root/prompts/worker.md"
 [[ -f "$worker" ]] || fail "missing $worker"
-grep -q 'fleet-ops#958' "$worker" \
-  || fail "prompts/worker.md must cite fleet-ops#958 (prompt-side lock for the live skip-then-todos ENOENT shape)"
-grep -q "ENOENT: no such file or directory, access" "$worker" \
-  || fail "prompts/worker.md must name the live ENOENT wording so workers flag it"
-ok "worker.md cites fleet-ops#958 and the live ENOENT wording"
+grep -q 'fleet-ops#958' "$lib" \
+  || fail "lib/failed-command-flagged.py must cite fleet-ops#958 (detector-side lock for the live skip-then-todos ENOENT shape)"
+grep -q "ENOENT: no such file or directory, access" "$lib" \
+  || fail "lib/failed-command-flagged.py must name the live ENOENT wording so workers flag it"
+ok "lib/failed-command-flagged.py cites fleet-ops#958 and the live ENOENT wording"
 
 # --- 5. guard-fires drill: drift in the #958 citation fails scenario 3 ------
 # fleet-ops#2101: prompts/worker.md lost the #958 citation (plus 17 siblings)

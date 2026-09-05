@@ -60,7 +60,7 @@
 #      same as #957 (python3 -c walked past); the live wording is
 #      distinct and a future refactor must not let a `KeyError: 'comments'`
 #      string get treated as a benign no-match probe.
-#   6. worker.md cites fleet-ops#957 (prompt-side lock).
+#   6. lib/failed-command-flagged.py cites fleet-ops#957 (detector-side lock: case list moved to lib, fleet-ops#3246).
 #   7. lib/failed-command-flagged.py docstring cites fleet-ops#957
 #      (detector-side lock).
 #   8. seat-lib.test.sh hosts this file (CI cannot gain a new workflow line).
@@ -214,13 +214,13 @@ grep -q "KeyError: 'comments'" <<<"$snippet" \
 ok "live #1003: gh --json + python3 KeyError: 'comments' walked past is flagged"
 rm -f "$sessions/python-traceback-gh-json-comments.jsonl"
 
-# --- 6. worker.md cites fleet-ops#957 (prompt-side lock) ----------------
+# --- 6. lib/failed-command-flagged.py cites fleet-ops#957 (detector-side lock: case list moved to lib, fleet-ops#3246) ----------------
 worker="$repo_root/prompts/worker.md"
 [[ -f "$worker" ]] || fail "missing $worker"
-grep -q 'fleet-ops#957' "$worker" \
-  || fail "prompts/worker.md must cite fleet-ops#957 (prompt-side lock for the live Python traceback shape)"
-grep -q "KeyError: 'input_domain'" "$worker" \
-  || fail "prompts/worker.md must name the live KeyError wording so workers flag it"
+grep -q 'fleet-ops#957' "$lib" \
+  || fail "lib/failed-command-flagged.py must cite fleet-ops#957 (detector-side lock for the live Python traceback shape)"
+grep -q "KeyError: 'input_domain'" "$lib" \
+  || fail "lib/failed-command-flagged.py must name the live KeyError wording so workers flag it"
 # #1003 is a sibling python-traceback shape on a DIFFERENT session
 # (the 01a041a5 gh--json+python3 KeyError session). The class is the
 # same as #957 (python3 -c walked past); the live wording is distinct
@@ -228,11 +228,11 @@ grep -q "KeyError: 'input_domain'" "$worker" \
 # pipe whose --json filter omitted the field the probe tried to read).
 # Dropping the #1003 citation from the prompt is a regression even if
 # the #957 lock and the live #1003 drill still pass.
-grep -q 'fleet-ops#1003' "$worker" \
-  || fail "prompts/worker.md must cite fleet-ops#1003 (prompt-side lock for the gh--json+python3 KeyError sibling shape)"
-grep -q "KeyError: 'comments'" "$worker" \
-  || fail "prompts/worker.md must name the live #1003 KeyError: 'comments' wording so workers flag it"
-ok "worker.md cites fleet-ops#957, fleet-ops#1003 and the live KeyError wordings"
+grep -q 'fleet-ops#1003' "$lib" \
+  || fail "lib/failed-command-flagged.py must cite fleet-ops#1003 (detector-side lock for the gh--json+python3 KeyError sibling shape)"
+grep -q "KeyError: 'comments'" "$lib" \
+  || fail "lib/failed-command-flagged.py must name the live #1003 KeyError: 'comments' wording so workers flag it"
+ok "lib/failed-command-flagged.py cites fleet-ops#957, fleet-ops#1003 and the live KeyError wordings"
 
 # --- 6. lib/failed-command-flagged.py docstring cites fleet-ops#957 ----
 # (detector-side lock). The docstring is the standing-rule contract

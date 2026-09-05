@@ -58,7 +58,7 @@
 #      without naming the failure -> still a finding.
 #   3. same shape plus a later user-facing flag that names the failure
 #      -> clean.
-#   4. worker.md cites fleet-ops#1097 (prompt-side lock).
+#   4. lib/failed-command-flagged.py cites fleet-ops#1097 (detector-side lock: case list moved to lib, fleet-ops#3246).
 #   5. lib/failed-command-flagged.py docstring cites fleet-ops#1097.
 #   6. seat-lib.test.sh hosts this file (CI cannot gain a new workflow
 #      line — the worker token has no Workflows permission).
@@ -157,13 +157,13 @@ count=$(jq '.findings | length' <<<"$report")
 ok "live #1097: bare cat of stale tooling/fleet-ops plus later user-facing flag is clean"
 rm -f "$sessions/cat-stale-flagged.jsonl"
 
-# --- 4. worker.md cites fleet-ops#1097 (prompt-side lock) ---------------
+# --- 4. lib/failed-command-flagged.py cites fleet-ops#1097 (detector-side lock: case list moved to lib, fleet-ops#3246) ---------------
 [[ -f "$worker" ]] || fail "missing $worker"
-grep -q 'fleet-ops#1097' "$worker" \
-  || fail "prompts/worker.md must cite fleet-ops#1097 (prompt-side lock for the live stale-fleet-ops cat shape)"
-grep -q 'tooling/fleet-ops/bin/fleet-failed-command-flagged' "$worker" \
-  || fail "prompts/worker.md must name the live #1097 stale path so workers flag it"
-ok "worker.md cites fleet-ops#1097 and the live stale tooling/fleet-ops path"
+grep -q 'fleet-ops#1097' "$lib" \
+  || fail "lib/failed-command-flagged.py must cite fleet-ops#1097 (detector-side lock for the live stale-fleet-ops cat shape)"
+grep -q 'tooling/fleet-ops/bin/fleet-failed-command-flagged' "$lib" \
+  || fail "lib/failed-command-flagged.py must name the live #1097 stale path so workers flag it"
+ok "lib/failed-command-flagged.py cites fleet-ops#1097 and the live stale tooling/fleet-ops path"
 
 # --- 5. lib/failed-command-flagged.py docstring cites fleet-ops#1097 ----
 grep -q 'fleet-ops#1097' "$lib" \

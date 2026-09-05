@@ -20,6 +20,12 @@
 # ~25 KB, the bloated one was ~45 KB) and 4 KB per line (the trimmed
 # failed-command line is ~1.8 KB, the bloated one was ~22 KB). Both leave
 # headroom for legitimate growth while catching the bloat shape.
+#
+# Since fleet-ops#3245 the prompt is capped at <= 80 lines (fleet-ops#3120
+# requirement). That line-count cap is asserted below so a future edit that
+# re-grows the prompt past 80 lines is mechanically caught here before it
+# ships and re-introduces the context-pressure waste that killed single
+# sessions.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
@@ -37,6 +43,16 @@ if [[ "$packet_size" -gt "$PACKET_CEILING" ]]; then
 	fail "worker packet is ${packet_size}B, exceeds ${PACKET_CEILING}B ceiling — prompt bloat re-introduced the fleet-ops#1902 empty-run class. Trim the enumeration (the tests/fleet-failed-command-*.test.sh files + bin/fleet-failed-command-flagged lint are the authoritative shape list)."
 fi
 ok "worker packet is ${packet_size}B, under ${PACKET_CEILING}B ceiling"
+
+# --- 1b. Line-count ceiling: worker.md must stay <= 80 lines ---------------
+# fleet-ops#3245 (child of #3120): trimmed prompt is <= 80 lines. A grow back
+# past 80 re-introduces the single-session waste this requirement targets.
+LINE_CEILING=80
+line_count=$(wc -l < "$worker")
+if [[ "$line_count" -gt "$LINE_CEILING" ]]; then
+	fail "worker.md is ${line_count} lines, exceeds ${LINE_CEILING}-line ceiling (fleet-ops#3245). Trim the prompt; keep only the required content."
+fi
+ok "worker.md is ${line_count} lines, under ${LINE_CEILING}-line ceiling"
 
 # --- 2. Per-line cap: no single line exceeds 4 KB ----------------------------
 # The 22 KB single-line enumeration was the specific bloat shape. A per-line
