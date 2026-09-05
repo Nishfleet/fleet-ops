@@ -1,77 +1,83 @@
-feat(seat-health): walled-seat comeback probe with weekly credentials_bad issue
-
 ## Why
 
-fleet-ops#1348: #1167 landed the `walled_comeback` table in `config/seat-caps.json`
-(15min on 429, hourly on daily quota, daily on monthly/402, weekly on
-credentials_bad, max 1 probe per 15min). `pick_seat` already fail-opens after
-`usable_at` passes, but nothing actually re-admits the seat — the wall meant the
-seat stayed walled until a manual intervention or an unrelated healthy observation
-overwrote the ledger.
-
-This PR adds a periodic probe (systemd timer every 15min) that:
-- Reads `usable_at` from the per-seat ledger
-- When `usable_at` has passed, sends a polite 1-token "reply OK" probe through pi
-- A successful probe produces a healthy observation (seat-health.ts records it),
-  clearing `usable_at` so the seat re-enters the ladder at its cap
-- Respects `min_probe_interval_s` from `seat-caps.json` (max 1 probe per seat per tick)
-- `credentials_bad`: probes weekly and files an `agent-ready` issue if still bad
-  (needs fixing, not waiting)
+A fleet-ops PR with green fleet-ops tests was blocked by a cross-repo
+failure cluster: 0509's `Deploy production` and `codex-node-checks
+(merge_group)` loops were failing repeat-deterministically, nothing in
+fleet-ops caused them, and the blocked PRs partly fixed them. The
+stop-the-line detector must gate only the PR's OWN repo, and never fail a
+fleet-ops check on a 0509 signature.
 
 ## Scope
 
-- `bin/seat-walled-probe` — new script. Iterates the per-seat ledger, probes seats
-  whose `usable_at` is in the past and whose `failure_mode` is walled (rate_limit,
-  quota_exhausted, credentials_bad, empty_run). Uses `--dry-run` and `--probe-all`
-  flags. Exits 0 when there is nothing to probe (common case, not a failure).
-- `systemd/seat-walled-probe.service` + `systemd/seat-walled-probe.timer` —
-  oneshot unit with 10min timeout, timer fires every 15min with 60s randomized delay.
-- `systemd/timer-manifest.json` — entry for the new timer (source: repo, cadence: 15min).
-- `tests/seat-walled-probe.test.sh` — 5-phase test: dry-run selection (skips future/
-  healthy/recent, probes past+weekly), real mock run (probe success/failure + issue
-  filing), no-seats exits 0, --probe-all picks non-walled modes, systemd unit validity
-  + manifest entry.
-- `MANIFEST` — deploy mapping for bin + service + timer.
+`.github/scripts/repeat-deterministic-detector.mjs`:
+- new `--block` (opt-in PR gate), `--own-repo`, `--pr-body`, `--now`.
+- `selectBlockingRepeats` — a cluster blocks only when it is same-repo,
+  its LAST failure is inside the now-anchored lookback, and it is not
+  excluded by a fix PR referencing its tracking issue.
+- `fetchSignatureIssues` / `ensureTrackingIssue` — find / file (via
+  existing `bin/fleet-issue-file`) one tracking issue per same-repo
+  signature.
+- cross-repo repeats are advisory (reported + PR comment), never a
+  failing check.
+- exit 1 only when blocking repeats exist; else exit 0. Alert-only runs
+  without `--block` are unchanged.
+- GitHub annotations: blocking repeats are `::error`, others `::warning`.
 
-**Out of scope**: the census sweep integration. #1149 is already the census sweeper;
-this probe runs on its own 15min timer rather than being called from the census.
+`tests/repeat-deterministic-detector.test.sh` + new fixture
+`same-repo-loop.json`: same-repo=1, cross-repo=0, Fixes#=0,
+wrong-Fixes#=1, stale=0.
 
 ## Tradeoffs
 
-- **Own timer vs census hook.** Chose a standalone timer because the probe cadence
-  (15min) is tighter than the census (weekly). Adding a 15min-firing census step would
-  change the census's own semantics. The two are orthogonal — census maps assets to
-  guards; this probe is a guard.
+- The failing repo's cross-repo tracking issue is filed by that repo's own
+  detector instance (where it holds write scope); the fleet-ops gate cannot
+  write across a repo boundary, so it stays advisory-only.
+- Blocking is opt-in (`--block`) so the existing scheduled telemetry path
+  never turns a same-repo alert into a red run by surprise.
 
 ## Blast Radius
 
-- **Low risk.** New script + new systemd units only. No existing files modified.
-  The script reads (never writes) the per-seat ledger and `seat-caps.json`.
-  Systemd timer is non-mandatory — fleet runs fine without it.
-- **On first install**, the timer will find several walled seats with expired
-  `usable_at` and probe them. This is correct — those seats should have been
-  re-probed already.
+Only the detector script and its test. Every existing invocation (telemetry
+without `--block`) behaves identically (exit 0 with repeats reported). The
+new gate path only activates when a caller passes `--block` + `--own-repo`.
 
 ## Verification
 
-```
-bash tests/seat-walled-probe.test.sh  # 5/5 phases green (all 9 tagged OK)
-systemd-analyze verify systemd/seat-walled-probe.service systemd/seat-walled-probe.timer
-shellcheck -x bin/seat-walled-probe  # clean (exit 0)
-sgscan  # no new security findings
-```
+- `bash tests/repeat-deterministic-detector.test.sh` → all sections green,
+  including the new gate section: `OK: repo-scoped blocking gate —
+  same-repo=1 cross-repo=0 Fixes#=0 wrong-Fixes#=1 stale=0`.
+- Exit-code contract proven by run:
+  `node ... --from-json .../same-repo-loop.json --block --own-repo
+  Nishfleet/fleet-ops --now 2026-09-05T04:00:00Z` → exit 1 (block).
+  Same with `--pr-body` `Fixes #4242` → exit 0. Cross-repo fixture
+  (`merge-queue-loop.json`) with `--own-repo Nishfleet/fleet-ops` → exit 0,
+  repeats=1 blocking=0 (advisory).
+- `node --check` on the .mjs → OK. `shellcheck` on the test → clean.
+- Related P14 battery (`semantic-conflict-detector`, `red-on-main-detector`,
+  `ci-failure-escalation-detector`, `pi-packet-guard`, `manifest-shape`,
+  `intake-repos-shape`, `worker-token-fail-closed`, `required-check-purity`,
+  `worker-prompt-size-ceiling`) → all green.
+- `sgscan` → `No new security findings`.
+- `crgate` → not signed in on this host (CodeRabbit needs `auth login`;
+  noted, not performed).
+- run-proof: detector exit-code contract exercised end-to-end in the fixture
+  paths above (same-repo/cross-repo/fix-excluded/stale).
 
-run-proof: tests/seat-walled-probe.test.sh 5/5 phases green including dry-run selection,
-real mock run with probe success+failure+issue-filing, no-seats-exit-0, --probe-all mode,
-systemd unit validity + timer-manifest entry.
+## Gate note
 
-research: official docs (systemd.timer(5), systemd.service(5)) plus a last30days-scale pass for probe-style free-seat recovery patterns; compared polling to a systemd path-unit trigger on the ledger directory (rejected — path unit fires on every write, every few seconds; polling every 15min is simpler and lower CPU) and checked the existing bin/fleet-seat-recovery + census sweep (#1149) — adopted a standalone systemd timer + bash script because it runs on the existing fleet timer pattern with no new machinery, and the census sweep is weekly (too coarse for a 15min probe cadence).
+This PR edits `.github/scripts/repeat-deterministic-detector.mjs` — a
+gate-path change. Per the gate-integrity rule it must NOT be self-attested;
+a repository admin posts the `gate-integrity-attest:` comment after review.
 
-help-first: ran `systemctl --help`, `systemd-analyze --help`, `pi --help`, and `bin/fleet-seat-recovery --help` — none can read per-seat ledger JSON, compare timestamps against seat-caps.json walled_comeback durations, or file agent-ready issues via fleet-issue-file; the existing tools do not already do this.
+## Mechanism
 
-organ-heartbeat: systemd/seat-walled-probe.service systemd/seat-walled-probe.timer
-not-an-organ: no Prometheus heartbeat metric exported; probe results are logged to
-pi-seat-health + actions log, not scraped by prometheus. This is a scheduled probe,
-not an organ under fleet-ops#1010.
+This fixes a detector bug. The prevention mechanism is the regression suite
+in `tests/repeat-deterministic-detector.test.sh` that proves the guard
+fires: same-repo blocks, cross-repo stays advisory (exit 0), a `Fixes
+#<issue>` reference un-blocks, and stale clusters do not block.
 
-Closes #1348
+net-positive-because: repo-scoped gating removes the cross-repo deadlock
+(three orchestration PRs blocked on foreign 0509 clusters) while keeping
+the same-repo stop-the-line signal, tested end-to-end.
+
+Closes #3480
