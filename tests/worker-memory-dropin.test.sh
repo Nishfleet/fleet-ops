@@ -128,6 +128,8 @@ grep -qF 'memory.conf' "$tick" \
     || fail "pi-intake-tick.sh missing memory.conf write"
 grep -qF 'MemoryMax=' "$tick" \
     || fail "pi-intake-tick.sh missing MemoryMax= write"
+grep -qF 'MemorySwapMax=0' "$tick" \
+    || fail "pi-intake-tick.sh missing MemorySwapMax=0 write (fleet-ops#3611)"
 ok "4: intake tick writes per-instance memory.conf"
 
 # --- 5. pi-issue-start mirrors the drop-in ---------------------------------
@@ -146,7 +148,9 @@ grep -qE '^MemoryHigh=3G$' "$template" \
     || fail "template must NOT hardcode 1536M (that is per-repo via drop-in)"
 ! grep -qE '^MemoryMax=1\.5G$' "$template" \
     || fail "template must NOT hardcode 1.5G (would OOM-kill 0509 browser E2E)"
-ok "6: template keeps 6G/3G fallback; no universal 1.5G"
+grep -qE '^MemorySwapMax=0$' "$template" \
+    || fail "pi-issue@.service must keep MemorySwapMax=0 (fleet-ops#3611)"
+ok "6: template keeps 6G/3G fallback; no universal 1.5G; swap disabled"
 
 # --- 7. end-to-end drop-in write via a stubbed start path ------------------
 # Drive the memory-write fragment from seat-lib + the same shell that intake
@@ -162,12 +166,15 @@ mkdir -p "$drop_dir"
     printf '[Service]\n'
     [[ -n "$mem_max" ]] && printf 'MemoryMax=%s\n' "$mem_max"
     [[ -n "$mem_high" ]] && printf 'MemoryHigh=%s\n' "$mem_high"
+    printf 'MemorySwapMax=0\n'
 } > "$drop_dir/memory.conf"
 grep -qE '^MemoryMax=1536M$' "$drop_dir/memory.conf" \
     || fail "written drop-in missing MemoryMax=1536M"
 grep -qE '^MemoryHigh=1G$' "$drop_dir/memory.conf" \
     || fail "written drop-in missing MemoryHigh=1G"
-ok "7: scratch drop-in write produces MemoryMax=1536M / MemoryHigh=1G"
+grep -qE '^MemorySwapMax=0$' "$drop_dir/memory.conf" \
+    || fail "written drop-in missing MemorySwapMax=0 (fleet-ops#3611)"
+ok "7: scratch drop-in write produces MemoryMax=1536M / MemoryHigh=1G / MemorySwapMax=0"
 
 # --- 8. worker_env_for_repo -------------------------------------------------
 # fleet-ops#1587: per-repo Environment variables for browser-heavy repos.

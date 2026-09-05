@@ -1207,6 +1207,9 @@ blocked-on: nish-decision" 2>/dev/null || true
             printf '[Service]\n'
             [[ -n "$mem_max" ]] && printf 'MemoryMax=%s\n' "$mem_max"
             [[ -n "$mem_high" ]] && printf 'MemoryHigh=%s\n' "$mem_high"
+            # fleet-ops#3611: keep the worker off swap so a runaway is OOM-killed
+            # locally instead of thrashing the host and killing unrelated units.
+            printf 'MemorySwapMax=0\n'
         } > "$drop_tmp"
         if ! cmp -s "$drop_tmp" "$drop_dir/memory.conf" 2>/dev/null; then
             mv -f "$drop_tmp" "$drop_dir/memory.conf"
