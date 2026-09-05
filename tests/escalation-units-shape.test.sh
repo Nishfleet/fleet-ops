@@ -186,6 +186,25 @@ grep -qF 'pi-issue@*.service' "$unit_write" \
   || fail "unit-escalation-write: must exclude pi-issue@*.service (#2133/#2475 amplifier: pi-issue workers have own failure handling via OnFailure=pi-issue-failed@%i)"
 ok "unit-escalation-write self-trigger guard"
 
+# 11b. The storm metric exporter must mirror unit-escalation-write's
+# exclusion set (fleet-ops#3157). If a class lands in unit-escalation-write's
+# "no self-trigger / own failure handling" guard but the exporter still counts
+# it, ordinary non-escalation churn inflates sum(fleet_escalations_24h) and
+# re-triggers FleetEscalationStorm. Keep these two lists in lockstep.
+export_py="$repo_root/libexec/fleet-metrics-export.py"
+[[ -f "$export_py" ]] || fail "missing exporter: $export_py"
+grep -qF 'pi-issue@*' "$export_py" \
+  || fail "exporter _escalations_24h: must exclude pi-issue@* (mirror unit-escalation-write, fleet-ops#3157)"
+grep -q 'notify-probe.service' "$export_py" \
+  || fail "exporter _escalations_24h: must exclude notify-probe.service (mirror unit-escalation-write)"
+grep -q 'notify-probe.onfail.service' "$export_py" \
+  || fail "exporter _escalations_24h: must exclude notify-probe.onfail.service (mirror unit-escalation-write)"
+grep -qF 'probe-*.service' "$export_py" \
+  || fail "exporter _escalations_24h: must exclude probe-*.service (mirror unit-escalation-write)"
+grep -qF 'multi-*-sink.service' "$export_py" \
+  || fail "exporter _escalations_24h: must exclude multi-*-sink.service (mirror unit-escalation-write)"
+ok "exporter _escalations_24h mirrors unit-escalation-write exclusion set"
+
 # 12. systemd-analyze verify on the unit files (.service, .path, .timer).
 # Drop-in .conf files cannot be verified directly by systemd-analyze, so their
 # shape is locked by the grep checks above.

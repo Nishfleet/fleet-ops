@@ -1446,10 +1446,9 @@ def _repo_snapshot():
 def _escalations_24h():
     """Count unit-escalation@<instance> starts in the last 24h (top 20).
 
-    Excludes the same units unit-escalation-write refuses (no self-trigger /
-    feedback-loop units), plus canary / recovery units whose escalations are
-    not a "unit flapping" signal. Mirrors the case list in
-    /home/nish/.local/bin/unit-escalation-write, extended for this metric.
+    Mirrors the case list in
+    /home/nish/.local/bin/unit-escalation-write (the escalation authority),
+    extended for this metric.
     """
     # Patterns match the FAILED unit name (the template instance). The journal
     # regex below strips a trailing .service, so we test both the stripped name
@@ -1462,6 +1461,21 @@ def _escalations_24h():
         "escalation-daily-sweep.service",
         "escalation-daily-sweep.timer",
         "resilience-drill-stub*",
+        # fleet-ops#3157: pi-issue workers carry their own failure handling
+        # (OnFailure=pi-issue-failed@%i reaps the claim and re-dispatches on
+        # the next intake tick), so their unit-escalation starts are NOT a
+        # "unit flapping" signal and must not feed the storm metric. This is
+        # the same exclusion unit-escalation-write makes (fleet-ops#2133/#2475).
+        # Omitting it here let ordinary pi-issue worker churn inflate
+        # sum(fleet_escalations_24h) past the FleetEscalationStorm threshold.
+        "pi-issue@*",
+        # Probe / notify / sink fixtures refuse via unit-escalation-write; keep
+        # those out of the storm metric too (probe-*.service, notify-probe*,
+        # multi-*-sink.service).
+        "notify-probe.service",
+        "notify-probe.onfail.service",
+        "probe-*.service",
+        "multi-*-sink.service",
         # Canaries / orchestrator organs: their deliberate fail-loud escalations
         # are expected, not a flapping worker.
         "fleet-heartbeat*",
