@@ -131,14 +131,27 @@ ok "walled minimax/MiniMax-M3 -> pick_seat rotated to devin/swe-1-7"
 # --- invariant 2: every seat walled -> pick_seat returns empty (fail loud) ---
 # Wall devin too. Now both allowlisted seats are rate_limited with future resets.
 write_ledger devin swe-1-7 rate_limited "$usable" "$obs"
-
 set +e
 seat=$(pick_seat minimax MiniMax-M3 0 "$tried")
 rc=$?
 set -e
-[[ "$rc" == 1 ]] || fail "all seats walled: pick_seat returned $rc, expected 1 (refuse to route outside cap map)"
-[[ -z "$seat" ]] || fail "all seats walled: pick_seat returned '$seat', expected empty (the fail-loud escalation signal)"
-ok "every seat walled -> pick_seat empty + exit 1 (genuine escalation, not quiet degraded mode)"
+# fleet-ops#3324 (seat floor, landed 2026-09-05): when EVERY allowlisted seat is
+# walled but at least one wall is transient (rate_limited / transient_fault /
+# empty_run / overload_bench), pick_seat fail-opens the shortest remaining bench
+# instead of starving the tick (2026-09-04: 3,341 NO USABLE SEAT vs 1,358 successes).
+[[ "$rc" == 0 ]] || fail "all seats transiently walled: pick_seat returned $rc, expected 0 (seat-floor fail-open, fleet-ops#3324)"
+[[ -n "$seat" ]] || fail "all seats transiently walled: pick_seat returned empty, expected the shortest-bench seat (fleet-ops#3324)"
+ok "every seat transiently walled -> seat-floor fail-opens the shortest bench (fleet-ops#3324)"
+# A MONEY wall must never be fail-opened: both seats quota_exhausted -> refuse.
+write_ledger minimax MiniMax-M3 quota_exhausted "$usable" "$obs"
+write_ledger devin swe-1-7 quota_exhausted "$usable" "$obs"
+set +e
+seat=$(pick_seat minimax MiniMax-M3 0 "$tried")
+rc=$?
+set -e
+[[ "$rc" == 1 ]] || fail "all seats money-walled: pick_seat returned $rc, expected 1 (never fail-open a money wall)"
+[[ -z "$seat" ]] || fail "all seats money-walled: pick_seat returned '$seat', expected empty (the fail-loud escalation signal)"
+ok "every seat money-walled -> pick_seat empty + exit 1 (genuine escalation, not quiet degraded mode)"
 
 # --- invariant 3: the prompts instruct the agent to use this exact call -----
 # Guard against the prompt drift that caused #27 in the first place: the
