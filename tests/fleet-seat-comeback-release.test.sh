@@ -51,7 +51,12 @@
 #     / transient_other / empty_run / overload) — is the lived seats_dead
 #     stuck case: inside its 6h grace nothing releases or retires it. It now
 #     gets ONE second-chance re-probe: on success it is UNWALLED (transitions
-#     OUT of corpse), on failure it is explicitly RETIRED immediately (grace
+#     OUT of corpse). fleet-ops#3508: a FAILED rate_limit re-probe that does
+#     NOT establish a wall is a BOUNDED COMEBACK, not a retire — a 429
+#     resets over a bounded window, so the corpse is re-anchored to
+#     usable_at=now+walled_comeback.rate_limit_s (default 900s) and re-enters
+#     the walled path; only a non-recoverable failed re-probe (the stuck
+#     prober corpse, comeback_never_released) is RETIRED immediately (grace
 #     bypass). A no-wall corpse from a PERMANENT class (credentials_bad
 #     401/403, quota_exhausted-by-age 402) and any corpse still owed a
 #     comeback clock stay held/terminal.
@@ -1315,15 +1320,22 @@ set -e
 [[ "$rc" == "0" ]] || fail "17e: rate_limit corpse re-probe sweep must exit 0, got $rc ($(cat "$TMPD/ret17e.err"))"
 grep -q "corpse re-probe opencode/mimo-v2.5-free: no wall, second-chance re-probe" "$TMPD/ret17e.err" \
   || fail "17e: rate_limit no-wall corpse must be re-probed (fleet-ops#3229): $(cat "$TMPD/ret17e.err")"
-grep -q "explicitly retired opencode/mimo-v2.5-free after failed no-wall corpse re-probe" "$TMPD/ret17e.err" \
-  || fail "17e: failed re-probe must explicitly retire the rate_limit corpse: $(cat "$TMPD/ret17e.err")"
-[[ ! -e "$TMPD/seats17/opencode__mimo-v2.5-free.json" ]] \
-  || fail "17e: rate_limit corpse must leave the live roster on failed re-probe: $(ls "$TMPD/seats17")"
-[[ -f "$TMPD/seats-corpse-retired-$NOW_ISO/opencode__mimo-v2.5-free.json" ]] \
-  || fail "17e: retired corpse must land in the dated retirement dir: $(ls -la "$TMPD/seats-corpse-retired-$NOW_ISO" 2>&1)"
-grep -q "^fleet_seat_comeback_release_retired_total 1$" "$TMPD/prom17e.prom" \
-  || fail "17e: prom retired_total must be 1 (grace bypass): $(cat "$TMPD/prom17e.prom")"
-ok "17e: rate_limit no-wall corpse (the issue's mimo shape) re-probed; failed re-probe retires it immediately (fleet-ops#3229)"
+# fleet-ops#3508: a failed re-probe of a rate_limit corpse is NOT a terminal
+# retire — a 429 resets over a bounded window, so the corpse gets a bounded
+# comeback clock (usable_at = now + RATE_LIMIT_COMEBACK_S=900, frozen NOW
+# 2026-08-30T12:00:00Z => 12:15:00) and the seat re-enters the walled path.
+grep -q "bounded comeback opencode/mimo-v2.5-free: rate_limit corpse re-anchored to usable_at +900s, seat re-enters the walled path" "$TMPD/ret17e.err" \
+  || fail "17e: rate_limit corpse must get a bounded comeback, not immediate retire (fleet-ops#3508): $(cat "$TMPD/ret17e.err")"
+[[ -f "$TMPD/seats17/opencode__mimo-v2.5-free.json" ]] \
+  || fail "17e: rate_limit corpse must STAY in the live roster (bounded comeback, not retired): $(ls "$TMPD/seats17")"
+[[ ! -d "$TMPD/seats-corpse-retired-$NOW_ISO" ]] \
+  || fail "17e: no retirement dir may be created for a bounded-comeback rate_limit corpse: $(ls -la "$TMPD" 2>&1)"
+jq -e '.seat_dead == false and .health_class == "rate_limited" and .failure_mode == "rate_limit" and (.usable_at | contains("2026-08-30T12:15:00")) and .consecutive_failure_count == 30' \
+  "$TMPD/seats17/opencode__mimo-v2.5-free.json" >/dev/null \
+  || fail "17e: rate_limit corpse ledger must carry a bounded comeback clock (seat_dead=false, usable_at future): $(cat "$TMPD/seats17/opencode__mimo-v2.5-free.json")"
+grep -q "^fleet_seat_comeback_release_retired_total 0$" "$TMPD/prom17e.prom" \
+  || fail "17e: prom retired_total must be 0 (no retire, bounded comeback): $(cat "$TMPD/prom17e.prom")"
+ok "17e: rate_limit no-wall corpse re-probed; failed re-probe gets a bounded comeback clock, not an immediate retire (fleet-ops#3508)"
 
 # 17f. fleet-ops#3229 permanent-mode guard: a no-wall corpse from a
 #      PERMANENT failure mode (credentials_bad 401/403 — the model is gone /
@@ -1355,6 +1367,58 @@ grep -q "re-probe" "$TMPD/ret17f.err" \
 grep -qi "opencode/hy3-free" "$TMPD/ret17f.err" \
   && fail "17f: permanent-mode corpse must not be mentioned at all (held silently): $(cat "$TMPD/ret17f.err")"
 ok "17f: credentials_bad no-wall corpse inside grace is held, never re-probed (permanent-mode guard, fleet-ops#3229)"
+
+# 17g. fleet-ops#3508: the bounded comeback clock is a REAL retry schedule.
+#      After 17e re-anchored the rate_limit corpse to usable_at (now+900s),
+#      a LATER sweep once the clock has passed re-probes the seat on the
+#      normal wall-clock path and, on a healthy probe, UNWALLS it. Proves
+#      the seat is not terminal and recovers the moment the rate limit
+#      clears — the next seat-probe snapshot sees a released walled seat,
+#      not a retired corpse.
+rm -rf "$TMPD/seats17" "$TMPD/seats-corpse-retired-$NOW_ISO"
+mkdir -p "$TMPD/seats17"
+# A rate_limit corpse with no wall (the #3508 shape), frozen at 12:00.
+cat > "$TMPD/seats17/opencode__mimo-v2.5-free.json" << 'EOF'
+{"provider":"opencode","model":"mimo-v2.5-free","http_status":429,"retry_after":null,"health_class":"corpse","retryable":true,"seat_dead":true,"poison_ladder":false,"observed_at":"2026-08-30T11:00:00Z","source":"provider_fetch","failure_mode":"rate_limit","usable_at":null,"bench_until":null,"consecutive_failure_count":30}
+EOF
+STATE17G="$TMPD/state17g.json"
+PROM17G="$TMPD/prom17g.prom"
+# Sweep 1 (NOW=12:00): failed re-probe -> bounded comeback (usable_at 12:15).
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$TMPD/seats17" \
+    FLEET_SEAT_COMEBACK_STATE="$STATE17G" \
+    FLEET_SEAT_COMEBACK_PROM="$PROM17G" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" \
+    PI_BIN="$TMPD/pi-fail" \
+    bash "$BIN" >/dev/null 2>"$TMPD/ret17g1.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "17g: sweep1 must exit 0, got $rc ($(cat "$TMPD/ret17g1.err"))"
+grep -q "bounded comeback opencode/mimo-v2.5-free" "$TMPD/ret17g1.err" \
+  || fail "17g: sweep1 must re-anchor the bounded comeback: $(cat "$TMPD/ret17g1.err")"
+jq -e '.seat_dead == false and .usable_at == "2026-08-30T12:15:00.000Z"' \
+  "$TMPD/seats17/opencode__mimo-v2.5-free.json" >/dev/null \
+  || fail "17g: sweep1 must leave usable_at=12:15:00.000Z: $(cat "$TMPD/seats17/opencode__mimo-v2.5-free.json")"
+# Sweep 2 (NOW=12:20, past the 12:15 clock): wall passed -> re-probe; the
+# rate limit has cleared -> healthy probe unwalls the seat out of the
+# walled path. The seat is recovered, not terminal.
+NOW_GO="2026-08-30T12:20:00Z"
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$TMPD/seats17" \
+    FLEET_SEAT_COMEBACK_STATE="$STATE17G" \
+    FLEET_SEAT_COMEBACK_PROM="$PROM17G" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_GO" \
+    PI_BIN="$TMPD/pi-tool-ok" \
+    bash "$BIN" >/dev/null 2>"$TMPD/ret17g2.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "17g: sweep2 must exit 0, got $rc ($(cat "$TMPD/ret17g2.err"))"
+tail -40 "$TMPD/ret17g2.err" | grep -q "UNWALLED opencode/mimo-v2.5-free" \
+  || fail "17g: sweep2 must unwall the seat once the bounded clock passes (recovery): $(cat "$TMPD/ret17g2.err")"
+jq -e '.seat_dead == false and .health_class == "healthy" and .failure_mode == "none" and .consecutive_failure_count == 0' \
+  "$TMPD/seats17/opencode__mimo-v2.5-free.json" >/dev/null \
+  || fail "17g: seat must land healthy after the bounded-comback re-probe: $(cat "$TMPD/seats17/opencode__mimo-v2.5-free.json")"
+ok "17g: bounded comeback clock is a real retry schedule — seat unwalls on the next sweep once the clock passes (fleet-ops#3508)"
 
 # --- 18. fleet-ops#3176: PQE 1h==1h deadlock — comeback-release must NOT ---
 #      re-anchor a quota_exhausted seat whose observed_at is still inside the
