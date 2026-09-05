@@ -23,11 +23,13 @@ Usage:
   python3 lib/agent-ready-spec-gate.py check-body
   python3 lib/agent-ready-spec-gate.py check-body --body FILE
   python3 lib/agent-ready-spec-gate.py check-body --repo fleet-ops
+  python3 lib/agent-ready-spec-gate.py check-size
+  python3 lib/agent-ready-spec-gate.py check-size --body FILE --comments FILE --labels JSON
   python3 lib/agent-ready-spec-gate.py verify --repo-root DIR
 
 Exit codes:
-  0 — spec present / first-admission paths are wired
-  1 — no spec / a first-admission path dropped the gate
+  0 — spec present / size ok / first-admission paths are wired
+  1 — no spec / oversized / a first-admission path dropped the gate
   2 — usage error
 """
 from __future__ import annotations
@@ -87,6 +89,19 @@ CAP_NEEDLES = (
     "label_budget",
 )
 
+# fleet-ops#3309: more than this many live `required:` lines is too big
+# for one worker. Struck-through spans do not count. Umbrella-labeled
+# issues are exempt (tracking parents, never claimable).
+MAX_REQUIRED = 2
+STRIKE_RE = re.compile(r"~~[^~]*~~")
+DEL_RE = re.compile(r"<del>.*?</del>", flags=re.S)
+UMBRELLA_NAME = "umbrella"
+SIZE_TICK = "lib/pi-intake-tick.sh"
+SIZE_INTAKE = "prompts/intake.md"
+REQUIRED_RE = re.compile(
+    r"(?im)^(?:[-*]\s+)*required(?:[^:\n]*)\s*:\s*"
+)
+
 
 def _moves_metric(text: str) -> str | None:
     """Return the named metric when the body carries a valid moves: line."""
@@ -96,6 +111,44 @@ def _moves_metric(text: str) -> str | None:
             if token in MOVES_METRICS:
                 return token
     return None
+
+
+def live_text(text: str | None) -> str:
+    """Remove struck-through spans and drop now-empty lines."""
+    text = (text or "")
+    text = DEL_RE.sub("", text)
+    lines = []
+    for line in text.splitlines():
+        cleaned = STRIKE_RE.sub("", line)
+        if not cleaned.strip():
+            continue
+        lines.append(cleaned)
+    return "\n".join(lines)
+
+
+def count_required(text: str | None) -> int:
+    """Count live required: field lines in body and/or comments."""
+    return sum(1 for _ in REQUIRED_RE.finditer(live_text(text)))
+
+
+def has_umbrella(labels_raw: str | None) -> bool:
+    """True when labels JSON/csv includes the umbrella label."""
+    raw = (labels_raw or "").strip()
+    names: list[str] = []
+    if raw.startswith("["):
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            data = []
+        if isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict):
+                    names.append(str(item.get("name") or ""))
+                else:
+                    names.append(str(item))
+    else:
+        names = [part.strip() for part in raw.split(",") if part.strip()]
+    return any(name.lower() == UMBRELLA_NAME for name in names)
 
 
 def issue_has_spec(body: str | None, repo: str | None = None) -> bool:
@@ -124,6 +177,18 @@ def _die(msg: str, code: int = 2) -> None:
     raise SystemExit(code)
 
 
+def _read_optional(path: str) -> str:
+    if not path:
+        return ""
+    if path == "-":
+        return sys.stdin.read()
+    try:
+        return Path(path).read_text(encoding="utf-8")
+    except OSError as exc:
+        _die(f"cannot read {path}: {exc}")
+    return ""
+
+
 def cmd_check_body(args: argparse.Namespace) -> int:
     if args.body:
         try:
@@ -146,6 +211,27 @@ def cmd_check_body(args: argparse.Namespace) -> int:
     else:
         print("SPEC-GATE: refused — body has no termination:/accept:/required:/metric:", file=sys.stderr)
     return 1
+
+
+def cmd_check_size(args: argparse.Namespace) -> int:
+    """Exit 1 when live required: lines exceed MAX_REQUIRED (fleet-ops#3309)."""
+    if args.body:
+        body = _read_optional(args.body)
+    elif args.body_text is not None:
+        body = args.body_text
+    else:
+        body = sys.stdin.read()
+    comments = _read_optional(args.comments) if args.comments else ""
+    n = count_required(body) + count_required(comments)
+    if has_umbrella(args.labels):
+        print(f"SPEC-GATE: size-ok umbrella ({n} required:)")
+        return 0
+    if n > MAX_REQUIRED:
+        print(f"split me: {n} requirements; one requirement per issue")
+        print("blocked-on: split")
+        return 1
+    print(f"SPEC-GATE: size-ok ({n} required:)")
+    return 0
 
 
 def _read(path: Path) -> str:
@@ -182,6 +268,40 @@ def verify_wired(repo: Path) -> list[str]:
                     "or requeue path; wire the spec-gate or add it to the "
                     "requeue allowlist with a named reason"
                 )
+    return errors
+
+
+def verify_size_wired(repo: Path) -> list[str]:
+    """Claim-time size bounce must stay wired (fleet-ops#3309)."""
+    errors: list[str] = []
+    tick = _read(repo / SIZE_TICK)
+    if not tick:
+        errors.append(f"missing {SIZE_TICK} (size bounce lives there)")
+    else:
+        if "check-size" not in tick:
+            errors.append(f"{SIZE_TICK} does not call agent-ready-spec-gate check-size")
+        if "skipped-oversized" not in tick:
+            errors.append(f"{SIZE_TICK} lost skipped-oversized on size bounce")
+        i_size = tick.find("check-size")
+        i_push = tick.find("push --force-with-lease")
+        if i_size >= 0 and i_push >= 0 and i_size > i_push:
+            errors.append(
+                f"{SIZE_TICK} runs check-size after the claim push"
+            )
+        window = tick[i_size : i_size + 1200] if i_size >= 0 else ""
+        if i_size >= 0 and "--add-label agent-blocked" not in window:
+            errors.append(
+                f"{SIZE_TICK} does not flip agent-blocked on size bounce"
+            )
+        if i_size >= 0 and "--remove-label agent-ready" not in window:
+            errors.append(
+                f"{SIZE_TICK} does not drop agent-ready on size bounce"
+            )
+    intake = _read(repo / SIZE_INTAKE)
+    if not intake:
+        errors.append(f"missing {SIZE_INTAKE} (size bounce lives there)")
+    elif "check-size" not in intake:
+        errors.append(f"{SIZE_INTAKE} does not call agent-ready-spec-gate check-size")
     return errors
 
 
@@ -222,12 +342,17 @@ def verify_matrix(repo: Path) -> list[str]:
 
 def cmd_verify(args: argparse.Namespace) -> int:
     repo = Path(args.repo_root)
-    errors = verify_wired(repo) + verify_caps(repo) + verify_matrix(repo)
+    errors = (
+        verify_wired(repo)
+        + verify_caps(repo)
+        + verify_matrix(repo)
+        + verify_size_wired(repo)
+    )
     if errors:
         for err in errors:
             print(f"SPEC-GATE: {err}", file=sys.stderr)
         return 1
-    print("SPEC-GATE: first-admission wired, cap of 12 present, matrix enforced")
+    print("SPEC-GATE: first-admission wired, cap of 12 present, matrix enforced, size bounce wired")
     return 0
 
 
@@ -244,6 +369,19 @@ def main(argv: list[str] | None = None) -> int:
         help="repo name; fleet-ops requires a moves: line naming a product metric",
     )
     p_check.set_defaults(func=cmd_check_body)
+
+    p_size = sub.add_parser(
+        "check-size", help="exit 1 iff live required: lines exceed 2"
+    )
+    p_size.add_argument("--body", default="", help="read body from FILE")
+    p_size.add_argument("--body-text", default=None, help="body as a string")
+    p_size.add_argument(
+        "--comments", default="", help="read comments text from FILE"
+    )
+    p_size.add_argument(
+        "--labels", default="", help="labels JSON array or comma-separated names"
+    )
+    p_size.set_defaults(func=cmd_check_size)
 
     p_verify = sub.add_parser(
         "verify", help="fail-closed check that first-admission paths stay wired"

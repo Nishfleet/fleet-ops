@@ -58,6 +58,15 @@ Steps:
       Exit 0 = claim-ok, continue. Exit 1 = bounced (the binary already
       flipped agent-ready → agent-blocked and commented); skip issue N
       and do NOT push `claim/issue-N`. Any other exit is fail-loud.
+   a0b. Size gate (fleet-ops#3309) BEFORE any claim push. Count live
+      `- required:` lines in body+comments (ignore struck-through lines).
+      If more than 2, bounce unless the issue carries the `umbrella`
+      label. Run:
+      `python3 /home/nish/.local/lib/pi-packet/agent-ready-spec-gate.py check-size --body FILE --comments FILE --labels JSON`
+      Exit 0 = size-ok, continue. Exit 1 = oversized; flip
+      agent-ready → agent-blocked and comment `split me: N requirements;
+      one requirement per issue` with `blocked-on: split`; skip issue N
+      and do NOT push `claim/issue-N`. Any other exit is fail-loud.
    b. Hard claim — atomic create-only push; the claim branch IS the work branch:
       `git -C /home/nish/workspaces/products/<repo> ls-remote origin refs/heads/claim/issue-N`
       If that output contains a hash, another agent already holds the claim — skip issue N.
