@@ -93,6 +93,40 @@ if ! flock -n 9; then
     echo "pi-intake-tick: $REPO tick already running (no-op)"
     exit 0
 fi
+# fleet-ops#3695: top-up debounce. pi-issue@.service fires
+# `systemctl start --no-block pi-intake@<repo>` from ExecStopPost on every
+# worker exit, so a finishing cohort bursts intake starts at this tick.
+# A tick starting within TOPUP_DEBOUNCE_S of the previous tick's finish
+# sleeps out the remainder of the window WHILE HOLDING the flock acquired
+# above — sibling triggers that land during the sleep no-op on the lock,
+# and the one sleeping tick then runs once and sees every slot freed in
+# the window. Sleeping rather than skipping means the last worker of a
+# cohort can never strand its slot: its trigger always produces a real
+# tick. Overridable for tests.
+TOPUP_DEBOUNCE_S="${PI_INTAKE_TOPUP_DEBOUNCE_S:-60}"
+# The finish stamp sits next to the lock (per repo) and is written by an
+# EXIT trap so every exit path — early holds, gate exits, failures,
+# success — records the finish. It is stamped only AFTER the flock was
+# acquired, so a no-op on the lock never moves the window.
+_tick_last_finish_stamp="$lockdir/${REPO}.last-finish"
+trap 'date +%s >"$_tick_last_finish_stamp" 2>/dev/null || true' EXIT
+_tick_now=$(date +%s)
+_tick_last_finish=0
+if [[ -f "$_tick_last_finish_stamp" ]]; then
+    _tick_last_finish=$(cat "$_tick_last_finish_stamp" 2>/dev/null || echo 0)
+    # A corrupt stamp must not wedge the tick: non-numeric -> treat as no
+    # prior finish. A stamp in the future (clock skew) is clamped below so
+    # the sleep can never exceed the debounce window.
+    [[ "$_tick_last_finish" =~ ^[0-9]+$ ]] || _tick_last_finish=0
+fi
+_tick_sleep_remainder=$(( TOPUP_DEBOUNCE_S - (_tick_now - _tick_last_finish) ))
+if (( _tick_sleep_remainder > TOPUP_DEBOUNCE_S )); then
+    _tick_sleep_remainder=$TOPUP_DEBOUNCE_S
+fi
+if (( _tick_sleep_remainder > 0 )); then
+    echo "pi-intake-tick: $REPO start within ${TOPUP_DEBOUNCE_S}s of last tick finish; coalescing top-up burst — sleeping ${_tick_sleep_remainder}s while holding the lock"
+    sleep "$_tick_sleep_remainder"
+fi
 # ISSUE_STATE_DIR is used for the worker packet written for pi-issue-run.
 # It must NOT be named STATE_DIR: seat-lib.sh redefines that for its own
 # pi-packet state (watch.log, active-seats, attempts) when it is sourced below.

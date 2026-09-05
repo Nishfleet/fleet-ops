@@ -2,8 +2,15 @@
 Description=Pi fleet issue intake tick for Nishfleet/%i
 OnFailure=pi-intake-repair@%i.service
 # Retry ladder is systemd's own; StartLimit* must live in [Unit].
+# fleet-ops#3695: 8 -> 90. pi-issue@.service ExecStopPost now fires a
+# `start --no-block` top-up on every worker exit, and StartLimit counts
+# ALL starts — timer ticks, top-ups, and on-failure retries share the
+# budget. At 8/h one finishing cohort could exhaust the burst and silence
+# BOTH the top-ups and the next 20-min timer tick — the starvation this
+# issue removes. 90/h sits far above real top-up volume (a slot can free
+# at most ~once a minute per repo) while still bounding a genuine loop.
 StartLimitIntervalSec=1h
-StartLimitBurst=8
+StartLimitBurst=90
 
 [Service]
 Type=simple
