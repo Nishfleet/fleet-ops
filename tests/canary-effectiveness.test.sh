@@ -327,11 +327,19 @@ sys.modules["ce"] = m
 spec.loader.exec_module(m)
 from datetime import datetime, timezone
 
-# Healthy classify path => drill passes: ok=1, last_green=now.
+# Healthy classify path => drill passes: ok=1, last_green=now, and the
+# green result is announced on stderr so every live tick's journal proves
+# the detection end to end (fleet-ops#3060) — silent-green was the failure
+# mode that hid 2026-09-02's caught=0.
+import contextlib, io
 now = datetime(2026, 9, 2, 12, 0, 0, tzinfo=timezone.utc)
-ok, green = m.run_live_drill(now)
+err = io.StringIO()
+with contextlib.redirect_stderr(err):
+    ok, green = m.run_live_drill(now)
 assert ok == 1, ok
 assert green == now.timestamp(), green
+assert "DRILL GREEN" in err.getvalue(), err.getvalue()
+assert "SELF-TEST OK: injected fault detected (caught=1, ratio=1.0)" in err.getvalue(), err.getvalue()
 
 # The exported body carries the drill gauges when the drill ran.
 from pathlib import Path

@@ -868,9 +868,28 @@ def run_live_drill(now: datetime) -> tuple[int, float]:
         except Exception as exc:  # noqa: BLE001 — never fail the exporter
             print(f"canary-effectiveness: live drill crashed: {exc}", file=buf)
             rc = 1
+    detail = buf.getvalue()
     if rc != 0:
         print(
-            f"canary-effectiveness: DRILL RED: {buf.getvalue().strip()[:400]}",
+            f"canary-effectiveness: DRILL RED: {detail.strip()[:400]}",
+            file=sys.stderr,
+        )
+    else:
+        # A green live detection must be journal-visible, not only a
+        # gauge (fleet-ops#3060): the exporter tick's stderr proves the
+        # injected fault was caught end to end every cycle. Silent-green
+        # was the exact failure mode that let 2026-09-02's caught=0 run
+        # 19h with no evidence either way.
+        summary = next(
+            (
+                ln.strip()
+                for ln in reversed(detail.splitlines())
+                if ln.strip().startswith("SELF-TEST ")
+            ),
+            detail.strip()[:400],
+        )
+        print(
+            f"canary-effectiveness: DRILL GREEN: {summary}",
             file=sys.stderr,
         )
     return (1, now.timestamp()) if rc == 0 else (0, 0.0)
