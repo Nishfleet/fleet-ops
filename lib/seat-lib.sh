@@ -1276,29 +1276,20 @@ task_weight() {
     echo "light"
 }
 
-# fleet-ops#1133 + fleet-ops#1383: explicit difficulty/phase marker on a
-# packet. Scans the packet for a manifest line:
+# fleet-ops#1133: explicit difficulty marker on a packet. Scans the packet
+# for a manifest line:
 #   difficulty: keystone|senior-review|heavy|light
-#   phases: plan=capable,work=commodity,critique=capable,promote=capable
 #   keystone: true
 #   senior-review: true
-# A phases manifest implies keystone routing (capable seat first, two-strike
-# escalation to senior conference) because at least one phase needs a capable
-# (frontier) seat. First match wins. Falls back to task_weight() when no
-# marker is present. Missing file -> light.
+# First match wins. Falls back to task_weight() when no marker is present.
+# Missing file -> light.
 packet_difficulty() {
     local pkt="$1" line lowered
     if [[ ! -f "$pkt" ]]; then
         echo "light"
         return
     fi
-    # fleet-ops#1383: a phases manifest implies keystone routing.
-    # Capture-and-discard: packet_has_phases prints the manifest line on
-    # success; we only care about the exit status here.
-    if packet_has_phases "$pkt" >/dev/null 2>&1; then
-        echo "keystone"
-        return
-    fi
+
     while IFS= read -r line || [[ -n "$line" ]]; do
         lowered="${line,,}"
         if [[ "$lowered" =~ ^difficulty:[[:space:]]*(keystone|senior-review|heavy|light)[[:space:]]*$ ]]; then
@@ -1315,29 +1306,6 @@ packet_difficulty() {
         fi
     done < "$pkt"
     task_weight "$pkt"
-}
-
-# fleet-ops#1383: detect a packet-level phases manifest. A `phases:` line
-# declares the per-phase seat-class routing intent of the Fryxell harness
-# loop (explore->plan->work->critique->promote). Capable phases (plan, critique,
-# promote) need a strong seat; the commodity work phase is eligible for free
-# lanes. The manifest is purely declarative — it folds into the existing
-# difficulty gate (packet_difficulty returns keystone), never spawning sibling
-# tasks (depth-1 spawn-guard, fleet-ops#1260).
-# Args: $1 = packet file path.
-# Returns 0 (true) if the packet declares a phases manifest; prints the raw
-# manifest line. Returns 1 if no phases line is found.
-packet_has_phases() {
-    local pkt="$1" line lowered
-    [[ -f "$pkt" ]] || return 1
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        lowered="${line,,}"
-        if [[ "$lowered" =~ ^phases:[[:space:]]*(.+)[[:space:]]*$ ]]; then
-            printf '%s\n' "$line"
-            return 0
-        fi
-    done < "$pkt"
-    return 1
 }
 
 # fleet-ops#1167: keystone and senior-review share the cursor gate and
@@ -1418,38 +1386,18 @@ keystone_record_event() {
 # fleet-ops#1167: every pick is a 24h selection event. Fail-open.
 # Also refreshes fleet_seat_selection_24h{provider=} via the node_exporter
 # textfile collector (same pattern as pi-packet-verdict writing fleet-verdict.prom).
-# fleet-ops#1383: record a seat selection event in the JSONL ledger.
-# Args: provider model difficulty [phases]
-# phases (optional): the packet phases manifest (e.g.
-#   "plan=capable,work=commodity,critique=capable,promote=capable") or
-#   "none"). Recorded so the waste ledger (#1211) can attribute
-#   frontier-token share to capable phases vs the commodity work phase.
+# Args: provider model difficulty
 # Fail-open: a write error must never brick pick_seat.
 record_seat_selection() {
     local p="${1:-}" m="${2:-}" difficulty="${3:-light}"
-    local phases="${4:-${PI_PACKET_PHASES:-none}}"
     local ledger="${SEAT_SELECTION_LEDGER:-$STATE_DIR/seat-selection.jsonl}"
     p="${p//[^A-Za-z0-9._/-]/}"
     m="${m//[^A-Za-z0-9._/-]/}"
     difficulty="${difficulty//[^A-Za-z0-9._-]/}"
-    phases="${phases//[^A-Za-z0-9._=,]/_}"
     mkdir -p "$(dirname "$ledger")" 2>/dev/null || return 0
-    printf '{"ts":"%s","provider":"%s","model":"%s","difficulty":"%s","phases":"%s"}\n' \
-        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$p" "$m" "$difficulty" "$phases" >>"$ledger" 2>/dev/null || true
+    printf '{"ts":"%s","provider":"%s","model":"%s","difficulty":"%s"}\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$p" "$m" "$difficulty" >>"$ledger" 2>/dev/null || true
     export_seat_selection_prom
-}
-
-# fleet-ops#1383: extract the phases manifest value from a packet (strip
-# the "phases:" prefix) or echo "none". Helper for callers that already
-# hold the packet path; keeps the JSONL ledger shape stable for consumers
-# that only read difficulty.
-packet_phases() {
-    local pkt="$1" man
-    if man=$(packet_has_phases "$pkt" 2>/dev/null) && [[ -n "$man" ]]; then
-        echo "$man" | sed 's/^phases:[[:space:]]*//I; s/[[:space:]]*$//'
-    else
-        echo "none"
-    fi
 }
 
 # Rewrite fleet_seat_selection_24h{provider=} from the JSONL ledger.
