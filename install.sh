@@ -421,6 +421,10 @@ check_bak_sprawl() {
     case "$src" in '#'*) continue ;; esac
     [ -n "$dest" ] || continue
 
+    # Skip system files (under /etc/) since we cannot clean them without sudo
+    # and they are managed by the system package manager / admin process.
+    case "$dest" in /etc/*) continue ;; esac
+
     if [[ "$dest" == /* ]]; then
       dir=$(dirname "$dest")
       base=$(basename "$dest")
