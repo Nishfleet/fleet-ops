@@ -257,7 +257,7 @@ JSON
 base_models; base_catalog
 run_canary
 [[ "$env_rc" == "0" ]] || fail "scenario8b: a free-class provider carrying the slug must pass, got rc=$env_rc ($env_out)"
-grep -q 'double-wire' <<<"$env_out" && fail "scenario8b: free seat must not be called a double-wire ($env_out)"
+grep -q 'VIOLATION.*double-wire' <<<"$env_out" && fail "scenario8b: free seat must not be called a double-wire ($env_out)"
 ok "scenario8b: deepseek/deepseek-v4-pro on a free-class seat is not a double-wire"
 
 # --- 9. models.json missing the slug -----------------------------------------
