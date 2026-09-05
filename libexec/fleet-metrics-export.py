@@ -23,6 +23,39 @@ from pathlib import Path
 
 # --- Config ----------------------------------------------------------------
 
+def _ensure_worker_token() -> None:
+    """Use the nishfleet-worker App token for any GitHub write (fleet-ops#3445).
+
+    Fail closed if the App cannot mint and no token was inherited from a parent
+    organ, so a dead App never falls through to the human gh identity. Human gh
+    is read-only for organs. GH Actions (tests) has no App creds and stubs gh
+    as read-only, so skip minting there.
+    """
+    if os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_ACTIONS") == "true":
+        return
+    wt = os.environ.get(
+        "NISHFLEET_WORKER_TOKEN_BIN",
+        f"{os.environ.get('HOME', '/home/nish')}/.local/bin/worker-token",
+    )
+    try:
+        out = subprocess.run(
+            [wt, "--print"], capture_output=True, text=True, timeout=30
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print("fleet-ops#3445: worker-token --print failed - refusing human-gh writes: %s" % exc, file=sys.stderr)
+        sys.exit(1)
+    if out.returncode != 0:
+        print("fleet-ops#3445: worker-token --print rc=%s - refusing human-gh writes: %s" % (out.returncode, out.stderr.strip()[:200]), file=sys.stderr)
+        sys.exit(1)
+    for line in out.stdout.splitlines():
+        if line.startswith("export GH_TOKEN="):
+            os.environ["GH_TOKEN"] = line[len("export GH_TOKEN="):].strip()
+            return
+    print("fleet-ops#3445: worker-token --print output not an export GH_TOKEN line - refusing human-gh writes", file=sys.stderr)
+    sys.exit(1)
+
+# --- Config ----------------------------------------------------------------
+
 OUT = Path("/var/lib/prometheus/node-exporter/fleet.prom")
 # fleet-ops#2273: legacy stale textfile left behind when staleness-checker.py
 # was refactored (a639520) to stop writing fleet-staleness.prom. node_exporter
@@ -3478,7 +3511,40 @@ def _week_later_revert_check():
 
 # --- Main ------------------------------------------------------------------
 
+def _ensure_worker_token() -> None:
+    """Use the nishfleet-worker App token for any GitHub write (fleet-ops#3445).
+
+    Fail closed if the App cannot mint and no token was inherited from a parent
+    organ, so a dead App never falls through to the human gh identity. Human gh
+    is read-only for organs. GH Actions (tests) has no App creds and stubs gh
+    as read-only, so skip minting there.
+    """
+    if os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_ACTIONS") == "true":
+        return
+    wt = os.environ.get(
+        "NISHFLEET_WORKER_TOKEN_BIN",
+        f"{os.environ.get('HOME', '/home/nish')}/.local/bin/worker-token",
+    )
+    try:
+        out = subprocess.run(
+            [wt, "--print"], capture_output=True, text=True, timeout=30
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print("fleet-ops#3445: worker-token --print failed - refusing human-gh writes: %s" % exc, file=sys.stderr)
+        sys.exit(1)
+    if out.returncode != 0:
+        print("fleet-ops#3445: worker-token --print rc=%s - refusing human-gh writes: %s" % (out.returncode, out.stderr.strip()[:200]), file=sys.stderr)
+        sys.exit(1)
+    for line in out.stdout.splitlines():
+        if line.startswith("export GH_TOKEN="):
+            os.environ["GH_TOKEN"] = line[len("export GH_TOKEN="):].strip()
+            return
+    print("fleet-ops#3445: worker-token --print output not an export GH_TOKEN line - refusing human-gh writes", file=sys.stderr)
+    sys.exit(1)
+
+
 def main():
+    _ensure_worker_token()
     # fleet-ops#2273: remove the legacy fleet-staleness.prom textfile at the
     # start of every run. The staleness checker used to write there directly;
     # it now emits through this exporter into fleet.prom via the JSON cache.
