@@ -3,10 +3,12 @@
 #
 # fleet-ops#3324: when pick_seat's usable capable set is empty but at least
 # one benched seat is a recoverable class (transient_fault, rate_limited,
-# empty_run, overload_bench), fail-open the shortest remaining bench
+# overload_bench), fail-open the shortest remaining bench
 # instead of stalling with NO USABLE SEAT. A money wall (402 /
 # quota_exhausted / quota_bench / corpse / credentials_bad) is never
-# fail-opened.
+# fail-opened. fleet-ops#3675: a no-op bench (empty_run / spawn_fail) is a
+# HOLD, not a recoverable stall — the floor must NOT lift it (running on a
+# no-op seat burns issues).
 #
 # Replay drill, fully offline: scratch models.json + seat-caps.json + ledger.
 # Hosted from tests/seat-lib.test.sh (already listed in ci.yml) so the P14
@@ -221,7 +223,10 @@ grep -q "seat-floor: fail-open commandcode/minimax-m3-free" "$PI_PACKET_STATE/wa
   || fail "rate_limited: must log seat-floor fail-open"
 ok "rate_limited fail-opens"
 
-# --- 6. empty_run (failure_mode on transient_fault) fail-opens
+# --- 6. empty_run (failure_mode on transient_fault) is a HOLD, NOT floor-lifted (fleet-ops#3675)
+# A no-op bench is meant to hold the seat out of rotation; the floor must
+# NOT lift it (running on a no-op seat burns issues — live:
+# ollama/deepseek-v4-flash:0731 no-op'ed 30x/2h, floor-lifted every bench).
 reset_ledger
 jq -n --arg obs "$fresh_obs" --arg use "$short_bu" \
   '{health_class:"transient_fault",seat_dead:false,observed_at:$obs,usable_at:$use,failure_mode:"empty_run"}' \
@@ -238,10 +243,10 @@ set +e
 out=$(pick 2>/dev/null)
 rc=$?
 set -e
-[[ "$rc" == "0" ]] || fail "empty_run: expected rc=0, got rc=$rc out='$out'"
-[[ "$out" == $'commandcode\tminimax-m3-free' ]] \
-  || fail "empty_run: expected commandcode/minimax-m3-free, got '$out'"
-ok "empty_run (failure_mode on transient_fault) fail-opens"
+[[ "$rc" == "1" ]] || fail "empty_run: expected rc=1 (no-op bench is a HOLD, not floor-lifted), got rc=$rc out='$out'"
+grep -q "seat-floor: fail-open" "$PI_PACKET_STATE/watch.log" \
+  && fail "empty_run: must NOT log seat-floor fail-open for a no-op bench"
+ok "empty_run (failure_mode on transient_fault) is a HOLD, NOT floor-lifted (fleet-ops#3675)"
 
 # --- 7. private privacy never fail-opens a free-class seat
 reset_ledger

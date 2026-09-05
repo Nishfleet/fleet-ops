@@ -86,8 +86,8 @@ export PI_SEAT_LIB_CHECK_SYSTEMD=0
 export SEAT_FAILURE_CEILING=3
 export SEAT_PARK_WALL_S=86400
 export EMPTY_RUN_MARKER_FRESH_S=1800
-# fleet-ops#2934: the empty-run count-merge window is its own knob now
-# (EMPTY_RUN_COUNT_WINDOW_S, default 2 h), separate from the spawn-fail
+# fleet-ops#2934/#3675: the empty-run count-merge window is its own knob
+# (EMPTY_RUN_COUNT_WINDOW_S, default 6 h), separate from the spawn-fail
 # window (EMPTY_RUN_MARKER_FRESH_S). Pin it to the same 1800 s here so the
 # existing staleness assertion in (c) — which ages the marker past
 # EMPTY_RUN_MARKER_FRESH_S — still proves the reset. The #2934 fix's own
