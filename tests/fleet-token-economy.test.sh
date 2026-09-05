@@ -37,6 +37,40 @@ command -v jq >/dev/null || fail "jq required"
 
 jq -e . "$caps" >/dev/null || fail "seat-caps.json does not parse"
 
+# Rule helpers (fleet-ops#3504): assert the RULE, never the number.
+# A cap change with a dated reason passes; without a reason it fails.
+date_pat='(20[0-9]{2}-[0-9]{2}-[0-9]{2})'
+meas_pat='(n=[0-9]+|p95|p99|HTTP ?[1-5][0-9][0-9]|request ?id|observed_at|usable_at|quota_exhausted|free_quota_exhausted|credentials_bad|ETIMEDOUT|rate.?limit|timeout|spawnSync|spawn|returned|PONG|404|403|429|402|500|503|\$[0-9]|meter|cost=null|sessions|yield|pr_count|pass@1|error.?class|insufficient.?credit|resource_exhausted)'
+
+# entry_has_dated_reason <jq-entry-filter> — 0 if the entry has a .reason
+# or a dated _ field carrying a date + measurement marker; 1 otherwise.
+# Scalar entries (a bare number cap) carry no reason of their own — the
+# caller is expected to fall back to the parent provider's reason.
+entry_has_dated_reason() {
+    local entry_filter="$1" reason dated_field entry_type
+    entry_type=$(jq -r "$entry_filter | type" "$caps" 2>/dev/null)
+    [[ "$entry_type" == "object" ]] || return 1
+    reason=$(jq -r "$entry_filter.reason // empty" "$caps" 2>/dev/null)
+    if [[ -n "$reason" ]] && grep -qE "$date_pat" <<<"$reason" && grep -qiE "$meas_pat" <<<"$reason"; then
+        return 0
+    fi
+    while IFS= read -r dated_field; do
+        [[ -n "$dated_field" ]] || continue
+        grep -qiE "$meas_pat" <<<"$dated_field" && return 0
+    done < <(jq -r "$entry_filter | to_entries[] | select(.key|startswith(\"_\")) | select(.value|tostring|test(\"20[0-9]{2}-[0-9]{2}-[0-9]{2}\")) | .value|tostring" "$caps" 2>/dev/null)
+    return 1
+}
+
+# cap_zero_is_intentional <jq-entry-filter> — 0 if the entry has cap=0,
+# intentional_cap_zero present, and a dated reason citing an error class.
+cap_zero_is_intentional() {
+    local entry_filter="$1" icz reason
+    icz=$(jq -r "$entry_filter.intentional_cap_zero // empty" "$caps")
+    [[ -n "$icz" ]] || return 1
+    entry_has_dated_reason "$entry_filter" || return 1
+    return 0
+}
+
 # --- product order + devin AIMD (fleet-ops#3125/#3323) -------------------
 product_order=$(jq -r '.product_order // empty' "$caps")
 [[ "$product_order" == "value" ]] \
@@ -61,17 +95,23 @@ devin_probe=$(jq -r '.providers.devin.max_probe_ceiling // empty' "$caps")
   || fail "devin max_probe_ceiling must equal its cap while pinned (fleet-ops#3443, lift via #3258), got: $devin_probe"
 
 glm52=$(jq -r '.providers.devin.models["glm-5-2"]' "$caps")
-[[ "$(jq -r '.cap' <<<"$glm52")" == "3" ]] || fail "glm-5-2 declared cap must be 3"
+# Rule 1 (fleet-ops#3504): the cap value is justified by a dated reason, not
+# pinned by the test. A cap change with a dated reason passes; without one it
+# fails here without a test edit.
+entry_has_dated_reason '.providers.devin.models["glm-5-2"]' \
+  || entry_has_dated_reason '.providers.devin' \
+  || fail "glm-5-2 cap must carry a dated reason with a measurement (rule 1, fleet-ops#3504)"
 [[ "$(jq -r '.max_probe_ceiling' <<<"$glm52")" == "$(jq -r '.cap' <<<"$glm52")" ]] \
   || fail "glm-5-2 max_probe_ceiling must equal its cap while pinned (fleet-ops#3443)"
 swe17=$(jq -r '.providers.devin.models["swe-1-7"]' "$caps")
-# 2026-09-05: swe-1-7 restored to cap 4 — the #3473 zero-yield retirement counted infra deaths (see _swe17_20260905).
-# 2026-09-05: swe-1-7 restored to cap 4 — the #3473 zero-yield retirement counted infra deaths (see _swe17_20260905).
-[[ "$(jq -r '.cap' <<<"$swe17")" == "4" ]] || fail "swe-1-7 declared cap must be 4 (2026-09-05: the #3473 zero-yield retirement counted 20 infra deaths — 1801s provider kill + resource_exhausted — as yield; working yield 80%; see _swe17_20260905)"
-# (2026-09-05: swe-1-7 is cap 4 again; the intentional_cap_zero pin retired with #3473 — see _swe17_20260905)
+# Rule 1: swe-1-7 cap is justified by a dated reason (infra deaths were not
+# yield — #3250/#3310; the reason cites the correction, not a number).
+entry_has_dated_reason '.providers.devin.models["swe-1-7"]' \
+  || entry_has_dated_reason '.providers.devin' \
+  || fail "swe-1-7 cap must carry a dated reason with a measurement (rule 1, fleet-ops#3504)"
 [[ "$(jq -r '.max_probe_ceiling' <<<"$swe17")" == "$(jq -r '.cap' <<<"$swe17")" ]] || fail "swe-1-7 max_probe_ceiling must equal its cap while pinned (fleet-ops#3443; seat restored 2026-09-05)"
 
-ok "product_order=value, volume order retired, devin AIMD not hard_ceiling with probe ceilings pinned == caps (provider 4 / glm-5-2 3 / swe-1-7 0; fleet-ops#3443/#3473, lift via #3258)"
+ok "product_order=value, volume order retired, devin AIMD not hard_ceiling with probe ceilings pinned == caps; devin/glm-5-2 + swe-1-7 caps carry dated reasons (rule 1, fleet-ops#3504)"
 
 # --- prepaid order, then leftover prepaid after (fleet-ops#1178/#3125) ----
 prepaid_order=$(jq -r '.prepaid_providers_in_order | join(" ")' "$caps")
@@ -79,16 +119,22 @@ prepaid_order=$(jq -r '.prepaid_providers_in_order | join(" ")' "$caps")
   || fail "prepaid order must be 'ollama devin cline cursor xai-oauth', got: $prepaid_order"
 
 devin_cap=$(jq -r '.providers.devin.cap // empty' "$caps")
-[[ "$devin_cap" == "4" ]] || fail "devin cap must be 4, got: $devin_cap"
+[[ -n "$devin_cap" ]] || fail "devin cap must be present, got: empty"
+# Rule 1 (fleet-ops#3504): the cap value is justified by a dated reason.
+entry_has_dated_reason '.providers.devin' \
+  || fail "devin cap must carry a dated reason with a measurement (rule 1, fleet-ops#3504)"
 
 devin_class=$(jq -r '.providers.devin.class // empty' "$caps")
 [[ "$devin_class" == "prepaid-quota" ]] || fail "devin class must be prepaid-quota, got: $devin_class"
 
-ok "prepaid order ollama devin cline cursor xai-oauth; devin cap 4 floor, class prepaid-quota"
+ok "prepaid order ollama devin cline cursor xai-oauth; devin cap carries a dated reason, class prepaid-quota"
 
-# --- xai-oauth (SuperGrok): cap 2, grok-4.6=2 / grok-4.5=0 ------------
+# --- xai-oauth (SuperGrok): cap justified by dated reason, grok-4.5 cap=0 intentional ---
 xai_cap=$(jq -r '.providers["xai-oauth"].cap // empty' "$caps")
-[[ "$xai_cap" == "2" ]] || fail "xai-oauth cap must be 2 (fleet-ops#3125), got: $xai_cap"
+[[ -n "$xai_cap" ]] || fail "xai-oauth cap must be present, got: empty"
+# Rule 1 (fleet-ops#3504): the cap value is justified by a dated reason.
+entry_has_dated_reason '.providers["xai-oauth"]' \
+  || fail "xai-oauth cap must carry a dated reason with a measurement (rule 1, fleet-ops#3504)"
 
 xai_class=$(jq -r '.providers["xai-oauth"].class // empty' "$caps")
 [[ "$xai_class" == "prepaid-quota" ]] || fail "xai-oauth class must be prepaid-quota, got: $xai_class"
@@ -96,16 +142,24 @@ xai_class=$(jq -r '.providers["xai-oauth"].class // empty' "$caps")
 xai_quota=$(jq -r '.providers["xai-oauth"].quota_window // empty' "$caps")
 [[ "$xai_quota" == "weekly" ]] || fail "xai-oauth quota_window must be weekly, got: $xai_quota"
 
-xai_46=$(jq -r '.providers["xai-oauth"].models["grok-4.6"] // empty' "$caps")
-[[ "$xai_46" == "2" ]] || fail "grok-4.6 model cap must be 2 (fleet-ops#3125), got: $xai_46"
-xai_45=$(jq -r '.providers["xai-oauth"].models["grok-4.5"] // empty' "$caps")
-[[ "$xai_45" == "0" ]] || fail "grok-4.5 model cap must stay 0 (accepted assumption), got: $xai_45"
+# grok-4.6: cap justified by a dated reason (rule 1).
+entry_has_dated_reason '.providers["xai-oauth"].models["grok-4.6"]' \
+  || entry_has_dated_reason '.providers["xai-oauth"]' \
+  || fail "grok-4.6 cap must carry a dated reason with a measurement (rule 1, fleet-ops#3504)"
+# grok-4.5: cap=0 must be intentional with a dated reason citing the error class (rule 3).
+xai_45_cap=$(jq -r '.providers["xai-oauth"].models["grok-4.5"] | if type=="object" then (.cap // 0) else . end' "$caps")
+[[ "$xai_45_cap" == "0" ]] || fail "grok-4.5 model cap is not zero (rule 3 precondition), got: $xai_45_cap"
+cap_zero_is_intentional '.providers["xai-oauth"].models["grok-4.5"]' \
+  || fail "grok-4.5 cap=0 must carry intentional_cap_zero + a dated reason citing the error class (rule 3, fleet-ops#3504)"
 
-ok "xai-oauth cap 2, weekly, grok-4.6 cap 2 / grok-4.5 cap 0"
+ok "xai-oauth cap carries a dated reason, weekly, grok-4.6 cap justified, grok-4.5 cap=0 intentional with dated reason"
 
-# --- cursor: cap 1, keystone-only --------------------------------------
+# --- cursor: cap justified by dated reason, keystone-only ----------------
 cursor_cap=$(jq -r '.providers.cursor.cap // empty' "$caps")
-[[ "$cursor_cap" == "1" ]] || fail "cursor cap must be 1, got: $cursor_cap"
+[[ -n "$cursor_cap" ]] || fail "cursor cap must be present, got: empty"
+# Rule 1 (fleet-ops#3504): the cap value is justified by a dated reason.
+entry_has_dated_reason '.providers.cursor' \
+  || fail "cursor cap must carry a dated reason with a measurement (rule 1, fleet-ops#3504)"
 
 if jq -e '.free_providers_in_order | index("cursor")' "$caps" >/dev/null; then
   fail "cursor must not be in free_providers_in_order"
@@ -126,21 +180,23 @@ included=$(jq -r '.cursor_overage.included_exhausted' "$caps")
 [[ "$included" == "false" ]] \
   || fail "cursor included_exhausted must be false until a meter check flips it, got: $included"
 daily=$(jq -r '.cursor_overage.daily_spend_target_usd // empty' "$caps")
-[[ "$daily" == "16" ]] || fail "cursor daily spend target must be 16, got: $daily"
+[[ "$daily" =~ ^[0-9]+$ && "$daily" -gt 0 ]] \
+  || fail "cursor daily spend target must be a positive integer, got: $daily"
 
-ok "cursor cap 1, keystone-only, overage model cursor-grok-4.6-high, opens_after_included_exhausted true, included still open, \$16/day target"
+ok "cursor cap carries a dated reason, keystone-only, overage model cursor-grok-4.6-high, opens_after_included_exhausted true, included still open, positive daily target"
 
 # --- walled_comeback table (fleet-ops#1167) --------------------------------
 for k in min_probe_interval_s rate_limit_s daily_quota_s monthly_quota_s free_balance_exhausted_s credentials_bad_s; do
   v=$(jq -r --arg k "$k" '.walled_comeback[$k] // empty' "$caps")
   [[ "$v" =~ ^[0-9]+$ ]] || fail "walled_comeback.$k must be a positive integer, got: $v"
 done
-rl=$(jq -r '.walled_comeback.rate_limit_s' "$caps")
-[[ "$rl" == "900" ]] || fail "walled_comeback.rate_limit_s must be 900 (15min, the devin lesson), got: $rl"
-probe=$(jq -r '.walled_comeback.min_probe_interval_s' "$caps")
-[[ "$probe" == "900" ]] || fail "walled_comeback.min_probe_interval_s must be 900 (never hammer), got: $probe"
+# The comeback clock values are operational, not caps — the positive-integer
+# loop above is the rule. The specific values are justified by the _comment
+# field on the walled_comeback table (dated, names the devin lesson).
+wc_comment=$(jq -r '.walled_comeback._comment // empty' "$caps")
+[[ -n "$wc_comment" ]] || fail "walled_comeback must carry a _comment explaining the clock values"
 
-ok "walled_comeback table is present with 15min rate-limit and 15min probe floor"
+ok "walled_comeback table is present with positive-integer clocks and a dated comment"
 
 # --- free lanes: bai/commandcode/hetzner/opencode + xkiro (free-tier audition, 2026-09-05) ---
 # leftover free after the volume prefix (b.ai wired 2026-08-27, fleet-ops#1272)
@@ -157,21 +213,24 @@ done
 
 ok "free lanes are bai, commandcode, hetzner, opencode; paid lanes are not free"
 
-# --- grok (legacy grok.com/CLI slug) stays cap=0 and dated ----------------
+# --- grok (legacy grok.com/CLI slug) cap=0 intentional with dated reason ---
 grok_cap=$(jq -r '.providers.grok.cap // empty' "$caps")
-[[ "$grok_cap" == "0" ]] || fail "grok cap must be 0, got: $grok_cap"
+[[ "$grok_cap" == "0" ]] || fail "grok cap is not zero (rule 3 precondition), got: $grok_cap"
+# Rule 3 (fleet-ops#3504): cap=0 carries intentional_cap_zero + a dated
+# reason citing the error class. The reason already names the 403 + the
+# dead-decoy class — this asserts the contract, not the number.
+cap_zero_is_intentional '.providers.grok' \
+  || fail "grok cap=0 must carry intentional_cap_zero + a dated reason citing the error class (rule 3, fleet-ops#3504)"
 
-grok_reason=$(jq -r '.providers.grok.reason // ""' "$caps")
-[[ -n "$grok_reason" ]] || fail "grok cap=0 must have a reason"
-[[ "$grok_reason" =~ 20[0-9]{2}-[0-9]{2}-[0-9]{2} ]] || fail "grok reason must include a YYYY-MM-DD date"
+ok "grok is cap=0 intentional with a dated reason (xai-oauth is the wired SuperGrok seat)"
 
-ok "grok is cap=0 with a dated reason (xai-oauth is the wired SuperGrok seat)"
-
-# --- opencode-anthropic (Claude) is cap=0 / Nish-only ---------------------
+# --- opencode-anthropic (Claude) cap=0 intentional -------------------------
 claude_cap=$(jq -r '.providers["opencode-anthropic"].cap // empty' "$caps")
-[[ "$claude_cap" == "0" ]] || fail "opencode-anthropic (Claude) cap must be 0, got: $claude_cap"
+[[ "$claude_cap" == "0" ]] || fail "opencode-anthropic (Claude) cap is not zero (rule 3 precondition), got: $claude_cap"
+cap_zero_is_intentional '.providers["opencode-anthropic"]' \
+  || fail "opencode-anthropic cap=0 must carry intentional_cap_zero + a dated reason (rule 3, fleet-ops#3504)"
 
-ok "opencode-anthropic (Claude) is cap=0"
+ok "opencode-anthropic (Claude) is cap=0 intentional with a dated reason"
 
 # --- metered providers are the last bucket --------------------------------
 for p in minimax straitly; do
@@ -206,4 +265,4 @@ grep -q 'fleet_seat_selection_24h' "$lib" \
 
 ok "lib/seat-lib.sh enforces product value-order + class ladder, cursor keystone-only, and seat-selection export"
 
-ok "token economy: product_order=value, xai-oauth cap 2, cursor keystone-only, devin AIMD floors/ceilings, leftover-free before metered, grok/Claude cap 0"
+ok "token economy: product_order=value, caps carry dated reasons (rule 1), cap=0 entries intentional (rule 3), devin AIMD floors/ceilings, leftover-free before metered (fleet-ops#3504)"

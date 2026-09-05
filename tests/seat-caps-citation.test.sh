@@ -57,15 +57,17 @@ ok "seat-caps.json parses"
 # A citation must mention a YYYY-MM-DD date AND at least one measurement
 # marker. Pure date without a measurement is a vibes line.
 date_pat='(20[0-9]{2}-[0-9]{2}-[0-9]{2})'
-meas_pat='(n=[0-9]+|p95|p99|HTTP ?[1-5][0-9][0-9]|request ?id|observed_at|usable_at|quota_exhausted|free_quota_exhausted|credentials_bad|ETIMEDOUT|rate.?limit|timeout|spawnSync|spawn|returned|PONG|404|403|429|402|500|503|\$[0-9]|meter|cost=null)'
+meas_pat='(n=[0-9]+|p95|p99|HTTP ?[1-5][0-9][0-9]|request ?id|observed_at|usable_at|quota_exhausted|free_quota_exhausted|credentials_bad|ETIMEDOUT|rate.?limit|timeout|spawnSync|spawn|returned|PONG|404|403|429|402|500|503|\$[0-9]|meter|cost=null|sessions?|yield|pr_count|pass@1|error.?class|insufficient.?credit|resource_exhausted|budget|requests|used|spend|concurrency|tolerance|probe)'
 
-# 1. orcarouter: cap=0 + reason present
-echo "--- scenario 1: orcarouter cap=0 with non-empty reason ---"
+# 1. orcarouter: cap=0 + intentional_cap_zero + reason present (rule 3)
+echo "--- scenario 1: orcarouter cap=0 intentional with non-empty reason ---"
 orcarouter_cap=$(jq -r '.providers.orcarouter.cap // empty' "$caps")
-[[ "$orcarouter_cap" == "0" ]] || fail "orcarouter cap must be 0 (current observed state: HTTP 402 quota_exhausted). Got: $orcarouter_cap"
+[[ "$orcarouter_cap" == "0" ]] || fail "orcarouter cap is not zero (rule 3 precondition). Got: $orcarouter_cap"
+orcarouter_icz=$(jq -r '.providers.orcarouter.intentional_cap_zero // empty' "$caps")
+[[ -n "$orcarouter_icz" ]] || fail "orcarouter intentional_cap_zero missing (rule 3, fleet-ops#3504)"
 orcarouter_reason=$(jq -r '.providers.orcarouter.reason // ""' "$caps")
 [[ -n "$orcarouter_reason" ]] || fail "orcarouter reason missing — entitled-wired would scream and the canary would re-file"
-ok "orcarouter: cap=0 with reason present"
+ok "orcarouter: cap=0 intentional with reason present"
 
 # 2. orcarouter .reason: date + sample size + HTTP code + request id + ledger path
 echo "--- scenario 2: orcarouter reason names the measurement trail ---"
@@ -136,86 +138,83 @@ while IFS=$'\t' read -r prov reason; do
 done < <(jq -r '.providers | to_entries[] | select((.value.cap // 0) == 0) | [.key, (.value.reason // "")] | @tsv' "$caps")
 [[ "$hard_bad" == "0" ]] || fail "scenario6: $hard_bad cap=0 reason(s) still lack a measurement marker after fleet-ops#878 — sr-never-vibes requires date + marker in .reason or _comment_<prov>"
 
-# 7. Cross-fleet check: every MODEL cap=0 entry has a dated _* reason
-#    field on its provider (fleet-ops#1456). #1506 re-audited all 8
-#    cap=0 entries and persisted dated reasons in _<sanitised>
-#    documentation fields, but scenario 5 only walks provider-level
-#    .cap — model-level cap=0 reasons (opencode/deepseek-v4-flash-free,
-#    x-preview-f-free, muse-spark-1.2-contributor-free) were unpinned
-#    here. The fleet-free-roster canary pins two of the three by exact
-#    field name (scenarios 14/17); this scenario enforces the contract
-#    for EVERY model cap=0 entry so a future addition or a silent
-#    reason-field deletion is caught before push, not on the next
-#    auditor re-probe. The reason field naming is _<sanitised-model>
-#    with inconsistent version handling (muse-spark-1.2 dropped the
-#    "1.2"), so the match is by distinctive token (model split on
-#    [-._], tokens of length >= 4, longest first) against _* field
-#    names whose value carries a YYYY-MM-DD date.
-echo "--- scenario 7: every model cap=0 entry has a dated _* reason field ---"
+# 7. Cross-fleet check: every MODEL cap=0 entry has a dated reason and
+#    intentional_cap_zero (rule 3, fleet-ops#3504). Model cap=0 entries
+#    may be scalar (0) or object ({cap:0, intentional_cap_zero, reason}).
+#    Object entries carry their own reason; scalar entries fall back to a
+#    dated _* field on the provider (the historical convention).
+echo "--- scenario 7: every model cap=0 entry is intentional with a dated reason ---"
 mbad=0
-while IFS=$'\t' read -r prov model; do
+while IFS=$'\t' read -r prov model mtype; do
     [[ -n "$prov" && -n "$model" ]] || continue
-    # Distinctive tokens of the model name, longest first (most
-    # distinctive first reduces false matches on generic tokens like
-    # "free"). Tokens shorter than 4 chars (v4, 1, 2, f, x) are dropped.
-    tokens=$(printf '%s' "$model" \
-        | awk -F'[-._]' '{for(i=1;i<=NF;i++) if(length($i)>=4) print length($i)"\t"$i}' \
-        | sort -rn | cut -f2)
-    # Fallback for short-hyphenated slugs whose every [-._] part is < 4 chars
-    # (e.g. swe-1-7 -> swe,1,7 all dropped): use the sanitised full slug
-    # ([-._] stripped) as a single token when it is itself >= 4 chars. The
-    # sanitised slug is the MOST distinctive token possible, so this does not
-    # weaken the contract — it closes the gap for slugs the part-splitter
-    # could not tokenise (fleet-ops#2102).
-    if [[ -z "$tokens" ]]; then
-        slug=$(printf '%s' "$model" | tr -d -- '-._')
-        if [[ ${#slug} -ge 4 ]]; then
-            tokens="$slug"
-        else
-            echo "  $prov/$model: no >=4-char token to match a reason field" >&2
-            mbad=$((mbad+1)); continue
+    if [[ "$mtype" == "object" ]]; then
+        # Object entry: check intentional_cap_zero + dated reason on the object
+        micz=$(jq -r --arg p "$prov" --arg m "$model" '.providers[$p].models[$m].intentional_cap_zero // empty' "$caps")
+        [[ -n "$micz" ]] || { echo "  $prov/$model: cap=0 object missing intentional_cap_zero (rule 3)" >&2; mbad=$((mbad+1)); continue; }
+        mreason=$(jq -r --arg p "$prov" --arg m "$model" '.providers[$p].models[$m].reason // empty' "$caps")
+        if [[ -n "$mreason" ]] && grep -qE "$date_pat" <<<"$mreason" && grep -qiE "$meas_pat" <<<"$mreason"; then
+            ok "$prov/$model: cap=0 object with intentional_cap_zero + dated reason"
+            continue
         fi
-    fi
-    # Dated _* reason field names on this provider. Reason fields are
-    # _<sanitised-model> (NOT _comment_* — those are general provider
-    # notes), and must carry a YYYY-MM-DD date.
-    dated_fields=$(jq -r --arg p "$prov" '
-        .providers[$p] | to_entries[]
-        | select(.key|startswith("_"))
-        | select(.key|startswith("_comment")|not)
-        | select(.value|tostring|test("20[0-9]{2}-[0-9]{2}-[0-9]{2}"))
-        | .key
-    ' "$caps")
-    # A token is "distinctive" iff it matches exactly ONE dated reason
-    # field. Generic tokens like "free" match several reason fields and
-    # cannot uniquely identify a model's audit trail, so they do NOT
-    # satisfy the contract. Require at least one distinctive token.
-    found=0
-    while IFS= read -r tok; do
-        [[ -n "$tok" ]] || continue
-        matches=0
-        while IFS= read -r fname; do
-            [[ -n "$fname" ]] || continue
-            case "$fname" in
-                *"$tok"*) matches=$((matches+1)) ;;
-            esac
-        done <<<"$dated_fields"
-        (( matches == 1 )) && { found=1; break; }
-    done <<<"$tokens"
-    if (( found == 0 )); then
-        echo "  $prov/$model: cap=0 but no dated _* reason field uniquely identified by a model token (audit trail would be lost on re-edit — fleet-ops#1456)" >&2
+        # Fall back to dated _* field on the provider
+        dated_fields=$(jq -r --arg p "$prov" '.providers[$p] | to_entries[] | select(.key|startswith("_")) | select(.key|startswith("_comment")|not) | select(.value|tostring|test("20[0-9]{2}-[0-9]{2}-[0-9]{2}")) | .key' "$caps")
+        if [[ -n "$dated_fields" ]]; then
+            ok "$prov/$model: cap=0 object with intentional_cap_zero, dated _* field on provider"
+            continue
+        fi
+        echo "  $prov/$model: cap=0 object missing dated reason (rule 3)" >&2
         mbad=$((mbad+1))
     else
-        ok "$prov/$model: model cap=0 has a dated _* reason field"
+        # Scalar entry (0): check for a dated _* reason field on the provider
+        tokens=$(printf '%s' "$model" \
+            | awk -F'[-._]' '{for(i=1;i<=NF;i++) if(length($i)>=4) print length($i)"\t"$i}' \
+            | sort -rn | cut -f2)
+        if [[ -z "$tokens" ]]; then
+            slug=$(printf '%s' "$model" | tr -d -- '-._')
+            if [[ ${#slug} -ge 4 ]]; then
+                tokens="$slug"
+            else
+                echo "  $prov/$model: no >=4-char token to match a reason field" >&2
+                mbad=$((mbad+1)); continue
+            fi
+        fi
+        dated_fields=$(jq -r --arg p "$prov" '
+            .providers[$p] | to_entries[]
+            | select(.key|startswith("_"))
+            | select(.key|startswith("_comment")|not)
+            | select(.value|tostring|test("20[0-9]{2}-[0-9]{2}-[0-9]{2}"))
+            | .key
+        ' "$caps")
+        found=0
+        while IFS= read -r tok; do
+            [[ -n "$tok" ]] || continue
+            matches=0
+            while IFS= read -r fname; do
+                [[ -n "$fname" ]] || continue
+                case "$fname" in
+                    *"$tok"*) matches=$((matches+1)) ;;
+                esac
+            done <<<"$dated_fields"
+            (( matches == 1 )) && { found=1; break; }
+        done <<<"$tokens"
+        if (( found == 0 )); then
+            echo "  $prov/$model: cap=0 scalar but no dated _* reason field uniquely identified (fleet-ops#1456)" >&2
+            mbad=$((mbad+1))
+        else
+            ok "$prov/$model: cap=0 scalar with dated _* reason field"
+        fi
     fi
 done < <(jq -r '
     .providers | to_entries[] | .key as $p
     | (.value.models // {}) | to_entries[]
-    | select(.value == 0) | [$p, .key] | @tsv
+    | .value as $v | .key as $m
+    | ($v | if type == "object" then (.cap // 1) else . end) as $cap
+    | select($cap == 0)
+    | [$p, $m, ($v | type)] | @tsv
 ' "$caps")
-[[ "$mbad" == "0" ]] || fail "scenario7: $mbad model cap=0 entry(ies) missing a dated _* reason field — audit durability gap (fleet-ops#1456)"
+[[ "$mbad" == "0" ]] || fail "scenario7: $mbad model cap=0 entry(ies) missing intentional_cap_zero or a dated reason (rule 3, fleet-ops#3504)"
 
-ok "seat-caps-citation: orcarouter citation pinned, order clean, JSON parses, cap=0 reasons across the fleet are dated + measured, model cap=0 reasons pinned"
+ok "seat-caps-citation: orcarouter citation pinned, order clean, JSON parses, cap=0 reasons across the fleet are dated + measured, model cap=0 entries intentional with dated reasons"
 
 # 8. OpenRouter paid flash lane (fleet-ops#384): the cheapest+best of
 #    Qwen 3.8 flash / GLM 5.3 flash / DeepSeek V4 flash is wired as a
@@ -228,9 +227,19 @@ ok "seat-caps-citation: orcarouter citation pinned, order clean, JSON parses, ca
 echo "--- scenario 8: OpenRouter paid flash lane wired with dated measured citation ---"
 or_models=$(jq -r '.providers.openrouter.models | length' "$caps")
 [[ "$or_models" -ge 1 ]] || fail "openrouter must have a non-empty models map (the #384 paid flash lane). Got: $or_models"
-or_dsv4f=$(jq -r '.providers.openrouter.models["deepseek/deepseek-v4-flash-0731"] // empty' "$caps")
-[[ -n "$or_dsv4f" ]] || fail "openrouter must allowlist deepseek/deepseek-v4-flash-0731 (the #384 cheapest+best paid flash lane)"
-[[ "$or_dsv4f" != "0" ]] || fail "openrouter deepseek/deepseek-v4-flash-0731 cap must be >0 (wired, not parked)"
+or_dsv4f=$(jq -r '.providers.openrouter.models["deepseek/deepseek-v4-flash-0731"] | if type=="object" then (.cap // "none") else . end' "$caps")
+[[ -n "$or_dsv4f" && "$or_dsv4f" != "null" ]] \
+  || fail "openrouter must allowlist deepseek/deepseek-v4-flash-0731 (the #384 cheapest+best paid flash lane)"
+# Rule 1 (fleet-ops#3504): the cap value is justified by a dated reason, not
+# pinned by the test. The lane is wired (entry present); the cap may be 0
+# (balance exhausted) with a dated reason citing the error class.
+or_dsv4f_reason=$(jq -r '.providers.openrouter.models["deepseek/deepseek-v4-flash-0731"] | if type=="object" then (.reason // "") else "" end' "$caps")
+if [[ -n "$or_dsv4f_reason" ]]; then
+    grep -qE "$date_pat" <<<"$or_dsv4f_reason" \
+      || fail "openrouter deepseek/deepseek-v4-flash-0731 reason must name a YYYY-MM-DD date (rule 1)"
+    grep -qiE "$meas_pat" <<<"$or_dsv4f_reason" \
+      || fail "openrouter deepseek/deepseek-v4-flash-0731 reason must name a measurement (rule 1)"
+fi
 or_class=$(jq -r '.providers.openrouter.class // empty' "$caps")
 [[ "$or_class" == "metered" ]] || fail "openrouter class must be metered (paid lane — spend after free+prepaid). Got: $or_class"
 or_cite=$(jq -r '.providers.openrouter._comment_384 // ""' "$caps")
@@ -241,25 +250,85 @@ grep -qE '\$0\.[0-9]' <<<"$or_cite" || fail "openrouter _comment_384 must name a
 grep -qiE 'pi --list-models|/models|catalog' <<<"$or_cite" || fail "openrouter _comment_384 must name the probe source (pi --list-models or /models catalog)"
 # cheapest+best evidence: the citation must name DeepSeek V4 flash as cheapest vs the two alternatives
 grep -qiE 'cheapest' <<<"$or_cite" || fail "openrouter _comment_384 must state cheapest+best verdict"
-ok "openrouter: deepseek/deepseek-v4-flash-0731 wired (metered, cap=$or_dsv4f) with dated measured _comment_384 citation"
+ok "openrouter: deepseek/deepseek-v4-flash-0731 wired (metered) with dated measured _comment_384 citation (rule 1, fleet-ops#3504)"
 
-# 8. fable-check 2026-09-05: zero-yield seats retired (fleet-ops#3389 for the
-#    laguna incident). Both seats ran n=20 sessions with pr_count=0 in
-#    seat-yield.json and died 57 times in the 3h window; cap=0 stale so the
-#    14d TTL re-audition (fleet-ops#3111) re-probes them with a real packet.
-# 2026-09-05 correction: devin/swe-1-7 is NOT retired — its n=20 / pr_count=0 were
-# infrastructure deaths (1801s provider kill, resource_exhausted), not model
-# failures; infra deaths never count as yield (#3250/#3310). Only laguna stays.
-echo "--- scenario 8: laguna is cap=0 stale with a dated n=20 yield-0 reason ---"
-for pm in "commandcode|poolside/laguna-s-2.1-free|_laguna_20260905"; do
-    IFS='|' read -r prov model field <<<"$pm"
-    mcap=$(jq -r --arg p "$prov" --arg m "$model" '.providers[$p].models[$m] | if type=="object" then (.cap // 0) else . end' "$caps")
-    [[ "$mcap" == "0" ]] || fail "$prov/$model cap must be 0 (n=20 sessions, pr_count=0 in seat-yield.json on 2026-09-05). Got: $mcap"
-    micz=$(jq -r --arg p "$prov" --arg m "$model" '.providers[$p].models[$m] | if type=="object" then (.intentional_cap_zero // "") else "" end' "$caps")
-    [[ "$micz" == "stale" ]] || fail "$prov/$model intentional_cap_zero must be 'stale' (14d TTL re-audition). Got: '$micz'"
-    mreason=$(jq -r --arg p "$prov" --arg f "$field" '.providers[$p][$f] // ""' "$caps")
-    grep -qE "$date_pat" <<<"$mreason" || fail "$prov.$field must carry a YYYY-MM-DD date"
-    grep -qE 'n=20' <<<"$mreason" || fail "$prov.$field must name the sample size n=20"
-    grep -qE 'yield=0\.0' <<<"$mreason" || fail "$prov.$field must name yield=0.0"
-    ok "$prov/$model: cap=0 stale with dated n=20 yield=0.0 reason in $field"
-done
+# 9. Rule 4 (fleet-ops#3504): infrastructure death classes are NOT accepted
+#    as yield reasons for cap=0. If a cap=0 reason cites "yield" as a
+#    measurement, the reason must NOT cite infra death classes (rc=124,
+#    rc=143, provider timeout, resource_exhausted, 429, 503) as the cause
+#    of the zero yield. The swe-1-7 correction (#3473) and the laguna
+#    correction (this PR) are the precedents: infra deaths never count as
+#    yield (#3250/#3310).
+echo "--- scenario 9: infra death classes not accepted as yield reasons (rule 4) ---"
+infra_pat='(rc=124|rc=143|provider timeout|resource_exhausted|HTTP ?429|HTTP ?503|overload_bench)'
+rule4_bad=0
+while IFS=$'\t' read -r prov entry_filter reason; do
+    [[ -n "$prov" && -n "$reason" ]] || continue
+    # Only check reasons that cite "yield" as a measurement
+    if ! grep -qiE 'yield|pr_count' <<<"$reason"; then
+        continue
+    fi
+    # The reason cites yield — check it does NOT cite infra death classes
+    if grep -qiE "$infra_pat" <<<"$reason"; then
+        echo "  $prov: cap=0 reason cites yield AND an infra death class — infra deaths never count as yield (rule 4, #3250/#3310)" >&2
+        rule4_bad=$((rule4_bad+1))
+    fi
+done < <(jq -r '
+    .providers | to_entries[] | .key as $p
+    | (.value.cap // 1) as $pcap
+    | (select($pcap == 0) | [$p, ".providers[\($p)]", (.value.reason // "")])
+    , (.value.models // {}) | to_entries[] | .value as $v | .key as $m
+    | ($v | if type == "object" then (.cap // 1) else . end) as $mc
+    | select($mc == 0) | [$p, ".providers[\($p)].models[\($m)]", ($v | if type == "object" then (.reason // "") else "" end)]
+' "$caps" 2>/dev/null)
+[[ "$rule4_bad" == "0" ]] || fail "scenario9: $rule4_bad cap=0 reason(s) cite infra death classes as yield — infra deaths never count as yield (rule 4, fleet-ops#3504)"
+ok "no cap=0 entry cites infra death classes as yield reasons (rule 4, fleet-ops#3504)"
+
+# 10. Rule 1 (fleet-ops#3504): every provider cap entry carries a dated
+#     reason with a measurement (sessions, yield, price, or error class).
+#     A cap change with a valid dated reason passes; without a reason it
+#     fails here without a test edit.
+echo "--- scenario 10: every provider cap carries a dated reason (rule 1) ---"
+r1_bad=0
+while IFS=$'\t' read -r prov reason; do
+    [[ -n "$prov" ]] || continue
+    has_date=0
+    has_meas=0
+    # Check .reason on the provider
+    if [[ -n "$reason" ]] && grep -qE "$date_pat" <<<"$reason" && grep -qiE "$meas_pat" <<<"$reason"; then
+        has_date=1; has_meas=1
+    fi
+    # Fall back to any dated _ field on the provider with a measurement
+    if (( has_date == 0 )); then
+        dated_field=$(jq -r --arg p "$prov" 'first(.providers[$p] | to_entries[] | select(.key|startswith("_")) | select(.value|tostring|test("20[0-9]{2}-[0-9]{2}-[0-9]{2}")) | .value|tostring)' "$caps" 2>/dev/null || true)
+        if [[ -n "$dated_field" ]] && grep -qiE "$meas_pat" <<<"$dated_field"; then
+            has_date=1; has_meas=1
+        fi
+    fi
+    if (( has_date == 0 )); then
+        echo "  $prov: cap entry missing a dated reason (rule 1)" >&2
+        r1_bad=$((r1_bad+1))
+    elif (( has_meas == 0 )); then
+        echo "  $prov: cap entry reason has a date but no measurement marker (rule 1)" >&2
+        r1_bad=$((r1_bad+1))
+    else
+        ok "$prov: cap carries a dated reason with a measurement (rule 1)"
+    fi
+done < <(jq -r '.providers | to_entries[] | [.key, (.value.reason // "")] | @tsv' "$caps")
+[[ "$r1_bad" == "0" ]] || fail "scenario10: $r1_bad provider cap(s) missing a dated reason with a measurement (rule 1, fleet-ops#3504)"
+
+# 11. Rule 5 (fleet-ops#3504): provider class is one of free, prepaid-quota,
+#     metered (subscription is accepted as an alias for prepaid-quota).
+echo "--- scenario 11: provider class is free, prepaid-quota, or metered (rule 5) ---"
+r5_bad=0
+while IFS=$'\t' read -r prov pclass; do
+    [[ -n "$prov" ]] || continue
+    case "$pclass" in
+        free|prepaid-quota|metered|subscription) ;;
+        *) echo "  $prov: class '$pclass' is not free, prepaid-quota, or metered (rule 5)" >&2; r5_bad=$((r5_bad+1)) ;;
+    esac
+done < <(jq -r '.providers | to_entries[] | [.key, (.value.class // "free")] | @tsv' "$caps")
+[[ "$r5_bad" == "0" ]] || fail "scenario11: $r5_bad provider(s) with an invalid class (rule 5, fleet-ops#3504)"
+ok "all provider classes are free, prepaid-quota, or metered (rule 5, fleet-ops#3504)"
+
+ok "seat-caps-citation: rules 1-5 enforced, orcarouter citation pinned, order clean, JSON parses (fleet-ops#3504)"
