@@ -390,6 +390,67 @@ grep -Fxq "config/fleet_rules.yml /etc/prometheus/fleet_rules.yml" "$manifest" \
 ok "MANIFEST declares exporter + units + self-maintenance config + rules"
 
 # =========================================================================
+# 9b. fleet-ops#3111: seat-health age is UTC-parsed, host-TZ independent.
+# =========================================================================
+# The 2026-09-03 transport incident left the console 'seat healthy' tile green
+# on a 2-day-old pi-seat-health.json. The fix: exporter emits
+# fleet_pi_seat_health_age_seconds (absent/unparseable -> -1) and the
+# FleetPiSeatHealthStale rule fires >1800 (30 min) or == -1.
+#
+# The exporter's _read_seat must parse observed_at as UTC with
+# calendar.timegm. time.mktime applies the HOST's local timezone: on this IST
+# (+0530) host it reads every fresh UTC observation ~19800s (5.5h) stale and
+# FleetPiSeatHealthStale false-fires on a healthy seat — the same mktime-on-UTC
+# bug class #3520 fixed in the console but left here. Proved under TZ=Asia/Kolkata
+# so the parse is pinned timezone-independent (mirrors tests/fleet-console-pi-utc.test.sh).
+SEAT_HEALTH_OVERRIDE="$scratch/seat-health-age.json"
+TZ=Asia/Kolkata python3 - "$exporter" "$SEAT_HEALTH_OVERRIDE" "$rules" <<'PY' || fail "seat-health age UTC parse failed"
+import importlib.util, json, os, sys, tempfile, time, calendar
+from pathlib import Path
+exporter, seat_path, rules = sys.argv[1], sys.argv[2], sys.argv[3]
+spec = importlib.util.spec_from_file_location("fme", exporter)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+
+# (a) Fresh healthy observation, 60s old, written in UTC. On an IST host the
+#     old time.mktime read this as ~19800s stale; it must read as ~60s old.
+fresh_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 60))
+json.dump({"health_class": "healthy", "provider": "devin",
+           "model": "glm-5-2", "observed_at": fresh_ts},
+          open(seat_path, "w"))
+m.SEAT_HEALTH = Path(seat_path)
+true_epoch = calendar.timegm(time.strptime(
+    fresh_ts.replace("Z", "+00:00")[:19], "%Y-%m-%dT%H:%M:%S"))
+healthy, epoch = m._read_seat()
+assert healthy == 1, f"health_class=healthy must read healthy=1, got {healthy}"
+assert epoch == true_epoch, (
+    f"_read_seat must parse observed_at as UTC epoch {true_epoch}, got {epoch}; "
+    "time.mktime on an IST host reads a fresh observation ~19800s stale and "
+    "false-fires FleetPiSeatHealthStale (fleet-ops#3111, #3520 console class)")
+age = int(time.time()) - epoch
+assert 0 <= age < 1800, (
+    f"fresh observation age must be under the 1800s stale bound, got {age}; "
+    "the mktime local-TZ bug reads this as ~19800")
+
+# (b) Absent/unparseable file -> (0, None); the exporter emits age -1 (UNKNOWN).
+m.SEAT_HEALTH = Path("/nonexistent/seat.json")
+healthy, epoch = m._read_seat()
+assert healthy == 0 and epoch is None, \
+    f"absent file must read (0, None), got {(healthy, epoch)}"
+assert "fleet-ops#3111" in m.HELP_AGE, \
+    "seat-health AGE help text must cite fleet-ops#3111"
+
+# (c) The alert rule firing >1800 / == -1 must be declared (accept criterion).
+rules_txt = Path(rules).read_text()
+assert "alert: FleetPiSeatHealthStale" in rules_txt, \
+    "fleet_rules.yml missing alert: FleetPiSeatHealthStale"
+assert "fleet_pi_seat_health_age_seconds == -1 or fleet_pi_seat_health_age_seconds > 1800" in rules_txt, \
+    "fleet_rules.yml FleetPiSeatHealthStale must fire on age == -1 or > 1800"
+os.unlink(seat_path)
+print("OK: _read_seat parses observed_at as UTC (host-TZ independent); stale/absent -> UNKNOWN; >1800 rule present")
+PY
+
+# =========================================================================
 # 10. End-to-end: main() emits the new metric lines for a canned detail list
 # =========================================================================
 OUT_OVERRIDE="$scratch/out.prom"
