@@ -177,7 +177,7 @@ MAX_CLAIMS_IN_WINDOW="${PI_INTAKE_RECLAIM_MAX_CLAIMS:-4}"
 # reaches that read with a defined value; seat-lib.sh re-sets the identical
 # path when it is sourced live, so behavior is unchanged.
 ATTEMPTS_DIR="${ATTEMPTS_DIR:-${PI_PACKET_STATE:-$HOME/.local/state/pi-packet}/attempts}"
-WORKER_PROMPT="/home/nish/.pi/agent/prompts/worker.md"
+WORKER_PROMPT="${PI_INTAKE_WORKER_PROMPT:-/home/nish/.pi/agent/prompts/worker.md}"
 # fleet-ops#3247: repo-conditional worker prompt blocks. The D1 schema +
 # gate-integrity block ships only for 0509 (ideally only when the issue body
 # names migrations/ or .github/); the GEO/AEO block ships only when the issue
@@ -647,6 +647,32 @@ if [[ "$_gh_secondary_active" == "1" && $_gh_secondary_backoff -gt $_gh_secondar
     exit 0
 elif [[ "$_gh_secondary_active" == "1" && $_gh_secondary_backoff -le $_gh_secondary_now ]]; then
     _gh_secondary_clear
+fi
+
+# fleet-ops#3732 seat-slot gate: the capacity `slots` above count RAM/config
+# headroom, and the heavy seat gate below only proves ONE heavy-capable seat
+# is pickable — a single pick_seat an AIMD probe or a seat-floor fail-open
+# can satisfy even when every allowlisted seat is at its effective cap. On
+# 2026-09-05 the tick claimed 12 cap-exempt critical-path issues in 4 min
+# behind a devin/glm-5-2 seat already at learned_cap 2; every unit died on
+# pick_seat -> NO USABLE SEAT, the claims were released, and the reclaim
+# counters climbed toward the re-claim-cap block. Count the real free light
+# slots — Σ max(0, effective_cap - active) over exactly the seats a light
+# pick_seat would accept (learned caps/AIMD and benches honoured, probe
+# headroom NOT counted) — hold the tick when the count is 0, and otherwise
+# cap this tick's claims at min(slots, usable). The privacy arg mirrors the
+# worker's pick (repo_privacy of the target repo) so a private-repo tick
+# never counts free-class seats its workers cannot use.
+_tick_privacy=$(repo_privacy "$REPO" 2>/dev/null || echo public)
+usable_light=$(usable_light_slots "$_tick_privacy" 2>/dev/null || echo 0)
+[[ "$usable_light" =~ ^[0-9]+$ ]] || usable_light=0
+if (( usable_light <= 0 )); then
+    echo "no usable seat slot (slots=$slots); holding claims this tick — gate: no usable seat slot"
+    exit 0
+fi
+if (( usable_light < slots )); then
+    echo "usable seat slots scarce (usable_light=$usable_light < slots=$slots); capping claims this tick — gate: usable seat slots"
+    slots=$usable_light
 fi
 
 # Seat gate (auditor 2026-08-26T18:1xZ, summon fleet-ops-378 unit-failure):

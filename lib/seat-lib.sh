@@ -4066,6 +4066,104 @@ pick_seat() {
     return 1
 }
 
+# fleet-ops#3732: usable light-seat slot count. pick_seat answers "is there
+# a seat" — a single pick an AIMD probe or a seat-floor fail-open can
+# satisfy even when every allowlisted seat is at its effective cap (12
+# intake claims in 4 min died on NO USABLE SEAT 2026-09-05 behind a
+# devin/glm-5-2 seat already at learned_cap 2). The intake needs the COUNT
+# of free slots before claiming: Σ per seat of max(0, effective_cap -
+# active) over exactly the seats a light pick_seat would accept — the same
+# excluded set (cap=0 / dead / not-in-allowlist), credential precheck,
+# keystone-only provider skip, seat_usable ledger gates, free daily-request
+# budget, and the free-tier privacy line.
+#
+# Deliberate differences from pick_seat:
+#   - No AIMD probe admission: a probe is growth headroom pick_seat may
+#     grant, not a free slot. Counting it re-opens the phantom-capacity bug
+#     this gate exists to close.
+#   - The provider cap is shared across that provider's models, tracked as
+#     a per-provider remainder so two seats on one provider cannot double
+#     count the same free slot.
+#   - Read-only: no learned-cap writes of its own (effective_*_cap still
+#     syncs a fresh backoff / expired-bench decay exactly as pick_seat
+#     does), no bench markers, and seat_usable runs silent — a count must
+#     not perturb the state it measures.
+#
+# Args: [privacy: public|private] — pass the target repo's repo_privacy so a
+# private-repo caller never counts free-class seats its workers cannot use.
+# Prints the integer count on stdout.
+usable_light_slots() {
+    local privacy="${1:-public}"
+    [[ "$privacy" == "private" ]] || privacy="public"
+
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    if (( ! _quality_routing_loaded )); then load_quality_routing || true; fi
+    if (( ! _seat_yield_loaded )); then load_seat_yield || true; fi
+    if (( ! _seat_learned_loaded )); then load_learned_caps || true; fi
+
+    # Same once-per-pass caches pick_seat builds (fleet-ops#1297 / #1449):
+    # the excluded set and the active-seats count cache are the two data
+    # sources this count is drawn from.
+    _cred_cache=()
+    declare -A _EXCLUDED_REASON=()
+    declare -A _EXCLUDED_LIST=()
+    _build_excluded_set _EXCLUDED_REASON _EXCLUDED_LIST >/dev/null
+    _PICK_ACTIVE_CACHE_BUILT=0
+    _build_pick_active_cache
+
+    local _SEAT_USABLE_SILENT=1
+    local -A _prov_free=()
+    local total=0
+    local p m free capable p_cap m_cap class p_eff m_eff p_act m_act seat_free
+    while IFS=$'\t' read -r p m free capable; do
+        [[ -n "$p" && -n "$m" ]] || continue
+        [[ -n "${_EXCLUDED_REASON[$p/$m]:-}" ]] && continue
+        if _seat_is_dead "$p" "$m"; then continue; fi
+        [[ -z "${SEAT_PROVIDER_CAP[$p]:-}" ]] && continue
+        p_cap=$(provider_cap "$p")
+        (( p_cap == 0 )) && continue
+        m_cap=$(model_cap "$p" "$m")
+        [[ -z "${SEAT_MODEL_CAP[$p/$m]:-}" ]] && continue
+        (( m_cap == 0 )) && continue
+        if ! provider_has_credential "$p"; then continue; fi
+        # A light pick never lands on a keystone-only provider (cursor).
+        if _provider_is_keystone_only "$p"; then continue; fi
+        if [[ "${FLEET_ESCALATION_WEDGE_CHECK:-0}" == "1" ]] && provider_overload_wedged "$p"; then
+            continue
+        fi
+        if ! seat_usable "$p" "$m"; then continue; fi
+        if [[ "$m" == *":free" && -n "${SEAT_FREE_DAILY_REQUEST_BUDGET[$p]:-}" ]] \
+            && _provider_free_daily_budget_reached "$p"; then
+            continue
+        fi
+        class=$(model_class_of "$p" "$m")
+        if [[ "$privacy" == "private" && "$class" == "free" ]]; then continue; fi
+
+        # The provider cap is shared across the provider's models: track the
+        # remaining allowance so two seats on one provider cannot count the
+        # same free slot twice. A non-positive effective cap (a learned cap
+        # of 0 under a live bench) counts as no free slot — the conservative
+        # direction for a claim gate.
+        if [[ -z "${_prov_free[$p]:-}" ]]; then
+            p_eff=$(effective_provider_cap "$p")
+            p_act=$(count_active_on_provider "$p")
+            [[ "$p_eff" =~ ^[0-9]+$ ]] || p_eff=0
+            [[ "$p_act" =~ ^[0-9]+$ ]] || p_act=0
+            _prov_free[$p]=$(( p_eff - p_act ))
+        fi
+        m_eff=$(effective_model_cap "$p" "$m")
+        m_act=$(count_active_on_seat "$p" "$m")
+        [[ "$m_eff" =~ ^[0-9]+$ ]] || m_eff=0
+        [[ "$m_act" =~ ^[0-9]+$ ]] || m_act=0
+        seat_free=$(( m_eff - m_act ))
+        (( seat_free > _prov_free[$p] )) && seat_free=${_prov_free[$p]}
+        (( seat_free < 0 )) && seat_free=0
+        _prov_free[$p]=$(( _prov_free[$p] - seat_free ))
+        total=$(( total + seat_free ))
+    done < <(enumerate_seats)
+    echo "$total"
+}
+
 # Derive a stable packet-id from a packet file path.
 packet_id_from_path() {
     local pkt="$1" base
