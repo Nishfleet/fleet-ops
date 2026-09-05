@@ -26,18 +26,20 @@
 #   (4) writes merged_count+1 to BOTH the ledger and the marker.
 # A stale marker means seat-health.ts produced a healthy observation after
 # the bench expired (the recovery signal) — fall through to the ledger and
-# start a fresh count. The chronic-no-op park uses a lower ceiling
-# (EMPTY_RUN_FAILURE_CEILING, default 3, vs SEAT_FAILURE_CEILING=20) so a
-# free-lane no-op'er parks within a following 2h window, not after ~5h.
+# start a fresh count. The chronic-no-op park uses the same generic failure
+# ceiling (SEAT_FAILURE_CEILING, default 20) and the bench now escalates
+# geometrically so a free-lane no-op'er is held out of rotation within a
+# few cycles, not flat 900s every cycle (fleet-ops#3531).
 #
 # This test proves, end to end against the live wrapper:
 #   (a) three empty-run benches on the same seat WITH a healthy clobber
 #       between each accumulate the marker count 1 -> 2 -> 3 while the
 #       ledger stays clobbered at count=0. The marker is the durable count.
-#   (b) at EMPTY_RUN_FAILURE_CEILING (=3 here for test isolation) the #1362
-#       park wall engages (usable_at jumps to ~now+SEAT_PARK_WALL_S, the
-#       marker carries the count that fed the park, seat_usable holds the
-#       parked seat), so a chronic no-op'er stops entering rotation.
+#   (b) at the failure ceiling (SEAT_FAILURE_CEILING=3 here for test
+#       isolation) the #1362 park wall engages (usable_at jumps to
+#       ~now+SEAT_PARK_WALL_S, the marker carries the count that fed the
+#       park, seat_usable holds the parked seat), so a chronic no-op'er
+#       stops entering rotation.
 #   (c) a STALE same-class marker (older than EMPTY_RUN_MARKER_FRESH_S)
 #       falls back to the (clobbered) ledger and starts a fresh count —
 #       the recovery signal: a healthy observation after the bench expired
@@ -79,9 +81,9 @@ export PI_MODELS_JSON="$scratch/models.json"
 export SEAT_CAPS_JSON="$scratch/seat-caps.json"
 export XDG_RUNTIME_DIR="$scratch/xdg"
 export PI_SEAT_LIB_CHECK_SYSTEMD=0
-# Test isolation: pin the empty-run ceiling low so we can prove the park
-# fires in a few iterations. Production default is 3 (fleet-ops#3046).
-export EMPTY_RUN_FAILURE_CEILING=3
+# Test isolation: pin the failure ceiling low so we can prove the park
+# fires in a few iterations. Production default is 20 (fleet-ops#3531).
+export SEAT_FAILURE_CEILING=3
 export SEAT_PARK_WALL_S=86400
 export EMPTY_RUN_MARKER_FRESH_S=1800
 # fleet-ops#2934: the empty-run count-merge window is its own knob now
@@ -206,14 +208,14 @@ ledger_clobbered=$(jq -r '.consecutive_failure_count // 0' "$lf" 2>/dev/null || 
     || fail "ledger count = $ledger_clobbered, want 0 — the clobber must have zeroed it for the test to prove the marker carry"
 ok "(a3) marker count=3 while clobbered ledger count=0 — THE MARKER IS THE DURABLE COUNT"
 
-# --- (b) at EMPTY_RUN_FAILURE_CEILING, the long-wall park engages ----------
+# --- (b) at the failure ceiling, the long-wall park engages ----------------
 # The #1362 park must fire from the ACCUMULATED marker count (3) on the
-# 3rd no-op (ceiling=3 for test isolation), not from the clobbered ledger
-# (count=0). The marker's usable_at must jump to ~now+SEAT_PARK_WALL_S and
-# seat_usable must hold the parked seat.
+# 3rd no-op (SEAT_FAILURE_CEILING=3 for test isolation), not from the
+# clobbered ledger (count=0). The marker's usable_at must jump to
+# ~now+SEAT_PARK_WALL_S and seat_usable must hold the parked seat.
 w=$(wall_s_of_marker "$mf")
 (( w >= SEAT_PARK_WALL_S - 120 && w <= SEAT_PARK_WALL_S + 120 )) \
-    || fail "empty-run park wall = ${w}s, want ~${SEAT_PARK_WALL_S}s — the park must fire from the ACCUMULATED marker count at EMPTY_RUN_FAILURE_CEILING=3"
+    || fail "empty-run park wall = ${w}s, want ~${SEAT_PARK_WALL_S}s — the park must fire from the ACCUMULATED marker count at SEAT_FAILURE_CEILING=3"
 ok "(b1) empty-run park wall = ${w}s (~24h) — the #1362 park fires from the accumulated marker count across clobbers (fleet-ops#2627)"
 
 if seat_usable "$p" "$m"; then
@@ -279,20 +281,20 @@ new_mode=$(jq -r '.failure_mode // ""' "$mf")
     || fail "(d) marker count after empty-run (with prior spawn_fail marker) = $new_count, want 2 — cross-class markers MUST merge (fleet-ops#2786: the marker is a single file per seat, the count must accumulate across failure_mode classes)"
 ok "(d) spawn_fail marker (count=1) IS absorbed into empty-run count; empty-run continues at count=2, marker carries empty_run mode forward (fleet-ops#2786 cross-class accumulation)"
 
-# --- (e) flat cooldown still holds below the ceiling -----------------------
-# fleet-ops#2343 invariant: the no-op cooldown is FLAT below the ceiling
-# (no count ladder — the #1408 ladder churned healthy seats). Prove that
-# across clobbers: each no-op below the ceiling bench is ~EMPTY_RUN_BACKOFF_S,
-# not escalated.
+# --- (e) geometric cooldown below the ceiling ------------------------------
+# fleet-ops#3531: the empty-run bench now escalates geometrically below the
+# failure ceiling (base * 2^(n-1), capped at 6 h). Prove that across
+# clobbers: each no-op below the ceiling bench is ~base * 2^(n-1).
 rm -f "$lf" "$mf"
 for i in 1 2; do
-    mark_seat_empty_run "$p" "$m" "t2627:flat:${i}" >/dev/null 2>&1 \
-        || fail "mark_seat_empty_run flat-${i} failed"
+    mark_seat_empty_run "$p" "$m" "t2627:geometric:${i}" >/dev/null 2>&1 \
+        || fail "mark_seat_empty_run geometric-${i} failed"
     clobber_with_healthy "$p" "$m" "$lf"
+    want=$(( 900 * (2**(i-1)) ))
     backoff=$(wall_s_of_marker "$mf")
-    (( backoff >= 900 - 30 && backoff <= 900 + 30 )) \
-        || fail "(e) empty-run #${i} backoff = ${backoff}s, want ~900s (FLAT below ceiling, fleet-ops#2343 — accumulated marker count must not drive a bench ladder)"
-    ok "(e${i}) empty-run #${i} backoff = ${backoff}s (FLAT below ceiling — count accumulates but backoff does not escalate until EMPTY_RUN_FAILURE_CEILING=3)"
+    (( backoff >= want - 30 && backoff <= want + 30 )) \
+        || fail "(e) empty-run #${i} backoff = ${backoff}s, want ~${want}s (geometric below ceiling, fleet-ops#3531)"
+    ok "(e${i}) empty-run #${i} backoff = ${backoff}s (geometric below ceiling — count accumulates and escalates until SEAT_FAILURE_CEILING=3)"
 done
 
 ok "fleet-ops#2627/#2786: empty_run count accumulates across healthy clobbers (marker is durable count authority), the failure-ceiling park engages for a chronic no-op'er from the marker-carried count, stale markers fall back to the ledger (recovery signal), and cross-class markers (spawn_fail) DO merge so a seat that alternates classes still reaches the park"
@@ -335,7 +337,7 @@ ok "(f) empty_run marker (count=1) IS absorbed into spawn_fail count; spawn_fail
 # fleet-ops#2786 end-to-end: a seat that alternates empty_run and spawn_fail
 # (the live nemotron-3-ultra-free pattern) must reach the failure-ceiling
 # park from the accumulated cross-class count, not stall at count=1 every
-# cycle. EMPTY_RUN_FAILURE_CEILING=3 here for test isolation. Three
+# cycle. SEAT_FAILURE_CEILING=3 here for test isolation. Three
 # alternations (empty -> spawn -> empty) must park the seat on the 3rd.
 rm -f "$lf" "$mf"
 mark_seat_empty_run "$p" "$m" "t2786:alt:1" >/dev/null 2>&1 \
@@ -355,7 +357,7 @@ alt_mode=$(jq -r '.failure_mode // ""' "$mf")
 # The 3rd no-op (count=3) must park the seat at ~SEAT_PARK_WALL_S.
 alt_wall=$(wall_s_of_marker "$mf")
 (( alt_wall >= SEAT_PARK_WALL_S - 120 && alt_wall <= SEAT_PARK_WALL_S + 120 )) \
-    || fail "(g) alternated park wall = ${alt_wall}s, want ~${SEAT_PARK_WALL_S}s — the park must fire from the accumulated cross-class count at EMPTY_RUN_FAILURE_CEILING=3"
+    || fail "(g) alternated park wall = ${alt_wall}s, want ~${SEAT_PARK_WALL_S}s — the park must fire from the accumulated cross-class count at SEAT_FAILURE_CEILING=3"
 if seat_usable "$p" "$m"; then
     fail "(g) seat_usable returned usable on the alternated parked seat — park wall must hold across the marker"
 fi

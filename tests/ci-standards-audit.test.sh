@@ -485,19 +485,18 @@ bash "$here/fleet-scout-leak-canary.test.sh"
 # clobbers (seat-health.ts resets ledger count=0 on every 200 OK, so the
 # wrapper's mark_seat_empty_run must carry the count in the clobber-proof
 # spawn-bench marker — fleet-ops#1512 — and engage the failure-ceiling
-# park from the marker-carried count at EMPTY_RUN_FAILURE_CEILING). The
+# park from the marker-carried count). fleet-ops#3531: the bench now
+# escalates geometrically and uses the generic failure ceiling.
 # live 18 empty runs in 2h on healthy-reporting seats (opencode/nemotron
 # and openrouter/deepseek-v4-flash-0731) was the wrapper-side marker
 # staying at count=1 every cycle. Hosted here so P14 runs it without a
 # workflow-file edit (the worker App cannot push .github/workflows/**).
 bash "$here/seat-empty-run-clobber-park.test.sh"
 
-# fleet-ops#3046: the EMPTY_RUN_FAILURE_CEILING default was 10, but the
-# 2h count-merge window reset the count before it reached 10, so the live
-# nemotron-3-ultra-free loop (9 empty runs in 2h on fleet-ops-2778) never
-# parked. The fix lowers the default to 3 so the park fires on the 3rd
-# no-op in the SAME 2h window. This test asserts the production default
-# (no env override) is exactly 3 and the park engages on the 3rd no-op.
+# fleet-ops#3046 / #3531: the empty-run bench now escalates geometrically
+# and uses the generic failure ceiling. The marker count still accumulates
+# across healthy clobbers and the park engages at the ceiling. This test
+# exercises the default window and the geometric/park behaviour.
 # Hosted here so P14 runs it without a workflow-file edit.
 bash "$here/seat-empty-run-ceiling-default.test.sh"
 

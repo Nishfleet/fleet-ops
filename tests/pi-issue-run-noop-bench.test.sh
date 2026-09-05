@@ -129,7 +129,7 @@ cat >"$SEAT_CAPS_JSON" <<'JSON'
   "ram_gb_per_worker": 1.5,
   "free_providers_in_order": [],
   "providers": {
-    "devin": { "cap": 4, "class": "subscription", "models": { "glm-5-2": 4, "swe-1-7": 4 } }
+    "devin": { "cap": 4, "class": "subscription", "remote_agent": true, "models": { "glm-5-2": 4, "swe-1-7": 4 } }
   }
 }
 JSON
@@ -183,10 +183,10 @@ nm="${seat_line#*/}"
 # #1416 "lane fault, no bench" decision: without a bench, an intake re-spawn
 # (fresh claim, empty tried-seats) re-picked the same no-op'ing seat and
 # burned 8 runs/2h on straitly/deepseek-v4-pro. mark_seat_spawn_fail must
-# NOT be called (the flat 300s spawn-fail bench is the wrong class — the
-# empty_run no-op stays flat, it does not take the #1408 wall ladder).
+# NOT be called (spawn-fail is the wrong class — empty_run now shares the
+# geometric #3531 ladder, capped at 6 h / 1800 s for remote agents).
 if [[ -f "$scratch/mark_calls" ]]; then
-    fail "mark_seat_spawn_fail was called for stdout < OUT_MIN — must use mark_seat_empty_run (empty_run class, flat cooldown), not spawn-fail (calls: $(cat "$scratch/mark_calls"))"
+    fail "mark_seat_spawn_fail was called for stdout < OUT_MIN — must use mark_seat_empty_run (empty_run class, geometric cooldown), not spawn-fail (calls: $(cat "$scratch/mark_calls"))"
 fi
 [[ -f "$scratch/mark_empty_calls" ]] \
   || fail "mark_seat_empty_run was NOT called for stdout < OUT_MIN — provider no-op must bench the seat (fleet-ops#1298)"
@@ -194,7 +194,7 @@ grep -qF "$np/$nm" "$scratch/mark_empty_calls" \
   || fail "mark_seat_empty_run not called for $np/$nm; calls: $(cat "$scratch/mark_empty_calls")"
 grep -qF "provider-no-op" "$scratch/mark_empty_calls" \
   || fail "mark_seat_empty_run reason must mention provider-no-op; calls: $(cat "$scratch/mark_empty_calls")"
-ok "provider no-op (stdout < OUT_MIN) -> mark_seat_empty_run called for $np/$nm (seat fault, flat cooldown)"
+ok "provider no-op (stdout < OUT_MIN) -> mark_seat_empty_run called for $np/$nm (seat fault, geometric cooldown)"
 
 # (b) per-seat ledger: failure_mode=empty_run, usable_at ~900s (15 min) ahead.
 ledger1="$LEDGER/${np//[^A-Za-z0-9._-]/_}__${nm//[^A-Za-z0-9._-]/_}.json"
@@ -209,7 +209,7 @@ now1_epoch=$(date -u +%s)
 delta1=$((usable1_epoch - now1_epoch))
 (( delta1 >= 840 && delta1 <= 960 )) \
   || fail "provider no-op usable_at should be ~900s (15 min) ahead, got ${delta1}s: $(cat "$ledger1")"
-ok "ledger failure_mode=empty_run usable_at=+${delta1}s (~15 min flat cooldown, fleet-ops#2343)"
+ok "ledger failure_mode=empty_run usable_at=+${delta1}s (~15 min geometric cooldown, fleet-ops#2343)"
 
 # (c) seat_usable rejects the benched seat; pick_seat with empty tried-seats
 # (the intake re-spawn case) re-routes to a DIFFERENT seat — the #1298 fix.
@@ -228,7 +228,7 @@ next_nm=$(printf '%s' "$next" | cut -f2)
   || fail "pick_seat re-selected the no-op seat $np/$nm on intake re-spawn (empty tried-seats) — must reroute to a healthy seat (fleet-ops#1298)"
 ok "pick_seat reroutes intake re-spawn to $next_np/$next_nm (skips benched $np/$nm)"
 
-ok "pi-issue-run provider no-op exits 1, benches seat (empty_run, flat cooldown), reroutes to a healthy seat"
+ok "pi-issue-run provider no-op exits 1, benches seat (empty_run, geometric cooldown), reroutes to a healthy seat"
 
 # =============================================================================
 # fleet-ops#902: verdict-based EMPTY RUN — pi exits 0 and the ONLY stdout is
@@ -326,7 +326,7 @@ ok "empty-run (tools=0 + no final text) fails loudly, benches 15 min, re-routes 
 # same invocation instead of exiting 1 and consuming a systemd
 # StartLimitBurst slot. The script exits 0 when the second seat succeeds, so
 # no StartLimitBurst slot is consumed. Per fleet-ops#1298 the first no-op
-# seat IS now benched (empty_run, flat cooldown) so an intake re-spawn skips
+# seat IS now benched (empty_run, geometric cooldown) so an intake re-spawn skips
 # it — but the in-process retry still fires immediately on a different
 # seat, so the item is never charged a StartLimitBurst slot for the flake.
 # =============================================================================
@@ -382,7 +382,7 @@ tried3="$STATE_DIR/attempts/pi-issue-${inst3}.tried-seats"
 ok "tried-seats reset after successful in-process retry"
 
 # fleet-ops#1298: the first no-op seat (devin/glm-5-2) IS now benched via
-# mark_seat_empty_run (empty_run, flat cooldown) so an intake re-spawn skips
+# mark_seat_empty_run (empty_run, geometric cooldown) so an intake re-spawn skips
 # it. The spawn-fail marker (mark_seat_spawn_fail) must NOT be used — the
 # empty_run class is the correct one (flat 900s; the #1408 wall ladder is
 # for real spawn-fail walls only, fleet-ops#2343).
@@ -391,6 +391,57 @@ if grep -qF 'devin/glm-5-2' "$scratch/mark_calls" 2>/dev/null; then
 fi
 grep -qF 'devin/glm-5-2' "$scratch/mark_empty_calls" 2>/dev/null \
   || fail "first no-op seat (devin/glm-5-2) must be benched via mark_seat_empty_run (fleet-ops#1298); empty calls: $(cat "$scratch/mark_empty_calls" 2>/dev/null || true)"
-ok "first no-op seat (devin/glm-5-2) benched via mark_seat_empty_run (empty_run, flat cooldown) — intake re-spawn will skip it"
+ok "first no-op seat (devin/glm-5-2) benched via mark_seat_empty_run (empty_run, geometric cooldown) — intake re-spawn will skip it"
 
-ok "fleet-ops#1378: in-process no-op retry still works alongside the #1298 bench — item is never charged a StartLimitBurst slot for the flake"
+# =============================================================================
+# fleet-ops#3531: a remote devin session that exits 0 with tools=0 but a
+# pull/<n> URL in the output is NOT an empty run. It must be treated as a
+# successful session (exit 0, output copied to PI_ISSUES_DIR) and must NOT
+# call mark_seat_empty_run.
+# =============================================================================
+rm -f "$LEDGER"/*.json 2>/dev/null || true
+rm -f "$LEDGER"/*.spawn-bench.json 2>/dev/null || true
+rm -f "$scratch/mark_calls" "$scratch/mark_empty_calls" 2>/dev/null || true
+: >"$STATE_DIR/attempts/pi-issue-${inst}.tried-seats" 2>/dev/null || true
+: >"$STATE_DIR/attempts/pi-issue-${inst2}.tried-seats" 2>/dev/null || true
+: >"$STATE_DIR/attempts/pi-issue-${inst3}.tried-seats" 2>/dev/null || true
+export EMPTY_RUN_RETRY_MAX=0
+
+# Remote devin: tools=0 verdict plus a real PR URL. The PR URL proves the
+# session produced an outcome even though no local tools were used.
+cat >"$stub_bin/pi" <<'STUB'
+#!/usr/bin/env bash
+printf 'PACKET-VERDICT tools=0 class=worked\nhttps://github.com/Nishfleet/fleet-ops/pull/9999\n'
+exit 0
+STUB
+chmod +x "$stub_bin/pi"
+
+inst4="fleet-ops-3531-remote"
+printf 'Implement one GitHub issue: fleet-ops-3531.\n' >"$ISSUES_DIR/${inst4}.in"
+
+set +e
+bash "$bin" "$inst4" >"$scratch/run4.out" 2>"$scratch/run4.err"
+rc4=$?
+set -e
+
+[[ "$rc4" == "0" ]] \
+  || fail "remote devin with PR URL must exit 0 (success), got rc=$rc4 err=$(cat "$scratch/run4.err")"
+
+# The output file must contain the PR URL.
+out4=$(cat "$PI_ISSUES_DIR/${inst4}.out" 2>/dev/null || true)
+echo "$out4" | grep -qF 'https://github.com/Nishfleet/fleet-ops/pull/9999' \
+  || fail "output file should contain the PR URL, got: $out4"
+ok "remote devin (tools=0 + PR URL) treated as success, output contains PR URL"
+
+# mark_seat_empty_run must NOT be called for this remote PR success.
+if [[ -f "$scratch/mark_empty_calls" ]] && grep -qF 'devin' "$scratch/mark_empty_calls"; then
+    fail "remote devin PR success must NOT call mark_seat_empty_run; empty calls: $(cat "$scratch/mark_empty_calls")"
+fi
+ok "remote devin PR success did NOT bench the seat (no mark_seat_empty_run call)"
+
+# The tried-seats file for a successful run should be reset.
+tried4="$STATE_DIR/attempts/pi-issue-${inst4}.tried-seats"
+[[ -s "$tried4" ]] && fail "successful remote run must reset tried-seats, got: $(cat "$tried4")"
+ok "tried-seats reset after successful remote devin PR run"
+
+ok "fleet-ops#1378/#3531: in-process no-op retry and remote PR success both work"
