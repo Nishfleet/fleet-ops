@@ -417,9 +417,13 @@ extract_reason() {
     # fleet-ops#3594: the reason is the verdict block only — the paragraph after
     # the PASS/FAIL line, or the paragraph before it when the auditor wrote the
     # reason first. Harness noise is stripped before either is read.
+    # The markdown strip is applied to a copy used only to find the verdict
+    # line: the reason itself stays raw, because stripping # and _ turned
+    # "0509#1624" into "05091624" and src/my_file.ts into src/myfile.ts, so the
+    # evidence gate could never match an issue number or a body path.
     strip_harness_noise "$out" | awk -v v="$v" '{
-        gsub(/[*#`_]/,"")
-        if (!seen && $0 ~ "^[[:space:]]*"v"[[:space:]]*$") { seen=1; next }
+        line = $0; gsub(/[*#`_]/, "", line)
+        if (!seen && line ~ "^[[:space:]]*"v"[[:space:]]*$") { seen=1; next }
         if (seen) after = after $0 "\n"; else before = before $0 "\n"
     } END {
         if (after ~ /[^[:space:]]/) printf "%s", after; else printf "%s", before
