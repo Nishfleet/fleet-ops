@@ -56,6 +56,13 @@
 
 set -uo pipefail
 
+# Use the nishfleet-worker App token for any GitHub writes. Fail closed if
+# the App cannot mint and no token has been inherited from a parent organ.
+if [[ -z "${GH_TOKEN:-}" ]]; then
+    eval "$(worker-token --print)"
+fi
+
+
 TRIAGE_FILE="${TRIAGE_FILE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
 SYSTEMCTL="${SYSTEMCTL:-systemctl}"
 STATE_DIR="${PI_PACKET_STATE:-$HOME/.local/state/pi-packet}"

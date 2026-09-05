@@ -49,6 +49,13 @@ export HOME="${HOME:-/home/nish}"
 export PATH="${PATH:-/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin}"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
+# Use the nishfleet-worker App token for any GitHub writes. Fail closed if
+# the App cannot mint and no token has been inherited from a parent organ.
+if [[ -z "${GH_TOKEN:-}" ]]; then
+    eval "$(worker-token --print)"
+fi
+
+
 EXTRACT_PY='
 import json, re, sys
 

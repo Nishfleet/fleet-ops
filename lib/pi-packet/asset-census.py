@@ -62,6 +62,29 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+
+def _ensure_gh_token() -> None:
+    """Mint a short-lived nishfleet-worker installation token if not already set."""
+    if os.environ.get("GH_TOKEN"):
+        return
+    try:
+        out = subprocess.check_output(
+            ["worker-token", "--print"],
+            text=True,
+            stderr=subprocess.STDOUT,
+            timeout=30,
+        )
+    except subprocess.CalledProcessError as exc:
+        print(f"DEAD APP IDENTITY: worker-token mint failed: {exc.output}", file=sys.stderr)
+        sys.exit(3)
+    for line in out.splitlines():
+        if line.startswith("export GH_TOKEN="):
+            os.environ["GH_TOKEN"] = line.split("=", 1)[1]
+            return
+    print("DEAD APP IDENTITY: worker-token output did not contain GH_TOKEN export", file=sys.stderr)
+    sys.exit(3)
+
+
 VERSION = "1"
 
 SIGNAL_FMT = "signal: asset-census/{id}"
@@ -1159,6 +1182,7 @@ def file_unguarded_issues(cfg: Config, unguarded: list[dict[str, Any]], cap: int
             log("file-issues: dry-run would file: %s", title)
             filed += 1
             continue
+        _ensure_gh_token()
         if issue_file == "gh":
             proc = subprocess.run(
                 [

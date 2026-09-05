@@ -23,6 +23,13 @@
 #   2 = bad env / config
 set -euo pipefail
 
+# Use the nishfleet-worker App token for any GitHub writes. Fail closed if
+# the App cannot mint and no token has been inherited from a parent organ.
+if [[ -z "${GH_TOKEN:-}" ]]; then
+    eval "$(worker-token --print)"
+fi
+
+
 REPO_SLUG="Nishfleet/siterep-public"
 WORKTREE_DIR="/home/nish/workspaces/agent-worktrees/deploy-siterep"
 CREDS_FILE="${SITEREP_DEPLOY_CREDS_FILE:-/home/nish/.config/cloudflare/deploy-ci.env}"

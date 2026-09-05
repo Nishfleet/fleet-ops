@@ -64,6 +64,28 @@ import sys
 from pathlib import Path
 
 
+def _ensure_gh_token() -> None:
+    """Mint a short-lived nishfleet-worker installation token if not already set."""
+    if os.environ.get("GH_TOKEN"):
+        return
+    try:
+        out = subprocess.check_output(
+            ["worker-token", "--print"],
+            text=True,
+            stderr=subprocess.STDOUT,
+            timeout=30,
+        )
+    except subprocess.CalledProcessError as exc:
+        print(f"DEAD APP IDENTITY: worker-token mint failed: {exc.output}", file=sys.stderr)
+        sys.exit(3)
+    for line in out.splitlines():
+        if line.startswith("export GH_TOKEN="):
+            os.environ["GH_TOKEN"] = line.split("=", 1)[1]
+            return
+    print("DEAD APP IDENTITY: worker-token output did not contain GH_TOKEN export", file=sys.stderr)
+    sys.exit(3)
+
+
 HOME = Path(os.environ.get("HOME", "/home/nish"))
 CHECKOUT = os.environ.get("FLEET_OPS_CHECKOUT", "")
 AUDIT_LOG = Path(os.environ.get("FLEET_OPS_AUDIT_LOG", HOME / ".local" / "state" / "fleet-ops" / "drift-audit.log"))
@@ -204,6 +226,7 @@ def auto_file_drift(marker: str, title: str, extra: str, msg: str) -> None:
     if not DRIFT_FILE:
         log(f"file skipped (FLEET_OPS_DRIFT_FILE!=1) marker={marker}")
         return
+    _ensure_gh_token()
     try:
         proc = subprocess.run(
             [GH, "issue", "list", "-R", DRIFT_REPO, "--state", "open", "--limit", "50", "--json", "number,body"],
@@ -441,6 +464,7 @@ def observe_close_drift_issues(
     if not DRIFT_FILE:
         log("observe-to-close skipped (FLEET_OPS_DRIFT_FILE!=1)")
         return
+    _ensure_gh_token()
 
     marker_names = {
         SOURCE_MARKER: "canonical-checkout drift",

@@ -27,6 +27,28 @@ import subprocess
 import sys
 from pathlib import Path
 
+
+def _ensure_gh_token() -> None:
+    """Mint a short-lived nishfleet-worker installation token if not already set."""
+    if os.environ.get("GH_TOKEN"):
+        return
+    try:
+        out = subprocess.check_output(
+            ["worker-token", "--print"],
+            text=True,
+            stderr=subprocess.STDOUT,
+            timeout=30,
+        )
+    except subprocess.CalledProcessError as exc:
+        print(f"DEAD APP IDENTITY: worker-token mint failed: {exc.output}", file=sys.stderr)
+        sys.exit(3)
+    for line in out.splitlines():
+        if line.startswith("export GH_TOKEN="):
+            os.environ["GH_TOKEN"] = line.split("=", 1)[1]
+            return
+    print("DEAD APP IDENTITY: worker-token output did not contain GH_TOKEN export", file=sys.stderr)
+    sys.exit(3)
+
 DUP_THRESHOLD = 0.65
 BORDERLINE_THRESHOLD = 0.40
 KEY_BONUS = 0.10
@@ -444,6 +466,7 @@ def duplicate_marker(ref: str, score: float) -> str:
 
 
 def gh_comment(repo: str, number: int, body: str) -> tuple[int, str]:
+    _ensure_gh_token()
     proc = subprocess.run(
         [gh_bin(), "issue", "comment", str(number), "--repo", repo, "--body", body],
         capture_output=True,
@@ -454,6 +477,7 @@ def gh_comment(repo: str, number: int, body: str) -> tuple[int, str]:
 
 
 def gh_close(repo: str, number: int, comment: str) -> tuple[int, str]:
+    _ensure_gh_token()
     proc = subprocess.run(
         [gh_bin(), "issue", "close", str(number), "--repo", repo, "--comment", comment],
         capture_output=True,
@@ -464,6 +488,7 @@ def gh_close(repo: str, number: int, comment: str) -> tuple[int, str]:
 
 
 def gh_create(repo: str, title: str, body: str, labels: list[str], body_file: str) -> tuple[int, str]:
+    _ensure_gh_token()
     cmd = [gh_bin(), "issue", "create", "--repo", repo, "--title", title]
     tmp = None
     if body_file:
