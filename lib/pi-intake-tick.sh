@@ -402,8 +402,11 @@ DIFFICULTY_HEAVY_BODY_BYTES="${PI_INTAKE_DIFFICULTY_HEAVY_BODY_BYTES:-6000}"
 DIFFICULTY_HEAVY_REQUIRED="${PI_INTAKE_DIFFICULTY_HEAVY_REQUIRED:-2}"
 issue_difficulty() {
     local labels_json="$1" title="$2" body="$3" lowered bytes req
-    lowered="${title,,} ${labels_json,,}"
-    if [[ "$lowered" == *keystone* ]]; then echo "keystone"; return; fi
+    # keystone only by LABEL or an explicit `keystone:` title prefix — a title that
+    # merely mentions the word (e.g. "Manager loop for heavy/keystone issues — part 3/9")
+    # must not route a one-line child to the senior seats (2026-09-05 misfire).
+    lowered="${title,,}"
+    if [[ "$labels_json" == *'"keystone"'* || "$lowered" == keystone:* ]]; then echo "keystone"; return; fi
     if [[ "$labels_json" == *'"heavy"'* ]]; then echo "heavy"; return; fi
     bytes=$(printf '%s' "$body" | wc -c); bytes=${bytes//[^0-9]/}
     req=$(printf '%s\n' "$body" | grep -ciE '^[[:space:]]*-[[:space:]]*required[^:]*:' || true)
