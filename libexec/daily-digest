@@ -167,7 +167,69 @@ dead_n="${rest%%|*}"
 stale_n="${rest#*|}"
 seat_line="• Seats — $healthy_n healthy, $dead_n dead, $stale_n stale (>12h unobserved). Total seen: $((healthy_n+dead_n+stale_n))."
 
-# --- Section 6: disk usage on / ----------------------------------------------
+# --- Section 6: per-repo quality ratchet (fleet-ops#3519) ---------------------
+# Reads the per-repo rolling-7d quality gauges + committed ceilings that
+# lib/fleet-product-slo.py exports, and renders one plain-language line per
+# repo: 'quality: reverts x/100 (ceiling y), defects d/100 (c), sessions s/100
+# (.c)'. Only measured metrics are shown; deferred ones (rework, red-on-main,
+# act-on) appear once their exporters land (separate issues).
+quality_prom_out="${FLEET_PRODUCT_SLO_PROM_OUT:-/var/lib/prometheus/node-exporter/fleet-product-slo.prom}"
+if [ -f "$quality_prom_out" ]; then
+  quality_line=$( python3 - "$quality_prom_out" <<'PY'
+import re, sys, collections
+path = sys.argv[1]
+values = {}
+ceilings = {}
+metric_names = {
+    "reverts_per_100_merges": "reverts",
+    "post_merge_defects_per_100": "post-merge defects",
+    "sessions_to_pr_pct": "sessions",
+}
+try:
+    text = open(path).read()
+except FileNotFoundError:
+    text = ""
+for line in text.splitlines():
+    if line.startswith("#"):
+        continue
+    if line.startswith("fleet_product_quality_reverts_per_100{"):
+        m = re.match(r'fleet_product_quality_reverts_per_100\{repo="([^"]+)"\} ([0-9.]+)', line)
+        if m: values.setdefault(m.group(1), {})["reverts_per_100_merges"] = float(m.group(2))
+    elif line.startswith("fleet_product_quality_post_merge_defects_per_100{"):
+        m = re.match(r'fleet_product_quality_post_merge_defects_per_100\{repo="([^"]+)"\} ([0-9.]+)', line)
+        if m: values.setdefault(m.group(1), {})["post_merge_defects_per_100"] = float(m.group(2))
+    elif line.startswith("fleet_product_quality_sessions_to_pr_pct{"):
+        m = re.match(r'fleet_product_quality_sessions_to_pr_pct\{repo="([^"]+)"\} ([0-9.]+)', line)
+        if m: values.setdefault(m.group(1), {})["sessions_to_pr_pct"] = float(m.group(2))
+    elif line.startswith("fleet_product_quality_ceiling{"):
+        m = re.match(r'fleet_product_quality_ceiling\{repo="([^"]+)",metric="([^"]+)"\} ([0-9.]+)', line)
+        if m: ceilings.setdefault(m.group(1), {})[m.group(2)] = float(m.group(3))
+if not values:
+    print("• Quality metrics not available yet (fleet-ops#3519).")
+else:
+    out = []
+    for repo in sorted(values):
+        row = values[repo]
+        ceil = ceilings.get(repo, {})
+        bits = []
+        if "reverts_per_100_merges" in row:
+            c = ceil.get("reverts_per_100_merges")
+            bits.append(f'reverts {row["reverts_per_100_merges"]:.1f}/100 (ceiling {c:.1f})' if c is not None else f'reverts {row["reverts_per_100_merges"]:.1f}/100')
+        if "post_merge_defects_per_100" in row:
+            c = ceil.get("post_merge_defects_per_100")
+            bits.append(f'post-merge defects {row["post_merge_defects_per_100"]:.1f}/100 (ceiling {c:.1f})' if c is not None else f'post-merge defects {row["post_merge_defects_per_100"]:.1f}/100')
+        if "sessions_to_pr_pct" in row:
+            c = ceil.get("sessions_to_pr_pct")
+            bits.append(f'sessions {row["sessions_to_pr_pct"]:.1f}/100 (ceiling {c:.1f})' if c is not None else f'sessions {row["sessions_to_pr_pct"]:.1f}/100')
+        out.append(f'• Quality — {repo}: {", ".join(bits)}.')
+    print("\n".join(out))
+PY
+)
+else
+  quality_line="• Quality metrics not available yet (fleet-ops#3519)."
+fi
+
+# --- Section 7: disk usage on / ----------------------------------------------
 disk_pct=$(df -P / 2>/dev/null | awk 'NR==2 {gsub("%",""); print $5}')
 disk_line="• Disk on / — ${disk_pct}% used."
 
@@ -185,6 +247,7 @@ $fail_line
 $prom_line
 $repair_line
 $seat_line
+$quality_line
 $disk_line
 
 Reply to this message if you want anything investigated. Otherwise, on to the day."

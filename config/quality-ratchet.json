@@ -26,5 +26,24 @@
       "stop_at": 0.0,
       "cut": 0.25
     }
+  },
+  "_comment_ceilings": "fleet-ops#3519: per-repo, per-metric quality ceilings. The Sunday fleet-weekly-review ratchets each ceiling to min(current, observed p50 x 1.1) — it never loosens; loosening needs a PR with a dated reason and Nish's word. Seeds are the measured 2026-09-05 baseline for 0509 (reverts 4.5/100, red-on-main ~6h=360min, sessions-to-PR 33%); metrics without a measured baseline (defects, rework, act-on) seed conservatively-loose so the first ratchet week sets real values. Metrics whose computation is deferred (rework_rate_pct, red_on_main_minutes, review_act_on_rate) carry their seeds now so the shape is complete; separate issues wire their exporters. '_default' covers product repos without their own row until the ratchet gives them one.",
+  "ceilings": {
+    "_default": {
+      "reverts_per_100_merges": 4.5,
+      "post_merge_defects_per_100": 40.0,
+      "sessions_to_pr_pct": 33.0,
+      "rework_rate_pct": 20.0,
+      "red_on_main_minutes": 360.0,
+      "review_act_on_rate": 100.0
+    },
+    "0509": {
+      "reverts_per_100_merges": 4.5,
+      "post_merge_defects_per_100": 40.0,
+      "sessions_to_pr_pct": 33.0,
+      "rework_rate_pct": 20.0,
+      "red_on_main_minutes": 360.0,
+      "review_act_on_rate": 100.0
+    }
   }
 }
