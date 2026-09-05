@@ -1,77 +1,69 @@
-feat(seat-health): walled-seat comeback probe with weekly credentials_bad issue
+Fix the "dirty tracked files" deploy-block incident (fleet-ops-3389).
 
-## Why
+Root cause (orchestrator, 2026-09-05T04:25Z): the alert-repair dispatcher
+spawned its pi worker with NO working directory, so a weak model ran with
+cwd=/home/nish, found the live deploy-clone symlinks (~/.local/bin/* ->
+deploy-clone), ran `git checkout -b fix/...` on it and edited fleet-ops files
+in place. Its worker died, leaving a named branch + dirty tracked files that
+blocked merge-to-live for hours (this issue's body).
 
-fleet-ops#1348: #1167 landed the `walled_comeback` table in `config/seat-caps.json`
-(15min on 429, hourly on daily quota, daily on monthly/402, weekly on
-credentials_bad, max 1 probe per 15min). `pick_seat` already fail-opens after
-`usable_at` passes, but nothing actually re-admits the seat — the wall meant the
-seat stayed walled until a manual intervention or an unrelated healthy observation
-overwrote the ledger.
+Two mechanistic fixes ship together:
 
-This PR adds a periodic probe (systemd timer every 15min) that:
-- Reads `usable_at` from the per-seat ledger
-- When `usable_at` has passed, sends a polite 1-token "reply OK" probe through pi
-- A successful probe produces a healthy observation (seat-health.ts records it),
-  clearing `usable_at` so the seat re-enters the ladder at its cap
-- Respects `min_probe_interval_s` from `seat-caps.json` (max 1 probe per seat per tick)
-- `credentials_bad`: probes weekly and files an `agent-ready` issue if still bad
-  (needs fixing, not waiting)
+1. alert-repair-dispatch worktree seam (reuses the pi-issue-run seam):
+   - repo-targeted alerts get a real git worktree (detached at the repo's
+     origin/main) under agent-worktrees/alert-repair-<name>;
+   - fleet-internal alerts (no repo label) get a safe scratch working dir
+     under agent-state/alert-repair/worktrees;
+   - either way the dispatch passes `--working-directory <dir>` to
+     pi-systemd-run, so the worker's cwd is NEVER the live deploy-clone
+     (pi-systemd-run already banks that dir via PI_SALVAGE_WORKDIR);
+   - the packet now names the working directory and forbids the live
+     deploy-clone and the ~/.local/bin symlinks.
+   Fail-open: a worktree-creation error never drops the dispatch.
 
-## Scope
+2. fleet-ops-deploy auto-rescue: when the clone is on a NAMED non-main
+   branch carrying dirty tracked files AND no live process has cwd inside
+   the clone, the branch is orphaned WIP (an alert-repair worker edited the
+   clone in place); stash it with a dated message and detach to
+   origin/main so merge-to-live unblocks the SAME tick instead of blocking
+   for hours. A checkout with a live process inside (a real worker/hotfix)
+   is never touched — it stays a DEPLOY-BLOCK. Same `/proc/<pid>/cwd`
+   pattern interactive-session-reap uses.
 
-- `bin/seat-walled-probe` — new script. Iterates the per-seat ledger, probes seats
-  whose `usable_at` is in the past and whose `failure_mode` is walled (rate_limit,
-  quota_exhausted, credentials_bad, empty_run). Uses `--dry-run` and `--probe-all`
-  flags. Exits 0 when there is nothing to probe (common case, not a failure).
-- `systemd/seat-walled-probe.service` + `systemd/seat-walled-probe.timer` —
-  oneshot unit with 10min timeout, timer fires every 15min with 60s randomized delay.
-- `systemd/timer-manifest.json` — entry for the new timer (source: repo, cadence: 15min).
-- `tests/seat-walled-probe.test.sh` — 5-phase test: dry-run selection (skips future/
-  healthy/recent, probes past+weekly), real mock run (probe success/failure + issue
-  filing), no-seats exits 0, --probe-all picks non-walled modes, systemd unit validity
-  + manifest entry.
-- `MANIFEST` — deploy mapping for bin + service + timer.
+mechanism-impossible: no. Both fixes are mechanisms with regression tests:
+  - tests/alert-repair-worktree-seam.test.sh proves the repo alert creates
+    a real worktree + --working-directory, the internal alert gets a safe
+    scratch dir, the packet forbids the live clone, and NO-SPAWN stays
+    hermetic (no worktree). Hosted from ci-standards-audit (worker App
+    cannot push .github/workflows/**); pin added to the P14 gate.
+  - tests/fleet-ops-deploy.test.sh scenario 21a/21b proves the auto-rescue
+    fires when no process is inside and is refused while one is.
 
-**Out of scope**: the census sweep integration. #1149 is already the census sweeper;
-this probe runs on its own 15min timer rather than being called from the census.
-
-## Tradeoffs
-
-- **Own timer vs census hook.** Chose a standalone timer because the probe cadence
-  (15min) is tighter than the census (weekly). Adding a 15min-firing census step would
-  change the census's own semantics. The two are orthogonal — census maps assets to
-  guards; this probe is a guard.
-
-## Blast Radius
-
-- **Low risk.** New script + new systemd units only. No existing files modified.
-  The script reads (never writes) the per-seat ledger and `seat-caps.json`.
-  Systemd timer is non-mandatory — fleet runs fine without it.
-- **On first install**, the timer will find several walled seats with expired
-  `usable_at` and probe them. This is correct — those seats should have been
-  re-probed already.
-
-## Verification
-
+Verification: (hermetic, no live 9090/systemd; real git worktree from a
+scratch checkout; mock pi-systemd-run)
 ```
-bash tests/seat-walled-probe.test.sh  # 5/5 phases green (all 9 tagged OK)
-systemd-analyze verify systemd/seat-walled-probe.service systemd/seat-walled-probe.timer
-shellcheck -x bin/seat-walled-probe  # clean (exit 0)
-sgscan  # no new security findings
+bash tests/alert-repair-worktree-seam.test.sh        # 4/4 OK (RC=0)
+bash tests/fleet-ops-deploy.test.sh                  # incl. scenario21a/21b OK (RC=0)
+bash tests/alert-repair-class-park-skip.test.sh      # 4/4 OK
+bash tests/alert-repair-claim-mutex.test.sh          # OK
+bash tests/alert-repair-seat-walled.test.sh          # OK
+bash tests/alert-repair-slo-slowburn-skip.test.sh    # OK
+bash tests/alert-repair-wfr-trend-skip.test.sh       # OK
+bash tests/alert-repair-outcome-metric.test.sh       # OK
+bash tests/ci-standards-audit.test.sh                # OK (hosts the new test)
+bash tests/p14-test-listing-gate.test.sh             # OK (test listed closed)
+python3 -m py_compile libexec/alert-repair-dispatch  # OK
+bash -n bin/fleet-ops-deploy                          # OK
+sgscan                                               # No new security findings
 ```
+net-positive-because: the added lines are the mandatory mechanical
+prevention for a recurring (2nd time in 8h) incident — a worktree seam so a
+worker can never touch the live clone, an auto-rescue so a residual pollute
+cannot block merge-to-live for hours, and the regression tests + P14 pin
+that prove both and prevent regression. No unit/timer/workflow added.
+research: no new bin/ file; both seams reused from existing machinery
+(pi-systemd-run --working-directory / PI_SALVAGE_WORKDIR, and the
+interactive-session-reap /proc cwd pattern) per the orchestrator's
+help-first note — nothing forked or hand-built.
 
-run-proof: tests/seat-walled-probe.test.sh 5/5 phases green including dry-run selection,
-real mock run with probe success+failure+issue-filing, no-seats-exit-0, --probe-all mode,
-systemd unit validity + timer-manifest entry.
-
-research: official docs (systemd.timer(5), systemd.service(5)) plus a last30days-scale pass for probe-style free-seat recovery patterns; compared polling to a systemd path-unit trigger on the ledger directory (rejected — path unit fires on every write, every few seconds; polling every 15min is simpler and lower CPU) and checked the existing bin/fleet-seat-recovery + census sweep (#1149) — adopted a standalone systemd timer + bash script because it runs on the existing fleet timer pattern with no new machinery, and the census sweep is weekly (too coarse for a 15min probe cadence).
-
-help-first: ran `systemctl --help`, `systemd-analyze --help`, `pi --help`, and `bin/fleet-seat-recovery --help` — none can read per-seat ledger JSON, compare timestamps against seat-caps.json walled_comeback durations, or file agent-ready issues via fleet-issue-file; the existing tools do not already do this.
-
-organ-heartbeat: systemd/seat-walled-probe.service systemd/seat-walled-probe.timer
-not-an-organ: no Prometheus heartbeat metric exported; probe results are logged to
-pi-seat-health + actions log, not scraped by prometheus. This is a scheduled probe,
-not an organ under fleet-ops#1010.
-
-Closes #1348
+Closes #3389
