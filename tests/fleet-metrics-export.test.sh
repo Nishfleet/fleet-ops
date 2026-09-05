@@ -245,6 +245,72 @@ print(f"OK: _read_seat epoch fresh under TZ=Asia/Kolkata (age={age}s)")
 PY
 
 # =========================================================================
+# 7c. _read_seat: a held wrapper spawn-bench outranks a healthy sidecar
+#     (fleet-ops#3563)
+# =========================================================================
+# A benched seat must not report healthy. The bench writers co-write
+# pi-seat-health.json at bench time, but a later healthy observation from
+# the seat-health extension (in-flight run completing after the bench, or
+# a comeback probe) rewrites it while the spawn-bench marker still holds —
+# live 2026-09-05: devin/glm-5-2 ledger healthy at 23:19Z with the marker
+# held until 23:55Z. The gauge must read 0 while the marker holds and
+# fail-open to 1 once it expires.
+_3563_LEDGER="$scratch/ledger-3563"
+_3563_HEALTH="$scratch/seat-health-3563.json"
+mkdir -p "$_3563_LEDGER"
+_3563_LEDGER="$_3563_LEDGER" _3563_HEALTH="$_3563_HEALTH" \
+python3 - "$exporter" <<'PY' || fail "3563: spawn-bench overlay failed"
+import importlib.util, json, os, sys, time
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("fme", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+
+ledger = Path(os.environ["_3563_LEDGER"])
+m.SEAT_LEDGER = ledger
+seat = Path(os.environ["_3563_HEALTH"])
+m.SEAT_HEALTH = seat
+
+future = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() + 3600)) + "Z"
+past = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - 60)) + "Z"
+now = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + ".000Z"
+
+# The model id carries a ':' so the test also pins the seat_spawn_bench_path
+# sanitisation (deepseek-v4-flash:0731 -> deepseek-v4-flash_0731).
+seat.write_text(json.dumps({
+    "provider": "ollama", "model": "deepseek-v4-flash:0731",
+    "http_status": 200, "health_class": "healthy",
+    "observed_at": now,
+}), encoding="utf-8")
+(ledger / "ollama__deepseek-v4-flash_0731.spawn-bench.json").write_text(
+    json.dumps({"provider": "ollama", "model": "deepseek-v4-flash:0731",
+                "usable_at": future, "failure_mode": "empty_run",
+                "consecutive_failure_count": 3}), encoding="utf-8")
+
+healthy, _ = m._read_seat()
+assert healthy == 0, f"held spawn-bench must outrank a healthy sidecar (healthy={healthy})"
+print("OK: _read_seat reports 0 for a spawn-bench-held seat with a healthy sidecar")
+
+# Expired marker -> fail-open, the healthy observation stands.
+(ledger / "ollama__deepseek-v4-flash_0731.spawn-bench.json").write_text(
+    json.dumps({"provider": "ollama", "model": "deepseek-v4-flash:0731",
+                "usable_at": past, "failure_mode": "empty_run"}), encoding="utf-8")
+healthy, _ = m._read_seat()
+assert healthy == 1, f"expired spawn-bench must not suppress healthy (healthy={healthy})"
+print("OK: _read_seat reports 1 once the spawn-bench marker expires")
+
+# A held marker on a DIFFERENT seat must not touch this seat's reading.
+(ledger / "ollama__deepseek-v4-flash_0731.spawn-bench.json").unlink()
+(ledger / "devin__glm-5-2.spawn-bench.json").write_text(
+    json.dumps({"provider": "devin", "model": "glm-5-2",
+                "usable_at": future, "failure_mode": "spawn_fail"}), encoding="utf-8")
+healthy, _ = m._read_seat()
+assert healthy == 1, f"another seat's bench must not suppress healthy (healthy={healthy})"
+print("OK: _read_seat ignores a held marker for a different seat")
+PY
+ok "fleet-ops#3563: _read_seat overlays the spawn-bench marker — a benched seat never reads healthy"
+
+# =========================================================================
 # 8. fleet_rules.yml: promtool (if available) + rule presence
 # =========================================================================
 if command -v promtool >/dev/null 2>&1; then
@@ -419,6 +485,13 @@ json.dump({"health_class": "healthy", "provider": "devin",
            "model": "glm-5-2", "observed_at": fresh_ts},
           open(seat_path, "w"))
 m.SEAT_HEALTH = Path(seat_path)
+# fleet-ops#3563: _read_seat now overlays the wrapper spawn-bench marker —
+# point SEAT_LEDGER at an empty dir so this TZ-parse test stays hermetic
+# (the live ledger can hold a marker for the fixture seat, e.g.
+# devin/glm-5-2 was spawn-bench-held on 2026-09-05 and this test failed
+# until the override landed).
+_empty_ledger = Path(tempfile.mkdtemp(prefix="seat-ledger-empty-"))
+m.SEAT_LEDGER = _empty_ledger
 true_epoch = calendar.timegm(time.strptime(
     fresh_ts.replace("Z", "+00:00")[:19], "%Y-%m-%dT%H:%M:%S"))
 healthy, epoch = m._read_seat()

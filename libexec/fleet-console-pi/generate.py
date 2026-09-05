@@ -13,6 +13,7 @@ shows "—"), never a frozen last value and never a coerced zero.
 import http.client
 import json
 import os
+import re
 import subprocess
 import calendar
 import time
@@ -39,6 +40,10 @@ REPAIR_STALE_S = 20 * 60       # >1.5 push cycles (CADENCE_MIN=12); younger rend
 FLEET_STALE_S = 60 * 60
 FLEET_PAUSED_MARKER = Path("/home/nish/workspaces/agent-state/FLEET-PAUSED")
 SEAT_HEALTH = Path("/home/nish/workspaces/agent-state/lanes/pi-seat-health.json")
+# Per-seat health ledger dir; the wrapper's clobber-proof bench marker for a
+# seat is <sanitised-provider>__<sanitised-model>.spawn-bench.json inside it
+# (lib/seat-lib.sh seat_spawn_bench_path).
+SEAT_LEDGER = Path("/home/nish/workspaces/agent-state/lanes/seats")
 XDG = f"/run/user/{os.getuid()}"
 
 
@@ -406,6 +411,44 @@ def collect_repairs_inflight():
                  units=names[:20], dispatch_24h=dispatch_24h, explain=explain)
 
 
+def _seat_bench_held(provider, model):
+    """True if the seat's wrapper spawn-bench marker is held right now.
+
+    fleet-ops#3563: mark_seat_empty_run / mark_seat_spawn_fail write a
+    clobber-proof marker (<p>__<m>.spawn-bench.json) beside the per-seat
+    ledger whenever they bench a seat. The sidecar can be rewritten healthy
+    by a later extension observation while the marker still holds; the tile
+    must agree with the router (seat_usable honours the marker), so a held
+    marker means "not healthy" here. Never raises; a missing, unreadable,
+    or expired marker is False.
+    """
+    if not isinstance(provider, str) or not provider:
+        return False
+    if not isinstance(model, str) or not model:
+        return False
+    safe_p = re.sub(r"[^A-Za-z0-9._-]", "_", provider)
+    safe_m = re.sub(r"[^A-Za-z0-9._-]", "_", model)
+    marker_path = SEAT_LEDGER / f"{safe_p}__{safe_m}.spawn-bench.json"
+    try:
+        marker = json.loads(marker_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(marker, dict):
+        return False
+    usable_at = marker.get("usable_at")
+    if not isinstance(usable_at, str) or not usable_at:
+        return False
+    try:
+        # UTC parse via calendar.timegm (process TZ is +05:30 on the live
+        # host; mktime would misread a future-Z as past and drop the
+        # overlay).
+        usable_epoch = calendar.timegm(time.strptime(
+            usable_at.replace("Z", "")[:19], "%Y-%m-%dT%H:%M:%S"))
+    except ValueError:
+        return False
+    return usable_epoch > int(time.time())
+
+
 def collect_running_pi():
     src = ("systemd: running user units whose ExecStart contains "
            "'pi --print'")
@@ -435,6 +478,16 @@ def collect_running_pi():
         except ValueError:
             obs_epoch = None
     stale = obs_epoch is None or (time.time() - obs_epoch) > SEAT_STALE_S
+    # fleet-ops#3563: overlay the wrapper's spawn-bench marker. The bench
+    # writers co-write pi-seat-health.json at bench time, but a later
+    # healthy observation from the seat-health extension (an in-flight run
+    # completing after the bench, or a comeback probe) rewrites the sidecar
+    # as healthy while the marker still holds the seat — the tile would
+    # show "seat healthy" for a seat the router refuses to use. A held
+    # marker renders as spawn_bench, matching the heartbeat census overlay.
+    if health == "healthy" and _seat_bench_held(
+            data.get("provider"), data.get("model")):
+        health = "spawn_bench"
     try:
         units = [n for n in _running_units() if _invokes_pi_print(n)]
     except Exception as e:

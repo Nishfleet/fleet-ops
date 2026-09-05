@@ -672,6 +672,19 @@ def _read_seat():
     except (OSError, json.JSONDecodeError):
         return 0, None
     healthy = 1 if data.get("health_class") == "healthy" else 0
+    # fleet-ops#3563: a held wrapper spawn-bench outranks a later healthy
+    # observation. mark_seat_empty_run / mark_seat_spawn_fail co-write this
+    # sidecar at bench time (fleet-ops#3559), but a subsequent healthy
+    # observation from the seat-health extension — an in-flight run
+    # completing after the bench landed, or a comeback probe — rewrites it
+    # as health_class=healthy while the marker still holds the seat. The
+    # bench and the health file then disagree exactly as this issue
+    # reported (live 2026-09-05: devin/glm-5-2 ledger healthy at 23:19Z
+    # while its spawn-bench held until 23:55Z). seat_usable already honours
+    # the marker; report the seat not-healthy here too so a benched seat
+    # never reads healthy on fleet_pi_seat_healthy.
+    if healthy and _spawn_bench_held_for(data.get("provider"), data.get("model")):
+        healthy = 0
     obs = data.get("observed_at")
     epoch = None
     if isinstance(obs, str):
@@ -3235,6 +3248,39 @@ def _spawn_bench_active(ledger_path: Path) -> bool:
     # `opencode__nemotron-3-ultra-free.spawn-bench.json` (matching the
     # live state at /home/nish/workspaces/agent-state/lanes/seats/).
     spawn_bench = ledger_path.with_name(ledger_path.stem + ".spawn-bench.json")
+    return _spawn_bench_marker_held(spawn_bench)
+
+
+def _seat_spawn_bench_path(provider, model):
+    """Spawn-bench marker path for a provider/model seat key.
+
+    Mirrors lib/seat-lib.sh seat_spawn_bench_path: each of provider and
+    model is sanitised ([^A-Za-z0-9._-] -> _) and joined as
+    `<p>__<m>.spawn-bench.json` under SEAT_LEDGER.
+    """
+    safe_p = re.sub(r"[^A-Za-z0-9._-]", "_", provider)
+    safe_m = re.sub(r"[^A-Za-z0-9._-]", "_", model)
+    return SEAT_LEDGER / f"{safe_p}__{safe_m}.spawn-bench.json"
+
+
+def _spawn_bench_held_for(provider, model) -> bool:
+    """True if the named seat's wrapper spawn-bench marker is held now.
+
+    fleet-ops#3563: the single-record sidecar (pi-seat-health.json) names a
+    provider/model directly rather than a ledger path, so the overlay needs
+    a seat-key lookup instead of _spawn_bench_active's ledger-path lookup.
+    """
+    if not isinstance(provider, str) or not provider:
+        return False
+    if not isinstance(model, str) or not model:
+        return False
+    return _spawn_bench_marker_held(_seat_spawn_bench_path(provider, model))
+
+
+def _spawn_bench_marker_held(spawn_bench: Path) -> bool:
+    """True if the spawn-bench marker file exists and its usable_at is in
+    the future. Never raises; a missing/unreadable/past-due marker is
+    False (the bench expired -> fail-open)."""
     if not spawn_bench.is_file():
         return False
     try:
@@ -3254,8 +3300,7 @@ def _spawn_bench_active(ledger_path: Path) -> bool:
         # past-local epoch and the helper would incorrectly return
         # False). Use calendar.timegm to treat the parsed tuple as
         # UTC, then compare to the UTC wall clock.
-        from calendar import timegm
-        usable_epoch = timegm(time.strptime(usable_at.replace("Z", "")[:19], "%Y-%m-%dT%H:%M:%S"))
+        usable_epoch = calendar.timegm(time.strptime(usable_at.replace("Z", "")[:19], "%Y-%m-%dT%H:%M:%S"))
     except ValueError:
         return False
     return usable_epoch > int(time.time())

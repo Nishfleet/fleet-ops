@@ -284,6 +284,57 @@ PY
 ok "generate stamps verify.cmd"
 
 # =========================================================================
+# 12b. fleet-ops#3563: a held spawn-bench marker renders the seat tile as
+#      spawn_bench, not healthy — a benched seat is never reported healthy
+# =========================================================================
+_3563_LEDGER="$scratch/ledger-3563"
+_3563_HEALTH="$scratch/seat-health-3563.json"
+mkdir -p "$_3563_LEDGER"
+_3563_LEDGER="$_3563_LEDGER" _3563_HEALTH="$_3563_HEALTH" \
+python3 - "$gen" <<'PY' || fail "3563: console seat-bench overlay failed"
+import importlib.util, json, os, sys, time
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("g", sys.argv[1])
+g = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(g)
+
+g.SEAT_LEDGER = Path(os.environ["_3563_LEDGER"])
+g.SEAT_HEALTH = Path(os.environ["_3563_HEALTH"])
+g._running_units = lambda: []
+g._pi_argv_count = lambda: 0
+
+future = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() + 3600)) + "Z"
+past = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - 60)) + "Z"
+now = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + ".000Z"
+
+g.SEAT_HEALTH.write_text(json.dumps({
+    "provider": "ollama", "model": "deepseek-v4-flash:0731",
+    "http_status": 200, "health_class": "healthy",
+    "observed_at": now,
+}), encoding="utf-8")
+marker = g.SEAT_LEDGER / "ollama__deepseek-v4-flash_0731.spawn-bench.json"
+marker.write_text(json.dumps({
+    "provider": "ollama", "model": "deepseek-v4-flash:0731",
+    "usable_at": future, "failure_mode": "empty_run",
+    "consecutive_failure_count": 3}), encoding="utf-8")
+
+tile = g.collect_running_pi()
+assert tile["health_class"] == "spawn_bench", tile
+assert "spawn_bench" in tile.get("note", ""), tile
+print("OK: held spawn-bench renders the seat tile as spawn_bench, not healthy")
+
+# Expired marker -> fail-open, the healthy observation renders normally.
+marker.write_text(json.dumps({
+    "provider": "ollama", "model": "deepseek-v4-flash:0731",
+    "usable_at": past, "failure_mode": "empty_run"}), encoding="utf-8")
+tile = g.collect_running_pi()
+assert tile["health_class"] == "healthy", tile
+print("OK: expired spawn-bench leaves the healthy reading alone")
+PY
+ok "fleet-ops#3563: console tile overlays the spawn-bench marker — a benched seat never shows healthy"
+
+# =========================================================================
 # 13. drill --check
 # =========================================================================
 bash -n "$drill" || fail "drill: bash syntax error"
