@@ -621,10 +621,12 @@ def _read_seat():
     epoch = None
     if isinstance(obs, str):
         try:
-            # RFC3339 / ISO-8601 with trailing 'Z' for UTC.
-            ts = obs.replace("Z", "+00:00")
+            # RFC3339 / ISO-8601 with trailing 'Z' for UTC. Decode in UTC:
+            # time.mktime would re-interpret the wall-clock as LOCAL tz and
+            # inflate the age by the UTC offset (e.g. +5:30 IST -> always
+            # ~19800s), keeping FleetPiSeatHealthStale firing on a fresh file.
             epoch = int(
-                time.mktime(time.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S"))
+                calendar.timegm(time.strptime(obs[:19], "%Y-%m-%dT%H:%M:%S"))
             )
         except ValueError:
             epoch = None
