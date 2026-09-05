@@ -34,6 +34,29 @@ import urllib.request
 import urllib.error
 from pathlib import Path
 
+
+def _ensure_gh_token() -> None:
+    """Mint a short-lived nishfleet-worker installation token if not already set."""
+    if os.environ.get("GH_TOKEN"):
+        return
+    try:
+        out = subprocess.check_output(
+            ["worker-token", "--print"],
+            text=True,
+            stderr=subprocess.STDOUT,
+            timeout=30,
+        )
+    except subprocess.CalledProcessError as exc:
+        print(f"DEAD APP IDENTITY: worker-token mint failed: {exc.output}", file=sys.stderr)
+        sys.exit(3)
+    for line in out.splitlines():
+        if line.startswith("export GH_TOKEN="):
+            os.environ["GH_TOKEN"] = line.split("=", 1)[1]
+            return
+    print("DEAD APP IDENTITY: worker-token output did not contain GH_TOKEN export", file=sys.stderr)
+    sys.exit(3)
+
+
 # --- Config ----------------------------------------------------------------
 
 HOME = Path.home()
@@ -411,6 +434,7 @@ def _claim_result(claim):
 
 def _file_finding(finding):
     """File a GitHub issue for a staleness finding."""
+    _ensure_gh_token()
     claim = finding["claim"]
     ctype = claim["type"]
     source = claim["source"]

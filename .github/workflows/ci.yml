@@ -195,6 +195,10 @@ jobs:
         # suite runs transport-offline by declaration; the gate itself stays ON
         # in live operation where the real probe/bin exist.
         export PI_SEAT_LIB_CHECK_TRANSPORT=0
+        # fleet-ops#3445: tests run offline with stub gh; set a token so
+        # GitHub-write canaries can skip the App-token mint instead of failing
+        # closed in CI where the worker credentials are not installed.
+        export GH_TOKEN="${{ secrets.GITHUB_TOKEN }}"
         for t in jq openssl curl python3 node git flock; do
           command -v "$t" >/dev/null 2>&1 || {
             echo "missing tool: $t" >&2

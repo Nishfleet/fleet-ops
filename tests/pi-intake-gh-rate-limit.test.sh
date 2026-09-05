@@ -116,6 +116,7 @@ run_tick() {
         PI_INTAKE_RECONCILER_PROM="$scratch/reconciler" \
         PI_INTAKE_GH_RATE_LIMIT_STATE="$scratch/gh-rate-limit.json" \
         PI_INTAKE_GH_RATE_LIMIT_MAX_AGE="$max_age" \
+        PI_INTAKE_GH_SECONDARY_STATE_DIR="$scratch" \
         PI_INTAKE_ISSUE_STATE_DIR="$scratch/pi-issues" \
         SEAT_LIB="$stubs" \
         PRECEDENCE_BAND_LIB="$stubs" \
@@ -152,3 +153,37 @@ rc=$?
 echo "$out" | grep -qF 'holding claims this tick' && fail "missing state must NOT hold claims (fail-open): $out" || true
 echo "$out" | grep -qF 'gh rate-limit state file missing' || fail "missing state should warn: $out"
 ok "missing gh rate-limit state is fail-open"
+
+# Test 4: fleet-ops#3445 secondary rate-limit state holds claims with 60s x attempt backoff.
+_backoff_now=$(date +%s)
+_backoff_until=$(( _backoff_now + 120 ))
+cat >"$scratch/gh-secondary-rate.json" <<JSON
+{
+  "submitted_too_quickly": 1,
+  "attempt": 2,
+  "backoff_until": $_backoff_until,
+  "updated_at": $_backoff_now
+}
+JSON
+out="$(run_tick 0 120)"
+rc=$?
+[[ "$rc" == "0" ]] || fail "secondary rate-limit tick must exit 0 (hold), got rc=$rc"
+echo "$out" | grep -qF 'gh secondary rate-limit active' || fail "secondary state must log active: $out"
+echo "$out" | grep -qF 'holding claims this tick' || fail "secondary rate-limit must hold claims: $out"
+ok "secondary rate-limit state holds claims and exits 0 (fleet-ops#3445)"
+
+# Test 5: expired secondary state is cleared and the tick continues.
+_backoff_past=$(( _backoff_now - 1 ))
+cat >"$scratch/gh-secondary-rate.json" <<JSON
+{
+  "submitted_too_quickly": 1,
+  "attempt": 1,
+  "backoff_until": $_backoff_past,
+  "updated_at": $_backoff_past
+}
+JSON
+out="$(run_tick 0 120)"
+rc=$?
+[[ "$rc" == "0" ]] || fail "expired secondary rate-limit tick must exit 0, got rc=$rc"
+echo "$out" | grep -qF 'gh secondary rate-limit active' && fail "expired secondary state must NOT hold claims: $out" || true
+ok "expired secondary rate-limit state is cleared and the tick continues"
