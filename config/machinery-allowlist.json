@@ -234,6 +234,12 @@
       "endorsement": "timer desc: Nish until 2026-09-08 return"
     },
     {
+      "unit": "fable-fleet-check",
+      "class": "a",
+      "source": "hand-placed",
+      "endorsement": "unit desc: temporary — retire with fleet-landing-watch (vault agent-drop 2026-09-04T11-31-05Z); timer-manifest.json carries the cadence entry (fleet-ops#3338)"
+    },
+    {
       "unit": "nish-boundary-notify",
       "class": "a",
       "source": "hand-placed",
