@@ -3367,12 +3367,14 @@ bash "$here/pi-issue-run-noop-bench.test.sh" || fail "pi-issue-run-noop-bench te
 # and is enforced by bin/pi-issue-run on the success path.
 bash "$here/pi-issue-run-debug-playbook-gate.test.sh" || fail "pi-issue-run-debug-playbook-gate tests failed"
 
-# fleet-ops#1408: a seat that fails repeatedly must NOT re-enter rotation at
-# the base backoff every cycle. mark_seat_spawn_fail escalates the bench by
-# consecutive_failure_count so each repeated REAL wall (429/402/500/spawn
-# ETIMEDOUT) benches longer, breaking the re-seat loop. mark_seat_empty_run is
-# FLAT (EMPTY_RUN_BACKOFF_S, 900s) since fleet-ops#2343 — a provider no-op is
-# not a wall, and the old #1408 empty-run ladder churned healthy seats.
+# fleet-ops#1408/#3531: a seat that fails repeatedly must NOT re-enter
+# rotation at the base backoff every cycle. mark_seat_spawn_fail escalates
+# the bench by consecutive_failure_count so each repeated REAL wall
+# (429/402/500/spawn ETIMEDOUT) benches longer, breaking the re-seat loop.
+# fleet-ops#3531: mark_seat_empty_run now escalates geometrically too
+# (base * 2^(n-1), capped at 6 h / 1800 s for remote agents), using the
+# generic failure-ceiling park so chronic no-op'ers are held out of rotation
+# longer without punishing a single flake.
 # Hosted here for the same reason as the noop-bench test above (listed in
 # ci.yml, runs independent of the p14-test-listing-gate).
 bash "$here/seat-noop-escalation.test.sh" || fail "seat-noop-escalation tests failed"
