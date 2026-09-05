@@ -40,9 +40,9 @@ fo_high=$(jq -r '.worker_memory["fleet-ops"].MemoryHigh // empty' "$caps")
 o5_max=$(jq -r '.worker_memory["0509"].MemoryMax // empty' "$caps")
 o5_high=$(jq -r '.worker_memory["0509"].MemoryHigh // empty' "$caps")
 [[ "$fo_max" == "1536M" ]] || fail "fleet-ops MemoryMax want 1536M got '$fo_max'"
-[[ "$fo_high" == "1G" ]] || fail "fleet-ops MemoryHigh want 1G got '$fo_high'"
+[[ "$fo_high" == "1.25G" ]] || fail "fleet-ops MemoryHigh want 1.25G got '$fo_high'"
 [[ "$o5_max" == "2G" ]] || fail "0509 MemoryMax want 2G got '$o5_max'"
-[[ "$o5_high" == "1536M" ]] || fail "0509 MemoryHigh want 1536M got '$o5_high'"
+[[ "$o5_high" == "1.75G" ]] || fail "0509 MemoryHigh want 1.75G got '$o5_high'"
 tgt=$(jq -r '.target_concurrent // empty' "$caps")
 [[ "$tgt" == "25" ]] || fail "target_concurrent want 25 got '$tgt'"
 ram=$(jq -r '.ram_gb_per_worker // empty' "$caps")
@@ -54,9 +54,9 @@ export SEAT_CAPS_JSON="$caps"
 # shellcheck source=/dev/null
 source "$seat_lib"
 row=$(worker_memory_for_repo "fleet-ops")
-[[ "$row" == $'1536M\t1G' ]] || fail "fleet-ops row want $'1536M\\t1G' got '$row'"
+[[ "$row" == $'1536M\t1.25G' ]] || fail "fleet-ops row want $'1536M\\t1.25G' got '$row'"
 row=$(worker_memory_for_repo "0509")
-[[ "$row" == $'2G\t1536M' ]] || fail "0509 row want $'2G\\t1536M' got '$row'"
+[[ "$row" == $'2G\t1.75G' ]] || fail "0509 row want $'2G\\t1.75G' got '$row'"
 row=$(worker_memory_for_repo "unknown-repo")
 [[ -z "$row" ]] || fail "unknown-repo must return empty, got '$row'"
 ok "2: worker_memory_for_repo returns per-repo caps"
@@ -71,7 +71,7 @@ row=$(worker_memory_for_difficulty "fleet-ops" "heavy")
 row=$(worker_memory_for_difficulty "fleet-ops" "keystone")
 [[ "$row" == $'3G\t2G' ]] || fail "keystone difficulty want $'3G\t2G' got '$row'"
 row=$(worker_memory_for_difficulty "fleet-ops" "light")
-[[ "$row" == $'1536M\t1G' ]] || fail "light difficulty must fall back to per-repo, got '$row'"
+[[ "$row" == $'1536M\t1.25G' ]] || fail "light difficulty must fall back to per-repo, got '$row'"
 row=$(worker_memory_for_difficulty "unknown-repo" "light")
 [[ -z "$row" ]] || fail "unknown-repo light must return empty, got '$row'"
 ok "2b: worker_memory_for_difficulty returns heavy class for heavy|keystone"
@@ -99,9 +99,10 @@ trap 'rm -rf "$scratch"' EXIT
     heavy=$(count_active_heavy)
     [[ "$heavy" == "1" ]] || fail "count_active_heavy want 1 got '$heavy'"
     charge=$(active_ram_charge)
-    # 2 issue workers (1 heavy + 1 light) -> 1 + 2 = 3 light-worker units.
-    [[ "$charge" == "3" ]] || fail "active_ram_charge want 3 (1 light + 2 heavy) got '$charge'"
-    ok "2c: active_ram_charge charges heavy workers at 1.0 GB (double)"
+    # 2 issue workers (1 heavy + 1 light fleet-ops): heavy charges 1.0/0.5=2
+    # units, fleet-ops light charges 1.25/0.5=2.5 units (fleet-ops#3679).
+    [[ "$charge" == "4.500" ]] || fail "active_ram_charge want 4.500 (2 heavy + 2.5 fleet-ops light) got '$charge'"
+    ok "2c: active_ram_charge charges per-repo MemoryHigh (heavy 2 + fleet-ops 2.5)"
 )
 
 # --- 3. admit_ceiling / target_concurrent ----------------------------------
@@ -170,11 +171,11 @@ mkdir -p "$drop_dir"
 } > "$drop_dir/memory.conf"
 grep -qE '^MemoryMax=1536M$' "$drop_dir/memory.conf" \
     || fail "written drop-in missing MemoryMax=1536M"
-grep -qE '^MemoryHigh=1G$' "$drop_dir/memory.conf" \
-    || fail "written drop-in missing MemoryHigh=1G"
+grep -qE '^MemoryHigh=1.25G$' "$drop_dir/memory.conf" \
+    || fail "written drop-in missing MemoryHigh=1.25G"
 grep -qE '^MemorySwapMax=0$' "$drop_dir/memory.conf" \
     || fail "written drop-in missing MemorySwapMax=0 (fleet-ops#3611)"
-ok "7: scratch drop-in write produces MemoryMax=1536M / MemoryHigh=1G / MemorySwapMax=0"
+ok "7: scratch drop-in write produces MemoryMax=1536M / MemoryHigh=1.25G / MemorySwapMax=0"
 
 # --- 8. worker_env_for_repo -------------------------------------------------
 # fleet-ops#1587: per-repo Environment variables for browser-heavy repos.

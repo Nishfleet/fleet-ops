@@ -562,7 +562,10 @@ active=$(active_ram_charge 2>/dev/null || echo 0)
 issue=$(count_active_issue 2>/dev/null || echo 0)
 org=$(count_active_org 2>/dev/null || echo 0)
 org_res=$(org_reserve 2>/dev/null || echo 2)
-slots=$(( total_cap - active ))
+# active_ram_charge is fractional (per-repo MemoryHigh / fallback, fleet-ops#3679),
+# so compute slots in awk, not bash integer math. slots = remaining fallback
+# worker capacity (integer count of how many more light workers fit).
+slots=$(awk -v t="$total_cap" -v a="$active" 'BEGIN{ s=t-a; if(s<0)s=0; print int(s) }')
 
 if (( slots <= 0 )); then
     echo "at capacity (total_cap=$total_cap, active=$active, issue=$issue, org=$org, org_reserve=$org_res)"
