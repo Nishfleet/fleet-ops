@@ -700,6 +700,9 @@ healthy_capable_seat_for_issue() {
 reset_reclaim_and_systemic() {
     local repo="$1" num="$2"
     local inst="${repo#*/}-${num}"
+    # shellcheck disable=SC2031
+    # ATTEMPTS_DIR is only re-assigned inside the isolated subshell of the
+    # picker above (fleet-ops#3310); the global value is unchanged here.
     rm -f "$ATTEMPTS_DIR/pi-issue-${inst}.reclaim-count" \
           "$ATTEMPTS_DIR/pi-issue-${inst}.systemic" 2>/dev/null || true
 }
