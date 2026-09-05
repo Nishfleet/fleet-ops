@@ -7,25 +7,28 @@
 # exits 1 when the output does not meet the required shape (so systemd retries
 # once via Restart=on-failure, then the inherited OnFailure ladder takes over).
 #
-# Roles:
-#   devin            -> devin/glm-5-2
-#   free-glm-5-3     -> a free-class seat (seat-caps class=free). Previously
-#                      hard-matched the zenmux z-ai/glm-5.3 model, which went
-#                      credentials_bad (2026-08-25) and had no other glm-5.3
-#                      free seat anywhere -> NO-USABLE-SEAT every heartbeat
-#                      tick -> every free-glm-5-3 audit unit failed -> the
-#                      escalation layer summoned the auditor (2026-08-27).
-#                      Free is a class, not a model: pick any class=free seat
-#                      with a model cap > 0 (commandcode ds-flash, hetzner
-#                      qwen), fall back to any usable capable seat, and only
-#                      then admit total wall.
-#   straitly         -> straitly/deepseek/deepseek-v4-pro (default seat)
+# Roles (fleet-ops#3121 three-role blind panel; Nish 2026-09-04):
+#   devin            -> devin/glm-5-2 (judge)
+#   free-glm         -> first usable of zenmux/z-ai/glm-5.3-free,
+#                      cline/z-ai/glm-5.3-flash; then any free-class seat;
+#                      then any usable capable seat. 'free' class prior to a
+#                      2026-08-25 glm-5.3 credential hiccup hard-matched a
+#                      single model and NO-USABLE-SEAT'ed every tick; the
+#                      role now resolves to free-as-a-class, never a unit
+#                      failure.
+#   senior           -> first usable of senior_seats_in_order from
+#                      config/seat-caps.json (replaces the dead straitly
+#                      role): cursor/cursor-grok-4.6-high,
+#                      xai-oauth/grok-4.6, openrouter/deepseek/deepseek-v4-...
+#                      A walled seat is skipped, never a unit failure; if the
+#                      whole ladder is walled the role falls through to any
+#                      usable capable seat.
 #
 # Environment seams:
 #   AUDIT_STATE_DIR              vote file tree (default ~/.local/state/fleet-audit)
 #   AUDIT_DEVIN_SEAT             override provider:model, e.g. "devin:glm-5-2"
-#   AUDIT_FREE_GLM53_SEAT        override provider:model
-#   AUDIT_STRAITLY_SEAT          override provider:model
+#   AUDIT_FREE_GLM_SEAT          override provider:model (alias: AUDIT_FREE_GLM53_SEAT)
+#   AUDIT_SENIOR_SEAT            override provider:model (alias: AUDIT_STRAITLY_SEAT)
 #   AUDIT_PROMPT                 path to auditor prompt
 #   AUDIT_PLAN_FILE              decisions ledger source
 #   AUDIT_GH, AUDIT_SYSTEMCTL    overrides for tests
@@ -107,31 +110,36 @@ log() {
 # Returns 0 if the call should proceed, 1 if the runner should SKIP.
 seat_health_ok_for_call() {
     local p="$1" m="$2" marker="${PI_SEAT_HEALTH_MARKER:-$HOME/../workspaces/agent-state/lanes/pi-seat-health.json}"
-    local lp="${PI_SEAT_HEALTH_LEDGER_DIR:-}"
     local f
 
-    # Prefer the per-seat ledger (set by find_free_seat / find_any_capable_seat
-    # upstream); the global lanes marker is the alert-repair-dispatch fallback.
-    if [ -n "$lp" ] && [ -n "$p" ] && [ -n "$m" ]; then
-        f="$lp/${p}__${m}.json"
-        if [ -f "$f" ]; then
-            local hc
-            hc=$(jq -r '.health_class // ""' "$f" 2>/dev/null || printf '')
-            case "$hc" in
-                # fleet-ops#2327: "corpse" is the terminal dead class the
-                # extension writes when seat_dead fires — a corpse is retired,
-                # never routable. seat_usable already blocks it upstream; this
-                # preflight skips it too (defense in depth).
-                transient_fault|rate_limited|corpse)
-                    log "seat_health preflight: $p/$m class=$hc -> SKIP"
-                    return 1
-                    ;;
-            esac
-            # credentials_bad / quota_exhausted are already caught by
-            # seat_usable upstream; if the runner got here the seat was
-            # considered usable. Do not double-skip.
-            return 0
+    # Prefer the per-seat ledger (the same authority seat_usable uses); the
+    # global lanes marker is the alert-repair-dispatch fallback.
+    if command -v seat_ledger_path >/dev/null 2>&1; then
+        f=$(seat_ledger_path "$p" "$m" 2>/dev/null) || f=''
+    else
+        local lp="${PI_SEAT_HEALTH_LEDGER_DIR:-}"
+        if [ -n "$lp" ] && [ -n "$p" ] && [ -n "$m" ]; then
+            f="$lp/${p}__${m}.json"
         fi
+    fi
+    if [ -n "$f" ] && [ -f "$f" ]; then
+        local hc
+        hc=$(jq -r '.health_class // ""' "$f" 2>/dev/null || printf '')
+        case "$hc" in
+            # fleet-ops#2327: "corpse" is the terminal dead class the
+            # extension writes when seat_dead fires — a corpse is retired,
+            # never routable. seat_usable already blocks it upstream; this
+            # preflight skips it too (defense in depth).
+            # fleet-ops#3351: quota_exhausted is fail-opened by seat_usable once
+            # usable_at passes (one recovery probe). The auditor must not call a
+            # 402 seat and re-anchor observed_at; recovery probes stay with
+            # fleet-seat-comeback-release.
+            transient_fault|rate_limited|quota_exhausted|corpse)
+                log "seat_health preflight: $p/$m class=$hc -> SKIP"
+                return 1
+                ;;
+        esac
+        return 0
     fi
 
     [ -f "$marker" ] || return 0
@@ -143,7 +151,7 @@ seat_health_ok_for_call() {
     # provider+model. A different recorded seat is no signal here.
     [ "$rec_p" = "$p" ] && [ "$rec_m" = "$m" ] || return 0
     case "$hc" in
-        transient_fault|rate_limited|corpse) return 1 ;;
+        transient_fault|rate_limited|quota_exhausted|corpse) return 1 ;;
     esac
     return 0
 }
@@ -213,6 +221,79 @@ resolve_free_role() {
     return 1
 }
 
+# fleet-ops#3121: the free-glm role (Nish 2026-09-04 three-role panel).
+# First usable of zenmux/z-ai/glm-5.3-free, cline/z-ai/glm-5.3-flash; then
+# any free-class seat; then any usable capable seat. Never a unit failure on
+# a specific slug — free is a class, not a model.
+resolve_free_glm() {
+    if [ -n "${AUDIT_FREE_GLM_SEAT:-}" ]; then
+        printf '%s\t%s\n' "${AUDIT_FREE_GLM_SEAT%%:*}" "${AUDIT_FREE_GLM_SEAT#*:}"
+        return 0
+    fi
+    if [ -n "${AUDIT_FREE_GLM53_SEAT:-}" ]; then
+        printf '%s\t%s\n' "${AUDIT_FREE_GLM53_SEAT%%:*}" "${AUDIT_FREE_GLM53_SEAT#*:}"
+        return 0
+    fi
+    local order="${AUDIT_FREE_GLM_ORDER:-zenmux/z-ai/glm-5.3-free cline/z-ai/glm-5.3-flash}"
+    local slug p m
+    for slug in $order; do
+        [ -n "$slug" ] || continue
+        p="${slug%%/*}"
+        m="${slug#*/}"
+        [ -n "$p" ] && [ -n "$m" ] || continue
+        [ "$(model_cap "$p" "$m" 2>/dev/null || echo 0)" -gt 0 ] 2>/dev/null || continue
+        seat_usable "$p" "$m" 2>/dev/null || continue
+        printf '%s\t%s\n' "$p" "$m"
+        return 0
+    done
+    log "no ordered free-glm seat usable; falling back to any free-class seat"
+    resolve_free_role
+}
+
+# fleet-ops#3121: the senior role replaces the dead straitly auditor. First
+# usable seat in senior_seats_in_order (config/seat-caps.json) wins; a walled
+# seat is skipped, never a unit failure. If the whole ladder is walled the
+# resolver falls through to any usable capable seat. Returns 1 (lane fault ->
+# exit 0, no vote, retry next tick) only when nothing anywhere is usable.
+resolve_senior_seat() {
+    if [ -n "${AUDIT_SENIOR_SEAT:-}" ]; then
+        printf '%s\t%s\n' "${AUDIT_SENIOR_SEAT%%:*}" "${AUDIT_SENIOR_SEAT#*:}"
+        return 0
+    fi
+    if [ -n "${AUDIT_STRAITLY_SEAT:-}" ]; then
+        printf '%s\t%s\n' "${AUDIT_STRAITLY_SEAT%%:*}" "${AUDIT_STRAITLY_SEAT#*:}"
+        return 0
+    fi
+    local s
+    # Prefer the shared seat-lib ladder (first usable, any-capable fallback
+    # built in). Only inline when seat-lib is not available (tests, degraded).
+    if command -v find_senior_seat >/dev/null 2>&1; then
+        if s=$(find_senior_seat); then
+            printf '%s\n' "$s"
+            return 0
+        fi
+        return 1
+    fi
+    local order="${AUDIT_SENIOR_ORDER:-cursor/cursor-grok-4.6-high xai-oauth/grok-4.6 openrouter/deepseek/deepseek-v4-flash-0731}"
+    local seat p m
+    for seat in $order; do
+        [ -n "$seat" ] || continue
+        p="${seat%%/*}"
+        m="${seat#*/}"
+        [ -n "$p" ] && [ -n "$m" ] || continue
+        [ "$(model_cap "$p" "$m" 2>/dev/null || echo 0)" -gt 0 ] 2>/dev/null || continue
+        seat_usable "$p" "$m" 2>/dev/null || continue
+        printf '%s\t%s\n' "$p" "$m"
+        return 0
+    done
+    log "no usable senior seat from ladder; falling through to any capable seat"
+    if s=$(find_any_capable_seat); then
+        printf '%s\n' "$s"
+        return 0
+    fi
+    return 1
+}
+
 resolve_seat() {
     local role="$1"
     case "$role" in
@@ -223,30 +304,11 @@ resolve_seat() {
                 printf 'devin\tglm-5-2\n'
             fi
             ;;
-        free-glm-5-3|free)
-            resolve_free_role
+        free-glm-5-3|free|free-glm)
+            resolve_free_glm
             ;;
-        straitly)
-            if [ -n "${AUDIT_STRAITLY_SEAT:-}" ]; then
-                printf '%s\t%s\n' "${AUDIT_STRAITLY_SEAT%%:*}" "${AUDIT_STRAITLY_SEAT#*:}"
-            else
-                # Default straitly seat (seat-caps class=metered). If the
-                # default is dead, rotate within the provider like free does.
-                if seat_usable straitly deepseek/deepseek-v4-pro 2>/dev/null; then
-                    printf 'straitly\tdeepseek/deepseek-v4-pro\n'
-                else
-                    local p m _capable
-                    while IFS=$'\t' read -r p m _ _capable; do
-                        [ "$p" = "straitly" ] || continue
-                        [ -n "$m" ] || continue
-                        seat_usable "$p" "$m" 2>/dev/null || continue
-                        printf '%s\t%s\n' "$p" "$m"
-                        return 0
-                    done < <(enumerate_seats)
-                    log "no usable straitly seat (default deepseek-v4-pro unavailable)"
-                    return 1
-                fi
-            fi
+        senior|straitly)
+            resolve_senior_seat
             ;;
         *)
             log "unknown auditor role: $role"
@@ -407,7 +469,7 @@ main() {
     role="${parts[2]}"
 
     case "$role" in
-        devin|free-glm-5-3|free|straitly) : ;;
+        devin|free-glm-5-3|free|free-glm|senior|straitly) : ;;
         *) log "unknown role '$role' in instance $instance"; exit 2 ;;
     esac
 

@@ -54,7 +54,7 @@ cat >"$scratch/seat-caps.json" <<'JSON'
   "ram_gb_per_worker": 1.5,
   "free_providers_in_order": ["commandcode"],
   "prepaid_providers_in_order": ["cursor", "xai-oauth"],
-  "keystone_only_providers": ["cursor"],
+  "senior_seats_in_order": ["cursor/cursor-grok-4.6-high", "xai-oauth/grok-4.6"],
   "cursor_overage": {
     "opens_after_included_exhausted": true,
     "overage_model": "cursor-grok-4.6-high",

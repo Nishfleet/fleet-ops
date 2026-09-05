@@ -209,6 +209,63 @@ issues_json=$(jq -c --arg esc "$ESCALATE_LABEL" \
     '[.[] | select((.labels // []) | map(if type == "object" then (.name // empty) else . end) | index($esc) == null)]' \
     <<<"$issues_json" 2>/dev/null || printf '[]')
 
+# fleet-ops#3295: umbrella-labeled issues are tracking parents, not
+# claimable work (label desc: "tracking parent; not claimable"). The
+# lifecycle-label-sweep guard stops NEW umbrella issues from getting
+# agent-ready, but an umbrella issue may already carry agent-ready (e.g.
+# #3128 was labeled agent-ready before this guard landed, or a manual
+# label edit re-added it). This filter is the intake-side guard so the
+# tick never dispatches a worker on a tracker with no implementable work
+# — the dead-seat loop where the worker claims, finds nothing to do, and
+# dies or releases. Same jq shape as the escalate-senior filter above;
+# the label is fetched in the initial list so this is a pure jq pass.
+# fleet_umbrella_dispatch_total counts umbrella issues found in the
+# agent-ready list BEFORE this filter drops them — a non-zero value means
+# the sweep guard broke or someone manually labeled an umbrella issue
+# agent-ready, but this filter still prevents the dispatch. The counter
+# is informational (not a blocker); a sustained rise is a regression
+# signal on the sweep guard.
+UMBRELLA_LABEL="${PI_INTAKE_UMBRELLA_LABEL:-umbrella}"
+umbrella_dispatch_seen=$(printf '%s' "$issues_json" | jq --arg umb "$UMBRELLA_LABEL" \
+    '[(. // []) | .[] | select((.labels // []) | map(if type == "object" then (.name // empty) else . end) | index($umb) != null)] | length' 2>/dev/null || echo 0)
+issues_json=$(jq -c --arg umb "$UMBRELLA_LABEL" \
+    '[.[] | select((.labels // []) | map(if type == "object" then (.name // empty) else . end) | index($umb) == null)]' \
+    <<<"$issues_json" 2>/dev/null || printf '[]')
+
+# fleet-ops#3295: export fleet_umbrella_dispatch_total — cumulative count
+# of umbrella-labeled issues found in the agent-ready list (the near-
+# dispatch count). With both guards (sweep + intake filter) this trends to
+# 0; a non-zero value means the sweep guard broke or a manual label edit
+# re-added agent-ready to an umbrella issue, but the intake filter still
+# prevents the dispatch. Same per-repo prom-file convention as the
+# reconciler counter. Written BEFORE the no-ready-issues early exit so a
+# tick that found only umbrella issues still records them. Tests override
+# the path via PI_INTAKE_UMBRELLA_PROM.
+umbrella_prom_base="${PI_INTAKE_UMBRELLA_PROM:-/var/lib/prometheus/node-exporter/fleet-umbrella-dispatch}"
+umbrella_prom="${umbrella_prom_base}-${REPO}.prom"
+_umbrella_prev_total=0
+if [[ -f "$umbrella_prom" ]]; then
+    _umbrella_prev_total=$(awk -v r="$REPO" '
+        $0 ~ "fleet_umbrella_dispatch_total\\{repo=\""r"\"\\}" {
+            gsub(/[^0-9.]/, "", $2); v = int($2);
+            if (v > 0) print v; else print 0; exit
+        }
+        END { if (NR == 0) print 0 }
+    ' "$umbrella_prom" 2>/dev/null || echo 0)
+    _umbrella_prev_total="${_umbrella_prev_total:-0}"
+fi
+_umbrella_new_total=$(( _umbrella_prev_total + umbrella_dispatch_seen ))
+if {
+    printf '# HELP fleet_umbrella_dispatch_total Cumulative number of umbrella-labeled issues found in the agent-ready list by the intake tick (fleet-ops#3295). Trends to 0 with both guards; non-zero means the sweep guard broke but the intake filter still prevents dispatch.\n'
+    printf '# TYPE fleet_umbrella_dispatch_total counter\n'
+    printf 'fleet_umbrella_dispatch_total{repo="%s"} %d\n' "$REPO" "$_umbrella_new_total"
+} > "$umbrella_prom.tmp" 2>/dev/null; then
+    mv "$umbrella_prom.tmp" "$umbrella_prom" 2>/dev/null || true
+fi
+if (( umbrella_dispatch_seen > 0 )); then
+    echo "umbrella-dispatch-seen: delta=$umbrella_dispatch_seen total=$_umbrella_new_total repo=$REPO (intake filter prevented dispatch)"
+fi
+
 # fleet-ops#1464 — reconciler-caught counter. Every time the poll finds
 # ready work, it means the GH webhook (workers/github-push-forward/ →
 # gh-webhook-receiver.service) DID NOT trigger pi-intake@<repo> for this
@@ -331,6 +388,29 @@ d1_gate_integrity_needed() {
         fi
     done <<<"$D1_GATE_BODY_NEEDLES"
     return 1
+}
+
+# fleet-ops#3120/#3238 (2026-09-05): difficulty comes from the ISSUE, never from
+# the packet size. The packet is worker.md (~32 KB) + a TARGET line, so
+# seat-lib's task_weight fallback (HEAVY_PKT_BYTES=8192) classified EVERY issue
+# heavy and routed all work to the small capable pool while ollama and the free
+# seats sat idle. Rules: keystone label/title -> keystone; label heavy, or body
+# > DIFFICULTY_HEAVY_BODY_BYTES, or more than DIFFICULTY_HEAVY_REQUIRED
+# `- required:` lines -> heavy; else light. Emitted as the packet's first line,
+# which packet_difficulty already honours.
+DIFFICULTY_HEAVY_BODY_BYTES="${PI_INTAKE_DIFFICULTY_HEAVY_BODY_BYTES:-6000}"
+DIFFICULTY_HEAVY_REQUIRED="${PI_INTAKE_DIFFICULTY_HEAVY_REQUIRED:-2}"
+issue_difficulty() {
+    local labels_json="$1" title="$2" body="$3" lowered bytes req
+    lowered="${title,,} ${labels_json,,}"
+    if [[ "$lowered" == *keystone* ]]; then echo "keystone"; return; fi
+    if [[ "$labels_json" == *'"heavy"'* ]]; then echo "heavy"; return; fi
+    bytes=$(printf '%s' "$body" | wc -c); bytes=${bytes//[^0-9]/}
+    req=$(printf '%s\n' "$body" | grep -ciE '^[[:space:]]*-[[:space:]]*required[^:]*:' || true)
+    if (( ${bytes:-0} > DIFFICULTY_HEAVY_BODY_BYTES )) || (( ${req:-0} > DIFFICULTY_HEAVY_REQUIRED )); then
+        echo "heavy"; return
+    fi
+    echo "light"
 }
 
 geo_aeo_needed() {
@@ -883,6 +963,7 @@ blocked-on: nish-decision" 2>/dev/null || true
     # keystone marker in pi-issue-start).
     packet_path="$ISSUE_STATE_DIR/${REPO}-${N}.in"
     {
+        echo "difficulty: $(issue_difficulty "${labels[$i]}" "$title" "$body")"
         cat "$WORKER_PROMPT"
         if d1_gate_integrity_needed "$body" \
             && [[ -f "$WORKER_BLOCKS_DIR/$D1_GATE_INTEGRITY_BLOCK" ]]; then

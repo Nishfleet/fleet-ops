@@ -40,7 +40,12 @@
 #     immediately. A no-wall corpse from a PERMANENT class (credentials_bad
 #     401/403, quota_exhausted-by-age 402) and any corpse still owed a
 #     comeback clock (future wall) keep the 6h grace hold before physical
-#     retirement.
+#     retirement. fleet-ops#3301: if THIS sweep's failed probe already
+#     re-anchored a future wall (the extension wrote usable_at from a real
+#     HTTP 429, rebench_seat skipped), do NOT corpse — a no-wall corpse
+#     write would wipe the retry window the extension just set (lived
+#     2026-09-04T16:30Z opencode/mimo-v2.5-free: 429 +15min then CORPSED
+#     with usable_at=null, 27 failures, never released).
 #
 # Loud backstop (fleet-ops#2421): after the sweep, if walled seats still
 # hold EXPIRED wall clocks AND nothing was released this run, the release
@@ -1040,7 +1045,8 @@ main() {
             # re-benches again at the slower cadence. The loud-stall
             # check below still fires when EVERY probe attempt keeps
             # failing across re-bench windows (the genuine stuck case).
-            rebench_seat "$p" "$m" "$f" || true
+            local _rebench_rc=0
+            rebench_seat "$p" "$m" "$f" || _rebench_rc=$?
             # fleet-ops#2638: after re-bench the ledger's
             # consecutive_failure_count has incremented. If it has crossed
             # SEAT_DEAD_CONSECUTIVE_THRESHOLD the seat is terminally dead —
@@ -1081,6 +1087,22 @@ main() {
             # never fire.
             if [[ "$_pre_rebench_hc" == "quota_exhausted" ]]; then
                 log "skip corpse $p/$m: quota_exhausted is time-based (seat_dead at observed_at age >= 24h), not count-based — re-benched, not corpseed (fleet-ops#3176)"
+            elif (( _rebench_rc != 0 )); then
+                # fleet-ops#3301: only skip corpse when a FUTURE wall is
+                # actually on the ledger. rebench_seat returns 1 for two
+                # reasons: (a) the extension re-anchored usable_at into the
+                # future (the lived 2026-09-04T16:30Z mimo 429 path — honour
+                # that window), (b) jq compose / rename failed and the wall
+                # is still in the past (still corpse; a no-wall corpse is
+                # the right terminal write when nothing set a retry clock).
+                local _post_wall _post_we
+                _post_wall=$(wall_end_of "$f")
+                _post_we=$(ts_epoch "$_post_wall")
+                if [[ -n "$_post_we" ]] && (( _post_we > now )); then
+                    log "skip corpse $p/$m: extension re-anchored a future wall this sweep — retry window stands (fleet-ops#3301)"
+                else
+                    corpse_seat "$p" "$m" "$f" "$_merged" || true
+                fi
             else
                 corpse_seat "$p" "$m" "$f" "$_merged" || true
             fi

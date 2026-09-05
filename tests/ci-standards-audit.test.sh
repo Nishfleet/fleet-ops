@@ -404,6 +404,11 @@ bash "$here/sgscan.test.sh"
 # them without a workflow-file edit.
 bash "$here/fleet-loose-ends-canary.test.sh"
 bash "$here/pi-issue-run-hang-stall-bench.test.sh"
+
+# fleet-ops#3263 (PR #3304): devin/cursor provider extension + spawnSync
+# timeout gate. Hosted here so P14 runs it without a workflow-file edit
+# (workers cannot push .github/workflows/**).
+bash "$here/provider-timeout.test.sh"
 bash "$here/unit-escalation-write-retry-absorb.test.sh"
 bash "$here/unit-escalation-write-scout-futility-dedupe.test.sh"
 # fleet-ops#2399 added unit-escalation-write-journal-evidence.test.sh (ledger
@@ -524,3 +529,12 @@ bash "$here/fleet-ops-drift-metrics-dropin.test.sh"
 # class-prevention so a future drop of this host line fails by name.
 # Hermetic (scratch ledger/state, no gh/prometheus/systemd).
 bash "$here/seat-empty-run-intermittent-count.test.sh"
+
+# fleet-ops#1520: curator journal-cap lock. The live dump (~40KB of
+# dispositioned trust_denials.entries every 5 min) was fixed in
+# memory-compound#9; this test is the fleet-ops class lock so a revert
+# of journal_safe_status fails CI here. Hosted here so P14 runs it
+# without a workflow-file edit (the worker App cannot push
+# .github/workflows/**). Offline import of memoryctl plus a live layer
+# that skips in hosted CI (no user journal / no vault health file).
+bash "$here/curator-journal-cap.test.sh"

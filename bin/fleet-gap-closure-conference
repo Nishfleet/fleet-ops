@@ -38,8 +38,31 @@ here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 [ -x "$TALLY_BIN" ] || TALLY_BIN="${HOME}/.local/bin/fleet-gap-closure-tally"
 [ -x "$PI_AUDIT_RUN" ] || PI_AUDIT_RUN="${HOME}/.local/bin/fleet-gap-closure-auditor"
 
-DEFAULT_AUDITORS='[{"id":"glm-5-2","provider":"devin","model":"glm-5-2"},{"id":"glm-5-3","provider":"zenmux","model":"z-ai/glm-5.3-free"},{"id":"ds4-pro","provider":"straitly","model":"deepseek/deepseek-v4-pro"}]'
-AUDITORS="${GAP_LOOP_AUDITORS:-$DEFAULT_AUDITORS}"
+# fleet-ops#3121: the dead straitly/ds4-pro third auditor is replaced by the
+# senior role. The conference resolves the first usable senior seat
+# (senior_seats_in_order from config/seat-caps.json) at start so the blind
+# panel always has a live capable third judge. AUDITORS (the JSON array) is
+# built below once jq is confirmed.
+resolve_senior_conf_seat() {
+    local SEAT_LIB_PATH caps s
+    SEAT_LIB_PATH="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
+    if [ -f "$SEAT_LIB_PATH" ]; then
+        # shellcheck source=/dev/null
+        source "$SEAT_LIB_PATH"
+        load_seat_caps >/dev/null 2>&1 || true
+        if command -v find_senior_seat >/dev/null 2>&1; then
+            if s=$(find_senior_seat); then
+                printf '%s' "$s"
+                return 0
+            fi
+        fi
+    fi
+    caps="${SEAT_CAPS_JSON:-}"
+    if [ -z "$caps" ] || [ ! -f "$caps" ]; then caps="$here/../config/seat-caps.json"; fi
+    s="$(jq -r '.senior_seats_in_order[0] // ""' "$caps" 2>/dev/null || true)"
+    [ -n "$s" ] && { printf '%s' "$s"; return 0; }
+    printf 'cursor/cursor-grok-4.6-high'
+}
 
 mkdir -p "$JOBS_DIR"
 
@@ -53,6 +76,23 @@ fail_loud() { printf '[%s] [fleet-gap-closure-conference] FATAL: %s\n' "$(now_is
 command -v jq >/dev/null 2>&1 || fail_loud "jq missing"
 
 if [ "$DISABLE" = "1" ]; then log "disabled"; exit 0; fi
+
+# fleet-ops#3121: build the three-auditor panel. An explicit GAP_LOOP_AUDITORS
+# (tests / operator override) wins; otherwise the third judge is the
+# first-usable senior seat, replacing the dead straitly ds4-pro auditor.
+if [ -n "${GAP_LOOP_AUDITORS:-}" ]; then
+    AUDITORS="$GAP_LOOP_AUDITORS"
+else
+    SENIOR_SEAT="$(resolve_senior_conf_seat)"
+    SENIOR_PROVIDER="${SENIOR_SEAT%%/*}"
+    SENIOR_MODEL="${SENIOR_SEAT#*/}"
+    [ -n "$SENIOR_PROVIDER" ] || SENIOR_PROVIDER=cursor
+    [ -n "$SENIOR_MODEL" ] || SENIOR_MODEL=cursor-grok-4.6-high
+    AUDITORS="$(jq -n -c --arg sp "$SENIOR_PROVIDER" --arg sm "$SENIOR_MODEL" \
+'[{"id":"glm-5-2","provider":"devin","model":"glm-5-2"},
+  {"id":"glm-5-3","provider":"zenmux","model":"z-ai/glm-5.3-free"},
+  {"id":"senior","provider":$sp,"model":$sm}]')"
+fi
 
 CONF_ID="${GAP_LOOP_CONF_ID:-}"
 if [ -z "$CONF_ID" ]; then
@@ -88,18 +128,21 @@ build_context() {
 build_packet() {
     local tpl="$1" out="$2" aid="$3" round="$4" round1="$5"
     python3 - "$tpl" "$out" "$aid" "$round" "$round1" "$CONF_DIR/context.json" "$MODE" "$CONF_ID" <<'PY'
-import sys, json
+import re, sys, json
 tpl, out, aid, round_n, round1, ctx_path, mode, conf_id = sys.argv[1:9]
 with open(tpl, encoding='utf-8') as f:
     text = f.read()
 with open(ctx_path, encoding='utf-8') as f:
     ctx = json.load(f)
-text = text.replace('{{AUDITOR}}', aid)
-text = text.replace('{{ROUND}}', round_n)
-text = text.replace('{{MODE}}', mode)
-text = text.replace('{{CONF_ID}}', conf_id)
-text = text.replace('{{CONTEXT_JSON}}', json.dumps(ctx, indent=2))
-text = text.replace('{{ROUND1_VERDICTS_JSON}}', round1)
+values = {
+    'AUDITOR': aid,
+    'ROUND': round_n,
+    'MODE': mode,
+    'CONF_ID': conf_id,
+    'CONTEXT_JSON': json.dumps(ctx, indent=2),
+    'ROUND1_VERDICTS_JSON': round1,
+}
+text = re.sub(r'\{\{(\w+)\}\}', lambda m: values.get(m.group(1), m.group(0)), text)
 with open(out, 'w', encoding='utf-8') as f:
     f.write(text)
 PY

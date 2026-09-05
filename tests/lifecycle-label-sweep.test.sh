@@ -498,4 +498,68 @@ grep -q -- '--add-label scout-candidate' "$scratch/edits.log" \
   || fail "unlabeled product must still get scout-candidate: $(cat "$scratch/edits.log")"
 ok "unlabeled product issue still → scout-candidate after discarded lifecycle addition"
 
+# Case 15: umbrella-labeled unlabeled issue → nish-reserved, NOT agent-ready
+# (fleet-ops#3295). Umbrella = "tracking parent; not claimable". Without
+# this guard the sweep defaults every unlabeled open issue to agent-ready
+# (fleet-ops) / scout-candidate (product), intake dispatches a worker on
+# the tracker, the worker finds no implementable work, and dies — a pure
+# dead-seat loop (live #3128: 6 claims in one day).
+export LIFECYCLE_SWEEP_REPOS="Nishfleet/fleet-ops"
+cat >"$scratch/list.json" <<'JSON'
+[{"number":3128,"title":"umbrella: seat health observability gaps","labels":[{"name":"umbrella"}]}]
+JSON
+: >"$scratch/edits.log"
+: >"$scratch/comments.log"
+out=$("$bin" 2>"$scratch/err15.txt")
+grep -q 'relabeled=1' <<<"$out" || fail "umbrella relabeled: $out"
+grep -q -- '--add-label nish-reserved' "$scratch/edits.log" \
+  || fail "umbrella must get nish-reserved: $(cat "$scratch/edits.log")"
+if grep -q -- '--add-label agent-ready' "$scratch/edits.log"; then
+  fail "umbrella must NOT get agent-ready: $(cat "$scratch/edits.log")"
+fi
+ok "umbrella-labeled unlabeled issue → nish-reserved (not agent-ready) (fleet-ops#3295)"
+
+# Case 15b: umbrella on a product repo → nish-reserved, NOT scout-candidate.
+# Umbrella means "not claimable" regardless of repo.
+export LIFECYCLE_SWEEP_REPOS="Nishfleet/0509"
+cat >"$scratch/list.json" <<'JSON'
+[{"number":3120,"title":"umbrella: product tracking parent","labels":[{"name":"umbrella"}]}]
+JSON
+: >"$scratch/edits.log"
+out=$("$bin" 2>"$scratch/err15b.txt")
+grep -q 'relabeled=1' <<<"$out" || fail "umbrella product relabeled: $out"
+grep -q -- '--add-label nish-reserved' "$scratch/edits.log" \
+  || fail "umbrella product must get nish-reserved: $(cat "$scratch/edits.log")"
+if grep -q -- '--add-label scout-candidate' "$scratch/edits.log"; then
+  fail "umbrella product must NOT get scout-candidate: $(cat "$scratch/edits.log")"
+fi
+ok "umbrella-labeled unlabeled product issue → nish-reserved (not scout-candidate) (fleet-ops#3295)"
+
+# Case 15c: umbrella + gap-audit → nish-reserved (umbrella wins; "not
+# claimable" regardless of any other topic label).
+export LIFECYCLE_SWEEP_REPOS="Nishfleet/fleet-ops"
+cat >"$scratch/list.json" <<'JSON'
+[{"number":3125,"title":"umbrella: gap-audit tracking parent","labels":[{"name":"umbrella"},{"name":"gap-audit"}]}]
+JSON
+: >"$scratch/edits.log"
+out=$("$bin" 2>"$scratch/err15c.txt")
+grep -q -- '--add-label nish-reserved' "$scratch/edits.log" \
+  || fail "umbrella+gap-audit must get nish-reserved: $(cat "$scratch/edits.log")"
+if grep -q -- '--add-label agent-ready' "$scratch/edits.log"; then
+  fail "umbrella+gap-audit must NOT get agent-ready: $(cat "$scratch/edits.log")"
+fi
+ok "umbrella + gap-audit → nish-reserved (umbrella wins over gap-audit) (fleet-ops#3295)"
+
+# Case 15d: a non-umbrella unlabeled fleet-ops issue still → agent-ready
+# (the guard does not break the default path).
+cat >"$scratch/list.json" <<'JSON'
+[{"number":3300,"title":"feat(quality): inescapable per-role gates","body":"- required: a named gate / CI check / drill\n","labels":[]}]
+JSON
+: >"$scratch/edits.log"
+out=$("$bin" 2>"$scratch/err15d.txt")
+grep -q -- '--add-label agent-ready' "$scratch/edits.log" \
+  || fail "non-umbrella fleet-ops issue must still get agent-ready: $(cat "$scratch/edits.log")"
+ok "non-umbrella unlabeled fleet-ops issue still → agent-ready (guard does not break default)"
+export LIFECYCLE_SWEEP_REPOS="Nishfleet/0509"
+
 echo "all lifecycle-label-sweep cases passed"

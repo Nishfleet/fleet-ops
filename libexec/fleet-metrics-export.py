@@ -69,7 +69,7 @@ HELP_AGE = "# HELP fleet_pi_seat_health_age_seconds Seconds since the Pi seat wa
 TYPE_AGE = "# TYPE fleet_pi_seat_health_age_seconds gauge"
 HELP_SEAT_TOTAL = "# HELP fleet_pi_seat_total Number of enrolled seats (providers with cap>0 in seat-caps.json). Denominator for the seat_availability SLO (fleet-ops#1291)."
 TYPE_SEAT_TOTAL = "# TYPE fleet_pi_seat_total gauge"
-HELP_DCT = "# HELP fleet_pi_seat_dead_credential_total Number of seats with seat_dead=true carrying a credentials_bad signal in health_class or failure_mode (HTTP 401/403) that will not recover on their own (fleet-ops#1445, fleet-ops#2667)."
+HELP_DCT = "# HELP fleet_pi_seat_dead_credential_total Number of enrolled (model cap>0) seats with seat_dead=true carrying a credentials_bad signal in health_class or failure_mode (HTTP 401/403) that will not recover on their own (fleet-ops#1445, fleet-ops#2667, fleet-ops#3301)."
 TYPE_DCT = "# TYPE fleet_pi_seat_dead_credential_total gauge"
 HELP_DC = "# HELP fleet_pi_seat_dead_credential 1 for each dead-credential seat; health_class=credentials_bad means re-auth may help, health_class=corpse means the seat is terminal and must be retired from config/seat-caps.json (fleet-ops#1445, fleet-ops#2667)."
 TYPE_DC = "# TYPE fleet_pi_seat_dead_credential gauge"
@@ -385,7 +385,24 @@ SLO_DEFS_DEFAULT = Path(
 )
 SLO_DEFS_FALLBACK = Path(
     "/home/nish/workspaces/products/fleet-ops/config/slo-definitions.json"
-) 
+)
+# fleet-ops#3367: fallback SLO IDs used when slo-definitions.json is
+# missing/unparseable. _emit_slo_metrics MUST emit a fresh
+# fleet_slo_instrumented=0 for every known SLO on a config failure so
+# Prometheus does not retain stale instrumented=1 + compliance gauges from
+# the previous run — a stale SLO gauge alongside a fresh fleet_main_ci_green
+# is the real disagreement source (the docstring already promised this but
+# the code returned without emitting any gauges). Keep in sync with the
+# "slos" array in config/slo-definitions.json.
+_KNOWN_SLO_IDS = (
+    "main_green",
+    "chain_repair_latency",
+    "0509_user_journey",
+    "digest_delivery",
+    "waste_ratio",
+    "seat_availability",
+    "gh_rate_limit_headroom",
+)
 # fleet-waste-export writes fleet_waste_ratio here; the SLO emitter reads
 # the live value rather than recomputing it (single source of truth).
 WASTE_PROM = Path(
@@ -640,11 +657,20 @@ def _read_dead_credentials():
     EITHER field so the terminal class is visible, and carry health_class /
     failure_mode through to the caller for the per-seat series.
 
+    fleet-ops#3301: only ENROLLED seats (model cap>0 in seat-caps.json) count.
+    A cap=0 row is never picked, so a 401 on it is not a re-auth action — the
+    2026-09-04T16:30Z snapshot paged FleetDeadCredentialSeats on
+    opencode/hy3-free and opencode/x-preview-f-free, both already retired at
+    cap=0, while the control seat (ling-3.0-flash-fin-free) was healthy. Fail
+    open (count all) when seat-caps.json is unreadable so a genuinely dead
+    enrolled seat still alerts.
+
     Returns (count, [ {provider, model, http_status, health_class,
     failure_mode}, ... ]). Always a (count, list) pair — never raises on a
     missing/unreadable ledger.
     """
     seats = []
+    caps = _seat_caps_model_cap_map()
     if not SEAT_LEDGER.is_dir():
         return 0, seats
     try:
@@ -665,9 +691,15 @@ def _read_dead_credentials():
                 data.get("failure_mode"),
             ):
                 continue
+            provider = data.get("provider", "") or ""
+            model = data.get("model", "") or ""
+            if caps is not None:
+                cap = caps.get(f"{provider}/{model}", 0)
+                if not (isinstance(cap, (int, float)) and not isinstance(cap, bool) and cap > 0):
+                    continue
             seats.append({
-                "provider": data.get("provider", ""),
-                "model": data.get("model", ""),
+                "provider": provider,
+                "model": model,
                 "http_status": data.get("http_status"),
                 "health_class": data.get("health_class") or "",
                 "failure_mode": data.get("failure_mode") or "",
@@ -2910,8 +2942,16 @@ def _emit_slo_metrics(lines, main_ci, healthy, rate_limit):
     lines.append("")
     lines.extend(sb.format_prometheus_help_type())
     if defs is None:
+        # fleet-ops#3367: emit instrumented=0 for every known SLO so
+        # Prometheus overwrites any stale instrumented=1 from the previous
+        # run. Without this, a config glitch leaves stale compliance +
+        # instrumented=1 gauges in Prometheus while fleet_main_ci_green
+        # keeps updating — a real SLO-vs-green-map disagreement that keeps
+        # the burn alerts firing on frozen data.
         print("slo: config/slo-definitions.json missing/unparseable; "
-              "emitting empty SLO family", file=sys.stderr)
+              "emitting instrumented=0 for all known SLOs", file=sys.stderr)
+        for sid in _KNOWN_SLO_IDS:
+            lines.append(f'fleet_slo_instrumented{{slo="{_prom_label(sid)}"}} 0')
         return
     slos = defs.get("slos") or []
     for slo in slos:
@@ -2975,6 +3015,41 @@ _DQ_GAUGES = (
 )
 
 
+# --- blocked-reconcile nish-decision lint (fleet-ops#3312) -----------------
+# blocked-reconcile writes its last sweep summary to
+# /home/nish/.local/state/fleet-heartbeat/blocked-queue.json. We export the
+# count of rejected `blocked-on: nish-decision` lines that were rewritten to
+# `blocked-on: orchestrator` and labelled `needs-orchestrator`.
+BLOCKED_QUEUE_JSON = Path(
+    os.environ.get(
+        "FLEET_BLOCKED_QUEUE_JSON",
+        "/home/nish/.local/state/fleet-heartbeat/blocked-queue.json",
+    )
+)
+HELP_NBR = "# HELP fleet_nish_decision_rejected_total Number of `blocked-on: nish-decision` lines rejected and rewritten to `blocked-on: orchestrator` in the last blocked-reconcile sweep (fleet-ops#3312)."
+TYPE_NBR = "# TYPE fleet_nish_decision_rejected_total gauge"
+
+
+def _emit_blocked_reconcile(lines):
+    """Append fleet_nish_decision_rejected_total.
+
+    Reads the last blocked-reconcile sweep summary. A missing or
+    unparseable file emits 0 so the metric family is always present.
+    """
+    count = 0
+    try:
+        data = json.loads(BLOCKED_QUEUE_JSON.read_text(encoding="utf-8"))
+        raw = data.get("rejected_nish_decisions")
+        if isinstance(raw, (int, float)):
+            count = int(raw)
+    except (OSError, json.JSONDecodeError):
+        pass
+    lines.append("")
+    lines.append(HELP_NBR)
+    lines.append(TYPE_NBR)
+    lines.append(f"fleet_nish_decision_rejected_total {count}")
+
+
 # --- close-duplicates close guard (fleet-ops#3161) ------------------------
 # The heartbeat writes lib/issue-file.py close-duplicates summary to
 # $FLEET_HEARTBEAT_LOG_DIR/close-duplicates.json every tick. We emit the
@@ -3030,6 +3105,57 @@ def _emit_close_duplicates(lines):
             f'fleet_close_duplicates_closes_total{{cross_repo="{cr}",protected="{pr}"}} '
             f"{counts[f'cross_repo={cr},protected={pr}']}"
         )
+
+
+# --- observe-to-close close guard (fleet-ops#3231) ---------------------
+# The heartbeat writes bin/fleet-merged-pr-close's per-tick summary to
+# $FLEET_HEARTBEAT_LOG_DIR/merged-pr-close.json every tick. We emit the
+# close count by reason so an alert can fire the instant a close happens on
+# a bare mention or on a protected (critical-path / owner-authored) issue —
+# the PR #3205 regression that wrongly closed #3140/#3146. Both labelled
+# series must stay 0; only claim-branch and closes-trailer may increment.
+# The family is always emitted (zeros when the file is missing) so the
+# absent rule never false-fires on a skipped tick.
+MERGED_PR_CLOSE_JSON = Path(
+    os.environ.get(
+        "FLEET_MERGED_PR_CLOSE_JSON",
+        "/home/nish/.local/state/fleet-heartbeat/merged-pr-close.json",
+    )
+)
+HELP_MPC = (
+    "# HELP fleet_observe_to_close_total Issues auto-closed by observe-to-close "
+    "in the last heartbeat tick, by reason (fleet-ops#3231). Legal close "
+    "reasons are claim-branch (delivery PR head) and closes-trailer (explicit "
+    "Closes/Fixes/Resolves trailer). bare-mention and protected must always "
+    "be 0; an alert on either > 0 catches a wrong close of a mentioned or "
+    "critical-path/owner-authored issue."
+)
+TYPE_MPC = "# TYPE fleet_observe_to_close_total gauge"
+_MPC_REASONS = ("claim-branch", "closes-trailer", "bare-mention", "protected")
+
+
+def _emit_observe_to_close(lines):
+    """Append fleet_observe_to_close_total{reason}.
+
+    Reads the last observe-to-close summary's closes_by_reason map. Never
+    raises: a missing/unparseable file emits all four series as 0 so the
+    family is always present and the absent rule stays quiet.
+    """
+    counts = {r: 0 for r in _MPC_REASONS}
+    try:
+        data = json.loads(MERGED_PR_CLOSE_JSON.read_text(encoding="utf-8"))
+        raw = data.get("closes_by_reason") or {}
+        if isinstance(raw, dict):
+            for k, v in raw.items():
+                if k in counts and isinstance(v, (int, float)):
+                    counts[k] = int(v)
+    except (OSError, json.JSONDecodeError):
+        pass
+    lines.append("")
+    lines.append(HELP_MPC)
+    lines.append(TYPE_MPC)
+    for reason in _MPC_REASONS:
+        lines.append(f'fleet_observe_to_close_total{{reason="{reason}"}} {counts[reason]}')
 
 
 def _emit_deploy_quality(lines):
@@ -3612,9 +3738,17 @@ def main():
     # the exporter oneshot.
     _emit_deploy_quality(lines)
 
+    # --- blocked-reconcile nish-decision lint (fleet-ops#3312) ---
+    # Per-sweep count of rejected `blocked-on: nish-decision` lines.
+    _emit_blocked_reconcile(lines)
+
     # --- close-duplicates close guard (fleet-ops#3161) ---
     # Per-tick close count by label; cross_repo and protected must stay 0.
     _emit_close_duplicates(lines)
+
+    # --- observe-to-close close guard (fleet-ops#3231) ---
+    # Per-tick close count by reason; bare-mention and protected must stay 0.
+    _emit_observe_to_close(lines)
 
     body = "\n".join(lines) + "\n"
     _atomic_write(OUT, body)

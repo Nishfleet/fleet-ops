@@ -312,9 +312,15 @@ ok "fleet-worker-prompt-gh-pr-view-unknown-field.test.sh is pinned in the P14 re
 # as dirty-worktree-audit, fleet-ops#787) and add this named pin so a
 # future drop of the host line cannot park the test on known_orphans to
 # silence the generic $bad[] message — it would fail by name here first.
-grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-spawn-guard-stash-readonly\.test\.sh"?' \
+# fleet-ops#3244 (PR #3334): rule-enforcement now hosts the spawn-guard
+# nested suite (spawn-guard.test.sh) which itself hosts stash-readonly and
+# the sudo-write drill; the pin follows the new two-level host chain.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/spawn-guard\.test\.sh"?' \
   "$here/rule-enforcement.test.sh" \
-  || fail "rule-enforcement.test.sh must bash-invoke fleet-spawn-guard-stash-readonly.test.sh (fleet-ops#308)"
+  || fail "rule-enforcement.test.sh must bash-invoke spawn-guard.test.sh (fleet-ops#308)"
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-spawn-guard-stash-readonly\.test\.sh"?' \
+  "$here/spawn-guard.test.sh" \
+  || fail "spawn-guard.test.sh must bash-invoke fleet-spawn-guard-stash-readonly.test.sh (fleet-ops#308)"
 [[ -n "${reachable[fleet-spawn-guard-stash-readonly.test.sh]:-}" ]] \
   || fail "fleet-spawn-guard-stash-readonly.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#308)"
 [[ -z "${known_orphan_set[fleet-spawn-guard-stash-readonly.test.sh]:-}" ]] \
@@ -672,5 +678,38 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/seat-empty-run-intermittent-coun
 [[ -z "${known_orphan_set[seat-empty-run-intermittent-count.test.sh]:-}" ]] \
   || fail "seat-empty-run-intermittent-count.test.sh must not be a known orphan (fleet-ops#2934)"
 ok "seat-empty-run-intermittent-count.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#2934)"
+
+# fleet-ops#3295 (PR #3352 follow-up): hard-pin the host line for
+# pi-intake-tick-umbrella-exclusion in pi-intake-run (already listed in
+# ci.yml) so a future refactor that drops it is caught by name. PR #3352
+# added the test without a ci.yml listing or a host, leaving main red on
+# the generic "1 test file(s) are neither ..." FAIL from run 33908689540
+# (P14 red on every push since). This named pin is class-prevention:
+# parking it on known_orphans to silence the generic message must also
+# fail by name below.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/pi-intake-tick-umbrella-exclusion\.test\.sh"?' \
+  "$here/pi-intake-run.test.sh" \
+  || fail "pi-intake-run.test.sh must bash-invoke pi-intake-tick-umbrella-exclusion.test.sh (fleet-ops#3295)"
+[[ -n "${reachable[pi-intake-tick-umbrella-exclusion.test.sh]:-}" ]] \
+  || fail "pi-intake-tick-umbrella-exclusion.test.sh must be hosted by a listed test (fleet-ops#3295)"
+[[ -z "${known_orphan_set[pi-intake-tick-umbrella-exclusion.test.sh]:-}" ]] \
+  || fail "pi-intake-tick-umbrella-exclusion.test.sh must not be a known orphan (fleet-ops#3295)"
+ok "pi-intake-tick-umbrella-exclusion.test.sh host line in pi-intake-run.test.sh is pinned (fleet-ops#3295)"
+
+# fleet-ops#1520: hard-pin the host line for curator-journal-cap in
+# ci-standards-audit so a future refactor that drops it is caught by
+# name. The live dump was fixed in memory-compound#9; this test is the
+# fleet-ops class lock. Hosted from tests/ci-standards-audit.test.sh
+# (already listed in ci.yml) because the worker App cannot push
+# .github/workflows/**. Parking it on known_orphans to silence the
+# generic message must also fail by name below.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/curator-journal-cap\.test\.sh"?' \
+  "$here/ci-standards-audit.test.sh" \
+  || fail "ci-standards-audit.test.sh must bash-invoke curator-journal-cap.test.sh (fleet-ops#1520)"
+[[ -n "${reachable[curator-journal-cap.test.sh]:-}" ]] \
+  || fail "curator-journal-cap.test.sh must be hosted by a listed test (fleet-ops#1520)"
+[[ -z "${known_orphan_set[curator-journal-cap.test.sh]:-}" ]] \
+  || fail "curator-journal-cap.test.sh must not be a known orphan (fleet-ops#1520)"
+ok "curator-journal-cap.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#1520)"
 
 echo "OK: p14-test-listing-gate.test.sh: P14 test list is closed"

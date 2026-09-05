@@ -52,6 +52,7 @@ Environment seams (tests):
   FLEET_SCOUT_EFF_PROM_URL, FLEET_SCOUT_EFF_GH,
   FLEET_SCOUT_EFF_JOURNAL, FLEET_SCOUT_EFF_JOURNALCTL,
   FLEET_SCOUT_EFF_WINDOW_DAYS, FLEET_SCOUT_EFF_REPO,
+  FLEET_SCOUT_EFF_REPOS, FLEET_SCOUT_EFF_INTAKE,
   FLEET_SCOUT_EFF_DUPE_HOURS, FLEET_SCOUT_EFF_READY_HOURS,
   FLEET_SCOUT_EFF_MERGE_DAYS, XDG_RUNTIME_DIR, HOME
 """
@@ -88,6 +89,26 @@ JOURNALCTL = os.environ.get("FLEET_SCOUT_EFF_JOURNALCTL", "journalctl")
 NOW_ISO = os.environ.get("FLEET_SCOUT_EFF_NOW", "")
 WINDOW_DAYS = int(os.environ.get("FLEET_SCOUT_EFF_WINDOW_DAYS", "14"))
 REPO = os.environ.get("FLEET_SCOUT_EFF_REPO", "0509")
+# Enrolled scout repos: FLEET_SCOUT_EFF_REPOS (comma-separated) wins; else
+# the enrolled repos from config/intake-repos.json; else the original
+# single-repo default. A newly-scouted repo is covered without editing the
+# exporter (fleet-ops#3152).
+_INTAKE_CANDIDATES = [
+    os.environ.get("FLEET_SCOUT_EFF_INTAKE", ""),
+    str(Path(__file__).resolve().parents[1] / "config" / "intake-repos.json"),
+    f"{HOME}/workspaces/tooling/fleet-ops-deploy-clone/config/intake-repos.json",
+    f"{HOME}/workspaces/tooling/fleet-ops/config/intake-repos.json",
+    f"{HOME}/.local/share/fleet-ops/config/intake-repos.json",
+]
+# Per-repo filed label: the label the scout applies when it files an issue.
+# 0509's scout files with scout-candidate; the fleet-ops control-plane scout
+# applies agent-ready directly (control-plane rule). The filed cohort for a
+# repo is loaded by that label. 0509 additionally unions the lifecycle labels
+# so promoted issues that lost scout-candidate still count (fleet-ops#3170).
+FILED_LABELS = {
+    "0509": "scout-candidate",
+    "fleet-ops": "agent-ready",
+}
 DUPE_HOURS = float(os.environ.get("FLEET_SCOUT_EFF_DUPE_HOURS", "1"))
 READY_HOURS = float(os.environ.get("FLEET_SCOUT_EFF_READY_HOURS", "24"))
 MERGE_DAYS = int(os.environ.get("FLEET_SCOUT_EFF_MERGE_DAYS", "14"))
@@ -139,6 +160,12 @@ HELP_HB = (
     "scout-effectiveness export tick (organ heartbeat, fleet-ops#2756)."
 )
 TYPE_HB = "# TYPE fleet_scout_effectiveness_last_run_seconds gauge"
+HELP_UNCOVERED = (
+    "# HELP fleet_scout_effectiveness_uncovered_repo 1 when an enrolled "
+    "scout repo (config/intake-repos.json) has no metric in this export — "
+    "a loud alert instead of silent absence (fleet-ops#3152)."
+)
+TYPE_UNCOVERED = "# TYPE fleet_scout_effectiveness_uncovered_repo gauge"
 
 
 @dataclass(frozen=True)
@@ -200,6 +227,65 @@ def now_dt() -> datetime:
         if dt is not None:
             return dt
     return datetime.now(timezone.utc)
+
+
+def _first_existing(paths: list[str]) -> Path | None:
+    for p in paths:
+        if not p:
+            continue
+        path = Path(p)
+        if path.is_file():
+            return path
+    return None
+
+
+def enrolled_scout_repos() -> list[str]:
+    """Enrolled scout repos from config/intake-repos.json.
+
+    Empty list on any fault — the caller falls back to the single-repo
+    default rather than failing the export.
+    """
+    intake = _first_existing(_INTAKE_CANDIDATES)
+    if intake is None:
+        print("scout-effectiveness: intake-repos.json not found", file=sys.stderr)
+        return []
+    try:
+        data = json.loads(intake.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"scout-effectiveness: intake read failed: {exc}", file=sys.stderr)
+        return []
+    return [
+        str(row.get("name") or "").strip()
+        for row in (data.get("repos") or [])
+        if isinstance(row, dict) and row.get("name")
+    ]
+
+
+def resolve_repos() -> list[str]:
+    """FLEET_SCOUT_EFF_REPOS (comma-separated) or enrolled scout repos.
+
+    Falls back to the original single-repo default (0509) when neither
+    yields a list, so a broken intake file cannot silently drop the
+    exporter's coverage.
+    """
+    raw = os.environ.get("FLEET_SCOUT_EFF_REPOS", "").strip()
+    if raw:
+        return [r.strip() for r in raw.split(",") if r.strip()]
+    enrolled = enrolled_scout_repos()
+    if enrolled:
+        return enrolled
+    return [REPO]
+
+
+def uncovered_enrolled_repos(covered: list[str]) -> list[str]:
+    """Enrolled scout repos not covered by this export (loud-alert gate).
+
+    An enrolled repo with no metric must be loud, not silently absent
+    (fleet-ops#3152).
+    """
+    enrolled = enrolled_scout_repos()
+    covered_set = set(covered)
+    return [r for r in enrolled if r and r not in covered_set]
 
 
 def _http_json(base: str, path: str, params: dict[str, str]) -> dict[str, Any]:
@@ -483,8 +569,19 @@ def merge_issues(groups: Iterable[Iterable[ScoutIssue]]) -> list[ScoutIssue]:
     return list(by_num.values())
 
 
-def load_pipeline_issues(repo_full: str) -> list[ScoutIssue]:
-    groups = [load_issues_gh(repo_full, lab) for lab in LIFECYCLE_LABELS]
+def load_pipeline_issues(repo_full: str, filed_label: str) -> list[ScoutIssue]:
+    """Load a repo's scout-filed issues by its filed label.
+
+    0509's scout files with scout-candidate; the fleet-ops control-plane
+    scout applies agent-ready directly. For scout-candidate repos we union
+    the lifecycle labels so promoted issues that lost scout-candidate still
+    count (fleet-ops#3170); for the other filed labels the label alone is
+    the cohort (fleet-ops#3152).
+    """
+    if filed_label == "scout-candidate":
+        groups = [load_issues_gh(repo_full, lab) for lab in LIFECYCLE_LABELS]
+    else:
+        groups = [load_issues_gh(repo_full, filed_label)]
     return merge_issues(groups)
 
 
@@ -597,7 +694,13 @@ def compute_stats(
 # --- export ----------------------------------------------------------------
 
 
-def export_prom(stats: list[RepoStats], *, now: datetime) -> str:
+def export_prom(
+    stats: list[RepoStats],
+    *,
+    now: datetime,
+    uncovered: list[str] | None = None,
+) -> str:
+    uncovered = uncovered or []
     lines: list[str] = [HELP_RUNS, TYPE_RUNS]
     for s in stats:
         lines.append(
@@ -645,6 +748,14 @@ def export_prom(stats: list[RepoStats], *, now: datetime) -> str:
         f"fleet_scout_effectiveness_last_run_seconds {int(now.timestamp())}",
         "",
     ]
+    if uncovered:
+        lines += [HELP_UNCOVERED, TYPE_UNCOVERED]
+        for repo in uncovered:
+            lines.append(
+                f'fleet_scout_effectiveness_uncovered_repo{{repo="'
+                f'{prom_label(repo)}"}} 1'
+            )
+        lines += [""]
     body = "\n".join(lines)
     _atomic_write(OUT, body)
     return body
@@ -696,65 +807,85 @@ def main(argv: list[str] | None = None) -> int:
 
     end = now_dt()
     start = end - timedelta(days=WINDOW_DAYS)
+    repos = resolve_repos()
     try:
         if FIXTURE:
             runs, issues = load_fixture(FIXTURE)
-        else:
-            repo_full = f"Nishfleet/{REPO}"
-            runs_count = count_runs(
-                REPO, start.timestamp(), end.timestamp()
-            )
-            runs = []
-            if runs_count:
-                # Spread run timestamps evenly across the window so the
-                # count is faithful; the exact per-run timestamp is not
-                # needed for the aggregate metrics (only the count is).
-                span = end.timestamp() - start.timestamp()
-                step = span / runs_count if runs_count else 0
-                for k in range(runs_count):
-                    runs.append(start.timestamp() + step * (k + 0.5))
-            issues = load_pipeline_issues(repo_full)
-            merges = load_merges_gh(repo_full)
-            issues = [
-                ScoutIssue(
-                    number=iss.number,
-                    repo=iss.repo,
-                    created_ts=iss.created_ts,
-                    labels=iss.labels,
-                    state=iss.state,
-                    state_reason=iss.state_reason,
-                    closed_ts=iss.closed_ts,
-                    merged_ts=merges.get(iss.number, iss.merged_ts),
+            stats = [
+                compute_stats(
+                    repo,
+                    runs,
+                    issues,
+                    start_ts=start.timestamp(),
+                    end_ts=end.timestamp(),
                 )
-                for iss in issues
+                for repo in repos
             ]
-        stats = [
-            compute_stats(
-                REPO,
-                runs,
-                issues,
-                start_ts=start.timestamp(),
-                end_ts=end.timestamp(),
+        else:
+            stats = []
+            for repo in repos:
+                repo_full = f"Nishfleet/{repo}"
+                runs_count = count_runs(
+                    repo, start.timestamp(), end.timestamp()
+                )
+                runs = []
+                if runs_count:
+                    # Spread run timestamps evenly across the window so the
+                    # count is faithful; the exact per-run timestamp is not
+                    # needed for the aggregate metrics (only the count is).
+                    span = end.timestamp() - start.timestamp()
+                    step = span / runs_count if runs_count else 0
+                    for k in range(runs_count):
+                        runs.append(start.timestamp() + step * (k + 0.5))
+                filed_label = FILED_LABELS.get(repo, "agent-ready")
+                issues = load_pipeline_issues(repo_full, filed_label)
+                merges = load_merges_gh(repo_full)
+                issues = [
+                    ScoutIssue(
+                        number=iss.number,
+                        repo=iss.repo,
+                        created_ts=iss.created_ts,
+                        labels=iss.labels,
+                        state=iss.state,
+                        state_reason=iss.state_reason,
+                        closed_ts=iss.closed_ts,
+                        merged_ts=merges.get(iss.number, iss.merged_ts),
+                    )
+                    for iss in issues
+                ]
+                stats.append(
+                    compute_stats(
+                        repo,
+                        runs,
+                        issues,
+                        start_ts=start.timestamp(),
+                        end_ts=end.timestamp(),
+                    )
+                )
+        # Uncovered-repo loud alert: an enrolled scout repo with no metric
+        # must be loud, not silently absent (fleet-ops#3152).
+        uncovered = uncovered_enrolled_repos(repos)
+        for repo in uncovered:
+            print(
+                f"scout-effectiveness: LOUD ALERT — enrolled scout repo "
+                f"{repo!r} has no metric (uncovered); add it to "
+                f"FLEET_SCOUT_EFF_REPOS or fix intake-repos.json parsing",
+                file=sys.stderr,
             )
-        ]
-        body = export_prom(stats, now=end)
+        body = export_prom(stats, now=end, uncovered=uncovered)
         if to_stdout:
             sys.stdout.write(body if body.endswith("\n") else body + "\n")
         print(
             f"scout-effectiveness: wrote {OUT} "
-            f"(repo={REPO}, runs={stats[0].runs}, "
-            f"filed={stats[0].filed}, survive={stats[0].survive_intake}, "
-            f"agent_ready={stats[0].agent_ready}, "
-            f"claimed={stats[0].claimed}, "
-            f"merged_14d={stats[0].merged_14d}, "
-            f"ratio={stats[0].effectiveness_ratio:.4f})",
+            f"(repos={','.join(repos)}, "
+            f"uncovered={','.join(uncovered) or 'none'})",
             file=sys.stderr,
         )
         return 0
     except Exception as exc:  # noqa: BLE001 — never fail the parent exporter
         print(f"scout-effectiveness failed: {exc}", file=sys.stderr)
         try:
-            zeros = [RepoStats(repo=REPO)]
+            zeros = [RepoStats(repo=r) for r in repos]
             export_prom(zeros, now=end)
         except Exception as write_exc:  # noqa: BLE001
             print(

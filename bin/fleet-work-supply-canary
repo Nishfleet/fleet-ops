@@ -17,6 +17,10 @@
 # Subcommands:
 #   (default) / canary   heartbeat canary (fail-loud)
 #   gate <repo>          systemd ExecCondition: 0=run, 1=rest, 255=error
+#                        fleet-ops#3418: also rests (1) when the scout is
+#                        parked (scout-futility consecutive_dry >= N and
+#                        hours < BUFFER_H) so a green-and-sterile loop stops
+#                        burning cycles; lifts when hours >= BUFFER_H.
 #   hours <repo>         JSON snapshot of ready/drain/hours/action
 #   --help               usage
 #
@@ -221,12 +225,36 @@ cmd_hours() {
 
 # ExecCondition: 0 run (hours < 24), 1 skip rest, 255 error.
 cmd_gate() {
-    local short="$1" snap hours action
+    local short="$1" snap hours action park_state pdry park_n park_buf
     valid_repo "$short" || { log "gate: invalid repo '$short'"; return 255; }
     snap=$(snapshot "$short") || { log "gate: gh/measurement failed for $short"; return 255; }
     hours=$(jq -r '.hours_of_work' <<<"$snap")
     action=$(jq -r '.action' <<<"$snap")
     log "gate: $short hours=$hours action=$action"
+    # fleet-ops#3418: auto-park a green-and-sterile scout. Once
+    # scout-futility-check has escalated (consecutive_dry >= N), the scout
+    # has proven N times it cannot grow the buffer below BUFFER_H. Running
+    # it every 4h burns cycles for nothing — the escalate-senior ticket is
+    # the resolution path. Park (rest) until the buffer refills (hours >=
+    # BUFFER_H), then lift so the scout gets another chance; a still-sterile
+    # run re-increments consecutive_dry and re-parks. The park is stable:
+    # ExecStopPost on a skipped scout does NOT increment consecutive_dry
+    # (fleet-ops#1277 missing-begin branch), the timer still fires so
+    # FleetScoutStale stays quiet (last_run_epoch is refreshed by that
+    # branch), and the go-ham-idle canary never fires because the timer's
+    # LastTriggerUSec stays inside MAX_IDLE_S (4h cadence < 15000s).
+    park_n="${SCOUT_FUTILITY_N:-3}"
+    park_buf="${SCOUT_FUTILITY_BUFFER_H:-${SCOUT_FUTILITY_BUFFER:-12}}"
+    park_state="${SCOUT_FUTILITY_STATE_DIR:-$HOME/.local/state/scout-futility}/${short}.state"
+    if [[ -f "$park_state" ]]; then
+        pdry=$(grep -E "^consecutive_dry=" "$park_state" 2>/dev/null | head -n1 | cut -d= -f2-)
+        if is_uint "$pdry" && is_uint "$park_n" && is_uint "$park_buf" \
+            && [[ "$pdry" -ge "$park_n" ]] && is_uint "$hours" \
+            && [[ "$hours" -lt "$park_buf" ]]; then
+            log "gate: $short parked (scout-futility consecutive_dry=$pdry >= N=$park_n, hours=$hours < buffer=$park_buf) — rest until buffer refills; escalate-senior ticket is the resolution path"
+            return 1
+        fi
+    fi
     if [[ "$action" == "rest" ]]; then
         return 1
     fi

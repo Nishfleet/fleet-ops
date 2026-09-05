@@ -114,7 +114,7 @@ groups:
           service: fleet
         annotations:
           summary: "dead-credential seats need re-auth or retirement"
-          description: "One or more seats are seat_dead=true carrying a credentials_bad signal (HTTP 401/403) in health_class or failure_mode, and will not recover on their own (fleet-ops#1445, fleet-ops#2667). The per-seat fleet_pi_seat_dead_credential series names each seat and its health_class. Triage: probe the seat live AND probe a second model on the same provider as a control. If the control also fails, the credential is dead -> re-auth. If the control succeeds, the credential is fine and the MODEL is gone (a provider can return 401/403 for a retired slug) -> retire that model row in config/seat-caps.json at cap 0 with intentional_cap_zero=corpse and a dated reason. health_class=corpse means terminal: re-auth cannot help, retire it. Ledger: /home/nish/workspaces/agent-state/lanes/seats."
+          description: "One or more ENROLLED (model cap>0) seats are seat_dead=true carrying a credentials_bad signal (HTTP 401/403) in health_class or failure_mode, and will not recover on their own (fleet-ops#1445, fleet-ops#2667, fleet-ops#3301). Cap=0 rows are excluded: pick_seat never routes to them, so a 401 there is not a re-auth action. The per-seat fleet_pi_seat_dead_credential series names each seat and its health_class. Triage: probe the seat live AND probe a second model on the same provider as a control. If the control also fails, the credential is dead -> re-auth. If the control succeeds, the credential is fine and the MODEL is gone (a provider can return 401/403 for a retired slug) -> retire that model row in config/seat-caps.json at cap 0 with intentional_cap_zero=corpse and a dated reason. health_class=corpse means terminal: re-auth cannot help, retire it. Ledger: /home/nish/workspaces/agent-state/lanes/seats."
 
       # fleet-ops#2407: a walled seat whose usable_at/bench_until has passed is
       # RELEASED by the router (seat_usable fail-opens) but stays classed
@@ -236,6 +236,22 @@ groups:
         annotations:
           summary: "keystone routing organ absent — reliability-first routing is missing or dead"
           description: "fleet-ops#1133: the keystone routing ledger (keystone-routing.jsonl) has not been touched in 3h. pick_seat is not routing keystone packets to strong seats, or the ledger was wiped. Check seat-lib.sh packet_is_keystone / pick_seat keystone branch and the pi-packet state dir."
+
+      # fleet-ops#3324: the minimum-usable floor fail-opens a recoverable
+      # bench instead of stalling. A sustained climb on the counter means the
+      # fleet is living on slightly-early retries (every tick empty, every
+      # tick fail-open) — am-executor repair, not Nish. Money walls never
+      # increment this counter. increase() over 5m staying >0 for 30m is
+      # "increasing for 30 min".
+      - alert: FleetSeatFloorFailopen
+        expr: increase(fleet_seat_floor_failopen_total[5m]) > 0
+        for: 30m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "seat-floor fail-open climbing for 30 min — fleet living on slightly-early retries"
+          description: "Repair worker: pick_seat has been fail-opening the shortest remaining recoverable bench (transient_fault / rate_limited / empty_run / overload_bench) for 30 minutes (fleet-ops#3324). That is a starved capable set, not a money wall. Inspect watch.log for 'seat-floor: fail-open', the seat-health ledger at /home/nish/workspaces/agent-state/lanes/seats, and journalctl --user -u pi-intake@*. A money-walled seat is never fail-opened; if every remaining seat is quota_exhausted / corpse / credentials_bad the counter stays flat and this rule stays silent."
 
       - alert: FleetTestAlert
         expr: fleet_test_alert == 1
@@ -530,6 +546,23 @@ groups:
           summary: "canary-effectiveness metrics absent — the #2757 exporter path is missing or dead"
           description: "Repair: lib/canary-effectiveness.py must emit fleet_canary_effectiveness_last_run_seconds. It piggybacks fleet-metrics-export.service via systemd/fleet-metrics-export.service.d/canary-effectiveness.conf (no new timer). Check fleet-metrics-export.timer and journalctl --user -u fleet-metrics-export.service."
 
+      # fleet-ops#3055: the injected-fault drill runs inside every live
+      # exporter tick (hermetic — temp store + fixtures, never the real
+      # store). last_green only advances when the drill passes; a red/
+      # absent drill means the classify path silently broke again (the
+      # 2026-09-02 class pinned caught=0 for 19h because no drill ran
+      # anywhere). 30m matches the 5-min exporter tick: six red ticks
+      # before the fleet hears about it.
+      - alert: FleetCanaryEffectivenessDrillStale
+        expr: absent(fleet_canary_effectiveness_drill_last_green_seconds) or fleet_canary_effectiveness_drill_last_green_seconds == 0 or (time() - fleet_canary_effectiveness_drill_last_green_seconds) > 1800
+        for: 30m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "canary-effectiveness drill not green — the classify path can no longer prove it catches injected regressions"
+          description: "fleet_canary_effectiveness_drill_last_green_seconds is absent, 0, or older than 30m. The injected-fault drill must pass on every live exporter tick (fleet-ops#3055); a red drill means the canary can silently stop catching regressions. Repair: lib/canary-effectiveness.py, then re-run the exporter tick and confirm drill_ok=1."
+
       # effectiveness_ratio already covers the trailing 30d window inside
       # the exporter. Gate on (caught+missed)>0 so a quiet product with
       # zero incidents does not look like a broken canary.
@@ -639,16 +672,19 @@ groups:
       # The ratio gauge is a 14d trailing raw value baked into the
       # exporter, so this is a level check on a trend window. Omitted when
       # runs == 0 (no scout ran — that is the FleetScoutStale rule's job),
-      # so a quiet window never trips it.
+      # so a quiet window never trips it. No repo label: covers every
+      # enrolled scout repo (0509 by scout-candidate, fleet-ops by
+      # agent-ready) so a newly-scouted repo is protected without a rule
+      # edit (fleet-ops#3152).
       - alert: ScoutEffectivenessLow
-        expr: fleet_scout_effectiveness_ratio{repo="0509"} < 0.1 and fleet_scout_runs_total{repo="0509"} > 0
+        expr: fleet_scout_effectiveness_ratio < 0.1 and fleet_scout_runs_total > 0
         for: 6h
         labels:
           severity: warning
           service: fleet
         annotations:
-          summary: "pi-scout@0509 runs but produces no mergeable work (effectiveness_ratio < 0.1 over 14d)"
-          description: "fleet_scout_effectiveness_ratio{repo=\"0509\"} is below 0.1 while fleet_scout_runs_total > 0 (fleet-ops#2756). The scout is running but its output is not translating to merged PRs — the scout-futility green-and-empty pattern, now quantified. Inspect fleet_scout_issues_filed / survive_intake / agent_ready / merged_14d to find where the pipeline leaks (filed but duped at intake, agent-ready but never claimed, claimed but never merged). Compare against the > 0.3 issues/run target."
+          summary: "scout runs but produces no mergeable work (effectiveness_ratio < 0.1 over 14d)"
+          description: "fleet_scout_effectiveness_ratio is below 0.1 while fleet_scout_runs_total > 0 (fleet-ops#2756). The scout is running but its output is not translating to merged PRs — the scout-futility green-and-empty pattern, now quantified. Inspect fleet_scout_issues_filed / survive_intake / agent_ready / merged_14d to find where the pipeline leaks (filed but duped at intake, agent-ready but never claimed, claimed but never merged). Compare against the > 0.3 issues/run target."
 
 
   - name: fleet_product_slo
@@ -988,7 +1024,23 @@ groups:
           service: fleet
         annotations:
           summary: "SLO main_green slow burn — CI green fraction trending below the 99% budget line"
-          description: "WFR input: the main_green SLO is in slow burn — on pace to exhaust its weekly error budget. Not paging; feeds the weekly fleet review alert-quality lens. fleet-ops#1291."
+          description: "WFR input: the main_green SLO is in slow burn — on pace to exhaust its weekly error budget. Not paging; feeds the weekly fleet review alert-quality lens. NOTE: this is a windowed burn-rate alert (6h AND 30m avg_over_time), not a point-in-time check — it legitimately fires for up to 30m after all repos go green because the 30m window still includes recent red history. The green map (fleet_main_ci_green) is point-in-time; the SLO is windowed. They disagree by design during recovery. fleet-ops#1291, #3367."
+
+      # fleet-ops#3367: consistency check — SLO compliance and the per-repo
+      # green map both derive from the same main_ci dict in one atomic export,
+      # so they must agree at every scrape. A disagreement means a stale/frozen
+      # SLO gauge (e.g. config parse failure left old compliance in Prometheus
+      # while fleet_main_ci_green kept updating). "More than one scrape" = 2m
+      # (4 scrapes at 30s); a single-scrape race is tolerated.
+      - alert: FleetSloMainGreenGreenMapDisagree
+        expr: (fleet_slo_instrumented{slo="main_green"} == 1) and (abs(fleet_slo_compliance{slo="main_green"} - (sum(fleet_main_ci_green) / count(fleet_main_ci_green))) > 0.001)
+        for: 2m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "SLO main_green compliance disagrees with the per-repo green map"
+          description: "fleet_slo_compliance{slo=\"main_green\"} and sum(fleet_main_ci_green)/count(fleet_main_ci_green) disagree for >2m. Both derive from the same main_ci dict in one atomic export, so a disagreement means a stale/frozen SLO gauge while the green map updates — a real consistency bug. Check the exporter journal (journalctl --user -u fleet-metrics-export.service) and config/slo-definitions.json. fleet-ops#3367."
 
       # --- seat_availability: ratio SLO, target 0.90, budget = 10% of week ---
       - alert: FleetSloSeatAvailFastBurn
@@ -1182,3 +1234,21 @@ groups:
         annotations:
           summary: "close-duplicates closed a cross-repo or protected issue (fleet-ops#3161)"
           description: "fleet_close_duplicates_closes_total{cross_repo=\"true\"} or {protected=\"true\"} is > 0: the duplicate sweep closed an issue it must only comment on (cross-repo canonical, critical-path label, or nish3451-authored). Both series must stay 0. Check the last close-duplicates.json and the tick log dup-cluster review lines."
+      - alert: FleetObserveToCloseWrongClose
+        expr: fleet_observe_to_close_total{reason="bare-mention"} > 0 or fleet_observe_to_close_total{reason="protected"} > 0
+        for: 1m
+        labels:
+          severity: critical
+          service: fleet
+        annotations:
+          summary: "observe-to-close closed a mentioned or protected issue (fleet-ops#3231)"
+          description: "fleet_observe_to_close_total{reason=\"bare-mention\"} or {reason=\"protected\"} is > 0: observe-to-close closed an issue it must only comment on (a mere PR mention without a Closes trailer or claim branch, or a critical-path/owner-authored issue). Both series must stay 0 — only claim-branch and closes-trailer may increment. This is the PR #3205 regression class: #3140/#3146 were closed by a bare mention. Check the last merged-pr-close.json and the tick log."
+      - alert: FleetObserveToCloseAbsent
+        expr: absent(fleet_observe_to_close_total{reason="claim-branch"})
+        for: 15m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "observe-to-close metric family vanished"
+          description: "fleet_observe_to_close_total is absent for 15+ minutes — the merged-pr-close summary is not being written or the exporter is not emitting the family. Check bin/fleet-merged-pr-close in the heartbeat tick log and the merged-pr-close.json summary path. fleet-ops#3231."

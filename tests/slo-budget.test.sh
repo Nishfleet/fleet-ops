@@ -236,6 +236,135 @@ print("OK: missing seat ledger -> instrumented=0 (no false 1/13 pin)")
 PY
 
 # =========================================================================
+# 3c. fleet-ops#3367: stale-gauge fix — when defs is None, instrumented=0
+# is emitted for every known SLO so Prometheus cannot retain stale
+# instrumented=1 + compliance gauges from the previous run.
+# =========================================================================
+python3 - "$exporter" "$slo_defs" "$repo_root/config/seat-caps.json" "$scratch" <<'PY' || fail "stale-gauge fix check failed"
+import importlib.util, sys, json
+from pathlib import Path
+exporter, slo_defs, seat_caps, scratch = sys.argv[1:5]
+spec = importlib.util.spec_from_file_location("fme", exporter)
+m = importlib.util.module_from_spec(spec)
+sys.modules["fme"] = m
+spec.loader.exec_module(m)
+# Point SLO_DEFS to a non-existent file so _load_slo_defs returns None.
+m.SLO_DEFS_DEFAULT = Path(scratch) / "no-such-slo-defs.json"
+m.SLO_DEFS_FALLBACK = Path(scratch) / "no-such-slo-defs-fallback.json"
+m.SEAT_CAPS_DEFAULT = Path(seat_caps)
+m.SEAT_CAPS_FALLBACK = Path(seat_caps)
+# Stub waste + chain prom + actions.log (same as section 3).
+wp = Path(scratch) / "fleet-waste.prom"
+wp.write_text("# HELP fleet_waste_ratio ...\n# TYPE fleet_waste_ratio gauge\nfleet_waste_ratio 0.08\n")
+m.WASTE_PROM = wp
+cp = Path(scratch) / "fleet-chains.prom"
+cp.write_text("# HELP fleet_chain_repair_duration_seconds ...\n# TYPE fleet_chain_repair_duration_seconds gauge\nfleet_chain_repair_duration_seconds 1200\n")
+m.CHAIN_PROM = cp
+m.ACTIONS_LOG = Path(scratch) / "actions.log"
+m.ACTIONS_LOG.write_text("")
+# Seat ledger stub (same as section 3).
+seat_dir = Path(scratch) / "seats"
+seat_dir.mkdir(exist_ok=True)
+caps_data = json.loads(Path(seat_caps).read_text())
+for prov in sorted(caps_data.get("providers", {})):
+    (seat_dir / f"{prov}__fixture.json").write_text(
+        json.dumps({"provider": prov, "model": "fixture",
+                    "health_class": "healthy", "seat_dead": False}))
+m.SEAT_LEDGER = seat_dir
+
+lines = []
+m._emit_slo_metrics(lines, {"fleet-ops": 1}, 1, {})
+text = "\n".join(lines)
+
+# Every known SLO must have instrumented=0 — no stale instrumented=1.
+for sid in m._KNOWN_SLO_IDS:
+    assert f'fleet_slo_instrumented{{slo="{sid}"}} 0' in text, \
+        f"{sid} missing instrumented=0 on config failure"
+    assert f'fleet_slo_instrumented{{slo="{sid}"}} 1' not in text, \
+        f"{sid} must not have stale instrumented=1 on config failure"
+# No compliance gauges should be emitted (no defs to compute from).
+# Check for actual gauge samples, not HELP/TYPE lines.
+import re as _re
+comp_samples = _re.findall(r'fleet_slo_compliance\{slo="[^"]*"\} \S+', text)
+assert not comp_samples, \
+    f"no compliance gauges should be emitted when defs is None, got: {comp_samples}"
+print(f"OK: config failure emits instrumented=0 for all {len(m._KNOWN_SLO_IDS)} known SLOs (no stale gauges)")
+PY
+
+# =========================================================================
+# 3d. fleet-ops#3367: SLO compliance == green-map rollup invariant.
+# Both derive from the same main_ci dict in one atomic export, so they
+# must always agree at every scrape.
+# =========================================================================
+python3 - "$exporter" "$slo_defs" "$repo_root/config/seat-caps.json" "$scratch" <<'PY' || fail "SLO/green-map invariant check failed"
+import importlib.util, sys, json
+from pathlib import Path
+exporter, slo_defs, seat_caps, scratch = sys.argv[1:5]
+spec = importlib.util.spec_from_file_location("fme", exporter)
+m = importlib.util.module_from_spec(spec)
+sys.modules["fme"] = m
+spec.loader.exec_module(m)
+m.SLO_DEFS_DEFAULT = Path(slo_defs)
+m.SLO_DEFS_FALLBACK = Path(slo_defs)
+m.SEAT_CAPS_DEFAULT = Path(seat_caps)
+m.SEAT_CAPS_FALLBACK = Path(seat_caps)
+seat_dir = Path(scratch) / "seats"
+seat_dir.mkdir(exist_ok=True)
+caps_data = json.loads(Path(seat_caps).read_text())
+for prov in sorted(caps_data.get("providers", {})):
+    (seat_dir / f"{prov}__fixture.json").write_text(
+        json.dumps({"provider": prov, "model": "fixture",
+                    "health_class": "healthy", "seat_dead": False}))
+m.SEAT_LEDGER = seat_dir
+wp = Path(scratch) / "fleet-waste.prom"
+wp.write_text("# HELP fleet_waste_ratio ...\n# TYPE fleet_waste_ratio gauge\nfleet_waste_ratio 0.08\n")
+m.WASTE_PROM = wp
+cp = Path(scratch) / "fleet-chains.prom"
+cp.write_text("# HELP fleet_chain_repair_duration_seconds ...\n# TYPE fleet_chain_repair_duration_seconds gauge\nfleet_chain_repair_duration_seconds 1200\n")
+m.CHAIN_PROM = cp
+m.ACTIONS_LOG = Path(scratch) / "actions.log"
+m.ACTIONS_LOG.write_text("")
+
+# Test several main_ci shapes — the SLO compliance must always equal
+# sum(green)/count(repos) from the same dict.
+for label, main_ci in [
+    ("all-green", {"a": 1, "b": 1, "c": 1, "d": 1}),
+    ("one-red", {"a": 1, "b": 1, "c": 0, "d": 1}),
+    ("half-red", {"a": 1, "b": 0, "c": 1, "d": 0}),
+    ("all-red", {"a": 0, "b": 0, "c": 0, "d": 0}),
+]:
+    lines = []
+    m._emit_slo_metrics(lines, main_ci, 1, {})
+    text = "\n".join(lines)
+    expected = sum(main_ci.values()) / len(main_ci)
+    # Extract the emitted compliance value.
+    import re
+    match = re.search(r'fleet_slo_compliance\{slo="main_green"\} (\S+)', text)
+    assert match, f"{label}: main_green compliance not emitted"
+    emitted = float(match.group(1))
+    assert abs(emitted - expected) < 1e-6, \
+        f"{label}: SLO compliance {emitted} != green-map rollup {expected}"
+print("OK: SLO compliance == green-map rollup for all test shapes (all-green/one-red/half-red/all-red)")
+PY
+
+# =========================================================================
+# 3e. fleet-ops#3367: new alert is in both skip sets (dispatch + canary).
+# =========================================================================
+python3 - "$repo_root/libexec/alert-repair-dispatch" "$repo_root/bin/fleet-completion-canary.py" <<'PY' || fail "skip-set membership check failed"
+import ast, re, sys
+from pathlib import Path
+name = "FleetSloMainGreenGreenMapDisagree"
+for path, var in [(Path(sys.argv[1]), "SKIP_SET"),
+                  (Path(sys.argv[2]), "SKIP_FIRING")]:
+    src = path.read_text()
+    m = re.search(rf"{var} = (\{{.*?\}})", src, re.S)
+    assert m, f"{var} not found in {path.name}"
+    skip = ast.literal_eval(m.group(1))
+    assert name in skip, f"{name} missing from {var} in {path.name}"
+print(f"OK: {name} in both SKIP_SET (dispatch) and SKIP_FIRING (canary)")
+PY
+
+# =========================================================================
 # 4. fleet_rules.yml: SLO group + phone-chokepoint preserved
 # =========================================================================
 python3 - "$rules" <<'PY' || fail "rules check failed"
@@ -247,9 +376,12 @@ slo_rules = {r["alert"]: r for r in groups["fleet_slo_burn"]["rules"]}
 assert "FleetSloMetricsAbsent" in slo_rules, "missing FleetSloMetricsAbsent"
 assert "FleetSloMainGreenFastBurn" in slo_rules, "missing fast-burn alert"
 assert "FleetSloMainGreenSlowBurn" in slo_rules, "missing slow-burn alert"
+# fleet-ops#3367: consistency-check alert must be present.
+assert "FleetSloMainGreenGreenMapDisagree" in slo_rules, "missing green-map disagree alert"
 # Fast burn = critical, slow burn = warning (never page).
 assert slo_rules["FleetSloMainGreenFastBurn"]["labels"]["severity"] == "critical"
 assert slo_rules["FleetSloMainGreenSlowBurn"]["labels"]["severity"] == "warning"
+assert slo_rules["FleetSloMainGreenGreenMapDisagree"]["labels"]["severity"] == "warning"
 # Phone-chokepoint: still exactly one severity=page (RepairDispatchDown).
 page = [(g["name"], r["alert"]) for g in cfg["groups"] for r in g["rules"]
         if r.get("labels",{}).get("severity") == "page"]

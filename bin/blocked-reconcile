@@ -53,12 +53,21 @@ EXTRACT_PY='
 import json, re, sys
 
 NISH = "nish-decision"
+ORCHESTRATOR = "orchestrator"
 URL = re.compile(
     r"^https://github\.com/([\w.-]+)/([\w.-]+)/(issues|pull)/(\d+)/?$"
 )
 OWNED = re.compile(r"^([\w.-]+)/([\w.-]+)#(\d+)$")
 HASH = re.compile(r"^#(\d+)$")
 BLOCKED_ON = re.compile(r"(?im)^blocked-on:\s*(.+?)\s*$")
+# Valid nish-decision reasons: money/pay/price/billing, legal, product
+# direction/brand, customer data/deletion. Any other use of
+# `blocked-on: nish-decision` is rewritten to `blocked-on: orchestrator`.
+NISH_REASON = re.compile(
+    r"(?i)\b(money|pay|price|billing|legal|brand|deletion|"
+    r"product[\s/-]*direction|customer[\s/-]*data)\b"
+)
+COMMENT_ID_URL = re.compile(r"#issuecomment-(\d+)$")
 BLOCKED_BY = re.compile(
     r"(?i)blocked by\s+"
     r"(https://github\.com/[\w.-]+/[\w.-]+/(?:issues|pull)/\d+"
@@ -81,6 +90,31 @@ def live_text(text):
     return "\n".join(lines)
 
 
+def reject_nish_decisions(text):
+    """Rewrite invalid `blocked-on: nish-decision` lines to orchestrator.
+
+    A `blocked-on: nish-decision` line is valid only if the same text
+    (title, body, or comment) names an allowed reason: money/pay/price/
+    billing, legal, product direction/brand, or customer data/deletion.
+    Returns (new_text, count_of_rewritten_lines).
+    """
+    if not BLOCKED_ON.search(text):
+        return text, 0
+    if NISH_REASON.search(text):
+        return text, 0
+    count = 0
+
+    def repl(m):
+        nonlocal count
+        if m.group(1).strip().lower() == NISH:
+            count += 1
+            return "blocked-on: orchestrator"
+        return m.group(0)
+
+    new_text = BLOCKED_ON.sub(repl, text)
+    return new_text, count
+
+
 def comments_have_decision_resolved(comments):
     for c in comments:
         b = (c.get("body") if isinstance(c, dict) else "") or ""
@@ -98,6 +132,8 @@ def comments_have_decision_resolved(comments):
 
 def parse_ref(raw, owner, repo):
     raw = (raw or "").strip().rstrip(".,;")
+    if raw.lower() == ORCHESTRATOR:
+        return {"kind": ORCHESTRATOR}
     if raw.lower() == NISH:
         return {"kind": NISH}
     m = URL.match(raw)
@@ -128,7 +164,7 @@ def parse_ref(raw, owner, repo):
 
 
 def add_dep(deps, seen, parsed, owner, repo, self_n):
-    if parsed is None or parsed.get("kind") == NISH:
+    if parsed is None or parsed.get("kind") in (NISH, ORCHESTRATOR):
         return parsed is not None and parsed.get("kind") == NISH
     if (
         parsed["owner"] == owner
@@ -180,19 +216,88 @@ def extract(issue):
     title = issue.get("title") or ""
     body = issue.get("body") or ""
     comments = issue.get("comments") or []
+
+    # Resolve nish from the original text first. If the decision is already
+    # resolved (decision-resolved: in a comment/body with no live blocked-on:),
+    # do not rewrite the nish lines — the issue will requeue naturally.
     live_body = live_text(body)
     nish_resolved = comments_have_decision_resolved(comments)
     if DECISION_RESOLVED.search(live_body) and not BLOCKED_ON.search(live_body):
         nish_resolved = True
-    texts = [live_text(title), live_text(body)]
-    for c in comments:
-        b = (c.get("body") if isinstance(c, dict) else "") or ""
+
+    # Reject invalid `blocked-on: nish-decision` lines and build the list
+    # of edits to apply. A line is valid only if the same text names an
+    # allowed reason: money/pay/price/billing, legal, product direction/
+    # brand, or customer data/deletion. Skip rewriting when nish_resolved is
+    # already true so a resolved decision stays resolved.
+    rejected = []
+    rejected_count = 0
+
+    if nish_resolved:
+        new_title = live_text(title)
+        new_body = live_body
+        new_comments = list(comments)
+    else:
+        new_title, title_rej = reject_nish_decisions(live_text(title))
+        if title_rej:
+            rejected.append({"where": "title", "new_text": new_title})
+            rejected_count += title_rej
+
+        new_body, body_rej = reject_nish_decisions(live_text(body))
+        if body_rej:
+            rejected.append({"where": "body", "new_text": new_body})
+            rejected_count += body_rej
+
+        new_comments = []
+        for i, c in enumerate(comments):
+            if not isinstance(c, dict):
+                new_comments.append(c)
+                continue
+            b = c.get("body") or ""
+            if SKIP_COMMENT.match(b.lstrip()):
+                new_comments.append(c)
+                continue
+            new_b, b_rej = reject_nish_decisions(live_text(b))
+            if b_rej:
+                url = c.get("url") or ""
+                m = COMMENT_ID_URL.search(url)
+                cid = m.group(1) if m else ""
+                if not cid and str(c.get("id") or "").isdigit():
+                    cid = str(c["id"])
+                rejected.append({
+                    "where": "comment",
+                    "index": i,
+                    "id": cid,
+                    "new_text": new_b,
+                })
+                rejected_count += b_rej
+                new_c = dict(c)
+                new_c["body"] = new_b
+                new_comments.append(new_c)
+            else:
+                new_comments.append(c)
+
+    # Resolve nish-decision from the rewritten text. A line now reading
+    # `blocked-on: orchestrator` is still a live blocker, so it still
+    # suppresses a decision-resolved marker in the same comment/body.
+    live_body = live_text(new_body)
+    nish_resolved = comments_have_decision_resolved(new_comments)
+    if DECISION_RESOLVED.search(live_body) and not BLOCKED_ON.search(live_body):
+        nish_resolved = True
+
+    texts = [live_text(new_title), live_body]
+    for c in new_comments:
+        if not isinstance(c, dict):
+            continue
+        b = c.get("body") or ""
         if SKIP_COMMENT.match(b.lstrip()):
             continue
         texts.append(live_text(b))
+
     deps = []
     seen = set()
     nish = False
+    orchestrator = False
     for node in blocked_by_nodes(issue, owner, repo):
         add_dep(deps, seen, node, owner, repo, self_n)
     for text in texts:
@@ -201,12 +306,18 @@ def extract(issue):
             if parsed is None:
                 nish = True
                 continue
+            if parsed.get("kind") == ORCHESTRATOR:
+                orchestrator = True
+                continue
             if add_dep(deps, seen, parsed, owner, repo, self_n):
                 nish = True
         for m in BLOCKED_BY.finditer(text):
             parsed = parse_ref(m.group(1), owner, repo)
             if parsed is None:
                 nish = True
+                continue
+            if parsed.get("kind") == ORCHESTRATOR:
+                orchestrator = True
                 continue
             if add_dep(deps, seen, parsed, owner, repo, self_n):
                 nish = True
@@ -217,13 +328,24 @@ def extract(issue):
         "deps": deps,
         "nish": bool(nish),
         "nish_resolved": bool(nish_resolved),
+        "orchestrator": bool(orchestrator),
+        "rejected_count": rejected_count,
+        "rejected_nish_decisions": rejected,
     }
 
 
 def main():
     raw = sys.stdin.read()
     if not raw.strip():
-        print(json.dumps({"kind": NISH, "deps": [], "nish": False, "nish_resolved": False}))
+        print(json.dumps({
+            "kind": NISH,
+            "deps": [],
+            "nish": False,
+            "nish_resolved": False,
+            "orchestrator": False,
+            "rejected_count": 0,
+            "rejected_nish_decisions": [],
+        }))
         return
     print(json.dumps(extract(json.loads(raw)), separators=(",", ":")))
 
@@ -288,6 +410,7 @@ NOW_S=$(now_s)
 requeued=0
 still=0
 skipped=0
+rejected_nish=0
 
 # remaining_line is accumulated as JSON objects, one per still-blocked issue.
 remaining_file=$(mktemp)
@@ -372,6 +495,42 @@ requeue_issue() {
     gh issue edit "$num" -R "$repo" --remove-label agent-blocked --add-label agent-ready >/dev/null
 }
 
+apply_rejected_edits() {
+    local repo="$1" num="$2" rejected_json="$3"
+    local body_new cid cbody
+
+    body_new=$(printf '%s' "$rejected_json" | jq -r '[.[] | select(.where == "body")] | .[0].new_text // empty')
+    if [ -n "$body_new" ]; then
+        if [ "$DRY" = "1" ]; then
+            log "DRY $repo#$num: rewrite body (blocked-on: nish-decision -> orchestrator)"
+        else
+            gh issue edit "$num" -R "$repo" --body "$body_new" >/dev/null
+        fi
+    fi
+
+    while IFS= read -r item; do
+        [ -z "$item" ] && continue
+        cid=$(printf '%s' "$item" | jq -r '.id')
+        cbody=$(printf '%s' "$item" | jq -r '.new_text')
+        if [ -n "$cid" ] && [ -n "$cbody" ]; then
+            if [ "$DRY" = "1" ]; then
+                log "DRY $repo#$num: PATCH comment $cid (blocked-on: nish-decision -> orchestrator)"
+            else
+                gh api -X PATCH "repos/${repo}/issues/comments/${cid}" -f body="$cbody" >/dev/null
+            fi
+        fi
+    done < <(printf '%s' "$rejected_json" | jq -c '.[] | select(.where == "comment")')
+}
+
+ensure_orchestrator_label() {
+    local repo="$1" num="$2"
+    if [ "$DRY" = "1" ]; then
+        log "DRY $repo#$num: add needs-orchestrator label"
+        return 0
+    fi
+    gh issue edit "$num" -R "$repo" --add-label needs-orchestrator >/dev/null
+}
+
 rewrite_triage() {
     local snapshot="$1"
     python3 - "$TRIAGE" "$snapshot" <<'PY'
@@ -448,6 +607,17 @@ while IFS= read -r repo; do
         fi
         extracted=$(extract_issue "$payload")
         kind=$(printf '%s' "$extracted" | jq -r '.kind')
+        rejected_count=$(printf '%s' "$extracted" | jq -r '.rejected_count // 0')
+        rejected_json=$(printf '%s' "$extracted" | jq -c '.rejected_nish_decisions // []')
+        orchestrator=$(printf '%s' "$extracted" | jq -r '.orchestrator // false')
+
+        if [ "$rejected_count" -gt 0 ]; then
+            apply_rejected_edits "$repo" "$num" "$rejected_json"
+            ensure_orchestrator_label "$repo" "$num"
+            rejected_nish=$((rejected_nish + rejected_count))
+            log "  $repo#$num: rejected $rejected_count nish-decision line(s); relabelled needs-orchestrator"
+        fi
+
         created_s=$(date -u -d "$created" +%s 2>/dev/null || echo 0)
         age_h=0
         if [ "$created_s" -gt 0 ]; then
@@ -507,6 +677,16 @@ while IFS= read -r repo; do
             fi
         fi
 
+        if [ "$orchestrator" = "true" ]; then
+            machine=1
+            all_cleared=0
+            if [ -n "$remaining" ]; then
+                remaining="$remaining, orchestrator"
+            else
+                remaining="orchestrator"
+            fi
+        fi
+
         if [ "$machine" -eq 0 ]; then
             all_cleared=0
         fi
@@ -542,13 +722,14 @@ oldest_age=$(printf '%s' "$items_json" | jq -r 'if length==0 then empty else max
 
 snapshot=$(jq -nc --arg updated "$NOW_ISO" --argjson count "$count" \
     --arg oldest "${oldest:-}" --arg oldest_age "${oldest_age:-}" \
-    --argjson items "$items_json" \
+    --argjson items "$items_json" --argjson rejected_nish "$rejected_nish" \
     '{
       updated:$updated,
       count:$count,
       oldest: (if $oldest == "" then null else $oldest end),
       oldest_age_h: (if $oldest_age == "" then null else ($oldest_age|tonumber) end),
-      items:$items
+      items:$items,
+      rejected_nish_decisions:$rejected_nish
     }')
 
 if [ "$DRY" != "1" ]; then
@@ -556,7 +737,7 @@ if [ "$DRY" != "1" ]; then
     rewrite_triage "$snapshot"
 fi
 
-log "sweep done: still=$still requeued=$requeued skipped=$skipped count=$count oldest=${oldest:-none} oldest_age_h=${oldest_age:-none}"
-printf 'blocked-queue count=%s oldest_age_h=%s oldest=%s requeued=%s\n' \
-    "$count" "${oldest_age:-none}" "${oldest:-none}" "$requeued"
+log "sweep done: still=$still requeued=$requeued skipped=$skipped rejected_nish=$rejected_nish count=$count oldest=${oldest:-none} oldest_age_h=${oldest_age:-none}"
+printf 'blocked-queue count=%s oldest_age_h=%s oldest=%s requeued=%s rejected_nish=%s\n' \
+    "$count" "${oldest_age:-none}" "${oldest:-none}" "$requeued" "$rejected_nish"
 exit 0

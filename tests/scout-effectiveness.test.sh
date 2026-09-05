@@ -337,8 +337,8 @@ grep -q 'absent(fleet_scout_effectiveness_last_run_seconds)' "$rules" \
   || fail "Absent rule must watch fleet_scout_effectiveness_last_run_seconds"
 grep -q 'alert: ScoutEffectivenessLow' "$rules" \
   || fail "rules missing ScoutEffectivenessLow"
-grep -q 'fleet_scout_effectiveness_ratio{repo="0509"} < 0.1' "$rules" \
-  || fail "ScoutEffectivenessLow must gate on ratio < 0.1"
+grep -q 'fleet_scout_effectiveness_ratio < 0.1 and fleet_scout_runs_total > 0' "$rules" \
+  || fail "ScoutEffectivenessLow must gate on ratio < 0.1 (no repo label, covers 0509 + fleet-ops)"
 
 jq -e '.organs[] | select(.name=="scout-effectiveness")
   | select(.heartbeat_metric=="fleet_scout_effectiveness_last_run_seconds")

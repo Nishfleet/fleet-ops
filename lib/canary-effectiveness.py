@@ -5,6 +5,16 @@ Correlates canary failure events with subsequent user-facing incidents so
 the fleet can prove each canary organ catches regressions before users,
 not only that the canary runs.
 
+Durable event store (fleet-ops#3052): the trailing 30d window outlives the
+~7d retention of Prometheus query_range and journald, so without a store
+real incidents older than retention are unclassifiable and effectiveness
+can never be demonstrated. Every observed run/failure is merged into a
+JSONL store under
+$AGENT_STATE/canary-effectiveness/events.jsonl (dedup by
+ts+kind+detail per organ), pruned to the window, and the window is
+computed over the store — attribution stops flipping as old events age
+out of retention.
+
 Metric family (trailing 30d window unless noted):
 
   fleet_canary_runs_total{organ=...}
@@ -14,6 +24,16 @@ Metric family (trailing 30d window unless noted):
   fleet_canary_effectiveness_ratio{organ=...}   caught / (caught + missed)
   fleet_canary_last_failure_seconds{organ=...}  0 when no failure in window
   fleet_canary_effectiveness_last_run_seconds   organ heartbeat (always)
+  fleet_canary_effectiveness_drill_last_green_seconds
+                                               epoch of last passing
+                                               injected-fault drill (fleet-ops#3055)
+  fleet_canary_effectiveness_drill_ok           1 = drill passed last tick
+
+Drill (fleet-ops#3055): the hermetic self-test fault-injection drill runs
+inside every LIVE tick (not only CI), so the classify path cannot silently
+degrade again the way it did 2026-09-02 (19h of caught=0 with no drill
+anywhere). The drill gauge only advances on a pass; a red/absent drill
+trips FleetCanaryEffectivenessDrillStale.
 
 Attribution rule (issue accept §1):
   canary failure → incident in the same product surface within 24h
@@ -39,10 +59,12 @@ Environment seams (tests):
   FLEET_CANARY_EFF_OUT, FLEET_CANARY_EFF_NOW, FLEET_CANARY_EFF_EVENTS,
   FLEET_CANARY_EFF_PROM_URL, FLEET_CANARY_EFF_GH, FLEET_CANARY_EFF_JOURNALCTL,
   FLEET_CANARY_EFF_WINDOW_DAYS, FLEET_CANARY_EFF_CATCH_HOURS,
-  XDG_RUNTIME_DIR, HOME
+  FLEET_CANARY_EFF_STORE, AGENT_STATE, XDG_RUNTIME_DIR, HOME
 """
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -58,10 +80,20 @@ from pathlib import Path
 from typing import Any, Iterable
 
 HOME = os.environ.get("HOME", "/home/nish")
+AS = Path(os.environ.get("AGENT_STATE", f"{HOME}/workspaces/agent-state"))
 OUT = Path(
     os.environ.get(
         "FLEET_CANARY_EFF_OUT",
         "/var/lib/prometheus/node-exporter/fleet-canary-effectiveness.prom",
+    )
+)
+# Durable event store (fleet-ops#3052): Prometheus/journald retain only
+# ~7d but the effectiveness window is 30d. Every tick merges the freshly
+# observed events into this JSONL so the window is genuinely observable.
+STORE = Path(
+    os.environ.get(
+        "FLEET_CANARY_EFF_STORE",
+        str(AS / "canary-effectiveness" / "events.jsonl"),
     )
 )
 PROM_URL = os.environ.get(
@@ -117,6 +149,17 @@ HELP_HB = (
     "canary-effectiveness export tick (organ heartbeat, fleet-ops#2757)."
 )
 TYPE_HB = "# TYPE fleet_canary_effectiveness_last_run_seconds gauge"
+HELP_DRILL = (
+    "# HELP fleet_canary_effectiveness_drill_last_green_seconds Epoch of the "
+    "last exporter tick whose injected-fault drill passed; 0 = drill red "
+    "(fleet-ops#3055)."
+)
+TYPE_DRILL = "# TYPE fleet_canary_effectiveness_drill_last_green_seconds gauge"
+HELP_DRILL_OK = (
+    "# HELP fleet_canary_effectiveness_drill_ok 1 if the injected-fault "
+    "drill passed on this tick, else 0 (fleet-ops#3055)."
+)
+TYPE_DRILL_OK = "# TYPE fleet_canary_effectiveness_drill_ok gauge"
 
 
 @dataclass(frozen=True)
@@ -376,7 +419,13 @@ def events_from_gauge_failures(
     each real probe). Fall back to counting failure_metric samples only
     when no run_metric is configured — never both, or scrapes inflate
     runs_total.
+
+    The query window is anchored to a fixed 5-min wall-clock grid
+    (fleet-ops#3052): query_range sample times are start + k*step, so an
+    un-aligned start shifts the sample instants on every tick and the
+    durable event store would re-add shifted duplicates each run.
     """
+    start = float(int(start / 300) * 300)
     events: list[Event] = []
     if organ.failure_metric:
         points = _query_range(
@@ -567,6 +616,90 @@ def load_incidents_gh(
     return uniq
 
 
+# --- Durable event store (fleet-ops#3052) --------------------------------
+#
+# The effectiveness window is a trailing 30d but the live sources retain
+# only ~7d. Without a store, observe_since drifts forward as events age
+# out, so real incidents older than ~7d are silently re-ignored and
+# effectiveness can never be demonstrated. The store keeps every observed
+# event for WINDOW_DAYS so the window is real and attribution is stable.
+
+
+def event_keys(events: Iterable[Event]) -> set[tuple[str, float, str, str]]:
+    return {(e.organ, e.ts, e.kind, e.detail) for e in events}
+
+
+def merge_events(
+    existing: Iterable[Event], fresh: Iterable[Event]
+) -> list[Event]:
+    """Union of two event collections, deduped by (organ, ts, kind, detail).
+
+    The same canary failure is re-observed on consecutive ticks while it
+    is still inside retention; the store must not double-count it.
+    """
+    seen: set[tuple[str, float, str, str]] = set()
+    out: list[Event] = []
+    for e in list(existing) + list(fresh):
+        key = (e.organ, e.ts, e.kind, e.detail)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(e)
+    return out
+
+
+def prune_events(
+    events: Iterable[Event],
+    end: datetime,
+    window_days: int = WINDOW_DAYS,
+) -> list[Event]:
+    cutoff = (end - timedelta(days=window_days)).timestamp()
+    return [e for e in events if e.ts >= cutoff]
+
+
+def store_load(path: Path = STORE) -> list[Event]:
+    """Read the JSONL event store; corrupt/unknown lines are skipped."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return []
+    except OSError as exc:
+        print(f"canary-effectiveness: store read failed: {exc}", file=sys.stderr)
+        return []
+    out: list[Event] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+            out.append(
+                Event(
+                    organ=str(row["organ"]),
+                    ts=float(row["ts"]),
+                    kind=str(row["kind"]),
+                    detail=str(row.get("detail") or ""),
+                )
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
+
+
+def store_save(path: Path, events: Iterable[Event]) -> None:
+    """Atomically rewrite the store (JSONL, ts-sorted)."""
+    ordered = sorted(events, key=lambda e: (e.ts, e.organ, e.kind, e.detail))
+    body = "".join(
+        json.dumps(
+            {"organ": e.organ, "ts": e.ts, "kind": e.kind, "detail": e.detail},
+            sort_keys=True,
+        )
+        + "\n"
+        for e in ordered
+    )
+    _atomic_write(path, body)
+
+
 def load_fixture_events(path: str) -> tuple[list[Event], list[Incident]]:
     """Load offline fixture: {events:[{organ,ts,kind}], incidents:[...]}."""
     data = json.loads(Path(path).read_text())
@@ -615,7 +748,14 @@ def collect_live(start: datetime, end: datetime) -> tuple[list[Event], list[Inci
 # --- Export ---------------------------------------------------------------
 
 
-def export_prom(stats: list[OrganStats], *, now: datetime) -> str:
+def export_prom(
+    stats: list[OrganStats],
+    *,
+    now: datetime,
+    out: Path = OUT,
+    drill_ok: int | None = None,
+    drill_green: float | None = None,
+) -> str:
     lines: list[str] = [
         HELP_RUNS,
         TYPE_RUNS,
@@ -651,6 +791,18 @@ def export_prom(stats: list[OrganStats], *, now: datetime) -> str:
             f'fleet_canary_last_failure_seconds{{organ="{prom_label(s.organ)}"}} '
             f"{int(s.last_failure_seconds)}"
         )
+    if drill_ok is not None:
+        lines += [
+            "",
+            HELP_DRILL,
+            TYPE_DRILL,
+            f"fleet_canary_effectiveness_drill_last_green_seconds "
+            f"{int(drill_green or 0)}",
+            "",
+            HELP_DRILL_OK,
+            TYPE_DRILL_OK,
+            f"fleet_canary_effectiveness_drill_ok {1 if drill_ok else 0}",
+        ]
     lines += [
         "",
         HELP_HB,
@@ -659,7 +811,7 @@ def export_prom(stats: list[OrganStats], *, now: datetime) -> str:
         "",
     ]
     body = "\n".join(lines)
-    _atomic_write(OUT, body)
+    _atomic_write(out, body)
     return body
 
 
@@ -693,88 +845,163 @@ def compute_all(
     ]
 
 
+def run_live_drill(now: datetime) -> tuple[int, float]:
+    """Run the hermetic injected-fault drill inside the live exporter tick
+    (fleet-ops#3055). Returns (ok, last_green_seconds): ok=1 with
+    last_green=now when the drill passes; ok=0 with last_green=0 when it
+    fails. The gauge only advances on a passing drill, so a silent
+    classify regression (the 2026-09-02 class that pinned caught=0 for
+    19h while no drill ran anywhere) goes red/stale and the
+    FleetCanaryEffectivenessDrillStale alert fires instead of waiting for
+    the next real incident.
+
+    Hermetic by construction: self_test() drives the real main() against
+    its own temp store + fixture events (never the live store or the real
+    node-exporter path), so this costs a few milliseconds per tick.
+    Never raises — a drill fault must not fail the exporter.
+    """
+    buf = io.StringIO()
+    rc = 1
+    with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+        try:
+            rc = self_test()
+        except Exception as exc:  # noqa: BLE001 — never fail the exporter
+            print(f"canary-effectiveness: live drill crashed: {exc}", file=buf)
+            rc = 1
+    if rc != 0:
+        print(
+            f"canary-effectiveness: DRILL RED: {buf.getvalue().strip()[:400]}",
+            file=sys.stderr,
+        )
+    return (1, now.timestamp()) if rc == 0 else (0, 0.0)
+
+
 def self_test() -> int:
     """Inject a synthetic canary failure + incident within the 24h catch
     window and prove the emitter classifies it as caught, end-to-end through
-    the real compute_all -> export_prom pipeline (fleet-ops#3047).
+    the real main() -> store -> compute_all -> export_prom pipeline
+    (fleet-ops#3047, #3052).
 
     The live exporter reported caught=0 across all organs because the 30d
     incident window exceeds the ~7d retention of Prometheus/journald, so
     every real incident predates the earliest observable canary failure and
-    is honestly unclassifiable. That is correct, but it left no proof the
-    detection path actually fires when a classifiable fault lands. This
-    drill injects exactly that: a probe failure at T0 and a bug issue 1h
-    later in the same product repo, then asserts caught=1 and ratio=1.0 in
-    both the computed stats and the exported prometheus body.
+    is honestly unclassifiable. #3047 proved the classify path with a
+    synthetic fault; #3052 adds the durable event store that closes the
+    retention gap. This drill proves BOTH halves:
+
+      tick 1: a probe failure at T-2h and a bug issue 1h later in the same
+              product repo are injected through the real main() path and
+              must export caught=1, ratio=1.0.
+      tick 2: the live source no longer returns the failure (retention
+              loss simulated: empty live events). The store must retain the
+              failure so the same incident is STILL caught=1. Without the
+              store this tick would drop to caught=0 — the exact silent
+              regression this issue escalated on.
     """
-    t0 = 1_700_000_000.0  # deterministic; far from any real incident ts
-    events = [
-        Event(
-            organ="0509-surface-probe",
-            ts=t0,
-            kind="run",
-            detail="self-test run",
-        ),
-        Event(
-            organ="0509-surface-probe",
-            ts=t0,
-            kind="failure",
-            detail="self-test injected failure",
-        ),
-    ]
-    incidents = [
-        Incident(
-            repo="Nishfleet/0509",
-            ts=t0 + 3600,
-            number=999999,
-            labels=("bug",),
-            title="self-test injected regression",
-        ),
-    ]
-    stats = compute_all(events, incidents)
-    by = {s.organ: s for s in stats}
-    s = by["0509-surface-probe"]
-    if s.caught != 1 or s.missed != 0:
-        print(
-            f"SELF-TEST FAIL: expected caught=1 missed=0, got "
-            f"caught={s.caught} missed={s.missed} failures={s.failures}",
-            file=sys.stderr,
-        )
-        return 1
-    if abs(s.effectiveness_ratio - 1.0) > 1e-9:
-        print(
-            f"SELF-TEST FAIL: expected ratio=1.0, got {s.effectiveness_ratio}",
-            file=sys.stderr,
-        )
-        return 1
-    # Prove the export path emits the caught metric (write to a temp file,
-    # never the real node-exporter path).
+    end = 1_788_350_400.0  # deterministic 2026-09-02T12:00:00Z
+    fail_ts = end - 7200.0
+    inc_ts = end - 3600.0
+    incident = {
+        "repo": "Nishfleet/0509",
+        "ts": inc_ts,
+        "number": 999999,
+        "labels": ["bug"],
+        "title": "self-test injected regression",
+    }
     tmpdir = tempfile.mkdtemp(prefix="canary-selftest.")
-    out_path = Path(tmpdir) / "selftest.prom"
-    global OUT
-    saved_out = OUT
-    OUT = out_path
-    try:
-        body = export_prom(stats, now=datetime.fromtimestamp(
-            t0 + 7200, tz=timezone.utc
-        ))
-    finally:
-        OUT = saved_out
-    expected = (
-        'fleet_canary_caught_regressions_total{organ="0509-surface-probe"} 1'
-    )
-    if expected not in body:
-        print(
-            "SELF-TEST FAIL: export body missing caught=1 line",
-            file=sys.stderr,
+    saved_env = {
+        k: os.environ.get(k)
+        for k in (
+            "FLEET_CANARY_EFF_EVENTS",
+            "FLEET_CANARY_EFF_STORE",
+            "FLEET_CANARY_EFF_NOW",
+            "FLEET_CANARY_EFF_OUT",
         )
-        return 1
-    if not out_path.exists():
-        print("SELF-TEST FAIL: export did not write the prom file", file=sys.stderr)
-        return 1
-    shutil.rmtree(tmpdir, ignore_errors=True)
-    print("SELF-TEST OK: injected fault detected (caught=1, ratio=1.0)")
-    return 0
+    }
+    try:
+        store = Path(tmpdir) / "events.jsonl"
+        fixture1 = Path(tmpdir) / "tick1.json"
+        fixture2 = Path(tmpdir) / "tick2.json"
+        fixture1.write_text(
+            json.dumps(
+                {
+                    "events": [
+                        {
+                            "organ": "0509-surface-probe",
+                            "ts": fail_ts,
+                            "kind": "run",
+                            "detail": "self-test run",
+                        },
+                        {
+                            "organ": "0509-surface-probe",
+                            "ts": fail_ts,
+                            "kind": "failure",
+                            "detail": "self-test injected failure",
+                        },
+                    ],
+                    "incidents": [incident],
+                }
+            )
+        )
+        # Tick 2 loses the canary events: the live source only retains
+        # ~7d while the incident window is 30d — the retention gap the
+        # durable store closes (fleet-ops#3052).
+        fixture2.write_text(json.dumps({"events": [], "incidents": [incident]}))
+        os.environ["FLEET_CANARY_EFF_STORE"] = str(store)
+        os.environ["FLEET_CANARY_EFF_NOW"] = datetime.fromtimestamp(
+            end, tz=timezone.utc
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        for tick, fixture in (("tick1", fixture1), ("tick2", fixture2)):
+            os.environ["FLEET_CANARY_EFF_EVENTS"] = str(fixture)
+            out_path = Path(tmpdir) / f"{tick}.prom"
+            os.environ["FLEET_CANARY_EFF_OUT"] = str(out_path)
+            if main(["--stdout"]) != 0:
+                print(f"SELF-TEST FAIL: {tick} main() rc != 0", file=sys.stderr)
+                return 1
+            if not out_path.exists():
+                print(
+                    f"SELF-TEST FAIL: {tick} did not write the prom file",
+                    file=sys.stderr,
+                )
+                return 1
+            body = out_path.read_text()
+            if (
+                'fleet_canary_caught_regressions_total{organ="0509-surface-probe"} 1'
+                not in body
+            ):
+                print(
+                    f"SELF-TEST FAIL: {tick} missing caught=1 line; without the "
+                    f"durable store the retention-loss tick cannot attribute",
+                    file=sys.stderr,
+                )
+                return 1
+            if (
+                'fleet_canary_effectiveness_ratio{organ="0509-surface-probe"} 1.000000'
+                not in body
+            ):
+                print(
+                    f"SELF-TEST FAIL: {tick} ratio != 1.0",
+                    file=sys.stderr,
+                )
+                return 1
+        # Dedup: the store must hold exactly the two tick-1 events, not a
+        # re-observation copy from tick 2.
+        if len(store_load(store)) != 2:
+            print(
+                f"SELF-TEST FAIL: store dedup broken, {len(store_load(store))} "
+                f"events instead of 2",
+                file=sys.stderr,
+            )
+            return 1
+        print("SELF-TEST OK: injected fault detected (caught=1, ratio=1.0)")
+        return 0
+    finally:
+        for k, v in saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 def usage() -> int:
@@ -783,7 +1010,9 @@ def usage() -> int:
         "  Computes canary effectiveness metrics and writes\n"
         f"  {OUT} (override with FLEET_CANARY_EFF_OUT).\n"
         "  Offline fixture: FLEET_CANARY_EFF_EVENTS=/path/to.json\n"
-        "  --self-test: inject a synthetic fault and prove it is caught.",
+        "  --self-test: inject a synthetic fault and prove it is caught.\n"
+        "  Each live tick also runs the hermetic self-test drill and exports\n"
+        "  drill_ok / drill_last_green_seconds (fleet-ops#3055).",
         file=sys.stderr,
     )
     return 2
@@ -808,17 +1037,60 @@ def main(argv: list[str] | None = None) -> int:
 
     end = now_dt()
     start = end - timedelta(days=WINDOW_DAYS)
+    # Resolve per-call so tests and --self-test can point the exporter at
+    # hermetic paths at runtime (production defaults stay module-level).
+    out = Path(os.environ.get("FLEET_CANARY_EFF_OUT", str(OUT)))
+    store_path = Path(os.environ.get("FLEET_CANARY_EFF_STORE", str(STORE)))
+    events_file = os.environ.get("FLEET_CANARY_EFF_EVENTS", "")
     try:
-        if EVENTS_FILE:
-            events, incidents = load_fixture_events(EVENTS_FILE)
+        if events_file:
+            fresh, incidents = load_fixture_events(events_file)
         else:
-            events, incidents = collect_live(start, end)
+            fresh, incidents = collect_live(start, end)
+        # Durable event store (fleet-ops#3052): Prometheus query_range and
+        # journald only retain ~7d but the window is 30d. Merge each
+        # tick's observed events into the store so the window is genuinely
+        # observable and attribution stops flipping as old events age out
+        # of retention.
+        try:
+            stored = store_load(store_path)
+        except Exception as exc:  # noqa: BLE001 — never fail the export
+            print(
+                f"canary-effectiveness: store load failed: {exc}",
+                file=sys.stderr,
+            )
+            stored = []
+        events = prune_events(merge_events(stored, fresh), end)
+        if event_keys(events) != event_keys(stored):
+            try:
+                store_save(store_path, events)
+            except Exception as exc:  # noqa: BLE001
+                print(
+                    f"canary-effectiveness: store save failed: {exc}",
+                    file=sys.stderr,
+                )
         stats = compute_all(events, incidents)
-        body = export_prom(stats, now=end)
+        # Live-drill the classify path every tick (fleet-ops#3055): the
+        # 2026-09-02 incident ran 19h with the exporter reporting
+        # caught=0 while nothing live ever ran the injected-fault drill.
+        # The drill is hermetic (temp store + fixtures); its result is
+        # exported so a silent regression is visible within one alert
+        # window instead of at the next real incident.
+        drill_ok: int | None = None
+        drill_green: float | None = None
+        if not events_file:
+            drill_ok, drill_green = run_live_drill(end)
+        body = export_prom(
+            stats,
+            now=end,
+            out=out,
+            drill_ok=drill_ok,
+            drill_green=drill_green,
+        )
         if to_stdout:
             sys.stdout.write(body if body.endswith("\n") else body + "\n")
         print(
-            f"canary-effectiveness: wrote {OUT} "
+            f"canary-effectiveness: wrote {out} "
             f"({len(stats)} organs, {len(events)} events, "
             f"{len(incidents)} incidents)",
             file=sys.stderr,
@@ -830,7 +1102,7 @@ def main(argv: list[str] | None = None) -> int:
             zeros = [
                 OrganStats(organ=o.name) for o in ORGANS
             ]
-            export_prom(zeros, now=end)
+            export_prom(zeros, now=end, out=out)
         except Exception as write_exc:  # noqa: BLE001
             print(
                 f"canary-effectiveness zero-write failed: {write_exc}",

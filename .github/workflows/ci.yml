@@ -186,6 +186,15 @@ jobs:
       timeout-minutes: 10
       verify-command: |
         set -euo pipefail
+        # fleet-ops#3235 part six (the follow-up its own commit message planned:
+        # "CI workflow change in a follow-up commit — GitHub App cannot push
+        # workflow files"). GitHub runners have neither pi-transport-check nor
+        # pi, so the #3235 transport gate read every bench writer as
+        # transport-down and red'd the suite at the first ledger assertion
+        # (seat-lib.test.sh run 33888017048, then pi-issue-run-noop-bench). The
+        # suite runs transport-offline by declaration; the gate itself stays ON
+        # in live operation where the real probe/bin exist.
+        export PI_SEAT_LIB_CHECK_TRANSPORT=0
         for t in jq openssl curl python3 node git flock; do
           command -v "$t" >/dev/null 2>&1 || {
             echo "missing tool: $t" >&2
@@ -213,6 +222,7 @@ jobs:
         # skips for 15min, stale claims with no live worker/PR are released).
         bash tests/pi-issue-failed-reap-cooldown.test.sh
         bash tests/pi-intake-tick-reclaim-cooldown.test.sh
+        bash tests/pi-intake-tick-difficulty-from-issue.test.sh
         bash tests/repair-rotation.test.sh
         bash tests/alert-repair-seat-walled.test.sh
         bash tests/alert-repair-class-park-skip.test.sh
@@ -280,3 +290,4 @@ jobs:
         bash tests/fleet-rules-severity-page.test.sh
         bash tests/stop-escalation-writer-class-gate.test.sh
         bash tests/phone-chokepoint.test.sh
+        bash tests/scout-effectiveness-multirepo.test.sh

@@ -2,15 +2,17 @@
 # tests/pi-audit-run.test.sh
 #
 # fleet-ops#776: pi-audit senior auditor panel units fail when:
-#   1. straitly seat fallback prints a literal "\t" instead of a real tab,
-#      so provider and model are the malformed string "straitly\tgpt-5.6-sol".
+#   1. the senior role's seat ladder fallback prints a literal "\t" instead
+#      of a real tab, so provider and model are a malformed single string.
 #   2. an auditor returns a FAIL/PASS reason missing the required duplicate
 #      or north-star keywords, causing pi-audit-run to exit 1 and the
 #      systemd unit to exhaust StartLimitBurst.
 #
 # This test exercises the full pi-audit-run binary with stubbed gh, pi, and
-# seat-lib. It proves the straitly fallback emits a real tab-separated
-# provider/model pair and that an incomplete reason is padded, not rejected.
+# seat-lib. It proves the senior ladder emits a real tab-separated
+# provider/model pair (walled first entry falls through to the next), that
+# an incomplete reason is padded not rejected, and that a fully-walled lane
+# is a lane fault (exit 0, no vote).
 
 set -euo pipefail
 
@@ -111,8 +113,11 @@ class_of() {
 model_cap() { printf '1\n'; }
 
 seat_usable() {
-  # Force the straitly default off and the fallback gpt-5.6-sol on.
-  if [[ "$1" == "straitly" && "$2" == "deepseek/deepseek-v4-pro" ]]; then
+  # fleet-ops#3121: within the senior ladder (seat-caps senior_seats_in_order)
+  # the FIRST usable seat wins. Make cursor (first entry) unusable so the
+  # resolver falls through to the second ladder entry xai-oauth/grok-4.6 —
+  # proving "walled role resolves to its fallback" inside the ladder.
+  if [[ "$1" == "cursor" ]]; then
     return 1
   fi
   return 0
@@ -161,30 +166,31 @@ export AUDIT_STATE_DIR="$state_dir"
 export PI_CALLS="$calls"
 
 # -----------------------------------------------------------------------------
-# Scenario 1: straitly fallback emits a real tab and the right provider/model.
+# Scenario 1: the senior role (replaces dead straitly) resolves to the first
+# usable seat in senior_seats_in_order. cursor (first entry) is walled, so the
+# resolver falls through to the second ladder entry xai-oauth/grok-4.6.
 # -----------------------------------------------------------------------------
 reset_state() { rm -rf "$state_dir"; mkdir -p "$state_dir"; rm -f "$calls"; }
 
 reset_state
 PI_RESPONSE=$'FAIL\nThe candidate is not a duplicate and advances the north star.' \
-  bash "$bin" 'demo--42--straitly' >"$scratch/scenario1.out" 2>"$scratch/scenario1.err" || true
+  bash "$bin" 'demo--42--senior' >"$scratch/scenario1.out" 2>"$scratch/scenario1.err" || true
 
-[[ -f "$state_dir/demo/42/straitly.vote" ]] \
-  || fail "scenario1: no straitly vote written ($(cat "$scratch/scenario1.err"))"
-[[ $(jq -r '.verdict' "$state_dir/demo/42/straitly.vote") == "FAIL" ]] \
+[[ -f "$state_dir/demo/42/senior.vote" ]] \
+  || fail "scenario1: no senior vote written ($(cat "$scratch/scenario1.err"))"
+[[ $(jq -r '.verdict' "$state_dir/demo/42/senior.vote") == "FAIL" ]] \
   || fail "scenario1: verdict should be FAIL"
 
 # The pi stub records the provider/model it was called with.
 [[ -s "$calls" ]] || fail "scenario1: pi was never called"
 call_line=$(head -n1 "$calls")
-# With the bug, this line would be "straitly\tgpt-5.6-sol\tstraitly\tgpt-5.6-sol".
 call_prov=$(printf '%s\n' "$call_line" | cut -f1)
 call_mod=$(printf '%s\n' "$call_line" | cut -f2)
-[[ "$call_prov" == "straitly" ]] \
-  || fail "scenario1: provider was '$call_prov' (expected 'straitly'); call_line='$call_line'"
-[[ "$call_mod" == "gpt-5.6-sol" ]] \
-  || fail "scenario1: model was '$call_mod' (expected 'gpt-5.6-sol'); call_line='$call_line'"
-ok "scenario1: straitly fallback calls pi with provider=straitly, model=gpt-5.6-sol"
+[[ "$call_prov" == "xai-oauth" ]] \
+  || fail "scenario1: provider was '$call_prov' (expected 'xai-oauth'); call_line='$call_line'"
+[[ "$call_mod" == "grok-4.6" ]] \
+  || fail "scenario1: model was '$call_mod' (expected 'grok-4.6'); call_line='$call_line'"
+ok "scenario1: senior falls through walled cursor to xai-oauth/grok-4.6, emits real tab-separated provider/model"
 
 # -----------------------------------------------------------------------------
 # Scenario 2: free-glm-5-3 auditor returns FAIL with an incomplete reason;
@@ -410,4 +416,78 @@ grep -q 'no usable seat' "$scratch/scenario8.err" \
 [[ ! -s "$calls" ]] || fail "scenario8: pi must NOT be called on a walled lane (calls=$(cat "$calls"))"
 ok "scenario8: fully-walled lane exits 0, writes NO vote, calls no pi (candidate stays PENDING, no escalation storm)"
 
-ok "pi-audit-run: straitly tab fallback fixed, incomplete reasons padded, missing verdict still fails, #1011 clobber contained, walled lane is a lane fault"
+# -----------------------------------------------------------------------------
+# Scenario 9: quota_exhausted fail-open is caught by seat-health preflight
+#              (fleet-ops#3351 sibling of #3176).
+# seat_usable fail-opens a 402 once usable_at passes. The auditor must not
+# call that seat and re-anchor observed_at / restart the 1h provider window.
+# Two straitly 402s with usable_at in the past. Since fleet-ops#3121 (#3387)
+# the straitly role resolves through the senior ladder (AUDIT_SENIOR_ORDER,
+# first usable seat wins, cursor by default), so the ladder is pinned to the
+# two straitly seats this scenario writes ledgers for: resolve_seat picks
+# deepseek, seat_health_ok_for_call reads the ledger and writes SKIP, and pi
+# is never invoked.
+# -----------------------------------------------------------------------------
+reset_state
+quota_lib="$scratch/seat-lib-quota.sh"
+cat >"$quota_lib" <<'LIB'
+# shellcheck shell=bash
+load_seat_caps() { :; }
+enumerate_seats() {
+  printf '%s\t%s\t-\t1\n' straitly deepseek/deepseek-v4-pro
+  printf '%s\t%s\t-\t1\n' straitly gpt-5.6-sol
+}
+class_of() { printf 'metered\n'; }
+model_cap() { printf '1\n'; }
+# Simulate the #3351 fail-open: every straitly seat is "usable" per the floor.
+seat_usable() { return 0; }
+seat_ledger_path() {
+  local p="${1//[^A-Za-z0-9._-]/_}" m="${2//[^A-Za-z0-9._-]/_}"
+  printf '%s/%s__%s.json\n' "${PI_SEAT_HEALTH_LEDGER_DIR:-/dev/null}" "$p" "$m"
+}
+LIB
+
+seat_health_dir="$scratch/seat-health-quota"
+mkdir -p "$seat_health_dir"
+deepseek_observed='2026-09-03T17:52:38.402Z'
+gpt_observed='2026-09-03T17:52:42.611Z'
+past_usable='2026-09-04T17:50:00.000Z'
+
+jq -n \
+  --arg p 'straitly' --arg m 'deepseek/deepseek-v4-pro' \
+  --arg obs "$deepseek_observed" --arg use "$past_usable" \
+  '{provider:$p,model:$m,http_status:402,retry_after:null,health_class:"quota_exhausted",retryable:true,seat_dead:false,poison_ladder:false,observed_at:$obs,source:"provider_fetch",failure_mode:"quota_exhausted",usable_at:$use,consecutive_failure_count:1}' \
+  >"$seat_health_dir/straitly__deepseek_deepseek-v4-pro.json"
+
+jq -n \
+  --arg p 'straitly' --arg m 'gpt-5.6-sol' \
+  --arg obs "$gpt_observed" --arg use "$past_usable" \
+  '{provider:$p,model:$m,http_status:402,retry_after:null,health_class:"quota_exhausted",retryable:true,seat_dead:false,poison_ladder:false,observed_at:$obs,source:"provider_fetch",failure_mode:"quota_exhausted",usable_at:$use,consecutive_failure_count:2}' \
+  >"$seat_health_dir/straitly__gpt-5.6-sol.json"
+
+export AUDIT_STATE_DIR="$state_dir"
+export PI_SEAT_HEALTH_LEDGER_DIR="$seat_health_dir"
+set +e
+AUDIT_SENIOR_ORDER='straitly/deepseek/deepseek-v4-pro straitly/gpt-5.6-sol' \
+PI_PACKET_SEAT_LIB="$quota_lib" \
+  bash "$bin" 'demo--99--straitly' >"$scratch/scenario9.out" 2>"$scratch/scenario9.err"
+rc9=$?
+set -e
+unset PI_PACKET_SEAT_LIB
+unset PI_SEAT_HEALTH_LEDGER_DIR
+
+[[ "$rc9" == 0 ]] || fail "scenario9: quota_exhausted preflight must exit 0 (SKIP lane), got $rc9 ($(cat "$scratch/scenario9.err"))"
+[[ -f "$state_dir/demo/99/straitly.vote" ]] \
+  || fail "scenario9: SKIP vote must be written ($(cat "$scratch/scenario9.err"))"
+[[ $(jq -r '.verdict' "$state_dir/demo/99/straitly.vote") == 'SKIP' ]] \
+  || fail "scenario9: verdict must be SKIP, got $(jq -r '.verdict' "$state_dir/demo/99/straitly.vote")"
+[[ ! -s "$calls" ]] || fail "scenario9: pi must NOT be called on a quota_exhausted seat (calls=$(cat "$calls"))"
+[[ $(jq -r '.observed_at' "$seat_health_dir/straitly__deepseek_deepseek-v4-pro.json") == "$deepseek_observed" ]] \
+  || fail "scenario9: deepseek observed_at was re-anchored ($(jq -r '.observed_at' "$seat_health_dir/straitly__deepseek_deepseek-v4-pro.json"))"
+[[ $(jq -r '.observed_at' "$seat_health_dir/straitly__gpt-5.6-sol.json") == "$gpt_observed" ]] \
+  || fail "scenario9: gpt-5.6-sol observed_at was re-anchored ($(jq -r '.observed_at' "$seat_health_dir/straitly__gpt-5.6-sol.json"))"
+grep -q 'class=quota_exhausted' "$scratch/scenario9.err" \
+  || fail "scenario9: preflight log should name quota_exhausted ($(cat "$scratch/scenario9.err"))"
+ok "scenario9: quota_exhausted preflight writes SKIP, skips pi, leaves observed_at untouched (fleet-ops#3351)"
+
+ok "pi-audit-run: straitly tab fallback fixed, incomplete reasons padded, missing verdict still fails, #1011 clobber contained, walled lane is a lane fault, quota_exhausted preflight closes #3351"

@@ -328,7 +328,16 @@ EOF
     log "DRILL: loaded findings from $drill_src"
 else
 # --- pick a capable seat ---------------------------------------------------
-seat=$(pick_seat "" "" 1 "" || true)
+# fleet-ops#3121: blind audit is a senior-review judge seat — prefer the
+# senior ladder (senior_seats_in_order, first usable wins) so a walled
+# senior seat is skipped, never a failure; fall back to any capable seat via
+# pick_seat so the reviews never NO-USABLE-SEAT for want of a special seat.
+seat=""
+if command -v find_senior_seat >/dev/null 2>&1; then
+    load_seat_caps >/dev/null 2>&1 || true
+    seat=$(find_senior_seat || true)
+fi
+[ -n "$seat" ] || seat=$(pick_seat "" "" 1 "" || true)
 if [ -z "$seat" ]; then
     log "FATAL: no capable seat available"
     exit 1
