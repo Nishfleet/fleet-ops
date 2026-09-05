@@ -40,7 +40,7 @@ export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH}"
 # dead App never falls through to the human gh identity (fleet-ops#3445).
 # Human gh is read-only for organs; GH Actions (tests) has no App creds and
 # stubs gh as read-only, so skip minting there.
-if [[ -z "${GH_TOKEN:-}" && "${GITHUB_ACTIONS:-}" != "true" ]]; then
+if [[ -z "${GH_TOKEN:-}" && "${GITHUB_ACTIONS:-}" != "true" && "${GH:-gh}" == "gh" ]]; then
     export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
     _wt="${NISHFLEET_WORKER_TOKEN_BIN:-${HOME:-/home/nish}/.local/bin/worker-token}"
     _minted="$("$_wt" --print)" || { echo "fleet-ops#3445: $_wt --print failed - refusing human-gh writes" >&2; exit 1; }

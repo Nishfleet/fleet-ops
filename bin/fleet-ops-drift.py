@@ -74,6 +74,10 @@ def _ensure_worker_token() -> None:
     """
     if os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_ACTIONS") == "true":
         return
+    # A test injects a fake gh (GH != 'gh'); no human gh write is possible, so
+    # skip minting there too. Production callers never set GH.
+    if os.environ.get("GH", "gh") != "gh":
+        return
     wt = os.environ.get(
         "NISHFLEET_WORKER_TOKEN_BIN",
         f"{os.environ.get('HOME', '/home/nish')}/.local/bin/worker-token",
