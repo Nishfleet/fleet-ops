@@ -298,6 +298,24 @@ issues_json=$(jq -c --arg umb "$UMBRELLA_LABEL" \
     '[.[] | select((.labels // []) | map(if type == "object" then (.name // empty) else . end) | index($umb) == null)]' \
     <<<"$issues_json" 2>/dev/null || printf '[]')
 
+# fleet-ops#3313: '[fleet-ops#N]'-titled issues are control-plane work. In a
+# product queue they are undispatchable — the worker App has no Workflows
+# scope, so the .github/workflows edit can only land from the nish3451
+# identity; a worker claim on one burns a seat for zero product (2026-09-04:
+# 10 of 11 'ready' 0509 issues were fleet-ops CI wiring, 4 seats consumed).
+# A product tick (any repo not in config/self-maintenance-repos.json) refuses
+# them at intake; in fleet-ops they are native and stay. Pure jq pass on the
+# already-fetched list, same shape as the label filters above.
+if ! product_first_is_self_maintenance "$REPO"; then
+    _fleetops_titled_seen=$(printf '%s' "$issues_json" | jq \
+        '[.[] | select((.title // "") | startswith("[fleet-ops#"))] | length' 2>/dev/null || echo 0)
+    issues_json=$(jq -c '[.[] | select((.title // "") | startswith("[fleet-ops#") | not)]' \
+        <<<"$issues_json" 2>/dev/null || printf '[]')
+    if (( _fleetops_titled_seen > 0 )); then
+        echo "fleetops-title-refusal: dropped $_fleetops_titled_seen '[fleet-ops#'-titled issues from $REPO intake (control-plane work; belongs in fleet-ops)"
+    fi
+fi
+
 # fleet-ops#3295: export fleet_umbrella_dispatch_total — cumulative count
 # of umbrella-labeled issues found in the agent-ready list (the near-
 # dispatch count). With both guards (sweep + intake filter) this trends to
