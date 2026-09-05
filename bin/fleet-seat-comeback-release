@@ -801,6 +801,14 @@ retire_corpse() {
         log "retire $p/$m: mv FAILED at $f — ledger NOT retired"
         return 1
     fi
+    # fleet-ops#3669: the move alone leaves NO ledger in the live roster, so
+    # seat_usable falls through to "NO HEALTH DATA (no ledger file) — assuming
+    # usable" and pick_seat re-picks the deliberately-retired dead seat. Write
+    # a seat_dead=true / health_class=parked / usable_at far-future parked
+    # ledger in the live roster so the seat stays UNPICKABLE. Best-effort: a
+    # write failure is logged but does not fail the sweep (the read-side
+    # corpse-retired fence in seat_usable is the backstop).
+    write_parked_ledger "$p" "$m" "corpse-retired" || true
     RETIRED_TOTAL=$((RETIRED_TOTAL + 1))
     if (( force )); then
         log "RETIRED $p/$m (corpse explicitly retired after failed no-wall re-probe, age=${age}s, moved to $retired_dir, fleet-ops#3156)"

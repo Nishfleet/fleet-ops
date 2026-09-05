@@ -40,6 +40,13 @@ bash "$here/fleet-seat-recovery-units.test.sh"
 # .github/workflows/**). Runs in its own process (scratch ledger + stub pi).
 bash "$here/fleet-seat-comeback-release.test.sh"
 
+# fleet-ops#3669: the corpse-retirement park drill (retired seat stays
+# UNPICKABLE — parked ledger + 7-day corpse-retired read fence) is the
+# retirement half of the same path. Hosted here so the P14 closure
+# reaches it without a ci.yml edit. Runs in its own process (scratch
+# ledger + scratch caps).
+bash "$here/seat-lib-retire.test.sh"
+
 [[ -f "$bin" ]] || fail "fleet-seat-recovery not found: $bin"
 command -v jq >/dev/null || fail "jq required"
 
