@@ -2264,6 +2264,12 @@ for g in globs:
     lines.append(
         f"Starting unit-escalation@{unit}.service - Universal failure escalation"
     )
+# fleet-ops#3349: the alert-repair-* recovery units (hyphen separator) also
+# escape the *-repair@* glob and must never count toward FleetEscalationStorm.
+# One journal line for a real alert-repair unit -> none may be counted.
+lines.append(
+    "Starting unit-escalation@alert-repair-FleetMainRed-20260904T172208Z.service - Universal failure escalation"
+)
 # Control: a genuinely failing unit must still be counted.
 lines.append(
     "Starting unit-escalation@pi-intake@ctlrepo.service.service - Universal failure escalation"

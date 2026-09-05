@@ -1908,8 +1908,12 @@ def _escalations_24h():
         "fleet-heartbeat*",
         "pi-intake@fleet-ops-canary*",
         # OnFailure repair units are recovery machinery; counting them in the
-        # storm metric double-counts the original failure.
+        # storm metric double-counts the original failure. fleet-ops#3349:
+        # alert-repair-* units use a hyphen separator, so they escaped the
+        # *-repair@* glob and stayed counted (the "alert-repair run hop stalled"
+        # component of the FleetEscalationStorm); exclude them too.
         "*-repair@*",
+        "alert-repair-*",
     )
 
     def _is_excluded(name):
