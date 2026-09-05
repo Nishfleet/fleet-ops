@@ -19,17 +19,38 @@ GET  /healthz        Liveness probe (no auth, no body).
 Event → unit dispatch (event from X-GitHub-Event; action/label from body)
 ==========================================================================
 
+The dispatch table is now a MULTI-FAN-OUT: a single event may trigger
+several units. systemd's own `StartLimit*` + `Restart=no` + oneshot
+semantics guarantee that a re-dispatch of an already-active unit is a
+no-op, so a fast-path burst + the slow-path timer backstop both run
+without fighting (fleet-ops#3270).
+
+issues, action=opened (any repo, host-level)
+        → start lifecycle-label-sweep.service
+issues, action=labeled (any label)
+        → start lifecycle-label-sweep.service
 issues, action=labeled, label=agent-ready
         → start pi-intake@<repo>.service
 issues, action=labeled, label=pipeline-red
         → start fleet-deploy-check.service
 issues, action=opened, label=agent-ready
         → start pi-intake@<repo>.service   (race-safe: the tick will dedupe)
+issues, action=closed
+        → start fleet-issue-close-duplicates.service
 workflow_run, action=completed, conclusion=success
         → start fleet-deploy-check.service
 pull_request, action=closed (merged OR closed)
         → start fleet-worktree-reaper.service  (fleet-ops#3269)
+        + start fleet-merged-pr-close.service  (fleet-ops#3270)
+pull_request, action=opened (new in-flight PR)
+        → start fleet-loose-ends-canary.service  (fleet-ops#3270)
 ping    → no-op (200)
+
+The four sections that previously ran only on the
+fleet-heartbeat.timer (lifecycle-label-sweep, merged-pr-close,
+close-duplicates, loose-ends-canary) now also fire on the matching
+GitHub event via this receiver. The heartbeat tick (now 60 min) is
+the level-triggered backstop for webhooks that never arrive.
 
 Anything else → 200 + "ignored: <reason>" (the worker must always see 200;
 we never bounce, we log + skip).
@@ -87,7 +108,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 SECRET_FILE = os.environ.get(
     "GH_WEBHOOK_SECRET_FILE",
     str(Path.home() / ".config" / "fleet-ops" / "gh-webhook.secret"),
@@ -169,15 +190,27 @@ def verify_hmac(secret: bytes, body: bytes, signature_header: str) -> bool:
 
 def dispatch(event: str, action: str, label: str, repo: str, conclusion: str,
              dry: bool, enrolled: set[str] | None = None,
-             pr_merged: str = "") -> tuple[str, str]:
-    """Return (unit, reason). ``unit`` is empty when no-op. ``reason`` is
-    human + log friendly.
+             pr_merged: str = "") -> list[tuple[str, str]]:
+    """Return a list of ``(unit, reason)`` pairs. Empty list == no-op.
+
+    A single event may fan out to several units (fleet-ops#3270): a
+    ``pull_request/closed`` event triggers BOTH the worktree reaper AND
+    the merged-pr observe-to-close. ``issues/opened`` and
+    ``issues/labeled`` (any label) both trigger the lifecycle-label sweep
+    so a freshly-opened or freshly-labeled issue gets a lifecycle label
+    within one webhook round-trip. systemd's own oneshot semantics
+    guarantee a re-dispatch of an already-active unit is a no-op, so
+    the webhook fast-path and the 60-min heartbeat timer backstop do
+    not fight (fleet-ops#3269 precedent on the reaper).
 
     ``enrolled`` is the set of repos in config/intake-repos.json. A
     pi-intake@<repo> dispatch is refused for a repo NOT in that set —
     the synthetic canary repo (fleet-ops-canary) is the canonical
     non-enrolled case. fleet-deploy-check is fleet-wide, NOT per-repo,
-    so it is never enrollment-gated.
+    so it is never enrollment-gated. The lifecycle-label-sweep and
+    close-duplicates dispatches are also enrollment-agnostic: they
+    read config/intake-repos.json themselves and never reach a
+    non-enrolled repo's webhook hook.
 
     ``pr_merged`` is the pull_request.merged boolean ("true"/"false")
     for pull_request events; it is informational only — the reaper fires
@@ -185,42 +218,85 @@ def dispatch(event: str, action: str, label: str, repo: str, conclusion: str,
     leave a claim worktree behind (fleet-ops#3269).
     """
     if event == "ping":
-        return "", "ping (no-op)"
+        return []
 
     if event == "pull_request":
         if not repo or not REPO_RE.match(repo):
-            return "", f"pull_request: bad repo {repo!r}"
+            return [("", f"pull_request: bad repo {repo!r}")]
         if action == "closed":
             # A merged OR closed PR leaves its claim/issue-<N> worktree
             # behind. The reaper's Mode A reaps MERGED immediately and
             # CLOSED after the age gate (fleet-ops#3023), so both terminal
             # states must trigger it. systemctl start on an already-active
             # oneshot is a no-op, so a burst of closes dedupes naturally.
-            return "fleet-worktree-reaper.service", \
-                f"pull_request/{action}/merged={pr_merged} → fleet-worktree-reaper"
-        return "", f"pull_request: ignored (action={action})"
+            # fleet-ops#3270: also fire merged-pr-close — a merged PR
+            # with a forgotten `Closes #<N>` trailer is the second
+            # terminal-state side effect, and the helper is cheap
+            # (one `gh issue list` + one `gh pr list` per enrolled repo).
+            return [
+                ("fleet-worktree-reaper.service",
+                 f"pull_request/{action}/merged={pr_merged} → fleet-worktree-reaper"),
+                ("fleet-merged-pr-close.service",
+                 f"pull_request/{action}/merged={pr_merged} → fleet-merged-pr-close"),
+            ]
+        if action == "opened":
+            # fleet-ops#3270: a brand-new in-flight PR is half-done by
+            # definition until it lands; the loose-ends canary catches
+            # the >24h-without-merge class. Cheap to run, dedupes with
+            # the timer backstop.
+            return [("fleet-loose-ends-canary.service",
+                     f"pull_request/{action} → fleet-loose-ends-canary")]
+        return [("", f"pull_request: ignored (action={action})")]
 
     if event == "issues":
         if not repo or not REPO_RE.match(repo):
-            return "", f"issues: bad repo {repo!r}"
-        if action in ("labeled", "opened", "reopened"):
-            if label == "agent-ready" or action == "opened":
-                # 'opened' is the race-safe variant: the issue body itself
-                # has agent-ready (auto-applied by org rules) or the worker
-                # should at least try.
+            return [("", f"issues: bad repo {repo!r}")]
+        # Per-issue-event fan-out (fleet-ops#3270): every event on an
+        # enrolled-repo issue also fires the lifecycle-label-sweep so
+        # the sweep runs in seconds, not in the heartbeat's 60-min
+        # tick. The sweep is itself enrollment-aware (it reads
+        # config/intake-repos.json) so a non-enrolled repo gets
+        # the no-op fast path internally.
+        if action in ("labeled", "opened", "reopened", "closed"):
+            units: list[tuple[str, str]] = []
+            if action == "closed":
+                # fleet-ops#3270: when an issue closes, the dup
+                # cohort may now be orphan — close the canonical survivor
+                # + comment-only the rest (fleet-issue-file close-duplicates
+                # is the helper; the .service is the systemd wrapper).
+                units.append(("fleet-issue-close-duplicates.service",
+                              f"issues/{action} → fleet-issue-close-duplicates"))
+            if action in ("labeled", "opened", "reopened"):
+                # Lifecycle-label sweep runs on every open + label event.
+                # Cheap (one `gh issue list` per enrolled repo), idempotent
+                # (only relabels unlabeled), and protected against a
+                # closed repo by the helper's own guard.
+                units.append(("lifecycle-label-sweep.service",
+                              f"issues/{action} → lifecycle-label-sweep"))
+            if action == "labeled" and label == "agent-ready":
                 if enrolled is not None and repo not in enrolled:
-                    return "", f"issues: {repo!r} not enrolled in intake-repos.json"
-                return f"pi-intake@{repo}.service", f"issues/{action}/agent-ready → pi-intake@{repo}"
-            if label == "pipeline-red":
-                return "fleet-deploy-check.service", f"issues/labeled/pipeline-red → fleet-deploy-check"
-        return "", f"issues: ignored (action={action}, label={label})"
+                    return [("", f"issues: {repo!r} not enrolled in intake-repos.json")]
+                units.append((f"pi-intake@{repo}.service",
+                              f"issues/{action}/agent-ready → pi-intake@{repo}"))
+            elif action == "labeled" and label == "pipeline-red":
+                units.append(("fleet-deploy-check.service",
+                              f"issues/labeled/pipeline-red → fleet-deploy-check"))
+            elif action == "opened" and label == "agent-ready":
+                if enrolled is not None and repo not in enrolled:
+                    return [("", f"issues: {repo!r} not enrolled in intake-repos.json")]
+                units.append((f"pi-intake@{repo}.service",
+                              f"issues/{action}/agent-ready → pi-intake@{repo}"))
+            if units:
+                return units
+        return [("", f"issues: ignored (action={action}, label={label})")]
 
     if event == "workflow_run":
         if action == "completed" and conclusion == "success":
-            return "fleet-deploy-check.service", "workflow_run/completed/success → fleet-deploy-check"
-        return "", f"workflow_run: ignored (action={action}, conclusion={conclusion})"
+            return [("fleet-deploy-check.service",
+                     "workflow_run/completed/success → fleet-deploy-check")]
+        return [("", f"workflow_run: ignored (action={action}, conclusion={conclusion})")]
 
-    return "", f"unknown event: {event!r}"
+    return [("", f"unknown event: {event!r}")]
 
 
 def fire_unit(unit: str, dry: bool) -> tuple[int, str]:
@@ -387,18 +463,40 @@ def _make_handler(secret: bytes):
                     pr = payload.get("pull_request") or {}
                     pr_merged = str(pr.get("merged", "") or "")
 
-            unit, reason = dispatch(event, action, label, repo, conclusion, DRY,
-                                    _State.enrolled, pr_merged)
-            if unit:
-                rc, err = fire_unit(unit, DRY)
-                _State.record(unit, rc, event)
-                _log.info(
-                    "DISPATCH event=%s delivery=%s repo=%s issue=%s "
-                    "action=%s label=%s unit=%s rc=%d reason=%s err=%s",
-                    event, delivery, repo, issue_number, action, label, unit, rc, reason, err,
-                )
+            units = dispatch(event, action, label, repo, conclusion, DRY,
+                            _State.enrolled, pr_merged)
+            # Filter out empty (no-op) entries while preserving reason text
+            # for the ignored path. The dispatch table may return a single
+            # ("", reason) sentinel; we treat that as a verified-but-
+            # ignored event so the heartbeat still bumps (synthetic canary
+            # depends on this).
+            fireable = [(u, r) for (u, r) in units if u]
+            ignored = [r for (u, r) in units if not u]
+            if fireable:
+                # Fire each unit; record the FIRST as the canonical last
+                # dispatch for the prom file (multi-fan-out should not
+                # erase the last_unit/last_rc the operator can read on
+                # the prom file). Subsequent unit rcs are logged.
+                first_rc = -1
+                first_unit = ""
+                first_err = ""
+                for unit, reason in fireable:
+                    rc, err = fire_unit(unit, DRY)
+                    _State.record(unit, rc, event)
+                    if not first_unit:
+                        first_unit = unit
+                        first_rc = rc
+                        first_err = err
+                    _log.info(
+                        "DISPATCH event=%s delivery=%s repo=%s issue=%s "
+                        "action=%s label=%s unit=%s rc=%d reason=%s err=%s",
+                        event, delivery, repo, issue_number, action, label,
+                        unit, rc, reason, err,
+                    )
                 body_out = json.dumps({
-                    "received": True, "dispatched": unit, "rc": rc,
+                    "received": True,
+                    "dispatched": [u for u, _ in fireable],
+                    "rc": first_rc,
                     "delivery": delivery,
                 }).encode("utf-8")
                 self.send_response(200)
@@ -410,8 +508,10 @@ def _make_handler(secret: bytes):
                 # Ignored events are STILL verified receives — bump the
                 # heartbeat so the synthetic canary (non-enrolled repo)
                 # keeps FleetGhWebhookReceiverAbsent green.
+                reason = ignored[0] if ignored else f"unknown event: {event!r}"
                 _State.record_verified(event, reason)
-                _log.info("IGNORED event=%s delivery=%s reason=%s", event, delivery, reason)
+                _log.info("IGNORED event=%s delivery=%s reason=%s",
+                          event, delivery, reason)
                 body_out = json.dumps({
                     "received": True, "ignored": reason, "delivery": delivery,
                 }).encode("utf-8")

@@ -68,62 +68,109 @@ assert mod.verify_hmac(secret, body, "sha256=zz") is False
 bad = hmac.new(b"other", body, hashlib.sha256).hexdigest()
 assert mod.verify_hmac(secret, body, "sha256=" + bad) is False
 
-# dispatch table (no dry — but we want the unit name, not the fire call)
-unit, reason = mod.dispatch("issues", "labeled", "agent-ready", "fleet-ops",
-                            "", dry=False)
-assert unit == "pi-intake@fleet-ops.service", unit
-assert "issues/labeled/agent-ready" in reason, reason
+# dispatch table (no dry — but we want the unit name, not the fire call).
+# fleet-ops#3270: dispatch now returns a list of (unit, reason) pairs;
+# most events fan out to a single unit, but pull_request/closed fans
+# out to two (reaper + merged-pr-close) and issues/opened/labeled fans
+# out to two (lifecycle-sweep + the repo-specific dispatch). The
+# first_non_ignored helper returns the FIRST fireable unit, matching
+# the original test's expectations for the single-dispatch events.
+def first_fireable(pairs):
+    for u, r in pairs:
+        if u:
+            return u, r
+    if pairs:
+        return pairs[0]
+    return "", ""
 
-unit, reason = mod.dispatch("issues", "labeled", "pipeline-red", "fleet-ops",
-                            "", dry=False)
+unit, reason = first_fireable(mod.dispatch("issues", "labeled", "agent-ready", "fleet-ops",
+                            "", dry=False))
+# fleet-ops#3270: dispatch now returns lifecycle-label-sweep FIRST
+# (sweep-before-intake so a freshly-relabeled issue gets swept before
+# the worker reads it), with pi-intake as the second unit. The test
+# only requires BOTH be in the fireable set.
+pairs = mod.dispatch("issues", "labeled", "agent-ready", "fleet-ops", "", dry=False)
+fireable = [u for u, _ in pairs if u]
+assert "pi-intake@fleet-ops.service" in fireable, fireable
+assert "lifecycle-label-sweep.service" in fireable, fireable
+assert unit == fireable[0], (unit, fireable)
+
+unit, reason = first_fireable(mod.dispatch("issues", "labeled", "pipeline-red", "fleet-ops",
+                            "", dry=False))
 assert unit == "fleet-deploy-check.service", unit
 
-unit, reason = mod.dispatch("workflow_run", "completed", "", "fleet-ops",
-                            "success", dry=False)
+unit, reason = first_fireable(mod.dispatch("workflow_run", "completed", "", "fleet-ops",
+                            "success", dry=False))
 assert unit == "fleet-deploy-check.service", unit
 
 # pull_request/closed (merged) → fleet-worktree-reaper (fleet-ops#3269)
-unit, reason = mod.dispatch("pull_request", "closed", "", "fleet-ops",
-                            "", dry=False, pr_merged="true")
-assert unit == "fleet-worktree-reaper.service", unit
-assert "pull_request/closed" in reason, reason
+# AND fleet-merged-pr-close (fleet-ops#3270) — two-unit fan-out.
+pairs = mod.dispatch("pull_request", "closed", "", "fleet-ops",
+                     "", dry=False, pr_merged="true")
+fireable = [u for u, _ in pairs if u]
+assert "fleet-worktree-reaper.service" in fireable, fireable
+assert "fleet-merged-pr-close.service" in fireable, fireable
+assert any("pull_request/closed" in r for _, r in pairs), pairs
 
-# pull_request/closed (not merged) → fleet-worktree-reaper too (both
-# terminal states leave a claim worktree behind; Mode A reaps CLOSED
-# after the age gate, fleet-ops#3023).
-unit, reason = mod.dispatch("pull_request", "closed", "", "fleet-ops",
-                            "", dry=False, pr_merged="false")
-assert unit == "fleet-worktree-reaper.service", unit
+# pull_request/closed (not merged) → fleet-worktree-reaper + merged-pr-close
+# (both terminal states leave a claim worktree AND need a close trailer
+# check; fleet-ops#3023 + #3270).
+pairs = mod.dispatch("pull_request", "closed", "", "fleet-ops",
+                     "", dry=False, pr_merged="false")
+fireable = [u for u, _ in pairs if u]
+assert "fleet-worktree-reaper.service" in fireable, fireable
+assert "fleet-merged-pr-close.service" in fireable, fireable
 
-# pull_request/opened → ignored (only the terminal closed state reaps)
-unit, reason = mod.dispatch("pull_request", "opened", "", "fleet-ops",
-                            "", dry=False, pr_merged="false")
-assert unit == "", unit
-assert "ignored" in reason, reason
+# pull_request/opened → fleet-loose-ends-canary (fleet-ops#3270: a
+# new in-flight PR is half-done by definition).
+pairs = mod.dispatch("pull_request", "opened", "", "fleet-ops",
+                     "", dry=False, pr_merged="false")
+fireable = [u for u, _ in pairs if u]
+assert "fleet-loose-ends-canary.service" in fireable, fireable
 
 # pull_request/closed on a bad repo → ignored (defense-in-depth)
-unit, reason = mod.dispatch("pull_request", "closed", "", "bad repo name!",
-                            "", dry=False, pr_merged="true")
+unit, reason = first_fireable(mod.dispatch("pull_request", "closed", "", "bad repo name!",
+                            "", dry=False, pr_merged="true"))
 assert unit == "", unit
 assert "bad repo" in reason, reason
 
-unit, reason = mod.dispatch("issues", "labeled", "do-not-route",
-                            "fleet-ops", "", dry=False)
+unit, reason = first_fireable(mod.dispatch("issues", "labeled", "do-not-route",
+                            "fleet-ops", "", dry=False))
 assert unit == "", unit
 assert "ignored" in reason, reason
 
-unit, reason = mod.dispatch("issues", "labeled", "agent-ready", "bad repo name!",
-                            "", dry=False)
+unit, reason = first_fireable(mod.dispatch("issues", "labeled", "agent-ready", "bad repo name!",
+                            "", dry=False))
 assert unit == "", unit
 assert "bad repo" in reason, reason
 
-unit, reason = mod.dispatch("ping", "", "", "", "", dry=False)
+# ping → no-op
+unit, reason = first_fireable(mod.dispatch("ping", "", "", "", "", dry=False))
 assert unit == "", unit
 assert "ping" in reason, reason
 
-unit, reason = mod.dispatch("unknown_event", "x", "y", "z", "w", dry=False)
+# unknown event → ignored
+unit, reason = first_fireable(mod.dispatch("unknown_event", "x", "y", "z", "w", dry=False))
 assert unit == "", unit
 assert "unknown" in reason, reason
+
+# fleet-ops#3270: issues/opened (any repo, no label yet) → lifecycle-
+# label-sweep.service (host-level, enrollment-agnostic inside the
+# helper).
+pairs = mod.dispatch("issues", "opened", "", "fleet-ops", "", dry=False)
+fireable = [u for u, _ in pairs if u]
+assert "lifecycle-label-sweep.service" in fireable, fireable
+
+# issues/closed → close-duplicates (fleet-ops#3270).
+pairs = mod.dispatch("issues", "closed", "", "fleet-ops", "", dry=False)
+fireable = [u for u, _ in pairs if u]
+assert "fleet-issue-close-duplicates.service" in fireable, fireable
+
+# issues/labeled (any label, not agent-ready/pipeline-red) → lifecycle-sweep
+# only (no intake/deploy dispatch).
+pairs = mod.dispatch("issues", "labeled", "drill:lifecycle", "fleet-ops", "", dry=False)
+fireable = [u for u, _ in pairs if u]
+assert fireable == ["lifecycle-label-sweep.service"], fireable
 
 print("DRY unit checks OK")
 PYEOF
@@ -184,9 +231,13 @@ resp="$(curl -sS -X POST "http://127.0.0.1:$TEST_PORT/webhook" \
 status="$(printf '%s' "$resp" | tail -n1)"
 body_resp="$(printf '%s' "$resp" | head -n-1)"
 [[ "$status" == "200" ]] || fail "3: valid issues/labeled/agent-ready got $status; body=$body_resp"
-echo "$body_resp" | grep -q '"dispatched": "pi-intake@fleet-ops.service"' \
-    || fail "3: dispatched unit not in response: $body_resp"
-ok "3: valid issues/labeled/agent-ready → pi-intake@fleet-ops.service (DRY=1)"
+# fleet-ops#3270: this event fans out to two units (pi-intake + lifecycle-
+# label-sweep), so the response is a JSON array.
+echo "$body_resp" | grep -q '"pi-intake@fleet-ops.service"' \
+    || fail "3: pi-intake unit not in response: $body_resp"
+echo "$body_resp" | grep -q '"lifecycle-label-sweep.service"' \
+    || fail "3: lifecycle-label-sweep unit not in response: $body_resp"
+ok "3: valid issues/labeled/agent-ready → [pi-intake@fleet-ops, lifecycle-label-sweep] (DRY=1)"
 
 # --- 4: tampered body → 401 ---
 body_tampered='{"action":"closed"}'
@@ -245,7 +296,7 @@ resp="$(curl -sS -X POST "http://127.0.0.1:$TEST_PORT/webhook" \
 status="$(printf '%s' "$resp" | tail -n1)"
 body_resp="$(printf '%s' "$resp" | head -n-1)"
 [[ "$status" == "200" ]] || fail "7: workflow_run got $status; expected 200"
-echo "$body_resp" | grep -q '"dispatched": "fleet-deploy-check.service"' \
+echo "$body_resp" | grep -q '"fleet-deploy-check.service"' \
     || fail "7: workflow_run should dispatch fleet-deploy-check: $body_resp"
 ok "7: workflow_run/completed/success → fleet-deploy-check.service"
 
@@ -261,11 +312,17 @@ resp="$(curl -sS -X POST "http://127.0.0.1:$TEST_PORT/webhook" \
 status="$(printf '%s' "$resp" | tail -n1)"
 body_resp="$(printf '%s' "$resp" | head -n-1)"
 [[ "$status" == "200" ]] || fail "7b: pull_request/closed got $status; body=$body_resp"
-echo "$body_resp" | grep -q '"dispatched": "fleet-worktree-reaper.service"' \
+# fleet-ops#3270: this event fans out to two units (reaper + merged-pr-close).
+echo "$body_resp" | grep -q '"fleet-worktree-reaper.service"' \
     || fail "7b: pull_request/closed should dispatch fleet-worktree-reaper: $body_resp"
-ok "7b: pull_request/closed (merged) → fleet-worktree-reaper.service (DRY=1)"
+echo "$body_resp" | grep -q '"fleet-merged-pr-close.service"' \
+    || fail "7b: pull_request/closed should dispatch fleet-merged-pr-close: $body_resp"
+ok "7b: pull_request/closed (merged) → [fleet-worktree-reaper, fleet-merged-pr-close] (DRY=1)"
 
-# --- 7c: pull_request/opened → ignored (only terminal closed reaps) ---
+# --- 7c: pull_request/opened → fleet-loose-ends-canary (fleet-ops#3270).
+# A new in-flight PR is half-done by definition until it lands; the
+# canary is cheap and idempotent, so a webhook fan-out here is the
+# fastest way to catch the >24h-without-merge class.
 body_propen='{"action":"opened","pull_request":{"merged":false,"number":3269},"repository":{"name":"fleet-ops"}}'
 sig_propen="sha256=$(printf '%s' "$body_propen" | openssl dgst -sha256 -hmac "$secret" -hex | awk '{print $NF}')"
 resp="$(curl -sS -X POST "http://127.0.0.1:$TEST_PORT/webhook" \
@@ -277,9 +334,46 @@ resp="$(curl -sS -X POST "http://127.0.0.1:$TEST_PORT/webhook" \
 status="$(printf '%s' "$resp" | tail -n1)"
 body_resp="$(printf '%s' "$resp" | head -n-1)"
 [[ "$status" == "200" ]] || fail "7c: pull_request/opened got $status; body=$body_resp"
-echo "$body_resp" | grep -q '"ignored"' \
-    || fail "7c: pull_request/opened must be ignored: $body_resp"
-ok "7c: pull_request/opened → 200 + ignored (no reaper)"
+echo "$body_resp" | grep -q '"fleet-loose-ends-canary.service"' \
+    || fail "7c: pull_request/opened should dispatch fleet-loose-ends-canary: $body_resp"
+ok "7c: pull_request/opened → fleet-loose-ends-canary (DRY=1)"
+
+# --- 7d: issues/opened → lifecycle-label-sweep (fleet-ops#3270). The
+# repo is enrolled (in this checkout's intake-repos.json), so this
+# also fires the sweep. (We test the non-enrolled-repo path in
+# gh-webhook-receiver-live-e2e.test.sh; here we stay on the enrolled
+# path because the existing subprocess wiring already points the
+# receiver at this checkout's intake-repos.json.)
+body_opened='{"action":"opened","issue":{"number":3270},"repository":{"name":"fleet-ops"}}'
+sig_opened="sha256=$(printf '%s' "$body_opened" | openssl dgst -sha256 -hmac "$secret" -hex | awk '{print $NF}')"
+resp="$(curl -sS -X POST "http://127.0.0.1:$TEST_PORT/webhook" \
+    -H "Content-Type: application/json" \
+    -H "X-GitHub-Event: issues" \
+    -H "X-GitHub-Delivery: test-3270-opened" \
+    -H "X-Hub-Signature-256: $sig_opened" \
+    -w "\n%{http_code}" --data "$body_opened")"
+status="$(printf '%s' "$resp" | tail -n1)"
+body_resp="$(printf '%s' "$resp" | head -n-1)"
+[[ "$status" == "200" ]] || fail "7d: issues/opened got $status; body=$body_resp"
+echo "$body_resp" | grep -q '"lifecycle-label-sweep.service"' \
+    || fail "7d: issues/opened should dispatch lifecycle-label-sweep: $body_resp"
+ok "7d: issues/opened → lifecycle-label-sweep (DRY=1)"
+
+# --- 7e: issues/closed → fleet-issue-close-duplicates (fleet-ops#3270).
+body_closed='{"action":"closed","issue":{"number":2762},"repository":{"name":"fleet-ops"}}'
+sig_closed="sha256=$(printf '%s' "$body_closed" | openssl dgst -sha256 -hmac "$secret" -hex | awk '{print $NF}')"
+resp="$(curl -sS -X POST "http://127.0.0.1:$TEST_PORT/webhook" \
+    -H "Content-Type: application/json" \
+    -H "X-GitHub-Event: issues" \
+    -H "X-GitHub-Delivery: test-2762-closed" \
+    -H "X-Hub-Signature-256: $sig_closed" \
+    -w "\n%{http_code}" --data "$body_closed")"
+status="$(printf '%s' "$resp" | tail -n1)"
+body_resp="$(printf '%s' "$resp" | head -n-1)"
+[[ "$status" == "200" ]] || fail "7e: issues/closed got $status; body=$body_resp"
+echo "$body_resp" | grep -q '"fleet-issue-close-duplicates.service"' \
+    || fail "7e: issues/closed should dispatch fleet-issue-close-duplicates: $body_resp"
+ok "7e: issues/closed → fleet-issue-close-duplicates (DRY=1)"
 
 # --- 8: /healthz works without auth ---
 healthz="$(curl -sS "http://127.0.0.1:$TEST_PORT/healthz")"
@@ -293,13 +387,16 @@ grep -q 'fleet_gh_webhook_receiver_last_green_seconds' "$GH_WEBHOOK_RECEIVER_PRO
     || fail "9: prom file missing heartbeat metric"
 ok "9: receiver wrote heartbeat prom file"
 
-# --- 10: prom counter advanced for each successful dispatch (3 in this
-# test: the issues/labeled/agent-ready + the workflow_run/completed/success
-# + the pull_request/closed). Tampered bodies and ignored events do NOT
-# increment — they fail before the dispatcher runs.
-grep -E '^fleet_gh_webhook_receiver_dispatch_total 3$' "$GH_WEBHOOK_RECEIVER_PROM" \
-    || fail "10: dispatch counter != 3 (expected exactly the three successful events): $(cat "$GH_WEBHOOK_RECEIVER_PROM")"
-ok "10: dispatch counter advanced for every dispatched event (3 verified + dispatched)"
+# --- 10: prom counter advanced for each successful dispatch (5 in this
+# test after #3270: the issues/labeled/agent-ready + the workflow_run
+# + the pull_request/closed + the pull_request/opened + the issues/opened
+# + the issues/closed = 6 dispatch EVENTS; each event counts as 1 even
+# when it fans out to multiple units). Tampered bodies and unknown-
+# event / bad-repo ignored events do NOT increment — they fail before
+# the dispatcher runs.
+grep -E '^fleet_gh_webhook_receiver_dispatch_total 6$' "$GH_WEBHOOK_RECEIVER_PROM" \
+    || fail "10: dispatch counter != 6 (expected exactly six successful events: issues/labeled + workflow_run + pull_request/closed + pull_request/opened + issues/opened + issues/closed): $(cat "$GH_WEBHOOK_RECEIVER_PROM")"
+ok "10: dispatch counter advanced for every dispatched event (6 verified + dispatched)"
 
 kill "$server_pid" 2>/dev/null || true
 wait "$server_pid" 2>/dev/null || true
