@@ -266,6 +266,13 @@ bash "$here/alert-repair-wfr-trend-skip.test.sh"
 # without a workflow-file edit.
 bash "$here/alert-repair-slo-slowburn-skip.test.sh"
 
+# fleet-ops#3376: FleetEscalationStorm is a 24h rolling count / trend gauge;
+# a repair worker cannot clear it because the count ages out. Lock it into
+# dispatcher SKIP_SET + canary SKIP_FIRING so a firing storm cannot ladder
+# to a STOP-REASON / senior conference while the issue worker fixes the
+# exporter/metric. Hosted here so P14 runs it without a workflow-file edit.
+bash "$here/alert-repair-fleet-escalation-storm-skip.test.sh"
+
 # fleet-ops#2694 (PR #2796 follow-up): the fleet_alert_outcome_24h
 # phantom-vs-real split test landed on main without a ci.yml listing or a
 # host, so P14 ran red on "1 test file(s) are neither in ci.yml, hosted by
