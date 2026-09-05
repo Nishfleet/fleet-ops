@@ -4,6 +4,8 @@
 # Proves the 24h/12h drain trigger (fleet-ops#540) offline:
 #   1. Hours math: famine, floor drain, go-ham, generate, rest.
 #   2. gate: generate/go-ham exit 0; rest exit 1; gh fail exit 255.
+#   2b. gate auto-park: consecutive_dry>=N + hours<BUFFER_H -> rest=1;
+#       lifts at hours>=BUFFER_H; no state / dry<N -> run=0 (fleet-ops#3418).
 #   3. Canary clean: wired ExecCondition, prompt, workers ungated,
 #      auditor panel, hours in generate zone -> exit 0, OK.
 #   4. Hardcoded ExecCondition -> exit 1, LOUD.
@@ -210,6 +212,83 @@ unset GH_BROKEN
 rm -f "$scratch/gh_broken"
 [[ "$gate_rc" == "255" ]] || fail "gate gh fail must exit 255, got $gate_rc"
 ok "scenario2: gate exit 0/1/255"
+
+# --- 2b. auto-park a green-and-sterile scout (fleet-ops#3418) ---------------
+# The scout-futility tracker escalated (consecutive_dry >= N) and the buffer
+# is still below BUFFER_H -> the gate parks (rest=1) so the sterile loop stops
+# burning cycles. Lifts when the buffer refills (hours >= BUFFER_H). No state
+# file or consecutive_dry < N -> never parks.
+park_state_dir="$scratch/scout-futility-state"
+mkdir -p "$park_state_dir"
+export SCOUT_FUTILITY_STATE_DIR="$park_state_dir"
+export SCOUT_FUTILITY_N=3
+export SCOUT_FUTILITY_BUFFER_H=12
+write_state_file() {
+  local repo="$1" dry="$2"
+  cat >"$park_state_dir/${repo}.state" <<EOF
+# scout-futility state
+consecutive_dry=${dry}
+consecutive_wall=0
+EOF
+}
+# consecutive_dry=3 (>= N), hours=5 (< BUFFER_H) -> parked (rest=1).
+write_state_file demo 3
+export FLEET_WORK_SUPPLY_HOURS=5
+set +e
+"$bin" gate demo >/dev/null 2>&1
+gate_rc=$?
+set -e
+[[ "$gate_rc" == "1" ]] || fail "scenario2b: parked scout (dry=3, hours=5) must rest=1, got $gate_rc"
+# consecutive_dry=5 (> N), hours=10 (< BUFFER_H) -> still parked.
+write_state_file demo 5
+export FLEET_WORK_SUPPLY_HOURS=10
+set +e
+"$bin" gate demo >/dev/null 2>&1
+gate_rc=$?
+set -e
+[[ "$gate_rc" == "1" ]] || fail "scenario2b: parked scout (dry=5, hours=10) must rest=1, got $gate_rc"
+# Lift: consecutive_dry=3 (>= N) but hours=12 (>= BUFFER_H) -> run=0.
+write_state_file demo 3
+export FLEET_WORK_SUPPLY_HOURS=12
+set +e
+"$bin" gate demo >/dev/null 2>&1
+gate_rc=$?
+set -e
+[[ "$gate_rc" == "0" ]] || fail "scenario2b: lifted park (dry=3, hours=12) must run=0, got $gate_rc"
+# Lift: consecutive_dry=3, hours=20 (generate zone) -> run=0.
+export FLEET_WORK_SUPPLY_HOURS=20
+set +e
+"$bin" gate demo >/dev/null 2>&1
+gate_rc=$?
+set -e
+[[ "$gate_rc" == "0" ]] || fail "scenario2b: lifted park (dry=3, hours=20) must run=0, got $gate_rc"
+# Not parked: consecutive_dry=2 (< N), hours=5 -> run=0 (go-ham runs).
+write_state_file demo 2
+export FLEET_WORK_SUPPLY_HOURS=5
+set +e
+"$bin" gate demo >/dev/null 2>&1
+gate_rc=$?
+set -e
+[[ "$gate_rc" == "0" ]] || fail "scenario2b: not parked (dry=2 < N, hours=5) must run=0, got $gate_rc"
+# No state file -> never parks even at go-ham.
+rm -f "$park_state_dir/demo.state"
+set +e
+"$bin" gate demo >/dev/null 2>&1
+gate_rc=$?
+set -e
+[[ "$gate_rc" == "0" ]] || fail "scenario2b: no state file (hours=5) must run=0, got $gate_rc"
+# Park overrides go-ham but NOT rest: dry=3, hours=30 -> rest=1 (action=rest,
+# park is redundant but must not change the rest verdict).
+write_state_file demo 3
+export FLEET_WORK_SUPPLY_HOURS=30
+set +e
+"$bin" gate demo >/dev/null 2>&1
+gate_rc=$?
+set -e
+[[ "$gate_rc" == "1" ]] || fail "scenario2b: rest zone (dry=3, hours=30) must rest=1, got $gate_rc"
+unset FLEET_WORK_SUPPLY_HOURS SCOUT_FUTILITY_STATE_DIR SCOUT_FUTILITY_N SCOUT_FUTILITY_BUFFER_H
+rm -rf "$park_state_dir"
+ok "scenario2b: auto-park rests when consecutive_dry>=N and hours<BUFFER_H; lifts at hours>=BUFFER_H (fleet-ops#3418)"
 
 # --- 3. clean canary --------------------------------------------------------
 write_wired_checkout
