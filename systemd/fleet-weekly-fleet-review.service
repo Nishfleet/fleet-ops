@@ -16,9 +16,9 @@ Type=oneshot
 Environment=HOME=/home/nish
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_RUNTIME_DIR=/run/user/1000
-Environment=WORKDIR=/home/nish
+Environment=WORKDIR=/home/nish/workspaces/tooling/fleet-ops-deploy-clone
 Environment=LOG_DIR=/home/nish/workspaces/agent-state/cron-output
-Environment=PROMPTS_DIR=/home/nish/.pi/agent/prompts
+Environment=PROMPTS_DIR=/home/nish/workspaces/tooling/fleet-ops-deploy-clone/systemd/prompts
 Environment=PI_BIN=/home/nish/.local/bin/pi
 ExecStart=/home/nish/.local/bin/agent-cron-run weekly-fleet-review
 Restart=on-failure
