@@ -92,6 +92,11 @@ assert(REPO_TYPES.archive.skip === true, "archive type is skipped");
 JS
 ok "standards lib: classifyRepo + type table"
 
+# --- stray worker notes at the repo root (fleet-ops#3682 committed pr-body-3376.md + verification-3376.md) ---
+stray=""
+for f in pr-body-*.md verification-*.md PR_BODY*.md; do [ -e "$f" ] && stray="$stray$f "; done
+if [ -z "$stray" ]; then ok "repo root carries no stray worker notes (pr-body-*.md / verification-*.md)"; else ko "stray worker notes at repo root: $stray — PR bodies belong in the PR, not the tree"; fi
+
 echo
 echo "repo-standards tests: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
