@@ -34,6 +34,11 @@ libexec/fleet-console-pi/verify.py /home/nish/.local/libexec/fleet-console-pi/ve
 libexec/fleet-console-pi/push.sh /home/nish/.local/libexec/fleet-console-pi/push.sh
 libexec/fleet-console-pi/shell.html /home/nish/.local/libexec/fleet-console-pi/shell.html
 bin/fleet-console-tile-truth-drill /home/nish/.local/bin/fleet-console-tile-truth-drill
+# fleet-ops#3268: retire a dead repo — close every open PR with one comment,
+# then archive it (gh repo archive). Child of the waste-cut #3128. Dry-run
+# default. Archive step is Administration-gated (Worker App lacks it); the
+# tool closes PRs (worker scope) and reports the archive command loudly.
+bin/fleet-close-and-archive-repo /home/nish/.local/bin/fleet-close-and-archive-repo
 # fleet-ops#1157: ConsoleLying + ConsoleTileVerifyAbsent. System scope —
 # install.sh --system deploys to /etc/prometheus/fleet_rules.yml.
 config/fleet_rules.yml /etc/prometheus/fleet_rules.yml
