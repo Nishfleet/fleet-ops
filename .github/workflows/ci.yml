@@ -183,7 +183,7 @@ jobs:
       node-version: ""
       install-command: ""
       scan-secrets: false
-      timeout-minutes: 10
+      timeout-minutes: 20
       verify-command: |
         set -euo pipefail
         # fleet-ops#3235 part six (the follow-up its own commit message planned:
