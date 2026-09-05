@@ -712,4 +712,18 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/curator-journal-cap\.test\.sh"?'
   || fail "curator-journal-cap.test.sh must not be a known orphan (fleet-ops#1520)"
 ok "curator-journal-cap.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#1520)"
 
+# fleet-ops#3273: hard-pin the host line for install-manifest-bak-sprawl in
+# ci-standards-audit so a future refactor that drops it is caught by name.
+# Hosted from tests/ci-standards-audit.test.sh (already listed in ci.yml)
+# because the worker App cannot push .github/workflows/**. Parking it on
+# known_orphans to silence the generic message must also fail by name below.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/install-manifest-bak-sprawl\.test\.sh"?' \
+  "$here/ci-standards-audit.test.sh" \
+  || fail "ci-standards-audit.test.sh must bash-invoke install-manifest-bak-sprawl.test.sh (fleet-ops#3273)"
+[[ -n "${reachable[install-manifest-bak-sprawl.test.sh]:-}" ]] \
+  || fail "install-manifest-bak-sprawl.test.sh must be hosted by a listed test (fleet-ops#3273)"
+[[ -z "${known_orphan_set[install-manifest-bak-sprawl.test.sh]:-}" ]] \
+  || fail "install-manifest-bak-sprawl.test.sh must not be a known orphan (fleet-ops#3273)"
+ok "install-manifest-bak-sprawl.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#3273)"
+
 echo "OK: p14-test-listing-gate.test.sh: P14 test list is closed"
