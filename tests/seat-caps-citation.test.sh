@@ -247,8 +247,11 @@ ok "openrouter: deepseek/deepseek-v4-flash-0731 wired (metered, cap=$or_dsv4f) w
 #    laguna incident). Both seats ran n=20 sessions with pr_count=0 in
 #    seat-yield.json and died 57 times in the 3h window; cap=0 stale so the
 #    14d TTL re-audition (fleet-ops#3111) re-probes them with a real packet.
-echo "--- scenario 8: laguna + swe-1-7 are cap=0 stale with a dated n=20 yield-0 reason ---"
-for pm in "commandcode|poolside/laguna-s-2.1-free|_laguna_20260905" "devin|swe-1-7|_swe17_20260905"; do
+# 2026-09-05 correction: devin/swe-1-7 is NOT retired — its n=20 / pr_count=0 were
+# infrastructure deaths (1801s provider kill, resource_exhausted), not model
+# failures; infra deaths never count as yield (#3250/#3310). Only laguna stays.
+echo "--- scenario 8: laguna is cap=0 stale with a dated n=20 yield-0 reason ---"
+for pm in "commandcode|poolside/laguna-s-2.1-free|_laguna_20260905"; do
     IFS='|' read -r prov model field <<<"$pm"
     mcap=$(jq -r --arg p "$prov" --arg m "$model" '.providers[$p].models[$m] | if type=="object" then (.cap // 0) else . end' "$caps")
     [[ "$mcap" == "0" ]] || fail "$prov/$model cap must be 0 (n=20 sessions, pr_count=0 in seat-yield.json on 2026-09-05). Got: $mcap"
