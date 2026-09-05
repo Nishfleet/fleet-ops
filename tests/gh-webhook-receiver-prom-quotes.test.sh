@@ -74,40 +74,53 @@ spec = importlib.util.spec_from_file_location("serve", path)
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 
+# fleet-ops#3270: dispatch() now returns a list of (unit, reason) pairs
+# (multi-fan-out). first_fireable returns the first non-empty unit, or
+# the sentinel ("", reason) for an ignored event.
+def first_fireable(pairs):
+    for u, r in pairs:
+        if u:
+            return u, r
+    if pairs:
+        return pairs[0]
+    return "", ""
+
 # Enrolled set does NOT contain the synthetic canary repo.
 enrolled = {"fleet-ops", "0509"}
 
 # canary repo → NOT dispatched (enrollment guard)
-unit, reason = mod.dispatch("issues", "labeled", "agent-ready",
+unit, reason = first_fireable(mod.dispatch("issues", "labeled", "agent-ready",
                             "fleet-ops-canary", "", dry=True,
-                            enrolled=enrolled)
+                            enrolled=enrolled))
 assert unit == "", f"canary repo must NOT dispatch, got unit={unit!r}"
 assert "not enrolled" in reason, f"reason must name enrollment: {reason!r}"
 
-# enrolled repo → dispatched
-unit, reason = mod.dispatch("issues", "labeled", "agent-ready",
-                            "fleet-ops", "", dry=True,
-                            enrolled=enrolled)
-assert unit == "pi-intake@fleet-ops.service", unit
+# enrolled repo → dispatched (pi-intake is in the fan-out alongside
+# lifecycle-label-sweep; fleet-ops#3270).
+pairs = mod.dispatch("issues", "labeled", "agent-ready",
+                     "fleet-ops", "", dry=True, enrolled=enrolled)
+fireable = [u for u, _ in pairs if u]
+assert "pi-intake@fleet-ops.service" in fireable, fireable
 
 # fleet-deploy-check is fleet-wide, NOT enrollment-gated (pipeline-red)
-unit, reason = mod.dispatch("issues", "labeled", "pipeline-red",
+unit, reason = first_fireable(mod.dispatch("issues", "labeled", "pipeline-red",
                             "fleet-ops-canary", "", dry=True,
-                            enrolled=enrolled)
+                            enrolled=enrolled))
 assert unit == "fleet-deploy-check.service", \
     f"pipeline-red must dispatch regardless of enrollment: {unit!r}"
 
 # workflow_run/completed/success is fleet-wide, NOT enrollment-gated
-unit, reason = mod.dispatch("workflow_run", "completed", "",
+unit, reason = first_fireable(mod.dispatch("workflow_run", "completed", "",
                             "fleet-ops-canary", "success", dry=True,
-                            enrolled=enrolled)
+                            enrolled=enrolled))
 assert unit == "fleet-deploy-check.service", \
     f"workflow_run must dispatch regardless of enrollment: {unit!r}"
 
 # enrolled=None (legacy callers / tests) → no gating, backwards compatible
-unit, reason = mod.dispatch("issues", "labeled", "agent-ready",
-                            "fleet-ops", "", dry=True, enrolled=None)
-assert unit == "pi-intake@fleet-ops.service", unit
+pairs = mod.dispatch("issues", "labeled", "agent-ready",
+                     "fleet-ops", "", dry=True, enrolled=None)
+fireable = [u for u, _ in pairs if u]
+assert "pi-intake@fleet-ops.service" in fireable, fireable
 print("enrollment guard OK")
 PYEOF
 ok "3: dispatch() gates pi-intake on enrollment, leaves fleet-deploy-check ungated"

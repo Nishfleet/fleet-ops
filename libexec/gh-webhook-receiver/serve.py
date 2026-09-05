@@ -218,7 +218,7 @@ def dispatch(event: str, action: str, label: str, repo: str, conclusion: str,
     leave a claim worktree behind (fleet-ops#3269).
     """
     if event == "ping":
-        return []
+        return [("", "ping (no-op)")]
 
     if event == "pull_request":
         if not repo or not REPO_RE.match(repo):
@@ -266,11 +266,13 @@ def dispatch(event: str, action: str, label: str, repo: str, conclusion: str,
                 # is the helper; the .service is the systemd wrapper).
                 units.append(("fleet-issue-close-duplicates.service",
                               f"issues/{action} → fleet-issue-close-duplicates"))
-            if action in ("labeled", "opened", "reopened"):
-                # Lifecycle-label sweep runs on every open + label event.
-                # Cheap (one `gh issue list` per enrolled repo), idempotent
-                # (only relabels unlabeled), and protected against a
-                # closed repo by the helper's own guard.
+            if action in ("labeled", "opened", "reopened") and label != "pipeline-red":
+                # Lifecycle-label sweep runs on every open + label event
+                # except pipeline-red (a deploy signal, not a lifecycle
+                # state change — fleet-ops#3270). Cheap (one `gh issue
+                # list` per enrolled repo), idempotent (only relabels
+                # unlabeled), and protected against a closed repo by the
+                # helper's own guard.
                 units.append(("lifecycle-label-sweep.service",
                               f"issues/{action} → lifecycle-label-sweep"))
             if action == "labeled" and label == "agent-ready":
@@ -364,12 +366,14 @@ class _State:
     total: int = 0
 
     @classmethod
-    def record(cls, unit: str, rc: int, event: str) -> None:
+    def record(cls, unit: str, rc: int, event: str,
+               bump_total: bool = True) -> None:
         cls.last_event_ts = time.time()
         cls.last_unit = unit or "(none)"
         cls.last_rc = rc
         cls.last_event = event or "(unknown)"
-        cls.total += 1
+        if bump_total:
+            cls.total += 1
         write_prom(PROM_FILE, cls.last_event_ts, cls.last_unit,
                    cls.last_rc, cls.total, cls.last_event)
 
@@ -482,7 +486,13 @@ def _make_handler(secret: bytes):
                 first_err = ""
                 for unit, reason in fireable:
                     rc, err = fire_unit(unit, DRY)
-                    _State.record(unit, rc, event)
+                    # Bump the dispatch counter once per EVENT, not per
+                    # unit: a fan-out (pull_request/closed → reaper +
+                    # merged-pr-close) is one webhook delivery, so the
+                    # prom counter counts deliveries, not unit starts
+                    # (fleet-ops#3270).
+                    _State.record(unit, rc, event,
+                                  bump_total=not first_unit)
                     if not first_unit:
                         first_unit = unit
                         first_rc = rc

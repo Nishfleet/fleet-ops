@@ -1,0 +1,20 @@
+[Unit]
+Description=Merged-PR observe-to-close backstop — hourly (fleet-ops#3270)
+
+[Timer]
+# Named reason (vault: "a schedule needs a named reason"): webhooks are
+# the primary trigger (pull_request/closed via gh-webhook-receiver); this
+# timer is the level-triggered backstop for webhooks that never arrive
+# (GitHub delivery drops, receiver down, org webhook misconfigured). A
+# forgotten `Closes #<N>` trailer on a merged PR is not urgent — the
+# issue stays open and intake re-queues it, which is waste but not
+# breakage — so an hourly backstop is proportionate. fleet-ops#3270 moved
+# this out of the 15-min heartbeat; the backstop cadence is hourly
+# because the webhook fast-path now covers the freshness contract.
+OnCalendar=*:23:00
+RandomizedDelaySec=5min
+Persistent=true
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target

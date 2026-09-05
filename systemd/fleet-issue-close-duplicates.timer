@@ -1,0 +1,19 @@
+[Unit]
+Description=Duplicate-issue drain backstop — daily (fleet-ops#3270)
+
+[Timer]
+# Named reason (vault: "a schedule needs a named reason"): webhooks are
+# the primary trigger (issues/closed via gh-webhook-receiver); this timer
+# is the level-triggered backstop for webhooks that never arrive. A
+# duplicate issue is waste but not breakage — the canonical issue still
+# gets dispatched — so a daily backstop is proportionate (the old 15-min
+# cadence was overkill for a clustering drain). fleet-ops#3270 moved
+# this out of the 15-min heartbeat; the daily backstop catches a missed
+# webhook within one waking window.
+OnCalendar=*-*-* 04:17:00
+RandomizedDelaySec=30min
+Persistent=true
+AccuracySec=1h
+
+[Install]
+WantedBy=timers.target

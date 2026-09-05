@@ -1,0 +1,19 @@
+[Unit]
+Description=Loose-ends canary backstop — hourly (fleet-ops#3270)
+
+[Timer]
+# Named reason (vault: "a schedule needs a named reason"): webhooks are
+# the primary trigger (pull_request/opened via gh-webhook-receiver); this
+# timer is the level-triggered backstop for webhooks that never arrive.
+# The canary's contract is a 24h idle threshold, so an hourly backstop
+# catches a missed webhook well inside that window. fleet-ops#3270 moved
+# this out of the 15-min heartbeat; the hourly backstop is proportionate
+# because the 24h idle threshold is the real freshness contract, not the
+# 15-min cadence.
+OnCalendar=*:37:00
+RandomizedDelaySec=5min
+Persistent=true
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target

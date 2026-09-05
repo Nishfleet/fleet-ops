@@ -1,10 +1,22 @@
 [Unit]
-Description=Fleet orchestrator heartbeat (durable, session-independent)
+Description=Fleet orchestrator heartbeat (durable, session-independent, host-local)
 # Named reason for this schedule (vault: "a schedule needs a NAMED reason"):
 # orchestrator continuity across interactive-session restarts; event
 # notifications die with sessions. The previous watcher/cron was session-
 # bound and died 4x today on session hops; this timer is owned by the
 # user systemd instance, not by any agent or tmux session.
+#
+# fleet-ops#3270: the four sections that only read GitHub state
+# (lifecycle-label-sweep, merged-pr observe-to-close, close-duplicates,
+# loose-ends-canary) moved behind webhook triggers (gh-webhook-receiver
+# dispatches to their own .service units). tier 1 now keeps only
+# host-local sections: merge-to-live deploy, queue green PRs, release
+# orphaned claims, recover failed units, verify scout/intake timers,
+# update the last-heartbeat stamp, re-examine agent-blocked issues, RAM
+# measurement, seat-health freshness, and the canaries. The timer
+# cadence dropped 15 -> 60 min because the webhook fast-path covers the
+# GitHub-state freshness contract; host-local ops have no upstream event
+# signal and 60 min is proportionate.
 #
 # Two-tier design (P13 amendment, 2026-08-25):
 #   tier 1 (deterministic, no LLM) runs every tick — keeps the pipeline

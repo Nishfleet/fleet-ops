@@ -1,0 +1,29 @@
+[Unit]
+Description=Merged-PR observe-to-close — webhook-triggered (fleet-ops#3270, was heartbeat §19)
+# Named reason for this schedule (vault: "a schedule needs a named
+# reason"): a merged PR that ships an open issue but forgets the
+# `Closes #<N>` trailer leaves that issue OPEN and the heartbeat keeps
+# re-queuing it — a worker is dispatched again to re-do already-merged
+# work (fleet-ops#1435). The close is gated behind
+# FLEET_MERGED_PR_CLOSE_OK=1 so only the production unit closes against
+# the live repo. Previously ran every 15 min inside fleet-heartbeat-tier1
+# §19; fleet-ops#3270 moves it behind the gh-webhook-receiver
+# (pull_request/closed) so a merged PR triggers the close check in
+# seconds. The companion timer (fleet-merged-pr-close.timer) is the
+# level-triggered backstop for webhooks that never arrive.
+#
+# OnFailure is wired by the global service.d/10-escalate.conf drop-in
+# (unit-escalation@fleet-merged-pr-close.service).
+
+[Service]
+Type=oneshot
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=FLEET_MERGED_PR_CLOSE_OK=1
+Environment=MERGED_PR_CLOSE_INTAKE_JSON=/home/nish/workspaces/products/fleet-ops/config/intake-repos.json
+WorkingDirectory=/home/nish
+ExecStart=/home/nish/.local/bin/fleet-merged-pr-close
+TimeoutStartSec=10min
+# Never restart: the webhook (or the backstop timer) is the retry.
+Restart=no

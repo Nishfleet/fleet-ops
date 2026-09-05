@@ -531,6 +531,17 @@ systemd/fleet-restore-drill.service.d/10-keystone-hc.conf /home/nish/.config/sys
 bin/fleet-worktree-reaper /home/nish/.local/bin/fleet-worktree-reaper
 systemd/fleet-worktree-reaper.service /home/nish/.config/systemd/user/fleet-worktree-reaper.service
 systemd/fleet-worktree-reaper.timer /home/nish/.config/systemd/user/fleet-worktree-reaper.timer
+# fleet-ops#3270: four GitHub-reading heartbeat sections moved behind
+# webhook triggers (gh-webhook-receiver dispatches to these .service
+# units). Each has a backstop .timer for webhooks that never arrive.
+systemd/lifecycle-label-sweep.service /home/nish/.config/systemd/user/lifecycle-label-sweep.service
+systemd/lifecycle-label-sweep.timer /home/nish/.config/systemd/user/lifecycle-label-sweep.timer
+systemd/fleet-merged-pr-close.service /home/nish/.config/systemd/user/fleet-merged-pr-close.service
+systemd/fleet-merged-pr-close.timer /home/nish/.config/systemd/user/fleet-merged-pr-close.timer
+systemd/fleet-issue-close-duplicates.service /home/nish/.config/systemd/user/fleet-issue-close-duplicates.service
+systemd/fleet-issue-close-duplicates.timer /home/nish/.config/systemd/user/fleet-issue-close-duplicates.timer
+systemd/fleet-loose-ends-canary.service /home/nish/.config/systemd/user/fleet-loose-ends-canary.service
+systemd/fleet-loose-ends-canary.timer /home/nish/.config/systemd/user/fleet-loose-ends-canary.timer
 # fleet-ops#455 + #1463: eleven-plane resilience drill + keystone dead-man
 # pings + tailscaled Restart=always. The five #1463 failure-class planes
 # (queue_freeze, pipeline_red, boundary_delivery, band_floor,

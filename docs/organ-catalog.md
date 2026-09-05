@@ -24,7 +24,11 @@ cheaper than building, because prose bans lose to urgency at decision time.
 
 | Job class | Existing owner | Unit / mechanism | Ref |
 |---|---|---|---|
-| Fleet heartbeat / liveness | fleet-heartbeat | `fleet-heartbeat.timer` | #468 |
+| Fleet heartbeat / liveness (host-local) | fleet-heartbeat | `fleet-heartbeat.timer` | #468, #3270 |
+| Lifecycle-label sweep (webhook) | lifecycle-label-sweep | `lifecycle-label-sweep.{service,timer}` | #3270 |
+| Merged-PR observe-to-close (webhook) | fleet-merged-pr-close | `fleet-merged-pr-close.{service,timer}` | #3270 |
+| Duplicate-issue drain (webhook) | fleet-issue-close-duplicates | `fleet-issue-close-duplicates.{service,timer}` | #3270 |
+| Loose-ends canary (webhook) | fleet-loose-ends-canary | `fleet-loose-ends-canary.{service,timer}` | #3270 |
 | Tight merge→live deploy | fleet-deploy-check | `fleet-deploy-check.timer` | #468, TOP GEAR |
 | Blind audit / gap-closure | fleet-blind-audit | `fleet-blind-audit.timer` | #377 |
 | Resilience drill | fleet-resilience-drill | `fleet-resilience-drill.timer` | #1010 |

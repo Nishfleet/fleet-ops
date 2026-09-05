@@ -327,11 +327,14 @@ grep -q 'issue close 4242' "$scratch/closes.log" \
 ok "drill: unlabeled fixture is labeled after one tick, then closed"
 
 # Case 10: contracts
-grep -q 'lifecycle-label-sweep' "$repo_root/bin/fleet-heartbeat-tier1" \
-  || fail "tier1 must call lifecycle-label-sweep"
+# fleet-ops#3270: lifecycle-label-sweep moved from heartbeat tier1 §6b to
+# lifecycle-label-sweep.service (webhook-triggered). The contract now
+# checks the .service unit, not tier1.
+grep -q 'lifecycle-label-sweep' "$repo_root/systemd/lifecycle-label-sweep.service" \
+  || fail "lifecycle-label-sweep.service must call lifecycle-label-sweep"
 grep -q 'bin/lifecycle-label-sweep' "$repo_root/MANIFEST" \
   || fail "MANIFEST must install bin/lifecycle-label-sweep"
-ok "contracts: tier1 call + MANIFEST entry present"
+ok "contracts: .service unit call + MANIFEST entry present"
 
 # Case 11: failed-command observe-to-close on fleet-ops → observe-to-close,
 # not agent-ready (fleet-ops#1401). The body must carry the signal marker.

@@ -221,6 +221,28 @@ an already-active oneshot is a no-op, so a burst of closes dedupes
 naturally. The daily timer stays as the level-triggered backstop for
 webhooks that never arrive.
 
+**fleet-ops#3270: heartbeat GitHub-reading sections moved behind webhooks**
+
+Four sections that previously ran inside `fleet-heartbeat-tier1` every
+15 min now fire on the matching GitHub event via this receiver. The
+heartbeat timer dropped to 60 min and keeps only host-local sections
+(deploy, queue, reclaim, failed-unit recovery, RAM, seat-health,
+canaries). Each new dispatch has a companion backstop timer for
+webhooks that never arrive:
+
+| Event | Dispatch | Backstop timer | Was heartbeat § |
+|---|---|---|---|
+| `issues/opened` + `issues/labeled` | `lifecycle-label-sweep.service` | `lifecycle-label-sweep.timer` (hourly) | §6b |
+| `pull_request/closed` | `fleet-merged-pr-close.service` | `fleet-merged-pr-close.timer` (hourly) | §19 |
+| `issues/closed` | `fleet-issue-close-duplicates.service` | `fleet-issue-close-duplicates.timer` (daily) | §21 |
+| `pull_request/opened` | `fleet-loose-ends-canary.service` | `fleet-loose-ends-canary.timer` (hourly) | §43 |
+
+`pull_request/closed` is a multi-fan-out: it fires BOTH
+`fleet-worktree-reaper.service` (fleet-ops#3269) AND
+`fleet-merged-pr-close.service` (fleet-ops#3270). systemd's oneshot
+semantics guarantee a re-dispatch of an already-active unit is a no-op,
+so the webhook fast-path and the backstop timer do not fight.
+
 **Why 20-min cadence (and not 15 or 30)?**
 
 The issue says 15-30 minutes; we picked 20 because:

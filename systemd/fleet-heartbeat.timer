@@ -1,18 +1,29 @@
 [Unit]
-Description=Fleet orchestrator heartbeat (every 30 min, off-peak minute :17)
+Description=Fleet orchestrator heartbeat (every 60 min, off-peak minute :17)
 # Named reason: orchestrator continuity across interactive-session restarts;
 # event notifications die with sessions. The previous watcher/cron was
 # session-bound and died 4x today on session hops. This timer is owned by
 # the user systemd instance (Persistent=true), not by any agent session,
 # so it survives every interactive Claude/pi session exit.
 #
+# Cadence 15 -> 60 min (fleet-ops#3270): the four sections that only read
+# GitHub state (lifecycle-label-sweep, merged-pr observe-to-close,
+# close-duplicates, loose-ends-canary) moved behind webhook triggers
+# (gh-webhook-receiver dispatches issues/opened, issues/labeled,
+# issues/closed, pull_request/closed, pull_request/opened to their own
+# .service units). The heartbeat timer now keeps only host-local sections
+# (merge-to-live deploy, queue green PRs, release orphaned claims, recover
+# failed units, RAM measurement, seat-health freshness, canaries). 60 min
+# is proportionate for host-local ops that have no upstream event signal;
+# the webhook fast-path covers the GitHub-state freshness contract.
+#
 # Off-peak minute :17 — picked to avoid the cluster of fleet timers firing
 # at :00, :13, :15, :23, :38, :39, :43, :48, :52 (observed live at
-# `systemctl --user list-timers` on 2026-08-25). Minute :17 of every half
-# hour (17 and 47 past) sits in the gap.
+# `systemctl --user list-timers` on 2026-08-25). Minute :17 of every hour
+# sits in the gap.
 
 [Timer]
-OnCalendar=*:17/30
+OnCalendar=*:17/60
 RandomizedDelaySec=60
 Persistent=true
 AccuracySec=15s

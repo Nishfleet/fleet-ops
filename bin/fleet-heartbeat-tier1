@@ -58,11 +58,11 @@ fi
 #      machine-checkable dependency is closed/merged, flip back to
 #      agent-ready. Nish-decision blocks stay labelled and are published
 #      (count + oldest age) into the triage file.
-#   6b. Lifecycle-label unlabeled open issues (fleet-ops#376). Intake only
-#      sees agent-ready, so an issue with no lifecycle label is invisible
-#      forever. Sweep enrolled repos; default agent-ready; AUTO-REVERT
-#      SKIP/HALT → noise-class; FLAG-for-Nish → nish-reserved; drill:*
-#      titles → drill:lifecycle. Log relabeled=N on the tick line.
+#   6b. Lifecycle-label unlabeled open issues (fleet-ops#376). MOVED to
+#      webhook triggers (fleet-ops#3270): now runs as
+#      lifecycle-label-sweep.service dispatched by gh-webhook-receiver on
+#      issues/opened + issues/labeled, with lifecycle-label-sweep.timer
+#      as the hourly backstop. The heartbeat no longer runs this section.
 #   8. Undersaturation alarm + throughput line (fleet-ops#75). Delegates to
 #      bin/fleet-heartbeat-undersaturation: counts ready/claimed work and
 #      live pi-issue workers; if work>0 and running==0 it repairs (reset-
@@ -1181,38 +1181,16 @@ fi
 # ============================================================================
 # 6b. LIFECYCLE-LABEL UNLABELED OPEN ISSUES (fleet-ops#376)
 # ============================================================================
-# Named reason for this sweep: intake's ExecCondition / list is
-# `-l agent-ready`. An issue filed with no lifecycle label never enters
-# the queue (live: #290/#304/#308 sat OPEN unlabeled while the
-# conference-gate re-land died around them). The GitHub App has no
-# webhooks, so there is no event to subscribe to. Heartbeat's existing
-# 30-minute timer is the observer; this is not a new schedule.
+# fleet-ops#3270: MOVED behind webhook triggers. The sweep now runs as
+# lifecycle-label-sweep.service, dispatched by gh-webhook-receiver on
+# issues/opened + issues/labeled (so a freshly-opened or freshly-labeled
+# issue gets its lifecycle label in seconds, not in the next tick). The
+# companion lifecycle-label-sweep.timer is the hourly backstop for
+# webhooks that never arrive. The heartbeat timer (now 60 min) keeps
+# only host-local sections. Variables retained as 0 for the tier 1
+# complete log line + exit-code propagation (downstream reads them).
 relabeled=0
 lifecycle_rc=0
-LIFECYCLE_BIN="${FLEET_LIFECYCLE_SWEEP:-/home/nish/.local/bin/lifecycle-label-sweep}"
-if require_manifest_helper "$LIFECYCLE_BIN"; then
-    log "6b. lifecycle-label-sweep starting"
-    lifecycle_repos=$(jq -r '.repos[]? | "Nishfleet/" + .name' "$INTAKE_REPOS_JSON")
-    lifecycle_out=""
-    if lifecycle_out=$(LIFECYCLE_SWEEP_REPOS="$lifecycle_repos" \
-        LIFECYCLE_SWEEP_LOCKDIR="${XDG_RUNTIME_DIR}/lifecycle-label-sweep" \
-        LIFECYCLE_SWEEP_INTAKE_JSON="$INTAKE_REPOS_JSON" \
-        "$LIFECYCLE_BIN"); then
-        log "6b. lifecycle-label-sweep done: $lifecycle_out"
-        relabeled=$(printf '%s' "$lifecycle_out" | sed -n 's/.*relabeled=\([0-9][0-9]*\).*/\1/p')
-        relabeled=${relabeled:-0}
-    else
-        log "6b. lifecycle-label-sweep FAILED — next tick retries"
-    fi
-else
-    _req=$?
-    if [ "$_req" -eq 1 ]; then
-        loud "HELPER-MISSING" "lifecycle-label-sweep helper missing at $LIFECYCLE_BIN — MANIFEST dest; silent skip disabled the lifecycle-label sweep (fleet-ops#485)"
-        lifecycle_rc=1
-    else
-        log "6b. lifecycle-label-sweep helper missing at $LIFECYCLE_BIN — skip (not installed)"
-    fi
-fi
 
 # ============================================================================
 # 7. DEGRADED-LANE REPORT (fleet-ops#63)
@@ -1633,31 +1611,14 @@ fi
 # ============================================================================
 # 19. MERGED-PR OBSERVE-TO-CLOSE (fleet-ops#1435)
 # ============================================================================
-# The mechanical prevention for the "forgotten close trailer" class: a
-# merged PR that references an open #<N> but omits `Closes #<N>` leaves the
-# issue OPEN and the heartbeat re-queues it forever (PR #1429 merged the
-# #1135 work but left #1135 cycling through 5+ claim/release rounds). This
-# step closes an open agent-in-progress/critical-path issue once a merged PR
-# has shipped its work and no open PR / live worker / claim branch remains.
-# Close is gated behind FLEET_MERGED_PR_CLOSE_OK=1 so only the production
-# heartbeat closes against the live repo; a found candidate is normal
-# operation (it closes), so only a helper crash (rc >= 2) fails the tick.
-MERGED_PR_CLOSE_BIN="${FLEET_MERGED_PR_CLOSE:-/home/nish/.local/bin/fleet-merged-pr-close}"
+# fleet-ops#3270: MOVED behind webhook triggers. The close now runs as
+# fleet-merged-pr-close.service, dispatched by gh-webhook-receiver on
+# pull_request/closed (merged OR closed) so a merged PR triggers the
+# close check in seconds. The companion fleet-merged-pr-close.timer is
+# the hourly backstop for webhooks that never arrive. The heartbeat
+# timer (now 60 min) keeps only host-local sections. Variable retained
+# as 0 for the tier 1 complete log line + exit-code propagation.
 merged_pr_close_rc=0
-if [ -x "$MERGED_PR_CLOSE_BIN" ]; then
-    log "19. merged-pr observe-to-close starting"
-    if MERGED_PR_CLOSE_REPOS="$(printf '%s\n' "$claim_repos")" \
-        MERGED_PR_CLOSE_SUMMARY="$LOG_DIR/merged-pr-close.json" \
-        FLEET_MERGED_PR_CLOSE_OK=1 \
-        "$MERGED_PR_CLOSE_BIN" 2>>"$TICK_LOG"; then
-        log "19. merged-pr observe-to-close complete"
-    else
-        merged_pr_close_rc=$?
-        log "19. merged-pr observe-to-close rc=$merged_pr_close_rc — helper did not exit clean"
-    fi
-else
-    log "19. merged-pr-close helper missing at $MERGED_PR_CLOSE_BIN — skip (not installed; re-run ./install.sh)"
-fi
 
 # ============================================================================
 # 20. INTERVENTIONS-ELIMINATED SESSION-CLOSE LINT (fleet-ops#526)
@@ -1685,39 +1646,16 @@ fi
 # ============================================================================
 # 21. DUPLICATE-ISSUE DRAIN (fleet-ops#2762)
 # ============================================================================
-# Every tick, drain the same-problem duplicate backlog the filing gate
-# (fleet-ops#1212) identifies but never closes. The sweep clusters open
-# issues by title+body token overlap; for each duplicate cluster the oldest
-# open issue stays canonical and the remaining agent-ready members close
-# with a `duplicate-of` comment. agent-in-progress / agent-blocked /
-# red-on-main members get the marker comment only (merged by reference, no
-# close) so no active work or Nish-gated item is touched. Capped per run.
-# Fail-closed: FLEET_CLOSE_DUPLICATES_OK=1 is set only here, so one-off
-# tests cannot phantom-close real issues. rc 0 always (best-effort drain);
-# only a helper crash (rc >= 2) trips the unit.
-ISSUE_FILE_BIN="${FLEET_ISSUE_FILE:-/home/nish/.local/bin/fleet-issue-file}"
+# fleet-ops#3270: MOVED behind webhook triggers. The drain now runs as
+# fleet-issue-close-duplicates.service, dispatched by gh-webhook-receiver
+# on issues/closed so closing one duplicate triggers a re-drain of the
+# remaining cohort. The companion fleet-issue-close-duplicates.timer is
+# the daily backstop for webhooks that never arrive (a duplicate is
+# waste but not breakage — the canonical issue still gets dispatched).
+# The heartbeat timer (now 60 min) keeps only host-local sections.
+# Variable retained as 0 for the tier 1 complete log line + exit-code
+# propagation.
 close_duplicates_rc=0
-if [ -x "$ISSUE_FILE_BIN" ]; then
-    log "21. duplicate-issue drain starting"
-    # Fail-closed: only the production heartbeat closes (fleet-ops#820 class).
-    # FLEET_CLOSE_DUPLICATES_REVIEW_LOG points dup-cluster review lines
-    # (clusters > CLUSTER_CLOSE_MAX, comment-only) into this tick log so a
-    # human/senior can see which large clusters were left open (fleet-ops#3161).
-    if FLEET_CLOSE_DUPLICATES_OK=1 FLEET_CLOSE_DUPLICATES_REVIEW_LOG="$TICK_LOG" \
-        "$ISSUE_FILE_BIN" close-duplicates --output-json "$LOG_DIR/close-duplicates.json"; then
-        log "21. duplicate-issue drain complete"
-    else
-        close_duplicates_rc=$?
-        if [ "$close_duplicates_rc" -ge 2 ]; then
-            log "21. duplicate-issue drain CRASHED (rc=$close_duplicates_rc)"
-        else
-            log "21. duplicate-issue drain complete (rc=$close_duplicates_rc)"
-            close_duplicates_rc=0
-        fi
-    fi
-else
-    log "21. fleet-issue-file missing at $ISSUE_FILE_BIN — skip (not installed; re-run ./install.sh)"
-fi
 
 # ============================================================================
 # 15. UNJUSTIFIED-WAIT DETECTOR (fleet-ops#468 TOP GEAR invariant)
@@ -2632,36 +2570,16 @@ fi
 # 43. LOOSE-ENDS CANARY — "Nothing sits half-done, and no question dies
 # unanswered" (fleet-ops#528, sr-nothing-half-done, Nish 2026-08-20)
 # ============================================================================
-# Three detection classes share one classifier so a single observer drains
-# the backlog without a pager storm:
-#   1. Unanswered QUESTIONS.md rows (OPEN or HOLD past return date).
-#   2. Half-done worker PRs (open MERGEABLE, >24h, no auto-merge armed).
-#   3. Stale worktrees (dirty-or-idle >24h, no live worker unit).
-# Observe-to-open: a finding without an open ticket is filed (capped per
-# tick). Observe-to-close: a previously filed slug that is no longer a
-# finding gets a `resolved-at:` comment on a green tick; a later tick
-# with that marker closes the issue. rc 0 = tick green with findings
-# (alarm, fleet-ops#1116); rc 1 = watcher broken (loud, tick stays
-# green); rc >= 2 = crash (heartbeat fails loud).
-LOOSE_ENDS_CANARY_BIN="${FLEET_LOOSE_ENDS_CANARY:-/home/nish/.local/bin/fleet-loose-ends-canary}"
+# fleet-ops#3270: MOVED behind webhook triggers. The canary now runs as
+# fleet-loose-ends-canary.service, dispatched by gh-webhook-receiver on
+# pull_request/opened (a brand-new in-flight PR is half-done by
+# definition until it lands). The companion fleet-loose-ends-canary.timer
+# is the hourly backstop for webhooks that never arrive (the canary's
+# 24h idle threshold is the real freshness contract, so an hourly
+# backstop catches a missed webhook well inside that window). The
+# heartbeat timer (now 60 min) keeps only host-local sections. Variable
+# retained as 0 for the tier 1 complete log line + exit-code propagation.
 loose_ends_canary_rc=0
-if require_manifest_helper "$LOOSE_ENDS_CANARY_BIN"; then
-    log "43. loose-ends canary starting"
-    if "$LOOSE_ENDS_CANARY_BIN"; then
-        log "43. loose-ends canary complete"
-    else
-        loose_ends_canary_rc=$?
-        log "43. loose-ends canary FAILED (rc=$loose_ends_canary_rc) — sr-nothing-half-done detector broken; unit will land in --state=failed"
-    fi
-else
-    _req=$?
-    if [ "$_req" -eq 1 ]; then
-        loud "HELPER-MISSING" "loose-ends canary missing at $LOOSE_ENDS_CANARY_BIN — MANIFEST dest; silent skip disabled the sr-nothing-half-done check (fleet-ops#528)"
-        loose_ends_canary_rc=1
-    else
-        log "43. loose-ends canary missing at $LOOSE_ENDS_CANARY_BIN — skip (not installed)"
-    fi
-fi
 
 # ============================================================================
 # 44. EMPTY-RUN BURST CANARY (fleet-ops#2666)

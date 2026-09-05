@@ -1,0 +1,29 @@
+[Unit]
+Description=Duplicate-issue drain — webhook-triggered (fleet-ops#3270, was heartbeat §21)
+# Named reason for this schedule (vault: "a schedule needs a named
+# reason"): duplicate issues split worker effort and confuse the queue —
+# two workers can be dispatched to the same underlying problem. The drain
+# clusters open issues by title+body token overlap; the oldest stays
+# canonical and the rest close with a `duplicate-of` comment. Capped per
+# run. Fail-closed: FLEET_CLOSE_DUPLICATES_OK=1 is set only here, so
+# one-off tests cannot phantom-close real issues (fleet-ops#820).
+# Previously ran every 15 min inside fleet-heartbeat-tier1 §21;
+# fleet-ops#3270 moves it behind the gh-webhook-receiver (issues/closed)
+# so closing one duplicate triggers a re-drain of the remaining cohort.
+# The companion timer (fleet-issue-close-duplicates.timer) is the
+# level-triggered backstop for webhooks that never arrive.
+#
+# OnFailure is wired by the global service.d/10-escalate.conf drop-in
+# (unit-escalation@fleet-issue-close-duplicates.service).
+
+[Service]
+Type=oneshot
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=FLEET_CLOSE_DUPLICATES_OK=1
+WorkingDirectory=/home/nish
+ExecStart=/home/nish/.local/bin/fleet-issue-file close-duplicates
+TimeoutStartSec=10min
+# Never restart: the webhook (or the backstop timer) is the retry.
+Restart=no

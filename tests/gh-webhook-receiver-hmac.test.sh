@@ -134,10 +134,12 @@ unit, reason = first_fireable(mod.dispatch("pull_request", "closed", "", "bad re
 assert unit == "", unit
 assert "bad repo" in reason, reason
 
+# fleet-ops#3270: a non-routing label still fires lifecycle-label-sweep
+# (the sweep is the webhook-triggered replacement for the heartbeat's
+# label section). Only agent-ready/pipeline-red carry a second dispatch.
 unit, reason = first_fireable(mod.dispatch("issues", "labeled", "do-not-route",
                             "fleet-ops", "", dry=False))
-assert unit == "", unit
-assert "ignored" in reason, reason
+assert unit == "lifecycle-label-sweep.service", unit
 
 unit, reason = first_fireable(mod.dispatch("issues", "labeled", "agent-ready", "bad repo name!",
                             "", dry=False))

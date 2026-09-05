@@ -524,12 +524,14 @@ grep -q '^lib/loose-ends.py ' "$manifest" \
     || fail "16: MANIFEST missing lib/loose-ends.py"
 ok "16b: MANIFEST entries installed"
 
-# Heartbeat-tier1: block 42 wires the canary.
-grep -q 'LOOSE_ENDS_CANARY_BIN' "$tier1" \
-    || fail "16: heartbeat-tier1 missing LOOSE_ENDS_CANARY_BIN"
-grep -q '43. loose-ends canary' "$tier1" \
-    || fail "16: heartbeat-tier1 missing block 43 header"
-ok "16c: heartbeat-tier1 block 43 wired"
+# fleet-ops#3270: the canary moved from heartbeat tier1 §43 to
+# fleet-loose-ends-canary.service (webhook-triggered). The contract now
+# checks the .service unit, not tier1.
+grep -q 'fleet-loose-ends-canary' "$repo_root/systemd/fleet-loose-ends-canary.service" \
+    || fail "16: fleet-loose-ends-canary.service missing ExecStart"
+grep -q '43. LOOSE-ENDS CANARY' "$tier1" \
+    || fail "16: heartbeat-tier1 missing block 43 header (moved comment)"
+ok "16c: fleet-loose-ends-canary.service wired (was heartbeat tier1 §43)"
 
 # Worker prompt: PR-body gate that references the canary's marker.
 grep -q 'sr-nothing-half-done\|loose-ends-canary' "$worker" \

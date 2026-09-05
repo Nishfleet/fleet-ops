@@ -475,16 +475,17 @@ out=$(env PATH="$scratch/bin:$PATH" MERGED_PR_CLOSE_REPOS="Nishfleet/fleet-ops" 
 grep -q 'rc=2' <<<"$out" || fail "invalid WINDOW_DAYS must exit rc 2: $out"
 ok "crash: invalid WINDOW_DAYS -> rc 2"
 
-# --- Case 13: contracts — tier1 call + MANIFEST entry ---
-grep -q 'fleet-merged-pr-close' "$repo_root/bin/fleet-heartbeat-tier1" \
-  || fail "tier1 must call fleet-merged-pr-close"
-grep -q 'FLEET_MERGED_PR_CLOSE_OK=1' "$repo_root/bin/fleet-heartbeat-tier1" \
-  || fail "tier1 must set FLEET_MERGED_PR_CLOSE_OK=1"
-grep -q 'MERGED_PR_CLOSE_SUMMARY="$LOG_DIR/merged-pr-close.json"' "$repo_root/bin/fleet-heartbeat-tier1" \
-  || fail "tier1 must pass the summary JSON path (fleet-ops#3231)"
+# --- Case 13: contracts — .service unit call + MANIFEST entry ---
+# fleet-ops#3270: merged-pr-close moved from heartbeat tier1 §19 to
+# fleet-merged-pr-close.service (webhook-triggered). The contract now
+# checks the .service unit, not tier1.
+grep -q 'fleet-merged-pr-close' "$repo_root/systemd/fleet-merged-pr-close.service" \
+  || fail "fleet-merged-pr-close.service must call fleet-merged-pr-close"
+grep -q 'FLEET_MERGED_PR_CLOSE_OK=1' "$repo_root/systemd/fleet-merged-pr-close.service" \
+  || fail "fleet-merged-pr-close.service must set FLEET_MERGED_PR_CLOSE_OK=1"
 grep -q 'bin/fleet-merged-pr-close' "$repo_root/MANIFEST" \
   || fail "MANIFEST must install bin/fleet-merged-pr-close"
-ok "contracts: tier1 call + close gate + summary path + MANIFEST entry present"
+ok "contracts: .service unit call + close gate + MANIFEST entry present"
 
 # --- Case 14: tick-log fd 3 must be APPEND mode (fleet-ops#2080) ---
 # tier1 opens `exec 3>>"$TICK_LOG"` and invokes the helper with `2>>"$TICK_LOG"`.
