@@ -472,12 +472,17 @@ set -e
 unset PI_PACKET_SEAT_LIB
 unset PI_SEAT_HEALTH_LEDGER_DIR
 
-[[ "$rc9" == 0 ]] || fail "scenario9: quota_exhausted preflight must exit 0 (SKIP lane), got $rc9 ($(cat "$scratch/scenario9.err"))"
+[[ "$rc9" == 0 ]] || fail "scenario9: walled straitly must resolve to the senior fallback and exit 0, got $rc9 ($(cat "$scratch/scenario9.err"))"
 [[ -f "$state_dir/demo/99/straitly.vote" ]] \
   || fail "scenario9: SKIP vote must be written ($(cat "$scratch/scenario9.err"))"
 [[ $(jq -r '.verdict' "$state_dir/demo/99/straitly.vote") == 'SKIP' ]] \
   || fail "scenario9: verdict must be SKIP, got $(jq -r '.verdict' "$state_dir/demo/99/straitly.vote")"
-[[ ! -s "$calls" ]] || fail "scenario9: pi must NOT be called on a quota_exhausted seat (calls=$(cat "$calls"))"
+# fleet-ops#3121 (senior ladder): a walled straitly role resolves to the first
+# usable senior seat instead of stalling the panel. pi IS called — on the
+# fallback, never on a quota_exhausted straitly seat — and an auditor that
+# returns no PASS/FAIL line yields a SKIP vote (not a dead unit).
+grep -q 'cursor' "$calls" 2>/dev/null || fail "scenario9: pi must run on the senior fallback seat (calls=$(cat "$calls" 2>/dev/null))"
+! grep -q 'straitly' "$calls" 2>/dev/null || fail "scenario9: pi must NOT be called on a quota_exhausted straitly seat (calls=$(cat "$calls"))"
 [[ $(jq -r '.observed_at' "$seat_health_dir/straitly__deepseek_deepseek-v4-pro.json") == "$deepseek_observed" ]] \
   || fail "scenario9: deepseek observed_at was re-anchored ($(jq -r '.observed_at' "$seat_health_dir/straitly__deepseek_deepseek-v4-pro.json"))"
 [[ $(jq -r '.observed_at' "$seat_health_dir/straitly__gpt-5.6-sol.json") == "$gpt_observed" ]] \

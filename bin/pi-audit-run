@@ -559,7 +559,10 @@ main() {
         { cat "$out"; printf '\n\n## stderr\n'; cat "$err"; } > "$combined"
     fi
 
-    verdict=$(extract_verdict "$combined")
+    # 2026-09-05: an auditor that returns no PASS/FAIL line must become a SKIP
+    # vote, not a dead unit — under set -e a failing command substitution here
+    # exited 1 before the "did not contain a PASS/FAIL verdict" path below ran.
+    verdict=$(extract_verdict "$combined" || true)
     reason=$(extract_reason "$combined")
 
     if [ -z "$verdict" ]; then
