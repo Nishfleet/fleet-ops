@@ -299,3 +299,7 @@ jobs:
         bash tests/stop-escalation-writer-class-gate.test.sh
         bash tests/phone-chokepoint.test.sh
         bash tests/scout-effectiveness-multirepo.test.sh
+        # fleet-ops#3740 landed tests/fleet-close-and-archive-repo.test.sh without a
+        # ci.yml entry, so the P14 listing gate went red on main and blocked every
+        # PR (orchestrator fix, 2026-09-06). Drill: 5 scenarios, stubbed gh.
+        bash tests/fleet-close-and-archive-repo.test.sh

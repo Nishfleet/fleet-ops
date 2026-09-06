@@ -399,6 +399,25 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-ops-3310-infra-death-class
   || fail "fleet-ops-3310-infra-death-class-switch.test.sh must not be a known orphan (fleet-ops#3310)"
 ok "fleet-ops-3310-infra-death-class-switch.test.sh is pinned in the P14 reachable set (fleet-ops#3310)"
 
+# fleet-ops#3268 (child of waste-cut #3128): hard-pin the host line for
+# fleet-close-and-archive-repo. The test landed on main in PR #3740 without
+# a ci.yml listing and was hosted from tests/ci-standards-audit.test.sh
+# (already in P14) — the worker App cannot push .github/workflows/** so the
+# host was the only path. P14 ran red on "1 test file(s) are neither in
+# ci.yml, hosted by a listed test, live/destructive, nor a known orphan:
+# fleet-close-and-archive-repo.test.sh". This named pin is class-prevention
+# so a future drop of the host line cannot park the test on known_orphans to
+# silence the generic $bad[] message — it fails by name here first, same
+# shape as every other hosted test above.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-close-and-archive-repo\.test\.sh"?' \
+  "$here/ci-standards-audit.test.sh" \
+  || fail "ci-standards-audit.test.sh must bash-invoke fleet-close-and-archive-repo.test.sh (fleet-ops#3268)"
+[[ -n "${reachable[fleet-close-and-archive-repo.test.sh]:-}" ]] \
+  || fail "fleet-close-and-archive-repo.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#3268)"
+[[ -z "${known_orphan_set[fleet-close-and-archive-repo.test.sh]:-}" ]] \
+  || fail "fleet-close-and-archive-repo.test.sh must not be a known orphan (fleet-ops#3268)"
+ok "fleet-close-and-archive-repo.test.sh is pinned in the P14 reachable set (fleet-ops#3268)"
+
 # fleet-ops#2475 (PR #2193 follow-up): hard-pin the host line for
 # unit-escalation-write-pi-issue-exclusion. The test landed on main in this
 # PR without a ci.yml listing and was hosted from tests/ci-standards-audit.test.sh
