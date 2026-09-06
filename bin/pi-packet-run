@@ -89,6 +89,10 @@ if [[ -n "$pkt_repo" ]]; then
     pkt_privacy=$(repo_privacy "$pkt_repo")
 fi
 seat_log "pi-packet-run: $pid target repo=${pkt_repo:-<none>} privacy=$pkt_privacy"
+# fleet-ops#3724: the packet repo also feeds pick_seat's product_only gate —
+# a seat flagged product_only in seat-caps.json is offered only when this
+# repo carries the product flag in config/intake-repos.json.
+export PI_PACKET_REPO="${pkt_repo:-}"
 
 seat=$(pick_seat "$fail_p" "$fail_m" "$need_capable" "$tried_file" "$difficulty" "$pkt_privacy" || true)
 if [[ -z "$seat" ]]; then

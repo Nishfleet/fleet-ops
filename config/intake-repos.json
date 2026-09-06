@@ -1,5 +1,5 @@
 {
-  "description": "Declared set of Nishfleet repos enrolled in pi-intake/pi-scout. This is the single source of truth for which repos run intake \u2014 the intake reconciler (fleet-ops#32) converges systemd state to this file and only this file. A repo enrols by appearing in `repos`; the reconciler creates/enables its pi-intake@<repo>.timer + pi-scout@<repo>.timer. A repo leaves by being removed; the reconciler disables/masks-removes its units. No agent may enable or mask an intake unit directly \u2014 every change is a PR against this file, which is what makes enrolment legible instead of silent (the defect fleet-ops#32 was filed for).",
+  "description": "Declared set of Nishfleet repos enrolled in pi-intake/pi-scout. This is the single source of truth for which repos run intake \u2014 the intake reconciler (fleet-ops#32) converges systemd state to this file and only this file. A repo enrols by appearing in `repos`; the reconciler creates/enables its pi-intake@<repo>.timer + pi-scout@<repo>.timer. A repo leaves by being removed; the reconciler disables/masks-removes its units. No agent may enable or mask an intake unit directly \u2014 every change is a PR against this file, which is what makes enrolment legible instead of silent (the defect fleet-ops#32 was filed for). The optional `product` flag on a repos[] entry marks a repo as product work (customer-facing) as opposed to control plane; it is the gate lib/seat-lib.sh repo_is_product reads for seat-caps `product_only` seats (fleet-ops#3724). Absent or false means not-product \u2014 fail-closed, so a product_only metered seat can never serve fleet-ops or an unclassified repo.",
   "checkout_root": "/home/nish/workspaces/products",
   "required_labels": [
     "agent-ready",
@@ -9,10 +9,12 @@
   "preconditions": "Every enrolled repo MUST have (a) a git checkout at <checkout_root>/<name> \u2014 intake does `git -C <checkout_root>/<name> fetch origin` and the worker creates its worktree from it, and (b) all three `required_labels` present on the repo \u2014 the ExecCondition in pi-intake@.service silently no-ops (returns []) without them, so an agent-ready issue filed on a label-less repo looks queued and is actually inert (the exact gap fleet-ops#25 was filed for). The reconciler MUST verify both preconditions before enabling a unit and record (not silently skip) any repo that fails them.",
   "repos": [
     {
-      "name": "0509"
+      "name": "0509",
+      "product": true
     },
     {
       "name": "fleet-ops",
+      "product": false,
       "enrolled_by": "Nish, 2026-08-26",
       "reason": "Explicit decision, overriding the 2026-08-25 campaign-scope deferral: \"The fleet, if it turns out to be transformed and 11 on 10, then it will work on making 0509 even better. So I want that trade off. I appreciate that trade off actually.\" Control-plane work is therefore IN scope, accepted as an investment that compounds into product throughput - not as the fleet2 self-maintenance failure mode. Revisit if control-plane merges keep outpacing product merges after the fleet is healthy; the deferral reason (9:0 on 2026-08-25, 15:5 on 2026-08-25 evening) stands as the tripwire to watch, not as a prohibition."
     }

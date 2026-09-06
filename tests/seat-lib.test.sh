@@ -3709,3 +3709,8 @@ ok "3559: wrapper spawn-fail bench is visible in pi-seat-health.json (transient_
 # Workers cannot add a P14 line in .github/workflows/ci.yml; this file is the
 # listed CI host for the new free-model daily-budget bench test.
 bash "$here/seat-lib-free-daily-budget.test.sh" || fail "seat-lib-free-daily-budget tests failed"
+
+# fleet-ops#3724: paid deepseek product_only + USD/day spend cap replay drill.
+# Workers cannot add a P14 line in .github/workflows/ci.yml; this file is the
+# listed CI host for the new product_only/spend-cap bench test.
+bash "$here/seat-lib-product-only-spend-cap.test.sh" || fail "seat-lib-product-only-spend-cap tests failed"
