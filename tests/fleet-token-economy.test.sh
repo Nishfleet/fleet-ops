@@ -129,6 +129,24 @@ devin_class=$(jq -r '.providers.devin.class // empty' "$caps")
 
 ok "prepaid order ollama devin cline cursor xai-oauth; devin cap carries a dated reason, class prepaid-quota"
 
+# --- ollama/deepseek-v4-flash:0731 retired to cap=0 corpse (fleet-ops#3686) ---
+# The seat responds PONG/HTTP 200 to simple probes but no-ops on real work
+# (exit 0, stdout=0B): 21 empty runs in 2h, count=13, geometric backoff
+# climbed to the 6h cap while the ledger stayed healthy (seat-health.ts
+# clobbered it on a later simple-probe 200). pick_seat re-offered the seat
+# after each bench wall expired. Retired to cap=0 corpse so pick_seat skips
+# it (model cap=0) and the skip classifies INTENTIONAL (never re-auditioned).
+# Provider cap/hard_ceiling/max_probe_ceiling stay so seat-lib-aimd's
+# hard_ceiling=true assertion holds and a future re-audition re-raises the
+# model cap without a test edit.
+ollama_model_cap=$(jq -r '.providers.ollama.models["deepseek-v4-flash:0731"] | if type=="object" then (.cap // 0) else . end' "$caps")
+[[ "$ollama_model_cap" == "0" ]] \
+  || fail "ollama/deepseek-v4-flash:0731 model cap must be 0 (corpse, fleet-ops#3686), got: $ollama_model_cap"
+cap_zero_is_intentional '.providers.ollama.models["deepseek-v4-flash:0731"]' \
+  || fail "ollama/deepseek-v4-flash:0731 cap=0 must carry intentional_cap_zero + a dated reason citing the empty-run corpse class (rule 3, fleet-ops#3504, fleet-ops#3686)"
+
+ok "ollama/deepseek-v4-flash:0731 retired to cap=0 corpse with a dated reason (fleet-ops#3686); provider hard_ceiling stays for seat-lib-aimd"
+
 # --- xai-oauth (SuperGrok): cap justified by dated reason, grok-4.5 cap=0 intentional ---
 xai_cap=$(jq -r '.providers["xai-oauth"].cap // empty' "$caps")
 [[ -n "$xai_cap" ]] || fail "xai-oauth cap must be present, got: empty"

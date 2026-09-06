@@ -100,11 +100,16 @@
       "hard_ceiling": true,
       "quota_window": "weekly",
       "models": {
-        "deepseek-v4-flash:0731": 8
+        "deepseek-v4-flash:0731": {
+          "cap": 0,
+          "intentional_cap_zero": "corpse",
+          "reason": "2026-09-06 fleet-ops#3686: ollama/deepseek-v4-flash:0731 is a corpse advertising health. Live probe 2026-09-06T04:33Z: pi --print --provider ollama --model deepseek-v4-flash:0731 'Reply PONG' -> rc=0 PONG (simple packet works, HTTP 200), but the seat no-ops on real work — exit 0, stdout=0B. Heartbeat 2026-09-05T16:30Z: waste.empty_runs_last_2h=21, all samples ollama/deepseek-v4-flash:0731 exiting 0 with stdout=0B, consecutive_failure_count=13, geometric backoff climbed 7200->14400->21600s in 1h while ledger_health_class=healthy (seat-health.ts clobbered the ledger back to healthy/count=0 on a later simple-probe 200). The clobber-proof spawn-bench marker survived and seat_usable honoured it while live, but each bench wall expired and pick_seat re-offered the seat the next cycle — 21 wasted runs in 2h. The no-op is real-work-only (the model cannot drive the fleet worker task), so the seat is functionally dead and unfixable from the fleet side. Retired to cap=0 corpse: pick_seat skips it (model cap=0) and the skip classifies INTENTIONAL (never re-auditioned, fleet-ops#2435). Recovery is provider-side only — re-audition via a fresh allowlist entry if Ollama Cloud deepseek-v4-flash:0731 regains real-work capability. Provider cap/hard_ceiling/max_probe_ceiling stay so a future re-audition re-raises the model cap without a test edit (seat-lib-aimd locks hard_ceiling=true)."
+        }
       },
       "_hard_cap": "Nish 2026-08-26: hard 4, never probe above (like devin). Prepaid weekly quota, not free (Nish 2026-08-26, fleet-ops#387).",
       "max_probe_ceiling": 8,
-      "_cap8_20260905": "2026-09-05 (Nish: sub expiring unused): Ollama Cloud Pro weekly 4.4% used, hourly session budget 13.7%, 1339 requests all week, resets in 1 day; the seat ran 2 sessions in 12h only because every issue was classified heavy (#3444) and the seat was not capable (contextWindow 131072 -> 1,000,000 in models.json). Cap 4 at ~15 min/session cannot drain the quota; 8 stays under the hourly session budget. hard_ceiling stays true: never probe above 8."
+      "_cap8_20260905": "2026-09-05 (Nish: sub expiring unused): Ollama Cloud Pro weekly 4.4% used, hourly session budget 13.7%, 1339 requests all week, resets in 1 day; the seat ran 2 sessions in 12h only because every issue was classified heavy (#3444) and the seat was not capable (contextWindow 131072 -> 1,000,000 in models.json). Cap 4 at ~15 min/session cannot drain the quota; 8 stays under the hourly session budget. hard_ceiling stays true: never probe above 8.",
+      "_retired_20260906": "2026-09-06 fleet-ops#3686: the only model (deepseek-v4-flash:0731) retired to cap=0 corpse — see the model's reason. Provider cap 8 / hard_ceiling / max_probe_ceiling 8 are kept so seat-lib-aimd's hard_ceiling=true assertion holds and a future re-audition re-raises the model cap without a test edit; with no model at cap>0 the provider offers 0 seats (pick_seat skips at the model-cap gate)."
     },
     "commandcode": {
       "cap": 4,
