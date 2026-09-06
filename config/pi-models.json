@@ -111,6 +111,17 @@
             "cacheRead": 0,
             "cacheWrite": 0
           }
+        },
+        "deepseek/deepseek-v4-flash": {
+          "contextWindow": 1310720,
+          "maxTokens": 32768,
+          "reasoning": false,
+          "openRouterRouting": {
+            "order": [
+              "StreamLake"
+            ],
+            "allow_fallbacks": true
+          }
         }
       },
       "apiKey": "!cut -d= -f2 /home/nish/fleet2/etc/openrouter.env",
