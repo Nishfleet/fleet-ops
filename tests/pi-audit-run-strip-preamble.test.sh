@@ -32,4 +32,22 @@ for n in 1 2; do
 done
 noise=$(printf '\033]777;notify;Pi;Ready for input\007PACKET-VERDICT tools=0 class=no-tools')
 if reason_has_evidence "$noise" 1624 "$body"; then fail "noise-only reason admitted as evidence"; fi
+
+# fleet-ops#3594 (residual): a `## stderr` diagnostic block — embedded in the
+# auditor stdout against the reason paragraph, or appended after the verdict by
+# pi-audit-run's combined-output logic — is not the auditor's stated reason.
+# Both live shapes must yield the clean verdict block, and the padded
+# stderr-block reason itself must stay refused. Shapes captured from the same
+# 2026-09-05 senior votes (devin/1372, senior/1372) where the reason ended
+# " ... importer.\n## stderr[diag]".
+printf '0509#1624 cites src/routes/ads.ts as the gap; no duplicate; north-star fit.\n## stderr\n[2026-09-05] jq: parse error line 1\n\nPASS\n' >"$scratch/out3"
+printf '0509#1624: src/routes/ads.ts missing the cap; spec complete; no dup; north-star.\nPASS\n\n## stderr\n[2026-09-05] npm ERR! code ELIFECYCLE\n' >"$scratch/out4"
+for n in 3 4; do
+    v=$(extract_verdict "$scratch/out$n")
+    [[ "$v" == PASS ]] || fail "shape $n: verdict '$v' != PASS"
+    r=$(extract_reason "$scratch/out$n")
+    case "$r" in *stderr*) fail "shape $n: stderr block leaked into reason: $r";; esac
+    [[ "$r" == *'0509#1624'* && "$r" == *'src/routes/ads.ts'* ]] || fail "shape $n: reason lost the citation: '$r'"
+    reason_has_evidence "$r" 1624 "$body" || fail "shape $n: evidence gate refused the de-noised reason"
+done
 printf 'PASS: pi-audit-run strips harness noise; verdict-block reason admitted by the evidence gate (fleet-ops#3594)\n'

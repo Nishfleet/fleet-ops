@@ -411,23 +411,35 @@ extract_verdict() {
 # voids the audit trail (sr-token-efficiency); the panel will store the
 # full paragraph and report it without a cap.
 extract_reason() {
-    local out="$1" v
+    local out="$1" v sep both before after
     v=$(extract_verdict "$out")
     [ -n "$v" ] || return 0
     # fleet-ops#3594: the reason is the verdict block only — the paragraph after
     # the PASS/FAIL line, or the paragraph before it when the auditor wrote the
     # reason first. Harness noise is stripped before either is read.
+    #
+    # Residual (fleet-ops#3594): live auditor stdout embeds a `## stderr`
+    # diagnostic block (jq/parse errors) against the reason paragraph, and
+    # pi-audit-run's own combined-output logic appends one. Neither is the
+    # auditor's stated reason, so drop it from whichever verdict block we keep
+    # before the evidence gate in pi-audit-tally judges it.
+    #
     # The markdown strip is applied to a copy used only to find the verdict
     # line: the reason itself stays raw, because stripping # and _ turned
     # "0509#1624" into "05091624" and src/my_file.ts into src/myfile.ts, so the
     # evidence gate could never match an issue number or a body path.
-    strip_harness_noise "$out" | awk -v v="$v" '{
+    sep=$'\x1e'
+    both=$(strip_harness_noise "$out" | awk -v v="$v" -v sep="$sep" '{
         line = $0; gsub(/[*#`_]/, "", line)
         if (!seen && line ~ "^[[:space:]]*"v"[[:space:]]*$") { seen=1; next }
         if (seen) after = after $0 "\n"; else before = before $0 "\n"
-    } END {
-        if (after ~ /[^[:space:]]/) printf "%s", after; else printf "%s", before
-    }' | sed '/^$/d'
+    } END { printf "%s%s%s", before, sep, after }')
+    before=${both%%"$sep"*}
+    after=${both#*"$sep"}
+    local nb na
+    nb=$(printf '%s' "$before" | sed -E '/^#+[[:space:]]+stderr([[:space:]]|$)/,$d' | sed '/^$/d')
+    na=$(printf '%s' "$after" | sed -E '/^#+[[:space:]]+stderr([[:space:]]|$)/,$d' | sed '/^$/d')
+    if [ -n "$na" ]; then printf '%s' "$na"; else printf '%s' "$nb"; fi
 }
 
 # Ensures the reason paragraph explicitly addresses duplicates and north-star
