@@ -34,6 +34,10 @@ libexec/fleet-console-pi/verify.py /home/nish/.local/libexec/fleet-console-pi/ve
 libexec/fleet-console-pi/push.sh /home/nish/.local/libexec/fleet-console-pi/push.sh
 libexec/fleet-console-pi/shell.html /home/nish/.local/libexec/fleet-console-pi/shell.html
 bin/fleet-console-tile-truth-drill /home/nish/.local/bin/fleet-console-tile-truth-drill
+# fleet-ops#4061: on-demand product-vs-self merge split per repo (7d), the
+# top self-maintenance workload classes, and a shipped_24h tile reconcile.
+# Observe-to-close; no timer, no prom metric.
+bin/fleet-self-maintenance-split.py /home/nish/.local/bin/fleet-self-maintenance-split.py
 # fleet-ops#3268: retire a dead repo — close every open PR with one comment,
 # then archive it (gh repo archive). Child of the waste-cut #3128. Dry-run
 # default. Archive step is Administration-gated (Worker App lacks it); the

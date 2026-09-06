@@ -360,6 +360,48 @@ def _gh_search_count(query):
         raise VerifyError(f"gh search parse: {out.stdout[:80]!r}") from exc
 
 
+def _gh_search_titles(query):
+    """Return the titles of every PR matched by the search query.
+
+    The shipped_24h spot check must count NON-revert merges to match the
+    tile's definition (fleet_product_merged_24h = non-revert merges), but
+    GitHub search's `.total_count` cannot be filtered client-side. Fetch the
+    matched titles and count revert PRs out on this side (fleet-ops#4061).
+    Paged so a busy 24h (60+ merges) is fully captured.
+    """
+    if SKIP_GH:
+        raise VerifyError("gh skipped")
+    out = subprocess.run(
+        [GH, "api", "search/issues",
+         "-X", "GET", "-f", f"q={query} type:pr", "--paginate",
+         "--jq", ".items[]?.title"],
+        capture_output=True, text=True, timeout=VERIFY_TIMEOUT,
+    )
+    if out.returncode != 0:
+        raise VerifyError(
+            f"gh search rc={out.returncode}: {(out.stderr or '')[:160]}"
+        )
+    return [ln.strip() for ln in out.stdout.splitlines() if ln.strip()]
+
+
+def _is_revert_title(title: str) -> bool:
+    """Match fleet-product-slo's revert conventions by title.
+
+    fleet-ops#2755 defines shipped throughput as NON-revert merges; the
+    fleet's auto-reverter and GitHub's auto-revert both surface as
+    `Revert ...` / `auto-revert ...` titles. head-ref `revert/` branches are
+    GitHub auto-reverts titled `Revert \"...\"`, so title covers them.
+    """
+    t = title or ""
+    return t.startswith("Revert ") or t.lower().startswith("auto-revert")
+
+
+def _gh_search_nonrevert_count(query):
+    titles = _gh_search_titles(query)
+    return sum(0 if _is_revert_title(t) else 1 for t in titles)
+
+
+
 def run_open_prs_prom(tile):
     return int(_promql_sum("sum(fleet_open_prs)"))
 
@@ -487,7 +529,10 @@ def run_shipped_gh_spot(tile):
     since = (datetime.now(timezone.utc) - timedelta(hours=24)).strftime(
         "%Y-%m-%dT%H:%M:%S+00:00"
     )
-    n = _gh_search_count(f"repo:{repo} is:merged merged:>={since}")
+    # fleet-ops#4061: count NON-revert merges so the spot cross-check agrees
+    # with the tile's definition (fleet_product_merged_24h). A raw total_-
+    # count includes revert PRs and chronically false-DISPUTEs the tile.
+    n = _gh_search_nonrevert_count(f"repo:{repo} is:merged merged:>={since}")
     return n, displayed, repo
 
 
