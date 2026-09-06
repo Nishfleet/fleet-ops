@@ -242,6 +242,16 @@ bash "$here/fleet-ops-1160-regression.test.sh"
 # Hosted here so P14 runs it without a workflow-file edit.
 bash "$here/console-tile-verify.test.sh"
 
+# fleet-ops#4061: product-vs-self merge-split measurement tool test. Hermetic
+# (fake gh via FLEET_SELF_SPLIT_GH, scratch dirs). Hosted here so P14 runs it
+# without a workflow-file edit (the worker App cannot push .github/workflows/**).
+bash "$here/fleet-self-maintenance-split.test.sh"
+
+# fleet-ops#4061: shipped_24h tile spot-check now excludes revert PRs. Hermetic
+# (fake gh, in-process verify.py). Hosted here so P14 runs it without a
+# workflow-file edit.
+bash "$here/console-shipped-spot-revert.test.sh"
+
 # fleet-ops#1232: FleetGhCacheStale (warning, 45m) on the repair rail.
 # Hosted here so P14 runs it without a workflow-file edit.
 bash "$here/fleet-gh-cache-stale.test.sh"
