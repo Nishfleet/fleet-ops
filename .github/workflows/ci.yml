@@ -303,3 +303,7 @@ jobs:
         # ci.yml entry, so the P14 listing gate went red on main and blocked every
         # PR (orchestrator fix, 2026-09-06). Drill: 5 scenarios, stubbed gh.
         bash tests/fleet-close-and-archive-repo.test.sh
+        # fleet-ops#3322 audition lane: candidate seats get cap 1 on light issues for
+        # 10 sessions, judged by the yield ledger. Offline drill (stubbed gh/caps);
+        # listed here by the orchestrator because the worker token lacks workflow scope.
+        bash tests/audition-lane.test.sh
