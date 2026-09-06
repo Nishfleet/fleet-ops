@@ -419,13 +419,51 @@ def run_repairs_units(tile):
     return n
 
 
-def run_running_pi_execstart(tile):
-    units = 0
+def _running_pi_units():
+    """Live running/activating units whose ExecStart invokes `pi --print`.
+
+    Exact mirror of the tile writer's `_invokes_pi_print` in generate.py
+    (fleet-ops#1155: never a unit-name pattern), so a faithful tile and its
+    verifier count the SAME set.
+    """
+    found = []
     for name in _running_units():
         es = _show_value(name, "ExecStart")
         if ("pi --print" in es) or ("/pi-issue-run " in es) or ("/pi-issue-start" in es):
-            units += 1
-    return units
+            found.append(name)
+    return found
+
+
+def run_running_pi_execstart(tile):
+    """Live running-pi unit count, churn-race tolerant.
+
+    fleet-ops#3674: the tile snapshots the running-pi unit set at generate
+    time; this verifier re-scans the SAME live systemd source ~2s later.
+    The fleet spawns/finishes workers constantly, so a worker starting or
+    stopping in that window makes the two counts legitimately differ — a
+    timing artifact, not a lying tile. Mirror #2690: when the live set has
+    moved since the tile (the tile's recorded units != what's running now)
+    AND the counts now disagree, raise a race VerifyError so verify_tile
+    SKIPS (match=None) instead of falsely DISPUTING (ConsoleLying). A
+    tile that still disagrees without that churn signal (count off against
+    a stable / non-race set) is a genuine lie and DISPUTES.
+
+    The tiles's `units` list is truncated to 20 entries; when more workers
+    run than that we can't trust set equality, so a set mismatch only
+    counts as a race when the counts already differ. Matching counts never
+    race and never dispute (nothing to reconcile).
+    """
+    live = _running_pi_units()
+    live_n = len(live)
+    tile_n = tile.get("count")
+    if isinstance(tile_n, (int, float)) and int(tile_n) != live_n:
+        recorded = tile.get("units")
+        if isinstance(recorded, list) and recorded and set(recorded) != set(live):
+            raise VerifyError(
+                "running_pi unit set changed between generate and verify "
+                "(worker start/stop) — race, skip, not a lie"
+            )
+    return live_n
 
 
 def run_fleet_paused(tile):

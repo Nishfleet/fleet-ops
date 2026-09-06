@@ -182,7 +182,49 @@ assert all("api/v2/alerts" not in u for u in calls), "must not query Alertmanage
 m._http_json = _orig_http
 print("OK: firing_alerts verifier mirrors writer's Prometheus /api/v1/alerts")
 
-# --- inject overlay ---
+# --- fleet-ops#3674: running_pi churn race is SKIP, not DISPUTE ---
+# The tile snapshots the running-pi unit set at generate time; the verifier
+# re-scans the SAME live systemd source ~2s later. When a worker starts or
+# stops in that window, the two counts legitimately differ — a timing
+# artifact, not a lying tile. The verifier must skip (match=None, no
+# DISPUTE) when the live set has moved, exactly like shipped_24h's race
+# gate (#2690). A tile that disagrees with its OWN recorded unit set
+# (a genuine lie) still DISPUTES.
+calls_rp = []
+def fake_running_pi_units():
+    calls_rp.append(1)
+    return ["pi-issue@a.service", "pi-issue@b.service", "pi-issue@c.service"]  # live now (3)
+m._running_pi_units = fake_running_pi_units
+
+# Live count differs from tile count AND live set moved since the tile's
+# snapshot (tile saw a,b; live now has a,b,c — a worker just started)
+# -> churn race -> SKIP.
+rp_race = tile(count=2, units=["pi-issue@a.service", "pi-issue@b.service"])
+try:
+    m.run_running_pi_execstart(rp_race)
+    raise AssertionError("expected VerifyError race on churn")
+except m.VerifyError as e:
+    assert "race" in str(e).lower(), str(e)
+print("OK: running_pi churn race -> VerifyError (SKIP, not DISPUTE)")
+
+# Live set matches the tile's snapshot and count -> exact match.
+def fake_running_pi_units_match():
+    return ["pi-issue@a.service", "pi-issue@b.service"]
+m._running_pi_units = fake_running_pi_units_match
+rp_ok = tile(count=2, units=["pi-issue@a.service", "pi-issue@b.service"])
+assert m.run_running_pi_execstart(rp_ok) == 2
+print("OK: running_pi stable set -> exact count")
+
+# Tile with NO recorded unit snapshot (e.g. injection) is not race-gated;
+# the verifier reports the live count and the caller compares against the
+# tile's displayed value.
+def fake_running_pi_units_3():
+    return ["pi-issue@a.service", "pi-issue@b.service", "pi-issue@d.service"]
+m._running_pi_units = fake_running_pi_units_3
+assert m.run_running_pi_execstart(tile(count=2)) == 3
+print("OK: running_pi no-snapshot tile -> live count returned (lie detection intact)")
+
+# End-to-end: inject a lie into a snapshot-matching tile -> DISPUTED.
 doc4 = json.loads(json.dumps(doc))
 data4 = scratch / "inject.json"
 prom4 = scratch / "inject.prom"
