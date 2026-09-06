@@ -587,6 +587,10 @@ org_res=$(org_reserve 2>/dev/null || echo 2)
 # worker capacity (integer count of how many more light workers fit).
 slots=$(awk -v t="$total_cap" -v a="$active" 'BEGIN{ s=t-a; if(s<0)s=0; print int(s) }')
 
+# fleet-ops#3784: load seat caps so SEAT_SPAWN_STAGGER_S is defined (default 0)
+# before the spawn loop uses it. Safe to call multiple times.
+load_seat_caps || true
+
 if (( slots <= 0 )); then
     echo "at capacity (total_cap=$total_cap, active=$active, issue=$issue, org=$org, org_reserve=$org_res)"
     exit 0
