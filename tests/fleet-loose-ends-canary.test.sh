@@ -289,7 +289,8 @@ cat >"$scratch/prs.json" <<JSON
   {"repo":"Nishfleet/fleet-ops","number":11,"title":"fresh worker","url":"https://x/11","createdAt":"${FRESH_TS}","headRefName":"claim/issue-11","isDraft":false,"author":{"login":"nishfleet-worker[bot]"}},
   {"repo":"Nishfleet/fleet-ops","number":12,"title":"human PR","url":"https://x/12","createdAt":"${OLD_TS}","headRefName":"main","isDraft":false,"author":{"login":"nish3451"}},
   {"repo":"Nishfleet/fleet-ops","number":13,"title":"worker auto-merge on","url":"https://x/13","createdAt":"${OLD_TS}","headRefName":"claim/issue-13","isDraft":false,"author":{"login":"nishfleet-worker[bot]"},"autoMergeRequest":{"enabled":true}},
-  {"repo":"Nishfleet/fleet-ops","number":14,"title":"worker draft","url":"https://x/14","createdAt":"${OLD_TS}","headRefName":"claim/issue-14","isDraft":true,"author":{"login":"nishfleet-worker[bot]"}}
+  {"repo":"Nishfleet/fleet-ops","number":14,"title":"worker draft","url":"https://x/14","createdAt":"${OLD_TS}","headRefName":"claim/issue-14","isDraft":true,"author":{"login":"nishfleet-worker[bot]"}},
+  {"repo":"Nishfleet/fleet-ops","number":15,"title":"review skipped no seat","url":"https://x/15","createdAt":"${FRESH_TS}","headRefName":"claim/issue-15","isDraft":false,"author":{"login":"nishfleet-worker[bot]"},"body":"## Summary\n\nreview: skipped, no capable seat\n"}
 ]
 JSON
 
@@ -311,7 +312,7 @@ run_prs() {
 # --- 5-9. PR classifier matrix --------------------------------------------
 : >"$scratch/empty-q.md"
 run_prs
-grep -q 'prs: findings=1' "$scratch/p.err" || fail "5: stale worker PR must be a finding"
+grep -q 'prs: findings=2' "$scratch/p.err" || fail "5: stale worker PR must be a finding (got $(grep 'prs: findings' "$scratch/p.err" || true))"
 grep -q 'LOOSE-ENDS-STALE-PR' "$scratch/triage.md" || fail "5: stale worker PR must LOUD"
 grep -q 'Nishfleet/fleet-ops#10' "$scratch/triage.md" || fail "5: stale PR #10 must appear"
 ok "5: stale worker PR detected"
@@ -331,6 +332,14 @@ if grep -q 'Nishfleet/fleet-ops#14' "$scratch/triage.md"; then
     fail "9: draft PR must be skipped"
 fi
 ok "9: draft PR skipped"
+# fleet-ops#3709: a worker PR whose body carries `review: skipped, no
+# capable seat` is an immediate loose end (unreviewed + unarmed product
+# PR) — listed even when fresh, as its own class.
+grep -q 'LOOSE-ENDS-REVIEW-SKIPPED' "$scratch/triage.md" \
+    || fail "9b: review-skipped PR must LOUD as its own class"
+grep -q 'Nishfleet/fleet-ops#15' "$scratch/triage.md" \
+    || fail "9b: review-skipped PR #15 must be listed"
+ok "9b: review-skipped PR listed immediately as its own class"
 
 # --- 10-12. Worktree classifier -------------------------------------------
 cat >"$scratch/wts.json" <<JSON
