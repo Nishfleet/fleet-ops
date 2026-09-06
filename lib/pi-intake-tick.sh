@@ -571,6 +571,12 @@ fi
 echo "reconciler-caught: delta=$reconciler_caught total=$_reconciler_new_total repo=$REPO prom=$reconciler_prom"
 
 # Step 2: capacity (P4-A — fleet-ops config/seat-caps.json, not a hardcoded cap)
+# fleet-ops#3784: load the caps once in the parent shell so
+# SEAT_SPAWN_STAGGER_S (and the provider/model cap arrays) are defined in
+# the main shell, not only in the command-substitution subshells below.
+# A missing or broken caps file is not fatal — load_seat_caps falls back
+# to no-cap behaviour and returns 1, so the || true keeps the tick alive.
+load_seat_caps 2>/dev/null || true
 caps_sum=$(total_seat_cap 2>/dev/null || echo 0)
 ram_cap=$(ram_governor_cap 2>/dev/null || echo 9999)
 if (( caps_sum > 0 && caps_sum < ram_cap )); then
