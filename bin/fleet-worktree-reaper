@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # fleet-worktree-reaper — GC orphan agent worktrees whose cycle state is
 # recorded as terminal (fleet-ops#2227, fleet-ops#2637). Late duplicate
-# alerts (e.g. fleet-ops#2560/#2575/#2616/#2637/#2676/#2717/#2774) are
+# alerts (e.g. fleet-ops#2560/#2575/#2616/#2637/#2676/#2717/#2774/#3676) are
 # auto-filed by opus-heartbeat when hygiene_counts.worktree_dirs spikes;
 # the reaper is the standing fix and this script's daily timer run is
 # the only drain that addresses the count without crossing a boundary.
