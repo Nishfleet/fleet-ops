@@ -879,6 +879,184 @@ echo "$out_live" | grep -q "fix-branch-901: salvage not on origin" \
 ok "case38b: live repo + push-failed salvage keeps the worktree"
 rm -f "$FAKE_SALVAGE_DIR/fix-branch-901.no-push"
 
+# =====================================================================
+# Mode E (fleet-ops#3830): orphan directory GC. Dirs under $ROOT that
+# are NOT registered worktrees in any parent — standalone clones (`.git`
+# is a directory) and plain scratch dirs (no `.git`). The per-parent
+# loop only sees registered worktrees; these orphans accumulate. Mode E
+# scans $ROOT after the per-parent loop and reaps the leftovers.
+#
+# Safety: NOT-REGISTERED (skip evaluated_paths) + STALE (14d mtime) +
+# LIVE (pi-issue path unit not active). E1 clones also gate on CLEAN +
+# PUSHED; E2 plain dirs have no git gates (the stale gate + location is
+# the safety proof).
+# =====================================================================
+
+# Helper: create a standalone clone (`.git` is a directory, NOT a
+# worktree pointer) under $ROOT. push=1 pushes HEAD to the clone's
+# origin; push=0 leaves HEAD local. dirty=1 adds an uncommitted file.
+# old=1 sets the dir mtime 20 days back so the 14d stale gate passes.
+add_clone_dir() {
+    local wroot="$1" name="$2" push="${3:-1}" dirty="${4:-0}" old="${5:-0}"
+    local bare="$scratch/${name}.git"
+    local clone="$wroot/$name"
+    git -c init.defaultBranch=main init -q --bare "$bare"
+    git clone -q "$bare" "$clone"
+    git_ident "$clone"
+    printf 'base\n' >"$clone/README"
+    git -C "$clone" add README
+    git -C "$clone" commit -q -m base
+    git -C "$clone" push -q origin HEAD:main
+    git -C "$clone" checkout -q -B main origin/main
+    if [ "$dirty" = 1 ]; then
+        printf 'uncommitted\n' >"$clone/dirty.txt"
+    fi
+    if [ "$push" = 1 ]; then
+        # HEAD is already on origin/main after the push above.
+        :
+    else
+        # Make a unique commit so HEAD is NOT on origin.
+        printf 'local-only-%s\n' "$name" >>"$clone/local.txt"
+        git_ident "$clone"
+        git -C "$clone" add local.txt
+        git -C "$clone" commit -q -m "local-only $name"
+    fi
+    if [ "$old" = 1 ]; then
+        touch -d '20 days ago' "$clone" 2>/dev/null || true
+    fi
+    printf '%s' "$clone"
+}
+
+# Helper: create a plain scratch dir (no `.git`) under $ROOT. old=1 sets
+# the dir mtime 20 days back so the 14d stale gate passes.
+add_plain_dir() {
+    local wroot="$1" name="$2" old="${3:-1}"
+    local d="$wroot/$name"
+    mkdir -p "$d"
+    printf 'scratch\n' >"$d/note.txt"
+    if [ "$old" = 1 ]; then
+        touch -d '20 days ago' "$d" 2>/dev/null || true
+    fi
+    printf '%s' "$d"
+}
+
+# --- 39. E1 clone + pushed + clean + stale -> REAPED-E1 --------------------
+add_clone_dir "$wroot" "clone-e1-1000" 1 0 1
+out_e1=$("$bin" --root "$wroot" 2>&1) || true
+[ ! -d "$wroot/clone-e1-1000" ] \
+    || fail "case39: stale clean pushed clone should be REAPED-E1; output: $out_e1"
+echo "$out_e1" | grep -q "clone-e1-1000: REAPED-E1" \
+    || fail "case39: expected REAPED-E1 tag; output: $out_e1"
+ok "case39: E1 clone + pushed + clean + stale REAPED-E1"
+
+# --- 40. E1 clone + YOUNG -> SKIP-E too-young ------------------------------
+add_clone_dir "$wroot" "clone-e1-1001" 1 0 0
+out_e2=$("$bin" --root "$wroot" 2>&1) || true
+[ -d "$wroot/clone-e1-1001" ] \
+    || fail "case40: young clone must NOT be reaped; output: $out_e2"
+echo "$out_e2" | grep -q "clone-e1-1001: SKIP-E too-young" \
+    || fail "case40: expected SKIP-E too-young; output: $out_e2"
+ok "case40: E1 clone + YOUNG SKIP-E too-young"
+# Age it and reap to clean up.
+touch -d '20 days ago' "$wroot/clone-e1-1001" 2>/dev/null || true
+"$bin" --root "$wroot" >/dev/null 2>&1 || true
+
+# --- 41. E1 clone + NOT pushed + clean + stale -> SKIP-E head-not-on-origin
+add_clone_dir "$wroot" "clone-e1-1002" 0 0 1
+out_e3=$("$bin" --root "$wroot" 2>&1) || true
+[ -d "$wroot/clone-e1-1002" ] \
+    || fail "case41: not-pushed clone must NOT be reaped; output: $out_e3"
+echo "$out_e3" | grep -q "clone-e1-1002: SKIP-E head-not-on-origin" \
+    || fail "case41: expected SKIP-E head-not-on-origin; output: $out_e3"
+ok "case41: E1 clone + NOT pushed SKIP-E head-not-on-origin"
+
+# --- 42. E1 clone + pushed + dirty + stale -> SKIP-E dirty -----------------
+add_clone_dir "$wroot" "clone-e1-1003" 1 1 1
+out_e4=$("$bin" --root "$wroot" 2>&1) || true
+[ -d "$wroot/clone-e1-1003" ] \
+    || fail "case42: dirty clone must NOT be reaped; output: $out_e4"
+echo "$out_e4" | grep -q "clone-e1-1003: SKIP-E dirty clone" \
+    || fail "case42: expected SKIP-E dirty clone; output: $out_e4"
+ok "case42: E1 clone + dirty SKIP-E dirty clone"
+
+# --- 43. E2 plain dir + stale -> REAPED-E2 --------------------------------
+add_plain_dir "$wroot" "plain-e2-1100" 1
+out_e5=$("$bin" --root "$wroot" 2>&1) || true
+[ ! -d "$wroot/plain-e2-1100" ] \
+    || fail "case43: stale plain dir should be REAPED-E2; output: $out_e5"
+echo "$out_e5" | grep -q "plain-e2-1100: REAPED-E2" \
+    || fail "case43: expected REAPED-E2 tag; output: $out_e5"
+ok "case43: E2 plain dir + stale REAPED-E2"
+
+# --- 44. E2 plain dir + YOUNG -> SKIP-E too-young -------------------------
+add_plain_dir "$wroot" "plain-e2-1101" 0
+out_e6=$("$bin" --root "$wroot" 2>&1) || true
+[ -d "$wroot/plain-e2-1101" ] \
+    || fail "case44: young plain dir must NOT be reaped; output: $out_e6"
+echo "$out_e6" | grep -q "plain-e2-1101: SKIP-E too-young" \
+    || fail "case44: expected SKIP-E too-young; output: $out_e6"
+ok "case44: E2 plain dir + YOUNG SKIP-E too-young"
+# Age it and reap to clean up.
+touch -d '20 days ago' "$wroot/plain-e2-1101" 2>/dev/null || true
+"$bin" --root "$wroot" >/dev/null 2>&1 || true
+
+# --- 45. E2 plain dir + pi-issue path + LIVE worker -> SKIP-E live --------
+add_plain_dir "$wroot" "issue-fleet-ops-1200" 1
+printf 'running\n' >"$scratch/live/pi-issue@fleet-ops-1200.service"
+out_e7=$("$bin" --root "$wroot" 2>&1) || true
+[ -d "$wroot/issue-fleet-ops-1200" ] \
+    || fail "case45: live-worker plain dir must NOT be reaped; output: $out_e7"
+echo "$out_e7" | grep -q "issue-fleet-ops-1200: SKIP-E live worker" \
+    || fail "case45: expected SKIP-E live worker; output: $out_e7"
+ok "case45: E2 plain dir + pi-issue path + LIVE worker SKIP-E live"
+rm -f "$scratch/live/pi-issue@fleet-ops-1200.service" 2>/dev/null || true
+"$bin" --root "$wroot" >/dev/null 2>&1 || true
+
+# --- 46. Mode E never touches a registered worktree -----------------------
+# A registered worktree (created via `git worktree add`) must NOT be
+# seen by Mode E even if it is stale + clean + on origin — the per-
+# parent loop already evaluated it and recorded it in evaluated_paths.
+add_modec_worktree "$parent_a" "$wroot" "reg-wt-1300" "fix/reg-1300" 1 0 1
+# Re-run; the registered worktree is handled by Mode C (reaped), but
+# Mode E must NOT double-count or error on it.
+out_e8=$("$bin" --root "$wroot" 2>&1) || true
+# The registered worktree should be reaped by Mode C, not Mode E.
+echo "$out_e8" | grep -q "reg-wt-1300: REAPED-C" \
+    || fail "case46: registered worktree should be REAPED-C (not Mode E); output: $out_e8"
+echo "$out_e8" | grep -q "reg-wt-1300: REAPED-E" \
+    && fail "case46: registered worktree must NOT be touched by Mode E; output: $out_e8" || true
+ok "case46: Mode E never touches a registered worktree (Mode C handles it)"
+
+# --- 47. --dry-run reports E1 + E2 without deleting -----------------------
+add_clone_dir "$wroot" "clone-e1-1400" 1 0 1
+add_plain_dir "$wroot" "plain-e2-1401" 1
+dry_e=$("$bin" --dry-run --root "$wroot" 2>&1) || true
+[ -d "$wroot/clone-e1-1400" ] \
+    || fail "case47: dry-run must not delete clone; output: $dry_e"
+[ -d "$wroot/plain-e2-1401" ] \
+    || fail "case47: dry-run must not delete plain dir; output: $dry_e"
+echo "$dry_e" | grep -q "clone-e1-1400: DRY-REAP-E1" \
+    || fail "case47: expected DRY-REAP-E1; output: $dry_e"
+echo "$dry_e" | grep -q "plain-e2-1401: DRY-REAP-E2" \
+    || fail "case47: expected DRY-REAP-E2; output: $dry_e"
+ok "case47: --dry-run reports E1 + E2 without deleting"
+
+# --- 48. summary JSON carries Mode E fields -------------------------------
+summary_out_e="$(mktemp -t wt-reaper-summary-e.XXXXXX)"
+add_clone_dir "$wroot" "clone-e1-1500" 1 0 1
+add_plain_dir "$wroot" "plain-e2-1501" 1
+"$bin" --root "$wroot" --summary-file "$summary_out_e" >/dev/null 2>&1 || true
+jq -e 'has("reaped_e") and has("reaped_e_clone") and has("reaped_e_plain")' \
+    "$summary_out_e" >/dev/null 2>&1 \
+    || fail "case48: summary JSON missing Mode E reaped fields; content: $(cat "$summary_out_e")"
+jq -e 'has("mode_e_scanned") and has("skipped_e_young")' \
+    "$summary_out_e" >/dev/null 2>&1 \
+    || fail "case48: summary JSON missing Mode E skip fields; content: $(cat "$summary_out_e")"
+jq -e '.reaped_e >= 2' "$summary_out_e" >/dev/null 2>&1 \
+    || fail "case48: reaped_e should be >=2 (clone + plain); content: $(cat "$summary_out_e")"
+ok "case48: summary JSON carries Mode E fields"
+rm -f "$summary_out_e"
+
 # --- 16. install rail intact -----------------------------------------------
 for f in bin/fleet-worktree-reaper \
          systemd/fleet-worktree-reaper.service \
