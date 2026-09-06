@@ -2,6 +2,12 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "Fleet timer manifest — every user timer must have an entry with a named reason. CI validates live timers against this manifest.",
   "timers": {
+    "0509-search-tier-canary.timer": {
+      "reason": "Daily 06:10 IST — 0509 search tier canary (issue #1452)",
+      "classification": "scheduled",
+      "cadence": "daily",
+      "source": "user-config"
+    },
     "agent-cron-0509-daily-market-signal.timer": {
       "reason": "Daily 0509 market signal cron — true calendar job at 08:15 IST",
       "classification": "scheduled",
