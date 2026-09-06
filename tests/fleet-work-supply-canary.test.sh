@@ -319,6 +319,45 @@ set +e; "$bin" gate 0509 >/dev/null 2>&1; gate_rc=$?; set -e
 unset FLEET_WORK_SUPPLY_HOURS FLEET_WORK_SUPPLY_READY
 ok "scenario2c: supply floor runs the scout at created-24h<20 or ready<40; fleet-ops exempt; unmeasured -> runway rule (fleet-ops#3547)"
 
+# --- 2d. created-24h counts real supply only ---------------------------------
+# 2026-09-06: 0509 auto-revert.yml filed 40 "AUTO-REVERT HALT" notices in
+# 24h while Deploy production was red; created_24h read 73 with 0 product
+# issues agent-ready, so the floor stayed closed and the scout rested on
+# noise. Real supply excludes HALT notices and noise-class issues. The fake
+# gh here applies the --jq expression so the filter is exercised for real.
+gh_jq="$scratch/gh_jq"
+cat >"$gh_jq" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${GH_LOG:-/dev/null}"
+jqexpr=""; prev=""
+for a in "$@"; do [[ "$prev" == "--jq" ]] && jqexpr="$a"; prev="$a"; done
+case "$*" in
+  *"issue list"*"created:>="*) jq -r "${jqexpr:-.}" "${GH_CREATED_FIXTURE}"; exit 0 ;;
+  *"issue list"*"-l agent-ready"*"--state closed"*) echo '[]'; exit 0 ;;
+  *"issue list"*"-l agent-ready"*) cat "${WORK_READY:-/dev/null}" 2>/dev/null || echo 0; exit 0 ;;
+  *"issue list"*) echo '[]'; exit 0 ;;
+  *"issue create"*) echo "https://github.com/Nishfleet/fleet-ops/issues/999"; exit 0 ;;
+esac
+exit 0
+FAKE
+chmod +x "$gh_jq"
+export GH_CREATED_FIXTURE="$scratch/created.json"
+jq -n '[range(22)|{number:(1800+.),title:"AUTO-REVERT HALT: main moved after the red commit",labels:[]}]
+  + [range(2)|{number:(1900+.),title:"main CI red: fix failing workflow",labels:[{name:"noise-class"}]}]
+  + [range(3)|{number:(1950+.),title:"fix(search): real product finding \(.)",labels:[{name:"scout-candidate"}]}]' >"$GH_CREATED_FIXTURE"
+export GH="$gh_jq"
+export FLEET_WORK_SUPPLY_HOURS=66
+export FLEET_WORK_SUPPLY_READY=65
+unset FLEET_WORK_SUPPLY_CREATED_24H
+: >"$gh_log"
+set +e; gate_out=$("$bin" gate 0509 2>&1); gate_rc=$?; set -e
+[[ "$gate_rc" == "0" ]] || fail "scenario2d: 27 created of which 24 are AUTO-REVERT HALT / noise-class must count 3 (<20) and run=0, got rc=$gate_rc ($gate_out)"
+grep -q 'created_24h=3 ' <<<"$gate_out" || grep -rqs 'created_24h=3 ' "$scratch" || fail "scenario2d: must log created_24h=3 ($gate_out)"
+grep -q -- '--json number,title,labels' "$gh_log" || fail "scenario2d: must fetch title+labels to filter (gh=$(cat "$gh_log"))"
+export GH="$gh_fake"
+unset FLEET_WORK_SUPPLY_HOURS FLEET_WORK_SUPPLY_READY
+ok "scenario2d: created-24h excludes AUTO-REVERT HALT and noise-class issues"
+
 # --- 3. clean canary --------------------------------------------------------
 write_wired_checkout
 : >"$gh_log"; : >"$triage"

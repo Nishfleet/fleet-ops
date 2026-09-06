@@ -156,6 +156,10 @@ ready_count() {
 # consecutive_dry=7 and was parked while its candidates sat in admission.
 # Empty on gh failure or missing begin_at; the caller treats non-numeric as
 # "unknown" (0 filed) so the runway rule still decides.
+# Real filings only: AUTO-REVERT HALT notices and noise-class issues created
+# inside the window are not scout output (2026-09-06: a HALT notice scored a
+# dry run "filed=1"). Same filter in bin/fleet-work-supply-canary.
+SUPPLY_ISSUE_COUNT_JQ='[.[]|select((.title|startswith("AUTO-REVERT HALT")|not) and ([.labels[]?.name]|index("noise-class")|not))]|length'
 filed_since_begin() {
     local repo="$1" begin_at="$2" n
     if [[ -n "${SCOUT_FUTILITY_FILED_COUNT:-}" ]]; then
@@ -164,7 +168,8 @@ filed_since_begin() {
     fi
     [[ -n "$begin_at" ]] || { printf '\n'; return 0; }
     n=$("$GH" issue list -R "Nishfleet/${repo}" --state all --limit 200 \
-        --search "created:>=${begin_at}" --json number --jq 'length' 2>/dev/null || true)
+        --search "created:>=${begin_at}" --json number,title,labels \
+        --jq "$SUPPLY_ISSUE_COUNT_JQ" 2>/dev/null || true)
     printf '%s\n' "$n"
 }
 

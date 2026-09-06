@@ -199,6 +199,10 @@ fetch_ready() {
 # "workers draining a healthy buffer" from "blocked issues were re-released
 # and nobody is filing product work" — 2026-09-05 the 0509 scout rested at
 # hours=63-66 while created-24h had fallen to 5 (late Aug: 40-100/day).
+# Real supply only: AUTO-REVERT HALT notices (0509 auto-revert.yml files one
+# per push while a post-merge check is red — 40 in 24h on 2026-09-06) and
+# noise-class issues are not work. Same filter in bin/scout-futility-check.
+SUPPLY_ISSUE_COUNT_JQ='[.[]|select((.title|startswith("AUTO-REVERT HALT")|not) and ([.labels[]?.name]|index("noise-class")|not))]|length'
 fetch_created_24h() {
     local short="$1" n since now_s
     if [[ -n "${FLEET_WORK_SUPPLY_CREATED_24H:-}" ]]; then
@@ -208,7 +212,8 @@ fetch_created_24h() {
     now_s="${FLEET_WORK_SUPPLY_NOW_EPOCH:-$(date -u +%s)}"
     since=$(date -u -d "@$((now_s - 86400))" +%Y-%m-%dT%H:%M:%SZ)
     n=$("$GH" issue list -R "Nishfleet/${short}" --state all --limit 200 \
-        --search "created:>=${since}" --json number --jq 'length' 2>/dev/null || true)
+        --search "created:>=${since}" --json number,title,labels \
+        --jq "$SUPPLY_ISSUE_COUNT_JQ" 2>/dev/null || true)
     printf '%s\n' "$n"
 }
 

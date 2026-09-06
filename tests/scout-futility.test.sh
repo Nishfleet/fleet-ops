@@ -335,6 +335,49 @@ export SCOUT_FUTILITY_FILED_COUNT=0
 unset SCOUT_FUTILITY_FILED_COUNT
 ok "scenario7b: filed>=1 resets consecutive_dry; filed=0 increments; rc!=0 leaves it (fleet-ops#3547)"
 
+# --- 7c. filed_since_begin counts real filings only ---------------------------
+# 2026-09-06 14:52-15:11Z: the 0509 scout filed nothing, but an AUTO-REVERT
+# HALT notice landed inside the window and the run was scored "filed=1,
+# productive" — consecutive_dry reset on noise. HALT notices and noise-class
+# issues are not scout filings. The fake gh applies the --jq expression.
+gh_jq="$scratch/gh_jq"
+cat >"$gh_jq" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${GH_LOG:-/dev/null}"
+jqexpr=""; prev=""
+for a in "$@"; do [[ "$prev" == "--jq" ]] && jqexpr="$a"; prev="$a"; done
+case "$*" in
+  *"issue list"*"created:>="*) jq -r "${jqexpr:-.}" "${GH_CREATED_FIXTURE}"; exit 0 ;;
+  *"issue list"*"-l agent-ready"*"--state closed"*) echo '[]'; exit 0 ;;
+  *"issue list"*"-l agent-ready"*) cat "${WORK_READY:-/dev/null}" 2>/dev/null || echo 0; exit 0 ;;
+  *"issue list"*) echo '[]'; exit 0 ;;
+  *"issue create"*) echo "https://github.com/Nishfleet/fleet-ops/issues/999"; exit 0 ;;
+esac
+exit 0
+FAKE
+chmod +x "$gh_jq"
+export GH_CREATED_FIXTURE="$scratch/created.json"
+jq -n '[{number:1828,title:"AUTO-REVERT HALT: main moved after the red commit",labels:[]},{number:1830,title:"AUTO-REVERT HALT: Secret Scan failing across consecutive commits",labels:[{name:"noise-class"}]}]' >"$GH_CREATED_FIXTURE"
+export GH="$gh_jq"
+: >"$gh_log"; : >"$triage"
+echo '[]' >"$open_issues"
+printf '%s\n' 'before=2' 'consecutive_dry=1' >"$state/0509.state"
+export SCOUT_FUTILITY_READY_COUNT=2
+unset SCOUT_FUTILITY_FILED_COUNT
+"$bin" begin 0509 >/dev/null
+set +e; "$bin" end 0509 0 >/dev/null 2>&1; set -e
+[[ "$(state_field consecutive_dry)" == "2" ]] \
+  || fail "scenario7c: two AUTO-REVERT HALT notices created during the run are not filings; dry run must increment 1->2, got '$(state_field consecutive_dry)'"
+[[ "$(state_field last_filed)" == "0" ]] || fail "scenario7c: last_filed must be 0, got '$(state_field last_filed)'"
+jq -n '[{number:1828,title:"AUTO-REVERT HALT: main moved after the red commit",labels:[]},{number:1779,title:"/timeline/:domain 410 renders a generic error",labels:[{name:"scout-candidate"}]}]' >"$GH_CREATED_FIXTURE"
+"$bin" begin 0509 >/dev/null
+set +e; "$bin" end 0509 0 >/dev/null 2>&1; set -e
+[[ "$(state_field consecutive_dry)" == "0" ]] || fail "scenario7c: one real filing beside a HALT notice must reset, got '$(state_field consecutive_dry)'"
+[[ "$(state_field last_filed)" == "1" ]] || fail "scenario7c: last_filed must be 1, got '$(state_field last_filed)'"
+export GH="$gh_fake"
+unset SCOUT_FUTILITY_READY_COUNT
+ok "scenario7c: filed-since-begin excludes AUTO-REVERT HALT and noise-class issues"
+
 # --- 8. end without begin creates a snapshot (success-run) ------------------
 : >"$gh_log"
 : >"$triage"
