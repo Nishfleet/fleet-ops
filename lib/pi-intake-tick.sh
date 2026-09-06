@@ -599,6 +599,7 @@ if {
 fi
 echo "reconciler-caught: delta=$reconciler_caught total=$_reconciler_new_total repo=$REPO prom=$reconciler_prom"
 
+# >>> audition-lane funcs BEGIN (extracted by tests/audition-lane.test.sh — keep both markers)
 # fleet-ops#3322: audition lane. Inject new candidate seats from
 # config/model-candidates.json (a committed seed from the Last30Days best-value
 # research doc) into the LIVE caps as cap 1, audition: true, light issues only.
@@ -834,6 +835,8 @@ _audition_file_verdict() {
     fi
     printf '%s' "$verdict"
 }
+
+# <<< audition-lane funcs END
 
 # Run the audition lane (fail-open: any error is logged and the tick continues).
 audition_inject_and_retire 2>&1 || echo "audition: non-fatal error (fail-open)"

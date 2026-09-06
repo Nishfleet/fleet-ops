@@ -56,12 +56,17 @@ chmod +x "$scratch/bin/fleet-issue-file"
 export ISSUE_FILE_LOG="$issue_file_log"
 export FLEET_ISSUE_FILE="$scratch/bin/fleet-issue-file"
 
-# Extract the audition functions (lines 582-808) from the intake tick.
-# This captures the env-var block + all 3 functions WITHOUT the top-level
-# call at line 811 (which would run the tick). We source seat-lib first so
-# _seat_caps_loaded and load_seat_caps are available.
+# Extract the audition functions from the intake tick, between the BEGIN/END
+# markers in lib/pi-intake-tick.sh. This captures the env-var block + all 3
+# functions WITHOUT the top-level call that follows the END marker (which would
+# run the tick). Marker-based, not line numbers: any edit above the block used
+# to shift the range and break this test (fleet-ops#4016, PR #4017). We source
+# seat-lib first so _seat_caps_loaded and load_seat_caps are available.
 audition_funcs="$scratch/audition-funcs.sh"
-sed -n '582,808p' "$intake" > "$audition_funcs"
+awk '/^# >>> audition-lane funcs BEGIN/{f=1;next} /^# <<< audition-lane funcs END/{f=0} f' "$intake" > "$audition_funcs"
+[[ -s "$audition_funcs" ]] || fail "audition-lane markers missing from $intake (keep '# >>> audition-lane funcs BEGIN' / '# <<< audition-lane funcs END')"
+grep -q '^audition_inject_and_retire() {' "$audition_funcs" || fail "extracted block does not contain audition_inject_and_retire (markers moved?)"
+if grep -q '^audition_inject_and_retire 2>&1' "$audition_funcs"; then fail "extracted block includes the top-level call (END marker is too low)"; fi
 # Prepend _tick_dir so the _ISSUE_FILE_BIN path resolves.
 sed -i '1i_tick_dir="'"$repo_root"'/lib"' "$audition_funcs"
 bash -n "$audition_funcs" || fail "extracted audition funcs have syntax errors"
