@@ -229,7 +229,8 @@ for rec in "${prose[@]:-}"; do
   # the conservative fallback so hermes still honours it as a reserved class.
   class=$(printf '%s' "$hdr $marker" | grep -oE "$CLASSES" | head -1 || true)
   if [ -z "$class" ]; then
-    case "$(printf '%s' "$hdr $marker" | tr 'A-Z' 'a-z')" in
+    lower="${hdr} ${marker}"; lower="${lower,,}"
+    case "$lower" in
       *money*|*credit*|*pay*|*bill*|*card*|*charge*|*paid*) class="MONEY-BOUNDARY";;
       *) class="LEGAL-BOUNDARY";;
     esac

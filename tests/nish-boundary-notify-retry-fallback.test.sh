@@ -341,9 +341,11 @@ set -e
 echo "exit code: $rc7"
 
 # The old prose marker must NOT be delivered (boundary excludes it).
-grep -q "old ask" "$tmp/out7" \
-  && fail "prose older than the last delivered entry must not be backfiled" \
-  || ok "prose older than last-delivered entry not backfiled"
+if grep -q "old ask" "$tmp/out7"; then
+  fail "prose older than the last delivered entry must not be backfiled"
+else
+  ok "prose older than last-delivered entry not backfiled"
+fi
 # Deliveries (fallback) must be zero for this trigger: nothing unseen remains.
 fallback_curl7=$(wc -l < "$curl_log7")
 echo "fallback curl invocations: $fallback_curl7"
