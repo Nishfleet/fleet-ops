@@ -330,7 +330,6 @@ skipped_e_young=0
 skipped_e_live=0
 skipped_e_dirty=0
 skipped_e_notpushed=0
-skipped_e_nogit=0
 mode_e_scanned=0
 
 # is_live_worker <short> <issue_n>  — mirrors claim-reconcile.
