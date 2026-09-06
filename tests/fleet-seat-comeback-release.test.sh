@@ -316,8 +316,9 @@ cat > "$TMPD/seat-caps.json" <<'CAPS'
   "providers": {
     "bai": {"models": {"deepseek-v4-flash": 1}},
     "cline": {"models": {"z-ai/glm-5.3-flash": 1}},
-    "commandcode": {"models": {"poolside/laguna-s-2.1-free": 1}},
+    "commandcode": {"models": {"poolside/laguna-s-2.1-free": 1, "minimax/minimax-m3-free": 0}},
     "devin": {"models": {"glm-5-2": 1}},
+    "hetzner": {"models": {"Qwen/Qwen3.6-35B-A3B-FP8": 0}},
     "minimax": {"models": {"m3-free": 1}},
     "ollama": {"models": {"deepseek-v4-flash:0731": 1}},
     "opencode": {"models": {"hy3-free": 1, "mimo-v-2.5-free": 1, "mimo-v2.5-free": 1, "nemotron-3-ultra-free": 1}},
@@ -1168,6 +1169,89 @@ set -e
 grep -q "^fleet_seat_comeback_release_retired_total 0$" "$TMPD/prom13d.prom" \
   || fail "13d: prom retired_total must be 0 on a clean roster: $(cat "$TMPD/prom13d.prom")"
 ok "13d: clean roster (healthy + rate_limited) retires nothing, creates no dir (fleet-ops#2716)"
+
+# 13e. fleet-ops#3947: bench_reason backfill on a HELD corpse. Two shapes
+#      land in the live roster with bench_reason=null and read as the
+#      fail-open corpse shape to the seat-health census, which re-files the
+#      same "no bench overlay" ticket every tick:
+#        (a) a FRESH credentials_bad 401/403 corpse the seat-health
+#            extension just escalated (seat_dead=true, usable_at=null, no
+#            bench_reason — write_parked_ledger has not run yet, age inside
+#            the 6h grace so retire_corpse holds it).
+#        (b) an OLD pre-#3603 parked corpse (bench_until=far_future, no
+#            bench_reason) that retire_corpse's future-wall hold never
+#            re-parks.
+#      The sweep must backfill the durable bench literal on BOTH via a
+#      field-merge that PRESERVES health_class / failure_mode / seat_dead
+#      (so FleetDeadCredentialSeats still fires on the credentials_bad
+#      signal) — the corpse is recognisable as benched the moment the sweep
+#      sees it, not 6h later (and never for the future-wall shape).
+rm -rf "$RETSEAT"; mkdir -p "$RETSEAT"; rm -rf "$RETDIR"
+# (a) fresh credentials_bad corpse, 1h old (inside 6h grace), no wall, no bench_reason
+cat > "$RETSEAT/commandcode__minimax_minimax-m3-free.json" << 'EOF'
+{"provider":"commandcode","model":"minimax/minimax-m3-free","http_status":403,"retry_after":null,"health_class":"corpse","retryable":false,"seat_dead":true,"poison_ladder":false,"observed_at":"2026-08-30T12:00:00Z","source":"after_provider_response","failure_mode":"credentials_bad","usable_at":null,"consecutive_failure_count":30}
+EOF
+# (b) old pre-#3603 parked corpse, far-future bench_until, no bench_reason
+cat > "$RETSEAT/hetzner__Qwen_Qwen3.6-35B-A3B-FP8.json" << 'EOF'
+{"provider":"hetzner","model":"Qwen/Qwen3.6-35B-A3B-FP8","http_status":null,"retry_after":null,"health_class":"corpse","retryable":false,"seat_dead":true,"poison_ladder":false,"observed_at":"2026-08-30T12:00:00Z","source":"corpse_retirement","failure_mode":"corpse_retired","bench_until":"2036-08-30T12:00:00Z","usable_at":"2036-08-30T12:00:00Z","consecutive_failure_count":0}
+EOF
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$RETSEAT" \
+    FLEET_SEAT_COMEBACK_STATE="$TMPD/state13e.json" \
+    FLEET_SEAT_COMEBACK_PROM="$TMPD/prom13e.prom" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW2_ISO" \
+    PI_BIN="$TMPD/pi-tool-ok" \
+    bash "$BIN" >/dev/null 2>"$TMPD/ret13e.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "13e: bench_reason backfill sweep must exit 0, got $rc ($(cat "$TMPD/ret13e.err"))"
+# Both corpses are HELD (fresh inside grace / future wall) — not retired.
+[[ -f "$RETSEAT/commandcode__minimax_minimax-m3-free.json" ]] \
+  || fail "13e: fresh credentials_bad corpse must NOT be retired (held in grace): $(cat "$TMPD/ret13e.err")"
+[[ -f "$RETSEAT/hetzner__Qwen_Qwen3.6-35B-A3B-FP8.json" ]] \
+  || fail "13e: old future-wall corpse must NOT be retired: $(cat "$TMPD/ret13e.err")"
+[[ ! -d "$RETDIR" ]] || fail "13e: no retirement dir may be created for held corpses: $(ls -la "$TMPD" 2>&1)"
+# (a) fresh credentials_bad corpse: bench_reason backfilled, signal preserved.
+_br_a=$(jq -r '.bench_reason // ""' "$RETSEAT/commandcode__minimax_minimax-m3-free.json" 2>/dev/null || true)
+[[ -n "$_br_a" ]] \
+  || fail "13e: fresh credentials_bad corpse must get bench_reason backfilled (fleet-ops#3947): got '$_br_a'"
+_hc_a=$(jq -r '.health_class // ""' "$RETSEAT/commandcode__minimax_minimax-m3-free.json" 2>/dev/null || true)
+[[ "$_hc_a" == "corpse" ]] \
+  || fail "13e: backfill must PRESERVE health_class=corpse, got '$_hc_a' (FleetDeadCredentialSeats signal)"
+_fm_a=$(jq -r '.failure_mode // ""' "$RETSEAT/commandcode__minimax_minimax-m3-free.json" 2>/dev/null || true)
+[[ "$_fm_a" == "credentials_bad" ]] \
+  || fail "13e: backfill must PRESERVE failure_mode=credentials_bad, got '$_fm_a'"
+_sd_a=$(jq -r '.seat_dead // false' "$RETSEAT/commandcode__minimax_minimax-m3-free.json" 2>/dev/null || true)
+[[ "$_sd_a" == "true" ]] \
+  || fail "13e: backfill must PRESERVE seat_dead=true, got '$_sd_a'"
+_lec_a=$(jq -r '.last_error_class // ""' "$RETSEAT/commandcode__minimax_minimax-m3-free.json" 2>/dev/null || true)
+[[ "$_lec_a" == "credentials_bad" ]] \
+  || fail "13e: backfill must set last_error_class=credentials_bad (the failure_mode), got '$_lec_a'"
+# (b) old future-wall corpse: bench_reason backfilled, signal preserved.
+_br_b=$(jq -r '.bench_reason // ""' "$RETSEAT/hetzner__Qwen_Qwen3.6-35B-A3B-FP8.json" 2>/dev/null || true)
+[[ -n "$_br_b" ]] \
+  || fail "13e: old future-wall corpse must get bench_reason backfilled (fleet-ops#3947): got '$_br_b'"
+_hc_b=$(jq -r '.health_class // ""' "$RETSEAT/hetzner__Qwen_Qwen3.6-35B-A3B-FP8.json" 2>/dev/null || true)
+[[ "$_hc_b" == "corpse" ]] \
+  || fail "13e: backfill must PRESERVE health_class=corpse on the old corpse, got '$_hc_b'"
+_fm_b=$(jq -r '.failure_mode // ""' "$RETSEAT/hetzner__Qwen_Qwen3.6-35B-A3B-FP8.json" 2>/dev/null || true)
+[[ "$_fm_b" == "corpse_retired" ]] \
+  || fail "13e: backfill must PRESERVE failure_mode=corpse_retired, got '$_fm_b'"
+# Idempotence: a second sweep must not re-write (bench_reason already set).
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$RETSEAT" \
+    FLEET_SEAT_COMEBACK_STATE="$TMPD/state13e.json" \
+    FLEET_SEAT_COMEBACK_PROM="$TMPD/prom13e.prom" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW2_ISO" \
+    PI_BIN="$TMPD/pi-tool-ok" \
+    bash "$BIN" >/dev/null 2>"$TMPD/ret13e2.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "13e: idempotent re-sweep must exit 0, got $rc ($(cat "$TMPD/ret13e2.err"))"
+_br_a2=$(jq -r '.bench_reason // ""' "$RETSEAT/commandcode__minimax_minimax-m3-free.json" 2>/dev/null || true)
+[[ "$_br_a" == "$_br_a2" ]] \
+  || fail "13e: idempotent re-sweep must not change bench_reason: '$_br_a' -> '$_br_a2'"
+ok "13e: held corpse (fresh credentials_bad + old future-wall) gets bench_reason backfilled, signal preserved (fleet-ops#3947)"
 
 # --- 14. fleet-ops#2806: corpse on the merged own-failure streak -------
 # The lived nemotron/mimo shape: the seat-health extension re-anchors the

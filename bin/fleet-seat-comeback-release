@@ -749,6 +749,42 @@ _corpse_is_recoverable_mode() {
     esac
 }
 
+# fleet-ops#3947: a corpse ledger that carries NO bench_reason reads as the
+# fail-open corpse shape to the seat-health census/snapshot, which re-files
+# the same "no bench overlay" ticket every tick. Two shapes land here with
+# bench_reason=null: (a) a FRESH credentials_bad 401/403 corpse the
+# seat-health extension just escalated (seat_dead=true, usable_at=null, no
+# bench_reason — write_parked_ledger has not run yet), and (b) an OLD
+# pre-#3603 parked corpse (bench_until=far_future, no bench_reason) that
+# retire_corpse's future-wall hold never re-parks. Returns 0 (true) when the
+# ledger has a non-empty bench_reason, 1 when it is missing/empty.
+_corpse_has_bench_reason() {
+    local br
+    br=$(jq -r '.bench_reason // ""' "$1" 2>/dev/null || true)
+    [[ -n "$br" ]]
+}
+
+# fleet-ops#3947: backfill the durable bench literal on a held corpse via the
+# existing _seat_merge_error_class field-merge (preserves health_class /
+# failure_mode / seat_dead so FleetDeadCredentialSeats still fires on the
+# credentials_bad signal). Best-effort: a merge failure is logged but does
+# not block the sweep. The literal records WHY the seat is benched
+# (seat_dead=true -> pick_seat never offers) so the census recognises a held
+# corpse as durably benched the moment the sweep sees it, not 6h later when
+# retire_corpse finally parks it (and never for the future-wall shape).
+_backfill_corpse_bench_reason() {
+    local p="$1" m="$2" f="$3"
+    [[ -f "$f" ]] || return 1
+    _corpse_has_bench_reason "$f" && return 0
+    local _cfm _cbr
+    _cfm=$(jq -r '.failure_mode // "corpse"' "$f" 2>/dev/null || echo "corpse")
+    _cbr="seat_dead=true corpse, pick_seat never offers (durable, fleet-ops#3947)"
+    if declare -F _seat_merge_error_class >/dev/null 2>&1; then
+        _seat_merge_error_class "$p" "$m" "$_cfm" "$_cbr" \
+            || log "bench_reason backfill FAILED for $p/$m (best-effort, fleet-ops#3947)"
+    fi
+}
+
 # fleet-ops#2638: corpse a seat whose consecutive_failure_count has crossed
 # the threshold after a probe failure. The bash writer (mark_seat_quota_bench,
 # fleet-ops#2594) corpsed quota_cap at the same threshold but the prober's
@@ -1166,6 +1202,16 @@ main() {
             if retire_corpse "$p" "$m" "$f"; then
                 continue
             fi
+            # fleet-ops#3947: retire_corpse HELD this corpse (fresh inside the
+            # 6h grace window, or an old pre-#3603 parked corpse with a
+            # far-future bench_until it never re-parks). Either way the corpse
+            # sits in the live roster with bench_reason=null and reads as the
+            # fail-open corpse shape to the seat-health census, which re-files
+            # the same "no bench overlay" ticket every tick. Backfill the
+            # durable bench literal NOW via a field-merge that preserves
+            # health_class / failure_mode / seat_dead (so the credentials_bad
+            # alert signal stays live until retire_corpse finally parks it).
+            _backfill_corpse_bench_reason "$p" "$m" "$f"
             # fleet-ops#3156: a no-wall corpse (prober-created, failure_mode
             # "comeback_never_released") gets a second-chance re-probe instead
             # of sitting idle for the full 6h grace. A successful re-probe
