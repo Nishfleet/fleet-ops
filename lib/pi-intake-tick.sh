@@ -795,6 +795,14 @@ if product_first_is_self_maintenance "$REPO" || [[ "$REPO" == "fleet-ops" ]]; th
     (( _self_maint_cap < 1 )) && _self_maint_cap=1
 fi
 
+# fleet-ops#3784: load_seat_caps must run in THIS shell scope so its
+# SEAT_SPAWN_STAGGER_S (and the cap arrays) are visible to the claim loop
+# below. The capacity step above calls total_seat_cap/ram_governor_cap inside
+# $(...) command-substitution subshells, so their load_seat_caps side effects
+# never propagate here — without this parent-scope call, `set -u` aborts the
+# tick at the stagger read with "SEAT_SPAWN_STAGGER_S: unbound variable".
+load_seat_caps || true
+
 for i in "${!numbers[@]}"; do
     N="${numbers[$i]}"
     title="${titles[$i]}"
