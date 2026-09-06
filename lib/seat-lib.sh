@@ -249,6 +249,11 @@ declare -A SEAT_PROVIDER_REASON=()
 # "provider" for provider-level cap=0, "provider/model" for model-level.
 declare -A SEAT_CAP_ZERO_CLASS_INTENTIONAL=()
 declare -A SEAT_CAP_ZERO_CLASS_STALE=()
+# fleet-ops#3322: audition lane. A seat carrying audition: true in the LIVE
+# caps is only eligible for packet_difficulty light (cap 1, 10 sessions / 7d /
+# $1 cost cap, injected by lib/pi-intake-tick.sh from config/model-candidates.json).
+# Keyed on "provider" for provider-level audition, "provider/model" for model-level.
+declare -A SEAT_AUDITION=()
 SEAT_FREE_ORDER=""
 SEAT_PREPAID_ORDER=""
 # fleet-ops#3125: seat-caps product_order. "yield" routes product picks
@@ -368,6 +373,17 @@ seat_cost_for() {
     echo "${SEAT_COST[$p/$m]:-0}"
 }
 
+# fleet-ops#3322: return 0 if the seat is an audition seat (provider-level or
+# model-level audition: true in the LIVE caps). Audition seats are only
+# eligible for packet_difficulty light — pick_seat gates them out of every
+# other difficulty. Returns 1 (not audition) for unknown/empty seats.
+seat_is_audition() {
+    local p="${1:-}" m="${2:-}"
+    [[ -n "$p" && -n "$m" ]] || return 1
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    [[ -n "${SEAT_AUDITION[$p]:-}" || -n "${SEAT_AUDITION[$p/$m]:-}" ]]
+}
+
 load_seat_caps() {
     SEAT_PROVIDER_CAP=()
     SEAT_MODEL_CAP=()
@@ -382,6 +398,7 @@ load_seat_caps() {
     SEAT_PROVIDER_REASON=()
     SEAT_CAP_ZERO_CLASS_INTENTIONAL=()
     SEAT_CAP_ZERO_CLASS_STALE=()
+    SEAT_AUDITION=()
     SEAT_FREE_ORDER=""
     SEAT_PREPAID_ORDER=""
     SEAT_PRODUCT_ORDER=""
@@ -426,10 +443,10 @@ load_seat_caps() {
     # would have its own $p/$m clobbered to the last jq line before its lookup
     # ran, returning 0 for every unlisted-model seat and NO-USABLE-SEAT for
     # the whole free role (pi-audit@ free-glm-5-3 unit-failure loop 2026-08-27).
-    local p m cap class bench_def max_probe hard reason window budget ko ov_model ov_ex ov_usd cb icz remote
+    local p m cap class bench_def max_probe hard reason window budget ko ov_model ov_ex ov_usd cb icz remote audition
     # Unit separator (\x1f), not TSV: bash `read` collapses consecutive tabs
     # so optional empty fields (max_probe_ceiling, reason) would vanish.
-    while IFS=$'\x1f\n' read -r p cap class bench_def max_probe hard reason icz remote; do
+    while IFS=$'\x1f\n' read -r p cap class bench_def max_probe hard reason icz remote audition; do
         [[ -n "$p" ]] || continue
         SEAT_PROVIDER_CAP["$p"]="$cap"
         # subscription is the pre-#387 name for prepaid-quota.
@@ -455,6 +472,10 @@ load_seat_caps() {
         # fleet-ops#3531: remote agents (e.g. devin) run outside the local
         # harness and must be judged by session outcome, not local tool count.
         [[ "$remote" == "true" ]] && SEAT_PROVIDER_REMOTE_AGENT["$p"]=1
+        # fleet-ops#3322: provider-level audition flag (xkiro free-tier seats
+        # carry it at provider level via #3505). A seat carrying audition: true
+        # is only eligible for packet_difficulty light — pick_seat gates it.
+        [[ "$audition" == "true" ]] && SEAT_AUDITION["$p"]=1
     # A provider may be a bare number (shorthand for cap=N, class=free, no
     # models — e.g. "devin": 0). Indexing .value.cap on a number crashes jq
     # and, with `2>/dev/null || true`, silently empties the whole cap map —
@@ -464,9 +485,9 @@ load_seat_caps() {
     # provider_quota_bench_default returns 0 (no default, writer fails open).
     # max_probe_ceiling / hard_ceiling / reason (fleet-ops#217) likewise
     # optional; absent fields emit "" so the guards above skip them.
-    done < <(jq -r '.providers | to_entries[] | .key as $k | .value as $v | [$k, (if ($v|type)=="number" then $v else ($v.cap // 0) end), (if ($v|type)=="number" then "free" else ($v.class // "free") end), (if ($v|type)=="object" then ($v.quota_bench_default_s // "") else "" end), (if ($v|type)=="object" then ($v.max_probe_ceiling // "") else "" end), (if ($v|type)=="object" then ($v.hard_ceiling // false) else false end), (if ($v|type)=="object" then ($v.reason // "") else "" end), (if ($v|type)=="object" then ($v.intentional_cap_zero // "") else "" end), (if ($v|type)=="object" then ($v.remote_agent // "") else "" end)] | join("\u001f")' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    done < <(jq -r '.providers | to_entries[] | .key as $k | .value as $v | [$k, (if ($v|type)=="number" then $v else ($v.cap // 0) end), (if ($v|type)=="number" then "free" else ($v.class // "free") end), (if ($v|type)=="object" then ($v.quota_bench_default_s // "") else "" end), (if ($v|type)=="object" then ($v.max_probe_ceiling // "") else "" end), (if ($v|type)=="object" then ($v.hard_ceiling // false) else false end), (if ($v|type)=="object" then ($v.reason // "") else "" end), (if ($v|type)=="object" then ($v.intentional_cap_zero // "") else "" end), (if ($v|type)=="object" then ($v.remote_agent // "") else "" end), (if ($v|type)=="object" then ($v.audition // false) else false end)] | join("\u001f")' "$SEAT_CAPS_JSON" 2>/dev/null || true)
 
-    while IFS=$'\x1f\n' read -r p m cap class mprobe; do
+    while IFS=$'\x1f\n' read -r p m cap class mprobe maudition; do
         [[ -n "$p" && -n "$m" ]] || continue
         # Models map may be a bare number (cap) or an object {cap, class,
         # max_probe_ceiling}. Per-model class is an override for a free lane
@@ -488,6 +509,10 @@ load_seat_caps() {
             [[ "$class" == "subscription" ]] && class="prepaid-quota"
             SEAT_MODEL_CLASS["$p/$m"]="$class"
         fi
+        # fleet-ops#3322: model-level audition flag. A candidate injected by
+        # the intake tick from config/model-candidates.json carries audition:
+        # true at model level (cap 1, light issues only).
+        [[ "$maudition" == "true" ]] && SEAT_AUDITION["$p/$m"]=1
         # fleet-ops#1432: model-level intentional_cap_zero classification.
         # Only present when the model value is an object (not a bare number).
         if [[ ! "$cap" =~ ^[0-9]+$ ]]; then
@@ -512,7 +537,7 @@ load_seat_caps() {
     # uses it: bash `read` collapses consecutive tabs, so an empty per-model
     # `class` would shift `max_probe_ceiling` out of mprobe and the model
     # probe ceilings would silently never load (fleet-ops#3125).
-    done < <(jq -r '.providers | to_entries[] | .key as $p | .value as $v | (if ($v|type)=="object" then ($v.models // {}) else {} end) | to_entries[] | [$p, .key, (.value // 0 | tostring), (if (.value|type)=="object" then (.value.class // "") else "" end), (if (.value|type)=="object" then (.value.max_probe_ceiling // "") else "" end)] | join("\u001f")' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    done < <(jq -r '.providers | to_entries[] | .key as $p | .value as $v | (if ($v|type)=="object" then ($v.models // {}) else {} end) | to_entries[] | [$p, .key, (.value // 0 | tostring), (if (.value|type)=="object" then (.value.class // "") else "" end), (if (.value|type)=="object" then (.value.max_probe_ceiling // "") else "" end), (if (.value|type)=="object" then (.value.audition // false) else false end)] | join("\u001f")' "$SEAT_CAPS_JSON" 2>/dev/null || true)
 
     SEAT_FREE_ORDER=$(jq -r '.free_providers_in_order // [] | join(" ")' "$SEAT_CAPS_JSON" 2>/dev/null || true)
     SEAT_PREPAID_ORDER=$(jq -r '.prepaid_providers_in_order // [] | join(" ")' "$SEAT_CAPS_JSON" 2>/dev/null || true)
@@ -3618,6 +3643,16 @@ pick_seat() {
                 seat_log "seat $p/$m skipped (cursor overage model is ${SEAT_CURSOR_OVERAGE_MODEL:-cursor-grok-4.6-high} — fleet-ops#1167)"
                 continue
             fi
+        fi
+        # fleet-ops#3322: audition lane. A seat carrying audition: true (injected
+        # by the intake tick from config/model-candidates.json) is only eligible
+        # for packet_difficulty light — cap 1, 10 sessions / 7d / $1 cost cap.
+        # Skip it for heavy/keystone/senior-review so an unproven candidate
+        # never lands high-stakes work. The count-mode walk honours the same
+        # gate so intake does not claim into an audition-only pool for heavy.
+        if seat_is_audition "$p" "$m" && [[ "$difficulty" != "light" ]]; then
+            seat_log "seat $p/$m skipped (audition seat — light issues only, fleet-ops#3322)"
+            continue
         fi
         if (( need_capable )) && [[ "$capable" != "1" ]]; then
             # fleet-ops#1297: silence the per-seat "not capable for heavy task"

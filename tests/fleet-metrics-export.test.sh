@@ -1923,6 +1923,18 @@ assert result["devin/swe-1-7"]["cost_per_session"] == 0.0
 assert result["opencode/nemotron-3.5-lightning-free"]["cost_per_session"] == 0.0
 print("OK: seat-yield ledger carries rolling cost_per_session (fleet-ops#3323)")
 
+# fleet-ops#3322: cost_usd is the TOTAL cost over the rolling window (not
+# the mean). The audition lane caps total spend at $1, so the intake tick
+# reads cost_usd to enforce that cap. cost_per_session stays for value ranking.
+# devin/glm-5-2: 5 sessions x 0.10 -> cost_usd 0.50
+assert abs(result["devin/glm-5-2"]["cost_usd"] - 0.50) < 1e-9
+assert abs(j["devin/glm-5-2"]["cost_usd"] - 0.50) < 1e-9
+# opencode/mimo-v2.5-free: 10 of 20 sessions at 0.20 -> cost_usd 2.00
+assert abs(result["opencode/mimo-v2.5-free"]["cost_usd"] - 2.00) < 1e-9
+# devin/swe-1-7: no cost -> 0.0
+assert result["devin/swe-1-7"]["cost_usd"] == 0.0
+print("OK: seat-yield ledger carries total cost_usd (fleet-ops#3322)")
+
 # devin/swe-1-7: 25 sessions, last-20 all PR -> 1.0
 assert "devin/swe-1-7" in result
 assert result["devin/swe-1-7"]["yield"] == 1.0
@@ -1955,6 +1967,18 @@ assert 'fleet_sessions_no_pr_total{seat="opencode/mimo-v2.5-free"} 15' in out
 assert out.count("# HELP fleet_seat_yield") == 1
 assert out.count("# HELP fleet_sessions_no_pr_total") == 1
 print("OK: _emit_seat_yield HELP/TYPE once and per-seat series")
+
+# fleet-ops#3322: fleet_sessions_to_pr_pct emitted as a percentage (0..100),
+# HELP/TYPE once, and does NOT replace fleet_sessions_no_pr_total.
+assert "# HELP fleet_sessions_to_pr_pct" in out
+assert "# TYPE fleet_sessions_to_pr_pct gauge" in out
+assert 'fleet_sessions_to_pr_pct{seat="devin/glm-5-2"} 50.00' in out
+assert 'fleet_sessions_to_pr_pct{seat="opencode/mimo-v2.5-free"} 25.00' in out
+assert 'fleet_sessions_to_pr_pct{seat="devin/swe-1-7"} 100.00' in out
+assert out.count("# HELP fleet_sessions_to_pr_pct") == 1
+# Both families coexist — the new metric does not replace the old one.
+assert 'fleet_sessions_no_pr_total{seat="opencode/mimo-v2.5-free"} 15' in out
+print("OK: fleet_sessions_to_pr_pct emitted alongside fleet_sessions_no_pr_total (fleet-ops#3322)")
 
 # _parse_session_file handles bare string content and missing PR.
 no_pr_path = session("devin", "glm-5-2", "04:00:00", False)

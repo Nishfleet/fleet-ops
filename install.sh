@@ -476,6 +476,14 @@ process_entry() {
 
   if [ "$skip" = 1 ]; then return 0; fi
 
+  # fleet-ops#3322: model-candidates.json is a GENERATED, gitignored file
+  # (lib/weekly-fleet-review-model-discovery.py). Skip both drift and install
+  # when the source does not exist yet (fresh checkout, CI, pre-first-WFR) so
+  # a weekly-produced file never fails install.sh or drift checks.
+  if [[ "$src" == config/model-candidates.json && ! -f "$repo" ]]; then
+    return 0
+  fi
+
   if [ "$mode" = "--" ]; then
     # Drift detection: symlink to repo OR byte-identical regular file = OK.
     if [ -L "$dest" ]; then
@@ -560,7 +568,7 @@ process_entry() {
     # template/extensions/** get the same copy semantics (fleet-ops#3263):
     # the providers import ../seat-health.ts relative to their own file, and
     # a repo-tree symlink would resolve that against a nonexistent sibling.
-    if [[ "$src" == config/seat-caps.json ]] || is_extension_src "$src"; then
+    if [[ "$src" == config/seat-caps.json ]] || [[ "$src" == config/model-candidates.json ]] || is_extension_src "$src"; then
         # fleet-ops#3125/#3262: when the cap map changes, reset learned AIMD
         # state so a stale learned cap / bench from the old config never pins
         # a raised declared floor or ceiling (e.g. devin hard_ceiling removal

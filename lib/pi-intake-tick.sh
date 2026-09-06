@@ -570,6 +570,221 @@ if {
 fi
 echo "reconciler-caught: delta=$reconciler_caught total=$_reconciler_new_total repo=$REPO prom=$reconciler_prom"
 
+# fleet-ops#3322: audition lane. Inject new candidate seats from
+# config/model-candidates.json (generated weekly by the WFR model-discovery
+# pre-pass) into the LIVE caps as cap 1, audition: true, light issues only.
+# Retire audition seats at 10 sessions / 7 days / $1 cost cap, and file a
+# verdict issue (promote or audition-failed) via fleet-issue-file so a worker
+# lands the config/seat-caps.json PR. No new organ — reuses the existing
+# fleet-issue-file filer and the existing yield ledger. Prepaid-quota
+# providers are never auditioned (defence in depth at read time).
+MODEL_CANDIDATES_JSON="${PI_MODEL_CANDIDATES_JSON:-$HOME/.local/state/pi-packet/model-candidates.json}"
+AUDITION_DROPPED_JSON="${PI_AUDITION_DROPPED_JSON:-$HOME/.local/state/pi-packet/audition-dropped.json}"
+AUDITION_MAX_SESSIONS="${PI_AUDITION_MAX_SESSIONS:-10}"
+AUDITION_MAX_AGE_S="${PI_AUDITION_MAX_AGE_S:-604800}"   # 7 days
+AUDITION_MAX_COST_USD="${PI_AUDITION_MAX_COST_USD:-1}"
+AUDITION_RETRY_DAYS="${PI_AUDITION_RETRY_DAYS:-30}"
+_ISSUE_FILE_BIN="${FLEET_ISSUE_FILE:-$(cd "$_tick_dir/.." && pwd)/bin/fleet-issue-file}"
+[[ -x "$_ISSUE_FILE_BIN" ]] || _ISSUE_FILE_BIN="${FLEET_ISSUE_FILE:-$HOME/.local/bin/fleet-issue-file}"
+
+audition_inject_and_retire() {
+    [[ -f "$MODEL_CANDIDATES_JSON" ]] || return 0
+    [[ -f "$SEAT_CAPS_JSON" ]] || return 0
+    command -v jq >/dev/null 2>&1 || return 0
+
+    # Load the prepaid provider set from the LIVE caps (defence in depth:
+    # the candidate file excludes prepaid, but the tick re-checks here so a
+    # stale or hand-edited candidate file can never audition a prepaid seat).
+    local prepaid
+    prepaid=$(jq -r '.prepaid_providers_in_order // [] | .[]' "$SEAT_CAPS_JSON" 2>/dev/null)
+
+    # Load the dropped-candidate cooldown map ({provider/model: drop_date}).
+    # A candidate dropped < AUDITION_RETRY_DAYS ago is not re-injected.
+    local now_epoch
+    now_epoch=$(date +%s)
+    local _dropped_json=""
+    [[ -f "$AUDITION_DROPPED_JSON" ]] && _dropped_json=$(cat "$AUDITION_DROPPED_JSON" 2>/dev/null || true)
+
+    local now_iso
+    now_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+    # --- Phase 1: inject new candidates ---
+    # For each candidate not already in the LIVE caps and not prepaid, inject
+    # it as a new provider entry with cap 1, audition: true, and a model row
+    # with cap 1, audition: true. The LIVE caps file is the only place these
+    # live until promoted (config/seat-caps.json is untouched by the tick).
+    local injected=0
+    local tmp_caps
+    tmp_caps=$(mktemp)
+    # Start from the current LIVE caps; jq merges each candidate in.
+    cp -f "$SEAT_CAPS_JSON" "$tmp_caps"
+
+    while IFS=$'\t' read -r cp cm cc; do
+        [[ -n "$cp" && -n "$cm" ]] || continue
+        # Skip prepaid providers (never auditioned — standing rule).
+        if [[ -n "$prepaid" ]] && grep -qx "$cp" <<<"$prepaid"; then
+            echo "audition: skip $cp/$cm (prepaid-quota provider — never auditioned)"
+            continue
+        fi
+        # Skip if provider already in the LIVE caps (already wired or auditioning).
+        if jq -e --arg p "$cp" '.providers[$p]' "$tmp_caps" >/dev/null 2>&1; then
+            continue
+        fi
+        # Skip if dropped < AUDITION_RETRY_DAYS ago.
+        local _ck="$cp/$cm" _drop_ts _drop_age
+        if [[ -n "$_dropped_json" ]]; then
+            _drop_ts=$(printf '%s' "$_dropped_json" | jq -r --arg k "$_ck" '.[$k] // empty' 2>/dev/null || true)
+            if [[ "$_drop_ts" =~ ^[0-9]+$ ]]; then
+                _drop_age=$(( now_epoch - _drop_ts ))
+                if (( _drop_age < AUDITION_RETRY_DAYS * 86400 )); then
+                    echo "audition: skip $cp/$cm (dropped ${_drop_age}s ago, retry in $(( AUDITION_RETRY_DAYS * 86400 - _drop_age ))s)"
+                    continue
+                fi
+            fi
+        fi
+        # Inject: provider entry with cap 1, class, audition: true, and the
+        # model row with cap 1, audition: true. audition_started records the
+        # injection time for the 7-day age cap.
+        local class="${cc:-metered}"
+        [[ "$class" == "subscription" ]] && class="prepaid-quota"
+        # Defence in depth: never inject a prepaid-quota class candidate.
+        [[ "$class" == "prepaid-quota" ]] && { echo "audition: skip $cp/$cm (class prepaid-quota — never auditioned)"; continue; }
+        local next_caps
+        next_caps=$(jq --arg p "$cp" --arg m "$cm" --arg cls "$class" --arg ts "$now_iso" '
+            .providers[$p] = {
+                "cap": 1,
+                "class": $cls,
+                "audition": true,
+                "audition_started": $ts,
+                "models": { ($m): { "cap": 1, "audition": true } }
+            }
+        ' "$tmp_caps" 2>/dev/null) || continue
+        printf '%s' "$next_caps" > "$tmp_caps"
+        echo "audition: injected $cp/$cm (cap 1, class $class, light only, $now_iso)"
+        injected=$((injected + 1))
+    done < <(jq -r '.[] | [.provider, .model, .class] | @tsv' "$MODEL_CANDIDATES_JSON" 2>/dev/null || true)
+
+    # --- Phase 2: retire audition seats that hit a cap ---
+    # Walk the LIVE caps for providers/models carrying audition: true, read
+    # the yield ledger for their session count and cost, and retire any that
+    # hit 10 sessions / 7 days / $1 cost. A retired seat is removed from the
+    # LIVE caps and a verdict issue is filed via fleet-issue-file.
+    local retired=0
+    local yield_json=""
+    [[ -f "$SEAT_YIELD_JSON" ]] && yield_json=$(cat "$SEAT_YIELD_JSON" 2>/dev/null || true)
+
+    # Collect audition seats from the (potentially updated) tmp caps.
+    local audition_seats=""
+    audition_seats=$(jq -r '
+        .providers | to_entries[] | .key as $p | .value as $v |
+        (if ($v|type) == "object" then ($v.models // {}) else {} end) | to_entries[] |
+        select( ((.value|type) == "object" and .value.audition == true) or (($v.audition // false) == true) ) |
+        "\($p)\t\(.key)\t\($v.audition_started // "")"
+    ' "$tmp_caps" 2>/dev/null || true)
+
+    # Fleet median yield (for the promote threshold). Computed from the yield
+    # ledger across all seats with >= 20 sessions (non-provisional).
+    local fleet_median=0.0
+    if [[ -n "$yield_json" ]]; then
+        fleet_median=$(printf '%s' "$yield_json" | jq -r '
+            [to_entries[] | select(.value.provisional != true) | .value.yield]
+            | if length > 0 then sort | .[length / 2 | floor] else 0.0 end
+        ' 2>/dev/null || echo 0.0)
+    fi
+
+    while IFS=$'\t' read -r rp rm rstarted; do
+        [[ -n "$rp" && -n "$rm" ]] || continue
+        local _sessions=0 _cost=0.0 _yield=0.5 _age=0
+        if [[ -n "$yield_json" ]]; then
+            _sessions=$(printf '%s' "$yield_json" | jq -r --arg k "$rp/$rm" '.[$k].sessions // 0' 2>/dev/null || echo 0)
+            _cost=$(printf '%s' "$yield_json" | jq -r --arg k "$rp/$rm" '.[$k].cost_usd // (.cost_per_session // 0) * (.sessions // 0)' 2>/dev/null || echo 0)
+            _yield=$(printf '%s' "$yield_json" | jq -r --arg k "$rp/$rm" '.[$k].yield // 0.5' 2>/dev/null || echo 0.5)
+        fi
+        if [[ "$rstarted" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T ]]; then
+            local _started_epoch
+            _started_epoch=$(date -u -d "$rstarted" +%s 2>/dev/null || echo 0)
+            [[ "$_started_epoch" =~ ^[0-9]+$ ]] && _age=$(( now_epoch - _started_epoch ))
+        fi
+        # Retirement thresholds: 10 sessions OR 7 days OR $1 cost.
+        if (( _sessions >= AUDITION_MAX_SESSIONS )) \
+            || (( _age >= AUDITION_MAX_AGE_S )) \
+            || awk -v c="$_cost" -v m="$AUDITION_MAX_COST_USD" 'BEGIN{exit !(c+0 >= m+0)}'; then
+            # Retire: remove the model from the provider, and if the provider
+            # has no models left, remove the provider entirely. Write via a
+            # temp file so tmp_caps (the path) is not clobbered by the jq
+            # output before the write.
+            local _retire_tmp
+            _retire_tmp=$(mktemp)
+            if jq --arg p "$rp" --arg m "$rm" '
+                del(.providers[$p].models[$m])
+                | if (.providers[$p].models | length) == 0 then del(.providers[$p]) else . end
+            ' "$tmp_caps" > "$_retire_tmp" 2>/dev/null; then
+                mv -f "$_retire_tmp" "$tmp_caps"
+            else
+                rm -f "$_retire_tmp"
+            fi
+            # Record the drop date for the 30-day cooldown.
+            _audition_record_drop "$rp/$rm" "$now_epoch"
+            # File the verdict issue via fleet-issue-file (reuse existing organ).
+            _audition_file_verdict "$rp" "$rm" "$_yield" "$_sessions" "$_cost" "$fleet_median"
+            echo "audition: retired $rp/$rm (sessions=$_sessions age=${_age}s cost=\$$_cost yield=$_yield fleet_median=$fleet_median)"
+            retired=$((retired + 1))
+        fi
+    done <<<"$audition_seats"
+
+    # Commit the updated LIVE caps atomically (only if changed).
+    if ! cmp -s "$tmp_caps" "$SEAT_CAPS_JSON"; then
+        mv -f "$tmp_caps" "$SEAT_CAPS_JSON"
+        # Force seat-lib to reload caps on the next pick_seat call.
+        _seat_caps_loaded=0
+    else
+        rm -f "$tmp_caps"
+    fi
+
+    if (( injected > 0 || retired > 0 )); then
+        echo "audition: injected=$injected retired=$retired"
+    fi
+}
+
+# Record a dropped candidate in the cooldown map.
+_audition_record_drop() {
+    local key="$1" ts="$2"
+    [[ -n "$key" ]] || return 0
+    local tmp
+    tmp=$(mktemp)
+    local cur=""
+    [[ -f "$AUDITION_DROPPED_JSON" ]] && cur=$(cat "$AUDITION_DROPPED_JSON" 2>/dev/null || true)
+    if [[ -z "$cur" ]]; then cur='{}'; fi
+    printf '%s' "$cur" | jq --arg k "$key" --argjson t "$ts" '.[$k] = $t' > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
+    mv -f "$tmp" "$AUDITION_DROPPED_JSON"
+}
+
+# File a promote or audition-failed verdict issue via fleet-issue-file.
+# Reuses the existing organ (fleet-ops#3322 orchestrator decision Q2: option c).
+_audition_file_verdict() {
+    local p="$1" m="$2" y="$3" s="$4" c="$5" median="$6"
+    [[ -x "$_ISSUE_FILE_BIN" ]] || return 0
+    local title body verdict
+    if awk -v y="$y" -v m="$median" 'BEGIN{exit !(y+0 >= m+0)}'; then
+        verdict="promote"
+        title="promote $p/$m into seat-caps (yield $(printf '%.0f' "$(awk "BEGIN{print $y*100}")")%, cost \$$c)"
+        body="Audition complete (fleet-ops#3322). The seat $p/$m reached $s sessions with yield $(printf '%.1f' "$(awk "BEGIN{print $y*100}")")% (fleet median $(printf '%.1f' "$(awk "BEGIN{print $median*100}")")%) and total cost \$$c. Promote: add $p/$m to config/seat-caps.json with an appropriate cap. Numbers: sessions=$s yield=$y cost_usd=$c fleet_median=$median."
+    else
+        verdict="audition-failed"
+        title="drop $p/$m — audition-failed: yield $(printf '%.0f' "$(awk "BEGIN{print $y*100}")")%, cost \$$c"
+        body="Audition complete (fleet-ops#3322). The seat $p/$m reached $s sessions with yield $(printf '%.1f' "$(awk "BEGIN{print $y*100}")")% (fleet median $(printf '%.1f' "$(awk "BEGIN{print $median*100}")")%) and total cost \$$c. Drop: add a dated \`audition-failed:\` note to config/seat-caps.json so $p/$m is not re-tried for 30 days. Numbers: sessions=$s yield=$y cost_usd=$c fleet_median=$median."
+    fi
+    # File via fleet-issue-file with the agent-ready label so a worker picks
+    # it up. Best-effort: a filing failure is logged but does not block the
+    # tick (the retirement already happened in the LIVE caps).
+    if ! "$_ISSUE_FILE_BIN" file --repo fleet-ops --title "$title" --body "$body" --label agent-ready 2>&1; then
+        echo "audition: WARNING — fleet-issue-file failed for $verdict $p/$m (retirement still committed)" >&2
+    fi
+}
+
+# Run the audition lane (fail-open: any error is logged and the tick continues).
+audition_inject_and_retire 2>&1 || echo "audition: non-fatal error (fail-open)"
+
 # Step 2: capacity (P4-A — fleet-ops config/seat-caps.json, not a hardcoded cap)
 caps_sum=$(total_seat_cap 2>/dev/null || echo 0)
 ram_cap=$(ram_governor_cap 2>/dev/null || echo 9999)

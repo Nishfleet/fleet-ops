@@ -523,6 +523,16 @@ HELP_SNPR = (
     "last-20 window that did not produce a PR URL, per seat (fleet-ops#3250)."
 )
 TYPE_SNPR = "# TYPE fleet_sessions_no_pr_total gauge"
+# fleet-ops#3322: per-seat sessions-to-PR percentage (0..100). The issue's
+# moves: sessions_to_pr_pct metric. Computed from the same rolling window as
+# fleet_seat_yield; emitted as a percentage so the fleet-landing-watch measure
+# and the audition verdict share one scale. Does NOT replace
+# fleet_sessions_no_pr_total — both are emitted.
+HELP_STPR = (
+    "# HELP fleet_sessions_to_pr_pct Rolling last-20 issue-work sessions PR "
+    "yield as a percentage (0..100) per seat (fleet-ops#3322)."
+)
+TYPE_STPR = "# TYPE fleet_sessions_to_pr_pct gauge"
 
 # Self-maintenance repo set (fleet-ops#1136). PR-tunable; never hardcoded in
 # the classifier. Default ["fleet-ops"] when the file is missing/unparseable
@@ -1079,6 +1089,12 @@ def _compute_seat_yield():
         cost_per_session = (
             sum(e.get("cost", 0.0) for e in window) / total if total > 0 else 0.0
         )
+        # fleet-ops#3322: total audition cost (sum over the rolling window).
+        # The audition lane caps total spend at $1; cost_usd is the figure the
+        # intake tick reads to enforce that cap. cost_per_session stays for the
+        # value-ranking path (fleet-ops#3323) — both are written so existing
+        # consumers are unaffected.
+        cost_usd = sum(e.get("cost", 0.0) for e in window) if total > 0 else 0.0
         result[seat] = {
             "yield": y,
             "sessions": total,
@@ -1086,6 +1102,7 @@ def _compute_seat_yield():
             "no_pr_count": no_pr,
             "provisional": provisional,
             "cost_per_session": cost_per_session,
+            "cost_usd": cost_usd,
         }
 
     try:
@@ -1110,6 +1127,9 @@ def _emit_seat_yield(lines, seat_yield):
     lines.append("")
     lines.append(HELP_SNPR)
     lines.append(TYPE_SNPR)
+    lines.append("")
+    lines.append(HELP_STPR)
+    lines.append(TYPE_STPR)
     for seat in sorted(seat_yield):
         y = seat_yield[seat]
         lbl = _prom_label(seat)
@@ -1117,6 +1137,9 @@ def _emit_seat_yield(lines, seat_yield):
         lines.append(
             f'fleet_sessions_no_pr_total{{seat="{lbl}"}} {y["no_pr_count"]}'
         )
+        # fleet-ops#3322: sessions-to-PR percentage (0..100).
+        pct = (y["yield"] * 100.0) if isinstance(y.get("yield"), (int, float)) else 0.0
+        lines.append(f'fleet_sessions_to_pr_pct{{seat="{lbl}"}} {pct:.2f}')
 
 
 def _day_from_iso(s):
