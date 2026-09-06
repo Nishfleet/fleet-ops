@@ -47,6 +47,12 @@ bash "$here/fleet-seat-comeback-release.test.sh"
 # ledger + scratch caps).
 bash "$here/seat-lib-retire.test.sh"
 
+# fleet-ops#3928: the seat_log prod-watch.log write guard (test ancestry
+# forces the journal branch for the production log path) and the
+# SEAT_LOG_FILE scratch seam are the isolation half of the same path.
+# Hosted here so the P14 closure reaches it without a ci.yml edit.
+bash "$here/seat-log-prod-write-guard.test.sh"
+
 [[ -f "$bin" ]] || fail "fleet-seat-recovery not found: $bin"
 command -v jq >/dev/null || fail "jq required"
 

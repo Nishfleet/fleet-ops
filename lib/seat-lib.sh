@@ -43,7 +43,10 @@ export HOME="${HOME:-/home/nish}"
 STATE_DIR="${PI_PACKET_STATE:-$HOME/.local/state/pi-packet}"
 ATTEMPTS_DIR="$STATE_DIR/attempts"
 ACTIVE_SEATS_DIR="$STATE_DIR/active-seats"
-LOG_FILE="$STATE_DIR/watch.log"
+# SEAT_LOG_FILE is the direct seat_log target override (fleet-ops#3928): a
+# test harness can pin the audit line to its own scratch file instead of
+# redirecting the whole PI_PACKET_STATE dir.
+LOG_FILE="${SEAT_LOG_FILE:-$STATE_DIR/watch.log}"
 # Worker packet dir (pi-issue-run reads <inst>.in here; intake writes it).
 # Used by count_active_heavy to read each active unit's difficulty line.
 PI_ISSUES_DIR="${PI_ISSUES_DIR:-$HOME/.local/state/pi-issues}"
@@ -84,6 +87,36 @@ mkdir -p "$ATTEMPTS_DIR" "$ACTIVE_SEATS_DIR"
 # Runtime probe for the systemd-cat fallback (fleet-ops#3272).
 _SEAT_SYSTEMD_CAT="$(command -v systemd-cat 2>/dev/null || true)"
 
+# fleet-ops#3928: is this process tree rooted in a test suite? Walk the
+# ancestor chain (bounded) looking for a tests/*.test.sh invocation in an
+# ancestor's cmdline. A test that forgets to redirect PI_PACKET_STATE /
+# SEAT_LOG_FILE otherwise resolves LOG_FILE to the live state dir, and with
+# ~/.config/logrotate.conf present on this host _seat_log_uses_file would
+# then append test noise to the real watch.log (2026-09-06: a
+# fleet-seat-comeback-release.test.sh run in a worker worktree parked
+# phantom 'corpse-retired' lines for live seat names into the production
+# log, costing the orchestrator three checks to disprove a retirement).
+# Result is cached per process; the tree does not change mid-run. Fails open
+# to "not under test" (current behaviour) when the ancestor walk is not
+# possible, so a missing /proc or ps can never break a production caller.
+_SEAT_LOG_UNDER_TEST=""
+_seat_log_under_test() {
+    if [[ -z "$_SEAT_LOG_UNDER_TEST" ]]; then
+        _SEAT_LOG_UNDER_TEST=1
+        local pid="$PPID" depth=0 cmd next
+        while (( depth < 6 )) && [[ "$pid" =~ ^[0-9]+$ ]] && (( pid > 1 )); do
+            cmd=$(ps -o args= -p "$pid" 2>/dev/null) || break
+            case "$cmd" in
+                *.test.sh*) _SEAT_LOG_UNDER_TEST=0; break ;;
+            esac
+            next=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d '[:space:]') || break
+            pid="$next"
+            depth=$((depth + 1))
+        done
+    fi
+    return "$_SEAT_LOG_UNDER_TEST"
+}
+
 # Decide whether the durable log goes to the watch.log file or to the journal.
 # File is used when the user-level logrotate config is present (so the file is
 # kept small), or when the LOG_FILE is not the production watch.log (i.e., a
@@ -91,6 +124,14 @@ _SEAT_SYSTEMD_CAT="$(command -v systemd-cat 2>/dev/null || true)"
 # to systemd-cat so the log lands in journald's own rotation instead of an
 # unbounded flat file.
 _seat_log_uses_file() {
+    local prod_state="$HOME/.local/state/pi-packet"
+    # fleet-ops#3928 first: under a test harness the production watch.log is
+    # never appended — the line takes the journal branch instead (same
+    # observable contract as the no-logrotate fallback), so no suite can leak
+    # into the live audit log even if every redirect is forgotten.
+    case "$LOG_FILE" in
+        "$prod_state"/*) _seat_log_under_test && return 1 ;;
+    esac
     if [[ -n "${SEAT_LOG_FORCE_FILE:-}" ]]; then
         return 0
     fi
@@ -98,7 +139,6 @@ _seat_log_uses_file() {
     if [[ -f "$logrotate_conf" ]]; then
         return 0
     fi
-    local prod_state="$HOME/.local/state/pi-packet"
     case "$LOG_FILE" in
         "$prod_state"/*) return 1 ;;
         *) return 0 ;;

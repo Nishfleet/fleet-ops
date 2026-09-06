@@ -42,6 +42,11 @@ command -v jq >/dev/null || fail "jq required"
 scratch="$(mktemp -d -t seat-lib-retire.XXXXXX)"
 trap 'rm -rf "$scratch"' EXIT INT TERM
 
+# fleet-ops#3928: seat_log must never reach the live watch.log from a test.
+# Pin the audit line to the harness scratch file (the per-phase
+# PI_PACKET_STATE exports below still isolate attempts/active-seats state).
+export SEAT_LOG_FILE="$scratch/watch.log"
+
 export PI_SEAT_LIB_CHECK_SYSTEMD=0
 export PI_SEAT_NOUSABLE_COOLDOWN_S=0
 
@@ -120,9 +125,9 @@ rc=$?
 set -e
 [[ "$rc" == "1" ]] || fail "retired: pick_seat must refuse the retired seat (rc=1), got rc=$rc"
 [[ -z "$out" ]] || fail "retired: pick_seat must print nothing, got: $out"
-grep -q "NO USABLE SEAT" "$PI_PACKET_STATE/watch.log" \
+grep -q "NO USABLE SEAT" "$SEAT_LOG_FILE" \
   || fail "retired: must log the loud NO USABLE SEAT line"
-grep -q "parked" "$PI_PACKET_STATE/watch.log" \
+grep -q "parked" "$SEAT_LOG_FILE" \
   || fail "retired: log must name the park (health_class=parked)"
 ok "2: ledger at count>=20 -> retire -> pick_seat refuses the seat (log names the park)"
 

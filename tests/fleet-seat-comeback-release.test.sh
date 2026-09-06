@@ -114,6 +114,11 @@ mkdir -p "$SEATDIR"
 cleanup() { rm -rf "$TMPD"; }
 trap cleanup EXIT INT TERM
 
+# fleet-ops#3928: every `bash "$BIN"` below inherits this. The bin sources
+# seat-lib, and its retire path (write_parked_ledger -> seat_log) must never
+# append to the live watch.log — pin the audit line to the harness scratch.
+export SEAT_LOG_FILE="$TMPD/watch.log"
+
 # --- stub pi: SUCCESS stub exits 0 with "OK", FAILURE stub exits 1 -------
 cat > "$TMPD/pi-tool-ok" <<'EOF'
 #!/usr/bin/env bash
