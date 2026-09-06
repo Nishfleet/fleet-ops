@@ -23,7 +23,7 @@ Description=Fleet orchestrator heartbeat (every 60 min, off-peak minute :17)
 # sits in the gap.
 
 [Timer]
-OnCalendar=*:17/60
+OnCalendar=*:17:00
 RandomizedDelaySec=60
 Persistent=true
 AccuracySec=15s

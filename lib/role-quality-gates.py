@@ -75,6 +75,21 @@ NON_ROLE_UNIT_PREFIXES = (
     # prompt, produces no work items). Deterministic plumbing, not a role;
     # its gate is tests/fleet-worktree-reaper.test.sh.
     "fleet-worktree-reaper",
+    # fleet-ops#3270: the four heartbeat sections that only read GitHub
+    # state (lifecycle-label-sweep, merged-pr observe-to-close,
+    # close-duplicates, loose-ends canary) moved behind webhook triggers.
+    # Each is a webhook-triggered oneshot that wraps an existing helper
+    # (lifecycle-label-sweep, fleet-merged-pr-close,
+    # fleet-issue-file close-duplicates, fleet-loose-ends-canary); they
+    # run no model, own no prompt and produce no work items — same
+    # dispatch-plumbing class as fleet-worktree-reaper above. Their own
+    # gates are the per-helper tests (tests/lifecycle-label-sweep.test.sh,
+    # tests/fleet-merged-pr-close.test.sh, tests/fleet-loose-ends-canary.
+    # test.sh) plus the absent() rule on each unit's heartbeat metric.
+    "lifecycle-label-sweep",
+    "fleet-merged-pr-close",
+    "fleet-issue-close-duplicates",
+    "fleet-loose-ends-canary",
     # fleet-ops#2421: fleet-seat-comeback-release is plumbing (re-probes a
     # walled seat whose wall clock has passed and unwalls a provably-usable
     # one), not a work-producing role — it runs no model of its own, owns no
