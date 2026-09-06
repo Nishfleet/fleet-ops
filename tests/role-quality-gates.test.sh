@@ -380,6 +380,16 @@ esac
 exit 0
 FAKE
 chmod +x "$scratch/fakebin/gh"
+# fleet-ops#3445: the auditor files via bin/fleet-issue-file, which mints a
+# worker App token via NISHFLEET_WORKER_TOKEN_BIN (default
+# $HOME/.local/bin/worker-token). The test's HOME is a scratch dir with no
+# real token, so stub the mint to a fake token — gh is stubbed anyway.
+cat >"$scratch/fakebin/worker-token" <<'EOF'
+#!/usr/bin/env bash
+printf 'export GH_TOKEN=fake-test-token-cccccccccccccccc\n'
+EOF
+chmod +x "$scratch/fakebin/worker-token"
+export NISHFLEET_WORKER_TOKEN_BIN="$scratch/fakebin/worker-token"
 
 run_audit() {
   set +e

@@ -112,6 +112,7 @@ run_script() {
   printf '#!/bin/sh\nexit %s\n' "$verify_rc" >"$scratch/verify"
   chmod +x "$scratch/verify"
   WRANGLER_BIN="$scratch/wrangler" \
+    GH_TOKEN="fake-test-token-cccccccccccccccc" \
     env "PATH=$scratch:$ghbin:$PATH" \
     "$patched" 2>&1
 }

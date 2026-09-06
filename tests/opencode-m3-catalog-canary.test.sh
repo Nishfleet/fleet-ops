@@ -30,6 +30,17 @@ trap 'rm -rf "$scratch"' EXIT INT TERM
 
 export HOME="$scratch/home"
 mkdir -p "$HOME"
+# fleet-ops#3445: the canary mints a worker App token via
+# NISHFLEET_WORKER_TOKEN_BIN (default $HOME/.local/bin/worker-token). The
+# test's HOME is a scratch dir with no real token, so stub the mint to a
+# fake token — the test stubs gh anyway, so no real GitHub write happens.
+mkdir -p "$scratch/bin"
+cat >"$scratch/bin/worker-token" <<'EOF'
+#!/usr/bin/env bash
+printf 'export GH_TOKEN=fake-test-token-cccccccccccccccc\n'
+EOF
+chmod +x "$scratch/bin/worker-token"
+export NISHFLEET_WORKER_TOKEN_BIN="$scratch/bin/worker-token"
 triage="$scratch/triage.md"
 : >"$triage"
 export FLEET_HEARTBEAT_TRIAGE="$triage"
