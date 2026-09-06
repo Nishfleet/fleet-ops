@@ -1080,6 +1080,19 @@ fixtures = {
         "http_status": 429, "health_class": "rate_limited", "seat_dead": False,
         "usable_at": iso(-300), "bench_until": None,
     },
+    # 9. auditor 2026-09-06: a PHANTOM key (provider/model pair absent from
+    #    seat-caps.json, e.g. the retired openrouter/deepseek/deepseek-v4-pro-0813
+    #    that stayed in the ledger) must NOT count as comeback-overdue. The
+    #    releaser refuses to probe a phantom (fleet-ops#3661 _seat_key_in_caps),
+    #    so it can never be re-observed — counting it would re-fire the OVERDUE
+    #    alarm forever and stall the alert-repair chain. Mirror the releaser's
+    #    guard here: a seat absent from seat-caps.json is not an overdue
+    #    comeback, it is phantom/legacy garbage.
+    "openrouter__deepseek_deepseek-v4-pro-0813.json": {
+        "provider": "openrouter", "model": "deepseek/deepseek-v4-pro-0813",
+        "http_status": 402, "health_class": "quota_exhausted", "seat_dead": False,
+        "usable_at": PAST, "bench_until": None,
+    },
 }
 for name, body in fixtures.items():
     (Path(seat_dir) / name).write_text(json.dumps(body))
@@ -1116,7 +1129,9 @@ assert not any(i.startswith("opencode__nemotron") for i in ids), (
 assert not any("grok-4.5" in i for i in ids), "spawn-bench leaked into comeback"
 assert not any(i.startswith("test__") for i in ids), "test__ leaked into comeback"
 assert not any("muse-spark" in i for i in ids), "corpse leaked into comeback"
-print("OK: _read_comeback_overdue counts past-wall seats, excludes bench/test/corpse + mid-cycle (<1 interval)")
+assert not any("deepseek-v4-pro-0813" in i for i in ids), \
+    "phantom key (absent from seat-caps.json) leaked into comeback"
+print("OK: _read_comeback_overdue counts past-wall seats, excludes bench/test/corpse + mid-cycle (<1 interval) + phantom keys")
 
 # --- availability rollup: released seats count healthy ---
 # Seed every enrolled provider (cap>0) with a healthy fixture ledger, then

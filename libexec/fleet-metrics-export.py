@@ -2859,6 +2859,20 @@ def _read_comeback_overdue():
     if not SEAT_LEDGER.is_dir():
         return 0, seats
     now = time.time()
+    # fleet-ops#3661 (mirrored): exclude PHANTOM keys. The releaser
+    # (bin/fleet-seat-comeback-release) refuses a provider/model pair that is
+    # not a real seat in seat-caps.json (fleet-ops#3661 _seat_key_in_caps) — it
+    # never probes one, so a phantom ledger entry can never be re-observed and
+    # would trip this OVERDUE alarm forever (lived 2026-09-06: the now-retired
+    # openrouter/deepseek/deepseek-v4-pro-0813 ledger entry was counted overdue
+    # for ~2h, re-firing FleetSeatComebackOverdue every 6h and stalling the
+    # alert-repair chain past CLOCK_RUN). Mirror the releaser's guard here so a
+    # phantom can never permanently alarm: a seat absent from seat-caps.json is
+    # not enrollable, so it is not an overdue *comeback* — it belongs to the
+    # phantom/legacy-garbage class, not the comeback class. When caps are
+    # unreadable, fail open (keep counting — the caps source may be transiently
+    # missing and a real overdue seat must not be masked by that).
+    caps = _seat_caps_model_cap_map()
     try:
         for f in sorted(SEAT_LEDGER.iterdir()):
             if not f.is_file() or "__" not in f.name or not f.name.endswith(".json"):
@@ -2877,6 +2891,12 @@ def _read_comeback_overdue():
                 continue
             if data.get("health_class") == "healthy":
                 continue
+            # Phantom-key exclusion (see docstring). caps is not None <=>
+            # seat-caps.json parsed cleanly on this tick.
+            if caps is not None:
+                key = "{}/{}".format(data.get("provider", ""), data.get("model", ""))
+                if key not in caps:
+                    continue
             end = _seat_wall_end_epoch(data)
             # No wall clock: nothing to come back from — not an overdue
             # comeback (the class is a defensive hold or legacy garbage; the
