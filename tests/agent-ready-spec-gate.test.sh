@@ -58,6 +58,17 @@ set -e
 [[ "$prod_rc" == "0" ]] || fail "product spec must pass (rc=$prod_rc out=$prod_out)"
 ok "(b) product spec (termination:) is accepted"
 
+# (b2) fleet-ops#4091: scout-filed issues use `**keyword:**` bold markdown
+# spec lines. The gate must accept them, not refuse — refusing starves
+# product supply because every scout-candidate fails admission.
+printf '%s\n' '**metric:** Zero dead-ends' '**accept:**' '**termination:** `npm run canary:bet2`' >"$scratch/bold.md"
+set +e
+bold_out=$(python3 "$py" check-body --body "$scratch/bold.md" --repo 0509 2>&1)
+bold_rc=$?
+set -e
+[[ "$bold_rc" == "0" ]] || fail "bold-markdown spec must pass (rc=$bold_rc out=$bold_out)"
+ok "(b2) **keyword:** bold-markdown spec lines are accepted (fleet-ops#4091)"
+
 printf '%s\n' 'The rule-coverage canary found a queued rule.' \
   '- required: a named gate / canary step / CI check' \
   'signal: rule-enforcement/led-work-supply-agent-ready' >"$scratch/control.md"

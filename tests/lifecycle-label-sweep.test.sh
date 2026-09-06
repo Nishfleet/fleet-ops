@@ -152,6 +152,11 @@ FAKE
 chmod +x "$scratch/bin/gh" "$bin"
 export FAKE_DIR="$scratch"
 export PATH="$scratch/bin:$PATH"
+# fleet-ops#3445/#4091: the live script mints an App token and re-exports
+# PATH with /home/nish/.local/bin first when GH_TOKEN is unset, which would
+# bypass the fake gh and hit the real GitHub API. Set a stub GH_TOKEN so
+# the token-minting block is skipped and the fake gh on PATH is used.
+export GH_TOKEN="test-stub"
 export LIFECYCLE_SWEEP_LOCKDIR="$scratch/lock"
 export LIFECYCLE_SWEEP_REPOS="Nishfleet/0509"
 export LIFECYCLE_SWEEP_NOW="2026-08-26T16:00:00Z"
@@ -564,5 +569,38 @@ grep -q -- '--add-label agent-ready' "$scratch/edits.log" \
   || fail "non-umbrella fleet-ops issue must still get agent-ready: $(cat "$scratch/edits.log")"
 ok "non-umbrella unlabeled fleet-ops issue still → agent-ready (guard does not break default)"
 export LIFECYCLE_SWEEP_REPOS="Nishfleet/0509"
+
+# Case 16 (fleet-ops#4091): the bulk `gh issue list` call must NOT request
+# `.comments`. Requesting comments for every open issue in one GraphQL
+# round-trip makes GitHub 504 on repos with many open issues (fleet-ops
+# ~336), skipping the whole repo and starving product supply. Comments are
+# fetched lazily per-issue via `gh issue view --json comments` only where
+# the bounce-cooldown check needs them. Prove both halves:
+#   (a) the list call's --json arg has no `comments` field
+#   (b) a scout-candidate issue that fails the spec gate and is >72h old
+#       triggers exactly one `gh issue view --json comments` call (the
+#       lazy fetch), not zero and not one-per-row-in-the-list.
+: >"$scratch/gh.log"
+cat >"$scratch/list.json" <<'JSON'
+[{"number":7000,"title":"scout-candidate that fails the spec gate","body":"no spec lines here","labels":[{"name":"scout-candidate"}],"createdAt":"2026-08-01T00:00:00Z"}]
+JSON
+# view-7000.json returns an empty comments array (no bounce marker present)
+cat >"$scratch/view-7000.json" <<'JSON'
+{"comments":[]}
+JSON
+: >"$scratch/edits.log"
+out=$("$bin" 2>"$scratch/err16.txt" || true)
+# (a) the list call must not request comments
+if grep -q -- '--json number,title,labels,body,comments,createdAt' "$scratch/gh.log"; then
+  fail "fleet-ops#4091: bulk list must NOT request .comments (causes 504): $(grep 'issue list' "$scratch/gh.log")"
+fi
+grep -q -- '--json number,title,labels,body,createdAt' "$scratch/gh.log" \
+  || fail "fleet-ops#4091: bulk list must still request number,title,labels,body,createdAt: $(grep 'issue list' "$scratch/gh.log")"
+ok "fleet-ops#4091: bulk gh issue list does NOT request .comments (no 504)"
+# (b) the lazy fetch ran exactly once for the scout-candidate bounce check
+view_calls=$(grep -c -- 'issue view 7000' "$scratch/gh.log" || true)
+[[ "$view_calls" -eq 1 ]] \
+  || fail "fleet-ops#4091: expected exactly 1 gh issue view for the bounce check, got $view_calls: $(grep 'issue view' "$scratch/gh.log")"
+ok "fleet-ops#4091: comments fetched lazily once per scout-candidate bounce check (not on bulk list)"
 
 echo "all lifecycle-label-sweep cases passed"
