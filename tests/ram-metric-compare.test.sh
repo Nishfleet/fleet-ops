@@ -96,7 +96,7 @@ ok "3. zero units exit 0 and write state"
 # 4. admission charges per-repo MemoryHigh (fleet-ops#3679), fallback 2.0
 #    The flat ram_gb_per_worker (2.0) is now ONLY the fallback for repos
 #    without a worker_memory row; each active worker is charged its repo's
-#    MemoryHigh (0509 2.5G, fleet-ops 1.5G, heavy 1.0G from #3495) divided
+#    MemoryHigh (0509 2.5G, fleet-ops 2.5G per #3885, heavy 1.0G from #3495) divided
 #    by the fallback. Drift history: #1246 flagged the 1.5 lock stale after
 #    #1168 set 0.6; #1270 locked the assertion at 0.6 and #1284 fixed the
 #    docstrings; #1558 later re-measured down to 0.5; #3679 raised the charge
@@ -118,9 +118,9 @@ grep -q 'per="$SEAT_RAM_GB_PER_WORKER"' "$lib" \
 # ram_charge_gb_for must exist and return the repo's MemoryHigh in GB.
 grep -q 'ram_charge_gb_for()' "$lib" \
     || fail "seat-lib.sh must define ram_charge_gb_for (per-repo charge, fleet-ops#3679)"
-# fleet-ops light MemoryHigh 1536M -> charge 1.5 GB; unknown repo -> fallback 2.0.
+# fleet-ops light MemoryHigh 2560M -> charge 2.5 GB; unknown repo -> fallback 2.0.
 fo_charge=$(SEAT_CAPS_JSON="$caps" bash -c 'source "$0"; _seat_caps_loaded=0; load_seat_caps; ram_charge_gb_for fleet-ops light' "$lib")
-[[ "$fo_charge" == "1.500" ]] || fail "ram_charge_gb_for fleet-ops light want 1.500 got '$fo_charge'"
+[[ "$fo_charge" == "2.500" ]] || fail "ram_charge_gb_for fleet-ops light want 2.500 got '$fo_charge'"
 unk_charge=$(SEAT_CAPS_JSON="$caps" bash -c 'source "$0"; _seat_caps_loaded=0; load_seat_caps; ram_charge_gb_for unknown-repo light' "$lib")
 [[ "$unk_charge" == "2.0" ]] || fail "ram_charge_gb_for unknown-repo light want fallback 2.0 got '$unk_charge'"
 ok "4. admission charges per-repo MemoryHigh (fallback 2.0), no self-calibrate"
