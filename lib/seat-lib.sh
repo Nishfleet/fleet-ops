@@ -1944,8 +1944,18 @@ export_seat_selection_prom() {
 # the ledger, probed, or dispatched. Returns 0 when the pair is a real
 # seat (or the caps file is missing — fail-open so a missing caps file
 # never bricks the ladder); 1 when the pair is not in the caps map.
+#
+# fleet-ops#4018: a model whose id carries a `\.out` suffix is a probe-output
+# filename fragment, NEVER a real seat model. It is rejected BEFORE the
+# caps-missing fail-open: a phantom model read back from pi-seat-health.json
+# / a stray ledger would otherwise pass the fail-open and be re-dispatched,
+# so the seat-health extension re-writes the phantom `<model>-.out.json`
+# ledger and splits the reactive bench off the real ledger (self-
+# perpetuation: live devin__glm-5-2-.out.json / xai-oauth__grok-4-6-.out.json).
 _seat_key_in_caps() {
     local p="$1" m="$2"
+    # Never a real model id — reject regardless of the caps fail-open.
+    [[ "$m" != *.out ]] || return 1
     [[ -f "$SEAT_CAPS_JSON" ]] || return 0
     jq -e --arg p "$p" --arg m "$m" \
         '.providers[$p].models[$m] != null' "$SEAT_CAPS_JSON" >/dev/null 2>&1

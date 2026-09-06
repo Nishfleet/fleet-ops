@@ -247,7 +247,18 @@ def _seat_key_in_caps(provider, model):
     "swe-1-7-.out") and must never be dispatched. Fail-open when the caps
     file is missing/unparseable so a missing caps file never bricks the
     dispatch ladder.
+
+    fleet-ops#4018: a model id carrying a `.out` suffix is a probe-output
+    filename fragment, never a real seat model. Reject it BEFORE the
+    fail-open, so a phantom model read back from pi-seat-health.json (the
+    single-record sidecar _select_seat prioritises) cannot pass the
+    caps-missing fail-open and be re-dispatched as `--model <model>-.out` —
+    the seat-health extension then re-writes the phantom `<model>-.out.json`
+    ledger, self-perpetuating the split (live devin__glm-5-2-.out.json /
+    xai-oauth__grok-4-6-.out.json).
     """
+    if str(model).endswith(".out"):
+        return False
     try:
         caps = json.loads(Path(SEAT_CAPS_JSON).read_text())
     except (OSError, json.JSONDecodeError):

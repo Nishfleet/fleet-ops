@@ -156,8 +156,12 @@ seat_ledger_path() {
 # the ledger. Returns 0 when the pair is a real seat (or the caps file is
 # missing — fail-open so a missing caps file never bricks the watch); 1
 # when the pair is not in the caps map.
+# fleet-ops#4018: reject a `\.out`-suffixed model (probe-output filename
+# fragment) before the fail-open so a missing caps file cannot re-admit a
+# phantom ledger.
 _seat_key_in_caps() {
     local p="$1" m="$2"
+    [[ "$m" != *.out ]] || return 1
     [[ -f "$SEAT_CAPS_JSON" ]] || return 0
     jq -e --arg p "$p" --arg m "$m" \
         '.providers[$p].models[$m] != null' "$SEAT_CAPS_JSON" >/dev/null 2>&1

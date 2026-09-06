@@ -3777,3 +3777,10 @@ bash "$here/seat-spawn-bench-ceiling-false-healthy.test.sh" || fail "seat-spawn-
 # Workers cannot add a P14 line in .github/workflows/ci.yml; this file is the
 # listed CI host for the new spawn-fail corpse bench test.
 bash "$here/seat-spawn-corpse.test.sh" || fail "seat-spawn-corpse tests failed"
+
+# fleet-ops#4018: a probe-output filename fragment (a model id ending in
+# `-.out`) must never land in the seat ledger, even when seat-caps.json is
+# missing (the #3661 fail-open must not re-admit the phantom). Workers cannot
+# add a P14 line in .github/workflows/ci.yml; this file is the listed CI host
+# for the new phantom-.out-suffix bench test.
+bash "$here/seat-phantom-out-suffix.test.sh" || fail "seat-phantom-out-suffix tests failed"
