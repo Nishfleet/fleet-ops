@@ -213,7 +213,7 @@ audit_seats() {
         echo 0
         return 0
     fi
-    local f hc dead usable bench name
+    local f hc dead usable bench fm name
     for f in "$LEDGER_DIR"/*.json; do
         [[ -f "$f" ]] || continue
         name=$(basename "$f" .json)
@@ -221,6 +221,7 @@ audit_seats() {
         dead=$(jq -r '.seat_dead // false' "$f" 2>/dev/null || true)
         usable=$(jq -r '.usable_at // ""' "$f" 2>/dev/null || true)
         bench=$(jq -r '.bench_until // ""' "$f" 2>/dev/null || true)
+        fm=$(jq -r '.failure_mode // ""' "$f" 2>/dev/null || true)
         case "$hc" in
             quota_bench)
                 if [[ -z "$bench" ]]; then
@@ -262,8 +263,23 @@ audit_seats() {
         # false-positive UNJUSTIFIED-WAIT every tick and heartbeat tier 1
         # returned unjustified_rc=1 forever.
         if [[ "$dead" == "true" ]] && [[ "$hc" != "credentials_bad" && "$hc" != "corpse" ]]; then
-            loud "UNJUSTIFIED-WAIT" "seat $name seat_dead=true with health_class=$hc — dead marker without credentials_bad|corpse (clock inconsistent)"
-            n=$((n + 1))
+            # fleet-ops#2724: accept BOTH "credentials_bad" (legacy) and
+            # "corpse" (terminal, post-#2327 escalation in seat-health.ts) as
+            # dead-class states. Without this, every corpse seat tripped a
+            # false-positive UNJUSTIFIED-WAIT every tick and heartbeat tier 1
+            # returned unjustified_rc=1 forever.
+            # Also accept failure_mode=corpse_retired (the corpse_retirement
+            # writer emits health_class=parked + failure_mode=corpse_retired;
+            # the dead marker is the repair-gate clock) and quota_bench with
+            # seat_dead=true when bench_until is present (the case above
+            # validated the clock — seat_dead is a stale carry from the quota
+            # writer, not a terminal state).
+            if [[ "$fm" == "corpse_retired" || "$fm" == "corpse" ]] || { [[ "$hc" == "quota_bench" && -n "$bench" ]]; }; then
+                : # clocked — dead marker is the repair gate (corpse) or bench_until is the clock (quota)
+            else
+                loud "UNJUSTIFIED-WAIT" "seat $name seat_dead=true with health_class=$hc failure_mode=$fm — dead marker without credentials_bad|corpse (clock inconsistent)"
+                n=$((n + 1))
+            fi
         fi
     done
     echo "$n"
