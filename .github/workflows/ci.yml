@@ -211,6 +211,8 @@ jobs:
         bash tests/staleness-checker.test.sh
         bash tests/required-check-purity.test.sh
         bash tests/pi-packet-guard.test.sh
+        bash tests/fleet-work-supply-canary.test.sh
+        bash tests/scout-futility.test.sh
         bash tests/pi-systemd-run.test.sh
         bash tests/pi-intake-run.test.sh
         bash tests/pi-issue-start.test.sh

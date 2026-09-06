@@ -12,6 +12,8 @@
 #   5. Net ready increase resets the counter.
 #   6. Ready at/above the 12h buffer cap does not escalate.
 #   7. Non-zero scout exit does not increment (OnFailure owns crashes).
+#  7b. A green run that filed >= 1 issue resets consecutive_dry even when
+#      the agent-ready runway is flat (candidates in admission, #3547).
 #   8. end without begin creates a snapshot (success-run), does not
 #      increment consecutive_dry, does not file (fleet-ops#1277).
 #   9. Tracker always exits 0 (must not fail the scout unit).
@@ -302,6 +304,36 @@ printf '%s\n' 'before=1' 'consecutive_dry=2' >"$state/0509.state"
   || fail "scenario7: crash must leave consecutive_dry untouched, got '$(state_field consecutive_dry)'"
 ! grep -q 'issue create' "$gh_log" || fail "scenario7: crash must not file futility"
 ok "scenario7: non-zero exit does not increment (OnFailure owns crashes)"
+
+# --- 7b. a run that files issues is not dry (fleet-ops#3547) ----------------
+# The scout files scout-candidate issues (admission, fleet-ops#457), so the
+# agent-ready runway stays flat after a productive run. 2026-09-05: 0509 hit
+# consecutive_dry=7 and was parked while its candidates sat in admission.
+: >"$gh_log"
+: >"$triage"
+echo '[]' >"$open_issues"
+printf '%s\n' 'before=2' 'consecutive_dry=2' >"$state/0509.state"
+export SCOUT_FUTILITY_READY_COUNT=2
+"$bin" begin 0509 >/dev/null
+export SCOUT_FUTILITY_FILED_COUNT=3
+"$bin" end 0509 0 >/dev/null
+[[ "$(state_field consecutive_dry)" == "0" ]] \
+  || fail "scenario7b: green run that filed 3 issues must reset consecutive_dry, got '$(state_field consecutive_dry)'"
+[[ "$(state_field last_filed)" == "3" ]] \
+  || fail "scenario7b: last_filed must record 3, got '$(state_field last_filed)'"
+! grep -q 'SCOUT-FUTILITY' "$triage" || fail "scenario7b: must not LOUD after a productive run"
+export SCOUT_FUTILITY_FILED_COUNT=0
+"$bin" begin 0509 >/dev/null
+"$bin" end 0509 0 >/dev/null
+[[ "$(state_field consecutive_dry)" == "1" ]] \
+  || fail "scenario7b: green run that filed nothing (flat runway) must increment, got '$(state_field consecutive_dry)'"
+"$bin" begin 0509 >/dev/null
+"$bin" end 0509 1 >/dev/null
+[[ "$(state_field consecutive_dry)" == "1" ]] \
+  || fail "scenario7b: rc=1 must leave consecutive_dry unchanged, got '$(state_field consecutive_dry)'"
+[[ "$(state_field last_exit)" == "1" ]] || fail "scenario7b: last_exit must record 1"
+unset SCOUT_FUTILITY_FILED_COUNT
+ok "scenario7b: filed>=1 resets consecutive_dry; filed=0 increments; rc!=0 leaves it (fleet-ops#3547)"
 
 # --- 8. end without begin creates a snapshot (success-run) ------------------
 : >"$gh_log"

@@ -30,6 +30,10 @@ fi
 # Subcommands:
 #   (default) / canary   heartbeat canary (fail-loud)
 #   gate <repo>          systemd ExecCondition: 0=run, 1=rest, 255=error
+#                        fleet-ops#3547: rest needs BOTH runway >= REST_H
+#                        AND live supply (created-24h >= 20, agent-ready
+#                        >= 40); thin supply runs the scout regardless of
+#                        runway. fleet-ops itself is exempt (#3254 budget).
 #                        fleet-ops#3418: also rests (1) when the scout is
 #                        parked (scout-futility consecutive_dry >= N and
 #                        hours < BUFFER_H) so a green-and-sterile loop stops
@@ -58,6 +62,11 @@ fi
 #   FLEET_WORK_SUPPLY_CLOSED_JSON   closed-issue JSON fixture
 #   FLEET_WORK_SUPPLY_NOW_EPOCH     clock (default date -u +%s)
 #   FLEET_WORK_SUPPLY_HOURS         skip measurement; use this hours value
+#   FLEET_WORK_SUPPLY_CREATED_24H   override issues-created-last-24h (gate floor)
+#   FLEET_WORK_SUPPLY_MIN_CREATED_24H  gate floor, default 20 (fleet-ops#3547)
+#   FLEET_WORK_SUPPLY_MIN_READY     gate floor, default 40 (fleet-ops#3547)
+#   FLEET_WORK_SUPPLY_FLOOR_SKIP_REPOS  repos exempt from the floor, default
+#                                   "fleet-ops" (control plane, #3254 budget)
 #   FLEET_WORK_SUPPLY_WINDOW_H      drain window hours (default 6)
 #   FLEET_WORK_SUPPLY_GOHAM_H       default 12
 #   FLEET_WORK_SUPPLY_REST_H        default 24
@@ -185,6 +194,58 @@ fetch_ready() {
     printf '%s\n' "$n"
 }
 
+# Issues created in Nishfleet/<short> in the last 24h (any state, any label).
+# Empty string on gh failure. fleet-ops#3547: hours-of-work alone cannot tell
+# "workers draining a healthy buffer" from "blocked issues were re-released
+# and nobody is filing product work" — 2026-09-05 the 0509 scout rested at
+# hours=63-66 while created-24h had fallen to 5 (late Aug: 40-100/day).
+fetch_created_24h() {
+    local short="$1" n since now_s
+    if [[ -n "${FLEET_WORK_SUPPLY_CREATED_24H:-}" ]]; then
+        printf '%s\n' "$FLEET_WORK_SUPPLY_CREATED_24H"
+        return 0
+    fi
+    now_s="${FLEET_WORK_SUPPLY_NOW_EPOCH:-$(date -u +%s)}"
+    since=$(date -u -d "@$((now_s - 86400))" +%Y-%m-%dT%H:%M:%SZ)
+    n=$("$GH" issue list -R "Nishfleet/${short}" --state all --limit 200 \
+        --search "created:>=${since}" --json number --jq 'length' 2>/dev/null || true)
+    printf '%s\n' "$n"
+}
+
+# fleet-ops#3547: product-supply floor. Returns 0 (floor OPEN -> run the
+# scout) when the repo's supply is thin regardless of runway: issues created
+# in the last 24h < MIN_CREATED (default 20) or agent-ready < MIN_READY
+# (default 40). Returns 1 when supply is healthy or the repo is exempt
+# (fleet-ops: the control plane's own scout must not be pushed harder — the
+# 20% self-maintenance budget, fleet-ops#3254). If created-24h cannot be
+# measured the floor stays closed and the runway rule decides (logged), so a
+# gh hiccup never turns into a scout storm.
+supply_floor_open() {
+    local short="$1" snap="$2" ready created min_created min_ready r
+    local -a skip
+    read -r -a skip <<<"${FLEET_WORK_SUPPLY_FLOOR_SKIP_REPOS:-fleet-ops}"
+    for r in "${skip[@]}"; do
+        [[ "$short" == "$r" ]] && return 1
+    done
+    min_created="${FLEET_WORK_SUPPLY_MIN_CREATED_24H:-20}"
+    min_ready="${FLEET_WORK_SUPPLY_MIN_READY:-40}"
+    is_uint "$min_created" || min_created=20
+    is_uint "$min_ready" || min_ready=40
+    ready=$(jq -r '.ready' <<<"$snap")
+    is_uint "$ready" || ready=0
+    created=$(fetch_created_24h "$short")
+    if ! is_uint "$created"; then
+        log "gate: $short supply floor: created-24h unmeasured ('${created}') — runway rule decides"
+        return 1
+    fi
+    if [[ "$created" -lt "$min_created" || "$ready" -lt "$min_ready" ]]; then
+        log "gate: $short supply floor OPEN: created_24h=$created (min $min_created) ready=$ready (min $min_ready) — run the scout regardless of runway (fleet-ops#3547)"
+        return 0
+    fi
+    log "gate: $short supply floor closed: created_24h=$created ready=$ready — runway rule decides"
+    return 1
+}
+
 # Fetch closed agent-ready JSON. Empty on failure.
 fetch_closed_json() {
     local short="$1"
@@ -269,6 +330,12 @@ cmd_gate() {
         fi
     fi
     if [[ "$action" == "rest" ]]; then
+        # fleet-ops#3547: runway alone is not supply. Thin product supply
+        # (created-24h < 20 or agent-ready < 40) opens the floor and runs
+        # the scout; fleet-ops is exempt (see supply_floor_open).
+        if supply_floor_open "$short" "$snap"; then
+            return 0
+        fi
         return 1
     fi
     return 0
