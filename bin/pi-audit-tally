@@ -138,16 +138,26 @@ main() {
         # a tool-less auditor's citation of this candidate# + a body path.
         issue_json=$("$GH" issue view "$candidate" -R "Nishfleet/$repo" --json body 2>/dev/null || true)
         issue_body=$(printf '%s' "$issue_json" | jq -r '.body // empty')
-        local pass_reasons evidenceless
+        local pass_reasons evidenceless r_b64 r
         pass_reasons=$(printf '%s\n' "$votes" | jq -r '[.[] | select(.verdict == "PASS") | .reason] | join("\n")')
         evidenceless=0
-        while IFS= read -r r; do
-            [ -n "$r" ] || continue
-            if ! reason_has_evidence "$r" "$candidate" "$issue_body"; then
+        # fleet-ops#3548 follow-up: judge each PASS vote's reason as ONE unit,
+        # not line by line. The reasons were joined with "\n" and read back
+        # per line, so a multi-line reason was split and every line had to
+        # carry evidence on its own. Live votes end in a "## stderr"
+        # diagnostic line (cast before #3934 stripped it at the source): that
+        # line has no evidence, so unanimous, evidence-citing panels were
+        # refused 13 times and escalated (0509#1747/#1749/#1750/#1759-#1763).
+        # Each reason is read back base64-safe, the stderr block is dropped
+        # (same rule as pi-audit-run extract_reason), and an empty reason is
+        # keyword-less by definition.
+        while IFS= read -r r_b64; do
+            r=$(printf '%s' "$r_b64" | base64 -d | sed -E '/^#+[[:space:]]+stderr([[:space:]]|$)/,$d')
+            if [ -z "$(printf '%s' "$r" | tr -d '[:space:]')" ] || ! reason_has_evidence "$r" "$candidate" "$issue_body"; then
                 evidenceless=1
-                log "$repo/#$candidate PASS reason lacks repo-specific evidence (issue #, path, or URL): $(printf '%s' "$r" | head -c 160)"
+                log "$repo/#$candidate PASS reason lacks repo-specific evidence (issue #, path, or URL): $(printf '%s' "$r" | tr '\n' ' ' | head -c 160)"
             fi
-        done <<<"$pass_reasons"
+        done <<<"$(printf '%s\n' "$votes" | jq -r '.[] | select(.verdict == "PASS") | (.reason // "") | @base64')"
         if [ "$evidenceless" = "1" ]; then
             # fleet-ops#3574: a candidate refused for evidence ESCALATE_AFTER
             # times (default 3) is escalated (escalate-senior + drop
