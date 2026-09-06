@@ -83,6 +83,14 @@ prompts/auditor.md /home/nish/.pi/agent/prompts/auditor.md
 prompts/scout-repair.md /home/nish/.pi/agent/prompts/scout-repair.md
 prompts/siterep-uptime-repair.md /home/nish/.pi/agent/prompts/siterep-uptime-repair.md
 config/seat-caps.json /home/nish/.local/state/pi-packet/seat-caps.json
+# fleet-ops#3722: ~/.pi/agent/models.json becomes MANIFEST-managed. The live
+# file was hand-edited for every seat wire (fleet-ops#384, #1163, #1739);
+# the repo copy is the source of truth now. apiKey fields are !command refs
+# only — never a literal secret in the repo. Installed as a copy, not a
+# symlink, for the same reason as seat-caps.json (fleet-ops#2910): a symlink
+# into the git working tree means `git reset --hard` silently rewrites the
+# live pi model config.
+config/pi-models.json /home/nish/.pi/agent/models.json
 config/repo-privacy.json /home/nish/.local/state/pi-packet/repo-privacy.json
 config/entitled-seats.json /home/nish/.local/state/pi-packet/entitled-seats.json
 config/logrotate.conf /home/nish/.config/logrotate.conf

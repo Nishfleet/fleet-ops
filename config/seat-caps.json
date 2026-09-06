@@ -154,10 +154,9 @@
       "_comment_quota_bench": "2026-09-05 (orchestrator fable-check): z-ai/glm-4.7-flash-free died 21 times in 3h (watch.log 05:00-08:15Z, pi exited 1 in 18-19s) on HTTP 429 type=rate_limit \"You have reached the usage limit for the current free model\" with no reset window. mark_seat_quota_bench failed open (no provider default) and the seat was re-picked until the 25-failure corpse threshold, burning StartLimitBurst on #3254/#3519. 3600s mirrors walled_comeback.daily_quota_s and the xkiro free-tier default: one bounded re-probe per hour, never a permanent exclusion."
     },
     "openrouter": {
-      "cap": 0,
+      "cap": 4,
       "class": "metered",
-      "reason": "2026-09-05 balance USD 0.00 of 90.06 (HTTP 402); Nish decides any top-up; restore cap 2 when credits > 5 (fleet-ops#3283/#3284). fleet-ops#3241: classified stale (was unclassified — the prose sat in intentional_cap_zero, which matches no class token) so the 14d expire re-probes it; a 402 costs nothing, a healthy probe means credits returned.",
-      "intentional_cap_zero": "stale",
+      "reason": "2026-09-06 fleet-ops#3722: provider cap restored 0->4 for the four :free lanes below. The 2026-09-05 cap=0 was a credits park (balance USD 0.00 of 90.06, HTTP 402) and applies to paid spend only — :free models cost the account nothing, so parking the whole provider blocked free capacity. Paid seat deepseek/deepseek-v4-flash-0731 stays model-cap 0 until credits return (its own row carries the dated reason). Live probes 2026-09-06: n=4 `pi --print` spawns — minimax/minimax-m3:free and nvidia/nemotron-3-ultra-550b-a55b:free returned PONG (HTTP 200); z-ai/glm-5.2:free and google/gemma-4-31b-it:free returned upstream_429 'temporarily rate-limited upstream' (shared free pool, Retry-After 5s) — wiring correct, transient saturation handled by the rate_limited bench.",
       "free_model_daily_request_budget": 50,
       "_comment_free_daily_budget": "fleet-ops#3723 (2026-09-06): OpenRouter's free-model request budget is per ACCOUNT, not per key (openrouter.ai/docs/api-reference/limits: 'Making additional accounts or API keys will not affect your rate limits, as we govern capacity globally'). Documented caps (verified 2026-09-06 from openrouter.ai/docs/api-reference/limits): FREE_MODEL_RATE_LIMIT_RPM=20, FREE_MODEL_NO_CREDITS_RPD=50 (credits purchased < $10), FREE_MODEL_HAS_CREDITS_RPD=1000 (>= $10), FREE_MODEL_CREDITS_THRESHOLD=10. The account balance is USD 0.00 of 90.06 (HTTP 402, 2026-09-05) so the no-credits tier (50 req/day) is the live cap; raise to 1000 only after Nish tops up credits >= $10. seat-lib.sh counts assistant turns across all openrouter *:free model sessions today (UTC) and benches every openrouter free model once the shared counter hits this cap, until 00:00 UTC. The bench is NOT charged to the work item: no consecutive_failure_count increment, no yield penalty (it is an account-wide external limit, not a seat fault). Reuses the existing quota_bench/usable_at ledger fields; no new state file.",
       "models": {
@@ -165,9 +164,34 @@
           "cap": 0,
           "intentional_cap_zero": "stale",
           "reason": "2026-09-05 balance USD 0.00 of 90.06 (402); Nish decides any top-up; restore cap 2 when credits > 5 (fleet-ops#3283/#3284)"
+        },
+        "minimax/minimax-m3:free": {
+          "cap": 2,
+          "class": "free",
+          "max_probe_ceiling": 3,
+          "_note": "2026-09-06 fleet-ops#3722: wired as a free-class seat on the metered openrouter provider. Verified in pi --list-models catalog + live `pi --print` probe. cap 2, max_probe_ceiling 3; shared account daily budget 50/day (fleet-ops#3723) benches all openrouter :free models until 00:00 UTC when hit. Probe: PONG, HTTP 200."
+        },
+        "nvidia/nemotron-3-ultra-550b-a55b:free": {
+          "cap": 2,
+          "class": "free",
+          "max_probe_ceiling": 3,
+          "_note": "2026-09-06 fleet-ops#3722: wired as a free-class seat on the metered openrouter provider. Verified in pi --list-models catalog + live `pi --print` probe. cap 2, max_probe_ceiling 3; shared account daily budget 50/day (fleet-ops#3723) benches all openrouter :free models until 00:00 UTC when hit. Probe: PONG, HTTP 200."
+        },
+        "z-ai/glm-5.2:free": {
+          "cap": 2,
+          "class": "free",
+          "max_probe_ceiling": 3,
+          "_note": "2026-09-06 fleet-ops#3722: wired as a free-class seat on the metered openrouter provider. Verified in pi --list-models catalog; live `pi --print` probe at 2026-09-06T02:03Z returned upstream_429 'temporarily rate-limited upstream' (shared Decart free pool, Retry-After 5s) — rate_limited bench handles the transient. cap 2, max_probe_ceiling 3; shared account daily budget 50/day (fleet-ops#3723)."
+        },
+        "google/gemma-4-31b-it:free": {
+          "cap": 2,
+          "class": "free",
+          "max_probe_ceiling": 3,
+          "_note": "2026-09-06 fleet-ops#3722: wired as a free-class seat on the metered openrouter provider. Verified in pi --list-models catalog; live `pi --print` probe at 2026-09-06T02:03Z returned upstream_429 'temporarily rate-limited upstream' (shared Google AI Studio free pool, Retry-After 5s) — rate_limited bench handles the transient. cap 2, max_probe_ceiling 3; shared account daily budget 50/day (fleet-ops#3723)."
         }
       },
-      "_comment_384": "2026-08-29: paid flash lane wired (fleet-ops#384). Live OpenRouter /api/v1/models pricing probed 2026-08-29: deepseek/deepseek-v4-flash-0731 $0.045/M in, $0.09/M out, $0.009/M cache-read — cheapest of the three candidates (z-ai/glm-5.3-flash $0.075/$0.25; qwen/qwen3.8-flash $0.15/$0.47). Quality: deepseek-v4-flash is the proven fleet workhorse on 4 free lanes (bai, commandcode, ollama, cline) so cheapest AND best — no cheapest!=best override needed. Slug confirmed in pi --list-models (openrouter deepseek/deepseek-v4-flash-0731, 1.3M ctx, 32.8K out) and in the OpenRouter /models catalog. ZenMux deepseek/deepseek-v4-flash exists but ZenMux is credit-based ($5 flat per models.json note; /models API returns no per-token pricing) so OpenRouter wins on price transparency and per-token cheapness. Metered class — last-resort overflow after free + prepaid lanes (free lanes stay ahead of metered in the ladder order). cap=2 per metered discipline; AIMD raises only with evidence. Fail-closed: this is a metered lane, spend starts only after Nish merges this PR — never a slug that can bill credits before that. Resolves #1749 (GLM 5.3 flash revisit: wired free on cline #1739, paid lane not needed — DeepSeek V4 flash is cheaper+best)."
+      "_comment_384": "2026-08-29: paid flash lane wired (fleet-ops#384). Live OpenRouter /api/v1/models pricing probed 2026-08-29: deepseek/deepseek-v4-flash-0731 $0.045/M in, $0.09/M out, $0.009/M cache-read — cheapest of the three candidates (z-ai/glm-5.3-flash $0.075/$0.25; qwen/qwen3.8-flash $0.15/$0.47). Quality: deepseek-v4-flash is the proven fleet workhorse on 4 free lanes (bai, commandcode, ollama, cline) so cheapest AND best — no cheapest!=best override needed. Slug confirmed in pi --list-models (openrouter deepseek/deepseek-v4-flash-0731, 1.3M ctx, 32.8K out) and in the OpenRouter /models catalog. ZenMux deepseek/deepseek-v4-flash exists but ZenMux is credit-based ($5 flat per models.json note; /models API returns no per-token pricing) so OpenRouter wins on price transparency and per-token cheapness. Metered class — last-resort overflow after free + prepaid lanes (free lanes stay ahead of metered in the ladder order). cap=2 per metered discipline; AIMD raises only with evidence. Fail-closed: this is a metered lane, spend starts only after Nish merges this PR — never a slug that can bill credits before that. Resolves #1749 (GLM 5.3 flash revisit: wired free on cline #1739, paid lane not needed — DeepSeek V4 flash is cheaper+best).",
+      "_comment_3722": "fleet-ops#3722 (2026-09-06): four OpenRouter :free catalog models wired as free class seats, cap 2 each / max_probe_ceiling 3. Registration lives in models.json modelOverrides with cost 0 (now repo-managed: config/pi-models.json via MANIFEST). Provider class stays metered — the provider still carries paid credits capability and the parked paid seat. Per-model class=free overrides (model_class_of, fleet-ops#384) bucket these lanes free — same shape as cline/z-ai/glm-5.3-flash and zenmux/z-ai/glm-4.7-flash-free, so they are NOT added to free_providers_in_order (metered provider precedent) and the free-tier privacy line applies. Shared account-wide free budget: free_model_daily_request_budget=50 (fleet-ops#3723) benches all :free models at the account cap until 00:00 UTC. Yield-gated by fleet-ops#3250/#3251 like every seat: provisional yield 0.5 until 20 measured sessions."
     },
     "groq": {
       "cap": 0,

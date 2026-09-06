@@ -560,7 +560,9 @@ process_entry() {
     # template/extensions/** get the same copy semantics (fleet-ops#3263):
     # the providers import ../seat-health.ts relative to their own file, and
     # a repo-tree symlink would resolve that against a nonexistent sibling.
-    if [[ "$src" == config/seat-caps.json ]] || is_extension_src "$src"; then
+    # config/pi-models.json is copy-installed too (fleet-ops#3722): live pi
+    # model config must not silently change with the git working tree.
+    if [[ "$src" == config/seat-caps.json ]] || [[ "$src" == config/pi-models.json ]] || is_extension_src "$src"; then
         # fleet-ops#3125/#3262: when the cap map changes, reset learned AIMD
         # state so a stale learned cap / bench from the old config never pins
         # a raised declared floor or ceiling (e.g. devin hard_ceiling removal
