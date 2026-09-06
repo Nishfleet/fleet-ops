@@ -123,13 +123,42 @@ write_snap() {
 }
 
 write_seat_health() {
-    # args: <id> <health_class> [http_status]
-    local id="$1" cls="$2" http="${3:-0}"
+    # args: <id> <health_class> [http_status] [provider] [model]
+    # provider/model default to the id parts (unsanitised seat id) so the
+    # fleet-ops#3585 disagree scan can name the real seat. Extra fields
+    # are harmless to the pre-existing scenarios that ignore them.
+    local id="$1" cls="$2" http="${3:-0}" prov="${4:-}" mod="${5:-}"
+    if [[ -z "$prov" || -z "$mod" ]]; then
+        prov="${id%%__*}"
+        mod="${id#*__}"
+    fi
     cat >"$seat_dir/${id}.json" <<JSON
 {
+  "provider": "$prov",
+  "model": "$mod",
   "health_class": "$cls",
   "http_status": $http,
   "observed_at": "2026-09-01T17:33:00Z"
+}
+JSON
+}
+
+# write_spawn_bench <id> <failure_mode> <usable_at> — write a clobber-proof
+# spawn-bench marker (the mark_seat_empty_run / mark_seat_spawn_fail shape)
+# in the same seat-health dir the canary scans. fleet-ops#3585.
+write_spawn_bench() {
+    local id="$1" mode="$2" usable="$3"
+    cat >"$seat_dir/${id}.spawn-bench.json" <<JSON
+{
+  "provider": "test",
+  "model": "test",
+  "usable_at": "$usable",
+  "reason": "test",
+  "written_at": "2026-09-01T17:00:00Z",
+  "backoff_s": 900,
+  "failure_mode": "$mode",
+  "consecutive_failure_count": 1,
+  "writer": "test"
 }
 JSON
 }
@@ -528,4 +557,103 @@ set +e; "$bin" >/dev/null 2>&1; rc=$?; set -e
 grep -q 'unknown' "$issue_file_log" || fail "scenario 16: body must cite 'unknown' seat class"
 ok "scenario 16: missing seat-health does not crash the canary"
 
-echo "OK: fleet-empty-run-burst-canary — 16 scenarios"
+# 17. fleet-ops#3585 Part 1: a seat with a LIVE spawn-bench marker AND
+#     a ledger that says healthy is classified transient_fault by the
+#     canary's read helpers (the marker wins), so a burst on that seat
+#     is kind=provider-burst (benched seat), NOT healthy-seat-burst.
+#     The live 2026-09-05 ollama/deepseek-v4-flash:0731 case: ledger
+#     healthy, marker wall live, canary filed "healthy-seat-burst".
+future_usable=$(date -u -d "+1 hour" +%Y-%m-%dT%H:%M:%SZ)
+past_usable=$(date -u -d "-1 hour" +%Y-%m-%dT%H:%M:%SZ)
+rm -rf "$seat_dir"
+mkdir -p "$seat_dir"
+export GH_OPEN_ISSUES=""
+write_seat_health "ollama__deepseek-v4-flash_0731" healthy 200
+write_spawn_bench "ollama__deepseek-v4-flash_0731" empty_run "$future_usable"
+rm -f "$receipts"/*.err
+write_err "fleet-ops-3585a" "[2026-09-05T10:29:58Z] pi-issue-run: fleet-ops-3585a pi exited 0 but stdout=0B (< 20B) — provider no-op
+[2026-09-05T10:29:58Z] empty-run: marked ollama/deepseek-v4-flash:0731 unusable until $future_usable (reason=pi-issue:fleet-ops-3585a:provider-no-op:stdout=0B, backoff=86400s, count=6)
+"
+write_snap <<JSON
+{
+  "ts": "2026-09-05T10:30:04Z",
+  "waste": {
+    "empty_runs_last_2h": 6,
+    "empty_run_samples": [
+      "[2026-09-05T10:29:58Z] pi-issue-run: fleet-ops-3585a pi exited 0 but stdout=0B (< 20B) — provider no-op, benching seat (empty_run, flat cooldown) and re-seating in-process"
+    ]
+  }
+}
+JSON
+: >"$issue_file_log"
+set +e; "$bin" >"$scratch/out" 2>"$scratch/err"; rc=$?; set -e
+[[ "$rc" -eq 0 ]] || fail "scenario 17: benched-seat burst, expected exit 0, got $rc"
+# The seat is benched (marker live) so it must NOT be classified healthy.
+grep -q 'healthy-seat-burst' "$issue_file_log" \
+    && fail "scenario 17: benched seat must NOT be healthy-seat-burst, got: $(cat "$issue_file_log" | head -5)"
+grep -q 'provider-burst' "$issue_file_log" \
+    || fail "scenario 17: benched seat burst must be kind=provider-burst, got: $(cat "$issue_file_log" | head -5)"
+ok "scenario 17: live bench marker + healthy ledger -> provider-burst (not healthy-seat-burst)"
+
+# 18. fleet-ops#3585 Part 1b: once the marker wall EXPIRES, the canary
+#     falls back to the ledger — a healthy ledger with no live wall is
+#     healthy again (the bench aged out, the seat recovered).
+write_spawn_bench "ollama__deepseek-v4-flash_0731" empty_run "$past_usable"
+: >"$issue_file_log"
+set +e; "$bin" >"$scratch/out" 2>"$scratch/err"; rc=$?; set -e
+[[ "$rc" -eq 0 ]] || fail "scenario 18: expired-bench burst, expected exit 0, got $rc"
+grep -q 'healthy-seat-burst' "$issue_file_log" \
+    || fail "scenario 18: expired bench + healthy ledger -> healthy-seat-burst, got: $(cat "$issue_file_log" | head -5)"
+ok "scenario 18: expired bench marker -> ledger healthy wins again (healthy-seat-burst)"
+
+# 19. fleet-ops#3585 Part 2: the disagreement scan flags a seat that is
+#     benched (live marker) AND reported healthy by the ledger, even on
+#     a CLEAN tick (no burst). LOUD triage tag + file_finding fire.
+rm -rf "$seat_dir"
+mkdir -p "$seat_dir"
+export GH_OPEN_ISSUES=""
+write_seat_health "ollama__deepseek-v4-flash_0731" healthy 200 "ollama" "deepseek-v4-flash:0731"
+write_spawn_bench "ollama__deepseek-v4-flash_0731" empty_run "$future_usable"
+write_snap <<'JSON'
+{
+  "ts": "2026-09-05T10:30:04Z",
+  "waste": { "empty_runs_last_2h": 0, "empty_run_samples": [] }
+}
+JSON
+: >"$triage"
+: >"$issue_file_log"
+set +e; "$bin" >"$scratch/out" 2>"$scratch/err"; rc=$?; set -e
+[[ "$rc" -eq 0 ]] || fail "scenario 19: disagree scan on clean tick, expected exit 0 (alarm), got $rc"
+grep -q 'SEAT-BENCH-HEALTH-DISAGREE' "$triage" \
+    || fail "scenario 19: expected SEAT-BENCH-HEALTH-DISAGREE LOUD tag, got: $(cat "$triage")"
+grep -q 'seat-bench-health-disagree' "$issue_file_log" \
+    || fail "scenario 19: expected seat-bench-health-disagree finding filed, got: $(cat "$issue_file_log" | head -5)"
+grep -q 'ollama/deepseek-v4-flash:0731' "$issue_file_log" \
+    || fail "scenario 19: finding must name the disagreeing seat"
+ok "scenario 19: benched + healthy -> SEAT-BENCH-HEALTH-DISAGREE LOUD + filed on clean tick"
+
+# 20. fleet-ops#3585 Part 2b: no disagreement -> no LOUD tag, no file.
+#     A seat whose marker wall EXPIRED is not benched anymore, so a
+#     healthy ledger for it is NOT a disagreement.
+rm -rf "$seat_dir"
+mkdir -p "$seat_dir"
+export GH_OPEN_ISSUES=""
+write_seat_health "ollama__deepseek-v4-flash_0731" healthy 200 "ollama" "deepseek-v4-flash:0731"
+write_spawn_bench "ollama__deepseek-v4-flash_0731" empty_run "$past_usable"
+write_snap <<'JSON'
+{
+  "ts": "2026-09-05T10:30:04Z",
+  "waste": { "empty_runs_last_2h": 0, "empty_run_samples": [] }
+}
+JSON
+: >"$triage"
+: >"$issue_file_log"
+set +e; "$bin" >"$scratch/out" 2>"$scratch/err"; rc=$?; set -e
+[[ "$rc" -eq 0 ]] || fail "scenario 20: clean disagree scan, expected exit 0, got $rc"
+grep -q 'SEAT-BENCH-HEALTH-DISAGREE' "$triage" \
+    && fail "scenario 20: expired bench must NOT fire disagree, got: $(cat "$triage")"
+[[ ! -s "$issue_file_log" ]] \
+    || fail "scenario 20: no disagree -> no file, got: $(cat "$issue_file_log" | head -5)"
+ok "scenario 20: expired bench + healthy ledger -> no disagree (clean)"
+
+echo "OK: fleet-empty-run-burst-canary — 20 scenarios"
