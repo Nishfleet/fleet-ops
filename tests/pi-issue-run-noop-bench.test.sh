@@ -445,3 +445,97 @@ tried4="$STATE_DIR/attempts/pi-issue-${inst4}.tried-seats"
 ok "tried-seats reset after successful remote devin PR run"
 
 ok "fleet-ops#1378/#3531: in-process no-op retry and remote PR success both work"
+
+# =============================================================================
+# fleet-ops#3714: a session that made tool calls but ended its turn ON a tool
+# call (no trailing assistant text) leaves stdout at 0B while the verdict on
+# stderr says tools=N class=worked. Live 2026-09-05T22:14Z fleet-ops-3268 on
+# ollama/deepseek-v4-flash:0731: 14 tool calls, 44k tokens, stderr
+# "PACKET-VERDICT tools=35 class=worked", stdout=0B -> benched 4 h as
+# "provider-no-op:stdout=0B" and the cap-8 seat left the pool. stdout < OUT_MIN
+# with tools>0 (verdict on stderr OR toolCall entries in the session jsonl) is
+# worked-no-text: exit 0, seat NOT benched.
+# =============================================================================
+rm -f "$LEDGER"/*.json "$LEDGER"/*.spawn-bench.json 2>/dev/null || true
+rm -f "$scratch/mark_calls" "$scratch/mark_empty_calls" 2>/dev/null || true
+export EMPTY_RUN_RETRY_MAX=0
+
+no_empty_run_ledger() {
+    local f
+    for f in "$LEDGER"/*.json; do
+        [[ -f "$f" ]] || continue
+        if [[ "$(jq -r '.failure_mode // empty' "$f" 2>/dev/null)" == "empty_run" ]]; then
+            return 1
+        fi
+    done
+    return 0
+}
+
+# (a) verdict on stderr (where the packet-verdict extension writes it), nothing on stdout.
+cat >"$stub_bin/pi" <<'STUB'
+#!/usr/bin/env bash
+printf 'EXTLOAD-OK extension=packet-verdict mode=print-safe\nPACKET-VERDICT tools=35 class=worked\n' >&2
+exit 0
+STUB
+chmod +x "$stub_bin/pi"
+
+inst5="fleet-ops-3714-verdict"
+printf 'Implement one GitHub issue: fleet-ops#3714.\n' >"$ISSUES_DIR/${inst5}.in"
+set +e
+bash "$bin" "$inst5" >"$scratch/run5.out" 2>"$scratch/run5.err"
+rc5=$?
+set -e
+[[ "$rc5" == "0" ]] \
+  || fail "worked-no-text (stderr verdict tools=35, stdout 0B) must exit 0, got rc=$rc5 err=$(tail -n 5 "$scratch/run5.err")"
+if [[ -s "$scratch/mark_empty_calls" ]]; then
+    fail "worked-no-text must NOT bench the seat via mark_seat_empty_run; calls: $(cat "$scratch/mark_empty_calls")"
+fi
+no_empty_run_ledger || fail "worked-no-text must write no empty_run ledger: $(ls "$LEDGER")"
+grep -qF 'worked-no-text' "$scratch/run5.err" \
+  || fail "expected a worked-no-text log line, got: $(tail -n 5 "$scratch/run5.err")"
+ok "fleet-ops#3714 (a): stderr verdict tools=35 + stdout 0B -> exit 0, seat not benched"
+
+# (b) no verdict line at all; only the session jsonl carries toolCall entries.
+rm -f "$scratch/mark_calls" "$scratch/mark_empty_calls" 2>/dev/null || true
+inst6="fleet-ops-3714-jsonl"
+sess6="$HOME/.pi/agent/sessions/pi-issue-${inst6}"
+cat >"$stub_bin/pi" <<STUB
+#!/usr/bin/env bash
+mkdir -p "$sess6"
+printf '%s\n' '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"c1","name":"bash","arguments":{"command":"true"}}],"stopReason":"toolUse"}}' >"$sess6/2026-09-05T22-14-18-067Z_test.jsonl"
+exit 0
+STUB
+chmod +x "$stub_bin/pi"
+printf 'Implement one GitHub issue: fleet-ops#3714.\n' >"$ISSUES_DIR/${inst6}.in"
+set +e
+bash "$bin" "$inst6" >"$scratch/run6.out" 2>"$scratch/run6.err"
+rc6=$?
+set -e
+[[ "$rc6" == "0" ]] \
+  || fail "worked-no-text (session jsonl toolCall, no verdict, stdout 0B) must exit 0, got rc=$rc6 err=$(tail -n 5 "$scratch/run6.err")"
+if [[ -s "$scratch/mark_empty_calls" ]]; then
+    fail "session-jsonl tool calls must NOT bench the seat; calls: $(cat "$scratch/mark_empty_calls")"
+fi
+no_empty_run_ledger || fail "session-jsonl tool calls must write no empty_run ledger: $(ls "$LEDGER")"
+ok "fleet-ops#3714 (b): session jsonl toolCall + no verdict + stdout 0B -> exit 0, seat not benched"
+
+# (c) control: 0B stdout, no verdict, no tool calls anywhere is STILL a provider no-op.
+rm -f "$scratch/mark_calls" "$scratch/mark_empty_calls" 2>/dev/null || true
+cat >"$stub_bin/pi" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+chmod +x "$stub_bin/pi"
+inst7="fleet-ops-3714-noop"
+printf 'Implement one GitHub issue: fleet-ops#3714.\n' >"$ISSUES_DIR/${inst7}.in"
+set +e
+bash "$bin" "$inst7" >"$scratch/run7.out" 2>"$scratch/run7.err"
+rc7=$?
+set -e
+[[ "$rc7" == "1" ]] \
+  || fail "true no-op (0B, no verdict, no tool calls) must still exit 1, got rc=$rc7"
+[[ -s "$scratch/mark_empty_calls" ]] \
+  || fail "true no-op must still bench the seat via mark_seat_empty_run"
+ok "fleet-ops#3714 (c): true no-op still benched (detector not loosened)"
+
+ok "fleet-ops#3714: worked-no-text is not a provider no-op; true no-op still benches"
