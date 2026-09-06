@@ -302,4 +302,56 @@ jq -e '.providers.minimax.max_probe_ceiling == null' "$caps" >/dev/null \
   || fail "production: minimax must omit max_probe_ceiling (no climb)"
 ok "production seat-caps.json: devin AIMD not hard_ceiling, probe ceilings pinned == caps (fleet-ops#3443, lift via #3258), ollama hard_ceiling, all ceilings within [cap, 2x cap] (rule 2, fleet-ops#3504)"
 
+# === fleet-ops#3732: PICK_SEAT_COUNT_SLOTS=1 counts the slots a pick would fill ===
+# Replay drill from the issue's accept line: a seat map where the ONLY usable
+# seat is at its cap -> 0 slots; the same map with one free slot -> exactly 1.
+# Same filter chain as a pick, no probe admission, no seat picked.
+caps3732="$scratch/seat-caps-3732.json"
+learned3732="$scratch/learned-caps-3732.json"
+state3732="$scratch/state-3732"
+mkdir -p "$state3732/active-seats" "$scratch/ledger-3732"
+echo '{"providers":{}}' >"$learned3732"
+cat >"$caps3732" <<'JSON'
+{
+  "ram_gb_per_worker": 0.5,
+  "providers": {
+    "ollama": { "cap": 1, "class": "prepaid-quota", "hard_ceiling": true, "max_probe_ceiling": 1, "models": { "deepseek-v4-flash:0731": 1 } }
+  }
+}
+JSON
+count_slots_3732() {
+    SEAT_CAPS_JSON="$caps3732" LEARNED_CAPS_JSON="$learned3732" PI_PACKET_STATE="$state3732" \
+    PI_SEAT_HEALTH_LEDGER_DIR="$scratch/ledger-3732" PICK_SEAT_COUNT_SLOTS=1 \
+        bash -c 'source "$0" 2>/dev/null; pick_seat "" "" 0 "" light 2>/dev/null' "$lib"
+}
+seed_active_3732() {
+    local n="$1" i
+    rm -f "$state3732"/active-seats/*.json
+    for (( i = 0; i < n; i++ )); do
+        jq -nc --arg u "pi-seed-ollama-$i" \
+            '{provider:"ollama", model:"deepseek-v4-flash:0731", unit:$u, started_at:"2026-08-26T00:00:00Z"}' \
+            > "$state3732/active-seats/pi-seed-ollama-$i.json"
+    done
+}
+seed_active_3732 1
+got=$(count_slots_3732)
+[[ "$got" == "0" ]] || fail "fleet-ops#3732: only usable seat at cap (1/1 active) must count 0 slots, got '$got'"
+ok "fleet-ops#3732: only usable seat at its cap -> 0 usable slots"
+seed_active_3732 0
+got=$(count_slots_3732)
+[[ "$got" == "1" ]] || fail "fleet-ops#3732: one free slot must count exactly 1, got '$got'"
+ok "fleet-ops#3732: one free slot -> exactly 1 usable slot"
+jq '.providers.ollama.models["deepseek-v4-flash:0731"] = 4' "$caps3732" >"$caps3732.tmp" && mv "$caps3732.tmp" "$caps3732"
+got=$(count_slots_3732)
+[[ "$got" == "1" ]] || fail "fleet-ops#3732: provider cap 1 must bound a cap-4 model to 1 slot, got '$got'"
+ok "fleet-ops#3732: provider cap bounds the model headroom sum"
+[[ "$(jq -c '.providers' "$learned3732")" == "{}" ]] \
+    || fail "fleet-ops#3732: count mode must not record an AIMD probe/learned cap (got $(jq -c . "$learned3732"))"
+ok "fleet-ops#3732: count mode records no learned cap / probe"
+picked=$(SEAT_CAPS_JSON="$caps3732" LEARNED_CAPS_JSON="$learned3732" PI_PACKET_STATE="$state3732" \
+    PI_SEAT_HEALTH_LEDGER_DIR="$scratch/ledger-3732" \
+    bash -c 'source "$0" 2>/dev/null; pick_seat "" "" 0 "" light 2>/dev/null' "$lib")
+[[ "$picked" == ollama* ]] || fail "fleet-ops#3732: normal pick must still return the free ollama seat, got '$picked'"
+ok "fleet-ops#3732: normal pick mode unchanged (picked $picked)"
+
 echo "All AIMD invariants passed."

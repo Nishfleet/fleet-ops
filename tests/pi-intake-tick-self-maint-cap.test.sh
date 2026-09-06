@@ -146,3 +146,29 @@ done
 ok "Test 9: Step 3 claims critical-path first, then the ascending tail (1691,1702,1283,1576)"
 
 echo "ALL OK: intake-tick self-maintenance claim cap (fleet-ops#3254)"
+
+# === Test 10: usable seat-slot gate (fleet-ops#3732) ===
+# The tick must bound claims by the slots pick_seat would actually fill.
+# Replay the tick's own gate block (extracted verbatim, not re-typed) with a
+# stubbed pick_seat: 0 usable slots -> holds with the gate line and never
+# reaches the claim step; 1 usable slot with capacity slots=2 -> claims at most 1.
+grep -qF 'PICK_SEAT_COUNT_SLOTS=1 pick_seat "" "" 0 "" light' "$tick" \
+    || fail "Test 10: usable-slot count seam (PICK_SEAT_COUNT_SLOTS=1 pick_seat) missing from tick"
+grep -qF 'gate: no usable seat slot' "$tick" \
+    || fail "Test 10: 'gate: no usable seat slot' hold line missing from tick"
+_gate_block=$(awk '/Usable seat-slot gate \(fleet-ops#3732\)/{on=1} on{print} on && /^fi$/{n++; if(n==2) exit}' "$tick")
+[[ -n "$_gate_block" ]] || fail "Test 10: could not extract the #3732 gate block from the tick"
+_out0=$( pick_seat() { echo 0; }; slots=2; eval "$_gate_block"; echo "CLAIM-STEP-REACHED slots=$slots" ) || true
+grep -qF 'holding claims this tick — gate: no usable seat slot' <<<"$_out0" \
+    || fail "Test 10: 0 usable slots must hold with the gate line, got: $_out0"
+if grep -qF 'CLAIM-STEP-REACHED' <<<"$_out0"; then fail "Test 10: 0 usable slots must exit before the claim step"; fi
+_out1=$( pick_seat() { echo 1; }; slots=2; eval "$_gate_block"; echo "CLAIM-STEP-REACHED slots=$slots" ) || true
+grep -qF 'CLAIM-STEP-REACHED slots=1' <<<"$_out1" \
+    || fail "Test 10: 1 usable slot with capacity 2 must claim at most 1, got: $_out1"
+_out3=$( pick_seat() { echo 3; }; slots=2; eval "$_gate_block"; echo "CLAIM-STEP-REACHED slots=$slots" ) || true
+grep -qF 'CLAIM-STEP-REACHED slots=2' <<<"$_out3" \
+    || fail "Test 10: 3 usable slots with capacity 2 must keep slots=2, got: $_out3"
+_outx=$( pick_seat() { echo "garbage"; }; slots=2; eval "$_gate_block"; echo "CLAIM-STEP-REACHED slots=$slots" ) || true
+grep -qF 'gate: no usable seat slot' <<<"$_outx" \
+    || fail "Test 10: a non-numeric count must fail closed (hold), got: $_outx"
+ok "Test 10: usable seat-slot gate holds at 0, bounds claims to min(slots, usable), fails closed on garbage (fleet-ops#3732)"

@@ -3369,6 +3369,15 @@ pick_seat() {
     # per selection pass (fleet-ops#36). A provider with several models
     # shares one credential; the cache stops us re-running its apiKey
     # command per model.
+    # fleet-ops#3732: slot-count mode. PICK_SEAT_COUNT_SLOTS=1 walks the SAME
+    # filter chain as a pick but never picks a seat, never admits an AIMD probe
+    # and never logs a summary; it echoes the number of light slots this pick
+    # would actually fill: per provider, min(sum over its accepted models of
+    # max(0, eff_model_cap - active), max(0, eff_provider_cap - active)).
+    # The intake tick bounds its claims by this so it never claims into a wall.
+    local _count_mode="${PICK_SEAT_COUNT_SLOTS:-0}"
+    local -A _count_model_head=() _count_prov_head=()
+
     _cred_cache=()
 
     # Build the set of tried seats for exclusion.
@@ -3646,6 +3655,11 @@ pick_seat() {
         p_active=$(count_active_on_provider "$p")
         eff_cap=$(effective_provider_cap "$p")
         if (( eff_cap > 0 )) && (( p_active >= eff_cap )); then
+            if (( _count_mode )); then
+                # fleet-ops#3732 counting only: an at-cap provider contributes 0, no probe
+                _at_cap_provider[$p]=1
+                continue
+            fi
             if _aimd_probe_admitted "$p" "$eff_cap" "$p_active"; then
                 seat_log "seat $p/$m AIMD probe admitted (provider $p cap $eff_cap -> $((eff_cap + 1)): $p_active active, zero errors, RAM headroom)"
             else
@@ -3671,6 +3685,9 @@ pick_seat() {
         m_active=$(count_active_on_seat "$p" "$m")
         m_eff_cap=$(effective_model_cap "$p" "$m")
         if (( m_eff_cap > 0 )) && (( m_active >= m_eff_cap )); then
+            if (( _count_mode )); then
+                continue
+            fi
             if _model_probe_admitted "$p" "$m" "$m_eff_cap" "$m_active"; then
                 seat_log "seat $p/$m AIMD model probe admitted (model cap $m_eff_cap -> $((m_eff_cap + 1)): $m_active active, zero errors, RAM headroom)"
             else
@@ -3693,12 +3710,35 @@ pick_seat() {
             seat_log "seat $p/$m skipped (free-tier privacy: private-repo target, free-class lane blocked)"
             continue
         fi
+        if (( _count_mode )); then
+            # fleet-ops#3732: seat accepted — accumulate headroom, do not pick.
+            local _ph _mh
+            if (( eff_cap > 0 )); then _ph=$(( eff_cap - p_active )); else _ph=999; fi
+            if (( m_eff_cap > 0 )); then _mh=$(( m_eff_cap - m_active )); else _mh=999; fi
+            (( _ph < 0 )) && _ph=0
+            (( _mh < 0 )) && _mh=0
+            _count_prov_head[$p]=$_ph
+            _count_model_head[$p]=$(( ${_count_model_head[$p]:-0} + _mh ))
+            continue
+        fi
         case "$class" in
             prepaid-quota) prepaid_seats+=("$p"$'\t'"$m") ;;
             metered)       metered_seats+=("$p"$'\t'"$m") ;;
             *)             free_seats+=("$p"$'\t'"$m") ;;
         esac
     done < <(enumerate_seats)
+
+    if (( _count_mode )); then
+        local _ct=0 _cp _cph _cmh
+        for _cp in "${!_count_prov_head[@]}"; do
+            _cph=${_count_prov_head[$_cp]}
+            _cmh=${_count_model_head[$_cp]:-0}
+            (( _cmh < _cph )) && _cph=$_cmh
+            _ct=$(( _ct + _cph ))
+        done
+        echo "$_ct"
+        return 0
+    fi
 
     # fleet-ops#1449: ONE summary line per pick_seat call for the seats
     # that the pre-computed excluded set silently filtered out. The
