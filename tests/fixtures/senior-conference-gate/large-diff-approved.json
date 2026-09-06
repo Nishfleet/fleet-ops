@@ -1,0 +1,9 @@
+{
+  "additions": 721,
+  "deletions": 10,
+  "changedFiles": 10,
+  "files": [
+    {"path": "src/components/A.tsx"}
+  ],
+  "labels": [{"name": "conference-approved"}]
+}

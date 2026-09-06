@@ -1,0 +1,9 @@
+{
+  "additions": 2,
+  "deletions": 0,
+  "changedFiles": 1,
+  "files": [
+    {"path": "migrations/0001_add_column.sql"}
+  ],
+  "labels": []
+}

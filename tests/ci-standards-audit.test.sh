@@ -206,6 +206,13 @@ bash "$here/merge-trample-gate.test.sh"
 # .github/workflows/**).
 bash "$here/machinery-authorization-gate.test.sh"
 
+# fleet-ops#3756: senior-conference seriousness gate. A PR that trips the
+# seriousness gate (lines > 500 OR files > 10 OR touches deploy/migrations/
+# security/branch-protection) is REJECT unless it carries conference-approved.
+# Hosted here so P14 runs the drill without a workflow-file edit (the worker
+# App cannot push .github/workflows/**).
+bash "$here/senior-conference-gate.test.sh"
+
 # fleet-ops#1493 (fleet-ops#2020): tests/ready-work-deleted.test.sh pins the deletion
 # of the hand-placed ready-work dispatcher and checks the allowlist / MANIFEST /
 # organ-catalog. Host it here from this already-listed ci-standards-audit test so

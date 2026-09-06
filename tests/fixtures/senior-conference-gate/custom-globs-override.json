@@ -1,0 +1,12 @@
+{
+  "additions": 4,
+  "deletions": 0,
+  "changedFiles": 1,
+  "files": [
+    {"path": "products/0509/src/special.ts"}
+  ],
+  "labels": [],
+  "critical_path_globs": ["products/0509/**"],
+  "lines_threshold": 1000,
+  "files_threshold": 50
+}

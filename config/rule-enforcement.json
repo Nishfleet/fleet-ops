@@ -399,8 +399,8 @@
     {
       "id": "led-senior-conference",
       "source": "decisions-ledger.md: 2026-08-26 | serious builds get the senior conference",
-      "mechanism": "Panel verdict as a required check; automerge waits. Senior conference gate in prompts/senior-conference.md with two blind POVs and verdicts (MECHANICAL-INSTEAD, EXCEPTION-APPROVED, NISH-RESERVED). Machinery-authorization-gate rejects unauthorized new systemd units.",
-      "proof": "fleet-ops#223; bin/fleet-machinery-authorization-gate; lib/machinery-authorization-gate.py; config/machinery-allowlist.json; tests/machinery-authorization-gate.test.sh; prompts/senior-conference.md; prompts/blind-audit.md; bin/fleet-blind-audit",
+      "mechanism": "Panel verdict as a required check; automerge waits. Senior conference gate in prompts/senior-conference.md with two blind POVs and verdicts (MECHANICAL-INSTEAD, EXCEPTION-APPROVED, NISH-RESERVED). Machinery-authorization-gate rejects unauthorized new systemd units. fleet-ops#3756: senior-conference-gate mechanically flags a serious PR (lines > 500 OR files > 10 OR touches deploy/migrations/security/branch-protection) and REJECTS it unless it carries the conference-approved label; the conference runs the gate as an automatic criterion, and a CI status check (follow-up, needs workflows+administration scope) calls the same evaluator so a serious PR cannot merge unapproved.",
+      "proof": "fleet-ops#223; fleet-ops#3756; bin/fleet-senior-conference-gate; lib/senior-conference-gate.py; tests/senior-conference-gate.test.sh; bin/fleet-machinery-authorization-gate; lib/machinery-authorization-gate.py; config/machinery-allowlist.json; tests/machinery-authorization-gate.test.sh; prompts/senior-conference.md; prompts/blind-audit.md; bin/fleet-blind-audit",
       "status": "enforced"
     },
     {
