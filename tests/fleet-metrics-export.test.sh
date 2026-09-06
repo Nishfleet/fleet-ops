@@ -657,6 +657,7 @@ m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 caps = Path(sys.argv[2])
 m.SEAT_CAPS_DEFAULT = caps
 m.SEAT_CAPS_FALLBACK = Path("/nonexistent/caps.json")
+m.SEAT_CAPS_LIVE = Path("/nonexistent/live-caps.json")  # hermetic: repo-checkouts path list only
 
 def stale_age():
     n, seats = m._read_cap0_stale()
@@ -752,6 +753,7 @@ m.SEAT_HEALTH = Path("/nonexistent/seat.json")
 m.SEAT_LEDGER = Path(seat_ledger)
 m.SEAT_CAPS_DEFAULT = Path(seat_caps)
 m.SEAT_CAPS_FALLBACK = Path("/nonexistent/seat-caps.json")
+m.SEAT_CAPS_LIVE = Path("/nonexistent/live-caps.json")  # hermetic: repo-checkouts path list only
 m.HC_URL_FILE = Path("/nonexistent/hc.url")
 m.ACTIONS_LOG = Path("/nonexistent/actions.log")
 m.MAINTENANCE_FLAG = Path("/nonexistent/maint.json")
@@ -1177,6 +1179,7 @@ m.SEAT_LEDGER = Path(seat_dir)
 # phantom into the counts (catching the real default path only locally).
 m.SEAT_CAPS_DEFAULT = Path(seat_caps)
 m.SEAT_CAPS_FALLBACK = Path(seat_caps)
+m.SEAT_CAPS_LIVE = Path("/nonexistent/live-caps.json")  # hermetic: repo-checkouts path list only
 cb_n, cb = m._read_comeback_overdue()
 ids = {f"{s['provider']}__{s['model']}" for s in cb}
 # Past-wall non-dead non-excluded seats: commandcode minimax (overload past
@@ -1232,6 +1235,7 @@ for prov in enrolled:
     }))
 m.SEAT_CAPS_DEFAULT = Path(seat_caps)
 m.SEAT_CAPS_FALLBACK = Path(seat_caps)
+m.SEAT_CAPS_LIVE = Path("/nonexistent/live-caps.json")  # hermetic: repo-checkouts path list only
 base = m._healthy_enrolled_seat_count()
 assert base == len(enrolled), f"all-enrolled healthy base must be {len(enrolled)}, got {base}"
 # Replace the commandcode healthy fixture with the two overload_bench ledgers
@@ -1320,6 +1324,7 @@ spec.loader.exec_module(m)
 # --- cap-0 config: the healthy devin/glm-5-2 ledger is parked -> count 1 ---
 m.SEAT_CAPS_DEFAULT = Path(caps_cap0)
 m.SEAT_CAPS_FALLBACK = Path(caps_cap0)
+m.SEAT_CAPS_LIVE = Path("/nonexistent/live-caps.json")  # hermetic: repo-checkouts path list only
 m.SEAT_LEDGER = Path(seat_dir)
 n0, seats0 = m._read_healthy_cap0()
 ids0 = {f"{s['provider']}__{s['model']}" for s in seats0}
@@ -1337,6 +1342,7 @@ print("OK: cap0 config -> healthy-cap0_total 1 (devin/glm-5-2 parked)")
 # --- cap-restored config: glm-5-2 cap 3 -> count 0 (no healthy-parked) ---
 m.SEAT_CAPS_DEFAULT = Path(caps_cap3)
 m.SEAT_CAPS_FALLBACK = Path(caps_cap3)
+m.SEAT_CAPS_LIVE = Path("/nonexistent/live-caps.json")  # hermetic: repo-checkouts path list only
 n3, seats3 = m._read_healthy_cap0()
 assert n3 == 0, f"cap3 config: healthy-cap0 must be 0 (glm-5-2 restored), got {n3}: {seats3}"
 print("OK: cap-restored config -> healthy-cap0_total 0 (restore cleared the alarm)")
@@ -1344,6 +1350,7 @@ print("OK: cap-restored config -> healthy-cap0_total 0 (restore cleared the alar
 # --- missing config -> fail safe to 0 (no false alarm from a missing file) ---
 m.SEAT_CAPS_DEFAULT = Path("/nonexistent/hc0-caps.json")
 m.SEAT_CAPS_FALLBACK = Path("/nonexistent/hc0-caps-fallback.json")
+m.SEAT_CAPS_LIVE = Path("/nonexistent/live-caps.json")  # hermetic: repo-checkouts path list only
 n_miss, _ = m._read_healthy_cap0()
 assert n_miss == 0, f"missing config must fail safe to 0, got {n_miss}"
 print("OK: missing config -> healthy-cap0_total 0 (fail safe)")
@@ -1351,6 +1358,7 @@ print("OK: missing config -> healthy-cap0_total 0 (fail safe)")
 # --- model-cap map parses both bare-int and {cap,class} object values ---
 m.SEAT_CAPS_DEFAULT = Path(caps_cap0)
 m.SEAT_CAPS_FALLBACK = Path(caps_cap0)
+m.SEAT_CAPS_LIVE = Path("/nonexistent/live-caps.json")  # hermetic: repo-checkouts path list only
 caps = m._seat_caps_model_cap_map()
 assert caps["devin/glm-5-2"] == 0, caps
 assert caps["devin/swe-1-7"] == 0, caps
@@ -1382,6 +1390,7 @@ m.SELF_MAINT_JSON_DEFAULT = Path(sm_cfg)
 m.SELF_MAINT_JSON_FALLBACK = Path("/nonexistent/sm-fallback.json")
 m.SEAT_CAPS_DEFAULT = Path(caps_cap0)
 m.SEAT_CAPS_FALLBACK = Path(caps_cap0)
+m.SEAT_CAPS_LIVE = Path("/nonexistent/live-caps.json")  # hermetic: repo-checkouts path list only
 m.SEAT_LEDGER = Path(seat_dir)
 m.PR_CACHE_DIR = Path(out).parent
 m.DETAIL_CACHE = Path(out).parent / "detail.cache.json"
@@ -1551,6 +1560,7 @@ for prov in enrolled:
 m.SEAT_LEDGER = Path(seat_dir)
 m.SEAT_CAPS_DEFAULT = Path(seat_caps)
 m.SEAT_CAPS_FALLBACK = Path(seat_caps)
+m.SEAT_CAPS_LIVE = Path("/nonexistent/live-caps.json")  # hermetic: repo-checkouts path list only
 base = m._healthy_enrolled_seat_count()
 assert base == len(enrolled), f"baseline must be {len(enrolled)}, got {base}"
 
@@ -1880,6 +1890,7 @@ nr_caps.write_text(json.dumps({
 }))
 m.SEAT_CAPS_DEFAULT = nr_caps
 m.SEAT_CAPS_FALLBACK = Path("/nonexistent/seat-caps.json")
+m.SEAT_CAPS_LIVE = Path("/nonexistent/live-caps.json")  # hermetic: repo-checkouts path list only
 
 m.SEAT_LEDGER = Path(seat_dir)
 n, seats = m._read_never_released()
@@ -2042,6 +2053,7 @@ m.SEAT_YIELD_JSON = Path(scratch) / "seat-yield.json"
 m.SEAT_YIELD_CACHE = Path(scratch) / "seat-yield-cache.json"
 m.SEAT_CAPS_DEFAULT = Path(scratch) / "seat-caps.json"
 m.SEAT_CAPS_FALLBACK = Path("/nonexistent/seat-caps.json")
+m.SEAT_CAPS_LIVE = Path("/nonexistent/live-caps.json")  # hermetic: repo-checkouts path list only
 
 Path(m.SEAT_CAPS_DEFAULT).write_text(json.dumps({
     "providers": {
@@ -2321,6 +2333,7 @@ caps.write_text(json.dumps({
 m.SEAT_LEDGER = ledger
 m.SEAT_CAPS_DEFAULT = caps
 m.SEAT_CAPS_FALLBACK = Path("/nonexistent/seat-caps.json")
+m.SEAT_CAPS_LIVE = Path("/nonexistent/live-caps.json")  # hermetic: repo-checkouts path list only
 n, seats = m._read_dead_credentials()
 assert n == 1, f"enrolled dead-cred must be 1 (xai-oauth), got {n}: {seats}"
 assert seats[0]["provider"] == "xai-oauth" and seats[0]["model"] == "grok-4.5", seats
@@ -2332,6 +2345,7 @@ print("OK: cap=0 credentials_bad corpses excluded from dead-cred total (fleet-op
 # enrolled 401 cannot go silent.
 m.SEAT_CAPS_DEFAULT = Path("/nonexistent/missing-caps.json")
 m.SEAT_CAPS_FALLBACK = Path("/nonexistent/missing-caps-2.json")
+m.SEAT_CAPS_LIVE = Path("/nonexistent/live-caps.json")  # hermetic: repo-checkouts path list only
 n2, seats2 = m._read_dead_credentials()
 assert n2 == 3, f"fail-open must count all 3 dead-cred seats, got {n2}: {seats2}"
 print("OK: unreadable seat-caps fail-open counts all dead-cred seats (fleet-ops#3301)")
@@ -2595,6 +2609,7 @@ m.SEAT_HEALTH = Path("/nonexistent/seat.json")
 m.SEAT_LEDGER = Path("/nonexistent/seatdb")
 m.SEAT_CAPS_DEFAULT = Path("/nonexistent/sc.json")
 m.SEAT_CAPS_FALLBACK = Path("/nonexistent/sc2.json")
+m.SEAT_CAPS_LIVE = Path("/nonexistent/live-caps.json")  # hermetic: repo-checkouts path list only
 m.HC_URL_FILE = Path("/nonexistent/hc.url")
 m.ACTIONS_LOG = Path("/nonexistent/actions.log")
 m.MAINTENANCE_FLAG = Path("/nonexistent/maint.json")

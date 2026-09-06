@@ -21,6 +21,12 @@
 #  10. Retirement at $1 cost removes the seat.
 #  11. The verdict issue is filed via fleet-issue-file (stubbed).
 #  12. Promotion at fleet median files a promote verdict.
+#  13. A config-declared audition seat (provider-level audition: true on
+#      scalar model rows, e.g. xkiro via config PR) is never removed from the
+#      LIVE caps by the tick — its verdict is filed once and it stays live
+#      (fleet-ops#3811).
+#  14. A failed verdict filing keeps even a tick-injected seat in the LIVE
+#      caps for a retry next tick — no silent seat loss (fleet-ops#3811).
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -119,6 +125,7 @@ JSON
 
 export PI_MODELS_JSON="$scratch/models.json"
 export SEAT_CAPS_JSON="$scratch/seat-caps.json"
+export PI_AUDITION_VERDICTED_JSON="$scratch/audition-verdicted-default.json"
 export PI_PACKET_STATE="$scratch/state"
 mkdir -p "$PI_PACKET_STATE"
 ledger="$scratch/ledger"
@@ -152,6 +159,7 @@ export SEAT_CAPS_JSON="'"$SEAT_CAPS_JSON"'"
 export SEAT_YIELD_JSON="'"$SEAT_YIELD_JSON"'"
 export PI_MODEL_CANDIDATES_JSON="'"$PI_MODEL_CANDIDATES_JSON"'"
 export PI_AUDITION_DROPPED_JSON="'"$PI_AUDITION_DROPPED_JSON"'"
+export PI_AUDITION_VERDICTED_JSON="'"${PI_AUDITION_VERDICTED_JSON:-}"'"
 export FLEET_ISSUE_FILE="'"$FLEET_ISSUE_FILE"'"
 export ISSUE_FILE_LOG="'"$ISSUE_FILE_LOG"'"
 export PI_PACKET_STATE="'"$PI_PACKET_STATE"'"
@@ -231,8 +239,10 @@ cat >"$candidates" <<'JSON'
 JSON
 
 dropped="$scratch/audition-dropped.json"
+verdicted="$scratch/audition-verdicted.json"
 yield="$scratch/seat-yield.json"
 echo '{}' >"$dropped"
+echo '{}' >"$verdicted"
 echo '{}' >"$yield"
 
 export SEAT_CAPS_JSON="$inject_caps"
@@ -568,6 +578,151 @@ jq -e 'has("mergegateway/deepseek/deepseek-v4-flash")' "$dropped" >/dev/null 2>&
   && fail "promoted seat must NOT be recorded in the drop cooldown map" \
   || true
 ok "promotion at fleet median files promote verdict via fleet-issue-file (no drop cooldown)"
+
+# --- 12. config-declared audition seat is never removed by the tick ---------
+# fleet-ops#3811: a provider-level audition: true on SCALAR model rows is
+# config-declared (xkiro was wired via config PR #3505) — the tick did not
+# inject it and must not delete it from the LIVE caps. Doing so stranded the
+# seat's health ledgers as SEAT-KEY-INVALID phantoms for comeback-release
+# until the next deploy reinstalled the provider — a permanent flap. The tick
+# files the verdict issue once and keeps the seat.
+conf_caps="$scratch/conf-caps.json"
+cat >"$conf_caps" <<'JSON'
+{
+  "ram_gb_per_worker": 1.5,
+  "free_providers_in_order": ["ollama", "xkiro"],
+  "prepaid_providers_in_order": ["devin"],
+  "providers": {
+    "ollama": { "cap": 2, "class": "free", "models": { "deepseek-v4-flash:0731": 2 } },
+    "devin":  { "cap": 1, "class": "prepaid-quota", "models": { "glm-5-2": 1 } },
+    "xkiro": {
+      "cap": 3,
+      "class": "free",
+      "audition": true,
+      "models": {
+        "deepseek/deepseek-v4-pro": 1
+      }
+    }
+  }
+}
+JSON
+cat >"$yield" <<'JSON'
+{
+  "xkiro/deepseek/deepseek-v4-pro": {
+    "yield": 0.0,
+    "sessions": 20,
+    "pr_count": 0,
+    "no_pr_count": 20,
+    "provisional": false,
+    "cost_per_session": 0.0,
+    "cost_usd": 0.0
+  },
+  "ollama/deepseek-v4-flash:0731": {
+    "yield": 0.6,
+    "sessions": 20,
+    "pr_count": 12,
+    "no_pr_count": 8,
+    "provisional": false,
+    "cost_per_session": 0.0,
+    "cost_usd": 0.0
+  }
+}
+JSON
+echo '{}' >"$dropped"
+verdicted="$scratch/audition-verdicted.json"
+echo '{}' >"$verdicted"
+: >"$issue_file_log"
+echo '{"candidates": []}' >"$candidates"
+
+export SEAT_CAPS_JSON="$conf_caps"
+export SEAT_YIELD_JSON="$yield"
+export PI_MODEL_CANDIDATES_JSON="$candidates"
+export PI_AUDITION_DROPPED_JSON="$dropped"
+export AUDITION_DROPPED_JSON="$dropped"
+export PI_AUDITION_VERDICTED_JSON="$verdicted"
+out=$(run_audition)
+echo "$out" | grep -q "config-declared seat xkiro/deepseek/deepseek-v4-pro at cap" \
+  || fail "config-declared seat at cap should be logged as kept (got: $out)"
+jq -e '.providers.xkiro.models["deepseek/deepseek-v4-pro"] == 1' "$conf_caps" >/dev/null 2>&1 \
+  || fail "config-declared audition seat must NOT be removed from live caps"
+jq -e 'has("xkiro/deepseek/deepseek-v4-pro")' "$verdicted" >/dev/null 2>&1 \
+  || fail "filed verdict should be recorded in the verdicted map"
+# A yield-0 seat must not be filed as "promote" on a degenerate 0.0 median.
+grep -q "audition-failed" "$issue_file_log" 2>/dev/null \
+  || fail "zero-yield seat should file an audition-failed verdict (got log: $(cat "$issue_file_log"))"
+filings=$(wc -l <"$issue_file_log")
+[[ "$filings" == "1" ]] || fail "expected exactly one verdict filing, got $filings"
+# Second run: seat still kept, no second filing.
+out=$(run_audition)
+filings=$(wc -l <"$issue_file_log")
+[[ "$filings" == "1" ]] || fail "verdict for a kept seat must be filed once, got $filings filings"
+jq -e '.providers.xkiro.models["deepseek/deepseek-v4-pro"] == 1' "$conf_caps" >/dev/null 2>&1 \
+  || fail "config-declared seat must still be in live caps on the second run"
+ok "config-declared audition seat at cap: verdict filed once, seat kept in live caps"
+
+# --- 13. a failed verdict filing keeps the tick-injected seat ---------------
+# fleet-ops#3811: retiring a seat without the filed verdict issue is silent
+# seat loss — the promote/drop never reaches config/seat-caps.json. A filing
+# failure must leave the seat in the LIVE caps for a retry next tick.
+failfiler="$scratch/bin/fleet-issue-file-fail"
+cat >"$failfiler" <<'SH'
+#!/usr/bin/env bash
+echo "fleet-issue-file: $*" >>"${ISSUE_FILE_LOG:?}"
+echo "create failed: expected the \"[HOST/]OWNER/REPO\" format" >&2
+exit 1
+SH
+chmod +x "$failfiler"
+
+fail_caps="$scratch/fail-caps.json"
+cat >"$fail_caps" <<'JSON'
+{
+  "ram_gb_per_worker": 1.5,
+  "free_providers_in_order": ["ollama"],
+  "prepaid_providers_in_order": ["devin"],
+  "providers": {
+    "ollama": { "cap": 2, "class": "free", "models": { "deepseek-v4-flash:0731": 2 } },
+    "devin":  { "cap": 1, "class": "prepaid-quota", "models": { "glm-5-2": 1 } },
+    "mergegateway": {
+      "cap": 1,
+      "class": "metered",
+      "audition": true,
+      "audition_started": "2026-09-06T00:00:00Z",
+      "models": {
+        "deepseek/deepseek-v4-flash": { "cap": 1, "audition": true }
+      }
+    }
+  }
+}
+JSON
+cat >"$yield" <<'JSON'
+{
+  "mergegateway/deepseek/deepseek-v4-flash": {
+    "yield": 0.3,
+    "sessions": 10,
+    "provisional": false,
+    "cost_per_session": 0.05,
+    "cost_usd": 0.50
+  }
+}
+JSON
+echo '{}' >"$dropped"
+: >"$issue_file_log"
+
+export SEAT_CAPS_JSON="$fail_caps"
+export SEAT_YIELD_JSON="$yield"
+export FLEET_ISSUE_FILE="$failfiler"
+out=$(run_audition)
+echo "$out" | grep -q "keep mergegateway/deepseek/deepseek-v4-flash" \
+  || fail "filing failure should keep the seat (got: $out)"
+jq -e '.providers.mergegateway.models["deepseek/deepseek-v4-flash"].audition == true' "$fail_caps" >/dev/null 2>&1 \
+  || fail "seat must stay in live caps when the verdict filing fails"
+jq -e 'has("mergegateway/deepseek/deepseek-v4-flash")' "$dropped" >/dev/null 2>&1 \
+  && fail "no drop may be recorded when the verdict was not filed" \
+  || true
+ok "failed verdict filing keeps the tick-injected seat in live caps"
+
+# Restore the working filer for the remaining checks.
+export FLEET_ISSUE_FILE="$scratch/bin/fleet-issue-file"
 
 echo
 echo "ALL AUDITION-LANE TESTS PASSED"

@@ -610,6 +610,11 @@ echo "reconciler-caught: delta=$reconciler_caught total=$_reconciler_new_total r
 # providers are never auditioned (defence in depth at read time).
 MODEL_CANDIDATES_JSON="${PI_MODEL_CANDIDATES_JSON:-$HOME/.local/state/pi-packet/model-candidates.json}"
 AUDITION_DROPPED_JSON="${PI_AUDITION_DROPPED_JSON:-$HOME/.local/state/pi-packet/audition-dropped.json}"
+# fleet-ops#3811: seats the tick may NOT remove (config-declared provider-level
+# audition:true, e.g. xkiro) get their verdict filed once into this map so the
+# tick does not re-file the same verdict issue every tick while the seat waits
+# on its config/seat-caps.json PR.
+AUDITION_VERDICTED_JSON="${PI_AUDITION_VERDICTED_JSON:-$HOME/.local/state/pi-packet/audition-verdicted.json}"
 AUDITION_MAX_SESSIONS="${PI_AUDITION_MAX_SESSIONS:-10}"
 AUDITION_MAX_AGE_S="${PI_AUDITION_MAX_AGE_S:-604800}"   # 7 days
 AUDITION_MAX_COST_USD="${PI_AUDITION_MAX_COST_USD:-1}"
@@ -713,18 +718,36 @@ audition_inject_and_retire() {
     # the yield ledger for their session count and cost, and retire any that
     # hit 10 sessions / 7 days / $1 cost. A retired seat is removed from the
     # LIVE caps and a verdict issue is filed via fleet-issue-file.
+    #
+    # fleet-ops#3811: the tick may only REMOVE seats it injected itself —
+    # a model entry that is an object with audition: true. A provider-level
+    # audition: true on SCALAR model rows is config-declared (e.g. xkiro was
+    # wired via config PR #3505): the tick does not own those rows. Deleting
+    # them here strands the seat's health ledgers as SEAT-KEY-INVALID phantoms
+    # for fleet-seat-comeback-release (their walls can never drain) until the
+    # next deploy reinstalls them — a permanent flap that was observed live as
+    # FleetSeatComebackNeverReleased. Config-declared seats still get their
+    # verdict issue filed once (it drives the promote/drop config PR) but are
+    # left in the LIVE caps.
     local retired=0
     local yield_json=""
     [[ -f "$SEAT_YIELD_JSON" ]] && yield_json=$(cat "$SEAT_YIELD_JSON" 2>/dev/null || true)
 
-    # Collect audition seats from the (potentially updated) tmp caps.
+    # Collect audition seats from the (potentially updated) tmp caps. The 4th
+    # field is 1 when the MODEL row is a tick-injected object
+    # ({cap:1,audition:true}) — only those rows may be deleted below.
     local audition_seats=""
     audition_seats=$(jq -r '
         .providers | to_entries[] | .key as $p | .value as $v |
         (if ($v|type) == "object" then ($v.models // {}) else {} end) | to_entries[] |
         select( ((.value|type) == "object" and .value.audition == true) or (($v.audition // false) == true) ) |
-        "\($p)\t\(.key)\t\($v.audition_started // "")"
+        "\($p)\t\(.key)\t\($v.audition_started // "")\t\(if ((.value|type) == "object" and (.value.audition // false) == true) then "1" else "0" end)"
     ' "$tmp_caps" 2>/dev/null || true)
+
+    # Seats whose verdict issue was already filed (config-declared seats are
+    # kept, so without this map the tick would re-file every run).
+    local _verdicted_json=""
+    [[ -f "$AUDITION_VERDICTED_JSON" ]] && _verdicted_json=$(cat "$AUDITION_VERDICTED_JSON" 2>/dev/null || true)
 
     # Fleet median yield (for the promote threshold). Computed from the yield
     # ledger across all seats with >= 20 sessions (non-provisional).
@@ -736,7 +759,7 @@ audition_inject_and_retire() {
         ' 2>/dev/null || echo 0.0)
     fi
 
-    while IFS=$'\t' read -r rp rm rstarted; do
+    while IFS=$'\t' read -r rp rm rstarted rtick_injected; do
         [[ -n "$rp" && -n "$rm" ]] || continue
         local _sessions=0 _cost=0.0 _yield=0.5 _age=0
         if [[ -n "$yield_json" ]]; then
@@ -753,6 +776,35 @@ audition_inject_and_retire() {
         if (( _sessions >= AUDITION_MAX_SESSIONS )) \
             || (( _age >= AUDITION_MAX_AGE_S )) \
             || awk -v c="$_cost" -v m="$AUDITION_MAX_COST_USD" 'BEGIN{exit !(c+0 >= m+0)}'; then
+            local _verdict
+            # fleet-ops#3811: config-declared seat (provider-level audition:
+            # true, scalar model row — the tick did not inject it). Removing
+            # it from the LIVE caps strands its health ledgers as
+            # SEAT-KEY-INVALID phantoms for comeback-release until the next
+            # deploy reinstalls it — a permanent flap. File the verdict issue
+            # once (it drives the promote/drop config PR) and keep the seat.
+            if [[ "$rtick_injected" != "1" ]]; then
+                if _audition_verdicted_has "$rp/$rm" "$_verdicted_json"; then
+                    : # verdict already filed — config PR pending
+                elif _verdict=$(_audition_file_verdict "$rp" "$rm" "$_yield" "$_sessions" "$_cost" "$fleet_median"); then
+                    _audition_record_verdict "$rp/$rm" "$now_epoch"
+                    echo "audition: config-declared seat $rp/$rm at cap — verdict $_verdict filed, seat kept in live caps (removal is a config/seat-caps.json PR, fleet-ops#3811)"
+                else
+                    echo "audition: config-declared seat $rp/$rm at cap — verdict filing failed, seat kept in live caps (fleet-ops#3811)"
+                fi
+                continue
+            fi
+            # Tick-injected seat: file the verdict BEFORE deleting. If the
+            # filing fails the seat stays in the LIVE caps and the tick
+            # retries next run — retiring without the verdict issue is silent
+            # seat loss: the promote/drop never reaches config/seat-caps.json
+            # (fleet-ops#3811 — observed live: --repo "fleet-ops" was rejected
+            # by gh's OWNER/REPO check and the captured error text also
+            # polluted _verdict, breaking the drop-cooldown compare).
+            if ! _verdict=$(_audition_file_verdict "$rp" "$rm" "$_yield" "$_sessions" "$_cost" "$fleet_median"); then
+                echo "audition: keep $rp/$rm (verdict filing failed — seat stays in live caps, retry next tick; fleet-ops#3811)"
+                continue
+            fi
             # Retire: remove the model from the provider, and if the provider
             # has no models left, remove the provider entirely. Write via a
             # temp file so tmp_caps (the path) is not clobbered by the jq
@@ -767,13 +819,10 @@ audition_inject_and_retire() {
             else
                 rm -f "$_retire_tmp"
             fi
-            # File the verdict issue via fleet-issue-file (reuse existing
-            # organ). Only a DROPPED (audition-failed) seat gets the 30-day
-            # cooldown — a promoted seat is no longer a candidate, so it must
-            # not be blocked from re-audition if it is later dropped from
+            # Only a DROPPED (audition-failed) seat gets the 30-day cooldown —
+            # a promoted seat is no longer a candidate, so it must not be
+            # blocked from re-audition if it is later dropped from
             # config/seat-caps.json.
-            local _verdict
-            _verdict=$(_audition_file_verdict "$rp" "$rm" "$_yield" "$_sessions" "$_cost" "$fleet_median")
             if [[ "$_verdict" == "audition-failed" ]]; then
                 _audition_record_drop "$rp/$rm" "$now_epoch"
             fi
@@ -809,14 +858,43 @@ _audition_record_drop() {
     mv -f "$tmp" "$AUDITION_DROPPED_JSON"
 }
 
+# True when the verdict for $1 (provider/model) was already filed. $2 is the
+# preloaded AUDITION_VERDICTED_JSON content (may be empty).
+_audition_verdicted_has() {
+    local key="$1" json="${2:-}"
+    [[ -n "$key" && -n "$json" ]] || return 1
+    printf '%s' "$json" | jq -e --arg k "$key" '.[$k] != null' >/dev/null 2>&1
+}
+
+# Record a filed verdict for a kept (config-declared) seat so it is not
+# re-filed every tick (fleet-ops#3811).
+_audition_record_verdict() {
+    local key="$1" epoch="$2"
+    [[ -n "$key" ]] || return 0
+    local tmp
+    tmp=$(mktemp)
+    local cur=""
+    [[ -f "$AUDITION_VERDICTED_JSON" ]] && cur=$(cat "$AUDITION_VERDICTED_JSON" 2>/dev/null || true)
+    if [[ -z "$cur" ]]; then cur='{}'; fi
+    printf '%s' "$cur" | jq --arg k "$key" --argjson t "$epoch" '.[$k] = $t' > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
+    mv -f "$tmp" "$AUDITION_VERDICTED_JSON"
+}
+
 # File a promote or audition-failed verdict issue via fleet-issue-file.
 # Reuses the existing organ (fleet-ops#3322 orchestrator decision Q2: option c).
 # Prints the verdict ("promote" or "audition-failed") on stdout so the caller
-# can apply the 30-day cooldown only to dropped seats.
+# can apply the 30-day cooldown only to dropped seats. Returns non-zero when
+# the issue could not be filed — the caller must then keep the seat in the
+# LIVE caps (retirement without a filed verdict is silent seat loss,
+# fleet-ops#3811).
 _audition_file_verdict() {
     local p="$1" m="$2" y="$3" s="$4" c="$5" median="$6"
     local title body verdict
-    if awk -v y="$y" -v m="$median" 'BEGIN{exit !(y+0 >= m+0)}'; then
+    # A seat with zero yield must not "promote" on a degenerate fleet median of
+    # 0.0 (no non-provisional baseline) — promotion needs a positive yield at
+    # or above the median (fleet-ops#3811: xkiro seats at yield 0.0 after 20
+    # sessions were about to be filed as "promote").
+    if awk -v y="$y" -v m="$median" 'BEGIN{exit !((y+0) > 0 && (y+0) >= (m+0))}'; then
         verdict="promote"
         title="promote $p/$m into seat-caps (yield $(printf '%.0f' "$(awk "BEGIN{print $y*100}")")%, cost \$$c)"
         body="Audition complete (fleet-ops#3322). The seat $p/$m reached $s sessions with yield $(printf '%.1f' "$(awk "BEGIN{print $y*100}")")% (fleet median $(printf '%.1f' "$(awk "BEGIN{print $median*100}")")%) and total cost \$$c. Promote: add $p/$m to config/seat-caps.json with an appropriate cap. Numbers: sessions=$s yield=$y cost_usd=$c fleet_median=$median."
@@ -826,12 +904,19 @@ _audition_file_verdict() {
         body="Audition complete (fleet-ops#3322). The seat $p/$m reached $s sessions with yield $(printf '%.1f' "$(awk "BEGIN{print $y*100}")")% (fleet median $(printf '%.1f' "$(awk "BEGIN{print $median*100}")")%) and total cost \$$c. Drop: add a dated \`audition-failed:\` note to config/seat-caps.json so $p/$m is not re-tried for 30 days. Numbers: sessions=$s yield=$y cost_usd=$c fleet_median=$median."
     fi
     # File via fleet-issue-file with the agent-ready label so a worker picks
-    # it up. Best-effort: a filing failure is logged but does not block the
-    # tick (the retirement already happened in the LIVE caps).
+    # it up. gh requires the OWNER/REPO form (fleet-ops#3811: "--repo fleet-ops"
+    # failed every filing). The filer's output is captured into _file_out —
+    # sending it to this function's stdout would pollute the caller's
+    # $(verdict) capture and silently break the drop-cooldown compare.
     if [[ -x "$_ISSUE_FILE_BIN" ]]; then
-        if ! "$_ISSUE_FILE_BIN" file --repo fleet-ops --title "$title" --body "$body" --label agent-ready 2>&1; then
-            echo "audition: WARNING — fleet-issue-file failed for $verdict $p/$m (retirement still committed)" >&2
+        local _file_out
+        if ! _file_out=$("$_ISSUE_FILE_BIN" file --repo "Nishfleet/fleet-ops" --title "$title" --body "$body" --label agent-ready 2>&1); then
+            echo "audition: WARNING — fleet-issue-file failed for $verdict $p/$m: $_file_out (seat kept, retry next tick)" >&2
+            return 1
         fi
+    else
+        echo "audition: WARNING — fleet-issue-file not executable at $_ISSUE_FILE_BIN for $verdict $p/$m (seat kept, retry next tick)" >&2
+        return 1
     fi
     printf '%s' "$verdict"
 }

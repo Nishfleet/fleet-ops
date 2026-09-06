@@ -459,6 +459,19 @@ CHAIN_PROM = Path(
 )
 # seat-caps.json is the source of truth for enrolled-seat count
 # (fleet_pi_seat_total) — providers with cap>0 are enrolled.
+# fleet-ops#3811: the LIVE caps file the seat organs actually use comes
+# first (same source as lib/seat-lib.sh SEAT_CAPS_JSON), then the repo
+# checkouts as fallbacks. Validating comeback metrics against a stale repo
+# checkout while the organs use the live file makes the two
+# _seat_key_in_caps implementations disagree — a seat can be phantom to the
+# metric and real to the organ (or the reverse), which was part of the
+# comeback-release starvation this issue names.
+SEAT_CAPS_LIVE = Path(
+    os.environ.get(
+        "SEAT_CAPS_JSON",
+        "/home/nish/.local/state/pi-packet/seat-caps.json",
+    )
+)
 SEAT_CAPS_DEFAULT = Path(
     "/home/nish/workspaces/tooling/fleet-ops/config/seat-caps.json"
 )
@@ -2845,8 +2858,13 @@ def _seat_key_in_caps(provider, model):
     Returns True (fail-open) when the config is missing/unparseable so a
     broken seat-caps can never silently suppress a real alert — same shape as
     the other seat-caps reads in this module.
+
+    fleet-ops#3811: the LIVE caps file (SEAT_CAPS_LIVE — the same source
+    lib/seat-lib.sh uses) is checked FIRST so this guard's verdict matches
+    what the comeback-release organ actually does. The repo checkouts are
+    kept as fallbacks for hosts where the live file is absent (CI, dev).
     """
-    for path in (SEAT_CAPS_DEFAULT, SEAT_CAPS_FALLBACK):
+    for path in (SEAT_CAPS_LIVE, SEAT_CAPS_DEFAULT, SEAT_CAPS_FALLBACK):
         try:
             data = json.loads(path.read_text())
         except (OSError, json.JSONDecodeError):
