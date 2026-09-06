@@ -583,6 +583,18 @@ bash "$here/seat-empty-run-intermittent-count.test.sh"
 # Hermetic (scratch ledger/state, no gh/prometheus/systemd).
 bash "$here/seat-empty-run-park-persists.test.sh"
 
+# fleet-ops#3730: the empty-run counter must persist across a re-seat
+# cycle — a NEW issue picking the same seat (the intake re-spawn / fresh-
+# claim path) must NOT reset consecutive_failure_count to 1, and the seat
+# must be held until a non-empty run proves it (probe-gated re-admission,
+# fleet-ops#3737). The 2026-09-05 snapshot reset count=4 -> count=1 so the
+# geometric bench kept re-offering ollama/deepseek-v4-flash:0731 within the
+# hour and burned issue runs. This test pins the 1 -> 2 escalation through
+# pick_seat itself. Hosted here so P14 runs it without a workflow-file edit
+# (the worker App cannot push .github/workflows/**).
+# Hermetic (scratch ledger/state, no gh/prometheus/systemd).
+bash "$here/seat-empty-run-count-persists-new-issue.test.sh"
+
 # fleet-ops#1520: curator journal-cap lock. The live dump (~40KB of
 # dispositioned trust_denials.entries every 5 min) was fixed in
 # memory-compound#9; this test is the fleet-ops class lock so a revert

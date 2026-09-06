@@ -749,6 +749,20 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/seat-empty-run-park-persists\.te
   || fail "seat-empty-run-park-persists.test.sh must not be a known orphan (fleet-ops#3666)"
 ok "seat-empty-run-park-persists.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#3666)"
 
+# fleet-ops#3730: hard-pin the host line for seat-empty-run-count-persists-new-issue.
+# The empty-run counter must persist across a re-seat cycle (a new issue id
+# must not reset it to 1) and the seat must be held until a non-empty run
+# proves it. Hosted from ci-standards-audit (already in P14); named pin so a
+# future drop of the host line fails by name and cannot be parked on orphans.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/seat-empty-run-count-persists-new-issue\.test\.sh"?' \
+  "$here/ci-standards-audit.test.sh" \
+  || fail "ci-standards-audit.test.sh must bash-invoke seat-empty-run-count-persists-new-issue.test.sh (fleet-ops#3730)"
+[[ -n "${reachable[seat-empty-run-count-persists-new-issue.test.sh]:-}" ]] \
+  || fail "seat-empty-run-count-persists-new-issue.test.sh must be hosted by a listed test (fleet-ops#3730)"
+[[ -z "${known_orphan_set[seat-empty-run-count-persists-new-issue.test.sh]:-}" ]] \
+  || fail "seat-empty-run-count-persists-new-issue.test.sh must not be a known orphan (fleet-ops#3730)"
+ok "seat-empty-run-count-persists-new-issue.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#3730)"
+
 # fleet-ops#3295 (PR #3352 follow-up): hard-pin the host line for
 # pi-intake-tick-umbrella-exclusion in pi-intake-run (already listed in
 # ci.yml) so a future refactor that drops it is caught by name. PR #3352
