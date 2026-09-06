@@ -310,6 +310,18 @@ cmd_gate() {
     hours=$(jq -r '.hours_of_work' <<<"$snap")
     action=$(jq -r '.action' <<<"$snap")
     log "gate: $short hours=$hours action=$action"
+    # fleet-ops#3547: runway alone is not supply. Thin product supply
+    # (created-24h < 20 or agent-ready < 40) opens the floor and runs the
+    # scout regardless of runway. The floor also takes precedence over a
+    # scout-futility park: a critically thin repo that the futility tracker
+    # parked is exactly when the scout must try again — the park's
+    # escalate-senior path has not refilled supply (that is why the floor is
+    # open) and one scout run is not the burn the park guards against.
+    # fleet-ops is exempt (supply_floor_open returns closed). Returns 0 (run)
+    # before the park or runway rest can bind.
+    if supply_floor_open "$short" "$snap"; then
+        return 0
+    fi
     # fleet-ops#3418: auto-park a green-and-sterile scout. Once
     # scout-futility-check has escalated (consecutive_dry >= N), the scout
     # has proven N times it cannot grow the buffer below BUFFER_H. Running
@@ -335,12 +347,8 @@ cmd_gate() {
         fi
     fi
     if [[ "$action" == "rest" ]]; then
-        # fleet-ops#3547: runway alone is not supply. Thin product supply
-        # (created-24h < 20 or agent-ready < 40) opens the floor and runs
-        # the scout; fleet-ops is exempt (see supply_floor_open).
-        if supply_floor_open "$short" "$snap"; then
-            return 0
-        fi
+        # Runway rest binds only when the supply floor (checked above) is
+        # closed, i.e. supply is healthy (created-24h >= 20 and ready >= 40).
         return 1
     fi
     return 0

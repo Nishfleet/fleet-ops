@@ -225,6 +225,11 @@ mkdir -p "$park_state_dir"
 export SCOUT_FUTILITY_STATE_DIR="$park_state_dir"
 export SCOUT_FUTILITY_N=3
 export SCOUT_FUTILITY_BUFFER_H=12
+# Pin supply healthy (created-24h>=20 AND ready>=40) so this park scenario
+# tests the park alone: a thin supply floor overrides the park (asserted at
+# the end of this block) — fleet-ops#3547.
+export FLEET_WORK_SUPPLY_CREATED_24H=65
+export FLEET_WORK_SUPPLY_READY=65
 write_state_file() {
   local repo="$1" dry="$2"
   cat >"$park_state_dir/${repo}.state" <<EOF
@@ -288,7 +293,16 @@ set +e
 gate_rc=$?
 set -e
 [[ "$gate_rc" == "1" ]] || fail "scenario2b: rest zone (dry=3, hours=30) must rest=1, got $gate_rc"
-unset FLEET_WORK_SUPPLY_HOURS SCOUT_FUTILITY_STATE_DIR SCOUT_FUTILITY_N SCOUT_FUTILITY_BUFFER_H
+# fleet-ops#3547: THIN SUPPLY overrides the park. dry=3 (>= N), hours=5
+# (< BUFFER_H) would park, but created-24h=5 < 20 opens the floor -> run=0;
+# a parked scout must try again when the buffer is critical, the park's
+# escalate-senior path has not refilled it.
+write_state_file demo 3
+export FLEET_WORK_SUPPLY_HOURS=5
+export FLEET_WORK_SUPPLY_CREATED_24H=5
+set +e; "$bin" gate demo >/dev/null 2>&1; gate_rc=$?; set -e
+[[ "$gate_rc" == "0" ]] || fail "scenario2b: floor-open (created=5) overrides park (dry=3,hours=5) must run=0, got $gate_rc"
+unset FLEET_WORK_SUPPLY_HOURS SCOUT_FUTILITY_STATE_DIR SCOUT_FUTILITY_N SCOUT_FUTILITY_BUFFER_H FLEET_WORK_SUPPLY_CREATED_24H FLEET_WORK_SUPPLY_READY
 rm -rf "$park_state_dir"
 ok "scenario2b: auto-park rests when consecutive_dry>=N and hours<BUFFER_H; lifts at hours>=BUFFER_H (fleet-ops#3418)"
 
