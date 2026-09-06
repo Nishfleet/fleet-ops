@@ -381,6 +381,36 @@ set -e
 [[ "$sprobe_rc" != "0" ]] || fail "devin model: swe-1-7 must not probe (no declared ceiling)"
 ok "devin model AIMD: glm-5-2 probes to ceiling 6, swe-1-7 without ceiling stays at declared"
 
+# --- fleet-ops#3677: prepaid AIMD backoff bench is capped (15-30 min) -----
+# A single backoff on a prepaid-quota seat must re-probe within a bounded
+# window, NOT inherit a multi-hour bench from the per-seat ledger (the Devin
+# ~6h lockout this issue fixes). floor/2 is still the immediate cap
+# reduction; bench_until must be <= now + 1800s (30 min hard cap; lower when
+# the provider sets quota_bench_default_s).
+rm -f "$state/active-seats"/*.json "$ledger"/*.json "$learned" "$audit"
+# A fresh rate_limited marker whose reset window is 5h out: the AIMD backoff
+# must NOT inherit that multi-hour wall. provider_has_recent_error needs a
+# FRESH observed_at + a future usable_at.
+rate_obs=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+future_long=$(date -u -d "+5 hours" +%Y-%m-%dT%H:%M:%SZ)
+write_ledger devin "glm-5-2" rate_limited "$rate_obs" "$future_long"
+set +e
+eff3677=$(run effective_provider_cap devin 2>/dev/null)
+set -e
+[[ "$eff3677" == "2" ]] || fail "#3677: prepaid backoff must halve declared cap 4->2, got $eff3677"
+bu3677=$(jq -r '.providers.devin.bench_until // "none"' "$learned")
+[[ "$bu3677" != "none" && "$bu3677" != "null" ]] \
+  || fail "#3677: prepaid backoff must set bench_until, got '$bu3677'"
+now3677=$(date -u +%s)
+bu3677_s=$(date -u -d "$bu3677" +%s 2>/dev/null || echo 0)
+delta3677=$(( bu3677_s - now3677 ))
+(( bu3677_s > 0 && delta3677 <= 1800 )) \
+  || fail "#3677: prepaid backoff bench_until must be <= now+1800s (30 min), got ${delta3677}s (bench_until=$bu3677); the 5h-away ledger wall must be capped"
+# The audit line must print the bench length in seconds for the next reader.
+grep -q "aimd devin: learned_cap=2 result=backoff.*bench=" "$audit" \
+  || fail "#3677: audit line must print the bench length in seconds: $(cat "$audit")"
+ok "fleet-ops#3677: prepaid backoff halves cap 4->2 and caps bench_until to <= now+1800s (was ${delta3677}s to now); audit prints bench length in seconds"
+
 # --- invariant 5: bench expiry -> decay toward the floor ------------------
 rm -f "$state/active-seats"/*.json "$ledger"/*.json
 past=$(date -u -d "-10 minutes" +%Y-%m-%dT%H:%M:%SZ)

@@ -1045,6 +1045,33 @@ _provider_bench_until() {
     echo "$soonest"
 }
 
+# fleet-ops#3677: cap the AIMD backoff bench so a prepaid seat re-probes
+# within 15-30 min of a resource_exhausted, NOT the hours the per-seat
+# ledger's wall may carry (the Devin sub was ~85-97% unused while one backoff
+# pinned learned_cap=2 of 7 declared for ~6h). floor/2 remains the immediate
+# cap reduction; the bench is only a "don't re-probe" gate. Growth never
+# exceeds the provider's real quota reset window (devin quota_bench_default_s
+# =900), with 1800s as the hard ceiling when the provider sets no default.
+# Args: provider ledger_bench_until (RFC3339, may be empty). Echoes a capped
+# bench_until, or empty when $2 is empty.
+_provider_backoff_bench_until() {
+    local p="$1" raw="$2"
+    local cap_s=1800 rw now_s raw_s capped_s
+    rw=$(provider_quota_bench_default "$p")
+    if [[ "$rw" =~ ^[0-9]+$ ]] && (( rw > 0 )); then
+        (( rw < cap_s )) && cap_s=$rw
+    fi
+    [[ -n "$raw" ]] || { echo ""; return; }
+    now_s=$(date -u +%s)
+    raw_s=$(date -u -d "$raw" +%s 2>/dev/null || echo 0)
+    capped_s=$(( now_s + cap_s ))
+    if (( raw_s > 0 && raw_s <= capped_s )); then
+        echo "$raw"
+    else
+        date -u -d "@$capped_s" +%Y-%m-%dT%H:%M:%SZ
+    fi
+}
+
 _learned_audit() {
     local line="$1"
     printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$line" >>"$LEARNED_CAPS_AUDIT" 2>/dev/null || true
@@ -1113,7 +1140,13 @@ _record_learned_cap() {
     if mv "$tmp" "$LEARNED_CAPS_JSON" 2>/dev/null; then
         _set_learned_in_memory "$p" "$lc" "$bench" "$ramp_val"
         local bench_desc="no bench"
-        [[ -n "$bench" ]] && bench_desc="bench_until=$bench"
+        if [[ -n "$bench" ]]; then
+            local bs nowb
+            nowb=$(date -u +%s)
+            bs=$(date -u -d "$bench" +%s 2>/dev/null || echo 0)
+            bs=$(( bs > nowb ? bs - nowb : 0 ))
+            bench_desc="bench=${bs}s bench_until=$bench"
+        fi
         local ramp_desc=""
         [[ "$ramp_val" == "1" ]] && ramp_desc=" ramp"
         _learned_audit "aimd $p: learned_cap=$lc result=$result$bench_desc$ramp_desc"
@@ -1297,6 +1330,7 @@ effective_provider_cap() {
         (( backoff < 1 )) && backoff=1
         local bench
         bench=$(_provider_bench_until "$p")
+        bench=$(_provider_backoff_bench_until "$p" "$bench")
         local cur="${LEARNED_CAP[$p]:-}"
         local cur_bench="${LEARNED_BENCH_UNTIL[$p]:-}"
         if [[ "$cur" != "$backoff" || "$cur_bench" != "$bench" ]]; then
@@ -1427,6 +1461,7 @@ effective_model_cap() {
         (( backoff < 1 )) && backoff=1
         local bench
         bench=$(_provider_bench_until "$p")
+        bench=$(_provider_backoff_bench_until "$p" "$bench")
         local cur="${LEARNED_CAP[$key]:-}"
         local cur_bench="${LEARNED_BENCH_UNTIL[$key]:-}"
         if [[ "$cur" != "$backoff" || "$cur_bench" != "$bench" ]]; then
