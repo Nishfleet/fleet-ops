@@ -1486,8 +1486,9 @@ blocked-on: nish-decision" 2>/dev/null || true
 
     # fleet-ops#1558 + #3281: per-repo MemoryMax/MemoryHigh via per-instance
     # drop-in before start. Template keeps MemoryMax=6G/MemoryHigh=3G; this
-    # overrides for known repos (fleet-ops light 3G/2560M per #3885, 0509 browser
-    # 3G/2560M) and for heavy|keystone issues (heavy class 3G/2G, fleet-ops#3281).
+    # overrides for known repos (fleet-ops + 0509 MemoryMax=4G, throttle band
+    # removed per fleet-ops#3930) and for heavy|keystone issues (heavy class
+    # 3G/2G, fleet-ops#3281).
     # Missing table row = keep template. daemon-reload so the fresh drop-in is
     # seen on the subsequent start (oneshot units are not lingering-loaded).
     mem_row=$(worker_memory_for_difficulty "$REPO" "$difficulty" 2>/dev/null || true)

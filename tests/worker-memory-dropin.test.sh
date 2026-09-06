@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 # tests/worker-memory-dropin.test.sh
 #
-# fleet-ops#1558 + #1587: per-repo MemoryMax/MemoryHigh and Environment
+# fleet-ops#1558 + #1587 + #3930: per-repo MemoryMax/MemoryHigh and Environment
 # variables via intake-written per-instance drop-ins. Proves:
 #   1. seat-caps.json carries worker_memory for fleet-ops + 0509 with the
-#      decided caps (light 3G/2560M, browser 3G/2560M — fleet-ops raised from 2G/1536M to 0509's values in #3885 after pysemgrep peaked at the 1536M clamp; #3679 raised 0509 from 1536M after the 2026-09-05 oom-kill storm; #1587 values were 1536M/1G and 2G/1536M).
+#      decided caps (MemoryMax=4G, MemoryHigh REMOVED per fleet-ops#3930 — the
+#      throttle band is what makes oomd pressure-kill a random sibling; a worker
+#      that exceeds 4G is now OOM-killed locally at the cap instead. History:
+#      fleet-ops raised from 2G/1536M to 3G/2560M in #3885, 0509 from 1536M in
+#      #3679, then the band was dropped in #3930).
 #   2. seat-lib.sh worker_memory_for_repo returns those values.
 #   3. pi-intake-tick.sh writes the memory drop-in before systemctl start.
 #   4. pi-issue-start.sh mirrors the same memory drop-in on re-dispatch.
@@ -39,10 +43,10 @@ fo_max=$(jq -r '.worker_memory["fleet-ops"].MemoryMax // empty' "$caps")
 fo_high=$(jq -r '.worker_memory["fleet-ops"].MemoryHigh // empty' "$caps")
 o5_max=$(jq -r '.worker_memory["0509"].MemoryMax // empty' "$caps")
 o5_high=$(jq -r '.worker_memory["0509"].MemoryHigh // empty' "$caps")
-[[ "$fo_max" == "3G" ]] || fail "fleet-ops MemoryMax want 3G got '$fo_max'"
-[[ "$fo_high" == "2560M" ]] || fail "fleet-ops MemoryHigh want 2560M got '$fo_high'"
-[[ "$o5_max" == "3G" ]] || fail "0509 MemoryMax want 3G got '$o5_max'"
-[[ "$o5_high" == "2560M" ]] || fail "0509 MemoryHigh want 2560M got '$o5_high'"
+[[ "$fo_max" == "4G" ]] || fail "fleet-ops MemoryMax want 4G got '$fo_max'"
+[[ -z "$fo_high" ]] || fail "fleet-ops MemoryHigh must be absent (fleet-ops#3930 dropped the throttle band), got '$fo_high'"
+[[ "$o5_max" == "4G" ]] || fail "0509 MemoryMax want 4G got '$o5_max'"
+[[ -z "$o5_high" ]] || fail "0509 MemoryHigh must be absent (fleet-ops#3930 dropped the throttle band), got '$o5_high'"
 tgt=$(jq -r '.target_concurrent // empty' "$caps")
 [[ "$tgt" == "25" ]] || fail "target_concurrent want 25 got '$tgt'"
 ram=$(jq -r '.ram_gb_per_worker // empty' "$caps")
@@ -54,9 +58,9 @@ export SEAT_CAPS_JSON="$caps"
 # shellcheck source=/dev/null
 source "$seat_lib"
 row=$(worker_memory_for_repo "fleet-ops")
-[[ "$row" == $'3G\t2560M' ]] || fail "fleet-ops row want $'3G\\t2560M' got '$row'"
+[[ "$row" == $'4G\t' ]] || fail "fleet-ops row want $'4G\\t' (MemoryHigh absent) got '$row'"
 row=$(worker_memory_for_repo "0509")
-[[ "$row" == $'3G\t2560M' ]] || fail "0509 row want $'3G\\t2560M' got '$row'"
+[[ "$row" == $'4G\t' ]] || fail "0509 row want $'4G\\t' (MemoryHigh absent) got '$row'"
 row=$(worker_memory_for_repo "unknown-repo")
 [[ -z "$row" ]] || fail "unknown-repo must return empty, got '$row'"
 ok "2: worker_memory_for_repo returns per-repo caps"
@@ -71,7 +75,7 @@ row=$(worker_memory_for_difficulty "fleet-ops" "heavy")
 row=$(worker_memory_for_difficulty "fleet-ops" "keystone")
 [[ "$row" == $'3G\t2G' ]] || fail "keystone difficulty want $'3G\t2G' got '$row'"
 row=$(worker_memory_for_difficulty "fleet-ops" "light")
-[[ "$row" == $'3G\t2560M' ]] || fail "light difficulty must fall back to per-repo, got '$row'"
+[[ "$row" == $'4G\t' ]] || fail "light difficulty must fall back to per-repo (MemoryHigh absent), got '$row'"
 row=$(worker_memory_for_difficulty "unknown-repo" "light")
 [[ -z "$row" ]] || fail "unknown-repo light must return empty, got '$row'"
 ok "2b: worker_memory_for_difficulty returns heavy class for heavy|keystone"
@@ -82,8 +86,9 @@ trap 'rm -rf "$scratch"' EXIT
 
 # --- 2c. RAM governor charges per-repo MemoryHigh / fallback (fleet-ops#3679) ------
 # active_ram_charge must sum each worker's repo MemoryHigh (GB) divided by
-# ram_gb_per_worker (2.0). A heavy worker is charged 1.0/2.0 = 0.5 units;
-# a fleet-ops light worker is charged 2560M/2.0 = 1.25 units.
+# ram_gb_per_worker (2.0). fleet-ops#3930 removed the MemoryHigh band, so a
+# fleet-ops light worker has no row MemoryHigh and is charged the fallback
+# 2.0/2.0 = 1.0 unit. A heavy worker is charged 1.0/2.0 = 0.5 units.
 # Run in a subshell with a scratch PI_PACKET_STATE + PI_ISSUES_DIR so the
 # active-seats registry and packet are read from scratch, not the live host.
 (
@@ -102,8 +107,8 @@ trap 'rm -rf "$scratch"' EXIT
     [[ "$heavy" == "1" ]] || fail "count_active_heavy want 1 got '$heavy'"
     charge=$(active_ram_charge)
     # 2 issue workers (1 heavy + 1 light fleet-ops): heavy 1.0/2.0=0.5,
-    # fleet-ops 2560M/2.0=1.25, total 1.75 units.
-    [[ "$charge" == "1.750" ]] || fail "active_ram_charge want 1.750 (0.5 heavy + 1.25 fleet-ops) got '$charge'"
+    # fleet-ops (no MemoryHigh, fallback 2.0)/2.0=1.0, total 1.5 units.
+    [[ "$charge" == "1.500" ]] || fail "active_ram_charge want 1.500 (0.5 heavy + 1.0 fleet-ops) got '$charge'"
     ok "2c: active_ram_charge charges per-repo MemoryHigh / fallback"
 )
 
@@ -171,13 +176,13 @@ mkdir -p "$drop_dir"
     [[ -n "$mem_high" ]] && printf 'MemoryHigh=%s\n' "$mem_high"
     printf 'MemorySwapMax=0\n'
 } > "$drop_dir/memory.conf"
-grep -qE '^MemoryMax=3G$' "$drop_dir/memory.conf" \
-    || fail "written drop-in missing MemoryMax=3G"
-grep -qE '^MemoryHigh=2560M$' "$drop_dir/memory.conf" \
-    || fail "written drop-in missing MemoryHigh=2560M"
+grep -qE '^MemoryMax=4G$' "$drop_dir/memory.conf" \
+    || fail "written drop-in missing MemoryMax=4G"
+! grep -qE '^MemoryHigh=' "$drop_dir/memory.conf" \
+    || fail "written drop-in must NOT carry MemoryHigh (fleet-ops#3930 dropped the throttle band)"
 grep -qE '^MemorySwapMax=0$' "$drop_dir/memory.conf" \
     || fail "written drop-in missing MemorySwapMax=0 (fleet-ops#3611)"
-ok "7: scratch drop-in write produces MemoryMax=3G / MemoryHigh=2560M / MemorySwapMax=0"
+ok "7: scratch drop-in write produces MemoryMax=4G / no MemoryHigh / MemorySwapMax=0"
 
 # --- 8. worker_env_for_repo -------------------------------------------------
 # fleet-ops#1587: per-repo Environment variables for browser-heavy repos.

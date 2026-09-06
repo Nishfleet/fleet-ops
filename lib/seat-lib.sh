@@ -1344,11 +1344,11 @@ _systemd_quantity_gb() {
 
 # Per-repo RAM charge in GB for a worker of <repo> at <difficulty>.
 # heavy|keystone -> 1.0 GB (fleet-ops#3495). Else the repo's MemoryHigh
-# from worker_memory.<repo> (0509 2.5G, fleet-ops 1.5G), converted to
-# GB. Repos without a row fall back to ram_gb_per_worker (2.0). This is
-# what admission charges each active worker, so a 0509 browser worker
-# consumes its real 2.5 GB share of MemAvailable instead of the flat
-# 2.0 GB (fleet-ops#3679).
+# from worker_memory.<repo> (0509/fleet-ops no longer set MemoryHigh after
+# fleet-ops#3930 dropped the throttle band, so they fall back to 2.0), converted
+# to GB. Repos without a row fall back to ram_gb_per_worker (2.0). This is
+# what admission charges each active worker, so a browser worker consumes its
+# real share of MemAvailable instead of the flat 2.0 GB (fleet-ops#3679).
 ram_charge_gb_for() {
     local repo="$1" difficulty="$2" high gb
     if [[ "$difficulty" == "heavy" || "$difficulty" == "keystone" ]]; then
@@ -3055,9 +3055,9 @@ count_active_heavy() {
 # Total RAM charge of active workers in light-worker units (1 unit = the
 # fallback ram_gb_per_worker). Each issue worker is charged its repo's
 # MemoryHigh (heavy|keystone at 1.0 GB, fleet-ops#3495) divided by the
-# fallback, so a 0509 browser worker (2.5 GB) charges 1.25 units and a
-# fleet-ops worker (1.5 GB) charges 0.75 units instead of the flat 1
-# (fleet-ops#3679). Org/repair packets stay at 1x (capped at org_reserve).
+# fallback. 0509/fleet-ops no longer set MemoryHigh after fleet-ops#3930
+# dropped the throttle band, so they fall back to the flat 1 unit each.
+# Org/repair packets stay at 1x (capped at org_reserve).
 # This is what the RAM governor's cap is compared against so heavy/browser
 # workers consume their real share of MemAvailable.
 active_ram_charge() {

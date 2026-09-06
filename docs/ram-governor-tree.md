@@ -44,13 +44,17 @@ under pressure.
 
 ### 2. Per-worker throttle — `systemd/pi-issue@.service`
 
-**What it does.** Each worker runs with
+**What it does.** The template runs each worker with
 `MemoryHigh=3G` (throttle-and-reclaim, no kill) and `MemoryMax=6G` (hard
 ceiling per worker) plus `RuntimeMaxSec=45min` so a wedge dies on the wall
-clock. The throttle layer punishes one worker at a time — it cannot punish
-the host.
+clock. Known repos override this via an intake-written per-instance drop-in:
+fleet-ops#3930 (2026-09-06) set `MemoryMax=4G` with **no `MemoryHigh`** for
+fleet-ops + 0509 — the throttle band is what makes oomd pressure-kill a
+random sibling (6 kills in 1h, victim was not the offender), so it was
+removed and a worker that exceeds 4G is OOM-killed locally at the cap. The
+template's 3G/6G stays the no-table fallback for unknown repos.
 
-**Owner:** `systemd/pi-issue@.service`.
+**Owner:** `systemd/pi-issue@.service` + intake per-instance drop-ins.
 
 ### 3. Ubuntu stock policy — `user@1000.service` `ManagedOOMMemoryPressure=kill` at 50%
 
@@ -176,12 +180,12 @@ VmRSS). fleet-ops#1168 right-sized the live budget from that 1.5 GB p95*3
 clamp to the measured typical-worker value 0.6; fleet-ops#1558 then
 re-measured under per-repo MemoryMax drop-ins and `config/seat-caps.json`
 holds `ram_gb_per_worker=2.0` as the FALLBACK charge. fleet-ops#3679 changed
-admission to charge each active worker its repo's `MemoryHigh` (0509 2.5G,
-fleet-ops 1.5G, heavy 1.0G from #3495) divided by the fallback, so a 0509
-browser worker charges 1.25 units and a fleet-ops worker charges 0.75 units
-instead of the flat 1 — the flat 2.0 is now only for repos without a
-`worker_memory` row. Process VmRSS is much smaller, so using it would raise
-lanes but undercount real cgroup cost.
+admission to charge each active worker its repo's `MemoryHigh` divided by
+the fallback. fleet-ops#3930 (2026-09-06) removed the `MemoryHigh` band for
+fleet-ops + 0509 (it is what made oomd pressure-kill a random sibling), so
+they now fall back to the flat 2.0/2.0 = 1.0 unit each; heavy|keystone
+workers still charge 1.0 GB (fleet-ops#3495). Process VmRSS is much smaller,
+so using it would raise lanes but undercount real cgroup cost.
 
 Do not cite the 35 MB figure as cgroup cost.
 
@@ -199,7 +203,12 @@ Measured 2026-09-05 (`~/.local/state/ram-measurement/`):
 0509 units peaked at 1.50 GiB == old MemoryHigh 1536M (throttled=1);
 fleet-ops units peaked at 1.00-1.05 GiB == old MemoryHigh 1G (throttled=1).
 MemoryHigh was raised above those p95s (0509 -> 2.5G, fleet-ops -> 1.5G) so
-workers stop living at the clamp; MemoryMax stays the hard stop.
+workers stop living at the clamp. fleet-ops#3930 (2026-09-06) then REMOVED
+the `MemoryHigh` band entirely for fleet-ops + 0509 (it is what makes oomd
+pressure-kill a random sibling — 6 kills in 1h, pi-issue@0509-1752 killed
+at a 94.3M peak, victim not the offender) and raised `MemoryMax` to 4G, so
+those repos fall back to the flat 2.0 charge and a worker that exceeds 4G
+is OOM-killed locally instead of oomd killing a sibling.
 `target_concurrent` 25 is NOT reachable on 15 GB at 1.0-1.5 GiB per worker;
 the realistic ceiling is ~8-10 concurrent. Do NOT raise the slice
 `MemoryHigh` above 12G.
