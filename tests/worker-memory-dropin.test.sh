@@ -9,6 +9,11 @@
 #      that exceeds 4G is now OOM-killed locally at the cap instead. History:
 #      fleet-ops raised from 2G/1536M to 3G/2560M in #3885, 0509 from 1536M in
 #      #3679, then the band was dropped in #3930).
+#      fleet-ops#3930 CORRECTION: an omitted MemoryHigh= line in the drop-in
+#      does NOT clear the base template's MemoryHigh=3G -- it inherits it.
+#      Every live worker still showed MemoryHigh=3221225472 after #3938/#3950
+#      merged. The writer must emit the key with an EMPTY value (systemd's
+#      reset syntax) when the row has no MemoryHigh, not omit the line.
 #   2. seat-lib.sh worker_memory_for_repo returns those values.
 #   3. pi-intake-tick.sh writes the memory drop-in before systemctl start.
 #   4. pi-issue-start.sh mirrors the same memory drop-in on re-dispatch.
@@ -173,16 +178,29 @@ mkdir -p "$drop_dir"
     printf '# fleet-ops#1558: per-repo memory cap (test)\n'
     printf '[Service]\n'
     [[ -n "$mem_max" ]] && printf 'MemoryMax=%s\n' "$mem_max"
-    [[ -n "$mem_high" ]] && printf 'MemoryHigh=%s\n' "$mem_high"
+    # fleet-ops#3930 correction: write MemoryHigh= (empty) explicitly when the
+    # row has none, so the drop-in clears the base template's MemoryHigh=3G
+    # instead of silently inheriting it.
+    if [[ -n "$mem_high" ]]; then
+        printf 'MemoryHigh=%s\n' "$mem_high"
+    else
+        printf 'MemoryHigh=\n'
+    fi
     printf 'MemorySwapMax=0\n'
 } > "$drop_dir/memory.conf"
 grep -qE '^MemoryMax=4G$' "$drop_dir/memory.conf" \
     || fail "written drop-in missing MemoryMax=4G"
-! grep -qE '^MemoryHigh=' "$drop_dir/memory.conf" \
-    || fail "written drop-in must NOT carry MemoryHigh (fleet-ops#3930 dropped the throttle band)"
+# fleet-ops#3930 correction: the drop-in must carry an EXPLICIT empty
+# MemoryHigh= (systemd's reset syntax) so the unit does not inherit the
+# template's MemoryHigh=3G. A line carrying a non-empty value would be the
+# old bug (throttle band not actually dropped).
+grep -qE '^MemoryHigh=$' "$drop_dir/memory.conf" \
+    || fail "written drop-in must carry an explicit empty MemoryHigh= to clear the template default (fleet-ops#3930 correction)"
+! grep -qE '^MemoryHigh=.+$' "$drop_dir/memory.conf" \
+    || fail "written drop-in must NOT carry a non-empty MemoryHigh (fleet-ops#3930 dropped the throttle band)"
 grep -qE '^MemorySwapMax=0$' "$drop_dir/memory.conf" \
     || fail "written drop-in missing MemorySwapMax=0 (fleet-ops#3611)"
-ok "7: scratch drop-in write produces MemoryMax=4G / no MemoryHigh / MemorySwapMax=0"
+ok "7: scratch drop-in write produces MemoryMax=4G / explicit empty MemoryHigh= / MemorySwapMax=0"
 
 # --- 8. worker_env_for_repo -------------------------------------------------
 # fleet-ops#1587: per-repo Environment variables for browser-heavy repos.

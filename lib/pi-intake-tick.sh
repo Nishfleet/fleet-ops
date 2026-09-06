@@ -1506,7 +1506,21 @@ blocked-on: nish-decision" 2>/dev/null || true
             printf '# fleet-ops#1558/#3281: per-repo/per-difficulty memory cap (written by intake)\n'
             printf '[Service]\n'
             [[ -n "$mem_max" ]] && printf 'MemoryMax=%s\n' "$mem_max"
-            [[ -n "$mem_high" ]] && printf 'MemoryHigh=%s\n' "$mem_high"
+            # fleet-ops#3930 correction: an empty mem_high means the row DROPPED
+            # the throttle band (fleet-ops + 0509). An OMITTED MemoryHigh= line
+            # does not clear it -- the unit still inherits the template's
+            # MemoryHigh=3G, so the pressure-kill fix never took effect on live
+            # workers (measured: every running pi-issue@* unit still showed
+            # MemoryHigh=3221225472 after #3938/#3950 merged). Writing the key
+            # with an EMPTY value is systemd's own reset syntax and clears the
+            # inherited template value (verified: systemctl --user show reports
+            # MemoryHigh=infinity after an empty override, vs MemoryHigh=3G with
+            # the key omitted).
+            if [[ -n "$mem_high" ]]; then
+                printf 'MemoryHigh=%s\n' "$mem_high"
+            else
+                printf 'MemoryHigh=\n'
+            fi
             # fleet-ops#3611: keep the worker off swap so a runaway is OOM-killed
             # locally instead of thrashing the host and killing unrelated units.
             printf 'MemorySwapMax=0\n'
