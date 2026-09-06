@@ -118,9 +118,10 @@ grep -q 'per="$SEAT_RAM_GB_PER_WORKER"' "$lib" \
 # ram_charge_gb_for must exist and return the repo's MemoryHigh in GB.
 grep -q 'ram_charge_gb_for()' "$lib" \
     || fail "seat-lib.sh must define ram_charge_gb_for (per-repo charge, fleet-ops#3679)"
-# fleet-ops light MemoryHigh 1536M -> charge 1.5 GB; unknown repo -> fallback 2.0.
+# fleet-ops light MemoryHigh 2560M -> charge 2.5 GB (fleet-ops#3885);
+# unknown repo -> fallback 2.0.
 fo_charge=$(SEAT_CAPS_JSON="$caps" bash -c 'source "$0"; _seat_caps_loaded=0; load_seat_caps; ram_charge_gb_for fleet-ops light' "$lib")
-[[ "$fo_charge" == "1.500" ]] || fail "ram_charge_gb_for fleet-ops light want 1.500 got '$fo_charge'"
+[[ "$fo_charge" == "2.500" ]] || fail "ram_charge_gb_for fleet-ops light want 2.500 got '$fo_charge'"
 unk_charge=$(SEAT_CAPS_JSON="$caps" bash -c 'source "$0"; _seat_caps_loaded=0; load_seat_caps; ram_charge_gb_for unknown-repo light' "$lib")
 [[ "$unk_charge" == "2.0" ]] || fail "ram_charge_gb_for unknown-repo light want fallback 2.0 got '$unk_charge'"
 ok "4. admission charges per-repo MemoryHigh (fallback 2.0), no self-calibrate"

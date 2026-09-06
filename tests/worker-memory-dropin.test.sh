@@ -4,7 +4,9 @@
 # fleet-ops#1558 + #1587: per-repo MemoryMax/MemoryHigh and Environment
 # variables via intake-written per-instance drop-ins. Proves:
 #   1. seat-caps.json carries worker_memory for fleet-ops + 0509 with the
-#      decided caps (light 2G/1536M, browser 3G/2560M — raised in #3679 after the 2026-09-05 oom-kill storm; #1587 values were 1536M/1G and 2G/1536M).
+#      decided caps (light 3G/2560M, browser 3G/2560M — fleet-ops joins 0509
+#      in #3885 after the 2026-09-06 oom-kill storm; #3679 values were
+#      2G/1536M, #1587 values were 1536M/1G and 2G/1536M).
 #   2. seat-lib.sh worker_memory_for_repo returns those values.
 #   3. pi-intake-tick.sh writes the memory drop-in before systemctl start.
 #   4. pi-issue-start.sh mirrors the same memory drop-in on re-dispatch.
@@ -39,8 +41,8 @@ fo_max=$(jq -r '.worker_memory["fleet-ops"].MemoryMax // empty' "$caps")
 fo_high=$(jq -r '.worker_memory["fleet-ops"].MemoryHigh // empty' "$caps")
 o5_max=$(jq -r '.worker_memory["0509"].MemoryMax // empty' "$caps")
 o5_high=$(jq -r '.worker_memory["0509"].MemoryHigh // empty' "$caps")
-[[ "$fo_max" == "2G" ]] || fail "fleet-ops MemoryMax want 2G got '$fo_max'"
-[[ "$fo_high" == "1536M" ]] || fail "fleet-ops MemoryHigh want 1536M got '$fo_high'"
+[[ "$fo_max" == "3G" ]] || fail "fleet-ops MemoryMax want 3G got '$fo_max'"
+[[ "$fo_high" == "2560M" ]] || fail "fleet-ops MemoryHigh want 2560M got '$fo_high'"
 [[ "$o5_max" == "3G" ]] || fail "0509 MemoryMax want 3G got '$o5_max'"
 [[ "$o5_high" == "2560M" ]] || fail "0509 MemoryHigh want 2560M got '$o5_high'"
 tgt=$(jq -r '.target_concurrent // empty' "$caps")
@@ -54,7 +56,7 @@ export SEAT_CAPS_JSON="$caps"
 # shellcheck source=/dev/null
 source "$seat_lib"
 row=$(worker_memory_for_repo "fleet-ops")
-[[ "$row" == $'2G\t1536M' ]] || fail "fleet-ops row want $'2G\\t1536M' got '$row'"
+[[ "$row" == $'3G\t2560M' ]] || fail "fleet-ops row want $'3G\\t2560M' got '$row'"
 row=$(worker_memory_for_repo "0509")
 [[ "$row" == $'3G\t2560M' ]] || fail "0509 row want $'3G\\t2560M' got '$row'"
 row=$(worker_memory_for_repo "unknown-repo")
@@ -71,7 +73,7 @@ row=$(worker_memory_for_difficulty "fleet-ops" "heavy")
 row=$(worker_memory_for_difficulty "fleet-ops" "keystone")
 [[ "$row" == $'3G\t2G' ]] || fail "keystone difficulty want $'3G\t2G' got '$row'"
 row=$(worker_memory_for_difficulty "fleet-ops" "light")
-[[ "$row" == $'2G\t1536M' ]] || fail "light difficulty must fall back to per-repo, got '$row'"
+[[ "$row" == $'3G\t2560M' ]] || fail "light difficulty must fall back to per-repo, got '$row'"
 row=$(worker_memory_for_difficulty "unknown-repo" "light")
 [[ -z "$row" ]] || fail "unknown-repo light must return empty, got '$row'"
 ok "2b: worker_memory_for_difficulty returns heavy class for heavy|keystone"
@@ -80,10 +82,11 @@ ok "2b: worker_memory_for_difficulty returns heavy class for heavy|keystone"
 scratch=$(mktemp -d -t wmem.XXXXXX)
 trap 'rm -rf "$scratch"' EXIT
 
-# --- 2c. RAM governor charges per-repo MemoryHigh / fallback (fleet-ops#3679) ------
+# --- 2c. RAM governor charges per-repo MemoryHigh / fallback (fleet-ops#3679, #3885) ------
 # active_ram_charge must sum each worker's repo MemoryHigh (GB) divided by
 # ram_gb_per_worker (2.0). A heavy worker is charged 1.0/2.0 = 0.5 units;
-# a fleet-ops light worker is charged 1536M/2.0 = 0.75 units.
+# a fleet-ops light worker is charged 2560M/2.0 = 1.25 units (fleet-ops joins
+# 0509 in #3885).
 # Run in a subshell with a scratch PI_PACKET_STATE + PI_ISSUES_DIR so the
 # active-seats registry and packet are read from scratch, not the live host.
 (
@@ -102,9 +105,9 @@ trap 'rm -rf "$scratch"' EXIT
     [[ "$heavy" == "1" ]] || fail "count_active_heavy want 1 got '$heavy'"
     charge=$(active_ram_charge)
     # 2 issue workers (1 heavy + 1 light fleet-ops): heavy 1.0/2.0=0.5,
-    # fleet-ops 1536M/2.0=0.75, total 1.25 units.
-    [[ "$charge" == "1.250" ]] || fail "active_ram_charge want 1.250 (0.5 heavy + 0.75 fleet-ops) got '$charge'"
-    ok "2c: active_ram_charge charges per-repo MemoryHigh / fallback"
+    # fleet-ops 2560M/2.0=1.25, total 1.75 units.
+    [[ "$charge" == "1.750" ]] || fail "active_ram_charge want 1.750 (0.5 heavy + 1.25 fleet-ops) got '$charge'"
+    ok "2c: active_ram_charge charges per-repo MemoryHigh / fallback; fleet-ops joins 0509 at 2560M (#3885)"
 )
 
 # --- 3. admit_ceiling / target_concurrent ----------------------------------
@@ -171,13 +174,13 @@ mkdir -p "$drop_dir"
     [[ -n "$mem_high" ]] && printf 'MemoryHigh=%s\n' "$mem_high"
     printf 'MemorySwapMax=0\n'
 } > "$drop_dir/memory.conf"
-grep -qE '^MemoryMax=2G$' "$drop_dir/memory.conf" \
-    || fail "written drop-in missing MemoryMax=2G"
-grep -qE '^MemoryHigh=1536M$' "$drop_dir/memory.conf" \
-    || fail "written drop-in missing MemoryHigh=1536M"
+grep -qE '^MemoryMax=3G$' "$drop_dir/memory.conf" \
+    || fail "written drop-in missing MemoryMax=3G"
+grep -qE '^MemoryHigh=2560M$' "$drop_dir/memory.conf" \
+    || fail "written drop-in missing MemoryHigh=2560M"
 grep -qE '^MemorySwapMax=0$' "$drop_dir/memory.conf" \
     || fail "written drop-in missing MemorySwapMax=0 (fleet-ops#3611)"
-ok "7: scratch drop-in write produces MemoryMax=2G / MemoryHigh=1536M / MemorySwapMax=0"
+ok "7: scratch drop-in write produces MemoryMax=3G / MemoryHigh=2560M / MemorySwapMax=0"
 
 # --- 8. worker_env_for_repo -------------------------------------------------
 # fleet-ops#1587: per-repo Environment variables for browser-heavy repos.
