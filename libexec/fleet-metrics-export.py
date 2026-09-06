@@ -1996,6 +1996,14 @@ def _escalations_24h():
         "notify-probe.service",
         "notify-probe.onfail.service",
         "probe-*.service",
+        # fleet-ops#3617: the fleet-orphan-reset-probe@* test stub (fleet-ops#3617)
+        # proves reset-failed semantics via ExecStart=/bin/false; its
+        # deliberate failure is refused by unit-escalation-write (excluded in
+        # the writer's case list) so its template STOPS there — but the
+        # unit-escalation@<instance> template START was still being counted
+        # here, tripping the escalation-exclusion drift-lock. Mirror the
+        # writer's refuse entry so the metric and writer cannot drift.
+        "fleet-orphan-reset-probe@*",
         "multi-*-sink.service",
         "pi-issue@*",
         # Canaries / orchestrator organs: their deliberate fail-loud escalations
