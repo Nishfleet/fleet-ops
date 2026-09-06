@@ -459,8 +459,13 @@ CHAIN_PROM = Path(
 )
 # seat-caps.json is the source of truth for enrolled-seat count
 # (fleet_pi_seat_total) — providers with cap>0 are enrolled.
+# Env override matches lib/seat-lib.sh (SEAT_CAPS_JSON) so tests can point at a
+# fixture without editing the install path.
 SEAT_CAPS_DEFAULT = Path(
-    "/home/nish/workspaces/tooling/fleet-ops/config/seat-caps.json"
+    os.environ.get(
+        "SEAT_CAPS_JSON",
+        "/home/nish/workspaces/tooling/fleet-ops/config/seat-caps.json",
+    )
 )
 SEAT_CAPS_FALLBACK = Path(
     "/home/nish/workspaces/products/fleet-ops/config/seat-caps.json"
