@@ -1,0 +1,32 @@
+{
+  "closed_issues": [
+    {
+      "number": 500,
+      "title": "feat(x): duplicate request closed without merge",
+      "labels": [{"name": "duplicate"}],
+      "closedAt": "2026-08-26T03:00:00Z",
+      "closedByPullRequestsReferences": [
+        {"number": 199, "url": "https://github.com/Nishfleet/fleet-ops/pull/199"}
+      ]
+    },
+    {
+      "number": 501,
+      "title": "feat(y): wontfix closed without merge",
+      "labels": [{"name": "wontfix"}],
+      "closedAt": "2026-08-26T03:00:00Z",
+      "closedByPullRequestsReferences": [
+        {"number": 200, "url": "https://github.com/Nishfleet/fleet-ops/pull/200"}
+      ]
+    },
+    {
+      "number": 502,
+      "title": "stale auto-filed alert closed by triage",
+      "labels": [{"name": "triage-mass-close"}],
+      "closedAt": "2026-08-26T03:00:00Z",
+      "closedByPullRequestsReferences": [
+        {"number": 201, "url": "https://github.com/Nishfleet/fleet-ops/pull/201"}
+      ]
+    }
+  ],
+  "merged_prs": []
+}
