@@ -234,7 +234,7 @@ audit_seats() {
                     n=$((n + 1))
                 fi
                 ;;
-            credentials_bad|corpse)
+            credentials_bad|corpse|parked)
                 # fleet-ops#2724/#2667: the corpse class is the TERMINAL
                 # dead state seat-health.ts writes when a seat passes
                 # SEAT_DEAD_CONSECUTIVE_THRESHOLD (fleet-ops#2327/#2415).
@@ -245,6 +245,17 @@ audit_seats() {
                 # The named clock is the seat_dead marker itself; require
                 # it for both classes. A non-dead corpse is an inconsistent
                 # write that must be loud.
+                # fleet-ops#3706/#3669: "parked" is the TERMINAL ledger
+                # write_parked_ledger emits after retire_corpse physically
+                # moves a corpse out of the live roster — seat_dead=true,
+                # health_class=parked, failure_mode=corpse_retired, a
+                # far-future usable_at. It is the same dead-marker clock as
+                # a corpse (the seat is RETIRED, no comeback). Without this
+                # entry the parked commandcode/minimax/minimax-m3-free
+                # ledger tripped a false-positive UNJUSTIFIED-WAIT every
+                # heartbeat tick ("dead marker without credentials_bad|corpse
+                # (clock inconsistent)"), failing TOP GEAR and auto-filing
+                # stale alerts about an already-retired seat.
                 if [[ "$dead" != "true" ]]; then
                     loud "UNJUSTIFIED-WAIT" "seat $name health_class=$hc but seat_dead=$dead — dead marker missing (clock=repair gate)"
                     n=$((n + 1))
@@ -261,8 +272,10 @@ audit_seats() {
         # dead-class states. Without this, every corpse seat tripped a
         # false-positive UNJUSTIFIED-WAIT every tick and heartbeat tier 1
         # returned unjustified_rc=1 forever.
-        if [[ "$dead" == "true" ]] && [[ "$hc" != "credentials_bad" && "$hc" != "corpse" ]]; then
-            loud "UNJUSTIFIED-WAIT" "seat $name seat_dead=true with health_class=$hc — dead marker without credentials_bad|corpse (clock inconsistent)"
+        # fleet-ops#3706/#3669: "parked" is the same dead-class state — the
+        # terminal ledger write_parked_ledger emits after corpse retirement.
+        if [[ "$dead" == "true" ]] && [[ "$hc" != "credentials_bad" && "$hc" != "corpse" && "$hc" != "parked" ]]; then
+            loud "UNJUSTIFIED-WAIT" "seat $name seat_dead=true with health_class=$hc — dead marker without credentials_bad|corpse|parked (clock inconsistent)"
             n=$((n + 1))
         fi
     done

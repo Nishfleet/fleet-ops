@@ -271,6 +271,31 @@ if grep -q "dead marker without credentials_bad|corpse" "$scratch/err.log"; then
 fi
 ok "corpse seat_dead=true (transient_http failure_mode) is clean"
 
+# --- 5e. seat_dead=true with parked class — REGRESSION GUARD (fleet-ops#3706/#3669) -
+# The live evidence on 2026-09-06: commandcode/minimax/minimax-m3-free was
+# retired by retire_corpse + write_parked_ledger (fleet-ops#2716/#3669) after
+# the provider permanently retired the free slug (HTTP 403, cap=0,
+# intentional_cap_zero=corpse). The parked ledger carries seat_dead=true,
+# health_class=parked, failure_mode=corpse_retired, a far-future usable_at —
+# the seat is RETIRED and unpickable. The pre-fix dead-class filter only
+# accepted credentials_bad|corpse, so the parked ledger tripped a false-
+# positive UNJUSTIFIED-WAIT every heartbeat tick ("dead marker without
+# credentials_bad|corpse (clock inconsistent)"), failing TOP GEAR and
+# auto-filing stale alerts about an already-retired seat (fleet-ops#3706).
+# After the fix, a parked seat with dead=true is clean: the dead marker IS
+# the named clock, same as a corpse.
+cat >"$scratch/seats/parked-corpse.json" <<'JSON'
+{"provider":"commandcode","model":"minimax/minimax-m3-free","health_class":"parked","seat_dead":true,"failure_mode":"corpse_retired","source":"corpse_retirement","http_status":null,"observed_at":"2026-09-06T15:15:47Z","usable_at":"2036-09-03T15:15:47Z","bench_until":"2036-09-03T15:15:47Z","bench_reason":"corpse-retired: cap=0 corpse bench, pick_seat never offers (durable, fleet-ops#2716/#3669)","consecutive_failure_count":0,"writer":"write_parked_ledger"}
+JSON
+rc=$(run_bin)
+[[ "$rc" == "0" ]] || { cat "$scratch/err.log"; fail "parked seat_dead=true should exit 0 (got $rc)"; }
+grep -q "UNJUSTIFIED-WAIT-OK" "$scratch/err.log" || { cat "$scratch/err.log"; fail "parked seat missing UNJUSTIFIED-WAIT-OK"; }
+if grep -q "dead marker without credentials_bad|corpse" "$scratch/err.log"; then
+  cat "$scratch/err.log"; fail "parked seat was falsely flagged as inconsistent"
+fi
+ok "parked seat_dead=true (corpse_retired) is clean (fleet-ops#3706/#3669)"
+rm -f "$scratch/seats/parked-corpse.json"
+
 # --- 5d. seat_dead=false with corpse class — inconsistent write (fleet-ops#2724) -
 # The OTHER half of the guard: a corpse with NO dead marker is still
 # inconsistent. seat-health.ts writes both atomically (seat-health.ts:768
