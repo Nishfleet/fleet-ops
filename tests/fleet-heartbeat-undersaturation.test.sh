@@ -78,11 +78,31 @@ case "$*" in
       exit 0
     elif [[ "$*" == *"-l agent-in-progress"* ]]; then
       # count_work asks for length; the stale-label reap asks for the actual
-      # numbers via --jq '.[].number'. Distinguish on the jq filter so both
-      # the existing count scenarios and the new reap scenarios stay honest.
-      if [[ "$*" == *".[].number"* ]]; then
-        [[ -f "${WORK_INPROGRESS_NUMBERS:-/dev/null}" ]] \
-          && cat "${WORK_INPROGRESS_NUMBERS}"
+      # rows via --jq '.[]' (full JSON rows with labels, fleet-ops#3763).
+      # Distinguish on the jq filter so both the existing count scenarios and
+      # the new reap scenarios stay honest. The shell strips the single quotes,
+      # so the arg is literally `.[]` — match on that substring (length has none).
+      if [[ "$*" == *".[]"* ]]; then
+        # Emit one JSON row per number in WORK_INPROGRESS_NUMBERS. A number
+        # listed in WORK_INPROGRESS_BLOCKED_NUMBERS also gets agent-blocked so
+        # the #3763 guard can be exercised.
+        if [[ -f "${WORK_INPROGRESS_NUMBERS:-/dev/null}" ]]; then
+          first=1
+          while IFS= read -r _n; do
+            [[ -n "$_n" ]] || continue
+            _labels='[{"name":"agent-in-progress"}]'
+            if [[ -f "${WORK_INPROGRESS_BLOCKED_NUMBERS:-/dev/null}" ]] \
+               && grep -qxF "$_n" "${WORK_INPROGRESS_BLOCKED_NUMBERS}" 2>/dev/null; then
+              _labels='[{"name":"agent-in-progress"},{"name":"agent-blocked"}]'
+            fi
+            if [[ "$first" == 1 ]]; then
+              printf '{"number":%s,"labels":%s}\n' "$_n" "$_labels"
+              first=0
+            else
+              printf '\n{"number":%s,"labels":%s}\n' "$_n" "$_labels"
+            fi
+          done < "${WORK_INPROGRESS_NUMBERS}"
+        fi
         exit 0
       fi
       if [[ -s "${WORK_INPROGRESS_NUMBERS:-/dev/null}" ]]; then
@@ -329,6 +349,9 @@ export FLEET_UNDERSAT_ADMIT_CEILING=25
 export WORK_INPROGRESS_NUMBERS="$scratch/work_inprogress_numbers"
 export WORK_READY_NUMBERS="$scratch/work_ready_numbers"
 export OPEN_PR_ISSUES="$scratch/open_pr_issues"
+# fleet-ops#3763: numbers in this file also carry agent-blocked in the fake
+# gh's agent-in-progress row response, so the agent-blocked guard is exercised.
+export WORK_INPROGRESS_BLOCKED_NUMBERS="$scratch/work_inprogress_blocked_numbers"
 # Pointers the fake systemctl reads to decide what to return per scenario.
 RUNNING_UNITS="$scratch/running_units"
 FAILED_UNITS="$scratch/failed_units"
@@ -352,6 +375,7 @@ reset_state() {
   : >"$RUNNING_UNITS"; : >"$FAILED_UNITS"; : >"$LIVE_SEAT_UNITS"
   : >"$WEDGED_UNITS"; : >"$FRESH_ACTIVATING_UNITS"; : >"$ACTIVATING_UNITS"
   : >"$WORK_INPROGRESS_NUMBERS"; : >"$WORK_READY_NUMBERS"; : >"$OPEN_PR_ISSUES"
+  : >"$WORK_INPROGRESS_BLOCKED_NUMBERS"
 }
 
 # ============================================================================
@@ -593,6 +617,39 @@ grep -q 'UNDERSAT-REPAIR' "$triage" || fail "scenario6: missing UNDERSAT-REPAIR 
 [[ -f "$log_dir/undersaturation.flag" ]] \
     || fail "scenario6: marker must be set (genuine wedge remains after flip)"
 ok "scenario6: stale agent-in-progress + no PR + no live worker -> flipped to agent-ready, intake restarted, exit 0"
+
+# ============================================================================
+# Scenario 6b (fleet-ops#3763): a stale agent-in-progress label on an issue
+# that ALSO carries agent-blocked (a worker posted blocked-on: then died, or
+# intake escalated while the in-progress tag lingered). The reap must clear
+# agent-in-progress ONLY and must NOT re-add agent-ready — re-queuing a
+# deliberately parked issue re-arms the spawn churn the block was meant to
+# stop. blocked-reconcile owns the agent-blocked -> agent-ready flip.
+# ============================================================================
+reset_state
+printf '0\n' >"$scratch/work_ready"
+printf '0\n' >"$scratch/work_inprogress"
+printf '77\n' >"$WORK_INPROGRESS_NUMBERS"      # issue #77 (stale agent-in-progress)
+printf '77\n' >"$WORK_INPROGRESS_BLOCKED_NUMBERS"  # #77 also carries agent-blocked
+: >"$OPEN_PR_ISSUES"                           # no open PR for #77
+: >"$scratch/running_units"
+: >"$scratch/failed_units"
+
+run_helper
+[[ "$env_rc" == 0 ]] \
+    || fail "scenario6b: agent-blocked stale-label tick must exit 0, got $env_rc ($env_out)"
+
+# agent-in-progress removed (the stale tag is cleared).
+grep -q -- '--remove-label agent-in-progress' "$calls" \
+    || fail "scenario6b: --remove-label agent-in-progress not issued ($(cat "$calls"))"
+# agent-ready must NOT be added (parked issue — blocked-reconcile owns unblock).
+if grep -q -- '--add-label agent-ready' "$calls"; then
+    fail "scenario6b: must NOT add agent-ready on an agent-blocked issue (spawn-churn loop): $(cat "$calls")"
+fi
+# Label hygiene loud line is emitted (the action is visible).
+grep -q 'UNDERSAT-LABEL-HYGIENE' "$triage" \
+    || fail "scenario6b: triage missing UNDERSAT-LABEL-HYGIENE line"
+ok "scenario6b: stale agent-in-progress + agent-blocked + no PR -> cleared only, NOT re-queued (fleet-ops#3763)"
 
 # ============================================================================
 # Scenario 7 (fleet-ops#1155): an odd-named pi unit is still a live worker.

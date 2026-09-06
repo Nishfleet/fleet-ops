@@ -472,3 +472,140 @@ set -e
 grep -q 'CLAIM-REAP-NEEDED' "$triage" || fail "triage missing CLAIM-REAP-NEEDED for the open-PR hold: $(cat "$triage")"
 grep -q 'open_pr_count=1' "$triage" || fail "open-PR hold must report open_pr_count=1: $(cat "$triage")"
 ok "reaper holds the claim branch when an open PR exists (owner:branch head filter)"
+
+# --- Test F: agent-blocked guard (fleet-ops#3763) ---------------------------
+# A dead worker's claim release must NOT re-add agent-ready when the issue is
+# already agent-blocked (a worker posted blocked-on:, or intake escalated via
+# max-reclaims/claim-loop). Re-adding agent-ready re-arms the spawn churn the
+# block was meant to stop. The reaper must clear agent-in-progress ONLY and
+# leave agent-blocked for blocked-reconcile to resolve.
+state_f="$fake/state-f"
+mkdir -p "$state_f/attempts"
+ledger_f="$fake/ledger-f"
+mkdir -p "$ledger_f"
+edit_log_f="$fake/edit-log-f"
+rm -f "$edit_log_f"
+cat >"$gh_bin/gh" <<FAKE_GH
+#!/usr/bin/env bash
+case "\$1" in
+  api)
+    path="\${2:-}"
+    if [[ "\$path" == */issues/* ]]; then
+      printf '%s\n' '{"state":"open","labels":[{"name":"agent-in-progress"},{"name":"agent-blocked"},{"name":"needs-orchestrator"}]}'
+      exit 0
+    fi
+    if [[ "\$path" == */pulls* ]]; then
+      printf '%s\n' '[]'
+      exit 0
+    fi
+    if [[ "\$path" == */git/refs/heads/* ]]; then
+      if [[ "\$*" == *-X*DELETE* ]]; then
+        exit 0
+      fi
+      exit 0
+    fi
+    echo "unexpected gh api \$*" >&2
+    exit 1
+    ;;
+  issue)
+    case "\$2" in
+      edit)
+        # Record the full arg list so the test can assert which labels were
+        # added/removed.
+        printf '%s\n' "\$*" >>"$edit_log_f"
+        exit 0
+        ;;
+      comment) exit 0 ;;
+      *) echo "unexpected gh issue \$*" >&2; exit 1 ;;
+    esac
+    ;;
+  *) echo "unexpected gh \$*" >&2; exit 1 ;;
+esac
+FAKE_GH
+chmod +x "$gh_bin/gh"
+: >"$triage"
+write_fake inactive 0
+set +e
+out="$(PATH="$gh_bin:$PATH" SYSTEMCTL="$fake/systemctl" TRIAGE_FILE="$triage" \
+    PI_PACKET_STATE="$state_f" \
+    SEAT_LIB="$repo_root/lib/seat-lib.sh" \
+    PI_SEAT_HEALTH_LEDGER_DIR="$ledger_f" \
+    PI_SEAT_LIB_CHECK_SYSTEMD=0 \
+    "$bin" fleet-ops-3763 2>&1)"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "agent-blocked reap must exit 0, got $rc ($out)"
+# At least one `issue edit` call (the label flip).
+grep -q 'issue edit' "$edit_log_f" \
+    || fail "reaper must call gh issue edit at least once, log: $(cat "$edit_log_f" 2>/dev/null)"
+# The edit must NOT add agent-ready.
+grep -q -- '--add-label agent-ready' "$edit_log_f" \
+    && fail "reaper re-added agent-ready on an agent-blocked issue (spawn-churn loop): edit log: $(cat "$edit_log_f")" \
+    || true
+# The edit must remove agent-in-progress.
+grep -q -- '--remove-label agent-in-progress' "$edit_log_f" \
+    || fail "reaper did not clear agent-in-progress on the agent-blocked issue: edit log: $(cat "$edit_log_f")"
+ok "reaper clears agent-in-progress only on an agent-blocked issue (no agent-ready re-queue, fleet-ops#3763)"
+
+# --- Test F2: inverse — an unblocked OPEN issue still gets agent-ready --------
+# The guard must not regress the normal reclaim path: an OPEN issue with only
+# agent-in-progress (no agent-blocked) must still flip to agent-ready.
+state_f2="$fake/state-f2"
+mkdir -p "$state_f2/attempts"
+ledger_f2="$fake/ledger-f2"
+mkdir -p "$ledger_f2"
+edit_log_f2="$fake/edit-log-f2"
+rm -f "$edit_log_f2"
+cat >"$gh_bin/gh" <<FAKE_GH
+#!/usr/bin/env bash
+case "\$1" in
+  api)
+    path="\${2:-}"
+    if [[ "\$path" == */issues/* ]]; then
+      printf '%s\n' '{"state":"open","labels":[{"name":"agent-in-progress"}]}'
+      exit 0
+    fi
+    if [[ "\$path" == */pulls* ]]; then
+      printf '%s\n' '[]'
+      exit 0
+    fi
+    if [[ "\$path" == */git/refs/heads/* ]]; then
+      if [[ "\$*" == *-X*DELETE* ]]; then
+        exit 0
+      fi
+      exit 0
+    fi
+    echo "unexpected gh api \$*" >&2
+    exit 1
+    ;;
+  issue)
+    case "\$2" in
+      edit)
+        printf '%s\n' "\$*" >>"$edit_log_f2"
+        exit 0
+        ;;
+      comment) exit 0 ;;
+      *) echo "unexpected gh issue \$*" >&2; exit 1 ;;
+    esac
+    ;;
+  *) echo "unexpected gh \$*" >&2; exit 1 ;;
+esac
+FAKE_GH
+chmod +x "$gh_bin/gh"
+: >"$triage"
+write_fake inactive 0
+set +e
+out="$(PATH="$gh_bin:$PATH" SYSTEMCTL="$fake/systemctl" TRIAGE_FILE="$triage" \
+    PI_PACKET_STATE="$state_f2" \
+    SEAT_LIB="$repo_root/lib/seat-lib.sh" \
+    PI_SEAT_HEALTH_LEDGER_DIR="$ledger_f2" \
+    PI_SEAT_LIB_CHECK_SYSTEMD=0 \
+    "$bin" fleet-ops-3764 2>&1)"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "normal reap must exit 0, got $rc ($out)"
+grep -q -- '--add-label agent-ready' "$edit_log_f2" \
+    || fail "normal reap must re-add agent-ready on an unblocked issue: edit log: $(cat "$edit_log_f2")"
+grep -q -- '--remove-label agent-in-progress' "$edit_log_f2" \
+    || fail "normal reap must remove agent-in-progress: edit log: $(cat "$edit_log_f2")"
+ok "reaper still flips agent-in-progress -> agent-ready on an unblocked issue (no guard regression)"

@@ -179,8 +179,14 @@ state_json=$(gh api "repos/$repo_slug/issues/$issue" 2>&1) || {
 # REST `state` is lowercase; normalize for downstream comparisons.
 issue_state=$(printf '%s' "$state_json" | jq -r '.state // "UNKNOWN"' | tr '[:lower:]' '[:upper:]')
 in_progress=$(printf '%s' "$state_json" | jq -e '[.labels[]?.name] | any(. == "agent-in-progress")' >/dev/null 2>&1 && echo yes || echo no)
+# fleet-ops#3763: a dead worker's claim release must not re-queue an issue
+# that was deliberately parked with agent-blocked (a worker posted blocked-on:,
+# or intake escalated via max-reclaims/claim-loop). Re-adding agent-ready
+# re-arms the spawn churn the block was meant to stop. blocked-reconcile owns
+# the unblock; the reaper only clears the stale agent-in-progress tag here.
+agent_blocked=$(printf '%s' "$state_json" | jq -e '[.labels[]?.name] | any(. == "agent-blocked")' >/dev/null 2>&1 && echo yes || echo no)
 
-log "state=$issue_state in_progress=$in_progress for $repo_slug#$issue"
+log "state=$issue_state in_progress=$in_progress agent_blocked=$agent_blocked for $repo_slug#$issue"
 
 # --- branch cleanup: only if no open PR from this branch --------------------
 # Same REST-vs-GraphQL split: `gh pr list --json` is GraphQL; use `gh api` REST
@@ -232,7 +238,21 @@ fi
 
 if [[ "$issue_state" == "OPEN" ]]; then
     label_ok=no
-    if gh issue edit "$issue" -R "$repo_slug" --remove-label agent-in-progress --add-label agent-ready 2>/dev/null; then
+    # fleet-ops#3763: when the issue is agent-blocked, only clear the stale
+    # agent-in-progress tag — do NOT re-add agent-ready. A parked issue
+    # re-queued by the reaper spins a new worker that hits the same block,
+    # posts the same blocked-on:, and dies again (the #3763 loop: 4 claims
+    # in 40 min, StartLimitBurst). blocked-reconcile flips agent-blocked ->
+    # agent-ready once the blocker resolves.
+    if [[ "$agent_blocked" == "yes" ]]; then
+        if gh issue edit "$issue" -R "$repo_slug" --remove-label agent-in-progress 2>/dev/null; then
+            label_ok=yes
+            log "issue $repo_slug#$issue is agent-blocked; cleared agent-in-progress only (left agent-blocked for blocked-reconcile)"
+        else
+            log "label flip (remove in-progress only, agent-blocked held) failed on $repo_slug#$issue"
+            log_to_triage "CLAIM-REAP-LABEL-FAIL" "instance=$instance step=open_labels_blocked"
+        fi
+    elif gh issue edit "$issue" -R "$repo_slug" --remove-label agent-in-progress --add-label agent-ready 2>/dev/null; then
         label_ok=yes
     else
         log "label flip (remove in-progress / add ready) failed on $repo_slug#$issue"

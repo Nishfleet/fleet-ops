@@ -762,7 +762,7 @@ while IFS= read -r repo; do
     short=$(printf '%s' "$repo" | awk -F/ '{print $2}')
 
     issues_json=$(gh issue list -R "$repo" -l agent-in-progress --state open \
-        --json number,title --jq '.[]' 2>/dev/null) || {
+        --json number,title,labels --jq '.[]' 2>/dev/null) || {
             log "3.  - $repo: gh issue list FAILED — skip"
             continue
         }
@@ -770,6 +770,13 @@ while IFS= read -r repo; do
     while IFS= read -r issue_row; do
         [ -z "$issue_row" ] && continue
         issue_n=$(printf '%s' "$issue_row" | jq -r '.number')
+        # fleet-ops#3763: an issue can carry agent-in-progress AND agent-blocked
+        # simultaneously (a worker posted blocked-on: then died, or intake
+        # escalated while a stale in-progress tag lingered). Releasing such a
+        # claim must NOT re-add agent-ready — that re-queues a deliberately
+        # parked issue and re-arms the spawn churn the block was meant to stop.
+        # blocked-reconcile owns the agent-blocked -> agent-ready flip.
+        agent_blocked=$(printf '%s' "$issue_row" | jq -e '[.labels[]?.name] | any(. == "agent-blocked")' >/dev/null 2>&1 && echo yes || echo no)
 
         # Is a pi-issue worker for this claim currently doing work?
         # fleet-ops#63: --state=running misses both activating/start
@@ -833,7 +840,20 @@ while IFS= read -r repo; do
             fi
         fi
 
-        if gh issue edit "$issue_n" -R "$repo" \
+        if [[ "$agent_blocked" == "yes" ]]; then
+            # fleet-ops#3763: parked issue — clear the stale in-progress tag
+            # only; leave agent-blocked for blocked-reconcile to resolve.
+            if gh issue edit "$issue_n" -R "$repo" \
+                --remove-label agent-in-progress 2>/dev/null; then
+                gh issue comment "$issue_n" -R "$repo" \
+                    --body "claim branch released by fleet-heartbeat at $(date -u +%FT%TZ) (no live worker, no open PR; agent-blocked held — not re-queued)" \
+                    >/dev/null 2>&1 || true
+                log "3.  - $repo#$issue_n: RELEASED (agent-blocked held, not re-queued)"
+                released=$((released+1))
+            else
+                log "3.  - $repo#$issue_n: label flip FAILED (agent-blocked held) — will retry next tick"
+            fi
+        elif gh issue edit "$issue_n" -R "$repo" \
             --remove-label agent-in-progress --add-label agent-ready 2>/dev/null; then
             gh issue comment "$issue_n" -R "$repo" \
                 --body "claim branch released by fleet-heartbeat at $(date -u +%FT%TZ) (no live worker, no open PR)" \

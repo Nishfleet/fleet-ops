@@ -353,10 +353,15 @@ reap_stale_inprogress_labels() {
         [ -z "$repo" ] && continue
         short="${repo#*/}"
         issues=$("$GH" issue list -R "$repo" -l agent-in-progress \
-            --state open --json number --limit 200 --jq '.[].number' 2>/dev/null || true)
-        while IFS= read -r n; do
+            --state open --json number,labels --limit 200 --jq '.[]' 2>/dev/null || true)
+        while IFS= read -r issue_row; do
+            [ -z "$issue_row" ] && continue
+            n=$(printf '%s' "$issue_row" | jq -r '.number')
             [ -z "$n" ] && continue
             [[ "$n" =~ ^[1-9][0-9]*$ ]] || continue
+            # fleet-ops#3763: mirror tier1 §3's agent-blocked guard. A parked
+            # issue (agent-blocked) must not be re-queued by label hygiene.
+            agent_blocked=$(printf '%s' "$issue_row" | jq -e '[.labels[]?.name] | any(. == "agent-blocked")' >/dev/null 2>&1 && echo yes || echo no)
             unit="pi-issue@${short}-${n}.service"
             # Live worker holds the lane — not stale, leave it (matches §3 / #63).
             if "$SYSTEMCTL" --user list-units "$unit" --state=active,activating \
@@ -382,7 +387,20 @@ reap_stale_inprogress_labels() {
                     log "label-hygiene: $repo#$n remove-label FAILED (will retry next tick)"
                 fi
             else
-                if "$GH" issue edit "$n" -R "$repo" \
+                if [[ "$agent_blocked" == "yes" ]]; then
+                    # fleet-ops#3763: parked issue — clear the stale in-progress
+                    # tag only; leave agent-blocked for blocked-reconcile.
+                    if "$GH" issue edit "$n" -R "$repo" \
+                        --remove-label agent-in-progress 2>/dev/null; then
+                        "$GH" issue comment "$n" -R "$repo" \
+                            --body "stale agent-in-progress label cleared by fleet-heartbeat-undersaturation at $(date -u +%FT%TZ) (no live worker, no open PR; agent-blocked held — not re-queued)" \
+                            >/dev/null 2>&1 || true
+                        loud "UNDERSAT-LABEL-HYGIENE" "$repo#$n: cleared stale agent-in-progress (agent-blocked held, not re-queued)"
+                        cleared=$((cleared + 1))
+                    else
+                        log "label-hygiene: $repo#$n remove-label FAILED (agent-blocked held, will retry next tick)"
+                    fi
+                elif "$GH" issue edit "$n" -R "$repo" \
                     --remove-label agent-in-progress --add-label agent-ready 2>/dev/null; then
                     "$GH" issue comment "$n" -R "$repo" \
                         --body "stale agent-in-progress label flipped to agent-ready by fleet-heartbeat-undersaturation at $(date -u +%FT%TZ) (no live worker, no open PR — re-queued)" \
