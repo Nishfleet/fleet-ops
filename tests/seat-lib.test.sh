@@ -3771,3 +3771,9 @@ bash "$here/seat-lib-product-only-spend-cap.test.sh" || fail "seat-lib-product-o
 # Workers cannot add a P14 line in .github/workflows/ci.yml; this file is the
 # listed CI host for the new chronic-spawn-fail bench test.
 bash "$here/seat-spawn-bench-ceiling-false-healthy.test.sh" || fail "seat-spawn-bench-ceiling-false-healthy tests failed"
+
+# fleet-ops#3889: a chronic spawn_fail streak past a threshold is classed a
+# corpse (ledger + marker seat_dead=true) and held regardless of HTTP status.
+# Workers cannot add a P14 line in .github/workflows/ci.yml; this file is the
+# listed CI host for the new spawn-fail corpse bench test.
+bash "$here/seat-spawn-corpse.test.sh" || fail "seat-spawn-corpse tests failed"
