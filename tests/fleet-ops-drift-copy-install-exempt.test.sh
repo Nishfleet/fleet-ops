@@ -25,7 +25,7 @@ sys.exit(3)
 PY
 ) || fail "bin/fleet-ops-drift.py defines no COPY_INSTALLED_SRC_NAMES set literal (fleet-ops#3858)"
 
-for n in seat-caps.json pi-models.json; do
+for n in seat-caps.json pi-models.json model-candidates.json; do
   grep -qxF "$n" <<<"$names" \
     || fail "$n is copy-installed per MANIFEST but missing from COPY_INSTALLED_SRC_NAMES (fleet-ops#3858)"
 done
