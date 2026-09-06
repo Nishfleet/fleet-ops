@@ -24,6 +24,13 @@
 #                 out of scope; the --body gate covers new PRs before
 #                 they open.
 #
+# fleet-ops#3731 hard gate: a finding whose PR is ARMED for auto-merge
+# gets `gh pr merge --disable-auto` — the merge cannot complete until a
+# receipt lands and the queue pass re-arms. Without this the canary only
+# filed an issue while `gh pr merge --auto` (armed by the worker itself)
+# completed unverified: the silent pass the issue names.
+# FLEET_EXEC_REVIEW_DISARM=0 restores observe-only behaviour (tests).
+#
 # Observe-to-close (fleet-ops#729, same two-tick shape as #650/#521): a
 # green tick for a previously filed slug comments `resolved-at: signal:
 # ...`. A later tick that already carries that marker closes the issue.
@@ -155,7 +162,7 @@ else
         [[ -n "$repo" ]] || continue
         set +e
         chunk=$("$GH" pr list -R "$repo" --app nishfleet-worker --state open \
-            --limit 50 --json number,title,body,createdAt,url,headRefName,author 2>"$scratch/gh.err")
+            --limit 50 --json number,title,body,createdAt,url,headRefName,author,autoMergeRequest 2>"$scratch/gh.err")
         gh_rc=$?
         set -e
         if [[ "$gh_rc" -ne 0 ]] || ! jq -e 'type == "array"' >/dev/null 2>&1 <<<"$chunk"; then
@@ -215,6 +222,33 @@ if [[ "$finding_count" != "0" ]]; then
         url=$(jq -r '.url' <<<"$row")
         title_pr=$(jq -r '.title' <<<"$row")
         loud "EXEC-REVIEW-SKIP" "worker PR $slug has no run receipt url=$url title=$title_pr"
+
+        # fleet-ops#3731: absence of the cue is a HARD GATE, not a silent
+        # pass. An armed auto-merge on a no-receipt worker PR is the exact
+        # path that merged unverified work (the worker arms its own PR via
+        # `gh pr merge --auto`; this canary tick is the only independent
+        # organ that sees it before merge). Disarm it: the merge then
+        # cannot complete until a receipt lands and the heartbeat queue
+        # pass re-arms. FLEET_EXEC_REVIEW_DISARM=0 keeps the observe-only
+        # behaviour for tests/drills.
+        if [[ "${FLEET_EXEC_REVIEW_DISARM:-1}" == "1" ]] \
+            && [[ "$(jq -r '.auto_merge_armed // false' <<<"$row")" == "true" ]] \
+            && command -v "$GH" >/dev/null 2>&1; then
+            d_repo=$(jq -r '.repo // empty' <<<"$row")
+            d_num=$(jq -r '.number // empty' <<<"$row")
+            if [[ -n "$d_repo" && -n "$d_num" && "$d_num" != "null" ]]; then
+                set +e
+                "$GH" pr merge "$d_num" -R "$d_repo" --disable-auto \
+                    >"$scratch/disarm.out" 2>"$scratch/disarm.err"
+                disarm_rc=$?
+                set -e
+                if [[ "$disarm_rc" -eq 0 ]]; then
+                    loud "EXEC-REVIEW-DISARM" "auto-merge DISABLED on $slug (no verify cue — fleet-ops#3731 hard gate)"
+                else
+                    log "WARN: disarm failed for $slug (rc=$disarm_rc) $(tr '\n' ' ' <"$scratch/disarm.err")"
+                fi
+            fi
+        fi
 
         [[ "$FILE_ISSUES" == "1" ]] || continue
         [[ "$filed" -lt "$CAP" ]] || continue

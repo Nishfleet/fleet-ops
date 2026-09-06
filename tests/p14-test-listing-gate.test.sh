@@ -111,6 +111,12 @@ live_skip[opus-heartbeat-failed-units-gate.test.sh]=1
 # gather plus the live snapshot. Live/VPS-only — cannot run in hosted CI
 # (gather script absent).
 live_skip[opus-heartbeat-scout-staleness-gate.test.sh]=1
+# fleet-ops#3731: opus-heartbeat-verify-cue-gate drives the gather's
+# --check-verify-cue-gate subcommand against real merged-body shapes and
+# pins the installed gather at /home/nish/.local/libexec/opus-heartbeat-
+# gather for the shared-grammar plumbing. Live/VPS-only — cannot run in
+# hosted CI (gather script absent).
+live_skip[opus-heartbeat-verify-cue-gate.test.sh]=1
 # fleet-ops#1498: memory-index-autocompact-migrated runs `systemd-analyze verify`
 # on a unit whose ExecStart points to /home/nish/.local/bin/memory-index-autocompact
 # (VPS-only), absent on hosted runners. Live/VPS-only — cannot run in hosted CI.

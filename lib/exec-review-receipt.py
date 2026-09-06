@@ -29,14 +29,15 @@ from datetime import datetime, timezone
 from typing import Any
 
 RUN_PROOF_RE = re.compile(r"^[\t ]*run-proof:[\t ]+\S+", re.M)
-# Section marker: a markdown heading ("## Verification" with or without a
-# trailing colon), a bold heading ("**Verification**" / "**Verification:**"),
-# or an inline "Verification:" line. Workers commonly write the heading
-# without the colon; the prior regex required it and produced false
-# positives for legitimately run-cued PRs (fleet-ops#728).
+# Section marker: a markdown heading, a bold heading, or a "Name:" line
+# that opens an evidence section. fleet-ops#3731: the fleet's real bodies
+# use three section names — Verification, Test plan, run-proof — so all
+# three open a section. "Test plan" is restricted to heading/bold/line-
+# start forms: mid-sentence "the test plan:" is prose, not a section.
 VERIFICATION_RE = re.compile(
-    r"(?:^#+\s+[Vv]erification:?[\t ]*\*?[\t ]*$"
-    r"|\*{2}[\t ]*[Vv]erification:?[\t ]*\*{0,2}[\t ]*$"
+    r"(?:^#+\s+(?:[Vv]erification|[Tt]est[ \t]+[Pp]lan|[Rr]un-?[Pp]roof):?[\t ]*\*?[\t ]*$"
+    r"|\*{2}[\t ]*(?:[Vv]erification|[Tt]est[ \t]+[Pp]lan|[Rr]un-?[Pp]roof):?[\t ]*\*{0,2}[\t ]*$"
+    r"|^[Tt]est[ \t]+[Pp]lan:[\t ]*"
     r"|(?:^|[\t ])[Vv]erification:[\t ]*)"
 )
 JOURNALCTL_RE = re.compile(r"(^|[^A-Za-z0-9_])journalctl([^A-Za-z0-9_]|$)")
@@ -45,6 +46,48 @@ EXIT_RE = re.compile(r"exit[\t ]+[0-9]")
 RC_RE = re.compile(r"rc=[0-9]")
 PROMPT_RE = re.compile(r"^[\t ]*\$ ")
 OK_N_RE = re.compile(r"ok: [0-9]")
+# fleet-ops#3731: the dominant evidence formats in merged worker PRs are
+# "- [x] `cmd` — result" test-plan checkboxes and "- `cmd` — result"
+# verification bullets — neither carries a magic keyword, so the keyword
+# list alone classified verified PRs as no-receipt (5 of 60 in the
+# 2026-09-05/06 24h merged sample, all five carrying real run evidence).
+# A backticked span whose first token is a runner (or a ./path, or a
+# *.sh script) inside an evidence section is itself the cue. An
+# unchecked "- [ ]" box is a plan, not a run — it never counts.
+UNCHECKED_BOX_RE = re.compile(r"^[\t ]*[-*+][\t ]+\[[ \t]\]")
+CHECKED_BOX_RE = re.compile(r"^[\t ]*[-*+][\t ]+\[[xX]\]")
+BACKTICK_SPAN_RE = re.compile(r"`([^`\n]+)`")
+# A checked test-plan box without a backticked command still counts when
+# it names a result ("- [x] fleet-restore-drill passes: ...", fleet-ops
+# #3627). An unchecked box never does — it is a plan, not a run.
+CHECKED_RESULT_RE = re.compile(
+    r"\b(pass|passes|passed|green|clean|verified|ok)\b|exit[\t ]+[0-9]",
+    re.I,
+)
+COMMAND_RUNNERS = frozenset(
+    {
+        "bash", "sh", "python", "python3", "node", "npm", "npx", "pnpm",
+        "yarn", "bun", "deno", "vitest", "playwright", "pytest", "make",
+        "curl", "gh", "git", "systemctl", "journalctl", "sgscan", "cargo",
+        "terraform", "wrangler", "docker", "kubectl", "pi",
+        "pi-systemd-run", "go",
+    }
+)
+
+
+def _has_backticked_command(line: str) -> bool:
+    for m in BACKTICK_SPAN_RE.finditer(line):
+        tokens = m.group(1).strip().split()
+        if not tokens:
+            continue
+        first = tokens[0]
+        if (
+            first in COMMAND_RUNNERS
+            or first.startswith("./")
+            or first.endswith(".sh")
+        ):
+            return True
+    return False
 
 WORKER_LOGINS = frozenset(
     {
@@ -65,8 +108,14 @@ def has_receipt(body: str) -> bool:
             in_v = True
         if not in_v:
             continue
+        if UNCHECKED_BOX_RE.match(line):
+            continue
         if (
-            JOURNALCTL_RE.search(line)
+            _has_backticked_command(line)
+            or (
+                CHECKED_BOX_RE.match(line) and CHECKED_RESULT_RE.search(line)
+            )
+            or JOURNALCTL_RE.search(line)
             or SYSTEMCTL_RE.search(line)
             or "http://" in line
             or "https://" in line
@@ -155,6 +204,9 @@ def scan_prs(
                 "url": str(pr.get("url") or ""),
                 "headRefName": str(pr.get("headRefName") or ""),
                 "title": str(pr.get("title") or ""),
+                # fleet-ops#3731: an ARMED no-receipt PR is the silent
+                # pass this gate exists to close — the caller disarms it.
+                "auto_merge_armed": bool(pr.get("autoMergeRequest")),
             }
         )
     return {
@@ -189,11 +241,12 @@ def main(argv: list[str] | None = None) -> int:
             print("OK: Verification/run-proof receipt present")
             return 0
         print(
-            "REJECT: no run receipt. Add a Verification: section with a "
-            "real run-cue (journalctl, systemctl, URL, exit N, rc=N, a "
-            "fenced block, ALL PHASES PASSED, a `$ ` prompt line, or "
-            "`ok: N`) or a run-proof: line. A worker that skipped the "
-            "run is not done.",
+            "REJECT: no run receipt. Add a Verification or Test plan "
+            "section carrying a real run-cue (a backticked command, "
+            "journalctl, systemctl, URL, exit N, rc=N, a fenced block, "
+            "ALL PHASES PASSED, a `$ ` prompt line, `ok: N`, or a "
+            "checked `- [x] \\`cmd\\`` box) or a run-proof: line. A "
+            "worker that skipped the run is not done.",
             file=sys.stderr,
         )
         return 1
