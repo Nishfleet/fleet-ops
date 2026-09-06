@@ -1,8 +1,7 @@
 [Unit]
-Description=Verify and resume the agent stack after a maintenance-window reboot
+Description=Post-window verify: resume after reboot, or surface a surviving reboot-required flag (fleet-ops#3994)
 After=network-online.target tailscaled.service docker.service
 Wants=network-online.target
-ConditionPathExists=/home/nish/.local/state/vps-maintenance/resume-after-boot
 
 [Service]
 Type=oneshot

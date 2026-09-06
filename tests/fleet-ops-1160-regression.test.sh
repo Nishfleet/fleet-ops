@@ -163,5 +163,53 @@ for script in "$REPO_ROOT"/bin/*; do
 done
 ok "all non-py/ts scripts under bin/ are git-tracked executable (fleet-ops#3829 class lock)"
 
+# --------------------------------------------------------------- 6. REBOOT-REQUIRED SURVIVAL DETECTOR
+# fleet-ops#3994: when the maintenance window fails (e.g. 203/EXEC from #3829,
+# or any other failure), the deadman resumes agents but never checks the
+# reboot-required flag. The flag then sits unnoticed until a THOROUGH heartbeat
+# LLM happens to file it — 14h in the lived case. The fix: vps-post-reboot-verify
+# now runs every Sun 04:00 (ConditionPathExists removed from the service) and,
+# when no reboot happened (no resume-after-boot marker), checks
+# /var/run/reboot-required and surfaces it loudly.
 echo ""
-echo "ALL TESTS PASSED -- fleet-ops#1160 mechanism verified + #3829 exec-bit guard"
+echo "Checking reboot-required survival detector (fleet-ops#3994)..."
+
+SVC="$REPO_ROOT/systemd/system/vps-post-reboot-verify.service"
+TIMER_UNIT="$REPO_ROOT/systemd/system/vps-post-reboot-verify.timer"
+
+# The service must NOT gate on ConditionPathExists — that made it skip when no
+# reboot happened, which is exactly the case where the flag survives.
+if grep -q "ConditionPathExists" "$SVC"; then
+  fail "vps-post-reboot-verify.service still has ConditionPathExists — skips the no-reboot path where the flag survives (fleet-ops#3994)"
+fi
+ok "vps-post-reboot-verify.service runs every Sun 04:00 regardless of reboot (no ConditionPathExists)"
+
+# The script must check /var/run/reboot-required in the no-marker branch.
+if ! grep -q "fleet-ops#3994" "$SCRIPT"; then
+  fail "vps-post-reboot-verify missing fleet-ops#3994 marker — no-marker reboot-required check not added"
+fi
+if ! grep -q "/var/run/reboot-required" "$SCRIPT"; then
+  fail "vps-post-reboot-verify does not check /var/run/reboot-required in the no-marker path (fleet-ops#3994)"
+fi
+if ! grep -q "REBOOT-REQUIRED SURVIVED" "$SCRIPT"; then
+  fail "vps-post-reboot-verify missing the SURVIVED surface line (fleet-ops#3994)"
+fi
+# Must NOT auto-reboot outside the sanctioned window — only surface.
+if grep -q "systemctl reboot" "$SCRIPT"; then
+  fail "vps-post-reboot-verify must never reboot directly — only surface a surviving flag inside the sanctioned window logic (fleet-ops#3994)"
+fi
+# Must skip the check while the window is still in progress (pause flag set)
+# so a long apt that hasn't reached the reboot step is not a false alarm.
+if ! grep -q "agent-maintenance-status" "$SCRIPT"; then
+  fail "vps-post-reboot-verify must gate the no-marker check on agent-maintenance-status to skip while the window is still running (fleet-ops#3994)"
+fi
+ok "vps-post-reboot-verify surfaces a surviving reboot-required flag, skips while window is in progress, never auto-reboots (fleet-ops#3994)"
+
+# The timer description must no longer reference ConditionPathExists.
+if grep -q "ConditionPathExists" "$TIMER_UNIT"; then
+  fail "vps-post-reboot-verify.timer still references ConditionPathExists in its comment (fleet-ops#3994)"
+fi
+ok "vps-post-reboot-verify.timer comment updated for the no-condition path (fleet-ops#3994)"
+
+echo ""
+echo "ALL TESTS PASSED -- fleet-ops#1160 mechanism verified + #3829 exec-bit guard + #3994 reboot-required survival detector"

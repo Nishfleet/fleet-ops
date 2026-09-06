@@ -1,11 +1,13 @@
 [Unit]
-Description=Re-verify agent stack after maintenance-window reboot (one-shot, 30 min post-reboot)
-# Runs ~30 min after vps-weekly-update (Sun 03:30 IST) to catch delayed tailscale recovery.
-# ConditionPathExists on the service ensures it only fires if the first verify
-# did not clear the resume-after-boot marker. This timer is system-scope because
-# the service it triggers is system-scope (runs After=network-online.target,
-# early in boot before user sessions). A user-scope timer cannot activate a
-# system-scope service (fleet-ops#1160).
+Description=Post-window verify: resume after reboot, or surface a surviving reboot-required flag (fleet-ops#3994)
+# Runs ~30 min after vps-weekly-update (Sun 03:30 IST). The service runs every
+# Sunday 04:00 regardless of whether a reboot happened: if the resume-after-boot
+# marker exists it does the post-reboot resume; if not, it checks whether
+# /var/run/reboot-required survived the window and surfaces it loudly
+# (fleet-ops#3994 — a failed window left the reboot flag unnoticed for hours).
+# This timer is system-scope because the service it triggers is system-scope
+# (runs After=network-online.target, early in boot before user sessions). A
+# user-scope timer cannot activate a system-scope service (fleet-ops#1160).
 
 [Timer]
 OnCalendar=Sun *-*-* 04:00:00

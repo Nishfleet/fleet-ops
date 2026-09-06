@@ -4,7 +4,33 @@ set -uo pipefail
 . /home/nish/.local/bin/vps-maintenance-lib
 exec > >(tee "$STATE/post-reboot.log") 2>&1
 
-[ -f "$STATE/resume-after-boot" ] || { note "no resume marker; nothing to do"; exit 0; }
+# --------------------------------------------------------------- NO-REBOOT PATH
+# fleet-ops#3994: when the maintenance window ran but did NOT reboot (no
+# resume-after-boot marker), the service used to exit 0 silently. That let a
+# surviving /var/run/reboot-required flag go unnoticed for hours when the
+# window failed (e.g. 203/EXEC, fleet-ops#3829) — the deadman resumes agents
+# but never checks the reboot flag. Now: if the window is no longer in
+# progress (pause flag clear) and reboot-required is still set, surface it
+# loudly so it is never missed between the window and the next THOROUGH pass.
+if [ ! -f "$STATE/resume-after-boot" ]; then
+  if agent-maintenance-status >/dev/null 2>&1; then
+    # Pause flag is clear -> window finished (success or failure). Check the
+    # reboot flag it was supposed to clear.
+    if [ -f /var/run/reboot-required ]; then
+      PKGS_R=$(tr '\n' ' ' < /var/run/reboot-required.pkgs 2>/dev/null)
+      say "REBOOT-REQUIRED SURVIVED THE MAINTENANCE WINDOW (fleet-ops#3994)"
+      note "kernel running: $(uname -r)"
+      note "reboot-required.pkgs: ${PKGS_R:-<unknown>}"
+      note "the window did not reboot — check $STATE/update.log and the vps-weekly-update.service journal"
+      notify urgent "VPS $(hostname): reboot-required flag survived the maintenance window. kernel=$(uname -r), pending: ${PKGS_R:-unknown}. The Sunday window did not reboot — check vps-weekly-update.service. Next window will clear it; no auto-reboot outside the sanctioned window." || true
+      exit 1
+    fi
+    note "no resume marker, no reboot-required flag — window completed clean (fleet-ops#3994)"
+  else
+    note "maintenance window still in progress (pause flag set) — skipping reboot-required check (fleet-ops#3994)"
+  fi
+  exit 0
+fi
 
 say "POST-REBOOT RESUME"
 FAIL=()
