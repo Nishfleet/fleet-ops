@@ -225,7 +225,7 @@ m.RUNNERS["repairs_units"] = lambda t: 0
 m.RUNNERS["fleet_paused"] = lambda t: 0
 m.RUNNERS["open_prs_prom"] = lambda t: 0
 m.RUNNERS["main_ci_prom"] = lambda t: 0
-m.RUNNERS["alerts_am"] = lambda t: 0
+m.RUNNERS["alerts_prom"] = lambda t: 0
 m.RUNNERS["running_pi_execstart"] = lambda t: 0
 
 results = m.run(data_path=data, inject=None)

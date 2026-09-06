@@ -84,7 +84,7 @@ m.RUNNERS["fleet_paused"] = lambda t: 0
 m.RUNNERS["open_prs_prom"] = lambda t: 0
 m.RUNNERS["shipped_prom"] = lambda t: 0
 m.RUNNERS["main_ci_prom"] = lambda t: 0
-m.RUNNERS["alerts_am"] = lambda t: 0
+m.RUNNERS["alerts_prom"] = lambda t: 0
 m.RUNNERS["running_pi_execstart"] = lambda t: 0
 m.SKIP_GH = True
 
@@ -150,6 +150,37 @@ for name, spec in m.SPECS.items():
     assert v["cmd"] == spec["cmd"], name
     assert v["field"] == spec["field"], name
 print("OK: every tile spec has a verify.cmd")
+
+# --- firing_alerts ground truth mirrors the tile writer's Prometheus query ---
+# fleet-ops#3637: the verifier must re-read the SAME Prometheus /api/v1/alerts
+# the writer claims to mirror (state=firing, Watchdog excluded), NOT
+# Alertmanager /api/v2/alerts, which is a deduplicated view and disagrees
+# with Prometheus by design. Lock the spec so it can't drift back to AM.
+fa_spec = m.SPECS["firing_alerts"]
+assert fa_spec["runner"] == "alerts_prom", fa_spec["runner"]
+assert "api/v1/alerts" in fa_spec["cmd"], fa_spec["cmd"]
+assert "api/v2/alerts" not in fa_spec["cmd"], fa_spec["cmd"]
+# Parity: run_alerts_prom counts firing (non-Watchdog) entries exactly like
+# the writer's collect_firing_alerts, given the same Prometheus payload.
+fa_payload = {"status": "success", "data": {"alerts": [
+    {"state": "firing", "labels": {"alertname": "A"}},
+    {"state": "firing", "labels": {"alertname": "A"}},       # duplicate instance = 2
+    {"state": "pending", "labels": {"alertname": "B"}},      # pending not counted
+    {"state": "inactive", "labels": {"alertname": "C"}},
+    {"state": "firing", "labels": {"alertname": "Watchdog"}},  # excluded
+]}}
+calls = []
+_orig_http = m._http_json
+def fake_prom(url, timeout=m.VERIFY_TIMEOUT):
+    calls.append(url)
+    assert "/api/v1/alerts" in url and "9093" not in url, url
+    return fa_payload
+m._http_json = fake_prom
+assert m.run_alerts_prom({"count": 99}) == 2, "must count 2 firing non-Watchdog"
+assert calls, "run_alerts_prom must query Prometheus"
+assert all("api/v2/alerts" not in u for u in calls), "must not query Alertmanager"
+m._http_json = _orig_http
+print("OK: firing_alerts verifier mirrors writer's Prometheus /api/v1/alerts")
 
 # --- inject overlay ---
 doc4 = json.loads(json.dumps(doc))

@@ -38,7 +38,6 @@ PROM_OUT = Path(
     )
 )
 PROM = os.environ.get("PROM_URL", "http://127.0.0.1:9090")
-AM = os.environ.get("AM_URL", "http://127.0.0.1:9093")
 XDG = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
 PAUSED_MARKER = Path(
     os.environ.get(
@@ -120,12 +119,12 @@ SPECS = {
     },
     "firing_alerts": {
         "cmd": (
-            "Alertmanager GET /api/v2/alerts, state=active, Watchdog excluded "
-            "(independent of Prometheus /api/v1/alerts)"
+            "Prometheus GET /api/v1/alerts, state=firing, Watchdog excluded "
+            "(same source and filter as the tile writer)"
         ),
         "field": "count",
         "tolerance": {"mode": "exact"},
-        "runner": "alerts_am",
+        "runner": "alerts_prom",
     },
     "repairs_inflight": {
         "cmd": (
@@ -382,34 +381,31 @@ def run_main_ci_prom(tile):
     return int(_promql_sum("count(fleet_main_ci_green == 0)"))
 
 
-def run_alerts_am(tile):
-    url = AM.rstrip("/") + "/api/v2/alerts"
-    try:
-        payload = _http_json(url)
-    except VerifyError:
-        # AM down: fall back to Prometheus alerts API (weaker independence).
-        payload = _http_json(PROM.rstrip("/") + "/api/v1/alerts")
-        alerts = (payload.get("data") or {}).get("alerts") or []
-        n = 0
-        for a in alerts:
-            if a.get("state") != "firing":
-                continue
-            name = (a.get("labels") or {}).get("alertname") or ""
-            if name == "Watchdog":
-                continue
-            n += 1
-        return n
-    if not isinstance(payload, list):
-        raise VerifyError("am /api/v2/alerts was not a list")
+def run_alerts_prom(tile):
+    """Live Prometheus /api/v1/alerts firing count, Watchdog excluded.
+
+    fleet-ops#3637: the tile writer counts Prometheus /api/v1/alerts where
+    state==firing, but the verifier used Alertmanager /api/v2/alerts. Those
+    are two legitimately-different views (Alertmanager dedups/suppresses and
+    groups), so a tile that faithfully mirrors Prometheus was falsely
+    DISPUTED whenever the two sources diverged (ConsoleLying). Re-read the
+    SAME Prometheus endpoint the writer claims to mirror, with the same
+    filter, so a lying tile still DISPUTES but a true one stays green — the
+    #2805 same-source pattern.
+    """
+    url = PROM.rstrip("/") + "/api/v1/alerts"
+    payload = _http_json(url)
+    if payload.get("status") != "success":
+        raise VerifyError(f"prom alerts status={payload.get('status')}")
+    alerts = (payload.get("data") or {}).get("alerts") or []
     n = 0
-    for a in payload:
-        labels = a.get("labels") or {}
-        if labels.get("alertname") == "Watchdog":
+    for a in alerts:
+        if a.get("state") != "firing":
             continue
-        status = a.get("status") or {}
-        state = status.get("state") or a.get("status") or ""
-        if state in ("active", "firing"):
-            n += 1
+        name = (a.get("labels") or {}).get("alertname") or ""
+        if name == "Watchdog":
+            continue
+        n += 1
     return n
 
 
@@ -461,7 +457,7 @@ RUNNERS = {
     "open_prs_prom": run_open_prs_prom,
     "shipped_prom": run_shipped_prom,
     "main_ci_prom": run_main_ci_prom,
-    "alerts_am": run_alerts_am,
+    "alerts_prom": run_alerts_prom,
     "repairs_units": run_repairs_units,
     "running_pi_execstart": run_running_pi_execstart,
     "fleet_paused": run_fleet_paused,
