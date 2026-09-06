@@ -41,15 +41,19 @@ guards this class. No further code/config change is required.
 ## Verification
 
 The section-12 regression test passes on current main
-(`fleet-ops#3558: cancelled CI runs are not a red verdict`). Current main
-HEAD `285ff555` carries a push-triggered CI run `34022457579` with all
-jobs green (systemd-analyze, P14 tests/PR checks, Gitleaks, Shellcheck,
-Semgrep). Live exporter gauge (timer-refreshed):
+(`fleet-ops#3558: cancelled CI runs are not a red verdict`) — run on
+2026-09-06 from this PR's base. Current main HEAD `cadd8652` sits on a
+green trunk: the latest completed push-triggered CI run `34035447244`
+(HEAD `476c571f`, the commit just before `cadd8652`) concluded success;
+the newest run `34036497431` for `cadd8652` was mid-flight (PENDING
+rollup) at verification time, exactly the situation the fix handles
+without flapping. Live exporter gauge (timer-refreshed):
 `fleet_main_ci_green{repo="Nishfleet/fleet-ops"} 1`; no alert with
 `repo="Nishfleet/fleet-ops"` present in `/api/v1/alerts`.
 
-run-proof: `gh run view 34022457579 -R Nishfleet/fleet-ops` (push,
-conclusion success, all 5 jobs green);
+run-proof: `gh run list -R Nishfleet/fleet-ops --workflow CI --branch
+main` shows `34035447244` concluded success and `34036497431`
+`in_progress` for the current HEAD;
 `curl -s http://localhost:9090/api/v1/query?query=fleet_main_ci_green`
 (`Nishfleet/fleet-ops 1`); `/api/v1/alerts` shows no fleet-ops alert;
 `./tests/fleet-metrics-export.test.sh` passes section 12.
