@@ -347,6 +347,22 @@ repo_reality() {
     }
 }
 
+# fleet-ops#3966: an escalate-senior issue filed by the CI failure escalation
+# bridge (fleet-ops#221) names the failing PRODUCT repo in its body
+# (`- **Repo:** `Nishfleet/0509``), which is usually NOT the escalation repo
+# (fleet-ops) the issue lives in. repo_reality() above only fetches the
+# escalation repo, so the auditors never saw the product repo's open
+# issues/PRs and admitted already-owned product failures (the 0509#1752
+# duplicate). Extract the named product repo from the candidate body so its
+# reality is appended to the packet too. Returns the bare repo slug (e.g.
+# "0509") on stdout, or empty if no `Nishfleet/<repo>` is named.
+product_repo_from_body() {
+    local body="$1"
+    printf '%s\n' "$body" \
+        | sed -nE 's/.*\*\*Repo:\*\*[[:space:]]*`Nishfleet\/([^`]+)`.*/\1/p' \
+        | head -n1
+}
+
 # fleet-ops#786: do not byte-cap the ledger. Capping the decisions ledger
 # to save tokens starves the auditor of the rationale it is being asked to
 # weigh (sr-token-efficiency; same rule as packet-assembly #670).
@@ -383,6 +399,16 @@ build_packet() {
         printf '## Candidate title\n%s\n\n' "$title"
         printf '## Candidate body\n%s\n\n' "$body"
         repo_reality "$repo"
+        # fleet-ops#3966: when the escalation names a PRODUCT repo different
+        # from the escalation repo, append that repo's open issues/PRs too,
+        # so the auditors can see an already-owned product fix (e.g. 0509#1752)
+        # and dismiss the duplicate instead of admitting it.
+        local product_repo
+        product_repo=$(product_repo_from_body "$body")
+        if [ -n "$product_repo" ] && [ "$product_repo" != "$repo" ]; then
+            printf '## Named product repo reality (Nishfleet/%s)\n\n' "$product_repo"
+            repo_reality "$product_repo"
+        fi
         decisions_ledger
         printf '## Campaign priority pointer\nSee the repo-specific campaign doc / decisions ledger; north-star: product must beat the customer'\''s own edge AI; parity work is raised, not shipped.\n\n'
     }
