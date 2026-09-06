@@ -5218,6 +5218,90 @@ mark_seat_empty_run() {
     return 1
 }
 
+# --- worked-no-text bench (fleet-ops#3847) --------------------------------
+# fleet-ops#3714 taught pi-issue-run that a session which made tool calls did
+# real work: when a model ends its turn ON a tool call (deepseek-v4-flash:0731
+# via ollama closes with structured_output and no trailing text), pi --print
+# emits no final text, so stdout is 0B while the verdict on stderr already says
+# tools=N class=worked. Those runs are NOT provider no-ops and must not be
+# benched as empty runs. But a single 0B-stdout run is not proof of a broken
+# seat either — it is the live 2026-09-06 case (fleet-ops#3847):
+# ollama/deepseek-v4-flash:0731 produced 0B final text on 5/5 runs in 2h
+# (fleet-ops-3714, 0509-1731, fleet-ops-3727, fleet-ops-3322, fleet-ops-3730;
+# 197 tool calls, zero deliverables) and each was classified worked-no-text and
+# deliberately NOT benched. Whatever the classification, N consecutive
+# 0B-stdout runs is a broken seat. These helpers keep a per-seat counter of
+# consecutive worked-no-text runs (durable, across separate pi-issue-run
+# invocations and across issues) and bench the seat via mark_seat_empty_run
+# once the count reaches WORKED_NO_TEXT_THRESHOLD. The counter resets on a
+# real-output run (out_bytes >= OUT_MIN) and on the bench itself.
+WORKED_NO_TEXT_THRESHOLD="${WORKED_NO_TEXT_THRESHOLD:-5}"
+# A worked-no-text run that happened more than this many seconds ago is stale
+# (the seat went a healthy stretch in between) and starts a fresh count.
+WORKED_NO_TEXT_WINDOW_S="${WORKED_NO_TEXT_WINDOW_S:-7200}"  # 2 h
+
+seat_worked_no_text_path() {
+    local p="$1" m="$2" ps ms
+    ps="${p//[^A-Za-z0-9._-]/_}"
+    ms="${m//[^A-Za-z0-9._-]/_}"
+    printf '%s/%s__%s.worked-no-text.json\n' "$LEDGER_DIR" "$ps" "$ms"
+}
+
+# Increment the per-seat consecutive worked-no-text counter and, once it
+# reaches WORKED_NO_TEXT_THRESHOLD, bench the seat via mark_seat_empty_run and
+# reset the counter. Returns 0 (bench fired) when the threshold is reached,
+# 1 otherwise. Best-effort: a counter write failure must not block the
+# caller's fall-through (the run is still treated as worked-no-text).
+mark_seat_worked_no_text() {
+    local p="$1" m="$2" reason="${3:-worked-no-text}"
+    if ! _seat_key_guard "$p" "$m" "mark_seat_worked_no_text"; then return 1; fi
+    local path now_utc now_s prev prev_written written_s count tmp
+    path=$(seat_worked_no_text_path "$p" "$m")
+    mkdir -p "$LEDGER_DIR" 2>/dev/null || true
+    now_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    now_s=$(date -u +%s)
+    prev=0
+    if [[ -f "$path" ]]; then
+        prev=$(jq -r '.consecutive_worked_no_text // 0' "$path" 2>/dev/null || echo 0)
+        [[ "$prev" =~ ^[0-9]+$ ]] || prev=0
+        prev_written=$(jq -r '.written_at // ""' "$path" 2>/dev/null || true)
+        if [[ -n "$prev_written" ]]; then
+            written_s=$(date -u -d "$prev_written" +%s 2>/dev/null || echo 0)
+            if [[ "$written_s" =~ ^[0-9]+$ ]] && (( written_s > 0 )) \
+                && (( now_s - written_s > ${WORKED_NO_TEXT_WINDOW_S:-7200} )); then
+                prev=0  # stale: a healthy stretch elapsed, start fresh
+            fi
+        fi
+    fi
+    count=$((prev + 1))
+    tmp="$path.$$.$RANDOM.tmp"
+    if jq -nc --arg p "$p" --arg m "$m" --arg written "$now_utc" --arg reason "$reason" \
+        --argjson count "$count" \
+        '{provider:$p, model:$m, consecutive_worked_no_text:$count, written_at:$written, reason:$reason}' \
+        >"$tmp" 2>/dev/null; then
+        chmod 0644 "$tmp" 2>/dev/null || true
+        mv "$tmp" "$path" 2>/dev/null || { rm -f "$tmp" 2>/dev/null || true; }
+    else
+        rm -f "$tmp" 2>/dev/null || true
+    fi
+    seat_log "worked-no-text: $p/$m consecutive 0B-stdout runs = $count (threshold ${WORKED_NO_TEXT_THRESHOLD:-5})"
+    if (( count >= ${WORKED_NO_TEXT_THRESHOLD:-5} )); then
+        seat_log "worked-no-text: $p/$m hit ${count} consecutive 0B-stdout runs — BENCHING via empty_run (fleet-ops#3847)"
+        mark_seat_empty_run "$p" "$m" "pi-issue:worked-no-text:x${count}:${reason}" || true
+        rm -f "$path" 2>/dev/null || true  # reset after the bench
+        return 0
+    fi
+    return 1
+}
+
+# Reset the per-seat consecutive worked-no-text counter. Called on a real-output
+# run (out_bytes >= OUT_MIN) so a recovered seat starts fresh.
+reset_seat_worked_no_text() {
+    local p="$1" m="$2" path
+    path=$(seat_worked_no_text_path "$p" "$m")
+    rm -f "$path" 2>/dev/null || true
+}
+
 # --- error-class registry dispatch (fleet-ops#859) -----------------------
 # Data-driven lane-fault dispatch. seat-caps.json declares an `error_classes`
 # map: each class names a matcher function, a writer function, a trigger_order,

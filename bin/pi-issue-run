@@ -842,6 +842,23 @@ if (( out_bytes < OUT_MIN )); then
         # tried-seats exclusion keeps the next pick off this seat for the
         # rest of the burst. A session that DID ship (PR open or issue
         # closed) falls through to the success path as a real success.
+        # fleet-ops#3847: a SINGLE 0B-stdout run is not proof of a broken seat,
+        # but N consecutive ones is (live: deepseek-v4-flash:0731, 5/5 runs in
+        # 2h, 197 tool calls, zero deliverables, each classified worked-no-text
+        # and never benched). Count consecutive worked-no-text runs per seat;
+        # once the count reaches WORKED_NO_TEXT_THRESHOLD, bench the seat via
+        # mark_seat_empty_run and re-seat in-process instead of falling through
+        # to the loud-fail path.
+        if mark_seat_worked_no_text "$np" "$nm" "pi-issue:$inst:worked-no-text:tools=${tool_calls}"; then
+            seat_log "pi-issue-run: $inst $np/$nm benched after ${WORKED_NO_TEXT_THRESHOLD:-5} consecutive worked-no-text runs — re-seating in-process (fleet-ops#3847)"
+            empty_run_attempt=$((empty_run_attempt + 1))
+            if (( empty_run_attempt > EMPTY_RUN_RETRY_MAX )); then
+                seat_log "pi-issue-run: $inst in-process retries exhausted (${empty_run_attempt} attempts, limit=${EMPTY_RUN_RETRY_MAX}) — exiting 1 so systemd Restart fires"
+                write_death_class work
+                exit 1
+            fi
+            continue
+        fi
         seat_log "pi-issue-run: $inst session on $np/$nm made ${tool_calls} tool calls but printed no final text (stdout=${out_bytes}B) — worked-no-text, NOT a provider no-op; seat not benched (fleet-ops#3714)"
         _wnt_issue="${inst##*-}"
         _wnt_shipped=no
@@ -917,6 +934,14 @@ done  # fleet-ops#1378 empty-run retry while loop
 
 # --- success path (reached via break above) ---
 seat_log "pi-issue-run: $inst SUCCESS on $np/$nm (${out_bytes}B output)"
+# fleet-ops#3847: a REAL-output run (out_bytes >= OUT_MIN) proves the seat
+# recovered — reset the per-seat consecutive worked-no-text counter so a later
+# 0B run starts fresh. A worked-no-text run below threshold also falls through
+# to this path but is still 0B, so it must NOT reset the counter (that would
+# defeat the consecutive count).
+if (( out_bytes >= OUT_MIN )); then
+    reset_seat_worked_no_text "$np" "$nm"
+fi
 
 # fleet-ops#2005: session-close gate. A multi-attempt debug without a
 # four-heading vault playbook is not allowed to close successfully.

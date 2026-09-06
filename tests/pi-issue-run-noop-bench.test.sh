@@ -575,13 +575,11 @@ set +e
 bash "$bin" "$inst8" >"$scratch/run8.out" 2>"$scratch/run8.err"
 rc8=$?
 set -e
-[[ "$rc8" == "0" ]] \
-  || fail "worked-no-text WITH PR shipped must exit 0, got rc=$rc8 err=$(tail -n 5 "$scratch/run8.err")"
+[[ "$rc8" == "0" ]]   || fail "worked-no-text WITH PR shipped must exit 0, got rc=$rc8 err=$(tail -n 5 "$scratch/run8.err")"
 if [[ -s "$scratch/mark_empty_calls" ]]; then
     fail "worked-no-text with PR shipped must NOT bench the seat; calls: $(cat "$scratch/mark_empty_calls")"
 fi
-grep -qF 'PR shipped or issue closed' "$scratch/run8.err" \
-  || fail "expected a 'PR shipped or issue closed' log line, got: $(tail -n 5 "$scratch/run8.err")"
+grep -qF 'PR shipped or issue closed' "$scratch/run8.err"   || fail "expected a 'PR shipped or issue closed' log line, got: $(tail -n 5 "$scratch/run8.err")"
 ok "fleet-ops#3810 (d): worked-no-text + PR shipped -> exit 0, seat not benched"
 
 # Restore default gh stub for any subsequent test sections.
@@ -597,3 +595,68 @@ STUB
 chmod +x "$stub_bin/gh"
 
 ok "fleet-ops#3714/#3810: worked-no-text is not a provider no-op; no-PR fails loudly, PR-shipped succeeds; true no-op still benches"
+
+# =============================================================================
+# fleet-ops#3847: a SINGLE worked-no-text run (tools>0, 0B stdout) is not proof
+# of a broken seat, but N consecutive ones is. Live 2026-09-06:
+# ollama/deepseek-v4-flash:0731 produced 0B final text on 5/5 runs in 2h
+# (fleet-ops-3714, 0509-1731, fleet-ops-3727, fleet-ops-3322, fleet-ops-3730;
+# 197 tool calls, zero deliverables), each classified worked-no-text and never
+# benched. Once a seat hits WORKED_NO_TEXT_THRESHOLD consecutive 0B-stdout
+# worked-no-text runs, it is benched via mark_seat_empty_run and re-seated.
+#
+# NOTE (fleet-ops#3810, merged on main): a worked-no-text run with NO PR
+# shipped now exits 1 loudly regardless of threshold. So every run below
+# exits 1 (loud fail) AND must NOT bench; the bench fires only at the
+# threshold. The exit code is therefore not the discriminator — the bench
+# (mark_seat_empty_run) and the counter are.
+# =============================================================================
+export WORKED_NO_TEXT_THRESHOLD=3
+rm -f "$scratch/mark_calls" "$scratch/mark_empty_calls" 2>/dev/null || true
+rm -f "$LEDGER"/*.worked-no-text.json 2>/dev/null || true
+# Each inst is a separate pi-issue-run invocation on the same seat
+# (devin/glm-5-2), so the per-seat counter accumulates across runs. The gh
+# stub above returns no open PR and an open issue, so #3810's no-PR loud-fail
+# path fires (exit 1) on every run.
+cat >"$stub_bin/pi" <<'STUB'
+#!/usr/bin/env bash
+printf 'EXTLOAD-OK extension=packet-verdict mode=print-safe\nPACKET-VERDICT tools=12 class=worked\n' >&2
+exit 0
+STUB
+chmod +x "$stub_bin/pi"
+
+for i in 1 2; do
+    inst9="fleet-ops-3847-wnt-$i"
+    printf 'Implement one GitHub issue: fleet-ops#3847.\nTARGET: repo Nishfleet/fleet-ops issue 3847 unit pi-issue-fleet-ops-3847\n' >"$ISSUES_DIR/${inst9}.in"
+    set +e
+    bash "$bin" "$inst9" >"$scratch/run9-$i.out" 2>"$scratch/run9-$i.err"
+    rc=$?
+    set -e
+    [[ "$rc" == "1" ]]       || fail "worked-no-text run #$i (below threshold, no PR) must exit 1 per #3810, got rc=$rc err=$(tail -n 5 "$scratch/run9-$i.err")"
+done
+if [[ -s "$scratch/mark_empty_calls" ]]; then
+    fail "worked-no-text below threshold must NOT bench the seat; calls: $(cat "$scratch/mark_empty_calls")"
+fi
+# The counter file must exist and show count=2 after two runs.
+wnt_file=$(ls "$LEDGER"/*.worked-no-text.json 2>/dev/null | head -n1 || true)
+[[ -n "$wnt_file" ]] || fail "worked-no-text counter file missing after 2 runs"
+[[ "$(jq -r '.consecutive_worked_no_text // 0' "$wnt_file" 2>/dev/null)" == "2" ]]   || fail "worked-no-text counter must be 2 after 2 runs, got: $(cat "$wnt_file")"
+ok "fleet-ops#3847 (a): worked-no-text below threshold does NOT bench, counter accumulates"
+
+# 3rd consecutive run reaches the threshold -> bench fires (and, with no PR
+# shipped, #3810 still exits 1). The discriminator is the bench, not rc.
+rm -f "$scratch/mark_calls" "$scratch/mark_empty_calls" 2>/dev/null || true
+inst9="fleet-ops-3847-wnt-3"
+printf 'Implement one GitHub issue: fleet-ops#3847.\nTARGET: repo Nishfleet/fleet-ops issue 3847 unit pi-issue-fleet-ops-3847\n' >"$ISSUES_DIR/${inst9}.in"
+set +e
+bash "$bin" "$inst9" >"$scratch/run9-3.out" 2>"$scratch/run9-3.err"
+rc=$?
+set -e
+[[ "$rc" == "1" ]]   || fail "worked-no-text at threshold (no PR) must exit 1, got rc=$rc err=$(tail -n 5 "$scratch/run9-3.err")"
+[[ -s "$scratch/mark_empty_calls" ]]   || fail "worked-no-text at threshold must bench the seat via mark_seat_empty_run; calls: $(cat "$scratch/mark_empty_calls")"
+grep -qF 'worked-no-text' "$scratch/mark_empty_calls"   || fail "mark_seat_empty_run reason must mention worked-no-text; calls: $(cat "$scratch/mark_empty_calls")"
+# Counter resets after the bench.
+[[ -z "$(ls "$LEDGER"/*.worked-no-text.json 2>/dev/null)" ]]   || fail "worked-no-text counter must reset after the bench, got: $(ls "$LEDGER"/*.worked-no-text.json)"
+ok "fleet-ops#3847 (b): N consecutive worked-no-text runs bench the seat and reset the counter"
+
+ok "fleet-ops#3847: N consecutive worked-no-text runs bench the seat; below-threshold runs do not"
