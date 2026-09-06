@@ -2257,6 +2257,35 @@ seat_usable() {
                 (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE (wrapper bench ${sb_usable:-none} expired, marker is latest evidence — held for comeback-release probe, fleet-ops#3737)"
                 return 1
             fi
+            # fleet-ops#3826: a seat whose marker count is past the failure
+            # ceiling is CHRONICALLY spawn-failing. seat-health.ts logs a
+            # transport 200 as healthy during the very run that then exits 0
+            # with 0-byte stdout (after_provider_response carries status+
+            # headers only, never the body), so its healthy write
+            # (observed_at > marker written_at) is NOT recovery evidence —
+            # it is the same false-healthy #3737 guards against. Without this
+            # fence the seat is re-offered to a work item every park-wall
+            # expiry (24h), spawn-fails again (no_block:rc=1), and the count
+            # climbs forever while the ledger stays health_class=healthy /
+            # http 200 (live: xkiro/deepseek-v4-flash at 47 consecutive
+            # spawn_fail). Only a comeback-release tool-using probe
+            # (source="comeback_release") is real recovery for a
+            # ceiling-parked seat; hold until then. The marker age gate
+            # above (>24h fail-open) still bounds a dead comeback organ.
+            local sb_mcount sb_mmode sb_ceil sb_lsrc
+            sb_mcount=$(jq -r '.consecutive_failure_count // 0' "$sb_path" 2>/dev/null || echo 0)
+            [[ "$sb_mcount" =~ ^[0-9]+$ ]] || sb_mcount=0
+            sb_mmode=$(jq -r '.failure_mode // ""' "$sb_path" 2>/dev/null || true)
+            sb_ceil="${SEAT_FAILURE_CEILING:-20}"
+            [[ "$sb_mmode" == "empty_run" ]] && sb_ceil="${EMPTY_RUN_FAILURE_CEILING:-5}"
+            if _seat_parked_by_ceiling "$sb_mcount" "$sb_ceil"; then
+                sb_lsrc=""
+                [[ -f "$sb_lf" ]] && sb_lsrc=$(jq -r '.source // ""' "$sb_lf" 2>/dev/null || true)
+                if [[ "$sb_lsrc" != "comeback_release" ]]; then
+                    (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE (marker count=$sb_mcount >= ${sb_ceil} ceiling, ledger healthy write source=${sb_lsrc:-none} is not comeback_release — held for tool-using probe, fleet-ops#3826)"
+                    return 1
+                fi
+            fi
         fi
     fi
     f=$(seat_ledger_path "$p" "$m")

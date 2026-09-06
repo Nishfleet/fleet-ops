@@ -3734,3 +3734,9 @@ bash "$here/seat-lib-free-daily-budget.test.sh" || fail "seat-lib-free-daily-bud
 # Workers cannot add a P14 line in .github/workflows/ci.yml; this file is the
 # listed CI host for the new product_only/spend-cap bench test.
 bash "$here/seat-lib-product-only-spend-cap.test.sh" || fail "seat-lib-product-only-spend-cap tests failed"
+
+# fleet-ops#3826: a ceiling-parked spawn_fail seat must not be re-offered on
+# a false-healthy seat-health.ts ledger write (after_provider_response).
+# Workers cannot add a P14 line in .github/workflows/ci.yml; this file is the
+# listed CI host for the new chronic-spawn-fail bench test.
+bash "$here/seat-spawn-bench-ceiling-false-healthy.test.sh" || fail "seat-spawn-bench-ceiling-false-healthy tests failed"
