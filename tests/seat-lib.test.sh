@@ -983,6 +983,18 @@ set -e
 bash -c 'source "$0"; is_quota_cap_error "$1" "$2"' "$lib" "" 'session-error: OpenAI API error (402): 402 "Grok Build usage balance exhausted"' >/dev/null 2>&1 \
   || fail "9b: Grok Build 402 'usage balance exhausted' must be a quota/cap wall (no reset text; provider default applies)"
 ok "9b: Grok Build 402 'usage balance exhausted' -> quota/cap wall"
+# fleet-ops#3973 (2026-09-06): mergegateway HTTP 402 'Credit balance depleted'
+# (type/code budget_exceeded) — all three mergegateway seats died at 1s on
+# 0509-1752 (12:09-12:10Z) and watch.log booked the fast death as
+# error_class=unknown, so a money wall could be counted as seat yield. It is a
+# prepaid-balance wall, the same class as the Grok Build 402 above: classify
+# it (provider default applies when one exists; else the writer fails open and
+# the reactive quota_exhausted ledger keeps the bench), never leave it unknown.
+bash -c 'source "$0"; is_quota_cap_error "$1" "$2"' "$lib" "" '402: {"message":"Credit balance depleted. Add credits to continue.","type":"budget_exceeded","code":"budget_exceeded"}' >/dev/null 2>&1 \
+  || fail "9b: mergegateway 402 'Credit balance depleted' (budget_exceeded) must be a quota/cap wall, not error_class=unknown (fleet-ops#3973)"
+bash -c 'source "$0"; is_quota_cap_error "$1" "$2"' "$lib" "" 'session-error: 402 budget_exceeded' >/dev/null 2>&1 \
+  || fail "9b: bare 402 budget_exceeded code must be a quota/cap wall (fleet-ops#3973)"
+ok "9b: mergegateway 402 'Credit balance depleted' / budget_exceeded -> quota/cap wall (fleet-ops#3973)"
 set +e
 bash -c 'source "$0"; is_quota_cap_error "$1" "$2"' "$lib" "429 Too Many Requests retry-after: 30" "" >/dev/null 2>&1
 rc=$?
