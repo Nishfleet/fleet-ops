@@ -451,6 +451,32 @@ jq -e '.providers.minimax.max_probe_ceiling == null' "$caps" >/dev/null \
   || fail "production: minimax must omit max_probe_ceiling (no climb)"
 ok "production seat-caps.json: devin AIMD not hard_ceiling, probe ceilings pinned == caps (fleet-ops#3443, lift via #3258), ollama hard_ceiling, all ceilings within [cap, 2x cap] (rule 2, fleet-ops#3504)"
 
+# --- fleet-ops#3930: worker_memory shape (no MemoryHigh throttle band) ------
+# The pressure-kill fault: MemoryHigh throttling is what made systemd-oomd
+# turn one worker's thrash into a kill of a random sibling (6 pi-issue@*
+# kills in 1h on a 15 GB box; pi-issue@0509-1752 killed at a 94.3M peak —
+# victim was not the offender). The fix drops the MemoryHigh throttle band
+# for fleet-ops + 0509 and keeps MemoryMax=4G: a worker that exceeds 4G is
+# OOM-killed locally at the cap, and oomd has no throttle-to-kill path on
+# the worker slice. The heavy class (manager workers, measured flat ~1.0 GB)
+# keeps its 3G/2G band — it is not part of this fault. Pin the shape so a
+# future revert (re-adding MemoryHigh to fleet-ops/0509, or dropping
+# MemoryMax below 4G) is caught here, not on the next oomd kill burst.
+fo_max=$(jq -r '.worker_memory["fleet-ops"].MemoryMax // empty' "$caps")
+fo_high=$(jq -r '.worker_memory["fleet-ops"].MemoryHigh // empty' "$caps")
+o5_max=$(jq -r '.worker_memory["0509"].MemoryMax // empty' "$caps")
+o5_high=$(jq -r '.worker_memory["0509"].MemoryHigh // empty' "$caps")
+[[ "$fo_max" == "4G" ]] || fail "production: fleet-ops worker_memory MemoryMax must be 4G (fleet-ops#3930), got '$fo_max'"
+[[ -z "$fo_high" ]] || fail "production: fleet-ops worker_memory MemoryHigh must be ABSENT (fleet-ops#3930 dropped the throttle band so oomd has no throttle-to-kill path), got '$fo_high'"
+[[ "$o5_max" == "4G" ]] || fail "production: 0509 worker_memory MemoryMax must be 4G (fleet-ops#3930), got '$o5_max'"
+[[ -z "$o5_high" ]] || fail "production: 0509 worker_memory MemoryHigh must be ABSENT (fleet-ops#3930 dropped the throttle band), got '$o5_high'"
+# heavy class keeps its band (manager workers, not part of the pressure-kill fault).
+hvy_max=$(jq -r '.worker_memory.heavy.MemoryMax // empty' "$caps")
+hvy_high=$(jq -r '.worker_memory.heavy.MemoryHigh // empty' "$caps")
+[[ "$hvy_max" == "3G" && "$hvy_high" == "2G" ]] \
+  || fail "production: heavy worker_memory must stay 3G/2G (manager workers, fleet-ops#3281; not part of fleet-ops#3930), got max='$hvy_max' high='$hvy_high'"
+ok "production worker_memory: fleet-ops + 0509 MemoryMax=4G with NO MemoryHigh (throttle band dropped, fleet-ops#3930); heavy keeps 3G/2G"
+
 # === fleet-ops#3732: PICK_SEAT_COUNT_SLOTS=1 counts the slots a pick would fill ===
 # Replay drill from the issue's accept line: a seat map where the ONLY usable
 # seat is at its cap -> 0 slots; the same map with one free slot -> exactly 1.

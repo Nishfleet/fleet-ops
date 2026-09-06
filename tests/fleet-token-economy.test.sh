@@ -265,4 +265,27 @@ grep -q 'fleet_seat_selection_24h' "$lib" \
 
 ok "lib/seat-lib.sh enforces product value-order + class ladder, cursor keystone-only, and seat-selection export"
 
+# --- fleet-ops#3930: worker_memory shape (no MemoryHigh throttle band) ------
+# MemoryHigh throttling is what made systemd-oomd pressure-kill a random
+# sibling (6 pi-issue@* kills in 1h on a 15 GB box; pi-issue@0509-1752 killed
+# at a 94.3M peak — victim was not the offender). The fix drops the
+# MemoryHigh throttle band for fleet-ops + 0509 and keeps MemoryMax=4G so a
+# worker that exceeds 4G is OOM-killed locally at the cap and oomd has no
+# throttle-to-kill path. Pin the shape here so a revert is caught before
+# push, not on the next oomd kill burst. The heavy class (manager workers)
+# keeps its 3G/2G band — it is not part of this fault.
+fo_max=$(jq -r '.worker_memory["fleet-ops"].MemoryMax // empty' "$caps")
+fo_high=$(jq -r '.worker_memory["fleet-ops"].MemoryHigh // empty' "$caps")
+o5_max=$(jq -r '.worker_memory["0509"].MemoryMax // empty' "$caps")
+o5_high=$(jq -r '.worker_memory["0509"].MemoryHigh // empty' "$caps")
+[[ "$fo_max" == "4G" ]] || fail "fleet-ops worker_memory MemoryMax must be 4G (fleet-ops#3930), got '$fo_max'"
+[[ -z "$fo_high" ]] || fail "fleet-ops worker_memory MemoryHigh must be ABSENT (fleet-ops#3930 dropped the throttle band so oomd has no throttle-to-kill path), got '$fo_high'"
+[[ "$o5_max" == "4G" ]] || fail "0509 worker_memory MemoryMax must be 4G (fleet-ops#3930), got '$o5_max'"
+[[ -z "$o5_high" ]] || fail "0509 worker_memory MemoryHigh must be ABSENT (fleet-ops#3930 dropped the throttle band), got '$o5_high'"
+hvy_max=$(jq -r '.worker_memory.heavy.MemoryMax // empty' "$caps")
+hvy_high=$(jq -r '.worker_memory.heavy.MemoryHigh // empty' "$caps")
+[[ "$hvy_max" == "3G" && "$hvy_high" == "2G" ]] \
+  || fail "heavy worker_memory must stay 3G/2G (manager workers, fleet-ops#3281; not part of fleet-ops#3930), got max='$hvy_max' high='$hvy_high'"
+ok "worker_memory: fleet-ops + 0509 MemoryMax=4G with NO MemoryHigh (throttle band dropped, fleet-ops#3930); heavy keeps 3G/2G"
+
 ok "token economy: product_order=value, caps carry dated reasons (rule 1), cap=0 entries intentional (rule 3), devin AIMD floors/ceilings, leftover-free before metered (fleet-ops#3504)"

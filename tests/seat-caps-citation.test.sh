@@ -442,3 +442,36 @@ else
 fi
 
 ok "seat-caps-citation: rules 1-6 enforced, orcarouter citation pinned, order clean, JSON parses (fleet-ops#3504, fleet-ops#3864)"
+
+# 13. fleet-ops#3930: worker_memory shape + citation. The pressure-kill fault
+#     was caused by the MemoryHigh throttle band: oomd turned one worker's
+#     thrash into a kill of a random sibling (6 pi-issue@* kills in 1h on a
+#     15 GB box; pi-issue@0509-1752 killed at a 94.3M peak — victim was not
+#     the offender). The fix drops MemoryHigh for fleet-ops + 0509 and keeps
+#     MemoryMax=4G. Pin the shape AND the citation (the _comment_worker_memory
+#     field carries a dated reason with measurement markers — sr-never-vibes,
+#     rule 1) so a revert is caught here, not on the next oomd kill burst.
+echo "--- scenario 13: worker_memory shape + citation (fleet-ops#3930) ---"
+fo_max=$(jq -r '.worker_memory["fleet-ops"].MemoryMax // empty' "$caps")
+fo_high=$(jq -r '.worker_memory["fleet-ops"].MemoryHigh // empty' "$caps")
+o5_max=$(jq -r '.worker_memory["0509"].MemoryMax // empty' "$caps")
+o5_high=$(jq -r '.worker_memory["0509"].MemoryHigh // empty' "$caps")
+[[ "$fo_max" == "4G" ]] || fail "scenario13: fleet-ops worker_memory MemoryMax must be 4G (fleet-ops#3930), got '$fo_max'"
+[[ -z "$fo_high" ]] || fail "scenario13: fleet-ops worker_memory MemoryHigh must be ABSENT (fleet-ops#3930 dropped the throttle band so oomd has no throttle-to-kill path), got '$fo_high'"
+[[ "$o5_max" == "4G" ]] || fail "scenario13: 0509 worker_memory MemoryMax must be 4G (fleet-ops#3930), got '$o5_max'"
+[[ -z "$o5_high" ]] || fail "scenario13: 0509 worker_memory MemoryHigh must be ABSENT (fleet-ops#3930 dropped the throttle band), got '$o5_high'"
+hvy_max=$(jq -r '.worker_memory.heavy.MemoryMax // empty' "$caps")
+hvy_high=$(jq -r '.worker_memory.heavy.MemoryHigh // empty' "$caps")
+[[ "$hvy_max" == "3G" && "$hvy_high" == "2G" ]] \
+  || fail "scenario13: heavy worker_memory must stay 3G/2G (manager workers, fleet-ops#3281; not part of fleet-ops#3930), got max='$hvy_max' high='$hvy_high'"
+# Citation (rule 1): the _comment_worker_memory field (or the worker_memory
+# _note) must carry a date + a measurement marker naming the oomd kill
+# evidence (kill count, peak, or pressure) so the shape is grounded in the
+# live fault, not a vibes number.
+wm_cite=$(jq -r '.worker_memory._comment // .worker_memory._note // ""' "$caps")
+[[ -n "$wm_cite" ]] || fail "scenario13: worker_memory must carry a _comment or _note citation (fleet-ops#3930)"
+grep -qE "$date_pat" <<<"$wm_cite" \
+  || fail "scenario13: worker_memory citation must name a YYYY-MM-DD date (rule 1, fleet-ops#3930)"
+grep -qiE '(oomd|kill|pressure|MemoryHigh|throttle|94\.3M|peak|sibling)' <<<"$wm_cite" \
+  || fail "scenario13: worker_memory citation must name the oomd pressure-kill evidence (rule 1, fleet-ops#3930)"
+ok "scenario13: worker_memory fleet-ops + 0509 MemoryMax=4G no MemoryHigh, heavy 3G/2G, citation dated + measured (fleet-ops#3930)"
