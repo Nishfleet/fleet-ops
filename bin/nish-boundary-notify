@@ -8,6 +8,13 @@
 # a MONEY-BOUNDARY ("both prepaid seats hit payment walls, NISH DECISION
 # NEEDED") sat unread for 11h. This closes that, and ONLY that: routine faults
 # still go to auditors and never text him.
+#
+# It delivers BOTH shapes agents actually append: the canonical one-line form
+# (`<ISO-ts> <CLASS> slug — summary`) AND prose sections (`## YYYY-MM-DD — …`
+# with a NISH ACTION / NISH DECISION NEEDED bullet). Before fleet-ops#4048 the
+# parser only matched the timestamp shape, so prose escalations sat dark while
+# the unit exited 0. The prose-scan detector (below) ensures reserved-class
+# prose dated after the last delivered entry is never a silent green run.
 set -euo pipefail
 AS=${UNIT_ESCALATION_AGENT_STATE:-/home/nish/workspaces/agent-state}
 FILE="$AS/NISH-ESCALATIONS.md"
@@ -162,6 +169,77 @@ while IFS= read -r line; do
   deliver "$key" "$line" "$body" "$class" || fail=1
 done < <(grep -E "^[0-9-]{10}T[0-9:]{8}Z ($CLASSES) " "$FILE" 2>/dev/null || true)
 
-# A failed delivery (both paths exhausted) must be loud: exit 1 so OnFailure
-# summons an auditor. A spurious trigger with nothing to deliver exits 0.
+# --- Prose-scan detector (fleet-ops#4048) ----------------------------
+# The entry-line grep above only matches the canonical timestamp shape
+# (`<ISO-ts> <CLASS> slug — summary`). Historically agents appended prose
+# sections (`## YYYY-MM-DD — title` with a `NISH ACTION` / `NISH DECISION
+# NEEDED` bullet) that the grep never matched, so a reserved-class ask sat
+# in the file while the unit exited 0 and logged `Finished` with no
+# delivered line — the channel dark, the unit healthy-looking. The most
+# recent entry-format line can be followed by months of undelivered prose.
+#
+# This pass must NEVER let a green run silently drop reserved-class text.
+# It scans prose sections dated STRICTLY after the newest entry-format line
+# (the "last delivered one" — the backfill must not re-page already-resolved
+# history, and $SEEN de-dups anything delivered), and delivers each unseen
+# marker via the same retry/fallback path as the entry loop. If any cannot
+# be delivered it exits 1 so OnFailure summons an auditor.
+#
+# Boundary: the date of the newest entry-format line in the file, recomputed
+# each run. The file is append-only and the format is documented at the top
+# of NISH-ESCALATIONS.md, so a genuinely new reserved item is newer than the
+# boundary; an EMPTY boundary (no entry-format lines at all — a purely prose
+# file) makes every dated section subject to the scan.
+last_bd=$(
+  grep -oE "^[0-9-]{10}T[0-9:]{8}Z ($CLASSES) " "$FILE" 2>/dev/null \
+    | cut -c1-10 | sort -u | tail -1 || true
+)
+# Reserved-class prose markers: the boundary tokens themselves plus the two
+# prose ask shapes auditors write. NISH DECISION NEEDED is matched first (a
+# NISH ACTION line often also names MONEY-BOUNDARY); we deliver per section.
+prose_mark="NISH ACTION|NISH DECISION NEEDED|$CLASSES"
+# awk emits, one record per RELEVANT section, `<header>|<first-marker-line>`.
+# `next` after a ## header keeps the header itself from self-matching; only
+# lines after a post-boundary header count; `$0 !~ /^[0-9]/` skips
+# entry-format lines (already handled above); emitting once per section via
+# active=0 keeps NISH ACTION + NISH DECISION NEEDED in one section to one msg.
+readarray -t prose < <(
+  awk -v bd="$last_bd" -v m="$prose_mark" '
+    /^## [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/ {
+      date = substr($0, 4, 10)
+      active = (bd == "" || date > bd) ? 1 : 0
+      hdr = $0
+      next
+    }
+    active && $0 !~ /^[0-9]/ && $0 ~ m {
+      print hdr "|" $0
+      active = 0
+    }
+  ' "$FILE" | sort -u
+)
+prose_fail=0
+for rec in "${prose[@]:-}"; do
+  [ -n "$rec" ] || continue
+  hdr="${rec%%|*}"; marker="${rec#*|}"
+  key=$(printf '%s' "$rec" | sha256sum | cut -c1-32)
+  grep -qxF "$key" "$SEEN" && continue
+  # Class for the hermes --class gate: the class token if the section names
+  # one, else map the common money words in the ask to MONEY-BOUNDARY so a
+  # credit/billing ask gets the urgent class-gate bypass. LEGAL-BOUNDARY is
+  # the conservative fallback so hermes still honours it as a reserved class.
+  class=$(printf '%s' "$hdr $marker" | grep -oE "$CLASSES" | head -1 || true)
+  if [ -z "$class" ]; then
+    case "$(printf '%s' "$hdr $marker" | tr 'A-Z' 'a-z')" in
+      *money*|*credit*|*pay*|*bill*|*card*|*charge*|*paid*) class="MONEY-BOUNDARY";;
+      *) class="LEGAL-BOUNDARY";;
+    esac
+  fi
+  deliver "$key" "$marker" "$hdr
+$marker" "$class" || prose_fail=1
+done
+
+# A failed delivery (entry-format OR prose; both paths exhausted) must be
+# loud: exit 1 so OnFailure summons an auditor. A spurious trigger with
+# nothing to deliver exits 0.
+[ "$prose_fail" = 1 ] && fail=1
 exit "$fail"

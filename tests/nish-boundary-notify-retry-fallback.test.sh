@@ -208,5 +208,152 @@ echo "exit code: $rc4"
   || fail "no boundary entries must exit 0 (grep no-match must not abort); got $rc4"
 ok "no-entries trigger exits 0 (grep no-match does not abort)"
 
+# --- scenario 5: prose-format reserved entry is NOT silently dropped -------
+# fleet-ops#4048: the old parser only matched the timestamp shape, so a prose
+# section (`## YYYY-MM-DD — title` with a NISH ACTION bullet) was never
+# delivered while the unit exited 0. The prose-scan detector must deliver it.
+# Fake hermes still fails here, so the fallback curl must carry the delivery
+# (proving the prose path reuses the same retry/fallback machinery).
+echo "--- scenario 5: prose-format reserved entry is delivered, not silent ---"
+cat > "$escalations" <<'EOS'
+## 2026-09-08 — drill prose NISH ACTION (fleet-ops#4048)
+- **NISH ACTION (money — drill that prose delivery fires):** no-op drill ask; the detector must deliver this, not exit silently.
+EOS
+: > "$seen"
+# Restore the succeeding fake curl for this scenario.
+cat > "$tmp/curl" <<'EOF'
+#!/usr/bin/env bash
+printf 'curl-invoked\n' >> "$CURL_LOG"
+exit 0
+EOF
+chmod +x "$tmp/curl"
+curl_log5="$tmp/curl5.log"; : > "$curl_log5"
+
+set +e
+UNIT_ESCALATION_AGENT_STATE="$state" \
+BOUNDARY_NOTIFY_HERMES="$fake_hermes" \
+BOUNDARY_NOTIFY_TGENV="$tgenv" \
+BOUNDARY_NOTIFY_BACKOFF="0 0" \
+BOUNDARY_NOTIFY_FALLBACK=1 \
+HERMES_LOG="$hermes_log3" \
+CURL_LOG="$curl_log5" \
+PATH="$tmp:/usr/bin:/bin" \
+bash "$script" > "$tmp/out5" 2>"$tmp/err5"
+rc5=$?
+set -e
+echo "exit code: $rc5"
+
+# The run must NOT be a silent green: the prose NISH ACTION must be reported
+# as delivered (here on the fallback path since fake hermes always fails).
+grep -q "delivered (fallback direct API)" "$tmp/out5" \
+  || fail "prose reserved entry must be delivered, not silently dropped; out=$(cat "$tmp/out5")"
+ok "prose NISH ACTION delivered (not a silent green)"
+
+fallback_curl5=$(wc -l < "$curl_log5")
+echo "fallback curl invocations: $fallback_curl5"
+[[ "$fallback_curl5" -ge 1 ]] \
+  || fail "prose delivery must fire the fallback at least once; got $fallback_curl5"
+ok "prose path reused the retry/fallback machinery"
+
+# The prose marker must be marked seen (de-duped on the next trigger).
+prose_line="## 2026-09-08 — drill prose NISH ACTION (fleet-ops#4048)|- **NISH ACTION (money — drill that prose delivery fires):** no-op drill ask; the detector must deliver this, not exit silently."
+pkey=$(printf '%s' "$prose_line" | sha256sum | cut -c1-32)
+grep -qxF "$pkey" "$seen" \
+  || fail "delivered prose marker must be marked seen"
+ok "prose marker marked seen"
+
+# --- scenario 6: prose reserved entry, delivery fails -> exit 1 (loud) -----
+# The mirror of scenario 5: an undeliverable prose reserved item must NOT exit
+# 0 either — it exits 1 so OnFailure summons an auditor (fleet-ops#4048).
+echo "--- scenario 6: prose reserved entry, undeliverable -> exit 1 ---"
+cat > "$escalations" <<'EOS'
+## 2026-09-09 — drill prose NISH DECISION NEEDED (fleet-ops#4048)
+- **NISH DECISION NEEDED (drill):** this prose item must trip exit 1 when undeliverable.
+EOS
+: > "$seen"
+# Failing fake curl again (both delivery paths blocked).
+cat > "$tmp/curl" <<'EOF'
+#!/usr/bin/env bash
+printf 'curl-invoked\n' >> "$CURL_LOG"
+exit 1
+EOF
+chmod +x "$tmp/curl"
+curl_log6="$tmp/curl6.log"; : > "$curl_log6"
+
+set +e
+UNIT_ESCALATION_AGENT_STATE="$state" \
+BOUNDARY_NOTIFY_HERMES="$fake_hermes" \
+BOUNDARY_NOTIFY_TGENV="$tgenv" \
+BOUNDARY_NOTIFY_BACKOFF="0 0" \
+BOUNDARY_NOTIFY_FALLBACK=1 \
+HERMES_LOG="$hermes_log3" \
+CURL_LOG="$curl_log6" \
+PATH="$tmp:/usr/bin:/bin" \
+bash "$script" > "$tmp/out6" 2>"$tmp/err6"
+rc6=$?
+set -e
+echo "exit code: $rc6"
+[[ "$rc6" -eq 1 ]] \
+  || fail "undeliverable prose reserved entry must exit 1 (loud), got $rc6"
+ok "undeliverable prose reserved entry exits 1 (loud)"
+
+grep -q "DELIVERY FAILED" "$tmp/err6" \
+  || fail "stderr must report DELIVERY FAILED on prose failure; got: $(cat "$tmp/err6")"
+ok "prose DELIVERY FAILED reported on stderr"
+
+# --- scenario 7: old prose marker (<= last delivered) is NOT backfiled ------
+# A prose section dated no later than the newest entry-format line must not be
+# re-delivered (the backfill must not re-page already-resolved history). Here
+# an entry-format line dated 2026-09-07 makes a 2026-09-06 prose NISH ACTION
+# (same vintage as the OpenRouter ask) sit BELOW the boundary -> skipped.
+echo "--- scenario 7: prose older than last delivered entry is not backfiled ---"
+{
+  printf '## 2026-09-06 — drill old prose (fleet-ops#4048)\n'
+  printf -- '- **NISH ACTION (money — old ask):** must NOT be re-delivered.\n'
+  printf '2026-09-07T00:20:00Z MONEY-BOUNDARY newest-delivered-slug\n'
+} > "$escalations"
+: > "$seen"
+curl_log7="$tmp/curl7.log"; : > "$curl_log7"
+# Succeeding curl; but the entry-format line (newest, dated 09-07) is the only
+# thing the boundary scan may deliver, so mark it seen in advance to force a
+# pure "nothing new" run.
+entry_key=$(printf '%s' '2026-09-07T00:20:00Z MONEY-BOUNDARY newest-delivered-slug' | sha256sum | cut -c1-32)
+printf '%s\n' "$entry_key" > "$seen"
+cat > "$tmp/curl" <<'EOF'
+#!/usr/bin/env bash
+printf 'curl-invoked\n' >> "$CURL_LOG"
+exit 0
+EOF
+chmod +x "$tmp/curl"
+
+set +e
+UNIT_ESCALATION_AGENT_STATE="$state" \
+BOUNDARY_NOTIFY_HERMES="$fake_hermes" \
+BOUNDARY_NOTIFY_TGENV="$tgenv" \
+BOUNDARY_NOTIFY_BACKOFF="0 0" \
+BOUNDARY_NOTIFY_FALLBACK=1 \
+HERMES_LOG="$hermes_log3" \
+CURL_LOG="$curl_log7" \
+PATH="$tmp:/usr/bin:/bin" \
+bash "$script" > "$tmp/out7" 2>"$tmp/err7"
+rc7=$?
+set -e
+echo "exit code: $rc7"
+
+# The old prose marker must NOT be delivered (boundary excludes it).
+grep -q "old ask" "$tmp/out7" \
+  && fail "prose older than the last delivered entry must not be backfiled" \
+  || ok "prose older than last-delivered entry not backfiled"
+# Deliveries (fallback) must be zero for this trigger: nothing unseen remains.
+fallback_curl7=$(wc -l < "$curl_log7")
+echo "fallback curl invocations: $fallback_curl7"
+set +e
+[ "$rc7" -eq 0 ] && [ "$fallback_curl7" -eq 0 ]
+rc7b=$?
+set -e
+[[ "$rc7b" -eq 0 ]] \
+  || fail "old-prose-only trigger must exit 0 with zero deliveries (nothing new); rc=$rc7 fallback=$fallback_curl7"
+ok "old-prose-only trigger exits 0 with zero deliveries"
+
 echo ""
-echo "OK: nish-boundary-notify retry + fallback drill (fleet-ops#1458) — 4/4 scenarios pass"
+echo "OK: nish-boundary-notify retry + fallback drill (fleet-ops#1458) + prose detector (fleet-ops#4048) — 7/7 scenarios pass"
