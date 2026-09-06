@@ -157,6 +157,10 @@ ok "spawn-fail backoff capped at ~${dc}s (cap=${cap}s)"
 # iterations. Production default is 20 (fleet-ops#3531).
 export SEAT_FAILURE_CEILING=3
 export EMPTY_RUN_FAILURE_CEILING=3  # fleet-ops#3727: empty-run park uses its own ceiling
+# fleet-ops#3941: the park wall ESCALATES with the count past the ceiling.
+# Pin the cap high so the escalation is not truncated in this test and the
+# (3b) assertion below can check the exact escalated wall.
+export SEAT_PARK_WALL_MAX_S=999999999
 # A provider no-op (exit 0, < OUT_MIN stdout) is a retryable lane fault. It
 # now shares the single geometric ladder with overload/quota writers
 # (base * 2^(n-1), capped at 6 h) so a repeat offender is held out of
@@ -189,19 +193,21 @@ ed=$((eu - prev_epoch))
   || fail "empty-run #3 backoff = ${ed}s, want ~${park}s (park at SEAT_FAILURE_CEILING, fleet-ops#3531)"
 ok "empty-run count=3 backoff=${ed}s (~${park}s, parked at 3rd no-op — fleet-ops#3531)"
 
-# --- (3b) park wall holds at higher counts (no hidden rebound) ------------
+# --- (3b) park wall ESCALATES at higher counts (fleet-ops#3941) ----------
 # Eight consecutive no-ops earlier breached the old 7200s cap; under
-# fleet-ops#3531 the wall stays at SEAT_PARK_WALL_S for every count
-# >= the ceiling — never a base rebound, never unbounded growth.
+# fleet-ops#3531 the wall parked at SEAT_PARK_WALL_S. fleet-ops#3941 makes the
+# park wall GROW with the count past the ceiling instead of resetting to a
+# flat 24h every cycle — a seat that keeps failing is probed less and less
+# often. count=8, ceiling=3 -> extra=6 -> wall = 6 * 86400 = 518400s.
 for _ in 4 5 6 7 8; do
     mark_seat_empty_run "$p" "$m" "test:empty:flat" >/dev/null 2>&1 || true
 done
 prev_epoch=$(date -u +%s)
 euc=$(usable_at_epoch "$lf")
 edc=$((euc - prev_epoch))
-(( edc >= park - 30 && edc <= park + 30 )) \
-  || fail "empty-run backoff after 8 failures = ${edc}s, want ~${park}s (park wall, capped — fleet-ops#2343/#3046)"
-ok "empty-run backoff after 8 no-ops still ~${edc}s (park wall holds, capped — fleet-ops#2343/#3046)"
+(( edc >= 518400 - 30 && edc <= 518400 + 30 )) \
+  || fail "empty-run backoff after 8 failures = ${edc}s, want ~518400s (escalated park wall, count=8, ceiling=3 — fleet-ops#3941)"
+ok "empty-run backoff after 8 no-ops = ${edc}s (escalated park wall, fleet-ops#3941)"
 
 # --- (4) a non-empty completion is NOT punished: seat_usable after bench ---
 # This is the work-complete vs seat-fault split: a no-op seat is benched

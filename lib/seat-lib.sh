@@ -2716,7 +2716,7 @@ seat_usable() {
     [[ "$fail_mode" == "empty_run" ]] && _park_ceil="${EMPTY_RUN_FAILURE_CEILING:-3}"
     if [[ ( "$hc" == "transient_fault" || "$hc" == "rate_limited" ) && -n "$observed" ]] && _seat_parked_by_ceiling "$fail_count" "$_park_ceil"; then
         local park_end_s park_end_iso
-        park_end_s=$(($(date -u -d "$observed" +%s 2>/dev/null || echo 0) + SEAT_PARK_WALL_S))
+        park_end_s=$(($(date -u -d "$observed" +%s 2>/dev/null || echo 0) + $(_park_wall_s "$fail_count" "$_park_ceil")))
         park_end_iso=$(date -u -d "@$park_end_s" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$observed")
         if _seat_in_future "$park_end_iso"; then
             (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE ($hc count=$fail_count >= ${_park_ceil}, parked until $park_end_iso — long wall, not flat re-offer)"
@@ -3821,7 +3821,7 @@ _seat_floor_remaining_s() {
     fi
     if [[ -z "$rem" && "$hc" == "transient_fault" && -n "$observed" ]] \
         && _seat_parked_by_ceiling "$fail_count"; then
-        park_end_iso=$(date -u -d "@$(( $(date -u -d "$observed" +%s 2>/dev/null || echo 0) + SEAT_PARK_WALL_S ))" \
+        park_end_iso=$(date -u -d "@$(( $(date -u -d "$observed" +%s 2>/dev/null || echo 0) + $(_park_wall_s "$fail_count") ))" \
             +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
         rem=$(_seat_remaining_s "$park_end_iso" 2>/dev/null || true)
     fi
@@ -4938,6 +4938,15 @@ _geometric_bench_window() {
 # their assertions byte-identically.
 SEAT_FAILURE_CEILING="${SEAT_FAILURE_CEILING:-20}"
 SEAT_PARK_WALL_S="${SEAT_PARK_WALL_S:-86400}"  # 24 h — probe once per day, not per 15min
+# fleet-ops#3941: the failure-ceiling park wall ESCALATES with the count
+# instead of resetting to a flat SEAT_PARK_WALL_S every cycle. A seat that
+# has failed 47 times straight (live: xkiro/deepseek-v4-flash) was re-offered
+# every 24h park-wall expiry and re-walled at the SAME 24h — the wall never
+# grew, so a chronically-dead seat was probed once per day forever. Now the
+# wall grows one SEAT_PARK_WALL_S per failure past the ceiling, capped at
+# SEAT_PARK_WALL_MAX_S (default 7 days), so a seat that keeps failing is
+# probed less and less often.
+SEAT_PARK_WALL_MAX_S="${SEAT_PARK_WALL_MAX_S:-604800}"  # 7 days — cap on the escalated park wall
 
 # --- corpse reclassification (fleet-ops#2594) ------------------------------
 # The bash quota_bench writer (mark_seat_quota_bench) was excluded from the
@@ -4970,10 +4979,39 @@ _seat_dead_by_threshold() {
     (( count >= thr ))
 }
 
+# _park_wall_s count [ceil_override]
+# Echo the failure-ceiling park wall in seconds, ESCALATING with the count
+# past the ceiling instead of resetting to a flat SEAT_PARK_WALL_S every
+# cycle (fleet-ops#3941). count < ceil -> 0 (not parked; the caller uses the
+# base backoff). count == ceil -> SEAT_PARK_WALL_S (first park). Each further
+# failure adds one park wall, capped at SEAT_PARK_WALL_MAX_S. The optional
+# 2nd arg overrides the ceiling (empty-run uses EMPTY_RUN_FAILURE_CEILING).
+# Defensive: non-numeric inputs fall back to 0 / defaults.
+_park_wall_s() {
+    local count="${1:-0}" ceil_override="${2:-}"
+    [[ "$count" =~ ^[0-9]+$ ]] || count=0
+    local ceil="${SEAT_FAILURE_CEILING:-20}"
+    [[ -n "$ceil_override" ]] && ceil="$ceil_override"
+    [[ "$ceil" =~ ^[0-9]+$ ]] || ceil=20
+    local park="${SEAT_PARK_WALL_S:-86400}"
+    [[ "$park" =~ ^[0-9]+$ ]] || park=86400
+    local max="${SEAT_PARK_WALL_MAX_S:-604800}"
+    [[ "$max" =~ ^[0-9]+$ ]] || max=604800
+    if (( count < ceil )); then
+        printf '0'
+        return 0
+    fi
+    local extra=$(( count - ceil + 1 ))
+    local wall=$(( park * extra ))
+    (( wall > max )) && wall="$max"
+    printf '%s' "$wall"
+}
+
 # Echo the effective park wall seconds for a consecutive_failure_count and a
 # computed base backoff/window. When count >= SEAT_FAILURE_CEILING the wall is
-# forced to SEAT_PARK_WALL_S (the park); otherwise the base is echoed unchanged.
-# An optional 3rd argument overrides the ceiling for this call (legacy).
+# forced to the ESCALATED park wall (_park_wall_s, fleet-ops#3941); otherwise
+# the base is echoed unchanged. An optional 3rd argument overrides the ceiling
+# for this call (legacy).
 # fleet-ops#3531: all writers now share the generic SEAT_FAILURE_CEILING.
 # Defensive: non-numeric inputs fall back to the base / count=0.
 _failure_ceiling_wall() {
@@ -4982,11 +5020,9 @@ _failure_ceiling_wall() {
     [[ "$base" =~ ^[0-9]+$ ]] || base=300
     local ceil="${SEAT_FAILURE_CEILING:-20}"
     [[ -n "$ceil_override" ]] && ceil="$ceil_override"
-    local park="${SEAT_PARK_WALL_S:-86400}"
     [[ "$ceil" =~ ^[0-9]+$ ]] || ceil=20
-    [[ "$park" =~ ^[0-9]+$ ]] || park=86400
     if (( count >= ceil )); then
-        printf '%s' "$park"
+        printf '%s' "$(_park_wall_s "$count" "$ceil_override")"
         return 0
     fi
     printf '%s' "$base"

@@ -73,6 +73,10 @@ export PI_SEAT_LIB_CHECK_SYSTEMD=0
 unset SEAT_FAILURE_CEILING
 unset SEAT_DEAD_CONSECUTIVE_THRESHOLD
 export SEAT_PARK_WALL_S=86400
+# fleet-ops#3941: the park wall ESCALATES with the count past the ceiling.
+# Pin the cap high so the escalation is not truncated and Q8 can check the
+# exact escalated wall (count=25, ceiling=20 -> extra=6 -> 6*86400=518400).
+export SEAT_PARK_WALL_MAX_S=999999999
 mkdir -p "$XDG_RUNTIME_DIR"
 
 cat >"$PI_MODELS_JSON" <<'JSON'
@@ -227,10 +231,12 @@ dead=$(jq -r '.seat_dead' "$lf")
 bench_window_s=$(jq -r '.bench_window_s' "$lf")
 [[ "$c" == "25" ]] || fail "Q8: count=$c, want 25"
 [[ "$dead" == "true" ]] || fail "Q8: seat_dead=$dead, want true (corpse at threshold)"
-[[ "$bench_window_s" == "86400" ]] || fail "Q8: bench_window_s=$bench_window_s, want 86400 (park wall, c>=ceiling=20)"
+# fleet-ops#3941: the park wall escalates with the count past the ceiling.
+# count=25, ceiling=20 -> extra=6 -> wall = 6 * 86400 = 518400s.
+[[ "$bench_window_s" == "518400" ]] || fail "Q8: bench_window_s=$bench_window_s, want 518400 (escalated park wall, count=25, ceiling=20 — fleet-ops#3941)"
 if seat_usable "$p" "$m"; then
     fail "Q8: seat_usable returned usable for a parked+corpse ledger"
 fi
-ok "Q8: c=25 is BOTH parked (bench_window_s=86400, ceiling=20) AND a corpse (seat_dead=true) — both fences engage"
+ok "Q8: c=25 is BOTH parked (bench_window_s=518400, escalated from ceiling=20) AND a corpse (seat_dead=true) — both fences engage"
 
 ok "seat quota corpse: mark_seat_quota_bench reclassifies a seat to seat_dead=true at >= SEAT_DEAD_CONSECUTIVE_THRESHOLD (default 25) but keeps a concrete comeback bench_until; the seat cools down and fail-opens once the clock passes (fleet-ops#3377), and a healthy observation clears the corpse (fleet-ops#2594)"

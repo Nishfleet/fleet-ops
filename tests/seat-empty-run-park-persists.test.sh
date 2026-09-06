@@ -72,6 +72,10 @@ export PI_SEAT_LIB_CHECK_SYSTEMD=0
 export SEAT_FAILURE_CEILING=3
 export EMPTY_RUN_FAILURE_CEILING=3  # fleet-ops#3727: empty-run park uses its own ceiling
 export SEAT_PARK_WALL_S=86400
+# fleet-ops#3941: the park wall ESCALATES with the count past the ceiling.
+# Pin the cap high so the escalation is not truncated and (b) can check the
+# exact escalated wall (count=4, ceiling=3 -> extra=2 -> 2*86400=172800).
+export SEAT_PARK_WALL_MAX_S=999999999
 export EMPTY_RUN_MARKER_FRESH_S=1800
 # Leave EMPTY_RUN_COUNT_WINDOW_S at its DEFAULT (now SEAT_PARK_WALL_S = 24 h,
 # fleet-ops#3666) so this test exercises the production window, NOT a pinned
@@ -198,9 +202,13 @@ boundary_count=$(count_of "$mf")
 [[ "$boundary_count" == "4" ]] \
     || fail "(b) marker count at the 24h boundary = $boundary_count, want 4 — the marker count (3) must carry forward across the park boundary, NOT reset to 1 from the clobbered ledger (fleet-ops#3666)"
 boundary_wall=$(wall_s_of_marker "$mf")
-(( boundary_wall >= SEAT_PARK_WALL_S - 120 && boundary_wall <= SEAT_PARK_WALL_S + 120 )) \
-    || fail "(b) boundary park wall = ${boundary_wall}s, want ~${SEAT_PARK_WALL_S}s — the park must RE-PARK at 24h from the marker-carried count; before #3666 the count reset to 1 and the bench dropped to the 900s base (the 'overwritten by a 30m flat cooldown' symptom)"
-ok "(b) no-op at the 24h boundary: count 3 -> 4 (marker carries, NOT the clobbered ledger), park RE-PARKS at ${boundary_wall}s — the 24h park PERSISTS (fleet-ops#3666)"
+# fleet-ops#3941: the park wall ESCALATES with the count past the ceiling.
+# count=4, ceiling=3 -> extra=2 -> wall = 2 * 86400 = 172800s. The park
+# re-parks at a LONGER wall (not the 900s base) — the #3666 persistence
+# contract holds and the escalation makes it even stronger.
+(( boundary_wall >= 172800 - 120 && boundary_wall <= 172800 + 120 )) \
+    || fail "(b) boundary park wall = ${boundary_wall}s, want ~172800s (escalated, count=4, ceiling=3 — fleet-ops#3941); the park must RE-PARK from the marker-carried count, NOT drop to the 900s base"
+ok "(b) no-op at the 24h boundary: count 3 -> 4 (marker carries, NOT the clobbered ledger), park RE-PARKS at ${boundary_wall}s (escalated) — the park PERSISTS (fleet-ops#3666)"
 
 # --- (c) seat_usable holds the re-parked seat UNUSABLE across the boundary
 if seat_usable "$p" "$m"; then

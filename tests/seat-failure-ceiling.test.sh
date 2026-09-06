@@ -65,6 +65,10 @@ export PI_SEAT_LIB_CHECK_SYSTEMD=0
 # Use a small ceiling so the test does not need 60 iterations to cross it.
 export SEAT_FAILURE_CEILING=60
 export SEAT_PARK_WALL_S=86400
+# fleet-ops#3941: the park wall ESCALATES with the count past the ceiling.
+# Pin the cap high so the escalation is not truncated in this test and the
+# assertions below can check the exact escalated wall.
+export SEAT_PARK_WALL_MAX_S=999999999
 # Disable the corpse reclassification threshold (fleet-ops#2594) so this test
 # proves the parking behaviour in isolation. The quota_bench case seeds
 # count=59 -> 60 which would otherwise trip the corpse branch (default 25)
@@ -169,20 +173,21 @@ ok "below ceiling (count=$c): base backoff ${w}s holds, no park, no metric"
 # Use a fresh seat per marker so each starts from count = ceiling-1.
 run_park_case() {
     local label="$1" p="$2" m="$3" marker_fn="$4" field="${5:-usable_at}"
+    local case_ceil="${6:-$ceil}"
     local lf mf
     lf=$(ledger_file "$p" "$m")
     mf=$(marker_file "$p" "$m")
     rm -f "$lf" "$mf"
-    seed_ledger "$p" "$m" $((ceil - 1)) "transient_fault"
+    seed_ledger "$p" "$m" $((case_ceil - 1)) "transient_fault"
     "$marker_fn" "$p" "$m" "test:cross:${label}" >/dev/null 2>&1 \
         || fail "$marker_fn crossing ceiling failed"
     local c w
     c=$(jq -r '.consecutive_failure_count' "$lf")
-    [[ "$c" == "$ceil" ]] || fail "$label count = $c, want $ceil"
+    [[ "$c" == "$case_ceil" ]] || fail "$label count = $c, want $case_ceil"
     w=$(wall_s_of "$lf" "$field")
     (( w >= park - 120 && w <= park + 120 )) \
         || fail "$label wall = ${w}s, want ~${park}s (parked)"
-    _seat_parked_by_ceiling "$c" || fail "$label count $c should be parked"
+    _seat_parked_by_ceiling "$c" "$case_ceil" || fail "$label count $c should be parked"
     metric_has "$p" "$m" "$c" || fail "$label metric NOT emitted for $p/$m"
     # seat_usable must hold the parked seat.
     if seat_usable "$p" "$m"; then
@@ -192,7 +197,7 @@ run_park_case() {
 }
 
 run_park_case "spawn-fail"   "devin"    "glm-5-2"                       mark_seat_spawn_fail
-run_park_case "empty-run"    "devin"    "glm-5-2"                       mark_seat_empty_run
+run_park_case "empty-run"    "devin"    "glm-5-2"                       mark_seat_empty_run "" "${EMPTY_RUN_FAILURE_CEILING:-3}"
 run_park_case "quota-bench"  "opencode" "mimo-v2.5-free"                mark_seat_quota_bench  bench_until
 run_park_case "overload-bench" "opencode" "muse-spark-1.2-contributor-free" mark_seat_overload_bench bench_until
 run_park_case "hang-bench"   "devin"    "glm-5-2"                       mark_seat_hang_bench   bench_until
@@ -210,10 +215,12 @@ mark_seat_quota_bench "$p" "$m" "test:live:72" >/dev/null 2>&1 \
 c=$(jq -r '.consecutive_failure_count' "$lf")
 [[ "$c" == "73" ]] || fail "live-72 count = $c, want 73"
 w=$(wall_s_of "$lf" bench_until)
-(( w >= park - 120 && w <= park + 120 )) \
-    || fail "live-72 wall = ${w}s, want ~${park}s (parked on next fail)"
+# fleet-ops#3941: the park wall ESCALATES with the count past the ceiling.
+# count=73, ceiling=60 -> extra=14 -> wall = 14 * 86400 = 1209600s.
+(( w >= 1209600 - 120 && w <= 1209600 + 120 )) \
+    || fail "live-72 wall = ${w}s, want ~1209600s (escalated park, count=73, ceiling=60)"
 metric_has "$p" "$m" "$c" || fail "live-72 metric NOT emitted"
-ok "live state (72 -> 73): parked on next failure, wall=${w}s, metric emitted"
+ok "live state (72 -> 73): parked on next failure, wall=${w}s (escalated), metric emitted"
 
 # --- (4) metric file merges multiple parked seats (no clobber) -------------
 # After (2) and (3) several seats are parked; the prom file must carry a line
@@ -278,30 +285,34 @@ if ! seat_usable "$p" "$m"; then
 fi
 ok "6b: c=$((ceil - 1)) transient_fault ledger is usable (below the ceiling, no park)"
 
-# 6c: observed at 25h (stale AND past the default 24h park wall) fail-opens.
+# 6c: observed past the ESCALATED park wall fail-opens (one probe per wall,
+# not forever). c=149, ceiling=60 -> wall = _park_wall_s 149 = 90 days.
 rm -f "$lf" "$mf"
 seed_ledger "$p" "$m" 149 "transient_fault"
-old_iso=$(date -u -d '@'$(( $(date -u +%s) - 90000 ))' ' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
+_6c_wall=$(_park_wall_s 149)
+old_iso=$(date -u -d '@'$(( $(date -u +%s) - _6c_wall - 3600 ))' ' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
 tmp="$scratch/6c.json"
 jq --arg o "$old_iso" '.observed_at = $o' "$lf" >"$tmp" 2>/dev/null && mv "$tmp" "$lf"
 if ! seat_usable "$p" "$m"; then
-    fail "6c: seat_usable held a c=149 transient_fault ledger past the park wall — fail-open broken"
+    fail "6c: seat_usable held a c=149 transient_fault ledger past the escalated park wall — fail-open broken"
 fi
-ok "6c: observed past the park wall fail-opens (one probe per wall, not forever)"
+ok "6c: observed past the escalated park wall fail-opens (one probe per wall, not forever)"
 
 # 6d/6e: short park wall to prove the PARK branch fail-opens on its own clock
 # (observed still fresh) and holds when the wall has not elapsed.
 export SEAT_PARK_WALL_S=30
 rm -f "$lf" "$mf"
 seed_ledger "$p" "$m" 149 "transient_fault"
-# observed 120s ago: fresh (<6h) but the 30s park wall already elapsed.
-mid_iso=$(date -u -d '@'$(( $(date -u +%s) - 120 ))' ' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
+# c=149, ceiling=60 -> escalated wall = 90 * 30 = 2700s. Age observed past
+# the escalated wall (3000s) but keep it fresh (<6h) to prove the PARK
+# branch fail-opens on its own clock, not the stale branch.
+mid_iso=$(date -u -d '@'$(( $(date -u +%s) - 3000 ))' ' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
 tmp="$scratch/6d.json"
 jq --arg o "$mid_iso" '.observed_at = $o' "$lf" >"$tmp" 2>/dev/null && mv "$tmp" "$lf"
 if ! seat_usable "$p" "$m"; then
-    fail "6d: park branch did not fail-open after the short wall elapsed (fresh observed)"
+    fail "6d: park branch did not fail-open after the escalated short wall elapsed (fresh observed)"
 fi
-ok "6d: short wall elapsed while observed fresh -> usable (park branch fail-open)"
+ok "6d: escalated short wall elapsed while observed fresh -> usable (park branch fail-open)"
 
 rm -f "$lf" "$mf"
 seed_ledger "$p" "$m" 149 "transient_fault"
@@ -413,4 +424,43 @@ fi
 ok "7d: below-ceiling rate_limited c=19 stays on the flat usable_at window (no escalation below N>=20)"
 export SEAT_FAILURE_CEILING=60
 
-ok "seat failure ceiling: parks past SEAT_FAILURE_CEILING consecutive failures (default 20 since fleet-ops#2594, this test pins 60 for isolation), emits one metric, fail-opens on recovery, fleet-ops#3586 rate_limited escalation proves on the three live xkiro seats"
+# --- (8) fleet-ops#3941: the park wall ESCALATES with the count -----------
+# The live snapshot that filed the issue: xkiro/deepseek-v4-flash at 47
+# consecutive spawn_fail was re-offered every 24h park-wall expiry and
+# re-walled at the SAME 24h — the wall never grew, so a chronically-dead
+# seat was probed once per day forever. This section proves the wall now
+# GROWS with the count past the ceiling (one SEAT_PARK_WALL_S per failure)
+# and is capped at SEAT_PARK_WALL_MAX_S, on both the write side
+# (_failure_ceiling_wall) and the read side (seat_usable's park fence).
+export SEAT_FAILURE_CEILING=20
+export SEAT_PARK_WALL_S=86400
+export SEAT_PARK_WALL_MAX_S=604800  # 7 days — the production cap
+# 8a: write-side escalation ladder (count -> wall).
+[[ "$(_park_wall_s 20)" == "86400" ]]   || fail "8a: count=20 (==ceil) wall=$(_park_wall_s 20), want 86400 (first park)"
+[[ "$(_park_wall_s 21)" == "172800" ]] || fail "8a: count=21 wall=$(_park_wall_s 21), want 172800 (2x park)"
+[[ "$(_park_wall_s 22)" == "259200" ]] || fail "8a: count=22 wall=$(_park_wall_s 22), want 259200 (3x park)"
+[[ "$(_park_wall_s 47)" == "604800" ]] || fail "8a: count=47 wall=$(_park_wall_s 47), want 604800 (capped at 7 days)"
+[[ "$(_park_wall_s 19)" == "0" ]]      || fail "8a: count=19 (below ceil) wall=$(_park_wall_s 19), want 0 (not parked)"
+ok "8a: write-side park wall escalates with count past the ceiling, capped at SEAT_PARK_WALL_MAX_S"
+# 8b: _failure_ceiling_wall routes a parked count through the escalation.
+[[ "$(_failure_ceiling_wall 21 300)" == "172800" ]] \
+    || fail "8b: _failure_ceiling_wall(21,300)=$(_failure_ceiling_wall 21 300), want 172800 (escalated park)"
+[[ "$(_failure_ceiling_wall 19 300)" == "300" ]] \
+    || fail "8b: _failure_ceiling_wall(19,300)=$(_failure_ceiling_wall 19 300), want 300 (base backoff below ceiling)"
+ok "8b: _failure_ceiling_wall escalates a parked count, keeps the base backoff below the ceiling"
+# 8c: read-side park (seat_usable) escalates with the count too — a
+# transient_fault ledger at c=47 is held behind the escalated wall, not the
+# flat 24h. Seed c=47 fresh; the park fence must hold it (unusable).
+p="xkiro"; m="deepseek-v4-flash"
+lf=$(ledger_file "$p" "$m"); mf=$(marker_file "$p" "$m")
+rm -f "$lf" "$mf"
+seed_ledger "$p" "$m" 47 "transient_fault"
+if seat_usable "$p" "$m"; then
+    fail "8c: seat_usable returned USABLE for xkiro/deepseek-v4-flash c=47 transient_fault (read-side escalation missing)"
+fi
+grep -q "UNUSABLE (transient_fault count=47 >= 20, parked until" "$PI_PACKET_STATE/watch.log" \
+    || fail "8c: must log the escalated long-wall park for xkiro/deepseek-v4-flash c=47"
+ok "8c: xkiro/deepseek-v4-flash c=47 transient_fault -> parked behind the escalated long wall (read side)"
+export SEAT_FAILURE_CEILING=60
+
+ok "seat failure ceiling: parks past SEAT_FAILURE_CEILING consecutive failures (default 20 since fleet-ops#2594, this test pins 60 for isolation), emits one metric, fail-opens on recovery, fleet-ops#3586 rate_limited escalation proves on the three live xkiro seats, fleet-ops#3941 park-wall escalation proves on the write and read sides"

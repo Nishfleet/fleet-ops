@@ -599,7 +599,15 @@ rebench_wrapper_marker() {
     merged=$((prev_count + 1))
     backoff="$REBENCH_BACKOFF_S"
     if (( merged >= ${SEAT_FAILURE_CEILING:-20} )); then
-        backoff="${SEAT_PARK_WALL_S:-86400}"
+        # fleet-ops#3941: escalate the park wall with the count past the
+        # ceiling (_park_wall_s, capped at SEAT_PARK_WALL_MAX_S) instead of a
+        # flat SEAT_PARK_WALL_S. The seat-lib source is conditional, so fall
+        # back to the flat 24h wall if the helper is unavailable.
+        if declare -F _park_wall_s >/dev/null 2>&1; then
+            backoff="$(_park_wall_s "$merged")"
+        else
+            backoff="${SEAT_PARK_WALL_S:-86400}"
+        fi
     fi
     usable=$(date -u -d "@$(($(now_epoch) + backoff))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || now_iso)
     if (( DRY_RUN )); then
