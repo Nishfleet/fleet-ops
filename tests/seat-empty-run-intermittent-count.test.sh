@@ -35,8 +35,17 @@
 #       real recovery signal (a full park wall with no no-op) is honoured,
 #       so a recovered seat is not punished.
 #   (d) spawn_fail still uses the 30 min window: a spawn_fail marker older
-#       than 30 min is NOT merged into a fresh empty-run count, so widening
+#       than 30 min is NOT merged into a fresh spawn_fail count, so widening
 #       the empty-run window did not also widen the spawn-fail window.
+#   (e) empty_run -> spawn_fail cross-class: the count survives a > 30min gap
+#       (fleet-ops#3749/#3849 — spawn-fail writer uses the empty-run window for
+#       an empty_run marker so the cross-class count is not destroyed).
+#   (f) spawn_fail -> spawn_fail still resets after > 30min (no leak from (e)).
+#   (g) spawn_fail -> empty_run cross-class: a stale (>30min) spawn_fail marker
+#       does NOT inflate a fresh empty-run count (fleet-ops#3749 symmetric —
+#       empty-run writer uses the spawn-fail window for a spawn_fail marker).
+#   (h) empty_run -> empty_run still uses 24h (class-aware fix did NOT narrow
+#       the same-class empty_run window).
 #
 # Runs entirely offline: scratch ledger, scratch state, no network, no
 # systemd. Mirrors the harness shape of tests/seat-empty-run-clobber-park.test.sh.
@@ -307,4 +316,60 @@ sf2_count=$(count_of "$mf")
     || fail "(f) spawn_fail -> spawn_fail count after a 40min gap = $sf2_count, want 1 — the class-aware fix must NOT widen the same-class spawn_fail window; spawn storms are clustered and > 30min resets"
 ok "(f) spawn_fail -> spawn_fail still resets after a 40min gap — the class-aware fix did NOT leak the empty-run window into same-class spawn_fail"
 
-ok "fleet-ops#2934/#3675/#3666/#3749: empty-run count accumulates across gaps up to 24h (intermittent no-op'er reaches the ceiling and is parked, and the park persists across the 24h boundary), gaps > 24h reset (recovery honoured), spawn_fail keeps its 30min same-class window, and empty_run -> spawn_fail cross-class count survives a > 30min gap (fleet-ops#3749)"
+# --- (g) spawn_fail -> empty_run cross-class: stale spawn_fail does NOT inflate --
+# fleet-ops#3749 (symmetric completion): #3849 made mark_seat_spawn_fail
+# class-aware (an empty_run marker uses the 24h window, a spawn_fail marker
+# uses the 30min window). The symmetric gap: mark_seat_empty_run used the 24h
+# EMPTY_RUN_COUNT_WINDOW_S for ALL markers, including spawn_fail markers. A
+# spawn_fail marker older than the 30min spawn-fail window but inside 24h was
+# merged into a fresh empty-run count, inflating it — the very inflation the
+# comment block warns against ("a 24h spawn-fail window would let a long-ago
+# spawn_fail inflate a fresh empty-run count"). spawn storms are clustered
+# (30min): a spawn_fail older than 30min is stale, the spawn problem is over,
+# and a fresh empty-run is a separate fault. The fix: mark_seat_empty_run now
+# reads the marker's failure_mode and selects the window — an empty_run marker
+# uses EMPTY_RUN_COUNT_WINDOW_S (24h); a spawn_fail marker uses
+# EMPTY_RUN_MARKER_FRESH_S (30min). This test proves: a spawn_fail marker
+# aged past 30min (but inside 24h) is NOT merged into a fresh empty-run count
+# (the count resets to 1, not 2), with the ledger clobbered to healthy/count=0
+# by seat-health.ts between the two faults (the production recovery signal).
+rm -f "$lf" "$mf"
+mark_seat_spawn_fail "$p" "$m" "t3749:spawn:1" >/dev/null 2>&1 \
+    || fail "(g) mark_seat_spawn_fail #1 failed"
+[[ "$(count_of "$mf")" == "1" ]] \
+    || fail "(g) spawn_fail seed count = $(count_of "$mf"), want 1"
+# seat-health.ts clobbers the ledger to healthy/count=0 between the two faults
+# (the production recovery signal — a 200 observation after the bench expired).
+clobber_with_healthy "$p" "$m" "$lf"
+[[ "$(count_of "$lf")" == "0" ]] \
+    || fail "(g) ledger not clobbered to 0: $(count_of "$lf")"
+# Age the spawn_fail marker past the 30min spawn-fail window but inside the 24h
+# empty-run window. This is the inflation gap: before the symmetric fix the
+# empty-run writer used 24h for the spawn_fail marker and merged count=1.
+age_marker "$mf" 2400  # 40 min — past 30min spawn-fail window, inside 24h
+mark_seat_empty_run "$p" "$m" "t3749:noop:after-stale-spawn" >/dev/null 2>&1 \
+    || fail "(g) mark_seat_empty_run (after stale spawn_fail) failed"
+stale_sf_count=$(count_of "$mf")
+[[ "$stale_sf_count" == "1" ]] \
+    || fail "(g) empty-run count after a stale (>30min) spawn_fail marker = $stale_sf_count, want 1 — a spawn_fail older than the 30min spawn-fail window must NOT inflate a fresh empty-run count (fleet-ops#3749 symmetric); before the fix the 24h window merged it to 2"
+ok "(g) spawn_fail -> empty_run: a stale (>30min) spawn_fail marker does NOT inflate a fresh empty-run count (resets to 1, not 2) — the symmetric class-aware fix narrows the spawn_fail -> empty_run cross-class case to the 30min spawn-fail window"
+
+# --- (h) empty_run -> empty_run still uses 24h (class-aware fix did NOT narrow) -
+# Prove the class-aware fix in mark_seat_empty_run did NOT narrow the same-class
+# empty_run -> empty_run window. An empty_run marker aged past 30min but inside
+# 24h must STILL merge (the #2934 intermittent contract). This re-checks (a) but
+# with the class-aware code path active, so the failure_mode read + window
+# selection cannot accidentally narrow the same-class empty_run case.
+rm -f "$lf" "$mf"
+mark_seat_empty_run "$p" "$m" "t3749:noop:h1" >/dev/null 2>&1 \
+    || fail "(h) mark_seat_empty_run #1 failed"
+clobber_with_healthy "$p" "$m" "$lf"
+age_marker "$mf" 6120  # 1h42m — past 30min, inside 24h (the live #2934 gap)
+mark_seat_empty_run "$p" "$m" "t3749:noop:h2" >/dev/null 2>&1 \
+    || fail "(h) mark_seat_empty_run #2 (after 1h42m gap) failed"
+ee_count=$(count_of "$mf")
+[[ "$ee_count" == "2" ]] \
+    || fail "(h) empty_run -> empty_run count after a 1h42m gap = $ee_count, want 2 — the class-aware fix must NOT narrow the same-class empty_run window; the 24h intermittent contract still holds"
+ok "(h) empty_run -> empty_run still accumulates across a 1h42m gap — the class-aware fix did NOT narrow the same-class empty_run window"
+
+ok "fleet-ops#2934/#3675/#3666/#3749: empty-run count accumulates across gaps up to 24h (intermittent no-op'er reaches the ceiling and is parked, and the park persists across the 24h boundary), gaps > 24h reset (recovery honoured), spawn_fail keeps its 30min same-class window, empty_run -> spawn_fail cross-class count survives a > 30min gap (#3849), and spawn_fail -> empty_run cross-class does NOT inflate from a stale (>30min) spawn_fail (#3749 symmetric)"

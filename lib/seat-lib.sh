@@ -5077,17 +5077,40 @@ mark_seat_empty_run() {
     # a same-class-only merge lost the empty_run count the instant a
     # spawn_fail marker overwrote the file — live: 10 empty runs on
     # opencode/nemotron-3-ultra-free, every marker count=1).
-    local prev_count=0 sb_mcount sb_written sb_marker_path now_s written_s
+    # fleet-ops#3749 (symmetric completion): class-aware freshness, mirroring
+    # the #3849 fix in mark_seat_spawn_fail. The marker is a SINGLE file shared
+    # by mark_seat_empty_run and mark_seat_spawn_fail, so an empty-run write can
+    # read a marker left by a spawn_fail. The empty-run writer used
+    # EMPTY_RUN_COUNT_WINDOW_S (24 h) for ALL markers, including spawn_fail
+    # markers — so a spawn_fail marker older than the 30 min spawn-fail window
+    # but inside 24 h was merged into a fresh empty-run count, inflating it
+    # (the very inflation the comment above warns against: "a 24 h spawn-fail
+    # window would let a long-ago spawn_fail inflate a fresh empty-run count").
+    # spawn storms are clustered (30 min): a spawn_fail older than 30 min is
+    # stale, the spawn problem is over, and a fresh empty-run is a separate
+    # fault — the spawn_fail count must NOT carry over. Use the marker's
+    # failure_mode to select the window: an empty_run marker uses
+    # EMPTY_RUN_COUNT_WINDOW_S (24 h); a spawn_fail marker uses
+    # EMPTY_RUN_MARKER_FRESH_S (30 min). empty_run -> empty_run still uses the
+    # 24 h window (intermittent, long recovery signal); only the cross-class
+    # spawn_fail -> empty_run case narrows to the spawn-fail window.
+    local prev_count=0 sb_mcount sb_written sb_marker_path now_s written_s sb_fmode sb_window
     sb_marker_path=$(seat_spawn_bench_path "$p" "$m")
     if [[ -f "$sb_marker_path" ]]; then
         sb_mcount=$(jq -r '.consecutive_failure_count // 0' "$sb_marker_path" 2>/dev/null || echo 0)
         [[ "$sb_mcount" =~ ^[0-9]+$ ]] || sb_mcount=0
         sb_written=$(jq -r '.written_at // ""' "$sb_marker_path" 2>/dev/null || true)
+        sb_fmode=$(jq -r '.failure_mode // ""' "$sb_marker_path" 2>/dev/null || true)
+        if [[ "$sb_fmode" == "empty_run" ]]; then
+            sb_window="${EMPTY_RUN_COUNT_WINDOW_S:-$SEAT_PARK_WALL_S}"
+        else
+            sb_window="${EMPTY_RUN_MARKER_FRESH_S:-1800}"
+        fi
         if [[ -n "$sb_written" ]]; then
             now_s=$(date -u +%s)
             written_s=$(date -u -d "$sb_written" +%s 2>/dev/null || echo 0)
             if [[ "$written_s" =~ ^[0-9]+$ ]] && (( written_s > 0 )) \
-                && (( now_s - written_s <= EMPTY_RUN_COUNT_WINDOW_S )); then
+                && (( now_s - written_s <= sb_window )); then
                 prev_count="$sb_mcount"
             fi
         fi
