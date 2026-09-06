@@ -31,6 +31,9 @@
 
 set -euo pipefail
 
+# Default stagger for seat spawns (fleet-ops#???).
+SEAT_SPAWN_STAGGER_S="${SEAT_SPAWN_STAGGER_S:-0}"
+
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 export HOME="${HOME:-/home/nish}"
 export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH}"
