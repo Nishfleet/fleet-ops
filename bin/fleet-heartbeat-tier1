@@ -812,6 +812,18 @@ while IFS= read -r repo; do
 
         # Orphan. Release it.
         branch="claim/issue-${issue_n}"
+        # fleet-ops#3617: clear the dead worker's stale failed state now that
+        # the claim is being released. pi-issue@* units are `observe`-class at
+        # §4 (the reaper + intake re-dispatch are their retry path), so the
+        # heartbeat never reset-failed them before — a released claim left the
+        # unit sitting in `failed` forever, and the audit's failed-units lens
+        # re-filed it as an "orphan systemd unit is failed" gap-audit every
+        # cycle. Safe: the worker is confirmed dead (checked above), the claim
+        # is being released, and ConditionPathExists on the .in packet makes an
+        # accidental restart a clean SKIP. reset-failed is a no-op if the unit
+        # is not currently failed.
+        systemctl --user reset-failed "pi-issue@${short}-${issue_n}.service" 2>/dev/null \
+            && log "3.  - $repo#$issue_n: reset-failed dead worker unit pi-issue@${short}-${issue_n}.service" || true
         if gh api "repos/${repo}/git/refs/heads/${branch}" >/dev/null 2>&1; then
             if gh api "repos/${repo}/git/refs/heads/${branch}" -X DELETE >/dev/null 2>&1; then
                 log "3.  - $repo#$issue_n: deleted branch $branch"

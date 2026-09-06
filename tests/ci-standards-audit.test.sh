@@ -484,6 +484,15 @@ bash "$here/unit-escalation-write-pi-issue-exclusion.test.sh"
 # runs it without a workflow-file edit.
 bash "$here/fleet-rules-escalation-storm.test.sh"
 
+# fleet-ops#3617: the tier1 orphan-pass releases a dead worker's claim but
+# never clears the orphaned pi-issue@ unit's `failed` state, so the audit
+# re-files it as an "orphan systemd unit is failed" gap-audit every cycle.
+# This test pins the reset-failed-on-release fix. Hosted here so P14 runs
+# it without a workflow-file edit (the worker App cannot push
+# .github/workflows/**). The live reset-failed proof in Phase D skips in
+# hosted CI (no user systemd there) and runs on the VPS.
+bash "$here/fleet-heartbeat-orphan-reset.test.sh"
+
 # fleet-ops#2462: cap re-claims per item (MAX_RECLAIMS in pi-intake-tick.sh)
 # + systemic-failure skip (.systemic marker when every tried seat is benched).
 # Hosts the 11-test gate (MAX_RECLAIMS env var, tick read path, skip+escalate,
