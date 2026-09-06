@@ -3422,6 +3422,11 @@ def _spawn_bench_held_for(provider, model) -> bool:
 # in lib/seat-lib.sh and SPAWN_BENCH_FRESH_S in bin/fleet-seat-comeback-
 # release (24 h). Older than this the marker is archaeology and fail-open.
 SPAWN_BENCH_FRESH_S = 86400
+# Failure ceilings mirror lib/seat-lib.sh seat_usable(): a spawn_fail (or
+# any non-empty_run) seat parks past 20 consecutive failures; an empty run
+# parks past 5. Used by the fleet-ops#3826 ceiling fence below.
+SEAT_FAILURE_CEILING = 20
+EMPTY_RUN_FAILURE_CEILING = 5
 
 
 def _spawn_bench_marker_held(spawn_bench: Path) -> bool:
@@ -3442,6 +3447,34 @@ def _spawn_bench_marker_held(spawn_bench: Path) -> bool:
           ledger reports an unprobed dead-weight seat as available
           (the ollama/deepseek-v4-flash:0731 empty-run churn this issue
           names).
+
+    Beyond the two clock cases (and the reason this function is the
+    ledger-demotion fix for fleet-ops#3828), seat_usable holds the bench in
+    TWO more cases that this function previously missed:
+
+    fleet-ops#3889 — corpse fence: a marker that declares seat_dead=true
+    (the wrapper's verdict for a CHRONIC spawn_fail streak past the corpse
+    threshold, consecutive_failure_count >= SEAT_DEAD_CONSECUTIVE_THRESHOLD)
+    holds the seat TERMINALLY, regardless of usable_at and regardless of a
+    later false-healthy ledger write. The seat-health extension logs a
+    transport http 200 as healthy during the very run that then fails to
+    spawn, because after_provider_response carries status+headers only —
+    never the body or the process rc — so an rc=1 spawn failure is
+    indistinguishable from a healthy response. Only a real recovery probe
+    (source="comeback_release" on the ledger) re-proves the seat. Without
+    this, the census/availability read the clobbered health_class=healthy
+    ledger, counted the seat available, and "re-offered" a seat the router
+    held — the live xkiro/deepseek-v4-flash at 47 consecutive spawn_fail
+    with ledger_health_class=healthy.
+
+    fleet-ops#3826 — ceiling fence: even a FRESH marker whose usable_at has
+    passed and whose sibling ledger carries a NEWER healthy observation must
+    stay held when the marker's consecutive_failure_count is at or past the
+    failure ceiling (SEAT_FAILURE_CEILING for spawn_fail, and
+    EMPTY_RUN_FAILURE_CEILING for empty_run). The newer observation is the
+    same after_provider_response 200 the corpse fence names — status+headers
+    only, no body/rc — so it is the false-healthy clobber again, NOT recovery
+    evidence. Only a comeback-release probe re-proves the seat.
     """
     if not spawn_bench.is_file():
         return False
@@ -3463,6 +3496,26 @@ def _spawn_bench_marker_held(spawn_bench: Path) -> bool:
     )
     if usable_epoch is not None and usable_epoch > now:
         return True
+    # Sibling per-seat ledger: both the false-healthy clobber target and the
+    # recovery authority (a comeback-release probe writes source on it).
+    ledger = spawn_bench.with_name(
+        spawn_bench.name[: -len(".spawn-bench.json")] + ".json"
+    )
+    try:
+        led = json.loads(ledger.read_text())
+    except (OSError, json.JSONDecodeError):
+        led = {}
+    if not isinstance(led, dict):
+        led = {}
+    ledger_src = led.get("source") or ""
+    # fleet-ops#3889 corpse fence: terminal until a real recovery probe
+    # (source=comeback_release) re-writes the ledger. Mirrors seat_usable —
+    # no usable_at or marker-age bound, the corpse hold is durable.
+    if marker.get("seat_dead") is True:
+        if ledger_src != "comeback_release":
+            return True
+        # Recovered corpse: fall through — the fresh ledger observation now
+        # decides (seat_usable drops the corpse hold the same way).
     # Case (b): expired or clockless bench — held only while the marker is
     # fresh and remains the seat's latest evidence.
     written_at = marker.get("written_at")
@@ -3471,17 +3524,26 @@ def _spawn_bench_marker_held(spawn_bench: Path) -> bool:
     )
     if written_epoch is None or now - written_epoch > SPAWN_BENCH_FRESH_S:
         return False
-    ledger = spawn_bench.with_name(
-        spawn_bench.name[: -len(".spawn-bench.json")] + ".json"
+    obs = led.get("observed_at")
+    obs_epoch = _parse_iso_utc(obs) if isinstance(obs, str) else None
+    if obs_epoch is None or obs_epoch <= written_epoch:
+        return True
+    # fleet-ops#3826 ceiling fence: a NEWER healthy observation is the
+    # false-healthy clobber, not recovery, for a ceiling-parked seat.
+    mcount = marker.get("consecutive_failure_count") or 0
+    if not isinstance(mcount, int) or isinstance(mcount, bool):
+        try:
+            mcount = int(mcount)
+        except (TypeError, ValueError):
+            mcount = 0
+    mmode = marker.get("failure_mode") or ""
+    _ceil = (
+        EMPTY_RUN_FAILURE_CEILING if mmode == "empty_run"
+        else SEAT_FAILURE_CEILING
     )
-    obs_epoch = None
-    try:
-        led = json.loads(ledger.read_text())
-        obs = led.get("observed_at") if isinstance(led, dict) else None
-        obs_epoch = _parse_iso_utc(obs) if isinstance(obs, str) else None
-    except (OSError, json.JSONDecodeError):
-        obs_epoch = None
-    return obs_epoch is None or obs_epoch <= written_epoch
+    if mcount >= _ceil and ledger_src != "comeback_release":
+        return True
+    return False
 
 
 def _healthy_enrolled_seat_count():

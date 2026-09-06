@@ -383,6 +383,18 @@ def _spawn_bench_held(provider, model):
     (written within the 24 h count-merge window, no newer ledger
     observed_at) until the comeback organ probes the seat. Mirror the same
     rule here so repair hops do not route onto a probe-gated seat.
+
+    fleet-ops#3828 (mirror of seat_usable #3889/#3826): this function also
+    holds the bench in two more cases the clock rules miss, so a repair hop
+    never routes onto a seat the router already excludes. (1) corpse fence:
+    a marker-declared corpse (seat_dead=true, a chronic spawn_fail past the
+    corpse threshold) is held terminally, regardless of usable_at or a later
+    false-healthy ledger clobber — only a recovery probe
+    (source=comeback_release) releases it. (2) ceiling fence: a FRESH marker
+    whose count is at/past the failure ceiling (20 for spawn_fail, 5 for
+    empty_run) stays held even when the sibling ledger carries a NEWER
+    healthy observation (the after_provider_response 200 that carries
+    status+headers only, never the exit rc), unless source=comeback_release.
     """
     f = (Path(SEAT_LEDGER_DIR)
          / f"{_sanitise(provider)}__{_sanitise(model)}.spawn-bench.json")
@@ -390,6 +402,21 @@ def _spawn_bench_held(provider, model):
         d = json.loads(f.read_text())
     except (OSError, json.JSONDecodeError):
         return False
+    lf = (Path(SEAT_LEDGER_DIR)
+          / f"{_sanitise(provider)}__{_sanitise(model)}.json")
+
+    def _ledger_source():
+        try:
+            j = json.loads(lf.read_text())
+            return j.get("source") if isinstance(j, dict) else ""
+        except (OSError, json.JSONDecodeError):
+            return ""
+
+    # fleet-ops#3889 corpse fence: terminal until a real recovery probe.
+    if d.get("seat_dead") is True:
+        if _ledger_source() != "comeback_release":
+            return True
+        # Recovered corpse: fall through, the fresh ledger now decides.
     if _in_future(d.get("usable_at") or ""):
         return True
     written = d.get("written_at") or ""
@@ -399,14 +426,23 @@ def _spawn_bench_held(provider, model):
         return False
     if time.time() - w > 86400:
         return False
-    lf = (Path(SEAT_LEDGER_DIR)
-          / f"{_sanitise(provider)}__{_sanitise(model)}.json")
     try:
         obs = json.loads(lf.read_text()).get("observed_at") or ""
         o = calendar.timegm(time.strptime(obs[:19], "%Y-%m-%dT%H:%M:%S"))
     except (OSError, json.JSONDecodeError, ValueError, TypeError):
         return True
-    return o <= w
+    if o <= w:
+        return True
+    # fleet-ops#3826 ceiling fence: a NEWER healthy observation is the
+    # false-healthy clobber, not recovery, for a ceiling-parked seat.
+    try:
+        mcount = int(d.get("consecutive_failure_count") or 0)
+    except (TypeError, ValueError):
+        mcount = 0
+    _ceil = 5 if (d.get("failure_mode") or "") == "empty_run" else 20
+    if mcount >= _ceil and _ledger_source() != "comeback_release":
+        return True
+    return False
 
 
 def _seat_walled(provider, model):

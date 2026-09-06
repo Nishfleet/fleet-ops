@@ -139,6 +139,65 @@ out=$(SEAT_HEALTH_FILE="$scratch/pi-seat-health.json" \
 [[ "$out" == "openrouter	deepseek/deepseek-v4-flash-0731	healthy" ]] \
     || fail "expired spawn-bench marker must release the seat (fail-open), got: $out"
 ok "expired spawn-bench marker releases the seat (fail-open)"
+
+# --- 7. corpse fence (fleet-ops#3828 / #3889): marker seat_dead=true --------
+# A chronic spawn_fail corpse (marker seat_dead=true, consecutive count past
+# the corpse threshold) is DURABLE: it walls the seat even though the
+# seat-health extension later wrote a NEWER healthy 200 observation to the
+# ledger (after_provider_response carries status+headers only, never the rc,
+# so an rc=1 spawn failure reads as a healthy 200). Only a recovery probe
+# (source=comeback_release on the ledger) re-proves the seat.
+rm -rf "$scratch/seats" && mkdir -p "$scratch/seats"
+cat >"$scratch/pi-seat-health.json" <<EOF
+{"provider":"openrouter","model":"deepseek/deepseek-v4-flash-0731","health_class":"healthy","observed_at":"$NOW"}
+EOF
+cat >"$scratch/seats/openrouter__deepseek_deepseek-v4-flash-0731.json" <<EOF
+{"provider":"openrouter","model":"deepseek/deepseek-v4-flash-0731","health_class":"healthy","observed_at":"$NOW","usable_at":null}
+EOF
+cat >"$scratch/seats/openrouter__deepseek_deepseek-v4-flash-0731.spawn-bench.json" <<EOF
+{"provider":"openrouter","model":"deepseek/deepseek-v4-flash-0731","usable_at":"$PAST","reason":"no_block:rc=1","written_at":"$PAST","failure_mode":"spawn_fail","consecutive_failure_count":47,"seat_dead":true}
+EOF
+out=$(SEAT_HEALTH_FILE="$scratch/pi-seat-health.json" \
+      SEAT_LEDGER_DIR="$scratch/seats" "$dispatch_bin" --print-seat)
+[[ "$out" == "devin	glm-5-2	fallback" ]] \
+    || fail "corpse marker must wall a ledger-healthy seat, got: $out"
+ok "corpse marker walls a ledger-healthy seat (seat_dead=true, fleet-ops#3828)"
+# A recovery probe (source=comeback_release) re-proves the corpse.
+cat >"$scratch/seats/openrouter__deepseek_deepseek-v4-flash-0731.json" <<EOF
+{"provider":"openrouter","model":"deepseek/deepseek-v4-flash-0731","health_class":"healthy","observed_at":"$NOW","usable_at":null,"source":"comeback_release"}
+EOF
+out=$(SEAT_HEALTH_FILE="$scratch/pi-seat-health.json" \
+      SEAT_LEDGER_DIR="$scratch/seats" "$dispatch_bin" --print-seat)
+[[ "$out" == "openrouter	deepseek/deepseek-v4-flash-0731	healthy" ]] \
+    || fail "comeback_release must release a corpse marker, got: $out"
+ok "comeback_release recovery releases a corpse marker (fleet-ops#3828)"
+
+# --- 8. ceiling fence (fleet-ops#3826): count past the failure ceiling -------
+# A non-corpse marker whose count crossed the failure ceiling stays walled
+# even when the sibling ledger has a NEWER healthy observation (the same
+# false-healthy clobber the corpse fence names) — only comeback_release
+# re-proves it. Below the ceiling a fresh later observation releases the
+# seat (sub-ceiling seats are recoverable).
+cat >"$scratch/seats/openrouter__deepseek_deepseek-v4-flash-0731.json" <<EOF
+{"provider":"openrouter","model":"deepseek/deepseek-v4-flash-0731","health_class":"healthy","observed_at":"$NOW","usable_at":null}
+EOF
+cat >"$scratch/seats/openrouter__deepseek_deepseek-v4-flash-0731.spawn-bench.json" <<EOF
+{"provider":"openrouter","model":"deepseek/deepseek-v4-flash-0731","usable_at":"$PAST","reason":"no_block:rc=1","written_at":"$PAST","failure_mode":"spawn_fail","consecutive_failure_count":47,"seat_dead":false}
+EOF
+out=$(SEAT_HEALTH_FILE="$scratch/pi-seat-health.json" \
+      SEAT_LEDGER_DIR="$scratch/seats" "$dispatch_bin" --print-seat)
+[[ "$out" == "devin	glm-5-2	fallback" ]] \
+    || fail "ceiling marker must wall a ledger-healthy seat, got: $out"
+ok "ceiling marker walls a ledger-healthy seat (count>=ceiling, fleet-ops#3828)"
+# Below the ceiling the fresh later observation wins again (released).
+cat >"$scratch/seats/openrouter__deepseek_deepseek-v4-flash-0731.spawn-bench.json" <<EOF
+{"provider":"openrouter","model":"deepseek/deepseek-v4-flash-0731","usable_at":"$PAST","reason":"no_block:rc=1","written_at":"$PAST","failure_mode":"spawn_fail","consecutive_failure_count":3,"seat_dead":false}
+EOF
+out=$(SEAT_HEALTH_FILE="$scratch/pi-seat-health.json" \
+      SEAT_LEDGER_DIR="$scratch/seats" "$dispatch_bin" --print-seat)
+[[ "$out" == "openrouter	deepseek/deepseek-v4-flash-0731	healthy" ]] \
+    || fail "sub-ceiling marker count must release the seat, got: $out"
+ok "sub-ceiling marker count releases the seat (fail-open)"
 # --- 5. provider-overload wedge (fleet-ops#2661) ------------------------------
 export ALERT_REPAIR_NO_SPAWN=1
 # A provider with >=2 seats in overload_bench within the trailing 30 min is
