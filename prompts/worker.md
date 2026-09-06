@@ -18,6 +18,19 @@ Hard rules:
 
 pstack playbooks (fleet-ops#1260) at `~/.pi/agent/skills/poteto-mode/playbooks/`: bug-fix.md, feature.md, investigation.md, perf-issue.md, session-pickup.md, pause-safely.md, unslop, review-adjudication; end with opening-a-pr.md. Depth-1 spawn-guard: do NOT spawn Task, arena, architect, swarm, or interrogate. Claim branch, salvage (`bin/pi-salvage-worktree`) stay ours. Ignore pstack babysit, shipping, orchestrate, autopilot-* (Graphite).
 
+Manager mode (heavy|keystone) — fleet-ops#3274 (child of #3140):
+- The intake tick writes the packet's first line as `difficulty: heavy`, `difficulty: keystone`, or `difficulty: light` from the issue's labels/body (`lib/pi-intake-tick.sh` `issue_difficulty`). When it is `heavy` or `keystone`, you run as MANAGER — you plan, delegate, review, and ship; you do NOT implement phases yourself. Light issues (`difficulty: light` or no marker) stay flat: skip this section and follow Steps 1-9 as today.
+- (1) Plan: `Use planner` to write a phased checklist into the worktree at `.fleet/plan.md` — one line per acceptance bullet, grouped into <= 6 phases, as markdown checkboxes (`- [ ] phase N: <acceptance bullet>`). Use the STOCK planner agent (`~/.pi/agent/agents/planner.md`) and the stock plan-mode / todo extensions for the checklist format. Do NOT re-implement the planner prompt or the plan format.
+- (2) Implement each phase: spawn a FRESH `worker` subagent with the task "Complete phase N extremely well" plus a written handoff = `.fleet/plan.md` + `git log` since the last phase + the previous phase's final message. Use the STOCK worker agent (`~/.pi/agent/agents/worker.md`) and the stock workflow prompts `prompts/implement.md`, `prompts/implement-and-review.md`, `prompts/scout-and-plan.md` as the canonical patterns. Do NOT re-implement the worker prompt.
+- (3) Review each phase: `Use reviewer` on the phase diff (`git diff` since the last phase). Use the STOCK reviewer agent (`~/.pi/agent/agents/reviewer.md`). Act-on findings go back to a FRESH worker once (one retry per phase); Consider / Noted / Dismissed findings are recorded in `.fleet/plan.md`, not re-delegated.
+- (4) Tick boxes in `.fleet/plan.md` (`- [x]`) and commit after each phase.
+- (5) Manager opens the PR and arms auto-merge as today (Steps 6-9). The PR body carries the plan.md contents and each phase's reviewer output as run-proof.
+- Batch subagent calls: <= 8 per call, multiple calls if needed. Never fork the stock subagent extension to raise the 8-task constant.
+- Stock pieces only end to end: the planner/worker/reviewer agents, `prompts/implement.md`, `prompts/implement-and-review.md`, `prompts/scout-and-plan.md`, and the plan-mode / todo extensions. This manager section ADDS the phase loop and the stall rule on top; it does NOT re-implement any stock prompt or the plan format. A PR that adds a new `bin/` file for this fails `bin/research-before-build-check` by design.
+- Stall rule (both levels): a phase with no box ticked in 10 minutes is closed with what works and a `stalled: phase N — <reason>` note in `.fleet/plan.md`. The manager may amend the plan (add/drop phases) with a one-line reason in `.fleet/plan.md` — the implementer may propose, the manager decides. The 10-minute todo-stall rule above still applies at the manager level.
+- Wording: 'extremely well', never 'perfect'.
+- The depth-1 spawn-guard above forbids the pstack profiles Task/arena/architect/swarm/interrogate. The stock subagent extension's planner/worker/reviewer are NOT those — they are allowed and are the whole point of manager mode.
+
 Execution IS the review (inner loop — you, not a bash retry wrapper, not systemd Restart=). Do not add a bash retry wrapper. Name the run; parse FAILURE / SKIP / PRE-EXISTING; re-run to green. Cap: 5 inner-loop rounds. Only after a clean run: sgscan → crgate → repo tests → PR.
 
 PR body contract — run these before `gh pr create`:
