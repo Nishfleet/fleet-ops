@@ -253,4 +253,57 @@ sf_count=$(count_of "$mf")
     || fail "(d) spawn_fail count after a 40min gap = $sf_count, want 1 — spawn_fail must keep the 30min window; a > 30min gap resets the spawn_fail count (the empty-run window widening must NOT leak into spawn_fail)"
 ok "(d) spawn_fail count resets after a 40min gap (> 30min spawn-fail window) — the empty-run window widening did NOT widen spawn_fail"
 
-ok "fleet-ops#2934/#3675/#3666: empty-run count accumulates across gaps up to 24h (intermittent no-op'er reaches the ceiling and is parked, and the park persists across the 24h boundary), gaps > 24h reset (recovery honoured), and spawn_fail keeps its 30min window"
+# --- (e) empty_run -> spawn_fail cross-class: count survives a > 30min gap --
+# fleet-ops#3749: the marker is a SINGLE file shared by mark_seat_empty_run
+# and mark_seat_spawn_fail. Before the fix, mark_seat_spawn_fail used the
+# 30 min spawn-fail window for ALL markers, including markers written by
+# mark_seat_empty_run. A spawn-fail >30 min after an empty-run treated the
+# empty-run marker as stale, reset the count to 1, and overwrote the file —
+# destroying the empty-run count. Live: ollama/deepseek-v4-flash:0731
+# reached count=5/backoff=14400s at 22:49Z, a spawn-fail ~37 min later
+# reset the count to 1, and the next empty-run merged from the clobbered
+# marker + ledger to count=4 — the count went BACKWARDS.
+# The fix: mark_seat_spawn_fail uses the marker's failure_mode to select
+# the freshness window. An empty_run marker uses EMPTY_RUN_COUNT_WINDOW_S
+# (24 h); a spawn_fail marker uses EMPTY_RUN_MARKER_FRESH_S (30 min).
+# This test proves: an empty-run count SURVIVES a > 30 min gap into a
+# spawn-fail (the count accumulates 1 -> 2 across the gap), and the
+# subsequent spawn-fail does NOT reset to 1.
+rm -f "$lf" "$mf"
+mark_seat_empty_run "$p" "$m" "t3749:noop:1" >/dev/null 2>&1 \
+    || fail "(e) mark_seat_empty_run #1 failed"
+clobber_with_healthy "$p" "$m" "$lf"
+[[ "$(count_of "$mf")" == "1" ]] \
+    || fail "(e) empty-run seed count = $(count_of "$mf"), want 1"
+# Age past the 30 min spawn-fail window but inside the 24 h empty-run window.
+# This is the live #3749 gap shape: 37 min between the empty-run at 22:49Z
+# and the spawn-fail at ~23:26Z.
+age_marker "$mf" 2220  # 37 min
+mark_seat_spawn_fail "$p" "$m" "t3749:spawn:after-gap" >/dev/null 2>&1 \
+    || fail "(e) mark_seat_spawn_fail (after 37min gap) failed"
+cross_sf_count=$(count_of "$mf")
+[[ "$cross_sf_count" == "2" ]] \
+    || fail "(e) spawn_fail count after a 37min gap from an empty-run marker = $cross_sf_count, want 2 — the empty-run count must ACCUMULATE across the cross-class gap (fleet-ops#3749); before the fix the 30min spawn-fail window reset it to 1"
+ok "(e) empty_run -> spawn_fail: count accumulates 1 -> 2 across a 37min gap (> 30min spawn-fail window, < 24h empty-run window) — the cross-class count is NOT destroyed by the spawn-fail writer's 30min window"
+
+# --- (f) spawn_fail -> spawn_fail still resets after > 30min (no leak) ------
+# Prove the class-aware fix did NOT widen the spawn_fail -> spawn_fail window.
+# A spawn_fail marker older than 30 min must still reset on the next
+# spawn_fail (spawn storms are clustered). This re-checks (d) but with the
+# class-aware code path active, so the failure_mode read + window selection
+# cannot accidentally widen the same-class case.
+rm -f "$lf" "$mf"
+mark_seat_spawn_fail "$p" "$m" "t3749:spawn:1" >/dev/null 2>&1 \
+    || fail "(f) mark_seat_spawn_fail #1 failed"
+[[ "$(count_of "$mf")" == "1" ]] \
+    || fail "(f) spawn_fail seed count = $(count_of "$mf"), want 1"
+clobber_with_healthy "$p" "$m" "$lf"
+age_marker "$mf" 2400  # 40 min — past 30 min spawn-fail window
+mark_seat_spawn_fail "$p" "$m" "t3749:spawn:2" >/dev/null 2>&1 \
+    || fail "(f) mark_seat_spawn_fail #2 (after 40min gap) failed"
+sf2_count=$(count_of "$mf")
+[[ "$sf2_count" == "1" ]] \
+    || fail "(f) spawn_fail -> spawn_fail count after a 40min gap = $sf2_count, want 1 — the class-aware fix must NOT widen the same-class spawn_fail window; spawn storms are clustered and > 30min resets"
+ok "(f) spawn_fail -> spawn_fail still resets after a 40min gap — the class-aware fix did NOT leak the empty-run window into same-class spawn_fail"
+
+ok "fleet-ops#2934/#3675/#3666/#3749: empty-run count accumulates across gaps up to 24h (intermittent no-op'er reaches the ceiling and is parked, and the park persists across the 24h boundary), gaps > 24h reset (recovery honoured), spawn_fail keeps its 30min same-class window, and empty_run -> spawn_fail cross-class count survives a > 30min gap (fleet-ops#3749)"

@@ -4742,17 +4742,39 @@ mark_seat_spawn_fail() {
     # reading only the clobberable ledger lets a healthy observation reset
     # the count to 0 between wrapper writes — the same #2627 reset pattern
     # the marker was built to bust).
-    local prev_count=0 sb_mcount sb_written sb_marker_path now_s written_s
+    # fleet-ops#3749: class-aware freshness. The marker is a SINGLE file
+    # shared by mark_seat_empty_run and mark_seat_spawn_fail, so a
+    # spawn-fail write can clobber an empty-run marker. The empty-run
+    # writer uses EMPTY_RUN_COUNT_WINDOW_S (24 h) for freshness; if the
+    # spawn-fail writer applied its own 30 min window to an empty-run
+    # marker, a spawn-fail >30 min after an empty-run would treat the
+    # marker as stale, reset the count to 1, and overwrite the file —
+    # destroying the empty-run count the #2786 cross-class contract is
+    # meant to preserve. Live: ollama/deepseek-v4-flash:0731 reached
+    # count=5/backoff=14400s at 22:49Z, a spawn-fail ~37 min later reset
+    # the count to 1, and the next empty-run merged from the clobbered
+    # marker + ledger to count=4 — the count went BACKWARDS. Use the
+    # empty-run window when the marker was written by empty_run, and the
+    # spawn-fail window (30 min) otherwise. spawn_fail -> spawn_fail
+    # still resets after 30 min (spawn storms are clustered); only the
+    # cross-class empty_run -> spawn_fail case widens.
+    local prev_count=0 sb_mcount sb_written sb_marker_path now_s written_s sb_fmode sb_window
     sb_marker_path=$(seat_spawn_bench_path "$p" "$m")
     if [[ -f "$sb_marker_path" ]]; then
         sb_mcount=$(jq -r '.consecutive_failure_count // 0' "$sb_marker_path" 2>/dev/null || echo 0)
         [[ "$sb_mcount" =~ ^[0-9]+$ ]] || sb_mcount=0
         sb_written=$(jq -r '.written_at // ""' "$sb_marker_path" 2>/dev/null || true)
+        sb_fmode=$(jq -r '.failure_mode // ""' "$sb_marker_path" 2>/dev/null || true)
+        if [[ "$sb_fmode" == "empty_run" ]]; then
+            sb_window="${EMPTY_RUN_COUNT_WINDOW_S:-86400}"
+        else
+            sb_window="${EMPTY_RUN_MARKER_FRESH_S:-1800}"
+        fi
         if [[ -n "$sb_written" ]]; then
             now_s=$(date -u +%s)
             written_s=$(date -u -d "$sb_written" +%s 2>/dev/null || echo 0)
             if [[ "$written_s" =~ ^[0-9]+$ ]] && (( written_s > 0 )) \
-                && (( now_s - written_s <= EMPTY_RUN_MARKER_FRESH_S )); then
+                && (( now_s - written_s <= sb_window )); then
                 prev_count="$sb_mcount"
             fi
         fi
