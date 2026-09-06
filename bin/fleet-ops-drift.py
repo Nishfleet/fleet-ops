@@ -133,6 +133,10 @@ ORPHAN_EXEC_MARKER = "orphan-execstart: fleet-ops#285"
 PAPER_OVER_MARKER = "paper-over-dropin: fleet-ops#370"
 PRODUCTS_MARKER = "products-symlink-stale: fleet-ops#410"
 OFF_MAIN_MARKER = "deploy-clone-off-main: fleet-ops#477"
+# MANIFEST entries installed as file COPIES (not symlinks) by design; exempt
+# from the must-be-a-symlink check. Keep in lockstep with MANIFEST
+# (fleet-ops#2910 seat-caps.json, #3838 pi-models.json, #3858 the gap).
+COPY_INSTALLED_SRC_NAMES = {"seat-caps.json", "pi-models.json"}
 HOTPATCH_MARKER = "stale-overwrite-hot-patch: fleet-ops#463"
 VOLATILE_MARKER = "volatile-unit-path: fleet-ops#369"
 # fleet-ops#2725: the deploy-clone on main but dirty/diverged is a distinct
@@ -635,10 +639,15 @@ def check_canonical_source(checkout: Path, expected_dests: dict[str, Path]) -> N
             continue
         # fleet-ops#2910: seat-caps.json is intentionally a regular file copy
         # (not a symlink) so `git reset --hard` on the deploy-clone cannot
-        # silently rewrite the live config. Exempt it from the must-be-a-
-        # symlink check; check_live_matches_origin_main still compares its
-        # bytes to origin/main, and install.sh still guards cap downgrades.
-        if src.name == "seat-caps.json":
+        # silently rewrite the live config; check_live_matches_origin_main
+        # still compares its bytes to origin/main, and install.sh still guards
+        # cap downgrades. fleet-ops#3838 added config/pi-models.json
+        # (-> ~/.pi/agent/models.json) as a copy for the same reason but did
+        # not exempt it, so every deploy tick went LOUD DEPLOY-CHECK-FAILED on
+        # a DIFF-FILE finding for a file that is a copy by design (fleet-ops#3858).
+        # Exempt every MANIFEST copy-install; the set is pinned to MANIFEST by
+        # tests/fleet-ops-drift-copy-install-exempt.test.sh.
+        if src.name in COPY_INSTALLED_SRC_NAMES:
             continue
         # fleet-ops#3263: Pi provider extensions (template/extensions/**) are
         # installed as file COPIES, not symlinks. A symlink into the deploy-clone
