@@ -513,14 +513,42 @@ geo_aeo_needed() {
         'any(.[]?; (.name // "") | test("geo|aeo"; "i"))' >/dev/null 2>&1
 }
 
+# fleet-ops#4016: event-driven work supply. An empty ready pool is the one
+# signal that this repo ran out of work; do not sit on it until the
+# 4-hourly pi-scout@<repo>.timer fires (2026-09-06T16:47Z: 0509 ready=0 for
+# hours while the scout timer's next slot was 20:00Z). Start the repo's own
+# scout unit from the empty branch. No new organ: the unit's ExecCondition
+# (fleet-work-supply-canary gate: rest at >=24h runway) and the futility
+# tracker (ExecStartPre/ExecStopPost) still apply, so this only runs a
+# scout the timer would have been allowed to run. Debounce: skip while a
+# scout run is live (active/activating); the 20-min tick period bounds
+# re-triggers when the run stays dry. PI_INTAKE_SCOUT_ON_EMPTY=0 disables.
+scout_on_empty() {
+    [[ "${PI_INTAKE_SCOUT_ON_EMPTY:-1}" == "1" ]] || return 0
+    local unit="pi-scout@${REPO}.service" state
+    state=$("$SYSTEMCTL" --user show -p ActiveState --value "$unit" 2>/dev/null || true)
+    case "$state" in
+        active|activating|reloading)
+            echo "scout-on-empty: $unit $state — skip (debounce)"
+            return 0
+            ;;
+    esac
+    echo "scout-on-empty: ready=0 for $REPO — starting $unit (ExecCondition gate applies)"
+    "$SYSTEMCTL" --user start --no-block "$unit" 2>&1 \
+        || echo "scout-on-empty: start $unit failed rc=$? (non-fatal)"
+    return 0
+}
+
 if [[ -z "$issues_json" ]] || [[ "$issues_json" == "[]" ]]; then
     echo "no ready issues"
+    scout_on_empty
     exit 0
 fi
 
 ready_count=$(jq 'length' <<<"$issues_json" 2>/dev/null || echo 0)
 if (( ready_count == 0 )); then
     echo "no ready issues"
+    scout_on_empty
     exit 0
 fi
 
