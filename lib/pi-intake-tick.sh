@@ -1355,7 +1355,7 @@ blocked-on: nish-decision" 2>/dev/null || true
     # seconds between systemctl start --no-block calls. 0 disables. The value
     # is loaded from seat-caps.json spawn_stagger_s by load_seat_caps (called
     # during the capacity step above); default 0 if the caps file is absent.
-    if (( SEAT_SPAWN_STAGGER_S > 0 )); then
+    if (( ${SEAT_SPAWN_STAGGER_S:-0} > 0 )); then
         sleep "$SEAT_SPAWN_STAGGER_S"
     fi
     # fleet-ops#1455: write a durable claim record so opus-heartbeat-gather
