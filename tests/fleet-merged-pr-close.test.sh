@@ -158,6 +158,7 @@ chmod +x "$scratch/bin/systemctl"
 run() {
     # $@ -> env overrides; set default env then run the bin, print stdout.
     env \
+        GH="$scratch/bin/gh" \
         MERGED_PR_CLOSE_REPOS="Nishfleet/fleet-ops" \
         MERGED_PR_CLOSE_NOW="${TEST_NOW:-2026-08-28T00:53:00Z}" \
         MERGED_PR_CLOSE_TRIAGE="$scratch/triage.md" \
@@ -264,7 +265,7 @@ printf '%s\n' "pi-issue@fleet-ops-1135.service"
 exit 0
 FAKE
 chmod +x "$scratch/livebin/systemctl"
-out=$(env PATH="$scratch/livebin:$scratch/bin:$PATH" \
+out=$(env GH="$scratch/bin/gh" PATH="$scratch/livebin:$scratch/bin:$PATH" \
   MERGED_PR_CLOSE_REPOS="Nishfleet/fleet-ops" \
   MERGED_PR_CLOSE_NOW="2026-08-28T00:53:00Z" \
   MERGED_PR_CLOSE_TRIAGE="$scratch/triage.md" \
@@ -452,7 +453,7 @@ mkdir -p "$scratch/minbin"
 for t in bash env id jq date grep sed awk; do
   ln -sf "$(command -v "$t")" "$scratch/minbin/$t"
 done
-out=$(env PATH="$scratch/minbin" MERGED_PR_CLOSE_REPOS="Nishfleet/fleet-ops" \
+out=$(env GH="$scratch/minbin/gh" PATH="$scratch/minbin" MERGED_PR_CLOSE_REPOS="Nishfleet/fleet-ops" \
   MERGED_PR_CLOSE_NOW="2026-08-28T00:53:00Z" MERGED_PR_CLOSE_TRIAGE="$scratch/triage.md" \
   "$bin" 2>&1; echo "rc=$?")
 grep -q 'rc=2' <<<"$out" || fail "gh-missing must exit rc 2: $out"
@@ -460,7 +461,7 @@ ok "crash: gh missing -> rc 2"
 
 # invalid intake JSON
 printf 'not json{' >"$scratch/bad.json"
-out=$(env PATH="$scratch/bin:$PATH" MERGED_PR_CLOSE_REPOS="" \
+out=$(env GH="$scratch/bin/gh" PATH="$scratch/bin:$PATH" MERGED_PR_CLOSE_REPOS="" \
   MERGED_PR_CLOSE_INTAKE_JSON="$scratch/bad.json" \
   MERGED_PR_CLOSE_NOW="2026-08-28T00:53:00Z" MERGED_PR_CLOSE_TRIAGE="$scratch/triage.md" \
   "$bin" 2>&1; echo "rc=$?")
@@ -468,7 +469,7 @@ grep -q 'rc=2' <<<"$out" || fail "invalid intake JSON must exit rc 2: $out"
 ok "crash: invalid intake JSON -> rc 2"
 
 # invalid WINDOW_DAYS
-out=$(env PATH="$scratch/bin:$PATH" MERGED_PR_CLOSE_REPOS="Nishfleet/fleet-ops" \
+out=$(env GH="$scratch/bin/gh" PATH="$scratch/bin:$PATH" MERGED_PR_CLOSE_REPOS="Nishfleet/fleet-ops" \
   MERGED_PR_CLOSE_WINDOW_DAYS="bogus" \
   MERGED_PR_CLOSE_NOW="2026-08-28T00:53:00Z" MERGED_PR_CLOSE_TRIAGE="$scratch/triage.md" \
   "$bin" 2>&1; echo "rc=$?")

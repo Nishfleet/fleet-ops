@@ -357,11 +357,28 @@ esac
 FAKE
 chmod +x "$systemctl_fake"
 
+# --- fake gh ----------------------------------------------------------------
+# The drift canary mints worker-token unless GH points at a non-default fake
+# (fleet-ops#3576). Give it a fake gh so the mint is skipped and any gh call
+# the canary makes is captured, not a real human-gh write.
+gh_fake="$scratch/gh"
+gh_log="$scratch/gh.log"
+: >"$gh_log"
+cat >"$gh_fake" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${GH_LOG:-/dev/null}"
+exit 0
+FAKE
+chmod +x "$gh_fake"
+
 enabled_units="$scratch/enabled_units"
 : >"$enabled_units"
 export FLEET_OPS_FAKE_ENABLED="$enabled_units"
 
+export GH_LOG="$gh_log"
+
 run_canary() {
+  GH="${GH:-$gh_fake}" \
   FLEET_OPS_CHECKOUT="$checkout" \
   FLEET_OPS_SYSTEMCTL="$systemctl_fake" \
   FLEET_OPS_AUDIT_LOG="$HOME/.local/state/fleet-ops/drift-audit.log" \
@@ -371,6 +388,7 @@ run_canary() {
 }
 
 run_deploy() {
+  GH="${GH:-$gh_fake}" \
   PATH="$scratch:$PATH" \
   FLEET_OPS_CHECKOUT="$checkout" \
   FLEET_OPS_DRIFT_BIN="$canary" \
@@ -591,6 +609,7 @@ git -C "$checkout" worktree add --detach -q "$scratch/linked-wt"
 [[ ! -d "$scratch/linked-wt/.git" ]] \
     || fail "scenario9: setup expected .git NOT to be a directory on the linked worktree"
 if ! out=$(
+  GH="${GH:-$gh_fake}" \
   PATH="$scratch:$PATH" \
   FLEET_OPS_CHECKOUT="$scratch/linked-wt" \
   FLEET_OPS_DRIFT_BIN="$canary" \
