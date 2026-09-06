@@ -14,6 +14,12 @@
       "cadence": "daily",
       "source": "repo"
     },
+    "0509-search-tier-canary.timer": {
+      "reason": "Daily 06:10 IST §1.8 six-domain /search tier regression canary for 0509 (Nishfleet/0509#1452) — true calendar job; the worker GitHub App token cannot write .github/workflows and the check needs no secrets, only outbound HTTPS to 0509.io (fleet-ops#3735)",
+      "classification": "scheduled",
+      "cadence": "daily",
+      "source": "repo"
+    },
     "agent-governor-orphan-watchdog.timer": {
       "reason": "5-min all-agents orphan janitor — reaps marked descendants whose supervisor is gone; 5-min bounds detection",
       "classification": "scheduled",

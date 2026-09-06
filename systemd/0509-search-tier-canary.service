@@ -1,0 +1,23 @@
+[Unit]
+Description=0509 search tier canary — daily §1.8 six-domain regression guard (issue #1452)
+# Fails (exit non-zero) when any of the six §1.8 domains returns 0
+# verified/likely rows on production /search?q=<domain>&country=all.
+# Deliberately a user unit on the fleet VPS (like agent-cron-*): the worker
+# GitHub App token cannot create or update .github/workflows files, and the
+# check needs no secrets — only outbound HTTPS to 0509.io.
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/nish/workspaces/products/0509
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/env node scripts/search-tier-canary.mjs
+# Evidence: one plain-text run log; the unit's failed state is the loud
+# signal (systemctl --user list-units --failed) and the log keeps the
+# per-domain tier counts for observe-to-close.
+StandardOutput=append:/home/nish/workspaces/agent-state/cron-output/0509-search-tier-canary.log
+StandardError=inherit
+# Six fetches with 429 backoff worst case (~6 x 4 x 60s) must still finish.
+TimeoutStartSec=30min
+# A failed canary must stay failed for operators; do not restart into a loop.
+Restart=no

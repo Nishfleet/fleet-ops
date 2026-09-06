@@ -171,6 +171,11 @@
       "source": "repo"
     },
     {
+      "unit": "0509-search-tier-canary",
+      "class": "a",
+      "source": "repo"
+    },
+    {
       "unit": "siterep-uptime",
       "class": "a",
       "source": "repo"

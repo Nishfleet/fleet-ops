@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily 06:10 IST — 0509 search tier canary (issue #1452)
+
+[Timer]
+OnCalendar=*-*-* 06:10:00 Asia/Kolkata
+Persistent=true
+AccuracySec=2min
+Unit=0509-search-tier-canary.service
+
+[Install]
+WantedBy=timers.target

@@ -142,6 +142,13 @@ NON_ROLE_UNIT_PREFIXES = (
     # and produces no work items — same class as fleet-aeo-probe. Its own
     # gate is the drift --check plus tests/agent-scheduler-drift.test.sh.
     "agent-scheduler-drift",
+    # fleet-ops#3735: 0509-search-tier-canary is a daily six-domain /search
+    # tier regression canary (Nishfleet/0509#1452). It runs a node script,
+    # owns no judging prompt and produces no work items — observability
+    # plumbing, not a role, same class as fleet-completion-canary. Its own
+    # gate is the unit's failed state plus the search-tier-canary check in
+    # the 0509 product repo.
+    "0509-search-tier",
 )
 
 
