@@ -97,8 +97,9 @@ installed live at `/etc/systemd/system/user-1000.slice.d/50-ram-governor.conf`.
 
 `DurationSec` is GLOBAL in systemd 255 (per-slice `DurationSec` is not a
 valid key, `systemd-analyze verify --man=no` reports "Unknown key name …
-ignoring"). The 60 s duration is set in
-`/etc/systemd/oomd.conf.d/99-fleet.conf` as
+ignoring"). The 60 s duration is set by
+`systemd/system/oomd.conf.d/99-fleet.conf`, installed as
+`/etc/systemd/oomd.conf.d/99-fleet.conf` (fleet-ops#3971), as
 `DefaultMemoryPressureDurationSec=60s`.
 
 ### 5. app-pi\x2dissue.slice — `ManagedOOMMemoryPressure=kill` at 80%
@@ -137,9 +138,10 @@ is a side effect, not a design.
 | 2 — per-worker throttle | `systemd/pi-issue@.service` | `~/.config/systemd/user/pi-issue@.service` | `./install.sh` (default) |
 | 3 — stock neutralizer | `systemd/system/user@1000.service.d/50-no-distro-oomd-kill.conf` | `/etc/systemd/system/user@1000.service.d/...` | `./install.sh --system` (or manual) |
 | 4 — slice governor | `systemd/system/user-1000.slice.d/50-ram-governor.conf` | `/etc/systemd/system/user-1000.slice.d/...` | `./install.sh --system` (or manual) |
+| 4b — oomd duration | `systemd/system/oomd.conf.d/99-fleet.conf` | `/etc/systemd/oomd.conf.d/99-fleet.conf` | `./install.sh --system` (or manual) |
 | 5 — fleet slice | `systemd/app-pi\x2dissue.slice` | `~/.config/systemd/user/app-pi\x2dissue.slice` | `./install.sh` (default) |
 
-Layers 3 and 4 are NEW in this repo as of issue #71; layers 1, 2 and 5 were
+Layers 3, 4 and 4b are repo-owned as of issues #71 and #3971; layers 1, 2 and 5 were
 already repo-owned.
 
 ## Drill history

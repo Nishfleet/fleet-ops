@@ -70,6 +70,11 @@ grep -Fxq "systemd/fleet-bare-metal-rebuild-drill.service /home/nish/.config/sys
   || fail "MANIFEST missing service"
 grep -Fxq "systemd/fleet-bare-metal-rebuild-drill.timer /home/nish/.config/systemd/user/fleet-bare-metal-rebuild-drill.timer" "$manifest" \
   || fail "MANIFEST missing timer"
+# fleet-ops#3971: global oomd pressure duration must survive a bare-metal rebuild.
+[[ -f "$repo_root/systemd/system/oomd.conf.d/99-fleet.conf" ]] \
+  || fail "missing repo source: systemd/system/oomd.conf.d/99-fleet.conf"
+grep -Fxq "systemd/system/oomd.conf.d/99-fleet.conf /etc/systemd/oomd.conf.d/99-fleet.conf" "$manifest" \
+  || fail "MANIFEST missing oomd 99-fleet.conf"
 ok "MANIFEST installs the new artifacts"
 
 # 4. systemd-analyze verify (when the tool exists).

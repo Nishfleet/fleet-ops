@@ -34,8 +34,9 @@
 # Duration is NOT settable per-slice: ManagedOOMMemoryPressureDurationSec is
 # not a valid key in systemd 255 (verified - systemd-analyze reports
 # 'Unknown key name ... ignoring'). It is global only, as
-# DefaultMemoryPressureDurationSec in /etc/systemd/oomd.conf, set to 60s
-# there: at 80% a 30s spike is survivable, a full sustained minute is not.
+# DefaultMemoryPressureDurationSec in /etc/systemd/oomd.conf.d/99-fleet.conf,
+# repo-owned at systemd/system/oomd.conf.d/99-fleet.conf (fleet-ops#3971),
+# set to 60s there: at 80% a 30s spike is survivable, a full sustained minute is not.
 #
 # Provenance (fleet-ops#71): the kill path is now PROVEN, not assumed.
 # Bounded thrasher (MemoryHigh=128M, MemoryMax=1G, MemorySwapMax=0,
@@ -66,7 +67,8 @@
 # lifelines or the supervisor that would repair a reaped worker.
 #
 # Policy stack (outermost → innermost):
-#   /etc/systemd/oomd.conf.d/99-fleet.conf            60s pressure duration
+#   systemd/system/oomd.conf.d/99-fleet.conf → /etc/systemd/oomd.conf.d/99-fleet.conf
+#                                                   60s pressure duration (fleet-ops#3971)
 #   /etc/systemd/system/user-1000.slice.d/...         12 GiB cap + 80% kill (this issue)
 #   user@1000.service                                 50% stock kill (now neutralized — this issue)
 #   this slice (app-pi\x2dissue.slice)                80% kill (the LAST resort for fleet workers)

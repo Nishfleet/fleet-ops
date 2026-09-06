@@ -856,6 +856,10 @@ systemd/interactive-session-reap.timer /home/nish/.config/systemd/user/interacti
 # systemctl daemon-reload; --check treats both symlink and content-equal as OK.
 systemd/system/user-1000.slice.d/50-ram-governor.conf /etc/systemd/system/user-1000.slice.d/50-ram-governor.conf
 systemd/system/user@1000.service.d/50-no-distro-oomd-kill.conf /etc/systemd/system/user@1000.service.d/50-no-distro-oomd-kill.conf
+# fleet-ops#3971: global oomd pressure duration so a bare-metal rebuild keeps
+# the 60s window that fleet-ops#3930's fix depends on. /etc/systemd/oomd.conf.d
+# is the canonical system scope for DefaultMemoryPressureDurationSec.
+systemd/system/oomd.conf.d/99-fleet.conf /etc/systemd/oomd.conf.d/99-fleet.conf
 # fleet-ops#1145 slice 1: standing-rules generator + canonical source
 bin/render-standing-rules.py /home/nish/.local/bin/render-standing-rules.py
 bin/render-pi-agents-md.py /home/nish/.local/bin/render-pi-agents-md.py
