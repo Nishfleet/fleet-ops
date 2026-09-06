@@ -122,5 +122,46 @@ fi
 
 ok "install.sh enables vps-post-reboot-verify.timer at system scope"
 
+# --------------------------------------------------------------- 5. EXEC BIT
+# fleet-ops#3829: install.sh symlinks these scripts to ~/.local/bin/<name> and
+# systemd ExecStart runs them directly. A script tracked 100644 comes out of a
+# fresh checkout / `git reset --hard` without the executable bit, the symlink
+# target is then not executable, and systemd aborts the service with status
+# 203/EXEC — the weekly maintenance window silently never runs and the reboot
+# flag is never cleared (lived root cause on netcup-rs2000, 2026-09-06).
 echo ""
-echo "ALL TESTS PASSED -- fleet-ops#1160 mechanism verified"
+for vps_script in bin/vps-weekly-update bin/vps-post-reboot-verify; do
+  f="$REPO_ROOT/$vps_script"
+  if [ ! -f "$f" ]; then
+    fail "missing $vps_script"
+  fi
+  mode=$(git -C "$REPO_ROOT" ls-files -s "$vps_script" | awk '{print $1}')
+  # 100644 is git's not-executable blob mode; 100755 is executable.
+  if [ "$mode" = "100644" ]; then
+    fail "$vps_script is git-tracked non-executable (mode $mode) but is run directly by systemd ExecStart -> 203/EXEC (fleet-ops#3829)"
+  fi
+  if [ ! -x "$f" ]; then
+    fail "$vps_script is not executable in the working tree (mode $(stat -c '%A' "$f"))"
+  fi
+  ok "$vps_script is executable (git mode $mode, worktree $(stat -c '%A' "$f"))"
+done
+
+# General class lock: every non-python/non-TS script under bin/ must be
+# git-tracked executable. install.sh symlinks these to ~/.local/bin and other
+# systemd ExecStart units run them directly; a 100644 blob silently breaks the
+# unit at exec time. (bin/*.py and bin/*.ts are invoked via their interpreter
+# or imported as modules, so the exec bit does not apply to them.)
+for script in "$REPO_ROOT"/bin/*; do
+  rel=${script#"$REPO_ROOT"/}
+  case "$rel" in
+    *.py|*.ts) continue ;;
+  esac
+  mode=$(git -C "$REPO_ROOT" ls-files -s "$rel" | awk '{print $1}')
+  if [ "$mode" = "100644" ]; then
+    fail "bin/$rel is git-tracked non-executable (100644) but is run directly -> systemd 203/EXEC class (fleet-ops#3829)"
+  fi
+done
+ok "all non-py/ts scripts under bin/ are git-tracked executable (fleet-ops#3829 class lock)"
+
+echo ""
+echo "ALL TESTS PASSED -- fleet-ops#1160 mechanism verified + #3829 exec-bit guard"
