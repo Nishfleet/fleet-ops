@@ -169,13 +169,62 @@ read_seat_field() {
     return 1
 }
 
+# fleet-ops#3585: the wrapper's clobber-proof spawn-bench marker
+# (<provider>__<model-sanitised>.spawn-bench.json in SEAT_HEALTH_DIR,
+# written by mark_seat_empty_run / mark_seat_spawn_fail) is the durable
+# bench authority — seat-health.ts clobbers the per-seat ledger back to
+# health_class=healthy / count=0 / usable_at=null on a later simple
+# packet's healthy 200, so the ledger and the legacy sidecar disagree
+# with the bench. seat_usable() already honours the marker FIRST; the
+# canary's read helpers must do the same, or they classify a benched
+# seat as "healthy" and the burst ticket names the wrong class.
+#
+# _canary_in_future ts — return 0 if ts (ISO 8601 UTC) is strictly in
+# the future, 1 otherwise. Bash-portable (no gawk).
+_canary_in_future() {
+    local ts="$1" now ts_s
+    [[ -n "$ts" ]] || return 1
+    now=$(date -u +%s)
+    ts_s=$(date -u -d "$ts" +%s 2>/dev/null || echo 0)
+    [[ "$ts_s" =~ ^[0-9]+$ ]] || return 1
+    (( ts_s > now ))
+}
+
+# _canary_bench_live np nm — return 0 and print the marker's
+# failure_mode if a spawn-bench marker exists AND its usable_at wall is
+# still in the future (the seat is currently benched). Returns 1
+# otherwise (no marker, or wall expired). The marker is clobber-proof
+# (written ONLY by the wrapper), so a live wall wins over any
+# health_class=healthy the ledger or sidecar reports.
+_canary_bench_live() {
+    local np="$1" nm="$2" f usable mode
+    f="$SEAT_HEALTH_DIR/$(_sanitise "$np")__$(_sanitise "$nm").spawn-bench.json"
+    [[ -f "$f" ]] || return 1
+    usable=$(jq -r '.usable_at // ""' "$f" 2>/dev/null || true)
+    [[ -n "$usable" ]] || return 1
+    _canary_in_future "$usable" || return 1
+    mode=$(jq -r '.failure_mode // "unknown"' "$f" 2>/dev/null || echo unknown)
+    printf '%s\n' "$mode"
+    return 0
+}
+
 # seat_health_class np nm — prints health_class for the seat, or
 # "unknown" if the ledger has no entry for it. A "healthy" +
 # http_status=200 seat is the burst signal: a 0B-stdout run on a
 # healthy seat is a SEAT FAULT (not a transient hiccup), and the
 # canary's issue body cites the seat-health evidence.
+#
+# fleet-ops#3585: consult the clobber-proof spawn-bench marker FIRST.
+# A live bench wall means the seat is transient_fault (benched), even
+# if seat-health.ts clobbered the ledger back to healthy. Without this
+# the canary classified a benched seat as healthy and the burst ticket
+# named the wrong class.
 seat_health_class() {
-    local np="$1" nm="$2" v
+    local np="$1" nm="$2" v mode
+    if mode=$(_canary_bench_live "$np" "$nm"); then
+        printf 'transient_fault\n'
+        return 0
+    fi
     if v=$(read_seat_field "$np" "$nm" health_class); then
         printf '%s\n' "$v"
         return 0
@@ -183,8 +232,19 @@ seat_health_class() {
     printf 'unknown\n'
 }
 
+# seat_http_status np nm — prints http_status, honouring the bench
+# marker the same way seat_health_class does. empty_run benches carry
+# http 200 (the provider returned 200 but no agentic output); spawn_fail
+# benches carry http 0 (no response). Matches _seat_co_write_sidecar.
 seat_http_status() {
-    local np="$1" nm="$2" v
+    local np="$1" nm="$2" v mode
+    if mode=$(_canary_bench_live "$np" "$nm"); then
+        case "$mode" in
+            empty_run) printf '200\n' ;;
+            *)         printf '0\n' ;;
+        esac
+        return 0
+    fi
     if v=$(read_seat_field "$np" "$nm" http_status); then
         printf '%s\n' "$v"
         return 0
@@ -387,6 +447,79 @@ observe_to_close() {
     return 0
 }
 
+# scan_bench_health_disagree — fleet-ops#3585: the clobber-proof
+# spawn-bench marker and the (clobberable) per-seat ledger / legacy
+# sidecar are two sources of truth. seat-health.ts writes
+# health_class=healthy / count=0 / usable_at=null on a later simple
+# packet's healthy 200, so a seat the wrapper benched for a no-op shows
+# healthy in the ledger while the marker still walls it. seat_usable()
+# and the canary's read helpers (above) honour the marker FIRST, so
+# routing and classification are correct — but the STORES still
+# disagree, and no check flagged it (live: ollama/deepseek-v4-flash:0731
+# benched 3x in 2h, count 6/7/8, ledger healthy the whole time). This
+# scan walks the per-seat ledger dir for the raw disagreement — a
+# ledger file reporting health_class=healthy WHILE a spawn-bench marker
+# for the same seat has a usable_at wall still in the future — and files
+# a `fix(seat-bench-health-disagree):` finding + LOUD triage tag so the
+# store disagreement is repaired, not just papered over on the read
+# side. Returns 0 always (alarm, not fail-loud — same contract as the
+# burst gate); the LOUD tag lands the unit in alert-repair when triage
+# is consulted.
+scan_bench_health_disagree() {
+    [[ -d "$SEAT_HEALTH_DIR" ]] || return 0
+    local disagree=0 body=""
+    local f base np nm hc usable mode
+    while IFS= read -r f; do
+        [[ -n "$f" ]] || continue
+        base="$(basename "$f")"
+        # Only the per-seat ledger files, not the spawn-bench markers.
+        [[ "$base" == *.spawn-bench.json ]] && continue
+        [[ "$base" == *.json ]] || continue
+        hc=$(jq -r '.health_class // ""' "$f" 2>/dev/null || true)
+        [[ "$hc" == "healthy" ]] || continue
+        # Derive provider/model from the filename: <p>__<m>.json
+        # (the _sanitise convention; the separator is "__"). Prefer the
+        # ledger's own provider/model fields when present (production
+        # ledgers carry them, unsanitised) so the finding names the real
+        # seat id (e.g. deepseek-v4-flash:0731, not the _-sanitised form).
+        local stem="${base%.json}"
+        np="${stem%%__*}"
+        nm="${stem#*__}"
+        [[ -n "$np" && -n "$nm" && "$np" != "$nm" ]] || continue
+        local lp lm
+        lp=$(jq -r '.provider // ""' "$f" 2>/dev/null || true)
+        lm=$(jq -r '.model // ""' "$f" 2>/dev/null || true)
+        [[ -n "$lp" ]] && np="$lp"
+        [[ -n "$lm" ]] && nm="$lm"
+        local mb="$SEAT_HEALTH_DIR/$(_sanitise "${lp:-$np}")__$(_sanitise "${lm:-$nm}").spawn-bench.json"
+        [[ -f "$mb" ]] || continue
+        usable=$(jq -r '.usable_at // ""' "$mb" 2>/dev/null || true)
+        [[ -n "$usable" ]] || continue
+        _canary_in_future "$usable" || continue
+        mode=$(jq -r '.failure_mode // "unknown"' "$mb" 2>/dev/null || echo unknown)
+        disagree=$((disagree + 1))
+        body+=$(printf -- '- `%s/%s`: ledger health_class=healthy but spawn-bench marker walls until %s (failure_mode=%s, marker=%s)\n' \
+            "$np" "$nm" "$usable" "$mode" "$mb")
+    done < <(find "$SEAT_HEALTH_DIR" -maxdepth 1 -name '*.json' -type f 2>/dev/null | sort)
+    if (( disagree > 0 )); then
+        loud "SEAT-BENCH-HEALTH-DISAGREE" \
+            "$disagree seat(s) benched (spawn-bench marker wall live) AND reported healthy by the ledger — two sources of truth disagree (fleet-ops#3585)"
+        local title="seat-bench-health disagree: ${disagree} seat(s) benched but ledger reports healthy"
+        local full="Empty-run bencher and seat-health disagree (fleet-ops#3585).
+
+The wrapper's clobber-proof spawn-bench marker (mark_seat_empty_run / mark_seat_spawn_fail) walls a seat with a future usable_at, but the per-seat ledger (written by the seat-health.ts extension) reports health_class=healthy for the same seat — seat-health.ts clobbers the ledger back to healthy on a later simple packet's 200, overriding the bench. seat_usable() and the canary's read helpers honour the marker FIRST, so routing and burst classification are correct; the STORES still disagree and no check flagged it until now.
+
+Disagreeing seat(s):
+${body}
+Fix: make seat-health consume the spawn-bench marker (the marker is the clobber-proof authority), or make the bencher write the wall into the ledger in a way seat-health.ts honours. The read-side projection (canary + seat_usable) already prevents re-seating; this finding is the store-level disagreement the projection masks.
+
+Verification: re-run fleet-empty-run-burst-canary with the same SEAT_HEALTH_DIR; this finding drains (no SEAT-BENCH-HEALTH-DISAGREE LOUD tag) when no ledger file reports healthy for a seat with a live spawn-bench marker wall.
+"
+        file_finding "seat-bench-health-disagree" "$title" "$full"
+    fi
+    return 0
+}
+
 # ============================================================================
 # Gate 1: snapshot present + parseable.
 # ============================================================================
@@ -403,6 +536,11 @@ empty_runs=$(jq -r '.waste.empty_runs_last_2h // 0' "$SNAPSHOT")
 is_uint "$empty_runs" || { loud "EMPTY-BURST-WATCHER-BROKEN" "empty_runs_last_2h not a uint: $empty_runs"; exit 1; }
 samples_n=$(jq -r '.waste.empty_run_samples // [] | length' "$SNAPSHOT")
 is_uint "$samples_n" || { loud "EMPTY-BURST-WATCHER-BROKEN" "empty_run_samples not a list"; exit 1; }
+
+# fleet-ops#3585: scan for benched-and-healthy store disagreement on
+# every tick (independent of the burst counter — the disagreement is a
+# standing fault, not a burst-gated one). Alarm + file, not fail-loud.
+scan_bench_health_disagree
 
 # Watcher-broken: counter says burst but the sample list is empty (the
 # upstream watcher parsed a "0" but reported a non-zero count). Skip
