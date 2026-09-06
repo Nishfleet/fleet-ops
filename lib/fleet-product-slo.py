@@ -222,6 +222,24 @@ REPO_MERGED_SEARCH = MERGED_SEARCH.replace(
     'org:{ORG} is:pr', 'repo:{ORG}/{REPO} is:pr'
 )
 
+# fleet-ops#4039: the `labels(first: 20) { nodes { name } }` subquery nested
+# inside closingIssuesReferences intermittently fails GitHub GraphQL schema
+# validation with `Field 'name' doesn't exist on type 'LabelConnection'`
+# (a GitHub gateway bug — the query is valid; __type confirms LabelConnection
+# has `nodes`, and Label has `name`). Observed ~62% of ticks over 24h on
+# 2026-09-06/07. The labels data feeds ONLY defect_issue_created_ts (the
+# post-merge-defect quality metric, fleet-ops#3587); merged_24h — the console
+# shipped_24h tile source — does not need it. When the error fires, retry the
+# page without the labels subquery so the delivery metric keeps flowing and
+# the stale-cache drift that disputed the tile (ConsoleLying) cannot happen.
+# Stripping this substring leaves `nodes { number createdAt }`, still valid.
+_LABELS_SUBQUERY = " labels(first: 20) { nodes { name } }"
+
+
+def _strip_labels(query: str) -> str:
+    """Return the query with the closing-issue labels subquery removed."""
+    return query.replace(_LABELS_SUBQUERY, "")
+
 
 @dataclass(frozen=True)
 class MergedPR:
@@ -384,11 +402,29 @@ def _gh_graphql(query: str, cursor: str | None) -> dict[str, Any] | None:
 def _search_merged_prs(query: str) -> list[MergedPR] | None:
     out: list[MergedPR] = []
     cursor: str | None = None
+    # fleet-ops#4039: GitHub's GraphQL gateway intermittently rejects the
+    # nested labels subquery with a LabelConnection schema error. The labels
+    # data feeds only defect_issue_created_ts (a quality metric); retry the
+    # failing page without labels so merged_24h (the tile source) keeps
+    # flowing. Once stripped, stay stripped for the rest of pagination.
+    active_query = query
     for _ in range(GH_PAGES):
-        payload = _gh_graphql(query, cursor)
+        payload = _gh_graphql(active_query, cursor)
         if payload is None:
             return None
         if payload.get("errors"):
+            err_text = str(payload["errors"][:1])
+            if "LabelConnection" in err_text and active_query is query:
+                stripped = _strip_labels(query)
+                if stripped != query:
+                    print(
+                        "product-slo: GitHub GraphQL LabelConnection error; "
+                        "retrying without labels subquery (defect metric "
+                        "degrades, merged_24h preserved) — fleet-ops#4039",
+                        file=sys.stderr,
+                    )
+                    active_query = stripped
+                    continue  # retry this page without labels
             print(
                 f"product-slo: graphql errors: {payload['errors'][:1]}",
                 file=sys.stderr,

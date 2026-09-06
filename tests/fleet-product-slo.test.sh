@@ -477,6 +477,90 @@ grep -q "steps.quality.outputs.breached == 'false'" "$arm_wf" \
 ok "(l) --repo-check verdict + arm-gate wiring (fleet-ops#3532)"
 
 # =========================================================================
+# (m) fleet-ops#4039: LabelConnection retry — merged_24h survives a GitHub
+# GraphQL gateway error on the nested labels subquery. A mock gh returns the
+# LabelConnection schema error when the query carries `labels(first:`, and
+# valid merged-PR data (no labels) when it does not. The exporter must retry
+# without labels and still return PRs (so merged_24h keeps flowing); only the
+# defect_issue_created_ts quality field degrades to None.
+# =========================================================================
+mock_gh="$scratch/gh-labelconnection"
+cat >"$mock_gh" <<'PY'
+#!/usr/bin/env python3
+import json, sys
+payload = json.load(sys.stdin)
+query = payload.get("query", "")
+# Page 1 with labels -> LabelConnection schema error (the GitHub gateway bug).
+# Any query without the labels subquery -> valid merged-PR data.
+if "labels(first: 20)" in query:
+    print(json.dumps({"errors": [{"message": "Field 'name' doesn't exist on type 'LabelConnection'"}]}))
+    sys.exit(0)
+# Valid response: one non-revert merge in the last 24h, one revert, with
+# closing-issue references but NO labels (the stripped-query shape).
+now = 1788350400  # 2026-09-02T12:00:00Z (matches NOW_ISO)
+day = 86400
+nodes = [
+    {
+        "number": 21,
+        "title": "feat: shipped today",
+        "headRefName": "claim/issue-21",
+        "mergedAt": "2026-09-02T08:00:00Z",  # ~4h ago, inside 24h
+        "repository": {"nameWithOwner": "Nishfleet/0509"},
+        "closingIssuesReferences": {"nodes": [
+            {"number": 20, "createdAt": "2026-09-01T08:00:00Z"}
+        ]},
+    },
+    {
+        "number": 22,
+        "title": "Revert \"feat: shipped today\"",
+        "headRefName": "revert/21",
+        "mergedAt": "2026-09-02T09:00:00Z",  # ~3h ago, inside 24h, revert
+        "repository": {"nameWithOwner": "Nishfleet/0509"},
+        "closingIssuesReferences": {"nodes": []},
+    },
+]
+print(json.dumps({"data": {"search": {
+    "pageInfo": {"hasNextPage": False, "endCursor": None},
+    "nodes": nodes,
+}}}))
+PY
+chmod +x "$mock_gh"
+
+CACHE_4039="$scratch/product-slo-cache-4039.json"
+FLEET_PRODUCT_SLO_GH="$mock_gh" \
+FLEET_PRODUCT_SLO_CACHE="$CACHE_4039" \
+FLEET_PRODUCT_SLO_NOW="$NOW_ISO" \
+FLEET_PRODUCT_SLO_OUT="$scratch/out-4039.prom" \
+  python3 - "$helper" <<'PY' || fail "LabelConnection retry failed"
+import importlib.util, json, os, sys
+from datetime import datetime, timezone
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("fps", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+sys.modules["fps"] = m
+spec.loader.exec_module(m)
+
+now = m.parse_iso("2026-09-02T12:00:00Z")
+repos = ["0509"]
+prs = m.load_merged_prs(now, repos)
+assert prs is not None, "load_merged_prs returned None — LabelConnection retry did not fire"
+assert len(prs) == 2, f"expected 2 PRs, got {len(prs)}"
+# merged_24h: only the non-revert (#21) counts; the revert (#22) is excluded.
+slo = m.compute_repo_slo("0509", prs, now_ts=now.timestamp())
+assert slo.merged_24h == 1, f"merged_24h want 1, got {slo.merged_24h}"
+# defect_issue_created_ts degrades to None (labels stripped) — the quality
+# metric yields 0, but the delivery tile source is intact.
+for p in prs:
+    assert p.defect_issue_created_ts is None, "labels stripped path must not set defect_issue_created_ts"
+assert slo.quality_defects_per_100 == 0.0, "defects must be 0 without labels"
+# Cache was written from the stripped-query fetch.
+cache = json.loads(Path(os.environ["FLEET_PRODUCT_SLO_CACHE"]).read_text())
+assert "prs" in cache and len(cache["prs"]) == 2, "cache must hold the 2 PRs"
+print("OK: LabelConnection retry — merged_24h=1 preserved, defect metric degraded to 0")
+PY
+ok "(m) LabelConnection retry keeps merged_24h flowing (fleet-ops#4039)"
+
+# =========================================================================
 # promtool (optional)
 # =========================================================================
 if command -v promtool >/dev/null 2>&1; then
