@@ -2228,25 +2228,34 @@ seat_spawn_bench_path() {
 # marker on every writer call lets the count survive the clobber and the
 # failure-ceiling park actually engage for a CHRONIC no-op'ing seat (the live
 # 18 empty runs in 2h on healthy-reporting seats — fleet-ops#2627).
-# Args: provider model usable_at reason backoff_s count failure_mode
+# Args: provider model usable_at reason backoff_s count failure_mode [seat_dead]
+# fleet-ops#3889: the trailing [seat_dead] (optional, default false) lets the
+# spawn_fail writer project a durable corpse (seat_dead=true) onto the
+# clobber-proof marker. seat-health.ts resets the LEDGER's seat_dead to false
+# on every transport 200 (the false-healthy clobber the live
+# xkiro/deepseek-v4-flash at 47 spawn_fail showed) — the marker is the only
+# record seat-health.ts never touches, so a spawn_fail corpse must live there
+# to survive the clobber.
 _seat_write_spawn_bench() {
     local p="$1" m="$2" usable="$3" reason="$4" backoff="$5"
-    local count="${6:-0}" mode="${7:-unknown}"
+    local count="${6:-0}" mode="${7:-unknown}" seat_dead="${8:-false}"
     local path now_utc tmp
     # fleet-ops#3661: never write a spawn-bench marker for a phantom seat key.
     if ! _seat_key_guard "$p" "$m" "_seat_write_spawn_bench"; then return 1; fi
     path=$(seat_spawn_bench_path "$p" "$m")
     [[ "$count" =~ ^[0-9]+$ ]] || count=0
+    [[ "$seat_dead" == "true" || "$seat_dead" == "false" ]] || seat_dead=false
     now_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     tmp="$path.$$.$RANDOM.tmp"
     if jq -nc \
         --arg provider "$p" --arg model "$m" --arg usable "$usable" \
         --arg reason "$reason" --arg written "$now_utc" --argjson backoff "$backoff" \
-        --arg mode "$mode" --argjson count "$count" \
+        --arg mode "$mode" --argjson count "$count" --argjson seat_dead "$seat_dead" \
         --arg writer "_seat_write_spawn_bench" \
         '{provider:$provider, model:$model, usable_at:$usable,
           reason:$reason, written_at:$written, backoff_s:$backoff,
-          failure_mode:$mode, consecutive_failure_count:$count, writer:$writer}' \
+          failure_mode:$mode, consecutive_failure_count:$count,
+          seat_dead:$seat_dead, writer:$writer}' \
         > "$tmp" 2>/dev/null; then
         chmod 0644 "$tmp" 2>/dev/null || true
         mv "$tmp" "$path" 2>/dev/null || { rm -f "$tmp" 2>/dev/null || true; return 1; }
@@ -2429,12 +2438,44 @@ seat_usable() {
     # even read: a fresh marker wins regardless of what the ledger says (or
     # whether the ledger file exists at all).
     local sb_path sb_usable sb_written sb_written_s sb_lf sb_obs sb_obs_s
+    local sb_corpse_dead sb_corpse_src
     sb_path=$(seat_spawn_bench_path "$p" "$m")
     if [[ -f "$sb_path" ]]; then
-        sb_usable=$(jq -r '.usable_at // ""' "$sb_path" 2>/dev/null || true)
-        if [[ -n "$sb_usable" ]] && _seat_in_future "$sb_usable"; then
-            seat_log "seat $p/$m: UNUSABLE (spawn-bench until $sb_usable — wrapper bench held)"
-            return 1
+        # fleet-ops#3889: a spawn_fail CORPSE (marker seat_dead=true) is held
+        # TERMINALLY and DURABLY, regardless of the clock (usable_at) and
+        # regardless of the #3737 marker-age fail-open — that fail-open exists
+        # to bound a stalled comeback organ's hold on a RECOVERABLE bench, but a
+        # marker-declared corpse is the writer's verdict that the seat cannot
+        # even spawn, and it survives the false-healthy 200 that clobbers the
+        # ledger to seat_dead=false. Only a real recovery probe (the comeback
+        # organ writing source="comeback_release" + seat_dead=false to the
+        # ledger) re-proves the seat; until then it stays unpickable.
+        sb_corpse_dead=$(jq -r '.seat_dead // false' "$sb_path" 2>/dev/null || echo false)
+        if [[ "$sb_corpse_dead" == "true" ]]; then
+            sb_corpse_src=""
+            sb_lf=$(seat_ledger_path "$p" "$m")
+            [[ -f "$sb_lf" ]] && sb_corpse_src=$(jq -r '.source // ""' "$sb_lf" 2>/dev/null || true)
+            if [[ "$sb_corpse_src" != "comeback_release" ]]; then
+                (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE (marker-declared spawn-fail corpse seat_dead=true — held durably for a recovery probe, fleet-ops#3889)"
+                return 1
+            fi
+            # Recovered corpse: a comeback probe succeeded and re-wrote the
+            # ledger (fresh observed_at, source=comeback_release, seat_dead=
+            # false). The corpse marker is now stale — drop its clock/age holds
+            # so the (healthy) ledger decides.
+            sb_usable=""
+            sb_written=""
+        fi
+        # Non-corpse markers re-read their own usable_at below. A marker-
+        # corpse that survives to here has ALREADY been released as a real
+        # recovery (the held-corpse branch returned 1 above), so its clock is
+        # cleared (sb_usable="") and the ledger decides — no future-hold.
+        if [[ "$sb_corpse_dead" != "true" ]]; then
+            sb_usable=$(jq -r '.usable_at // ""' "$sb_path" 2>/dev/null || true)
+            if [[ -n "$sb_usable" ]] && _seat_in_future "$sb_usable"; then
+                seat_log "seat $p/$m: UNUSABLE (spawn-bench until $sb_usable — wrapper bench held)"
+                return 1
+            fi
         fi
         # fleet-ops#3737: an expired (or clockless) wrapper bench must NOT
         # silently fail-open while the marker is still the latest evidence
@@ -5155,11 +5196,30 @@ mark_seat_spawn_fail() {
     local usable_at
     usable_at=$(date -u -d "@$(($(date -u +%s) + backoff))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
 
+    # fleet-ops#3889: corpse reclassification for a CHRONIC spawn_fail streak.
+    # seat-health.ts logs a transport 200 as healthy during the very run that
+    # then exits 0 with 0-byte stdout (after_provider_response carries status+
+    # headers only, never the body), so the LEDGER stays health_class=healthy /
+    # http 200 / seat_dead=false while the wrapper's benchmark climbs forever —
+    # live xkiro/deepseek-v4-flash reached 47 consecutive spawn_fail with the
+    # ledger healthy, re-offered every flat 24h park-wall expiry. Mirror the
+    # quota writer (fleet-ops#2594): once merged_count crosses
+    # SEAT_DEAD_CONSECUTIVE_THRESHOLD (default 25, matching seat-health.ts) the
+    # spawn_fail bench is written seat_dead=true so the seat is classed a
+    # CORPSE regardless of the HTTP 200, the roster/census count it dead, and
+    # seat_usable holds it terminally (only a recovery probe re-proves it). The
+    # corpse is ALSO carried onto the clobber-proof spawn-bench marker so the
+    # false-healthy ledger clobber cannot resurrect it.
+    local seat_dead=false
+    if _seat_dead_by_threshold "$merged_count"; then
+        seat_dead=true
+    fi
+
     if ! jq -nc \
         --arg provider "$p" --arg model "$m" --arg reason "$reason" \
         --arg observed "$now_utc" --arg usable "$usable_at" \
         --argjson http_status 0 --argjson retry_after null \
-        --argjson retryable true --argjson seat_dead false --argjson poison_ladder false \
+        --argjson retryable true --argjson seat_dead "$seat_dead" --argjson poison_ladder false \
         --argjson backoff "$backoff" --argjson merged "$merged_count" \
         --arg writer "mark_seat_spawn_fail" \
         '{
@@ -5182,10 +5242,14 @@ mark_seat_spawn_fail() {
     fi
     chmod 0644 "$tmp" 2>/dev/null || true
     if mv "$tmp" "$path" 2>/dev/null; then
-        seat_log "spawn-fail: marked $p/$m unusable until $usable_at (reason=$reason, backoff=${backoff}s, count=$merged_count)"
-        if _seat_parked_by_ceiling "$merged_count"; then
-            _emit_failure_ceiling_metric "$p" "$m" "$merged_count"
-            seat_log "spawn-fail: $p/$m PARKED past failure ceiling (count=$merged_count >= ${SEAT_FAILURE_CEILING}, wall=${backoff}s)"
+        if [[ "$seat_dead" == "true" ]]; then
+            seat_log "spawn-fail: $p/$m CORPSE reclassified (count=$merged_count >= ${SEAT_DEAD_CONSECUTIVE_THRESHOLD}); usable_at=$usable_at kept as comeback clock (fleet-ops#3889); re-released only by a recovery probe / healthy observation clears seat_dead=false"
+        else
+            seat_log "spawn-fail: marked $p/$m unusable until $usable_at (reason=$reason, backoff=${backoff}s, count=$merged_count)"
+            if _seat_parked_by_ceiling "$merged_count"; then
+                _emit_failure_ceiling_metric "$p" "$m" "$merged_count"
+                seat_log "spawn-fail: $p/$m PARKED past failure ceiling (count=$merged_count >= ${SEAT_FAILURE_CEILING}, wall=${backoff}s)"
+            fi
         fi
         # fleet-ops#1512: also write the clobber-proof spawn-bench marker so
         # seat_usable honours this bench even if seat-health.ts later writes a
@@ -5195,7 +5259,9 @@ mark_seat_spawn_fail() {
         # is the durable count authority for the bench class — the ledger's
         # count is reset to 0 by seat-health.ts's healthy clobber, and the
         # failure-ceiling park must engage from the marker-carried count.
-        _seat_write_spawn_bench "$p" "$m" "$usable_at" "$reason" "$backoff" "$merged_count" "spawn_fail" 2>/dev/null || true
+        # fleet-ops#3889: a spawn_fail corpse (seat_dead=true) is carried onto
+        # the marker too so the false-healthy 200 clobber cannot resurrect it.
+        _seat_write_spawn_bench "$p" "$m" "$usable_at" "$reason" "$backoff" "$merged_count" "spawn_fail" "$seat_dead" 2>/dev/null || true
         return 0
     fi
     seat_log "spawn-fail: rename FAILED for $p/$m at $path (reason=$reason)"
