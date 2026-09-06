@@ -1,77 +1,29 @@
-feat(seat-health): walled-seat comeback probe with weekly credentials_bad issue
+## Summary
+- Re-verify the commandcode minimax/minimax-m3-free corpse. Snapshot 2026-09-06T12:30:16Z observed_at 2026-09-06T09:02:03.335Z: a 403 credentials_bad corpse with no bench_reason. That observed_at is one minute BEFORE the #3603 bench_reason fix in PR #3927 merged 2026-09-06T09:03Z — this issue is the exact fail-open detection bug #3603/#3927 already closed.
+- The seat is already durably retired and auditable: cap=0 + intentional_cap_zero=corpse (fleet-ops#2700), parked ledger with bench_reason AND usable_at set (fleet-ops#2716/#3669), physical corpse ledger moved to lanes/seats-corpse-retired-2026-09-06T15:15:47Z/ by fleet-seat-comeback-release.
+- The 403 is the provider's permanent free-slug retirement ("The free MiniMax M3 and M2.7 models have been retired"), not a billing wall and not a credential fault. The commandcode credential is LIVE — control probe commandcode/poolside/laguna-s-2.1-free returns PONG in the same window.
+- No money spend: nothing to re-auth, no spend required; the only remedy (paid M3) is a paid tier and stays out of scope.
 
-## Why
+## Verification: real run results 2026-09-06T18:34Z
+- Credential live: `pi --print --no-session --provider commandcode --model poolside/laguna-s-2.1-free 'Reply with exactly: PONG'` -> PONG, exit 0.
+- Ledger parked + auditable: lanes/seats/commandcode__minimax_minimax-m3-free.json health_class=parked, seat_dead=true, failure_mode=corpse_retired, bench_reason="corpse-retired: cap=0 corpse bench, pick_seat never offers (durable, fleet-ops#2716/#3669)", bench_until=2036-09-03T15:15:47Z, usable_at=2036-09-03T15:15:47Z, consecutive_failure_count=0.
+- Read-side authority: `seat_usable commandcode/minimax/minimax-m3-free` -> UNUSABLE (seat_dead=true, class=parked), rc=1 — pick_seat cannot offer the seat.
+- Metric: `curl 127.0.0.1:9090/api/v1/query?query=fleet_pi_seat_dead_credential_total` -> 0. FleetDeadCredentialSeats absent from Alertmanager /api/v2/alerts (count 0).
+- Retirement journal: `journalctl --user -u 'fleet-seat-comeback-release*'` shows parked-ledger commandcode/minimax/minimax-m3-free parked (bench_reason set, bench_until=2036-09-03T15:15:47Z) at 2026-09-06T15:15:47Z with the physical corpse moved to lanes/seats-corpse-retired-2026-09-06T15:15:47Z/ and no re-observation since.
 
-fleet-ops#1348: #1167 landed the `walled_comeback` table in `config/seat-caps.json`
-(15min on 429, hourly on daily quota, daily on monthly/402, weekly on
-credentials_bad, max 1 probe per 15min). `pick_seat` already fail-opens after
-`usable_at` passes, but nothing actually re-admits the seat — the wall meant the
-seat stayed walled until a manual intervention or an unrelated healthy observation
-overwrote the ledger.
+## Tests
+- JSON valid: `python3 -c "import json; json.load(open('config/seat-caps.json'))"` -> JSON valid.
+- `bash tests/seat-caps-citation.test.sh` -> OK: rules 1-6 enforced, JSON parses (exit 0).
+- `bash tests/seat-caps-citation-rule6-replay.test.sh` -> OK: live config accepted (exit 0).
+- `bash tests/fleet-free-roster-canary.test.sh` -> OK: all scenarios incl. scenario19b production-lock pin (exit 0) + scenario13 worker_memory.
+- `bash bin/sgscan` -> No new security findings.
 
-This PR adds a periodic probe (systemd timer every 15min) that:
-- Reads `usable_at` from the per-seat ledger
-- When `usable_at` has passed, sends a polite 1-token "reply OK" probe through pi
-- A successful probe produces a healthy observation (seat-health.ts records it),
-  clearing `usable_at` so the seat re-enters the ladder at its cap
-- Respects `min_probe_interval_s` from `seat-caps.json` (max 1 probe per seat per tick)
-- `credentials_bad`: probes weekly and files an `agent-ready` issue if still bad
-  (needs fixing, not waiting)
+## run-proof
 
-## Scope
+run-proof: scenario19b in tests/fleet-free-roster-canary.test.sh pins cap=0 + intentional_cap_zero=corpse; live seat_usable UNUSABLE rc=1; journalctl RETIRED event; metric 0.
+- scenario19b in tests/fleet-free-roster-canary.test.sh pins cap=0 + intentional_cap_zero=corpse production lock.
+- With bench_reason now recorded (#3603/#3927), the fail-open corpse detector no longer re-files this durably-benched corpse — no re-observation in fleet-seat-comeback-release journal across subsequent ticks.
+- organ-heartbeat: config/seat-caps.json not-an-organ: data-only comment append, no runnable organ touched.
+- loose-ends-canary: none — sibling stale duplicates #3940/#3947/#3982 remain separate open issues owned by their own claims.
 
-- `bin/seat-walled-probe` — new script. Iterates the per-seat ledger, probes seats
-  whose `usable_at` is in the past and whose `failure_mode` is walled (rate_limit,
-  quota_exhausted, credentials_bad, empty_run). Uses `--dry-run` and `--probe-all`
-  flags. Exits 0 when there is nothing to probe (common case, not a failure).
-- `systemd/seat-walled-probe.service` + `systemd/seat-walled-probe.timer` —
-  oneshot unit with 10min timeout, timer fires every 15min with 60s randomized delay.
-- `systemd/timer-manifest.json` — entry for the new timer (source: repo, cadence: 15min).
-- `tests/seat-walled-probe.test.sh` — 5-phase test: dry-run selection (skips future/
-  healthy/recent, probes past+weekly), real mock run (probe success/failure + issue
-  filing), no-seats exits 0, --probe-all picks non-walled modes, systemd unit validity
-  + manifest entry.
-- `MANIFEST` — deploy mapping for bin + service + timer.
-
-**Out of scope**: the census sweep integration. #1149 is already the census sweeper;
-this probe runs on its own 15min timer rather than being called from the census.
-
-## Tradeoffs
-
-- **Own timer vs census hook.** Chose a standalone timer because the probe cadence
-  (15min) is tighter than the census (weekly). Adding a 15min-firing census step would
-  change the census's own semantics. The two are orthogonal — census maps assets to
-  guards; this probe is a guard.
-
-## Blast Radius
-
-- **Low risk.** New script + new systemd units only. No existing files modified.
-  The script reads (never writes) the per-seat ledger and `seat-caps.json`.
-  Systemd timer is non-mandatory — fleet runs fine without it.
-- **On first install**, the timer will find several walled seats with expired
-  `usable_at` and probe them. This is correct — those seats should have been
-  re-probed already.
-
-## Verification
-
-```
-bash tests/seat-walled-probe.test.sh  # 5/5 phases green (all 9 tagged OK)
-systemd-analyze verify systemd/seat-walled-probe.service systemd/seat-walled-probe.timer
-shellcheck -x bin/seat-walled-probe  # clean (exit 0)
-sgscan  # no new security findings
-```
-
-run-proof: tests/seat-walled-probe.test.sh 5/5 phases green including dry-run selection,
-real mock run with probe success+failure+issue-filing, no-seats-exit-0, --probe-all mode,
-systemd unit validity + timer-manifest entry.
-
-research: official docs (systemd.timer(5), systemd.service(5)) plus a last30days-scale pass for probe-style free-seat recovery patterns; compared polling to a systemd path-unit trigger on the ledger directory (rejected — path unit fires on every write, every few seconds; polling every 15min is simpler and lower CPU) and checked the existing bin/fleet-seat-recovery + census sweep (#1149) — adopted a standalone systemd timer + bash script because it runs on the existing fleet timer pattern with no new machinery, and the census sweep is weekly (too coarse for a 15min probe cadence).
-
-help-first: ran `systemctl --help`, `systemd-analyze --help`, `pi --help`, and `bin/fleet-seat-recovery --help` — none can read per-seat ledger JSON, compare timestamps against seat-caps.json walled_comeback durations, or file agent-ready issues via fleet-issue-file; the existing tools do not already do this.
-
-organ-heartbeat: systemd/seat-walled-probe.service systemd/seat-walled-probe.timer
-not-an-organ: no Prometheus heartbeat metric exported; probe results are logged to
-pi-seat-health + actions log, not scraped by prometheus. This is a scheduled probe,
-not an organ under fleet-ops#1010.
-
-Closes #1348
+Closes #3963
