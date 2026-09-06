@@ -28,7 +28,18 @@ cat >"$stubs" <<'SH'
 #!/usr/bin/env bash
 total_seat_cap() { echo 8; }
 issue_seat_cap() { echo 5; }
-pick_seat() { echo "commandcode	deepseek/deepseek-v4-flash		0"; return 0; }
+pick_seat() {
+    # fleet-ops#3732: count mode (PICK_SEAT_COUNT_SLOTS=1) echoes the number of
+    # usable seat slots, never a pick. This test exercises the gh rate-limit
+    # hold path, not the seat-slot gate, so return 1 usable slot to keep the
+    # low=0 path continuing as asserted below.
+    if [[ "${PICK_SEAT_COUNT_SLOTS:-0}" == "1" ]]; then
+        echo 1
+        return 0
+    fi
+    echo "commandcode	deepseek/deepseek-v4-flash		0"
+    return 0
+}
 precedence_band_phase() { echo "band"; }
 precedence_band_pending_clear() { true; }
 precedence_band_pending_starvation_clear() { true; }
