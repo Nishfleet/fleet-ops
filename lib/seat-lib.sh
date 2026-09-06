@@ -4721,11 +4721,28 @@ mark_seat_empty_run() {
             seat_log "empty-run: $p/$m PARKED past failure ceiling (count=$merged_count >= ${SEAT_FAILURE_CEILING}, wall=${backoff}s)"
         fi
         # fleet-ops#1512: clobber-proof spawn-bench marker (same rationale as
-        # mark_seat_spawn_fail). Best-effort. fleet-ops#2627: also carry the
+        # mark_seat_spawn_fail). fleet-ops#2627: also carry the
         # consecutive_failure_count and failure_mode=empty_run so the next
         # empty-run call merges from this marker across any healthy ledger
         # clobber, and the chronic-no-op park engages from the durable count.
-        _seat_write_spawn_bench "$p" "$m" "$usable_at" "$reason" "$backoff" "$merged_count" "empty_run" 2>/dev/null || true
+        # fleet-ops#3602: the marker write is NOT best-effort. The ledger is
+        # co-written by seat-health.ts, which clobbers it back to
+        # health_class=healthy / count=0 / usable_at=null on a later HTTP-200
+        # observation (a different worker's simple packet). When the marker
+        # write failed silently (the old `2>/dev/null || true`), the bench
+        # lived ONLY in the clobberable ledger, the next 200 probe cleared it,
+        # and pick_seat re-offered the no-op'ing seat — live
+        # ollama/deepseek-v4-flash:0731 was re-benched 8x in 2h (count=6,7,8)
+        # yet still offered healthy. The marker is the survival mechanism, so
+        # a marker write failure fails LOUD (return 1): the bench either has a
+        # clobber-proof marker that survives until wall_end, or the caller
+        # (pi-issue-run) logs the failure and falls back to tried-seats
+        # exclusion for the current run — never a silent degradation to a
+        # clobberable-only bench.
+        if ! _seat_write_spawn_bench "$p" "$m" "$usable_at" "$reason" "$backoff" "$merged_count" "empty_run" 2>/dev/null; then
+            seat_log "empty-run: LOUD marker-write FAILED for $p/$m at $sb_marker_path (reason=$reason) — bench NOT clobber-proof, relying on tried-seats exclusion (fleet-ops#3602)"
+            return 1
+        fi
         return 0
     fi
     seat_log "empty-run: rename FAILED for $p/$m at $path (reason=$reason)"

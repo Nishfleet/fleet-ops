@@ -3450,6 +3450,18 @@ bash "$here/seat-floor-failopen.test.sh" || fail "seat-floor-failopen tests fail
 # p14-test-listing-gate).
 bash "$here/seat-spawn-bench-clobber.test.sh" || fail "seat-spawn-bench-clobber tests failed"
 
+# fleet-ops#3602: an empty-run bench must SURVIVE a subsequent successful
+# (HTTP 200) probe until its wall_end, and a seat with an unexpired empty-run
+# bench can NEVER be returned by pick_seat. The clobber-proof spawn-bench
+# marker (#1512) is the survival mechanism; this test proves the contract
+# end-to-end through pick_seat (the routing authority), including after a
+# healthy ledger clobber, and that the marker write is no longer best-effort
+# (a marker-write failure fails loud so the bench is never silently lost to a
+# clobberable ledger). Hosted here for the same reason as the spawn-bench
+# clobber test above (listed in ci.yml, runs independent of the
+# p14-test-listing-gate).
+bash "$here/seat-empty-run-bench-sticks.test.sh" || fail "seat-empty-run-bench-sticks tests failed"
+
 # --- fleet-ops#1409: seat_usable per-seat fold + NO-USABLE-SEAT backoff ------
 # Isolated fixture: a single benched seat (quota_bench, future bench_until)
 # forces pick_seat into the NO USABLE SEAT path (rc=1), where the #1409 fix
