@@ -614,7 +614,7 @@ def print_seat(exclude: str | None) -> tuple[str, str, str] | None:
     return parts[0], parts[1], parts[2]
 
 
-def _dispatch_line_seen(alertname: str) -> bool:
+def _dispatch_line_seen(alertname: str, since: datetime | None = None) -> bool:
     """Return True if actions.log has a DISPATCH line for alertname.
 
     The dispatcher writes DISPATCH only when it spawns a unit; skips
@@ -622,14 +622,27 @@ def _dispatch_line_seen(alertname: str) -> bool:
     SKIP/SKIPPED-CLAIMED/NO-SPAWN and return rc=0 WITHOUT a DISPATCH line.
     This is the dispatch hop's observed terminal state — the receipt that
     a repair unit was actually spawned (fleet-ops#3190).
+
+    When `since` is given, only DISPATCH lines written at or after `since`
+    count. This is the redispatch verification: a redispatch that was
+    SKIPPED-CLAIMED (claim already held) writes no new DISPATCH line, so a
+    stale DISPATCH line from an earlier dispatch must not be read as proof
+    that THIS redispatch spawned a unit (fleet-ops#3625: DeployBlockedStuck
+    reported redispatch-rc=0 dispatched=True on 11:52Z and 12:22Z while the
+    dispatcher only wrote SKIPPED-CLAIMED — the alert never resolved).
     """
     if not ACTIONS.is_file():
         return False
     try:
         for line in ACTIONS.read_text(errors="replace").splitlines():
             m = LOG_RE.search(line)
-            if m and m.group(2) == "DISPATCH" and m.group(3) == alertname:
-                return True
+            if not (m and m.group(2) == "DISPATCH" and m.group(3) == alertname):
+                continue
+            if since is not None:
+                ts = parse_iso(m.group(1))
+                if ts is None or ts < since:
+                    continue
+            return True
     except OSError:
         pass
     return False
@@ -648,11 +661,16 @@ def redispatch_real(alertname: str) -> tuple[int, bool]:
     (fleet-ops#3190: DeployBlockedStuck redispatch rc=0 on
     openrouter/deepseek-v4-flash-0731, chain_stalled_total went 0->1 while
     the hop stayed open).
+
+    The `since` marker is captured BEFORE the dispatcher runs so a stale
+    DISPATCH line from an earlier dispatch cannot be mistaken for a unit
+    spawned by THIS redispatch (fleet-ops#3625).
     """
     env = os.environ.copy()
     env["AMX_STATUS"] = "firing"
     env["AMX_RECEIVER"] = "completion-canary-redispatch"
     env["AMX_ALERT_1_LABEL_alertname"] = alertname
+    before = now_dt()
     try:
         r = subprocess.run([DISPATCHER], env=env, capture_output=True, text=True,
                            timeout=60, check=False)
@@ -660,7 +678,7 @@ def redispatch_real(alertname: str) -> tuple[int, bool]:
         log(f"ERROR: redispatch {alertname} failed: {exc}")
         return 1, False
     rc = 0 if r.returncode == 0 else r.returncode
-    dispatched = _dispatch_line_seen(alertname)
+    dispatched = _dispatch_line_seen(alertname, since=before)
     log(f"redispatch alertname={alertname} dispatcher_rc={r.returncode} "
         f"dispatched={dispatched}")
     return rc, dispatched

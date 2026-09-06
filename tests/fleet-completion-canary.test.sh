@@ -902,6 +902,65 @@ assert d.get("detail", {}).get("hop") == "dispatch", d
 PY
 ok "dispatch hop closes on DISPATCH line, not rc=0 (fleet-ops#3190)"
 
+# --- 9e-stale. a SKIPPED-CLAIMED redispatch must not read a stale DISPATCH
+# line as proof THIS redispatch spawned a unit (fleet-ops#3625) --
+# Live incident 2026-09-05: DeployBlockedStuck fired 4000s despite two rc=0
+# redispatches (11:52:14Z, 12:22:13Z). The dispatcher only wrote
+# SKIPPED-CLAIMED (reason=alert-repair-claim-already-held) — no new unit was
+# spawned — but _dispatch_line_seen scanned the WHOLE actions.log and found
+# a stale DISPATCH line from an earlier dispatch, so the canary logged
+# "redispatch-rc=0 dispatched=True" and reported success while the alert kept
+# firing. Fix: _dispatch_line_seen only counts DISPATCH lines written at or
+# after the redispatch began; a SKIP (no new DISPATCH line) escalates to
+# STOP-REASON / senior conference instead of reporting success.
+rm -rf "$scratch/state"; mkdir -p "$scratch/state"
+: >"$scratch/dispatch.log"
+: >"$scratch/actions.log"
+rm -f "$scratch/STOP-REASON.json"
+python3 - "$scratch/alerts.json" <<'PY'
+import json, sys
+json.dump({"status":"success","data":{"alerts":[
+  {"state":"firing","activeAt":"2026-09-05T11:20:00Z",
+   "labels":{"alertname":"DeployBlockedStuck"}}
+]}}, open(sys.argv[1],"w"))
+PY
+# Seed a STALE DISPATCH line from an EARLIER dispatch (04:22Z) — the exact
+# shape that made the old _dispatch_line_seen return True for a later SKIP.
+cat >"$scratch/actions.log" <<'PYEND'
+[2026-09-05T04:22:20Z] DISPATCH alertname=DeployBlockedStuck unit=alert-repair-DeployBlockedStuck-20260905T042220Z seat=commandcode/poolside/laguna-s-2.1-free reason=healthy packet=/x rc=0
+PYEND
+# Tick 1: firing 32 min > 10 min CLOCK_DISPATCH, no NEW DISPATCH -> hop=dispatch
+# stalled -> redispatch with DISPATCHER_SKIP=1 (simulates SKIPPED-CLAIMED,
+# claim already held) -> rc=0, NO new DISPATCH line -> the stale 04:22Z line
+# must NOT count -> dispatched=False -> STOP-REASON (senior conference).
+rc=$(DISPATCHER_SKIP=1 run_bin "2026-09-05T11:52:14Z")
+[[ "$rc" == "0" ]] || fail "9e-stale tick-1 rc=$rc stderr=$(cat "$scratch/err.log")"
+grep -q "dispatch AMX_ALERT_1_LABEL_alertname=DeployBlockedStuck" "$scratch/dispatch.log" \
+  || fail "9e-stale tick-1: dispatcher must be invoked; log=$(cat "$scratch/dispatch.log")"
+# The canary's REDISPATCH receipt must record dispatched=False (the stale
+# 04:22Z DISPATCH line must not be read as THIS redispatch spawning a unit).
+grep -q 'REDISPATCH alertname=DeployBlockedStuck.*dispatched=False' "$scratch/actions.log" \
+  || fail "9e-stale tick-1: redispatch must report dispatched=False (stale DISPATCH line must not count); log=$(cat "$scratch/actions.log")"
+# No NEW DISPATCH line may be written (the dispatcher skipped). The only
+# DISPATCH line is the stale 04:22:20Z seed — a line at/after the redispatch
+# time (11:52:14Z) would mean a unit was actually spawned.
+if grep -qE '\] DISPATCH alertname=DeployBlockedStuck' "$scratch/actions.log" \
+   && ! grep -qE '\[2026-09-05T04:22:20Z\] DISPATCH alertname=DeployBlockedStuck' "$scratch/actions.log"; then
+  fail "9e-stale tick-1: dispatcher skip must NOT write a new DISPATCH line; log=$(cat "$scratch/actions.log")"
+fi
+# STOP-REASON must be written (no worker spawned -> nothing to give a chance
+# to; the dispatch hop did not reach terminal state).
+[[ -f "$scratch/STOP-REASON.json" ]] \
+  || fail "9e-stale tick-1: SKIPPED-CLAIMED redispatch (rc=0, no new DISPATCH) must write STOP-REASON (fleet-ops#3625)"
+python3 - "$scratch/STOP-REASON.json" <<'PY' || exit 1
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d.get("reason") == "alert-repair-stalled", f"reason={d.get('reason')!r}"
+assert d.get("detail", {}).get("alertname") == "DeployBlockedStuck", d
+assert d.get("detail", {}).get("hop") == "dispatch", d
+PY
+ok "SKIPPED-CLAIMED redispatch escalates despite a stale DISPATCH line (fleet-ops#3625)"
+
 # --- 9e-drain. successful dispatch redispatch drains the hop metric (fleet-ops#3226) --
 # Bug: a dispatch-hop stall was redispatched successfully (DISPATCH line
 # written, unit spawned), but the canary still exported
