@@ -146,6 +146,15 @@ PROBE_TIMEOUT="${FLEET_SEAT_COMEBACK_TIMEOUT_S:-45}"
 # re-benches again. Without this, a perpetually-failing seat burns a
 # slot every 15 min and the loud-stall check fires forever.
 REBENCH_BACKOFF_S="${FLEET_SEAT_COMEBACK_REBENCH_BACKOFF_S:-900}"
+# fleet-ops#3737: freshness window for the wrapper bench marker
+# (<seat>.spawn-bench.json, written by mark_seat_empty_run /
+# mark_seat_spawn_fail). A marker younger than this whose usable_at has
+# expired and which is still the seat's latest evidence (no newer ledger
+# observed_at) owes a comeback probe before the seat is re-admitted —
+# seat_usable holds it meanwhile. Matches EMPTY_RUN_COUNT_WINDOW_S /
+# SEAT_PARK_WALL_S in lib/seat-lib.sh (24 h): older than that is
+# archaeology and the marker no longer gates.
+SPAWN_BENCH_FRESH_S="${FLEET_SEAT_COMEBACK_SPAWN_BENCH_FRESH_S:-86400}"
 # fleet-ops#2638: corpse the seat when consecutive_failure_count crosses
 # the threshold after a probe failure. Matches SEAT_DEAD_CONSECUTIVE_THRESHOLD
 # in lib/seat-lib.sh (also default 25) so the comeback-release path agrees
@@ -541,6 +550,54 @@ rebench_seat() {
     log "REBENCHED $p/$m (fresh bench until $bench_until, backoff=${REBENCH_BACKOFF_S}s, class=$hc, failure_mode=$fm, count=$merged_count)"
     return 0
 }
+
+# fleet-ops#3737: re-bench a WRAPPER bench marker (<seat>.spawn-bench.json)
+# after a failed comeback probe. Mirrors rebench_seat for the clobber-proof
+# surface: advance usable_at to now + REBENCH_BACKOFF_S (or the 24 h park
+# wall once the merged count crosses the failure ceiling — the same
+# SEAT_FAILURE_CEILING/SEAT_PARK_WALL_S semantics the wrapper's
+# mark_seat_empty_run uses) and refresh written_at so the marker stays the
+# seat's latest evidence and the router's probe-gate hold (seat_usable,
+# fleet-ops#3737) keeps the seat out of rotation without burning a work
+# item. The count bumps so a chronically-dead seat still converges on the
+# park without any real packet paying for the discovery.
+rebench_wrapper_marker() {
+    local p="$1" m="$2" mk="$3"
+    local prev_count prev_mode merged backoff usable tmp
+    prev_count=$(jq -r '.consecutive_failure_count // 0' "$mk" 2>/dev/null || echo 0)
+    [[ "$prev_count" =~ ^[0-9]+$ ]] || prev_count=0
+    prev_mode=$(jq -r '.failure_mode // "unknown"' "$mk" 2>/dev/null || echo "unknown")
+    [[ -n "$prev_mode" ]] || prev_mode="unknown"
+    merged=$((prev_count + 1))
+    backoff="$REBENCH_BACKOFF_S"
+    if (( merged >= ${SEAT_FAILURE_CEILING:-20} )); then
+        backoff="${SEAT_PARK_WALL_S:-86400}"
+    fi
+    usable=$(date -u -d "@$(($(now_epoch) + backoff))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || now_iso)
+    if (( DRY_RUN )); then
+        log "DRY-RUN: would re-bench wrapper marker $p/$m until $usable (probe failed; count=$merged, mode=$prev_mode)"
+        return 0
+    fi
+    tmp="$mk.$$.tmp"
+    if jq -nc \
+        --arg provider "$p" --arg model "$m" --arg usable "$usable" \
+        --arg reason "comeback-release: probe failed — wrapper bench re-benched" \
+        --arg written "$(now_iso)" --argjson backoff "$backoff" \
+        --arg mode "$prev_mode" --argjson count "$merged" \
+        '{provider:$provider, model:$model, usable_at:$usable,
+          reason:$reason, written_at:$written, backoff_s:$backoff,
+          failure_mode:$mode, consecutive_failure_count:$count,
+          writer:"comeback_release_rebench"}' > "$tmp" 2>/dev/null; then
+        chmod 600 "$tmp" 2>/dev/null || true
+        if mv "$tmp" "$mk" 2>/dev/null; then
+            log "re-benched wrapper marker $p/$m until $usable (probe failed; count=$merged, mode=$prev_mode)"
+            return 0
+        fi
+    fi
+    rm -f "$tmp" 2>/dev/null || true
+    log "re-bench wrapper marker $p/$m FAILED — marker left as-is (expired; router hold persists while fresh)"
+    return 1
+}
 # --- fleet-ops#2661: consecutive overload_503 strike bookkeeping ---------
 # A failed probe of an overload_bench seat is an overload_503 strike on that
 # provider (the rebench preserved the overload class, so the ledger still says
@@ -920,6 +977,53 @@ main() {
         # re-walled would carry its old streak forward and corpse too fast.
         if [[ "$hc" == "healthy" ]]; then
             OWN_FAIL["$base"]="0"
+            # fleet-ops#3737: a "healthy" ledger does NOT prove release when
+            # the seat carries a fresh wrapper bench marker
+            # (<base>.spawn-bench.json). seat-health.ts writes healthy on ANY
+            # transport 200 — the after_provider_response event carries
+            # status+headers only, never the body — so the very run that then
+            # exits 0 with 0-byte stdout (empty_run) or a failed spawn
+            # (spawn_fail) leaves a healthy ledger entry while the bench
+            # lives only in the clobber-proof marker. The router now holds
+            # an expired marker until this organ probes the seat
+            # (lib/seat-lib.sh seat_usable, same issue): a fresh marker
+            # (written within SPAWN_BENCH_FRESH_S) whose usable_at has passed
+            # and whose written_at is NOT superseded by a newer ledger
+            # observed_at is the seat's latest evidence — it owes a comeback
+            # probe. Probe success -> unwall_seat writes a fresh healthy
+            # observation (observed_at > written_at lifts the router hold).
+            # Probe failure -> re-bench the marker so the seat stays out
+            # WITHOUT a work item paying for the discovery (live: ollama/
+            # deepseek-v4-flash:0731, 12 empty runs in 2h — each bench
+            # expiry silently re-admitted the still-dead seat).
+            local _mk="${f%.json}.spawn-bench.json"
+            local _mk_usable _mk_written _mk_usable_e _mk_written_e _mk_obs_e
+            if [[ -f "$_mk" ]]; then
+                _mk_usable=$(jq -r '.usable_at // ""' "$_mk" 2>/dev/null || true)
+                _mk_written=$(jq -r '.written_at // ""' "$_mk" 2>/dev/null || true)
+                _mk_usable_e=$(ts_epoch "$_mk_usable")
+                _mk_written_e=$(ts_epoch "$_mk_written")
+                _mk_obs_e=$(ts_epoch "$(jq -r '.observed_at // ""' "$f" 2>/dev/null || true)")
+                if [[ -n "$_mk_written_e" ]] \
+                    && (( now - _mk_written_e <= SPAWN_BENCH_FRESH_S )) \
+                    && { [[ -z "$_mk_usable_e" ]] || (( _mk_usable_e <= now )); } \
+                    && { [[ -z "$_mk_obs_e" ]] || (( _mk_obs_e <= _mk_written_e )); }; then
+                    log "probe $p/$m: healthy ledger but expired wrapper bench marker (usable_at=${_mk_usable:-none}, written_at=$_mk_written) is latest evidence — comeback probe before re-admission (fleet-ops#3737)"
+                    last_probe["$base"]="$(now_epoch)"
+                    if probe_seat "$p" "$m"; then
+                        ((probed++)) || true
+                        reset_overload_strikes "$p"
+                        if unwall_seat "$p" "$m" "$f"; then
+                            ((released_this_run++)) || true
+                        fi
+                    else
+                        ((probed++)) || true
+                        OWN_FAIL["$base"]=$(( ${OWN_FAIL["$base"]:-0} + 1 ))
+                        rebench_wrapper_marker "$p" "$m" "$_mk" \
+                            || log "wrapper marker re-bench failed for $p/$m (fleet-ops#3737)"
+                    fi
+                fi
+            fi
             continue
         fi
         [[ "$hc" != "healthy" ]] || continue
