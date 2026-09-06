@@ -1353,8 +1353,9 @@ blocked-on: nish-decision" 2>/dev/null || true
     # fleet-ops#3784: stagger cohort spawns so clone/npm/pi startup peaks do
     # not overlap (oomd slice-pressure kills at tick time). Sleep a few
     # seconds between systemctl start --no-block calls. 0 disables. The value
-    # is loaded from seat-caps.json spawn_stagger_s by load_seat_caps (called
-    # during the capacity step above); default 0 if the caps file is absent.
+    # is loaded from seat-caps.json spawn_stagger_s by load_seat_caps.
+    # Must call in main shell (not subshell) so SEAT_SPAWN_STAGGER_S persists.
+    load_seat_caps || true
     if (( SEAT_SPAWN_STAGGER_S > 0 )); then
         sleep "$SEAT_SPAWN_STAGGER_S"
     fi
