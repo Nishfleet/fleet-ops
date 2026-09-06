@@ -1,0 +1,13 @@
+M	bin/fleet-empty-run-burst-canary
+M	bin/vps-weekly-update
+M	lib/seat-lib.sh
+M	libexec/fleet-console-pi/generate.py
+M	libexec/fleet-metrics-export.py
+M	tests/console-tile-verify.test.sh
+M	tests/fleet-metrics-export.test.sh
+M	tests/fleet-ops-1160-regression.test.sh
+M	tests/opus-heartbeat-seat-comeback.test.sh
+M	tests/seat-empty-run-ceiling-3727.test.sh
+M	tests/seat-empty-run-ceiling-default.test.sh
+M	tests/seat-lib-aimd.test.sh
+M	tests/seat-lib.test.sh
