@@ -3323,8 +3323,22 @@ bash "$here/reusable-surface-audit.test.sh" || fail "reusable-surface-audit test
 
 # fleet-ops#703: lock the orcarouter sr-never-vibes citation. Workers
 # cannot add a P14 line in .github/workflows/ci.yml; this file is the
-# listed CI host.
+# listed CI host. The citation test reads the LIVE config/seat-caps.json
+# (it honors SEAT_CAPS_JSON only so a replay drill can point it at a
+# fixture); drop the scratch SEAT_CAPS_JSON this file set above so the
+# hosted test and the rule-6 replay drill below read the live config.
+unset SEAT_CAPS_JSON
 bash "$here/seat-caps-citation.test.sh" || fail "seat-caps-citation tests failed"
+
+# fleet-ops#3864: rule-6 replay drill. Workers cannot add a P14 line in
+# .github/workflows/ci.yml; this file is the listed CI host. The drill
+# synthesizes the #3848 seat-caps.json hunk (ollama cap=0 corpse on a
+# prepaid-quota provider) and proves seat-caps-citation.test.sh now REFUSES
+# it (exit 1) while still exiting 0 on the live config. Hosted here (not from
+# seat-caps-citation.test.sh) to avoid the recursion: the drill runs the
+# citation test as a subprocess, so the citation test itself must not host it.
+bash "$here/seat-caps-citation-rule6-replay.test.sh" \
+  || fail "seat-caps-citation-rule6-replay drill failed (rule 6, fleet-ops#3864)"
 
 # fleet-ops#819: cancelled-while-queued detector. Workers cannot add a
 # P14 line in .github/workflows/ci.yml; this file is the listed CI

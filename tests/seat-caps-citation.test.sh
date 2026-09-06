@@ -41,7 +41,11 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-caps="$repo_root/config/seat-caps.json"
+# SEAT_CAPS_JSON override (the repo-wide convention, lib/seat-lib.sh:71) lets a
+# replay drill point this test at a fixture reproducing a past bad hunk
+# (fleet-ops#3864: the #3848 ollama cap=0 corpse retirement). Default is the
+# live config.
+caps="${SEAT_CAPS_JSON:-$repo_root/config/seat-caps.json}"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
@@ -331,4 +335,110 @@ done < <(jq -r '.providers | to_entries[] | [.key, (.value.class // "free")] | @
 [[ "$r5_bad" == "0" ]] || fail "scenario11: $r5_bad provider(s) with an invalid class (rule 5, fleet-ops#3504)"
 ok "all provider classes are free, prepaid-quota, or metered (rule 5, fleet-ops#3504)"
 
-ok "seat-caps-citation: rules 1-5 enforced, orcarouter citation pinned, order clean, JSON parses (fleet-ops#3504)"
+# 12. Rule 6 (fleet-ops#3864): a cap=0 entry retired for yield
+#     (intentional_cap_zero in {corpse, yield, stale-yield}) on a prepaid-quota
+#     or metered provider must cite the seat-retirement rule's three pieces of
+#     evidence (2026-09-05, after #3389/#3473): the retirement error class
+#     (model-working / tools>0 — the model was working, never an infrastructure
+#     death class like rc=124, rc=143, 429, 503, resource_exhausted,
+#     no-seat-available), a session count of at least 20, and a PR rate under
+#     10% (or pr_count 0). A worker cannot land what #3848 landed
+#     (ollama/deepseek-v4-flash:0731 retired at measured yield 0.30 with only
+#     rc=124 hang-watchdog infra deaths; reverted by orchestrator PR #3863).
+#     The three config-pinning suites all passed on #3848 because the citation
+#     rules checked for a dated reason, not the retirement rule's evidence —
+#     this scenario closes that gap. Free-class providers are out of scope: a
+#     free lane has no spend to protect, so the retirement rule's evidence
+#     threshold does not apply.
+echo "--- scenario 12: cap=0 yield retirement on a paid provider cites the retirement rule (rule 6) ---"
+r6_errclass_pat='(model-working|tools[[:space:]]*>[[:space:]]*0)'
+r6_infra_pat='(rc=124|rc=143|HTTP[[:space:]]?429|HTTP[[:space:]]?503|resource_exhausted|no-seat-available)'
+# session count >= 20: n=20, n=25, n=120, "20 sessions", "sessions 20", "sessions=20"
+r6_session_pat='(n=[2-9][0-9]|n=[1-9][0-9]{2,}|[2-9][0-9][[:space:]]*sessions?|sessions?[[:space:]]*[=: ]?[[:space:]]*[2-9][0-9]|[1-9][0-9]{2,}[[:space:]]*sessions?)'
+# PR rate under 10% or pr_count 0: "pr_count 0", "pr_count=0", "<10%", "under 10%",
+# "yield 0.05" (<0.10), "yield 0" (exactly 0). "yield 0.30" and "pr_count 6" do NOT match.
+r6_prrate_pat='(pr_count[[:space:]]*[=: ]?[[:space:]]*0([^0-9.]|$)|<[[:space:]]*10%|under[[:space:]]+10%|PR[[:space:]]+rate[[:space:]]+<[[:space:]]*10%|yield[[:space:]]*0\.0[0-9]|yield[[:space:]]*0([^0-9.]|$))'
+r6_bad=0
+r6_checked=0
+# Provider-level cap=0 entries on a paid provider.
+while IFS=$'\t' read -r prov pclass reason; do
+    [[ -n "$prov" ]] || continue
+    [[ "$pclass" == "prepaid-quota" || "$pclass" == "metered" ]] || continue
+    r6_checked=$((r6_checked+1))
+    if [[ -z "$reason" ]]; then
+        echo "  $prov: cap=0 yield-class retirement on $pclass provider but reason is empty (rule 6)" >&2
+        r6_bad=$((r6_bad+1)); continue
+    fi
+    if ! grep -qiE "$r6_errclass_pat" <<<"$reason"; then
+        echo "  $prov: cap=0 yield retirement on $pclass provider — reason must cite the retirement error class (model-working / tools>0), not just a date (rule 6, fleet-ops#3864)" >&2
+        r6_bad=$((r6_bad+1)); continue
+    fi
+    if grep -qiE "$r6_infra_pat" <<<"$reason"; then
+        echo "  $prov: cap=0 yield retirement on $pclass provider — reason cites an infra death class (rc=124/143, 429, 503, resource_exhausted, no-seat-available); infra deaths never count as yield (rule 6, fleet-ops#3864)" >&2
+        r6_bad=$((r6_bad+1)); continue
+    fi
+    if ! grep -qiE "$r6_session_pat" <<<"$reason"; then
+        echo "  $prov: cap=0 yield retirement on $pclass provider — reason must cite a session count of at least 20 (rule 6, fleet-ops#3864)" >&2
+        r6_bad=$((r6_bad+1)); continue
+    fi
+    if ! grep -qiE "$r6_prrate_pat" <<<"$reason"; then
+        echo "  $prov: cap=0 yield retirement on $pclass provider — reason must cite a PR rate under 10% or pr_count 0 (rule 6, fleet-ops#3864)" >&2
+        r6_bad=$((r6_bad+1)); continue
+    fi
+    ok "$prov: cap=0 yield retirement on $pclass provider cites error class + >=20 sessions + PR rate <10% (rule 6)"
+done < <(jq -r '
+    .providers | to_entries[] | .key as $p
+    | (.value.cap // 1) as $cap
+    | select($cap == 0)
+    | (.value.intentional_cap_zero // "") as $icz
+    | select($icz | IN("corpse","yield","stale-yield"))
+    | (.value.class // "free") as $cls
+    | [$p, $cls, (.value.reason // "")] | @tsv
+' "$caps")
+# Model-level cap=0 entries on a paid provider.
+while IFS=$'\t' read -r prov model pclass reason; do
+    [[ -n "$prov" ]] || continue
+    [[ "$pclass" == "prepaid-quota" || "$pclass" == "metered" ]] || continue
+    r6_checked=$((r6_checked+1))
+    if [[ -z "$reason" ]]; then
+        echo "  $prov/$model: cap=0 yield-class retirement on $pclass provider but reason is empty (rule 6)" >&2
+        r6_bad=$((r6_bad+1)); continue
+    fi
+    if ! grep -qiE "$r6_errclass_pat" <<<"$reason"; then
+        echo "  $prov/$model: cap=0 yield retirement on $pclass provider — reason must cite the retirement error class (model-working / tools>0), not just a date (rule 6, fleet-ops#3864)" >&2
+        r6_bad=$((r6_bad+1)); continue
+    fi
+    if grep -qiE "$r6_infra_pat" <<<"$reason"; then
+        echo "  $prov/$model: cap=0 yield retirement on $pclass provider — reason cites an infra death class (rc=124/143, 429, 503, resource_exhausted, no-seat-available); infra deaths never count as yield (rule 6, fleet-ops#3864)" >&2
+        r6_bad=$((r6_bad+1)); continue
+    fi
+    if ! grep -qiE "$r6_session_pat" <<<"$reason"; then
+        echo "  $prov/$model: cap=0 yield retirement on $pclass provider — reason must cite a session count of at least 20 (rule 6, fleet-ops#3864)" >&2
+        r6_bad=$((r6_bad+1)); continue
+    fi
+    if ! grep -qiE "$r6_prrate_pat" <<<"$reason"; then
+        echo "  $prov/$model: cap=0 yield retirement on $pclass provider — reason must cite a PR rate under 10% or pr_count 0 (rule 6, fleet-ops#3864)" >&2
+        r6_bad=$((r6_bad+1)); continue
+    fi
+    ok "$prov/$model: cap=0 yield retirement on $pclass provider cites error class + >=20 sessions + PR rate <10% (rule 6)"
+done < <(jq -r '
+    .providers | to_entries[] | .key as $p
+    | (.value.class // "free") as $cls
+    | (.value.models // {}) | to_entries[] | .value as $v | .key as $m
+    | ($v | if type == "object" then (.cap // 1) else . end) as $mc
+    | select($mc == 0)
+    | ($v | if type == "object" then (.intentional_cap_zero // "") else "" end) as $icz
+    | select($icz | IN("corpse","yield","stale-yield"))
+    | select($cls | IN("prepaid-quota","metered"))
+    | [$p, $m, $cls, ($v | if type == "object" then (.reason // "") else "" end)] | @tsv
+' "$caps")
+if (( r6_bad > 0 )); then
+    fail "scenario12: $r6_bad cap=0 yield retirement(s) on a paid provider missing the retirement rule's evidence (rule 6, fleet-ops#3864)"
+fi
+if (( r6_checked == 0 )); then
+    ok "no cap=0 yield-class retirement on a paid provider — rule 6 vacuously satisfied (fleet-ops#3864)"
+else
+    ok "every cap=0 yield-class retirement on a paid provider cites the retirement rule's evidence (rule 6, fleet-ops#3864)"
+fi
+
+ok "seat-caps-citation: rules 1-6 enforced, orcarouter citation pinned, order clean, JSON parses (fleet-ops#3504, fleet-ops#3864)"
