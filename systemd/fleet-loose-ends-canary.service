@@ -22,7 +22,7 @@ Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=FLEET_LOOSE_ENDS_INTAKE=/home/nish/workspaces/products/fleet-ops/config/intake-repos.json
 WorkingDirectory=/home/nish
-ExecStart=/home/nish/.local/bin/fleet-loose-ends-canary
+ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/fleet-loose-ends-canary'
 TimeoutStartSec=10min
 # Never restart: the webhook (or the backstop timer) is the retry.
 Restart=no

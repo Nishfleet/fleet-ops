@@ -23,7 +23,7 @@ Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=FLEET_CLOSE_DUPLICATES_OK=1
 WorkingDirectory=/home/nish
-ExecStart=/home/nish/.local/bin/fleet-issue-file close-duplicates
+ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/fleet-issue-file close-duplicates'
 TimeoutStartSec=10min
 # Never restart: the webhook (or the backstop timer) is the retry.
 Restart=no

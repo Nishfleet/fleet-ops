@@ -23,7 +23,7 @@ Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=LIFECYCLE_SWEEP_INTAKE_JSON=/home/nish/workspaces/products/fleet-ops/config/intake-repos.json
 Environment=LIFECYCLE_SWEEP_LOCKDIR=/run/user/1000/lifecycle-label-sweep
 WorkingDirectory=/home/nish
-ExecStart=/home/nish/.local/bin/lifecycle-label-sweep
+ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/lifecycle-label-sweep'
 TimeoutStartSec=10min
 # Never restart: the webhook (or the backstop timer) is the retry. A
 # failed sweep escalates via the global drop-in, not via Restart=.

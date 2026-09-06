@@ -23,7 +23,7 @@ Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=FLEET_MERGED_PR_CLOSE_OK=1
 Environment=MERGED_PR_CLOSE_INTAKE_JSON=/home/nish/workspaces/products/fleet-ops/config/intake-repos.json
 WorkingDirectory=/home/nish
-ExecStart=/home/nish/.local/bin/fleet-merged-pr-close
+ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/fleet-merged-pr-close'
 TimeoutStartSec=10min
 # Never restart: the webhook (or the backstop timer) is the retry.
 Restart=no
