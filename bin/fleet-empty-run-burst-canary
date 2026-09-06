@@ -191,18 +191,36 @@ _canary_in_future() {
 }
 
 # _canary_bench_live np nm — return 0 and print the marker's
-# failure_mode if a spawn-bench marker exists AND its usable_at wall is
-# still in the future (the seat is currently benched). Returns 1
-# otherwise (no marker, or wall expired). The marker is clobber-proof
-# (written ONLY by the wrapper), so a live wall wins over any
-# health_class=healthy the ledger or sidecar reports.
+# failure_mode if a spawn-bench marker gates the seat: usable_at in the
+# future, OR an expired marker that is fresh and still the seat's latest
+# evidence (fleet-ops#3737 — the router's probe-gate hold). Returns 1
+# otherwise (no marker, stale marker, or a newer ledger observation).
+# The marker is clobber-proof (written ONLY by the wrapper), so a live
+# wall wins over any health_class=healthy the ledger or sidecar reports.
 _canary_bench_live() {
     local np="$1" nm="$2" f usable mode
     f="$SEAT_HEALTH_DIR/$(_sanitise "$np")__$(_sanitise "$nm").spawn-bench.json"
     [[ -f "$f" ]] || return 1
     usable=$(jq -r '.usable_at // ""' "$f" 2>/dev/null || true)
-    [[ -n "$usable" ]] || return 1
-    _canary_in_future "$usable" || return 1
+    if [[ -z "$usable" ]] || ! _canary_in_future "$usable"; then
+        # fleet-ops#3737: an expired (or clockless) wrapper bench is still
+        # LIVE while the marker is fresh (written within the router's 24 h
+        # count-merge window) and remains the seat's latest evidence —
+        # seat_usable holds it for the comeback probe, so a ledger/sidecar
+        # saying healthy is the clobbered surface, not the truth.
+        local w ws os lf
+        w=$(jq -r '.written_at // ""' "$f" 2>/dev/null || true)
+        ws=$(date -u -d "$w" +%s 2>/dev/null || echo 0)
+        [[ "$ws" =~ ^[0-9]+$ ]] && (( ws > 0 )) || return 1
+        (( $(date -u +%s) - ws <= 86400 )) || return 1
+        lf="$SEAT_HEALTH_DIR/$(_sanitise "$np")__$(_sanitise "$nm").json"
+        os=0
+        if [[ -f "$lf" ]]; then
+            os=$(date -u -d "$(jq -r '.observed_at // ""' "$lf" 2>/dev/null || true)" +%s 2>/dev/null || echo 0)
+            [[ "$os" =~ ^[0-9]+$ ]] || os=0
+        fi
+        (( os <= ws )) || return 1
+    fi
     mode=$(jq -r '.failure_mode // "unknown"' "$f" 2>/dev/null || echo unknown)
     printf '%s\n' "$mode"
     return 0

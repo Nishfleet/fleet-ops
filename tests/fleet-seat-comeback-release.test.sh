@@ -252,6 +252,40 @@ cat > "$SEATDIR/bai__deepseek-v4-flash.json" << 'EOF'
 {"provider":"bai","model":"deepseek-v4-flash","http_status":200,"retry_after":null,"health_class":"healthy","retryable":false,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T11:00:00Z","source":"after_provider_response","failure_mode":"none","usable_at":null,"consecutive_failure_count":0}
 EOF
 
+# fleet-ops#3737: a "healthy" ledger is not proof of release when the seat
+# carries a fresh wrapper bench marker that is still its latest evidence —
+# seat-health.ts writes healthy on a transport 200 during the very run that
+# exits 0 with 0B stdout, so the bench survives only in the marker. The
+# router holds such a seat for this organ's probe; an expired fresh marker
+# owes a probe before re-admission.
+#
+# 7a. Healthy ledger + FRESH EXPIRED marker, marker is latest evidence
+#     (ledger observed_at == marker written_at — the mid-run 200 clobber).
+#     Probe owed -> released on success / re-benched on failure.
+cat > "$SEATDIR/ollama__deepseek-v4-flash_0731.json" << 'EOF'
+{"provider":"ollama","model":"deepseek-v4-flash:0731","http_status":200,"retry_after":null,"health_class":"healthy","retryable":false,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T11:00:00Z","source":"after_provider_response","failure_mode":"none","usable_at":null,"consecutive_failure_count":0}
+EOF
+cat > "$SEATDIR/ollama__deepseek-v4-flash_0731.spawn-bench.json" << 'EOF'
+{"provider":"ollama","model":"deepseek-v4-flash:0731","usable_at":"2026-08-30T11:15:00Z","reason":"pi-issue:fleet-ops-3737:provider-no-op:stdout=0B","written_at":"2026-08-30T11:00:00Z","backoff_s":900,"failure_mode":"empty_run","consecutive_failure_count":3,"writer":"mark_seat_empty_run"}
+EOF
+# 7b. Healthy ledger + fresh expired marker, but the ledger observation is
+#     NEWER than the marker's written_at — a post-bench success already
+#     proved the seat. Never probed.
+cat > "$SEATDIR/minimax__m3-free.json" << 'EOF'
+{"provider":"minimax","model":"m3-free","http_status":200,"retry_after":null,"health_class":"healthy","retryable":false,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T11:30:00Z","source":"after_provider_response","failure_mode":"none","usable_at":null,"consecutive_failure_count":0}
+EOF
+cat > "$SEATDIR/minimax__m3-free.spawn-bench.json" << 'EOF'
+{"provider":"minimax","model":"m3-free","usable_at":"2026-08-30T10:15:00Z","reason":"pi-issue:provider-no-op:stdout=0B","written_at":"2026-08-30T10:00:00Z","backoff_s":900,"failure_mode":"empty_run","consecutive_failure_count":1,"writer":"mark_seat_empty_run"}
+EOF
+# 7c. Healthy ledger + STALE marker (written >24h ago — archaeology).
+#     Never probed; the marker no longer gates.
+cat > "$SEATDIR/opencode__mimo-v2.5-free.json" << 'EOF'
+{"provider":"opencode","model":"mimo-v2.5-free","http_status":200,"retry_after":null,"health_class":"healthy","retryable":false,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-29T11:00:00Z","source":"after_provider_response","failure_mode":"none","usable_at":null,"consecutive_failure_count":0}
+EOF
+cat > "$SEATDIR/opencode__mimo-v2.5-free.spawn-bench.json" << 'EOF'
+{"provider":"opencode","model":"mimo-v2.5-free","usable_at":"2026-08-29T11:15:00Z","reason":"pi-issue:provider-no-op:stdout=0B","written_at":"2026-08-29T11:00:00Z","backoff_s":900,"failure_mode":"empty_run","consecutive_failure_count":2,"writer":"mark_seat_empty_run"}
+EOF
+
 STATE="$TMPD/state.json"
 PROM="$TMPD/release.prom"
 
@@ -268,6 +302,8 @@ cat > "$TMPD/seat-caps.json" <<'CAPS'
     "cline": {"models": {"z-ai/glm-5.3-flash": 1}},
     "commandcode": {"models": {"poolside/laguna-s-2.1-free": 1}},
     "devin": {"models": {"glm-5-2": 1}},
+    "minimax": {"models": {"m3-free": 1}},
+    "ollama": {"models": {"deepseek-v4-flash:0731": 1}},
     "opencode": {"models": {"hy3-free": 1, "mimo-v-2.5-free": 1, "mimo-v2.5-free": 1, "nemotron-3-ultra-free": 1}},
     "straitly": {"models": {"deepseek/deepseek-v4-pro": 1, "deepseek-v4-pro": 1, "gpt-5.6-sol": 1}},
     "test": {"models": {"test": 1}}
@@ -292,6 +328,15 @@ grep -qi "spawn-bench" <<<"$out" && fail "dry-run: spawn-bench pseudo-seat must 
 grep -qi "would probe devin/glm-5-2" <<<"$out" && fail "dry-run: corpse must never be probed: $out"
 grep -qi "nemotron" <<<"$out" && fail "dry-run: future-wall seat must never be probed: $out"
 grep -qi "bai/deepseek" <<<"$out" && fail "dry-run: healthy seat must never be probed: $out"
+# fleet-ops#3737: a healthy ledger + fresh expired wrapper marker that is
+# still the latest evidence owes a comeback probe (probe-gated
+# re-admission); a newer ledger observation or a stale (>24h) marker does not.
+grep -q "would probe ollama/deepseek-v4-flash:0731" <<<"$out" \
+  || fail "dry-run: expired fresh marker on a healthy ledger must be probed (fleet-ops#3737): $out"
+grep -qi "would probe minimax/m3-free" <<<"$out" \
+  && fail "dry-run: post-bench healthy observation releases the marker — must not be probed: $out"
+grep -qi "would probe opencode/mimo-v2.5-free" <<<"$out" \
+  && fail "dry-run: stale (>24h) marker is archaeology — must not be probed: $out"
 # fleet-ops#2716: the devin corpse (observed 2026-08-29, ~36h old) IS past
 # the 6h corpse grace — dry-run must PREVIEW its retirement but never act.
 grep -q "would retire devin/glm-5-2" <<<"$out" \
@@ -325,11 +370,21 @@ jq -e '.usable_at == null and .bench_until == null and .consecutive_failure_coun
   || fail "overload_bench seat healthy write must clear the wall and count: $(cat "$SEATDIR/commandcode__poolside_laguna-s-2.1-free.json")"
 health=$(jq -r '.health_class' "$SEATDIR/straitly__gpt-5.6-sol.json")
 [[ "$health" == "healthy" ]] || fail "quota_exhausted seat must be unwalled (healthy), got $health"
+# fleet-ops#3737: the marker-held healthy seat (7a) was probed and
+# released — the unwall write refreshes observed_at past the marker's
+# written_at, lifting the router's probe-gate hold. The marker itself is
+# kept: its count stays the durable memory for the chronic-no-op merge.
+obs=$(jq -r '.observed_at' "$SEATDIR/ollama__deepseek-v4-flash_0731.json")
+[[ "$obs" == "$NOW_ISO" ]] \
+  || fail "marker-held seat unwall must refresh observed_at to the sweep now ($NOW_ISO), got $obs"
+mk_count=$(jq -r '.consecutive_failure_count' "$SEATDIR/ollama__deepseek-v4-flash_0731.spawn-bench.json")
+[[ "$mk_count" == "3" ]] \
+  || fail "marker must be kept intact on release (count memory for the chronic merge), got $mk_count"
 # State + prom reflect the release.
 released_total=$(jq -r '.released_total' "$STATE")
-[[ "$released_total" == "2" ]] || fail "released_total must be 2, got $released_total"
-grep -q "^fleet_seat_comeback_release_released_total 2$" "$PROM" \
-  || fail "prom released_total must be 2: $(cat "$PROM")"
+[[ "$released_total" == "3" ]] || fail "released_total must be 3, got $released_total"
+grep -q "^fleet_seat_comeback_release_released_total 3$" "$PROM" \
+  || fail "prom released_total must be 3: $(cat "$PROM")"
 grep -q "^fleet_seat_comeback_release_stalled 0$" "$PROM" \
   || fail "prom stalled must be 0: $(cat "$PROM")"
 grep -qE "^fleet_seat_comeback_release_last_green_seconds [0-9]+$" "$PROM" \
@@ -378,6 +433,16 @@ EOF
 cat > "$SEATDIR/straitly__gpt-5.6-sol.json" << 'EOF'
 {"provider":"straitly","model":"gpt-5.6-sol","http_status":402,"retry_after":null,"health_class":"quota_exhausted","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T09:00:00.000Z","source":"provider_fetch","failure_mode":"quota_exhausted","usable_at":"2026-08-30T09:30:21.000Z","consecutive_failure_count":23}
 EOF
+# fleet-ops#3737: a healthy-ledger seat whose fresh expired wrapper marker
+# is the latest evidence owes a probe; on failure the MARKER is re-benched
+# (the ledger's healthy entry is untouched — the marker is the routing
+# authority the router reads first).
+cat > "$SEATDIR/ollama__deepseek-v4-flash_0731.json" << 'EOF'
+{"provider":"ollama","model":"deepseek-v4-flash:0731","http_status":200,"retry_after":null,"health_class":"healthy","retryable":false,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T11:00:00Z","source":"after_provider_response","failure_mode":"none","usable_at":null,"consecutive_failure_count":0}
+EOF
+cat > "$SEATDIR/ollama__deepseek-v4-flash_0731.spawn-bench.json" << 'EOF'
+{"provider":"ollama","model":"deepseek-v4-flash:0731","usable_at":"2026-08-30T11:15:00Z","reason":"pi-issue:fleet-ops-3737:provider-no-op:stdout=0B","written_at":"2026-08-30T11:00:00Z","backoff_s":900,"failure_mode":"empty_run","consecutive_failure_count":3,"writer":"mark_seat_empty_run"}
+EOF
 STATE="$TMPD/state-fail.json"
 PROM="$TMPD/release-fail.prom"
 set +e
@@ -407,6 +472,22 @@ jq -e '.source == "comeback_release_rebench" and .failure_mode == "overload_503"
 jq -e '.source == "comeback_release_rebench" and .consecutive_failure_count == 24' \
   "$SEATDIR/straitly__gpt-5.6-sol.json" >/dev/null \
   || fail "re-bench: quota seat count must increment: $(cat "$SEATDIR/straitly__gpt-5.6-sol.json")"
+# fleet-ops#3737: the marker-held healthy seat was probed, failed, and its
+# MARKER re-benched — usable_at advanced to the future, written_at
+# refreshed to the sweep now, count incremented, mode preserved. The
+# healthy ledger entry is left as-is (the marker is the routing authority).
+grep -q "re-benched wrapper marker ollama/deepseek-v4-flash:0731" "$TMPD/live-fail.err" \
+  || fail "marker re-bench: must log re-benched for the marker-held seat: $(cat "$TMPD/live-fail.err")"
+jq -e '.failure_mode == "empty_run" and .consecutive_failure_count == 4 and .writer == "comeback_release_rebench"' \
+  "$SEATDIR/ollama__deepseek-v4-flash_0731.spawn-bench.json" >/dev/null \
+  || fail "marker re-bench: count must increment, mode preserved, writer tagged: $(cat "$SEATDIR/ollama__deepseek-v4-flash_0731.spawn-bench.json")"
+mk_usable=$(jq -r '.usable_at' "$SEATDIR/ollama__deepseek-v4-flash_0731.spawn-bench.json")
+mk_usable_epoch=$(date -u -d "$mk_usable" +%s 2>/dev/null || echo 0)
+(( mk_usable_epoch > NOW_EPOCH )) \
+  || fail "marker re-bench: usable_at must be in the future, got $mk_usable"
+mk_written=$(jq -r '.written_at' "$SEATDIR/ollama__deepseek-v4-flash_0731.spawn-bench.json")
+[[ "$mk_written" == "$NOW_ISO" ]] \
+  || fail "marker re-bench: written_at must refresh to the sweep now, got $mk_written"
 # Prom reflects the re-bench (not a stall): stalled=0, walled_expired=0,
 # probed_total advanced, last-green written.
 grep -q "^fleet_seat_comeback_release_stalled 0$" "$PROM" \
@@ -415,8 +496,8 @@ grep -qE "^fleet_seat_comeback_release_walled_expired 0$" "$PROM" \
   || fail "re-bench: prom walled_expired must be 0 (walls advanced): $(cat "$PROM")"
 grep -qE "^fleet_seat_comeback_release_last_green_seconds [0-9]+$" "$PROM" \
   || fail "re-bench: prom last-green must be written (the release path is operating): $(cat "$PROM")"
-grep -q "^fleet_seat_comeback_release_probed_total 2$" "$PROM" \
-  || fail "re-bench: prom probed_total must be 2: $(cat "$PROM")"
+grep -q "^fleet_seat_comeback_release_probed_total 3$" "$PROM" \
+  || fail "re-bench: prom probed_total must be 3: $(cat "$PROM")"
 ok "re-bench: probe failure advances the wall to now+REBENCH_BACKOFF_S; no loud stall, next tick skips"
 
 # --- 3b. re-bench: subsequent tick with future wall skips the seat -------

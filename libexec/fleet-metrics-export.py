@@ -3277,10 +3277,32 @@ def _spawn_bench_held_for(provider, model) -> bool:
     return _spawn_bench_marker_held(_seat_spawn_bench_path(provider, model))
 
 
+# fleet-ops#3737: freshness window for an expired spawn-bench marker that
+# still gates the seat. Matches EMPTY_RUN_COUNT_WINDOW_S / SEAT_PARK_WALL_S
+# in lib/seat-lib.sh and SPAWN_BENCH_FRESH_S in bin/fleet-seat-comeback-
+# release (24 h). Older than this the marker is archaeology and fail-open.
+SPAWN_BENCH_FRESH_S = 86400
+
+
 def _spawn_bench_marker_held(spawn_bench: Path) -> bool:
-    """True if the spawn-bench marker file exists and its usable_at is in
-    the future. Never raises; a missing/unreadable/past-due marker is
-    False (the bench expired -> fail-open)."""
+    """True if the spawn-bench marker currently gates this seat's
+    re-admission. Never raises; missing/unreadable data is False
+    (fail-open).
+
+    fleet-ops#3737: seat_usable holds the bench in TWO cases —
+      (a) usable_at strictly in the future (the active bench), or
+      (b) usable_at expired/absent BUT the marker is FRESH (written within
+          SPAWN_BENCH_FRESH_S) and still the seat's latest evidence: no
+          sibling-ledger observed_at newer than written_at. A later ledger
+          observation is post-bench evidence — a run that produced output
+          writes healthy with no following marker — so case (b) releases
+          on it; otherwise the comeback organ probes the seat before
+          re-admission and the census must agree the seat is not healthy
+          while it is probe-gated. Without case (b) a clobbered-healthy
+          ledger reports an unprobed dead-weight seat as available
+          (the ollama/deepseek-v4-flash:0731 empty-run churn this issue
+          names).
+    """
     if not spawn_bench.is_file():
         return False
     try:
@@ -3289,21 +3311,37 @@ def _spawn_bench_marker_held(spawn_bench: Path) -> bool:
         return False
     if not isinstance(marker, dict):
         return False
+    now = int(time.time())
+    # Parse ISO timestamps as UTC (the seat ledger is always UTC-Z).
+    # time.mktime is local-timezone-dependent and would give a wrong epoch
+    # on a non-UTC host (the live VPS runs IST, +5:30; a future-Z timestamp
+    # would parse to a past-local epoch). _parse_iso_utc uses
+    # calendar.timegm so the parsed tuple is treated as UTC.
     usable_at = marker.get("usable_at")
-    if not isinstance(usable_at, str) or not usable_at:
+    usable_epoch = (
+        _parse_iso_utc(usable_at) if isinstance(usable_at, str) else None
+    )
+    if usable_epoch is not None and usable_epoch > now:
+        return True
+    # Case (b): expired or clockless bench — held only while the marker is
+    # fresh and remains the seat's latest evidence.
+    written_at = marker.get("written_at")
+    written_epoch = (
+        _parse_iso_utc(written_at) if isinstance(written_at, str) else None
+    )
+    if written_epoch is None or now - written_epoch > SPAWN_BENCH_FRESH_S:
         return False
+    ledger = spawn_bench.with_name(
+        spawn_bench.name[: -len(".spawn-bench.json")] + ".json"
+    )
+    obs_epoch = None
     try:
-        # Parse the ISO timestamp as UTC (the seat ledger is always
-        # UTC-Z). time.mktime is local-timezone-dependent and would
-        # give a wrong epoch on a non-UTC host (the live VPS runs
-        # IST, +5:30; a future-Z timestamp would parse to a
-        # past-local epoch and the helper would incorrectly return
-        # False). Use calendar.timegm to treat the parsed tuple as
-        # UTC, then compare to the UTC wall clock.
-        usable_epoch = calendar.timegm(time.strptime(usable_at.replace("Z", "")[:19], "%Y-%m-%dT%H:%M:%S"))
-    except ValueError:
-        return False
-    return usable_epoch > int(time.time())
+        led = json.loads(ledger.read_text())
+        obs = led.get("observed_at") if isinstance(led, dict) else None
+        obs_epoch = _parse_iso_utc(obs) if isinstance(obs, str) else None
+    except (OSError, json.JSONDecodeError):
+        obs_epoch = None
+    return obs_epoch is None or obs_epoch <= written_epoch
 
 
 def _healthy_enrolled_seat_count():

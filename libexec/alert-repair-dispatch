@@ -365,9 +365,13 @@ def _spawn_bench_held(provider, model):
     provider no-op) at 15:22:13Z on 2026-09-01 (fleet-ops#2672): the seat
     returned nothing, and the chain stayed stuck at hop=verify. Mirrors
     lib/seat-lib.sh seat_usable() (checks the marker FIRST, before the
-    ledger) and libexec/fleet-metrics-export.py _spawn_bench_active(). An
-    expired marker falls through to the ledger (fail-open), matching the
-    router's release at usable_at.
+    ledger) and libexec/fleet-metrics-export.py _spawn_bench_marker_held().
+
+    fleet-ops#3737: an expired marker no longer fails open while it is still
+    the seat's latest evidence — the router holds a FRESH expired marker
+    (written within the 24 h count-merge window, no newer ledger
+    observed_at) until the comeback organ probes the seat. Mirror the same
+    rule here so repair hops do not route onto a probe-gated seat.
     """
     f = (Path(SEAT_LEDGER_DIR)
          / f"{_sanitise(provider)}__{_sanitise(model)}.spawn-bench.json")
@@ -375,7 +379,23 @@ def _spawn_bench_held(provider, model):
         d = json.loads(f.read_text())
     except (OSError, json.JSONDecodeError):
         return False
-    return _in_future(d.get("usable_at") or "")
+    if _in_future(d.get("usable_at") or ""):
+        return True
+    written = d.get("written_at") or ""
+    try:
+        w = calendar.timegm(time.strptime(written[:19], "%Y-%m-%dT%H:%M:%S"))
+    except (ValueError, TypeError):
+        return False
+    if time.time() - w > 86400:
+        return False
+    lf = (Path(SEAT_LEDGER_DIR)
+          / f"{_sanitise(provider)}__{_sanitise(model)}.json")
+    try:
+        obs = json.loads(lf.read_text()).get("observed_at") or ""
+        o = calendar.timegm(time.strptime(obs[:19], "%Y-%m-%dT%H:%M:%S"))
+    except (OSError, json.JSONDecodeError, ValueError, TypeError):
+        return True
+    return o <= w
 
 
 def _seat_walled(provider, model):

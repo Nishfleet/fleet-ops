@@ -24,7 +24,10 @@
 #   (1) mark_seat_spawn_fail writes the spawn-bench marker.
 #   (2) After a healthy ledger clobber, seat_usable STILL returns unusable
 #       (marker held over the stale healthy ledger entry).
-#   (3) After the marker's usable_at expires, seat_usable fail-opens.
+#   (3) After the marker's usable_at expires, seat_usable keeps a FRESH
+#       marker held while it is the seat's latest evidence (probe-gated
+#       re-admission, fleet-ops#3737); post-bench evidence or marker age
+#       >24h releases it.
 #   (4) mark_seat_empty_run writes the marker too (same clobber survival).
 #   (5) A seat with NO marker and a healthy ledger is usable (no false block).
 #
@@ -144,14 +147,50 @@ if seat_usable "$p" "$m"; then
 fi
 ok "REGRESSION FIXED: seat_usable held unusable after healthy ledger clobber (marker honoured)"
 
-# --- (3) marker expiry fail-opens ------------------------------------------
+# --- (3) expired marker is probe-gated while it is the latest evidence ---
+# fleet-ops#3737: an expired wrapper bench no longer fails open — while the
+# marker is fresh (< EMPTY_RUN_COUNT_WINDOW_S) and still the seat's latest
+# evidence, seat_usable holds it for the comeback organ's tool-using probe,
+# so a dead-weight seat never costs a work item a turn. The ledger's
+# clobbered-healthy write here has observed_at == the marker's write
+# instant (the mid-run 200 the extension logged during the empty run), so
+# the marker remains the latest evidence.
 past_iso=$(date -u -d '@0' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "1970-01-01T00:00:00Z")
 tmp=$(mktemp)
 jq --arg u "$past_iso" '.usable_at = $u' "$mf" >"$tmp" 2>/dev/null && mv "$tmp" "$mf"
-if ! seat_usable "$p" "$m"; then
-    fail "seat_usable returned unusable after marker expired — fail-open broken (recovered seat walled)"
+marker_written=$(jq -r '.written_at // ""' "$mf")
+[[ -n "$marker_written" ]] || fail "spawn-bench marker has no written_at"
+tmp=$(mktemp)
+jq --arg o "$marker_written" '.observed_at = $o' "$lf" >"$tmp" 2>/dev/null && mv "$tmp" "$lf"
+if seat_usable "$p" "$m"; then
+    fail "seat_usable fail-opened an expired fresh marker that is the latest evidence — probe-gate broken (fleet-ops#3737)"
 fi
-ok "expired marker fail-opens — recovered seat re-eligible"
+ok "expired fresh marker held as latest evidence — probe-gated re-admission (fleet-ops#3737)"
+
+# --- (3b) post-bench evidence releases ------------------------------------
+# A ledger observation NEWER than the marker's written_at means a real run
+# produced output after the bench was written — recovery evidence, so the
+# ledger decides again (healthy -> usable).
+tmp=$(mktemp)
+later_iso=$(date -u -d "@$(( $(date -u -d "$marker_written" +%s) + 120 ))" +%Y-%m-%dT%H:%M:%SZ)
+jq --arg o "$later_iso" '.observed_at = $o' "$lf" >"$tmp" 2>/dev/null && mv "$tmp" "$lf"
+if ! seat_usable "$p" "$m"; then
+    fail "seat_usable held a seat with post-bench healthy evidence — recovery release broken"
+fi
+ok "post-bench healthy observation releases the expired marker — recovered seat re-eligible"
+
+# --- (3c) archaeology escape: a stale marker fail-opens -------------------
+# A marker older than the count window is archaeology — fail-open so a
+# stalled comeback organ cannot strand the seat forever.
+tmp=$(mktemp)
+old_iso=$(date -u -d "@$(( $(date -u +%s) - 90000 ))" +%Y-%m-%dT%H:%M:%SZ)
+jq --arg w "$old_iso" '.written_at = $w' "$mf" >"$tmp" 2>/dev/null && mv "$tmp" "$mf"
+tmp=$(mktemp)
+jq --arg o "$old_iso" '.observed_at = $o' "$lf" >"$tmp" 2>/dev/null && mv "$tmp" "$lf"
+if ! seat_usable "$p" "$m"; then
+    fail "seat_usable held a stale (>24h) marker — dead-organ escape hatch broken"
+fi
+ok "stale marker (>24h) fail-opens — dead-organ escape hatch intact"
 
 # --- (4) mark_seat_empty_run writes the marker + survives clobber ----------
 rm -f "$lf" "$mf"

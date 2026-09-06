@@ -1972,15 +1972,55 @@ seat_usable() {
     # (mark_seat_spawn_fail / mark_seat_empty_run) and never by seat-health.ts,
     # so the bench survives the clobber. Checked FIRST, before the ledger is
     # even read: a fresh marker wins regardless of what the ledger says (or
-    # whether the ledger file exists at all). An expired marker falls through
-    # to the ledger (fail-open, same as the ledger's own bench_until expiry).
-    local sb_path sb_usable
+    # whether the ledger file exists at all).
+    local sb_path sb_usable sb_written sb_written_s sb_lf sb_obs sb_obs_s
     sb_path=$(seat_spawn_bench_path "$p" "$m")
     if [[ -f "$sb_path" ]]; then
         sb_usable=$(jq -r '.usable_at // ""' "$sb_path" 2>/dev/null || true)
         if [[ -n "$sb_usable" ]] && _seat_in_future "$sb_usable"; then
             seat_log "seat $p/$m: UNUSABLE (spawn-bench until $sb_usable — wrapper bench held)"
             return 1
+        fi
+        # fleet-ops#3737: an expired (or clockless) wrapper bench must NOT
+        # silently fail-open while the marker is still the latest evidence
+        # for the seat. seat-health.ts records a transport 200 as healthy
+        # during the very run that then exits 0 with 0-byte stdout —
+        # pi's after_provider_response event carries status+headers only,
+        # never the body, so an empty completion is indistinguishable from
+        # a healthy response — and that healthy write clobbers the ledger's
+        # copy of the bench. Before this change an expired marker fell
+        # through to the clobbered ledger and the next work item became the
+        # de-facto probe (live: ollama/deepseek-v4-flash:0731, 12 empty
+        # runs in 2h — every bench expiry re-admitted a still-dead seat).
+        #
+        # Hold while ALL of these are true:
+        #   - the marker is FRESH: written within EMPTY_RUN_COUNT_WINDOW_S
+        #     (the same 24 h window the count-merge uses). Older than that
+        #     is archaeology — fail-open so a stalled comeback organ cannot
+        #     strand the seat forever;
+        #   - the ledger carries NO observation newer than the marker's
+        #     written_at. A newer entry is post-bench evidence: a run that
+        #     produced output writes healthy with no following marker, so
+        #     observed_at > written_at means a real run already paid the
+        #     discovery cost — fall through and let the ledger decide.
+        # The hold is released by fleet-seat-comeback-release: its
+        # tool-using probe writes a fresh healthy observation on success
+        # (observed_at > written_at lifts this check) and re-benches the
+        # marker on failure. Re-admission is probe-gated, not clock-gated,
+        # so a dead-weight seat never costs a work item a turn.
+        sb_written=$(jq -r '.written_at // ""' "$sb_path" 2>/dev/null || true)
+        sb_written_s=$(date -u -d "$sb_written" +%s 2>/dev/null || echo 0)
+        if [[ "$sb_written_s" =~ ^[0-9]+$ ]] && (( sb_written_s > 0 )) \
+            && (( $(_seat_now_epoch) - sb_written_s <= ${EMPTY_RUN_COUNT_WINDOW_S:-86400} )); then
+            sb_lf=$(seat_ledger_path "$p" "$m")
+            sb_obs=""
+            [[ -f "$sb_lf" ]] && sb_obs=$(jq -r '.observed_at // ""' "$sb_lf" 2>/dev/null || true)
+            sb_obs_s=$(date -u -d "$sb_obs" +%s 2>/dev/null || echo 0)
+            [[ "$sb_obs_s" =~ ^[0-9]+$ ]] || sb_obs_s=0
+            if (( sb_obs_s <= sb_written_s )); then
+                (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE (wrapper bench ${sb_usable:-none} expired, marker is latest evidence — held for comeback-release probe, fleet-ops#3737)"
+                return 1
+            fi
         fi
     fi
     f=$(seat_ledger_path "$p" "$m")

@@ -17,7 +17,9 @@
 # at the failure ceiling (SEAT_FAILURE_CEILING consecutive failures -> 24 h
 # wall). Remote agents (e.g. devin) are capped at 1800 s instead. The count is
 # still tracked and reset to 0 by seat-health.ts on a healthy in-session
-# observation, and seat_usable fail-opens after usable_at regardless of count.
+# observation, and seat_usable releases the bench after usable_at —
+# probe-gated while the fresh marker is still the latest evidence
+# (fleet-ops#3737), then fail-open.
 #
 # This test proves:
 #   (1) repeated spawn-fail benches escalate (300 -> 600 -> 1200s, capped).
@@ -201,10 +203,13 @@ edc=$((euc - prev_epoch))
 ok "empty-run backoff after 8 no-ops still ~${edc}s (park wall holds, capped — fleet-ops#2343/#3046)"
 
 # --- (4) a non-empty completion is NOT punished: seat_usable after bench ---
-# A benched seat is unusable only until usable_at; after it expires the seat
-# is usable again (fail-open). This is the work-complete vs seat-fault split:
-# a no-op seat is benched (seat-fault), a real completion is not (the bench
-# only ever fires on a failure). Verify seat_usable fail-opens post-bench.
+# This is the work-complete vs seat-fault split: a no-op seat is benched
+# (seat-fault), a real completion is not (the bench only ever fires on a
+# failure). fleet-ops#3737: bench EXPIRY alone no longer re-admits the seat
+# — while the fresh marker is still the latest evidence (no post-bench
+# observation) the seat is held for the comeback organ's probe so a
+# dead-weight seat never costs a work item a turn. Recovery evidence — a
+# ledger observation newer than the marker's written_at — releases it.
 rm -f "$lf" "$mf"
 mark_seat_spawn_fail "$p" "$m" "test:failopen" >/dev/null 2>&1 || true
 if seat_usable "$p" "$m"; then
@@ -223,10 +228,29 @@ if [[ -f "$sb_marker" ]]; then
     tmp=$(mktemp)
     jq --arg u "$past_iso" '.usable_at = $u' "$sb_marker" >"$tmp" 2>/dev/null && mv "$tmp" "$sb_marker"
 fi
-if ! seat_usable "$p" "$m"; then
-    fail "seat_usable returned unusable after bench expired — fail-open is broken (recovered seat walled)"
+# The marker's written_at is still the latest evidence (the ledger's
+# observation is the bench write itself) — the seat stays HELD for the
+# comeback probe, not silently re-admitted (fleet-ops#3737).
+if seat_usable "$p" "$m"; then
+    fail "seat_usable fail-opened an expired fresh marker that is the latest evidence — probe-gate broken (fleet-ops#3737)"
 fi
-ok "expired bench fail-opens — a recovered seat is re-eligible (work-complete not punished)"
+ok "expired bench marker stays held while latest evidence — comeback probe gates re-admission (fleet-ops#3737)"
+# Post-bench evidence releases: a ledger observation newer than the marker's
+# written_at is a real run that produced output after the bench — the
+# ledger decides again (healthy -> usable). Simulate the comeback probe's
+# unwall write / a real successful run. Pin observed_at past the marker's
+# written_at (second granularity) so the ordering is deterministic.
+sb_written=$(jq -r '.written_at // ""' "$sb_marker")
+[[ -n "$sb_written" ]] || fail "marker has no written_at"
+now_obs=$(date -u -d "@$(( $(date -u -d "$sb_written" +%s) + 120 ))" +%Y-%m-%dT%H:%M:%SZ)
+tmp=$(mktemp)
+jq --arg o "$now_obs" \
+  '.health_class="healthy" | .failure_mode="none" | .usable_at=null | .consecutive_failure_count=0 | .observed_at=$o | .http_status=200 | .source="after_provider_response"' \
+  "$lf" >"$tmp" 2>/dev/null && mv "$tmp" "$lf"
+if ! seat_usable "$p" "$m"; then
+    fail "seat_usable held a seat with post-bench healthy evidence — recovery release broken (recovered seat walled)"
+fi
+ok "post-bench healthy observation releases the probe-gated bench — recovered seat re-eligible (work-complete not punished)"
 
 # --- (5) remote_agent prepaid-quota seat: empty-run bench caps at 1800 s ---
 # fleet-ops#3531: devin runs outside the local harness, so a FALSE empty run
