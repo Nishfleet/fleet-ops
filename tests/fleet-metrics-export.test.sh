@@ -556,6 +556,18 @@ ok "MANIFEST declares exporter + units + self-maintenance config + rules"
 # =========================================================================
 # 9b. fleet-ops#3111: seat-health age is UTC-parsed, host-TZ independent.
 # =========================================================================
+# Regression gate (fleet-ops#3564): the exporter must never parse a UTC
+# timestamp with time.mktime. On the +05:30 live host that local-time parse
+# read every fresh observation exactly 19800s stale and re-armed
+# FleetPiSeatHealthStale each tick after #3520 fixed only the console. A
+# single `time.mktime(time.strptime(` reintroduction must fail CI loudly
+# rather than silently re-arming the alert. Mirror of
+# tests/fleet-console-pi-utc.test.sh.
+! grep -q 'time.mktime(time.strptime(' "$exporter" \
+  || fail "fleet-metrics-export.py must not parse UTC timestamps with time.mktime (local-time bug class #3520/#3562); use calendar.timegm"
+grep -q 'calendar.timegm(time.strptime(' "$exporter" \
+  || fail "fleet-metrics-export.py must parse UTC timestamps with calendar.timegm"
+ok "fleet-ops#3564: exporter contains no time.mktime-on-strptime local-time parse"
 # The 2026-09-03 transport incident left the console 'seat healthy' tile green
 # on a 2-day-old pi-seat-health.json. The fix: exporter emits
 # fleet_pi_seat_health_age_seconds (absent/unparseable -> -1) and the
@@ -619,6 +631,48 @@ assert "fleet_pi_seat_health_age_seconds == -1 or fleet_pi_seat_health_age_secon
     "fleet_rules.yml FleetPiSeatHealthStale must fire on age == -1 or > 1800"
 os.unlink(seat_path)
 print("OK: _read_seat parses observed_at as UTC (host-TZ independent); stale/absent -> UNKNOWN; >1800 rule present")
+PY
+
+# =========================================================================
+# 9c. fleet-ops#3564: cap-stale reason-date age is TZ-independent too.
+# =========================================================================
+# #3520/#3562 converted every observed_at parse to calendar.timegm. The last
+# remaining local-time parse in the exporter was the cap=0 stale reason date
+# (_age_from_reason): on the +05:30 host time.mktime read a dated reason ~19800s
+# older than it is on a UTC host, the same 19800s IST offset this issue names.
+# Pin: the cap0-stale age must be identical under Asia/Kolkata and UTC.
+CAPS_3564="$scratch/caps-3564.json"
+python3 - "$exporter" "$CAPS_3564" <<'PY' || fail "cap-stale reason-date age is TZ-dependent (fleet-ops#3564)"
+import importlib.util, json, os, sys, time
+from pathlib import Path
+# Generate the fixture in Python so the nested seat-caps structure is exact.
+Path(sys.argv[2]).write_text(json.dumps({"providers": {"groq": {
+    "cap": 0, "intentional_cap_zero": "stale",
+    "reason": "2026-09-01 re-audition: endpoint 404",
+    "models": {"groq-x": {
+        "cap": 0, "intentional_cap_zero": "stale",
+        "reason": "2026-09-01 re-audition: not probed"}}}}}), encoding="utf-8")
+spec = importlib.util.spec_from_file_location("fme", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+caps = Path(sys.argv[2])
+m.SEAT_CAPS_DEFAULT = caps
+m.SEAT_CAPS_FALLBACK = Path("/nonexistent/caps.json")
+
+def stale_age():
+    n, seats = m._read_cap0_stale()
+    assert n == 2 and len(seats) == 2, (n, seats)
+    return [s["age_seconds"] for s in seats]
+
+os.environ["TZ"] = "Asia/Kolkata"; time.tzset()
+ist_ages = stale_age()
+os.environ["TZ"] = "UTC"; time.tzset()
+utc_ages = stale_age()
+# time.mktime under +05:30 read the date ~19800s older than UTC; timegm is
+# flat. Ages may differ by at most 1s (the int(time.time()) clock between the
+# two calls), never 19800.
+for a, b in zip(ist_ages, utc_ages):
+    assert abs(a - b) <= 1, f"cap0 stale age is TZ-dependent: IST {a}s vs UTC {b}s (time.mktime offset ~19800s)"
+print(f"OK: cap0 stale reason-date age TZ-independent (IST={ist_ages[0]}s UTC={utc_ages[0]}s)")
 PY
 
 # =========================================================================

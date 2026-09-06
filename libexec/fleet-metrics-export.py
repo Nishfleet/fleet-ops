@@ -3132,7 +3132,12 @@ def _read_cap0_stale():
         if not m:
             return -1
         try:
-            ds = int(time.mktime(time.strptime(
+            # fleet-ops#3564: reason dates are bare calendar dates on a UTC
+            # ledger. time.mktime applies the process local timezone, so on a
+            # +05:30 host this read every dated reason ~19800s more stale than
+            # a UTC host (the same local-time-offset bug class #3520/#3562
+            # fixed for observed_at). timegm keeps the age host-TZ independent.
+            ds = int(calendar.timegm(time.strptime(
                 f"{m.group(1)}-{m.group(2)}-{m.group(3)}", "%Y-%m-%d")))
             return now - ds
         except ValueError:
