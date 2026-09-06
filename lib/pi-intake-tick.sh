@@ -1355,6 +1355,12 @@ blocked-on: nish-decision" 2>/dev/null || true
     # seconds between systemctl start --no-block calls. 0 disables. The value
     # is loaded from seat-caps.json spawn_stagger_s by load_seat_caps (called
     # during the capacity step above); default 0 if the caps file is absent.
+    # fleet-ops#3784 fix: pick_seat/total_seat_cap above run in command-
+    # substitution subshells, so load_seat_caps's globals (incl. this var)
+    # never reach the parent shell — load explicitly here before the read,
+    # otherwise set -u crashes the tick after the spawn and systemd restart-
+    # loops, burst-spawning workers without the stagger (SustainedLoadHigh).
+    (( _seat_caps_loaded )) || load_seat_caps || true
     if (( SEAT_SPAWN_STAGGER_S > 0 )); then
         sleep "$SEAT_SPAWN_STAGGER_S"
     fi
