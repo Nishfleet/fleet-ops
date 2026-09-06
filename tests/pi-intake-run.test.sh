@@ -164,3 +164,12 @@ bash "$here/worker-packet-size.test.sh"
 # self-limiting-budget split. ci.yml lists this file, so the drill runs
 # here instead of a new workflow line.
 bash "$here/pi-intake-tick-self-maint-cap.test.sh"
+
+# --- 16. fleet-ops#3784 cohort-spawn stagger (CI hook) ------------------
+# tests/pi-intake-tick-spawn-stagger.test.sh locks the spawn_stagger_s
+# config value (seat-caps.json) + the tick's sleep between systemctl
+# start --no-block calls so clone/npm/pi startup peaks do not overlap
+# (oomd slice-pressure kills at tick time). ci.yml lists this file, so
+# the drill runs here instead of a new workflow line (workers cannot edit
+# .github/workflows/ci.yml).
+bash "$here/pi-intake-tick-spawn-stagger.test.sh"

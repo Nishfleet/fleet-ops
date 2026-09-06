@@ -400,6 +400,7 @@ load_seat_caps() {
     SEAT_RAM_GB_PER_WORKER=1.5
     SEAT_ORG_RESERVE=2
     SEAT_TARGET_CONCURRENT=25
+    SEAT_SPAWN_STAGGER_S=0
 
     [[ -f "$SEAT_CAPS_JSON" ]] || { seat_log "seat-caps: NO CAPS FILE at $SEAT_CAPS_JSON — falling back to no-cap behaviour"; return 1; }
     if ! jq -e . "$SEAT_CAPS_JSON" >/dev/null 2>&1; then
@@ -407,13 +408,17 @@ load_seat_caps() {
         return 1
     fi
 
-    local ram ores tgt
+    local ram ores tgt stagger
     ram=$(jq -r '.ram_gb_per_worker // 1.5' "$SEAT_CAPS_JSON")
     [[ "$ram" =~ ^[0-9]+(\.[0-9]+)?$ ]] && SEAT_RAM_GB_PER_WORKER="$ram"
     ores=$(jq -r '.org_reserve // 2' "$SEAT_CAPS_JSON")
     [[ "$ores" =~ ^[0-9]+$ ]] && SEAT_ORG_RESERVE="$ores"
     tgt=$(jq -r '.target_concurrent // 25' "$SEAT_CAPS_JSON")
     [[ "$tgt" =~ ^[0-9]+$ ]] && SEAT_TARGET_CONCURRENT="$tgt"
+    # fleet-ops#3784: seconds to sleep between cohort spawns so clone/npm/pi
+    # startup peaks do not overlap (oomd slice-pressure kills). 0 disables.
+    stagger=$(jq -r '.spawn_stagger_s // 0' "$SEAT_CAPS_JSON")
+    [[ "$stagger" =~ ^[0-9]+$ ]] && SEAT_SPAWN_STAGGER_S="$stagger"
 
     # fleet-ops#602: the read loops below must use LOCAL variables. bash's
     # `local` is DYNAMIC scoping, so a bare `p`/`m` here would write into the
