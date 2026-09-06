@@ -729,6 +729,20 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/seat-empty-run-intermittent-coun
   || fail "seat-empty-run-intermittent-count.test.sh must not be a known orphan (fleet-ops#2934)"
 ok "seat-empty-run-intermittent-count.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#2934)"
 
+# fleet-ops#3666 (PR #3769 follow-up): hard-pin the host line for
+# seat-empty-run-park-persists in ci-standards-audit so a future refactor
+# that drops it is caught by name. Same class-prevention as the drift test
+# above: parking it on known_orphans to silence the generic message must
+# also fail by name below.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/seat-empty-run-park-persists\.test\.sh"?' \
+  "$here/ci-standards-audit.test.sh" \
+  || fail "ci-standards-audit.test.sh must bash-invoke seat-empty-run-park-persists.test.sh (fleet-ops#3666)"
+[[ -n "${reachable[seat-empty-run-park-persists.test.sh]:-}" ]] \
+  || fail "seat-empty-run-park-persists.test.sh must be hosted by a listed test (fleet-ops#3666)"
+[[ -z "${known_orphan_set[seat-empty-run-park-persists.test.sh]:-}" ]] \
+  || fail "seat-empty-run-park-persists.test.sh must not be a known orphan (fleet-ops#3666)"
+ok "seat-empty-run-park-persists.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#3666)"
+
 # fleet-ops#3295 (PR #3352 follow-up): hard-pin the host line for
 # pi-intake-tick-umbrella-exclusion in pi-intake-run (already listed in
 # ci.yml) so a future refactor that drops it is caught by name. PR #3352

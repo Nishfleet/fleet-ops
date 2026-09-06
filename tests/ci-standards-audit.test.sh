@@ -565,6 +565,17 @@ bash "$here/fleet-ops-drift-metrics-dropin.test.sh"
 # Hermetic (scratch ledger/state, no gh/prometheus/systemd).
 bash "$here/seat-empty-run-intermittent-count.test.sh"
 
+# fleet-ops#3666 (PR #3769 follow-up): the failure-ceiling park (24 h)
+# persistence test landed on the claim branch without a ci.yml listing or
+# a host, so P14 ran red on "1 test file(s) are neither in ci.yml, hosted
+# by a listed test, live/destructive, nor a known orphan:
+# seat-empty-run-park-persists.test.sh". Hosted here so P14 runs it
+# without a workflow-file edit (the worker App cannot push
+# .github/workflows/**). The named pin in tests/p14-test-listing-gate.test.sh
+# is the class-prevention so a future drop of this host line fails by name.
+# Hermetic (scratch ledger/state, no gh/prometheus/systemd).
+bash "$here/seat-empty-run-park-persists.test.sh"
+
 # fleet-ops#1520: curator journal-cap lock. The live dump (~40KB of
 # dispositioned trust_denials.entries every 5 min) was fixed in
 # memory-compound#9; this test is the fleet-ops class lock so a revert
