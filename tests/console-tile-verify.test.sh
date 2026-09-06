@@ -331,8 +331,66 @@ marker.write_text(json.dumps({
 tile = g.collect_running_pi()
 assert tile["health_class"] == "healthy", tile
 print("OK: expired spawn-bench leaves the healthy reading alone")
+
+# fleet-ops#3795: an EXPIRED-but-FRESH marker still gates the seat
+# (the #3737 probe-gate hold). seat_usable refuses to route agentic work
+# to a seat whose marker is fresh and still the latest evidence, even
+# after usable_at passes — the comeback organ probes before re-admission.
+# The tile must agree: a clobbered-healthy sidecar with NO ledger
+# observation newer than the marker's written_at must render spawn_bench,
+# not healthy, or the census says "seat healthy" while the router holds
+# the seat and the empty-run churn the issue names continues unseen.
+written = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - 1200)) + "Z"
+usable_expired = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - 300)) + "Z"
+obs_older = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - 1500)) + ".000Z"
+g.SEAT_HEALTH.write_text(json.dumps({
+    "provider": "ollama", "model": "deepseek-v4-flash:0731",
+    "http_status": 200, "health_class": "healthy",
+    "observed_at": obs_older,
+}), encoding="utf-8")
+(g.SEAT_LEDGER / "ollama__deepseek-v4-flash_0731.json").write_text(json.dumps({
+    "provider": "ollama", "model": "deepseek-v4-flash:0731",
+    "http_status": 200, "health_class": "healthy",
+    "observed_at": obs_older, "consecutive_failure_count": 0,
+}), encoding="utf-8")
+marker.write_text(json.dumps({
+    "provider": "ollama", "model": "deepseek-v4-flash:0731",
+    "usable_at": usable_expired, "written_at": written,
+    "failure_mode": "empty_run", "consecutive_failure_count": 4,
+}), encoding="utf-8")
+tile = g.collect_running_pi()
+assert tile["health_class"] == "spawn_bench", (
+    f"expired-but-fresh marker with no newer ledger obs must render "
+    f"spawn_bench (probe-gate hold), got {tile.get('health_class')}: {tile}")
+print("OK: expired-but-fresh spawn-bench renders spawn_bench, not healthy (fleet-ops#3795)")
+
+# A ledger observation NEWER than the marker's written_at is post-bench
+# evidence (a run that produced output) -> case (b) releases, healthy stands.
+obs_newer = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - 60)) + ".000Z"
+(g.SEAT_LEDGER / "ollama__deepseek-v4-flash_0731.json").write_text(json.dumps({
+    "provider": "ollama", "model": "deepseek-v4-flash:0731",
+    "http_status": 200, "health_class": "healthy",
+    "observed_at": obs_newer, "consecutive_failure_count": 0,
+}), encoding="utf-8")
+tile = g.collect_running_pi()
+assert tile["health_class"] == "healthy", (
+    f"newer ledger obs must release the expired-but-fresh hold, "
+    f"got {tile.get('health_class')}: {tile}")
+print("OK: newer ledger observation releases the expired-but-fresh hold (fleet-ops#3795)")
+
+# A stale marker (written > 24h ago) is archaeology -> fail-open.
+stale_written = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - 100000)) + "Z"
+marker.write_text(json.dumps({
+    "provider": "ollama", "model": "deepseek-v4-flash:0731",
+    "usable_at": usable_expired, "written_at": stale_written,
+    "failure_mode": "empty_run", "consecutive_failure_count": 4,
+}), encoding="utf-8")
+tile = g.collect_running_pi()
+assert tile["health_class"] == "healthy", (
+    f"stale marker (>24h) must fail-open, got {tile.get('health_class')}: {tile}")
+print("OK: stale (>24h) expired marker fails open (fleet-ops#3795)")
 PY
-ok "fleet-ops#3563: console tile overlays the spawn-bench marker — a benched seat never shows healthy"
+ok "fleet-ops#3563/#3795: console tile overlays the spawn-bench marker — a benched seat never shows healthy"
 
 # =========================================================================
 # 13. drill --check

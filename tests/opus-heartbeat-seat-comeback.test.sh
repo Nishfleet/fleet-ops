@@ -325,3 +325,102 @@ print("OK: mid-cycle seat inside one-probe-interval grace not flagged overdue (f
 
 print("ALL OK: seat comeback arithmetic fixed (fleet-ops#2152)")
 PY
+
+# =========================================================================
+# 10. fleet-ops#3795: an EXPIRED-but-FRESH spawn-bench marker still gates
+#     the seat (the #3737 probe-gate hold). seat_usable refuses to route
+#     agentic work to a seat whose marker is fresh and still the latest
+#     evidence, even after usable_at passes — the comeback organ probes
+#     before re-admission. The census seat_table must agree: a clobbered-
+#     healthy ledger with NO observation newer than the marker's written_at
+#     must overlay as spawn_bench/walled, NOT healthy, or the census says
+#     "seat healthy" while the router holds the seat and the empty-run
+#     churn the issue names (25 no-ops in 2h) continues unseen.
+# =========================================================================
+SEATDIR2="$TMPD/seats2"
+mkdir -p "$SEATDIR2"
+
+# A: expired-but-fresh marker, ledger obs OLDER than marker written_at.
+#    The marker is the latest evidence -> overlay applies (probe-gate hold).
+cat > "$SEATDIR2/ollama__deepseek-v4-flash_0731.json" << EOF
+{"provider":"ollama","model":"deepseek-v4-flash:0731","http_status":200,"retry_after":null,"health_class":"healthy","retryable":false,"seat_dead":false,"poison_ladder":false,"observed_at":"$(date -u -d '25 minutes ago' +%Y-%m-%dT%H:%M:%SZ)","source":"after_provider_response","failure_mode":"none","usable_at":null,"consecutive_failure_count":0}
+EOF
+cat > "$SEATDIR2/ollama__deepseek-v4-flash_0731.spawn-bench.json" << EOF
+{"provider":"ollama","model":"deepseek-v4-flash:0731","usable_at":"$(date -u -d '5 minutes ago' +%Y-%m-%dT%H:%M:%SZ)","reason":"pi-issue:fleet-ops-3602:provider-no-op:stdout=0B","written_at":"$(date -u -d '20 minutes ago' +%Y-%m-%dT%H:%M:%SZ)","backoff_s":1800,"failure_mode":"empty_run","consecutive_failure_count":4}
+EOF
+
+# B: expired-but-fresh marker, ledger obs NEWER than marker written_at.
+#    Post-bench evidence (a run that produced output) -> overlay releases.
+cat > "$SEATDIR2/devin__glm-5-2.json" << EOF
+{"provider":"devin","model":"glm-5-2","http_status":200,"retry_after":null,"health_class":"healthy","retryable":false,"seat_dead":false,"poison_ladder":false,"observed_at":"$(date -u -d '2 minutes ago' +%Y-%m-%dT%H:%M:%SZ)","source":"after_provider_response","failure_mode":"none","usable_at":null,"consecutive_failure_count":0}
+EOF
+cat > "$SEATDIR2/devin__glm-5-2.spawn-bench.json" << EOF
+{"provider":"devin","model":"glm-5-2","usable_at":"$(date -u -d '5 minutes ago' +%Y-%m-%dT%H:%M:%SZ)","reason":"pi-issue:empty-run","written_at":"$(date -u -d '20 minutes ago' +%Y-%m-%dT%H:%M:%SZ)","backoff_s":1800,"failure_mode":"empty_run","consecutive_failure_count":3}
+EOF
+
+# C: stale marker (written > 24h ago) -> archaeology, fail-open.
+cat > "$SEATDIR2/opencode__stale-bench.json" << EOF
+{"provider":"opencode","model":"stale-bench","http_status":200,"retry_after":null,"health_class":"healthy","retryable":false,"seat_dead":false,"poison_ladder":false,"observed_at":"$(date -u -d '30 minutes ago' +%Y-%m-%dT%H:%M:%SZ)","source":"after_provider_response","failure_mode":"none","usable_at":null,"consecutive_failure_count":0}
+EOF
+cat > "$SEATDIR2/opencode__stale-bench.spawn-bench.json" << EOF
+{"provider":"opencode","model":"stale-bench","usable_at":"$(date -u -d '2 days ago' +%Y-%m-%dT%H:%M:%SZ)","reason":"old-bench","written_at":"$(date -u -d '2 days ago' +%Y-%m-%dT%H:%M:%SZ)","backoff_s":3600,"failure_mode":"empty_run","consecutive_failure_count":2}
+EOF
+
+OPUS_HB_STATE="$TMPD" OPUS_HB_THOROUGH=1 SEATS_DIR="$SEATDIR2" PROM_URL="http://127.0.0.1:9" \
+  python3 "$GATHER" >"$TMPD/snapshot2.json" 2>"$TMPD/gather2.err" \
+  || fail "gather2 failed rc=$? (stderr: $(cat "$TMPD/gather2.err"))"
+
+python3 - "$TMPD/snapshot2.json" <<'PY' || fail "fleet-ops#3795 assertion failed"
+import json, sys
+
+snap = json.load(open(sys.argv[1]))
+seats = snap.get("seats") or {}
+rows = {r["id"]: r for r in seats.get("seats", [])}
+
+# A: expired-but-fresh, obs older -> overlay applies (probe-gate hold).
+olla = rows.get("ollama__deepseek-v4-flash_0731")
+assert olla is not None, f"ollama seat missing from seat table: {list(rows)}"
+assert olla.get("bench_overlay") is True, (
+    f"expired-but-fresh marker with no newer obs must carry bench_overlay=true: {olla}")
+assert olla.get("health_class") == "spawn_bench", (
+    f"effective class must be spawn_bench (probe-gate hold), got {olla.get('health_class')}")
+assert olla.get("walled") is True, (
+    f"expired-but-fresh seat must be walled: {olla}")
+assert olla.get("consecutive_failure_count") == 4, (
+    f"durable marker count (4) must survive over clobbered-to-0 ledger, "
+    f"got {olla.get('consecutive_failure_count')}")
+assert olla.get("failure_mode") == "empty_run", (
+    f"failure_mode must come from the marker: {olla}")
+# The seat must NOT be counted healthy.
+assert olla.get("health_class") != "healthy", (
+    "expired-but-fresh seat must not report healthy in the census")
+print("OK: expired-but-fresh spawn-bench overlays as walled/spawn_bench (fleet-ops#3795 probe-gate)")
+
+# B: expired-but-fresh, obs newer -> post-bench evidence, overlay releases.
+devin = rows.get("devin__glm-5-2")
+assert devin is not None, f"devin seat missing from seat table: {list(rows)}"
+assert devin.get("bench_overlay") is None, (
+    f"newer ledger obs must release the expired-but-fresh hold: {devin}")
+assert devin.get("health_class") == "healthy", (
+    f"post-bench evidence must leave the healthy reading alone: {devin}")
+print("OK: newer ledger observation releases the expired-but-fresh hold (fleet-ops#3795)")
+
+# C: stale marker (> 24h) -> archaeology, fail-open.
+stale = rows.get("opencode__stale-bench")
+assert stale is not None, f"stale-bench seat missing from seat table: {list(rows)}"
+assert stale.get("bench_overlay") is None, (
+    f"stale marker (>24h) must not overlay: {stale}")
+assert stale.get("health_class") == "healthy", (
+    f"stale marker must fail-open to healthy: {stale}")
+print("OK: stale (>24h) expired marker fails open (fleet-ops#3795)")
+
+# healthy_n must be 2 (devin + stale-bench), NOT 3 (ollama is walled).
+assert seats.get("healthy_n") == 2, (
+    f"healthy_n must be 2 (devin + stale-bench; ollama is walled), "
+    f"got {seats.get('healthy_n')}")
+assert seats.get("walled_n") == 1, (
+    f"walled_n must be 1 (ollama probe-gate hold), got {seats.get('walled_n')}")
+print("OK: census counts match — expired-but-fresh seat not counted healthy (fleet-ops#3795)")
+PY
+
+echo "OK: fleet-ops#3795 expired-but-fresh probe-gate overlay"

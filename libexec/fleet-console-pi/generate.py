@@ -411,6 +411,14 @@ def collect_repairs_inflight():
                  units=names[:20], dispatch_24h=dispatch_24h, explain=explain)
 
 
+# fleet-ops#3737: freshness window for an expired spawn-bench marker that
+# still gates the seat. Matches EMPTY_RUN_COUNT_WINDOW_S / SEAT_PARK_WALL_S
+# in lib/seat-lib.sh and SPAWN_BENCH_FRESH_S in
+# libexec/fleet-metrics-export.py (24 h). Older than this the marker is
+# archaeology and fail-open.
+_SEAT_BENCH_FRESH_S = 86400
+
+
 def _seat_bench_held(provider, model):
     """True if the seat's wrapper spawn-bench marker is held right now.
 
@@ -421,6 +429,21 @@ def _seat_bench_held(provider, model):
     must agree with the router (seat_usable honours the marker), so a held
     marker means "not healthy" here. Never raises; a missing, unreadable,
     or expired marker is False.
+
+    fleet-ops#3795: seat_usable holds the bench in TWO cases —
+      (a) usable_at strictly in the future (the active bench), or
+      (b) usable_at expired/absent BUT the marker is FRESH (written within
+          _SEAT_BENCH_FRESH_S) and still the seat's latest evidence: no
+          sibling-ledger observed_at newer than written_at. A later ledger
+          observation is post-bench evidence — a run that produced output
+          writes healthy with no following marker — so case (b) releases on
+          it; otherwise the comeback organ probes the seat before
+          re-admission and the tile must agree the seat is not healthy
+          while it is probe-gated. Without case (b) a clobbered-healthy
+          sidecar renders an unprobed dead-weight seat as healthy (the
+          ollama/deepseek-v4-flash:0731 empty-run churn this issue names:
+          25 no-ops in 2h while the census said healthy). Mirrors
+          _spawn_bench_marker_held in libexec/fleet-metrics-export.py.
     """
     if not isinstance(provider, str) or not provider:
         return False
@@ -435,18 +458,46 @@ def _seat_bench_held(provider, model):
         return False
     if not isinstance(marker, dict):
         return False
+    now = int(time.time())
     usable_at = marker.get("usable_at")
-    if not isinstance(usable_at, str) or not usable_at:
+    if isinstance(usable_at, str) and usable_at:
+        try:
+            # UTC parse via calendar.timegm (process TZ is +05:30 on the
+            # live host; mktime would misread a future-Z as past and drop
+            # the overlay).
+            usable_epoch = calendar.timegm(time.strptime(
+                usable_at.replace("Z", "")[:19], "%Y-%m-%dT%H:%M:%S"))
+        except ValueError:
+            usable_epoch = None
+        if usable_epoch is not None and usable_epoch > now:
+            return True
+    # Case (b): expired or clockless bench — held only while the marker is
+    # fresh and remains the seat's latest evidence.
+    written_at = marker.get("written_at")
+    if not isinstance(written_at, str) or not written_at:
         return False
     try:
-        # UTC parse via calendar.timegm (process TZ is +05:30 on the live
-        # host; mktime would misread a future-Z as past and drop the
-        # overlay).
-        usable_epoch = calendar.timegm(time.strptime(
-            usable_at.replace("Z", "")[:19], "%Y-%m-%dT%H:%M:%S"))
+        written_epoch = calendar.timegm(time.strptime(
+            written_at.replace("Z", "")[:19], "%Y-%m-%dT%H:%M:%S"))
     except ValueError:
         return False
-    return usable_epoch > int(time.time())
+    if now - written_epoch > _SEAT_BENCH_FRESH_S:
+        return False
+    ledger_path = SEAT_LEDGER / f"{safe_p}__{safe_m}.json"
+    obs_epoch = None
+    try:
+        led = json.loads(ledger_path.read_text())
+        if isinstance(led, dict):
+            obs = led.get("observed_at")
+            if isinstance(obs, str) and obs:
+                try:
+                    obs_epoch = calendar.timegm(time.strptime(
+                        obs.replace("Z", "")[:19], "%Y-%m-%dT%H:%M:%S"))
+                except ValueError:
+                    obs_epoch = None
+    except (OSError, json.JSONDecodeError):
+        obs_epoch = None
+    return obs_epoch is None or obs_epoch <= written_epoch
 
 
 def collect_running_pi():
