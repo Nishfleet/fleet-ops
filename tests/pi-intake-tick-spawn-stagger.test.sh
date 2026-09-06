@@ -71,5 +71,29 @@ grep -qE '^\. "\$SEAT_LIB"|^\. "\$seat_lib"|source .*seat-lib' "$tick" \
     || fail "tick must source seat-lib.sh (SEAT_SPAWN_STAGGER_S scope)"
 ok "4: tick sources seat-lib.sh (SEAT_SPAWN_STAGGER_S in scope)"
 
+# --- 5. parent-shell load so SEAT_SPAWN_STAGGER_S reaches the claim loop ----
+# fleet-ops#3861: a load inside $() dies with the subshell. Every seat-state
+# read call site in the tick is a command substitution, so the configured
+# spawn_stagger_s silently fell back to the default 0 and the cohort
+# stagger #3784 targeted was inert. At least one BARE (non-subshell)
+# load_seat_caps statement must exist in the tick's parent shell BEFORE the
+# stagger sleep line, so SEAT_SPAWN_STAGGER_S is in scope when the claim
+# actually sleeps.
+parent_load=$(grep -nE '^[[:space:]]*load_seat_caps([[:space:]]|\|)' "$tick" | head -1 | cut -d: -f1)
+[[ -n "$parent_load" ]] \
+    || fail "tick must call load_seat_caps in the PARENT shell (a bare statement, not a \$() subshell) — fleet-ops#3861"
+sleep_line2=$(grep -nF 'sleep "$SEAT_SPAWN_STAGGER_S"' "$tick" | head -1 | cut -d: -f1)
+(( parent_load < sleep_line2 )) \
+    || fail "parent load_seat_caps (line $parent_load) must precede the stagger sleep (line $sleep_line2)"
+ok "5: tick loads caps in the parent shell (line $parent_load) before the stagger sleep (line $sleep_line2)"
+
+# --- 6. tick logs the stagger value actually slept --------------------------
+# fleet-ops#3861: "verify with a claim tick that logs the stagger value
+# actually slept" — the stagger must be observable in the tick output, not
+# just slept silently.
+grep -qF 'spawn stagger ${SEAT_SPAWN_STAGGER_S}s' "$tick" \
+    || fail "tick must log the SEAT_SPAWN_STAGGER_S value it sleeps (fleet-ops#3861)"
+ok "6: tick logs the stagger value it sleeps"
+
 echo
 echo "ALL OK: pi-intake-tick spawn stagger (fleet-ops#3784)"

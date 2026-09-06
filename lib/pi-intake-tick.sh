@@ -868,6 +868,19 @@ if (( slots <= 0 )); then
     exit 0
 fi
 
+# fleet-ops#3861: load_seat_caps must run in the PARENT shell so the
+# spawn_stagger_s (SEAT_SPAWN_STAGGER_S) the claim loop sleeps actually
+# carries the config/seat-caps.json value. Every other call site in this
+# tick is a command substitution ($(pick_seat ...) below), which runs in a
+# subshell where load_seat_caps sets SEAT_* vars that die when the subshell
+# exits — so SEAT_SPAWN_STAGGER_S never reached the parent and the 5s cohort
+# stagger stayed inert (fleet-ops#3784). Audition (above) may have rewritten
+# the LIVE caps, so load AFTER it reads the current file for the probes and
+# the claim loop below. Fail-open: a missing/unparseable caps file falls
+# back to SEAT_SPAWN_STAGGER_S=0 inside load_seat_caps.
+_seat_caps_loaded=0
+load_seat_caps || true
+
 # GitHub API rate-limit gate (fleet-ops#1350, 2026-08-27 #1167 ceiling
 # addendum). The 5000/hr core budget is the next binding constraint past
 # RAM: claiming N more issues this tick would burn N claim-pushes + N
@@ -1645,9 +1658,14 @@ blocked-on: nish-decision" 2>/dev/null || true
     # not overlap (oomd slice-pressure kills at tick time). Sleep a few
     # seconds between systemctl start --no-block calls. 0 disables. The value
     # is loaded from seat-caps.json spawn_stagger_s by load_seat_caps (called
-    # during the capacity step above); default 0 if the caps file is absent.
+    # in the parent shell after the capacity step above — fleet-ops#3861, so
+    # the value survives the pick_seat subshells into this read); default 0
+    # if the caps file is absent.
     SEAT_SPAWN_STAGGER_S=${SEAT_SPAWN_STAGGER_S:-0}
     if (( SEAT_SPAWN_STAGGER_S > 0 )); then
+        # Log the value actually slept so a claim tick proves the configured
+        # stagger engaged (fleet-ops#3861).
+        echo "issue $N ($title): spawn stagger ${SEAT_SPAWN_STAGGER_S}s (seat-caps spawn_stagger_s)"
         sleep "$SEAT_SPAWN_STAGGER_S"
     fi
     # fleet-ops#1455: write a durable claim record so opus-heartbeat-gather
