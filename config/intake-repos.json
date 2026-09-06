@@ -9,7 +9,8 @@
   "preconditions": "Every enrolled repo MUST have (a) a git checkout at <checkout_root>/<name> \u2014 intake does `git -C <checkout_root>/<name> fetch origin` and the worker creates its worktree from it, and (b) all three `required_labels` present on the repo \u2014 the ExecCondition in pi-intake@.service silently no-ops (returns []) without them, so an agent-ready issue filed on a label-less repo looks queued and is actually inert (the exact gap fleet-ops#25 was filed for). The reconciler MUST verify both preconditions before enabling a unit and record (not silently skip) any repo that fails them.",
   "repos": [
     {
-      "name": "0509"
+      "name": "0509",
+      "product": true
     },
     {
       "name": "fleet-ops",
@@ -32,6 +33,7 @@
   "deferred": [
     {
       "name": "siterep-public",
+      "product": true,
       "reason": "0509-exclusive campaign (decisions ledger 2026-08-26): new product supply targets 0509 ONLY for the next days/weeks \u2014 'big epic changes to make it undisputed segment best'. Existing PRs/issues drain normally; re-enrol via PR when Nish widens scope. fleet-ops stays enrolled solely to finish the mechanical stack + gap-closure loop, ratio line as tripwire."
     },
     {
@@ -60,6 +62,7 @@
     },
     {
       "name": "inish-site",
+      "product": true,
       "reason": "Campaign scope (decisions ledger 2026-08-25: '0509 gets all lanes for the transformation campaign; other repos maintenance-only'). Re-enrol via PR when Nish widens lanes. 0509-telemetry additionally: private DATA repo \u2014 enrolling a data sink in code intake is a category error. TinyStudio.io-public: legacy mirror. fleet-ops: control-plane work-generation paused (the 2026-08-25 evening produced 9 control-plane merges vs 0 product merges \u2014 the fleet2 self-maintenance pattern)."
     },
     {
