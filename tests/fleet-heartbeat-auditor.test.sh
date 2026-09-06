@@ -207,6 +207,23 @@ write_vote() {
         > "$dir/$role.vote"
 }
 
+# fleet-ops#3962: write a vote with an explicit `at` timestamp so a SKIP can
+# be aged past AUDIT_SKIP_RECAST_AFTER_S without waiting real time.
+write_vote_at() {
+    local repo="$1" candidate="$2" role="$3" verdict="$4" reason="$5" at="$6"
+    local dir="$state_dir/$repo/$candidate"
+    mkdir -p "$dir"
+    jq -n \
+        --arg repo "$repo" \
+        --arg candidate "$candidate" \
+        --arg role "$role" \
+        --arg verdict "$verdict" \
+        --arg reason "$reason" \
+        --arg at "$at" \
+        '{repo:$repo,candidate:$candidate,role:$role,verdict:$verdict,reason:$reason,at:$at}' \
+        > "$dir/$role.vote"
+}
+
 run_auditor() {
   set +e
   env_out=$(env GH="$gh_fake" SYSTEMCTL="$systemctl_fake" "$auditor_bin" 2>&1)
@@ -635,6 +652,88 @@ grep -q 'add-label agent-ready' "$GH_CALLS" || fail "scenario14: did not add age
 printf '%s\n' "$env_out" | grep -q 'OWNER-BYPASS' \
   || fail "scenario14: must log one OWNER-BYPASS line ($env_out)"
 ok "scenario14: nish3451-authored + spec gate PASS -> agent-ready without panel"
+
+# ============================================================================
+# Scenario 15 (fleet-ops#3962): a stale SKIP vote (older than
+# AUDIT_SKIP_RECAST_AFTER_S) is treated as MISSING — the vote file is
+# renamed to <role>.vote.skip-<epoch> and the role's pi-audit@ unit is
+# re-started through the existing missing-vote path. Before the fix the
+# SKIP counted as present, so pi-audit-tally saw PASS=1 FAIL=1 and logged
+# "remains PENDING" forever.
+# ============================================================================
+reset_state
+printf '50\n' >"$CANDIDATES"
+: >"$ACTIVE_UNITS"
+# 1 PASS, 1 FAIL, 1 stale SKIP — the exact 1-1-SKIP panel that stuck.
+old_at=$(date -u -d '2000 seconds ago' +%Y-%m-%dT%H:%M:%SZ)
+write_vote_at demo 50 devin PASS "north star; no duplicates; see bin/foo" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+write_vote_at demo 50 senior FAIL "vague termination" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+write_vote_at demo 50 free-glm SKIP "provider returned exit 1: commandcode/minimax-m3-free transient failure" "$old_at"
+: >"$calls"
+
+run_auditor
+
+[[ "$env_rc" == 0 ]] || fail "scenario15: must exit 0, got $env_rc ($env_out)"
+# The free-glm unit must be re-started (the SKIP was stale -> recast).
+grep -qx 'start pi-audit@demo--50--free-glm.service' "$calls" \
+    || fail "scenario15: stale SKIP must re-start free-glm unit ($(cat "$calls"))"
+# The PASS/FAIL votes must NOT trigger a start (they are present, non-SKIP).
+grep -qx 'start pi-audit@demo--50--devin.service' "$calls" \
+    && fail "scenario15: must not restart devin (PASS vote present) ($(cat "$calls"))"
+grep -qx 'start pi-audit@demo--50--senior.service' "$calls" \
+    && fail "scenario15: must not restart senior (FAIL vote present) ($(cat "$calls"))"
+# The stale SKIP vote file must be renamed aside, not left at <role>.vote.
+[[ -f "$state_dir/demo/50/free-glm.vote" ]] \
+    && fail "scenario15: stale SKIP vote must be renamed away from free-glm.vote"
+n_skip=$(ls -1 "$state_dir/demo/50"/free-glm.vote.skip-* 2>/dev/null | wc -l)
+[[ "$n_skip" -eq 1 ]] \
+    || fail "scenario15: expected 1 renamed skip file, got $n_skip ($(ls -1 "$state_dir/demo/50" 2>/dev/null))"
+# No SKIP-EXHAUSTED yet (only 1 recast of 3 allowed).
+printf '%s\n' "$env_out" | grep -q 'SKIP-EXHAUSTED' \
+    && fail "scenario15: must not log SKIP-EXHAUSTED on first recast ($env_out)"
+ok "scenario15: stale SKIP vote renamed + role unit re-started (fleet-ops#3962)"
+
+# ============================================================================
+# Scenario 16 (fleet-ops#3962): after AUDIT_SKIP_RECAST_MAX (default 3)
+# prior recasts, a stale SKIP is left in place and a SINGLE SKIP-EXHAUSTED
+# line is logged — once, not every tick.
+# ============================================================================
+reset_state
+printf '51\n' >"$CANDIDATES"
+: >"$ACTIVE_UNITS"
+old_at=$(date -u -d '2000 seconds ago' +%Y-%m-%dT%H:%M:%SZ)
+write_vote_at demo 51 devin PASS "north star; no duplicates; see bin/foo" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+write_vote_at demo 51 senior FAIL "vague termination" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+write_vote_at demo 51 free-glm SKIP "provider returned exit 1: transient failure" "$old_at"
+# Pre-create 3 prior recast files -> recast_count=3 >= MAX=3 -> exhausted.
+mkdir -p "$state_dir/demo/51"
+touch "$state_dir/demo/51/free-glm.vote.skip-1000"
+touch "$state_dir/demo/51/free-glm.vote.skip-1001"
+touch "$state_dir/demo/51/free-glm.vote.skip-1002"
+: >"$calls"
+
+run_auditor
+
+[[ "$env_rc" == 0 ]] || fail "scenario16: must exit 0, got $env_rc ($env_out)"
+# Exhausted -> no start for free-glm.
+grep -qx 'start pi-audit@demo--51--free-glm.service' "$calls" \
+    && fail "scenario16: must NOT re-start free-glm after 3 recasts ($(cat "$calls"))"
+# The SKIP vote must be left in place (not renamed).
+[[ -f "$state_dir/demo/51/free-glm.vote" ]] \
+    || fail "scenario16: exhausted SKIP vote must be left in place"
+# Exactly one SKIP-EXHAUSTED line so far.
+n_exh1=$(printf '%s\n' "$env_out" | grep -c 'SKIP-EXHAUSTED' || true)
+[[ "$n_exh1" -eq 1 ]] \
+    || fail "scenario16: expected 1 SKIP-EXHAUSTED line on first exhausted tick, got $n_exh1 ($env_out)"
+
+# Run a second tick — the marker must suppress a repeat SKIP-EXHAUSTED.
+: >"$calls"
+run_auditor
+[[ "$env_rc" == 0 ]] || fail "scenario16b: must exit 0, got $env_rc ($env_out)"
+n_exh2=$(printf '%s\n' "$env_out" | grep -c 'SKIP-EXHAUSTED' || true)
+[[ "$n_exh2" -eq 0 ]] \
+    || fail "scenario16b: SKIP-EXHAUSTED must be logged ONCE, not every tick (got $n_exh2 this tick: $env_out)"
+ok "scenario16: 3 prior recasts -> no start, single SKIP-EXHAUSTED line, not repeated (fleet-ops#3962)"
 
 # Nested CI host (workers cannot add a ci.yml line).
 grep -Fq 'bash "$here/fleet-heartbeat-auditor.test.sh"' "$here/fleet-heartbeat-low-water-mark.test.sh" \

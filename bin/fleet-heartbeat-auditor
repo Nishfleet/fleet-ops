@@ -42,6 +42,16 @@ STATE_DIR="${AUDIT_STATE_DIR:-$HOME/.local/state/fleet-audit}"
 TALLY_BIN="${AUDIT_TALLY_BIN:-/home/nish/.local/bin/pi-audit-tally}"
 PENDING_AGE_S="${AUDIT_PENDING_AGE_S:-2400}"
 
+# fleet-ops#3962: a SKIP vote is not a verdict — pi-audit-tally counts only
+# PASS/FAIL, so a 1-1-SKIP panel stays PENDING forever. A stale SKIP (older
+# than AUDIT_SKIP_RECAST_AFTER_S) is treated as MISSING: the vote file is
+# renamed aside and the role's pi-audit@ unit is re-started through the
+# existing missing-vote path. After AUDIT_SKIP_RECAST_MAX recasts the SKIP
+# is left in place and a single SKIP-EXHAUSTED line is logged (once, via a
+# marker file). No tie-break in the tally — 1 PASS is not an admission.
+SKIP_RECAST_AFTER_S="${AUDIT_SKIP_RECAST_AFTER_S:-1800}"
+SKIP_RECAST_MAX="${AUDIT_SKIP_RECAST_MAX:-3}"
+
 mkdir -p "$LOG_DIR" "$STATE_DIR"
 
 ROLES=(devin free-glm senior)
@@ -134,6 +144,64 @@ pending_since_s() {
     printf '%s\n' $(( now - then_s ))
 }
 
+# fleet-ops#3962: SKIP-vote recast helpers. A SKIP vote file exists on disk
+# so the pre-fix loop counted it as present, but pi-audit-tally ignores SKIP
+# (counts only PASS/FAIL), leaving 1-1-SKIP panels PENDING forever. These
+# helpers let process_candidate detect a stale SKIP, rename it aside, and
+# re-run the role's audit unit through the existing missing-vote path.
+
+vote_verdict() {
+    local v="$1"
+    [ -f "$v" ] || return 1
+    jq -r '.verdict // empty' "$v" 2>/dev/null
+}
+
+vote_age_s() {
+    local v="$1" at now then_s
+    [ -f "$v" ] || return 1
+    at=$(jq -r '.at // empty' "$v" 2>/dev/null)
+    [ -n "$at" ] || return 1
+    now=$(date -u +%s)
+    then_s=$(date -u -d "$at" +%s 2>/dev/null || echo 0)
+    [ "$then_s" -gt 0 ] 2>/dev/null || return 1
+    printf '%s\n' $(( now - then_s ))
+}
+
+vote_at_epoch() {
+    local v="$1" at
+    [ -f "$v" ] || return 1
+    at=$(jq -r '.at // empty' "$v" 2>/dev/null)
+    [ -n "$at" ] || return 1
+    date -u -d "$at" +%s 2>/dev/null
+}
+
+recast_count() {
+    # Counts prior SKIP recasts for a role: <role>.vote.skip-* files in the
+    # candidate dir. The .skip-exhausted marker does NOT match this glob.
+    local repo="$1" candidate="$2" role="$3" dir n f
+    dir="$STATE_DIR/$repo/$candidate"
+    [ -d "$dir" ] || { printf '0\n'; return; }
+    n=0
+    shopt -s nullglob
+    for f in "$dir/$role.vote.skip-"*; do
+        n=$(( n + 1 ))
+    done
+    shopt -u nullglob
+    printf '%s\n' "$n"
+}
+
+skip_exhausted_log() {
+    # Logs SKIP-EXHAUSTED once per role per candidate via a marker file so
+    # the line is not repeated every tick.
+    local repo="$1" candidate="$2" role="$3" dir marker
+    dir="$STATE_DIR/$repo/$candidate"
+    marker="$dir/$role.skip-exhausted"
+    [ -f "$marker" ] && return
+    mkdir -p "$dir" 2>/dev/null || true
+    log "$repo/#$candidate: SKIP-EXHAUSTED for $role — $SKIP_RECAST_MAX recasts done, SKIP left in place (fleet-ops#3962)"
+    date -u +%Y-%m-%dT%H:%M:%SZ > "$marker" 2>/dev/null || true
+}
+
 start_audit() {
     local repo="$1" candidate="$2" role="$3" unit
     unit=$(unit_name "$repo" "$candidate" "$role")
@@ -194,7 +262,39 @@ process_candidate() {
     for role in "${ROLES[@]}"; do
         v=$(vote_path "$repo" "$candidate" "$role")
         if [ -f "$v" ]; then
-            continue
+            # fleet-ops#3962: a SKIP vote is not a verdict. pi-audit-tally
+            # counts only PASS/FAIL, so a 1-1-SKIP panel stays PENDING
+            # forever. A stale SKIP (older than AUDIT_SKIP_RECAST_AFTER_S)
+            # is treated as MISSING: rename it aside and fall through to
+            # the missing-vote path so the role's pi-audit@ unit re-runs.
+            # After AUDIT_SKIP_RECAST_MAX recasts, leave the SKIP in place
+            # and log SKIP-EXHAUSTED once. A fresh SKIP (not yet stale) or
+            # any non-SKIP verdict stays present as before.
+            if [ "$(vote_verdict "$v" 2>/dev/null)" = "SKIP" ]; then
+                local s_age s_n s_epoch s_dir
+                s_age=$(vote_age_s "$v" 2>/dev/null || echo "")
+                if [ -n "$s_age" ] && [ "$s_age" -ge "$SKIP_RECAST_AFTER_S" ]; then
+                    s_n=$(recast_count "$repo" "$candidate" "$role")
+                    if [ "$s_n" -ge "$SKIP_RECAST_MAX" ]; then
+                        skip_exhausted_log "$repo" "$candidate" "$role"
+                        continue
+                    fi
+                    s_epoch=$(vote_at_epoch "$v" 2>/dev/null || date -u +%s)
+                    s_dir=$(dirname "$v")
+                    if mv "$v" "$s_dir/$role.vote.skip-$s_epoch" 2>/dev/null; then
+                        log "$repo/#$candidate: stale SKIP for $role (age=${s_age}s) recast $((s_n+1))/$SKIP_RECAST_MAX — vote renamed, re-starting unit (fleet-ops#3962)"
+                    else
+                        # Rename failed — leave the SKIP and treat as present
+                        # so we do not spin the unit every tick.
+                        log "$repo/#$candidate: stale SKIP for $role rename FAILED — leaving vote in place"
+                        continue
+                    fi
+                else
+                    continue
+                fi
+            else
+                continue
+            fi
         fi
         unit=$(unit_name "$repo" "$candidate" "$role")
         state=$(unit_state "$unit")
