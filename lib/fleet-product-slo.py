@@ -192,6 +192,13 @@ query($cursor: String) {
 }
 """
 
+# fleet-ops#3532: the auto-merge-arm ceiling gate calls --repo-check, which
+# needs only one repo's trailing-7d merges — a repo-scoped search is a
+# fraction of the org-wide 28d page set.
+REPO_MERGED_SEARCH = MERGED_SEARCH.replace(
+    'org:{ORG} is:pr', 'repo:{ORG}/{REPO} is:pr'
+)
+
 
 @dataclass(frozen=True)
 class MergedPR:
@@ -346,11 +353,7 @@ def _gh_graphql(query: str, cursor: str | None) -> dict[str, Any] | None:
         return None
 
 
-def _fetch_merged_prs(cutoff: datetime) -> list[MergedPR] | None:
-    cutoff_iso = cutoff.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    query = (
-        MERGED_SEARCH.replace("{ORG}", ORG).replace("{CUTOFF}", cutoff_iso)
-    )
+def _search_merged_prs(query: str) -> list[MergedPR] | None:
     out: list[MergedPR] = []
     cursor: str | None = None
     for _ in range(GH_PAGES):
@@ -402,6 +405,26 @@ def _fetch_merged_prs(cutoff: datetime) -> list[MergedPR] | None:
         if not cursor:
             break
     return out
+
+
+def _fetch_merged_prs(cutoff: datetime) -> list[MergedPR] | None:
+    cutoff_iso = cutoff.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    query = (
+        MERGED_SEARCH.replace("{ORG}", ORG).replace("{CUTOFF}", cutoff_iso)
+    )
+    return _search_merged_prs(query)
+
+
+def _fetch_repo_merged_prs(
+    repo: str, cutoff: datetime
+) -> list[MergedPR] | None:
+    cutoff_iso = cutoff.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    query = (
+        REPO_MERGED_SEARCH.replace("{ORG}", ORG)
+        .replace("{REPO}", repo)
+        .replace("{CUTOFF}", cutoff_iso)
+    )
+    return _search_merged_prs(query)
 
 
 def _cache_read() -> tuple[list[dict[str, Any]] | None, float | None]:
@@ -686,6 +709,79 @@ def load_ceilings(repos: list[str]) -> dict[str, dict[str, float]]:
     return out
 
 
+def load_repo_ceiling_row(repo: str) -> dict[str, float]:
+    """One repo's ceiling row from config/quality-ratchet.json `.ceilings`:
+    the repo's own row else `_default`, every committed metric (not limited
+    to QUALITY_METRICS — a metric becomes gateable the moment a measurement
+    source lands, e.g. red_on_main_minutes via fleet-ops#3534).
+    """
+    path = _first_existing(_QUALITY_RATCHET_CANDIDATES)
+    if path is None:
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        ceilings = data.get("ceilings") if isinstance(data, dict) else None
+        if not isinstance(ceilings, dict):
+            return {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+    row = ceilings.get(repo)
+    if not isinstance(row, dict) or not row:
+        row = ceilings.get("_default")
+    if not isinstance(row, dict):
+        return {}
+    out: dict[str, float] = {}
+    for metric, val in row.items():
+        try:
+            out[str(metric)] = float(val)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+# fleet-ops#3532: the auto-merge-arm ceiling gate enforces exactly the two
+# metrics the issue names. A metric enforces only when a measurement source
+# exists — today that is reverts_per_100_merges (merged-PR data); the rest
+# report under `unmeasured` until their exporters land.
+GATE_METRICS = ("reverts_per_100_merges", "red_on_main_minutes")
+
+
+def repo_check(repo: str, now: datetime) -> dict[str, Any]:
+    """Quality-ceiling verdict for one repo (--repo-check). Fetches the
+    repo's trailing-7d merged PRs, computes the gate metrics through the
+    same compute_repo_slo definition the exporter uses, and compares each
+    measured metric against the committed ceiling. Prints a single JSON
+    verdict; a fetch failure raises so the caller can decide fail-open.
+    """
+    now_ts = now.timestamp()
+    if FIXTURE:
+        _, prs = load_fixture(FIXTURE)
+    else:
+        prs = _fetch_repo_merged_prs(
+            repo, now - timedelta(seconds=WEEK_S)
+        )
+        if prs is None:
+            raise RuntimeError("merged-PR fetch failed")
+    repo_prs = [p for p in prs if p.repo == repo]
+    slo = compute_repo_slo(repo, repo_prs, now_ts=now_ts)
+    measured = {"reverts_per_100_merges": slo.quality_reverts_per_100}
+    ceilings = load_repo_ceiling_row(repo)
+    breached = sorted(
+        m
+        for m in GATE_METRICS
+        if m in measured and m in ceilings and measured[m] > ceilings[m]
+    )
+    return {
+        "repo": repo,
+        "merges_7d": slo.merges_7d,
+        "measured": measured,
+        "ceiling": {m: ceilings[m] for m in GATE_METRICS if m in ceilings},
+        "breached": breached,
+        "unmeasured": [m for m in GATE_METRICS if m not in measured],
+        "ok": not breached,
+    }
+
+
 def export_prom(slos: list[RepoSLO], *, now: datetime) -> str:
     lines: list[str] = [HELP_TP, TYPE_TP]
     for s in slos:
@@ -770,8 +866,11 @@ def _atomic_write(path: Path, body: str) -> None:
 def usage() -> int:
     print(
         "usage: fleet-product-slo.py [--stdout] [--help]\n"
+        "       fleet-product-slo.py --repo-check <repo>\n"
         "  Computes product delivery SLOs and writes\n"
         f"  {OUT} (override with FLEET_PRODUCT_SLO_OUT).\n"
+        "  --repo-check prints the one-repo quality-ceiling verdict as\n"
+        "  JSON (the auto-merge-arm gate input; exit 1 on fetch failure).\n"
         "  Offline fixture: FLEET_PRODUCT_SLO_FIXTURE=/path/to.json",
         file=sys.stderr,
     )
@@ -781,6 +880,7 @@ def usage() -> int:
 def main(argv: list[str] | None = None) -> int:
     argv = list(argv if argv is not None else sys.argv[1:])
     to_stdout = False
+    repo_check_repo: str | None = None
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -790,8 +890,24 @@ def main(argv: list[str] | None = None) -> int:
             to_stdout = True
             i += 1
             continue
+        if a == "--repo-check":
+            if i + 1 >= len(argv):
+                print("product-slo: --repo-check needs a repo", file=sys.stderr)
+                return usage()
+            repo_check_repo = argv[i + 1]
+            i += 2
+            continue
         print(f"product-slo: unknown flag {a}", file=sys.stderr)
         return usage()
+
+    if repo_check_repo is not None:
+        try:
+            verdict = repo_check(repo_check_repo, now_dt())
+        except Exception as exc:  # noqa: BLE001 — caller decides fail-open
+            print(f"product-slo repo-check failed: {exc}", file=sys.stderr)
+            return 1
+        print(json.dumps(verdict, sort_keys=True))
+        return 0
 
     end = now_dt()
     try:
