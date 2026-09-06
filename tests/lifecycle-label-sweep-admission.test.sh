@@ -78,6 +78,9 @@ export PATH="$scratch/bin:$PATH"
 export LIFECYCLE_SWEEP_LOCKDIR="$scratch/lock"
 export LIFECYCLE_SWEEP_REPOS="Nishfleet/0509"
 export LIFECYCLE_SWEEP_NOW="2026-09-06T17:00:00Z"
+# fleet-ops#3445: the sweep re-PATHs to /home/nish/.local/bin first and mints
+# a real App token when GH_TOKEN is unset, bypassing the fake gh. Set a stub.
+export GH_TOKEN="test-stub"
 unset LIFECYCLE_SWEEP_DRILL || true
 
 # 72h before NOW — any createdAt at or before this is old enough to bounce.
@@ -122,9 +125,14 @@ fi
 ok "(b) first sweep: one bounce comment, no relabel"
 
 # Second sweep: the bounce comment is now visible on the issue (simulated by
-# reflecting it into list.json). The sweep must NOT re-bounce and NOT relabel.
+# reflecting it into view-1409.json, the lazy-fetch source the sweep reads
+# via `gh issue view --json comments` since fleet-ops#4091). The sweep must
+# NOT re-bounce and NOT relabel.
 cat >"$scratch/list.json" <<JSON
-[{"number":1409,"title":"fix(search): results page 500s on empty query","body":"The search results page returns a 500 when the query is empty. Reproduced locally.\n","labels":[{"name":"scout-candidate"}],"createdAt":"$OLD_CREATED","comments":[{"author":{"login":"nishfleet-worker[bot]"},"body":"scout-candidate-bounce: spec gate failed at 2026-09-06T16:00:00Z (fleet-ops#4022)\nmissing: add a \`termination:\`/\`accept:\`/\`required:\`/\`metric:\` line so this issue can be admitted to agent-ready.","createdAt":"2026-09-06T16:00:00Z"}]}]
+[{"number":1409,"title":"fix(search): results page 500s on empty query","body":"The search results page returns a 500 when the query is empty. Reproduced locally.\n","labels":[{"name":"scout-candidate"}],"createdAt":"$OLD_CREATED","comments":[]}]
+JSON
+cat >"$scratch/view-1409.json" <<JSON
+{"comments":[{"author":{"login":"nishfleet-worker[bot]"},"body":"scout-candidate-bounce: spec gate failed at 2026-09-06T16:00:00Z (fleet-ops#4022)\nmissing: add a \`termination:\`/\`accept:\`/\`required:\`/\`metric:\` line so this issue can be admitted to agent-ready.","createdAt":"2026-09-06T16:00:00Z"}]}
 JSON
 : >"$scratch/edits.log"
 : >"$scratch/comments.log"
@@ -160,7 +168,10 @@ ok "(c) spec-less scout-candidate younger than 72h → left alone (no premature 
 # --- Case (d): unlabeled issue with a bounce comment within cooldown →
 # scout-candidate is NOT re-applied (scope point 3, kills the churn loop) --
 cat >"$scratch/list.json" <<JSON
-[{"number":1409,"title":"fix(search): results page 500s on empty query","body":"The search results page returns a 500 when the query is empty. Reproduced locally.\n","labels":[],"createdAt":"$OLD_CREATED","comments":[{"author":{"login":"nishfleet-worker[bot]"},"body":"scout-candidate-bounce: spec gate failed at 2026-09-06T16:00:00Z (fleet-ops#4022)\nmissing: add a \`termination:\`/\`accept:\`/\`required:\`/\`metric:\` line so this issue can be admitted to agent-ready.","createdAt":"2026-09-06T16:00:00Z"}]}]
+[{"number":1409,"title":"fix(search): results page 500s on empty query","body":"The search results page returns a 500 when the query is empty. Reproduced locally.\n","labels":[],"createdAt":"$OLD_CREATED","comments":[]}]
+JSON
+cat >"$scratch/view-1409.json" <<JSON
+{"comments":[{"author":{"login":"nishfleet-worker[bot]"},"body":"scout-candidate-bounce: spec gate failed at 2026-09-06T16:00:00Z (fleet-ops#4022)\nmissing: add a \`termination:\`/\`accept:\`/\`required:\`/\`metric:\` line so this issue can be admitted to agent-ready.","createdAt":"2026-09-06T16:00:00Z"}]}
 JSON
 : >"$scratch/edits.log"
 : >"$scratch/comments.log"
@@ -179,7 +190,10 @@ ok "(d) unlabeled issue bounced within cooldown → scout-candidate NOT re-appli
 # blocks it, and the admission pass re-bounces (the window expired). ------
 OLD_BOUNCE="2026-08-20T00:00:00Z"
 cat >"$scratch/list.json" <<JSON
-[{"number":1409,"title":"fix(search): results page 500s on empty query","body":"The search results page returns a 500 when the query is empty. Reproduced locally.\n","labels":[{"name":"scout-candidate"}],"createdAt":"$OLD_CREATED","comments":[{"author":{"login":"nishfleet-worker[bot]"},"body":"scout-candidate-bounce: spec gate failed at $OLD_BOUNCE (fleet-ops#4022)\nmissing: add a \`termination:\`/\`accept:\`/\`required:\`/\`metric:\` line so this issue can be admitted to agent-ready.","createdAt":"$OLD_BOUNCE"}]}]
+[{"number":1409,"title":"fix(search): results page 500s on empty query","body":"The search results page returns a 500 when the query is empty. Reproduced locally.\n","labels":[{"name":"scout-candidate"}],"createdAt":"$OLD_CREATED","comments":[]}]
+JSON
+cat >"$scratch/view-1409.json" <<JSON
+{"comments":[{"author":{"login":"nishfleet-worker[bot]"},"body":"scout-candidate-bounce: spec gate failed at $OLD_BOUNCE (fleet-ops#4022)\nmissing: add a \`termination:\`/\`accept:\`/\`required:\`/\`metric:\` line so this issue can be admitted to agent-ready.","createdAt":"$OLD_BOUNCE"}]}
 JSON
 : >"$scratch/edits.log"
 : >"$scratch/comments.log"

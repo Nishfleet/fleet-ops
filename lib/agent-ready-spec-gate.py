@@ -44,13 +44,16 @@ PROG = "agent-ready-spec-gate"
 
 # Line-anchored field. Leading list markers allowed so canary bodies
 # (`- required: ...`) count. termination: needs a command on the same
-# line; the others may introduce a following list.
+# line; the others may introduce a following list. `**keyword:**` bold
+# markdown (scout-filed issues, fleet-ops#4091) is also accepted — the
+# scout files spec lines as `**metric:**`/`**accept:**`/`**termination:**`,
+# and refusing them starves product supply the same way a missing line does.
 FIELD_RE = re.compile(
-    r"(?im)^(?:[-*]\s+)*(termination|accept|required|metric)\s*:\s*(.*)$"
+    r"(?im)^(?:\*\*|[-*]\s+)*(termination|accept|required|metric)\s*:\s*(.*)$"
 )
 
 # fleet-ops#3255: control-plane work must name the product metric it moves.
-MOVES_RE = re.compile(r"(?im)^(?:[-*]\s+)*moves\s*:\s*(.*)$")
+MOVES_RE = re.compile(r"(?im)^(?:\*\*|[-*]\s+)*moves\s*:\s*(.*)$")
 
 MOVES_METRICS = (
     "sessions_to_pr_pct",

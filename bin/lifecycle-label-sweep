@@ -387,10 +387,26 @@ issue_older_than_bounce_age() {
     (( n - c >= SCOUT_BOUNCE_COOLDOWN_SECONDS ))
 }
 
+# Lazy per-issue comment fetch (fleet-ops#4091). The bulk `gh issue list`
+# call used to request `.comments` for every open issue in one GraphQL
+# round-trip; on repos with many open issues (fleet-ops ~336) GitHub 504s
+# and the whole sweep skips the repo, so scout-candidates never get
+# promoted to agent-ready and product supply starves. Comments are only
+# needed for the scout-candidate bounce-cooldown check below, so fetch them
+# one issue at a time and only when that check actually runs. Fail-open to
+# an empty array so a transient gh blip skips the cooldown guard rather
+# than aborting the sweep.
+fetch_issue_comments() {
+    local repo="$1" num="$2"
+    gh issue view "$num" -R "$repo" --json comments 2>/dev/null \
+        | jq -c '.comments // []' 2>/dev/null || printf '[]'
+}
+
 # True (0) when the issue already carries a scout-candidate-bounce: comment
 # whose createdAt is within the cooldown window of NOW_ISO. A bounce
 # comment with no createdAt is treated as in-cooldown (fail-closed: do not
-# re-bounce). comments_json is the `.comments` array from gh issue list.
+# re-bounce). comments_json is the `.comments` array — now fetched lazily
+# via fetch_issue_comments, not carried on the bulk list row.
 bounce_in_cooldown() {
     local comments_json="$1" now="$2"
     local now_epoch
@@ -526,8 +542,14 @@ while IFS= read -r repo; do
     [ -z "$repo" ] && continue
     log "repo $repo"
 
+    # fleet-ops#4091: do NOT request `.comments` here. The bulk list call
+    # fetches every open issue in one GraphQL round-trip; adding `.comments`
+    # makes GitHub 504 on repos with many open issues (fleet-ops ~336),
+    # skipping the whole repo and starving product supply. Comments are
+    # fetched lazily per-issue via fetch_issue_comments only where the
+    # bounce-cooldown check actually needs them.
     if ! list_json=$(gh issue list -R "$repo" --state open \
-        --json number,title,labels,body,comments,createdAt --limit 500 2>/dev/null); then
+        --json number,title,labels,body,createdAt --limit 500 2>/dev/null); then
         log "  $repo: gh issue list FAILED — skip"
         continue
     fi
@@ -586,7 +608,7 @@ while IFS= read -r repo; do
         # the queue every tick — the churn loop. The bounce comment is the
         # cooldown signal; leave the issue alone until the window expires.
         if [ "$label" = "scout-candidate" ]; then
-            if bounce_in_cooldown "$(printf '%s' "$row" | jq -c '.comments // []')" "$NOW_ISO"; then
+            if bounce_in_cooldown "$(fetch_issue_comments "$repo" "$num")" "$NOW_ISO"; then
                 log "  $repo#$num: skip scout-candidate re-apply (bounced within cooldown; fleet-ops#4022)"
                 skipped=$((skipped + 1))
                 continue
@@ -613,7 +635,6 @@ while IFS= read -r repo; do
         title=$(printf '%s' "$row" | jq -r '.title // ""')
         labels_json=$(printf '%s' "$row" | jq -c '.labels // []')
         issue_body=$(printf '%s' "$row" | jq -r '.body // ""')
-        comments_json=$(printf '%s' "$row" | jq -c '.comments // []')
         created=$(printf '%s' "$row" | jq -r '.createdAt // ""')
         # only issues currently labeled scout-candidate
         printf '%s' "$labels_json" | jq -e '.[] | select(.name=="scout-candidate")' >/dev/null 2>&1 || continue
@@ -629,8 +650,11 @@ while IFS= read -r repo; do
                 failed=$((failed + 1))
             fi
         else
+            # fleet-ops#4091: fetch comments lazily only for the bounce
+            # check, not on the bulk list row (avoids the 504 that starved
+            # product supply).
             if issue_older_than_bounce_age "$created" "$NOW_ISO" \
-                && ! bounce_in_cooldown "$comments_json" "$NOW_ISO"; then
+                && ! bounce_in_cooldown "$(fetch_issue_comments "$repo" "$num")" "$NOW_ISO"; then
                 log "  $repo#$num: scout-candidate spec gate failed, >72h → bounce ($title)"
                 if bounce_scout_candidate "$repo" "$num"; then
                     bounced=$((bounced + 1))
