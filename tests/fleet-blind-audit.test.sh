@@ -533,6 +533,12 @@ bash "$here/manual-seam-lens.test.sh"
 # listed blind-audit test so it runs in CI without a workflow-file edit.
 bash "$here/deliberate-states-registry.test.sh"
 
+# fleet-ops#3683: host the closed-but-undelivered detector drill (flags an
+# issue closed after a PR tried to deliver it but no referencing PR merged)
+# from the listed blind-audit test so it runs in CI without a workflow-file
+# edit (the nishfleet-worker App token has no Workflows permission).
+bash "$here/closed-undelivered-detector.test.sh"
+
 # fleet-ops#838: no | head -N truncation pipes survive under set -o pipefail.
 # grep -mN is the safe replacement; head -c on a file is fine.
 if grep -nE '\| +head +-[0-9]' "$bin"; then
