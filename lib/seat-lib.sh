@@ -4907,6 +4907,38 @@ _seat_merge_error_class() {
     return 1
 }
 
+# _seat_is_benched <provider> <model>
+# Returns 0 if the seat ledger already shows an active bench (a non-healthy
+# health_class, a future bench_until/usable_at, or an unexpired spawn-bench
+# marker), 1 otherwise. Used by the fast-death fallthrough bench (fleet-ops#3766)
+# so it never overwrites a bench a prior detector (hang_bench / quota / overload
+# / mid-session) already wrote — the fallthrough is only for a seat that is
+# genuinely unbenched and flapping.
+_seat_is_benched() {
+    local p="$1" m="$2"
+    local sb_path sb_usable
+    sb_path=$(seat_spawn_bench_path "$p" "$m")
+    if [[ -f "$sb_path" ]]; then
+        sb_usable=$(jq -r '.usable_at // ""' "$sb_path" 2>/dev/null || true)
+        if [[ -n "$sb_usable" ]] && _seat_in_future "$sb_usable"; then
+            return 0
+        fi
+    fi
+    local f hc bench_until usable_at
+    f=$(seat_ledger_path "$p" "$m")
+    [[ -f "$f" ]] || return 1
+    IFS=$'\x1f'$'\n' read -r hc bench_until usable_at < <(
+        jq -r '[(.health_class//""),(.bench_until//""),(.usable_at//"")] | join("\u001f")' "$f" 2>/dev/null || true
+    )
+    [[ -z "$hc" ]] && return 1
+    # Any non-healthy class is a bench (hang_bench / quota_bench / overload_bench
+    # / transient_fault / corpse) — never overwrite it with a fresh spawn-fail.
+    [[ "$hc" != "healthy" ]] && return 0
+    if [[ -n "$bench_until" ]] && _seat_in_future "$bench_until"; then return 0; fi
+    if [[ -n "$usable_at" ]] && _seat_in_future "$usable_at"; then return 0; fi
+    return 1
+}
+
 # --- quota/cap bench (fleet-ops#90) ----------------------------------------
 # A provider that returns a hard cap/quota 429 with an advertised reset window
 # (ClinePass "weekly Clinepass limit ... resets in 1d 11h", devin 15-min 429,

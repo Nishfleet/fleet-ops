@@ -673,13 +673,16 @@ if (( rc != 0 )); then
         fi
         # Merge last_error_class + bench_reason into the seat ledger (best-effort).
         _seat_merge_error_class "$np" "$nm" "$_dec_cls" "$_dec_lit" 2>/dev/null || true
-        # Fallthrough bench: if no detector above benched (error_class=unknown),
-        # bench via mark_seat_spawn_fail so the seat stops flapping. Re-merge the
-        # error_class onto the freshly-written ledger afterward.
+        # Fallthrough bench: if no detector above benched (error_class=unknown)
+        # AND the seat is not already benched by a prior detector (hang_bench /
+        # quota / overload / mid-session), bench via mark_seat_spawn_fail so the
+        # seat stops flapping. Re-merge the error_class onto the freshly-written
+        # ledger afterward.
         if [[ "$_dec_cls" == "unknown" && "$spawn_fail_triggered" == "0" ]] \
             && ! is_quota_cap_error "$out_file" "$err_file" \
             && ! is_overload_error "$out_file" "$err_file" \
-            && ! is_mid_session_death "$err_file"; then
+            && ! is_mid_session_death "$err_file" \
+            && ! _seat_is_benched "$np" "$nm"; then
             seat_log "pi-issue-run: $inst FAST DEATH error_class=unknown on $np/$nm (rc=$rc, 0 tools, ${spawn_elapsed_s}s) — benching seat ${SPAWN_FAIL_BACKOFF_S}s (no detector matched; raw tail: ${_dec_lit:0:120})"
             if mark_seat_spawn_fail "$np" "$nm" "pi-issue:$inst:fast-death:error_class=unknown:rc=$rc"; then
                 seat_log "pi-issue-run: $inst seat $np/$nm benched (fast-death unknown); next restart will skip via pick_seat"
