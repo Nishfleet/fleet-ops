@@ -26,9 +26,14 @@
 #       seat-health.ts writes on a later simple packet's 200), pick_seat
 #       STILL never returns the benched seat — the spawn-bench marker holds
 #       the bench until wall_end.
-#   (3) After the marker's wall_end passes, pick_seat fail-opens and the
-#       seat is eligible again (a recovered seat is never walled
-#       permanently — the fail-open contract).
+#   (3) After the marker's wall_end passes, a FRESH marker that is still
+#       the seat's latest evidence is held for pick_seat (probe-gated
+#       re-admission, fleet-ops#3737 — a dead-weight seat never costs a work
+#       item a turn); a POST-bench healthy observation (real recovery) or
+#       marker age >24h releases the hold so a recovered seat is never
+#       walled permanently. This is the probe-gated successor to the old
+#       clock-gated fail-open (#3737 supersedes the naive wall_end
+#       re-admission #3602 step (3) asserted).
 #   (4) The marker write is NOT best-effort: if the spawn-bench marker
 #       cannot be written, mark_seat_empty_run fails loud (returns 1) so
 #       the bench is never silently lost to a clobberable ledger.
@@ -191,30 +196,66 @@ _seat_in_future "$marker_usable" \
 assert_pick_skips_benched "(2) after healthy 200-probe clobber (marker held)"
 ok "(2) empty-run bench SURVIVES a healthy 200-probe clobber — pick_seat still excludes the seat until wall_end (fleet-ops#3602)"
 
-# --- (3) wall_end passes -> pick_seat fail-opens (recovered seat) ----------
+# --- (3) wall_end passes: fresh marker held as latest evidence (probe-gate) --
+# fleet-ops#3737: an expired wrapper bench no longer fails open. While the
+# marker is fresh (< EMPTY_RUN_COUNT_WINDOW_S) and still the seat's latest
+# evidence, pick_seat holds it for the comeback organ's tool-using probe —
+# so a dead-weight seat never costs a work item a turn. The clobber's
+# healthy observed_at corresponds to the SAME run as the marker write (the
+# mid-run 200 the extension logged during the empty run), so it is NOT
+# post-bench recovery evidence; pin it to the marker's written_at.
 past_iso=$(date -u -d '@0' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "1970-01-01T00:00:00Z")
 tmp=$(mktemp)
 jq --arg u "$past_iso" '.usable_at = $u' "$bench_mf" >"$tmp" 2>/dev/null && mv "$tmp" "$bench_mf"
-: >"$STATE_DIR/attempts/pi-issue-fleet-ops-3602.tried-seats" 2>/dev/null || true
-picked=$(pick_seat "" "" 0 "" "light" "public" || true)
-[[ -n "$picked" ]] || fail "pick_seat returned empty after marker expired — fail-open broken"
-picked_p=$(printf '%s' "$picked" | cut -f1)
-picked_m=$(printf '%s' "$picked" | cut -f2)
-# After expiry the bench seat is eligible again (fail-open, one probe).
-# It may or may not be picked first (free-bucket order), but it must NOT be
-# excluded — i.e. at least one of the 5 picks below must be the bench seat.
+marker_written=$(jq -r '.written_at // ""' "$bench_mf")
+[[ -n "$marker_written" ]] || fail "spawn-bench marker has no written_at"
+tmp=$(mktemp)
+jq --arg o "$marker_written" '.observed_at = $o' "$bench_lf" >"$tmp" 2>/dev/null && mv "$tmp" "$bench_lf"
+assert_pick_skips_benched "(3) after wall_end, fresh expired marker held as latest evidence (probe-gated re-admission)"
+ok "(3) expired fresh marker is held as latest evidence — probe-gated re-admission (fleet-ops#3737)"
+
+# --- (3b) post-bench recovery observation releases the hold ----------------
+# A ledger observation NEWER than the marker's written_at means a real run
+# produced output after the bench — recovery evidence, so the seat is
+# re-eligible (fail-open). The comeback organ's successful probe writes
+# exactly this. It may or may not be picked first (free-bucket order), but
+# it must NOT be excluded — at least one of the 5 picks must be the seat.
+later_iso=$(date -u -d "@$(( $(date -u -d "$marker_written" +%s) + 120 ))" +%Y-%m-%dT%H:%M:%SZ)
+tmp=$(mktemp)
+jq --arg o "$later_iso" '.observed_at = $o' "$bench_lf" >"$tmp" 2>/dev/null && mv "$tmp" "$bench_lf"
 saw_bench=0
 for i in 1 2 3 4 5; do
     : >"$STATE_DIR/attempts/pi-issue-fleet-ops-3602.tried-seats" 2>/dev/null || true
     picked=$(pick_seat "" "" 0 "" "light" "public" || true)
-    [[ -n "$picked" ]] || fail "pick_seat returned empty after marker expired (iter $i)"
+    [[ -n "$picked" ]] || fail "pick_seat returned empty after post-bench recovery (iter $i)"
     picked_p=$(printf '%s' "$picked" | cut -f1)
     picked_m=$(printf '%s' "$picked" | cut -f2)
     [[ "$picked_p/$picked_m" == "$bench_p/$bench_m" ]] && saw_bench=1
 done
 [[ "$saw_bench" == "1" ]] \
-  || fail "pick_seat never returned the recovered bench seat after wall_end — fail-open broken (seat walled permanently)"
-ok "(3) after wall_end passes, pick_seat fail-opens — recovered seat re-eligible (not walled permanently)"
+  || fail "pick_seat never returned the recovered seat after post-bench evidence — recovery release broken"
+ok "(3b) post-bench healthy observation releases the hold — recovered seat re-eligible (not walled permanently)"
+
+# --- (3c) archaeology: a stale marker (>24h) fail-opens --------------------
+# A marker older than the count window is archaeology — fail-open so a
+# stalled comeback organ cannot strand the seat forever.
+old_iso=$(date -u -d "@$(( $(date -u +%s) - 90000 ))" +%Y-%m-%dT%H:%M:%SZ)
+tmp=$(mktemp)
+jq --arg w "$old_iso" '.written_at = $w' "$bench_mf" >"$tmp" 2>/dev/null && mv "$tmp" "$bench_mf"
+tmp=$(mktemp)
+jq --arg o "$old_iso" '.observed_at = $o' "$bench_lf" >"$tmp" 2>/dev/null && mv "$tmp" "$bench_lf"
+saw_bench=0
+for i in 1 2 3 4 5; do
+    : >"$STATE_DIR/attempts/pi-issue-fleet-ops-3602.tried-seats" 2>/dev/null || true
+    picked=$(pick_seat "" "" 0 "" "light" "public" || true)
+    [[ -n "$picked" ]] || fail "pick_seat returned empty for stale marker (iter $i)"
+    picked_p=$(printf '%s' "$picked" | cut -f1)
+    picked_m=$(printf '%s' "$picked" | cut -f2)
+    [[ "$picked_p/$picked_m" == "$bench_p/$bench_m" ]] && saw_bench=1
+done
+[[ "$saw_bench" == "1" ]] \
+  || fail "pick_seat walled a stale (>24h) marker — dead-organ escape hatch broken"
+ok "(3c) stale marker (>24h) fail-opens — dead-organ escape hatch intact"
 
 # --- (4) marker write is NOT best-effort: failure is loud ------------------
 # If the spawn-bench marker cannot be written, mark_seat_empty_run must
