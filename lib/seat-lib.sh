@@ -6202,16 +6202,21 @@ is_overload_error() {
     local out="$1" err="$2"
     local combined="$out"$'\n'"$err"
     [[ -n "$combined" ]] || return 1
-    # Three ACCEPT shapes, each independently sufficient (any one of):
+    # Four ACCEPT shapes, each independently sufficient (any one of):
     #   (a) the commandcode-specific 503 "Upstream model provider is
     #       temporarily unavailable" — the live fleet-ops#652 body.
     #   (b) an HTTP 503 status with a Retry-After / "try again" hint.
     #   (c) a generic "upstream ... overloaded" (e.g. OpenAI/Anthropic
     #       502/503 wording).
+    #   (d) a generic "A server error occurred. Please try again." — the
+    #       xkiro 5xx body (fleet-ops#3738): pi surfaces it as rc=1 with no
+    #       status code, so without this shape it falls through to
+    #       no_block:rc=1 spawn-fail and accumulates a 47-count park
+    #       instead of a short overload bench.
     # Bare "503" or bare "temporarily unavailable" WITHOUT any of the
     # above co-occurring context is NOT a match (avoid false positives on
     # log lines that mention 503 in passing, or a flaky network call).
-    if grep -qiE 'upstream[[:space:]]+(model[[:space:]]+)?provider[[:space:]]+is[[:space:]]+temporarily[[:space:]]+unavailable|upstream[[:space:]]+(is[[:space:]]+)?overloaded|overloaded[[:space:]]+upstream' <<<"$combined"; then
+    if grep -qiE 'upstream[[:space:]]+(model[[:space:]]+)?provider[[:space:]]+is[[:space:]]+temporarily[[:space:]]+unavailable|upstream[[:space:]]+(is[[:space:]]+)?overloaded|overloaded[[:space:]]+upstream|server[[:space:]]+error[[:space:]]+occurred[[:space:]]*\.?[[:space:]]*please[[:space:]]+try[[:space:]]+again' <<<"$combined"; then
         return 0
     fi
     if grep -qiE '503[[:space:]]+(service[[:space:]]+unavailable|backend|upstream|bad[[:space:]]+gateway|gateway[[:space:]]+timeout)|http[[:space:]]*503|status[[:space:]]*:[[:space:]]*503|"status":[[:space:]]*503' <<<"$combined"; then

@@ -1424,6 +1424,25 @@ bash -c 'source "$0"; is_overload_error "$1" "$2"' "$lib" "" "" >/dev/null 2>&1
 rc=$?
 set -e
 [[ "$rc" != "0" ]] || fail "is_overload: empty input must NOT match"
+# xkiro generic 5xx "A server error occurred. Please try again." (fleet-ops#3738):
+# pi surfaces it as rc=1 with no status code; without shape (d) it falls through
+# to no_block:rc=1 spawn-fail and accumulates a 47-count park instead of a short
+# overload bench.
+set +e
+bash -c 'source "$0"; is_overload_error "$1" "$2"' "$lib" \
+    'A server error occurred. Please try again.' \
+    '' >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "is_overload: xkiro 'A server error occurred. Please try again.' must match (rc=$rc)"
+# Bare "server error" without "please try again" must NOT match (co-occurrence guard).
+set +e
+bash -c 'source "$0"; is_overload_error "$1" "$2"' "$lib" \
+    'A server error occurred.' \
+    '' >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" != "0" ]] || fail "is_overload: 'server error occurred' without 'please try again' must NOT match (co-occurrence guard)"
 
 # 9h-2: writer uses the 503_bench_default_s (alias overload_bench_default_s)
 # when the body has no Retry-After. The summoning-trip fault was the writer
