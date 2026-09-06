@@ -126,6 +126,11 @@ mark_seat_hang_bench() {
     printf '%s/%s %s\n' "\$1" "\$2" "\${3:-}" >>"$scratch/hang_calls"
     orig_mark_seat_hang_bench "\$@"
 }
+eval "\$(declare -f mark_seat_spawn_fail | sed '1s/^mark_seat_spawn_fail/orig_mark_seat_spawn_fail/')"
+mark_seat_spawn_fail() {
+    printf '%s/%s %s\n' "\$1" "\$2" "\${3:-}" >>"$scratch/spawnfail_calls"
+    orig_mark_seat_spawn_fail "\$@"
+}
 EOF
 export PI_PACKET_SEAT_LIB="$scratch/seat-lib.sh"
 
@@ -213,5 +218,90 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
 '
 done
 run_scenario "rfi-stall-2133" "$rfi_body" 1
+
+
+# (C)/(D) fleet-ops#3883: the hang watchdog (rc=124, a real `timeout` kill of
+# pi) appends "killed" to stderr, which is_mid_session_death matches — so every
+# watchdog kill used to reach mark_seat_spawn_fail and bench the seat with an
+# escalating backoff. A session that made tool calls is slow, not a seat fault
+# (the retirement rule classes rc=124 as infrastructure): no bench. A session
+# with 0 tool calls is a true hang: bench as before. The fake pi writes the
+# session jsonl exactly where pi-issue-run pins it (--session-dir/--session-id)
+# and then blocks until PI_HANG_TIMEOUT_S kills it.
+run_watchdog_scenario() {
+    local label="$1" ntools="$2" expect_bench="$3"
+    local inst="$label"
+    rm -f "$scratch/hang_calls" "$scratch/spawnfail_calls"
+    rm -rf "$LEDGER"; mkdir -p "$LEDGER"
+    rm -rf "$STATE_DIR"; mkdir -p "$STATE_DIR/attempts" "$STATE_DIR/active-seats"
+
+    cat >"$stub_bin/pi" <<STUB
+#!/usr/bin/env bash
+sdir=""; sid=""
+while [[ \$# -gt 0 ]]; do
+    case "\$1" in
+        --session-dir) sdir="\$2"; shift 2 ;;
+        --session-id) sid="\$2"; shift 2 ;;
+        *) shift ;;
+    esac
+done
+mkdir -p "\$sdir"
+: >"\$sdir/\$sid.jsonl"
+for ((i = 0; i < $ntools; i++)); do
+    printf '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"t%s","name":"bash","arguments":{"command":"true"}}]}}\\n' "\$i" >>"\$sdir/\$sid.jsonl"
+    printf '{"type":"message","message":{"role":"toolResult","toolCallId":"t%s","content":[{"type":"text","text":"ok"}]}}\\n' "\$i" >>"\$sdir/\$sid.jsonl"
+done
+printf 'working\\n'
+exec sleep 60
+STUB
+    chmod +x "$stub_bin/pi"
+    export PI_BIN="$stub_bin/pi"
+
+    printf 'Implement one GitHub issue: Nishfleet/fleet-ops#3883 (%s).\n' "$label" >"$ISSUES_DIR/${inst}.in"
+
+    set +e
+    PI_HANG_TIMEOUT_S=3 bash "$bin" "$inst" >"$scratch/run.out" 2>"$scratch/run.err"
+    rc=$?
+    set -e
+    [[ "$rc" == "1" ]] \
+      || fail "$label: pi-issue-run must exit 1 (systemd re-seat), got rc=$rc err=$(tail -n 5 "$scratch/run.err")"
+
+    tried="$STATE_DIR/attempts/pi-issue-${inst}.tried-seats"
+    [[ -s "$tried" ]] || fail "$label: tried-seats file missing after run"
+    seat_line=$(head -n1 "$tried")
+    np="${seat_line%%/*}"
+    nm="${seat_line#*/}"
+
+    grep -q 'PI HANG WATCHDOG' "$STATE_DIR/watch.log" "$scratch/run.err" 2>/dev/null \
+      || fail "$label: the hang watchdog did not fire (rc=124 path not exercised): $(tail -n 5 "$scratch/run.err")"
+    cls=$(cat "$STATE_DIR/attempts/pi-issue-${inst}.last-death-class" 2>/dev/null || true)
+    [[ "$cls" == "infra" ]] || fail "$label: last-death-class want infra got '$cls'"
+
+    # shellcheck disable=SC1091
+    source "$repo_root/lib/seat-lib.sh"
+    if [[ "$expect_bench" == "no" ]]; then
+        [[ ! -f "$scratch/spawnfail_calls" ]] \
+          || fail "$label: mark_seat_spawn_fail was called for a session with $ntools tool calls: $(cat "$scratch/spawnfail_calls")"
+        grep -q "HANG WATCHDOG kill after $ntools tool calls" "$STATE_DIR/watch.log" "$scratch/run.err" 2>/dev/null \
+          || fail "$label: slow-session log line missing: $(grep -h 'pi-issue-run' "$STATE_DIR/watch.log" 2>/dev/null | tail -n 5)"
+        seat_usable "$np" "$nm" \
+          || fail "$label: seat $np/$nm became unusable after a working session was watchdog-killed"
+        ok "$label: rc=124 with $ntools tool calls -> no bench, seat $np/$nm stays usable, death class infra"
+    else
+        [[ -f "$scratch/spawnfail_calls" ]] \
+          || fail "$label: mark_seat_spawn_fail was NOT called for a 0-tool-call hang (true hang must still bench)"
+        grep -qF "$np/$nm" "$scratch/spawnfail_calls" \
+          || fail "$label: spawn-fail not marked for $np/$nm: $(cat "$scratch/spawnfail_calls")"
+        grep -q 'mid-session-death:rc=124' "$scratch/spawnfail_calls" \
+          || fail "$label: bench reason is not mid-session-death:rc=124: $(cat "$scratch/spawnfail_calls")"
+        if seat_usable "$np" "$nm"; then
+            fail "$label: seat_usable $np/$nm still usable after a 0-tool-call hang bench"
+        fi
+        ok "$label: rc=124 with 0 tool calls -> mark_seat_spawn_fail bench kept, seat $np/$nm unusable"
+    fi
+}
+
+run_watchdog_scenario "wd-slow-3883" 7 no
+run_watchdog_scenario "wd-hang-3883" 0 yes
 
 ok "pi-issue-run #2133 hang/stall detectors fire and bench the seat via mark_seat_hang_bench"

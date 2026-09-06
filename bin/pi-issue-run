@@ -640,7 +640,31 @@ if (( rc != 0 )); then
     # Bench it exactly like the no-op path: mark_seat_spawn_fail writes a
     # transient_fault ledger with usable_at = now + SPAWN_FAIL_BACKOFF_S, which
     # survives the reap (the ledger is the DURABLE avoidance authority).
-    if (( ! spawn_fail_triggered )) && ! is_quota_cap_error "$out_file" "$err_file" && is_mid_session_death "$err_file"; then
+    # fleet-ops#3883: a hang-watchdog kill (rc=124) of a session that made
+    # tool calls is a SLOW session, not a seat fault. The wrapper itself
+    # appends "killed" to $err_file on rc=124, so is_mid_session_death
+    # matched every watchdog kill and the escalating spawn-fail bench emptied
+    # the pool (ollama count=5 -> 3600s bench, usable_light_slots=0,
+    # 2026-09-06; the killed #3322 session had 155 tool calls). The seat
+    # retirement rule classes rc=124 as infrastructure, never seat yield.
+    # Only an rc=124 with 0 tool calls (a true hang) still benches.
+    # Count from the session file pi-issue-run pinned (--session-dir), using
+    # both conventions in the tree: lib/seat-lib.sh session_tool_calls counts
+    # toolResult messages; the in-process seam below counts "type":"toolCall".
+    _wd_tools=0
+    if (( rc == 124 )); then
+        _wd_sess=$(find "$session_dir" -maxdepth 1 -name '*.jsonl' -type f -printf '%T@ %p\n' 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2-)
+        if [[ -n "$_wd_sess" && -f "$_wd_sess" ]]; then
+            _wd_tools=$(session_tool_calls "$_wd_sess" 2>/dev/null || echo 0)
+            _wd_calls=$(grep -ac '"type":"toolCall"' "$_wd_sess" 2>/dev/null || echo 0)
+            [[ "$_wd_tools" =~ ^[0-9]+$ ]] || _wd_tools=0
+            [[ "$_wd_calls" =~ ^[0-9]+$ ]] || _wd_calls=0
+            (( _wd_calls > _wd_tools )) && _wd_tools=$_wd_calls
+        fi
+    fi
+    if (( rc == 124 )) && (( _wd_tools > 0 )); then
+        seat_log "pi-issue-run: $inst HANG WATCHDOG kill after ${_wd_tools} tool calls on $np/$nm (${spawn_elapsed_s}s) — slow session, not a seat fault; no bench (fleet-ops#3883)"
+    elif (( ! spawn_fail_triggered )) && ! is_quota_cap_error "$out_file" "$err_file" && is_mid_session_death "$err_file"; then
         seat_log "pi-issue-run: $inst mid-session provider death (rc=$rc) on $np/$nm after ${spawn_elapsed_s}s — benching seat ${SPAWN_FAIL_BACKOFF_S}s"
         if mark_seat_spawn_fail "$np" "$nm" "pi-issue:$inst:mid-session-death:rc=$rc"; then
             seat_log "pi-issue-run: $inst seat $np/$nm marked; next restart or intake re-claim will skip it via pick_seat"
