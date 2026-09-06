@@ -178,14 +178,13 @@ vote_at_epoch() {
 recast_count() {
     # Counts prior SKIP recasts for a role: <role>.vote.skip-* files in the
     # candidate dir. The .skip-exhausted marker does NOT match this glob.
-    local repo="$1" candidate="$2" role="$3" dir n f
+    local repo="$1" candidate="$2" role="$3" dir n
     dir="$STATE_DIR/$repo/$candidate"
     [ -d "$dir" ] || { printf '0\n'; return; }
-    n=0
     shopt -s nullglob
-    for f in "$dir/$role.vote.skip-"*; do
-        n=$(( n + 1 ))
-    done
+    # shellcheck disable=SC2034 # n counts the recast files; contents unused.
+    recast_files=( "$dir/$role.vote.skip-"* )
+    n=${#recast_files[@]}
     shopt -u nullglob
     printf '%s\n' "$n"
 }
