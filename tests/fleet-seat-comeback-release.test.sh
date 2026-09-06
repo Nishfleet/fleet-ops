@@ -1065,6 +1065,16 @@ _parked_hc=$(jq -r '.health_class // ""' "$RETSEAT/devin__glm-5-2.json" 2>/dev/n
 _parked_dead=$(jq -r '.seat_dead // false' "$RETSEAT/devin__glm-5-2.json" 2>/dev/null || true)
 [[ "$_parked_dead" == "true" ]] \
   || fail "13b: parked ledger must be seat_dead=true, got $_parked_dead"
+# fleet-ops#3603: a corpse-retired ledger must carry a bench_reason so the
+# fail-open corpse detector (which flags bench_reason=null as the fail-open
+# corpse shape) never re-files a durably-benched corpse. The cap=0 corpse row
+# (config/seat-caps.json) is the real bench; bench_reason makes it visible.
+_parked_br=$(jq -r '.bench_reason // ""' "$RETSEAT/devin__glm-5-2.json" 2>/dev/null || true)
+[[ -n "$_parked_br" ]] \
+  || fail "13b: parked ledger must carry a bench_reason (fail-open corpse shape, fleet-ops#3603): $_parked_br"
+_parked_lec=$(jq -r '.last_error_class // ""' "$RETSEAT/devin__glm-5-2.json" 2>/dev/null || true)
+[[ "$_parked_lec" == "corpse_retired" ]] \
+  || fail "13b: parked ledger must carry last_error_class=corpse_retired, got '$_parked_lec'"
 [[ -f "$RETDIR/devin__glm-5-2.json" ]] \
   || fail "13b: corpse ledger must land in seats-corpse-retired-<ts>/: $(ls -la "$TMPD" 2>&1)"
 grep -q "^fleet_seat_comeback_release_retired_total 1$" "$TMPD/prom13b.prom" \

@@ -5792,9 +5792,18 @@ write_parked_ledger() {
     # holds the seat off the ladder (and seat_dead=true is the terminal block).
     far_future=$(date -u -d "@$((now_s + 315360000))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
     tmp="$path.park.$$.$RANDOM.tmp"
+    # fleet-ops#3603: a corpse ledger that carries NO bench_reason reads as the
+    # fail-open corpse shape (fleet-ops#1890/#2712) to the seat-health census /
+    # corpse snapshot, which re-files the same durably-benched corpse ticket
+    # every tick as "bench_reason=null". Record the durable bench literal here
+    # so a corpse-retired ledger (cap=0 + intentional_cap_zero=corpse is the
+    # real bench; pick_seat never offers it) is recognisable as benched, never
+    # fail-open.
+    br="corpse-retired: cap=0 corpse bench, pick_seat never offers (durable, fleet-ops#2716/#3669)"
     if ! jq -nc \
         --arg provider "$p" --arg model "$m" \
         --arg observed "$now_utc" --arg usable "$far_future" \
+        --arg br "$br" \
         --argjson seat_dead true --argjson poison_ladder false \
         '{
           provider:$provider, model:$model,
@@ -5804,6 +5813,8 @@ write_parked_ledger() {
           observed_at:$observed,
           source:"corpse_retirement",
           failure_mode:"corpse_retired",
+          last_error_class:"corpse_retired",
+          bench_reason:$br,
           bench_until:$usable,
           usable_at:$usable,
           consecutive_failure_count:0,
