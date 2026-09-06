@@ -453,6 +453,44 @@ def gh_comment(repo: str, number: int, body: str) -> tuple[int, str]:
     return proc.returncode, (proc.stdout or "").strip() or (proc.stderr or "").strip()
 
 
+def issue_has_dup_marker(repo: str, number: int, canon_ref: str) -> bool:
+    """True if the issue already carries a `possible-duplicate-of: <canon_ref>`
+    marker comment (fleet-ops#3728).
+
+    The close-duplicates sweep re-ran every tick and re-posted the SAME
+    marker on protected duplicates (~20 identical comments on #3728)
+    because a protected canonical can never be closed, so the comment-only
+    branch fired every run with no memory of the prior marker. This lets
+    the sweep skip an issue it has already marked for that canonical.
+
+    Fail-open: a gh error returns False (no marker seen) so the marker is
+    still posted — the idempotency is a best-effort spam cut, not a gate
+    that can suppress the duplicate signal on a transient gh failure.
+    """
+    try:
+        proc = subprocess.run(
+            [gh_bin(), "issue", "view", str(number), "--repo", repo,
+             "--json", "comments"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if proc.returncode != 0:
+        return False
+    try:
+        data = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError:
+        return False
+    needle = f"possible-duplicate-of: {canon_ref}"
+    for c in data.get("comments") or []:
+        if isinstance(c, dict) and needle in (c.get("body") or ""):
+            return True
+    return False
+
+
 def gh_close(repo: str, number: int, comment: str) -> tuple[int, str]:
     proc = subprocess.run(
         [gh_bin(), "issue", "close", str(number), "--repo", repo, "--comment", comment],
@@ -913,6 +951,24 @@ def cmd_close_duplicates(args: argparse.Namespace) -> int:
                          "reason": reason, "score": score}
                     )
                     commented += 1
+                    continue
+                # fleet-ops#3728: skip re-posting a possible-duplicate marker
+                # the issue already carries for this canonical. Without this
+                # the sweep re-commented every tick on protected duplicates
+                # (a protected canonical can never close, so the comment-only
+                # branch fired every run) and accumulated ~20 identical
+                # marker comments on #3728. One marker is enough; the
+                # duplicate signal is already on the issue.
+                if issue_has_dup_marker(repo, m["number"], canon_ref):
+                    print(
+                        f"[close-duplicates] already-marked {ref} -> {canon_ref} ({reason}); skip",
+                        file=sys.stderr,
+                    )
+                    actions.append(
+                        {"ref": ref, "canonical": canon_ref, "action": "skip",
+                         "reason": f"already-marked:{reason}", "score": score}
+                    )
+                    skipped += 1
                     continue
                 rc, out = gh_comment(repo, m["number"], body)
                 if rc == 0:
