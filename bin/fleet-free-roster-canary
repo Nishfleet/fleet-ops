@@ -372,6 +372,23 @@ for pid in "${free_providers[@]}"; do
     # Detector 2b: wired free-form slug gone from catalog -> bench stale lane.
     for slug in "${!allow_set[@]}"; do
         is_free_form "$slug" || continue
+        # A slug that is ALREADY benched at cap=0 (with a dated reason /
+        # intentional_cap_zero marker) is the bench row itself, not a live
+        # wired lane that went stale — so it must never be re-filed as
+        # newly-stale (fleet-ops#3864). Several production-lock rows sit at
+        # cap=0 by design (fleet-ops#811 x-preview-f-free, #744
+        # deepseek-v4-flash-free, #1224 muse-spark-1.2-contributor-free) and
+        # their signal can never clear (the row stays allowlisted and the
+        # slug never reappears), so filing them yields a permanent, never-
+        # closing duplicate on every tick. Read the cap from the allowlist
+        # row (legacy scalar form or {"cap": N, ...} object form).
+        _slug_cap=$(jq -r --arg id "$pid" --arg s "$slug" \
+            '(.providers[$id].models[$s] // "missing") | if type == "object" then (.cap // -1) else . end' \
+            "$SEAT_CAPS_JSON" 2>/dev/null || echo -1)
+        if [[ "$_slug_cap" == "0" ]]; then
+            log "detector2b: $pid/$slug already benched at cap=0; skip stale filing"
+            continue
+        fi
         if ! printf '%s\n' "$cat_slugs" | grep -qxF "$slug"; then
             if (( filed >= FILE_CAP )); then
                 log "cap reached ($FILE_CAP): deferring stale $pid/$slug to a later tick"

@@ -12,6 +12,7 @@
 #      (discovery must not fail the heartbeat).
 #   6. Billing slug (no -free / no *-pass/) in catalog is not a discovery.
 #   7. Stale wired free slug gone from catalog -> exit 0, files bench.
+#   7a. Already-benched (cap=0) stale slug is not re-filed (fleet-ops#3864).
 #   8. Per-tick file cap throttles filings.
 #   9. Dedup: open issue already carrying the marker -> no second create.
 #  10. pi missing -> exit 1 (watcher broken, fail loud).
@@ -275,6 +276,41 @@ grep -q 'FREE-ROSTER-STALE' "$triage" || fail "scenario7: missing STALE"
 grep -q 'hy3-free' "$triage" || fail "scenario7: must name the stale slug"
 grep -q 'issue create' "$gh_log" || fail "scenario7: must auto-file bench"
 ok "scenario7: stale wired free slug auto-files a bench ticket"
+
+# --- 7a. already-benched (cap=0) stale slug is not re-filed (fleet-ops#3864) ---
+# A free-form slug that is ALREADY benched at cap=0 (the {"cap":0,
+# "intentional_cap_zero":...} row) is the bench itself, not a live wired lane
+# that went stale. The production-lock rows (fleet-ops#811 x-preview-f-free,
+# #744 deepseek-v4-flash-free, #1224 muse-spark) sit at cap=0 by design and
+# their signal can never clear, so filing them yields a permanent duplicate
+# on every tick. The canary must skip them. A live cap>0 lane that went
+# stale must STILL be filed (proves we do not skip the whole stale check).
+: >"$gh_log"; : >"$triage"
+base_entitled
+write_caps <<'JSON'
+{ "free_providers_in_order": ["opencode"],
+  "providers": { "opencode": { "cap": 1, "class": "free", "models": {
+      "hy3-free": { "cap": 0, "intentional_cap_zero": "stale",
+                     "reason": "2026-08-28 provider dropped the slug" },
+      "mimo-v2.5-free": 1 } } } }
+JSON
+write_catalog <<'TSV'
+opencode	minimax-m3
+TSV
+run_canary
+[[ "$env_rc" == "0" ]] || fail "scenario7a: expected rc=0, got $env_rc ($env_out)"
+grep -q 'detector2b: opencode/hy3-free already benched at cap=0' <<<"$env_out" \
+  || fail "scenario7a: must log the benched skip"
+grep -q 'FREE-ROSTER-STALE' "$triage" \
+  || fail "scenario7a: cap>0 stale lane must still be flagged STALE"
+grep -q 'mimo-v2.5-free' "$triage" \
+  || fail "scenario7a: must still name the live stale slug"
+grep -q 'issue create' "$gh_log" \
+  || fail "scenario7a: must still auto-file bench for the cap>0 stale lane"
+if grep -q 'hy3-free' "$gh_log"; then
+  fail "scenario7a: must not file a stale ticket for the already-benched slug"
+fi
+ok "scenario7a: already-benched cap=0 stale slug is skipped; live stale lane still filed"
 
 # --- 8. per-tick file cap throttles filings -------------------------------
 : >"$gh_log"; : >"$triage"
