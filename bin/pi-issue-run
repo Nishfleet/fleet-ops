@@ -645,6 +645,51 @@ if (( rc != 0 )); then
         fi
     fi
     seat_log "pi-issue-run: $inst pi exited $rc on $np/$nm (${spawn_elapsed_s}s, spawn_fail=$spawn_fail_triggered) — systemd will restart with a new seat"
+    # fleet-ops#3766: fast-death error classification. A fast death (rc!=0,
+    # 0 tool calls) with NO error text flaps the seat between probe-healthy
+    # and run-dead — the seat retirement rule needs an ERROR CLASS before any
+    # cap change, and with no classifiable literal the seat can neither be
+    # benched honestly nor cleared. Capture the last provider/transport error
+    # line (pi stderr tail + the session jsonl's last error/message field,
+    # already surfaced into $err_file by the #3238 block above) into a
+    # synthetic PACKET-VERDICT line and into the seat ledger's
+    # last_error_class/bench_reason so every fast death carries a classifiable
+    # literal. An unclassifiable death is error_class=unknown with the raw
+    # tail, never healthy. If no detector above benched (error_class=unknown),
+    # bench via mark_seat_spawn_fail so the seat stops flapping.
+    _sess_last=$(find "$session_dir" -maxdepth 1 -name '*.jsonl' -type f -printf '%T@ %p\n' 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2-)
+    _tool_calls=0
+    [[ -n "$_sess_last" && -f "$_sess_last" ]] && _tool_calls=$(session_tool_calls "$_sess_last")
+    if (( _tool_calls == 0 )); then
+        _dec_out=$(classify_death_error "$out_file" "$err_file" "$_sess_last" 2>/dev/null || true)
+        _dec_cls=$(printf '%s\n' "$_dec_out" | sed -n '1p')
+        _dec_lit=$(printf '%s\n' "$_dec_out" | sed -n '2p')
+        [[ -n "$_dec_cls" ]] || _dec_cls="unknown"
+        # Append a synthetic verdict line to stdout so the audit trail
+        # (watch.log / the .out packet) carries the classifiable literal.
+        # Only if the agent did not already write a PACKET-VERDICT line.
+        if ! grep -qE 'PACKET-VERDICT[[:space:]]+tools=' "$out_file" 2>/dev/null; then
+            printf 'PACKET-VERDICT tools=0 class=no-tools error_class=%s error_tail=%s\n' "$_dec_cls" "$_dec_lit" >>"$out_file" 2>/dev/null || true
+        fi
+        # Merge last_error_class + bench_reason into the seat ledger (best-effort).
+        _seat_merge_error_class "$np" "$nm" "$_dec_cls" "$_dec_lit" 2>/dev/null || true
+        # Fallthrough bench: if no detector above benched (error_class=unknown),
+        # bench via mark_seat_spawn_fail so the seat stops flapping. Re-merge the
+        # error_class onto the freshly-written ledger afterward.
+        if [[ "$_dec_cls" == "unknown" && "$spawn_fail_triggered" == "0" ]] \
+            && ! is_quota_cap_error "$out_file" "$err_file" \
+            && ! is_overload_error "$out_file" "$err_file" \
+            && ! is_mid_session_death "$err_file"; then
+            seat_log "pi-issue-run: $inst FAST DEATH error_class=unknown on $np/$nm (rc=$rc, 0 tools, ${spawn_elapsed_s}s) — benching seat ${SPAWN_FAIL_BACKOFF_S}s (no detector matched; raw tail: ${_dec_lit:0:120})"
+            if mark_seat_spawn_fail "$np" "$nm" "pi-issue:$inst:fast-death:error_class=unknown:rc=$rc"; then
+                seat_log "pi-issue-run: $inst seat $np/$nm benched (fast-death unknown); next restart will skip via pick_seat"
+                _seat_merge_error_class "$np" "$nm" "$_dec_cls" "$_dec_lit" 2>/dev/null || true
+            else
+                seat_log "pi-issue-run: $inst WARN: fast-death bench marker write FAILED for $np/$nm — relying on tried-seats exclusion"
+            fi
+        fi
+        seat_log "pi-issue-run: $inst fast-death classified error_class=$_dec_cls on $np/$nm (0 tools, rc=$rc) — tail: ${_dec_lit:0:120}"
+    fi
     # fleet-ops#3310: classify this death. Infra deaths (hang/signal/timeout/
     # ceiling) increment the separate infra-death counter, not the WORK cap;
     # only real work failures consume the reclaim-count cap that switches seat

@@ -150,6 +150,9 @@ bash "$here/pi-issue-run-failure-reason.test.sh"
 # behavioural test, now green. Same P14-host constraint as above.
 bash "$here/pi-issue-run-scratch-home-identity.test.sh"
 bash "$here/pi-issue-run-tried-reset.test.sh"
+# fleet-ops#3766: fast-death error classification replay drill. Same P14-host
+# constraint as above (worker App cannot push workflow files to list in ci.yml).
+bash "$here/pi-issue-run-fast-death-class.test.sh"
 # fleet-ops#1233: legal-basics inventory lock. Named ci.yml step is out of
 # band for the worker App (Contents cannot push workflow files).
 bash "$here/legal-basics-surfaces.test.sh"
