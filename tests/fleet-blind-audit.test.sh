@@ -173,8 +173,14 @@ printf '%s\n' '{"candidates":[]}' >"$scratch/empty-seams.json"
 # below actually prints. Under set -e a failing bin would exit the test
 # script silently before rc=$? runs (the fleet-ops#280 "no FAIL line" symptom).
 rc=0
+# fleet-ops#3618: set a dummy GH_TOKEN so bin/fleet-blind-audit and
+# bin/fleet-issue-file skip their worker-token mint + PATH rewrite (the
+# block guarded by `-z GH_TOKEN && GITHUB_ACTIONS != true && GH == gh`).
+# Without this, a VPS run shadows $scratch/fakebin/gh behind the real gh
+# and files real gap-audit issues from the test fixtures (#3617/#3618).
 PATH="$scratch/fakebin:$PATH" \
   GH_CREATE_LOG="$scratch/gh-create.log" \
+  GH_TOKEN="test-no-real-gh" \
   AUDIT_REPO="Nishfleet/fleet-ops" \
   AUDIT_REPO_ROOT="$repo_root" \
   AUDIT_STATE_DIR="$scratch/state" \
