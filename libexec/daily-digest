@@ -233,6 +233,46 @@ fi
 disk_pct=$(df -P / 2>/dev/null | awk 'NR==2 {gsub("%",""); print $5}')
 disk_line="• Disk on / — ${disk_pct}% used."
 
+# --- Section 8: spend last 24h (fleet_seat_spend_usd) -------------------------
+# fleet-ops#3283 (merged, PR #3545) exports fleet_seat_spend_usd{provider,day}
+# as a per-UTC-day gauge: each series holds that whole day's USD total, so a
+# delta/rate over it is always ~0. "Last 24h" is therefore the sum of the
+# current and previous UTC-day buckets per provider (the 09:00 IST run sees
+# ~3.5h of today + all of yesterday). Reads the same Prometheus the alert
+# section uses. Absent metric -> graceful line.
+today_utc="$(date -u +%F)"
+yday_utc="$(date -u -d 'yesterday' +%F)"
+spend_json="$(curl -sS --max-time 5 --get "$prom_url/api/v1/query" \
+    --data-urlencode "query=sum by (provider) (fleet_seat_spend_usd{day=~\"$today_utc|$yday_utc\"})" \
+    2>/dev/null || echo '{}')"
+spend_line="$(SPEND_JSON="$spend_json" python3 <<'PY'
+import json, os
+raw = os.environ.get("SPEND_JSON") or "{}"
+try:
+    results = json.loads(raw).get("data", {}).get("result", [])
+except Exception:
+    results = []
+if not results:
+    print("• Spend last 24h: not available yet.")
+    raise SystemExit(0)
+items = []
+total = 0.0
+for r in results:
+    try:
+        v = float(r.get("value", [0, "0"])[1])
+    except Exception:
+        v = 0.0
+    lbl = r.get("metric", {}).get("provider") or "provider"
+    total += v
+    items.append((lbl, v))
+parts = [f"{lbl} ${v:.2f}" for lbl, v in sorted(items, key=lambda iv: -iv[1]) if v > 0.005]
+if not parts:
+    print("• Spend last 24h: $0.00.")
+else:
+    print(f"• Spend last 24h: ${total:.2f} ({', '.join(parts)}).")
+PY
+)"
+
 # --- Compose ------------------------------------------------------------------
 # Plain language. No jargon. Short. Header names what it is and when.
 # (datestr is 09:00 IST of the trigger day, or NOW for an ad-hoc run.)
@@ -249,6 +289,7 @@ $repair_line
 $seat_line
 $quality_line
 $disk_line
+$spend_line
 
 Reply to this message if you want anything investigated. Otherwise, on to the day."
 
@@ -261,4 +302,7 @@ Reply to this message if you want anything investigated. Otherwise, on to the da
 # the next digest.
 # --json so we capture the Telegram message_id for the systemd journal
 # (proof of delivery; never print the bot token).
-exec /home/nish/.local/bin/hermes send -t telegram --urgent --class daily-digest --json "$body" </dev/null
+# HERMES_BIN is a test seam (tests/daily-digest.test.sh points it at a stub so
+# the compose is proven without texting Nish); defaults to the sanctioned texter.
+HERMES_BIN="${HERMES_BIN:-/home/nish/.local/bin/hermes}"
+exec "$HERMES_BIN" send -t telegram --urgent --class daily-digest --json "$body" </dev/null

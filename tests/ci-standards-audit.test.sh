@@ -596,3 +596,11 @@ bash "$here/pi-audit-tally-escalate-senior.test.sh"
 # cannot push .github/workflows/**). Hermetic (stub pi + scratch vote dir,
 # no gh/prometheus/systemd).
 bash "$here/pi-audit-run-strip-preamble.test.sh"
+
+# fleet-ops#3285: the daily-digest spend-line replay drill. The test landed
+# in this PR without a ci.yml listing (the worker App cannot push
+# .github/workflows/**), so it is hosted here so P14 runs it. The named pin
+# in tests/p14-test-listing-gate.test.sh is the class-prevention so a future
+# drop of this host line fails by name. Hermetic (mock PATH + canned
+# Prometheus response + capture hermes stub, no gh/prometheus/systemd).
+bash "$here/daily-digest.test.sh"
