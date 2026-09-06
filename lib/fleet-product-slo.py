@@ -202,7 +202,7 @@ query($cursor: String) {
         mergedAt
         repository { nameWithOwner }
         closingIssuesReferences(first: 5) {
-          nodes { number createdAt labels(first: 20) { name } }
+          nodes { number createdAt labels(first: 20) { nodes { name } } }
         }
       }
     }
