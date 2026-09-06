@@ -1046,11 +1046,13 @@ fixtures = {
         "http_status": 402, "health_class": "quota_exhausted", "seat_dead": False,
         "usable_at": PAST, "bench_until": None,
     },
-    # 4. rate_limited with EXPIRED wall -> RELEASED.
+    # 4. rate_limited with EXPIRED wall -> RELEASED. Carries cfc=15 (in the
+    #    [10, 25) never-released window) so the phantom-key test below proves a
+    #    real engaged seat still counts while the phantom is excluded.
     "opencode__mimo-v2.5-free.json": {
         "provider": "opencode", "model": "mimo-v2.5-free",
         "http_status": 429, "health_class": "rate_limited", "seat_dead": False,
-        "usable_at": PAST, "bench_until": None,
+        "usable_at": PAST, "bench_until": None, "consecutive_failure_count": 15,
     },
     # 5. corpse (seat_dead) with EXPIRED wall -> never released, never
     #    comeback-overdue (FleetDeadCredentialSeats owns corpses).
@@ -1080,6 +1082,19 @@ fixtures = {
         "http_status": 429, "health_class": "rate_limited", "seat_dead": False,
         "usable_at": iso(-300), "bench_until": None,
     },
+    # 9. fleet-ops#3661: a PHANTOM seat key (provider/model NOT an
+    #    allowlisted seat-caps.json models key) past its wall clock, with a
+    #    high consecutive_failure_count. Comeback-release skips it with the
+    #    SEAT-KEY-INVALID guard, so it can never be unwalled by the organ and
+    #    must NOT count as overdue or never-released — otherwise the
+    #    seat-comeback alerts fire indefinitely until a worker manually
+    #    retires the phantom (the lived openrouter/deepseek-v4-pro-0813 case,
+    #    retired 2026-09-06 via alert-repair).
+    "opencode__phantom-gone-free.json": {
+        "provider": "opencode", "model": "phantom-gone-free",
+        "http_status": 429, "health_class": "rate_limited", "seat_dead": False,
+        "usable_at": PAST, "bench_until": None, "consecutive_failure_count": 15,
+    },
 }
 for name, body in fixtures.items():
     (Path(seat_dir) / name).write_text(json.dumps(body))
@@ -1102,6 +1117,12 @@ print("OK: _seat_is_released mirrors seat_usable fail-open (fleet-ops#2407)")
 
 # --- _read_comeback_overdue over the scratch ledger ---
 m.SEAT_LEDGER = Path(seat_dir)
+# Wire seat-caps BEFORE the comeback collectors so the fleet-ops#3661
+# phantom-key guard reads the scratch config deterministically — CI has no
+# /home/nish/... paths, and fail-open on a missing config would leak the
+# phantom into the counts (catching the real default path only locally).
+m.SEAT_CAPS_DEFAULT = Path(seat_caps)
+m.SEAT_CAPS_FALLBACK = Path(seat_caps)
 cb_n, cb = m._read_comeback_overdue()
 ids = {f"{s['provider']}__{s['model']}" for s in cb}
 # Past-wall non-dead non-excluded seats: commandcode minimax (overload past
@@ -1116,7 +1137,29 @@ assert not any(i.startswith("opencode__nemotron") for i in ids), (
 assert not any("grok-4.5" in i for i in ids), "spawn-bench leaked into comeback"
 assert not any(i.startswith("test__") for i in ids), "test__ leaked into comeback"
 assert not any("muse-spark" in i for i in ids), "corpse leaked into comeback"
-print("OK: _read_comeback_overdue counts past-wall seats, excludes bench/test/corpse + mid-cycle (<1 interval)")
+# A phantom seat key (not in seat-caps.json models) must be excluded even when
+# its wall is expired (fleet-ops#3661 SEAT-KEY-INVALID consistency).
+assert not any("phantom-gone-free" in i for i in ids), \
+    "phantom seat key leaked into comeback-overdue"
+print("OK: _read_comeback_overdue counts past-wall seats, excludes bench/test/corpse/mid-cycle + phantom keys")
+
+# --- _read_never_released over the scratch ledger ---
+# The phantom fixture has cfc=15 (inside the [10, 25) never-released window) as
+# a non-corpse non-healthy seat past its wall. With the fleet-ops#3661
+# consistency guard it must be excluded even though every window condition
+# (fc count, wall passed, non-corpse) would otherwise count it — comeback-_
+# release can never unwind a phantom, so it is not a live comeback signal.
+nr_n, nr = m._read_never_released()
+nr_ids = {f"{s['provider']}__{s['model']}" for s in nr}
+# opencode/mimo-v2.5-free (cfc=15, past wall, valid caps key) must still count;
+# the phantom (cfc=15, past wall, NOT a valid caps key) must be excluded even
+# though every window condition would otherwise count it — comeback-release can
+# never unwind a phantom, so it is not a live comeback signal.
+assert nr_n == 1, f"never_released_n must be 1 (mimo only), got {nr_n}: {nr_ids}"
+assert {"opencode__mimo-v2.5-free"} <= nr_ids, nr_ids
+assert not any("phantom-gone-free" in i for i in nr_ids), \
+    f"phantom seat key leaked into never-released (got {nr_ids})"
+print("OK: _read_never_released excludes phantom seat keys, keeps real engaged seats (SEAT-KEY-INVALID consistency)")
 
 # --- availability rollup: released seats count healthy ---
 # Seed every enrolled provider (cap>0) with a healthy fixture ledger, then
@@ -1767,6 +1810,22 @@ fixtures = {
 }
 for name, body in fixtures.items():
     (Path(seat_dir) / name).write_text(json.dumps(body))
+
+# Hermetic seat-caps so the fleet-ops#3661 phantom-key guard treats these
+# synthetic opencode fixtures as REAL enrolled seats (their models are not in
+# the production config/seat-caps.json). Without this the guard would exclude
+# opencode/no-wall + opencode/past-wall as phantoms and the future-wall
+# test would silently pass on 0 fixtures, not on genuine future-wall exclusion.
+nr_caps = Path(seat_dir) / "seat-caps.json"
+nr_caps.write_text(json.dumps({
+    "providers": {"opencode": {"cap": 3, "class": "free", "models": {
+        "no-wall": {"cap": 1}, "past-wall": {"cap": 1},
+        "future-wall": {"cap": 1}, "future-wall-low": {"cap": 1},
+        "corpse": {"cap": 1}, "healthy": {"cap": 1},
+    }}}
+}))
+m.SEAT_CAPS_DEFAULT = nr_caps
+m.SEAT_CAPS_FALLBACK = Path("/nonexistent/seat-caps.json")
 
 m.SEAT_LEDGER = Path(seat_dir)
 n, seats = m._read_never_released()

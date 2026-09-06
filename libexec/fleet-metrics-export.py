@@ -2821,6 +2821,43 @@ def _seat_is_released(data, now=None):
     return end < (now if now is not None else time.time())
 
 
+def _seat_key_in_caps(provider, model):
+    """True when provider/model is an allowlisted key in seat-caps.json.
+
+    Mirrors lib/seat-lib.sh `_seat_key_in_caps` (the SEAT-KEY-INVALID guard,
+    fleet-ops#3661): a model key present under `.providers.<p>.models` counts
+    as a real seat even when its cap is 0 (a bench / production-lock row); a
+    key absent from that models map is a PHANTOM (probe-output filename
+    fragment, a retired slug still holding a ledger, provider/model pairs the
+    router never allows). The comeback-release organ refuses to probe or
+    release phantoms, so they can never be unwalled by it — the metrics must
+    not count them as overdue or never-released, or the seat-comeback alerts
+    fire indefinitely until a worker manually retires the phantom.
+
+    Returns True (fail-open) when the config is missing/unparseable so a
+    broken seat-caps can never silently suppress a real alert — same shape as
+    the other seat-caps reads in this module.
+    """
+    for path in (SEAT_CAPS_DEFAULT, SEAT_CAPS_FALLBACK):
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        providers = data.get("providers")
+        if not isinstance(providers, dict):
+            continue
+        if provider not in providers:
+            return False
+        pcfg = providers.get(provider)
+        if not isinstance(pcfg, dict):
+            return False
+        models = pcfg.get("models")
+        if not isinstance(models, dict):
+            return False
+        return model in models
+    return True
+
+
 def _read_comeback_overdue():
     """Seats still classed non-healthy whose wall clock has already passed.
 
@@ -2876,6 +2913,15 @@ def _read_comeback_overdue():
             if data.get("seat_dead") is True:
                 continue
             if data.get("health_class") == "healthy":
+                continue
+            # fleet-ops#3661 (consistency with seat-lib's SEAT-KEY-INVALID
+            # guard): a ledger whose provider/model is not a valid
+            # seat-caps.json models key is a PHANTOM. Comeback-release
+            # refuses to probe or release phantoms, so they can never be
+            # unwalled here — counting them as overdue just fires this alert
+            # until a worker manually retires the phantom. A phantom is
+            # cleanup-owned, never a live-seat comeback signal; skip it.
+            if not _seat_key_in_caps(data.get("provider", ""), data.get("model", "")):
                 continue
             end = _seat_wall_end_epoch(data)
             # No wall clock: nothing to come back from — not an overdue
@@ -3227,6 +3273,16 @@ def _read_never_released():
                 continue  # corpses are counted elsewhere (FleetDeadCredentialSeats)
             if data.get("health_class") == "healthy":
                 continue  # recovered
+            # fleet-ops#3661 (consistency with seat-lib's SEAT-KEY-INVALID
+            # guard): a ledger whose provider/model is not a valid
+            # seat-caps.json models key is a PHANTOM and is never probed or
+            # released by comeback-release, so its consecutive-failure window
+            # can never resolve here — counting it fires
+            # FleetSeatComebackNeverReleased until a worker manually retires
+            # the phantom. A phantom is cleanup-owned, never a live-seat
+            # comeback signal; skip it.
+            if not _seat_key_in_caps(data.get("provider", ""), data.get("model", "")):
+                continue
             # fleet-ops#2752: a seat whose wall clock (bench_until ??
             # usable_at) is still in the FUTURE is legitimately walled —
             # it will self-release when the wall passes (the comeback-
