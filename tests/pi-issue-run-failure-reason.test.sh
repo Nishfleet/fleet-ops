@@ -128,3 +128,11 @@ ok "class lock rejects a pi-issue-run test that forgot the App-identity stub"
 grep -Fq 'pi-issue-run-failure-reason.test.sh' "$here/worker-token-fail-closed.test.sh" \
   || fail "tests/worker-token-fail-closed.test.sh must invoke this file (P14 host, fleet-ops#568)"
 ok "failure-reason lock is wired through tests/worker-token-fail-closed.test.sh"
+
+# fleet-ops#3873: host the per-seat-timeout regression test here so it is
+# in the P14 reachable set without a ci.yml edit (worker App has no
+# Workflows scope). This file already scans every pi-issue-run-*.test.sh
+# for the App-identity stub (the #568 lock above), so hosting the sibling
+# here is the established pattern.
+bash "$here/pi-issue-run-per-seat-timeout.test.sh"
+ok "hosted pi-issue-run-per-seat-timeout.test.sh (P14 reachable, fleet-ops#3873)"

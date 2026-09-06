@@ -595,6 +595,22 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-ops-2772-claim-loop-gate\.
   || fail "fleet-ops-2772-claim-loop-gate.test.sh must not be a known orphan (fleet-ops#2772)"
 ok "fleet-ops-2772-claim-loop-gate.test.sh is pinned in the P14 reachable set (fleet-ops#2772)"
 
+# fleet-ops#3873: hard-pin the host line for the per-seat-timeout test. It
+# is hosted from pi-issue-run-failure-reason.test.sh (already in P14 via
+# worker-token-fail-closed.test.sh) because the worker App has no
+# Workflows scope to add a ci.yml line. Hosting on the #568 failure-reason
+# host mirrors pi-issue-run-tried-reset.test.sh. Named pin so a future drop
+# of the host line cannot park the test on known_orphans to silence the
+# generic $bad[] message — it fails by name here first.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/pi-issue-run-per-seat-timeout\.test\.sh"?' \
+  "$here/pi-issue-run-failure-reason.test.sh" \
+  || fail "pi-issue-run-failure-reason.test.sh must bash-invoke pi-issue-run-per-seat-timeout.test.sh (fleet-ops#3873)"
+[[ -n "${reachable[pi-issue-run-per-seat-timeout.test.sh]:-}" ]] \
+  || fail "pi-issue-run-per-seat-timeout.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#3873)"
+[[ -z "${known_orphan_set[pi-issue-run-per-seat-timeout.test.sh]:-}" ]] \
+  || fail "pi-issue-run-per-seat-timeout.test.sh must not be a known orphan (fleet-ops#3873)"
+ok "pi-issue-run-per-seat-timeout.test.sh is pinned in the P14 reachable set (fleet-ops#3873)"
+
 shopt -s nullglob
 all_tests=("$here"/*.test.sh)
 shopt -u nullglob
