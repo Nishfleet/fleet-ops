@@ -103,7 +103,7 @@ fi
 # over 72h before this PR: pi-issue@* STOP-REASON writes were still
 # occurring (the loop was live), so the exclusion is necessary.
 case "$UNIT" in
-  unit-escalation@*|stop-escalation.service|stop-escalation.path|ready-work.service|escalation-daily-sweep.service|escalation-daily-sweep.timer|resilience-drill-stub*|notify-probe.service|notify-probe.onfail.service|probe-*.service|multi-*-sink.service|pi-issue@*.service)
+  unit-escalation@*|stop-escalation.service|stop-escalation.path|ready-work.service|escalation-daily-sweep.service|escalation-daily-sweep.timer|resilience-drill-stub*|notify-probe.service|notify-probe.onfail.service|probe-*.service|fleet-orphan-reset-probe@*.service|multi-*-sink.service|pi-issue@*.service)
     echo "unit-escalation-write: skipping excluded unit '$UNIT' (no self-trigger / own failure handling)" >&2
     exit 0
     ;;

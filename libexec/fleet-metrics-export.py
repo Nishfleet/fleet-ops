@@ -1997,6 +1997,7 @@ def _escalations_24h():
         "notify-probe.onfail.service",
         "probe-*.service",
         "multi-*-sink.service",
+        "fleet-orphan-reset-probe@*",
         "pi-issue@*",
         # Canaries / orchestrator organs: their deliberate fail-loud escalations
         # are expected, not a flapping worker.
