@@ -1057,6 +1057,147 @@ jq -e '.reaped_e >= 2' "$summary_out_e" >/dev/null 2>&1 \
 ok "case48: summary JSON carries Mode E fields"
 rm -f "$summary_out_e"
 
+# =====================================================================
+# Bound (fleet-ops#3995): --max-worktrees caps the dir count under $ROOT.
+# Pre-pass: when the count is over the bound, the run raises the salvage
+# cap to the full backlog so one tick drains the dirty pile. Post-pass:
+# when the count is STILL over the bound after the reap, the run emits
+# BOUND-BREACH and exits 3 so the escalation drop-in pages. Dry-run never
+# breaches (it deletes nothing). 0 disables the bound.
+#
+# Uses a FRESH isolated root so the dir count is deterministic (the main
+# $wroot accumulates survivors from earlier cases).
+# =====================================================================
+bound_root="$scratch/bound-worktrees"
+mkdir -p "$bound_root"
+
+# Helper: create N young plain dirs under $ROOT that Mode E will SKIP as
+# too-young (so they survive the reap and hold the count over the bound).
+# Young = mtime now, well under the 14d stale gate.
+make_young_dirs() {
+    local root="$1" prefix="$2" n="$3"
+    local i
+    for i in $(seq 1 "$n"); do
+        mkdir -p "$root/${prefix}-${i}"
+        printf 'young\n' >"$root/${prefix}-${i}/note.txt"
+    done
+}
+
+# --- 49. bound breach: count over max after reap -> exit 3 + BOUND-BREACH --
+# 5 young dirs that survive + max=3 => post-count=5 > 3 => breach.
+make_young_dirs "$bound_root" "bound-breach" 5
+set +e
+out_bound=$("$bin" --root "$bound_root" --max-worktrees 3 2>&1)
+rc_bound=$?
+set -e
+[ "$rc_bound" -eq 3 ] \
+    || fail "case49: over-bound run must exit 3, got rc=$rc_bound; output: $out_bound"
+echo "$out_bound" | grep -q "BOUND-BREACH" \
+    || fail "case49: expected BOUND-BREACH line; output: $out_bound"
+# The young dirs must still exist (the bound does not force-delete; it
+# only escalates). The reaper's safety gates still hold.
+live_count=$(find "$bound_root" -mindepth 1 -maxdepth 1 -type d -name 'bound-breach-*' | wc -l)
+[ "$live_count" -eq 5 ] \
+    || fail "case49: bound must not force-delete young dirs; live=$live_count; output: $out_bound"
+ok "case49: bound breach exits 3 + BOUND-BREACH, safety gates hold"
+rm -rf "$bound_root"/*; rm -rf "$bound_root"/.* 2>/dev/null || true
+
+# --- 50. bound ok: count under max after reap -> exit 0 --------------------
+# 2 young dirs + max=3 => post-count=2 <= 3 => no breach, exit 0.
+make_young_dirs "$bound_root" "bound-ok" 2
+set +e
+out_ok=$("$bin" --root "$bound_root" --max-worktrees 3 2>&1)
+rc_ok=$?
+set -e
+[ "$rc_ok" -eq 0 ] \
+    || fail "case50: under-bound run must exit 0, got rc=$rc_ok; output: $out_ok"
+echo "$out_ok" | grep -q "bound-ok:" \
+    || fail "case50: expected bound-ok line; output: $out_ok"
+echo "$out_ok" | grep -q "BOUND-BREACH" \
+    && fail "case50: under-bound run must NOT breach; output: $out_ok" || true
+ok "case50: under-bound run exits 0, no breach"
+rm -rf "$bound_root"/*; rm -rf "$bound_root"/.* 2>/dev/null || true
+
+# --- 51. dry-run never breaches even when over bound -----------------------
+# 5 young dirs + max=3 + --dry-run => no deletion, no breach, exit 0.
+make_young_dirs "$bound_root" "bound-dry" 5
+set +e
+out_dry=$("$bin" --dry-run --root "$bound_root" --max-worktrees 3 2>&1)
+rc_dry=$?
+set -e
+[ "$rc_dry" -eq 0 ] \
+    || fail "case51: dry-run must exit 0 even when over bound, got rc=$rc_dry; output: $out_dry"
+echo "$out_dry" | grep -q "BOUND-BREACH" \
+    && fail "case51: dry-run must NOT breach; output: $out_dry" || true
+# All 5 dirs still present (dry-run deletes nothing).
+live_count=$(find "$bound_root" -mindepth 1 -maxdepth 1 -type d -name 'bound-dry-*' | wc -l)
+[ "$live_count" -eq 5 ] \
+    || fail "case51: dry-run must not delete; live=$live_count; output: $out_dry"
+ok "case51: dry-run never breaches even when over bound"
+rm -rf "$bound_root"/*; rm -rf "$bound_root"/.* 2>/dev/null || true
+
+# --- 52. --max-worktrees 0 disables the bound ------------------------------
+# 5 young dirs + max=0 => no bound check, exit 0 even though count > 0.
+make_young_dirs "$bound_root" "bound-off" 5
+set +e
+out_off=$("$bin" --root "$bound_root" --max-worktrees 0 2>&1)
+rc_off=$?
+set -e
+[ "$rc_off" -eq 0 ] \
+    || fail "case52: max=0 must disable bound and exit 0, got rc=$rc_off; output: $out_off"
+echo "$out_off" | grep -q "BOUND-BREACH" \
+    && fail "case52: max=0 must not breach; output: $out_off" || true
+ok "case52: --max-worktrees 0 disables the bound"
+rm -rf "$bound_root"/*; rm -rf "$bound_root"/.* 2>/dev/null || true
+
+# --- 53. summary JSON carries the bound fields -----------------------------
+summary_out_b="$(mktemp -t wt-reaper-summary-b.XXXXXX)"
+make_young_dirs "$bound_root" "bound-json" 4
+set +e
+"$bin" --root "$bound_root" --max-worktrees 3 --summary-file "$summary_out_b" >/dev/null 2>&1
+set -e
+jq -e 'has("max_worktrees") and has("pre_count") and has("post_count") and has("bound_breached")' \
+    "$summary_out_b" >/dev/null 2>&1 \
+    || fail "case53: summary JSON missing bound fields; content: $(cat "$summary_out_b")"
+jq -e '.max_worktrees == 3' "$summary_out_b" >/dev/null 2>&1 \
+    || fail "case53: max_worktrees must be 3; content: $(cat "$summary_out_b")"
+jq -e '.pre_count >= 4' "$summary_out_b" >/dev/null 2>&1 \
+    || fail "case53: pre_count must be >=4; content: $(cat "$summary_out_b")"
+jq -e '.bound_breached == 1' "$summary_out_b" >/dev/null 2>&1 \
+    || fail "case53: bound_breached must be 1 (4 young dirs > max 3); content: $(cat "$summary_out_b")"
+ok "case53: summary JSON carries bound fields + breach flag"
+rm -f "$summary_out_b"
+rm -rf "$bound_root"/*; rm -rf "$bound_root"/.* 2>/dev/null || true
+
+# --- 54. pre-pass raises salvage cap when over bound (aggressive drain) ---
+# A stale dirty worktree that WOULD be salvaged but for the salvage cap.
+# With --salvage-limit 1 and the count over the bound, the pre-pass
+# raises the cap so the full backlog is banked in one tick. We verify the
+# raise happened by checking the run banked MORE than the configured cap.
+add_modec_worktree "$parent_a" "$bound_root" "fix-branch-1600" "fix/mode-d-1600" 0 1 0
+add_modec_worktree "$parent_a" "$bound_root" "fix-branch-1601" "fix/mode-d-1601" 0 1 0
+touch -d '20 days ago' "$bound_root/fix-branch-1600"
+touch -d '20 days ago' "$bound_root/fix-branch-1601"
+# Plus 4 young dirs to push the count over max=3.
+make_young_dirs "$bound_root" "bound-raise" 4
+summary_raise="$(mktemp -t wt-reaper-raise.XXXXXX)"
+set +e
+out_raise=$("$bin" --root "$bound_root" --max-worktrees 3 --salvage-limit 1 \
+    --summary-file "$summary_raise" 2>&1)
+set -e
+# Both stale dirty worktrees should be salvaged + reaped (cap raised).
+[ ! -d "$bound_root/fix-branch-1600" ] \
+    || fail "case54: fix-branch-1600 should be reaped (cap raised); output: $out_raise"
+[ ! -d "$bound_root/fix-branch-1601" ] \
+    || fail "case54: fix-branch-1601 should be reaped (cap raised); output: $out_raise"
+# The summary should show salvage_attempts >= 2 (both banked), proving the
+# configured cap of 1 was raised.
+jq -e '.salvage_attempts >= 2' "$summary_raise" >/dev/null 2>&1 \
+    || fail "case54: salvage_attempts must be >=2 (cap raised); content: $(cat "$summary_raise")"
+ok "case54: pre-pass raises salvage cap when over bound (aggressive drain)"
+rm -f "$summary_raise"
+rm -rf "$bound_root"/*; rm -rf "$bound_root"/.* 2>/dev/null || true
+
 # --- 16. install rail intact -----------------------------------------------
 for f in bin/fleet-worktree-reaper \
          systemd/fleet-worktree-reaper.service \

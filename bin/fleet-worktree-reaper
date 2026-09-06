@@ -190,6 +190,17 @@
 #   --salvage-age-days N  Mode D gate: only bank+reap dirty worktrees
 #                    whose directory mtime is older than N days (default 14).
 #   --salvage-limit N  Max Mode D salvage attempts per run (default 50).
+#   --max-worktrees N  Bound on the count of dirs under --root. When the
+#                    PRE-pass count exceeds N, the run raises the salvage
+#                    limit to the full backlog so Mode D drains the dirty
+#                    pile in one tick instead of across many daily ticks.
+#                    When the count is still over N AFTER the reap, the
+#                    run emits a BOUND-BREACH line and exits 3 so the
+#                    escalation drop-in (unit-escalation@) pages on the
+#                    unbounded growth. 0 disables the bound (no pre-pass
+#                    raise, no post-pass breach check, exit 0). Default
+#                    450 — the known steady-state ceiling under the
+#                    current daily reap (fleet-ops#3995).
 #   --summary-file P  Write the run breakdown as JSON to P (default:
 #                    $AGENT_STATE/worktree-reaper-last-run.json). Use
 #                    --no-summary-file to disable.
@@ -207,6 +218,8 @@
 #   FLEET_WORKTREE_REAPER_SALVAGE_AGE_S  Mode D gate in seconds —
 #                          overrides the days computation (tests)
 #   FLEET_WORKTREE_REAPER_SALVAGE_LIMIT  Mode D per-run cap (default 50)
+#   FLEET_WORKTREE_REAPER_MAX_WORKTREES  bound on the dir count under
+#                       --root (default 450, 0 disables; fleet-ops#3995)
 #   PI_SALVAGE_BIN     pi-salvage-worktree binary for Mode D banking
 #                          (default: pi-salvage-worktree on PATH)
 #   FLEET_WORKTREE_REAPER_NOW_EPOCH      override epoch for age tests
@@ -217,6 +230,9 @@
 #   0  best-effort GC complete (per-worktree failures are logged + counted,
 #      never fatal — a timer that aborts on one bad worktree stops all GC)
 #   2  missing prereq (git, gh, jq, systemctl) or usage
+#   3  GC complete AND the post-reap dir count is still over --max-worktrees
+#      (the bound is breached; the escalation drop-in pages on this). The
+#      summary JSON is still written. fleet-ops#3995.
 set -euo pipefail
 
 ROOT="${FLEET_WORKTREE_REAPER_ROOT:-/home/nish/workspaces/agent-worktrees}"
@@ -225,6 +241,8 @@ MERGED_LIMIT="${FLEET_WORKTREE_REAPER_MERGED_LIMIT:-5000}"
 MIN_AGE_HOURS="${FLEET_WORKTREE_REAPER_MIN_AGE_HOURS:-24}"
 SALVAGE_AGE_DAYS="${FLEET_WORKTREE_REAPER_SALVAGE_AGE_DAYS:-14}"
 SALVAGE_LIMIT="${FLEET_WORKTREE_REAPER_SALVAGE_LIMIT:-50}"
+# Bound on the dir count under $ROOT (fleet-ops#3995). 0 disables.
+MAX_WORKTREES="${FLEET_WORKTREE_REAPER_MAX_WORKTREES:-450}"
 # pi-salvage-worktree (fleet-ops#1204) owns the bank semantics — secret
 # scan, quarantine, wip/<unit>-<ts> push. Mode D reuses it rather than
 # duplicating the scan.
@@ -255,6 +273,7 @@ while [ $# -gt 0 ]; do
         --min-age-hours) MIN_AGE_HOURS="${2:?--min-age-hours needs an N}"; shift 2 ;;
         --salvage-age-days) SALVAGE_AGE_DAYS="${2:?--salvage-age-days needs an N}"; shift 2 ;;
         --salvage-limit) SALVAGE_LIMIT="${2:?--salvage-limit needs an N}"; shift 2 ;;
+        --max-worktrees) MAX_WORKTREES="${2:?--max-worktrees needs an N}"; shift 2 ;;
         --summary-file) SUMMARY_FILE="${2:?--summary-file needs a PATH}"; shift 2 ;;
         --no-summary-file) SUMMARY_FILE=""; shift ;;
         -h|--help) usage ;;
@@ -264,6 +283,7 @@ done
 [[ "$MIN_AGE_HOURS" =~ ^[0-9]+$ ]] || { echo "fleet-worktree-reaper: --min-age-hours must be a non-negative integer" >&2; exit 2; }
 [[ "$SALVAGE_AGE_DAYS" =~ ^[0-9]+$ ]] || { echo "fleet-worktree-reaper: --salvage-age-days must be a non-negative integer" >&2; exit 2; }
 [[ "$SALVAGE_LIMIT" =~ ^[0-9]+$ ]] || { echo "fleet-worktree-reaper: --salvage-limit must be a non-negative integer" >&2; exit 2; }
+[[ "$MAX_WORKTREES" =~ ^[0-9]+$ ]] || { echo "fleet-worktree-reaper: --max-worktrees must be a non-negative integer" >&2; exit 2; }
 # Mode D stale gate in seconds; the _S env seam overrides the days
 # computation so tests can use small values (mirrors NOW_EPOCH).
 SALVAGE_AGE_S="${FLEET_WORKTREE_REAPER_SALVAGE_AGE_S:-$(( SALVAGE_AGE_DAYS * 86400 ))}"
@@ -299,7 +319,24 @@ while IFS= read -r d; do
     fi
 done < <(find "$ROOT" -mindepth 1 -maxdepth 1 -type d 2>/dev/null)
 
-log "root=$ROOT dry_run=$DRY_RUN parents=${#parents[@]}"
+log "root=$ROOT dry_run=$DRY_RUN parents=${#parents[@]} max_worktrees=$MAX_WORKTREES"
+
+# --- pre-pass: count dirs under $ROOT and raise the salvage cap when the
+# count is over --max-worktrees (fleet-ops#3995). The default salvage cap
+# (50) drains the dirty backlog gradually across daily ticks; when the
+# bound is breached the run raises the cap to the full backlog so one
+# tick drains as much as the safety gates allow instead of leaking
+# another day. The cap is restored after the per-parent loop so the
+# summary JSON reports the configured value, not the raised one.
+pre_count=0
+if [ -d "$ROOT" ]; then
+    pre_count=$(find "$ROOT" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
+fi
+SALVAGE_LIMIT_CONFIGURED="$SALVAGE_LIMIT"
+if [ "$MAX_WORKTREES" -gt 0 ] && [ "$pre_count" -gt "$MAX_WORKTREES" ] && [ "$DRY_RUN" = 0 ]; then
+    log "bound-pre: count=$pre_count over max=$MAX_WORKTREES — raising salvage limit from $SALVAGE_LIMIT to $pre_count for this run"
+    SALVAGE_LIMIT="$pre_count"
+fi
 
 # --- per-parent: list worktrees, resolve repo, batch merged-PR query ------
 total_scanned=0
@@ -983,22 +1020,51 @@ printf 'fleet-worktree-reaper scanned=%s claim=%s pi_path=%s other=%s reaped=%s 
     "$salvaged" "$salvage_attempts" "$salvage_candidates" "$skipped_nogit" "$failed" \
     "$mode_e_scanned" "$skipped_e_young" "$skipped_e_live" "$skipped_e_dirty" "$skipped_e_notpushed"
 
+# --- post-pass: bound check (fleet-ops#3995) ------------------------------
+# Restore the configured salvage cap so the summary reports the real
+# value, then count the dirs left under $ROOT. If the bound is set and
+# the count is still over it, emit BOUND-BREACH and exit 3 so the
+# escalation drop-in (unit-escalation@) pages on the unbounded growth.
+# Dry-run never breaches: a dry run deletes nothing, so the post-count is
+# the pre-count by definition and a breach would be noise. The summary
+# JSON below carries post_count + bound_breached so the duty officer can
+# see the breach without grepping journalctl.
+SALVAGE_LIMIT="$SALVAGE_LIMIT_CONFIGURED"
+post_count=0
+if [ -d "$ROOT" ]; then
+    post_count=$(find "$ROOT" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
+fi
+bound_breached=0
+if [ "$MAX_WORKTREES" -gt 0 ] && [ "$DRY_RUN" = 0 ] && [ "$post_count" -gt "$MAX_WORKTREES" ]; then
+    bound_breached=1
+    log "BOUND-BREACH: post_count=$post_count over max=$MAX_WORKTREES (pre=$pre_count, reaped=$reaped) — escalation paged"
+fi
+
 # Persist the run breakdown as JSON so the duty officer and manual
 # verification can see WHY worktree_dirs is high (reaped vs skipped_dirty
 # vs skipped_notpushed) without grepping journalctl. Best-effort: a write
 # failure is logged, never fatal.
 if [ -n "$SUMMARY_FILE" ]; then
     run_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    summary_json=$(printf '{"script":"fleet-worktree-reaper","ts":"%s","dry_run":%s,"scanned":%s,"reaped":%s,"reaped_a":%s,"reaped_a_closed":%s,"reaped_b":%s,"reaped_c":%s,"reaped_e":%s,"reaped_e_clone":%s,"reaped_e_plain":%s,"skipped_live":%s,"skipped_unmerged":%s,"skipped_dirty":%s,"skipped_notpushed":%s,"skipped_notterminal":%s,"skipped_young":%s,"salvaged":%s,"salvage_attempts":%s,"salvage_candidates":%s,"skipped_nogit":%s,"failed":%s,"claim":%s,"pi_path":%s,"other":%s,"mode_e_scanned":%s,"skipped_e_young":%s,"skipped_e_live":%s,"skipped_e_dirty":%s,"skipped_e_notpushed":%s}' \
+    summary_json=$(printf '{"script":"fleet-worktree-reaper","ts":"%s","dry_run":%s,"scanned":%s,"reaped":%s,"reaped_a":%s,"reaped_a_closed":%s,"reaped_b":%s,"reaped_c":%s,"reaped_e":%s,"reaped_e_clone":%s,"reaped_e_plain":%s,"skipped_live":%s,"skipped_unmerged":%s,"skipped_dirty":%s,"skipped_notpushed":%s,"skipped_notterminal":%s,"skipped_young":%s,"salvaged":%s,"salvage_attempts":%s,"salvage_candidates":%s,"skipped_nogit":%s,"failed":%s,"claim":%s,"pi_path":%s,"other":%s,"mode_e_scanned":%s,"skipped_e_young":%s,"skipped_e_live":%s,"skipped_e_dirty":%s,"skipped_e_notpushed":%s,"max_worktrees":%s,"pre_count":%s,"post_count":%s,"bound_breached":%s}' \
         "$run_ts" "$DRY_RUN" "$total_scanned" "$reaped" "$reaped_a" "$reaped_a_closed" "$reaped_b" "$reaped_c" "$reaped_e" "$reaped_e_clone" "$reaped_e_plain" \
         "$skipped_live" "$skipped_unmerged" "$skipped_dirty" "$skipped_notpushed" \
         "$skipped_notterminal" "$skipped_young" "$salvaged" "$salvage_attempts" "$salvage_candidates" \
         "$skipped_nogit" "$failed" \
         "$total_claim" "$total_pi_path" "$total_other" \
-        "$mode_e_scanned" "$skipped_e_young" "$skipped_e_live" "$skipped_e_dirty" "$skipped_e_notpushed")
+        "$mode_e_scanned" "$skipped_e_young" "$skipped_e_live" "$skipped_e_dirty" "$skipped_e_notpushed" \
+        "$MAX_WORKTREES" "$pre_count" "$post_count" "$bound_breached")
     if ! printf '%s\n' "$summary_json" >"$SUMMARY_FILE.tmp.$$" 2>/dev/null \
        || ! mv -f "$SUMMARY_FILE.tmp.$$" "$SUMMARY_FILE" 2>/dev/null; then
         log "summary-file write FAILED ($SUMMARY_FILE) — non-fatal"
         rm -f "$SUMMARY_FILE.tmp.$$" 2>/dev/null || true
     fi
 fi
+
+if [ "$bound_breached" = 1 ]; then
+    printf 'fleet-worktree-reaper BOUND-BREACH post_count=%s max=%s pre=%s reaped=%s\n' \
+        "$post_count" "$MAX_WORKTREES" "$pre_count" "$reaped"
+    exit 3
+fi
+log "bound-ok: post_count=$post_count max=$MAX_WORKTREES pre=$pre_count reaped=$reaped"
+exit 0
