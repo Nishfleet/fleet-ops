@@ -87,9 +87,27 @@
       "source": "repo"
     },
     "fleet-heartbeat.timer": {
-      "reason": "Orchestrator continuity across interactive-session restarts — event notifications die with sessions; this timer survives every session exit",
+      "reason": "Orchestrator continuity across interactive-session restarts — event notifications die with sessions; this timer survives every session exit. fleet-ops#3270: cadence 15->60 min; the four GitHub-reading sections (lifecycle-label-sweep, merged-pr-close, close-duplicates, loose-ends) moved behind webhook triggers, so the heartbeat keeps only host-local sections (deploy, queue, reclaim, failed-unit recovery, RAM, seat-health, canaries)",
       "classification": "scheduled",
-      "cadence": "30min",
+      "cadence": "60min",
+      "source": "repo"
+    },
+    "fleet-issue-close-duplicates.timer": {
+      "reason": "fleet-ops#3270: daily backstop for the duplicate-issue drain. Webhooks (issues/closed via gh-webhook-receiver) are the primary trigger; this timer catches webhooks that never arrive. A duplicate is waste but not breakage — the canonical issue still gets dispatched — so daily is proportionate",
+      "classification": "scheduled",
+      "cadence": "daily",
+      "source": "repo"
+    },
+    "fleet-loose-ends-canary.timer": {
+      "reason": "fleet-ops#3270: hourly backstop for the loose-ends canary (sr-nothing-half-done). Webhooks (pull_request/opened via gh-webhook-receiver) are the primary trigger; this timer catches webhooks that never arrive. The canary's 24h idle threshold is the real freshness contract, so hourly is well inside that window",
+      "classification": "scheduled",
+      "cadence": "hourly",
+      "source": "repo"
+    },
+    "fleet-merged-pr-close.timer": {
+      "reason": "fleet-ops#3270: hourly backstop for merged-pr observe-to-close. Webhooks (pull_request/closed via gh-webhook-receiver) are the primary trigger; this timer catches webhooks that never arrive. A forgotten Closes #<N> trailer is not urgent — the issue stays open and intake re-queues it — so hourly is proportionate",
+      "classification": "scheduled",
+      "cadence": "hourly",
       "source": "repo"
     },
     "fleet-metrics-export.timer": {
@@ -162,6 +180,12 @@
       "reason": "30-min backstop for intake reconciler — path unit handles synchronous file-change trips; this timer catches missed mtime bumps or masked path units",
       "classification": "scheduled",
       "cadence": "30min",
+      "source": "repo"
+    },
+    "lifecycle-label-sweep.timer": {
+      "reason": "fleet-ops#3270: hourly backstop for the lifecycle-label sweep. Webhooks (issues/opened + issues/labeled via gh-webhook-receiver) are the primary trigger; this timer catches webhooks that never arrive. The sweep is idempotent (only relabels unlabeled), so a webhook + timer double-fire dedupes naturally",
+      "classification": "scheduled",
+      "cadence": "hourly",
       "source": "repo"
     },
     "interactive-session-reap.timer": {

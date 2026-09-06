@@ -66,7 +66,9 @@ helpers = {
     "BLOCKED_BIN=": "blocked-reconcile",
     "UNDERSAT_BIN=": "undersaturation",
     "CLAIM_BIN=": "claim-reconcile",
-    "LIFECYCLE_BIN=": "lifecycle-label-sweep",
+    # fleet-ops#3270: lifecycle-label-sweep moved from tier1 §6b to
+    # lifecycle-label-sweep.service (webhook-triggered). No longer
+    # checked here.
     "LOW_WATER_BIN=": "low-water-mark",
     "AUDITOR_BIN=": "senior-auditor panel",
     "REDPR_BIN=": "red-pr-repair",

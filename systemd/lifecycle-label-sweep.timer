@@ -1,0 +1,21 @@
+[Unit]
+Description=Lifecycle-label sweep backstop — hourly (fleet-ops#3270)
+
+[Timer]
+# Named reason (vault: "a schedule needs a named reason"): webhooks are
+# the primary trigger (issues/opened + issues/labeled via
+# gh-webhook-receiver); this timer is the level-triggered backstop for
+# webhooks that never arrive (GitHub delivery drops, receiver down, org
+# webhook misconfigured). Hourly catches a missed label within one waking
+# window without noising triage every tick. The sweep is idempotent, so
+# a webhook + timer double-fire dedupes naturally (only relabels
+# unlabeled). fleet-ops#3270 moved this out of the 15-min heartbeat; the
+# backstop cadence is hourly, not the old 15 min, because the webhook
+# fast-path now covers the freshness contract.
+OnCalendar=*:17:00
+RandomizedDelaySec=5min
+Persistent=true
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,30 @@
+[Unit]
+Description=Lifecycle-label sweep — webhook-triggered (fleet-ops#3270, was heartbeat §6b)
+# Named reason for this schedule (vault: "a schedule needs a named reason"):
+# lifecycle labels are the intake visibility gate — an unlabeled open issue
+# is invisible to pi-intake forever (fleet-ops#376). The sweep is
+# idempotent (only relabels unlabeled) and cheap (one `gh issue list` per
+# enrolled repo). Previously ran every 15 min inside fleet-heartbeat-tier1
+# §6b; fleet-ops#3270 moves it behind the gh-webhook-receiver
+# (issues/opened + issues/labeled) so a freshly-opened or freshly-labeled
+# issue gets its lifecycle label in seconds, not in the next tick. The
+# companion timer (lifecycle-label-sweep.timer) is the level-triggered
+# backstop for webhooks that never arrive.
+#
+# OnFailure is wired by the global service.d/10-escalate.conf drop-in
+# (unit-escalation@lifecycle-label-sweep.service), so a failed sweep
+# escalates via the standard matrix.
+
+[Service]
+Type=oneshot
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=LIFECYCLE_SWEEP_INTAKE_JSON=/home/nish/workspaces/products/fleet-ops/config/intake-repos.json
+Environment=LIFECYCLE_SWEEP_LOCKDIR=/run/user/1000/lifecycle-label-sweep
+WorkingDirectory=/home/nish
+ExecStart=/home/nish/.local/bin/lifecycle-label-sweep
+TimeoutStartSec=10min
+# Never restart: the webhook (or the backstop timer) is the retry. A
+# failed sweep escalates via the global drop-in, not via Restart=.
+Restart=no

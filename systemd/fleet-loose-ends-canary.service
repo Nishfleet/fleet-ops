@@ -1,0 +1,28 @@
+[Unit]
+Description=Loose-ends canary — webhook-triggered (fleet-ops#3270, was heartbeat §43)
+# Named reason for this schedule (vault: "a schedule needs a named
+# reason"): the sr-nothing-half-done invariant — a PR open >24h without
+# a merge is half-done work, and a finding without an open ticket is a
+# lost question (fleet-ops#528). The canary scans open claim/issue-* PRs
+# for the >24h-without-merge class and files/observes-to-close findings.
+# Previously ran every 15 min inside fleet-heartbeat-tier1 §43;
+# fleet-ops#3270 moves it behind the gh-webhook-receiver
+# (pull_request/opened) so a brand-new in-flight PR triggers the canary
+# immediately (a new PR is half-done by definition until it lands). The
+# companion timer (fleet-loose-ends-canary.timer) is the level-triggered
+# backstop for webhooks that never arrive.
+#
+# OnFailure is wired by the global service.d/10-escalate.conf drop-in
+# (unit-escalation@fleet-loose-ends-canary.service).
+
+[Service]
+Type=oneshot
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+Environment=FLEET_LOOSE_ENDS_INTAKE=/home/nish/workspaces/products/fleet-ops/config/intake-repos.json
+WorkingDirectory=/home/nish
+ExecStart=/home/nish/.local/bin/fleet-loose-ends-canary
+TimeoutStartSec=10min
+# Never restart: the webhook (or the backstop timer) is the retry.
+Restart=no
