@@ -630,17 +630,30 @@ def _dispatch_line_seen(alertname: str, since: datetime | None = None) -> bool:
     that THIS redispatch spawned a unit (fleet-ops#3625: DeployBlockedStuck
     reported redispatch-rc=0 dispatched=True on 11:52Z and 12:22Z while the
     dispatcher only wrote SKIPPED-CLAIMED — the alert never resolved).
+
+    `since` is floored to whole-second precision before comparing.
+    `actions.log` timestamps are whole-second ISO (`%H:%M:%SZ`, no
+    fractional seconds), but `since` comes from `now_dt()`, which carries
+    microseconds. Without flooring, a DISPATCH line written in the SAME
+    wall-clock second as `since` was captured parses as microsecond=0 and
+    compares as strictly earlier than `since` whenever `since` itself has
+    a nonzero microsecond component — a genuinely fresh dispatch is then
+    misread as stale. fleet-ops#3946: live 2026-09-06T09:37:09Z DISPATCH +
+    09:37:09Z REDISPATCH `dispatched=False` — same second, dispatcher ran
+    fast enough that both `before` and the DISPATCH line landed in the
+    same second, and the unflooted comparison rejected the line.
     """
     if not ACTIONS.is_file():
         return False
+    since_floor = since.replace(microsecond=0) if since is not None else None
     try:
         for line in ACTIONS.read_text(errors="replace").splitlines():
             m = LOG_RE.search(line)
             if not (m and m.group(2) == "DISPATCH" and m.group(3) == alertname):
                 continue
-            if since is not None:
+            if since_floor is not None:
                 ts = parse_iso(m.group(1))
-                if ts is None or ts < since:
+                if ts is None or ts < since_floor:
                     continue
             return True
     except OSError:

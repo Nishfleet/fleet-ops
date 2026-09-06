@@ -1011,6 +1011,38 @@ assert d.get("detail", {}).get("hop") == "dispatch", d
 PY
 ok "dispatched=False redispatch reports a non-zero rc and trips the chain (fleet-ops#3846)"
 
+# --- 9e-samesec. a DISPATCH line written in the SAME wall-clock second as
+# `since` was captured must count, not be misread as stale (fleet-ops#3946) --
+# Live incident 2026-09-06T09:37:09Z: the dispatcher wrote a real DISPATCH
+# line and redispatch_real's REDISPATCH receipt STILL read dispatched=False,
+# both timestamped 09:37:09Z. Root cause: `since` comes from now_dt(), which
+# carries microseconds; actions.log timestamps are whole-second ISO
+# (%H:%M:%SZ). A DISPATCH line written in the same second as `since` parses
+# with microsecond=0 and compares as strictly earlier than a `since` with a
+# nonzero microsecond component — a genuinely fresh dispatch was misread as
+# stale. Fix: `since` is floored to whole-second precision before the
+# comparison. Exercise _dispatch_line_seen directly (unit-level, not via the
+# fake dispatcher, since the bug is in the comparison itself).
+: >"$scratch/actions.log"
+cat >"$scratch/actions.log" <<'PYEND'
+[2026-09-06T09:37:09Z] DISPATCH alertname=FleetMainRed unit=alert-repair-FleetMainRed-20260906T093709Z seat=devin/glm-5-2 reason=fallback packet=/x rc=0
+PYEND
+python3 - "$repo_root/bin/fleet-completion-canary.py" "$scratch/actions.log" <<'PY' || fail "9e-samesec: same-second DISPATCH line must count (fleet-ops#3946)"
+import importlib.util, sys, os
+from datetime import datetime, timezone
+os.environ["FLEET_COMPLETION_ACTIONS_LOG"] = sys.argv[2]
+spec = importlib.util.spec_from_file_location("fcc", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+# `since` captured with nonzero microseconds in the SAME second as the
+# DISPATCH line's whole-second timestamp — the exact live shape.
+since = datetime(2026, 9, 6, 9, 37, 9, 842384, tzinfo=timezone.utc)
+assert m._dispatch_line_seen("FleetMainRed", since=since), (
+    "same-second DISPATCH line misread as stale (fleet-ops#3946)"
+)
+PY
+ok "same-second DISPATCH line is not misread as stale (fleet-ops#3946)"
+
 # --- 9e-drain. successful dispatch redispatch drains the hop metric (fleet-ops#3226) --
 # Bug: a dispatch-hop stall was redispatched successfully (DISPATCH line
 # written, unit spawned), but the canary still exported
