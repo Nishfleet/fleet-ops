@@ -43,7 +43,12 @@ export HOME="${HOME:-/home/nish}"
 STATE_DIR="${PI_PACKET_STATE:-$HOME/.local/state/pi-packet}"
 ATTEMPTS_DIR="$STATE_DIR/attempts"
 ACTIVE_SEATS_DIR="$STATE_DIR/active-seats"
-LOG_FILE="$STATE_DIR/watch.log"
+# SEAT_LOG_FILE pins the seat_log target to a specific file instead of the
+# state-dir watch.log (fleet-ops#3928): a test harness that would otherwise
+# write to the production watch.log can redirect the audit line to its own
+# scratch file without moving the whole PI_PACKET_STATE dir. Unset in
+# production, so this keeps the live LOG_FILE behaviour byte-for-byte.
+LOG_FILE="${SEAT_LOG_FILE:-$STATE_DIR/watch.log}"
 # Worker packet dir (pi-issue-run reads <inst>.in here; intake writes it).
 # Used by count_active_heavy to read each active unit's difficulty line.
 PI_ISSUES_DIR="${PI_ISSUES_DIR:-$HOME/.local/state/pi-issues}"
