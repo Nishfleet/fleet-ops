@@ -7,6 +7,9 @@
 #   2. --body with run-proof: line -> exit 0.
 #   3. --body with Verification: but no run-cue -> exit 1.
 #   4. --body with no Verification: -> exit 1 (the skip).
+#   4d. --body with the same-repo 'Closes fleet-ops#N' short form -> exit 1
+#       (fleet-ops#3960: such a body cannot auto-close its issue on merge,
+#       so the pre-create body gate rejects it before arm).
 #   5. Scan: worker PR with receipt -> exit 0, EXEC-REVIEW-OK, no file.
 #   6. Scan: worker PR without receipt -> exit 0 (observe-to-open), files.
 #   7. Scan: human PR without receipt -> exit 0, no file.
@@ -306,6 +309,30 @@ run-proof: journal fleet-prepaid-util-canary exit 0
 ' >"$scratch/body.md"
 run_body "$scratch/body.md" || fail "4c: run-proof: must accept even without colon heading"
 ok "4c: --body with run-proof: (no colon heading) accepted (the louder signal)"
+
+# --- 4d. --body with `Closes <repo>#N` short form REJECTED (fleet-ops#3960) ---
+# Same-repo PR body using the cross-repo short form (`Closes fleet-ops#3873`)
+# does NOT auto-close the issue on merge (the bug that left fleet-ops#3873
+# open after PR #3952 merged). The pre-create `--body` gate must reject it
+# even when the receipt is present, so a body that cannot close its issue
+# never reaches arm. This test runs from the repo root so the origin remote
+# resolves the base repo to Nishfleet/fleet-ops.
+printf '%s\n' '## Summary
+changed
+
+## Verification:
+- journalctl -u fleet-heartbeat.service --since "5 min ago"
+
+Closes fleet-ops#3873
+' >"$scratch/body.md"
+if run_body "$scratch/body.md"; then
+  fail "4d: Closes fleet-ops#3873 must be REJECTED by --body gate, but it passed"
+fi
+grep -q 'REJECT' "$scratch/body.err" \
+  || fail "4d: expected a REJECT line in stderr: $(cat "$scratch/body.err")"
+grep -q 'does not auto-close' "$scratch/body.err" \
+  || fail "4d: REJECT must cite the auto-close gap: $(cat "$scratch/body.err")"
+ok "4d: --body REJECTs the same-repo 'Closes fleet-ops#N' short form (fleet-ops#3960)"
 
 run_scan() {
   local fixture="$1"

@@ -102,6 +102,45 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
     usage
 fi
 
+# Derive the base repo `owner/name` for the cwd from its origin remote, so a
+# worker running the pre-create gate from any repo's worktree can tell a
+# same-repo `Closes <repo>#N` from a genuine cross-repo reference. Emits
+# nothing when there is no GitHub remote (the caller fails open on that).
+repo_from_remote() {
+    local url
+    url="$(git -C "$1" remote get-url origin 2>/dev/null || true)"
+    case "$url" in
+        git@github.com:*|https://github.com/*|ssh://git@github.com/*)
+            printf '%s\n' "$url" \
+                | sed -E 's#.*github\.com[:/]([^/:]+)/([^/#]+)(\.git)?/?$#\1/\2#'
+            ;;
+        *) printf '' ;;
+    esac
+}
+
+# fleet-ops#3960 wiring: the pre-create `--body` gate also rejects a body that
+# uses the same-repo `Closes <repo>#N` short form. That form does not
+# auto-close the issue on merge (fleet-ops#695), which is exactly how PR #3952
+# left fleet-ops#3873 OPEN while its fix was already on main. The base repo
+# comes from the origin remote of the worker's worktree; a body with no
+# GitHub remote fails open (receipt check alone still applies).
+body_closes_gate() {
+    local body="$1" gate="$2" base="$3" payload rc out
+    [[ -n "$base" ]] || return 0
+    [[ -x "$gate" ]] || { printf 'REJECT: same-repo closes gate missing at %s\n' "$gate" >&2; return 1; }
+    payload="$(python3 -c 'import json,sys;print(json.dumps({"body":open(sys.argv[1]).read(),"base_repository":sys.argv[2]}))' "$body" "$base")"
+    set +e
+    out="$(printf '%s' "$payload" | "$gate" pre-create --input - 2>&1)"
+    rc=$?
+    set -e
+    if [[ $rc -ne 0 ]]; then
+        printf 'REJECT: PR body uses the same-repo `Closes <repo>#N` short form, which does not auto-close the issue on merge (fleet-ops#695/#3960); use `Closes #N`.\n' >&2
+        printf '%s\n' "$out" >&2
+        return 1
+    fi
+    return 0
+}
+
 if [[ "${1:-}" == "--body" ]]; then
     [[ $# -ge 2 ]] || usage
     if ! command -v python3 >/dev/null 2>&1; then
@@ -112,8 +151,14 @@ if [[ "${1:-}" == "--body" ]]; then
         printf 'REJECT: helper missing at %s\n' "$LIB" >&2
         exit 1
     fi
-    python3 "$LIB" check --body "$2"
-    exit $?
+    receipt_rc=0
+    python3 "$LIB" check --body "$2" || receipt_rc=$?
+    closes_gate="$_canon_repo/bin/fleet-same-repo-closes-gate"
+    base_repo="$(repo_from_remote "$PWD")"
+    if ! body_closes_gate "$2" "$closes_gate" "$base_repo"; then
+        exit 1
+    fi
+    exit "$receipt_rc"
 fi
 
 [[ $# -eq 0 ]] || usage

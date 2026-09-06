@@ -15,6 +15,8 @@ This is a pure evaluator: no dispatch, no retry, no GitHub writes.
 
 Subcommands:
   evaluate (default)  PR JSON on stdin / --input → verdict JSON
+  pre-create          pre-`gh pr create` body check: only the same-repo
+                      short-owner form (no live closingIssuesReferences)
   --ledger-line       print the decisions-ledger line verbatim
 """
 
@@ -366,6 +368,38 @@ def evaluate(pr: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def evaluate_pre_create(pr: dict[str, Any]) -> dict[str, Any]:
+    """Pre-create verdict: only the bad short-owner form (fleet-ops#695/#3960).
+
+    Runs in the worker's pre-`gh pr create` body gate, where the PR does not
+    exist yet, so there is no live `closingIssuesReferences` from GraphQL. The
+    full `evaluate` path's missing-closes check cannot run here: a correct
+    body carrying `Closes #N` would be falsely REJECTED because its parsed
+    closes list is (not yet) empty. This mode checks only the deterministic
+    short-owner form -- `Closes fleet-ops#N` on a PR whose base repo is
+    Nishfleet/fleet-ops -- which is the form that leaves the issue OPEN on
+    merge (the fleet-ops#3873 -> #3960 incident).
+    """
+    body = str(pr.get("body") or "")
+    base_key = base_repo_key(pr)
+    bad = find_bad_references(body, base_key, closed_numbers=None)
+    if bad:
+        return {
+            "verdict": "REJECT",
+            "rule": LEDGER_LINE,
+            "reason": (
+                "PR body (pre-create) uses the cross-repo `Closes <repo>#N` "
+                "syntax for a same-repo issue; GitHub does not auto-close in "
+                "this form (fleet-ops#695, #3960)"
+            ),
+            "bad_references": bad,
+        }
+    return {
+        "verdict": "PASS",
+        "reason": "no same-repo `Closes <repo>#N` short form in pre-create body (fleet-ops#695/#3960)",
+    }
+
+
 def _load_input(path: str | None) -> dict[str, Any]:
     if path in (None, "-", ""):
         raw = sys.stdin.read()
@@ -391,8 +425,11 @@ def main(argv: list[str] | None = None) -> int:
         "command",
         nargs="?",
         default="evaluate",
-        choices=["evaluate"],
-        help="evaluate a PR (default)",
+        choices=["evaluate", "pre-create"],
+        help=(
+            "evaluate a live created PR (default); pre-create checks only "
+            "the same-repo short-owner form before gh pr create"
+        ),
     )
     parser.add_argument("--input", "-i", help="JSON file (default: stdin)")
     parser.add_argument(
@@ -407,7 +444,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     payload = _load_input(args.input)
-    verdict = evaluate(payload)
+    evaluator = evaluate_pre_create if args.command == "pre-create" else evaluate
+    verdict = evaluator(payload)
     json.dump(verdict, sys.stdout)
     sys.stdout.write("\n")
     return 0 if verdict.get("verdict") == "PASS" else 1
