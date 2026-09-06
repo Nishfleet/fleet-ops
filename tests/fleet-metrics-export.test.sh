@@ -358,6 +358,32 @@ grep -q "alert: FleetProviderQuotaExhausted" "$rules" \
   || fail "fleet_rules.yml missing FleetProviderQuotaExhausted (fleet-ops#2712)"
 grep -q "fleet_provider_quota_exhausted_total > 0" "$rules" \
   || fail "provider-quota-exhausted rule must trip on fleet_provider_quota_exhausted_total > 0"
+# fleet-ops#3284 (child of #3150): the money-boundary rule — current-UTC-day
+# spend over USD 5 OR vendor credits remaining under USD 5, per provider.
+# severity=warning routes to repair-dispatch; the description is the contract
+# that carries the alert to nish-boundary-notify (MONEY-BOUNDARY write to
+# NISH-ESCALATIONS.md) and benches the provider via the existing quota_bench
+# path until Nish clears it. Pin the alert name, the expr, the severity, and
+# the four load-bearing strings in the description so a later edit cannot
+# silently drop the Nish route or the bench.
+grep -q "alert: FleetProviderSpendBoundary" "$rules" \
+  || fail "fleet_rules.yml missing FleetProviderSpendBoundary (fleet-ops#3284)"
+grep -q "fleet_seat_spend_today_usd > 5 or fleet_seat_credits_remaining_usd < 5" "$rules" \
+  || fail "spend-boundary rule must trip on fleet_seat_spend_today_usd > 5 OR fleet_seat_credits_remaining_usd < 5"
+spend_block="$(awk '/- alert: FleetProviderSpendBoundary/,/- alert: FleetKeystoneRoutingAbsent/' "$rules")"
+[[ -n "$spend_block" ]] || fail "could not extract FleetProviderSpendBoundary block"
+grep -q "severity: warning" <<<"$spend_block" \
+  || fail "FleetProviderSpendBoundary must be severity=warning (repair-dispatch route, not phone page)"
+grep -q "MONEY-BOUNDARY" <<<"$spend_block" \
+  || fail "FleetProviderSpendBoundary description must instruct a MONEY-BOUNDARY write"
+grep -q "NISH-ESCALATIONS.md" <<<"$spend_block" \
+  || fail "FleetProviderSpendBoundary description must name NISH-ESCALATIONS.md (the nish-boundary-notify path)"
+grep -q "nish-boundary-notify" <<<"$spend_block" \
+  || fail "FleetProviderSpendBoundary description must name nish-boundary-notify"
+grep -q "quota_bench" <<<"$spend_block" \
+  || fail "FleetProviderSpendBoundary description must route the provider bench through the quota_bench path"
+grep -q "lanes/seats" <<<"$spend_block" \
+  || fail "FleetProviderSpendBoundary description must name the seat ledger dir"
 if command -v promtool >/dev/null 2>&1; then
   unit_yml="$scratch/fleet-queue-ratio.test.yml"
   cat >"$unit_yml" <<YOAML
@@ -437,6 +463,78 @@ YOAML
   grep -q "SUCCESS" <<<"$out" \
     || fail "promtool test rules: provider-quota-exhausted must fire on total>=1 and stay silent on total=0 ($out)"
   ok "promtool test rules: provider-quota-exhausted fires on real burn (fleet-ops#2712)"
+
+  # fleet-ops#3284: the money-boundary drill. Three cases:
+  #   (a) spend leg — fleet_seat_spend_today_usd > 5 fires for that provider;
+  #   (b) credits leg — fleet_seat_credits_remaining_usd < 5 fires;
+  #   (c) quiet — spend 4 / credits 9 plus a stale day-labelled
+  #       fleet_seat_spend_usd row at 99 (a >$5 day in the trailing window)
+  #       must NOT fire: the rule must key on the day-less today copy, never
+  #       on a day that aged out of "today".
+  sb_yml="$scratch/fleet-spend-boundary.test.yml"
+  cat >"$sb_yml" <<YOAML
+rule_files:
+  - $rules
+evaluation_interval: 1m
+tests:
+  - interval: 1m
+    name: spend boundary fires when a provider's today spend is over USD 5
+    input_series:
+      - series: 'fleet_seat_spend_today_usd{provider="openrouter"}'
+        values: '6x10'
+      - series: 'fleet_seat_credits_remaining_usd{provider="openrouter"}'
+        values: '9x10'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: FleetProviderSpendBoundary
+        exp_alerts:
+          - exp_labels:
+              alertname: FleetProviderSpendBoundary
+              provider: openrouter
+              severity: warning
+              service: fleet
+            exp_annotations:
+              summary: "provider openrouter crossed the USD 5 money boundary — today's spend over 5 or credits remaining under 5"
+              description: 'fleet-ops#3284 (child of #3150, zero-revenue standing rule): provider openrouter breached the money boundary — fleet_seat_spend_today_usd > 5 (current-UTC-day metered spend) and/or fleet_seat_credits_remaining_usd < 5 (vendor-reported balance). Repair worker — do BOTH, in order. (1) Nish route, class ''money'': append ONE line to /home/nish/workspaces/agent-state/NISH-ESCALATIONS.md of the form ''<ISO-8601 UTC> MONEY-BOUNDARY provider=openrouter spend_today_usd=<value> credits_remaining_usd=<value> — provider over the USD 5 boundary; only Nish can approve spend (fleet-ops#3284)''. The MONEY-BOUNDARY class token must be the second whitespace field — that write is what the nish-boundary-notify.path unit delivers to Nish''s phone. (2) Set the provider''s issue-work cap to 0 via the existing quota_bench path: the roster is .providers.openrouter.models in config/seat-caps.json (live copy ~/.local/state/pi-packet/seat-caps.json) — for every model with cap>0 write /home/nish/workspaces/agent-state/lanes/seats/<provider>__<model>.json (sanitise provider/model to [A-Za-z0-9._-]) containing health_class:"quota_bench", retryable:true, seat_dead:false, failure_mode:"quota_cap", source:"money_boundary", consecutive_failure_count:0 (a money wall is not a seat fault — do not escalate the count or trip the corpse threshold), and a FAR-FUTURE bench_until + usable_at (e.g. +365d — this wall holds until Nish clears it, never the ~6h-capped geometric window a normal 429 gets). seat_usable''s quota_bench branch keeps every benched seat out of pick_seat while bench_until is in the future. Then report the entries written. Do NOT top up, re-auth, or un-bench — money is Nish''s alone; only Nish clears the wall.'
+  - interval: 1m
+    name: spend boundary fires when a provider's credits remaining is under USD 5
+    input_series:
+      - series: 'fleet_seat_spend_today_usd{provider="minimax"}'
+        values: '1x10'
+      - series: 'fleet_seat_credits_remaining_usd{provider="minimax"}'
+        values: '4x10'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: FleetProviderSpendBoundary
+        exp_alerts:
+          - exp_labels:
+              alertname: FleetProviderSpendBoundary
+              provider: minimax
+              severity: warning
+              service: fleet
+            exp_annotations:
+              summary: "provider minimax crossed the USD 5 money boundary — today's spend over 5 or credits remaining under 5"
+              description: 'fleet-ops#3284 (child of #3150, zero-revenue standing rule): provider minimax breached the money boundary — fleet_seat_spend_today_usd > 5 (current-UTC-day metered spend) and/or fleet_seat_credits_remaining_usd < 5 (vendor-reported balance). Repair worker — do BOTH, in order. (1) Nish route, class ''money'': append ONE line to /home/nish/workspaces/agent-state/NISH-ESCALATIONS.md of the form ''<ISO-8601 UTC> MONEY-BOUNDARY provider=minimax spend_today_usd=<value> credits_remaining_usd=<value> — provider over the USD 5 boundary; only Nish can approve spend (fleet-ops#3284)''. The MONEY-BOUNDARY class token must be the second whitespace field — that write is what the nish-boundary-notify.path unit delivers to Nish''s phone. (2) Set the provider''s issue-work cap to 0 via the existing quota_bench path: the roster is .providers.minimax.models in config/seat-caps.json (live copy ~/.local/state/pi-packet/seat-caps.json) — for every model with cap>0 write /home/nish/workspaces/agent-state/lanes/seats/<provider>__<model>.json (sanitise provider/model to [A-Za-z0-9._-]) containing health_class:"quota_bench", retryable:true, seat_dead:false, failure_mode:"quota_cap", source:"money_boundary", consecutive_failure_count:0 (a money wall is not a seat fault — do not escalate the count or trip the corpse threshold), and a FAR-FUTURE bench_until + usable_at (e.g. +365d — this wall holds until Nish clears it, never the ~6h-capped geometric window a normal 429 gets). seat_usable''s quota_bench branch keeps every benched seat out of pick_seat while bench_until is in the future. Then report the entries written. Do NOT top up, re-auth, or un-bench — money is Nish''s alone; only Nish clears the wall.'
+  - interval: 1m
+    name: spend boundary stays silent under both thresholds and on stale day rows
+    input_series:
+      - series: 'fleet_seat_spend_today_usd{provider="quietprov"}'
+        values: '4x10'
+      - series: 'fleet_seat_credits_remaining_usd{provider="quietprov"}'
+        values: '9x10'
+      - series: 'fleet_seat_spend_usd{provider="oldprov",day="2020-01-01"}'
+        values: '99x10'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: FleetProviderSpendBoundary
+        exp_alerts: []
+YOAML
+  if ! out="$(promtool test rules "$sb_yml" 2>&1)"; then
+    fail "promtool test rules exited non-zero on the spend-boundary test: $out"
+  fi
+  grep -q "SUCCESS" <<<"$out" \
+    || fail "promtool test rules: spend-boundary must fire on each leg and stay silent under both ($out)"
+  ok "promtool test rules: spend-boundary fires on each leg, silent under both, immune to stale day rows (fleet-ops#3284)"
 fi
 ok "fleet_rules.yml: absent heartbeat + 3 regression-trend rules + queue tripwire + provider quota"
 
@@ -2252,6 +2350,31 @@ spend2 = m._compute_spend()
 assert spend2 == spend, spend2
 print("OK: _compute_spend scans sessions and caches by mtime")
 
+# fleet-ops#3284: _emit_spend also emits fleet_seat_spend_today_usd{provider}
+# — the day-less copy of the current UTC day's row the FleetProviderSpendBoundary
+# rule selects on ('today' cannot be expressed against the day-labelled series
+# in a static PromQL rule).
+import datetime as _dt
+_today = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%d")
+lines = []
+m._emit_spend(lines, {"openrouter": {_today: 6.25, "2020-01-01": 99.0},
+                      "minimax": {"2020-01-02": 7.0}})
+body = "\n".join(lines)
+assert f'fleet_seat_spend_usd{{provider="openrouter",day="{_today}"}} 6.250000' in body, body
+assert f'fleet_seat_spend_today_usd{{provider="openrouter"}} 6.250000' in body, body
+# a provider with no spend today emits NO today row (absent = 0 — the alert
+# must not trip on a stale day from the trailing window)
+assert 'fleet_seat_spend_today_usd{provider="minimax"}' not in body, body
+# days older than the 30d retention window are filtered from BOTH families
+assert 'day="2020-01-01"' not in body and 'day="2020-01-02"' not in body, body
+assert body.count("# HELP fleet_seat_spend_today_usd") == 1, body
+assert body.count("# TYPE fleet_seat_spend_today_usd") == 1, body
+# no spend at all -> no today family (absent, not a fake 0)
+lines = []
+m._emit_spend(lines, {})
+assert 'fleet_seat_spend_today_usd' not in "\n".join(lines)
+print("OK: _emit_spend emits the current-day copy only for providers with spend today")
+
 # _read_env_key
 env_file = td / ".env"
 env_file.write_text("# comment\nXKIRO_API_KEY=secret123\nOPENROUTER_API_KEY=or456\n")
@@ -2285,6 +2408,17 @@ sd.mkdir(parents=True)
                   "message": {"role": "assistant", "usage": {"cost": {"total": 0.456}}}}) + "\n"
 )
 
+# fleet-ops#3284: a second session stamped TODAY (UTC) so the day-less
+# fleet_seat_spend_today_usd row has something to emit.
+import datetime as _dt
+_today = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%d")
+(sd / f"{_today}T03-04-05Z_t.jsonl").write_text(
+    json.dumps({"type": "session", "id": "t", "timestamp": f"{_today}T03:04:05Z"}) + "\n"
+    + json.dumps({"type": "model_change", "provider": "minimax", "modelId": "m"}) + "\n"
+    + json.dumps({"type": "message", "timestamp": f"{_today}T03:05:00Z",
+                  "message": {"role": "assistant", "usage": {"cost": {"total": 6.5}}}}) + "\n"
+)
+
 m.OUT = Path(out_path)
 m.PR_CACHE_DIR = Path(scratch) / "cache"
 m.PR_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -2305,6 +2439,10 @@ m.STALENESS_CACHE = Path("/nonexistent/stale.json")
 m.DETAIL_CACHE = m.PR_CACHE_DIR / "detail.cache.json"
 m.OPENROUTER_BALANCE_CACHE = m.PR_CACHE_DIR / "openrouter-balance.json"
 m.XKIRO_BALANCE_CACHE = m.PR_CACHE_DIR / "xkiro-balance.json"
+# fleet-ops#3284: pin the spend mtime cache into scratch too — SPEND_CACHE is
+# bound at module load to the LIVE path, so without this the test reads and
+# rewrites the real seat-spend cache.
+m.SPEND_CACHE = m.PR_CACHE_DIR / "spend-cache.json"
 
 m._list_timers = lambda: [{"unit": "fleet-metrics-export.timer", "last_usec": 0}]
 m._timer_active = lambda unit: 1
@@ -2339,6 +2477,14 @@ assert '# TYPE fleet_seat_spend_usd gauge' in body, body
 assert 'fleet_seat_spend_usd{provider="openrouter",day="2026-09-04"} 0.123000' in body, body
 assert 'fleet_seat_spend_usd{provider="minimax",day="2026-09-04"} 0.456000' in body, body
 
+# fleet-ops#3284: the day-less current-day copy for the spend-boundary rule.
+assert '# HELP fleet_seat_spend_today_usd' in body, body
+assert '# TYPE fleet_seat_spend_today_usd gauge' in body, body
+assert f'fleet_seat_spend_usd{{provider="minimax",day="{_today}"}} 6.500000' in body, body
+assert f'fleet_seat_spend_today_usd{{provider="minimax"}} 6.500000' in body, body
+# no spend today for openrouter -> no today row (absent = 0, never a fake 0)
+assert 'fleet_seat_spend_today_usd{provider="openrouter"}' not in body, body
+
 assert '# HELP fleet_seat_credits_remaining_usd' in body, body
 assert '# TYPE fleet_seat_credits_remaining_usd gauge' in body, body
 assert 'fleet_seat_credits_remaining_usd{provider="openrouter"} 6.950000' in body, body
@@ -2363,6 +2509,7 @@ for line in body.splitlines():
         type_counts[line.split()[2]] += 1
 for fam in (
     "fleet_seat_spend_usd",
+    "fleet_seat_spend_today_usd",
     "fleet_seat_credits_remaining_usd",
     "fleet_seat_free_tokens_remaining",
     "fleet_seat_credits_held_usd",

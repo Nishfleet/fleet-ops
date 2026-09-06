@@ -1256,6 +1256,14 @@ TYPE_SPEND = "# TYPE fleet_seat_spend_usd gauge"
 # Bound the family's cardinality: only the trailing retention window is
 # exported so old days do not accumulate in Prometheus forever.
 SPEND_RETENTION_DAYS = 30
+HELP_SPEND_TODAY = (
+    "# HELP fleet_seat_spend_today_usd Seat spend in USD per provider for the "
+    "current UTC day (fleet-ops#3284). The day-labelled fleet_seat_spend_usd "
+    "series cannot express 'today' in a static PromQL rule (the label is a "
+    "date string, not comparable to now()), so the spend-boundary alert rules "
+    "on this day-less copy of the current day's row."
+)
+TYPE_SPEND_TODAY = "# TYPE fleet_seat_spend_today_usd gauge"
 HELP_CREDITS = (
     "# HELP fleet_seat_credits_remaining_usd Remaining account balance in USD "
     "for metered providers from vendor credits/usage endpoints (fleet-ops#3283)."
@@ -1274,13 +1282,18 @@ TYPE_HELD = "# TYPE fleet_seat_credits_held_usd gauge"
 
 
 def _emit_spend(lines, spend):
-    """Append fleet_seat_spend_usd family per provider/day (trailing window)."""
+    """Append fleet_seat_spend_usd family per provider/day (trailing window),
+    plus fleet_seat_spend_today_usd{provider} for the current UTC day
+    (fleet-ops#3284 — the alert-rule selector)."""
     if not spend:
         return
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=SPEND_RETENTION_DAYS)).strftime("%Y-%m-%d")
+    now = datetime.now(timezone.utc)
+    today = now.strftime("%Y-%m-%d")
+    cutoff = (now - timedelta(days=SPEND_RETENTION_DAYS)).strftime("%Y-%m-%d")
     lines.append("")
     lines.append(HELP_SPEND)
     lines.append(TYPE_SPEND)
+    today_rows = []
     for provider in sorted(spend):
         for day in sorted(spend[provider]):
             if day < cutoff:
@@ -1289,6 +1302,16 @@ def _emit_spend(lines, spend):
                 f'fleet_seat_spend_usd{{provider="{_prom_label(provider)}",'
                 f'day="{_prom_label(day)}"}} {spend[provider][day]:.6f}'
             )
+            if day == today:
+                today_rows.append(
+                    f'fleet_seat_spend_today_usd{{provider="{_prom_label(provider)}"}} '
+                    f'{spend[provider][day]:.6f}'
+                )
+    if today_rows:
+        lines.append("")
+        lines.append(HELP_SPEND_TODAY)
+        lines.append(TYPE_SPEND_TODAY)
+        lines.extend(today_rows)
 
 
 def _read_env_key(path, names):
