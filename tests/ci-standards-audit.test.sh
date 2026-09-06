@@ -327,6 +327,15 @@ bash "$here/fleet-issue-file-close-duplicates.test.sh"
 # Hermetic (fake gh, no network).
 bash "$here/fleet-issue-file-close-duplicates-regression-3161.test.sh"
 
+# fleet-ops#3728: hermetic test for the already-marked idempotency branch
+# (close-duplicates must not re-post a possible-duplicate marker the issue
+# already carries for the same canonical). Hosted here so P14 runs it
+# without a workflow edit (the worker App cannot push .github/workflows/**).
+# The named pin in tests/p14-test-listing-gate.test.sh is the
+# class-prevention so a future drop of this host line fails by name.
+# Hermetic (fake gh, no network).
+bash "$here/fleet-issue-file-close-duplicates-idempotent.test.sh"
+
 # fleet-ops#2902 (PR #2905 follow-up): the leaky-worktree containment
 # detector landed on main without a ci.yml listing or a host — and P14 was
 # already red on the two orphans above, so this leftover slipped in

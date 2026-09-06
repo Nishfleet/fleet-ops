@@ -553,6 +553,21 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-issue-file-close-duplicate
   || fail "fleet-issue-file-close-duplicates-regression-3161.test.sh must not be a known orphan (fleet-ops#3161)"
 ok "fleet-issue-file-close-duplicates-regression-3161.test.sh is pinned in the P14 reachable set (fleet-ops#3161)"
 
+# fleet-ops#3728: hard-pin the host line for the close-duplicates idempotency
+# test (already-marked skip). Same shape as the #3161 pin above — the test
+# is hosted from ci-standards-audit.test.sh (already listed in ci.yml)
+# because the worker App cannot push .github/workflows/**. This named pin
+# is class-prevention so a future drop of the host line cannot park the
+# test on known_orphans to silence the generic $bad[] message.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-issue-file-close-duplicates-idempotent\.test\.sh"?' \
+  "$here/ci-standards-audit.test.sh" \
+  || fail "ci-standards-audit.test.sh must bash-invoke fleet-issue-file-close-duplicates-idempotent.test.sh (fleet-ops#3728)"
+[[ -n "${reachable[fleet-issue-file-close-duplicates-idempotent.test.sh]:-}" ]] \
+  || fail "fleet-issue-file-close-duplicates-idempotent.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#3728)"
+[[ -z "${known_orphan_set[fleet-issue-file-close-duplicates-idempotent.test.sh]:-}" ]] \
+  || fail "fleet-issue-file-close-duplicates-idempotent.test.sh must not be a known orphan (fleet-ops#3728)"
+ok "fleet-issue-file-close-duplicates-idempotent.test.sh is pinned in the P14 reachable set (fleet-ops#3728)"
+
 # fleet-ops#2902 (PR #2905 follow-up): hard-pin the host line for
 # worktree-leaky-test-containment. The test landed on main in PR #2905
 # (the #2769 containment detector fix) without a ci.yml listing or a host.
