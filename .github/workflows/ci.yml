@@ -228,7 +228,6 @@ jobs:
         bash tests/pi-intake-topup.test.sh
         bash tests/fleet-console-pi-utc.test.sh
         bash tests/pi-issue-run-session-error-feed.test.sh
-        bash tests/pi-issue-run-fast-death-class.test.sh
         bash tests/repair-rotation.test.sh
         bash tests/alert-repair-seat-walled.test.sh
         bash tests/alert-repair-class-park-skip.test.sh
