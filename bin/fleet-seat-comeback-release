@@ -114,6 +114,8 @@
 #   FLEET_SEAT_COMEBACK_TIMEOUT_S       probe timeout (default 45)
 #   FLEET_SEAT_COMEBACK_CORPSE_GRACE_S  corpse-ledger retirement grace
 #                                       (default 21600 = 6h, fleet-ops#2716)
+#   FLEET_SEAT_COMEBACK_CORPSE_RUNAWAY_MULT  runaway-corpse count multiple
+#                                       (default 4, fleet-ops#3638)
 #   FLEET_SEAT_COMEBACK_NOW              ISO timestamp override (tests)
 #
 # Exit: 0 clean sweep. 1 when the release path is stuck (walled seats hold
@@ -184,6 +186,27 @@ CORPSE_GRACE_S="${FLEET_SEAT_COMEBACK_CORPSE_GRACE_S:-21600}"
 # re-enters the normal walled path instead of being force-retired as a
 # terminal corpse the moment one probe fails.
 RATE_LIMIT_COMEBACK_S="${FLEET_SEAT_COMEBACK_RATE_LIMIT_S:-900}"
+# fleet-ops#3638: runaway-corpse multiple. A no-wall corpse whose
+# consecutive_failure_count has climbed to >= CORPSE_RUNAWAY_MULT x
+# SEAT_DEAD_CONSECUTIVE_THRESHOLD has demonstrably burned through many
+# second-chance re-probes. The lived bug: a comeback_never_released corpse
+# bounces corpse -> second-chance re-probe -> extension reclassifies to a
+# walled state (rate_limited / quota_bench) during the probe -> "extension
+# reclassified, no longer a corpse" -> walled seat re-probes, fails, and
+# re-corpses at count+2 with a FRESH observed_at. retire_corpse's 6h grace
+# keys on observed_at, so each re-corpse RESETS the grace window and the
+# seat is never reaped — count climbs to 117/109 (the lived xkiro seats),
+# FleetSeatComebackNeverReleased stays pending, the live roster keeps
+# counting a dead seat. Once the count crosses this multiple the corpse is
+# force-retired immediately (grace bypass): the second-chance re-probe is
+# for a FRESH corpse (count near threshold); a runaway corpse has had its
+# chances and is permanently excluded so the seat count reflects a dead
+# seat, not a forever-bouncing corpse. Default 4x (100 at threshold 25) —
+# catches the reported 117/109 case while leaving genuine slow-recovery
+# seats room below the line.
+CORPSE_RUNAWAY_MULT="${FLEET_SEAT_COMEBACK_CORPSE_RUNAWAY_MULT:-4}"
+[[ "$CORPSE_RUNAWAY_MULT" =~ ^[0-9]+$ ]] || CORPSE_RUNAWAY_MULT=4
+(( CORPSE_RUNAWAY_MULT >= 1 )) || CORPSE_RUNAWAY_MULT=4
 # fleet-ops#3176: the provider-quota-exhausted alert window in
 # libexec/fleet-metrics-export.py (PROVIDER_QUOTA_WINDOW_S, default 3600s).
 # A quota_exhausted (HTTP 402) seat whose observed_at is STILL inside this
@@ -1058,6 +1081,35 @@ main() {
             _cfm=$(jq -r '.failure_mode // ""' "$f" 2>/dev/null || true)
             _csrc=$(jq -r '.source // ""' "$f" 2>/dev/null || true)
             if [[ -z "$_cwe" ]] && { [[ "$_cfm" == "comeback_never_released" || "$_csrc" == "comeback_release_corpse" ]] || _corpse_is_recoverable_mode "$_cfm"; }; then
+                # fleet-ops#3638: RUNAWAY CORPSE guard. A no-wall corpse
+                # whose consecutive_failure_count has climbed to >=
+                # CORPSE_RUNAWAY_MULT x threshold has already burned
+                # through many second-chance re-probes. The bounce cycle
+                # (corpse -> re-probe -> extension reclassifies to walled
+                # -> re-probe fails -> re-corpse at count+2 with a FRESH
+                # observed_at) resets retire_corpse's 6h grace on every
+                # re-corpse, so the no-force retire never fires and the
+                # count climbs without bound (lived xkiro seats at 117/109).
+                # Once the count crosses the runaway line the corpse is
+                # permanently excluded: force-retire it here so the live
+                # roster seat count reflects a dead seat, not a forever-
+                # bouncing corpse. The second-chance re-probe below is for
+                # a FRESH corpse (count near threshold); a runaway corpse
+                # has had its chances.
+                local _runaway_count _runaway_line
+                _runaway_count=$(jq -r '.consecutive_failure_count // 0' "$f" 2>/dev/null || echo 0)
+                [[ "$_runaway_count" =~ ^[0-9]+$ ]] || _runaway_count=0
+                _runaway_line=$(( CORPSE_RUNAWAY_MULT * SEAT_DEAD_CONSECUTIVE_THRESHOLD ))
+                if (( _runaway_count >= _runaway_line )); then
+                    log "RUNAWAY corpse $p/$m: count=$_runaway_count >= ${CORPSE_RUNAWAY_MULT}x threshold ${SEAT_DEAD_CONSECUTIVE_THRESHOLD} (line=${_runaway_line}) — force-retire, second chances exhausted (fleet-ops#3638)"
+                    if retire_corpse "$p" "$m" "$f" 1; then
+                        log "explicitly retired $p/$m as runaway corpse (count=$_runaway_count, fleet-ops#3638)"
+                    else
+                        log "runaway corpse $p/$m: retire failed — held"
+                    fi
+                    last_probe["$base"]="$(now_epoch)"
+                    continue
+                fi
                 log "corpse re-probe $p/$m: no wall, second-chance re-probe (fleet-ops#3156)"
                 if probe_seat "$p" "$m"; then
                     ((probed++)) || true

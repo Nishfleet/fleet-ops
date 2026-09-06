@@ -306,7 +306,8 @@ cat > "$TMPD/seat-caps.json" <<'CAPS'
     "ollama": {"models": {"deepseek-v4-flash:0731": 1}},
     "opencode": {"models": {"hy3-free": 1, "mimo-v-2.5-free": 1, "mimo-v2.5-free": 1, "nemotron-3-ultra-free": 1}},
     "straitly": {"models": {"deepseek/deepseek-v4-pro": 1, "deepseek-v4-pro": 1, "gpt-5.6-sol": 1}},
-    "test": {"models": {"test": 1}}
+    "test": {"models": {"test": 1}},
+    "xkiro": {"models": {"deepseek/deepseek-v4-pro": 1, "minimax/minimax-m3:free": 1}}
   }
 }
 CAPS
@@ -1558,6 +1559,118 @@ jq -e '.seat_dead == false and .health_class == "healthy" and .failure_mode == "
   "$TMPD/seats17/opencode__mimo-v2.5-free.json" >/dev/null \
   || fail "17g: seat must land healthy after the bounded-comback re-probe: $(cat "$TMPD/seats17/opencode__mimo-v2.5-free.json")"
 ok "17g: bounded comeback clock is a real retry schedule — seat unwalls on the next sweep once the clock passes (fleet-ops#3508)"
+
+# 17h. fleet-ops#3638: RUNAWAY CORPSE guard. A no-wall corpse whose
+#      consecutive_failure_count has climbed far past the threshold has
+#      burned through many second-chance re-probes. The bounce cycle
+#      (corpse -> re-probe -> extension reclassifies to walled -> re-probe
+#      fails -> re-corpse at count+2 with a FRESH observed_at) resets
+#      retire_corpse's 6h grace on every re-corpse, so the no-force retire
+#      never fires and the count climbs without bound (lived xkiro seats at
+#      117/109). Once the count crosses CORPSE_RUNAWAY_MULT x threshold
+#      (default 4x = 100) the corpse is force-retired immediately — the
+#      second-chance re-probe is NOT fired. This proves a corpse is either
+#      revived (below the line, re-probed) or permanently excluded (at/above
+#      the line, retired), and the live roster seat count reflects it (the
+#      corpse ledger moves to the dated retirement dir; a parked ledger
+#      takes its place so the seat stays unpickable).
+rm -rf "$TMPD/seats17" "$TMPD/seats-corpse-retired-$NOW_ISO"
+mkdir -p "$TMPD/seats17"
+# The issue's exact shape: xkiro/deepseek/deepseek-v4-pro, count=117,
+# failure_mode=comeback_never_released, no wall, observed_at 1h ago (inside
+# the 6h grace — the no-force retire would HOLD it; the runaway guard must
+# fire regardless of grace).
+cat > "$TMPD/seats17/xkiro__deepseek_deepseek-v4-pro.json" << 'EOF'
+{"provider":"xkiro","model":"deepseek/deepseek-v4-pro","http_status":null,"retry_after":null,"health_class":"corpse","retryable":false,"seat_dead":true,"poison_ladder":false,"observed_at":"2026-08-30T11:00:00Z","source":"comeback_release_corpse","failure_mode":"comeback_never_released","usable_at":null,"bench_until":null,"consecutive_failure_count":117,"corpse_threshold":25}
+EOF
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$TMPD/seats17" \
+    FLEET_SEAT_COMEBACK_STATE="$TMPD/state17h.json" \
+    FLEET_SEAT_COMEBACK_PROM="$TMPD/prom17h.prom" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" \
+    PI_BIN="$TMPD/pi-tool-ok" \
+    bash "$BIN" >/dev/null 2>"$TMPD/ret17h.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "17h: runaway-corpse sweep must exit 0, got $rc ($(cat "$TMPD/ret17h.err"))"
+# The runaway guard must fire — NOT the second-chance re-probe. Even with a
+# healthy probe stub (pi-tool-ok), a runaway corpse is force-retired without
+# probing, because the count proves the second chances are already exhausted.
+grep -q "RUNAWAY corpse xkiro/deepseek/deepseek-v4-pro: count=117 >= 4x threshold 25 (line=100) — force-retire, second chances exhausted" "$TMPD/ret17h.err" \
+  || fail "17h: runaway guard must log the force-retire line (fleet-ops#3638): $(cat "$TMPD/ret17h.err")"
+grep -q "explicitly retired xkiro/deepseek/deepseek-v4-pro as runaway corpse (count=117, fleet-ops#3638)" "$TMPD/ret17h.err" \
+  || fail "17h: runaway corpse must be explicitly retired (fleet-ops#3638): $(cat "$TMPD/ret17h.err")"
+# The second-chance re-probe must NOT have fired (the runaway guard
+# short-circuits before it).
+grep -q "second-chance re-probe" "$TMPD/ret17h.err" \
+  && fail "17h: runaway corpse must NOT get a second-chance re-probe (count already past the line): $(cat "$TMPD/ret17h.err")"
+# fleet-ops#3669: retirement leaves a parked ledger in the live roster so the
+# seat stays UNPICKABLE (the corpse ledger itself is moved to the audit dir).
+[[ -f "$TMPD/seats17/xkiro__deepseek_deepseek-v4-pro.json" ]] \
+  || fail "17h: retirement must leave a parked ledger in the live roster (fleet-ops#3669): $(ls "$TMPD/seats17")"
+_parked_hc=$(jq -r '.health_class // ""' "$TMPD/seats17/xkiro__deepseek_deepseek-v4-pro.json" 2>/dev/null || true)
+[[ "$_parked_hc" == "parked" ]] \
+  || fail "17h: parked ledger must be health_class=parked, got $_parked_hc"
+_parked_dead=$(jq -r '.seat_dead // false' "$TMPD/seats17/xkiro__deepseek_deepseek-v4-pro.json" 2>/dev/null || true)
+[[ "$_parked_dead" == "true" ]] \
+  || fail "17h: parked ledger must be seat_dead=true so the seat stays off the ladder, got $_parked_dead"
+# The corpse ledger itself must land in the dated retirement dir.
+[[ -f "$TMPD/seats-corpse-retired-$NOW_ISO/xkiro__deepseek_deepseek-v4-pro.json" ]] \
+  || fail "17h: retired corpse must land in the dated retirement dir: $(ls -la "$TMPD/seats-corpse-retired-$NOW_ISO" 2>&1)"
+grep -q "^fleet_seat_comeback_release_retired_total 1$" "$TMPD/prom17h.prom" \
+  || fail "17h: prom retired_total must be 1 (runaway force-retire): $(cat "$TMPD/prom17h.prom")"
+# The seat count reflects the retirement: the never-released gauge (which
+# skips seat_dead=true) must be 0 over the post-sweep roster — the parked
+# ledger is seat_dead=true, so the dead seat is NOT counted as a live
+# never-released comeback.
+_nr_n=$(python3 - "$repo_root/libexec/fleet-metrics-export.py" "$TMPD/seats17" "$NOW_EPOCH" <<'PY'
+import importlib.util, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("fme", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+m.SEAT_LEDGER = Path(sys.argv[2])
+m.time.time = lambda: int(sys.argv[3])
+nr_n, _ = m._read_never_released()
+print(nr_n)
+PY
+)
+[[ "$_nr_n" == "0" ]] \
+  || fail "17h: never-released gauge must be 0 after runaway retirement (seat count reflects the dead seat), got $_nr_n"
+ok "17h: runaway no-wall corpse (count=117 >= 4x threshold) is force-retired, not re-probed; live roster seat count reflects the retirement (fleet-ops#3638)"
+
+# 17i. fleet-ops#3638 negative: a no-wall corpse just BELOW the runaway
+#      line (count=99 < 100 at 4x threshold 25) still gets the second-chance
+#      re-probe — the runaway guard only fires at/above the line, leaving
+#      genuine slow-recovery seats room below it. With a healthy probe stub
+#      the below-line corpse is unwalled (revived), proving the guard does
+#      not over-reach.
+rm -rf "$TMPD/seats17" "$TMPD/seats-corpse-retired-$NOW_ISO"
+mkdir -p "$TMPD/seats17"
+cat > "$TMPD/seats17/xkiro__minimax_minimax-m3_free.json" << 'EOF'
+{"provider":"xkiro","model":"minimax/minimax-m3:free","http_status":null,"retry_after":null,"health_class":"corpse","retryable":false,"seat_dead":true,"poison_ladder":false,"observed_at":"2026-08-30T11:00:00Z","source":"comeback_release_corpse","failure_mode":"comeback_never_released","usable_at":null,"bench_until":null,"consecutive_failure_count":99,"corpse_threshold":25}
+EOF
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$TMPD/seats17" \
+    FLEET_SEAT_COMEBACK_STATE="$TMPD/state17i.json" \
+    FLEET_SEAT_COMEBACK_PROM="$TMPD/prom17i.prom" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" \
+    PI_BIN="$TMPD/pi-tool-ok" \
+    bash "$BIN" >/dev/null 2>"$TMPD/ret17i.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "17i: below-line corpse sweep must exit 0, got $rc ($(cat "$TMPD/ret17i.err"))"
+grep -q "corpse re-probe xkiro/minimax/minimax-m3:free: no wall, second-chance re-probe" "$TMPD/ret17i.err" \
+  || fail "17i: below-line corpse must still get the second-chance re-probe (fleet-ops#3638): $(cat "$TMPD/ret17i.err")"
+grep -q "UNWALLED xkiro/minimax/minimax-m3:free" "$TMPD/ret17i.err" \
+  || fail "17i: below-line corpse must be unwalled on a healthy re-probe (not runaway-retired): $(cat "$TMPD/ret17i.err")"
+grep -q "RUNAWAY corpse" "$TMPD/ret17i.err" \
+  && fail "17i: below-line corpse (count=99 < 100) must NOT trigger the runaway guard: $(cat "$TMPD/ret17i.err")"
+jq -e '.seat_dead == false and .health_class == "healthy"' \
+  "$TMPD/seats17/xkiro__minimax_minimax-m3_free.json" >/dev/null \
+  || fail "17i: below-line corpse must land healthy after the re-probe: $(cat "$TMPD/seats17/xkiro__minimax_minimax-m3_free.json")"
+grep -q "^fleet_seat_comeback_release_retired_total 0$" "$TMPD/prom17i.prom" \
+  || fail "17i: prom retired_total must be 0 (below the line, revived not retired): $(cat "$TMPD/prom17i.prom")"
+ok "17i: below-line no-wall corpse (count=99 < 4x threshold) still gets the second-chance re-probe and is revived (fleet-ops#3638)"
 
 # --- 18. fleet-ops#3176: PQE 1h==1h deadlock — comeback-release must NOT ---
 #      re-anchor a quota_exhausted seat whose observed_at is still inside the
