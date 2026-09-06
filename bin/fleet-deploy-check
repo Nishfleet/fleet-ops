@@ -17,6 +17,19 @@
 #   - flock: one deploy at a time (a deploy already running or a heartbeat
 #     block 0 deploy in flight means this check yields — never concurrent)
 #
+# Deploy-clone read-only gate (fleet-ops#3758): the deploy clone is the live
+# install source and must stay a clean origin/main. Workers that need to edit
+# fleet-ops code use separate git worktrees, never the deploy clone. When a
+# worker breaks that rule (in-progress tracked edits or stray untracked files
+# in the deploy clone), this check flags it with a DEPLOY-CHECK-DIRTY-CLONE
+# LOUD line on EVERY tick - regardless of whether origin/main moved - so the
+# violation is surfaced within the 2-min cadence instead of sitting silent
+# until a merge arrives. The LOUD line lists the offending paths to make the
+# culprit obvious. The dirty state is not itself fatal here: fleet-ops-deploy
+# still rejects a dirty clone and auto-files the deploy-blocked issue (and
+# self-rescues an abandoned clone), so this gate is visibility + the existing
+# rejection, not a deployment skip.
+#
 # Environment seams (tests):
 #   FLEET_OPS_CHECKOUT            checkout to watch (default: canonical clone)
 #   FLEET_OPS_DEPLOY_BIN          deploy binary (default: $checkout/bin/fleet-ops-deploy)
@@ -73,10 +86,50 @@ deploy_in_flight() {
     python3 "$WIPE_LIB" argv-running fleet-ops-deploy >/dev/null 2>&1
 }
 
+# Return the offending paths in a dirty deploy clone, or empty when it is
+# clean. Uses plain `git status --porcelain` (with untracked) so "clean"
+# means truly porcelain-empty - a worker leaving either a tracked edit or a
+# stray untracked file in the deploy clone trips the gate.
+deploy_clone_dirty() {
+    git -C "$CHECKOUT" status --porcelain 2>/dev/null | cut -c4-
+}
+
+# Join at most five paths (plus a remainder count) for the LOUD line, so the
+# message stays readable even if a worker dirtied many files.
+clip_paths() {
+    local max=5 i n joined
+    readarray -t paths <<<"$1"
+    n=${#paths[@]}
+    if (( n > max )); then n=$max; fi
+    joined=""
+    for ((i = 0; i < n; i++)); do
+        [[ -n "$joined" ]] && joined+=","
+        joined+="${paths[i]}"
+    done
+    [[ $n -gt 0 ]] || return 0
+    printf -v out '%s' "$joined"
+    if (( ${#paths[@]} > max )); then
+        out+=",+$(( ${#paths[@]} - max )) more"
+    fi
+}
+
 main() {
     if [[ ! -d "$CHECKOUT/.git" ]] && [[ ! -f "$CHECKOUT/.git" ]]; then
         loud "DEPLOY-CHECK-CHECKOUT-MISSING" "checkout $CHECKOUT is not a git worktree — nothing to watch"
         return 0
+    fi
+
+    # Read-only gate: flag a dirty deploy clone on every tick. Visibility
+    # first - the offending paths go in the LOUD line. Do NOT return early:
+    # fleet-ops-deploy still needs to run when origin/main moved so it can
+    # reject-dirty / auto-file / self-rescue the abandoned clone.
+    local dirty_list dirty_disp out
+    dirty_list=$(deploy_clone_dirty)
+    if [[ -n "$dirty_list" ]]; then
+        clip_paths "$dirty_list"
+        dirty_disp="$out"
+        loud "DEPLOY-CHECK-DIRTY-CLONE" \
+            "deploy clone $CHECKOUT is dirty (must stay clean origin/main; workers edit in worktrees, not the deploy clone - fleet-ops#3758): $dirty_disp"
     fi
 
     local before after rc=0

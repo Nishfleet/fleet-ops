@@ -194,6 +194,59 @@ n_after=$(grep -c "DEPLOY-INVOKED" "$DEPLOY_SPY_LOG" || true)
 [[ "$n_after" == "$n_before" ]] || fail "deploy must not be invoked when lock held"
 ok "lock held -> yields, no deploy"
 
+# --- 9. dirty deploy clone (tracked edit) -> LOUD DIRTY-CLONE every tick ----
+# fleet-ops#3758: a worker editing a tracked file directly in the deploy clone
+# must be flagged on EVERY tick for visibility, even when origin/main is
+# unchanged (no merge has arrived to trip the deploy-side rejection). The
+# dirty state is not fatal here (fleet-ops-deploy rejects/auto-files/rescues),
+# so the gate must NOT skip the deploy path - it only adds the LOUD line.
+# Sync the fixture to a clean HEAD==origin/main first (the deploy spy never
+# actually merges, so HEAD has stayed at the original commit through §4-7).
+git -C "$checkout" fetch -q origin
+git -C "$checkout" reset -q --hard origin/main
+printf 'worker-wip\n' >> "$checkout/f"
+n_before=$(grep -c "DEPLOY-INVOKED" "$DEPLOY_SPY_LOG" || true)
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "dirty clone should still exit 0 (got $rc)"
+grep -q "DEPLOY-CHECK-DIRTY-CLONE" "$scratch/err.log" \
+  || fail "dirty tracked edit must loud DEPLOY-CHECK-DIRTY-CLONE"
+grep -q "nothing to do" "$scratch/err.log" \
+  || fail "dirty + unchanged must still log nothing to do"
+# The offending path (porcelain short format) is named in the LOUD line.
+grep -qE "DEPLOY-CHECK-DIRTY-CLONE.*\bf\b" "$scratch/err.log" \
+  || fail "DIRTY-CLONE loud should name the offending path"
+n_after=$(grep -c "DEPLOY-INVOKED" "$DEPLOY_SPY_LOG" || true)
+[[ "$n_after" == "$n_before" ]] \
+  || fail "dirty + unchanged must not invoke deploy (visibility only)"
+git -C "$checkout" checkout -q -- f
+ok "dirty tracked edit louds DIRTY-CLONE on an unchanged tick, no deploy"
+
+# --- 10. untracked file in deploy clone -> LOUD DIRTY-CLONE ----------------
+# A stray untracked file (e.g. a worker's scratch artifact) also dirties the
+# clone; plain `git status --porcelain` catches it so "clean" = truly
+# porcelain-empty.
+: > "$scratch/err.log"
+echo stray > "$checkout/worker-untracked.txt"
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "untracked clone should exit 0 (got $rc)"
+grep -q "DEPLOY-CHECK-DIRTY-CLONE" "$scratch/err.log" \
+  || fail "untracked file must loud DEPLOY-CHECK-DIRTY-CLONE"
+grep -q "worker-untracked.txt" "$scratch/err.log" \
+  || fail "DIRTY-CLONE loud should name the untracked path"
+rm -f "$checkout/worker-untracked.txt"
+ok "untracked file louds DIRTY-CLONE and names the path"
+
+# --- 11. clean clone -> no DIRTY-CLONE loud ---------------------------------
+# A clean origin/main deploy clone must not trip the gate (no noise on the
+# healthy path).
+: > "$scratch/err.log"
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "clean clone should exit 0 (got $rc)"
+if grep -q "DEPLOY-CHECK-DIRTY-CLONE" "$scratch/err.log"; then
+  fail "clean clone must not loud DIRTY-CLONE"
+fi
+ok "clean clone produces no DIRTY-CLONE loud"
+
 # --- 8. fleet-ops#598: unpinned defaultBranch=master is the CI failure ------
 # Drill: a bare origin whose HEAD stays on master after a main push makes
 # clone + `git push origin main` fail with `src refspec main does not match
