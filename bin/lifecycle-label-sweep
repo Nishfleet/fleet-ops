@@ -318,8 +318,17 @@ skipped=0
 failed=0
 reclassified=0
 healed=0
+admitted=0
+bounced=0
 drill_repo=""
 drill_num=""
+
+# fleet-ops#4022: scout-candidate bounce cooldown. A spec-less scout-candidate
+# issue older than 72h gets ONE bounce comment; the comment marker is the
+# cooldown signal so the next sweep does not re-bounce it and the unlabeled
+# pass does not re-apply scout-candidate to it within the window.
+SCOUT_BOUNCE_MARKER="scout-candidate-bounce:"
+SCOUT_BOUNCE_COOLDOWN_SECONDS=$((72 * 60 * 60))
 
 ensure_label() {
     local repo="$1" name="$2"
@@ -356,6 +365,88 @@ issue_passes_spec_gate() {
         return 1
     fi
     printf '%s' "$body" | python3 "$py" check-body --repo "$repo" >/dev/null
+}
+
+# fleet-ops#4022: epoch seconds for an ISO-8601 UTC timestamp, or empty on
+# parse failure. GNU date (Linux VPS + GitHub runners) parses the Z form.
+iso_epoch() {
+    local ts="$1"
+    [ -n "$ts" ] || { printf ''; return; }
+    date -d "$ts" +%s 2>/dev/null || printf ''
+}
+
+# True (0) when the issue's createdAt is older than the bounce cooldown
+# relative to NOW_ISO. Fail-open false (1) when the age cannot be computed
+# — a missing createdAt must not trigger a bounce.
+issue_older_than_bounce_age() {
+    local created="$1" now="$2"
+    local c n
+    c=$(iso_epoch "$created")
+    n=$(iso_epoch "$now")
+    [ -n "$c" ] && [ -n "$n" ] || return 1
+    (( n - c >= SCOUT_BOUNCE_COOLDOWN_SECONDS ))
+}
+
+# True (0) when the issue already carries a scout-candidate-bounce: comment
+# whose createdAt is within the cooldown window of NOW_ISO. A bounce
+# comment with no createdAt is treated as in-cooldown (fail-closed: do not
+# re-bounce). comments_json is the `.comments` array from gh issue list.
+bounce_in_cooldown() {
+    local comments_json="$1" now="$2"
+    local now_epoch
+    now_epoch=$(iso_epoch "$now")
+    [ -n "$now_epoch" ] || return 1
+    local row body created bepoch diff
+    while IFS= read -r row; do
+        [ -z "$row" ] && continue
+        body=$(printf '%s' "$row" | jq -r '.body // ""')
+        printf '%s' "$body" | grep -qF "$SCOUT_BOUNCE_MARKER" || continue
+        created=$(printf '%s' "$row" | jq -r '.createdAt // ""')
+        [ -n "$created" ] || return 0
+        bepoch=$(iso_epoch "$created")
+        [ -n "$bepoch" ] || return 0
+        diff=$(( now_epoch - bepoch ))
+        (( diff < SCOUT_BOUNCE_COOLDOWN_SECONDS )) && return 0
+    done < <(printf '%s' "$comments_json" | jq -c '.[] // empty' 2>/dev/null)
+    return 1
+}
+
+# fleet-ops#4022: admit a scout-candidate issue whose body passes the spec
+# gate to agent-ready. Drop scout-candidate so intake lists it.
+admit_scout_candidate() {
+    local repo="$1" num="$2"
+    local body
+    body="lifecycle-label: agent-ready by fleet-heartbeat at ${NOW_ISO} (scout-candidate passed spec gate; fleet-ops#4022)"
+    if [ "$DRY" = "1" ]; then
+        log "DRY $repo#$num: admit scout-candidate → agent-ready"
+        return 0
+    fi
+    ensure_label "$repo" "agent-ready"
+    if ! gh issue edit "$num" -R "$repo" --remove-label scout-candidate --add-label agent-ready >/dev/null 2>&1; then
+        log "  $repo#$num: admit scout-candidate FAILED — retry next tick"
+        return 1
+    fi
+    gh issue comment "$num" -R "$repo" --body "$body" >/dev/null 2>&1 || true
+    return 0
+}
+
+# fleet-ops#4022: post ONE bounce comment on a spec-less scout-candidate
+# issue older than 72h, naming the missing spec line. The marker in the
+# body is the cooldown signal for the next sweep.
+bounce_scout_candidate() {
+    local repo="$1" num="$2"
+    local body
+    body="${SCOUT_BOUNCE_MARKER} spec gate failed at ${NOW_ISO} (fleet-ops#4022)
+missing: add a \`termination:\`/\`accept:\`/\`required:\`/\`metric:\` line so this issue can be admitted to agent-ready."
+    if [ "$DRY" = "1" ]; then
+        log "DRY $repo#$num: bounce scout-candidate (spec gate failed, >72h)"
+        return 0
+    fi
+    if ! gh issue comment "$num" -R "$repo" --body "$body" >/dev/null 2>&1; then
+        log "  $repo#$num: bounce comment FAILED — retry next tick"
+        return 1
+    fi
+    return 0
 }
 
 apply_label() {
@@ -436,7 +527,7 @@ while IFS= read -r repo; do
     log "repo $repo"
 
     if ! list_json=$(gh issue list -R "$repo" --state open \
-        --json number,title,labels,body --limit 500 2>/dev/null); then
+        --json number,title,labels,body,comments,createdAt --limit 500 2>/dev/null); then
         log "  $repo: gh issue list FAILED — skip"
         continue
     fi
@@ -489,11 +580,66 @@ while IFS= read -r repo; do
                 continue
             fi
         fi
+        # fleet-ops#4022: do not re-apply scout-candidate to an issue that
+        # was bounced within the cooldown. A bounced issue that lost its
+        # scout-candidate label (e.g. panel discard) would otherwise re-enter
+        # the queue every tick — the churn loop. The bounce comment is the
+        # cooldown signal; leave the issue alone until the window expires.
+        if [ "$label" = "scout-candidate" ]; then
+            if bounce_in_cooldown "$(printf '%s' "$row" | jq -c '.comments // []')" "$NOW_ISO"; then
+                log "  $repo#$num: skip scout-candidate re-apply (bounced within cooldown; fleet-ops#4022)"
+                skipped=$((skipped + 1))
+                continue
+            fi
+        fi
         log "  $repo#$num: unlabeled → $label ($title)"
         if apply_label "$repo" "$num" "$label"; then
             relabeled=$((relabeled + 1))
         else
             failed=$((failed + 1))
+        fi
+    done < <(printf '%s' "$list_json" | jq -c '.[]')
+
+    # fleet-ops#4022: scout-candidate admission pass. A scout-candidate issue
+    # whose body already PASSES the spec gate is ready work, not a proposal —
+    # admit it to agent-ready so intake can claim it. One whose body FAILS the
+    # gate and is older than 72h gets ONE bounce comment naming the missing
+    # spec line and is left for the scout/worker to specify; the bounce marker
+    # is the cooldown so the next sweep does not re-bounce or re-label it.
+    # No gate is weakened: admission still routes through agent-ready-spec-gate.
+    while IFS= read -r row; do
+        [ -z "$row" ] && continue
+        num=$(printf '%s' "$row" | jq -r '.number')
+        title=$(printf '%s' "$row" | jq -r '.title // ""')
+        labels_json=$(printf '%s' "$row" | jq -c '.labels // []')
+        issue_body=$(printf '%s' "$row" | jq -r '.body // ""')
+        comments_json=$(printf '%s' "$row" | jq -c '.comments // []')
+        created=$(printf '%s' "$row" | jq -r '.createdAt // ""')
+        # only issues currently labeled scout-candidate
+        printf '%s' "$labels_json" | jq -e '.[] | select(.name=="scout-candidate")' >/dev/null 2>&1 || continue
+        # terminal / hold states keep their own lifecycle; do not admit them
+        if printf '%s' "$labels_json" | jq -e '.[] | select(.name=="discarded" or .name=="observe-to-close" or .name=="nish-reserved" or .name=="noise-class")' >/dev/null 2>&1; then
+            continue
+        fi
+        if issue_passes_spec_gate "$issue_body" "$repo"; then
+            log "  $repo#$num: scout-candidate passes spec gate → admit agent-ready ($title)"
+            if admit_scout_candidate "$repo" "$num"; then
+                admitted=$((admitted + 1))
+            else
+                failed=$((failed + 1))
+            fi
+        else
+            if issue_older_than_bounce_age "$created" "$NOW_ISO" \
+                && ! bounce_in_cooldown "$comments_json" "$NOW_ISO"; then
+                log "  $repo#$num: scout-candidate spec gate failed, >72h → bounce ($title)"
+                if bounce_scout_candidate "$repo" "$num"; then
+                    bounced=$((bounced + 1))
+                else
+                    failed=$((failed + 1))
+                fi
+            else
+                skipped=$((skipped + 1))
+            fi
         fi
     done < <(printf '%s' "$list_json" | jq -c '.[]')
 
@@ -566,9 +712,9 @@ while IFS= read -r repo; do
     done < <(printf '%s' "$list_json" | jq -c '.[]')
 done <<< "$repos"
 
-log "sweep done: relabeled=$relabeled skipped=$skipped failed=$failed reclassified=$reclassified healed=$healed"
-printf 'lifecycle-label-sweep relabeled=%s skipped=%s failed=%s reclassified=%s healed=%s\n' \
-    "$relabeled" "$skipped" "$failed" "$reclassified" "$healed"
+log "sweep done: relabeled=$relabeled skipped=$skipped failed=$failed reclassified=$reclassified healed=$healed admitted=$admitted bounced=$bounced"
+printf 'lifecycle-label-sweep relabeled=%s skipped=%s failed=%s reclassified=%s healed=%s admitted=%s bounced=%s\n' \
+    "$relabeled" "$skipped" "$failed" "$reclassified" "$healed" "$admitted" "$bounced"
 
 if [ "$DRILL" = "1" ]; then
     if [ "$DRY" = "1" ]; then
