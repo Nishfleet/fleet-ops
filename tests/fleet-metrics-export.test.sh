@@ -2418,6 +2418,35 @@ assert filed == [], "no file when Prometheus is unavailable"
 state3 = m._read_week_later_state()
 assert "200" not in state3, "unevaluated PR must not be recorded (retried later)"
 print("OK: Prometheus-unavailable PR is left unevaluated, not filed, not recorded")
+
+# --- fleet-ops#3948: a PR younger than 7d-6h is never evaluated ---
+# The live organ filed #3605 89 min after #3577 merged (before == after,
+# same trailing-7d data) because the search window leaked. Whatever the
+# search returns, a young PR is skipped and left unrecorded (retried when
+# it is really a week old).
+import re
+from datetime import datetime, timezone
+young_iso = datetime.fromtimestamp(now - 2 * 3600, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+m._week_later_prs = lambda: [
+    {"number": 300, "title": "feat: v", "moves": "product_merges_per_day", "merged_at": young_iso},
+]
+m._metric_7d_value = lambda metric, t: 5.0 if abs(t - now) <= 1 else 8.0  # not improved
+m._revert_candidate_exists = lambda n, metric: False
+filed.clear()
+summary4 = m._week_later_revert_check()
+assert filed == [], f"fleet-ops#3948: PR merged 2h ago must not be filed: {filed}"
+assert "300" not in m._read_week_later_state(), "fleet-ops#3948: young PR must not be recorded"
+print("OK: fleet-ops#3948 PR merged 2h ago is skipped, not filed, not recorded")
+
+# --- fleet-ops#3948: the search uses one merged:A..B range, never two qualifiers ---
+captured = []
+m._gh_graphql = lambda q, c: captured.append(q) or None
+m._gh_week_later_prs()
+assert captured, "fleet-ops#3948: week-later search must run"
+q = captured[0]
+assert "merged:>=" not in q and "merged:<=" not in q, q
+assert re.search(r"merged:\d{4}-\d{2}-\d{2}T[0-9:]+Z\.\.\d{4}-\d{2}-\d{2}T[0-9:]+Z", q), q
+print("OK: fleet-ops#3948 week-later search uses a merged:A..B range")
 PY
 
 ok "fleet-ops#3124 part 4/4: week-later revert-candidate check pinned"

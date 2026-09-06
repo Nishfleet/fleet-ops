@@ -3884,6 +3884,9 @@ def _emit_deploy_quality(lines):
 # a later tick. The PR list is cached to WEEK_LATER_CACHE_TTL so the gh
 # search runs at most ~4x/day, not every 5-min tick.
 WEEK_LATER_WINDOW_S = 6 * 3600
+# Client-side floor on merge age (fleet-ops#3948): a PR younger than this is
+# never evaluated, whatever the search returned.
+WEEK_LATER_MIN_AGE_S = 7 * 86400 - WEEK_LATER_WINDOW_S
 WEEK_LATER_CACHE_TTL = 6 * 3600
 WEEK_LATER_CACHE = PR_CACHE_DIR / "week-later-prs-cache.json"
 # Per-PR evaluation ledger: once a PR is evaluated (improved / already-filed /
@@ -3945,7 +3948,7 @@ def _gh_week_later_prs():
     query = (
         "query($cursor: String) {\n"
         '  search(query: "repo:Nishfleet/fleet-ops is:pr is:merged '
-        f"merged:>={start_iso} merged:<={end_iso} sort:merged-desc\"" "\n"
+        f"merged:{start_iso}..{end_iso} sort:merged-desc\"" "\n"
         "    type: ISSUE, first: 100, after: $cursor) {\n"
         "    pageInfo { hasNextPage endCursor }\n"
         "    nodes {\n"
@@ -4135,6 +4138,15 @@ def _week_later_revert_check():
             continue
         merged_epoch = _parse_iso_utc(pr["merged_at"])
         if merged_epoch is None:
+            continue
+        if now - merged_epoch < WEEK_LATER_MIN_AGE_S:
+            # fleet-ops#3948: the search window is the only thing that
+            # makes this a WEEK-later check. When it leaks younger PRs
+            # (two `merged:` qualifiers were OR-ed by GitHub search and
+            # returned everything merged in the last 7d), before and
+            # after cover the same trailing-7d data and the PR is filed
+            # as a revert candidate hours after merge. Not evaluated, not
+            # recorded: retried when it is actually a week old.
             continue
         before = _metric_7d_value(metric, merged_epoch)
         after = _metric_7d_value(metric, now)
