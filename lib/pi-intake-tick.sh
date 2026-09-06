@@ -248,6 +248,8 @@ fi
 # shellcheck source=/home/nish/.local/lib/pi-packet/precedence-band.sh
 # shellcheck disable=SC1091  # external lib, absent in hosted CI
 . "$PRECEDENCE_BAND_LIB"
+# fleet-ops#3784: default stagger to 0 if not loaded by seat caps
+SEAT_SPAWN_STAGGER_S="${SEAT_SPAWN_STAGGER_S:-0}"
 # Each tick starts with a clean floor latch. The file is keyed on $$ so a
 # leftover from a recycled PID cannot freeze the floor for this tick
 # (fleet-ops#1452). The flock above already serializes fleet-ops ticks.
