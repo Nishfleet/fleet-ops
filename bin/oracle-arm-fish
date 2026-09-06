@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+# oracle-arm-fish — one tick of the OCI Always Free ARM (A1.Flex) capacity hunt.
+#
+# Oracle's Always Free ARM allowance (4 OCPU / 24 GB of VM.Standard.A1.Flex) is
+# real but almost never has capacity in a busy region: `LaunchInstance` returns
+# "Out of host capacity" until a slot frees. The only way onto ARM without
+# paying is to keep asking. This script IS one ask; systemd owns the repetition.
+#
+# Deliberately NOT a poll loop in bash (fleet standing rule: no hand-built
+# dispatchers). One tick, one exit. oracle-arm-fish.timer schedules it every
+# 10 minutes — slow on purpose: Oracle rate-limits and flags accounts that
+# hammer LaunchInstance, and a flagged account loses the Always Free tier
+# outright, which is the exact opposite of the goal.
+#
+# Exit contract (fleet-ops verdict discipline — exit 0 is not proof of success):
+#   ARM-FISH-VERDICT state=standdown   no credentials yet; nothing attempted
+#   ARM-FISH-VERDICT state=nocapacity  asked every AD, all out of host capacity
+#   ARM-FISH-VERDICT state=landed      instance RUNNING; timer disabled itself
+#   ARM-FISH-VERDICT state=error       something other than capacity broke -> exit 1
+# Only state=error exits non-zero, so OnFailure summons a repair agent for real
+# faults and stays quiet for the expected capacity misses.
+set -uo pipefail
+
+OCI=${OCI_BIN:-/home/nish/.local/bin/oci}
+OCI_CFG=${OCI_CLI_CONFIG_FILE:-/home/nish/.oci/config}
+ARM_ENV=${FLEET_ARM_ENV:-/home/nish/.oci/fleet-arm.env}
+STATE=${FLEET_ARM_STATE:-/home/nish/workspaces/agent-state/lanes/oracle-arm-fish.json}
+NOTIFY=${FLEET_ARM_NOTIFY:-/home/nish/workspaces/products/fleet-ops/bin/nish-boundary-notify}
+INSTANCE_NAME=${FLEET_ARM_NAME:-fleet-arm-node}
+TIMER_UNIT=oracle-arm-fish.timer
+
+verdict() { echo "ARM-FISH-VERDICT state=$1 ${2:-}"; }
+
+# --- guards: stand down quietly until Nish's signup lands ---------------------
+if [ ! -x "$OCI" ];     then verdict standdown "reason=no-oci-cli";     exit 0; fi
+if [ ! -r "$OCI_CFG" ]; then verdict standdown "reason=no-oci-config";  exit 0; fi
+if [ ! -r "$ARM_ENV" ]; then verdict standdown "reason=no-arm-env (run oracle-bootstrap-micro)"; exit 0; fi
+
+# shellcheck disable=SC1090
+set -a; . "$ARM_ENV"; set +a
+
+: "${OCI_COMPARTMENT_OCID:?missing in $ARM_ENV}"
+: "${OCI_SUBNET_OCID:?missing in $ARM_ENV}"
+: "${OCI_SSH_PUB:?missing in $ARM_ENV}"
+
+if [ -z "${OCI_ARM_IMAGE_OCID:-}" ]; then
+  verdict error "reason=no-arm-image-ocid"; exit 1
+fi
+
+j() { "$OCI" --config-file "$OCI_CFG" "$@"; }
+
+# Already landed? Then the timer should not be running at all — disable and stop.
+EXISTING=$(j compute instance list -c "$OCI_COMPARTMENT_OCID" \
+             --display-name "$INSTANCE_NAME" --lifecycle-state RUNNING \
+             --query 'data[0].id' --raw-output 2>/dev/null)
+if [ -n "$EXISTING" ] && [ "$EXISTING" != null ]; then
+  verdict landed "instance=$EXISTING reason=already-running"
+  systemctl --user disable --now "$TIMER_UNIT" >/dev/null 2>&1 || true
+  exit 0
+fi
+
+read -r -a ADS <<<"${OCI_ADS:-}"
+if [ "${#ADS[@]}" -eq 0 ]; then
+  mapfile -t ADS < <(j iam availability-domain list -c "$OCI_COMPARTMENT_OCID" \
+                       --query 'data[].name' --raw-output 2>/dev/null \
+                     | tr -d '[]"' | tr ',' '\n' | sed 's/^ *//' | grep -v '^$')
+fi
+[ "${#ADS[@]}" -gt 0 ] || { verdict error "reason=no-availability-domains"; exit 1; }
+
+# Ladder: 2 OCPU / 12 GB first. A smaller ask finds a slot far more often than
+# the full 4/24, and the shape is resizable afterwards — landing ANY A1 node is
+# what matters, because Oracle counts the allowance, not the instance.
+OCPUS=${FLEET_ARM_OCPUS:-2}
+MEMGB=${FLEET_ARM_MEM_GB:-12}
+BOOTGB=${FLEET_ARM_BOOT_GB:-100}
+
+CAPACITY_MISS=0
+ERRFILE=$(mktemp)
+trap 'rm -f "$ERRFILE"' EXIT
+
+for AD in "${ADS[@]}"; do
+  echo "oracle-arm-fish: asking $AD for A1.Flex ${OCPUS}ocpu/${MEMGB}GB"
+  if INST=$(j compute instance launch \
+              -c "$OCI_COMPARTMENT_OCID" \
+              --availability-domain "$AD" \
+              --shape VM.Standard.A1.Flex \
+              --shape-config "{\"ocpus\":${OCPUS},\"memoryInGBs\":${MEMGB}}" \
+              --display-name "$INSTANCE_NAME" \
+              --image-id "$OCI_ARM_IMAGE_OCID" \
+              --subnet-id "$OCI_SUBNET_OCID" \
+              --assign-public-ip true \
+              --boot-volume-size-in-gbs "$BOOTGB" \
+              --ssh-authorized-keys-file "$OCI_SSH_PUB" \
+              --wait-for-state RUNNING \
+              --query 'data.id' --raw-output 2>"$ERRFILE"); then
+
+    PUBIP=$(j compute instance list-vnics --instance-id "$INST" \
+              --query 'data[0]."public-ip"' --raw-output 2>/dev/null)
+    verdict landed "instance=$INST ad=$AD ip=$PUBIP ocpus=$OCPUS mem=${MEMGB}GB"
+
+    mkdir -p "$(dirname "$STATE")"
+    printf '{"instance_ocid":"%s","availability_domain":"%s","public_ip":"%s","ocpus":%s,"memory_gb":%s,"landed_at":"%s"}\n' \
+      "$INST" "$AD" "$PUBIP" "$OCPUS" "$MEMGB" "$(date -u +%FT%TZ)" > "$STATE"
+
+    # Stop fishing. The allowance is claimed; further launches would either fail
+    # on the service limit or start costing money.
+    systemctl --user disable --now "$TIMER_UNIT" >/dev/null 2>&1 || true
+    echo "oracle-arm-fish: $TIMER_UNIT disabled — allowance claimed"
+
+    if [ -x "$NOTIFY" ]; then
+      printf '\n## %s — ORACLE ARM LANDED (informational, no decision needed)\n\n- A1.Flex %s OCPU / %s GB is RUNNING in %s at %s (instance %s). Next: join it to the tailnet and resize toward 4 OCPU / 24 GB. Timer %s disabled itself.\n' \
+        "$(date -u +%F)" "$OCPUS" "$MEMGB" "$AD" "$PUBIP" "$INST" "$TIMER_UNIT" \
+        >> /home/nish/workspaces/agent-state/NISH-ESCALATIONS.md || true
+    fi
+    exit 0
+  fi
+
+  ERR=$(tr -d '\n' <"$ERRFILE")
+  if grep -qiE 'out of host capacity|outofhostcapacity|capacity' <<<"$ERR"; then
+    CAPACITY_MISS=$((CAPACITY_MISS + 1))
+    echo "oracle-arm-fish: $AD out of host capacity (expected)"
+  else
+    verdict error "ad=$AD detail=$(tail -c 400 <<<"$ERR")"
+    exit 1
+  fi
+done
+
+verdict nocapacity "ads_tried=${#ADS[@]} misses=$CAPACITY_MISS"
+exit 0

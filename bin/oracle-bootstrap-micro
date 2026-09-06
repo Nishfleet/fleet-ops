@@ -1,0 +1,186 @@
+#!/usr/bin/env bash
+# oracle-bootstrap-micro — one-shot day-one provisioning of the OCI Always Free
+# outside-in monitor node.
+#
+# Named reason this exists as a script and not a hand-typed sequence: it is
+# idempotent and re-runnable. Every OCI object it needs (VCN, subnet, internet
+# gateway, route table, security list, instance) is looked up by display name
+# first and only created when absent, so a partial failure is resumed by
+# re-running, not unpicked by hand.
+#
+# It creates:
+#   VCN            fleet-monitor-vcn        10.10.0.0/16
+#   subnet         fleet-monitor-subnet     10.10.0.0/24 (public)
+#   int. gateway   fleet-monitor-igw
+#   security list  fleet-monitor-sl         ingress: SSH from the netcup VPS
+#                                           public IP only, + Tailscale UDP
+#                                           41641 from anywhere (direct-path
+#                                           NAT traversal; falls back to DERP
+#                                           relay if blocked).
+#   instance       fleet-monitor-micro      VM.Standard.E2.1.Micro, Always Free
+#
+# It then writes ~/.oci/fleet-arm.env, which oracle-arm-fish reads. Until that
+# file exists the ARM-fishing timer stands down.
+#
+# Zero-spend: every shape and volume here is inside the Always Free allowance.
+# The script REFUSES to launch anything not on the Always Free list.
+set -euo pipefail
+
+OCI=${OCI_BIN:-/home/nish/.local/bin/oci}
+OCI_CFG=${OCI_CLI_CONFIG_FILE:-/home/nish/.oci/config}
+SSH_PUB=${FLEET_SSH_PUB:-/home/nish/.ssh/id_ed25519.pub}
+NETCUP_IP=${NETCUP_PUBLIC_IP:-}
+ENV_OUT=${FLEET_ARM_ENV:-/home/nish/.oci/fleet-arm.env}
+
+VCN_NAME=fleet-monitor-vcn
+SUBNET_NAME=fleet-monitor-subnet
+IGW_NAME=fleet-monitor-igw
+SL_NAME=fleet-monitor-sl
+INSTANCE_NAME=fleet-monitor-micro
+MICRO_SHAPE=VM.Standard.E2.1.Micro
+
+die() { echo "oracle-bootstrap-micro: FATAL: $*" >&2; exit 1; }
+log() { echo "oracle-bootstrap-micro: $*"; }
+
+[ -x "$OCI" ]      || die "oci CLI not found at $OCI"
+[ -r "$OCI_CFG" ]  || die "no OCI config at $OCI_CFG — Nish must finish signup and hand over the API key first"
+[ -r "$SSH_PUB" ]  || die "no SSH public key at $SSH_PUB"
+
+if [ -z "$NETCUP_IP" ]; then
+  NETCUP_IP=$(curl -fsS --max-time 10 https://api.ipify.org) || die "could not determine this host's public IP; set NETCUP_PUBLIC_IP"
+fi
+log "netcup public IP for the SSH allowlist: $NETCUP_IP"
+
+TENANCY=$(awk -F= '/^tenancy=/{print $2; exit}' "$OCI_CFG" | tr -d ' \r')
+REGION=$(awk -F= '/^region=/{print $2; exit}'  "$OCI_CFG" | tr -d ' \r')
+[ -n "$TENANCY" ] || die "no tenancy OCID in $OCI_CFG"
+COMPARTMENT=${OCI_COMPARTMENT_OCID:-$TENANCY}   # root compartment by default
+log "region=$REGION compartment=${COMPARTMENT:0:24}…"
+
+j() { "$OCI" --config-file "$OCI_CFG" "$@"; }
+
+# --- availability domains -----------------------------------------------------
+mapfile -t ADS < <(j iam availability-domain list -c "$COMPARTMENT" \
+                     --query 'data[].name' --raw-output 2>/dev/null \
+                   | tr -d '[]"' | tr ',' '\n' | sed 's/^ *//' | grep -v '^$')
+[ "${#ADS[@]}" -gt 0 ] || die "no availability domains returned — check credentials"
+log "availability domains: ${ADS[*]}"
+
+# --- VCN ----------------------------------------------------------------------
+VCN=$(j network vcn list -c "$COMPARTMENT" --display-name "$VCN_NAME" \
+        --query 'data[0].id' --raw-output 2>/dev/null || true)
+if [ -z "$VCN" ] || [ "$VCN" = "null" ]; then
+  log "creating VCN $VCN_NAME"
+  VCN=$(j network vcn create -c "$COMPARTMENT" --display-name "$VCN_NAME" \
+          --cidr-blocks '["10.10.0.0/16"]' --dns-label fleetmon --wait-for-state AVAILABLE \
+          --query 'data.id' --raw-output)
+fi
+log "vcn=$VCN"
+
+# --- internet gateway ---------------------------------------------------------
+IGW=$(j network internet-gateway list -c "$COMPARTMENT" --vcn-id "$VCN" \
+        --display-name "$IGW_NAME" --query 'data[0].id' --raw-output 2>/dev/null || true)
+if [ -z "$IGW" ] || [ "$IGW" = "null" ]; then
+  log "creating internet gateway"
+  IGW=$(j network internet-gateway create -c "$COMPARTMENT" --vcn-id "$VCN" \
+          --display-name "$IGW_NAME" --is-enabled true --wait-for-state AVAILABLE \
+          --query 'data.id' --raw-output)
+fi
+
+# --- route table (default RT of the VCN gets the 0.0.0.0/0 -> IGW rule) --------
+RT=$(j network vcn get --vcn-id "$VCN" --query 'data."default-route-table-id"' --raw-output)
+j network route-table update --rt-id "$RT" --force --route-rules \
+  "[{\"destination\":\"0.0.0.0/0\",\"destinationType\":\"CIDR_BLOCK\",\"networkEntityId\":\"$IGW\"}]" >/dev/null
+log "default route table $RT points 0.0.0.0/0 at the IGW"
+
+# --- security list ------------------------------------------------------------
+# Ingress is deliberately narrow:
+#   * TCP 22 from the netcup VPS public IP ONLY (bastion/admin path)
+#   * UDP 41641 from anywhere (Tailscale direct path; without it Tailscale still
+#     works but relays every packet through DERP)
+# Everything else — including the Uptime Kuma web UI — is reached over the
+# tailnet, never the public interface.
+SL=$(j network vcn get --vcn-id "$VCN" --query 'data."default-security-list-id"' --raw-output)
+j network security-list update --security-list-id "$SL" --force \
+  --display-name "$SL_NAME" \
+  --ingress-security-rules "[
+    {\"protocol\":\"6\",\"source\":\"${NETCUP_IP}/32\",\"isStateless\":false,
+     \"tcpOptions\":{\"destinationPortRange\":{\"min\":22,\"max\":22}}},
+    {\"protocol\":\"17\",\"source\":\"0.0.0.0/0\",\"isStateless\":false,
+     \"udpOptions\":{\"destinationPortRange\":{\"min\":41641,\"max\":41641}}}
+  ]" \
+  --egress-security-rules '[{"protocol":"all","destination":"0.0.0.0/0","isStateless":false}]' >/dev/null
+log "security list $SL locked to SSH-from-$NETCUP_IP + Tailscale UDP 41641"
+
+# --- subnet -------------------------------------------------------------------
+SUBNET=$(j network subnet list -c "$COMPARTMENT" --vcn-id "$VCN" \
+           --display-name "$SUBNET_NAME" --query 'data[0].id' --raw-output 2>/dev/null || true)
+if [ -z "$SUBNET" ] || [ "$SUBNET" = "null" ]; then
+  log "creating subnet $SUBNET_NAME"
+  SUBNET=$(j network subnet create -c "$COMPARTMENT" --vcn-id "$VCN" \
+             --display-name "$SUBNET_NAME" --cidr-block 10.10.0.0/24 \
+             --dns-label fleetmonsub --prohibit-public-ip-on-vnic false \
+             --wait-for-state AVAILABLE --query 'data.id' --raw-output)
+fi
+log "subnet=$SUBNET"
+
+# --- image: Canonical Ubuntu 24.04 (aarch64 variant resolved separately) ------
+IMAGE_X86=$(j compute image list -c "$COMPARTMENT" \
+              --operating-system 'Canonical Ubuntu' --operating-system-version '24.04' \
+              --shape "$MICRO_SHAPE" --sort-by TIMECREATED --sort-order DESC \
+              --query 'data[0].id' --raw-output)
+[ -n "$IMAGE_X86" ] && [ "$IMAGE_X86" != null ] || die "no Ubuntu 24.04 image for $MICRO_SHAPE"
+IMAGE_ARM=$(j compute image list -c "$COMPARTMENT" \
+              --operating-system 'Canonical Ubuntu' --operating-system-version '24.04' \
+              --shape VM.Standard.A1.Flex --sort-by TIMECREATED --sort-order DESC \
+              --query 'data[0].id' --raw-output 2>/dev/null || true)
+log "x86 image=$IMAGE_X86"
+log "arm image=${IMAGE_ARM:-<none>}"
+
+# --- instance -----------------------------------------------------------------
+INST=$(j compute instance list -c "$COMPARTMENT" --display-name "$INSTANCE_NAME" \
+         --lifecycle-state RUNNING --query 'data[0].id' --raw-output 2>/dev/null || true)
+if [ -z "$INST" ] || [ "$INST" = "null" ]; then
+  launched=0
+  for AD in "${ADS[@]}"; do
+    log "launching $MICRO_SHAPE in $AD"
+    if INST=$(j compute instance launch -c "$COMPARTMENT" \
+                --availability-domain "$AD" --shape "$MICRO_SHAPE" \
+                --display-name "$INSTANCE_NAME" --image-id "$IMAGE_X86" \
+                --subnet-id "$SUBNET" --assign-public-ip true \
+                --ssh-authorized-keys-file "$SSH_PUB" \
+                --wait-for-state RUNNING --query 'data.id' --raw-output 2>/tmp/oci-micro-err); then
+      launched=1; break
+    fi
+    log "AD $AD refused: $(tr -d '\n' </tmp/oci-micro-err | tail -c 300)"
+  done
+  [ "$launched" = 1 ] || die "every availability domain refused $MICRO_SHAPE — see the errors above"
+fi
+log "instance=$INST"
+
+PUBIP=$(j compute instance list-vnics --instance-id "$INST" \
+          --query 'data[0]."public-ip"' --raw-output)
+log "public ip=$PUBIP"
+
+# --- hand the ARM fisher everything it needs ----------------------------------
+umask 077
+{
+  echo "# written by oracle-bootstrap-micro on $(date -u +%FT%TZ)"
+  echo "OCI_COMPARTMENT_OCID=$COMPARTMENT"
+  echo "OCI_REGION=$REGION"
+  echo "OCI_SUBNET_OCID=$SUBNET"
+  echo "OCI_ARM_IMAGE_OCID=${IMAGE_ARM:-}"
+  echo "OCI_SSH_PUB=$SSH_PUB"
+  printf 'OCI_ADS="%s"\n' "${ADS[*]}"
+  echo "OCI_MICRO_INSTANCE_OCID=$INST"
+  echo "OCI_MICRO_PUBLIC_IP=$PUBIP"
+} > "$ENV_OUT"
+log "wrote $ENV_OUT — oracle-arm-fish.timer will start fishing on its next tick"
+
+cat <<SUMMARY
+
+  READY. Next:
+    ssh ubuntu@$PUBIP            # from this VPS only; the security list allows no one else
+    then: tailscale up --auth-key=<key> --hostname=oracle-monitor
+          install Uptime Kuma (see docs/oracle-always-free.md)
+SUMMARY

@@ -1,0 +1,23 @@
+[Unit]
+Description=Ask Oracle for free ARM capacity every 10 minutes until it lands
+# Named reason for a schedule (the fleet compute rule prefers event-driven):
+# capacity freeing up in an Oracle region emits no event anyone outside Oracle
+# can subscribe to. Polling is the only mechanism that exists.
+#
+# 10 minutes, not faster, is a safety limit rather than a politeness one:
+# Oracle rate-limits LaunchInstance and has revoked Always Free tenancies for
+# hammering it. ~144 asks/day is the widely-reported sustainable rate.
+#
+# The timer disables ITSELF the moment an instance reaches RUNNING
+# (oracle-arm-fish calls `systemctl --user disable --now`), so this never
+# becomes a permanent background cost.
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=10min
+Persistent=false
+AccuracySec=1min
+RandomizedDelaySec=90
+
+[Install]
+WantedBy=timers.target
