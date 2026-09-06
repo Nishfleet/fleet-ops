@@ -961,6 +961,56 @@ assert d.get("detail", {}).get("hop") == "dispatch", d
 PY
 ok "SKIPPED-CLAIMED redispatch escalates despite a stale DISPATCH line (fleet-ops#3625)"
 
+# --- 9e-rc. dispatched=False must report a NON-ZERO redispatch-rc (fleet-ops#3846) --
+# Live incident 2026-09-06T04:22:13Z: FleetMainRed REDISPATCH receipt read
+# `redispatch-rc=0 dispatched=False` — the dispatcher SKIPped (no DISPATCH
+# line) but the canary reported rc=0, so the receipt looked like
+# success-without-dispatch. The chain pinned at hop=dispatch (open=1
+# stalled=1) while FleetMainRed kept firing. The `not dispatched` escalation
+# path (#3190) already wrote STOP-REASON, but the rc itself was dishonest —
+# rc=0 must mean "a unit was actually dispatched". Fix: redispatch_real
+# returns rc=1 when dispatched=False so the receipt and any rc consumer see
+# an honest trip, not a silent success.
+rm -rf "$scratch/state"; mkdir -p "$scratch/state"
+: >"$scratch/dispatch.log"
+: >"$scratch/actions.log"
+rm -f "$scratch/STOP-REASON.json"
+python3 - "$scratch/alerts.json" <<'PY'
+import json, sys
+json.dump({"status":"success","data":{"alerts":[
+  {"state":"firing","activeAt":"2026-09-06T03:46:56Z",
+   "labels":{"alertname":"FleetMainRed"}}
+]}}, open(sys.argv[1],"w"))
+PY
+# Tick 1: firing 35 min (03:46:56 -> 04:22:13) > 10 min CLOCK_DISPATCH, no
+# DISPATCH -> hop=dispatch stalled -> redispatch with DISPATCHER_SKIP=1
+# (simulates the live skip: claim-held / class-park / all-seats-wedged) ->
+# rc=0 from the dispatcher, NO DISPATCH line -> dispatched=False.
+rc=$(DISPATCHER_SKIP=1 run_bin "2026-09-06T04:22:13Z")
+[[ "$rc" == "0" ]] || fail "9e-rc tick-1 canary rc=$rc stderr=$(cat "$scratch/err.log")"
+# The REDISPATCH receipt must record dispatched=False ...
+grep -q 'REDISPATCH alertname=FleetMainRed.*dispatched=False' "$scratch/actions.log" \
+  || fail "9e-rc tick-1: redispatch must report dispatched=False; log=$(cat "$scratch/actions.log")"
+# ... AND a NON-ZERO redispatch-rc (the honest trip, fleet-ops#3846). The old
+# code logged `redispatch-rc=0 dispatched=False` (success-without-dispatch);
+# that exact shape must NOT recur.
+if grep -qE 'REDISPATCH alertname=FleetMainRed.*redispatch-rc=0 dispatched=False' "$scratch/actions.log"; then
+  fail "9e-rc tick-1: redispatch-rc must be NON-ZERO when dispatched=False (fleet-ops#3846); log=$(cat "$scratch/actions.log")"
+fi
+grep -qE 'REDISPATCH alertname=FleetMainRed.*redispatch-rc=[1-9][0-9]* dispatched=False' "$scratch/actions.log" \
+  || fail "9e-rc tick-1: redispatch-rc must be a non-zero integer when dispatched=False; log=$(cat "$scratch/actions.log")"
+# STOP-REASON must be written (the chain trips / escalates, not silently stalls).
+[[ -f "$scratch/STOP-REASON.json" ]] \
+  || fail "9e-rc tick-1: dispatched=False redispatch must write STOP-REASON (fleet-ops#3846)"
+python3 - "$scratch/STOP-REASON.json" <<'PY' || exit 1
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d.get("reason") == "alert-repair-stalled", f"reason={d.get('reason')!r}"
+assert d.get("detail", {}).get("alertname") == "FleetMainRed", d
+assert d.get("detail", {}).get("hop") == "dispatch", d
+PY
+ok "dispatched=False redispatch reports a non-zero rc and trips the chain (fleet-ops#3846)"
+
 # --- 9e-drain. successful dispatch redispatch drains the hop metric (fleet-ops#3226) --
 # Bug: a dispatch-hop stall was redispatched successfully (DISPATCH line
 # written, unit spawned), but the canary still exported
