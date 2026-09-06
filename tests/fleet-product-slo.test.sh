@@ -308,7 +308,8 @@ m.SESSIONS_DIR = Path(sys.argv[3]) if len(sys.argv) > 3 else Path("/nonexistent-
 NOW = 1788350400  # 2026-09-02T12:00:00Z
 DAY = 86400
 prs = [
-    # feat merged 2d ago, tied to an issue filed 3d ago (in-week link)
+    # feat merged 2d ago, tied to an issue filed 3d ago (in-week link, NO
+    # defect label) — normal throughput, must NOT count as a defect (#3587).
     m.MergedPR(number=1, repo="0509", title="feat: a", head_ref="claim/1",
                merged_ts=NOW - 2 * DAY, issue_created_ts=NOW - 3 * DAY),
     # revert merged 1d ago (in-week) with no linked issue
@@ -317,19 +318,29 @@ prs = [
     # old merge, outside week
     m.MergedPR(number=3, repo="0509", title="feat: old", head_ref="claim/3",
                merged_ts=NOW - 10 * DAY, issue_created_ts=None),
+    # defect-fix merged 1.5d ago, closes a bug-labeled issue filed 2d ago
+    # (in-week) — a real post-merge defect report, MUST count (#3587).
+    m.MergedPR(number=4, repo="0509", title="fix: billing crash", head_ref="claim/4",
+               merged_ts=NOW - 1.5 * DAY, issue_created_ts=NOW - 2 * DAY,
+               defect_issue_created_ts=NOW - 2 * DAY),
+    # fix merged 1d ago closing an in-week issue with NO defect label — a
+    # pre-existing fix, not a post-merge defect; must NOT count (#3587).
+    m.MergedPR(number=5, repo="0509", title="fix: copy", head_ref="claim/5",
+               merged_ts=NOW - 1 * DAY, issue_created_ts=NOW - 2 * DAY),
 ]
 s = m.compute_repo_slo("0509", prs, now_ts=NOW)
-# merges_7d = #1,#2 = 2; reverts_7d = 1 -> 50/100
-assert s.merges_7d == 2, s.merges_7d
-assert abs(s.quality_reverts_per_100 - 50.0) < 1e-9, s.quality_reverts_per_100
-# defects: only #1 has an in-week linked issue -> 1 defects / 2 merges = 50/100
-assert abs(s.quality_defects_per_100 - 50.0) < 1e-9, s.quality_defects_per_100
+# merges_7d = #1,#2,#4,#5 = 4; reverts_7d = 1 -> 25/100
+assert s.merges_7d == 4, s.merges_7d
+assert abs(s.quality_reverts_per_100 - 25.0) < 1e-9, s.quality_reverts_per_100
+# defects: only #4 closes an in-week defect-labeled issue -> 1/4 = 25/100.
+# #1 (feat, no label) and #5 (fix, no label) are normal throughput, NOT defects.
+assert abs(s.quality_defects_per_100 - 25.0) < 1e-9, s.quality_defects_per_100
 assert s.quality_sessions_to_pr_pct == 0.0, s.quality_sessions_to_pr_pct
-print("OK: compute quality metrics (reverts 50/100, defects 50/100, sessions 0)")
+print("OK: compute quality metrics (reverts 25/100, defects 25/100, sessions 0)")
 
 # Direction lock (fleet-ops#3519): sessions_to_pr_pct = 100 * sessions / merges
 # (sessions per 100 merged PRs; high = churning = bad). With 4 in-week session
-# dirs and 2 in-week merges, the metric must be 200.0 — NOT 50.0 (the inverted
+# dirs and 4 in-week merges, the metric must be 100.0 — NOT 25.0 (the inverted
 # 100 * merges / sessions shape that previously fired a false ceiling alert).
 sess_root = Path(os.environ.get("FLEET_PRODUCT_SLO_SESSIONS", "/nonexistent-sessions"))
 sess_root.mkdir(parents=True, exist_ok=True)
@@ -344,8 +355,8 @@ for n in (10, 11, 12, 13):
     os.utime(str(p), (recent, recent))
 s2 = m.compute_repo_slo("0509", prs, now_ts=NOW)
 assert s2.sessions_7d == 4, s2.sessions_7d
-assert abs(s2.quality_sessions_to_pr_pct - 200.0) < 1e-9, s2.quality_sessions_to_pr_pct
-print("OK: sessions_to_pr_pct direction = 100 * sessions / merges (200.0 for 4 sessions / 2 merges)")
+assert abs(s2.quality_sessions_to_pr_pct - 100.0) < 1e-9, s2.quality_sessions_to_pr_pct
+print("OK: sessions_to_pr_pct direction = 100 * sessions / merges (100.0 for 4 sessions / 4 merges)")
 
 # Ceilings load from config/quality-ratchet.json.
 ratchet_path = sys.argv[2]
@@ -361,8 +372,8 @@ print("OK: ceilings loaded from config/quality-ratchet.json (+ _default fallback
 
 # Export carries the quality families + ceiling series.
 body = m.export_prom([s], now=m.parse_iso("2026-09-02T12:00:00Z"))
-assert 'fleet_product_quality_reverts_per_100{repo="0509"} 50.000000' in body
-assert 'fleet_product_quality_post_merge_defects_per_100{repo="0509"} 50.000000' in body
+assert 'fleet_product_quality_reverts_per_100{repo="0509"} 25.000000' in body
+assert 'fleet_product_quality_post_merge_defects_per_100{repo="0509"} 25.000000' in body
 assert 'fleet_product_quality_sessions_to_pr_pct{repo="0509"} 0.000000' in body
 assert 'fleet_product_quality_ceiling{repo="0509",metric="reverts_per_100_merges"} 4.500000' in body
 assert 'fleet_product_quality_ceiling{repo="0509",metric="sessions_to_pr_pct"} 33.000000' in body

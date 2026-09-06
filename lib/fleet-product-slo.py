@@ -105,6 +105,22 @@ QUALITY_METRICS = (
     "sessions_to_pr_pct",
 )
 
+# fleet-ops#3587: a post-merge defect is an issue that REPORTS breakage in
+# shipped code, not the original ask a PR was built to solve. The only
+# available signal that distinguishes them is the issue's label — timestamps
+# cannot (every PR closes an issue filed before it merges). These are the
+# defect-class labels the fleet actually uses across product repos (0509:
+# bug/design-defect/deploy-regression; fleet-ops: bug/red-on-main). A merge
+# counts as a post-merge defect only when it closes an in-week issue carrying
+# one of these labels. The old proxy counted ANY in-week closing issue, which
+# flagged ~74% of normal throughput (feat/fix/test/docs closing their own
+# original issue) as defects — the false-positive top class driving
+# QualityPostMergeDefectsCeiling. The broader ceiling redesign (sessions
+# proxy, baseline-seeded ceilings, backtest drill) is fleet-ops#3759.
+DEFECT_ISSUE_LABELS = frozenset(
+    {"bug", "defect", "regression", "design-defect", "deploy-regression", "red-on-main"}
+)
+
 _INTAKE_CANDIDATES = [
     os.environ.get("FLEET_PRODUCT_SLO_INTAKE", ""),
     str(Path(__file__).resolve().parents[1] / "config" / "intake-repos.json"),
@@ -148,10 +164,12 @@ HELP_QRV = (
 )
 TYPE_QRV = "# TYPE fleet_product_quality_reverts_per_100 gauge"
 HELP_QDF = (
-    "# HELP fleet_product_quality_post_merge_defects_per_100 Merged PRs tied "
-    "to an issue filed within the trailing 7 days, per 100 merged PRs "
-    "(desk-triage / red-on-main / customer-facing defects), per product repo "
-    "(fleet-ops#3519)."
+    "# HELP fleet_product_quality_post_merge_defects_per_100 Merged PRs that "
+    "close an in-week issue carrying a defect-class label (bug / defect / "
+    "regression / design-defect / deploy-regression / red-on-main), per 100 "
+    "merged PRs in the trailing 7 days per product repo (fleet-ops#3519, "
+    "#3587). The label is the only signal that separates a defect report "
+    "from the original ask a PR was built to solve."
 )
 TYPE_QDF = "# TYPE fleet_product_quality_post_merge_defects_per_100 gauge"
 HELP_QSP = (
@@ -184,7 +202,7 @@ query($cursor: String) {
         mergedAt
         repository { nameWithOwner }
         closingIssuesReferences(first: 5) {
-          nodes { number createdAt }
+          nodes { number createdAt labels(first: 20) { name } }
         }
       }
     }
@@ -208,6 +226,11 @@ class MergedPR:
     head_ref: str
     merged_ts: float
     issue_created_ts: float | None = None  # earliest closing-issue createdAt
+    # fleet-ops#3587: earliest createdAt among closing issues that carry a
+    # defect-class label (DEFECT_ISSUE_LABELS). None when no closing issue is
+    # a defect report — i.e. the merge solved its own original ask, not a
+    # post-merge defect. Drives quality_defects_per_100.
+    defect_issue_created_ts: float | None = None
 
 
 @dataclass
@@ -378,6 +401,7 @@ def _search_merged_prs(query: str) -> list[MergedPR] | None:
             if merged is None:
                 continue
             issue_created: float | None = None
+            defect_created: float | None = None
             refs = ((node.get("closingIssuesReferences") or {}).get("nodes")) or []
             for ref in refs:
                 if not isinstance(ref, dict):
@@ -388,6 +412,17 @@ def _search_merged_prs(query: str) -> list[MergedPR] | None:
                 ts = created.timestamp()
                 if issue_created is None or ts < issue_created:
                     issue_created = ts
+                # fleet-ops#3587: a closing issue carrying a defect-class
+                # label is a defect report; track its earliest createdAt.
+                labels = (ref.get("labels") or {}).get("nodes") or []
+                label_names = {
+                    str((lab or {}).get("name") or "")
+                    for lab in labels
+                    if isinstance(lab, dict)
+                }
+                if label_names & DEFECT_ISSUE_LABELS:
+                    if defect_created is None or ts < defect_created:
+                        defect_created = ts
             out.append(
                 MergedPR(
                     number=int(node.get("number") or 0),
@@ -396,6 +431,7 @@ def _search_merged_prs(query: str) -> list[MergedPR] | None:
                     head_ref=str(node.get("headRefName") or ""),
                     merged_ts=merged.timestamp(),
                     issue_created_ts=issue_created,
+                    defect_issue_created_ts=defect_created,
                 )
             )
         page = conn.get("pageInfo") or {}
@@ -456,6 +492,7 @@ def _cache_write(prs: list[MergedPR], fetched_at: float) -> None:
                 "head_ref": p.head_ref,
                 "merged_ts": p.merged_ts,
                 "issue_created_ts": p.issue_created_ts,
+                "defect_issue_created_ts": p.defect_issue_created_ts,
             }
             for p in prs
         ],
@@ -485,6 +522,11 @@ def _rows_to_prs(rows: list[dict[str, Any]]) -> list[MergedPR]:
                     issue_created_ts=(
                         float(row["issue_created_ts"])
                         if row.get("issue_created_ts") is not None
+                        else None
+                    ),
+                    defect_issue_created_ts=(
+                        float(row["defect_issue_created_ts"])
+                        if row.get("defect_issue_created_ts") is not None
                         else None
                     ),
                 )
@@ -548,9 +590,10 @@ def compute_repo_slo(
     - merged_24h: non-revert merges in trailing 24h
     - quality_reverts_per_100: 100 * reverts_7d / merges_7d (reverts count in
       the denominator too — it is "reverts per 100 merges")
-    - quality_defects_per_100: 100 * merges tied to an issue filed within the
-      week / merges_7d (desk-triage / red-on-main / customer-facing issues
-      tied to a merged PR)
+    - quality_defects_per_100: 100 * merges that close an in-week issue
+      carrying a defect-class label (DEFECT_ISSUE_LABELS) / merges_7d. The
+      label separates a defect report from the original ask the PR solved
+      (fleet-ops#3587).
     - quality_sessions_to_pr_pct: 100 * sessions_7d / merges_7d from the
       host session dir (`pi-issue-<repo>-*`)
     """
@@ -576,10 +619,16 @@ def compute_repo_slo(
                 slo.reverts_28d += 1
         if week_cut < pr.merged_ts <= now_ts:
             slo.merges_7d += 1
-            # Post-merge defect proxy: the merge is tied to an issue filed
-            # within the week (fresh desk-triage / red-on-main / customer
-            # issue). Reverts count too — a revert of a fresh PR is a defect.
-            if pr.issue_created_ts is not None and pr.issue_created_ts > week_cut:
+            # Post-merge defect proxy (fleet-ops#3587): the merge closes an
+            # in-week issue carrying a defect-class label — a defect report
+            # reacting to shipped code, not the original ask the PR solved.
+            # The old "any in-week closing issue" heuristic flagged ~74% of
+            # normal throughput as defects; the label is the only signal that
+            # separates a defect from the PR's own original issue.
+            if (
+                pr.defect_issue_created_ts is not None
+                and pr.defect_issue_created_ts > week_cut
+            ):
                 defect_merges += 1
         if revert:
             continue
