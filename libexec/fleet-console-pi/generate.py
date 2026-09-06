@@ -417,6 +417,11 @@ def collect_repairs_inflight():
 # libexec/fleet-metrics-export.py (24 h). Older than this the marker is
 # archaeology and fail-open.
 _SEAT_BENCH_FRESH_S = 86400
+# Failure ceilings mirror lib/seat-lib.sh seat_usable(): a spawn_fail (or
+# any non-empty_run) seat parks past 20 consecutive failures; an empty run
+# parks past 5. Used by the fleet-ops#3828 ceiling fence below.
+_SEAT_FAILURE_CEILING = 20
+_EMPTY_RUN_FAILURE_CEILING = 5
 
 
 def _seat_bench_held(provider, model):
@@ -444,6 +449,20 @@ def _seat_bench_held(provider, model):
           ollama/deepseek-v4-flash:0731 empty-run churn this issue names:
           25 no-ops in 2h while the census said healthy). Mirrors
           _spawn_bench_marker_held in libexec/fleet-metrics-export.py.
+
+    fleet-ops#3828 (mirror of the #3889/#3826 fences in
+    _spawn_bench_marker_held and seat_usable): the bench is held in TWO
+    more cases the clock rules miss, so the console tile never renders a
+    seat the router excludes as "healthy". (1) corpse fence: a marker-
+    declared corpse (seat_dead=true, a chronic spawn_fail past the corpse
+    threshold) is held terminally, regardless of usable_at or a later
+    false-healthy ledger clobber — only a recovery probe
+    (source=comeback_release) releases it. (2) ceiling fence: a FRESH
+    marker whose count is at/past the failure ceiling (20 for spawn_fail,
+    5 for empty_run) stays held even when the sibling ledger carries a
+    NEWER healthy observation (the after_provider_response 200 that
+    carries status+headers only, never the exit rc), unless
+    source=comeback_release.
     """
     if not isinstance(provider, str) or not provider:
         return False
@@ -459,6 +478,24 @@ def _seat_bench_held(provider, model):
     if not isinstance(marker, dict):
         return False
     now = int(time.time())
+    # Sibling per-seat ledger: both the false-healthy clobber target and
+    # the recovery authority (a comeback-release probe writes source on it).
+    ledger_path = SEAT_LEDGER / f"{safe_p}__{safe_m}.json"
+    ledger_src = ""
+    try:
+        led = json.loads(ledger_path.read_text())
+        if isinstance(led, dict):
+            ledger_src = led.get("source") or ""
+    except (OSError, json.JSONDecodeError):
+        led = {}
+    # fleet-ops#3889 corpse fence: terminal until a real recovery probe
+    # (source=comeback_release) re-writes the ledger. Mirrors seat_usable —
+    # no usable_at or marker-age bound, the corpse hold is durable.
+    if marker.get("seat_dead") is True:
+        if ledger_src != "comeback_release":
+            return True
+        # Recovered corpse: fall through — the fresh ledger observation now
+        # decides (seat_usable drops the corpse hold the same way).
     usable_at = marker.get("usable_at")
     if isinstance(usable_at, str) and usable_at:
         try:
@@ -483,21 +520,33 @@ def _seat_bench_held(provider, model):
         return False
     if now - written_epoch > _SEAT_BENCH_FRESH_S:
         return False
-    ledger_path = SEAT_LEDGER / f"{safe_p}__{safe_m}.json"
     obs_epoch = None
-    try:
-        led = json.loads(ledger_path.read_text())
-        if isinstance(led, dict):
-            obs = led.get("observed_at")
-            if isinstance(obs, str) and obs:
-                try:
-                    obs_epoch = calendar.timegm(time.strptime(
-                        obs.replace("Z", "")[:19], "%Y-%m-%dT%H:%M:%S"))
-                except ValueError:
-                    obs_epoch = None
-    except (OSError, json.JSONDecodeError):
-        obs_epoch = None
-    return obs_epoch is None or obs_epoch <= written_epoch
+    if isinstance(led, dict):
+        obs = led.get("observed_at")
+        if isinstance(obs, str) and obs:
+            try:
+                obs_epoch = calendar.timegm(time.strptime(
+                    obs.replace("Z", "")[:19], "%Y-%m-%dT%H:%M:%S"))
+            except ValueError:
+                obs_epoch = None
+    if obs_epoch is None or obs_epoch <= written_epoch:
+        return True
+    # fleet-ops#3826 ceiling fence: a NEWER healthy observation is the
+    # false-healthy clobber, not recovery, for a ceiling-parked seat.
+    mcount = marker.get("consecutive_failure_count") or 0
+    if not isinstance(mcount, int) or isinstance(mcount, bool):
+        try:
+            mcount = int(mcount)
+        except (TypeError, ValueError):
+            mcount = 0
+    mmode = marker.get("failure_mode") or ""
+    _ceil = (
+        _EMPTY_RUN_FAILURE_CEILING if mmode == "empty_run"
+        else _SEAT_FAILURE_CEILING
+    )
+    if mcount >= _ceil and ledger_src != "comeback_release":
+        return True
+    return False
 
 
 def collect_running_pi():

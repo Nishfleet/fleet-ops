@@ -462,8 +462,118 @@ tile = g.collect_running_pi()
 assert tile["health_class"] == "healthy", (
     f"stale marker (>24h) must fail-open, got {tile.get('health_class')}: {tile}")
 print("OK: stale (>24h) expired marker fails open (fleet-ops#3795)")
+
+# --- fleet-ops#3828: corpse + ceiling fences (mirror of #3889/#3826) -------
+# A chronic spawn_fail corpse (marker seat_dead=true, count=47) or a
+# ceiling-parked seat (count >= 20 for spawn_fail) must render spawn_bench
+# even when the sibling ledger carries a NEWER healthy 200 observation
+# (after_provider_response carries status+headers only, never the rc — an
+# rc=1 spawn failure reads as a healthy 200). Only a recovery probe
+# (source=comeback_release on the ledger) re-proves the seat.
+written = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - 60)) + "Z"
+usable_expired = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - 300)) + "Z"
+obs_newer = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - 30)) + ".000Z"
+ldg = g.SEAT_LEDGER / "ollama__deepseek-v4-flash_0731.json"
+# Scenario G — corpse fence: marker seat_dead=true + expired usable_at +
+# a NEWER healthy ledger. The corpse must win (TERMINAL until recovery).
+g.SEAT_HEALTH.write_text(json.dumps({
+    "provider": "ollama", "model": "deepseek-v4-flash:0731",
+    "http_status": 200, "health_class": "healthy",
+    "observed_at": obs_newer,
+}), encoding="utf-8")
+ldg.write_text(json.dumps({
+    "provider": "ollama", "model": "deepseek-v4-flash:0731",
+    "http_status": 200, "health_class": "healthy",
+    "observed_at": obs_newer, "consecutive_failure_count": 0,
+}), encoding="utf-8")
+marker.write_text(json.dumps({
+    "provider": "ollama", "model": "deepseek-v4-flash:0731",
+    "usable_at": usable_expired, "written_at": written,
+    "failure_mode": "spawn_fail", "consecutive_failure_count": 47,
+    "seat_dead": True,
+}), encoding="utf-8")
+tile = g.collect_running_pi()
+assert tile["health_class"] == "spawn_bench", (
+    f"corpse marker must render spawn_bench despite newer healthy ledger, "
+    f"got {tile.get('health_class')}: {tile}")
+print("OK: corpse marker renders spawn_bench despite newer healthy ledger (fleet-ops#3828)")
+# A recovery probe (source=comeback_release) re-proves the corpse.
+ldg.write_text(json.dumps({
+    "provider": "ollama", "model": "deepseek-v4-flash:0731",
+    "http_status": 200, "health_class": "healthy",
+    "observed_at": obs_newer, "consecutive_failure_count": 0,
+    "source": "comeback_release",
+}), encoding="utf-8")
+tile = g.collect_running_pi()
+assert tile["health_class"] == "healthy", (
+    f"comeback_release must release a corpse marker, "
+    f"got {tile.get('health_class')}: {tile}")
+print("OK: comeback_release recovery releases a corpse marker (fleet-ops#3828)")
+
+# Scenario H — ceiling fence: non-corpse marker whose count crossed the
+# failure ceiling, usable_at expired, ledger has a NEWER healthy write.
+# The ceiling must hold despite the newer observation.
+ldg.write_text(json.dumps({
+    "provider": "ollama", "model": "deepseek-v4-flash:0731",
+    "http_status": 200, "health_class": "healthy",
+    "observed_at": obs_newer, "consecutive_failure_count": 0,
+}), encoding="utf-8")
+marker.write_text(json.dumps({
+    "provider": "ollama", "model": "deepseek-v4-flash:0731",
+    "usable_at": usable_expired, "written_at": written,
+    "failure_mode": "spawn_fail", "consecutive_failure_count": 47,
+    "seat_dead": False,
+}), encoding="utf-8")
+tile = g.collect_running_pi()
+assert tile["health_class"] == "spawn_bench", (
+    f"ceiling marker must render spawn_bench despite newer healthy ledger, "
+    f"got {tile.get('health_class')}: {tile}")
+print("OK: ceiling marker renders spawn_bench despite newer healthy ledger (fleet-ops#3828)")
+# Below the ceiling the healthy (later) observation wins again (released).
+marker.write_text(json.dumps({
+    "provider": "ollama", "model": "deepseek-v4-flash:0731",
+    "usable_at": usable_expired, "written_at": written,
+    "failure_mode": "spawn_fail", "consecutive_failure_count": 3,
+    "seat_dead": False,
+}), encoding="utf-8")
+tile = g.collect_running_pi()
+assert tile["health_class"] == "healthy", (
+    f"sub-ceiling marker count must release the seat, "
+    f"got {tile.get('health_class')}: {tile}")
+print("OK: sub-ceiling marker count releases the seat (fail-open)")
+# Empty-run seats use the lower _EMPTY_RUN_FAILURE_CEILING (5).
+marker.write_text(json.dumps({
+    "provider": "ollama", "model": "deepseek-v4-flash:0731",
+    "usable_at": usable_expired, "written_at": written,
+    "failure_mode": "empty_run", "consecutive_failure_count": 5,
+    "seat_dead": False,
+}), encoding="utf-8")
+tile = g.collect_running_pi()
+assert tile["health_class"] == "spawn_bench", (
+    f"empty_run count=5 at its ceiling must render spawn_bench, "
+    f"got {tile.get('health_class')}: {tile}")
+print("OK: empty_run ceiling (5) holds at its lower threshold (fleet-ops#3828)")
+# comeback_release releases a ceiling-parked seat too.
+ldg.write_text(json.dumps({
+    "provider": "ollama", "model": "deepseek-v4-flash:0731",
+    "http_status": 200, "health_class": "healthy",
+    "observed_at": obs_newer, "consecutive_failure_count": 0,
+    "source": "comeback_release",
+}), encoding="utf-8")
+marker.write_text(json.dumps({
+    "provider": "ollama", "model": "deepseek-v4-flash:0731",
+    "usable_at": usable_expired, "written_at": written,
+    "failure_mode": "spawn_fail", "consecutive_failure_count": 47,
+    "seat_dead": False,
+}), encoding="utf-8")
+tile = g.collect_running_pi()
+assert tile["health_class"] == "healthy", (
+    f"comeback_release must release a ceiling-parked seat, "
+    f"got {tile.get('health_class')}: {tile}")
+print("OK: comeback_release re-proves a ceiling-parked seat (fleet-ops#3828)")
 PY
 ok "fleet-ops#3563/#3795: console tile overlays the spawn-bench marker — a benched seat never shows healthy"
+ok "fleet-ops#3828: console tile corpse + ceiling fences — N spawn_fail demotes the ledger read"
 
 # =========================================================================
 # 13. drill --check

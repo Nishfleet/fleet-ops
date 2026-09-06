@@ -1625,8 +1625,105 @@ assert bad2 == len(enrolled), \
     f"garbage usable_at must not gate ({len(enrolled)}), got {bad2}"
 (Path(seat_dir) / "opencode__fixture.spawn-bench.json").unlink()
 print("OK: malformed / garbage spawn-bench does not gate the rollup")
+
+# --- fleet-ops#3828: N consecutive spawn_fail must demote the LEDGER entry ---
+# Pre-fix the census/availability read ONLY the ledger health_class + the
+# bench clock, so a chronic spawn_fail seat whose marker reached the corpse
+# (seat_dead=true, #3889) or failure-ceiling (#3826) count was reported
+# healthy the moment the seat-health extension wrote a NEWER false-healthy
+# 200 to the ledger (after_provider_response carries status+headers only,
+# never the rc — an rc=1 spawn failure reads as a healthy 200). The bench
+# overlay held it out of pick_seat, but the ledger "re-offered" it on the
+# count/availability side. Both fences now demote the effective ledger class.
+#
+# Scenario E — corpse fence: marker seat_dead=true (chronic spawn_fail,
+# count=47) + an EXPIRED usable_at + a fresh healthy ledger. The corpse must
+# win over the healthy ledger (TERMINAL until a recovery probe).
+W = iso(-60)      # marker written 1 min ago (fresh within 24 h)
+LDG = Path(seat_dir) / "opencode__fixture.json"
+MKF = Path(seat_dir) / "opencode__fixture.spawn-bench.json"
+(Path(seat_dir) / "opencode__fixture.json").write_text(json.dumps({
+    "provider": "opencode", "model": "fixture", "health_class": "healthy",
+    "seat_dead": False, "usable_at": None, "bench_until": None,
+    "observed_at": iso(0),  # NEWER than written_at (the false-healthy clobber)
+}))
+(MKF).write_text(json.dumps({
+    "provider": "opencode", "model": "fixture", "usable_at": PAST,
+    "written_at": W, "backoff_s": 100000, "failure_mode": "spawn_fail",
+    "consecutive_failure_count": 47, "seat_dead": True,
+}))
+corpse = m._healthy_enrolled_seat_count()
+assert corpse == len(enrolled) - 1, \
+    f"marker corpse must demote the healthy ledger ({len(enrolled)-1}), got {corpse}"
+# The healthy sidecar path must agree (fleet_pi_seat_healthy).
+assert m._spawn_bench_marker_held(MKF) is True, \
+    "corpse fence must hold the marker directly"
+print(f"OK: corpse fence demotes the ledger + holds marker (opencode dropped, {corpse}/{len(enrolled)})")
+# Recovery probe (source=comeback_release on the ledger) re-proves the seat.
+(LDG).write_text(json.dumps({
+    "provider": "opencode", "model": "fixture", "health_class": "healthy",
+    "seat_dead": False, "http_status": 200, "source": "comeback_release",
+    "observed_at": iso(0),
+}))
+corpse_rec = m._healthy_enrolled_seat_count()
+assert corpse_rec == len(enrolled), \
+    f"comeback_release must release an expired corpse marker ({len(enrolled)}), got {corpse_rec}"
+print("OK: comeback_release recovery re-proves an expired-corpus marker")
+
+# Scenario F — ceiling fence (#3826): non-corpse marker whose count crossed
+# the failure ceiling, usable_at expired, ledger has a NEWER healthy write.
+# The ceiling must hold despite the newer observation.
+(LDG).write_text(json.dumps({
+    "provider": "opencode", "model": "fixture", "health_class": "healthy",
+    "seat_dead": False, "http_status": 200, "observed_at": iso(0),  # newer
+}))
+(MKF).write_text(json.dumps({
+    "provider": "opencode", "model": "fixture", "usable_at": PAST,
+    "written_at": W, "backoff_s": 900, "failure_mode": "spawn_fail",
+    "consecutive_failure_count": 47, "seat_dead": False,
+}))
+ceil_held = m._healthy_enrolled_seat_count()
+assert ceil_held == len(enrolled) - 1, \
+    f"ceiling fence must hold a ceiling-parked seat ({len(enrolled)-1}), got {ceil_held}"
+print(f"OK: ceiling fence holds count>=ceiling seat despite newer healthy observation ({ceil_held}/{len(enrolled)})")
+# Below the ceiling the healthy (later) observation wins again.
+(MKF).write_text(json.dumps({
+    "provider": "opencode", "model": "fixture", "usable_at": PAST,
+    "written_at": W, "backoff_s": 900, "failure_mode": "spawn_fail",
+    "consecutive_failure_count": 3, "seat_dead": False,
+}))
+below = m._healthy_enrolled_seat_count()
+assert below == len(enrolled), \
+    f"sub-ceiling count with fresh later observation must be released ({len(enrolled)}), got {below}"
+print("OK: sub-ceiling marker count does not gate the rollup")
+# Empty-run seats use the lower EMPTY_RUN_FAILURE_CEILING (5).
+(MKF).write_text(json.dumps({
+    "provider": "opencode", "model": "fixture", "usable_at": PAST,
+    "written_at": W, "failure_mode": "empty_run",
+    "consecutive_failure_count": 5, "seat_dead": False,
+}))
+emt_held = m._healthy_enrolled_seat_count()
+assert emt_held == len(enrolled) - 1, \
+    f"empty_run count=5 at its ceiling must hold ({len(enrolled)-1}), got {emt_held}"
+print("OK: empty_run ceiling (5) holds at its lower threshold")
+# comeback_release releases a ceiling-parked seat too.
+(LDG).write_text(json.dumps({
+    "provider": "opencode", "model": "fixture", "health_class": "healthy",
+    "seat_dead": False, "http_status": 200, "source": "comeback_release",
+    "observed_at": iso(0),
+}))
+ceil_rec = m._healthy_enrolled_seat_count()
+assert ceil_rec == len(enrolled), \
+    f"comeback_release must release a ceiling-parked seat ({len(enrolled)}), got {ceil_rec}"
+(MKF).unlink()
+(LDG).write_text(json.dumps({
+    "provider": "opencode", "model": "fixture", "health_class": "healthy",
+    "seat_dead": False, "usable_at": None, "bench_until": None,
+}))
+print("OK: comeback_release re-proves a ceiling-parked seat")
 PY
 ok "fleet-ops#2493: held wrapper spawn-bench outranks a later healthy observation (census honest)"
+ok "fleet-ops#3828: N consecutive spawn_fail demotes the ledger class (corpse + ceiling fences)"
 
 # =========================================================================
 # 16. fleet-ops#2712: provider-level (account-level) quota exhaustion.
