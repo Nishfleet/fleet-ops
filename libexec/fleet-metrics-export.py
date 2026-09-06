@@ -529,6 +529,12 @@ HELP_STP = (
     "sessions-to-PR ratio the issue's moves: names, per seat (fleet-ops#3322)."
 )
 TYPE_STP = "# TYPE fleet_sessions_to_pr_pct gauge"
+HELP_SC = (
+    "# HELP fleet_seat_cost_usd Total usage.cost in USD per seat over the "
+    "last-20 window (fleet-ops#3322). Audition seats retire at $1; recorded "
+    "for every seat, exactly like any seat."
+)
+TYPE_SC = "# TYPE fleet_seat_cost_usd gauge"
 
 # Self-maintenance repo set (fleet-ops#1136). PR-tunable; never hardcoded in
 # the classifier. Default ["fleet-ops"] when the file is missing/unparseable
@@ -1096,9 +1102,10 @@ def _compute_seat_yield():
 
 
 def _emit_seat_yield(lines, seat_yield):
-    """Append fleet_seat_yield and fleet_sessions_no_pr_total families.
+    """Append fleet_seat_yield, fleet_sessions_no_pr_total, fleet_sessions_to_pr_pct,
+    and fleet_seat_cost_usd families.
 
-    The two metric families share the same per-seat loop. HELP/TYPE are
+    The metric families share the same per-seat loop. HELP/TYPE are
     emitted once per family so the node_exporter textfile stays parseable.
     """
     if not seat_yield:
@@ -1112,6 +1119,9 @@ def _emit_seat_yield(lines, seat_yield):
     lines.append("")
     lines.append(HELP_STP)
     lines.append(TYPE_STP)
+    lines.append("")
+    lines.append(HELP_SC)
+    lines.append(TYPE_SC)
     for seat in sorted(seat_yield):
         y = seat_yield[seat]
         lbl = _prom_label(seat)
@@ -1126,6 +1136,8 @@ def _emit_seat_yield(lines, seat_yield):
         _s = y["sessions"]
         _pct = (y["pr_count"] / _s) if _s > 0 else 0.0
         lines.append(f'fleet_sessions_to_pr_pct{{seat="{lbl}"}} {_pct:.6f}')
+        # fleet-ops#3322: per-seat total cost over the window (cost_usd).
+        lines.append(f'fleet_seat_cost_usd{{seat="{lbl}"}} {y["cost_usd"]:.6f}')
 
 
 def _day_from_iso(s):

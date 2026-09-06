@@ -304,6 +304,7 @@ declare -A QUALITY_HEAVY_BAN=()
 _seat_yield_loaded=0
 declare -A SEAT_YIELD=()
 declare -A SEAT_COST=()
+declare -A SEAT_COST_USD=()
 
 load_quality_routing() {
     QUALITY_HEAVY_BAN=()
@@ -333,22 +334,25 @@ load_quality_routing() {
 load_seat_yield() {
     SEAT_YIELD=()
     SEAT_COST=()
+    SEAT_COST_USD=()
     _seat_yield_loaded=1
     [[ -f "$SEAT_YIELD_JSON" ]] || return 0
     [[ -s "$SEAT_YIELD_JSON" ]] || return 0
     command -v jq >/dev/null 2>&1 || return 0
-    local seat y _sessions _provisional c
-    while IFS=$'\t' read -r seat y _sessions _provisional c; do
+    local seat y _sessions _provisional c cs
+    while IFS=$'\t' read -r seat y _sessions _provisional c cs; do
         [[ -n "$seat" ]] || continue
         SEAT_YIELD["$seat"]="$y"
         SEAT_COST["$seat"]="$c"
+        SEAT_COST_USD["$seat"]="$cs"
     done < <(
         jq -r 'to_entries[]
                | [ .key,
                    (.value.yield // 0.5 | tostring),
                    (.value.sessions // 0 | tostring),
                    (.value.provisional // true | tostring),
-                   (.value.cost_per_session // 0 | tostring) ]
+                   (.value.cost_per_session // 0 | tostring),
+                   (.value.cost_usd // 0 | tostring) ]
                | @tsv' "$SEAT_YIELD_JSON" 2>/dev/null || true
     )
 }
@@ -371,6 +375,17 @@ seat_cost_for() {
     [[ -n "$p" && -n "$m" ]] || return 1
     if (( ! _seat_yield_loaded )); then load_seat_yield || true; fi
     echo "${SEAT_COST[$p/$m]:-0}"
+}
+
+# fleet-ops#3322: return the rolling TOTAL cost (cost_usd) for a seat over
+# the same window. Unknown seats default to 0. Used by the audition lane
+# to enforce the $1 retirement ceiling. Echoes nothing and returns 1 if
+# the seat argument is empty.
+seat_cost_usd_for() {
+    local p="${1:-}" m="${2:-}"
+    [[ -n "$p" && -n "$m" ]] || return 1
+    if (( ! _seat_yield_loaded )); then load_seat_yield || true; fi
+    echo "${SEAT_COST_USD[$p/$m]:-0}"
 }
 
 load_seat_caps() {
