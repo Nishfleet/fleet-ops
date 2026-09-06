@@ -1,0 +1,75 @@
+## What / why
+
+comeback-release (`bin/fleet-seat-comeback-release`) skipped **every** seat
+key absent from the `providers.<p>.models` map as a "phantom" (fleet-ops#3661).
+That blanket guard over-rejected REAL provider seats whose caps row is merely
+missing — cap=0 parked for re-audition, a provider config out of date — so an
+expired `usable_at` left them stuck overdue forever (lived finding: orcarouter/
+orcarouter/free 6h+ past usable_at, never re-auditioned; seats_healthy sat at
+9/41 and FleetSloSeatAvailSlowBurn stayed lit). Meanwhile TRUE probe-artifact
+phantoms (model id a unit-output filename fragment, devin/glm-5-2-.out) were
+skipped but never retired, so the census and the thorough heartbeat detector
+kept counting them comeback-overdue.
+
+## Fix
+
+Split the phantom branch so an expired usable_at deterministically returns or
+re-probes each seat:
+
+1. A **probe-artifact** key (model id ends in `.out`/`.err`/`.log` — the
+   #3661/#4018 shape) is a true phantom and is now **retired out of the live
+   roster** (terminal move to a dated `seats-phantom-retired-<ts>/` dir,
+   mirroring the corpse retirement #2716). It can never be unwalled, so
+   leaving the ledger in `lanes/seats/` made every detector read it overdue
+   forever.
+2. Any **other** key the caps check rejects is a REAL routable seat (its caps
+   row is just missing). It now falls through to the normal wall-clock path
+   and is **re-probed when its wall expires** — the automated re-audition
+   (a success unwalls it; a 402/429 re-benches it into a future wall).
+3. The expired / interval-breach recounts exclude only probe-artifact
+   phantoms, so a real-but-unconfigured seat that ends the sweep still past
+   usable_at by >1 probe interval is correctly a releaser miss.
+
+New helper `_seat_is_probe_artifact` distinguishes the two; `retire_phantom_ledger`
+retires a phantom (held while its meaningless wall clock is still in the future).
+
+## Tests
+
+Tests #20 and #21 in `tests/fleet-seat-comeback-release.test.sh`:
+- #20 (updated): the `devin/swe-1-7-.out` phantom is retired out of the roster,
+  never probed (previously just left skipped).
+- #21 (new): pins BOTH seats named in the finding — the `devin/glm-5-2-.out`
+  phantom is retired; `orcarouter/orcarouter/free` is re-probed and re-benched
+  into a future wall. `overdue_n`/`never_released_n` helpers now wire the
+  scratch seat-caps for host determinism (matches `fleet-metrics-export.test.sh`).
+
+## Verification
+
+`bash tests/fleet-seat-comeback-release.test.sh` — ALL OK (tests 1-21), exit 0.
+
+End-to-end scratch re-run (both seats from the 2026-09-06T15:45Z heartbeat
+replicated in a scratch ledger, failing-probe stub pi):
+
+- thorough detector BEFORE sweep (the exact finding):
+  `opus-heartbeat-gather` `seat_probes_walled_comebacks.comeback_overdue_n = 2`
+- `bin/fleet-seat-comeback-release` real sweep, exit 0:
+  - `devin/glm-5-2-.out` → `RETIRED PHANTOM`, ledger moved to
+    `seats-phantom-retired-2026-09-06T19:06:00Z/`
+  - `orcarouter/orcarouter/free` → re-probed, re-benched to `usable_at`
+    2026-09-06T19:21:00Z (future; `health_class` transient_fault)
+- thorough detector AFTER sweep:
+  `seat_probes_walled_comebacks.comeback_overdue_n = 0` — both seats reclassified.
+
+run-proof:
+- units: `fleet-seat-comeback-release.service` / `.timer` unchanged (no new organ).
+- test: `tests/fleet-seat-comeback-release.test.sh` (P14-style local run) green.
+- `sgscan` — no new security findings.
+- `shellcheck -x bin/fleet-seat-comeback-release` — clean.
+
+organ-heartbeat: bin/fleet-seat-comeback-release not-an-organ: no fleet-organs/absence rule in config/fleet-organs.json; the unit's own fleet_seat_comeback_release_last_green_seconds textfile (absent/stale rule) + OnFailure escalate is its liveness signal, unchanged.
+
+loose-ends-canary: sr-nothing-half-done — one sweep deterministically reclassifies BOTH named seats (phantom retired out of the roster, orcarouter re-benched to a future wall); no half-done / stuck-overdue state left behind.
+
+Closes #3993
+
+net-positive-because: the diff adds one terminal retire helper + the test that pins it; it removes a whole class of stuck-overdue seats (the lived devin/glm-5-2-.out + orcarouter/orcarouter/free pair) that otherwise re-fired every heartbeat and consumed an outage probe slot forever — the net positive is the test coverage for a one-way lifecycle step that prevents unbounded overdue counting.
