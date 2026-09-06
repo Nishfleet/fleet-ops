@@ -1,0 +1,29 @@
+{
+  "_comment": "fleet-ops#3322 audition lane seed. Generated from the Last30Days best-value research doc (last30days v3.18.4, ~/Documents/Last30Days/best-value-coding-agent-models-*-raw-v3.md). Non-prepaid providers only (prepaid-quota is never auditioned — the 2026-08 Ollama audition burned 65% of a weekly quota). Exclusions: (1) anything already in config/seat-caps.json (xkiro's three free-tier models are already auditioning via #3505); (2) OpenRouter free models (#3316 owns that lane). Each entry is {provider, model, class, source}. The intake tick injects each candidate not already in the LIVE caps as cap 1, audition: true, light issues only, for 10 sessions / 7 days / $1 cost, then files a promote-or-drop verdict issue.",
+  "candidates": [
+    {
+      "provider": "mergegateway",
+      "model": "deepseek/deepseek-v4-flash",
+      "class": "metered",
+      "source": "Last30Days best-value doc: DeepSeek V4 Flash is the top best-value coding model for autonomous tool-using workers; mergegateway is a non-prepaid gateway with $10 free credits and a live endpoint (probed 2026-09-06, PONG)."
+    },
+    {
+      "provider": "mergegateway",
+      "model": "minimax/minimax-m3",
+      "class": "metered",
+      "source": "Last30Days best-value doc: MiniMax M3 (428B MoE, 1M context) is a top best-value open-weight coding model; mergegateway is non-prepaid with a live endpoint (probed 2026-09-06, PONG)."
+    },
+    {
+      "provider": "mergegateway",
+      "model": "google/gemini-3.7-flash",
+      "class": "metered",
+      "source": "Last30Days best-value doc: Gemini 3.7 Flash is a fast/cheap frontier-tier model; mergegateway is non-prepaid with a live endpoint (probed 2026-09-06, PONG)."
+    },
+    {
+      "provider": "mergegateway",
+      "model": "anthropic/claude-sonnet-5",
+      "class": "metered",
+      "source": "Last30Days best-value doc: Claude Sonnet 5 is a strong coding model; mergegateway is non-prepaid with a live endpoint (probed 2026-09-06, PONG)."
+    }
+  ]
+}

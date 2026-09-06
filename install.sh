@@ -476,6 +476,14 @@ process_entry() {
 
   if [ "$skip" = 1 ]; then return 0; fi
 
+  # fleet-ops#3322: model-candidates.json is a committed seed config (seeded
+  # from the Last30Days best-value research doc). Skip both drift and install
+  # when the source does not exist yet (fresh checkout, CI) so a missing seed
+  # never fails install.sh or drift checks — the audition lane is fail-open.
+  if [[ "$src" == config/model-candidates.json && ! -f "$repo" ]]; then
+    return 0
+  fi
+
   if [ "$mode" = "--" ]; then
     # Drift detection: symlink to repo OR byte-identical regular file = OK.
     if [ -L "$dest" ]; then
@@ -562,7 +570,9 @@ process_entry() {
     # a repo-tree symlink would resolve that against a nonexistent sibling.
     # config/pi-models.json is copy-installed too (fleet-ops#3722): live pi
     # model config must not silently change with the git working tree.
-    if [[ "$src" == config/seat-caps.json ]] || [[ "$src" == config/pi-models.json ]] || is_extension_src "$src"; then
+    # config/model-candidates.json is copy-installed too (fleet-ops#3322):
+    # the audition seed lives in the LIVE state dir next to seat-caps.json.
+    if [[ "$src" == config/seat-caps.json ]] || [[ "$src" == config/pi-models.json ]] || [[ "$src" == config/model-candidates.json ]] || is_extension_src "$src"; then
         # fleet-ops#3125/#3262: when the cap map changes, reset learned AIMD
         # state so a stale learned cap / bench from the old config never pins
         # a raised declared floor or ceiling (e.g. devin hard_ceiling removal

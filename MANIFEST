@@ -91,6 +91,9 @@ config/seat-caps.json /home/nish/.local/state/pi-packet/seat-caps.json
 # into the git working tree means `git reset --hard` silently rewrites the
 # live pi model config.
 config/pi-models.json /home/nish/.pi/agent/models.json
+# fleet-ops#3322: audition-lane candidate seed (non-prepaid best-value
+# models). Copy-installed into the LIVE state dir alongside seat-caps.json.
+config/model-candidates.json /home/nish/.local/state/pi-packet/model-candidates.json
 config/repo-privacy.json /home/nish/.local/state/pi-packet/repo-privacy.json
 config/entitled-seats.json /home/nish/.local/state/pi-packet/entitled-seats.json
 config/logrotate.conf /home/nish/.config/logrotate.conf
