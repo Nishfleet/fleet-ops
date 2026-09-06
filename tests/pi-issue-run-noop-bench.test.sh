@@ -70,6 +70,12 @@ export PI_BIN="$stub_bin/pi"
 
 cat >"$stub_bin/gh" <<'STUB'
 #!/usr/bin/env bash
+# Default: no open PR, issue open. Tests override for PR-shipped cases.
+if [[ "$*" == *"--jq"* ]]; then
+    printf 'open\n'
+    exit 0
+fi
+printf '[]\n'
 exit 0
 STUB
 chmod +x "$stub_bin/gh"
@@ -447,14 +453,18 @@ ok "tried-seats reset after successful remote devin PR run"
 ok "fleet-ops#1378/#3531: in-process no-op retry and remote PR success both work"
 
 # =============================================================================
-# fleet-ops#3714: a session that made tool calls but ended its turn ON a tool
-# call (no trailing assistant text) leaves stdout at 0B while the verdict on
-# stderr says tools=N class=worked. Live 2026-09-05T22:14Z fleet-ops-3268 on
+# fleet-ops#3714 + #3810: a session that made tool calls but ended its turn ON
+# a tool call (no trailing assistant text) leaves stdout at 0B while the verdict
+# on stderr says tools=N class=worked. Live 2026-09-05T22:14Z fleet-ops-3268 on
 # ollama/deepseek-v4-flash:0731: 14 tool calls, 44k tokens, stderr
-# "PACKET-VERDICT tools=35 class=worked", stdout=0B -> benched 4 h as
-# "provider-no-op:stdout=0B" and the cap-8 seat left the pool. stdout < OUT_MIN
-# with tools>0 (verdict on stderr OR toolCall entries in the session jsonl) is
-# worked-no-text: exit 0, seat NOT benched.
+# "PACKET-VERDICT tools=35 class=worked", stdout=0B. #3714 ruled this is NOT a
+# provider no-op (the seat functioned, tools>0) so the seat is NOT benched.
+# #3810: but a worked-no-text session that did NOT ship a PR is a BURNED CLAIM,
+# not a success. 16 such runs in 2h on ollama/deepseek-v4-flash:0731 each
+# burned a claim silently (exit 0, no re-queue). Fix: exit 1 (fail loudly,
+# death_class=work) so systemd Restart re-queues on a different seat. The seat
+# is NOT benched. A worked-no-text session that DID ship (PR open or issue
+# closed) stays exit 0 (real success).
 # =============================================================================
 rm -f "$LEDGER"/*.json "$LEDGER"/*.spawn-bench.json 2>/dev/null || true
 rm -f "$scratch/mark_calls" "$scratch/mark_empty_calls" 2>/dev/null || true
@@ -471,7 +481,7 @@ no_empty_run_ledger() {
     return 0
 }
 
-# (a) verdict on stderr (where the packet-verdict extension writes it), nothing on stdout.
+# (a) verdict on stderr, nothing on stdout, no PR shipped -> exit 1, seat NOT benched.
 cat >"$stub_bin/pi" <<'STUB'
 #!/usr/bin/env bash
 printf 'EXTLOAD-OK extension=packet-verdict mode=print-safe\nPACKET-VERDICT tools=35 class=worked\n' >&2
@@ -480,22 +490,24 @@ STUB
 chmod +x "$stub_bin/pi"
 
 inst5="fleet-ops-3714-verdict"
-printf 'Implement one GitHub issue: fleet-ops#3714.\n' >"$ISSUES_DIR/${inst5}.in"
+printf 'Implement one GitHub issue: fleet-ops#3714.\nTARGET: repo Nishfleet/fleet-ops issue 3714 unit pi-issue-fleet-ops-3714\n' >"$ISSUES_DIR/${inst5}.in"
 set +e
 bash "$bin" "$inst5" >"$scratch/run5.out" 2>"$scratch/run5.err"
 rc5=$?
 set -e
-[[ "$rc5" == "0" ]] \
-  || fail "worked-no-text (stderr verdict tools=35, stdout 0B) must exit 0, got rc=$rc5 err=$(tail -n 5 "$scratch/run5.err")"
+[[ "$rc5" == "1" ]] \
+  || fail "worked-no-text (stderr verdict tools=35, stdout 0B, no PR) must exit 1, got rc=$rc5 err=$(tail -n 5 "$scratch/run5.err")"
 if [[ -s "$scratch/mark_empty_calls" ]]; then
     fail "worked-no-text must NOT bench the seat via mark_seat_empty_run; calls: $(cat "$scratch/mark_empty_calls")"
 fi
 no_empty_run_ledger || fail "worked-no-text must write no empty_run ledger: $(ls "$LEDGER")"
 grep -qF 'worked-no-text' "$scratch/run5.err" \
   || fail "expected a worked-no-text log line, got: $(tail -n 5 "$scratch/run5.err")"
-ok "fleet-ops#3714 (a): stderr verdict tools=35 + stdout 0B -> exit 0, seat not benched"
+grep -qF 'failing claim loudly' "$scratch/run5.err" \
+  || fail "expected a 'failing claim loudly' log line, got: $(tail -n 5 "$scratch/run5.err")"
+ok "fleet-ops#3714 (a): stderr verdict tools=35 + stdout 0B + no PR -> exit 1, seat not benched"
 
-# (b) no verdict line at all; only the session jsonl carries toolCall entries.
+# (b) no verdict line at all; only the session jsonl carries toolCall entries, no PR -> exit 1.
 rm -f "$scratch/mark_calls" "$scratch/mark_empty_calls" 2>/dev/null || true
 inst6="fleet-ops-3714-jsonl"
 sess6="$HOME/.pi/agent/sessions/pi-issue-${inst6}"
@@ -506,18 +518,18 @@ printf '%s\n' '{"type":"message","message":{"role":"assistant","content":[{"type
 exit 0
 STUB
 chmod +x "$stub_bin/pi"
-printf 'Implement one GitHub issue: fleet-ops#3714.\n' >"$ISSUES_DIR/${inst6}.in"
+printf 'Implement one GitHub issue: fleet-ops#3714.\nTARGET: repo Nishfleet/fleet-ops issue 3714 unit pi-issue-fleet-ops-3714\n' >"$ISSUES_DIR/${inst6}.in"
 set +e
 bash "$bin" "$inst6" >"$scratch/run6.out" 2>"$scratch/run6.err"
 rc6=$?
 set -e
-[[ "$rc6" == "0" ]] \
-  || fail "worked-no-text (session jsonl toolCall, no verdict, stdout 0B) must exit 0, got rc=$rc6 err=$(tail -n 5 "$scratch/run6.err")"
+[[ "$rc6" == "1" ]] \
+  || fail "worked-no-text (session jsonl toolCall, no verdict, stdout 0B, no PR) must exit 1, got rc=$rc6 err=$(tail -n 5 "$scratch/run6.err")"
 if [[ -s "$scratch/mark_empty_calls" ]]; then
     fail "session-jsonl tool calls must NOT bench the seat; calls: $(cat "$scratch/mark_empty_calls")"
 fi
 no_empty_run_ledger || fail "session-jsonl tool calls must write no empty_run ledger: $(ls "$LEDGER")"
-ok "fleet-ops#3714 (b): session jsonl toolCall + no verdict + stdout 0B -> exit 0, seat not benched"
+ok "fleet-ops#3714 (b): session jsonl toolCall + no verdict + stdout 0B + no PR -> exit 1, seat not benched"
 
 # (c) control: 0B stdout, no verdict, no tool calls anywhere is STILL a provider no-op.
 rm -f "$scratch/mark_calls" "$scratch/mark_empty_calls" 2>/dev/null || true
@@ -527,7 +539,7 @@ exit 0
 STUB
 chmod +x "$stub_bin/pi"
 inst7="fleet-ops-3714-noop"
-printf 'Implement one GitHub issue: fleet-ops#3714.\n' >"$ISSUES_DIR/${inst7}.in"
+printf 'Implement one GitHub issue: fleet-ops#3714.\nTARGET: repo Nishfleet/fleet-ops issue 3714 unit pi-issue-fleet-ops-3714\n' >"$ISSUES_DIR/${inst7}.in"
 set +e
 bash "$bin" "$inst7" >"$scratch/run7.out" 2>"$scratch/run7.err"
 rc7=$?
@@ -538,4 +550,50 @@ set -e
   || fail "true no-op must still bench the seat via mark_seat_empty_run"
 ok "fleet-ops#3714 (c): true no-op still benched (detector not loosened)"
 
-ok "fleet-ops#3714: worked-no-text is not a provider no-op; true no-op still benches"
+# (d) worked-no-text WITH a PR shipped -> exit 0 (real success, #3810).
+rm -f "$scratch/mark_calls" "$scratch/mark_empty_calls" 2>/dev/null || true
+cat >"$stub_bin/gh" <<'STUB'
+#!/usr/bin/env bash
+# PR is open for this case.
+if [[ "$*" == *"--jq"* ]]; then
+    printf 'open\n'
+    exit 0
+fi
+printf '[{"number":42,"state":"open"}]\n'
+exit 0
+STUB
+chmod +x "$stub_bin/gh"
+cat >"$stub_bin/pi" <<'STUB'
+#!/usr/bin/env bash
+printf 'EXTLOAD-OK extension=packet-verdict mode=print-safe\nPACKET-VERDICT tools=35 class=worked\n' >&2
+exit 0
+STUB
+chmod +x "$stub_bin/pi"
+inst8="fleet-ops-3810-shipped"
+printf 'Implement one GitHub issue: fleet-ops#3810.\nTARGET: repo Nishfleet/fleet-ops issue 3810 unit pi-issue-fleet-ops-3810\n' >"$ISSUES_DIR/${inst8}.in"
+set +e
+bash "$bin" "$inst8" >"$scratch/run8.out" 2>"$scratch/run8.err"
+rc8=$?
+set -e
+[[ "$rc8" == "0" ]] \
+  || fail "worked-no-text WITH PR shipped must exit 0, got rc=$rc8 err=$(tail -n 5 "$scratch/run8.err")"
+if [[ -s "$scratch/mark_empty_calls" ]]; then
+    fail "worked-no-text with PR shipped must NOT bench the seat; calls: $(cat "$scratch/mark_empty_calls")"
+fi
+grep -qF 'PR shipped or issue closed' "$scratch/run8.err" \
+  || fail "expected a 'PR shipped or issue closed' log line, got: $(tail -n 5 "$scratch/run8.err")"
+ok "fleet-ops#3810 (d): worked-no-text + PR shipped -> exit 0, seat not benched"
+
+# Restore default gh stub for any subsequent test sections.
+cat >"$stub_bin/gh" <<'STUB'
+#!/usr/bin/env bash
+if [[ "$*" == *"--jq"* ]]; then
+    printf 'open\n'
+    exit 0
+fi
+printf '[]\n'
+exit 0
+STUB
+chmod +x "$stub_bin/gh"
+
+ok "fleet-ops#3714/#3810: worked-no-text is not a provider no-op; no-PR fails loudly, PR-shipped succeeds; true no-op still benches"

@@ -831,9 +831,36 @@ if (( out_bytes < OUT_MIN )); then
         seat_log "pi-issue-run: $inst remote session on $np/$nm produced a PR URL (stdout=${out_bytes}B) — treating as success"
     elif tool_calls=$(session_tool_calls "$out_file" "$err_file" "$session_dir") && (( tool_calls > 0 )); then
         # fleet-ops#3714: worked-no-text. The seat functioned (tools>0); the
-        # model just ended on a tool call. Not a provider no-op: no bench, no
-        # re-seat. Falls through to the verdict check and the success path.
+        # model just ended on a tool call. Not a provider no-op: no bench.
+        # fleet-ops#3810: but a worked-no-text session that did NOT ship a
+        # PR is a BURNED CLAIM, not a success. Exit 0 left the issue
+        # unresolved with no re-queue (16 empty runs in 2h on
+        # ollama/deepseek-v4-flash:0731, each burning a claim silently).
+        # Fail the claim loudly (exit 1, death_class=work) so systemd
+        # Restart re-queues the issue on a different seat. The seat is NOT
+        # benched (not a seat fault — the seat functioned, tools>0);
+        # tried-seats exclusion keeps the next pick off this seat for the
+        # rest of the burst. A session that DID ship (PR open or issue
+        # closed) falls through to the success path as a real success.
         seat_log "pi-issue-run: $inst session on $np/$nm made ${tool_calls} tool calls but printed no final text (stdout=${out_bytes}B) — worked-no-text, NOT a provider no-op; seat not benched (fleet-ops#3714)"
+        _wnt_issue="${inst##*-}"
+        _wnt_shipped=no
+        if [[ -n "$pkt_repo" ]]; then
+            _wnt_open_pr=$(gh api "repos/Nishfleet/${pkt_repo}/pulls?state=open&head=${pkt_repo}:claim/issue-${_wnt_issue}&per_page=1" 2>/dev/null || true)
+            if printf '%s' "$_wnt_open_pr" | jq -e 'length > 0' >/dev/null 2>&1; then
+                _wnt_shipped=yes
+            else
+                _wnt_issue_state=$(gh api "repos/Nishfleet/${pkt_repo}/issues/${_wnt_issue}" --jq '.state // "open"' 2>/dev/null || true)
+                [[ "$_wnt_issue_state" == "closed" ]] && _wnt_shipped=yes
+            fi
+        fi
+        if [[ "$_wnt_shipped" == "yes" ]]; then
+            seat_log "pi-issue-run: $inst worked-no-text but PR shipped or issue closed — treating as success"
+        else
+            seat_log "pi-issue-run: $inst worked-no-text with no PR shipped — failing claim loudly (exit 1) so systemd re-queues (fleet-ops#3810)"
+            write_death_class work
+            exit 1
+        fi
     else
         seat_log "pi-issue-run: $inst pi exited 0 but stdout=${out_bytes}B (< ${OUT_MIN}B) — provider no-op, benching seat (empty_run, geometric cooldown) and re-seating in-process"
         if mark_seat_empty_run "$np" "$nm" "pi-issue:$inst:provider-no-op:stdout=${out_bytes}B"; then
