@@ -154,6 +154,7 @@ ok "spawn-fail backoff capped at ~${dc}s (cap=${cap}s)"
 # Test isolation: pin the failure ceiling low so the park fires in a few
 # iterations. Production default is 20 (fleet-ops#3531).
 export SEAT_FAILURE_CEILING=3
+export EMPTY_RUN_FAILURE_CEILING=3  # fleet-ops#3727: empty-run park uses its own ceiling
 # A provider no-op (exit 0, < OUT_MIN stdout) is a retryable lane fault. It
 # now shares the single geometric ladder with overload/quota writers
 # (base * 2^(n-1), capped at 6 h) so a repeat offender is held out of
@@ -237,6 +238,7 @@ ok "expired bench fail-opens — a recovered seat is re-eligible (work-complete 
 # mask the cap. Also prove a remote FREE seat keeps the generic 6 h cap:
 # the tighter 1800 s cap is a prepaid-quota protection only.
 export SEAT_FAILURE_CEILING=20
+export EMPTY_RUN_FAILURE_CEILING=20  # fleet-ops#3727: park at 20 here so the 5-iteration remote cap test is not masked by the empty-run park
 rp="remoteco"; rm_="r-model"
 rlf=$(ledger_file "$rp" "$rm_")
 rmf=$(marker_file "$rp" "$rm_")

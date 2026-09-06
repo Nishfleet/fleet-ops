@@ -2209,8 +2209,8 @@ seat_usable() {
     # usable_at is empty (the 9d fixture and any ledger without usable_at).
     # \x1f is not whitespace, so empty fields survive. Include newline in IFS
     # so the trailing jq newline is not glued onto bench_until.
-    IFS=$'\x1f'$'\n' read -r hc dead observed usable_at bench_until fail_count < <(
-        jq -r '[(.health_class//""),(.seat_dead|tostring),(.observed_at//""),(.usable_at//""),(.bench_until//""),(.consecutive_failure_count//0)] | join("\u001f")' "$f" 2>/dev/null || true
+    IFS=$'\x1f'$'\n' read -r hc dead observed usable_at bench_until fail_count fail_mode < <(
+        jq -r '[(.health_class//""),(.seat_dead|tostring),(.observed_at//""),(.usable_at//""),(.bench_until//""),(.consecutive_failure_count//0),(.failure_mode//"")] | join("\u001f")' "$f" 2>/dev/null || true
     )
     if [[ -z "$hc" ]]; then
         (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: NO HEALTH DATA (ledger unparseable) — assuming usable"
@@ -2324,16 +2324,21 @@ seat_usable() {
     # opencode/muse-spark-1.2-contributor-free at 149 straight HTTP 500s)
     # was re-offered every flat-window cycle (30s), even from a stale pre-fix
     # ledger. Park the READ side with the same long wall the marker writers
-    # use: past SEAT_FAILURE_CEILING a transient_fault ledger is held until
+    # use: past the failure ceiling a transient_fault ledger is held until
     # observed_at + SEAT_PARK_WALL_S, then fail-opens (one probe per park
     # wall, not per flat window). Same contract as #1362: a healthy write
     # resets count to 0, so a recovered seat is never walled permanently.
-    if [[ "$hc" == "transient_fault" && -n "$observed" ]] && _seat_parked_by_ceiling "$fail_count"; then
+    # fleet-ops#3727: empty runs use a lower EMPTY_RUN_FAILURE_CEILING (default
+    # 5) so a chronic no-op'er parks on the read side at the same threshold the
+    # writer parks at, not the generic 20.
+    local _park_ceil="${SEAT_FAILURE_CEILING:-20}"
+    [[ "$fail_mode" == "empty_run" ]] && _park_ceil="${EMPTY_RUN_FAILURE_CEILING:-5}"
+    if [[ "$hc" == "transient_fault" && -n "$observed" ]] && _seat_parked_by_ceiling "$fail_count" "$_park_ceil"; then
         local park_end_s park_end_iso
         park_end_s=$(($(date -u -d "$observed" +%s 2>/dev/null || echo 0) + SEAT_PARK_WALL_S))
         park_end_iso=$(date -u -d "@$park_end_s" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$observed")
         if _seat_in_future "$park_end_iso"; then
-            (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE (transient_fault count=$fail_count >= ${SEAT_FAILURE_CEILING:-20}, parked until $park_end_iso — long wall, not flat re-offer)"
+            (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE (transient_fault count=$fail_count >= ${_park_ceil}, parked until $park_end_iso — long wall, not flat re-offer)"
             return 1
         fi
     fi
@@ -4477,18 +4482,20 @@ SEAT_BENCH_GEOMETRIC_CAP_S="${SEAT_BENCH_GEOMETRIC_CAP_S:-21600}"
 # capped at 1800 s instead of the 6 h default.
 SEAT_REMOTE_AGENT_EMPTY_RUN_CAP_S="${SEAT_REMOTE_AGENT_EMPTY_RUN_CAP_S:-1800}"
 
-# _geometric_bench_window base count [cap]
+# _geometric_bench_window base count [cap] [ceil_override]
 # Compute a bench window that doubles per consecutive failure, capped at <cap>,
 # and then parked at the failure ceiling. This is the single helper shared by
-# the overload, quota, and empty-run writers.
+# the overload, quota, and empty-run writers. The optional 4th arg overrides
+# the failure ceiling for this call (fleet-ops#3727: empty runs use a lower
+# EMPTY_RUN_FAILURE_CEILING than the generic SEAT_FAILURE_CEILING).
 _geometric_bench_window() {
-    local base="${1:-300}" count="${2:-1}" cap="${3:-$SEAT_BENCH_GEOMETRIC_CAP_S}"
+    local base="${1:-300}" count="${2:-1}" cap="${3:-$SEAT_BENCH_GEOMETRIC_CAP_S}" ceil_ovr="${4:-}"
     [[ "$base" =~ ^[0-9]+$ ]] || base=300
     [[ "$count" =~ ^[0-9]+$ ]] || count=1
     [[ "$cap" =~ ^[0-9]+$ ]] || cap=21600
     local window
     window=$(_escalated_backoff "$base" "$count" "$cap")
-    _failure_ceiling_wall "$count" "$window"
+    _failure_ceiling_wall "$count" "$window" "$ceil_ovr"
 }
 
 # --- failure-count ceiling (fleet-ops#1362) ---------------------------------
@@ -4931,6 +4938,18 @@ EMPTY_RUN_MARKER_FRESH_S="${EMPTY_RUN_MARKER_FRESH_S:-1800}"  # 30 min — spawn
 # default = park wall (24 h) so a chronic no-op'er's count survives the full
 # failure-ceiling park, not just the geometric bench cap (fleet-ops#3666).
 EMPTY_RUN_COUNT_WINDOW_S="${EMPTY_RUN_COUNT_WINDOW_S:-$SEAT_PARK_WALL_S}"
+# fleet-ops#3727: a SEPARATE, lower failure ceiling for empty runs. The generic
+# SEAT_FAILURE_CEILING (default 20) was unified in fleet-ops#3531, but a chronic
+# no-op'er (ollama/deepseek-v4-flash:0731, 12 empty runs in 2h) churned for 20
+# cycles before the 24h park engaged — the geometric cap (6h) re-offered the
+# seat every 6h and the count climbed too slowly. A provider no-op is a LANE
+# FAULT, not a quota wall: 5 no-ops in the same 24h count-merge window is a
+# strong signal the seat is functionally dead for agentic work, so park it
+# behind the 24h wall on the 5th no-op instead of the 20th. The generic ceiling
+# still applies to spawn_fail / quota / overload (real walls that recover
+# differently). Tests that pin a low ceiling for empty-run park isolation set
+# BOTH SEAT_FAILURE_CEILING and EMPTY_RUN_FAILURE_CEILING.
+EMPTY_RUN_FAILURE_CEILING="${EMPTY_RUN_FAILURE_CEILING:-5}"
 
 mark_seat_empty_run() {
     local p="$1" m="$2" reason="${3:-empty_run}"
@@ -4988,15 +5007,18 @@ mark_seat_empty_run() {
     # the local harness, so a false empty run is capped at 30 min (1800 s) to
     # avoid punishing a healthy remote seat — the tighter cap applies only to
     # prepaid-quota seats (a paid seat idled by a false verdict is real
-    # money). The long failure-ceiling park (SEAT_FAILURE_CEILING, default
-    # 20, to SEAT_PARK_WALL_S, default 24 h) still applies on top.
+    # money). The long failure-ceiling park (SEAT_PARK_WALL_S, default 24 h)
+    # still applies on top. fleet-ops#3727: empty runs use a SEPARATE, lower
+    # failure ceiling (EMPTY_RUN_FAILURE_CEILING, default 5) so a chronic
+    # no-op'er parks on the 5th no-op, not the 20th — the generic 20 let
+    # ollama/deepseek-v4-flash:0731 churn 12 empty runs in 2h without parking.
     local cap
     cap="$SEAT_BENCH_GEOMETRIC_CAP_S"
     if provider_remote_agent "$p" && [[ "$(model_class_of "$p" "$m")" == "prepaid-quota" ]]; then
         cap="$SEAT_REMOTE_AGENT_EMPTY_RUN_CAP_S"
     fi
     local backoff
-    backoff=$(_geometric_bench_window "$EMPTY_RUN_BACKOFF_S" "$merged_count" "$cap")
+    backoff=$(_geometric_bench_window "$EMPTY_RUN_BACKOFF_S" "$merged_count" "$cap" "$EMPTY_RUN_FAILURE_CEILING")
     # Compute usable_at = now + backoff (ISO 8601, bash portable).
     local usable_at
     usable_at=$(date -u -d "@$(($(date -u +%s) + backoff))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
@@ -5029,13 +5051,13 @@ mark_seat_empty_run() {
     chmod 0644 "$tmp" 2>/dev/null || true
     if mv "$tmp" "$path" 2>/dev/null; then
         seat_log "empty-run: marked $p/$m unusable until $usable_at (reason=$reason, backoff=${backoff}s, count=$merged_count)"
-        # fleet-ops#3531: park check uses the generic failure ceiling (default
-        # 20). The geometric backoff (capped at 6 h, 1800 s for remote agents)
-        # grows the bench below the ceiling; once crossed, the seat is parked
-        # behind the long wall.
-        if _seat_parked_by_ceiling "$merged_count"; then
+        # fleet-ops#3727: park check uses the empty-run-specific failure ceiling
+        # (EMPTY_RUN_FAILURE_CEILING, default 5). The geometric backoff (capped
+        # at 6 h, 1800 s for remote agents) grows the bench below the ceiling;
+        # once crossed, the seat is parked behind the long wall.
+        if _seat_parked_by_ceiling "$merged_count" "$EMPTY_RUN_FAILURE_CEILING"; then
             _emit_failure_ceiling_metric "$p" "$m" "$merged_count"
-            seat_log "empty-run: $p/$m PARKED past failure ceiling (count=$merged_count >= ${SEAT_FAILURE_CEILING}, wall=${backoff}s)"
+            seat_log "empty-run: $p/$m PARKED past failure ceiling (count=$merged_count >= ${EMPTY_RUN_FAILURE_CEILING}, wall=${backoff}s)"
         fi
         # fleet-ops#1512: clobber-proof spawn-bench marker (same rationale as
         # mark_seat_spawn_fail). fleet-ops#2627: also carry the

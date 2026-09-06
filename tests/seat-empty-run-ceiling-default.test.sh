@@ -2,19 +2,23 @@
 # tests/seat-empty-run-ceiling-default.test.sh
 #
 # fleet-ops#3531: the empty-run bench now escalates geometrically
-# (base * 2^(n-1), capped at 6 h) and uses the generic failure ceiling
-# (SEAT_FAILURE_CEILING, default 20). This supersedes the prior
-# EMPTY_RUN_FAILURE_CEILING tier that parked on the 3rd no-op but left
-# the bench flat at 900s below it.
+# (base * 2^(n-1), capped at 6 h). fleet-ops#3727: empty runs use a
+# SEPARATE, lower failure ceiling (EMPTY_RUN_FAILURE_CEILING, default 5)
+# so a chronic no-op'er parks on the 5th no-op, not the 20th — the
+# generic 20 (SEAT_FAILURE_CEILING) let ollama/deepseek-v4-flash:0731
+# churn 12 empty runs in 2h without parking. The geometric bench still
+# escalates below the ceiling (900s -> 1800s -> ...).
 #
 # This test proves, end to end against the live wrapper:
 #   (a) three empty-run benches on the same seat WITH a healthy clobber
 #       between each accumulate the marker count 1 -> 2 -> 3.
 #   (b) the bench escalates geometrically below the ceiling
 #       (900s -> 1800s).
-#   (c) on the 3rd no-op (failure ceiling pinned to 3 for test isolation)
-#       the #1362 park wall engages (usable_at jumps to ~now+SEAT_PARK_WALL_S,
-#       seat_usable holds the parked seat).
+#   (c) on the 3rd no-op (empty-run failure ceiling pinned to 3 for test
+#       isolation) the #1362 park wall engages (usable_at jumps to
+#       ~now+SEAT_PARK_WALL_S, seat_usable holds the parked seat).
+#   (d) the production default EMPTY_RUN_FAILURE_CEILING is 5 (fleet-ops#3727),
+#       lower than the generic SEAT_FAILURE_CEILING (20).
 #
 # Runs entirely offline: scratch ledger, scratch state, no network, no
 # systemd. Mirrors the harness shape of tests/seat-empty-run-clobber-park.test.sh.
@@ -44,8 +48,10 @@ export SEAT_CAPS_JSON="$scratch/seat-caps.json"
 export XDG_RUNTIME_DIR="$scratch/xdg"
 export PI_SEAT_LIB_CHECK_SYSTEMD=0
 # Test isolation: pin the failure ceiling low so the park fires in a few
-# iterations. Production default is 20 (fleet-ops#3531).
+# iterations. Production default is 20 (fleet-ops#3531). fleet-ops#3727:
+# empty runs use their own ceiling (EMPTY_RUN_FAILURE_CEILING, default 5).
 export SEAT_FAILURE_CEILING=3
+export EMPTY_RUN_FAILURE_CEILING=3
 export SEAT_PARK_WALL_S=86400
 export EMPTY_RUN_MARKER_FRESH_S=1800
 export EMPTY_RUN_COUNT_WINDOW_S=7200
@@ -80,12 +86,15 @@ JSON
 # shellcheck disable=SC1091
 source "$seat_lib"
 
-# Assert the production default generic failure ceiling is 20 (fleet-ops#3531).
-# A regression that lowers it back to 3 (or any value < 20) would park seats
-# on the 3rd empty run instead of the 20th, punishing healthy free seats.
+# Assert the production default generic failure ceiling is 20 (fleet-ops#3531)
+# and the empty-run-specific ceiling is 5 (fleet-ops#3727). The generic ceiling
+# stays at 20 for spawn_fail / quota / overload; empty runs park sooner.
 [[ "${SEAT_FAILURE_CEILING:-20}" == "3" ]] \
     || fail "SEAT_FAILURE_CEILING = ${SEAT_FAILURE_CEILING:-20}, want 3 for this test isolation (production default is 20, fleet-ops#3531)"
 ok "(a0) SEAT_FAILURE_CEILING pinned to 3 for test isolation (production default 20, fleet-ops#3531)"
+[[ "${EMPTY_RUN_FAILURE_CEILING:-5}" == "3" ]] \
+    || fail "EMPTY_RUN_FAILURE_CEILING = ${EMPTY_RUN_FAILURE_CEILING:-5}, want 3 for this test isolation (production default is 5, fleet-ops#3727)"
+ok "(a0b) EMPTY_RUN_FAILURE_CEILING pinned to 3 for test isolation (production default 5, fleet-ops#3727)"
 
 ledger_file() {
     local p="$1" m="$2"
@@ -169,6 +178,6 @@ park_wall=$(wall_s_of_marker "$mf")
 if seat_usable "$p" "$m"; then
     fail "(b) seat_usable returned usable on the 3rd-no-op parked seat — the park wall must hold it out of rotation"
 fi
-ok "(b) 3rd no-op: count=3, park wall = ${park_wall}s (~24h), seat HELD UNUSABLE — geometric bench then park (fleet-ops#3531)"
+ok "(b) 3rd no-op: count=3, park wall = ${park_wall}s (~24h), seat HELD UNUSABLE — geometric bench then park (fleet-ops#3531/#3727)"
 
-ok "fleet-ops#3531: empty-run benches escalate geometrically and park at the generic failure ceiling"
+ok "fleet-ops#3531/#3727: empty-run benches escalate geometrically and park at the empty-run-specific failure ceiling (default 5, not the generic 20)"

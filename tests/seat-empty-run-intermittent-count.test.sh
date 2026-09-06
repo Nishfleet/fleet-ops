@@ -68,6 +68,7 @@ export PI_SEAT_LIB_CHECK_SYSTEMD=0
 # Test isolation: pin the failure ceiling low so the park fires in a few
 # iterations. Production default is 20 (fleet-ops#3531).
 export SEAT_FAILURE_CEILING=3
+export EMPTY_RUN_FAILURE_CEILING=3  # fleet-ops#3727: empty-run park uses its own ceiling
 export SEAT_PARK_WALL_S=86400
 # The DEFAULT empty-run count window is now 24 h (86400 s =
 # SEAT_PARK_WALL_S, fleet-ops#3666) — leave it at the default
