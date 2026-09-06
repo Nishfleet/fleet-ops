@@ -103,7 +103,9 @@
       },
       "_hard_cap": "Nish 2026-08-26: hard 4, never probe above (like devin). Prepaid weekly quota, not free (Nish 2026-08-26, fleet-ops#387).",
       "max_probe_ceiling": 8,
-      "_cap8_20260905": "2026-09-05 (Nish: sub expiring unused): Ollama Cloud Pro weekly 4.4% used, hourly session budget 13.7%, 1339 requests all week, resets in 1 day; the seat ran 2 sessions in 12h only because every issue was classified heavy (#3444) and the seat was not capable (contextWindow 131072 -> 1,000,000 in models.json). Cap 4 at ~15 min/session cannot drain the quota; 8 stays under the hourly session budget. hard_ceiling stays true: never probe above 8."
+      "hang_timeout_s": 2640,
+      "_cap8_20260905": "2026-09-05 (Nish: sub expiring unused): Ollama Cloud Pro weekly 4.4% used, hourly session budget 13.7%, 1339 requests all week, resets in 1 day; the seat ran 2 sessions in 12h only because every issue was classified heavy (#3444) and the seat was not capable (contextWindow 131072 -> 1,000,000 in models.json). Cap 4 at ~15 min/session cannot drain the quota; 8 stays under the hourly session budget. hard_ceiling stays true: never probe above 8.",
+      "_hang_timeout_3873": "fleet-ops#3873: ollama sessions on deepseek-v4-flash:0731 do 14-149 tool calls then get rc=124 killed at the global 2520s (42 min) watchdog before writing final text — 8/8 empty runs in 2h, every one a worked-no-text. The seat answers 200 and does real work; the timeout is too short for this seat. Per-seat override 2640s (44 min) gives 2 more minutes under the unit's 45 min TimeoutStartSec; the global default 2520 stays for every other seat."
     },
     "commandcode": {
       "cap": 4,

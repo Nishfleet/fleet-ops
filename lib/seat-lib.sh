@@ -710,6 +710,26 @@ load_seat_caps() {
     return 0
 }
 
+# fleet-ops#3873: per-seat hang-watchdog timeout. A slow seat (e.g.
+# ollama/deepseek-v4-flash:0731) does 14-149 tool calls then gets rc=124
+# killed at the global 2520s (42 min) watchdog before writing final text —
+# every run scored as worked-no-text / empty. The seat answers 200 and does
+# real work; the timeout is too short for that seat. seat-caps.json declares
+# a provider-level hang_timeout_s override; this helper reads it and falls
+# back to the global default. pi-issue-run calls it after picking the seat.
+# A value < 60s is ignored (defensive: a misconfigured sub-minute timeout
+# would kill every session). Returns the timeout in seconds on stdout.
+seat_hang_timeout_s() {
+    local p="$1" m="$2" v
+    (( ${_seat_caps_loaded:-0} )) || load_seat_caps >/dev/null 2>&1 || true
+    v=$(jq -r --arg p "$p" '.providers[$p].hang_timeout_s // empty' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    if [[ "$v" =~ ^[0-9]+$ ]] && (( v >= 60 )); then
+        printf '%s\n' "$v"
+        return 0
+    fi
+    printf '%s\n' "${PI_HANG_TIMEOUT_S:-2520}"
+}
+
 # fleet-ops#3111: expire stale cap=0 seats to a default cap so pick_seat
 # re-probes them after SEAT_CAP_ZERO_STALE_TTL_S. Reads the reason date from
 # the SEAT_PROVIDER_REASON / model-level reason; if older than the TTL (or no

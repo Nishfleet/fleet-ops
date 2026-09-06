@@ -458,7 +458,13 @@ fi
 #
 # Also written to the err file so the seat-health spawn-fail detector can
 # distinguish a hang (this marker) from a spawn ETIMEDOUT.
-PI_HANG_TIMEOUT_S="${PI_HANG_TIMEOUT_S:-2520}"  # 42 min < unit TimeoutStartSec=45min
+# fleet-ops#3873: per-seat hang-watchdog override. A slow seat (e.g.
+# ollama/deepseek-v4-flash:0731) needs a longer watchdog than the global
+# 42 min default — its sessions do 14-149 tool calls then get rc=124
+# killed before writing final text. seat-caps.json declares a per-provider
+# hang_timeout_s; seat_hang_timeout_s reads it and falls back to 2520.
+# An env-set PI_HANG_TIMEOUT_S (tests) wins over the config override.
+PI_HANG_TIMEOUT_S="${PI_HANG_TIMEOUT_S:-$(seat_hang_timeout_s "$np" "$nm")}"
 # fleet-ops#2133: minimum elapsed seconds before the long-hang-then-ETIMEDOUT
 # and Ready-for-input stall detectors fire. A genuine long hang is >> 5 min;
 # lowering it (e.g. PI_HANG_BENCH_MIN_S=1 in tests) does NOT change production
@@ -859,7 +865,7 @@ if (( out_bytes < OUT_MIN )); then
             fi
             continue
         fi
-        seat_log "pi-issue-run: $inst session on $np/$nm made ${tool_calls} tool calls but printed no final text (stdout=${out_bytes}B) — worked-no-text, NOT a provider no-op; seat not benched (fleet-ops#3714)"
+        seat_log "pi-issue-run: $inst session on $np/$nm made ${tool_calls} tool calls but printed no final text (out=${out_bytes}B) — worked-no-text; seat not benched (fleet-ops#3714)"
         _wnt_issue="${inst##*-}"
         _wnt_shipped=no
         if [[ -n "$pkt_repo" ]]; then
