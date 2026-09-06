@@ -89,13 +89,23 @@ ok()   { echo "OK: $*"; }
 # fleet_seat_comeback_overdue_total, the FleetSeatComebackOverdue alert
 # source — asserting 0 here proves the sweep cleared the overdue metric.
 overdue_n() {
-    python3 - "$repo_root/libexec/fleet-metrics-export.py" "$SEATDIR" "$NOW_EPOCH" <<'PY'
+    # $1 optional: explicit seat dir (defaults to the global $SEATDIR). The
+    # metrics _read_comeback_overdue MUST see the SAME scratch seat-caps the
+    # bin sweep used (the module defaults point at the live config, which
+    # lacks the test-only seats and would exclude them on a host where that
+    # config exists — the pre-existing host-vs-CI nondeterminism removed
+    # here, fleet-ops#3993). Mirrors tests/fleet-metrics-export.test.sh's
+    # SEAT_CAPS_DEFAULT/SEAT_CAPS_FALLBACK wiring.
+    local dir="${1:-$SEATDIR}"
+    python3 - "$repo_root/libexec/fleet-metrics-export.py" "$dir" "$TMPD/seat-caps.json" "$NOW_EPOCH" <<'PY'
 import importlib.util, sys
 from pathlib import Path
 spec = importlib.util.spec_from_file_location("fme", sys.argv[1])
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 m.SEAT_LEDGER = Path(sys.argv[2])
-m.time.time = lambda: int(sys.argv[3])
+m.SEAT_CAPS_DEFAULT = Path(sys.argv[3])
+m.SEAT_CAPS_FALLBACK = Path("/nonexistent/seat-caps.json")
+m.time.time = lambda: int(sys.argv[4])
 cb_n, _ = m._read_comeback_overdue()
 print(cb_n)
 PY
@@ -979,13 +989,18 @@ cat > "$SEATDIR/cline__z-ai_glm-5.3-flash.json" << 'EOF'
 {"provider":"cline","model":"z-ai/glm-5.3-flash","http_status":200,"retry_after":null,"health_class":"healthy","retryable":false,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T11:00:00Z","source":"after_provider_response","failure_mode":"none","consecutive_failure_count":0}
 EOF
 # never_released_n() over $SEATDIR (mirrors tests 6's overdue_n()).
+# Also wires the scratch seat-caps so _read_never_released's phantom-key guard
+# sees the test's caps on every host (fleet-ops#3993, same determinism fix as
+# overdue_n).
 never_released_n() {
-    python3 - "$repo_root/libexec/fleet-metrics-export.py" "$SEATDIR" <<'PY'
+    python3 - "$repo_root/libexec/fleet-metrics-export.py" "$SEATDIR" "$TMPD/seat-caps.json" <<'PY'
 import importlib.util, sys
 from pathlib import Path
 spec = importlib.util.spec_from_file_location("fme", sys.argv[1])
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 m.SEAT_LEDGER = Path(sys.argv[2])
+m.SEAT_CAPS_DEFAULT = Path(sys.argv[3])
+m.SEAT_CAPS_FALLBACK = Path("/nonexistent/seat-caps.json")
 nr_n, _ = m._read_never_released()
 print(nr_n)
 PY
@@ -1924,14 +1939,22 @@ PI_SEAT_HEALTH_LEDGER_DIR="$PHANTD" \
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "20: phantom sweep must exit 0, got $rc ($(cat "$TMPD/phantom.err"))"
-grep -q "LOUD SEAT-KEY-INVALID devin/swe-1-7-.out writer=fleet-seat-comeback-release" "$TMPD/phantom.err" \
+grep -q "LOUD SEAT-KEY-INVALID devin/swe-1-7-.out writer=fleet-seat-comeback-release (phantom)" "$TMPD/phantom.err" \
   || fail "20: phantom must be skipped with the LOUD SEAT-KEY-INVALID line: $(cat "$TMPD/phantom.err")"
 [[ ! -s "$TMPD/probe.log" ]] \
   || fail "20: phantom seat must NEVER be probed: $(cat "$TMPD/probe.log")"
-# The phantom ledger must be untouched (not unwalled, not rebenched).
-jq -e '.health_class == "transient_other" and .consecutive_failure_count == 18' "$PHANTD/devin__swe-1-7-.out.json" >/dev/null \
-  || fail "20: phantom ledger must be left untouched: $(cat "$PHANTD/devin__swe-1-7-.out.json")"
-ok "20: phantom seat key skipped by comeback-release with LOUD line, never probed (fleet-ops#3661)"
+# fleet-ops#3993: a probe-artifact phantom can never be unwalled, so it is
+# retired OUT of the live roster (not merely left untouched) — otherwise the
+# census / thorough detector count it comeback-overdue forever. The ledger
+# must no longer be in the roster (moved to seats-phantom-retired-*/).
+[[ ! -e "$PHANTD/devin__swe-1-7-.out.json" ]] \
+  || fail "20: phantom ledger must be retired out of the roster: $(ls "$PHANTD")"
+PHANT_RETIRE="$TMPD/seats-phantom-retired-$NOW_ISO"
+[[ -d "$PHANT_RETIRE" && -f "$PHANT_RETIRE/devin__swe-1-7-.out.json" ]] \
+  || fail "20: phantom must land in the dated seats-phantom-retired-<ts>/ dir ($PHANT_RETIRE)"
+grep -q "RETIRED PHANTOM devin/swe-1-7-.out" "$TMPD/phantom.err" \
+  || fail "20: sweep must log the phantom retirement: $(cat "$TMPD/phantom.err")"
+ok "20: phantom seat key retired out of roster by comeback-release, never probed (fleet-ops#3661/#3993)"
 
 # Writer call with a phantom model: mark_seat_spawn_fail must write nothing
 # and log LOUD. Source seat-lib with a scratch ledger + caps fixture.
@@ -1954,4 +1977,79 @@ grep -q "LOUD SEAT-KEY-INVALID devin/swe-1-7-.out writer=mark_seat_spawn_fail" <
   || fail "20: writer must log the LOUD SEAT-KEY-INVALID line: $out"
 ok "20: writer call with phantom model writes nothing and logs LOUD (fleet-ops#3661)"
 
-echo "ALL OK: active come-back release path (fleet-ops#2421) + force-probe-on-overdue-usable_at + corpse-at-threshold + never-released metric (fleet-ops#2638) + own-streak corpse + interval-breach loud check (fleet-ops#2806) + no-wall corpse second-chance re-probe / explicit retire (fleet-ops#3156) + extension-reclassify race (fleet-ops#3179) + PQE 1h==1h deadlock fix (fleet-ops#3176) + skip-corpse-on-reanchored-wall (fleet-ops#3301) + phantom seat key rejection (fleet-ops#3661)"
+# ---------------------------------------------------------------------------
+# 21. fleet-ops#3993: an expired usable_at deterministically returns the seat.
+# Two seats from the thorough heartbeat (2026-09-06T15:45Z) that were stuck
+# comeback-overdue because the release organ skipped BOTH as "phantom":
+#   - devin/glm-5-2-.out  : a TRUE probe-output fragment (model ends .out).
+#                           Can never be unwalled -> RETIRED out of the roster
+#                           (the census/detector stop counting it).
+#   - orcarouter/free     : a REAL provider seat absent from the seat-caps
+#                           models map (cap=0 parked for re-audition). It IS
+#                           routable -> RE-PROBED on wall expiry (automated
+#                           re-audition) and re-benched into a future wall on
+#                           the 402, so it is no longer overdue.
+# ---------------------------------------------------------------------------
+SEATD21="$TMPD/seats21"
+mkdir -p "$SEATD21"
+# TRUE phantom: model is a probe-output fragment, usable_at in the past.
+cat > "$SEATD21/devin__glm-5-2-.out.json" <<'EOF'
+{"provider":"devin","model":"glm-5-2-.out","http_status":1,"retry_after":null,"health_class":"transient_fault","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T11:00:00Z","source":"cli_spawn","failure_mode":"transient_other","usable_at":"2026-08-30T11:00:00Z","consecutive_failure_count":1}
+EOF
+# REAL seat absent from the caps models map (orcarouter has no models row),
+# quota_exhausted, observed_at OLD (outside the PQE window) so the probe
+# fires, usable_at in the past.
+cat > "$SEATD21/orcarouter__orcarouter_free.json" <<'EOF'
+{"provider":"orcarouter","model":"orcarouter/free","http_status":402,"retry_after":null,"health_class":"quota_exhausted","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-29T09:16:51Z","source":"provider_fetch","failure_mode":"quota_exhausted","usable_at":"2026-08-30T09:16:51Z","consecutive_failure_count":1}
+EOF
+# A failing probe stub that records every probe invoked.
+cat > "$TMPD/pi-probe-log21" <<'EOF'
+#!/usr/bin/env bash
+echo "PROBED $*" >>"${PI_PROBE_LOG:-/dev/null}"
+exit 1
+EOF
+chmod +x "$TMPD/pi-probe-log21"
+: >"$TMPD/probe21.log"
+ST21="$TMPD/state21.json"
+PROM21="$TMPD/release21.prom"
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$SEATD21" \
+    FLEET_SEAT_COMEBACK_STATE="$ST21" \
+    FLEET_SEAT_COMEBACK_PROM="$PROM21" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" \
+    PI_BIN="$TMPD/pi-probe-log21" \
+    PI_PROBE_LOG="$TMPD/probe21.log" \
+    bash "$BIN" >/dev/null 2>"$TMPD/run21.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "21: sweep of the two stuck seats must exit 0, got $rc ($(cat "$TMPD/run21.err"))"
+
+# 1. The TRUE phantom is retired OUT of the live roster (never probed).
+[[ ! -e "$SEATD21/devin__glm-5-2-.out.json" ]] \
+  || fail "21: devin phantom ledger must be retired out of the roster: $(ls "$SEATD21")"
+grep -q "LOUD SEAT-KEY-INVALID devin/glm-5-2-.out writer=fleet-seat-comeback-release (phantom)" "$TMPD/run21.err" \
+  || fail "21: devin phantom must log the phantom SEAT-KEY-INVALID line: $(cat "$TMPD/run21.err")"
+[[ ! -e "$TMPD/probe21.log" ]] || {
+  grep -q "devin/glm-5-2-.out" "$TMPD/probe21.log" && \
+    fail "21: devin phantom must NEVER be probed: $(cat "$TMPD/probe21.log")" || true
+}
+
+# 2. The REAL orcarouter seat is re-probed (re-audition) and re-benched into
+#    a FUTURE wall, so it is no longer comeback-overdue.
+grep -q "PROBED.*--provider orcarouter --model orcarouter/free" "$TMPD/probe21.log" \
+  || fail "21: real orcarouter seat must be re-probed: $(cat "$TMPD/probe21.log")"
+[[ -f "$SEATD21/orcarouter__orcarouter_free.json" ]] \
+  || fail "21: orcarouter ledger must remain in the roster (re-bench, not retire)"
+ou_a=$(jq -r '.usable_at // ""' "$SEATD21/orcarouter__orcarouter_free.json")
+ou_e=$(date -u -d "${ou_a%Z}" +%s)
+(( ou_e > NOW_EPOCH )) \
+  || fail "21: orcarouter usable_at must be re-benched into the future ($ou_a <= now), got: $(cat "$SEATD21/orcarouter__orcarouter_free.json")"
+
+# 3. The comeback-overdue detector clears: both seats reclassified.
+# (Overdue computed against SEATD21, the same ledger the sweep just ran on,
+# using the fixed helper so the metrics reads the same scratch caps.)
+ocd_n=$(overdue_n "$SEATD21")
+[[ "$ocd_n" == "0" ]] || fail "21: comeback-overdue must be 0 after the sweep (both seats reclassified), got $ocd_n"
+ok "21: devin phantom retired + real orcarouter re-probed/re-benched -> comeback-overdue 0 (fleet-ops#3993)"
+
+echo "ALL OK: active come-back release path (fleet-ops#2421) + force-probe-on-overdue-usable_at + corpse-at-threshold + never-released metric (fleet-ops#2638) + own-streak corpse + interval-breach loud check (fleet-ops#2806) + no-wall corpse second-chance re-probe / explicit retire (fleet-ops#3156) + extension-reclassify race (fleet-ops#3179) + PQE 1h==1h deadlock fix (fleet-ops#3176) + skip-corpse-on-reanchored-wall (fleet-ops#3301) + phantom retirement + real-non-caps-seat re-probe (fleet-ops#3993)"

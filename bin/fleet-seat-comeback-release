@@ -268,6 +268,28 @@ _seat_key_valid() {
     fi
 }
 
+# fleet-ops#3993: distinguish a REAL provider seat that is merely absent
+# from the seat-caps models map (cap=0 parked for re-audition, a provider
+# config out of date, a retired slug still holding a ledger) from a TRUE
+# probe-output PHANTOM (a model id that is a unit output filename fragment
+# like "glm-5-2-.out" / "swe-1-7-.out" / "grok-4-6-.out", fleet-ops#3661).
+# The seat-caps `_seat_key_in_caps` guard over-rejects: it answers false for
+# every seat without an exact providers.<p>.models.<m> row, yet most of those
+# are REAL routable seats (mergegateway/*, openrouter/*, straitly/gpt-5.6-sol,
+# zenmux, groq, orcarouter/*) that the release organ SHOULD re-probe when
+# their wall expires — the lived finding: orcarouter/orcarouter/free stuck
+# 6h+ past usable_at because the release organ skipped it as "phantom" and
+# never re-auditioned it. The distinguishing signal is the model id itself:
+# a real model never ends in a dot-file extension. Reject (return 0 / true)
+# ONLY those probe-artifact ids; everything else is safe to re-probe.
+_seat_is_probe_artifact() {
+    # A probe-output fragment ends in .out/.err/.log (the unit output file
+    # the prober captured the model id from, the #3661/#4018 shape). Real
+    # fleet model ids (glm-5-2, gpt-5.6-sol, deepseek-v4-flash-0731,
+    # z-ai/glm-5.3-flash, orcarouter/free, ...) never end in a dot-file ext.
+    [[ "${1:-}" =~ \.(out|err|log)$ ]]
+}
+
 now_epoch() {
     if [[ -n "$NOW_ISO" ]]; then
         date -u -d "$NOW_ISO" +%s 2>/dev/null || date -u +%s
@@ -924,6 +946,55 @@ retire_corpse() {
     return 0
 }
 
+# fleet-ops#3993: retire a TRUE probe-artifact PHANTOM ledger out of the live
+# roster. A phantom (model id a unit-output filename fragment like
+# "swe-1-7-.out") is NOT a routable seat: `_seat_key_in_caps` refuses it, so
+# the release organ can never unwall it — yet the exhaustive seat census and
+# the thorough heartbeat detector (opus-heartbeat-gather seat_probes_
+# walled_comebacks) keep counting it comeback-overdue as long as the ledger
+# sits in lanes/seats/. The lived case: devin/glm-5-2-.out stuck past usable_at
+# with nothing ever clearing it (the #3891/#3917 phantom metrics fix excludes
+# it from fleet_seat_comeback_overdue_total but nothing RETIRES the ledger, so
+# the census still reads it walled/overdue). The release organ already owns the
+# terminal retire step for corpse ledgers (fleet-ops#2716, retire_corpse); a
+# phantom gets the same terminal treatment: physically moved out of the live
+# roster into a dated audit dir. No parked ledger is written (write_parked_
+# ledger rejects phantoms via `_seat_key_guard`, fleet-ops#3661 — and phantoms
+# are never routable, so nothing can re-pick one).
+#
+# Defensive hold: a phantom still carrying a FUTURE wall clock is held
+# (freshly-written garbage — give the upstream writer a window to correct
+# before it is retired; mirrors the corpse defensive hold, fleet-ops#2394).
+# Retire only once the wall is past or absent, so the retire is deterministic
+# (wall + one sweep).
+#
+# Returns 0 when retired (or would be, dry-run), 1 when held or on failure.
+retire_phantom_ledger() {
+    local p="$1" m="$2" f="$3" wall_end we now_e
+    now_e=$(now_epoch)
+    wall_end=$(wall_end_of "$f")
+    we=$(ts_epoch "$wall_end")
+    if [[ -n "$we" ]] && (( we > now_e )); then
+        log "HOLD phantom $p/$m: wall clock $wall_end in the future — retire when it passes (fleet-ops#3993)"
+        return 1
+    fi
+    if (( DRY_RUN )); then
+        log "DRY-RUN: would retire phantom $p/$m (probe-output fragment — never routable, retiring out of roster)"
+        return 0
+    fi
+    local retired_dir="${PHANTOM_RETIRE_DIR:-}"
+    [[ -d "$retired_dir" ]] || mkdir -p "$retired_dir" 2>/dev/null || {
+        log "retire $p/$m: cannot create $retired_dir — phantom left in place"
+        return 1
+    }
+    if ! mv "$f" "$retired_dir/" 2>/dev/null; then
+        log "retire $p/$m: mv FAILED at $f — phantom left in place"
+        return 1
+    fi
+    log "RETIRED PHANTOM $p/$m (probe-output fragment, moved to $retired_dir, fleet-ops#3993)"
+    return 0
+}
+
 # --- sweep -------------------------------------------------------------------
 main() {
     local now state probed_total released_total probed=0 released_this_run=0
@@ -957,6 +1028,11 @@ main() {
     # ledger dir (dirname of the ledger), so a sweep that retires several
     # corpses lands them all in one audit dir.
     CORPSE_RETIRE_DIR="$(dirname "$LEDGER")/seats-corpse-retired-$(now_iso)"
+    # fleet-ops#3993: one dated dir per sweep for probe-artifact phantoms the
+    # release organ retires out of the live roster (parallel to the corpse-
+    # retirement dir above). A phantom can never be unwalled, so the terminal
+    # step is the move out — the census / thorough detector stop counting it.
+    PHANTOM_RETIRE_DIR="$(dirname "$LEDGER")/seats-phantom-retired-$(now_iso)"
 
     if [[ ! -d "$LEDGER" ]]; then
         log "ledger dir missing: $LEDGER"
@@ -996,12 +1072,27 @@ main() {
         [[ -n "$m" ]] || continue
         # fleet-ops#3661: a provider/model pair that is not a real seat in
         # seat-caps.json (providers.<p>.models.<m>) is a PHANTOM key (e.g. a
-        # probe-output filename fragment like "swe-1-7-.out"). It must never
-        # be probed or dispatched — skip it LOUD so the next phantom names
-        # itself instead of burning a probe slot every sweep.
+        # probe-output filename fragment like "swe-1-7-.out"). A phantom must
+        # never be probed or dispatched. fleet-ops#3993 narrows the blanket
+        # skip: `_seat_key_in_caps` ALSO rejects REAL provider seats whose
+        # caps models row is merely missing (cap=0 parked for re-audition, a
+        # provider config out of date like orcarouter / mergegateway /
+        # openrouter/deepseek-v4-*). Those ARE routable and must be re-probed
+        # when their wall expires — that is the automated re-audition — so
+        # only a TRUE probe-artifact id (model ends in .out/.err/.log) is a
+        # hard phantom; it is RETIRED out of the live roster (it can never be
+        # unwalled, so leaving it makes the census/detector count it overdue
+        # forever, fleet-ops#3993).
         if ! _seat_key_valid "$p" "$m"; then
-            log "LOUD SEAT-KEY-INVALID $p/$m writer=fleet-seat-comeback-release"
-            continue
+            if _seat_is_probe_artifact "$m"; then
+                log "LOUD SEAT-KEY-INVALID $p/$m writer=fleet-seat-comeback-release (phantom)"
+                retire_phantom_ledger "$p" "$m" "$f" \
+                    || true
+                continue
+            fi
+            log "seat $p/$m absent from seat-caps models but real key (model not a probe artifact) — re-probe on wall expiry / re-audition (fleet-ops#3993)"
+            # NO continue: fall through to the normal wall-clock handling so a
+            # real seat with an expired usable_at gets probed (not left stuck).
         fi
         hc=$(jq -r '.health_class // ""' "$f" 2>/dev/null || true)
         # A healthy seat resets this organ's own-failure streak for that
@@ -1422,10 +1513,14 @@ main() {
         [[ "$p" != "test" ]] || continue
         [[ -n "$p" ]] || continue
         m=$(jq -r '.model // ""' "$f" 2>/dev/null || true)
-        # fleet-ops#3661: a phantom seat key is not a real seat — exclude it
-        # from the expired/breach recounts so it never trips the loud-stall
-        # or interval-breach checks (it was already skipped in the sweep).
-        _seat_key_valid "$p" "$m" || continue
+        # fleet-ops#3993: exclude only a TRUE probe-artifact phantom (model id
+        # ends in .out/.err/.log) from the expired/breach recounts — an
+        # artifact phantom is never routable, so it can never trip the
+        # loud-stall or interval-breach checks (past-wall ones are retired in
+        # the main loop; held future-wall ones are not past). A REAL seat that
+        # happens to be absent from the caps models map IS routable and is
+        # acted on in the main loop, so it is counted here like any seat.
+        _seat_is_probe_artifact "$m" && continue
         hc=$(jq -r '.health_class // ""' "$f" 2>/dev/null || true)
         [[ "$hc" != "healthy" ]] || continue
         dead=$(jq -r '(.seat_dead // false)' "$f" 2>/dev/null || true)
@@ -1464,8 +1559,11 @@ main() {
         [[ "$p" != "test" ]] || continue
         [[ -n "$p" ]] || continue
         m=$(jq -r '.model // ""' "$f" 2>/dev/null || true)
-        # fleet-ops#3661: exclude phantom seat keys from the breach recount.
-        _seat_key_valid "$p" "$m" || continue
+        # fleet-ops#3993: exclude only a TRUE probe-artifact phantom from the
+        # breach recount (same rule as the expired-count loop, so real-but-
+        # unconfigured seats that end the sweep still past usable_at by more
+        # than a probe interval are flagged as a releaser miss).
+        _seat_is_probe_artifact "$m" && continue
         hc=$(jq -r '.health_class // ""' "$f" 2>/dev/null || true)
         [[ "$hc" != "healthy" ]] || continue
         dead=$(jq -r '(.seat_dead // false)' "$f" 2>/dev/null || true)
