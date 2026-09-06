@@ -491,7 +491,8 @@ scan_bench_health_disagree() {
         lm=$(jq -r '.model // ""' "$f" 2>/dev/null || true)
         [[ -n "$lp" ]] && np="$lp"
         [[ -n "$lm" ]] && nm="$lm"
-        local mb="$SEAT_HEALTH_DIR/$(_sanitise "${lp:-$np}")__$(_sanitise "${lm:-$nm}").spawn-bench.json"
+        local mb
+        mb="$SEAT_HEALTH_DIR/$(_sanitise "${lp:-$np}")__$(_sanitise "${lm:-$nm}").spawn-bench.json"
         [[ -f "$mb" ]] || continue
         usable=$(jq -r '.usable_at // ""' "$mb" 2>/dev/null || true)
         [[ -n "$usable" ]] || continue
