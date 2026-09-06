@@ -86,6 +86,19 @@ MAX_LINES="${FLEET_ESCALATION_DRAIN_MAX_LINES:-50}"
 STUCK_AGE_S="${FLEET_ESCALATION_DRAIN_STUCK_AGE_S:-21600}"
 CLASSES="${FLEET_ESCALATION_DRAIN_CLASSES:-MONEY-BOUNDARY|LEGAL-BOUNDARY|PRODUCT-DIRECTION|CUSTOMER-DATA|CREDENTIAL-BOUNDARY|ONE-SHOT-PUBLIC-ACTION}"
 DRY_RUN="${FLEET_ESCALATION_DRAIN_DRY_RUN:-0}"
+# Condition-resolution pass (fleet-ops#3996): ages out money-wall entries
+# whose underlying provider condition has resolved. A provider is "walled"
+# if ANY seat file under SEAT_DIR has http_status 402 or health_class
+# quota_exhausted for that provider. A money-wall entry mentioning provider(s)
+# is archived when ALL mentioned providers are no longer walled.
+SEAT_DIR="${FLEET_ESCALATION_DRAIN_SEAT_DIR:-$AGENT_STATE/lanes/seats}"
+CONDITION_DRAIN="${FLEET_ESCALATION_DRAIN_CONDITION_DRAIN:-1}"
+# Provider names to scan for in entry text (lowercase, pipe-delimited regex).
+# Sourced from the seat-file provider prefixes; extended with common aliases.
+PROVIDER_NAMES="${FLEET_ESCALATION_DRAIN_PROVIDER_NAMES:-openrouter|straitly|commandcode|bai|cline|poolside|groq|minimax|ollama|opencode|cursor|hetzner|mergegateway|orcarouter|xai-oauth|xkiro|zenmux}"
+# Money-wall keywords that mark an entry as a provider money wall (not just
+# any entry that happens to mention a provider name).
+MONEY_KEYWORDS="${FLEET_ESCALATION_DRAIN_MONEY_KEYWORDS:-402|quota_exhausted|credits exhausted|credit balance|insufficient_user_quota|out of credits|billing wall|quota wall|payment wall}"
 
 log() {
     printf '[%s] [fleet-escalation-drain] %s\n' \
@@ -117,6 +130,8 @@ fi
 
 nish_archived=0
 nish_bounded=0
+nish_condition_resolved=0
+nish_condition_live=0
 packet_deleted=0
 packet_skipped=0
 
@@ -390,6 +405,301 @@ drain_nish() {
 }
 
 # ---------------------------------------------------------------------------
+# 1b. NISH-ESCALATIONS.md condition-resolution pass (fleet-ops#3996)
+# ---------------------------------------------------------------------------
+#
+# The unconditional drain above archives RESOLVED / REVOKED / non-class noise
+# and delivered boundary entries past MAX_LINES. But money-wall entries —
+# both formal MONEY-BOUNDARY lines and prose `## date — title` sections the
+# senior auditor writes about provider 402s — stay forever because they
+# carry no RESOLVED marker even when the underlying provider condition has
+# resolved (credits topped up, quota reset, seat came back). A ledger with
+# no drain for these cannot distinguish live boundaries from closed ones.
+#
+# This pass:
+#   1. Builds a provider health map from seat files under SEAT_DIR: a
+#      provider is WALLED if ANY seat file for it has http_status 402 or
+#      health_class quota_exhausted; otherwise it is HEALTHY (or ABSENT —
+#      no seat file at all, treated as not-walled so a stale entry about a
+#      provider whose seats were deleted does not linger).
+#   2. Parses the live NISH-ESCALATIONS.md into blocks: the file-format
+#      header (kept verbatim), formal timestamp entries (kept — the
+#      unconditional drain already handled RESOLVED/REVOKED/non-class), and
+#      prose sections (`## ...` headers with their body until the next `## `
+#      or formal timestamp entry or EOF).
+#   3. For each prose section AND each formal MONEY-BOUNDARY entry: scan the
+#      block text for provider names (PROVIDER_NAMES) AND money-wall
+#      keywords (MONEY_KEYWORDS). If both are present, the block is a
+#      money-wall entry. If ALL providers it mentions are no longer walled,
+#      the condition has RESOLVED -> archive. If any mentioned provider is
+#      still walled, the condition is LIVE -> keep and count.
+#   4. Non-money-wall blocks (no provider + money keyword) are kept
+#      untouched — this pass never touches a credential, legal, or
+#      product-direction boundary.
+#
+# Conservative by design: a money-wall entry is archived ONLY when every
+# provider it names has zero walled seats. A single 402 seat for any
+# mentioned provider keeps the entry live. This never silently drops a
+# boundary — the proof is the seat health map, which is the same source
+# pick_seat and the comeback-release path use.
+#
+# Environment seams (tests):
+#   FLEET_ESCALATION_DRAIN_SEAT_DIR       seat files directory
+#   FLEET_ESCALATION_DRAIN_CONDITION_DRAIN  0 = skip this pass entirely
+#   FLEET_ESCALATION_DRAIN_PROVIDER_NAMES  provider regex
+#   FLEET_ESCALATION_DRAIN_MONEY_KEYWORDS  money-wall keyword regex
+
+build_provider_walled_map() {
+    # Prints lines: <provider>\t<walled:0|1> for each provider that has at
+    # least one seat file. A provider is walled if ANY seat has 402 or
+    # quota_exhausted. Absent providers are implicitly not-walled (caller
+    # treats a missing key as 0).
+    if [ ! -d "$SEAT_DIR" ]; then
+        return 0
+    fi
+    local f
+    for f in "$SEAT_DIR"/*.json; do
+        [ -e "$f" ] || continue
+        local base prov
+        base=$(basename "$f")
+        prov="${base%%__*}"
+        [ -n "$prov" ] || continue
+        # Skip spawn-bench files — they are not health probes.
+        [[ "$base" == *.spawn-bench.json ]] && continue
+        local status hclass
+        status=$(jq -r '.http_status // empty' "$f" 2>/dev/null || true)
+        hclass=$(jq -r '.health_class // empty' "$f" 2>/dev/null || true)
+        local walled=0
+        if [ "$status" = "402" ] || [ "$hclass" = "quota_exhausted" ]; then
+            walled=1
+        fi
+        # Aggregate: a provider is walled if ANY seat is walled.
+        printf '%s\t%s\n' "$prov" "$walled"
+    done | awk -F'\t' '{ if ($2==1) w[$1]=1; else if (!(($1) in w)) w[$1]=0 } END { for (k in w) printf "%s\t%d\n", k, w[k] }'
+}
+
+drain_nish_conditions() {
+    if [ "$CONDITION_DRAIN" != "1" ]; then
+        return 0
+    fi
+    if [ ! -f "$NISH" ]; then
+        return 0
+    fi
+
+    # Build the provider walled map into an associative array.
+    declare -A walled_map=()
+    local p w
+    while IFS=$'\t' read -r p w; do
+        [ -n "$p" ] || continue
+        walled_map["$p"]="$w"
+    done < <(build_provider_walled_map)
+
+    # Parse the live file into blocks. A block is either:
+    #   - the file-format header (first 6 lines — kept verbatim)
+    #   - a formal timestamp entry (starts with ISO timestamp — kept by this
+    #     pass unless it is a MONEY-BOUNDARY with resolved providers)
+    #   - a prose section (starts with `## ` — candidate for condition drain)
+    # We walk line by line, grouping into blocks, and classify each block.
+    mkdir -p "$ARCHIVE_DIR"
+    local stamp_day
+    stamp_day=$(date -u +%Y-%m-%d)
+    local archive_path="$ARCHIVE_DIR/$stamp_day.md"
+    local tmp_nish tmp_archive
+    tmp_nish=$(mktemp -p "$AGENT_STATE" .nish-cond.XXXXXX)
+    tmp_archive=$(mktemp -p "$AGENT_STATE" .nish-cond-arch.XXXXXX)
+
+    local -a kept_lines=()
+    local -a archive_lines=()
+    local -a current_block=()
+    local block_type=""   # header | formal | prose | other
+    local block_text=""
+    local line_ind=0
+
+    flush_block() {
+        if [ "${#current_block[@]}" -eq 0 ]; then
+            return
+        fi
+        case "$block_type" in
+            header|other)
+                local ln
+                for ln in "${current_block[@]}"; do kept_lines+=("$ln"); done
+                ;;
+            formal)
+                # Formal entries were already handled by the unconditional
+                # drain. But a MONEY-BOUNDARY formal entry whose providers
+                # have resolved is aged out here too (the unconditional drain
+                # only archives RESOLVED/REVOKED/non-class, not live
+                # MONEY-BOUNDARY entries with resolved conditions).
+                local is_money=0
+                if printf '%s' "$block_text" | grep -qiE "MONEY-BOUNDARY"; then
+                    is_money=1
+                fi
+                if [ "$is_money" = "1" ] && \
+                   printf '%s' "$block_text" | grep -qiE "($MONEY_KEYWORDS)" && \
+                   printf '%s' "$block_text" | grep -qiE "($PROVIDER_NAMES)"; then
+                    if _block_providers_resolved "$block_text"; then
+                        local ln
+                        for ln in "${current_block[@]}"; do archive_lines+=("$ln"); done
+                        nish_condition_resolved=$((nish_condition_resolved + 1))
+                    else
+                        local ln
+                        for ln in "${current_block[@]}"; do kept_lines+=("$ln"); done
+                        nish_condition_live=$((nish_condition_live + 1))
+                    fi
+                else
+                    local ln
+                    for ln in "${current_block[@]}"; do kept_lines+=("$ln"); done
+                fi
+                ;;
+            prose)
+                # Prose section: check if it is a money-wall entry with
+                # resolved providers.
+                if printf '%s' "$block_text" | grep -qiE "($MONEY_KEYWORDS)" && \
+                   printf '%s' "$block_text" | grep -qiE "($PROVIDER_NAMES)"; then
+                    if _block_providers_resolved "$block_text"; then
+                        local ln
+                        for ln in "${current_block[@]}"; do archive_lines+=("$ln"); done
+                        nish_condition_resolved=$((nish_condition_resolved + 1))
+                    else
+                        local ln
+                        for ln in "${current_block[@]}"; do kept_lines+=("$ln"); done
+                        nish_condition_live=$((nish_condition_live + 1))
+                    fi
+                else
+                    local ln
+                    for ln in "${current_block[@]}"; do kept_lines+=("$ln"); done
+                fi
+                ;;
+        esac
+        current_block=()
+        block_type=""
+        block_text=""
+    }
+
+    # Check if all providers mentioned in a block are no longer walled.
+    _block_providers_resolved() {
+        local text="$1"
+        local prov
+        # Extract provider names found in the text (lowercased).
+        local found
+        found=$(printf '%s' "$text" | tr '[:upper:]' '[:lower:]' | \
+                grep -oE "($PROVIDER_NAMES)" | sort -u)
+        [ -n "$found" ] || return 1  # no provider mentioned -> not a money-wall
+        local all_resolved=1
+        while IFS= read -r prov; do
+            [ -n "$prov" ] || continue
+            local pw="${walled_map[$prov]:-0}"
+            if [ "$pw" = "1" ]; then
+                all_resolved=0
+                break
+            fi
+        done <<< "$found"
+        [ "$all_resolved" = "1" ]
+    }
+
+    while IFS= read -r line || [ -n "$line" ]; do
+        line_ind=$((line_ind + 1))
+
+        # File-format header: first 6 lines kept verbatim.
+        if [ "$line_ind" -le 6 ]; then
+            if [ "$block_type" != "header" ] && [ "${#current_block[@]}" -gt 0 ]; then
+                flush_block
+            fi
+            block_type="header"
+            current_block+=("$line")
+            block_text="$block_text"$'\n'"$line"
+            continue
+        fi
+
+        # Prose section header: `## ...`
+        if [[ "$line" =~ ^##[[:space:]] ]]; then
+            if [ "${#current_block[@]}" -gt 0 ]; then
+                flush_block
+            fi
+            block_type="prose"
+            current_block=("$line")
+            block_text="$line"
+            continue
+        fi
+
+        # Formal timestamp entry: starts with ISO timestamp + space.
+        if [[ "$line" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}(:[0-9]{2}){1,2}Z[[:space:]] ]]; then
+            if [ "${#current_block[@]}" -gt 0 ]; then
+                flush_block
+            fi
+            block_type="formal"
+            current_block=("$line")
+            block_text="$line"
+            continue
+        fi
+
+        # Continuation line: belongs to the current block.
+        if [ "${#current_block[@]}" -gt 0 ]; then
+            current_block+=("$line")
+            block_text="$block_text"$'\n'"$line"
+        else
+            # Stray line before any block — keep verbatim.
+            if [ "$block_type" != "other" ] && [ "${#current_block[@]}" -gt 0 ]; then
+                flush_block
+            fi
+            block_type="other"
+            current_block=("$line")
+            block_text="$line"
+        fi
+    done < "$NISH"
+    if [ "${#current_block[@]}" -gt 0 ]; then
+        flush_block
+    fi
+
+    if [ "$nish_condition_resolved" -eq 0 ]; then
+        rm -f "$tmp_nish" "$tmp_archive"
+        if [ "$nish_condition_live" -gt 0 ]; then
+            log "condition-drain: $nish_condition_live live money-wall entries (no resolved conditions to archive)"
+        fi
+        return 0
+    fi
+
+    if [ "$DRY_RUN" = "1" ]; then
+        log "DRY: condition-drain would archive $nish_condition_resolved resolved money-wall entries ($nish_condition_live still live)"
+        rm -f "$tmp_nish" "$tmp_archive"
+        return 0
+    fi
+
+    local old_lines
+    old_lines=$(wc -l < "$NISH")
+
+    # Live file rewrite (kept only).
+    {
+        for ln in "${kept_lines[@]}"; do
+            printf '%s\n' "$ln"
+        done
+    } > "$tmp_nish"
+    mv "$tmp_nish" "$NISH"
+
+    # Archive append.
+    {
+        if [ ! -s "$archive_path" ]; then
+            printf '# NISH-ESCALATIONS archive — %s (UTC)\n' "$stamp_day"
+            printf '# Archived by fleet-escalation-drain condition-pass (fleet-ops#3996).\n'
+            printf '# Entries moved here are money-wall entries whose underlying\n'
+            printf '# provider condition resolved (no 402 / quota_exhausted seats).\n'
+            printf '# NEVER rotated; one file per UTC day.\n'
+            printf '\n'
+        fi
+        for ln in "${archive_lines[@]}"; do
+            printf '%s\n' "$ln"
+        done
+    } > "$tmp_archive"
+    cat "$tmp_archive" >> "$archive_path"
+    rm -f "$tmp_archive"
+
+    local new_lines
+    new_lines=$(wc -l < "$NISH")
+    log "condition-drain: resolved=$nish_condition_resolved live=$nish_condition_live live_lines=$new_lines (was $old_lines) archive=$archive_path"
+    return 0
+}
+
+# ---------------------------------------------------------------------------
 # 2. alert-repair packet drain
 # ---------------------------------------------------------------------------
 #
@@ -497,7 +807,8 @@ drain_packets() {
 }
 
 drain_nish
+drain_nish_conditions
 drain_packets
 
-log "summary: nish_archived=$nish_archived nish_bounded=$nish_bounded packet_deleted=$packet_deleted packet_skipped=$packet_skipped dry_run=$DRY_RUN"
+log "summary: nish_archived=$nish_archived nish_bounded=$nish_bounded nish_condition_resolved=$nish_condition_resolved nish_condition_live=$nish_condition_live packet_deleted=$packet_deleted packet_skipped=$packet_skipped dry_run=$DRY_RUN"
 exit 0

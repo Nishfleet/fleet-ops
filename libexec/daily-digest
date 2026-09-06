@@ -273,6 +273,54 @@ else:
 PY
 )"
 
+# --- Section 9: live escalations (fleet-ops#3996) ------------------------------
+# Surfaces the still-live boundary entries in NISH-ESCALATIONS.md so Nish
+# can see what needs his attention in the morning digest. The hourly drain
+# (fleet-escalation-drain) already archived resolved money-wall entries, so
+# whatever is in the live file is still live. Counts formal class-gated
+# entries (MONEY-BOUNDARY etc.) and prose sections (## date — title), and
+# lists the first line of each (truncated). Absent file -> graceful line.
+NISH_ESC="${FLEET_ESCALATION_NISH:-/home/nish/workspaces/agent-state/NISH-ESCALATIONS.md}"
+esc_line="$(NISH_ESC="$NISH_ESC" python3 <<'PY'
+import os, re, sys
+path = os.environ.get("NISH_ESC") or ""
+if not path or not os.path.isfile(path):
+    print("• No live escalations (ledger not found).")
+    raise SystemExit(0)
+lines = []
+try:
+    with open(path, encoding="utf-8", errors="replace") as f:
+        lines = f.readlines()
+except OSError:
+    print("• No live escalations (ledger unreadable).")
+    raise SystemExit(0)
+# Formal class-gated entries: lines starting with ISO timestamp + CLASS.
+class_re = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}(:\d{2}){1,2}Z\s+(MONEY-BOUNDARY|LEGAL-BOUNDARY|PRODUCT-DIRECTION|CUSTOMER-DATA|CREDENTIAL-BOUNDARY|ONE-SHOT-PUBLIC-ACTION)\b")
+# Prose sections: lines starting with `## `.
+prose_re = re.compile(r"^##\s+(.+)")
+entries = []
+for ln in lines:
+    m = class_re.match(ln)
+    if m:
+        # First 80 chars of the entry line (truncated for the digest).
+        text = ln.rstrip()[:80]
+        entries.append(text)
+        continue
+    m = prose_re.match(ln)
+    if m:
+        text = m.group(1).strip()[:80]
+        entries.append(text)
+if not entries:
+    print("• No live escalations — ledger is empty.")
+else:
+    print(f"• {len(entries)} live escalation(s) needing your attention:")
+    for e in entries[:8]:
+        print(f"  - {e}")
+    if len(entries) > 8:
+        print(f"  ... and {len(entries) - 8} more (see NISH-ESCALATIONS.md).")
+PY
+)"
+
 # --- Compose ------------------------------------------------------------------
 # Plain language. No jargon. Short. Header names what it is and when.
 # (datestr is 09:00 IST of the trigger day, or NOW for an ad-hoc run.)
@@ -290,6 +338,7 @@ $seat_line
 $quality_line
 $disk_line
 $spend_line
+$esc_line
 
 Reply to this message if you want anything investigated. Otherwise, on to the day."
 

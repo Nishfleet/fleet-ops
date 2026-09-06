@@ -121,4 +121,49 @@ grep -qF "sum by (provider)" "$scratch/query1.txt" \
   || fail "case 3: query is not a per-provider sum: $(cat "$scratch/query1.txt")"
 ok "case 3: PromQL is the day-bucketed per-provider sum"
 
-echo "all daily-digest spend cases passed"
+# --- case 4: live escalations section (fleet-ops#3996) -----------------------
+# The digest must surface still-live boundary entries from NISH-ESCALATIONS.md.
+# Uses FLEET_ESCALATION_NISH as a test seam to point at a fixture file.
+mkdir -p "$scratch/esc"
+cat >"$scratch/esc/NISH-ESCALATIONS.md" <<'MDEOF'
+# Nish escalations
+
+One line per escalation.
+Three lines of header.
+Four lines of header.
+
+Format: entry line.
+2026-09-06T14:35Z MONEY-BOUNDARY hash=openrouter-402 reason=ladder-walled:402:openrouter quota_exhausted
+  SUMMARY: openrouter credits exhausted, 402 across all seats.
+## 2026-09-06 - AUTO-REVERT workflow bug: needs Workflows-scope token
+- The nishfleet-worker App token does not have Workflows scope.
+MDEOF
+
+env SPEND_RESPONSE="$scratch/spend.json" \
+    CURL_QUERY_CAPTURE="$scratch/query4.txt" \
+    DAILY_DIGEST_CAPTURE="$scratch/body4.txt" \
+    HERMES_BIN="$scratch/bin/hermes" \
+    FLEET_ESCALATION_NISH="$scratch/esc/NISH-ESCALATIONS.md" \
+    bash "$digest" >/dev/null 2>&1
+[[ -f "$scratch/body4.txt" ]] || fail "case 4: digest did not invoke the hermes stub"
+grep -qF "live escalation(s) needing your attention" "$scratch/body4.txt" \
+  || fail "case 4: live escalations header missing: $(grep -i escalation "$scratch/body4.txt" || echo none)"
+grep -qF "MONEY-BOUNDARY hash=openrouter-402" "$scratch/body4.txt" \
+  || fail "case 4: formal MONEY-BOUNDARY entry not surfaced"
+grep -qF "AUTO-REVERT workflow bug" "$scratch/body4.txt" \
+  || fail "case 4: prose section not surfaced"
+ok "case 4: live escalations section surfaces formal + prose entries"
+
+# --- case 5: graceful fallback when ledger is missing ------------------------
+env SPEND_RESPONSE="$scratch/spend.json" \
+    CURL_QUERY_CAPTURE="$scratch/query5.txt" \
+    DAILY_DIGEST_CAPTURE="$scratch/body5.txt" \
+    HERMES_BIN="$scratch/bin/hermes" \
+    FLEET_ESCALATION_NISH="$scratch/esc/DOES-NOT-EXIST.md" \
+    bash "$digest" >/dev/null 2>&1
+[[ -f "$scratch/body5.txt" ]] || fail "case 5: digest did not invoke the hermes stub"
+grep -qF "No live escalations" "$scratch/body5.txt" \
+  || fail "case 5: missing-ledger fallback missing: $(grep -i escalation "$scratch/body5.txt" || echo none)"
+ok "case 5: missing ledger -> graceful fallback"
+
+echo "all daily-digest cases passed"
