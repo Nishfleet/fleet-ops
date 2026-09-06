@@ -216,7 +216,7 @@ if [[ "$mode" == "all" || "$mode" == "prs" ]]; then
                 [[ -n "$repo" ]] || continue
                 set +e
                 chunk=$("$GH" pr list -R "$repo" --state open --limit 100 \
-                    --json number,title,url,createdAt,headRefName,isDraft,author 2>"$scratch/gh.err")
+                    --json number,title,url,createdAt,headRefName,isDraft,author,body 2>"$scratch/gh.err")
                 gh_rc=$?
                 set -e
                 if [[ "$gh_rc" -ne 0 ]] || ! jq -e 'type == "array"' >/dev/null 2>&1 <<<"$chunk"; then
@@ -569,10 +569,21 @@ for row in "${pr_findings[@]:-}"; do
     url=$(jq -r '.url // ""' <<<"$row")
     age=$(jq -r '.age_hours // "?"' <<<"$row")
     head=$(jq -r '.headRefName // ""' <<<"$row")
-    loud "LOOSE-ENDS-STALE-PR" "slug=$slug age_h=$age head=$head url=$url"
-    payload=$(printf 'age_h=%s headRef=%s url=%s' "$age" "$head" "$url")
-    file_one "stale-worker-pr" "$slug" "$payload" \
-        "open worker PR older than the idle window without auto-merge; arm auto-merge or finish the work"
+    kind=$(jq -r '.kind // "stale-worker-pr"' <<<"$row")
+    if [[ "$kind" == "review-skipped-pr" ]]; then
+        # fleet-ops#3709: a product PR opened without the reviewer round
+        # (no capable senior seat) and without auto-merge. Surface it as its
+        # own class so a senior reviews it before arming — never silent.
+        loud "LOOSE-ENDS-REVIEW-SKIPPED" "slug=$slug age_h=$age head=$head url=$url"
+        payload=$(printf 'age_h=%s headRef=%s url=%s' "$age" "$head" "$url")
+        file_one "$kind" "$slug" "$payload" \
+            "product PR opened without the reviewer round (no capable senior seat) and without auto-merge; a senior must review before arming"
+    else
+        loud "LOOSE-ENDS-STALE-PR" "slug=$slug age_h=$age head=$head url=$url"
+        payload=$(printf 'age_h=%s headRef=%s url=%s' "$age" "$head" "$url")
+        file_one "stale-worker-pr" "$slug" "$payload" \
+            "open worker PR older than the idle window without auto-merge; arm auto-merge or finish the work"
+    fi
 done
 
 for row in "${wt_findings[@]:-}"; do

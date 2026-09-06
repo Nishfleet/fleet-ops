@@ -33,7 +33,7 @@ Steps:
 5. Implement the smallest durable fix. Then run the Execution IS the review inner loop to green, then repo tests/sgscan.
 6. Commit; `git push origin claim/issue-<N>`.
 7. `gh pr create ... Verification: ... run-proof: ... research: ... help-first: ... Closes #<N>`
-8. Arm: `gh pr merge <PR> --auto --squash -R Nishfleet/<repo>`
+8. Arm: `gh pr merge <PR> --auto --squash -R Nishfleet/<repo>`. If the reviewer round was skipped because no senior seat was usable (`bin/fleet-review-arm-check` exits 1), do NOT arm — open the PR without auto-merge and add the literal line `review: skipped, no capable seat` to the PR body so the loose-ends canary surfaces it.
 9. Print exactly one final line: the PR URL. Exit 0.
 
 D1 schema rule (expand/contract) — applies whenever your diff touches `migrations/**`:

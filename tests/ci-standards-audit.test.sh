@@ -420,6 +420,13 @@ bash "$here/sgscan.test.sh"
 bash "$here/fleet-loose-ends-canary.test.sh"
 bash "$here/pi-issue-run-hang-stall-bench.test.sh"
 
+# fleet-ops#3709 (part 2/2 of #3264): reviewer-round fallback — when no
+# senior seat is usable, the product worker opens the PR WITHOUT the
+# auto-merge arm and marks the body `review: skipped, no capable seat`
+# so the loose-ends canary surfaces it. Hosted here so P14 runs it
+# without a workflow-file edit (workers cannot push .github/workflows/**).
+bash "$here/fleet-review-arm-check.test.sh"
+
 # fleet-ops#3263 (PR #3304): devin/cursor provider extension + spawnSync
 # timeout gate. Hosted here so P14 runs it without a workflow-file edit
 # (workers cannot push .github/workflows/**).

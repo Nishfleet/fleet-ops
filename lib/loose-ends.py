@@ -189,6 +189,40 @@ def classify_prs(
         if not _branch_is_worker(head_ref, author_login):
             skipped_human += 1
             continue
+        # fleet-ops#3709: a worker PR whose body carries the literal line
+        # `review: skipped, no capable seat` was opened WITHOUT the auto-merge
+        # arm because no senior seat was usable. It is an immediate loose end
+        # (unreviewed + unarmed product PR) — surface it now, regardless of
+        # age, so it is never skipped silently. The body line is the marker
+        # the worker writes when it skips the reviewer round.
+        body = str(pr.get("body") or "")
+        if "review: skipped, no capable seat" in body:
+            number = pr.get("number")
+            repo = str(pr.get("repo") or "")
+            url = str(pr.get("url") or "")
+            slug = f"{repo}#{number}" if repo and number is not None else str(number)
+            age_hours = None
+            created_raw = str(pr.get("createdAt") or "").strip()
+            if created_raw.endswith("Z"):
+                created_raw = created_raw[:-1] + "+00:00"
+            try:
+                age_hours = round((now - datetime.fromisoformat(created_raw).timestamp()) / 3600.0, 1)
+            except ValueError:
+                pass
+            findings.append(
+                {
+                    "slug": slug,
+                    "repo": repo,
+                    "number": number,
+                    "url": url,
+                    "headRefName": head_ref,
+                    "title": str(pr.get("title") or ""),
+                    "createdAt": pr.get("createdAt"),
+                    "age_hours": age_hours,
+                    "kind": "review-skipped-pr",
+                }
+            )
+            continue
         created = str(pr.get("createdAt") or "").strip()
         if not created:
             skipped_fresh += 1

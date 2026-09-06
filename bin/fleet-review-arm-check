@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# fleet-review-arm-check — reviewer-round arm gate (fleet-ops#3709).
+#
+# The reviewer round on a product PR must run on a senior seat
+# (senior_seats_in_order from config/seat-caps.json, fleet-ops#3121). When
+# no entry of that ladder is usable, the worker must NOT arm the PR
+# unreviewed and must NOT skip silently: it opens the PR WITHOUT
+# `gh pr merge --auto` and marks the body with the literal line
+# `review: skipped, no capable seat` so the loose-ends canary surfaces it.
+#
+# Exit 0: a senior seat is usable — the reviewer round can run, arming
+#         is allowed.
+# Exit 1: no entry of senior_seats_in_order is usable — open the PR
+#         without the arm and add the body line above.
+#
+# Reuses lib/seat-lib.sh (the routing authority) — no new mechanism, no
+# new organ. Not a scheduled unit; a worker-facing gate only.
+
+set -euo pipefail
+
+here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+
+usage() {
+    cat >&2 <<'USAGE'
+usage: fleet-review-arm-check [--help]
+
+Exit 0 when a senior seat (senior_seats_in_order) is usable — arming the
+product PR is allowed. Exit 1 when no senior seat is usable — open the PR
+WITHOUT `gh pr merge --auto` and mark the body `review: skipped, no capable
+seat` so the loose-ends canary surfaces it.
+USAGE
+    exit 2
+}
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+    usage
+fi
+
+# Resolve the seat-lib the same way the fleet does: the installed copy
+# first (the live routing authority), then the repo copy.
+SEAT_LIB="${PI_PACKET_SEAT_LIB:-}"
+if [[ -z "$SEAT_LIB" || ! -f "$SEAT_LIB" ]]; then
+    SEAT_LIB="$here/../lib/seat-lib.sh"
+fi
+if [[ ! -f "$SEAT_LIB" ]]; then
+    echo "fleet-review-arm-check: seat-lib missing at $SEAT_LIB" >&2
+    exit 2
+fi
+
+# shellcheck source=/dev/null
+source "$SEAT_LIB"
+load_seat_caps >/dev/null 2>&1 || true
+
+if senior_seat_available; then
+    exit 0
+fi
+exit 1
