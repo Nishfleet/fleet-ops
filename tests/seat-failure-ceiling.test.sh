@@ -323,4 +323,94 @@ if ! seat_usable "$p" "$m"; then
 fi
 ok "6f: healthy ledger is usable regardless of count (recovered seat re-eligible)"
 
-ok "seat failure ceiling: parks past SEAT_FAILURE_CEILING consecutive failures (default 20 since fleet-ops#2594, this test pins 60 for isolation), emits one metric, fail-opens on recovery"
+# --- (7) fleet-ops#3586 read-side escalation for rate_limited seats --------
+# The live 2026-09-05 snapshot that filed the issue: three xkiro seats stuck
+# at 48-63 consecutive http 429 (rate_limited) with usable_at ~15min out,
+# re-probed and re-walled every cycle so the count kept climbing and never
+# escalated. A 429 that has not cleared in 20+ re-wall cycles is not a
+# transient rate limit — it is an unusable seat. seat_usable now feeds
+# rate_limited through the SAME read-side park fence as transient_fault
+# (fleet-ops#2288): past SEAT_FAILURE_CEILING consecutive failures it is held
+# behind the long wall anchored at observed_at instead of the endless
+# 15-min re-wall loop.
+# This section proves the escalation FIRES on the three live seat ids from
+# the snapshot, at the production threshold the issue quotes (N>=20).
+# Cases:
+#   7a xkiro/deepseek-v4-flash c=63 rate_limited, fresh -> parked
+#   7b xkiro/deepseek-v4-pro     c=52 rate_limited, fresh -> parked
+#   7c xkiro/minimax-m3:free     c=48 rate_limited, fresh -> parked
+#   7d below the ceiling (c=19, N<20) -> NOT parked: the flat usable_at
+#      window is still honoured (a <20-count 429 remains a transient rate
+#      limit), never re-offered ahead of its own reset.
+# Isolate this section at the production default the issue quotes (N>=20);
+# the test body above pins 60 for its write-side replay isolation.
+export SEAT_FAILURE_CEILING=20
+# Fresh observed marker helper: the live shape carried usable_at ~15min out
+# AND a climbing count, so seed the ledgers with the reset window too.
+seed_rate_limited_ledger() {
+    local p="$1" m="$2" count="$3"
+    local lf use
+    lf=$(ledger_file "$p" "$m")
+    use=$(date -u -d "@$(( $(date -u +%s) + 900 ))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
+    local now_utc
+    now_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    jq -nc \
+        --arg provider "$p" --arg model "$m" --arg observed "$now_utc" --arg use "$use" \
+        --argjson count "$count" \
+        '{provider:$provider,model:$model,http_status:429,retry_after:900,
+          health_class:"rate_limited",seat_dead:false,poison_ladder:false,retryable:true,
+          observed_at:$observed,usable_at:$use,consecutive_failure_count:$count}' \
+        >"$lf" 2>/dev/null || fail "seed_rate_limited_ledger jq failed"
+}
+# 7a: xkiro/deepseek-v4-flash c=63 — the worst seat in the snapshot.
+p="xkiro"; m="deepseek-v4-flash"
+lf=$(ledger_file "$p" "$m"); mf=$(marker_file "$p" "$m")
+rm -f "$lf" "$mf"
+seed_rate_limited_ledger "$p" "$m" 63
+if seat_usable "$p" "$m"; then
+    fail "7a: seat_usable returned USABLE for xkiro/deepseek-v4-flash c=63 rate_limited (escalation to long wall missing)"
+fi
+grep -q "UNUSABLE (rate_limited count=63 >= 20, parked until" "$PI_PACKET_STATE/watch.log" \
+    || fail "7a: must log the long-wall park for xkiro/deepseek-v4-flash c=63 (got: $(grep -c 'rate_limited' "$PI_PACKET_STATE/watch.log" 2>/dev/null || echo 0) rate_limited lines)"
+ok "7a: xkiro/deepseek-v4-flash c=63 rate_limited -> parked behind the long wall (fires)"
+# 7b: xkiro/deepseek-v4-pro c=52.
+p="xkiro"; m="deepseek-v4-pro"
+lf=$(ledger_file "$p" "$m"); mf=$(marker_file "$p" "$m")
+rm -f "$lf" "$mf"
+seed_rate_limited_ledger "$p" "$m" 52
+if seat_usable "$p" "$m"; then
+    fail "7b: seat_usable returned USABLE for xkiro/deepseek-v4-pro c=52 rate_limited (escalation missing)"
+fi
+grep -q "UNUSABLE (rate_limited count=52 >= 20, parked until" "$PI_PACKET_STATE/watch.log" \
+    || fail "7b: must log the long-wall park for xkiro/deepseek-v4-pro c=52"
+ok "7b: xkiro/deepseek-v4-pro c=52 rate_limited -> parked (fires)"
+# 7c: xkiro/minimax-m3:free c=48.
+p="xkiro"; m="minimax-m3:free"
+lf=$(ledger_file "$p" "$m"); mf=$(marker_file "$p" "$m")
+rm -f "$lf" "$mf"
+seed_rate_limited_ledger "$p" "$m" 48
+if seat_usable "$p" "$m"; then
+    fail "7c: seat_usable returned USABLE for xkiro/minimax-m3:free c=48 rate_limited (escalation missing)"
+fi
+grep -q "UNUSABLE (rate_limited count=48 >= 20, parked until" "$PI_PACKET_STATE/watch.log" \
+    || fail "7c: must log the long-wall park for xkiro/minimax-m3:free c=48"
+ok "7c: xkiro/minimax-m3:free c=48 rate_limited -> parked (fires)"
+# 7d: below N>=20 (c=19) is NOT parked — the flat usable_at window is still
+# honoured by the rate_limited branch (a sub-ceiling 429 is still transient),
+# so the escalation is scoped to chronically-failing seats only.
+p="xkiro"; m="deepseek-v4-flash"
+lf=$(ledger_file "$p" "$m"); mf=$(marker_file "$p" "$m")
+rm -f "$lf" "$mf"
+seed_rate_limited_ledger "$p" "$m" 19
+if seat_usable "$p" "$m"; then
+    fail "7d: below-ceiling rate_limited c=19 must remain excluded by the flat usable_at window, not parked (park branch leaked below N>=20)"
+fi
+grep -q "UNUSABLE (rate_limited until" "$PI_PACKET_STATE/watch.log" \
+    || fail "7d: below-ceiling rate_limited seat must hit the flat usable_at branch (rate_limited until ...), not the park branch"
+if grep -q "rate_limited count=19 >= 20, parked until" "$PI_PACKET_STATE/watch.log"; then
+    fail "7d: park branch fired below the N>=20 ceiling — escalation must not trigger on c=19"
+fi
+ok "7d: below-ceiling rate_limited c=19 stays on the flat usable_at window (no escalation below N>=20)"
+export SEAT_FAILURE_CEILING=60
+
+ok "seat failure ceiling: parks past SEAT_FAILURE_CEILING consecutive failures (default 20 since fleet-ops#2594, this test pins 60 for isolation), emits one metric, fail-opens on recovery, fleet-ops#3586 rate_limited escalation proves on the three live xkiro seats"

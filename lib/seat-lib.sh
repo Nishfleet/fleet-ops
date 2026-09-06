@@ -2186,6 +2186,10 @@ _seat_has_recent_corpse_retired() {
 #   - rate_limited: excluded while the marker is FRESH (observed_at <
 #     RATE_LIMIT_FRESH_SECS=30min) and usable_at is in the future; once the
 #     marker ages past 30min the seat is RETRIED (rate limit may have reset).
+#     fleet-ops#3586: past SEAT_FAILURE_CEILING consecutive 429s (the live
+#     xkiro c=48-63 shape) a rate_limited seat is NOT a transient rate limit
+#     — it is unusable — and the read-side park fence holds it behind the
+#     long wall instead of the endless 15-min re-wall loop.
 #   - transient_fault past SEAT_FAILURE_CEILING consecutive failures -> unusable
 #     (parked behind the long wall until observed_at + SEAT_PARK_WALL_S, then
 #     fail-opens — the fleet-ops#2288 read-side fence for extension-written
@@ -2396,14 +2400,23 @@ seat_usable() {
     # fleet-ops#3727: empty runs use a lower EMPTY_RUN_FAILURE_CEILING (default
     # 3 per fleet-ops#3760) so a chronic no-op'er parks on the read side at the
     # same threshold the writer parks at, not the generic 20.
+    # fleet-ops#3586: rate_limited is the SAME flat/re-walled class as
+    # transient_fault — a seat that keeps answering http 429 with a short
+    # usable_at (~15min) gets re-walled every cycle and its count climbs
+    # (live: xkiro/deepseek-v4-flash c=63, deepseek-v4-pro c=52,
+    # minimax-m3:free c=48 all 429 rate_limited). A seat that has failed
+    # N>=SEAT_FAILURE_CEILING times consecutively is not rate-limited (a
+    # 1-15min wall would have cleared long ago), it is unusable. So the
+    # read-side park fence below covers rate_limited too: past the ceiling
+    # it is held behind the long wall instead of the flat re-offer loop.
     local _park_ceil="${SEAT_FAILURE_CEILING:-20}"
     [[ "$fail_mode" == "empty_run" ]] && _park_ceil="${EMPTY_RUN_FAILURE_CEILING:-3}"
-    if [[ "$hc" == "transient_fault" && -n "$observed" ]] && _seat_parked_by_ceiling "$fail_count" "$_park_ceil"; then
+    if [[ ( "$hc" == "transient_fault" || "$hc" == "rate_limited" ) && -n "$observed" ]] && _seat_parked_by_ceiling "$fail_count" "$_park_ceil"; then
         local park_end_s park_end_iso
         park_end_s=$(($(date -u -d "$observed" +%s 2>/dev/null || echo 0) + SEAT_PARK_WALL_S))
         park_end_iso=$(date -u -d "@$park_end_s" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$observed")
         if _seat_in_future "$park_end_iso"; then
-            (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE (transient_fault count=$fail_count >= ${_park_ceil}, parked until $park_end_iso — long wall, not flat re-offer)"
+            (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE ($hc count=$fail_count >= ${_park_ceil}, parked until $park_end_iso — long wall, not flat re-offer)"
             return 1
         fi
     fi
