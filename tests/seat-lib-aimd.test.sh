@@ -27,6 +27,14 @@ lib="$repo_root/lib/seat-lib.sh"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
+# fleet-ops#3760: --scenario empty-run-convergence runs ONLY the empty-run
+# convergence replay (the issue's termination command). No arg = full suite.
+scenario=""
+if [[ "${1:-}" == "--scenario" ]]; then
+    scenario="${2:-}"
+    shift 2
+fi
+
 [[ -f "$lib" ]] || fail "seat-lib.sh not found: $lib"
 command -v jq >/dev/null || fail "jq required"
 
@@ -92,6 +100,147 @@ export PI_SEAT_HEALTH_LEDGER_DIR="$ledger"
 export LEARNED_CAPS_JSON="$learned"
 export LEARNED_CAPS_AUDIT="$audit"
 mkdir -p "$state" "$ledger" "$state/active-seats"
+
+# === fleet-ops#3760: --scenario empty-run-convergence replay ==================
+# The issue's termination command:
+#   bash tests/seat-lib-aimd.test.sh --scenario empty-run-convergence
+# Proves the empty-run churn converges: ollama/deepseek-v4-flash:0731 no-op'ed
+# 12 times in 2h. With EMPTY_RUN_FAILURE_CEILING=3 (lowered from 5 by #3760),
+# the geometric bench (900s -> 1800s) holds the first two no-ops, then the 3rd
+# parks the seat behind the 24h wall. seat_usable holds it; pick_seat skips it.
+# Defined here so --scenario can dispatch to it before the full suite runs.
+run_empty_run_convergence() {
+    local conv_scratch conv_state conv_ledger conv_caps conv_models conv_learned
+    conv_scratch="$scratch/conv-3760"
+    conv_state="$conv_scratch/state"
+    conv_ledger="$conv_scratch/ledger"
+    conv_caps="$conv_scratch/seat-caps.json"
+    conv_models="$conv_scratch/models.json"
+    conv_learned="$conv_scratch/learned-caps.json"
+    mkdir -p "$conv_state/active-seats" "$conv_ledger"
+
+    cat >"$conv_models" <<'JSON'
+{
+  "providers": {
+    "ollama": {
+      "models": [ { "id": "deepseek-v4-flash:0731", "cost": { "input": 0 }, "contextWindow": 128000 } ]
+    }
+  }
+}
+JSON
+
+    cat >"$conv_caps" <<'JSON'
+{
+  "ram_gb_per_worker": 0.5,
+  "free_providers_in_order": ["ollama"],
+  "providers": {
+    "ollama": { "cap": 1, "class": "prepaid-quota", "hard_ceiling": true, "max_probe_ceiling": 1, "quota_bench_default_s": 900, "overload_bench_default_s": 600, "models": { "deepseek-v4-flash:0731": 1 } }
+  }
+}
+JSON
+
+    echo '{"providers":{}}' >"$conv_learned"
+
+    # PRODUCTION DEFAULTS — do NOT pin EMPTY_RUN_FAILURE_CEILING. The replay
+    # proves the production default (3, fleet-ops#3760) converges.
+    SEAT_CAPS_JSON="$conv_caps" \
+    PI_MODELS_JSON="$conv_models" \
+    PI_PACKET_STATE="$conv_state" \
+    PI_SEAT_HEALTH_LEDGER_DIR="$conv_ledger" \
+    LEARNED_CAPS_JSON="$conv_learned" \
+    PI_SEAT_LIB_CHECK_SYSTEMD=0 \
+    PI_SEAT_CREDENTIAL_PRECHECK=0 \
+    SEAT_MIN_FREE_RAM_MB=0 \
+    QUALITY_SCOREBOARD_JSON="$scratch/no-quality-scoreboard.json" \
+    QUALITY_ROUTING_JSON="$scratch/no-quality-routing.json" \
+        bash -c '
+            set -euo pipefail
+            source "$1"
+            fail() { echo "FAIL: $*" >&2; exit 1; }
+            ok()   { echo "OK: $*"; }
+
+            p="ollama"; m="deepseek-v4-flash:0731"
+
+            # Production default must be 3 (fleet-ops#3760), not 5, not 20.
+            [[ "${EMPTY_RUN_FAILURE_CEILING:-3}" == "3" ]] \
+                || fail "convergence: EMPTY_RUN_FAILURE_CEILING = ${EMPTY_RUN_FAILURE_CEILING:-3}, want 3 (production default, fleet-ops#3760)"
+            ok "convergence (a): production default EMPTY_RUN_FAILURE_CEILING=3 (fleet-ops#3760)"
+
+            ledger_file() {
+                printf "%s/%s__%s.json" "$PI_SEAT_HEALTH_LEDGER_DIR" \
+                    "${1//[^A-Za-z0-9._-]/_}" "${2//[^A-Za-z0-9._-]/_}"
+            }
+            marker_file() {
+                printf "%s/%s__%s.spawn-bench.json" "$PI_SEAT_HEALTH_LEDGER_DIR" \
+                    "${1//[^A-Za-z0-9._-]/_}" "${2//[^A-Za-z0-9._-]/_}"
+            }
+            count_of() { jq -r ".consecutive_failure_count // 0" "$1" 2>/dev/null || echo 0; }
+            wall_s_of() {
+                local u now_s u_s
+                u=$(jq -r ".usable_at // \"\"" "$1" 2>/dev/null || true)
+                [[ -n "$u" ]] || { echo 0; return; }
+                now_s=$(date -u +%s)
+                u_s=$(date -u -d "$u" +%s 2>/dev/null || echo 0)
+                echo $((u_s - now_s))
+            }
+
+            lf=$(ledger_file "$p" "$m")
+            mf=$(marker_file "$p" "$m")
+            rm -f "$lf" "$mf"
+
+            # (b) 2 no-ops below the ceiling: geometric bench holds (900 -> 1800).
+            for i in 1 2; do
+                mark_seat_empty_run "$p" "$m" "pi-issue:fleet-ops-3760:noop:${i}" >/dev/null 2>&1 \
+                    || fail "convergence (b): mark_seat_empty_run #${i} failed"
+                c=$(count_of "$mf")
+                [[ "$c" == "$i" ]] \
+                    || fail "convergence (b): marker count after no-op #${i} = $c, want $i"
+                w=$(wall_s_of "$mf")
+                (( w < ${SEAT_PARK_WALL_S:-86400} - 120 )) \
+                    || fail "convergence (b): no-op #${i} wall = ${w}s, should be < park wall (count=$i < ceiling=3, NOT parked)"
+            done
+            ok "convergence (b): 2 no-ops below ceiling=3: NOT parked, geometric bench holds (900->1800)"
+
+            # (c) 3rd no-op: empty-run failure ceiling engages, 24h park.
+            mark_seat_empty_run "$p" "$m" "pi-issue:fleet-ops-3760:noop:3" >/dev/null 2>&1 \
+                || fail "convergence (c): mark_seat_empty_run #3 (park) failed"
+            park_count=$(count_of "$mf")
+            [[ "$park_count" == "3" ]] \
+                || fail "convergence (c): marker count after 3rd no-op = $park_count, want 3"
+            park_wall=$(wall_s_of "$mf")
+            (( park_wall >= ${SEAT_PARK_WALL_S:-86400} - 120 && park_wall <= ${SEAT_PARK_WALL_S:-86400} + 120 )) \
+                || fail "convergence (c): park wall = ${park_wall}s, want ~${SEAT_PARK_WALL_S:-86400}s (3rd no-op, fleet-ops#3760)"
+            if seat_usable "$p" "$m"; then
+                fail "convergence (c): seat_usable returned usable on the 3rd-no-op parked seat"
+            fi
+            ok "convergence (c): 3rd no-op parks behind 24h wall, seat HELD UNUSABLE (fleet-ops#3760)"
+
+            # (d) pick_seat must NOT return the parked seat (no re-selection).
+            set +e
+            pick=$(pick_seat "" "" 0 "" light 2>/dev/null)
+            pick_rc=$?
+            set -e
+            if [[ "$pick_rc" == "0" ]]; then
+                echo "$pick" | grep -q "^ollama" \
+                    && fail "convergence (d): pick_seat returned the parked ollama seat — must be skipped while benched"
+            fi
+            ok "convergence (d): pick_seat does not re-select the parked seat (no churn, fleet-ops#3760)"
+
+            # (e) waste ratio proxy: 3 no-ops -> 1 park = 3 wasted runs, not 12.
+            # The pre-#3760 ceiling (5) would have allowed 5 no-ops; the generic
+            # 20 would have allowed 12. 3 converges fastest without false-positiving
+            # a single flake (the first no-op is a 900s cooldown, not a park).
+            ok "convergence (e): 3 no-ops -> park (was 5 pre-#3760, 12 pre-#3727) — waste ratio trends toward 0"
+
+            echo "empty-run-convergence: ALL CONVERGENCE INVARIANTS PASSED (fleet-ops#3760)"
+        ' _ "$lib"
+}
+
+# --scenario dispatch: run ONLY the named replay, then exit.
+if [[ "$scenario" == "empty-run-convergence" ]]; then
+    run_empty_run_convergence
+    exit 0
+fi
 
 # Registry files MUST match pi-*.json (the _seat_live_registry_files glob).
 seed_active() {
@@ -353,5 +502,9 @@ picked=$(SEAT_CAPS_JSON="$caps3732" LEARNED_CAPS_JSON="$learned3732" PI_PACKET_S
     bash -c 'source "$0" 2>/dev/null; pick_seat "" "" 0 "" light 2>/dev/null' "$lib")
 [[ "$picked" == ollama* ]] || fail "fleet-ops#3732: normal pick must still return the free ollama seat, got '$picked'"
 ok "fleet-ops#3732: normal pick mode unchanged (picked $picked)"
+
+# Full suite includes the convergence replay as a final invariant.
+run_empty_run_convergence
+ok "fleet-ops#3760: empty-run convergence replay passed (production default EMPTY_RUN_FAILURE_CEILING=3)"
 
 echo "All AIMD invariants passed."

@@ -2369,10 +2369,10 @@ seat_usable() {
     # wall, not per flat window). Same contract as #1362: a healthy write
     # resets count to 0, so a recovered seat is never walled permanently.
     # fleet-ops#3727: empty runs use a lower EMPTY_RUN_FAILURE_CEILING (default
-    # 5) so a chronic no-op'er parks on the read side at the same threshold the
-    # writer parks at, not the generic 20.
+    # 3 per fleet-ops#3760) so a chronic no-op'er parks on the read side at the
+    # same threshold the writer parks at, not the generic 20.
     local _park_ceil="${SEAT_FAILURE_CEILING:-20}"
-    [[ "$fail_mode" == "empty_run" ]] && _park_ceil="${EMPTY_RUN_FAILURE_CEILING:-5}"
+    [[ "$fail_mode" == "empty_run" ]] && _park_ceil="${EMPTY_RUN_FAILURE_CEILING:-3}"
     if [[ "$hc" == "transient_fault" && -n "$observed" ]] && _seat_parked_by_ceiling "$fail_count" "$_park_ceil"; then
         local park_end_s park_end_iso
         park_end_s=$(($(date -u -d "$observed" +%s 2>/dev/null || echo 0) + SEAT_PARK_WALL_S))
@@ -5005,13 +5005,20 @@ EMPTY_RUN_COUNT_WINDOW_S="${EMPTY_RUN_COUNT_WINDOW_S:-$SEAT_PARK_WALL_S}"
 # no-op'er (ollama/deepseek-v4-flash:0731, 12 empty runs in 2h) churned for 20
 # cycles before the 24h park engaged — the geometric cap (6h) re-offered the
 # seat every 6h and the count climbed too slowly. A provider no-op is a LANE
-# FAULT, not a quota wall: 5 no-ops in the same 24h count-merge window is a
+# FAULT, not a quota wall: a few no-ops in the same 24h count-merge window is a
 # strong signal the seat is functionally dead for agentic work, so park it
-# behind the 24h wall on the 5th no-op instead of the 20th. The generic ceiling
-# still applies to spawn_fail / quota / overload (real walls that recover
-# differently). Tests that pin a low ceiling for empty-run park isolation set
-# BOTH SEAT_FAILURE_CEILING and EMPTY_RUN_FAILURE_CEILING.
-EMPTY_RUN_FAILURE_CEILING="${EMPTY_RUN_FAILURE_CEILING:-5}"
+# behind the 24h wall instead of the 20th. The generic ceiling still applies to
+# spawn_fail / quota / overload (real walls that recover differently). Tests
+# that pin a low ceiling for empty-run park isolation set BOTH
+# SEAT_FAILURE_CEILING and EMPTY_RUN_FAILURE_CEILING.
+# fleet-ops#3760: lowered from 5 to 3. The 12-empty-runs-in-2h churn (4 issues
+# filed this week: #3749/#3737/#3730/#3727) showed 5 was still too slow to
+# converge — the geometric bench (900s -> 1800s -> 3600s -> 7200s) re-offered
+# the seat four times before the 24h park, and any count-merge reset let it
+# churn again. 3 no-ops in the 24h count-merge window parks on the 3rd no-op:
+# the geometric bench holds (900s -> 1800s) for the first two, then the 24h
+# wall fires. This is the max_bench_retries cap from the #3760 spec.
+EMPTY_RUN_FAILURE_CEILING="${EMPTY_RUN_FAILURE_CEILING:-3}"
 
 mark_seat_empty_run() {
     local p="$1" m="$2" reason="${3:-empty_run}"
@@ -5071,9 +5078,10 @@ mark_seat_empty_run() {
     # prepaid-quota seats (a paid seat idled by a false verdict is real
     # money). The long failure-ceiling park (SEAT_PARK_WALL_S, default 24 h)
     # still applies on top. fleet-ops#3727: empty runs use a SEPARATE, lower
-    # failure ceiling (EMPTY_RUN_FAILURE_CEILING, default 5) so a chronic
-    # no-op'er parks on the 5th no-op, not the 20th — the generic 20 let
-    # ollama/deepseek-v4-flash:0731 churn 12 empty runs in 2h without parking.
+    # failure ceiling (EMPTY_RUN_FAILURE_CEILING, default 3 per fleet-ops#3760)
+    # so a chronic no-op'er parks on the 3rd no-op, not the 20th — the generic
+    # 20 let ollama/deepseek-v4-flash:0731 churn 12 empty runs in 2h without
+    # parking.
     local cap
     cap="$SEAT_BENCH_GEOMETRIC_CAP_S"
     if provider_remote_agent "$p" && [[ "$(model_class_of "$p" "$m")" == "prepaid-quota" ]]; then
@@ -5114,9 +5122,10 @@ mark_seat_empty_run() {
     if mv "$tmp" "$path" 2>/dev/null; then
         seat_log "empty-run: marked $p/$m unusable until $usable_at (reason=$reason, backoff=${backoff}s, count=$merged_count)"
         # fleet-ops#3727: park check uses the empty-run-specific failure ceiling
-        # (EMPTY_RUN_FAILURE_CEILING, default 5). The geometric backoff (capped
-        # at 6 h, 1800 s for remote agents) grows the bench below the ceiling;
-        # once crossed, the seat is parked behind the long wall.
+        # (EMPTY_RUN_FAILURE_CEILING, default 3 per fleet-ops#3760). The
+        # geometric backoff (capped at 6 h, 1800 s for remote agents) grows the
+        # bench below the ceiling; once crossed, the seat is parked behind the
+        # long wall.
         if _seat_parked_by_ceiling "$merged_count" "$EMPTY_RUN_FAILURE_CEILING"; then
             _emit_failure_ceiling_metric "$p" "$m" "$merged_count"
             seat_log "empty-run: $p/$m PARKED past failure ceiling (count=$merged_count >= ${EMPTY_RUN_FAILURE_CEILING}, wall=${backoff}s)"

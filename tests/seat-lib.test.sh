@@ -3462,9 +3462,9 @@ bash "$here/seat-spawn-bench-clobber.test.sh" || fail "seat-spawn-bench-clobber 
 # p14-test-listing-gate).
 bash "$here/seat-empty-run-bench-sticks.test.sh" || fail "seat-empty-run-bench-sticks tests failed"
 
-# fleet-ops#3727: repeated empty-run churn parks at EMPTY_RUN_FAILURE_CEILING=5
+# fleet-ops#3727/#3760: repeated empty-run churn parks at EMPTY_RUN_FAILURE_CEILING=3
 # (not the generic 20) so a chronic no-op'er (ollama/deepseek-v4-flash:0731,
-# 12 empty runs in 2h) converges to the 24h park on the 5th no-op. Standalone
+# 12 empty runs in 2h) converges to the 24h park on the 3rd no-op. Standalone
 # test with production defaults (no ceiling pin).
 bash "$here/seat-empty-run-ceiling-3727.test.sh" || fail "seat-empty-run-ceiling-3727 tests failed"
 
