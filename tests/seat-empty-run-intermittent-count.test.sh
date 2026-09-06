@@ -4,7 +4,7 @@
 # fleet-ops#2934: an intermittent no-op'er gaps its empty runs by more than
 # the spawn-fail count-merge window (EMPTY_RUN_MARKER_FRESH_S, 30 min) but
 # less than the empty-run count-merge window (EMPTY_RUN_COUNT_WINDOW_S,
-# default 6 h = SEAT_BENCH_GEOMETRIC_CAP_S, fleet-ops#3675).
+# default 24 h = SEAT_PARK_WALL_S, fleet-ops#3666).
 # Before this fix both classes shared the 30 min window, so a ~1h42m gap
 # aged the marker past 30 min, the count reset to 1, and the
 # failure-ceiling park never fired — the seat re-entered rotation every
@@ -15,9 +15,9 @@
 # being re-selected.
 #
 # The fix (this PR): mark_seat_empty_run merges the marker count over
-# EMPTY_RUN_COUNT_WINDOW_S (default 6 h, at least as long as the max
-# empty-run bench so a chronic no-op'er's count survives the bench,
-# fleet-ops#3675), while mark_seat_spawn_fail keeps the
+# EMPTY_RUN_COUNT_WINDOW_S (default 24 h = the park wall, so a chronic
+# no-op'er's count survives the full failure-ceiling park, fleet-ops#3666),
+# while mark_seat_spawn_fail keeps the
 # 30 min window (spawn storms are clustered). The bench is still the FLAT
 # 900 s cooldown (fleet-ops#2343 — no ladder); only the COUNT-accumulation
 # window widens, so the failure-ceiling park can engage for a chronic
@@ -25,14 +25,14 @@
 #
 # This test proves, end to end against the live wrapper:
 #   (a) an empty-run count SURVIVES a gap > EMPTY_RUN_MARKER_FRESH_S (30 min)
-#       but < EMPTY_RUN_COUNT_WINDOW_S (6 h) — the live #2934 gap shape. The
+#       but < EMPTY_RUN_COUNT_WINDOW_S (24 h) — the live #2934 gap shape. The
 #       count accumulates 1 -> 2 across the gap, so the seat trends toward
 #       the ceiling instead of resetting to 1 every cycle.
 #   (b) at the failure ceiling the park engages from the accumulated count
 #       across the gap — the chronic intermittent no-op'er is demoted
 #       (held UNUSABLE by seat_usable) instead of re-selected.
-#   (c) a gap > EMPTY_RUN_COUNT_WINDOW_S (6 h) DOES reset the count — the
-#       real recovery signal (a full window with no no-op) is honoured,
+#   (c) a gap > EMPTY_RUN_COUNT_WINDOW_S (24 h) DOES reset the count — the
+#       real recovery signal (a full park wall with no no-op) is honoured,
 #       so a recovered seat is not punished.
 #   (d) spawn_fail still uses the 30 min window: a spawn_fail marker older
 #       than 30 min is NOT merged into a fresh empty-run count, so widening
@@ -69,8 +69,8 @@ export PI_SEAT_LIB_CHECK_SYSTEMD=0
 # iterations. Production default is 20 (fleet-ops#3531).
 export SEAT_FAILURE_CEILING=3
 export SEAT_PARK_WALL_S=86400
-# The DEFAULT empty-run count window is now 6 h (21600 s =
-# SEAT_BENCH_GEOMETRIC_CAP_S, fleet-ops#3675) — leave it at the default
+# The DEFAULT empty-run count window is now 24 h (86400 s =
+# SEAT_PARK_WALL_S, fleet-ops#3666) — leave it at the default
 # so this test exercises the production window, NOT a pinned override.
 # The spawn-fail window stays at its 30 min default.
 export EMPTY_RUN_MARKER_FRESH_S=1800
@@ -161,13 +161,13 @@ p="openrouter"; m="deepseek/deepseek-v4-flash-0731"
 lf=$(ledger_file "$p" "$m")
 mf=$(marker_file "$p" "$m")
 
-# --- (a) count SURVIVES a gap > 30 min but < 6 h (the live #2934 gap) -----
+# --- (a) count SURVIVES a gap > 30 min but < 24 h (the live #2934 gap) ----
 # Live shape: no-op at 18:40:08Z (count=2), then a 1h42m gap, then no-op at
 # 20:22:31Z. Before the fix the 1h42m gap aged the marker past the 30 min
 # window and the count reset to 1. With the default
-# EMPTY_RUN_COUNT_WINDOW_S=21600 (6 h, fleet-ops#3675) the 1h42m (6120 s)
-# gap is still inside the empty-run window, so the count must accumulate
-# 1 -> 2 across the gap.
+# EMPTY_RUN_COUNT_WINDOW_S=86400 (24 h = SEAT_PARK_WALL_S, fleet-ops#3666) the
+# 1h42m (6120 s) gap is still inside the empty-run window, so the count must
+# accumulate 1 -> 2 across the gap.
 rm -f "$lf" "$mf"
 mark_seat_empty_run "$p" "$m" "t2934:noop:1" >/dev/null 2>&1 \
     || fail "mark_seat_empty_run #1 failed"
@@ -175,18 +175,18 @@ clobber_with_healthy "$p" "$m" "$lf"
 [[ "$(count_of "$mf")" == "1" ]] \
     || fail "(a) marker count after 1st no-op = $(count_of "$mf"), want 1"
 # Simulate the 1h42m (6120 s) inter-empty-run gap — strictly between the
-# 30 min spawn-fail window and the 6 h empty-run window.
+# 30 min spawn-fail window and the 24 h empty-run window.
 age_marker "$mf" 6120
 mark_seat_empty_run "$p" "$m" "t2934:noop:2" >/dev/null 2>&1 \
     || fail "mark_seat_empty_run #2 (after gap) failed"
 clobber_with_healthy "$p" "$m" "$lf"
 cross_gap_count=$(count_of "$mf")
 [[ "$cross_gap_count" == "2" ]] \
-    || fail "(a) marker count after a 6120s (1h42m) gap = $cross_gap_count, want 2 — the empty-run count must ACCUMULATE across a gap > 30min but < 6h (fleet-ops#2934/#3675); before the fix the 30min window reset it to 1"
-ok "(a) empty-run count accumulates 1 -> 2 across a 1h42m gap (> 30min spawn-fail window, < 6h empty-run window) — the live #2934 reset is fixed"
+    || fail "(a) marker count after a 6120s (1h42m) gap = $cross_gap_count, want 2 — the empty-run count must ACCUMULATE across a gap > 30min but < 24h (fleet-ops#2934/#3675/#3666); before the fix the 30min window reset it to 1"
+ok "(a) empty-run count accumulates 1 -> 2 across a 1h42m gap (> 30min spawn-fail window, < 24h empty-run window) — the live #2934 reset is fixed"
 
 # --- (b) the chronic intermittent no-op'er reaches the ceiling and parks --
-# Continue the pattern: a third no-op after another < 6 h gap must reach
+# Continue the pattern: a third no-op after another < 24 h gap must reach
 # count=3 (SEAT_FAILURE_CEILING=3 here, 20 in production) and park the
 # seat. Before the fix the count reset every cycle and the park never
 # fired, so the seat
@@ -196,7 +196,7 @@ mark_seat_empty_run "$p" "$m" "t2934:noop:3" >/dev/null 2>&1 \
     || fail "mark_seat_empty_run #3 (park) failed"
 park_count=$(count_of "$mf")
 [[ "$park_count" == "3" ]] \
-    || fail "(b) marker count after 3rd intermittent no-op = $park_count, want 3 — the count must reach the ceiling across < 6h gaps"
+    || fail "(b) marker count after 3rd intermittent no-op = $park_count, want 3 — the count must reach the ceiling across < 24h gaps"
 park_wall=$(wall_s_of_marker "$mf")
 (( park_wall >= SEAT_PARK_WALL_S - 120 && park_wall <= SEAT_PARK_WALL_S + 120 )) \
     || fail "(b) park wall = ${park_wall}s, want ~${SEAT_PARK_WALL_S}s — the failure-ceiling park must fire from the accumulated intermittent count"
@@ -205,20 +205,20 @@ if seat_usable "$p" "$m"; then
 fi
 ok "(b) 3rd intermittent no-op reaches count=3 and parks the seat (~${park_wall}s wall, held UNUSABLE) — a chronic intermittent no-op'er is demoted instead of re-selected"
 
-# --- (c) a gap > EMPTY_RUN_COUNT_WINDOW_S (default 6 h, fleet-ops#3675) DOES reset the count (real recovery signal) ----------
-# A seat that goes a full count window (6 h by default) without no-op'ing
-# has recovered. The next empty-run must start a fresh count, not carry the
-# stale high count forward. This is the fail-open contract: the wider window
-# does not wall a recovered seat.
+# --- (c) a gap > EMPTY_RUN_COUNT_WINDOW_S (default 24 h = SEAT_PARK_WALL_S, fleet-ops#3666) DOES reset the count (real recovery signal) ----------
+# A seat that goes a full count window (24 h by default — the park wall,
+# fleet-ops#3666) without no-op'ing has recovered. The next empty-run must
+# start a fresh count, not carry the stale high count forward. This is the
+# fail-open contract: the wider window does not wall a recovered seat.
 rm -f "$lf" "$mf"
 mark_seat_empty_run "$p" "$m" "t2934:recovery-seed" >/dev/null 2>&1 \
     || fail "mark_seat_empty_run (recovery seed) failed"
 clobber_with_healthy "$p" "$m" "$lf"
 [[ "$(count_of "$mf")" == "1" ]] \
     || fail "(c) seed count = $(count_of "$mf"), want 1"
-# Age the marker past the empty-run count window (SEAT_BENCH_GEOMETRIC_CAP_S
-# = 21600 s default + 600 s margin).
-age_marker "$mf" 22200
+# Age the marker past the empty-run count window (SEAT_PARK_WALL_S = 86400 s
+# default + 600 s margin).
+age_marker "$mf" 87000
 mark_seat_empty_run "$p" "$m" "t2934:after-recovery" >/dev/null 2>&1 \
     || fail "mark_seat_empty_run (after recovery) failed"
 fresh_count=$(count_of "$mf")
@@ -227,10 +227,10 @@ fresh_count=$(count_of "$mf")
 ok "(c) a > count-window gap resets the empty-run count (recovered seat is NOT punished) — the wider window honours fail-open"
 
 # --- (d) spawn_fail keeps the 30 min window (not widened) -----------------
-# The empty-run window widened to 6 h, but spawn_fail must still use the 30
+# The empty-run window widened to 24 h, but spawn_fail must still use the 30
 # min window: a spawn_fail marker older than 30 min is NOT merged into a
 # fresh empty-run count. Prove it by seeding a spawn_fail marker, ageing it
-# past 30 min but inside 6 h, then running an empty-run — the spawn_fail
+# past 30 min but inside 24 h, then running an empty-run — the spawn_fail
 # count must NOT carry over (the empty-run writer reads the marker, but a
 # spawn_fail-only freshness gate would have merged it; here we prove the
 # spawn_fail marker's count is merged ONLY because the EMPTY-RUN window
@@ -244,7 +244,7 @@ mark_seat_spawn_fail "$p" "$m" "t2934:spawn:1" >/dev/null 2>&1 \
 [[ "$(count_of "$mf")" == "1" ]] \
     || fail "(d) spawn_fail seed count = $(count_of "$mf"), want 1"
 clobber_with_healthy "$p" "$m" "$lf"
-# Age past the 30 min spawn-fail window but inside the 6 h empty-run window.
+# Age past the 30 min spawn-fail window but inside the 24 h empty-run window.
 age_marker "$mf" 2400
 mark_seat_spawn_fail "$p" "$m" "t2934:spawn:2" >/dev/null 2>&1 \
     || fail "mark_seat_spawn_fail #2 (after 40min gap) failed"
@@ -253,4 +253,4 @@ sf_count=$(count_of "$mf")
     || fail "(d) spawn_fail count after a 40min gap = $sf_count, want 1 — spawn_fail must keep the 30min window; a > 30min gap resets the spawn_fail count (the empty-run window widening must NOT leak into spawn_fail)"
 ok "(d) spawn_fail count resets after a 40min gap (> 30min spawn-fail window) — the empty-run window widening did NOT widen spawn_fail"
 
-ok "fleet-ops#2934/#3675: empty-run count accumulates across gaps up to 6h (intermittent no-op'er reaches the ceiling and is parked), gaps > 6h reset (recovery honoured), and spawn_fail keeps its 30min window"
+ok "fleet-ops#2934/#3675/#3666: empty-run count accumulates across gaps up to 24h (intermittent no-op'er reaches the ceiling and is parked, and the park persists across the 24h boundary), gaps > 24h reset (recovery honoured), and spawn_fail keeps its 30min window"
