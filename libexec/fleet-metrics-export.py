@@ -465,6 +465,19 @@ SEAT_CAPS_DEFAULT = Path(
 SEAT_CAPS_FALLBACK = Path(
     "/home/nish/workspaces/products/fleet-ops/config/seat-caps.json"
 )
+
+
+def _seat_caps_paths():
+    """Candidate seat-caps.json paths, SEAT_CAPS_JSON override first.
+
+    fleet-ops#3891: mirrors lib/seat-lib.sh and bin/fleet-seat-comeback-release,
+    which honor SEAT_CAPS_JSON, so every caps-derived metric (enrolled seats,
+    phantom exclusion) judges the SAME file as the releaser. Production leaves
+    the variable unset; tests pin a scratch copy through it.
+    """
+    env_caps = os.environ.get("SEAT_CAPS_JSON")
+    paths = [Path(env_caps)] if env_caps else []
+    return paths + [SEAT_CAPS_DEFAULT, SEAT_CAPS_FALLBACK]
 READY_CACHE = PR_CACHE_DIR / "ready-work-cache.json"
 READY_GH_TIMEOUT = 45
 
@@ -2724,7 +2737,7 @@ def _enrolled_seat_providers():
     denominator family. Returns None when the config is missing/unparseable
     (callers then report source-unavailable rather than guessing).
     """
-    for path in (SEAT_CAPS_DEFAULT, SEAT_CAPS_FALLBACK):
+    for path in _seat_caps_paths():
         try:
             data = json.loads(path.read_text())
         except (OSError, json.JSONDecodeError):
@@ -3019,7 +3032,7 @@ def _seat_caps_model_cap_map():
     Returns None when the config is missing/unparseable so callers can
     report source-unavailable instead of guessing.
     """
-    for path in (SEAT_CAPS_DEFAULT, SEAT_CAPS_FALLBACK):
+    for path in _seat_caps_paths():
         try:
             data = json.loads(path.read_text())
         except (OSError, json.JSONDecodeError):
@@ -3132,7 +3145,7 @@ def _read_cap0_stale():
     """
     seats = []
     data = None
-    for path in (SEAT_CAPS_DEFAULT, SEAT_CAPS_FALLBACK):
+    for path in _seat_caps_paths():
         try:
             data = json.loads(path.read_text())
             break
