@@ -5047,6 +5047,25 @@ EMPTY_RUN_COUNT_WINDOW_S="${EMPTY_RUN_COUNT_WINDOW_S:-$SEAT_PARK_WALL_S}"
 # differently). Tests that pin a low ceiling for empty-run park isolation set
 # BOTH SEAT_FAILURE_CEILING and EMPTY_RUN_FAILURE_CEILING.
 EMPTY_RUN_FAILURE_CEILING="${EMPTY_RUN_FAILURE_CEILING:-5}"
+# fleet-ops#3781: REPEAT empty-run stickiness. A FIRST empty run (merged_count
+# = 1) keeps the short EMPTY_RUN_BACKOFF_S cooldown — a transient no-op that
+# usually recovers, and over-benching a healthy seat for one hiccup is what
+# fleet-ops#2343 undid. A second (count=2) stays short too — it can still be a
+# recoverable flake (fleet-ops#2343, the 2nd-no-op geometric cooldown). But a
+# seat that keeps returning stdout=0B (http 200, ledger healthy) every time
+# the cooldown expires is functionally dead for agentic work, and each
+# re-offer burns a pi-issue attempt (live 18 empty runs in 2h on
+# ollama/deepseek-v4-flash:0731, opencode/nemotron-3-ultra-free,
+# openrouter/deepseek-v4-flash-0731). Once merged_count reaches
+# EMPTY_RUN_STICKY_MIN_COUNT the bench is floored at EMPTY_RUN_STICKY_FLOOR_S
+# (the 2h observation window the fleet measures churn in) so a repeat
+# no-op'er is not re-offered within the same window; the geometric ladder
+# below it (900->1800s) still gives a transient no-op'er two short chances to
+# recover before the sticky floor engages. The 24h failure-ceiling park
+# (merged_count >= EMPTY_RUN_FAILURE_CEILING) sits above and wins whenever it
+# engages.
+EMPTY_RUN_STICKY_MIN_COUNT="${EMPTY_RUN_STICKY_MIN_COUNT:-3}"
+EMPTY_RUN_STICKY_FLOOR_S="${EMPTY_RUN_STICKY_FLOOR_S:-7200}"  # 2 h — the empty-run observation window
 
 mark_seat_empty_run() {
     local p="$1" m="$2" reason="${3:-empty_run}"
@@ -5139,6 +5158,30 @@ mark_seat_empty_run() {
     fi
     local backoff
     backoff=$(_geometric_bench_window "$EMPTY_RUN_BACKOFF_S" "$merged_count" "$cap" "$EMPTY_RUN_FAILURE_CEILING")
+    # fleet-ops#3781: sticky floor. Once a seat has REPEATED no-ops
+    # (merged_count >= EMPTY_RUN_STICKY_MIN_COUNT) it benches for at least the
+    # 2h observation window, so it is not re-offered within the same window the
+    # churn is measured in. The geometric window below that is only
+    # 900->1800s for the first two no-ops (a transient no-op'er gets two short
+    # chances to recover); once the third no-op shows the pattern is chronic the
+    # floor holds it out for the full window. The 24h park (count >= ceiling)
+    # already exceeds the floor, so it is unaffected.
+    #
+    # Remote agents (e.g. devin) are EXEMPT: they run outside the local
+    # harness and are far likelier to produce a false empty verdict, so they
+    # keep the geometric ladder (capped at SEAT_REMOTE_AGENT_EMPTY_RUN_CAP_S
+    # for prepaid-quota, the generic cap for free) instead of being floored to
+    # the full 2h — over-benching a remote seat for a false verdict is real
+    # cost (fleet-ops#3531). Local seats get the floor.
+    local _sticky_floor=1
+    if provider_remote_agent "$p"; then
+        _sticky_floor=0
+    fi
+    if (( _sticky_floor )) \
+        && (( merged_count >= EMPTY_RUN_STICKY_MIN_COUNT )) \
+        && (( backoff < EMPTY_RUN_STICKY_FLOOR_S )); then
+        backoff="$EMPTY_RUN_STICKY_FLOOR_S"
+    fi
     # Compute usable_at = now + backoff (ISO 8601, bash portable).
     local usable_at
     usable_at=$(date -u -d "@$(($(date -u +%s) + backoff))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")

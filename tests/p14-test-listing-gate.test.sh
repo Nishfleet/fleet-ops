@@ -763,6 +763,18 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/seat-empty-run-count-persists-ne
   || fail "seat-empty-run-count-persists-new-issue.test.sh must not be a known orphan (fleet-ops#3730)"
 ok "seat-empty-run-count-persists-new-issue.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#3730)"
 
+# fleet-ops#3781: hard-pin the host line for seat-empty-run-sticky-floor in
+# ci-standards-audit so a future refactor that drops it is caught by name.
+# Same class-prevention as the park-persists test above: parking it on
+# known_orphans to silence the generic message must also fail by name below.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/seat-empty-run-sticky-floor\.test\.sh"?' \
+  "$here/ci-standards-audit.test.sh" \
+  || fail "ci-standards-audit.test.sh must bash-invoke seat-empty-run-sticky-floor.test.sh (fleet-ops#3781)"
+[[ -n "${reachable[seat-empty-run-sticky-floor.test.sh]:-}" ]] \
+  || fail "seat-empty-run-sticky-floor.test.sh must be hosted by a listed test (fleet-ops#3781)"
+[[ -z "${known_orphan_set[seat-empty-run-sticky-floor.test.sh]:-}" ]] \
+  || fail "seat-empty-run-sticky-floor.test.sh must not be a known orphan (fleet-ops#3781)"
+ok "seat-empty-run-sticky-floor.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#3781)"
 # fleet-ops#3295 (PR #3352 follow-up): hard-pin the host line for
 # pi-intake-tick-umbrella-exclusion in pi-intake-run (already listed in
 # ci.yml) so a future refactor that drops it is caught by name. PR #3352

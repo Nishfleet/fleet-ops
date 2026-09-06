@@ -595,6 +595,20 @@ bash "$here/seat-empty-run-park-persists.test.sh"
 # Hermetic (scratch ledger/state, no gh/prometheus/systemd).
 bash "$here/seat-empty-run-count-persists-new-issue.test.sh"
 
+# fleet-ops#3781: the empty-run bench is STICKY. A seat with repeated
+# stdout=0B (provider no-op, http 200, ledger healthy) must not be re-offered
+# within the same 2h window the fleet measures churn in — live 18 empty runs
+# in 2h (ollama/deepseek-v4-flash:0731, opencode/nemotron-3-ultra-free,
+# openrouter/deepseek-v4-flash-0731). The sticky floor benches a repeat
+# no-op'er (merged_count >= EMPTY_RUN_STICKY_MIN_COUNT) for
+# EMPTY_RUN_STICKY_FLOOR_S (the 2h window), while a transient no-op'er keeps
+# two short geometric cooldowns and the 24h park still wins above the floor.
+# Hosted here so P14 runs it without a workflow-file edit (the worker App
+# cannot push .github/workflows/**). The named pin in
+# tests/p14-test-listing-gate.test.sh is the class-prevention so a future
+# drop of this host line fails by name. Hermetic (scratch ledger/state, no
+# gh/prometheus/systemd).
+bash "$here/seat-empty-run-sticky-floor.test.sh"
 # fleet-ops#1520: curator journal-cap lock. The live dump (~40KB of
 # dispositioned trust_denials.entries every 5 min) was fixed in
 # memory-compound#9; this test is the fleet-ops class lock so a revert
