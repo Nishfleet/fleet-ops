@@ -292,6 +292,13 @@ declare -A SEAT_PROVIDER_MAX_PROBE=()
 declare -A SEAT_MODEL_PROBE_CEILING=()
 declare -A SEAT_PROVIDER_HARD_CEILING=()
 declare -A SEAT_PROVIDER_REASON=()
+# fleet-ops#3690: per-tick per-provider spawn cap. Limits how many NEW
+# sessions pick_seat routes to a provider within a single intake tick so a
+# fresh fleet (learned-caps reset) does not burst N spawns on one provider
+# and trip resource_exhausted. 0 = unlimited. Loaded from tick_spawn_cap on
+# the provider block in seat-caps.json; the intake tick resets the counter
+# file at the start of each tick.
+declare -A SEAT_TICK_SPAWN_CAP=()
 # fleet-ops#1432: classification of cap=0 seats as intentional (dead_decoy /
 # money_only) vs stale (broken endpoint, TPM ceiling, exhausted quota). Drives
 # the summary line in _build_excluded_set so the operator sees at a glance
@@ -461,6 +468,7 @@ load_seat_caps() {
     SEAT_PROVIDER_MAX_PROBE=()
     SEAT_PROVIDER_HARD_CEILING=()
     SEAT_PROVIDER_REASON=()
+    SEAT_TICK_SPAWN_CAP=()
     SEAT_CAP_ZERO_CLASS_INTENTIONAL=()
     SEAT_CAP_ZERO_CLASS_STALE=()
     SEAT_PRODUCT_ONLY=()
@@ -510,10 +518,10 @@ load_seat_caps() {
     # would have its own $p/$m clobbered to the last jq line before its lookup
     # ran, returning 0 for every unlisted-model seat and NO-USABLE-SEAT for
     # the whole free role (pi-audit@ free-glm-5-3 unit-failure loop 2026-08-27).
-    local p m cap class bench_def max_probe hard reason window budget ko ov_model ov_ex ov_usd cb icz remote audition
+    local p m cap class bench_def max_probe hard reason window budget ko ov_model ov_ex ov_usd cb icz remote audition tick_cap
     # Unit separator (\x1f), not TSV: bash `read` collapses consecutive tabs
     # so optional empty fields (max_probe_ceiling, reason) would vanish.
-    while IFS=$'\x1f\n' read -r p cap class bench_def max_probe hard reason icz remote audition; do
+    while IFS=$'\x1f\n' read -r p cap class bench_def max_probe hard reason icz remote audition tick_cap; do
         [[ -n "$p" ]] || continue
         SEAT_PROVIDER_CAP["$p"]="$cap"
         # subscription is the pre-#387 name for prepaid-quota.
@@ -525,6 +533,8 @@ load_seat_caps() {
         [[ "$max_probe" =~ ^[0-9]+$ ]] && SEAT_PROVIDER_MAX_PROBE["$p"]="$max_probe"
         [[ "$hard" == "true" ]] && SEAT_PROVIDER_HARD_CEILING["$p"]=1
         [[ -n "$reason" ]] && SEAT_PROVIDER_REASON["$p"]="$reason"
+        # fleet-ops#3690: per-tick spawn cap (0 = unlimited).
+        [[ "$tick_cap" =~ ^[0-9]+$ ]] && SEAT_TICK_SPAWN_CAP["$p"]="$tick_cap"
         # fleet-ops#1432: classification of cap=0 seats (intentional vs stale).
         # fleet-ops#2435: "corpse" joins the intentional set — a model whose
         # ledger is seat_dead (terminal "corpse" class, no comeback clock)
@@ -552,7 +562,7 @@ load_seat_caps() {
     # provider_quota_bench_default returns 0 (no default, writer fails open).
     # max_probe_ceiling / hard_ceiling / reason (fleet-ops#217) likewise
     # optional; absent fields emit "" so the guards above skip them.
-    done < <(jq -r '.providers | to_entries[] | .key as $k | .value as $v | [$k, (if ($v|type)=="number" then $v else ($v.cap // 0) end), (if ($v|type)=="number" then "free" else ($v.class // "free") end), (if ($v|type)=="object" then ($v.quota_bench_default_s // "") else "" end), (if ($v|type)=="object" then ($v.max_probe_ceiling // "") else "" end), (if ($v|type)=="object" then ($v.hard_ceiling // false) else false end), (if ($v|type)=="object" then ($v.reason // "") else "" end), (if ($v|type)=="object" then ($v.intentional_cap_zero // "") else "" end), (if ($v|type)=="object" then ($v.remote_agent // "") else "" end), (if ($v|type)=="object" then ($v.audition // false) else false end)] | join("\u001f")' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    done < <(jq -r '.providers | to_entries[] | .key as $k | .value as $v | [$k, (if ($v|type)=="number" then $v else ($v.cap // 0) end), (if ($v|type)=="number" then "free" else ($v.class // "free") end), (if ($v|type)=="object" then ($v.quota_bench_default_s // "") else "" end), (if ($v|type)=="object" then ($v.max_probe_ceiling // "") else "" end), (if ($v|type)=="object" then ($v.hard_ceiling // false) else false end), (if ($v|type)=="object" then ($v.reason // "") else "" end), (if ($v|type)=="object" then ($v.intentional_cap_zero // "") else "" end), (if ($v|type)=="object" then ($v.remote_agent // "") else "" end), (if ($v|type)=="object" then ($v.audition // false) else false end), (if ($v|type)=="object" then ($v.tick_spawn_cap // "") else "" end)] | join("\u001f")' "$SEAT_CAPS_JSON" 2>/dev/null || true)
 
     while IFS=$'\x1f\n' read -r p m cap class mprobe maudition; do
         [[ -n "$p" && -n "$m" ]] || continue
@@ -911,18 +921,26 @@ LEARNED_CAPS_AUDIT="${LEARNED_CAPS_AUDIT:-$HOME/.local/state/pi-packet/learned-c
 _seat_learned_loaded=0
 declare -A LEARNED_CAP=()
 declare -A LEARNED_BENCH_UNTIL=()
+# fleet-ops#3690: ramp flag. A provider whose cap block changed on deploy is
+# seeded at floor/2 with ramp=true so the next tick starts low and climbs +1
+# per probe instead of bursting to declared. While ramp=true the declared
+# floor clamp is bypassed (eff may sit below declared); graduating to declared
+# clears the flag and normal AIMD resumes.
+declare -A LEARNED_RAMP=()
 
 load_learned_caps() {
     LEARNED_CAP=()
     LEARNED_BENCH_UNTIL=()
+    LEARNED_RAMP=()
     _seat_learned_loaded=1
     [[ -f "$LEARNED_CAPS_JSON" ]] || return 0
-    local p lc bu
-    while IFS=$'\x1f\n' read -r p lc bu; do
+    local p lc bu ramp
+    while IFS=$'\x1f\n' read -r p lc bu ramp; do
         [[ -n "$p" ]] || continue
         [[ "$lc" =~ ^[0-9]+$ ]] && LEARNED_CAP["$p"]="$lc"
         [[ -n "$bu" ]] && LEARNED_BENCH_UNTIL["$p"]="$bu"
-    done < <(jq -r '.providers // {} | to_entries[] | [.key, (.value.learned_cap//""), (.value.bench_until//"")] | join("\u001f")' "$LEARNED_CAPS_JSON" 2>/dev/null || true)
+        [[ "$ramp" == "true" ]] && LEARNED_RAMP["$p"]=1
+    done < <(jq -r '.providers // {} | to_entries[] | [.key, (.value.learned_cap//""), (.value.bench_until//""), (.value.ramp|tostring)] | join("\u001f")' "$LEARNED_CAPS_JSON" 2>/dev/null || true)
 }
 
 # Hard upper bound a provider may probe to. Absent -> declared cap (no
@@ -1013,32 +1031,44 @@ _learned_audit() {
 }
 
 _set_learned_in_memory() {
-    local p="$1" lc="$2" bench="${3:-}"
+    local p="$1" lc="$2" bench="${3:-}" ramp="${4:-}"
     LEARNED_CAP["$p"]="$lc"
     if [[ -n "$bench" ]]; then
         LEARNED_BENCH_UNTIL["$p"]="$bench"
     else
         unset 'LEARNED_BENCH_UNTIL[$p]'
     fi
+    if [[ "$ramp" == "1" ]]; then
+        LEARNED_RAMP["$p"]=1
+    elif [[ "$ramp" == "0" ]]; then
+        unset 'LEARNED_RAMP[$p]'
+    fi
 }
 
 # Persist learned state for one provider and emit an audit line.
-# Args: provider learned_cap result bench_until
-# result in {probe, backoff, decay}.
+# Args: provider learned_cap result bench_until [ramp]
+# result in {probe, backoff, decay, ramp}. ramp in {0,1}; absent preserves the
+# current in-memory LEARNED_RAMP[$p] (so probes during a ramp keep the flag
+# until graduation clears it explicitly with ramp=0).
 _record_learned_cap() {
-    local p="$1" lc="$2" result="$3" bench="${4:-}"
+    local p="$1" lc="$2" result="$3" bench="${4:-}" ramp="${5:-}"
     [[ "$lc" =~ ^[0-9]+$ ]] || return 1
+    # Absent ramp arg: preserve the current flag (probe during ramp stays ramp).
+    local ramp_val="${LEARNED_RAMP[$p]:-0}"
+    [[ "$ramp" == "0" || "$ramp" == "1" ]] && ramp_val="$ramp"
     mkdir -p "$(dirname "$LEARNED_CAPS_JSON")" 2>/dev/null || true
     local tmp="$LEARNED_CAPS_JSON.tmp.$$.$RANDOM" now_utc
     now_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    local ramp_json
+    [[ "$ramp_val" == "1" ]] && ramp_json="true" || ramp_json="false"
     if [[ -f "$LEARNED_CAPS_JSON" ]] && jq -e . "$LEARNED_CAPS_JSON" >/dev/null 2>&1; then
         # Merge via object addition, not $ps[$p] = ... jq 1.7 rejects
         # assignment through a variable-held object ("Invalid path
         # expression") and the fallback would then rewrite the file with
         # only this provider, wiping sibling learned caps.
         if jq --arg p "$p" --argjson lc "$lc" --arg r "$result" \
-                --arg b "$bench" --arg t "$now_utc" \
-            '.providers = ((.providers // {}) + {($p): {learned_cap:$lc, last_result:$r, bench_until:(if $b == "" then null else $b end), last_at:$t}})' \
+                --arg b "$bench" --arg t "$now_utc" --argjson ramp "$ramp_json" \
+            '.providers = ((.providers // {}) + {($p): {learned_cap:$lc, last_result:$r, bench_until:(if $b == "" then null else $b end), ramp:$ramp, last_at:$t}})' \
             "$LEARNED_CAPS_JSON" >"$tmp" 2>/dev/null; then
             :
         else
@@ -1051,31 +1081,185 @@ _record_learned_cap() {
     if [[ -z "$tmp" || ! -s "$tmp" ]]; then
         tmp="$LEARNED_CAPS_JSON.tmp.$$.$RANDOM"
         if ! jq -nc --arg p "$p" --argjson lc "$lc" --arg r "$result" \
-            --arg b "$bench" --arg t "$now_utc" \
-            '{providers: {($p): {learned_cap:$lc, last_result:$r, bench_until:(if $b == "" then null else $b end), last_at:$t}}}' >"$tmp" 2>/dev/null; then
+            --arg b "$bench" --arg t "$now_utc" --argjson ramp "$ramp_json" \
+            '{providers: {($p): {learned_cap:$lc, last_result:$r, bench_until:(if $b == "" then null else $b end), ramp:$ramp, last_at:$t}}}' >"$tmp" 2>/dev/null; then
             seat_log "aimd: state write FAILED for $p (lc=$lc result=$result) — in-memory only"
             rm -f "$tmp" 2>/dev/null || true
-            _set_learned_in_memory "$p" "$lc" "$bench"
+            _set_learned_in_memory "$p" "$lc" "$bench" "$ramp_val"
             return 0
         fi
     fi
     chmod 0644 "$tmp" 2>/dev/null || true
     if mv "$tmp" "$LEARNED_CAPS_JSON" 2>/dev/null; then
-        _set_learned_in_memory "$p" "$lc" "$bench"
+        _set_learned_in_memory "$p" "$lc" "$bench" "$ramp_val"
         local bench_desc="no bench"
         [[ -n "$bench" ]] && bench_desc="bench_until=$bench"
-        _learned_audit "aimd $p: learned_cap=$lc result=$result $bench_desc"
+        local ramp_desc=""
+        [[ "$ramp_val" == "1" ]] && ramp_desc=" ramp"
+        _learned_audit "aimd $p: learned_cap=$lc result=$result$bench_desc$ramp_desc"
         return 0
     fi
     seat_log "aimd: state rename FAILED for $p at $LEARNED_CAPS_JSON — in-memory only"
     rm -f "$tmp" 2>/dev/null || true
-    _set_learned_in_memory "$p" "$lc" "$bench"
+    _set_learned_in_memory "$p" "$lc" "$bench" "$ramp_val"
+    return 0
+}
+
+# fleet-ops#3690: reset learned AIMD state ONLY for providers whose
+# providers.<p> block changed between the old and new seat-caps.json, not the
+# whole file. A ram_gb_per_worker / worker_memory / spawn_stagger_s edit
+# touches top-level fields and must NOT reset AIMD — the old whole-file wipe
+# (install.sh pre-#3690) dropped every provider to null and the next tick
+# burst to declared caps (5 devin spawns at once, all rc=143 in <30s). For
+# each changed provider, drop its learned entries (the "p" key and any "p/*"
+# model keys) and seed learned_cap=floor/2 with ramp=true so the next tick
+# starts low and ramps +1 per probe instead of bursting to declared.
+# Unchanged providers keep their learned state. Best-effort: a jq failure
+# logs and leaves the file unchanged. Args: old_caps new_caps learned_caps
+reset_learned_caps_on_provider_change() {
+    local old_caps="$1" new_caps="$2" learned="$3"
+    [[ -f "$old_caps" && -f "$new_caps" && -f "$learned" ]] || return 0
+    command -v jq >/dev/null 2>&1 || return 0
+    cmp -s "$old_caps" "$new_caps" && return 0
+    local now_utc bak tmp changed_list
+    now_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    changed_list=$(jq -n --slurpfile old "$old_caps" --slurpfile new "$new_caps" '
+        ($old[0].providers // {}) as $o | ($new[0].providers // {}) as $n |
+        (($o | keys) + ($n | keys)) | unique | .[] |
+        select(($o[.] // "" | tostring) != ($n[.] // "" | tostring))
+    ' 2>/dev/null || true)
+    [[ -n "$changed_list" ]] || return 0
+    bak="$learned.bak-$(date -u +%Y%m%dT%H%M%SZ)"
+    cp -f "$learned" "$bak" 2>/dev/null || true
+    tmp="$learned.tmp.$$.$RANDOM"
+    if jq -n --slurpfile old "$old_caps" --slurpfile new "$new_caps" \
+            --slurpfile lc "$learned" --arg t "$now_utc" '
+        ($old[0].providers // {}) as $o |
+        ($new[0].providers // {}) as $n |
+        ($lc[0].providers // {}) as $prov |
+        (($o | keys) + ($n | keys)) as $all |
+        ($all | unique | map(select(($o[.] // "" | tostring) != ($n[.] // "" | tostring)))) as $changed |
+        ($changed | map(. + "/")) as $pfxs |
+        {
+            providers: (
+                ($prov | with_entries(select(
+                    .key as $k |
+                    ($changed | index($k) | not) and
+                    ($pfxs | map(. as $pfx | $k | startswith($pfx)) | any | not)
+                ))) +
+                ($changed | map(. as $p |
+                    ($n | has($p)) as $exists |
+                    if $exists then
+                        ($n[$p]) as $pv |
+                        {($p): {
+                            learned_cap: (($pv | if type == "number" then . else (.cap // 1) end) | if . < 2 then 1 else (. / 2 | floor) end),
+                            last_result: "ramp",
+                            ramp: true,
+                            bench_until: null,
+                            last_at: $t
+                        }}
+                    else empty end
+                ) | add // {})
+            )
+        }
+    ' >"$tmp" 2>/dev/null && mv -f "$tmp" "$learned" 2>/dev/null; then
+        local changed_flat="${changed_list//$'\n'/ }"
+        echo "reset learned-caps.json for providers: ${changed_flat} (seat-caps.json per-provider change, fleet-ops#3690)"
+        return 0
+    fi
+    rm -f "$tmp" 2>/dev/null || true
+    seat_log "aimd: per-provider learned-caps reset FAILED (jq error) — leaving $learned unchanged" 2>/dev/null || true
+    return 0
+}
+
+# fleet-ops#3690: per-tick per-provider spawn cap. Limits how many NEW
+# sessions pick_seat routes to a provider within a single intake tick so a
+# fresh fleet (learned-caps reset) does not burst N spawns on one provider
+# and trip resource_exhausted (5 devin spawns at once, all rc=143 in <30s).
+# The intake tick calls reset_tick_spawn_counts at the start of each tick to
+# zero the counter file; pick_seat calls tick_spawn_cap_exceeded before
+# routing and tick_spawn_cap_record after a successful pick. A provider
+# without tick_spawn_cap in seat-caps.json is unlimited (returns 1 = not
+# exceeded). The counter file is $STATE_DIR/tick-spawn-counts.json:
+# {"devin": 2, ...}. Tests override via SEAT_TICK_SPAWN_COUNTS_JSON.
+SEAT_TICK_SPAWN_COUNTS_JSON="${SEAT_TICK_SPAWN_COUNTS_JSON:-$STATE_DIR/tick-spawn-counts.json}"
+
+# Reset all per-tick spawn counters to 0. Called by the intake tick at the
+# start of each tick. Best-effort: a write failure logs and continues (the
+# cap degrades to unlimited, never blocks intake).
+reset_tick_spawn_counts() {
+    local dir
+    dir=$(dirname "$SEAT_TICK_SPAWN_COUNTS_JSON" 2>/dev/null || echo "$STATE_DIR")
+    mkdir -p "$dir" 2>/dev/null || true
+    local tmp="$SEAT_TICK_SPAWN_COUNTS_JSON.tmp.$$.$RANDOM"
+    if jq -nc '{}' >"$tmp" 2>/dev/null && mv -f "$tmp" "$SEAT_TICK_SPAWN_COUNTS_JSON" 2>/dev/null; then
+        return 0
+    fi
+    rm -f "$tmp" 2>/dev/null || true
+    seat_log "tick-spawn: reset FAILED at $SEAT_TICK_SPAWN_COUNTS_JSON — cap degrades to unlimited" 2>/dev/null || true
+    return 0
+}
+
+# Echo the current spawn count for a provider (0 if the file is missing or
+# unparseable). Args: provider
+_tick_spawn_count() {
+    local p="$1"
+    [[ -f "$SEAT_TICK_SPAWN_COUNTS_JSON" ]] || { echo 0; return; }
+    local n
+    n=$(jq -r --arg p "$p" '.[$p] // 0' "$SEAT_TICK_SPAWN_COUNTS_JSON" 2>/dev/null || echo 0)
+    [[ "$n" =~ ^[0-9]+$ ]] || n=0
+    echo "$n"
+}
+
+# Return 0 (exceeded) if the provider has hit its per-tick spawn cap, 1
+# (not exceeded) otherwise. A provider without SEAT_TICK_SPAWN_CAP or with
+# cap=0 is unlimited. Args: provider
+tick_spawn_cap_exceeded() {
+    local p="$1"
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    local cap="${SEAT_TICK_SPAWN_CAP[$p]:-0}"
+    [[ "$cap" =~ ^[0-9]+$ ]] || cap=0
+    (( cap > 0 )) || return 1
+    local n
+    n=$(_tick_spawn_count "$p")
+    (( n >= cap )) && return 0
+    return 1
+}
+
+# Increment the per-tick spawn counter for a provider after a successful
+# pick. Best-effort: a write failure logs and continues. Args: provider
+tick_spawn_cap_record() {
+    local p="$1"
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    local cap="${SEAT_TICK_SPAWN_CAP[$p]:-0}"
+    [[ "$cap" =~ ^[0-9]+$ ]] || cap=0
+    (( cap > 0 )) || return 0
+    local dir
+    dir=$(dirname "$SEAT_TICK_SPAWN_COUNTS_JSON" 2>/dev/null || echo "$STATE_DIR")
+    mkdir -p "$dir" 2>/dev/null || true
+    local tmp="$SEAT_TICK_SPAWN_COUNTS_JSON.tmp.$$.$RANDOM"
+    if [[ -f "$SEAT_TICK_SPAWN_COUNTS_JSON" ]] && jq -e . "$SEAT_TICK_SPAWN_COUNTS_JSON" >/dev/null 2>&1; then
+        if jq --arg p "$p" '.[$p] = ((.[$p] // 0) + 1)' "$SEAT_TICK_SPAWN_COUNTS_JSON" >"$tmp" 2>/dev/null \
+            && mv -f "$tmp" "$SEAT_TICK_SPAWN_COUNTS_JSON" 2>/dev/null; then
+            return 0
+        fi
+    else
+        if jq -nc --arg p "$p" '{($p): 1}' >"$tmp" 2>/dev/null \
+            && mv -f "$tmp" "$SEAT_TICK_SPAWN_COUNTS_JSON" 2>/dev/null; then
+            return 0
+        fi
+    fi
+    rm -f "$tmp" 2>/dev/null || true
+    seat_log "tick-spawn: record FAILED for $p — counter not incremented" 2>/dev/null || true
     return 0
 }
 
 # Effective cap pick_seat honours. Records backoff on a fresh 429.
 # Order: hard_ceiling -> fresh 429 backoff -> bench in effect -> decay ->
-# clamp learned to [declared, ceiling].
+# clamp learned to [declared, ceiling]. fleet-ops#3690: a ramp=true entry
+# (seeded by install.sh when the provider's cap block changed) bypasses the
+# declared floor clamp so the provider starts at floor/2 and climbs +1 per
+# probe; graduating to declared clears the flag.
 effective_provider_cap() {
     local p="$1"
     if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
@@ -1087,6 +1271,7 @@ effective_provider_cap() {
         return
     fi
     ceiling=$(max_probe_ceiling "$p")
+    local ramp="${LEARNED_RAMP[$p]:-0}"
     if provider_has_recent_error "$p"; then
         local backoff=$(( declared / 2 ))
         (( backoff < 1 )) && backoff=1
@@ -1095,7 +1280,10 @@ effective_provider_cap() {
         local cur="${LEARNED_CAP[$p]:-}"
         local cur_bench="${LEARNED_BENCH_UNTIL[$p]:-}"
         if [[ "$cur" != "$backoff" || "$cur_bench" != "$bench" ]]; then
-            _record_learned_cap "$p" "$backoff" "backoff" "$bench"
+            # Preserve the ramp flag through a backoff: a provider still
+            # ramping that hits a 429 backs off but stays in ramp mode so
+            # it re-climbs from the backed-off value, not a burst to declared.
+            _record_learned_cap "$p" "$backoff" "backoff" "$bench" "$ramp"
         fi
         echo "$backoff"
         return
@@ -1110,17 +1298,40 @@ effective_provider_cap() {
     if [[ -n "$bench" ]] && ! _seat_in_future "$bench"; then
         local cur="${LEARNED_CAP[$p]:-}"
         if [[ "$cur" =~ ^[0-9]+$ ]] && (( cur != declared )); then
-            _record_learned_cap "$p" "$declared" "decay" ""
+            # Bench expired in ramp mode: restart the ramp from floor/2
+            # (fleet-ops#3690). In normal mode, decay to declared.
+            if [[ "$ramp" == "1" ]]; then
+                local restart=$(( declared / 2 ))
+                (( restart < 1 )) && restart=1
+                _record_learned_cap "$p" "$restart" "ramp" "" 1
+                echo "$restart"
+            else
+                _record_learned_cap "$p" "$declared" "decay" ""
+                echo "$declared"
+            fi
+            return
         elif [[ -n "$cur" ]]; then
             _record_learned_cap "$p" "$declared" "decay" ""
+            echo "$declared"
+            return
         fi
-        echo "$declared"
-        return
     fi
     local current="${LEARNED_CAP[$p]:-}"
     if [[ ! "$current" =~ ^[0-9]+$ ]]; then current="$declared"; fi
     local eff=$(( current < ceiling ? current : ceiling ))
-    (( eff < declared )) && eff=$declared
+    # fleet-ops#3690: only clamp to the declared floor when NOT ramping. A
+    # ramp=true entry may sit below declared (floor/2 start) and must not be
+    # bumped back to declared — that would defeat the slow start and burst.
+    if [[ "$ramp" != "1" ]]; then
+        (( eff < declared )) && eff=$declared
+    else
+        (( eff < 1 )) && eff=1
+        # Graduation: once the ramp reaches declared, clear the flag and
+        # resume normal AIMD (declared is now the floor again).
+        if (( eff >= declared )); then
+            _record_learned_cap "$p" "$eff" "decay" "" 0
+        fi
+    fi
     echo "$eff"
 }
 
@@ -1145,7 +1356,15 @@ _aimd_probe_admitted() {
     awk -v cap="$ram_cap" -v act="$active_total" 'BEGIN{ exit !(cap > act) }' || return 1
     local new=$(( eff + 1 ))
     (( new > ceiling )) && new=$ceiling
-    _record_learned_cap "$p" "$new" "probe" ""
+    # fleet-ops#3690: a probe that reaches declared graduates the provider
+    # out of ramp mode (clears the flag); below declared, keep ramping.
+    local declared
+    declared=$(provider_cap "$p")
+    if [[ "${LEARNED_RAMP[$p]:-0}" == "1" ]] && (( new >= declared )); then
+        _record_learned_cap "$p" "$new" "probe" "" 0
+    else
+        _record_learned_cap "$p" "$new" "probe" ""
+    fi
     return 0
 }
 
@@ -3879,6 +4098,15 @@ pick_seat() {
             seat_log "seat $p/$m skipped (model cap=0)"
             continue
         fi
+        # fleet-ops#3690: per-tick per-provider spawn cap. Skip the provider's
+        # seats once tick_spawn_cap new sessions have been routed to it this
+        # tick. The intake tick resets the counter at the start of each tick.
+        # Count mode (PICK_SEAT_COUNT_SLOTS=1) skips the gate so slot counting
+        # still reflects raw seat availability.
+        if (( ! _count_mode )) && tick_spawn_cap_exceeded "$p"; then
+            seat_log "seat $p/$m skipped (per-tick spawn cap reached for $p — fleet-ops#3690)"
+            continue
+        fi
         if ! provider_has_credential "$p"; then
             # provider_has_credential already logged the rejection reason.
             # Defence in depth on top of the cap map (fleet-ops#36): an
@@ -4392,6 +4620,9 @@ pick_seat() {
         if _is_keystone_class "$difficulty"; then
             keystone_record_event routed "${chosen%%$'\t'*}" "${chosen#*$'\t'}"
         fi
+        # fleet-ops#3690: count this pick against the provider's per-tick
+        # spawn cap so the next pick_seat in the same tick sees it.
+        tick_spawn_cap_record "${chosen%%$'\t'*}"
         printf '%s\n' "$chosen"
         return 0
     fi
@@ -4432,6 +4663,8 @@ pick_seat() {
             if _is_keystone_class "$difficulty"; then
                 keystone_record_event routed "$_floor_p" "$_floor_m"
             fi
+            # fleet-ops#3690: count floor-fallback picks too.
+            tick_spawn_cap_record "$_floor_p"
             printf '%s\t%s\n' "$_floor_p" "$_floor_m"
             return 0
         fi

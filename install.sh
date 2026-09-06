@@ -573,17 +573,30 @@ process_entry() {
     # config/model-candidates.json is copy-installed too (fleet-ops#3322):
     # the audition seed lives in the LIVE state dir next to seat-caps.json.
     if [[ "$src" == config/seat-caps.json ]] || [[ "$src" == config/pi-models.json ]] || [[ "$src" == config/model-candidates.json ]] || is_extension_src "$src"; then
-        # fleet-ops#3125/#3262: when the cap map changes, reset learned AIMD
-        # state so a stale learned cap / bench from the old config never pins
-        # a raised declared floor or ceiling (e.g. devin hard_ceiling removal
-        # + model ceilings). The pre-install dest differs from the repo copy
-        # only on a real change (this install step refuses cap downgrades
-        # above), so an idempotent `install.sh` run is a no-op.
+        # fleet-ops#3125/#3262/#3690: when a provider's cap block changes,
+        # reset its learned AIMD state so a stale learned cap / bench from the
+        # old config never pins a raised declared floor or ceiling. The
+        # pre-install dest differs from the repo copy only on a real change
+        # (this install step refuses cap downgrades above), so an idempotent
+        # `install.sh` run is a no-op. fleet-ops#3690: reset ONLY the
+        # providers whose providers.<p> block changed (hashed per-provider),
+        # not the whole file — a ram_gb_per_worker / worker_memory edit must
+        # not reset AIMD. Each reset provider is seeded at floor/2 with
+        # ramp=true so the next tick ramps +1 per probe instead of bursting.
         if [[ "$src" == config/seat-caps.json && -f "$dest" ]] && ! cmp -s "$dest" "$repo"; then
             learned="$HOME/.local/state/pi-packet/learned-caps.json"
             if [[ -f "$learned" ]]; then
-                mv -f "$learned" "$learned.bak-$(date -u +%Y%m%dT%H%M%SZ)"
-                echo "reset learned-caps.json (seat-caps.json changed on deploy)"
+                if [[ -f "$here/lib/seat-lib.sh" ]] && command -v jq >/dev/null 2>&1; then
+                    # shellcheck source=lib/seat-lib.sh
+                    source "$here/lib/seat-lib.sh" 2>/dev/null || true
+                    reset_learned_caps_on_provider_change "$dest" "$repo" "$learned" || true
+                else
+                    # seat-lib.sh or jq unavailable: fall back to the legacy
+                    # whole-file reset so a stale learned cap never pins a
+                    # raised floor (the pre-#3690 behaviour).
+                    mv -f "$learned" "$learned.bak-$(date -u +%Y%m%dT%H%M%SZ)"
+                    echo "reset learned-caps.json (seat-caps.json changed; seat-lib.sh unavailable for per-provider reset)"
+                fi
             fi
         fi
         rm -f "$dest"

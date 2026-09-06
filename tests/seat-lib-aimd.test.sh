@@ -503,6 +503,165 @@ picked=$(SEAT_CAPS_JSON="$caps3732" LEARNED_CAPS_JSON="$learned3732" PI_PACKET_S
 [[ "$picked" == ollama* ]] || fail "fleet-ops#3732: normal pick must still return the free ollama seat, got '$picked'"
 ok "fleet-ops#3732: normal pick mode unchanged (picked $picked)"
 
+# === fleet-ops#3690: per-provider learned-state reset + ramp + spawn cap =====
+# Three invariants from the issue:
+#   1. Unrelated seat-caps.json changes (ram_gb_per_worker) do NOT reset
+#      learned AIMD state; only a provider's own block change resets it.
+#   2. After a reset, the provider starts at floor/2 with ramp=true and
+#      effective_provider_cap returns that value (not declared) so the next
+#      tick ramps +1 per probe instead of bursting to declared.
+#   3. pick_seat enforces a per-tick per-provider spawn cap (devin: 2/tick).
+
+# --- #3690 invariant 1: per-provider reset, unrelated fields preserved ----
+# Build two cap files that differ ONLY in ram_gb_per_worker (top-level).
+# The reset function must NOT touch any provider's learned state.
+caps3690="$scratch/seat-caps-3690.json"
+learned3690="$scratch/learned-caps-3690.json"
+state3690="$scratch/state-3690"
+mkdir -p "$state3690/active-seats" "$scratch/ledger-3690"
+cat >"$scratch/caps-3690-old.json" <<'JSON'
+{
+  "ram_gb_per_worker": 1.5,
+  "providers": {
+    "devin": { "cap": 4, "class": "prepaid-quota", "max_probe_ceiling": 4, "models": { "glm-5-2": { "cap": 3, "max_probe_ceiling": 3 }, "swe-1-7": { "cap": 4, "max_probe_ceiling": 4 } } },
+    "commandcode": { "cap": 2, "class": "free", "max_probe_ceiling": 4, "models": { "deepseek/deepseek-v4-flash": 4 } }
+  }
+}
+JSON
+cat >"$scratch/caps-3690-new-ram.json" <<'JSON'
+{
+  "ram_gb_per_worker": 2.0,
+  "providers": {
+    "devin": { "cap": 4, "class": "prepaid-quota", "max_probe_ceiling": 4, "models": { "glm-5-2": { "cap": 3, "max_probe_ceiling": 3 }, "swe-1-7": { "cap": 4, "max_probe_ceiling": 4 } } },
+    "commandcode": { "cap": 2, "class": "free", "max_probe_ceiling": 4, "models": { "deepseek/deepseek-v4-flash": 4 } }
+  }
+}
+JSON
+jq -nc '{providers:{devin:{learned_cap:2,last_result:"backoff",bench_until:null,last_at:"2026-09-05T16:00:00Z"},commandcode:{learned_cap:3,last_result:"probe",bench_until:null,last_at:"2026-09-05T16:00:00Z"}}}' >"$learned3690"
+run reset_learned_caps_on_provider_change "$scratch/caps-3690-old.json" "$scratch/caps-3690-new-ram.json" "$learned3690" 2>/dev/null
+# Both providers' learned state must survive the unrelated ram_gb change.
+devin_lc=$(jq -r '.providers.devin.learned_cap // "gone"' "$learned3690")
+cc_lc=$(jq -r '.providers.commandcode.learned_cap // "gone"' "$learned3690")
+[[ "$devin_lc" == "2" ]] || fail "#3690: ram_gb-only change must preserve devin learned_cap (got $devin_lc)"
+[[ "$cc_lc" == "3" ]] || fail "#3690: ram_gb-only change must preserve commandcode learned_cap (got $cc_lc)"
+ok "#3690: unrelated ram_gb_per_worker change preserves all learned AIMD state"
+
+# Now change ONLY commandcode's cap block. devin must survive, commandcode reset.
+cat >"$scratch/caps-3690-new-cc.json" <<'JSON'
+{
+  "ram_gb_per_worker": 1.5,
+  "providers": {
+    "devin": { "cap": 4, "class": "prepaid-quota", "max_probe_ceiling": 4, "models": { "glm-5-2": { "cap": 3, "max_probe_ceiling": 3 }, "swe-1-7": { "cap": 4, "max_probe_ceiling": 4 } } },
+    "commandcode": { "cap": 3, "class": "free", "max_probe_ceiling": 6, "models": { "deepseek/deepseek-v4-flash": 6 } }
+  }
+}
+JSON
+jq -nc '{providers:{devin:{learned_cap:2,last_result:"backoff",bench_until:null,last_at:"2026-09-05T16:00:00Z"},commandcode:{learned_cap:3,last_result:"probe",bench_until:null,last_at:"2026-09-05T16:00:00Z"},"devin/glm-5-2":{learned_cap:3,last_result:"probe",bench_until:null,last_at:"2026-09-05T16:00:00Z"}}}' >"$learned3690"
+run reset_learned_caps_on_provider_change "$scratch/caps-3690-old.json" "$scratch/caps-3690-new-cc.json" "$learned3690" 2>/dev/null
+devin_lc=$(jq -r '.providers.devin.learned_cap // "gone"' "$learned3690")
+devin_glm_lc=$(jq -r '.providers["devin/glm-5-2"].learned_cap // "gone"' "$learned3690")
+cc_lc=$(jq -r '.providers.commandcode.learned_cap // "gone"' "$learned3690")
+cc_ramp=$(jq -r '.providers.commandcode.ramp | tostring // "gone"' "$learned3690")
+[[ "$devin_lc" == "2" ]] || fail "#3690: commandcode-only change must preserve devin learned_cap (got $devin_lc)"
+[[ "$devin_glm_lc" == "3" ]] || fail "#3690: commandcode-only change must preserve devin/glm-5-2 model learned_cap (got $devin_glm_lc)"
+[[ "$cc_lc" == "1" ]] || fail "#3690: changed commandcode must reset to floor/2=1 (got $cc_lc)"
+[[ "$cc_ramp" == "true" ]] || fail "#3690: changed commandcode must have ramp=true (got $cc_ramp)"
+ok "#3690: provider-specific change resets only that provider (devin preserved, commandcode ramp=floor/2)"
+
+# --- #3690 invariant 2: ramp=true -> effective cap starts low, not declared --
+# Seed a ramp entry for devin (cap=4, learned_cap=2, ramp=true) and verify
+# effective_provider_cap returns 2, not 4.
+rm -f "$state3690"/active-seats/*.json "$scratch/ledger-3690"/*.json
+jq -nc '{providers:{devin:{learned_cap:2,last_result:"ramp",ramp:true,bench_until:null,last_at:"2026-09-05T16:00:00Z"}}}' >"$learned3690"
+cp "$scratch/caps-3690-old.json" "$caps3690"
+eff=$(SEAT_CAPS_JSON="$caps3690" LEARNED_CAPS_JSON="$learned3690" PI_PACKET_STATE="$state3690" \
+    PI_SEAT_HEALTH_LEDGER_DIR="$scratch/ledger-3690" \
+    bash -c 'source "$0" 2>/dev/null; load_seat_caps; load_learned_caps; effective_provider_cap devin' "$lib")
+[[ "$eff" == "2" ]] || fail "#3690: ramp=true effective_provider_cap must return learned 2, not declared 4 (got $eff)"
+ok "#3690: ramp=true -> effective cap is 2 (floor/2), not 4 (declared) — no first-tick burst"
+
+# Verify ramp graduates: after a probe to declared, ramp clears.
+# Seed ramp at learned_cap=3 (one below declared 4). A probe to 4 graduates.
+jq -nc '{providers:{devin:{learned_cap:3,last_result:"ramp",ramp:true,bench_until:null,last_at:"2026-09-05T16:00:00Z"}}}' >"$learned3690"
+# Seed 3 active devin seats so the probe gate (active==eff) passes.
+for (( i = 0; i < 3; i++ )); do
+    jq -nc --arg u "pi-3690-devin-$i" \
+        '{provider:"devin",model:"glm-5-2",unit:$u,started_at:"2026-09-05T16:00:00Z"}' \
+        > "$state3690/active-seats/pi-3690-devin-$i.json"
+done
+set +e
+SEAT_CAPS_JSON="$caps3690" LEARNED_CAPS_JSON="$learned3690" PI_PACKET_STATE="$state3690" \
+    PI_SEAT_HEALTH_LEDGER_DIR="$scratch/ledger-3690" \
+    PI_MODELS_JSON="$scratch/models.json" \
+    LEARNED_CAPS_AUDIT="$scratch/audit-3690.log" \
+    PI_SEAT_LIB_CHECK_SYSTEMD=0 PI_SEAT_CREDENTIAL_PRECHECK=0 SEAT_MIN_FREE_RAM_MB=0 \
+    bash -c 'source "$0" 2>/dev/null; load_seat_caps; load_learned_caps; _aimd_probe_admitted devin 3 3' "$lib"
+set -e
+graduated_lc=$(jq -r '.providers.devin.learned_cap // "gone"' "$learned3690")
+# jq `//` treats false as empty, so use `| tostring` to distinguish false from missing.
+graduated_ramp=$(jq -r '.providers.devin.ramp | tostring // "gone"' "$learned3690")
+[[ "$graduated_lc" == "4" ]] || fail "#3690: probe from ramp 3->4 must record learned_cap=4 (got $graduated_lc)"
+[[ "$graduated_ramp" == "false" ]] || fail "#3690: reaching declared must clear ramp (got $graduated_ramp)"
+ok "#3690: ramp graduates on probe to declared (learned 3->4, ramp cleared)"
+
+# --- #3690 invariant 3: per-tick per-provider spawn cap (devin max 2/tick) ---
+# Build a cap file with tick_spawn_cap:2 on devin. Three consecutive pick_seat
+# calls in the same tick (no reset between them) must route only 2 to devin;
+# the 3rd must skip devin and fall through to another provider.
+caps3690_spawn="$scratch/seat-caps-3690-spawn.json"
+state3690_spawn="$scratch/state-3690-spawn"
+learned3690_spawn="$scratch/learned-caps-3690-spawn.json"
+counts3690="$scratch/tick-spawn-counts.json"
+mkdir -p "$state3690_spawn/active-seats" "$scratch/ledger-3690-spawn"
+cat >"$scratch/models-3690-spawn.json" <<'JSON'
+{
+  "providers": {
+    "devin": { "models": [ { "id": "glm-5-2", "cost": { "input": 0 } } ] },
+    "commandcode": { "models": [ { "id": "deepseek/deepseek-v4-flash", "cost": { "input": 0 } } ] }
+  }
+}
+JSON
+cat >"$caps3690_spawn" <<'JSON'
+{
+  "ram_gb_per_worker": 0.5,
+  "prepaid_providers_in_order": ["devin"],
+  "providers": {
+    "devin": { "cap": 4, "class": "prepaid-quota", "max_probe_ceiling": 4, "tick_spawn_cap": 2, "models": { "glm-5-2": { "cap": 4, "max_probe_ceiling": 4 } } },
+    "commandcode": { "cap": 2, "class": "metered", "max_probe_ceiling": 4, "models": { "deepseek/deepseek-v4-flash": 4 } }
+  }
+}
+JSON
+echo '{"providers":{}}' >"$learned3690_spawn"
+echo '{}' >"$counts3690"
+# devin is prepaid-quota (picked before metered commandcode), so picks 1 and 2
+# route to devin; pick 3 hits the cap and must fall through to commandcode.
+pick3690() {
+    SEAT_CAPS_JSON="$caps3690_spawn" \
+    LEARNED_CAPS_JSON="$learned3690_spawn" \
+    PI_PACKET_STATE="$state3690_spawn" \
+    PI_SEAT_HEALTH_LEDGER_DIR="$scratch/ledger-3690-spawn" \
+    PI_MODELS_JSON="$scratch/models-3690-spawn.json" \
+    SEAT_TICK_SPAWN_COUNTS_JSON="$counts3690" \
+    bash -c 'source "$0" 2>/dev/null; pick_seat "" "" 0 "" light 2>/dev/null' "$lib"
+}
+p1=$(pick3690)
+p2=$(pick3690)
+p3=$(pick3690)
+[[ "$p1" == devin* ]] || fail "#3690: 1st pick must route to devin (got '$p1')"
+[[ "$p2" == devin* ]] || fail "#3690: 2nd pick must route to devin (got '$p2')"
+[[ "$p3" != devin* ]] || fail "#3690: 3rd pick must NOT route to devin (spawn cap 2 reached), got '$p3'"
+[[ "$p3" == commandcode* ]] || fail "#3690: 3rd pick must fall through to commandcode (got '$p3')"
+devin_count=$(jq -r '.devin // 0' "$counts3690")
+[[ "$devin_count" == "2" ]] || fail "#3690: tick spawn counter must show 2 devin picks (got $devin_count)"
+ok "#3690: per-tick spawn cap 2 limits devin to 2 picks; 3rd falls through to commandcode"
+
+# After reset_tick_spawn_counts, devin picks resume.
+SEAT_TICK_SPAWN_COUNTS_JSON="$counts3690" \
+    bash -c 'source "$0" 2>/dev/null; reset_tick_spawn_counts' "$lib"
+p4=$(pick3690)
+[[ "$p4" == devin* ]] || fail "#3690: after reset, 1st pick must route to devin again (got '$p4')"
+ok "#3690: reset_tick_spawn_counts clears the counter; devin picks resume next tick"
+
 # Full suite includes the convergence replay as a final invariant.
 run_empty_run_convergence
 ok "fleet-ops#3760: empty-run convergence replay passed (production default EMPTY_RUN_FAILURE_CEILING=3)"

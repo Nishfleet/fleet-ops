@@ -810,6 +810,11 @@ _audition_file_verdict() {
 # Run the audition lane (fail-open: any error is logged and the tick continues).
 audition_inject_and_retire 2>&1 || echo "audition: non-fatal error (fail-open)"
 
+# fleet-ops#3690: reset per-tick per-provider spawn counters at the start of
+# each tick so pick_seat's tick_spawn_cap gate counts only this tick's spawns.
+# Best-effort: a write failure degrades the cap to unlimited (never blocks).
+reset_tick_spawn_counts 2>/dev/null || true
+
 # Step 2: capacity (P4-A — fleet-ops config/seat-caps.json, not a hardcoded cap)
 caps_sum=$(total_seat_cap 2>/dev/null || echo 0)
 ram_cap=$(ram_governor_cap 2>/dev/null || echo 9999)
