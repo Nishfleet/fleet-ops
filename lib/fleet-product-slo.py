@@ -21,7 +21,7 @@ Metric family:
 Sources:
   - config/intake-repos.json repos[] (product candidates)
   - config/self-maintenance-repos.json (control-plane exclusion)
-  - gh GraphQL search of merged PRs (cached, 6h TTL)
+  - gh GraphQL search of merged PRs per product repo (cached, 15m TTL)
 
 Piggybacks fleet-metrics-export.service via
 systemd/fleet-metrics-export.service.d/product-slo.conf — no new timer
@@ -84,7 +84,12 @@ FIXTURE = os.environ.get("FLEET_PRODUCT_SLO_FIXTURE", "")
 NOW_ISO = os.environ.get("FLEET_PRODUCT_SLO_NOW", "")
 GH = os.environ.get("FLEET_PRODUCT_SLO_GH", "gh")
 ORG = os.environ.get("FLEET_PRODUCT_SLO_ORG", "Nishfleet")
-TTL = int(os.environ.get("FLEET_PRODUCT_SLO_TTL", "21600"))  # 6h
+# fleet-ops#3984: 15m TTL (was 6h). The shipped_24h tile reads this cache,
+# so a 6h-stale cache undercounted the trailing-24h window by up to ~8
+# merges (the "window edge" miss). 15m keeps the 24h count within the
+# console verifier's abs<=2 tolerance while staying well under the gh
+# search rate limit (per-repo fetch, ~10 pages per refresh).
+TTL = int(os.environ.get("FLEET_PRODUCT_SLO_TTL", "900"))  # 15m
 STALE = int(os.environ.get("FLEET_PRODUCT_SLO_STALE", "86400"))  # 24h
 GH_TIMEOUT = 60
 GH_PAGES = 10
@@ -202,7 +207,7 @@ query($cursor: String) {
         mergedAt
         repository { nameWithOwner }
         closingIssuesReferences(first: 5) {
-          nodes { number createdAt labels(first: 20) { name } }
+          nodes { number createdAt labels(first: 20) { nodes { name } } }
         }
       }
     }
@@ -443,12 +448,25 @@ def _search_merged_prs(query: str) -> list[MergedPR] | None:
     return out
 
 
-def _fetch_merged_prs(cutoff: datetime) -> list[MergedPR] | None:
-    cutoff_iso = cutoff.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    query = (
-        MERGED_SEARCH.replace("{ORG}", ORG).replace("{CUTOFF}", cutoff_iso)
-    )
-    return _search_merged_prs(query)
+def _fetch_product_merged_prs(
+    repos: list[str], cutoff: datetime
+) -> list[MergedPR] | None:
+    """Fetch the trailing-28d merged PRs per product repo and combine.
+
+    Per-repo, not org-wide: the org-wide search is capped at 1000 results
+    (GitHub search API limit), and fleet-ops (self-maintenance) alone
+    exceeds that in 28d, silently truncating product repos' older merges
+    and undercounting shipped_24h. Each product repo merges well under
+    1000 in 28d, so a per-repo search fully covers the window
+    (fleet-ops#3984).
+    """
+    out: list[MergedPR] = []
+    for repo in repos:
+        repo_prs = _fetch_repo_merged_prs(repo, cutoff)
+        if repo_prs is None:
+            return None
+        out.extend(repo_prs)
+    return out
 
 
 def _fetch_repo_merged_prs(
@@ -536,7 +554,7 @@ def _rows_to_prs(rows: list[dict[str, Any]]) -> list[MergedPR]:
     return out
 
 
-def load_merged_prs(now: datetime) -> list[MergedPR] | None:
+def load_merged_prs(now: datetime, repos: list[str]) -> list[MergedPR] | None:
     """Cached merged-PR list covering the trailing 28d, or None on hard miss."""
     cached_rows, fetched_at = _cache_read()
     now_ts = now.timestamp()
@@ -546,7 +564,7 @@ def load_merged_prs(now: datetime) -> list[MergedPR] | None:
             return _rows_to_prs(cached_rows)
 
     cutoff = now - timedelta(seconds=MONTH_S)
-    fresh = _fetch_merged_prs(cutoff)
+    fresh = _fetch_product_merged_prs(repos, cutoff)
     if fresh is not None:
         _cache_write(fresh, now_ts)
         return fresh
@@ -964,7 +982,7 @@ def main(argv: list[str] | None = None) -> int:
             repos, prs = load_fixture(FIXTURE)
         else:
             repos = load_product_repos()
-            prs_or_none = load_merged_prs(end)
+            prs_or_none = load_merged_prs(end, repos)
             if prs_or_none is None:
                 raise RuntimeError("merged-PR fetch failed and no usable cache")
             prs = prs_or_none

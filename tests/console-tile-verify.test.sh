@@ -142,6 +142,18 @@ assert m._within(10, 11, {"mode": "exact"}) is False
 assert m._within(0, 0, {"mode": "percent", "pct": 15}) is True
 print("OK: percent vs exact tolerance")
 
+# --- shipped_24h spot tolerance is tight (fleet-ops#3984) ---
+# The product-slo spot check used to be 20%, which hid a 12% miss (57 vs
+# 65). It must be tight (2% or abs<=2) so that class is caught, while a
+# small cache lag (delta<=2) still passes.
+sh_spec = m.SPECS["shipped_24h"]
+assert sh_spec["spot"]["tolerance"] == {"mode": "percent", "pct": 2}, \
+    sh_spec["spot"]["tolerance"]
+assert m._within(57, 65, {"mode": "percent", "pct": 2}) is False  # 12% miss caught
+assert m._within(47, 47, {"mode": "percent", "pct": 2}) is True   # exact
+assert m._within(47, 48, {"mode": "percent", "pct": 2}) is True   # abs<=2 floor
+print("OK: shipped_24h spot tolerance tightened to 2% or abs<=2")
+
 # --- attach_specs covers every tile ---
 empty = {"tiles": {k: {} for k in m.SPECS}}
 m.attach_specs(empty)

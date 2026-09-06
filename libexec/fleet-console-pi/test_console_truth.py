@@ -98,6 +98,43 @@ def test_zero_is_ok_when_cache_fresh(monkeypatch):
     assert ci["red_count"] == 0
 
 
+def test_shipped_org_total_secondary_line(monkeypatch):
+    """fleet-ops#3984: shipped_24h carries the org-wide trailing-24h merge
+    total (all repos incl. fleet-ops) as a secondary line, so the product-only
+    number is not read as org-wide. When the org-wide family is absent the
+    secondary line is hidden (None), never a lie."""
+    now = time.time()
+
+    def q(expr, timeout=5):
+        if "fleet_product_merged_24h" in expr:
+            return [{"metric": {"repo": "0509"}, "value": 47},
+                    {"metric": {"repo": "siterep-public"}, "value": 1}]
+        if "fleet_merged_prs_24h" in expr:
+            return [{"metric": {"repo": "Nishfleet/0509"}, "value": 47},
+                    {"metric": {"repo": "Nishfleet/fleet-ops"}, "value": 103}]
+        return []
+
+    monkeypatch.setattr(G, "_prom_query", q)
+    monkeypatch.setattr(G, "_product_slo_mtime", lambda: now)
+    sh = G.collect_shipped()
+    assert sh["ok"] is True
+    assert sh["count"] == 48          # product repos only
+    assert sh["org_total"] == 150     # all repos incl. fleet-ops
+
+    # Org-wide family absent (PromError) -> hide the secondary line (None),
+    # keep the tile ok.
+    def q_no_org(expr, timeout=5):
+        if "fleet_product_merged_24h" in expr:
+            return [{"metric": {"repo": "0509"}, "value": 47}]
+        raise G.PromError("org-wide family absent")
+
+    monkeypatch.setattr(G, "_prom_query", q_no_org)
+    sh2 = G.collect_shipped()
+    assert sh2["ok"] is True
+    assert sh2["count"] == 47
+    assert sh2["org_total"] is None
+
+
 def test_stale_textfile_hides_number(monkeypatch):
     """Frozen fleet.prom must not display its last scrape as live truth."""
     def q(expr, timeout=5):

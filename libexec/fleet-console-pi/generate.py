@@ -215,8 +215,18 @@ def collect_shipped():
             full = repo if "/" in repo else f"{ORG}/{repo}"
             items.append({"repo": full, "count": n})
     items.sort(key=lambda x: (-x["count"], x["repo"]))
+    # fleet-ops#3984: surface the org-wide trailing-24h merge total (all
+    # repos incl. fleet-ops) as a secondary line so the product-only number
+    # is not read as org-wide. fleet_merged_prs_24h is the org-wide family
+    # in fleet.prom; when it is absent, hide the secondary line (None).
+    org_total = 0
+    try:
+        for r in _prom_query("fleet_merged_prs_24h"):
+            org_total += int(r["value"])
+    except PromError:
+        org_total = None
     return _tile(src, PROM_STALE_S, True, mtime, count=total, items=items,
-                 explain=explain)
+                 org_total=org_total, explain=explain)
 
 
 def collect_open_prs():

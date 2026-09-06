@@ -97,7 +97,7 @@ SPECS = {
             "PromQL sum(fleet_product_merged_24h) @ 127.0.0.1:9090 "
             "(exact vs tile count) AND gh search prs "
             "'repo:<spot-repo> is:merged merged:>=<24h-iso> type:pr' "
-            "(percent vs that repo's item; product-slo family, 20% or abs<=2)"
+            "(percent vs that repo's item; product-slo family, 2% or abs<=2)"
         ),
         "field": "count",
         "tolerance": {"mode": "exact"},
@@ -107,7 +107,7 @@ SPECS = {
                 "gh api search/issues -f q='repo:<spot-repo> is:merged "
                 "merged:>=<24h-iso> type:pr' --jq .total_count"
             ),
-            "tolerance": {"mode": "percent", "pct": 20},
+            "tolerance": {"mode": "percent", "pct": 2},
             "runner": "shipped_gh_spot",
         },
     },
