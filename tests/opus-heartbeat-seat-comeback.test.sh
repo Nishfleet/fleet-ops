@@ -131,7 +131,15 @@ EOF
 # PROM_URL to dead port so promql degrades gracefully (defensive gather).
 # OPUS_HB_THOROUGH=1 so the thorough battery (incl. seat_probes_walled_comebacks)
 # is included in the snapshot.
-OPUS_HB_STATE="$TMPD" OPUS_HB_THOROUGH=1 SEATS_DIR="$SEATDIR" PROM_URL="http://127.0.0.1:9" \
+# fleet-ops#3983: SEAT_CAPS_JSON points at a synthetic empty caps file so the
+# gather's cap=0 intentional_cap_zero=corpse exclusion does not pick up the
+# live config and exclude the test's commandcode/minimax fixture (which is a
+# real walled seat in THIS test, not a retired corpse).
+cat > "$TMPD/seat-caps.json" << 'EOF'
+{"providers": {}}
+EOF
+OPUS_HB_STATE="$TMPD" OPUS_HB_THOROUGH=1 SEATS_DIR="$SEATDIR" \
+  SEAT_CAPS_JSON="$TMPD/seat-caps.json" PROM_URL="http://127.0.0.1:9" \
   python3 "$GATHER" >"$TMPD/snapshot.json" 2>"$TMPD/gather.err" \
   || fail "gather failed rc=$? (stderr: $(cat "$TMPD/gather.err"))"
 
