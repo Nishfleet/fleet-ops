@@ -662,16 +662,6 @@ def redispatch_real(alertname: str) -> tuple[int, bool]:
     openrouter/deepseek-v4-flash-0731, chain_stalled_total went 0->1 while
     the hop stayed open).
 
-    fleet-ops#3846: when dispatched=False the returned rc is NON-ZERO (1),
-    not the dispatcher's exit code. rc=0 now means "a unit was actually
-    dispatched" (DISPATCH line written); a skip/no-spawn is a non-zero trip
-    so the chain escalates instead of reporting success-without-dispatch
-    (live 2026-09-06T04:22:13Z: FleetMainRed REDISPATCH redispatch-rc=0
-    dispatched=False pinned the chain at hop=dispatch open=1 stalled=1
-    while the alert kept firing). The caller checks `not dispatched` first
-    for the descriptive escalation message; this rc makes the REDISPATCH
-    receipt and any rc consumer honest.
-
     The `since` marker is captured BEFORE the dispatcher runs so a stale
     DISPATCH line from an earlier dispatch cannot be mistaken for a unit
     spawned by THIS redispatch (fleet-ops#3625).
@@ -689,21 +679,6 @@ def redispatch_real(alertname: str) -> tuple[int, bool]:
         return 1, False
     rc = 0 if r.returncode == 0 else r.returncode
     dispatched = _dispatch_line_seen(alertname, since=before)
-    if not dispatched:
-        # fleet-ops#3846: rc=0 means a unit was ACTUALLY dispatched (a DISPATCH
-        # line was written to actions.log — the dispatch hop's observed
-        # terminal state, fleet-ops#3190). A skip (skip-list, class-park,
-        # claim-held, all-seats-wedged, no-spawn) or a dispatcher that exited
-        # 0 without spawning returns rc=0 from the dispatcher but wrote NO
-        # DISPATCH line — that is not success. Return a non-zero rc so the
-        # chain trips (escalates via the rc!=0 path) instead of reporting
-        # success-without-dispatch: the live 2026-09-06T04:22:13Z REDISPATCH
-        # receipt `redispatch-rc=0 dispatched=False` for FleetMainRed pinned
-        # the chain at hop=dispatch (open=1 stalled=1) while the alert kept
-        # firing — rc=0 read as success even though no unit was spawned. The
-        # caller still checks `not dispatched` first (descriptive message);
-        # this rc makes the receipt and any rc consumer honest.
-        rc = 1
     log(f"redispatch alertname={alertname} dispatcher_rc={r.returncode} "
         f"dispatched={dispatched}")
     return rc, dispatched
@@ -883,38 +858,30 @@ def take_ladder(chain: dict, hop: str, age: int, state: dict,
         rc, dispatched = redispatch_real(name)
         append_redispatch_log(name, hop, seat_label,
                               f"redispatch-rc={rc} dispatched={dispatched}")
+        if rc != 0:
+            write_stop_reason(chain, hop, age)
+            loud("UNREPAIRED-FAIL",
+                 f"alertname={name} hop={hop} age={age}s — redispatch failed "
+                 f"rc={rc}; STOP-REASON written")
+            return "stop-reason"
         if not dispatched:
             # fleet-ops#3190: rc=0 only proves the dispatcher RAN, not that
             # it spawned a unit. A skip (skip-list, class-park, claim-held,
-            # all-seats-wedged, no-spawn) returns WITHOUT writing a DISPATCH
-            # line — the dispatch hop's observed terminal state is the
-            # DISPATCH line in actions.log, not the exit code. Counting a
-            # skip as progress (ladder="redispatch") pinned DeployBlockedStuck
+            # all-seats-wedged, no-spawn) returns rc=0 WITHOUT writing a
+            # DISPATCH line — the dispatch hop's observed terminal state is
+            # the DISPATCH line in actions.log, not the exit code. Counting
+            # a skip as progress (ladder="redispatch") pinned DeployBlockedStuck
             # at hop=dispatch while chain_stalled_total went 0->1: each tick
             # saw rc=0, set ladder="redispatch", but no DISPATCH line ever
             # arrived, so classify() kept returning hop=dispatch and the
             # chain never advanced. Escalate instead — STOP-REASON hands
             # the chain to the senior conference, same as the no-op-redispatch
             # path above (fleet-ops#2247).
-            # fleet-ops#3846: redispatch_real now returns a NON-ZERO rc for
-            # this case, so the REDISPATCH receipt reads
-            # `redispatch-rc=<nonzero> dispatched=False` (an honest trip)
-            # instead of `redispatch-rc=0 dispatched=False` (success-without-
-            # dispatch, which pinned FleetMainRed at hop=dispatch open=1
-            # stalled=1 on 2026-09-06T04:22:13Z). This check fires first so
-            # the descriptive "no DISPATCH line" message is preserved; the
-            # rc!=0 guard below is the defensive crash path.
             write_stop_reason(chain, hop, age)
             loud("UNREPAIRED-FAIL",
-                 f"alertname={name} hop={hop} age={age}s — redispatch rc={rc} "
+                 f"alertname={name} hop={hop} age={age}s — redispatch rc=0 "
                  f"but no DISPATCH line (skip/no-spawn); dispatch hop did "
                  f"not reach terminal state; STOP-REASON (senior conference)")
-            return "stop-reason"
-        if rc != 0:
-            write_stop_reason(chain, hop, age)
-            loud("UNREPAIRED-FAIL",
-                 f"alertname={name} hop={hop} age={age}s — redispatch failed "
-                 f"rc={rc}; STOP-REASON written")
             return "stop-reason"
         loud("UNREPAIRED-FAIL",
              f"alertname={name} hop={hop} age={age}s — re-dispatched via "
