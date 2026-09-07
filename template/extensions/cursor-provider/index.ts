@@ -3,7 +3,7 @@
  *
  * Registers `cursor` as a Pi provider. Routes through the Cursor CLI:
  *   cursor-agent --print --api-key "$CURSOR_API_KEY" --model <model>
- *                --force --trust --workspace <workspace> -- <prompt>
+ *                --auto-review --trust --workspace <workspace> -- <prompt>
  *
  * Credential: $CURSOR_API_KEY from ~/fleet2/etc/cursor.env
  * Models (NON-NEGOTIABLE LOCK, Nish 2026-08-22):
@@ -143,7 +143,7 @@ function streamCursor(
 			}
 
 			// Build the command — same flags as implementation-worker-cursor-sub
-			// cursor-agent --print --model <model> --force --trust
+			// cursor-agent --print --model <model> --auto-review --trust
 			//   --workspace <workspace> -- <prompt>
 			const workspace = process.cwd();
 
@@ -152,7 +152,7 @@ function streamCursor(
 
 			// Run cursor-agent and capture output
 			// Use spawnSync (not execSync) to avoid shell parsing of the prompt
-			const child = spawnSync(cursorBin, ["--print", "--api-key", apiKey, "--model", model.id, "--force", "--trust", "--workspace", workspace, "--", prompt], {
+			const child = spawnSync(cursorBin, ["--print", "--api-key", apiKey, "--model", model.id, "--auto-review", "--trust", "--workspace", workspace, "--", prompt], {
 				cwd: workspace,
 				timeout: 2400000, // 40 min (2026-09-04 fleet-ops#3263: 30 min killed heavy packets at 1801s — same class as the devin-provider fix; pi hang watchdog is 2520s, provider must stay under it)
 				maxBuffer: 10 * 1024 * 1024, // 10MB
