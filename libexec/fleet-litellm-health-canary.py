@@ -26,11 +26,13 @@ binary is missing (organ not installed yet), the gauge is 0 and a
 debug line is logged, NOT a fail-loud exit — the organ-absent alert
 fires on the missing metric, not on this canary's exit code.
 
-Fail-loud: if the proxy is unreachable for the whole tick, exit 1 so the
-service lands in --state=failed and the global service.d/10-escalate.conf
-drop-in climbs the ladder. A single 5xx is recorded as proxy_up=0 but
-does NOT exit 1 (transient — the router's own cooldown handles it); only
-a connection-refused (organ dead) exits 1.
+Fail-loud: if the proxy is continuously unreachable for FLEET_LITELLM_DEAD_TOLERANCE_S
+seconds (default 60), exit 1 so the service lands in --state=failed and the global
+service.d/10-escalate.conf drop-in climbs the ladder. A single connection-refused
+tick is held (dead_since persisted in the state file) so a legitimate install/restart
+window that gaps one 60s tick does not false-trip. A single 5xx is recorded as
+proxy_up=0 but does NOT exit 1 (transient — the router's own cooldown handles it);
+only sustained connection-refused (organ dead) exits 1.
 
 No new scheduler for the proxy_up heartbeat: this canary runs on a 60s
 timer (systemd/fleet-litellm-health-canary.timer) because the proxy is a
@@ -86,7 +88,16 @@ DEFAULT_STATE = Path(
     os.environ.get("FLEET_LITELLM_STATE", "/home/nish/workspaces/agent-state/litellm/health.json")
 )
 DEFAULT_TIMEOUT_S = float(os.environ.get("FLEET_LITELLM_TIMEOUT_S", "10"))
-DEFAULT_PG_HOST = os.environ.get("FLEET_LITELLM_PG_HOST", "/var/run/postgresql")
+# Fail-loud only after the proxy has been continuously unreachable this long.
+# A single connection-refused tick can hit a legitimate restart window (the
+# proxy organ is a live daemon whose install/restart gaps ~one 60s tick, e.g.
+# the fleet-ops#4130 worker restarting organs to pick up config), so we hold
+# through that window and only climb the escalation ladder on sustained death
+# (<=2 min at the 60s default, honoring the unit's named '<2 min' reason).
+DEFAULT_DEAD_TOLERANCE_S = float(os.environ.get("FLEET_LITELLM_DEAD_TOLERANCE_S", "60"))
+DEFAULT_PG_HOST = os.environ.get(
+    "FLEET_LITELLM_PG_HOST", "/home/nish/.local/share/fleet-litellm-postgres/run"
+)
 DEFAULT_REDIS_HOST = os.environ.get("FLEET_LITELLM_REDIS_HOST", "127.0.0.1")
 DEFAULT_REDIS_PORT = os.environ.get("FLEET_LITELLM_REDIS_PORT", "6379")
 
@@ -107,6 +118,16 @@ def _atomic_write(path: Path, text: str, *, mode: int = 0o644) -> None:
             pass
         raise
     os.chmod(path, mode)
+
+
+def _load_state(path: Path) -> dict[str, Any]:
+    """Load the previous tick's state json (may be absent on first run)."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            doc = json.load(fh)
+        return doc if isinstance(doc, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
 
 
 def _organ_installed(venv: str) -> bool:
@@ -261,6 +282,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--prom", default=str(DEFAULT_PROM))
     p.add_argument("--state", default=str(DEFAULT_STATE))
     p.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_S)
+    p.add_argument("--dead-tolerance", type=float, default=DEFAULT_DEAD_TOLERANCE_S)
     p.add_argument("--venv", default=DEFAULT_VENV)
     p.add_argument("--quiet", action="store_true")
     args = p.parse_args(argv)
@@ -295,12 +317,45 @@ def main(argv: list[str] | None = None) -> int:
     redis_up = _probe_redis(DEFAULT_REDIS_HOST, DEFAULT_REDIS_PORT)
 
     if status == 0:
-        # Organ dead — connection refused. Fail loud so the escalation
-        # drop-in climbs the ladder. This is the P4 drill condition.
-        if not args.quiet:
-            print(f"fleet-litellm-health-canary: proxy unreachable at {url} (organ dead)", file=sys.stderr)
+        # Organ unreachable — connection refused. Hold through a single-tick
+        # restart window (dead_since persisted in the state file), and only
+        # fail loud once continuously unreachable for --dead-tolerance
+        # seconds. The prom file is still written proxy_up=0 immediately so
+        # the freshness/absent rules surface real death even mid-window.
+        state = _load_state(args.state)
+        dead_since = state.get("dead_since")
+        if not isinstance(dead_since, (int, float)):
+            dead_since = now
+        elapsed = now - float(dead_since)
         _atomic_write(Path(args.prom), render_prom(now, 0, {}, pg_up, redis_up, 1))
-        return 1
+        state.update(
+            {
+                "now": int(now),
+                "proxy_up": 0,
+                "status": 0,
+                "groups": {},
+                "postgres_up": pg_up,
+                "redis_up": redis_up,
+                "dead_since": int(dead_since),
+            }
+        )
+        _atomic_write(Path(args.state), json.dumps(state, indent=2, sort_keys=True))
+        if elapsed >= args.dead_tolerance:
+            if not args.quiet:
+                print(
+                    f"fleet-litellm-health-canary: proxy unreachable at {url} "
+                    f"for {int(elapsed)}s >= {int(args.dead_tolerance)}s (organ dead)",
+                    file=sys.stderr,
+                )
+            return 1
+        if not args.quiet:
+            print(
+                f"fleet-litellm-health-canary: proxy unreachable at {url} "
+                f"(dead {int(elapsed)}s < {int(args.dead_tolerance)}s tolerance, "
+                f"likely restart window — holding)",
+                file=sys.stderr,
+            )
+        return 0
 
     proxy_up = 1 if status == 200 else 0
     groups = _parse_readiness(body) if proxy_up else {}
@@ -314,6 +369,7 @@ def main(argv: list[str] | None = None) -> int:
         "groups": groups,
         "postgres_up": pg_up,
         "redis_up": redis_up,
+        "dead_since": None,
     }
     _atomic_write(Path(args.state), json.dumps(state, indent=2, sort_keys=True))
 
