@@ -126,7 +126,13 @@ resolvers. **The repo file is a shape reference only — it is NOT in
 MANIFEST and `install.sh` never touches this path.** It carries
 `*.example` baseUrls and env-var key names; installing it over a live
 router replaces the operator's real seat set with placeholders
-(fleet-ops#4174 reopen). **LiteLLM 1.98 does NOT support a command-style
+(fleet-ops#4174 reopen).
+
+**Fresh checkout:** the live file is operator-owned and is never seeded
+by `install.sh`. On a fresh checkout there is no live file, so the proxy
+unit's `ConditionPathExists` stays false and the proxy intentionally does
+not start — that is fail-closed by design, not a fault. The operator
+creates the live copy by hand per this section before the proxy runs. **LiteLLM 1.98 does NOT support a command-style
 `api_key:` resolver** — that assumption in the original shape was wrong.
 The supported form is `api_key: os.environ/<NAME>` (litellm
 `secret_managers`), so the live copy names env vars and §3a's start wrapper
