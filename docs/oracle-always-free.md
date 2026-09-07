@@ -14,9 +14,16 @@ and runs Uptime Kuma. As a second effect it is a spare tailnet node — an
 emergency SSH bastion if netcup's Tailscale ever dies while ufw stays shut.
 
 **Cost: $0.** Everything below is inside Oracle's Always Free allowance
-(2x VM.Standard.E2.1.Micro, plus 4 OCPU / 24 GB of VM.Standard.A1.Flex, plus
-200 GB block storage, plus 10 TB/month egress). Nothing here upgrades to Pay As
-You Go. Backups stay on Cloudflare R2 — this box is **not** a backup target.
+(2x VM.Standard.E2.1.Micro, plus **2 OCPU / 12 GB** of VM.Standard.A1.Flex,
+plus 200 GB of block storage across *all* volumes, plus 10 TB/month egress).
+Nothing here upgrades to Pay As You Go. Backups stay on Cloudflare R2 — this
+box is **not** a backup target.
+
+> **The A1 allowance was cut from 4 OCPU / 24 GB to 2 OCPU / 12 GB.** Oracle
+> surfaces this as a console banner, "Always Free A1 Resource Limit Update",
+> and it is confirmed in the Always Free docs (checked 2026-09-07). Older
+> guides — and the first version of this one — still say 4/24. They are wrong
+> now, and acting on them costs money.
 
 ---
 
@@ -178,19 +185,30 @@ it survives someone narrowing rule 1 later.
 
 ## ARM fishing
 
-`VM.Standard.A1.Flex` — 4 OCPU / 24 GB of it — is the valuable half of Always
-Free, and it is "Out of host capacity" in most regions most of the time.
-There is no waitlist and no event to subscribe to. Repeated `LaunchInstance`
-calls are the only documented route in.
+`VM.Standard.A1.Flex` is the valuable half of Always Free, and it is "Out of
+host capacity" in most regions most of the time. There is no waitlist and no
+event to subscribe to. Repeated `LaunchInstance` calls are the only documented
+route in.
+
+**The allowance is 2 OCPU / 12 GB, and it is metered by the hour, not by
+shape:** 1,500 OCPU-hours and 9,000 GB-hours per month. Divide by a 730-hour
+month and that is 2.05 OCPU and 12.3 GB — i.e. exactly 2/12 running
+continuously, with almost no headroom. A larger shape does not fail at launch
+and bill you later; it drains the monthly budget early and starts charging
+partway through the month, quietly. **2/12 is the ceiling, not an opening bid,
+and there is nothing to resize up to.**
+
+`oracle-arm-fish` refuses to launch above 2 OCPU / 12 GB / 150 GB boot and
+exits 1 (`state=error reason=exceeds-always-free`). The knobs are
+env-overridable downward only — nothing can grow the ask past the free ceiling
+by accident.
 
 * `oracle-arm-fish` is **one ask**, not a loop. `oracle-arm-fish.timer` owns
   the repetition (fleet rule: no hand-built dispatchers in bash).
 * **Every 10 minutes, deliberately.** Oracle rate-limits `LaunchInstance` and
   has revoked Always Free tenancies for hammering it. Faster is not better;
   faster loses the account.
-* It asks for **2 OCPU / 12 GB first** — a smaller ask finds a slot far more
-  often, and the shape resizes afterwards. Oracle counts the *allowance*, not
-  the instance, so landing any A1 node is the win.
+* It asks for **2 OCPU / 12 GB** — the entire allowance, in one instance.
 * It rotates across every availability domain in the home region each tick.
 * **It disables itself** the moment an instance reaches RUNNING, and appends an
   informational line to `NISH-ESCALATIONS.md`.
@@ -207,8 +225,14 @@ ARM-FISH-VERDICT state=error       a real fault -> exit 1 -> OnFailure summons r
 
 "Out of host capacity" exits **0**, so the expected miss never pages anyone.
 
-After it lands: resize toward 4 OCPU / 24 GB / 200 GB boot if capacity allows,
-join it to the tailnet the same way as the micro, and add it to ufw.
+After it lands: **do not resize it up** — 2/12 is already the whole allowance.
+Join it to the tailnet the same way as the micro, and add it to ufw.
+
+**Block volume arithmetic.** Always Free is 200 GB across *every* volume, and
+each instance takes a boot volume (47 GB minimum, 50 GB default). The budget
+here is the micro's 50 GB plus the ARM node's 100 GB = 150 GB, leaving 50 GB
+spare. Do not grow either boot volume to 200 GB — that alone consumes the whole
+allowance and puts the other instance's disk into billing.
 
 ---
 

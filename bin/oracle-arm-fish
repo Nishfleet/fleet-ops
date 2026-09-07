@@ -1,10 +1,18 @@
 #!/usr/bin/env bash
 # oracle-arm-fish — one tick of the OCI Always Free ARM (A1.Flex) capacity hunt.
 #
-# Oracle's Always Free ARM allowance (4 OCPU / 24 GB of VM.Standard.A1.Flex) is
-# real but almost never has capacity in a busy region: `LaunchInstance` returns
-# "Out of host capacity" until a slot frees. The only way onto ARM without
-# paying is to keep asking. This script IS one ask; systemd owns the repetition.
+# Oracle's Always Free ARM allowance is real but almost never has capacity in a
+# busy region: `LaunchInstance` returns "Out of host capacity" until a slot
+# frees. The only way onto ARM without paying is to keep asking. This script IS
+# one ask; systemd owns the repetition.
+#
+# THE ALLOWANCE IS 2 OCPU / 12 GB (Oracle cut it from 4/24; console banner
+# "Always Free A1 Resource Limit Update", confirmed in the Always Free docs on
+# 2026-09-07). It is metered as 1,500 OCPU-hours + 9,000 GB-hours per MONTH,
+# which is exactly 2 OCPU / 12 GB running continuously — 1500/730h = 2.05 OCPU,
+# 9000/730h = 12.3 GB. So a bigger shape does not merely risk a bill later: it
+# burns the monthly budget early and starts charging partway through the month.
+# 2/12 is the CEILING, not an opening bid, and there is nothing to resize up to.
 #
 # Deliberately NOT a poll loop in bash (fleet standing rule: no hand-built
 # dispatchers). One tick, one exit. oracle-arm-fish.timer schedules it every
@@ -67,12 +75,22 @@ if [ "${#ADS[@]}" -eq 0 ]; then
 fi
 [ "${#ADS[@]}" -gt 0 ] || { verdict error "reason=no-availability-domains"; exit 1; }
 
-# Ladder: 2 OCPU / 12 GB first. A smaller ask finds a slot far more often than
-# the full 4/24, and the shape is resizable afterwards — landing ANY A1 node is
-# what matters, because Oracle counts the allowance, not the instance.
+# 2 OCPU / 12 GB is the whole Always Free A1 allowance. Not a first rung.
 OCPUS=${FLEET_ARM_OCPUS:-2}
 MEMGB=${FLEET_ARM_MEM_GB:-12}
+# Block Volume Always Free is 200 GB across ALL volumes, and every instance
+# takes a boot volume (47 GB minimum, 50 GB default). 100 GB here leaves room
+# for the micro's 50 GB with 50 GB to spare.
 BOOTGB=${FLEET_ARM_BOOT_GB:-100}
+
+# Zero-spend rail. The three knobs above are env-overridable so a future
+# operator can shrink the ask; nothing should be able to GROW it past the free
+# ceiling by accident, because Oracle bills the overage silently rather than
+# refusing the launch. Fail closed.
+if [ "$OCPUS" -gt 2 ] || [ "$MEMGB" -gt 12 ] || [ "$BOOTGB" -gt 150 ]; then
+  verdict error "reason=exceeds-always-free ocpus=$OCPUS mem=${MEMGB}GB boot=${BOOTGB}GB (ceiling 2/12/150)"
+  exit 1
+fi
 
 CAPACITY_MISS=0
 ERRFILE=$(mktemp)
