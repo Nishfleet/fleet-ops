@@ -715,3 +715,11 @@ bash "$here/0509-surface-probe-deleted.test.sh"
 # cannot push .github/workflows/**). Hermetic (repo-only checks, no
 # gh/prometheus/systemd).
 bash "$here/fleet-litellm-organ.test.sh"
+
+# fleet-ops#4130 P3a: the PI_SEAT_SOURCE=litellm env-switch test. Proves the
+# five worker seat-selection callers route to their LiteLLM proxy group when
+# PI_SEAT_SOURCE=litellm and keep the default seat-lib path unchanged.
+# Hosted here so P14 runs it without a workflow-file edit (the worker App
+# cannot push .github/workflows/**). Hermetic (stubbed seat-lib + pi, no
+# gh/prometheus/systemd).
+bash "$here/pi-seat-source-litellm.test.sh"

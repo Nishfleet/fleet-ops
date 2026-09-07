@@ -94,24 +94,38 @@ seat_log "pi-packet-run: $pid target repo=${pkt_repo:-<none>} privacy=$pkt_priva
 # repo carries the product flag in config/intake-repos.json.
 export PI_PACKET_REPO="${pkt_repo:-}"
 
-seat=$(pick_seat "$fail_p" "$fail_m" "$need_capable" "$tried_file" "$difficulty" "$pkt_privacy" || true)
-if [[ -z "$seat" ]]; then
-    if [[ "$difficulty" == "keystone" ]]; then
-        seat_log "pi-packet-run: KEYSTONE ESCALATION for $pid (tried: $(tr '\n' ' ' < "$tried_file" 2>/dev/null || true)) — exiting 1 so OnFailure summons senior conference"
-    else
-        seat_log "pi-packet-run: no alternate seat for $pid (tried: $(tr '\n' ' ' < "$tried_file" 2>/dev/null || true)) — exiting 1 so OnFailure escalates"
+# fleet-ops#4130 P3a: PI_SEAT_SOURCE=litellm routes this caller to the
+# LiteLLM proxy group instead of pick_seat. Default seat-lib is unchanged.
+# Group: worker-capable for heavy/keystone, else worker-cheap. A private-repo
+# target uses the litellm-private provider (the proxy's sk-fleet-private
+# virtual key, fail-closed: no free lane reachable).
+PI_SEAT_SOURCE="${PI_SEAT_SOURCE:-seat-lib}"
+if [[ "$PI_SEAT_SOURCE" == "litellm" ]]; then
+    np="litellm"
+    nm="worker-cheap"
+    [[ "$need_capable" == "1" ]] && nm="worker-capable"
+    if [[ "$pkt_privacy" == "private" ]]; then
+        np="litellm-private"
     fi
-    exit 1
+else
+    seat=$(pick_seat "$fail_p" "$fail_m" "$need_capable" "$tried_file" "$difficulty" "$pkt_privacy" || true)
+    if [[ -z "$seat" ]]; then
+        if [[ "$difficulty" == "keystone" ]]; then
+            seat_log "pi-packet-run: KEYSTONE ESCALATION for $pid (tried: $(tr '\n' ' ' < "$tried_file" 2>/dev/null || true)) — exiting 1 so OnFailure summons senior conference"
+        else
+            seat_log "pi-packet-run: no alternate seat for $pid (tried: $(tr '\n' ' ' < "$tried_file" 2>/dev/null || true)) — exiting 1 so OnFailure escalates"
+        fi
+        exit 1
+    fi
+    np=$(printf '%s' "$seat" | cut -f1)
+    nm=$(printf '%s' "$seat" | cut -f2)
 fi
-
-np=$(printf '%s' "$seat" | cut -f1)
-nm=$(printf '%s' "$seat" | cut -f2)
 
 # Record this seat as tried BEFORE running, so a concurrent restart cannot
 # pick the same one. Append "provider/model" per line.
 printf '%s/%s\n' "$np" "$nm" >>"$tried_file"
 
-seat_log "pi-packet-run: $pid running on $np/$nm (weight=$difficulty, tried: $(wc -l < "$tried_file") seat(s))"
+seat_log "pi-packet-run: $pid running on $np/$nm (weight=$difficulty, seat_source=$PI_SEAT_SOURCE, tried: $(wc -l < "$tried_file") seat(s))"
 
 # --- run pi, capture stdout/stderr --------------------------------------------
 # pi reads the packet from stdin. We capture stdout to measure output size

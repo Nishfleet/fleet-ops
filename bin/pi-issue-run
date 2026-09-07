@@ -330,6 +330,22 @@ if [[ -f "$ATTEMPTS_DIR/pi-issue-${inst}.prefer-class" ]]; then
 fi
 export PI_PICK_PREFER_CLASS
 
+# fleet-ops#4130 P3a: PI_SEAT_SOURCE=litellm routes this caller to the
+# LiteLLM proxy group instead of pick_seat. Default seat-lib is unchanged.
+# Group: worker-capable for heavy/keystone, else worker-cheap. A private-repo
+# target uses the litellm-private provider (the proxy's sk-fleet-private
+# virtual key, fail-closed: no free lane reachable). The litellm path is a
+# one-liner: no tried-seats files, no ledgers, no bench markers.
+PI_SEAT_SOURCE="${PI_SEAT_SOURCE:-seat-lib}"
+if [[ "$PI_SEAT_SOURCE" == "litellm" ]]; then
+    np="litellm"
+    nm="worker-cheap"
+    [[ "$need_capable" == "1" ]] && nm="worker-capable"
+    if [[ "$pkt_privacy" == "private" ]]; then
+        np="litellm-private"
+    fi
+    seat_log "pi-issue-run: $inst running on $np/$nm (weight=$difficulty, seat_source=litellm)"
+else
 # First attempt: no exclusions. Subsequent attempts (after a restart) carry
 # the previously-tried seats in $tried_file; pick_seat excludes them all.
 seat=$(pick_seat "" "" "$need_capable" "$tried_file" "$difficulty" "$pkt_privacy" || true)
@@ -402,6 +418,7 @@ clear_active_seat "pi-issue-${inst}" 2>/dev/null || true
 register_active_seat "pi-issue-${inst}" "$np" "$nm"
 
 seat_log "pi-issue-run: $inst running on $np/$nm (weight=$difficulty, tried: $(wc -l < "$tried_file") seat(s))"
+fi
 
 # --- P14: mint a short-lived nishfleet-worker installation token ------------
 # The App creds file must exist. Creds present and mint fails → scream, do not
