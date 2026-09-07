@@ -281,12 +281,6 @@
       "endorsement": "ledger TOP GEAR; repo drop-in"
     },
     {
-      "unit": "agent-governor-orphan-watchdog",
-      "class": "a",
-      "source": "hand-placed",
-      "endorsement": "issue: known-mandatory"
-    },
-    {
       "unit": "fleet-metrics-export",
       "class": "a",
       "source": "hand-placed",

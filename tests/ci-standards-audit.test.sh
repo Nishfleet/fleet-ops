@@ -749,3 +749,14 @@ bash "$here/codex-launcher-retired.test.sh"
 # Hosted here so P14 runs it without a workflow-file edit (the worker App
 # cannot push .github/workflows/**). Hermetic (repo-only; promtool optional).
 bash "$here/fleet-duty-officer-recording.test.sh"
+
+
+# fleet-ops#4147 (child of #4140 row 8): the hand-built load-storm brake
+# + all-agents orphan janitor were retired (live-only, never tracked in this
+# repo), replaced by systemd-oomd + CPUWeight/IOWeight + cgroup scoping.
+# Hosted here so P14 runs the deletion pin without a workflow-file edit (the
+# worker App cannot push .github/workflows/**). The named pin in
+# tests/p14-test-listing-gate.test.sh is the class-prevention so a future
+# drop of this host line fails by name. Hermetic (repo-only checks, no
+# gh/prometheus/systemd).
+bash "$here/load-storm-brake-agent-orphan-watchdog-deleted.test.sh"

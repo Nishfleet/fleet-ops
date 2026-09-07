@@ -38,7 +38,7 @@ Live snapshot 2026-09-07:
 | 5 | claude-telegram-bridge.py | 412 (+753 .bak) | `claude-telegram-bridge` | Hermes (Nish-owned) — one Telegram path | bridge + 2 `.bak` | **GO** (Nish decision on Telegram path) |
 | 6 | seat prom writers + corpse-retire + comeback-release | 2,163 | `fleet-seat-comeback-release.timer` + seat-lib | LiteLLM health checks/cooldowns/budgets (fleet-ops#4130) | corpse-retire, comeback-release, 3 `.prom` writers | **GO** (covered by #4130) |
 | 7 | dead-man canaries: gh-webhook-canary-deadman.py + fleet-completion-canary + loose-ends | 2,267+ | `fleet-completion-canary.timer` + `fleet-loose-ends-canary.timer` | healthchecks.io (account exists) + Prometheus `absent()`/Watchdog rules | deadman.py, completion-canary, loose-ends canary | **GO** |
-| 8 | load-storm-brake + agent-orphan-watchdog | 376 | `load-storm-brake` / `agent-orphan-watchdog` | systemd-oomd, CPUWeight/IOWeight, cgroup scoping (`systemd-run --scope`, `KillMode=control-group`) | both scripts | **GO** |
+| 8 | load-storm-brake + agent-orphan-watchdog | 376 | `load-storm-brake` / `agent-orphan-watchdog` | systemd-oomd, CPUWeight/IOWeight, cgroup scoping (`systemd-run --scope`, `KillMode=control-group`) | both scripts | **DONE** (retired 2026-09-07, #4147) |
 | 9 | codex launcher (wrapper + governed-run + agent-governor-runtime) | 3,976 (+281 `.bak`) | `codex` (launcher) | per-role systemd unit templates `codex-sol@.service` (unused paper; Sol retired) + `codex-luna@.service` — identity pinned in ExecStart (model/provider/effort fixed) | wipe gated on one green Luna-class run after ChatGPT usage reset | **SHAPE-ONLY** (#4148; wipe gated; #4159 closed as dup) |
 | 10 | fleet-* timers (47 units) | classify | 20 `fleet-*.timer` | Prometheus alert rule / GitHub Actions scheduled workflow / genuine drill | the non-drill timers | **PARTIAL** (see §4) |
 | 11 | memory-index-dedupe.py + hermes-staff generator + oracle-* + 0509-surface-probe | 702 | various | classify | classify | **DONE** (hermes-staff GO retired 2026-09-07 #4150; memory-index-dedupe NO-GO kept; oracle-* GO retired #4162; 0509-surface-probe GO retired #1150) |
@@ -147,15 +147,23 @@ rules.
 **GO.** Delete 2,267+ lines. No new organ (healthchecks.io + Prometheus
 already exist). Filed as issue.
 
-### Row 8 — load-storm-brake + agent-orphan-watchdog → systemd-oomd (GO)
+### Row 8 — load-storm-brake + agent-orphan-watchdog → systemd-oomd (DONE)
 
 Live: `load-storm-brake` 197, `agent-orphan-watchdog` 179 = **376 lines**.
 Replacement: systemd-oomd, CPUWeight/IOWeight, cgroup scoping
 (`systemd-run --scope`, `KillMode=control-group`) which makes orphans
 impossible.
 
-**GO.** Delete 376 lines. No new organ (systemd-oomd already deployed,
-fleet-ops#3971). Filed as issue.
+**DONE (2026-09-07, #4147).** Both scripts are wiped from the live path (rm,
+no .bak, no parked copies). Every agent launch runs as a scope/service
+(`KillMode=control-group`) so orphans cannot exist (verified live:
+`pi-issue@fleet-ops-4147.service` runs under `app-pi-issue.slice` with
+`KillMode=control-group`); load storms are prevented by systemd-oomd
+(active since 2026-09-03, fleet-ops#3971) + CPUWeight/IOWeight
+(`user-1000.slice` CPUWeight=60, `fleet-work.slice` CPUWeight=80,
+`tmux-spawn-*.scope.d` interactive CPUWeight=300). The
+`agent-governor-orphan-watchdog.timer` + LoadStorm skip-listing in
+alertmanager/alert-repair-dispatch are gone. No new organ.
 
 ### Row 9 — codex launcher → per-role systemd unit templates (SHAPE-ONLY #4148)
 
@@ -298,7 +306,7 @@ NO-GO — see §3 row 2 — and is excluded from the total):
 | 5 claude-telegram-bridge.py | 412 (+753 `.bak`) |
 | 6 seat prom writers + corpse-retire + comeback-release | 2,163 |
 | 7 dead-man canaries | 2,267+ |
-| 8 load-storm-brake + agent-orphan-watchdog | 376 |
+| 8 load-storm-brake + agent-orphan-watchdog | 376 (retired 2026-09-07) |
 | 9 codex launcher (wrapper + governed-run + runtime) | 3,976 (+281 `.bak`) |
 | 10 fleet-* timer GO rows | (units, not lines — the scripts they run are counted above) |
 | **Total** | **~14,253 lines** (+8,892 `.bak` lines) |
@@ -330,7 +338,7 @@ Row 11 classify rows are filed as classify issues.
 | 3 venue-claim + open-question | #4143 (dup #4155) |
 | 5 claude-telegram-bridge.py | #4156 |
 | 7 dead-man canaries | #4157 |
-| 8 load-storm-brake + agent-orphan-watchdog | #4158 |
+| 8 load-storm-brake + agent-orphan-watchdog | #4147 (dup #4158) |
 | 9 codex launcher wrapper | #4148 (canonical; #4159 closed as dup) |
 | 10 baseline-delta + truth-staleness -> Prom alert | #4160 |
 | 10 issue-close-duplicates + merged-pr-close -> Actions | #4161 |

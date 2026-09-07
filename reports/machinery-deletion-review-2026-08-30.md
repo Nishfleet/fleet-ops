@@ -56,7 +56,6 @@ owner, not a corpse.
 |---|---|---|---|---|
 | vps-maintenance-deadman | Fired weekly + 1 Telegram send 08-25 (maintenance-pause fail-safe resume) | Loses the fail-safe resume if a maintenance window never clears the pause flag | — | EXEMPT (deadman class; standing rule: maintenance without deadman is not allowed) |
 | gh-webhook-canary-deadman | Fires every 4 min, silent (silence = channel healthy) | Webhook-channel death goes unnoticed | gh-webhook-canary is its live twin | EXEMPT (deadman class, fleet-ops#1464) |
-| agent-governor-orphan-watchdog | Fires every ~5 min; `marked_orphans=0 action=cleaned survivors=0` every run in window | Orphaned agent descendants leak when supervisors die | interactive-session-reap (sessions) vs orphan janitor (descendants) — complementary | EXEMPT (orphan-watchdog class; issue-body known-mandatory) |
 | vps-maintenance-quiesce | Fired weekly (T-15 quiesce; stops NEW work before update) | Update/reboot runs with live agents mid-write | vps-weekly-update (sibling of the maintenance window) | EXEMPT (maintenance-window class) |
 | vps-weekly-update | **Proven main-bus event**: completed full stack update + `systemctl reboot` 2026-08-30 03:32 (uptime 16:19 confirms the reboot) | Weekly patch/update + reboot rail gone | — | EXEMPT (maintenance window; ledger TOP GEAR) |
 
