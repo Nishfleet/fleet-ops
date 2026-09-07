@@ -1,62 +1,82 @@
-fix(workflows): correct unresolvable action@<sha> pins in ci-standards-audit + guard test (closes Nishfleet/fleet-ops#1417)
+## What changed
 
-## Summary
+The 0509 scout usage block (fleet-ops#3149) treats Cloudflare Zone Analytics as
+one best-effort source. The sanctioned CF token lacks `zone.analytics.read`
+for the 0509 zone, so the GraphQL call returns a 403 authz error and the
+source drops. Per the judge opus-5 decision (2026-09-07), this issue makes
+that source explicitly OPTIONAL and grounds the scout on the three working
+sources instead of waiting on a token re-scope.
 
-Two SHA typos in `.github/workflows/ci-standards-audit.yml` made the scheduled workflow unresolvable at GitHub Actions setup time (same class as the prior `ci-failure-escalation` typo fixed in PR #3678):
+### 1. CF analytics source is optional (fleet-ops#3172)
 
-- line 95: `actions/checkout@3d3c42e5aac5ba805825da76410b181273ba90b1 # v7.0.1` (was `...10b...`)
-- line 122: `actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2` (was `507de32f... # v4.6.0`)
+`lib/packet-assembly.sh` `packet_cf_analytics_usage` now detects the 403
+`zone.analytics.read` authz error and logs a one-line
+`usage-source: cloudflare-analytics UNAVAILABLE (token scope)` marker, then
+DROPS (returns 1). A missing optional source never fails the scout run or
+drops the whole usage block — the other sources (lp_run_audit, /search query
+log, inbound email) still assemble around it.
 
-A new hermetic test `tests/workflow-action-pin-guard.test.sh` enforces:
-1. every `uses: <repo>@<sha>` pin matches a canonical 6-line registry; and
-2. no `<repo>` is pinned to two different SHAs across all workflows.
+### 2. TODO(fleet-ops#3172) at the CF call site
 
-The test is wired into the P14 `tests:` job `verify-command` list in `.github/workflows/ci.yml`.
+A `TODO(fleet-ops#3172)` comment sits at the GraphQL call site. Once the
+sanctioned token is re-scoped with Zone Analytics Read, the call returns data
+instead of the authz error, the UNAVAILABLE branch stops matching, and the
+block prints normally — no code change needed.
 
-Mechanical-fix (fleet-ops#366): the new test is the detector that prevents this bug class from recurring. Reference: `fleet-ops#1296` (precursor).
+### 3. Reader path for the working sources (verified + tested)
 
-## Closes
-
-Closes Nishfleet/fleet-ops#1417
+The reader path for `lp_run_audit`, the /search query log, and inbound email
+already exists (`packet_local_usage` / `packet_inbound_email_usage`). This PR
+adds tests proving the reader path reads dump dirs into the usage block and
+that a missing dump dir DROPS with a marker instead of failing. The dump side
+(populating `$PACKET_LP_AUDIT_DIR` / `$PACKET_SEARCH_LOG_DIR`) is a 0509-app
+concern and is tracked as a follow-up.
 
 ## Verification
 
-```
-$ bash tests/workflow-action-pin-guard.test.sh
-OK: all pinned actions match the canonical registry
-OK: each action is pinned to a single SHA across all workflows
-OK: workflow action pins are canonical and consistent (fleet-ops#1296)
-EXIT: 0
+- Live probe of `packet_cf_analytics_usage 0509.io 7` against the real
+  sanctioned CF token (VPS, token value never printed):
+  ```
+  usage-source: cloudflare-analytics UNAVAILABLE (token scope)
+  ### Cloudflare analytics (0509.io, 7 days): Actor 'com.cloudflare.api.token...' does not have permission 'com.cloudflare.api.account.zone.analytics.read'
+  exit=1
+  ```
+  The source logs the availability line and DROPS (exit 1), non-fatal.
+- Integrated `packet_usage_block` with a real lp_run_audit + /search query
+  log dump dir: CF source drops with the UNAVAILABLE marker, lp_run_audit and
+  /search query log are read into the block, and the whole block assembles
+  with exit 0 (never fails the scout run).
+- `bash tests/pi-scout-packet-assembly.test.sh` -> green (exit 0), including
+  the two new sections: CF 403 logs `usage-source: cloudflare-analytics
+  UNAVAILABLE (token scope)` and drops; reader path reads lp_run_audit and
+  /search query log dumps.
+- `bash tests/cf-token-canary.test.sh` -> green (exit 0).
+- `bash tests/pi-scout-seat-rotation.test.sh`, `sr-token-efficiency-debt`,
+  `failure-mechanism-gate`, `fleet-failed-command-flagged` -> green.
+- `bash -n lib/packet-assembly.sh` -> OK. `sgscan --base origin/main` -> no
+  new security findings.
 
-$ bash tests/reusable-workflows.test.sh
-OK: reusable workflow set is shape-locked
-EXIT: 0
+run-proof: live `packet_cf_analytics_usage 0509.io 7` against the real
+sanctioned CF token returned exit 1 with the `usage-source:
+cloudflare-analytics UNAVAILABLE (token scope)` line and the authz drop
+marker; integrated `packet_usage_block` with real lp_run_audit + /search
+query log dump dirs assembled the full usage block with exit 0; the
+pi-scout-packet-assembly test (including the two new sections) and the
+cf-token-canary test both ran green.
 
-$ bash tests/p14-test-listing-gate.test.sh
-OK: p14-test-listing-gate.test.sh: P14 test list is closed
-EXIT: 0
+net-positive-because: the +68 lines are the CF-optional branch (log line +
+TODO + doc) and two test sections proving the optional-source and reader-path
+behaviour; the net-positive is the durable fix that grounds the scout on the
+three working sources and makes the fourth non-fatal, per the judge opus-5
+decision.
 
-$ sgscan
-No new security findings.
-```
+organ-heartbeat: lib/packet-assembly.sh not-an-organ: a sourced helper lib
+invoked only from inside the existing scout run; no new unit, timer, workflow,
+exporter, guard, or canary.
 
-## run-proof
+loose-ends: dump path for lp_run_audit / /search query log / inbound email
+(populating $PACKET_LP_AUDIT_DIR / $PACKET_SEARCH_LOG_DIR) is a 0509-app
+concern and is filed as a follow-up; the reader path is shipped and tested
+here.
 
-- New `tests/workflow-action-pin-guard.test.sh` runs in the P14 `tests:` job's `verify-command` list.
-- All three required shell tests EXIT 0 against the rebased branch (see Verification above).
-- No new unit/timer/path-unit/workflow added — only edits to existing workflows + one new `tests/*.test.sh` file.
-
-## Diff scope
-
-- `.github/workflows/ci-standards-audit.yml`: 2 lines changed (line 95 + line 122)
-- `.github/workflows/ci.yml`: 4 lines added (3-line fleet-ops#1296 comment + 1 bash line) adjacent to `bash tests/reusable-workflows.test.sh`
-- `tests/workflow-action-pin-guard.test.sh`: NEW (90 lines, executable, hermetic)
-
-## Notes
-
-- Worker App token has no Workflows scope, so this commit is authored/committed under the `Nish <257724087+nish3451@users.noreply.github.com>` identity (per orchestrator decision 2026-09-07 in Nishfleet/fleet-ops#3659). The branch is pushed with `GH_TOKEN=$(gh auth token)` (nish3451's token, which has `workflow` scope) so the workflow-file push is accepted.
-- No new `bin/` file — new artifact is `tests/workflow-action-pin-guard.test.sh` only.
-- No `Relates #` vs `Closes #` ambiguity: this is `fix(workflows):`, not `fix(failed-command):` or `fix(decisions-ledger):`, so `Closes Nishfleet/fleet-ops#1417` is correct.
-- Senior reviewer round skipped — fleet-ops is not a product repo per `config/intake-repos.json` (exempt).
-
-loose-ends: fleet-ops#3659, fleet-ops#1417
+Closes #3172
