@@ -1372,7 +1372,7 @@ blocked-on: infra" 2>/dev/null || true
         fi
         # No live worker. Is there an open PR from this branch? If so, the
         # work is done and in review — skip (do not re-claim finished work).
-        _claim_prs=$(gh api "repos/$FULL/pulls?state=open&head=${FULL#*/}:claim/issue-$N&per_page=1" 2>/dev/null || true)
+        _claim_prs=$(gh api "repos/$FULL/pulls?state=open&head=${FULL%%/*}:claim/issue-$N&per_page=1" 2>/dev/null || true)
         _claim_pr_count=$(printf '%s' "$_claim_prs" | jq 'length // 0' 2>/dev/null || echo 0)
         if (( _claim_pr_count > 0 )); then
             echo "issue $N ($title): skipped-claim-pr-open (open PR from claim/issue-$N)"
