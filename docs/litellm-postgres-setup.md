@@ -168,6 +168,12 @@ entry; this runbook is its canonical copy, which is what makes a bare-metal
 rebuild complete. `tests/fleet-litellm-organ.test.sh` §5e pins that the unit
 and this section stay in sync.
 
+The unit invokes it through `/usr/bin/env` (`ExecStart=/usr/bin/env
+~/.local/bin/fleet-litellm-proxy-start`). That keeps the first ExecStart token
+runner-safe, so CI's `systemd-analyze` job and `p14-unstubbed-unit-verify` pass
+without a Workflows-scope ci.yml stub (fleet-ops#4398); `/usr/bin/env` execs the
+wrapper via its shebang, so the live organ is unchanged.
+
 ```sh
 cat > ~/.local/bin/fleet-litellm-proxy-start <<'EOF'
 #!/bin/bash

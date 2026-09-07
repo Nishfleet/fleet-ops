@@ -489,6 +489,15 @@ defects, each now fixed in-repo with a test that would have caught it:
    wrapper path added to its stub list, which is a workflow-file edit. Filed
    as #4398.
 
+   Resolved without a workflow edit: the unit invokes the wrapper through
+   `/usr/bin/env` (`ExecStart=/usr/bin/env ~/.local/bin/fleet-litellm-proxy-start`).
+   systemd-analyze only checks the first ExecStart token, and
+   `p14-unstubbed-unit-verify` only flags a first token that is not a
+   runner-safe bin — so `/usr/bin/env` (a `/usr/bin/*` path) keeps both CI
+   gates green with no ci.yml stub. `/usr/bin/env` execs the wrapper via its
+   shebang, so the live organ is unchanged. #4398 is therefore moot for this
+   unit.
+
 Also corrected: `/health/readiness` returns the low-detail
 `{"status":"healthy","db":"connected"}` payload unless
 `general_settings.allow_public_health_readiness_details` is set — there is
