@@ -195,6 +195,17 @@ if [ -e "$dropin" ] || [ -L "$dropin" ]; then
         || log "WARN: daemon-reload after scout prom-mode drop-in removal failed"
 fi
 
+# fleet-ops#4112: orphaned drop-in dir for the deleted fleet-auto-deploy unit
+# (WFR 2026-08-30). install.sh also removes it on a successful install; remove
+# here too so a dirty/non-ff deploy still clears the invisible leftover.
+dropin_dir="${HOME}/.config/systemd/user/fleet-auto-deploy.timer.d"
+if [ -d "$dropin_dir" ]; then
+    rm -rf "$dropin_dir"
+    log "removed orphaned fleet-auto-deploy.timer.d drop-in dir: $dropin_dir (fleet-ops#4112)"
+    systemctl --user daemon-reload >/dev/null 2>&1 \
+        || log "WARN: daemon-reload after fleet-auto-deploy drop-in removal failed"
+fi
+
 # The same drop-in pointed FLEET_OPS_DRIFT_BIN at a GC-able worktree. Env
 # for this tick is already set; refusing the path stops the self-compare.
 canary_resolved=$(readlink -f "$CANARY" 2>/dev/null || printf '%s' "$CANARY")

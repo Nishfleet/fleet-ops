@@ -101,8 +101,12 @@ grep -q 'remove_papered_heartbeat_dropin' "$repo_root/install.sh" \
     || fail "install.sh must remove the paper-over heartbeat drop-in"
 grep -q 'remove_stale_scout_prom_mode_dropin' "$repo_root/install.sh" \
     || fail "install.sh must remove the stale scout 20-prom-mode drop-in (fleet-ops#2924)"
+grep -q 'remove_orphaned_fleet_auto_deploy_dropin' "$repo_root/install.sh" \
+    || fail "install.sh must remove the orphaned fleet-auto-deploy.timer.d drop-in (fleet-ops#4112)"
 grep -q 'pi-scout@.service.d/20-prom-mode.conf' "$repo_root/bin/fleet-ops-deploy" \
     || fail "fleet-ops-deploy must remove the stale scout 20-prom-mode drop-in (fleet-ops#2924)"
+grep -q 'fleet-auto-deploy.timer.d' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "fleet-ops-deploy must remove the orphaned fleet-auto-deploy.timer.d drop-in (fleet-ops#4112)"
 grep -q 'systemd/pi-intake@.service.d/10-use-tick.conf' "$repo_root/MANIFEST" \
     || fail "MANIFEST must list 10-use-tick.conf (fleet-ops#2924 absorb)"
 [[ -f "$repo_root/systemd/pi-intake@.service.d/10-use-tick.conf" ]] \
@@ -791,6 +795,16 @@ printf 'Environment=FLEET_OPS_DRIFT_BIN=/tmp/gc-able-worktree/fleet-ops-drift.py
 PATH="$scratch:$PATH" "$install" >/dev/null 2>&1 || true
 [[ ! -e "$dropin" ]] || fail "scenario12: paper-over heartbeat drop-in was not removed"
 ok "scenario12b: install.sh removes the paper-over heartbeat drop-in"
+
+# fleet-ops#4112: orphaned drop-in dir for the deleted fleet-auto-deploy unit.
+# install.sh must remove the whole dir on a user-scope install, even though
+# the unit itself no longer exists (so a unit-name-only hunt cannot see it).
+orphan_dir="$HOME/.config/systemd/user/fleet-auto-deploy.timer.d"
+mkdir -p "$orphan_dir"
+printf '[Timer]\nOnCalendar=\nOnCalendar=*-*-* *:23:00\n' > "$orphan_dir/override.conf"
+PATH="$scratch:$PATH" "$install" >/dev/null 2>&1 || true
+[[ ! -d "$orphan_dir" ]] || fail "scenario12b-orphan: orphaned fleet-auto-deploy.timer.d drop-in dir was not removed"
+ok "scenario12b-orphan: install.sh removes the orphaned fleet-auto-deploy.timer.d drop-in dir (fleet-ops#4112)"
 
 # --- scenario 12c: cap drop with NEWER repo mtime (fleet-ops#371) ------------
 # git checkout of a stale commit stamps the working tree now, so the #372

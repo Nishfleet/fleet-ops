@@ -338,6 +338,26 @@ remove_stale_scout_prom_mode_dropin() {
     fi
 }
 
+# fleet-ops#4112: the fleet-auto-deploy unit was deleted as stale machinery
+# (WFR 2026-08-30, reports/machinery-deletion-review-2026-08-30.md). Its
+# hand-placed drop-in dir ~/.config/systemd/user/fleet-auto-deploy.timer.d/
+# survived the deletion and is invisible to a unit-name-only hunt
+# (fleet-ops#2924 / #1548) because the unit no longer exists. The override
+# only rewrote [Timer] OnCalendar — no ExecStart/ExecStartPre, not new
+# machinery — so absorb-into-repo is wrong (there is no unit to source it).
+# Remove the orphaned dir; only touch it when this MANIFEST installs into
+# the live user unit dir.
+remove_orphaned_fleet_auto_deploy_dropin() {
+    local user_systemd="${HOME}/.config/systemd/user"
+    local dropin_dir="${user_systemd}/fleet-auto-deploy.timer.d"
+    grep -q " ${user_systemd}/" "$manifest" 2>/dev/null || return 0
+    if [ -d "$dropin_dir" ]; then
+        rm -rf "$dropin_dir"
+        echo "removed orphaned fleet-auto-deploy.timer.d drop-in dir: $dropin_dir (fleet-ops#4112)"
+        user_unit_changed=1
+    fi
+}
+
 # Drift-or-install one entry. `_skip=1` means skip — out of scope for the
 # current mode. `_install_user` defaults to ln -s; `install_system` defaults
 # to sudo install -D.
@@ -637,6 +657,7 @@ fi
 if [ "$do_user_install" = 1 ]; then
   remove_papered_heartbeat_dropin
   remove_stale_scout_prom_mode_dropin
+  remove_orphaned_fleet_auto_deploy_dropin
   # Only daemon-reload when a user-scope systemd unit/drop-in actually
   # changed. First install on a fresh box still reloads because every unit
   # is new. Bin/prompt/config changes do not waste a reload.
