@@ -785,6 +785,9 @@ m._keystone_routing_counts = lambda: (0, 0, None)
 m._ping_healthcheck = lambda: None
 m._fetch_openrouter_credits = lambda: None
 m._fetch_xkiro_usage = lambda: None
+m._fetch_openrouter_key = lambda: None
+m._fetch_claude_usage = lambda: None
+m._fetch_codex_usage = lambda: None
 m._GH_FETCHED_THIS_RUN = False
 
 rc = m.main()
@@ -894,6 +897,9 @@ m._read_dead_credentials = lambda: (0, [])
 m._ping_healthcheck = lambda: None
 m._fetch_openrouter_credits = lambda: None
 m._fetch_xkiro_usage = lambda: None
+m._fetch_openrouter_key = lambda: None
+m._fetch_claude_usage = lambda: None
+m._fetch_codex_usage = lambda: None
 m._GH_FETCHED_THIS_RUN = False
 
 rc = m.main()
@@ -979,6 +985,9 @@ m._read_dead_credentials = lambda: (0, [])
 m._ping_healthcheck = lambda: None
 m._fetch_openrouter_credits = lambda: None
 m._fetch_xkiro_usage = lambda: None
+m._fetch_openrouter_key = lambda: None
+m._fetch_claude_usage = lambda: None
+m._fetch_codex_usage = lambda: None
 m._GH_FETCHED_THIS_RUN = False
 
 rc = m.main()
@@ -1040,6 +1049,9 @@ m._read_dead_credentials = lambda: (0, [])
 m._ping_healthcheck = lambda: None
 m._fetch_openrouter_credits = lambda: None
 m._fetch_xkiro_usage = lambda: None
+m._fetch_openrouter_key = lambda: None
+m._fetch_claude_usage = lambda: None
+m._fetch_codex_usage = lambda: None
 m._GH_FETCHED_THIS_RUN = False
 
 rc = m.main()
@@ -1437,6 +1449,9 @@ m._read_provider_quota_exhausted = lambda: (0, [])
 m._ping_healthcheck = lambda: None
 m._fetch_openrouter_credits = lambda: None
 m._fetch_xkiro_usage = lambda: None
+m._fetch_openrouter_key = lambda: None
+m._fetch_claude_usage = lambda: None
+m._fetch_codex_usage = lambda: None
 m._GH_FETCHED_THIS_RUN = False
 rc = m.main()
 assert rc == 0, f"main rc={rc}"
@@ -2746,6 +2761,9 @@ m._keystone_routing_counts = lambda: (0, 0, None)
 m._ping_healthcheck = lambda: None
 m._fetch_openrouter_credits = lambda: None
 m._fetch_xkiro_usage = lambda: None
+m._fetch_openrouter_key = lambda: None
+m._fetch_claude_usage = lambda: None
+m._fetch_codex_usage = lambda: None
 m._gh_rate_limit = lambda: None
 m._read_dead_credentials = lambda: (0, [])
 m._fetch_openrouter_credits = lambda: 6.95
@@ -2805,6 +2823,163 @@ print("OK: main() emits spend, credits, xkiro free tokens and held; HELP/TYPE on
 PY
 
 ok "fleet-ops#3283: spend, credits, xkiro wallet/free-token metrics"
+
+# =========================================================================
+# fleet-ops#4217: live seat quotas. The exporter emits
+# fleet_seat_quota_remaining_pct{provider,window,source},
+# fleet_seat_quota_reset_seconds{provider,window,source}, and
+# fleet_seat_quota_observed_seconds{provider,source} from VPS-native API
+# reads. Phase 1 covers OpenRouter /key, Claude OAuth, Codex OAuth. This
+# test stubs the fetchers and pins the metric shape + the HELP/TYPE-once
+# rule + the _resolve_cut_directive fix (the pre-existing 401 on
+# OpenRouter /credits caused by the unresolved `!cut` directive in
+# models.json).
+# =========================================================================
+python3 - "$exporter" <<'PY' || fail "fleet-ops#4217 quota metric test failed"
+import importlib.util, json, os, sys, time
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("m", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+
+# 1. Helpers exist.
+for fn in ("_fetch_openrouter_key", "_fetch_claude_usage", "_fetch_codex_usage",
+           "_emit_seat_quota", "_emit_seat_quota_headers", "_cached_quota_json",
+           "_iso_to_seconds_until", "_resolve_cut_directive"):
+    assert hasattr(m, fn), f"missing {fn}"
+
+# 2. _resolve_cut_directive: a `!cut -d= -f2 <file>` directive resolves to the
+#    real key; a plain key passes through; a malformed directive returns None.
+cut_dir = "/tmp/fme-cut-test.env"
+Path(cut_dir).write_text("OPENROUTER_API_KEY=sk-or-v1-realkey123\n# comment\n")
+assert m._resolve_cut_directive(f"!cut -d= -f2 {cut_dir}") == "sk-or-v1-realkey123", "cut directive did not resolve"
+assert m._resolve_cut_directive("sk-or-v1-plainkey") == "sk-or-v1-plainkey", "plain key mutated"
+assert m._resolve_cut_directive("!cut -d= -f2 /nonexistent/file.env") is None, "missing file should return None"
+assert m._resolve_cut_directive(None) is None, "None input should return None"
+assert m._resolve_cut_directive(42) is None, "non-string input should return None"
+os.unlink(cut_dir)
+print("OK: _resolve_cut_directive resolves !cut directives, passes plain keys, returns None on failure")
+
+# 3. _iso_to_seconds_until: parses ISO, returns seconds; None/invalid -> None.
+from datetime import datetime, timezone
+future = (datetime.now(timezone.utc).isoformat())
+s = m._iso_to_seconds_until(future)
+assert s is not None and s >= 0, f"future ISO -> {s}"
+assert m._iso_to_seconds_until(None) is None, "None -> None"
+assert m._iso_to_seconds_until("not-a-date") is None, "invalid -> None"
+print("OK: _iso_to_seconds_until parses ISO timestamps, rejects garbage")
+
+# 4. _emit_seat_quota: emits pct, reset, observed with correct labels.
+#    Headers are emitted once via _emit_seat_quota_headers (fleet-ops#1844:
+#    duplicate HELP/TYPE makes the textfile unparseable).
+lines = []
+m._emit_seat_quota_headers(lines)
+rows = [{"pct": 92.0, "reset_s": 2250.0, "window": "session"},
+        {"pct": 46.0, "reset_s": 450.0, "window": "weekly"}]
+m._emit_seat_quota(lines, "claude", rows, "api", time.time())
+body = "\n".join(lines)
+assert 'fleet_seat_quota_remaining_pct{provider="claude",window="session",source="api"} 92.0000' in body, body
+assert 'fleet_seat_quota_remaining_pct{provider="claude",window="weekly",source="api"} 46.0000' in body, body
+assert 'fleet_seat_quota_reset_seconds{provider="claude",window="session",source="api"} 2250.0000' in body, body
+assert 'fleet_seat_quota_reset_seconds{provider="claude",window="weekly",source="api"} 450.0000' in body, body
+assert 'fleet_seat_quota_observed_seconds{provider="claude",source="api"}' in body, body
+assert body.count("# HELP fleet_seat_quota_remaining_pct") == 1, "duplicate HELP pct"
+assert body.count("# TYPE fleet_seat_quota_remaining_pct") == 1, "duplicate TYPE pct"
+assert body.count("# HELP fleet_seat_quota_reset_seconds") == 1, "duplicate HELP reset"
+assert body.count("# TYPE fleet_seat_quota_reset_seconds") == 1, "duplicate TYPE reset"
+assert body.count("# HELP fleet_seat_quota_observed_seconds") == 1, "duplicate HELP observed"
+assert body.count("# TYPE fleet_seat_quota_observed_seconds") == 1, "duplicate TYPE observed"
+# Two providers must NOT duplicate HELP/TYPE (the fleet-ops#1844 regression).
+lines2 = []
+m._emit_seat_quota_headers(lines2)
+m._emit_seat_quota(lines2, "claude", rows, "api", time.time())
+m._emit_seat_quota(lines2, "codex", [{"pct": 0.0, "reset_s": 438205.0, "window": "primary"}], "api", time.time())
+body2 = "\n".join(lines2)
+assert body2.count("# HELP fleet_seat_quota_remaining_pct") == 1, "two providers dup HELP pct"
+assert body2.count("# TYPE fleet_seat_quota_remaining_pct") == 1, "two providers dup TYPE pct"
+assert 'fleet_seat_quota_remaining_pct{provider="codex",window="primary",source="api"} 0.0000' in body2, body2
+print("OK: _emit_seat_quota emits pct/reset/observed; headers once even for multiple providers")
+
+# 5. _emit_seat_quota with empty rows emits nothing.
+lines3 = []
+m._emit_seat_quota(lines3, "empty", [], "api", time.time())
+assert lines3 == [], "empty rows should emit nothing"
+print("OK: _emit_seat_quota with empty rows emits nothing")
+
+# 6. _fetch_claude_usage maps the live response shape (five_hour + seven_day
+#    utilization -> remaining_pct = 100 - utilization).
+#    _fetch_codex_usage maps rate_limit.primary_window.used_percent.
+#    Stub the token + urlopen to avoid network.
+import urllib.request
+class _FakeResp:
+    def __init__(self, data): self._data = json.dumps(data).encode()
+    def __enter__(self): return self
+    def __exit__(self, *a): pass
+    def read(self): return self._data
+
+claude_payload = {
+    "five_hour": {"utilization": 8.0, "resets_at": "2099-01-01T00:00:00+00:00"},
+    "seven_day": {"utilization": 54.0, "resets_at": "2099-01-01T00:00:00+00:00"},
+}
+m._claude_access_token = lambda: "fake-token"
+orig_urlopen = urllib.request.urlopen
+urllib.request.urlopen = lambda req, timeout=15: _FakeResp(claude_payload)
+try:
+    rows = m._fetch_claude_usage()
+finally:
+    urllib.request.urlopen = orig_urlopen
+assert rows is not None, "claude fetch returned None for valid payload"
+assert len(rows) == 2, f"expected 2 windows, got {len(rows)}"
+session = [r for r in rows if r["window"] == "session"][0]
+weekly = [r for r in rows if r["window"] == "weekly"][0]
+assert abs(session["pct"] - 92.0) < 0.01, f"session pct {session['pct']}"
+assert abs(weekly["pct"] - 46.0) < 0.01, f"weekly pct {weekly['pct']}"
+print("OK: _fetch_claude_usage maps five_hour/seven_day utilization -> remaining_pct")
+
+codex_payload = {
+    "rate_limit": {
+        "allowed": False,
+        "limit_reached": True,
+        "primary_window": {"used_percent": 100, "limit_window_seconds": 2592000, "reset_after_seconds": 438205},
+    },
+}
+m._codex_access_token = lambda: "fake-token"
+urllib.request.urlopen = lambda req, timeout=15: _FakeResp(codex_payload)
+try:
+    rows = m._fetch_codex_usage()
+finally:
+    urllib.request.urlopen = orig_urlopen
+assert rows is not None, "codex fetch returned None for valid payload"
+assert len(rows) == 1, f"expected 1 window, got {len(rows)}"
+assert abs(rows[0]["pct"] - 0.0) < 0.01, f"codex pct {rows[0]['pct']} (100% used -> 0% remaining)"
+assert abs(rows[0]["reset_s"] - 438205.0) < 0.01, f"codex reset_s {rows[0]['reset_s']}"
+print("OK: _fetch_codex_usage maps rate_limit.primary_window.used_percent -> remaining_pct")
+
+# 7. _fetch_openrouter_key returns None when limit is null (no per-key cap).
+or_payload_nocap = {"data": {"limit": None, "limit_remaining": None, "limit_reset": None, "usage": 60.0}}
+m._openrouter_api_key = lambda: "fake-key"
+urllib.request.urlopen = lambda req, timeout=15: _FakeResp(or_payload_nocap)
+try:
+    assert m._fetch_openrouter_key() is None, "null limit should return None"
+finally:
+    urllib.request.urlopen = orig_urlopen
+print("OK: _fetch_openrouter_key returns None when limit is null (no per-key cap)")
+
+or_payload_cap = {"data": {"limit": 100.0, "limit_remaining": 40.0, "limit_reset": "2099-01-01T00:00:00+00:00"}}
+urllib.request.urlopen = lambda req, timeout=15: _FakeResp(or_payload_cap)
+try:
+    r = m._fetch_openrouter_key()
+    assert r is not None, "cap payload should return a row"
+    assert abs(r["pct"] - 40.0) < 0.01, f"openrouter key pct {r['pct']}"
+    assert r["window"] == "key_cap"
+finally:
+    urllib.request.urlopen = orig_urlopen
+print("OK: _fetch_openrouter_key maps limit/limit_remaining -> pct when a cap exists")
+
+print("OK: fleet-ops#4217 live seat quota metric family + VPS-native reads")
+PY
+ok "fleet-ops#4217: live seat quota metric family + VPS-native reads (OpenRouter /key, Claude OAuth, Codex OAuth, !cut resolver)"
 
 # =========================================================================
 # fleet-ops#3180: fleet_escalations_24h must not count template starts the
@@ -3038,6 +3213,9 @@ m._keystone_routing_counts = lambda: (0, 0, None)
 m._ping_healthcheck = lambda: None
 m._fetch_openrouter_credits = lambda: None
 m._fetch_xkiro_usage = lambda: None
+m._fetch_openrouter_key = lambda: None
+m._fetch_claude_usage = lambda: None
+m._fetch_codex_usage = lambda: None
 m._GH_FETCHED_THIS_RUN = False
 rc = m.main()
 assert rc == 0, f"main rc={rc}"

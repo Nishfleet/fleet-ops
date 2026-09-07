@@ -1372,12 +1372,73 @@ def _read_env_key(path, names):
     return None
 
 
+def _resolve_cut_directive(value):
+    """Resolve a pi `!cut -d= -f2 /path/to/file` apiKey directive, or return value.
+
+    pi's models.json stores some apiKeys as `!cut -d<sep> -f<n> <file>`: a shell
+    command pi runs at load time to read the real key from a dotenv-style file.
+    The Python exporter does not run pi, so a raw `!cut ...` string 401s against
+    the vendor API (fleet-ops#4217: OpenRouter /key and /credits both 401'd
+    with the unresolved directive). Parse and run the cut command ourselves.
+    """
+    if not isinstance(value, str):
+        return None
+    if not value.startswith("!cut"):
+        return value
+    parts = value.split()
+    # parts[0] == "!cut"; expect -d<sep> -f<n> <file> (the shape pi writes).
+    if len(parts) < 4:
+        return None
+    delim = None
+    field = None
+    filepath = None
+    i = 1
+    while i < len(parts):
+        p = parts[i]
+        if p.startswith("-d") and len(p) > 2:
+            delim = p[2:]
+            i += 1
+        elif p.startswith("-f") and len(p) > 2:
+            try:
+                field = int(p[2:])
+            except ValueError:
+                return None
+            i += 1
+        elif p.startswith("-d") and i + 1 < len(parts):
+            delim = parts[i + 1]
+            i += 2
+        elif p.startswith("-f") and i + 1 < len(parts):
+            try:
+                field = int(parts[i + 1])
+            except ValueError:
+                return None
+            i += 2
+        else:
+            filepath = p
+            i += 1
+    if delim is None or field is None or filepath is None:
+        return None
+    try:
+        text = Path(filepath).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        cols = line.split(delim)
+        if 0 < field <= len(cols):
+            v = cols[field - 1].strip().strip('"').strip("'")
+            return v or None
+    return None
+
+
 def _openrouter_api_key():
     """Return the OpenRouter API key, or None.
 
     Resolution order: env var OPENROUTER_API_KEY, then the pi provider config
-    models.json (providers.openrouter.apiKey), then the dotenv fallback. Never
-    prints the key.
+    models.json (providers.openrouter.apiKey, resolving any `!cut` directive),
+    then the dotenv fallback. Never prints the key.
     """
     env_key = os.environ.get(OPENROUTER_API_KEY_ENV)
     if env_key:
@@ -1386,7 +1447,7 @@ def _openrouter_api_key():
         data = json.loads(OPENROUTER_MODELS_JSON.read_text(encoding="utf-8"))
         key = (data.get("providers") or {}).get("openrouter", {}).get("apiKey")
         if key:
-            return key
+            return _resolve_cut_directive(key)
     except (OSError, json.JSONDecodeError):
         pass
     return _read_env_key(OPENROUTER_ENV_FILE, (OPENROUTER_API_KEY_ENV, "API_KEY"))
@@ -1538,6 +1599,288 @@ def _emit_xkiro_wallet(lines, xkiro):
         lines.append(HELP_HELD)
         lines.append(TYPE_HELD)
         lines.extend(rows)
+
+
+# --- Live seat quotas (fleet-ops#4217) ---
+# Nish 2026-09-07: the fleet learns a wall reactively (429/402) and benches on
+# guesses. This family emits the LIVE remaining quota per seat so judges and
+# seat-lib can read it before a decision. Phase 1 (this PR) covers the
+# VPS-native API seats whose credentials already live on this host and whose
+# quota endpoint answers a token-authenticated GET from the VPS:
+#   - OpenRouter /api/v1/key (limit_remaining + limit_reset, verified live)
+#   - Claude OAuth api.anthropic.com/api/oauth/usage (five_hour + seven_day
+#     utilization + resets_at, verified live from ~/.claude/.credentials.json)
+#   - Codex OAuth chatgpt.com/backend-api/wham/usage (rate_limit primary_window
+#     used_percent + reset_after_seconds, verified live from ~/.codex/auth.json)
+# Browser-session seats (Cursor, Devin, Grok, Ollama, Z.ai, OpenCode, RunInfra,
+# ZenMux, Cline, Straitly, MiniMax, CommandCode) need headless-browser login or
+# credential repair and are filed as follow-up issues; this PR wires the metric
+# family and the API-native reads so those seats slot in as one fetcher each.
+# OpenUsage (robinebers/openusage) is the authoritative reference for each
+# provider's exact endpoint and auth; the endpoint strings below are copied
+# from its provider sources (Sources/OpenUsage/Providers/*) and verified live.
+HELP_QUOTA_PCT = (
+    "# HELP fleet_seat_quota_remaining_pct Remaining quota as a percentage "
+    "(0..100) per provider per window from the provider's own usage/quota "
+    "endpoint (fleet-ops#4217). source label: api (VPS-native token read), "
+    "dashboard (headless-browser scrape), stale (session died, repair pending)."
+)
+TYPE_QUOTA_PCT = "# TYPE fleet_seat_quota_remaining_pct gauge"
+HELP_QUOTA_RESET = (
+    "# HELP fleet_seat_quota_reset_seconds Seconds until the quota window "
+    "resets, per provider per window (fleet-ops#4217). 0 when the provider "
+    "does not report a reset time."
+)
+TYPE_QUOTA_RESET = "# TYPE fleet_seat_quota_reset_seconds gauge"
+HELP_QUOTA_OBSERVED = (
+    "# HELP fleet_seat_quota_observed_seconds Seconds since the quota was last "
+    "observed from the provider (fleet-ops#4217). absent() on this family is "
+    "the stale-quota alert: a seat whose observed_at is older than "
+    "QUOTA_STALE_S has no live figure."
+)
+TYPE_QUOTA_OBSERVED = "# TYPE fleet_seat_quota_observed_seconds gauge"
+QUOTA_STALE_S = 900  # 15 min — the issue's stale threshold.
+CLAUDE_CREDENTIALS_JSON = Path.home() / ".claude" / ".credentials.json"
+CODEX_AUTH_JSON = Path.home() / ".codex" / "auth.json"
+CLAUDE_OAUTH_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+CODEX_WHAM_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
+OPENROUTER_KEY_URL = "https://openrouter.ai/api/v1/key"
+CLAUDE_QUOTA_CACHE = PR_CACHE_DIR / "claude-quota-cache.json"
+CODEX_QUOTA_CACHE = PR_CACHE_DIR / "codex-quota-cache.json"
+OPENROUTER_KEY_CACHE = PR_CACHE_DIR / "openrouter-key-cache.json"
+QUOTA_TTL = 300  # 5 min — matches the exporter cadence; one fresh fetch per run.
+QUOTA_STALE_CACHE = 1800  # 30 min — serve stale cache while a fetch is failing.
+
+
+def _fetch_openrouter_key():
+    """Return OpenRouter /api/v1/key quota rows, or None.
+
+    The endpoint returns limit_remaining (USD left in the per-key cap window)
+    and limit_reset (ISO timestamp). When limit is null the key has no per-key
+    cap, so there is no quota meter to emit (the account-wide /credits balance
+    is already exported as fleet_seat_credits_remaining_usd). Verified live
+    2026-09-07: limit=null for this key, so this fetcher returns None today
+    and emits nothing; a key with a cap emits both rows.
+    """
+    key = _openrouter_api_key()
+    if not key:
+        return None
+    req = urllib.request.Request(
+        OPENROUTER_KEY_URL,
+        headers={"Authorization": f"Bearer {key}", "User-Agent": _VENDOR_USER_AGENT},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:  # nosemgrep
+            payload = json.loads(resp.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, ValueError) as exc:
+        print(f"openrouter key fetch failed: {exc}", file=sys.stderr)
+        return None
+    data = payload.get("data") or {}
+    if not isinstance(data, dict):
+        return None
+    limit = data.get("limit")
+    remaining = data.get("limit_remaining")
+    reset = data.get("limit_reset")
+    if limit is None or remaining is None:
+        return None
+    try:
+        limit = float(limit)
+        remaining = float(remaining)
+    except (ValueError, TypeError):
+        return None
+    if limit <= 0:
+        return None
+    pct = (remaining / limit) * 100.0 if limit else 0.0
+    reset_s = _iso_to_seconds_until(reset)
+    return {"pct": pct, "reset_s": reset_s, "window": "key_cap"}
+
+
+def _claude_access_token():
+    """Return the Claude OAuth access token from ~/.claude/.credentials.json, or None."""
+    try:
+        data = json.loads(CLAUDE_CREDENTIALS_JSON.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    oauth = (data or {}).get("claudeAiOauth") or {}
+    token = oauth.get("accessToken")
+    return token or None
+
+
+def _codex_access_token():
+    """Return the Codex OAuth access token from ~/.codex/auth.json, or None."""
+    try:
+        data = json.loads(CODEX_AUTH_JSON.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    tokens = (data or {}).get("tokens") or {}
+    token = tokens.get("access_token")
+    return token or None
+
+
+def _fetch_claude_usage():
+    """Return Claude OAuth usage quota rows, or None.
+
+    api.anthropic.com/api/oauth/usage returns five_hour and seven_day windows
+    with utilization (0..100, percent USED) and resets_at (ISO). remaining_pct
+    = 100 - utilization. Verified live 2026-09-07.
+    """
+    token = _claude_access_token()
+    if not token:
+        return None
+    req = urllib.request.Request(
+        CLAUDE_OAUTH_USAGE_URL,
+        headers={"Authorization": f"Bearer {token}", "User-Agent": _VENDOR_USER_AGENT},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:  # nosemgrep
+            payload = json.loads(resp.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, ValueError) as exc:
+        print(f"claude usage fetch failed: {exc}", file=sys.stderr)
+        return None
+    if not isinstance(payload, dict):
+        return None
+    rows = []
+    for key, window in (("five_hour", "session"), ("seven_day", "weekly")):
+        entry = payload.get(key)
+        if not isinstance(entry, dict):
+            continue
+        util = entry.get("utilization")
+        resets_at = entry.get("resets_at")
+        if util is None:
+            continue
+        try:
+            util = float(util)
+        except (ValueError, TypeError):
+            continue
+        pct = max(0.0, 100.0 - util)
+        reset_s = _iso_to_seconds_until(resets_at)
+        rows.append({"pct": pct, "reset_s": reset_s, "window": window})
+    return rows or None
+
+
+def _fetch_codex_usage():
+    """Return Codex OAuth wham/usage quota rows, or None.
+
+    chatgpt.com/backend-api/wham/usage returns rate_limit.primary_window with
+    used_percent (0..100) and reset_after_seconds. remaining_pct =
+    100 - used_percent. Verified live 2026-09-07.
+    """
+    token = _codex_access_token()
+    if not token:
+        return None
+    req = urllib.request.Request(
+        CODEX_WHAM_USAGE_URL,
+        headers={"Authorization": f"Bearer {token}", "User-Agent": _VENDOR_USER_AGENT},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:  # nosemgrep
+            payload = json.loads(resp.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, ValueError) as exc:
+        print(f"codex usage fetch failed: {exc}", file=sys.stderr)
+        return None
+    if not isinstance(payload, dict):
+        return None
+    rl = payload.get("rate_limit")
+    if not isinstance(rl, dict):
+        return None
+    pw = rl.get("primary_window")
+    if not isinstance(pw, dict):
+        return None
+    used = pw.get("used_percent")
+    reset_after = pw.get("reset_after_seconds")
+    if used is None:
+        return None
+    try:
+        used = float(used)
+    except (ValueError, TypeError):
+        return None
+    pct = max(0.0, 100.0 - used)
+    reset_s = None
+    if reset_after is not None:
+        try:
+            reset_s = float(reset_after)
+        except (ValueError, TypeError):
+            reset_s = None
+    return [{"pct": pct, "reset_s": reset_s, "window": "primary"}]
+
+
+def _iso_to_seconds_until(iso_str):
+    """Return seconds from now until an ISO timestamp, or None."""
+    if not iso_str or not isinstance(iso_str, str):
+        return None
+    try:
+        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    now = datetime.now(timezone.utc)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return max(0.0, (dt - now).total_seconds())
+
+
+def _cached_quota_json(path, fetcher, name):
+    """Return fetched/cached quota data, or None to omit the family.
+
+    Fresh cache (<=5 min) skips network. On failure, serve cache up to 30 min.
+    One fetch per provider per exporter run.
+    """
+    cached, cache_age = _read_cache(path)
+    if cache_age is not None and cache_age <= QUOTA_TTL and cached is not None:
+        return cached
+    data = fetcher()
+    if data is not None:
+        _write_cache(path, data)
+        return data
+    if cached is not None and cache_age is not None and cache_age <= QUOTA_STALE_CACHE:
+        print(f"{name} quota fetch failed, serving stale cache (age={int(cache_age)}s)",
+              file=sys.stderr)
+        return cached
+    return None
+
+
+def _emit_seat_quota(lines, provider, rows, source, observed_at):
+    """Append fleet_seat_quota_* rows for one provider.
+
+    rows: list of {pct, reset_s, window}. observed_at: epoch seconds of the
+    fetch. source: api | dashboard | stale.
+
+    Emits the data rows only (no HELP/TYPE); the caller emits the HELP/TYPE
+    headers once via _emit_seat_quota_headers so multiple providers do not
+    duplicate them (fleet-ops#1844: a duplicate HELP/TYPE makes the textfile
+    unparseable and node_exporter drops the whole fleet.prom).
+    """
+    if not rows:
+        return
+    now = time.time()
+    observed_s = max(0.0, now - observed_at) if observed_at else 0.0
+    for r in rows:
+        window = _prom_label(r.get("window") or "primary")
+        pct = r["pct"]
+        reset_s = r.get("reset_s")
+        reset_val = float(reset_s) if reset_s is not None else 0.0
+        lines.append(
+            f'fleet_seat_quota_remaining_pct{{provider="{_prom_label(provider)}",'
+            f'window="{window}",source="{_prom_label(source)}"}} {pct:.4f}'
+        )
+        lines.append(
+            f'fleet_seat_quota_reset_seconds{{provider="{_prom_label(provider)}",'
+            f'window="{window}",source="{_prom_label(source)}"}} {reset_val:.4f}'
+        )
+    lines.append(
+        f'fleet_seat_quota_observed_seconds{{provider="{_prom_label(provider)}",'
+        f'source="{_prom_label(source)}"}} {observed_s:.4f}'
+    )
+
+
+def _emit_seat_quota_headers(lines):
+    """Emit one HELP/TYPE pair per quota metric name (call once before rows)."""
+    lines.append("")
+    lines.append(HELP_QUOTA_PCT)
+    lines.append(TYPE_QUOTA_PCT)
+    lines.append(HELP_QUOTA_RESET)
+    lines.append(TYPE_QUOTA_RESET)
+    lines.append(HELP_QUOTA_OBSERVED)
+    lines.append(TYPE_QUOTA_OBSERVED)
 
 
 _GH_FETCHED_THIS_RUN = False
@@ -4829,6 +5172,35 @@ def main():
         balances["xkiro"] = xkiro_usage[1]
     _emit_credits_remaining(lines, balances)
     _emit_xkiro_wallet(lines, xkiro_usage)
+
+    # --- Live seat quotas (fleet-ops#4217) ---
+    # VPS-native API reads. Each fetcher is cached independently; a None
+    # return omits that provider's rows (never a frozen value). Browser-
+    # session seats (Cursor, Devin, Grok, Ollama, Z.ai, OpenCode, RunInfra,
+    # ZenMux, Cline, Straitly, MiniMax, CommandCode) are follow-up issues —
+    # this PR ships the metric family + the API-native seats so those seats
+    # slot in as one fetcher each.
+    openrouter_key = _cached_quota_json(
+        OPENROUTER_KEY_CACHE, _fetch_openrouter_key, "openrouter_key"
+    )
+    claude_usage = _cached_quota_json(
+        CLAUDE_QUOTA_CACHE, _fetch_claude_usage, "claude_usage"
+    )
+    codex_usage = _cached_quota_json(
+        CODEX_QUOTA_CACHE, _fetch_codex_usage, "codex_usage"
+    )
+    _quota_now = time.time()
+    _quota_providers = []
+    if isinstance(openrouter_key, dict):
+        _quota_providers.append(("openrouter", [openrouter_key]))
+    if isinstance(claude_usage, list):
+        _quota_providers.append(("claude", claude_usage))
+    if isinstance(codex_usage, list):
+        _quota_providers.append(("codex", codex_usage))
+    if _quota_providers:
+        _emit_seat_quota_headers(lines)
+        for _prov, _rows in _quota_providers:
+            _emit_seat_quota(lines, _prov, _rows, "api", _quota_now)
 
     # --- Truth staleness (fleet-ops#1137) ---
     # Read the staleness checker's cached results and re-export as Prometheus
