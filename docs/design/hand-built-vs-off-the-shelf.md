@@ -41,7 +41,7 @@ Live snapshot 2026-09-07:
 | 8 | load-storm-brake + agent-orphan-watchdog | 376 | `load-storm-brake` / `agent-orphan-watchdog` | systemd-oomd, CPUWeight/IOWeight, cgroup scoping (`systemd-run --scope`, `KillMode=control-group`) | both scripts | **GO** |
 | 9 | codex wrapper | 281 | `codex` (launcher) | systemd-run properties on the unit | codex wrapper | **GO** |
 | 10 | fleet-* timers (47 units) | classify | 20 `fleet-*.timer` | Prometheus alert rule / GitHub Actions scheduled workflow / genuine drill | the non-drill timers | **PARTIAL** (see §4) |
-| 11 | memory-index-dedupe.py + hermes-staff generator + oracle-* | 702 | various | classify | classify | **PARTIAL** (see §5) |
+| 11 | memory-index-dedupe.py + hermes-staff generator + oracle-* + 0509-surface-probe | 702 | various | classify | classify | **DONE** (hermes-staff GO retired 2026-09-07 #4150; memory-index-dedupe NO-GO kept; oracle-* GO retired #4162; 0509-surface-probe GO retired #1150) |
 
 ## 3. Per-row detail
 
@@ -132,7 +132,7 @@ systemd-run properties on the unit.
 
 ### Row 10 — fleet-* timers → classify (PARTIAL, see §4)
 
-### Row 11 — memory-index-dedupe + hermes-staff + oracle → classify (PARTIAL, see §5)
+### Row 11 — memory-index-dedupe + hermes-staff + oracle + 0509-surface-probe → classify (DONE, see §5)
 
 ## 4. fleet-* timer classification (row 10)
 
@@ -167,13 +167,31 @@ timers are deleted with their replacement issues.
 
 - `memory-index-dedupe.py` (222): dedupes the memory index. **Classify** —
   if the index is a plain file, dedupe is a one-shot maintenance script, not a
-  mechanism; keep as a manual tool, no timer. Verdict: **KEEP as manual tool**.
-- `hermes-staff/gen_hermes_staff.py` (147) + `run-agent` (54): Hermes staff
-  generator. **Classify** — Hermes is Nish-owned; the generator is part of
-  that product. Verdict: **KEEP** (Nish-owned product, not fleet machinery).
+  mechanism; keep as a manual tool, no timer. Verdict: **NO-GO (KEEP)** —
+  consumer is `bin/memory-index-autocompact` (tier-1 deterministic rebuild);
+  no off-the-shelf deterministic equivalent exists (tier-2 uses Anthropic's
+  shipped `consolidate-memory` skill but burns an Opus run on a mechanical
+  edit; dedupe exists to avoid that spend). The autocompact path unit is the
+  mechanism; dedupe is its cost-saving helper with no timer of its own. Kept
+  (#4150).
+- `hermes-staff/gen_hermes_staff.py` (147) + `run-agent` (54) + `run-script`
+  (61) + `run-common.sh` (97) = 359 lines: hand-built systemd-twin generator
+  for hermes cron agent/script jobs. **Classify** — live state 2026-09-07:
+  orphaned. Generated units gone from systemd, `~/.hermes/cron/jobs.json`
+  empty (`"jobs": []` since 2026-08-26), last run logs 2026-08-23. The
+  scheduling it duplicated is owned by hermes cron (built into the hermes CLI,
+  gateway live PID 1464, ticker heartbeat <60s). Verdict: **GO (retired
+  2026-09-07, #4150)** — wiped: `~/.local/libexec/hermes-staff/`,
+  `~/.local/state/hermes-staff/`, 13 orphan `stamp-hermes-staff-*.timer`.
+  Replacement proven live: `hermes cron status` rc=0 (gateway running, ticker
+  45s ago). Vault entry appended to `retired-mechanisms.md`.
 - `oracle-arm-fish` (147) + `oracle-bootstrap-micro` (186): oracle scripts.
-  **Classify** — need a decision on whether these are still used. Verdict:
-  **NO-GO pending** — file a classify issue.
+  **Classify** — Verdict: **GO (retired 2026-09-07, #4162)** — wiped and
+  vault entry appended; replaced by hitrov/oci-arm-host-capacity.
+- `0509-surface-probe` (163): hand-built authenticated surface-matrix probe.
+  Verdict: **GO (retired 2026-09-07, #1150)** — wiped and vault entry
+  appended; replaced by 0509 CI `e2e/surface-audit.mjs` +
+  `cross-browser-matrix.yml`.
 
 ## 6. Total hand-built lines after the GO rows land
 
@@ -221,3 +239,4 @@ Row 11 classify rows are filed as classify issues.
 | 10 baseline-delta + truth-staleness -> Prom alert | #4160 |
 | 10 issue-close-duplicates + merged-pr-close -> Actions | #4161 |
 | 11 oracle-* classify | #4162 |
+| 11 memory-index-dedupe + hermes-staff + 0509-surface-probe classify | #4150 |

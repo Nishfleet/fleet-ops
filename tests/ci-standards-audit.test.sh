@@ -678,3 +678,10 @@ bash "$here/daily-digest.test.sh"
 # drop of this host line fails by name. Hermetic (repo-only checks, no
 # gh/prometheus/systemd).
 bash "$here/venue-claim-open-question-deleted.test.sh"
+
+# fleet-ops#4150 (child of #4140 row 11): the hand-built hermes-staff
+# generator (live-only, orphaned systemd-twin of hermes cron) was retired.
+# Hosted here so P14 runs the deletion pin without a workflow-file edit (the
+# worker App cannot push .github/workflows/**). Hermetic (repo-only checks,
+# no gh/prometheus/systemd).
+bash "$here/hermes-staff-deleted.test.sh"
