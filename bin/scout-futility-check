@@ -353,6 +353,12 @@ EOF
 #   - INFERENCE_CAP_ERROR (the literal error name)
 #   - 404 Provider returned error (opencode corpse pattern — the model
 #     itself is gone, the provider returns 404)
+#   - 402 + "Grok Build usage balance exhausted" / "balance exhausted" /
+#     quota_exhausted (xai-oauth SuperGrok weekly-sub balance drain —
+#     fleet-ops#3125; config/seat-caps.json documents this exact 402 as the
+#     wall that 0-caps the seat, live 2026-08-30 + 2026-09-07; the #2468
+#     crash-loop dedupe never engaged for xai-oauth 402s because the pattern
+#     was absent, so a fresh SENIOR AUDITOR was re-summoned per crash)
 # Matched against the last 50 journal lines (all priorities) of the failed
 # pi-scout@<repo>.service unit. A crash is wall-class iff at least one line
 # carries provider-wall evidence AND no non-benign line is a non-wall work
@@ -370,7 +376,7 @@ EOF
 # wins over its benign prefix (the notify+503 combo), so wall is checked
 # first; a line is only demoted when it carries neither wall evidence nor
 # benign machinery text.
-PROVIDER_WALL_PATTERNS='overloaded_error|FreeUsageLimitError|quota_cap|INFERENCE_CAP_ERROR|out-of-credits|insufficient_user_quota|insufficient credits|purchase more credits|credit insufficient balance|Provider returned error|Upstream model provider is temporarily unavailable|resource_exhausted|Devin exited'
+PROVIDER_WALL_PATTERNS='overloaded_error|FreeUsageLimitError|quota_cap|INFERENCE_CAP_ERROR|out-of-credits|insufficient_user_quota|insufficient credits|purchase more credits|credit insufficient balance|balance exhausted|quota_exhausted|Provider returned error|Upstream model provider is temporarily unavailable|resource_exhausted|Devin exited'
 # Benign pi-machinery / systemd lifecycle lines that always accompany a scout
 # run in the unit journal. Not fault evidence; must not demote a wall crash.
 BENIGN_JOURNAL_PATTERNS='^\[[0-9]{4}-[0-9]{2}-[0-9]{2}T|EXTLOAD-OK|PACKET-VERDICT|Ready for input|Main process exited|Failed with result|Failed to start|Triggering OnFailure|Consumed .*CPU time|Starting pi-'
