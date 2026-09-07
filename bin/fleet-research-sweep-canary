@@ -1,0 +1,291 @@
+#!/usr/bin/env bash
+# fleet-research-sweep-canary — prevention mechanism for the continuous
+# research sweep (fleet-ops#3130, P11-A).
+#
+# The Weekly Fleet Review ratchet needs research input to know what "the
+# frontier" is. This canary is the mechanical guard that the researcher
+# role actually ran and produced a mechanism proposal in the trailing 7
+# days. It reads the researcher's own state sink
+# (agent-state/fleet-researcher/state.json, written by
+# fleet-researcher-run) and asserts two invariants:
+#
+#   (a) the researcher RAN — state.last_run_at is within the last 7 days
+#   (b) it PRODUCED >= 1 mechanism proposal — at least one delta with
+#       status == "filed" and filed_at within the last 7 days
+#
+# A mechanism proposal is a filed research-delta issue (scout-candidate +
+# research-delta labels) — the researcher's specced, PR-ready output, not
+# prose. A run that files nothing (all deltas rejected/deduped) is a
+# missed sweep: the ratchet starves even though the timer fired.
+#
+# Observe-to-open: when either invariant is violated AND no open ticket
+# already carries the marker, file a `fix(research-sweep):` mechanism
+# issue naming which invariant broke and the live state.
+#
+# Observe-to-close: when both invariants hold, close any open canary-filed
+# ticket with a resolved-at note.
+#
+# No new scheduler: heartbeat-tier1 block 45 (same cadence as the other
+# reaction canaries). Not an organ: it exports no heartbeat metric — it
+# is a reaction detector over the researcher role's own state.
+#
+# Exit codes:
+#   0  clean tick (both invariants hold) OR violation handled (filed or
+#      deduped) OR observe-to-close ran — alarms but does not fail the
+#      heartbeat (fleet-ops#1116)
+#   1  watcher broken (state.json missing / unparseable / missing the
+#      fields the invariants need) — LOUD, heartbeat fails loud
+#   2  usage error
+#
+# Environment seams (tests):
+#   FLEET_RESEARCH_SWEEP_STATE   researcher state.json path
+#   FLEET_RESEARCH_SWEEP_REPO    default Nishfleet/fleet-ops
+#   FLEET_RESEARCH_SWEEP_DAYS    trailing window (default 7)
+#   FLEET_RESEARCH_SWEEP_FILE    1 (default) file issues; 0 skip gh
+#   FLEET_RESEARCH_SWEEP_NOW     ISO-8601 UTC override for tests
+#   FLEET_ISSUE_FILE             fleet-issue-file (filing-time dedupe)
+#   FLEET_HEARTBEAT_TRIAGE       triage file
+#   GH                           gh binary (tests stub this)
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+GH="${GH:-gh}"
+ISSUE_FILE="${FLEET_ISSUE_FILE:-$(cd "$(dirname "$(readlink -f "$0")")" && pwd)/fleet-issue-file}"
+
+STATE="${FLEET_RESEARCH_SWEEP_STATE:-/home/nish/workspaces/agent-state/fleet-researcher/state.json}"
+REPO="${FLEET_RESEARCH_SWEEP_REPO:-Nishfleet/fleet-ops}"
+DAYS="${FLEET_RESEARCH_SWEEP_DAYS:-7}"
+FILE_ISSUES="${FLEET_RESEARCH_SWEEP_FILE:-1}"
+NOW="${FLEET_RESEARCH_SWEEP_NOW:-}"
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+
+MARKER_PREFIX="fleet-research-sweep-canary:"
+
+log() {
+    printf '[%s] [fleet-research-sweep-canary] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+loud() {
+    local tag="$1"; shift
+    local msg="$*"
+    log "LOUD [$tag] $msg"
+    {
+        printf '\n[%s] [%s] %s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+    } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+usage() {
+    cat <<'EOF'
+usage: fleet-research-sweep-canary [--help]
+
+Prevention mechanism for the continuous research sweep (fleet-ops#3130).
+Reads the researcher state sink (agent-state/fleet-researcher/state.json)
+and asserts the researcher ran AND produced >= 1 mechanism proposal in
+the trailing 7 days. Observe-to-opens a `fix(research-sweep):` issue on
+violation; observe-to-closes when both invariants hold. Runs from
+heartbeat-tier1 block 45 — no new scheduler.
+EOF
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    usage
+    exit 0
+fi
+
+command -v jq >/dev/null 2>&1 || { loud "RESEARCH-SWEEP-WATCHER-BROKEN" "jq missing"; exit 1; }
+
+# is_uint value — strict non-negative integer (default 0).
+is_uint() {
+    case "${1:-}" in
+        ''|*[!0-9]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+# iso_epoch iso — print the epoch seconds of an ISO-8601 UTC timestamp.
+# Empty when unparseable.
+iso_epoch() {
+    local iso="$1"
+    if [[ "$iso" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; then
+        date -u -d "$iso" +%s 2>/dev/null || true
+    fi
+}
+
+# ============================================================================
+# Gate 1: state.json present + parseable + the fields the invariants need.
+# ============================================================================
+if [[ ! -f "$STATE" ]]; then
+    loud "RESEARCH-SWEEP-WATCHER-BROKEN" \
+        "researcher state.json missing: $STATE (fleet-researcher-run has never written it?)"
+    exit 1
+fi
+
+if ! jq -e . >/dev/null 2>&1 <"$STATE"; then
+    loud "RESEARCH-SWEEP-WATCHER-BROKEN" \
+        "researcher state.json unparseable: $STATE"
+    exit 1
+fi
+
+last_run=$(jq -r '.last_run_at // ""' "$STATE")
+if [[ -z "$last_run" ]]; then
+    loud "RESEARCH-SWEEP-WATCHER-BROKEN" \
+        "researcher state.json has no last_run_at: $STATE (researcher never ran?)"
+    exit 1
+fi
+
+# Resolve the reference "now" (test override or live UTC).
+if [[ -n "$NOW" ]]; then
+    now_epoch=$(iso_epoch "$NOW") || true
+    [[ -n "$now_epoch" ]] || { loud "RESEARCH-SWEEP-WATCHER-BROKEN" "bad FLEET_RESEARCH_SWEEP_NOW: $NOW"; exit 1; }
+else
+    now_epoch=$(date -u +%s)
+fi
+
+last_run_epoch=$(iso_epoch "$last_run")
+if [[ -z "$last_run_epoch" ]]; then
+    loud "RESEARCH-SWEEP-WATCHER-BROKEN" \
+        "researcher state.json last_run_at unparseable: '$last_run'"
+    exit 1
+fi
+
+window_s=$(( DAYS * 86400 ))
+ran=0
+if (( now_epoch - last_run_epoch <= window_s )); then
+    ran=1
+fi
+
+# Count mechanism proposals filed within the window: deltas with
+# status == "filed" and filed_at within the trailing window.
+produced=0
+produced_title=""
+while IFS= read -r row; do
+    [[ -n "$row" ]] || continue
+    st=$(jq -r '.status // ""' <<<"$row" 2>/dev/null) || continue
+    [[ "$st" == "filed" ]] || continue
+    fa=$(jq -r '.filed_at // ""' <<<"$row" 2>/dev/null) || continue
+    fa_epoch=$(iso_epoch "$fa") || true
+    [[ -n "$fa_epoch" ]] || continue
+    if (( now_epoch - fa_epoch <= window_s )); then
+        produced=$(( produced + 1 ))
+        if [[ -z "$produced_title" ]]; then
+            produced_title=$(jq -r '.title // ""' <<<"$row" 2>/dev/null) || true
+        fi
+    fi
+done < <(jq -c '.deltas[]?' "$STATE" 2>/dev/null)
+
+log "tick: last_run_at=$last_run ran=$ran produced=$produced window=${DAYS}d now=$(date -u -d @$now_epoch +%Y-%m-%dT%H:%M:%SZ)"
+
+# ============================================================================
+# Invariants. Both must hold for a clean tick.
+# ============================================================================
+violation=""
+if [[ "$ran" != "1" ]]; then
+    violation="researcher did not run in the last ${DAYS}d (last_run_at=$last_run)"
+elif [[ "$produced" -lt 1 ]]; then
+    violation="researcher ran but produced 0 mechanism proposals in the last ${DAYS}d (last_run_at=$last_run)"
+fi
+
+# ============================================================================
+# Observe-to-close (and dedup) — one open-issue list, used for both.
+# ============================================================================
+open_json=""
+if [[ "$FILE_ISSUES" == "1" ]] && command -v "$GH" >/dev/null 2>&1; then
+    set +e
+    open_json=$("$GH" issue list -R "$REPO" --state open --limit 200 \
+        --json number,body 2>/dev/null)
+    local_rc=$?
+    set -e
+    if [[ "$local_rc" -ne 0 || -z "$open_json" ]]; then
+        log "gh issue list failed (rc=$local_rc) — dedup + observe-to-close skipped"
+    elif ! jq -e . >/dev/null 2>&1 <<<"$open_json"; then
+        log "gh issue list returned non-JSON — dedup + observe-to-close skipped"
+        open_json=""
+    fi
+fi
+
+if [[ -z "$violation" && -n "$open_json" ]]; then
+    while IFS= read -r row; do
+        [[ -n "$row" ]] || continue
+        num=$(jq -r '.number // empty' <<<"$row" 2>/dev/null) || continue
+        body=$(jq -r '.body // ""' <<<"$row" 2>/dev/null) || continue
+        [[ -n "$num" && -n "$body" ]] || continue
+        if printf '%s\n' "$body" | grep -qF "$MARKER_PREFIX"; then
+            ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+            comment="observe-to-close: research sweep healthy — researcher ran (last_run_at=$last_run) and produced $produced mechanism proposal(s) in the last ${DAYS}d at $ts. The ratchet has research input again; this missed-sweep ticket drains."
+            set +e
+            "$GH" issue close "$num" -R "$REPO" --comment "$comment" >/dev/null 2>&1
+            crc=$?
+            set -e
+            if [[ "$crc" -eq 0 ]]; then
+                log "observe-to-close: healthy sweep closed #$num"
+            else
+                log "observe-to-close: failed to close #$num (rc=$crc)"
+            fi
+        fi
+    done < <(printf '%s' "$open_json" | jq -c '.[]' 2>/dev/null)
+fi
+
+if [[ -z "$violation" ]]; then
+    log "OK: research sweep healthy (ran=$ran produced=$produced); observe-to-close ran"
+    exit 0
+fi
+
+# ============================================================================
+# Violation: file (or dedup against) a `fix(research-sweep):` ticket.
+# ============================================================================
+if [[ -n "$open_json" ]]; then
+    dup=$(printf '%s' "$open_json" \
+        | jq -r --arg m "$MARKER_PREFIX" '.[] | select((.body // "") | contains($m)) | .number' \
+        | head -n 1 || true)
+    if [[ -n "$dup" ]]; then
+        log "dedup: open $REPO#$dup already carries marker for a missed research sweep"
+        exit 0
+    fi
+fi
+
+title="fix(research-sweep): $violation"
+body_file="$(mktemp -t research-sweep-body.XXXXXX)"
+trap 'rm -f "$body_file"' EXIT INT TERM
+{
+    printf 'The continuous research sweep (fleet-ops#3130, P11-A) missed its weekly bar: **%s**.\n\n' "$violation"
+    printf '## Live researcher state (agent-state/fleet-researcher/state.json)\n\n'
+    printf -- '- last_run_at: `%s`\n' "$last_run"
+    printf -- '- mechanism proposals filed in last %sd: `%s`\n' "$DAYS" "$produced"
+    if [[ -n "$produced_title" ]]; then
+        printf -- '- most recent filed proposal: `%s`\n' "$produced_title"
+    fi
+    printf '\n## Mechanism hypothesis\n\n'
+    printf -- '- The researcher timer fired but the run filed nothing (all deltas rejected/deduped), OR the researcher did not run at all (timer wedged, seat exhaustion, StartLimitBurst).\n'
+    printf -- '- Fix direction: prove which — check `systemctl --user status quality-research-weekly` / `fleet-researcher.service` and the last `fleet-researcher-run` report dir under agent-state/fleet-researcher/reports/ — then repair the timer/seat path or loosen the delta contract so a real frontier delta survives.\n'
+    printf '\n## What to fix\n\n'
+    printf '1. Confirm the hypothesis with a live trace of the researcher run (journal, report dir, seat health).\n'
+    printf '2. Land the mechanism change (this is a mechanism ticket, fleet-ops#366 — a report without a prevention mechanism is a failed fix).\n'
+    printf '3. This ticket drains automatically when the sweep is healthy again (researcher ran + >= 1 mechanism proposal in the trailing %sd, observe-to-close).\n\n' "$DAYS"
+    printf '## Verification\n\n'
+    printf -- '- Canary: fleet-research-sweep-canary (heartbeat-tier1 block 45) reads %s each tick and no longer reports a missed sweep.\n' "$STATE"
+    printf -- '- State: jq -r .last_run_at %s within %sd AND at least one delta with status filed and filed_at within %sd.\n\n' "$STATE" "$DAYS" "$DAYS"
+    printf 'run-proof: canary tick at %s; state=%s; last_run_at=%s; produced=%s; window=%sd.\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$STATE" "$last_run" "$produced" "$DAYS"
+    printf '\n%s\n' "$MARKER_PREFIX"
+} >"$body_file"
+
+if [[ "$FILE_ISSUES" != "1" ]]; then
+    log "file skipped (FLEET_RESEARCH_SWEEP_FILE=$FILE_ISSUES) marker=$MARKER_PREFIX"
+    log "OK: missed research sweep isolated: $violation"
+    exit 0
+fi
+
+loud "RESEARCH-SWEEP-MISSED" \
+    "$violation (last_run_at=$last_run produced=$produced window=${DAYS}d)"
+if "$ISSUE_FILE" file -R "$REPO" --title "$title" --body "$(cat "$body_file")" >/dev/null 2>&1; then
+    log "filed: $title"
+else
+    loud "RESEARCH-SWEEP-FILE-ERR" "fleet-issue-file failed for $MARKER_PREFIX"
+fi
+log "OK: missed research sweep isolated + ticket filed: $violation"
+exit 0

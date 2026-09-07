@@ -778,6 +778,13 @@ bin/fleet-empty-run-burst-canary /home/nish/.local/bin/fleet-empty-run-burst-can
 # resolves (ratio >= 0.1) or the stage's leak drains to 0. No new timer;
 # heartbeat-tier1 block 45. Not an organ (exports no heartbeat metric).
 bin/fleet-scout-leak-canary /home/nish/.local/bin/fleet-scout-leak-canary
+# fleet-ops#3130: continuous-research prevention canary. Asserts the
+# researcher ran AND produced >= 1 mechanism proposal in the trailing 7d
+# (reads agent-state/fleet-researcher/state.json); auto-files a
+# `fix(research-sweep):` issue on violation, observe-to-closes when
+# healthy. No new timer; heartbeat-tier1 block 46. Not an organ (exports
+# no heartbeat metric).
+bin/fleet-research-sweep-canary /home/nish/.local/bin/fleet-research-sweep-canary
 # fleet-ops#524: per-repo verification harness canary (sr-verify-harness).
 # Fail-loud if an enrolled product repo HEAD is missing
 # .claude/skills/verify-<app>/SKILL.md with required sections + features/.
