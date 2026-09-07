@@ -310,16 +310,16 @@
       "_note": "Nish 2026-08-27 00:30 IST: 'ds4 pro from straitly is fire' — approved beyond senior-auditor duty into worker rotation. Metered (~$0.42/M in, real card below the quoted 30%-off). Start cap 2 per metered discipline; AIMD raises only with evidence. gpt-5.6-sol stays orchestration-only (never a worker); qwen3.8-max not approved. Check the straitly meter within minutes of first draws (never-double-wire rule)."
     },
     "mergegateway": {
-      "cap": 1,
+      "cap": 2,
       "class": "metered",
       "quota_bench_default_s": 604800,
-      "audition": true,
       "models": {
-        "deepseek/deepseek-v4-flash": { "cap": 1, "audition": true },
+        "deepseek/deepseek-v4-flash": 2,
         "anthropic/claude-sonnet-5": { "cap": 1, "audition": true },
         "minimax/minimax-m3": { "cap": 1, "audition": true },
         "google/gemini-3.7-flash": { "cap": 1, "audition": true }
       },
+      "_comment_promote_20260907": "fleet-ops#4055 (2026-09-07): promote mergegateway/deepseek/deepseek-v4-flash out of audition. Audition verdict (fleet-ops#3322): sessions=10 yield=0.5 cost_usd=0.0 fleet_median=0.0 — positive yield at/above fleet median, so the tick filed a promote verdict. Cap 2 per metered discipline (matches straitly/deepseek-v4-pro 'Start cap 2 per metered discipline; AIMD raises only with evidence'). Provider cap raised 1->2 so the model cap binds (pick_seat admits only min(provider_cap, model_cap) concurrent). Provider-level audition:true dropped so the promoted model is no longer gated to light-only via seat_is_audition; the three remaining models keep model-level audition:true so they stay light-only and still retire at 10 sessions / 7d / $1.",
       "_comment_audition_20260906": "fleet-ops#3973 (2026-09-06): mergegateway is a live audition provider (class metered, $10 free credits, probed 2026-09-06 PONG) that carries prepaid quota the audition lane refills by hand. A provider 402 'Credit balance depleted' (type/code budget_exceeded, tail watched 2026-09-06T12:09-12:10Z on all three seats at 1s on 0509-1752) is a prepaid-balance WALL, not error_class=unknown — the same class as the straitly/xai 402s, so quota_bench_default_s=604800 (7 days, same period class as xai-oauth). With the default the seat is benched once instead of re-dying daily; without it mark_seat_quota_bench fails open and the reactive quota_exhausted ledger benches for 24h. No cap change, no seat retirement (infra/money class, rc=1 at 1s 0 tools).",
       "_comment_quota_3973": "fleet-ops#3973: mergegateway audition provider pins quota_bench_default_s=604800 (7d prepaid refill class, same as straitly/xai 402s). Citation: observed 2026-09-06T12:10:19Z watch.log 'fast-death classified error_class=unknown on mergegateway/google/gemini-3.7-flash' with tail '402: {\"message\":\"Credit balance depleted. Add credits to continue.\",\"type\":\"budget_exceeded\",\"code\":\"budget_exceeded\"}' — a money wall Nish is told about, refilled by hand; bench once for 7d, not daily."
     },
