@@ -41,6 +41,16 @@
       "note": "RunInfra deepseek-v4-flash worker seat (fleet-ops#4205, Nish 2026-09-07). Prepaid balance, cap 4, never a judge/senior seat. HTTP 402 = balance wall (Nish-only top-up), not a transient fault."
     },
     {
+      "id": "crof",
+      "class": "prepaid-quota",
+      "note": "CrofAI deepseek-v4-flash-0731 worker seat (fleet-ops#4262, Nish 2026-09-07). Prepaid balance, cap 2, NOT audition. Never a judge/senior seat. HTTP 402 = balance wall (Nish-only top-up), not a transient fault."
+    },
+    {
+      "id": "entrim",
+      "class": "prepaid-quota",
+      "note": "Entrim deepseek-ai/DeepSeek-V4-Flash worker seat (fleet-ops#4262, Nish 2026-09-07). Prepaid balance, cap 2, NOT audition. Never a judge/senior seat. HTTP 402 = balance wall (Nish-only top-up), not a transient fault."
+    },
+    {
       "id": "minimax",
       "class": "metered",
       "note": "MiniMax-M3 direct, per-token."

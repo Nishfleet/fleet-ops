@@ -322,11 +322,11 @@ systemd/fleet-aeo-probe.service /home/nish/.config/systemd/user/fleet-aeo-probe.
 systemd/fleet-aeo-probe.timer /home/nish/.config/systemd/user/fleet-aeo-probe.timer
 libexec/fleet-aeo-probe.py /home/nish/.local/libexec/fleet-aeo-probe.py
 config/aeo-probe.json /home/nish/.config/fleet-aeo/probe.json
-# fleet-ops#1137: truth staleness detector — weekly cross-check of standing
-# docs vs live state. The checker piggybacks the metrics exporter via a
-# drop-in ExecStartPost so no extra timer is needed for the heartbeat.
-systemd/fleet-truth-staleness-check.service /home/nish/.config/systemd/user/fleet-truth-staleness-check.service
-systemd/fleet-truth-staleness-check.timer /home/nish/.config/systemd/user/fleet-truth-staleness-check.timer
+# fleet-ops#1137: truth staleness detector — cross-check of standing docs
+# vs live state. The checker piggybacks the metrics exporter via a drop-in
+# (no timer of its own since fleet-ops#4149). The hand-built weekly timer +
+# issue filing were retired in fleet-ops#4149; the TruthStalenessMismatch
+# alert rule in config/fleet_rules.yml notifies instead.
 libexec/staleness-checker.py /home/nish/.local/libexec/staleness-checker.py
 systemd/fleet-metrics-export.service.d/staleness-checker.conf /home/nish/.config/systemd/user/fleet-metrics-export.service.d/staleness-checker.conf
 bin/guard_pi_packet_hook.py /home/nish/.claude/hooks/guard_pi_packet.py

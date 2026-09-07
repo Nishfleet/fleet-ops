@@ -156,19 +156,14 @@
     },
     {
       "id": "truth-staleness",
-      "gate": "weekly checker cross-checks standing docs against live state",
+      "gate": "checker cross-checks standing docs against live state; TruthStalenessMismatch alerts on mismatches (timer + issue filing retired in fleet-ops#4149)",
       "proof": [
         "libexec/staleness-checker.py",
         "tests/staleness-checker.test.sh",
         "config/fleet_rules.yml",
-        "systemd/fleet-truth-staleness-check.timer",
-        "systemd/fleet-truth-staleness-check.service",
         "systemd/fleet-metrics-export.service.d/staleness-checker.conf"
       ],
-      "units": [
-        "fleet-truth-staleness-check.timer",
-        "fleet-truth-staleness-check.service"
-      ],
+      "units": [],
       "prompts": [],
       "bypass_checks": []
     },

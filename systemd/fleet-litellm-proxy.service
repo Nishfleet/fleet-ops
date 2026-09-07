@@ -11,6 +11,13 @@ ConditionPathExists=%h/.config/fleet-ops/litellm-proxy.yaml
 # pages. Restart=on-failure brings the proxy back when a dependent
 # recovers.
 Wants=fleet-litellm-postgres.service fleet-litellm-redis.service
+# StartLimit* are [Unit]-section keys; in [Service] systemd ignores them
+# ("Unknown key name ... in section 'Service'") and the documented storm
+# cap silently falls back to the 10s/5 default. 60s/5 makes the P4 drill
+# contract real: after 5 rapid failures the proxy stays down for the rest
+# of the minute instead of retry-churning at RestartSec=2s.
+StartLimitIntervalSec=60s
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -27,13 +34,10 @@ Environment=LITELLM_PROXY_CONFIG=%h/.config/fleet-ops/litellm-proxy.yaml
 # to it over 127.0.0.1:4000.
 ExecStart=/usr/bin/env /home/nish/.local/venvs/litellm/bin/litellm --config ${LITELLM_PROXY_CONFIG} --port 4000 --host 127.0.0.1
 # Restart on any failure (import error, bind conflict, upstream crash).
-# 2s delay so the journalctl storm is bounded; systemd caps the storm
-# with StartLimit* below. The P4 drill proves workers fail loud <60s
-# when the proxy stays down.
+# 2s delay + the [Unit]-section StartLimit* above bound the storm. The
+# P4 drill proves workers fail loud <60s when the proxy stays down.
 Restart=on-failure
 RestartSec=2s
-StartLimitIntervalSec=60s
-StartLimitBurst=5
 TimeoutStopSec=15
 # Hardening: the proxy only needs to bind a loopback socket and read its
 # config + credential resolvers. No write needs to escape the venv cache.

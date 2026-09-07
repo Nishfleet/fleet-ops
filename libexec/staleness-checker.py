@@ -4,10 +4,15 @@
 Extracts mechanically verifiable claims from standing docs (file paths,
 systemd units, issue references) and tests them against the living VPS.
 
-Mismatches are exported as Prometheus gauges (for fleet-metrics-export
-piggyback) AND filed as agent-ready issues when the checker is run directly.
+Mismatches are exported as Prometheus gauges via the fleet-metrics-export
+piggyback. The hand-built weekly timer + GitHub issue filing were retired in
+fleet-ops#4149: the off-the-shelf notifier is now the TruthStalenessMismatch
+alert rule in config/fleet_rules.yml, which watches
+fleet_truth_staleness_mismatches_by_kind (exported from the cache below).
 
-Running cadence: weekly (Sunday 04:00 IST) — docs rot slowly, weekly is enough.
+Running cadence: on the fleet-metrics-export tick (ExecStartPost in
+systemd/fleet-metrics-export.service.d/staleness-checker.conf) — no timer of
+its own since fleet-ops#4149.
 
 ## Claim types (phase 1: mechanically checkable)
 - **path_exists**: Files/paths referenced in standing docs actually exist on disk.
@@ -41,9 +46,7 @@ FINDINGS_DIR = HOME / "workspaces/agent-state/staleness-findings"
 PR_CACHE_DIR = HOME / "workspaces/agent-state/fleet-metrics"
 FINDINGS_CACHE = PR_CACHE_DIR / "staleness-findings-cache.json"
 FINDINGS_CACHE_TTL = 3600  # 1 hour — reuse last run's data
-FINDING_LIMIT = 100        # max open issues to file per run
 GH_TIMEOUT = 45            # gh calls can be slow
-ISSUE_LABELS = ["agent-ready", "staleness-detector"]
 # fleet-ops#2273: legacy textfile from before the metrics-export piggyback
 # refactor. The checker no longer writes here (fleet-metrics-export.py is the
 # single writer of staleness gauges into fleet.prom). Clean up the stale file
@@ -407,78 +410,6 @@ def _claim_result(claim):
     }
 
 
-# --- Issue filing -----------------------------------------------------------
-
-def _file_finding(finding):
-    """File a GitHub issue for a staleness finding."""
-    claim = finding["claim"]
-    ctype = claim["type"]
-    source = claim["source"]
-    raw = claim.get("raw", claim["value"])
-    detail = finding["detail"]
-
-    # Build title and body
-    if ctype == "path":
-        title = f"Stale doc path: {raw}"
-    elif ctype == "unit":
-        title = f"Stale doc unit: {raw}"
-    elif ctype == "issue":
-        title = f"Stale doc issue ref: {raw}"
-    else:
-        title = f"Stale doc claim: {raw}"
-
-    body = f"""Staleness finding from truth-staleness-checker (fleet-ops#1137).
-
-- **Type**: {ctype}
-- **Source doc**: {source}
-- **Claim**: {raw}
-- **Detail**: {detail}
-
-This claim was extracted from a standing doc and failed live validation.
-Review the doc and either update it or fix the live state.
-"""
-
-    # Only file if we haven't already filed something similar today
-    today = time.strftime("%Y-%m-%d")
-    # Check if this exact finding was already filed today
-    try:
-        r = subprocess.run(
-            ["gh", "search", "issues",
-             "--repo", "Nishfleet/fleet-ops",
-             "--state", "open",
-             "--label", "staleness-detector",
-             "--json", "title,number"],
-            capture_output=True, text=True, timeout=30,
-        )
-        if r.returncode == 0:
-            existing = json.loads(r.stdout or "[]")
-            for iss in existing:
-                if title in iss.get("title", "") and iss.get("number"):
-                    return iss["number"]  # already filed
-    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
-        pass  # search failed, file anyway
-
-    try:
-        labels_args = sum([["-l", l] for l in ISSUE_LABELS], [])
-        r = subprocess.run(
-            ["gh", "issue", "create",
-             "-R", "Nishfleet/fleet-ops",
-             "-t", title,
-             "-b", body]
-            + labels_args,
-            capture_output=True, text=True, timeout=30,
-        )
-        if r.returncode != 0:
-            print(f"issue create failed: {r.stderr.strip()[:200]}", file=sys.stderr)
-            return None
-        # Extract issue number from URL or output
-        m = re.search(r'(\d+)', r.stdout)
-        return int(m.group(1)) if m else None
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        print(f"issue create error: {exc}", file=sys.stderr)
-        return None
-
-
 # --- Prometheus export ------------------------------------------------------
 
 def _prom_label(s):
@@ -488,21 +419,17 @@ def _prom_label(s):
 # --- Main -------------------------------------------------------------------
 
 def main():
-    """Run the staleness checker.
+    """Run the staleness detector: extract claims, validate, write the cache.
 
     Returns 0 on success (even if mismatches found).
     Returns non-zero only on internal errors.
 
-    Flags:
-      --no-file   Extract and validate claims, export metrics, but do NOT file
-                  GitHub issues. Used by tests and dry runs to avoid side effects.
+    Export-only since fleet-ops#4149: the hand-built weekly issue filing was
+    retired and replaced by the TruthStalenessMismatch alert rule in
+    config/fleet_rules.yml (watches fleet_truth_staleness_mismatches_by_kind
+    exported from the cache below). The old --no-file flag is gone because
+    filing no longer exists.
     """
-    import argparse
-    parser = argparse.ArgumentParser(description="Truth staleness detector")
-    parser.add_argument("--no-file", action="store_true",
-                        help="validate and export metrics only; do not file GitHub issues")
-    args = parser.parse_args()
-
     start_time = time.time()
     findings = []
 
@@ -547,23 +474,7 @@ def main():
     }
     _write_cache(FINDINGS_CACHE, run_data)
 
-    # 5. File issues for new mismatches (only when run directly with filing
-    #    enabled). --no-file skips filing (tests, dry runs). The exporter
-    #    piggyback (STALENESS_RUN_MODE=export) also skips filing — the weekly
-    #    timer (STALENESS_RUN_MODE=direct) is the only path that files.
-    run_type = os.environ.get("STALENESS_RUN_MODE", "direct")
-    file_issues = run_type == "direct" and not args.no_file
-    filed_issues = []
-    if file_issues and findings:
-        # Limit issues per run
-        for f in findings[:FINDING_LIMIT]:
-            iss = _file_finding(f)
-            if iss:
-                filed_issues.append(iss)
-                print(f"  filed issue #{iss}: {f['claim'].get('raw', f['claim']['value'])}",
-                      file=sys.stderr)
-
-    # 6. Prometheus export is owned by fleet-metrics-export.py.
+    # 5. Prometheus export is owned by fleet-metrics-export.py.
     # This checker only writes its JSON cache (step 4). fleet-metrics-export.py
     # is the SINGLE writer of /var/lib/prometheus/node-exporter/fleet.prom and
     # reads this cache to emit the fleet_truth_staleness_* gauges. Writing
@@ -579,10 +490,9 @@ def main():
     except FileNotFoundError:
         pass
 
-    # 7. Summary
+    # 6. Summary
     print(f"\nStaleness check complete: {docs_scanned} docs, "
-          f"{len(unique_claims)} claims, {len(findings)} mismatches, "
-          f"{len(filed_issues)} issues filed", file=sys.stderr)
+          f"{len(unique_claims)} claims, {len(findings)} mismatches", file=sys.stderr)
 
     return 0
 

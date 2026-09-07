@@ -630,6 +630,72 @@
           "maxTokens": 65536
         }
       ]
+    },
+    "runinfra": {
+      "baseUrl": "https://api.runinfra.ai/v1",
+      "api": "openai-completions",
+      "apiKey": "!cut -d= -f2 /home/nish/fleet2/etc/runinfra.env",
+      "models": [
+        {
+          "id": "deepseek-v4-flash",
+          "name": "DeepSeek V4 Flash via RunInfra",
+          "contextWindow": 1000000,
+          "maxTokens": 32768,
+          "reasoning": false,
+          "cost": {
+            "input": 0.13,
+            "output": 0.27,
+            "cacheRead": 0.01,
+            "cacheWrite": 0
+          },
+          "_comment_4262": "fleet-ops#4262: runinfra's models registration is durable here. #4207 landed the seat-caps/entitled rows only; install.sh copy-installs pi-models.json verbatim (the unknown-provider merge exists only for seat-caps.json), so the 2026-09-07 14:10Z deploy silently dropped runinfra+crof+entrim from the live models.json. Landed verbatim from the pre-#4234 live file (models.json.pre-4234-20260907T133107Z)."
+        }
+      ]
+    },
+    "crof": {
+      "baseUrl": "https://crof.ai/v1",
+      "api": "openai-completions",
+      "apiKey": "!cut -d= -f2 /home/nish/fleet2/etc/crof.env",
+      "models": [
+        {
+          "id": "deepseek-v4-flash-0731",
+          "name": "DeepSeek V4 Flash 0731 (Q8_0) via CrofAI",
+          "contextWindow": 1000000,
+          "maxTokens": 32768,
+          "reasoning": false,
+          "cost": {
+            "input": 0.08,
+            "output": 0.1,
+            "cacheRead": 0.003,
+            "cacheWrite": 0
+          },
+          "samplingParams": {
+            "reasoning_effort": "none"
+          },
+          "_comment_reasoning": "fleet-ops#4234/#4262: same treatment as the merged #4234 fix for ollama.com — CrofAI serves DeepSeek V4 Flash 0731 and reasons by default, charging reasoning to the output budget; reasoning_effort:none is the only value that turns it off (landed verbatim from the pre-#4234 live file). Pi already clamps this seat's thinkingLevel to off because reasoning is not declared here, so this makes the wire match Pi's own view."
+        }
+      ]
+    },
+    "entrim": {
+      "baseUrl": "https://api.entrim.ai/v1",
+      "api": "openai-completions",
+      "apiKey": "!cut -d= -f2 /home/nish/fleet2/etc/entrim.env",
+      "models": [
+        {
+          "id": "deepseek-ai/DeepSeek-V4-Flash",
+          "name": "DeepSeek V4 Flash via Entrim",
+          "contextWindow": 1000000,
+          "maxTokens": 32768,
+          "reasoning": false,
+          "cost": {
+            "input": 0.09,
+            "output": 0.17,
+            "cacheRead": 0.09,
+            "cacheWrite": 0
+          },
+          "_comment_4262": "fleet-ops#4262: landed verbatim from the live file (pre-#4234 backup). cacheRead=input (0.09) until measured — Entrim's cache-read pricing is not known yet."
+        }
+      ]
     }
   }
 }

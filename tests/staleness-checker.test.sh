@@ -22,22 +22,29 @@ else
   fail "libexec/staleness-checker.py not found"
 fi
 
-# Test 2: Timer and service files exist
-echo "[2] systemd units exist"
-for f in systemd/fleet-truth-staleness-check.timer systemd/fleet-truth-staleness-check.service; do
-  if [[ -f "$f" ]]; then
-    pass "$f exists"
-  else
-    fail "$f missing"
-  fi
-done
-
-# Test 3: Timer fires on weekly cadence
-echo "[3] Timer fires weekly"
-if grep -q "OnCalendar=Sun" systemd/fleet-truth-staleness-check.timer; then
-  pass "Timer has weekly (Sunday) schedule"
+# Test 2: Weekly timer + issue filing retired (fleet-ops#4149)
+echo "[2] hand-built weekly timer and issue filing are gone"
+if [[ -f systemd/fleet-truth-staleness-check.timer || -f systemd/fleet-truth-staleness-check.service ]]; then
+  fail "retired units still exist in the repo"
 else
-  fail "Timer missing weekly schedule"
+  pass "systemd/fleet-truth-staleness-check.{timer,service} are deleted"
+fi
+if grep -q "_file_finding\|STALENESS_RUN_MODE\|ISSUE_LABELS\|FINDING_LIMIT" libexec/staleness-checker.py; then
+  fail "issue-filing machinery still present in staleness-checker.py"
+else
+  pass "issue-filing machinery stripped from staleness-checker.py"
+fi
+
+# Test 3: Replacement alert rule exists (fleet-ops#4149)
+echo "[3] TruthStalenessMismatch alert rule exists"
+if grep -q "TruthStalenessMismatch" config/fleet_rules.yml; then
+  if grep -q "fleet_truth_staleness_mismatches_by_kind > 0" config/fleet_rules.yml; then
+    pass "TruthStalenessMismatch rule exists and watches mismatches_by_kind"
+  else
+    fail "TruthStalenessMismatch rule missing mismatches_by_kind expr"
+  fi
+else
+  fail "TruthStalenessMismatch rule missing from fleet_rules.yml"
 fi
 
 # Test 4: Drop-in conf exists for piggyback
@@ -224,12 +231,12 @@ else
   fail "Real canonical.md still references stale paths: $PY_RESULT3"
 fi
 
-# Test 10: Script runs without error (dry check, --no-file to avoid filing real issues)
-echo "[10] Script runs without crashing (--no-file)"
-python3 libexec/staleness-checker.py --no-file 2>/dev/null
+# Test 10: Script runs without error (export-only since fleet-ops#4149)
+echo "[10] Script runs without crashing"
+python3 libexec/staleness-checker.py 2>/dev/null
 RC=$?
 if [[ $RC -eq 0 ]]; then
-  pass "Script runs clean with --no-file (rc=$RC)"
+  pass "Script runs clean (rc=$RC)"
 else
   fail "Script crashed (rc=$RC)"
 fi
@@ -305,8 +312,7 @@ fi
 # fresh values in fleet.prom — Prometheus picks one, and the stale one won,
 # triggering TruthStalenessAbsent (absent() does not fire because the metric IS
 # present — it's just the wrong, stale value).
-# Pin: the checker removes the legacy file on every run (--no-file path too,
-# so the weekly-piggyback tick that doesn't file issues still cleans up).
+# Pin: the checker removes the legacy file on every run (export-only path too).
 echo "[12] Removes legacy fleet-staleness.prom on every run (fleet-ops#2273)"
 SCRATCH_STALE="$(mktemp -d -t stale-test.XXXXXX)"
 trap 'rm -rf "$SCRATCH_STALE"' EXIT INT TERM
@@ -320,16 +326,15 @@ spec = importlib.util.spec_from_file_location("sc", "libexec/staleness-checker.p
 sc = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(sc)
 
-# Save the scratch path, then rewrite argv so argparse sees only --no-file.
+# Save the scratch path, then rewrite argv (no flags since fleet-ops#4149).
 legacy_path = Path(sys.argv[1]) / "fleet-staleness.prom"
-sys.argv = ["staleness-checker.py", "--no-file"]
+sys.argv = ["staleness-checker.py"]
 sc.LEGACY_STALENESS_PROM = legacy_path
 assert sc.LEGACY_STALENESS_PROM.exists(), "seed file should exist"
 
 sc._gh_issue = lambda repo, num: None
 sc._systemctl_unit_exists = lambda u: True
 sc._systemctl_unit_active = lambda u: True
-sc._file_finding = lambda f: None
 sc.STANDING_DOCS = []
 
 rc = sc.main()

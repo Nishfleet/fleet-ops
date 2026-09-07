@@ -294,6 +294,18 @@ jobs:
         # behavior so a reverted merge can no longer leave its issues closed.
         bash tests/auto-revert-required-check-gate.test.sh
         bash tests/reopen-reverted-issues.test.sh
+        # fleet-ops#407: prove a real end-to-end run before shipping new
+        # units/timers/workflows. The drill (test) always runs; the live
+        # PR-body check only runs for pull_request events and exits 0/SKIP
+        # when the diff adds no machinery.
+        bash tests/prove-one-run-check.test.sh
+        if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+          body_file="$(mktemp)"
+          status_file="$(mktemp)"
+          jq -r '.pull_request.body // ""' "$GITHUB_EVENT_PATH" > "$body_file"
+          git diff --name-status origin/main...HEAD > "$status_file"
+          bin/prove-one-run-check --body "$body_file" --name-status "$status_file"
+        fi
         # The CI-standards audit parses workflow YAML with PyYAML.
         python3 -m pip install --no-input "pyyaml==6.0.1"
         bash tests/ci-standards-audit.test.sh

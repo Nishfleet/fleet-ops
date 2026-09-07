@@ -350,6 +350,24 @@
         "deepseek-v4-flash": 4
       },
       "_comment_runinfra": "fleet-ops#4205 (Nish 2026-09-07): RunInfra (https://api.runinfra.ai/v1, model deepseek-v4-flash, key resolved by '!cut -d= -f2 /home/nish/fleet2/etc/runinfra.env' already in ~/.pi/agent/models.json) is a WORKER seat, cap 4, class prepaid. It is never a judge/senior seat. contextWindow 1M (capable=1). quota_bench_default_s 86400 (24h): a quota/cap 429 whose error text carries no explicit reset window benches the seat for a day, not the 900s devin default. 402-as-balance-wall: RunInfra returns HTTP 402 when the prepaid balance is exhausted — that is a MONEY wall (Nish-only top-up), never a transient fault to retry; the quota_bench path benches it and the seat-dead quota-age rule (seat_dead_quota_age_s 86400) turns a 24h-old 402 into a corpse needing billing repair. Do not flip this row to free or metered without a ledger line."
+    },
+    "crof": {
+      "cap": 2,
+      "class": "prepaid-quota",
+      "quota_bench_default_s": 86400,
+      "models": {
+        "deepseek-v4-flash-0731": 2
+      },
+      "_comment_crof": "fleet-ops#4262 (Nish 2026-09-07): CrofAI (https://crof.ai/v1, model deepseek-v4-flash-0731, key resolved by '!cut -d= -f2 /home/nish/fleet2/etc/crof.env') is a WORKER seat, cap 2, class prepaid, NOT audition. contextWindow 1M (capable=1). quota_bench_default_s 86400 (24h): a quota/cap 429 with no explicit reset window benches a day. 402-as-balance-wall: HTTP 402 = prepaid balance exhausted — MONEY wall (Nish-only top-up), never a transient fault; the seat-dead quota-age rule turns a 24h-old 402 into a billing-repair corpse. No max_probe_ceiling: cap stays pinned at 2 (no upward AIMD probe on a paid seat). reasoning_effort:none wired in pi-models.json (fleet-ops#4234 — the endpoint reasons by default)."
+    },
+    "entrim": {
+      "cap": 2,
+      "class": "prepaid-quota",
+      "quota_bench_default_s": 86400,
+      "models": {
+        "deepseek-ai/DeepSeek-V4-Flash": 2
+      },
+      "_comment_entrim": "fleet-ops#4262 (Nish 2026-09-07): Entrim (https://api.entrim.ai/v1, model deepseek-ai/DeepSeek-V4-Flash, key resolved by '!cut -d= -f2 /home/nish/fleet2/etc/entrim.env') is a WORKER seat, cap 2, class prepaid, NOT audition. contextWindow 1M (capable=1). quota_bench_default_s 86400 (24h): a quota/cap 429 with no explicit reset window benches a day. 402-as-balance-wall: HTTP 402 = prepaid balance exhausted — MONEY wall (Nish-only top-up), never a transient fault; the seat-dead quota-age rule turns a 24h-old 402 into a billing-repair corpse. No max_probe_ceiling: cap stays pinned at 2 (no upward AIMD probe on a paid seat). cacheRead=input until measured (pi-models.json)."
     }
   },
   "product_order": "value",
@@ -366,7 +384,9 @@
     "cline",
     "cursor",
     "xai-oauth",
-    "runinfra"
+    "runinfra",
+    "crof",
+    "entrim"
   ],
   "_comment_senior_order": "fleet-ops#3121: the senior (judge/orchestrator/reviewer) role's seat ladder. Replaces the dead straitly role and the old keystone_only_providers dual mechanism — ONE mechanism now. First usable seat in the list wins; a walled seat is skipped, not a unit failure; if the whole list is walled the resolver falls through to any usable capable seat. cursor cap 2 concurrent (fleet-ops#4206, raised 1->2 to spend the $400 API pool); senior draws count against the existing prepaid-usage/cursor.json weekly meter (ceiling 300/week), after which the list falls through to xai grok and then openrouter deepseek. Nish 2026-09-04: devin (devin/glm-5-2), free-glm (zenmux/z-ai/glm-5.3-free, cline/z-ai/glm-5.3-flash), senior (this list) are the three judge roles; senior replaces straitly everywhere.",
   "senior_seats_in_order": [

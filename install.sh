@@ -520,6 +520,40 @@ remove_retired_canaries() {
     fi
 }
 
+remove_retired_staleness_timer() {
+    local unit p
+    # fleet-ops#4149: the hand-built weekly truth-staleness timer + its
+    # issue-filing service are retired — the TruthStalenessMismatch alert
+    # rule (config/fleet_rules.yml) replaced them. Stop/disable/remove the
+    # live units on any box that still has them.
+    for unit in fleet-truth-staleness-check.timer fleet-truth-staleness-check.service
+    do
+        p="${HOME}/.config/systemd/user/$unit"
+        # `-e || -L` catches real files AND dangling symlinks (fleet-ops#4199).
+        if [ -e "$p" ] || [ -L "$p" ]; then
+            "$SYSTEMCTL" --user stop "$unit" 2>/dev/null || true
+            "$SYSTEMCTL" --user disable "$unit" 2>/dev/null || true
+            rm -f "$p"
+            echo "retired unit removed: $unit (fleet-ops#4149)"
+            user_unit_changed=1
+        fi
+        p="${HOME}/.config/systemd/user/timers.target.wants/$unit"
+        if [ -e "$p" ] || [ -L "$p" ]; then
+            rm -f "$p"
+            echo "retired wants symlink removed: $unit (fleet-ops#4149)"
+            user_unit_changed=1
+        fi
+    done
+    # Wipe backup/retired unit files parked in the user systemd dir
+    # (fleet-ops#4149 acceptance: backups are rm'd, not parked). systemd
+    # ignores files with unknown suffixes, so any *.bak* / *.retired* at
+    # the top level is inert cruft from a retired or mutated mechanism —
+    # never a live unit. These are NOT tracked in MANIFEST — they only
+    # ever exist on a live box, so a repo grep cannot prove them gone;
+    # this function does.
+    rm -f "${HOME}"/.config/systemd/user/*.bak* "${HOME}"/.config/systemd/user/*.retired*
+}
+
 # Drift-or-install one entry. `_skip=1` means skip — out of scope for the
 # current mode. `_install_user` defaults to ln -s; `install_system` defaults
 # to sudo install -D.
@@ -842,6 +876,7 @@ if [ "$do_user_install" = 1 ]; then
   remove_orphaned_fleet_cheap_triage_dropin
   remove_orphaned_fleet_e2e_heartbeat_dropin
   remove_retired_canaries
+  remove_retired_staleness_timer
   # Only daemon-reload when a user-scope systemd unit/drop-in actually
   # changed. First install on a fresh box still reloads because every unit
   # is new. Bin/prompt/config changes do not waste a reload.
