@@ -450,12 +450,82 @@ reconciler_prom="${reconciler_prom_base}-${REPO}.prom"
 # is the intake-side guard so the two never fight. Filtering on body text
 # (not just label) also covers the stale-label window where an issue is still
 # agent-ready but carries a blocker.
+# fleet-ops#4395 belt-and-braces: a `blocked-on:` line naming an issue/PR that
+# is CLOSED/MERGED must NOT count as blocked. blocked-reconcile owns the
+# agent-blocked label and clears closed-ref blockers on its 30-min sweep, but
+# the intake-side guard must not re-claim an issue whose blocker is already
+# resolved (the stale-label window). This helper resolves each machine-
+# checkable blocker target's live state via gh and returns 0 (blocked) only
+# while at least one target is still open. Special markers (nish-decision,
+# orchestrator, infra, senior-review) are not issue refs and always count as
+# blocked. Fail-safe: a gh error leaves the issue blocked (never claim on a
+# lookup failure).
+#
+# Args: $1=body  $2=repo (Nishfleet/<repo>)  $3=issue number
+# Returns: 0 = blocked (do not claim), 1 = not blocked (claimable)
 blocked_filter() {
-    local body="$1"
-    if printf '%s' "$body" | grep -qE '^blocked-on:'; then
-        return 0
+    local body="$1" repo="$2" num="$3"
+    local line ref owner rname target_num
+    local any_machine=0 any_open=0
+    if ! printf '%s' "$body" | grep -qE '^blocked-on:'; then
+        return 1
     fi
-    return 1
+    while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        ref=$(printf '%s' "$line" | sed -E 's/^blocked-on:[[:space:]]*//' | sed -E 's/[[:space:]]+$//')
+        case "$ref" in
+            nish-decision|orchestrator|infra|senior-review)
+                # Special marker — not an issue ref; always a live blocker.
+                any_open=1
+                continue
+                ;;
+        esac
+        # Resolve the target ref to owner/repo/number.
+        if [[ "$ref" =~ ^https://github\.com/([^/]+)/([^/]+)/(issues|pull)/([0-9]+)/?$ ]]; then
+            owner="${BASH_REMATCH[1]}"; rname="${BASH_REMATCH[2]}"
+            target_num="${BASH_REMATCH[4]}"
+        elif [[ "$ref" =~ ^([^/]+)/([^/]+)#([0-9]+)$ ]]; then
+            owner="${BASH_REMATCH[1]}"; rname="${BASH_REMATCH[2]}"; target_num="${BASH_REMATCH[3]}"
+        elif [[ "$ref" =~ ^#([0-9]+)$ ]]; then
+            owner="${repo%%/*}"; rname="${repo#*/}"; target_num="${BASH_REMATCH[1]}"
+        else
+            # Unparseable ref — treat as a live blocker (fail-safe).
+            any_open=1
+            continue
+        fi
+        any_machine=1
+        # Resolve the target's live state. A PR is checked via the pulls
+        # endpoint so a merged PR counts as cleared.
+        local state_json is_pr state merged
+        if ! state_json=$(gh api "repos/${owner}/${rname}/issues/${target_num}" 2>/dev/null); then
+            any_open=1
+            continue
+        fi
+        is_pr=$(printf '%s' "$state_json" | jq -r 'if .pull_request then "yes" else "no" end' 2>/dev/null || echo no)
+        if [ "$is_pr" = "yes" ]; then
+            if ! state_json=$(gh api "repos/${owner}/${rname}/pulls/${target_num}" 2>/dev/null); then
+                any_open=1
+                continue
+            fi
+            merged=$(printf '%s' "$state_json" | jq -r '.merged' 2>/dev/null || echo false)
+            if [ "$merged" = "true" ]; then
+                # Merged PR clears the blocker.
+                continue
+            fi
+            # A closed-unmerged PR is still a blocker (fleet-ops#364).
+            any_open=1
+            continue
+        fi
+        state=$(printf '%s' "$state_json" | jq -r '.state' 2>/dev/null || echo open)
+        if [ "$state" != "closed" ]; then
+            any_open=1
+        fi
+    done < <(printf '%s' "$body" | grep -E '^blocked-on:')
+    if [ "$any_machine" -eq 1 ] && [ "$any_open" -eq 0 ]; then
+        echo "issue $num ($repo): stale blocker — all blocked-on targets closed/merged; letting through"
+        return 1
+    fi
+    return 0
 }
 
 # Vacation park (fleet-ops#1165, vacation-audit-20260827 finding 12):
@@ -1503,7 +1573,7 @@ blocked-on: orchestrator" 2>/dev/null || true
     # Blocker filter: never claim an issue whose body carries a blocked-on:
     # line (machine dep or nish-decision). The claim is a no-op spawn churn
     # otherwise. Audit finding 2026-08-26: fleet-ops#87 looped exactly this way.
-    if blocked_filter "$body"; then
+    if blocked_filter "$body" "$FULL" "$N"; then
         echo "issue $N ($title): skipped-blocked-on"
         continue
     fi
