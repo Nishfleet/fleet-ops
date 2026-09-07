@@ -3,11 +3,10 @@
 #
 # fleet-ops#92: a malformed systemd/*.slice must fail CI.
 #
-# The dedicated unit-verify job in .github/workflows/ci.yml still loops
-# only systemd/*.service and systemd/*.timer. Expanding that glob needs a
-# Workflows-permission token (nishfleet-worker cannot push
-# .github/workflows/**). This file is the class lock that can land without
-# that token.
+# The dedicated unit-verify job in .github/workflows/ci.yml now loops
+# systemd/*.slice too, with --recursive-errors=no (plain verify exits 0 on
+# unknown keys / bad sections). This file is the class lock that proves the
+# strong check catches a bad slice and that the live slices load clean.
 #
 # Default `systemd-analyze verify` (no --recursive-errors) exits 0 even
 # when the unit has unknown keys or a missing section. --recursive-errors=no

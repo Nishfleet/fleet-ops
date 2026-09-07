@@ -134,10 +134,19 @@ jobs:
           systemd-analyze --version
           # Verify each file individually so a failure names the bad file.
           # Do NOT use set -e: we want to collect all failures, then exit.
+          # Slices get --recursive-errors=no: plain verify exits 0 on unknown
+          # keys / bad sections (fleet-ops#92), so a malformed slice would
+          # otherwise slip through. Services/timers keep plain verify so a
+          # pre-existing service key quirk does not regress CI (fleet-ops#4174).
           shopt -s nullglob
           rc=0
           for f in systemd/*.service systemd/*.timer; do
             if ! systemd-analyze verify --man=no "$f"; then
+              rc=1
+            fi
+          done
+          for f in systemd/*.slice; do
+            if ! systemd-analyze verify --man=no --recursive-errors=no "$f"; then
               rc=1
             fi
           done
