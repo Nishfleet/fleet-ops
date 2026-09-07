@@ -6,9 +6,9 @@ DECISIONS comment on #4148, resolved by the claude-vps orchestrator).
 
 These files were loose under `~/.local` and never tracked in any git repo.
 This directory is the archive — git history is the backup (same rule as
-fleet-ops#4141). Orchestrator option (3) 2026-09-07: the live wrapper remains
-until a green proof (c) on a Sol-capable seat returning HTTP 200. Do not treat
-this archive as a wipe of ~/.local.
+fleet-ops#4141). Nish retired Sol 2026-09-07. The live wrapper remains until
+a green Luna-class proof (c) through `codex-luna@` after the ChatGPT usage
+reset (2026-09-12T14:31Z). Do not treat this archive as a wipe of ~/.local.
 
 | File | Live path (still present) | Lines (live) | Purpose |
 |---|---|---|---|
@@ -50,11 +50,10 @@ systemd `KillMode=control-group`).
 - Nish 2026-09-07 "nothing hand built" — umbrella #4140.
 - DECISIONS comment on fleet-ops#4148 (claude-vps orchestrator): canonical
   issue is #4148; #4159 closed as duplicate; unit/timer wipe is out of scope
-  (that is #4158); archive first, then templates, then one real Sol packet run
-  through `codex-sol@`, only then wipe.
-- Orchestrator option (3) 2026-09-07: templates stay shape-only. Proof (c)
-  failed (ChatGPT-account auth rejects `gpt-5.6-sol`; straitly is
-  quota_exhausted). No deletion this claim.
+  (that is #4158).
+- Nish 2026-09-07 retired Sol. Proof (c) is a Luna-class run through
+  `codex-luna@` after the ChatGPT usage reset, not a Sol run. No deletion
+  until that run is green. Wipe follow-up: #4278.
 
 Do not rebuild unless the per-role unit templates are retired AND a launch-time
 identity gate is genuinely required again — and even then prefer an

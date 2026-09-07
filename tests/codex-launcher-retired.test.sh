@@ -4,11 +4,11 @@
 # fleet-ops#4148 (child of #4140 row 9): shape-only landing of per-role
 # systemd unit templates (systemd/codex-sol@.service, systemd/codex-luna@.service)
 # whose ExecStart hard-codes model/provider/effort so launch identity holds
-# by construction (DECISIONS on #4148; orchestrator option 3 2026-09-07;
-# #4159 closed as duplicate). The live PATH wrapper + governed-run +
-# agent-governor-runtime stay in place until a green proof (c) on a
-# Sol-capable seat returning HTTP 200. The archive commit is the git backup
-# of the loose ~/.local files (same rule as #4141); it is not a wipe.
+# by construction (DECISIONS on #4148; #4159 closed as duplicate). Sol is
+# retired (Nish 2026-09-07); the Sol template is unused paper. The live PATH
+# wrapper + governed-run + agent-governor-runtime stay until a green Luna
+# proof (c) after the ChatGPT usage reset. The archive is the git backup of
+# the loose ~/.local files (same rule as #4141); it is not a wipe.
 #
 # This test pins the shape-only replacement:
 #   1. No wrapper/runtime/governed-run file in active repo dirs (bin/, lib/,
@@ -103,6 +103,11 @@ for pin in '-m gpt-5.6-luna' 'model_provider=openai' 'model_reasoning_effort=max
   grep -qF -e "$pin" "$luna" || fail "codex-luna@ must pin '$pin' in ExecStart"
 done
 ok "codex-sol@ / codex-luna@ pin model/provider/effort by construction"
+grep -qF "ExecStart=/bin/bash -c" "$sol" \
+  || fail "codex-sol@ ExecStart must wrap codex-real in /bin/bash -c so hosted systemd-analyze verify does not require %h/.local/libexec/codex-real"
+grep -qF "ExecStart=/bin/bash -c" "$luna" \
+  || fail "codex-luna@ ExecStart must wrap codex-real in /bin/bash -c so hosted systemd-analyze verify does not require %h/.local/libexec/codex-real"
+ok "both templates wrap ExecStart in /bin/bash -c (hosted systemd-analyze)"
 
 # --- 6. MANIFEST carries both templates ---------------------------------------
 grep -qF 'systemd/codex-sol@.service' "$repo_root/MANIFEST" \

@@ -2,15 +2,18 @@
 #
 # Shape-only replacement for the hand-built ~/.local/bin/codex governance
 # wrapper (archived under archive/codex-launcher-retired-2026-09-07/).
-# The live PATH wrapper remains until the gated wipe (option 3, #4148).
-# The wrapper enforced for Luna: model=gpt-5.6-luna, provider=openai,
-# effort=max,
-# fork_turns=none, agent_type=executor_luna (certified_policy). This unit
-# pins model/provider/effort in a fixed ExecStart; the instance (%i) is a
-# free run label (e.g. codex-luna@20260907). A launch through this unit
-# cannot express another model, provider or effort, so the allow-list holds
-# by construction (DECISIONS on fleet-ops#4148: "codex-luna@.service =
-# provider openai + agent_type executor_luna").
+# The live PATH wrapper remains until the gated wipe (#4278; Luna proof after
+# the ChatGPT usage reset). The wrapper enforced for Luna: model=gpt-5.6-luna,
+# provider=openai, effort=max, fork_turns=none, agent_type=executor_luna.
+# This unit pins model/provider/effort in a fixed ExecStart; the instance
+# (%i) is a free run label (e.g. codex-luna@20260907). A launch through this
+# unit cannot express another model, provider or effort, so the allow-list
+# holds by construction.
+#
+# ExecStart is `/bin/bash -c 'exec …'` so hosted `systemd-analyze verify`
+# checks bash (present on the runner) rather than `%h/.local/libexec/codex-real`
+# (absent on CI; fleet-ops#4148 P14/systemd-analyze red). Identity pins stay
+# in the inner argv.
 #
 # Not expressible as a fixed ExecStart and therefore dropped (listed in the
 # #4148 PR body): agent_type=executor_luna and fork_turns=none were
@@ -19,7 +22,9 @@
 # A real packet run:
 #
 #   systemd-run --user --collect --wait --unit <name> \
-#     -p StandardInput=file:/path/to/packet.md codex-luna@<label>.service
+#     -p StandardInput=file:/path/to/packet.md \
+#     -- /home/nish/.config/systemd/user/codex-luna@.service
+#   (or: systemd-run … codex-luna@<label>.service)
 
 [Unit]
 Description=Codex Luna session (%i) — per-role launch template (fleet-ops#4148)
@@ -29,6 +34,6 @@ Wants=network-online.target
 [Service]
 Type=simple
 Environment=CODEX_HOME=%h/.codex
-ExecStart=%h/.local/libexec/codex-real exec --json --skip-git-repo-check -m gpt-5.6-luna -c model_provider=openai -c model_reasoning_effort=max
+ExecStart=/bin/bash -c 'exec /home/nish/.local/libexec/codex-real exec --json --skip-git-repo-check -m gpt-5.6-luna -c model_provider=openai -c model_reasoning_effort=max'
 KillMode=control-group
 TimeoutStopSec=30
