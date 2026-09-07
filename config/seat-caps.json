@@ -159,8 +159,9 @@
           "reason": "2026-09-07 (fleet-ops#4271, session-waste #4260): 31 picks -> 0 PRs over 2026-09-01..09-07 (never shipped). Cap 0; the re-audition path (yield gate #3251) is the only way back in."
         },
         "deepseek/deepseek-v4-flash": {
-          "cap": 2,
-          "reason": "2026-09-07 fleet-ops#4205 (Nish scope-add 'ollama cloud and the rest'): land the paid ZenMux deepseek-v4-flash lane as a metered worker seat, cap 2. It answers SEAT-OK live but was absent from the seat-caps models allowlist, so fleet-seat-comeback-release logged it as 'absent from seat-caps models but real key' every tick and pick_seat never picked it. Meter check (fleet-ops#42: never wire a slug that can bill credits without a meter check): ZenMux is credit-based ($5 flat wallet; /models API returns no per-token pricing, confirmed 2026-08-29 fleet-ops#384), so daily_spend_cap_usd is NOT set here — Pi usage.cost cannot track per-token spend with no pricing, so that meter would be inert and misleading. The meter IS the wallet balance: HTTP 402 when the $5 is exhausted is a balance wall (same 402-as-balance-wall shape as runinfra in this same issue), benched by the provider quota_bench_default_s=3600 — never a transient fault to retry. The $5 wallet is the hard bound on spend; cap=2 limits concurrency. No max_probe_ceiling -> cap pinned at 2 (no upward AIMD probe on a paid seat). Not product_only: Nish declared it a worker seat (serves all enrolled repos, fleet-ops included). Metered class keeps it in the last-resort bucket after free + prepaid. Remove only with a ledger line."
+          "cap": 0,
+          "intentional_cap_zero": "money_only",
+          "reason": "2026-09-07 Nish: park the paid ZenMux DeepSeek V4 Flash lane (cap 0). ZenMux dashboard showed $5.00 on 2026-09-07 for 166M tokens (99% input, ~90% cached) at DeepSeek list price ($0.22/$0.007/$0.66). The same traffic costs ~$1.95 on crof (Q8, $0.08/$0.003/$0.10) and ~$4.10 on runinfra. Nish ordered the switch to crof. Free GLM lane on zenmux stays. Supersedes the #4205 scope-add for this slug. Re-raise only with a measured cheaper-than-crof price."
         }
       },
       "_comment_1442": "2026-08-29 fleet-ops#1442 (queue-starvation audit): zenmux had NO models map, so pick_seat skipped every zenmux row as not-in-allowlist even though z-ai/glm-4.7-flash-free was healthy (HTTP 200, observed 2026-08-28T14:27Z) and genuinely free. Live zenmux /models API: display_name 'Z.AI: GLM 4.7 Flash (Free)', pricings.completion[0].value=0 perMTokens USD. Live pi --print spawn: PACKET-VERDICT tools=1 class=worked, ANSWER=42, exit 0. Per-model class=free override (model_class_of, fleet-ops#384) buckets it free so the free-tier privacy line and ladder order apply even though the provider class is metered — same shape as cline/z-ai/glm-5.3-flash. cap=1 capacity-is-measured; the seat rate-limited (429) after 3 probes in 2 min during this audit, so cap stays 1 until a league mean beats a servable incumbent — the walled_comeback rate_limit_s=900 handles transient free-tier TPM walls. NOT added to free_providers_in_order (cline precedent: a metered/prepaid provider with a free model override is not in the free-order list; the free model is still bucketed and picked, just after the free-class providers). The paid credit lane deepseek/deepseek-v4-flash was deliberately held out of the allowlist under fleet-ops#42 until a meter check was wired; it is now landed (2026-09-07, fleet-ops#4205) with the 402-balance-wall meter — see its model reason.",
@@ -420,6 +421,7 @@
     "opencode",
     "xkiro"
   ],
+  "_comment_prepaid_order": "2026-09-07 Nish (switch the zenmux workload to crof): crof moved ahead of runinfra because it is the cheapest measured DeepSeek V4 Flash seat - the 166M-token 2026-09-07 day that billed $5.00 on the paid ZenMux lane at DeepSeek list price ($0.22/$0.007/$0.66) costs ~$1.95 on crof ($0.08/$0.003/$0.10) and ~$4.10 on runinfra ($0.13/$0.01/$0.27), so the cheapest seat is drawn first; the paid zenmux slug is parked at cap 0 in the same change.",
   "prepaid_providers_in_order": [
     "ollama",
     "devin",
@@ -427,8 +429,8 @@
     "cursor",
     "alibaba-coding",
     "xai-oauth",
-    "runinfra",
     "crof",
+    "runinfra",
     "entrim"
   ],
   "_comment_senior_order": "fleet-ops#3121: the senior (judge/orchestrator/reviewer) role's seat ladder. Replaces the dead straitly role and the old keystone_only_providers dual mechanism — ONE mechanism now. First usable seat in the list wins; a walled seat is skipped, not a unit failure; if the whole list is walled the resolver falls through to any usable capable seat. cursor cap 2 concurrent (fleet-ops#4206, raised 1->2 to spend the $400 API pool); senior draws count against the existing prepaid-usage/cursor.json weekly meter (ceiling 300/week), after which the list falls through to xai grok and then openrouter deepseek. Nish 2026-09-04: devin (devin/glm-5-2), free-glm (zenmux/z-ai/glm-5.3-free, cline/z-ai/glm-5.3-flash), senior (this list) are the three judge roles; senior replaces straitly everywhere.",

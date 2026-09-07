@@ -115,9 +115,10 @@ entry_has_dated_reason '.providers.devin.models["swe-1-7"]' \
 ok "product_order=value, volume order retired, devin AIMD not hard_ceiling with probe ceilings pinned == caps; devin/glm-5-2 + swe-1-7 caps carry dated reasons (rule 1, fleet-ops#3504)"
 
 # --- prepaid order, then leftover prepaid after (fleet-ops#1178/#3125) ----
+# 2026-09-07 (Nish 'switch the zenmux workload to crof'): crof moved ahead of runinfra — it is the cheapest measured DeepSeek V4 Flash seat ($0.08/$0.003/$0.10 vs runinfra $0.13/$0.01/$0.27).
 prepaid_order=$(jq -r '.prepaid_providers_in_order | join(" ")' "$caps")
-[[ "$prepaid_order" == "ollama devin cline cursor alibaba-coding xai-oauth runinfra crof entrim" ]] \
-  || fail "prepaid order must be 'ollama devin cline cursor alibaba-coding xai-oauth runinfra crof entrim', got: $prepaid_order"
+[[ "$prepaid_order" == "ollama devin cline cursor alibaba-coding xai-oauth crof runinfra entrim" ]] \
+  || fail "prepaid order must be 'ollama devin cline cursor alibaba-coding xai-oauth crof runinfra entrim', got: $prepaid_order"
 
 devin_cap=$(jq -r '.providers.devin.cap // empty' "$caps")
 [[ -n "$devin_cap" ]] || fail "devin cap must be present, got: empty"
