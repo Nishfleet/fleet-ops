@@ -1645,9 +1645,14 @@ CODEX_AUTH_JSON = Path.home() / ".codex" / "auth.json"
 CLAUDE_OAUTH_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 CODEX_WHAM_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 OPENROUTER_KEY_URL = "https://openrouter.ai/api/v1/key"
+CURSOR_AUTH_JSON = Path.home() / ".config" / "cursor" / "auth.json"
+CURSOR_PERIOD_USAGE_URL = (
+    "https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage"
+)
 CLAUDE_QUOTA_CACHE = PR_CACHE_DIR / "claude-quota-cache.json"
 CODEX_QUOTA_CACHE = PR_CACHE_DIR / "codex-quota-cache.json"
 OPENROUTER_KEY_CACHE = PR_CACHE_DIR / "openrouter-key-cache.json"
+CURSOR_QUOTA_CACHE = PR_CACHE_DIR / "cursor-quota-cache.json"
 QUOTA_TTL = 300  # 5 min — matches the exporter cadence; one fresh fetch per run.
 QUOTA_STALE_CACHE = 1800  # 30 min — serve stale cache while a fetch is failing.
 
@@ -1802,6 +1807,69 @@ def _fetch_codex_usage():
         except (ValueError, TypeError):
             reset_s = None
     return [{"pct": pct, "reset_s": reset_s, "window": "primary"}]
+
+
+def _cursor_access_token():
+    """Return the Cursor access token from ~/.config/cursor/auth.json, or None."""
+    try:
+        data = json.loads(CURSOR_AUTH_JSON.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    token = (data or {}).get("accessToken")
+    return token or None
+
+
+def _fetch_cursor_usage():
+    """Return Cursor GetCurrentPeriodUsage quota rows, or None.
+
+    api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage answers a
+    POST with the Bearer accessToken from ~/.config/cursor/auth.json (the same
+    token the Cursor CLI uses; verified live 2026-09-07). The payload carries
+    planUsage.totalPercentUsed (percent USED across the billing cycle) and
+    billingCycleEnd (epoch-milliseconds). remaining_pct = 100 - totalPercentUsed;
+    reset_s = seconds until billingCycleEnd. The endpoint is the one OpenUsage's
+    Cursor provider calls (Sources/OpenUsage/Providers/Cursor/CursorUsageClient.swift).
+    """
+    token = _cursor_access_token()
+    if not token:
+        return None
+    req = urllib.request.Request(
+        CURSOR_PERIOD_USAGE_URL,
+        data=b"{}",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "User-Agent": _VENDOR_USER_AGENT,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:  # nosemgrep
+            payload = json.loads(resp.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, ValueError) as exc:
+        print(f"cursor usage fetch failed: {exc}", file=sys.stderr)
+        return None
+    if not isinstance(payload, dict):
+        return None
+    plan_usage = payload.get("planUsage")
+    if not isinstance(plan_usage, dict):
+        return None
+    used = plan_usage.get("totalPercentUsed")
+    if used is None:
+        return None
+    try:
+        used = float(used)
+    except (ValueError, TypeError):
+        return None
+    pct = max(0.0, min(100.0, 100.0 - used))
+    reset_s = None
+    cycle_end = payload.get("billingCycleEnd")
+    if cycle_end is not None:
+        try:
+            reset_s = max(0.0, float(cycle_end) / 1000.0 - time.time())
+        except (ValueError, TypeError):
+            reset_s = None
+    return [{"pct": pct, "reset_s": reset_s, "window": "monthly"}]
 
 
 def _iso_to_seconds_until(iso_str):
@@ -5176,7 +5244,7 @@ def main():
     # --- Live seat quotas (fleet-ops#4217) ---
     # VPS-native API reads. Each fetcher is cached independently; a None
     # return omits that provider's rows (never a frozen value). Browser-
-    # session seats (Cursor, Devin, Grok, Ollama, Z.ai, OpenCode, RunInfra,
+    # session seats (Devin, Grok, Ollama, Z.ai, OpenCode, RunInfra,
     # ZenMux, Cline, Straitly, MiniMax, CommandCode) are follow-up issues —
     # this PR ships the metric family + the API-native seats so those seats
     # slot in as one fetcher each.
@@ -5189,6 +5257,9 @@ def main():
     codex_usage = _cached_quota_json(
         CODEX_QUOTA_CACHE, _fetch_codex_usage, "codex_usage"
     )
+    cursor_usage = _cached_quota_json(
+        CURSOR_QUOTA_CACHE, _fetch_cursor_usage, "cursor_usage"
+    )
     _quota_now = time.time()
     _quota_providers = []
     if isinstance(openrouter_key, dict):
@@ -5197,6 +5268,8 @@ def main():
         _quota_providers.append(("claude", claude_usage))
     if isinstance(codex_usage, list):
         _quota_providers.append(("codex", codex_usage))
+    if isinstance(cursor_usage, list):
+        _quota_providers.append(("cursor", cursor_usage))
     if _quota_providers:
         _emit_seat_quota_headers(lines)
         for _prov, _rows in _quota_providers:
