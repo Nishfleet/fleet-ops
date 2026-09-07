@@ -180,14 +180,22 @@ jobs:
             echo "::error::Canonical auto-merge-arm.yml is missing from siterep-public@main — nothing to sync. Aborting."
             exit 1
           fi
-          # Group 1: auto-merge-arm.yml -> can-arm repos only.
+          # Group 1: auto-merge-arm.yml -> can-arm repos only. fleet-ops is
+          # EXCLUDED: it runs the nishfleet-worker App-token arm workflow
+          # (fleet-ops#1469) and must not be overwritten by the PAT-based
+          # siterep-public canonical. The canonical switches to the App token
+          # only once the NISHFLEET_WORKER_APP_ID / NISHFLEET_WORKER_PRIVATE_KEY
+          # secrets exist org-wide (or per-repo across Nishfleet); until then
+          # fleet-ops owns its App-token copy locally (same pattern as
+          # stop-the-line-watch).
+          grep -vxE 'Nishfleet/fleet-ops' repos-eligible.txt > repos-arm.txt || true
           {
             echo "group:"
             echo "  - files:"
             echo "      - source: canonical/auto-merge-arm.yml"
             echo "        dest: .github/workflows/auto-merge-arm.yml"
             echo "    repos: |"
-            while IFS= read -r r; do echo "      $r"; done < repos-eligible.txt
+            while IFS= read -r r; do echo "      $r"; done < repos-arm.txt
           } > .github/sync.yml
           # Group 2: visual-check.yml -> ALL active repos, only if it exists.
           if [ "$HAVE_VISUAL" = "1" ]; then

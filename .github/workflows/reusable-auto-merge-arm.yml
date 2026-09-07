@@ -1,11 +1,26 @@
-# Reusable auto-merge arm. Callers keep the pull_request trigger and pass
-# AUTO_REVERT_PAT explicitly (not secrets: inherit).
+# Reusable auto-merge arm. Callers keep the pull_request trigger and pass the
+# nishfleet-worker App secrets explicitly (not secrets: inherit).
 #
 #   jobs:
 #     arm:
 #       uses: Nishfleet/fleet-ops/.github/workflows/reusable-auto-merge-arm.yml@main
 #       secrets:
-#         AUTO_REVERT_PAT: ${{ secrets.AUTO_REVERT_PAT }}
+#         NISHFLEET_WORKER_APP_ID: ${{ secrets.NISHFLEET_WORKER_APP_ID }}
+#         NISHFLEET_WORKER_PRIVATE_KEY: ${{ secrets.NISHFLEET_WORKER_PRIVATE_KEY }}
+#
+# Arms under a nishfleet-worker App installation token, not GITHUB_TOKEN and
+# not a human PAT (fleet-ops#1469):
+#   - GITHUB_TOKEN would not trigger push workflows on main (deploy
+#     verification, auto-revert), silently disarming the safety net.
+#   - A human PAT (the old AUTO_REVERT_PAT) made Nish the triggering actor of
+#     every merge, so GitHub emailed him one failure notice per red workflow
+#     per merge (30+ hand-deleted on 2026-08-28). The App is the actor now;
+#     failure notices stop reaching Nish.
+# The App token is a real actor (like the PAT) so push workflows still fire.
+# If the App secrets are missing the mint fails LOUD and the PR waits for a
+# human — the correct fallback. There is NO GITHUB_TOKEN fallback here: a
+# silent merge under GITHUB_TOKEN is exactly the disarmed-safety-net case the
+# token choice exists to prevent.
 #
 # fleet-ops#1457 (stop-the-line): before arming, this workflow checks for an
 # open `stop-the-line` issue in the repo. The detector opens the issue when
@@ -33,7 +48,9 @@ name: Reusable auto-merge arm
 on:
   workflow_call:
     secrets:
-      AUTO_REVERT_PAT:
+      NISHFLEET_WORKER_APP_ID:
+        required: false
+      NISHFLEET_WORKER_PRIVATE_KEY:
         required: false
 
 permissions:
@@ -183,14 +200,30 @@ jobs:
           fi
           echo "trampled=false" >> "$GITHUB_OUTPUT"
 
+      - name: Mint nishfleet-worker App installation token
+        id: app-token
+        # Mints a ≤1h installation token for the nishfleet-worker GitHub App
+        # (app id 4728578, org-wide install under Nishfleet). The App carries
+        # contents/pull-requests:write — enough to arm auto-merge — and is a
+        # real actor, so a merge under this token triggers push workflows on
+        # main (deploy verification, auto-revert), unlike GITHUB_TOKEN. No
+        # continue-on-error and no GITHUB_TOKEN fallback: a missing or expired
+        # App secret must fail LOUD so the PR waits for a human rather than
+        # silently merging under a token that disarms the safety net
+        # (fleet-ops#1469). Same action pin as the auto-revert path.
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ secrets.NISHFLEET_WORKER_APP_ID }}
+          private-key: ${{ secrets.NISHFLEET_WORKER_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
       - name: Arm auto-merge
         if: steps.freeze.outputs.frozen == 'false' && steps.quality.outputs.breached == 'false' && steps.trample.outputs.trampled == 'false'
         env:
-          GH_TOKEN: ${{ secrets.AUTO_REVERT_PAT }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR: ${{ github.event.pull_request.number }}
         run: |
           if [ -z "$GH_TOKEN" ]; then
-            echo "::error::AUTO_REVERT_PAT is not configured — auto-merge not armed; this PR waits for a human"
+            echo "::error::nishfleet-worker App token is not configured — auto-merge not armed; this PR waits for a human"
             exit 1
           fi
           gh pr merge "$PR" --auto --squash --repo "${{ github.repository }}"
