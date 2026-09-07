@@ -14,7 +14,7 @@ repo_root="$(cd "$here/.." && pwd)"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
-src="$repo_root/docs/pending-gate-integrity/reusable-gate-integrity.yml"
+src="$repo_root/.github/workflows/reusable-gate-integrity.yml"
 callable="$repo_root/.github/workflows/reusable-gate-integrity.yml"
 caller="$repo_root/template/.github/workflows/gate-integrity.yml"
 template_cfg="$repo_root/template/.fleet/gate-integrity.yml"
