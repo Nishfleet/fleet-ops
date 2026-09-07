@@ -1404,21 +1404,26 @@ groups:
   # new exporter, no new textfile, no hand-built gatherer.
   - name: fleet_duty_officer_recording
     rules:
+      # fleet-ops#4394: count() of an empty vector is absent, not 0. Each
+      # expr uses `or vector(0)` so the judge-cited names
+      # (`fleet_failed_units`, `fleet_seat_unhealthy_count`,
+      # `fleet_workers_active`) always return a value.
+      # tests/fleet-duty-officer-recording.test.sh pins the citations.
       # failed_units: the gather counted `systemctl --user list-units
       # --state=failed`; node_systemd_unit_state already carries it.
       - record: fleet_failed_units
-        expr: count(node_systemd_unit_state{state="failed"} == 1)
+        expr: count(node_systemd_unit_state{state="failed"} == 1) or vector(0)
 
       # unhealthy seat count: the gather read seat JSON and counted
       # health_class != healthy; fleet_pi_seat_healthy already carries it.
       - record: fleet_seat_unhealthy_count
-        expr: count(fleet_pi_seat_healthy == 0)
+        expr: count(fleet_pi_seat_healthy == 0) or vector(0)
 
       # active worker count (unit + process): the gather counted
       # systemctl pi-issue@ units; fleet_pi_workers_active already carries
       # the same rollup the undersaturation guard uses.
       - record: fleet_workers_active
-        expr: fleet_pi_workers_active{kind="sum"}
+        expr: sum(fleet_pi_workers_active{kind="sum"}) or vector(0)
 
   # fleet-ops#4206: Cursor $400 'API Usage' on-demand pool pacing. The
   # measured spend reader (bin/fleet-prepaid-util-canary) emits

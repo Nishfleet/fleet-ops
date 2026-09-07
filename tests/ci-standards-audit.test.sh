@@ -715,3 +715,9 @@ bash "$here/0509-surface-probe-deleted.test.sh"
 # cannot push .github/workflows/**). Hermetic (repo-only checks, no
 # gh/prometheus/systemd).
 bash "$here/fleet-litellm-organ.test.sh"
+
+# fleet-ops#4394: judge-cited PromQL names must resolve to a recording rule
+# or exporter HELP, and count() of an empty vector must be 0 not absent.
+# Hosted here so P14 runs it without a workflow-file edit (the worker App
+# cannot push .github/workflows/**). Hermetic (repo-only; promtool optional).
+bash "$here/fleet-duty-officer-recording.test.sh"

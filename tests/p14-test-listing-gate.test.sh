@@ -850,4 +850,17 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/daily-digest\.test\.sh"?' \
   || fail "daily-digest.test.sh must not be a known orphan (fleet-ops#3285)"
 ok "daily-digest.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#3285)"
 
+# fleet-ops#4394: hard-pin the host line for fleet-duty-officer-recording.
+# Hosted from tests/ci-standards-audit.test.sh (already listed in ci.yml)
+# because the worker App cannot push .github/workflows/**. Parking it on
+# known_orphans to silence the generic message must also fail by name.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-duty-officer-recording\.test\.sh"?' \
+  "$here/ci-standards-audit.test.sh" \
+  || fail "ci-standards-audit.test.sh must bash-invoke fleet-duty-officer-recording.test.sh (fleet-ops#4394)"
+[[ -n "${reachable[fleet-duty-officer-recording.test.sh]:-}" ]] \
+  || fail "fleet-duty-officer-recording.test.sh must be hosted by a listed test (fleet-ops#4394)"
+[[ -z "${known_orphan_set[fleet-duty-officer-recording.test.sh]:-}" ]] \
+  || fail "fleet-duty-officer-recording.test.sh must not be a known orphan (fleet-ops#4394)"
+ok "fleet-duty-officer-recording.test.sh is pinned in the P14 reachable set (fleet-ops#4394)"
+
 echo "OK: p14-test-listing-gate.test.sh: P14 test list is closed"
