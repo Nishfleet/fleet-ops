@@ -321,6 +321,36 @@ grep -q 'MERGED-PR-CLOSE-AMBIGUOUS' <<<"$out" || fail "two deliveries must be LO
 grep -q 'MERGED-PR-CLOSE-AMBIGUOUS' "$scratch/triage.md" || fail "ambiguous must land in triage: $(cat "$scratch/triage.md")"
 ok "two delivery PRs -> AMBIGUOUS LOUD skip, no close"
 
+# --- Case 7e: a claim-branch PR that says `Relates to #N` is a mention, not
+# a delivery (fleet-ops#1138) — live #4317 class. The gap-audit issue was
+# delivered by PR #4373 (claim/issue-4317, `Closes #4317`), while the
+# adjudication PR #4358 reused the same claim/issue-4317 branch with
+# `Relates to #4317` (explicit non-delivery). The branch-match alone
+# over-counted deliveries and produced a permanent MERGED-PR-CLOSE-AMBIGUOUS
+# skip that stranded #4317 open, cycling a worker every reclaim. An explicit
+# `Relates to #N` must override the claim-branch heuristic so the real
+# delivery is unambiguous and the issue closes. ---
+set_fixtures "$NOOP_ISSUE" \
+  '[{"number":1451,"title":"allowlist: add unit (gap-audit)","body":"shipped work\n\nCloses #1135","mergedAt":"2026-08-28T00:22:21Z","url":"https://url/1451","headRefName":"claim/issue-1135"},{"number":1450,"title":"fix(role-quality-gates): adjudicate launch template","body":"Adjudication.\n\nRelates to #1135","mergedAt":"2026-08-28T00:10:00Z","url":"https://url/1450","headRefName":"claim/issue-1135"}]'
+out=$(run FLEET_MERGED_PR_CLOSE_OK=1)
+grep -q 'MERGED-PR-CLOSE-AMBIGUOUS' <<<"$out" && fail "Relates-to on claim branch must not be ambiguous: $out"
+grep -q 'CLOSED' <<<"$out" || fail "Relates-to downgrade must leave exactly one delivery and close: $out"
+grep -q 'issue close 1135' "$scratch/closes.log" || fail "Relates-to downgrade must close the issue: $(cat "$scratch/closes.log")"
+grep -q 'via claim-branch' <<<"$out" || fail "close must be attributed to the real claim-branch delivery: $out"
+grep -q 'pull/1451\|#1451' "$scratch/closes.log" || fail "close must cite the real delivery PR #1451, not the Relates-to #1450: $(cat "$scratch/closes.log")"
+ok "claim-branch PR with Relates-to #N -> mention, not delivery; issue closes"
+
+# --- Case 7f: ONLY a `Relates to #N` PR on the claim branch -> comment-only,
+# never close. The explicit non-delivery trailer means there is no delivery
+# at all, so observe-to-close must leave the issue open (a mention is not a
+# fix, fleet-ops#3231). ---
+set_fixtures "$NOOP_ISSUE" \
+  '[{"number":1450,"title":"fix(role-quality-gates): adjudicate launch template","body":"Adjudication only.\n\nRelates to #1135","mergedAt":"2026-08-28T00:10:00Z","url":"https://url/1450","headRefName":"claim/issue-1135"}]'
+out=$(run FLEET_MERGED_PR_CLOSE_OK=1)
+[[ -s "$scratch/closes.log" ]] && fail "Relates-to-only must not close: $(cat "$scratch/closes.log")"
+grep -q 'NOTE (mode=mention)' <<<"$out" || fail "Relates-to-only must be reported as a note: $out"
+ok "only Relates-to #N on the claim branch -> comment-only, never close"
+
 # --- Case 8: merged PR outside the 7-day window -> leave open ---
 set_fixtures "$NOOP_ISSUE" "$TRAILER_PR"
 out=$(run FLEET_MERGED_PR_CLOSE_OK=1 TEST_NOW="2026-08-28T00:53:00Z")

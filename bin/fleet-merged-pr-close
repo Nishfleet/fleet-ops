@@ -218,6 +218,21 @@ trailer_delivery() {
         | grep -Eiq "(^|[^0-9A-Za-z])(Clos(es?|ed)|Fix(es|ed)?|Resolv(es?|ed))[[:space:]]+#${n}([^0-9A-Za-z]|$)"
 }
 
+# relates_to_issue TEXT N — does TEXT carry an explicit `Relates to #N`
+# (non-delivery) trailer for issue N? fleet-ops#1138 uses `Relates to #N` as
+# the explicit 'this PR is related but does NOT close' signal. When a merged
+# PR sits on the claim/issue-<N> head branch but its body says `Relates to
+# #N`, the explicit non-delivery intent must win over the branch-name
+# heuristic (fleet-ops#1672): the branch may have been reused by a related
+# (adjudication/partial) PR, and counting it as a delivery manufactures
+# AMBIGUOUS skips that strand the delivered issue forever (live: #4317 via
+# #4358 reusing claim/issue-4317 alongside the real delivery #4373).
+relates_to_issue() {
+    local text="$1" n="$2"
+    printf '%s' "$text" \
+        | grep -Eiq "(^|[^0-9A-Za-z])Relat(es|ed)[[:space:]]+to[[:space:]]+#${n}([^0-9A-Za-z]|$)"
+}
+
 existing_comment() {
     local repo="$1" n="$2" marker="$3"
     "$GH" issue view "$n" -R "$repo" --json comments --jq '.[]?.body // empty' 2>/dev/null \
@@ -410,7 +425,18 @@ while IFS= read -r repo; do
         mentions=()
         while IFS=$'\t' read -r mnum mtitle mbody murl mhead; do
             [ -z "$mnum" ] && continue
-            if [ "$mhead" = "claim/issue-${num}" ]; then
+            on_claim_branch=0
+            [ "$mhead" = "claim/issue-${num}" ] && on_claim_branch=1
+            # An explicit `Relates to #N` (fleet-ops#1138) is a non-delivery
+            # signal that must override the claim-branch heuristic: the
+            # branch can be reused by an adjudication/partial PR that shares
+            # the issue's claim line, and treating it as a delivery would
+            # manufacture an AMBIGUOUS skip and strand the issue (live:
+            # #4317 vs #4358/#4373). A branch match that says `Relates to`
+            # is a mention, never a claim-branch delivery.
+            if [ "$on_claim_branch" = "1" ] && relates_to_issue "$mbody" "$num"; then
+                mentions+=("$mnum|$murl")
+            elif [ "$on_claim_branch" = "1" ]; then
                 deliveries+=("$mnum|$murl|claim-branch")
             elif trailer_delivery "$mbody" "$num"; then
                 deliveries+=("$mnum|$murl|closes-trailer")
