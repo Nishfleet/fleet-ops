@@ -97,7 +97,9 @@ SPECS = {
             "PromQL sum(fleet_product_merged_24h) @ 127.0.0.1:9090 "
             "(exact vs tile count) AND gh search prs "
             "'repo:<spot-repo> is:merged merged:>=<24h-iso> type:pr' "
-            "(percent vs that repo's item; product-slo family, 2% or abs<=2)"
+            "(percent vs that repo's item; product-slo family, 2% or abs<=2; "
+            "revert titles excluded client-side to match the non-revert "
+            "definition, fleet-ops#4061)"
         ),
         "field": "count",
         "tolerance": {"mode": "exact"},
@@ -387,13 +389,17 @@ def _gh_search_titles(query):
 def _is_revert_title(title: str) -> bool:
     """Match fleet-product-slo's revert conventions by title.
 
-    fleet-ops#2755 defines shipped throughput as NON-revert merges; the
-    fleet's auto-reverter and GitHub's auto-revert both surface as
-    `Revert ...` / `auto-revert ...` titles. head-ref `revert/` branches are
-    GitHub auto-reverts titled `Revert \"...\"`, so title covers them.
+    fleet-ops#2755 defines shipped throughput as NON-revert merges. The
+    fleet's auto-restore bot merges `revert: auto-restore green main
+    (reverts <sha>)` (head-ref `revert/<sha>`, lowercase `revert:` title),
+    GitHub's auto-revert is `Revert \"...\"`, and the arm titles
+    `auto-revert ...`. REST search drops `head` for merged PRs, so the
+    title is the only field the spot check can see; strip and lowercase
+    so ALL of the collector's title conventions match (fleet-ops#4061).
     """
-    t = title or ""
-    return t.startswith("Revert ") or t.lower().startswith("auto-revert")
+    t = (title or "").lstrip().lower()
+    return (t.startswith("revert ") or t.startswith("revert:")
+            or t.startswith("auto-revert"))
 
 
 def _gh_search_nonrevert_count(query):
@@ -532,6 +538,9 @@ def run_shipped_gh_spot(tile):
     # fleet-ops#4061: count NON-revert merges so the spot cross-check agrees
     # with the tile's definition (fleet_product_merged_24h). A raw total_-
     # count includes revert PRs and chronically false-DISPUTEs the tile.
+    # _is_revert_title must stay symmetric with lib/fleet-product-slo.py
+    # is_revert()'s title conventions (incl. the lowercase `revert:` the
+    # auto-restore bot uses) or a faithful tile false-DISPUTEs.
     n = _gh_search_nonrevert_count(f"repo:{repo} is:merged merged:>={since}")
     return n, displayed, repo
 

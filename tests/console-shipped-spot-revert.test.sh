@@ -20,7 +20,7 @@ scratch="$(mktemp -d -t shippedspot.XXXXXX)"
 trap 'rm -rf "$scratch"' EXIT INT TERM
 
 # Fake gh: search/issues returns titles (incl a GitHub auto-revert + a
-# fleet auto-revert) so the raw count would be 5 but non-revert is 3.
+# fleet auto-revert) so the raw count would be 6 but non-revert is 3.
 gh_fake="$scratch/gh"
 cat >"$gh_fake" <<'FAKE'
 #!/usr/bin/env bash
@@ -31,6 +31,7 @@ fix(seat-lib): corpse retirement
 Revert "fix(seat-lib): corpse retirement"
 feat(search): plain buyer copy
 auto-revert: auto-restore green main
+revert: auto-restore green main (reverts b498b90)
 fix(canary): empty-run burst
 OUT
   exit 0
@@ -49,12 +50,17 @@ m.GH = gh
 m.SKIP_GH = False
 
 count = m._gh_search_nonrevert_count("repo:Nishfleet/0509 is:merged merged:>=2026-09-05T00:00:00+00:00")
-assert count == 3, f"expected 3 non-revert of 5 titles, got {count}"
-print(f"OK: raw 5 titles -> non-revert count = {count} (reverts excluded)")
+assert count == 3, f"expected 3 non-revert of 6 titles, got {count}"
+print(f"OK: raw 6 titles -> non-revert count = {count} (reverts excluded)")
 
-# _is_revert_title unit cases
+# _is_revert_title unit cases — must mirror fleet-product-slo's is_revert,
+# incl the auto-restore bot's lowercase `revert: ...` (ConsoleLying live
+# case: head-revert branches titled `revert: auto-restore green main
+# (reverts <sha>)` were counted, over-flagging the tile).
 assert m._is_revert_title("Revert \"fix\"") is True
 assert m._is_revert_title("auto-revert: auto-restore green main") is True
+assert m._is_revert_title("revert: auto-restore green main (reverts b498b90)") is True
+assert m._is_revert_title("revert/3a1d316") is False  # head-ref form is not a title; fine, title covers the bot
 assert m._is_revert_title("feat(search): plain copy") is False
 assert m._is_revert_title("fix(seat-lib): corpse retirement") is False
 print("OK: _is_revert_title matches fleet-product-slo revert conventions")

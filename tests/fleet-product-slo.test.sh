@@ -108,6 +108,13 @@ prs = [
     # Non-revert in last 24h
     m.MergedPR(number=15, repo="0509", title="feat: today", head_ref="claim/issue-15",
                merged_ts=NOW - 0.5 * DAY, issue_created_ts=NOW - 2 * DAY),
+    # Auto-restore bot revert: lowercase `revert:` title, head `revert/<sha>`
+    # (fleet convention — ConsoleLying live case, fleet-ops#4061). Must be
+    # excluded by title even without the head-ref check.
+    m.MergedPR(number=16, repo="0509",
+               title="revert: auto-restore green main (reverts b498b90)",
+               head_ref="revert/b498b90",
+               merged_ts=NOW - 4 * 3600, issue_created_ts=None),
 ]
 
 s = m.compute_repo_slo("0509", prs, now_ts=NOW)
@@ -120,13 +127,16 @@ assert s.throughput_weekly == 3, f"throughput={s.throughput_weekly}"
 assert abs(s.lead_time_days - 5.0) < 1e-9, f"lead={s.lead_time_days} samples={s.lead_samples}"
 assert all(x != 1.0 for x in s.lead_samples), "revert lead must not appear"
 
-# (c) revert_rate over 28d: reverts=#12,#14 (2); merges=all 0509 in 28d = #10..#15 = 6
-assert s.merges_28d == 6, s.merges_28d
-assert s.reverts_28d == 2, s.reverts_28d
-assert abs(s.revert_rate - 2 / 6) < 1e-9, s.revert_rate
+# (c) revert_rate over 28d: reverts=#12,#14,#16 (3); merges=all 0509 in
+# 28d = #10..#16 = 7
+assert s.merges_28d == 7, s.merges_28d
+assert s.reverts_28d == 3, s.reverts_28d
+assert abs(s.revert_rate - 3 / 7) < 1e-9, s.revert_rate
 
-# 24h non-revert: only #15
+# 24h non-revert: only #15 (#16 is a bot revert)
 assert s.merged_24h == 1, s.merged_24h
+assert m.is_revert(prs[-1]) is True, "lowercase `revert:` title must count as a revert"
+assert m.is_revert(prs[-2]) is False
 
 print("OK: compute_repo_slo a/b/c")
 PY

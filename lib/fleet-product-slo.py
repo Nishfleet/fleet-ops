@@ -331,11 +331,16 @@ def is_revert(pr: MergedPR) -> bool:
     head = pr.head_ref or ""
     if head.startswith("revert/"):
         return True
-    if title.startswith("Revert "):
-        return True
-    if title.lower().startswith("auto-revert"):
-        return True
-    return False
+    # Title conventions must stay symmetric with the console verifier's
+    # _is_revert_title (libexec/fleet-console-pi/verify.py, fleet-ops#4061):
+    # GitHub's auto-revert `Revert "..."`, the fleet auto-restore bot's
+    # lowercase `revert: auto-restore green main (reverts <sha>)`, and the
+    # arm's `auto-revert ...`. Matching them all by title means a PR is
+    # excluded regardless of which check sees it first.
+    tl = title.lstrip().lower()
+    return (tl.startswith("revert ")
+            or tl.startswith("revert:")
+            or tl.startswith("auto-revert"))
 
 
 def _first_existing(paths: list[str]) -> Path | None:
