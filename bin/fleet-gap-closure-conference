@@ -141,6 +141,59 @@ resolve_free_glm_conf_seat() {
     return 1
 }
 
+# fleet-ops#4209: the glm-5-2 auditor used to be hardcoded to devin/glm-5-2.
+# When the devin seat is quota-benched, dead, or never-probed, the auditor
+# preflight refuses it and the termination conference files a mechanical
+# gap-audit dissent (cycle-4 conference 2026-09-07T10:49:54Z: devin/glm-5-2
+# quota-benched until 2026-09-08T09:01:04Z — a no-show, not an auditor
+# judgment). The devin auditor is now resolved to the first live usable wired
+# seat at start, mirroring the #3121 senior-seat and #4210 free-GLM
+# resolutions: a devin ladder (unwired / unusable slugs skipped), then any
+# usable capable seat. Prints provider<TAB>model; returns 1 when no usable
+# seat exists.
+resolve_devin_conf_seat() {
+    local SEAT_LIB_PATH slug p m
+    SEAT_LIB_PATH="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
+    if [ -f "$SEAT_LIB_PATH" ]; then
+        # shellcheck source=/dev/null
+        source "$SEAT_LIB_PATH"
+        load_seat_caps >/dev/null 2>&1 || true
+    else
+        return 1
+    fi
+    # 1) Devin ladder (Nish 2026-09-04 three-role panel). A slug is only
+    #    resolvable when wired (model_cap > 0), has health data the auditor
+    #    preflight will accept, and is usable right now.
+    for slug in devin/glm-5-2 devin/swe-1-7; do
+        p="${slug%%/*}"
+        m="${slug#*/}"
+        [ -n "$p" ] && [ -n "$m" ] || continue
+        [ "$(model_cap "$p" "$m" 2>/dev/null || echo 0)" -gt 0 ] 2>/dev/null || continue
+        _conf_seat_has_health_data "$p" "$m" || continue
+        seat_usable "$p" "$m" 2>/dev/null || continue
+        printf '%s\t%s\n' "$p" "$m"
+        return 0
+    done
+    # 2) Any usable capable seat — same degradation shape as pi-audit-run's
+    #    resolve_free_role (fleet-ops#3121). A live capable vote is better
+    #    than a guaranteed preflight refusal, and it is the only thing that
+    #    lets the loop converge while the devin lane is benched. Poison seats
+    #    are skipped when the installed seat-lib knows them.
+    local fp fm
+    while IFS=$'\t' read -r fp fm _fcap _capable; do
+        [ -n "$fp" ] && [ -n "$fm" ] || continue
+        [ "$(model_cap "$fp" "$fm" 2>/dev/null || echo 0)" -gt 0 ] 2>/dev/null || continue
+        _conf_seat_has_health_data "$fp" "$fm" || continue
+        seat_usable "$fp" "$fm" 2>/dev/null || continue
+        if command -v seat_is_poison >/dev/null 2>&1; then
+            seat_is_poison "$fp" "$fm" 2>/dev/null && continue
+        fi
+        printf '%s\t%s\n' "$fp" "$fm"
+        return 0
+    done < <(enumerate_seats)
+    return 1
+}
+
 mkdir -p "$JOBS_DIR"
 
 now_iso() {
@@ -192,12 +245,29 @@ else
         GLM53_MODEL="z-ai/glm-5.3-free"
         log "no usable free-GLM seat; glm-5-3 keeps ladder slug $GLM53_PROVIDER/$GLM53_MODEL (preflight will refuse)"
     fi
-    AUDITORS="$(jq -n -c --arg sp "$SENIOR_PROVIDER" --arg sm "$SENIOR_MODEL" \
+    # fleet-ops#4209: glm-5-2 must land on a LIVE wired seat, not the
+    # hardcoded devin/glm-5-2 (quota-benched at the cycle-4 conference
+    # 2026-09-07T10:49:54Z, so the auditor preflight refused it and the
+    # termination conference filed a mechanical dissent). Only when no usable
+    # seat exists anywhere do we keep the ladder slug, so the preflight
+    # refusal and the dissent surface the wall honestly.
+    if DEVIN_SEAT="$(resolve_devin_conf_seat)"; then
+        GLM52_PROVIDER="$(printf '%s' "$DEVIN_SEAT" | cut -f1)"
+        GLM52_MODEL="$(printf '%s' "$DEVIN_SEAT" | cut -f2)"
+        [ -n "$GLM52_PROVIDER" ] || GLM52_PROVIDER=devin
+        [ -n "$GLM52_MODEL" ] || GLM52_MODEL=glm-5-2
+    else
+        GLM52_PROVIDER="devin"
+        GLM52_MODEL="glm-5-2"
+        log "no usable devin seat; glm-5-2 keeps ladder slug $GLM52_PROVIDER/$GLM52_MODEL (preflight will refuse)"
+    fi
+    AUDITORS="$(jq -n -c --arg dp "$GLM52_PROVIDER" --arg dm "$GLM52_MODEL" \
                           --arg fp "$GLM53_PROVIDER" --arg fm "$GLM53_MODEL" \
-'[{"id":"glm-5-2","provider":"devin","model":"glm-5-2"},
+                          --arg sp "$SENIOR_PROVIDER" --arg sm "$SENIOR_MODEL" \
+'[{"id":"glm-5-2","provider":$dp,"model":$dm},
   {"id":"glm-5-3","provider":$fp,"model":$fm},
   {"id":"senior","provider":$sp,"model":$sm}]')"
-    log "panel resolved: glm-5-3=$GLM53_PROVIDER/$GLM53_MODEL senior=$SENIOR_PROVIDER/$SENIOR_MODEL"
+    log "panel resolved: glm-5-2=$GLM52_PROVIDER/$GLM52_MODEL glm-5-3=$GLM53_PROVIDER/$GLM53_MODEL senior=$SENIOR_PROVIDER/$SENIOR_MODEL"
 fi
 
 CONF_ID="${GAP_LOOP_CONF_ID:-}"
