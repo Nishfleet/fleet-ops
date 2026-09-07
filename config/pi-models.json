@@ -804,6 +804,28 @@
         "supportsDeveloperRole": false
       },
       "_comment_4329": "fleet-ops#4329: alibaba-coding's models registration is durable here. install.sh copy-installs pi-models.json verbatim (the unknown-provider merge exists only for seat-caps.json), so without this row a deploy would silently drop the provider from the live models.json — the same trap #4262 caught for runinfra/crof/entrim. Landed verbatim from the live ~/.pi/agent/models.json (smoke-tested SEAT-OK 2026-09-07). compat.supportsDeveloperRole=false (the endpoint 400s on Pi's developer role); thinking on for the reasoning models, enable_thinking=false for qwen3.8-flash + deepseek-v4-flash-0731."
+    },
+    "litellm": {
+      "name": "LiteLLM proxy (fleet-ops#4130 P2 — first consumer: fable-check)",
+      "baseUrl": "http://127.0.0.1:4000",
+      "api": "openai-completions",
+      "apiKey": "!grep ^SK_FLEET_SENIOR= /home/nish/.config/fleet-ops/litellm-virtual-keys.env | cut -d= -f2",
+      "models": [
+        {
+          "id": "judge",
+          "name": "LiteLLM judge group (senior ladder: cursor grok-4.6-high -> xai grok-4.6 -> openrouter deepseek-v4-flash-0731 -> worker-capable)",
+          "contextWindow": 500000,
+          "maxTokens": 8192,
+          "reasoning": true,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "_comment_4181": "fleet-ops#4181 P2: the proxy mints a virtual key (sk-fleet-senior) whose model allowlist pins the judge group. The fallback chain is configured in the live ~/.config/fleet-ops/litellm-proxy.yaml router_settings.fallbacks. Cost is 0 here because the proxy tracks spend in Postgres against the real upstream seats; pi's cost map would double-count. P3 deletes seat-lib and moves all workers to litellm groups."
+        }
+      ]
     }
   }
 }
