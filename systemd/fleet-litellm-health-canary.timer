@@ -1,0 +1,12 @@
+[Unit]
+Description=Run fleet-litellm-health-canary every 60s (fleet-ops#4130 P1)
+Documentation=https://github.com/Nishfleet/fleet-ops/issues/4130
+
+[Timer]
+OnCalendar=*:0/1
+Persistent=true
+AccuracySec=5s
+Unit=fleet-litellm-health-canary.service
+
+[Install]
+WantedBy=timers.target

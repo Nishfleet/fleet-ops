@@ -1,0 +1,7 @@
+# fleet-ops#4130 P1: Redis for the LiteLLM router fast path (cooldown
+# cache, provider_budget_config spend). MemoryMax=128M matches the P0
+# design doc §3 cap — Redis only holds ephemeral router state, not
+# budgets (those live in Postgres). Bind 127.0.0.1 only.
+[Slice]
+CPUQuota=50%
+MemoryMax=128M

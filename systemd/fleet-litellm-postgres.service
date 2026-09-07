@@ -1,0 +1,24 @@
+[Unit]
+Description=Fleet LiteLLM Postgres — budgets/keys/spend (fleet-ops#4130 P1)
+Documentation=https://github.com/Nishfleet/fleet-ops/issues/4130
+# This unit wraps the distro postgresql@14-main service for the LiteLLM
+# slice. The live install (apt install postgresql, socket-only config,
+# createdb litellm) is Nish-gated; the runbook is
+# docs/litellm-postgres-setup.md. This unit ships the shape so the organ
+# registry + absent() rule + prom scrape can land in the same PR.
+ConditionPathExists=/etc/postgresql/14/main/postgresql.conf
+
+[Service]
+Type=simple
+Slice=app-litellm-postgres.slice
+# The distro unit owns the postgres process; this is a thin wrapper that
+# pins the slice + memory ceiling. ExecStart re-execs the distro
+# postgres. The live deploy symlinks this into ~/.config/systemd/user
+# only after the apt install (runbook step 4).
+ExecStart=/usr/lib/postgresql/14/bin/postgres -D /var/lib/postgresql/14/main -c config_file=/etc/postgresql/14/main/postgresql.conf
+Restart=on-failure
+RestartSec=3s
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target

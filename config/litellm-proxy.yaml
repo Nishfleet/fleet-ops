@@ -1,0 +1,161 @@
+# fleet-ops#4130 P1 — LiteLLM proxy router config (shape reference).
+#
+# This file is the repo-resident shape. The LIVE config lives at
+# ~/.config/fleet-ops/litellm-proxy.yaml and is operator-owned so that
+# credential resolvers (the models.json `!cmd` style) never enter the
+# repo. install.sh copies this to the live path on deploy; the live copy
+# is where `api_key: command:...` resolvers get filled in.
+#
+# All LiteLLM feature claims below are verified against current LiteLLM
+# docs (docs.litellm.ai, retrieved 2026-09-07) — see
+# docs/design/litellm-vs-seat-lib.md for the per-feature citations and
+# the three gaps the docs expose (concurrency counting, health-check V2
+# reactive-only, prepaid expiry-week pacing approximate).
+#
+# Model groups map to the four Pi provider models in
+# docs/design/litellm-vs-seat-lib.md §2. Deployments are drawn from
+# config/entitled-seats.json + config/seat-caps.json. Caps below mirror
+# the live seat-caps provider caps (rpm/tpm/max_parallel_requests) so
+# the proxy enforces the same bounds seat-lib does today; P3 deletes
+# the seat-lib side.
+#
+# PLACEHOLDERS ONLY — no real key is in this file. The live copy uses
+# `api_key: command:/home/nish/.local/bin/<resolver>` for each seat,
+# matching the existing models.json `!/path/to/cmd` resolver pattern.
+# Verified: LiteLLM accepts `api_key: command:...` via litellm_params
+# (docs virtual_keys).
+
+model_list:
+  # --- worker-cheap: free lanes first, then prepaid, metered last ---
+  # order: 1 = free, 2 = prepaid, 3 = metered (fallback order)
+  - model_name: worker-cheap
+    litellm_params:
+      model: openai/deepseek-v4-flash
+      api_base: https://opencode.example/v1
+      api_key: command:/home/nish/.local/bin/opencode-key
+      tags: ["free"]
+      order: 1
+      rpm: 3
+      max_parallel_requests: 3
+  - model_name: worker-cheap
+    litellm_params:
+      model: openai/deepseek-v4-flash
+      api_base: https://commandcode.example/v1
+      api_key: command:/home/nish/.local/bin/commandcode-key
+      tags: ["free"]
+      order: 1
+      rpm: 3
+      max_parallel_requests: 4
+  - model_name: worker-cheap
+    litellm_params:
+      model: openai/Qwen3.6-35B-A3B-FP8
+      api_base: https://hetzner.example/v1
+      api_key: command:/home/nish/.local/bin/hetzner-key
+      tags: ["free"]
+      order: 1
+      rpm: 2
+      max_parallel_requests: 1
+  - model_name: worker-cheap
+    litellm_params:
+      model: openai/glm-5-2
+      api_base: https://devin.example/v1
+      api_key: command:/home/nish/.local/bin/devin-key
+      tags: ["prepaid"]
+      order: 2
+      max_parallel_requests: 4
+  - model_name: worker-cheap
+    litellm_params:
+      model: openai/deepseek-v4-pro
+      api_base: https://straitly.example/v1
+      api_key: command:/home/nish/.local/bin/straitly-key
+      tags: ["metered"]
+      order: 3
+      max_parallel_requests: 2
+
+  # --- worker-capable: prepaid strong models ---
+  - model_name: worker-capable
+    litellm_params:
+      model: openai/swe-1-7
+      api_base: https://devin.example/v1
+      api_key: command:/home/nish/.local/bin/devin-key
+      tags: ["prepaid"]
+      order: 1
+      max_parallel_requests: 4
+  - model_name: worker-capable
+    litellm_params:
+      model: openai/minimax-m3
+      api_base: https://minimax.example/v1
+      api_key: command:/home/nish/.local/bin/minimax-key
+      tags: ["metered"]
+      order: 2
+      max_parallel_requests: 2
+
+  # --- senior: ordered fallback ladder (seat-caps senior_seats_in_order) ---
+  - model_name: senior
+    litellm_params:
+      model: openai/cursor-grok-4.6-high
+      api_base: https://cursor.example/v1
+      api_key: command:/home/nish/.local/bin/cursor-key
+      tags: ["prepaid", "senior"]
+      order: 1
+      max_parallel_requests: 1
+  - model_name: senior
+    litellm_params:
+      model: openai/grok-4.6
+      api_base: https://xai-oauth.example/v1
+      api_key: command:/home/nish/.local/bin/xai-oauth-key
+      tags: ["prepaid", "senior"]
+      order: 2
+      max_parallel_requests: 2
+  - model_name: senior
+    litellm_params:
+      model: openai/deepseek-v4-flash-0731
+      api_base: https://openrouter.example/v1
+      api_key: command:/home/nish/.local/bin/openrouter-key
+      tags: ["metered", "senior"]
+      order: 3
+      max_parallel_requests: 4
+
+  # --- judge: same ladder, separate group for spend tagging (P2 consumer) ---
+  - model_name: judge
+    litellm_params:
+      model: openai/cursor-grok-4.6-high
+      api_base: https://cursor.example/v1
+      api_key: command:/home/nish/.local/bin/cursor-key
+      tags: ["prepaid", "judge"]
+      order: 1
+      max_parallel_requests: 1
+
+router_settings:
+  routing_strategy: simple-shuffle
+  fallbacks:
+    - worker-cheap: [worker-capable]
+    - senior: [worker-capable]
+    - judge: [senior]
+  # cooldown_time + allowed_fails replace seat-lib's bench windows. Gap
+  # #2 (health-check V2 reactive-only): 429/408 no longer auto-bench in
+  # V2, so allowed_fails_policy pins quota-class to 1 fail to preserve
+  # the current "bench on first 429" behaviour. See design doc §1 gap 2.
+  cooldown_time: 60
+  allowed_fails: 2
+  num_retries: 2
+  timeout: 1800
+  enable_tag_filtering: true
+  # provider_budget_config replaces cursor weekly ceiling + metered
+  # spend caps. Wall-clock periods (1d, 7d), not ISO-week — gap #3 names
+  # the approximation for prepaid expiry-week pacing.
+  provider_budget_config:
+    cursor:    { budget_limit: 16, time_period: 1d }
+    straitly:  { budget_limit: 5,  time_period: 1d }
+
+general_settings:
+  # master_key + virtual keys are operator-owned (live config, not repo).
+  # The live copy sets master_key from a credential resolver and mints
+  # sk-fleet-worker / sk-fleet-senior / sk-fleet-private virtual keys
+  # with model allowlists (private = paid deployments only, fail-closed).
+  background_health_checks: true
+  health_check_interval: 60
+  # Postgres for budgets/keys/spend (local socket, no network listener).
+  # Redis for the router fast path (cooldown cache, provider budget spend).
+  database_url: postgresql:///litellm
+  redis_url: redis://127.0.0.1:6379

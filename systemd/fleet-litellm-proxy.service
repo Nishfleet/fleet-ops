@@ -1,0 +1,46 @@
+[Unit]
+Description=Fleet LiteLLM proxy — seat routing organ (fleet-ops#4130 P1)
+Documentation=https://github.com/Nishfleet/fleet-ops/issues/4130
+# Hard dependency: the venv + config must exist before we start, otherwise
+# the proxy exits at import time with a missing-config diagnostic. The
+# live install (apt + pip + start) is Nish-gated; this unit ships the
+# shape, the deploy is in docs/litellm-postgres-setup.md.
+ConditionPathExists=%h/.config/fleet-ops/litellm-proxy.yaml
+# Wants, not Requires: a dead Postgres/Redis must not pull the proxy down
+# with it — the proxy fails loud on its own (P4 drill) and the canary
+# pages. Restart=on-failure brings the proxy back when a dependent
+# recovers.
+Wants=fleet-litellm-postgres.service fleet-litellm-redis.service
+
+[Service]
+Type=simple
+Slice=app-litellm.slice
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+# The config is operator-owned (lives in ~/.config, not the repo) so keys
+# resolved through the existing credential resolvers never enter the repo
+# or the unit file. The repo copy at config/litellm-proxy.yaml is the
+# shape reference; install.sh copies it to the live path on deploy.
+Environment=LITELLM_PROXY_CONFIG=%h/.config/fleet-ops/litellm-proxy.yaml
+# Loopback only — never expose the proxy on a public interface. Pi speaks
+# to it over 127.0.0.1:4000.
+ExecStart=/home/nish/.local/venvs/litellm/bin/litellm --config ${LITELLM_PROXY_CONFIG} --port 4000 --host 127.0.0.1
+# Restart on any failure (import error, bind conflict, upstream crash).
+# 2s delay so the journalctl storm is bounded; systemd caps the storm
+# with StartLimit* below. The P4 drill proves workers fail loud <60s
+# when the proxy stays down.
+Restart=on-failure
+RestartSec=2s
+StartLimitIntervalSec=60s
+StartLimitBurst=5
+TimeoutStopSec=15
+# Hardening: the proxy only needs to bind a loopback socket and read its
+# config + credential resolvers. No write needs to escape the venv cache.
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=%h/.local/venvs/litellm %h/.config/fleet-ops
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

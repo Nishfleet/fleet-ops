@@ -234,6 +234,31 @@
       "bypass_checks": [
         "rulebook_redteam_backups"
       ]
+    },
+    {
+      "id": "litellm-proxy",
+      "gate": "P1 paper organ \u2014 proxy + Postgres + Redis + /health canary; live install is Nish-gated (docs/litellm-postgres-setup.md); organ-heartbeat invariant + absent() rules enforce observability",
+      "proof": [
+        "systemd/fleet-litellm-proxy.service",
+        "systemd/fleet-litellm-postgres.service",
+        "systemd/fleet-litellm-redis.service",
+        "systemd/fleet-litellm-health-canary.service",
+        "systemd/fleet-litellm-health-canary.timer",
+        "libexec/fleet-litellm-health-canary.py",
+        "config/litellm-proxy.yaml",
+        "config/fleet-organs.json",
+        "config/fleet_rules.yml",
+        "tests/fleet-litellm-organ.test.sh",
+        "docs/litellm-postgres-setup.md"
+      ],
+      "units": [
+        "fleet-litellm-proxy.service",
+        "fleet-litellm-postgres.service",
+        "fleet-litellm-redis.service",
+        "fleet-litellm-health-canary.service"
+      ],
+      "prompts": [],
+      "bypass_checks": []
     }
   ]
 }
