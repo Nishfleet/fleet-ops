@@ -1833,6 +1833,34 @@ def main() -> int:
             # A verify chain that stays stalled past its deadline terminates
             # as detector-red (unit succeeded, alert still firing).
             if hop == "verify":
+                # fleet-ops#4081: class-park short-circuit. A verify chain
+                # whose 1h deadline (set on the first stall tick) is still in
+                # the future, BUT whose class is now parked
+                # (decision_class_until in the future), has already been
+                # adjudicated — the park IS the escalation verdict. Collapse
+                # the remaining deadline to zero-grace so the existing
+                # expired-deadline drain fires SAME-tick instead of waiting
+                # for the next 15-min tick. Without this, a fresh verify
+                # stall that becomes class-parked takes 3 ticks to drain
+                # (tick 1: 1h deadline + park; tick 2: park gate in
+                # take_ladder sets a zero-grace deadline but returns
+                # "already", so the deadline check above — which runs BEFORE
+                # take_ladder — only sees it on tick 3; tick 3: drain). The
+                # live 2026-09-06 QualitySessionsPrCeiling verify stall fired
+                # FleetChainStalled (for: 15m) during that extra tick. Only
+                # applies when a deadline is already set and in the future;
+                # a pre-parked chain with no deadline (fleet-ops#2716) keeps
+                # its 2-tick drain (tick 1 sets zero-grace via the elif
+                # below, tick 2 drains).
+                deadline_ts = state.get("verify_deadline_ts")
+                if deadline_ts:
+                    deadline = parse_iso(deadline_ts)
+                    if deadline is not None and now < deadline:
+                        class_until = state.get("decision_class_until")
+                        if class_until:
+                            class_dt = parse_iso(str(class_until))
+                            if class_dt is not None and now < class_dt:
+                                state["verify_deadline_ts"] = iso(now)
                 deadline_ts = state.get("verify_deadline_ts")
                 if deadline_ts:
                     deadline = parse_iso(deadline_ts)

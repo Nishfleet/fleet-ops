@@ -1773,6 +1773,100 @@ grep -q 'fleet_chain_stalled{plane="alert-repair",hop="verify"} 0' "$scratch/fle
 ok "class-parked verify-hop chain drains via #1610 detector-red, rail stays drained (fleet-ops#2716)"
 
 
+set +u
+# --- 9n. fresh verify stall -> class-parked -> SAME-tick drain (fleet-ops#4081) -
+# #4081 live shape: QualitySessionsPrCeiling verify hop stalled. Tick 1 (first
+# stall) laddered stop-reason + set a 1h verify_deadline_ts + class-parked the
+# alert (decision_class_until = now + PARK_CLASS). Tick 2 (15 min later, one
+# canary cadence) found the deadline still in the future BUT the class now
+# parked. Before the fix the class-park gate inside take_ladder set a
+# zero-grace deadline and returned "already" -- the deadline check (which runs
+# BEFORE take_ladder) only saw it on tick 3, so fleet_chain_stalled{verify}
+# held 1 across an extra 15-min tick and FleetChainStalled (for: 15m) fired
+# for an already-adjudicated chain. The fix collapses the in-future deadline
+# to zero-grace SAME-tick when the class is parked, so the existing
+# detector-red drain fires on tick 2 (stalled returns to 0 one tick earlier,
+# under the 15m alert threshold). Contrast with 9m (pre-parked, no deadline
+# set) which keeps its 2-tick drain.
+rm -rf "$scratch/state"; mkdir -p "$scratch/state"
+
+python3 - "$scratch/alerts.json" <<'PY'
+import json, sys
+json.dump({"status": "success", "data": {"alerts": [
+  {"state": "firing", "labels": {"alertname": "QualitySessionsPrCeiling"},
+   "activeAt": "2026-09-06T19:58:53Z"}
+]}}, open(sys.argv[1], "w"))
+PY
+cat >"$scratch/actions.log" <<'PYEND'
+[2026-09-06T19:58:53Z] DISPATCH alertname=QualitySessionsPrCeiling seat=devin/glm-5-2 unit=alert-repair-QualitySessionsPrCeiling-20260906T195853Z
+PYEND
+# Unit "succeeded" (systemd --collect default Result=success on unload) but
+# the alert is still firing -> hop=verify. Age > CLOCK_RUN + CLOCK_VERIFY.
+printf 'success\n' >"$scratch/sysctl/alert-repair-QualitySessionsPrCeiling-20260906T195853Z.result"
+printf 'inactive\n' >"$scratch/sysctl/alert-repair-QualitySessionsPrCeiling-20260906T195853Z.active"
+
+# Tick 1 (21:37:17Z, ~98 min after dispatch -- past CLOCK_RUN=3600 +
+# CLOCK_VERIFY=1800): first verify stall. No prior state, no class park yet.
+# take_ladder -> stop-reason, sets verify_deadline_ts = now + 1h, class-parks.
+rm -f "$scratch/STOP-REASON.json"
+rc=$(run_bin "2026-09-06T21:37:17Z")
+[[ "$rc" == "0" ]] || fail "9n tick-1 rc=$rc see err.log"
+python3 - "$scratch/state/open/QualitySessionsPrCeiling.json" <<'PY' || exit 1
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d.get("ladder") == "stop-reason", d
+assert d.get("hop") == "verify", d
+assert d.get("verify_deadline_ts"), d
+# 1h deadline set (not zero-grace) -- this is the fresh-stall path, not 9m.
+assert d.get("verify_deadline_ts") == "2026-09-06T22:37:17Z", d
+assert d.get("decision_class_until"), d
+PY
+# STOP-REASON written on the first stall (senior conference summoned).
+[[ -f "$scratch/STOP-REASON.json" ]] || fail "9n tick-1: first stall must write STOP-REASON"
+# Rail shows the stall this tick.
+grep -q 'fleet_chain_stalled{plane="alert-repair",hop="verify"} 1' "$scratch/fleet-chains.prom" \
+  || fail "9n tick-1: verify stalled must be 1"
+
+# Tick 2 (21:52:09Z, 15 min later -- one canary cadence): the 1h deadline is
+# still in the future (22:37) BUT the class is now parked. The fix collapses
+# the deadline to zero-grace SAME-tick -> detector-red drain fires now, NOT on
+# tick 3. Before the fix this tick set a zero-grace deadline via the
+# take_ladder class-park gate and returned "already" (stalled stayed 1).
+rm -f "$scratch/STOP-REASON.json"
+rc=$(run_bin "2026-09-06T21:52:09Z")
+[[ "$rc" == "0" ]] || fail "9n tick-2 rc=$rc see err.log"
+# Drained same-tick: cooldown marker with terminal=detector-red.
+python3 - "$scratch/state/open/QualitySessionsPrCeiling.json" <<'PY' || exit 1
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d.get("terminal") == "detector-red", d
+assert d.get("dead_until"), d
+assert d.get("ladder") == "stop-reason", d
+# Class park preserved across the cooldown close.
+assert d.get("decision_class_until"), d
+PY
+# Ledger carries the detector-red terminal.
+grep -q 'QualitySessionsPrCeiling.*detector-red' "$scratch/state/chains.terminated.jsonl" \
+  || fail "9n tick-2: ledger must carry detector-red"
+# The parked-verify drain does NOT re-write STOP-REASON (the park IS the
+# verdict -- same as 9m).
+[[ ! -e "$scratch/STOP-REASON.json" ]] \
+  || fail "9n tick-2: class-parked drain must NOT write STOP-REASON"
+# Rail drained this tick (the #1610 close path decrements open/stalled).
+grep -q 'fleet_chain_open{plane="alert-repair",hop="verify"} 0' "$scratch/fleet-chains.prom" \
+  || fail "9n tick-2: verify open must be 0"
+grep -q 'fleet_chain_stalled{plane="alert-repair",hop="verify"} 0' "$scratch/fleet-chains.prom" \
+  || fail "9n tick-2: verify stalled must be 0 same-tick drain"
+
+# Tick 3 (22:07:00Z): cooldown active -- chain must NOT re-create.
+rc=$(run_bin "2026-09-06T22:07:00Z")
+[[ "$rc" == "0" ]] || fail "9n tick-3 rc=$rc see err.log"
+grep -q 'fleet_chain_stalled{plane="alert-repair",hop="verify"} 0' "$scratch/fleet-chains.prom" \
+  || fail "9n tick-3: verify stalled must stay 0 during cooldown"
+
+ok "fresh verify stall -> class-parked -> same-tick detector-red drain on tick 2 fleet-ops#4081"
+
+
 # ============================================================================
 # Dispatch plane (fleet-ops#1009)
 # ============================================================================
