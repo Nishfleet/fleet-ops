@@ -10,7 +10,8 @@
 #     session; light packets order by value, heavy/keystone yield-first
 #     (fleet-ops#3323, superseding the #3125 pure-yield order)
 #   - xai-oauth (SuperGrok) provider cap 2, grok-4.6 cap 2, grok-4.5 cap 0
-#   - cursor is capped at 1, keystone/senior-review only (not a free lane)
+#   - cursor is capped at 2 (fleet-ops#4206, raised 1->2 to spend the $400
+#     API pool), keystone/senior-review only (not a free lane)
 #   - scout/canary/audit picks keep leftover free lanes
 #     (commandcode/hetzner/opencode) before prepaid; metered
 #     (minimax/straitly/...) last

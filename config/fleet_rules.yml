@@ -1332,3 +1332,69 @@ groups:
       # the same rollup the undersaturation guard uses.
       - record: fleet_workers_active
         expr: fleet_pi_workers_active{kind="sum"}
+
+  # fleet-ops#4206: Cursor $400 'API Usage' on-demand pool pacing. The
+  # measured spend reader (bin/fleet-prepaid-util-canary) emits
+  # fleet_prepaid_spend_usd{provider="cursor"} + pool/cycle/included from
+  # POST api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage
+  # into /var/lib/prometheus/node-exporter/prepaid-spend.prom. The rules
+  # here pace the pool to zero by the billing-cycle reset and file a repair
+  # packet (adds difficulty: senior-review to waiting heavy issues) when
+  # the projected burn falls below pool/remaining-days. No new exporter or
+  # scheduler — the existing canary tick + node_exporter textfile collector
+  # feed these rules.
+  - name: fleet_cursor_prepaid_pacing
+    rules:
+      # fleet_cursor_prepaid_remaining_usd: how much of the $400 on-demand
+      # pool is left (pool - spend).
+      - record: fleet_cursor_prepaid_remaining_usd
+        expr: fleet_prepaid_pool_usd{provider="cursor"} - fleet_prepaid_spend_usd{provider="cursor"}
+
+      # fleet_cursor_prepaid_remaining_days: days until the billing cycle
+      # resets. Floored at 0 so a passed reset does not divide by zero or
+      # produce a negative pacing target.
+      - record: fleet_cursor_prepaid_remaining_days
+        expr: clamp_min((fleet_prepaid_cycle_end_timestamp{provider="cursor"} - time()) / 86400, 0)
+
+      # fleet_cursor_prepaid_required_daily_burn_usd: the daily spend rate
+      # needed to exhaust the remaining pool by the reset. When the cycle
+      # has passed (remaining_days == 0) this is 0 — no pacing needed.
+      - record: fleet_cursor_prepaid_required_daily_burn_usd
+        expr: fleet_cursor_prepaid_remaining_usd / clamp_min(fleet_cursor_prepaid_remaining_days, 1) * on() (fleet_cursor_prepaid_remaining_days > 0)
+
+      # FleetCursorPrepaidSpendReaderAbsent: the spend reader is dead or
+      # the canary tick stopped writing the textfile. severity=warning so
+      # alert-repair-dispatch spawns a worker; the absence is the fault,
+      # not a slow burn.
+      - alert: FleetCursorPrepaidSpendReaderAbsent
+        expr: absent(fleet_prepaid_spend_usd{provider="cursor"})
+        for: 30m
+        labels:
+          severity: warning
+          service: fleet
+          repo: Nishfleet/fleet-ops
+        annotations:
+          summary: "cursor prepaid spend reader absent — fleet_prepaid_spend_usd{provider=cursor} missing for 30+ minutes"
+          description: "fleet-ops#4206: bin/fleet-prepaid-util-canary is not writing /var/lib/prometheus/node-exporter/prepaid-spend.prom or the Cursor DashboardService GetCurrentPeriodUsage call is failing (auth missing, API unreachable, response shape changed). The $400 'API Usage' on-demand pool cannot be paced without this metric. Repair worker — check (1) the canary tick log for 'cursor spend reader: no data'; (2) ~/.config/cursor/auth.json exists and has accessToken (do NOT print the token); (3) curl -s -X POST -H 'Authorization: Bearer <token>' -d '{}' https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage returns JSON with spendLimitUsage; (4) the prepaid-spend.prom textfile is world-readable (0644) in the node_exporter textfile dir. Do NOT emit a fake zero — the absent() rule is the correct fail-loud."
+
+      # FleetCursorPrepaidBurnPacingLow: the trailing-24h burn is below the
+      # required daily burn (pool/remaining-days) for 2h, meaning the Cursor
+      # $400 pool will not be spent by the reset. The repair packet adds
+      # difficulty: senior-review to waiting heavy issues so pick_seat routes
+      # them to the cursor/cursor-grok-4.6-high senior ladder.
+      # severity=warning so alert-repair-dispatch spawns a worker that
+      # edits issue bodies (gh issue edit --body) per the fable-check
+      # 'Cursor API budget' block.
+      - alert: FleetCursorPrepaidBurnPacingLow
+        expr: |
+          fleet_cursor_prepaid_remaining_usd > 0
+            and fleet_cursor_prepaid_remaining_days > 0
+            and increase(fleet_prepaid_spend_usd{provider="cursor"}[24h]) < fleet_cursor_prepaid_required_daily_burn_usd
+        for: 2h
+        labels:
+          severity: warning
+          service: fleet
+          repo: Nishfleet/fleet-ops
+        annotations:
+          summary: "cursor $400 prepaid pool burn pacing low — trailing-24h burn below pool/remaining-days for 2h"
+          description: "fleet-ops#4206: the Cursor 'API Usage' on-demand pool is being spent too slowly to exhaust by the billing-cycle reset. Repair worker — increase the share of senior-review/keystone work landing on cursor/cursor-grok-4.6-high: for each waiting heavy fleet-ops/0509 issue (open, agent-ready or unclaimed, difficulty: heavy or keystone), prepend 'difficulty: senior-review' to the top of the issue body (gh issue edit --body) so pick_seat routes it to the senior ladder (senior_seats_in_order starts with cursor/cursor-grok-4.6-high). Cap stays 2 (ETIMEDOUT above that); pacing comes from hours, not concurrency. Do NOT raise the cap above 2. Do NOT touch worker-tier models. The judge's Telegram line should quote fleet_prepaid_spend_usd{provider=cursor} and the remaining pool."

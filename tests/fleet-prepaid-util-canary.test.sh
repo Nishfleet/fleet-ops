@@ -19,6 +19,12 @@
 #  13. Production seat-caps: every cap>0 prepaid with models is in
 #      prepaid_providers_in_order.
 #  14. Heartbeat-tier1 wires the canary and propagates a gate fail-loud.
+#  15. Cursor spend reader: DashboardService fixture -> .prom with
+#      fleet_prepaid_spend_usd{provider=cursor} + pool/cycle/included.
+#  16. Cursor spend reader: missing fixture -> no .prom (absent() rule fires).
+#  17. ETIMEDOUT watch: cli_timeout at cap 2 -> files lower-cap-to-1.
+#  18. ETIMEDOUT watch: cli_timeout at cap 1 -> quiet (watch is cap>=2 only).
+#  19. ETIMEDOUT watch: stale cli_timeout (>24h) -> quiet.
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -341,4 +347,130 @@ grep -q 'bin/fleet-prepaid-util-canary' "$repo_root/MANIFEST" \
   || fail "MANIFEST must install bin/fleet-prepaid-util-canary"
 ok "scenario14: heartbeat-tier1 wires the canary, fail-loud on gate, MANIFEST installs it"
 
-ok "fleet-prepaid-util-canary: ladder, expiry-waste, bench skip, dedup, cap, prod clean"
+# --- 15. Cursor spend reader: fixture -> .prom with fleet_prepaid_spend_usd
+: >"$gh_log"; : >"$triage"
+base_entitled
+write_caps <<'JSON'
+{ "prepaid_providers_in_order": ["cursor"],
+  "providers": { "cursor": { "cap": 2, "class": "prepaid-quota", "models": { "cursor-grok-4.6-high": 2 } } } }
+JSON
+export FLEET_PREPAID_UTIL_NOW="$MIDWEEK"
+export FLEET_PREPAID_UTIL_WORK=0
+export FLEET_PREPAID_UTIL_FILE=0
+prom_out="$scratch/prepaid-spend.prom"
+spend_state="$scratch/prepaid-spend"
+mkdir -p "$spend_state"
+cat >"$scratch/cursor-usage.json" <<'JSON'
+{"billingCycleStart":"1787371371000","billingCycleEnd":"1790049771000","planUsage":{"totalSpend":215698,"includedSpend":40000,"bonusSpend":175698,"limit":40000,"autoPercentUsed":71.89,"apiPercentUsed":0.018,"totalPercentUsed":61.628},"spendLimitUsage":{"individualLimit":40000,"individualRemaining":25000,"limitType":"user"},"enabled":true}
+JSON
+set +e
+spend_out=$(
+  CURSOR_USAGE_URL="$scratch/cursor-usage.json" \
+  FLEET_PREPAID_SPEND_DIR="$spend_state" \
+  FLEET_PREPAID_PROM_PATH="$prom_out" \
+  FLEET_ENTITLED_SEATS_JSON="$scratch/entitled-seats.json" \
+  SEAT_CAPS_JSON="$scratch/seat-caps.json" \
+  FLEET_OPS_REPO="$scratch" \
+  "$bin" 2>&1
+)
+spend_rc=$?
+set -e
+[[ "$spend_rc" == "0" ]] || fail "scenario15: expected rc=0, got $spend_rc ($spend_out)"
+[[ -f "$prom_out" ]] || fail "scenario15: .prom file not written"
+grep -q '^fleet_prepaid_spend_usd{provider="cursor"} 150\.000000' "$prom_out" \
+  || fail "scenario15: spend_usd must be 150.00 (40000-25000=15000 cents=$150), got: $(cat "$prom_out")"
+grep -q '^fleet_prepaid_pool_usd{provider="cursor"} 400\.000000' "$prom_out" \
+  || fail "scenario15: pool_usd must be 400.00"
+grep -q '^fleet_prepaid_cycle_end_timestamp{provider="cursor"} 1790049771' "$prom_out" \
+  || fail "scenario15: cycle_end_timestamp must be 1790049771"
+grep -q '^fleet_prepaid_included_exhausted{provider="cursor"} 1' "$prom_out" \
+  || fail "scenario15: included_exhausted must be 1 (includedSpend 40000 >= limit 40000)"
+grep -q 'cursor spend reader: spend_usd=150' <<<"$spend_out" \
+  || fail "scenario15: missing spend reader log line"
+ok "scenario15: cursor spend reader emits fleet_prepaid_spend_usd{provider=cursor} from DashboardService fixture"
+
+# --- 16. Cursor spend reader: missing fixture -> no .prom (absent rule fires)
+: >"$gh_log"; : >"$triage"
+rm -f "$prom_out"
+set +e
+no_spend_out=$(
+  CURSOR_USAGE_URL="$scratch/nonexistent.json" \
+  FLEET_PREPAID_SPEND_DIR="$spend_state" \
+  FLEET_PREPAID_PROM_PATH="$prom_out" \
+  FLEET_ENTITLED_SEATS_JSON="$scratch/entitled-seats.json" \
+  SEAT_CAPS_JSON="$scratch/seat-caps.json" \
+  FLEET_OPS_REPO="$scratch" \
+  "$bin" 2>&1
+)
+no_spend_rc=$?
+set -e
+[[ "$no_spend_rc" == "0" ]] || fail "scenario16: expected rc=0 (non-fatal), got $no_spend_rc"
+[[ ! -f "$prom_out" ]] || fail "scenario16: .prom file must NOT be written on missing fixture"
+grep -q 'cursor spend reader: no data' <<<"$no_spend_out" \
+  || fail "scenario16: missing 'no data' log line"
+ok "scenario16: cursor spend reader omits metric on failure (absent() rule fires)"
+
+# --- 17. ETIMEDOUT watch: cli_timeout at cap 2 -> files lower-cap-to-1 -----
+: >"$gh_log"; : >"$triage"
+base_entitled
+write_caps <<'JSON'
+{ "prepaid_providers_in_order": ["cursor"],
+  "providers": { "cursor": { "cap": 2, "class": "prepaid-quota", "models": { "cursor-grok-4.6-high": 2 } } } }
+JSON
+export FLEET_PREPAID_UTIL_NOW="2026-09-07T12:00:00Z"
+export FLEET_PREPAID_UTIL_WORK=0
+export FLEET_PREPAID_UTIL_FILE=1
+printf '%s\n' '{"provider":"cursor","model":"cursor-grok-4.6-high","health_class":"transient_fault","failure_mode":"cli_timeout","observed_at":"2026-09-07T10:00:00Z","consecutive_failure_count":1}' \
+  >"$PI_SEAT_HEALTH_LEDGER_DIR/cursor__cursor-grok-4.6-high.json"
+run_canary
+[[ "$env_rc" == "0" ]] || fail "scenario17: ETIMEDOUT watch must keep tick green, got $env_rc ($env_out)"
+grep -q 'PREPAID-UTIL-CURSOR-ETIMEDOUT-AT-CAP-2' "$triage" \
+  || fail "scenario17: missing ETIMEDOUT-AT-CAP-2 LOUD line"
+grep -q 'issue create' "$gh_log" \
+  || fail "scenario17: must file lower-cap-to-1 finding"
+ok "scenario17: cli_timeout at cap 2 files lower-cap-to-1 finding"
+rm -f "$PI_SEAT_HEALTH_LEDGER_DIR/cursor__cursor-grok-4.6-high.json"
+
+# --- 18. ETIMEDOUT watch: cli_timeout at cap 1 -> no file (cap already 1) ---
+: >"$gh_log"; : >"$triage"
+base_entitled
+write_caps <<'JSON'
+{ "prepaid_providers_in_order": ["cursor"],
+  "providers": { "cursor": { "cap": 1, "class": "prepaid-quota", "models": { "cursor-grok-4.6-high": 1 } } } }
+JSON
+export FLEET_PREPAID_UTIL_NOW="2026-09-07T12:00:00Z"
+export FLEET_PREPAID_UTIL_WORK=0
+printf '%s\n' '{"provider":"cursor","model":"cursor-grok-4.6-high","health_class":"transient_fault","failure_mode":"cli_timeout","observed_at":"2026-09-07T10:00:00Z","consecutive_failure_count":1}' \
+  >"$PI_SEAT_HEALTH_LEDGER_DIR/cursor__cursor-grok-4.6-high.json"
+run_canary
+[[ "$env_rc" == "0" ]] || fail "scenario18: expected rc=0, got $env_rc ($env_out)"
+! grep -q 'PREPAID-UTIL-CURSOR-ETIMEDOUT-AT-CAP-2' "$triage" \
+  || fail "scenario18: cap 1 must not trip the cap-2 watch"
+! grep -q 'issue create' "$gh_log" \
+  || fail "scenario18: cap 1 must not file a lower-cap finding"
+ok "scenario18: cli_timeout at cap 1 is quiet (watch is cap>=2 only)"
+rm -f "$PI_SEAT_HEALTH_LEDGER_DIR/cursor__cursor-grok-4.6-high.json"
+
+# --- 19. ETIMEDOUT watch: stale cli_timeout (>24h) -> no file --------------
+: >"$gh_log"; : >"$triage"
+base_entitled
+write_caps <<'JSON'
+{ "prepaid_providers_in_order": ["cursor"],
+  "providers": { "cursor": { "cap": 2, "class": "prepaid-quota", "models": { "cursor-grok-4.6-high": 2 } } } }
+JSON
+export FLEET_PREPAID_UTIL_NOW="2026-09-07T12:00:00Z"
+export FLEET_PREPAID_UTIL_WORK=0
+printf '%s\n' '{"provider":"cursor","model":"cursor-grok-4.6-high","health_class":"healthy","failure_mode":"cli_timeout","observed_at":"2026-09-05T10:00:00Z","consecutive_failure_count":0}' \
+  >"$PI_SEAT_HEALTH_LEDGER_DIR/cursor__cursor-grok-4.6-high.json"
+run_canary
+[[ "$env_rc" == "0" ]] || fail "scenario19: expected rc=0, got $env_rc ($env_out)"
+! grep -q 'PREPAID-UTIL-CURSOR-ETIMEDOUT-AT-CAP-2' "$triage" \
+  || fail "scenario19: stale cli_timeout (>24h) must not trip"
+! grep -q 'issue create' "$gh_log" \
+  || fail "scenario19: stale cli_timeout must not file"
+ok "scenario19: stale cli_timeout (>24h horizon) is quiet"
+rm -f "$PI_SEAT_HEALTH_LEDGER_DIR/cursor__cursor-grok-4.6-high.json"
+unset FLEET_PREPAID_UTIL_FILE
+unset CURSOR_USAGE_URL FLEET_PREPAID_SPEND_DIR FLEET_PREPAID_PROM_PATH
+
+ok "fleet-prepaid-util-canary: ladder, expiry-waste, bench skip, dedup, cap, prod clean, cursor spend reader, ETIMEDOUT watch"
