@@ -1138,6 +1138,14 @@ ok "rule-enforcement: install enabled-but-inactive timer self-heal drill"
 bash "$here/install-prometheus-rules-reload.test.sh" || fail "install prometheus rules-reload drill failed"
 ok "rule-enforcement: install prometheus rules-reload drill"
 
+# fleet-ops#4199: install.sh remove_retired_canaries must remove the
+# #4182 dead-man-canary units even when they are DANGLING symlinks (the
+# #4182 retire left them on disk, `-f` skipped them, and the timer-manifest
+# drill went red on clean main). Nested host so the worker token does not
+# edit .github/workflows/**.
+bash "$here/install-retire-dangling-symlink.test.sh" || fail "install retire dangling-symlink drill failed"
+ok "rule-enforcement: install retire dangling-symlink drill"
+
 # fleet-ops#516: sr-max-speed hunter. CI lists this file, not
 # fleet-max-speed.test.sh (workers cannot edit .github/workflows).
 bash "$here/fleet-max-speed.test.sh" || fail "fleet-max-speed tests failed"

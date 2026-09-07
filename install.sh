@@ -409,17 +409,33 @@ remove_orphaned_fleet_cheap_triage_dropin() {
 # (its dead-man is now the FleetGhWebhookCanaryAbsent absent() rule + a
 # healthchecks.io ping-on-success).
 remove_retired_canaries() {
-    local unit
+    local unit p
     for unit in \
         gh-webhook-canary-deadman.service gh-webhook-canary-deadman.timer \
         fleet-completion-canary.service fleet-completion-canary.timer \
         fleet-loose-ends-canary.service fleet-loose-ends-canary.timer
     do
-        if [ -f "${HOME}/.config/systemd/user/$unit" ]; then
+        p="${HOME}/.config/systemd/user/$unit"
+        # `-f` is false for a dangling symlink (its target is gone), so the
+        # #4182 retire left the unit symlinks on disk: they pointed at
+        # systemd/ files deleted from the deploy clone, `-f` skipped them,
+        # and the live timers stayed, reddening the timer-manifest drill
+        # (fleet-ops#4199). `-e || -L` catches both real files and dangling
+        # symlinks.
+        if [ -e "$p" ] || [ -L "$p" ]; then
             "$SYSTEMCTL" --user stop "$unit" 2>/dev/null || true
             "$SYSTEMCTL" --user disable "$unit" 2>/dev/null || true
-            rm -f "${HOME}/.config/systemd/user/$unit"
+            rm -f "$p"
             echo "retired unit removed: $unit (fleet-ops#4146)"
+            user_unit_changed=1
+        fi
+        # `systemctl --user disable` cannot resolve a dangling unit, so it
+        # leaves the timers.target.wants symlink behind. Remove it explicitly
+        # so the timer-manifest live check stops seeing the retired timer.
+        p="${HOME}/.config/systemd/user/timers.target.wants/$unit"
+        if [ -e "$p" ] || [ -L "$p" ]; then
+            rm -f "$p"
+            echo "retired wants symlink removed: $unit (fleet-ops#4146)"
             user_unit_changed=1
         fi
     done

@@ -505,6 +505,12 @@
       "classification": "scheduled",
       "cadence": "3h",
       "source": "user-config"
+    },
+    "fable-fleet-check-opus.timer": {
+      "reason": "Hourly fleet judge on Opus 5, offset :45 UTC (second POV; Nish 2026-09-07) \u2014 installed by hand outside the repo deploy; adopted into the manifest to close the #1460 shape-lock gap",
+      "classification": "scheduled",
+      "cadence": "1h",
+      "source": "user-config"
     }
   }
 }
