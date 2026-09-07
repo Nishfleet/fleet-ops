@@ -809,7 +809,7 @@
       "name": "LiteLLM proxy (fleet-ops#4130 P2 — first consumer: fable-check)",
       "baseUrl": "http://127.0.0.1:4000",
       "api": "openai-completions",
-      "apiKey": "!grep ^SK_FLEET_SENIOR= /home/nish/.config/fleet-ops/litellm-virtual-keys.env | cut -d= -f2",
+      "apiKey": "!/home/nish/.local/bin/fleet-litellm-key judge",
       "models": [
         {
           "id": "judge",
