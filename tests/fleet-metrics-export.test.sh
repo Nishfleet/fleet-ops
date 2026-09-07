@@ -2362,7 +2362,7 @@ def load(p, name):
     return m
 m = load(sys.argv[1], "fme")
 
-# 1. Missing file -> all four series 0, family present with HELP/TYPE once.
+# 1. Missing file -> all five series 0, family present with HELP/TYPE once.
 with tempfile.TemporaryDirectory() as td:
     m.MERGED_PR_CLOSE_JSON = Path(td) / "missing.json"
     lines = []
@@ -2371,19 +2371,20 @@ with tempfile.TemporaryDirectory() as td:
     assert "fleet_observe_to_close_total" in out, out
     assert out.count("# HELP fleet_observe_to_close_total") == 1, out
     assert out.count("# TYPE fleet_observe_to_close_total") == 1, out
-    for r in ["claim-branch","closes-trailer","bare-mention","protected"]:
+    for r in ["claim-branch","closes-trailer","verdict-pass","bare-mention","protected"]:
         assert f'fleet_observe_to_close_total{{reason="{r}"}} 0' in out, out
-    print("OK: missing file -> 4 series all 0, HELP/TYPE once")
+    print("OK: missing file -> 5 series all 0, HELP/TYPE once")
 
-# 2. Legal closes (claim-branch + closes-trailer) are emitted faithfully;
-#    a WRONG bare-mention close is emitted too so the alert can fire.
+# 2. Legal closes (claim-branch + closes-trailer + verdict-pass) are emitted
+#    faithfully; a WRONG bare-mention close is emitted too so the alert fires.
 with tempfile.TemporaryDirectory() as td:
     p = Path(td) / "merged-pr-close.json"
     p.write_text(json.dumps({
-        "closed": 2,
+        "closed": 3,
         "closes_by_reason": {
             "claim-branch": 1,
             "closes-trailer": 1,
+            "verdict-pass": 1,
             "bare-mention": 1,
             "protected": 0,
         },
@@ -2394,11 +2395,12 @@ with tempfile.TemporaryDirectory() as td:
     out = "\n".join(lines)
     assert 'reason="claim-branch"} 1' in out, out
     assert 'reason="closes-trailer"} 1' in out, out
+    assert 'reason="verdict-pass"} 1' in out, out
     assert 'reason="bare-mention"} 1' in out, out
     assert 'reason="protected"} 0' in out, out
-    print("OK: summary with a wrong bare-mention close is emitted faithfully (alert can fire)")
+    print("OK: summary with legal closes + a wrong bare-mention close is emitted faithfully (alert can fire)")
 
-# 3. Unparseable file -> all four 0 (no crash).
+# 3. Unparseable file -> all five 0 (no crash).
 with tempfile.TemporaryDirectory() as td:
     p = Path(td) / "bad.json"
     p.write_text("{not json")
@@ -2407,7 +2409,7 @@ with tempfile.TemporaryDirectory() as td:
     m._emit_observe_to_close(lines)
     out = "\n".join(lines)
     assert 'reason="claim-branch"} 0' in out, out
-    print("OK: unparseable file -> 4 series all 0 (no crash)")
+    print("OK: unparseable file -> 5 series all 0 (no crash)")
 PY
 
 ok "fleet-ops#3231: fleet_observe_to_close_total{reason} emitted (missing/legit/wrong/unparseable)"

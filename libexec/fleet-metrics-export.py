@@ -4414,13 +4414,14 @@ MERGED_PR_CLOSE_JSON = Path(
 HELP_MPC = (
     "# HELP fleet_observe_to_close_total Issues auto-closed by observe-to-close "
     "in the last heartbeat tick, by reason (fleet-ops#3231). Legal close "
-    "reasons are claim-branch (delivery PR head) and closes-trailer (explicit "
-    "Closes/Fixes/Resolves trailer). bare-mention and protected must always "
-    "be 0; an alert on either > 0 catches a wrong close of a mentioned or "
-    "critical-path/owner-authored issue."
+    "reasons are claim-branch (delivery PR head), closes-trailer (explicit "
+    "Closes/Fixes/Resolves trailer), and verdict-pass (verification-only "
+    "issue with a worker VERDICT: PASS comment; fleet-ops#4274). "
+    "bare-mention and protected must always be 0; an alert on either > 0 "
+    "catches a wrong close of a mentioned or critical-path/owner-authored issue."
 )
 TYPE_MPC = "# TYPE fleet_observe_to_close_total gauge"
-_MPC_REASONS = ("claim-branch", "closes-trailer", "bare-mention", "protected")
+_MPC_REASONS = ("claim-branch", "closes-trailer", "verdict-pass", "bare-mention", "protected")
 
 
 def _emit_observe_to_close(lines):

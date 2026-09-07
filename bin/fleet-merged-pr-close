@@ -254,12 +254,14 @@ candidates=0
 closed=0
 closes_claim=0
 closes_trailer=0
+closes_verdict=0
 skipped_live=0
 skipped_open_pr=0
 skipped_branch=0
 skipped_ambiguous=0
 skipped_mention=0
 skipped_protected=0
+skipped_verdict_pending=0
 
 while IFS= read -r repo; do
     [ -z "$repo" ] && continue
@@ -303,13 +305,61 @@ while IFS= read -r repo; do
         num=$(printf '%s' "$row" | jq -r '.number')
         labels_json=$(printf '%s' "$row" | jq -c '.labels // []')
 
-        # Restrict to the two lifecycle labels this detector owns:
-        # agent-in-progress (a worker may still be on it) or critical-path.
+        # Restrict to the labels this detector owns:
+        # agent-in-progress (a worker may still be on it), critical-path, or
+        # verification-only (fleet-ops#4274: a verification-only issue has no
+        # delivery PR — its terminal is a worker VERDICT: PASS comment).
         if ! printf '%s' "$labels_json" \
-            | jq -e 'map(.name) | index("agent-in-progress") != null or index("critical-path") != null' >/dev/null 2>&1; then
+            | jq -e 'map(.name) | index("agent-in-progress") != null or index("critical-path") != null or index("verification-only") != null' >/dev/null 2>&1; then
             continue
         fi
         scanned=$((scanned + 1))
+
+        # --- Verification-only terminal (fleet-ops#4274) ---
+        # A verification-only issue (no PR, no code change) has no delivery PR
+        # to match. Its acceptance is a worker `VERDICT: PASS` comment, which
+        # observe-to-close treats as a closing event exactly like a merged PR.
+        # VERDICT: FAIL or no verdict yet → leave open (§3 re-queues so a
+        # worker retries). This runs BEFORE the merged-PR guards because a
+        # verification-only issue has no claim branch and no open PR by
+        # definition; the live-worker guard still applies (a running worker
+        # may not have posted the verdict yet).
+        if printf '%s' "$labels_json" \
+            | jq -e 'map(.name) | index("verification-only") != null' >/dev/null 2>&1; then
+            if has_live_worker "$repo" "$num"; then
+                log "  $repo#$num: verification-only — live worker active — skip"
+                skipped_live=$((skipped_live + 1))
+                continue
+            fi
+            if ! issue_comments=$("$GH" issue view "$num" -R "$repo" \
+                    --json comments --jq '.[]?.body // empty' 2>/dev/null); then
+                loud "MERGED-PR-CLOSE-GH" "$repo#$num: gh issue view comments failed — skip (next tick retries)"
+                continue
+            fi
+            if printf '%s' "$issue_comments" \
+                    | grep -Eiq '^VERDICT:[[:space:]]+PASS([[:space:]]|$)'; then
+                candidates=$((candidates + 1))
+                if [ "$OK_TO_CLOSE" != "1" ]; then
+                    log "  $repo#$num: verification-only VERDICT: PASS candidate but FLEET_MERGED_PR_CLOSE_OK != 1 — close skipped"
+                    continue
+                fi
+                comment="observe-to-close (fleet-ops#4274): verification-only issue — a worker posted \`VERDICT: PASS\`. No PR is expected (verification-only issues have no code change); the verdict comment is the terminal signal, exactly like a merged PR. The heartbeat closes it at ${NOW_ISO}."
+                if ! "$GH" issue close "$num" -R "$repo" --comment "$comment" >/dev/null 2>&1; then
+                    loud "MERGED-PR-CLOSE-ERR" "$repo#$num: gh issue close failed — will retry next tick"
+                    continue
+                fi
+                _rc_clear_file="$ATTEMPTS_DIR/pi-issue-${repo}-${num}.reclaim-count"
+                _sys_clear_file="$ATTEMPTS_DIR/pi-issue-${repo}-${num}.systemic"
+                rm -f "$_rc_clear_file" "$_sys_clear_file" 2>/dev/null || true
+                closed=$((closed + 1))
+                closes_verdict=$((closes_verdict + 1))
+                log "  $repo#$num: CLOSED (verification-only VERDICT: PASS) -- reset reclaim-count + systemic marker"
+            else
+                log "  $repo#$num: verification-only — no VERDICT: PASS comment yet — leave open"
+                skipped_verdict_pending=$((skipped_verdict_pending + 1))
+            fi
+            continue
+        fi
 
         # --- Safety guards, all fail-closed ---
         # 1. Open PR on the claim branch → work in flight; queue pass owns it.
@@ -512,11 +562,11 @@ done <<< "$repos"
 if [ -n "$SUMMARY_FILE" ] \
     && mkdir -p "$(dirname "$SUMMARY_FILE")" 2>/dev/null; then
     cat >"$SUMMARY_FILE" <<EOF
-{"_meta":{"ts":"$NOW_ISO","tool":"fleet-merged-pr-close"},"closed":$closed,"closes_by_reason":{"claim-branch":$closes_claim,"closes-trailer":$closes_trailer,"bare-mention":0,"protected":0}}
+{"_meta":{"ts":"$NOW_ISO","tool":"fleet-merged-pr-close"},"closed":$closed,"closes_by_reason":{"claim-branch":$closes_claim,"closes-trailer":$closes_trailer,"verdict-pass":$closes_verdict,"bare-mention":0,"protected":0}}
 EOF
 else
     log "WARN: could not write summary $SUMMARY_FILE"
 fi
 
-log "merged-pr observe-to-close done: scanned=$scanned candidates=$candidates closed=$closed(claim=$closes_claim,trailer=$closes_trailer) skipped_open_pr=$skipped_open_pr skipped_branch=$skipped_branch skipped_live=$skipped_live skipped_ambiguous=$skipped_ambiguous skipped_mention=$skipped_mention skipped_protected=$skipped_protected"
+log "merged-pr observe-to-close done: scanned=$scanned candidates=$candidates closed=$closed(claim=$closes_claim,trailer=$closes_trailer,verdict=$closes_verdict) skipped_open_pr=$skipped_open_pr skipped_branch=$skipped_branch skipped_live=$skipped_live skipped_ambiguous=$skipped_ambiguous skipped_mention=$skipped_mention skipped_protected=$skipped_protected skipped_verdict_pending=$skipped_verdict_pending"
 exit 0

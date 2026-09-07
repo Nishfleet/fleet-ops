@@ -840,6 +840,35 @@ while IFS= read -r repo; do
             fi
         fi
 
+        # fleet-ops#4274: a verification-only issue whose worker posted
+        # VERDICT: PASS is terminal — observe-to-close closes it on the next
+        # tick. Do NOT re-queue (adding agent-ready would re-dispatch a worker
+        # to re-do already-passing verification — the 12-day loop that burned
+        # 0509#972). Release the claim without re-queue, like the agent-blocked
+        # path. VERDICT: FAIL or no verdict → fall through to the normal
+        # re-queue so a worker retries.
+        verification_only=$(printf '%s' "$issue_row" | jq -e '[.labels[]?.name] | any(. == "verification-only")' >/dev/null 2>&1 && echo yes || echo no)
+        if [[ "$verification_only" == "yes" ]]; then
+            verdict_pass=no
+            if issue_comments=$(gh issue view "$issue_n" -R "$repo" --json comments --jq '.[]?.body // empty' 2>/dev/null); then
+                if printf '%s' "$issue_comments" | grep -Eiq '^VERDICT:[[:space:]]+PASS([[:space:]]|$)'; then
+                    verdict_pass=yes
+                fi
+            fi
+            if [[ "$verdict_pass" == "yes" ]]; then
+                if gh issue edit "$issue_n" -R "$repo" --remove-label agent-in-progress 2>/dev/null; then
+                    gh issue comment "$issue_n" -R "$repo" \
+                        --body "claim branch released by fleet-heartbeat at $(date -u +%FT%TZ) (verification-only VERDICT: PASS; not re-queued — observe-to-close closes it; fleet-ops#4274)" \
+                        >/dev/null 2>&1 || true
+                    log "3.  - $repo#$issue_n: RELEASED (verification-only VERDICT: PASS, not re-queued — observe-to-close closes it)"
+                    released=$((released+1))
+                else
+                    log "3.  - $repo#$issue_n: label flip FAILED (verification-only PASS held) — will retry next tick"
+                fi
+                continue
+            fi
+        fi
+
         if [[ "$agent_blocked" == "yes" ]]; then
             # fleet-ops#3763: parked issue — clear the stale in-progress tag
             # only; leave agent-blocked for blocked-reconcile to resolve.
