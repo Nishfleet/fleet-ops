@@ -122,20 +122,137 @@ python3 -m venv ~/.local/venvs/litellm
 ```
 
 Copy the repo config to the live path and fill in the credential
-resolvers (the `api_key: command:...` lines). The repo
-`config/litellm-proxy.yaml` is the shape; the live copy is operator-owned
-so no key enters the repo:
+resolvers. **The repo file is a shape reference only — it is NOT in
+MANIFEST and `install.sh` never touches this path.** It carries
+`*.example` baseUrls and env-var key names; installing it over a live
+router replaces the operator's real seat set with placeholders
+(fleet-ops#4174 reopen).
+
+**Fresh checkout:** the live file is operator-owned and is never seeded
+by `install.sh`. On a fresh checkout there is no live file, so the proxy
+unit's `ConditionPathExists` stays false and the proxy intentionally does
+not start — that is fail-closed by design, not a fault. The operator
+creates the live copy by hand per this section before the proxy runs. **LiteLLM 1.98 does NOT support a command-style
+`api_key:` resolver** — that assumption in the original shape was wrong.
+The supported form is `api_key: os.environ/<NAME>` (litellm
+`secret_managers`), so the live copy names env vars and §3a's start wrapper
+puts the real values into the process environment. No key value ever
+enters the repo:
 
 ```sh
 mkdir -p ~/.config/fleet-ops
 cp config/litellm-proxy.yaml ~/.config/fleet-ops/litellm-proxy.yaml
-# Edit ~/.config/fleet-ops/litellm-proxy.yaml: replace each
-#   api_key: command:/home/nish/.local/bin/<resolver>
-# with the real resolver path (the same binaries models.json's `!cmd`
-# style uses). Set master_key from a credential resolver and mint the
-# sk-fleet-worker / sk-fleet-senior / sk-fleet-private virtual keys
-# via `litellm --config ... --create-key` (see LiteLLM virtual_keys docs).
+# Then edit that NEW file by hand:
+#   1. replace every *.example api_base with the provider's real baseUrl;
+#   2. keep each deployment's api_key as os.environ/<PROVIDER>_API_KEY —
+#      the name must match what the section 3a wrapper exports;
+#   3. set master_key: os.environ/LITELLM_MASTER_KEY;
+#   4. mint the sk-fleet-worker / sk-fleet-senior / sk-fleet-private
+#      virtual keys via the proxy's /key/generate admin API (LiteLLM
+#      virtual_keys docs), pinning each key's model allowlist to a group.
+# If a live config already exists, edit it in place instead of copying.
 ```
+
+### 3a. The start wrapper (`~/.local/bin/fleet-litellm-proxy-start`)
+
+The proxy unit's `ExecStart` IS this wrapper. It exists because two things
+LiteLLM needs cannot be expressed in the config file (fleet-ops#4174
+reopen — without it the installed organ dies at startup):
+
+1. Keys come from `os.environ/<NAME>`, so something has to export them.
+   The wrapper sources the credential env files that already exist on the
+   host and reads the xai OAuth access token out of Pi's `auth.json`. It
+   prints nothing, moves nothing, duplicates nothing — the stores stay
+   where they are.
+2. LiteLLM's Prisma layer reads `DATABASE_URL` from the ENVIRONMENT, not
+   from `general_settings.database_url`. And the socket-less form
+   `postgresql:///litellm` is rejected by the query engine (P1012); the
+   working form is host-qualified.
+
+It is operator-owned (it names secret-bearing paths) so it is NOT a MANIFEST
+entry; this runbook is its canonical copy, which is what makes a bare-metal
+rebuild complete. `tests/fleet-litellm-organ.test.sh` §5e pins that the unit
+and this section stay in sync.
+
+The unit invokes it through `/usr/bin/env` (`ExecStart=/usr/bin/env
+~/.local/bin/fleet-litellm-proxy-start`). That keeps the first ExecStart token
+runner-safe, so CI's `systemd-analyze` job and `p14-unstubbed-unit-verify` pass
+without a Workflows-scope ci.yml stub (fleet-ops#4398); `/usr/bin/env` execs the
+wrapper via its shebang, so the live organ is unchanged.
+
+```sh
+cat > ~/.local/bin/fleet-litellm-proxy-start <<'EOF'
+#!/bin/bash
+# fleet-litellm-proxy-start — resolve credentials into the environment at
+# runtime, then exec litellm. See docs/litellm-postgres-setup.md §3a.
+set -euo pipefail
+set -a
+
+# --- env-file providers (KEY=value format, safe to source) ---
+# Source exactly the seats the live router config declares. Only
+# OpenAI-compatible providers belong here; Cursor/Devin speak proprietary
+# protocols and are reached through their own harnesses, not the proxy.
+source /home/nish/fleet2/etc/opencode.env
+source /home/nish/fleet2/etc/commandcode.env
+source /home/nish/fleet2/etc/hetzner.env
+source /home/nish/fleet2/etc/devin.env
+source /home/nish/fleet2/etc/cursor.env
+source /home/nish/fleet2/etc/openrouter.env
+source /home/nish/fleet2/etc/alibaba-coding.env
+source /home/nish/fleet2/etc/groq.env
+source /home/nish/fleet2/etc/ollama.env
+source /home/nish/fleet2/etc/entrim.env
+source /home/nish/fleet2/etc/crof.env
+source /home/nish/.config/straitly/straitly.env
+
+# --- xai-oauth: OAuth access token from auth.json (refreshed every 4h by
+# grok-token-refresh). Read once at proxy start; a refresh needs a proxy
+# restart to pick up. P4 drill covers the stale-token case.
+export XAI_OAUTH_ACCESS_TOKEN=$(/usr/bin/python3 -c "
+import json, sys
+try:
+    a = json.load(open('/home/nish/.pi/agent/auth.json'))
+    sys.stdout.write(a.get('xai-oauth', {}).get('access', ''))
+except Exception:
+    sys.stdout.write('')
+")
+
+# --- the proxy's own admin key (virtual-key minting). Generated once,
+# stored in a mode-0600 env file owned by the operator, never in the repo.
+source /home/nish/.config/fleet-ops/litellm-master-key.env
+
+# --- DATABASE_URL: Prisma reads this from the ENV, not the config file.
+# The fleet-owned cluster listens on loopback; the socket-only form is
+# rejected by the query engine (P1012).
+export DATABASE_URL=postgresql://litellm@localhost:5432/litellm
+
+set +a
+exec /home/nish/.local/venvs/litellm/bin/litellm \
+  --config /home/nish/.config/fleet-ops/litellm-proxy.yaml \
+  --port 4000 \
+  --host 127.0.0.1
+EOF
+chmod 700 ~/.local/bin/fleet-litellm-proxy-start
+```
+
+### 3b. Pi's client side (`config/pi-models.json` provider `litellm`)
+
+Pi reaches the proxy as an OpenAI-compatible provider whose key is a virtual
+key minted for one group. The repo already ships that row; it resolves its
+key through `~/.local/bin/fleet-litellm-key <group>` (the `!cmd` apiKey form
+Pi does support — unlike LiteLLM's config, which has no command resolver).
+Create that resolver so a consumer can authenticate:
+
+```sh
+install -m 700 /dev/null ~/.local/bin/fleet-litellm-key
+# Then edit it: read the group->virtual-key map from
+# ~/.config/fleet-ops/litellm-virtual-keys.env and print exactly one key for
+# the group named in $1. Print nothing on an unknown group — a silent empty
+# key fails the request loudly instead of falling back to master_key.
+```
+
+Do not hand the master key to consumers: it is the admin credential that
+mints and revokes virtual keys.
 
 Start the proxy:
 
@@ -143,6 +260,8 @@ Start the proxy:
 systemctl --user daemon-reload
 systemctl --user enable --now fleet-litellm-proxy.service
 curl -s http://127.0.0.1:4000/health/readiness | jq .
+# Expect {"status":"healthy","db":"connected"} — db:connected is the proof
+# the Prisma layer reached the fleet-owned cluster, not just that uvicorn bound.
 ```
 
 ## 4. /health canary + prom scrape

@@ -173,3 +173,11 @@ bash "$here/pi-intake-tick-self-maint-cap.test.sh"
 # the drill runs here instead of a new workflow line (workers cannot edit
 # .github/workflows/ci.yml).
 bash "$here/pi-intake-tick-spawn-stagger.test.sh"
+
+# --- 17. fleet-ops#4395 stale-blocker belt-and-braces (CI hook) --------
+# tests/pi-intake-tick-blocked-filter-stale.test.sh locks the intake
+# tick's blocked_filter: a `blocked-on:` line naming a CLOSED/MERGED
+# issue/PR must NOT count as blocked (stale blocker). ci.yml lists this
+# file, so the drill runs here instead of a new workflow line (workers
+# cannot edit .github/workflows/ci.yml).
+bash "$here/pi-intake-tick-blocked-filter-stale.test.sh"

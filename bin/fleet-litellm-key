@@ -1,0 +1,35 @@
+#!/bin/bash
+# fleet-litellm-key — resolve a LiteLLM virtual key by tier.
+# Usage: fleet-litellm-key [worker|senior|private]
+# Outputs the key value on stdout. No key is ever printed to a log.
+# Reads from the operator-owned env file written during proxy install.
+set -euo pipefail
+TIER="${1:-worker}"
+ENV_FILE="${FLEET_LITELLM_KEYS_ENV:-$HOME/.config/fleet-ops/litellm-virtual-keys.env}"
+MASTER_ENV="${FLEET_LITELLM_MASTER_ENV:-$HOME/.config/fleet-ops/litellm-master-key.env}"
+case "$TIER" in
+    worker)
+        # shellcheck source=/dev/null
+        source "$ENV_FILE"
+        printf '%s' "$SK_FLEET_WORKER"
+        ;;
+    senior|judge)
+        # shellcheck source=/dev/null
+        source "$ENV_FILE"
+        printf '%s' "$SK_FLEET_SENIOR"
+        ;;
+    private)
+        # shellcheck source=/dev/null
+        source "$ENV_FILE"
+        printf '%s' "$SK_FLEET_PRIVATE"
+        ;;
+    master)
+        # shellcheck source=/dev/null
+        source "$MASTER_ENV"
+        printf '%s' "$LITELLM_MASTER_KEY"
+        ;;
+    *)
+        echo "fleet-litellm-key: unknown tier: $TIER" >&2
+        exit 1
+        ;;
+esac

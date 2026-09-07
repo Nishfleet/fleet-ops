@@ -126,7 +126,13 @@ EOF
 else
     [ -x "$PI_BIN" ] || { log "FATAL: pi binary not executable: $PI_BIN"; exit 2; }
     [ -f "$PROMPT" ] || { log "FATAL: prompt missing: $PROMPT"; exit 2; }
-    seat=$(pick_researcher_seat || true)
+    # fleet-ops#4219 P3a: PI_SEAT_SOURCE switch.
+    if [ "${PI_SEAT_SOURCE:-seat-lib}" = "litellm" ]; then
+        seat=$(printf 'litellm\tworker-cheap\n')
+        log "PI_SEAT_SOURCE=litellm: fleet-researcher -> litellm/worker-cheap"
+    else
+        seat=$(pick_researcher_seat || true)
+    fi
     if [ -z "${seat:-}" ]; then
         log "FATAL: no cheap/free seat available"
         exit 1

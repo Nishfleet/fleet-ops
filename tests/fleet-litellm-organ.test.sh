@@ -83,8 +83,12 @@ ok "2: rules carry all four absent() expressions and reference fleet-ops#4130"
 # --- 3: prom scrape job for the proxy /metrics endpoint
 grep -q 'job_name: litellm' "$prom" || fail "3: prom missing litellm scrape job"
 grep -q '127.0.0.1:4000' "$prom" || fail "3: prom litellm job must target 127.0.0.1:4000"
-grep -q 'metrics_path: /metrics' "$prom" || fail "3: prom litellm job must set metrics_path /metrics"
-ok "3: prometheus has litellm scrape job at 127.0.0.1:4000/metrics"
+# Trailing slash: LiteLLM serves /metrics/, and a bare /metrics is a 307
+# with no body — Prometheus would report the target up while scraping
+# nothing (fleet-ops#4174 reopen).
+grep -q 'metrics_path: /metrics/' "$prom" \
+    || fail "3: prom litellm job must set metrics_path /metrics/ (trailing slash — bare /metrics only 307s)"
+ok "3: prometheus has litellm scrape job at 127.0.0.1:4000/metrics/"
 
 # --- 4: MANIFEST installs every new file
 for f in \
@@ -94,13 +98,25 @@ for f in \
     "systemd/fleet-litellm-proxy.service" \
     "systemd/fleet-litellm-postgres.service" \
     "systemd/fleet-litellm-redis.service" \
-    "config/litellm-proxy.yaml" \
     "libexec/fleet-litellm-health-canary.py" \
     "systemd/fleet-litellm-health-canary.service" \
     "systemd/fleet-litellm-health-canary.timer"; do
     grep -q "^$f " "$manifest" || fail "4: MANIFEST missing install line for $f"
 done
 ok "4: MANIFEST installs every new LiteLLM file"
+
+# --- 4b: the repo router config is a SHAPE, never an install target
+# (fleet-ops#4174 reopen). The live ~/.config/fleet-ops/litellm-proxy.yaml
+# holds the operator's real baseUrls and seat set; installing the repo copy
+# over it silently replaces them with *.example placeholders. A previous
+# MANIFEST line did exactly that and fleet-ops#4219's backup exists to undo
+# it. Pin that it never comes back.
+if grep -qE '^config/litellm-proxy\.yaml[[:space:]]' "$manifest"; then
+    fail "4b: MANIFEST must NOT install config/litellm-proxy.yaml — it is the shape reference, not the live operator config (fleet-ops#4174)"
+fi
+grep -q 'config/litellm-proxy.yaml' "$repo_root/docs/litellm-postgres-setup.md" \
+    || fail "4b: the runbook must tell the operator how the live config is created from the repo shape"
+ok "4b: repo router config stays out of the install path; runbook covers the live copy"
 
 # --- 5: canary bin compiles + the organ-dead path exits 1
 python3 -m py_compile "$canary" || fail "5: canary py_compile failed"
@@ -146,7 +162,7 @@ grep -q 'fleet_litellm_organ_installed 1' "$scratch/dead.prom" \
 simple_stub="$scratch/simple.json"
 printf '{"status":"healthy","db":"connected"}' > "$simple_stub"
 FLEET_LITELLM_PROM="$scratch/simple.prom" \
-FLEET_LITELLM_STATE="$scratch/simple.json" \
+FLEET_LITELLM_STATE="$scratch/simple.state.json" \
 FLEET_LITELLM_STUB="$simple_stub" \
 FLEET_LITELLM_STUB_PG=1 \
 FLEET_LITELLM_STUB_REDIS=1 \
@@ -175,14 +191,85 @@ grep -q 'fleet_litellm_organ_installed 0' "$scratch/notinst.prom" \
     || fail "5b: not-installed prom missing organ_installed=0 (the absent() rule gate)"
 ok "5b: canary fails open (exit 0) when the proxy organ is not installed"
 
-# --- 6: no real credential in the repo config (placeholders only)
+# --- 5d: the Postgres probe must NOT rely on pg_isready's own defaults
+# (fleet-ops#4174 reopen). Two live faults came from defaults:
+#   a) no -h -> pg_isready probes /var/run/postgresql, which is not where
+#      the fleet-owned cluster's user-owned socket lives;
+#   b) no -d/-U -> pg_isready defaults to user=$USER database=$USER, which
+#      logs 'FATAL: database "nish" does not exist' into the cluster every
+#      60s and can exit non-zero on stricter configs.
+# A stub pg_isready records its argv so both are asserted without needing a
+# real cluster in CI.
+stubbin="$scratch/pg_isready"
+printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s"\nexit 0\n' "$scratch/pg.argv" > "$stubbin"
+chmod +x "$stubbin"
+rm -f "$scratch/pg.argv"
+FLEET_LITELLM_PROM="$scratch/pg.prom" \
+FLEET_LITELLM_STATE="$scratch/pg.state.json" \
+FLEET_LITELLM_STUB="$simple_stub" \
+FLEET_LITELLM_STUB_INSTALLED=1 \
+FLEET_LITELLM_STUB_REDIS=1 \
+FLEET_LITELLM_PG_ISREADY="$stubbin" \
+python3 "$canary" --quiet || fail "5d: canary with stub pg_isready must exit 0"
+pgargv="$(tr '\n' ' ' <"$scratch/pg.argv")"
+# Each argv item is written on its own line by the stub, so assert per token.
+grep -qx -- '-h' "$scratch/pg.argv" \
+    || fail "5d: pg probe must pass an explicit -h <socket dir>, got: $pgargv"
+grep -qx -- '-d' "$scratch/pg.argv" \
+    || fail "5d: pg probe must pass -d (not the \$USER database default), got: $pgargv"
+grep -qx -- 'litellm' "$scratch/pg.argv" \
+    || fail "5d: pg probe must name database/user litellm, got: $pgargv"
+grep -qx -- '-U' "$scratch/pg.argv" \
+    || fail "5d: pg probe must pass -U (not the \$USER default), got: $pgargv"
+# The default host is the fleet-owned cluster's run dir, never the distro
+# /var/run/postgresql (root:postgres-owned, unwritable by the cluster owner).
+grep -qE '^/home/nish/\.local/share/fleet-litellm-postgres/run$' "$scratch/pg.argv" \
+    || fail "5d: default pg host must be the fleet-owned cluster socket dir, got: $(tr '\n' ' ' <"$scratch/pg.argv")"
+ok "5d: pg probe passes explicit -h/-d/-U (no pg_isready defaults)"
+
+# --- 5e: the proxy unit must ExecStart the credential-resolving start
+# wrapper, not a bare venv invocation. LiteLLM reads DATABASE_URL from the
+# environment (not general_settings.database_url) and resolves keys via
+# os.environ/<NAME>; a bare `litellm --config ...` therefore exits 3 at
+# startup with Prisma P1012 — the exact failure that left the installed
+# organ dead after #4337 (fleet-ops#4174 reopen). The wrapper itself is
+# operator-installed (it sources secret-bearing env files) and is carried
+# by docs/litellm-postgres-setup.md §3; this asserts the unit points at it.
+proxy_unit="$repo_root/systemd/fleet-litellm-proxy.service"
+grep -qE '^ExecStart=.*/fleet-litellm-proxy-start$' "$proxy_unit" \
+    || fail "5e: $proxy_unit must ExecStart the fleet-litellm-proxy-start wrapper"
+# The wrapper is a host-local binary, so the unit must invoke it through
+# /usr/bin/env (a runner-safe first token). That keeps CI's unit-verify job
+# green WITHOUT a Workflows-scope ci.yml stub: systemd-analyze only checks the
+# first ExecStart token, and p14-unstubbed-unit-verify only flags a first
+# token that is not a runner-safe bin. A bare `ExecStart=/home/nish/.local/...`
+# would need the ci.yml stub workers cannot add (fleet-ops#4398).
+grep -qE '^ExecStart=/usr/bin/env .*/fleet-litellm-proxy-start$' "$proxy_unit" \
+    || fail "5e: $proxy_unit must ExecStart the wrapper via /usr/bin/env (runner-safe first token, no ci.yml stub needed)"
+grep -q 'ConditionPathExists=%h/.config/fleet-ops/litellm-proxy.yaml' "$proxy_unit" \
+    || fail "5e: proxy unit must gate on the operator config path"
+# The runbook has to install that same wrapper, or a rebuild ships a unit
+# whose ExecStart names a missing binary (conditionless instant death).
+grep -q 'fleet-litellm-proxy-start' "$repo_root/docs/litellm-postgres-setup.md" \
+    || fail "5e: docs/litellm-postgres-setup.md must carry the proxy start wrapper"
+ok "5e: proxy unit ExecStarts the start wrapper via /usr/bin/env and the runbook installs it"
+
+# --- 6: no real credential in the repo config (env-var references only)
 cfg="$repo_root/config/litellm-proxy.yaml"
 if grep -Eq 'sk-[A-Za-z0-9]{20,}' "$cfg"; then
-    fail "6: config/litellm-proxy.yaml contains a real-looking sk- key (must be command: placeholders)"
+    fail "6: config/litellm-proxy.yaml contains a real-looking sk- key (must be os.environ/ references)"
 fi
-grep -q 'command:/home/nish/.local/bin/' "$cfg" \
-    || fail "6: config must use command: resolver placeholders, not inline keys"
-ok "6: config uses command: resolver placeholders, no real key in repo"
+# The resolver form LiteLLM actually supports. `command:` is NOT supported
+# by litellm 1.98 (fleet-ops#4174 reopen), so the shape must not claim it.
+grep -q 'api_key: os.environ/' "$cfg" \
+    || fail "6: config must resolve keys via os.environ/<NAME>, not inline values"
+if grep -q 'api_key: command:' "$cfg"; then
+    fail "6: config must not use the unsupported api_key command: resolver form"
+fi
+# Every deployment names an env var rather than a literal secret.
+bad_keys=$( { grep -E '^[[:space:]]*api_key:' "$cfg" | grep -vc 'os\.environ/'; } || true )
+[[ "$bad_keys" = 0 ]] || fail "6: $bad_keys api_key line(s) are not os.environ/ references"
+ok "6: config resolves keys via os.environ/ placeholders, no real key in repo"
 
 # --- 7: organ-heartbeat gate passes on the live repo (every organ has its rule)
 "$bin" verify >/tmp/litellm-organ-verify.out 2>&1 || {
@@ -190,5 +277,50 @@ ok "6: config uses command: resolver placeholders, no real key in repo"
     fail "7: organ-heartbeat verify must pass on the live repo"
 }
 ok "7: organ-heartbeat verify passes on the live repo"
+
+# --- 8: straitly 402 credit-exhaustion must bench the deployment (fleet-ops#4404)
+# straitly returns 402 on credit exhaustion, which LiteLLM surfaces as
+# litellm.BadRequestError. The cooldown decision reads the per-deployment
+# model_info.allowed_fails_policy (litellm/router_utils/cooldown_handlers.py
+# _get_deployment_cooldown_policy), NOT the router-level key — so the pin must
+# live in the straitly deployment's model_info, not router_settings.
+cfg="$repo_root/config/litellm-proxy.yaml"
+if ! grep -q 'BadRequestErrorAllowedFails: 1' "$cfg"; then
+    fail "8: straitly 402 credit-exhaustion must pin BadRequestErrorAllowedFails: 1 to bench on first fail (fleet-ops#4404)"
+fi
+# The pin must be inside the straitly deployment's model_info, not a stray
+# router-level or unrelated block. Parse the YAML and assert a deployment
+# whose api_base is straitly carries the policy under its model_info.
+python3 - "$cfg" <<'PY' || fail "8: BadRequestErrorAllowedFails: 1 must sit in the straitly deployment model_info, not router_settings"
+import sys, yaml
+cfg = yaml.safe_load(open(sys.argv[1]))
+straitly = [
+    d for d in cfg["model_list"]
+    if "straitly" in d["litellm_params"].get("api_base", "")
+]
+assert straitly, "no straitly deployment found in model_list"
+for d in straitly:
+    mi = d.get("model_info") or {}
+    pol = mi.get("allowed_fails_policy") or {}
+    assert pol.get("BadRequestErrorAllowedFails") == 1, \
+        f"straitly deployment missing model_info.allowed_fails_policy.BadRequestErrorAllowedFails: 1: {d['model_name']}"
+print("straitly bench policy OK")
+PY
+ok "8: straitly deployment benches on first BadRequestError (402 credit-exhaustion)"
+
+# --- 9: worker-capable must not dead-end the fallback chain (fleet-ops#4404)
+# worker-cheap -> worker-capable used to dead-end at worker-capable (no
+# fallback of its own -> "No fallback model group found"). Give worker-capable
+# a terminal healthy route (senior) and let worker-cheap fall through it.
+grep -qE '^\s*- worker-capable: \[senior\]$' "$cfg" \
+    || fail "9: worker-capable must fall back to senior (terminal healthy group), got: no worker-capable fallback (fleet-ops#4404)"
+grep -qE '^\s*- worker-cheap: \[worker-capable, senior\]$' "$cfg" \
+    || fail "9: worker-cheap must fall through to senior after worker-capable (fleet-ops#4404)"
+# Avoid a cheap<->capable ping-pong: worker-cheap must NOT fall back directly
+# to another worker-cheap, and worker-capable must NOT loop back to worker-cheap.
+if grep -qE 'worker-capable: \[worker-cheap\]' "$cfg"; then
+    fail "9: fallback chain must not loop worker-capable back into worker-cheap (fleet-ops#4404)"
+fi
+ok "9: worker-capable has a terminal fallback (senior); worker-cheap chain no longer dead-ends"
 
 echo "ALL OK: fleet-litellm-organ"

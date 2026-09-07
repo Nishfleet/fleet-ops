@@ -262,6 +262,14 @@ JSON
 export PI_PACKET_STATE="$scratch/pi-packet"
 export PI_MODELS_JSON="$scratch/models.json"
 export SEAT_CAPS_JSON="$scratch/seat-caps.json"
+# fleet-ops#4395: isolate the seat-health ledger so the infra-block re-queue
+# drill (Case 8a) is hermetic. seat-lib reads LEDGER_DIR from
+# PI_SEAT_HEALTH_LEDGER_DIR at source time; without this the drill reads the
+# LIVE fleet ledger and the result depends on production seat state (e.g.
+# opencode rate_limited in prod makes the test fail). An empty ledger dir
+# makes every allowlisted seat fail-open as usable.
+mkdir -p "$scratch/seat-ledger"
+export PI_SEAT_HEALTH_LEDGER_DIR="$scratch/seat-ledger"
 
 # Case 1: closed issue dep → requeue
 cat >"$scratch/list.json" <<'JSON'

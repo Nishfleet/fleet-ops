@@ -776,6 +776,33 @@ grep -q 'SCOUT-FUTILITY' "$triage" \
   || fail "scenario17g: opencode 404 wall-crash must LOUD on N=3 (triage=$(cat "$triage"))"
 ok "scenario17g: opencode 404 'Provider returned error' is wall-class"
 
+# Scenario 17g2: xai-oauth 402 "Grok Build usage balance exhausted" is
+# wall-class (fleet-ops#3125, live 2026-09-07T18:31Z pi-scout@fleet-ops
+# trip). config/seat-caps.json documents this exact 402 as the wall that
+# 0-caps the xai-oauth/grok-4.6 seat, but the classifier omitted it, so the
+# #2468 crash-loop dedupe never engaged for xai-oauth 402s and a fresh
+# SENIOR AUDITOR was re-summoned per crash (consecutive_wall pinned at 0).
+# The line alone, no 503/429 noise.
+echo 'OpenAI API error (402): 402 "Grok Build usage balance exhausted"' >"$scratch/journalctl-body.txt"
+export JOURNALCTL_BODY_FILE="$scratch/journalctl-body.txt"
+: >"$gh_log"
+: >"$triage"
+echo '[]' >"$open_issues"
+# Reset state: scenario17g leaves consecutive_wall=3; 17i must count from 0
+# so its 3 wall-crashes reach consecutive_wall=3 (not 6).
+rm -f "$state/fleet-ops.state"
+"$bin" begin fleet-ops >/dev/null
+"$bin" end fleet-ops 1 >/dev/null
+"$bin" begin fleet-ops >/dev/null
+"$bin" end fleet-ops 1 >/dev/null
+"$bin" begin fleet-ops >/dev/null
+"$bin" end fleet-ops 1 >/dev/null
+[[ "$(state_field consecutive_wall fleet-ops)" == "3" ]] \
+  || fail "scenario17g2: xai-oauth 402 'Grok Build usage balance exhausted' alone is wall-class, got consecutive_wall='$(state_field consecutive_wall fleet-ops)'"
+grep -q 'SCOUT-FUTILITY' "$triage" \
+  || fail "scenario17g2: xai-oauth 402 wall-crash must LOUD on N=3 (triage=$(cat "$triage"))"
+ok "scenario17g2: xai-oauth 402 'Grok Build usage balance exhausted' is wall-class"
+
 # Scenario 17h: provider wall at INFO priority, 40 lines back (fleet-ops
 # #2521). The pi script prints the 503/429 wall error to stdout/stderr at
 # info priority, not err. A long run pushes it far back. The pattern merged

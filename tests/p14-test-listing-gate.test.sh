@@ -108,13 +108,11 @@ known_orphans=(
   fleet-heartbeat-orphan-distinguish.test.sh
   fleet-heartbeat-red-pr-repair.test.sh
   fleet-researcher.test.sh
-  heartbeat-watchman.test.sh
   install-manifest-comment-purity.test.sh
   memory-ledger-supersede.test.sh
   org-ruleset-skip-detector.test.sh
   pi-issue-run-defensive-mkdir.test.sh
   pi-issue-run-mid-session-bench.test.sh
-  pi-packet-run.test.sh
   pi-scout-seat-rotation.test.sh
   pi-transport-check-dropin-428.test.sh
   verify-fleet-sync-pat.test.sh

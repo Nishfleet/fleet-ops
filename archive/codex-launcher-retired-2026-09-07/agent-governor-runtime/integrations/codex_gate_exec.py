@@ -1,0 +1,290 @@
+#!/usr/bin/env python3
+"""PATH wrapper that gates real Codex agent sessions before exec."""
+
+from __future__ import annotations
+
+import errno
+import os
+import signal
+import subprocess
+import sys
+import time
+import tomllib
+from pathlib import Path
+from typing import Sequence
+
+REPO_ROOT = Path("/home/nish/.local/libexec/agent-governor-runtime")
+sys.path.insert(0, str(REPO_ROOT))
+
+from agent_governor.broker import ToolBroker  # noqa: E402
+from agent_governor.manifest import load_manifest  # noqa: E402
+from agent_governor.trace import TraceStore  # noqa: E402
+from integrations.certified_policy import evaluate_certified  # noqa: E402
+from integrations.codex_launch_policy import LUNA_MODEL, LUNA_PROVIDER, LUNA_ROLE  # noqa: E402
+
+DEFAULT_ROOT = Path("/home/nish/.local/share/agent-governor/codex-launch-v1")
+DEFAULT_REAL = Path("/home/nish/.local/libexec/codex-real")
+DEFAULT_CODEX_HOME = Path("/home/nish/.codex")
+# Wrapper-private launch pins. Consumed into metadata and stripped before the
+# real CLI so the role/provider markers never become Codex configuration.
+GATE_PROVIDER_ENV = "AGENT_GOVERNOR_LAUNCH_PROVIDER"
+GATE_AGENT_TYPE_ENV = "AGENT_GOVERNOR_LAUNCH_AGENT_TYPE"
+RESERVED_OVERRIDE_ENVS = ("CODEX_REAL_BINARY", "CODEX_AGENT_GOVERNOR_ROOT")
+# INVARIANT (shared with implementation-worker-*-auto and lanes/test_routing_control.py):
+# GOVERNED_RUN_TERM_CLEANUP_SECONDS matches run_supervised's stop_deadline below.
+GOVERNED_RUN_TERM_CLEANUP_SECONDS = 10
+INFRA_COMMANDS = {"app-server", "remote-control", "mcp", "mcp-server", "completion", "update", "doctor", "sandbox", "debug", "features", "login", "logout", "plugin", "help"}
+VALUE_OPTIONS = {"-c", "--config", "-m", "--model", "-p", "--profile", "-s", "--sandbox", "-C", "--cd", "--add-dir", "-i", "--image"}
+
+
+class IdentityConflict(ValueError):
+    """Raised when duplicate identity declarations disagree."""
+
+
+def command_name(args: Sequence[str]) -> str | None:
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg in VALUE_OPTIONS:
+            index += 2
+            continue
+        if arg.startswith("-"):
+            index += 1
+            continue
+        return arg
+    return None
+
+
+def _record_identity(result: dict[str, str], key: str, value: str) -> None:
+    previous = result.get(key)
+    if previous is not None and previous != value:
+        raise IdentityConflict(f"conflicting_{key}")
+    result[key] = value
+
+
+def launch_metadata(args: Sequence[str]) -> dict[str, str]:
+    result = {"fork_turns": "none"}
+    config_documents: list[dict[str, object]] = []
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg in {"--oss"} or arg.startswith("--oss="):
+            result["oss"] = "true"
+            index += 1
+            continue
+        if arg in {"--local-provider"} or arg.startswith("--local-provider="):
+            result["local_provider"] = "true"
+            index += 1
+            # --local-provider takes an optional value form; skip paired value.
+            if arg == "--local-provider" and index < len(args) and not args[index].startswith("-"):
+                index += 1
+            continue
+        if arg in {"-m", "--model"} and index + 1 < len(args):
+            _record_identity(result, "model", args[index + 1])
+            index += 2
+            continue
+        if arg.startswith("--model="):
+            _record_identity(result, "model", arg.split("=", 1)[1])
+            index += 1
+            continue
+        if arg in {"-p", "--profile"} and index + 1 < len(args):
+            _record_identity(result, "profile", args[index + 1])
+            index += 2
+            continue
+        if arg.startswith("--profile="):
+            _record_identity(result, "profile", arg.split("=", 1)[1])
+            index += 1
+            continue
+        if arg in {"-c", "--config"} and index + 1 < len(args):
+            value = args[index + 1]
+            document = tomllib.loads(value)
+            config_documents.append(document)
+            index += 2
+            continue
+        if arg.startswith("--config="):
+            config_documents.append(tomllib.loads(arg.split("=", 1)[1]))
+            index += 1
+            continue
+        index += 1
+    profile = result.get("profile")
+    for document in config_documents:
+        sources = [document]
+        profiles = document.get("profiles")
+        if isinstance(profile, str) and isinstance(profiles, dict) and isinstance(profiles.get(profile), dict):
+            sources.append(profiles[profile])
+        for source in sources:
+            if isinstance(source.get("model"), str):
+                _record_identity(result, "model", source["model"])
+            if isinstance(source.get("model_reasoning_effort"), str):
+                _record_identity(result, "reasoning_effort", source["model_reasoning_effort"])
+            if isinstance(source.get("model_provider"), str):
+                _record_identity(result, "provider", source["model_provider"])
+    return result
+
+
+def apply_config_defaults(metadata: dict[str, str], config_path: Path) -> dict[str, str]:
+    document = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    defaults: dict[str, str] = {}
+    if isinstance(document.get("model"), str):
+        defaults["model"] = document["model"]
+    if isinstance(document.get("model_reasoning_effort"), str):
+        defaults["reasoning_effort"] = document["model_reasoning_effort"]
+    if isinstance(document.get("model_provider"), str):
+        defaults["provider"] = document["model_provider"]
+    profile = metadata.get("profile")
+    if profile is not None:
+        profiles = document.get("profiles")
+        if not isinstance(profiles, dict) or not isinstance(profiles.get(profile), dict):
+            raise ValueError("profile_unresolved")
+        selected = profiles[profile]
+        if isinstance(selected.get("model"), str):
+            defaults["model"] = selected["model"]
+        if isinstance(selected.get("model_reasoning_effort"), str):
+            defaults["reasoning_effort"] = selected["model_reasoning_effort"]
+        if isinstance(selected.get("model_provider"), str):
+            defaults["provider"] = selected["model_provider"]
+    # Explicit launch metadata wins, but conflicting keys already failed above.
+    result = {**defaults, **metadata}
+    return result
+
+
+def merge_gate_identity(metadata: dict[str, str], env: dict[str, str]) -> dict[str, str]:
+    """Merge wrapper-private identity pins; reject conflicts with CLI metadata."""
+    result = dict(metadata)
+    provider = env.get(GATE_PROVIDER_ENV)
+    agent_type = env.get(GATE_AGENT_TYPE_ENV)
+    if provider is not None:
+        previous = result.get("provider")
+        if previous is not None and previous != provider:
+            raise IdentityConflict("conflicting_provider")
+        result["provider"] = provider
+    if agent_type is not None:
+        previous = result.get("agent_type")
+        if previous is not None and previous != agent_type:
+            raise IdentityConflict("conflicting_agent_type")
+        result["agent_type"] = agent_type
+    return result
+
+
+def requires_gate(args: Sequence[str]) -> bool:
+    if any(arg in {"--version", "-V"} for arg in args):
+        return False
+    command = command_name(args)
+    return command not in INFRA_COMMANDS
+
+
+def process_start_ticks(pid: int) -> str:
+    content = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    fields_after_comm = content.rsplit(")", 1)[1].split()
+    return fields_after_comm[19]
+
+
+def run_supervised(real: Path, args: Sequence[str], env: dict[str, str] | None = None) -> int:
+    """Run a governed Codex process while leaving a verifiable parent marker."""
+    child_env = dict(os.environ if env is None else env)
+    child_env["AGENT_GOVERNOR_MANAGED"] = "1"
+    child_env["AGENT_GOVERNOR_SUPERVISOR_PID"] = str(os.getpid())
+    child_env["AGENT_GOVERNOR_SUPERVISOR_START_TICKS"] = process_start_ticks(os.getpid())
+    child_env["AGENT_GOVERNOR_STARTED_UNIX"] = str(int(time.time()))
+    # Never leak wrapper-private identity pins into the real CLI environment.
+    child_env.pop(GATE_PROVIDER_ENV, None)
+    child_env.pop(GATE_AGENT_TYPE_ENV, None)
+    try:
+        child = subprocess.Popen([str(real), *args], env=child_env, process_group=0)
+    except OSError as exc:
+        # Controlled launch failure, never a traceback: 127 for a missing
+        # executable (ENOENT), 126 for format/permission/setup refusal
+        # (ENOEXEC, EACCES, ...). One stable credential-free diagnostic line.
+        detail = exc.strerror or "exec refused"
+        print(f"supervised launch refused: {real} ({detail})", file=sys.stderr)
+        return 127 if exc.errno == errno.ENOENT else 126
+    stop_signal: int | None = None
+    stop_deadline: float | None = None
+
+    def forward(signum: int, _frame: object) -> None:
+        nonlocal stop_signal, stop_deadline
+        stop_signal = signum
+        stop_deadline = time.monotonic() + GOVERNED_RUN_TERM_CLEANUP_SECONDS
+        if child.poll() is None:
+            try:
+                os.killpg(child.pid, signum)
+            except ProcessLookupError:
+                pass
+
+    previous = {
+        signum: signal.signal(signum, forward)
+        for signum in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM)
+    }
+    try:
+        while True:
+            try:
+                return_code = child.wait(timeout=0.5)
+                return 128 + (-return_code) if return_code < 0 else return_code
+            except subprocess.TimeoutExpired:
+                if stop_deadline is not None and time.monotonic() >= stop_deadline:
+                    os.killpg(child.pid, signal.SIGKILL)
+                    return 128 + (stop_signal or signal.SIGKILL)
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    for name in RESERVED_OVERRIDE_ENVS:
+        if name in os.environ:
+            print(f"codex gate: reserved env override denied ({name})", file=sys.stderr)
+            return 126
+    real = DEFAULT_REAL.resolve()
+    if real == Path(__file__).resolve() or not real.is_file():
+        print("codex gate: real Codex binary unavailable", file=sys.stderr)
+        return 126
+    governed = requires_gate(args)
+    if governed:
+        try:
+            if any(arg == "--oss" or arg.startswith("--oss=") for arg in args):
+                raise RuntimeError("oss_denied")
+            if any(
+                arg == "--local-provider" or arg.startswith("--local-provider=")
+                for arg in args
+            ):
+                raise RuntimeError("local_provider_denied")
+            metadata = apply_config_defaults(
+                launch_metadata(args),
+                DEFAULT_CODEX_HOME / "config.toml",
+            )
+            metadata = merge_gate_identity(metadata, dict(os.environ))
+            if metadata.get("model") == LUNA_MODEL:
+                if metadata.get("provider") != LUNA_PROVIDER:
+                    raise RuntimeError("luna_requires_openai_provider")
+                if metadata.get("agent_type") != LUNA_ROLE:
+                    raise RuntimeError("luna_requires_executor_luna")
+            root = DEFAULT_ROOT
+            manifest, _, _ = load_manifest(root)
+            broker = ToolBroker(manifest, trace=TraceStore(root, manifest.trace_path))
+            decision = broker.decide("launch_codex_session", metadata)
+            policy = evaluate_certified(root, metadata)
+            if not decision.allowed:
+                raise RuntimeError(decision.reason)
+            if not policy["allowed"]:
+                raise RuntimeError(str(policy["reason"]))
+        except IdentityConflict as exc:
+            print(f"codex gate: launch denied ({exc})", file=sys.stderr)
+            return 126
+        except Exception as exc:
+            print(f"codex gate: launch denied ({exc})", file=sys.stderr)
+            return 126
+    child_env = dict(os.environ)
+    child_env.pop(GATE_PROVIDER_ENV, None)
+    child_env.pop(GATE_AGENT_TYPE_ENV, None)
+    # Fixed certified CODEX_HOME for governed launches; ignore caller drift.
+    if governed:
+        child_env["CODEX_HOME"] = str(DEFAULT_CODEX_HOME)
+    if governed:
+        return run_supervised(real, args, env=child_env)
+    os.execve(str(real), [str(real), *args], child_env)
+    return 126
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

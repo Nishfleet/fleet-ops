@@ -132,6 +132,47 @@ def _textfile_mtime():
     return max(r["value"] for r in rows)
 
 
+def _seat_quota_info(provider, timeout=5):
+    """Query Prometheus for fleet_seat_quota_* rows for one provider.
+
+    Returns a dict with 'rows' (list of {window, remaining_pct, reset_s})
+    and 'source' (api/dashboard/stale).  Returns None on any error
+    (Prometheus down, no series for this provider) — the caller treats
+    None as 'no quota data available' and the tile still renders.
+    """
+    if not provider:
+        return None
+    try:
+        pct_rows = _prom_query(
+            f'fleet_seat_quota_remaining_pct{{provider="{provider}"}}',
+            timeout=timeout,
+        )
+        reset_rows = _prom_query(
+            f'fleet_seat_quota_reset_seconds{{provider="{provider}"}}',
+            timeout=timeout,
+        )
+    except PromError:
+        return None
+    if not pct_rows:
+        return None
+    # Index reset rows by window for joining
+    reset_by_window = {}
+    for r in reset_rows:
+        w = r["metric"].get("window", "")
+        reset_by_window[w] = r["value"]
+    rows = []
+    source = ""
+    for r in pct_rows:
+        w = r["metric"].get("window", "")
+        source = r["metric"].get("source", "")
+        rows.append({
+            "window": w,
+            "remaining_pct": round(r["value"], 1),
+            "reset_s": round(reset_by_window.get(w, 0)),
+        })
+    return {"rows": rows, "source": source}
+
+
 def _cache_fresh(kind):
     """True when exporter emitted fleet_gh_cache_fresh{kind=...} = 1."""
     rows = _prom_query(f'fleet_gh_cache_fresh{{kind="{kind}"}}')
@@ -567,7 +608,9 @@ def collect_running_pi():
                "-p ExecStart over running units — never a unit-name "
                "pattern; fleet-ops#1155). Subtitle is /proc argv count of "
                "the pi binary plus --print (independent, not added). Seat "
-               "health_class from agent-state/lanes/pi-seat-health.json.")
+               "health_class from agent-state/lanes/pi-seat-health.json. "
+               "Quota remaining % from fleet_seat_quota_remaining_pct "
+               "(fleet-ops#4217) for the current seat's provider.")
     try:
         data = json.loads(SEAT_HEALTH.read_text())
     except (OSError, json.JSONDecodeError) as e:
@@ -617,7 +660,21 @@ def collect_running_pi():
         if note_extra:
             note = note + "; " + note_extra
         return _unknown(src, SEAT_STALE_S, note, explain=explain)
-    note = f"seat {health} ({data.get('provider')}/{data.get('model')})"
+    provider = data.get("provider")
+    quota_info = _seat_quota_info(provider)
+    quota_note = ""
+    quota_fields = {}
+    if quota_info and quota_info["rows"]:
+        parts = []
+        for qr in quota_info["rows"]:
+            w = qr["window"] or "?"
+            parts.append(f"{w}={qr['remaining_pct']}%")
+        quota_note = f"quota {', '.join(parts)}"
+        quota_fields["quota_source"] = quota_info["source"]
+        quota_fields["quota_rows"] = quota_info["rows"]
+    note = f"seat {health} ({provider}/{data.get('model')})"
+    if quota_note:
+        note = note + "; " + quota_note
     if note_extra:
         note = note + "; " + note_extra
     return _tile(
@@ -625,10 +682,11 @@ def collect_running_pi():
         count=len(units), proc_count=proc_count, unit_count=len(units),
         units=units[:20],
         health_class=health,
-        provider=data.get("provider"),
+        provider=provider,
         model=data.get("model"),
         note=note,
         explain=explain,
+        **quota_fields,
     )
 
 

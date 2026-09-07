@@ -415,10 +415,11 @@ Shipped in P1:
   (`~/.local/share/fleet-litellm-redis/redis.conf`), real long-running
   daemon, `MemoryMax=128M`, bind `127.0.0.1:6379`. The proxy
   `Requires=`+`After=` it.
-- `config/litellm-proxy.yaml` — the router config from §2, with
-  `api_key: command:...` placeholders (no real key in the repo). The
-  live copy at `~/.config/fleet-ops/litellm-proxy.yaml` holds the
-  credential resolvers.
+- `config/litellm-proxy.yaml` — the router config from §2. Keys are
+  `api_key: os.environ/<NAME>` references, so no real key is in the repo.
+  The live copy at `~/.config/fleet-ops/litellm-proxy.yaml` holds the real
+  baseUrls; `fleet-litellm-proxy-start` exports the named env vars at
+  launch (§3a of the runbook).
 - `libexec/fleet-litellm-health-canary.py` + service + 60s timer —
   polls `/health/readiness`, exports `fleet_litellm_proxy_up`,
   `fleet_litellm_postgres_up`, `fleet_litellm_redis_up` + per-group
@@ -447,3 +448,79 @@ P2 (next phase, to be filed): first consumer — route
 `agent-cron-run fable-check` to `litellm/judge`, prove one hourly run
 end-to-end through the proxy with the proxy log showing the fallback
 chain honoured.
+
+---
+
+## P1 reopen — what the live install actually needed (fleet-ops#4174)
+
+The organ was live-installed against this shape and did not start. Four
+defects, each now fixed in-repo with a test that would have caught it:
+
+1. **Postgres/Redis were not real daemons.** They shipped as oneshot
+   readiness markers around the distro services, so both showed
+   `active (exited)` and the proxy raced the DB socket. Both units are now
+   fleet-owned `Type=simple` long-running daemons, and the proxy is
+   `Requires=` + `After=` both.
+2. **`api_key: command:...` does not exist in litellm 1.98.** The only
+   supported inline resolver is `os.environ/<NAME>`. The repo shape used
+   the wrong form; it now uses `os.environ/`, and the wrapper that fills
+   those variables is carried by the runbook (§3a) and named by the unit's
+   `ExecStart`. Test §5e/§6 pin both halves.
+3. **Prisma reads `DATABASE_URL` from the environment**, not from
+   `general_settings.database_url`, and rejects the socket-less
+   `postgresql:///litellm` form with P1012 — the proxy exited 3 at startup.
+   The wrapper exports the host-qualified URL; the config documents this.
+4. **Observability probes hit defaults that are wrong here.** `/metrics`
+   404'd because the `prometheus` callback was never configured, so the
+   scrape job had nothing to read. And the canary's `pg_isready` call used
+   pg_isready's own defaults (`-h /var/run/postgresql -U nish -d nish`),
+   which logged `FATAL: database "nish" does not exist` into the cluster
+   every 60s while reporting a healthy organ as down. The probe now passes
+   an explicit `-h/-d/-U` (test §5d), and `litellm_settings.callbacks:
+   ["prometheus"]` mounts `/metrics`.
+
+5. **`/metrics` needed a trailing slash.** With the callback mounted, the
+   proxy answers bare `/metrics` with a 307 to `/metrics/` and an empty body.
+   Prometheus does not follow redirects, so `up{job="litellm"}` stayed 1 while
+   zero `litellm_*` series landed — a scrape that looks healthy and measures
+   nothing. The job now targets `/metrics/`.
+
+   One follow-on is outside a worker's token: CI's unit-verify job needs the
+   wrapper path added to its stub list, which is a workflow-file edit. Filed
+   as #4398.
+
+   Resolved without a workflow edit: the unit invokes the wrapper through
+   `/usr/bin/env` (`ExecStart=/usr/bin/env ~/.local/bin/fleet-litellm-proxy-start`).
+   systemd-analyze only checks the first ExecStart token, and
+   `p14-unstubbed-unit-verify` only flags a first token that is not a
+   runner-safe bin — so `/usr/bin/env` (a `/usr/bin/*` path) keeps both CI
+   gates green with no ci.yml stub. `/usr/bin/env` execs the wrapper via its
+   shebang, so the live organ is unchanged. #4398 is therefore moot for this
+   unit.
+
+Also corrected: `/health/readiness` returns the low-detail
+`{"status":"healthy","db":"connected"}` payload unless
+`general_settings.allow_public_health_readiness_details` is set — there is
+no `?detailed=true` query param. The canary handles that format and
+synthesises a `proxy` group instead of reporting zero groups for a healthy
+proxy (test §5c).
+
+Two more repo-vs-host gaps found while proving the above:
+
+6. **The repo router config was a MANIFEST install target.** That symlinked
+   `*.example` baseUrls over the operator's live router on every deploy tick,
+   replacing the working seat set with placeholders. It is now shape-only and
+   out of the install path (test §4b keeps it out).
+7. **Pi's client side names an operator binary that is nowhere installed.**
+   `config/pi-models.json` resolves the `litellm` provider key through
+   `~/.local/bin/fleet-litellm-key <group>` — a host-local script no repo file
+   or runbook step created. Runbook §3b now says how to make it, and warns
+   against handing out `master_key` instead.
+
+State after this PR: proxy, Postgres and Redis are three running user-scope
+daemons. Proven on this host: stopping all three and starting only the proxy
+brings Postgres and Redis up first (`Requires=` + `After=`),
+`/health/readiness` answers 200 with `db: connected`, `/metrics/` serves 159
+`litellm_*` series into the Prometheus job, and the canary exports
+`fleet_litellm_organ_installed 1` — so the four `absent()` rules are un-gated
+and will page on real death.

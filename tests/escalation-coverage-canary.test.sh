@@ -1473,6 +1473,11 @@ bash "$here/quality-slo-staleness.test.sh"
 # (worker tokens cannot push .github/workflows/**).
 bash "$here/fleet-pi-extensions-canary.test.sh"
 
+# fleet-ops#4382: pin vendor-native safety modes in devin/cursor templates.
+# Invoked from this CI-listed file so hosted runners run it without a
+# workflow edit (worker tokens cannot push .github/workflows/**).
+bash "$here/fleet-provider-no-dangerous-modes.test.sh"
+
 # fleet-ops#634: free-model roster canary. Invoked from this CI-listed file
 # so hosted runners run it without a workflow edit (worker tokens cannot
 # push .github/workflows/**). PR #624 (fleet-ops#518) shipped the canary and

@@ -32,12 +32,36 @@ Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 # The config is operator-owned (lives in ~/.config, not the repo) so keys
 # resolved through the existing credential resolvers never enter the repo
-# or the unit file. The repo copy at config/litellm-proxy.yaml is the
-# shape reference; install.sh copies it to the live path on deploy.
+# or the unit file. The repo copy at config/litellm-proxy.yaml is the shape
+# reference ONLY — it is deliberately not a MANIFEST install target, because
+# dropping *.example baseUrls over a live router would cut the organ's seats
+# (fleet-ops#4174 reopen). ConditionPathExists above gates on this exact %h
+# path: if the operator has not created it, the unit stays condition-skipped
+# rather than crash-looping. Keep the two paths in sync.
 Environment=LITELLM_PROXY_CONFIG=%h/.config/fleet-ops/litellm-proxy.yaml
 # Loopback only — never expose the proxy on a public interface. Pi speaks
 # to it over 127.0.0.1:4000.
-ExecStart=/usr/bin/env /home/nish/.local/venvs/litellm/bin/litellm --config ${LITELLM_PROXY_CONFIG} --port 4000 --host 127.0.0.1
+#
+# The start wrapper is REQUIRED, not cosmetic (fleet-ops#4174 reopen):
+#   1. LiteLLM 1.98 does not support `api_key: command:...` in the config —
+#      it supports `os.environ/<NAME>`. The wrapper sources the existing
+#      credential env files and reads the OAuth token out of auth.json into
+#      the process environment, so no key value ever enters the repo or a
+#      unit file.
+#   2. LiteLLM's Prisma layer reads DATABASE_URL from the ENVIRONMENT, not
+#      from general_settings.database_url. Without the export the proxy
+#      exits 3 at startup with P1012 ("the URL must start with the protocol
+#      postgresql://") — that is exactly how the organ died before the
+#      wrapper existed.
+#   3. It pins the venv binary explicitly instead of relying on PATH.
+# Install it per docs/litellm-postgres-setup.md §3; the runbook carries the
+# script, so a bare-metal rebuild reproduces the organ from repo + runbook.
+# The wrapper is invoked through /usr/bin/env so the unit's first ExecStart
+# token is a runner-safe bin: CI's systemd-analyze job (which only checks the
+# first token) and p14-unstubbed-unit-verify both pass WITHOUT a Workflows-
+# scope ci.yml stub (fleet-ops#4398). /usr/bin/env execs the wrapper via its
+# shebang, so the live organ is unchanged.
+ExecStart=/usr/bin/env /home/nish/.local/bin/fleet-litellm-proxy-start
 # Restart on any failure (import error, bind conflict, upstream crash).
 # 2s delay + the [Unit]-section StartLimit* above bound the storm. The
 # P4 drill proves workers fail loud <60s when the proxy stays down.

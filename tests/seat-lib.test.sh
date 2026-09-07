@@ -3977,3 +3977,8 @@ bash "$here/seat-phantom-out-suffix.test.sh" || fail "seat-phantom-out-suffix te
 # the live config.
 unset SEAT_CAPS_JSON
 bash "$here/seat-caps-zero-yield.test.sh" || fail "seat-caps-zero-yield tests failed"
+
+# fleet-ops#4219 P3a: PI_SEAT_SOURCE env switch routes the six worker callers
+# to LiteLLM groups. Workers cannot add a P14 line in .github/workflows/ci.yml;
+# this file is the listed CI host for the new seat-source test.
+bash "$here/pi-seat-source-litellm.test.sh" || fail "pi-seat-source-litellm tests failed"

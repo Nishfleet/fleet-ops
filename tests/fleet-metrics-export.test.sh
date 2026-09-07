@@ -791,6 +791,7 @@ m._fetch_claude_usage = lambda: None
 m._fetch_codex_usage = lambda: None
 m._fetch_cursor_usage = lambda: None
 m._fetch_devin_usage = lambda: None
+m._fetch_xkiro_quota = lambda: None
 m._GH_FETCHED_THIS_RUN = False
 
 rc = m.main()
@@ -905,6 +906,7 @@ m._fetch_openrouter_key = lambda: None
 m._fetch_claude_usage = lambda: None
 m._fetch_codex_usage = lambda: None
 m._fetch_cursor_usage = lambda: None
+m._fetch_xkiro_quota = lambda: None
 m._GH_FETCHED_THIS_RUN = False
 
 rc = m.main()
@@ -995,6 +997,7 @@ m._fetch_openrouter_key = lambda: None
 m._fetch_claude_usage = lambda: None
 m._fetch_codex_usage = lambda: None
 m._fetch_cursor_usage = lambda: None
+m._fetch_xkiro_quota = lambda: None
 m._GH_FETCHED_THIS_RUN = False
 
 rc = m.main()
@@ -1061,6 +1064,7 @@ m._fetch_openrouter_key = lambda: None
 m._fetch_claude_usage = lambda: None
 m._fetch_codex_usage = lambda: None
 m._fetch_cursor_usage = lambda: None
+m._fetch_xkiro_quota = lambda: None
 m._GH_FETCHED_THIS_RUN = False
 
 rc = m.main()
@@ -1463,6 +1467,7 @@ m._fetch_openrouter_key = lambda: None
 m._fetch_claude_usage = lambda: None
 m._fetch_codex_usage = lambda: None
 m._fetch_cursor_usage = lambda: None
+m._fetch_xkiro_quota = lambda: None
 m._GH_FETCHED_THIS_RUN = False
 rc = m.main()
 assert rc == 0, f"main rc={rc}"
@@ -2429,6 +2434,106 @@ PY
 ok "fleet-ops#3250: seat-yield ledger, JSON sidecar, and prom output"
 
 # =========================================================================
+# 17b. fleet-ops#3250/#3310: infra deaths never count as seat yield.
+#
+# The rule was written into both issues and into the seat-retirement policy,
+# but the ledger counted a provider-side death as a no-PR miss, so a seat was
+# marked low-quality for the fleet's own infrastructure failing. That is how
+# devin/swe-1-7 was wrongly retired (#3389, corrected in #3473).
+# =========================================================================
+python3 - "$exporter" "$scratch" <<'PY' || fail "seat-yield infra-death exclusion failed"
+import importlib.util, json, sys
+from pathlib import Path
+
+exporter, scratch = sys.argv[1:3]
+spec = importlib.util.spec_from_file_location("fme2", exporter)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+
+sessions = Path(scratch) / "sessions-infra"
+sessions.mkdir(parents=True, exist_ok=True)
+m.SESSIONS_DIR = sessions
+m.SEAT_YIELD_JSON = Path(scratch) / "seat-yield-infra.json"
+m.SEAT_YIELD_CACHE = Path(scratch) / "seat-yield-infra-cache.json"
+m.SEAT_CAPS_DEFAULT = Path(scratch) / "seat-caps-infra.json"
+m.SEAT_CAPS_FALLBACK = Path("/nonexistent/seat-caps.json")
+m.SEAT_CAPS_LIVE = Path("/nonexistent/live-caps.json")
+Path(m.SEAT_CAPS_DEFAULT).write_text(json.dumps({"providers": {}}))
+
+def session(provider, model, ts, kind, cost=None):
+    """kind: pr | miss | infra | infra_prose"""
+    d = sessions / f"pi-issue-{provider}-{model}"
+    d.mkdir(parents=True, exist_ok=True)
+    base = f"2026-09-04T{ts}Z"
+    msg = {"role": "assistant", "content": [], "usage": {}}
+    if cost is not None:
+        msg["usage"] = {"cost": {"total": cost}}
+    if kind == "pr":
+        msg["content"] = [{"type": "text",
+                           "text": "https://github.com/Nishfleet/0509/pull/1234"}]
+    elif kind == "miss":
+        msg["content"] = [{"type": "text", "text": "No PR produced."}]
+    elif kind == "infra":
+        msg["stopReason"] = "error"
+        msg["errorMessage"] = ('Devin exited with code 1: Error: Agent error: '
+                               '{"cognition.ai/errorKind": "resource_exhausted"}')
+    elif kind == "infra_prose":
+        # The model WORKED and merely talked about a timeout. It must count as
+        # a real miss: the words appear in content, never in a stopReason pair.
+        msg["content"] = [{"type": "text",
+                           "text": "The upload timed out and returned 503; "
+                                   "I fixed the ETIMEDOUT retry. No PR yet."}]
+    lines = [
+        json.dumps({"type": "session", "version": 3, "timestamp": base,
+                    "id": f"{provider}-{ts}"}),
+        json.dumps({"type": "model_change", "provider": provider,
+                    "modelId": model, "timestamp": base}),
+        json.dumps({"type": "message", "message": msg, "timestamp": base}),
+    ]
+    (d / f"2026-09-04T{ts}.jsonl").write_text("\n".join(lines))
+
+# seat A: 20 working sessions (10 PR) buried under 10 NEWER infra deaths.
+# Poisoned reading = the 10 deaths evict half the real evidence and score 0.25;
+# correct reading reaches past them and scores 10/20 = 0.50.
+for i in range(20):
+    session("prov", "worked", f"01:00:{i:02d}", "pr" if i % 2 == 0 else "miss")
+for i in range(10):
+    session("prov", "worked", f"02:00:{i:02d}", "infra", cost=0.05)
+
+# seat B: every session died on infrastructure -> no quality evidence.
+for i in range(20):
+    session("prov", "alldead", f"03:00:{i:02d}", "infra")
+
+# seat C: 20 sessions where the model worked and discussed a timeout in prose.
+for i in range(20):
+    session("prov", "prose", f"04:00:{i:02d}", "infra_prose")
+
+r = m._compute_seat_yield()
+
+a = r["prov/worked"]
+assert a["infra_deaths"] == 10, a
+assert a["sessions"] == 20, f"infra deaths must not occupy the window: {a}"
+assert a["pr_count"] == 10, a
+assert a["yield"] == 0.5, a
+assert a["provisional"] is False, a
+# The audition spend cap must still see what the dead sessions burned.
+assert abs(a["cost_usd"] - 0.5) < 1e-9, a
+
+b = r["prov/alldead"]
+assert b["sessions"] == 0, b
+assert b["yield"] == 0.0, f"all-infra seat must not be promoted to 0.5: {b}"
+assert b["provisional"] is False, b
+
+c = r["prov/prose"]
+assert c["infra_deaths"] == 0, f"prose must never be read as an infra death: {c}"
+assert c["yield"] == 0.0, c
+assert c["sessions"] == 20, c
+
+print("OK: infra deaths excluded from yield; prose not misread; spend intact")
+PY
+ok "fleet-ops#3250/#3310: infra deaths never count as seat yield"
+
+# =========================================================================
 # 18. fleet-ops#3231: fleet_observe_to_close_total{reason}
 # The exporter reads the last observe-to-close summary's closes_by_reason
 # and emits four labelled series. only claim-branch and closes-trailer may
@@ -2862,6 +2967,7 @@ m._fetch_claude_usage = lambda: None
 m._fetch_codex_usage = lambda: None
 m._fetch_cursor_usage = lambda: None
 m._fetch_devin_usage = lambda: None
+m._fetch_xkiro_quota = lambda: None
 m._gh_rate_limit = lambda: None
 m._read_dead_credentials = lambda: (0, [])
 m._fetch_openrouter_credits = lambda: 6.95
@@ -2943,7 +3049,7 @@ spec.loader.exec_module(m)
 
 # 1. Helpers exist.
 for fn in ("_fetch_openrouter_key", "_fetch_claude_usage", "_fetch_codex_usage",
-           "_fetch_cursor_usage",
+           "_fetch_cursor_usage", "_fetch_xkiro_quota",
            "_emit_seat_quota", "_emit_seat_quota_headers", "_cached_quota_json",
            "_iso_to_seconds_until", "_resolve_cut_directive"):
     assert hasattr(m, fn), f"missing {fn}"
@@ -3137,9 +3243,29 @@ assert by_window["daily"]["reset_s"] is not None and by_window["daily"]["reset_s
 assert by_window["weekly"]["reset_s"] is not None and by_window["weekly"]["reset_s"] > 0, f"devin weekly reset_s {by_window['weekly']['reset_s']}"
 print("OK: _fetch_devin_usage maps planStatus daily/weeklyQuotaRemainingPercent + ResetAtUnix -> remaining_pct")
 
+# 10. _fetch_xkiro_quota maps free_tokens.remaining / limit_per_day -> pct,
+#     and computes reset_s as seconds until next UTC midnight.
+xkiro_payload = {
+    "object": "usage",
+    "free_tokens": {"used_today": 5012001, "limit_per_day": 5000000, "remaining": 0},
+    "wallet": {"balance_usd": "5.000000", "held_usd": "0.000000"},
+}
+m._read_env_key = lambda path, names: "fake-key"
+urllib.request.urlopen = lambda req, timeout=15: _FakeResp(xkiro_payload)
+try:
+    rows = m._fetch_xkiro_quota()
+finally:
+    urllib.request.urlopen = orig_urlopen
+assert rows is not None, "xkiro fetch returned None for valid payload"
+assert len(rows) == 1, f"expected 1 window, got {len(rows)}"
+assert abs(rows[0]["pct"] - 0.0) < 0.01, f"xkiro pct {rows[0]['pct']} (0 remaining)"
+assert rows[0]["window"] == "daily", f"xkiro window {rows[0]['window']}"
+assert rows[0]["reset_s"] is not None and rows[0]["reset_s"] > 0, f"xkiro reset_s {rows[0]['reset_s']}"
+print("OK: _fetch_xkiro_quota maps free_tokens.remaining / limit_per_day -> pct + UTC-midnight reset")
+
 print("OK: fleet-ops#4217 live seat quota metric family + VPS-native reads")
 PY
-ok "fleet-ops#4217: live seat quota metric family + VPS-native reads (OpenRouter /key, Claude OAuth, Codex OAuth, Cursor, Devin, !cut resolver)"
+ok "fleet-ops#4217: live seat quota metric family + VPS-native reads (OpenRouter /key, Claude OAuth, Codex OAuth, Cursor, Devin, xKiro, !cut resolver)"
 
 # =========================================================================
 # fleet-ops#3180: fleet_escalations_24h must not count template starts the
@@ -3379,6 +3505,7 @@ m._fetch_claude_usage = lambda: None
 m._fetch_codex_usage = lambda: None
 m._fetch_cursor_usage = lambda: None
 m._fetch_devin_usage = lambda: None
+m._fetch_xkiro_quota = lambda: None
 m._GH_FETCHED_THIS_RUN = False
 rc = m.main()
 assert rc == 0, f"main rc={rc}"
