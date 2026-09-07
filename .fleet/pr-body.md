@@ -98,21 +98,9 @@ EXIT: 0
 - No new unit/timer/path-unit/workflow added — only edits to existing
   `bin/`/`config/`/`prompts/` + two new `bin/` helpers + one new `tests/` file.
 
-## research
+research: official docs (systemd.exec ExecStopPost, ausearch(8), auditctl(8), healthchecks.io ping API) + existing bin/keystone-hc-ping checked. Compared: (a) hand-written stop-requester watcher — rejected, the issue forbids it ("No hand-written watcher"); (b) systemd's own OnFailure= + ExecStopPost — adopted for the verdict rail (off-the-shelf, no new organ); (c) auditd/ausearch — adopted for the audit trail (off-the-shelf distro package, the issue names it); (d) healthchecks.io ping API via existing keystone-hc-ping — adopted for the dead-man transport. bin/pi-detached-deadman is the ExecStopPost salvage (mechanism is systemd's; no off-the-shelf tool turns exit-0-without-deliverable into a FAILURE). bin/fleet-who-stopped is a thin ausearch formatter (ausearch already does the query; the helper just names the stopper for the journal).
 
-- `bin/pi-detached-deadman` (NEW): the ExecStopPost salvage that turns an
-  exit-0-without-deliverable into a FAILURE. No off-the-shelf tool does this —
-  systemd's `ExecStopPost` + a deliverable existence check is the mechanism;
-  the healthchecks.io ping API is the off-the-shelf transport (existing
-  `bin/keystone-hc-ping`).
-- `bin/fleet-who-stopped` (NEW): thin `ausearch` wrapper that names the stopper
-  from the auditd execve trail. auditd is the off-the-shelf distro package;
-  `ausearch` is its shipped query tool. The helper just formats the output.
-
-## help-first
-
-- `bin/pi-detached-deadman --help` — documents the verdict matrix and flags.
-- `bin/fleet-who-stopped --help` — documents the ausearch query window.
+help-first: `ausearch --help` + `auditctl --help` + `systemd-run --help` read. ausearch already queries the audit trail but does not name "who stopped THIS unit" in one line — fleet-who-stopped formats that. systemd-run already accepts --property=OnFailure and ExecStopPost= but does not check a deliverable or ping healthchecks — pi-systemd-run + pi-detached-deadman add that.
 
 ## Diff scope
 
@@ -142,5 +130,7 @@ EXIT: 0
 - Out-of-repo standing text (judge packet `fable-check.md`, vault
   `global-standing-rules.md`) is a separate cross-project edit, filed as
   follow-up.
+
+net-positive-because: new mechanism (fleet-ops#4266) — the dead-man verdict hook (pi-detached-deadman), the stop audit trail helper (fleet-who-stopped), the auditd rule, and the canary lint block 13 are net-new rails with no prior equivalent; the test coverage (pi-detached-deadman verdict matrix + 4 new canary scenarios + resilience drill) is the detector that prevents the bug class from recurring (mechanical-fix fleet-ops#366). Deletion-first applied: no new organ, no new unit/timer/workflow — all rails wired into existing bin/pi-systemd-run, bin/fleet-escalation-canary, bin/keystone-hc-ping, bin/unit-escalation-write.
 
 loose-ends: out-of-repo standing text (judge packet + vault global-standing-rules) for fleet-ops#4266
