@@ -121,10 +121,6 @@ m.SEAT_LEDGER = seat_dir
 wp = Path(scratch) / "fleet-waste.prom"
 wp.write_text("# HELP fleet_waste_ratio ...\n# TYPE fleet_waste_ratio gauge\nfleet_waste_ratio 0.08\n")
 m.WASTE_PROM = wp
-# Stub chain prom (fleet-ops#2168) for chain_repair_latency SLO
-cp = Path(scratch) / "fleet-chains.prom"
-cp.write_text("# HELP fleet_chain_repair_duration_seconds ...\n# TYPE fleet_chain_repair_duration_seconds gauge\nfleet_chain_repair_duration_seconds 1200\n")
-m.CHAIN_PROM = cp
 # Stub actions.log (empty) so per-alertname parser returns {}
 m.ACTIONS_LOG = Path(scratch) / "actions.log"
 m.ACTIONS_LOG.write_text("")
@@ -253,13 +249,10 @@ m.SLO_DEFS_DEFAULT = Path(scratch) / "no-such-slo-defs.json"
 m.SLO_DEFS_FALLBACK = Path(scratch) / "no-such-slo-defs-fallback.json"
 m.SEAT_CAPS_DEFAULT = Path(seat_caps)
 m.SEAT_CAPS_FALLBACK = Path(seat_caps)
-# Stub waste + chain prom + actions.log (same as section 3).
+# Stub waste prom + actions.log (same as section 3).
 wp = Path(scratch) / "fleet-waste.prom"
 wp.write_text("# HELP fleet_waste_ratio ...\n# TYPE fleet_waste_ratio gauge\nfleet_waste_ratio 0.08\n")
 m.WASTE_PROM = wp
-cp = Path(scratch) / "fleet-chains.prom"
-cp.write_text("# HELP fleet_chain_repair_duration_seconds ...\n# TYPE fleet_chain_repair_duration_seconds gauge\nfleet_chain_repair_duration_seconds 1200\n")
-m.CHAIN_PROM = cp
 m.ACTIONS_LOG = Path(scratch) / "actions.log"
 m.ACTIONS_LOG.write_text("")
 # Seat ledger stub (same as section 3).
@@ -319,9 +312,6 @@ m.SEAT_LEDGER = seat_dir
 wp = Path(scratch) / "fleet-waste.prom"
 wp.write_text("# HELP fleet_waste_ratio ...\n# TYPE fleet_waste_ratio gauge\nfleet_waste_ratio 0.08\n")
 m.WASTE_PROM = wp
-cp = Path(scratch) / "fleet-chains.prom"
-cp.write_text("# HELP fleet_chain_repair_duration_seconds ...\n# TYPE fleet_chain_repair_duration_seconds gauge\nfleet_chain_repair_duration_seconds 1200\n")
-m.CHAIN_PROM = cp
 m.ACTIONS_LOG = Path(scratch) / "actions.log"
 m.ACTIONS_LOG.write_text("")
 
@@ -348,20 +338,20 @@ print("OK: SLO compliance == green-map rollup for all test shapes (all-green/one
 PY
 
 # =========================================================================
-# 3e. fleet-ops#3367: new alert is in both skip sets (dispatch + canary).
+# 3e. fleet-ops#3367: new alert is in the dispatch skip set.
 # =========================================================================
-python3 - "$repo_root/libexec/alert-repair-dispatch" "$repo_root/bin/fleet-completion-canary.py" <<'PY' || fail "skip-set membership check failed"
+python3 - "$repo_root/libexec/alert-repair-dispatch" <<'PY' || fail "skip-set membership check failed"
 import ast, re, sys
 from pathlib import Path
 name = "FleetSloMainGreenGreenMapDisagree"
-for path, var in [(Path(sys.argv[1]), "SKIP_SET"),
-                  (Path(sys.argv[2]), "SKIP_FIRING")]:
-    src = path.read_text()
-    m = re.search(rf"{var} = (\{{.*?\}})", src, re.S)
-    assert m, f"{var} not found in {path.name}"
-    skip = ast.literal_eval(m.group(1))
-    assert name in skip, f"{name} missing from {var} in {path.name}"
-print(f"OK: {name} in both SKIP_SET (dispatch) and SKIP_FIRING (canary)")
+path = Path(sys.argv[1])
+var = "SKIP_SET"
+src = path.read_text()
+m = re.search(rf"{var} = (\{{.*?\}})", src, re.S)
+assert m, f"{var} not found in {path.name}"
+skip = ast.literal_eval(m.group(1))
+assert name in skip, f"{name} missing from {var} in {path.name}"
+print(f"OK: {name} in SKIP_SET (dispatch)")
 PY
 
 # =========================================================================

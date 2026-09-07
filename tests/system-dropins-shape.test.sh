@@ -21,8 +21,7 @@
 #   5. install.sh accepts --check, --system, --check --system; refuses
 #      unknown args.
 #   6. fleet-ops#1499: the user-scope BASE unit files
-#      (fleet-completion-canary.{service,timer},
-#      fleet-metrics-export.{service,timer}) are repo-owned under systemd/
+#      (fleet-metrics-export.{service,timer}) are repo-owned under systemd/
 #      AND have exact MANIFEST entries, and the metrics-export drop-ins
 #      (fleet-metrics-export.service.d/) are kept + MANIFEST-listed. The
 #      #1480 audit found these base units hand-placed in
@@ -148,25 +147,19 @@ echo "OK: system drop-ins shape locked (50-ram-governor + 50-no-distro-oomd-kill
 # ~/.config/systemd/user/ and bypassing the repo; #2097 moved them into
 # systemd/ + MANIFEST. Lock both halves: base units repo-owned + listed, and
 # the metrics-export drop-ins kept + listed.
-cc_svc="$repo_root/systemd/fleet-completion-canary.service"
-cc_tmr="$repo_root/systemd/fleet-completion-canary.timer"
 me_svc="$repo_root/systemd/fleet-metrics-export.service"
 me_tmr="$repo_root/systemd/fleet-metrics-export.timer"
-[[ -f "$cc_svc" ]] || fail "missing base unit: $cc_svc"
-[[ -f "$cc_tmr" ]] || fail "missing base unit: $cc_tmr"
 [[ -f "$me_svc" ]] || fail "missing base unit: $me_svc"
 [[ -f "$me_tmr" ]] || fail "missing base unit: $me_tmr"
 
 for entry in \
-  "systemd/fleet-completion-canary.service /home/nish/.config/systemd/user/fleet-completion-canary.service" \
-  "systemd/fleet-completion-canary.timer /home/nish/.config/systemd/user/fleet-completion-canary.timer" \
   "systemd/fleet-metrics-export.service /home/nish/.config/systemd/user/fleet-metrics-export.service" \
   "systemd/fleet-metrics-export.timer /home/nish/.config/systemd/user/fleet-metrics-export.timer" \
 ; do
   grep -Fxq "$entry" "$manifest" \
     || fail "MANIFEST missing base-unit entry (fleet-ops#1499): $entry"
 done
-ok "fleet-ops#1499: completion-canary + metrics-export base units repo-owned + MANIFEST-listed"
+ok "fleet-ops#1499: metrics-export base units repo-owned + MANIFEST-listed"
 
 me_dropdir="$repo_root/systemd/fleet-metrics-export.service.d"
 for d in 10-git-mirrors.conf staleness-checker.conf waste-ledger.conf; do

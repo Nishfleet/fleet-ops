@@ -19,9 +19,12 @@ Exit codes
   3  network/connection failure (receiver not listening)
   4  bad response shape
 
-The deadman (gh-webhook-canary-deadman) watches the prom file and pages
-the alert-repair rail when the series is missing or stale. The canary
-script itself is silent on success.
+The dead-man is the FleetGhWebhookCanaryAbsent absent() rule in
+config/fleet_rules.yml (pages the alert-repair rail when the series is
+missing or stale) plus an optional healthchecks.io ping-on-success
+(GH_WEBHOOK_HEALTHCHECKS_URL): the canary pings the URL on each green
+run, so healthchecks.io alerts externally if the push channel stops
+going green. The canary script itself is silent on success.
 
 Environment seams:
 
@@ -31,6 +34,9 @@ Environment seams:
   GH_WEBHOOK_CANARY_DRY           1 = compute HMAC + write the payload to
                                   stdout; no network call (used by tests)
   GH_WEBHOOK_CANARY_TIMEOUT       default 10 (seconds)
+  GH_WEBHOOK_HEALTHCHECKS_URL     optional healthchecks.io ping URL; pinged
+                                  on each green run (external dead-man).
+                                  Never derived from event data.
 """
 from __future__ import annotations
 
@@ -57,6 +63,7 @@ PROM = os.environ.get("GH_WEBHOOK_CANARY_PROM",
                       "/var/lib/prometheus/node-exporter/fleet-gh-webhook-canary.prom")
 DRY = os.environ.get("GH_WEBHOOK_CANARY_DRY", "") == "1"
 TIMEOUT = float(os.environ.get("GH_WEBHOOK_CANARY_TIMEOUT", "10"))
+HEALTHCHECKS_URL = os.environ.get("GH_WEBHOOK_HEALTHCHECKS_URL", "")
 
 
 def _read_secret() -> bytes:
@@ -137,6 +144,27 @@ def _write_prom(file_path: str, last_green: float, last_rc: int,
         print(f"gh-webhook-canary: prom write skipped: {e}", file=sys.stderr)
 
 
+def _ping_healthchecks(url: str) -> None:
+    """Ping the healthchecks.io URL on a green run (external dead-man).
+
+    Best-effort: a failed ping must never fail the canary. The URL is
+    operator-set via GH_WEBHOOK_HEALTHCHECKS_URL and never derived from
+    event data.
+    """
+    if not url:
+        return
+    if DRY:
+        print(f"---HEALTHCHECKS---\nwould ping {url}")
+        return
+    try:
+        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
+        with urllib.request.urlopen(url, timeout=10) as resp:
+            resp.read()
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError) as e:
+        print(f"gh-webhook-canary: healthchecks.io ping skipped: {e}",
+              file=sys.stderr)
+
+
 def main(argv: list[str]) -> int:
     secret = _read_secret()
     payload = _synthetic_payload()
@@ -151,6 +179,9 @@ def main(argv: list[str]) -> int:
         sys.stdout.buffer.write(b"---BODY---\n")
         sys.stdout.buffer.write(body)
         sys.stdout.buffer.write(b"\n")
+        # DRY: report the healthchecks.io ping the canary would make on a
+        # green run (the external dead-man seam).
+        _ping_healthchecks(HEALTHCHECKS_URL)
         return 0
 
     status, resp = _post(TARGET, body, sig, TIMEOUT)
@@ -172,10 +203,13 @@ def main(argv: list[str]) -> int:
         print(f"gh-webhook-canary: response missing 'received:true': {j!r}",
               file=sys.stderr)
         return 4
+    # Green run: ping the healthchecks.io dead-man so the external observer
+    # sees the push channel is alive.
+    _ping_healthchecks(HEALTHCHECKS_URL)
     # rc==0 means the receiver actually fired the unit (pi-intake@<repo>.
     # service or fleet-deploy-check.service). rc non-zero with DRY=0 means
     # the unit did not exist (the canary repo doesn't ship one) — that is
-    # expected and not a canary failure. The deadman reads only the
+    # expected and not a canary failure. The absent() rule reads only the
     # canary_last_green_seconds series, which we just bumped.
     return 0
 

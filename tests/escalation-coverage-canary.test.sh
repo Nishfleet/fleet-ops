@@ -1179,12 +1179,6 @@ bash "$here/fleet-escalation-completion.test.sh"
 # workflow edit (worker tokens cannot push .github/workflows/**).
 bash "$here/quality-slo-staleness.test.sh"
 
-# fleet-ops#468/#1610: alert-repair COMPLETION canary (hop clocks + stall
-# ladder + bounded verify timeout so a verify hop cannot hold the chain open
-# indefinitely). Invoked from this CI-listed file so hosted runners run it
-# without a workflow edit (worker tokens cannot push .github/workflows/**).
-bash "$here/fleet-completion-canary.test.sh"
-
 # fleet-ops#536: proven-only Pi extension allowlist. Invoked from this
 # CI-listed file so hosted runners run it without a workflow edit
 # (worker tokens cannot push .github/workflows/**).

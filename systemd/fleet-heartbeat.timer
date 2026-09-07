@@ -6,11 +6,11 @@ Description=Fleet orchestrator heartbeat (every 60 min, off-peak minute :17)
 # the user systemd instance (Persistent=true), not by any agent session,
 # so it survives every interactive Claude/pi session exit.
 #
-# Cadence 15 -> 60 min (fleet-ops#3270): the four sections that only read
+# Cadence 15 -> 60 min (fleet-ops#3270): the three sections that only read
 # GitHub state (lifecycle-label-sweep, merged-pr observe-to-close,
-# close-duplicates, loose-ends-canary) moved behind webhook triggers
+# close-duplicates) moved behind webhook triggers
 # (gh-webhook-receiver dispatches issues/opened, issues/labeled,
-# issues/closed, pull_request/closed, pull_request/opened to their own
+# issues/closed, pull_request/closed to their own
 # .service units). The heartbeat timer now keeps only host-local sections
 # (merge-to-live deploy, queue green PRs, release orphaned claims, recover
 # failed units, RAM measurement, seat-health freshness, canaries). 60 min

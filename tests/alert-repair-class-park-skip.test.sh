@@ -2,13 +2,13 @@
 # tests/alert-repair-class-park-skip.test.sh
 #
 # auditor 2026-08-31T11:1xZ, fleet-ops#2495 follow-up: an alert whose
-# class is parked (decision_class_until in the future) by
-# fleet-completion-canary MUST NOT spawn a fresh alert-repair unit on
-# each AMX repeat_interval fire; the canary's verdict is authoritative.
+# class is parked (decision_class_until in the future) MUST NOT spawn a
+# fresh alert-repair unit on each AMX repeat_interval fire; the park
+# verdict is authoritative.
 #
 # Live class: FleetQueueSelfMaintenanceRatioHigh alert escalated to the
-# senior-auditor pipeline 7 times in 36h (2026-08-30..31) because
-# fleet-completion-canary correctly parked the class but
+# senior-auditor pipeline 7 times in 36h (2026-08-30..31) because the
+# class was parked but
 # libexec/alert-repair-dispatch had no awareness of that state, so AMX
 # kept spawning new units that died on lane faults and re-summoned the
 # auditor via OnFailure.
@@ -33,7 +33,7 @@
 #      packet written; no seat selection invoked (the SKIP comes before
 #      _pick_seat and _acquire_alert_repair_claim).
 #   3. State file with an EXPIRED decision_class_until -> dispatch
-#      proceeds (park is over; the canary will re-park on next
+#      proceeds (park is over; the parker will re-park on next
 #      escalation if needed).
 #   4. State file with NO decision_class_until key -> dispatch proceeds.
 set -euo pipefail

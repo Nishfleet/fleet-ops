@@ -437,19 +437,18 @@ bash "$here/fleet-help-flag-runs-live.test.sh"
 bash "$here/sgscan.test.sh"
 
 # auditor 2026-08-30: p14-test-listing-gate red on 4 orphan tests
-# (fleet-loose-ends-canary + pi-issue-run-hang-stall-bench +
-# unit-escalation-write-retry-absorb + unit-escalation-write-scout-futility-dedupe).
+# (pi-issue-run-hang-stall-bench + unit-escalation-write-retry-absorb +
+# unit-escalation-write-scout-futility-dedupe).
 # Each landed without a host or known_orphan entry, which kept the gate red,
 # SPEC-GATE-REFUSED the intake tick, dropped running=2 vs admit=22, and
 # tripped the fleet-heartbeat undersat fail-loud. Hosted here so P14 runs
 # them without a workflow-file edit.
-bash "$here/fleet-loose-ends-canary.test.sh"
 bash "$here/pi-issue-run-hang-stall-bench.test.sh"
 
 # fleet-ops#3709 (part 2/2 of #3264): reviewer-round fallback — when no
 # senior seat is usable, the product worker opens the PR WITHOUT the
 # auto-merge arm and marks the body `review: skipped, no capable seat`
-# so the loose-ends canary surfaces it. Hosted here so P14 runs it
+# so the loose-ends surface it. Hosted here so P14 runs it
 # without a workflow-file edit (workers cannot push .github/workflows/**).
 bash "$here/fleet-review-arm-check.test.sh"
 

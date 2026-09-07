@@ -465,7 +465,7 @@ def _episode_starts(text, crit):
 
     An episode starts on the first DISPATCH of an alertname while that
     name is not open; RESOLVED closes it. Redispatches of an already-open
-    alert (Alertmanager repeat / completion-canary hop) do not start a
+    alert (Alertmanager repeat / alert-repair hop) do not start a
     new episode and must not blame later merges.
     """
     open_eps = set()

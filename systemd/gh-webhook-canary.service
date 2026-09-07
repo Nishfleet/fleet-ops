@@ -7,10 +7,12 @@ Documentation=https://github.com/Nishfleet/fleet-ops/issues/1464
 # script POSTs a synthetic 'issues/labeled/agent-ready' payload to the
 # local receiver, asserts a 200 response, and bumps the
 # fleet_gh_webhook_canary_last_green_seconds Prometheus metric.
-# A separate deadman (gh-webhook-canary-deadman.{service,timer}) watches
-# that metric and pages the alert-repair rail when the series goes
-# absent for > 15 min. That's the standard dead-man's-switch inversion:
-# alert on missing success, never on present failure alone.
+# The dead-man is the FleetGhWebhookCanaryAbsent absent() rule in
+# config/fleet_rules.yml (pages the alert-repair rail when the series
+# goes absent for > 15 min) plus an optional healthchecks.io
+# ping-on-success (GH_WEBHOOK_HEALTHCHECKS_URL) for an external dead-man.
+# That's the standard dead-man's-switch inversion: alert on missing
+# success, never on present failure alone.
 
 [Service]
 Type=oneshot
@@ -18,6 +20,9 @@ Environment=GH_WEBHOOK_CANARY_TARGET=http://127.0.0.1:8088/webhook
 Environment=GH_WEBHOOK_CANARY_SECRET_FILE=%h/.config/fleet-ops/gh-webhook.secret
 Environment=GH_WEBHOOK_CANARY_PROM=/var/lib/prometheus/node-exporter/fleet-gh-webhook-canary.prom
 Environment=GH_WEBHOOK_CANARY_DRY=0
+# healthchecks.io ping URL (external dead-man). Read from a local env
+# file so the secret never lives in the repo. Optional: empty = no ping.
+EnvironmentFile=-%h/.config/fleet-ops/gh-webhook-hc.env
 # P14 systemd-analyze dodge: hosted runners lack ~/.local. The repo
 # install.sh symlinks the script to ~/.local/bin for the live box.
 ExecStart=/usr/bin/python3 %h/.local/bin/gh-webhook-canary

@@ -35,12 +35,9 @@ ok "2: pi-intake@.timer cadence is */20 (slow reconciler envelope)"
 for entry in \
     "libexec/gh-webhook-receiver/serve.py" \
     "bin/gh-webhook-canary.py" \
-    "bin/gh-webhook-canary-deadman.py" \
     "systemd/gh-webhook-receiver.service" \
     "systemd/gh-webhook-canary.service" \
-    "systemd/gh-webhook-canary.timer" \
-    "systemd/gh-webhook-canary-deadman.service" \
-    "systemd/gh-webhook-canary-deadman.timer"
+    "systemd/gh-webhook-canary.timer"
 do
     grep -F "$entry" "$manifest" >/dev/null \
         || fail "MANIFEST missing entry: $entry"

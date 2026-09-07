@@ -13,17 +13,6 @@
       ]
     },
     {
-      "name": "completion-canary",
-      "kind": "canary",
-      "heartbeat_metric": "fleet_chain_open",
-      "absent_alert": "FleetCompletionCanaryAbsent",
-      "files": [
-        "bin/fleet-completion-canary.py",
-        "systemd/fleet-completion-canary.service",
-        "systemd/fleet-completion-canary.timer"
-      ]
-    },
-    {
       "name": "undersaturation-guard",
       "kind": "guard",
       "heartbeat_metric": "fleet_pi_workers_active",
@@ -154,11 +143,8 @@
       "absent_alert": "FleetGhWebhookCanaryAbsent",
       "files": [
         "bin/gh-webhook-canary.py",
-        "bin/gh-webhook-canary-deadman.py",
         "systemd/gh-webhook-canary.service",
-        "systemd/gh-webhook-canary.timer",
-        "systemd/gh-webhook-canary-deadman.service",
-        "systemd/gh-webhook-canary-deadman.timer"
+        "systemd/gh-webhook-canary.timer"
       ]
     },
     {

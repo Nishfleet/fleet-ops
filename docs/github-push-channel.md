@@ -22,8 +22,6 @@ This document is the runbook for that hand-off.
 | Receiver systemd unit            | `systemd/gh-webhook-receiver.service`                     |
 | Synthetic canary script          | `bin/gh-webhook-canary.py`                                |
 | Canary systemd unit + timer      | `systemd/gh-webhook-canary.{service,timer}`               |
-| Dead-man watchdog script         | `bin/gh-webhook-canary-deadman.py`                        |
-| Dead-man systemd unit + timer    | `systemd/gh-webhook-canary-deadman.{service,timer}`       |
 | Intake cadence slow-down         | `systemd/pi-intake@.timer` (`*:00/15` → `*:00/20`)        |
 | Reconciler-caught counter        | `lib/pi-intake-tick.sh`                                   |
 | Organ registry entries           | `config/fleet-organs.json`                                |
@@ -141,7 +139,6 @@ install.sh                       # picks up the new systemd units + bins
 systemctl --user daemon-reload
 systemctl --user enable --now gh-webhook-receiver.service
 systemctl --user enable --now gh-webhook-canary.timer
-systemctl --user enable --now gh-webhook-canary-deadman.timer
 ```
 
 Verify:
@@ -152,28 +149,27 @@ curl -sS http://127.0.0.1:8088/healthz | jq .
 # Synthetic canary hits the receiver from inside the VPS — no tunnel involved.
 systemctl --user start gh-webhook-canary.service
 journalctl --user -u gh-webhook-canary.service -n 5
-# After ~5 min, deadman should report status=ok and NOT page.
-systemctl --user start gh-webhook-canary-deadman.service
-journalctl --user -u gh-webhook-canary-deadman.service -n 5
 ```
 
-### 6. Wire the (optional) healthchecks.io fail URL
+### 6. Wire the (optional) healthchecks.io ping URL
 
-The dead-man can ping an external dead-man's switch when the canary
-goes red. To enable, set in the user's systemd environment:
+The canary pings an external healthchecks.io URL on each green run
+(ping-on-success). If the push channel stops going green, healthchecks.io
+stops receiving pings and alerts externally. To enable, set the URL in a
+local env file (never in the repo):
 
 ```sh
-mkdir -p ~/.config/systemd/user/gh-webhook-canary-deadman.service.d
-cat > ~/.config/systemd/user/gh-webhook-canary-deadman.service.d/override.conf <<'EOF'
-[Service]
-Environment=GH_WEBHOOK_HEALTHCHECKS_FAIL_URL=https://hc-ping.com/<uuid-fail>
+mkdir -p ~/.config/fleet-ops
+cat > ~/.config/fleet-ops/gh-webhook-hc.env <<'EOF'
+GH_WEBHOOK_HEALTHCHECKS_URL=https://hc-ping.com/<uuid>
 EOF
 systemctl --user daemon-reload
 ```
 
-The dead-man does NOT page healthchecks.io on every red evaluation —
-it throttles to once per 30 minutes via the alert-repair triage file
-to prevent alert storms when the path is down for hours.
+The canary pings healthchecks.io on every green run; the internal
+dead-man is the `FleetGhWebhookCanaryAbsent` absent() rule in
+`config/fleet_rules.yml`, which pages the alert-repair rail when the
+series is missing or stale.
 
 ## Why these design choices
 
@@ -235,7 +231,6 @@ webhooks that never arrive:
 | `issues/opened` + `issues/labeled` | `lifecycle-label-sweep.service` | `lifecycle-label-sweep.timer` (hourly) | §6b |
 | `pull_request/closed` | `fleet-merged-pr-close.service` | `fleet-merged-pr-close.timer` (hourly) | §19 |
 | `issues/closed` | `fleet-issue-close-duplicates.service` | `fleet-issue-close-duplicates.timer` (daily) | §21 |
-| `pull_request/opened` | `fleet-loose-ends-canary.service` | `fleet-loose-ends-canary.timer` (hourly) | §43 |
 
 `pull_request/closed` is a multi-fan-out: it fires BOTH
 `fleet-worktree-reaper.service` (fleet-ops#3269) AND
@@ -260,9 +255,9 @@ The issue says 15-30 minutes; we picked 20 because:
 |-----------------------------------------|---------------------------------------------------------|
 | Worker unreachable from GH               | GitHub retries + pings CF; alert-repair never fires      |
 | Tunnel down                             | Worker returns 200 with `forward:"failed"` to GH        |
-| Receiver service dead                   | Worker logs forward failure; dead-man pages in 15 min    |
+| Receiver service dead                   | Worker logs forward failure; absent() rule pages in 15 min    |
 | HMAC secret rotated, mismatched         | Receiver returns 401; GH retries with same payload      |
-| Canary script broken                    | Dead-man pages in 15 min                                |
+| Canary script broken                    | absent() rule pages in 15 min                                |
 | Intake reconciler slow                  | `fleet_intake_reconciler_caught_total` rises            |
 | Org webhook deleted                     | Receiver silent; canary still green; no signal yet — file new issue if this state persists |
 
@@ -294,9 +289,10 @@ the canonical intake-repos path (#1659), and the annotation pointing at
 the real cause (#1954) all landed within hours.
 
 **Prevention already shipped (this class is mechanically guarded):**
-- Dead-man (`gh-webhook-canary-deadman`) reads BOTH the canary series and
-  the receiver's own heartbeat (default `/var/lib/prometheus/node-exporter/fleet-gh-webhook-receiver.prom`),
-  so canary-green-but-receiver-absent is paged (#1569).
+- The `FleetGhWebhookCanaryAbsent` absent() rule reads the canary series
+  and pages the alert-repair rail when it is missing or stale; the
+  canary also pings healthchecks.io on each green run for an external
+  dead-man.
 - `gh-webhook-receiver.service` carries `Restart=on-failure`, so a crash
   auto-recovers at the machine level.
 - Offline lock tests pin the label format (#1607), the HMAC/dispatch
