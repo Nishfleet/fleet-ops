@@ -422,6 +422,63 @@ if grep -q "DEPLOY-CHECK-NONCANONICAL-UNITS" "$scratch/err.log"; then
 fi
 ok "foreign (non-systemd/) unit symlink is skipped"
 
+# --- 13. install.sh repair exits non-zero but names the failing step (fleet-ops#4223)
+# When install.sh refuses a live config (non-fatal), it still retargets the
+# non-canonical unit symlinks. fleet-deploy-check must report which install
+# step failed, not just "install.sh repair exited rc=1".
+unit_dir2="$scratch/units2"
+canon_dir2="$scratch/canon2"
+ws_root2="$scratch/ws2"
+worktree_dir2="$scratch/ws2/issue-fleet-ops-4223"
+mkdir -p "$unit_dir2" "$canon_dir2/systemd" "$worktree_dir2/systemd"
+cat >"$canon_dir2/systemd/fleet-completion-canary.service" <<'UNIT'
+[Unit]
+Description=canary
+[Service]
+ExecStart=/bin/true
+UNIT
+cat >"$worktree_dir2/systemd/fleet-completion-canary.service" <<'UNIT'
+[Unit]
+Description=canary
+[Service]
+ExecStart=/bin/true
+UNIT
+ln -sfn "$worktree_dir2/systemd/fleet-completion-canary.service" \
+  "$unit_dir2/fleet-completion-canary.service"
+
+cat >"$canon_dir2/install-refuse.sh" <<INSTALL
+#!/usr/bin/env bash
+ln -sfn "$canon_dir2/systemd/fleet-completion-canary.service" \
+  "$unit_dir2/fleet-completion-canary.service"
+echo "NONFATAL REFUSE: /home/nish/.pi/agent/models.json is newer than repo copy config/pi-models.json and the content differs (will not overwrite live config)"
+exit 1
+INSTALL
+chmod +x "$canon_dir2/install-refuse.sh"
+
+: > "$scratch/err.log"
+rc=$(FLEET_OPS_CHECKOUT="$canon_dir2" \
+     FLEET_OPS_DEPLOY_BIN="$deploy_spy" \
+     FLEET_DEPLOY_CHECK_LOCK="$lock" \
+     FLEET_DEPLOY_CHECK_NO_DEPLOY=0 \
+     FLEET_DEPLOY_CHECK_UNIT_DIR="$unit_dir2" \
+     FLEET_DEPLOY_CHECK_INSTALL_BIN="$canon_dir2/install-refuse.sh" \
+     FLEET_OPS_CANONICAL_CHECKOUT="$canon_dir2" \
+     FLEET_OPS_WORKSPACES_ROOT="$ws_root2" \
+     FLEET_HEARTBEAT_TRIAGE="$triage" \
+     DEPLOY_SPY_LOG="$DEPLOY_SPY_LOG" \
+       "$bin" >/dev/null 2>"$scratch/err.log"; echo $?)
+# The repair step is reported; the checker itself continues and is not fatal.
+grep -q "DEPLOY-CHECK-NONCANONICAL-UNITS" "$scratch/err.log" \
+  || fail "non-canonical unit symlink must loud DEPLOY-CHECK-NONCANONICAL-UNITS"
+grep -q "NONFATAL REFUSE: /home/nish/.pi/agent/models.json" "$scratch/err.log" \
+  || fail "LOUD line must include the install.sh refusal reason, got: $(cat "$scratch/err.log")"
+target=$(readlink -f "$unit_dir2/fleet-completion-canary.service")
+case "$target" in
+  "$canon_dir2"*) ;;
+  *) fail "repair must retarget at canonical; got $target" ;;
+esac
+ok "fleet-deploy-check reports the install.sh step that failed (fleet-ops#4223)"
+
 # --- 8. fleet-ops#598: unpinned defaultBranch=master is the CI failure ------
 # Drill: a bare origin whose HEAD stays on master after a main push makes
 # clone + `git push origin main` fail with `src refspec main does not match

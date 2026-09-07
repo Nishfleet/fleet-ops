@@ -693,11 +693,11 @@ process_entry() {
         if seat_caps_is_origin_main_blob "$repo"; then
             :
         elif why=$(seat_caps_would_downgrade "$dest" "$repo"); then
-            echo "REFUSE: $dest would lower live seat caps ($why) from $repo (fleet-ops#371)"
+            echo "NONFATAL REFUSE: $dest would lower live seat caps ($why) from $repo (fleet-ops#371)"
             rc=1
             return 0
         elif live_newer_than_repo "$dest" "$repo"; then
-            echo "REFUSE: $dest is newer than repo copy $repo and the content differs (will not overwrite live config)"
+            echo "NONFATAL REFUSE: $dest is newer than repo copy $repo and the content differs (will not overwrite live config)"
             file_install_refuse "$dest" "$repo"
             rc=1
             return 0
@@ -705,7 +705,7 @@ process_entry() {
     elif [[ "$npm_pin" = 1 ]]; then
         : # dest is a pin to the installed package; always retarget
     elif live_newer_than_repo "$dest" "$repo"; then
-        echo "REFUSE: $dest is newer than repo copy $repo and the content differs (will not overwrite live config)"
+        echo "NONFATAL REFUSE: $dest is newer than repo copy $repo and the content differs (will not overwrite live config)"
         file_install_refuse "$dest" "$repo"
         rc=1
         return 0

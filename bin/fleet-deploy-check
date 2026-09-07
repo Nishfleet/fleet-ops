@@ -150,10 +150,21 @@ repair_noncanonical_units() {
     fi
     log "retargeting non-canonical unit symlinks via $install_bin"
     local rc=0
-    bash "$install_bin" >/dev/null 2>&1 || rc=$?
+    local out
+    out=$(bash "$install_bin" 2>&1) || rc=$?
     if [[ "$rc" -ne 0 ]]; then
-        loud "DEPLOY-CHECK-NONCANONICAL-UNITS" \
-            "install.sh repair exited rc=$rc (retry next tick)"
+        # Surface the first failure line (REFUSE, NONFATAL REFUSE, install.sh
+        # fatal, or DIFF) so the loud message names the failing repair step
+        # instead of only the exit code.
+        local reason
+        reason=$(printf '%s\n' "$out" | grep -m1 -E '^(NONFATAL |install\.sh: |DIFF:|REFUSE:)' || true)
+        if [[ -n "$reason" ]]; then
+            loud "DEPLOY-CHECK-NONCANONICAL-UNITS" \
+                "install.sh repair reported: $reason (rc=$rc; retry next tick)"
+        else
+            loud "DEPLOY-CHECK-NONCANONICAL-UNITS" \
+                "install.sh repair exited rc=$rc (retry next tick)"
+        fi
     else
         log "non-canonical unit symlinks retargeted to canonical (rc=0)"
     fi

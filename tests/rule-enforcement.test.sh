@@ -1138,6 +1138,12 @@ ok "rule-enforcement: install enabled-but-inactive timer self-heal drill"
 bash "$here/install-prometheus-rules-reload.test.sh" || fail "install prometheus rules-reload drill failed"
 ok "rule-enforcement: install prometheus rules-reload drill"
 
+# fleet-ops#4223: a non-fatal config REFUSE must not abort install.sh; later
+# MANIFEST entries (e.g. a non-canonical unit symlink) must still be repaired.
+# Nested host so the worker token does not edit .github/workflows/**.
+bash "$here/install-refuse-continues.test.sh" || fail "install refuse-continues drill failed"
+ok "rule-enforcement: install refuse-continues drill (fleet-ops#4223)"
+
 # fleet-ops#516: sr-max-speed hunter. CI lists this file, not
 # fleet-max-speed.test.sh (workers cannot edit .github/workflows).
 bash "$here/fleet-max-speed.test.sh" || fail "fleet-max-speed tests failed"
