@@ -5,7 +5,7 @@
 #
 # fleet-ops#3277: `--subagent` asserts the subagent load handshake so a
 # pi reinstall cannot silently drop delegation. Default (no flag) stays
-# cli.js-only: self-heal and seat-lib _transport_is_down must not treat a
+# cli.js-only: self-heal and routing helper _transport_is_down must not treat a
 # missing subagent as a clobbered bin.
 set -euo pipefail
 

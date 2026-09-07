@@ -45,7 +45,7 @@ here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 # built below once jq is confirmed.
 resolve_senior_conf_seat() {
     local SEAT_LIB_PATH caps s
-    SEAT_LIB_PATH="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
+    SEAT_LIB_PATH="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/litellm-seat.sh}"
     if [ -f "$SEAT_LIB_PATH" ]; then
         # shellcheck source=/dev/null
         source "$SEAT_LIB_PATH"
@@ -104,7 +104,7 @@ _conf_seat_has_health_data() {
 }
 resolve_free_glm_conf_seat() {
     local SEAT_LIB_PATH slug p m
-    SEAT_LIB_PATH="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
+    SEAT_LIB_PATH="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/litellm-seat.sh}"
     if [ -f "$SEAT_LIB_PATH" ]; then
         # shellcheck source=/dev/null
         source "$SEAT_LIB_PATH"
@@ -131,7 +131,7 @@ resolve_free_glm_conf_seat() {
     #    than a guaranteed preflight refusal, and it is the only thing that
     #    lets the loop converge while every free lane is benched (2026-09-07:
     #    all free seats quota_bench / corpse / parked). Poison seats are
-    #    skipped when the installed seat-lib knows them.
+    #    skipped when the installed routing helper knows them.
     local pass fp fm _fcap _capable cls
     for pass in 1 2; do
         while IFS=$'\t' read -r fp fm _fcap _capable; do
@@ -165,7 +165,7 @@ resolve_free_glm_conf_seat() {
 # seat exists.
 resolve_devin_conf_seat() {
     local SEAT_LIB_PATH slug p m
-    SEAT_LIB_PATH="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
+    SEAT_LIB_PATH="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/litellm-seat.sh}"
     if [ -f "$SEAT_LIB_PATH" ]; then
         # shellcheck source=/dev/null
         source "$SEAT_LIB_PATH"
@@ -190,7 +190,7 @@ resolve_devin_conf_seat() {
     #    resolve_free_role (fleet-ops#3121). A live capable vote is better
     #    than a guaranteed preflight refusal, and it is the only thing that
     #    lets the loop converge while the devin lane is benched. Poison seats
-    #    are skipped when the installed seat-lib knows them.
+    #    are skipped when the installed routing helper knows them.
     local fp fm
     while IFS=$'\t' read -r fp fm _fcap _capable; do
         [ -n "$fp" ] && [ -n "$fm" ] || continue

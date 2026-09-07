@@ -42,7 +42,7 @@
 #
 # This is a best-effort supply nudge, NOT a fail-loud alarm (that is
 # undersaturation's job). A non-zero exit here is a CONFIG error (missing
-# intake-repos.json / jq / seat-lib); the tier1 wrapper logs it and writes a
+# intake-repos.json / jq / litellm-seat); the tier1 wrapper logs it and writes a
 # LOUD triage line but does NOT let it brick the heartbeat — a broken
 # refill nudge must not stop PR queuing, orphan reclaim, or the wedge alarm.
 #
@@ -52,7 +52,7 @@
 #   FLEET_INTAKE_REPOS_JSON      default .../config/intake-repos.json
 #   FLEET_HEARTBEAT_LOG_DIR      stamp + log state
 #   FLEET_HEARTBEAT_TRIAGE       triage file
-#   PI_PACKET_SEAT_LIB           seat-lib.sh path (for seat_max_concurrent)
+#   PI_PACKET_SEAT_LIB           litellm-seat.sh path (for seat_max_concurrent)
 #   FLEET_LOW_WATER_LANE_CEILING if set, overrides seat_max_concurrent()
 #                                (test seam + production escape hatch)
 #   FLEET_LOW_WATER_MIN_INTERVAL_S  stamp freshness bound (default 7200 = 2h)
@@ -61,7 +61,7 @@
 #   FLEET_WORK_SUPPLY_LIB        work-supply.sh (default installed dest)
 #
 # Exit: 0 = pass complete (dispatched where appropriate, skipped otherwise).
-#       2 = config error (missing intake-repos.json / jq / seat-lib).
+#       2 = config error (missing intake-repos.json / jq / litellm-seat).
 
 set -euo pipefail
 
@@ -73,7 +73,7 @@ GH="${GH:-gh}"
 INTAKE_JSON="${FLEET_INTAKE_REPOS_JSON:-/home/nish/workspaces/products/fleet-ops/config/intake-repos.json}"
 TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
 LOG_DIR="${FLEET_HEARTBEAT_LOG_DIR:-/home/nish/.local/state/fleet-heartbeat}"
-SEAT_LIB_DEFAULT="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
+SEAT_LIB_DEFAULT="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/litellm-seat.sh}"
 MIN_INTERVAL_S="${FLEET_LOW_WATER_MIN_INTERVAL_S:-7200}"
 STAMP_DIR="${FLEET_LOW_WATER_STAMP_DIR:-$LOG_DIR/low-water-mark}"
 WS_LIB="${FLEET_WORK_SUPPLY_LIB:-$HOME/.local/lib/pi-packet/work-supply.sh}"
@@ -123,8 +123,8 @@ enrolled_repos=$(jq -r '.repos[].name | "Nishfleet/" + .' "$INTAKE_JSON")
 
 # --- lane ceiling: the live RAM-governor lane count (seat_max_concurrent) ---
 # The natural low-water mark: fewer ready items than lanes means starvation is
-# already scheduled. FLEET_LOW_WATER_LANE_CEILING overrides seat-lib entirely
-# (test seam + production escape hatch); otherwise source seat-lib once and
+# already scheduled. FLEET_LOW_WATER_LANE_CEILING overrides litellm-seat entirely
+# (test seam + production escape hatch); otherwise source litellm-seat once and
 # call seat_max_concurrent() = min(sum_of_provider_caps, ram_governor_cap).
 _LWM_SEAT_LIB_LOADED=0
 lane_ceiling() {
@@ -134,8 +134,8 @@ lane_ceiling() {
     fi
     if [ "$_LWM_SEAT_LIB_LOADED" -eq 0 ]; then
         if [ ! -f "$SEAT_LIB_DEFAULT" ]; then
-            loud "LOW-WATER-CONFIG" "seat-lib missing: $SEAT_LIB_DEFAULT — set FLEET_LOW_WATER_LANE_CEILING or install seat-lib"
-            log "FATAL: seat-lib missing: $SEAT_LIB_DEFAULT"
+            loud "LOW-WATER-CONFIG" "litellm-seat missing: $SEAT_LIB_DEFAULT — set FLEET_LOW_WATER_LANE_CEILING or install litellm-seat"
+            log "FATAL: litellm-seat missing: $SEAT_LIB_DEFAULT"
             return 1
         fi
         # shellcheck source=/dev/null

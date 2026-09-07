@@ -89,6 +89,10 @@ pick_seat() {
   done
   return 1
 }
+litellm_pick_seat() {
+  local tried="${2:-}"
+  pick_seat "" "" 1 "$tried"
+}
 mark_seat_spawn_fail() {
   local p="$1" m="$2"
   [ -n "${STOP_ESCALATION_TEST_BENCH_FILE:-}" ] || return 0

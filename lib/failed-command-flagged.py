@@ -20,7 +20,7 @@ file 5-7 duplicates per slug across consecutive heartbeat ticks (live
 survives gh outages and is pruned when the slug stops being a finding.
 The ledger dedup is locked under
 tests/fleet-failed-command-ledger-dedup.test.sh; cross-check that the
-test stays in tests/seat-lib.test.sh so it runs on CI.
+test stays in the hosted CI suite so it runs on CI.
 
 grep/rg/diff exit 1 (POSIX no-match) is not a failure. `xargs grep/rg/diff`
 exit 123 is the same no-match class: xargs exits 123 when an invoked

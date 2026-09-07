@@ -38,7 +38,7 @@ ISSUE_FILE="${FLEET_ISSUE_FILE:-$(cd "$(dirname "$(readlink -f "$0")")" && pwd)/
 PI_BIN="${PI_BIN:-$HOME/.local/bin/pi}"
 STATE_DIR="${RESEARCHER_STATE_DIR:-/home/nish/workspaces/agent-state/fleet-researcher}"
 PROMPT="${RESEARCHER_PROMPT:-$HOME/.pi/agent/prompts/researcher.md}"
-SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
+SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/litellm-seat.sh}"
 AUDITOR_BIN="${RESEARCHER_AUDITOR_BIN:-$HOME/.local/bin/fleet-heartbeat-auditor}"
 DRY_RUN="${RESEARCHER_DRY_RUN:-0}"
 DRILL="${RESEARCHER_DRILL:-0}"
@@ -49,7 +49,7 @@ repo_fallback="$(cd "$here/.." && pwd)"
 [ -f "$PROMPT" ] || PROMPT="$repo_fallback/prompts/researcher.md"
 LIB="${RESEARCHER_LIB:-$HOME/.local/lib/pi-packet/researcher-delta.py}"
 [ -f "$LIB" ] || LIB="$repo_fallback/lib/researcher-delta.py"
-[ -f "$SEAT_LIB" ] || SEAT_LIB="$repo_fallback/lib/seat-lib.sh"
+[ -f "$SEAT_LIB" ] || SEAT_LIB="$repo_fallback/lib/litellm-seat.sh"
 [ -x "$AUDITOR_BIN" ] || AUDITOR_BIN="$repo_fallback/bin/fleet-heartbeat-auditor"
 
 log() {
@@ -89,23 +89,11 @@ pick_researcher_seat() {
         # shellcheck source=/dev/null
         source "$SEAT_LIB"
     fi
-    if command -v enumerate_seats >/dev/null 2>&1 && command -v class_of >/dev/null 2>&1; then
-        local p m _free _capable
-        while IFS=$'\t' read -r p m _free _capable; do
-            [ -n "$p" ] || continue
-            [ "$(class_of "$p" 2>/dev/null || echo "")" = "free" ] || continue
-            if command -v seat_usable >/dev/null 2>&1; then
-                seat_usable "$p" "$m" 2>/dev/null || continue
-            fi
-            printf '%s\t%s\n' "$p" "$m"
-            return 0
-        done < <(enumerate_seats)
-    fi
-    if command -v pick_seat >/dev/null 2>&1; then
-        pick_seat "" "" 0 "" || true
+    if declare -F litellm_pick_seat >/dev/null 2>&1; then
+        litellm_pick_seat "worker-cheap"
         return 0
     fi
-    return 1
+    printf 'litellm\tworker-cheap\n'
 }
 
 if [ "$DRILL" = "1" ]; then
@@ -126,13 +114,9 @@ EOF
 else
     [ -x "$PI_BIN" ] || { log "FATAL: pi binary not executable: $PI_BIN"; exit 2; }
     [ -f "$PROMPT" ] || { log "FATAL: prompt missing: $PROMPT"; exit 2; }
-    # fleet-ops#4219 P3a: PI_SEAT_SOURCE switch.
-    if [ "${PI_SEAT_SOURCE:-seat-lib}" = "litellm" ]; then
-        seat=$(printf 'litellm\tworker-cheap\n')
-        log "PI_SEAT_SOURCE=litellm: fleet-researcher -> litellm/worker-cheap"
-    else
-        seat=$(pick_researcher_seat || true)
-    fi
+    # fleet-ops#4263 P3b: always worker-cheap through the proxy.
+    seat=$(printf 'litellm\tworker-cheap\n')
+    log "fleet-researcher -> litellm/worker-cheap"
     if [ -z "${seat:-}" ]; then
         log "FATAL: no cheap/free seat available"
         exit 1
