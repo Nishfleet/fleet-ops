@@ -21,6 +21,30 @@ eval "$(sed -n '/^DIFFICULTY_HEAVY_BODY_BYTES=/,/^}/p' "$tick")"
 [[ "$(issue_difficulty '["agent-ready"]' 'Manager loop for heavy/keystone issues — part 3/9' '- required: one thing')" == "light" ]] || fail "a title merely mentioning keystone must NOT be keystone"
 [[ "$(issue_difficulty '[]' 'x' "$(head -c 7000 /dev/zero | tr '\0' 'a')")" == "heavy" ]] || fail "body over 6000 bytes must be heavy"
 ok "Test 2: classification rules"
+# fleet-ops#4248: an explicit `difficulty:` marker in the issue body must reach
+# the packet header. Nish's lever for the Cursor $400 senior pool is exactly
+# this line; before the fix intake recomputed the header and the marker was
+# silently dropped (observed 2026-09-07: 0509#1919 body line 1
+# "difficulty: senior-review" -> packet first line "difficulty: light" ->
+# ran on devin/swe-1-7 at weight=light).
+[[ "$(issue_difficulty '["agent-ready"]' 'guard the offer timeline' 'difficulty: senior-review
+
+- required: one thing')" == "senior-review" ]] || fail "an explicit difficulty: senior-review marker must win"
+[[ "$(issue_difficulty '["agent-ready"]' 'x' 'senior-review: true
+- required: one thing')" == "senior-review" ]] || fail "the senior-review: true boolean form must win"
+[[ "$(issue_difficulty '["agent-ready"]' 'x' 'keystone: true
+- required: one thing')" == "keystone" ]] || fail "the keystone: true boolean form must win"
+[[ "$(issue_difficulty '["agent-ready"]' 'x' "difficulty: light
+$(for i in 1 2 3 4; do echo "- required: thing $i"; done)")" == "light" ]] || fail "an explicit marker must beat the size heuristic"
+[[ "$(issue_difficulty '["agent-ready","heavy"]' 'x' 'difficulty: light
+short')" == "heavy" ]] || fail "a curated heavy LABEL must not be downgraded by a body marker"
+[[ "$(issue_difficulty '["agent-ready","keystone"]' 'x' 'difficulty: light
+short')" == "keystone" ]] || fail "a curated keystone LABEL must not be downgraded by a body marker"
+[[ "$(issue_difficulty '["agent-ready"]' 'x' 'difficulty: bogus
+- required: one thing')" == "light" ]] || fail "an unknown marker value must fall through to the heuristic"
+[[ "$(issue_difficulty '["agent-ready"]' 'x' 'we set difficulty: senior-review last week
+- required: one thing')" == "light" ]] || fail "a difficulty word mid-sentence must NOT route as a marker"
+ok "Test 2b: explicit body marker is honoured, labels still win, typos fall through"
 scratch=$(mktemp -d); trap 'rm -rf "$scratch"' EXIT
 head -c 30000 /dev/zero | tr '\0' 'a' > "$scratch/worker.md"; { cat "$scratch/worker.md"; echo; echo "TARGET: repo Nishfleet/fleet-ops issue 1 unit pi-issue-fleet-ops-1"; } > "$scratch/p.in"
 w=$(bash -c 'source "$0"; PI_PACKET_BASE_PROMPT="$1" task_weight "$2"' "$lib" "$scratch/worker.md" "$scratch/p.in")

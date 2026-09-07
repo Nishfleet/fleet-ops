@@ -488,13 +488,44 @@ d1_gate_integrity_needed() {
 DIFFICULTY_HEAVY_BODY_BYTES="${PI_INTAKE_DIFFICULTY_HEAVY_BODY_BYTES:-6000}"
 DIFFICULTY_HEAVY_REQUIRED="${PI_INTAKE_DIFFICULTY_HEAVY_REQUIRED:-2}"
 issue_difficulty() {
-    local labels_json="$1" title="$2" body="$3" lowered bytes req
+    local labels_json="$1" title="$2" body="$3" lowered bytes req marker
     # keystone only by LABEL or an explicit `keystone:` title prefix — a title that
     # merely mentions the word (e.g. "Manager loop for heavy/keystone issues — part 3/9")
     # must not route a one-line child to the senior seats (2026-09-05 misfire).
     lowered="${title,,}"
     if [[ "$labels_json" == *'"keystone"'* || "$lowered" == keystone:* ]]; then echo "keystone"; return; fi
     if [[ "$labels_json" == *'"heavy"'* ]]; then echo "heavy"; return; fi
+    # fleet-ops#4248: an explicit author marker in the issue body decides the
+    # class when no keystone/heavy LABEL already did. Nish's standing lever for
+    # spending the Cursor senior pool is "put `difficulty: senior-review` at the
+    # top of the issue body so pick_seat routes it to the senior ladder", but
+    # intake recomputed the header from title/labels/body-size and wrote its own
+    # value as the packet's FIRST line; packet_difficulty() (lib/seat-lib.sh)
+    # takes the first match, so the marker was silently dropped and
+    # senior-review work ran as weight=light on a worker seat. Deliberately
+    # placed AFTER the label checks: the marker can only decide an unlabelled
+    # packet, never downgrade a curated keystone/heavy label. Vocabulary is kept
+    # identical to packet_difficulty(): keystone|senior-review|heavy|light, plus
+    # the `keystone: true` / `senior-review: true` boolean forms it already
+    # documents. An unknown value falls through to the size heuristic, so a typo
+    # degrades to the previous behaviour rather than emitting an unroutable
+    # packet.
+    marker=$(printf '%s\n' "${body,,}" \
+        | grep -oE '^[[:space:]]*difficulty:[[:space:]]*(keystone|senior-review|heavy|light)[[:space:]]*$' \
+        | head -1 || true)
+    if [[ -n "$marker" ]]; then
+        marker="${marker#*:}"
+        echo "${marker//[[:space:]]/}"
+        return
+    fi
+    if printf '%s\n' "${body,,}" \
+        | grep -qE '^[[:space:]]*keystone:[[:space:]]*(true|yes|1)[[:space:]]*$'; then
+        echo "keystone"; return
+    fi
+    if printf '%s\n' "${body,,}" \
+        | grep -qE '^[[:space:]]*senior-review:[[:space:]]*(true|yes|1)[[:space:]]*$'; then
+        echo "senior-review"; return
+    fi
     bytes=$(printf '%s' "$body" | wc -c); bytes=${bytes//[^0-9]/}
     req=$(printf '%s\n' "$body" | grep -ciE '^[[:space:]]*-[[:space:]]*required[^:]*:' || true)
     if (( ${bytes:-0} > DIFFICULTY_HEAVY_BODY_BYTES )) || (( ${req:-0} > DIFFICULTY_HEAVY_REQUIRED )); then
