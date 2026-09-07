@@ -639,6 +639,11 @@ systemd/camofox-browser.service.d/tmpdir.conf /home/nish/.config/systemd/user/ca
 # absorb so deploy symlinks it and the drop-in hunt stays clean. The gate bin
 # it references stays hand-placed as part of the allowlisted infra tool.
 systemd/camofox-browser.service.d/xvfb-auth-gate.conf /home/nish/.config/systemd/user/camofox-browser.service.d/xvfb-auth-gate.conf
+# fleet-ops#4063: codex-remote-control is a hand-placed infra tool (allowlist
+# class a). This OOM drop-in was a real file under the live drop-in dir
+# (blind-audit fleet-ops#2924 / #1548). Absorb so deploy symlinks it;
+# pure ManagedOOM* / memory cap override, not new machinery.
+systemd/codex-remote-control.service.d/20-oom-avoid.conf /home/nish/.config/systemd/user/codex-remote-control.service.d/20-oom-avoid.conf
 # fleet-ops#3111: self-heal drop-in. Overrides ExecStart with the
 # pi-transport-self-heal wrapper (npm rebuild; no hand-written symlink).
 systemd/pi-transport-check.service.d/20-self-heal.conf /home/nish/.config/systemd/user/pi-transport-check.service.d/20-self-heal.conf
