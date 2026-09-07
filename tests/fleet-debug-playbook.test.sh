@@ -236,6 +236,7 @@ FLEET_DEBUG_PLAYBOOK_WINDOW_HOURS="24" \
 FLEET_DEBUG_PLAYBOOK_GRACE_MINUTES="0" \
 FLEET_DEBUG_PLAYBOOK_NOW="2026-08-27T00:10:00Z" \
 FLEET_DEBUG_PLAYBOOK_FILE_ISSUES=1 \
+FLEET_DEBUG_PLAYBOOK_AGGREGATE=0 \
 FLEET_DEBUG_PLAYBOOK_ISSUE_REPO="Nishfleet/fleet-ops" \
 GH="$scratch/gh" \
 GH_MOCK_STORE="$gh_store" \
@@ -255,6 +256,7 @@ FLEET_DEBUG_PLAYBOOK_WINDOW_HOURS="24" \
 FLEET_DEBUG_PLAYBOOK_GRACE_MINUTES="0" \
 FLEET_DEBUG_PLAYBOOK_NOW="2026-08-27T00:10:00Z" \
 FLEET_DEBUG_PLAYBOOK_FILE_ISSUES=1 \
+FLEET_DEBUG_PLAYBOOK_AGGREGATE=0 \
 FLEET_DEBUG_PLAYBOOK_ISSUE_REPO="Nishfleet/fleet-ops" \
 GH="$scratch/gh" \
 GH_MOCK_STORE="$gh_store" \
@@ -291,6 +293,7 @@ FLEET_DEBUG_PLAYBOOK_GRACE_MINUTES="0" \
 FLEET_DEBUG_PLAYBOOK_NOW="2026-08-27T00:10:00Z" \
 FLEET_DEBUG_PLAYBOOK_FILE_ISSUES=1 \
 FLEET_DEBUG_PLAYBOOK_CUMULATIVE_CAP=3 \
+FLEET_DEBUG_PLAYBOOK_AGGREGATE=0 \
 FLEET_DEBUG_PLAYBOOK_ISSUE_REPO="Nishfleet/fleet-ops" \
 GH="$scratch/gh" \
 GH_MOCK_STORE="$gh_store" \
@@ -325,6 +328,7 @@ FLEET_DEBUG_PLAYBOOK_NOW="2026-08-27T00:10:00Z" \
 FLEET_DEBUG_PLAYBOOK_FILE_ISSUES=1 \
 FLEET_DEBUG_PLAYBOOK_CAP=2 \
 FLEET_DEBUG_PLAYBOOK_CUMULATIVE_CAP=3 \
+FLEET_DEBUG_PLAYBOOK_AGGREGATE=0 \
 FLEET_DEBUG_PLAYBOOK_ISSUE_REPO="Nishfleet/fleet-ops" \
 GH="$scratch/gh" \
 GH_MOCK_STORE="$gh_store" \
@@ -347,6 +351,7 @@ FLEET_DEBUG_PLAYBOOK_GRACE_MINUTES="0" \
 FLEET_DEBUG_PLAYBOOK_NOW="2026-08-27T00:10:00Z" \
 FLEET_DEBUG_PLAYBOOK_FILE_ISSUES=1 \
 FLEET_DEBUG_PLAYBOOK_CUMULATIVE_CAP=3 \
+FLEET_DEBUG_PLAYBOOK_AGGREGATE=0 \
 FLEET_DEBUG_PLAYBOOK_ISSUE_REPO="Nishfleet/fleet-ops" \
 GH="$scratch/gh" \
 GH_MOCK_STORE="$gh_store" \
@@ -387,6 +392,7 @@ FLEET_DEBUG_PLAYBOOK_GRACE_MINUTES="0" \
 FLEET_DEBUG_PLAYBOOK_NOW="2026-08-27T00:10:00Z" \
 FLEET_DEBUG_PLAYBOOK_FILE_ISSUES=1 \
 FLEET_DEBUG_PLAYBOOK_OK_TO_CLOSE=1 \
+FLEET_DEBUG_PLAYBOOK_AGGREGATE=0 \
 FLEET_DEBUG_PLAYBOOK_ISSUE_REPO="Nishfleet/fleet-ops" \
 GH="$scratch/gh" \
 GH_MOCK_STORE="$gh_store" \
@@ -400,6 +406,112 @@ set -e
 grep -q "CLOSED issue #1" "$scratch/err-close.log" || fail "close log missing for #1"
 ok "observe-to-close closes stale debug-playbook issues only"
 rm -f "$sessions/live-session.jsonl"
+
+# --- 8e. aggregate mode (fleet-ops#4384) -------------------------------------
+# With FLEET_DEBUG_PLAYBOOK_AGGREGATE=1 (default) and multiple in-window
+# findings, exactly ONE aggregate issue per day is created (title carries the
+# date + count, body lists paths + slugs, deduped by signal: debug-playbook/
+# <date>). A second scan run does not create another. No per-slug ticket is
+# ever auto-created again (regression pin).
+rm -rf "$gh_store"/*
+mkdir -p "$gh_store"
+for i in agg-one agg-two agg-three; do
+  write_session "$i" "$FAIL_TWO
+{\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Fixed it.\"}]}}"
+done
+set +e
+FLEET_DEBUG_PLAYBOOK_SESSIONS="$scratch/sessions" \
+FLEET_DEBUG_PLAYBOOK_LIB="$lib" \
+FLEET_DEBUG_PLAYBOOK_WINDOW_HOURS="24" \
+FLEET_DEBUG_PLAYBOOK_GRACE_MINUTES="0" \
+FLEET_DEBUG_PLAYBOOK_NOW="2026-08-27T00:10:00Z" \
+FLEET_DEBUG_PLAYBOOK_FILE_ISSUES=1 \
+FLEET_DEBUG_PLAYBOOK_ISSUE_REPO="Nishfleet/fleet-ops" \
+GH="$scratch/gh" \
+GH_MOCK_STORE="$gh_store" \
+FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
+  "$bin" >/dev/null 2>"$scratch/err-agg.log"
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "aggregate run should exit 1 (got $rc) $(cat "$scratch/err-agg.log")"
+grep -q "FILED aggregate 2026-08-27" "$scratch/err-agg.log" \
+  || fail "aggregate run did not file the daily aggregate $(cat "$scratch/err-agg.log")"
+n_issues=$(find "$gh_store" -maxdepth 1 -name 'issue-*.body' | wc -l)
+[[ "$n_issues" -eq 1 ]] || fail "aggregate mode must file exactly ONE issue for 3 findings (got $n_issues)"
+grep -rq "signal: debug-playbook/2026-08-27" "$gh_store" \
+  || fail "aggregate issue body missing the date signal key"
+# Regression pin: no per-slug ticket is auto-created in aggregate mode.
+if grep -rqE "signal: debug-playbook/(agg-one|agg-two|agg-three)" "$gh_store"; then
+  fail "aggregate mode must NOT auto-create per-slug tickets (fleet-ops#4384)"
+fi
+ok "aggregate mode files exactly one daily issue, no per-slug tickets"
+
+# Second scan run: the aggregate is deduped, no new issue is created.
+set +e
+FLEET_DEBUG_PLAYBOOK_SESSIONS="$scratch/sessions" \
+FLEET_DEBUG_PLAYBOOK_LIB="$lib" \
+FLEET_DEBUG_PLAYBOOK_WINDOW_HOURS="24" \
+FLEET_DEBUG_PLAYBOOK_GRACE_MINUTES="0" \
+FLEET_DEBUG_PLAYBOOK_NOW="2026-08-27T00:10:00Z" \
+FLEET_DEBUG_PLAYBOOK_FILE_ISSUES=1 \
+FLEET_DEBUG_PLAYBOOK_ISSUE_REPO="Nishfleet/fleet-ops" \
+GH="$scratch/gh" \
+GH_MOCK_STORE="$gh_store" \
+FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
+  "$bin" >/dev/null 2>"$scratch/err-agg2.log"
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "second aggregate run should exit 1 (got $rc)"
+grep -q "already open (deduped)" "$scratch/err-agg2.log" \
+  || fail "second aggregate run did not dedupe $(cat "$scratch/err-agg2.log")"
+n_issues=$(find "$gh_store" -maxdepth 1 -name 'issue-*.body' | wc -l)
+[[ "$n_issues" -eq 1 ]] || fail "second aggregate run must not create another issue (got $n_issues)"
+ok "aggregate dedupes on a second scan run"
+for i in agg-one agg-two agg-three; do rm -f "$sessions/$i.jsonl"; done
+
+# --- 8e-prime. aggregate observe-to-close -----------------------------------
+# An aggregate issue for a date with no remaining finding closes. Pre-create
+# an aggregate issue for a PAST date (2026-08-26) whose sessions are gone, and
+# one for the CURRENT date (2026-08-27) that still has a finding. The past
+# aggregate closes; the current one stays open.
+rm -rf "$gh_store"/*
+mkdir -p "$gh_store"
+cat >"$gh_store/issue-1.body" <<'BODY'
+title
+fix(debug-playbook): 2026-08-26 — 2 sessions missing playbook notes
+
+signal: debug-playbook/2026-08-26
+BODY
+cat >"$gh_store/issue-2.body" <<'BODY'
+title
+fix(debug-playbook): 2026-08-27 — 1 session missing playbook notes
+
+signal: debug-playbook/2026-08-27
+BODY
+write_session "agg-live" "$FAIL_TWO
+{\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Fixed it.\"}]}}"
+set +e
+FLEET_DEBUG_PLAYBOOK_SESSIONS="$scratch/sessions" \
+FLEET_DEBUG_PLAYBOOK_LIB="$lib" \
+FLEET_DEBUG_PLAYBOOK_WINDOW_HOURS="24" \
+FLEET_DEBUG_PLAYBOOK_GRACE_MINUTES="0" \
+FLEET_DEBUG_PLAYBOOK_NOW="2026-08-27T00:10:00Z" \
+FLEET_DEBUG_PLAYBOOK_FILE_ISSUES=1 \
+FLEET_DEBUG_PLAYBOOK_OK_TO_CLOSE=1 \
+FLEET_DEBUG_PLAYBOOK_ISSUE_REPO="Nishfleet/fleet-ops" \
+GH="$scratch/gh" \
+GH_MOCK_STORE="$gh_store" \
+FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
+  "$bin" >/dev/null 2>"$scratch/err-aggclose.log"
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "aggregate observe-to-close run should exit 1 for live finding (got $rc)"
+[[ -f "$gh_store/closed-1.body" ]] || fail "past-date aggregate #1 should be closed"
+[[ -f "$gh_store/issue-2.body" ]] || fail "current-date aggregate #2 should stay open"
+grep -q "CLOSED aggregate issue #1" "$scratch/err-aggclose.log" \
+  || fail "aggregate close log missing for #1 $(cat "$scratch/err-aggclose.log")"
+ok "aggregate observe-to-close closes a past-date aggregate, keeps the live one"
+rm -f "$sessions/agg-live.jsonl"
 
 # --- 8d. gate subcommand -----------------------------------------------------
 good_session='{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"ok","name":"bash","arguments":{"command":"true"}}]}}
@@ -438,6 +550,10 @@ grep -q 'fleet-debug-playbook' "$tier1" \
   || fail "fleet-heartbeat-tier1 must invoke fleet-debug-playbook"
 grep -q 'debug_playbook_rc' "$tier1" \
   || fail "fleet-heartbeat-tier1 must propagate debug_playbook_rc"
+grep -q 'FLEET_DEBUG_PLAYBOOK_OK_TO_CLOSE=1' "$tier1" \
+  || fail "fleet-heartbeat-tier1 must set FLEET_DEBUG_PLAYBOOK_OK_TO_CLOSE=1 (fleet-ops#4384 — production is the only caller trusted to close)"
+grep -q 'FLEET_DEBUG_PLAYBOOK_AGGREGATE' "$bin" \
+  || fail "bin/fleet-debug-playbook must gate aggregate filing on FLEET_DEBUG_PLAYBOOK_AGGREGATE (fleet-ops#4384)"
 grep -q 'bin/fleet-debug-playbook' "$repo_root/MANIFEST" \
   || fail "MANIFEST must install bin/fleet-debug-playbook"
 grep -q 'lib/debug-playbook.py' "$repo_root/MANIFEST" \
