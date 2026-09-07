@@ -88,7 +88,7 @@ d["computed_at"] = "2026-08-26T00:00:00Z"
 json.dump(d, open(p, "w"), indent=2)
 PY
 set +e
-env AGENT_STATE="$scratch" \
+env GITHUB_ACTIONS=true AGENT_STATE="$scratch" \
   FLEET_QUALITY_SLO_FILE=0 \
   FLEET_QUALITY_SLO_EVENTS="$fixtures/clean.json" \
   FLEET_QUALITY_SLO_LIB="$lib" \
@@ -109,7 +109,7 @@ ok "test 2: stale pre-run snapshot -> loud + recomputed + gauge written"
 
 # --- 3. generator with a FRESH pre-existing snapshot (steady state) --------
 set +e
-env AGENT_STATE="$scratch" \
+env GITHUB_ACTIONS=true AGENT_STATE="$scratch" \
   FLEET_QUALITY_SLO_FILE=0 \
   FLEET_QUALITY_SLO_EVENTS="$fixtures/clean.json" \
   FLEET_QUALITY_SLO_LIB="$lib" \

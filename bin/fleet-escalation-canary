@@ -992,10 +992,10 @@ else
     # The standard thin-caller workflows every enrolled repo must carry
     # (mirrors THIN_CALLERS in .github/scripts/repo-standards.lib.mjs).
     # Tests override via FLEET_STANDARDS_DRIFT_MECHANISMS.
-    _sd_mechanisms=(${FLEET_STANDARDS_DRIFT_MECHANISMS:-secret-scan.yml semgrep.yml review-gate.yml auto-enqueue.yml})
+    read -r -a _sd_mechanisms <<<"${FLEET_STANDARDS_DRIFT_MECHANISMS:-secret-scan.yml semgrep.yml review-gate.yml auto-enqueue.yml}"
     # Local-richer repos carry richer local gates and are skipped for the
     # thin-caller check (mirrors LOCAL_RICHER in repo-standards.lib.mjs).
-    _sd_local_richer=(${FLEET_STANDARDS_DRIFT_LOCAL_RICHER:-Nishfleet/0509})
+    read -r -a _sd_local_richer <<<"${FLEET_STANDARDS_DRIFT_LOCAL_RICHER:-Nishfleet/0509}"
 
     if [[ ! -f "$INTAKE_REPOS_JSON" ]]; then
         loud "ESCALATION-CANARY-VIOLATION" "standards drift: intake-repos.json missing at $INTAKE_REPOS_JSON — cannot enumerate enrolled repos"
