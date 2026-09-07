@@ -46,8 +46,8 @@ Attribution rule (issue accept §1):
 Sources:
   - Prometheus query_range for probe/drill gauges (0509-surface-probe,
     fleet-resilience-drill)
-  - journalctl --user for oneshot unit Result= (fleet-completion-canary,
-    siterep-live-canary)
+  - journalctl --user for oneshot unit Result= (siterep-live-canary,
+    fleet-resilience-drill)
   - `gh issue list` for bug/regression-labeled issues in each organ's
     product repos
 
@@ -184,11 +184,6 @@ ORGANS: tuple[Organ, ...] = (
         failure_labels={"probe": "0509-surface"},
         run_metric="fleet_surface_probe_last_run_seconds",
         run_labels={"probe": "0509-surface"},
-    ),
-    Organ(
-        name="fleet-completion-canary",
-        product_repos=("Nishfleet/fleet-ops",),
-        unit="fleet-completion-canary.service",
     ),
     Organ(
         name="siterep-live-canary",

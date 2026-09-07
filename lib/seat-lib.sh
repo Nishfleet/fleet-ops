@@ -1654,10 +1654,10 @@ _systemd_quantity_gb() {
 # Per-repo RAM charge in GB for a worker of <repo> at <difficulty>.
 # heavy|keystone -> 1.0 GB (fleet-ops#3495). Else the repo's MemoryHigh
 # from worker_memory.<repo> (0509/fleet-ops no longer set MemoryHigh after
-# fleet-ops#3930 dropped the throttle band, so they fall back to 2.0), converted
-# to GB. Repos without a row fall back to ram_gb_per_worker (2.0). This is
-# what admission charges each active worker, so a browser worker consumes its
-# real share of MemAvailable instead of the flat 2.0 GB (fleet-ops#3679).
+# fleet-ops#3930 dropped the throttle band, so they fall back to 1.0), converted
+# to GB. Repos without a row fall back to ram_gb_per_worker (1.0, fleet-ops#4164).
+# This is what admission charges each active worker, so a browser worker
+# consumes its real share of MemAvailable instead of the flat 1.0 GB.
 ram_charge_gb_for() {
     local repo="$1" difficulty="$2" high gb
     if [[ "$difficulty" == "heavy" || "$difficulty" == "keystone" ]]; then
@@ -1895,7 +1895,7 @@ find_senior_seat() {
 # senior ladder is walled. This is the reviewer-round fallback gate: when
 # no senior seat is usable, the worker opens the product PR WITHOUT the
 # auto-merge arm and marks the body `review: skipped, no capable seat` so
-# the loose-ends canary surfaces it. Unlike find_senior_seat, this does
+# the loose-ends surface it. Unlike find_senior_seat, this does
 # NOT fall through to a non-senior capable seat — the reviewer must run on
 # a senior seat or not at all (never armed unreviewed, never skipped
 # silently). Re-entrant safe: a plain read of the already-loaded

@@ -3,7 +3,7 @@
 #
 # fleet-ops#1455: the intake tick MUST append a claim record to the claims
 # index (ready-work-claims.log) on each successful claim+spawn. Without this,
-# opus-heartbeat-gather reads an empty log, reports claims_last_2h=0 even
+# the fleet judge reads an empty log, reports claims_last_2h=0 even
 # while claims are happening (visible in the journal as `claimed+spawned`),
 # and watchers auto-file false "Intake starvation" issues (#1455, #1377,
 # #1448). The claims index is also read by fleet-restore-drill (B.2 — a
@@ -18,7 +18,7 @@
 #   2. The tick appends to CLAIMS_LOG after the claimed+spawned line.
 #   3. The append format is a timestamped claim record (ISO-8601 Z + space +
 #      "claimed" keyword) — matches both consumers:
-#        - opus-heartbeat-gather: ISO_START regex + "claimed" in line
+#        - fleet judge (fable-check.md): ISO_START regex + "claimed" in line
 #        - fleet-restore-drill B.2: ^YYYY-MM-DDTHH:MM:SSZ <rest>
 #   4. The append comes AFTER all post-condition guards (branch, packet,
 #      unit) so a failed spawn never writes a false claim record.
@@ -45,7 +45,7 @@ grep -qF '>> "$CLAIMS_LOG"' "$tick" \
 ok "Test 2: tick appends to CLAIMS_LOG"
 
 # === Test 3: append format is a timestamped claim record ===
-# Must match opus-heartbeat-gather's ISO_START regex and "claimed" predicate,
+# Must match the fleet judge's ISO_START regex and "claimed" predicate,
 # AND fleet-restore-drill B.2's ^YYYY-MM-DDTHH:MM:SSZ<space> regex.
 # Check the printf template contains the "claimed" keyword and the ISO-Z date
 # format string, in the append-to-CLAIMS_LOG line.
@@ -56,7 +56,7 @@ append_fmt=$(grep '>> "$CLAIMS_LOG"' "$tick" | head -1)
     || fail "claim record format missing ISO-8601 Z timestamp format string"
 [[ "$append_fmt" == *'line=%s'* ]] \
     || fail "claim record format missing 'line=%s' issue-number field"
-ok "Test 3: claim record format matches opus-heartbeat-gather + fleet-restore-drill consumers"
+ok "Test 3: claim record format matches fleet judge + fleet-restore-drill consumers"
 
 # === Test 4: append comes AFTER all post-condition guards ===
 claimed_line=$(grep -n 'echo "issue \$N (\$title): claimed+spawned"' "$tick" | tail -1 | cut -d: -f1)

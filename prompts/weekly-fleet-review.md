@@ -123,8 +123,8 @@ eight lenses:
     remediation.
   * **O** (Over budget, instrumented=0) — the SLO's source metric is
     NOT wired (instrumented=0). This is a debt verdict, not a pass:
-    file the follow-up to instrument it. The three currently
-    uninstrumented SLOs (chain_repair_latency, 0509_user_journey,
+    file the follow-up to instrument it. The two currently
+    uninstrumented SLOs (0509_user_journey,
     digest_delivery) have follow-up issues filed — track their status.
   * **T** (Tighten candidate) — S verdict AND the SLO has met its
     target for `min_weeks_unspent` consecutive weeks → feed to the
@@ -158,8 +158,8 @@ eight lenses:
 
 The deletion-review block is part of the machinery lens, not a new lens:
 its findings use `"lens": "machinery"` in the Findings JSON. Optimization:
-the 09-08 scheduled-expiry cohort (opus-heartbeat, opus-heartbeat-thorough,
-evening-highlights-digest) is the standing first look each cycle.
+the scheduled-expiry cohort (evening-highlights-digest) is the standing
+first look each cycle.
 
 Each lens file MUST end with a `## Findings` heading and a JSON block:
 

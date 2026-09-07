@@ -246,7 +246,7 @@ two queued issues serve the same constraint, merge into one.
 | #523 (token-efficiency) | — | keep | standalone, prompt-layout lint not yet built |
 | #526 (interventions-eliminated) | BC5 | merge-into-#366 | intervention elimination is the same class as mechanical-fix |
 | #527 (gap-rules-audit) | — | keep | the rulebook red-team cadence is a distinct mechanism |
-| #528 (nothing-half-done) | BC7 | merge-into-#378 | loose-ends sweep is the same detector class as switched-on-proven |
+| #528 (nothing-half-done) | BC7 | merge-into-#378 | loose-ends enforcement moved to GitHub actions/stale + hourly judge packet + worktree reaper (fleet-ops#4146) |
 | #531 (prepaid-max-util) | BC2 | close | seat-caps.json + the saturation floor already enforce this; the queued mechanism is obsolete |
 | #532 (skills-native) | — | close | cross-symlink + rsync already enforce this; the mechanism exists |
 | #538 (never-vibes) | BC8 | keep | the "measure before deciding" gate is not yet built |

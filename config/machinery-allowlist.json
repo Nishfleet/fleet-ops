@@ -227,22 +227,10 @@
       "source": "repo"
     },
     {
-      "unit": "opus-heartbeat",
-      "class": "a",
-      "source": "hand-placed",
-      "endorsement": "ledger: Nish-ordered watch during absence"
-    },
-    {
-      "unit": "opus-heartbeat-thorough",
-      "class": "a",
-      "source": "hand-placed",
-      "endorsement": "timer desc: Nish until 2026-09-08 return"
-    },
-    {
       "unit": "fable-fleet-check",
       "class": "a",
       "source": "hand-placed",
-      "endorsement": "unit desc: temporary — retire with fleet-landing-watch (vault agent-drop 2026-09-04T11-31-05Z); timer-manifest.json carries the cadence entry (fleet-ops#3338)"
+      "endorsement": "unit desc: temporary \u2014 retire with fleet-landing-watch (vault agent-drop 2026-09-04T11-31-05Z); timer-manifest.json carries the cadence entry (fleet-ops#3338)"
     },
     {
       "unit": "nish-boundary-notify",
@@ -279,12 +267,6 @@
       "class": "a",
       "source": "hand-placed",
       "endorsement": "issue: known-mandatory"
-    },
-    {
-      "unit": "fleet-completion-canary",
-      "class": "a",
-      "source": "hand-placed",
-      "endorsement": "registered organ; migration-gap follow-up filed"
     },
     {
       "unit": "fleet-metrics-export",
@@ -370,7 +352,7 @@
       "banned_class": "test debris",
       "follow_up": "filed",
       "adjudicated": "MECHANICAL-INSTEAD",
-      "verdict": "deleted; not fleet machinery — a stdio-ordering test fixture left installed as a user unit (ExecStart is `cat > /tmp/auditor-stdio-test.out`). No repo trace (no MANIFEST line, no timer-manifest.json entry, no systemd/ file, no organ). No live safety gate depends on it. Test fixtures do not belong in the user unit dir; the machinery-authorization-gate (fleet-ops#1548) is the mechanical prevention, this deletion closes the audit trail.",
+      "verdict": "deleted; not fleet machinery \u2014 a stdio-ordering test fixture left installed as a user unit (ExecStart is `cat > /tmp/auditor-stdio-test.out`). No repo trace (no MANIFEST line, no timer-manifest.json entry, no systemd/ file, no organ). No live safety gate depends on it. Test fixtures do not belong in the user unit dir; the machinery-authorization-gate (fleet-ops#1548) is the mechanical prevention, this deletion closes the audit trail.",
       "resolved_by": "#1492"
     },
     {
@@ -394,7 +376,7 @@
       "banned_class": "dispatcher",
       "follow_up": "filed",
       "adjudicated": "MECHANICAL-INSTEAD",
-      "verdict": "deleted; quality research is owned by the sanctioned quality-research-weekly (class (a), repo-sourced) per docs/organ-catalog.md. The hand-placed quality-baseline-research.service/.timer + ~/.local/bin/quality-baseline-refresh was a hand-rolled dispatcher (banned class 'Hand-rolled dispatcher -> Pi stock dispatch') with no repo base, built 2026-08-25 (the day before the 2026-08-26 ban). Both runs (2026-08-25, 2026-08-28) produced SKIP-WITH-NUDGE — zero research ran in 5 days because no gate it depends on is live. visual-quality-waves.md stays (it is the canonical never-say-next SENIOR-AUDITOR escalation-layer program doc, referenced by stop-escalation-dispatch / escalation-daily-sweep / memory-index-autocompact); only the dispatcher was deleted. Same shape as the ready-work dispatcher adjudication (#1493).",
+      "verdict": "deleted; quality research is owned by the sanctioned quality-research-weekly (class (a), repo-sourced) per docs/organ-catalog.md. The hand-placed quality-baseline-research.service/.timer + ~/.local/bin/quality-baseline-refresh was a hand-rolled dispatcher (banned class 'Hand-rolled dispatcher -> Pi stock dispatch') with no repo base, built 2026-08-25 (the day before the 2026-08-26 ban). Both runs (2026-08-25, 2026-08-28) produced SKIP-WITH-NUDGE \u2014 zero research ran in 5 days because no gate it depends on is live. visual-quality-waves.md stays (it is the canonical never-say-next SENIOR-AUDITOR escalation-layer program doc, referenced by stop-escalation-dispatch / escalation-daily-sweep / memory-index-autocompact); only the dispatcher was deleted. Same shape as the ready-work dispatcher adjudication (#1493).",
       "resolved_by": "#1497"
     },
     {

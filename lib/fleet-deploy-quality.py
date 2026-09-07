@@ -29,7 +29,7 @@ measures the deployment pipeline from the sources that actually record it:
       already-open alert do not count. Critical names are curated to
       alerts whose Prometheus for: duration is UNDER the 10-min TTD
       budget (heartbeat/export staleness, fast burns) — FleetMainRed
-      (for:30m), FleetChainStalled (for:15m), and 3h absence rules are
+      (for:30m) and 3h absence rules are
       excluded because they cannot meet the budget by construction.
       Host-health and synthetic alerts stay excluded. Published as p95
       over episode samples (NaN when fewer than TTD_MIN_SAMPLES).
@@ -133,8 +133,8 @@ REVERT_TITLE_Q = '"auto-restore green main" in:title'
 #   FleetHeartbeatStale/MetricsExportStale/FastBurns for=120
 #   FleetMetricsExportMissing for=300
 # Excluded on purpose (cannot meet budget by construction):
-#   FleetMainRed for=1800, FleetChainStalled for=900,
-#   FleetCompletionCanaryAbsent/FleetUndersatGuardAbsent for=10800,
+#   FleetMainRed for=1800,
+#   FleetUndersatGuardAbsent for=10800,
 #   FleetSloSeatAvailSlowBurn for=1800 AND severity=warning (not critical).
 # Also excluded: host-health, synthetic, absence/self-maintenance alerts —
 # a coincidental host fault must not mark a deployment as bad.
@@ -465,7 +465,7 @@ def _episode_starts(text, crit):
 
     An episode starts on the first DISPATCH of an alertname while that
     name is not open; RESOLVED closes it. Redispatches of an already-open
-    alert (Alertmanager repeat / completion-canary hop) do not start a
+    alert (Alertmanager repeat / alert-repair hop) do not start a
     new episode and must not blame later merges.
     """
     open_eps = set()

@@ -437,11 +437,8 @@ bin/fleet-stale-auto-revert-sweep /home/nish/.local/bin/fleet-stale-auto-revert-
 bin/fleet-escalation-canary /home/nish/.local/bin/fleet-escalation-canary
 # fleet-ops#468: alert-repair COMPLETION canary (Prometheus alert chains).
 # hop clocks + stall ladder + detector-red terminal. 15-min systemd timer.
-bin/fleet-completion-canary.py /home/nish/.local/libexec/fleet-completion-canary
 # fleet-ops#468: alert-repair COMPLETION service. oneshot, fail-loud, no restart.
-systemd/fleet-completion-canary.service /home/nish/.config/systemd/user/fleet-completion-canary.service
 # fleet-ops#468: alert-repair COMPLETION timer. 15-min OnCalendar.
-systemd/fleet-completion-canary.timer /home/nish/.config/systemd/user/fleet-completion-canary.timer
 # fleet-ops#387: entitled-vs-wired canary. Run by heartbeat-tier1 block 15.
 # Diffs entitled-seats.json against seat-caps.json every tick; missing row,
 # cap=0 without a dated reason, or a prepaid seat labelled free goes LOUD
@@ -568,8 +565,6 @@ systemd/fleet-merged-pr-close.service /home/nish/.config/systemd/user/fleet-merg
 systemd/fleet-merged-pr-close.timer /home/nish/.config/systemd/user/fleet-merged-pr-close.timer
 systemd/fleet-issue-close-duplicates.service /home/nish/.config/systemd/user/fleet-issue-close-duplicates.service
 systemd/fleet-issue-close-duplicates.timer /home/nish/.config/systemd/user/fleet-issue-close-duplicates.timer
-systemd/fleet-loose-ends-canary.service /home/nish/.config/systemd/user/fleet-loose-ends-canary.service
-systemd/fleet-loose-ends-canary.timer /home/nish/.config/systemd/user/fleet-loose-ends-canary.timer
 # fleet-ops#455 + #1463: eleven-plane resilience drill + keystone dead-man
 # pings + tailscaled Restart=always. The five #1463 failure-class planes
 # (queue_freeze, pipeline_red, boundary_delivery, band_floor,
@@ -762,13 +757,6 @@ config/tailscale-acl-lockdown.json /home/nish/.local/state/pi-packet/tailscale-a
 # runs `tailscale status` with no sudo and fails loud. Heartbeat-tier1
 # block 42.
 bin/fleet-tailscale-localapi-canary /home/nish/.local/bin/fleet-tailscale-localapi-canary
-# fleet-ops#528: loose-ends canary (sr-nothing-half-done, Nish 2026-08-20).
-# Fail-loud (rc>=2) when the three-class detector (unanswered QUESTIONS.md
-# rows, half-done worker PRs, stale worktrees) is broken. exit 1 = watcher
-# missing or MANIFEST dest uninstalled — already loud via HELPER-MISSING.
-# Heartbeat-tier1 block 43.
-bin/fleet-loose-ends-canary /home/nish/.local/bin/fleet-loose-ends-canary
-lib/loose-ends.py /home/nish/.local/lib/fleet-ops/loose-ends.py
 # fleet-ops#3709: reviewer-round arm gate. Not a scheduled organ — a
 # worker-facing gate the product worker calls before arming. Installed so
 # the worker can run it from the deploy clone.
@@ -1001,12 +989,9 @@ systemd/timer-manifest.json /home/nish/.config/fleet-ops/timer-manifest.json
 # reconciler role sane against the faster push path.
 libexec/gh-webhook-receiver/serve.py /home/nish/.local/libexec/gh-webhook-receiver/serve.py
 bin/gh-webhook-canary.py /home/nish/.local/bin/gh-webhook-canary
-bin/gh-webhook-canary-deadman.py /home/nish/.local/bin/gh-webhook-canary-deadman
 systemd/gh-webhook-receiver.service /home/nish/.config/systemd/user/gh-webhook-receiver.service
 systemd/gh-webhook-canary.service /home/nish/.config/systemd/user/gh-webhook-canary.service
 systemd/gh-webhook-canary.timer /home/nish/.config/systemd/user/gh-webhook-canary.timer
-systemd/gh-webhook-canary-deadman.service /home/nish/.config/systemd/user/gh-webhook-canary-deadman.service
-systemd/gh-webhook-canary-deadman.timer /home/nish/.config/systemd/user/gh-webhook-canary-deadman.timer
 
 docs/github-push-channel.md /home/nish/.local/share/fleet-ops/docs/github-push-channel.md
 

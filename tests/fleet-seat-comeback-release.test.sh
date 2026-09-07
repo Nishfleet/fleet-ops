@@ -1023,7 +1023,7 @@ ok "never-released metric: 2 stuck seats counted (poolside+mimo), healthy seat e
 # roster forever — seat-caps.json retiring the slug (cap 0 +
 # intentional_cap_zero=corpse, fleet-ops#2708) stops the rotation but the
 # ledger file keeps counting as roster membership in the census
-# (daily-digest 'Total seen', opus-heartbeat-gather seat_table n). The
+# (daily-digest 'Total seen', fleet metrics exporter seat_table n). The
 # corpse is physically moved into lanes/seats-corpse-retired-<UTC-ts>/
 # once its observed_at ages past CORPSE_GRACE_S (default 6h). A fresh
 # corpse (inside grace) and a corpse that still carries a future wall

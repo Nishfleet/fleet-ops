@@ -123,9 +123,9 @@ trap 'touch "$_debounce_stamp" 2>/dev/null || true' EXIT
 # runner where the runner user cannot create /home/nish (fleet-ops#1407).
 ISSUE_STATE_DIR="${PI_INTAKE_ISSUE_STATE_DIR:-/home/nish/.local/state/pi-issues}"
 # fleet-ops#1455: the claims index is the durable record of which issues were
-# actually claimed in this tick. opus-heartbeat-gather counts it for
-# claims_last_2h; fleet-restore-drill (B.2) reads it to know which issues are
-# claimed after a restore. Overridable for tests so a GitHub-hosted runner
+# actually claimed in this tick. The fleet judge (fable-check.md) reads it
+# for the claims-signal; fleet-restore-drill (B.2) reads it to know which
+# issues are claimed after a restore. Overridable for tests so a GitHub-hosted runner
 # does not have to write under /home/nish.
 CLAIMS_LOG="${PI_INTAKE_CLAIMS_LOG:-/home/nish/workspaces/agent-state/ready-work-claims.log}"
 # fleet-ops#2133: reclaim cooldown. When pi-issue-failed-reap releases a
@@ -363,7 +363,7 @@ fi
 # fleet-intake-reconciler-stale alerts on (see config/fleet_rules.yml).
 #
 # Per-repo prom file (matches the existing per-repo metric convention,
-# e.g. fleet-opus-heartbeat.prom is repo-scoped via Pi seat labels):
+# e.g. fleet-intake-reconciler-<repo>.prom is repo-scoped via Pi seat labels):
 # a single shared file would be clobbered by parallel pi-intake@<repo>
 # timers. Naming: ${base}-<repo>.prom, default base fleet-intake-reconciler.
 reconciler_caught=0
@@ -1753,7 +1753,7 @@ blocked-on: nish-decision" 2>/dev/null || true
         echo "issue $N ($title): spawn stagger ${SEAT_SPAWN_STAGGER_S}s (seat-caps spawn_stagger_s)"
         sleep "$SEAT_SPAWN_STAGGER_S"
     fi
-    # fleet-ops#1455: write a durable claim record so opus-heartbeat-gather
+    # fleet-ops#1455: write a durable claim record so the fleet judge
     # and fleet-restore-drill can see the claim. Guard above means we only
     # append after a verified branch+packet+unit spawn.
     _claims_dir="$(dirname "$CLAIMS_LOG")"

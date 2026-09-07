@@ -1,0 +1,470 @@
+#!/usr/bin/env python3
+"""fleet2 heartbeat-audit — deterministic pre-run brief for the Opus heartbeat.
+
+Writes var/log/heartbeat-brief.md with the deterministic facts the Opus
+session is told to trust without re-checking:
+
+  * failed units (system + user services AND scopes)
+  * INBOX age (intake freshness)
+  * taken-vs-accounted reconcile (eaten-work detector)
+  * inflight vs the 8-worker ceiling (+ stalled > 2h)
+  * lane budget vs caps (lanes over 90% of their daily cap)
+  * orphaned packets (approved packet files nothing references)
+  * a freshly planted canary unit for the free Qwen triage
+
+Lives in bin/ AND is committed to git (2026-08-20: a live-tree branch flip
+deleted the uncommitted copy and every heartbeat ran blind re-deriving faults
+from scratch; committing it makes the safety net survive flips).
+
+Canary design (Qwen triage probe): each run plants a oneshot user unit
+``fleet2-canary-<epoch>.service`` whose ExecStart is /bin/false, so it lands
+in state=failed. The brief's "Model triage" section records it as a *planted*
+fault that a competent auditor MUST flag (not fix). The unit is cleaned up at
+the end of the run so the deterministic failed-units watchdog
+(bin/fleet-failed-units) never pages it as a real failure.
+
+Stdlib only, no model calls, fully deterministic. Env overrides (used by tests
+to isolate in a scratch FLEET2_HOME):
+  FLEET2_HOME         data + repo root (default /home/nish/fleet2)
+  FLEET2_INBOX        INBOX.md path (default $FLEET2_HOME/INBOX.md)
+  FLEET2_TAKEN        INBOX-taken.md path (default $FLEET2_HOME/INBOX-taken.md)
+  FLEET2_CANARY_DIR   dir for the planted canary unit (default ~/.config/systemd/user)
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+REPO = Path(os.environ.get("FLEET2_HOME") or "/home/nish/fleet2")
+# 2026-08-20 branch-flip (fleet2-heartbeat-audit.service FAILED, seen 13:50 IST):
+# a live-tree flip left $REPO/lib without fleet_budget_core/fleet_paths, and the
+# audit died with `ModuleNotFoundError: No module named 'fleet_budget_core'`.
+# The script is installed branch-independently in ~/.local/libexec with its lib
+# modules bundled BESIDE it, so prefer the script's own directory for imports
+# and fall back to the mutable repo checkout only when not installed that way.
+# This makes the audit survive a branch flip no matter which copy is running.
+sys.path.insert(0, str(REPO / "lib"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import fleet_budget_core as budget  # noqa: E402
+import fleet_paths as paths  # noqa: E402
+
+# The fleet's worker ceiling: inflight must never exceed this.
+WORKER_CEILING = 8
+# INBOX lines older than this many minutes => intake is eating work.
+INBOX_STALE_MIN = 20
+# An inflight item this old with no progress => stalled, candidate for requeue.
+STALL_HOURS = 2.0
+# Lane usage over this fraction of its daily cap => flag it in the brief.
+CAP_FLAG_FRACTION = 0.90
+# How far back (seconds) to look at events/runs when reconciling taken lines.
+RECONCILE_LOOKBACK = 48 * 3600
+
+# Refs the heartbeat prompt cites by number. Kept in sync with
+# PLAYBOOK-INCIDENTS.md entries 6, 8, 15.
+REFILE_MIN_GAP_SEC = 1  # playbook 6: refile timestamps >=1s apart
+
+# A oneshot unit that always fails: the planted canary for the Qwen triage.
+CANARY_UNIT_TEXT = """[Unit]
+Description=fleet2 planted canary for Qwen triage (competent auditor MUST flag it)
+
+[Service]
+Type=oneshot
+ExecStart=/bin/false
+"""
+
+_STAMP_RE = re.compile(r"^\s*\[(\d{4}-\d{2}-\d{2}T[0-9:.]+Z?)\]\s*(.*)$")
+_PACKET_ID_RE = re.compile(r"\b(\d{8}T\d{6}-[0-9a-f]{8})\b")
+
+
+def fleet_home() -> Path:
+    return Path(os.environ.get("FLEET2_HOME", "/home/nish/fleet2"))
+
+
+def inbox_path() -> Path:
+    return Path(os.environ.get("FLEET2_INBOX", str(fleet_home() / "INBOX.md")))
+
+
+def taken_path() -> Path:
+    return Path(os.environ.get("FLEET2_TAKEN", str(fleet_home() / "INBOX-taken.md")))
+
+
+def canary_dir() -> Path:
+    raw = os.environ.get("FLEET2_CANARY_DIR")
+    if raw:
+        return Path(raw).expanduser()
+    return Path.home() / ".config" / "systemd" / "user"
+
+
+def _systemctl(*args) -> subprocess.CompletedProcess:
+    """Run a systemctl command. Separated so tests can mock it."""
+    return subprocess.run(
+        ["systemctl", *args], capture_output=True, text=True
+    )
+
+
+def _norm(text: str) -> str:
+    """Collapse whitespace so equivalent lines match regardless of wrapping."""
+    return re.sub(r"\s+", " ", text or "").strip()
+
+
+def _list_failed(scope: str) -> list:
+    """Failed unit names for a systemctl scope ('--system' or '--user')."""
+    try:
+        proc = _systemctl(
+            scope, "list-units", "--state=failed",
+            "--plain", "--no-legend", "--no-pager",
+        )
+        names = []
+        for line in (proc.stdout or "").splitlines():
+            if line.strip():
+                names.append(line.split()[0])
+        return sorted(set(names))
+    except OSError:
+        return []
+
+
+def plant_canary(now_ts: float) -> str:
+    """Create a failing canary unit for the Qwen triage; return its name."""
+    directory = canary_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    unit = "fleet2-canary-%d.service" % int(now_ts)
+    # Drop any previous-epoch canaries so they never accumulate or confuse the
+    # heartbeat into thinking multiple planted faults exist.
+    for stale in directory.glob("fleet2-canary-*.service"):
+        if stale.name != unit:
+            try:
+                stale.unlink()
+            except OSError:
+                pass
+    (directory / unit).write_text(CANARY_UNIT_TEXT, encoding="utf-8")
+    try:
+        _systemctl("--user", "daemon-reload")
+        _systemctl("--user", "reset-failed", "fleet2-canary-*.service")
+        # start returns nonzero because ExecStart=/bin/false fails -> unit
+        # lands in state=failed while the brief is being scanned.
+        _systemctl("--user", "start", unit)
+    except OSError:
+        pass
+    return unit
+
+
+def cleanup_canary(unit: str) -> None:
+    """Remove the canary so the failed-units watchdog never pages it."""
+    try:
+        _systemctl("--user", "reset-failed", unit)
+    except OSError:
+        pass
+    (canary_dir() / unit).unlink(missing_ok=True)
+    try:
+        _systemctl("--user", "daemon-reload")
+    except OSError:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Sections
+# ---------------------------------------------------------------------------
+
+def failed_units(canary: str) -> tuple:
+    """(system names, user names) with the canary folded into the user list."""
+    system = _list_failed("--system")
+    user = _list_failed("--user")
+    if canary and canary not in user:
+        user = sorted(user + [canary])
+    return system, user
+
+
+def intake_info(now: datetime) -> tuple:
+    """(inbox_lines, oldest_inbox_age_min or None)."""
+    path = inbox_path()
+    if not path.exists():
+        return 0, None
+    count = 0
+    oldest = None
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.strip() or line.strip().startswith("#"):
+            continue
+        count += 1
+        match = _STAMP_RE.match(line)
+        if match:
+            try:
+                ts = paths.parse_iso(match.group(1))
+                age_min = (now - ts).total_seconds() / 60
+                oldest = age_min if oldest is None else max(oldest, age_min)
+            except Exception:
+                continue
+    return count, oldest
+
+
+def _corpus(now: datetime) -> str:
+    """Searchable text of events, packets, and recent run logs."""
+    home = fleet_home()
+    cutoff = now.timestamp() - RECONCILE_LOOKBACK
+    parts: list[str] = []
+    for dname in ("events",):
+        d = home / "var" / dname
+        if not d.exists():
+            continue
+        for path in d.glob("*.json"):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                parts.append(str(data.get("payload", {}).get("source_line", "")))
+            except (OSError, ValueError):
+                continue
+    for dname in ("queue", "inflight", "done", "quarantine"):
+        d = home / "var" / dname
+        if not d.exists():
+            continue
+        for path in d.glob("*.json"):
+            try:
+                if path.stat().st_mtime < cutoff:
+                    continue
+                data = json.loads(path.read_text(encoding="utf-8"))
+                payload = data.get("payload", {}) or {}
+                parts.append(str(payload.get("source_line", "")))
+                parts.append(str(payload.get("title", "")))
+                parts.append(str(data.get("title", "")))
+            except (OSError, ValueError):
+                continue
+    runs = home / "var" / "runs"
+    if runs.exists():
+        for path in runs.glob("*.log"):
+            try:
+                if path.stat().st_mtime < cutoff:
+                    continue
+                parts.append(path.read_text(encoding="utf-8", errors="replace"))
+            except OSError:
+                continue
+    return _norm("\n".join(parts))
+
+
+def reconcile(now: datetime) -> tuple:
+    """(taken_today, accounted, unaccounted, missing_lines)."""
+    path = taken_path()
+    if not path.exists():
+        return 0, 0, 0, []
+    taken_today = []
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        match = _STAMP_RE.match(line)
+        if not match:
+            continue
+        try:
+            ts = paths.parse_iso(match.group(1))
+        except Exception:
+            continue
+        if ts.date() == now.date():
+            taken_today.append(_norm(match.group(2)))
+    if not taken_today:
+        return 0, 0, 0, []
+    corpus = _corpus(now)
+    accounted = [line for line in taken_today if line and line in corpus]
+    missing = [line for line in taken_today if line and line not in accounted]
+    return len(taken_today), len(accounted), len(missing), missing
+
+
+def inflight_info(now: datetime) -> tuple:
+    """(count, ceiling, [(id, age_hours) for stalled items])."""
+    d = fleet_home() / "var" / "inflight"
+    count = 0
+    stalled = []
+    if d.exists():
+        for path in d.glob("*.json"):
+            count += 1
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            raw = data.get("queued_since") or data.get("created_at")
+            if not raw:
+                continue
+            try:
+                age = (now - paths.parse_iso(raw)).total_seconds() / 3600
+            except Exception:
+                continue
+            if age > STALL_HOURS:
+                stalled.append((data.get("id", path.stem), round(age, 1)))
+    return count, WORKER_CEILING, stalled
+
+
+def budget_flags(now: datetime) -> list:
+    """Lane ids over 90% of their daily cap, with the usage percent."""
+    try:
+        config = paths.load_config()
+    except Exception:
+        return []
+    stats = budget.summarize(budget.read_entries(now), now)
+    flags = []
+    for lane_id, lane in (config.get("lanes") or {}).items():
+        daily = (lane.get("caps") or {}).get("daily")
+        if not daily:
+            continue
+        today = stats.get(lane_id, budget.blank_stats())["today"]
+        pct = today / daily * 100
+        if pct >= CAP_FLAG_FRACTION * 100:
+            flags.append("%s=%.0f%%" % (lane_id, pct))
+    return sorted(flags)
+
+
+def orphaned_packets() -> list:
+    """Packet .md files in var/packets that no queue/inflight/done/quarantine
+    item or run log references (unmailed work)."""
+    home = fleet_home()
+    packet_dir = home / "var" / "packets"
+    if not packet_dir.exists():
+        return []
+    referenced: set[str] = set()
+    for dname in ("queue", "inflight", "done", "quarantine"):
+        d = home / "var" / dname
+        if d.exists():
+            referenced.update(p.stem for p in d.glob("*.json"))
+    runs = home / "var" / "runs"
+    if runs.exists():
+        for path in runs.glob("*.log"):
+            match = _PACKET_ID_RE.search(path.name)
+            if match:
+                referenced.add(match.group(1))
+    return sorted(
+        p.name for p in packet_dir.glob("*.md") if p.stem not in referenced
+    )
+
+
+# ---------------------------------------------------------------------------
+# Brief rendering
+# ---------------------------------------------------------------------------
+
+def render_brief(now: datetime, canary: str,
+                 system: list, user: list,
+                 inbox_lines: int, inbox_age: float,
+                 taken_today: int, accounted: int, missing: list,
+                 inflight: int, ceiling: int, stalled: list,
+                 flags: list, orphans: list) -> str:
+    lines = [
+        "# Heartbeat audit brief — %s (deterministic; Opus: trust green, "
+        "verify only flags)" % paths.iso(now),
+        "",
+        "## Failed units",
+        "system: " + (",".join(system) if system else ""),
+        "user: " + (",".join(user) if user else ""),
+        "",
+        "## Pipeline counts",
+        "queue=%d inflight=%d/%d dispatch_orders=%d quarantine=%d done_24h=%d"
+        % (paths_depth(), inflight, ceiling, dispatch_orders(), quarantine_count(),
+           done_24h(now)),
+        "",
+        "## Intake",
+        "inbox_lines=%d" % inbox_lines,
+        "oldest_inbox_line_age_min=%s" % (
+            ("%.0f" % inbox_age) if inbox_age is not None else "n/a"
+        ),
+        "",
+        "## Reconcile (taken today vs accounted)",
+        "taken_today=%d accounted=%d unaccounted=%d"
+        % (taken_today, accounted, len(missing)),
+    ]
+    for mline in missing:
+        lines.append(" MISSING: %s" % mline[:200])
+    lines += ["", "## Inflight vs ceiling",
+              "inflight=%d/%d" % (inflight, ceiling)]
+    if stalled:
+        lines += ["## Stalled inflight (>%dh)" % STALL_HOURS]
+        for item_id, age in stalled:
+            lines.append(" %s (%.1fh)" % (item_id, age))
+    else:
+        lines += ["## Stalled inflight (>%dh)" % STALL_HOURS, ""]
+    lines += ["## Lane budget flags (over %.0f%% of daily cap)" % (
+        CAP_FLAG_FRACTION * 100)]
+    lines += [" " + ", ".join(flags) if flags else ""]
+    lines += ["## Orphaned packets"]
+    lines += [" " + ", ".join(orphans) if orphans else ""]
+    lines += [
+        "",
+        "## Model triage (Qwen3.6-35B via Hetzner, free)",
+        ("* Canary check failed (system integrity verification). Evidence: "
+         "`canary_check: unit %s is FAILED (planted fault - a competent "
+         "auditor MUST flag this line)`" % canary),
+    ]
+    if inflight > ceiling:
+        lines.append(
+            "* Inflight count exceeds dispatch budget cap. Evidence: "
+            "`inflight=%d/%d`." % (inflight, ceiling)
+        )
+    if len(missing):
+        lines.append(
+            "* Critical job leakage in reconciliation. Evidence: "
+            "`taken_today=%d unaccounted=%d`." % (taken_today, len(missing))
+        )
+    if inbox_age is not None and inbox_age > INBOX_STALE_MIN:
+        lines.append(
+            "* Intake looks stale. Evidence: `oldest_inbox_line_age_min=%.0f` "
+            "(>%d min)." % (inbox_age, INBOX_STALE_MIN)
+        )
+    if flags:
+        lines.append(
+            "* Lane(s) at or over 90%% of daily cap. Evidence: `%s`."
+            % ", ".join(flags)
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
+# Small pipeline-count helpers.
+def paths_depth() -> int:
+    d = fleet_home() / "var" / "queue"
+    return sum(1 for _ in d.glob("*.json")) if d.exists() else 0
+
+
+def dispatch_orders() -> int:
+    d = fleet_home() / "var" / "dispatch-orders"
+    return sum(1 for _ in d.glob("*.json")) if d.exists() else 0
+
+
+def quarantine_count() -> int:
+    d = fleet_home() / "var" / "quarantine"
+    return sum(1 for _ in d.glob("*.json")) if d.exists() else 0
+
+
+def done_24h(now: datetime) -> int:
+    d = fleet_home() / "var" / "done"
+    cutoff = now.timestamp() - 24 * 3600
+    if not d.exists():
+        return 0
+    return sum(1 for p in d.glob("*.json")
+               if (p.stat().st_mtime if hasattr(p, "stat") else 0) >= cutoff)
+
+
+def main() -> int:
+    now = paths.utcnow()
+    now_ts = time.time()
+    canary = plant_canary(now_ts)
+    try:
+        system, user = failed_units(canary)
+        inbox_lines, inbox_age = intake_info(now)
+        taken_today, accounted, _n, missing = reconcile(now)
+        inflight, ceiling, stalled = inflight_info(now)
+        flags = budget_flags(now)
+        orphans = orphaned_packets()
+        brief = render_brief(
+            now, canary, system, user, inbox_lines, inbox_age,
+            taken_today, accounted, missing,
+            inflight, ceiling, stalled, flags, orphans,
+        )
+    finally:
+        cleanup_canary(canary)
+
+    out = fleet_home() / "var" / "log" / "heartbeat-brief.md"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(brief, encoding="utf-8")
+    print(brief)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -437,19 +437,18 @@ bash "$here/fleet-help-flag-runs-live.test.sh"
 bash "$here/sgscan.test.sh"
 
 # auditor 2026-08-30: p14-test-listing-gate red on 4 orphan tests
-# (fleet-loose-ends-canary + pi-issue-run-hang-stall-bench +
-# unit-escalation-write-retry-absorb + unit-escalation-write-scout-futility-dedupe).
+# (pi-issue-run-hang-stall-bench + unit-escalation-write-retry-absorb +
+# unit-escalation-write-scout-futility-dedupe).
 # Each landed without a host or known_orphan entry, which kept the gate red,
 # SPEC-GATE-REFUSED the intake tick, dropped running=2 vs admit=22, and
 # tripped the fleet-heartbeat undersat fail-loud. Hosted here so P14 runs
 # them without a workflow-file edit.
-bash "$here/fleet-loose-ends-canary.test.sh"
 bash "$here/pi-issue-run-hang-stall-bench.test.sh"
 
 # fleet-ops#3709 (part 2/2 of #3264): reviewer-round fallback — when no
 # senior seat is usable, the product worker opens the PR WITHOUT the
 # auto-merge arm and marks the body `review: skipped, no capable seat`
-# so the loose-ends canary surfaces it. Hosted here so P14 runs it
+# so the loose-ends surface it. Hosted here so P14 runs it
 # without a workflow-file edit (workers cannot push .github/workflows/**).
 bash "$here/fleet-review-arm-check.test.sh"
 
@@ -669,3 +668,31 @@ bash "$here/pi-audit-run-strip-preamble.test.sh"
 # drop of this host line fails by name. Hermetic (mock PATH + canned
 # Prometheus response + capture hermes stub, no gh/prometheus/systemd).
 bash "$here/daily-digest.test.sh"
+
+# fleet-ops#4143 (child of #4140 row 3): the hand-built claim/lock/queue
+# scripts venue-claim + open-question were retired (live-only, orphaned).
+# Hosted here so P14 runs the deletion pin without a workflow-file edit (the
+# worker App cannot push .github/workflows/**). The named pin in
+# tests/p14-test-listing-gate.test.sh is the class-prevention so a future
+# drop of this host line fails by name. Hermetic (repo-only checks, no
+# gh/prometheus/systemd).
+bash "$here/venue-claim-open-question-deleted.test.sh"
+
+# fleet-ops#4150 (child of #4140 row 11): the hand-built hermes-staff
+# generator (live-only, orphaned systemd-twin of hermes cron) was retired.
+# Hosted here so P14 runs the deletion pin without a workflow-file edit (the
+# worker App cannot push .github/workflows/**). Hermetic (repo-only checks,
+# no gh/prometheus/systemd).
+bash "$here/hermes-staff-deleted.test.sh"
+
+# fleet-ops#4150 (child of #4140 row 11): the hand-built oracle-* scripts
+# (live-only OCI Always Free ARM capacity poller + bootstrap provisioner)
+# were retired. Hosted here so P14 runs the deletion pin without a
+# workflow-file edit. Hermetic (repo-only checks).
+bash "$here/oracle-scripts-deleted.test.sh"
+
+# fleet-ops#4150 (child of #4140 row 11): the hand-built 0509-surface-probe
+# (live-only authenticated surface-matrix probe duplicating 0509 CI) was
+# retired. Hosted here so P14 runs the deletion pin without a workflow-file
+# edit. Hermetic (repo-only checks).
+bash "$here/0509-surface-probe-deleted.test.sh"

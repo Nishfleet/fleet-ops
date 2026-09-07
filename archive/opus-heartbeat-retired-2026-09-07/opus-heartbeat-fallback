@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+# opus-heartbeat-fallback — same snapshot, judged by strongest available Pi lane.
+# Invoked when Opus auth/quota walls or returns no verdict. Watch continuity.
+#
+# Step 0: `pi --help` and seat ledger already inspected. This is NOT a new
+# dispatcher; it is `pi-systemd-run` (existing) + `pi --print` (existing).
+# fleet2-opus-heartbeat cannot do this (different prompt, dead timer).
+# No SaaS judge exists for this snapshot.
+set -Eeuo pipefail
+
+SNAP="${1:-/home/nish/.local/state/opus-heartbeat/snapshot.json}"
+STATE="${OPUS_HB_STATE:-/home/nish/.local/state/opus-heartbeat}"
+SHARE="${OPUS_HB_SHARE:-/home/nish/.local/share/opus-heartbeat}"
+SEATS="${OPUS_HB_SEATS:-/home/nish/workspaces/agent-state/lanes/seats}"
+PACKET="$STATE/fallback-packet.md"
+PROMPT_FILE="$SHARE/judge-prompt.md"
+LOG="$STATE/run.log"
+
+ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+log() { printf '%s %s\n' "$(ts)" "$*" >>"$LOG"; }
+
+mkdir -p "$STATE"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
+
+if [ ! -s "$SNAP" ]; then
+  log "FALLBACK-NO-SNAPSHOT $SNAP"
+  exit 1
+fi
+
+# Packet contract: strongest available of deepseek-v4-pro / glm.
+# Order is preference; skip seats that are dead or not yet usable.
+pick() {
+  python3 - "$SEATS" <<'PY'
+import json, sys, os
+from pathlib import Path
+from datetime import datetime, timezone
+
+seats_dir = Path(sys.argv[1])
+# (provider, model, ledger glob stem fragments)
+candidates = [
+    ("straitly", "deepseek/deepseek-v4-pro", "straitly__deepseek_deepseek-v4-pro.json"),
+    ("devin", "glm-5-2", "devin__glm-5-2.json"),
+    ("zenmux", "z-ai/glm-5.3-free", "zenmux__z-ai_glm-5.3-free.json"),
+    ("minimax", "MiniMax-M3", "minimax__MiniMax-M3.json"),
+]
+now = datetime.now(timezone.utc)
+
+def usable(doc):
+    if not doc:
+        return False
+    if doc.get("seat_dead"):
+        return False
+    ua = doc.get("usable_at")
+    if ua:
+        try:
+            t = datetime.fromisoformat(str(ua).replace("Z", "+00:00"))
+            if t > now:
+                return False
+        except ValueError:
+            pass
+    klass = doc.get("health_class") or ""
+    if klass in ("credentials_bad",):
+        return False
+    return True
+
+first_any = None
+for prov, model, fname in candidates:
+    path = seats_dir / fname
+    doc = None
+    if path.is_file():
+        try:
+            doc = json.loads(path.read_text())
+        except Exception:
+            doc = None
+    if first_any is None:
+        first_any = (prov, model, (doc or {}).get("health_class") or "no-ledger")
+    if usable(doc):
+        print(f"{prov}\t{model}\t{(doc or {}).get('health_class')}")
+        sys.exit(0)
+
+# Continuity: dispatch even if all are walled — pick the first retryable.
+if first_any:
+    print(f"{first_any[0]}\t{first_any[1]}\tWALLED:{first_any[2]}")
+    sys.exit(0)
+print("straitly\tdeepseek/deepseek-v4-pro\tno-seats")
+PY
+}
+
+read -r PROV MODEL SEAT_NOTE <<<"$(pick | tr '\t' ' ')"
+log "FALLBACK pick provider=$PROV model=$MODEL note=$SEAT_NOTE"
+
+{
+  echo "# Opus heartbeat fallback judge"
+  echo
+  echo "Opus 5 could not judge this run ($SEAT_NOTE). You are the continuity judge."
+  echo "Same contract as the Opus duty officer. Snapshot path: $SNAP"
+  echo
+  cat "$PROMPT_FILE"
+  echo
+  echo "SNAPSHOT:"
+  echo
+  cat "$SNAP"
+} >"$PACKET"
+
+# If a fallback is already running, pi-systemd-run no-ops (exit 0). Fine.
+pi-systemd-run --unit opus-heartbeat-fallback \
+  --working-directory /home/nish \
+  --stdin "$PACKET" -- \
+  pi --print --provider "$PROV" --model "$MODEL"
+log "FALLBACK dispatched provider=$PROV model=$MODEL"
+exit 0

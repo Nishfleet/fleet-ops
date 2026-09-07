@@ -2257,7 +2257,7 @@ set -e
 [[ "$rc" != "0" ]] || fail "1415-atcap: cap=1 laguna with one live worker must reject (rc=0 returned, out=$out)"
 # at_capacity_events metric predicate (cap= + skipped) must be 0 — no per-seat
 # 'skipped (... cap=...)' line leaked past the #1624 fold. This is the exact
-# predicate the opus-heartbeat gather rolls up into at_capacity_events_last_2h.
+# predicate the fleet metrics exporter rolls up into at_capacity_events.
 _1415_pred=$(grep 'cap=' "$PI_PACKET_STATE/watch.log" 2>/dev/null | grep -c 'skipped' || true)
 _1415_pred=${_1415_pred:-0}
 if (( _1415_pred > 0 )); then

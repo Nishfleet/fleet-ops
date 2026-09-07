@@ -121,12 +121,12 @@ fireable = [u for u, _ in pairs if u]
 assert "fleet-worktree-reaper.service" in fireable, fireable
 assert "fleet-merged-pr-close.service" in fireable, fireable
 
-# pull_request/opened → fleet-loose-ends-canary (fleet-ops#3270: a
-# new in-flight PR is half-done by definition).
+# pull_request/opened → ignored (fleet-ops#4146: the loose-ends canary
+# was retired; the >24h-without-merge class is GitHub actions/stale).
 pairs = mod.dispatch("pull_request", "opened", "", "fleet-ops",
                      "", dry=False, pr_merged="false")
 fireable = [u for u, _ in pairs if u]
-assert "fleet-loose-ends-canary.service" in fireable, fireable
+assert fireable == [], fireable
 
 # pull_request/closed on a bad repo → ignored (defense-in-depth)
 unit, reason = first_fireable(mod.dispatch("pull_request", "closed", "", "bad repo name!",
@@ -321,10 +321,10 @@ echo "$body_resp" | grep -q '"fleet-merged-pr-close.service"' \
     || fail "7b: pull_request/closed should dispatch fleet-merged-pr-close: $body_resp"
 ok "7b: pull_request/closed (merged) → [fleet-worktree-reaper, fleet-merged-pr-close] (DRY=1)"
 
-# --- 7c: pull_request/opened → fleet-loose-ends-canary (fleet-ops#3270).
-# A new in-flight PR is half-done by definition until it lands; the
-# canary is cheap and idempotent, so a webhook fan-out here is the
-# fastest way to catch the >24h-without-merge class.
+# --- 7c: pull_request/opened → ignored (fleet-ops#4146). The loose-ends
+# canary was retired; the >24h-without-merge class is GitHub's own
+# actions/stale on a schedule in each repo. The receiver must not
+# dispatch anything for a new in-flight PR.
 body_propen='{"action":"opened","pull_request":{"merged":false,"number":3269},"repository":{"name":"fleet-ops"}}'
 sig_propen="sha256=$(printf '%s' "$body_propen" | openssl dgst -sha256 -hmac "$secret" -hex | awk '{print $NF}')"
 resp="$(curl -sS -X POST "http://127.0.0.1:$TEST_PORT/webhook" \
@@ -336,9 +336,9 @@ resp="$(curl -sS -X POST "http://127.0.0.1:$TEST_PORT/webhook" \
 status="$(printf '%s' "$resp" | tail -n1)"
 body_resp="$(printf '%s' "$resp" | head -n-1)"
 [[ "$status" == "200" ]] || fail "7c: pull_request/opened got $status; body=$body_resp"
-echo "$body_resp" | grep -q '"fleet-loose-ends-canary.service"' \
-    || fail "7c: pull_request/opened should dispatch fleet-loose-ends-canary: $body_resp"
-ok "7c: pull_request/opened → fleet-loose-ends-canary (DRY=1)"
+echo "$body_resp" | grep -q '"ignored"' \
+    || fail "7c: pull_request/opened should be ignored: $body_resp"
+ok "7c: pull_request/opened → ignored (DRY=1)"
 
 # --- 7d: issues/opened → lifecycle-label-sweep (fleet-ops#3270). The
 # repo is enrolled (in this checkout's intake-repos.json), so this
@@ -390,15 +390,16 @@ grep -q 'fleet_gh_webhook_receiver_last_green_seconds' "$GH_WEBHOOK_RECEIVER_PRO
 ok "9: receiver wrote heartbeat prom file"
 
 # --- 10: prom counter advanced for each successful dispatch (5 in this
-# test after #3270: the issues/labeled/agent-ready + the workflow_run
-# + the pull_request/closed + the pull_request/opened + the issues/opened
-# + the issues/closed = 6 dispatch EVENTS; each event counts as 1 even
-# when it fans out to multiple units). Tampered bodies and unknown-
+# test after #4146: the issues/labeled/agent-ready + the workflow_run
+# + the pull_request/closed + the issues/opened
+# + the issues/closed = 5 dispatch EVENTS; each event counts as 1 even
+# when it fans out to multiple units). pull_request/opened is ignored
+# (the loose-ends canary was retired). Tampered bodies and unknown-
 # event / bad-repo ignored events do NOT increment — they fail before
 # the dispatcher runs.
-grep -E '^fleet_gh_webhook_receiver_dispatch_total 6$' "$GH_WEBHOOK_RECEIVER_PROM" \
-    || fail "10: dispatch counter != 6 (expected exactly six successful events: issues/labeled + workflow_run + pull_request/closed + pull_request/opened + issues/opened + issues/closed): $(cat "$GH_WEBHOOK_RECEIVER_PROM")"
-ok "10: dispatch counter advanced for every dispatched event (6 verified + dispatched)"
+grep -E '^fleet_gh_webhook_receiver_dispatch_total 5$' "$GH_WEBHOOK_RECEIVER_PROM" \
+    || fail "10: dispatch counter != 5 (expected exactly five successful events: issues/labeled + workflow_run + pull_request/closed + issues/opened + issues/closed): $(cat "$GH_WEBHOOK_RECEIVER_PROM")"
+ok "10: dispatch counter advanced for every dispatched event (5 verified + dispatched)"
 
 kill "$server_pid" 2>/dev/null || true
 wait "$server_pid" 2>/dev/null || true

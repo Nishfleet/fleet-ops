@@ -401,6 +401,39 @@ remove_orphaned_fleet_cheap_triage_dropin() {
     fi
 }
 
+# fleet-ops#4146: retire the three dead-man canaries (gh-webhook-canary-
+# deadman, fleet-completion-canary, fleet-loose-ends-canary). Their units
+# and timers are gone from MANIFEST; stop+disable any live leftovers and
+# remove the prom files they wrote so the node-exporter textfile dir does
+# not keep serving retired series. The gh-webhook-canary producer stays
+# (its dead-man is now the FleetGhWebhookCanaryAbsent absent() rule + a
+# healthchecks.io ping-on-success).
+remove_retired_canaries() {
+    local unit
+    for unit in \
+        gh-webhook-canary-deadman.service gh-webhook-canary-deadman.timer \
+        fleet-completion-canary.service fleet-completion-canary.timer \
+        fleet-loose-ends-canary.service fleet-loose-ends-canary.timer
+    do
+        if [ -f "${HOME}/.config/systemd/user/$unit" ]; then
+            "$SYSTEMCTL" --user stop "$unit" 2>/dev/null || true
+            "$SYSTEMCTL" --user disable "$unit" 2>/dev/null || true
+            rm -f "${HOME}/.config/systemd/user/$unit"
+            echo "retired unit removed: $unit (fleet-ops#4146)"
+            user_unit_changed=1
+        fi
+    done
+    # Remove the prom files the retired canaries wrote (deadman metric,
+    # fleet_chain_* family). The gh-webhook-canary prom file stays.
+    rm -f /var/lib/prometheus/node-exporter/fleet-chains.prom
+    # Strip the deadman block from the gh-webhook-canary prom file if a
+    # stale copy still carries it.
+    if [ -f /var/lib/prometheus/node-exporter/fleet-gh-webhook-canary.prom ]; then
+        sed -i '/fleet_gh_webhook_canary_deadman_paged_total/d; /fleet_gh_webhook_canary_deadman_last_status/d' \
+            /var/lib/prometheus/node-exporter/fleet-gh-webhook-canary.prom 2>/dev/null || true
+    fi
+}
+
 # Drift-or-install one entry. `_skip=1` means skip — out of scope for the
 # current mode. `_install_user` defaults to ln -s; `install_system` defaults
 # to sudo install -D.
@@ -703,6 +736,7 @@ if [ "$do_user_install" = 1 ]; then
   remove_orphaned_fleet_auto_deploy_dropin
   remove_orphaned_fleet_auto_ship_dropin
   remove_orphaned_fleet_cheap_triage_dropin
+  remove_retired_canaries
   # Only daemon-reload when a user-scope systemd unit/drop-in actually
   # changed. First install on a fresh box still reloads because every unit
   # is new. Bin/prompt/config changes do not waste a reload.

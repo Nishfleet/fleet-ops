@@ -167,6 +167,8 @@ HELP_MPR = "# HELP fleet_merged_prs_24h Merged PR count per repo in the trailing
 TYPE_MPR = "# TYPE fleet_merged_prs_24h gauge"
 HELP_ESC = "# HELP fleet_escalations_24h Count of unit-escalation@ instances in the last 24h (top 20)."
 TYPE_ESC = "# TYPE fleet_escalations_24h gauge"
+HELP_OOMD = "# HELP fleet_oomd_kills_6h systemd-oomd kills of app-pi-issue.slice units in the trailing 6h, by unit (fleet-ops#4164). A rise > 3 in 6h trips FleetOomdKillsHigh, whose repair packet raises the live ram_gb_per_worker charge back to 2.0. Counts only oomd-managed kills (MESSAGE=Killed unit or Killed process), not kernel OOM."
+TYPE_OOMD = "# TYPE fleet_oomd_kills_6h gauge"
 HELP_RDISP = "# HELP fleet_repair_dispatch_24h DISPATCH lines in alert-repair actions.log within 24h."
 TYPE_RDISP = "# TYPE fleet_repair_dispatch_24h gauge"
 HELP_RSKIP = "# HELP fleet_repair_skip_24h SKIP lines in alert-repair actions.log within 24h."
@@ -434,7 +436,6 @@ SLO_DEFS_FALLBACK = Path(
 # "slos" array in config/slo-definitions.json.
 _KNOWN_SLO_IDS = (
     "main_green",
-    "chain_repair_latency",
     "0509_user_journey",
     "digest_delivery",
     "waste_ratio",
@@ -447,14 +448,6 @@ WASTE_PROM = Path(
     os.environ.get(
         "FLEET_WASTE_OUT",
         "/var/lib/prometheus/node-exporter/fleet-waste.prom",
-    )
-)
-# fleet-completion-canary writes fleet_chain_repair_duration_seconds here;
-# the SLO emitter reads the live p95 value for chain_repair_latency.
-CHAIN_PROM = Path(
-    os.environ.get(
-        "FLEET_CHAIN_PROM",
-        "/var/lib/prometheus/node-exporter/fleet-chains.prom",
     )
 )
 # seat-caps.json is the source of truth for enrolled-seat count
@@ -2064,6 +2057,68 @@ def _escalations_24h():
     return dict(counts.most_common(20))
 
 
+def _oomd_kills_6h():
+    """Count systemd-oomd kills of app-pi-issue.slice units in the last 6h.
+
+    fleet-ops#4164: a rise > 3 in 6h trips FleetOomdKillsHigh, whose repair
+    packet raises the live ram_gb_per_worker charge back to 2.0. Counts only
+    oomd-managed kills (systemd-oomd logs "Killed unit ..." or
+    "Killed process ..."), not kernel OOM. Scoped to the app-pi-issue.slice
+    cgroup so host-level oomd kills (unrelated services) do not trip the
+    fleet alert. Returns a dict {unit: count} (top 20).
+
+    Overridable for tests via FLEET_OOMD_JOURNAL_STUB (a file whose lines
+    stand in for journalctl --output=cat output).
+    """
+    stub = os.environ.get("FLEET_OOMD_JOURNAL_STUB")
+    if stub:
+        try:
+            with open(stub) as f:
+                stdout = f.read()
+        except OSError:
+            return {}
+        rc = 0
+    else:
+        try:
+            r = subprocess.run(
+                [
+                    "journalctl", "--user",
+                    "--since", "6 hours ago",
+                    "--no-pager",
+                    "--output=cat",
+                    "SYSTEMD_OOMD_KILL=1",
+                ],
+                capture_output=True, text=True, timeout=JOURNAL_TIMEOUT,
+                env={**os.environ, "XDG_RUNTIME_DIR": XDG},
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            print(f"oomd-kills journalctl failed: {exc}", file=sys.stderr)
+            return {}
+        rc = r.returncode
+        stdout = r.stdout
+    if rc != 0 and not stub:
+        print(f"oomd-kills journalctl rc={rc}", file=sys.stderr)
+        return {}
+    counts = Counter()
+    for line in stdout.splitlines():
+        # systemd-oomd log lines (cat output): "Killed unit <name>.service."
+        # or "Killed unit <name>.slice." or
+        # "Killed process <pid> (<comm>) in unit <name>.service."
+        m = re.search(r"in unit (\S+?)\.service", line)
+        if not m:
+            m = re.search(r"Killed unit (\S+?)\.(service|slice)", line)
+        if not m:
+            continue
+        unit = m.group(1)
+        # Scope to fleet worker units (pi-issue@* under app-pi-issue.slice)
+        # and the slice itself. A host-level oomd kill of an unrelated
+        # service is not a fleet signal.
+        if not (unit.startswith("pi-issue@") or unit == "app-pi-issue"):
+            continue
+        counts[unit] += 1
+    return dict(counts.most_common(20))
+
+
 def _repair_log_counts_24h():
     """Return (dispatch_count, skip_count) from actions.log within 24h."""
     if not ACTIONS_LOG.exists():
@@ -2704,31 +2759,6 @@ def _read_waste_ratio():
         if not line or line.startswith("#"):
             continue
         if line.startswith("fleet_waste_ratio "):
-            try:
-                return float(line.split()[-1])
-            except (ValueError, IndexError):
-                return None
-    return None
-
-
-def _read_chain_repair_duration():
-    """Read the live fleet_chain_repair_duration_seconds gauge from fleet-chains.prom, or None.
-
-    fleet-completion-canary emits the p95 chain duration; the SLO emitter reads
-    its published value rather than recomputing it. Returns None when the prom
-    file is missing or the gauge is absent (e.g., a fresh install before the
-    completion canary has run once) — the chain_repair_latency SLO then reports
-    instrumented=0 for this tick.
-    """
-    try:
-        text = CHAIN_PROM.read_text()
-    except OSError:
-        return None
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("fleet_chain_repair_duration_seconds "):
             try:
                 return float(line.split()[-1])
             except (ValueError, IndexError):
@@ -3668,14 +3698,6 @@ def _slo_compliance(slo, main_ci, healthy, rate_limit, waste_ratio, seat_total):
             return None, False
         target = slo["target"]
         return (waste_ratio / target) if target > 0 else None, True
-    if sid == "chain_repair_latency":
-        # Gauge "below" SLO: compliance = p95_duration / target (>1 means over budget).
-        # Target is 1800 seconds (30 min). p95 comes from fleet-completion-canary.
-        chain_duration = _read_chain_repair_duration()
-        if chain_duration is None:
-            return None, False
-        target = slo["target"]
-        return (chain_duration / target) if target > 0 else None, True
     # 0509_user_journey / digest_delivery: source metrics pending instrumentation
     # (follow-up issues). Even if flagged instrumented=true in config, no live
     # reader exists yet → not instrumented.
@@ -3686,7 +3708,7 @@ def _emit_slo_metrics(lines, main_ci, healthy, rate_limit):
     """Append the fleet_slo_* gauge family for every SLO in the config.
 
     Called from main() with the data it has already gathered. Reads
-    fleet-waste.prom, fleet-chains.prom, and seat-caps.json for the SLOs
+    fleet-waste.prom and seat-caps.json for the SLOs
     whose sources live outside this exporter. Always emits the family (even
     on a missing config — zeros with instrumented=0) so FleetSloMetricsAbsent
     never false-fires on a config glitch; a missing config is logged to
@@ -4692,6 +4714,16 @@ def main():
     for unit in sorted(esc_counts):
         lines.append(
             f'fleet_escalations_24h{{unit="{unit}"}} {esc_counts[unit]}'
+        )
+
+    # oomd kills of app-pi-issue.slice units in the last 6h (fleet-ops#4164).
+    oomd_counts = _oomd_kills_6h()
+    lines.append("")
+    lines.append(HELP_OOMD)
+    lines.append(TYPE_OOMD)
+    for unit in sorted(oomd_counts):
+        lines.append(
+            f'fleet_oomd_kills_6h{{unit="{unit}"}} {oomd_counts[unit]}'
         )
 
     # Repair dispatch / skip counts.

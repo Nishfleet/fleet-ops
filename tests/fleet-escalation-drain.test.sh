@@ -202,7 +202,7 @@ ok "scenario 2: re-run on bounded file is a no-op (idempotency)"
 rm -rf "$AS/alert-repair"
 mkdir -p "$AS/alert-repair"
 
-# Ledger fixture (chains.terminated.jsonl - the fleet-completion-canary
+# Ledger fixture (chains.terminated.jsonl - the alert-repair
 # termination ledger mirrored under alert-repair/):
 #   FleetA  terminated green  end=09-01T18:00Z  -> packet at 06:00Z consumed
 #   FleetB  terminated esc     end=09-01T12:00Z  -> packet at 10:00Z consumed
@@ -225,7 +225,7 @@ touch "$AS/alert-repair/packet-FleetB-20260901T130000Z.md"   # re-fired AFTER te
 touch "$AS/alert-repair/packet-FleetC-20260901T050000Z.md"   # no ledger record -> KEEP (stuck chain)
 touch "$AS/alert-repair/packet-FleetStuck-20260820T000000Z.md" # old, no ledger -> KEEP + LOUD STUCK-PACKET
 # Canary/guard scaffolding - no `<alert>-<ts>.md` suffix:
-touch "$AS/alert-repair/packet-11-completion-canary.md"
+touch "$AS/alert-repair/packet-11-canary-scaffold.md"
 touch "$AS/alert-repair/packet-13-undersaturation-guard.md"
 touch "$AS/alert-repair/packet-red-main-2.md"
 
@@ -244,7 +244,7 @@ run_drain
     || fail "scenario 3: FleetStuck (old, no terminal) must be KEPT (never silently deleted)"
 grep -q "STUCK-PACKET.*packet-FleetStuck-20260820T000000Z.md" "$scratch/run.stderr" \
     || fail "scenario 3: drain must flag old no-terminal packets LOUD; stderr: $(cat "$scratch/run.stderr")"
-[[ -f "$AS/alert-repair/packet-11-completion-canary.md" ]] \
+[[ -f "$AS/alert-repair/packet-11-canary-scaffold.md" ]] \
     || fail "scenario 3: canary scaffolding (packet-11-) must be KEPT (no ts suffix)"
 [[ -f "$AS/alert-repair/packet-13-undersaturation-guard.md" ]] \
     || fail "scenario 3: guard scaffolding (packet-13-) must be KEPT (no ts suffix)"
@@ -322,7 +322,7 @@ touch "$AS/alert-repair/packet-FleetStaleA-${ts_7h_ago}.md"
 # 1h-old packet (filename ts = now-1h): must NOT be flagged LOUD.
 touch "$AS/alert-repair/packet-FleetStaleB-${ts_1h_ago}.md"
 # Canary scaffolding (no ts suffix): must be preserved and never LOUD.
-touch "$AS/alert-repair/packet-11-completion-canary.md"
+touch "$AS/alert-repair/packet-11-canary-scaffold.md"
 
 run_drain
 
@@ -331,7 +331,7 @@ run_drain
     || fail "scenario 5: 7h-old packet (no terminal) must be KEPT, never silently deleted"
 [[ -f "$AS/alert-repair/packet-FleetStaleB-${ts_1h_ago}.md" ]] \
     || fail "scenario 5: 1h-old packet (no terminal) must be KEPT, never silently deleted"
-[[ -f "$AS/alert-repair/packet-11-completion-canary.md" ]] \
+[[ -f "$AS/alert-repair/packet-11-canary-scaffold.md" ]] \
     || fail "scenario 5: canary scaffolding must be KEPT (no ts suffix)"
 
 # 7h-old packet must be flagged LOUD.
@@ -343,7 +343,7 @@ if grep -q "STUCK-PACKET.*packet-FleetStaleB-${ts_1h_ago}.md" "$scratch/run.stde
     fail "scenario 5: 1h-old packet must NOT trip LOUD STUCK-PACKET; stderr: $(cat "$scratch/run.stderr")"
 fi
 # Canary scaffolding must never appear in the LOUD line.
-if grep -q "STUCK-PACKET.*packet-11-completion-canary.md" "$scratch/run.stderr"; then
+if grep -q "STUCK-PACKET.*packet-11-canary-scaffold.md" "$scratch/run.stderr"; then
     fail "scenario 5: canary scaffolding must NEVER appear in LOUD line; stderr: $(cat "$scratch/run.stderr")"
 fi
 ok "scenario 5: 6h threshold - 7h packet LOUD, 1h packet silent, scaffolding ignored"

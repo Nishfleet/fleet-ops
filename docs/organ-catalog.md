@@ -28,7 +28,6 @@ cheaper than building, because prose bans lose to urgency at decision time.
 | Lifecycle-label sweep (webhook) | lifecycle-label-sweep | `lifecycle-label-sweep.{service,timer}` | #3270 |
 | Merged-PR observe-to-close (webhook) | fleet-merged-pr-close | `fleet-merged-pr-close.{service,timer}` | #3270 |
 | Duplicate-issue drain (webhook) | fleet-issue-close-duplicates | `fleet-issue-close-duplicates.{service,timer}` | #3270 |
-| Loose-ends canary (webhook) | fleet-loose-ends-canary | `fleet-loose-ends-canary.{service,timer}` | #3270 |
 | Tight merge→live deploy | fleet-deploy-check | `fleet-deploy-check.timer` | #468, TOP GEAR |
 | Blind audit / gap-closure | fleet-blind-audit | `fleet-blind-audit.timer` | #377 |
 | Resilience drill | fleet-resilience-drill | `fleet-resilience-drill.timer` | #1010 |
@@ -42,7 +41,6 @@ cheaper than building, because prose bans lose to urgency at decision time.
 | Console tile truth | fleet-console-pi | `fleet-console-pi.timer` | #1157 |
 | Seat recovery | fleet-seat-recovery | `fleet-seat-recovery.{path,service}` | seat governor |
 | Metrics export | fleet-metrics-export | `fleet-metrics-export.timer` | organ: metrics-export |
-| Completion canary | fleet-completion-canary | `fleet-completion-canary.timer` | organ: completion-canary |
 | Scout canary | pi-scout@ | `pi-scout@.timer` | organ: scout |
 | Intake (per repo) | pi-intake@ | `pi-intake@<repo>.timer` | intake-repos.json |
 | Intake repair | pi-intake-repair@ | `pi-intake-repair@<repo>.timer` | stock Pi |
@@ -61,7 +59,6 @@ cheaper than building, because prose bans lose to urgency at decision time.
 | Siterep live canary | siterep-live-canary | `siterep-live-canary.timer` | canary |
 | Siterep uptime | siterep-uptime | `siterep-uptime.timer` | uptime rail |
 | Quality research (weekly) | quality-research-weekly | `quality-research-weekly.timer` | #457 |
-| Opus duty-officer watch | opus-heartbeat(+ -thorough) | `opus-heartbeat*.timer` | Nish-ordered |
 | Boundary-notify (Nish-reserved) | nish-boundary-notify | `nish-boundary-notify.service` | standing rule |
 | Memory curator | nish-memory-curator | `nish-memory-curator.timer` | memory compound |
 | VPS maintenance (quiesce/deadman/update) | vps-maintenance-* / vps-weekly-update | `vps-maintenance-*.timer` | systemd-by-default |

@@ -31,9 +31,9 @@ Live snapshot 2026-09-07:
 
 | # | Mechanism | Lines (live) | Owner unit(s) | Off-the-shelf replacement | What gets DELETED | Verdict |
 |---|---|---|---|---|---|---|
-| 1 | opus-heartbeat family | 3,249 (+7,858 .bak) | `opus-heartbeat.timer` + `heartbeat-audit` + `opus-heartbeat-run` + `opus-heartbeat-fallback` | PromQL recording rules + Alertmanager; judge packet reads `/api/v1/query` | gather + heartbeat + audit + run + fallback + 6 `.bak` copies | **GO** |
-| 2 | repo-sync-snapshot.py | 1,311 | `repo-sync-snapshot.timer` | `gh` GraphQL directly, or a github-exporter for Prometheus | repo-sync-snapshot.py | **GO** |
-| 3 | venue-claim + open-question | 1,810 | `venue-claim` / `open-question` (webhook/timer) | GitHub issue assignment + Projects, Actions concurrency groups, flock/systemd for local locks | venue-claim, open-question | **GO** |
+| 1 | opus-heartbeat family | 3,249 (+7,858 .bak) | `opus-heartbeat.timer` + `heartbeat-audit` + `opus-heartbeat-run` + `opus-heartbeat-fallback` | PromQL recording rules + Alertmanager; judge packet reads `/api/v1/query` | gather + heartbeat + audit + run + fallback + 6 `.bak` copies | **DONE** (#4141) |
+| 2 | repo-sync-snapshot.py | 1,311 | `repo-sync-snapshot.timer` | (none — see row detail) | (none — see row detail) | **NO-GO** (misdescribed: not an org PR/CI snapshot; see row detail) |
+| 3 | venue-claim + open-question | 1,810 | `venue-claim` / `open-question` (webhook/timer) | GitHub issue assignment + Projects, Actions concurrency groups, flock/systemd for local locks | venue-claim, open-question | **DONE** (retired 2026-09-07, #4143) |
 | 4 | fleet-pr-rebase | 0 (already retired) | — | GitHub merge queue + auto-merge + `gh pr update-branch` | already gone (git history only) | **NO-GO** (already retired) |
 | 5 | claude-telegram-bridge.py | 412 (+753 .bak) | `claude-telegram-bridge` | Hermes (Nish-owned) — one Telegram path | bridge + 2 `.bak` | **GO** (Nish decision on Telegram path) |
 | 6 | seat prom writers + corpse-retire + comeback-release | 2,163 | `fleet-seat-comeback-release.timer` + seat-lib | LiteLLM health checks/cooldowns/budgets (fleet-ops#4130) | corpse-retire, comeback-release, 3 `.prom` writers | **GO** (covered by #4130) |
@@ -41,40 +41,77 @@ Live snapshot 2026-09-07:
 | 8 | load-storm-brake + agent-orphan-watchdog | 376 | `load-storm-brake` / `agent-orphan-watchdog` | systemd-oomd, CPUWeight/IOWeight, cgroup scoping (`systemd-run --scope`, `KillMode=control-group`) | both scripts | **GO** |
 | 9 | codex wrapper | 281 | `codex` (launcher) | systemd-run properties on the unit | codex wrapper | **GO** |
 | 10 | fleet-* timers (47 units) | classify | 20 `fleet-*.timer` | Prometheus alert rule / GitHub Actions scheduled workflow / genuine drill | the non-drill timers | **PARTIAL** (see §4) |
-| 11 | memory-index-dedupe.py + hermes-staff generator + oracle-* | 702 | various | classify | classify | **PARTIAL** (see §5) |
+| 11 | memory-index-dedupe.py + hermes-staff generator + oracle-* + 0509-surface-probe | 702 | various | classify | classify | **DONE** (hermes-staff GO retired 2026-09-07 #4150; memory-index-dedupe NO-GO kept; oracle-* GO retired #4162; 0509-surface-probe GO retired #1150) |
 
 ## 3. Per-row detail
 
-### Row 1 — opus-heartbeat family → PromQL + Alertmanager (GO)
+### Row 1 — opus-heartbeat family → PromQL + Alertmanager (DONE, #4141)
 
-Live lines: `opus-heartbeat-gather` 1,749, `opus-heartbeat` 771,
+Retired 2026-09-07. Live lines were: `opus-heartbeat-gather` 1,749, `opus-heartbeat` 771,
 `heartbeat-audit` 470, `opus-heartbeat-run` 146, `opus-heartbeat-fallback`
 113 = **3,249 lines**. Plus **6 `.bak` copies of gather** in libexec
 (1,166 + 1,214 + 1,235 + 1,353 + 1,413 + 1,477 = **7,858 lines**) — git is the
-backup; delete all six.
+backup; all deleted.
 
-The family re-derives fleet state (unit health, timers, PRs, claims) that
-Prometheus already holds. Replacement: PromQL recording rules + Alertmanager;
-the judge packet reads `/api/v1/query` instead of re-gathering.
+The family re-derived fleet state (unit health, timers, PRs, claims) that
+Prometheus already holds. Replacement: PromQL recording rules (group
+`fleet_duty_officer_recording` in `config/fleet_rules.yml`) + the existing
+hourly fleet judge (`fable-fleet-check.service`, packet
+`agent-state/fleet-landing-watch/fable-check.md`) which now queries
+`/api/v1/query` with an anti-fabrication rule. The 5 live scripts were
+archived to `archive/opus-heartbeat-retired-2026-09-07/` before deletion.
 
-**GO.** Delete 3,249 lines + 7,858 `.bak` lines. New organ: none — Prometheus
-and Alertmanager already run. Filed as issue (see §6).
+### Row 2 — repo-sync-snapshot.py → NO-GO (misdescribed seed map)
 
-### Row 2 — repo-sync-snapshot.py → gh GraphQL / github-exporter (GO)
+Live: 1,311 lines (`~/.local/libexec/repo-sync-snapshot.py`, 44,138 bytes;
+source in the local-only `control-plane` repo, which has no GitHub remote and
+where `Nishfleet/control-plane` does not exist).
 
-Live: 1,311 lines. Produces an org PR/CI snapshot. Replacement: `gh` GraphQL
-directly, or a github-exporter for Prometheus.
+The seed map described this as "org PR/CI snapshot" and proposed `gh` GraphQL
+or a Prometheus github-exporter as the replacement. That description is
+factually wrong, verified live 2026-09-07:
 
-**GO.** Delete 1,311 lines. No new organ (gh CLI / github-exporter are
-off-the-shelf). Filed as issue.
+- The file's docstring is "Safely replicate Git repositories and dirty work
+  between two machines." It is a Mac↔VPS **Git repository replication** tool,
+  not an org PR/CI snapshot tool.
+- Functions: `sync_repositories`, `create_snapshot`, `publish_repository`,
+  `fetch_peer_repository`, `ensure_local_bare_repo`, `ensure_remote_bare_repo`,
+  `create_stash_snapshots` — all replication, zero PR/CI.
+- `grep -iE 'pull.?request|pr[_-]|ci[_-]|check.?run|workflow.?run|graphql|
+  github.?exporter|prometheus|\.prom'` over the file → 0 matches.
+- The proposed replacement (gh GraphQL / github-exporter) snapshots org PRs/CI
+  — a different function. It does not replicate Git repositories between
+  machines.
 
-### Row 3 — venue-claim + open-question → GitHub native (GO)
+The mechanism is also **dormant**, not running:
+
+- Consuming units `repo-sync-snapshot.{service,timer}` and
+  `repo-sync-tooling.{service,timer}` exist only as files under
+  `control-plane/systemd/`; they are NOT installed in
+  `~/.config/systemd/user/` (`systemctl --user list-unit-files 'repo-sync*'` →
+  0; `list-timers 'repo-sync*'` → 0).
+- `~/.local/state/repo-sync/state.json` last modified 2026-08-23 (before the
+  2026-08-25 fleet restoration); backups dir `/home/nish/repo-sync-backups/`
+  last written 2026-08-24.
+
+**NO-GO** for the proposed replacement — it does not cover the file's actual
+job, and the file is not in fleet-ops (a fleet-ops PR cannot delete it). The
+seed-map row is corrected here. Whether the dormant Mac↔VPS Git replication
+should itself be retired — and with what substitute (e.g. both machines pull
+from the existing GitHub mirrors / `.mirrors/`) — is a separate, correctly
+described decision for Nish, not this row. Issues #4142 and #4154 were filed
+from the wrong row and cannot be implemented as written.
+
+### Row 3 — venue-claim + open-question → GitHub native (DONE)
 
 Live: `venue-claim` 1,008, `open-question` 802 = **1,810 lines**. Claim/lock/
 queue semantics. Replacement: GitHub issue assignment + Projects, Actions
 concurrency groups, flock/systemd for local locks.
 
-**GO.** Delete 1,810 lines. No new organ. Filed as issue.
+**DONE (2026-09-07, #4143).** Both scripts were orphaned (no units, no data
+dir) and are wiped from the live path. The fleet already runs claim/lock/queue
+on GitHub issue assignment + Projects, Actions concurrency groups, and
+flock/systemd. No new organ.
 
 ### Row 4 — fleet-pr-rebase → already retired (NO-GO)
 
@@ -129,7 +166,7 @@ systemd-run properties on the unit.
 
 ### Row 10 — fleet-* timers → classify (PARTIAL, see §4)
 
-### Row 11 — memory-index-dedupe + hermes-staff + oracle → classify (PARTIAL, see §5)
+### Row 11 — memory-index-dedupe + hermes-staff + oracle + 0509-surface-probe → classify (DONE, see §5)
 
 ## 4. fleet-* timer classification (row 10)
 
@@ -164,36 +201,58 @@ timers are deleted with their replacement issues.
 
 - `memory-index-dedupe.py` (222): dedupes the memory index. **Classify** —
   if the index is a plain file, dedupe is a one-shot maintenance script, not a
-  mechanism; keep as a manual tool, no timer. Verdict: **KEEP as manual tool**.
-- `hermes-staff/gen_hermes_staff.py` (147) + `run-agent` (54): Hermes staff
-  generator. **Classify** — Hermes is Nish-owned; the generator is part of
-  that product. Verdict: **KEEP** (Nish-owned product, not fleet machinery).
+  mechanism; keep as a manual tool, no timer. Verdict: **NO-GO (KEEP)** —
+  consumer is `bin/memory-index-autocompact` (tier-1 deterministic rebuild);
+  no off-the-shelf deterministic equivalent exists (tier-2 uses Anthropic's
+  shipped `consolidate-memory` skill but burns an Opus run on a mechanical
+  edit; dedupe exists to avoid that spend). The autocompact path unit is the
+  mechanism; dedupe is its cost-saving helper with no timer of its own. Kept
+  (#4150).
+- `hermes-staff/gen_hermes_staff.py` (147) + `run-agent` (54) + `run-script`
+  (61) + `run-common.sh` (97) = 359 lines: hand-built systemd-twin generator
+  for hermes cron agent/script jobs. **Classify** — live state 2026-09-07:
+  orphaned. Generated units gone from systemd, `~/.hermes/cron/jobs.json`
+  empty (`"jobs": []` since 2026-08-26), last run logs 2026-08-23. The
+  scheduling it duplicated is owned by hermes cron (built into the hermes CLI,
+  gateway live PID 1464, ticker heartbeat <60s). Verdict: **GO (retired
+  2026-09-07, #4150)** — wiped: `~/.local/libexec/hermes-staff/`,
+  `~/.local/state/hermes-staff/`, 13 orphan `stamp-hermes-staff-*.timer`.
+  Replacement proven live: `hermes cron status` rc=0 (gateway running, ticker
+  45s ago). Vault entry appended to `retired-mechanisms.md`.
 - `oracle-arm-fish` (147) + `oracle-bootstrap-micro` (186): oracle scripts.
-  **Classify** — need a decision on whether these are still used. Verdict:
-  **NO-GO pending** — file a classify issue.
+  **Classify** — Verdict: **GO (retired 2026-09-07, #4162)** — wiped and
+  vault entry appended; replaced by hitrov/oci-arm-host-capacity.
+- `0509-surface-probe` (163): hand-built authenticated surface-matrix probe.
+  Verdict: **GO (retired 2026-09-07, #1150)** — wiped and vault entry
+  appended; replaced by 0509 CI `e2e/surface-audit.mjs` +
+  `cross-browser-matrix.yml`. Stale prom writers
+  (`fleet-surface-probe-0050.prom`, `fleet-surface-probe-0509.prom`) wiped
+  from `/var/lib/prometheus/node-exporter/` 2026-09-07; no `fleet_probe` /
+  `fleet_surface_probe` rule remains in `config/fleet_rules.yml`.
 
 ## 6. Total hand-built lines after the GO rows land
 
-GO-row deletions (rows 1, 2, 3, 5, 6, 7, 8, 9 + row-10 GO timers):
+GO-row deletions (rows 1, 3, 5, 6, 7, 8, 9 + row-10 GO timers; row 2 is
+NO-GO — see §3 row 2 — and is excluded from the total):
 
 | Row | Lines deleted |
 |---|---|
 | 1 opus-heartbeat family | 3,249 (+7,858 `.bak`) |
-| 2 repo-sync-snapshot.py | 1,311 |
-| 3 venue-claim + open-question | 1,810 |
+| 3 venue-claim + open-question | 1,810 (retired 2026-09-07) |
 | 5 claude-telegram-bridge.py | 412 (+753 `.bak`) |
 | 6 seat prom writers + corpse-retire + comeback-release | 2,163 |
 | 7 dead-man canaries | 2,267+ |
 | 8 load-storm-brake + agent-orphan-watchdog | 376 |
 | 9 codex wrapper | 281 |
 | 10 fleet-* timer GO rows | (units, not lines — the scripts they run are counted above) |
-| **Total** | **~11,869 lines** (+8,611 `.bak` lines) |
+| **Total** | **~10,558 lines** (+8,611 `.bak` lines) |
 
-**Total hand-built lines deleted after the GO rows land: ~11,869 lines of
-live code + 8,611 lines of `.bak` copies = ~20,480 lines.** This is against a
+**Total hand-built lines deleted after the GO rows land: ~10,558 lines of
+live code + 8,611 lines of `.bak` copies = ~19,169 lines.** This is against a
 19,838-line `~/.local` snapshot, so the GO rows remove the majority of the
 hand-built surface. The seat-lib deletion (row 6) is the single largest chunk
-and is owned by #4130.
+and is owned by #4130. Row 2 (repo-sync-snapshot.py, 1,311 lines) is NO-GO and
+not counted; see §3 row 2.
 
 No new organ is proposed in any GO row without naming what it deletes: every
 replacement (Prometheus, Alertmanager, gh CLI, github-exporter, GitHub native,
@@ -208,9 +267,9 @@ Row 11 classify rows are filed as classify issues.
 
 | Row | Filed issue |
 |---|---|
-| 1 opus-heartbeat family | #4153 |
-| 2 repo-sync-snapshot.py | #4154 |
-| 3 venue-claim + open-question | #4155 |
+| 1 opus-heartbeat family | #4141 (DONE) |
+| 2 repo-sync-snapshot.py | #4154 (NO-GO — filed from the wrong row; see §3 row 2) |
+| 3 venue-claim + open-question | #4143 (dup #4155) |
 | 5 claude-telegram-bridge.py | #4156 |
 | 7 dead-man canaries | #4157 |
 | 8 load-storm-brake + agent-orphan-watchdog | #4158 |
@@ -218,3 +277,4 @@ Row 11 classify rows are filed as classify issues.
 | 10 baseline-delta + truth-staleness -> Prom alert | #4160 |
 | 10 issue-close-duplicates + merged-pr-close -> Actions | #4161 |
 | 11 oracle-* classify | #4162 |
+| 11 memory-index-dedupe + hermes-staff + 0509-surface-probe classify | #4150 |

@@ -38,9 +38,7 @@ cn = organs["gh-webhook-canary"]
 assert cn["heartbeat_metric"] == "fleet_gh_webhook_canary_last_green_seconds", cn
 assert cn["absent_alert"] == "FleetGhWebhookCanaryAbsent", cn
 assert "bin/gh-webhook-canary.py" in cn["files"]
-assert "bin/gh-webhook-canary-deadman.py" in cn["files"]
 assert "systemd/gh-webhook-canary.timer" in cn["files"]
-assert "systemd/gh-webhook-canary-deadman.timer" in cn["files"]
 print("registry OK")
 PY
 ok "1: registry has gh-webhook-receiver + gh-webhook-canary with right fields"
@@ -79,10 +77,8 @@ trap 'rm -f "$ns"' EXIT INT TERM
 {
     echo "M\tlibexec/gh-webhook-receiver/serve.py"
     echo "M\tbin/gh-webhook-canary.py"
-    echo "M\tbin/gh-webhook-canary-deadman.py"
     echo "M\tsystemd/gh-webhook-receiver.service"
     echo "M\tsystemd/gh-webhook-canary.timer"
-    echo "M\tsystemd/gh-webhook-canary-deadman.timer"
 } > "$ns"
 "$bin" gate \
     --name-status "$ns" \

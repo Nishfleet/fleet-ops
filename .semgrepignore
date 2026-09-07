@@ -1,0 +1,4 @@
+# Retired mechanisms archived for historical record (git is the backup).
+# These are dead code, intentionally committed once before deletion; they are
+# not live and must not be scanned. See fleet-ops#4141.
+archive/opus-heartbeat-retired-2026-09-07/
