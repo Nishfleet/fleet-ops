@@ -136,7 +136,16 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
         run: |
           if [ -z "$GH_TOKEN" ]; then
-            echo "::error::AUTO_REVERT_PAT is not configured — auto-merge not armed; this PR waits for a human"
-            exit 1
+            # fleet-ops#1081: a missing PAT is NOT a failure. The PR still
+            # lands — the opener's own `gh pr merge --auto --squash` (the
+            # worker's mandatory arm step) arms merge-on-green, and a human
+            # can always click the green button. Failing this check here
+            # would paint every PR red in repos that never set the secret,
+            # turning a non-blocker into permanent noise. Emit a notice and
+            # exit 0 so the check stays green; the PAT is only required for
+            # the GITHUB_TOKEN-merge push-trigger gap, which is already
+            # covered by the opener's own arm under a real identity.
+            echo "::notice::AUTO_REVERT_PAT is not configured — auto-merge arm via this workflow skipped; the PR's opener already armed merge-on-green, so this is not a merge blocker."
+            exit 0
           fi
           gh pr merge "$PR" --auto --squash --repo "${{ github.repository }}"

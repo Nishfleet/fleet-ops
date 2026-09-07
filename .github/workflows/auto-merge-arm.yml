@@ -14,7 +14,10 @@ name: Auto-merge arm
 # Arms with AUTO_REVERT_PAT, not GITHUB_TOKEN: a merge performed under
 # GITHUB_TOKEN would not trigger push workflows on main (deploy verification,
 # auto-revert), silently disarming the safety net. If the PAT is missing the
-# run fails LOUD and the PR waits for a human — the correct fallback.
+# reusable workflow emits a notice and exits 0 (fleet-ops#1081) — the check
+# stays green and the PR still lands via the opener's own merge-on-green arm
+# (or a human click). A missing PAT is not a merge blocker and must not paint
+# every PR red.
 
 on:
   pull_request:

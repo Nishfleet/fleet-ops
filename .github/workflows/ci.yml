@@ -289,6 +289,9 @@ jobs:
         bash tests/fleet-escalation-completion.test.sh
         bash tests/rule-enforcement.test.sh
         bash tests/reusable-workflows.test.sh
+        # fleet-ops#1081: a missing AUTO_REVERT_PAT must not fail the
+        # auto-merge-arm check (the PR still lands via the opener's own arm).
+        bash tests/auto-merge-arm-missing-pat.test.sh
         # fleet-ops#359: lock the auto-revert gate and the reopen-on-revert
         # behavior so a reverted merge can no longer leave its issues closed.
         bash tests/auto-revert-required-check-gate.test.sh
