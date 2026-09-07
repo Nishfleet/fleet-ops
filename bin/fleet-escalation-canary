@@ -61,6 +61,15 @@
 #        proves pick_seat privacy=private never returns a free-class seat and
 #        fails closed when only free seats remain. LOUD the same tick a
 #        regression re-opens the leak.
+#    13. Detached-work lint (fleet-ops#4266): no raw `systemd-run` transient
+#        user unit in the last 24h WITHOUT OnFailure. Reads the audit trail
+#        (ausearch -k fleet-unit-run) when auditd is installed: every
+#        systemd-run execve by auid=1000 must carry
+#        --property=OnFailure=unit-escalation@... (pi-systemd-run always
+#        adds it) or the unit is named as a VIOLATION — a clean stop of a
+#        raw unit is exactly the silent death the dead-man exists to catch.
+#        No auditd = PENDING (loud, not fail): the rules + auditd install
+#        are shipped via install.sh --system / bare-metal manifest.
 #
 # Required-check enumeration note: authoritatively listing each repo's
 # required_status_checks needs branch-protection read (Administration scope),
@@ -108,6 +117,8 @@
 #   FLEET_VAULT_CONFLICT_STALE_HOURS    default 1 (timer fires every 10 min)
 #   FLEET_REPO_PRIVACY_JSON             config/repo-privacy.json source (block 12)
 #   FLEET_ESCALATION_CANARY_SKIP_PRIVACY_GUARD  1 skips block 12 (offline tests)
+#   AUSEARCH                            default ausearch (block 13, tests stub it)
+#   FLEET_ESCALATION_CANARY_SKIP_DETACHED  1 skips block 13 (offline tests)
 
 set -Eeuo pipefail
 
@@ -202,6 +213,12 @@ is_escalation_excluded() {
         ready-work*)               return 0 ;;
         escalation-daily-sweep.*)  return 0 ;;
         resilience-drill-stub*)    return 0 ;;
+        # scope.d anti-recursion (fleet-ops#4266): systemd's own per-manager
+        # scope + Chromium/flatpak app sandbox scopes must not summon the
+        # SENIOR AUDITOR on tab churn. Keep in lockstep with the script
+        # guard in unit-escalation-write.
+        init.scope)                return 0 ;;
+        app-*.scope)               return 0 ;;
     esac
     return 1
 }
@@ -286,11 +303,11 @@ fi
 # A service-only type filter is the class that missed fleet-seat-recovery.path
 # (unit-start-limit-hit, OnFailure empty). path.d/ and timer.d/ are the
 # matching type drop-ins; this block must enumerate all three types.
-log "1. checking escalation coverage for loaded user services, paths, and timers"
+log "1. checking escalation coverage for loaded user services, paths, timers, and scopes"
 mapfile -t loaded_units < <(
-    "$SYSTEMCTL" --user list-units --type=service,path,timer --no-legend --plain 2>/dev/null \
+    "$SYSTEMCTL" --user list-units --type=service,path,timer,scope --no-legend --plain 2>/dev/null \
         | awk '{print $1}' \
-        | grep -E '\.(service|path|timer)$' \
+        | grep -E '\.(service|path|timer|scope)$' \
         || true
 )
 
@@ -960,6 +977,48 @@ JSON
         fi
         if [[ "$_drill_rc" -eq 0 ]]; then
             log "12.  - config/repo-privacy.json valid, default_policy=private, guard fires"
+        fi
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# 13. detached-work lint: raw systemd-run transients without OnFailure
+#     (fleet-ops#4266)
+# ---------------------------------------------------------------------------
+# A `systemd-run --user` that is NOT pi-systemd-run has no OnFailure
+# property (until a manager that loaded scope.d/service.d assigns the
+# drop-in) and no dead-man. The audit trail of systemd-run execve by
+# auid=1000 is the 24h window on that class. Every execve must carry the
+# --property=OnFailure flag; .scope-run raw units are caught the same way
+# once systemd-run execves with --scope. auditd absent = PENDING, because
+# the install ships the rule file but the package is deployed separately.
+log "13. checking for raw systemd-run transients without OnFailure (audit trail)"
+if [[ "${FLEET_ESCALATION_CANARY_SKIP_DETACHED:-0}" == "1" ]]; then
+    log "13.  - skipped (FLEET_ESCALATION_CANARY_SKIP_DETACHED)"
+elif ! command -v ausearch >/dev/null 2>&1 && [[ -z "${AUSEARCH:-}" ]]; then
+    loud "ESCALATION-CANARY-PENDING" "detached-work lint: ausearch not installed ($(date -u +%Y-%m-%dT%H:%M:%SZ)) — install auditd (install.sh --system ships config/audit/rules.d/30-fleet-unit-stop.rules; apt-get -y install auditd or wait for vps-weekly-update)"
+    pending=$((pending + 1))
+else
+    ausearch_bin="${AUSEARCH:-ausearch}"
+    raw="$("$ausearch_bin" -k fleet-unit-run -ts yesterday -i 2>/dev/null || true)"
+    if [[ -z "$raw" ]]; then
+        log "13.  - no systemd-run execve in the last 24h (key=fleet-unit-run) — clean"
+    else
+        # One ausearch -i EXECVE record is one (long) line: all aN= args.
+        # A raw launch = systemd-run whose args lack --property=OnFailure.
+        raw_bad=0
+        while IFS= read -r rec; do
+            [[ "$rec" == *"systemd-run"* ]] || continue
+            [[ "$rec" != *"--property=OnFailure"* ]] || continue
+            unit_name="$(sed -n 's/.*a[0-9]*="--unit=\([^"]*\)".*/\1/p' <<<"$rec" | head -n 1)"
+            [[ -n "$unit_name" ]] || unit_name="$(sed -n 's/.*a[0-9]*=--unit=\([^ "\/"]*\) .*/\1/p' <<<"$rec" | head -n 1)"
+            loud "DETACHED-RAW-UNIT" "unit=${unit_name:-<unnamed>} — raw systemd-run without --property=OnFailure (fleet-ops#4266: a clean stop of this unit dies silently; relaunch via pi-systemd-run which adds the dead-man)"
+            raw_bad=$((raw_bad + 1))
+        done <<<"$raw"
+        if [[ "$raw_bad" -gt 0 ]]; then
+            violations=$((violations + 1))
+        else
+            log "13.  - all plausible systemd-run execve records carry OnFailure — only pi-systemd-run transients in the last 24h"
         fi
     fi
 fi

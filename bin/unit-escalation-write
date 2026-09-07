@@ -25,6 +25,13 @@
 # The dispatch dedupe-hash is sha256 of the whole file; the timestamp makes
 # each trip unique so a fresh failure always gets its 2-dispatch budget.
 #
+# Env overrides (fleet-ops#4266): UNIT_ESCALATION_REASON (default
+# "unit-failure") and UNIT_ESCALATION_SOURCE (default "unit-escalation")
+# let the detached dead-man (pi-detached-deadman) write through the SAME
+# writer with reason=unit-stopped-without-deliverable / source=
+# pi-detached-deadman for clean-stop deaths — one STOP-REASON per trip, one
+# auditor, no second writer to maintain.
+#
 # fleet-ops#34, task 4: when a worker is OOM-killed (Result=oom-kill,
 # MemoryPeak near its cgroup cap, journal contains "Killed process"), the
 # auditor must be able to see that immediately.  This writer captures
@@ -103,7 +110,7 @@ fi
 # over 72h before this PR: pi-issue@* STOP-REASON writes were still
 # occurring (the loop was live), so the exclusion is necessary.
 case "$UNIT" in
-  unit-escalation@*|stop-escalation.service|stop-escalation.path|ready-work.service|escalation-daily-sweep.service|escalation-daily-sweep.timer|resilience-drill-stub*|notify-probe.service|notify-probe.onfail.service|probe-*.service|fleet-orphan-reset-probe@*.service|multi-*-sink.service|pi-issue@*.service)
+  unit-escalation@*|stop-escalation.service|stop-escalation.path|ready-work.service|escalation-daily-sweep.service|escalation-daily-sweep.timer|resilience-drill-stub*|notify-probe.service|notify-probe.onfail.service|probe-*.service|fleet-orphan-reset-probe@*.service|multi-*-sink.service|pi-issue@*.service|init.scope|app-*.scope)
     echo "unit-escalation-write: skipping excluded unit '$UNIT' (no self-trigger / own failure handling)" >&2
     exit 0
     ;;
@@ -396,8 +403,10 @@ jcount = int(sys.argv[7])
 rest = sys.argv[8:]
 lines = rest[:jcount]
 errors_lines = rest[jcount:]
+reason = os.environ.get("UNIT_ESCALATION_REASON", "unit-failure")
+source = os.environ.get("UNIT_ESCALATION_SOURCE", "unit-escalation")
 entry = {
-    "reason": "unit-failure",
+    "reason": reason,
     "detail": {
         "unit": unit,
         "journal": lines,
@@ -409,7 +418,7 @@ entry = {
     },
     "timestamp": time.strftime('%Y-%m-%dT%H:%M:%S.000Z', time.gmtime()),
     "extension": "unit-escalation",
-    "source": "unit-escalation",
+    "source": source,
 }
 lockpath = path + ".lock"
 os.makedirs(os.path.dirname(path), exist_ok=True)

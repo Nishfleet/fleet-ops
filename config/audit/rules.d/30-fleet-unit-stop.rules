@@ -1,0 +1,27 @@
+# =============================================================================
+# fleet-ops#4266 — who stopped it? audit trail
+# =============================================================================
+# A clean `systemctl stop` of a healthy unit yields Result=success, so
+# OnFailure never fires and the escort rail stays dark. The only durable
+# trace of "who stopped it" is the execve audit record of the stopping
+# process. Watch both mechanisms a stopper can use under this uid:
+#   - /usr/bin/systemctl execve (systemctl --user stop <unit>)
+#   - /usr/bin/kill      execve (kill <pid> of the unit's main process)
+# plus their /bin symlink aliases (Ubuntu ships /usr/bin paths; Debian
+# merges into /usr/bin too; the /bin/ symlink exists on both).
+#
+# Bound to auid=1000 (the fleet user) only: root/system maintenance stops
+# are visible in the same records anyway via exe, and -F auid=1000 keeps
+# the noise down to the fleet user's own stopping commands.
+#
+# Install: install.sh --system copies this to /etc/audit/rules.d/ and
+# reloads via `sudo augenrules --load` (idempotent; auditd must be
+# installed — see bare-metal-rebuild-manifest.json packages.core + the
+# vps-weekly-update install line).
+#
+# Query: bin/fleet-who-stopped <unit>  (ausearch -k fleet-unit-stop -i)
+# =============================================================================
+-w /usr/bin/systemctl -p x -F auid=1000 -k fleet-unit-stop
+-w /usr/bin/kill      -p x -F auid=1000 -k fleet-unit-stop
+-w /bin/systemctl     -p x -F auid=1000 -k fleet-unit-stop
+-w /bin/kill          -p x -F auid=1000 -k fleet-unit-stop

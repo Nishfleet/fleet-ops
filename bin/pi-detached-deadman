@@ -1,0 +1,214 @@
+#!/usr/bin/env bash
+# pi-detached-deadman — ExecStopPost verdict hook for pi-systemd-run units
+# (fleet-ops#4266). A detached job that ENDS is not automatically fine: a
+# stop with no Requester logged kills work nobody notices, and a job whose
+# deliverable never appeared is a failure even at exit 0. This hook turns
+# "the unit ended" into one of three verdicts:
+#
+#   success  -> dead-man success ping (healthchecks.io), textfile series
+#               cleared (the run kept its promise)
+#   died     -> STOP-REASON (for CLEAN stops: a stop becomes a failure;
+#               failed runs already reach unit-escalation via OnFailure =
+#               unit-escalation@%n.service) + /fail ping + Prometheus
+#               textfile gauge 1 so DetachedJobDied alert -> repair packet
+#   nothing  -> hook was never armed (no PI_DEADMAN_DISPATCH) — legacy or
+#               non-pi-systemd-run callers pass through untouched
+#
+# The verdict read is SYSTEMD's own ExecStopPost environment: SERVICE_RESULT
+# (success|exit-code|signal|oom-kill|timeout|watchdog|...), EXIT_CODE,
+# EXIT_STATUS. The deliverable is the run's promise: when --deliverable was
+# given at launch, the hook checks the file at stop time regardless of the
+# exit status — "even at exit 0, a stop becomes a failure".
+#
+# The "who stopped it" answer runs through the audit trail (ausearch -k
+# fleet-unit-stop) when auditd is installed; the line is echo'd to stderr so
+# it lands in the unit's journal (and therefore in the STOP-REASON detail
+# captured by unit-escalation-write). No auditd = the line says so; the
+# auditd install is shipped by install.sh --system + the bare-metal manifest.
+#
+# Always exits 0: ExecStopPost must never fail the unit it is watching.
+#
+# Env (set by pi-systemd-run; inherited seams for tests):
+#   PI_DEADMAN_DISPATCH       run id (uuid). Empty = not armed -> no-op.
+#   PI_DEADMAN_UNIT           unit name (e.g. pi-job-<ts>-<pid>)
+#   PI_DEADMAN_CMDLINE        recorded command line (relaunch source)
+#   PI_DEADMAN_DEADLINE       --deadline minutes (grace proxy, recorded)
+#   PI_DEADMAN_DELIVERABLE    --deliverable absolute path (optional)
+#   SERVICE_RESULT, EXIT_CODE, EXIT_STATUS   (systemd ExecStopPost)
+#   KEYSTONE_HC_ENV, PI_DEADMAN_URL_BASE     ping seams (keystone-hc-ping)
+#   PI_DEADMAN_TEXTFILE       node_exporter textfile (default
+#                             /var/lib/prometheus/node-exporter/fleet-detached.prom)
+#   PI_DEADMAN_ESCALATION_BIN unit-escalation-write path (default: sibling)
+#   PI_DEADMAN_WHOSTOPPED_BIN fleet-who-stopped path (default: sibling)
+#   PI_DEADMAN_DRYRUN         1 = print the verdict, write nothing (tests)
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+escalation_bin="${PI_DEADMAN_ESCALATION_BIN:-$here/unit-escalation-write}"
+whostopped_bin="${PI_DEADMAN_WHOSTOPPED_BIN:-$here/fleet-who-stopped}"
+textfile="${PI_DEADMAN_TEXTFILE:-/var/lib/prometheus/node-exporter/fleet-detached.prom}"
+
+log() { printf '[%s] [pi-detached-deadman] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; }
+
+# --- node_exporter textfile gauge -------------------------------------------
+# fleet_detached_job_died{unit,dispatch,cmdline,deliverable,deadline} 1
+# Only DEATH series live in the file: value 1 = died without its deliverable
+# (alert source); a value-0 write is a clear of a stale series (success path
+# or repair-worker acknowledgment). Atomic read-modify-write under flock so
+# concurrent launches/stops cannot clobber each other's series.
+_textfile_set() {
+    local want="$1"
+    [[ -n "${PI_DEADMAN_TEXTFILE_SKIP:-}" ]] && return 0
+    local label_cmdline="${PI_DEADMAN_CMDLINE:-}"
+    label_cmdline="${label_cmdline:0:400}"
+    PI_DEADMAN_TEXTFILE="$textfile" PI_DEADMAN_UNIT="$unit" \
+        PI_DEADMAN_DISPATCH="$dispatch" PI_DEADMAN_DEADLINE="${PI_DEADMAN_DEADLINE:-}" \
+        PI_DEADMAN_DELIVERABLE="$deliverable" PI_DEADMAN_METRIC_WANT="$want" \
+        PI_DEADMAN_CMDLINE="$label_cmdline" python3 - <<'PY'
+import fcntl, os, tempfile
+path = os.environ["PI_DEADMAN_TEXTFILE"]
+keys = ["unit", "dispatch"]
+labels = {
+    "unit": os.environ.get("PI_DEADMAN_UNIT", ""),
+    "dispatch": os.environ.get("PI_DEADMAN_DISPATCH", ""),
+    "cmdline": os.environ.get("PI_DEADMAN_CMDLINE", ""),
+    "deliverable": "1" if os.environ.get("PI_DEADMAN_DELIVERABLE") else "0",
+    "deadline": os.environ.get("PI_DEADMAN_DEADLINE", ""),
+}
+want = os.environ.get("PI_DEADMAN_METRIC_WANT", "0")
+
+def esc(v: str) -> str:
+    return v.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+def matches(l: dict) -> bool:
+    if want == "0":
+        # Clear semantics: drop the WHOLE unit's series regardless of
+        # dispatch. --clear <unit> runs with dispatch="" (repair worker
+        # only knows the unit name), and a success verdict must clear any
+        # stale series for that unit, so matching on unit alone.
+        return l.get("unit") == labels.get("unit")
+    return all(l.get(k) == labels.get(k) for k in keys)
+
+block = 'fleet_detached_job_died{%s} %s' % (
+    ",".join(f'{k}="{esc(labels[k])}"' for k in labels),
+    "1" if want == "1" else "0",
+)
+
+os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+lock = path + ".lock"
+with open(lock, "w") as lk:
+    fcntl.flock(lk, fcntl.LOCK_EX)
+    lines = []
+    try:
+        with open(path) as f:
+            lines = f.read().splitlines()
+    except OSError:
+        pass
+    kept, changed = [], False
+    for ln in lines:
+        if not ln.startswith("fleet_detached_job_died{"):
+            kept.append(ln)
+            continue
+        try:
+            payload = ln[ln.index("{") + 1:ln.rindex("}")]
+            l = {}
+            for part in payload.split(","):
+                k, _, v = part.partition("=")
+                l[k.strip()] = v.strip().strip('"').replace('\\"', '"').replace("\\\\", "\\")
+        except Exception:
+            continue
+        if matches(l):
+            changed = True
+            if want == "1":
+                kept.append(block)
+            continue
+        kept.append(ln)
+    if want == "1" and not changed:
+        kept.append(block)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".", prefix=".fleet-detached-")
+    with os.fdopen(fd, "w") as f:
+        f.write("# HELP fleet_detached_job_died 1 when a pi-systemd-run unit ended without its deliverable (fleet-ops#4266).\n")
+        f.write("# TYPE fleet_detached_job_died gauge\n")
+        for ln in kept:
+            f.write(ln + "\n")
+    os.replace(tmp, path)
+PY
+}
+
+dispatch="${PI_DEADMAN_DISPATCH:-}"
+unit="${PI_DEADMAN_UNIT:-}"
+deliverable="${PI_DEADMAN_DELIVERABLE:-}"
+
+# Repair-worker acknowledgment mode: clear the died series for a unit by
+# name (the alert fired; the worker relaunched; the dead-man is disarmed so
+# DetachedJobDied resolves instead of re-firing every 6h).
+if [[ "${1:-}" == "--clear" ]]; then
+    clear_unit="${2:-}"
+    [[ -n "$clear_unit" ]] || { echo "usage: pi-detached-deadman --clear <unit>" >&2; exit 2; }
+    unit="$clear_unit"
+    dispatch=""
+    if [[ "${PI_DEADMAN_DRYRUN:-0}" == "1" ]]; then
+        echo "clear: $clear_unit"
+        exit 0
+    fi
+    _textfile_set 0
+    exit 0
+fi
+
+[[ -z "$dispatch" ]] && exit 0          # not armed: pass through untouched
+
+service_result="${SERVICE_RESULT:-}"
+
+# Verdict: died = the unit's Result was not success, OR the promised
+# deliverable is missing at stop time (exit 0 included).
+died=0
+if [[ "$service_result" != "success" ]]; then
+    died=1
+fi
+if [[ -n "$deliverable" && ! -f "$deliverable" ]]; then
+    died=1
+fi
+
+# --- who stopped it (audit trail, best-effort) ------------------------------
+stopper_line=""
+if [[ "$died" == "1" && -x "$whostopped_bin" ]]; then
+    stopper_line="$("$whostopped_bin" "$unit" 2>/dev/null | tail -n 1 || true)"
+fi
+[[ -z "$stopper_line" ]] && stopper_line="who-stopped: no audit trail (auditd not installed?) — install.sh --system ships /etc/audit/rules.d/30-fleet-unit-stop.rules"
+
+if [[ "${PI_DEADMAN_DRYRUN:-0}" == "1" ]]; then
+    if [[ "$died" == "1" ]]; then
+        echo "verdict=died unit=$unit result=$service_result deliverable=$deliverable"
+        echo "$stopper_line"
+    else
+        echo "verdict=success unit=$unit result=$service_result"
+    fi
+    exit 0
+fi
+
+if [[ "$died" == "1" ]]; then
+    # /fail ping: instant DOWN beats waiting out the grace period.
+    "$here/keystone-hc-ping" detached fail || true
+    # Clean-stop deaths are invisible to OnFailure (Result=success) — this
+    # hook is their only writer. Unit failures are already written by the
+    # OnFailure -> unit-escalation@%n rail; reusing the SAME writer with a
+    # distinct reason keeps one STOP-REASON per trip and one auditor.
+    echo "$stopper_line" >&2   # lands in the unit journal -> STOP-REASON detail
+    if [[ "$service_result" == "success" ]]; then
+        UNIT_ESCALATION_REASON="unit-stopped-without-deliverable" \
+        UNIT_ESCALATION_SOURCE="pi-detached-deadman" \
+            "$escalation_bin" "$unit" >/dev/null 2>&1 || true
+    fi
+    _textfile_set 1
+    log "died: unit=$unit result=$service_result deliverable=${deliverable:-unset} — dead-man tripped"
+else
+    # The run kept its promise: success ping (same run id), and the died
+    # series (if any stale one exists) is cleared.
+    "$here/keystone-hc-ping" detached success || true
+    _textfile_set 0
+fi
+exit 0

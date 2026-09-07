@@ -211,6 +211,11 @@ bin/pi-transport-check /home/nish/.local/bin/pi-transport-check
 bin/pi-issue-run /home/nish/.local/bin/pi-issue-run
 bin/pi-issue-failed-reap /home/nish/.local/bin/pi-issue-failed-reap
 bin/pi-systemd-run /home/nish/.local/bin/pi-systemd-run
+# fleet-ops#4266: ExecStopPost dead-man — the verdict hook that turns "the
+# unit ended" into success ping / STOP-REASON + /fail ping + died gauge.
+bin/pi-detached-deadman /home/nish/.local/bin/pi-detached-deadman
+# fleet-ops#4266: ausearch wrapper answering "who stopped it" (auditd).
+bin/fleet-who-stopped /home/nish/.local/bin/fleet-who-stopped
 # fleet-ops#1204: ExecStopPost salvage — bank a dying worker's dirty
 # worktree onto wip/<unit>-<ts>. Weekly --gc is the WIP branch lifecycle.
 bin/pi-salvage-worktree /home/nish/.local/bin/pi-salvage-worktree
@@ -363,6 +368,11 @@ bin/lifecycle-label-sweep /home/nish/.local/bin/lifecycle-label-sweep
 lib/agent-ready-spec-gate.py /home/nish/.local/lib/pi-packet/agent-ready-spec-gate.py
 bin/stop-escalation-dispatch /home/nish/.local/bin/stop-escalation-dispatch
 bin/unit-escalation-write /home/nish/.local/bin/unit-escalation-write
+# fleet-ops#4266: close the `systemd-run --user --scope` escalation bypass —
+# generic scope.d drop-in mirroring service.d/10-escalate.conf (scopes take
+# no service-level drop-ins). Exclusions: init.scope + app-*.scope enforced
+# by the unit-escalation-write script guard (lockstep with the canary).
+systemd/scope.d/10-escalate.conf /home/nish/.config/systemd/user/scope.d/10-escalate.conf
 bin/escalation-daily-sweep /home/nish/.local/bin/escalation-daily-sweep
 # fleet-ops#1164: persist nish-boundary-notify CLASSES in git + lint. The
 # script delivers Nish-RESERVED escalation classes out of NISH-ESCALATIONS.md;
@@ -573,6 +583,11 @@ systemd/fleet-issue-close-duplicates.timer /home/nish/.config/systemd/user/fleet
 # in the unit file.
 bin/fleet-resilience-drill /home/nish/.local/bin/fleet-resilience-drill
 bin/keystone-hc-ping /home/nish/.local/bin/keystone-hc-ping
+# fleet-ops#4266: audit watch on systemctl/kill execve (auid=1000) so a
+# clean stop leaves a "who stopped it" trail. install.sh --system copies to
+# /etc/audit/rules.d/ and reloads via augenrules --load when auditd is
+# present; auditd ships in bare-metal-rebuild-manifest.json packages.core.
+config/audit/rules.d/30-fleet-unit-stop.rules /etc/audit/rules.d/30-fleet-unit-stop.rules
 systemd/fleet-resilience-drill.service /home/nish/.config/systemd/user/fleet-resilience-drill.service
 systemd/fleet-resilience-drill.timer /home/nish/.config/systemd/user/fleet-resilience-drill.timer
 systemd/resilience-drill.slice /home/nish/.config/systemd/user/resilience-drill.slice

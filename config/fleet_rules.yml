@@ -39,6 +39,22 @@ groups:
           summary: "fleet metrics textfile missing"
           description: "fleet.prom is gone from the node-exporter textfile dir."
 
+      - alert: DetachedJobDied
+        # fleet-ops#4266: a pi-systemd-run unit ended WITHOUT its deliverable
+        # (even at exit 0 — a clean stop never fires OnFailure, so the
+        # STOP-REASON + /fail ping + gauge 1 written by pi-detached-deadman
+        # are the only failure signal). Series are cleared by the deadman on
+        # a success verdict or by pi-detached-deadman --clear after the
+        # repair worker relaunches.
+        expr: fleet_detached_job_died == 1
+        for: 1m
+        labels:
+          severity: critical
+          service: fleet
+        annotations:
+          summary: "Detached job {{ $labels.unit }} ended without its deliverable"
+          description: "unit={{ $labels.unit }} dispatch={{ $labels.dispatch }} deliverable={{ $labels.deliverable }} deadline={{ $labels.deadline }} (fleet-ops#4266). Relaunch the recorded command line via pi-systemd-run with the same --stdin packet and --deliverable, then run: bin/fleet-who-stopped {{ $labels.unit }} and post the audit line to the auditor. Clear the dead-man once relaunched: bin/pi-detached-deadman --clear {{ $labels.unit }}"
+
       - alert: FleetUndersatGuardAbsent
         expr: absent(fleet_pi_workers_active)
         for: 3h
