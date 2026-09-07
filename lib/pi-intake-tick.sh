@@ -267,6 +267,74 @@ if [[ ! -f "$SPEC_GATE_PY" ]]; then
     exit 1
 fi
 
+# GitHub API rate-limit PRE-CHECK (fleet-ops#2523). The tick makes several
+# gh calls (issue list, PR list, label edits) before the mid-tick rate-limit
+# gate (fleet-ops#1350) below. When the core budget is nearly exhausted, those
+# calls fail or burn seats on retries, stalling dispatch. This pre-check runs
+# BEFORE the first gh call and skips the whole tick (exit 0) when headroom is
+# low. It reads the SAME side-car state file the exporter writes every 60s
+# (agent-state/pi-intake/gh-rate-limit.json) — a cached result, never a fresh
+# gh api call that would itself consume quota. The tick runs every 5 min, so
+# skipping one tick is safe; the next tick re-checks. Thresholds: skip when
+# remaining < 500 OR headroom < 10% (remaining/limit). A missing or stale
+# state file fails OPEN (the throttle is a soft gate, not a blocker).
+gh_rl_pre_path="${PI_INTAKE_GH_RATE_LIMIT_STATE:-/home/nish/workspaces/agent-state/pi-intake/gh-rate-limit.json}"
+gh_rl_pre_max_age="${PI_INTAKE_GH_RATE_LIMIT_MAX_AGE:-120}"
+gh_rl_pre_skip_min="${PI_INTAKE_GH_RATE_LIMIT_SKIP_MIN:-500}"
+gh_rl_pre_skip_pct="${PI_INTAKE_GH_RATE_LIMIT_SKIP_PCT:-10}"
+if [[ -r "$gh_rl_pre_path" ]]; then
+    _gh_rl_pre_json=$(cat "$gh_rl_pre_path" 2>/dev/null) || _gh_rl_pre_json=
+    if [[ -n "$_gh_rl_pre_json" ]]; then
+        _gh_rl_pre_remaining=$(printf '%s' "$_gh_rl_pre_json" | jq -r '.remaining // 0' 2>/dev/null) || _gh_rl_pre_remaining=0
+        _gh_rl_pre_limit=$(printf '%s' "$_gh_rl_pre_json" | jq -r '.limit // 0' 2>/dev/null) || _gh_rl_pre_limit=0
+        _gh_rl_pre_fetched=$(printf '%s' "$_gh_rl_pre_json" | jq -r '.fetched_at // 0' 2>/dev/null) || _gh_rl_pre_fetched=0
+        _gh_rl_pre_now=$(date +%s)
+        _gh_rl_pre_age=$(( _gh_rl_pre_now - ${_gh_rl_pre_fetched%.*} ))
+        if (( _gh_rl_pre_age > gh_rl_pre_max_age )); then
+            echo "gh rate-limit pre-check state stale (age=${_gh_rl_pre_age}s > max=${gh_rl_pre_max_age}s); failing open — gate: gh_rate_limit pre-check stale"
+        else
+            _gh_rl_pre_headroom=0
+            if (( _gh_rl_pre_limit > 0 )); then
+                _gh_rl_pre_headroom=$(( _gh_rl_pre_remaining * 100 / _gh_rl_pre_limit ))
+            fi
+            if (( _gh_rl_pre_remaining < gh_rl_pre_skip_min )) || (( _gh_rl_pre_headroom < gh_rl_pre_skip_pct )); then
+                # Export fleet_intake_tick_skipped_rate_limit_total (per-repo
+                # prom file, same convention as the reconciler/umbrella counters).
+                _rl_skip_prom_base="${PI_INTAKE_RL_SKIP_PROM:-/var/lib/prometheus/node-exporter/fleet-intake-tick-skipped-rate-limit}"
+                _rl_skip_prom="${_rl_skip_prom_base}-${REPO}.prom"
+                _rl_skip_prev=0
+                if [[ -f "$_rl_skip_prom" ]]; then
+                    _rl_skip_prev=$(awk -v r="$REPO" '
+                        $0 ~ "fleet_intake_tick_skipped_rate_limit_total\\{repo=\""r"\"\\}" {
+                            gsub(/[^0-9.]/, "", $2); v = int($2);
+                            if (v > 0) print v; else print 0; exit
+                        }
+                        END { if (NR == 0) print 0 }
+                    ' "$_rl_skip_prom" 2>/dev/null || echo 0)
+                    _rl_skip_prev="${_rl_skip_prev:-0}"
+                fi
+                _rl_skip_new=$(( _rl_skip_prev + 1 ))
+                mkdir -p "$(dirname "$_rl_skip_prom")" 2>/dev/null || true
+                if {
+                    printf '# HELP fleet_intake_tick_skipped_rate_limit_total Cumulative number of intake ticks skipped because GitHub API rate-limit headroom was low (fleet-ops#2523).
+'
+                    printf '# TYPE fleet_intake_tick_skipped_rate_limit_total counter
+'
+                    printf 'fleet_intake_tick_skipped_rate_limit_total{repo="%s"} %d\n' "$REPO" "$_rl_skip_new"
+                } > "$_rl_skip_prom.tmp" 2>/dev/null; then
+                    mv "$_rl_skip_prom.tmp" "$_rl_skip_prom" 2>/dev/null || true
+                fi
+                echo "rate-limit headroom low, skipping intake tick (remaining=${_gh_rl_pre_remaining}/${_gh_rl_pre_limit}, headroom=${_gh_rl_pre_headroom}% < ${gh_rl_pre_skip_pct}% or < ${gh_rl_pre_skip_min}); skipped_total=$_rl_skip_new"
+                exit 0
+            fi
+        fi
+    else
+        echo "gh rate-limit pre-check state file unreadable or empty; failing open — gate: gh_rate_limit pre-check missing"
+    fi
+else
+    echo "gh rate-limit pre-check state file missing; failing open — gate: gh_rate_limit pre-check missing"
+fi
+
 # Step 1: list ready work
 # Limit 250 (auditor 2026-08-28, summon unit-failure fleet-heartbeat): the
 # prior --limit 50 returned only the 50 NEWEST agent-ready issues (gh issue

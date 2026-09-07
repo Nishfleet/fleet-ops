@@ -355,6 +355,10 @@ template/cursor-rules/fleet-packet-verdict.mdc /home/nish/.cursor/rules/fleet-pa
 # pinned by tests/provider-timeout.test.sh to stay >= 0.9 x PI_HANG_TIMEOUT_S.
 template/extensions/devin-provider/index.ts /home/nish/.pi/agent/extensions/devin-provider/index.ts
 template/extensions/cursor-provider/index.ts /home/nish/.pi/agent/extensions/cursor-provider/index.ts
+# fleet-ops#3126: shared provider-shim spawn guard. Both provider shims import
+# it to refuse dangerous operations (git stash, rm -rf, credential writes,
+# systemctl restart, wrangler deploy) before execing the vendor binary.
+template/extensions/provider-spawn-guard.ts /home/nish/.pi/agent/extensions/provider-spawn-guard.ts
 # fleet-ops#3280: fleet-work.slice TasksMax=8000 (soft 7500 in spawn-guard-core).
 # Process-count fence; RAM governor remains admission authority. install.sh
 # converges the live Pi spawn-guard so the ceiling cannot drift from the drop-in.

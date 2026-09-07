@@ -68,6 +68,11 @@
       "proof": "live VPS 2026-08-25; depth-1 spawn guard"
     },
     {
+      "id": "provider-spawn-guard",
+      "kind": "global-file",
+      "proof": "fleet-ops#3126; devin/cursor shim pre-exec guard, imported by both provider shims"
+    },
+    {
       "id": "stop-judge",
       "kind": "global-file",
       "proof": "live VPS 2026-08-26; stop-hook judge for destructive calls"

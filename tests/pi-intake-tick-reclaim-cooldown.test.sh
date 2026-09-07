@@ -125,4 +125,12 @@ echo
 # name in tests/p14-test-listing-gate.test.sh. Same intake dispatch family.
 bash "$here/fleet-ops-2772-claim-loop-gate.test.sh" || fail "fleet-ops-2772 claim-loop-gate tests failed"
 
+# fleet-ops#4273: the escalation-class regression test (neither #2462 nor
+# #2772 escalation may emit nish-decision; the reserved-class path still
+# can). Hosted here from pi-intake-tick-reclaim-cooldown.test.sh (already
+# listed in ci.yml — the worker App cannot push .github/workflows/**) and
+# pinned by name in tests/p14-test-listing-gate.test.sh. Same intake
+# dispatch family as the #2772 host above.
+bash "$here/fleet-ops-4273-escalation-never-nish-decision.test.sh" || fail "fleet-ops-4273 escalation nish-decision regression tests failed"
+
 echo "ALL OK: intake-tick reclaim cooldown + stale-claim release (fleet-ops#2133)"

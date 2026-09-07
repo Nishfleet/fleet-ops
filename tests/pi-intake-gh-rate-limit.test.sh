@@ -55,7 +55,12 @@ SH
 chmod +x "$prior_art_stub"
 
 # Functions beat PATH, so we override gh/git/systemctl in the child bash.
+# GH_CALL_LOG (when set) records every gh invocation so a test can assert the
+# pre-check skipped the tick WITHOUT making any gh call (fleet-ops#2523).
 gh() {
+    if [[ -n "${GH_CALL_LOG:-}" ]]; then
+        printf '%s\n' "$*" >>"$GH_CALL_LOG"
+    fi
     if [[ "$1" == "issue" && "$2" == "list" ]]; then
         printf '%s\n' '[{"number":12345,"title":"test claim"}]'
         return 0
@@ -88,16 +93,34 @@ mkdir -p "$scratch/run"
 
 write_state() {
     local low="$1"
-    cat >"$scratch/gh-rate-limit.json" <<JSON
+    # fleet-ops#2523: the pre-check (remaining < 500 OR headroom < 10%) runs
+    # before the mid-tick gate. To exercise the mid-tick gate (low==1, 20%
+    # threshold) WITHOUT tripping the stricter pre-check, low=1 uses
+    # remaining=1500/limit=10000 (headroom 15%, remaining >= 500) so only the
+    # mid-tick gate fires. low=0 uses a healthy remaining=3000/limit=5000.
+    if [[ "$low" == "1" ]]; then
+        cat >"$scratch/gh-rate-limit.json" <<JSON
 {
-  "low": $low,
-  "remaining": 5,
-  "limit": 30,
+  "low": 1,
+  "remaining": 1500,
+  "limit": 10000,
   "resource": "search",
   "reset": $(( $(date +%s) + 3600 )),
   "fetched_at": $(date +%s)
 }
 JSON
+    else
+        cat >"$scratch/gh-rate-limit.json" <<JSON
+{
+  "low": 0,
+  "remaining": 3000,
+  "limit": 5000,
+  "resource": "search",
+  "reset": $(( $(date +%s) + 3600 )),
+  "fetched_at": $(date +%s)
+}
+JSON
+    fi
 }
 
 run_tick() {
@@ -158,6 +181,85 @@ rc=$?
 echo "$out" | grep -qF 'holding claims this tick' && fail "missing state must NOT hold claims (fail-open): $out" || true
 echo "$out" | grep -qF 'gh rate-limit state file missing' || fail "missing state should warn: $out"
 ok "missing gh rate-limit state is fail-open"
+
+# --- fleet-ops#2523 rate-limit PRE-CHECK (skip tick before any gh call) ---
+# The pre-check runs at the very start of the tick, before the first gh call.
+# When headroom is low (remaining < 500 OR headroom < 10%) it must exit 0 with
+# the "rate-limit headroom low, skipping intake tick" log line and export the
+# fleet_intake_tick_skipped_rate_limit_total metric, WITHOUT making any gh call.
+
+write_state_full() {
+    local remaining="$1" limit="$2"
+    cat >"$scratch/gh-rate-limit.json" <<JSON
+{
+  "low": 0,
+  "remaining": $remaining,
+  "limit": $limit,
+  "resource": "core",
+  "reset": $(( $(date +%s) + 3600 )),
+  "fetched_at": $(date +%s)
+}
+JSON
+}
+
+run_tick_precheck() {
+    local remaining="$1" limit="$2"
+    write_state_full "$remaining" "$limit"
+    rm -f "$scratch/gh-calls.log"
+    mkdir -p "$scratch/secondary" "$scratch/pi-issues" "$scratch/rl-skip"
+    env \
+        GITHUB_ACTIONS=true \
+        PATH="$stubs:${PATH}" \
+        HOME="$scratch" \
+        XDG_RUNTIME_DIR="$scratch/run" \
+        PI_INTAKE_LOCKDIR="$scratch" \
+        PI_INTAKE_RECONCILER_PROM="$scratch/reconciler" \
+        PI_INTAKE_GH_RATE_LIMIT_STATE="$scratch/gh-rate-limit.json" \
+        PI_INTAKE_GH_RATE_LIMIT_MAX_AGE="120" \
+        PI_INTAKE_GH_SECONDARY_STATE_DIR="$scratch/secondary" \
+        PI_INTAKE_ISSUE_STATE_DIR="$scratch/pi-issues" \
+        PI_INTAKE_RL_SKIP_PROM="$scratch/rl-skip/fleet-intake-tick-skipped-rate-limit" \
+        GH_CALL_LOG="$scratch/gh-calls.log" \
+        SEAT_LIB="$stubs" \
+        PRECEDENCE_BAND_LIB="$stubs" \
+        PRIOR_ART_CLAIM_CHECK="$prior_art_stub" \
+        FLEET_ISSUE_REPO="Nishfleet/fleet-ops" \
+        bash "$tick" fleet-ops 2>&1
+}
+
+# Test 3b: low remaining (< 500) -> pre-check skips the tick, no gh call
+out="$(run_tick_precheck 100 5000)"
+rc=$?
+[[ "$rc" == "0" ]] || fail "pre-check low-remaining tick must exit 0, got rc=$rc"
+echo "$out" | grep -qF 'rate-limit headroom low, skipping intake tick' || fail "pre-check must log 'rate-limit headroom low, skipping intake tick': $out"
+# The pre-check must skip BEFORE any gh call (fleet-ops#2523 acceptance).
+if [[ -s "$scratch/gh-calls.log" ]]; then
+    fail "pre-check low-remaining tick must NOT call gh, but gh was called: $(cat "$scratch/gh-calls.log")"
+fi
+# The metric must be exported when skipped.
+[[ -f "$scratch/rl-skip/fleet-intake-tick-skipped-rate-limit-fleet-ops.prom" ]] || fail "pre-check must export fleet_intake_tick_skipped_rate_limit_total prom file"
+grep -qF 'fleet_intake_tick_skipped_rate_limit_total{repo="fleet-ops"} 1' "$scratch/rl-skip/fleet-intake-tick-skipped-rate-limit-fleet-ops.prom" || fail "pre-check prom file must record skipped_total=1"
+ok "pre-check low remaining (<500) skips tick, exports metric, no gh call"
+
+# Test 3c: low headroom (< 10%) with remaining >= 500 -> pre-check skips
+out="$(run_tick_precheck 400 5000)"
+rc=$?
+[[ "$rc" == "0" ]] || fail "pre-check low-headroom tick must exit 0, got rc=$rc"
+echo "$out" | grep -qF 'rate-limit headroom low, skipping intake tick' || fail "pre-check must log 'rate-limit headroom low, skipping intake tick': $out"
+if [[ -s "$scratch/gh-calls.log" ]]; then
+    fail "pre-check low-headroom tick must NOT call gh, but gh was called: $(cat "$scratch/gh-calls.log")"
+fi
+ok "pre-check low headroom (<10%) skips tick, no gh call"
+
+# Test 3d: healthy headroom (remaining >= 500 and >= 10%) -> pre-check does NOT
+# skip; the tick proceeds to the gh issue list call (stub returns a claim).
+out="$(run_tick_precheck 3000 5000)"
+rc=$?
+[[ "$rc" == "0" ]] || fail "pre-check healthy tick must exit 0, got rc=$rc"
+echo "$out" | grep -qF 'rate-limit headroom low, skipping intake tick' && fail "pre-check healthy tick must NOT skip: $out" || true
+# The tick must have reached the gh issue list call (healthy path).
+grep -qF 'issue list' "$scratch/gh-calls.log" || fail "pre-check healthy tick must reach gh issue list: $(cat "$scratch/gh-calls.log" 2>/dev/null)"
+ok "pre-check healthy headroom does not skip; tick reaches gh"
 
 # --- fleet-ops#3445 secondary rate-limit gate -----------------------------
 

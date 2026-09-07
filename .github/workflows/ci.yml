@@ -71,7 +71,7 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s extglob
-          files=(bin/!(*.py|*.ts) install.sh)
+          files=(bin/!(*.py|*.ts) .github/scripts/gate-integrity.sh install.sh)
           shellcheck -x "${files[@]}"
 
   unit-verify:
@@ -270,6 +270,10 @@ jobs:
         bash tests/seat-lib.test.sh
         bash tests/seat-lib-degraded.test.sh
         bash tests/seat-lib-org-reserve.test.sh
+        # fleet-ops#2563: cap quota_bench walls at the provider's declared
+        # reset horizon (quota_window) so a vendor-claimed 19-day Retry-After
+        # cannot freeze a weekly-resetting seat for three cycles.
+        bash tests/seat-wall-reset-horizon.test.sh
         bash tests/stop-escalation-dispatch.test.sh
         bash tests/escalation-units-shape.test.sh
         # fleet-ops#1164: persist nish-boundary-notify CLASSES in git + lint.
@@ -325,6 +329,7 @@ jobs:
         # fleet-ops#828: lock the gate-integrity decision script's
         # line-anchored attestation extraction (multi-line attest comments).
         bash tests/gate-integrity.test.sh
+        bash tests/gate-integrity-config.test.sh
         # fleet-ops#1136: pin the self-maintenance ratio, upgrade/repair/churn
         # classification, queue composition, and verified-merges numerator
         # (non-null diff AND delivery evidence) in the metrics exporter, plus
