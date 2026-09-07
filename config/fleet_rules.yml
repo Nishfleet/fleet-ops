@@ -943,13 +943,11 @@ groups:
 
       # Organ heartbeat (fleet-ops#1137 standing pattern). The truth
       # staleness checker exports fleet_truth_staleness_last_run_seconds on
-      # every run (both the weekly timer and the exporter-piggyback
-      # ExecStartPost). 25h = just over one missed weekly cycle, so a
-      # routine skip never fires but a dead checker does. absent() catches
-      # a missing file; time()-timestamp catches a frozen file (textfile
-      # collector keeps last scrape). No new timer needed for the heartbeat
-      # — the checker piggybacks the existing 5-min exporter tick via
-      # ExecStartPost.
+      # every run (the exporter-piggyback ExecStartPost on the 5-min exporter
+      # tick — no timer of its own since fleet-ops#4149). 25h is a generous
+      # slack so a routine skip never fires but a dead checker does. absent()
+      # catches a missing file; time()-timestamp catches a frozen file
+      # (textfile collector keeps last scrape).
       - alert: TruthStalenessAbsent
         expr: absent(fleet_truth_staleness_last_run_seconds) or (time() - fleet_truth_staleness_last_run_seconds) > 90000
         for: 12h
@@ -958,7 +956,27 @@ groups:
           service: fleet
         annotations:
           summary: "truth-staleness-checker organ absent — the standing-doc checker is missing or dead"
-          description: "Repair worker: fleet_truth_staleness_last_run_seconds is absent or older than 25h (one missed weekly cycle). The truth-staleness-checker (fleet-ops#1137) cross-checks standing docs against live state; if this is silent, standing truth can silently rot without detection. Check: (1) `systemctl --user list-timers fleet-truth-staleness-check.timer` is present; (2) the weekly timer fired successfully; (3) `cat ~/.local/libexec/staleness-checker.py` is intact; (4) `systemctl --user status fleet-metrics-export.service` (the checker piggybacks the exporter via ExecStartPost). Helper: /home/nish/.local/libexec/staleness-checker.py. fleet-ops#1137."
+          description: "Repair worker: fleet_truth_staleness_last_run_seconds is absent or older than 25h. The truth-staleness-checker (fleet-ops#1137) cross-checks standing docs against live state; if this is silent, standing truth can silently rot without detection. Check: (1) `systemctl --user status fleet-metrics-export.service` (the checker piggybacks the exporter via ExecStartPost in systemd/fleet-metrics-export.service.d/staleness-checker.conf); (2) `cat ~/.local/libexec/staleness-checker.py` is intact; (3) run it by hand: `python3 ~/.local/libexec/staleness-checker.py`. The weekly timer + issue filing were retired in fleet-ops#4149 — TruthStalenessMismatch notifies on actual mismatches. Helper: /home/nish/.local/libexec/staleness-checker.py. fleet-ops#1137."
+
+      # fleet-ops#4149: the hand-built weekly truth-staleness timer + GitHub
+      # issue filing are retired. This alert is their off-the-shelf
+      # replacement: when the checker finds a mismatch (stale doc path, dead
+      # unit ref, or rotten issue ref), fleet_truth_staleness_mismatches_by_kind
+      # goes > 0 with one series per kind. The finding details (kind, source
+      # doc, raw claim, reason) live in the JSON cache the checker writes on
+      # every run: ~/workspaces/agent-state/fleet-metrics/staleness-findings-cache.json
+      # (fleet-metrics-export.py reads the same cache for this gauge).
+      # severity=warning -> repair-dispatch (no phone): docs-vs-live drift is
+      # a repair job, not a page (fleet-ops#1534).
+      - alert: TruthStalenessMismatch
+        expr: fleet_truth_staleness_mismatches_by_kind > 0
+        for: 1h
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "truth staleness mismatches — standing docs drifted from live state"
+          description: "Repair worker: fleet_truth_staleness_mismatches_by_kind > 0 — one or more standing-doc claims (file paths, systemd units, issue refs) failed live validation. Read the details in ~/workspaces/agent-state/fleet-metrics/staleness-findings-cache.json (kind, source doc, raw claim, reason), then either fix the live state or correct the doc. The checker piggybacks the exporter tick (ExecStartPost in systemd/fleet-metrics-export.service.d/staleness-checker.conf); this alert replaced the retired weekly timer + auto-filed issues (fleet-ops#4149)."
 
 
   - name: fleet_asset_census_supply

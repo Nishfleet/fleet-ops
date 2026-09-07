@@ -165,8 +165,6 @@
       "absent_alert": "TruthStalenessAbsent",
       "files": [
         "libexec/staleness-checker.py",
-        "systemd/fleet-truth-staleness-check.service",
-        "systemd/fleet-truth-staleness-check.timer",
         "systemd/fleet-metrics-export.service.d/staleness-checker.conf"
       ]
     },

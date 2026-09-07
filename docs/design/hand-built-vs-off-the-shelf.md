@@ -170,32 +170,63 @@ systemd-run properties on the unit.
 
 ## 4. fleet-* timer classification (row 10)
 
-20 `fleet-*.timer` units. Each is one of: a Prometheus alert rule, a GitHub
-Actions scheduled workflow, or a genuine drill. Classified live:
+> **2026-09-07 update (fleet-ops#4149):** the 2026-08-24 snapshot below
+> counted 20 `fleet-*.timer` unit files in the repo; the LIVE count at
+> classification time is 19 (the dead-man canaries were retired by #4182,
+> and the original 20 included drop-ins/backups). Every live timer is now
+> classified; each row below is annotated with its outcome.
 
-**Genuine drills / host-side mechanisms — KEEP (13):**
+19 live `fleet-*.timer` units. Each is one of: a Prometheus alert rule, a
+GitHub Actions scheduled workflow, or a genuine drill. Classified live:
+
+**Genuine drills / host-side mechanisms — KEEP (14):**
 `fleet-asset-census`, `fleet-bare-metal-rebuild-drill`, `fleet-blind-audit`,
 `fleet-console-pi`, `fleet-deploy-check`, `fleet-heartbeat`,
 `fleet-metrics-export` (feeds Prometheus), `fleet-resilience-drill`,
 `fleet-restore-drill`, `fleet-rulebook-redteam`, `fleet-weekly-fleet-review`,
 `fleet-worktree-reaper`, `fleet-aeo-probe` (GEO/AEO measurement, owned-content
-tactic).
+tactic), `fleet-baseline-delta` (RE-CLASSIFIED, below).
 
-**Prometheus-alert-rule candidates — GO (2):**
-`fleet-baseline-delta` (weekly strangeness report → Prom alert rule),
-`fleet-truth-staleness-check` (staleness → Prom alert rule).
+**RE-CLASSIFIED KEEP — `fleet-baseline-delta` (fleet-ops#4149):** the
+original table listed it as a Prom-alert candidate ("weekly strangeness
+report"). The mechanism's own contract — fleet-ops#1151, pinned by the unit's
+named reason and the `FleetBaselineDeltaAbsent` rule in config/fleet_rules.yml
+("a high |z| is a report line for the review conference, never a page") — is
+that it produces the ranked top-20 baseline-delta pre-digest the weekly review
+conference reads. A Prometheus alert rule cannot reproduce the report (the
+median/MAD strangeness math is not expressible in PromQL, and paging on every
+anomaly is the wrong contract), and it must run on the VPS against localhost
+Prometheus, so it cannot move to Actions. No off-the-shelf equivalent exists.
+It fails the deletion bar, so it stays.
 
-**Dead-man / healthchecks.io — GO (2):** `fleet-completion-canary`,
-`fleet-loose-ends-canary` (row 7).
+**Retired as Prom-alert-rule — `fleet-truth-staleness-check` (fleet-ops#4149,
+this PR):** the weekly staleness checker + its auto-filed GitHub issues were a
+hand-built alert channel. The detector stays — it piggybacks the
+fleet-metrics-export tick via ExecStartPost (systemd/fleet-metrics-export
+.service.d/staleness-checker.conf), so no timer of its own — and the
+off-the-shelf notifier is the new `TruthStalenessMismatch` alert rule
+(`fleet_truth_staleness_mismatches_by_kind > 0`, severity=warning) in
+config/fleet_rules.yml, beside the existing `TruthStalenessAbsent` heartbeat.
+The timer, service, and the issue-filing machinery in the checker are deleted
+in #4149; the finding details live in the JSON cache
+(~/workspaces/agent-state/fleet-metrics/staleness-findings-cache.json).
 
-**GitHub Actions scheduled-workflow candidates — GO (2):**
-`fleet-issue-close-duplicates`, `fleet-merged-pr-close` (both webhook-triggered
-with a timer fallback; the timer fallback can move to a scheduled workflow).
+**Dead-man / healthchecks.io — DONE (#4182, merged):** `fleet-completion-canary`,
+`fleet-loose-ends-canary` (row 7) are retired; the deadman metric + chain prom
+files are gone from the repo and the live box.
 
-**LiteLLM — GO (1):** `fleet-seat-comeback-release` (row 6, #4130).
+**GitHub Actions scheduled-workflow candidates — KEEP (2), pending #4161:**
+`fleet-issue-close-duplicates`, `fleet-merged-pr-close` are webhook-triggered
+with a timer fallback. They cannot move to Actions yet: the worker token has
+NO Workflows permission and cannot write `.github/workflows/**` (fleet-ops#3735).
+Tracked in #4161; re-audit when the token is upgraded.
 
-Net: 13 KEEP, 7 GO (2 Prom-alert, 2 dead-man, 2 Actions, 1 LiteLLM). The GO
-timers are deleted with their replacement issues.
+**LiteLLM — PENDING (1):** `fleet-seat-comeback-release` (row 6, #4130). The
+LiteLLM proxy organ is in flight (#4178 P1); the comeback-release timer retires
+when #4130 lands.
+
+Net: 19 live before #4149 → 18 after (truth-staleness-check retired; the other
+18 are KEEP or tracked against #4130/#4161).
 
 ## 5. Classify rows (row 11)
 
