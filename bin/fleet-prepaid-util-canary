@@ -334,8 +334,13 @@ JSON
         printf '# HELP fleet_prepaid_included_exhausted 1 when the included plan usage is exhausted (the on-demand pool is open), 0 otherwise (fleet-ops#4206).\n'
         printf '# TYPE fleet_prepaid_included_exhausted gauge\n'
         printf 'fleet_prepaid_included_exhausted{provider="cursor"} %s\n' "$inc_ex"
-    } >"$tmp" 2>/dev/null && chmod 0644 "$tmp" && mv -f "$tmp" "$PREPAID_PROM_PATH" 2>/dev/null \
-        || { rm -f "$tmp" 2>/dev/null; log "WARN: could not write prepaid-spend.prom $PREPAID_PROM_PATH"; }
+    } >"$tmp" 2>/dev/null
+    if chmod 0644 "$tmp" 2>/dev/null && mv -f "$tmp" "$PREPAID_PROM_PATH" 2>/dev/null; then
+        :
+    else
+        rm -f "$tmp" 2>/dev/null
+        log "WARN: could not write prepaid-spend.prom $PREPAID_PROM_PATH"
+    fi
     log "cursor spend reader: spend_usd=$spend_usd pool_usd=$pool_usd cycle_end_s=$cycle_end_s included_exhausted=$inc_ex -> $PREPAID_PROM_PATH"
 }
 
