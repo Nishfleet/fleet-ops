@@ -115,7 +115,10 @@
       },
       "apiKey": "!cut -d= -f2 /home/nish/fleet2/etc/openrouter.env",
       "baseUrl": "https://openrouter.ai/api/v1",
-      "api": "openai-completions"
+      "api": "openai-completions",
+      "compat": {
+        "thinkingTokenBudgetField": "thinking_token_budget"
+      }
     },
     "commandcode": {
       "baseUrl": "https://api.commandcode.ai/provider/v1",
@@ -808,7 +811,9 @@
         }
       ],
       "compat": {
-        "supportsDeveloperRole": false
+        "supportsDeveloperRole": false,
+        "supportsReasoningEffort": false,
+        "thinkingTokenBudgetField": "thinking_budget"
       },
       "_comment_4329": "fleet-ops#4329: alibaba-coding's models registration is durable here. install.sh copy-installs pi-models.json verbatim (the unknown-provider merge exists only for seat-caps.json), so without this row a deploy would silently drop the provider from the live models.json — the same trap #4262 caught for runinfra/crof/entrim. Landed verbatim from the live ~/.pi/agent/models.json (smoke-tested SEAT-OK 2026-09-07). compat.supportsDeveloperRole=false (the endpoint 400s on Pi's developer role); thinking on for the reasoning models, enable_thinking=false for qwen3.8-flash + deepseek-v4-flash-0731."
     }
