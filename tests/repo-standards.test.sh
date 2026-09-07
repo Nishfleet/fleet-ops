@@ -99,6 +99,11 @@ ok "standards lib: classifyRepo + type table"
 # (the context never reports). fleet-ops ci.yml was the only repo whose job
 # name differed (Semgrep vs the standard's semgrep); this locks the parity
 # so BP apply stays safe.
+# fleet-ops#70: when fleet-ops folds the four local jobs into the batched
+# P14 tests caller (scan-secrets: true, no local Gitleaks/semgrep/etc.),
+# the standard required contexts are NOT applied to fleet-ops branch
+# protection — only "P14 tests / PR checks" is. So the parity check is
+# skipped for the folded contexts when the batched caller is in use.
 node --input-type=module - <<'JS'
 import { THIN_CALLERS } from "./.github/scripts/repo-standards.lib.mjs";
 import { readFileSync } from "node:fs";
@@ -108,12 +113,21 @@ const yaml = readFileSync(".github/workflows/ci.yml", "utf8");
 const jobNames = [...yaml.matchAll(/^\s{4}name: (.+)$/gm)].map((m) => m[1].trim());
 const requiredCtxs = [];
 for (const tc of THIN_CALLERS) for (const r of tc.required) if (!requiredCtxs.includes(r)) requiredCtxs.push(r);
-const missing = requiredCtxs.filter((c) => !jobNames.includes(c));
+// fleet-ops#70: if the batched caller is used (scan-secrets: true), the
+// four standard contexts are folded into "P14 tests / PR checks" and are
+// not separate job names. Skip the parity check for those contexts.
+const folded = /scan-secrets:\s*true/.test(yaml);
+const checkCtxs = folded ? requiredCtxs.filter((c) => !["Gitleaks", "semgrep", "Shellcheck", "systemd-analyze"].includes(c)) : requiredCtxs;
+const missing = checkCtxs.filter((c) => !jobNames.includes(c));
 if (missing.length > 0) {
   console.error(`FAIL: required context(s) with no producing ci.yml job name: ${missing.join(", ")} (case-sensitive; ci.yml job names = ${jobNames.join(", ")})`);
   process.exit(1);
 }
-console.error(`ok: all ${requiredCtxs.length} standard required context(s) (${requiredCtxs.join(", ")}) are produced verbatim by ci.yml jobs (${jobNames.join(", ")})`);
+if (folded) {
+  console.error(`ok: batched caller in use (scan-secrets: true); ${checkCtxs.length} non-folded standard required context(s) (${checkCtxs.join(", ")}) match ci.yml job names (${jobNames.join(", ")}); Gitleaks/semgrep/Shellcheck/systemd-analyze folded into P14 tests (fleet-ops#70)`);
+} else {
+  console.error(`ok: all ${requiredCtxs.length} standard required context(s) (${requiredCtxs.join(", ")}) are produced verbatim by ci.yml jobs (${jobNames.join(", ")})`);
+}
 JS
 ok "standard required contexts match ci.yml job names exactly (fleet-ops#248)"
 

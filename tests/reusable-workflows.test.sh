@@ -5,7 +5,8 @@
 #   1. reusable-pr-checks.yml and reusable-auto-merge-arm.yml are workflow_call.
 #   2. Every job in those files has timeout-minutes.
 #   3. Path filters are not on the trigger (a skipped required check freezes PRs).
-#   4. fleet-ops CI calls reusable-pr-checks for the tests job.
+#   4. fleet-ops CI calls reusable-pr-checks for the tests job with
+#      scan-secrets on, and does not keep the four expand/contract local jobs.
 #   5. The template callers point at Nishfleet/fleet-ops, not a copy of the steps.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -50,9 +51,15 @@ ok "timeouts and PR concurrency are present"
 
 grep -q 'uses: ./.github/workflows/reusable-pr-checks.yml' "$ci" \
   || fail "ci.yml tests job must call reusable-pr-checks.yml in this repo"
-grep -q 'scan-secrets: false' "$ci" \
-  || fail "fleet-ops must not double-run gitleaks while the required Gitleaks job still exists"
-ok "fleet-ops CI calls reusable-pr-checks (secrets scan left on the required Gitleaks job)"
+if grep -q 'scan-secrets: false' "$ci"; then
+  fail "fleet-ops must run gitleaks via reusable-pr-checks (scan-secrets must not be false)"
+fi
+for name in Gitleaks Semgrep Shellcheck systemd-analyze; do
+  if grep -E "^[[:space:]]+name: ${name}\$" "$ci"; then
+    fail "ci.yml must not keep a local required job named ${name}; fold it into reusable-pr-checks"
+  fi
+done
+ok "fleet-ops CI calls reusable-pr-checks with secrets scan on and no duplicate local jobs"
 
 # fleet-ops#1469: the arm path must mint a nishfleet-worker App token and
 # arm under it — never the human AUTO_REVERT_PAT (made Nish the triggering
