@@ -416,6 +416,11 @@ bash "$here/fleet-intake-reconciler-counter.test.sh"
 # cannot push .github/workflows/**).
 bash "$here/fleet-gap-closure-loop.test.sh"
 
+# fleet-ops#4211: senior-seat split (TAB vs slash) in
+# bin/fleet-gap-closure-conference. Hosted here so P14 runs it without a
+# workflow-file edit (the worker App cannot push .github/workflows/**).
+bash "$here/fleet-gap-closure-conference-senior-seat.test.sh"
+
 # fleet-ops#3268 (child of waste-cut #3128): offline replay drill for
 # bin/fleet-close-and-archive-repo (retire-a-dead-repo loop with a stubbed
 # gh). Landed on main via PR #3740 without a ci.yml listing or host, so the
