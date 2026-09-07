@@ -448,6 +448,29 @@ remove_orphaned_fleet_cheap_triage_dropin() {
     fi
 }
 
+# fleet-ops#4151: the fleet-e2e-heartbeat unit was an end-to-end proof that
+# the fleet ships (control-plane lane fleet-e2e-heartbeat.py). The live unit
+# file, timer, the lane script, and the gate/fleet-gate binary it called are
+# all gone; only the hand-placed drop-in dir
+# ~/.config/systemd/user/fleet-e2e-heartbeat.service.d/ survived the deletion
+# and is invisible to a unit-name-only hunt (fleet-ops#2924 / #1548) because
+# the unit no longer exists. The dir also carries .bak files
+# (override.conf.bak-pulse-a69537d453-20260811,
+# override.conf.bak-time-audit-20260812,
+# override.conf.bak-unit-fix-20260811T130719Z). Not new machinery — there is
+# no unit to source it — so absorb-into-repo is wrong. Remove the orphaned
+# dir; only touch it when this MANIFEST installs into the live user unit dir.
+remove_orphaned_fleet_e2e_heartbeat_dropin() {
+    local user_systemd="${HOME}/.config/systemd/user"
+    local dropin_dir="${user_systemd}/fleet-e2e-heartbeat.service.d"
+    grep -q " ${user_systemd}/" "$manifest" 2>/dev/null || return 0
+    if [ -d "$dropin_dir" ]; then
+        rm -rf "$dropin_dir"
+        echo "removed orphaned fleet-e2e-heartbeat.service.d drop-in dir: $dropin_dir (fleet-ops#4151)"
+        user_unit_changed=1
+    fi
+}
+
 # fleet-ops#4146: retire the three dead-man canaries (gh-webhook-canary-
 # deadman, fleet-completion-canary, fleet-loose-ends-canary). Their units
 # and timers are gone from MANIFEST; stop+disable any live leftovers and
@@ -817,6 +840,7 @@ if [ "$do_user_install" = 1 ]; then
   remove_orphaned_fleet_auto_deploy_dropin
   remove_orphaned_fleet_auto_ship_dropin
   remove_orphaned_fleet_cheap_triage_dropin
+  remove_orphaned_fleet_e2e_heartbeat_dropin
   remove_retired_canaries
   # Only daemon-reload when a user-scope systemd unit/drop-in actually
   # changed. First install on a fresh box still reloads because every unit

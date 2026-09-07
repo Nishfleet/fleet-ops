@@ -107,6 +107,8 @@ grep -q 'remove_orphaned_fleet_auto_ship_dropin' "$repo_root/install.sh" \
     || fail "install.sh must remove the orphaned fleet-auto-ship.service.d drop-in (fleet-ops#4114)"
 grep -q 'remove_orphaned_fleet_cheap_triage_dropin' "$repo_root/install.sh" \
     || fail "install.sh must remove the orphaned fleet-cheap-triage.service.d drop-in (fleet-ops#4126)"
+grep -q 'remove_orphaned_fleet_e2e_heartbeat_dropin' "$repo_root/install.sh" \
+    || fail "install.sh must remove the orphaned fleet-e2e-heartbeat.service.d drop-in (fleet-ops#4151)"
 grep -q 'pi-scout@.service.d/20-prom-mode.conf' "$repo_root/bin/fleet-ops-deploy" \
     || fail "fleet-ops-deploy must remove the stale scout 20-prom-mode drop-in (fleet-ops#2924)"
 grep -q 'fleet-auto-deploy.timer.d' "$repo_root/bin/fleet-ops-deploy" \
@@ -115,6 +117,8 @@ grep -q 'fleet-auto-ship.service.d' "$repo_root/bin/fleet-ops-deploy" \
     || fail "fleet-ops-deploy must remove the orphaned fleet-auto-ship.service.d drop-in (fleet-ops#4114)"
 grep -q 'fleet-cheap-triage.service.d' "$repo_root/bin/fleet-ops-deploy" \
     || fail "fleet-ops-deploy must remove the orphaned fleet-cheap-triage.service.d drop-in (fleet-ops#4126)"
+grep -q 'fleet-e2e-heartbeat.service.d' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "fleet-ops-deploy must remove the orphaned fleet-e2e-heartbeat.service.d drop-in (fleet-ops#4151)"
 grep -q 'systemd/pi-intake@.service.d/10-use-tick.conf' "$repo_root/MANIFEST" \
     || fail "MANIFEST must list 10-use-tick.conf (fleet-ops#2924 absorb)"
 [[ -f "$repo_root/systemd/pi-intake@.service.d/10-use-tick.conf" ]] \
@@ -840,6 +844,21 @@ printf 'bak\n' > "$orphan_triage_dir/override.conf.bak-time-audit-20260812"
 PATH="$scratch:$PATH" "$install" >/dev/null 2>&1 || true
 [[ ! -d "$orphan_triage_dir" ]] || fail "scenario12b-orphan-triage: orphaned fleet-cheap-triage.service.d drop-in dir was not removed"
 ok "scenario12b-orphan-triage: install.sh removes the orphaned fleet-cheap-triage.service.d drop-in dir (fleet-ops#4126)"
+
+# fleet-ops#4151: orphaned drop-in dir for the deleted fleet-e2e-heartbeat
+# unit (control-plane lane deleted). install.sh must remove the whole dir on
+# a user-scope install, even though the unit itself no longer exists (so a
+# unit-name-only hunt cannot see it). The dir also carries .bak files — rm -rf
+# must clear them too.
+orphan_e2e_dir="$HOME/.config/systemd/user/fleet-e2e-heartbeat.service.d"
+mkdir -p "$orphan_e2e_dir"
+printf '[Service]\nExecStart=\nExecStart=/bin/true\n' > "$orphan_e2e_dir/override.conf"
+printf 'bak\n' > "$orphan_e2e_dir/override.conf.bak-pulse-a69537d453-20260811"
+printf 'bak\n' > "$orphan_e2e_dir/override.conf.bak-time-audit-20260812"
+printf 'bak\n' > "$orphan_e2e_dir/override.conf.bak-unit-fix-20260811T130719Z"
+PATH="$scratch:$PATH" "$install" >/dev/null 2>&1 || true
+[[ ! -d "$orphan_e2e_dir" ]] || fail "scenario12b-orphan-e2e: orphaned fleet-e2e-heartbeat.service.d drop-in dir was not removed"
+ok "scenario12b-orphan-e2e: install.sh removes the orphaned fleet-e2e-heartbeat.service.d drop-in dir (fleet-ops#4151)"
 
 # --- scenario 12c: cap drop with NEWER repo mtime (fleet-ops#371) ------------
 # git checkout of a stale commit stamps the working tree now, so the #372
