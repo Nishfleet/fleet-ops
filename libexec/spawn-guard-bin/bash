@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/bash
 # bash shim — below-agent spawn guard (fleet-ops#3126). Every non-interactive
 # bash the vendor spawns must carry the BASH_ENV payload (DEBUG trap), even
 # when the runner's exported env was lost. Belt-and-suspenders on top of the

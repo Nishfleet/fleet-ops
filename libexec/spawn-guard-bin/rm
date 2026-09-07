@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/bash
 # rm shim — below-agent spawn guard (fleet-ops#3126). Validates argv
 # against the same rules as the Pi extension when armed, then execs real rm.
 if [[ "${FLEET_SPAWN_GUARD:-0}" == "1" ]]; then

@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/bash
 # systemctl shim — below-agent spawn guard (fleet-ops#3126). Blocks
 # `systemctl restart <slice>` and fleet-unit restarts even when invoked
 # directly by the vendor, then execs real systemctl for everything else.

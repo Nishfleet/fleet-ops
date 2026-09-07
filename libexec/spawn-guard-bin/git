@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/bash
 # git shim — below-agent spawn guard (fleet-ops#3126). Validates argv
 # against the same rules as the Pi extension when armed, then execs real git.
 if [[ "${FLEET_SPAWN_GUARD:-0}" == "1" ]]; then

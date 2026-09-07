@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/bash
 # sh shim — below-agent spawn guard (fleet-ops#3126). dash (the usual `sh`
 # on this box) reads neither BASH_ENV nor ENV non-interactively and has no
 # DEBUG trap, so dash sessions cannot be wrapped from inside. Their

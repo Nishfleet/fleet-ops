@@ -108,6 +108,7 @@
 #   FLEET_VAULT_CONFLICT_STALE_HOURS    default 1 (timer fires every 10 min)
 #   FLEET_REPO_PRIVACY_JSON             config/repo-privacy.json source (block 12)
 #   FLEET_ESCALATION_CANARY_SKIP_PRIVACY_GUARD  1 skips block 12 (offline tests)
+#   FLEET_ESCALATION_CANARY_SKIP_SPAWN_GUARD  1 skips block 13 (offline tests)
 
 set -Eeuo pipefail
 
@@ -960,6 +961,51 @@ JSON
         fi
         if [[ "$_drill_rc" -eq 0 ]]; then
             log "12.  - config/repo-privacy.json valid, default_policy=private, guard fires"
+        fi
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# 13. Below-the-agent spawn-guard bypass probe (fleet-ops#3126)
+# ---------------------------------------------------------------------------
+# The Pi extension only sees Pi's own bash tool calls; devin/cursor provider
+# CLIs run their own agent tools, so the extension rules never fire inside
+# them (proven live 2026-08-25: a real `git stash push` on the devin seat ran
+# with no SPAWN_BLOCKED). The below-the-agent guard (lib/spawn-guard-core.sh
+# + libexec/spawn-guard-bin/*) rides along inside the vendor's processes via
+# PATH shims + a BASH_ENV DEBUG trap. This block runs the hermetic bypass
+# probe (bin/fleet-spawn-guard --probe) every heartbeat tick: it creates its
+# own scratch repo and its own block log, arms the guard, and asserts that
+# `git stash push` is blocked across the bash-trap, dash-shim, and git-shim
+# layers. A regression that re-opens the bypass is LOUD the same tick, not at
+# the next CI run.
+#
+# FLEET_ESCALATION_CANARY_SKIP_SPAWN_GUARD=1 skips this block (offline tests).
+log "13. checking below-the-agent spawn-guard bypass (fleet-ops#3126)"
+if [[ "${FLEET_ESCALATION_CANARY_SKIP_SPAWN_GUARD:-0}" == "1" ]]; then
+    log "13.  - SKIP (FLEET_ESCALATION_CANARY_SKIP_SPAWN_GUARD=1)"
+else
+    _sg_probe="$FLEET_OPS_REPO/bin/fleet-spawn-guard"
+    if [[ ! -x "$_sg_probe" ]]; then
+        loud "ESCALATION-CANARY-VIOLATION" "spawn-guard: bin/fleet-spawn-guard missing at $_sg_probe — the below-the-agent guard is not installed; devin/cursor seats run with zero enforcement"
+        violations=$((violations + 1))
+    elif ! command -v git >/dev/null 2>&1; then
+        loud "ESCALATION-CANARY-PENDING" "spawn-guard: git missing — cannot run the bypass probe"
+        pending=$((pending + 1))
+    else
+        _sg_rc=0
+        set +e
+        _sg_out=$("$_sg_probe" --probe 2>&1)
+        _sg_rc=$?
+        set -e
+        if [[ "$_sg_rc" -eq 0 ]]; then
+            log "13.  - probe: guard blocks git stash across bash-trap/dash-shim/git-shim layers ($(printf '%s' "$_sg_out" | head -c 200))"
+        elif [[ "$_sg_rc" -eq 2 ]]; then
+            loud "ESCALATION-CANARY-PENDING" "spawn-guard: probe infra missing (rc=2): $(printf '%s' "$_sg_out" | head -c 200)"
+            pending=$((pending + 1))
+        else
+            loud "ESCALATION-CANARY-VIOLATION" "spawn-guard: bypass probe FAILED (rc=$_sg_rc): $(printf '%s' "$_sg_out" | head -c 300) — a devin/cursor seat can run git stash / rm -rf / credential writes / systemctl restarts unchecked"
+            violations=$((violations + 1))
         fi
     fi
 fi

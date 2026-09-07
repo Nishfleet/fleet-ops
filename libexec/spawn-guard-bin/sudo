@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/bash
 # sudo shim — below-agent spawn guard (fleet-ops#3126). Blocks the
 # sudo-install/cp/mv shapes that write root-owned files into the pi transport
 # paths (the 2026-09-03 ~/.local/bin/pi clobber) even when the vendor calls

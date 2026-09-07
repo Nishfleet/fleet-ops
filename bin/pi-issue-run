@@ -139,6 +139,19 @@ SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
 # shellcheck source=../lib/seat-lib.sh source-path=SCRIPTDIR
 source "$SEAT_LIB"
 
+# fleet-ops#3126: below-the-agent spawn guard. The Pi extension only sees Pi's
+# own bash tool calls; devin/cursor provider CLIs run their own agent tools,
+# so the extension rules never fire inside them. This bash engine rides along
+# inside the vendor's processes via PATH shims + a BASH_ENV DEBUG trap. We
+# source the core here so spawn_guard_activate is available to arm the guard
+# for shim-class providers once the seat is picked. Native seats stay
+# byte-identical (spawn_guard_activate deactivates for them).
+SPAWN_GUARD_CORE="${FLEET_SPAWN_GUARD_CORE:-$HOME/.local/lib/pi-packet/spawn-guard-core.sh}"
+if [[ -f "$SPAWN_GUARD_CORE" ]]; then
+    # shellcheck source=../lib/spawn-guard-core.sh source-path=SCRIPTDIR
+    source "$SPAWN_GUARD_CORE"
+fi
+
 # fleet-ops#3125: issue work is PRODUCT work — pick_seat orders candidates
 # by the rolling PR-yield ledger when seat-caps product_order is "yield".
 export PI_PICK_ROLE=product
@@ -372,6 +385,17 @@ fi
 
 np=$(printf '%s' "$seat" | cut -f1)
 nm=$(printf '%s' "$seat" | cut -f2)
+
+# fleet-ops#3126: arm the below-the-agent spawn guard for shim-class providers
+# (devin/cursor). For native seats spawn_guard_activate deactivates, so those
+# lanes stay byte-identical. The guard must be armed BEFORE pi spawns the
+# vendor CLI so the vendor's own agent tools inherit the PATH shims + BASH_ENV
+# DEBUG trap. Best-effort: if the core failed to source, the guard simply does
+# not arm and the seat runs as today (the canary block 13 catches a regression
+# where the guard stops wiring).
+if declare -F spawn_guard_activate >/dev/null 2>&1; then
+    spawn_guard_activate "$np"
+fi
 
 # Defensive recreate: $ATTEMPTS_DIR was created at startup, but something
 # (a concurrent worker, a tmpfiles.d rule, an external cleanup) has been

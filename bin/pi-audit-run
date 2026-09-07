@@ -74,6 +74,15 @@ if [ -f "$SEAT_LIB" ]; then
     VOTE_DIR="${VOTE_DIR:-$HOME/.local/state/fleet-audit}"
 fi
 
+# fleet-ops#3126: below-the-agent spawn guard. Source the core so
+# spawn_guard_activate is available to arm the guard for shim-class providers
+# (devin/cursor) once the seat is resolved. Native seats stay byte-identical.
+SPAWN_GUARD_CORE="${FLEET_SPAWN_GUARD_CORE:-$HOME/.local/lib/pi-packet/spawn-guard-core.sh}"
+if [ -f "$SPAWN_GUARD_CORE" ]; then
+    # shellcheck source=/dev/null
+    source "$SPAWN_GUARD_CORE"
+fi
+
 # Force-load the seat-caps map up front. load_seat_caps' read loops write to
 # $p/$m in the caller's dynamic scope, so any lazy load inside
 # model_cap/provider_cap/class_of clobbers THEIR local $p/$m (bash local is
@@ -564,6 +573,16 @@ main() {
     fi
     provider=$(printf '%s\n' "$seat" | cut -f1)
     model=$(printf '%s\n' "$seat" | cut -f2)
+
+    # fleet-ops#3126: arm the below-the-agent spawn guard for shim-class
+    # providers (devin/cursor). Native seats deactivate, staying byte-identical.
+    # Must be armed BEFORE pi spawns the vendor CLI so the vendor's own agent
+    # tools inherit the PATH shims + BASH_ENV DEBUG trap. Best-effort: if the
+    # core failed to source, the guard does not arm and the seat runs as today
+    # (the canary block 13 catches a wiring regression).
+    if command -v spawn_guard_activate >/dev/null 2>&1; then
+        spawn_guard_activate "$provider"
+    fi
 
     log "auditing $repo/#$candidate with $provider/$model (role=$role)"
 

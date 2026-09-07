@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/bash
 # tee shim — below-agent spawn guard (fleet-ops#3126). Blocks writing
 # through tee to credential paths (fleet2/etc, .env, auth.json) even when
 # the vendor calls tee directly, then execs real tee.

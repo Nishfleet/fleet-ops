@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/bash
 # wrangler shim — below-agent spawn guard (fleet-ops#3126). Blocks direct
 # `wrangler deploy` / `versions upload` on 0509 (P10-B item 4) so the
 # vendor's own wrangler call cannot sneak past the extension hook.
