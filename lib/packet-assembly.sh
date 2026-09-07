@@ -175,6 +175,13 @@ except Exception: pass' 2>/dev/null)
 # 4xx (404s), and slow routes (avg edge time). Vendor API via the sanctioned
 # CF token. Returns 1 (DROP) when the token is missing, lacks analytics scope,
 # the zone is unknown, or the query returns no rows. fleet-ops#3149.
+#
+# This source is OPTIONAL (fleet-ops#3172): when the sanctioned token lacks
+# zone.analytics.read the authz failure is logged as a one-line
+# `usage-source: cloudflare-analytics UNAVAILABLE (token scope)` marker and the
+# source DROPS (returns 1) — it must never fail the scout run or drop the whole
+# usage block. The other usage sources (lp_run_audit, /search query log, inbound
+# email) still assemble around it.
 packet_cf_analytics_usage() {
     local zone_name="${1:-$PACKET_ZONE_NAME}" days="${2:-7}"
     local token zone from now q resp rows lines t
@@ -195,6 +202,12 @@ packet_cf_analytics_usage() {
     # here and the sanctioned token lacks zone.analytics.read (see filed gap
     # issue), so THAT fidelity is a follow-up; the volume query is the one that
     # parses cleanly (authz-gated only).
+    # TODO(fleet-ops#3172): once the sanctioned CF token is re-scoped with
+    # Zone Analytics Read for the 0509 zone, this source lights up by itself —
+    # the GraphQL call below returns data instead of the authz error, so the
+    # UNAVAILABLE branch below stops matching and the block prints normally.
+    # No code change needed at that point; re-run the packet-assembly probe to
+    # confirm.
     q="query {
   viewer {
     zones(filter: {zoneTag: \"$zone\"}) {
@@ -232,7 +245,18 @@ except Exception as e:
 ' 2>/dev/null)
     [[ -n "$lines" ]] || return 1
     case "$lines" in
-        ERR:*|EMPTY) printf '### Cloudflare analytics (%s, %s days): %s\n\n' "$zone_name" "$days" "${lines#ERR: }"; return 1 ;;
+        ERR:*|EMPTY)
+            # fleet-ops#3172: the sanctioned token lacks zone.analytics.read, so
+            # the GraphQL call returns an authz error. This source is OPTIONAL —
+            # log the availability line and DROP (return 1); the scout run and
+            # the rest of the usage block continue. A missing optional source
+            # must never fail the scout run.
+            if [[ "$lines" == *"zone.analytics.read"* ]]; then
+                printf 'usage-source: cloudflare-analytics UNAVAILABLE (token scope)\n'
+            fi
+            printf '### Cloudflare analytics (%s, %s days): %s\n\n' "$zone_name" "$days" "${lines#ERR: }"
+            return 1
+            ;;
     esac
     printf '### Cloudflare analytics — %s, %s days (vendor API)\n' "$zone_name" "$days"
     printf 'Daily requests + uniques (date, requests, uniques):\n'
