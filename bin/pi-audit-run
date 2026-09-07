@@ -624,15 +624,20 @@ main() {
         { cat "$out"; printf '\n\n## stderr\n'; cat "$err"; } > "$combined"
     fi
 
-    verdict=$(extract_verdict "$combined")
-    reason=$(extract_reason "$combined")
+    # fleet-ops#4409: extract_verdict ends in a `grep -m1` pipeline; on no
+    # match pipefail makes the function return 1 and set -e would kill the
+    # script AT the assignment, before the empty-verdict branch below. Guard
+    # both assignments so the empty-verdict/reason branches are reachable and
+    # can log a distinguishing line instead of dying silently.
+    verdict=$(extract_verdict "$combined") || verdict=""
+    reason=$(extract_reason "$combined") || reason=""
 
     if [ -z "$verdict" ]; then
-        log "auditor output did not contain a PASS/FAIL verdict"
+        log "auditor output did not contain a PASS/FAIL verdict (empty verdict; exiting 1 for systemd retry)"
         exit 1
     fi
     if [ -z "$reason" ]; then
-        log "auditor output did not contain a reason"
+        log "auditor output did not contain a reason (empty reason; exiting 1 for systemd retry)"
         exit 1
     fi
     if ! reason=$(ensure_reason_complete "$reason"); then

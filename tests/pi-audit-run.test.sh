@@ -231,7 +231,12 @@ PI_RESPONSE=$'PASS\nNo duplicate; beats customer edge AI and advances the north 
 ok "scenario3: complete PASS reason writes vote and exits 0"
 
 # -----------------------------------------------------------------------------
-# Scenario 4: missing verdict still exits 1 (systemd may retry once).
+# Scenario 4: missing verdict still exits 1 (systemd may retry once) AND logs
+#              a distinguishing line (fleet-ops#4409). Before the guard, the
+#              unguarded `verdict=$(extract_verdict ...)` assignment died under
+#              set -e with no log line and no vote, so the silent-death class
+#              was indistinguishable from the logged branch. Now the empty
+#              verdict must be reachable and must log.
 # -----------------------------------------------------------------------------
 reset_state
 PI_RESPONSE=$'some random text\nwith no verdict' \
@@ -239,7 +244,25 @@ PI_RESPONSE=$'some random text\nwith no verdict' \
 [[ "${rc:-0}" == "1" ]] || fail "scenario4: missing verdict must exit 1, got rc=${rc:-0}"
 [[ ! -f "$state_dir/demo/45/devin.vote" ]] \
     || fail "scenario4: vote must not be written when verdict is missing"
-ok "scenario4: missing verdict still exits 1"
+grep -q "did not contain a PASS/FAIL verdict" "$scratch/scenario4.err" \
+    || fail "scenario4: empty-verdict path must log a distinguishing line, got: $(cat "$scratch/scenario4.err")"
+ok "scenario4: missing verdict exits 1 and logs a distinguishing line"
+
+# -----------------------------------------------------------------------------
+# Scenario 4b: verdict present but reason empty still exits 1 and logs a
+#              distinguishing line (fleet-ops#4409). extract_reason returns
+#              empty when there is no reason paragraph after the verdict line;
+#              the empty-reason branch must be reachable and must log.
+# -----------------------------------------------------------------------------
+reset_state
+PI_RESPONSE=$'PASS\n' \
+  bash "$bin" 'demo--46--devin' >"$scratch/scenario4b.out" 2>"$scratch/scenario4b.err" || rc=$?
+[[ "${rc:-0}" == "1" ]] || fail "scenario4b: empty reason must exit 1, got rc=${rc:-0}"
+[[ ! -f "$state_dir/demo/46/devin.vote" ]] \
+    || fail "scenario4b: vote must not be written when reason is empty"
+grep -q "did not contain a reason" "$scratch/scenario4b.err" \
+    || fail "scenario4b: empty-reason path must log a distinguishing line, got: $(cat "$scratch/scenario4b.err")"
+ok "scenario4b: empty reason exits 1 and logs a distinguishing line"
 
 # -----------------------------------------------------------------------------
 # Scenario 5: seat-health preflight refuses a transient_fault seat
