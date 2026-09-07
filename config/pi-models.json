@@ -196,6 +196,9 @@
       "baseUrl": "https://opencode.ai/zen/v1",
       "api": "openai-completions",
       "apiKey": "!cut -d= -f2 /home/nish/fleet2/etc/opencode.env",
+      "compat": {
+        "thinkingTokenBudgetField": "thinking_token_budget"
+      },
       "models": [
         {
           "id": "deepseek-v4-flash-free",
@@ -540,7 +543,8 @@
       ],
       "compat": {
         "thinkingFormat": "openrouter",
-        "supportsReasoningEffort": true
+        "supportsReasoningEffort": true,
+        "thinkingTokenBudgetField": "thinking_token_budget"
       }
     },
     "xai-oauth": {
@@ -589,6 +593,9 @@
       "baseUrl": "https://api.xkiro.com/v1",
       "api": "openai-completions",
       "apiKey": "!cut -d= -f2 /home/nish/.config/xkiro/.env",
+      "compat": {
+        "thinkingTokenBudgetField": "thinking_token_budget"
+      },
       "models": [
         {
           "id": "deepseek/deepseek-v4-flash",
