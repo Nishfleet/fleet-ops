@@ -320,12 +320,17 @@ function processRepo(repo, r, fleetOpsSha, opts) {
   // PR — this script does not open file PRs directly to keep one writer per
   // repo (the file-sync action already owns that surface).
   //
-  // --only-labels scopes the apply to the label triad only. Branch-protection
-  // apply is OFF by default even in --apply mode because required-context case
-  // sensitivity (e.g. fleet-ops requires "Semgrep" but the standard declares
-  // "semgrep") can stall every PR in a repo if the casing does not match the
-  // workflow's job name exactly. Branch-protection apply is a follow-up once
-  // the context-name reconciliation lands.
+  // --only-labels scopes the apply to the label triad only: the explicit
+  // labels-only safety brake. Branch-protection apply runs in --apply mode
+  // whenever --only-labels is NOT passed (fleet-ops#248). The required-context
+  // union is case-sensitive, so a standard context whose casing does not
+  // match a repo's workflow job name exactly would stall every PR in that
+  // repo (e.g. fleet-ops required "Semgrep" while the standard declares
+  // "semgrep"). The context-name reconciliation (fleet-ops#248) renamed the
+  // fleet-ops semgrep job to match the standard; siterep-public and 0509
+  // already produce the canonical names, so the standard contexts now match
+  // the produced checks everywhere. That reconciliation is the prerequisite
+  // for this path - it must land before BP apply can run safely on a repo.
   if (opts.apply) {
     for (const f of findings) {
       if (f.fix === "apply-api" && f.rule === "label-triad" && f.label) {

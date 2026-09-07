@@ -46,6 +46,10 @@ trap 'rm -rf "$scratch"' EXIT INT TERM
 export PI_SEAT_LIB_CHECK_SYSTEMD=0
 # fleet-ops#1409: skip the per-pick NO-USABLE-SEAT cooldown in tests.
 export PI_SEAT_NOUSABLE_COOLDOWN_S=0
+# fleet-ops#4217: hermetic live-quota lookup — on the VPS the real
+# node_exporter textfile carries fleet_seat_quota_* rows that must not leak
+# into the static-default/fail-open bench tests below.
+export SEAT_LIVE_QUOTA_PROM="$scratch/no-live-quota.prom"
 
 # A models.json with a deliberately non-allowlisted provider (groq) and a
 # non-allowlisted model on an allowlisted provider (ollama/gpt-oss:20b).
@@ -1218,6 +1222,81 @@ set -e
   && fail "default: cursor (no default) must NOT write a marker" || true
 grep -q "quota-bench: cursor/composer-2.5 NOT benched" "$PI_PACKET_STATE/watch.log" \
   || fail "default: cursor fail-open must log the NOT-benched line"
+
+# 9f-live (fleet-ops#4217): a fresh, EXHAUSTED live fleet_seat_quota_* row is
+# the provider's real reset horizon and beats the static default; a window
+# with remaining pct, a stale observation, or a passed reset must not bench.
+live_prom="$scratch/live-quota.prom"
+cat >"$live_prom" <<'PROM'
+fleet_seat_quota_remaining_pct{provider="cursor",window="monthly",source="api"} 0.0000
+fleet_seat_quota_reset_seconds{provider="cursor",window="monthly",source="api"} 5100.5
+fleet_seat_quota_observed_seconds{provider="cursor",source="api"} 100.0
+fleet_seat_quota_remaining_pct{provider="cline",window="weekly",source="api"} 95.0000
+fleet_seat_quota_reset_seconds{provider="cline",window="weekly",source="api"} 600000.0
+fleet_seat_quota_observed_seconds{provider="cline",source="api"} 10.0
+fleet_seat_quota_remaining_pct{provider="devin",window="daily",source="api"} 0.0000
+fleet_seat_quota_reset_seconds{provider="devin",window="daily",source="api"} 2500.0
+fleet_seat_quota_remaining_pct{provider="devin",window="weekly",source="api"} 0.0000
+fleet_seat_quota_reset_seconds{provider="devin",window="weekly",source="api"} 90000.0
+fleet_seat_quota_observed_seconds{provider="devin",source="api"} 500.0
+fleet_seat_quota_remaining_pct{provider="minimax",window="daily",source="api"} 0.0000
+fleet_seat_quota_reset_seconds{provider="minimax",window="daily",source="api"} 80000.0
+fleet_seat_quota_observed_seconds{provider="minimax",source="api"} 1000.0
+fleet_seat_quota_remaining_pct{provider="ollama",window="daily",source="api"} 0.0000
+fleet_seat_quota_reset_seconds{provider="ollama",window="daily",source="api"} 400.0
+fleet_seat_quota_observed_seconds{provider="ollama",source="api"} 500.0
+PROM
+live=$(SEAT_LIVE_QUOTA_PROM="$live_prom" bash -c 'source "$0"; provider_live_reset_s cursor' "$lib")
+[[ "$live" == "5000" ]] || fail "live-reset: cursor (exhausted, fresh) expected 5000 (5100.5 - 100), got '${live:-<none>}'"
+live=$(SEAT_LIVE_QUOTA_PROM="$live_prom" bash -c 'source "$0"; provider_live_reset_s cline' "$lib")
+[[ "$live" == "0" ]] || fail "live-reset: cline (95% left, NOT exhausted) expected 0, got '$live'"
+live=$(SEAT_LIVE_QUOTA_PROM="$live_prom" bash -c 'source "$0"; provider_live_reset_s devin' "$lib")
+[[ "$live" == "2000" ]] || fail "live-reset: devin (two exhausted windows) expected min 2000 (2500-500), got '$live'"
+live=$(SEAT_LIVE_QUOTA_PROM="$live_prom" bash -c 'source "$0"; provider_live_reset_s minimax' "$lib")
+[[ "$live" == "0" ]] || fail "live-reset: minimax (observation 1000s > 900s stale gate) expected 0, got '$live'"
+live=$(SEAT_LIVE_QUOTA_PROM="$live_prom" bash -c 'source "$0"; provider_live_reset_s ollama' "$lib")
+[[ "$live" == "0" ]] || fail "live-reset: ollama (reset already passed: 400 - 500 < 0) expected 0, got '$live'"
+live=$(SEAT_LIVE_QUOTA_PROM="$live_prom" bash -c 'source "$0"; provider_live_reset_s nosuchprovider' "$lib")
+[[ "$live" == "0" ]] || fail "live-reset: unknown provider expected 0, got '$live'"
+live=$(SEAT_LIVE_QUOTA_PROM="$scratch/no-such-file.prom" bash -c 'source "$0"; provider_live_reset_s cursor' "$lib")
+[[ "$live" == "0" ]] || fail "live-reset: missing prom file expected 0, got '$live'"
+ok "9f-live: provider_live_reset_s honours exhaustion, staleness, passed resets, min-across-windows"
+# Writer wiring: cursor has NO static default (fails open in 9f above), but a
+# live exhausted row must bench it at the live window (count=1 -> no geometric
+# escalation, bench_window_s == live value).
+live_ledger="$scratch/ledger-live-quota"
+mkdir -p "$live_ledger"
+export PI_SEAT_HEALTH_LEDGER_DIR="$live_ledger"
+export PI_PACKET_STATE="$scratch/state-live-quota"
+mkdir -p "$PI_PACKET_STATE"
+set +e
+SEAT_LIVE_QUOTA_PROM="$live_prom" bash -c 'source "$0"; load_seat_caps; mark_seat_quota_bench "$1" "$2" "$3"' "$lib" "cursor" "composer-2.5" "usage limit hit, no window" >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "live-reset writer: cursor with live exhausted row expected rc=0, got $rc"
+bw=$(jq -r '.bench_window_s' "$live_ledger/cursor__composer-2.5.json")
+[[ "$bw" == "5000" ]] || fail "live-reset writer: cursor bench_window_s expected 5000, got $bw"
+grep -q "benching on live fleet_seat_quota reset 5000s" "$PI_PACKET_STATE/watch.log" \
+  || fail "live-reset writer: must log the live-reset bench line"
+# cline's live window is NOT exhausted (95% left) -> the static default still
+# applies even though a live row exists.
+set +e
+SEAT_LIVE_QUOTA_PROM="$live_prom" bash -c 'source "$0"; load_seat_caps; mark_seat_quota_bench "$1" "$2" "$3"' "$lib" "cline" "cline-pass/minimax-m3" "INFERENCE_CAP_ERROR: weekly Clinepass limit." >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "live-reset writer: cline expected rc=0, got $rc"
+bw=$(jq -r '.bench_window_s' "$live_ledger/cline__cline-pass_minimax-m3.json")
+[[ "$bw" == "604800" ]] || fail "live-reset writer: cline (95% live) must use the static default 604800, got $bw"
+# A wall whose error text DOES carry a window still wins over the live figure
+# (parsed text is ground truth for that wall).
+set +e
+SEAT_LIVE_QUOTA_PROM="$live_prom" bash -c 'source "$0"; load_seat_caps; mark_seat_quota_bench "$1" "$2" "$3"' "$lib" "cursor" "cursor-grok-4.6-high" "quota exceeded, resets in 2h" >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "live-reset writer: parsed-text case expected rc=0, got $rc"
+bw=$(jq -r '.bench_window_s' "$live_ledger/cursor__cursor-grok-4.6-high.json")
+[[ "$bw" == "7200" ]] || fail "live-reset writer: parsed text (2h=7200) must beat the live figure 5000, got $bw"
+ok "9f-live: mark_seat_quota_bench prefers parsed text > live exhausted reset > static default > fail-open"
 
 # 9f-mimo: fleet-ops#650 / #661 — mimo-v2.5-free FreeUsageLimitError (HTTP 429,
 # no reset window in body). With quota_bench_default_s=900 on the opencode
@@ -3888,3 +3967,13 @@ bash "$here/seat-spawn-corpse.test.sh" || fail "seat-spawn-corpse tests failed"
 # add a P14 line in .github/workflows/ci.yml; this file is the listed CI host
 # for the new phantom-.out-suffix bench test.
 bash "$here/seat-phantom-out-suffix.test.sh" || fail "seat-phantom-out-suffix tests failed"
+
+# fleet-ops#4271 (session-waste #4260): a seat cannot hold cap > 0 while its
+# trailing-7-day yield is 0 PRs over >= 20 picks. Workers cannot add a P14
+# line in .github/workflows/ci.yml; this file is the listed CI host for the
+# new zero-yield cap invariant test. The test reads the LIVE config/seat-caps.json
+# (it honors SEAT_CAPS_JSON only so a replay drill can point it at a fixture);
+# drop the scratch SEAT_CAPS_JSON this file set above so the hosted test reads
+# the live config.
+unset SEAT_CAPS_JSON
+bash "$here/seat-caps-zero-yield.test.sh" || fail "seat-caps-zero-yield tests failed"

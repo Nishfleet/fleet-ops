@@ -120,8 +120,9 @@
           "reason": "2026-09-02: HTTP 403 FORBIDDEN 'The free MiniMax M3 and M2.7 models have been retired' (n=3, fleet-ops#2700). Provider retired the free slug permanently; control probe poolside/laguna-s-2.1-free returned PONG same window, so credential is LIVE. Recovery is provider-side only."
         },
         "poolside/laguna-s-2.1-free": {
-          "cap": 1,
-          "reason": "2026-09-05 CORRECTION (fleet-ops#3504 rule 4): the cap=0 retirement counted n=20 sessions pr_count=0 yield=0.0 as yield, but every session died with HTTP 503 overload_bench (infra death class, not a model failure — same correction as swe-1-7/#3473). Infra deaths never count as yield (#3250/#3310). Cap restored 0->1; re-audition by the yield gate (#3251) with real working sessions, not by a stale TTL triggered by infra deaths."
+          "cap": 0,
+          "intentional_cap_zero": "yield",
+          "reason": "2026-09-07 (fleet-ops#4271, session-waste #4260): 239 picks -> 1 PR (0.00 PR/run) over 2026-09-01..09-07, 466 slot-min per PR vs fleet median ~30. The 2026-09-05 infra-death correction (#3504 rule 4) is not disputed — infra deaths never count as yield (#3250/#3310) — but it does not matter: an infra-dying seat still consumes a pick, a claim cycle and a RestartSec=240 delay on a live issue. Cap 0; the re-audition path (yield gate #3251) is the only way back in."
         }
       },
       "_comment_2667": "2026-09-02 fleet-ops#2667 (retire-or-re-auth audit of the 4 seats reported as credentials_bad): commandcode/deepseek/deepseek-v4-flash re-probed live -> HTTP 400 {\"code\":\"BAD_REQUEST\",\"type\":\"invalid_request_error\"} 'You have insufficient credits to make this request'. That is a MONEY wall on a metered slug — not a credential fault and not a dead slug — confirmed by the control probe poolside/laguna-s-2.1-free returning PONG on the same provider in the same window. The seat carries no seat_dead ledger entry (no commandcode__deepseek_deepseek-v4-flash.json in /home/nish/workspaces/agent-state/lanes/seats), so it is not inflating the dead-credential count. Cap deliberately LEFT at 2: fleet-ops#1890 is open and owns the credit exhaustion, and _comment_1350 kept the row warm 'for when its credits recover'. Topping up credits is Nish-only spend, so no agent can clear it. Do not flip this row without closing #1890. 2026-09-02 fleet-ops#2785 re-verification (this ticket; alert fired 04:20:34Z, the 04:17:42Z HTTP 401 escalated a corpse ledger the quarantine path retired): live probes 18:36-19:12Z on commandcode/deepseek/deepseek-v4-flash return HTTP 400 insufficient-credits (n=4) in the same window the control probe poolside/laguna-s-2.1-free returns PONG rc=0 -> the commandcode credential is LIVE and the slug is still the #1890 money wall; no seat_dead ledger entry exists for the seat, so it does not inflate the dead-credential count (fresh exporter run 19:12Z: fleet_pi_seat_dead_credential_total 0). Cap stays 2. Nothing to re-auth (credential live), nothing to retire (money wall, Nish-only spend).",
@@ -136,9 +137,13 @@
       "class": "free",
       "max_probe_ceiling": 2,
       "models": {
-        "Qwen/Qwen3.6-35B-A3B-FP8": 1
+        "Qwen/Qwen3.6-35B-A3B-FP8": {
+          "cap": 0,
+          "intentional_cap_zero": "yield",
+          "reason": "2026-09-07 (fleet-ops#4271, session-waste #4260): 166 picks -> 2 PRs (0.01 PR/run) over 2026-09-01..09-07, 655 slot-min per PR vs fleet median ~30. Cap 0; the re-audition path (yield gate #3251) is the only way back in."
+        }
       },
-      "reason": "2026-09-05: hetzner Qwen took 10 of 15 light picks and produced 2 PRs from 20 sessions (8 request timeouts, 4 EngineCore errors). Cap 1 until the yield gate (#3251) governs it by data; free, so one probe slot stays. max_probe_ceiling 2 = 2x cap (fleet-ops#1350 concurrency probe timed out at 60s n=3, so probing above 2x is not safe until latency drops).",
+      "reason": "2026-09-07 (fleet-ops#4271, session-waste #4260): hetzner Qwen capped to 0 — 166 picks -> 2 PRs (0.01 PR/run) over 2026-09-01..09-07, 655 slot-min per PR vs fleet median ~30. Prior 2026-09-05 cap 1 (10 of 15 light picks, 2 PRs from 20 sessions) was already below the fleet median; the 7-day population study confirms it. Re-audition only via the yield gate (#3251).",
       "_note": "2026-08-26 fleet-ops#437: allowlist the live models.json slug. cap=2 with an empty models map made pick_seat skip every hetzner row as not in the cap-map allowlist.",
       "_comment_1350": "2026-08-29 fleet-ops#1350 concurrency-tolerance probe (load 2.95, 0 active workers): 3 simultaneous pi --print --provider hetzner --model Qwen/Qwen3.6-35B-A3B-FP8 'reply PONG' probes all timed out at 60s (rc=124); a single probe returned rc=0 but took ~120s (PACKET-VERDICT tools=0 class=no-tools). The seat responds but with ~120s latency on a 1-token probe, so concurrent probes all hit the timeout. Cap NOT raised — stays 2. The latency is a live-state observation (possibly transient); re-probe before any future raise. If it persists, file a hetzner-latency issue.",
       "_cap1_20260905": "2026-09-05: hetzner Qwen took 10 of 15 light picks and produced 2 PRs from 20 sessions (8 request timeouts, 4 EngineCore errors). Cap 1 until the yield gate (#3251) governs it by data; free, so one probe slot stays; probe ceiling lowered 4->2 to satisfy the <=2x cap rule (fleet-ops#3504)."
@@ -148,12 +153,15 @@
       "class": "metered",
       "models": {
         "z-ai/glm-4.7-flash-free": {
-          "cap": 1,
-          "class": "free"
+          "cap": 0,
+          "intentional_cap_zero": "yield",
+          "class": "free",
+          "reason": "2026-09-07 (fleet-ops#4271, session-waste #4260): 31 picks -> 0 PRs over 2026-09-01..09-07 (never shipped). Cap 0; the re-audition path (yield gate #3251) is the only way back in."
         },
         "deepseek/deepseek-v4-flash": {
-          "cap": 2,
-          "reason": "2026-09-07 fleet-ops#4205 (Nish scope-add 'ollama cloud and the rest'): land the paid ZenMux deepseek-v4-flash lane as a metered worker seat, cap 2. It answers SEAT-OK live but was absent from the seat-caps models allowlist, so fleet-seat-comeback-release logged it as 'absent from seat-caps models but real key' every tick and pick_seat never picked it. Meter check (fleet-ops#42: never wire a slug that can bill credits without a meter check): ZenMux is credit-based ($5 flat wallet; /models API returns no per-token pricing, confirmed 2026-08-29 fleet-ops#384), so daily_spend_cap_usd is NOT set here — Pi usage.cost cannot track per-token spend with no pricing, so that meter would be inert and misleading. The meter IS the wallet balance: HTTP 402 when the $5 is exhausted is a balance wall (same 402-as-balance-wall shape as runinfra in this same issue), benched by the provider quota_bench_default_s=3600 — never a transient fault to retry. The $5 wallet is the hard bound on spend; cap=2 limits concurrency. No max_probe_ceiling -> cap pinned at 2 (no upward AIMD probe on a paid seat). Not product_only: Nish declared it a worker seat (serves all enrolled repos, fleet-ops included). Metered class keeps it in the last-resort bucket after free + prepaid. Remove only with a ledger line."
+          "cap": 0,
+          "intentional_cap_zero": "money_only",
+          "reason": "2026-09-07 Nish: park the paid ZenMux DeepSeek V4 Flash lane (cap 0). ZenMux dashboard showed $5.00 on 2026-09-07 for 166M tokens (99% input, ~90% cached) at DeepSeek list price ($0.22/$0.007/$0.66). The same traffic costs ~$1.95 on crof (Q8, $0.08/$0.003/$0.10) and ~$4.10 on runinfra. Nish ordered the switch to crof. Free GLM lane on zenmux stays. Supersedes the #4205 scope-add for this slug. Re-raise only with a measured cheaper-than-crof price."
         }
       },
       "_comment_1442": "2026-08-29 fleet-ops#1442 (queue-starvation audit): zenmux had NO models map, so pick_seat skipped every zenmux row as not-in-allowlist even though z-ai/glm-4.7-flash-free was healthy (HTTP 200, observed 2026-08-28T14:27Z) and genuinely free. Live zenmux /models API: display_name 'Z.AI: GLM 4.7 Flash (Free)', pricings.completion[0].value=0 perMTokens USD. Live pi --print spawn: PACKET-VERDICT tools=1 class=worked, ANSWER=42, exit 0. Per-model class=free override (model_class_of, fleet-ops#384) buckets it free so the free-tier privacy line and ladder order apply even though the provider class is metered — same shape as cline/z-ai/glm-5.3-flash. cap=1 capacity-is-measured; the seat rate-limited (429) after 3 probes in 2 min during this audit, so cap stays 1 until a league mean beats a servable incumbent — the walled_comeback rate_limit_s=900 handles transient free-tier TPM walls. NOT added to free_providers_in_order (cline precedent: a metered/prepaid provider with a free model override is not in the free-order list; the free model is still bucketed and picked, just after the free-class providers). The paid credit lane deepseek/deepseek-v4-flash was deliberately held out of the allowlist under fleet-ops#42 until a meter check was wired; it is now landed (2026-09-07, fleet-ops#4205) with the 402-balance-wall meter — see its model reason.",
@@ -226,9 +234,17 @@
           "intentional_cap_zero": "corpse",
           "reason": "2026-09-02: HTTP 401 ModelError 'Model hy3-free is not supported' (n=3, fleet-ops#2667). Provider dropped the slug; control probe nemotron-3-ultra-free returned PONG same window, so credential is LIVE. Recovery is provider-side only."
         },
-        "mimo-v2.5-free": 1,
+        "mimo-v2.5-free": {
+          "cap": 0,
+          "intentional_cap_zero": "yield",
+          "reason": "2026-09-07 (fleet-ops#4271, session-waste #4260): 29 picks -> 0 PRs over 2026-09-01..09-07 (never shipped). Cap 0; the re-audition path (yield gate #3251) is the only way back in."
+        },
         "nemotron-3.5-lightning-free": 1,
-        "nemotron-3-ultra-free": 1,
+        "nemotron-3-ultra-free": {
+          "cap": 0,
+          "intentional_cap_zero": "yield",
+          "reason": "2026-09-07 (fleet-ops#4271, session-waste #4260): 75 picks -> 10 PRs (0.13 PR/run) over 2026-09-01..09-07, 121 slot-min per PR vs fleet median ~30. Best of the eight zero-yield seats but still 4x the fleet median cost per PR; capped with the cohort. Re-audition only via the yield gate (#3251)."
+        },
         "ling-3.0-flash-fin-free": {
           "cap": 1,
           "reason": "2026-09-06 fleet-ops#3738: live probe `pi --print --provider opencode --model ling-3.0-flash-fin-free 'Reply with exactly: PONG'` returned PONG rc=0; tool packet (bash, compute 6*7) returned ANSWER=42 PACKET-VERDICT tools=1 class=worked; no prepaid-usage/opencode.json meter file (zero spend). Catalog cost 0 (free slug, 262.1K context, 32.8K max-out, reasoning). Beats worst incumbent hy3-free (131.1K context, 16.4K max-out) on context and max-out. cap=1 shares the provider cap (capacity-is-measured); raise after a league mean beats a servable incumbent. Do not allowlist a billing slug. fleet-free-roster-canary observe-to-close: wiring this slug stops the free-slug-available ticket."
@@ -335,9 +351,21 @@
       "503_bench_default_s": 600,
       "audition": true,
       "models": {
-        "deepseek/deepseek-v4-flash": 1,
-        "deepseek/deepseek-v4-pro": 1,
-        "minimax/minimax-m3:free": 1
+        "deepseek/deepseek-v4-flash": {
+          "cap": 0,
+          "intentional_cap_zero": "yield",
+          "reason": "2026-09-07 (fleet-ops#4271, session-waste #4260): 36 picks -> 1 PR (0.03 PR/run) over 2026-09-01..09-07. Cap 0; the re-audition path (yield gate #3251) is the only way back in."
+        },
+        "deepseek/deepseek-v4-pro": {
+          "cap": 0,
+          "intentional_cap_zero": "yield",
+          "reason": "2026-09-07 (fleet-ops#4271, session-waste #4260): 38 picks -> 1 PR (0.03 PR/run) over 2026-09-01..09-07. Cap 0; the re-audition path (yield gate #3251) is the only way back in."
+        },
+        "minimax/minimax-m3:free": {
+          "cap": 0,
+          "intentional_cap_zero": "yield",
+          "reason": "2026-09-07 (fleet-ops#4271, session-waste #4260): 23 picks -> 0 PRs over 2026-09-01..09-07 (never shipped). Cap 0; the re-audition path (yield gate #3251) is the only way back in."
+        }
       },
       "_comment_audition_20260905": "Nish 2026-09-05: audition on the xKiro free plan (the USD 5 wallet must stay at 5). Free tier = 5,000,000 tokens/day on free-tier models; probed 2026-09-05 (n=3 models): deepseek-v4-flash, deepseek-v4-pro and minimax-m3:free each answered a real wc -l tool task correctly in 6-18s; the response echoes the model id (identity rule holds); GET /v1/usage returns free_tokens used/limit/remaining and wallet balance (meter, #3283). Provider block lives in ~/.pi/agent/models.json. Promote or drop by the yield ledger after ~10 WORKING sessions each; paid tiers never without Nish.",
       "_comment_503_20260906": "fleet-ops#3738: xkiro returns a generic 5xx 'A server error occurred. Please try again.' (pi surfaces it as rc=1 with no status code). Without a 503_bench_default_s, is_overload_error now classifies the body (shape d in seat-lib.sh) but mark_seat_overload_bench fails open (no marker) and the seat re-enters rotation immediately. 600s matches commandcode's overload default and gives the reactive seat-health ledger time to land before the bench expires; the geometric escalator (#3531) still backs off repeat 5xx storms."
@@ -368,6 +396,21 @@
         "deepseek-ai/DeepSeek-V4-Flash": 2
       },
       "_comment_entrim": "fleet-ops#4262 (Nish 2026-09-07): Entrim (https://api.entrim.ai/v1, model deepseek-ai/DeepSeek-V4-Flash, key resolved by '!cut -d= -f2 /home/nish/fleet2/etc/entrim.env') is a WORKER seat, cap 2, class prepaid, NOT audition. contextWindow 1M (capable=1). quota_bench_default_s 86400 (24h): a quota/cap 429 with no explicit reset window benches a day. 402-as-balance-wall: HTTP 402 = prepaid balance exhausted — MONEY wall (Nish-only top-up), never a transient fault; the seat-dead quota-age rule turns a 24h-old 402 into a billing-repair corpse. No max_probe_ceiling: cap stays pinned at 2 (no upward AIMD probe on a paid seat). cacheRead=input until measured (pi-models.json)."
+    },
+    "alibaba-coding": {
+      "cap": 3,
+      "class": "prepaid-quota",
+      "quota_bench_default_s": 604800,
+      "models": {
+        "qwen3.8-max": 1,
+        "qwen3.7-max": 1,
+        "qwen3.7-plus": 1,
+        "glm-5.2": 1,
+        "deepseek-v4-pro": 1,
+        "deepseek-v4-flash-0731": 1,
+        "qwen3.8-flash": 1
+      },
+      "_comment_alibaba": "fleet-ops#4329 (Nish 2026-09-07): Alibaba Model Studio Token Plan, Personal Standard mid tier (https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1, key resolved by '!cut -d= -f2 /home/nish/fleet2/etc/alibaba-coding.env', provider id alibaba-coding). $18/mo, 10,000 credits/month, 3-4 concurrent agents, service PAUSES at either the monthly or the 7-day window cap, no rollover, no credits API — console only. class prepaid, provider cap 3 (plan says 3-4 concurrent; ETIMEDOUT/429 -> 2). Tiers: qwen3.8-max (thinking) = senior candidate, audition on senior-review packets; qwen3.7-max + deepseek-v4-pro + qwen3.7-plus + glm-5.2 = capable workers; deepseek-v4-flash-0731 + qwen3.8-flash = cheap workers (light packets). Pacing: credits are per-request and depend on model/thinking/tool calls, so measure — read remaining credits from the console via the #4217 VPS login (source=dashboard) and target 10,000/month ≈ 2,300 per 7-day window; expiry-first ordering (an expiring monthly grant beats non-expiring seats) but never above Cursor's expiring pool in senior work. Terms say interactive-only / no automation (same class as the GLM coding plan) — recorded here; Nish's call already made. Feeds the #4242 audit; all 7 models in the #4262 audition set. quota_bench_default_s 604800 (7d): a quota/cap 429 with no explicit reset window benches a week (the 7-day window pacing), not the 900s devin default; the #4217 pipeline supplies real reset times when it lands. No max_probe_ceiling: cap stays pinned at 3 (no upward AIMD probe on a paid seat). compat.supportsDeveloperRole=false (the endpoint 400s on Pi's developer role); thinking on for the reasoning models, enable_thinking=false for qwen3.8-flash + deepseek-v4-flash-0731 (wired in pi-models.json)."
     }
   },
   "product_order": "value",
@@ -378,14 +421,16 @@
     "opencode",
     "xkiro"
   ],
+  "_comment_prepaid_order": "2026-09-07 Nish (switch the zenmux workload to crof): crof moved ahead of runinfra because it is the cheapest measured DeepSeek V4 Flash seat - the 166M-token 2026-09-07 day that billed $5.00 on the paid ZenMux lane at DeepSeek list price ($0.22/$0.007/$0.66) costs ~$1.95 on crof ($0.08/$0.003/$0.10) and ~$4.10 on runinfra ($0.13/$0.01/$0.27), so the cheapest seat is drawn first; the paid zenmux slug is parked at cap 0 in the same change.",
   "prepaid_providers_in_order": [
     "ollama",
     "devin",
     "cline",
     "cursor",
+    "alibaba-coding",
     "xai-oauth",
-    "runinfra",
     "crof",
+    "runinfra",
     "entrim"
   ],
   "_comment_senior_order": "fleet-ops#3121: the senior (judge/orchestrator/reviewer) role's seat ladder. Replaces the dead straitly role and the old keystone_only_providers dual mechanism — ONE mechanism now. First usable seat in the list wins; a walled seat is skipped, not a unit failure; if the whole list is walled the resolver falls through to any usable capable seat. cursor cap 2 concurrent (fleet-ops#4206, raised 1->2 to spend the $400 API pool); senior draws count against the existing prepaid-usage/cursor.json weekly meter (ceiling 300/week), after which the list falls through to xai grok and then openrouter deepseek. Nish 2026-09-04: devin (devin/glm-5-2), free-glm (zenmux/z-ai/glm-5.3-free, cline/z-ai/glm-5.3-flash), senior (this list) are the three judge roles; senior replaces straitly everywhere.",

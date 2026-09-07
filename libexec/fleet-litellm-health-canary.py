@@ -50,6 +50,8 @@ Environment seams (tests):
   FLEET_LITELLM_PG_ISREADY  pg_isready binary (default searched on PATH)
   FLEET_LITELLM_REDIS_CLI   redis-cli binary (default searched on PATH)
   FLEET_LITELLM_PG_HOST     postgres host (default /var/run/postgresql)
+  FLEET_LITELLM_PG_DB       postgres database name (default litellm)
+  FLEET_LITELLM_PG_USER     postgres user name (default litellm)
   FLEET_LITELLM_REDIS_HOST  redis host (default 127.0.0.1)
   FLEET_LITELLM_REDIS_PORT  redis port (default 6379)
   FLEET_LITELLM_STUB_PG     "1" forces postgres_up=1 (tests)
@@ -86,7 +88,9 @@ DEFAULT_STATE = Path(
     os.environ.get("FLEET_LITELLM_STATE", "/home/nish/workspaces/agent-state/litellm/health.json")
 )
 DEFAULT_TIMEOUT_S = float(os.environ.get("FLEET_LITELLM_TIMEOUT_S", "10"))
-DEFAULT_PG_HOST = os.environ.get("FLEET_LITELLM_PG_HOST", "/var/run/postgresql")
+DEFAULT_PG_HOST = os.environ.get(
+    "FLEET_LITELLM_PG_HOST", "/home/nish/.local/share/fleet-litellm-postgres/run"
+)
 DEFAULT_REDIS_HOST = os.environ.get("FLEET_LITELLM_REDIS_HOST", "127.0.0.1")
 DEFAULT_REDIS_PORT = os.environ.get("FLEET_LITELLM_REDIS_PORT", "6379")
 
@@ -155,41 +159,76 @@ def _fetch(url: str, timeout: float) -> tuple[int, str]:
 
 def _parse_readiness(body: str) -> dict[str, Any]:
     """Parse /health/readiness response. Returns {group: {healthy: n, unhealthy: n}}.
-    LiteLLM /health/readiness returns {"healthy_endpoints": [...], "unhealthy_endpoints": [...]}.
-    Each endpoint carries model_info; we bucket by model_name (the group alias)."""
+
+    LiteLLM's readiness endpoint returns two formats depending on version
+    and query params:
+
+    1. Detailed: {"healthy_endpoints": [...], "unhealthy_endpoints": [...]}
+       Each endpoint carries model_info; we bucket by model_name (the group
+       alias). This is the format the canary was originally designed for.
+
+    2. Simple: {"status": "healthy"|"unhealthy", "db": "connected"|...}
+       LiteLLM 1.98+ returns this by default without ?detailed=True. No
+       per-group breakdown is available, so we synthesise a single
+       "proxy" group with healthy=1 when status==healthy, unhealthy=1
+       otherwise. This keeps the fleet_litellm_proxy_healthy_deployments
+       gauge meaningful even without per-group detail (fleet-ops#4174
+       reopen: groups=0 despite a healthy proxy).
+    """
     try:
         doc = json.loads(body)
     except (json.JSONDecodeError, ValueError):
         return {}
     out: dict[str, dict[str, int]] = {}
-    for ep in doc.get("healthy_endpoints", []) or []:
-        name = "unknown"
-        if isinstance(ep, dict):
-            mi = ep.get("model_info") or {}
-            name = (mi.get("model_name") if isinstance(mi, dict) else None) or ep.get("model") or "unknown"
-        g = out.setdefault(str(name), {"healthy": 0, "unhealthy": 0})
-        g["healthy"] += 1
-    for ep in doc.get("unhealthy_endpoints", []) or []:
-        name = "unknown"
-        if isinstance(ep, dict):
-            mi = ep.get("model_info") or {}
-            name = (mi.get("model_name") if isinstance(mi, dict) else None) or ep.get("model") or "unknown"
-        g = out.setdefault(str(name), {"healthy": 0, "unhealthy": 0})
-        g["unhealthy"] += 1
+    healthy_eps = doc.get("healthy_endpoints") or []
+    unhealthy_eps = doc.get("unhealthy_endpoints") or []
+    if healthy_eps or unhealthy_eps:
+        # Detailed format — bucket by model_name.
+        for ep in healthy_eps:
+            name = "unknown"
+            if isinstance(ep, dict):
+                mi = ep.get("model_info") or {}
+                name = (mi.get("model_name") if isinstance(mi, dict) else None) or ep.get("model") or "unknown"
+            g = out.setdefault(str(name), {"healthy": 0, "unhealthy": 0})
+            g["healthy"] += 1
+        for ep in unhealthy_eps:
+            name = "unknown"
+            if isinstance(ep, dict):
+                mi = ep.get("model_info") or {}
+                name = (mi.get("model_name") if isinstance(mi, dict) else None) or ep.get("model") or "unknown"
+            g = out.setdefault(str(name), {"healthy": 0, "unhealthy": 0})
+            g["unhealthy"] += 1
+    elif isinstance(doc, dict) and "status" in doc:
+        # Simple format — synthesise a single "proxy" group.
+        status = str(doc.get("status", ""))
+        g = out.setdefault("proxy", {"healthy": 0, "unhealthy": 0})
+        if status == "healthy":
+            g["healthy"] = 1
+        else:
+            g["unhealthy"] = 1
     return out
 
 
 def _probe_postgres(pg_host: str) -> int:
-    """1 if pg_isready succeeds, 0 otherwise. Missing binary -> 0 (organ absent)."""
+    """1 if pg_isready succeeds, 0 otherwise. Missing binary -> 0 (organ absent).
+
+    Connects as user=litellm to database=litellm — the fleet-owned cluster
+    only has that role/database. The pg_isready defaults (user=nish,
+    database=nish) produce FATAL log spam every tick and could return a
+    false-negative exit code on stricter Postgres configs (fleet-ops#4174
+    reopen: 'FATAL: database "nish" does not exist' every 60s).
+    """
     if os.environ.get("FLEET_LITELLM_STUB_PG") == "1":
         return 1
     bin_name = os.environ.get("FLEET_LITELLM_PG_ISREADY", "pg_isready")
     pg_bin = shutil.which(bin_name) if "/" not in bin_name else bin_name
     if not pg_bin:
         return 0
+    pg_db = os.environ.get("FLEET_LITELLM_PG_DB", "litellm")
+    pg_user = os.environ.get("FLEET_LITELLM_PG_USER", "litellm")
     try:
         r = subprocess.run(
-            [pg_bin, "-q", "-h", pg_host],
+            [pg_bin, "-q", "-h", pg_host, "-d", pg_db, "-U", pg_user],
             capture_output=True,
             timeout=5,
         )

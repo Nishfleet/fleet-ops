@@ -54,14 +54,35 @@ grep -q 'scan-secrets: false' "$ci" \
   || fail "fleet-ops must not double-run gitleaks while the required Gitleaks job still exists"
 ok "fleet-ops CI calls reusable-pr-checks (secrets scan left on the required Gitleaks job)"
 
+# fleet-ops#1469: the arm path must mint a nishfleet-worker App token and
+# arm under it — never the human AUTO_REVERT_PAT (made Nish the triggering
+# actor of every merge, so GitHub emailed him per red workflow per merge) and
+# never GITHUB_TOKEN (would not trigger push workflows on main).
+#
+# fleet-ops's auto-merge-arm.yml and the template caller delegate to the
+# reusable workflow and pass the App secrets explicitly; the reusable
+# workflow carries the mint step and arms under the minted token.
 grep -q 'uses: ./.github/workflows/reusable-auto-merge-arm.yml' "$caller_arm" \
   || fail "auto-merge-arm.yml must call reusable-auto-merge-arm.yml"
-grep -q 'secrets.AUTO_REVERT_PAT' "$caller_arm" \
-  || fail "auto-merge-arm.yml must pass AUTO_REVERT_PAT explicitly"
+grep -q 'secrets.NISHFLEET_WORKER_APP_ID' "$caller_arm" \
+  || fail "auto-merge-arm.yml must pass NISHFLEET_WORKER_APP_ID explicitly"
+grep -q 'secrets.NISHFLEET_WORKER_PRIVATE_KEY' "$caller_arm" \
+  || fail "auto-merge-arm.yml must pass NISHFLEET_WORKER_PRIVATE_KEY explicitly"
+grep -q 'secrets.NISHFLEET_WORKER_APP_ID' "$template_arm" \
+  || fail "template auto-merge-arm.yml must pass NISHFLEET_WORKER_APP_ID explicitly"
+grep -q 'secrets.NISHFLEET_WORKER_PRIVATE_KEY' "$template_arm" \
+  || fail "template auto-merge-arm.yml must pass NISHFLEET_WORKER_PRIVATE_KEY explicitly"
+grep -q 'actions/create-github-app-token' "$auto_arm" \
+  || fail "reusable-auto-merge-arm.yml must mint the nishfleet-worker App token (fleet-ops#1469)"
+grep -q 'steps.app-token.outputs.token' "$auto_arm" \
+  || fail "reusable-auto-merge-arm.yml must arm under the minted App token (fleet-ops#1469)"
+if grep -q 'secrets.AUTO_REVERT_PAT' "$caller_arm" "$template_arm" "$auto_arm"; then
+  fail "auto-merge-arm must not reference the retired AUTO_REVERT_PAT (fleet-ops#1469)"
+fi
 if grep -q 'secrets: inherit' "$caller_arm" "$template_arm" "$template_ci" "$ci"; then
   fail "callers must not use secrets: inherit"
 fi
-ok "fleet-ops auto-merge-arm calls the reusable workflow"
+ok "fleet-ops arm path mints the nishfleet-worker App token (not AUTO_REVERT_PAT)"
 
 grep -q 'uses: Nishfleet/fleet-ops/.github/workflows/reusable-pr-checks.yml@v1' "$template_ci" \
   || fail "template ci.yml must call Nishfleet/fleet-ops reusable-pr-checks.yml@v1"
@@ -87,5 +108,23 @@ bash "$here/p11b-pending-or-callable.test.sh"
 # from .github/workflows/ once a Workflows-scoped token lands it. Hosted here so
 # it stays in the P14 reachable set without a workflow edit.
 bash "$here/stale-pending-or-callable.test.sh"
+
+# fleet-ops#4294: the docs-only fast path must not treat .github/** as docs.
+# The classifier regex is in reusable-pr-checks.yml; pin its behaviour here so
+# the regression (^.git matching .github/**) cannot recur invisibly.
+classifier_pattern=$(grep -oP '\^\\\.git[^"'"'"']*' "$pr_checks" | head -1)
+if [[ "$classifier_pattern" != '^\.git/' ]]; then
+  fail "docs-only classifier must use '^\\.git/' (trailing slash) to avoid treating .github/** as docs (fleet-ops#4294); got '$classifier_pattern'"
+fi
+ok "docs-only classifier uses '^\\.git/' (fleet-ops#4294)"
+
+# Live repro: .github/workflows/ci.yml must classify as code, docs/x.md as docs.
+if ! printf '.github/workflows/ci.yml\n' | grep -Eiv '\.(md|mdx|txt|rst|csv)$|^docs/|^\.lane/|^README|^CHANGELOG|^LICENSE|^\.git/' | grep -q .; then
+  fail ".github/workflows/ci.yml must classify as code (fleet-ops#4294)"
+fi
+if printf 'docs/x.md\n' | grep -Eiv '\.(md|mdx|txt|rst|csv)$|^docs/|^\.lane/|^README|^CHANGELOG|^LICENSE|^\.git/' | grep -q .; then
+  fail "docs/x.md must still classify as docs (fleet-ops#4294)"
+fi
+ok ".github/** classifies as code, docs/** as docs (fleet-ops#4294)"
 
 echo "OK: reusable workflow set is shape-locked"

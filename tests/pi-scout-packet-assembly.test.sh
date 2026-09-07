@@ -119,6 +119,49 @@ grep -q 'A.5 Money-path walk' "$repo_root/prompts/scout.md" || fail "scout promp
 grep -q 'A.6 Usage citation' "$repo_root/prompts/scout.md" || fail "scout prompt missing usage citation rule"
 ok "scout prompt carries usage citation, money-path walk, and scout-yield"
 
+# 1d. CF analytics source is OPTIONAL (fleet-ops#3172): when the sanctioned
+# token lacks zone.analytics.read the GraphQL call returns a 403 authz error;
+# the source logs a one-line `usage-source: cloudflare-analytics UNAVAILABLE
+# (token scope)` marker and DROPS (returns 1) — it must never fail the scout
+# run or drop the whole usage block.
+cf_token_file="$scratch/cf-token.env"
+printf 'CLOUDFLARE_API_TOKEN="fake-token"\n' >"$cf_token_file"
+# Override curl so the GraphQL call returns the real 403 authz shape without
+# touching the network.
+cat >"$scratch/curl" <<'EOF'
+#!/usr/bin/env bash
+# Only the GraphQL call is faked; anything else (zone id) is not reached here.
+printf '%s' '{"errors":[{"message":"Actor '"'"'com.cloudflare.api.token.abc'"'"' does not have permission '"'"'com.cloudflare.api.account.zone.analytics.read'"'"' for zone 0509"}]}'
+EOF
+chmod +x "$scratch/curl"
+PATH="$scratch:$PATH" PACKET_CF_FILE="$cf_token_file" PACKET_CF_ZONE="0509" \
+    bash -c 'source "$1"; packet_cf_analytics_usage 0509.io 7' _ "$repo_root/lib/packet-assembly.sh" \
+    >"$scratch/cf-403.out" 2>&1 || true
+grep -q 'usage-source: cloudflare-analytics UNAVAILABLE (token scope)' "$scratch/cf-403.out" \
+  || fail "CF 403 must log the usage-source UNAVAILABLE line, got: $(cat "$scratch/cf-403.out")"
+grep -q 'does not have permission' "$scratch/cf-403.out" \
+  || fail "CF 403 must keep the visible drop marker"
+ok "CF analytics source is optional: 403 logs usage-source UNAVAILABLE and drops, never fails the scout"
+
+# 1e. Reader path for the working sources (fleet-ops#3172): lp_run_audit and
+# /search query log dump dirs are read into the usage block when present, and
+# a missing dump dir DROPS with a marker instead of failing.
+usage_dir="$scratch/usage-dump"
+mkdir -p "$usage_dir/lp" "$usage_dir/search"
+printf '{"tag":"lp_run_audit","stage":"cta_extract","outcome":"ok"}\n' \
+  >"$usage_dir/lp/audit-20260904.ndjson"
+printf '{"q":"sneaker","hits":3}\n' >"$usage_dir/search/search-20260904.ndjson"
+PACKET_LP_AUDIT_DIR="$usage_dir/lp" PACKET_SEARCH_LOG_DIR="$usage_dir/search" \
+    bash -c 'source "$1"; packet_local_usage "lp_run_audit / landing-page telemetry" "$PACKET_LP_AUDIT_DIR" "*.ndjson"; packet_local_usage "/search query log" "$PACKET_SEARCH_LOG_DIR" "*.ndjson"' \
+    _ "$repo_root/lib/packet-assembly.sh" >"$scratch/reader.out" 2>&1
+grep -q 'lp_run_audit / landing-page telemetry (newest: audit-20260904.ndjson)' "$scratch/reader.out" \
+  || fail "lp_run_audit dump must be read into the usage block, got: $(cat "$scratch/reader.out")"
+grep -q '/search query log (newest: search-20260904.ndjson)' "$scratch/reader.out" \
+  || fail "/search query log dump must be read into the usage block, got: $(cat "$scratch/reader.out")"
+grep -q '"tag":"lp_run_audit"' "$scratch/reader.out" \
+  || fail "lp_run_audit dump content must appear verbatim"
+ok "reader path reads lp_run_audit and /search query log dumps into the usage block"
+
 # 2. Stale market signal (> 36h) returns 1.
 stale_dir="$scratch/stale-signal"
 mkdir -p "$stale_dir"

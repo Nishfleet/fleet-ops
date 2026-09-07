@@ -148,6 +148,17 @@ router_settings:
     cursor:    { budget_limit: 16, time_period: 1d }
     straitly:  { budget_limit: 5,  time_period: 1d }
 
+litellm_settings:
+  # The prometheus callback mounts the /metrics ASGI endpoint that the
+  # fleet's Prometheus scrape job (config/prometheus.yml) polls. Without
+  # this the scrape returns 404 and no litellm_deployment_* gauges land
+  # in Prometheus (fleet-ops#4174 reopen).
+  callbacks: ["prometheus"]
+  # The proxy binds 127.0.0.1 only; requiring auth for /metrics blocks the
+  # Prometheus scrape job which has no bearer token.
+  require_auth_for_metrics_endpoint: false
+  drop_params: true
+
 general_settings:
   # master_key + virtual keys are operator-owned (live config, not repo).
   # The live copy sets master_key from a credential resolver and mints

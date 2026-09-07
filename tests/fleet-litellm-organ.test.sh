@@ -139,6 +139,26 @@ grep -q 'fleet_litellm_proxy_up{endpoint="readiness"} 0' "$scratch/dead.prom" \
     || fail "5: organ-dead prom missing proxy_up=0"
 grep -q 'fleet_litellm_organ_installed 1' "$scratch/dead.prom" \
     || fail "5: organ-dead prom missing organ_installed=1 (installed marker stays 1 when organ dies)"
+# --- 5c: simple readiness format (LiteLLM 1.98+ default, fleet-ops#4174 reopen)
+# The proxy returns {"status":"healthy","db":"connected"} instead of the
+# detailed endpoints format. The canary must still report proxy_up=1 and
+# a synthesised "proxy" group with healthy=1.
+simple_stub="$scratch/simple.json"
+printf '{"status":"healthy","db":"connected"}' > "$simple_stub"
+FLEET_LITELLM_PROM="$scratch/simple.prom" \
+FLEET_LITELLM_STATE="$scratch/simple.json" \
+FLEET_LITELLM_STUB="$simple_stub" \
+FLEET_LITELLM_STUB_PG=1 \
+FLEET_LITELLM_STUB_REDIS=1 \
+FLEET_LITELLM_STUB_INSTALLED=1 \
+FLEET_LITELLM_NOW=1700000100 \
+python3 "$canary" --quiet || fail "5c: canary simple-format path must exit 0"
+grep -q 'fleet_litellm_proxy_up{endpoint="readiness"} 1' "$scratch/simple.prom" \
+    || fail "5c: simple-format prom missing proxy_up=1"
+grep -q 'fleet_litellm_proxy_healthy_deployments{group="proxy"} 1' "$scratch/simple.prom" \
+    || fail "5c: simple-format prom missing proxy group healthy=1"
+ok "5c: canary handles LiteLLM simple readiness format (proxy group synthesised)"
+
 ok "5: canary compiles, proxy_up=1 path exits 0, organ-dead path exits 1"
 
 # --- 5b: organ-not-installed path (Nish-gated live install not yet done) -> exit 0, no fail-loud

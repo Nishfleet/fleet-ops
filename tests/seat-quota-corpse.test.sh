@@ -55,6 +55,9 @@ ok()   { echo "OK: $*"; }
 
 scratch="$(mktemp -d -t seat-quota-corpse.XXXXXX)"
 trap 'rm -rf "$scratch"' EXIT INT TERM
+# fleet-ops#4217: hermetic live-quota lookup — real fleet_seat_quota_* rows in
+# the VPS node_exporter textfile must not leak into the corpse-threshold tests.
+export SEAT_LIVE_QUOTA_PROM="$scratch/no-live-quota.prom"
 
 export HOME="$scratch/home"
 mkdir -p "$HOME"

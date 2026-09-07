@@ -6,11 +6,16 @@ Documentation=https://github.com/Nishfleet/fleet-ops/issues/4130
 # live install (apt + pip + start) is Nish-gated; this unit ships the
 # shape, the deploy is in docs/litellm-postgres-setup.md.
 ConditionPathExists=%h/.config/fleet-ops/litellm-proxy.yaml
-# Wants, not Requires: a dead Postgres/Redis must not pull the proxy down
-# with it — the proxy fails loud on its own (P4 drill) and the canary
-# pages. Restart=on-failure brings the proxy back when a dependent
-# recovers.
-Wants=fleet-litellm-postgres.service fleet-litellm-redis.service
+# Hard dependency on the fleet-owned Postgres + Redis daemons (Nish,
+# 2026-09-07 reopen of fleet-ops#4174): the proxy is ordered After= both
+# and Requires= both, so systemd starts them first and pulls the proxy
+# down if either dies. The proxy's own /health/readiness proves the DB
+# connection; the canary pages on any of the three going absent. This is
+# the real long-running-daemon shape — the earlier Wants= + oneshot
+# readiness-marker shape left Postgres/Redis as Type=oneshot "active
+# (exited)" and the proxy started before the DB socket was up.
+Requires=fleet-litellm-postgres.service fleet-litellm-redis.service
+After=fleet-litellm-postgres.service fleet-litellm-redis.service
 # StartLimit* are [Unit]-section keys; in [Service] systemd ignores them
 # ("Unknown key name ... in section 'Service'") and the documented storm
 # cap silently falls back to the 10s/5 default. 60s/5 makes the P4 drill

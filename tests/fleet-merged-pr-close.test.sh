@@ -73,7 +73,14 @@ case "$1" in
         exit 0
         ;;
       view)
-        # Existing comment bodies, accumulated by `issue comment`.
+        # --jq extracts comment bodies — return them as raw text lines so
+        # both the dedup grep (existing_comment) and the verdict-marker grep
+        # (verification-only terminal, fleet-ops#4274) work against real
+        # comment text, not a JSON wrapper.
+        if [[ "$*" == *"--jq"* ]]; then
+          cat "$FAKE_DIR/view-comments.txt" 2>/dev/null || true
+          exit 0
+        fi
         printf '[{"body":"%s"}]' "$(cat "$FAKE_DIR/view-comments.txt" 2>/dev/null || true)"
         exit 0
         ;;
@@ -438,6 +445,55 @@ grep -q '"claim-branch":1' "$scratch/summary.json" || fail "replay summary must 
 grep -q '"bare-mention":0' "$scratch/summary.json" || fail "replay summary must keep bare-mention=0: $(cat "$scratch/summary.json")"
 grep -q '"protected":0' "$scratch/summary.json" || fail "replay summary must keep protected=0: $(cat "$scratch/summary.json")"
 ok "replay summary: closes_by_reason legal-only"
+
+# --- Case 11c: verification-only + VERDICT: PASS -> close (fleet-ops#4274) ---
+# A verification-only issue has no PR. Its terminal is a worker VERDICT: PASS
+# comment. observe-to-close closes it exactly like a merged PR delivery.
+# This is the fix for 0509#972: a passed verification burned worker capacity
+# for 12 days because there was no PR to merge-close it.
+set_fixtures \
+  '[{"number":972,"title":"verify the cohort","labels":[{"name":"verification-only"},{"name":"agent-in-progress"}],"body":"verify only","author":{"login":"fleet-issue-bot"}}]' \
+  '[]'
+printf 'VERDICT: PASS\ncohort verified at 2026-08-26\n' >"$scratch/view-comments.txt"
+out=$(run FLEET_MERGED_PR_CLOSE_OK=1)
+grep -q 'CLOSED (verification-only VERDICT: PASS)' <<<"$out" || fail "verdict PASS should close: $out"
+grep -q 'issue close 972' "$scratch/closes.log" || fail "verdict PASS must call gh issue close 972: $(cat "$scratch/closes.log")"
+grep -q 'verdict-pass":1' "$scratch/summary.json" || fail "summary must count verdict-pass=1: $(cat "$scratch/summary.json")"
+ok "verification-only + VERDICT: PASS -> close (fleet-ops#4274)"
+
+# --- Case 11d: verification-only + VERDICT: FAIL -> leave open ---
+# A failed verification is not terminal — the issue stays open and re-queues
+# so a worker retries. observe-to-close never closes on FAIL.
+set_fixtures \
+  '[{"number":972,"title":"verify the cohort","labels":[{"name":"verification-only"},{"name":"agent-in-progress"}],"body":"verify only","author":{"login":"fleet-issue-bot"}}]' \
+  '[]'
+printf 'VERDICT: FAIL\ncohort not verified\n' >"$scratch/view-comments.txt"
+out=$(run FLEET_MERGED_PR_CLOSE_OK=1)
+grep -q 'no VERDICT: PASS comment yet' <<<"$out" || fail "verdict FAIL should leave open: $out"
+[[ -s "$scratch/closes.log" ]] && fail "verdict FAIL must not close: $(cat "$scratch/closes.log")"
+ok "verification-only + VERDICT: FAIL -> leave open (re-queues)"
+
+# --- Case 11e: verification-only + no verdict yet -> leave open ---
+# A worker that died before posting a verdict is not terminal — the issue
+# stays open and §3 re-queues so a new worker retries.
+set_fixtures \
+  '[{"number":972,"title":"verify the cohort","labels":[{"name":"verification-only"},{"name":"agent-in-progress"}],"body":"verify only","author":{"login":"fleet-issue-bot"}}]' \
+  '[]'
+: >"$scratch/view-comments.txt"
+out=$(run FLEET_MERGED_PR_CLOSE_OK=1)
+grep -q 'no VERDICT: PASS comment yet' <<<"$out" || fail "no verdict should leave open: $out"
+[[ -s "$scratch/closes.log" ]] && fail "no verdict must not close: $(cat "$scratch/closes.log")"
+ok "verification-only + no verdict -> leave open"
+
+# --- Case 11f: verification-only + close OFF -> candidate logged, no write ---
+set_fixtures \
+  '[{"number":972,"title":"verify the cohort","labels":[{"name":"verification-only"},{"name":"agent-in-progress"}],"body":"verify only","author":{"login":"fleet-issue-bot"}}]' \
+  '[]'
+printf 'VERDICT: PASS\n' >"$scratch/view-comments.txt"
+out=$(run)
+grep -q 'VERDICT: PASS candidate' <<<"$out" || fail "close-off should report verdict candidate: $out"
+[[ -s "$scratch/closes.log" ]] && fail "close-off must not close live issues: $(cat "$scratch/closes.log")"
+ok "verification-only + close OFF -> candidate described, live repo untouched"
 
 # --- Case 12: crash paths fail closed with rc 2 ---
 # gh missing

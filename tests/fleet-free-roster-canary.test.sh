@@ -453,21 +453,37 @@ grep -q 'bin/fleet-free-roster-canary' "$repo_root/MANIFEST" \
   || fail "MANIFEST must install bin/fleet-free-roster-canary"
 ok "scenario12: heartbeat-tier1 wires the canary, fail-loud on gate, MANIFEST installs it"
 
-# --- 13. production lock: mimo-v2.5-free stay-wired (fleet-ops#640) ---------
+# --- 13. production lock: mimo-v2.5-free stay-benched (fleet-ops#640, #4271) --
 # The class prevention for "auditioned free slug silently dropped": a later
 # PR that removes mimo-v2.5-free from the allowlist without a dated bench
 # reason fails this lock. Billing slugs (mimo-v2.5, xiaomi/mimo-v2.5) must
-# not ride in on the free row.
-jq -e '.providers.opencode.models["mimo-v2.5-free"] > 0' \
-    "$repo_root/config/seat-caps.json" >/dev/null \
-  || fail "scenario13: production seat-caps must allowlist opencode/mimo-v2.5-free (fleet-ops#640)"
+# not ride in on the free row. fleet-ops#4271 (session-waste #4260) capped
+# the seat to 0 for zero PR yield (29 picks -> 0 PRs over 2026-09-01..09-07);
+# the row must stay present at cap=0 with intentional_cap_zero + a dated
+# reason, and the re-audition path (yield gate #3251) is the only way back in.
+mimo_cap=$(jq -r '(.providers.opencode.models["mimo-v2.5-free"] // "missing") | if type == "object" then .cap else . end' \
+    "$repo_root/config/seat-caps.json")
+if [[ "$mimo_cap" == "missing" ]]; then
+  fail "scenario13: production seat-caps must keep a mimo-v2.5-free row (fleet-ops#640)"
+fi
+if [[ "$mimo_cap" != "0" ]]; then
+  fail "scenario13: production mimo-v2.5-free must be capped 0 (zero-yield retirement, fleet-ops#4271; got $mimo_cap)"
+fi
+mimo_icz=$(jq -r '.providers.opencode.models["mimo-v2.5-free"].intentional_cap_zero // ""' \
+    "$repo_root/config/seat-caps.json")
+[[ "$mimo_icz" == "yield" ]] \
+  || fail "scenario13: production mimo-v2.5-free must carry intentional_cap_zero=yield (fleet-ops#4271)"
+mimo_reason=$(jq -r '.providers.opencode.models["mimo-v2.5-free"].reason // ""' \
+    "$repo_root/config/seat-caps.json")
+grep -qE '20[0-9]{2}-[0-9]{2}-[0-9]{2}' <<<"$mimo_reason" \
+  || fail "scenario13: mimo-v2.5-free cap=0 reason must be dated (fleet-ops#4271)"
 while IFS= read -r k; do
   lk="${k,,}"
   if [[ "$lk" == *mimo* ]] && [[ "$lk" != "mimo-v2.5-free" ]]; then
     fail "scenario13: production opencode allowlists a non-free mimo slug: $k"
   fi
 done < <(jq -r '.providers.opencode.models // {} | keys[]' "$repo_root/config/seat-caps.json")
-ok "scenario13: production seat-caps keep mimo-v2.5-free and no billing mimo slug"
+ok "scenario13: production seat-caps keep mimo-v2.5-free benched at cap=0 with dated reason and no billing mimo slug"
 
 # --- 14. production lock: x-preview-f-free stay-benched (fleet-ops#811) ----
 # The class prevention for "auditioned free slug silently unwired after a
@@ -544,14 +560,27 @@ while IFS= read -r k; do
 done < <(jq -r '.providers.opencode.models // {} | keys[]' "$repo_root/config/seat-caps.json")
 ok "scenario15: production seat-caps keep nemotron-3.5-lightning-free wired with dated reason and no billing sibling"
 
-# --- 16. production lock: nemotron-3-ultra-free stay-wired (fleet-ops#910) --
+# --- 16. production lock: nemotron-3-ultra-free stay-benched (fleet-ops#910, #4271) --
 # The class prevention for "auditioned free slug silently dropped": a later
 # PR that removes nemotron-3-ultra-free from the allowlist without a dated
 # bench reason fails this lock. Billing slugs (nemotron-3-ultra,
-# nvidia/nemotron-3-ultra) must not ride in on the free row.
-jq -e '.providers.opencode.models["nemotron-3-ultra-free"] > 0' \
-    "$repo_root/config/seat-caps.json" >/dev/null \
-  || fail "scenario16: production seat-caps must allowlist opencode/nemotron-3-ultra-free (fleet-ops#910)"
+# nvidia/nemotron-3-ultra) must not ride in on the free row. fleet-ops#4271
+# (session-waste #4260) capped the seat to 0 for zero PR yield (75 picks ->
+# 10 PRs, 0.13 PR/run, 121 slot-min per PR vs fleet median ~30); the row must
+# stay present at cap=0 with intentional_cap_zero + a dated reason, and the
+# re-audition path (yield gate #3251) is the only way back in.
+nem_cap=$(jq -r '(.providers.opencode.models["nemotron-3-ultra-free"] // "missing") | if type == "object" then .cap else . end' \
+    "$repo_root/config/seat-caps.json")
+if [[ "$nem_cap" == "missing" ]]; then
+  fail "scenario16: production seat-caps must keep a nemotron-3-ultra-free row (fleet-ops#910)"
+fi
+if [[ "$nem_cap" != "0" ]]; then
+  fail "scenario16: production nemotron-3-ultra-free must be capped 0 (zero-yield retirement, fleet-ops#4271; got $nem_cap)"
+fi
+nem_icz=$(jq -r '.providers.opencode.models["nemotron-3-ultra-free"].intentional_cap_zero // ""' \
+    "$repo_root/config/seat-caps.json")
+[[ "$nem_icz" == "yield" ]] \
+  || fail "scenario16: production nemotron-3-ultra-free must carry intentional_cap_zero=yield (fleet-ops#4271)"
 reason=$(jq -r '.providers.opencode._comment_nemotron_ultra // ""' \
     "$repo_root/config/seat-caps.json")
 if [[ -z "$reason" ]]; then
@@ -569,7 +598,7 @@ while IFS= read -r k; do
     fail "scenario16: production opencode allowlists a non-free nemotron-3-ultra slug: $k"
   fi
 done < <(jq -r '.providers.opencode.models // {} | keys[]' "$repo_root/config/seat-caps.json")
-ok "scenario16: production seat-caps keep nemotron-3-ultra-free and no billing sibling"
+ok "scenario16: production seat-caps keep nemotron-3-ultra-free benched at cap=0 with dated reason and no billing sibling"
 
 # --- 17. production lock: muse-spark-1.2-contributor-free stay-benched (fleet-ops#1224) --
 # The class prevention for "auditioned free slug silently unwired after a

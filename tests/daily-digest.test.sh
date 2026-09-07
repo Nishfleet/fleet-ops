@@ -135,6 +135,7 @@ Four lines of header.
 Format: entry line.
 2026-09-06T14:35Z MONEY-BOUNDARY hash=openrouter-402 reason=ladder-walled:402:openrouter quota_exhausted
   SUMMARY: openrouter credits exhausted, 402 across all seats.
+2026-09-07T08:10Z PRODUCT-DIRECTION issue-0509-964 — keep or drop the Offer Timeline bet? — recommended: keep, Bet-3 already funds it
 ## 2026-09-06 - AUTO-REVERT workflow bug: needs Workflows-scope token
 - The nishfleet-worker App token does not have Workflows scope.
 MDEOF
@@ -152,6 +153,10 @@ grep -qF "MONEY-BOUNDARY hash=openrouter-402" "$scratch/body4.txt" \
   || fail "case 4: formal MONEY-BOUNDARY entry not surfaced"
 grep -qF "AUTO-REVERT workflow bug" "$scratch/body4.txt" \
   || fail "case 4: prose section not surfaced"
+# fleet-ops#4260: entries that carry a `— recommended:` tail must reach the
+# digest intact (question + recommended answer, answerable in one line).
+grep -qF "recommended: keep, Bet-3 already funds it" "$scratch/body4.txt" \
+  || fail "case 4: recommended-answer tail not surfaced: $(grep -i 'recommended\|PRODUCT-DIRECTION' "$scratch/body4.txt" || echo none)"
 ok "case 4: live escalations section surfaces formal + prose entries"
 
 # --- case 5: graceful fallback when ledger is missing ------------------------

@@ -29,8 +29,10 @@ name: Repo standards sync
 #     enforcer). The live canary stays in fleet-heartbeat; this file is the
 #     inherited matrix.
 #
-# Blocked on: FLEET_SYNC_PAT secret (contents+workflows+pull-requests write
-# across Nishfleet + nish3451). Fails LOUD with an actionable message if absent.
+# Identity: FLEET_SYNC_PAT secret holds a classic PAT with repo+workflow
+# scopes and push access to Nishfleet + nish3451. Verified by
+# bin/verify-fleet-sync-pat before the sync step (fleet-ops#488). Fails LOUD
+# with an actionable message if absent or under-scoped.
 
 on:
   schedule:
@@ -67,6 +69,16 @@ jobs:
             echo "::error::FLEET_SYNC_PAT secret is not set. Create a PAT with contents+workflows+pull-requests write across Nishfleet and nish3451, add it as the FLEET_SYNC_PAT repo (or org) secret on Nishfleet/fleet-ops, then re-run this workflow (Actions tab -> Repo standards sync -> Run workflow). Until then this workflow cannot sync."
             exit 1
           fi
+
+      - name: Probe FLEET_SYNC_PAT scopes and push access
+        # fleet-ops#488: a non-empty check lets a dead/under-scoped token sail
+        # past and fail later inside BetaHuhn with a vague "Resource not
+        # accessible by personal access token". bin/verify-fleet-sync-pat
+        # (fleet-ops#482) catches it LOUD before the sync step runs.
+        env:
+          FLEET_SYNC_PAT: ${{ secrets.FLEET_SYNC_PAT }}
+        run: |
+          bin/verify-fleet-sync-pat --token "$FLEET_SYNC_PAT"
 
       - name: Ensure allow_auto_merge on all active repos
         # Idempotent, skip archived. Repos where the plan forbids
@@ -180,14 +192,22 @@ jobs:
             echo "::error::Canonical auto-merge-arm.yml is missing from siterep-public@main — nothing to sync. Aborting."
             exit 1
           fi
-          # Group 1: auto-merge-arm.yml -> can-arm repos only.
+          # Group 1: auto-merge-arm.yml -> can-arm repos only. fleet-ops is
+          # EXCLUDED: it runs the nishfleet-worker App-token arm workflow
+          # (fleet-ops#1469) and must not be overwritten by the PAT-based
+          # siterep-public canonical. The canonical switches to the App token
+          # only once the NISHFLEET_WORKER_APP_ID / NISHFLEET_WORKER_PRIVATE_KEY
+          # secrets exist org-wide (or per-repo across Nishfleet); until then
+          # fleet-ops owns its App-token copy locally (same pattern as
+          # stop-the-line-watch).
+          grep -vxE 'Nishfleet/fleet-ops' repos-eligible.txt > repos-arm.txt || true
           {
             echo "group:"
             echo "  - files:"
             echo "      - source: canonical/auto-merge-arm.yml"
             echo "        dest: .github/workflows/auto-merge-arm.yml"
             echo "    repos: |"
-            while IFS= read -r r; do echo "      $r"; done < repos-eligible.txt
+            while IFS= read -r r; do echo "      $r"; done < repos-arm.txt
           } > .github/sync.yml
           # Group 2: visual-check.yml -> ALL active repos, only if it exists.
           if [ "$HAVE_VISUAL" = "1" ]; then

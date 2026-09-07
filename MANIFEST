@@ -279,6 +279,13 @@ bin/pi-intake-repair-run /home/nish/.local/bin/pi-intake-repair-run
 bin/agent-cron-run /home/nish/.local/bin/agent-cron-run
 systemd/agent-cron-0509-daily-market-signal.service /home/nish/.config/systemd/user/agent-cron-0509-daily-market-signal.service
 systemd/agent-cron-0509-daily-market-signal.timer /home/nish/.config/systemd/user/agent-cron-0509-daily-market-signal.timer
+# fleet-ops#4260: orchestrator decision sweep — drains needs-orchestrator.
+# On-demand service only (no timer): blocked-reconcile starts it when an
+# open needs-orchestrator issue is older than 1h; the prompt's
+# `difficulty: senior-review` marker routes it to the senior seat ladder
+# through the stock agent-cron-run (no new wrapper).
+systemd/agent-cron-orchestrator-decision-sweep.service /home/nish/.config/systemd/user/agent-cron-orchestrator-decision-sweep.service
+prompts/orchestrator-decision-sweep.md /home/nish/.pi/agent/prompts/orchestrator-decision-sweep.md
 # fleet-ops#3735: daily §1.8 six-domain /search tier regression canary for
 # 0509 (issue Nishfleet/0509#1452). Absorbed from a hand-placed real file
 # into the repo so the machinery-authorization hunt stops flagging it as
@@ -783,6 +790,13 @@ bin/fleet-empty-run-burst-canary /home/nish/.local/bin/fleet-empty-run-burst-can
 # resolves (ratio >= 0.1) or the stage's leak drains to 0. No new timer;
 # heartbeat-tier1 block 45. Not an organ (exports no heartbeat metric).
 bin/fleet-scout-leak-canary /home/nish/.local/bin/fleet-scout-leak-canary
+# fleet-ops#3130: continuous-research prevention canary. Asserts the
+# researcher ran AND produced >= 1 mechanism proposal in the trailing 7d
+# (reads agent-state/fleet-researcher/state.json); auto-files a
+# `fix(research-sweep):` issue on violation, observe-to-closes when
+# healthy. No new timer; heartbeat-tier1 block 46. Not an organ (exports
+# no heartbeat metric).
+bin/fleet-research-sweep-canary /home/nish/.local/bin/fleet-research-sweep-canary
 # fleet-ops#524: per-repo verification harness canary (sr-verify-harness).
 # Fail-loud if an enrolled product repo HEAD is missing
 # .claude/skills/verify-<app>/SKILL.md with required sections + features/.

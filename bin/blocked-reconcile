@@ -48,6 +48,12 @@ fi
 #   BLOCKED_RECONCILE_STICKY_SECS  min age before editing last-checked
 #                                  comment (default 21600 = 6h)
 #   BLOCKED_RECONCILE_DRY_RUN      if 1, print actions and mutate nothing
+#   BLOCKED_RECONCILE_ORCHESTRATOR_UNIT     on-demand service started when an
+#                                  open needs-orchestrator issue is aged
+#                                  (default agent-cron-orchestrator-decision-
+#                                  sweep.service; empty disables)
+#   BLOCKED_RECONCILE_ORCHESTRATOR_MIN_AGE_S  age threshold, default 3600 (1h)
+#   BLOCKED_RECONCILE_SYSTEMCTL    systemctl binary (tests stub it)
 #
 # Modes:
 #   --extract   read one issue JSON on stdin, print {kind,deps} (no network)
@@ -73,12 +79,14 @@ URL = re.compile(
 OWNED = re.compile(r"^([\w.-]+)/([\w.-]+)#(\d+)$")
 HASH = re.compile(r"^#(\d+)$")
 BLOCKED_ON = re.compile(r"(?im)^blocked-on:\s*(.+?)\s*$")
-# Valid nish-decision reasons: money/pay/price/billing, legal, product
-# direction/brand, customer data/deletion. Any other use of
-# `blocked-on: nish-decision` is rewritten to `blocked-on: orchestrator`.
+# Valid nish-decision reasons (fleet-ops#4260 — the canonical Nish-reserved
+# list): money/pay/price/pricing/billing, legal, brand, product direction,
+# customer data/deletion, or an authority Nish explicitly reserved. Any other
+# use of `blocked-on: nish-decision` is rewritten to
+# `blocked-on: orchestrator`.
 NISH_REASON = re.compile(
-    r"(?i)\b(money|pay|price|billing|legal|brand|deletion|"
-    r"product[\s/-]*direction|customer[\s/-]*data)\b"
+    r"(?i)\b(money|pay|price|pricing|billing|legal|brand|deletion|"
+    r"product[\s/-]*direction|customer[\s/-]*data|reserved)\b"
 )
 COMMENT_ID_URL = re.compile(r"#issuecomment-(\d+)$")
 BLOCKED_BY = re.compile(
@@ -431,7 +439,7 @@ rejected_nish=0
 
 # remaining_line is accumulated as JSON objects, one per still-blocked issue.
 remaining_file=$(mktemp)
-trap 'rm -f "$remaining_file"' EXIT
+trap 'rm -f "$remaining_file" "${orch_file:-}" "${orch_ages_file:-}"' EXIT
 : >"$remaining_file"
 
 extract_issue() {
@@ -819,6 +827,14 @@ while IFS= read -r repo; do
         if [ "$orchestrator" = "true" ]; then
             machine=1
             all_cleared=0
+            # fleet-ops#4260: publish kind=orchestrator so the snapshot's
+            # per-kind counts (fleet_blocked_issues{kind}) separate an
+            # orchestrator decision wait from a Nish-reserved one. A live
+            # unresolved nish-decision keeps precedence — Nish is the harder
+            # constraint.
+            if ! { [ "$nish_flag" = "true" ] && [ "$nish_resolved" != "true" ]; }; then
+                kind="orchestrator"
+            fi
             if [ -n "$remaining" ]; then
                 remaining="$remaining, orchestrator"
             else
@@ -940,6 +956,108 @@ blocked-reconcile: infra-block released at ${NOW_ISO}"
     done < <(printf '%s' "$list_json" | jq -c '.[]')
 done <<< "$repos"
 
+# --- fleet-ops#4260: needs-orchestrator drain -------------------------------
+# The agent-blocked loop above only sees issues carrying that label. The
+# needs-orchestrator class is wider: it also covers issues a worker labelled
+# without agent-blocked, and it is the class this sweep must ROUTE, not just
+# re-stamp ("a reconcile that only stamps still-blocked never drains").
+# Collect every open needs-orchestrator issue per enrolled repo into the
+# snapshot (the fleet_blocked_issues{kind="needs-orchestrator"} metric source)
+# and, when any is older than ORCH_MIN_AGE_S (default 1h), start the
+# orchestrator decision pass — event-driven on this sweep's output, not a
+# timer: the App has no webhooks, so the heartbeat's existing 30-minute
+# reconcile IS the observer. The hourly escalation-drain stays the dead-man
+# backstop.
+ORCH_UNIT="${BLOCKED_RECONCILE_ORCHESTRATOR_UNIT:-agent-cron-orchestrator-decision-sweep.service}"
+ORCH_MIN_AGE_S="${BLOCKED_RECONCILE_ORCHESTRATOR_MIN_AGE_S:-3600}"
+SYSTEMCTL_BIN="${BLOCKED_RECONCILE_SYSTEMCTL:-systemctl}"
+
+orch_file=$(mktemp)
+orch_ages_file=$(mktemp)
+: >"$orch_file"
+: >"$orch_ages_file"
+orch_aged=0
+while IFS= read -r repo; do
+    [ -z "$repo" ] && continue
+    if ! orch_json=$(gh issue list -R "$repo" -l needs-orchestrator --state open \
+        --json number,createdAt,labels --limit 200 2>/dev/null); then
+        log "  $repo: needs-orchestrator list FAILED — skip"
+        continue
+    fi
+    while IFS= read -r orow; do
+        [ -z "$orow" ] && continue
+        # An in-progress issue has a live worker; it is not parked.
+        if printf '%s' "$orow" | jq -e '[.labels[].name] | index("agent-in-progress")' >/dev/null 2>&1; then
+            continue
+        fi
+        onum=$(printf '%s' "$orow" | jq -r '.number')
+        ocreated=$(printf '%s' "$orow" | jq -r '.createdAt')
+        ocreated_s=$(date -u -d "$ocreated" +%s 2>/dev/null || echo 0)
+        oage_s=0
+        if [ "$ocreated_s" -gt 0 ]; then
+            oage_s=$((NOW_S - ocreated_s))
+        fi
+        jq -nc --arg ref "${repo}#${onum}" --argjson age "$oage_s" \
+            '{ref:$ref, age_s:$age}' >>"$orch_file"
+        printf '%s\n' "$oage_s" >>"$orch_ages_file"
+        if [ "$oage_s" -ge "$ORCH_MIN_AGE_S" ]; then
+            orch_aged=1
+        fi
+    done < <(printf '%s' "$orch_json" | jq -c '.[]')
+done <<< "$repos"
+
+# Belt: an agent-blocked issue parked on `blocked-on: orchestrator` must
+# trigger the sweep even when its needs-orchestrator label is missing (the
+# label sweep above is the metric source, but the trigger is the drain — a
+# label-less orchestrator block is exactly the parked class #4260 fixes).
+# remaining_file items carry age_h, so the seconds threshold maps to
+# age_h >= ORCH_MIN_AGE_S/3600 (conservative: strictly older than 1h).
+_orch_min_age_h=$((ORCH_MIN_AGE_S / 3600))
+if ((_orch_min_age_h < 1)); then
+    _orch_min_age_h=1
+fi
+if [ "$orch_aged" != "1" ] && [ -s "$remaining_file" ]; then
+    if jq -se --argjson min_h "$_orch_min_age_h" \
+        '[.[] | select(.kind == "orchestrator" and .age_h >= $min_h)] | length > 0' \
+        "$remaining_file" >/dev/null 2>&1; then
+        orch_aged=1
+    fi
+fi
+
+orch_items_json=$(if [ -s "$orch_file" ]; then jq -s '.' "$orch_file"; else echo '[]'; fi)
+orch_count=$(printf '%s' "$orch_items_json" | jq 'length')
+orch_oldest_s=$(printf '%s' "$orch_items_json" | jq -r 'if length==0 then 0 else max_by(.age_s).age_s end')
+# p50 (median) of the needs-orchestrator ages — the alert source for
+# fleet_blocked_issue_age_seconds{kind="needs-orchestrator",quantile="0.5"}.
+orch_p50_s=$(python3 - "$orch_ages_file" <<'PY'
+import sys
+ages = []
+try:
+    with open(sys.argv[1], encoding="utf-8") as f:
+        ages = sorted(int(x) for x in f.read().split() if x.strip())
+except (OSError, ValueError):
+    ages = []
+if not ages:
+    print(0)
+else:
+    n = len(ages)
+    print(ages[n // 2] if n % 2 else (ages[n // 2 - 1] + ages[n // 2]) // 2)
+PY
+)
+rm -f "$orch_file" "$orch_ages_file"
+
+if [ "$DRY" != "1" ] && [ -n "$ORCH_UNIT" ] && [ "$orch_aged" = "1" ]; then
+    if "$SYSTEMCTL_BIN" --user is-active --quiet "$ORCH_UNIT" 2>/dev/null; then
+        log "orchestrator decision sweep already active — not re-queuing ($ORCH_UNIT)"
+    elif "$SYSTEMCTL_BIN" --user --no-block start "$ORCH_UNIT" 2>/dev/null; then
+        log "orchestrator decision sweep STARTED ($ORCH_UNIT) — needs-orchestrator count=$orch_count oldest_age_s=$orch_oldest_s"
+    else
+        log "WARN: orchestrator decision sweep start FAILED ($ORCH_UNIT) — $orch_count needs-orchestrator item(s) stay parked"
+    fi
+elif [ "$orch_aged" = "1" ]; then
+    log "needs-orchestrator aged items present (count=$orch_count oldest_age_s=$orch_oldest_s) — trigger skipped (DRY or unit unset)"
+fi
+
 items_json=$(if [ -s "$remaining_file" ]; then jq -s '.' "$remaining_file"; else echo '[]'; fi)
 count=$(printf '%s' "$items_json" | jq 'length')
 oldest=$(printf '%s' "$items_json" | jq -r 'if length==0 then empty else max_by(.age_h) | .ref end')
@@ -948,13 +1066,20 @@ oldest_age=$(printf '%s' "$items_json" | jq -r 'if length==0 then empty else max
 snapshot=$(jq -nc --arg updated "$NOW_ISO" --argjson count "$count" \
     --arg oldest "${oldest:-}" --arg oldest_age "${oldest_age:-}" \
     --argjson items "$items_json" --argjson rejected_nish "$rejected_nish" \
+    --argjson orch_items "$orch_items_json" --argjson orch_p50 "$orch_p50_s" \
     '{
       updated:$updated,
       count:$count,
       oldest: (if $oldest == "" then null else $oldest end),
       oldest_age_h: (if $oldest_age == "" then null else ($oldest_age|tonumber) end),
       items:$items,
-      rejected_nish_decisions:$rejected_nish
+      rejected_nish_decisions:$rejected_nish,
+      needs_orchestrator: {
+        count: ($orch_items | length),
+        oldest_age_s: (if ($orch_items | length) == 0 then 0 else ($orch_items | max_by(.age_s).age_s) end),
+        p50_age_s: $orch_p50,
+        items: $orch_items
+      }
     }')
 
 if [ "$DRY" != "1" ]; then
@@ -962,7 +1087,7 @@ if [ "$DRY" != "1" ]; then
     rewrite_triage "$snapshot"
 fi
 
-log "sweep done: still=$still requeued=$requeued skipped=$skipped rejected_nish=$rejected_nish count=$count oldest=${oldest:-none} oldest_age_h=${oldest_age:-none}"
-printf 'blocked-queue count=%s oldest_age_h=%s oldest=%s requeued=%s rejected_nish=%s\n' \
-    "$count" "${oldest_age:-none}" "${oldest:-none}" "$requeued" "$rejected_nish"
+log "sweep done: still=$still requeued=$requeued skipped=$skipped rejected_nish=$rejected_nish count=$count oldest=${oldest:-none} oldest_age_h=${oldest_age:-none} needs_orchestrator=$orch_count orch_p50_s=$orch_p50_s"
+printf 'blocked-queue count=%s oldest_age_h=%s oldest=%s requeued=%s rejected_nish=%s needs_orchestrator=%s\n' \
+    "$count" "${oldest_age:-none}" "${oldest:-none}" "$requeued" "$rejected_nish" "$orch_count"
 exit 0

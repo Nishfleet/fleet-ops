@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -1692,10 +1693,15 @@ CURSOR_AUTH_JSON = Path.home() / ".config" / "cursor" / "auth.json"
 CURSOR_PERIOD_USAGE_URL = (
     "https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage"
 )
+DEVIN_CREDENTIALS_TOML = Path.home() / ".local" / "share" / "devin" / "credentials.toml"
+DEVIN_GET_USER_STATUS_URL = (
+    "https://server.codeium.com/exa.seat_management_pb.SeatManagementService/GetUserStatus"
+)
 CLAUDE_QUOTA_CACHE = PR_CACHE_DIR / "claude-quota-cache.json"
 CODEX_QUOTA_CACHE = PR_CACHE_DIR / "codex-quota-cache.json"
 OPENROUTER_KEY_CACHE = PR_CACHE_DIR / "openrouter-key-cache.json"
 CURSOR_QUOTA_CACHE = PR_CACHE_DIR / "cursor-quota-cache.json"
+DEVIN_QUOTA_CACHE = PR_CACHE_DIR / "devin-quota-cache.json"
 QUOTA_TTL = 300  # 5 min — matches the exporter cadence; one fresh fetch per run.
 QUOTA_STALE_CACHE = 1800  # 30 min — serve stale cache while a fetch is failing.
 
@@ -1913,6 +1919,111 @@ def _fetch_cursor_usage():
         except (ValueError, TypeError):
             reset_s = None
     return [{"pct": pct, "reset_s": reset_s, "window": "monthly"}]
+
+
+def _devin_windsurf_api_key():
+    """Return the Devin/Codeium windsurf_api_key from credentials.toml, or None.
+
+    OpenUsage's Devin provider reads the same file (DevinAuthStore.swift:
+    ~/.local/share/devin/credentials.toml, key windsurf_api_key). The key is
+    the Codeium/Windsurf auth token, not the api.devin.ai API key.
+    """
+    try:
+        with open(DEVIN_CREDENTIALS_TOML, "rb") as fh:
+            cfg = tomllib.load(fh)
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    key = cfg.get("windsurf_api_key")
+    return key if isinstance(key, str) and key else None
+
+
+def _fetch_devin_usage():
+    """Return Devin GetUserStatus quota rows, or None.
+
+    server.codeium.com/exa.seat_management_pb.SeatManagementService/GetUserStatus
+    answers a POST carrying the windsurf_api_key from
+    ~/.local/share/devin/credentials.toml (the same auth OpenUsage's Devin
+    provider uses; verified live 2026-09-07). The payload's planStatus carries
+    dailyQuotaRemainingPercent / weeklyQuotaRemainingPercent (percent REMAINING)
+    and dailyQuotaResetAtUnix / weeklyQuotaResetAtUnix (epoch seconds).
+    remaining_pct is used as-is; reset_s = seconds until the reset.
+    """
+    key = _devin_windsurf_api_key()
+    if not key:
+        return None
+    body = {
+        "metadata": {
+            "apiKey": key,
+            "ideName": "devin",
+            "ideVersion": "1.108.2",
+            "extensionName": "devin",
+            "extensionVersion": "1.108.2",
+            "locale": "en",
+        }
+    }
+    req = urllib.request.Request(
+        DEVIN_GET_USER_STATUS_URL,
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Connect-Protocol-Version": "1",
+            "User-Agent": _VENDOR_USER_AGENT,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:  # nosemgrep
+            payload = json.loads(resp.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, ValueError) as exc:
+        print(f"devin usage fetch failed: {exc}", file=sys.stderr)
+        return None
+    if not isinstance(payload, dict):
+        return None
+    user_status = payload.get("userStatus")
+    if not isinstance(user_status, dict):
+        return None
+    plan_status = user_status.get("planStatus")
+    if not isinstance(plan_status, dict):
+        return None
+    rows = []
+    now = time.time()
+    # Daily quota (percent remaining).
+    daily = plan_status.get("dailyQuotaRemainingPercent")
+    if daily is not None:
+        try:
+            daily = float(daily)
+        except (ValueError, TypeError):
+            daily = None
+        if daily is not None:
+            daily_reset = plan_status.get("dailyQuotaResetAtUnix")
+            daily_reset_s = None
+            if daily_reset is not None:
+                try:
+                    daily_reset_s = max(0.0, float(daily_reset) - now)
+                except (ValueError, TypeError):
+                    daily_reset_s = None
+            rows.append(
+                {"pct": max(0.0, min(100.0, daily)), "reset_s": daily_reset_s, "window": "daily"}
+            )
+    # Weekly quota (percent remaining).
+    weekly = plan_status.get("weeklyQuotaRemainingPercent")
+    if weekly is not None:
+        try:
+            weekly = float(weekly)
+        except (ValueError, TypeError):
+            weekly = None
+        if weekly is not None:
+            weekly_reset = plan_status.get("weeklyQuotaResetAtUnix")
+            weekly_reset_s = None
+            if weekly_reset is not None:
+                try:
+                    weekly_reset_s = max(0.0, float(weekly_reset) - now)
+                except (ValueError, TypeError):
+                    weekly_reset_s = None
+            rows.append(
+                {"pct": max(0.0, min(100.0, weekly)), "reset_s": weekly_reset_s, "window": "weekly"}
+            )
+    return rows or None
 
 
 def _iso_to_seconds_until(iso_str):
@@ -4318,25 +4429,81 @@ BLOCKED_QUEUE_JSON = Path(
 HELP_NBR = "# HELP fleet_nish_decision_rejected_total Number of `blocked-on: nish-decision` lines rejected and rewritten to `blocked-on: orchestrator` in the last blocked-reconcile sweep (fleet-ops#3312)."
 TYPE_NBR = "# TYPE fleet_nish_decision_rejected_total gauge"
 
+# fleet-ops#4260: the blocked queue must be observable BY KIND so a parked
+# needs-orchestrator class is visible before a human notices the fleet went
+# idle. `kind` values come from the reconcile snapshot: the agent-blocked
+# queue kinds (work-item/nish-decision/orchestrator/infra/senior-review) plus
+# needs-orchestrator, which counts the label sweep across ALL open issues —
+# a wider set, overlapping the others by design (an issue can be both
+# agent-blocked and needs-orchestrator). Every kind is always emitted (0 when
+# absent) so a stale family cannot false-fire or false-clear an alert.
+_BLOCKED_KINDS = (
+    "work-item",
+    "nish-decision",
+    "orchestrator",
+    "infra",
+    "senior-review",
+    "needs-orchestrator",
+)
+HELP_FBI = "# HELP fleet_blocked_issues Open blocked issues by kind from the last blocked-reconcile sweep (fleet-ops#4260). kind=needs-orchestrator counts the label sweep across all open issues; the other kinds count the agent-blocked queue."
+TYPE_FBI = "# TYPE fleet_blocked_issues gauge"
+HELP_FBIA = "# HELP fleet_blocked_issue_age_seconds Age stats for blocked issues by kind, seconds since issue creation, from the last blocked-reconcile sweep (fleet-ops#4260)."
+TYPE_FBIA = "# TYPE fleet_blocked_issue_age_seconds gauge"
+
 
 def _emit_blocked_reconcile(lines):
-    """Append fleet_nish_decision_rejected_total.
+    """Append blocked-queue metrics.
 
     Reads the last blocked-reconcile sweep summary. A missing or
-    unparseable file emits 0 so the metric family is always present.
+    unparseable file emits zeros so the metric families are always present.
     """
     count = 0
+    by_kind = {k: 0 for k in _BLOCKED_KINDS}
+    orch_p50 = 0
+    orch_oldest = 0
     try:
         data = json.loads(BLOCKED_QUEUE_JSON.read_text(encoding="utf-8"))
         raw = data.get("rejected_nish_decisions")
         if isinstance(raw, (int, float)):
             count = int(raw)
+        for item in data.get("items") or []:
+            k = item.get("kind") if isinstance(item, dict) else None
+            if k in by_kind:
+                by_kind[k] += 1
+        orch = data.get("needs_orchestrator")
+        if isinstance(orch, dict):
+            oc = orch.get("count")
+            if isinstance(oc, (int, float)):
+                by_kind["needs-orchestrator"] = int(oc)
+            for key, dest in (("p50_age_s", "p50"), ("oldest_age_s", "oldest")):
+                v = orch.get(key)
+                if isinstance(v, (int, float)):
+                    if dest == "p50":
+                        orch_p50 = int(v)
+                    else:
+                        orch_oldest = int(v)
     except (OSError, json.JSONDecodeError):
         pass
     lines.append("")
     lines.append(HELP_NBR)
     lines.append(TYPE_NBR)
     lines.append(f"fleet_nish_decision_rejected_total {count}")
+    lines.append("")
+    lines.append(HELP_FBI)
+    lines.append(TYPE_FBI)
+    for k in _BLOCKED_KINDS:
+        lines.append(f'fleet_blocked_issues{{kind="{k}"}} {by_kind[k]}')
+    lines.append("")
+    lines.append(HELP_FBIA)
+    lines.append(TYPE_FBIA)
+    lines.append(
+        'fleet_blocked_issue_age_seconds{kind="needs-orchestrator",quantile="0.5"} '
+        f"{orch_p50}"
+    )
+    lines.append(
+        'fleet_blocked_issue_age_seconds{kind="needs-orchestrator",quantile="1"} '
+        f"{orch_oldest}"
+    )
 
 
 # --- close-duplicates close guard (fleet-ops#3161) ------------------------
@@ -4414,13 +4581,14 @@ MERGED_PR_CLOSE_JSON = Path(
 HELP_MPC = (
     "# HELP fleet_observe_to_close_total Issues auto-closed by observe-to-close "
     "in the last heartbeat tick, by reason (fleet-ops#3231). Legal close "
-    "reasons are claim-branch (delivery PR head) and closes-trailer (explicit "
-    "Closes/Fixes/Resolves trailer). bare-mention and protected must always "
-    "be 0; an alert on either > 0 catches a wrong close of a mentioned or "
-    "critical-path/owner-authored issue."
+    "reasons are claim-branch (delivery PR head), closes-trailer (explicit "
+    "Closes/Fixes/Resolves trailer), and verdict-pass (verification-only "
+    "issue with a worker VERDICT: PASS comment; fleet-ops#4274). "
+    "bare-mention and protected must always be 0; an alert on either > 0 "
+    "catches a wrong close of a mentioned or critical-path/owner-authored issue."
 )
 TYPE_MPC = "# TYPE fleet_observe_to_close_total gauge"
-_MPC_REASONS = ("claim-branch", "closes-trailer", "bare-mention", "protected")
+_MPC_REASONS = ("claim-branch", "closes-trailer", "verdict-pass", "bare-mention", "protected")
 
 
 def _emit_observe_to_close(lines):
@@ -5388,6 +5556,9 @@ def main():
     cursor_usage = _cached_quota_json(
         CURSOR_QUOTA_CACHE, _fetch_cursor_usage, "cursor_usage"
     )
+    devin_usage = _cached_quota_json(
+        DEVIN_QUOTA_CACHE, _fetch_devin_usage, "devin_usage"
+    )
     _quota_now = time.time()
     _quota_providers = []
     if isinstance(openrouter_key, dict):
@@ -5398,6 +5569,8 @@ def main():
         _quota_providers.append(("codex", codex_usage))
     if isinstance(cursor_usage, list):
         _quota_providers.append(("cursor", cursor_usage))
+    if isinstance(devin_usage, list):
+        _quota_providers.append(("devin", devin_usage))
     if _quota_providers:
         _emit_seat_quota_headers(lines)
         for _prov, _rows in _quota_providers:

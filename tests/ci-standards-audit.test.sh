@@ -550,6 +550,7 @@ bash "$here/fleet-ops-3310-infra-death-class-switch.test.sh"
 # .github/workflows/**).
 bash "$here/fleet-empty-run-burst-canary.test.sh"
 bash "$here/fleet-scout-leak-canary.test.sh"
+bash "$here/fleet-research-sweep-canary.test.sh"
 
 # fleet-ops#2627: empty-run count must accumulate across healthy ledger
 # clobbers (seat-health.ts resets ledger count=0 on every 200 OK, so the
@@ -588,6 +589,12 @@ bash "$here/scout-effectiveness.test.sh"
 # workflow-file edit (the worker App cannot push .github/workflows/**).
 # Hermetic test (no gh/prometheus/systemd) — runs fine in hosted CI.
 bash "$here/fleet-product-slo.test.sh"
+
+# fleet-ops#3759: the quality-ceiling proxy replay drill (--backtest 4w
+# --repo <r>). Hosted here so P14 runs it without a workflow-file edit (the
+# worker App cannot push .github/workflows/**). Hermetic test (fixture, no
+# live gh) — runs fine in hosted CI.
+bash "$here/fleet-product-slo-backtest.test.sh"
 
 # fleet-ops#2920 (PR #2937 follow-up): the drift-canary metrics drop-in
 # test landed on main without a ci.yml listing or a host, so P14 ran red

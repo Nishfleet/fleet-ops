@@ -239,6 +239,12 @@
       "endorsement": "unit desc: temporary \u2014 second POV of the two-judge fleet check (fable-check.md: Cursor Grok 4.6 high at :15, Opus 5 xhigh at :45, independent POVs, same packet; Nish 2026-09-07 both Opus 5 and Grok 4.6 high), retire with fleet-landing-watch like fable-fleet-check; timer-manifest.json carries the cadence entry (fleet-ops#4230)"
     },
     {
+      "unit": "0509-demo-brand-timeline-canary",
+      "class": "a",
+      "source": "hand-placed",
+      "endorsement": "unit desc: 0509 demo-brand offer timeline public-surface canary (0509 issue #1899) \u2014 probes the five demo brands' public /timeline/:domain pages for a rendered dated ledger, daily 06:10 IST; deliberately a user unit on the fleet VPS (like 0509-search-tier-canary, issue #1452) because the worker GitHub App token cannot create/update .github/workflows files and the check needs no secrets (only outbound HTTPS to 0509.io); runs from a dedicated read-only checkout that self-syncs to main on every run"
+    },
+    {
       "unit": "nish-boundary-notify",
       "class": "a",
       "source": "hand-placed",

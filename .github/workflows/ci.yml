@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   semgrep:
-    name: Semgrep
+    name: semgrep
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -71,7 +71,7 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s extglob
-          files=(bin/!(*.py|*.ts) install.sh)
+          files=(bin/!(*.py|*.ts) .github/scripts/gate-integrity.sh install.sh)
           shellcheck -x "${files[@]}"
 
   unit-verify:
@@ -121,6 +121,7 @@ jobs:
             /home/nish/.local/bin/fleet-asset-census \
             /home/nish/.local/bin/agent-scheduler-drift-check \
             /home/nish/.local/bin/memory-index-autocompact \
+            /usr/bin/redis-server \
             /home/nish/workspaces/tooling/fleet-console-pi/push.sh
           do
             sudo install -D -m 0755 /dev/null "$p"
@@ -134,10 +135,19 @@ jobs:
           systemd-analyze --version
           # Verify each file individually so a failure names the bad file.
           # Do NOT use set -e: we want to collect all failures, then exit.
+          # Slices get --recursive-errors=no: plain verify exits 0 on unknown
+          # keys / bad sections (fleet-ops#92), so a malformed slice would
+          # otherwise slip through. Services/timers keep plain verify so a
+          # pre-existing service key quirk does not regress CI (fleet-ops#4174).
           shopt -s nullglob
           rc=0
           for f in systemd/*.service systemd/*.timer; do
             if ! systemd-analyze verify --man=no "$f"; then
+              rc=1
+            fi
+          done
+          for f in systemd/*.slice; do
+            if ! systemd-analyze verify --man=no --recursive-errors=no "$f"; then
               rc=1
             fi
           done
@@ -191,7 +201,7 @@ jobs:
 
   tests:
     # Calls the central reusable PR-checks workflow. The required check
-    # names (Gitleaks, Semgrep, Shellcheck, systemd-analyze, CI checklist gate)
+    # names (Gitleaks, semgrep, Shellcheck, systemd-analyze, CI checklist gate)
     # stay as local jobs above: a `uses:` job reports as "caller / callee" and
     # would make
     # those required checks wait forever. scan-secrets is false so gitleaks
@@ -247,6 +257,7 @@ jobs:
         # skips for 15min, stale claims with no live worker/PR are released).
         bash tests/pi-issue-failed-reap-cooldown.test.sh
         bash tests/pi-intake-tick-reclaim-cooldown.test.sh
+        bash tests/claim-pr-head-owner.test.sh
         bash tests/pi-intake-tick-difficulty-from-issue.test.sh
         bash tests/pi-intake-topup.test.sh
         bash tests/pi-intake-tick-scout-on-empty.test.sh
@@ -260,6 +271,10 @@ jobs:
         bash tests/seat-lib.test.sh
         bash tests/seat-lib-degraded.test.sh
         bash tests/seat-lib-org-reserve.test.sh
+        # fleet-ops#2563: cap quota_bench walls at the provider's declared
+        # reset horizon (quota_window) so a vendor-claimed 19-day Retry-After
+        # cannot freeze a weekly-resetting seat for three cycles.
+        bash tests/seat-wall-reset-horizon.test.sh
         bash tests/stop-escalation-dispatch.test.sh
         bash tests/escalation-units-shape.test.sh
         # fleet-ops#1164: persist nish-boundary-notify CLASSES in git + lint.
@@ -289,16 +304,33 @@ jobs:
         bash tests/fleet-escalation-completion.test.sh
         bash tests/rule-enforcement.test.sh
         bash tests/reusable-workflows.test.sh
+        # fleet-ops#1296: reject typo'd/unregistered action@<sha> pins in
+        # .github/workflows/** before a scheduled workflow fails to resolve
+        # its checkout and drags main's statusCheckRollup red.
+        bash tests/workflow-action-pin-guard.test.sh
         # fleet-ops#359: lock the auto-revert gate and the reopen-on-revert
         # behavior so a reverted merge can no longer leave its issues closed.
         bash tests/auto-revert-required-check-gate.test.sh
         bash tests/reopen-reverted-issues.test.sh
+        # fleet-ops#407: prove a real end-to-end run before shipping new
+        # units/timers/workflows. The drill (test) always runs; the live
+        # PR-body check only runs for pull_request events and exits 0/SKIP
+        # when the diff adds no machinery.
+        bash tests/prove-one-run-check.test.sh
+        if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+          body_file="$(mktemp)"
+          status_file="$(mktemp)"
+          jq -r '.pull_request.body // ""' "$GITHUB_EVENT_PATH" > "$body_file"
+          git diff --name-status origin/main...HEAD > "$status_file"
+          bin/prove-one-run-check --body "$body_file" --name-status "$status_file"
+        fi
         # The CI-standards audit parses workflow YAML with PyYAML.
         python3 -m pip install --no-input "pyyaml==6.0.1"
         bash tests/ci-standards-audit.test.sh
         # fleet-ops#828: lock the gate-integrity decision script's
         # line-anchored attestation extraction (multi-line attest comments).
         bash tests/gate-integrity.test.sh
+        bash tests/gate-integrity-config.test.sh
         # fleet-ops#1136: pin the self-maintenance ratio, upgrade/repair/churn
         # classification, queue composition, and verified-merges numerator
         # (non-null diff AND delivery evidence) in the metrics exporter, plus

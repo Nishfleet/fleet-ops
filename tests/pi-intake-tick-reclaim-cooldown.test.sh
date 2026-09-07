@@ -82,8 +82,11 @@ ok "Test 6: skipped-claim path checks for a live worker unit"
 # === Test 7: skipped-claim-lost checks for open PR before skipping ===
 grep -qF 'skipped-claim-pr-open' "$tick" \
     || fail "skipped-claim-pr-open message not found"
-grep -qF 'repos/$FULL/pulls?state=open&head=${FULL#*/}:claim/issue-$N' "$tick" \
-    || fail "open PR check (gh api pulls) not found in skipped-claim path"
+# The head= filter is <owner>:<branch>. This assertion used to pin
+# head=${FULL#*/} (the REPO name), which is what let the always-empty probe
+# survive review — see tests/claim-pr-head-owner.test.sh.
+grep -qF 'repos/$FULL/pulls?state=open&head=${FULL%%/*}:claim/issue-$N' "$tick" \
+    || fail "open PR check (gh api pulls) not found, or not owner-scoped, in skipped-claim path"
 ok "Test 7: skipped-claim path checks for an open PR before skipping"
 
 # === Test 8: stale claim (no live worker, no open PR) is released ===
@@ -121,5 +124,13 @@ echo
 # in ci.yml — the worker App cannot push .github/workflows/**) and pinned by
 # name in tests/p14-test-listing-gate.test.sh. Same intake dispatch family.
 bash "$here/fleet-ops-2772-claim-loop-gate.test.sh" || fail "fleet-ops-2772 claim-loop-gate tests failed"
+
+# fleet-ops#4273: the escalation-class regression test (neither #2462 nor
+# #2772 escalation may emit nish-decision; the reserved-class path still
+# can). Hosted here from pi-intake-tick-reclaim-cooldown.test.sh (already
+# listed in ci.yml — the worker App cannot push .github/workflows/**) and
+# pinned by name in tests/p14-test-listing-gate.test.sh. Same intake
+# dispatch family as the #2772 host above.
+bash "$here/fleet-ops-4273-escalation-never-nish-decision.test.sh" || fail "fleet-ops-4273 escalation nish-decision regression tests failed"
 
 echo "ALL OK: intake-tick reclaim cooldown + stale-claim release (fleet-ops#2133)"

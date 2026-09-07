@@ -108,6 +108,10 @@
 #   FLEET_VAULT_CONFLICT_STALE_HOURS    default 1 (timer fires every 10 min)
 #   FLEET_REPO_PRIVACY_JSON             config/repo-privacy.json source (block 12)
 #   FLEET_ESCALATION_CANARY_SKIP_PRIVACY_GUARD  1 skips block 12 (offline tests)
+#   FLEET_ESCALATION_CANARY_SKIP_STANDARDS_DRIFT  1 skips block 13 (offline tests)
+#   FLEET_STANDARDS_DRIFT_ISSUE_REPO   repo that receives standards-drift issues (default Nishfleet/fleet-ops)
+#   FLEET_STANDARDS_DRIFT_FILE_ISSUES  1 (default) auto-file drift issues; 0 skips
+#   FLEET_STANDARDS_DRIFT_MECHANISMS   space-separated thin-caller workflow filenames (tests override)
 
 set -Eeuo pipefail
 
@@ -960,6 +964,121 @@ JSON
         fi
         if [[ "$_drill_rc" -eq 0 ]]; then
             log "12.  - config/repo-privacy.json valid, default_policy=private, guard fires"
+        fi
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# 13. Standards-drift prevention (portable standards, P11-B)
+# ---------------------------------------------------------------------------
+# Every intake-enrolled repo must carry the standard thin-caller workflows
+# (the portable-standard gates: Gitleaks, semgrep, review-gate, auto-enqueue).
+# A repo that loses a gate drifts from the standard silently — this block
+# asserts the gates are present (contents read, available to the worker
+# token) and auto-files a "standards drift" issue per repo per missing
+# mechanism (deduped by signal key). Local-richer repos (0509) carry richer
+# local gates and are skipped for the thin-caller check, matching
+# repo-standards-apply.mjs.
+#
+# FLEET_ESCALATION_CANARY_SKIP_STANDARDS_DRIFT=1 skips this block (offline
+# tests). FLEET_STANDARDS_DRIFT_FILE_ISSUES=0 disables auto-file (drift is
+# still LOUD).
+log "13. checking standards drift across intake-enrolled repos"
+if [[ "${FLEET_ESCALATION_CANARY_SKIP_STANDARDS_DRIFT:-0}" == "1" ]]; then
+    log "13.  - SKIP (FLEET_ESCALATION_CANARY_SKIP_STANDARDS_DRIFT=1)"
+else
+    _sd_issue_repo="${FLEET_STANDARDS_DRIFT_ISSUE_REPO:-Nishfleet/fleet-ops}"
+    _sd_file_issues="${FLEET_STANDARDS_DRIFT_FILE_ISSUES:-1}"
+    # The standard thin-caller workflows every enrolled repo must carry
+    # (mirrors THIN_CALLERS in .github/scripts/repo-standards.lib.mjs).
+    # Tests override via FLEET_STANDARDS_DRIFT_MECHANISMS.
+    read -r -a _sd_mechanisms <<<"${FLEET_STANDARDS_DRIFT_MECHANISMS:-secret-scan.yml semgrep.yml review-gate.yml auto-enqueue.yml}"
+    # Local-richer repos carry richer local gates and are skipped for the
+    # thin-caller check (mirrors LOCAL_RICHER in repo-standards.lib.mjs).
+    read -r -a _sd_local_richer <<<"${FLEET_STANDARDS_DRIFT_LOCAL_RICHER:-Nishfleet/0509}"
+
+    if [[ ! -f "$INTAKE_REPOS_JSON" ]]; then
+        loud "ESCALATION-CANARY-VIOLATION" "standards drift: intake-repos.json missing at $INTAKE_REPOS_JSON — cannot enumerate enrolled repos"
+        violations=$((violations + 1))
+    elif ! command -v jq >/dev/null 2>&1; then
+        loud "ESCALATION-CANARY-PENDING" "standards drift: jq missing — cannot parse intake-repos.json"
+        pending=$((pending + 1))
+    elif ! command -v "$GH" >/dev/null 2>&1; then
+        loud "ESCALATION-CANARY-PENDING" "standards drift: gh missing — cannot read enrolled repo workflows"
+        pending=$((pending + 1))
+    else
+        mapfile -t _sd_repos < <(
+            jq -r '.repos[]? | "Nishfleet/\(.name)"' "$INTAKE_REPOS_JSON" 2>/dev/null || true
+        )
+        if [[ "${#_sd_repos[@]}" -eq 0 ]]; then
+            log "13.  - no intake-enrolled repos to check"
+        else
+            _sd_open_json="[]"
+            if [[ "$_sd_file_issues" == "1" ]]; then
+                set +e
+                _sd_open_json=$("$GH" issue list -R "$_sd_issue_repo" --state open --limit 200 --json number,body,title 2>/dev/null)
+                _sd_list_rc=$?
+                set -e
+                if [[ "$_sd_list_rc" -ne 0 ]] || [[ -z "$_sd_open_json" ]]; then
+                    _sd_open_json="[]"
+                    log "13.  WARN: could not list open issues for dedupe (gh rc=$_sd_list_rc)"
+                fi
+            fi
+            _sd_filed=0
+            _sd_dup=0
+            for _sd_repo in "${_sd_repos[@]}"; do
+                [[ -n "$_sd_repo" ]] || continue
+                _sd_is_local_richer=0
+                for _lr in "${_sd_local_richer[@]}"; do
+                    [[ "$_lr" == "$_sd_repo" ]] && _sd_is_local_richer=1
+                done
+                if [[ "$_sd_is_local_richer" -eq 1 ]]; then
+                    log "13.  - $_sd_repo: local-richer (richer local gates) — thin-caller check skipped"
+                    continue
+                fi
+                for _sd_m in "${_sd_mechanisms[@]}"; do
+                    [[ -n "$_sd_m" ]] || continue
+                    set +e
+                    _sd_have=$("$GH" api "repos/$_sd_repo/contents/.github/workflows/$_sd_m" --jq '.name' 2>/dev/null)
+                    _sd_api_rc=$?
+                    set -e
+                    if [[ "$_sd_api_rc" -eq 0 ]] && [[ -n "$_sd_have" ]]; then
+                        log "13.  - $_sd_repo: $_sd_m present"
+                    else
+                        loud "ESCALATION-CANARY-VIOLATION" "standards drift: $_sd_repo missing standard gate $_sd_m — the portable standard is not applied"
+                        violations=$((violations + 1))
+                        if [[ "$_sd_file_issues" == "1" ]]; then
+                            _sd_signal="signal: standards-drift/$_sd_repo/$_sd_m"
+                            if jq -e --arg s "$_sd_signal" '[.[] | select((.body // "") | contains($s))] | length > 0' <<<"$_sd_open_json" >/dev/null 2>&1; then
+                                _sd_dup=$((_sd_dup + 1))
+                                log "13.  - $_sd_repo/$_sd_m: already has an open standards-drift issue (deduped)"
+                            else
+                                _sd_title="standards drift: $_sd_repo missing $_sd_m"
+                                _sd_body="$_sd_signal
+
+Repo $_sd_repo is intake-enrolled but missing the standard gate workflow \`$_sd_m\`.
+The portable standard (P11-B) requires every enrolled repo to carry the
+standard thin-caller workflows. This issue was auto-filed by the
+fleet-escalation-canary standards-drift block.
+
+Fix: add the thin-caller workflow (or apply the standard via
+repo-standards-apply.mjs)."
+                                set +e
+                                _sd_created=$("$ISSUE_FILE" file -R "$_sd_issue_repo" --title "$_sd_title" --body "$_sd_body" 2>/tmp/standards-drift-create.err)
+                                _sd_create_rc=$?
+                                set -e
+                                if [[ "$_sd_create_rc" -eq 0 ]]; then
+                                    _sd_filed=$((_sd_filed + 1))
+                                    log "13.  FILED standards-drift $_sd_repo/$_sd_m -> $_sd_created"
+                                else
+                                    log "13.  WARN: failed to file standards-drift $_sd_repo/$_sd_m (rc=$_sd_create_rc) $(tr '\n' ' ' </tmp/standards-drift-create.err 2>/dev/null)"
+                                fi
+                            fi
+                        fi
+                    fi
+                done
+            done
+            log "13.  auto-file: filed=$_sd_filed deduped=$_sd_dup"
         fi
     fi
 fi

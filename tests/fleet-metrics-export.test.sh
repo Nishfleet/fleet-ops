@@ -790,6 +790,7 @@ m._fetch_openrouter_key = lambda: None
 m._fetch_claude_usage = lambda: None
 m._fetch_codex_usage = lambda: None
 m._fetch_cursor_usage = lambda: None
+m._fetch_devin_usage = lambda: None
 m._GH_FETCHED_THIS_RUN = False
 
 rc = m.main()
@@ -2162,6 +2163,88 @@ PY
 ok "fleet-ops#3312: fleet_nish_decision_rejected_total emitted (missing/legit/unparseable)"
 
 # =========================================================================
+# fleet-ops#4260: fleet_blocked_issues{kind} + needs-orchestrator age stats.
+# Every kind is always emitted (0 when absent) so a stale family cannot
+# false-fire or false-clear FleetNeedsOrchestratorStale.
+# =========================================================================
+python3 - "$exporter" <<'PY' || fail "blocked-queue per-kind metric emission failed"
+import importlib.util, json, sys, tempfile
+from pathlib import Path
+def load(p, name):
+    spec = importlib.util.spec_from_file_location(name, p)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+m = load(sys.argv[1], "fme")
+
+KINDS = ["work-item", "nish-decision", "orchestrator", "infra",
+         "senior-review", "needs-orchestrator"]
+
+# 1. Missing file -> all kinds present at 0, age series present at 0.
+with tempfile.TemporaryDirectory() as td:
+    m.BLOCKED_QUEUE_JSON = Path(td) / "missing.json"
+    lines = []
+    m._emit_blocked_reconcile(lines)
+    out = "\n".join(lines)
+    assert out.count("# HELP fleet_blocked_issues") == 1, out
+    assert out.count("# TYPE fleet_blocked_issues") == 1, out
+    for k in KINDS:
+        assert f'fleet_blocked_issues{{kind="{k}"}} 0' in out, out
+    assert 'fleet_blocked_issue_age_seconds{kind="needs-orchestrator",quantile="0.5"} 0' in out, out
+    assert 'fleet_blocked_issue_age_seconds{kind="needs-orchestrator",quantile="1"} 0' in out, out
+    print("OK: missing file -> all kinds at 0, age series at 0")
+
+# 2. A snapshot with mixed kinds + a needs_orchestrator block.
+with tempfile.TemporaryDirectory() as td:
+    p = Path(td) / "blocked-queue.json"
+    p.write_text(json.dumps({
+        "count": 3,
+        "items": [
+            {"ref": "Nishfleet/fleet-ops#1", "kind": "work-item", "age_h": 2},
+            {"ref": "Nishfleet/fleet-ops#2", "kind": "orchestrator", "age_h": 5},
+            {"ref": "Nishfleet/fleet-ops#3", "kind": "nish-decision", "age_h": 9},
+        ],
+        "needs_orchestrator": {"count": 4, "oldest_age_s": 9000,
+                               "p50_age_s": 5400, "items": []},
+    }))
+    m.BLOCKED_QUEUE_JSON = p
+    lines = []
+    m._emit_blocked_reconcile(lines)
+    out = "\n".join(lines)
+    assert 'fleet_blocked_issues{kind="work-item"} 1' in out, out
+    assert 'fleet_blocked_issues{kind="orchestrator"} 1' in out, out
+    assert 'fleet_blocked_issues{kind="nish-decision"} 1' in out, out
+    assert 'fleet_blocked_issues{kind="infra"} 0' in out, out
+    assert 'fleet_blocked_issues{kind="needs-orchestrator"} 4' in out, out
+    assert 'fleet_blocked_issue_age_seconds{kind="needs-orchestrator",quantile="0.5"} 5400' in out, out
+    assert 'fleet_blocked_issue_age_seconds{kind="needs-orchestrator",quantile="1"} 9000' in out, out
+    print("OK: per-kind counts + needs-orchestrator age stats emitted")
+
+# 3. Unparseable file -> all kinds at 0 (no crash).
+with tempfile.TemporaryDirectory() as td:
+    p = Path(td) / "bad.json"
+    p.write_text("{not json")
+    m.BLOCKED_QUEUE_JSON = p
+    lines = []
+    m._emit_blocked_reconcile(lines)
+    out = "\n".join(lines)
+    for k in KINDS:
+        assert f'fleet_blocked_issues{{kind="{k}"}} 0' in out, out
+    print("OK: unparseable file -> all kinds at 0 (no crash)")
+PY
+
+ok "fleet-ops#4260: fleet_blocked_issues{kind} + needs-orchestrator age emitted (missing/legit/unparseable)"
+
+# The alert that consumes the series must exist in the rules file and point
+# at the p50 series with a repair path naming the decision-sweep unit.
+grep -q 'alert: FleetNeedsOrchestratorStale' "$repo_root/config/fleet_rules.yml" \
+    || fail "fleet_rules.yml missing FleetNeedsOrchestratorStale"
+grep -q 'fleet_blocked_issue_age_seconds{kind="needs-orchestrator",quantile="0.5"}' "$repo_root/config/fleet_rules.yml" \
+    || fail "FleetNeedsOrchestratorStale must key on the needs-orchestrator p50 series"
+grep -q 'agent-cron-orchestrator-decision-sweep' "$repo_root/config/fleet_rules.yml" \
+    || fail "alert description must name the decision-sweep unit so the repair packet runs it"
+
+# =========================================================================
 # 17. fleet-ops#3250: per-seat rolling last-20 issue-work session PR yield.
 # =========================================================================
 python3 - "$exporter" "$scratch" <<'PY' || fail "seat-yield logic failed"
@@ -2362,7 +2445,7 @@ def load(p, name):
     return m
 m = load(sys.argv[1], "fme")
 
-# 1. Missing file -> all four series 0, family present with HELP/TYPE once.
+# 1. Missing file -> all five series 0, family present with HELP/TYPE once.
 with tempfile.TemporaryDirectory() as td:
     m.MERGED_PR_CLOSE_JSON = Path(td) / "missing.json"
     lines = []
@@ -2371,19 +2454,20 @@ with tempfile.TemporaryDirectory() as td:
     assert "fleet_observe_to_close_total" in out, out
     assert out.count("# HELP fleet_observe_to_close_total") == 1, out
     assert out.count("# TYPE fleet_observe_to_close_total") == 1, out
-    for r in ["claim-branch","closes-trailer","bare-mention","protected"]:
+    for r in ["claim-branch","closes-trailer","verdict-pass","bare-mention","protected"]:
         assert f'fleet_observe_to_close_total{{reason="{r}"}} 0' in out, out
-    print("OK: missing file -> 4 series all 0, HELP/TYPE once")
+    print("OK: missing file -> 5 series all 0, HELP/TYPE once")
 
-# 2. Legal closes (claim-branch + closes-trailer) are emitted faithfully;
-#    a WRONG bare-mention close is emitted too so the alert can fire.
+# 2. Legal closes (claim-branch + closes-trailer + verdict-pass) are emitted
+#    faithfully; a WRONG bare-mention close is emitted too so the alert fires.
 with tempfile.TemporaryDirectory() as td:
     p = Path(td) / "merged-pr-close.json"
     p.write_text(json.dumps({
-        "closed": 2,
+        "closed": 3,
         "closes_by_reason": {
             "claim-branch": 1,
             "closes-trailer": 1,
+            "verdict-pass": 1,
             "bare-mention": 1,
             "protected": 0,
         },
@@ -2394,11 +2478,12 @@ with tempfile.TemporaryDirectory() as td:
     out = "\n".join(lines)
     assert 'reason="claim-branch"} 1' in out, out
     assert 'reason="closes-trailer"} 1' in out, out
+    assert 'reason="verdict-pass"} 1' in out, out
     assert 'reason="bare-mention"} 1' in out, out
     assert 'reason="protected"} 0' in out, out
-    print("OK: summary with a wrong bare-mention close is emitted faithfully (alert can fire)")
+    print("OK: summary with legal closes + a wrong bare-mention close is emitted faithfully (alert can fire)")
 
-# 3. Unparseable file -> all four 0 (no crash).
+# 3. Unparseable file -> all five 0 (no crash).
 with tempfile.TemporaryDirectory() as td:
     p = Path(td) / "bad.json"
     p.write_text("{not json")
@@ -2407,7 +2492,7 @@ with tempfile.TemporaryDirectory() as td:
     m._emit_observe_to_close(lines)
     out = "\n".join(lines)
     assert 'reason="claim-branch"} 0' in out, out
-    print("OK: unparseable file -> 4 series all 0 (no crash)")
+    print("OK: unparseable file -> 5 series all 0 (no crash)")
 PY
 
 ok "fleet-ops#3231: fleet_observe_to_close_total{reason} emitted (missing/legit/wrong/unparseable)"
@@ -2776,6 +2861,7 @@ m._fetch_openrouter_key = lambda: None
 m._fetch_claude_usage = lambda: None
 m._fetch_codex_usage = lambda: None
 m._fetch_cursor_usage = lambda: None
+m._fetch_devin_usage = lambda: None
 m._gh_rate_limit = lambda: None
 m._read_dead_credentials = lambda: (0, [])
 m._fetch_openrouter_credits = lambda: 6.95
@@ -3018,9 +3104,42 @@ assert rows[0]["window"] == "monthly", f"cursor window {rows[0]['window']}"
 assert rows[0]["reset_s"] is not None and rows[0]["reset_s"] > 0, f"cursor reset_s {rows[0]['reset_s']}"
 print("OK: _fetch_cursor_usage maps planUsage.totalPercentUsed + billingCycleEnd -> remaining_pct")
 
+# 9. _fetch_devin_usage maps GetUserStatus planStatus.dailyQuotaRemainingPercent /
+#    weeklyQuotaRemainingPercent (percent REMAINING) -> remaining_pct, and the
+#    dailyQuotaResetAtUnix / weeklyQuotaResetAtUnix (epoch seconds) -> reset_s.
+#    Stub the key + urlopen to avoid network.
+devin_payload = {
+    "userStatus": {
+        "pro": True,
+        "planStatus": {
+            "planInfo": {"planName": "Pro"},
+            "dailyQuotaRemainingPercent": 96,
+            "weeklyQuotaRemainingPercent": 93,
+            "dailyQuotaResetAtUnix": 1788854400,
+            "weeklyQuotaResetAtUnix": 1789286400,
+        },
+    }
+}
+m._devin_windsurf_api_key = lambda: "fake-key"
+urllib.request.urlopen = lambda req, timeout=15: _FakeResp(devin_payload)
+try:
+    rows = m._fetch_devin_usage()
+finally:
+    urllib.request.urlopen = orig_urlopen
+assert rows is not None, "devin fetch returned None for valid payload"
+assert len(rows) == 2, f"expected 2 windows (daily+weekly), got {len(rows)}"
+by_window = {r["window"]: r for r in rows}
+assert "daily" in by_window, f"missing daily window: {list(by_window)}"
+assert "weekly" in by_window, f"missing weekly window: {list(by_window)}"
+assert abs(by_window["daily"]["pct"] - 96.0) < 0.01, f"devin daily pct {by_window['daily']['pct']}"
+assert abs(by_window["weekly"]["pct"] - 93.0) < 0.01, f"devin weekly pct {by_window['weekly']['pct']}"
+assert by_window["daily"]["reset_s"] is not None and by_window["daily"]["reset_s"] > 0, f"devin daily reset_s {by_window['daily']['reset_s']}"
+assert by_window["weekly"]["reset_s"] is not None and by_window["weekly"]["reset_s"] > 0, f"devin weekly reset_s {by_window['weekly']['reset_s']}"
+print("OK: _fetch_devin_usage maps planStatus daily/weeklyQuotaRemainingPercent + ResetAtUnix -> remaining_pct")
+
 print("OK: fleet-ops#4217 live seat quota metric family + VPS-native reads")
 PY
-ok "fleet-ops#4217: live seat quota metric family + VPS-native reads (OpenRouter /key, Claude OAuth, Codex OAuth, Cursor, !cut resolver)"
+ok "fleet-ops#4217: live seat quota metric family + VPS-native reads (OpenRouter /key, Claude OAuth, Codex OAuth, Cursor, Devin, !cut resolver)"
 
 # =========================================================================
 # fleet-ops#3180: fleet_escalations_24h must not count template starts the
@@ -3259,6 +3378,7 @@ m._fetch_openrouter_key = lambda: None
 m._fetch_claude_usage = lambda: None
 m._fetch_codex_usage = lambda: None
 m._fetch_cursor_usage = lambda: None
+m._fetch_devin_usage = lambda: None
 m._GH_FETCHED_THIS_RUN = False
 rc = m.main()
 assert rc == 0, f"main rc={rc}"

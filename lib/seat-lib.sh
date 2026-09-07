@@ -568,8 +568,11 @@ load_seat_caps() {
         # ledger is seat_dead (terminal "corpse" class, no comeback clock)
         # is retired, never re-auditioned, so its cap-0 skip classifies as
         # intentional (by design), not stale (re-audit when the external
-        # condition clears).
-        if [[ "$icz" == "dead_decoy" || "$icz" == "money_only" || "$icz" == "corpse" ]]; then
+        # condition clears). fleet-ops#4271: "yield" joins the intentional set
+        # — a seat retired for zero PR yield (0 PRs over >= 20 picks) is
+        # intentional, never auto-expired; the re-audition path (yield gate
+        # #3251) is the only way back in.
+        if [[ "$icz" == "dead_decoy" || "$icz" == "money_only" || "$icz" == "corpse" || "$icz" == "yield" ]]; then
             SEAT_CAP_ZERO_CLASS_INTENTIONAL["$p"]="$icz"
         elif [[ "$icz" == "stale" ]]; then
             SEAT_CAP_ZERO_CLASS_STALE["$p"]="$icz"
@@ -625,7 +628,9 @@ load_seat_caps() {
             icz=$(jq -r '.intentional_cap_zero // ""' <<<"$cap" 2>/dev/null || true)
             # fleet-ops#2435: "corpse" is intentional too — see the provider
             # loop comment. Matches the ledger's terminal corpse class.
-            if [[ "$icz" == "dead_decoy" || "$icz" == "money_only" || "$icz" == "corpse" ]]; then
+            # fleet-ops#4271: "yield" (zero-PR retirement) is intentional too —
+            # never auto-expired; re-audition only via the yield gate (#3251).
+            if [[ "$icz" == "dead_decoy" || "$icz" == "money_only" || "$icz" == "corpse" || "$icz" == "yield" ]]; then
                 SEAT_CAP_ZERO_CLASS_INTENTIONAL["$p/$m"]="$icz"
             elif [[ "$icz" == "stale" ]]; then
                 SEAT_CAP_ZERO_CLASS_STALE["$p/$m"]="$icz"
@@ -893,6 +898,126 @@ provider_quota_bench_default() {
     local p="$1"
     if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
     echo "${SEAT_PROVIDER_BENCH_DEFAULT[$p]:-0}"
+}
+
+# --- live quota reset from fleet-metrics-export (fleet-ops#4217) ------------
+# The exporter writes fleet_seat_quota_{remaining_pct,reset_seconds,
+# observed_seconds}{provider,window} into the node_exporter textfile from each
+# provider's OWN usage endpoint. When a quota wall's error text carries no
+# parseable reset window, a fresh live row beats the static
+# quota_bench_default_s guess in seat-caps.json: it is the provider's real
+# reset horizon (the issue's motivation: xai benched 7d for a 1.5d reset).
+#
+# Only EXHAUSTED windows count (remaining_pct <= SEAT_LIVE_QUOTA_EXHAUSTED_PCT,
+# default 1): a window with 95% left resetting in 14h is not this wall's
+# recovery time, and benching on it would re-create the opposite over-bench
+# (Devin benched 22h at 94% weekly left). Across exhausted windows the MINIMUM
+# positive reset wins — the soonest the seat can plausibly recover.
+#
+# reset_seconds is as-of-observation, so observed_seconds is subtracted;
+# observations older than SEAT_LIVE_QUOTA_STALE_S (900s, the exporter's own
+# QUOTA_STALE_S) are not trusted.
+#
+# Echoes integer seconds > 0, or 0 when there is no usable live figure (file
+# missing/unreadable, no rows for the provider, stale observation, no exhausted
+# window, or the reset has already passed). Callers fall back to the static
+# default — this helper must never brick a bench decision.
+SEAT_LIVE_QUOTA_PROM="${SEAT_LIVE_QUOTA_PROM:-/var/lib/prometheus/node-exporter/fleet.prom}"
+SEAT_LIVE_QUOTA_STALE_S="${SEAT_LIVE_QUOTA_STALE_S:-900}"
+SEAT_LIVE_QUOTA_EXHAUSTED_PCT="${SEAT_LIVE_QUOTA_EXHAUSTED_PCT:-1}"
+
+provider_live_reset_s() {
+    local p="$1"
+    [[ -r "$SEAT_LIVE_QUOTA_PROM" ]] || { echo 0; return 0; }
+    awk -v prov="$p" -v stale="$SEAT_LIVE_QUOTA_STALE_S" -v thresh="$SEAT_LIVE_QUOTA_EXHAUSTED_PCT" '
+        function label(line, key,    re, s) {
+            re = key "=\"[^\"]*\""
+            if (match(line, re)) {
+                s = substr(line, RSTART, RLENGTH)
+                sub("^" key "=\"", "", s)
+                sub("\"$", "", s)
+                return s
+            }
+            return ""
+        }
+        /^fleet_seat_quota_observed_seconds\{/ && label($1, "provider") == prov {
+            obs = $2 + 0; have_obs = 1
+        }
+        /^fleet_seat_quota_remaining_pct\{/ && label($1, "provider") == prov {
+            rem[label($1, "window")] = $2 + 0
+        }
+        /^fleet_seat_quota_reset_seconds\{/ && label($1, "provider") == prov {
+            rst[label($1, "window")] = $2 + 0
+        }
+        END {
+            if (!have_obs || obs > stale + 0) { print 0; exit }
+            best = 0
+            for (w in rst) {
+                if (!(w in rem) || rem[w] > thresh + 0) continue
+                live = int(rst[w] - obs)
+                if (live <= 0) continue
+                if (best == 0 || live < best) best = live
+            }
+            print best
+        }
+    ' "$SEAT_LIVE_QUOTA_PROM" 2>/dev/null || echo 0
+}
+
+# --- wall ceiling: the provider's real reset horizon (fleet-ops#2563) -------
+# A vendor can advertise a reset window far longer than its own quota cycle.
+# Live: cline/cline-pass/minimax-m3 came back HTTP 402 with
+# retry_after=1530000 (17.7 days), so the ledger was written
+# usable_at=2026-09-19 from a provider whose seat-caps.json row declares
+# quota_window="weekly". A 19-day wall on a weekly-resetting seat is not a
+# quota window; it is a seat frozen for three reset cycles, and nothing else
+# bounds it (consecutive_failure_count was 6, nowhere near
+# SEAT_FAILURE_CEILING=20, so the failure-ceiling park never engages).
+#
+# The bound already exists in config as `quota_window` — it was loaded into
+# SEAT_PROVIDER_QUOTA_WINDOW and read by exactly one consumer (_prepaid_paced,
+# weekly-pace only). This turns it into the wall ceiling too, so no new config
+# key is needed: a provider that declares its reset cycle gets its walls capped
+# at one cycle and is re-probed at that cadence instead of frozen for the whole
+# vendor-claimed countdown. A provider with no quota_window keeps the legacy
+# behaviour (0 = no ceiling).
+#
+# The ceiling is a RE-PROBE CADENCE, not a claim the quota reset: seat_usable
+# fail-opens after the wall, the probe either works or re-benches for one more
+# cycle. Cost of being wrong is one failed probe per cycle; cost of honouring
+# the vendor number is a dead seat for weeks.
+provider_wall_ceiling_s() {
+    local p="$1"
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    case "${SEAT_PROVIDER_QUOTA_WINDOW[$p]:-}" in
+        hourly)  echo 3600 ;;
+        daily)   echo 86400 ;;
+        weekly)  echo 604800 ;;
+        monthly) echo 2678400 ;;   # 31d — the longest real monthly cycle
+        *)       echo 0 ;;
+    esac
+}
+
+# Echo the effective wall ISO timestamp for a provider, capped at the
+# provider's reset horizon measured from <anchor> (the marker's observed_at,
+# or now when that is empty/unparseable). Echoes <wall> unchanged when the
+# provider declares no quota_window, when either timestamp will not parse, or
+# when the wall is already inside the horizon. Never widens a wall.
+_wall_capped_at_horizon() {
+    local p="$1" anchor="$2" wall="$3"
+    local ceil wall_s anchor_s max_s
+    ceil=$(provider_wall_ceiling_s "$p")
+    if [[ ! "$ceil" =~ ^[0-9]+$ ]] || (( ceil <= 0 )); then printf '%s' "$wall"; return 0; fi
+    wall_s=$(date -u -d "$wall" +%s 2>/dev/null || echo 0)
+    [[ "$wall_s" =~ ^[0-9]+$ ]] && (( wall_s > 0 )) || { printf '%s' "$wall"; return 0; }
+    anchor_s=0
+    [[ -n "$anchor" ]] && anchor_s=$(date -u -d "$anchor" +%s 2>/dev/null || echo 0)
+    [[ "$anchor_s" =~ ^[0-9]+$ ]] && (( anchor_s > 0 )) || anchor_s=$(date -u +%s)
+    max_s=$(( anchor_s + ceil ))
+    if (( wall_s > max_s )); then
+        date -u -d "@$max_s" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || printf '%s' "$wall"
+        return 0
+    fi
+    printf '%s' "$wall"
 }
 
 # Default bench window (seconds) for a provider's 503/upstream-overload storm
@@ -1855,20 +1980,23 @@ _provider_is_keystone_only() {
 # read of the already-loaded SEAT_SENIOR_ORDER; load_seat_caps must have run
 # (pick_seat / callers force-load it).
 find_senior_seat() {
-    local sn p m
+    local sn p m _tk
     for sn in "${SEAT_SENIOR_ORDER[@]}"; do
         [[ -n "$sn" ]] || continue
         p="${sn%%/*}"
         m="${sn#*/}"
         [[ -n "$p" && -n "$m" ]] || continue
         [[ "$(model_cap "$p" "$m" 2>/dev/null || echo 0)" -gt 0 ]] 2>/dev/null || continue
-        # fleet-ops#4220: respect the per-cycle tried-seats set so a
-        # senior-review Restart= cycle walks the senior ladder past a seat
-        # that already failed this cycle (not the whole ladder). The tried
-        # associative array is built by pick_seat; when find_senior_seat is
-        # called standalone (no pick_seat in scope) the array is unset and
-        # the :- default is empty, so the check is a no-op.
-        [[ -n "${tried[$p/$m]:-}" ]] && continue
+        # fleet-ops#4220: respect pick_seat's per-cycle tried map so a
+        # Restart= cycle walks past a seat that already failed this cycle.
+        # Standalone callers have no assoc `tried`. An unset or scalar
+        # `tried` is NOT associative, so `$p/$m` would be arithmetic
+        # (`cursor` unbound under `set -u`). Honor the map only when it
+        # is actually `declare -A`.
+        if [[ "$(declare -p tried 2>/dev/null || true)" == *"declare -A"* ]]; then
+            _tk="$p/$m"
+            [[ -n "${tried[$_tk]:-}" ]] && continue
+        fi
         # fleet-ops#3121: cursor weekly ceiling. When cursor's prepaid-usage
         # count for the week hits SEAT_SENIOR_CURSOR_CEILING, skip cursor and
         # fall through to the next seat in the ladder (xai-oauth/grok-4.6).
@@ -2684,6 +2812,20 @@ seat_usable() {
     # quota_bench BEFORE stale-observed_at: bench_until is the source of truth
     # for the advertised reset window, which can outlive STALE_SECS.
     if [[ "$hc" == "quota_bench" ]]; then
+        # fleet-ops#2563: the read side caps too. quota_bench markers are also
+        # written by the OUT-OF-REPO seat-health extension straight from the
+        # vendor's Retry-After (live: 1530000s = 17.7d on a weekly-resetting
+        # provider), so the write-side geometric cap cannot reach them. Same
+        # fence shape as the #2288 transient_fault park: hold the seat only to
+        # the provider's reset horizon, then fail open and re-probe.
+        if [[ -n "$bench_until" ]]; then
+            local capped_bench
+            capped_bench=$(_wall_capped_at_horizon "$p" "$observed" "$bench_until")
+            if [[ "$capped_bench" != "$bench_until" ]]; then
+                seat_log "seat $p/$m: quota_bench wall $bench_until CAPPED to $capped_bench (provider reset horizon from quota_window — re-probe cadence, fleet-ops#2563)"
+                bench_until="$capped_bench"
+            fi
+        fi
         if [[ -n "$bench_until" ]] && _seat_in_future "$bench_until"; then
             (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: benched until $bench_until (quota_bench)"
             return 1
@@ -4094,10 +4236,34 @@ pick_seat() {
     tried["$fail_p/$fail_m"]=1
     local tried_count=0
     if [[ -n "$tried_file" && -f "$tried_file" ]]; then
-        local tp tm
+        local tp tm _tried_pruned=0
+        local -a _tried_kept=()
+        # Silence per-seat UNUSABLE lines during the prune walk; one
+        # drop line below is the operator-visible record.
+        local _SEAT_USABLE_SILENT=1
         while IFS=/ read -r tp tm; do
-            [[ -n "$tp" ]] && tried["$tp/$tm"]=1 && tried_count=$((tried_count + 1))
+            [[ -n "$tp" && -n "$tm" ]] || continue
+            # fleet-ops#4220: senior-review tried-seats is the Restart=
+            # skip list only while the bench holds. Once seat_usable is
+            # true (bench expired or never written), the line is stale
+            # and must not pin cursor past the bench. Keystone still
+            # counts every tried line as a strike (fleet-ops#1133).
+            if [[ "$difficulty" == "senior-review" ]] && seat_usable "$tp" "$tm"; then
+                seat_log "pick_seat: dropping stale tried $tp/$tm (bench expired — fleet-ops#4220)"
+                _tried_pruned=1
+                continue
+            fi
+            tried["$tp/$tm"]=1
+            tried_count=$((tried_count + 1))
+            _tried_kept+=("$tp/$tm")
         done <"$tried_file"
+        if ((_tried_pruned)); then
+            if ((${#_tried_kept[@]} > 0)); then
+                printf '%s\n' "${_tried_kept[@]}" >"$tried_file"
+            else
+                : >"$tried_file"
+            fi
+        fi
     fi
 
     # Pre-compute the "definitively excluded" set ONCE per call
@@ -6191,6 +6357,17 @@ mark_seat_quota_bench() {
     local window_s=0 parsed
     parsed=$(_parse_reset_window_s "$text" 2>/dev/null || true)
     [[ "$parsed" =~ ^[0-9]+$ ]] && window_s="$parsed"
+    if (( window_s <= 0 )); then
+        # fleet-ops#4217: the provider's own live quota (fresh observation of
+        # an EXHAUSTED window) is the real reset horizon — it beats the static
+        # quota_bench_default_s below. 0 (no live figure) falls through.
+        local live
+        live=$(provider_live_reset_s "$p")
+        if [[ "$live" =~ ^[0-9]+$ ]] && (( live > 0 )); then
+            window_s="$live"
+            seat_log "quota-bench: $p/$m benching on live fleet_seat_quota reset ${live}s (exhausted window, fleet-ops#4217)"
+        fi
+    fi
     if (( window_s <= 0 )); then
         local def
         def=$(provider_quota_bench_default "$p")

@@ -129,7 +129,8 @@
         "memory-index-autocompact.service"
       ],
       "prompts": [
-        "heartbeat.md"
+        "heartbeat.md",
+        "orchestrator-decision-sweep.md"
       ],
       "bypass_checks": [
         "orchestrator_verdict_guard"

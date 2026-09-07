@@ -1,11 +1,26 @@
-# Reusable auto-merge arm. Callers keep the pull_request trigger and pass
-# AUTO_REVERT_PAT explicitly (not secrets: inherit).
+# Reusable auto-merge arm. Callers keep the pull_request trigger and pass the
+# nishfleet-worker App secrets explicitly (not secrets: inherit).
 #
 #   jobs:
 #     arm:
 #       uses: Nishfleet/fleet-ops/.github/workflows/reusable-auto-merge-arm.yml@main
 #       secrets:
-#         AUTO_REVERT_PAT: ${{ secrets.AUTO_REVERT_PAT }}
+#         NISHFLEET_WORKER_APP_ID: ${{ secrets.NISHFLEET_WORKER_APP_ID }}
+#         NISHFLEET_WORKER_PRIVATE_KEY: ${{ secrets.NISHFLEET_WORKER_PRIVATE_KEY }}
+#
+# Arms under a nishfleet-worker App installation token, not GITHUB_TOKEN and
+# not a human PAT (fleet-ops#1469):
+#   - GITHUB_TOKEN would not trigger push workflows on main (deploy
+#     verification, auto-revert), silently disarming the safety net.
+#   - A human PAT (the old AUTO_REVERT_PAT) made Nish the triggering actor of
+#     every merge, so GitHub emailed him one failure notice per red workflow
+#     per merge (30+ hand-deleted on 2026-08-28). The App is the actor now;
+#     failure notices stop reaching Nish.
+# The App token is a real actor (like the PAT) so push workflows still fire.
+# If the App secrets are missing the mint fails LOUD and the PR waits for a
+# human — the correct fallback. There is NO GITHUB_TOKEN fallback here: a
+# silent merge under GITHUB_TOKEN is exactly the disarmed-safety-net case the
+# token choice exists to prevent.
 #
 # fleet-ops#1457 (stop-the-line): before arming, this workflow checks for an
 # open `stop-the-line` issue in the repo. The detector opens the issue when
@@ -33,7 +48,9 @@ name: Reusable auto-merge arm
 on:
   workflow_call:
     secrets:
-      AUTO_REVERT_PAT:
+      NISHFLEET_WORKER_APP_ID:
+        required: false
+      NISHFLEET_WORKER_PRIVATE_KEY:
         required: false
 
 permissions:
@@ -46,8 +63,18 @@ jobs:
       !contains(github.event.pull_request.title, '[no-merge]') &&
       !contains(join(github.event.pull_request.labels.*.name, ','), 'no-auto-merge')
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
+      # Check out the PR head with full history so the merge-trample gate
+      # (below) can compute the PR's effective diff-to-main. The arm itself
+      # needs no workspace, but the gate is a git-diff evaluator.
+      - name: Check out PR head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
       # ---- stop-the-line check (fleet-ops#1457) ----------------------------
       # A freeze (the HALT verdict persists and no later green has cleared
       # it) is observed by an OPEN `stop-the-line` issue. Reading the issue
@@ -129,14 +156,74 @@ jobs:
           echo "quality: $(jq -c . <<<"$verdict")"
           echo "breached=false" >> "$GITHUB_OUTPUT"
 
-      - name: Arm auto-merge
-        if: steps.freeze.outputs.frozen == 'false' && steps.quality.outputs.breached == 'false'
+      # ---- merge-trample gate (fleet-ops#1229) ----------------------------
+      # A PR whose merge diff deletes paths its own commits never modified
+      # (ghost), or that deletes files its merge-base just added while also
+      # changing other files (the #1228 worktree-gap class), must not
+      # auto-merge even if the heartbeat path is down. This step makes the
+      # gate a real required check: a REJECT exits 1, failing the job so the
+      # PR cannot land. The gate binary and its library are fetched at the
+      # exact fleet-ops ref this workflow file came from (github.workflow_sha)
+      # so gate and definition can never drift apart. A fetch/interop failure
+      # warns and arms — fail-open, the same posture as the freeze and quality
+      # gates above; only an actual REJECT fails closed.
+      - name: Check merge-trample gate
+        id: trample
         env:
-          GH_TOKEN: ${{ secrets.AUTO_REVERT_PAT }}
+          FLEET_OPS_REF: ${{ github.workflow_sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          git fetch -q origin main:refs/remotes/origin/main
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          base="https://raw.githubusercontent.com/Nishfleet/fleet-ops/${FLEET_OPS_REF}"
+          if ! curl -fsSL --retry 2 -o "$tmp/fleet-merge-trample-gate" "$base/bin/fleet-merge-trample-gate" \
+            || ! curl -fsSL --retry 2 -o "$tmp/merge-trample-gate.py" "$base/lib/merge-trample-gate.py"; then
+            echo "::warning::merge-trample gate fetch failed — arming proceeds (fail-open, mirrors the freeze/quality gates)"
+            echo "trampled=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          chmod +x "$tmp/fleet-merge-trample-gate"
+          if ! MERGE_TRAMPLE_GATE_LIB="$tmp/merge-trample-gate.py" \
+              "$tmp/fleet-merge-trample-gate" evaluate \
+              --repo "$GITHUB_WORKSPACE" \
+              --base origin/main \
+              --head "$PR_HEAD" \
+              --title "$PR_TITLE" \
+              --head-ref "$PR_HEAD_REF" >/dev/null 2>&1; then
+            echo "::error::merge-trample REJECT (fleet-ops#1229) — this PR's merge diff deletes paths its own commits never touched; auto-merge not armed"
+            echo "trampled=true" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          echo "trampled=false" >> "$GITHUB_OUTPUT"
+
+      - name: Mint nishfleet-worker App installation token
+        id: app-token
+        # Mints a ≤1h installation token for the nishfleet-worker GitHub App
+        # (app id 4728578, org-wide install under Nishfleet). The App carries
+        # contents/pull-requests:write — enough to arm auto-merge — and is a
+        # real actor, so a merge under this token triggers push workflows on
+        # main (deploy verification, auto-revert), unlike GITHUB_TOKEN. No
+        # continue-on-error and no GITHUB_TOKEN fallback: a missing or expired
+        # App secret must fail LOUD so the PR waits for a human rather than
+        # silently merging under a token that disarms the safety net
+        # (fleet-ops#1469). Same action pin as the auto-revert path.
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ secrets.NISHFLEET_WORKER_APP_ID }}
+          private-key: ${{ secrets.NISHFLEET_WORKER_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+      - name: Arm auto-merge
+        if: steps.freeze.outputs.frozen == 'false' && steps.quality.outputs.breached == 'false' && steps.trample.outputs.trampled == 'false'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR: ${{ github.event.pull_request.number }}
         run: |
           if [ -z "$GH_TOKEN" ]; then
-            echo "::error::AUTO_REVERT_PAT is not configured — auto-merge not armed; this PR waits for a human"
+            echo "::error::nishfleet-worker App token is not configured — auto-merge not armed; this PR waits for a human"
             exit 1
           fi
           gh pr merge "$PR" --auto --squash --repo "${{ github.repository }}"

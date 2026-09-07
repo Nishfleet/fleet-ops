@@ -219,6 +219,7 @@ label_color() {
         nish-reserved)   printf '%s' "5319E7" ;;
         noise-class)     printf '%s' "CFD3D7" ;;
         observe-to-close) printf '%s' "BFD4F2" ;;
+        verification-only) printf '%s' "0E8A16" ;;
         drill:lifecycle) printf '%s' "EDEDED" ;;
         agent-ready)     printf '%s' "0E8A16" ;;
         scout-candidate) printf '%s' "FBCA04" ;;
@@ -232,6 +233,7 @@ label_desc() {
         nish-reserved)   printf '%s' "Reserved for Nish; agents must not claim" ;;
         noise-class)     printf '%s' "Not work (halt notices, noise); not agent-ready" ;;
         observe-to-close) printf '%s' "Waiting for detector observe-to-close; do not claim (fleet-ops#1401)" ;;
+        verification-only) printf '%s' "No PR expected; terminal is a worker VERDICT: PASS comment (fleet-ops#4274)" ;;
         drill:lifecycle) printf '%s' "Lifecycle-label drill fixture (fleet-ops#376)" ;;
         agent-ready)     printf '%s' "Auto: ready for a worker to claim" ;;
         scout-candidate) printf '%s' "Queued for senior admission; not yet agent-ready" ;;
@@ -541,6 +543,11 @@ log "sweep starting now=$NOW_ISO"
 while IFS= read -r repo; do
     [ -z "$repo" ] && continue
     log "repo $repo"
+
+    # fleet-ops#4274: ensure the verification-only label exists so a
+    # verification-only issue can carry it and observe-to-close can scan
+    # for it. Idempotent (gh label create --force).
+    ensure_label "$repo" "verification-only"
 
     # fleet-ops#4091: do NOT request `.comments` here. The bulk list call
     # fetches every open issue in one GraphQL round-trip; adding `.comments`

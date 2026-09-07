@@ -3,7 +3,7 @@
  *
  * Registers `devin` as a Pi provider. Routes through the Devin CLI:
  *   devin -p "<prompt>" --model <model> --respect-workspace-trust false
- *         --permission-mode dangerous
+ *         --permission-mode smart --sandbox
  *
  * Credential: $DEVIN_API_KEY from ~/fleet2/etc/devin.env
  * Models: glm-5-2, swe-1-7 (Free on Devin Pro pass — the only $0 marginal ones)
@@ -142,7 +142,8 @@ function streamDevin(
 				"--prompt-file", promptFile,
 				"--model", model.id,
 				"--respect-workspace-trust", "false",
-				"--permission-mode", "dangerous",
+				"--permission-mode", "smart",
+				"--sandbox",
 			];
 
 			let child;
