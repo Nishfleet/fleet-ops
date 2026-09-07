@@ -311,6 +311,27 @@ grep -q "dead marker missing" "$scratch/err.log" || { cat "$scratch/err.log"; fa
 ok "corpse seat_dead=false is flagged as missing dead marker"
 rm -f "$scratch/seats/corpse-creds.json" "$scratch/seats/corpse-transient.json" "$scratch/seats/corpse-nodead.json"
 
+# --- 5e. seat_dead=true with quota_bench class + bench_until — REGRESSION GUARD ---
+# A quota_bench seat is a legitimate dead state: seat-health.ts writes
+# seat_dead=true with health_class=quota_bench and a bench_until clock
+# (the reset time). The dead-marker filter must accept quota_bench the
+# same way it accepts credentials_bad/corpse — otherwise every benched
+# quota seat trips a false UNJUSTIFIED-WAIT every tick and heartbeat
+# tier 1 returns unjustified_rc=1 forever (observed on xkiro minimax-m3
+# free, bench_until 2026-09-13). The no-bench_until case is still caught
+# by the quota_bench branch above.
+cat >"$scratch/seats/quota-bench-dead.json" <<'JSON'
+{"provider":"xkiro","model":"minimax/minimax-m3:free","health_class":"quota_bench","seat_dead":true,"failure_mode":"quota_cap","http_status":429,"bench_until":"2026-09-13T19:43:11Z","usable_at":"2026-09-13T19:43:11Z","observed_at":"2026-09-06T19:43:11Z"}
+JSON
+rc=$(run_bin)
+[[ "$rc" == "0" ]] || { cat "$scratch/err.log"; fail "quota_bench seat_dead=true with bench_until should exit 0 (got $rc)"; }
+grep -q "UNJUSTIFIED-WAIT-OK" "$scratch/err.log" || { cat "$scratch/err.log"; fail "quota_bench seat missing UNJUSTIFIED-WAIT-OK"; }
+if grep -q "dead marker without credentials_bad|corpse" "$scratch/err.log"; then
+  cat "$scratch/err.log"; fail "quota_bench seat was falsely flagged as inconsistent"
+fi
+ok "quota_bench seat_dead=true with bench_until is clean"
+rm -f "$scratch/seats/quota-bench-dead.json"
+
 # --- 6. STOP-REASON illegal reason -------------------------------------------
 printf '%s\n' '{"reason":"mystery-wait","detail":{}}' >"$scratch/STOP-REASON.json"
 rc=$(run_bin)

@@ -274,8 +274,11 @@ audit_seats() {
         # returned unjustified_rc=1 forever.
         # fleet-ops#3706/#3669: "parked" is the same dead-class state — the
         # terminal ledger write_parked_ledger emits after corpse retirement.
-        if [[ "$dead" == "true" ]] && [[ "$hc" != "credentials_bad" && "$hc" != "corpse" && "$hc" != "parked" ]]; then
-            loud "UNJUSTIFIED-WAIT" "seat $name seat_dead=true with health_class=$hc — dead marker without credentials_bad|corpse|parked (clock inconsistent)"
+        # fleet-ops#4113: "quota_bench" is a legitimate dead state carrying a
+        # bench_until reset clock (seat-health.ts writes seat_dead=true with
+        # health_class=quota_bench). Accept it alongside the others.
+        if [[ "$dead" == "true" ]] && [[ "$hc" != "credentials_bad" && "$hc" != "corpse" && "$hc" != "parked" && "$hc" != "quota_bench" ]]; then
+            loud "UNJUSTIFIED-WAIT" "seat $name seat_dead=true with health_class=$hc — dead marker without credentials_bad|corpse|parked|quota_bench (clock inconsistent)"
             n=$((n + 1))
         fi
     done
