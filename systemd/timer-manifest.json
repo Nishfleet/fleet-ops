@@ -506,6 +506,12 @@
       "cadence": "3h",
       "source": "user-config"
     },
+    "fable-fleet-check-opus.timer": {
+      "reason": "Hourly fleet judge on Opus 5, offset :45 UTC (second POV; Nish 2026-09-07) \u2014 installed by hand outside the repo deploy; adopted into the manifest to close the #1460 shape-lock gap",
+      "classification": "scheduled",
+      "cadence": "1h",
+      "source": "user-config"
+    },
     "fleet-litellm-health-canary.timer": {
       "reason": "60s LiteLLM proxy /health/readiness probe (fleet-ops#4130 P1) — the proxy is a daemon whose death must surface in <2 min, not on the 5-min metrics-export cadence. The 60s timer is the named reason (organ-death latency).",
       "classification": "scheduled",
