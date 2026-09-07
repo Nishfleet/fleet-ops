@@ -24,9 +24,9 @@ the missing rails inside existing organs (no new organ):
    watcher.
 3. **Prometheus / alert path**: healthchecks failures already flow via the
    #4146 replacement (hc + `absent()` rules); the dead-man `/fail` ping feeds
-   the same path. The escalation canary's new block 13 surfaces raw
+   the same path. The escalation canary's new block 14 surfaces raw
    `systemd-run` transients without OnFailure as a VIOLATION naming the unit.
-4. **Lint** (`bin/fleet-escalation-canary` block 13): checks that no user unit
+4. **Lint** (`bin/fleet-escalation-canary` block 14): checks that no user unit
    was created by raw `systemd-run` in the last 24h without OnFailure
    (`systemctl show -p OnFailure` over transient units + the auditd execve
    trail). A false-clean guard (`auditctl -l`) makes an empty `ausearch` result
@@ -43,7 +43,7 @@ audit trail. `bin/pi-detached-deadman` is the ExecStopPost salvage that turns
 "exit 0 without deliverable" into a FAILURE with a STOP-REASON + `/fail` ping,
 and clears the stale dead-man series on a real success.
 
-Mechanical-fix (fleet-ops#366): the new canary block 13 + the
+Mechanical-fix (fleet-ops#366): the new canary block 14 + the
 `pi-detached-deadman` verdict matrix test are the detector/test that prevent
 this bug class from recurring; `fleet-who-stopped` is the observe-to-close
 helper.
@@ -92,7 +92,7 @@ EXIT: 0
   `verify-command` list (hosted by `tests/pi-systemd-run.test.sh` per the P14
   listing gate).
 - `tests/escalation-coverage-canary.test.sh` — extended with scenarios 2e-2h
-  (fleet-ops#4266) and block 13 of the canary.
+  (fleet-ops#4266) and block 14 of the canary.
 - `tests/fleet-resilience-drill.test.sh` — extended with the dead-man drill
   acceptance.
 - No new unit/timer/path-unit/workflow added — only edits to existing
@@ -109,7 +109,7 @@ help-first: `ausearch --help` + `auditctl --help` + `systemd-run --help` read. a
 - `bin/pi-detached-deadman` (NEW): ExecStopPost salvage + verdict matrix.
 - `bin/fleet-who-stopped` (NEW): ausearch stopper-naming helper.
 - `bin/keystone-hc-ping`: +`detached` mode (start/success/fail pings).
-- `bin/fleet-escalation-canary`: +block 13 (raw systemd-run lint + false-clean
+- `bin/fleet-escalation-canary`: +block 14 (raw systemd-run lint + false-clean
   guard), +live-dummy exclusion carve-out for proof units.
 - `bin/unit-escalation-write`: +live-dummy* exclusion so proof units do not
   summon the senior auditor.
@@ -131,6 +131,6 @@ help-first: `ausearch --help` + `auditctl --help` + `systemd-run --help` read. a
   `global-standing-rules.md`) is a separate cross-project edit, filed as
   follow-up.
 
-net-positive-because: new mechanism (fleet-ops#4266) — the dead-man verdict hook (pi-detached-deadman), the stop audit trail helper (fleet-who-stopped), the auditd rule, and the canary lint block 13 are net-new rails with no prior equivalent; the test coverage (pi-detached-deadman verdict matrix + 4 new canary scenarios + resilience drill) is the detector that prevents the bug class from recurring (mechanical-fix fleet-ops#366). Deletion-first applied: no new organ, no new unit/timer/workflow — all rails wired into existing bin/pi-systemd-run, bin/fleet-escalation-canary, bin/keystone-hc-ping, bin/unit-escalation-write.
+net-positive-because: new mechanism (fleet-ops#4266) — the dead-man verdict hook (pi-detached-deadman), the stop audit trail helper (fleet-who-stopped), the auditd rule, and the canary lint block 14 are net-new rails with no prior equivalent; the test coverage (pi-detached-deadman verdict matrix + 4 new canary scenarios + resilience drill) is the detector that prevents the bug class from recurring (mechanical-fix #366). Deletion-first applied: no new organ, no new unit/timer/workflow — all rails wired into existing bin/pi-systemd-run, bin/fleet-escalation-canary, bin/keystone-hc-ping, bin/unit-escalation-write.
 
 loose-ends: out-of-repo standing text (judge packet + vault global-standing-rules) for fleet-ops#4266
