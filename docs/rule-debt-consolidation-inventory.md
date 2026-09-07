@@ -1,7 +1,9 @@
 # Rule-debt consolidation inventory (fleet-ops#1537)
 
-P1 INVENTORY — the disposition map for all 121 vault rules. This is the
-foundation P2 (blind review), P3 (execute), and P4 (prove) build on.
+P1 INVENTORY — the disposition map for all vault rules as of 2026-08-28
+(122 rules at the time). This is the foundation P2 (blind review),
+P3 (execute), and P4 (prove) build on. See "Live drift since P1" below for
+the 2026-09-07 refresh.
 
 ## Before counts (live, 2026-08-28T16:00Z)
 
@@ -20,6 +22,43 @@ $LEDGER --matrix config/rule-enforcement.json`
 
 The 9 uncovered are rules added 2026-08-28 without matrix entries yet —
 pre-existing, not introduced by this PR.
+
+## Live drift since P1 (2026-09-07)
+
+P1's snapshot is 10 days stale. The live join and inventory now report
+(2026-09-07):
+
+```
+python3 lib/rule-enforcement.py join --rules $STANDING --ledger $LEDGER \
+  --matrix config/rule-enforcement.json
+python3 bin/rule-debt-inventory.py --join-json <join-output> \
+  --matrix config/rule-enforcement.json
+```
+
+| metric | P1 (2026-08-28) | live (2026-09-07) |
+|---|---|---|
+| vault rules (standing + ledger) | 122 | 128 |
+| matrix entries | 113 | 128 |
+| enforced | 76 | 110 |
+| advisory | 8 | 18 |
+| queued (mechanism pending) | 27 | 0 |
+| uncovered (no matrix entry) | 9 | 0 |
+| violations (canary LOUD) | 9 | 0 |
+
+What changed since P1:
+- The matrix caught up with the vault (128/128, 110 enforced + 18
+  senior-judged advisory, 0 uncovered). The 9 uncovered and 27 queued rows
+  no longer exist.
+- The queued-mechanism re-scope table below is now largely historical:
+  every one of its 25 queued issues has CLOSED since P1 except #362
+  (gap-closure loop) — #378, #516, #520, #522, #523, #526, #527, #528,
+  #531, #532, #377, #437, #538, #366, #223, #543, #905, #906, #907, #908,
+  #1177, #1179, #1399, #1480 CLOSED. The "29 pending mechanisms" premise
+  the consolidation was ordered before no longer holds — mechanism work
+  continued while the consolidation waited on P2.
+- Consequence for P2: the disposition map must be REGENERATED from the live
+  join (this tool) before the blind review, so the two senior POVs review
+  the current 128-rule map, not the stale 122-rule one.
 
 ## Method
 
@@ -268,6 +307,11 @@ two queued issues serve the same constraint, merge into one.
 Re-scope summary: **keep 11, merge 5 into 2, close 9**. Net queued mechanisms
 drop from 27 matrix rows to 13 distinct mechanisms (11 kept + 2 merge targets).
 
+> Status 2026-09-07: this table is HISTORICAL. Since P1, all 25 queued
+> issues closed except #362 (only that one remains open) and the live matrix
+> has 0 queued rows. The re-scope belongs to P3 with a fresh read of the
+> live matrix, not to this snapshot.
+
 ## What this PR ships
 
 This PR ships the P1 inventory (this document) + the `bin/rule-debt-inventory.py`
@@ -290,3 +334,21 @@ independent senior POVs checking the disposition map for meaning loss).
 - **P4 PROVE**: rule-enforcement join before/after counts; heartbeat canary
   green on the new file; grep every instruction-file reference to renamed
   rules still resolves; post the full before/after diff summary on the issue.
+
+### Routing decision (orchestrator sweep 2026-09-07) — P2 is the senior
+conference's job; P3/P4 are a worker's, and only AFTER P2 output lands
+
+The depth-1 worker that claimed #1537 in August could not run P2 (the
+spawn-guard forbids subagents; a single POV cannot be two blind POVs). The
+orchestrator sweep decided on 2026-09-07 (comment on #1537):
+
+- **P2 is not waived.** The senior conference runs it — two independent
+  blind senior POVs, then synthesis. Disagreements default to KEEP.
+- **A worker does P1, P3 and P4**, and only picks the issue back up for
+  P3/P4 **against P2's output** (the reviewed disposition map). P1 is
+  merged (PR #1551); P1 must be regenerated against the live join before
+  P2 reviews it (see "Live drift since P1" above).
+- **As of 2026-09-07 P2 has not run** — no conference job, no reviewed map,
+  no output on the issue. Nothing on the rails triggers it yet.
+
+P3 starts when P2's reviewed map is posted on #1537.
