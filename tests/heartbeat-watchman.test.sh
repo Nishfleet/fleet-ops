@@ -312,4 +312,9 @@ grep -qx "https://example.test/hc-ping/wrapper" "$CURL_URLS" \
   || fail "freshness skip must still ping: $(cat "$CURL_URLS") out=$out"
 ok "wrapper: freshness skip still pings dead-man"
 
+# fleet-ops#1570: the system-scope covered-units suite is chained here because
+# the P14 CI job cannot gain a new workflow step (nishfleet-worker has no
+# Workflows permission to list it in ci.yml). This already-listed host runs it.
+bash "$here/heartbeat-watchman-system-scope.test.sh"
+
 echo "ALL OK"
