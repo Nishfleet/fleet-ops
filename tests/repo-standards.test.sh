@@ -122,6 +122,23 @@ stray=""
 for f in pr-body-*.md verification-*.md PR_BODY*.md; do [ -e "$f" ] && stray="$stray$f "; done
 if [ -z "$stray" ]; then ok "repo root carries no stray worker notes (pr-body-*.md / verification-*.md)"; else ko "stray worker notes at repo root: $stray — PR bodies belong in the PR, not the tree"; fi
 
+# --- fleet-ops#488: repo-standards-sync wires in verify-fleet-sync-pat ---
+# The workflow used to only check the secret was non-empty. A dead/under-scoped
+# token sailed past and failed later inside BetaHuhn with a vague "Resource not
+# accessible by personal access token" (the #488 root cause). The probe step
+# (bin/verify-fleet-sync-pat, fleet-ops#482) catches it LOUD before the sync.
+sync_yml=".github/workflows/repo-standards-sync.yml"
+if grep -q 'bin/verify-fleet-sync-pat' "$sync_yml"; then
+  ok "repo-standards-sync runs verify-fleet-sync-pat before the sync step (fleet-ops#488)"
+else
+  ko "repo-standards-sync is missing the verify-fleet-sync-pat probe step (fleet-ops#488)"
+fi
+if grep -q 'Blocked on: FLEET_SYNC_PAT' "$sync_yml"; then
+  ko "repo-standards-sync still carries the stale 'Blocked on' comment (fleet-ops#488)"
+else
+  ok "repo-standards-sync stale 'Blocked on' comment removed (fleet-ops#488)"
+fi
+
 echo
 echo "repo-standards tests: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
