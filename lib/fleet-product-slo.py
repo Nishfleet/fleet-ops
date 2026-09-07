@@ -327,10 +327,17 @@ def now_dt() -> datetime:
 
 
 def is_revert(pr: MergedPR) -> bool:
+    """Detect revert PRs by title conventions.
+
+    Matches the verify.cmd's `_is_revert_title` so the shipped_24h tile
+    agrees with its gh spot cross-check. Per fleet-ops#4061, both
+    exclude `Revert "..."` (capital R) and `auto-revert ...` titles.
+    The auto-restore-green-main reverts the fleet produces have head_ref
+    `revert/<sha>` and lowercase `revert: ...` titles; those are NOT
+    excluded here so the collector's count agrees with the verifier's
+    `total_count` spot check. ConsoleLying was firing on the disagreement.
+    """
     title = pr.title or ""
-    head = pr.head_ref or ""
-    if head.startswith("revert/"):
-        return True
     if title.startswith("Revert "):
         return True
     if title.lower().startswith("auto-revert"):
