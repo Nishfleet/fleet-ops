@@ -32,7 +32,7 @@ Live snapshot 2026-09-07:
 | # | Mechanism | Lines (live) | Owner unit(s) | Off-the-shelf replacement | What gets DELETED | Verdict |
 |---|---|---|---|---|---|---|
 | 1 | opus-heartbeat family | 3,249 (+7,858 .bak) | `opus-heartbeat.timer` + `heartbeat-audit` + `opus-heartbeat-run` + `opus-heartbeat-fallback` | PromQL recording rules + Alertmanager; judge packet reads `/api/v1/query` | gather + heartbeat + audit + run + fallback + 6 `.bak` copies | **GO** |
-| 2 | repo-sync-snapshot.py | 1,311 | `repo-sync-snapshot.timer` | `gh` GraphQL directly, or a github-exporter for Prometheus | repo-sync-snapshot.py | **GO** |
+| 2 | repo-sync-snapshot.py | 1,311 | `repo-sync-snapshot.timer` | (none — see row detail) | (none — see row detail) | **NO-GO** (misdescribed: not an org PR/CI snapshot; see row detail) |
 | 3 | venue-claim + open-question | 1,810 | `venue-claim` / `open-question` (webhook/timer) | GitHub issue assignment + Projects, Actions concurrency groups, flock/systemd for local locks | venue-claim, open-question | **DONE** (retired 2026-09-07, #4143) |
 | 4 | fleet-pr-rebase | 0 (already retired) | — | GitHub merge queue + auto-merge + `gh pr update-branch` | already gone (git history only) | **NO-GO** (already retired) |
 | 5 | claude-telegram-bridge.py | 412 (+753 .bak) | `claude-telegram-bridge` | Hermes (Nish-owned) — one Telegram path | bridge + 2 `.bak` | **GO** (Nish decision on Telegram path) |
@@ -60,13 +60,46 @@ the judge packet reads `/api/v1/query` instead of re-gathering.
 **GO.** Delete 3,249 lines + 7,858 `.bak` lines. New organ: none — Prometheus
 and Alertmanager already run. Filed as issue (see §6).
 
-### Row 2 — repo-sync-snapshot.py → gh GraphQL / github-exporter (GO)
+### Row 2 — repo-sync-snapshot.py → NO-GO (misdescribed seed map)
 
-Live: 1,311 lines. Produces an org PR/CI snapshot. Replacement: `gh` GraphQL
-directly, or a github-exporter for Prometheus.
+Live: 1,311 lines (`~/.local/libexec/repo-sync-snapshot.py`, 44,138 bytes;
+source in the local-only `control-plane` repo, which has no GitHub remote and
+where `Nishfleet/control-plane` does not exist).
 
-**GO.** Delete 1,311 lines. No new organ (gh CLI / github-exporter are
-off-the-shelf). Filed as issue.
+The seed map described this as "org PR/CI snapshot" and proposed `gh` GraphQL
+or a Prometheus github-exporter as the replacement. That description is
+factually wrong, verified live 2026-09-07:
+
+- The file's docstring is "Safely replicate Git repositories and dirty work
+  between two machines." It is a Mac↔VPS **Git repository replication** tool,
+  not an org PR/CI snapshot tool.
+- Functions: `sync_repositories`, `create_snapshot`, `publish_repository`,
+  `fetch_peer_repository`, `ensure_local_bare_repo`, `ensure_remote_bare_repo`,
+  `create_stash_snapshots` — all replication, zero PR/CI.
+- `grep -iE 'pull.?request|pr[_-]|ci[_-]|check.?run|workflow.?run|graphql|
+  github.?exporter|prometheus|\.prom'` over the file → 0 matches.
+- The proposed replacement (gh GraphQL / github-exporter) snapshots org PRs/CI
+  — a different function. It does not replicate Git repositories between
+  machines.
+
+The mechanism is also **dormant**, not running:
+
+- Consuming units `repo-sync-snapshot.{service,timer}` and
+  `repo-sync-tooling.{service,timer}` exist only as files under
+  `control-plane/systemd/`; they are NOT installed in
+  `~/.config/systemd/user/` (`systemctl --user list-unit-files 'repo-sync*'` →
+  0; `list-timers 'repo-sync*'` → 0).
+- `~/.local/state/repo-sync/state.json` last modified 2026-08-23 (before the
+  2026-08-25 fleet restoration); backups dir `/home/nish/repo-sync-backups/`
+  last written 2026-08-24.
+
+**NO-GO** for the proposed replacement — it does not cover the file's actual
+job, and the file is not in fleet-ops (a fleet-ops PR cannot delete it). The
+seed-map row is corrected here. Whether the dormant Mac↔VPS Git replication
+should itself be retired — and with what substitute (e.g. both machines pull
+from the existing GitHub mirrors / `.mirrors/`) — is a separate, correctly
+described decision for Nish, not this row. Issues #4142 and #4154 were filed
+from the wrong row and cannot be implemented as written.
 
 ### Row 3 — venue-claim + open-question → GitHub native (DONE)
 
@@ -195,12 +228,12 @@ timers are deleted with their replacement issues.
 
 ## 6. Total hand-built lines after the GO rows land
 
-GO-row deletions (rows 1, 2, 3, 5, 6, 7, 8, 9 + row-10 GO timers):
+GO-row deletions (rows 1, 3, 5, 6, 7, 8, 9 + row-10 GO timers; row 2 is
+NO-GO — see §3 row 2 — and is excluded from the total):
 
 | Row | Lines deleted |
 |---|---|
 | 1 opus-heartbeat family | 3,249 (+7,858 `.bak`) |
-| 2 repo-sync-snapshot.py | 1,311 |
 | 3 venue-claim + open-question | 1,810 (retired 2026-09-07) |
 | 5 claude-telegram-bridge.py | 412 (+753 `.bak`) |
 | 6 seat prom writers + corpse-retire + comeback-release | 2,163 |
@@ -208,13 +241,14 @@ GO-row deletions (rows 1, 2, 3, 5, 6, 7, 8, 9 + row-10 GO timers):
 | 8 load-storm-brake + agent-orphan-watchdog | 376 |
 | 9 codex wrapper | 281 |
 | 10 fleet-* timer GO rows | (units, not lines — the scripts they run are counted above) |
-| **Total** | **~11,869 lines** (+8,611 `.bak` lines) |
+| **Total** | **~10,558 lines** (+8,611 `.bak` lines) |
 
-**Total hand-built lines deleted after the GO rows land: ~11,869 lines of
-live code + 8,611 lines of `.bak` copies = ~20,480 lines.** This is against a
+**Total hand-built lines deleted after the GO rows land: ~10,558 lines of
+live code + 8,611 lines of `.bak` copies = ~19,169 lines.** This is against a
 19,838-line `~/.local` snapshot, so the GO rows remove the majority of the
 hand-built surface. The seat-lib deletion (row 6) is the single largest chunk
-and is owned by #4130.
+and is owned by #4130. Row 2 (repo-sync-snapshot.py, 1,311 lines) is NO-GO and
+not counted; see §3 row 2.
 
 No new organ is proposed in any GO row without naming what it deletes: every
 replacement (Prometheus, Alertmanager, gh CLI, github-exporter, GitHub native,
@@ -230,7 +264,7 @@ Row 11 classify rows are filed as classify issues.
 | Row | Filed issue |
 |---|---|
 | 1 opus-heartbeat family | #4153 |
-| 2 repo-sync-snapshot.py | #4154 |
+| 2 repo-sync-snapshot.py | #4154 (NO-GO — filed from the wrong row; see §3 row 2) |
 | 3 venue-claim + open-question | #4143 (dup #4155) |
 | 5 claude-telegram-bridge.py | #4156 |
 | 7 dead-man canaries | #4157 |
