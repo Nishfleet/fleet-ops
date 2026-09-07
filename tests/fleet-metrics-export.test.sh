@@ -790,6 +790,7 @@ m._fetch_openrouter_key = lambda: None
 m._fetch_claude_usage = lambda: None
 m._fetch_codex_usage = lambda: None
 m._fetch_cursor_usage = lambda: None
+m._fetch_devin_usage = lambda: None
 m._GH_FETCHED_THIS_RUN = False
 
 rc = m.main()
@@ -2776,6 +2777,7 @@ m._fetch_openrouter_key = lambda: None
 m._fetch_claude_usage = lambda: None
 m._fetch_codex_usage = lambda: None
 m._fetch_cursor_usage = lambda: None
+m._fetch_devin_usage = lambda: None
 m._gh_rate_limit = lambda: None
 m._read_dead_credentials = lambda: (0, [])
 m._fetch_openrouter_credits = lambda: 6.95
@@ -3018,9 +3020,42 @@ assert rows[0]["window"] == "monthly", f"cursor window {rows[0]['window']}"
 assert rows[0]["reset_s"] is not None and rows[0]["reset_s"] > 0, f"cursor reset_s {rows[0]['reset_s']}"
 print("OK: _fetch_cursor_usage maps planUsage.totalPercentUsed + billingCycleEnd -> remaining_pct")
 
+# 9. _fetch_devin_usage maps GetUserStatus planStatus.dailyQuotaRemainingPercent /
+#    weeklyQuotaRemainingPercent (percent REMAINING) -> remaining_pct, and the
+#    dailyQuotaResetAtUnix / weeklyQuotaResetAtUnix (epoch seconds) -> reset_s.
+#    Stub the key + urlopen to avoid network.
+devin_payload = {
+    "userStatus": {
+        "pro": True,
+        "planStatus": {
+            "planInfo": {"planName": "Pro"},
+            "dailyQuotaRemainingPercent": 96,
+            "weeklyQuotaRemainingPercent": 93,
+            "dailyQuotaResetAtUnix": 1788854400,
+            "weeklyQuotaResetAtUnix": 1789286400,
+        },
+    }
+}
+m._devin_windsurf_api_key = lambda: "fake-key"
+urllib.request.urlopen = lambda req, timeout=15: _FakeResp(devin_payload)
+try:
+    rows = m._fetch_devin_usage()
+finally:
+    urllib.request.urlopen = orig_urlopen
+assert rows is not None, "devin fetch returned None for valid payload"
+assert len(rows) == 2, f"expected 2 windows (daily+weekly), got {len(rows)}"
+by_window = {r["window"]: r for r in rows}
+assert "daily" in by_window, f"missing daily window: {list(by_window)}"
+assert "weekly" in by_window, f"missing weekly window: {list(by_window)}"
+assert abs(by_window["daily"]["pct"] - 96.0) < 0.01, f"devin daily pct {by_window['daily']['pct']}"
+assert abs(by_window["weekly"]["pct"] - 93.0) < 0.01, f"devin weekly pct {by_window['weekly']['pct']}"
+assert by_window["daily"]["reset_s"] is not None and by_window["daily"]["reset_s"] > 0, f"devin daily reset_s {by_window['daily']['reset_s']}"
+assert by_window["weekly"]["reset_s"] is not None and by_window["weekly"]["reset_s"] > 0, f"devin weekly reset_s {by_window['weekly']['reset_s']}"
+print("OK: _fetch_devin_usage maps planStatus daily/weeklyQuotaRemainingPercent + ResetAtUnix -> remaining_pct")
+
 print("OK: fleet-ops#4217 live seat quota metric family + VPS-native reads")
 PY
-ok "fleet-ops#4217: live seat quota metric family + VPS-native reads (OpenRouter /key, Claude OAuth, Codex OAuth, Cursor, !cut resolver)"
+ok "fleet-ops#4217: live seat quota metric family + VPS-native reads (OpenRouter /key, Claude OAuth, Codex OAuth, Cursor, Devin, !cut resolver)"
 
 # =========================================================================
 # fleet-ops#3180: fleet_escalations_24h must not count template starts the
@@ -3259,6 +3294,7 @@ m._fetch_openrouter_key = lambda: None
 m._fetch_claude_usage = lambda: None
 m._fetch_codex_usage = lambda: None
 m._fetch_cursor_usage = lambda: None
+m._fetch_devin_usage = lambda: None
 m._GH_FETCHED_THIS_RUN = False
 rc = m.main()
 assert rc == 0, f"main rc={rc}"
