@@ -145,6 +145,12 @@ with open(lock, "w") as lk:
         f.write("# TYPE fleet_detached_job_died gauge\n")
         for ln in kept:
             f.write(ln + "\n")
+    # mkstemp creates 0600, and os.replace keeps that mode: node_exporter runs
+    # as User=prometheus, so a 0600 textfile is unreadable to it — it sets
+    # node_textfile_scrape_error=1 and the series never reaches Prometheus,
+    # which silently disarms DetachedJobDied. Every sibling textfile in the
+    # directory is 0644; match them (fleet-ops#4266).
+    os.chmod(tmp, 0o644)
     os.replace(tmp, path)
 PY
 }

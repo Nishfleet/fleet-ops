@@ -16,7 +16,8 @@
 #      dispatch) and does not touch other units
 #   7. dry-run prints the verdict and writes nothing
 #   8. repeated write/clear cycles never duplicate the HELP/TYPE header
-#      (node_exporter rejects a textfile with a second HELP line)
+#      (node_exporter rejects a textfile with a second HELP line) and the
+#      file stays 0644 so node_exporter (User=prometheus) can read it
 #
 # All hermetic: fake escalation writer, fake who-stopped, scratch textfile,
 # KEYSTONE_HC_ENV pointing at an unset-URL env file so ping fail-opens
@@ -142,6 +143,14 @@ type_lines=$(grep -c '^# TYPE fleet_detached_job_died' "$tf" || true)
 [[ "$type_lines" == "1" ]] \
     || fail "10 writes must leave exactly one TYPE line, got $type_lines"
 ok "10 write/clear cycles leave one HELP/TYPE pair (no header accumulation)"
+
+# node_exporter runs as User=prometheus: a textfile it cannot read sets
+# node_textfile_scrape_error=1 and the series never reaches Prometheus, which
+# silently disarms the alert. mkstemp's default 0600 did exactly that live.
+mode=$(stat -c '%a' "$tf")
+[[ "$mode" == "644" ]] \
+    || fail "textfile must be world-readable for node_exporter (User=prometheus), got mode $mode"
+ok "textfile is written 0644 so node_exporter can read it"
 
 if command -v promtool >/dev/null 2>&1; then
     promtool check metrics <"$tf" >/dev/null 2>&1 \
