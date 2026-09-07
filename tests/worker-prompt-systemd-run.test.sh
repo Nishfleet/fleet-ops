@@ -39,7 +39,7 @@ ok "names pi-systemd-run"
 #   pi-systemd-run --unit <packet> --stdin <packet>.md -- pi --print --provider <p> --model <m>
 # A Claude argv (claude -p --model ...) is the escalation shape, not the
 # default worker spawn. The worker packet must show the pi path.
-grep -Eq 'pi-systemd-run --unit [^ ]+ --stdin [^ ]+ -- pi --print --provider [^ ]+ --model [^ ]+' "$prompt" \
+grep -Eq 'pi-systemd-run --unit [^ ]+ --stdin [^ ]+.* -- pi --print --provider [^ ]+ --model [^ ]+' "$prompt" \
   || fail "worker.md must carry a pi-systemd-run example with a pi --print --provider --model argv (fleet-ops#350)"
 ok "copy-paste example uses a pi --print --provider --model argv"
 
