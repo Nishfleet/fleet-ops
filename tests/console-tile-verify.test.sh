@@ -588,6 +588,89 @@ ok "fleet-ops#3563/#3795: console tile overlays the spawn-bench marker — a ben
 ok "fleet-ops#3828: console tile corpse + ceiling fences — N spawn_fail demotes the ledger read"
 
 # =========================================================================
+# 12c. fleet-ops#4217: PI WORK tile shows quota remaining % for the seat
+# =========================================================================
+_4217_HEALTH="$scratch/seat-health-4217.json"
+_4217_HEALTH="$_4217_HEALTH" \
+python3 - "$gen" <<'PY' || fail "4217: console quota display failed"
+import importlib.util, json, os, sys, time
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("g", sys.argv[1])
+g = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(g)
+
+g.SEAT_HEALTH = Path(os.environ["_4217_HEALTH"])
+g._running_units = lambda: []
+g._pi_argv_count = lambda: 0
+
+now = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + ".000Z"
+g.SEAT_HEALTH.write_text(json.dumps({
+    "provider": "claude", "model": "opus-4",
+    "http_status": 200, "health_class": "healthy",
+    "observed_at": now,
+}), encoding="utf-8")
+
+# Stub _prom_query to return quota data for claude
+def fake_prom(expr, timeout=5):
+    if "remaining_pct" in expr and "claude" in expr:
+        return [
+            {"metric": {"provider": "claude", "window": "session", "source": "api"}, "value": 92.0},
+            {"metric": {"provider": "claude", "window": "weekly", "source": "api"}, "value": 46.0},
+        ]
+    if "reset_seconds" in expr and "claude" in expr:
+        return [
+            {"metric": {"provider": "claude", "window": "session"}, "value": 12000.0},
+            {"metric": {"provider": "claude", "window": "weekly"}, "value": 580000.0},
+        ]
+    return []
+
+g._prom_query = fake_prom
+
+tile = g.collect_running_pi()
+assert tile["health_class"] == "healthy", tile
+assert "quota" in tile.get("note", ""), f"note missing quota: {tile}"
+assert "session=92.0%" in tile["note"], f"note missing session pct: {tile}"
+assert "weekly=46.0%" in tile["note"], f"note missing weekly pct: {tile}"
+assert tile.get("quota_source") == "api", tile
+assert len(tile.get("quota_rows", [])) == 2, tile
+print("OK: PI WORK tile shows quota remaining % for the seat (fleet-ops#4217)")
+
+# No quota data (provider not in fleet.prom) -> tile still works, no quota in note
+g.SEAT_HEALTH.write_text(json.dumps({
+    "provider": "minimax", "model": "MiniMax-M3",
+    "http_status": 200, "health_class": "healthy",
+    "observed_at": now,
+}), encoding="utf-8")
+
+def fake_prom_no_quota(expr, timeout=5):
+    return []
+
+g._prom_query = fake_prom_no_quota
+tile = g.collect_running_pi()
+assert tile["health_class"] == "healthy", tile
+assert "quota" not in tile.get("note", ""), f"note should not have quota: {tile}"
+assert tile.get("quota_source") is None, tile
+print("OK: PI WORK tile works without quota data (fleet-ops#4217)")
+
+# Prometheus down -> tile still works
+def fake_prom_down(expr, timeout=5):
+    raise g.PromError("offline")
+
+g._prom_query = fake_prom_down
+g.SEAT_HEALTH.write_text(json.dumps({
+    "provider": "claude", "model": "opus-4",
+    "http_status": 200, "health_class": "healthy",
+    "observed_at": now,
+}), encoding="utf-8")
+tile = g.collect_running_pi()
+assert tile["health_class"] == "healthy", tile
+assert "quota" not in tile.get("note", ""), f"prom down: note should not have quota: {tile}"
+print("OK: PI WORK tile works when Prometheus is down (fleet-ops#4217)")
+PY
+ok "fleet-ops#4217: PI WORK tile shows quota remaining % for the current seat"
+
+# =========================================================================
 # 13. drill --check
 # =========================================================================
 bash -n "$drill" || fail "drill: bash syntax error"
