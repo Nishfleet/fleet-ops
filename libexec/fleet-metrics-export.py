@@ -562,6 +562,21 @@ OPENROUTER_API_KEY_ENV = "OPENROUTER_API_KEY"
 
 SEAT_YIELD_WINDOW = 20
 SEAT_YIELD_PROVISIONAL = 0.5
+# fleet-ops#3250/#3310 state the rule "infra deaths never count as seat yield",
+# but the ledger below never implemented it: a session that died because the
+# PROVIDER failed (resource_exhausted, 429/5xx, connection reset, hang-watchdog
+# rc=124/143) was counted as a no-PR miss, so a seat was punished for the
+# fleet's own infrastructure. That poisoning already produced wrong verdicts:
+# devin/swe-1-7 was retired on it (#3389, corrected in #3473). Matched against
+# the final assistant message's structured stopReason/errorMessage pair — never
+# free transcript text, so a worker discussing a timeout is not misread.
+SEAT_YIELD_INFRA_RE = re.compile(
+    r"resource_exhausted|rate[ _-]?limit|\b(?:429|500|502|503|504)\b"
+    r"|ETIMEDOUT|ECONNRESET|ECONNREFUSED|socket hang up|connection error"
+    r"|timed? ?out|overloaded|unavailable|bad gateway"
+    r"|exited with code (?:124|143)|SIGKILL|SIGTERM|no seat available",
+    re.I,
+)
 # Final assistant text contains a Nishfleet PR URL (http/s optional).
 PR_URL_RE = re.compile(
     r"(?:https?://)?github\.com/Nishfleet/[^/\s\"]+/pull/\d+", re.IGNORECASE
@@ -979,7 +994,10 @@ def _parse_session_file(path):
     session start time. A session counts as PR-producing if the final
     assistant message text contains a Nishfleet PR URL. cost is the sum of
     message.usage.cost.total across the session (fleet-ops#3323) — 0.0 for
-    free lanes and sessions that record no usage.cost.
+    free lanes and sessions that record no usage.cost. infra_death is True
+    when the session ended on a provider-side error (stopReason "error" whose
+    errorMessage matches SEAT_YIELD_INFRA_RE); those sessions never count as
+    seat yield (fleet-ops#3250/#3310).
     """
     session_ts = None
     model_seat = None
@@ -1030,6 +1048,7 @@ def _parse_session_file(path):
     if not model_seat:
         return None
     has_pr = False
+    infra_death = False
     if last_assistant_line:
         try:
             data = json.loads(last_assistant_line)
@@ -1038,6 +1057,13 @@ def _parse_session_file(path):
             text = _extract_text(content)
             if PR_URL_RE.search(text):
                 has_pr = True
+            # A provider-side failure ends the session with stopReason "error"
+            # and a structured errorMessage. Only that pair is inspected, so
+            # the classification cannot be tripped by transcript prose.
+            if msg.get("stopReason") == "error":
+                infra_death = bool(
+                    SEAT_YIELD_INFRA_RE.search(msg.get("errorMessage") or "")
+                )
         except json.JSONDecodeError:
             pass
     ts_epoch = _parse_iso_utc(session_ts) if session_ts else None
@@ -1051,6 +1077,7 @@ def _parse_session_file(path):
         "timestamp": ts_epoch,
         "has_pr_url": has_pr,
         "cost": cost,
+        "infra_death": infra_death,
     }
 
 
@@ -1071,9 +1098,9 @@ def _compute_seat_yield():
     cache = {}
     try:
         data, _age = _read_cache(SEAT_YIELD_CACHE)
-        # v2: cached entries carry per-session cost (fleet-ops#3323); v1
-        # entries lack it, so they are re-parsed once on this tick.
-        if isinstance(data, dict) and data.get("v") == 2:
+        # v3: cached entries carry infra_death (fleet-ops#3250 enforcement);
+        # v1/v2 entries lack it, so they are re-parsed once on this tick.
+        if isinstance(data, dict) and data.get("v") == 3:
             cache = data.get("entries") or {}
     except (OSError, json.JSONDecodeError):
         pass
@@ -1093,6 +1120,7 @@ def _compute_seat_yield():
                 "timestamp": cached["timestamp"],
                 "has_pr_url": cached["has_pr_url"],
                 "cost": cached.get("cost", 0.0),
+                "infra_death": cached.get("infra_death", False),
             }
         else:
             entry = _parse_session_file(path)
@@ -1104,11 +1132,12 @@ def _compute_seat_yield():
             "timestamp": entry["timestamp"],
             "has_pr_url": entry["has_pr_url"],
             "cost": entry["cost"],
+            "infra_death": entry["infra_death"],
         }
         sessions.append(entry)
 
     try:
-        _write_cache(SEAT_YIELD_CACHE, {"v": 2, "entries": new_cache})
+        _write_cache(SEAT_YIELD_CACHE, {"v": 3, "entries": new_cache})
     except OSError:
         pass
 
@@ -1127,11 +1156,29 @@ def _compute_seat_yield():
     result = {}
     for seat, entries in by_seat.items():
         entries.sort(key=lambda x: x["timestamp"], reverse=True)
+        # Cost keeps the raw last-20 window: an infra death can still burn
+        # tokens before it dies, and the audition spend cap (fleet-ops#3322)
+        # must keep seeing that spend. Only the QUALITY signal is filtered.
         window = entries[:SEAT_YIELD_WINDOW]
-        total = len(window)
-        pr_count = sum(1 for e in window if e["has_pr_url"])
+        # fleet-ops#3250/#3310: yield is measured over sessions where the model
+        # actually worked. Infra deaths are dropped rather than counted as
+        # misses, and the window reaches further back to stay 20 deep, which is
+        # exactly the retirement rule's ">= 20 sessions ended with the model
+        # working" bar.
+        working = [e for e in entries if not e.get("infra_death")]
+        infra_deaths = sum(1 for e in window if e.get("infra_death"))
+        yield_window = working[:SEAT_YIELD_WINDOW]
+        total = len(yield_window)
+        pr_count = sum(1 for e in yield_window if e["has_pr_url"])
         no_pr = total - pr_count
-        if total < SEAT_YIELD_WINDOW:
+        if entries and not working:
+            # Every attempt died on infrastructure. There is no quality
+            # evidence either way, so the seat is NOT promoted to the
+            # provisional 0.5 it would get as a newcomer; benching and caps
+            # (seat-lib) own dead seats, not this ledger.
+            y = 0.0
+            provisional = False
+        elif total < SEAT_YIELD_WINDOW:
             y = SEAT_YIELD_PROVISIONAL
             provisional = True
         else:
@@ -1140,21 +1187,24 @@ def _compute_seat_yield():
         # fleet-ops#3323: mean usage.cost per session over the same window.
         # Sessions with no recorded cost count 0, so free lanes land on 0 and
         # pick_seat's value floor (0.001) sorts them first at equal yield.
+        raw_total = len(window)
         cost_per_session = (
-            sum(e.get("cost", 0.0) for e in window) / total if total > 0 else 0.0
+            sum(e.get("cost", 0.0) for e in window) / raw_total
+            if raw_total > 0 else 0.0
         )
         # fleet-ops#3322: total audition cost (sum over the rolling window).
         # The audition lane caps total spend at $1; cost_usd is the figure the
         # intake tick reads to enforce that cap. cost_per_session stays for the
         # value-ranking path (fleet-ops#3323) — both are written so existing
         # consumers are unaffected.
-        cost_usd = sum(e.get("cost", 0.0) for e in window) if total > 0 else 0.0
+        cost_usd = sum(e.get("cost", 0.0) for e in window) if raw_total > 0 else 0.0
         result[seat] = {
             "yield": y,
             "sessions": total,
             "pr_count": pr_count,
             "no_pr_count": no_pr,
             "provisional": provisional,
+            "infra_deaths": infra_deaths,
             "cost_per_session": cost_per_session,
             "cost_usd": cost_usd,
         }
