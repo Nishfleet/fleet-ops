@@ -2689,24 +2689,36 @@ seat_usable() {
         return 1
     fi
     # fleet-ops #652 hot-patch: overload_bench (503 / upstream-overload) is
-    # the transient sibling of quota_bench. Same fail-open semantics, same
-    # observed_at-vs-bench_until ordering — the 503 storm can outlive the
-    # 6h stale window, so bench_until wins. Without this branch the seat
+    # the transient sibling of quota_bench. Same fail-open semantics — the
+    # 503 storm can outlive the 6h stale window, so the advertised reset
+    # (usable_at, fallback bench_until) wins. Without this branch the seat
     # would fall through to the backoff / usable_at path with a less
     # informative log line and pick_seat would still skip it (usable_at
     # == bench_until), but the auditor's post-mortem rollup loses the
     # overload_bench distinction.
+    # FIX 2026-09-07: seat-health extension writes usable_at (not bench_until)
+    # for overload_bench. Fall back to usable_at like quota_exhausted does,
+    # otherwise a seat with only usable_at stays permanently unusable after
+    # bench expires (bench_until empty -> defensive block).
     if [[ "$hc" == "overload_bench" ]]; then
-        if [[ -n "$bench_until" ]] && _seat_in_future "$bench_until"; then
-            (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: benched until $bench_until (overload_bench)"
+        local ob_until="$usable_at"
+        [[ -z "$ob_until" ]] && ob_until="$bench_until"
+        if [[ -n "$ob_until" ]] && _seat_in_future "$ob_until"; then
+            (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: benched until $ob_until (overload_bench)"
             return 1
         fi
-        if [[ -n "$bench_until" ]]; then
-            seat_log "seat $p/$m: bench expired ($bench_until passed) — assuming usable (fail-open)"
+        if [[ -n "$ob_until" ]]; then
+            seat_log "seat $p/$m: bench expired ($ob_until passed) — assuming usable (fail-open)"
             return 0
         fi
-        (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE (overload_bench with no bench_until — defensive block)"
-        return 1
+        # No usable_at/bench_until: hold while observation fresh; stale ->
+        # fail-open (no advertised reset to honour).
+        if _seat_observed_fresh "$observed"; then
+            (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE (health_class=overload_bench, observed $observed)"
+            return 1
+        fi
+        seat_log "seat $p/$m: NO HEALTH DATA (observed_at ${observed:-<empty>} stale >${STALE_SECS}s, overload_bench with no usable_at) — assuming usable"
+        return 0
     fi
     # Auditor 2026-08-27: hang_bench (model accepted request but never
     # finalised before TimeoutStartSec / PI_HANG_TIMEOUT_S). Same fail-open
