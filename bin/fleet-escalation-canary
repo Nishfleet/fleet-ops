@@ -992,9 +992,11 @@ else
     # The standard thin-caller workflows every enrolled repo must carry
     # (mirrors THIN_CALLERS in .github/scripts/repo-standards.lib.mjs).
     # Tests override via FLEET_STANDARDS_DRIFT_MECHANISMS.
+    # shellcheck disable=SC2206
     _sd_mechanisms=(${FLEET_STANDARDS_DRIFT_MECHANISMS:-secret-scan.yml semgrep.yml review-gate.yml auto-enqueue.yml})
     # Local-richer repos carry richer local gates and are skipped for the
     # thin-caller check (mirrors LOCAL_RICHER in repo-standards.lib.mjs).
+    # shellcheck disable=SC2206
     _sd_local_richer=(${FLEET_STANDARDS_DRIFT_LOCAL_RICHER:-Nishfleet/0509})
 
     if [[ ! -f "$INTAKE_REPOS_JSON" ]]; then
