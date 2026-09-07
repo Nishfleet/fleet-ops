@@ -378,6 +378,29 @@ remove_orphaned_fleet_auto_ship_dropin() {
     fi
 }
 
+# fleet-ops#4126: the fleet-cheap-triage unit lived in the control plane,
+# which was deleted on 2026-08-23 ("Everything runs through Pi, directly.
+# No launchers." — vault global-standing-rules.md). The live unit file,
+# timer, the cheap-triage.py lane script, and the gate/fleet-gate binary it
+# called are all gone; only the hand-placed drop-in dir
+# ~/.config/systemd/user/fleet-cheap-triage.service.d/ survived the deletion
+# and is invisible to a unit-name-only hunt (fleet-ops#2924 / #1548) because
+# the unit no longer exists. The dir also carries .bak files
+# (override.conf.bak-pulse-c51af7b13e-20260811,
+# override.conf.bak-time-audit-20260812). Not new machinery — there is no
+# unit to source it — so absorb-into-repo is wrong. Remove the orphaned
+# dir; only touch it when this MANIFEST installs into the live user unit dir.
+remove_orphaned_fleet_cheap_triage_dropin() {
+    local user_systemd="${HOME}/.config/systemd/user"
+    local dropin_dir="${user_systemd}/fleet-cheap-triage.service.d"
+    grep -q " ${user_systemd}/" "$manifest" 2>/dev/null || return 0
+    if [ -d "$dropin_dir" ]; then
+        rm -rf "$dropin_dir"
+        echo "removed orphaned fleet-cheap-triage.service.d drop-in dir: $dropin_dir (fleet-ops#4126)"
+        user_unit_changed=1
+    fi
+}
+
 # Drift-or-install one entry. `_skip=1` means skip — out of scope for the
 # current mode. `_install_user` defaults to ln -s; `install_system` defaults
 # to sudo install -D.
@@ -679,6 +702,7 @@ if [ "$do_user_install" = 1 ]; then
   remove_stale_scout_prom_mode_dropin
   remove_orphaned_fleet_auto_deploy_dropin
   remove_orphaned_fleet_auto_ship_dropin
+  remove_orphaned_fleet_cheap_triage_dropin
   # Only daemon-reload when a user-scope systemd unit/drop-in actually
   # changed. First install on a fresh box still reloads because every unit
   # is new. Bin/prompt/config changes do not waste a reload.
