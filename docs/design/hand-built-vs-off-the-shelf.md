@@ -39,7 +39,7 @@ Live snapshot 2026-09-07:
 | 6 | seat prom writers + corpse-retire + comeback-release | 2,163 | `fleet-seat-comeback-release.timer` + seat-lib | LiteLLM health checks/cooldowns/budgets (fleet-ops#4130) | corpse-retire, comeback-release, 3 `.prom` writers | **GO** (covered by #4130) |
 | 7 | dead-man canaries: gh-webhook-canary-deadman.py + fleet-completion-canary + loose-ends | 2,267+ | `fleet-completion-canary.timer` + `fleet-loose-ends-canary.timer` | healthchecks.io (account exists) + Prometheus `absent()`/Watchdog rules | deadman.py, completion-canary, loose-ends canary | **GO** |
 | 8 | load-storm-brake + agent-orphan-watchdog | 376 | `load-storm-brake` / `agent-orphan-watchdog` | systemd-oomd, CPUWeight/IOWeight, cgroup scoping (`systemd-run --scope`, `KillMode=control-group`) | both scripts | **GO** |
-| 9 | codex wrapper | 281 | `codex` (launcher) | systemd-run properties on the unit | codex wrapper | **GO** |
+| 9 | codex launcher (wrapper + governed-run + agent-governor-runtime) | 3,976 (+281 `.bak`) | `codex` (launcher) | per-role systemd unit templates `codex-sol@.service` + `codex-luna@.service` — identity pinned in ExecStart (model/provider/effort fixed) | codex wrapper + agent-governor-runtime + governed-run | **DONE** (#4148; #4159 closed as dup) |
 | 10 | fleet-* timers (47 units) | classify | 20 `fleet-*.timer` | Prometheus alert rule / GitHub Actions scheduled workflow / genuine drill | the non-drill timers | **PARTIAL** (see §4) |
 | 11 | memory-index-dedupe.py + hermes-staff generator + oracle-* + 0509-surface-probe | 702 | various | classify | classify | **DONE** (hermes-staff GO retired 2026-09-07 #4150; memory-index-dedupe NO-GO kept; oracle-* GO retired #4162; 0509-surface-probe GO retired #1150) |
 
@@ -157,12 +157,30 @@ impossible.
 **GO.** Delete 376 lines. No new organ (systemd-oomd already deployed,
 fleet-ops#3971). Filed as issue.
 
-### Row 9 — codex wrapper → systemd-run properties (GO)
+### Row 9 — codex launcher → per-role systemd unit templates (DONE #4148)
 
-Live: `~/.local/bin/codex` 281 lines. Launcher governance. Replacement:
-systemd-run properties on the unit.
+Live: `~/.local/bin/codex` 281 lines + `~/.local/bin/governed-run` 31 lines +
+`~/.local/libexec/agent-governor-runtime/` ~3,664 lines (+ one 281-line
+`.bak`). Launcher governance: launch-time identity/policy gates
+(broker/manifest/trace, certified policy, allow-listed models/efforts,
+provider pin, `--oss`/`--local-provider` denial, process-group supervision).
 
-**GO.** Delete 281 lines. No new organ. Filed as issue.
+Replacement (DECISIONS on #4148, canonical; #4159 closed as duplicate):
+per-role systemd unit templates whose ExecStart hard-codes identity —
+`codex-sol@.service` = `codex-real exec --json -m gpt-5.6-sol
+-c model_provider=openai` with effort as the instance (`@medium`/`@xhigh`);
+`codex-luna@.service` = `gpt-5.6-luna` + `openai` + `effort=max`. A launch
+through a template cannot express another identity, so the wrapper's
+allow-list holds by construction. Anything not expressible as a fixed
+ExecStart was dropped and listed in the #4148 PR body (`agent_type`,
+`fork_turns`, `--oss`/`--local-provider` denial, broker decision, signal
+supervision — the last replaced natively by systemd `KillMode=control-group`).
+
+**DONE** (#4148). Archived to `archive/codex-launcher-retired-2026-09-07/`
+(wrapper + runtime + governed-run; git history is the backup, same rule as
+#4141), live copies wiped, callers repointed to `codex-real`, vault
+never-rebuild ledger updated. No new organ: the two templates are launch
+paper, not scheduled machinery.
 
 ### Row 10 — fleet-* timers → classify (PARTIAL, see §4)
 
@@ -274,14 +292,16 @@ NO-GO — see §3 row 2 — and is excluded from the total):
 | 6 seat prom writers + corpse-retire + comeback-release | 2,163 |
 | 7 dead-man canaries | 2,267+ |
 | 8 load-storm-brake + agent-orphan-watchdog | 376 |
-| 9 codex wrapper | 281 |
+| 9 codex launcher (wrapper + governed-run + runtime) | 3,976 (+281 `.bak`) |
 | 10 fleet-* timer GO rows | (units, not lines — the scripts they run are counted above) |
-| **Total** | **~10,558 lines** (+8,611 `.bak` lines) |
+| **Total** | **~14,253 lines** (+8,892 `.bak` lines) |
 
-**Total hand-built lines deleted after the GO rows land: ~10,558 lines of
-live code + 8,611 lines of `.bak` copies = ~19,169 lines.** This is against a
-19,838-line `~/.local` snapshot, so the GO rows remove the majority of the
-hand-built surface. The seat-lib deletion (row 6) is the single largest chunk
+**Total hand-built lines deleted after the GO rows land: ~14,253 lines of
+live code + 8,892 lines of `.bak` copies = ~23,145 lines.** Against a
+23,814-line `~/.local` snapshot count (the original 19,838-line figure did
+not include the row-9 runtime tree under `libexec/`, added here at 3,976
+lines), the GO rows remove the majority of the hand-built surface. The
+seat-lib deletion (row 6) is the single largest chunk
 and is owned by #4130. Row 2 (repo-sync-snapshot.py, 1,311 lines) is NO-GO and
 not counted; see §3 row 2.
 
@@ -304,7 +324,7 @@ Row 11 classify rows are filed as classify issues.
 | 5 claude-telegram-bridge.py | #4156 |
 | 7 dead-man canaries | #4157 |
 | 8 load-storm-brake + agent-orphan-watchdog | #4158 |
-| 9 codex wrapper | #4159 |
+| 9 codex launcher wrapper | #4148 (canonical; #4159 closed as dup) |
 | 10 baseline-delta + truth-staleness -> Prom alert | #4160 |
 | 10 issue-close-duplicates + merged-pr-close -> Actions | #4161 |
 | 11 oracle-* classify | #4162 |

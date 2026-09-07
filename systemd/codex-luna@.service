@@ -1,0 +1,32 @@
+# fleet-ops#4148: per-role Codex launch template — Luna identity by construction.
+#
+# Replaces the retired hand-built ~/.local/bin/codex governance wrapper
+# (archived under archive/codex-launcher-retired-2026-09-07/). The wrapper
+# enforced for Luna: model=gpt-5.6-luna, provider=openai, effort=max,
+# fork_turns=none, agent_type=executor_luna (certified_policy). This unit
+# pins model/provider/effort in a fixed ExecStart; the instance (%i) is a
+# free run label (e.g. codex-luna@20260907). A launch through this unit
+# cannot express another model, provider or effort, so the allow-list holds
+# by construction (DECISIONS on fleet-ops#4148: "codex-luna@.service =
+# provider openai + agent_type executor_luna").
+#
+# Not expressible as a fixed ExecStart and therefore dropped (listed in the
+# #4148 PR body): agent_type=executor_luna and fork_turns=none were
+# wrapper-internal identity markers with no Codex CLI/config equivalent.
+#
+# A real packet run:
+#
+#   systemd-run --user --collect --wait --unit <name> \
+#     -p StandardInput=file:/path/to/packet.md codex-luna@<label>.service
+
+[Unit]
+Description=Codex Luna session (%i) — per-role launch template (fleet-ops#4148)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=CODEX_HOME=%h/.codex
+ExecStart=%h/.local/libexec/codex-real exec --json -m gpt-5.6-luna -c model_provider=openai -c model_reasoning_effort=max
+KillMode=control-group
+TimeoutStopSec=30

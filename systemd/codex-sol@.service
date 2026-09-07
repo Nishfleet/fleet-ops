@@ -1,0 +1,33 @@
+# fleet-ops#4148: per-role Codex launch template — Sol identity by construction.
+#
+# Replaces the retired hand-built ~/.local/bin/codex governance wrapper
+# (281 lines, archived under archive/codex-launcher-retired-2026-09-07/).
+# The wrapper enforced: model=gpt-5.6-sol, provider=openai, effort in
+# {medium, xhigh} (certified_policy SOL_EFFORTS), and rejected --oss /
+# --local-provider. This unit pins the same identity in a fixed ExecStart;
+# the instance (%i) is the effort. A launch through this unit cannot express
+# another model, provider or effort, so the allow-list holds by construction
+# (DECISIONS on fleet-ops#4148: "codex-sol@.service = gpt-5.6-sol at
+# medium|xhigh").
+#
+# Sanctioned instances: codex-sol@medium.service (orchestration identity),
+# codex-sol@xhigh.service (fleet burn lane). A real packet run:
+#
+#   systemd-run --user --collect --wait --unit <name> \
+#     -p StandardInput=file:/path/to/packet.md codex-sol@xhigh.service
+#
+# Prompt comes from stdin (codex exec reads stdin when no PROMPT arg is
+# given). --json streams the session transcript as JSONL for proof/audit.
+
+[Unit]
+Description=Codex Sol session (effort %i) — per-role launch template (fleet-ops#4148)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=CODEX_HOME=%h/.codex
+# Identity fixed by construction; %i is the effort (sanctioned: medium, xhigh).
+ExecStart=%h/.local/libexec/codex-real exec --json -m gpt-5.6-sol -c model_provider=openai -c model_reasoning_effort=%i
+KillMode=control-group
+TimeoutStopSec=30
