@@ -25,7 +25,6 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { writeSeatHealthFromCliSpawn, writeSeatHealthFromCliTimeout } from "../seat-health.ts";
-import { assertPromptSafe } from "../provider-spawn-guard.ts";
 
 // =============================================================================
 // Helpers
@@ -130,14 +129,6 @@ function streamCursor(
 		try {
 			assertLockedModel(model.id);
 			const prompt = extractPrompt(context);
-			// P10-bypass closure (fleet-ops#3126): the cursor-agent CLI runs its
-			// own agent with its own tools, so Pi never sees a bash call from
-			// inside the vendor session. Refuse dangerous operations in the
-			// prompt BEFORE execing the vendor binary — the only point this
-			// shim controls. Throws a loud, actionable error if the prompt
-			// requests git stash, rm -rf, credential writes, systemctl restart,
-			// or a wrangler deploy.
-			assertPromptSafe(prompt);
 			const cursorBin = "/home/nish/.local/bin/cursor-agent";
 			const apiKey = process.env.CURSOR_API_KEY;
 

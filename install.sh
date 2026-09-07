@@ -554,6 +554,22 @@ remove_retired_staleness_timer() {
     rm -f "${HOME}"/.config/systemd/user/*.bak* "${HOME}"/.config/systemd/user/*.retired*
 }
 
+# fleet-ops#3126 revert: the provider-shim prompt scan landed by #4356 is
+# retired. template/extensions/** install as COPIES (fleet-ops#3263) and this
+# installer has no generic prune for a copy dropped from MANIFEST, so the live
+# module would linger in ~/.pi/agent/extensions after the revert and
+# fleet-pi-extensions-canary would scream unproven-wired on every heartbeat
+# (already filed once: fleet-ops#4372). Remove it explicitly, same idiom as
+# the retired units above.
+remove_retired_provider_spawn_guard() {
+    local p="${HOME}/.pi/agent/extensions/provider-spawn-guard.ts"
+    # `-e || -L` catches real files and dangling symlinks (fleet-ops#4199).
+    if [ -e "$p" ] || [ -L "$p" ]; then
+        rm -f "$p"
+        echo "retired pi extension removed: provider-spawn-guard.ts (fleet-ops#3126 revert)"
+    fi
+}
+
 # Drift-or-install one entry. `_skip=1` means skip — out of scope for the
 # current mode. `_install_user` defaults to ln -s; `install_system` defaults
 # to sudo install -D.
@@ -877,6 +893,7 @@ if [ "$do_user_install" = 1 ]; then
   remove_orphaned_fleet_e2e_heartbeat_dropin
   remove_retired_canaries
   remove_retired_staleness_timer
+  remove_retired_provider_spawn_guard
   # Only daemon-reload when a user-scope systemd unit/drop-in actually
   # changed. First install on a fresh box still reloads because every unit
   # is new. Bin/prompt/config changes do not waste a reload.

@@ -25,7 +25,6 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeSeatHealthFromCliSpawn, writeSeatHealthFromCliTimeout } from "../seat-health.ts";
-import { assertPromptSafe } from "../provider-spawn-guard.ts";
 
 // =============================================================================
 // Helpers — extract the user prompt from Pi's message context
@@ -113,14 +112,6 @@ function streamDevin(
 
 		try {
 			const prompt = extractPrompt(context);
-			// P10-bypass closure (fleet-ops#3126): the devin CLI runs its own
-			// agent with its own tools, so Pi never sees a bash call from inside
-			// the vendor session. Refuse dangerous operations in the prompt
-			// BEFORE execing the vendor binary — the only point this shim
-			// controls. Throws a loud, actionable error if the prompt requests
-			// git stash, rm -rf, credential writes, systemctl restart, or a
-			// wrangler deploy.
-			assertPromptSafe(prompt);
 			const devinBin = "/home/nish/.local/bin/devin";
 
 			if (!existsSync(devinBin)) {
