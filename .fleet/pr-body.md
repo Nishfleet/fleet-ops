@@ -1,62 +1,61 @@
-fix(workflows): correct unresolvable action@<sha> pins in ci-standards-audit + guard test (closes Nishfleet/fleet-ops#1417)
+## fix(spawn-guard): close gate-bypass on devin/cursor CLI shims
 
-## Summary
+Closes #3126
 
-Two SHA typos in `.github/workflows/ci-standards-audit.yml` made the scheduled workflow unresolvable at GitHub Actions setup time (same class as the prior `ci-failure-escalation` typo fixed in PR #3678):
+### Problem
 
-- line 95: `actions/checkout@3d3c42e5aac5ba805825da76410b181273ba90b1 # v7.0.1` (was `...10b...`)
-- line 122: `actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2` (was `507de32f... # v4.6.0`)
+The devin and cursor providers are CLI shims that shell out to a vendor binary
+(`devin`, `cursor-agent`) with `--permission-mode dangerous`. That binary runs
+its own agent with its own tools, so Pi never sees a bash call from inside the
+vendor session and the Pi-side guards (`bash-spawn-hook` -> `spawn-guard-core`,
+`protected-paths`, `permission-gate`) are all blind on those seats. Proven
+2026-08-25: a stash push RAN on the devin seat with no `SPAWN_BLOCKED` line and
+no block-log row. This is the fleet's PRIMARY seat (devin) and the cursor
+keystone seat.
 
-A new hermetic test `tests/workflow-action-pin-guard.test.sh` enforces:
-1. every `uses: <repo>@<sha>` pin matches a canonical 6-line registry; and
-2. no `<repo>` is pinned to two different SHAs across all workflows.
+### Closure (orchestrator decision 2026-09-07)
 
-The test is wired into the P14 `tests:` job `verify-command` list in `.github/workflows/ci.yml`.
+Edit the existing provider shims so they refuse dangerous operations in the
+prompt BEFORE execing the vendor binary. No new organ, no bpf, no new wrapper
+binary, no canary organ.
 
-Mechanical-fix (fleet-ops#366): the new test is the detector that prevents this bug class from recurring. Reference: `fleet-ops#1296` (precursor).
+- `template/extensions/provider-spawn-guard.ts` (new): shared pre-exec guard
+  mirroring the `spawn-guard-core` rules — stash, recursive delete under the
+  home tree, credential-path writes, systemctl restarts, and the 0509
+  wrangler-deploy block. Logs to the same `SPAWN_BLOCK_LOG` and writes
+  `SPAWN_BLOCKED` to stderr.
+- `template/extensions/devin-provider/index.ts` and
+  `template/extensions/cursor-provider/index.ts`: import and call
+  `assertPromptSafe(prompt)` before the vendor `spawnSync`.
+- `MANIFEST` + `config/pi-extensions-allowlist.json`: ship and prove the new
+  module.
+- `tests/fleet-spawn-guard-provider-shim.test.sh` (new): pins the rule matrix
+  and that both shims wire the guard before the vendor spawnSync. Hosted by
+  `spawn-guard.test.sh` and pinned in the P14 reachable set.
 
-## Closes
+### Verification
 
-Closes Nishfleet/fleet-ops#1417
+- `bash tests/spawn-guard.test.sh` — exit 0, all four sub-suites green
+  (stash-readonly, sudo-write, provider-shim, no-local-bin-clobber).
+- `bash tests/fleet-spawn-guard-provider-shim.test.sh` — exit 0, rule matrix
+  blocks stash / recursive delete / credential writes / systemctl restart /
+  wrangler deploy; both shims wire `assertPromptSafe(prompt)`.
+- `bash tests/p14-test-listing-gate.test.sh` — exit 0, provider-shim test
+  pinned in the P14 reachable set.
+- `bash tests/provider-timeout.test.sh` — exit 0, both provider shims still
+  managed with timeouts >= 0.9 x watchdog.
+- `bash tests/manifest-shape.test.sh` — exit 0.
+- `bash tests/fleet-pi-extensions-canary.test.sh` — exit 0, allowlist clean.
+- `bash bin/sgscan` — exit 0, no new security findings.
+- `bash bin/fleet-no-agent-names-check --commit-range origin/main..HEAD` —
+  exit 0, no agent attribution.
 
-## Verification
+run-proof: tests/spawn-guard.test.sh, tests/fleet-spawn-guard-provider-shim.test.sh, tests/p14-test-listing-gate.test.sh, tests/provider-timeout.test.sh, tests/manifest-shape.test.sh, tests/fleet-pi-extensions-canary.test.sh, bin/sgscan all exit 0
 
-```
-$ bash tests/workflow-action-pin-guard.test.sh
-OK: all pinned actions match the canonical registry
-OK: each action is pinned to a single SHA across all workflows
-OK: workflow action pins are canonical and consistent (fleet-ops#1296)
-EXIT: 0
+net-positive-because: the diff adds a shared guard module + one test to close a security-critical gate bypass on the fleet's primary seat; the added lines are the enforcement itself, not control-plane machinery.
 
-$ bash tests/reusable-workflows.test.sh
-OK: reusable workflow set is shape-locked
-EXIT: 0
+research: the orchestrator decision (2026-09-07) names the exact fix — edit the existing provider shims to refuse dangerous operations before execing the vendor binary, and extend the existing spawn-guard tests. No new organ.
 
-$ bash tests/p14-test-listing-gate.test.sh
-OK: p14-test-listing-gate.test.sh: P14 test list is closed
-EXIT: 0
+help-first: the existing spawn-guard tests (fleet-spawn-guard-stash-readonly, fleet-spawn-guard-sudo-write) and the provider shims' existing structure were read before writing the new module and test; the new test follows the same extract-and-assert pattern as the existing stash-readonly test.
 
-$ sgscan
-No new security findings.
-```
-
-## run-proof
-
-- New `tests/workflow-action-pin-guard.test.sh` runs in the P14 `tests:` job's `verify-command` list.
-- All three required shell tests EXIT 0 against the rebased branch (see Verification above).
-- No new unit/timer/path-unit/workflow added — only edits to existing workflows + one new `tests/*.test.sh` file.
-
-## Diff scope
-
-- `.github/workflows/ci-standards-audit.yml`: 2 lines changed (line 95 + line 122)
-- `.github/workflows/ci.yml`: 4 lines added (3-line fleet-ops#1296 comment + 1 bash line) adjacent to `bash tests/reusable-workflows.test.sh`
-- `tests/workflow-action-pin-guard.test.sh`: NEW (90 lines, executable, hermetic)
-
-## Notes
-
-- Worker App token has no Workflows scope, so this commit is authored/committed under the `Nish <257724087+nish3451@users.noreply.github.com>` identity (per orchestrator decision 2026-09-07 in Nishfleet/fleet-ops#3659). The branch is pushed with `GH_TOKEN=$(gh auth token)` (nish3451's token, which has `workflow` scope) so the workflow-file push is accepted.
-- No new `bin/` file — new artifact is `tests/workflow-action-pin-guard.test.sh` only.
-- No `Relates #` vs `Closes #` ambiguity: this is `fix(workflows):`, not `fix(failed-command):` or `fix(decisions-ledger):`, so `Closes Nishfleet/fleet-ops#1417` is correct.
-- Senior reviewer round skipped — fleet-ops is not a product repo per `config/intake-repos.json` (exempt).
-
-loose-ends: fleet-ops#3659, fleet-ops#1417
+organ-heartbeat: template/extensions/provider-spawn-guard.ts not-an-organ: helper module imported by the provider shims, not a standalone organ.
