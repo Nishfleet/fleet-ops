@@ -10,6 +10,7 @@ exec > >(tee "$STATE/update.log") 2>&1
 
 FAILURES=(); SKIPS=()
 fail() { FAILURES+=("$1"); printf '!! FAIL: %s\n' "$1"; }
+warn() { printf '!! WARN: %s\n' "$1"; }
 skipped() { SKIPS+=("$1"); printf '   SKIP: %s\n' "$1"; }
 
 versions() {
@@ -94,6 +95,11 @@ sudo -n apt-get -y -o Dpkg::Options::=--force-confdef \
                                                              || fail "apt dist-upgrade"
 sudo -n apt-get -y autoremove --purge                        || fail "apt autoremove"
 sudo -n apt-get -y autoclean                                 || true
+# fleet-ops#4266: auditd is required for the "who stopped it" trail
+# (bin/fleet-who-stopped + the canary's detached-work lint). Idempotent:
+# apt skips already-installed packages. Only reached on a running fleet
+# box (the weekly update), so unplanned boxes stay untouched.
+sudo -n apt-get -y install auditd                            || warn "apt auditd install failed (fleet-ops#4266)"
 
 say "NPM GLOBALS"
 # A pi reinstall has wiped ~/.pi/agent/extensions before; back it up and verify after.

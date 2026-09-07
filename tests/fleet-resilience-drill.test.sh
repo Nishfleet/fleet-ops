@@ -215,6 +215,56 @@ printf '%s\n' "$out" | grep -qi 'skip' || fail "unset URL must log skip, got: $o
 ok "keystone-hc-ping skips when URL unset (exit 0)"
 
 # ============================================================================
+# detached mode (fleet-ops#4266): /start + success + /fail with the same
+# run id riding as the healthchecks.io `rid` parameter.
+# ============================================================================
+printf 'HC_URL_DETACHED=https://hc-ping.example/detached-base-uuid\n' >>"$envfile"
+
+# 1. start ping -> BASE/start?rid=<runid>
+: >"$CURL_LOG"
+out="$(PI_DEADMAN_DISPATCH=11111111-2222-3333-4444-555555555555 \
+    "$ping" detached start 2>&1)" || fail "detached start must exit 0"grep -q 'https://hc-ping.example/detached-base-uuid/start?rid=11111111-2222-3333-4444-555555555555' "$CURL_LOG" \
+  || fail "detached start must build BASE/start?rid=<runid>: $(cat "$CURL_LOG")"
+printf '%s\n' "$out" | grep -qi 'ping ok' || fail "detached start must log ok, got: $out"
+ok "detached start -> BASE/start?rid=<runid>"
+
+# 2. fail ping -> BASE/fail?rid=<runid>
+: >"$CURL_LOG"
+PI_DEADMAN_DISPATCH=11111111-2222-3333-4444-555555555555 "$ping" detached fail >/dev/null 2>&1 \
+  || fail "detached fail must exit 0"
+grep -q 'fail?rid=11111111-2222-3333-4444-555555555555' "$CURL_LOG" \
+  || fail "detached fail must build BASE/fail?rid=<runid>: $(cat "$CURL_LOG")"
+ok "detached fail -> BASE/fail?rid=<runid>"
+
+# 3. success ping -> BASE?rid=<runid> (no suffix: healthchecks semantics)
+: >"$CURL_LOG"
+PI_DEADMAN_DISPATCH=11111111-2222-3333-4444-555555555555 "$ping" detached success >/dev/null 2>&1 \
+  || fail "detached success must exit 0"
+grep -q 'detached-base-uuid?rid=11111111-2222-3333-4444-555555555555' "$CURL_LOG" \
+  || fail "detached success must build BASE?rid=<runid>: $(cat "$CURL_LOG")"
+ok "detached success -> BASE?rid=<runid> (same rid as start)"
+
+# 4. no run id -> silent skip, no curl
+: >"$CURL_LOG"
+out="$("$ping" detached start 2>&1)" || fail "detached without run id must exit 0"
+grep -q . "$CURL_LOG" && fail "detached without run id must not curl"
+printf '%s\n' "$out" | grep -qi 'PI_DEADMAN_DISPATCH unset' || fail "missing run id must log skip, got: $out"
+ok "detached without run id skips (PI_DEADMAN_DISPATCH unset)"
+
+# 5. curl failure (e.g. 404 check deleted) still exits 0 — best-effort
+cat >"$scratch/curl-fail" <<'CURL'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${CURL_LOG:-/dev/null}"
+exit 1
+CURL
+chmod +x "$scratch/curl-fail"
+: >"$CURL_LOG"
+out="$(CURL="$scratch/curl-fail" PI_DEADMAN_DISPATCH=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee \
+    "$ping" detached start 2>&1)" || fail "detached with failing curl must exit 0"
+printf '%s\n' "$out" | grep -qi 'best-effort' || fail "curl failure must log best-effort, got: $out"
+ok "detached ping failure is best-effort (exit 0)"
+
+# ============================================================================
 # Drill behavioural tests
 # ============================================================================
 export HOME="$scratch/home"

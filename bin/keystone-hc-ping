@@ -1,15 +1,25 @@
 #!/usr/bin/env bash
 # keystone-hc-ping — best-effort healthchecks.io ping for one keystone timer
-# (fleet-ops#455). Ping on SUCCESS of intake / scout / reconcile / restore.
+# (fleet-ops#455) or one detached job (fleet-ops#4266). Ping on SUCCESS of
+# intake / scout / reconcile / restore; for `detached` mode the pinged URL
+# is the per-unit run-id path of the dedicated fleet-detached-deadman check:
+#   BASE/start?rid=<runid>   at launch (ExecStartPost)
+#   BASE?rid=<runid>         on success (ExecStopPost verdict)
+#   BASE/fail?rid=<runid>    on death (ExecStopPost verdict)
+# A missing or unset URL is a silent skip (same pattern as the keystone
+# modes); the PROVISIONING of the check is a one-time machine step (create
+# the check in the healthchecks.io UI and add HC_URL_DETACHED to the env
+# file) exactly like the keystone URLs before it.
 # Never prints the URL. Always exits 0 (a missed ping must not fail the
 # keystone unit; the resilience drill LOUDs unconfigured URLs instead).
 #
-# Usage: keystone-hc-ping <intake|scout|reconcile|restore>
+# Usage: keystone-hc-ping <intake|scout|reconcile|restore|detached [start|success|fail]>
 #
 # Env:
 #   KEYSTONE_HC_ENV  file of HC_URL_* assignments (default
 #                    ~/.config/fleet-ops/keystone-hc.env). Missing file = skip.
 #   CURL, HC_TIMEOUT
+#   PI_DEADMAN_DISPATCH / PI_DEADMAN_URL_BASE  (detached mode; run id + base)
 
 set -Eeuo pipefail
 
@@ -24,12 +34,20 @@ log() {
 }
 
 name="${1:-}"
+verb="${2:-start}"
 case "$name" in
-  intake|scout|reconcile|restore) ;;
+  intake|scout|reconcile|restore) ;; # verbs: bare URL (success ping)
+  detached) ;;                        # verbs: start|success|fail from $2
   *)
-    log "usage: keystone-hc-ping <intake|scout|reconcile|restore>"
+    log "usage: keystone-hc-ping <intake|scout|reconcile|restore|detached [start|success|fail]>"
     exit 0
     ;;
+esac
+
+case "$name:$verb" in
+  intake:*|scout:*|reconcile:*|restore:*) verb="success" ;;
+  detached:start|detached:success|detached:fail) ;;
+  *) log "usage: keystone-hc-ping detached <start|success|fail>"; exit 0 ;;
 esac
 
 var="HC_URL_${name^^}"
@@ -50,6 +68,24 @@ done <"$ENV_FILE"
 if [[ -z "$url" ]]; then
   log "skip ($name): $var unset"
   exit 0
+fi
+
+# Detached mode: the env URL is the check's base ping URL; the per-unit
+# run id rides as the healthchecks.io documented `rid` parameter (the same
+# run id for start AND success of one execution) — no check configuration
+# needed beyond the single dedicated check.
+if [[ "$name" == "detached" ]]; then
+  runid="${PI_DEADMAN_DISPATCH:-}"
+  if [[ -z "$runid" ]]; then
+    log "skip (detached): PI_DEADMAN_DISPATCH unset"
+    exit 0
+  fi
+  base="${PI_DEADMAN_URL_BASE:-$url}"
+  case "$verb" in
+    start)   url="$base/start?rid=$runid" ;;
+    fail)    url="$base/fail?rid=$runid" ;;
+    success) url="$base?rid=$runid" ;;
+  esac
 fi
 
 if "$CURL" -fsS -m "$HC_TIMEOUT" "$url" >/dev/null 2>&1; then
