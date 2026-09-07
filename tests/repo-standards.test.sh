@@ -92,6 +92,31 @@ assert(REPO_TYPES.archive.skip === true, "archive type is skipped");
 JS
 ok "standards lib: classifyRepo + type table"
 
+# --- fleet-ops#248: standard required contexts are produced verbatim -------
+# repo-standards-apply.mjs applies THIN_CALLERS[].required to branch
+# protection (union, case-sensitive). A required context whose casing does
+# not match the workflow job name exactly would stall every PR in that repo
+# (the context never reports). fleet-ops ci.yml was the only repo whose job
+# name differed (Semgrep vs the standard's semgrep); this locks the parity
+# so BP apply stays safe.
+node --input-type=module - <<'JS'
+import { THIN_CALLERS } from "./.github/scripts/repo-standards.lib.mjs";
+import { readFileSync } from "node:fs";
+const yaml = readFileSync(".github/workflows/ci.yml", "utf8");
+// Job-level `name:` lines are indented exactly 4 spaces; step names start
+// with "- name:" (6+ spaces) and the top-level workflow name has none.
+const jobNames = [...yaml.matchAll(/^\s{4}name: (.+)$/gm)].map((m) => m[1].trim());
+const requiredCtxs = [];
+for (const tc of THIN_CALLERS) for (const r of tc.required) if (!requiredCtxs.includes(r)) requiredCtxs.push(r);
+const missing = requiredCtxs.filter((c) => !jobNames.includes(c));
+if (missing.length > 0) {
+  console.error(`FAIL: required context(s) with no producing ci.yml job name: ${missing.join(", ")} (case-sensitive; ci.yml job names = ${jobNames.join(", ")})`);
+  process.exit(1);
+}
+console.error(`ok: all ${requiredCtxs.length} standard required context(s) (${requiredCtxs.join(", ")}) are produced verbatim by ci.yml jobs (${jobNames.join(", ")})`);
+JS
+ok "standard required contexts match ci.yml job names exactly (fleet-ops#248)"
+
 # --- stray worker notes at the repo root (fleet-ops#3682 committed pr-body-3376.md + verification-3376.md) ---
 stray=""
 for f in pr-body-*.md verification-*.md PR_BODY*.md; do [ -e "$f" ] && stray="$stray$f "; done

@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   semgrep:
-    name: Semgrep
+    name: semgrep
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -200,7 +200,7 @@ jobs:
 
   tests:
     # Calls the central reusable PR-checks workflow. The required check
-    # names (Gitleaks, Semgrep, Shellcheck, systemd-analyze, CI checklist gate)
+    # names (Gitleaks, semgrep, Shellcheck, systemd-analyze, CI checklist gate)
     # stay as local jobs above: a `uses:` job reports as "caller / callee" and
     # would make
     # those required checks wait forever. scan-secrets is false so gitleaks

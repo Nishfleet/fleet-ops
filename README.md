@@ -203,7 +203,7 @@ That file is the batched CI standard for every current and future repo: one
 job, `timeout-minutes`, PR concurrency, npm cache, job-level path gating, and
 gitleaks. Callers pass `inputs`; they do not copy the steps. The four required
 check names stay as local jobs because a `uses:` job reports as
-`caller / callee` and branch protection still lists `Gitleaks`, `Semgrep`,
+`caller / callee` and branch protection still lists `Gitleaks`, `semgrep`,
 `Shellcheck`, and `systemd-analyze`.
 
 New repos copy `template/.github/workflows/` (wired to this repo at `@v1`).
