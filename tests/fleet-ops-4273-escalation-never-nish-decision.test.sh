@@ -80,8 +80,14 @@ ok "Test 2: #2772 skipped-claim-loop escalation emits blocked-on: orchestrator, 
 # only path that may keep nish-decision.
 grep -qF 'NISH_REASON = re.compile' "$reconcile" \
     || fail "blocked-reconcile NISH_REASON regex not found (reserved-class gate)"
-grep -qF 'money|pay|price|billing|legal|brand|deletion' "$reconcile" \
-    || fail "blocked-reconcile reserved-class reasons (money/legal/brand/...) not found"
+# The reserved-class reasons are split across two adjacent string literals in
+# the NISH_REASON regex (money|pay|price|pricing|billing|legal|brand|deletion|
+# then product-direction|customer-data|reserved). Assert each reason token is
+# present so a future edit that drops a reserved class fails this test.
+for _tok in money pay price pricing billing legal brand deletion product customer reserved; do
+    grep -qF "$_tok" "$reconcile" \
+        || fail "blocked-reconcile reserved-class reason '$_tok' not found in NISH_REASON"
+done
 # The rewriter must target only nish-decision lines and turn them into
 # orchestrator; the reserved-class check (NISH_REASON.search) short-circuits
 # the rewrite so a valid nish-decision line survives.

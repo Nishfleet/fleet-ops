@@ -570,6 +570,25 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-ops-2772-claim-loop-gate\.
   || fail "fleet-ops-2772-claim-loop-gate.test.sh must not be a known orphan (fleet-ops#2772)"
 ok "fleet-ops-2772-claim-loop-gate.test.sh is pinned in the P14 reachable set (fleet-ops#2772)"
 
+# fleet-ops#4273: hard-pin the host line for
+# fleet-ops-4273-escalation-never-nish-decision. The escalation-class
+# regression test (neither #2462 nor #2772 escalation may emit
+# nish-decision; the reserved-class path still can) is hosted from
+# tests/pi-intake-tick-reclaim-cooldown.test.sh (already listed in ci.yml) —
+# the worker App cannot push .github/workflows/** so the host was the only
+# path. This named pin is class-prevention so a future drop of the host
+# line cannot park the test on known_orphans to silence the generic $bad[]
+# message — it fails by name here first, same shape as every other hosted
+# test above.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-ops-4273-escalation-never-nish-decision\.test\.sh"?' \
+  "$here/pi-intake-tick-reclaim-cooldown.test.sh" \
+  || fail "pi-intake-tick-reclaim-cooldown.test.sh must bash-invoke fleet-ops-4273-escalation-never-nish-decision.test.sh (fleet-ops#4273)"
+[[ -n "${reachable[fleet-ops-4273-escalation-never-nish-decision.test.sh]:-}" ]] \
+  || fail "fleet-ops-4273-escalation-never-nish-decision.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#4273)"
+[[ -z "${known_orphan_set[fleet-ops-4273-escalation-never-nish-decision.test.sh]:-}" ]] \
+  || fail "fleet-ops-4273-escalation-never-nish-decision.test.sh must not be a known orphan (fleet-ops#4273)"
+ok "fleet-ops-4273-escalation-never-nish-decision.test.sh is pinned in the P14 reachable set (fleet-ops#4273)"
+
 # fleet-ops#3873: hard-pin the host line for the per-seat-timeout test. It
 # is hosted from pi-issue-run-failure-reason.test.sh (already in P14 via
 # worker-token-fail-closed.test.sh) because the worker App has no
