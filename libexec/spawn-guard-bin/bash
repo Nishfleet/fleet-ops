@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# bash shim — below-agent spawn guard (fleet-ops#3126). Every non-interactive
+# bash the vendor spawns must carry the BASH_ENV payload (DEBUG trap), even
+# when the runner's exported env was lost. Belt-and-suspenders on top of the
+# runner's export: BASH_ENV is honored by real /bin/bash regardless of how it
+# was started, so even an absolute-path bash call from the vendor gets the
+# trap. When the guard is not armed this shim is a pure pass-through.
+if [[ "${FLEET_SPAWN_GUARD:-0}" == "1" ]]; then
+    _sg_env="${FLEET_SPAWN_GUARD_ENV:-}"
+    if [[ -z "$_sg_env" ]]; then
+        [[ -f "$HOME/.local/lib/pi-packet/spawn-guard-env.sh" ]] && _sg_env="$HOME/.local/lib/pi-packet/spawn-guard-env.sh"
+    fi
+    if [[ -n "$_sg_env" && -f "$_sg_env" ]]; then
+        export FLEET_SPAWN_GUARD=1
+        export FLEET_SPAWN_GUARD_ENV="$_sg_env"
+        export BASH_ENV="$_sg_env"
+    fi
+    unset _sg_env
+fi
+_sg_guard_dir="$(dirname "$(readlink -f "$0")")"
+_sg_path_rest=""
+for _sg_dir in ${PATH//:/ }; do
+    [[ -n "$_sg_dir" && "$_sg_dir" != "$_sg_guard_dir" ]] && _sg_path_rest="${_sg_path_rest}${_sg_path_rest:+:}${_sg_dir}"
+done
+_sg_real="$(PATH="$_sg_path_rest" command -v bash 2>/dev/null)"
+if [[ -z "$_sg_real" ]]; then
+    echo "fleet-spawn-guard: cannot locate real bash" >&2
+    exit 3
+fi
+exec "$_sg_real" "$@"

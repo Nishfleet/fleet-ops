@@ -1,0 +1,210 @@
+#!/usr/bin/env bash
+# fleet-spawn-guard — below-agent spawn guard: status + hermetic bypass probe
+# (fleet-ops#3126)
+#
+# The Pi extension sees only Pi's own bash tool calls; devin/cursor provider
+# CLIs run their own agent tools, so the extension rules never fire inside
+# them (proven 2026-08-25). This tool is the operator face of the
+# below-the-agent guard (lib/spawn-guard-core.sh + libexec/spawn-guard-bin/*):
+#
+#   fleet-spawn-guard --status     wire check: core+env+shims resolved?
+#   fleet-spawn-guard --probe      hermetic bypass probe: does the armed env
+#                                  block `git stash push` (bash trap, dash
+#                                  shim, direct-binary shim)? 0 = guard
+#                                  blocks, 1 = BYPASS, 2 = infra missing.
+#   fleet-spawn-guard --providers  print the shim-class provider list
+#   fleet-spawn-guard --runner-wired [REPO]  runners carry activation?
+#
+# Resolution order: env seams (tests/operator) -> installed
+# (~/.local/lib/pi-packet) -> repo checkout (dev / CI hosted tests).
+# The install symlinks this same file via MANIFEST; the probe is hermetic:
+# it creates its own scratch repo and its own block log, so it never touches
+# production repos or the real spawn-blocks.log.
+
+self=$(readlink -f "$0" 2>/dev/null || echo "$0")
+self_dir=$(dirname "$self")
+# repo root when running from a checkout (installed copy has none)
+REPO_ROOT=""
+if [[ -f "$self_dir/../lib/spawn-guard-core.sh" && -d "$self_dir/../bin" ]]; then
+    REPO_ROOT=$(cd "$self_dir/.." && pwd)
+fi
+
+spawn_guard_core_resolve_core() {
+    if [[ -n "${FLEET_SPAWN_GUARD_CORE:-}" ]]; then printf '%s' "$FLEET_SPAWN_GUARD_CORE"; return 0; fi
+    if [[ -f "$HOME/.local/lib/pi-packet/spawn-guard-core.sh" ]]; then printf '%s' "$HOME/.local/lib/pi-packet/spawn-guard-core.sh"; return 0; fi
+    if [[ -n "$REPO_ROOT" ]]; then printf '%s' "$REPO_ROOT/lib/spawn-guard-core.sh"; return 0; fi
+    printf '%s' "$HOME/.local/lib/pi-packet/spawn-guard-core.sh"
+}
+spawn_guard_core_resolve_env() {
+    if [[ -n "${FLEET_SPAWN_GUARD_ENV:-}" ]]; then printf '%s' "$FLEET_SPAWN_GUARD_ENV"; return 0; fi
+    if [[ -f "$HOME/.local/lib/pi-packet/spawn-guard-env.sh" ]]; then printf '%s' "$HOME/.local/lib/pi-packet/spawn-guard-env.sh"; return 0; fi
+    if [[ -n "$REPO_ROOT" ]]; then printf '%s' "$REPO_ROOT/libexec/spawn-guard-env.sh"; return 0; fi
+    printf '%s' "$HOME/.local/lib/pi-packet/spawn-guard-env.sh"
+}
+spawn_guard_core_resolve_bin() {
+    if [[ -n "${FLEET_SPAWN_GUARD_BIN:-}" ]]; then printf '%s' "$FLEET_SPAWN_GUARD_BIN"; return 0; fi
+    if [[ -d "$HOME/.local/lib/pi-packet/spawn-guard-bin" ]]; then printf '%s' "$HOME/.local/lib/pi-packet/spawn-guard-bin"; return 0; fi
+    if [[ -n "$REPO_ROOT" ]]; then printf '%s' "$REPO_ROOT/libexec/spawn-guard-bin"; return 0; fi
+    printf '%s' "$HOME/.local/lib/pi-packet/spawn-guard-bin"
+}
+
+FLEET_SPAWN_GUARD_CORE="$(spawn_guard_core_resolve_core)"
+FLEET_SPAWN_GUARD_ENV="$(spawn_guard_core_resolve_env)"
+FLEET_SPAWN_GUARD_BIN="$(spawn_guard_core_resolve_bin)"
+export FLEET_SPAWN_GUARD_CORE FLEET_SPAWN_GUARD_ENV FLEET_SPAWN_GUARD_BIN
+
+usage() {
+    printf 'usage: fleet-spawn-guard {--status|--probe|--providers|--runner-wired [REPO]|--help}\n' >&2
+    printf '  --status         wire check (exit 0 wired, 1 missing)\n' >&2
+    printf '  --probe          hermetic bypass probe (0 blocks, 1 BYPASS, 2 infra missing)\n' >&2
+    printf '  --providers      print shim-class provider list\n' >&2
+    printf '  --runner-wired   verify pi runners carry spawn_guard_activate\n' >&2
+    exit 0
+}
+
+spawn_guard_shim_list() {
+    printf 'bash sh git rm sudo systemctl wrangler npm tee'
+}
+
+cmd_status() {
+    local missing=""
+    [[ -f "$FLEET_SPAWN_GUARD_CORE" ]] || missing="$missing core=$FLEET_SPAWN_GUARD_CORE"
+    [[ -f "$FLEET_SPAWN_GUARD_ENV" ]] || missing="$missing env=$FLEET_SPAWN_GUARD_ENV"
+    [[ -d "$FLEET_SPAWN_GUARD_BIN" ]] || missing="$missing bin=$FLEET_SPAWN_GUARD_BIN"
+    local s missing_shims=""
+    for s in $(spawn_guard_shim_list); do
+        [[ -x "$FLEET_SPAWN_GUARD_BIN/$s" ]] || missing_shims="$missing_shims $s"
+    done
+    [[ -z "$missing_shims" ]] || missing="$missing shims:$missing_shims"
+    if [[ -n "$missing" ]]; then
+        printf 'SPAWN-GUARD-STATUS missing%s\n' "$missing"
+        return 1
+    fi
+    printf 'SPAWN-GUARD-STATUS ok core=%s env=%s bin=%s shims=9 providers=%s\n' \
+        "$FLEET_SPAWN_GUARD_CORE" "$FLEET_SPAWN_GUARD_ENV" "$FLEET_SPAWN_GUARD_BIN" \
+        "${FLEET_SHIM_PROVIDERS:-devin cursor}"
+    return 0
+}
+
+cmd_providers() {
+    printf '%s\n' "${FLEET_SHIM_PROVIDERS:-devin cursor}"
+    return 0
+}
+
+cmd_runner_wired() {
+    local repo="$1"
+    # shellcheck disable=SC2016
+    local pat='spawn_guard_activate'
+    if [[ ! -d "$repo/bin" ]]; then
+        printf 'SPAWN-GUARD-RUNNERS missing repo=%s\n' "$repo"
+        return 1
+    fi
+    local f bad=""
+    for f in pi-issue-run pi-packet-run pi-audit-run fleet-heartbeat-tier2; do
+        if [[ -f "$repo/bin/$f" ]] && grep -qF "$pat" "$repo/bin/$f" 2>/dev/null; then
+            :
+        else
+            bad="$bad $f"
+        fi
+    done
+    if [[ -n "$bad" ]]; then
+        printf 'SPAWN-GUARD-RUNNERS missing:%s\n' "$bad"
+        return 1
+    fi
+    printf 'SPAWN-GUARD-RUNNERS ok\n'
+    return 0
+}
+
+# --- hermetic probe -----------------------------------------------------------
+cmd_probe() {
+    if [[ ! -f "$FLEET_SPAWN_GUARD_CORE" || ! -f "$FLEET_SPAWN_GUARD_ENV" || ! -d "$FLEET_SPAWN_GUARD_BIN" ]]; then
+        printf 'SPAWN-GUARD-PROBE infra-missing core=%s env=%s bin=%s\n' \
+            "$FLEET_SPAWN_GUARD_CORE" "$FLEET_SPAWN_GUARD_ENV" "$FLEET_SPAWN_GUARD_BIN"
+        return 2
+    fi
+    if ! command -v git >/dev/null 2>&1; then
+        printf 'SPAWN-GUARD-PROBE infra-missing git\n'
+        return 2
+    fi
+    # resolve the real bash by absolute path BEFORE arming PATH, so phase c
+    # can bypass the bash shim/trap and exercise the git shim alone
+    local real_bash
+    real_bash="$(command -v bash)"
+
+    local scratch
+    scratch=$(mktemp -d -t spawn-guard-probe.XXXXXX)
+    trap 'find "$scratch" -depth -delete 2>/dev/null || true' EXIT
+
+    git -C "$scratch" init -q || { printf 'SPAWN-GUARD-PROBE infra-fail git-init\n'; return 2; }
+    git -C "$scratch" config user.email probe@fleet-ops
+    git -C "$scratch" config user.name probe
+    printf 'probe\n' >"$scratch/file"
+    git -C "$scratch" add file
+    git -C "$scratch" commit -qm probe || { printf 'SPAWN-GUARD-PROBE infra-fail git-commit\n'; return 2; }
+    # dirty working tree so a guarded-off stash would actually succeed
+    printf 'dirty\n' >>"$scratch/file"
+
+    # armed env: shims first on PATH, BASH_ENV payload, isolated block log,
+    # ceiling disabled (hermetic determinism).
+    export FLEET_SPAWN_GUARD=1
+    export FLEET_SPAWN_GUARD_ENV FLEET_SPAWN_GUARD_BIN
+    export BASH_ENV="$FLEET_SPAWN_GUARD_ENV"
+    export PATH="$FLEET_SPAWN_GUARD_BIN:$PATH"
+    export FLEET_SPAWN_GUARD_LOG="$scratch/blocks.log"
+    export FLEET_SPAWN_SOFT_CEILING=999999999
+    export FLEET_SPEC_DEPTH=0
+
+    local phase rc out bypass=0
+    # phase a: bash -c (DEBUG trap layer)
+    out=$(cd "$scratch" && bash -c 'git stash push -m guard-probe' 2>&1); rc=$?
+    if [[ "$rc" -eq 0 ]] || ! grep -q 'SPAWN_BLOCKED' <<<"$out"; then
+        printf 'SPAWN-GUARD-PROBE BYPASS phase=bash-trap rc=%s out=%s\n' "$rc" "$(printf '%s' "$out" | head -c 200)"
+        bypass=1
+    fi
+    # phase b: sh -c (dash + PATH tool shim layer)
+    if [[ "$bypass" -eq 0 ]]; then
+        out=$(cd "$scratch" && sh -c 'git stash push -m guard-probe' 2>&1); rc=$?
+        if [[ "$rc" -eq 0 ]] || ! grep -q 'SPAWN_BLOCKED' <<<"$out"; then
+            printf 'SPAWN-GUARD-PROBE BYPASS phase=sh-shim rc=%s out=%s\n' "$rc" "$(printf '%s' "$out" | head -c 200)"
+            bypass=1
+        fi
+    fi
+    # phase c: direct binary git via PATH (git shim) — real bash by absolute
+    # path and BASH_ENV stripped so the trap layer cannot fire first
+    if [[ "$bypass" -eq 0 ]]; then
+        out=$(cd "$scratch" && env -u BASH_ENV "$real_bash" -c 'git stash push -m guard-probe' 2>&1); rc=$?
+        if [[ "$rc" -eq 0 ]] || ! grep -q 'SPAWN_BLOCKED' <<<"$out"; then
+            printf 'SPAWN-GUARD-PROBE BYPASS phase=git-shim rc=%s out=%s\n' "$rc" "$(printf '%s' "$out" | head -c 200)"
+            bypass=1
+        fi
+    fi
+    # allow-sanity: read-only stash forms must pass (fleet-ops#754)
+    if [[ "$bypass" -eq 0 ]]; then
+        out=$(cd "$scratch" && bash -c 'git stash list; git status --porcelain' 2>&1); rc=$?
+        if [[ "$rc" -ne 0 ]]; then
+            printf 'SPAWN-GUARD-PROBE OVERBLOCK phase=allow-sanity rc=%s out=%s\n' "$rc" "$(printf '%s' "$out" | head -c 200)"
+            bypass=1
+        fi
+    fi
+
+    local stashes
+    stashes=$(git -C "$scratch" stash list 2>/dev/null | wc -l | tr -d ' ')
+    if [[ "$bypass" -eq 0 ]]; then
+        [[ "$stashes" == "0" ]] || { printf 'SPAWN-GUARD-PROBE BYPASS stashes=%s (a stash was created)\n' "$stashes"; bypass=1; }
+    fi
+
+    if [[ "$bypass" -eq 1 ]]; then
+        return 1
+    fi
+    printf 'SPAWN-GUARD-PROBE ok blocked=3 stashes=%s log=%s\n' "$stashes" "$FLEET_SPAWN_GUARD_LOG"
+    return 0
+}
+
+case "${1:-}" in
+    --status) cmd_status ;;
+    --probe) cmd_probe ;;
+    --providers) cmd_providers ;;
+    --runner-wired) cmd_runner_wired "${2:-$REPO_ROOT}" ;;
+    -h|--help|"") usage ;;
+    *) printf 'fleet-spawn-guard: unknown arg %s\n' "$1" >&2; usage ;;
+esac
