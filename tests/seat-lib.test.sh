@@ -3409,6 +3409,10 @@ bash "$here/alert-repair-claim-mutex.test.sh" || fail "alert-repair-claim-mutex 
 # is the listed CI host.
 bash "$here/keystone-routing.test.sh" || fail "keystone-routing tests failed"
 
+# fleet-ops#4220: senior-review routes to the senior ladder (find_senior_seat)
+# before the keystone class ladder. Hosted here (no workflow edit).
+bash "$here/senior-review-routing.test.sh" || fail "senior-review-routing tests failed"
+
 # fleet-ops#1167: cursor keystone-only + leftover prepaid is xai-oauth +
 # selection ledger. Hosted here (no workflow edit).
 bash "$here/token-economy-routing.test.sh" || fail "token-economy-routing tests failed"

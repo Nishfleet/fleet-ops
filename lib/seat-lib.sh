@@ -1862,6 +1862,13 @@ find_senior_seat() {
         m="${sn#*/}"
         [[ -n "$p" && -n "$m" ]] || continue
         [[ "$(model_cap "$p" "$m" 2>/dev/null || echo 0)" -gt 0 ]] 2>/dev/null || continue
+        # fleet-ops#4220: respect the per-cycle tried-seats set so a
+        # senior-review Restart= cycle walks the senior ladder past a seat
+        # that already failed this cycle (not the whole ladder). The tried
+        # associative array is built by pick_seat; when find_senior_seat is
+        # called standalone (no pick_seat in scope) the array is unset and
+        # the :- default is empty, so the check is a no-op.
+        [[ -n "${tried[$p/$m]:-}" ]] && continue
         # fleet-ops#3121: cursor weekly ceiling. When cursor's prepaid-usage
         # count for the week hits SEAT_SENIOR_CURSOR_CEILING, skip cursor and
         # fall through to the next seat in the ladder (xai-oauth/grok-4.6).
@@ -4763,6 +4770,35 @@ pick_seat() {
     # The class ladder below runs only when the prefer-class override did not
     # already pick a seat (an empty preferred bucket / walled senior falls
     # through to the normal yield ladder).
+    # fleet-ops#4220: senior-review packets route through the senior ladder
+    # (SEAT_SENIOR_ORDER: cursor → xai-oauth → openrouter) BEFORE the keystone
+    # class ladder. The class ladder walks prepaid_providers_in_order, which in
+    # the live config leads with ollama — so without this gate a senior-review
+    # packet landed on ollama instead of cursor. The buckets above already
+    # passed all cap/bench/tried/credential checks, so walking the senior order
+    # against them reuses the existing rails (no duplicated cap logic). Falls
+    # through to the class ladder when no senior seat is in the buckets (walled
+    # role resolves to its fallback, not a stall).
+    if [[ -z "${chosen:-}" && "$difficulty" == "senior-review" ]]; then
+        local _sn _sp _sm _bucket_seat
+        for _sn in "${SEAT_SENIOR_ORDER[@]:-}"; do
+            [[ -n "$_sn" ]] || continue
+            _sp="${_sn%%/*}"
+            _sm="${_sn#*/}"
+            [[ -n "$_sp" && -n "$_sm" ]] || continue
+            for _bucket_seat in "${prepaid_seats[@]:-}" "${metered_seats[@]:-}" "${free_seats[@]:-}" "${product_only_seats[@]:-}"; do
+                [[ "$_bucket_seat" == "$_sp"$'\t'"$_sm" ]] || continue
+                chosen="$_bucket_seat"
+                chosen_p="$_sp"
+                chosen_m="$_sm"
+                if [[ "$(model_class_of "$chosen_p" "$chosen_m")" == "prepaid-quota" ]]; then
+                    _record_prepaid_pick "$chosen_p"
+                fi
+                seat_log "pick_seat: senior-review routing to $chosen_p/$chosen_m"
+                break 2
+            done
+        done
+    fi
     if [[ -z "${chosen:-}" ]]; then
     if (( ${#product_seats[@]} > 0 )); then
         chosen="${product_seats[0]}"
