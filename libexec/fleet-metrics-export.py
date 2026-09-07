@@ -1702,6 +1702,7 @@ CODEX_QUOTA_CACHE = PR_CACHE_DIR / "codex-quota-cache.json"
 OPENROUTER_KEY_CACHE = PR_CACHE_DIR / "openrouter-key-cache.json"
 CURSOR_QUOTA_CACHE = PR_CACHE_DIR / "cursor-quota-cache.json"
 DEVIN_QUOTA_CACHE = PR_CACHE_DIR / "devin-quota-cache.json"
+XKIRO_QUOTA_CACHE = PR_CACHE_DIR / "xkiro-quota-cache.json"
 QUOTA_TTL = 300  # 5 min — matches the exporter cadence; one fresh fetch per run.
 QUOTA_STALE_CACHE = 1800  # 30 min — serve stale cache while a fetch is failing.
 
@@ -2024,6 +2025,49 @@ def _fetch_devin_usage():
                 {"pct": max(0.0, min(100.0, weekly)), "reset_s": weekly_reset_s, "window": "weekly"}
             )
     return rows or None
+
+
+def _fetch_xkiro_quota():
+    """Return xKiro free-tokens quota rows, or None.
+
+    api.xkiro.com/v1/usage (the same endpoint _fetch_xkiro_usage calls for
+    the vendor-balance family) returns free_tokens.remaining / limit_per_day
+    and wallet.balance_usd. remaining_pct = remaining / limit * 100; the
+    daily window resets at 00:00 UTC. Verified live 2026-09-08.
+    """
+    key = _read_env_key(XKIRO_ENV_FILE, ("XKIRO_API_KEY", "API_KEY"))
+    if not key:
+        return None
+    req = urllib.request.Request(
+        "https://api.xkiro.com/v1/usage",
+        headers={"Authorization": f"Bearer {key}", "User-Agent": _VENDOR_USER_AGENT},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:  # nosemgrep
+            payload = json.loads(resp.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, ValueError) as exc:
+        print(f"xkiro quota fetch failed: {exc}", file=sys.stderr)
+        return None
+    free = payload.get("free_tokens") or {}
+    remaining = free.get("remaining")
+    limit = free.get("limit_per_day")
+    if remaining is None or limit is None:
+        return None
+    try:
+        remaining = int(remaining)
+        limit = int(limit)
+    except (ValueError, TypeError):
+        return None
+    if limit <= 0:
+        return None
+    pct = max(0.0, min(100.0, (remaining / limit) * 100.0))
+    # xKiro free-tokens reset at 00:00 UTC daily.
+    now = datetime.now(timezone.utc)
+    tomorrow = now.replace(
+        hour=0, minute=0, second=0, microsecond=0
+    ) + timedelta(days=1)
+    reset_s = max(0.0, (tomorrow - now).total_seconds())
+    return [{"pct": pct, "reset_s": reset_s, "window": "daily"}]
 
 
 def _iso_to_seconds_until(iso_str):
@@ -5548,10 +5592,9 @@ def main():
     # --- Live seat quotas (fleet-ops#4217) ---
     # VPS-native API reads. Each fetcher is cached independently; a None
     # return omits that provider's rows (never a frozen value). Browser-
-    # session seats (Devin, Grok, Ollama, Z.ai, OpenCode, RunInfra,
-    # ZenMux, Cline, Straitly, MiniMax, CommandCode) are follow-up issues —
-    # this PR ships the metric family + the API-native seats so those seats
-    # slot in as one fetcher each.
+    # session seats (Grok, Ollama, Z.ai, OpenCode, RunInfra,
+    # ZenMux, Cline, Straitly, MiniMax, CommandCode) are follow-up issues
+    # (#4232 / #4233) — each slots in as one fetcher.
     openrouter_key = _cached_quota_json(
         OPENROUTER_KEY_CACHE, _fetch_openrouter_key, "openrouter_key"
     )
@@ -5567,6 +5610,9 @@ def main():
     devin_usage = _cached_quota_json(
         DEVIN_QUOTA_CACHE, _fetch_devin_usage, "devin_usage"
     )
+    xkiro_quota = _cached_quota_json(
+        XKIRO_QUOTA_CACHE, _fetch_xkiro_quota, "xkiro_quota"
+    )
     _quota_now = time.time()
     _quota_providers = []
     if isinstance(openrouter_key, dict):
@@ -5579,6 +5625,8 @@ def main():
         _quota_providers.append(("cursor", cursor_usage))
     if isinstance(devin_usage, list):
         _quota_providers.append(("devin", devin_usage))
+    if isinstance(xkiro_quota, list):
+        _quota_providers.append(("xkiro", xkiro_quota))
     if _quota_providers:
         _emit_seat_quota_headers(lines)
         for _prov, _rows in _quota_providers:

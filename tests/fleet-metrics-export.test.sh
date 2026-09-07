@@ -791,6 +791,7 @@ m._fetch_claude_usage = lambda: None
 m._fetch_codex_usage = lambda: None
 m._fetch_cursor_usage = lambda: None
 m._fetch_devin_usage = lambda: None
+m._fetch_xkiro_quota = lambda: None
 m._GH_FETCHED_THIS_RUN = False
 
 rc = m.main()
@@ -905,6 +906,7 @@ m._fetch_openrouter_key = lambda: None
 m._fetch_claude_usage = lambda: None
 m._fetch_codex_usage = lambda: None
 m._fetch_cursor_usage = lambda: None
+m._fetch_xkiro_quota = lambda: None
 m._GH_FETCHED_THIS_RUN = False
 
 rc = m.main()
@@ -995,6 +997,7 @@ m._fetch_openrouter_key = lambda: None
 m._fetch_claude_usage = lambda: None
 m._fetch_codex_usage = lambda: None
 m._fetch_cursor_usage = lambda: None
+m._fetch_xkiro_quota = lambda: None
 m._GH_FETCHED_THIS_RUN = False
 
 rc = m.main()
@@ -1061,6 +1064,7 @@ m._fetch_openrouter_key = lambda: None
 m._fetch_claude_usage = lambda: None
 m._fetch_codex_usage = lambda: None
 m._fetch_cursor_usage = lambda: None
+m._fetch_xkiro_quota = lambda: None
 m._GH_FETCHED_THIS_RUN = False
 
 rc = m.main()
@@ -1463,6 +1467,7 @@ m._fetch_openrouter_key = lambda: None
 m._fetch_claude_usage = lambda: None
 m._fetch_codex_usage = lambda: None
 m._fetch_cursor_usage = lambda: None
+m._fetch_xkiro_quota = lambda: None
 m._GH_FETCHED_THIS_RUN = False
 rc = m.main()
 assert rc == 0, f"main rc={rc}"
@@ -2862,6 +2867,7 @@ m._fetch_claude_usage = lambda: None
 m._fetch_codex_usage = lambda: None
 m._fetch_cursor_usage = lambda: None
 m._fetch_devin_usage = lambda: None
+m._fetch_xkiro_quota = lambda: None
 m._gh_rate_limit = lambda: None
 m._read_dead_credentials = lambda: (0, [])
 m._fetch_openrouter_credits = lambda: 6.95
@@ -2943,7 +2949,7 @@ spec.loader.exec_module(m)
 
 # 1. Helpers exist.
 for fn in ("_fetch_openrouter_key", "_fetch_claude_usage", "_fetch_codex_usage",
-           "_fetch_cursor_usage",
+           "_fetch_cursor_usage", "_fetch_xkiro_quota",
            "_emit_seat_quota", "_emit_seat_quota_headers", "_cached_quota_json",
            "_iso_to_seconds_until", "_resolve_cut_directive"):
     assert hasattr(m, fn), f"missing {fn}"
@@ -3137,9 +3143,29 @@ assert by_window["daily"]["reset_s"] is not None and by_window["daily"]["reset_s
 assert by_window["weekly"]["reset_s"] is not None and by_window["weekly"]["reset_s"] > 0, f"devin weekly reset_s {by_window['weekly']['reset_s']}"
 print("OK: _fetch_devin_usage maps planStatus daily/weeklyQuotaRemainingPercent + ResetAtUnix -> remaining_pct")
 
+# 10. _fetch_xkiro_quota maps free_tokens.remaining / limit_per_day -> pct,
+#     and computes reset_s as seconds until next UTC midnight.
+xkiro_payload = {
+    "object": "usage",
+    "free_tokens": {"used_today": 5012001, "limit_per_day": 5000000, "remaining": 0},
+    "wallet": {"balance_usd": "5.000000", "held_usd": "0.000000"},
+}
+m._read_env_key = lambda path, names: "fake-key"
+urllib.request.urlopen = lambda req, timeout=15: _FakeResp(xkiro_payload)
+try:
+    rows = m._fetch_xkiro_quota()
+finally:
+    urllib.request.urlopen = orig_urlopen
+assert rows is not None, "xkiro fetch returned None for valid payload"
+assert len(rows) == 1, f"expected 1 window, got {len(rows)}"
+assert abs(rows[0]["pct"] - 0.0) < 0.01, f"xkiro pct {rows[0]['pct']} (0 remaining)"
+assert rows[0]["window"] == "daily", f"xkiro window {rows[0]['window']}"
+assert rows[0]["reset_s"] is not None and rows[0]["reset_s"] > 0, f"xkiro reset_s {rows[0]['reset_s']}"
+print("OK: _fetch_xkiro_quota maps free_tokens.remaining / limit_per_day -> pct + UTC-midnight reset")
+
 print("OK: fleet-ops#4217 live seat quota metric family + VPS-native reads")
 PY
-ok "fleet-ops#4217: live seat quota metric family + VPS-native reads (OpenRouter /key, Claude OAuth, Codex OAuth, Cursor, Devin, !cut resolver)"
+ok "fleet-ops#4217: live seat quota metric family + VPS-native reads (OpenRouter /key, Claude OAuth, Codex OAuth, Cursor, Devin, xKiro, !cut resolver)"
 
 # =========================================================================
 # fleet-ops#3180: fleet_escalations_24h must not count template starts the
@@ -3379,6 +3405,7 @@ m._fetch_claude_usage = lambda: None
 m._fetch_codex_usage = lambda: None
 m._fetch_cursor_usage = lambda: None
 m._fetch_devin_usage = lambda: None
+m._fetch_xkiro_quota = lambda: None
 m._GH_FETCHED_THIS_RUN = False
 rc = m.main()
 assert rc == 0, f"main rc={rc}"
