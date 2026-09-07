@@ -70,6 +70,14 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_PROXY_URL = os.environ.get("FLEET_LITELLM_PROXY_URL", "http://127.0.0.1:4000")
+# The proxy organ's live install is Nish-gated (fleet-ops#4174 P1: "paper +
+# installable units, NOT a live deploy"). The venv is the definitive install
+# marker (the proxy unit's ExecStart runs this binary). When it is absent the
+# organ is NOT installed yet, so the canary must fail-open (exit 0) rather than
+# fail-loud on connection-refused — the proxy is legitimately absent, not dead.
+DEFAULT_VENV = os.environ.get(
+    "FLEET_LITELLM_VENV", "/home/nish/.local/venvs/litellm/bin/litellm"
+)
 DEFAULT_PROM = Path(
     os.environ.get("FLEET_LITELLM_PROM", "/var/lib/prometheus/node-exporter/fleet-litellm-health.prom")
 )
@@ -98,6 +106,21 @@ def _atomic_write(path: Path, text: str, *, mode: int = 0o644) -> None:
             pass
         raise
     os.chmod(path, mode)
+
+
+def _organ_installed(venv: str) -> bool:
+    """True if the LiteLLM proxy organ is installed (venv present).
+
+    When the organ is not installed (Nish-gated live install not yet done), the
+    canary must NOT fail loud on connection-refused — the proxy is legitimately
+    absent, not dead. This mirrors the postgres/redis probes, which already
+    treat a missing binary as "organ not installed" (gauge 0, no fail-loud).
+    When Nish installs the venv, this canary automatically resumes fail-loud on
+    real organ death — no re-arming needed.
+    """
+    if os.environ.get("FLEET_LITELLM_STUB_INSTALLED") == "1":
+        return True
+    return Path(venv).is_file()
 
 
 def _now() -> float:
@@ -233,10 +256,29 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--prom", default=str(DEFAULT_PROM))
     p.add_argument("--state", default=str(DEFAULT_STATE))
     p.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_S)
+    p.add_argument("--venv", default=DEFAULT_VENV)
     p.add_argument("--quiet", action="store_true")
     args = p.parse_args(argv)
 
     now = _now()
+
+    # Fail-open when the organ is not installed (Nish-gated live install not yet
+    # done). Write the prom file with the metrics present at 0 and exit 0 — do
+    # NOT fail loud. The absent() rules are gated on the organ being installed
+    # (fleet-ops#4174 P1: paper, not live deploy). When Nish installs the venv,
+    # this canary resumes fail-loud on real organ death.
+    if not _organ_installed(args.venv):
+        pg_up = _probe_postgres(DEFAULT_PG_HOST)
+        redis_up = _probe_redis(DEFAULT_REDIS_HOST, DEFAULT_REDIS_PORT)
+        _atomic_write(Path(args.prom), render_prom(now, 0, {}, pg_up, redis_up))
+        if not args.quiet:
+            print(
+                "fleet-litellm-health-canary: proxy organ not installed "
+                f"(venv {args.venv} missing) — skip, no fail-loud",
+                file=sys.stderr,
+            )
+        return 0
+
     url = args.proxy_url.rstrip("/") + "/health/readiness"
     status, body = _fetch(url, args.timeout)
 

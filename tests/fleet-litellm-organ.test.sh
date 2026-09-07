@@ -114,6 +114,7 @@ FLEET_LITELLM_STATE="$scratch/up.json" \
 FLEET_LITELLM_STUB="$stub" \
 FLEET_LITELLM_STUB_PG=1 \
 FLEET_LITELLM_STUB_REDIS=1 \
+FLEET_LITELLM_STUB_INSTALLED=1 \
 FLEET_LITELLM_NOW=1700000000 \
 python3 "$canary" --quiet || fail "5: canary proxy_up=1 path must exit 0"
 grep -q 'fleet_litellm_proxy_up{endpoint="readiness"} 1' "$scratch/up.prom" \
@@ -130,10 +131,23 @@ FLEET_LITELLM_STATE="$scratch/dead.json" \
 FLEET_LITELLM_PROXY_URL=http://127.0.0.1:1 \
 FLEET_LITELLM_STUB_PG=1 \
 FLEET_LITELLM_STUB_REDIS=1 \
+FLEET_LITELLM_STUB_INSTALLED=1 \
 python3 "$canary" --quiet && fail "5: canary organ-dead path must exit 1"
 grep -q 'fleet_litellm_proxy_up{endpoint="readiness"} 0' "$scratch/dead.prom" \
     || fail "5: organ-dead prom missing proxy_up=0"
 ok "5: canary compiles, proxy_up=1 path exits 0, organ-dead path exits 1"
+
+# --- 5b: organ-not-installed path (Nish-gated live install not yet done) -> exit 0, no fail-loud
+FLEET_LITELLM_PROM="$scratch/notinst.prom" \
+FLEET_LITELLM_STATE="$scratch/notinst.json" \
+FLEET_LITELLM_PROXY_URL=http://127.0.0.1:1 \
+FLEET_LITELLM_VENV=/nonexistent/venv/litellm/bin/litellm \
+FLEET_LITELLM_STUB_PG=1 \
+FLEET_LITELLM_STUB_REDIS=1 \
+python3 "$canary" --quiet || fail "5b: canary organ-not-installed path must exit 0 (fail-open)"
+grep -q 'fleet_litellm_proxy_up{endpoint="readiness"} 0' "$scratch/notinst.prom" \
+    || fail "5b: not-installed prom missing proxy_up=0"
+ok "5b: canary fails open (exit 0) when the proxy organ is not installed"
 
 # --- 6: no real credential in the repo config (placeholders only)
 cfg="$repo_root/config/litellm-proxy.yaml"
