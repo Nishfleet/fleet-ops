@@ -81,7 +81,7 @@ seat_log "pi-scout-run: $repo/$prompt_name privacy=$scout_privacy"
 export PI_PACKET_REPO="$repo"
 
 # fleet-ops#4263 P3b: always route through the LiteLLM worker-cheap group.
-seat=$(litellm_pick_seat "worker-cheap")
+seat=$(litellm_pick_seat "worker-cheap" || true)
 seat_log "pi-scout-run: $repo/$prompt_name group=worker-cheap"
 if [[ -z "$seat" ]]; then
     seat_log "pi-scout-run: $repo/$prompt_name SKIP — no healthy seat available (saturated pool; exit ${SEAT_SKIP_EXIT})"

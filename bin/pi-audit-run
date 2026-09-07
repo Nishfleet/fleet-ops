@@ -602,7 +602,7 @@ main() {
         *) group=worker-capable ;;
     esac
     if declare -F litellm_pick_seat >/dev/null 2>&1; then
-        seat=$(litellm_pick_seat "$group")
+        seat=$(litellm_pick_seat "$group" || true)
     elif seat=$(resolve_seat "$role"); then
         :
     else

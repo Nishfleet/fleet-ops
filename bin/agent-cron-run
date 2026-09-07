@@ -40,6 +40,8 @@ export HOME="${HOME:-/home/nish}"
 SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/litellm-seat.sh}"
 # shellcheck source=../lib/litellm-seat.sh source-path=SCRIPTDIR
 source "$SEAT_LIB"
+SPAWN_FAIL_MAX_S="${SPAWN_FAIL_MAX_S:-120}"
+SPAWN_FAIL_BACKOFF_S="${SPAWN_FAIL_BACKOFF_S:-300}"
 
 slug="${1:?agent-cron-run: need <slug>}"
 WORKDIR="${WORKDIR:-$HOME}"

@@ -153,6 +153,8 @@ OUT_MIN="${PI_PACKET_RUN_OUT_MIN:-20}"
 # systemd Restart= count it toward StartLimitBurst. This keeps empty runs
 # from burning the item's dispatch budget.
 EMPTY_RUN_RETRY_MAX="${EMPTY_RUN_RETRY_MAX:-2}"
+SPAWN_FAIL_MAX_S="${SPAWN_FAIL_MAX_S:-120}"
+SPAWN_FAIL_BACKOFF_S="${SPAWN_FAIL_BACKOFF_S:-300}"
 
 # fleet-ops#2005: debug-playbook gate. A session with two or more real
 # failed attempts and no four-heading vault playbook is blocked from closing.
@@ -345,7 +347,7 @@ export PI_PICK_PREFER_CLASS
 # fallback, cooldown, and health checks.
 _lit_group="worker-cheap"
 [[ "$pkt_privacy" == "private" ]] && _lit_group="worker-private"
-seat=$(litellm_pick_seat "$_lit_group")
+seat=$(litellm_pick_seat "$_lit_group" || true)
 seat_log "pi-issue-run: $inst group=$_lit_group (privacy=$pkt_privacy)"
 if [[ -z "$seat" ]]; then
     # The tried file does not exist on the first attempt; the `2>/dev/null`

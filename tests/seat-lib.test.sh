@@ -46,6 +46,15 @@ got=$(litellm_pick_seat "judge")
   || fail "litellm_pick_seat judge got $got"
 ok "litellm_pick_seat returns litellm<TAB>group"
 
+# fleet-ops#4263: pi-issue-run / agent-cron-run arithmetic under set -u.
+[[ "${SPAWN_FAIL_MAX_S}" =~ ^[0-9]+$ ]] \
+  || fail "SPAWN_FAIL_MAX_S must be set after sourcing (got '${SPAWN_FAIL_MAX_S-}')"
+[[ "${SPAWN_FAIL_BACKOFF_S}" =~ ^[0-9]+$ ]] \
+  || fail "SPAWN_FAIL_BACKOFF_S must be set after sourcing (got '${SPAWN_FAIL_BACKOFF_S-}')"
+(( 1 < SPAWN_FAIL_MAX_S )) \
+  || fail "SPAWN_FAIL_MAX_S must be usable in (( )) under set -u"
+ok "spawn-fail defaults are set for set -u wrappers"
+
 # Nested CI hosts that do not depend on the deleted routing library.
 bash "$here/salvage-secret-scan.test.sh" || fail "salvage-secret-scan tests failed"
 bash "$here/pi-packet-verdict.test.sh" || fail "pi-packet-verdict tests failed"

@@ -33,6 +33,11 @@ trap 'rm -rf "$scratch"' EXIT INT TERM
 # shellcheck source=/dev/null
 source "$repo_root/lib/litellm-seat.sh"
 
+check "SPAWN_FAIL_MAX_S set after source" \
+    test "${SPAWN_FAIL_MAX_S}" -gt 0
+check "SPAWN_FAIL_BACKOFF_S set after source" \
+    test "${SPAWN_FAIL_BACKOFF_S}" -gt 0
+
 result=$(litellm_pick_seat "worker-cheap")
 check "litellm_pick_seat worker-cheap" \
     test "$result" = "$(printf 'litellm\tworker-cheap')"

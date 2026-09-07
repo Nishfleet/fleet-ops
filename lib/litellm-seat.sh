@@ -300,7 +300,7 @@ seat_hang_timeout_s() {
     if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
     [[ -f "$SEAT_CAPS_JSON" ]] || { echo 2520; return; }
     val=$(jq -r --arg p "$p" '.providers[$p].hang_timeout_s // empty' "$SEAT_CAPS_JSON" 2>/dev/null || true)
-    if [[ "$val" =~ ^[0-9]+$ ]] && (( val > 0 )); then
+    if [[ "$val" =~ ^[0-9]+$ ]] && (( val >= 60 )); then
         echo "$val"
         return
     fi
@@ -416,6 +416,13 @@ seat_usable() {
     return 0
 }
 
+# Wrappers (pi-issue-run, agent-cron-run) compare spawn_elapsed_s against
+# these under `set -u`. Defaults lived in the deleted routing library;
+# without them CI dies at `(( spawn_elapsed_s < SPAWN_FAIL_MAX_S ))`.
+SPAWN_FAIL_BACKOFF_S="${SPAWN_FAIL_BACKOFF_S:-300}"
+SPAWN_FAIL_MAX_S="${SPAWN_FAIL_MAX_S:-120}"
+SPAWN_FAIL_BACKOFF_CAP_S="${SPAWN_FAIL_BACKOFF_CAP_S:-3600}"
+
 # Verdict-path stubs. Cooldown lives in the proxy; wrappers still call these
 # so a failure is logged without writing routing ledgers.
 mark_seat_spawn_fail() { seat_log "mark_seat_spawn_fail: $* (proxy cooldown owns routing)"; return 0; }
@@ -432,4 +439,39 @@ is_mid_session_death() { return 1; }
 is_overload_error() { return 1; }
 is_quota_error() { return 1; }
 is_quota_cap_error() { return 1; }
-classify_death_error() { echo ""; return 1; }
+_seat_is_benched() { return 1; }
+_seat_merge_error_class() { return 0; }
+
+# Observability only (fleet-ops#3766). Class matchers above are stubs, so
+# the class is unknown unless the hang_etimedout grep hits. The literal
+# still lands on PACKET-VERDICT; the proxy owns cooldown.
+classify_death_error() {
+    local out="${1:-}" err="${2:-}" sess="${3:-}"
+    local out_text="" err_text=""
+    [[ -n "$out" && -f "$out" ]] && out_text=$(cat "$out" 2>/dev/null || true)
+    [[ -n "$err" && -f "$err" ]] && err_text=$(cat "$err" 2>/dev/null || true)
+    local cls="unknown"
+    if is_quota_cap_error "$out_text" "$err_text"; then
+        cls="quota_cap"
+    elif is_overload_error "$out_text" "$err_text"; then
+        cls="overload_503"
+    elif is_spawn_etimeout "$out_text" "$err_text"; then
+        cls="spawn_etimeout"
+    elif is_mid_session_death "$err"; then
+        cls="mid_session_death"
+    elif [[ -n "$err_text" ]] && grep -qiE 'spawnSync.*ETIMEDOUT|ETIMEDOUT.*spawnSync' <<<"$err_text" 2>/dev/null; then
+        cls="hang_etimedout"
+    fi
+    local literal=""
+    if [[ -n "$err_text" ]]; then
+        literal=$(grep -E '^session-error:' <<<"$err_text" 2>/dev/null | tail -1 | sed 's/^session-error: //' | head -c 300 || true)
+    fi
+    if [[ -z "$literal" && -n "$err_text" ]]; then
+        literal=$(grep -vE '^[[:space:]]*$' <<<"$err_text" 2>/dev/null | tail -1 | head -c 300 || true)
+    fi
+    if [[ -z "$literal" && -n "$sess" && -f "$sess" ]]; then
+        literal=$(jq -r 'select(.message.stopReason? == "error") | .message.errorMessage // empty' "$sess" 2>/dev/null | tail -1 | head -c 300 || true)
+    fi
+    [[ -z "$literal" ]] && literal="(no error text captured)"
+    printf '%s\n%s\n' "$cls" "$literal"
+}
