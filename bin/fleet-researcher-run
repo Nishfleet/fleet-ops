@@ -84,7 +84,14 @@ command -v jq >/dev/null 2>&1 || { log "FATAL: jq missing"; exit 2; }
 python3 "$LIB" init --state "$state" >/dev/null
 
 # --- pick a cheap/free seat, or load a drill fixture -----------------------
+# fleet-ops#4130 P3a: PI_SEAT_SOURCE=litellm routes this caller to the
+# LiteLLM proxy group (worker-cheap) instead of the seat-lib ladder.
+# Default seat-lib is unchanged.
 pick_researcher_seat() {
+    if [ "${PI_SEAT_SOURCE:-seat-lib}" = "litellm" ]; then
+        printf 'litellm\tworker-cheap\n'
+        return 0
+    fi
     if [ -f "$SEAT_LIB" ]; then
         # shellcheck source=/dev/null
         source "$SEAT_LIB"

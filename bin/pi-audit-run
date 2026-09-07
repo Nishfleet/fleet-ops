@@ -296,6 +296,13 @@ resolve_senior_seat() {
 
 resolve_seat() {
     local role="$1"
+    # fleet-ops#4130 P3a: PI_SEAT_SOURCE=litellm routes the auditor to the
+    # LiteLLM proxy group (worker-cheap) instead of the seat-lib ladder.
+    # Default seat-lib is unchanged.
+    if [ "${PI_SEAT_SOURCE:-seat-lib}" = "litellm" ]; then
+        printf 'litellm\tworker-cheap\n'
+        return 0
+    fi
     case "$role" in
         devin)
             if [ -n "${AUDIT_DEVIN_SEAT:-}" ]; then
