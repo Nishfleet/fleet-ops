@@ -359,7 +359,7 @@ groups:
           service: host
         annotations:
           summary: "load1 above 3x core count for 2m — restart storm likely"
-          description: "node_load1 > 3 * count(idle cpus) (3x nproc). Fast deterministic brake fires; LLM root-cause follows via STOP-REASON."
+          description: "node_load1 > 3 * count(idle cpus) (3x nproc). Prevented by oomd + CPUWeight/IOWeight + cgroup scoping; if it still fires, alert-repair-dispatch root-causes it."
 
       - alert: SustainedLoadHigh
         expr: node_load15 > 6

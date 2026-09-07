@@ -113,7 +113,6 @@ endorsement found.
 | vps-maintenance-deadman | 2026-08-25 | `vps-maintenance-deadman` | issue body: known-mandatory; ledger systemd-by-default |
 | vps-maintenance-quiesce | 2026-08-25 | `vps-maintenance-quiesce` | vps-maintenance family |
 | vps-weekly-update | (no journal yet) | `vps-weekly-update` | ledger TOP GEAR; repo drop-in override |
-| agent-governor-orphan-watchdog | 2026-08-22 | `agent-orphan-watchdog` | issue body: known-mandatory |
 | fleet-completion-canary | 2026-08-27 | `fleet-completion-canary` | registered organ (fleet-organs.json); #468 |
 | fleet-metrics-export | 2026-08-23 | `fleet-metrics-export.py` | registered organ (metrics-export); repo drop-in override |
 

@@ -175,7 +175,6 @@ ISSUE_EVIDENCE_REPOS_FILE = os.environ.get(
 SKIP_FIRING = {
     "Watchdog",
     "FleetTestAlert",
-    "LoadStorm",
     # Anti-recursion: this canary's own organ-absence / stall rails. A
     # missing fleet_chain_open is fixed by THIS process exporting it, not
     # by spawning an alert-repair worker to rebuild the canary.

@@ -51,11 +51,6 @@ CLASS_PARK_DIR = Path(os.environ.get(
     "CLASS_PARK_DIR",
     "/home/nish/workspaces/agent-state/fleet-completion-canary/open",
 ))
-# LoadStorm is handled deterministically by load-storm-brake (wired in
-# prometheus-am-executor config.yml via match_labels). The LLM root-cause
-# worker for that class comes AFTER, via the STOP-REASON.json the brake
-# writes — never a direct dispatch. Listed here as defense in depth: even
-# if a LoadStorm alert reaches this command, it must not spawn an LLM worker.
 # CanaryDrill is the synthetic stalled-chain probe used by
 # fleet-completion-canary (packet 11, fleet-ops#468) — also must not
 # spawn a real repair worker; the canary drives the drill by faking a
@@ -74,7 +69,7 @@ CLASS_PARK_DIR = Path(os.environ.get(
 # and escalating — the 'chain ran and failed to clear it' loop).
 # severity=none is not enough: this dispatcher keys on alertname, not
 # severity, so the name must live in SKIP_SET or a firing trend pages.
-SKIP_SET = {"Watchdog", "FleetTestAlert", "LoadStorm", "CanaryDrill",
+SKIP_SET = {"Watchdog", "FleetTestAlert", "CanaryDrill",
            "WasteRatioRising", "FleetSloSeatAvailSlowBurn",
            # WFR-input slow-burn SLO (fleet-ops#1291/2429): the main_green
            # burn-rate rule is a lagging integrator — it clears only when
