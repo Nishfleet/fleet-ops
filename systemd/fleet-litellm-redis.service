@@ -11,7 +11,7 @@ ConditionPathExists=/etc/redis/redis.conf
 [Service]
 Type=simple
 Slice=app-litellm-redis.slice
-ExecStart=/usr/bin/redis-server /etc/redis/redis.conf --bind 127.0.0.1 --maxmemory 128mb --maxmemory-policy allkeys-lru --port 6379
+ExecStart=/usr/bin/env /usr/bin/redis-server /etc/redis/redis.conf --bind 127.0.0.1 --maxmemory 128mb --maxmemory-policy allkeys-lru --port 6379
 Restart=on-failure
 RestartSec=2s
 TimeoutStopSec=10

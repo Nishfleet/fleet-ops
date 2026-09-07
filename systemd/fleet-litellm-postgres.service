@@ -15,7 +15,7 @@ Slice=app-litellm-postgres.slice
 # pins the slice + memory ceiling. ExecStart re-execs the distro
 # postgres. The live deploy symlinks this into ~/.config/systemd/user
 # only after the apt install (runbook step 4).
-ExecStart=/usr/lib/postgresql/14/bin/postgres -D /var/lib/postgresql/14/main -c config_file=/etc/postgresql/14/main/postgresql.conf
+ExecStart=/usr/bin/env /usr/lib/postgresql/14/bin/postgres -D /var/lib/postgresql/14/main -c config_file=/etc/postgresql/14/main/postgresql.conf
 Restart=on-failure
 RestartSec=3s
 TimeoutStopSec=30

@@ -25,7 +25,7 @@ Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=LITELLM_PROXY_CONFIG=%h/.config/fleet-ops/litellm-proxy.yaml
 # Loopback only — never expose the proxy on a public interface. Pi speaks
 # to it over 127.0.0.1:4000.
-ExecStart=/home/nish/.local/venvs/litellm/bin/litellm --config ${LITELLM_PROXY_CONFIG} --port 4000 --host 127.0.0.1
+ExecStart=/usr/bin/env /home/nish/.local/venvs/litellm/bin/litellm --config ${LITELLM_PROXY_CONFIG} --port 4000 --host 127.0.0.1
 # Restart on any failure (import error, bind conflict, upstream crash).
 # 2s delay so the journalctl storm is bounded; systemd caps the storm
 # with StartLimit* below. The P4 drill proves workers fail loud <60s
