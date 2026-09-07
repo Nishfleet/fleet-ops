@@ -684,3 +684,15 @@ bash "$here/venue-claim-open-question-deleted.test.sh"
 # worker App cannot push .github/workflows/**). Hermetic (repo-only checks,
 # no gh/prometheus/systemd).
 bash "$here/hermes-staff-deleted.test.sh"
+
+# fleet-ops#4150 (child of #4140 row 11): the hand-built oracle-* scripts
+# (live-only OCI Always Free ARM capacity poller + bootstrap provisioner)
+# were retired. Hosted here so P14 runs the deletion pin without a
+# workflow-file edit. Hermetic (repo-only checks).
+bash "$here/oracle-scripts-deleted.test.sh"
+
+# fleet-ops#4150 (child of #4140 row 11): the hand-built 0509-surface-probe
+# (live-only authenticated surface-matrix probe duplicating 0509 CI) was
+# retired. Hosted here so P14 runs the deletion pin without a workflow-file
+# edit. Hermetic (repo-only checks).
+bash "$here/0509-surface-probe-deleted.test.sh"

@@ -191,7 +191,10 @@ timers are deleted with their replacement issues.
 - `0509-surface-probe` (163): hand-built authenticated surface-matrix probe.
   Verdict: **GO (retired 2026-09-07, #1150)** — wiped and vault entry
   appended; replaced by 0509 CI `e2e/surface-audit.mjs` +
-  `cross-browser-matrix.yml`.
+  `cross-browser-matrix.yml`. Stale prom writers
+  (`fleet-surface-probe-0050.prom`, `fleet-surface-probe-0509.prom`) wiped
+  from `/var/lib/prometheus/node-exporter/` 2026-09-07; no `fleet_probe` /
+  `fleet_surface_probe` rule remains in `config/fleet_rules.yml`.
 
 ## 6. Total hand-built lines after the GO rows land
 
