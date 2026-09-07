@@ -285,8 +285,12 @@ gh_rl_pre_skip_pct="${PI_INTAKE_GH_RATE_LIMIT_SKIP_PCT:-10}"
 if [[ -r "$gh_rl_pre_path" ]]; then
     _gh_rl_pre_json=$(cat "$gh_rl_pre_path" 2>/dev/null) || _gh_rl_pre_json=
     if [[ -n "$_gh_rl_pre_json" ]]; then
-        _gh_rl_pre_remaining=$(printf '%s' "$_gh_rl_pre_json" | jq -r '.remaining // 0' 2>/dev/null) || _gh_rl_pre_remaining=0
-        _gh_rl_pre_limit=$(printf '%s' "$_gh_rl_pre_json" | jq -r '.limit // 0' 2>/dev/null) || _gh_rl_pre_limit=0
+        # Prefer resources.core: the exporter MIN-aggregates remaining/limit
+        # across core/search/graphql, so top-level is the search floor (30/30)
+        # while REST core is ~5000. The #4352 pre-check remaining<500 then
+        # skipped every tick. Fall back to top-level for old sidecars.
+        _gh_rl_pre_remaining=$(printf '%s' "$_gh_rl_pre_json" | jq -r '.resources.core.remaining // .remaining // 0' 2>/dev/null) || _gh_rl_pre_remaining=0
+        _gh_rl_pre_limit=$(printf '%s' "$_gh_rl_pre_json" | jq -r '.resources.core.limit // .limit // 0' 2>/dev/null) || _gh_rl_pre_limit=0
         _gh_rl_pre_fetched=$(printf '%s' "$_gh_rl_pre_json" | jq -r '.fetched_at // 0' 2>/dev/null) || _gh_rl_pre_fetched=0
         _gh_rl_pre_now=$(date +%s)
         _gh_rl_pre_age=$(( _gh_rl_pre_now - ${_gh_rl_pre_fetched%.*} ))

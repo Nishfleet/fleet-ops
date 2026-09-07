@@ -141,6 +141,7 @@ run_tick() {
         HOME="$scratch" \
         XDG_RUNTIME_DIR="$scratch/run" \
         PI_INTAKE_LOCKDIR="$scratch" \
+        PI_INTAKE_DEBOUNCE_SEC=0 \
         PI_INTAKE_RECONCILER_PROM="$scratch/reconciler" \
         PI_INTAKE_GH_RATE_LIMIT_STATE="$scratch/gh-rate-limit.json" \
         PI_INTAKE_GH_RATE_LIMIT_MAX_AGE="$max_age" \
@@ -213,6 +214,7 @@ run_tick_precheck() {
         HOME="$scratch" \
         XDG_RUNTIME_DIR="$scratch/run" \
         PI_INTAKE_LOCKDIR="$scratch" \
+        PI_INTAKE_DEBOUNCE_SEC=0 \
         PI_INTAKE_RECONCILER_PROM="$scratch/reconciler" \
         PI_INTAKE_GH_RATE_LIMIT_STATE="$scratch/gh-rate-limit.json" \
         PI_INTAKE_GH_RATE_LIMIT_MAX_AGE="120" \
@@ -261,6 +263,74 @@ echo "$out" | grep -qF 'rate-limit headroom low, skipping intake tick' && fail "
 grep -qF 'issue list' "$scratch/gh-calls.log" || fail "pre-check healthy tick must reach gh issue list: $(cat "$scratch/gh-calls.log" 2>/dev/null)"
 ok "pre-check healthy headroom does not skip; tick reaches gh"
 
+# fleet-ops#2523 follow-up: the live sidecar MIN-aggregates remaining/limit
+# across core/search/graphql, so top-level is search 30/30 while core is
+# healthy (~4800/5000). The pre-check comment says it gates on the CORE
+# budget. Reading top-level remaining<500 skipped every tick (observed
+# 2026-09-07T18:21:56Z remaining=30/30 headroom=100%). Prefer
+# .resources.core, fall back to top-level for old sidecars.
+write_state_core_nested() {
+    local core_rem="$1" core_lim="$2" top_rem="$3" top_lim="$4"
+    cat >"$scratch/gh-rate-limit.json" <<JSON
+{
+  "low": 0,
+  "remaining": $top_rem,
+  "limit": $top_lim,
+  "reset": $(( $(date +%s) + 3600 )),
+  "fetched_at": $(date +%s),
+  "resources": {
+    "core": {"remaining": $core_rem, "limit": $core_lim, "reset": $(( $(date +%s) + 3600 )), "low": 0},
+    "search": {"remaining": $top_rem, "limit": $top_lim, "reset": $(( $(date +%s) + 60 )), "low": 0},
+    "graphql": {"remaining": 4000, "limit": 5000, "reset": $(( $(date +%s) + 3600 )), "low": 0}
+  }
+}
+JSON
+}
+
+run_tick_core_nested() {
+    local core_rem="$1" core_lim="$2" top_rem="$3" top_lim="$4"
+    write_state_core_nested "$core_rem" "$core_lim" "$top_rem" "$top_lim"
+    rm -f "$scratch/gh-calls.log"
+    mkdir -p "$scratch/secondary" "$scratch/pi-issues" "$scratch/rl-skip"
+    env \
+        GITHUB_ACTIONS=true \
+        PATH="$stubs:${PATH}" \
+        HOME="$scratch" \
+        XDG_RUNTIME_DIR="$scratch/run" \
+        PI_INTAKE_LOCKDIR="$scratch" \
+        PI_INTAKE_DEBOUNCE_SEC=0 \
+        PI_INTAKE_RECONCILER_PROM="$scratch/reconciler" \
+        PI_INTAKE_GH_RATE_LIMIT_STATE="$scratch/gh-rate-limit.json" \
+        PI_INTAKE_GH_RATE_LIMIT_MAX_AGE="120" \
+        PI_INTAKE_GH_SECONDARY_STATE_DIR="$scratch/secondary" \
+        PI_INTAKE_ISSUE_STATE_DIR="$scratch/pi-issues" \
+        PI_INTAKE_RL_SKIP_PROM="$scratch/rl-skip/fleet-intake-tick-skipped-rate-limit" \
+        GH_CALL_LOG="$scratch/gh-calls.log" \
+        SEAT_LIB="$stubs" \
+        PRECEDENCE_BAND_LIB="$stubs" \
+        PRIOR_ART_CLAIM_CHECK="$prior_art_stub" \
+        FLEET_ISSUE_REPO="Nishfleet/fleet-ops" \
+        bash "$tick" fleet-ops 2>&1
+}
+
+# Test 3e: live sidecar shape (search 30/30 at top-level, core healthy) must NOT skip
+out="$(run_tick_core_nested 4839 5000 30 30)"
+rc=$?
+[[ "$rc" == "0" ]] || fail "live-shape healthy-core tick must exit 0, got rc=$rc"
+echo "$out" | grep -qF 'rate-limit headroom low, skipping intake tick' && fail "live-shape healthy core must NOT skip (top-level is search 30/30): $out" || true
+grep -qF 'issue list' "$scratch/gh-calls.log" || fail "live-shape healthy core must reach gh issue list: $(cat "$scratch/gh-calls.log" 2>/dev/null)"
+ok "pre-check uses resources.core; search-min top-level 30/30 does not skip"
+
+# Test 3f: nested core actually low (100/5000) still skips even if top-level looks 100%
+out="$(run_tick_core_nested 100 5000 30 30)"
+rc=$?
+[[ "$rc" == "0" ]] || fail "nested-core-low tick must exit 0, got rc=$rc"
+echo "$out" | grep -qF 'rate-limit headroom low, skipping intake tick' || fail "nested core 100/5000 must skip: $out"
+if [[ -s "$scratch/gh-calls.log" ]]; then
+    fail "nested-core-low tick must NOT call gh, but gh was called: $(cat "$scratch/gh-calls.log")"
+fi
+ok "pre-check still skips when resources.core remaining is actually low"
+
 # --- fleet-ops#3445 secondary rate-limit gate -----------------------------
 
 write_secondary() {
@@ -282,6 +352,7 @@ run_tick_quiet() {
         HOME="$scratch" \
         XDG_RUNTIME_DIR="$scratch/run" \
         PI_INTAKE_LOCKDIR="$scratch" \
+        PI_INTAKE_DEBOUNCE_SEC=0 \
         PI_INTAKE_RECONCILER_PROM="$scratch/reconciler" \
         PI_INTAKE_GH_RATE_LIMIT_STATE="$scratch/gh-rate-limit.json" \
         PI_INTAKE_GH_RATE_LIMIT_MAX_AGE="120" \
