@@ -627,5 +627,43 @@ grep -q "nish_body_resolved=0" "$scratch/run10b.stderr" \
     || fail "scenario 10: re-run must report 0 body_resolved (idempotent); stderr: $(cat "$scratch/run10b.stderr")"
 ok "scenario 10: re-run is idempotent (0 body_resolved on second pass)"
 
+# ---------------------------------------------------------------------------
+# Scenario 11: retired-mechanism regression (fleet-ops#4418). The drain's
+# STUCK-PACKET escalation reference must never point a stuck packet at a
+# retired mechanism. The retired-mechanisms ledger (vault) is the source of
+# truth. If the ledger is absent (hosted CI), skip this check rather than
+# inventing a stale snapshot.
+# ---------------------------------------------------------------------------
+retired_ledger="/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/retired-mechanisms.md"
+if [[ -f "$retired_ledger" ]]; then
+    # Extract mechanism names: text before the first '(', split on '+' and ':'.
+    # Also generate the fleet-prefix-stripped variant so a shortened
+    # reference (e.g. "completion-canary" for "fleet-completion-canary")
+    # is still caught.
+    mech_variants="$(grep '^\- ' "$retired_ledger" \
+        | sed 's/^\- //' | cut -d'(' -f1 \
+        | tr '+:' '\n' \
+        | sed 's/[[:space:]]*$//;s/^[[:space:]]*//' \
+        | grep -v '^$' \
+        | while IFS= read -r name; do
+            printf '%s\n' "$name"
+            [[ "$name" == fleet-* ]] && printf '%s\n' "${name#fleet-}"
+            true
+          done \
+        | sort -u)"
+    stuck_line="$(grep 'STUCK-PACKET' "$bin" || true)"
+    [[ -n "$stuck_line" ]] \
+        || fail "scenario 11: drain must have a STUCK-PACKET escalation line"
+    while IFS= read -r name; do
+        [[ -z "$name" ]] && continue
+        if echo "$stuck_line" | grep -qi "$name"; then
+            fail "scenario 11: drain STUCK-PACKET line references retired mechanism '$name' (retired-mechanisms ledger)"
+        fi
+    done <<< "$mech_variants"
+    ok "scenario 11: drain STUCK-PACKET line references no retired mechanism (ledger source of truth)"
+else
+    echo "SKIP: retired-mechanisms ledger absent (hosted CI) — skipping retired-mechanism regression"
+fi
+
 echo
-echo "fleet-escalation-drain: all scenarios passed (fleet-ops#2677 + #2773 + #3996)"
+echo "fleet-escalation-drain: all scenarios passed (fleet-ops#2677 + #2773 + #3996 + #4418)"

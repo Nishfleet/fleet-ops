@@ -775,9 +775,10 @@ drain_nish_conditions() {
 # older than FLEET_ESCALATION_DRAIN_STUCK_AGE_S (default 6h, fleet-ops#2677)
 # with no terminal record is a genuinely STUCK chain — the drain flags it
 # LOUD on stderr so the hourly journal (inherited by the escalation
-# ladder) makes the failure visible; the completion canary's stall budget
-# (24h) is the slower follow-up that eventually escalates a stuck chain
-# into STOP-REASON. A loud flag at 6h, never a silent delete.
+# ladder) makes the failure visible; the Prometheus/Alertmanager absent()
+# pipeline (the #4146 replacement for the retired completion-canary
+# stall ladder) escalates a stuck chain. A loud flag at 6h, never a
+# silent delete.
 #
 # Skip-list: packet files without a `<alert>-<ts>.md` timestamp suffix are
 # canary / guard scaffolding packets with no webhook dispatch (e.g.
@@ -858,7 +859,7 @@ drain_packets() {
         for s in "${stuck[@]:0:10}"; do
             head_line="$head_line $s"
         done
-        log "LOUD [STUCK-PACKET] $n_stuck webhook packet(s) older than ${STUCK_AGE_S}s have NO terminated chain in $TERMINATED — drain leaves them (never silently delete); completion-canary stall ladder must escalate:$head_line"
+        log "LOUD [STUCK-PACKET] $n_stuck webhook packet(s) older than ${STUCK_AGE_S}s have NO terminated chain in $TERMINATED — drain leaves them (never silently delete); left for the Prometheus/Alertmanager absent() pipeline to escalate:$head_line"
     fi
 }
 
