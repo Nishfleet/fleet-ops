@@ -561,6 +561,82 @@ PY
 ok "(m) LabelConnection retry keeps merged_24h flowing (fleet-ops#4039)"
 
 # =========================================================================
+# (n) fleet-ops#4073: the LabelConnection schema error also surfaces as a
+# non-2xx HTTP status, so `gh api graphql` exits rc!=0 with the error on
+# stderr (observed in production at 2026-09-06T23:15Z: `gh graphql rc=1:
+# gh: Field 'name' doesn't exist on type 'LabelConnection'`). The #4102
+# payload-error retry (test m) checks payload.get("errors") and never fires
+# on the rc!=0 path — _gh_graphql returned None and stale cache was served,
+# so merged_24h drifted and ConsoleLying re-fired. This test's mock gh exits
+# rc=1 with the LabelConnection error on STDERR when the query carries
+# `labels(first:`, and returns valid merged-PR data (no labels) when it does
+# not. The exporter must retry without labels and still return PRs.
+# =========================================================================
+mock_gh_rc="$scratch/gh-labelconnection-rc"
+cat >"$mock_gh_rc" <<'PY'
+#!/usr/bin/env python3
+import json, sys
+payload = json.load(sys.stdin)
+query = payload.get("query", "")
+# Page 1 with labels -> rc=1 + LabelConnection on stderr (the production
+# gateway-bug shape that bypassed #4102's payload-error retry).
+if "labels(first: 20)" in query:
+    sys.stderr.write(
+        "gh: Field 'name' doesn't exist on type 'LabelConnection'\n"
+    )
+    sys.exit(1)
+# Valid response once labels are stripped: one non-revert merge in 24h.
+now = 1788350400  # 2026-09-02T12:00:00Z (matches NOW_ISO)
+nodes = [
+    {
+        "number": 31,
+        "title": "feat: shipped today (rc-variant)",
+        "headRefName": "claim/issue-31",
+        "mergedAt": "2026-09-02T08:00:00Z",
+        "repository": {"nameWithOwner": "Nishfleet/0509"},
+        "closingIssuesReferences": {"nodes": [
+            {"number": 30, "createdAt": "2026-09-01T08:00:00Z"}
+        ]},
+    },
+]
+print(json.dumps({"data": {"search": {
+    "pageInfo": {"hasNextPage": False, "endCursor": None},
+    "nodes": nodes,
+}}}))
+PY
+chmod +x "$mock_gh_rc"
+
+CACHE_4073="$scratch/product-slo-cache-4073.json"
+FLEET_PRODUCT_SLO_GH="$mock_gh_rc" \
+FLEET_PRODUCT_SLO_CACHE="$CACHE_4073" \
+FLEET_PRODUCT_SLO_NOW="$NOW_ISO" \
+FLEET_PRODUCT_SLO_OUT="$scratch/out-4073.prom" \
+  python3 - "$helper" <<'PY' || fail "LabelConnection rc!=0 retry failed"
+import importlib.util, json, os, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("fps", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+sys.modules["fps"] = m
+spec.loader.exec_module(m)
+
+now = m.parse_iso("2026-09-02T12:00:00Z")
+repos = ["0509"]
+prs = m.load_merged_prs(now, repos)
+assert prs is not None, "load_merged_prs returned None — rc!=0 LabelConnection retry did not fire"
+assert len(prs) == 1, f"expected 1 PR, got {len(prs)}"
+# merged_24h: the one non-revert merge counts.
+slo = m.compute_repo_slo("0509", prs, now_ts=now.timestamp())
+assert slo.merged_24h == 1, f"merged_24h want 1, got {slo.merged_24h}"
+# defect_issue_created_ts degrades to None (labels stripped).
+for p in prs:
+    assert p.defect_issue_created_ts is None, "labels stripped path must not set defect_issue_created_ts"
+cache = json.loads(Path(os.environ["FLEET_PRODUCT_SLO_CACHE"]).read_text())
+assert "prs" in cache and len(cache["prs"]) == 1, "cache must hold the 1 PR"
+print("OK: LabelConnection rc!=0 retry — merged_24h=1 preserved, defect metric degraded to 0")
+PY
+ok "(n) LabelConnection rc!=0/stderr retry keeps merged_24h flowing (fleet-ops#4073)"
+
+# =========================================================================
 # promtool (optional)
 # =========================================================================
 if command -v promtool >/dev/null 2>&1; then

@@ -233,7 +233,27 @@ REPO_MERGED_SEARCH = MERGED_SEARCH.replace(
 # page without the labels subquery so the delivery metric keeps flowing and
 # the stale-cache drift that disputed the tile (ConsoleLying) cannot happen.
 # Stripping this substring leaves `nodes { number createdAt }`, still valid.
+#
+# fleet-ops#4073: the gateway surfaces the same schema error in TWO shapes:
+#   (a) HTTP 200 with {"errors": [...]} in the JSON body (rc=0) — #4102's
+#       payload-error retry handles this.
+#   (b) a non-2xx HTTP status so `gh api graphql` exits rc!=0 with the error
+#       on stderr — observed in production at 2026-09-06T23:15Z
+#       (`gh graphql rc=1: gh: Field 'name' doesn't exist on type
+#       'LabelConnection'`). The rc!=0 path returned None and served stale
+#       cache WITHOUT triggering #4102's retry, so merged_24h drifted and
+#       ConsoleLying re-fired. _gh_graphql now raises LabelConnectionError
+#       on the rc!=0/stderr variant so _search_merged_prs retries without
+#       labels on both shapes.
 _LABELS_SUBQUERY = " labels(first: 20) { nodes { name } }"
+
+
+class LabelConnectionError(Exception):
+    """GitHub GraphQL gateway rejected the nested labels subquery (rc!=0).
+
+    The rc=0/payload variant is detected inline in _search_merged_prs; this
+    exception covers the rc!=0/stderr variant (fleet-ops#4073).
+    """
 
 
 def _strip_labels(query: str) -> str:
@@ -387,9 +407,17 @@ def _gh_graphql(query: str, cursor: str | None) -> dict[str, Any] | None:
         print(f"product-slo: gh graphql failed: {exc}", file=sys.stderr)
         return None
     if proc.returncode != 0:
+        stderr_text = (proc.stderr or proc.stdout)[:300]
+        # fleet-ops#4073: the LabelConnection schema error can surface as a
+        # non-2xx HTTP status (gh exits rc!=0 with the error on stderr),
+        # not only as a 200/{"errors":...} payload. Raise so the caller can
+        # retry without the labels subquery on both shapes; a non-Label
+        # rc!=0 stays a generic None (serves stale cache, next tick retries).
+        if "LabelConnection" in stderr_text:
+            raise LabelConnectionError(stderr_text[:160])
         print(
             f"product-slo: gh graphql rc={proc.returncode}: "
-            f"{(proc.stderr or proc.stdout)[:300]}",
+            f"{stderr_text}",
             file=sys.stderr,
         )
         return None
@@ -402,14 +430,38 @@ def _gh_graphql(query: str, cursor: str | None) -> dict[str, Any] | None:
 def _search_merged_prs(query: str) -> list[MergedPR] | None:
     out: list[MergedPR] = []
     cursor: str | None = None
-    # fleet-ops#4039: GitHub's GraphQL gateway intermittently rejects the
-    # nested labels subquery with a LabelConnection schema error. The labels
-    # data feeds only defect_issue_created_ts (a quality metric); retry the
-    # failing page without labels so merged_24h (the tile source) keeps
-    # flowing. Once stripped, stay stripped for the rest of pagination.
+    # fleet-ops#4039 / #4073: GitHub's GraphQL gateway intermittently rejects
+    # the nested labels subquery with a LabelConnection schema error, in TWO
+    # shapes — a 200/{"errors":...} payload (rc=0) and a non-2xx/rc!=0 with
+    # the error on stderr. The labels data feeds only defect_issue_created_ts
+    # (a quality metric); retry the failing page without labels so merged_24h
+    # (the tile source) keeps flowing. Once stripped, stay stripped for the
+    # rest of pagination.
     active_query = query
     for _ in range(GH_PAGES):
-        payload = _gh_graphql(active_query, cursor)
+        try:
+            payload = _gh_graphql(active_query, cursor)
+        except LabelConnectionError as e:
+            # fleet-ops#4073: rc!=0/stderr variant. Retry without labels the
+            # same way the payload variant below does; a non-label rc!=0
+            # stays a generic None (handled before reaching here).
+            if active_query is query:
+                stripped = _strip_labels(query)
+                if stripped != query:
+                    print(
+                        "product-slo: GitHub GraphQL LabelConnection error "
+                        f"(rc!=0: {e}); retrying without labels subquery "
+                        "(defect metric degrades, merged_24h preserved) "
+                        "— fleet-ops#4073",
+                        file=sys.stderr,
+                    )
+                    active_query = stripped
+                    continue  # retry this page without labels
+            print(
+                f"product-slo: graphql LabelConnection rc error: {e}",
+                file=sys.stderr,
+            )
+            return None
         if payload is None:
             return None
         if payload.get("errors"):
