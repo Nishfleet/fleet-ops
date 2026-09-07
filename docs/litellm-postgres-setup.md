@@ -11,49 +11,103 @@ that a new organ needs Nish's endorsement, which he gave 2026-09-07 for
 the program, and the live install is the moment the organ starts
 running.
 
-## 1. Postgres (local socket only, MemoryMax=1G)
+## 0. Disable the distro Postgres + Redis (if present)
+
+The organ runs its OWN fleet-owned Postgres + Redis as user systemd
+daemons (Nish, 2026-09-07 reopen of fleet-ops#4174). The distro system
+services are NOT used and must be stopped + disabled so they do not
+hold port 5432 / 6379. An earlier live-install attempt used the distro
+services with the fleet units as oneshot readiness markers — that shape
+is rejected (Postgres/Redis showed `active (exited)` instead of
+`active (running)`). Skip this step only if the distro packages were
+never installed.
 
 ```sh
-sudo apt update
-sudo apt install -y postgresql postgresql-contrib
-# Socket-only: ensure /etc/postgresql/14/main/postgresql.conf has
-#   listen_addresses = ''
-# (default on Debian is already loopback; set to '' for socket-only).
-sudo systemctl stop postgresql
-sudo sed -i "s/^#*listen_addresses.*/listen_addresses = ''/" /etc/postgresql/14/main/postgresql.conf
-sudo systemctl start postgresql
-# Create the litellm DB + user (no password — socket auth).
-sudo -u postgres createuser -d litellm
-sudo -u postgres createdb -O litellm litellm
-# Prove the socket works:
-pg_isready -h /var/run/postgresql
-#  /var/run/postgresql:5432 - accepting connections
+sudo systemctl stop redis-server.service postgresql@16-main.service 2>/dev/null
+sudo systemctl disable redis-server.service postgresql@16-main.service postgresql.service 2>/dev/null
+# Confirm the ports are free:
+ss -tlnp | grep -E '5432|6379'   # (empty)
 ```
 
-The `fleet-litellm-postgres.service` unit wraps the distro postgres in
-the `app-litellm-postgres.slice` (`MemoryMax=1G`). Enable it after the
-apt install:
+## 1. Postgres (fleet-owned cluster, loopback 127.0.0.1:5432, MemoryMax=1G)
+
+The cluster lives at `~/.local/share/fleet-litellm-postgres`, owned by
+the user (NOT the distro `/var/lib/postgresql`). The
+`fleet-litellm-postgres.service` unit runs `postgres -D` against it as a
+real long-running daemon in `app-litellm-postgres.slice`
+(`MemoryMax=1G`). The proxy `Requires=`+`After=` it.
+
+```sh
+# The postgres client binaries ship in the postgresql apt package; the
+# server binary is in postgresql-16. Install once (no system service use):
+sudo apt install -y postgresql-16 postgresql-client-16
+
+PGDATA=$HOME/.local/share/fleet-litellm-postgres
+mkdir -p "$(dirname "$PGDATA")"
+# initdb a fresh user-owned cluster (trust auth — loopback-only organ).
+/usr/lib/postgresql/16/bin/initdb -D "$PGDATA" \
+  --auth-local=trust --auth-host=trust --encoding=UTF8 --locale=C
+# Loopback-only listener + user-owned socket dir.
+cat >> "$PGDATA/postgresql.conf" <<EOF
+listen_addresses = '127.0.0.1'
+port = 5432
+unix_socket_directories = '$PGDATA/run'
+EOF
+mkdir -p "$PGDATA/run"
+# Start it once to create the litellm role + DB, then stop (the unit
+# owns the long-running process from here).
+/usr/lib/postgresql/16/bin/pg_ctl -D "$PGDATA" -l "$PGDATA/start.log" -w start
+psql -h 127.0.0.1 -p 5432 -U "$USER" -d postgres -c "CREATE ROLE litellm WITH LOGIN CREATEDB;"
+psql -h 127.0.0.1 -p 5432 -U "$USER" -d postgres -c "CREATE DATABASE litellm OWNER litellm;"
+/usr/lib/postgresql/16/bin/pg_ctl -D "$PGDATA" -w stop
+# Prove the socket dir path the canary probes:
+pg_isready -h "$PGDATA/run"
+#  /home/nish/.local/share/fleet-litellm-postgres/run:5432 - accepting connections
+```
+
+Enable the fleet unit (real daemon, not a readiness marker):
 
 ```sh
 systemctl --user daemon-reload
 systemctl --user enable --now fleet-litellm-postgres.service
+systemctl --user status fleet-litellm-postgres.service   # Active: active (running)
 ```
 
-## 2. Redis (bind 127.0.0.1, maxmemory 128mb)
+## 2. Redis (fleet-owned, bind 127.0.0.1, maxmemory 128mb)
+
+The config lives at `~/.local/share/fleet-litellm-redis/redis.conf`,
+owned by the user (NOT the distro `/etc/redis/redis.conf`). The
+`fleet-litellm-redis.service` unit runs `redis-server` against it as a
+real long-running daemon in `app-litellm-redis.slice`
+(`MemoryMax=128M`). The proxy `Requires=`+`After=` it.
 
 ```sh
-sudo apt install -y redis-server
-# Bind loopback, cap memory. The unit passes --maxmemory 128mb on the
-# command line; the conf change is defence-in-depth.
-sudo sed -i 's/^bind .*/bind 127.0.0.1/' /etc/redis/redis.conf
-sudo systemctl restart redis-server
-redis-cli -h 127.0.0.1 PING   # PONG
+sudo apt install -y redis-tools   # redis-server binary is already on the host
+RD=$HOME/.local/share/fleet-litellm-redis
+mkdir -p "$RD"
+cat > "$RD/redis.conf" <<'EOF'
+bind 127.0.0.1
+port 6379
+protected-mode yes
+maxmemory 128mb
+maxmemory-policy allkeys-lru
+dir /home/nish/.local/share/fleet-litellm-redis
+dbfilename dump.rdb
+save ""
+appendonly no
+daemonize no
+supervised no
+loglevel notice
+EOF
 ```
 
-Enable the wrapper unit:
+Enable the fleet unit (real daemon, not a readiness marker):
 
 ```sh
+systemctl --user daemon-reload
 systemctl --user enable --now fleet-litellm-redis.service
+systemctl --user status fleet-litellm-redis.service   # Active: active (running)
+redis-cli -h 127.0.0.1 -p 6379 PING   # PONG
 ```
 
 ## 3. LiteLLM proxy (venv, port 127.0.0.1:4000)
@@ -107,16 +161,18 @@ curl -s http://127.0.0.1:9090/api/v1/rules | jq '.data.groups[].rules[].name' | 
 ## 5. Backup (Postgres)
 
 Add a `pg_dump` to the existing backup job (the fleet already has a
-backup organ; this adds one line):
+backup organ; this adds one line). The fleet-owned cluster socket is
+user-owned, so no sudo:
 
 ```sh
-# In the existing backup script:
-pg_dump -h /var/run/postgresql -U litellm litellm | gzip > /home/nish/workspaces/agent-state/backups/litellm-$(date -u +%Y%m%dT%H%M%SZ).sql.gz
+# In the existing backup script (fleet-owned cluster socket):
+pg_dump -h "$HOME/.local/share/fleet-litellm-postgres/run" -U litellm litellm \
+  | gzip > /home/nish/workspaces/agent-state/backups/litellm-$(date -u +%Y%m%dT%H%M%SZ).sql.gz
 # Retain per the existing backup rotation.
 ```
 
 The P4 drill proves Postgres-down → workers fail loud <60s, restore
-<10 min from this dump + the distro unit.
+<10 min from this dump + the fleet unit.
 
 ## Rollback (full)
 
@@ -124,11 +180,12 @@ The P4 drill proves Postgres-down → workers fail loud <60s, restore
 systemctl --user stop fleet-litellm-proxy fleet-litellm-postgres fleet-litellm-redis fleet-litellm-health-canary.timer
 systemctl --user disable fleet-litellm-proxy fleet-litellm-postgres fleet-litellm-redis fleet-litellm-health-canary.timer
 # Remove the litellm scrape job from config/prometheus.yml + reload prom.
-# Drop the DB:
-sudo -u postgres dropdb litellm
+# Drop the fleet-owned cluster (no sudo — it is user-owned):
+psql -h 127.0.0.1 -p 5432 -U "$USER" -d postgres -c "DROP DATABASE litellm;"
+rm -rf "$HOME/.local/share/fleet-litellm-postgres" "$HOME/.local/share/fleet-litellm-redis"
 # The venv + apt packages can stay (no running organ); remove if desired:
 # ~/.local/venvs/litellm/bin/pip uninstall litellm
-# sudo apt remove postgresql redis-server   # Nish's call
+# sudo apt remove postgresql-16 redis-tools   # Nish's call
 ```
 
 No consumer exists in P1 (P2 lands the first), so rollback has zero

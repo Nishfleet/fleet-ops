@@ -86,7 +86,9 @@ DEFAULT_STATE = Path(
     os.environ.get("FLEET_LITELLM_STATE", "/home/nish/workspaces/agent-state/litellm/health.json")
 )
 DEFAULT_TIMEOUT_S = float(os.environ.get("FLEET_LITELLM_TIMEOUT_S", "10"))
-DEFAULT_PG_HOST = os.environ.get("FLEET_LITELLM_PG_HOST", "/var/run/postgresql")
+DEFAULT_PG_HOST = os.environ.get(
+    "FLEET_LITELLM_PG_HOST", "/home/nish/.local/share/fleet-litellm-postgres/run"
+)
 DEFAULT_REDIS_HOST = os.environ.get("FLEET_LITELLM_REDIS_HOST", "127.0.0.1")
 DEFAULT_REDIS_PORT = os.environ.get("FLEET_LITELLM_REDIS_PORT", "6379")
 

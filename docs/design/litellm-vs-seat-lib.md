@@ -404,10 +404,17 @@ Shipped in P1:
 - `systemd/app-litellm.slice` / `app-litellm-postgres.slice` /
   `app-litellm-redis.slice` — dedicated slices so a DB bloat cannot
   push the proxy past its ceiling.
-- `systemd/fleet-litellm-postgres.service` + slice — distro Postgres,
-  `MemoryMax=1G`, local socket only.
-- `systemd/fleet-litellm-redis.service` + slice — distro Redis,
-  `MemoryMax=128M`, bind `127.0.0.1`.
+- `systemd/fleet-litellm-postgres.service` + slice — fleet-owned
+  Postgres cluster (`~/.local/share/fleet-litellm-postgres`), real
+  long-running daemon, `MemoryMax=1G`, loopback `127.0.0.1:5432` only.
+  The proxy `Requires=`+`After=` it (Nish, 2026-09-07 reopen: the
+  earlier distro-service + oneshot-readiness-marker shape left
+  Postgres/Redis as `active (exited)` and the proxy started before the
+  DB socket was up — rejected).
+- `systemd/fleet-litellm-redis.service` + slice — fleet-owned Redis
+  (`~/.local/share/fleet-litellm-redis/redis.conf`), real long-running
+  daemon, `MemoryMax=128M`, bind `127.0.0.1:6379`. The proxy
+  `Requires=`+`After=` it.
 - `config/litellm-proxy.yaml` — the router config from §2, with
   `api_key: command:...` placeholders (no real key in the repo). The
   live copy at `~/.config/fleet-ops/litellm-proxy.yaml` holds the

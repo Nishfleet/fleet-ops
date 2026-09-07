@@ -1,17 +1,24 @@
 [Unit]
 Description=Fleet LiteLLM Redis — router fast path (fleet-ops#4130 P1)
 Documentation=https://github.com/Nishfleet/fleet-ops/issues/4130
-# Redis for the LiteLLM router: cooldown cache + provider_budget_config
-# spend tracking across proxy restarts. Ephemeral state only — budgets
-# persist in Postgres. The live install (apt install redis-server,
-# bind 127.0.0.1, maxmemory 128mb) is Nish-gated; the runbook is
+# Fleet-owned Redis (NOT the distro redis-server system service). The
+# config lives at %h/.local/share/fleet-litellm-redis/redis.conf, owned
+# by the user, loopback-only on 127.0.0.1:6379, maxmemory 128mb. This is
+# a real long-running daemon — the proxy Requires= it and the canary
+# probes it. The distro redis-server system service is NOT used by this
+# organ (it was installed by an earlier live-install attempt and is now
+# redundant; the runbook disables it). Live install is in
 # docs/litellm-postgres-setup.md (Redis section).
-ConditionPathExists=/etc/redis/redis.conf
+ConditionPathExists=%h/.local/share/fleet-litellm-redis/redis.conf
 
 [Service]
 Type=simple
 Slice=app-litellm-redis.slice
-ExecStart=/usr/bin/env /usr/bin/redis-server /etc/redis/redis.conf --bind 127.0.0.1 --maxmemory 128mb --maxmemory-policy allkeys-lru --port 6379
+Environment=HOME=%h
+# The config pins bind 127.0.0.1, port 6379, maxmemory 128mb,
+# maxmemory-policy allkeys-lru. Ephemeral router state only — budgets
+# persist in Postgres.
+ExecStart=/usr/bin/redis-server %h/.local/share/fleet-litellm-redis/redis.conf
 Restart=on-failure
 RestartSec=2s
 TimeoutStopSec=10
