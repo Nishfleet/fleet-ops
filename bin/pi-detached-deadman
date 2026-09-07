@@ -110,6 +110,16 @@ with open(lock, "w") as lk:
         pass
     kept, changed = [], False
     for ln in lines:
+        # This family's HELP/TYPE pair is rewritten on every save, so a copy
+        # surviving from the previous content must be dropped. Keeping it made
+        # each write add another pair: the live textfile reached 27 HELP lines
+        # and node_exporter rejected the whole file ("second HELP line for
+        # metric name"), so DetachedJobDied could never fire. Other families'
+        # comments are kept untouched (fleet-ops#4266).
+        if ln.startswith("# HELP fleet_detached_job_died") or ln.startswith(
+            "# TYPE fleet_detached_job_died"
+        ):
+            continue
         if not ln.startswith("fleet_detached_job_died{"):
             kept.append(ln)
             continue

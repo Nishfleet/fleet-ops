@@ -15,6 +15,8 @@
 #   6. --clear <unit> clears the unit's died series by unit NAME (empty
 #      dispatch) and does not touch other units
 #   7. dry-run prints the verdict and writes nothing
+#   8. repeated write/clear cycles never duplicate the HELP/TYPE header
+#      (node_exporter rejects a textfile with a second HELP line)
 #
 # All hermetic: fake escalation writer, fake who-stopped, scratch textfile,
 # KEYSTONE_HC_ENV pointing at an unset-URL env file so ping fail-opens
@@ -119,4 +121,34 @@ printf '%s\n' "$out" | grep -q 'verdict=died' \
 [[ -s "$esc_log" ]] && fail "dry-run must not call the STOP-REASON writer"
 ok "dry-run prints verdict, writes nothing"
 
-echo "PASS: pi-detached-deadman verdict matrix (7 cases)"
+# --- 8. repeated writes never accumulate the HELP/TYPE header -----------------
+# Live regression (fleet-ops#4266): the read-modify-write kept the previous
+# content's header lines and prepended a fresh pair on every save, so the
+# production textfile reached 27 HELP lines and node_exporter rejected the
+# whole file ("second HELP line for metric name") — DetachedJobDied could
+# never fire. Five write+clear cycles must leave exactly one pair.
+: >"$tf"
+for i in 1 2 3 4 5; do
+    env "${common[@]}" PI_DEADMAN_DISPATCH="h$i" PI_DEADMAN_UNIT="u-hdr$i" \
+        PI_DEADMAN_CMDLINE="sleep 1" SERVICE_RESULT=exit-code \
+        "$deadman" 2>/dev/null || fail "header-cycle write $i must exit 0"
+    env "${common[@]}" "$deadman" --clear "u-hdr$i" 2>/dev/null \
+        || fail "header-cycle clear $i must exit 0"
+done
+help_lines=$(grep -c '^# HELP fleet_detached_job_died' "$tf" || true)
+type_lines=$(grep -c '^# TYPE fleet_detached_job_died' "$tf" || true)
+[[ "$help_lines" == "1" ]] \
+    || fail "10 writes must leave exactly one HELP line, got $help_lines: $(cat "$tf")"
+[[ "$type_lines" == "1" ]] \
+    || fail "10 writes must leave exactly one TYPE line, got $type_lines"
+ok "10 write/clear cycles leave one HELP/TYPE pair (no header accumulation)"
+
+if command -v promtool >/dev/null 2>&1; then
+    promtool check metrics <"$tf" >/dev/null 2>&1 \
+        || fail "textfile must parse as Prometheus text format after repeated writes"
+    ok "promtool parses the repeatedly-written textfile"
+else
+    echo "SKIP: promtool not installed (CI runner) — header-count assertion only"
+fi
+
+echo "PASS: pi-detached-deadman verdict matrix (8 cases)"
