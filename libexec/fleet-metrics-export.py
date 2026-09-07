@@ -2577,6 +2577,14 @@ def _escalations_24h():
         "fleet-orphan-reset-probe@*",
         "multi-*-sink.service",
         "pi-issue@*",
+        # fleet-ops#4266 detached dead-man: the writer refuses the scope.d
+        # anti-recursion scopes (init.scope, app-*.scope) and the live-dummy*
+        # dead-man PROOF units (a deliberate stop-without-deliverable is the
+        # verdict being proven, not a fault). Mirror the writer's refuse
+        # entries so the metric and writer cannot drift.
+        "init.scope",
+        "app-*.scope",
+        "live-dummy*",
         # Canaries / orchestrator organs: their deliberate fail-loud escalations
         # are expected, not a flapping worker.
         "fleet-heartbeat*",
