@@ -293,6 +293,20 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-spawn-guard-stash-readonly
   || fail "fleet-spawn-guard-stash-readonly.test.sh must not be a known orphan (fleet-ops#308)"
 ok "fleet-spawn-guard-stash-readonly.test.sh is pinned in the P14 reachable set (fleet-ops#308)"
 
+# fleet-ops#3126: hard-pin the host line for fleet-spawn-guard-provider-shim.
+# The devin/cursor provider-shim guard test is hosted by spawn-guard.test.sh
+# (same nested-CI pattern as stash-readonly, fleet-ops#308). Pin it by name so
+# a future drop of the host line cannot park it on known_orphans to silence
+# the generic $bad[] message.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-spawn-guard-provider-shim\.test\.sh"?' \
+  "$here/spawn-guard.test.sh" \
+  || fail "spawn-guard.test.sh must bash-invoke fleet-spawn-guard-provider-shim.test.sh (fleet-ops#3126)"
+[[ -n "${reachable[fleet-spawn-guard-provider-shim.test.sh]:-}" ]] \
+  || fail "fleet-spawn-guard-provider-shim.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#3126)"
+[[ -z "${known_orphan_set[fleet-spawn-guard-provider-shim.test.sh]:-}" ]] \
+  || fail "fleet-spawn-guard-provider-shim.test.sh must not be a known orphan (fleet-ops#3126)"
+ok "fleet-spawn-guard-provider-shim.test.sh is pinned in the P14 reachable set (fleet-ops#3126)"
+
 # fleet-ops#2071: hard-pin the host lines for the two intake-tick tests that
 # PR #2068 hosted from tests/pi-intake-run.test.sh (already listed in ci.yml)
 # without adding named pins. The blind-audit report at 2026-08-29T15:26:31Z
