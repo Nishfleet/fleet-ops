@@ -696,3 +696,10 @@ bash "$here/oracle-scripts-deleted.test.sh"
 # retired. Hosted here so P14 runs the deletion pin without a workflow-file
 # edit. Hermetic (repo-only checks).
 bash "$here/0509-surface-probe-deleted.test.sh"
+
+# fleet-ops#4130 P1: the LiteLLM proxy organ test (proxy + Postgres + Redis +
+# /health canary absent() rules, prom scrape, MANIFEST install, canary bin).
+# Hosted here so P14 runs it without a workflow-file edit (the worker App
+# cannot push .github/workflows/**). Hermetic (repo-only checks, no
+# gh/prometheus/systemd).
+bash "$here/fleet-litellm-organ.test.sh"
