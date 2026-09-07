@@ -23,15 +23,23 @@ Phase C residue is the in-repo weekly probe (`libexec/fleet-aeo-probe.py`). That
 | Ahrefs Brand Radar free checker | no signup | Brand-name index, not custom prompts. Live "0509" run returned no report (low volume). |
 | HubSpot AEO Grader | no signup | Pre-set brand queries. Same low-volume limit. |
 | Semrush AI Visibility | free account is not prompt tracking | Custom prompts are the $99 toolkit, no trial. |
-| PromptWatch Explore | free + MCP/REST | Only free tool with an API. Free-tier engine list is unverified without a live signup. Follow-up: fleet-ops (Phase B signup). |
+| PromptWatch Explore | free + MCP/REST | Only free tool with an API. Free tier tracks ChatGPT only (official docs), so it cannot cover the 2-of-{ChatGPT, Perplexity, Claude} threshold. Rejected in Phase B (fleet-ops#1325). |
 | FixAEO | public Gemini scan | URL audit, not custom-prompt tracking. Paid trials are card-gated. |
 | Answer Visibility Lab | free audit | Site-readiness, not a live engine citation tracker. |
 
 Paid tools that beat this narrow 15-query probe were not bought. That is a money decision for Nish. None were recommended for this scope.
 
-## Phase B (not this PR)
+## Phase B (fleet-ops#1325) — resolved: rejected
 
-- PromptWatch Explore: one card-free signup to confirm free engines, then maybe pull its API.
+PromptWatch Explore was the only free tool with an API, so Phase B was a card-free signup to confirm the free-tier engine list. The official docs resolve it without a signup:
+
+- **Explore (free) tracks ChatGPT only.** Three independent doc pages say the same thing: "the entry-level Explore plan tracks ChatGPT only, and every other plan unlocks all active models" (plans-and-billing, choosing-your-models, no-data-for-model). On Explore the create-monitor form shows other models with an Upgrade badge and won't let you check them.
+- The issue's bar was **at least two** of {ChatGPT, Perplexity, Claude}. Free covers 1 of 3, so it fails.
+- The API exists on Explore (10/s, 150/min, 100/hour) but is moot: a single-engine tracker cannot replace the in-repo probe, which already covers ChatGPT, Perplexity, and Claude.
+
+**Outcome: rejected with reason.** No signup was created (a new public account surface for a tool that provably fails the threshold), and the in-repo probe stays as-is. The free engines are: ChatGPT only.
+
+Remaining Phase B items (not this PR):
 - AthenaHQ Essential: one-shot baseline if a signup inbox exists.
 - Ahrefs + HubSpot: competitor (StockX) snapshots only. They do not see 0509.
 
