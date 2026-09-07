@@ -696,6 +696,21 @@
           "_comment_4262": "fleet-ops#4262: landed verbatim from the live file (pre-#4234 backup). cacheRead=input (0.09) until measured — Entrim's cache-read pricing is not known yet."
         }
       ]
+    },
+    "litellm": {
+      "name": "LiteLLM proxy (fleet-ops#4130 P2)",
+      "baseUrl": "http://127.0.0.1:4000",
+      "api": "openai-completions",
+      "apiKey": "!cut -d= -f2 /home/nish/fleet2/etc/litellm-senior.env",
+      "models": [
+        {
+          "id": "judge",
+          "name": "LiteLLM judge group (senior ladder)",
+          "contextWindow": 500000,
+          "maxTokens": 500000
+        }
+      ],
+      "_comment_4181": "fleet-ops#4181 P2: first consumer of the proxy organ. baseUrl is the loopback proxy; the apiKey resolver returns the sk-fleet-senior virtual key (allowlist pins the judge group) from an operator-owned file — never a raw key in the repo. The proxy enforces the senior fallback ladder. P3 adds the worker-cheap/worker-capable/senior groups."
     }
   }
 }

@@ -77,24 +77,37 @@ fi
 need_capable=0
 [[ "$difficulty" == "heavy" || "$difficulty" == "keystone" ]] && need_capable=1
 
-seat=$(pick_seat "" "" "$need_capable" "$tried_file" "$difficulty" || true)
-if [[ -z "$seat" ]]; then
-    seat_log "agent-cron-run: $slug no healthy seat available (tried: $(tr '\n' ' ' <"$tried_file" 2>/dev/null))"
-    echo "FATAL: agent-cron-run: $slug no healthy seat available — every allowlisted seat is walled" >&2
-    if [[ "$difficulty" == "keystone" ]]; then
-        seat_log "agent-cron-run: $slug KEYSTONE ESCALATION — keeping tried-seats so OnFailure summons senior conference"
+# --- P2 (fleet-ops#4181): fable-check routes through the LiteLLM proxy -----
+# The hourly fleet judge is the first consumer of the proxy organ (P1,
+# fleet-ops#4174). It selects the `judge` group on the `litellm` provider
+# (baseUrl http://127.0.0.1:4000) instead of pick_seat's direct seats. The
+# proxy enforces the senior fallback ladder (cursor grok-4.6-high -> xai
+# grok-4.6 -> openrouter deepseek-v4-flash-0731 -> worker-capable) and the
+# virtual-key allowlist pins the group. seat-lib still owns every other
+# caller until P3. Rollback: drop this branch; fable-check falls back to
+# pick_seat.
+if [[ "$slug" == "fable-check" ]]; then
+    np="litellm"
+    nm="judge"
+else
+    seat=$(pick_seat "" "" "$need_capable" "$tried_file" "$difficulty" || true)
+    if [[ -z "$seat" ]]; then
+        seat_log "agent-cron-run: $slug no healthy seat available (tried: $(tr '\n' ' ' <"$tried_file" 2>/dev/null))"
+        echo "FATAL: agent-cron-run: $slug no healthy seat available — every allowlisted seat is walled" >&2
+        if [[ "$difficulty" == "keystone" ]]; then
+            seat_log "agent-cron-run: $slug KEYSTONE ESCALATION — keeping tried-seats so OnFailure summons senior conference"
+            exit 1
+        fi
+        # Reset tried-seats: every allowlisted seat has been tried and failed.
+        # The seat-health ledger (usable_at/bench_until) is the durable avoidance
+        # authority; clearing tried_file lets the next restart retry seats that
+        # have RECOVERED instead of looping on an exhausted list.
+        : >"$tried_file"
         exit 1
     fi
-    # Reset tried-seats: every allowlisted seat has been tried and failed.
-    # The seat-health ledger (usable_at/bench_until) is the durable avoidance
-    # authority; clearing tried_file lets the next restart retry seats that
-    # have RECOVERED instead of looping on an exhausted list.
-    : >"$tried_file"
-    exit 1
+    np=$(printf '%s' "$seat" | cut -f1)
+    nm=$(printf '%s' "$seat" | cut -f2)
 fi
-
-np=$(printf '%s' "$seat" | cut -f1)
-nm=$(printf '%s' "$seat" | cut -f2)
 
 # Defensive recreate (fleet-ops#63): $ATTEMPTS_DIR can vanish mid-run.
 mkdir -p "$ATTEMPTS_DIR" 2>/dev/null || {

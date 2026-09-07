@@ -193,6 +193,61 @@ set -e
 [[ "$rc" == "1" ]] || fail "scenario 3: pi failure must exit 1 so systemd re-seats, got $rc"
 ok "scenario 3: pi failure -> exit 1 (systemd Restart= re-seats on next try)"
 
+# --- scenario 4 (fleet-ops#4181 P2): fable-check routes to litellm/judge ----
+# The hourly fleet judge is the first consumer of the LiteLLM proxy organ.
+# It must select the `judge` group on the `litellm` provider (baseUrl
+# http://127.0.0.1:4000) directly, bypassing pick_seat's direct seats. The
+# proxy enforces the senior fallback ladder + virtual-key allowlist. This
+# holds even when pick_seat would return a different seat, proving the
+# routing branch wins for this caller.
+cat >"$stub_lib" <<'EOF'
+export HOME="${HOME:-/home/nish}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/1000}"
+export PI_BIN="${PI_BIN:-/home/nish/.local/bin/pi}"
+ATTEMPTS_DIR="${ATTEMPTS_DIR:-/tmp/agent-cron-attempts-stub}"
+mkdir -p "$ATTEMPTS_DIR"
+seat_log() { :; }
+task_weight() { echo "light"; }
+register_active_seat() { :; }
+clear_active_seat() { :; }
+is_spawn_etimeout() { return 1; }
+is_quota_cap_error() { return 1; }
+mark_seat_spawn_fail() { return 0; }
+mark_seat_quota_bench() { return 0; }
+# pick_seat would return a direct seat; the fable-check branch must ignore it.
+pick_seat() { printf 'cursor\tcomposer-2.5\n'; return 0; }
+EOF
+cat >"$fake_pi" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" > "$PI_RECORD_ARGS"
+cat > "$PI_RECORD_STDIN"
+printf 'judge packet body\nDIGEST:: fable-check digest line\n'
+EOF
+chmod +x "$fake_pi"
+rm -f "$record_args" "$record_stdin"
+# A fable-check prompt in the prompts dir.
+printf '# fable-check prompt\njudge the fleet.\n' >"$prompts_dir/fable-check.md"
+
+set +e
+"$bin" fable-check >"$scratch/run4.out" 2>"$scratch/run4.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "scenario 4: fable-check must exit 0, got $rc (stderr: $(cat "$scratch/run4.err"))"
+grep -q -- '--provider litellm' "$record_args" \
+  || fail "scenario 4: fable-check must run on provider litellm, got: $(cat "$record_args")"
+grep -q -- '--model judge' "$record_args" \
+  || fail "scenario 4: fable-check must run on model judge, got: $(cat "$record_args")"
+# The direct seat pick_seat would have returned must NOT be used.
+if grep -q -- '--provider cursor' "$record_args"; then
+    fail "scenario 4: fable-check must not fall back to pick_seat's direct seat, got: $(cat "$record_args")"
+fi
+# The run must be recorded with the litellm/judge seat line.
+out_file="$log_dir/fable-check-$(date -u +%Y-%m-%d).md"
+[[ -f "$out_file" ]] || fail "scenario 4: fable-check output file not written: $out_file"
+grep -q 'seat=litellm/judge' "$out_file" \
+  || fail "scenario 4: output file must record seat=litellm/judge, got: $(cat "$out_file")"
+ok "scenario 4: fable-check routes to litellm/judge, recorded + delivered"
+
 # --- fleet-ops#264: missing 0509 units must SKIP, not FAIL the P14 list -----
 # Seat rotation above only needs bin/agent-cron-run. A fresh worktree that
 # does not yet carry the service/timer files used to die here with
