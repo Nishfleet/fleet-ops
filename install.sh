@@ -742,12 +742,18 @@ process_entry() {
                 fi
             fi
         fi
+        # fleet-ops#4205: merge unknown provider rows from the live state
+        # file into the repo copy so a hand-wired seat (e.g. runinfra)
+        # survives a deploy instead of being silently dropped. The repo
+        # stays the source of truth for every provider it declares.
+        # Resolve the live file BEFORE rm -f removes the dest symlink.
+        # $src is local src=$1 (a string); the heredoc in
+        # seat_caps_merge_unknown_providers above corrupts shellcheck 0.11's
+        # array-tracking for the rest of this function, so it misreports a
+        # plain string as an array. Line 777 uses the same $src in a case
+        # at global scope with no warning.
+        # shellcheck disable=SC2128
         if [[ "$src" == config/seat-caps.json ]]; then
-            # fleet-ops#4205: merge unknown provider rows from the live state
-            # file into the repo copy so a hand-wired seat (e.g. runinfra)
-            # survives a deploy instead of being silently dropped. The repo
-            # stays the source of truth for every provider it declares.
-            # Resolve the live file BEFORE rm -f removes the dest symlink.
             seat_caps_merge_unknown_providers "$dest" "$repo" > "$dest.merge.$$"
             rm -f "$dest"
             install -D -m 0644 "$dest.merge.$$" "$dest"
