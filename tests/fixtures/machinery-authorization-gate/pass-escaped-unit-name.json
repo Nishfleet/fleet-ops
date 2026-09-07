@@ -1,0 +1,16 @@
+{
+  "name_status": "A\t\"systemd/app-pi\\\\x2dissue.slice\"\nM\tMANIFEST\n",
+  "body": "Add the repo-owned worker oomd slice and wire it through MANIFEST.\n",
+  "allowlist": {
+    "authorized": [
+      {
+        "unit": "app-pi\\x2dissue",
+        "class": "a",
+        "source": "repo"
+      }
+    ]
+  },
+  "manifest_added_lines": [
+    "systemd/app-pi\\x2dissue.slice /home/nish/.config/systemd/user/app-pi\\x2dissue.slice"
+  ]
+}

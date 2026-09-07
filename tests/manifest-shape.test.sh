@@ -83,3 +83,9 @@ echo "OK: app-manifest.json shape is locked (nishfleet-worker, 4 perms, no webho
 # Invoked from here so CI runs it without a workflow-file edit (the
 # nishfleet-worker app cannot push .github/workflows/**).
 bash "$here/worker-app-bootstrap.test.sh"
+
+# fleet-ops#3858: MANIFEST copy-installs (seat-caps.json, pi-models.json) must
+# be exempt from fleet-ops-drift's must-be-a-symlink check. Invoked from here
+# for the same reason as the handshake lock above: the nishfleet-worker app
+# cannot push .github/workflows/**, so new suites ride an existing ci.yml entry.
+bash "$here/fleet-ops-drift-copy-install-exempt.test.sh"

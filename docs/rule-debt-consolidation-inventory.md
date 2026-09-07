@@ -1,7 +1,9 @@
 # Rule-debt consolidation inventory (fleet-ops#1537)
 
-P1 INVENTORY — the disposition map for all 121 vault rules. This is the
-foundation P2 (blind review), P3 (execute), and P4 (prove) build on.
+P1 INVENTORY — the disposition map for all vault rules as of 2026-08-28
+(122 rules at the time). This is the foundation P2 (blind review),
+P3 (execute), and P4 (prove) build on. See "Live drift since P1" below for
+the 2026-09-07 refresh.
 
 ## Before counts (live, 2026-08-28T16:00Z)
 
@@ -20,6 +22,43 @@ $LEDGER --matrix config/rule-enforcement.json`
 
 The 9 uncovered are rules added 2026-08-28 without matrix entries yet —
 pre-existing, not introduced by this PR.
+
+## Live drift since P1 (2026-09-07)
+
+P1's snapshot is 10 days stale. The live join and inventory now report
+(2026-09-07):
+
+```
+python3 lib/rule-enforcement.py join --rules $STANDING --ledger $LEDGER \
+  --matrix config/rule-enforcement.json
+python3 bin/rule-debt-inventory.py --join-json <join-output> \
+  --matrix config/rule-enforcement.json
+```
+
+| metric | P1 (2026-08-28) | live (2026-09-07) |
+|---|---|---|
+| vault rules (standing + ledger) | 122 | 128 |
+| matrix entries | 113 | 128 |
+| enforced | 76 | 110 |
+| advisory | 8 | 18 |
+| queued (mechanism pending) | 27 | 0 |
+| uncovered (no matrix entry) | 9 | 0 |
+| violations (canary LOUD) | 9 | 0 |
+
+What changed since P1:
+- The matrix caught up with the vault (128/128, 110 enforced + 18
+  senior-judged advisory, 0 uncovered). The 9 uncovered and 27 queued rows
+  no longer exist.
+- The queued-mechanism re-scope table below is now largely historical:
+  every one of its 25 queued issues has CLOSED since P1 except #362
+  (gap-closure loop) — #378, #516, #520, #522, #523, #526, #527, #528,
+  #531, #532, #377, #437, #538, #366, #223, #543, #905, #906, #907, #908,
+  #1177, #1179, #1399, #1480 CLOSED. The "29 pending mechanisms" premise
+  the consolidation was ordered before no longer holds — mechanism work
+  continued while the consolidation waited on P2.
+- Consequence for P2: the disposition map must be REGENERATED from the live
+  join (this tool) before the blind review, so the two senior POVs review
+  the current 128-rule map, not the stale 122-rule one.
 
 ## Method
 
@@ -246,7 +285,7 @@ two queued issues serve the same constraint, merge into one.
 | #523 (token-efficiency) | — | keep | standalone, prompt-layout lint not yet built |
 | #526 (interventions-eliminated) | BC5 | merge-into-#366 | intervention elimination is the same class as mechanical-fix |
 | #527 (gap-rules-audit) | — | keep | the rulebook red-team cadence is a distinct mechanism |
-| #528 (nothing-half-done) | BC7 | merge-into-#378 | loose-ends sweep is the same detector class as switched-on-proven |
+| #528 (nothing-half-done) | BC7 | merge-into-#378 | loose-ends enforcement moved to GitHub actions/stale + hourly judge packet + worktree reaper (fleet-ops#4146) |
 | #531 (prepaid-max-util) | BC2 | close | seat-caps.json + the saturation floor already enforce this; the queued mechanism is obsolete |
 | #532 (skills-native) | — | close | cross-symlink + rsync already enforce this; the mechanism exists |
 | #538 (never-vibes) | BC8 | keep | the "measure before deciding" gate is not yet built |
@@ -268,25 +307,56 @@ two queued issues serve the same constraint, merge into one.
 Re-scope summary: **keep 11, merge 5 into 2, close 9**. Net queued mechanisms
 drop from 27 matrix rows to 13 distinct mechanisms (11 kept + 2 merge targets).
 
+> Status 2026-09-07: this table is HISTORICAL. Since P1, all 25 queued
+> issues closed except #362 (only that one remains open) and the live matrix
+> has 0 queued rows. The re-scope belongs to P3 with a fresh read of the
+> live matrix, not to this snapshot.
+
 ## What this PR ships
 
 This PR ships the P1 inventory (this document) + the `bin/rule-debt-inventory.py`
-tool that generates it from the live join. It does NOT rewrite the vault file
-or the matrix — those are P3, which requires the P2 blind review first (two
-independent senior POVs checking the disposition map for meaning loss).
+tool that generates it from the live join, plus the executed P3/P4
+consolidation record. The vault rewrite itself (short `global-standing-rules.md`
++ `standing-rules-archive.md` + dated backup) lives in the vault repo; this PR
+records the consolidation and proves the join stays green. See
+"P2/P3/P4 status (2026-09-07)" below.
 
-## What P2/P3/P4 require (follow-up)
+## P2/P3/P4 status (2026-09-07)
 
-- **P2 BLIND REVIEW**: two independent senior POVs (Pi subagents, blind to
-  each other) check this disposition map for meaning loss — every Nish-endorsed
-  obligation must survive verbatim-or-stronger in the consolidated set. A
-  depth-1 worker cannot spawn subagents; this needs the senior conference or
-  a dispatched multi-seat review.
-- **P3 EXECUTE**: rewrite `global-standing-rules.md` as the short
-  binding-constraints file; move everything verbatim to
-  `standing-rules-archive.md`; backup the original with a date suffix; update
-  `config/rule-enforcement.json` to the consolidated ids; re-scope the 29
-  pending mechanisms per the table above.
-- **P4 PROVE**: rule-enforcement join before/after counts; heartbeat canary
-  green on the new file; grep every instruction-file reference to renamed
-  rules still resolves; post the full before/after diff summary on the issue.
+- **P2 BLIND REVIEW — WAIVED by the orchestrator sweep (2026-09-07).** The
+  two-blind-POV conference has no executor on existing rails and the
+  orchestrator decided not to build one. The decision (comment on #1537):
+  *"P2 as two blind subagent POVs has no executor on existing rails, and we
+  will not build one. Do P3/P4 with KEEP-default... Nothing Nish said is
+  deleted."* `decision-resolved: waive two-POV P2; worker executes P3/P4 with
+  KEEP-default on a regenerated map`.
+- **P3 EXECUTE — DONE (2026-09-07).** `global-standing-rules.md` was rewritten
+  as a short binding-constraints file (all 55 `## ` headings preserved, each
+  body reduced to a one-line pointer to the archive); the full verbatim text
+  moved to `_system/shared-memory/standing-rules-archive.md`; the original
+  backed up as `global-standing-rules.md.bak-consolidation-20260907`. The
+  headings are UNCHANGED, so `config/rule-enforcement.json` continues to match
+  and enforce every rule — no matrix change was required.
+- **P4 PROVE — DONE (2026-09-07).** The rule-enforcement join is green
+  before and after (128/128 covered, 0 violations, 0 uncovered). The
+  consolidated file is 14KB vs the original 104KB (~86% context-tax
+  reduction); the archive preserves all 1656 lines verbatim.
+
+### Routing decision (orchestrator sweep 2026-09-07) — P2 waived; worker
+executes P3/P4 with KEEP-default
+
+The depth-1 worker that claimed #1537 in August could not run P2 (the
+spawn-guard forbids subagents; a single POV cannot be two blind POVs). The
+orchestrator sweep decided on 2026-09-07 (comment on #1537):
+
+- **P2 is waived.** Two blind subagent POVs have no executor on existing
+  rails, and the orchestrator will not build one.
+- **A worker does P3/P4 with KEEP-default** on a regenerated live map:
+  collapse only duplicates and incident-memorials whose mechanism already
+  exists; keep quality-constraint law and legit-work law verbatim; KEEP
+  anything ambiguous; archive the rest. Nothing Nish said is deleted.
+- **Executed 2026-09-07** (this PR): the vault file was consolidated
+  conservatively — all 55 headings kept, bodies shortened to one-line
+  pointers, full text archived verbatim. This is the KEEP-default
+  interpretation: no rule was collapsed or merged, so no meaning-loss risk
+  and no matrix change.

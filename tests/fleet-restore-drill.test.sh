@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # tests/fleet-restore-drill.test.sh
 #
-# fleet-ops#388: lock the restore drill's shape and prove its three planes
-# (backup mechanism, fleet files parseable, paths covered) on a mocked
-# systemctl + scratch repo. Does NOT touch the live system restic units.
+# fleet-ops#388: lock the restore drill's shape and prove its four planes
+# (backup mechanism, fleet files parseable, paths covered, dated artifact
+# marker) on a mocked systemctl + scratch repo. Does NOT touch the live
+# system restic units.
 #
 # What it proves:
 #   1. Drill script + service + timer + MANIFEST entries exist with the
@@ -18,6 +19,13 @@
 #   8. Empty claims index -> exit 1, LOUD.
 #   9. MANIFEST src missing in repo -> exit 1, LOUD.
 #  10. --check reports ready/missing without system calls.
+#  11. Absent artifact marker (fleet-ops#2471) -> exit 1, LOUD
+#      artifact-missing; the marker is still rewritten when A/B/C passed, so
+#      the next run self-heals green.
+#  12. Stale artifact marker (older than the max-age bound) -> exit 1, LOUD
+#      artifact-stale; the marker is refreshed on the rebuild-green run.
+#  13. A green run emits a dated marker at the alert-repair path the
+#      heartbeat stats (backup_freshness.newest_backup_marker).
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
@@ -170,6 +178,14 @@ write_claims() {
   printf '2026-08-26T16:53:40Z claimed line=43\n' >"$CLAIMS_LOG"
 }
 
+# Seed a fresh dated artifact marker (fleet-ops#2471). reset_all writes it so
+# green scenarios stay green; scenario J/K delete or age it on purpose.
+write_marker_fresh() {
+  mkdir -p "$state/alert-repair"
+  printf '%s OK control plane rebuildable\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    >"$state/alert-repair/fleet-restore-drill-marker"
+}
+
 write_manifest() {
   # The MANIFEST references srcs that must exist in the scratch repo.
   : >"$repo/systemd/fleet-restore-drill.service"
@@ -189,10 +205,12 @@ run_drill() {
 reset_all() {
   rm -f "$triage"; : >"$triage"
   rm -rf "$sys_state"; mkdir -p "$sys_state"
+  rm -rf "$state/alert-repair"
   write_green_system
   write_seat_caps
   write_claims
   write_manifest
+  write_marker_fresh
 }
 
 # ============================================================================
@@ -203,7 +221,12 @@ run_drill
 [[ "$drill_rc" == 0 ]] || fail "scenarioA: must exit 0, got $drill_rc ($drill_out)"
 grep -q 'RESTORE-DRILL-OK' "$triage" || fail "scenarioA: triage missing OK line"
 grep -q 'control plane rebuildable' "$triage" || fail "scenarioA: OK line must name the rebuild story"
-ok "scenarioA: green run -> exit 0 with OK line"
+[[ -f "$state/alert-repair/fleet-restore-drill-marker" ]] \
+  || fail "scenarioA: green run must emit the artifact marker"
+grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z OK control plane rebuildable' \
+  "$state/alert-repair/fleet-restore-drill-marker" \
+  || fail "scenarioA: marker must carry a dated artifact line"
+ok "scenarioA: green run -> exit 0 with OK line + dated marker"
 
 # ============================================================================
 # Scenario B: stale backup -> exit 1, LOUD staleness
@@ -303,4 +326,35 @@ unset FLEET_RESTORE_DRILL_SKIP_SYSTEM
 grep -q 'SKIP' <<<"$drill_out" || fail "scenarioI: drill must log the SKIP"
 ok "scenarioI: skip-system flag skips plane A"
 
-ok "fleet-restore-drill: three planes + --check + skip flag covered (fleet-ops#388)"
+# ============================================================================
+# Scenario J: absent artifact marker -> exit 1, LOUD artifact-missing
+# (fleet-ops#2471). The marker is still rewritten (A/B/C pass), so the next
+# run self-heals green.
+# ============================================================================
+reset_all
+rm -f "$state/alert-repair/fleet-restore-drill-marker"
+run_drill
+[[ "$drill_rc" == 1 ]] || fail "scenarioJ: must exit 1 (marker absent), got $drill_rc ($drill_out)"
+grep -q 'RESTORE-DRILL-ARTIFACT-MISSING' "$triage" || fail "scenarioJ: triage missing ARTIFACT-MISSING"
+grep -q 'newest_backup_marker would be null' "$triage" || fail "scenarioJ: triage must name the heartbeat null case"
+[[ -f "$state/alert-repair/fleet-restore-drill-marker" ]] \
+  || fail "scenarioJ: marker must be rewritten on the rebuild-green run"
+run_drill
+[[ "$drill_rc" == 0 ]] || fail "scenarioJ: second run must be green (self-heal), got $drill_rc ($drill_out)"
+ok "scenarioJ: absent marker -> exit 1 LOUD, marker rewritten, next run green"
+
+# ============================================================================
+# Scenario K: stale artifact marker (older than the max-age bound) -> exit 1,
+# LOUD artifact-stale; refreshed on the rebuild-green run.
+# ============================================================================
+reset_all
+touch -d '3 days ago' "$state/alert-repair/fleet-restore-drill-marker"
+run_drill
+[[ "$drill_rc" == 1 ]] || fail "scenarioK: must exit 1 (stale marker), got $drill_rc ($drill_out)"
+grep -q 'RESTORE-DRILL-ARTIFACT-STALE' "$triage" || fail "scenarioK: triage missing ARTIFACT-STALE"
+grep -q '28800s bound' "$triage" || fail "scenarioK: triage must name the staleness bound"
+run_drill
+[[ "$drill_rc" == 0 ]] || fail "scenarioK: second run must be green (self-heal), got $drill_rc ($drill_out)"
+ok "scenarioK: stale marker -> exit 1 LOUD, marker refreshed, next run green"
+
+ok "fleet-restore-drill: four planes (incl. artifact marker) + --check + skip flag covered (fleet-ops#388)"

@@ -19,16 +19,19 @@
 #      does NOT name the provider -> exit 0, files (the citation must
 #      name what it covers).
 #   8. Detector: a provider cap=0 with no dated reason -> exit 0, files.
-#   9. Detector: a provider cap=0 with a dated reason -> exit 0, no file.
-#  10. Detector: a bare "feels right" citation is NOT a marker -> files.
-#  11. Detector: a fleet-ops# ref alone is NOT a marker -> files.
-#  12. Dedup: an open issue carrying the marker -> no second create.
-#  13. File cap: more findings than FLEET_VIBES_CANARY_CAP -> excess
+#   9. Detector: a provider cap=0 with a dated reason + marker -> exit 0,
+#      no file.
+#  10. Detector: a provider cap=0 with a dated reason but NO measurement
+#      marker -> exit 0, files (the fleet-ops#878 case: date alone is
+#      not enough for an "off" decision).
+#  11. Detector: a bare "feels right" citation is NOT a marker -> files.
+#  12. Detector: a fleet-ops# ref alone is NOT a marker -> files.
+#  13. Dedup: an open issue carrying the marker -> no second create.
+#  14. File cap: more findings than FLEET_VIBES_CANARY_CAP -> excess
 #      deferred, no error.
-#  14. Broken: seat-caps missing / unparseable / jq missing -> exit 1.
-#  15. Production seat-caps: gate + detectors clean (exit 0, no filing).
-#      orcarouter now carries a dated cap=0 reason (fleet-ops#1456).
-#  16. Heartbeat-tier1 wires the canary and propagates a fail-loud gate.
+#  15. Broken: seat-caps missing / unparseable / jq missing -> exit 1.
+#  16. Production seat-caps: gate + detectors clean (exit 0, no filing).
+#  17. Heartbeat-tier1 wires the canary and propagates a fail-loud gate.
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -113,7 +116,7 @@ cat >"$clean_caps" <<'JSON'
     "groq": {
       "cap": 0,
       "class": "free",
-      "reason": "2026-08-25 credentials_bad on openai/gpt-oss-120b; no working credential."
+      "reason": "2026-08-25 credentials_bad on openai/gpt-oss-120b; no working credential. Live probe `pi --print --provider groq --model openai/gpt-oss-120b PONG` returned HTTP 401 (credentials_bad)."
     }
   },
   "_comment_seat_roster": "Nish 2026-08-25: devin probed live and answering (HTTP 200)."
@@ -208,43 +211,59 @@ SEAT_CAPS_JSON="$clean_caps" FLEET_VIBES_CANARY_FILE=1 "$bin" >/tmp/vibes9.log 2
 grep -qi "groq" "$gh_creates" && fail "dated-reason cap0 must not file"
 ok "9. detector: cap=0 with a dated reason -> no file"
 
-# 10. A bare "feels right" citation is NOT a marker -> files.
+# 10. cap=0 with a dated reason but NO measurement marker -> files.
+#     This is the fleet-ops#878 case: a date alone is not enough for an
+#     "off" decision; the evidence that justified cap=0 must carry a real
+#     measurement signal (HTTP code, n=, PONG, probe, quota, meter, etc.).
+cap0_nomarker="$scratch/cap0_nomarker.json"
+jq '.providers.grokmock = {"cap": 0, "class": "free", "reason": "2026-08-26 money-adjacent; Nish only. Not a free lane."}' \
+  "$clean_caps" >"$cap0_nomarker"
+: >"$gh_creates"
+SEAT_CAPS_JSON="$cap0_nomarker" FLEET_VIBES_CANARY_FILE=1 "$bin" >/tmp/vibes10a.log 2>&1 \
+  || fail "cap0-no-marker detector must exit 0 (rc=$?)"
+grep -qi "vibes: grokmock cap=0 dated reason has no measurement marker" "$gh_creates" \
+  || fail "detector must file cap0-no-measurement (creates=$(cat "$gh_creates"))"
+grep -q "cap0-no-measurement" /tmp/vibes10a.log \
+  || fail "detector must log cap0-no-measurement for the dated-but-unmarked reason"
+ok "10. detector: cap=0 dated reason but no measurement marker -> files"
+
+# 11. A bare "feels right" citation is NOT a marker -> files.
 feels="$scratch/feels.json"
 jq '.providers.feelsprov = {"cap": 1, "class": "free", "models": {"x": 1}, "_note": "2026-08-26: cap=1 feels right for this provider."}' \
   "$clean_caps" >"$feels"
 : >"$gh_creates"
-SEAT_CAPS_JSON="$feels" FLEET_VIBES_CANARY_FILE=1 "$bin" >/tmp/vibes10.log 2>&1 \
+SEAT_CAPS_JSON="$feels" FLEET_VIBES_CANARY_FILE=1 "$bin" >/tmp/vibes14.log 2>&1 \
   || fail "feels-right detector must exit 0 (rc=$?)"
 grep -qi "vibes: feelsprov cap=1 has no measurement citation" "$gh_creates" \
   || fail "feels-right must file (creates=$(cat "$gh_creates"))"
-ok "10. detector: a 'feels right' citation is not a marker -> files"
+ok "11. detector: a 'feels right' citation is not a marker -> files"
 
-# 11. A fleet-ops# ref alone is NOT a marker -> files.
+# 12. A fleet-ops# ref alone is NOT a marker -> files.
 refonly="$scratch/refonly.json"
 jq '.providers.refprov = {"cap": 1, "class": "free", "models": {"x": 1}, "_note": "2026-08-26: see fleet-ops#999 for context."}' \
   "$clean_caps" >"$refonly"
 : >"$gh_creates"
-SEAT_CAPS_JSON="$refonly" FLEET_VIBES_CANARY_FILE=1 "$bin" >/tmp/vibes11.log 2>&1 \
+SEAT_CAPS_JSON="$refonly" FLEET_VIBES_CANARY_FILE=1 "$bin" >/tmp/vibes17.log 2>&1 \
   || fail "ref-only detector must exit 0 (rc=$?)"
 grep -qi "vibes: refprov cap=1 has no measurement citation" "$gh_creates" \
   || fail "ref-only must file (creates=$(cat "$gh_creates"))"
-ok "11. detector: a fleet-ops# ref alone is not a marker -> files"
+ok "12. detector: a fleet-ops# ref alone is not a marker -> files"
 
-# 12. Dedup: an open issue carrying the marker -> no second create.
+# 13. Dedup: an open issue carrying the marker -> no second create.
 : >"$gh_creates"
 echo '[{"number": 777, "body": "vibes-canary: refprov cap-no-measurement\nmore text"}]' >"$gh_open"
-SEAT_CAPS_JSON="$refonly" FLEET_VIBES_CANARY_FILE=1 "$bin" >/tmp/vibes12.log 2>&1 \
+SEAT_CAPS_JSON="$refonly" FLEET_VIBES_CANARY_FILE=1 "$bin" >/tmp/vibes14.log 2>&1 \
   || fail "dedup must exit 0 (rc=$?)"
 grep -qi "vibes: refprov cap=1 has no measurement citation" "$gh_creates" \
   && fail "dedup must not file a second time (creates=$(cat "$gh_creates"))"
-grep -q "dedup: open Nishfleet/fleet-ops#777" /tmp/vibes12.log \
+grep -q "dedup: open Nishfleet/fleet-ops#777" /tmp/vibes14.log \
   || fail "dedup must log the existing issue"
-ok "12. dedup: open issue with the marker -> no second create"
+ok "13. dedup: open issue with the marker -> no second create"
 
 # Reset open issues for the cap test.
 echo '[]' >"$gh_open"
 
-# 13. File cap: more findings than the cap -> excess deferred, no error.
+# 14. File cap: more findings than the cap -> excess deferred, no error.
 many="$scratch/many.json"
 base="$(cat "$clean_caps")"
 for p in p1 p2 p3 p4 p5 p6; do
@@ -252,27 +271,27 @@ for p in p1 p2 p3 p4 p5 p6; do
 done
 printf '%s' "$base" >"$many"
 : >"$gh_creates"
-SEAT_CAPS_JSON="$many" FLEET_VIBES_CANARY_FILE=1 FLEET_VIBES_CANARY_CAP=2 "$bin" >/tmp/vibes13.log 2>&1 \
+SEAT_CAPS_JSON="$many" FLEET_VIBES_CANARY_FILE=1 FLEET_VIBES_CANARY_CAP=2 "$bin" >/tmp/vibes17.log 2>&1 \
   || fail "file-cap must exit 0 (rc=$?)"
 filed=$(wc -l <"$gh_creates")
 (( filed == 2 )) || fail "file cap=2 must file exactly 2 (filed=$filed)"
-grep -q "file cap reached" /tmp/vibes13.log || fail "must log cap reached"
-ok "13. file cap: excess findings deferred to next tick (filed=$filed cap=2)"
+grep -q "file cap reached" /tmp/vibes17.log || fail "must log cap reached"
+ok "14. file cap: excess findings deferred to next tick (filed=$filed cap=2)"
 
-# 14. Broken: seat-caps missing / unparseable -> exit 1.
+# 15. Broken: seat-caps missing / unparseable -> exit 1.
 : >"$triage"
-SEAT_CAPS_JSON="$scratch/nope.json" FLEET_VIBES_CANARY_FILE=0 "$bin" >/tmp/vibes14a.log 2>&1 \
+SEAT_CAPS_JSON="$scratch/nope.json" FLEET_VIBES_CANARY_FILE=0 "$bin" >/tmp/vibes16a.log 2>&1 \
   && fail "missing seat-caps must exit 1"
 grep -q "VIBES-CANARY-BROKEN" "$triage" || fail "missing seat-caps must be LOUD"
 bad_json="$scratch/bad.json"
 printf '{ not json' >"$bad_json"
 : >"$triage"
-SEAT_CAPS_JSON="$bad_json" FLEET_VIBES_CANARY_FILE=0 "$bin" >/tmp/vibes14b.log 2>&1 \
+SEAT_CAPS_JSON="$bad_json" FLEET_VIBES_CANARY_FILE=0 "$bin" >/tmp/vibes16b.log 2>&1 \
   && fail "unparseable seat-caps must exit 1"
 grep -q "VIBES-CANARY-BROKEN" "$triage" || fail "unparseable seat-caps must be LOUD"
-ok "14. broken: missing / unparseable seat-caps -> exit 1, LOUD"
+ok "15. broken: missing / unparseable seat-caps -> exit 1, LOUD"
 
-# 15. Production seat-caps: gate + detectors both clean (exit 0, no filing).
+# 16. Production seat-caps: gate + detectors both clean (exit 0, no filing).
 #     orcarouter was the known uncited cap when this drill was authored
 #     (PR #704, 2026-08-27); it now carries a dated cap=0 reason
 #     (fleet-ops#1456 / #880) so production is fully cited.
@@ -280,19 +299,19 @@ prod_caps="$repo_root/config/seat-caps.json"
 if [[ -f "$prod_caps" ]]; then
   : >"$gh_creates"
   echo '[]' >"$gh_open"
-  SEAT_CAPS_JSON="$prod_caps" FLEET_VIBES_CANARY_FILE=1 "$bin" >/tmp/vibes15.log 2>&1 \
+  SEAT_CAPS_JSON="$prod_caps" FLEET_VIBES_CANARY_FILE=1 "$bin" >/tmp/vibes17.log 2>&1 \
     || fail "production seat-caps must exit 0 (rc=$?) — gate + detectors clean"
-  grep -q "GATE: ram_gb_per_worker" /tmp/vibes15.log \
+  grep -q "GATE: ram_gb_per_worker" /tmp/vibes17.log \
     || fail "production gate must pass (ram_gb_per_worker measured)"
-  grep -q "DETECTOR: clean" /tmp/vibes15.log \
+  grep -q "DETECTOR: clean" /tmp/vibes17.log \
     || fail "production detector must be clean (every behaviour-driving constant cited)"
   [[ -s "$gh_creates" ]] && fail "production seat-caps must not file (filed=$(cat "$gh_creates"))"
-  ok "15. production seat-caps: gate + detectors clean, exit 0, no filing"
+  ok "16. production seat-caps: gate + detectors clean, exit 0, no filing"
 else
-  ok "15. production seat-caps not present (hosted CI) — skip"
+  ok "16. production seat-caps not present (hosted CI) — skip"
 fi
 
-# 16. Heartbeat-tier1 wires the canary and propagates a fail-loud gate.
+# 17. Heartbeat-tier1 wires the canary and propagates a fail-loud gate.
 grep -q "fleet-vibes-canary" "$tier1" \
   || fail "heartbeat-tier1 must wire fleet-vibes-canary"
 grep -q "vibes_canary_rc" "$tier1" \
@@ -300,6 +319,6 @@ grep -q "vibes_canary_rc" "$tier1" \
 grep -q 'vibes_canary_rc' "$tier1" && \
   grep -A2 'vibes_canary_rc' "$tier1" | grep -q 'exit' \
   || fail "heartbeat-tier1 must propagate vibes_canary_rc to exit"
-ok "16. heartbeat-tier1 wires the canary and propagates fail-loud"
+ok "17. heartbeat-tier1 wires the canary and propagates fail-loud"
 
-echo "OK: fleet-vibes-canary: gate, detector, dedup, cap, broken, production, heartbeat wiring"
+echo "OK: fleet-vibes-canary: gate, detector, dedup, cap0-no-marker, cap, broken, production, heartbeat wiring"

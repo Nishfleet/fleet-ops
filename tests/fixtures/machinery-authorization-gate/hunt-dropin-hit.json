@@ -1,0 +1,59 @@
+{
+  "allowlist": {
+    "authorized": [
+      {"unit": "fleet-heartbeat", "class": "a"},
+      {"unit": "pi-intake@", "class": "a"},
+      {"unit": "pi-scout@", "class": "a"},
+      {"unit": "fleet-metrics-export", "class": "a"}
+    ]
+  },
+  "unit_files": [
+    {
+      "kind": "unit",
+      "unit": "auditor-stdio-test",
+      "path": "/tmp/machinery-auth-gate-fixture/auditor-stdio-test.service",
+      "symlink": false
+    },
+    {
+      "kind": "unit",
+      "unit": "fleet-heartbeat",
+      "path": "/tmp/machinery-auth-gate-fixture/fleet-heartbeat.service",
+      "symlink": true
+    },
+    {
+      "kind": "drop-in",
+      "unit": "pi-scout@",
+      "dropin": "pi-scout@.service.d/20-prom-mode.conf",
+      "path": "/tmp/machinery-auth-gate-fixture/pi-scout@.service.d/20-prom-mode.conf",
+      "symlink": false
+    },
+    {
+      "kind": "drop-in",
+      "unit": "pi-intake@",
+      "dropin": "pi-intake@.service.d/10-use-tick.conf",
+      "path": "/tmp/machinery-auth-gate-fixture/pi-intake@.service.d/10-use-tick.conf",
+      "symlink": false
+    },
+    {
+      "kind": "drop-in",
+      "unit": "fleet-metrics-export",
+      "dropin": "fleet-metrics-export.service.d/canary-effectiveness.conf",
+      "path": "/tmp/machinery-auth-gate-fixture/fleet-metrics-export.service.d/canary-effectiveness.conf",
+      "symlink": false
+    },
+    {
+      "kind": "drop-in",
+      "unit": "pi-scout@",
+      "dropin": "pi-scout@.service.d/10-keystone-hc.conf",
+      "path": "/tmp/machinery-auth-gate-fixture/pi-scout@.service.d/10-keystone-hc.conf",
+      "symlink": true
+    },
+    {
+      "kind": "drop-in",
+      "unit": "pi-issue@fleet-ops-2924",
+      "dropin": "pi-issue@fleet-ops-2924.service.d/memory.conf",
+      "path": "/tmp/machinery-auth-gate-fixture/pi-issue@fleet-ops-2924.service.d/memory.conf",
+      "symlink": false
+    }
+  ]
+}

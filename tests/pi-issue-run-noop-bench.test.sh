@@ -47,6 +47,7 @@ mkdir -p "$LEDGER"
 
 export PI_PACKET_STATE="$STATE_DIR"
 export PI_SEAT_HEALTH_LEDGER_DIR="$LEDGER"
+export PI_SEAT_HEALTH_SIDECAR="$scratch/pi-seat-health.json"
 export PI_ISSUES_DIR="$ISSUES_DIR"
 export PI_MODELS_JSON="$scratch/models.json"
 export SEAT_CAPS_JSON="$scratch/seat-caps.json"
@@ -69,6 +70,12 @@ export PI_BIN="$stub_bin/pi"
 
 cat >"$stub_bin/gh" <<'STUB'
 #!/usr/bin/env bash
+# Default: no open PR, issue open. Tests override for PR-shipped cases.
+if [[ "$*" == *"--jq"* ]]; then
+    printf 'open\n'
+    exit 0
+fi
+printf '[]\n'
 exit 0
 STUB
 chmod +x "$stub_bin/gh"
@@ -128,7 +135,7 @@ cat >"$SEAT_CAPS_JSON" <<'JSON'
   "ram_gb_per_worker": 1.5,
   "free_providers_in_order": [],
   "providers": {
-    "devin": { "cap": 4, "class": "subscription", "models": { "glm-5-2": 4, "swe-1-7": 4 } }
+    "devin": { "cap": 4, "class": "subscription", "remote_agent": true, "models": { "glm-5-2": 4, "swe-1-7": 4 } }
   }
 }
 JSON
@@ -174,38 +181,60 @@ seat_line=$(head -n1 "$tried")
 np="${seat_line%%/*}"
 nm="${seat_line#*/}"
 
-# (a) fleet-ops#1416: provider no-ops (stdout < OUT_MIN, exit 0) do NOT
-# bench the seat. The seat is healthy — pi ran and exited 0. The tried-seats
-# file already records this seat for THIS unit, and systemd Restart will
-# pick a different one. No mark_seat_spawn_fail or mark_seat_empty_run
-# call should be made.
+# (a) fleet-ops#1298: provider no-ops (stdout < OUT_MIN, exit 0) ARE seat
+# faults — same class as the verdict tools=0 empty-run (fleet-ops#902).
+# The seat is benched via mark_seat_empty_run (FLAT cooldown,
+# EMPTY_RUN_BACKOFF_S = 15 min, fleet-ops#2343) so pick_seat skips it on the
+# next intake re-spawn and reroutes to a healthy seat. #1298 reversed the
+# #1416 "lane fault, no bench" decision: without a bench, an intake re-spawn
+# (fresh claim, empty tried-seats) re-picked the same no-op'ing seat and
+# burned 8 runs/2h on straitly/deepseek-v4-pro. mark_seat_spawn_fail must
+# NOT be called (spawn-fail is the wrong class — empty_run now shares the
+# geometric #3531 ladder, capped at 6 h / 1800 s for remote agents).
 if [[ -f "$scratch/mark_calls" ]]; then
-    fail "mark_seat_spawn_fail was called for stdout < OUT_MIN — must NOT mark a healthy seat (calls: $(cat "$scratch/mark_calls"))"
+    fail "mark_seat_spawn_fail was called for stdout < OUT_MIN — must use mark_seat_empty_run (empty_run class, geometric cooldown), not spawn-fail (calls: $(cat "$scratch/mark_calls"))"
 fi
-if [[ -f "$scratch/mark_empty_calls" ]] && grep -qF "$np/$nm" "$scratch/mark_empty_calls"; then
-    fail "mark_seat_empty_run was called for stdout < OUT_MIN — must NOT mark a healthy seat (calls: $(cat "$scratch/mark_empty_calls"))"
-fi
-ok "provider no-op (stdout < OUT_MIN) -> NO seat marker written (healthy seat, lane fault)"
+[[ -f "$scratch/mark_empty_calls" ]] \
+  || fail "mark_seat_empty_run was NOT called for stdout < OUT_MIN — provider no-op must bench the seat (fleet-ops#1298)"
+grep -qF "$np/$nm" "$scratch/mark_empty_calls" \
+  || fail "mark_seat_empty_run not called for $np/$nm; calls: $(cat "$scratch/mark_empty_calls")"
+grep -qF "provider-no-op" "$scratch/mark_empty_calls" \
+  || fail "mark_seat_empty_run reason must mention provider-no-op; calls: $(cat "$scratch/mark_empty_calls")"
+ok "provider no-op (stdout < OUT_MIN) -> mark_seat_empty_run called for $np/$nm (seat fault, geometric cooldown)"
 
-# (b) seat_usable must still return true — the seat is healthy, no penalty.
+# (b) per-seat ledger: failure_mode=empty_run, usable_at ~900s (15 min) ahead.
+ledger1="$LEDGER/${np//[^A-Za-z0-9._-]/_}__${nm//[^A-Za-z0-9._-]/_}.json"
+[[ -f "$ledger1" ]] || fail "per-seat ledger missing at $ledger1"
+mode1=$(jq -r '.failure_mode // empty' "$ledger1")
+[[ "$mode1" == "empty_run" ]] \
+  || fail "ledger failure_mode must be empty_run, got '$mode1': $(cat "$ledger1")"
+usable1=$(jq -r '.usable_at // empty' "$ledger1")
+[[ -n "$usable1" ]] || fail "ledger has no usable_at: $(cat "$ledger1")"
+usable1_epoch=$(date -u -d "$usable1" +%s)
+now1_epoch=$(date -u +%s)
+delta1=$((usable1_epoch - now1_epoch))
+(( delta1 >= 840 && delta1 <= 960 )) \
+  || fail "provider no-op usable_at should be ~900s (15 min) ahead, got ${delta1}s: $(cat "$ledger1")"
+ok "ledger failure_mode=empty_run usable_at=+${delta1}s (~15 min geometric cooldown, fleet-ops#2343)"
+
+# (c) seat_usable rejects the benched seat; pick_seat with empty tried-seats
+# (the intake re-spawn case) re-routes to a DIFFERENT seat — the #1298 fix.
 # shellcheck disable=SC1091
 source "$repo_root/lib/seat-lib.sh"
-if ! seat_usable "$np" "$nm"; then
-    fail "seat_usable $np/$nm returned UNUSABLE after provider no-op — should be usable (healthy seat, no penalty)"
+if seat_usable "$np" "$nm"; then
+    fail "seat_usable $np/$nm returned usable after provider no-op bench — should be benched"
 fi
-ok "seat_usable $np/$nm still USABLE after provider no-op"
-
-# (c) pick_seat with empty tried-seats WILL re-select the same seat on
-# intake re-spawn. This is intentional: the seat is healthy, so trying
-# it again is fine (the provider may produce output on the next attempt).
+ok "seat_usable $np/$nm UNUSABLE after provider no-op (reroutes on next pick)"
 : >"$tried"
 next=$(pick_seat "" "" 0 "" || true)
-[[ -n "$next" ]] || fail "pick_seat returned empty after provider no-op"
-# Just verify pick_seat works; it may pick the same or a different seat.
-# Either is acceptable — the seat is not penalised.
-ok "pick_seat returned a seat after provider no-op (may be same or different)"
+[[ -n "$next" ]] || fail "pick_seat returned empty after provider no-op bench"
+next_np=$(printf '%s' "$next" | cut -f1)
+next_nm=$(printf '%s' "$next" | cut -f2)
+[[ "$next_np/$next_nm" != "$np/$nm" ]] \
+  || fail "pick_seat re-selected the no-op seat $np/$nm on intake re-spawn (empty tried-seats) — must reroute to a healthy seat (fleet-ops#1298)"
+ok "pick_seat reroutes intake re-spawn to $next_np/$next_nm (skips benched $np/$nm)"
 
-ok "pi-issue-run provider no-op exits 1, no marker, seat stays usable"
+ok "pi-issue-run provider no-op exits 1, benches seat (empty_run, geometric cooldown), reroutes to a healthy seat"
 
 # =============================================================================
 # fleet-ops#902: verdict-based EMPTY RUN — pi exits 0 and the ONLY stdout is
@@ -279,6 +308,10 @@ for other in "devin/glm-5-2" "devin/swe-1-7"; do
     o_p="${other%%/*}"; o_m="${other#*/}"
     o_ledger="$LEDGER/${o_p//[^A-Za-z0-9._-]/_}__${o_m//[^A-Za-z0-9._-]/_}.json"
     rm -f "$o_ledger" 2>/dev/null || true
+    # fleet-ops#1512: also clear the clobber-proof spawn-bench marker so the
+    # other seat is fully usable (seat_usable checks it before the ledger).
+    o_sbench="$LEDGER/${o_p//[^A-Za-z0-9._-]/_}__${o_m//[^A-Za-z0-9._-]/_}.spawn-bench.json"
+    rm -f "$o_sbench" 2>/dev/null || true
 done
 if seat_usable "$np2" "$nm2"; then
     fail "seat_usable $np2/$nm2 returned usable after empty-run bench"
@@ -295,17 +328,20 @@ ok "empty-run (tools=0 + no final text) fails loudly, benches 15 min, re-routes 
 
 # =============================================================================
 # fleet-ops#1378: in-process no-op retry — when a seat produces a provider
-# no-op (0B stdout, healthy seat), the script must re-run on a different seat
-# INSIDE the same invocation instead of exiting 1 and consuming a systemd
+# no-op (0B stdout), the script must re-run on a different seat INSIDE the
+# same invocation instead of exiting 1 and consuming a systemd
 # StartLimitBurst slot. The script exits 0 when the second seat succeeds, so
-# no StartLimitBurst slot is consumed. A 0B provider no-op is a lane fault, not
-# a seat fault, so the first seat is NOT benched.
+# no StartLimitBurst slot is consumed. Per fleet-ops#1298 the first no-op
+# seat IS now benched (empty_run, geometric cooldown) so an intake re-spawn skips
+# it — but the in-process retry still fires immediately on a different
+# seat, so the item is never charged a StartLimitBurst slot for the flake.
 # =============================================================================
 # Set EMPTY_RUN_RETRY_MAX=1 so the script retries once before giving up.
 export EMPTY_RUN_RETRY_MAX=1
 
 # Reset ledgers and mark logs so both seats are usable and scenario 3 is clean.
 rm -f "$LEDGER"/*.json 2>/dev/null || true
+rm -f "$LEDGER"/*.spawn-bench.json 2>/dev/null || true
 rm -f "$scratch/mark_calls" "$scratch/mark_empty_calls" 2>/dev/null || true
 # Clear tried-seats from prior scenarios.
 : >"$STATE_DIR/attempts/pi-issue-fleet-ops-378.tried-seats" 2>/dev/null || true
@@ -346,17 +382,281 @@ echo "$out3" | grep -qF 'Real output' \
   || fail "output file should contain 'Real output' from second seat, got: $out3"
 ok "in-process retry: first seat no-op (0B), script re-seated in-process, second seat succeeded, exited 0"
 
-# The first seat was a provider no-op (healthy seat) — it must NOT have been
-# benched. The tried-seats file for the successful run should be reset.
+# The tried-seats file for the successful run should be reset.
 tried3="$STATE_DIR/attempts/pi-issue-${inst3}.tried-seats"
 [[ -s "$tried3" ]] && fail "successful run must reset tried-seats, got: $(cat "$tried3")"
 ok "tried-seats reset after successful in-process retry"
 
-# Either mark log must not contain the first no-op seat (devin/glm-5-2).
-if grep -qF 'devin/glm-5-2' "$scratch/mark_calls" 2>/dev/null \
-    || grep -qF 'devin/glm-5-2' "$scratch/mark_empty_calls" 2>/dev/null; then
-    fail "first no-op seat (devin/glm-5-2) must NOT be benched (provider no-op is a lane fault)"
+# fleet-ops#1298: the first no-op seat (devin/glm-5-2) IS now benched via
+# mark_seat_empty_run (empty_run, geometric cooldown) so an intake re-spawn skips
+# it. The spawn-fail marker (mark_seat_spawn_fail) must NOT be used — the
+# empty_run class is the correct one (flat 900s; the #1408 wall ladder is
+# for real spawn-fail walls only, fleet-ops#2343).
+if grep -qF 'devin/glm-5-2' "$scratch/mark_calls" 2>/dev/null; then
+    fail "first no-op seat (devin/glm-5-2) must use mark_seat_empty_run, not mark_seat_spawn_fail (calls: $(cat "$scratch/mark_calls"))"
 fi
-ok "first no-op seat was NOT benched (lane fault, healthy seat)"
+grep -qF 'devin/glm-5-2' "$scratch/mark_empty_calls" 2>/dev/null \
+  || fail "first no-op seat (devin/glm-5-2) must be benched via mark_seat_empty_run (fleet-ops#1298); empty calls: $(cat "$scratch/mark_empty_calls" 2>/dev/null || true)"
+ok "first no-op seat (devin/glm-5-2) benched via mark_seat_empty_run (empty_run, geometric cooldown) — intake re-spawn will skip it"
 
-ok "fleet-ops#1378: in-process no-op retry works — item is never charged for a lane flake"
+# =============================================================================
+# fleet-ops#3531: a remote devin session that exits 0 with tools=0 but a
+# pull/<n> URL in the output is NOT an empty run. It must be treated as a
+# successful session (exit 0, output copied to PI_ISSUES_DIR) and must NOT
+# call mark_seat_empty_run.
+# =============================================================================
+rm -f "$LEDGER"/*.json 2>/dev/null || true
+rm -f "$LEDGER"/*.spawn-bench.json 2>/dev/null || true
+rm -f "$scratch/mark_calls" "$scratch/mark_empty_calls" 2>/dev/null || true
+: >"$STATE_DIR/attempts/pi-issue-${inst}.tried-seats" 2>/dev/null || true
+: >"$STATE_DIR/attempts/pi-issue-${inst2}.tried-seats" 2>/dev/null || true
+: >"$STATE_DIR/attempts/pi-issue-${inst3}.tried-seats" 2>/dev/null || true
+export EMPTY_RUN_RETRY_MAX=0
+
+# Remote devin: tools=0 verdict plus a real PR URL. The PR URL proves the
+# session produced an outcome even though no local tools were used.
+cat >"$stub_bin/pi" <<'STUB'
+#!/usr/bin/env bash
+printf 'PACKET-VERDICT tools=0 class=worked\nhttps://github.com/Nishfleet/fleet-ops/pull/9999\n'
+exit 0
+STUB
+chmod +x "$stub_bin/pi"
+
+inst4="fleet-ops-3531-remote"
+printf 'Implement one GitHub issue: fleet-ops-3531.\n' >"$ISSUES_DIR/${inst4}.in"
+
+set +e
+bash "$bin" "$inst4" >"$scratch/run4.out" 2>"$scratch/run4.err"
+rc4=$?
+set -e
+
+[[ "$rc4" == "0" ]] \
+  || fail "remote devin with PR URL must exit 0 (success), got rc=$rc4 err=$(cat "$scratch/run4.err")"
+
+# The output file must contain the PR URL.
+out4=$(cat "$PI_ISSUES_DIR/${inst4}.out" 2>/dev/null || true)
+echo "$out4" | grep -qF 'https://github.com/Nishfleet/fleet-ops/pull/9999' \
+  || fail "output file should contain the PR URL, got: $out4"
+ok "remote devin (tools=0 + PR URL) treated as success, output contains PR URL"
+
+# mark_seat_empty_run must NOT be called for this remote PR success.
+if [[ -f "$scratch/mark_empty_calls" ]] && grep -qF 'devin' "$scratch/mark_empty_calls"; then
+    fail "remote devin PR success must NOT call mark_seat_empty_run; empty calls: $(cat "$scratch/mark_empty_calls")"
+fi
+ok "remote devin PR success did NOT bench the seat (no mark_seat_empty_run call)"
+
+# The tried-seats file for a successful run should be reset.
+tried4="$STATE_DIR/attempts/pi-issue-${inst4}.tried-seats"
+[[ -s "$tried4" ]] && fail "successful remote run must reset tried-seats, got: $(cat "$tried4")"
+ok "tried-seats reset after successful remote devin PR run"
+
+ok "fleet-ops#1378/#3531: in-process no-op retry and remote PR success both work"
+
+# =============================================================================
+# fleet-ops#3714 + #3810: a session that made tool calls but ended its turn ON
+# a tool call (no trailing assistant text) leaves stdout at 0B while the verdict
+# on stderr says tools=N class=worked. Live 2026-09-05T22:14Z fleet-ops-3268 on
+# ollama/deepseek-v4-flash:0731: 14 tool calls, 44k tokens, stderr
+# "PACKET-VERDICT tools=35 class=worked", stdout=0B. #3714 ruled this is NOT a
+# provider no-op (the seat functioned, tools>0) so the seat is NOT benched.
+# #3810: but a worked-no-text session that did NOT ship a PR is a BURNED CLAIM,
+# not a success. 16 such runs in 2h on ollama/deepseek-v4-flash:0731 each
+# burned a claim silently (exit 0, no re-queue). Fix: exit 1 (fail loudly,
+# death_class=work) so systemd Restart re-queues on a different seat. The seat
+# is NOT benched. A worked-no-text session that DID ship (PR open or issue
+# closed) stays exit 0 (real success).
+# =============================================================================
+rm -f "$LEDGER"/*.json "$LEDGER"/*.spawn-bench.json 2>/dev/null || true
+rm -f "$scratch/mark_calls" "$scratch/mark_empty_calls" 2>/dev/null || true
+export EMPTY_RUN_RETRY_MAX=0
+
+no_empty_run_ledger() {
+    local f
+    for f in "$LEDGER"/*.json; do
+        [[ -f "$f" ]] || continue
+        if [[ "$(jq -r '.failure_mode // empty' "$f" 2>/dev/null)" == "empty_run" ]]; then
+            return 1
+        fi
+    done
+    return 0
+}
+
+# (a) verdict on stderr, nothing on stdout, no PR shipped -> exit 1, seat NOT benched.
+cat >"$stub_bin/pi" <<'STUB'
+#!/usr/bin/env bash
+printf 'EXTLOAD-OK extension=packet-verdict mode=print-safe\nPACKET-VERDICT tools=35 class=worked\n' >&2
+exit 0
+STUB
+chmod +x "$stub_bin/pi"
+
+inst5="fleet-ops-3714-verdict"
+printf 'Implement one GitHub issue: fleet-ops#3714.\nTARGET: repo Nishfleet/fleet-ops issue 3714 unit pi-issue-fleet-ops-3714\n' >"$ISSUES_DIR/${inst5}.in"
+set +e
+bash "$bin" "$inst5" >"$scratch/run5.out" 2>"$scratch/run5.err"
+rc5=$?
+set -e
+[[ "$rc5" == "1" ]] \
+  || fail "worked-no-text (stderr verdict tools=35, stdout 0B, no PR) must exit 1, got rc=$rc5 err=$(tail -n 5 "$scratch/run5.err")"
+if [[ -s "$scratch/mark_empty_calls" ]]; then
+    fail "worked-no-text must NOT bench the seat via mark_seat_empty_run; calls: $(cat "$scratch/mark_empty_calls")"
+fi
+no_empty_run_ledger || fail "worked-no-text must write no empty_run ledger: $(ls "$LEDGER")"
+grep -qF 'worked-no-text' "$scratch/run5.err" \
+  || fail "expected a worked-no-text log line, got: $(tail -n 5 "$scratch/run5.err")"
+grep -qF 'failing claim loudly' "$scratch/run5.err" \
+  || fail "expected a 'failing claim loudly' log line, got: $(tail -n 5 "$scratch/run5.err")"
+ok "fleet-ops#3714 (a): stderr verdict tools=35 + stdout 0B + no PR -> exit 1, seat not benched"
+
+# (b) no verdict line at all; only the session jsonl carries toolCall entries, no PR -> exit 1.
+rm -f "$scratch/mark_calls" "$scratch/mark_empty_calls" 2>/dev/null || true
+inst6="fleet-ops-3714-jsonl"
+sess6="$HOME/.pi/agent/sessions/pi-issue-${inst6}"
+cat >"$stub_bin/pi" <<STUB
+#!/usr/bin/env bash
+mkdir -p "$sess6"
+printf '%s\n' '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"c1","name":"bash","arguments":{"command":"true"}}],"stopReason":"toolUse"}}' >"$sess6/2026-09-05T22-14-18-067Z_test.jsonl"
+exit 0
+STUB
+chmod +x "$stub_bin/pi"
+printf 'Implement one GitHub issue: fleet-ops#3714.\nTARGET: repo Nishfleet/fleet-ops issue 3714 unit pi-issue-fleet-ops-3714\n' >"$ISSUES_DIR/${inst6}.in"
+set +e
+bash "$bin" "$inst6" >"$scratch/run6.out" 2>"$scratch/run6.err"
+rc6=$?
+set -e
+[[ "$rc6" == "1" ]] \
+  || fail "worked-no-text (session jsonl toolCall, no verdict, stdout 0B, no PR) must exit 1, got rc=$rc6 err=$(tail -n 5 "$scratch/run6.err")"
+if [[ -s "$scratch/mark_empty_calls" ]]; then
+    fail "session-jsonl tool calls must NOT bench the seat; calls: $(cat "$scratch/mark_empty_calls")"
+fi
+no_empty_run_ledger || fail "session-jsonl tool calls must write no empty_run ledger: $(ls "$LEDGER")"
+ok "fleet-ops#3714 (b): session jsonl toolCall + no verdict + stdout 0B + no PR -> exit 1, seat not benched"
+
+# (c) control: 0B stdout, no verdict, no tool calls anywhere is STILL a provider no-op.
+rm -f "$scratch/mark_calls" "$scratch/mark_empty_calls" 2>/dev/null || true
+cat >"$stub_bin/pi" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+chmod +x "$stub_bin/pi"
+inst7="fleet-ops-3714-noop"
+printf 'Implement one GitHub issue: fleet-ops#3714.\nTARGET: repo Nishfleet/fleet-ops issue 3714 unit pi-issue-fleet-ops-3714\n' >"$ISSUES_DIR/${inst7}.in"
+set +e
+bash "$bin" "$inst7" >"$scratch/run7.out" 2>"$scratch/run7.err"
+rc7=$?
+set -e
+[[ "$rc7" == "1" ]] \
+  || fail "true no-op (0B, no verdict, no tool calls) must still exit 1, got rc=$rc7"
+[[ -s "$scratch/mark_empty_calls" ]] \
+  || fail "true no-op must still bench the seat via mark_seat_empty_run"
+ok "fleet-ops#3714 (c): true no-op still benched (detector not loosened)"
+
+# (d) worked-no-text WITH a PR shipped -> exit 0 (real success, #3810).
+rm -f "$scratch/mark_calls" "$scratch/mark_empty_calls" 2>/dev/null || true
+cat >"$stub_bin/gh" <<'STUB'
+#!/usr/bin/env bash
+# PR is open for this case.
+if [[ "$*" == *"--jq"* ]]; then
+    printf 'open\n'
+    exit 0
+fi
+printf '[{"number":42,"state":"open"}]\n'
+exit 0
+STUB
+chmod +x "$stub_bin/gh"
+cat >"$stub_bin/pi" <<'STUB'
+#!/usr/bin/env bash
+printf 'EXTLOAD-OK extension=packet-verdict mode=print-safe\nPACKET-VERDICT tools=35 class=worked\n' >&2
+exit 0
+STUB
+chmod +x "$stub_bin/pi"
+inst8="fleet-ops-3810-shipped"
+printf 'Implement one GitHub issue: fleet-ops#3810.\nTARGET: repo Nishfleet/fleet-ops issue 3810 unit pi-issue-fleet-ops-3810\n' >"$ISSUES_DIR/${inst8}.in"
+set +e
+bash "$bin" "$inst8" >"$scratch/run8.out" 2>"$scratch/run8.err"
+rc8=$?
+set -e
+[[ "$rc8" == "0" ]]   || fail "worked-no-text WITH PR shipped must exit 0, got rc=$rc8 err=$(tail -n 5 "$scratch/run8.err")"
+if [[ -s "$scratch/mark_empty_calls" ]]; then
+    fail "worked-no-text with PR shipped must NOT bench the seat; calls: $(cat "$scratch/mark_empty_calls")"
+fi
+grep -qF 'PR shipped or issue closed' "$scratch/run8.err"   || fail "expected a 'PR shipped or issue closed' log line, got: $(tail -n 5 "$scratch/run8.err")"
+ok "fleet-ops#3810 (d): worked-no-text + PR shipped -> exit 0, seat not benched"
+
+# Restore default gh stub for any subsequent test sections.
+cat >"$stub_bin/gh" <<'STUB'
+#!/usr/bin/env bash
+if [[ "$*" == *"--jq"* ]]; then
+    printf 'open\n'
+    exit 0
+fi
+printf '[]\n'
+exit 0
+STUB
+chmod +x "$stub_bin/gh"
+
+ok "fleet-ops#3714/#3810: worked-no-text is not a provider no-op; no-PR fails loudly, PR-shipped succeeds; true no-op still benches"
+
+# =============================================================================
+# fleet-ops#3847: a SINGLE worked-no-text run (tools>0, 0B stdout) is not proof
+# of a broken seat, but N consecutive ones is. Live 2026-09-06:
+# ollama/deepseek-v4-flash:0731 produced 0B final text on 5/5 runs in 2h
+# (fleet-ops-3714, 0509-1731, fleet-ops-3727, fleet-ops-3322, fleet-ops-3730;
+# 197 tool calls, zero deliverables), each classified worked-no-text and never
+# benched. Once a seat hits WORKED_NO_TEXT_THRESHOLD consecutive 0B-stdout
+# worked-no-text runs, it is benched via mark_seat_empty_run and re-seated.
+#
+# NOTE (fleet-ops#3810, merged on main): a worked-no-text run with NO PR
+# shipped now exits 1 loudly regardless of threshold. So every run below
+# exits 1 (loud fail) AND must NOT bench; the bench fires only at the
+# threshold. The exit code is therefore not the discriminator — the bench
+# (mark_seat_empty_run) and the counter are.
+# =============================================================================
+export WORKED_NO_TEXT_THRESHOLD=3
+rm -f "$scratch/mark_calls" "$scratch/mark_empty_calls" 2>/dev/null || true
+rm -f "$LEDGER"/*.worked-no-text.json 2>/dev/null || true
+# Each inst is a separate pi-issue-run invocation on the same seat
+# (devin/glm-5-2), so the per-seat counter accumulates across runs. The gh
+# stub above returns no open PR and an open issue, so #3810's no-PR loud-fail
+# path fires (exit 1) on every run.
+cat >"$stub_bin/pi" <<'STUB'
+#!/usr/bin/env bash
+printf 'EXTLOAD-OK extension=packet-verdict mode=print-safe\nPACKET-VERDICT tools=12 class=worked\n' >&2
+exit 0
+STUB
+chmod +x "$stub_bin/pi"
+
+for i in 1 2; do
+    inst9="fleet-ops-3847-wnt-$i"
+    printf 'Implement one GitHub issue: fleet-ops#3847.\nTARGET: repo Nishfleet/fleet-ops issue 3847 unit pi-issue-fleet-ops-3847\n' >"$ISSUES_DIR/${inst9}.in"
+    set +e
+    bash "$bin" "$inst9" >"$scratch/run9-$i.out" 2>"$scratch/run9-$i.err"
+    rc=$?
+    set -e
+    [[ "$rc" == "1" ]]       || fail "worked-no-text run #$i (below threshold, no PR) must exit 1 per #3810, got rc=$rc err=$(tail -n 5 "$scratch/run9-$i.err")"
+done
+if [[ -s "$scratch/mark_empty_calls" ]]; then
+    fail "worked-no-text below threshold must NOT bench the seat; calls: $(cat "$scratch/mark_empty_calls")"
+fi
+# The counter file must exist and show count=2 after two runs.
+wnt_file=$(ls "$LEDGER"/*.worked-no-text.json 2>/dev/null | head -n1 || true)
+[[ -n "$wnt_file" ]] || fail "worked-no-text counter file missing after 2 runs"
+[[ "$(jq -r '.consecutive_worked_no_text // 0' "$wnt_file" 2>/dev/null)" == "2" ]]   || fail "worked-no-text counter must be 2 after 2 runs, got: $(cat "$wnt_file")"
+ok "fleet-ops#3847 (a): worked-no-text below threshold does NOT bench, counter accumulates"
+
+# 3rd consecutive run reaches the threshold -> bench fires (and, with no PR
+# shipped, #3810 still exits 1). The discriminator is the bench, not rc.
+rm -f "$scratch/mark_calls" "$scratch/mark_empty_calls" 2>/dev/null || true
+inst9="fleet-ops-3847-wnt-3"
+printf 'Implement one GitHub issue: fleet-ops#3847.\nTARGET: repo Nishfleet/fleet-ops issue 3847 unit pi-issue-fleet-ops-3847\n' >"$ISSUES_DIR/${inst9}.in"
+set +e
+bash "$bin" "$inst9" >"$scratch/run9-3.out" 2>"$scratch/run9-3.err"
+rc=$?
+set -e
+[[ "$rc" == "1" ]]   || fail "worked-no-text at threshold (no PR) must exit 1, got rc=$rc err=$(tail -n 5 "$scratch/run9-3.err")"
+[[ -s "$scratch/mark_empty_calls" ]]   || fail "worked-no-text at threshold must bench the seat via mark_seat_empty_run; calls: $(cat "$scratch/mark_empty_calls")"
+grep -qF 'worked-no-text' "$scratch/mark_empty_calls"   || fail "mark_seat_empty_run reason must mention worked-no-text; calls: $(cat "$scratch/mark_empty_calls")"
+# Counter resets after the bench.
+[[ -z "$(ls "$LEDGER"/*.worked-no-text.json 2>/dev/null)" ]]   || fail "worked-no-text counter must reset after the bench, got: $(ls "$LEDGER"/*.worked-no-text.json)"
+ok "fleet-ops#3847 (b): N consecutive worked-no-text runs bench the seat and reset the counter"
+
+ok "fleet-ops#3847: N consecutive worked-no-text runs bench the seat; below-threshold runs do not"

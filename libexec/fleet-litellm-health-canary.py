@@ -1,0 +1,377 @@
+#!/usr/bin/env python3
+"""fleet-litellm-health-canary — LiteLLM proxy /health/readiness probe
+(fleet-ops#4130 P1).
+
+Polls the LiteLLM proxy at 127.0.0.1:4000/health/readiness every tick and
+exports:
+
+  fleet_litellm_proxy_up{endpoint="readiness"} 1|0
+  fleet_litellm_organ_installed 1|0
+  fleet_litellm_proxy_healthy_deployments{group="..."} <count>
+  fleet_litellm_proxy_unhealthy_deployments{group="..."} <count>
+  fleet_litellm_proxy_last_green_seconds            <unix ts>
+  fleet_litellm_postgres_up                          1|0
+  fleet_litellm_redis_up                             1|0
+
+The first is the organ heartbeat metric (config/fleet-organs.json
+litellm-proxy entry); its absent() rule is FleetLitellmProxyAbsent.
+fleet_litellm_postgres_up / fleet_litellm_redis_up are the postgres/redis
+organ heartbeats (absent rules FleetLitellmPostgresAbsent /
+FleetLitellmRedisAbsent). The last_green_seconds gauge is the canary
+freshness gauge; its absent() rule is FleetLitellmHealthCanaryAbsent.
+
+Postgres is probed via `pg_isready -q` (distro client); Redis via a
+inline PING over a redis-cli subprocess. Both are optional: if the
+binary is missing (organ not installed yet), the gauge is 0 and a
+debug line is logged, NOT a fail-loud exit — the organ-absent alert
+fires on the missing metric, not on this canary's exit code.
+
+Fail-loud: if the proxy is unreachable for the whole tick, exit 1 so the
+service lands in --state=failed and the global service.d/10-escalate.conf
+drop-in climbs the ladder. A single 5xx is recorded as proxy_up=0 but
+does NOT exit 1 (transient — the router's own cooldown handles it); only
+a connection-refused (organ dead) exits 1.
+
+No new scheduler for the proxy_up heartbeat: this canary runs on a 60s
+timer (systemd/fleet-litellm-health-canary.timer) because the proxy is a
+daemon whose death must surface in <2 min, not on the 5-min
+metrics-export cadence. The 60s timer is the named reason (organ-death
+latency).
+
+Stdlib only. No git, no GitHub writes.
+
+Environment seams (tests):
+  FLEET_LITELLM_PROXY_URL   default http://127.0.0.1:4000
+  FLEET_LITELLM_PROM        prom textfile path
+  FLEET_LITELLM_STATE       state json path
+  FLEET_LITELLM_NOW         fixed now for tests
+  FLEET_LITELLM_TIMEOUT_S   per-request timeout
+  FLEET_LITELLM_STUB        path to a stub JSON response (tests)
+  FLEET_LITELLM_PG_ISREADY  pg_isready binary (default searched on PATH)
+  FLEET_LITELLM_REDIS_CLI   redis-cli binary (default searched on PATH)
+  FLEET_LITELLM_PG_HOST     postgres host or socket dir (default the
+                            fleet-owned cluster's own run dir;
+                            pg_isready defaults to /var/run/postgresql,
+                            which is root:postgres-owned and unwritable by
+                            the user running the cluster)
+  FLEET_LITELLM_PG_PORT     postgres port (default 5432)
+  FLEET_LITELLM_PG_DB       postgres database name (default litellm)
+  FLEET_LITELLM_PG_USER     postgres user name (default litellm)
+  FLEET_LITELLM_REDIS_HOST  redis host (default 127.0.0.1)
+  FLEET_LITELLM_REDIS_PORT  redis port (default 6379)
+  FLEET_LITELLM_STUB_PG     "1" forces postgres_up=1 (tests)
+  FLEET_LITELLM_STUB_REDIS  "1" forces redis_up=1 (tests)
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+from typing import Any
+
+DEFAULT_PROXY_URL = os.environ.get("FLEET_LITELLM_PROXY_URL", "http://127.0.0.1:4000")
+# The proxy organ's live install is Nish-gated (fleet-ops#4174 P1: "paper +
+# installable units, NOT a live deploy"). The venv is the definitive install
+# marker (the proxy unit's ExecStart runs this binary). When it is absent the
+# organ is NOT installed yet, so the canary must fail-open (exit 0) rather than
+# fail-loud on connection-refused — the proxy is legitimately absent, not dead.
+DEFAULT_VENV = os.environ.get(
+    "FLEET_LITELLM_VENV", "/home/nish/.local/venvs/litellm/bin/litellm"
+)
+DEFAULT_PROM = Path(
+    os.environ.get("FLEET_LITELLM_PROM", "/var/lib/prometheus/node-exporter/fleet-litellm-health.prom")
+)
+DEFAULT_STATE = Path(
+    os.environ.get("FLEET_LITELLM_STATE", "/home/nish/workspaces/agent-state/litellm/health.json")
+)
+DEFAULT_TIMEOUT_S = float(os.environ.get("FLEET_LITELLM_TIMEOUT_S", "10"))
+DEFAULT_PG_HOST = os.environ.get(
+    "FLEET_LITELLM_PG_HOST",
+    "/home/nish/.local/share/fleet-litellm-postgres/run",
+)
+DEFAULT_PG_PORT = os.environ.get("FLEET_LITELLM_PG_PORT", "5432")
+DEFAULT_REDIS_HOST = os.environ.get("FLEET_LITELLM_REDIS_HOST", "127.0.0.1")
+DEFAULT_REDIS_PORT = os.environ.get("FLEET_LITELLM_REDIS_PORT", "6379")
+
+
+def _atomic_write(path: Path, text: str, *, mode: int = 0o644) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_name, path)
+    except Exception:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+    os.chmod(path, mode)
+
+
+def _organ_installed(venv: str) -> bool:
+    """True if the LiteLLM proxy organ is installed (venv present).
+
+    When the organ is not installed (Nish-gated live install not yet done), the
+    canary must NOT fail loud on connection-refused — the proxy is legitimately
+    absent, not dead. This mirrors the postgres/redis probes, which already
+    treat a missing binary as "organ not installed" (gauge 0, no fail-loud).
+    When Nish installs the venv, this canary automatically resumes fail-loud on
+    real organ death — no re-arming needed.
+    """
+    if os.environ.get("FLEET_LITELLM_STUB_INSTALLED") == "1":
+        return True
+    return Path(venv).is_file()
+
+
+def _now() -> float:
+    fixed = os.environ.get("FLEET_LITELLM_NOW")
+    if fixed:
+        try:
+            return float(fixed)
+        except ValueError:
+            pass
+    return time.time()
+
+
+def _fetch(url: str, timeout: float) -> tuple[int, str]:
+    """Return (status_code, body). status_code=0 means connection failed."""
+    stub = os.environ.get("FLEET_LITELLM_STUB")
+    if stub:
+        p = Path(stub)
+        if not p.is_file():
+            return 0, ""
+        with p.open(encoding="utf-8") as fh:
+            return 200, fh.read()
+    try:
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosem: dynamic-urllib-use-detected
+            return int(resp.status), resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as e:
+        return int(e.code), e.read().decode("utf-8", errors="replace")
+    except (urllib.error.URLError, TimeoutError, ConnectionError, OSError):
+        return 0, ""
+
+
+def _parse_readiness(body: str) -> dict[str, Any]:
+    """Parse /health/readiness response. Returns {group: {healthy: n, unhealthy: n}}.
+
+    LiteLLM's readiness endpoint returns two formats depending on version
+    and query params:
+
+    1. Detailed: {"healthy_endpoints": [...], "unhealthy_endpoints": [...]}
+       Each endpoint carries model_info; we bucket by model_name (the group
+       alias). This is the format the canary was originally designed for.
+
+    2. Simple: {"status": "healthy"|"unhealthy", "db": "connected"|...}
+       LiteLLM 1.98+ returns this by default without ?detailed=True. No
+       per-group breakdown is available, so we synthesise a single
+       "proxy" group with healthy=1 when status==healthy, unhealthy=1
+       otherwise. This keeps the fleet_litellm_proxy_healthy_deployments
+       gauge meaningful even without per-group detail (fleet-ops#4174
+       reopen: groups=0 despite a healthy proxy).
+    """
+    try:
+        doc = json.loads(body)
+    except (json.JSONDecodeError, ValueError):
+        return {}
+    out: dict[str, dict[str, int]] = {}
+    healthy_eps = doc.get("healthy_endpoints") or []
+    unhealthy_eps = doc.get("unhealthy_endpoints") or []
+    if healthy_eps or unhealthy_eps:
+        # Detailed format — bucket by model_name.
+        for ep in healthy_eps:
+            name = "unknown"
+            if isinstance(ep, dict):
+                mi = ep.get("model_info") or {}
+                name = (mi.get("model_name") if isinstance(mi, dict) else None) or ep.get("model") or "unknown"
+            g = out.setdefault(str(name), {"healthy": 0, "unhealthy": 0})
+            g["healthy"] += 1
+        for ep in unhealthy_eps:
+            name = "unknown"
+            if isinstance(ep, dict):
+                mi = ep.get("model_info") or {}
+                name = (mi.get("model_name") if isinstance(mi, dict) else None) or ep.get("model") or "unknown"
+            g = out.setdefault(str(name), {"healthy": 0, "unhealthy": 0})
+            g["unhealthy"] += 1
+    elif isinstance(doc, dict) and "status" in doc:
+        # Simple format — synthesise a single "proxy" group.
+        status = str(doc.get("status", ""))
+        g = out.setdefault("proxy", {"healthy": 0, "unhealthy": 0})
+        if status == "healthy":
+            g["healthy"] = 1
+        else:
+            g["unhealthy"] = 1
+    return out
+
+
+def _probe_postgres(pg_host: str = DEFAULT_PG_HOST) -> int:
+    """1 if pg_isready succeeds, 0 otherwise. Missing binary -> 0 (organ absent).
+
+    Connects as user=litellm to database=litellm — the fleet-owned cluster
+    only has that role/database. The pg_isready defaults (user=nish,
+    database=nish) produce FATAL log spam every tick and could return a
+    false-negative exit code on stricter Postgres configs (fleet-ops#4174
+    reopen: 'FATAL: database "nish" does not exist' every 60s).
+    """
+    if os.environ.get("FLEET_LITELLM_STUB_PG") == "1":
+        return 1
+    bin_name = os.environ.get("FLEET_LITELLM_PG_ISREADY", "pg_isready")
+    pg_bin = shutil.which(bin_name) if "/" not in bin_name else bin_name
+    if not pg_bin:
+        return 0
+    pg_db = os.environ.get("FLEET_LITELLM_PG_DB", "litellm")
+    pg_user = os.environ.get("FLEET_LITELLM_PG_USER", "litellm")
+    try:
+        r = subprocess.run(
+            [pg_bin, "-q", "-h", pg_host, "-d", pg_db, "-U", pg_user],
+            capture_output=True,
+            timeout=5,
+        )
+        return 1 if r.returncode == 0 else 0
+    except (subprocess.TimeoutExpired, OSError):
+        return 0
+
+
+def _probe_redis(host: str, port: str) -> int:
+    """1 if redis-cli PING returns PONG, 0 otherwise. Missing binary -> 0."""
+    if os.environ.get("FLEET_LITELLM_STUB_REDIS") == "1":
+        return 1
+    bin_name = os.environ.get("FLEET_LITELLM_REDIS_CLI", "redis-cli")
+    rd_bin = shutil.which(bin_name) if "/" not in bin_name else bin_name
+    if not rd_bin:
+        return 0
+    try:
+        r = subprocess.run(
+            [rd_bin, "-h", host, "-p", str(port), "PING"],
+            capture_output=True,
+            timeout=5,
+            text=True,
+        )
+        return 1 if r.returncode == 0 and r.stdout.strip() == "PONG" else 0
+    except (subprocess.TimeoutExpired, OSError):
+        return 0
+
+
+def render_prom(
+    now: float,
+    proxy_up: int,
+    groups: dict[str, dict[str, int]],
+    pg_up: int,
+    redis_up: int,
+    organ_installed: int,
+) -> str:
+    lines: list[str] = []
+    lines.append(f'# HELP fleet_litellm_proxy_up 1 if /health/readiness returned 200, 0 on 5xx, absent if organ dead')
+    lines.append('# TYPE fleet_litellm_proxy_up gauge')
+    lines.append(f'fleet_litellm_proxy_up{{endpoint="readiness"}} {int(proxy_up)}')
+    lines.append('# HELP fleet_litellm_organ_installed 1 if the proxy organ venv is present, 0 if not (Nish-gated live install not done). Gates the absent() rules so a deliberately-uninstalled organ does not fire them (fleet-ops#4221).')
+    lines.append('# TYPE fleet_litellm_organ_installed gauge')
+    lines.append(f'fleet_litellm_organ_installed {int(organ_installed)}')
+    lines.append('# HELP fleet_litellm_proxy_healthy_deployments count of healthy deployments per model group')
+    lines.append('# TYPE fleet_litellm_proxy_healthy_deployments gauge')
+    lines.append('# HELP fleet_litellm_proxy_unhealthy_deployments count of unhealthy deployments per model group')
+    lines.append('# TYPE fleet_litellm_proxy_unhealthy_deployments gauge')
+    for gname, counts in sorted(groups.items()):
+        glabel = gname.replace("\\", "\\\\").replace('"', '\\"')
+        lines.append(f'fleet_litellm_proxy_healthy_deployments{{group="{glabel}"}} {counts.get("healthy", 0)}')
+        lines.append(f'fleet_litellm_proxy_unhealthy_deployments{{group="{glabel}"}} {counts.get("unhealthy", 0)}')
+    lines.append('# HELP fleet_litellm_postgres_up 1 if pg_isready succeeded, 0 otherwise, absent if organ not installed')
+    lines.append('# TYPE fleet_litellm_postgres_up gauge')
+    lines.append(f'fleet_litellm_postgres_up {int(pg_up)}')
+    lines.append('# HELP fleet_litellm_redis_up 1 if redis-cli PING returned PONG, 0 otherwise, absent if organ not installed')
+    lines.append('# TYPE fleet_litellm_redis_up gauge')
+    lines.append(f'fleet_litellm_redis_up {int(redis_up)}')
+    lines.append('# HELP fleet_litellm_proxy_last_green_seconds unix ts of last proxy_up=1 tick')
+    lines.append('# TYPE fleet_litellm_proxy_last_green_seconds gauge')
+    if proxy_up == 1:
+        lines.append(f'fleet_litellm_proxy_last_green_seconds {int(now)}')
+    lines.append("")
+    return "\n".join(lines)
+
+
+def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else "")
+    p.add_argument("--proxy-url", default=DEFAULT_PROXY_URL)
+    p.add_argument("--prom", default=str(DEFAULT_PROM))
+    p.add_argument("--state", default=str(DEFAULT_STATE))
+    p.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_S)
+    p.add_argument("--venv", default=DEFAULT_VENV)
+    p.add_argument("--quiet", action="store_true")
+    args = p.parse_args(argv)
+
+    now = _now()
+
+    # Fail-open when the organ is not installed (Nish-gated live install not yet
+    # done). Write the prom file with the metrics present at 0, export
+    # fleet_litellm_organ_installed=0, and exit 0 — do NOT fail loud. The
+    # absent() rules are gated on the organ being installed via
+    # `unless fleet_litellm_organ_installed == 0` (fleet-ops#4174 P1: paper, not
+    # live deploy), so a deliberately-uninstalled organ stays silent and the
+    # canary keeps a live liveness signal (proxy_up=0 present). When Nish
+    # installs the venv, organ_installed flips to 1 and this canary resumes
+    # fail-loud on real organ death.
+    if not _organ_installed(args.venv):
+        pg_up = _probe_postgres()
+        redis_up = _probe_redis(DEFAULT_REDIS_HOST, DEFAULT_REDIS_PORT)
+        _atomic_write(Path(args.prom), render_prom(now, 0, {}, pg_up, redis_up, 0))
+        if not args.quiet:
+            print(
+                "fleet-litellm-health-canary: proxy organ not installed "
+                f"(venv {args.venv} missing) — skip, no fail-loud",
+                file=sys.stderr,
+            )
+        return 0
+
+    url = args.proxy_url.rstrip("/") + "/health/readiness"
+    status, body = _fetch(url, args.timeout)
+
+    pg_up = _probe_postgres()
+    redis_up = _probe_redis(DEFAULT_REDIS_HOST, DEFAULT_REDIS_PORT)
+
+    if status == 0:
+        # Organ dead — connection refused. Fail loud so the escalation
+        # drop-in climbs the ladder. This is the P4 drill condition.
+        if not args.quiet:
+            print(f"fleet-litellm-health-canary: proxy unreachable at {url} (organ dead)", file=sys.stderr)
+        _atomic_write(Path(args.prom), render_prom(now, 0, {}, pg_up, redis_up, 1))
+        return 1
+
+    proxy_up = 1 if status == 200 else 0
+    groups = _parse_readiness(body) if proxy_up else {}
+
+    _atomic_write(Path(args.prom), render_prom(now, proxy_up, groups, pg_up, redis_up, 1))
+
+    state = {
+        "now": int(now),
+        "proxy_up": proxy_up,
+        "status": status,
+        "groups": groups,
+        "postgres_up": pg_up,
+        "redis_up": redis_up,
+    }
+    _atomic_write(Path(args.state), json.dumps(state, indent=2, sort_keys=True))
+
+    if not args.quiet:
+        print(
+            f"fleet-litellm-health-canary: proxy_up={proxy_up} status={status} "
+            f"groups={len(groups)} pg_up={pg_up} redis_up={redis_up}"
+        )
+    # A 5xx is transient (router cooldown handles it); do not exit 1.
+    # Only connection-refused (status==0) exits 1, handled above.
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -12,6 +12,8 @@
 #   5. Net ready increase resets the counter.
 #   6. Ready at/above the 12h buffer cap does not escalate.
 #   7. Non-zero scout exit does not increment (OnFailure owns crashes).
+#  7b. A green run that filed >= 1 issue resets consecutive_dry even when
+#      the agent-ready runway is flat (candidates in admission, #3547).
 #   8. end without begin creates a snapshot (success-run), does not
 #      increment consecutive_dry, does not file (fleet-ops#1277).
 #   9. Tracker always exits 0 (must not fail the scout unit).
@@ -138,7 +140,8 @@ run_pair() {
 }
 
 state_field() {
-  grep -E "^${1}=" "$state/0509.state" 2>/dev/null | head -n 1 | cut -d= -f2-
+  local field="${1:-}" repo="${2:-0509}"
+  grep -E "^${field}=" "$state/${repo}.state" 2>/dev/null | head -n 1 | cut -d= -f2-
 }
 
 # --- 2. one dry green run: track, do not file --------------------------------
@@ -302,6 +305,79 @@ printf '%s\n' 'before=1' 'consecutive_dry=2' >"$state/0509.state"
 ! grep -q 'issue create' "$gh_log" || fail "scenario7: crash must not file futility"
 ok "scenario7: non-zero exit does not increment (OnFailure owns crashes)"
 
+# --- 7b. a run that files issues is not dry (fleet-ops#3547) ----------------
+# The scout files scout-candidate issues (admission, fleet-ops#457), so the
+# agent-ready runway stays flat after a productive run. 2026-09-05: 0509 hit
+# consecutive_dry=7 and was parked while its candidates sat in admission.
+: >"$gh_log"
+: >"$triage"
+echo '[]' >"$open_issues"
+printf '%s\n' 'before=2' 'consecutive_dry=2' >"$state/0509.state"
+export SCOUT_FUTILITY_READY_COUNT=2
+"$bin" begin 0509 >/dev/null
+export SCOUT_FUTILITY_FILED_COUNT=3
+"$bin" end 0509 0 >/dev/null
+[[ "$(state_field consecutive_dry)" == "0" ]] \
+  || fail "scenario7b: green run that filed 3 issues must reset consecutive_dry, got '$(state_field consecutive_dry)'"
+[[ "$(state_field last_filed)" == "3" ]] \
+  || fail "scenario7b: last_filed must record 3, got '$(state_field last_filed)'"
+! grep -q 'SCOUT-FUTILITY' "$triage" || fail "scenario7b: must not LOUD after a productive run"
+export SCOUT_FUTILITY_FILED_COUNT=0
+"$bin" begin 0509 >/dev/null
+"$bin" end 0509 0 >/dev/null
+[[ "$(state_field consecutive_dry)" == "1" ]] \
+  || fail "scenario7b: green run that filed nothing (flat runway) must increment, got '$(state_field consecutive_dry)'"
+"$bin" begin 0509 >/dev/null
+"$bin" end 0509 1 >/dev/null
+[[ "$(state_field consecutive_dry)" == "1" ]] \
+  || fail "scenario7b: rc=1 must leave consecutive_dry unchanged, got '$(state_field consecutive_dry)'"
+[[ "$(state_field last_exit)" == "1" ]] || fail "scenario7b: last_exit must record 1"
+unset SCOUT_FUTILITY_FILED_COUNT
+ok "scenario7b: filed>=1 resets consecutive_dry; filed=0 increments; rc!=0 leaves it (fleet-ops#3547)"
+
+# --- 7c. filed_since_begin counts real filings only ---------------------------
+# 2026-09-06 14:52-15:11Z: the 0509 scout filed nothing, but an AUTO-REVERT
+# HALT notice landed inside the window and the run was scored "filed=1,
+# productive" — consecutive_dry reset on noise. HALT notices and noise-class
+# issues are not scout filings. The fake gh applies the --jq expression.
+gh_jq="$scratch/gh_jq"
+cat >"$gh_jq" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${GH_LOG:-/dev/null}"
+jqexpr=""; prev=""
+for a in "$@"; do [[ "$prev" == "--jq" ]] && jqexpr="$a"; prev="$a"; done
+case "$*" in
+  *"issue list"*"created:>="*) jq -r "${jqexpr:-.}" "${GH_CREATED_FIXTURE}"; exit 0 ;;
+  *"issue list"*"-l agent-ready"*"--state closed"*) echo '[]'; exit 0 ;;
+  *"issue list"*"-l agent-ready"*) cat "${WORK_READY:-/dev/null}" 2>/dev/null || echo 0; exit 0 ;;
+  *"issue list"*) echo '[]'; exit 0 ;;
+  *"issue create"*) echo "https://github.com/Nishfleet/fleet-ops/issues/999"; exit 0 ;;
+esac
+exit 0
+FAKE
+chmod +x "$gh_jq"
+export GH_CREATED_FIXTURE="$scratch/created.json"
+jq -n '[{number:1828,title:"AUTO-REVERT HALT: main moved after the red commit",labels:[]},{number:1830,title:"AUTO-REVERT HALT: Secret Scan failing across consecutive commits",labels:[{name:"noise-class"}]}]' >"$GH_CREATED_FIXTURE"
+export GH="$gh_jq"
+: >"$gh_log"; : >"$triage"
+echo '[]' >"$open_issues"
+printf '%s\n' 'before=2' 'consecutive_dry=1' >"$state/0509.state"
+export SCOUT_FUTILITY_READY_COUNT=2
+unset SCOUT_FUTILITY_FILED_COUNT
+"$bin" begin 0509 >/dev/null
+set +e; "$bin" end 0509 0 >/dev/null 2>&1; set -e
+[[ "$(state_field consecutive_dry)" == "2" ]] \
+  || fail "scenario7c: two AUTO-REVERT HALT notices created during the run are not filings; dry run must increment 1->2, got '$(state_field consecutive_dry)'"
+[[ "$(state_field last_filed)" == "0" ]] || fail "scenario7c: last_filed must be 0, got '$(state_field last_filed)'"
+jq -n '[{number:1828,title:"AUTO-REVERT HALT: main moved after the red commit",labels:[]},{number:1779,title:"/timeline/:domain 410 renders a generic error",labels:[{name:"scout-candidate"}]}]' >"$GH_CREATED_FIXTURE"
+"$bin" begin 0509 >/dev/null
+set +e; "$bin" end 0509 0 >/dev/null 2>&1; set -e
+[[ "$(state_field consecutive_dry)" == "0" ]] || fail "scenario7c: one real filing beside a HALT notice must reset, got '$(state_field consecutive_dry)'"
+[[ "$(state_field last_filed)" == "1" ]] || fail "scenario7c: last_filed must be 1, got '$(state_field last_filed)'"
+export GH="$gh_fake"
+unset SCOUT_FUTILITY_READY_COUNT
+ok "scenario7c: filed-since-begin excludes AUTO-REVERT HALT and noise-class issues"
+
 # --- 8. end without begin creates a snapshot (success-run) ------------------
 : >"$gh_log"
 : >"$triage"
@@ -319,8 +395,14 @@ siterep_dry=$(grep -E '^consecutive_dry=' "$state/siterep-public.state" | cut -d
 siterep_before=$(grep -E '^before=' "$state/siterep-public.state" | cut -d= -f2-)
 [[ -z "$siterep_before" ]] \
   || fail "scenario8: seeded snapshot must leave before empty so a later skip-end cannot false-count dry, got '$siterep_before'"
+siterep_run=$(grep -E '^last_run_epoch=' "$state/siterep-public.state" | cut -d= -f2-)
+is_uint() { case "${1:-}" in ''|*[!0-9]*) return 1 ;; *) return 0 ;; esac; }
+is_uint "$siterep_run" && [[ "$siterep_run" -gt 0 ]] \
+  || fail "scenario8: missing-begin end must refresh last_run_epoch to a live tick, got '$siterep_run'"
+grep -q "fleet_scout_last_run_seconds{repo=\"siterep-public\"} ${siterep_run}" "$scratch/fleet-scout.prom" \
+  || fail "scenario8: prom must export the refreshed live tick for siterep-public"
 ! grep -q 'issue create' "$gh_log" || fail "scenario8: must not file"
-ok "scenario8: end without begin creates snapshot, success-run, not a dry count"
+ok "scenario8: end without begin creates snapshot, success-run, refreshes live epoch"
 
 # --- 9. tracker always exits 0 ----------------------------------------------
 set +e
@@ -372,15 +454,21 @@ grep -q "fleet_scout_last_run_seconds{repo=\"0509\"} ${epoch1}" "$scratch/fleet-
 "$bin" end 0509 0 >/dev/null
 [[ "$(state_field consecutive_dry)" == "1" ]] \
   || fail "scenario12: first completed end should dry=1"
+epoch_after_real_end=$(state_field last_run_epoch)
+[[ "$epoch_after_real_end" == "$epoch1" ]] \
+  || fail "scenario12: real end must preserve begin epoch ($epoch1), got '$epoch_after_real_end'"
+grep -q "fleet_scout_last_run_seconds{repo=\"0509\"} ${epoch1}" "$scratch/fleet-scout.prom" \
+  || fail "scenario12: real end must not disturb begin epoch in prom"
 "$bin" end 0509 0 >/dev/null
-[[ "$(state_field last_run_epoch)" == "$epoch1" ]] \
-  || fail "scenario12: missing-begin end must preserve last_run_epoch ($epoch1), got '$(state_field last_run_epoch)'"
+epoch_after_missing=$(state_field last_run_epoch)
+[[ "$epoch_after_missing" -ge "$epoch1" ]] \
+  || fail "scenario12: missing-begin end must refresh last_run_epoch (>= $epoch1), got '$epoch_after_missing'"
 [[ "$(state_field consecutive_dry)" == "1" ]] \
   || fail "scenario12: missing-begin end must not increment dry, got '$(state_field consecutive_dry)'"
-grep -q "fleet_scout_last_run_seconds{repo=\"0509\"} ${epoch1}" "$scratch/fleet-scout.prom" \
-  || fail "scenario12: skip-end must not bump exported last_run"
+grep -q "fleet_scout_last_run_seconds{repo=\"0509\"} ${epoch_after_missing}" "$scratch/fleet-scout.prom" \
+  || fail "scenario12: skip-end must export the refreshed live epoch in prom"
 ! grep -q 'issue create' "$gh_log" || fail "scenario12: must not file"
-ok "scenario12: last_run is begin-only; missing-begin end preserves it"
+ok "scenario12: begin epoch preserved across real ends; missing-begin ends refresh"
 
 # --- 12b. unreadable snapshot is the same success-run path ------------------
 printf 'this is garbage\nnot a state file\n' >"$state/0509.state"
@@ -443,4 +531,581 @@ if grep -E 'fleet_scout_last_run_seconds\{repo="fleet-ops"\} 0$' "$scratch/fleet
 fi
 ok "scenario15: rest-skip end omits last_run=0"
 
-echo "OK: scout-futility: green-and-empty scout escalates after N dry runs, never loops quietly"
+# --- 16. runway is measured in hours, not just ready items ------------------
+# 12 ready issues with no consumption = 12h runway (>= cap) -> reset.
+# 12 ready with 12 closed in the last 6h = drain rate 2/h -> runway 6h.
+# The item count alone would say "at cap"; the hours metric must escalate.
+: >"$gh_log"
+: >"$triage"
+rm -f "$state/0509.state"
+export SCOUT_FUTILITY_READY_COUNT=12
+export SCOUT_FUTILITY_CLOSED_JSON="$scratch/closed-12.json"
+now=$(date -u +%s)
+jq -n --arg ts "$(date -u -d '@'"$((now - 3600))" +%Y-%m-%dT%H:%M:%SZ)" \
+  '[range(12) | {number:(.+1), closedAt:$ts}]' >"$SCOUT_FUTILITY_CLOSED_JSON"
+printf '%s\n' 'before=12' 'consecutive_dry=2' >"$state/0509.state"
+"$bin" begin 0509 >/dev/null
+"$bin" end 0509 0 >/dev/null
+[[ "$(state_field consecutive_dry)" == "3" ]] \
+  || fail "scenario16: 12 ready with high drain (12 closed in 6h) = 6h runway; should escalate, got '$(state_field consecutive_dry)'"
+grep -q 'SCOUT-FUTILITY' "$triage" \
+  || fail "scenario16: missing LOUD SCOUT-FUTILITY for runway < 12h"
+ok "scenario16: runway in hours — high drain turns 12 ready items into 6h buffer, escalates"
+unset SCOUT_FUTILITY_CLOSED_JSON
+
+# --- 17. provider-wall crash loop (fleet-ops#2468) ---------------------------
+# N consecutive crashes where EVERY journal error line matches a provider-wall
+# pattern (503 overloaded_error, 429 FreeUsageLimitError, INFERENCE_CAP_ERROR,
+# out-of-credits, 404 "Provider returned error") are structurally equivalent
+# to green-and-empty futility: a bench/seat famine, not a work crash. The
+# tracker escalates ONCE under signal: scout-futility/<repo> (so the existing
+# unit-escalation-write dedupe gate matches it), then dedupes on repeats.
+# Non-wall crashes do NOT increment consecutive_wall.
+unset SCOUT_FUTILITY_CLOSED_JSON || true
+: >"$gh_log"
+: >"$triage"
+echo '[]' >"$open_issues"
+rm -f "$state/fleet-ops.state"
+export SCOUT_FUTILITY_READY_COUNT=16
+
+# Stub journalctl that emulates journald filtering: `-p err` returns only
+# err-priority lines, `-n N` truncates to the last N lines, and priority
+# tags are stripped like `journalctl -o cat`. The provider wall error is
+# printed by the pi script at info priority, so the err-priority view never
+# sees it and only the all-priority -n 50 view (the hot-patch, fleet-ops
+# #2521) reaches it.
+# Body is written to a separate file and read by the stub so JSON quotes
+# inside the body don't conflict with the stub's quoting.
+mkdir -p "$scratch/bin"
+write_journalctl_stub() {
+    cat >"$scratch/bin/journalctl" <<'EOFSTUB'
+#!/usr/bin/env bash
+# Body is read from $JOURNALCTL_BODY_FILE (set by the test) so JSON quotes
+# inside the body never touch this script's quoting. Fixture lines may carry
+# a `info:` / `err:` priority tag; -o cat output strips them.
+body_file="${JOURNALCTL_BODY_FILE:-/dev/null}"
+n=10
+prev=""
+for arg in "$@"; do
+    if [[ "$prev" == "-n" ]]; then
+        case "$arg" in ''|*[!0-9]*) ;; *) n="$arg" ;; esac
+    fi
+    prev="$arg"
+done
+if [[ -f "$body_file" ]]; then
+    if [[ "$*" == *"-p err"* ]]; then
+        grep '^err:' "$body_file" | tail -n "$n" | sed 's/^err: //'
+    else
+        sed 's/^\(info\|err\): //' "$body_file" | tail -n "$n"
+    fi
+fi
+exit 0
+EOFSTUB
+    chmod +x "$scratch/bin/journalctl"
+}
+write_journalctl_stub
+export JOURNALCTL="$scratch/bin/journalctl"
+export PATH="$scratch/bin:$PATH"
+
+# Scenario 17a: 3 consecutive wall-crashes on fleet-ops -> escalate under
+# signal: scout-futility/fleet-ops. First two do not file; third does.
+echo '503: {"message":"Upstream model provider is temporarily unavailable. Please try again in a moment.","type":"overloaded_error"}' >"$scratch/journalctl-body.txt"
+export JOURNALCTL_BODY_FILE="$scratch/journalctl-body.txt"
+
+# Set up body-capture gh BEFORE the wall-crashes fire. Wall-crash #3 will
+# invoke file_wall_escalation which calls gh_create, so the body-cap gh
+# must be on disk by then. (Setting this AFTER the wall-crashes fire
+# means the cap gh is never seen by the test's python subprocess.)
+body_cap_wall="$scratch/filed-body-wall.md"
+cat >"$gh_fake" <<FAKE
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"\${GH_LOG:-/dev/null}"
+case "\$*" in
+    *"issue create"*)
+        bodyf=""
+        prev=""
+        for a in "\$@"; do
+            if [[ "\$prev" == "--body-file" ]]; then
+                bodyf="\$a"
+            fi
+            prev="\$a"
+        done
+        # When GH_BODY_CAP is set, capture the body file there too.
+        if [[ -n "\$bodyf" && -f "\$bodyf" ]]; then
+            if [[ -n "\${GH_BODY_CAP:-}" ]]; then
+                cp "\$bodyf" "\$GH_BODY_CAP" 2>&1 || true
+            fi
+        fi
+        echo "https://github.com/Nishfleet/fleet-ops/issues/2468"
+        exit 0
+        ;;
+    *"issue list"*)
+        echo '[]'
+        exit 0
+        ;;
+esac
+exit 0
+FAKE
+chmod +x "$gh_fake"
+export GH_BODY_CAP="$body_cap_wall"
+
+"$bin" begin fleet-ops >/dev/null
+"$bin" end fleet-ops 1 >/dev/null
+[[ "$(state_field consecutive_wall fleet-ops)" == "1" ]] \
+  || fail "scenario17a: first wall-crash must set consecutive_wall=1, got '$(state_field consecutive_wall fleet-ops)'"
+! grep -q 'issue create' "$gh_log" \
+  || fail "scenario17a: must not file on first wall-crash (gh_log=$(cat "$gh_log"))"
+
+"$bin" begin fleet-ops >/dev/null
+"$bin" end fleet-ops 1 >/dev/null
+[[ "$(state_field consecutive_wall fleet-ops)" == "2" ]] \
+  || fail "scenario17b: second wall-crash must set consecutive_wall=2, got '$(state_field consecutive_wall fleet-ops)'"
+! grep -q 'issue create' "$gh_log" \
+  || fail "scenario17b: must not file on second wall-crash (gh_log=$(cat "$gh_log"))"
+
+"$bin" begin fleet-ops >/dev/null
+"$bin" end fleet-ops 1 >/dev/null
+[[ "$(state_field consecutive_wall fleet-ops)" == "3" ]] \
+  || fail "scenario17c: third wall-crash must set consecutive_wall=3, got '$(state_field consecutive_wall fleet-ops)'"
+grep -q 'SCOUT-FUTILITY' "$triage" \
+  || fail "scenario17c: missing LOUD SCOUT-FUTILITY (triage=$(cat "$triage"))"
+grep -q 'issue create' "$gh_log" \
+  || fail "scenario17c: third wall-crash must auto-file (gh_log=$(cat "$gh_log"))"
+grep -q -- '--label escalate-senior' "$gh_log" \
+  || fail "scenario17c: ticket must carry escalate-senior label (gh_log=$(cat "$gh_log"))"
+grep -q '\[escalate-senior\] scout wall-crash loop: Nishfleet/fleet-ops' "$gh_log" \
+  || fail "scenario17c: title must name wall-crash + repo (gh_log=$(cat "$gh_log"))"
+[[ -f "$body_cap_wall" ]] || fail "scenario17c: did not capture filed body"
+grep -Fq 'signal: scout-futility/fleet-ops' "$body_cap_wall" \
+  || fail "scenario17c: filed body missing signal key, got: $(cat "$body_cap_wall")"
+grep -Fq 'consecutive_wall' "$body_cap_wall" \
+  || fail "scenario17c: filed body must name consecutive_wall in evidence, got: $(cat "$body_cap_wall")"
+grep -Fq 'overloaded_error' "$body_cap_wall" \
+  || fail "scenario17c: filed body must name wall-class evidence (overloaded_error), got: $(cat "$body_cap_wall")"
+ok "scenario17c: 3 consecutive wall-crashes escalate under signal: scout-futility/fleet-ops"
+
+# Scenario 17d: 4th wall-crash with prior ticket open -> NO new ticket.
+# Restore the 0509-style fake gh that serves an already-open issue with the
+# signal marker (this is the existing dedupe path used by scenario4).
+cat >"$gh_fake" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${GH_LOG:-/dev/null}"
+case "$*" in
+    *"issue create"*)
+        echo "https://github.com/Nishfleet/fleet-ops/issues/2468"
+        exit 0
+        ;;
+    *"issue list"*)
+        if [[ -f "${GH_OPEN_ISSUES:-/dev/null}" ]]; then
+            cat "${GH_OPEN_ISSUES}"
+        else
+            echo '[]'
+        fi
+        exit 0
+        ;;
+esac
+exit 0
+FAKE
+chmod +x "$gh_fake"
+cat >"$open_issues" <<'JSON'
+[{"number": 2468, "body": "already open\n\nsignal: scout-futility/fleet-ops\n"}]
+JSON
+: >"$gh_log"
+: >"$triage"
+"$bin" begin fleet-ops >/dev/null
+"$bin" end fleet-ops 1 >/dev/null
+[[ "$(state_field consecutive_wall fleet-ops)" == "4" ]] \
+  || fail "scenario17d: fourth wall-crash must still increment to 4, got '$(state_field consecutive_wall fleet-ops)'"
+grep -q 'SCOUT-FUTILITY' "$triage" \
+  || fail "scenario17d: still LOUD on later wall-crashes"
+grep -q 'issue create' "$gh_log" \
+  && fail "scenario17d: must NOT file a second ticket (gh_log=$(cat "$gh_log"))"
+ok "scenario17d: wall-crash loop escalates once, dedupes on repeats"
+
+# Scenario 17e: non-wall crash (exit=1, journal empty / non-wall lines) does
+# NOT increment consecutive_wall. A transient worker assertion or OOM must
+# not be mistaken for provider-wall class.
+echo 'AssertionError: expected design-system-ratchet counts to match ceiling' >"$scratch/journalctl-body.txt"
+export JOURNALCTL_BODY_FILE="$scratch/journalctl-body.txt"
+: >"$gh_log"
+: >"$triage"
+# Reset consecutive_wall via a green run on a clean repo so we test the
+# "non-wall crash resets" path on a fresh counter starting from >= N.
+# Actually, simpler: the current state has consecutive_wall=4. Issue a
+# non-wall crash and verify consecutive_wall resets to 0.
+"$bin" begin fleet-ops >/dev/null
+"$bin" end fleet-ops 1 >/dev/null
+[[ "$(state_field consecutive_wall fleet-ops)" == "0" ]] \
+  || fail "scenario17e: non-wall crash must reset consecutive_wall to 0, got '$(state_field consecutive_wall fleet-ops)'"
+! grep -q 'issue create' "$gh_log" \
+  || fail "scenario17e: non-wall crash must not file futility (gh_log=$(cat "$gh_log"))"
+ok "scenario17e: non-wall crash resets consecutive_wall, no escalation"
+
+# Scenario 17f: a single mixed run (one wall line + one non-wall line) is NOT
+# wall-class — the rule is ALL non-empty error lines match. This protects
+# against misclassifying a flaky seat or a real bug that happens to mention
+# "INFERENCE_CAP_ERROR" once.
+printf '503 overloaded_error\nAssertionError: should not reach here\n' >"$scratch/journalctl-body.txt"
+export JOURNALCTL_BODY_FILE="$scratch/journalctl-body.txt"
+: >"$gh_log"
+: >"$triage"
+"$bin" begin fleet-ops >/dev/null
+"$bin" end fleet-ops 1 >/dev/null
+[[ "$(state_field consecutive_wall fleet-ops)" == "0" ]] \
+  || fail "scenario17f: mixed wall + non-wall lines must reset consecutive_wall, got '$(state_field consecutive_wall fleet-ops)'"
+ok "scenario17f: mixed wall + non-wall lines are NOT wall-class"
+
+# Scenario 17g: opencode 404 "Provider returned error" pattern is wall-class
+# (the opencode corpse class: the model itself is gone, provider returns 404
+# forever; bench/seat famine, not a work fault). Issue the issue body line
+# alone, no 503 / 429 noise.
+echo 'opencode API error: 404 Provider returned error for model muse-spark-1.2-contributor-free' >"$scratch/journalctl-body.txt"
+export JOURNALCTL_BODY_FILE="$scratch/journalctl-body.txt"
+: >"$gh_log"
+: >"$triage"
+echo '[]' >"$open_issues"
+"$bin" begin fleet-ops >/dev/null
+"$bin" end fleet-ops 1 >/dev/null
+"$bin" begin fleet-ops >/dev/null
+"$bin" end fleet-ops 1 >/dev/null
+"$bin" begin fleet-ops >/dev/null
+"$bin" end fleet-ops 1 >/dev/null
+[[ "$(state_field consecutive_wall fleet-ops)" == "3" ]] \
+  || fail "scenario17g: opencode 404 'Provider returned error' alone is wall-class, got consecutive_wall='$(state_field consecutive_wall fleet-ops)'"
+grep -q 'SCOUT-FUTILITY' "$triage" \
+  || fail "scenario17g: opencode 404 wall-crash must LOUD on N=3 (triage=$(cat "$triage"))"
+ok "scenario17g: opencode 404 'Provider returned error' is wall-class"
+
+# Scenario 17g2: xai-oauth 402 "Grok Build usage balance exhausted" is
+# wall-class (fleet-ops#3125, live 2026-09-07T18:31Z pi-scout@fleet-ops
+# trip). config/seat-caps.json documents this exact 402 as the wall that
+# 0-caps the xai-oauth/grok-4.6 seat, but the classifier omitted it, so the
+# #2468 crash-loop dedupe never engaged for xai-oauth 402s and a fresh
+# SENIOR AUDITOR was re-summoned per crash (consecutive_wall pinned at 0).
+# The line alone, no 503/429 noise.
+echo 'OpenAI API error (402): 402 "Grok Build usage balance exhausted"' >"$scratch/journalctl-body.txt"
+export JOURNALCTL_BODY_FILE="$scratch/journalctl-body.txt"
+: >"$gh_log"
+: >"$triage"
+echo '[]' >"$open_issues"
+# Reset state: scenario17g leaves consecutive_wall=3; 17i must count from 0
+# so its 3 wall-crashes reach consecutive_wall=3 (not 6).
+rm -f "$state/fleet-ops.state"
+"$bin" begin fleet-ops >/dev/null
+"$bin" end fleet-ops 1 >/dev/null
+"$bin" begin fleet-ops >/dev/null
+"$bin" end fleet-ops 1 >/dev/null
+"$bin" begin fleet-ops >/dev/null
+"$bin" end fleet-ops 1 >/dev/null
+[[ "$(state_field consecutive_wall fleet-ops)" == "3" ]] \
+  || fail "scenario17g2: xai-oauth 402 'Grok Build usage balance exhausted' alone is wall-class, got consecutive_wall='$(state_field consecutive_wall fleet-ops)'"
+grep -q 'SCOUT-FUTILITY' "$triage" \
+  || fail "scenario17g2: xai-oauth 402 wall-crash must LOUD on N=3 (triage=$(cat "$triage"))"
+ok "scenario17g2: xai-oauth 402 'Grok Build usage balance exhausted' is wall-class"
+
+# Scenario 17h: provider wall at INFO priority, 40 lines back (fleet-ops
+# #2521). The pi script prints the 503/429 wall error to stdout/stderr at
+# info priority, not err. A long run pushes it far back. The pattern merged
+# in PR #2498 scanned `-p err -n 10`: it loses the case twice — the
+# err-priority filter drops the info line entirely, and a 10-line tail
+# window cannot reach 40 lines back. The hot-patch scans the last 50 lines
+# at all priorities. Fixture: 50 info-priority lines, the explicit
+# `503 overloaded_error` at line 10 (40 lines from the tail), the rest a
+# retry storm that also carries the wall pattern so EVERY line in the
+# 50-line window matches (the strict all-lines rule for wall class).
+: >"$gh_log"
+: >"$triage"
+echo '[]' >"$open_issues"
+rm -f "$state/fleet-ops.state"
+{
+    i=1
+    while [[ $i -le 50 ]]; do
+        if [[ $i -eq 10 ]]; then
+            printf 'info: INFO pi: HTTP 503 overloaded_error: Upstream model provider is temporarily unavailable\n'
+        else
+            printf 'info: INFO pi: retry %d/60 (overloaded_error)\n' "$i"
+        fi
+        i=$((i + 1))
+    done
+} >"$scratch/journalctl-body.txt"
+export JOURNALCTL_BODY_FILE="$scratch/journalctl-body.txt"
+
+# The OLD invocation shape (-p err -n 10) sees nothing: the wall line is
+# info priority, 40 lines back.
+old_out=$("$scratch/bin/journalctl" --user -u pi-scout@fleet-ops.service -p err -n 10 --no-pager -o cat 2>/dev/null || true)
+[[ -z "$old_out" ]] \
+  || fail "scenario17h: err-priority view must be empty for an info-priority wall line, got: $old_out"
+# Even at all priorities, a 10-line tail window stops 40 lines short.
+tail10=$("$scratch/bin/journalctl" --user -u pi-scout@fleet-ops.service -n 10 --no-pager -o cat 2>/dev/null || true)
+! grep -q '503 overloaded_error' <<<"$tail10" \
+  || fail "scenario17h: -n 10 tail must not reach the wall line 40 lines back"
+# The fixed invocation (-n 50, all priorities) reaches 40 lines back and
+# surfaces the info-priority 503.
+window50=$("$scratch/bin/journalctl" --user -u pi-scout@fleet-ops.service -n 50 --no-pager -o cat 2>/dev/null || true)
+grep -q '503 overloaded_error' <<<"$window50" \
+  || fail "scenario17h: -n 50 window must include the wall line 40 lines back"
+
+# The helper source must keep the all-priority 50-line scan (a re-narrowing
+# to -p err -n 10 would break this scenario AND silently miss info-priority
+# wall crashes in production).
+grep -q -- '--user -u "\$unit" -n 50' "$bin" \
+  || fail "scenario17h: helper must scan the last 50 lines at all priorities"
+! grep -q -- '-p err -n 10' "$bin" \
+  || fail "scenario17h: helper must not filter -p err (info-priority wall lines would vanish)"
+
+# End-to-end through the real helper: one crash on this journal counts as a
+# wall crash (detect_provider_wall returns true; consecutive_wall bumps).
+"$bin" begin fleet-ops >/dev/null
+"$bin" end fleet-ops 1 >/dev/null
+[[ "$(state_field consecutive_wall fleet-ops)" == "1" ]] \
+  || fail "scenario17h: info-priority 503 40 lines back must count as wall-class, got consecutive_wall='$(state_field consecutive_wall fleet-ops)'"
+ok "scenario17h: provider wall at info priority 40 lines back is detected (all priorities, -n 50)"
+
+# Scenario 17i: PRODUCTION-mixed journal (the real 2026-08-31 failed-run
+# layout) is wall-class. The fatal 503/429 line ALWAYS lands next to benign
+# pi-machinery + systemd lifecycle lines (EXTLOAD-OK, PACKET-VERDICT, seat
+# selection, tracker logs, notify;Pi, "Main process exited", "Failed to
+# start", "Consumed ... CPU time"). The all-lines-must-match rule could
+# never succeed against this journal, so consecutive_wall stayed pinned at 0
+# and the #2351 dedupe gate never opened — every crash re-summoned the
+# auditor (the 08-31 loop). Fixture mirrors journald -o cat output for the
+# failed run at 15:07Z on 2026-08-31.
+: >"$gh_log"
+: >"$triage"
+echo '[]' >"$open_issues"
+rm -f "$state/fleet-ops.state"
+{
+    # Faithful to production 2026-08-31: the fatal 503 is printed by pi on
+    # the SAME journal line as the trailing notify;Pi escape sequence
+    # (journald preserves the glue), surrounded by benign machinery lines.
+    printf 'EXTLOAD-OK extension=bash-spawn-hook guard=tool_call depth_max=1 ceiling=2800/3000 wrangler_deploy_guard=0509\n'
+    printf 'EXTLOAD-OK extension=packet-verdict mode=print-safe\n'
+    printf 'EXTLOAD-OK extension=seat-health source=after_provider_response\n'
+    printf 'EXTLOAD-OK extension=stop-judge mode=print-safe\n'
+    printf '\033]777;notify;Pi;Ready for input\007\033]777;notify;Pi;Ready for input\007503: {"message":"Upstream model provider is temporarily unavailable. Please try again in a moment.","type":"overloaded_error"}\n'
+    printf 'PACKET-VERDICT tools=4 class=worked\n'
+    printf 'pi-scout@fleet-ops.service: Main process exited, code=exited, status=1/FAILURE\n'
+    printf '[2026-08-31T15:07:21Z] [scout-futility-check] end: fleet-ops exit=1 (not green, not provider-wall) — leave consecutive_dry=0, consecutive_wall=0\n'
+    printf '[2026-08-31T15:07:23Z] pi-scout-run: fleet-ops/scout running on commandcode/minimax/minimax-m3-free (weight=heavy)\n'
+    printf "pi-scout@fleet-ops.service: Failed with result 'exit-code'.\n"
+    printf 'Failed to start pi-scout@fleet-ops.service - Pi fleet product scout for Nishfleet/fleet-ops.\n'
+    printf 'pi-scout@fleet-ops.service: Triggering OnFailure= dependencies.\n'
+    printf 'pi-scout@fleet-ops.service: Consumed 4.442s CPU time, 98.5M memory peak, 0B memory swap peak.\n'
+} >"$scratch/journalctl-body.txt"
+export JOURNALCTL_BODY_FILE="$scratch/journalctl-body.txt"
+"$bin" begin fleet-ops >/dev/null
+"$bin" end fleet-ops 1 >/dev/null
+[[ "$(state_field consecutive_wall fleet-ops)" == "1" ]] \
+  || fail "scenario17i: production-mixed journal (benign machinery + 503) must be wall-class, got consecutive_wall='$(state_field consecutive_wall fleet-ops)'"
+"$bin" begin fleet-ops >/dev/null
+"$bin" end fleet-ops 1 >/dev/null
+[[ "$(state_field consecutive_wall fleet-ops)" == "2" ]] \
+  || fail "scenario17i: second production-mixed wall crash must increment to 2, got '$(state_field consecutive_wall fleet-ops)'"
+! grep -q 'issue create' "$gh_log" \
+  || fail "scenario17i: must not file below N=3 (gh_log=$(cat "$gh_log"))"
+ok "scenario17i: production-mixed journal is wall-class (benign lines no longer demote)"
+
+# Scenario 17j: production-mixed journal PLUS a non-wall work fault line is
+# NOT wall-class — a real assertion/tool error next to a 503 demotes the run
+# so OnFailure repair handles it. Benign-line filtering must not swallow work
+# faults.
+{
+    printf 'EXTLOAD-OK extension=packet-verdict mode=print-safe\n'
+    printf '\033]777;notify;Pi;Ready for input\007503: {"message":"Upstream model provider is temporarily unavailable. Please try again in a moment.","type":"overloaded_error"}\n'
+    printf 'PACKET-VERDICT tools=4 class=worked\n'
+    printf 'Error: unexpected token in JSON at position 42\n'
+    printf 'pi-scout@fleet-ops.service: Main process exited, code=exited, status=1/FAILURE\n'
+} >"$scratch/journalctl-body.txt"
+export JOURNALCTL_BODY_FILE="$scratch/journalctl-body.txt"
+: >"$gh_log"
+: >"$triage"
+echo '[]' >"$open_issues"
+"$bin" begin fleet-ops >/dev/null
+"$bin" end fleet-ops 1 >/dev/null
+[[ "$(state_field consecutive_wall fleet-ops)" == "0" ]] \
+  || fail "scenario17j: mixed benign + wall + work-fault journal must reset consecutive_wall, got '$(state_field consecutive_wall fleet-ops)'"
+ok "scenario17j: work-fault line still demotes inside a production-mixed journal"
+
+# Scenario 17k: prior-run non-wall lines in the bare -n 50 window must NOT
+# demote the CURRENT run's 503 when begin_at scopes journalctl --since.
+# Proven live 2026-09-02T19:46Z: pi-scout@0509 died on overloaded_error but
+# detect_provider_wall returned false because the previous invocation's
+# "Devin exited ... resource_exhausted" / JSON fragment sat inside -n 50 and
+# demoted the whole window. begin_at (written by cmd_begin) scopes the read.
+# Fixture encoding: lines before '---SINCE---' = prior-run residue; lines
+# after = current run. The stub drops prior lines when --since is in argv.
+write_journalctl_stub_since() {
+    cat >"$scratch/bin/journalctl" <<'EOFSTUB'
+#!/usr/bin/env bash
+body_file="${JOURNALCTL_BODY_FILE:-/dev/null}"
+n=10
+prev=""
+since=0
+for arg in "$@"; do
+    if [[ "$prev" == "-n" ]]; then
+        case "$arg" in ''|*[!0-9]*) ;; *) n="$arg" ;; esac
+    fi
+    if [[ "$arg" == "--since" ]]; then since=1; fi
+    prev="$arg"
+done
+if [[ -f "$body_file" ]]; then
+    if [[ "$since" == "1" ]] && grep -q '^---SINCE---$' "$body_file"; then
+        body=$(awk 'f; /^---SINCE---$/ {f=1; next}' "$body_file")
+    else
+        body=$(cat "$body_file")
+    fi
+    if [[ " $* " == *" -p err "* ]]; then
+        printf '%s\n' "$body" | grep '^err:' | tail -n "$n" | sed 's/^err: //'
+    else
+        printf '%s\n' "$body" | sed 's/^\(info\|err\): //' | sed '/^---SINCE---$/d' | tail -n "$n"
+    fi
+fi
+exit 0
+EOFSTUB
+    chmod +x "$scratch/bin/journalctl"
+}
+write_journalctl_stub_since
+export JOURNALCTL="$scratch/bin/journalctl"
+{
+    # Prior-run residue: a real work-fault demoter (NOT a wall pattern).
+    printf 'Error: unexpected token in JSON at position 42\n'
+    printf 'Traceback (most recent call last): KeyError: patch\n'
+    printf '%s\n' '---SINCE---'
+    # Current-run pure wall (production-mixed)
+    printf 'EXTLOAD-OK extension=packet-verdict mode=print-safe\n'
+    printf '\033]777;notify;Pi;Ready for input\007503: {"message":"Upstream model provider is temporarily unavailable. Please try again in a moment.","type":"overloaded_error"}\n'
+    printf 'PACKET-VERDICT tools=3 class=worked\n'
+    printf 'pi-scout@0509.service: Main process exited, code=exited, status=1/FAILURE\n'
+} >"$scratch/journalctl-body.txt"
+export JOURNALCTL_BODY_FILE="$scratch/journalctl-body.txt"
+: >"$gh_log"
+: >"$triage"
+echo '[]' >"$open_issues"
+rm -f "$state/0509.state"
+# begin writes begin_at → detect_provider_wall passes --since → stub drops
+# the prior KeyError → current 503 is wall-class.
+"$bin" begin 0509 >/dev/null
+"$bin" end 0509 1 >/dev/null
+[[ "$(state_field consecutive_wall 0509)" == "1" ]] \
+  || fail "scenario17k: begin_at-scoped journal must classify current 503 as wall despite prior-run KeyError, got consecutive_wall='$(state_field consecutive_wall 0509)'"
+# Current-window KeyError must still demote (scope must not swallow real faults).
+{
+    printf '%s\n' '---SINCE---'
+    printf 'EXTLOAD-OK extension=packet-verdict mode=print-safe\n'
+    printf '\033]777;notify;Pi;Ready for input\007503: {"message":"Upstream model provider is temporarily unavailable. Please try again in a moment.","type":"overloaded_error"}\n'
+    printf 'Error: unexpected token in JSON at position 42\n'
+    printf 'PACKET-VERDICT tools=3 class=worked\n'
+} >"$scratch/journalctl-body.txt"
+"$bin" begin 0509 >/dev/null
+"$bin" end 0509 1 >/dev/null
+[[ "$(state_field consecutive_wall 0509)" == "0" ]] \
+  || fail "scenario17k: current-window KeyError must still demote, got consecutive_wall='$(state_field consecutive_wall 0509)'"
+ok "scenario17k: begin_at scopes journal so prior-run faults cannot demote current wall"
+
+# Scenario 17l: the Devin multi-line wall block is wall-class (fleet-ops
+# #2922, defect 2 residue). The live 2026-09-02T19:31Z pi-scout@0509 crash
+# printed "Devin exited ... : {" + indented JSON + "}" as FOUR journal lines
+# (reproduced verbatim in #2922's Evidence). PROVIDER_WALL_PATTERNS matches
+# line 1 ("Devin exited") and line 2 ("resource_exhausted"), but lines 3-4
+# ("cognition.ai/retryable": true, and the closing brace) are structural JSON
+# continuation of the SAME wall message — the old demote rule flipped that
+# pure provider-wall run to "not provider-wall", keeping consecutive_wall at
+# 0 and the #2351/#2468 dedupe gate closed. A JSON fragment attached to wall
+# evidence must not demote.
+write_journalctl_stub_since
+JOURNALCTL="$scratch/bin/journalctl"
+export JOURNALCTL
+{
+    printf 'EXTLOAD-OK extension=bash-spawn-hook guard=tool_call depth_max=1 ceiling=2800/3000 wrangler_deploy_guard=0509\n'
+    printf 'EXTLOAD-OK extension=packet-verdict mode=print-safe\n'
+    printf 'EXTLOAD-OK extension=seat-health source=after_provider_response\n'
+    printf 'EXTLOAD-OK extension=stop-judge mode=print-safe\n'
+    printf '\033]777;notify;Pi;Ready for input\007Devin exited with code 1: Error: Agent error: Connection error, send a message to continue retrying (error id: 1804a50d2a8d4f15a03c9f3f408a3e93): {\n'
+    printf '  "cognition.ai/errorKind": "resource_exhausted",\n'
+    printf '  "cognition.ai/retryable": true\n'
+    printf '}\n'
+    printf 'PACKET-VERDICT tools=0 class=no-tools\n'
+    printf 'pi-scout@0509.service: Main process exited, code=exited, status=1/FAILURE\n'
+} >"$scratch/journalctl-body.txt"
+export JOURNALCTL_BODY_FILE="$scratch/journalctl-body.txt"
+: >"$gh_log"
+: >"$triage"
+echo '[]' >"$open_issues"
+rm -f "$state/0509.state"
+"$bin" begin 0509 >/dev/null
+"$bin" end 0509 1 >/dev/null
+[[ "$(state_field consecutive_wall 0509)" == "1" ]] \
+  || fail "scenario17l: Devin resource_exhausted multi-line block must be wall-class, got consecutive_wall='$(state_field consecutive_wall 0509)'"
+ok "scenario17l: Devin multi-line JSON wall block is wall-class"
+
+# Scenario 17m: a JSON continuation fragment NOT attached to wall evidence
+# still demotes (conservative default preserved). A window that opens in the
+# middle of an unrelated message must not become wall-class on a 503 that
+# merely shares the window — work faults stay non-wall until proven
+# otherwise, so OnFailure repair still owns them.
+write_journalctl_stub_since
+JOURNALCTL="$scratch/bin/journalctl"
+export JOURNALCTL
+{
+    printf '  "cognition.ai/retryable": true\n'
+    printf '}\n'
+    printf '\033]777;notify;Pi;Ready for input\007503: {"message":"Upstream model provider is temporarily unavailable. Please try again in a moment.","type":"overloaded_error"}\n'
+} >"$scratch/journalctl-body.txt"
+export JOURNALCTL_BODY_FILE="$scratch/journalctl-body.txt"
+: >"$gh_log"
+: >"$triage"
+echo '[]' >"$open_issues"
+rm -f "$state/0509.state"
+"$bin" begin 0509 >/dev/null
+"$bin" end 0509 1 >/dev/null
+[[ "$(state_field consecutive_wall 0509)" == "0" ]] \
+  || fail "scenario17m: unaffiliated JSON continuation must still demote, got consecutive_wall='$(state_field consecutive_wall 0509)'"
+ok "scenario17m: unaffiliated JSON continuation still demotes"
+
+# Scenario 17n: live 2026-09-04 commandcode/b.ai credit-exhausted journals
+# are wall-class. PROVIDER_WALL_PATTERNS had out-of-credits/quota_cap but
+# not the live strings (`insufficient credits`, `purchase more credits`,
+# `insufficient_user_quota`), so consecutive_wall stayed 0, the #2351
+# dedupe gate never opened, and every scout 400 -> repair 400 crash wrote
+# a fresh STOP-REASON (live 18:00:54Z on b.ai + 19:00:11Z on commandcode
+# deepseek-v4-flash). Pin both production lines against a production-mixed
+# journal (EXTLOAD-OK / PACKET-VERDICT / systemd lifecycle).
+write_journalctl_stub_since
+JOURNALCTL="$scratch/bin/journalctl"
+export JOURNALCTL
+{
+    printf 'EXTLOAD-OK extension=bash-spawn-hook guard=tool_call depth_max=1 ceiling=2800/3000 wrangler_deploy_guard=0509\n'
+    printf 'EXTLOAD-OK extension=packet-verdict mode=print-safe\n'
+    printf 'EXTLOAD-OK extension=seat-health source=after_provider_response\n'
+    printf 'EXTLOAD-OK extension=stop-judge mode=print-safe\n'
+    printf '400: {"message":"You have insufficient credits to make this request. Please purchase more credits to continue using the service.","type":"invalid_request_error","code":"BAD_REQUEST"}\n'
+    printf 'PACKET-VERDICT tools=0 class=no-tools\n'
+    printf 'pi-scout@fleet-ops.service: Main process exited, code=exited, status=1/FAILURE\n'
+} >"$scratch/journalctl-body.txt"
+export JOURNALCTL_BODY_FILE="$scratch/journalctl-body.txt"
+: >"$gh_log"
+: >"$triage"
+echo '[]' >"$open_issues"
+rm -f "$state/fleet-ops.state"
+"$bin" begin fleet-ops >/dev/null
+"$bin" end fleet-ops 1 >/dev/null
+[[ "$(state_field consecutive_wall fleet-ops)" == "1" ]] \
+  || fail "scenario17n: commandcode insufficient-credits journal must be wall-class, got consecutive_wall='$(state_field consecutive_wall fleet-ops)'"
+# Second pin: the b.ai 18:00:54Z line (insufficient_user_quota).
+{
+    printf 'EXTLOAD-OK extension=packet-verdict mode=print-safe\n'
+    printf '400: {"error":{"message":"insufficient_user_quota","type":"invalid_request_error"}}\n'
+    printf 'PACKET-VERDICT tools=0 class=no-tools\n'
+} >"$scratch/journalctl-body.txt"
+"$bin" begin fleet-ops >/dev/null
+"$bin" end fleet-ops 1 >/dev/null
+[[ "$(state_field consecutive_wall fleet-ops)" == "2" ]] \
+  || fail "scenario17n: insufficient_user_quota journal must increment consecutive_wall, got '$(state_field consecutive_wall fleet-ops)'"
+ok "scenario17n: live insufficient-credits / insufficient_user_quota journals are wall-class"
+
+# Reset journalctl stub + state file so subsequent test runs (if any) start clean.
+unset JOURNALCTL JOURNALCTL_BODY_FILE
+rm -f "$scratch/journalctl-body.txt"
+ok "scenario17: provider-wall crash loop escalates + dedupes (fleet-ops#2468)"
+
+echo "OK: scout-futility: green-and-empty + provider-wall crash loop escalates after N, never loops quietly"

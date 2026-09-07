@@ -41,7 +41,11 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-caps="$repo_root/config/seat-caps.json"
+# SEAT_CAPS_JSON override (the repo-wide convention, lib/seat-lib.sh:71) lets a
+# replay drill point this test at a fixture reproducing a past bad hunk
+# (fleet-ops#3864: the #3848 ollama cap=0 corpse retirement). Default is the
+# live config.
+caps="${SEAT_CAPS_JSON:-$repo_root/config/seat-caps.json}"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
@@ -57,15 +61,17 @@ ok "seat-caps.json parses"
 # A citation must mention a YYYY-MM-DD date AND at least one measurement
 # marker. Pure date without a measurement is a vibes line.
 date_pat='(20[0-9]{2}-[0-9]{2}-[0-9]{2})'
-meas_pat='(n=[0-9]+|p95|p99|HTTP ?[1-5][0-9][0-9]|request ?id|observed_at|usable_at|quota_exhausted|free_quota_exhausted|credentials_bad|ETIMEDOUT|rate.?limit|timeout|spawnSync|spawn|returned|PONG|404|403|429|402|500|503|\$[0-9])'
+meas_pat='(n=[0-9]+|p95|p99|HTTP ?[1-5][0-9][0-9]|request ?id|observed_at|usable_at|quota_exhausted|free_quota_exhausted|credentials_bad|ETIMEDOUT|rate.?limit|timeout|spawnSync|spawn|returned|PONG|404|403|429|402|500|503|\$[0-9]|meter|cost=null|sessions?|yield|pr_count|pass@1|error.?class|insufficient.?credit|resource_exhausted|budget|requests|used|spend|concurrency|tolerance|probe)'
 
-# 1. orcarouter: cap=0 + reason present
-echo "--- scenario 1: orcarouter cap=0 with non-empty reason ---"
+# 1. orcarouter: cap=0 + intentional_cap_zero + reason present (rule 3)
+echo "--- scenario 1: orcarouter cap=0 intentional with non-empty reason ---"
 orcarouter_cap=$(jq -r '.providers.orcarouter.cap // empty' "$caps")
-[[ "$orcarouter_cap" == "0" ]] || fail "orcarouter cap must be 0 (current observed state: HTTP 402 quota_exhausted). Got: $orcarouter_cap"
+[[ "$orcarouter_cap" == "0" ]] || fail "orcarouter cap is not zero (rule 3 precondition). Got: $orcarouter_cap"
+orcarouter_icz=$(jq -r '.providers.orcarouter.intentional_cap_zero // empty' "$caps")
+[[ -n "$orcarouter_icz" ]] || fail "orcarouter intentional_cap_zero missing (rule 3, fleet-ops#3504)"
 orcarouter_reason=$(jq -r '.providers.orcarouter.reason // ""' "$caps")
 [[ -n "$orcarouter_reason" ]] || fail "orcarouter reason missing — entitled-wired would scream and the canary would re-file"
-ok "orcarouter: cap=0 with reason present"
+ok "orcarouter: cap=0 intentional with reason present"
 
 # 2. orcarouter .reason: date + sample size + HTTP code + request id + ledger path
 echo "--- scenario 2: orcarouter reason names the measurement trail ---"
@@ -83,17 +89,10 @@ if jq -e '.free_providers_in_order | index("orcarouter")' "$caps" >/dev/null; th
 fi
 ok "orcarouter removed from free_providers_in_order"
 
-# 5. Cross-fleet soft check: every cap=0 reason across the fleet
-#    ALSO carries a date. The measurement-marker check is owned by
-#    the sr-never-vibes canary (fleet-ops#538) so a single-source
-#    enforcer exists. This test only mirrors the date-presence part
-#    of the entitled-wired contract as a local pre-push sanity check.
-#    We do NOT fail the test on measurement-marker gaps here, because
-#    those are pre-existing canary findings for inferx, opencode-anthropic,
-#    and grok — they are out of scope for the orcarouter#703 fix and
-#    must be filed as their own issues, not retrofitted into this PR.
-#    A soft warn line is still emitted so the next pre-push run makes
-#    the gap visible to whoever touches the file.
+# 5. Cross-fleet check: every cap=0 reason across the fleet carries a
+#    date (the entitled-wired date contract). The measurement-marker
+#    check is enforced in scenario 6 below; this scenario only pins the
+#    date-presence invariant as a local pre-push sanity check.
 echo "--- scenario 5: every cap=0 reason across the fleet is dated ---"
 bad=0
 while IFS=$'\t' read -r prov reason; do
@@ -107,90 +106,119 @@ while IFS=$'\t' read -r prov reason; do
 done < <(jq -r '.providers | to_entries[] | select((.value.cap // 0) == 0) | [.key, (.value.reason // "")] | @tsv' "$caps")
 [[ "$bad" == "0" ]] || fail "scenario5: $bad cap=0 reason(s) missing date — entitled-wired owns this; copy the test signal into a follow-up issue"
 
-# 6. Soft warn: cap=0 reasons that lack a measurement marker are
-#    pre-existing canary gaps (NOT failures of THIS test). They are
-#    filed as a follow-up issue rather than fixed in this PR, per the
-#    'stay inside the issue's scope' rule. Listed by name so the next
-#    worker who touches seat-caps.json sees the gap.
-echo "--- scenario 6 (warn-only): cap=0 reasons missing a measurement marker ---"
-soft_bad=0
+# 6. HARD check: every cap=0 reason carries a measurement marker (probe
+#    output, observed provider signal, sample size), either in .reason
+#    itself or in a top-level _comment_<prov> field (fleet-ops#878). The
+#    cross-fleet audit from #703 exposed inferx (date only, no marker),
+#    opencode-anthropic (money-decision, no measurement), and grok (evidence
+#    was in _comment_grok, not .reason). This test owns the fix: each
+#    cap=0 provider must carry date + marker in .reason OR have a
+#    _comment_<prov> top-level field with date + marker.
+echo "--- scenario 6: every cap=0 reason has a date + measurement marker ---"
+hard_bad=0
 while IFS=$'\t' read -r prov reason; do
     [[ -n "$prov" && -n "$reason" ]] || continue
-    if ! grep -qiE "$meas_pat" <<<"$reason"; then
-        echo "  WARN: $prov cap=0 reason has a date but no measurement marker (canary-owned; pre-existing, out of scope for #703)"
-        soft_bad=$((soft_bad + 1))
+    # Must have a date (enforced by scenario 5 above; re-check for
+    # self-containment).
+    if ! grep -qE "$date_pat" <<<"$reason"; then
+        echo "  $prov: cap=0 reason missing date" >&2
+        hard_bad=$((hard_bad + 1))
+        continue
     fi
+    # Check marker in .reason itself.
+    if grep -qiE "$meas_pat" <<<"$reason"; then
+        ok "$prov: cap=0 reason has date + measurement marker"
+        continue
+    fi
+    # .reason has no marker — check a top-level _comment_<prov> field.
+    comment_field="_comment_${prov}"
+    prov_comment=$(jq -r --arg f "$comment_field" '.[$f] // empty' "$caps")
+    if [[ -n "$prov_comment" ]] && grep -qE "$date_pat" <<<"$prov_comment" && grep -qiE "$meas_pat" <<<"$prov_comment"; then
+        ok "$prov: cap=0 reason cites _comment_${prov} top-level field with date + measurement marker"
+        continue
+    fi
+    echo "  $prov: cap=0 reason has a date but no measurement marker (not in .reason or _comment_${prov})" >&2
+    hard_bad=$((hard_bad + 1))
 done < <(jq -r '.providers | to_entries[] | select((.value.cap // 0) == 0) | [.key, (.value.reason // "")] | @tsv' "$caps")
-if (( soft_bad > 0 )); then
-    echo "  ($soft_bad cap=0 reason(s) lack a measurement marker; tracked under the follow-up issue filed by this PR, NOT fixed here)"
-fi
+[[ "$hard_bad" == "0" ]] || fail "scenario6: $hard_bad cap=0 reason(s) still lack a measurement marker after fleet-ops#878 — sr-never-vibes requires date + marker in .reason or _comment_<prov>"
 
-# 7. Cross-fleet check: every MODEL cap=0 entry has a dated _* reason
-#    field on its provider (fleet-ops#1456). #1506 re-audited all 8
-#    cap=0 entries and persisted dated reasons in _<sanitised>
-#    documentation fields, but scenario 5 only walks provider-level
-#    .cap — model-level cap=0 reasons (opencode/deepseek-v4-flash-free,
-#    x-preview-f-free, muse-spark-1.2-contributor-free) were unpinned
-#    here. The fleet-free-roster canary pins two of the three by exact
-#    field name (scenarios 14/17); this scenario enforces the contract
-#    for EVERY model cap=0 entry so a future addition or a silent
-#    reason-field deletion is caught before push, not on the next
-#    auditor re-probe. The reason field naming is _<sanitised-model>
-#    with inconsistent version handling (muse-spark-1.2 dropped the
-#    "1.2"), so the match is by distinctive token (model split on
-#    [-._], tokens of length >= 4, longest first) against _* field
-#    names whose value carries a YYYY-MM-DD date.
-echo "--- scenario 7: every model cap=0 entry has a dated _* reason field ---"
+# 7. Cross-fleet check: every MODEL cap=0 entry has a dated reason and
+#    intentional_cap_zero (rule 3, fleet-ops#3504). Model cap=0 entries
+#    may be scalar (0) or object ({cap:0, intentional_cap_zero, reason}).
+#    Object entries carry their own reason; scalar entries fall back to a
+#    dated _* field on the provider (the historical convention).
+echo "--- scenario 7: every model cap=0 entry is intentional with a dated reason ---"
 mbad=0
-while IFS=$'\t' read -r prov model; do
+while IFS=$'\t' read -r prov model mtype; do
     [[ -n "$prov" && -n "$model" ]] || continue
-    # Distinctive tokens of the model name, longest first (most
-    # distinctive first reduces false matches on generic tokens like
-    # "free"). Tokens shorter than 4 chars (v4, 1, 2, f, x) are dropped.
-    tokens=$(printf '%s' "$model" \
-        | awk -F'[-._]' '{for(i=1;i<=NF;i++) if(length($i)>=4) print length($i)"\t"$i}' \
-        | sort -rn | cut -f2)
-    [[ -n "$tokens" ]] || { echo "  $prov/$model: no >=4-char token to match a reason field" >&2; mbad=$((mbad+1)); continue; }
-    # Dated _* reason field names on this provider. Reason fields are
-    # _<sanitised-model> (NOT _comment_* — those are general provider
-    # notes), and must carry a YYYY-MM-DD date.
-    dated_fields=$(jq -r --arg p "$prov" '
-        .providers[$p] | to_entries[]
-        | select(.key|startswith("_"))
-        | select(.key|startswith("_comment")|not)
-        | select(.value|tostring|test("20[0-9]{2}-[0-9]{2}-[0-9]{2}"))
-        | .key
-    ' "$caps")
-    # A token is "distinctive" iff it matches exactly ONE dated reason
-    # field. Generic tokens like "free" match several reason fields and
-    # cannot uniquely identify a model's audit trail, so they do NOT
-    # satisfy the contract. Require at least one distinctive token.
-    found=0
-    while IFS= read -r tok; do
-        [[ -n "$tok" ]] || continue
-        matches=0
-        while IFS= read -r fname; do
-            [[ -n "$fname" ]] || continue
-            case "$fname" in
-                *"$tok"*) matches=$((matches+1)) ;;
-            esac
-        done <<<"$dated_fields"
-        (( matches == 1 )) && { found=1; break; }
-    done <<<"$tokens"
-    if (( found == 0 )); then
-        echo "  $prov/$model: cap=0 but no dated _* reason field uniquely identified by a model token (audit trail would be lost on re-edit — fleet-ops#1456)" >&2
+    if [[ "$mtype" == "object" ]]; then
+        # Object entry: check intentional_cap_zero + dated reason on the object
+        micz=$(jq -r --arg p "$prov" --arg m "$model" '.providers[$p].models[$m].intentional_cap_zero // empty' "$caps")
+        [[ -n "$micz" ]] || { echo "  $prov/$model: cap=0 object missing intentional_cap_zero (rule 3)" >&2; mbad=$((mbad+1)); continue; }
+        mreason=$(jq -r --arg p "$prov" --arg m "$model" '.providers[$p].models[$m].reason // empty' "$caps")
+        if [[ -n "$mreason" ]] && grep -qE "$date_pat" <<<"$mreason" && grep -qiE "$meas_pat" <<<"$mreason"; then
+            ok "$prov/$model: cap=0 object with intentional_cap_zero + dated reason"
+            continue
+        fi
+        # Fall back to dated _* field on the provider
+        dated_fields=$(jq -r --arg p "$prov" '.providers[$p] | to_entries[] | select(.key|startswith("_")) | select(.key|startswith("_comment")|not) | select(.value|tostring|test("20[0-9]{2}-[0-9]{2}-[0-9]{2}")) | .key' "$caps")
+        if [[ -n "$dated_fields" ]]; then
+            ok "$prov/$model: cap=0 object with intentional_cap_zero, dated _* field on provider"
+            continue
+        fi
+        echo "  $prov/$model: cap=0 object missing dated reason (rule 3)" >&2
         mbad=$((mbad+1))
     else
-        ok "$prov/$model: model cap=0 has a dated _* reason field"
+        # Scalar entry (0): check for a dated _* reason field on the provider
+        tokens=$(printf '%s' "$model" \
+            | awk -F'[-._]' '{for(i=1;i<=NF;i++) if(length($i)>=4) print length($i)"\t"$i}' \
+            | sort -rn | cut -f2)
+        if [[ -z "$tokens" ]]; then
+            slug=$(printf '%s' "$model" | tr -d -- '-._')
+            if [[ ${#slug} -ge 4 ]]; then
+                tokens="$slug"
+            else
+                echo "  $prov/$model: no >=4-char token to match a reason field" >&2
+                mbad=$((mbad+1)); continue
+            fi
+        fi
+        dated_fields=$(jq -r --arg p "$prov" '
+            .providers[$p] | to_entries[]
+            | select(.key|startswith("_"))
+            | select(.key|startswith("_comment")|not)
+            | select(.value|tostring|test("20[0-9]{2}-[0-9]{2}-[0-9]{2}"))
+            | .key
+        ' "$caps")
+        found=0
+        while IFS= read -r tok; do
+            [[ -n "$tok" ]] || continue
+            matches=0
+            while IFS= read -r fname; do
+                [[ -n "$fname" ]] || continue
+                case "$fname" in
+                    *"$tok"*) matches=$((matches+1)) ;;
+                esac
+            done <<<"$dated_fields"
+            (( matches == 1 )) && { found=1; break; }
+        done <<<"$tokens"
+        if (( found == 0 )); then
+            echo "  $prov/$model: cap=0 scalar but no dated _* reason field uniquely identified (fleet-ops#1456)" >&2
+            mbad=$((mbad+1))
+        else
+            ok "$prov/$model: cap=0 scalar with dated _* reason field"
+        fi
     fi
 done < <(jq -r '
     .providers | to_entries[] | .key as $p
     | (.value.models // {}) | to_entries[]
-    | select(.value == 0) | [$p, .key] | @tsv
+    | .value as $v | .key as $m
+    | ($v | if type == "object" then (.cap // 1) else . end) as $cap
+    | select($cap == 0)
+    | [$p, $m, ($v | type)] | @tsv
 ' "$caps")
-[[ "$mbad" == "0" ]] || fail "scenario7: $mbad model cap=0 entry(ies) missing a dated _* reason field — audit durability gap (fleet-ops#1456)"
+[[ "$mbad" == "0" ]] || fail "scenario7: $mbad model cap=0 entry(ies) missing intentional_cap_zero or a dated reason (rule 3, fleet-ops#3504)"
 
-ok "seat-caps-citation: orcarouter citation pinned, order clean, JSON parses, cap=0 reasons across the fleet are dated + measured, model cap=0 reasons pinned"
+ok "seat-caps-citation: orcarouter citation pinned, order clean, JSON parses, cap=0 reasons across the fleet are dated + measured, model cap=0 entries intentional with dated reasons"
 
 # 8. OpenRouter paid flash lane (fleet-ops#384): the cheapest+best of
 #    Qwen 3.8 flash / GLM 5.3 flash / DeepSeek V4 flash is wired as a
@@ -203,9 +231,19 @@ ok "seat-caps-citation: orcarouter citation pinned, order clean, JSON parses, ca
 echo "--- scenario 8: OpenRouter paid flash lane wired with dated measured citation ---"
 or_models=$(jq -r '.providers.openrouter.models | length' "$caps")
 [[ "$or_models" -ge 1 ]] || fail "openrouter must have a non-empty models map (the #384 paid flash lane). Got: $or_models"
-or_dsv4f=$(jq -r '.providers.openrouter.models["deepseek/deepseek-v4-flash-0731"] // empty' "$caps")
-[[ -n "$or_dsv4f" ]] || fail "openrouter must allowlist deepseek/deepseek-v4-flash-0731 (the #384 cheapest+best paid flash lane)"
-[[ "$or_dsv4f" != "0" ]] || fail "openrouter deepseek/deepseek-v4-flash-0731 cap must be >0 (wired, not parked)"
+or_dsv4f=$(jq -r '.providers.openrouter.models["deepseek/deepseek-v4-flash-0731"] | if type=="object" then (.cap // "none") else . end' "$caps")
+[[ -n "$or_dsv4f" && "$or_dsv4f" != "null" ]] \
+  || fail "openrouter must allowlist deepseek/deepseek-v4-flash-0731 (the #384 cheapest+best paid flash lane)"
+# Rule 1 (fleet-ops#3504): the cap value is justified by a dated reason, not
+# pinned by the test. The lane is wired (entry present); the cap may be 0
+# (balance exhausted) with a dated reason citing the error class.
+or_dsv4f_reason=$(jq -r '.providers.openrouter.models["deepseek/deepseek-v4-flash-0731"] | if type=="object" then (.reason // "") else "" end' "$caps")
+if [[ -n "$or_dsv4f_reason" ]]; then
+    grep -qE "$date_pat" <<<"$or_dsv4f_reason" \
+      || fail "openrouter deepseek/deepseek-v4-flash-0731 reason must name a YYYY-MM-DD date (rule 1)"
+    grep -qiE "$meas_pat" <<<"$or_dsv4f_reason" \
+      || fail "openrouter deepseek/deepseek-v4-flash-0731 reason must name a measurement (rule 1)"
+fi
 or_class=$(jq -r '.providers.openrouter.class // empty' "$caps")
 [[ "$or_class" == "metered" ]] || fail "openrouter class must be metered (paid lane — spend after free+prepaid). Got: $or_class"
 or_cite=$(jq -r '.providers.openrouter._comment_384 // ""' "$caps")
@@ -216,4 +254,230 @@ grep -qE '\$0\.[0-9]' <<<"$or_cite" || fail "openrouter _comment_384 must name a
 grep -qiE 'pi --list-models|/models|catalog' <<<"$or_cite" || fail "openrouter _comment_384 must name the probe source (pi --list-models or /models catalog)"
 # cheapest+best evidence: the citation must name DeepSeek V4 flash as cheapest vs the two alternatives
 grep -qiE 'cheapest' <<<"$or_cite" || fail "openrouter _comment_384 must state cheapest+best verdict"
-ok "openrouter: deepseek/deepseek-v4-flash-0731 wired (metered, cap=$or_dsv4f) with dated measured _comment_384 citation"
+ok "openrouter: deepseek/deepseek-v4-flash-0731 wired (metered) with dated measured _comment_384 citation (rule 1, fleet-ops#3504)"
+
+# 9. Rule 4 (fleet-ops#3504): infrastructure death classes are NOT accepted
+#    as yield reasons for cap=0. If a cap=0 reason cites "yield" as a
+#    measurement, the reason must NOT cite infra death classes (rc=124,
+#    rc=143, provider timeout, resource_exhausted, 429, 503) as the cause
+#    of the zero yield. The swe-1-7 correction (#3473) and the laguna
+#    correction (this PR) are the precedents: infra deaths never count as
+#    yield (#3250/#3310).
+echo "--- scenario 9: infra death classes not accepted as yield reasons (rule 4) ---"
+infra_pat='(rc=124|rc=143|provider timeout|resource_exhausted|HTTP ?429|HTTP ?503|overload_bench)'
+rule4_bad=0
+while IFS=$'\t' read -r prov entry_filter reason; do
+    [[ -n "$prov" && -n "$reason" ]] || continue
+    # Only check reasons that cite "yield" as a measurement
+    if ! grep -qiE 'yield|pr_count' <<<"$reason"; then
+        continue
+    fi
+    # The reason cites yield — check it does NOT cite infra death classes
+    if grep -qiE "$infra_pat" <<<"$reason"; then
+        echo "  $prov: cap=0 reason cites yield AND an infra death class — infra deaths never count as yield (rule 4, #3250/#3310)" >&2
+        rule4_bad=$((rule4_bad+1))
+    fi
+done < <(jq -r '
+    .providers | to_entries[] | .key as $p
+    | (.value.cap // 1) as $pcap
+    | (select($pcap == 0) | [$p, ".providers[\($p)]", (.value.reason // "")])
+    , (.value.models // {}) | to_entries[] | .value as $v | .key as $m
+    | ($v | if type == "object" then (.cap // 1) else . end) as $mc
+    | select($mc == 0) | [$p, ".providers[\($p)].models[\($m)]", ($v | if type == "object" then (.reason // "") else "" end)]
+' "$caps" 2>/dev/null)
+[[ "$rule4_bad" == "0" ]] || fail "scenario9: $rule4_bad cap=0 reason(s) cite infra death classes as yield — infra deaths never count as yield (rule 4, fleet-ops#3504)"
+ok "no cap=0 entry cites infra death classes as yield reasons (rule 4, fleet-ops#3504)"
+
+# 10. Rule 1 (fleet-ops#3504): every provider cap entry carries a dated
+#     reason with a measurement (sessions, yield, price, or error class).
+#     A cap change with a valid dated reason passes; without a reason it
+#     fails here without a test edit.
+echo "--- scenario 10: every provider cap carries a dated reason (rule 1) ---"
+r1_bad=0
+while IFS=$'\t' read -r prov reason; do
+    [[ -n "$prov" ]] || continue
+    has_date=0
+    has_meas=0
+    # Check .reason on the provider
+    if [[ -n "$reason" ]] && grep -qE "$date_pat" <<<"$reason" && grep -qiE "$meas_pat" <<<"$reason"; then
+        has_date=1; has_meas=1
+    fi
+    # Fall back to any dated _ field on the provider with a measurement
+    if (( has_date == 0 )); then
+        dated_field=$(jq -r --arg p "$prov" 'first(.providers[$p] | to_entries[] | select(.key|startswith("_")) | select(.value|tostring|test("20[0-9]{2}-[0-9]{2}-[0-9]{2}")) | .value|tostring)' "$caps" 2>/dev/null || true)
+        if [[ -n "$dated_field" ]] && grep -qiE "$meas_pat" <<<"$dated_field"; then
+            has_date=1; has_meas=1
+        fi
+    fi
+    if (( has_date == 0 )); then
+        echo "  $prov: cap entry missing a dated reason (rule 1)" >&2
+        r1_bad=$((r1_bad+1))
+    elif (( has_meas == 0 )); then
+        echo "  $prov: cap entry reason has a date but no measurement marker (rule 1)" >&2
+        r1_bad=$((r1_bad+1))
+    else
+        ok "$prov: cap carries a dated reason with a measurement (rule 1)"
+    fi
+done < <(jq -r '.providers | to_entries[] | [.key, (.value.reason // "")] | @tsv' "$caps")
+[[ "$r1_bad" == "0" ]] || fail "scenario10: $r1_bad provider cap(s) missing a dated reason with a measurement (rule 1, fleet-ops#3504)"
+
+# 11. Rule 5 (fleet-ops#3504): provider class is one of free, prepaid-quota,
+#     metered (subscription is accepted as an alias for prepaid-quota).
+echo "--- scenario 11: provider class is free, prepaid-quota, or metered (rule 5) ---"
+r5_bad=0
+while IFS=$'\t' read -r prov pclass; do
+    [[ -n "$prov" ]] || continue
+    case "$pclass" in
+        free|prepaid-quota|metered|subscription) ;;
+        *) echo "  $prov: class '$pclass' is not free, prepaid-quota, or metered (rule 5)" >&2; r5_bad=$((r5_bad+1)) ;;
+    esac
+done < <(jq -r '.providers | to_entries[] | [.key, (.value.class // "free")] | @tsv' "$caps")
+[[ "$r5_bad" == "0" ]] || fail "scenario11: $r5_bad provider(s) with an invalid class (rule 5, fleet-ops#3504)"
+ok "all provider classes are free, prepaid-quota, or metered (rule 5, fleet-ops#3504)"
+
+# 12. Rule 6 (fleet-ops#3864): a cap=0 entry retired for yield
+#     (intentional_cap_zero in {corpse, yield, stale-yield}) on a prepaid-quota
+#     or metered provider must cite the seat-retirement rule's three pieces of
+#     evidence (2026-09-05, after #3389/#3473): the retirement error class
+#     (model-working / tools>0 — the model was working, never an infrastructure
+#     death class like rc=124, rc=143, 429, 503, resource_exhausted,
+#     no-seat-available), a session count of at least 20, and a PR rate under
+#     10% (or pr_count 0). A worker cannot land what #3848 landed
+#     (ollama/deepseek-v4-flash:0731 retired at measured yield 0.30 with only
+#     rc=124 hang-watchdog infra deaths; reverted by orchestrator PR #3863).
+#     The three config-pinning suites all passed on #3848 because the citation
+#     rules checked for a dated reason, not the retirement rule's evidence —
+#     this scenario closes that gap. Free-class providers are out of scope: a
+#     free lane has no spend to protect, so the retirement rule's evidence
+#     threshold does not apply.
+echo "--- scenario 12: cap=0 yield retirement on a paid provider cites the retirement rule (rule 6) ---"
+r6_errclass_pat='(model-working|tools[[:space:]]*>[[:space:]]*0)'
+r6_infra_pat='(rc=124|rc=143|HTTP[[:space:]]?429|HTTP[[:space:]]?503|resource_exhausted|no-seat-available)'
+# session count >= 20: n=20, n=25, n=120, "20 sessions", "sessions 20", "sessions=20"
+r6_session_pat='(n=[2-9][0-9]|n=[1-9][0-9]{2,}|[2-9][0-9][[:space:]]*sessions?|sessions?[[:space:]]*[=: ]?[[:space:]]*[2-9][0-9]|[1-9][0-9]{2,}[[:space:]]*sessions?)'
+# PR rate under 10% or pr_count 0: "pr_count 0", "pr_count=0", "<10%", "under 10%",
+# "yield 0.05" (<0.10), "yield 0" (exactly 0). "yield 0.30" and "pr_count 6" do NOT match.
+r6_prrate_pat='(pr_count[[:space:]]*[=: ]?[[:space:]]*0([^0-9.]|$)|<[[:space:]]*10%|under[[:space:]]+10%|PR[[:space:]]+rate[[:space:]]+<[[:space:]]*10%|yield[[:space:]]*0\.0[0-9]|yield[[:space:]]*0([^0-9.]|$))'
+r6_bad=0
+r6_checked=0
+# Provider-level cap=0 entries on a paid provider.
+while IFS=$'\t' read -r prov pclass reason; do
+    [[ -n "$prov" ]] || continue
+    [[ "$pclass" == "prepaid-quota" || "$pclass" == "metered" ]] || continue
+    r6_checked=$((r6_checked+1))
+    if [[ -z "$reason" ]]; then
+        echo "  $prov: cap=0 yield-class retirement on $pclass provider but reason is empty (rule 6)" >&2
+        r6_bad=$((r6_bad+1)); continue
+    fi
+    if ! grep -qiE "$r6_errclass_pat" <<<"$reason"; then
+        echo "  $prov: cap=0 yield retirement on $pclass provider — reason must cite the retirement error class (model-working / tools>0), not just a date (rule 6, fleet-ops#3864)" >&2
+        r6_bad=$((r6_bad+1)); continue
+    fi
+    if grep -qiE "$r6_infra_pat" <<<"$reason"; then
+        echo "  $prov: cap=0 yield retirement on $pclass provider — reason cites an infra death class (rc=124/143, 429, 503, resource_exhausted, no-seat-available); infra deaths never count as yield (rule 6, fleet-ops#3864)" >&2
+        r6_bad=$((r6_bad+1)); continue
+    fi
+    if ! grep -qiE "$r6_session_pat" <<<"$reason"; then
+        echo "  $prov: cap=0 yield retirement on $pclass provider — reason must cite a session count of at least 20 (rule 6, fleet-ops#3864)" >&2
+        r6_bad=$((r6_bad+1)); continue
+    fi
+    if ! grep -qiE "$r6_prrate_pat" <<<"$reason"; then
+        echo "  $prov: cap=0 yield retirement on $pclass provider — reason must cite a PR rate under 10% or pr_count 0 (rule 6, fleet-ops#3864)" >&2
+        r6_bad=$((r6_bad+1)); continue
+    fi
+    ok "$prov: cap=0 yield retirement on $pclass provider cites error class + >=20 sessions + PR rate <10% (rule 6)"
+done < <(jq -r '
+    .providers | to_entries[] | .key as $p
+    | (.value.cap // 1) as $cap
+    | select($cap == 0)
+    | (.value.intentional_cap_zero // "") as $icz
+    | select($icz | IN("corpse","yield","stale-yield"))
+    | (.value.class // "free") as $cls
+    | [$p, $cls, (.value.reason // "")] | @tsv
+' "$caps")
+# Model-level cap=0 entries on a paid provider. fleet-ops#4271: a model with
+# a class:free override on a metered/prepaid provider is a FREE seat (costs
+# nothing — the cline/z-ai/glm-5.3-flash, openrouter :free, zenmux/z-ai/
+# glm-4.7-flash-free precedent). The retirement rule's evidence threshold
+# protects spend, so it does not apply to a free model; the jq below skips
+# model entries whose own class is "free" (same as a free-class provider).
+while IFS=$'\t' read -r prov model pclass reason; do
+    [[ -n "$prov" ]] || continue
+    [[ "$pclass" == "prepaid-quota" || "$pclass" == "metered" ]] || continue
+    r6_checked=$((r6_checked+1))
+    if [[ -z "$reason" ]]; then
+        echo "  $prov/$model: cap=0 yield-class retirement on $pclass provider but reason is empty (rule 6)" >&2
+        r6_bad=$((r6_bad+1)); continue
+    fi
+    if ! grep -qiE "$r6_errclass_pat" <<<"$reason"; then
+        echo "  $prov/$model: cap=0 yield retirement on $pclass provider — reason must cite the retirement error class (model-working / tools>0), not just a date (rule 6, fleet-ops#3864)" >&2
+        r6_bad=$((r6_bad+1)); continue
+    fi
+    if grep -qiE "$r6_infra_pat" <<<"$reason"; then
+        echo "  $prov/$model: cap=0 yield retirement on $pclass provider — reason cites an infra death class (rc=124/143, 429, 503, resource_exhausted, no-seat-available); infra deaths never count as yield (rule 6, fleet-ops#3864)" >&2
+        r6_bad=$((r6_bad+1)); continue
+    fi
+    if ! grep -qiE "$r6_session_pat" <<<"$reason"; then
+        echo "  $prov/$model: cap=0 yield retirement on $pclass provider — reason must cite a session count of at least 20 (rule 6, fleet-ops#3864)" >&2
+        r6_bad=$((r6_bad+1)); continue
+    fi
+    if ! grep -qiE "$r6_prrate_pat" <<<"$reason"; then
+        echo "  $prov/$model: cap=0 yield retirement on $pclass provider — reason must cite a PR rate under 10% or pr_count 0 (rule 6, fleet-ops#3864)" >&2
+        r6_bad=$((r6_bad+1)); continue
+    fi
+    ok "$prov/$model: cap=0 yield retirement on $pclass provider cites error class + >=20 sessions + PR rate <10% (rule 6)"
+done < <(jq -r '
+    .providers | to_entries[] | .key as $p
+    | (.value.class // "free") as $cls
+    | (.value.models // {}) | to_entries[] | .value as $v | .key as $m
+    | ($v | if type == "object" then (.cap // 1) else . end) as $mc
+    | select($mc == 0)
+    | ($v | if type == "object" then (.intentional_cap_zero // "") else "" end) as $icz
+    | select($icz | IN("corpse","yield","stale-yield"))
+    | select($cls | IN("prepaid-quota","metered"))
+    | select(($v | if type == "object" then (.class // "") else "" end) != "free")
+    | [$p, $m, $cls, ($v | if type == "object" then (.reason // "") else "" end)] | @tsv
+' "$caps")
+if (( r6_bad > 0 )); then
+    fail "scenario12: $r6_bad cap=0 yield retirement(s) on a paid provider missing the retirement rule's evidence (rule 6, fleet-ops#3864)"
+fi
+if (( r6_checked == 0 )); then
+    ok "no cap=0 yield-class retirement on a paid provider — rule 6 vacuously satisfied (fleet-ops#3864)"
+else
+    ok "every cap=0 yield-class retirement on a paid provider cites the retirement rule's evidence (rule 6, fleet-ops#3864)"
+fi
+
+ok "seat-caps-citation: rules 1-6 enforced, orcarouter citation pinned, order clean, JSON parses (fleet-ops#3504, fleet-ops#3864)"
+
+# 13. fleet-ops#3930: worker_memory shape + citation. The pressure-kill fault
+#     was caused by the MemoryHigh throttle band: oomd turned one worker's
+#     thrash into a kill of a random sibling (6 pi-issue@* kills in 1h on a
+#     15 GB box; pi-issue@0509-1752 killed at a 94.3M peak — victim was not
+#     the offender). The fix drops MemoryHigh for fleet-ops + 0509 and keeps
+#     MemoryMax=4G. Pin the shape AND the citation (the _comment_worker_memory
+#     field carries a dated reason with measurement markers — sr-never-vibes,
+#     rule 1) so a revert is caught here, not on the next oomd kill burst.
+echo "--- scenario 13: worker_memory shape + citation (fleet-ops#3930) ---"
+fo_max=$(jq -r '.worker_memory["fleet-ops"].MemoryMax // empty' "$caps")
+fo_high=$(jq -r '.worker_memory["fleet-ops"].MemoryHigh // empty' "$caps")
+o5_max=$(jq -r '.worker_memory["0509"].MemoryMax // empty' "$caps")
+o5_high=$(jq -r '.worker_memory["0509"].MemoryHigh // empty' "$caps")
+[[ "$fo_max" == "4G" ]] || fail "scenario13: fleet-ops worker_memory MemoryMax must be 4G (fleet-ops#3930), got '$fo_max'"
+[[ -z "$fo_high" ]] || fail "scenario13: fleet-ops worker_memory MemoryHigh must be ABSENT (fleet-ops#3930 dropped the throttle band so oomd has no throttle-to-kill path), got '$fo_high'"
+[[ "$o5_max" == "4G" ]] || fail "scenario13: 0509 worker_memory MemoryMax must be 4G (fleet-ops#3930), got '$o5_max'"
+[[ -z "$o5_high" ]] || fail "scenario13: 0509 worker_memory MemoryHigh must be ABSENT (fleet-ops#3930 dropped the throttle band), got '$o5_high'"
+hvy_max=$(jq -r '.worker_memory.heavy.MemoryMax // empty' "$caps")
+hvy_high=$(jq -r '.worker_memory.heavy.MemoryHigh // empty' "$caps")
+[[ "$hvy_max" == "3G" && "$hvy_high" == "2G" ]] \
+  || fail "scenario13: heavy worker_memory must stay 3G/2G (manager workers, fleet-ops#3281; not part of fleet-ops#3930), got max='$hvy_max' high='$hvy_high'"
+# Citation (rule 1): the _comment_worker_memory field (or the worker_memory
+# _note) must carry a date + a measurement marker naming the oomd kill
+# evidence (kill count, peak, or pressure) so the shape is grounded in the
+# live fault, not a vibes number.
+wm_cite=$(jq -r '.worker_memory._comment // .worker_memory._note // ""' "$caps")
+[[ -n "$wm_cite" ]] || fail "scenario13: worker_memory must carry a _comment or _note citation (fleet-ops#3930)"
+grep -qE "$date_pat" <<<"$wm_cite" \
+  || fail "scenario13: worker_memory citation must name a YYYY-MM-DD date (rule 1, fleet-ops#3930)"
+grep -qiE '(oomd|kill|pressure|MemoryHigh|throttle|94\.3M|peak|sibling)' <<<"$wm_cite" \
+  || fail "scenario13: worker_memory citation must name the oomd pressure-kill evidence (rule 1, fleet-ops#3930)"
+ok "scenario13: worker_memory fleet-ops + 0509 MemoryMax=4G no MemoryHigh, heavy 3G/2G, citation dated + measured (fleet-ops#3930)"

@@ -5,7 +5,9 @@
 # New systemd/** unit files or MANIFEST unit lines that are neither on
 # config/machinery-allowlist.json nor carrying `authorized-by-nish:` are
 # REJECT (exit 1). Repairs and deletions stay ungated. hunt flags live
-# hand-placed units not on the allowlist.
+# hand-placed units not on the allowlist, and real-file drop-ins under
+# ~/.config/systemd/user/*.d/ that are not symlinks into the repo
+# (fleet-ops#2924).
 #
 # Usage:
 #   fleet-machinery-authorization-gate [--name-status F] [--body F] [--allowlist F]

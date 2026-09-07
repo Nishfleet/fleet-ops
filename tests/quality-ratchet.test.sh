@@ -258,6 +258,85 @@ grep -q 'config/quality-ratchet.json' "$manifest" \
   || fail "MANIFEST must install config/quality-ratchet.json"
 ok "(i) heartbeat-tier1 wires the canary, fail-loud, MANIFEST installs it"
 
+# =========================================================================
+# (j) fleet-ops#3519 per-repo quality ceiling ratchet (tighten-ceilings)
+# =========================================================================
+cat >"$scratch/tighten-metrics.json" <<'JSON'
+{
+  "0509": {
+    "reverts_per_100_merges": [4.0, 2.0, 3.0, 5.0, 1.0],
+    "post_merge_defects_per_100": [10.0, 20.0, 15.0],
+    "sessions_to_pr_pct": [30.0, 20.0, 25.0]
+  }
+}
+JSON
+cp "$ratchet" "$scratch/ratchet-copy.json"
+
+# dry-run: reports 3 proposed tighten, does NOT write
+set +e
+dry_out=$(python3 "$py" tighten-ceilings \
+  --ratchet "$scratch/ratchet-copy.json" --metrics "$scratch/tighten-metrics.json" \
+  --dry-run 2>&1)
+dry_rc=$?
+set -e
+[[ "$dry_rc" == "0" ]] || fail "tighten-ceilings --dry-run must exit 0 (rc=$dry_rc)"
+grep -q 'dry-run no write (3' <<<"$dry_out" \
+  || fail "dry-run must propose 3 tightens (out=$dry_out)"
+grep -q 'RATCHET: 0509.reverts_per_100_merges: 4.500000 -> 3.300000' <<<"$dry_out" \
+  || fail "dry-run must propose reverts 4.5 -> 3.3 (out=$dry_out)"
+# dry-run must not have written
+python3 - "$scratch/ratchet-copy.json" <<'PY' || fail "dry-run must not write"
+import json, sys
+assert json.load(open(sys.argv[1]))["ceilings"]["0509"]["reverts_per_100_merges"] == 4.5
+PY
+ok "(j) tighten-ceilings dry-run proposes min(current, p50 x 1.1) without writing"
+
+# real write tightens 0509 and never-loosens others
+set +e
+write_out=$(python3 "$py" tighten-ceilings \
+  --ratchet "$scratch/ratchet-copy.json" --metrics "$scratch/tighten-metrics.json" 2>&1)
+write_rc=$?
+set -e
+[[ "$write_rc" == "0" ]] || fail "tighten-ceilings write must exit 0 (rc=$write_rc out=$write_out)"
+python3 - "$scratch/ratchet-copy.json" <<'PY' || fail "written ceilings wrong"
+import json, sys
+d = json.load(open(sys.argv[1]))["ceilings"]
+# p50 3.0 x 1.1 = 3.3 < 4.5 -> tightened
+assert d["0509"]["reverts_per_100_merges"] == 3.3, d
+# p50 of [10,20,15] sorted [10,15,20] = 15; 15 x 1.1 = 16.5 < 40 -> tightened
+assert d["0509"]["post_merge_defects_per_100"] == 16.5, d
+# p50 25 x 1.1 = 27.5 < 33 -> tightened
+assert d["0509"]["sessions_to_pr_pct"] == 27.5, d
+PY
+ok "(j) tighten-ceilings write tightens all three measured ceilings"
+
+# never-loosens: a high p50 must leave the ceiling unchanged
+cat >"$scratch/loose-metrics.json" <<'JSON'
+{"0509": {"reverts_per_100_merges": [6.0, 4.0, 5.0], "post_merge_defects_per_100": [50.0], "sessions_to_pr_pct": [40.0]}}
+JSON
+cp "$ratchet" "$scratch/ratchet-copy2.json"
+set +e
+loose_out=$(python3 "$py" tighten-ceilings \
+  --ratchet "$scratch/ratchet-copy2.json" --metrics "$scratch/loose-metrics.json" 2>&1)
+loose_rc=$?
+set -e
+[[ "$loose_rc" == "0" ]] || fail "never-loosen write must exit 0 (rc=$loose_rc out=$loose_out)"
+python3 - "$scratch/ratchet-copy2.json" <<'PY' || fail "ceiling loosened"
+import json, sys
+d = json.load(open(sys.argv[1]))["ceilings"]["0509"]
+# p50 5 x 1.1 = 5.5 > 4.5 -> must stay 4.5
+assert d["reverts_per_100_merges"] == 4.5, d
+# p50 50 -> 55 > 40, stays 40; p50 40 -> 44 > 33, stays 33
+assert d["post_merge_defects_per_100"] == 40.0, d
+assert d["sessions_to_pr_pct"] == 33.0, d
+PY
+ok "(j) tighten-ceilings never loosens (high p50 leaves ceilings unchanged)"
+
+# WFR prompt documents the per-repo ceiling ratchet
+grep -q 'tighten-ceilings' "$prompt" \
+  || fail "WFR prompt must document per-repo tighten-ceilings (fleet-ops#3519)"
+ok "(j) WFR prompt documents the per-repo quality ceiling ratchet (fleet-ops#3519)"
+
 grep -Fq 'bash "$here/quality-ratchet.test.sh"' "$here/rule-enforcement.test.sh" \
   || fail "rule-enforcement.test.sh must nest this file"
 ok "contracts: nested CI host"

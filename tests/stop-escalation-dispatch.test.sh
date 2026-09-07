@@ -78,6 +78,12 @@ pick_seat() {
     # tried seats (the dispatcher records each pick in the tried file)
     if [ -n "$tried_file" ] && [ -f "$tried_file" ] \
        && grep -qxF "$p/$m" "$tried_file" 2>/dev/null; then continue; fi
+    # fleet-ops#2661: escalate-lane provider-wedge skip (mirror of the
+    # real seat-lib pick_seat when FLEET_ESCALATION_WEDGE_CHECK=1):a
+    # provider listed in $STOP_ESCALATION_TEST_WEDGE_FILE is overload-wedged
+    # and ALL its seats are excluded from this pick.
+    if [ "${FLEET_ESCALATION_WEDGE_CHECK:-0}" = "1" ] && [ -n "${STOP_ESCALATION_TEST_WEDGE_FILE:-}" ] && [ -f "$STOP_ESCALATION_TEST_WEDGE_FILE" ] \
+       && grep -qxF "$p" "$STOP_ESCALATION_TEST_WEDGE_FILE" 2>/dev/null; then continue; fi
     printf '%s%s%s\n' "$p" "$TAB" "$m"
     return 0
   done
@@ -95,9 +101,14 @@ is_quota_cap_error() {
   local out="$1" err="$2"
   local combined="$out"$'\n'"$err"
   [[ -n "$combined" ]] || return 1
-  grep -qiE 'quota[[:space:]]+(exhausted|exceeded|reached)|out[[:space:]]+of[[:space:]]+credits|weekly[[:space:]]+(clinepass[[:space:]]+)?limit' <<<"$combined" || return 1
-  grep -qiE 'resets?[[:space:]]+(in|at|after)|retry[[:space:]_-]?after' <<<"$combined" || grep -qiE 'weekly[[:space:]]+(clinepass[[:space:]]+)?limit' <<<"$combined" || return 1
-  return 0
+  # Mirror of the real lib/seat-lib.sh matcher (fleet-ops#3816 added the
+  # xkiro free-model daily-token-quota patterns; the live 47-count
+  # spawn_fail park on xkiro/deepseek-v4-flash was a stub that predated
+  # them, so a regression here re-opens the misclassification).
+  grep -qiE 'weekly[[:space:]]+(clinepass[[:space:]]+)?limit|daily[[:space:]]+limit|quota[[:space:]]+(exhausted|exceeded|reached)|usage[[:space:]]+balance[[:space:]]+exhausted|budget_exceeded|credit[[:space:]]+balance[[:space:]]+depleted|free-model[[:space:]]+token[[:space:]]+quota|resource_exhausted|INFERENCE_CAP_ERROR|usage[[:space:]]+limit|plan[[:space:]]+limit|out[[:space:]]+of[[:space:]]+credits|message[[:space:]]+rate[[:space:]]+limit|rate[[:space:]]+limit[[:space:]]+(exceeded|reached)|cap[[:space:]]+(exceeded|reached)|exceeded[[:space:]]+your' <<<"$combined" || return 1
+  grep -qiE 'resets?[[:space:]]+(in|at|after)|retry[[:space:]_-]?after|reset[[:space:]]+window' <<<"$combined" && return 0
+  grep -qiE 'weekly[[:space:]]+(clinepass[[:space:]]+)?limit|daily[[:space:]]+limit|INFERENCE_CAP_ERROR|FreeUsageLimitError|usage[[:space:]]+balance[[:space:]]+exhausted|budget_exceeded|credit[[:space:]]+balance[[:space:]]+depleted|usage[[:space:]]+limit[[:space:]]+for[[:space:]]+the[[:space:]]+current[[:space:]]+free[[:space:]]+model|free-model[[:space:]]+token[[:space:]]+quota|resource_exhausted' <<<"$combined" && return 0
+  return 1
 }
 is_overload_error() {
   local out="$1" err="$2"
@@ -147,6 +158,15 @@ case "$mode" in
   quota)
     # A hard quota/cap wall with an advertised reset window.
     echo "quota exhausted, resets in 1h" >&2
+    exit 1
+    ;;
+  xkiro_quota)
+    # fleet-ops#3780: the live xkiro free-tier daily wall. pi surfaces it
+    # as rc=1 with the 429 body on stderr; the real is_quota_cap_error
+    # classifies it (free-model token quota + rate_limit_exceeded), so the
+    # dispatcher must bench via the quota path, not the spawn_fail fallback
+    # that accumulated the 47-count park.
+    printf '429: {"message":"You'"'"'ve reached today'"'"'s free-model token quota. Your plan'"'"'s paid allowance is separate — switch to a paid model to keep going, or wait for the daily reset.","type":"rate_limit_error","code":"rate_limit_exceeded"}\n' >&2
     exit 1
     ;;
   timeout)
@@ -625,5 +645,85 @@ grep -q "bench=quota_cap" "$STOP_ESCALATION_AUDITOR_LOG" \
 grep -qxF "devin/glm-5-2" "$STOP_ESCALATION_TEST_BENCH_FILE" \
   || fail "quota: devin must be benched"
 ok "fleet-ops#623: rc=1 quota wall -> quota bench path (long bench)"
+
+# ---------------------------------------------------------------------------
+# Invariant 13b (fleet-ops#3780): the xkiro free-tier daily-token-quota wall
+# (HTTP 429, "free-model token quota ... wait for the daily reset",
+# type=rate_limit_error code=rate_limit_exceeded) is a quota_cap, NOT a
+# spawn_fail. The live seat accumulated 47 consecutive spawn_fail because
+# the stub's is_quota_cap_error predated the #3816 free-model patterns; the
+# real matcher classifies it, so the dispatcher must take the quota bench
+# path (long bench until the daily reset), never the no_block:rc=1 fallback
+# that drove the corpse park.
+# ---------------------------------------------------------------------------
+: > "$STOP_ESCALATION_SEEN"
+: > "$STOP_ESCALATION_KILLS"
+: > "$STOP_ESCALATION_AUDITOR_LOG"
+: > "$STOP_ESCALATION_NISH"
+: > "$STOP_ESCALATION_TEST_BENCH_FILE"
+cat >"$STOP_ESCALATION_STOP_REASON" <<'JSON'
+{"reason":"unit-failure","detail":{"unit":"pi-issue@fleet-ops-3780-xkiro.service"}}
+JSON
+hashx=$(sha256sum "$STOP_ESCALATION_STOP_REASON" | awk '{print $1}')
+export STOP_ESCALATION_TEST_SEAT_MODE=healthy
+export STOP_ESCALATION_TEST_PI_MODE=xkiro_quota
+set +e
+"$dispatch"; rc=$?
+set -e
+[[ $rc -eq 0 ]] || fail "xkiro_quota: expected exit 0, got $rc"
+grep -q "DISPATCH-NO-BLOCK hash=$hashx provider=devin" "$STOP_ESCALATION_AUDITOR_LOG" \
+  || fail "xkiro_quota: expected DISPATCH-NO-BLOCK on devin"
+grep -q "bench=quota_cap" "$STOP_ESCALATION_AUDITOR_LOG" \
+  || fail "xkiro_quota: expected bench=quota_cap (xkiro free-model daily wall is a quota cap, not a spawn_fail)"
+! grep -q "bench=no_block:rc=1" "$STOP_ESCALATION_AUDITOR_LOG" \
+  || fail "xkiro_quota: must NOT fall through to no_block:rc=1 spawn_fail (the 47-count misclassification)"
+grep -qxF "devin/glm-5-2" "$STOP_ESCALATION_TEST_BENCH_FILE" \
+  || fail "xkiro_quota: devin must be benched via quota path"
+ok "fleet-ops#3780: xkiro free-model daily-token-quota 429 -> quota_cap bench, not spawn_fail"
+
+# ---------------------------------------------------------------------------
+# Invariant 14 (fleet-ops#2661): escalate-lane provider-wedge check. A
+# provider with >=2 seats in overload_bench within the last 30 min is WEDGED:
+# the AUDITOR must NEVER be dispatched into that storm (it just killed the
+# workers). The dispatcher exports FLEET_ESCALATION_WEDGE_CHECK=1; the real
+# pick_seat (and this stub mirror of it) skip wedged providers entirely.
+# Prove: wedge=cursor -> rotation skips cursor and dispatches devin; wedge=both
+# -> no seat -> LADDER-WALLED (quiet auditor-log, exit 0,, NOT a dispatch.
+# ---------------------------------------------------------------------------
+: > "$STOP_ESCALATION_SEEN"
+: > "$STOP_ESCALATION_KILLS"
+: > "$STOP_ESCALATION_AUDITOR_LOG"
+: > "$STOP_ESCALATION_NISH"
+: > "$STOP_ESCALATION_TEST_BENCH_FILE"
+cat >"$STOP_ESCALATION_STOP_REASON" <<'JSON'
+{"reason":"unit-failure","detail":{"unit":"pi-issue@fleet-ops-2661-wedge.service"}}
+JSON
+hashw=$(sha256sum "$STOP_ESCALATION_STOP_REASON" | awk '{print $1}')
+export STOP_ESCALATION_TEST_SEAT_MODE=rotate
+export STOP_ESCALATION_TEST_PI_MODE=block
+export STOP_ESCALATION_TEST_WEDGE_FILE="$scratch/wedged.txt"
+printf '%s\n' cursor >"$STOP_ESCALATION_TEST_WEDGE_FILE"
+export FLEET_ESCALATION_WEDGE_CHECK=1
+set +e
+"$dispatch"; rc=$?
+set -e
+[[ $rc -eq 0 ]] || fail "wedge cursor: expected exit 0, got $rc"
+grep -qE "DISPATCH hash=$hashw count=[0-9]+ provider=devin model=glm-5-2" "$STOP_ESCALATION_AUDITOR_LOG" \
+  || fail "wedge cursor: must dispatch devin (cursor wedged), got: $(cat "$STOP_ESCALATION_AUDITOR_LOG")"
+! grep -q "cursor" "$STOP_ESCALATION_AUDITOR_LOG" \
+  || fail "wedge cursor: must NEVER dispatch cursor (wedged provider)"
+# All candidates wedged -> no seat -> LADDER-WALLED (quiet, exit 0,, no budget.
+printf '%s\n' devin cursor >"$STOP_ESCALATION_TEST_WEDGE_FILE"
+: > "$STOP_ESCALATION_AUDITOR_LOG"
+set +e
+"$dispatch"; rc=$?
+set -e
+[[ $rc -eq 0 ]] || fail "wedge all: expected exit 0 (quiet walled ladder), got $rc"
+grep -q "LADDER-WALLED hash=$hashw" "$STOP_ESCALATION_AUDITOR_LOG" \
+  || fail "wedge all: wedged ladder must land in auditor LOG: $(cat "$STOP_ESCALATION_AUDITOR_LOG")"
+! grep -q "DISPATCH hash=$hashw" "$STOP_ESCALATION_AUDITOR_LOG" \
+  || fail "wedge all: must NOT dispatch into a wedged ladder"
+unset FLEET_ESCALATION_WEDGE_CHECK
+ok "fleet-ops#2661: escalate lanes refuse overload-wedged providers (rotation skips; all-wedged ladder walls quietly"
 
 ok "stop-escalation-dispatch: lane faults rotate, timeout/no-block quiet, cap enforced, kill-retry capped, dead-seat rotation (#1354), rc=1 benching + quiet walled ladder (#623)"

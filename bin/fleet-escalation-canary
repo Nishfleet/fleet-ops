@@ -47,7 +47,7 @@
 #     9. Rule-enforcement coverage (fleet-ops#383): every vault standing rule
 #        and ledger decision names a live enforcer in
 #        config/rule-enforcement.json. Missing or stale queued = VIOLATION;
-#        uncovered rules and queued rows owned by an umbrella tracker
+#        uncovered rules and stale queued rows (age > queued_stale_days)
 #        auto-file a distinct mechanism issue, deduped by signal key, cap per tick.
 #        When a previously auto-filed source is now `enforced`, the canary
 #        comments `canary-covered:` on the open issue (observe-to-close).
@@ -61,6 +61,15 @@
 #        proves pick_seat privacy=private never returns a free-class seat and
 #        fails closed when only free seats remain. LOUD the same tick a
 #        regression re-opens the leak.
+#    13. Detached-work lint (fleet-ops#4266): no raw `systemd-run` transient
+#        user unit in the last 24h WITHOUT OnFailure. Reads the audit trail
+#        (ausearch -k fleet-unit-run) when auditd is installed: every
+#        systemd-run execve by auid=1000 must carry
+#        --property=OnFailure=unit-escalation@... (pi-systemd-run always
+#        adds it) or the unit is named as a VIOLATION — a clean stop of a
+#        raw unit is exactly the silent death the dead-man exists to catch.
+#        No auditd = PENDING (loud, not fail): the rules + auditd install
+#        are shipped via install.sh --system / bare-metal manifest.
 #
 # Required-check enumeration note: authoritatively listing each repo's
 # required_status_checks needs branch-protection read (Administration scope),
@@ -100,10 +109,6 @@
 #                                       canary has reported them covered (observe-
 #                                       to-close); 0 skips the close step.
 #   FLEET_RULE_ENFORCEMENT_ISSUE_REPO   Nishfleet/fleet-ops
-#   FLEET_RULE_ENFORCEMENT_UMBRELLA_ISSUES comma-separated issue numbers that are
-#                                       umbrella trackers (e.g. 416). The canary
-#                                       auto-files a distinct mechanism issue for
-#                                       each queued row owned by an umbrella issue.
 #   FLEET_RULE_ENFORCEMENT_NOW          ISO timestamp for queued-age checks (tests)
 #   FLEET_ESCALATION_CANARY_SKIP_VAULT_CONFLICT  1 skips block 11 (offline tests)
 #   FLEET_VAULT_CONFLICT_TIMER          default vault-conflict-resolver.timer
@@ -112,6 +117,13 @@
 #   FLEET_VAULT_CONFLICT_STALE_HOURS    default 1 (timer fires every 10 min)
 #   FLEET_REPO_PRIVACY_JSON             config/repo-privacy.json source (block 12)
 #   FLEET_ESCALATION_CANARY_SKIP_PRIVACY_GUARD  1 skips block 12 (offline tests)
+#   FLEET_ESCALATION_CANARY_SKIP_STANDARDS_DRIFT  1 skips block 13 (offline tests)
+#   FLEET_STANDARDS_DRIFT_ISSUE_REPO   repo that receives standards-drift issues (default Nishfleet/fleet-ops)
+#   FLEET_STANDARDS_DRIFT_FILE_ISSUES  1 (default) auto-file drift issues; 0 skips
+#   FLEET_STANDARDS_DRIFT_MECHANISMS   space-separated thin-caller workflow filenames (tests override)
+#   AUSEARCH                            default ausearch (block 14, tests stub it)
+#   AUDITCTL                            default auditctl (block 14 rule-loaded guard, tests stub it)
+#   FLEET_ESCALATION_CANARY_SKIP_DETACHED  1 skips block 14 (offline tests)
 
 set -Eeuo pipefail
 
@@ -148,8 +160,6 @@ FILE_RULE_ISSUES="${FLEET_RULE_ENFORCEMENT_FILE_ISSUES:-1}"
 CLOSE_RULE_ISSUES="${FLEET_RULE_ENFORCEMENT_CLOSE_ISSUES:-1}"
 RULE_ISSUE_REPO="${FLEET_RULE_ENFORCEMENT_ISSUE_REPO:-Nishfleet/fleet-ops}"
 RULE_NOW="${FLEET_RULE_ENFORCEMENT_NOW:-}"
-UMBRELLA_ISSUES_RAW="${FLEET_RULE_ENFORCEMENT_UMBRELLA_ISSUES:-}"
-mapfile -t UMBRELLA_ISSUES < <(printf '%s\n' "$UMBRELLA_ISSUES_RAW" | tr ',' '\n' | grep -v '^$' || true)
 
 # Backup-staleness canary (fleet-ops#388). The system restic units are
 # readable via `systemctl show` (no sudo); a stale or failed backup is LOUD
@@ -208,6 +218,12 @@ is_escalation_excluded() {
         ready-work*)               return 0 ;;
         escalation-daily-sweep.*)  return 0 ;;
         resilience-drill-stub*)    return 0 ;;
+        # scope.d anti-recursion (fleet-ops#4266): systemd's own per-manager
+        # scope + Chromium/flatpak app sandbox scopes must not summon the
+        # SENIOR AUDITOR on tab churn. Keep in lockstep with the script
+        # guard in unit-escalation-write.
+        init.scope)                return 0 ;;
+        app-*.scope)               return 0 ;;
     esac
     return 1
 }
@@ -228,6 +244,7 @@ SANCTIONED_PI_RUNNERS=(
     pi-issue-run
     pi-packet-run
     pi-scout-run
+    fleet-seat-comeback-release
     stop-escalation-dispatch
 )
 
@@ -291,11 +308,11 @@ fi
 # A service-only type filter is the class that missed fleet-seat-recovery.path
 # (unit-start-limit-hit, OnFailure empty). path.d/ and timer.d/ are the
 # matching type drop-ins; this block must enumerate all three types.
-log "1. checking escalation coverage for loaded user services, paths, and timers"
+log "1. checking escalation coverage for loaded user services, paths, timers, and scopes"
 mapfile -t loaded_units < <(
-    "$SYSTEMCTL" --user list-units --type=service,path,timer --no-legend --plain 2>/dev/null \
+    "$SYSTEMCTL" --user list-units --type=service,path,timer,scope --no-legend --plain 2>/dev/null \
         | awk '{print $1}' \
-        | grep -E '\.(service|path|timer)$' \
+        | grep -E '\.(service|path|timer|scope)$' \
         || true
 )
 
@@ -507,9 +524,10 @@ fi
 # Parse vault `## ` headings + ledger dated decisions, join against
 # config/rule-enforcement.json. Any rule with no entry, an invalid row, or
 # queued(#N) older than queued_stale_days is a LOUD violation. Uncovered
-# rules auto-file a mechanism issue (deduped by signal key), cap per tick.
-# Enforced rows with an open mechanism issue get a `canary-covered:` comment
-# (observe-to-close; fleet-ops#479).
+# rules and stale queued rows (age > queued_stale_days) auto-file a mechanism
+# issue (deduped by signal key), cap per tick. Enforced rows with an open
+# mechanism issue get a `canary-covered:` comment (observe-to-close;
+# fleet-ops#479).
 log "9. checking rule-enforcement coverage against vault standing rules + ledger"
 if [[ ! -f "$RULE_MATRIX" ]]; then
     loud "ESCALATION-CANARY-VIOLATION" "rule-enforcement: matrix missing at $RULE_MATRIX — no standing rule can name its enforcer"
@@ -568,7 +586,7 @@ else
             pending=$((pending + 1))
         done < <(jq -r '.extra_matrix[].source' <<<"$rule_report")
 
-        # Auto-file uncovered/queued-umbrella issues, then observe-to-close
+        # Auto-file uncovered/stale-queued issues, then observe-to-close
         # enforced rows (fleet-ops#479). Listing runs even when uncovered_n=0
         # so a green join can still comment on leftover mechanism tickets.
         if [[ "$FILE_RULE_ISSUES" == "1" ]]; then
@@ -590,16 +608,12 @@ else
                 log "9.  WARN: gh missing — cannot auto-file or observe-to-close mechanism issues"
             fi
 
-            if [[ "$uncovered_n" -gt 0 ]] || { [[ "$queued_n" -gt 0 ]] && [[ ${#UMBRELLA_ISSUES[@]} -gt 0 ]]; }; then
-            declare -A UMBRELLA_MAP=()
-            for u in "${UMBRELLA_ISSUES[@]}"; do
-                [[ -n "$u" ]] && UMBRELLA_MAP["$u"]=1
-            done
+            if [[ "$uncovered_n" -gt 0 ]] || [[ "$stale_n" -gt 0 ]]; then
 
             file_item() {
                 local item="$1"
                 local context="$2"
-                local rid issue_n signal title body created create_rc
+                local rid signal title body created create_rc
                 rid=$(jq -r '.id' <<<"$item")
                 signal="signal: rule-enforcement/${rid}"
                 if jq -e --arg s "$signal" '[.[] | select((.body // "") | contains($s))] | length > 0' <<<"$open_json" >/dev/null 2>&1; then
@@ -632,13 +646,14 @@ else
                 file_item "$item" "uncovered"
             done < <(jq -c '.uncovered[]' <<<"$rule_report")
 
+            # Auto-file mechanism issues for stale queued rows (age >
+            # queued_stale_days) regardless of umbrella ownership. This
+            # ensures the "enforcement is mechanical" contract holds even
+            # when umbrella issues are closed (fleet-ops#3139).
             while IFS= read -r item; do
                 [[ -n "$item" ]] || continue
-                issue_n=$(jq -r '.issue' <<<"$item")
-                if [[ "${UMBRELLA_MAP[$issue_n]:-0}" == "1" ]]; then
-                    file_item "$item" "queued"
-                fi
-            done < <(jq -c '.queued[]' <<<"$rule_report")
+                file_item "$item" "stale-queued"
+            done < <(jq -c '.stale_queued[]' <<<"$rule_report")
 
             if [[ "$skipped_cap" -gt 0 ]]; then
                 loud "ESCALATION-CANARY-PENDING" "rule-enforcement: auto-file cap reached (filed=$filed cap=$cap remaining=$skipped_cap) — next tick continues"
@@ -968,6 +983,183 @@ JSON
         if [[ "$_drill_rc" -eq 0 ]]; then
             log "12.  - config/repo-privacy.json valid, default_policy=private, guard fires"
         fi
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# 13. Standards-drift prevention (portable standards, P11-B)
+# ---------------------------------------------------------------------------
+# Every intake-enrolled repo must carry the standard thin-caller workflows
+# (the portable-standard gates: Gitleaks, semgrep, review-gate, auto-enqueue).
+# A repo that loses a gate drifts from the standard silently — this block
+# asserts the gates are present (contents read, available to the worker
+# token) and auto-files a "standards drift" issue per repo per missing
+# mechanism (deduped by signal key). Local-richer repos (0509) carry richer
+# local gates and are skipped for the thin-caller check, matching
+# repo-standards-apply.mjs.
+#
+# FLEET_ESCALATION_CANARY_SKIP_STANDARDS_DRIFT=1 skips this block (offline
+# tests). FLEET_STANDARDS_DRIFT_FILE_ISSUES=0 disables auto-file (drift is
+# still LOUD).
+log "13. checking standards drift across intake-enrolled repos"
+if [[ "${FLEET_ESCALATION_CANARY_SKIP_STANDARDS_DRIFT:-0}" == "1" ]]; then
+    log "13.  - SKIP (FLEET_ESCALATION_CANARY_SKIP_STANDARDS_DRIFT=1)"
+else
+    _sd_issue_repo="${FLEET_STANDARDS_DRIFT_ISSUE_REPO:-Nishfleet/fleet-ops}"
+    _sd_file_issues="${FLEET_STANDARDS_DRIFT_FILE_ISSUES:-1}"
+    # The standard thin-caller workflows every enrolled repo must carry
+    # (mirrors THIN_CALLERS in .github/scripts/repo-standards.lib.mjs).
+    # Tests override via FLEET_STANDARDS_DRIFT_MECHANISMS.
+    read -r -a _sd_mechanisms <<<"${FLEET_STANDARDS_DRIFT_MECHANISMS:-secret-scan.yml semgrep.yml review-gate.yml auto-enqueue.yml}"
+    # Local-richer repos carry richer local gates and are skipped for the
+    # thin-caller check (mirrors LOCAL_RICHER in repo-standards.lib.mjs).
+    read -r -a _sd_local_richer <<<"${FLEET_STANDARDS_DRIFT_LOCAL_RICHER:-Nishfleet/0509}"
+
+    if [[ ! -f "$INTAKE_REPOS_JSON" ]]; then
+        loud "ESCALATION-CANARY-VIOLATION" "standards drift: intake-repos.json missing at $INTAKE_REPOS_JSON — cannot enumerate enrolled repos"
+        violations=$((violations + 1))
+    elif ! command -v jq >/dev/null 2>&1; then
+        loud "ESCALATION-CANARY-PENDING" "standards drift: jq missing — cannot parse intake-repos.json"
+        pending=$((pending + 1))
+    elif ! command -v "$GH" >/dev/null 2>&1; then
+        loud "ESCALATION-CANARY-PENDING" "standards drift: gh missing — cannot read enrolled repo workflows"
+        pending=$((pending + 1))
+    else
+        mapfile -t _sd_repos < <(
+            jq -r '.repos[]? | "Nishfleet/\(.name)"' "$INTAKE_REPOS_JSON" 2>/dev/null || true
+        )
+        if [[ "${#_sd_repos[@]}" -eq 0 ]]; then
+            log "13.  - no intake-enrolled repos to check"
+        else
+            _sd_open_json="[]"
+            if [[ "$_sd_file_issues" == "1" ]]; then
+                set +e
+                _sd_open_json=$("$GH" issue list -R "$_sd_issue_repo" --state open --limit 200 --json number,body,title 2>/dev/null)
+                _sd_list_rc=$?
+                set -e
+                if [[ "$_sd_list_rc" -ne 0 ]] || [[ -z "$_sd_open_json" ]]; then
+                    _sd_open_json="[]"
+                    log "13.  WARN: could not list open issues for dedupe (gh rc=$_sd_list_rc)"
+                fi
+            fi
+            _sd_filed=0
+            _sd_dup=0
+            for _sd_repo in "${_sd_repos[@]}"; do
+                [[ -n "$_sd_repo" ]] || continue
+                _sd_is_local_richer=0
+                for _lr in "${_sd_local_richer[@]}"; do
+                    [[ "$_lr" == "$_sd_repo" ]] && _sd_is_local_richer=1
+                done
+                if [[ "$_sd_is_local_richer" -eq 1 ]]; then
+                    log "13.  - $_sd_repo: local-richer (richer local gates) — thin-caller check skipped"
+                    continue
+                fi
+                for _sd_m in "${_sd_mechanisms[@]}"; do
+                    [[ -n "$_sd_m" ]] || continue
+                    set +e
+                    _sd_have=$("$GH" api "repos/$_sd_repo/contents/.github/workflows/$_sd_m" --jq '.name' 2>/dev/null)
+                    _sd_api_rc=$?
+                    set -e
+                    if [[ "$_sd_api_rc" -eq 0 ]] && [[ -n "$_sd_have" ]]; then
+                        log "13.  - $_sd_repo: $_sd_m present"
+                    else
+                        loud "ESCALATION-CANARY-VIOLATION" "standards drift: $_sd_repo missing standard gate $_sd_m — the portable standard is not applied"
+                        violations=$((violations + 1))
+                        if [[ "$_sd_file_issues" == "1" ]]; then
+                            _sd_signal="signal: standards-drift/$_sd_repo/$_sd_m"
+                            if jq -e --arg s "$_sd_signal" '[.[] | select((.body // "") | contains($s))] | length > 0' <<<"$_sd_open_json" >/dev/null 2>&1; then
+                                _sd_dup=$((_sd_dup + 1))
+                                log "13.  - $_sd_repo/$_sd_m: already has an open standards-drift issue (deduped)"
+                            else
+                                _sd_title="standards drift: $_sd_repo missing $_sd_m"
+                                _sd_body="$_sd_signal
+
+Repo $_sd_repo is intake-enrolled but missing the standard gate workflow \`$_sd_m\`.
+The portable standard (P11-B) requires every enrolled repo to carry the
+standard thin-caller workflows. This issue was auto-filed by the
+fleet-escalation-canary standards-drift block.
+
+Fix: add the thin-caller workflow (or apply the standard via
+repo-standards-apply.mjs)."
+                                set +e
+                                _sd_created=$("$ISSUE_FILE" file -R "$_sd_issue_repo" --title "$_sd_title" --body "$_sd_body" 2>/tmp/standards-drift-create.err)
+                                _sd_create_rc=$?
+                                set -e
+                                if [[ "$_sd_create_rc" -eq 0 ]]; then
+                                    _sd_filed=$((_sd_filed + 1))
+                                    log "13.  FILED standards-drift $_sd_repo/$_sd_m -> $_sd_created"
+                                else
+                                    log "13.  WARN: failed to file standards-drift $_sd_repo/$_sd_m (rc=$_sd_create_rc) $(tr '\n' ' ' </tmp/standards-drift-create.err 2>/dev/null)"
+                                fi
+                            fi
+                        fi
+                    fi
+                done
+            done
+            log "13.  auto-file: filed=$_sd_filed deduped=$_sd_dup"
+        fi
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+
+# 14. detached-work lint: raw systemd-run transients without OnFailure
+#     (fleet-ops#4266)
+# ---------------------------------------------------------------------------
+# A `systemd-run --user` that is NOT pi-systemd-run has no OnFailure
+# property (until a manager that loaded scope.d/service.d assigns the
+# drop-in) and no dead-man. The audit trail of systemd-run execve by
+# auid=1000 is the 24h window on that class. Every execve must carry the
+# --property=OnFailure flag; .scope-run raw units are caught the same way
+# once systemd-run execves with --scope. auditd absent = PENDING, because
+# the install ships the rule file but the package is deployed separately.
+log "14. checking for raw systemd-run transients without OnFailure (audit trail)"
+if [[ "${FLEET_ESCALATION_CANARY_SKIP_DETACHED:-0}" == "1" ]]; then
+    log "14.  - skipped (FLEET_ESCALATION_CANARY_SKIP_DETACHED)"
+elif ! command -v ausearch >/dev/null 2>&1 && [[ -z "${AUSEARCH:-}" ]]; then
+    loud "ESCALATION-CANARY-PENDING" "detached-work lint: ausearch not installed ($(date -u +%Y-%m-%dT%H:%M:%SZ)) — install auditd (install.sh --system ships config/audit/rules.d/30-fleet-unit-stop.rules; apt-get -y install auditd or wait for vps-weekly-update)"
+    pending=$((pending + 1))
+else
+    ausearch_bin="${AUSEARCH:-ausearch}"
+    # False-clean guard: an empty ausearch result is only trustworthy if the
+    # fleet-unit-run rule is actually loaded in the RUNNING auditd. auditd
+    # installed but rules not yet applied (install.sh --system copies the
+    # rules.d file; augenrules --load applies it) would otherwise report
+    # "clean" while raw systemd-run goes uncaught. auditctl -l lists the
+    # live rules; absent auditctl or no fleet-unit-run line = PENDING (loud,
+    # not fail), matching the ausearch-not-installed handling.
+    rule_loaded=0
+    auditctl_bin="${AUDITCTL:-auditctl}"
+    if command -v "$auditctl_bin" >/dev/null 2>&1; then
+        if sudo -n "$auditctl_bin" -l 2>/dev/null | grep -q 'fleet-unit-run'; then
+            rule_loaded=1
+        fi
+    fi
+    if [[ "$rule_loaded" != "1" ]]; then
+        loud "ESCALATION-CANARY-PENDING" "detached-work lint: auditd present but fleet-unit-run rule not loaded in the running daemon ($(date -u +%Y-%m-%dT%H:%M:%SZ)) — run 'sudo augenrules --load' (install.sh --system does this on a rules change)"
+        pending=$((pending + 1))
+    else
+    raw="$("$ausearch_bin" -k fleet-unit-run -ts yesterday -i 2>/dev/null || true)"
+    if [[ -z "$raw" ]]; then
+        log "14.  - no systemd-run execve in the last 24h (key=fleet-unit-run) — clean"
+    else
+        # One ausearch -i EXECVE record is one (long) line: all aN= args.
+        # A raw launch = systemd-run whose args lack --property=OnFailure.
+        raw_bad=0
+        while IFS= read -r rec; do
+            [[ "$rec" == *"systemd-run"* ]] || continue
+            [[ "$rec" != *"--property=OnFailure"* ]] || continue
+            unit_name="$(sed -n 's/.*a[0-9]*="--unit=\([^"]*\)".*/\1/p' <<<"$rec" | head -n 1)"
+            [[ -n "$unit_name" ]] || unit_name="$(sed -n 's/.*a[0-9]*=--unit=\([^ "\/"]*\) .*/\1/p' <<<"$rec" | head -n 1)"
+            loud "DETACHED-RAW-UNIT" "unit=${unit_name:-<unnamed>} — raw systemd-run without --property=OnFailure (fleet-ops#4266: a clean stop of this unit dies silently; relaunch via pi-systemd-run which adds the dead-man)"
+            raw_bad=$((raw_bad + 1))
+        done <<<"$raw"
+        if [[ "$raw_bad" -gt 0 ]]; then
+            violations=$((violations + 1))
+        else
+            log "14.  - all plausible systemd-run execve records carry OnFailure — only pi-systemd-run transients in the last 24h"
+        fi
+    fi
     fi
 fi
 

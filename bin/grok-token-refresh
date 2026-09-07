@@ -31,18 +31,37 @@
 #   may rotate refresh. 4 h is well inside the 6 h access-token
 #   lifetime. Persistent=true so a sleeping box catches up on resume.
 #
+# Why TOKEN_TTL_S default 18000 (5 h), not 1800 (30 min)?
+#   The timer fires every 4 h with up to 10 min RandomizedDelaySec +
+#   10 min AccuracySec, so a tick can land ~4h20m after the previous
+#   one. With the old 1800s skip threshold, a token refreshed at T0
+#   had ~6h of life; the next tick at T+4h20m saw ~1h40m left (>30m)
+#   and SKIPped, then the tick at T+8h40m found the token already
+#   expired for ~2h40m — a worker picking the seat in that window
+#   hit a 401 (fleet-ops#2817). 18000s (5h) means a token with <5h
+#   of life is always refreshed at the next tick, so the stored
+#   credential never ages past one timer cycle of its 6h lifetime.
+#
 # Skip / REJECT discipline:
 #   0  SKIP (no work): auth.json missing, no xai-oauth entry, no
 #                     refresh field, or access still has more than
-#                     TOKEN_TTL_S of life left (default 1800 = 30 min
+#                     TOKEN_TTL_S of life left (default 18000 = 5 h
 #                     safety margin). Exit 0 so a healthy system is
-#                     silent. last_success metric is PRESERVED (never
-#                     zeroed on skip — that would false-alarm the
-#                     absent() rule).
+#                     silent. last_success metric ADVANCES to now on
+#                     every SKIP — a SKIP is a successful run (the
+#                     script ran, found the credential healthy, and
+#                     chose not to rotate). The absent() organ rule
+#                     means "the script has not run", not "has not
+#                     rotated"; a healthy idle seat must not trip it.
+#                     (fleet-ops#2817: the old preserve-on-skip logic
+#                     let last_success go stale while the timer kept
+#                     SKIPping a fresh token, firing a false
+#                     FleetGrokTokenRefreshStale.)
 #   1  REJECT:        refresh grant fails (HTTP non-2xx, malformed
 #                     JSON, or missing access_token / expires_in).
 #                     auth.json is NOT modified. Exits 1. last_success
-#                     preserved; outcome=reject.
+#                     preserved (a failed grant is not a healthy run);
+#                     outcome=reject.
 #   2  usage error.
 #
 # Side effects on success:
@@ -73,7 +92,7 @@
 #   GROK_TOKEN_REFRESH_TOKEN_URL    override the OAuth endpoint
 #   GROK_TOKEN_REFRESH_CLIENT_ID    override the client id
 #   GROK_TOKEN_REFRESH_TIMEOUT      seconds (default 20)
-#   GROK_TOKEN_REFRESH_TOKEN_TTL_S  skip-if-fresh window (default 1800)
+#   GROK_TOKEN_REFRESH_TOKEN_TTL_S  skip-if-fresh window (default 18000)
 #   GROK_TOKEN_REFRESH_LOCK_TIMEOUT_S  lock wait (default 30)
 #   GROK_TOKEN_REFRESH_TEXTFILE     override the prom textfile path
 #   GROK_TOKEN_REFRESH_CURL_BIN     override curl (tests use a stub)
@@ -92,7 +111,7 @@ LOCK_DIR="${AUTH_JSON}.fleet-refresh.lock.d"
 TOKEN_URL="${GROK_TOKEN_REFRESH_TOKEN_URL:-https://auth.x.ai/oauth2/token}"
 CLIENT_ID="${GROK_TOKEN_REFRESH_CLIENT_ID:-b1a00492-073a-47ea-816f-4c329264a828}"
 TIMEOUT="${GROK_TOKEN_REFRESH_TIMEOUT:-20}"
-TOKEN_TTL_S="${GROK_TOKEN_REFRESH_TOKEN_TTL_S:-1800}"
+TOKEN_TTL_S="${GROK_TOKEN_REFRESH_TOKEN_TTL_S:-18000}"
 LOCK_TIMEOUT_S="${GROK_TOKEN_REFRESH_LOCK_TIMEOUT_S:-30}"
 TEXTFILE="${GROK_TOKEN_REFRESH_TEXTFILE:-/var/lib/prometheus/node-exporter/fleet-grok-token-refresh.prom}"
 TRIAGE="${FLEET_GROK_REFRESH_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
@@ -185,30 +204,36 @@ if ! command -v "$CURL_BIN" >/dev/null 2>&1; then
 fi
 
 PRIOR_SUCCESS="$(read_prior_success)"
+# now_epoch is computed once, up front: every SKIP advances last_success to
+# now (a SKIP is a successful run — the script ran and found the credential
+# healthy). Only REJECT preserves the prior value (a failed grant is not a
+# healthy run). fleet-ops#2817: the old preserve-on-skip logic let
+# last_success go stale while the timer kept SKIPping a fresh token, firing
+# a false FleetGrokTokenRefreshStale.
+now_epoch="$(date -u +%s)"
+now_ms=$((now_epoch * 1000))
 
 if [[ ! -s "$AUTH_JSON" ]]; then
     log "SKIP: auth.json missing or empty at $AUTH_JSON — no credential to refresh"
-    write_metric "skipped" "$PRIOR_SUCCESS"
+    write_metric "skipped" "$now_epoch"
     exit 0
 fi
 
 if ! jq -e --arg p "$PROVIDER" 'has($p)' "$AUTH_JSON" >/dev/null 2>&1; then
     log "SKIP: no provider key '$PROVIDER' in $AUTH_JSON"
-    write_metric "skipped" "$PRIOR_SUCCESS"
+    write_metric "skipped" "$now_epoch"
     exit 0
 fi
 
 refresh_token="$(jq -r --arg p "$PROVIDER" '.[$p].refresh // empty' "$AUTH_JSON" 2>/dev/null || true)"
 if [[ -z "$refresh_token" ]]; then
     log "SKIP: no refresh under $PROVIDER in auth.json — interactive /login xai-oauth required"
-    write_metric "skipped" "$PRIOR_SUCCESS"
+    write_metric "skipped" "$now_epoch"
     exit 0
 fi
 
 # Skip-if-fresh. expires is ms epoch (pi-grok / OAuthCredentials shape).
 # Tolerate a stringified number (observed live on this host).
-now_epoch="$(date -u +%s)"
-now_ms=$((now_epoch * 1000))
 expires_raw="$(jq -r --arg p "$PROVIDER" '.[$p].expires // empty' "$AUTH_JSON" 2>/dev/null || true)"
 if [[ -n "$expires_raw" && "$expires_raw" =~ ^[0-9]+$ ]]; then
     # Heuristic: values > 1e12 are ms; smaller are seconds.
@@ -220,7 +245,7 @@ if [[ -n "$expires_raw" && "$expires_raw" =~ ^[0-9]+$ ]]; then
     remaining_s=$(( (expires_ms - now_ms) / 1000 ))
     if (( remaining_s > TOKEN_TTL_S )); then
         log "SKIP: access still has ${remaining_s}s of life (TTL_S=$TOKEN_TTL_S)"
-        write_metric "skipped" "$PRIOR_SUCCESS"
+        write_metric "skipped" "$now_epoch"
         exit 0
     fi
     log "refresh needed: access expires in ${remaining_s}s (TTL_S=$TOKEN_TTL_S)"

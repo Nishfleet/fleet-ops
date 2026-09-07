@@ -78,7 +78,16 @@ ok "StartLimit* confined to [Unit] (not in [Service])"
 # full systemd target tree that a unit test should not build. So: run the
 # plain verify when the bin exists (VPS), else SKIP with a named reason —
 # the dedicated unit-verify CI job is the syntax gate on hosted runners
-# (fleet-ops#154 / #867).
+# (fleet-ops#154 / #867 / #884).
+#
+# fleet-ops#884: this SKIP block is the fix for the P14 hosted-CI failure
+#   FAIL: systemd-analyze verify failed for fleet-seat-recovery.service:
+#   fleet-seat-recovery.service: Command /home/nish/.local/bin/fleet-seat-recovery
+#   is not executable: No such file or directory
+# reported against CI run 33037937469 on main. Regression-locked by
+# tests/p14-unstubbed-unit-verify.test.sh step 4c (the SKIP block must
+# emit the named reason; a future edit that strips the SKIP and re-runs
+# verify unconditionally red-fails this lock, not hosted CI).
 if command -v systemd-analyze >/dev/null 2>&1; then
   if [[ -x /home/nish/.local/bin/fleet-seat-recovery ]]; then
     for f in "$svc_unit" "$path_unit"; do

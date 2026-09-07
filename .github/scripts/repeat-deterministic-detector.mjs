@@ -23,12 +23,35 @@
 // GitHub `::error` annotations, the job summary, optional PR comments
 // (--comment), and JSON output. No new channel is invented.
 //
+// Repo-scoped blocking (--block). The detector can gate a PR's own repo:
+//   - Blocking (exit 1) applies ONLY to signatures in the PR's OWN
+//     repository (repeat.repo === the --own-repo / GITHUB_REPOSITORY context).
+//     A same-repo repeat-deterministic loop is, by definition, a loop the PR
+//     cannot safely re-arm past — that is the stop-the-line signal.
+//   - Cross-repo signatures (e.g. a 0509 'Deploy production' cluster sampled
+//     from a fleet-ops PR gate) are ADVISORY: reported via the PR comment and
+//     the report, but never a failing check for the fleet-ops PR. The failing
+//     repo's OWN detector instance files its tracking issue (fleet-issue-file)
+//     where it holds write scope; the gate cannot write across a repo boundary.
+//   - A cluster only blocks when its LAST failure falls inside the lookback
+//     window anchored to `now` (nowMs - lookbackHours). The live fetcher
+//     already bounds samples to created_at >= now-lookback, so this holds by
+//     construction live; the explicit guard (--now) makes the anchor visible
+//     and deterministic for fixture/regression runs.
+//   - A signature whose FIX PR references its tracking issue
+//     (`Fixes #N` / `Closes #N` / `Resolves #N` in the gated PR body) is
+//     excluded from blocking that PR: a PR that fixes the loop must not be
+//     blocked for the same signature.
+//
+// Blocking is opt-in via --block so the alert-only telemetry path stays
+// unchanged (exit 0 with repeats reported).
+//
 // Surface: gh CLI + GitHub REST API only. No paid services.
 
 import { execFileSync } from "node:child_process";
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { existsSync, appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const DEFAULT_LOOKBACK_HOURS = 6;
 const DEFAULT_THRESHOLD = 3;
@@ -36,6 +59,13 @@ const DEFAULT_WINDOW_HOURS = 6;
 const DEFAULT_TOP_SIGNATURES = 10;
 const DEFAULT_PAGE_SIZE = 100;
 const COMMENT_MARKER = "<!-- repeat-deterministic-detector -->";
+
+// Resolved once: the fleet-issue-file dedupe wrapper (fleet-ops#1212). It is
+// the "existing fleet-issue-file" the blocking/cross-repo contract names —
+// filing-time dedupe against open issues, so one signature gets at most one
+// tracking issue.
+const DETECTOR_SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
+const FLEET_ISSUE_FILE = resolve(DETECTOR_SCRIPT_DIR, "../../bin/fleet-issue-file");
 
 // GitHub Actions log annotation prefix. Real GitHub logs emit
 // `##[error] <msg>` (with brackets), not the bracketless `##error <msg>`
@@ -343,6 +373,141 @@ export function detectRepeatDeterministic(failures, opts = {}) {
 }
 
 /**
+ * Decide which repeat clusters BLOCK the pipeline (the exit-1 gate). A
+ * cluster blocks ONLY when ALL of the following hold:
+ *
+ *   - SAME-REPO: repeat.repo === ownRepo, the repo the gated PR belongs to.
+ *     Cross-repo clusters (e.g. a 0509 'Deploy production' loop sampled from
+ *     a fleet-ops PR gate) are ADVISORY — reported, but never a failing
+ *     check for the fleet-ops PR (the deadlock this fix removes).
+ *   - IN-WINDOW: its LAST failure is inside the lookback window anchored to
+ *     `now` (nowMs - lookbackHours). The live fetcher bounds samples to
+ *     created_at >= now-lookback, so this holds by construction live; the
+ *     explicit guard (--now) makes the anchor deterministic in tests.
+ *   - NOT FIXED: the gated PR body does not reference the signature's
+ *     tracking issue with a `Fixes`/`Closes`/`Resolves #N` trailer. A PR
+ *     that fixes the filed issue must not block itself on that signature.
+ *
+ * When ownRepo is empty (no repo context) nothing blocks — an unscoped run
+ * cannot know what is "own", so it stays alert-only.
+ *
+ * @param {Repeat[]} repeats
+ * @param {{ ownRepo: string, nowMs: number, lookbackHours?: number, prBody?: string, signatureIssues?: Array<{ signature: string, number: number }> }} opts
+ * @returns {Repeat[]}
+ */
+export function selectBlockingRepeats(repeats, opts = {}) {
+  const ownRepo = opts.ownRepo ?? "";
+  if (!ownRepo) return [];
+  const nowMs = Number.isFinite(opts.nowMs) ? opts.nowMs : Date.now();
+  const lookbackMs = (opts.lookbackHours ?? DEFAULT_LOOKBACK_HOURS) * 60 * 60 * 1000;
+  const windowStart = nowMs - lookbackMs;
+  const fixRe = /(?:fixes|closes|resolves)\s+#(\d+)/giu;
+  const fixedIssues = new Set();
+  const prBody = opts.prBody ?? "";
+  for (const m of prBody.matchAll(fixRe)) fixedIssues.add(Number(m[1]));
+  const issueForSig = new Map((opts.signatureIssues ?? []).map((si) => [si.signature, Number(si.number)]));
+  return (repeats ?? []).filter((r) => {
+    if (r.repo !== ownRepo) return false; // cross-repo: advisory, never a failing check
+    const last = Date.parse(r.last_at);
+    if (!Number.isFinite(last) || last < windowStart || last > nowMs) {
+      return false; // not inside the now-anchored lookback (or in the future)
+    }
+    const issueNum = issueForSig.get(r.signature);
+    if (issueNum !== undefined && fixedIssues.has(issueNum)) return false; // fix PR references its issue
+    return true;
+  });
+}
+
+/**
+ * Best-effort open-issue lookup: map each repeat signature to the number of
+ * the open tracking issue that carps it (matched by the detector marker +
+ * the signature in the issue body). This is what lets a later FIX PR
+ * reference the issue and un-block the same signature. Best-effort: a failed
+ * lookup returns an empty map (no fix-exclusion possible), never a crash.
+ *
+ * @param {string} repo
+ * @param {Repeat[]} repeats
+ * @returns {Map<string, number>}
+ */
+export function fetchSignatureIssues(repo, repeats) {
+  const found = new Map();
+  try {
+    const issues = /** @type {Array<{ number: number, body: string | null }> | null} */ (
+      ghApiJson(
+        `repos/${repo}/issues`,
+        `.[] | {number: .number, body: .body}`,
+        {
+          query: { state: "open", per_page: DEFAULT_PAGE_SIZE },
+          paginate: true,
+          timeoutMs: 60_000,
+        },
+      )
+    );
+    if (!Array.isArray(issues)) return found;
+    for (const it of issues) {
+      if (!it || typeof it.body !== "string") continue;
+      for (const r of repeats) {
+        if (found.has(r.signature)) continue;
+        if (it.body.includes(COMMENT_MARKER) && it.body.includes(r.signature)) {
+          found.set(r.signature, Number(it.number));
+        }
+      }
+    }
+  } catch (error) {
+    console.error(
+      `tracking_issue_lookup_failed on ${repo}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  return found;
+}
+
+/**
+ * File (or dedupe to) ONE tracking issue for a repeat signature in its own
+ * repo via the existing fleet-issue-file wrapper. Only invoked live for the
+ * blockable (same-repo) repeats so the fix-PR-exclusion cycle has a real
+ * issue to reference. Best-effort: a filing failure logs and continues — it
+ * must never crash the gate.
+ *
+ * @param {string} repo
+ * @param {Repeat} repeat
+ * @returns {boolean}
+ */
+export function ensureTrackingIssue(repo, repeat) {
+  const title = `repeat-deterministic (fleet-ops gate): ${repeat.workflow} / ${repeat.job} / ${repeat.step}`.slice(0, 200);
+  const body = [
+    COMMENT_MARKER,
+    "",
+    renderAlert(repeat),
+    "",
+    `Signature: \`${repeat.signature}\``,
+    "",
+    "Tracked by the repeat-deterministic PR gate. A PR fixing this signature " +
+      "references this issue (`Fixes #N`) to un-block itself.",
+  ].join("\n");
+  try {
+    if (existsSync(FLEET_ISSUE_FILE)) {
+      execFileSync(
+        FLEET_ISSUE_FILE,
+        ["-R", repo, "--title", title, "--body", body],
+        { encoding: "utf8", env: process.env, timeout: 60_000, stdio: ["ignore", "pipe", "pipe"] },
+      );
+    } else {
+      execFileSync(
+        "gh",
+        ["issue", "create", "-R", repo, "--title", title, "--body", body],
+        { encoding: "utf8", env: process.env, timeout: 60_000 },
+      );
+    }
+    return true;
+  } catch (error) {
+    console.error(
+      `tracking_issue_file_failed on ${repo}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return false;
+  }
+}
+
+/**
  * Summarize every failure signature in the sample — NOT only those that
  * crossed the repeat-deterministic threshold. The headline "21.8% CI
  * failure rate" is meaningless without decomposition: the same assertion
@@ -522,6 +687,7 @@ export function renderAlert(repeat) {
  *   window_hours: number,
  *   failures_sampled: number,
  *   repeats: Repeat[],
+ *   blocking?: Repeat[],
  *   top_signatures?: FailureSignature[],
  *   event_split?: EventSplit,
  * }} report
@@ -545,6 +711,17 @@ export function renderReport(report) {
       lines.push(`      first:     ${repeat.first_at}`);
       lines.push(`      last:      ${repeat.last_at}`);
       lines.push(`      runs:      ${repeat.runs.map((r) => r.run_url).join(", ")}`);
+    }
+  }
+  lines.push("");
+  if (Array.isArray(report.blocking)) {
+    if (report.blocking.length === 0) {
+      lines.push("Blocking repeats (same-repo, in-window, not fix-excluded): none — PR gate stays green");
+    } else {
+      lines.push(`Blocking repeats (PR GATE FAIL): ${report.blocking.length}`);
+      for (const repeat of report.blocking) {
+        lines.push(`  - ${renderAlert(repeat).replace(/\r?\n/gu, " ")}`);
+      }
     }
   }
   lines.push("");
@@ -891,9 +1068,12 @@ export function commentOnPullRequest(repository, repeat) {
  */
 export function emitGithubAnnotations(report, emitAnnotations) {
   if (!emitAnnotations) return;
+  const blocking = new Set((report.blocking ?? []).map((r) => r.signature));
   for (const repeat of report.repeats) {
     const msg = renderAlert(repeat).replace(/\r?\n/gu, " ");
-    console.error(`::error title=REPEAT-DETERMINISTIC::${msg}`);
+    // Same-repo blockable repeats are hard errors (they gate). Cross-repo
+    // repeats, and non-blocking repeats, are advisory warnings.
+    console.error(`::${blocking.has(repeat.signature) ? "error" : "warning"} title=REPEAT-DETERMINISTIC::${msg}`);
   }
   if (report.event_split?.primary) {
     const { pr, queue } = report.event_split.primary;
@@ -919,6 +1099,10 @@ Options:
   --format <human|json>     Output format (default: human)
   --output-json <path>      Also write the report JSON to this file
   --comment                 Emit PR-comment breadcrumbs (off by default)
+  --block                   Enable exit-1 PR gating on same-repo repeats
+  --own-repo <owner/name>   The PR's own repo (default: env GITHUB_REPOSITORY)
+  --pr-body <path>          File with the gated PR body (fix-PR exclusion)
+  --now <iso>               "Now" anchor for the lookback window (tests)
   --no-enrich               Do not fetch job logs for assertion text
   --no-event-split          Skip fetching the full-run set for the event-rate split
   --help                    Show this message
@@ -936,6 +1120,10 @@ function parseArgs(argv) {
     format: "human",
     outputJson: "",
     comment: false,
+    block: false,
+    ownRepo: "",
+    prBody: "",
+    nowMs: Date.now(),
     enrich: true,
     eventSplit: true,
   };
@@ -962,6 +1150,15 @@ function parseArgs(argv) {
       args.outputJson = argv[++i] ?? "";
     } else if (arg === "--comment") {
       args.comment = true;
+    } else if (arg === "--block") {
+      args.block = true;
+    } else if (arg === "--own-repo") {
+      args.ownRepo = argv[++i] ?? "";
+    } else if (arg === "--pr-body") {
+      args.prBody = argv[++i] ?? "";
+    } else if (arg === "--now") {
+      const parsed = Date.parse(argv[++i] ?? "");
+      if (Number.isFinite(parsed)) args.nowMs = parsed;
     } else if (arg === "--no-enrich") {
       args.enrich = false;
     } else if (arg === "--no-event-split") {
@@ -980,13 +1177,13 @@ function parseArgs(argv) {
 
 /**
  * @param {unknown} payload
- * @returns {{ failures: Failure[], totalRuns: Array<{ id: number, event: string | null, conclusion: string | null, created_at: string }> | null }}
+ * @returns {{ failures: Failure[], totalRuns: Array<{ id: number, event: string | null, conclusion: string | null, created_at: string }> | null, signatureIssues: Array<{ signature: string, number: number }> }}
  */
 function failuresFromFixture(payload) {
-  /** @type {{ failures?: unknown, total_runs?: unknown, repository?: unknown }} */
+  /** @type {{ failures?: unknown, total_runs?: unknown, signature_issues?: unknown, repository?: unknown }} */
   const obj = Array.isArray(payload) || payload === null || typeof payload !== "object"
     ? /** @type {{ failures?: unknown }} */ ({})
-    : /** @type {{ failures?: unknown, total_runs?: unknown, repository?: unknown }} */ (payload);
+    : /** @type {{ failures?: unknown, total_runs?: unknown, signature_issues?: unknown, repository?: unknown }} */ (payload);
   const list = Array.isArray(obj.failures) ? obj.failures : [];
   const failures = list.map((f) => {
     const pr =
@@ -1027,17 +1224,43 @@ function failuresFromFixture(payload) {
       })
       .filter((r) => r !== null);
   }
-  return { failures, totalRuns };
+  const signatureIssues =
+    Array.isArray(obj.signature_issues)
+      ? obj.signature_issues
+          .filter((si) => si && typeof si === "object")
+          .map((si) => {
+            const rec = /** @type {{ signature?: unknown, number?: unknown }} */ (si);
+            return { signature: String(rec.signature ?? ""), number: Number(rec.number) };
+          })
+          .filter((si) => si.signature && Number.isFinite(si.number))
+      : [];
+  return { failures, totalRuns, signatureIssues };
 }
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const now = new Date();
+  const nowMs = args.nowMs;
   let repository = args.repo;
   /** @type {Failure[]} */
   let failures;
   /** @type {Array<{ id: number, event: string | null, conclusion: string | null, created_at: string }> | null} */
   let totalRuns = null;
+  /** @type {Array<{ signature: string, number: number }>} */
+  let parsedSignatureIssues = [];
+  // The gated PR's body, used only for the fix-PR exclusion (a PR that
+  // `Fixes #<tracking>` its own signature must not block itself). Lenient:
+  // a missing/unreadable file logs and treats the exclusion as empty.
+  let prBodyText = "";
+  if (args.prBody) {
+    try {
+      prBodyText = readFileSync(resolve(args.prBody), "utf8");
+    } catch (error) {
+      console.error(
+        `could_not_read_pr_body ${args.prBody}: ${error instanceof Error ? error.message : String(error)} — treating as no fix-exclusion`,
+      );
+    }
+  }
 
   if (args.fromJson) {
     const payload = JSON.parse(readFileSync(resolve(args.fromJson), "utf8"));
@@ -1048,6 +1271,7 @@ async function main() {
     const parsed = failuresFromFixture(payload);
     failures = parsed.failures;
     totalRuns = parsed.totalRuns;
+    parsedSignatureIssues = parsed.signatureIssues ?? [];
   } else {
     const since = new Date(now.getTime() - args.lookbackHours * 60 * 60 * 1000);
     const runs = fetchFailedRuns(args.repo, since);
@@ -1080,6 +1304,37 @@ async function main() {
   // headline rate cannot drive action without this decomposition. Limit is
   // configurable via --top-signatures; default 10.
   const topSignatures = summarizeSignatures(failures, { limit: args.topSignatures });
+  // Repo-scoped PR gate: when --block is set, exit 1 iff a repeat is in the
+  // PR's OWN repo, inside the now-anchored lookback, and not excluded by a
+  // fix-PR reference. Cross-repo repeats stay advisory (never block).
+  const blocking = [];
+  if (args.block) {
+    const ownRepo = args.ownRepo || process.env.GITHUB_REPOSITORY || "";
+    if (!ownRepo) {
+      console.error("--block requires --own-repo or GITHUB_REPOSITORY (the PR's own repo) to scope blocking");
+      process.exit(2);
+    }
+    if (!args.fromJson) {
+      // Live: ensure a tracking issue exists for each same-repo repeat so a
+      // later fix PR can reference it (fleet-issue-file dedupes). Best-effort.
+      for (const r of repeats) {
+        if (r.repo === ownRepo) ensureTrackingIssue(ownRepo, r);
+      }
+    }
+    const signatureIssues = args.fromJson
+      ? parsedSignatureIssues
+      : Array.from(fetchSignatureIssues(ownRepo, repeats).entries())
+          .map(([signature, number]) => ({ signature, number }));
+    blocking.push(
+      ...selectBlockingRepeats(repeats, {
+        ownRepo,
+        nowMs,
+        lookbackHours: args.lookbackHours,
+        prBody: prBodyText,
+        signatureIssues,
+      }),
+    );
+  }
   // pull_request vs merge_group failure-rate split. The issue's headline
   // number is uninformative without it: a 12-point gap says "queue-side
   // failure" (semantic merge conflicts), while a small gap says "flaky".
@@ -1092,6 +1347,7 @@ async function main() {
     window_hours: args.windowHours,
     failures_sampled: failures.length,
     repeats,
+    blocking: args.block ? blocking : undefined,
     top_signatures: topSignatures,
     event_split: eventSplit,
   };
@@ -1121,6 +1377,7 @@ async function main() {
   if (process.env.GITHUB_OUTPUT) {
     const lines = [
       `repeats=${repeats.length}`,
+      `blocking=${blocking.length}`,
       `failures-sampled=${failures.length}`,
       `top-signatures=${topSignatures.length}`,
       `event-split=${eventSplit.primary ? "computed" : "missing"}`,
@@ -1128,6 +1385,10 @@ async function main() {
     ];
     appendFileSync(process.env.GITHUB_OUTPUT, `${lines.join("\n")}\n`);
   }
+
+  // The gate: exit 1 only when a same-repo, in-window, unexcluded repeat
+  // was found. Cross-repo repeats never fail the PR's own check.
+  if (blocking.length > 0) process.exitCode = 1;
 }
 
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;

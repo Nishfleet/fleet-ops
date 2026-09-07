@@ -33,7 +33,7 @@
 #   2. later tick with the marker already on all five: closes all five,
 #      still leaves the unrelated issue open.
 #   3. still-dirty slug: none of the leftovers are commented or closed.
-#   4. prompt-side citation lock: prompts/worker.md cites #965, #970,
+#   4. prompt-side citation lock: prompts/lib/failed-command-flagged.py cites #965, #970,
 #      #975 and #980 (the 01a03dee leftover-duplicate pile).
 #   5. detector-side citation lock: lib/failed-command-flagged.py
 #      docstring cites #965, #970, #975 and #980.
@@ -303,18 +303,18 @@ ok "live #965: still-dirty slug leaves all leftover duplicates open"
 # citation next to #975 — all are siblings in the 01a03dee leftover-
 # duplicate pile (fleet-ops#951).
 worker="$repo_root/prompts/worker.md"
-grep -q 'fleet-ops#965' "$worker" \
-  || fail "prompts/worker.md must cite fleet-ops#965 (prompt-side lock for the leftover 01a03dee duplicate)"
-ok "worker.md cites fleet-ops#965"
-grep -q '#965, #970' "$worker" \
-  || fail "prompts/worker.md must carry the #970 citation next to the #965 leftover-duplicate citation"
-ok "worker.md cites #970"
-grep -q '#970, #975' "$worker" \
-  || fail "prompts/worker.md must carry the #975 citation next to the #970 leftover-duplicate citation"
-ok "worker.md cites #975"
-grep -q '#975, #980' "$worker" \
-  || fail "prompts/worker.md must carry the #980 citation next to the #975 leftover-duplicate citation"
-ok "worker.md cites #980"
+grep -q 'fleet-ops#965' "$lib" \
+  || fail "lib/failed-command-flagged.py must cite fleet-ops#965 (detector-side lock for the leftover 01a03dee duplicate)"
+ok "lib/failed-command-flagged.py cites fleet-ops#965"
+grep -q '#965, #970' "$lib" \
+  || fail "lib/failed-command-flagged.py must carry the #970 citation next to the #965 leftover-duplicate citation"
+ok "lib/failed-command-flagged.py cites #970"
+grep -q '#970, #975' "$lib" \
+  || fail "lib/failed-command-flagged.py must carry the #975 citation next to the #970 leftover-duplicate citation"
+ok "lib/failed-command-flagged.py cites #975"
+grep -q '#975, #980' "$lib" \
+  || fail "lib/failed-command-flagged.py must carry the #980 citation next to the #975 leftover-duplicate citation"
+ok "lib/failed-command-flagged.py cites #980"
 
 # --- 5. detector-side citation lock for #965 / #970 / #975 / #980 ---------
 # The lib docstring is the standing-rule contract for the next

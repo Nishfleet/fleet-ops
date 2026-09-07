@@ -7,7 +7,7 @@
 #      reports mismatch=1 and those p95s. Does not edit ram_gb_per_worker.
 #   2. Equal metrics report mismatch=0.
 #   3. Zero units still exit 0 and write a state file.
-#   4. Admission uses ram_gb_per_worker from the cap map (0.5 as of #1558), no self-calibrate.
+#   4. Admission uses ram_gb_per_worker from the cap map (1.0 as of #4164), no self-calibrate.
 #   5. Comments that cite 35 MB must label it as process VmRSS and must
 #      also cite memory.current + fleet-ops#202 (so the class cannot
 #      silently return as "RSS means cgroup").
@@ -93,25 +93,43 @@ echo "$out" | grep -q 'mismatch=0' || fail "empty run mismatch must be 0; got: $
 ok "3. zero units exit 0 and write state"
 
 # =========================================================================
-# 4. admission uses cap-map ram_gb_per_worker (0.5), no self-calibrate
-#    The current measured ceiling is 0.5 GB (fleet-ops#1558; prior 0.6 via #1168 / #489).
-#    Drift history: #1246 flagged the 1.5 lock stale after #1168 set 0.6; #1270
-#    locked the assertion at 0.6 and #1284 fixed the docstrings; #1558 later
-#    re-measured down to 0.5. Coupling rule (fleet-ops#1190, the #1168 drift
-#    that broke this test): the
-#    "0.5" below is a deliberate lock. When you change ram_gb_per_worker in
-#    config/seat-caps.json, update this assertion and the ok line below in the
-#    SAME commit/PR. The config value is the source of truth; this test exists
-#    to catch a config change that forgets its measurement doc.
+# 4. admission charges per-repo MemoryHigh (fleet-ops#3679), fallback 1.0
+#    The flat ram_gb_per_worker (1.0) is now ONLY the fallback for repos
+#    without a worker_memory row; each active worker is charged its repo's
+#    MemoryHigh (0509 2.5G, fleet-ops 2.5G per #3885, heavy 1.0G from #3495) divided
+#    by the fallback. fleet-ops#3930 (2026-09-06) REMOVED the MemoryHigh band for
+#    fleet-ops + 0509 (it is what made oomd pressure-kill a random sibling), so
+#    those repos now have no row MemoryHigh and are charged the fallback 1.0.
+#    Drift history: #1246 flagged the 1.5 lock stale after
+#    #1168 set 0.6; #1270 locked the assertion at 0.6 and #1284 fixed the
+#    docstrings; #1558 later re-measured down to 0.5; #3679 raised the charge
+#    to 2.0 and made it per-repo; #4164 (2026-09-07) lowered it to 1.0 after
+#    re-measurement showed the 2.0 charge admitted only 4 workers at 12GB free
+#    while kills came from per-unit MemoryMax=4G caps, not concurrency.
+#    Coupling rule (fleet-ops#1190, the #1168
+#    drift that broke this test): the "1.0" below is a deliberate lock.
+#    When you change ram_gb_per_worker in config/seat-caps.json, update this
+#    assertion and the ok line below in the SAME commit/PR. The config value
+#    is the source of truth; this test exists to catch a config change that
+#    forgets its measurement doc.
 # =========================================================================
-[[ "$(jq -r '.ram_gb_per_worker' "$caps")" == "0.5" ]] \
-    || fail "ram_gb_per_worker must be 0.5 (got $(jq -r '.ram_gb_per_worker' "$caps")) — update this assertion and the scenario-4 comment in the same PR (fleet-ops#1190)"
+[[ "$(jq -r '.ram_gb_per_worker' "$caps")" == "1.0" ]] \
+    || fail "ram_gb_per_worker must be 1.0 (got $(jq -r '.ram_gb_per_worker' "$caps")) — update this assertion and the scenario-4 comment in the same PR (fleet-ops#1190)"
 if grep -q 'ram_governor_recalibrate\|ram_governor_effective_gb' "$lib"; then
     fail "seat-lib.sh must not self-calibrate per_worker from live RSS (#489 keeps the config as the source of truth)"
 fi
 grep -q 'per="$SEAT_RAM_GB_PER_WORKER"' "$lib" \
     || fail "ram_governor_cap must still divide by SEAT_RAM_GB_PER_WORKER"
-ok "4. admission formula is 0.5 G from cap map, no self-calibrate"
+# fleet-ops#3679: admission charges per-repo MemoryHigh, not a flat 1.0.
+# ram_charge_gb_for must exist and return the repo's MemoryHigh in GB.
+grep -q 'ram_charge_gb_for()' "$lib" \
+    || fail "seat-lib.sh must define ram_charge_gb_for (per-repo charge, fleet-ops#3679)"
+# fleet-ops light has NO MemoryHigh after #3930 -> fallback 1.0; unknown repo -> fallback 1.0.
+fo_charge=$(SEAT_CAPS_JSON="$caps" bash -c 'source "$0"; _seat_caps_loaded=0; load_seat_caps; ram_charge_gb_for fleet-ops light' "$lib")
+[[ "$fo_charge" == "1.0" ]] || fail "ram_charge_gb_for fleet-ops light want fallback 1.0 got '$fo_charge'"
+unk_charge=$(SEAT_CAPS_JSON="$caps" bash -c 'source "$0"; _seat_caps_loaded=0; load_seat_caps; ram_charge_gb_for unknown-repo light' "$lib")
+[[ "$unk_charge" == "1.0" ]] || fail "ram_charge_gb_for unknown-repo light want fallback 1.0 got '$unk_charge'"
+ok "4. admission charges per-repo MemoryHigh (fallback 1.0), no self-calibrate"
 
 # =========================================================================
 # 5. 35 MB cannot be cited as cgroup memory.current

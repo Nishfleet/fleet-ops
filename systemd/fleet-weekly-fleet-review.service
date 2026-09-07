@@ -16,10 +16,14 @@ Type=oneshot
 Environment=HOME=/home/nish
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_RUNTIME_DIR=/run/user/1000
-Environment=WORKDIR=/home/nish
+Environment=WORKDIR=/home/nish/workspaces/tooling/fleet-ops-deploy-clone
 Environment=LOG_DIR=/home/nish/workspaces/agent-state/cron-output
 Environment=PROMPTS_DIR=/home/nish/.pi/agent/prompts
 Environment=PI_BIN=/home/nish/.local/bin/pi
+# fleet-ops#3321: model discovery pre-pass — runs last30days, fetches
+# models.dev + OpenRouter, writes config/model-candidates.json. No model is
+# auditioned or routed here; the list is consumed by the seat-routing layer.
+ExecStartPre=/usr/bin/python3 /home/nish/workspaces/tooling/fleet-ops-deploy-clone/lib/weekly-fleet-review-model-discovery.py
 ExecStart=/home/nish/.local/bin/agent-cron-run weekly-fleet-review
 Restart=on-failure
 RestartSec=900

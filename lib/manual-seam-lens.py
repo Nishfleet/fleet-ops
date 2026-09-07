@@ -27,6 +27,78 @@ MECHANICAL_BODY_RE = re.compile(
 MECHANICAL_TITLE_RE = re.compile(
     r"(?i)^\[gap-audit\]|^AUTO-REVERT"
 )
+# Automated escalation log patterns (fleet-ops#2115, fleet-ops#2706): these are
+# written by stop-escalation-dispatch, the SENIOR AUDITOR, and the seat-management
+# machinery as part of the automated escalation/seat system, not manual
+# human operations. Filter them out so the manual-seam lens doesn't flag
+# the automation's own logs as seams.
+# Note: this matches against `rest` (the line after the ISO timestamp is stripped).
+# Anchor `^` matches at start-of-string (`.search()` is used, not `.match()`, but
+# the surrounding code only invokes this against a single stripped line, so
+# start-of-string == start-of-line).
+ESCALATION_LOG_RE = re.compile(
+    r"^(?:"
+    r"DISPATCH(?:-NO-BLOCK|-OUTPUT)?|TIMEOUT-KILL(?:-OUTPUT)?|KILL-RETRY(?:-OUTPUT)?|STOP-ESCALATION(?:-FAULT)?"
+    r"|LADDER-WALLED"
+    r"|dispatched auditor|EXTLOAD-|PACKET-)"
+    # Senior-auditor report bullets (fleet-ops#2706): the auditor writes these
+    # bullets inside AUDITOR-LOG.md as part of its standard closeout template.
+    # The lines can contain embedded ISO timestamps because the auditor cites
+    # prior events. Without these alternatives the lens would mis-classify
+    # the auditor's own report as a "manual seam".
+    r"|\*\*Summoning trip:\*\*"
+    r"|\*\*Root cause(?:\s*\(same class|\s*\(worked-example)?"
+    r"|\*\*For you \(Nish\):\*\*"
+    # stop-judge cooldown verdict (fleet-ops#2925): every closeout's numbered
+    # "Fixes applied this turn" checklist ends with the cooldown bullet
+    # ("N. **Cooldown NOT cleared** — ..."). It is the automated
+    # stop-judge/seat-health machinery's verdict, tracked to close by the
+    # observe-to-clear READY-WORK items, not a manual hand operation.
+    r"|\*\*Cooldown(?: NOT)? cleared\*\*"
+    r"|\*\*NEW development this trip"
+    r"|\*\*Re-queue(?:\s*\(halted item\))?:\*\*"
+    r"|\*\*Re-queue:\*\*"
+    r"|\*\*Catch-all summary:\*\*"
+    r"|\*\*Class-park preserved(?:\s*\(not modified\))?:"
+    r"|\*\*Confer-with-peers(?:\s+evidence)?:\*\*"
+    r"|\*\*The wrong-assumption trap"
+    r"|\*\*Live hot-patch applied to"
+    r"|\*\*\(A\) WRITER-SIDE dedupe"
+    r"|\*\*\(B\) READER-SIDE dedupe"
+    r"|\*\*Precedence-band canary"
+    r"|\*\*NEW GAP caught this round"
+    r"|This is EXACTLY the stale-state class"
+    r"|\d+\. \`gh search issues \"AUTO-REVERT HALT\""
+    r"|\d+\. CAATCH-ALL sweep:"
+    # STOP-REASON.json + auditor-resolved: auditor closeout-skip report (fleet-ops#433).
+    # Variants: `STOP-REASON.json`, STOP-REASON.json, **STOP-REASON.json**, optionally numbered.
+    # The arrow + reason=auditor-resolved pair is the distinguishing mark.
+    r"|STOP-REASON\.json.{0,40}\u2192.{0,40}reason=auditor-resolved"
+    r"|STOP-REASON\.json re-read"
+    r"|STOP-REASON re-read"
+    r"|`STOP-REASON\.json` re-read"
+    r"|`STOP-REASON` re-read"
+    # Canary tick + STOP-REASON written: automated canary output (escalation
+    # chain writes STOP-REASON.json via fleet-escalation-canary).
+    r"|canary tick: STOP-REASON written"
+    r"|Read the alert, identified"
+    r"|escalated via OnFailure="
+    r"|cline/cline-pass/"
+    r"|pick_seat "
+    r"|Seat pool:"
+    r"|Non-heavy seats:"
+    r"|Heavy seats "
+    r"|catch-all sweep:"
+    r"|Verified drill "
+    r"|The actual root cause:"
+    r"|Armed auto-merge "
+    r"|Re-armed auto-merge"
+    r"|FleetSlo"
+    r"|Closest peer session:"
+    r"|## .* — SENIOR AUDITOR"
+    r"|AUDITOR-LOG\.md"
+    r"|auditor_claimed\(\)"
+)
 ISO_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
 HEADING_RE = re.compile(r"^## Manual-seam lens\b", re.M)
 
@@ -81,6 +153,38 @@ def is_match(title, candidates):
             continue
         if t in ct or ct in t or overlap(title, other) > 0.65:
             return c
+    return None
+
+
+# fleet-ops#1708: a seam whose title names an explicit issue reference (e.g.
+# "(fleet-ops#1083)" or "#358") is already queued as that mechanism. Match it
+# to the open issue by number so the lens does not re-file it as a fresh
+# gap-audit duplicate. Without this, a seam that is literally about an
+# already-filed mechanism gets classified "no matching mechanism" and filed.
+ISSUE_REF_RE = re.compile(r"(?:[A-Za-z0-9._-]+/)?(?:[A-Za-z0-9._-]+)?#(\d+)")
+
+
+def ref_match(seam, candidates):
+    """Return the open-issue candidate whose number appears as an explicit
+    `#NNN` / `repo#NNN` reference in the seam title, or None."""
+    if not seam:
+        return None
+    by_number = {}
+    for c in candidates or []:
+        try:
+            num = int(c.get("number"))
+        except (TypeError, ValueError):
+            continue
+        by_number[num] = c
+    if not by_number:
+        return None
+    for m in ISSUE_REF_RE.finditer(str(seam)):
+        try:
+            num = int(m.group(1))
+        except (TypeError, ValueError):
+            continue
+        if num in by_number:
+            return by_number[num]
     return None
 
 
@@ -176,6 +280,9 @@ def collect_actions_log(log_path, since_dt, now):
         if not rest or len(rest) < 8:
             continue
         if WORKER_CLAIM_RE.search(rest):
+            continue
+        # Skip automated escalation log entries (fleet-ops#2115)
+        if ESCALATION_LOG_RE.search(rest):
             continue
         out.append(candidate(rest[:200], "actions-log", stamp.strftime("%Y-%m-%dT%H:%M:%SZ"), str(p)))
         if len(out) >= 50:
@@ -324,7 +431,7 @@ def classify(candidates, findings_doc, open_issues, now_iso):
                 }
             )
             continue
-        matched = is_match(seam, open_issues)
+        matched = ref_match(seam, open_issues) or is_match(seam, open_issues)
         if matched:
             num = matched.get("number")
             mech = f"#{num}" if num else (matched.get("title") or "open issue")

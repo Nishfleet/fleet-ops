@@ -1,0 +1,10 @@
+{
+  "additions": 12,
+  "deletions": 3,
+  "changedFiles": 2,
+  "files": [
+    {"path": "README.md"},
+    {"path": "docs/notes.md"}
+  ],
+  "labels": []
+}

@@ -50,7 +50,7 @@ URGENT_ENV="${HERMES_URGENT:-0}"
 # Sanctioned urgent classes: Nish-reserved boundary classes + the digests.
 # Env-overridable for tests (HERMES_OUTBOUND_CLASSES). Pipe-separated; the
 # gate matches the declared class exactly (case-sensitive) against this set.
-CLASSES="${HERMES_OUTBOUND_CLASSES:-MONEY-BOUNDARY|LEGAL-BOUNDARY|PRODUCT-DIRECTION|CUSTOMER-DATA|CREDENTIAL-BOUNDARY|ONE-SHOT-PUBLIC-ACTION|daily-digest|weekly-digest}"
+CLASSES="${HERMES_OUTBOUND_CLASSES:-MONEY-BOUNDARY|LEGAL-BOUNDARY|PRODUCT-DIRECTION|CUSTOMER-DATA|CREDENTIAL-BOUNDARY|ONE-SHOT-PUBLIC-ACTION|daily-digest|weekly-digest|evening-highlights-digest}"
 
 # --- Non-send commands: pass through untouched ------------------------------
 # `send --list` / `send -l` lists targets without messaging — also passthrough.

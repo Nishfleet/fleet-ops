@@ -333,6 +333,81 @@ grep -F 'RED-PR-ESCALATE' "$bin" >/dev/null \
     || fail "helper must emit RED-PR-ESCALATE on exhaustion"
 ok "scenarioF: tier1 wires the helper and propagates fail-loud exit to the pager"
 
-ok "red-pr-repair: observe-then-dispatch debounce, bounded 2 attempts, fail loud on exhaustion, live-worker skip, non-red clear"
+# ============================================================================
+# Scenario G: pi-issue-start dispatch is NON-BLOCKING (--no-block)
+# ============================================================================
+# fleet-ops#2151 second fault: fleet-heartbeat.service is Type=oneshot with
+# TimeoutStartSec=45min. dispatch_repair -> pi-issue-start -> `systemctl --user
+# start` was BLOCKING, so a worker with a 2520s lifetime held the oneshot
+# heartbeat hostage past its 45min timeout -> unit-failure -> auditor pages.
+# The fix is one flag: `start --no-block`. This scenario drives the REAL
+# pi-issue-start (not the fake) with a SYSTEMCTL that sleeps 5s on a plain
+# `start` but returns immediately when `--no-block` is present, and asserts
+# pi-issue-start returns well within that 5s window — proving the flag is
+# wired through and the oneshot is never held hostage.
+pi_issue_start_real="$repo_root/bin/pi-issue-start"
+[[ -x "$pi_issue_start_real" ]] || fail "scenarioG: real pi-issue-start not executable: $pi_issue_start_real"
+
+# Fake systemctl: blocking start sleeps 5s; --no-block start returns at once.
+# Records every start argv so we can prove the flag reached it.
+systemctl_noblock="$scratch/systemctl-noblock"
+start_log="$scratch/start.log"
+: >"$start_log"
+cat >"$systemctl_noblock" <<'FAKE'
+#!/usr/bin/env bash
+shift  # consume --user
+cmd="$1"; shift
+case "$cmd" in
+  is-active)
+    echo inactive; exit 0 ;;
+  show)
+    # `show -p MainPID --value <unit>` -> 0 (no live MainPID)
+    echo 0; exit 0 ;;
+  daemon-reload)
+    exit 0 ;;
+  start)
+    printf 'start %s\n' "$*" >>"${START_LOG:-/dev/null}"
+    # If --no-block is present, return immediately (the real flag's effect).
+    # Otherwise simulate a blocking start that holds the caller for 5s.
+    for a in "$@"; do
+      [[ "$a" == "--no-block" ]] && exit 0
+    done
+    sleep 5
+    exit 0
+    ;;
+  *)
+    exit 0 ;;
+esac
+FAKE
+chmod +x "$systemctl_noblock"
+
+# Pre-create the .in packet so pi-issue-start skips regeneration, and point
+# SEAT_LIB at a nonexistent path so the memory drop-in block is skipped —
+# isolates the test to the final `exec systemctl start` line.
+pi_issues_dir="$scratch/pi-issues"
+mkdir -p "$pi_issues_dir"
+printf 'worker prompt body\n\nTARGET: repo Nishfleet/demo issue 55 unit pi-issue-demo-55\n' \
+    >"$pi_issues_dir/demo-55.in"
+
+g_start=$(date +%s.%N)
+set +e
+g_out=$(SYSTEMCTL="$systemctl_noblock" START_LOG="$start_log" \
+        PI_ISSUES_DIR="$pi_issues_dir" SEAT_LIB="/nonexistent/seat-lib.sh" \
+        "$pi_issue_start_real" demo-55 2>&1)
+g_rc=$?
+set -e
+g_end=$(date +%s.%N)
+g_elapsed=$(awk -v s="$g_start" -v e="$g_end" 'BEGIN{printf "%.3f", e-s}')
+
+[[ "$g_rc" == 0 ]] || fail "scenarioG: pi-issue-start must exit 0, got $g_rc ($g_out)"
+# Must return well within the 5s blocking window (under 2s is comfortable headroom).
+awk -v t="$g_elapsed" 'BEGIN{exit !(t < 2)}' \
+    || fail "scenarioG: pi-issue-start took ${g_elapsed}s — NOT non-blocking (must be <2s; blocking path sleeps 5s)"
+# The flag must actually have reached the fake systemctl.
+grep -qx 'start --no-block pi-issue@demo-55.service' "$start_log" \
+    || fail "scenarioG: start must carry --no-block, got $(cat "$start_log")"
+ok "scenarioG: pi-issue-start dispatch is non-blocking (returned in ${g_elapsed}s, --no-block wired through)"
+
+ok "red-pr-repair: observe-then-dispatch debounce, bounded 2 attempts, fail loud on exhaustion, live-worker skip, non-red clear, non-blocking dispatch"
 
 echo "all phases passed"

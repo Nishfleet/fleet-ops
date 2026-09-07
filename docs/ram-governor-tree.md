@@ -44,13 +44,17 @@ under pressure.
 
 ### 2. Per-worker throttle — `systemd/pi-issue@.service`
 
-**What it does.** Each worker runs with
+**What it does.** The template runs each worker with
 `MemoryHigh=3G` (throttle-and-reclaim, no kill) and `MemoryMax=6G` (hard
 ceiling per worker) plus `RuntimeMaxSec=45min` so a wedge dies on the wall
-clock. The throttle layer punishes one worker at a time — it cannot punish
-the host.
+clock. Known repos override this via an intake-written per-instance drop-in:
+fleet-ops#3930 (2026-09-06) set `MemoryMax=4G` with **no `MemoryHigh`** for
+fleet-ops + 0509 — the throttle band is what makes oomd pressure-kill a
+random sibling (6 kills in 1h, victim was not the offender), so it was
+removed and a worker that exceeds 4G is OOM-killed locally at the cap. The
+template's 3G/6G stays the no-table fallback for unknown repos.
 
-**Owner:** `systemd/pi-issue@.service`.
+**Owner:** `systemd/pi-issue@.service` + intake per-instance drop-ins.
 
 ### 3. Ubuntu stock policy — `user@1000.service` `ManagedOOMMemoryPressure=kill` at 50%
 
@@ -93,8 +97,9 @@ installed live at `/etc/systemd/system/user-1000.slice.d/50-ram-governor.conf`.
 
 `DurationSec` is GLOBAL in systemd 255 (per-slice `DurationSec` is not a
 valid key, `systemd-analyze verify --man=no` reports "Unknown key name …
-ignoring"). The 60 s duration is set in
-`/etc/systemd/oomd.conf.d/99-fleet.conf` as
+ignoring"). The 60 s duration is set by
+`systemd/system/oomd.conf.d/99-fleet.conf`, installed as
+`/etc/systemd/oomd.conf.d/99-fleet.conf` (fleet-ops#3971), as
 `DefaultMemoryPressureDurationSec=60s`.
 
 ### 5. app-pi\x2dissue.slice — `ManagedOOMMemoryPressure=kill` at 80%
@@ -133,9 +138,10 @@ is a side effect, not a design.
 | 2 — per-worker throttle | `systemd/pi-issue@.service` | `~/.config/systemd/user/pi-issue@.service` | `./install.sh` (default) |
 | 3 — stock neutralizer | `systemd/system/user@1000.service.d/50-no-distro-oomd-kill.conf` | `/etc/systemd/system/user@1000.service.d/...` | `./install.sh --system` (or manual) |
 | 4 — slice governor | `systemd/system/user-1000.slice.d/50-ram-governor.conf` | `/etc/systemd/system/user-1000.slice.d/...` | `./install.sh --system` (or manual) |
-| 5 — fleet slice | `systemd/app-pi\x2dissue.slice` | `~/.config/systemd/user/app-pi\x2dissue.slice` | out-of-band copy (pre-existing; see #71) |
+| 4b — oomd duration | `systemd/system/oomd.conf.d/99-fleet.conf` | `/etc/systemd/oomd.conf.d/99-fleet.conf` | `./install.sh --system` (or manual) |
+| 5 — fleet slice | `systemd/app-pi\x2dissue.slice` | `~/.config/systemd/user/app-pi\x2dissue.slice` | `./install.sh` (default) |
 
-Layers 3 and 4 are NEW in this repo as of issue #71; layers 1, 2 and 5 were
+Layers 3, 4 and 4b are repo-owned as of issues #71 and #3971; layers 1, 2 and 5 were
 already repo-owned.
 
 ## Drill history
@@ -172,12 +178,42 @@ Live sample 2026-08-26:
 - ratio 411.8
 
 fleet-ops#489 decided to keep `memory.current` for admission (not process
-VmRSS). fleet-ops#1168 then right-sized the live budget from that 1.5 GB
-p95*3 clamp to the measured typical-worker value: `config/seat-caps.json`
-sets `ram_gb_per_worker=0.6`. Process VmRSS is much smaller, so using it
-would raise lanes but undercount real cgroup cost.
+VmRSS). fleet-ops#1168 right-sized the live budget from that 1.5 GB p95*3
+clamp to the measured typical-worker value 0.6; fleet-ops#1558 then
+re-measured under per-repo MemoryMax drop-ins and `config/seat-caps.json`
+holds `ram_gb_per_worker=2.0` as the FALLBACK charge. fleet-ops#3679 changed
+admission to charge each active worker its repo's `MemoryHigh` divided by
+the fallback. fleet-ops#3930 (2026-09-06) removed the `MemoryHigh` band for
+fleet-ops + 0509 (it is what made oomd pressure-kill a random sibling), so
+they now fall back to the flat 2.0/2.0 = 1.0 unit each; heavy|keystone
+workers still charge 1.0 GB (fleet-ops#3495). Process VmRSS is much smaller,
+so using it would raise lanes but undercount real cgroup cost.
 
 Do not cite the 35 MB figure as cgroup cost.
+
+## Per-repo charge model — fleet-ops#3679
+
+Admission (`active_ram_charge` in `lib/seat-lib.sh`) sums each active
+worker's charge in light-worker units (1 unit = the fallback
+`ram_gb_per_worker`). `ram_charge_gb_for <repo> <difficulty>` returns the
+GB charge: heavy|keystone -> 1.0 GB (fleet-ops#3495); else the repo's
+`worker_memory.<repo>.MemoryHigh` converted to GB; else the fallback 2.0.
+The governor's cap (`ram_governor_cap`) is the MemAvailable budget in the
+same units, so a browser-heavy mix self-throttles to its real footprint.
+
+Measured 2026-09-05 (`~/.local/state/ram-measurement/`):
+0509 units peaked at 1.50 GiB == old MemoryHigh 1536M (throttled=1);
+fleet-ops units peaked at 1.00-1.05 GiB == old MemoryHigh 1G (throttled=1).
+MemoryHigh was raised above those p95s (0509 -> 2.5G, fleet-ops -> 1.5G) so
+workers stop living at the clamp. fleet-ops#3930 (2026-09-06) then REMOVED
+the `MemoryHigh` band entirely for fleet-ops + 0509 (it is what makes oomd
+pressure-kill a random sibling — 6 kills in 1h, pi-issue@0509-1752 killed
+at a 94.3M peak, victim not the offender) and raised `MemoryMax` to 4G, so
+those repos fall back to the flat 2.0 charge and a worker that exceeds 4G
+is OOM-killed locally instead of oomd killing a sibling.
+`target_concurrent` 25 is NOT reachable on 15 GB at 1.0-1.5 GiB per worker;
+the realistic ceiling is ~8-10 concurrent. Do NOT raise the slice
+`MemoryHigh` above 12G.
 
 ## Tuning — read first
 

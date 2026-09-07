@@ -1,0 +1,18 @@
+[Unit]
+Description=Weekly baseline-delta strangeness report — Sun 04:00 IST
+# Named reason: the Weekly Fleet Review sits at Sun 04:30 IST. This job
+# is its pre-pass (fleet-ops#1151): a ranked |z|>3 strangeness pass over
+# every fleet_* and key node_* series, written to the WFR input dir
+# before the review's blind lenses sit. Metric strangeness has no event
+# to subscribe to, so a Sunday calendar fire after the maintenance
+# window (quiesce 03:15, vps-weekly-update 03:30 + drain) and 30 minutes
+# before the review is the correct trigger. Persistent so a missed
+# Sunday (VPS down) still writes the input dir before the next review.
+
+[Timer]
+OnCalendar=Sun *-*-* 04:00:00 Asia/Kolkata
+Persistent=true
+AccuracySec=5min
+
+[Install]
+WantedBy=timers.target

@@ -46,10 +46,10 @@ jq -e '.rules[] | select(.id == "led-worker-lane-refresh" and .status == "enforc
   || fail "led-worker-lane-refresh must be status=enforced (fleet-ops#545)"
 ok "matrix row led-worker-lane-refresh is enforced"
 
-jq -e '.rules[] | select(.id == "led-2026-08-27-worker-lane-order-nish-emphatic-can-t-stress-enou" and .status == "enforced")' \
+jq -e '.rules[] | select(.id == "led-2026-08-27-worker-lane-order-nish-emphatic-can-t-stress-enou" and (.status | startswith("advisory")) and (.mechanism | contains("RETIRED")))' \
   "$matrix" >/dev/null \
-  || fail "led-2026-08-27-worker-lane-order must be status=enforced (fleet-ops#1178)"
-ok "matrix row led-2026-08-27-worker-lane-order is enforced"
+  || fail "led-2026-08-27-worker-lane-order must be status=advisory(RETIRED by fleet-ops#3125) not enforced (fleet-ops#1178 retired 2026-09-04)"
+ok "matrix row led-2026-08-27-worker-lane-order is retired-advisory (volume order replaced by yield)"
 
 jq -e '.rules[] | select(.id == "led-2026-08-27-cursor-400-sequencing-model-nish" and .status == "enforced")' \
   "$matrix" >/dev/null \
@@ -83,10 +83,14 @@ do
   ok "matrix row for $src is enforced"
 done
 # fleet-ops#1178: apostrophe in "can't" — assert via --arg, not a double-quoted for-loop entry.
+# fleet-ops#3125 (2026-09-04): the volume lane order is RETIRED (yield-ranked
+# product routing replaced the volume prefix) — the row must carry an
+# advisory RETIRED status, not enforced.
 src_1178='decisions-ledger.md: 2026-08-27 | Worker lane order (Nish, emphatic: "can'"'"'t stress enough")'
 status=$(jq -r --arg src "$src_1178" '.rules[] | select(.source == $src) | .status' "$matrix")
-[[ "$status" == "enforced" ]] || fail "matrix must have $src_1178 as enforced, got ${status:-missing}"
-ok "matrix row for worker lane order (fleet-ops#1178) is enforced"
+[[ "$status" == "enforced" || ( "$status" == advisory* && "$status" == *RETIRED* ) ]] \
+  || fail "matrix must have $src_1178 as enforced or advisory-RETIRED, got ${status:-missing}"
+ok "matrix row for worker lane order (fleet-ops#1178) is retired-advisory (volume canary deleted)"
 
 src_1245='decisions-ledger.md: 2026-08-27 | GEO/AEO: fleet executes measurement + owned-content tactics; community/PR parked for Nish'
 status=$(jq -r --arg src "$src_1245" '.rules[] | select(.source == $src) | .status' "$matrix")
@@ -111,6 +115,27 @@ do
   esac
 done
 
+# fleet-ops#1621: the remaining seven 2026-08-28 vault entries (1 standing
+# rule + 6 ledger decisions) must each have a matrix row with a valid status
+# (enforced | queued(#N) | advisory(reason)). Same class as #1371/#1529. The
+# live-vault join covers them on the VPS, but CI skips that join, so pin them
+# directly to keep the batch from silently drifting on CI.
+for src in \
+  'global-standing-rules.md: Quality is a constraint, never a trade-off (Nish, 2026-08-28)' \
+  'decisions-ledger.md: 2026-08-28 | Optimization target: MAX QUALITY THROUGHPUT (Nish: "max *quality* throughput because *quality* above all else")' \
+  'decisions-ledger.md: 2026-08-28 | Quality is a CONSTRAINT, never a trade-off (Nish)' \
+  'decisions-ledger.md: 2026-08-28 | 25 concurrent workers is the standing floor (Nish: "I want 25 workers on all the time... quality is the bar, it has to keep climbing")' \
+  'decisions-ledger.md: 2026-08-28 | hostinger-kvm4 revival queued under existing decisions (ledger-derived, no new ask)' \
+  $'decisions-ledger.md: 2026-08-28 | hostinger-kvm4 is RETIRED (Nish: "Hostinger was retired. It\'s now Netcup dummy")' \
+  'decisions-ledger.md: 2026-08-28 | Capacity: ceiling accepted (Nish, via decision prompt)'
+do
+  status=$(jq -r --arg src "$src" '.rules[] | select(.source == $src) | .status' "$matrix")
+  case "$status" in
+    enforced|"queued("*|"advisory"*) ok "matrix row for $src is present (fleet-ops#1621)" ;;
+    *) fail "matrix must have a valid-status row for $src, got ${status:-missing} (fleet-ops#1621)" ;;
+  esac
+done
+
 # fleet-ops#1403: the four 2026-08-27/28 ledger decisions must each have a
 # matrix entry with a valid status (enforced | queued(#N) |
 # advisory(reason)). The rows were added by PR #1400 (closing #1371), but
@@ -128,12 +153,6 @@ do
     *) fail "matrix must have a valid-status row for $src, got ${status:-missing} (fleet-ops#1403)" ;;
   esac
 done
-
-# fleet-ops#1178: volume front-of-ladder canary. Hosted BEFORE the live
-# vault join so a busy board of other uncovered sibling ledger lines
-# cannot skip this drill (the live join still asserts our covered_rows).
-bash "$here/fleet-volume-lane-order-canary.test.sh" || fail "volume-lane-order canary drill failed"
-ok "rule-enforcement: volume-lane-order canary drill"
 
 # fleet-ops#1245: GEO/AEO parked-tactics + brand-gate canary. Hosted
 # BEFORE the live vault join for the same reason as #1178.
@@ -212,9 +231,13 @@ if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
     || fail "live join must report work supply 24h as enforced covered_rows (fleet-ops#540): $(jq -c '.covered_rows' <<<"$live")"
   jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-26 | worker-lane refresh (Nish)" and .status == "enforced")' <<<"$live" >/dev/null \
     || fail "live join must report worker-lane refresh as enforced covered_rows (fleet-ops#545): $(jq -c '.covered_rows' <<<"$live")"
+  # fleet-ops#3125: the worker-lane-order rule is RETIRED — the join counts it
+  # as covered/advisory but does not enumerate it in covered_rows, so assert
+  # the matrix row carries the advisory-RETIRED status (uncovered==0 above
+  # already proves the live ledger line is covered).
   jq -e --arg src 'decisions-ledger.md: 2026-08-27 | Worker lane order (Nish, emphatic: "can'"'"'t stress enough")' \
-    '.covered_rows[] | select(.source == $src and .status == "enforced")' <<<"$live" >/dev/null \
-    || fail "live join must report worker lane order as enforced covered_rows (fleet-ops#1178): $(jq -c '.covered_rows' <<<"$live")"
+    '.rules[] | select(.source == $src and (.status | startswith("advisory")) and (.mechanism | contains("RETIRED")))' "$matrix" >/dev/null \
+    || fail "matrix must mark worker lane order as advisory-RETIRED (fleet-ops#1178 retired 2026-09-04 by fleet-ops#3125)"
   jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-27 | Cursor $400 sequencing + model (Nish)" and .status == "enforced")' <<<"$live" >/dev/null \
     || fail "live join must report cursor \$400 sequencing as enforced covered_rows (fleet-ops#1179): $(jq -c '.covered_rows' <<<"$live")"
   jq -e --arg src 'decisions-ledger.md: 2026-08-27 | GEO/AEO: fleet executes measurement + owned-content tactics; community/PR parked for Nish' \
@@ -349,11 +372,39 @@ queued_issues = [
     {"number": 482, "body": body_fallback, "comments": [{"body": f"canary-covered: {src}\n"}]},
 ]
 assert m.close_targets(queued_report, queued_issues) == [], "queued row must not close"
+
+# needs-interactive guard (fleet-ops#2006): an issue whose body carries a
+# `needs-interactive:` marker is an ACTIVE human-action fault (e.g. the grok
+# CLI seat is dead and Nish must `grok login --device-auth`). The
+# rule-enforcement canary "covers" the signal because it DETECTS the dead
+# seat every tick — but "covered" means detected, not fixed. Without this
+# guard the observe-to-close loop posts canary-covered, then closes the
+# ticket while the seat is still dead, the canary re-files next tick, and
+# the class recurs indefinitely (4 tickets in ~4h on 2026-08-29). Such an
+# issue must be excluded from BOTH observe_targets (no canary-covered
+# comment) and close_targets (no close) so the live fault stays open until
+# a human actually fixes it.
+needs_interactive_body = (
+    body_fallback
+    + "\n\nseat-live-validate: grok needs-interactive\n"
+)
+needs_interactive_issues = [
+    {
+        "number": 483,
+        "body": needs_interactive_body,
+        "comments": [{"body": f"canary-covered: {src}\n"}],
+    },
+]
+assert m.observe_targets(report, needs_interactive_issues) == [], \
+    "needs-interactive issue must not get a canary-covered comment"
+assert m.close_targets(report, needs_interactive_issues) == [], \
+    "needs-interactive issue must not be observe-to-closed while the fault is live"
 print("parser-ok")
 PY
 ok "parser: ## headings counted, ### ignored, FLAG ledger lines skipped"
 ok "observe-to-close: fallback id, source backtick, and already-commented issues"
 ok "observe-to-close close_targets: marker+enforced closes, no-marker and queued do not"
+ok "observe-to-close: needs-interactive issue is not commented or closed (fleet-ops#2006)"
 
 # --- fixture join: complete coverage ----------------------------------------
 cat >"$scratch/covered-rules.md" <<'EOF'
@@ -633,7 +684,7 @@ cat >"$drill/repo/config/rule-enforcement.json" <<'EOF'
       "mechanism": "not yet",
       "proof": "fleet-ops#1",
       "status": "queued(#1)",
-      "queued_since": "2026-08-26"
+      "queued_since": "2026-08-18"
     }
   ]
 }
@@ -760,7 +811,6 @@ run_drill() {
     FLEET_RULE_ENFORCEMENT_LIB="$lib" \
     FLEET_RULE_ENFORCEMENT_FILE_ISSUES=1 \
     FLEET_RULE_ENFORCEMENT_ISSUE_REPO="Nishfleet/fleet-ops" \
-    FLEET_RULE_ENFORCEMENT_UMBRELLA_ISSUES=1 \
     FLEET_RULE_ENFORCEMENT_NOW="2026-08-26T12:00:00Z" \
     GH_LOG="$glog" \
     GH_CREATED="$created" \
@@ -816,6 +866,40 @@ cat >"$drill/standing.md" <<'EOF'
 EOF
 cat >"$drill/ledger.md" <<'EOF'
 - 2026-08-26 | covered ledger rule | a decision
+EOF
+# Rewrite the matrix so sr-queued-fixture is non-stale (queued_since=now).
+# The vault covers it, but the row stays queued — #78 must NOT be closed
+# (only enforced rows get observe-to-close). No stale_queued violation =>
+# canary exits 0.
+cat >"$drill/repo/config/rule-enforcement.json" <<'EOF'
+{
+  "queued_stale_days": 7,
+  "auto_file_cap_per_tick": 5,
+  "rules": [
+    {
+      "id": "sr-covered-fixture",
+      "source": "global-standing-rules.md: Covered fixture rule (Nish, 2026-08-26)",
+      "mechanism": "test gate",
+      "proof": "tests/rule-enforcement.test.sh",
+      "status": "enforced"
+    },
+    {
+      "id": "led-covered-fixture",
+      "source": "decisions-ledger.md: 2026-08-26 | covered ledger rule",
+      "mechanism": "test gate",
+      "proof": "tests/rule-enforcement.test.sh",
+      "status": "enforced"
+    },
+    {
+      "id": "sr-queued-fixture",
+      "source": "global-standing-rules.md: Queued fixture rule waiting for a mechanism (Nish, 2026-08-26)",
+      "mechanism": "not yet",
+      "proof": "fleet-ops#1",
+      "status": "queued(#1)",
+      "queued_since": "2026-08-26"
+    }
+  ]
+}
 EOF
 : >"$created"
 : >"$drill/triage.md"
@@ -897,14 +981,13 @@ ok "rule-enforcement: fleet-wipe-lessons gate drill"
 bash "$here/dirty-worktree-audit.test.sh" || fail "dirty-worktree-audit drill failed"
 ok "rule-enforcement: dirty-worktree-audit drill"
 
-# fleet-ops#754: spawn-guard git_stash_forbidden allow/block matrix. The
-# test pins the live regex in ~/.pi/agent/extensions/spawn-guard-core.ts
-# (read-only git stash list/show allowed; pop/apply/push/drop/clear/
-# branch/create/store blocked). Hosted CI skips the live join when the
-# extension is absent. Nested host so the worker token does not need to
-# edit .github/workflows/**.
-bash "$here/fleet-spawn-guard-stash-readonly.test.sh" || fail "spawn-guard stash-readonly drill failed"
-ok "rule-enforcement: spawn-guard stash-readonly drill"
+# fleet-ops#754 + #3244: spawn-guard live regex allow/block matrices. The
+# guard lives in ~/.pi/agent/extensions/spawn-guard-core.ts. The nested
+# suite runs the git_stash_forbidden drill (#754) and the sudo-write drill
+# (#3244). Hosted CI skips the live join when the extension is absent.
+# Nested host so the worker token does not need to edit .github/workflows/**.
+bash "$here/spawn-guard.test.sh" || fail "spawn-guard drill failed"
+ok "rule-enforcement: spawn-guard drill"
 
 # fleet-ops#459: NORTH STAR quality guard. Nested host so the worker token
 # does not need to edit .github/workflows/**.
@@ -959,6 +1042,11 @@ ok "rule-enforcement: quality-research-weekly drill"
 # token does not need a workflow edit.
 bash "$here/weekly-fleet-review.test.sh" || fail "weekly-fleet-review drill failed"
 ok "rule-enforcement: weekly-fleet-review drill"
+
+# fleet-ops#1151: weekly baseline-delta strangeness pre-pass (WFR input).
+# Nested host so this token does not need a workflow edit.
+bash "$here/fleet-baseline-delta.test.sh" || fail "baseline-delta drill failed"
+ok "rule-enforcement: baseline-delta drill"
 
 # fleet-ops#1236: weekly AEO visibility probe. Nested host so this token
 # does not need a workflow edit.
@@ -1034,7 +1122,27 @@ ok "rule-enforcement: worker-memory drop-in drill"
 bash "$here/siterep-live-canary-pin.test.sh" || fail "siterep live canary pin drill failed"
 ok "rule-enforcement: siterep live canary pin drill"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, vault-lint, wipe-lessons, dirty-worktree-audit, spawn-guard-stash-readonly, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, tailscale-acl, verify-harness, paid-flash, token-economy, volume-lane-order, geo-aeo, quality-ratchet, standing-rules-drift, aeo-probe, organ-heartbeat, asset-census, timer-manifest, agent-ready-spec-gate, gh-webhook-prom-quotes, worker-memory-dropin, and siterep-live-canary-pin drills"
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, vault-lint, wipe-lessons, dirty-worktree-audit, spawn-guard, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, tailscale-acl, verify-harness, paid-flash, token-economy, geo-aeo, quality-ratchet, standing-rules-drift, aeo-probe, organ-heartbeat, asset-census, timer-manifest, agent-ready-spec-gate, gh-webhook-prom-quotes, worker-memory-dropin, and siterep-live-canary-pin drills (volume-lane-order retired in fleet-ops#3125)"
+
+# fleet-ops#2089: install.sh must self-heal enabled-but-inactive timers
+# (the staleness canary sat dead: enabled, NextElapse=infinity, never
+# scheduled). Nested host so the worker token does not edit
+# .github/workflows/**.
+bash "$here/install-enabled-but-inactive-timer.test.sh" || fail "install enabled-but-inactive timer self-heal drill failed"
+ok "rule-enforcement: install enabled-but-inactive timer self-heal drill"
+
+# fleet-ops#1307: install.sh --system must reload prometheus after a changed
+# config/fleet_rules.yml (ExecReload is kill -HUP; a merged alert rule
+# otherwise sits on disk) and prove every group is in GET /api/v1/rules.
+# Nested host so the worker token does not edit .github/workflows/**.
+bash "$here/install-prometheus-rules-reload.test.sh" || fail "install prometheus rules-reload drill failed"
+ok "rule-enforcement: install prometheus rules-reload drill"
+
+# fleet-ops#4223: a non-fatal config REFUSE must not abort install.sh; later
+# MANIFEST entries (e.g. a non-canonical unit symlink) must still be repaired.
+# Nested host so the worker token does not edit .github/workflows/**.
+bash "$here/install-refuse-continues.test.sh" || fail "install refuse-continues drill failed"
+ok "rule-enforcement: install refuse-continues drill (fleet-ops#4223)"
 
 # fleet-ops#516: sr-max-speed hunter. CI lists this file, not
 # fleet-max-speed.test.sh (workers cannot edit .github/workflows).
@@ -1044,6 +1152,11 @@ bash "$here/fleet-max-speed.test.sh" || fail "fleet-max-speed tests failed"
 # host so the worker token does not need to edit .github/workflows/**.
 bash "$here/fleet-token-efficiency.test.sh" || fail "token-efficiency gate drill failed"
 ok "rule-enforcement: token-efficiency gate drill"
+# fleet-ops#3191: rebuild/masking PR gate — a change to the rebuild manifest,
+# unit-masking config, or rebuild scripts/runbook/test must carry a VERIFY
+# line. Nested host so the worker token does not edit .github/workflows/**.
+bash "$here/fleet-rebuild-verify-check.test.sh" || fail "rebuild-verify gate drill failed"
+ok "rule-enforcement: rebuild-verify gate drill"
 # fleet-ops#527: monthly rulebook red-team + rollback-backup gate. Same
 # CI constraint (worker token cannot add a P14 line in ci.yml).
 bash "$here/fleet-rulebook-redteam.test.sh" || fail "rulebook red-team drill failed"
@@ -1065,4 +1178,29 @@ ok "rule-enforcement: skills-symlink canary drill"
 bash "$here/fleet-bin-exclude-canary.test.sh" || fail "bin-exclude canary drill failed"
 ok "rule-enforcement: bin-exclude canary drill"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, rulebook-redteam, vibes, skills-symlink, and bin-exclude drills"
+# fleet-ops#1291: SLO error-budget system contract (lib/slo_budget.py,
+# config/slo-definitions.json, exporter _emit_slo_metrics, fleet_rules.yml
+# burn alerts, WFR L7/L8 lenses). Hosted from this already-listed test so
+# P14 runs it without a workflow edit.
+bash "$here/slo-budget.test.sh" || fail "slo-budget drill failed"
+ok "rule-enforcement: slo-budget drill"
+
+# fleet-ops#2151: tailscaled localapi socket-reachability canary (skips
+# gracefully on a runner without tailscale). Hosted here from this
+# already-listed test so P14 runs it without a workflow edit.
+bash "$here/fleet-tailscale-localapi-canary.test.sh" || fail "tailscale localapi canary drill failed"
+ok "rule-enforcement: tailscale localapi canary drill"
+
+
+# fleet-ops#2227: fleet-worktree-reaper GCs orphan agent worktrees on merged+
+# terminal claims. Hermetic (fake gh/systemctl, local bare repos). Hosted
+# here so P14 runs it without a workflow edit.
+bash "$here/fleet-worktree-reaper.test.sh" || fail "worktree-reaper drill failed"
+ok "rule-enforcement: worktree-reaper drill"
+
+# fleet-ops#1160: VPS reboot-survival regression — post-reboot timer must be
+# system-scope and verify must recover tailscale, not just announce.
+bash "$here/fleet-ops-1160-regression.test.sh" || fail "vps reboot-survival regression drill failed"
+ok "rule-enforcement: vps reboot-survival regression drill"
+
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, rulebook-redteam, vibes, skills-symlink, bin-exclude, slo-budget, tailscale-localapi-canary, worktree-reaper, and vps-reboot-survival-regression drills"

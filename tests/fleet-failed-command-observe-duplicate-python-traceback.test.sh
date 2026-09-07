@@ -315,14 +315,14 @@ ok "live #966: still-dirty slug leaves all six leftover duplicates open"
 # the #971 citation next to #966 — both are siblings in the 01a03e38
 # leftover-duplicate pile (fleet-ops#951).
 worker="$repo_root/prompts/worker.md"
-grep -q '#966' "$worker" \
-  || fail "prompts/worker.md must carry the #966 citation next to the #957 python-traceback citation"
-grep -q 'fleet-ops#957, #966' "$worker" \
-  || fail "prompts/worker.md must cite #966 next to the #957 python-traceback citation"
-ok "worker.md cites #966"
-grep -q '#966, #971' "$worker" \
-  || fail "prompts/worker.md must carry the #971 citation next to the #966 python-traceback leftover-duplicate citation"
-ok "worker.md cites #971"
+grep -q '#966' "$lib" \
+  || fail "lib/failed-command-flagged.py must carry the #966 citation next to the #957 python-traceback citation"
+grep -q 'fleet-ops#957, #966' "$lib" \
+  || fail "lib/failed-command-flagged.py must cite #966 next to the #957 python-traceback citation"
+ok "lib/failed-command-flagged.py cites #966"
+grep -q '#966, #971' "$lib" \
+  || fail "lib/failed-command-flagged.py must carry the #971 citation next to the #966 python-traceback leftover-duplicate citation"
+ok "lib/failed-command-flagged.py cites #971"
 grep -q 'fleet-ops#957, #966' "$lib" \
   || fail "lib/failed-command-flagged.py docstring must cite #966 next to #957"
 ok "lib/failed-command-flagged.py docstring cites #966"

@@ -12,6 +12,7 @@
 #     "detail": {
 #       "unit": "<full name>",
 #       "journal": ["last 5 lines"],
+#       "journal_errors": ["last 5 error-priority lines"],
 #       "result": "<Result from systemctl show>",
 #       "exit_status": "<ExecMainStatus if available>",
 #       "memory_peak": "<MemoryPeak bytes or empty>",
@@ -24,11 +25,34 @@
 # The dispatch dedupe-hash is sha256 of the whole file; the timestamp makes
 # each trip unique so a fresh failure always gets its 2-dispatch budget.
 #
+# Env overrides (fleet-ops#4266): UNIT_ESCALATION_REASON (default
+# "unit-failure") and UNIT_ESCALATION_SOURCE (default "unit-escalation")
+# let the detached dead-man (pi-detached-deadman) write through the SAME
+# writer with reason=unit-stopped-without-deliverable / source=
+# pi-detached-deadman for clean-stop deaths — one STOP-REASON per trip, one
+# auditor, no second writer to maintain.
+#
 # fleet-ops#34, task 4: when a worker is OOM-killed (Result=oom-kill,
 # MemoryPeak near its cgroup cap, journal contains "Killed process"), the
 # auditor must be able to see that immediately.  This writer captures
 # Result, ExecMainStatus, and MemoryPeak from systemctl, and a best-effort
 # OOM flag, in the STOP-REASON detail.
+#
+# fleet-ops#2912 closeout-skipped recurrence suppression: a unit that keeps
+# failing on every scheduler tick with the SAME fault class (fleet-heartbeat's
+# persistent structural reds, siterep-live-canary while the live site is red,
+# etc.) writes one fresh STOP-REASON per tick; each fresh sha256 hash bypasses
+# the dispatcher's 2-dispatch-per-hash cap and summons a fresh SENIOR AUDITOR
+# who closeout-skips the same in-class trip (35 trips in ~2 days, #2912). Once
+# the same class has been closeout-skipped RECURRENCE_SUPPRESS_N consecutive
+# times, this writer stops generating fresh STOP-REASON entries for it (no new
+# hash -> stop-escalation.path does not fire -> no auditor dispatch). The unit
+# still lands in --state=failed (the tier-1 rc is unchanged) and the skip is
+# LOUD in the unit-escalation journal; only the redundant auditor summoning
+# stops. A materially different class (different exit status / result / LOUD
+# tag set), an OOM-kill, or a prior STOP-REASON that is not an auditor-resolved
+# closeout all reset the counter and write fresh (fail-open: the auditor is
+# never silently skipped when the evidence is inconclusive).
 set -euo pipefail
 
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
@@ -36,6 +60,15 @@ export HOME="${HOME:-/home/nish}"
 
 AS=${UNIT_ESCALATION_AGENT_STATE:-/home/nish/workspaces/agent-state}
 SR=${UNIT_ESCALATION_STOP_REASON:-$AS/STOP-REASON.json}
+# scout-futility dedupe seams (see the pi-scout gate below). GH is the gh CLI
+# (issue-list hit is scoped to scout units only, so a slow gh call never
+# touches non-scout failures). SCOUT_FUTILITY_* match scout-futility-check so
+# tests can redirect both sides to a scratch dir.
+GH=${UNIT_ESCALATION_GH:-gh}
+FUT_FDIR=${SCOUT_FUTILITY_STATE_DIR:-$HOME/.local/state/scout-futility}
+FUT_REPO=${SCOUT_FUTILITY_REPO:-Nishfleet/fleet-ops}
+FUT_N=${SCOUT_FUTILITY_N:-3}
+case "$FUT_N" in ''|*[!0-9]*) FUT_N=3 ;; esac
 UNIT="${1:-}"
 
 if [ -z "$UNIT" ]; then
@@ -50,16 +83,134 @@ fi
 # resurrection-plane stubs the drill DELIBERATELY SIGKILLs to prove
 # Restart=always; that intentional kill is the drill working, not a fault
 # (a real drill failure escalates normally via the drill unit itself).
+# probe-<n>.service / probe-<n>a.service / probe-<n>b.service / multi-<n>-sink.service
+# are the fleet-ops#1526 live-drill scaffolding (deliberate
+# ExecStart=/bin/false probes that empirically test the OnFailure= chain,
+# MONITOR_UNIT delivery, and the multi-source MONITOR_UNIT-absent shape).
+# Their failure is the probe test itself, not a fault; the probe's own
+# onfail handler is the assertion sink.
+# pi-issue@* (fleet-ops#2133/#2475, PR #2193): pi-issue workers already have
+# their own failure handling — systemd Restart=on-failure (StartLimitBurst=3)
+# + OnFailure=pi-issue-failed@%i.service (reaps claim, releases labels,
+# re-dispatches on the next intake tick). Routing every pi-issue failure
+# through the SENIOR AUDITOR created an amplifier loop: worker fails on a
+# walled seat → unit-escalation writes STOP-REASON → stop-escalation fires
+# an auditor → auditor consumes a healthy seat + RAM (1.1G) → auditor fails
+# (DISPATCH-NO-BLOCK) → benches that seat → next worker fails → repeat.
+# Measured 2026-08-30 05:00Z: 59 pi-issue failures → 62 unit-escalation
+# firings → 33 stop-escalation auditor dispatches in ONE HOUR, each burning
+# a seat the workers needed. The fleet-ops#1467 retry-cycle guard only
+# catches transient first-failures (NRestarts < StartLimitBurst); once burst
+# exhausts the writer proceeds and the amplifier fires. Exclude pi-issue@*
+# here so the auditor stays available for genuine never-say-next trips
+# (stop-judge, ready-work, fleet-heartbeat, alert-repair, etc.) without the
+# worker-failure amplifier. Pi-issue recovery stays the reaper + intake
+# re-dispatch path; the auditor path is dropped because it is redundant and
+# actively harmful. Verified via journalctl --user -u 'unit-escalation@*'
+# over 72h before this PR: pi-issue@* STOP-REASON writes were still
+# occurring (the loop was live), so the exclusion is necessary.
+# live-dummy* (fleet-ops#4266 detached dead-man): the dead-man's LIVE PROOF
+# (pi-systemd-run --unit live-dummy --deliverable /tmp/live-dummy.md, stop
+# at exit 0 with no deliverable written) is a DELIBERATE stop-without-
+# deliverable — the proof unit IS the test; its STOP-REASON is the verdict
+# being proven, not a fault. Without the exclusion every dead-man proof
+# summons the senior auditor (observed 2026-09-07T15:45:05Z: unit-stopped-
+# without-deliverable trip for live-dummy from pi-detached-deadman). Proof
+# units are ephemeral (--collect) and named live-dummy* by convention; a
+# REAL detached job never carries that name, so this carve-out cannot mask
+# a genuine dead-man failure.
 case "$UNIT" in
-  unit-escalation@*|stop-escalation.service|stop-escalation.path|ready-work.service|escalation-daily-sweep.service|escalation-daily-sweep.timer|resilience-drill-stub*)
-    echo "unit-escalation-write: skipping excluded unit '$UNIT' (no self-trigger)" >&2
+  unit-escalation@*|stop-escalation.service|stop-escalation.path|ready-work.service|escalation-daily-sweep.service|escalation-daily-sweep.timer|resilience-drill-stub*|notify-probe.service|notify-probe.onfail.service|probe-*.service|fleet-orphan-reset-probe@*.service|multi-*-sink.service|pi-issue@*.service|init.scope|app-*.scope|live-dummy*)
+    echo "unit-escalation-write: skipping excluded unit '$UNIT' (no self-trigger / own failure handling)" >&2
     exit 0
+    ;;
+esac
+
+# fleet-ops#1467 false-trip: a unit with Restart=on-failure is DESIGNED to
+# absorb a transient fault via retry before escalating. systemd fires
+# OnFailure= on the FIRST failure transition (before Restart=on-failure
+# executes its retry), so the escalation ladder races ahead of the retry and
+# escalates a fault the retry would have absorbed (proven: pi-audit@0509--1467
+# hit a 503 on first run, OnFailure wrote STOP-REASON, then the retry succeeded
+# and wrote a PASS/FAIL vote — the escalation was a false alarm).
+# Suppress when a retry cycle is still pending: NRestarts < StartLimitBurst.
+# After burst exhaustion the unit enters permanent failed state; the next
+# OnFailure trigger sees NRestarts >= burst and escalates normally. Best-effort:
+# missing properties (unit already unloaded) default so the check passes open
+# (escalate — fail-loud on the unknown).
+_nr=$(systemctl --user show -p NRestarts --value "$UNIT" 2>/dev/null || echo 0)
+_burst=$(systemctl --user show -p StartLimitBurst --value "$UNIT" 2>/dev/null || echo 0)
+_nr=${_nr:-0}; _burst=${_burst:-0}
+# Coerce to integers; non-numeric/blank becomes 0 (escalate — fail-loud on
+# the unknown rather than silently suppressing a real fault).
+case "$_nr" in ''|*[!0-9]*) _nr_i=0 ;; *) _nr_i="$_nr" ;; esac
+case "$_burst" in ''|*[!0-9]*) _burst_i=0 ;; *) _burst_i="$_burst" ;; esac
+_restart_mode=$(systemctl --user show -p Restart --value "$UNIT" 2>/dev/null || echo "no")
+# fleet-ops#1467: a unit with Restart=on-failure|always is designed to absorb
+# a transient fault via retry before escalating. systemd fires OnFailure= on
+# the FIRST failure transition (before Restart=on-failure executes its retry),
+# so without this guard a transient fault (e.g. a 503 overload) escalates to
+# the auditor even though the retry was about to absorb it (proven: pi-audit@
+# 0509--1467 hit a 503 on the first run, OnFailure wrote STOP-REASON, then the
+# retry succeeded and wrote a PASS/FAIL vote). Suppress when a retry cycle is
+# still pending: NRestarts < StartLimitBurst. After burst exhaustion the unit
+# enters permanent failed state; the next OnFailure trigger sees
+# NRestarts >= burst and escalates normally.
+if [ "$_restart_mode" = "on-failure" ] || [ "$_restart_mode" = "always" ]; then
+    if [ "$_nr_i" -lt "$_burst_i" ]; then
+        echo "unit-escalation-write: skipping '$UNIT' (Restart=$_restart_mode, NRestarts=$_nr < StartLimitBurst=$_burst — retry cycle in flight)" >&2
+        exit 0
+    fi
+fi
+
+# scout-futility dedupe (proven loops 2026-08-30 and 2026-08-31, fleet-ops#2054
+# / #2468): pi-scout@<repo> and pi-scout-repair@<repo> die on EVERY run while the
+# repo is in a structural scout-dry OR provider-wall-crash state — both are
+# bench/seat famine classes that scout-futility-check escalates ONCE per repo
+# (marker `signal: scout-futility/<repo>`, filed as escalate-senior; consecutive
+# counters pin at >= N once filed). Each crash writes a fresh STOP-REASON (fresh
+# timestamp = fresh dispatch hash = fresh 2-dispatch budget), so without this
+# dedupe gate the auditor pipeline summons a fresh SENIOR AUDITOR every scout
+# run on the SAME root cause. A unit failure on top of an OPEN futility
+# escalation is the same famine re-firing, not a new fault. Skip writing
+# STOP-REASON then; log LOUD so the skip is visible in the unit journal. When
+# the futility issue closes or the state resets, the gate reopens and fresh
+# failures escalate normally again. Fail-open: a gh read error returns no
+# marker issue, so the writer escalates (no silent sick scout).
+case "$UNIT" in
+  pi-scout@*.service|pi-scout-repair@*.service)
+    _repo="${UNIT#pi-scout}"
+    _repo="${_repo#@}"; _repo="${_repo#-repair@}"; _repo="${_repo%.service}"
+    _dry=$(grep -m1 '^consecutive_dry=' "$FUT_FDIR/$_repo.state" 2>/dev/null | cut -d= -f2-) || true
+    _dry=${_dry:-0}
+    _wall=$(grep -m1 '^consecutive_wall=' "$FUT_FDIR/$_repo.state" 2>/dev/null | cut -d= -f2-) || true
+    _wall=${_wall:-0}
+    _dry_ok=0; _wall_ok=0
+    [[ "$_dry" =~ ^[0-9]+$ ]] && [ "$_dry" -ge "$FUT_N" ] && _dry_ok=1
+    [[ "$_wall" =~ ^[0-9]+$ ]] && [ "$_wall" -ge "$FUT_N" ] && _wall_ok=1
+    if [ "$_dry_ok" = "1" ] || [ "$_wall_ok" = "1" ]; then
+      _open=$("$GH" issue list -R "$FUT_REPO" --state open --limit 200 \
+          --json number,body --jq '.[] | select((.body // "") | contains("signal: scout-futility/'"$_repo"'")) | .number' 2>/dev/null | head -n1 || true)
+      if [ -n "$_open" ]; then
+        echo "unit-escalation-write: skipping '$UNIT' (scout-futility for '$_repo' already escalated: $FUT_REPO#$_open, consecutive_dry=$_dry consecutive_wall=$_wall — same structural famine, not a new fault)" >&2
+        exit 0
+      fi
+    fi
     ;;
 esac
 
 # Last 5 journal lines for the failed unit (user scope). Best-effort: empty
 # array if journalctl is unavailable or the unit left no logs.
 mapfile -t jl < <(journalctl --user -u "$UNIT" -n 5 --no-pager -o short-iso 2>/dev/null || true)
+
+# Last 5 error-priority journal lines (ledger led-2026-08-28-manual-evidence-
+# pinning-and-triage-greps-fleet-op, fleet-ops#2392): the senior auditor carries
+# the failure evidence without a hand journalctl grep. error-priority = syslog
+# priority err(3) or higher (err, crit, alert, emerg), i.e. -p err. Best-effort:
+# empty array when the unit left no error-priority lines.
+JOURNAL_ERRORS_LINES=${UNIT_ESCALATION_JOURNAL_ERRORS_LINES:-5}
+case "$JOURNAL_ERRORS_LINES" in ''|*[!0-9]*) JOURNAL_ERRORS_LINES=5 ;; esac
+mapfile -t jel < <(journalctl --user -u "$UNIT" -p err -n "$JOURNAL_ERRORS_LINES" --no-pager -o short-iso 2>/dev/null || true)
 
 # OOM / kill evidence (fleet-ops#34, task 4).  systemctl show is best-effort:
 # an old unit may already have dropped out of the loaded set.
@@ -80,19 +231,196 @@ if [ "$oom_signal" = "no" ]; then
   fi
 fi
 
+# fleet-ops#2614 same-unit re-fire dedupe (writer-side). fleet-heartbeat.service
+# (and other persistent-red units: pi-scout@<repo>.service when a repo is in
+# structural dry/wall famine, siterep-live-canary.service when the live site is
+# red, etc.) fire OnFailure= on EVERY scheduler tick while the underlying fault
+# is unfixed. Without this dedupe each fire writes a fresh STOP-REASON.json
+# with a fresh sha256 hash, which:
+#   1. orphans the previous chain state file under
+#      $AS/fleet-escalation-completion/<old-hash>.json (it stays "in_flight"
+#      forever because fleet-escalation-completion only updates the hash of
+#      the CURRENT STOP-REASON);
+#   2. keeps fleet_chain_open{plane=unit-escalation, hop=trip} at 1
+#      indefinitely (the metric reads only the current STOP-REASON, and a
+#      fresh write of reason=unit-failure is non-terminal);
+#   3. forces the senior-auditor dispatcher to summon a fresh auditor every
+#      tick on the SAME root cause (each fresh hash bypasses the dispatcher's
+#      2-dispatch-per-hash cap).
+# Suppress when the existing STOP-REASON.json is for the SAME unit, has
+# reason=unit-failure (not a resolved/cooldown/boundary terminal), and is
+# recent (<SAME_UNIT_REFIRE_WINDOW_S, default 600s = 10min). After the
+# window the dedupe expires and the next fire writes fresh — a same-unit
+# re-fire an hour later IS a new trip (the prior one either resolved or
+# aged out). Different units always write fresh (no overlap; they each get
+# their own chain). STALE_OOM (OOM-kill) units always write fresh — a
+# recurrent OOM is a new evidence event even on the same unit.
+SAME_UNIT_REFIRE_WINDOW_S=${UNIT_ESCALATION_SAME_UNIT_WINDOW:-600}
+case "$SAME_UNIT_REFIRE_WINDOW_S" in ''|*[!0-9]*) SAME_UNIT_REFIRE_WINDOW_S=600 ;; esac
+# fleet-ops#2912 recurrence-suppression seams. RECURRENCE_STATE records, per
+# unit, how many CONSECUTIVE same-class trips ended in an auditor-resolved
+# closeout-skip; once the count reaches RECURRENCE_SUPPRESS_N (default 3) the
+# writer stops producing fresh STOP-REASON entries for that class. The count
+# expires after RECURRENCE_TTL (default 48h) so a class that went quiet and
+# later returns is treated as new. Tests override all three via env.
+RECURRENCE_STATE=${UNIT_ESCALATION_RECURRENCE_STATE:-$AS/unit-escalation-recurrence.json}
+RECURRENCE_SUPPRESS_N=${UNIT_ESCALATION_RECURRENCE_SUPPRESS_N:-3}
+case "$RECURRENCE_SUPPRESS_N" in ''|*[!0-9]*) RECURRENCE_SUPPRESS_N=3 ;; esac
+RECURRENCE_TTL=${UNIT_ESCALATION_RECURRENCE_TTL:-172800}
+case "$RECURRENCE_TTL" in ''|*[!0-9]*) RECURRENCE_TTL=172800 ;; esac
+_rf_skipped=0
+if [ -f "$SR" ] && [ "$oom_signal" != "yes" ]; then
+    _rf_reason=$(jq -r '.reason // ""' "$SR" 2>/dev/null || echo "")
+    _rf_unit=$(jq -r '.detail.unit // ""' "$SR" 2>/dev/null || echo "")
+    _rf_ts=$(jq -r '.timestamp // ""' "$SR" 2>/dev/null || echo "")
+    if [ "$_rf_reason" = "unit-failure" ] && [ "$_rf_unit" = "$UNIT" ] && [ -n "$_rf_ts" ]; then
+        _rf_now=$(date -u +%s)
+        _rf_then=$(date -u -d "$_rf_ts" +%s 2>/dev/null || echo 0)
+        if [[ "$_rf_then" =~ ^[0-9]+$ ]] && [ "$_rf_then" -gt 0 ] \
+            && [ $((_rf_now - _rf_then)) -lt "$SAME_UNIT_REFIRE_WINDOW_S" ]; then
+            _rf_age=$((_rf_now - _rf_then))
+            _rf_hash=$(sha256sum "$SR" 2>/dev/null | awk '{print $1}')
+            _rf_hash=${_rf_hash:-unknown}
+            echo "unit-escalation-write: skipping same-unit re-fire of '$UNIT' (age=${_rf_age}s < window=${SAME_UNIT_REFIRE_WINDOW_S}s, existing_hash=${_rf_hash:0:12} reason=$_rf_reason — already tracking this fault; do not orphan existing chain)" >&2
+            _rf_skipped=1
+        fi
+    fi
+fi
+if [ "$_rf_skipped" = "1" ]; then
+    exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# fleet-ops#2912 closeout-skipped recurrence gate (trip-layer suppression).
+# Decides whether this failure generates a fresh STOP-REASON (and therefore
+# a fresh senior-auditor dispatch) or is the Nth repeat of a class the
+# auditor already closeout-skipped. Evaluated here, BEFORE the atomic write:
+# the existing STOP-REASON still holds the previous trip's outcome, so this
+# is the only layer that can see "the last trip of this unit was
+# auditor-resolved by a senior auditor" (the closeout-skip marker). A skip
+# means no SR change -> stop-escalation.path does not fire -> no dispatch.
+# Journal window for class fingerprinting (LOUD [TAG] tokens): the writer
+# already scans this unit's journal for OOM evidence; reuse a slightly wider
+# window so recurring detector LOUD tags (e.g. FAILED-COMMAND-SWALLOWED,
+# DEBUG-PLAYBOOK-MISSING) land in the fingerprint. Stubbed empty in tests.
+mapfile -t _rec_taglines < <(journalctl --user -u "$UNIT" -n 40 --no-pager -q 2>/dev/null || true)
+
+_recur_out=""
+if _recur_out=$(python3 - "$UNIT" "$SR" "$result" "$exit_status" "$oom_signal" \
+        "$RECURRENCE_STATE" "$RECURRENCE_SUPPRESS_N" "$RECURRENCE_TTL" \
+        "${_rec_taglines[@]+"${_rec_taglines[@]}"}" <<'PY'
+import sys, json, os, time, re, fcntl, tempfile
+unit, sr_path, result, exit_status, oom_signal = sys.argv[1:6]
+state_path, suppress_n, ttl = sys.argv[6], int(sys.argv[7]), int(sys.argv[8])
+taglines = sys.argv[9:]
+
+# Class fingerprint: result + exit status + sorted unique LOUD [TAG] tokens
+# from the failed unit's recent journal. Identical fingerprint on consecutive
+# ticks = the same structural failure class recurring (fleet-heartbeat's 5
+# persistent reds produce the same LOUD set and the same exit 1 every tick).
+tags = sorted(set(re.findall(r'LOUD\s*\[([A-Z0-9_-]+)\]', "\n".join(taglines))))
+fp = "%s|%s|%s" % (result, exit_status, ",".join(tags))
+
+# Closeout-skip detection: the current STOP-REASON must be an
+# auditor-resolved closeout of THIS unit (live shape nests the summoning
+# trip under detail.summoning_trip; older writes put the unit directly on
+# detail.unit). Both shapes are honoured. An OOM-kill is never a closeout
+# class (existing #2614 carve-out: fresh evidence every time).
+closeout = False
+try:
+    with open(sr_path) as f:
+        sr = json.load(f)
+    detail = sr.get("detail") or {}
+    inner = (detail.get("summoning_trip") or {}).get("detail") or {}
+    prev_unit = inner.get("unit") or detail.get("unit") or ""
+    closeout = (sr.get("reason") == "auditor-resolved"
+                and prev_unit == unit and oom_signal != "yes")
+except Exception:
+    closeout = False
+
+state = {}
+try:
+    with open(state_path) as f:
+        state = json.load(f)
+except Exception:
+    state = {}
+
+now = int(time.time())
+ent = state.get(unit) or {}
+try:
+    n = int(ent.get("n") or 0)
+except Exception:
+    n = 0
+last_fp = str(ent.get("fingerprint") or "")
+try:
+    last = int(ent.get("last") or 0)
+except Exception:
+    last = 0
+
+if closeout:
+    if last > 0 and (now - last) > ttl:
+        # Class went quiet past the TTL; a return is a new cycle.
+        n, last_fp = 1, fp
+    elif fp == last_fp:
+        # Same class closeout-skipped again: the recurrence count climbs.
+        n += 1
+    else:
+        # Materially different class: restart the count, dispatch confirm.
+        n, last_fp = 1, fp
+else:
+    # No closeout-skip on the prior trip (trip in flight, different unit, or
+    # no SR): counter resets; the current audit will re-establish it.
+    n, last_fp = 0, ""
+
+state[unit] = {"n": n, "fingerprint": last_fp, "last": now}
+try:
+    os.makedirs(os.path.dirname(state_path), exist_ok=True)
+    with open(state_path + ".lock", "w") as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(state_path), prefix=".rec-")
+        with os.fdopen(fd, "w") as f:
+            json.dump(state, f, indent=2)
+            f.write("\n")
+        os.replace(tmp, state_path)
+except Exception as e:
+    # State-write failure must never silently skip an auditor: fail open.
+    print("RECURRENCE verdict=WRITE n=%d error=%s" % (n, e))
+    raise SystemExit(0)
+
+verdict = "SUPPRESS" if (closeout and n >= suppress_n) else "WRITE"
+print("RECURRENCE verdict=%s unit=%s n=%d suppress_n=%d closeout=%s class=%s"
+      % (verdict, unit, n, suppress_n, closeout, fp[:120]))
+raise SystemExit(0)
+PY
+); then
+    if [[ "$_recur_out" == *"verdict=SUPPRESS"* ]]; then
+        echo "unit-escalation-write: suppressing recurring closeout-skipped class for '$UNIT' ($_recur_out) — no fresh STOP-REASON, no senior-auditor dispatch (fleet-ops#2912)" >&2
+        exit 0
+    fi
+    echo "unit-escalation-write: recurrence gate $_recur_out" >&2
+else
+    echo "unit-escalation-write: WARN recurrence gate failed (rc=$?) — fail-open, writing fresh STOP-REASON" >&2
+fi
+
 # Atomic write under flock so concurrent failures serialize (each overwrites
 # with its own entry; the path unit fires per change; the auditor's catch-all
 # sweep then collects any other failed units via systemctl --state=failed).
-python3 - "$SR" "$UNIT" "$result" "$exit_status" "$mem_peak" "$oom_signal" "${jl[@]+"${jl[@]}"}" <<'PY'
+python3 - "$SR" "$UNIT" "$result" "$exit_status" "$mem_peak" "$oom_signal" "${#jl[@]}" "${jl[@]+"${jl[@]}"}" "${jel[@]+"${jel[@]}"}" <<'PY'
 import sys, json, os, time, fcntl, tempfile
 path, unit = sys.argv[1], sys.argv[2]
 result, exit_status, mem_peak, oom_signal = sys.argv[3:7]
-lines = sys.argv[7:]
+jcount = int(sys.argv[7])
+rest = sys.argv[8:]
+lines = rest[:jcount]
+errors_lines = rest[jcount:]
+reason = os.environ.get("UNIT_ESCALATION_REASON", "unit-failure")
+source = os.environ.get("UNIT_ESCALATION_SOURCE", "unit-escalation")
 entry = {
-    "reason": "unit-failure",
+    "reason": reason,
     "detail": {
         "unit": unit,
         "journal": lines,
+        "journal_errors": errors_lines,
         "result": result,
         "exit_status": exit_status,
         "memory_peak": mem_peak,
@@ -100,7 +428,7 @@ entry = {
     },
     "timestamp": time.strftime('%Y-%m-%dT%H:%M:%S.000Z', time.gmtime()),
     "extension": "unit-escalation",
-    "source": "unit-escalation",
+    "source": source,
 }
 lockpath = path + ".lock"
 os.makedirs(os.path.dirname(path), exist_ok=True)

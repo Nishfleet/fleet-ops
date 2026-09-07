@@ -60,13 +60,17 @@
 #                                 the fixture behind).
 #
 # Result JSON: $AGENT_STATE/fleet-resilience-drill/last-run.json
-# Metrics:     $AGENT_STATE/fleet-resilience-drill/resilience-drill.prom
-#              (Prometheus textfile; node-exporter picks it up via its
-#               textfile collector — see install.sh --system + the
-#               /etc/default/prometheus env var the MANIFEST ships). The
-#               last-green timestamp is only written when all planes pass
-#               or skip, so absent() / stale() catches a drill that stops
-#               running or stays red.
+# Metrics:     /var/lib/prometheus/node-exporter/fleet-resilience-drill.prom
+#              (default — the node-exporter textfile directory that
+#               Prometheus scrapes; node-exporter's textfile collector is
+#               wired in /etc/default/prometheus-node-exporter). The env
+#               override FLEET_RES_DRILL_PROM_FILE exists for tests/scratch.
+#               The default MUST stay on the scraped path: the 2026-08-28
+#               ResilienceDrillAbsent incident ran green all week while its
+#               metric went unseen because the default pointed at
+#               $AGENT_STATE (unscraped). The last-green timestamp is only
+#               written when all planes pass or skip, so absent() / stale()
+#               catches a drill that stops running or stays red.
 # LOUD lines go to the heartbeat triage file. Any FAIL exits 1 (the global
 # OnFailure drop-in pages). SKIP is LOUD and does not fail the unit.
 #
@@ -160,7 +164,7 @@ PRECEDENCE_PENDING_FILE="${FLEET_RES_DRILL_PRECEDENCE_PENDING_FILE:-$AGENT_STATE
 RES_DRILL_VAULT="${FLEET_RES_DRILL_VAULT:-$AGENT_STATE/.res-drill-vault}"
 ISSUE_FILE_BIN="${FLEET_RES_DRILL_ISSUE_FILE:-$(cd "$(dirname "$(readlink -f "$0")")" && pwd)/fleet-issue-file}"
 AUTOFILE_DISABLE="${FLEET_RES_DRILL_AUTOFILE_DISABLE:-0}"
-PROM_FILE="${FLEET_RES_DRILL_PROM_FILE:-$STATE_DIR/resilience-drill.prom}"
+PROM_FILE="${FLEET_RES_DRILL_PROM_FILE:-/var/lib/prometheus/node-exporter/fleet-resilience-drill.prom}"
 
 BLUEPRINT="$FLEET_OPS_REPO/docs/resilience-blueprint.md"
 RUNBOOK="$FLEET_OPS_REPO/docs/break-glass-access.md"

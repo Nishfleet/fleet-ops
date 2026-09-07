@@ -153,15 +153,28 @@ get_installation_id() {
     fi
   fi
   jwt="$(mint_jwt)"
-  local list
-  list="$(curl -fsS \
-      -H "Authorization: Bearer $jwt" \
-      -H "Accept: application/vnd.github+json" \
-      -H "User-Agent: nishfleet-worker-token" \
-      -H "X-GitHub-Api-Version: 2022-11-28" \
-      "https://api.github.com/app/installations" 2>&1)" || {
+  # fleet-ops#3445 class: a transient GitHub API 404 on /app/installations
+  # (stale installations cache + live discovery 404) must NOT hard-fail the
+  # mint. Bounded retry (3 attempts, 2s apart) absorbs the transient; a
+  # sustained failure still exits 3 (fail-closed, no human-gh fallback).
+  local list attempt
+  list=""
+  for attempt in 1 2 3; do
+    list="$(curl -fsS \
+        -H "Authorization: Bearer $jwt" \
+        -H "Accept: application/vnd.github+json" \
+        -H "User-Agent: nishfleet-worker-token" \
+        -H "X-GitHub-Api-Version: 2022-11-28" \
+        "https://api.github.com/app/installations" 2>&1)" && break
+    if (( attempt < 3 )); then
+      echo "worker-token: app/installations lookup attempt $attempt failed — retrying" >&2
+      sleep 2
+    fi
+  done
+  if [[ -z "$list" ]]; then
     echo "worker-token: app/installations lookup failed — degraded" >&2
-    exit 3; }
+    exit 3
+  fi
   printf '%s' "$list" | jq '{installations: .}' > "$INSTALL_CACHE" 2>/dev/null || {
     echo "worker-token: app/installations parse failed — degraded" >&2
     exit 3; }

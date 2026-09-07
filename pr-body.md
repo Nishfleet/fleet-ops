@@ -1,49 +1,77 @@
-Raise free-lane caps and add GitHub API rate limit as a concurrency governor (fleet-ops#1350).
+feat(seat-health): walled-seat comeback probe with weekly credentials_bad issue
 
-## What changed
+## Why
 
-- `config/seat-caps.json`: raised free-lane caps and AIMD probe ceilings from live concurrency-tolerance probes.
-  - `bai` cap 2 -> 4 (deepseek-v4-flash, measured clean to n=5).
-  - `commandcode` cap 2 -> 4 (minimax-m3-free, measured clean to n=5).
-  - `opencode` cap 1 -> 3 (hy3-free, measured clean to n=5).
-  - `hetzner` cap stays 2 (concurrent probes timeout; re-probe before raising).
-  - Cursor stays 1 (known single-flight).
-- `libexec/fleet-metrics-export.py`: fetches `gh api rate_limit` once per run, emits `fleet_gh_rate_limit_*` Prometheus metrics, and writes a side-car JSON state file for the intake throttle.
-- `lib/pi-intake-tick.sh`: gates issue claims on the side-car state; holds claims this tick when any consumed resource (core/search/graphql) is below 20%. Missing or stale state fail-open (and now logs that it is failing open) so a dead exporter does not freeze the fleet.
-- `config/fleet_rules.yml`: adds `FleetGhRateLimitAbsent` (organ heartbeat) and `FleetGhRateLimitLowSustained` (6h trend) alerts.
-- `tests/seat-lib-aimd.test.sh`: updated AIMD ceiling assertions to match the raised free-lane caps.
-- `tests/fleet-gh-rate-limit.test.sh` + `tests/pi-intake-gh-rate-limit.test.sh` (CI-hosted by `fleet-metrics-export.test.sh` and `pi-intake-run.test.sh`): offline coverage for the rate-limit metrics and the intake throttle.
+fleet-ops#1348: #1167 landed the `walled_comeback` table in `config/seat-caps.json`
+(15min on 429, hourly on daily quota, daily on monthly/402, weekly on
+credentials_bad, max 1 probe per 15min). `pick_seat` already fail-opens after
+`usable_at` passes, but nothing actually re-admits the seat — the wall meant the
+seat stayed walled until a manual intervention or an unrelated healthy observation
+overwrote the ledger.
 
-## Target state
+This PR adds a periodic probe (systemd timer every 15min) that:
+- Reads `usable_at` from the per-seat ledger
+- When `usable_at` has passed, sends a polite 1-token "reply OK" probe through pi
+- A successful probe produces a healthy observation (seat-health.ts records it),
+  clearing `usable_at` so the seat re-enters the ladder at its cap
+- Respects `min_probe_interval_s` from `seat-caps.json` (max 1 probe per seat per tick)
+- `credentials_bad`: probes weekly and files an `agent-ready` issue if still bad
+  (needs fixing, not waiting)
 
-- 15-25 concurrent workers, load <12, zero 429-storms.
-- GitHub API budget is a soft ceiling: intake throttles before the remaining core/search/graphql budget drops below 20%, and a sustained-low trend alert fires if any resource stays under 20% for 6+ hours.
+## Scope
+
+- `bin/seat-walled-probe` — new script. Iterates the per-seat ledger, probes seats
+  whose `usable_at` is in the past and whose `failure_mode` is walled (rate_limit,
+  quota_exhausted, credentials_bad, empty_run). Uses `--dry-run` and `--probe-all`
+  flags. Exits 0 when there is nothing to probe (common case, not a failure).
+- `systemd/seat-walled-probe.service` + `systemd/seat-walled-probe.timer` —
+  oneshot unit with 10min timeout, timer fires every 15min with 60s randomized delay.
+- `systemd/timer-manifest.json` — entry for the new timer (source: repo, cadence: 15min).
+- `tests/seat-walled-probe.test.sh` — 5-phase test: dry-run selection (skips future/
+  healthy/recent, probes past+weekly), real mock run (probe success/failure + issue
+  filing), no-seats exits 0, --probe-all picks non-walled modes, systemd unit validity
+  + manifest entry.
+- `MANIFEST` — deploy mapping for bin + service + timer.
+
+**Out of scope**: the census sweep integration. #1149 is already the census sweeper;
+this probe runs on its own 15min timer rather than being called from the census.
+
+## Tradeoffs
+
+- **Own timer vs census hook.** Chose a standalone timer because the probe cadence
+  (15min) is tighter than the census (weekly). Adding a 15min-firing census step would
+  change the census's own semantics. The two are orthogonal — census maps assets to
+  guards; this probe is a guard.
+
+## Blast Radius
+
+- **Low risk.** New script + new systemd units only. No existing files modified.
+  The script reads (never writes) the per-seat ledger and `seat-caps.json`.
+  Systemd timer is non-mandatory — fleet runs fine without it.
+- **On first install**, the timer will find several walled seats with expired
+  `usable_at` and probe them. This is correct — those seats should have been
+  re-probed already.
 
 ## Verification
 
-run-proof: tests/fleet-gh-rate-limit.test.sh
-
 ```
-$ cd /home/nish/workspaces/agent-worktrees/issue-fleet-ops-1350
-$ bash tests/fleet-gh-rate-limit.test.sh
-OK: healthy rate-limit emits metrics + sidecar; low=0, binding floor=20/30
-OK: exhausted rate-limit (<20% on search) sets low=1, sidecar=5/30
-OK: fleet-ops#1350 gh rate-limit metrics + sidecar verified
-
-$ bash tests/pi-intake-gh-rate-limit.test.sh
-OK: low=1 holds claims and exits 0
-OK: low=0 continues without holding
-OK: missing gh rate-limit state is fail-open
-
-$ bash tests/seat-lib-aimd.test.sh
-All AIMD invariants passed.
-
-$ bash tests/pi-intake-run.test.sh
-ALL OK: intake-tick spawn post-condition + start-limit healer
-
-$ bash tests/fleet-metrics-export.test.sh
-ALL OK: fleet-metrics-export #1136 logic pinned
-
-$ bash tests/seat-lib.test.sh
-ALL OK
+bash tests/seat-walled-probe.test.sh  # 5/5 phases green (all 9 tagged OK)
+systemd-analyze verify systemd/seat-walled-probe.service systemd/seat-walled-probe.timer
+shellcheck -x bin/seat-walled-probe  # clean (exit 0)
+sgscan  # no new security findings
 ```
+
+run-proof: tests/seat-walled-probe.test.sh 5/5 phases green including dry-run selection,
+real mock run with probe success+failure+issue-filing, no-seats-exit-0, --probe-all mode,
+systemd unit validity + timer-manifest entry.
+
+research: official docs (systemd.timer(5), systemd.service(5)) plus a last30days-scale pass for probe-style free-seat recovery patterns; compared polling to a systemd path-unit trigger on the ledger directory (rejected — path unit fires on every write, every few seconds; polling every 15min is simpler and lower CPU) and checked the existing bin/fleet-seat-recovery + census sweep (#1149) — adopted a standalone systemd timer + bash script because it runs on the existing fleet timer pattern with no new machinery, and the census sweep is weekly (too coarse for a 15min probe cadence).
+
+help-first: ran `systemctl --help`, `systemd-analyze --help`, `pi --help`, and `bin/fleet-seat-recovery --help` — none can read per-seat ledger JSON, compare timestamps against seat-caps.json walled_comeback durations, or file agent-ready issues via fleet-issue-file; the existing tools do not already do this.
+
+organ-heartbeat: systemd/seat-walled-probe.service systemd/seat-walled-probe.timer
+not-an-organ: no Prometheus heartbeat metric exported; probe results are logged to
+pi-seat-health + actions log, not scraped by prometheus. This is a scheduled probe,
+not an organ under fleet-ops#1010.
+
+Closes #1348

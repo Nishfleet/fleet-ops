@@ -8,8 +8,8 @@
 #   After: machinery capped at ~30% of live pi-issue@ lanes; product 70%
 #   with product_front first. One repair lane always runs when live
 #   machinery == 0 (fleet-ops#1452 floor); ratio resumes from the second
-#   machinery unit. A machinery issue jumps the band only by naming
-#   `band-multiplier: N` on its body. Weekly Fleet Review owns
+#   machinery unit. A machinery issue jumps the band only by carrying
+#   a `priority` or `emergency` label. Weekly Fleet Review owns
 #   machinery_max_pct / product_min_pct (tighten only).
 #
 # Environment (tests):
@@ -130,11 +130,19 @@ precedence_band_is_leverage_issue() {
     jq -e --argjson n "$n" '.surge_leverage_issues | index($n) != null' "$json" >/dev/null
 }
 
-precedence_band_has_multiplier() {
-    local body="$1"
-    printf '%s\n' "$body" | grep -qE '^band-multiplier:[[:space:]]*[1-9][0-9]*[[:space:]]*$'
-}
+PRECEDENCE_BAND_PRIORITY_LABEL="${PRECEDENCE_BAND_PRIORITY_LABEL:-priority}"
+PRECEDENCE_BAND_EMERGENCY_LABEL="${PRECEDENCE_BAND_EMERGENCY_LABEL:-emergency}"
 
+# Check if issue has a band-multiplier label (priority/emergency).
+# Args: labels_json (from gh issue list --json labels)
+precedence_band_has_multiplier() {
+    local labels_json="$1"
+    local priority="$PRECEDENCE_BAND_PRIORITY_LABEL"
+    local emergency="$PRECEDENCE_BAND_EMERGENCY_LABEL"
+    printf '%s\n' "$labels_json" | jq -e --arg p "$priority" --arg e "$emergency" '
+      .[]? | select(.name == $p or .name == $e) | .name
+    ' >/dev/null
+}
 # Detect starvation-class issues: meta-issues reporting the dispatch/claim
 # pipeline is not consuming the ready queue. These differ from regular
 # repair issues (specific code bugs) in that they diagnose the throttle
@@ -276,7 +284,7 @@ precedence_band_over_cap() {
 # Return 0 if this claim may proceed. Prints a one-token reason.
 # Args: repo issue_number body [title]
 precedence_band_allow_claim() {
-    local repo="$1" n="$2" body="${3:-}" title="${4:-}"
+    local repo="$1" n="$2" labels_json="${3:-}" body="${4:-}" title="${5:-}"
     local phase pct
     # Product repos are never gated by the machinery band. Check this
     # before reading the policy so a missing config cannot stall 0509.
@@ -356,7 +364,7 @@ precedence_band_allow_claim() {
             printf 'allow-band-surge-legit\n'
             return 0
         fi
-        if precedence_band_has_multiplier "$body"; then
+        if precedence_band_has_multiplier "$labels_json"; then
             printf 'allow-multiplier\n'
             return 0
         fi
@@ -382,4 +390,116 @@ precedence_band_allow_claim() {
     fi
     printf 'allow-band\n'
     return 0
+}
+
+# === Product-first precedence (fleet-ops#2519) ===
+# When the queue self-maintenance ratio exceeds PRODUCT_FIRST_SELF_RATIO_MAX,
+# the intake tick holds the self-maintenance repo (fleet-ops) in the intake
+# buffer: its agent-ready issues are not admitted to the dispatch queue, so
+# fleet capacity goes to product repos. Product repos are never gated. Fails
+# open (admit) when the queue composition cache is unavailable, so a dead
+# metrics exporter never freezes the fleet.
+#
+# Environment (tests):
+#   PRODUCT_FIRST_QUEUE_CACHE    queue-composition-cache.json (default:
+#                                agent-state/fleet-metrics)
+#   PRODUCT_FIRST_QUEUE          which queue ratio gates admission
+#                                (default: agent-ready)
+#   PRODUCT_FIRST_SELF_RATIO_MAX threshold (default: 0.5)
+#   SELF_MAINT_REPOS_JSON        self-maintenance repos (default:
+#                                config/self-maintenance-repos.json)
+#   PRODUCT_FIRST_PROM           prom path for fleet_queue_product_ratio
+PRODUCT_FIRST_SELF_RATIO_MAX="${PRODUCT_FIRST_SELF_RATIO_MAX:-0.5}"
+PRODUCT_FIRST_QUEUE="${PRODUCT_FIRST_QUEUE:-agent-ready}"
+PRODUCT_FIRST_QUEUE_CACHE="${PRODUCT_FIRST_QUEUE_CACHE:-}"
+SELF_MAINT_REPOS_JSON="${SELF_MAINT_REPOS_JSON:-}"
+
+product_first_resolve_queue_cache() {
+    # An explicitly-set PRODUCT_FIRST_QUEUE_CACHE is the operator's chosen
+    # source of truth; missing means unavailable, not "fall back to live".
+    # Without this, an override path that does not exist would silently
+    # pull the live system cache and invert the fail-open contract (an
+    # unavailable cache must admit, not serve numbers).
+    if [[ -n "$PRODUCT_FIRST_QUEUE_CACHE" ]]; then
+        [[ -f "$PRODUCT_FIRST_QUEUE_CACHE" ]] || return 1
+        printf '%s\n' "$PRODUCT_FIRST_QUEUE_CACHE"
+        return 0
+    fi
+    local p="/home/nish/workspaces/agent-state/fleet-metrics/queue-composition-cache.json"
+    if [[ -f "$p" ]]; then
+        printf '%s\n' "$p"
+        return 0
+    fi
+    return 1
+}
+
+# Print "SELF TOTAL" for PRODUCT_FIRST_QUEUE from the cache. Returns 1 on
+# unavailable cache or unparseable/total=0 data.
+product_first_queue_counts() {
+    local cache
+    cache="$(product_first_resolve_queue_cache)" || return 1
+    jq -r --arg q "$PRODUCT_FIRST_QUEUE" '.data[$q] | "\(.self) \(.total)"' "$cache" \
+        2>/dev/null || return 1
+}
+
+# Print the self-maintenance ratio (0..1) for PRODUCT_FIRST_QUEUE.
+# Returns 1 on unavailable cache or total=0.
+product_first_ratio() {
+    local counts self total
+    counts="$(product_first_queue_counts)" || return 1
+    self="${counts%% *}"
+    total="${counts##* }"
+    [[ "$self" =~ ^[0-9]+$ && "$total" =~ ^[0-9]+$ && "$total" -gt 0 ]] || return 1
+    awk -v s="$self" -v t="$total" 'BEGIN{printf "%.6f", s/t}'
+}
+
+# Print the product ratio (1 - self-maintenance ratio) for
+# PRODUCT_FIRST_QUEUE. Returns 1 on unavailable cache or total=0.
+product_first_product_ratio() {
+    local r
+    r="$(product_first_ratio)" || return 1
+    awk -v r="$r" 'BEGIN{printf "%.6f", 1-r}'
+}
+
+# Return 0 (HOLD product-first precedence) when the self-maintenance ratio
+# exceeds the max; 1 (ADMIT) otherwise or when the ratio is unavailable.
+product_first_hold() {
+    local r
+    r="$(product_first_ratio)" || return 1
+    awk -v r="$r" -v m="$PRODUCT_FIRST_SELF_RATIO_MAX" 'BEGIN{exit !(r > m)}'
+}
+
+# Return 0 if $1 is a self-maintenance repo
+# (config/self-maintenance-repos.json); 1 otherwise.
+product_first_is_self_maintenance() {
+    local repo="$1" json
+    if [[ -n "$SELF_MAINT_REPOS_JSON" && -f "$SELF_MAINT_REPOS_JSON" ]]; then
+        json="$SELF_MAINT_REPOS_JSON"
+    elif [[ -f "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/config/self-maintenance-repos.json" ]]; then
+        json="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/config/self-maintenance-repos.json"
+    else
+        json=""
+    fi
+    if [[ -n "$json" ]]; then
+        jq -e --arg r "$repo" '.repos | index($r) != null' "$json" >/dev/null 2>&1
+    else
+        [[ "$repo" == "fleet-ops" ]]
+    fi
+}
+
+# Best-effort export of fleet_queue_product_ratio for PRODUCT_FIRST_QUEUE to
+# a prom file. Called by the intake tick so the metric is written even when
+# the product-first precedence is currently holding (observability).
+product_first_export_product_ratio() {
+    local out="${PRODUCT_FIRST_PROM:-/var/lib/prometheus/node-exporter/fleet-queue-product-ratio.prom}"
+    mkdir -p "$(dirname "$out")" 2>/dev/null || true
+    local pr
+    if pr="$(product_first_product_ratio)"; then
+        {
+            printf '# HELP fleet_queue_product_ratio Product / total agent-ready issues by queue. 1 - self-maintenance_ratio (fleet-ops#2519).\n'
+            printf '# TYPE fleet_queue_product_ratio gauge\n'
+            printf 'fleet_queue_product_ratio{queue="%s"} %s\n' "$PRODUCT_FIRST_QUEUE" "$pr"
+        } > "$out.tmp.$$" 2>/dev/null || return 0
+        mv "$out.tmp.$$" "$out" 2>/dev/null || true
+    fi
 }

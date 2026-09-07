@@ -233,6 +233,134 @@ def evaluate_record(
     return errors
 
 
+# --- fleet-ops#3519: per-repo quality ceiling ratchet ---------------------------
+
+# The measured per-repo quality ceilings the fleet-metrics-export pipeline owns.
+CEILING_METRICS = (
+    "reverts_per_100_merges",
+    "post_merge_defects_per_100",
+    "sessions_to_pr_pct",
+)
+
+
+def load_ceilings_cfg(ratchet: dict[str, Any]) -> dict[str, dict[str, float]]:
+    """Return the `.ceilings` block (repo -> metric -> number). Missing or
+    malformed -> {} so a config fault tightens nothing, silently.
+    """
+    ceilings = ratchet.get("ceilings")
+    if not isinstance(ceilings, dict):
+        return {}
+    out: dict[str, dict[str, float]] = {}
+    for repo, row in ceilings.items():
+        if not isinstance(row, dict):
+            continue
+        nums: dict[str, float] = {}
+        for metric, val in row.items():
+            try:
+                nums[metric] = float(val)
+            except (TypeError, ValueError):
+                continue
+        if nums:
+            out[str(repo)] = nums
+    return out
+
+
+def _p50(samples: list[float]) -> float | None:
+    clean = [
+        s for s in samples
+        if isinstance(s, (int, float)) and not isinstance(s, bool)
+    ]
+    if not clean:
+        return None
+    clean.sort()
+    n = len(clean)
+    mid = n // 2
+    if n % 2 == 1:
+        return float(clean[mid])
+    return round((clean[mid - 1] + clean[mid]) / 2.0, PLACES)
+
+
+def tighten_ceilings(
+    ceilings: dict[str, dict[str, float]],
+    metrics: dict[str, dict[str, list[float]]],
+) -> tuple[dict[str, dict[str, float]], list[str]]:
+    """Compute per-repo ceiling = min(current, p50 x 1.1). NEVER loosens.
+
+    Returns (updated ceilings, human-readable change list). A repo/metric with
+    no weekly samples keeps its current ceiling (no tightening signal). A repo
+    with no committed ceiling is seeded from this week's p50 x 1.1.
+    """
+    updated = {repo: dict(row) for repo, row in ceilings.items()}
+    changes: list[str] = []
+    for repo, repo_metric in metrics.items():
+        if not isinstance(repo_metric, dict):
+            continue
+        for metric, samples in repo_metric.items():
+            if metric not in CEILING_METRICS:
+                continue
+            if repo not in updated or metric not in updated[repo]:
+                base: float | None = None  # seed from this week
+            else:
+                base = updated[repo][metric]
+            p50 = _p50(samples if isinstance(samples, list) else [samples])
+            if p50 is None:
+                continue
+            candidate = round(p50 * 1.1, PLACES)
+            new = candidate if base is None else round(min(base, candidate), PLACES)
+            if base is not None and _same(new, base):
+                continue  # no tightening
+            if repo not in updated:
+                updated[repo] = {}
+            updated[repo][metric] = new
+            changes.append(
+                f"{repo}.{metric}: "
+                + (f"{base:.6f} -> " if base is not None else "seed ")
+                + f"{new:.6f} (p50 {p50:.6f} x 1.1 = {candidate:.6f})"
+            )
+    return updated, changes
+
+
+def cmd_tighten_ceilings(args: argparse.Namespace) -> int:
+    try:
+        raw = load_json(args.ratchet)
+        metrics = load_json(args.metrics)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        print(f"QUALITY-RATCHET: {exc}", file=sys.stderr)
+        return 1
+    if not isinstance(metrics, dict):
+        print(
+            "QUALITY-RATCHET: --metrics must be {repo: {metric: [samples]}}",
+            file=sys.stderr,
+        )
+        return 1
+    if not isinstance(raw.get("ceilings"), dict):
+        raise ValueError("ratchet has no ceilings block")
+    ceilings = raw["ceilings"]
+    updated, changes = tighten_ceilings(ceilings, metrics)
+    raw["ceilings"] = updated
+    for change in changes:
+        print(f"RATCHET: {change}", file=sys.stderr)
+    if args.dry_run:
+        print(
+            f"QUALITY-RATCHET-OK: dry-run no write ({len(changes)} proposed tighten(s))",
+            file=sys.stderr,
+        )
+        return 0
+    if changes:
+        _write_json(args.ratchet, raw)
+    print(
+        f"QUALITY-RATCHET-OK: {len(changes)} ceiling(s) tightened; none loosened",
+        file=sys.stderr,
+    )
+    return 0
+
+
+def _write_json(path: str, data: dict[str, Any]) -> None:
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, indent=2, sort_keys=False)
+        fh.write("\n")
+
+
 def check_weekly_record(
     ratchet: dict[str, Any],
     wfr_dir: Path,
@@ -321,6 +449,12 @@ def main(argv: list[str] | None = None) -> int:
     e.add_argument("--record", required=True)
     e.add_argument("--now", default="")
     e.set_defaults(func=cmd_evaluate_record)
+
+    t = sub.add_parser("tighten-ceilings", help="fleet-ops#3519 weekly ratchet: recompute .ceilings to min(current, p50 x 1.1)")
+    t.add_argument("--ratchet", required=True, help="config/quality-ratchet.json")
+    t.add_argument("--metrics", required=True, help="{repo: {metric: [weekly samples]}}")
+    t.add_argument("--dry-run", action="store_true", help="report proposed tightens without writing")
+    t.set_defaults(func=cmd_tighten_ceilings)
 
     args = parser.parse_args(argv)
     return int(args.func(args))

@@ -196,18 +196,18 @@ count=$(jq '.findings | length' <<<"$report")
 ok "git ref-existence probe is exempt (contrast: live #1065 cherry-pick empty exit 1 is NOT)"
 rm -f "$sessions/git-ref-probe-exempt-vs-1065.jsonl"
 
-# --- 5. worker.md cites fleet-ops#1065 (prompt-side lock) ------------------
+# --- 5. lib/failed-command-flagged.py cites fleet-ops#1065 (detector-side lock: case list moved to lib, fleet-ops#3246) ------------------
 # The prompt is the standing-rule contract for the next worker; dropping
 # the #1065 citation is a regression even if the drill still passes.
 worker="$repo_root/prompts/worker.md"
 [[ -f "$worker" ]] || fail "missing $worker"
-grep -q 'fleet-ops#1065' "$worker" \
-  || fail "prompts/worker.md must cite fleet-ops#1065 (prompt-side lock for the live cherry-pick empty shape)"
-grep -q "previous cherry-pick is now empty" "$worker" \
-  || fail "prompts/worker.md must name the live 'previous cherry-pick is now empty' wording so workers flag it"
-grep -q "git cherry-pick" "$worker" \
-  || fail "prompts/worker.md must name the live 'git cherry-pick' command so workers flag it"
-ok "worker.md cites fleet-ops#1065 and the live cherry-pick empty wording"
+grep -q 'fleet-ops#1065' "$lib" \
+  || fail "lib/failed-command-flagged.py must cite fleet-ops#1065 (detector-side lock for the live cherry-pick empty shape)"
+grep -q "previous cherry-pick is now empty" "$lib" \
+  || fail "lib/failed-command-flagged.py must name the live 'previous cherry-pick is now empty' wording so workers flag it"
+grep -q "git cherry-pick" "$lib" \
+  || fail "lib/failed-command-flagged.py must name the live 'git cherry-pick' command so workers flag it"
+ok "lib/failed-command-flagged.py cites fleet-ops#1065 and the live cherry-pick empty wording"
 
 # --- 6. lib/failed-command-flagged.py docstring cites fleet-ops#1065 -------
 # (detector-side lock). The docstring is the standing-rule contract for

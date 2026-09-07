@@ -145,6 +145,28 @@ run_check "$scratch/self-status.txt" "$scratch/self"
 [[ "$rc" == "0" ]] || fail "gate must not trip on its own files (rc=$rc out=$(cat "$out_file"))"
 ok "gate does not trip on its own files"
 
+# --- scenario 4b: extensions/ provider plugins are not assemblers ---------
+# fleet-ops#3125/#3263: devin/cursor provider sources carry maxTokens model
+# registry metadata; the gate must not treat them as prompt-assembler caps.
+mkdir -p "$scratch/ext/repo/extensions/sample-provider"
+cat >"$scratch/ext/repo/extensions/sample-provider/index.ts" <<'TS'
+import type { Model } from "@earendil-works/pi-ai";
+const models: Model[] = [
+  { id: "glm-5-2", name: "GLM-5.2", reasoning: true, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200000, maxTokens: 131072 },
+];
+export default models;
+TS
+cd "$scratch/ext/repo"
+git init -q .
+git config user.email "ext@example.com"
+git config user.name "Ext"
+git add -A
+git diff --name-status --cached >"$scratch/ext-status.txt"
+run_check "$scratch/ext-status.txt" "$scratch/ext/repo"
+[[ "$rc" == "0" ]] || fail "extensions/ provider sources must pass (rc=$rc out=$(cat "$out_file"))"
+ok "extensions/ provider plugin sources are not prompt assemblers"
+cd "$scratch/repo"
+
 # --- scenario 5: --all on a clean root passes -------------------------------
 cd "$scratch/repo"
 git reset -q

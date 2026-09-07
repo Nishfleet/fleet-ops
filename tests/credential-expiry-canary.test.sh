@@ -24,6 +24,11 @@
 # Offline. No GitHub API calls.
 
 set -euo pipefail
+# Offline: disable the wrapper's auto-file / observe-to-close gh block so
+# the existing GitHub-plane tests never touch the network. The pre-expiry
+# probe tests below re-enable it with a stubbed GH.
+export FLEET_CRED_EXPIRY_FILE_ISSUES=0
+export FLEET_CRED_EXPIRY_CLOSE_ISSUES=0
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
 lib="$repo_root/lib/credential-expiry-canary.py"
@@ -195,4 +200,275 @@ set -e
 grep -q 'PASS' <<<"$out" || fail "fixture PASS: $out"
 ok "fixture dir mode → PASS"
 
-echo "OK: credential-expiry-canary (fleet-ops#938)"
+# ============================================================================
+# PRE-EXPIRY PROBE (fleet-ops#2134, WFR 2026-08-29 lens-6-security)
+# ============================================================================
+# The reactive seat-health ledger only records credentials_bad AFTER a
+# worker burns a slot. The pre-expiry probe fires N hours BEFORE a
+# credential's known expiry so the renewal issue is auto-filed before the
+# production 403. These tests prove the probe-fires-before-403 invariant.
+
+# Fixed clock for deterministic remaining_s math.
+PROBE_NOW="2026-08-30T05:00:00Z"
+# expires_ms chosen so remaining_s is a clean number under --now.
+# 2026-08-30T05:00:00Z = 1788070800 s = 1788070800000 ms.
+# 3h before expiry -> expires 2026-08-30T08:00:00Z = 1788081600000 ms.
+NEAR_EXPIRY_MS=1788081600000
+# 30d after now -> well outside any threshold.
+FAR_EXPIRY_MS=1790662800000
+
+# --- 17. near-expiry credential triggers the probe (not a production 403) ---
+set +e
+out="$("$bin" --app-returns "$app_ok" \
+    --auth-entries "[{\"provider\":\"xai-oauth\",\"expires_ms\":$NEAR_EXPIRY_MS}]" \
+    --now "$PROBE_NOW" 2>&1)"
+rc=$?
+set -e
+[[ "$rc" -eq 1 ]] || fail "near-expiry must exit 1 (PRE-EXPIRY-DETECTED), got $rc: $out"
+grep -q 'PRE-EXPIRY-DETECTED' <<<"$out" || fail "must print PRE-EXPIRY-DETECTED: $out"
+grep -q 'probe_triggered=true' <<<"$out" || fail "must mark probe_triggered=true: $out"
+grep -q 'signal: cred-expiry/xai-oauth' <<<"$out" || fail "must emit the cred-expiry signal: $out"
+# The invariant: the probe fired (PRE-EXPIRY-DETECTED), NOT a production 403.
+grep -qi 'production 403\|PRODUCTION-403' <<<"$out" && \
+    fail "must not report a production 403 (probe fires before it): $out"
+ok "near-expiry credential triggers the probe (PRE-EXPIRY-DETECTED, not a production 403)"
+
+# --- 18. far-expiry credential does not trigger the probe -------------------
+set +e
+out="$("$bin" --app-returns "$app_ok" \
+    --auth-entries "[{\"provider\":\"xai-oauth\",\"expires_ms\":$FAR_EXPIRY_MS}]" \
+    --now "$PROBE_NOW" 2>&1)"
+rc=$?
+set -e
+[[ "$rc" -eq 0 ]] || fail "far-expiry must exit 0, got $rc: $out"
+grep -q 'PRE-EXPIRY-DETECTED' <<<"$out" && \
+    fail "far-expiry must NOT print PRE-EXPIRY-DETECTED: $out"
+ok "far-expiry credential does not trigger the probe"
+
+# --- 19. static key (no expires) is not probeable ---------------------------
+set +e
+out="$("$bin" --app-returns "$app_ok" \
+    --auth-entries '[{"provider":"devin","expires_ms":null}]' \
+    --now "$PROBE_NOW" 2>&1)"
+rc=$?
+set -e
+[[ "$rc" -eq 0 ]] || fail "static key (no expires) must exit 0, got $rc: $out"
+grep -q 'PRE-EXPIRY-DETECTED' <<<"$out" && \
+    fail "static key must NOT trigger PRE-EXPIRY-DETECTED: $out"
+ok "static key (no known expiry) is not probeable"
+
+# --- 20. threshold boundary: just over N hours -> no finding ----------------
+# expires 7h after now; default threshold 6h -> not detected.
+set +e
+boundary_ms=$(( 1788070800000 + 7 * 3600 * 1000 ))
+out="$("$bin" --app-returns "$app_ok" \
+    --auth-entries "[{\"provider\":\"xai-oauth\",\"expires_ms\":$boundary_ms}]" \
+    --now "$PROBE_NOW" --pre-expiry-hours 6 2>&1)"
+rc=$?
+set -e
+[[ "$rc" -eq 0 ]] || fail "7h (>6h threshold) must exit 0, got $rc: $out"
+grep -q 'PRE-EXPIRY-DETECTED' <<<"$out" && \
+    fail "7h must NOT trigger PRE-EXPIRY-DETECTED at 6h threshold: $out"
+ok "threshold boundary: 7h expiry at 6h threshold -> no finding"
+
+# --- 21. --no-pre-expiry-probe disables the probe --------------------------
+set +e
+out="$("$bin" --app-returns "$app_ok" \
+    --auth-entries "[{\"provider\":\"xai-oauth\",\"expires_ms\":$NEAR_EXPIRY_MS}]" \
+    --now "$PROBE_NOW" --no-pre-expiry-probe 2>&1)"
+rc=$?
+set -e
+[[ "$rc" -eq 0 ]] || fail "--no-pre-expiry-probe must exit 0 (PASS), got $rc: $out"
+grep -q 'PRE-EXPIRY-DETECTED' <<<"$out" && \
+    fail "--no-pre-expiry-probe must NOT print PRE-EXPIRY-DETECTED: $out"
+ok "--no-pre-expiry-probe disables the probe"
+
+# --- 22. already-expired credential is also PRE-EXPIRY-DETECTED ------------
+# remaining_s negative: the credential is past expiry — the probe still
+# fires (louder than near-expiry) so the renewal issue is filed.
+past_ms=$(( 1788070800000 - 3600 * 1000 ))   # 1h before now
+set +e
+out="$("$bin" --app-returns "$app_ok" \
+    --auth-entries "[{\"provider\":\"xai-oauth\",\"expires_ms\":$past_ms}]" \
+    --now "$PROBE_NOW" 2>&1)"
+rc=$?
+set -e
+[[ "$rc" -eq 1 ]] || fail "already-expired must exit 1, got $rc: $out"
+grep -q 'PRE-EXPIRY-DETECTED' <<<"$out" || fail "already-expired must print PRE-EXPIRY-DETECTED: $out"
+ok "already-expired credential is PRE-EXPIRY-DETECTED (louder than near-expiry)"
+
+# --- 23. lib exposes pre_expiry_probe + load_auth_expiries -----------------
+python3 -c '
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("cec", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+assert hasattr(m, "pre_expiry_probe"), "missing pre_expiry_probe"
+assert hasattr(m, "load_auth_expiries"), "missing load_auth_expiries"
+from datetime import datetime, timezone
+now = datetime(2026,8,30,5,0,0,tzinfo=timezone.utc)
+# near-expiry (3h) at 6h threshold -> 1 finding
+f = m.pre_expiry_probe([{"provider":"x","expires_ms":1788081600000}], now=now, threshold_hours=6)
+assert len(f)==1 and f[0]["verdict"]=="PRE-EXPIRY-DETECTED" and f[0]["probe_triggered"] is True, f
+# far-expiry (30d) -> 0 findings
+f2 = m.pre_expiry_probe([{"provider":"x","expires_ms":1790662800000}], now=now, threshold_hours=6)
+assert len(f2)==0, f2
+print("lib pre_expiry_probe OK")
+' "$lib" || fail "lib pre_expiry_probe/load_auth_expiries missing or wrong"
+ok "lib exposes pre_expiry_probe + load_auth_expiries with correct detection"
+
+# --- 24. auto-file: PRE-EXPIRY-DETECTED files a renewal issue (stubbed gh) --
+# Build a stub gh + fleet-issue-file in a temp bin dir.
+stub_dir="$(mktemp -d -t cred-expiry-stub.XXXXXX)"
+trap 'rm -rf "$scratch" "$stub_dir"' EXIT INT TERM
+
+cat >"$stub_dir/gh" <<'STUB'
+#!/usr/bin/env bash
+# Record every call; dispatch on subcommand.
+cmd_log="${FLEET_CRED_EXPIRY_STUB_LOG:-/tmp/cred-expiry-gh-calls.log}"
+case "$1" in
+    issue)
+        case "$2" in
+            list)
+                echo "${FLEET_CRED_EXPIRY_STUB_LIST:-[]}"
+                ;;
+            comment)
+                printf 'gh issue comment %s\n' "$3" >>"$cmd_log"
+                ;;
+            close)
+                printf 'gh issue close %s\n' "$3" >>"$cmd_log"
+                ;;
+        esac
+        ;;
+esac
+exit 0
+STUB
+chmod +x "$stub_dir/gh"
+
+cat >"$stub_dir/fleet-issue-file" <<'STUB'
+#!/usr/bin/env bash
+# Record the file call; print a fake issue URL.
+cmd_log="${FLEET_CRED_EXPIRY_STUB_LOG:-/tmp/cred-expiry-gh-calls.log}"
+printf 'fleet-issue-file file %s\n' "$*" >>"$cmd_log"
+echo "https://github.com/Nishfleet/fleet-ops/issues/9999"
+exit 0
+STUB
+chmod +x "$stub_dir/fleet-issue-file"
+
+calls_log="$(mktemp -t cred-expiry-calls.XXXXXX)"
+export FLEET_CRED_EXPIRY_STUB_LOG="$calls_log"
+
+# 24a. no existing issue -> files a new renewal issue.
+export FLEET_CRED_EXPIRY_STUB_LIST='[]'
+export FLEET_CRED_EXPIRY_FILE_ISSUES=1
+export FLEET_CRED_EXPIRY_CLOSE_ISSUES=1
+export GH="$stub_dir/gh"
+export FLEET_ISSUE_FILE="$stub_dir/fleet-issue-file"
+: >"$calls_log"
+set +e
+out="$("$bin" --app-returns "$app_ok" \
+    --auth-entries "[{\"provider\":\"xai-oauth\",\"expires_ms\":$NEAR_EXPIRY_MS}]" \
+    --now "$PROBE_NOW" 2>&1)"
+rc=$?
+set -e
+[[ "$rc" -eq 1 ]] || fail "auto-file run must exit 1 (PRE-EXPIRY-DETECTED), got $rc: $out"
+grep -q 'fleet-issue-file file' "$calls_log" || \
+    fail "wrapper must call fleet-issue-file to file a renewal issue: $(cat "$calls_log")"
+ok "auto-file: PRE-EXPIRY-DETECTED files a renewal issue via fleet-issue-file"
+
+# 24b. existing issue with the signal -> deduped (no new file) + REPEAT-TICK
+# ADVISORY (fleet-ops#2134): once an open renewal issue exists, the heal path
+# (grok-token-refresh.timer for xai-oauth) owns the repair. Re-paging the
+# auditor every tick for an already-tracked, self-healing credential is pure
+# token burn — the stop-escalation hash drifts each tick (remaining_s/
+# timestamps change) so unit-escalation summons a senior auditor unboundedly.
+# The wrapper downgrades a fully-deduped tick to rc=0 + a LOUD advisory so
+# the auditor is paged ONCE (first detection) not every tick.
+export FLEET_CRED_EXPIRY_STUB_LIST='[{"number":42,"body":"...signal: cred-expiry/xai-oauth...","title":"renew"}]'
+: >"$calls_log"
+set +e
+out="$("$bin" --app-returns "$app_ok" \
+    --auth-entries "[{\"provider\":\"xai-oauth\",\"expires_ms\":$NEAR_EXPIRY_MS}]" \
+    --now "$PROBE_NOW" 2>&1)"
+rc=$?
+set -e
+[[ "$rc" -eq 0 ]] || \
+    fail "repeat-tick (all deduped) must exit 0 (CRED-EXPIRY-TRACKED advisory), got $rc: $out"
+grep -q 'CRED-EXPIRY-TRACKED' <<<"$out" || \
+    fail "repeat-tick must print the LOUD CRED-EXPIRY-TRACKED advisory: $out"
+grep -q 'fleet-issue-file file' "$calls_log" && \
+    fail "wrapper must NOT re-file when an open issue already carries the signal: $(cat "$calls_log")"
+ok "repeat-tick advisory: existing renewal issue -> rc=0 + CRED-EXPIRY-TRACKED, no re-file (no auditor burn)"
+
+# 24c. observe-to-close: signal cleared this tick -> comment + close.
+export FLEET_CRED_EXPIRY_STUB_LIST='[{"number":42,"body":"renew xai-oauth signal: cred-expiry/xai-oauth","title":"renew"}]'
+: >"$calls_log"
+set +e
+# far-expiry -> no PRE-EXPIRY-DETECTED this tick -> the open issue clears.
+out="$("$bin" --app-returns "$app_ok" \
+    --auth-entries "[{\"provider\":\"xai-oauth\",\"expires_ms\":$FAR_EXPIRY_MS}]" \
+    --now "$PROBE_NOW" 2>&1)"
+rc=$?
+set -e
+[[ "$rc" -eq 0 ]] || fail "observe-to-close run must exit 0 (no finding), got $rc: $out"
+grep -q 'gh issue comment 42' "$calls_log" || \
+    fail "observe-to-close must comment on the cleared issue: $(cat "$calls_log")"
+grep -q 'gh issue close 42' "$calls_log" || \
+    fail "observe-to-close must close the cleared issue: $(cat "$calls_log")"
+ok "observe-to-close: cleared signal comments + closes the renewal issue"
+
+# 24d. observe-to-close does NOT close a still-detected provider.
+# The provider is still detected AND already has an open issue -> this is the
+# repeat-tick advisory case (rc=0, CRED-EXPIRY-TRACKED). The point of 24d is
+# the observe-to-close gate: the open issue must NOT be closed while the
+# provider is still detected. The rc change from 1 -> 0 is the intended
+# fleet-ops#2134 repeat-tick-advisory fix (24b proves the advisory); here we
+# only assert the no-close invariant.
+export FLEET_CRED_EXPIRY_STUB_LIST='[{"number":42,"body":"renew xai-oauth signal: cred-expiry/xai-oauth","title":"renew"}]'
+: >"$calls_log"
+set +e
+out="$("$bin" --app-returns "$app_ok" \
+    --auth-entries "[{\"provider\":\"xai-oauth\",\"expires_ms\":$NEAR_EXPIRY_MS}]" \
+    --now "$PROBE_NOW" 2>&1)"
+rc=$?
+set -e
+[[ "$rc" -eq 0 ]] || \
+    fail "still-detected + already-tracked must exit 0 (repeat-tick advisory), got $rc: $out"
+grep -q 'CRED-EXPIRY-TRACKED' <<<"$out" || \
+    fail "still-detected + already-tracked must print CRED-EXPIRY-TRACKED: $out"
+grep -q 'gh issue close 42' "$calls_log" && \
+    fail "observe-to-close must NOT close an issue whose provider is still detected: $(cat "$calls_log")"
+ok "observe-to-close: still-detected provider is not closed (repeat-tick advisory rc=0)"
+
+# 24e. REJECT (dead App / PAT expires ≤ window end) stays fail-loud.
+# The repeat-tick advisory must ONLY fire on the PRE-EXPIRY-DETECTED path
+# (detected_count > 0). The App/PAT REJECT path leaves pre_expiry_detected
+# empty (detected_count == 0) — those conditions are NOT self-healing (a dead
+# App or an expiring PAT does not auto-rotate) and MUST stay fail-loud so the
+# auditor is paged. Simulate the REJECT path: GET /app 401, no auth-entries,
+# filing enabled with a stub open list. Assert rc=1 and NO CRED-EXPIRY-TRACKED.
+export FLEET_CRED_EXPIRY_STUB_LIST='[{"number":42,"body":"renew xai-oauth signal: cred-expiry/xai-oauth","title":"renew"}]'
+: >"$calls_log"
+set +e
+out="$("$bin" --app-returns '{}' --app-status 401 2>&1)"
+rc=$?
+set -e
+[[ "$rc" -eq 1 ]] || \
+    fail "REJECT (dead App, detected_count==0) must stay fail-loud rc=1, got $rc: $out"
+grep -q 'REJECT' <<<"$out" || fail "REJECT must print REJECT: $out"
+grep -q 'CRED-EXPIRY-TRACKED' <<<"$out" && \
+    fail "REJECT path (detected_count==0) must NOT emit the CRED-EXPIRY-TRACKED advisory: $out"
+ok "REJECT (dead App) stays fail-loud — repeat-tick advisory does not fire when detected_count==0"
+
+# Restore the offline defaults for any later checks.
+export FLEET_CRED_EXPIRY_FILE_ISSUES=0
+export FLEET_CRED_EXPIRY_CLOSE_ISSUES=0
+unset GH FLEET_ISSUE_FILE FLEET_CRED_EXPIRY_STUB_LIST FLEET_CRED_EXPIRY_STUB_LOG
+
+# --- 25. tier1 block 31 still wires the canary (unchanged) -----------------
+# Re-assert the tier1 wiring is intact after the wrapper change (the
+# existing block-31 checks at #11 already cover this; this is a belt-and-
+# braces re-confirm that the pre-expiry extension did not break the wiring).
+grep -q 'CRED_EXPIRY_CANARY_BIN' "$tier1" || fail "tier1 still references CRED_EXPIRY_CANARY_BIN"
+ok "tier1 block 31 wiring intact after pre-expiry extension"
+
+echo "OK: credential-expiry-canary (fleet-ops#938 + #2134 pre-expiry probe)"

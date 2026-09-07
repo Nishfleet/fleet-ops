@@ -14,22 +14,71 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections import Counter
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # --- Config ----------------------------------------------------------------
 
+def _ensure_worker_token() -> None:
+    """Use the nishfleet-worker App token for any GitHub write (fleet-ops#3445).
+
+    Fail closed if the App cannot mint and no token was inherited from a parent
+    organ, so a dead App never falls through to the human gh identity. Human gh
+    is read-only for organs. GH Actions (tests) has no App creds and stubs gh
+    as read-only, so skip minting there.
+    """
+    if os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_ACTIONS") == "true":
+        return
+    # A test injects a fake gh (GH != 'gh'); no human gh write is possible, so
+    # skip minting there too. Production callers never set GH.
+    if os.environ.get("GH", "gh") != "gh":
+        return
+    wt = os.environ.get(
+        "NISHFLEET_WORKER_TOKEN_BIN",
+        f"{os.environ.get('HOME', '/home/nish')}/.local/bin/worker-token",
+    )
+    try:
+        out = subprocess.run(
+            [wt, "--print"], capture_output=True, text=True, timeout=30
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print("fleet-ops#3445: worker-token --print failed - refusing human-gh writes: %s" % exc, file=sys.stderr)
+        sys.exit(1)
+    if out.returncode != 0:
+        print("fleet-ops#3445: worker-token --print rc=%s - refusing human-gh writes: %s" % (out.returncode, out.stderr.strip()[:200]), file=sys.stderr)
+        sys.exit(1)
+    for line in out.stdout.splitlines():
+        if line.startswith("export GH_TOKEN="):
+            os.environ["GH_TOKEN"] = line[len("export GH_TOKEN="):].strip()
+            return
+    print("fleet-ops#3445: worker-token --print output not an export GH_TOKEN line - refusing human-gh writes", file=sys.stderr)
+    sys.exit(1)
+
+# --- Config ----------------------------------------------------------------
+
 OUT = Path("/var/lib/prometheus/node-exporter/fleet.prom")
+# fleet-ops#2273: legacy stale textfile left behind when staleness-checker.py
+# was refactored (a639520) to stop writing fleet-staleness.prom. node_exporter
+# reads ALL .prom files in the textfile dir, so the stale file's duplicate
+# fleet_truth_staleness_* metrics shadow the fresh values in fleet.prom.
+# This path is the cleanup target — removed atomically when fleet.prom is
+# (re)written, so the duplicate can never reappear.
+LEGACY_STALENESS_PROM = OUT.parent / "fleet-staleness.prom"
 SEAT_HEALTH = Path(
     "/home/nish/workspaces/agent-state/lanes/pi-seat-health.json"
 )
 # Per-seat health ledger written by the pi seat-health extension. Each file is
 # <sanitised-provider>__<sanitised-model>.json. We scan it to surface
-# dead-credential seats (seat_dead=true, health_class=credentials_bad) as a
-# distinct heartbeat signal (fleet-ops#1445) instead of them being buried in
+# dead-credential seats (seat_dead=true, credentials_bad) as a distinct
+# heartbeat signal (fleet-ops#1445) instead of them being buried in
 # pick_seat's per-pick cap/dead fold or silently re-logged every cycle.
+# fleet-ops#2667: the credentials_bad signal lives in health_class OR in
+# failure_mode — see _read_dead_credentials for why both must be read.
 SEAT_LEDGER = Path(
     "/home/nish/workspaces/agent-state/lanes/seats"
 )
@@ -50,10 +99,66 @@ HELP_HEALTH = "# HELP fleet_pi_seat_healthy 1 if the Pi seat is healthy, else 0.
 TYPE_HEALTH = "# TYPE fleet_pi_seat_healthy gauge"
 HELP_OBS = "# HELP fleet_pi_seat_observed_seconds Epoch (s) when the Pi seat was last observed."
 TYPE_OBS = "# TYPE fleet_pi_seat_observed_seconds gauge"
-HELP_DCT = "# HELP fleet_pi_seat_dead_credential_total Number of seats with seat_dead=true and health_class=credentials_bad (HTTP 401/403) that need re-auth and will not recover until re-authenticated (fleet-ops#1445)."
+# fleet-ops#3111: a stale pi-seat-health.json must read as UNKNOWN, never
+# "healthy". The 2026-09-03 incident left the console tile saying "seat
+# healthy" from a 2-day-old observation while the transport was down 33h.
+# Age in seconds since observed_at; absent/unparseable -> -1 (UNKNOWN). The
+# alert rule fires >1800 (30 min) so a stale feed can never mask an outage.
+HELP_AGE = "# HELP fleet_pi_seat_health_age_seconds Seconds since the Pi seat was last observed (-1 if the observation is absent/unparseable). fleet-ops#3111."
+TYPE_AGE = "# TYPE fleet_pi_seat_health_age_seconds gauge"
+HELP_SEAT_TOTAL = "# HELP fleet_pi_seat_total Number of enrolled seats (providers with cap>0 in seat-caps.json). Denominator for the seat_availability SLO (fleet-ops#1291)."
+TYPE_SEAT_TOTAL = "# TYPE fleet_pi_seat_total gauge"
+HELP_DCT = "# HELP fleet_pi_seat_dead_credential_total Number of enrolled (model cap>0) seats with seat_dead=true carrying a credentials_bad signal in health_class or failure_mode (HTTP 401/403) that will not recover on their own (fleet-ops#1445, fleet-ops#2667, fleet-ops#3301)."
 TYPE_DCT = "# TYPE fleet_pi_seat_dead_credential_total gauge"
-HELP_DC = "# HELP fleet_pi_seat_dead_credential 1 for each dead-credential seat needing re-auth (fleet-ops#1445)."
+HELP_DC = "# HELP fleet_pi_seat_dead_credential 1 for each dead-credential seat; health_class=credentials_bad means re-auth may help, health_class=corpse means the seat is terminal and must be retired from config/seat-caps.json (fleet-ops#1445, fleet-ops#2667)."
 TYPE_DC = "# TYPE fleet_pi_seat_dead_credential gauge"
+HELP_CB = "# HELP fleet_seat_comeback_overdue_total Number of seats still classed non-healthy whose wall clock (usable_at/bench_until) has passed — released by the router but not re-observed since (fleet-ops#2407)."
+TYPE_CB = "# TYPE fleet_seat_comeback_overdue_total gauge"
+HELP_CBP = "# HELP fleet_seat_comeback_overdue 1 for each seat whose wall clock has passed but is still classed non-healthy (fleet-ops#2407)."
+TYPE_CBP = "# TYPE fleet_seat_comeback_overdue gauge"
+# fleet-ops#2638: never-probed comeback visibility. Counts seats the prober
+# has been failing on (consecutive_failure_count >= 10) without yet reaching
+# the corpse threshold (default 25). Sustained > 0 here is the loud signal
+# that the release path is firing but the seat still cannot recover — the
+# next sweep should corpse it. Combined with fleet_seat_comeback_overdue_total
+# it tells the repair worker which overdue seats are approaching the corpse
+# boundary before the bin has actually written the corpse.
+HELP_NRT = "# HELP fleet_seat_comeback_never_released_total Number of seats the comeback-release prober has been failing on (consecutive_failure_count in [10, SEAT_DEAD_CONSECUTIVE_THRESHOLD)) that are not yet corpse — the never-probed comeback visibility (fleet-ops#2638)."
+TYPE_NRT = "# TYPE fleet_seat_comeback_never_released_total gauge"
+HELP_NRP = "# HELP fleet_seat_comeback_never_released 1 for each seat whose consecutive_failure_count is in the never-released window (fleet-ops#2638)."
+TYPE_NRP = "# TYPE fleet_seat_comeback_never_released gauge"
+# fleet-ops#2712: provider-level (account-level) quota exhaustion. A
+# provider counts when >=2 of its seats report HTTP 402/health_class=
+# quota_exhausted within a 1h window — one billing wall, many seats.
+# Sustained > 0 here means the seat_availability SLO burn is account-
+# level, not 3 independent seat faults.
+HELP_PQE = "# HELP fleet_provider_quota_exhausted_total Number of providers with >=2 quota_exhausted seats observed in the last 1h — account-level quota exhaustion (fleet-ops#2712)."
+TYPE_PQE = "# TYPE fleet_provider_quota_exhausted_total gauge"
+HELP_PQEP = "# HELP fleet_provider_quota_exhausted 1 for each provider whose seats are account-level quota exhausted (fleet-ops#2712)."
+TYPE_PQEP = "# TYPE fleet_provider_quota_exhausted gauge"
+# fleet-ops#2738: healthy-but-parked visibility. A seat whose ledger reports
+# health_class=healthy + seat_dead=false (the seat works) but whose model cap
+# in seat-caps.json is 0 is silently costing throughput — pick_seat skips it
+# every tick while the seat-availability SLO burns. The devin/glm-5-2 restore
+# lapsed exactly this way: the ledger came back healthy, the cap stayed 0 for
+# 3+ days. This gauge counts those seats so the WFR lens and the next
+# blind-audit see them instead of a quiet depressed rollup. Sustained > 0
+# here is the loud signal that a restore was forgotten.
+HELP_HCAP0 = "# HELP fleet_seat_healthy_cap0_total Number of seats whose ledger is healthy (health_class=healthy, seat_dead=false) but whose model cap in seat-caps.json is 0 — healthy-but-parked, silently costing throughput (fleet-ops#2738)."
+TYPE_HCAP0 = "# TYPE fleet_seat_healthy_cap0_total gauge"
+HELP_HCAP0P = "# HELP fleet_seat_healthy_cap0 1 for each healthy-but-parked seat (health_class=healthy, seat_dead=false, model cap=0) so the repair worker knows which cap to restore (fleet-ops#2738)."
+TYPE_HCAP0P = "# TYPE fleet_seat_healthy_cap0 gauge"
+# fleet-ops#3111: stale cap=0 seats (intentional_cap_zero="stale") that have
+# not been re-auditioned. The 2026-09-03 incident showed groq/inferx/orcarouter
+# lingering at cap=0 for weeks while the fleet starved. The age is parsed from
+# the first YYYY-MM-DD in the reason; -1 if no date (undated = expires first).
+# seat-lib's _expire_stale_cap0_seats re-admits them at cap=1 after 14d; this
+# metric makes them visible BEFORE the expiry so the operator can re-audition
+# or re-date the reason.
+HELP_SC0T = "# HELP fleet_seat_cap0_stale_total Number of cap=0 seats classified stale (intentional_cap_zero=stale) — need re-audition or will auto-expire to cap=1 after 14d (fleet-ops#3111)."
+TYPE_SC0T = "# TYPE fleet_seat_cap0_stale_total gauge"
+HELP_SC0 = "# HELP fleet_seat_cap0_stale 1 for each stale cap=0 seat, with age_seconds since the reason date (-1 if undated) so the repair worker knows which to re-audition first (fleet-ops#3111)."
+TYPE_SC0 = "# TYPE fleet_seat_cap0_stale gauge"
 HELP_TEST = "# HELP fleet_test_alert 1 if the synthetic test alert file exists, else 0."
 TYPE_TEST = "# TYPE fleet_test_alert gauge"
 TEST_ALERT_FILE = Path(f"/run/user/{os.getuid()}/fleet-test-alert")
@@ -63,10 +168,14 @@ HELP_MPR = "# HELP fleet_merged_prs_24h Merged PR count per repo in the trailing
 TYPE_MPR = "# TYPE fleet_merged_prs_24h gauge"
 HELP_ESC = "# HELP fleet_escalations_24h Count of unit-escalation@ instances in the last 24h (top 20)."
 TYPE_ESC = "# TYPE fleet_escalations_24h gauge"
+HELP_OOMD = "# HELP fleet_oomd_kills_6h systemd-oomd kills of app-pi-issue.slice units in the trailing 6h, by unit (fleet-ops#4164). A rise > 3 in 6h trips FleetOomdKillsHigh, whose repair packet raises the live ram_gb_per_worker charge back to 2.0. Counts only oomd-managed kills (MESSAGE=Killed unit or Killed process), not kernel OOM."
+TYPE_OOMD = "# TYPE fleet_oomd_kills_6h gauge"
 HELP_RDISP = "# HELP fleet_repair_dispatch_24h DISPATCH lines in alert-repair actions.log within 24h."
 TYPE_RDISP = "# TYPE fleet_repair_dispatch_24h gauge"
 HELP_RSKIP = "# HELP fleet_repair_skip_24h SKIP lines in alert-repair actions.log within 24h."
 TYPE_RSKIP = "# TYPE fleet_repair_skip_24h gauge"
+HELP_AD = "# HELP fleet_alert_outcome_24h Per-alertname repair outcomes in the trailing 24h (fleet-ops#1291 alert-quality). kind=dispatch|resolved|failed|skipped|phantom_resolved. phantom_resolved = RESOLVED entries whose root_cause starts with PHANTOM_ALERT (drill fixtures, not real repair work) — the WFR alert-quality lens reads phantom_resolved>5/24h as phantom-drift regression (fleet-ops#2694). Feeds the WFR alert-quality lens."
+TYPE_AD = "# TYPE fleet_alert_outcome_24h gauge"
 HELP_OPEN = "# HELP fleet_open_prs Open pull-request count per repo from a cached org snapshot."
 TYPE_OPEN = "# TYPE fleet_open_prs gauge"
 HELP_CI = "# HELP fleet_main_ci_green 1 if default-branch CI is green, 0 if red. PENDING rollup resolved from latest completed CI run; repos with no CI omitted."
@@ -87,8 +196,10 @@ HELP_WACT = "# HELP fleet_pi_workers_active Live pi work in flight by source. ki
 TYPE_WACT = "# TYPE fleet_pi_workers_active gauge"
 # `fleet_ready_work` — open agent-ready issues across enrolled Nishfleet repos
 # (intake-repos.json is the source of truth). One gh call, cached 30 min like
-# merged-prs; omitted after 2h stale — never a frozen value.
-HELP_READY = "# HELP fleet_ready_work Open agent-ready issues across enrolled Nishfleet repos (intake-repos.json). Omitted when gh is unhealthy and cache is >2h stale."
+# merged-prs. If gh is unhealthy and the cache is >2h stale, the exporter FAILS
+# LOUD (exits non-zero) instead of omitting the family, so the frozen-queue gate
+# never receives a null/frozen value (fleet-ops#1772).
+HELP_READY = "# HELP fleet_ready_work Open agent-ready issues across enrolled Nishfleet repos (intake-repos.json). The exporter fails loud when the value cannot be determined, so this family is never silently null or stale."
 TYPE_READY = "# TYPE fleet_ready_work gauge"
 # `fleet_maintenance_quiescing` — 1 during the weekly maintenance window (or
 # any manual quiesce), else 0. Gates FleetUndersaturated so the window's
@@ -106,8 +217,9 @@ TYPE_MAINT = "# TYPE fleet_maintenance_quiescing gauge"
 #   fleet_queue_total{queue="agent-ready"|"ready-work"} — total open issues
 #   fleet_queue_self_maintenance_total{queue="agent-ready"|"ready-work"} — self-maintenance issues
 #   fleet_queue_self_maintenance_ratio{queue="agent-ready"|"ready-work"} — ratio 0..1 (omitted when total=0)
-# The 64% tripwire (fleet2 death-number) is enforced by a TREND alert on the
-# 7-day window (offset 7d), not a level — levels are Nish's policy.
+# The 64% tripwire (fleet2 death-number) is a LEVEL held above 0.64,
+# smoothed over the trailing 7 days (avg_over_time[7d]) so momentary dips
+# and export gaps cannot reset it (fleet-ops#2171).
 HELP_QT = "# HELP fleet_queue_total Open agent-ready issues by queue. queue=agent-ready: all Nishfleet repos. queue=ready-work: enrolled repos only (intake-repos.json)."
 TYPE_QT = "# TYPE fleet_queue_total gauge"
 HELP_QSM = "# HELP fleet_queue_self_maintenance_total Self-maintenance agent-ready issues by queue. Self-maintenance = repos in config/self-maintenance-repos.json (default fleet-ops)."
@@ -181,6 +293,49 @@ TYPE_KHB = "# TYPE fleet_keystone_routing_heartbeat_seconds gauge"
 KEYSTONE_LEDGER = Path(
     "/home/nish/.local/state/pi-packet/keystone-routing.jsonl"
 )
+
+# Worktree reaper summary (fleet-ops#4118). bin/fleet-worktree-reaper writes
+# a JSON breakdown here on every daily timer run: post_count (dirs left under
+# agent-worktrees after the reap), reaped, skipped_* breakdown, and the run
+# timestamp. The heartbeat exporter reads it to emit the count metric the
+# heartbeat can gauge (fleet_worktree_dirs) plus a liveness signal. A summary
+# older than WORKTREE_REAPER_STALE_S (7d, matching the retired opus-heartbeat
+# REAPER_STALE_S) is treated as stale — the reaper missed a week of daily runs.
+WORKTREE_REAPER_SUMMARY = Path(
+    "/home/nish/workspaces/agent-state/worktree-reaper-last-run.json"
+)
+WORKTREE_REAPER_STALE_S = 7 * 86400
+
+# Worktree reaper gauge family (fleet-ops#4118). fleet_worktree_dirs is the
+# count of dirs left under agent-worktrees after the last reap — the
+# unbounded-growth invariant the issue tracks. fleet_worktree_reaped_total is
+# how many the reaper removed that run. The present gauge is ALWAYS emitted so
+# the heartbeat can tell a dead reaper (0) from a healthy one (1); the count
+# gauges are emitted only when the summary is present and fresh (a missing or
+# stale summary means the count is unknown, not 0).
+HELP_WTP = (
+    "# HELP fleet_worktree_reaper_present 1 when the worktree reaper's last-run "
+    "summary is present and fresh, 0 when missing/unparseable/stale. The "
+    "liveness signal for the reaper organ (fleet-ops#4118)."
+)
+TYPE_WTP = "# TYPE fleet_worktree_reaper_present gauge"
+HELP_WTD = (
+    "# HELP fleet_worktree_dirs Number of directories left under agent-worktrees "
+    "after the last worktree-reaper run (post_count). The count metric the "
+    "heartbeat gauges for unbounded worktree sprawl (fleet-ops#4118)."
+)
+TYPE_WTD = "# TYPE fleet_worktree_dirs gauge"
+HELP_WTR = (
+    "# HELP fleet_worktree_reaped Number of worktrees the reaper removed "
+    "in its last run (fleet-ops#4118)."
+)
+TYPE_WTR = "# TYPE fleet_worktree_reaped gauge"
+HELP_WTHB = (
+    "# HELP fleet_worktree_reaper_heartbeat_seconds Epoch (s) of the reaper's "
+    "last-run summary timestamp. Its presence is the freshness signal for the "
+    "reaper organ; absent() fires when the reaper is dead (fleet-ops#4118)."
+)
+TYPE_WTHB = "# TYPE fleet_worktree_reaper_heartbeat_seconds gauge"
 
 # Truth staleness metrics (fleet-ops#1137: cross-check standing docs vs live
 # state). The staleness checker exports fleet_truth_staleness_last_run_seconds,
@@ -306,6 +461,60 @@ INTAKE_JSON_DEFAULT = Path(
 INTAKE_JSON_FALLBACK = Path(
     "/home/nish/workspaces/products/fleet-ops/config/intake-repos.json"
 )
+# fleet-ops#1291: SLO definitions (single source of truth for targets,
+# windows, ratchet params, metric sources). The exporter reads this and
+# emits fleet_slo_* gauges; lib/slo_budget.py does the budget math.
+SLO_DEFS_DEFAULT = Path(
+    "/home/nish/workspaces/tooling/fleet-ops/config/slo-definitions.json"
+)
+SLO_DEFS_FALLBACK = Path(
+    "/home/nish/workspaces/products/fleet-ops/config/slo-definitions.json"
+)
+# fleet-ops#3367: fallback SLO IDs used when slo-definitions.json is
+# missing/unparseable. _emit_slo_metrics MUST emit a fresh
+# fleet_slo_instrumented=0 for every known SLO on a config failure so
+# Prometheus does not retain stale instrumented=1 + compliance gauges from
+# the previous run — a stale SLO gauge alongside a fresh fleet_main_ci_green
+# is the real disagreement source (the docstring already promised this but
+# the code returned without emitting any gauges). Keep in sync with the
+# "slos" array in config/slo-definitions.json.
+_KNOWN_SLO_IDS = (
+    "main_green",
+    "0509_user_journey",
+    "digest_delivery",
+    "waste_ratio",
+    "seat_availability",
+    "gh_rate_limit_headroom",
+)
+# fleet-waste-export writes fleet_waste_ratio here; the SLO emitter reads
+# the live value rather than recomputing it (single source of truth).
+WASTE_PROM = Path(
+    os.environ.get(
+        "FLEET_WASTE_OUT",
+        "/var/lib/prometheus/node-exporter/fleet-waste.prom",
+    )
+)
+# seat-caps.json is the source of truth for enrolled-seat count
+# (fleet_pi_seat_total) — providers with cap>0 are enrolled.
+# fleet-ops#3811: the LIVE caps file the seat organs actually use comes
+# first (same source as lib/seat-lib.sh SEAT_CAPS_JSON), then the repo
+# checkouts as fallbacks. Validating comeback metrics against a stale repo
+# checkout while the organs use the live file makes the two
+# _seat_key_in_caps implementations disagree — a seat can be phantom to the
+# metric and real to the organ (or the reverse), which was part of the
+# comeback-release starvation this issue names.
+SEAT_CAPS_LIVE = Path(
+    os.environ.get(
+        "SEAT_CAPS_JSON",
+        "/home/nish/.local/state/pi-packet/seat-caps.json",
+    )
+)
+SEAT_CAPS_DEFAULT = Path(
+    "/home/nish/workspaces/tooling/fleet-ops/config/seat-caps.json"
+)
+SEAT_CAPS_FALLBACK = Path(
+    "/home/nish/workspaces/products/fleet-ops/config/seat-caps.json"
+)
 READY_CACHE = PR_CACHE_DIR / "ready-work-cache.json"
 READY_GH_TIMEOUT = 45
 
@@ -313,6 +522,86 @@ READY_GH_TIMEOUT = 45
 # READY_CACHE so the old int shape is not misread.
 QUEUE_CACHE = PR_CACHE_DIR / "queue-composition-cache.json"
 ALL_AGENT_READY_CACHE = PR_CACHE_DIR / "all-agent-ready-cache.json"
+
+# --- Seat yield ledger (fleet-ops#3250) ---
+# Pi issue-work sessions live here. Only pi-issue-* directories carry product
+# work; scout/canary/audit roles use other dirs and keep their own routing.
+SESSIONS_DIR = Path(
+    os.environ.get("FLEET_SESSIONS_DIR", str(Path.home() / ".pi" / "agent" / "sessions"))
+)
+# Per-file parse cache so re-export ticks are cheap; keyed on file mtime seconds.
+SEAT_YIELD_CACHE = PR_CACHE_DIR / "seat-yield-sessions-cache.json"
+# JSON sidecar consumed by lib/seat-lib.sh pick_seat. Not a new organ; just a
+# state file written by the existing fleet-metrics-export tick.
+SEAT_YIELD_JSON = Path(
+    os.environ.get(
+        "FLEET_SEAT_YIELD_JSON",
+        str(Path.home() / ".local" / "state" / "pi-packet" / "seat-yield.json"),
+    )
+)
+# --- Seat spend + provider balance (fleet-ops#3283) ---
+# Pi session jsonl already carries usage.cost per message; we sum it per
+# provider per UTC day. The per-file mtime cache keeps re-export cheap.
+SPEND_CACHE = PR_CACHE_DIR / "seat-spend-sessions-cache.json"
+# Vendor API credentials. OpenRouter's key lives in the pi provider config
+# models.json (the same config pi itself authenticates with); the xKiro key
+# lives in its dotenv file. We read both with env-var override.
+OPENROUTER_MODELS_JSON = Path(
+    os.environ.get("OPENROUTER_MODELS_JSON", str(Path.home() / ".pi" / "agent" / "models.json"))
+)
+OPENROUTER_ENV_FILE = Path.home() / ".config" / "openrouter" / ".env"
+XKIRO_ENV_FILE = Path.home() / ".config" / "xkiro" / ".env"
+# At most one vendor HTTP fetch per exporter run; cached 30 min, stale 2 h.
+VENDOR_BALANCE_TTL = 1800
+VENDOR_BALANCE_STALE = 7200
+OPENROUTER_BALANCE_CACHE = PR_CACHE_DIR / "openrouter-balance-cache.json"
+XKIRO_BALANCE_CACHE = PR_CACHE_DIR / "xkiro-balance-cache.json"
+# OpenRouter credits response carries total_credits and total_usage but no
+# precomputed remaining field (live 2026-09-05); remaining = credits - usage.
+OPENROUTER_API_KEY_ENV = "OPENROUTER_API_KEY"
+
+SEAT_YIELD_WINDOW = 20
+SEAT_YIELD_PROVISIONAL = 0.5
+# fleet-ops#3250/#3310 state the rule "infra deaths never count as seat yield",
+# but the ledger below never implemented it: a session that died because the
+# PROVIDER failed (resource_exhausted, 429/5xx, connection reset, hang-watchdog
+# rc=124/143) was counted as a no-PR miss, so a seat was punished for the
+# fleet's own infrastructure. That poisoning already produced wrong verdicts:
+# devin/swe-1-7 was retired on it (#3389, corrected in #3473). Matched against
+# the final assistant message's structured stopReason/errorMessage pair — never
+# free transcript text, so a worker discussing a timeout is not misread.
+SEAT_YIELD_INFRA_RE = re.compile(
+    r"resource_exhausted|rate[ _-]?limit|\b(?:429|500|502|503|504)\b"
+    r"|ETIMEDOUT|ECONNRESET|ECONNREFUSED|socket hang up|connection error"
+    r"|timed? ?out|overloaded|unavailable|bad gateway"
+    r"|exited with code (?:124|143)|SIGKILL|SIGTERM|no seat available",
+    re.I,
+)
+# Final assistant text contains a Nishfleet PR URL (http/s optional).
+PR_URL_RE = re.compile(
+    r"(?:https?://)?github\.com/Nishfleet/[^/\s\"]+/pull/\d+", re.IGNORECASE
+)
+HELP_SY = (
+    "# HELP fleet_seat_yield Rolling last-20 issue-work sessions PR yield "
+    "per seat (0..1). Seats with <20 sessions report a provisional 0.5 "
+    "yield so new seats are tried (fleet-ops#3250)."
+)
+TYPE_SY = "# TYPE fleet_seat_yield gauge"
+HELP_SNPR = (
+    "# HELP fleet_sessions_no_pr_total Number of issue-work sessions in the "
+    "last-20 window that did not produce a PR URL, per seat (fleet-ops#3250)."
+)
+TYPE_SNPR = "# TYPE fleet_sessions_no_pr_total gauge"
+# fleet-ops#3322: per-seat sessions-to-PR percentage (0..100). The issue's
+# moves: sessions_to_pr_pct metric. Computed from the same rolling window as
+# fleet_seat_yield; emitted as a percentage so the fleet-landing-watch measure
+# and the audition verdict share one scale. Does NOT replace
+# fleet_sessions_no_pr_total — both are emitted.
+HELP_STPR = (
+    "# HELP fleet_sessions_to_pr_pct Rolling last-20 issue-work sessions PR "
+    "yield as a percentage (0..100) per seat (fleet-ops#3322)."
+)
+TYPE_STPR = "# TYPE fleet_sessions_to_pr_pct gauge"
 
 # Self-maintenance repo set (fleet-ops#1136). PR-tunable; never hardcoded in
 # the classifier. Default ["fleet-ops"] when the file is missing/unparseable
@@ -358,9 +647,25 @@ query($cursor: String) {
 # PullRequest nodes for an ISSUE-typed query; `sort:updated-desc` + a 24h
 # mergedAt cutoff in the client keeps the page count bounded (a busy day is
 # ~50-100 merges; GH_PAGES=10 × first=100 covers 1000).
-MERGED_PRS_SEARCH_QUERY = """
+# fleet-ops#2690: push the 24h time filter into the search query and sort by
+# merge time. The previous `sort:updated-desc` + client-side cutoff could
+# exhaust the GH_PAGES×first=1000 pagination cap on stale-but-recently-updated
+# PRs (issues that were merged > 24h ago but received any update activity —
+# comments, labels, references — bubble to the top), which silently under-
+# counts the 24h window. The console tile (sum(fleet_merged_prs_24h)) then
+# disagreed with the verifier's spot gh search (REST `is:merged merged:>=`
+# filter) and ConsoleLying fired on a lying tile that was actually a lying
+# GraphQL. `merged:>=$cutoff sort:merged-desc` lets GitHub do the filtering
+# and ordering so the result is bounded by the 24h window.
+#
+# The cutoff is interpolated as a literal in the search query STRING by
+# _gh_merged_prs_raw — GraphQL does not expand variables inside the
+# `search(query: "...")` string field, so passing it as a $-variable would
+# not reach the GitHub search engine. cutoff_iso is generated server-side
+# from a trusted system value, never user input.
+MERGED_PRS_SEARCH_QUERY_TEMPLATE = """
 query($cursor: String) {
-  search(query: "org:Nishfleet is:pr is:merged sort:updated-desc", type: ISSUE, first: 100, after: $cursor) {
+  search(query: "org:Nishfleet is:pr is:merged merged:>={CUTOFF} sort:merged-desc", type: ISSUE, first: 100, after: $cursor) {
     pageInfo { hasNextPage endCursor }
     nodes {
       ... on PullRequest {
@@ -446,14 +751,33 @@ def _read_seat():
     except (OSError, json.JSONDecodeError):
         return 0, None
     healthy = 1 if data.get("health_class") == "healthy" else 0
+    # fleet-ops#3563: a held wrapper spawn-bench outranks a later healthy
+    # observation. mark_seat_empty_run / mark_seat_spawn_fail co-write this
+    # sidecar at bench time (fleet-ops#3559), but a subsequent healthy
+    # observation from the seat-health extension — an in-flight run
+    # completing after the bench landed, or a comeback probe — rewrites it
+    # as health_class=healthy while the marker still holds the seat. The
+    # bench and the health file then disagree exactly as this issue
+    # reported (live 2026-09-05: devin/glm-5-2 ledger healthy at 23:19Z
+    # while its spawn-bench held until 23:55Z). seat_usable already honours
+    # the marker; report the seat not-healthy here too so a benched seat
+    # never reads healthy on fleet_pi_seat_healthy.
+    if healthy and _spawn_bench_held_for(data.get("provider"), data.get("model")):
+        healthy = 0
     obs = data.get("observed_at")
     epoch = None
     if isinstance(obs, str):
         try:
             # RFC3339 / ISO-8601 with trailing 'Z' for UTC.
             ts = obs.replace("Z", "+00:00")
+            # time.mktime interprets the tuple in the process local timezone,
+            # so on a +05:30 host a fresh UTC observed_at parses ~5.5h in the
+            # past and fires FleetPiSeatHealthStale (fleet-ops#3329). observed_at
+            # is UTC: use calendar.timegm (the same pattern _parse_iso_utc and
+            # the comeback-clock path already use) so the epoch is correct
+            # regardless of TZ.
             epoch = int(
-                time.mktime(time.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S"))
+                calendar.timegm(time.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S"))
             )
         except ValueError:
             epoch = None
@@ -463,17 +787,41 @@ def _read_seat():
 def _read_dead_credentials():
     """Scan the per-seat health ledger for dead-credential seats.
 
-    A dead-credential seat is seat_dead=true with health_class=credentials_bad
-    (HTTP 401/403): it will never recover until the provider credential is
-    re-authenticated (fleet-ops#1445). These are surfaced once per 5-min export
-    tick as a distinct metric + alert, rather than being buried in pick_seat's
-    per-pick "excluded ... dead: D" fold or re-logged every cycle by the seat
-    loop.
+    A dead-credential seat is seat_dead=true carrying a credentials_bad signal
+    (HTTP 401/403): it will never recover on its own (fleet-ops#1445). These are
+    surfaced once per 5-min export tick as a distinct metric + alert, rather than
+    being buried in pick_seat's per-pick "excluded ... dead: D" fold or re-logged
+    every cycle by the seat loop.
 
-    Returns (count, [ {provider, model, http_status}, ... ]). Always a
-    (count, list) pair — never raises on a missing/unreadable ledger.
+    fleet-ops#2667: the credentials_bad signal lives in TWO fields, and matching
+    only health_class made this metric blind exactly when it mattered most.
+    seat-health.ts classifyHttpStatus maps 401/403 -> health_class
+    "credentials_bad", but the fleet-ops#2327 corpse escalation then REWRITES
+    health_class to the terminal "corpse" class while leaving
+    failure_mode="credentials_bad" in place. A seat that has fully earned the
+    alert — terminally dead on a 401/403 — therefore dropped out of a
+    health_class-only match. Live proof 2026-09-02: the ledger held
+    commandcode/minimax-m3-free (403) and opencode/hy3-free (401), both
+    seat_dead=true + failure_mode=credentials_bad + health_class=corpse, while
+    fleet_pi_seat_dead_credential_total read 0 and PiSeatDeadCredential could
+    not fire. Four such seats accumulated unseen until a human noticed. Match
+    EITHER field so the terminal class is visible, and carry health_class /
+    failure_mode through to the caller for the per-seat series.
+
+    fleet-ops#3301: only ENROLLED seats (model cap>0 in seat-caps.json) count.
+    A cap=0 row is never picked, so a 401 on it is not a re-auth action — the
+    2026-09-04T16:30Z snapshot paged FleetDeadCredentialSeats on
+    opencode/hy3-free and opencode/x-preview-f-free, both already retired at
+    cap=0, while the control seat (ling-3.0-flash-fin-free) was healthy. Fail
+    open (count all) when seat-caps.json is unreadable so a genuinely dead
+    enrolled seat still alerts.
+
+    Returns (count, [ {provider, model, http_status, health_class,
+    failure_mode}, ... ]). Always a (count, list) pair — never raises on a
+    missing/unreadable ledger.
     """
     seats = []
+    caps = _seat_caps_model_cap_map()
     if not SEAT_LEDGER.is_dir():
         return 0, seats
     try:
@@ -486,12 +834,27 @@ def _read_dead_credentials():
                 continue
             if not isinstance(data, dict):
                 continue
-            if data.get("seat_dead") is True and data.get("health_class") == "credentials_bad":
-                seats.append({
-                    "provider": data.get("provider", ""),
-                    "model": data.get("model", ""),
-                    "http_status": data.get("http_status"),
-                })
+            if data.get("seat_dead") is not True:
+                continue
+            # fleet-ops#2667: EITHER field carries the credentials_bad signal.
+            if "credentials_bad" not in (
+                data.get("health_class"),
+                data.get("failure_mode"),
+            ):
+                continue
+            provider = data.get("provider", "") or ""
+            model = data.get("model", "") or ""
+            if caps is not None:
+                cap = caps.get(f"{provider}/{model}", 0)
+                if not (isinstance(cap, (int, float)) and not isinstance(cap, bool) and cap > 0):
+                    continue
+            seats.append({
+                "provider": provider,
+                "model": model,
+                "http_status": data.get("http_status"),
+                "health_class": data.get("health_class") or "",
+                "failure_mode": data.get("failure_mode") or "",
+            })
     except OSError:
         return 0, []
     return len(seats), seats
@@ -607,6 +970,1235 @@ def _write_cache(path, data):
         print(f"cache write {path}: {exc}", file=sys.stderr)
 
 
+def _extract_text(content):
+    """Flatten assistant message content to plain text.
+
+    Content may be a raw string or a list of objects. Only text objects
+    are extracted; reasoning/thinking blocks are ignored.
+    """
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    parts = []
+    for item in content or []:
+        if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str):
+            parts.append(item["text"])
+    return "".join(parts)
+
+
+def _parse_session_file(path):
+    """Return {seat, timestamp, has_pr_url, cost} for a pi-issue session .jsonl.
+
+    Seat is taken from the first model_change event; the timestamp is the
+    session start time. A session counts as PR-producing if the final
+    assistant message text contains a Nishfleet PR URL. cost is the sum of
+    message.usage.cost.total across the session (fleet-ops#3323) — 0.0 for
+    free lanes and sessions that record no usage.cost. infra_death is True
+    when the session ended on a provider-side error (stopReason "error" whose
+    errorMessage matches SEAT_YIELD_INFRA_RE); those sessions never count as
+    seat yield (fleet-ops#3250/#3310).
+    """
+    session_ts = None
+    model_seat = None
+    last_assistant_line = None
+    fallback_ts = None
+    cost = 0.0
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line:
+                    continue
+                if session_ts is None and re.search(r'"type"\s*:\s*"session"', line):
+                    try:
+                        data = json.loads(line)
+                        session_ts = data.get("timestamp")
+                        # id is a fallback sort key; timestamps should be unique
+                        # enough, but a stable id prevents ties.
+                        fallback_ts = data.get("id", "")
+                    except json.JSONDecodeError:
+                        pass
+                    continue
+                if model_seat is None and re.search(r'"type"\s*:\s*"model_change"', line):
+                    try:
+                        data = json.loads(line)
+                        provider = data.get("provider")
+                        model = data.get("modelId")
+                        if provider and model:
+                            model_seat = f"{provider}/{model}"
+                    except json.JSONDecodeError:
+                        pass
+                    continue
+                if '"usage"' in line and '"cost"' in line:
+                    try:
+                        data = json.loads(line)
+                        c = (
+                            ((data.get("message") or {}).get("usage") or {})
+                            .get("cost") or {}
+                        ).get("total")
+                        if c is not None:
+                            cost += float(c)
+                    except (json.JSONDecodeError, ValueError, TypeError):
+                        pass
+                if re.search(r'"role"\s*:\s*"assistant"', line):
+                    last_assistant_line = line
+    except OSError:
+        return None
+    if not model_seat:
+        return None
+    has_pr = False
+    infra_death = False
+    if last_assistant_line:
+        try:
+            data = json.loads(last_assistant_line)
+            msg = data.get("message") or {}
+            content = msg.get("content")
+            text = _extract_text(content)
+            if PR_URL_RE.search(text):
+                has_pr = True
+            # A provider-side failure ends the session with stopReason "error"
+            # and a structured errorMessage. Only that pair is inspected, so
+            # the classification cannot be tripped by transcript prose.
+            if msg.get("stopReason") == "error":
+                infra_death = bool(
+                    SEAT_YIELD_INFRA_RE.search(msg.get("errorMessage") or "")
+                )
+        except json.JSONDecodeError:
+            pass
+    ts_epoch = _parse_iso_utc(session_ts) if session_ts else None
+    if ts_epoch is None:
+        # If we cannot parse the ISO timestamp, keep ordering stable by falling
+        # back to 0. This is rare (malformed session line) and safe: a bogus
+        # session floats to the start of the window and is quickly evicted.
+        ts_epoch = 0
+    return {
+        "seat": model_seat,
+        "timestamp": ts_epoch,
+        "has_pr_url": has_pr,
+        "cost": cost,
+        "infra_death": infra_death,
+    }
+
+
+def _compute_seat_yield():
+    """Compute per-seat rolling last-20 issue-work session PR yield and cost.
+
+    Scans FLEET_SESSIONS_DIR/pi-issue-*/**/*.jsonl, caches per-file results
+    by mtime, and returns {seat: {yield, sessions, pr_count, provisional,
+    cost_per_session}}. cost_per_session is the mean usage.cost over the
+    same rolling window (fleet-ops#3323) so pick_seat can rank by value =
+    yield / max(cost_per_session, 0.001).
+    Also writes the JSON sidecar used by lib/seat-lib.sh pick_seat.
+    """
+    sessions_dir = Path(SESSIONS_DIR)
+    if not sessions_dir.is_dir():
+        return {}
+
+    cache = {}
+    try:
+        data, _age = _read_cache(SEAT_YIELD_CACHE)
+        # v3: cached entries carry infra_death (fleet-ops#3250 enforcement);
+        # v1/v2 entries lack it, so they are re-parsed once on this tick.
+        if isinstance(data, dict) and data.get("v") == 3:
+            cache = data.get("entries") or {}
+    except (OSError, json.JSONDecodeError):
+        pass
+
+    new_cache = {}
+    sessions = []
+    for path in sessions_dir.glob("pi-issue-*/*.jsonl"):
+        try:
+            mtime_s = int(path.stat().st_mtime)
+        except OSError:
+            continue
+        key = str(path)
+        cached = cache.get(key)
+        if isinstance(cached, dict) and cached.get("mtime_s") == mtime_s:
+            entry = {
+                "seat": cached["seat"],
+                "timestamp": cached["timestamp"],
+                "has_pr_url": cached["has_pr_url"],
+                "cost": cached.get("cost", 0.0),
+                "infra_death": cached.get("infra_death", False),
+            }
+        else:
+            entry = _parse_session_file(path)
+            if entry is None:
+                continue
+        new_cache[key] = {
+            "mtime_s": mtime_s,
+            "seat": entry["seat"],
+            "timestamp": entry["timestamp"],
+            "has_pr_url": entry["has_pr_url"],
+            "cost": entry["cost"],
+            "infra_death": entry["infra_death"],
+        }
+        sessions.append(entry)
+
+    try:
+        _write_cache(SEAT_YIELD_CACHE, {"v": 3, "entries": new_cache})
+    except OSError:
+        pass
+
+    # Group by seat, then fold in the cap-map allowlist so new/idle seats get
+    # a provisional 0.5 entry in the JSON/metrics.
+    by_seat = {}
+    for e in sessions:
+        by_seat.setdefault(e["seat"], []).append(e)
+
+    known_caps = _seat_caps_model_cap_map()
+    if known_caps:
+        for seat, cap in known_caps.items():
+            if cap > 0 and seat not in by_seat:
+                by_seat[seat] = []
+
+    result = {}
+    for seat, entries in by_seat.items():
+        entries.sort(key=lambda x: x["timestamp"], reverse=True)
+        # Cost keeps the raw last-20 window: an infra death can still burn
+        # tokens before it dies, and the audition spend cap (fleet-ops#3322)
+        # must keep seeing that spend. Only the QUALITY signal is filtered.
+        window = entries[:SEAT_YIELD_WINDOW]
+        # fleet-ops#3250/#3310: yield is measured over sessions where the model
+        # actually worked. Infra deaths are dropped rather than counted as
+        # misses, and the window reaches further back to stay 20 deep, which is
+        # exactly the retirement rule's ">= 20 sessions ended with the model
+        # working" bar.
+        working = [e for e in entries if not e.get("infra_death")]
+        infra_deaths = sum(1 for e in window if e.get("infra_death"))
+        yield_window = working[:SEAT_YIELD_WINDOW]
+        total = len(yield_window)
+        pr_count = sum(1 for e in yield_window if e["has_pr_url"])
+        no_pr = total - pr_count
+        if entries and not working:
+            # Every attempt died on infrastructure. There is no quality
+            # evidence either way, so the seat is NOT promoted to the
+            # provisional 0.5 it would get as a newcomer; benching and caps
+            # (seat-lib) own dead seats, not this ledger.
+            y = 0.0
+            provisional = False
+        elif total < SEAT_YIELD_WINDOW:
+            y = SEAT_YIELD_PROVISIONAL
+            provisional = True
+        else:
+            y = pr_count / total if total > 0 else 0.0
+            provisional = False
+        # fleet-ops#3323: mean usage.cost per session over the same window.
+        # Sessions with no recorded cost count 0, so free lanes land on 0 and
+        # pick_seat's value floor (0.001) sorts them first at equal yield.
+        raw_total = len(window)
+        cost_per_session = (
+            sum(e.get("cost", 0.0) for e in window) / raw_total
+            if raw_total > 0 else 0.0
+        )
+        # fleet-ops#3322: total audition cost (sum over the rolling window).
+        # The audition lane caps total spend at $1; cost_usd is the figure the
+        # intake tick reads to enforce that cap. cost_per_session stays for the
+        # value-ranking path (fleet-ops#3323) — both are written so existing
+        # consumers are unaffected.
+        cost_usd = sum(e.get("cost", 0.0) for e in window) if raw_total > 0 else 0.0
+        result[seat] = {
+            "yield": y,
+            "sessions": total,
+            "pr_count": pr_count,
+            "no_pr_count": no_pr,
+            "provisional": provisional,
+            "infra_deaths": infra_deaths,
+            "cost_per_session": cost_per_session,
+            "cost_usd": cost_usd,
+        }
+
+    try:
+        _atomic_write(SEAT_YIELD_JSON, json.dumps(result, sort_keys=True))
+    except OSError as exc:
+        print(f"seat-yield json write: {exc}", file=sys.stderr)
+
+    return result
+
+
+def _emit_seat_yield(lines, seat_yield):
+    """Append fleet_seat_yield and fleet_sessions_no_pr_total families.
+
+    The two metric families share the same per-seat loop. HELP/TYPE are
+    emitted once per family so the node_exporter textfile stays parseable.
+    """
+    if not seat_yield:
+        return
+    lines.append("")
+    lines.append(HELP_SY)
+    lines.append(TYPE_SY)
+    lines.append("")
+    lines.append(HELP_SNPR)
+    lines.append(TYPE_SNPR)
+    lines.append("")
+    lines.append(HELP_STPR)
+    lines.append(TYPE_STPR)
+    for seat in sorted(seat_yield):
+        y = seat_yield[seat]
+        lbl = _prom_label(seat)
+        lines.append(f'fleet_seat_yield{{seat="{lbl}"}} {y["yield"]:.6f}')
+        lines.append(
+            f'fleet_sessions_no_pr_total{{seat="{lbl}"}} {y["no_pr_count"]}'
+        )
+        # fleet-ops#3322: sessions-to-PR percentage (0..100).
+        pct = (y["yield"] * 100.0) if isinstance(y.get("yield"), (int, float)) else 0.0
+        lines.append(f'fleet_sessions_to_pr_pct{{seat="{lbl}"}} {pct:.2f}')
+
+
+def _day_from_iso(s):
+    """Return YYYY-MM-DD UTC day from an ISO timestamp, or None."""
+    if not s:
+        return None
+    epoch = _parse_iso_utc(s)
+    if epoch is None:
+        return None
+    return datetime.fromtimestamp(epoch, timezone.utc).strftime("%Y-%m-%d")
+
+
+def _parse_session_file_for_cost(path):
+    """Return {provider: {day: cost}} for a session jsonl.
+
+    Pi session jsonl carries the provider only on `model_change` lines, not
+    on `message` lines (fleet-ops#3283, live session shape). We track the
+    active provider as we walk the file and attribute each message's
+    usage.cost.total to that provider on the message's UTC day. Messages
+    with no usage.cost, a zero cost, or an unparseable line are ignored;
+    a file with no model_change contributes nothing.
+    """
+    spend = {}
+    provider = None
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line:
+                    continue
+                if not line.startswith("{"):
+                    continue
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(data, dict) or "type" not in data:
+                    continue
+                t = data.get("type")
+                if t == "model_change":
+                    provider = data.get("provider")
+                    continue
+                if t != "message":
+                    continue
+                msg = data.get("message") or {}
+                if not isinstance(msg, dict):
+                    continue
+                # Pi session jsonl nests per-message cost under message.usage
+                # (fleet-ops#3283, live shape). Fall back to the tracked
+                # model_change provider, or the message's own provider key.
+                if not provider:
+                    provider = msg.get("provider")
+                if not provider:
+                    continue
+                cost = ((msg.get("usage") or {}).get("cost") or {}).get("total")
+                if cost is None:
+                    continue
+                try:
+                    cost = float(cost)
+                except (ValueError, TypeError):
+                    continue
+                if cost == 0:
+                    continue
+                ts = data.get("timestamp") or ""
+                day = _day_from_iso(ts)
+                if day is None:
+                    continue
+                spend.setdefault(provider, {}).setdefault(day, 0.0)
+                spend[provider][day] += cost
+    except OSError:
+        return None
+    return spend
+
+
+def _compute_spend():
+    """Compute seat spend per provider per UTC day from session jsonl.
+
+    Scans FLEET_SESSIONS_DIR/**/*.jsonl, caches per-file results by mtime,
+    and returns {provider: {day: cost}}.
+    """
+    sessions_dir = Path(SESSIONS_DIR)
+    if not sessions_dir.is_dir():
+        return {}
+
+    cache = {}
+    try:
+        data, _age = _read_cache(SPEND_CACHE)
+        if isinstance(data, dict) and data.get("v") == 1:
+            cache = data.get("entries") or {}
+    except (OSError, json.JSONDecodeError):
+        pass
+
+    new_cache = {}
+    spend = {}
+    # Scan ALL pi session jsonl (interactive + pi-issue) so metered spend is
+    # not hidden. Live check: ~$188 of minimax spend lives in --home-nish--
+    # (interactive) sessions, not pi-issue-* — restricting to worker dirs
+    # would miss exactly the spend the zero-revenue rule needs to see.
+    # The mtime cache keeps re-scans cheap (first cold scan ~15s, cached ~0s).
+    dirty = False
+    for path in sessions_dir.rglob("*.jsonl"):
+        try:
+            mtime_s = int(path.stat().st_mtime)
+        except OSError:
+            continue
+        key = str(path)
+        cached = cache.get(key)
+        if isinstance(cached, dict) and cached.get("mtime_s") == mtime_s:
+            entry = cached.get("spend") or {}
+        else:
+            entry = _parse_session_file_for_cost(path)
+            dirty = True
+            if entry is None:
+                continue
+        new_cache[key] = {"mtime_s": mtime_s, "spend": entry}
+        for provider, days in entry.items():
+            prov = spend.setdefault(provider, {})
+            for day, cost in days.items():
+                prov[day] = prov.get(day, 0.0) + cost
+
+    # Rewrite the cache only when a file was actually re-parsed, so a quiet
+    # 5-min tick does not churn-write the multi-thousand-entry cache.
+    if dirty:
+        try:
+            _write_cache(SPEND_CACHE, {"v": 1, "entries": new_cache})
+        except OSError:
+            pass
+
+    return spend
+
+
+HELP_SPEND = (
+    "# HELP fleet_seat_spend_usd Seat spend in USD per provider per UTC day "
+    "from pi session usage.cost (fleet-ops#3283)."
+)
+TYPE_SPEND = "# TYPE fleet_seat_spend_usd gauge"
+# Bound the family's cardinality: only the trailing retention window is
+# exported so old days do not accumulate in Prometheus forever.
+SPEND_RETENTION_DAYS = 30
+HELP_SPEND_TODAY = (
+    "# HELP fleet_seat_spend_today_usd Seat spend in USD per provider for the "
+    "current UTC day (fleet-ops#3284). The day-labelled fleet_seat_spend_usd "
+    "series cannot express 'today' in a static PromQL rule (the label is a "
+    "date string, not comparable to now()), so the spend-boundary alert rules "
+    "on this day-less copy of the current day's row."
+)
+TYPE_SPEND_TODAY = "# TYPE fleet_seat_spend_today_usd gauge"
+HELP_CREDITS = (
+    "# HELP fleet_seat_credits_remaining_usd Remaining account balance in USD "
+    "for metered providers from vendor credits/usage endpoints (fleet-ops#3283)."
+)
+TYPE_CREDITS = "# TYPE fleet_seat_credits_remaining_usd gauge"
+HELP_FREE_TOKENS = (
+    "# HELP fleet_seat_free_tokens_remaining Remaining free-tier tokens "
+    "for xkiro (fleet-ops#3283)."
+)
+TYPE_FREE_TOKENS = "# TYPE fleet_seat_free_tokens_remaining gauge"
+HELP_HELD = (
+    "# HELP fleet_seat_credits_held_usd Held/pending spend in USD "
+    "for xkiro wallet (fleet-ops#3283)."
+)
+TYPE_HELD = "# TYPE fleet_seat_credits_held_usd gauge"
+
+
+def _emit_spend(lines, spend):
+    """Append fleet_seat_spend_usd family per provider/day (trailing window),
+    plus fleet_seat_spend_today_usd{provider} for the current UTC day
+    (fleet-ops#3284 — the alert-rule selector)."""
+    if not spend:
+        return
+    now = datetime.now(timezone.utc)
+    today = now.strftime("%Y-%m-%d")
+    cutoff = (now - timedelta(days=SPEND_RETENTION_DAYS)).strftime("%Y-%m-%d")
+    lines.append("")
+    lines.append(HELP_SPEND)
+    lines.append(TYPE_SPEND)
+    today_rows = []
+    for provider in sorted(spend):
+        for day in sorted(spend[provider]):
+            if day < cutoff:
+                continue
+            lines.append(
+                f'fleet_seat_spend_usd{{provider="{_prom_label(provider)}",'
+                f'day="{_prom_label(day)}"}} {spend[provider][day]:.6f}'
+            )
+            if day == today:
+                today_rows.append(
+                    f'fleet_seat_spend_today_usd{{provider="{_prom_label(provider)}"}} '
+                    f'{spend[provider][day]:.6f}'
+                )
+    if today_rows:
+        lines.append("")
+        lines.append(HELP_SPEND_TODAY)
+        lines.append(TYPE_SPEND_TODAY)
+        lines.extend(today_rows)
+
+
+def _read_env_key(path, names):
+    """Return the first matching key from a dotenv file or env var, or None."""
+    if path.is_file():
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            text = ""
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key in names and value:
+                return value
+    for name in names:
+        value = os.environ.get(name)
+        if value:
+            return value
+    return None
+
+
+def _resolve_cut_directive(value):
+    """Resolve a pi `!cut -d= -f2 /path/to/file` apiKey directive, or return value.
+
+    pi's models.json stores some apiKeys as `!cut -d<sep> -f<n> <file>`: a shell
+    command pi runs at load time to read the real key from a dotenv-style file.
+    The Python exporter does not run pi, so a raw `!cut ...` string 401s against
+    the vendor API (fleet-ops#4217: OpenRouter /key and /credits both 401'd
+    with the unresolved directive). Parse and run the cut command ourselves.
+    """
+    if not isinstance(value, str):
+        return None
+    if not value.startswith("!cut"):
+        return value
+    parts = value.split()
+    # parts[0] == "!cut"; expect -d<sep> -f<n> <file> (the shape pi writes).
+    if len(parts) < 4:
+        return None
+    delim = None
+    field = None
+    filepath = None
+    i = 1
+    while i < len(parts):
+        p = parts[i]
+        if p.startswith("-d") and len(p) > 2:
+            delim = p[2:]
+            i += 1
+        elif p.startswith("-f") and len(p) > 2:
+            try:
+                field = int(p[2:])
+            except ValueError:
+                return None
+            i += 1
+        elif p.startswith("-d") and i + 1 < len(parts):
+            delim = parts[i + 1]
+            i += 2
+        elif p.startswith("-f") and i + 1 < len(parts):
+            try:
+                field = int(parts[i + 1])
+            except ValueError:
+                return None
+            i += 2
+        else:
+            filepath = p
+            i += 1
+    if delim is None or field is None or filepath is None:
+        return None
+    try:
+        text = Path(filepath).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        cols = line.split(delim)
+        if 0 < field <= len(cols):
+            v = cols[field - 1].strip().strip('"').strip("'")
+            return v or None
+    return None
+
+
+def _openrouter_api_key():
+    """Return the OpenRouter API key, or None.
+
+    Resolution order: env var OPENROUTER_API_KEY, then the pi provider config
+    models.json (providers.openrouter.apiKey, resolving any `!cut` directive),
+    then the dotenv fallback. Never prints the key.
+    """
+    env_key = os.environ.get(OPENROUTER_API_KEY_ENV)
+    if env_key:
+        return env_key
+    try:
+        data = json.loads(OPENROUTER_MODELS_JSON.read_text(encoding="utf-8"))
+        key = (data.get("providers") or {}).get("openrouter", {}).get("apiKey")
+        if key:
+            return _resolve_cut_directive(key)
+    except (OSError, json.JSONDecodeError):
+        pass
+    return _read_env_key(OPENROUTER_ENV_FILE, (OPENROUTER_API_KEY_ENV, "API_KEY"))
+
+
+# Vendors reject urllib's default User-Agent (xkiro 403'd Python-urllib;
+# curl/Mozilla pass, live 2026-09-05). Send an identifiable UA on every fetch.
+_VENDOR_USER_AGENT = "fleet-metrics-export/1.0 (Nishfleet; fleet-ops#3283)"
+
+
+def _fetch_openrouter_credits():
+    """Return remaining USD from OpenRouter /api/v1/credits, or None.
+
+    The endpoint returns total_credits and total_usage but no precomputed
+    remaining, so remaining = total_credits - total_usage. If only
+    total_credits is present we report it as-is (no usage data to subtract).
+    None omits the family (never a frozen/bogus value).
+    """
+    key = _openrouter_api_key()
+    if not key:
+        return None
+    req = urllib.request.Request(
+        "https://openrouter.ai/api/v1/credits",
+        headers={"Authorization": f"Bearer {key}", "User-Agent": _VENDOR_USER_AGENT},
+    )
+    try:
+        # req URL is a hardcoded constant; only the auth header is dynamic.
+        with urllib.request.urlopen(req, timeout=15) as resp:  # nosemgrep
+            payload = json.loads(resp.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, ValueError) as exc:
+        print(f"openrouter credits fetch failed: {exc}", file=sys.stderr)
+        return None
+    data = payload.get("data") or {}
+    if not isinstance(data, dict):
+        return None
+    total = data.get("total_credits")
+    usage = data.get("total_usage")
+    remaining = data.get("total_remaining")
+    try:
+        if remaining is not None:
+            return float(remaining)
+        total = None if total is None else float(total)
+        usage = None if usage is None else float(usage)
+        if total is not None and usage is not None:
+            return total - usage
+        if total is not None:
+            return total
+    except (ValueError, TypeError):
+        return None
+    return None
+
+
+def _fetch_xkiro_usage():
+    """Return (free_tokens, wallet_balance, wallet_held) for xkiro, or None."""
+    key = _read_env_key(XKIRO_ENV_FILE, ("XKIRO_API_KEY", "API_KEY"))
+    if not key:
+        return None
+    req = urllib.request.Request(
+        "https://api.xkiro.com/v1/usage",
+        headers={"Authorization": f"Bearer {key}", "User-Agent": _VENDOR_USER_AGENT},
+    )
+    try:
+        # req URL is a hardcoded constant; only the auth header is dynamic.
+        with urllib.request.urlopen(req, timeout=15) as resp:  # nosemgrep
+            payload = json.loads(resp.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, ValueError) as exc:
+        print(f"xkiro usage fetch failed: {exc}", file=sys.stderr)
+        return None
+    free = payload.get("free_tokens") or {}
+    wallet = payload.get("wallet") or {}
+    try:
+        remaining = free.get("remaining")
+        balance = wallet.get("balance_usd")
+        held = wallet.get("held_usd")
+        remaining = None if remaining is None else int(remaining)
+        balance = None if balance is None else float(balance)
+        held = None if held is None else float(held)
+    except (ValueError, TypeError):
+        return None
+    if remaining is None and balance is None and held is None:
+        return None
+    return (remaining, balance, held)
+
+
+_VENDOR_BALANCE_FETCHED = set()
+
+
+def _cached_vendor_json(path, fetcher, name):
+    """Return fetched/cached vendor data, or None to omit the metric family.
+
+    Fresh cache (<=30 min) skips network. On failure, serve cache up to 2h.
+    One fetch per vendor per exporter run so the 5-min oneshot stays under
+    the rate-limit budget.
+    """
+    global _VENDOR_BALANCE_FETCHED
+    cached, cache_age = _read_cache(path)
+    if cache_age is not None and cache_age <= VENDOR_BALANCE_TTL and cached is not None:
+        return cached
+    if name in _VENDOR_BALANCE_FETCHED:
+        if cached is not None and cache_age is not None and cache_age <= VENDOR_BALANCE_STALE:
+            return cached
+        return None
+    data = fetcher()
+    _VENDOR_BALANCE_FETCHED.add(name)
+    if data is not None:
+        _write_cache(path, data)
+        return data
+    if cached is not None and cache_age is not None and cache_age <= VENDOR_BALANCE_STALE:
+        print(f"{name} vendor fetch failed, serving stale cache (age={int(cache_age)}s)",
+              file=sys.stderr)
+        return cached
+    return None
+
+
+def _emit_credits_remaining(lines, balances):
+    """Append fleet_seat_credits_remaining_usd per provider with a balance."""
+    rows = []
+    for provider, amount in sorted(balances.items()):
+        if amount is not None:
+            rows.append(
+                f'fleet_seat_credits_remaining_usd{{provider="{_prom_label(provider)}"}} '
+                f'{amount:.6f}'
+            )
+    if rows:
+        lines.append("")
+        lines.append(HELP_CREDITS)
+        lines.append(TYPE_CREDITS)
+        lines.extend(rows)
+
+
+def _emit_xkiro_wallet(lines, xkiro):
+    """Append xkiro free tokens and wallet held metrics."""
+    if xkiro is None:
+        return
+    remaining, balance, held = xkiro
+    rows = []
+    if remaining is not None:
+        rows.append(
+            f'fleet_seat_free_tokens_remaining{{provider="xkiro"}} {remaining}'
+        )
+    if held is not None:
+        rows.append(
+            f'fleet_seat_credits_held_usd{{provider="xkiro"}} {held:.6f}'
+        )
+    if rows:
+        lines.append("")
+        lines.append(HELP_FREE_TOKENS)
+        lines.append(TYPE_FREE_TOKENS)
+        lines.append(HELP_HELD)
+        lines.append(TYPE_HELD)
+        lines.extend(rows)
+
+
+# --- Live seat quotas (fleet-ops#4217) ---
+# Nish 2026-09-07: the fleet learns a wall reactively (429/402) and benches on
+# guesses. This family emits the LIVE remaining quota per seat so judges and
+# seat-lib can read it before a decision. Phase 1 (this PR) covers the
+# VPS-native API seats whose credentials already live on this host and whose
+# quota endpoint answers a token-authenticated GET from the VPS:
+#   - OpenRouter /api/v1/key (limit_remaining + limit_reset, verified live)
+#   - Claude OAuth api.anthropic.com/api/oauth/usage (five_hour + seven_day
+#     utilization + resets_at, verified live from ~/.claude/.credentials.json)
+#   - Codex OAuth chatgpt.com/backend-api/wham/usage (rate_limit primary_window
+#     used_percent + reset_after_seconds, verified live from ~/.codex/auth.json)
+# Browser-session seats (Cursor, Devin, Grok, Ollama, Z.ai, OpenCode, RunInfra,
+# ZenMux, Cline, Straitly, MiniMax, CommandCode) need headless-browser login or
+# credential repair and are filed as follow-up issues; this PR wires the metric
+# family and the API-native reads so those seats slot in as one fetcher each.
+# OpenUsage (robinebers/openusage) is the authoritative reference for each
+# provider's exact endpoint and auth; the endpoint strings below are copied
+# from its provider sources (Sources/OpenUsage/Providers/*) and verified live.
+HELP_QUOTA_PCT = (
+    "# HELP fleet_seat_quota_remaining_pct Remaining quota as a percentage "
+    "(0..100) per provider per window from the provider's own usage/quota "
+    "endpoint (fleet-ops#4217). source label: api (VPS-native token read), "
+    "dashboard (headless-browser scrape), stale (session died, repair pending)."
+)
+TYPE_QUOTA_PCT = "# TYPE fleet_seat_quota_remaining_pct gauge"
+HELP_QUOTA_RESET = (
+    "# HELP fleet_seat_quota_reset_seconds Seconds until the quota window "
+    "resets, per provider per window (fleet-ops#4217). 0 when the provider "
+    "does not report a reset time."
+)
+TYPE_QUOTA_RESET = "# TYPE fleet_seat_quota_reset_seconds gauge"
+HELP_QUOTA_OBSERVED = (
+    "# HELP fleet_seat_quota_observed_seconds Seconds since the quota was last "
+    "observed from the provider (fleet-ops#4217). absent() on this family is "
+    "the stale-quota alert: a seat whose observed_at is older than "
+    "QUOTA_STALE_S has no live figure."
+)
+TYPE_QUOTA_OBSERVED = "# TYPE fleet_seat_quota_observed_seconds gauge"
+QUOTA_STALE_S = 900  # 15 min — the issue's stale threshold.
+CLAUDE_CREDENTIALS_JSON = Path.home() / ".claude" / ".credentials.json"
+CODEX_AUTH_JSON = Path.home() / ".codex" / "auth.json"
+CLAUDE_OAUTH_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+CODEX_WHAM_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
+OPENROUTER_KEY_URL = "https://openrouter.ai/api/v1/key"
+CURSOR_AUTH_JSON = Path.home() / ".config" / "cursor" / "auth.json"
+CURSOR_PERIOD_USAGE_URL = (
+    "https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage"
+)
+DEVIN_CREDENTIALS_TOML = Path.home() / ".local" / "share" / "devin" / "credentials.toml"
+DEVIN_GET_USER_STATUS_URL = (
+    "https://server.codeium.com/exa.seat_management_pb.SeatManagementService/GetUserStatus"
+)
+CLAUDE_QUOTA_CACHE = PR_CACHE_DIR / "claude-quota-cache.json"
+CODEX_QUOTA_CACHE = PR_CACHE_DIR / "codex-quota-cache.json"
+OPENROUTER_KEY_CACHE = PR_CACHE_DIR / "openrouter-key-cache.json"
+CURSOR_QUOTA_CACHE = PR_CACHE_DIR / "cursor-quota-cache.json"
+DEVIN_QUOTA_CACHE = PR_CACHE_DIR / "devin-quota-cache.json"
+XKIRO_QUOTA_CACHE = PR_CACHE_DIR / "xkiro-quota-cache.json"
+QUOTA_TTL = 300  # 5 min — matches the exporter cadence; one fresh fetch per run.
+QUOTA_STALE_CACHE = 1800  # 30 min — serve stale cache while a fetch is failing.
+
+
+def _fetch_openrouter_key():
+    """Return OpenRouter /api/v1/key quota rows, or None.
+
+    The endpoint returns limit_remaining (USD left in the per-key cap window)
+    and limit_reset (ISO timestamp). When limit is null the key has no per-key
+    cap, so there is no quota meter to emit (the account-wide /credits balance
+    is already exported as fleet_seat_credits_remaining_usd). Verified live
+    2026-09-07: limit=null for this key, so this fetcher returns None today
+    and emits nothing; a key with a cap emits both rows.
+    """
+    key = _openrouter_api_key()
+    if not key:
+        return None
+    req = urllib.request.Request(
+        OPENROUTER_KEY_URL,
+        headers={"Authorization": f"Bearer {key}", "User-Agent": _VENDOR_USER_AGENT},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:  # nosemgrep
+            payload = json.loads(resp.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, ValueError) as exc:
+        print(f"openrouter key fetch failed: {exc}", file=sys.stderr)
+        return None
+    data = payload.get("data") or {}
+    if not isinstance(data, dict):
+        return None
+    limit = data.get("limit")
+    remaining = data.get("limit_remaining")
+    reset = data.get("limit_reset")
+    if limit is None or remaining is None:
+        return None
+    try:
+        limit = float(limit)
+        remaining = float(remaining)
+    except (ValueError, TypeError):
+        return None
+    if limit <= 0:
+        return None
+    pct = (remaining / limit) * 100.0 if limit else 0.0
+    reset_s = _iso_to_seconds_until(reset)
+    return {"pct": pct, "reset_s": reset_s, "window": "key_cap"}
+
+
+def _claude_access_token():
+    """Return the Claude OAuth access token from ~/.claude/.credentials.json, or None."""
+    try:
+        data = json.loads(CLAUDE_CREDENTIALS_JSON.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    oauth = (data or {}).get("claudeAiOauth") or {}
+    token = oauth.get("accessToken")
+    return token or None
+
+
+def _codex_access_token():
+    """Return the Codex OAuth access token from ~/.codex/auth.json, or None."""
+    try:
+        data = json.loads(CODEX_AUTH_JSON.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    tokens = (data or {}).get("tokens") or {}
+    token = tokens.get("access_token")
+    return token or None
+
+
+def _fetch_claude_usage():
+    """Return Claude OAuth usage quota rows, or None.
+
+    api.anthropic.com/api/oauth/usage returns five_hour and seven_day windows
+    with utilization (0..100, percent USED) and resets_at (ISO). remaining_pct
+    = 100 - utilization. Verified live 2026-09-07.
+    """
+    token = _claude_access_token()
+    if not token:
+        return None
+    req = urllib.request.Request(
+        CLAUDE_OAUTH_USAGE_URL,
+        headers={"Authorization": f"Bearer {token}", "User-Agent": _VENDOR_USER_AGENT},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:  # nosemgrep
+            payload = json.loads(resp.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, ValueError) as exc:
+        print(f"claude usage fetch failed: {exc}", file=sys.stderr)
+        return None
+    if not isinstance(payload, dict):
+        return None
+    rows = []
+    for key, window in (("five_hour", "session"), ("seven_day", "weekly")):
+        entry = payload.get(key)
+        if not isinstance(entry, dict):
+            continue
+        util = entry.get("utilization")
+        resets_at = entry.get("resets_at")
+        if util is None:
+            continue
+        try:
+            util = float(util)
+        except (ValueError, TypeError):
+            continue
+        pct = max(0.0, 100.0 - util)
+        reset_s = _iso_to_seconds_until(resets_at)
+        rows.append({"pct": pct, "reset_s": reset_s, "window": window})
+    return rows or None
+
+
+def _fetch_codex_usage():
+    """Return Codex OAuth wham/usage quota rows, or None.
+
+    chatgpt.com/backend-api/wham/usage returns rate_limit.primary_window with
+    used_percent (0..100) and reset_after_seconds. remaining_pct =
+    100 - used_percent. Verified live 2026-09-07.
+    """
+    token = _codex_access_token()
+    if not token:
+        return None
+    req = urllib.request.Request(
+        CODEX_WHAM_USAGE_URL,
+        headers={"Authorization": f"Bearer {token}", "User-Agent": _VENDOR_USER_AGENT},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:  # nosemgrep
+            payload = json.loads(resp.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, ValueError) as exc:
+        print(f"codex usage fetch failed: {exc}", file=sys.stderr)
+        return None
+    if not isinstance(payload, dict):
+        return None
+    rl = payload.get("rate_limit")
+    if not isinstance(rl, dict):
+        return None
+    pw = rl.get("primary_window")
+    if not isinstance(pw, dict):
+        return None
+    used = pw.get("used_percent")
+    reset_after = pw.get("reset_after_seconds")
+    if used is None:
+        return None
+    try:
+        used = float(used)
+    except (ValueError, TypeError):
+        return None
+    pct = max(0.0, 100.0 - used)
+    reset_s = None
+    if reset_after is not None:
+        try:
+            reset_s = float(reset_after)
+        except (ValueError, TypeError):
+            reset_s = None
+    return [{"pct": pct, "reset_s": reset_s, "window": "primary"}]
+
+
+def _cursor_access_token():
+    """Return the Cursor access token from ~/.config/cursor/auth.json, or None."""
+    try:
+        data = json.loads(CURSOR_AUTH_JSON.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    token = (data or {}).get("accessToken")
+    return token or None
+
+
+def _fetch_cursor_usage():
+    """Return Cursor GetCurrentPeriodUsage quota rows, or None.
+
+    api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage answers a
+    POST with the Bearer accessToken from ~/.config/cursor/auth.json (the same
+    token the Cursor CLI uses; verified live 2026-09-07). The payload carries
+    planUsage.totalPercentUsed (percent USED across the billing cycle) and
+    billingCycleEnd (epoch-milliseconds). remaining_pct = 100 - totalPercentUsed;
+    reset_s = seconds until billingCycleEnd. The endpoint is the one OpenUsage's
+    Cursor provider calls (Sources/OpenUsage/Providers/Cursor/CursorUsageClient.swift).
+    """
+    token = _cursor_access_token()
+    if not token:
+        return None
+    req = urllib.request.Request(
+        CURSOR_PERIOD_USAGE_URL,
+        data=b"{}",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "User-Agent": _VENDOR_USER_AGENT,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:  # nosemgrep
+            payload = json.loads(resp.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, ValueError) as exc:
+        print(f"cursor usage fetch failed: {exc}", file=sys.stderr)
+        return None
+    if not isinstance(payload, dict):
+        return None
+    plan_usage = payload.get("planUsage")
+    if not isinstance(plan_usage, dict):
+        return None
+    used = plan_usage.get("totalPercentUsed")
+    if used is None:
+        return None
+    try:
+        used = float(used)
+    except (ValueError, TypeError):
+        return None
+    pct = max(0.0, min(100.0, 100.0 - used))
+    reset_s = None
+    cycle_end = payload.get("billingCycleEnd")
+    if cycle_end is not None:
+        try:
+            reset_s = max(0.0, float(cycle_end) / 1000.0 - time.time())
+        except (ValueError, TypeError):
+            reset_s = None
+    return [{"pct": pct, "reset_s": reset_s, "window": "monthly"}]
+
+
+def _devin_windsurf_api_key():
+    """Return the Devin/Codeium windsurf_api_key from credentials.toml, or None.
+
+    OpenUsage's Devin provider reads the same file (DevinAuthStore.swift:
+    ~/.local/share/devin/credentials.toml, key windsurf_api_key). The key is
+    the Codeium/Windsurf auth token, not the api.devin.ai API key.
+    """
+    try:
+        with open(DEVIN_CREDENTIALS_TOML, "rb") as fh:
+            cfg = tomllib.load(fh)
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    key = cfg.get("windsurf_api_key")
+    return key if isinstance(key, str) and key else None
+
+
+def _fetch_devin_usage():
+    """Return Devin GetUserStatus quota rows, or None.
+
+    server.codeium.com/exa.seat_management_pb.SeatManagementService/GetUserStatus
+    answers a POST carrying the windsurf_api_key from
+    ~/.local/share/devin/credentials.toml (the same auth OpenUsage's Devin
+    provider uses; verified live 2026-09-07). The payload's planStatus carries
+    dailyQuotaRemainingPercent / weeklyQuotaRemainingPercent (percent REMAINING)
+    and dailyQuotaResetAtUnix / weeklyQuotaResetAtUnix (epoch seconds).
+    remaining_pct is used as-is; reset_s = seconds until the reset.
+    """
+    key = _devin_windsurf_api_key()
+    if not key:
+        return None
+    body = {
+        "metadata": {
+            "apiKey": key,
+            "ideName": "devin",
+            "ideVersion": "1.108.2",
+            "extensionName": "devin",
+            "extensionVersion": "1.108.2",
+            "locale": "en",
+        }
+    }
+    req = urllib.request.Request(
+        DEVIN_GET_USER_STATUS_URL,
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Connect-Protocol-Version": "1",
+            "User-Agent": _VENDOR_USER_AGENT,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:  # nosemgrep
+            payload = json.loads(resp.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, ValueError) as exc:
+        print(f"devin usage fetch failed: {exc}", file=sys.stderr)
+        return None
+    if not isinstance(payload, dict):
+        return None
+    user_status = payload.get("userStatus")
+    if not isinstance(user_status, dict):
+        return None
+    plan_status = user_status.get("planStatus")
+    if not isinstance(plan_status, dict):
+        return None
+    rows = []
+    now = time.time()
+    # Daily quota (percent remaining).
+    daily = plan_status.get("dailyQuotaRemainingPercent")
+    if daily is not None:
+        try:
+            daily = float(daily)
+        except (ValueError, TypeError):
+            daily = None
+        if daily is not None:
+            daily_reset = plan_status.get("dailyQuotaResetAtUnix")
+            daily_reset_s = None
+            if daily_reset is not None:
+                try:
+                    daily_reset_s = max(0.0, float(daily_reset) - now)
+                except (ValueError, TypeError):
+                    daily_reset_s = None
+            rows.append(
+                {"pct": max(0.0, min(100.0, daily)), "reset_s": daily_reset_s, "window": "daily"}
+            )
+    # Weekly quota (percent remaining).
+    weekly = plan_status.get("weeklyQuotaRemainingPercent")
+    if weekly is not None:
+        try:
+            weekly = float(weekly)
+        except (ValueError, TypeError):
+            weekly = None
+        if weekly is not None:
+            weekly_reset = plan_status.get("weeklyQuotaResetAtUnix")
+            weekly_reset_s = None
+            if weekly_reset is not None:
+                try:
+                    weekly_reset_s = max(0.0, float(weekly_reset) - now)
+                except (ValueError, TypeError):
+                    weekly_reset_s = None
+            rows.append(
+                {"pct": max(0.0, min(100.0, weekly)), "reset_s": weekly_reset_s, "window": "weekly"}
+            )
+    return rows or None
+
+
+def _fetch_xkiro_quota():
+    """Return xKiro free-tokens quota rows, or None.
+
+    api.xkiro.com/v1/usage (the same endpoint _fetch_xkiro_usage calls for
+    the vendor-balance family) returns free_tokens.remaining / limit_per_day
+    and wallet.balance_usd. remaining_pct = remaining / limit * 100; the
+    daily window resets at 00:00 UTC. Verified live 2026-09-08.
+    """
+    key = _read_env_key(XKIRO_ENV_FILE, ("XKIRO_API_KEY", "API_KEY"))
+    if not key:
+        return None
+    req = urllib.request.Request(
+        "https://api.xkiro.com/v1/usage",
+        headers={"Authorization": f"Bearer {key}", "User-Agent": _VENDOR_USER_AGENT},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:  # nosemgrep
+            payload = json.loads(resp.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, ValueError) as exc:
+        print(f"xkiro quota fetch failed: {exc}", file=sys.stderr)
+        return None
+    free = payload.get("free_tokens") or {}
+    remaining = free.get("remaining")
+    limit = free.get("limit_per_day")
+    if remaining is None or limit is None:
+        return None
+    try:
+        remaining = int(remaining)
+        limit = int(limit)
+    except (ValueError, TypeError):
+        return None
+    if limit <= 0:
+        return None
+    pct = max(0.0, min(100.0, (remaining / limit) * 100.0))
+    # xKiro free-tokens reset at 00:00 UTC daily.
+    now = datetime.now(timezone.utc)
+    tomorrow = now.replace(
+        hour=0, minute=0, second=0, microsecond=0
+    ) + timedelta(days=1)
+    reset_s = max(0.0, (tomorrow - now).total_seconds())
+    return [{"pct": pct, "reset_s": reset_s, "window": "daily"}]
+
+
+def _iso_to_seconds_until(iso_str):
+    """Return seconds from now until an ISO timestamp, or None."""
+    if not iso_str or not isinstance(iso_str, str):
+        return None
+    try:
+        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    now = datetime.now(timezone.utc)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return max(0.0, (dt - now).total_seconds())
+
+
+def _cached_quota_json(path, fetcher, name):
+    """Return fetched/cached quota data, or None to omit the family.
+
+    Fresh cache (<=5 min) skips network. On failure, serve cache up to 30 min.
+    One fetch per provider per exporter run.
+    """
+    cached, cache_age = _read_cache(path)
+    if cache_age is not None and cache_age <= QUOTA_TTL and cached is not None:
+        return cached
+    data = fetcher()
+    if data is not None:
+        _write_cache(path, data)
+        return data
+    if cached is not None and cache_age is not None and cache_age <= QUOTA_STALE_CACHE:
+        print(f"{name} quota fetch failed, serving stale cache (age={int(cache_age)}s)",
+              file=sys.stderr)
+        return cached
+    return None
+
+
+def _emit_seat_quota(lines, provider, rows, source, observed_at):
+    """Append fleet_seat_quota_* rows for one provider.
+
+    rows: list of {pct, reset_s, window}. observed_at: epoch seconds of the
+    fetch. source: api | dashboard | stale.
+
+    Emits the data rows only (no HELP/TYPE); the caller emits the HELP/TYPE
+    headers once via _emit_seat_quota_headers so multiple providers do not
+    duplicate them (fleet-ops#1844: a duplicate HELP/TYPE makes the textfile
+    unparseable and node_exporter drops the whole fleet.prom).
+    """
+    if not rows:
+        return
+    now = time.time()
+    observed_s = max(0.0, now - observed_at) if observed_at else 0.0
+    for r in rows:
+        window = _prom_label(r.get("window") or "primary")
+        pct = r["pct"]
+        reset_s = r.get("reset_s")
+        reset_val = float(reset_s) if reset_s is not None else 0.0
+        lines.append(
+            f'fleet_seat_quota_remaining_pct{{provider="{_prom_label(provider)}",'
+            f'window="{window}",source="{_prom_label(source)}"}} {pct:.4f}'
+        )
+        lines.append(
+            f'fleet_seat_quota_reset_seconds{{provider="{_prom_label(provider)}",'
+            f'window="{window}",source="{_prom_label(source)}"}} {reset_val:.4f}'
+        )
+    lines.append(
+        f'fleet_seat_quota_observed_seconds{{provider="{_prom_label(provider)}",'
+        f'source="{_prom_label(source)}"}} {observed_s:.4f}'
+    )
+
+
+def _emit_seat_quota_headers(lines):
+    """Emit one HELP/TYPE pair per quota metric name (call once before rows)."""
+    lines.append("")
+    lines.append(HELP_QUOTA_PCT)
+    lines.append(TYPE_QUOTA_PCT)
+    lines.append(HELP_QUOTA_RESET)
+    lines.append(TYPE_QUOTA_RESET)
+    lines.append(HELP_QUOTA_OBSERVED)
+    lines.append(TYPE_QUOTA_OBSERVED)
+
+
 _GH_FETCHED_THIS_RUN = False
 
 
@@ -695,12 +2287,24 @@ def _gh_merged_prs_raw():
     (fleet-ops#1136 objective decision); the REST `gh search prs --json`
     surface omits additions/deletions/changedFiles, so GraphQL search is
     required.
+
+    fleet-ops#2690: the search query itself carries the 24h filter and
+    sort:merged-desc. Pagination now terminates naturally (the result set
+    is bounded by the window) — `merged:>=$cutoff` lets GitHub do the
+    filtering and `sort:merged-desc` orders by merge time so the most
+    recent merges come first. The GH_PAGES cap is still defended as a
+    safety net; hitting it on a 24h window means >GH_PAGES×100 PRs merged
+    in 24h across the org, which is the operational alarm to investigate.
     """
     cutoff_epoch = time.time() - 86400
+    cutoff_iso = datetime.fromtimestamp(
+        cutoff_epoch, tz=timezone.utc
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    query = MERGED_PRS_SEARCH_QUERY_TEMPLATE.replace("{CUTOFF}", cutoff_iso)
     out = []
     cursor = None
     for _ in range(GH_PAGES):
-        payload = _gh_graphql(MERGED_PRS_SEARCH_QUERY, cursor)
+        payload = _gh_graphql(query, cursor)
         if payload is None:
             return None
         if payload.get("errors"):
@@ -714,6 +2318,9 @@ def _gh_merged_prs_raw():
             merged = node.get("mergedAt") or ""
             ep = _parse_iso_utc(merged)
             if ep is None or ep < cutoff_epoch:
+                # Defensive backstop — the query already filtered, but if
+                # GitHub's window edge drifted by a second a row could leak
+                # through. Drop it; do not emit a false 24h merge.
                 continue
             out.append({
                 "repo": repo,
@@ -729,11 +2336,23 @@ def _gh_merged_prs_raw():
         cursor = page.get("endCursor")
         if not cursor:
             return out
+    # (the 24h-windowed query should never exhaust the page cap at fleet
+    # volume; if it does, that is the operational alarm — the print is
+    # the existing loud signal picked up by alerting.)
     print("gh merged-prs search: hit page cap", file=sys.stderr)
     return out
 
 
 def _gh_graphql(query, cursor=None):
+    """Run `gh api graphql` with the query plus optional cursor.
+
+    Note (fleet-ops#2690): earlier drafts of the #2690 fix passed the 24h
+    cutoff as a $-variable via `-f cutoff=<iso>`. That does NOT work —
+    GraphQL does not expand variables inside the `search(query: "...")`
+    string field, only at the top level of the query body. The cutoff is
+    interpolated into the search string by the caller (see
+    MERGED_PRS_SEARCH_QUERY_TEMPLATE and _gh_merged_prs_raw).
+    """
     cmd = ["gh", "api", "graphql", "-f", f"query={query}"]
     if cursor:
         cmd.extend(["-f", f"cursor={cursor}"])
@@ -918,7 +2537,9 @@ def _gh_latest_ci_verdict(repo_full, branch):
     Used to resolve a PENDING statusCheckRollup: the rollup is pending while a
     fresh CI run is in flight, so we fall back to the most recent COMPLETED CI
     run on the default branch (the same signal `gh run list -w CI` gives).
-    Skipped/neutral runs don't count; if none completed, return None (omit).
+    Skipped/neutral/cancelled runs are not verdicts (a cancelled run is a
+    superseded/abandoned run, not a red trunk) so they are skipped; if no run
+    with a real conclusion completed, return None (omit).
     """
     try:
         r = subprocess.run(
@@ -945,10 +2566,11 @@ def _gh_latest_ci_verdict(repo_full, branch):
         concl = (row.get("conclusion") or "").lower()
         if concl == "success":
             return 1
-        if concl in ("failure", "cancelled", "timed_out",
+        if concl in ("failure", "timed_out",
                      "action_required", "startup_failure"):
             return 0
-        # skipped / neutral → not a verdict, keep looking
+        # skipped / neutral / cancelled → not a verdict (a cancelled run is a
+        # superseded/abandoned run, not a red trunk), keep looking
     return None
 
 
@@ -1026,13 +2648,48 @@ def _escalations_24h():
         "escalation-daily-sweep.service",
         "escalation-daily-sweep.timer",
         "resilience-drill-stub*",
+        # fleet-ops#3180: resync with the writer's refuse list. The
+        # 2026-08-30 pi-issue@* exclusion (fleet-ops#2133/#2475 — workers
+        # escalate via their own reaper + re-dispatch lane, never to the
+        # senior auditor) and the drill/probe scaffolding never landed here,
+        # so the unit-escalation@<instance> template START was still counted
+        # even though the writer refused the trip. Measured 2026-09-05:
+        # 868 of 936 counted starts were pi-issue@* no-seat crash-loops,
+        # tripping FleetEscalationStorm (threshold 300; remaining 64).
+        # tests/fleet-metrics-export.test.sh locks this list against the
+        # writer's case line so a future exclusion cannot drift again.
+        "notify-probe.service",
+        "notify-probe.onfail.service",
+        "probe-*.service",
+        # fleet-ops#3617: the fleet-orphan-reset-probe@* test stub (fleet-ops#3617)
+        # proves reset-failed semantics via ExecStart=/bin/false; its
+        # deliberate failure is refused by unit-escalation-write (excluded in
+        # the writer's case list) so its template STOPS there — but the
+        # unit-escalation@<instance> template START was still being counted
+        # here, tripping the escalation-exclusion drift-lock. Mirror the
+        # writer's refuse entry so the metric and writer cannot drift.
+        "fleet-orphan-reset-probe@*",
+        "multi-*-sink.service",
+        "pi-issue@*",
+        # fleet-ops#4266 detached dead-man: the writer refuses the scope.d
+        # anti-recursion scopes (init.scope, app-*.scope) and the live-dummy*
+        # dead-man PROOF units (a deliberate stop-without-deliverable is the
+        # verdict being proven, not a fault). Mirror the writer's refuse
+        # entries so the metric and writer cannot drift.
+        "init.scope",
+        "app-*.scope",
+        "live-dummy*",
         # Canaries / orchestrator organs: their deliberate fail-loud escalations
         # are expected, not a flapping worker.
         "fleet-heartbeat*",
         "pi-intake@fleet-ops-canary*",
         # OnFailure repair units are recovery machinery; counting them in the
-        # storm metric double-counts the original failure.
+        # storm metric double-counts the original failure. fleet-ops#3349:
+        # alert-repair-* units use a hyphen separator, so they escaped the
+        # *-repair@* glob and stayed counted (the "alert-repair run hop stalled"
+        # component of the FleetEscalationStorm); exclude them too.
         "*-repair@*",
+        "alert-repair-*",
     )
 
     def _is_excluded(name):
@@ -1067,6 +2724,68 @@ def _escalations_24h():
     return dict(counts.most_common(20))
 
 
+def _oomd_kills_6h():
+    """Count systemd-oomd kills of app-pi-issue.slice units in the last 6h.
+
+    fleet-ops#4164: a rise > 3 in 6h trips FleetOomdKillsHigh, whose repair
+    packet raises the live ram_gb_per_worker charge back to 2.0. Counts only
+    oomd-managed kills (systemd-oomd logs "Killed unit ..." or
+    "Killed process ..."), not kernel OOM. Scoped to the app-pi-issue.slice
+    cgroup so host-level oomd kills (unrelated services) do not trip the
+    fleet alert. Returns a dict {unit: count} (top 20).
+
+    Overridable for tests via FLEET_OOMD_JOURNAL_STUB (a file whose lines
+    stand in for journalctl --output=cat output).
+    """
+    stub = os.environ.get("FLEET_OOMD_JOURNAL_STUB")
+    if stub:
+        try:
+            with open(stub) as f:
+                stdout = f.read()
+        except OSError:
+            return {}
+        rc = 0
+    else:
+        try:
+            r = subprocess.run(
+                [
+                    "journalctl", "--user",
+                    "--since", "6 hours ago",
+                    "--no-pager",
+                    "--output=cat",
+                    "SYSTEMD_OOMD_KILL=1",
+                ],
+                capture_output=True, text=True, timeout=JOURNAL_TIMEOUT,
+                env={**os.environ, "XDG_RUNTIME_DIR": XDG},
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            print(f"oomd-kills journalctl failed: {exc}", file=sys.stderr)
+            return {}
+        rc = r.returncode
+        stdout = r.stdout
+    if rc != 0 and not stub:
+        print(f"oomd-kills journalctl rc={rc}", file=sys.stderr)
+        return {}
+    counts = Counter()
+    for line in stdout.splitlines():
+        # systemd-oomd log lines (cat output): "Killed unit <name>.service."
+        # or "Killed unit <name>.slice." or
+        # "Killed process <pid> (<comm>) in unit <name>.service."
+        m = re.search(r"in unit (\S+?)\.service", line)
+        if not m:
+            m = re.search(r"Killed unit (\S+?)\.(service|slice)", line)
+        if not m:
+            continue
+        unit = m.group(1)
+        # Scope to fleet worker units (pi-issue@* under app-pi-issue.slice)
+        # and the slice itself. A host-level oomd kill of an unrelated
+        # service is not a fleet signal.
+        if not (unit.startswith("pi-issue@") or unit == "app-pi-issue"):
+            continue
+        counts[unit] += 1
+    return dict(counts.most_common(20))
+
+
 def _repair_log_counts_24h():
     """Return (dispatch_count, skip_count) from actions.log within 24h."""
     if not ACTIONS_LOG.exists():
@@ -1091,6 +2810,79 @@ def _repair_log_counts_24h():
         print(f"actions.log read: {exc}", file=sys.stderr)
         return 0, 0
     return disp, skip
+
+
+# fleet-ops#1291: per-alertname repair-outcome counts for the WFR
+# alert-quality lens. The dispatcher writes one line per outcome with an
+# `alertname=` token; this counts DISPATCH / RESOLVED / FAILED /
+# SKIPPED-CLAIMED per alertname in the trailing 24h. The WFR computes
+# action_rate = dispatch/(dispatch+skipped) and reads the RESOLVED text to
+# judge false-positives — the stats feed the review, the review judges.
+# Handles both bracketed `[YYYY-..Z]` and bare `YYYY-..Z` timestamps (the
+# dispatcher's FAILED/RESOLVED lines use the bare form).
+_BARE_TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})Z")
+_ALERTNAME_RE = re.compile(r"alertname=(\S+)")
+# fleet-ops#2694: phantom resolutions carry root_cause=PHANTOM_ALERT...
+# (the value is underscore-joined; the first whitespace-delimited token is
+# the signal). Real resolutions have transient_npm_.../no root_cause token.
+_ROOT_CAUSE_RE = re.compile(r"root_cause=(\S+)")
+
+
+def _repair_log_per_alertname_24h():
+    """Return dict[alertname] = {dispatch, resolved, failed, skipped,
+    phantom_resolved} for the trailing 24h, or {} when actions.log is
+    missing. RESOLVED entries whose root_cause starts with PHANTOM_ALERT
+    count as phantom_resolved, not resolved — drill fixtures are not
+    repair work (fleet-ops#2694)."""
+    if not ACTIONS_LOG.exists():
+        return {}
+    cutoff = time.time() - 86400
+    out: dict = {}
+    try:
+        with ACTIONS_LOG.open("r") as f:
+            for line in f:
+                # Try bracketed then bare timestamp.
+                m = _TS_RE.match(line)
+                off = m.end() if m else None
+                if off is None:
+                    m = _BARE_TS_RE.match(line)
+                    off = m.end() if m else None
+                if off is None:
+                    continue
+                ep = _parse_iso_utc(m.group(1))
+                if ep is None or ep < cutoff:
+                    continue
+                rest = line[off:].lstrip()
+                kind = None
+                if rest.startswith("DISPATCH "):
+                    kind = "dispatch"
+                elif rest.startswith("RESOLVED "):
+                    # fleet-ops#2694: PHANTOM_ALERT root_cause = drill
+                    # fixture, not a real fix; keep it out of "resolved"
+                    # so the WFR lens can flag phantom drift.
+                    rc = _ROOT_CAUSE_RE.search(rest)
+                    if rc and rc.group(1).startswith("PHANTOM_ALERT"):
+                        kind = "phantom_resolved"
+                    else:
+                        kind = "resolved"
+                elif rest.startswith("FAILED "):
+                    kind = "failed"
+                elif rest.startswith("SKIPPED-CLAIMED "):
+                    kind = "skipped"
+                if kind is None:
+                    continue
+                am = _ALERTNAME_RE.search(rest)
+                if not am:
+                    continue
+                name = am.group(1)
+                d = out.setdefault(name, {"dispatch": 0, "resolved": 0,
+                                          "failed": 0, "skipped": 0,
+                                          "phantom_resolved": 0})
+                d[kind] += 1
+    except OSError as exc:
+        print(f"actions.log per-alertname read: {exc}", file=sys.stderr)
+        return {}
+    return out
 
 
 # --- Undersaturation guard (2026-08-27) ------------------------------------
@@ -1245,16 +3037,6 @@ def _fetch_queue_composition():
     }
 
 
-def _ready_work():
-    """Cached open agent-ready issue count (30-min fresh, 2-h stale envelope).
-    Back-compat: returns the total count for the ready-work queue.
-    """
-    qc = _queue_composition()
-    if qc is None:
-        return None
-    return qc["ready-work"]["total"]
-
-
 def _worker_units():
     """Return list of active+activating user service units matching pi-* /
     alert-repair-*.
@@ -1402,6 +3184,62 @@ def _keystone_routing_counts():
         elif ev == "escalated":
             escalated += 1
     return routed, escalated, st.st_mtime
+
+
+def _read_worktree_reaper():
+    """Read the worktree reaper's last-run summary (fleet-ops#4118).
+
+    bin/fleet-worktree-reaper writes a JSON breakdown to
+    WORKTREE_REAPER_SUMMARY on every daily timer run. This surfaces the count
+    the heartbeat can gauge: post_count (dirs left under agent-worktrees after
+    the reap), reaped (how many the reaper removed), and the run timestamp for
+    freshness. Degrades to present=False when the summary is missing,
+    unparseable, or stale (older than WORKTREE_REAPER_STALE_S) so the heartbeat
+    can tell a dead reaper from a healthy one — a missing reaper result is
+    data, not a crash.
+
+    Returns a dict with present + the count fields, or present=False with a
+    reason.
+    """
+    try:
+        doc = json.loads(
+            WORKTREE_REAPER_SUMMARY.read_text(encoding="utf-8", errors="replace")
+        )
+    except OSError:
+        return {"present": False, "reason": "summary-missing"}
+    except json.JSONDecodeError:
+        return {"present": False, "reason": "summary-unparseable"}
+    ts = doc.get("ts")
+    age_s = None
+    if isinstance(ts, str):
+        ts_epoch = _parse_iso_utc(ts)
+        if ts_epoch is not None:
+            age_s = time.time() - ts_epoch
+    if age_s is not None and age_s > WORKTREE_REAPER_STALE_S:
+        return {
+            "present": False,
+            "reason": "summary-stale",
+            "ts": ts,
+            "age_s": age_s,
+        }
+    return {
+        "present": True,
+        "ts": ts,
+        "age_s": age_s,
+        "post_count": doc.get("post_count"),
+        "pre_count": doc.get("pre_count"),
+        "reaped": doc.get("reaped"),
+        "scanned": doc.get("scanned"),
+        "bound_breached": doc.get("bound_breached"),
+        "skipped_dirty": doc.get("skipped_dirty"),
+        "skipped_notpushed": doc.get("skipped_notpushed"),
+        "skipped_live": doc.get("skipped_live"),
+        "skipped_young": doc.get("skipped_young"),
+        "skipped_unmerged": doc.get("skipped_unmerged"),
+        "skipped_notterminal": doc.get("skipped_notterminal"),
+        "salvaged": doc.get("salvaged"),
+        "failed": doc.get("failed"),
+    }
 
 
 # --- Self-maintenance + PR quality (fleet-ops#1136) ------------------------
@@ -1581,9 +3419,1686 @@ def _verified_merges(detail):
     }
 
 
+# --- SLO error budgets (fleet-ops#1291) ------------------------------------
+# Google SRE Workbook Ch.5 canon. config/slo-definitions.json is the single
+# source of truth; lib/slo_budget.py does the budget math (loaded lazily so
+# the exporter stays a standalone script with no sys.path games at import
+# time). The exporter computes compliance for each INSTRUMENTED SLO from
+# data it already gathers in main() (CI green rollup, seat health, rate
+# limit) plus the live fleet_waste_ratio from fleet-waste.prom, then emits
+# the fleet_slo_* gauge family. Burn-rate ALERTS live in
+# config/fleet_rules.yml as multiwindow avg_over_time() queries over
+# fleet_slo_compliance (ratio SLOs) or threshold-window alerts (gauge SLOs)
+# — Prometheus owns the canon, not Python. Uninstrumented SLOs (source
+# metric pending a follow-up) emit fleet_slo_instrumented=0 and zero budget
+# burn so their alert rules (gated on instrumented=1) never fire on a
+# metric they cannot measure.
+
+_SLO_BUDGET_MOD = None
+
+
+def _slo_budget_mod():
+    """Lazily load lib/slo_budget.py from ../lib/ relative to this script."""
+    global _SLO_BUDGET_MOD
+    if _SLO_BUDGET_MOD is not None:
+        return _SLO_BUDGET_MOD
+    import importlib.util
+    lib_path = Path(__file__).resolve().parent.parent / "lib" / "slo_budget.py"
+    spec = importlib.util.spec_from_file_location("slo_budget", lib_path)
+    mod = importlib.util.module_from_spec(spec)
+    # Register in sys.modules so dataclass's _is_type can resolve the module
+    # (frozen dataclasses look up cls.__module__ in sys.modules at class-build time).
+    sys.modules["slo_budget"] = mod
+    spec.loader.exec_module(mod)
+    _SLO_BUDGET_MOD = mod
+    return mod
+
+
+def _load_slo_defs():
+    """Return the parsed slo-definitions.json, or None if missing/unparseable."""
+    for path in (SLO_DEFS_DEFAULT, SLO_DEFS_FALLBACK):
+        try:
+            return json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+    return None
+
+
+def _read_waste_ratio():
+    """Read the live fleet_waste_ratio gauge from fleet-waste.prom, or None.
+
+    fleet-waste-export is the single source of truth for the waste ratio;
+    the SLO emitter reads its published value rather than recomputing it.
+    Returns None when the prom file is missing or the gauge is absent
+    (e.g., a fresh install before the waste exporter has run once) — the
+    waste_ratio SLO then reports instrumented=0 for this tick.
+    """
+    try:
+        text = WASTE_PROM.read_text()
+    except OSError:
+        return None
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("fleet_waste_ratio "):
+            try:
+                return float(line.split()[-1])
+            except (ValueError, IndexError):
+                return None
+    return None
+
+
+def _enrolled_seat_providers():
+    """Return the set of enrolled provider names (cap > 0 in seat-caps.json).
+
+    Enrollment is per-provider: a provider whose cap is 0 (dead decoys,
+    deliberately-capped, money-only rows) is not a seat the fleet routes
+    to, so it must not count in the seat_availability SLO numerator or
+    denominator family. Returns None when the config is missing/unparseable
+    (callers then report source-unavailable rather than guessing).
+    """
+    for path in (SEAT_CAPS_DEFAULT, SEAT_CAPS_FALLBACK):
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        providers = data.get("providers") or {}
+        if not isinstance(providers, dict):
+            continue
+        enrolled = set()
+        for prov, cfg in providers.items():
+            if not isinstance(cfg, dict):
+                continue
+            cap = cfg.get("cap", 0)
+            if isinstance(cap, (int, float)) and cap > 0:
+                enrolled.add(prov)
+        return enrolled if enrolled else None
+    return None
+
+
+def _enrolled_seat_total():
+    """Count enrolled seats (providers with cap>0) from seat-caps.json.
+
+    fleet_pi_seat_total is the denominator for the seat_availability SLO.
+    Returns None when the config is missing/unparseable so the SLO reports
+    instrumented=0 rather than dividing by zero.
+    """
+    enrolled = _enrolled_seat_providers()
+    return len(enrolled) if enrolled else None
+
+
+# fleet-ops#2407: release-at-usable_at classes — the classes whose router
+# (lib/seat-lib.sh seat_usable) FAIL-OPENS the seat once its wall clock
+# (bench_until ?? usable_at) has passed. quota_exhausted / credentials_bad /
+# corpse are held unconditionally until a healthy observation (billing/
+# credential repair or a corpse re-probe), so they are never release-at-expiry.
+# Keep this list in lock-step with seat_usable's branches.
+_SEAT_RELEASE_AT_EXPIRY_CLASSES = frozenset(
+    {
+        "overload_bench",
+        "quota_bench",
+        "hang_bench",
+        "transient_fault",
+        "rate_limited",
+    }
+)
+
+# fleet-ops#2806: one probe interval. The releaser
+# (bin/fleet-seat-comeback-release) re-probes a walled seat within this
+# window of its wall clock passing (seat-caps.json
+# walled_comeback.min_probe_interval_s=900). A seat whose wall passed more
+# than this many seconds ago while still walled means the releaser had a
+# full probe cycle and did not act — overdue by more than one probe
+# interval. The comeback-overdue metric and the thorough gather's
+# usable_at_overdue grace on this boundary so a mid-cycle seat (a few
+# minutes past, releaser about to re-probe) is not flagged.
+COMEBACK_OVERDUE_GRACE_S = 900
+
+
+def _seat_wall_end_epoch(data):
+    """Epoch (s) of a ledger's wall clock, or None when not held by a clock.
+
+    Bash-written bench markers (overload_bench / quota_bench / hang_bench)
+    carry bench_until (usable_at aliases it); extension-written classes carry
+    usable_at. seat_usable prefers bench_until and falls back to usable_at,
+    so this helper mirrors that. Returns None for an unparseable/absent clock
+    (treated as held, the defensive block).
+    """
+    raw = data.get("bench_until") or data.get("usable_at")
+    if not isinstance(raw, str) or not raw:
+        return None
+    ts = raw.strip().rstrip("Z")
+    try:
+        return calendar.timegm(time.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S"))
+    except ValueError:
+        return None
+
+
+def _seat_is_released(data, now=None):
+    """True when the router would (re)admit this seat at this instant.
+
+    fleet-ops#2407: a walled seat is RELEASED the moment now >= usable_at for
+    the release-at-expiry classes — seat_usable fail-opens it then, and the
+    census/availability split must not keep counting a released seat as
+    walled until the next observation happens to reclassify it. A non-healthy
+    seat with a wall clock that has passed is available; one that is held
+    (future clock) or has no clock (defensive hold) stays walled.
+    """
+    if data.get("seat_dead") is True:
+        return False
+    if data.get("health_class") not in _SEAT_RELEASE_AT_EXPIRY_CLASSES:
+        return False
+    end = _seat_wall_end_epoch(data)
+    if end is None:
+        return False
+    return end < (now if now is not None else time.time())
+
+
+def _seat_key_in_caps(provider, model):
+    """True when provider/model is an allowlisted key in seat-caps.json.
+
+    Mirrors lib/seat-lib.sh `_seat_key_in_caps` (the SEAT-KEY-INVALID guard,
+    fleet-ops#3661): a model key present under `.providers.<p>.models` counts
+    as a real seat even when its cap is 0 (a bench / production-lock row); a
+    key absent from that models map is a PHANTOM (probe-output filename
+    fragment, a retired slug still holding a ledger, provider/model pairs the
+    router never allows). The comeback-release organ refuses to probe or
+    release phantoms, so they can never be unwalled by it — the metrics must
+    not count them as overdue or never-released, or the seat-comeback alerts
+    fire indefinitely until a worker manually retires the phantom.
+
+    Returns True (fail-open) when the config is missing/unparseable so a
+    broken seat-caps can never silently suppress a real alert — same shape as
+    the other seat-caps reads in this module.
+
+    fleet-ops#3811: the LIVE caps file (SEAT_CAPS_LIVE — the same source
+    lib/seat-lib.sh uses) is checked FIRST so this guard's verdict matches
+    what the comeback-release organ actually does. The repo checkouts are
+    kept as fallbacks for hosts where the live file is absent (CI, dev).
+    """
+    for path in (SEAT_CAPS_LIVE, SEAT_CAPS_DEFAULT, SEAT_CAPS_FALLBACK):
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        providers = data.get("providers")
+        if not isinstance(providers, dict):
+            continue
+        if provider not in providers:
+            return False
+        pcfg = providers.get(provider)
+        if not isinstance(pcfg, dict):
+            return False
+        models = pcfg.get("models")
+        if not isinstance(models, dict):
+            return False
+        return model in models
+    return True
+
+
+def _read_comeback_overdue():
+    """Seats still classed non-healthy whose wall clock has already passed.
+
+    fleet-ops#2407: the wall-release path only clears on the NEXT observation
+    (a healthy write reclassifies; a failure re-anchors usable_at), so a seat
+    whose wall expired and nothing re-probed it lingers classed walled. Those
+    seats are comeback-OVERDUE: the router has fail-opened them but they were
+    not re-observed since. Exported once per tick (total + per-seat series) so
+    the state fails loud instead of silently depressing the seat_availability
+    rollup. seat_dead=true corpses are excluded here (they are deliberately
+    terminal — FleetDeadCredentialSeats owns them); a quota/credential hold
+    counts only once its own wall clock has passed (a hard billing wall whose
+    reset window elapsed is exactly an overdue comeback).
+
+    fleet-ops#2806: the RELEASER (bin/fleet-seat-comeback-release) re-probes a
+    walled seat within one probe interval (walled_comeback.
+    min_probe_interval_s, ~900s) of its wall clock passing — the seat returns
+    to the healthy pool at usable_at (the router fail-opens it and this
+    rollup already releases it, fleet-ops#2407). A seat whose wall passed only
+    seconds ago is therefore mid-cycle, NOT overdue; the metric must not
+    flag the releaser for a state it is about to act on (the lived
+    2026-09-02T09:45Z case: two seats 6-14min past usable_at, releaser firing
+    in the same tick, FleetSeatComebackOverdue pending at value=2). The
+    overdue flag is graced by one probe interval: only a seat whose wall
+    clock is past by MORE than COMEBACK_OVERDUE_GRACE_S (default 900) counts
+    — the releaser had a full probe cycle to re-probe (re-anchor or unwall)
+    and did not. This is the "overdue by more than one probe interval"
+    boundary; the release organ's own interval-breach loud check
+    (fleet_seat_comeback_release_interval_breached, fleet-ops#2806) fires on
+    the same boundary from inside the sweep.
+
+    Returns (count, [ {provider, model, health_class, usable_at, bench_until} ]).
+    Never raises on a missing/unreadable ledger.
+    """
+    seats = []
+    if not SEAT_LEDGER.is_dir():
+        return 0, seats
+    now = time.time()
+    try:
+        for f in sorted(SEAT_LEDGER.iterdir()):
+            if not f.is_file() or "__" not in f.name or not f.name.endswith(".json"):
+                continue
+            if ".spawn-bench" in f.name:
+                continue
+            try:
+                data = json.loads(f.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            if data.get("provider") == "test":
+                continue
+            if data.get("seat_dead") is True:
+                continue
+            if data.get("health_class") == "healthy":
+                continue
+            # fleet-ops#3661 (consistency with seat-lib's SEAT-KEY-INVALID
+            # guard): a ledger whose provider/model is not a valid
+            # seat-caps.json models key is a PHANTOM. Comeback-release
+            # refuses to probe or release phantoms, so they can never be
+            # unwalled here — counting them as overdue just fires this alert
+            # until a worker manually retires the phantom. A phantom is
+            # cleanup-owned, never a live-seat comeback signal; skip it.
+            if not _seat_key_in_caps(data.get("provider", ""), data.get("model", "")):
+                continue
+            end = _seat_wall_end_epoch(data)
+            # No wall clock: nothing to come back from — not an overdue
+            # comeback (the class is a defensive hold or legacy garbage; the
+            # census still counts it walled). Only expired clocks alarm.
+            if end is None:
+                continue
+            # fleet-ops#2806: grace of one probe interval. A seat whose wall
+            # passed within the grace window is mid-cycle — the releaser
+            # re-probes it on the next 15-min tick (re-anchor or unwall).
+            # Only a wall past by more than one probe interval is OVERDUE.
+            if now - end <= COMEBACK_OVERDUE_GRACE_S:
+                continue
+            seats.append(
+                {
+                    "provider": data.get("provider", ""),
+                    "model": data.get("model", ""),
+                    "health_class": data.get("health_class", ""),
+                    "usable_at": data.get("usable_at"),
+                    "bench_until": data.get("bench_until"),
+                }
+            )
+    except OSError:
+        return 0, []
+    return len(seats), seats
+
+
+# fleet-ops#2712: provider-level (account-level) quota exhaustion. Three
+# seats from the same provider all returning HTTP 402 inside a 1h window
+# points at the provider's account being out of quota, not at three
+# independent seat faults — the per-seat health_class=quota_exhausted
+# signal alone collapses three failures into one root cause. Surface
+# that pattern here so the operator (and the alert below) can tell
+# "account billing wall" from "lone seat quota hold". A provider only
+# counts when it has at least MIN_PROVIDER_QUOTA_SEATS (default 2) seats
+# observed as quota_exhausted within PROVIDER_QUOTA_WINDOW_S (default
+# 3600s); one seat alone is an isolated hold, not account exhaustion.
+MIN_PROVIDER_QUOTA_SEATS = 2
+PROVIDER_QUOTA_WINDOW_S = 3600
+
+
+def _read_provider_quota_exhausted():
+    """Group quota_exhausted seats by provider within the last 1h.
+
+    fleet-ops#2712: a single 402 may be one seat's per-model quota (cheap,
+    isolated). Multiple 402s from one provider in a tight window is the
+    account-level signal — one billing wall, many seats. Scan the ledger
+    for quota_exhausted seats whose observed_at is within
+    PROVIDER_QUOTA_WINDOW_S (default 3600s), group by provider, and return
+    the providers whose seat count is >= MIN_PROVIDER_QUOTA_SEATS
+    (default 2). Seat_dead corpses are skipped (terminal, owned by
+    FleetDeadCredentialSeats). test__ fixtures are skipped (synthetic).
+    The .spawn-bench sibling files are skipped (not seat observations).
+
+    Returns (count, [ {provider, seats, models} ]). Never raises on a
+    missing/unreadable ledger.
+    """
+    if not SEAT_LEDGER.is_dir():
+        return 0, []
+    now = time.time()
+    # provider -> { "seats": int, "models": [ (model, observed_at), ... ] }
+    grouped = {}
+    try:
+        for f in sorted(SEAT_LEDGER.iterdir()):
+            if not f.is_file() or "__" not in f.name or not f.name.endswith(".json"):
+                continue
+            if ".spawn-bench" in f.name:
+                continue
+            try:
+                data = json.loads(f.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            if data.get("provider") == "test":
+                continue
+            if data.get("seat_dead") is True:
+                continue
+            # The HTTP-402 + health_class=quota_exhausted combination is
+            # the seat-health extension's classifier output. A seat that
+            # is in some other failure mode (transient_http, rate_limit)
+            # is NOT an account-quota signal even if the model is hosted
+            # by the same provider.
+            if data.get("http_status") != 402:
+                continue
+            if data.get("health_class") != "quota_exhausted":
+                continue
+            observed = data.get("observed_at")
+            if not isinstance(observed, str) or not observed:
+                continue
+            ts = observed.strip().rstrip("Z")
+            try:
+                epoch = calendar.timegm(time.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S"))
+            except ValueError:
+                continue
+            if (now - epoch) > PROVIDER_QUOTA_WINDOW_S:
+                continue
+            prov = data.get("provider")
+            if not isinstance(prov, str) or not prov:
+                continue
+            entry = grouped.setdefault(prov, {"seats": 0, "models": []})
+            entry["seats"] += 1
+            entry["models"].append((data.get("model", ""), observed))
+    except OSError:
+        return 0, []
+    providers = [
+        {"provider": p, "seats": v["seats"], "models": v["models"]}
+        for p, v in sorted(grouped.items())
+        if v["seats"] >= MIN_PROVIDER_QUOTA_SEATS
+    ]
+    return len(providers), providers
+
+
+def _seat_caps_model_cap_map():
+    """Build a {provider/model: cap} map from seat-caps.json.
+
+    Mirrors lib/seat-lib.sh load_seat_caps model-cap parsing: a model value
+    may be a bare int (the cap) or an object {cap, class, ...}; the cap is
+    `.cap // 0` for objects. Unlisted models default to 0 (seat-lib's
+    model_cap returns 0 for unlisted, and pick_seat skips cap=0 models).
+    Returns None when the config is missing/unparseable so callers can
+    report source-unavailable instead of guessing.
+    """
+    for path in (SEAT_CAPS_DEFAULT, SEAT_CAPS_FALLBACK):
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        providers = data.get("providers") or {}
+        if not isinstance(providers, dict):
+            continue
+        caps = {}
+        for prov, cfg in providers.items():
+            if not isinstance(cfg, dict):
+                continue
+            models = cfg.get("models") or {}
+            if not isinstance(models, dict):
+                continue
+            for model, val in models.items():
+                if isinstance(val, bool):
+                    cap = 0
+                elif isinstance(val, (int, float)):
+                    cap = int(val)
+                elif isinstance(val, dict):
+                    raw = val.get("cap", 0)
+                    cap = int(raw) if isinstance(raw, (int, float)) and not isinstance(raw, bool) else 0
+                else:
+                    cap = 0
+                caps[f"{prov}/{model}"] = cap
+        return caps
+    return None
+
+
+def _read_healthy_cap0():
+    """Healthy-but-parked seats: ledger healthy, model cap in seat-caps is 0.
+
+    fleet-ops#2738: a seat whose ledger reports health_class=healthy and
+    seat_dead=false (the seat works — proven by a 200 observation) but whose
+    model cap in seat-caps.json is 0 is silently parked: pick_seat skips it
+    every tick while the seat-availability SLO burns. The devin/glm-5-2
+    restore lapsed exactly this way — the ledger came back healthy on
+    2026-09-01, the cap stayed 0 for 3+ days, and no metric surfaced it.
+    This gauge counts those seats (total + per-seat series) so the WFR lens
+    and the next blind-audit see a healthy-but-parked seat instead of a
+    quiet depressed rollup. Sustained > 0 here is the loud signal that a
+    restore was forgotten.
+
+    A held wrapper spawn-bench (fleet-ops#2493) outranks a later healthy
+    observation, so a spawn-bench-active seat is NOT counted as healthy
+    here (it is not actually healthy — the wrapper benched it). test__
+    fixtures and .spawn-bench sibling markers are skipped. Never raises on
+    a missing/unreadable ledger or config; returns (0, []) when the config
+    is unavailable so the metric fails safe (no false healthy-parked alarm
+    from a missing config).
+
+    Returns (count, [ {provider, model} ]).
+    """
+    caps = _seat_caps_model_cap_map()
+    if caps is None:
+        return 0, []
+    seats = []
+    if not SEAT_LEDGER.is_dir():
+        return 0, seats
+    try:
+        for f in sorted(SEAT_LEDGER.iterdir()):
+            if not f.is_file() or "__" not in f.name or not f.name.endswith(".json"):
+                continue
+            if ".spawn-bench" in f.name:
+                continue
+            try:
+                data = json.loads(f.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            if data.get("provider") == "test":
+                continue
+            if data.get("seat_dead") is True:
+                continue
+            if data.get("health_class") != "healthy":
+                continue
+            # fleet-ops#2493: a held wrapper spawn-bench outranks a later
+            # healthy observation — the seat is not actually healthy.
+            if _spawn_bench_active(f):
+                continue
+            prov = data.get("provider")
+            model = data.get("model")
+            if not isinstance(prov, str) or not isinstance(model, str):
+                continue
+            if not prov or not model:
+                continue
+            # seat-lib model_cap returns 0 for unlisted models; mirror that
+            # so a healthy ledger for a removed model still flags (the cap
+            # is effectively 0 — pick_seat will not route to it).
+            if caps.get(f"{prov}/{model}", 0) == 0:
+                seats.append({"provider": prov, "model": model})
+    except OSError:
+        return 0, []
+    return len(seats), seats
+
+
+def _read_cap0_stale():
+    """Stale cap=0 seats (intentional_cap_zero=stale) with age from the reason date.
+
+    fleet-ops#3111: a stale cap=0 seat has a dated reason ("2026-08-28
+    re-audition: endpoint 404"). The 2026-09-03 incident showed groq, inferx,
+    and orcarouter lingering at cap=0 for weeks while the fleet starved.
+    seat-lib's _expire_stale_cap0_seats re-admits them at cap=1 after 14d;
+    this metric makes them visible BEFORE the expiry so the operator can
+    re-audition or re-date the reason. Age is seconds since the first
+    YYYY-MM-DD in the reason; -1 if undated (undated = expires first).
+
+    Returns (count, [ {provider, model, age_seconds} ]).
+    """
+    seats = []
+    data = None
+    for path in (SEAT_CAPS_DEFAULT, SEAT_CAPS_FALLBACK):
+        try:
+            data = json.loads(path.read_text())
+            break
+        except (OSError, json.JSONDecodeError):
+            continue
+    if not isinstance(data, dict):
+        return 0, []
+    now = int(time.time())
+    providers = data.get("providers", {})
+    if not isinstance(providers, dict):
+        return 0, []
+
+    def _age_from_reason(reason):
+        if not isinstance(reason, str):
+            return -1
+        m = re.search(r"(\d{4})-(\d{2})-(\d{2})", reason)
+        if not m:
+            return -1
+        try:
+            # fleet-ops#3564: reason dates are bare calendar dates on a UTC
+            # ledger. time.mktime applies the process local timezone, so on a
+            # +05:30 host this read every dated reason ~19800s more stale than
+            # a UTC host (the same local-time-offset bug class #3520/#3562
+            # fixed for observed_at). timegm keeps the age host-TZ independent.
+            ds = int(calendar.timegm(time.strptime(
+                f"{m.group(1)}-{m.group(2)}-{m.group(3)}", "%Y-%m-%d")))
+            return now - ds
+        except ValueError:
+            return -1
+
+    for prov, pv in providers.items():
+        if isinstance(pv, dict):
+            icz = pv.get("intentional_cap_zero", "")
+            cap = pv.get("cap", 0)
+            if icz == "stale" and cap == 0:
+                seats.append({
+                    "provider": prov, "model": "",
+                    "age_seconds": _age_from_reason(pv.get("reason", "")),
+                })
+            models = pv.get("models", {})
+            if isinstance(models, dict):
+                for model, mv in models.items():
+                    if isinstance(mv, dict):
+                        micz = mv.get("intentional_cap_zero", "")
+                        mcap = mv.get("cap", 0)
+                        if micz == "stale" and mcap == 0:
+                            seats.append({
+                                "provider": prov, "model": model,
+                                "age_seconds": _age_from_reason(mv.get("reason", "")),
+                            })
+    return len(seats), seats
+
+
+# fleet-ops#2638: SEAT_DEAD_CONSECUTIVE_THRESHOLD mirror — the bash writer
+# (lib/seat-lib.sh) corpses quota_cap at this count; the prober
+# (bin/fleet-seat-comeback-release) corpses the same way on the overload/
+# transient/rate classes. Used by _read_never_released to define the
+# "stuck" window: a seat that has failed >= half-threshold times under
+# the prober and is NOT yet corpse is a never-probed comeback — the bin
+# has fired on it and the seat still won't recover. Exporting this as
+# a per-tick gauge makes the stuck state visible before it crosses into
+# the corpse path.
+NEVER_RELEASED_MIN_COUNT = 10  # floor for "stuck" so a healthy probe cycle
+                                # doesn't render every wall as stuck
+
+
+def _read_never_released():
+    """Seats that the prober has been failing on for a while without corpse.
+
+    fleet-ops#2638: the lived poolside/laguna (23x 503s) and opencode/mimo
+    (42x 429s) cases both sat at health_class != healthy with the prober
+    re-benching every 15 min, count climbing, the seat never recovering.
+    These are NEVER-PROBED COMEBACKS — the bin fires on them but the seat
+    never releases. The prober's corpse path (at SEAT_DEAD_CONSECUTIVE_THRESHOLD,
+    default 25) converts them to terminal corpses, but the stuck state
+    between "high count" and "corpse" was invisible. This gauge makes
+    that window visible: seats with consecutive_failure_count in
+    [NEVER_RELEASED_MIN_COUNT, SEAT_DEAD_CONSECUTIVE_THRESHOLD) that are
+    NOT corpses. Sustained > 0 here is the loud signal that the release
+    path is operating but the seat still cannot recover — the next
+    corpse write should fire. Combined with fleet_seat_comeback_overdue_total
+    it tells the repair worker which overdue seats are approaching the
+    corpse boundary.
+
+    The threshold env var defaults to 25 (matching SEAT_DEAD_CONSECUTIVE_THRESHOLD
+    in lib/seat-lib.sh, fleet-ops#2594) so the corpus threshold and the
+    stuck-window upper bound stay in lock-step.
+
+    Returns (count, [ {provider, model, health_class, count} ]).
+    Never raises on a missing/unreadable ledger.
+    """
+    seats = []
+    if not SEAT_LEDGER.is_dir():
+        return 0, seats
+    now = time.time()
+    try:
+        threshold = int(os.environ.get("SEAT_DEAD_CONSECUTIVE_THRESHOLD", "25"))
+    except (TypeError, ValueError):
+        threshold = 25
+    if threshold < 1:
+        threshold = 25
+    try:
+        for f in sorted(SEAT_LEDGER.iterdir()):
+            if not f.is_file() or "__" not in f.name or not f.name.endswith(".json"):
+                continue
+            if ".spawn-bench" in f.name:
+                continue
+            try:
+                data = json.loads(f.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            if data.get("provider") == "test":
+                continue
+            if data.get("seat_dead") is True:
+                continue  # corpses are counted elsewhere (FleetDeadCredentialSeats)
+            if data.get("health_class") == "healthy":
+                continue  # recovered
+            # fleet-ops#3661 (consistency with seat-lib's SEAT-KEY-INVALID
+            # guard): a ledger whose provider/model is not a valid
+            # seat-caps.json models key is a PHANTOM and is never probed or
+            # released by comeback-release, so its consecutive-failure window
+            # can never resolve here — counting it fires
+            # FleetSeatComebackNeverReleased until a worker manually retires
+            # the phantom. A phantom is cleanup-owned, never a live-seat
+            # comeback signal; skip it.
+            if not _seat_key_in_caps(data.get("provider", ""), data.get("model", "")):
+                continue
+            # fleet-ops#2752: a seat whose wall clock (bench_until ??
+            # usable_at) is still in the FUTURE is legitimately walled —
+            # it will self-release when the wall passes (the comeback-
+            # release prober re-probes it at that point). It is NOT a
+            # never-released corpse: the cline/cline-pass_minimax-m3
+            # corpse was written by repair-dispatch because this window
+            # counted a 17-day-future-walled quota seat as "stuck" (count
+            # 19, threshold 25 — the natural corpse path could never fire
+            # while the wall kept the seat benched), FleetSeatComebackNeverReleased
+            # fired, and the repair worker manually corpse'd a VALID
+            # subscription seat whose monthly cap resets 16d14h out. Only
+            # a seat whose wall has PASSED (or that never had one) can be
+            # a never-probed comeback — a future-walled seat is not owed a
+            # comeback yet.
+            _wall = _seat_wall_end_epoch(data)
+            if _wall is not None and _wall >= now:
+                continue
+            try:
+                count = int(data.get("consecutive_failure_count") or 0)
+            except (TypeError, ValueError):
+                count = 0
+            # "Stuck" = close to but below the corpse threshold. The lower
+            # bound (NEVER_RELEASED_MIN_COUNT, default 10) prevents the gauge
+            # from spiking on a single fresh failure; the upper bound is the
+            # corpse boundary (seat at threshold will be corpse on the next
+            # sweep and disappear from this gauge).
+            if count < NEVER_RELEASED_MIN_COUNT or count >= threshold:
+                continue
+            seats.append(
+                {
+                    "provider": data.get("provider", ""),
+                    "model": data.get("model", ""),
+                    "health_class": data.get("health_class", ""),
+                    "count": count,
+                }
+            )
+    except OSError:
+        return 0, []
+    return len(seats), seats
+
+
+def _spawn_bench_active(ledger_path: Path) -> bool:
+    """True if the per-seat spawn-bench marker is fresh and in the future.
+
+    fleet-ops#1512: the wrapper writes a `.<base>.spawn-bench.json` file
+    next to the per-seat ledger whenever mark_seat_spawn_fail /
+    mark_seat_empty_run benches a seat. seat_usable checks it FIRST, so
+    the router already excludes the seat while the bench is held. The
+    metrics export used to ignore it — a seat whose ledger shows
+    health_class=healthy (the seat-health extension's after_provider_response
+    re-wrote it on a later 200 OK) but whose spawn-bench is still in the
+    future was counted as healthy in the seat_availability SLO, even
+    though the router refused to route work to it. The census said
+    "healthy" while pick_seat said "no usable seat" — fleet-ops#2493
+    closed that gap: read the spawn-bench and treat a held bench as
+    non-healthy (an active wrapper bench is always operator- or wrapper-
+    authored and is more authoritative than a later healthy observation
+    on the same seat).
+
+    Returns False on a missing / unreadable / past-due marker; never
+    raises. The path argument is the per-seat ledger file; the spawn-
+    bench sibling is `<base>.spawn-bench.json` in the same directory.
+    """
+    if not ledger_path.is_file():
+        return False
+    # Per lib/seat-lib.sh seat_spawn_bench_path, the spawn-bench file lives
+    # beside the ledger as `<provider>__<model>.spawn-bench.json` — i.e.
+    # the same base name as the ledger with the .json suffix replaced by
+    # `.spawn-bench.json`, NOT a separate suffix appended to the full
+    # ledger filename. Construct it via stem + suffix so a ledger like
+    # `opencode__nemotron-3-ultra-free.json` maps to
+    # `opencode__nemotron-3-ultra-free.spawn-bench.json` (matching the
+    # live state at /home/nish/workspaces/agent-state/lanes/seats/).
+    spawn_bench = ledger_path.with_name(ledger_path.stem + ".spawn-bench.json")
+    return _spawn_bench_marker_held(spawn_bench)
+
+
+def _seat_spawn_bench_path(provider, model):
+    """Spawn-bench marker path for a provider/model seat key.
+
+    Mirrors lib/seat-lib.sh seat_spawn_bench_path: each of provider and
+    model is sanitised ([^A-Za-z0-9._-] -> _) and joined as
+    `<p>__<m>.spawn-bench.json` under SEAT_LEDGER.
+    """
+    safe_p = re.sub(r"[^A-Za-z0-9._-]", "_", provider)
+    safe_m = re.sub(r"[^A-Za-z0-9._-]", "_", model)
+    return SEAT_LEDGER / f"{safe_p}__{safe_m}.spawn-bench.json"
+
+
+def _spawn_bench_held_for(provider, model) -> bool:
+    """True if the named seat's wrapper spawn-bench marker is held now.
+
+    fleet-ops#3563: the single-record sidecar (pi-seat-health.json) names a
+    provider/model directly rather than a ledger path, so the overlay needs
+    a seat-key lookup instead of _spawn_bench_active's ledger-path lookup.
+    """
+    if not isinstance(provider, str) or not provider:
+        return False
+    if not isinstance(model, str) or not model:
+        return False
+    return _spawn_bench_marker_held(_seat_spawn_bench_path(provider, model))
+
+
+# fleet-ops#3737: freshness window for an expired spawn-bench marker that
+# still gates the seat. Matches EMPTY_RUN_COUNT_WINDOW_S / SEAT_PARK_WALL_S
+# in lib/seat-lib.sh and SPAWN_BENCH_FRESH_S in bin/fleet-seat-comeback-
+# release (24 h). Older than this the marker is archaeology and fail-open.
+SPAWN_BENCH_FRESH_S = 86400
+# Failure ceilings mirror lib/seat-lib.sh seat_usable(): a spawn_fail (or
+# any non-empty_run) seat parks past 20 consecutive failures; an empty run
+# parks past 5. Used by the fleet-ops#3826 ceiling fence below.
+SEAT_FAILURE_CEILING = 20
+EMPTY_RUN_FAILURE_CEILING = 5
+
+
+def _spawn_bench_marker_held(spawn_bench: Path) -> bool:
+    """True if the spawn-bench marker currently gates this seat's
+    re-admission. Never raises; missing/unreadable data is False
+    (fail-open).
+
+    fleet-ops#3737: seat_usable holds the bench in TWO cases —
+      (a) usable_at strictly in the future (the active bench), or
+      (b) usable_at expired/absent BUT the marker is FRESH (written within
+          SPAWN_BENCH_FRESH_S) and still the seat's latest evidence: no
+          sibling-ledger observed_at newer than written_at. A later ledger
+          observation is post-bench evidence — a run that produced output
+          writes healthy with no following marker — so case (b) releases
+          on it; otherwise the comeback organ probes the seat before
+          re-admission and the census must agree the seat is not healthy
+          while it is probe-gated. Without case (b) a clobbered-healthy
+          ledger reports an unprobed dead-weight seat as available
+          (the ollama/deepseek-v4-flash:0731 empty-run churn this issue
+          names).
+
+    Beyond the two clock cases (and the reason this function is the
+    ledger-demotion fix for fleet-ops#3828), seat_usable holds the bench in
+    TWO more cases that this function previously missed:
+
+    fleet-ops#3889 — corpse fence: a marker that declares seat_dead=true
+    (the wrapper's verdict for a CHRONIC spawn_fail streak past the corpse
+    threshold, consecutive_failure_count >= SEAT_DEAD_CONSECUTIVE_THRESHOLD)
+    holds the seat TERMINALLY, regardless of usable_at and regardless of a
+    later false-healthy ledger write. The seat-health extension logs a
+    transport http 200 as healthy during the very run that then fails to
+    spawn, because after_provider_response carries status+headers only —
+    never the body or the process rc — so an rc=1 spawn failure is
+    indistinguishable from a healthy response. Only a real recovery probe
+    (source="comeback_release" on the ledger) re-proves the seat. Without
+    this, the census/availability read the clobbered health_class=healthy
+    ledger, counted the seat available, and "re-offered" a seat the router
+    held — the live xkiro/deepseek-v4-flash at 47 consecutive spawn_fail
+    with ledger_health_class=healthy.
+
+    fleet-ops#3826 — ceiling fence: even a FRESH marker whose usable_at has
+    passed and whose sibling ledger carries a NEWER healthy observation must
+    stay held when the marker's consecutive_failure_count is at or past the
+    failure ceiling (SEAT_FAILURE_CEILING for spawn_fail, and
+    EMPTY_RUN_FAILURE_CEILING for empty_run). The newer observation is the
+    same after_provider_response 200 the corpse fence names — status+headers
+    only, no body/rc — so it is the false-healthy clobber again, NOT recovery
+    evidence. Only a comeback-release probe re-proves the seat.
+    """
+    if not spawn_bench.is_file():
+        return False
+    try:
+        marker = json.loads(spawn_bench.read_text())
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(marker, dict):
+        return False
+    now = int(time.time())
+    # Parse ISO timestamps as UTC (the seat ledger is always UTC-Z).
+    # time.mktime is local-timezone-dependent and would give a wrong epoch
+    # on a non-UTC host (the live VPS runs IST, +5:30; a future-Z timestamp
+    # would parse to a past-local epoch). _parse_iso_utc uses
+    # calendar.timegm so the parsed tuple is treated as UTC.
+    usable_at = marker.get("usable_at")
+    usable_epoch = (
+        _parse_iso_utc(usable_at) if isinstance(usable_at, str) else None
+    )
+    if usable_epoch is not None and usable_epoch > now:
+        return True
+    # Sibling per-seat ledger: both the false-healthy clobber target and the
+    # recovery authority (a comeback-release probe writes source on it).
+    ledger = spawn_bench.with_name(
+        spawn_bench.name[: -len(".spawn-bench.json")] + ".json"
+    )
+    try:
+        led = json.loads(ledger.read_text())
+    except (OSError, json.JSONDecodeError):
+        led = {}
+    if not isinstance(led, dict):
+        led = {}
+    ledger_src = led.get("source") or ""
+    # fleet-ops#3889 corpse fence: terminal until a real recovery probe
+    # (source=comeback_release) re-writes the ledger. Mirrors seat_usable —
+    # no usable_at or marker-age bound, the corpse hold is durable.
+    if marker.get("seat_dead") is True:
+        if ledger_src != "comeback_release":
+            return True
+        # Recovered corpse: fall through — the fresh ledger observation now
+        # decides (seat_usable drops the corpse hold the same way).
+    # Case (b): expired or clockless bench — held only while the marker is
+    # fresh and remains the seat's latest evidence.
+    written_at = marker.get("written_at")
+    written_epoch = (
+        _parse_iso_utc(written_at) if isinstance(written_at, str) else None
+    )
+    if written_epoch is None or now - written_epoch > SPAWN_BENCH_FRESH_S:
+        return False
+    obs = led.get("observed_at")
+    obs_epoch = _parse_iso_utc(obs) if isinstance(obs, str) else None
+    if obs_epoch is None or obs_epoch <= written_epoch:
+        return True
+    # fleet-ops#3826 ceiling fence: a NEWER healthy observation is the
+    # false-healthy clobber, not recovery, for a ceiling-parked seat.
+    mcount = marker.get("consecutive_failure_count") or 0
+    if not isinstance(mcount, int) or isinstance(mcount, bool):
+        try:
+            mcount = int(mcount)
+        except (TypeError, ValueError):
+            mcount = 0
+    mmode = marker.get("failure_mode") or ""
+    _ceil = (
+        EMPTY_RUN_FAILURE_CEILING if mmode == "empty_run"
+        else SEAT_FAILURE_CEILING
+    )
+    if mcount >= _ceil and ledger_src != "comeback_release":
+        return True
+    return False
+
+
+def _healthy_enrolled_seat_count():
+    """Count enrolled providers with >=1 healthy or released, non-dead ledger.
+
+    Rollup for the seat_availability SLO (fleet-ops#1291): the spec says
+    "Fraction of enrolled seats that are healthy (rollup)" — i.e. a
+    per-seat healthy/not tally over the whole fleet, not one provider's
+    single 0/1. Each per-seat health ledger file under SEAT_LEDGER is one
+    (provider, model) observation; a provider counts healthy when ANY of
+    its model ledgers reports health_class=healthy and seat_dead != true
+    (a provider with a live model is an enrolled seat that is healthy).
+
+    fleet-ops#2407: a ledger whose wall clock has EXPIRED is released — the
+    router (seat_usable) fail-opens it at now >= usable_at, so it is
+    available capacity and counts toward the rollup even though no fresh
+    observation has reclassified it yet. Without this, an overload_bench /
+    transient_fault seat whose wall passed sat "walled" in the rollup until
+    the next probe, depressing seat availability for the whole window
+    (2026-08-30: three such seats past usable_at still counted walled).
+    The comeback-overdue metric above fails loud when that release is
+    unobserved, so no dead seat hides behind this relaxation.
+
+    fleet-ops#2493: a held wrapper spawn-bench is operator- or wrapper-
+    authored and is MORE authoritative than a later healthy observation
+    on the same seat. The seat-health extension's after_provider_response
+    re-writes the ledger as health_class=healthy on a 200 OK, but the
+    wrapper's spawn-bench marker (written for an empty run / no-op /
+    spawn-fail) persists in the same directory. Without this check the
+    census says "healthy" while pick_seat says "no usable seat" — a
+    silent mismatch that pinned opencode/nemotron-3-ultra-free as
+    "healthy" across 6 empty runs in 2h (fleet-ops#2493 lived snapshot).
+    Read the spawn-bench sibling; if it is in the future, the seat is
+    NOT healthy for the rollup.
+
+    Providers with no ledger file at all are counted unhealthy (not proven
+    healthy — fail-safe toward the alert). Returns None when the ledger
+    directory is missing/unreadable so the SLO reports instrumented=0.
+    """
+    enrolled = _enrolled_seat_providers()
+    if not enrolled:
+        return None
+    if not SEAT_LEDGER.is_dir():
+        return None
+    healthy = set()
+    try:
+        for f in SEAT_LEDGER.iterdir():
+            if not f.is_file() or "__" not in f.name or not f.name.endswith(".json"):
+                continue
+            try:
+                data = json.loads(f.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            if data.get("seat_dead") is True:
+                continue
+            # fleet-ops#2493: a held wrapper spawn-bench outranks a later
+            # healthy observation. The wrapper wrote the bench for an
+            # empty run / no-op / spawn-fail; the seat-health extension
+            # then re-wrote the ledger as healthy on a 200 OK. The bench
+            # is the more recent operational truth — count the seat as
+            # non-healthy until the bench expires.
+            if _spawn_bench_active(f):
+                continue
+            if data.get("health_class") != "healthy" and not _seat_is_released(data):
+                continue
+            prov = data.get("provider")
+            if isinstance(prov, str) and prov in enrolled:
+                healthy.add(prov)
+    except OSError:
+        return None
+    return len(healthy)
+
+
+def _slo_compliance(slo, main_ci, healthy, rate_limit, waste_ratio, seat_total):
+    """Compute live compliance (0..1 ratio or value/target gauge) for one SLO.
+
+    Returns (compliance_or_None, instrumented_bool). None compliance means
+    the source metric is not available this tick (SLO emits instrumented=0).
+    """
+    sid = slo["id"]
+    if not slo.get("instrumented", False):
+        return None, False
+    if sid == "main_green":
+        # Fraction of enrolled repos with green CI this scrape.
+        if not main_ci:
+            return None, False
+        vals = list(main_ci.values())
+        return sum(vals) / len(vals), True
+    if sid == "seat_availability":
+        # Rollup over the per-seat health ledger (fleet-ops#1291): healthy
+        # enrolled providers / enrolled providers. The old code divided the
+        # SINGLE pi-seat-health 0/1 gauge by the enrolled-provider count,
+        # pinning compliance at 0/13 or 1/13 forever — a metric bug that
+        # kept this SLO in permanent slow burn regardless of real seat
+        # health (alert-repair diagnosis 2026-08-30, 05:57/07:44Z). The
+        # single-seat gauge stays exported as fleet_pi_seat_healthy for the
+        # FleetPiSeatUnhealthy alert; this SLO now computes the rollup.
+        if seat_total is None or seat_total <= 0:
+            return None, False
+        healthy_count = _healthy_enrolled_seat_count()
+        if healthy_count is None:
+            return None, False
+        return healthy_count / seat_total, True
+    if sid == "gh_rate_limit_headroom":
+        # min(remaining/limit) across the consumed resources, as a fraction.
+        if not rate_limit:
+            return None, False
+        fracs = []
+        for r in slo.get("resources", ("core", "search", "graphql")):
+            row = rate_limit.get(r)
+            if not row or row.get("limit", 0) <= 0:
+                continue
+            fracs.append(row["remaining"] / row["limit"])
+        if not fracs:
+            return None, False
+        return min(fracs), True
+    if sid == "waste_ratio":
+        # Gauge "below" SLO: compliance = actual/target (>1 means over budget).
+        if waste_ratio is None:
+            return None, False
+        target = slo["target"]
+        return (waste_ratio / target) if target > 0 else None, True
+    # 0509_user_journey / digest_delivery: source metrics pending instrumentation
+    # (follow-up issues). Even if flagged instrumented=true in config, no live
+    # reader exists yet → not instrumented.
+    return None, False
+
+
+def _emit_slo_metrics(lines, main_ci, healthy, rate_limit):
+    """Append the fleet_slo_* gauge family for every SLO in the config.
+
+    Called from main() with the data it has already gathered. Reads
+    fleet-waste.prom and seat-caps.json for the SLOs
+    whose sources live outside this exporter. Always emits the family (even
+    on a missing config — zeros with instrumented=0) so FleetSloMetricsAbsent
+    never false-fires on a config glitch; a missing config is logged to
+    stderr.
+    """
+    sb = _slo_budget_mod()
+    defs = _load_slo_defs()
+    waste_ratio = _read_waste_ratio()
+    seat_total = _enrolled_seat_total()
+    lines.append("")
+    lines.extend(sb.format_prometheus_help_type())
+    if defs is None:
+        # fleet-ops#3367: emit instrumented=0 for every known SLO so
+        # Prometheus overwrites any stale instrumented=1 from the previous
+        # run. Without this, a config glitch leaves stale compliance +
+        # instrumented=1 gauges in Prometheus while fleet_main_ci_green
+        # keeps updating — a real SLO-vs-green-map disagreement that keeps
+        # the burn alerts firing on frozen data.
+        print("slo: config/slo-definitions.json missing/unparseable; "
+              "emitting instrumented=0 for all known SLOs", file=sys.stderr)
+        for sid in _KNOWN_SLO_IDS:
+            lines.append(f'fleet_slo_instrumented{{slo="{_prom_label(sid)}"}} 0')
+        return
+    slos = defs.get("slos") or []
+    for slo in slos:
+        sid = slo["id"]
+        target = slo["target"]
+        window_s = slo.get("window_seconds", defs.get("default_window_seconds", 604800))
+        direction = slo.get("direction", "above")
+        compliance, instrumented = _slo_compliance(
+            slo, main_ci, healthy, rate_limit, waste_ratio, seat_total
+        )
+        if not instrumented or compliance is None:
+            # Uninstrumented or source unavailable this tick: emit zero
+            # budget burn + instrumented=0 so the burn alerts (gated on
+            # instrumented=1) cannot fire on a metric they cannot measure.
+            lines.append(f'fleet_slo_instrumented{{slo="{_prom_label(sid)}"}} 0')
+            continue
+        # Elapsed = full window this scrape (compliance is a point-in-time
+        # rollup over the trailing window, so the whole window is "elapsed"
+        # for budget-consumption purposes). Burn-rate alerts derive the
+        # time dimension themselves via increase() over the consumed gauge.
+        budget = sb.compute_budget(sid, target, window_s, compliance, window_s, direction)
+        lines.extend(sb.format_prometheus(budget))
+        lines.append(f'fleet_slo_instrumented{{slo="{_prom_label(sid)}"}} 1')
+
+
+# --- Deployment quality SLOs (fleet-ops#2758) -----------------------------
+# lib/fleet-deploy-quality.py computes the deployment-quality SLO family
+# (latency, rollback rate, time-to-detect, success rate, blocked-duration)
+# from gh merged/revert lists, the fleet-deploy-check journal, and the
+# alert-repair actions.log. Loaded lazily (same pattern as slo_budget) so
+# this exporter stays a standalone script; the module never raises out of
+# here — a hard failure emits NaN gauges + fleet_deployment_quality_up 0 so
+# the DeploymentQualityStale rule stays loud instead of serving a frozen or
+# zero value (a 0 blocked-duration during a real 40-min block is exactly
+# the silent drift the rule family exists to kill).
+
+_DEPLOY_QUALITY_MOD = None
+
+
+def _deploy_quality_mod():
+    """Lazily load lib/fleet-deploy-quality.py from ../lib/."""
+    global _DEPLOY_QUALITY_MOD
+    if _DEPLOY_QUALITY_MOD is not None:
+        return _DEPLOY_QUALITY_MOD
+    import importlib.util
+    lib_path = Path(__file__).resolve().parent.parent / "lib" / "fleet-deploy-quality.py"
+    spec = importlib.util.spec_from_file_location("fleet_deploy_quality", lib_path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["fleet_deploy_quality"] = mod
+    spec.loader.exec_module(mod)
+    _DEPLOY_QUALITY_MOD = mod
+    return mod
+
+
+_DQ_GAUGES = (
+    "fleet_deployment_latency_seconds",
+    "fleet_deployment_rollback_rate",
+    "fleet_deployment_time_to_detect_seconds",
+    "fleet_deployment_success_rate",
+    "fleet_deploy_blocked_duration_seconds",
+)
+
+
+# --- blocked-reconcile nish-decision lint (fleet-ops#3312) -----------------
+# blocked-reconcile writes its last sweep summary to
+# /home/nish/.local/state/fleet-heartbeat/blocked-queue.json. We export the
+# count of rejected `blocked-on: nish-decision` lines that were rewritten to
+# `blocked-on: orchestrator` and labelled `needs-orchestrator`.
+BLOCKED_QUEUE_JSON = Path(
+    os.environ.get(
+        "FLEET_BLOCKED_QUEUE_JSON",
+        "/home/nish/.local/state/fleet-heartbeat/blocked-queue.json",
+    )
+)
+HELP_NBR = "# HELP fleet_nish_decision_rejected_total Number of `blocked-on: nish-decision` lines rejected and rewritten to `blocked-on: orchestrator` in the last blocked-reconcile sweep (fleet-ops#3312)."
+TYPE_NBR = "# TYPE fleet_nish_decision_rejected_total gauge"
+
+# fleet-ops#4260: the blocked queue must be observable BY KIND so a parked
+# needs-orchestrator class is visible before a human notices the fleet went
+# idle. `kind` values come from the reconcile snapshot: the agent-blocked
+# queue kinds (work-item/nish-decision/orchestrator/infra/senior-review) plus
+# needs-orchestrator, which counts the label sweep across ALL open issues —
+# a wider set, overlapping the others by design (an issue can be both
+# agent-blocked and needs-orchestrator). Every kind is always emitted (0 when
+# absent) so a stale family cannot false-fire or false-clear an alert.
+_BLOCKED_KINDS = (
+    "work-item",
+    "nish-decision",
+    "orchestrator",
+    "infra",
+    "senior-review",
+    "needs-orchestrator",
+)
+HELP_FBI = "# HELP fleet_blocked_issues Open blocked issues by kind from the last blocked-reconcile sweep (fleet-ops#4260). kind=needs-orchestrator counts the label sweep across all open issues; the other kinds count the agent-blocked queue."
+TYPE_FBI = "# TYPE fleet_blocked_issues gauge"
+HELP_FBIA = "# HELP fleet_blocked_issue_age_seconds Age stats for blocked issues by kind, seconds since issue creation, from the last blocked-reconcile sweep (fleet-ops#4260)."
+TYPE_FBIA = "# TYPE fleet_blocked_issue_age_seconds gauge"
+
+
+def _emit_blocked_reconcile(lines):
+    """Append blocked-queue metrics.
+
+    Reads the last blocked-reconcile sweep summary. A missing or
+    unparseable file emits zeros so the metric families are always present.
+    """
+    count = 0
+    by_kind = {k: 0 for k in _BLOCKED_KINDS}
+    orch_p50 = 0
+    orch_oldest = 0
+    try:
+        data = json.loads(BLOCKED_QUEUE_JSON.read_text(encoding="utf-8"))
+        raw = data.get("rejected_nish_decisions")
+        if isinstance(raw, (int, float)):
+            count = int(raw)
+        for item in data.get("items") or []:
+            k = item.get("kind") if isinstance(item, dict) else None
+            if k in by_kind:
+                by_kind[k] += 1
+        orch = data.get("needs_orchestrator")
+        if isinstance(orch, dict):
+            oc = orch.get("count")
+            if isinstance(oc, (int, float)):
+                by_kind["needs-orchestrator"] = int(oc)
+            for key, dest in (("p50_age_s", "p50"), ("oldest_age_s", "oldest")):
+                v = orch.get(key)
+                if isinstance(v, (int, float)):
+                    if dest == "p50":
+                        orch_p50 = int(v)
+                    else:
+                        orch_oldest = int(v)
+    except (OSError, json.JSONDecodeError):
+        pass
+    lines.append("")
+    lines.append(HELP_NBR)
+    lines.append(TYPE_NBR)
+    lines.append(f"fleet_nish_decision_rejected_total {count}")
+    lines.append("")
+    lines.append(HELP_FBI)
+    lines.append(TYPE_FBI)
+    for k in _BLOCKED_KINDS:
+        lines.append(f'fleet_blocked_issues{{kind="{k}"}} {by_kind[k]}')
+    lines.append("")
+    lines.append(HELP_FBIA)
+    lines.append(TYPE_FBIA)
+    lines.append(
+        'fleet_blocked_issue_age_seconds{kind="needs-orchestrator",quantile="0.5"} '
+        f"{orch_p50}"
+    )
+    lines.append(
+        'fleet_blocked_issue_age_seconds{kind="needs-orchestrator",quantile="1"} '
+        f"{orch_oldest}"
+    )
+
+
+# --- close-duplicates close guard (fleet-ops#3161) ------------------------
+# The heartbeat writes lib/issue-file.py close-duplicates summary to
+# $FLEET_HEARTBEAT_LOG_DIR/close-duplicates.json every tick. We emit the
+# per-tick close count by label so an alert can fire the instant a
+# cross-repo or protected (critical-path / owner-authored) issue is closed.
+# Both labelled series must stay 0; only cross_repo=false,protected=false
+# may increment. The family is always emitted (zeros when the file is
+# missing) so FleetCloseDuplicatesClosesAbsent never false-fires on a
+# skipped tick.
+CLOSE_DUP_JSON = Path(
+    os.environ.get(
+        "FLEET_CLOSE_DUPLICATES_JSON",
+        "/home/nish/.local/state/fleet-heartbeat/close-duplicates.json",
+    )
+)
+HELP_CD = (
+    "# HELP fleet_close_duplicates_closes_total Duplicate issues auto-closed "
+    "by fleet-issue-file close-duplicates in the last run, by label "
+    "(fleet-ops#3161). cross_repo and protected must always be 0; an alert "
+    "on either > 0 catches a wrong close of a cross-repo or protected issue."
+)
+TYPE_CD = "# TYPE fleet_close_duplicates_closes_total gauge"
+_CLOSE_DUP_LABELS = (
+    ("false", "false"),
+    ("false", "true"),
+    ("true", "false"),
+    ("true", "true"),
+)
+
+
+def _emit_close_duplicates(lines):
+    """Append fleet_close_duplicates_closes_total{cross_repo,protected}.
+
+    Reads the last close-duplicates summary's closes_by_label map. Never
+    raises: a missing/unparseable file emits all four series as 0 so the
+    family is always present and the absent rule stays quiet.
+    """
+    counts = {f"cross_repo={cr},protected={pr}": 0 for cr, pr in _CLOSE_DUP_LABELS}
+    try:
+        data = json.loads(CLOSE_DUP_JSON.read_text(encoding="utf-8"))
+        raw = data.get("closes_by_label") or {}
+        if isinstance(raw, dict):
+            for k, v in raw.items():
+                if k in counts and isinstance(v, (int, float)):
+                    counts[k] = int(v)
+    except (OSError, json.JSONDecodeError):
+        pass
+    lines.append("")
+    lines.append(HELP_CD)
+    lines.append(TYPE_CD)
+    for cr, pr in _CLOSE_DUP_LABELS:
+        lines.append(
+            f'fleet_close_duplicates_closes_total{{cross_repo="{cr}",protected="{pr}"}} '
+            f"{counts[f'cross_repo={cr},protected={pr}']}"
+        )
+
+
+# --- observe-to-close close guard (fleet-ops#3231) ---------------------
+# The heartbeat writes bin/fleet-merged-pr-close's per-tick summary to
+# $FLEET_HEARTBEAT_LOG_DIR/merged-pr-close.json every tick. We emit the
+# close count by reason so an alert can fire the instant a close happens on
+# a bare mention or on a protected (critical-path / owner-authored) issue —
+# the PR #3205 regression that wrongly closed #3140/#3146. Both labelled
+# series must stay 0; only claim-branch and closes-trailer may increment.
+# The family is always emitted (zeros when the file is missing) so the
+# absent rule never false-fires on a skipped tick.
+MERGED_PR_CLOSE_JSON = Path(
+    os.environ.get(
+        "FLEET_MERGED_PR_CLOSE_JSON",
+        "/home/nish/.local/state/fleet-heartbeat/merged-pr-close.json",
+    )
+)
+HELP_MPC = (
+    "# HELP fleet_observe_to_close_total Issues auto-closed by observe-to-close "
+    "in the last heartbeat tick, by reason (fleet-ops#3231). Legal close "
+    "reasons are claim-branch (delivery PR head), closes-trailer (explicit "
+    "Closes/Fixes/Resolves trailer), and verdict-pass (verification-only "
+    "issue with a worker VERDICT: PASS comment; fleet-ops#4274). "
+    "bare-mention and protected must always be 0; an alert on either > 0 "
+    "catches a wrong close of a mentioned or critical-path/owner-authored issue."
+)
+TYPE_MPC = "# TYPE fleet_observe_to_close_total gauge"
+_MPC_REASONS = ("claim-branch", "closes-trailer", "verdict-pass", "bare-mention", "protected")
+
+
+def _emit_observe_to_close(lines):
+    """Append fleet_observe_to_close_total{reason}.
+
+    Reads the last observe-to-close summary's closes_by_reason map. Never
+    raises: a missing/unparseable file emits all four series as 0 so the
+    family is always present and the absent rule stays quiet.
+    """
+    counts = {r: 0 for r in _MPC_REASONS}
+    try:
+        data = json.loads(MERGED_PR_CLOSE_JSON.read_text(encoding="utf-8"))
+        raw = data.get("closes_by_reason") or {}
+        if isinstance(raw, dict):
+            for k, v in raw.items():
+                if k in counts and isinstance(v, (int, float)):
+                    counts[k] = int(v)
+    except (OSError, json.JSONDecodeError):
+        pass
+    lines.append("")
+    lines.append(HELP_MPC)
+    lines.append(TYPE_MPC)
+    for reason in _MPC_REASONS:
+        lines.append(f'fleet_observe_to_close_total{{reason="{reason}"}} {counts[reason]}')
+
+
+def _emit_deploy_quality(lines):
+    """Append the fleet_deployment_* family from lib/fleet-deploy-quality.py.
+
+    Never fails the exporter: on any module failure the issue's five named
+    gauges are emitted as NaN with fleet_deployment_quality_up 0 (the
+    DeploymentQualityStale rule makes that loud) and the fault is logged to
+    stderr. NaN keeps the threshold rules (latency>1800, blocked>900, ...)
+    silent on a data outage — a comparison against NaN is false — while the
+    up=0 says the family is unhealthy, not healthy.
+    """
+    try:
+        out = _deploy_quality_mod().prom_lines()
+        if not out or not any(l.startswith("fleet_deployment_")
+                              for l in out if not l.startswith("#")):
+            raise ValueError("empty deploy-quality family")
+        lines.append("")
+        lines.extend(out)
+    except Exception as exc:  # noqa: BLE001 - the exporter must stay green
+        print(f"deploy-quality: {exc}", file=sys.stderr)
+        label = 'repo="fleet-ops"'
+        lines.append("")
+        for gauge in _DQ_GAUGES:
+            lines.append(f"# HELP {gauge} deploy-quality SLO (fleet-ops#2758); NaN when the computation failed this scrape.")
+            lines.append(f"# TYPE {gauge} gauge")
+            lines.append(f"{gauge}{{{label}}} NaN")
+        lines.append("# HELP fleet_deployment_quality_up 1 when the deploy-quality computation succeeded, 0 when it failed (values are NaN).")
+        lines.append("# TYPE fleet_deployment_quality_up gauge")
+        lines.append(f"fleet_deployment_quality_up{{{label}}} 0")
+
+
+# --- Week-later revert check (fleet-ops#3124 part 4/4) ---------------------
+# Self-maintenance budget: a fleet-ops PR that carries a `moves:` metric is
+# expected to move that metric. Seven days after the PR merges, compare the
+# metric's 7d value before vs after the merge; if it did not improve, file
+# ONE revert-candidate issue ("revert candidate: #N did not move <metric>",
+# labeled agent-ready, `termination:` = the revert PR merged). One issue per
+# PR, never re-filed. Runs on the existing fleet-metrics-export tick (no new
+# timer).
+#
+# The `moves:` line is the sibling part 2/4 (fleet-ops#3255) spec-gate
+# requirement; this part consumes it. A PR body carries `moves: <metric>`
+# naming one of the product metrics. Only metrics with a mapped Prometheus
+# expression are comparable; unmapped metrics are skipped (not filed).
+
+# ±6h around the 7-day mark: a PR merged exactly 7 days ago is in the window
+# for 12h, so a tick that misses it (gh hiccup, exporter down) catches it on
+# a later tick. The PR list is cached to WEEK_LATER_CACHE_TTL so the gh
+# search runs at most ~4x/day, not every 5-min tick.
+WEEK_LATER_WINDOW_S = 6 * 3600
+# Client-side floor on merge age (fleet-ops#3948): a PR younger than this is
+# never evaluated, whatever the search returned.
+WEEK_LATER_MIN_AGE_S = 7 * 86400 - WEEK_LATER_WINDOW_S
+WEEK_LATER_CACHE_TTL = 6 * 3600
+WEEK_LATER_CACHE = PR_CACHE_DIR / "week-later-prs-cache.json"
+# Per-PR evaluation ledger: once a PR is evaluated (improved / already-filed /
+# filed) it is never re-evaluated, so the gh dedup/create calls are bounded to
+# one per PR, not one per tick. Pruned after WEEK_LATER_STATE_TTL.
+WEEK_LATER_STATE = PR_CACHE_DIR / "week-later-state.json"
+WEEK_LATER_STATE_TTL = 14 * 86400
+WEEK_LATER_PROM_URL = "http://127.0.0.1:9090/api/v1/query"
+WEEK_LATER_PROM_TIMEOUT = 10
+
+# moves: metric -> Prometheus expression for the metric's value. The 7d value
+# is the avg_over_time of this expression over a 7d window. Only metrics with
+# a mapping here are comparable; add mappings as the sibling parts land.
+_MOVES_METRIC_QUERIES = {
+    "product_merges_per_day": 'sum(fleet_self_maintenance_merges{kind="product"})',
+}
+
+# Line-anchored `moves:` field (the sibling spec-gate's body line). Leading
+# list markers allowed so a `- moves: ...` body line counts, mirroring the
+# spec-gate's FIELD_RE.
+_MOVES_RE = re.compile(r"(?im)^(?:[-*]\s+)*moves\s*:\s*(\S+)")
+
+
+def _week_later_prs():
+    """Cached list of fleet-ops PRs merged ~7 days ago with a moves: line.
+
+    Returns a list of {"number", "title", "moves", "merged_at"} or [] on
+    failure. The gh search is cached to WEEK_LATER_CACHE_TTL so the exporter
+    does not hammer the API every 5-min tick; a stale cache is served on a
+    gh failure (the window is wide enough that a missed tick is caught later).
+    """
+    cached, age = _read_cache(WEEK_LATER_CACHE)
+    if age is not None and age <= WEEK_LATER_CACHE_TTL and cached is not None:
+        return cached
+    data = _gh_week_later_prs()
+    if data is not None:
+        _write_cache(WEEK_LATER_CACHE, data)
+        return data
+    if cached is not None:
+        print("week-later: gh failed, serving stale PR list", file=sys.stderr)
+        return cached
+    return []
+
+
+def _gh_week_later_prs():
+    """Query GitHub for fleet-ops PRs merged ~7 days ago with a moves: line.
+
+    One paginated GraphQL search across Nishfleet/fleet-ops for PRs merged in
+    [now-7d-WINDOW, now-7d+WINDOW]. Returns a list of {"number", "title",
+    "moves", "merged_at"} for PRs whose body carries a `moves:` line, or None
+    on failure. The cutoff is interpolated as a literal in the search string
+    (GraphQL does not expand variables inside `search(query: ...)`).
+    """
+    now = time.time()
+    start = now - 7 * 86400 - WEEK_LATER_WINDOW_S
+    end = now - 7 * 86400 + WEEK_LATER_WINDOW_S
+    start_iso = datetime.fromtimestamp(start, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    end_iso = datetime.fromtimestamp(end, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    query = (
+        "query($cursor: String) {\n"
+        '  search(query: "repo:Nishfleet/fleet-ops is:pr is:merged '
+        f"merged:{start_iso}..{end_iso} sort:merged-desc\"" "\n"
+        "    type: ISSUE, first: 100, after: $cursor) {\n"
+        "    pageInfo { hasNextPage endCursor }\n"
+        "    nodes {\n"
+        "      ... on PullRequest {\n"
+        "        number\n"
+        "        title\n"
+        "        body\n"
+        "        mergedAt\n"
+        "      }\n"
+        "    }\n"
+        "  }\n"
+        "}\n"
+    )
+    out = []
+    cursor = None
+    for _ in range(GH_PAGES):
+        payload = _gh_graphql(query, cursor)
+        if payload is None:
+            return None
+        if payload.get("errors"):
+            print(f"week-later gh graphql errors: {payload['errors'][:1]}", file=sys.stderr)
+            return None
+        conn = ((payload.get("data") or {}).get("search") or {})
+        for node in conn.get("nodes") or []:
+            number = node.get("number")
+            if not isinstance(number, int):
+                continue
+            body = node.get("body") or ""
+            m = _MOVES_RE.search(body)
+            if not m:
+                continue
+            out.append({
+                "number": number,
+                "title": node.get("title") or "",
+                "moves": m.group(1).strip(),
+                "merged_at": node.get("mergedAt") or "",
+            })
+        page = conn.get("pageInfo") or {}
+        if not page.get("hasNextPage"):
+            return out
+        cursor = page.get("endCursor")
+        if not cursor:
+            return out
+    print("week-later gh search: hit page cap", file=sys.stderr)
+    return out
+
+
+def _prom_query_value(expr, time_epoch):
+    """Return the value of a Prometheus instant query at time_epoch, or None."""
+    params = urllib.parse.urlencode({"query": expr, "time": str(time_epoch)})
+    url = f"{WEEK_LATER_PROM_URL}?{params}"
+    try:
+        with urllib.request.urlopen(url, timeout=WEEK_LATER_PROM_TIMEOUT) as r:  # nosemgrep
+            payload = json.load(r)
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError,
+            json.JSONDecodeError) as exc:
+        print(f"week-later prom query failed: {exc}", file=sys.stderr)
+        return None
+    if payload.get("status") != "success":
+        return None
+    result = (payload.get("data") or {}).get("result") or []
+    if not result:
+        return None
+    try:
+        return float(result[0].get("value")[1])
+    except (TypeError, ValueError, IndexError):
+        return None
+
+
+def _metric_7d_value(metric, time_epoch):
+    """Return the metric's 7d average value at time_epoch, or None.
+
+    The 7d value is avg_over_time(<metric expr>[7d:1d]) evaluated at
+    time_epoch — the average daily value over the 7 days ending there. None
+    when the metric has no mapped expression or Prometheus cannot answer.
+    """
+    expr = _MOVES_METRIC_QUERIES.get(metric)
+    if not expr:
+        return None
+    return _prom_query_value(f"avg_over_time({expr}[7d:1d])", time_epoch)
+
+
+def _revert_candidate_exists(pr_number, metric):
+    """True when an open revert-candidate issue for this PR already exists.
+
+    Dedup by exact title match against open issues whose title contains
+    "revert candidate". Fail-safe: on any gh failure return True so a PR is
+    never double-filed (a transient gh error must not create a duplicate).
+    """
+    target = f"revert candidate: #{pr_number} did not move {metric}"
+    try:
+        r = subprocess.run(
+            ["gh", "issue", "list", "-R", "Nishfleet/fleet-ops",
+             "--state", "open", "--search", "revert candidate in:title",
+             "--json", "number,title", "--limit", "50"],
+            capture_output=True, text=True, timeout=GH_TIMEOUT,
+            env={**os.environ, "GH": "/usr/bin/gh"},
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"week-later dedup gh issue list failed: {exc}", file=sys.stderr)
+        return True
+    if r.returncode != 0:
+        print(f"week-later dedup gh issue list rc={r.returncode}", file=sys.stderr)
+        return True
+    try:
+        rows = json.loads(r.stdout or "[]")
+    except json.JSONDecodeError:
+        return True
+    return any((row.get("title") or "") == target for row in rows)
+
+
+def _file_revert_candidate(pr_number, metric, before, after, merged_at):
+    """File one revert-candidate issue. Returns True on success."""
+    title = f"revert candidate: #{pr_number} did not move {metric}"
+    marker = f"signal: revert-candidate/{pr_number}/{metric}"
+    body = (
+        f"Revert candidate: PR #{pr_number} (merged {merged_at}) carried "
+        f"`moves: {metric}` but the metric's 7d value did not improve after "
+        f"merge.\n\n"
+        f"before: {before}\n"
+        f"after: {after}\n\n"
+        f"termination: revert PR for #{pr_number} merged\n\n"
+        f"{marker}\n"
+    )
+    try:
+        r = subprocess.run(
+            ["gh", "issue", "create", "-R", "Nishfleet/fleet-ops",
+             "--title", title, "--label", "agent-ready", "--body", body],
+            capture_output=True, text=True, timeout=GH_TIMEOUT,
+            env={**os.environ, "GH": "/usr/bin/gh"},
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"week-later gh issue create failed: {exc}", file=sys.stderr)
+        return False
+    if r.returncode != 0:
+        print(f"week-later gh issue create rc={r.returncode}: {r.stderr.strip()[:200]}",
+              file=sys.stderr)
+        return False
+    return True
+
+
+def _read_week_later_state():
+    """Return the per-PR evaluation ledger dict, or {} on failure."""
+    try:
+        data = json.loads(WEEK_LATER_STATE.read_text())
+        if isinstance(data, dict):
+            return data
+    except (OSError, json.JSONDecodeError):
+        pass
+    return {}
+
+
+def _write_week_later_state(state, now):
+    """Persist the ledger, pruning entries older than WEEK_LATER_STATE_TTL."""
+    pruned = {
+        k: v for k, v in state.items()
+        if isinstance(v, dict) and (now - (v.get("checked_at") or 0)) <= WEEK_LATER_STATE_TTL
+    }
+    try:
+        _atomic_write(WEEK_LATER_STATE, json.dumps(pruned, sort_keys=True))
+    except OSError as exc:
+        print(f"week-later state write: {exc}", file=sys.stderr)
+
+
+def _week_later_revert_check():
+    """Run the week-later revert-candidate check. Returns a summary string.
+
+    Never raises and never fails the exporter: every gh/Prometheus failure is
+    logged and the PR is left unevaluated (retried on a later tick). A PR is
+    evaluated at most once (the state ledger), so the gh dedup/create calls
+    are bounded to one per PR.
+    """
+    prs = _week_later_prs()
+    if not prs:
+        return "week-later: no fleet-ops PRs merged ~7d ago with a moves: line"
+    state = _read_week_later_state()
+    now = time.time()
+    filed = 0
+    skipped = 0
+    for pr in prs:
+        number = pr["number"]
+        metric = pr["moves"]
+        if metric not in _MOVES_METRIC_QUERIES:
+            continue  # metric not yet mapped to a Prometheus query
+        if str(number) in state:
+            skipped += 1
+            continue
+        merged_epoch = _parse_iso_utc(pr["merged_at"])
+        if merged_epoch is None:
+            continue
+        if now - merged_epoch < WEEK_LATER_MIN_AGE_S:
+            # fleet-ops#3948: the search window is the only thing that
+            # makes this a WEEK-later check. When it leaks younger PRs
+            # (two `merged:` qualifiers were OR-ed by GitHub search and
+            # returned everything merged in the last 7d), before and
+            # after cover the same trailing-7d data and the PR is filed
+            # as a revert candidate hours after merge. Not evaluated, not
+            # recorded: retried when it is actually a week old.
+            continue
+        before = _metric_7d_value(metric, merged_epoch)
+        after = _metric_7d_value(metric, now)
+        if before is None or after is None:
+            continue  # Prometheus unavailable; retry on a later tick
+        if after > before:
+            state[str(number)] = {"checked_at": now, "verdict": "improved"}
+            continue
+        if _revert_candidate_exists(number, metric):
+            state[str(number)] = {"checked_at": now, "verdict": "already-filed"}
+            skipped += 1
+            continue
+        if _file_revert_candidate(number, metric, before, after, pr["merged_at"]):
+            state[str(number)] = {"checked_at": now, "verdict": "filed"}
+            filed += 1
+    _write_week_later_state(state, now)
+    return f"week-later: filed={filed} skipped={skipped}"
+
+
 # --- Main ------------------------------------------------------------------
 
+def _ensure_worker_token() -> None:
+    """Use the nishfleet-worker App token for any GitHub write (fleet-ops#3445).
+
+    Fail closed if the App cannot mint and no token was inherited from a parent
+    organ, so a dead App never falls through to the human gh identity. Human gh
+    is read-only for organs. GH Actions (tests) has no App creds and stubs gh
+    as read-only, so skip minting there.
+    """
+    if os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_ACTIONS") == "true":
+        return
+    # A test injects a fake gh (GH != 'gh'); no human gh write is possible, so
+    # skip minting there too. Production callers never set GH.
+    if os.environ.get("GH", "gh") != "gh":
+        return
+    wt = os.environ.get(
+        "NISHFLEET_WORKER_TOKEN_BIN",
+        f"{os.environ.get('HOME', '/home/nish')}/.local/bin/worker-token",
+    )
+    try:
+        out = subprocess.run(
+            [wt, "--print"], capture_output=True, text=True, timeout=30
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print("fleet-ops#3445: worker-token --print failed - refusing human-gh writes: %s" % exc, file=sys.stderr)
+        sys.exit(1)
+    if out.returncode != 0:
+        print("fleet-ops#3445: worker-token --print rc=%s - refusing human-gh writes: %s" % (out.returncode, out.stderr.strip()[:200]), file=sys.stderr)
+        sys.exit(1)
+    for line in out.stdout.splitlines():
+        if line.startswith("export GH_TOKEN="):
+            os.environ["GH_TOKEN"] = line[len("export GH_TOKEN="):].strip()
+            return
+    print("fleet-ops#3445: worker-token --print output not an export GH_TOKEN line - refusing human-gh writes", file=sys.stderr)
+    sys.exit(1)
+
+
 def main():
+    _ensure_worker_token()
+    # fleet-ops#2273: remove the legacy fleet-staleness.prom textfile at the
+    # start of every run. The staleness checker used to write there directly;
+    # it now emits through this exporter into fleet.prom via the JSON cache.
+    # node_exporter reads every .prom file in the textfile dir, so a stale
+    # copy's duplicate fleet_truth_staleness_* metrics shadow the fresh values.
+    # Do this first so the cleanup runs even on a fail-loud early return.
+    try:
+        LEGACY_STALENESS_PROM.unlink()
+    except FileNotFoundError:
+        pass
+
     timers = _list_timers()
     healthy, observed_epoch = _read_seat()
 
@@ -1614,10 +5129,22 @@ def main():
         lines.append(
             f"fleet_pi_seat_observed_seconds {observed_epoch}"
         )
+    # fleet-ops#3111: seat-health age. A stale feed (>30 min) is UNKNOWN, never
+    # "healthy". -1 when observed_at is absent/unparseable so the alert rule can
+    # distinguish "no data" from "fresh". Drives FleetPiSeatHealthStale.
+    age = -1
+    if observed_epoch is not None:
+        age = int(time.time()) - observed_epoch
+    lines.append("")
+    lines.append(HELP_AGE)
+    lines.append(TYPE_AGE)
+    lines.append(f"fleet_pi_seat_health_age_seconds {age}")
     # fleet-ops#1445: surface dead-credential seats once per tick as a distinct
-    # signal. These seats are seat_dead=true + credentials_bad (HTTP 401/403)
-    # and need human re-auth; the total gauge drives the alert rule and the
-    # per-seat series names each seat needing re-auth.
+    # signal. These seats are seat_dead=true + credentials_bad (HTTP 401/403);
+    # the total gauge drives the alert rule and the per-seat series names each
+    # seat. fleet-ops#2667: the per-seat series carries health_class so the
+    # reader can tell a re-authable seat (credentials_bad) from a terminal
+    # corpse that must be retired from the seat map instead.
     _dc_n, _dc = _read_dead_credentials()
     lines.append("")
     lines.append(HELP_DCT)
@@ -1631,8 +5158,121 @@ def main():
             "{}__{}".format(_s["provider"], _s["model"]).strip("_") or "unknown"
         )
         _st = _prom_label(str(_s.get("http_status") or ""))
+        _hcl = _prom_label(str(_s.get("health_class") or ""))
         lines.append(
-            f'fleet_pi_seat_dead_credential{{seat="{_seat_label}",http_status="{_st}"}} 1'
+            f'fleet_pi_seat_dead_credential{{seat="{_seat_label}",http_status="{_st}",health_class="{_hcl}"}} 1'
+        )
+    # fleet-ops#2407: surface comeback-overdue seats (still classed non-healthy
+    # past their usable_at/bench_until — released by the router's fail-open but
+    # never re-observed since). The total gauge drives the alert rule; the
+    # per-seat series names each lingering seat so the repair worker knows who
+    # to probe. .spawn-bench markers and test__ fixtures are synthetic, and
+    # seat_dead corpses are deliberately terminal (FleetDeadCredentialSeats
+    # owns them) — none of them appear here.
+    _cb_n, _cb = _read_comeback_overdue()
+    lines.append("")
+    lines.append(HELP_CB)
+    lines.append(TYPE_CB)
+    lines.append(f"fleet_seat_comeback_overdue_total {_cb_n}")
+    lines.append("")
+    lines.append(HELP_CBP)
+    lines.append(TYPE_CBP)
+    for _s in _cb:
+        _seat_label = _prom_label(
+            "{}__{}".format(_s["provider"], _s["model"]).strip("_") or "unknown"
+        )
+        _hc = _prom_label(str(_s.get("health_class") or ""))
+        lines.append(
+            f'fleet_seat_comeback_overdue{{seat="{_seat_label}",health_class="{_hc}"}} 1'
+        )
+    # fleet-ops#2638: never-probed comeback visibility. A seat in this gauge
+    # means the comeback-release prober has fired on it >=10 times, the seat
+    # has not recovered, and the next sweep will corpse it. Sustained > 0 here
+    # is the loud signal that the release path is operating on a chronically
+    # failing seat — the repair worker should expect a fleet_seat_comeback_release_corpse_total
+    # increment on the next sweep and may want to inspect the provider before
+    # the next bench window. Per-seat series names each stuck seat.
+    _nr_n, _nr = _read_never_released()
+    lines.append("")
+    lines.append(HELP_NRT)
+    lines.append(TYPE_NRT)
+    lines.append(f"fleet_seat_comeback_never_released_total {_nr_n}")
+    lines.append("")
+    lines.append(HELP_NRP)
+    lines.append(TYPE_NRP)
+    for _s in _nr:
+        _seat_label = _prom_label(
+            "{}__{}".format(_s["provider"], _s["model"]).strip("_") or "unknown"
+        )
+        _hc = _prom_label(str(_s.get("health_class") or ""))
+        _count = int(_s.get("count") or 0)
+        lines.append(
+            f'fleet_seat_comeback_never_released{{seat="{_seat_label}",health_class="{_hc}",count="{_count}"}} 1'
+        )
+    # fleet-ops#2712: provider-level (account-level) quota exhaustion.
+    # Group quota_exhausted seats by provider; emit a 1-row per affected
+    # provider with the seat count so the repair worker can see the burst
+    # size, and a total gauge for the alert rule. The alert rule
+    # (FleetProviderQuotaExhausted, config/fleet_rules.yml) catches the
+    # "one billing wall, many seats" pattern that the per-seat
+    # health_class=quota_exhausted signal alone cannot.
+    _pqe_n, _pqe = _read_provider_quota_exhausted()
+    lines.append("")
+    lines.append(HELP_PQE)
+    lines.append(TYPE_PQE)
+    lines.append(f"fleet_provider_quota_exhausted_total {_pqe_n}")
+    lines.append("")
+    lines.append(HELP_PQEP)
+    lines.append(TYPE_PQEP)
+    for _s in _pqe:
+        _prov = _prom_label(str(_s.get("provider") or ""))
+        _seats = int(_s.get("seats") or 0)
+        lines.append(
+            f'fleet_provider_quota_exhausted{{provider="{_prov}",seats="{_seats}"}} 1'
+        )
+    # fleet-ops#2738: healthy-but-parked visibility. A seat whose ledger is
+    # healthy (health_class=healthy, seat_dead=false) but whose model cap in
+    # seat-caps.json is 0 is silently costing throughput — pick_seat skips it
+    # every tick while the seat-availability SLO burns. The total gauge drives
+    # the alert/WFR lens; the per-seat series names each parked seat so the
+    # repair worker knows which cap to restore. Sustained > 0 here is the loud
+    # signal that a restore was forgotten (the devin/glm-5-2 lapse lived here
+    # for 3+ days with no metric surfacing it).
+    _hc0_n, _hc0 = _read_healthy_cap0()
+    lines.append("")
+    lines.append(HELP_HCAP0)
+    lines.append(TYPE_HCAP0)
+    lines.append(f"fleet_seat_healthy_cap0_total {_hc0_n}")
+    lines.append("")
+    lines.append(HELP_HCAP0P)
+    lines.append(TYPE_HCAP0P)
+    for _s in _hc0:
+        _seat_label = _prom_label(
+            "{}__{}".format(_s["provider"], _s["model"]).strip("_") or "unknown"
+        )
+        lines.append(
+            f'fleet_seat_healthy_cap0{{seat="{_seat_label}"}} 1'
+        )
+    # fleet-ops#3111: stale cap=0 seats. A stale cap=0 seat
+    # (intentional_cap_zero=stale) has a dated reason and should be
+    # re-auditioned; seat-lib auto-expires it to cap=1 after 14d. This metric
+    # surfaces them BEFORE the expiry so the operator can re-audition or
+    # re-date the reason. age_seconds=-1 means undated (expires first).
+    _sc0_n, _sc0 = _read_cap0_stale()
+    lines.append("")
+    lines.append(HELP_SC0T)
+    lines.append(TYPE_SC0T)
+    lines.append(f"fleet_seat_cap0_stale_total {_sc0_n}")
+    lines.append("")
+    lines.append(HELP_SC0)
+    lines.append(TYPE_SC0)
+    for _s in _sc0:
+        _seat_label = _prom_label(
+            "{}__{}".format(_s["provider"], _s["model"]).strip("_") or "unknown"
+        )
+        _age = int(_s.get("age_seconds", -1))
+        lines.append(
+            f'fleet_seat_cap0_stale{{seat="{_seat_label}",age_seconds="{_age}"}} 1'
         )
     lines.append("")
     lines.append(HELP_TEST)
@@ -1759,6 +5399,7 @@ def main():
             lines.append(f"fleet_verified_merge_ratio {vm['ratio']:.6f}")
 
     snap = _repo_snapshot()
+    main_ci = {}
     if snap is not None:
         open_prs = snap.get("open_prs") or {}
         main_ci = snap.get("main_ci") or {}
@@ -1778,53 +5419,65 @@ def main():
             )
         fresh_kinds.append("repo_snapshot")
 
-    ready = _ready_work()
-    if ready is not None:
-        lines.append("")
-        lines.append(HELP_READY)
-        lines.append(TYPE_READY)
-        lines.append(f"fleet_ready_work {ready}")
-        fresh_kinds.append("ready_work")
+    # --- Ready work + queue composition (fleet-ops#1136, #1772) ---
+    # Both share one cached gh call. If we cannot determine the open
+    # agent-ready count, fail loud instead of writing a fleet.prom that
+    # omits fleet_ready_work and makes the frozen-queue gate see null.
+    qc = _queue_composition()
+    if qc is None:
+        print(
+            f"ready_work: cannot determine open agent-ready issue count; "
+            f"refusing to write {OUT} so the frozen-queue gate does not see a "
+            f"null/frozen value",
+            file=sys.stderr,
+        )
+        return 1
 
-    # --- Queue composition (fleet-ops#1136 scope addition) ---
-    # Two queues: "agent-ready" (all Nishfleet repos) and "ready-work"
+    ready = qc["ready-work"]["total"]
+    lines.append("")
+    lines.append(HELP_READY)
+    lines.append(TYPE_READY)
+    lines.append(f"fleet_ready_work {ready}")
+    fresh_kinds.append("ready_work")
+
+    # Queue composition: "agent-ready" (all Nishfleet repos) and "ready-work"
     # (enrolled repos only). Both export total, self-maintenance count, and
     # ratio (omitted when total=0). The 64% fleet2 death-number tripwire
-    # is a TREND alert (offset 7d), not a level.
+    # is a 7d-smoothed level (avg_over_time[7d] > 0.64) — see
+    # config/fleet_rules.yml FleetQueueSelfMaintenanceRatioHigh
+    # (fleet-ops#2171).
     # HELP/TYPE is emitted once per metric name; the per-queue samples
     # follow. Duplicate HELP/TYPE lines make the textfile unparseable
     # (promtool rejects them), so they must stay outside the loop.
-    qc = _queue_composition()
-    if qc is not None:
-        lines.append("")
-        lines.append(HELP_QT)
-        lines.append(TYPE_QT)
-        for queue in ("agent-ready", "ready-work"):
-            lines.append(
-                f'fleet_queue_total{{queue="{queue}"}} {qc[queue]["total"]}'
+    lines.append("")
+    lines.append(HELP_QT)
+    lines.append(TYPE_QT)
+    for queue in ("agent-ready", "ready-work"):
+        lines.append(
+            f'fleet_queue_total{{queue="{queue}"}} {qc[queue]["total"]}'
+        )
+    lines.append("")
+    lines.append(HELP_QSM)
+    lines.append(TYPE_QSM)
+    for queue in ("agent-ready", "ready-work"):
+        lines.append(
+            f'fleet_queue_self_maintenance_total{{queue="{queue}"}} {qc[queue]["self"]}'
+        )
+    ratio_lines = []
+    for queue in ("agent-ready", "ready-work"):
+        q = qc[queue]
+        total = q["total"]
+        if total > 0:
+            ratio = q["self"] / total
+            ratio_lines.append(
+                f'fleet_queue_self_maintenance_ratio{{queue="{queue}"}} {ratio:.6f}'
             )
+    if ratio_lines:
         lines.append("")
-        lines.append(HELP_QSM)
-        lines.append(TYPE_QSM)
-        for queue in ("agent-ready", "ready-work"):
-            lines.append(
-                f'fleet_queue_self_maintenance_total{{queue="{queue}"}} {qc[queue]["self"]}'
-            )
-        ratio_lines = []
-        for queue in ("agent-ready", "ready-work"):
-            q = qc[queue]
-            total = q["total"]
-            if total > 0:
-                ratio = q["self"] / total
-                ratio_lines.append(
-                    f'fleet_queue_self_maintenance_ratio{{queue="{queue}"}} {ratio:.6f}'
-                )
-        if ratio_lines:
-            lines.append("")
-            lines.append(HELP_QSMR)
-            lines.append(TYPE_QSMR)
-            lines.extend(ratio_lines)
-        fresh_kinds.append("queue_composition")
+        lines.append(HELP_QSMR)
+        lines.append(TYPE_QSMR)
+        lines.extend(ratio_lines)
+    fresh_kinds.append("queue_composition")
 
     if fresh_kinds:
         lines.append("")
@@ -1843,6 +5496,16 @@ def main():
             f'fleet_escalations_24h{{unit="{unit}"}} {esc_counts[unit]}'
         )
 
+    # oomd kills of app-pi-issue.slice units in the last 6h (fleet-ops#4164).
+    oomd_counts = _oomd_kills_6h()
+    lines.append("")
+    lines.append(HELP_OOMD)
+    lines.append(TYPE_OOMD)
+    for unit in sorted(oomd_counts):
+        lines.append(
+            f'fleet_oomd_kills_6h{{unit="{unit}"}} {oomd_counts[unit]}'
+        )
+
     # Repair dispatch / skip counts.
     disp_count, skip_count = _repair_log_counts_24h()
     lines.append("")
@@ -1853,6 +5516,28 @@ def main():
     lines.append(HELP_RSKIP)
     lines.append(TYPE_RSKIP)
     lines.append(f"fleet_repair_skip_24h {skip_count}")
+
+    # --- Per-alertname repair outcomes (fleet-ops#1291 alert-quality) ---
+    # Feeds the WFR alert-quality lens: dispatch vs skipped = action rate,
+    # resolved vs failed = success rate, repeated failed = noisy/unactionable.
+    # fleet-ops#2694: phantom_resolved counts RESOLVED entries whose
+    # root_cause starts with PHANTOM_ALERT (drill fixtures, no real defect)
+    # so the lens can flag phantom drift without conflating it with real
+    # fixes.
+    per_alert = _repair_log_per_alertname_24h()
+    if per_alert:
+        lines.append("")
+        lines.append(HELP_AD)
+        lines.append(TYPE_AD)
+        for name in sorted(per_alert):
+            counts = per_alert[name]
+            lbl = _prom_label(name)
+            for kind in ("dispatch", "resolved", "failed", "skipped",
+                         "phantom_resolved"):
+                lines.append(
+                    f'fleet_alert_outcome_24h{{alertname="{lbl}",kind="{kind}"}} '
+                    f'{counts[kind]}'
+                )
 
     # --- Undersaturation guard (2026-08-27) ---
     # fleet_pi_workers_active{kind=...} — always exported (no gh, no journal).
@@ -1898,6 +5583,105 @@ def main():
         lines.append(TYPE_KHB)
         lines.append(f"fleet_keystone_routing_heartbeat_seconds {k_mtime:.3f}")
 
+    # --- Worktree reaper gauge (fleet-ops#4118) ---
+    # The reaper (bin/fleet-worktree-reaper) writes a daily summary JSON. The
+    # present gauge is ALWAYS emitted so the heartbeat can tell a dead reaper
+    # (0) from a healthy one (1); the count + heartbeat gauges are emitted only
+    # when the summary is present and fresh (a missing/stale summary means the
+    # count is unknown, not 0). fleet_worktree_dirs is the count metric the
+    # heartbeat gauges for unbounded worktree sprawl.
+    wt = _read_worktree_reaper()
+    lines.append("")
+    lines.append(HELP_WTP)
+    lines.append(TYPE_WTP)
+    lines.append(f"fleet_worktree_reaper_present {1 if wt.get('present') else 0}")
+    if wt.get("present"):
+        lines.append("")
+        lines.append(HELP_WTD)
+        lines.append(TYPE_WTD)
+        lines.append(f"fleet_worktree_dirs {int(wt.get('post_count') or 0)}")
+        lines.append("")
+        lines.append(HELP_WTR)
+        lines.append(TYPE_WTR)
+        lines.append(f"fleet_worktree_reaped {int(wt.get('reaped') or 0)}")
+        if isinstance(wt.get("ts"), str):
+            ts_epoch = _parse_iso_utc(wt["ts"])
+            if ts_epoch is not None:
+                lines.append("")
+                lines.append(HELP_WTHB)
+                lines.append(TYPE_WTHB)
+                lines.append(f"fleet_worktree_reaper_heartbeat_seconds {ts_epoch}")
+
+    # --- Seat yield ledger (fleet-ops#3250) ---
+    # Computed from the agent's own pi-issue session files. Per-seat rolling
+    # last-20-sessions PR yield; new/idle seats get a provisional 0.5 yield
+    # so they are tried, not starved. Emits the family and writes a JSON
+    # sidecar for lib/seat-lib.sh pick_seat to consume.
+    seat_yield = _compute_seat_yield()
+    _emit_seat_yield(lines, seat_yield)
+
+    # --- Seat spend + metered provider balances (fleet-ops#3283) ---
+    # Spend is derived from per-message usage.cost in pi session jsonl.  Balance
+    # is fetched from each vendor's own credits/usage endpoint where one exists.
+    spend = _compute_spend()
+    _emit_spend(lines, spend)
+    openrouter_balance = _cached_vendor_json(
+        OPENROUTER_BALANCE_CACHE, _fetch_openrouter_credits, "openrouter_credits"
+    )
+    xkiro_usage = _cached_vendor_json(
+        XKIRO_BALANCE_CACHE, _fetch_xkiro_usage, "xkiro_usage"
+    )
+    balances = {}
+    if openrouter_balance is not None:
+        balances["openrouter"] = openrouter_balance
+    if xkiro_usage is not None and xkiro_usage[1] is not None:
+        balances["xkiro"] = xkiro_usage[1]
+    _emit_credits_remaining(lines, balances)
+    _emit_xkiro_wallet(lines, xkiro_usage)
+
+    # --- Live seat quotas (fleet-ops#4217) ---
+    # VPS-native API reads. Each fetcher is cached independently; a None
+    # return omits that provider's rows (never a frozen value). Browser-
+    # session seats (Grok, Ollama, Z.ai, OpenCode, RunInfra,
+    # ZenMux, Cline, Straitly, MiniMax, CommandCode) are follow-up issues
+    # (#4232 / #4233) — each slots in as one fetcher.
+    openrouter_key = _cached_quota_json(
+        OPENROUTER_KEY_CACHE, _fetch_openrouter_key, "openrouter_key"
+    )
+    claude_usage = _cached_quota_json(
+        CLAUDE_QUOTA_CACHE, _fetch_claude_usage, "claude_usage"
+    )
+    codex_usage = _cached_quota_json(
+        CODEX_QUOTA_CACHE, _fetch_codex_usage, "codex_usage"
+    )
+    cursor_usage = _cached_quota_json(
+        CURSOR_QUOTA_CACHE, _fetch_cursor_usage, "cursor_usage"
+    )
+    devin_usage = _cached_quota_json(
+        DEVIN_QUOTA_CACHE, _fetch_devin_usage, "devin_usage"
+    )
+    xkiro_quota = _cached_quota_json(
+        XKIRO_QUOTA_CACHE, _fetch_xkiro_quota, "xkiro_quota"
+    )
+    _quota_now = time.time()
+    _quota_providers = []
+    if isinstance(openrouter_key, dict):
+        _quota_providers.append(("openrouter", [openrouter_key]))
+    if isinstance(claude_usage, list):
+        _quota_providers.append(("claude", claude_usage))
+    if isinstance(codex_usage, list):
+        _quota_providers.append(("codex", codex_usage))
+    if isinstance(cursor_usage, list):
+        _quota_providers.append(("cursor", cursor_usage))
+    if isinstance(devin_usage, list):
+        _quota_providers.append(("devin", devin_usage))
+    if isinstance(xkiro_quota, list):
+        _quota_providers.append(("xkiro", xkiro_quota))
+    if _quota_providers:
+        _emit_seat_quota_headers(lines)
+        for _prov, _rows in _quota_providers:
+            _emit_seat_quota(lines, _prov, _rows, "api", _quota_now)
+
     # --- Truth staleness (fleet-ops#1137) ---
     # Read the staleness checker's cached results and re-export as Prometheus
     # gauges so the absent() rule in fleet_rules.yml can watch them. The
@@ -1931,6 +5715,45 @@ def main():
                 )
     except OSError as exc:
         print(f"staleness cache read: {exc}", file=sys.stderr)
+
+    # --- SLO error budgets (fleet-ops#1291) ---
+    # Emitted last so every source the SLOs read (CI rollup, seat health,
+    # rate limit, waste ratio) has been gathered this tick. fleet_pi_seat_total
+    # is the seat_availability denominator; published here so the SLO's
+    # compliance is auditable from the raw gauges alone.
+    _seat_total = _enrolled_seat_total()
+    if _seat_total is not None:
+        lines.append("")
+        lines.append(HELP_SEAT_TOTAL)
+        lines.append(TYPE_SEAT_TOTAL)
+        lines.append(f"fleet_pi_seat_total {_seat_total}")
+    _emit_slo_metrics(lines, main_ci, healthy, rl)
+
+    # --- Deployment quality SLOs (fleet-ops#2758) ---
+    # Emitted after the SLO family so every data source this module reads
+    # (gh, journal, actions log) is complete for the tick; a module fault
+    # degrades to NaN + up 0 (see _emit_deploy_quality) and never fails
+    # the exporter oneshot.
+    _emit_deploy_quality(lines)
+
+    # --- blocked-reconcile nish-decision lint (fleet-ops#3312) ---
+    # Per-sweep count of rejected `blocked-on: nish-decision` lines.
+    _emit_blocked_reconcile(lines)
+
+    # --- close-duplicates close guard (fleet-ops#3161) ---
+    # Per-tick close count by label; cross_repo and protected must stay 0.
+    _emit_close_duplicates(lines)
+
+    # --- observe-to-close close guard (fleet-ops#3231) ---
+    # Per-tick close count by reason; bare-mention and protected must stay 0.
+    _emit_observe_to_close(lines)
+
+    # --- Week-later revert check (fleet-ops#3124 part 4/4) ---
+    # For each fleet-ops PR merged ~7 days ago with a `moves:` metric, compare
+    # the metric's 7d value before vs after; if it did not improve, file ONE
+    # revert-candidate issue (never re-filed). Non-fatal: a failure is logged
+    # and the exporter still writes fleet.prom.
+    _week_later_revert_check()
 
     body = "\n".join(lines) + "\n"
     _atomic_write(OUT, body)

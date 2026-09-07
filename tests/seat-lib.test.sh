@@ -19,7 +19,9 @@
 #   5. rate_limited: excluded while marker fresh (<30min) AND usable_at
 #      future; RETRIED once the marker ages past 30min or usable_at passes.
 #   6. seat_dead=true / credentials_bad / quota_exhausted -> unusable.
-#   7. Stale observed_at (>6h) -> usable (the P4-A inversion fix).
+#   7. Stale observed_at (>6h) -> usable (the P4-A inversion fix), EXCEPT a
+#      seat_dead=true corpse, which is TERMINALLY excluded regardless of
+#      staleness (fleet-ops#2327 — only a successful probe resurrects it).
 #   8. quota_bench (fleet-ops#90): a 429-with-window seats the advertised
 #      reset; pick_seat skips until then and fail-opens after; all-benched
 #      returns rc=1 (existing no-seat path) without consuming an attempt.
@@ -42,6 +44,12 @@ trap 'rm -rf "$scratch"' EXIT INT TERM
 # pick_seat into prepaid (fleet-ops#108 / #142 / #509). The wedge-age
 # probe below turns this back on with a stubbed systemctl.
 export PI_SEAT_LIB_CHECK_SYSTEMD=0
+# fleet-ops#1409: skip the per-pick NO-USABLE-SEAT cooldown in tests.
+export PI_SEAT_NOUSABLE_COOLDOWN_S=0
+# fleet-ops#4217: hermetic live-quota lookup — on the VPS the real
+# node_exporter textfile carries fleet_seat_quota_* rows that must not leak
+# into the static-default/fail-open bench tests below.
+export SEAT_LIVE_QUOTA_PROM="$scratch/no-live-quota.prom"
 
 # A models.json with a deliberately non-allowlisted provider (groq) and a
 # non-allowlisted model on an allowlisted provider (ollama/gpt-oss:20b).
@@ -258,6 +266,80 @@ fi
 if grep -q "seat devin/swe-1-7 skipped (model cap=0)" "$PI_PACKET_STATE/watch.log"; then
   fail "mixedcap: swe-1-7 is the cap>0 sibling and must not be in the summary"
 fi
+export PI_MODELS_JSON="$scratch/models.json"
+export SEAT_CAPS_JSON="$scratch/seat-caps.json"
+
+# --- invariant 3c (fleet-ops#2738): healthy-ledger + cap-3 restore shape ---
+# A healthy devin/glm-5-2 ledger with the model cap restored to 3 must make
+# pick_seat return devin/glm-5-2 (the seat is picked — throughput restored).
+# The same healthy ledger with cap 0 must NOT pick glm-5-2 (the cap is the
+# gate, not the ledger). SQL-style pin on the restore: the cap value is the
+# only variable between the two picks; the ledger is identical and healthy.
+cat >"$scratch/models-restore.json" <<'JSON'
+{
+  "providers": {
+    "devin": {
+      "models": [
+        { "id": "glm-5-2", "cost": { "input": 0 } }
+      ]
+    }
+  }
+}
+JSON
+cat >"$scratch/seat-caps-restore-cap3.json" <<'JSON'
+{
+  "ram_gb_per_worker": 1.5,
+  "providers": {
+    "devin": { "cap": 4, "class": "free", "models": { "glm-5-2": 3 } }
+  }
+}
+JSON
+cat >"$scratch/seat-caps-restore-cap0.json" <<'JSON'
+{
+  "ram_gb_per_worker": 1.5,
+  "providers": {
+    "devin": { "cap": 4, "class": "free", "models": { "glm-5-2": 0 } }
+  }
+}
+JSON
+ledger_restore="$scratch/ledger-restore"
+mkdir -p "$ledger_restore"
+fresh_obs_restore=$(date -u -d '60 seconds ago' +%Y-%m-%dT%H:%M:%SZ)
+jq -n --arg obs "$fresh_obs_restore" \
+  '{provider:"devin",model:"glm-5-2",health_class:"healthy",seat_dead:false,http_status:200,observed_at:$obs}' \
+  > "$ledger_restore/devin__glm-5-2.json"
+export PI_SEAT_HEALTH_LEDGER_DIR="$ledger_restore"
+export PI_MODELS_JSON="$scratch/models-restore.json"
+
+# --- cap 3: the restored seat is picked ---
+export SEAT_CAPS_JSON="$scratch/seat-caps-restore-cap3.json"
+export PI_PACKET_STATE="$scratch/state-restore-cap3"
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "0" ]] \
+  || fail "restore-cap3: healthy ledger + cap 3 must pick devin/glm-5-2, got rc=$rc out=$out"
+[[ "$out" == "devin	glm-5-2" ]] \
+  || fail "restore-cap3: expected devin/glm-5-2, got: $out"
+echo "OK: restore-cap3 -> pick_seat returns devin/glm-5-2 (healthy + cap 3 = picked)"
+
+# --- cap 0: the SAME healthy ledger is NOT picked (cap is the gate) ---
+export SEAT_CAPS_JSON="$scratch/seat-caps-restore-cap0.json"
+export PI_PACKET_STATE="$scratch/state-restore-cap0"
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "1" ]] \
+  || fail "restore-cap0: healthy ledger + cap 0 must NOT pick (no usable seat), got rc=$rc out=$out"
+[[ -z "$out" ]] \
+  || fail "restore-cap0: must print nothing (glm-5-2 is cap=0), got: $out"
+grep -q "NO USABLE SEAT" "$PI_PACKET_STATE/watch.log" \
+  || fail "restore-cap0: must log NO USABLE SEAT (cap 0 gates the healthy seat), got: $(cat "$PI_PACKET_STATE/watch.log")"
+echo "OK: restore-cap0 -> pick_seat returns nothing (healthy ledger + cap 0 = parked)"
+
+# Restore the shared fixtures the rest of the suite uses.
 export PI_MODELS_JSON="$scratch/models.json"
 export SEAT_CAPS_JSON="$scratch/seat-caps.json"
 
@@ -524,10 +606,51 @@ set -e
 [[ "$rc" == "0" ]] || fail "rate-ledger: expected a pick (retry), got rc=$rc"
 [[ "$out" == "cline	cline-pass/deepseek-v4-flash" ]] \
   || fail "rate-ledger: expected cline ds-flash retry, got: $out"
+# fleet-ops#1409: per-seat UNUSABLE lines are folded into a per-pick summary.
+# The retry-on-stale-RL line is emitted (return-0 path, not silenced).
+# pick_seat returns on the first usable seat (cline-pass/deepseek-v4-flash),
+# so minimax is never reached in the loop — it stays excluded by the tried
+# list but does not appear in the unusable summary. The pick is the proof.
 grep -q "retrying after rate_limited" "$PI_PACKET_STATE/watch.log" \
   || fail "rate-ledger: must log the retrying-after-rate_limited line"
-grep -q "UNUSABLE (rate_limited until" "$PI_PACKET_STATE/watch.log" \
-  || fail "rate-ledger: minimax fresh-RL must stay excluded"
+
+# --- invariant 5b: rate_limited conservative bench (fleet-ops#1156 salvage) -
+# The salvage hot-patch makes usable_at the authoritative signal: a fresh
+# 429 marker with NO usable_at must NOT be retried immediately (conservative
+# bench), and a stale marker with a FUTURE usable_at must still be benched
+# (respect the explicit reset window). Both were retried under the old logic.
+ledger="$scratch/ledger-rl-conservative"
+mkdir -p "$ledger"
+# cline ds-flash: fresh marker (1 min old), NO usable_at -> UNUSABLE (conservative)
+fresh_obs_no_use=$(date -u -d "@$((now-60))" +%Y-%m-%dT%H:%M:%SZ)
+jq -n --arg obs "$fresh_obs_no_use" \
+  '{health_class:"rate_limited",seat_dead:false,observed_at:$obs,usable_at:null}' \
+  > "$ledger/cline__cline-pass_deepseek-v4-flash.json"
+export PI_PACKET_STATE="$scratch/state-rl-conservative"
+export PI_SEAT_HEALTH_LEDGER_DIR="$ledger"
+set +e
+bash -c 'source "$0"; seat_usable "$1" "$2"' "$lib" "cline" "cline-pass/deepseek-v4-flash" >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" != "0" ]] || fail "rate-conservative: fresh marker + no usable_at must be UNUSABLE (conservative bench), seat_usable returned 0"
+grep -q "UNUSABLE (rate_limited, observed" "$PI_PACKET_STATE/watch.log" \
+  || fail "rate-conservative: must log the no-usable_at UNUSABLE line"
+ok "rate_limited: fresh marker + no usable_at -> UNUSABLE (conservative bench)"
+
+# minimax: stale marker (40 min old), usable_at 5 min in future -> UNUSABLE
+stale_obs_future_use=$(date -u -d "@$((now-2400))" +%Y-%m-%dT%H:%M:%SZ)
+future_use=$(date -u -d "@$((now+300))" +%Y-%m-%dT%H:%M:%SZ)
+jq -n --arg obs "$stale_obs_future_use" --arg use "$future_use" \
+  '{health_class:"rate_limited",seat_dead:false,observed_at:$obs,usable_at:$use}' \
+  > "$ledger/cline__cline-pass_minimax-m3.json"
+set +e
+bash -c 'source "$0"; seat_usable "$1" "$2"' "$lib" "cline" "cline-pass/minimax-m3" >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" != "0" ]] || fail "rate-conservative: stale marker + future usable_at must be UNUSABLE (respect bench window), seat_usable returned 0"
+grep -q "UNUSABLE (rate_limited until $future_use" "$PI_PACKET_STATE/watch.log" \
+  || fail "rate-conservative: must log the future-usable_at UNUSABLE line"
+ok "rate_limited: stale marker + future usable_at -> UNUSABLE (respect bench window)"
 
 # --- invariant 6/7: dead / credentials_bad / stale-observed ----------------
 # (7) stale observed_at -> usable: ollama marker from yesterday
@@ -547,6 +670,131 @@ set -e
 [[ "$rc" == "0" ]] || fail "stale ledger: expected a pick, got rc=$rc"
 grep -q "stale >21600s) — assuming usable" "$PI_PACKET_STATE/watch.log" \
   || fail "stale ledger: stale seat must be assumed usable"
+
+# --- invariant 7b: corpse (seat_dead=true) is TERMINALLY excluded --------
+# fleet-ops#2327: the stale-observed fail-open above applies to HEALTHY/
+# transient markers (retry a seat that may have recovered), NEVER to a
+# seat_dead=true corpse. Between observations a corpse's observed_at
+# naturally ages past STALE_SECS; re-admitting it on staleness is the exact
+# re-pick loop that grew opencode/muse-spark-1.2-contributor-free's count
+# 80 -> 150 straight 500s (workers kept picking it, it kept 500'ing). Death
+# is not a freshness question: a corpse stays off the ladder until a healthy
+# observation (seat_dead=false, count=0) is recorded — the seat-walled-probe
+# auto-probe that used to write one weekly was deleted (fleet-ops#2394), so
+# recovery is manual, not automatic. Prove both seat_usable and the pick-seat
+# excluded-set refuse a stale corpse.
+ledger="$scratch/ledger-corpse"
+mkdir -p "$ledger"
+# The live muse-spark shape: seat_dead=true, class corpse, observed_at a
+# week old (stale >6h), usable_at long past, count 150.
+jq -n \
+  '{health_class:"corpse",seat_dead:true,observed_at:"2026-08-24T00:00:00Z",usable_at:"2026-08-25T00:00:00Z"}' \
+  > "$ledger/opencode__muse-spark-1.2-contributor-free.json"
+export PI_PACKET_STATE="$scratch/state-corpse"
+export PI_SEAT_HEALTH_LEDGER_DIR="$ledger"
+# 7b.1 seat_usable must refuse the stale corpse outright.
+set +e
+bash -c 'source "$0"; seat_usable "$1" "$2"' "$lib" "opencode" "muse-spark-1.2-contributor-free" >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" != "0" ]] || fail "corpse: seat_usable must refuse a stale seat_dead=true corpse (got usable rc=0)"
+grep -q "UNUSABLE (seat_dead=true" "$PI_PACKET_STATE/watch.log" \
+  || fail "corpse: seat_usable must log the UNUSABLE (seat_dead=true) line for a stale corpse"
+ok "corpse: seat_usable refuses a stale seat_dead=true corpse (terminal exclusion)"
+# 7b.2 the excluded-set (what pick_seat consults) must also refuse the
+# stale corpse. Exercise _build_excluded_set + _seat_is_dead directly: the
+# corpse ledger is the ONLY seat in the dir, so a correct set marks it dead
+# and _seat_is_dead reports it (rc-1 shape on the pre-fix code: the stale
+# guard skipped it and the set stayed empty).
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; declare -A _EXCLUDED_REASON=() _EXCLUDED_LIST=(); _build_excluded_set _EXCLUDED_REASON _EXCLUDED_LIST >/dev/null; if _seat_is_dead opencode muse-spark-1.2-contributor-free; then echo DEAD-EXCLUDED; else echo NOT-EXCLUDED; fi' "$lib" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "corpse: _build_excluded_set/_seat_is_dead probe failed (rc=$rc)"
+[[ "$out" == "DEAD-EXCLUDED" ]] \
+  || fail "corpse: stale corpse must be in the excluded set (got: $out)"
+ok "corpse: stale seat_dead=true corpse stays in the excluded set (no resurrection)"
+
+# --- invariant 7c: transient-dead seat is RE-ADMITTED by a healthy
+# observation (fleet-ops#2531, 2026-08-31) --------------------------------
+# 7b proves a corpse is TERMINALLY excluded. This is the complementary
+# half: the terminal flag must not be STICKY for a seat that was marked
+# dead from a TRANSIENT overload. Live case: a human hand-marked
+# commandcode/poolside/laguna-s-2.1-free seat_dead=true after 4x 503
+# overloaded_error (06:50Z, source manual_override_after_repeated_503,
+# no wall clock) — the terminal flag applied to a transient condition.
+# seat_usable must refuse it while dead, but a fresh healthy observation
+# (200, count 0, seat_dead false — the 12:29:26Z live-probe shape that
+# revived it via the seat-health extension) must re-admit the seat onto
+# the ladder. The literal incident-time ledger shapes are used.
+p_scratch="$scratch/2531-poolside"
+mkdir -p "$p_scratch/ledger"
+cat >"$p_scratch/models.json" <<'JSON'
+{
+  "providers": {
+    "commandcode": {
+      "models": [ { "id": "poolside/laguna-s-2.1-free", "cost": { "input": 0 } } ]
+    }
+  }
+}
+JSON
+cat >"$p_scratch/seat-caps.json" <<'JSON'
+{
+  "ram_gb_per_worker": 1.5,
+  "free_providers_in_order": ["commandcode"],
+  "providers": {
+    "commandcode": { "cap": 2, "class": "free", "models": { "poolside/laguna-s-2.1-free": 2 } }
+  }
+}
+JSON
+export PI_MODELS_JSON="$p_scratch/models.json"
+export SEAT_CAPS_JSON="$p_scratch/seat-caps.json"
+export PI_SEAT_HEALTH_LEDGER_DIR="$p_scratch/ledger"
+export PI_PACKET_STATE="$p_scratch/state"
+# The literal 2026-08-31T06:50:00.000Z dead shape (live seat ledger).
+jq -n '{provider:"commandcode",model:"poolside/laguna-s-2.1-free",http_status:503,retry_after:null,health_class:"unhealthy",retryable:true,seat_dead:true,poison_ladder:false,observed_at:"2026-08-31T06:50:00.000Z",source:"manual_override_after_repeated_503",failure_mode:"overloaded_error",usable_at:null,consecutive_failure_count:4}' \
+  > "$p_scratch/ledger/commandcode__poolside_laguna-s-2.1-free.json"
+# 7c.1 dead shape -> seat_usable refuses (terminal exclusion, as for a corpse).
+set +e
+bash -c 'source "$0"; seat_usable "$1" "$2"' "$lib" "commandcode" "poolside/laguna-s-2.1-free" >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" != "0" ]] \
+  || fail "2531-poolside: seat_usable must refuse the hand-marked seat_dead=true shape (got usable rc=0)"
+ok "2531-poolside: seat_usable refuses the transient-dead manual_override shape"
+# 7c.2 pick_seat must NOT hand the dead lane out while it is dead.
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" != "0" ]] \
+  || fail "2531-poolside: pick_seat must return no seat while the only lane is seat_dead=true (got rc=0 out=$out)"
+grep -qi "poolside" <<<"$out" \
+  && fail "2531-poolside: pick_seat must not hand out a seat_dead=true lane (got: $out)"
+ok "2531-poolside: pick_seat refrains while the lane is seat_dead=true (no usable seat)"
+# 7c.3 the healthy observation lands (seat-health extension, live probe —
+# the literal 2026-08-31T12:29:26.902Z shape) and the lane is RE-ADMITTED.
+jq -n '{provider:"commandcode",model:"poolside/laguna-s-2.1-free",http_status:200,retry_after:null,health_class:"healthy",retryable:false,seat_dead:false,poison_ladder:false,observed_at:"2026-08-31T12:29:26.902Z",source:"after_provider_response",failure_mode:"none",usable_at:null,consecutive_failure_count:0}' \
+  > "$p_scratch/ledger/commandcode__poolside_laguna-s-2.1-free.json"
+set +e
+bash -c 'source "$0"; seat_usable "$1" "$2"' "$lib" "commandcode" "poolside/laguna-s-2.1-free" >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" == "0" ]] \
+  || fail "2531-poolside: seat_usable must re-admit after the healthy observation (got rc=$rc)"
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "0" ]] \
+  || fail "2531-poolside: pick_seat must pick the revived lane (got rc=$rc out=$out)"
+[[ "$out" == "commandcode	poolside/laguna-s-2.1-free" ]] \
+  || fail "2531-poolside: expected the revived lane picked, got: $out"
+ok "2531-poolside: healthy observation re-admits the transient-dead lane (pick_seat picks it)"
+# Restore the file-level fixtures for the invariants that follow.
+export PI_MODELS_JSON="$scratch/models.json"
+export SEAT_CAPS_JSON="$scratch/seat-caps.json"
+unset PI_SEAT_HEALTH_LEDGER_DIR PI_PACKET_STATE
 
 # --- invariant 8: credential precheck (fleet-ops#36) -----------------------
 # An allowlisted provider (cap>0, model cap>0) is STILL rejected when its
@@ -713,6 +961,17 @@ bash -c 'source "$0"; is_quota_cap_error "$1" "$2"' "$lib" "" "INFERENCE_CAP_ERR
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "is_quota: 'daily limit' (periodic cap, no window) must match -> default fallback (rc=$rc)"
+# fleet-ops 2026-09-05: xKiro free tier's daily wall ("You've reached today's
+# free-model token quota ... wait for the daily reset") was classified as a
+# transient rate_limited 429 and re-picked every 15-30 min: 16 fast deaths on
+# deepseek-v4-pro and 14 on minimax-m3:free in 3h, 0 PRs. It is a hard daily
+# cap -> quota bench (provider default quota_bench_default_s, geometric).
+set +e
+bash -c 'source "$0"; is_quota_cap_error "$1" "$2"' "$lib" "" "429: {\"message\":\"You've reached today's free-model token quota. Your plan's paid allowance is separate — switch to a paid model to keep going, or wait for the daily reset.\"}" >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "is_quota: xKiro 'reached today's free-model token quota' daily wall must match (rc=$rc)"
+ok "9b: xKiro daily free-model token quota wall is a quota cap, not a transient 429"
 # 'out of credits' with NO reset window is permanent exhaustion (the reactive
 # quota_exhausted ledger block handles it), not a periodic cap with a default,
 # so the wrapper must NOT bench it.
@@ -721,6 +980,25 @@ bash -c 'source "$0"; is_quota_cap_error "$1" "$2"' "$lib" "" "out of credits, p
 rc=$?
 set -e
 [[ "$rc" != "0" ]] || fail "is_quota: 'out of credits' with no reset window must NOT match (permanent exhaustion -> reactive ledger)"
+# fleet-ops 2026-09-05: xai-oauth Grok Build HTTP 402 'usage balance exhausted' —
+# 15 sessions/24h died at 1s and the seat stayed 'healthy' (no literal matched).
+# Unlike 'out of credits' it IS a periodic prepaid cap (weekly SuperGrok balance,
+# provider default 604800s in seat-caps.json), so the wrapper must bench it.
+bash -c 'source "$0"; is_quota_cap_error "$1" "$2"' "$lib" "" 'session-error: OpenAI API error (402): 402 "Grok Build usage balance exhausted"' >/dev/null 2>&1 \
+  || fail "9b: Grok Build 402 'usage balance exhausted' must be a quota/cap wall (no reset text; provider default applies)"
+ok "9b: Grok Build 402 'usage balance exhausted' -> quota/cap wall"
+# fleet-ops#3973 (2026-09-06): mergegateway HTTP 402 'Credit balance depleted'
+# (type/code budget_exceeded) — all three mergegateway seats died at 1s on
+# 0509-1752 (12:09-12:10Z) and watch.log booked the fast death as
+# error_class=unknown, so a money wall could be counted as seat yield. It is a
+# prepaid-balance wall, the same class as the Grok Build 402 above: classify
+# it (provider default applies when one exists; else the writer fails open and
+# the reactive quota_exhausted ledger keeps the bench), never leave it unknown.
+bash -c 'source "$0"; is_quota_cap_error "$1" "$2"' "$lib" "" '402: {"message":"Credit balance depleted. Add credits to continue.","type":"budget_exceeded","code":"budget_exceeded"}' >/dev/null 2>&1 \
+  || fail "9b: mergegateway 402 'Credit balance depleted' (budget_exceeded) must be a quota/cap wall, not error_class=unknown (fleet-ops#3973)"
+bash -c 'source "$0"; is_quota_cap_error "$1" "$2"' "$lib" "" 'session-error: 402 budget_exceeded' >/dev/null 2>&1 \
+  || fail "9b: bare 402 budget_exceeded code must be a quota/cap wall (fleet-ops#3973)"
+ok "9b: mergegateway 402 'Credit balance depleted' / budget_exceeded -> quota/cap wall (fleet-ops#3973)"
 set +e
 bash -c 'source "$0"; is_quota_cap_error "$1" "$2"' "$lib" "429 Too Many Requests retry-after: 30" "" >/dev/null 2>&1
 rc=$?
@@ -763,6 +1041,53 @@ devin_hc=$(jq -r '.health_class' "$devin_lf")
 devin_bw=$(jq -r '.bench_window_s' "$devin_lf")
 [[ "$devin_hc" == "quota_bench" ]] || fail "writer: Devin health_class expected quota_bench, got $devin_hc"
 [[ "$devin_bw" == "2100" ]] || fail "writer: Devin bench_window_s expected 2100, got $devin_bw"
+
+# 9b-transport-gate: probe AND pi both ABSENT must fail-OPEN (skip the gate),
+# not read as transport-down. GitHub CI runners have neither
+# /home/nish/.local/bin/pi-transport-check nor .../pi, so a down-reading made
+# every bench writer return 1 and went red on main from #3235 onward (run
+# 33899911568: 'writer: Devin mark_seat_quota_bench expected rc=0, got 1').
+# Same live Devin text, both bins pointed at a nonexistent path.
+set +e
+bash -c 'source "$0"; load_seat_caps; PI_TRANSPORT_CHECK="$4"; PI_BIN="$4"; mark_seat_quota_bench "$1" "$2" "$3"' \
+    "$lib" "devin" "swe-1-7" "$devin_err" "$scratch/no-such-transport-probe" >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "transport gate: probe AND pi absent -> fail-open, writer must succeed (rc=$rc)"
+
+# 9b-mimo: OpenCode free-tier FreeUsageLimitError (HTTP 429, no reset window).
+# Stage 1 matches 'rate limit exceeded'; stage 2a (no 'resets in' / 'retry-after'
+# text) fails; stage 2b (hard-cap keyword) must now match FreeUsageLimitError so
+# mark_seat_quota_bench fires and benches the seat via the provider default.
+# A bare transient 429 without any quota keyword must still NOT match.
+free_429='429: {"type":"FreeUsageLimitError","message":"Error from provider (Console): Rate limit exceeded. Please try again later."}'
+set +e
+bash -c 'source "$0"; is_quota_cap_error "$1" "$2"' "$lib" "$free_429" "" >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "is_quota: FreeUsageLimitError (no window) must match (rc=$rc)"
+set +e
+bash -c 'source "$0"; is_quota_cap_error "$1" "$2"' "$lib" "429 Too Many Requests" "" >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" != "0" ]] || fail "is_quota: bare transient 429 with no quota keyword must NOT match (rc=$rc)"
+
+# 9b-zenmux: zenmux free-model daily usage cap (HTTP 429 type=rate_limit, no
+# reset window, "Please try again later"). 2026-09-05: z-ai/glm-4.7-flash-free
+# died 21 times in 3h on this body (watch.log, pi exited 1 in 18-19s). Stage 1
+# matched 'usage limit' but stage 2b did not, so mark_seat_quota_bench failed
+# open and the seat was re-picked until the 25-failure corpse threshold, burning
+# StartLimitBurst on landing-set packets (#3254, #3519).
+zenmux_429='429: {"code":"429","type":"rate_limit","message":"You have reached the usage limit for the current free model. Please try again later, or use a different model. For details, see: https://zenmux.ai/pricing/pay-as-you-go (request_id: c8bb1690762c40bbb25c34c60f3bf2a8)"}'
+set +e
+bash -c 'source "$0"; is_quota_cap_error "$1" "$2"' "$lib" "$zenmux_429" "" >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "is_quota: zenmux 'usage limit for the current free model' (no window) must match (rc=$rc)"
+# The writer needs a provider default or it fails open (no marker written).
+prod_caps="$(cd "$(dirname "$lib")/.." && pwd)/config/seat-caps.json"
+jq -e '.providers.zenmux.quota_bench_default_s >= 900' "$prod_caps" >/dev/null 2>&1 \
+  || fail "seat-caps: zenmux needs quota_bench_default_s (>=900s) or mark_seat_quota_bench fails open on the free-model usage cap"
 
 # 9b-cursor-heavy: cursor composer stays light-only even with a 200k window;
 # cursor-grok-4.6-high is the only cursor model admitted as heavy-capable
@@ -851,8 +1176,10 @@ set -e
 [[ -z "$out" ]] || fail "bench-pick: must print nothing to stdout, got: $out"
 grep -q "NO USABLE SEAT" "$PI_PACKET_STATE/watch.log" \
   || fail "bench-pick: must log NO USABLE SEAT (no attempt consumed on a benched seat)"
-grep -q "benched until" "$PI_PACKET_STATE/watch.log" \
-  || fail "bench-pick: must log 'benched until' for the skipped cline seats"
+# fleet-ops#1409: per-seat 'benched until' lines are folded into the
+# per-pick unusable summary. The 2 cline seats still block the pick → rc=1.
+grep -q "unusable.*seats" "$PI_PACKET_STATE/watch.log" \
+  || fail "bench-pick: must log unusable summary for the benched cline seats"
 
 # 9e: once bench_until passes, the seat is offered again (fail-open).
 past_bu=$(date -u -d "@$((now - 60))" +%Y-%m-%dT%H:%M:%SZ)
@@ -895,6 +1222,81 @@ set -e
   && fail "default: cursor (no default) must NOT write a marker" || true
 grep -q "quota-bench: cursor/composer-2.5 NOT benched" "$PI_PACKET_STATE/watch.log" \
   || fail "default: cursor fail-open must log the NOT-benched line"
+
+# 9f-live (fleet-ops#4217): a fresh, EXHAUSTED live fleet_seat_quota_* row is
+# the provider's real reset horizon and beats the static default; a window
+# with remaining pct, a stale observation, or a passed reset must not bench.
+live_prom="$scratch/live-quota.prom"
+cat >"$live_prom" <<'PROM'
+fleet_seat_quota_remaining_pct{provider="cursor",window="monthly",source="api"} 0.0000
+fleet_seat_quota_reset_seconds{provider="cursor",window="monthly",source="api"} 5100.5
+fleet_seat_quota_observed_seconds{provider="cursor",source="api"} 100.0
+fleet_seat_quota_remaining_pct{provider="cline",window="weekly",source="api"} 95.0000
+fleet_seat_quota_reset_seconds{provider="cline",window="weekly",source="api"} 600000.0
+fleet_seat_quota_observed_seconds{provider="cline",source="api"} 10.0
+fleet_seat_quota_remaining_pct{provider="devin",window="daily",source="api"} 0.0000
+fleet_seat_quota_reset_seconds{provider="devin",window="daily",source="api"} 2500.0
+fleet_seat_quota_remaining_pct{provider="devin",window="weekly",source="api"} 0.0000
+fleet_seat_quota_reset_seconds{provider="devin",window="weekly",source="api"} 90000.0
+fleet_seat_quota_observed_seconds{provider="devin",source="api"} 500.0
+fleet_seat_quota_remaining_pct{provider="minimax",window="daily",source="api"} 0.0000
+fleet_seat_quota_reset_seconds{provider="minimax",window="daily",source="api"} 80000.0
+fleet_seat_quota_observed_seconds{provider="minimax",source="api"} 1000.0
+fleet_seat_quota_remaining_pct{provider="ollama",window="daily",source="api"} 0.0000
+fleet_seat_quota_reset_seconds{provider="ollama",window="daily",source="api"} 400.0
+fleet_seat_quota_observed_seconds{provider="ollama",source="api"} 500.0
+PROM
+live=$(SEAT_LIVE_QUOTA_PROM="$live_prom" bash -c 'source "$0"; provider_live_reset_s cursor' "$lib")
+[[ "$live" == "5000" ]] || fail "live-reset: cursor (exhausted, fresh) expected 5000 (5100.5 - 100), got '${live:-<none>}'"
+live=$(SEAT_LIVE_QUOTA_PROM="$live_prom" bash -c 'source "$0"; provider_live_reset_s cline' "$lib")
+[[ "$live" == "0" ]] || fail "live-reset: cline (95% left, NOT exhausted) expected 0, got '$live'"
+live=$(SEAT_LIVE_QUOTA_PROM="$live_prom" bash -c 'source "$0"; provider_live_reset_s devin' "$lib")
+[[ "$live" == "2000" ]] || fail "live-reset: devin (two exhausted windows) expected min 2000 (2500-500), got '$live'"
+live=$(SEAT_LIVE_QUOTA_PROM="$live_prom" bash -c 'source "$0"; provider_live_reset_s minimax' "$lib")
+[[ "$live" == "0" ]] || fail "live-reset: minimax (observation 1000s > 900s stale gate) expected 0, got '$live'"
+live=$(SEAT_LIVE_QUOTA_PROM="$live_prom" bash -c 'source "$0"; provider_live_reset_s ollama' "$lib")
+[[ "$live" == "0" ]] || fail "live-reset: ollama (reset already passed: 400 - 500 < 0) expected 0, got '$live'"
+live=$(SEAT_LIVE_QUOTA_PROM="$live_prom" bash -c 'source "$0"; provider_live_reset_s nosuchprovider' "$lib")
+[[ "$live" == "0" ]] || fail "live-reset: unknown provider expected 0, got '$live'"
+live=$(SEAT_LIVE_QUOTA_PROM="$scratch/no-such-file.prom" bash -c 'source "$0"; provider_live_reset_s cursor' "$lib")
+[[ "$live" == "0" ]] || fail "live-reset: missing prom file expected 0, got '$live'"
+ok "9f-live: provider_live_reset_s honours exhaustion, staleness, passed resets, min-across-windows"
+# Writer wiring: cursor has NO static default (fails open in 9f above), but a
+# live exhausted row must bench it at the live window (count=1 -> no geometric
+# escalation, bench_window_s == live value).
+live_ledger="$scratch/ledger-live-quota"
+mkdir -p "$live_ledger"
+export PI_SEAT_HEALTH_LEDGER_DIR="$live_ledger"
+export PI_PACKET_STATE="$scratch/state-live-quota"
+mkdir -p "$PI_PACKET_STATE"
+set +e
+SEAT_LIVE_QUOTA_PROM="$live_prom" bash -c 'source "$0"; load_seat_caps; mark_seat_quota_bench "$1" "$2" "$3"' "$lib" "cursor" "composer-2.5" "usage limit hit, no window" >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "live-reset writer: cursor with live exhausted row expected rc=0, got $rc"
+bw=$(jq -r '.bench_window_s' "$live_ledger/cursor__composer-2.5.json")
+[[ "$bw" == "5000" ]] || fail "live-reset writer: cursor bench_window_s expected 5000, got $bw"
+grep -q "benching on live fleet_seat_quota reset 5000s" "$PI_PACKET_STATE/watch.log" \
+  || fail "live-reset writer: must log the live-reset bench line"
+# cline's live window is NOT exhausted (95% left) -> the static default still
+# applies even though a live row exists.
+set +e
+SEAT_LIVE_QUOTA_PROM="$live_prom" bash -c 'source "$0"; load_seat_caps; mark_seat_quota_bench "$1" "$2" "$3"' "$lib" "cline" "cline-pass/minimax-m3" "INFERENCE_CAP_ERROR: weekly Clinepass limit." >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "live-reset writer: cline expected rc=0, got $rc"
+bw=$(jq -r '.bench_window_s' "$live_ledger/cline__cline-pass_minimax-m3.json")
+[[ "$bw" == "604800" ]] || fail "live-reset writer: cline (95% live) must use the static default 604800, got $bw"
+# A wall whose error text DOES carry a window still wins over the live figure
+# (parsed text is ground truth for that wall).
+set +e
+SEAT_LIVE_QUOTA_PROM="$live_prom" bash -c 'source "$0"; load_seat_caps; mark_seat_quota_bench "$1" "$2" "$3"' "$lib" "cursor" "cursor-grok-4.6-high" "quota exceeded, resets in 2h" >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "live-reset writer: parsed-text case expected rc=0, got $rc"
+bw=$(jq -r '.bench_window_s' "$live_ledger/cursor__cursor-grok-4.6-high.json")
+[[ "$bw" == "7200" ]] || fail "live-reset writer: parsed text (2h=7200) must beat the live figure 5000, got $bw"
+ok "9f-live: mark_seat_quota_bench prefers parsed text > live exhausted reset > static default > fail-open"
 
 # 9f-mimo: fleet-ops#650 / #661 — mimo-v2.5-free FreeUsageLimitError (HTTP 429,
 # no reset window in body). With quota_bench_default_s=900 on the opencode
@@ -950,8 +1352,9 @@ out=$(SEAT_CAPS_JSON="$SEAT_CAPS_JSON_MIMO" \
 rc=$?
 set -e
 [[ "$rc" == "1" ]] || fail "mimo-bench: pick_seat after bench must rc=1 (NO USABLE SEAT), got rc=$rc out='$out"
-grep -q "opencode/mimo-v2.5-free: benched until" "$PI_PACKET_STATE/watch.log" \
-  || fail "mimo-bench: pick_seat must log 'opencode/mimo-v2.5-free: benched until' skip line (log tail: $(tail -3 "$PI_PACKET_STATE/watch.log"))"
+# fleet-ops#1409: per-seat 'benched until' folded into per-pick summary.
+grep -q "unusable.*seats.*opencode" "$PI_PACKET_STATE/watch.log" \
+  || fail "mimo-bench: pick_seat must log unusable summary including opencode (log tail: $(tail -3 "$PI_PACKET_STATE/watch.log"))"
 # Restore the canonical scratch ledger for any later sections.
 export PI_SEAT_HEALTH_LEDGER_DIR="$ledger"
 
@@ -972,10 +1375,62 @@ out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0 "$1"' "$lib" "$scr
 rc=$?
 set -e
 [[ "$rc" == "1" ]] || fail "stale-obs-bench: expected rc=1 (still benched despite stale observed_at), got rc=$rc out=$out"
-grep -q "benched until" "$PI_PACKET_STATE/watch.log" \
-  || fail "stale-obs-bench: must skip on bench_until, not fail-open on stale observed_at"
+# fleet-ops#1409: bench_until still takes priority over stale fail-open;
+# per-seat 'benched until' is folded into the unusable summary.
+grep -q "unusable.*seats" "$PI_PACKET_STATE/watch.log" \
+  || fail "stale-obs-bench: must log unusable summary (bench_until > stale fail-open)"
 grep -q "stale >" "$PI_PACKET_STATE/watch.log" \
   && fail "stale-obs-bench: must NOT take the stale-observed_at fail-open path while bench_until is future"
+
+# 9g2: quota_exhausted with a future usable_at outlives STALE_SECS the same
+# way quota_bench's bench_until does. Live 2026-09-02 FleetProviderQuotaExhausted:
+# two cline-pass 402s (retry_after ~1.4e6s / usable_at 16d out) were re-offered
+# after observed_at aged past 6h, 402'd again, and the 1h provider-quota window
+# never emptied. Honour usable_at; do NOT take the stale fail-open.
+stale_obs_qe=$(date -u -d '7 hours ago' +%Y-%m-%dT%H:%M:%SZ)
+future_qe=$(date -u -d "@$((now + 1425600))" +%Y-%m-%dT%H:%M:%SZ)
+jq -n --arg obs "$stale_obs_qe" --arg use "$future_qe" \
+  '{health_class:"quota_exhausted",http_status:402,seat_dead:false,observed_at:$obs,usable_at:$use,consecutive_failure_count:9}' \
+  > "$ledger/cline__cline-pass_deepseek-v4-flash.json"
+jq -n --arg obs "$stale_obs_qe" --arg use "$future_qe" \
+  '{health_class:"quota_exhausted",http_status:402,seat_dead:false,observed_at:$obs,usable_at:$use,consecutive_failure_count:18}' \
+  > "$ledger/cline__cline-pass_minimax-m3.json"
+export PI_PACKET_STATE="$scratch/state-qe-stale-obs"
+# Direct seat_usable: must refuse, must log the until-usable_at line, must
+# NOT log the 6h stale fail-open.
+set +e
+bash -c 'source "$0"; seat_usable "$1" "$2"' "$lib" "cline" "cline-pass/deepseek-v4-flash" >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" != "0" ]] || fail "stale-obs-qe: seat_usable must refuse stale quota_exhausted with future usable_at (got rc=0)"
+grep -q "UNUSABLE (quota_exhausted until $future_qe)" "$PI_PACKET_STATE/watch.log" \
+  || fail "stale-obs-qe: must log UNUSABLE (quota_exhausted until <usable_at>)"
+grep -q "stale >" "$PI_PACKET_STATE/watch.log" \
+  && fail "stale-obs-qe: must NOT take the stale-observed_at fail-open path while usable_at is future"
+# pick_seat must also skip both (rc=1, no stdout) rather than re-offer.
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0 "$1"' "$lib" "$scratch/tried-bench.txt" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "stale-obs-qe: pick_seat expected rc=1 (still walled despite stale observed_at), got rc=$rc out=$out"
+[[ -z "$out" ]] || fail "stale-obs-qe: pick_seat must print nothing, got: $out"
+# Expired usable_at on a stale observation fail-opens once (the advertised
+# reset has passed; one probe, not a 6h re-offer loop).
+past_qe=$(date -u -d "@$((now - 60))" +%Y-%m-%dT%H:%M:%SZ)
+jq -n --arg obs "$stale_obs_qe" --arg use "$past_qe" \
+  '{health_class:"quota_exhausted",http_status:402,seat_dead:false,observed_at:$obs,usable_at:$use}' \
+  > "$ledger/cline__cline-pass_deepseek-v4-flash.json"
+jq -n --arg obs "$stale_obs_qe" --arg use "$past_qe" \
+  '{health_class:"quota_exhausted",http_status:402,seat_dead:false,observed_at:$obs,usable_at:$use}' \
+  > "$ledger/cline__cline-pass_minimax-m3.json"
+export PI_PACKET_STATE="$scratch/state-qe-expired"
+set +e
+bash -c 'source "$0"; seat_usable "$1" "$2"' "$lib" "cline" "cline-pass/deepseek-v4-flash" >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "stale-obs-qe-expired: expired usable_at must fail-open (got rc=$rc)"
+grep -q "quota_exhausted wall expired" "$PI_PACKET_STATE/watch.log" \
+  || fail "stale-obs-qe-expired: must log wall-expired fail-open"
 
 # Restore the canonical scratch cap map so any later re-source is unaffected.
 export SEAT_CAPS_JSON="$scratch/seat-caps.json"
@@ -994,7 +1449,9 @@ ok "enumerate_seats: cursor composer excluded from heavy; cursor-grok-4.6-high r
 ok "quota_bench: writer parses window -> bench_until future -> seat_usable skips with 'benched until' log"
 ok "quota_bench: pick_seat skips benched seats; all-benched -> rc=1 NO USABLE SEAT (no attempt consumed); expired bench_until -> fail-open pick"
 ok "quota_bench: stale observed_at (>6h) with future bench_until still skipped (weekly cap outlives STALE_SECS)"
+ok "quota_exhausted: stale observed_at (>6h) with future usable_at still skipped (weekly 402 outlives STALE_SECS)"
 ok "quota_bench: opencode/mimo-v2.5-free FreeUsageLimitError (no window) benches 900s via provider default; pick_seat skips (fleet-ops#650/661)"
+ok "quota_bench: is_quota_cap_error matches FreeUsageLimitError 429-no-window; rejects bare transient 429 (9b-mimo)"
 
 # --- fleet-ops#652 hot-patch: 503 / upstream-overload bench ----------------
 # commandcode/minimax-m3-free returned 35 of 200+ tool calls as 503
@@ -1046,6 +1503,25 @@ bash -c 'source "$0"; is_overload_error "$1" "$2"' "$lib" "" "" >/dev/null 2>&1
 rc=$?
 set -e
 [[ "$rc" != "0" ]] || fail "is_overload: empty input must NOT match"
+# xkiro generic 5xx "A server error occurred. Please try again." (fleet-ops#3738):
+# pi surfaces it as rc=1 with no status code; without shape (d) it falls through
+# to no_block:rc=1 spawn-fail and accumulates a 47-count park instead of a short
+# overload bench.
+set +e
+bash -c 'source "$0"; is_overload_error "$1" "$2"' "$lib" \
+    'A server error occurred. Please try again.' \
+    '' >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "is_overload: xkiro 'A server error occurred. Please try again.' must match (rc=$rc)"
+# Bare "server error" without "please try again" must NOT match (co-occurrence guard).
+set +e
+bash -c 'source "$0"; is_overload_error "$1" "$2"' "$lib" \
+    'A server error occurred.' \
+    '' >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" != "0" ]] || fail "is_overload: 'server error occurred' without 'please try again' must NOT match (co-occurrence guard)"
 
 # 9h-2: writer uses the 503_bench_default_s (alias overload_bench_default_s)
 # when the body has no Retry-After. The summoning-trip fault was the writer
@@ -1064,6 +1540,13 @@ cat >"$scratch/seat-caps-cc.json" <<'JSON'
       "models": {
         "deepseek/deepseek-v4-flash": 2,
         "minimax/minimax-m3-free": 1
+      }
+    },
+    "cline": {
+      "cap": 2,
+      "class": "subscription",
+      "models": {
+        "cline-pass/deepseek-v4-flash": 2
       }
     }
   }
@@ -1217,25 +1700,37 @@ out=$(SEAT_CAPS_JSON="$scratch/seat-caps-cc-only.json" \
   bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0 "$1"' "$lib" "$scratch/tried-cc.txt" 2>/dev/null)
 rc=$?
 set -e
-# Only the benched commandcode/minimax-m3-free is allowlisted, so an
-# ALL-benched commandcode returns rc=1 NO USABLE SEAT. The acceptance
-# criterion is: pick_seat does NOT return the benched commandcode row.
-[[ "$rc" == "1" ]] || fail "pick-after-overload: pick_seat must rc=1 (only seat benched), got rc=$rc out='$out'"
-grep -q "commandcode/minimax/minimax-m3-free: benched until" "$PI_PACKET_STATE/watch.log" \
-  || fail "pick-after-overload: must log the 'benched until' skip line (log tail: $(tail -3 "$PI_PACKET_STATE/watch.log"))"
-[[ -z "$out" ]] || fail "pick-after-overload: stdout must be empty (no seat), got '$out'"
+# Only the benched commandcode/minimax-m3-free is allowlisted.
+# fleet-ops#3324: overload_bench is a recoverable class, so the
+# minimum-usable floor fail-opens it instead of stalling. The
+# acceptance criterion is still that the writer benched the seat
+# (unusable summary + ledger class); the floor then lifts it.
+[[ "$rc" == "0" ]] || fail "pick-after-overload: pick_seat must rc=0 (floor fail-open), got rc=$rc out='$out'"
+[[ "$out" == $'commandcode\tminimax/minimax-m3-free' ]] \
+  || fail "pick-after-overload: expected commandcode/minimax-m3-free fail-open, got '$out'"
+grep -q "seat-floor: fail-open commandcode/minimax/minimax-m3-free" "$PI_PACKET_STATE/watch.log" \
+  || fail "pick-after-overload: must log seat-floor fail-open (log tail: $(tail -5 "$PI_PACKET_STATE/watch.log"))"
+# fleet-ops#1409: per-seat 'benched until' folded into per-pick summary
+# BEFORE the floor lifts the seat.
+grep -q "unusable.*seats.*commandcode" "$PI_PACKET_STATE/watch.log" \
+  || fail "pick-after-overload: must log unusable summary including commandcode/minimax-m3-free (log tail: $(tail -3 "$PI_PACKET_STATE/watch.log"))"
 # Distinct from quota path: the skip line mentions the overload bench class
 # (the auditor distinguishes them via health_class=overload_bench). The
 # writer logs 'overload-bench: benched ...' (dash) in PI_PACKET_STATE; the
 # seat_usable reader logs 'benched until ... (overload_bench)' (underscore)
 # in the pick_seat PI_PACKET_STATE. Accept either, but NOT 'quota_bench' or
 # 'quota-bench:' — those would be the wrong class.
-grep -q "overload-bench:\|(overload_bench)" "$PI_PACKET_STATE/watch.log" \
-  || fail "pick-after-overload: must mention overload class (not quota); log tail: $(tail -5 "$PI_PACKET_STATE/watch.log")"
-# Sanity: the quota class is NOT in this log (otherwise the bench class is
-# being mis-typed and the post-mortem rollup would be wrong).
-grep -q "quota-bench:\|(quota_bench)" "$PI_PACKET_STATE/watch.log" \
-  && fail "pick-after-overload: log must NOT mention quota class (would mis-classify the bench) — log tail: $(tail -5 "$PI_PACKET_STATE/watch.log")" || true
+# fleet-ops#1409: per-seat 'benched until' folded into per-pick summary.
+# The overload class distinction lives in the ledger (health_class=overload_bench);
+# verify the ledger, not the per-seat log line.
+grep -q "unusable.*seats" "$PI_PACKET_STATE/watch.log" \
+  || fail "pick-after-overload: must log unusable summary (log tail: $(tail -3 "$PI_PACKET_STATE/watch.log"))"
+hc_ledger=$(jq -r '.health_class' "$cc_ledger_only/commandcode__minimax_minimax-m3-free.json")  || true
+[[ "$hc_ledger" == "overload_bench" ]] \
+  || fail "pick-after-overload: ledger health_class must be overload_bench, got '$hc_ledger'"
+# Sanity: the quota class is NOT in the ledger.
+[[ "$hc_ledger" != "quota_bench" ]] \
+  || fail "pick-after-overload: ledger health_class must NOT be quota_bench"
 
 # 9h-6: 503_bench_default_s field name. The live seat-caps.json uses the
 # 503_bench_default_s key; the alias overload_bench_default_s is also
@@ -1309,7 +1804,7 @@ ok "overload_bench: is_overload_error matches commandcode 503 + Retry-After; rej
 ok "overload_bench: writer uses 503_bench_default_s=600 when body has no Retry-After; bench_until ~now+600s; failure_mode=overload_503"
 ok "overload_bench: writer prefers parsed Retry-After (45s) over provider default (600s)"
 ok "overload_bench: writer fails open (rc=1, no marker) when no Retry-After and no 503_bench_default_s"
-ok "overload_bench: pick_seat skips a benched commandcode/minimax-m3-free; rc=1 NO USABLE SEAT; logs 'benched until' + 'overload-bench:'"
+ok "overload_bench: pick_seat fail-opens a benched commandcode/minimax-m3-free via the #3324 floor; logs unusable summary + seat-floor: fail-open"
 ok "overload_bench: 503_bench_default_s AND overload_bench_default_s are both accepted as field names"
 ok "overload_bench: distinct from quota_bench (health_class / failure_mode) for post-mortem rollup (fleet-ops#652)"
 
@@ -1841,7 +2336,7 @@ set -e
 [[ "$rc" != "0" ]] || fail "1415-atcap: cap=1 laguna with one live worker must reject (rc=0 returned, out=$out)"
 # at_capacity_events metric predicate (cap= + skipped) must be 0 — no per-seat
 # 'skipped (... cap=...)' line leaked past the #1624 fold. This is the exact
-# predicate the opus-heartbeat gather rolls up into at_capacity_events_last_2h.
+# predicate the fleet metrics exporter rolls up into at_capacity_events.
 _1415_pred=$(grep 'cap=' "$PI_PACKET_STATE/watch.log" 2>/dev/null | grep -c 'skipped' || true)
 _1415_pred=${_1415_pred:-0}
 if (( _1415_pred > 0 )); then
@@ -1862,10 +2357,12 @@ export PI_MODELS_JSON="$scratch/1163/models.json"
 rm -rf "$PI_PACKET_STATE/active-seats"
 
 # (c5) fleet-ops#1432: cap=0 seats classified as intentional (dead_decoy /
-#      money_only — by design, never re-audit) vs stale (broken endpoint /
-#      TPM ceiling / exhausted quota — re-audit when the external condition
-#      clears) surface in the per-pick excluded summary so the operator sees
-#      at a glance which cap=0 seats need re-audition and which are permanent.
+#      money_only / corpse — by design, never re-audit) vs stale (broken
+#      endpoint / TPM ceiling / exhausted quota — re-audit when the external
+#      condition clears) surface in the per-pick excluded summary so the
+#      operator sees at a glance which cap=0 seats need re-audition and
+#      which are permanent. (fleet-ops#2435 adds the corpse class: a model
+#      whose ledger is seat_dead is retired, never re-auditioned.)
 #      The per-seat "skipped (provider cap=0)" lines stay silenced (the
 #      at_capacity_events metric predicate stays 0); the classification is
 #      folded into the ONE excluded summary via the intentional_cap_zero
@@ -1880,7 +2377,7 @@ cat >"$scratch/1432/models.json" <<'JSON'
   "providers": {
     "starco": { "models": [ { "id": "star-m1" } ] },
     "dudco":  { "models": [ { "id": "dud-m1" } ] },
-    "freeco": { "models": [ { "id": "lite-free" } ] }
+    "freeco": { "models": [ { "id": "lite-free" }, { "id": "lite-corpse" } ] }
   }
 }
 JSON
@@ -1891,7 +2388,7 @@ cat >"$scratch/1432/caps.json" <<'JSON'
   "providers": {
     "starco": { "cap": 0, "class": "metered", "intentional_cap_zero": "money_only" },
     "dudco":  { "cap": 0, "class": "free",    "intentional_cap_zero": "stale" },
-    "freeco": { "cap": 2, "class": "free",    "models": { "lite-free": 2 } }
+    "freeco": { "cap": 2, "class": "free",    "models": { "lite-free": 2, "lite-corpse": { "cap": 0, "intentional_cap_zero": "corpse" } } }
   }
 }
 JSON
@@ -1906,18 +2403,174 @@ set -e
 [[ "$rc" == "0" ]] || fail "1432-capclass: expected the freeco lane to be pickable, got rc=$rc out=$out"
 [[ "$out" == "freeco"$'\t'"lite-free" ]] \
   || fail "1432-capclass: expected freeco/lite-free (the only cap>0 lane), got: $out"
-# One excluded summary naming both cap=0 seats AND the intentional/stale split.
-grep -qE "pick_seat: excluded 2 seats \(cap=0: 2; dead: 0; not-in-allowlist: 0\) \[cap0-intentional: 1; cap0-stale: 1\]" "$PI_PACKET_STATE/watch.log" \
-  || fail "1432-capclass: summary must fold the cap=0 intentional/stale classification, got log: $(cat "$PI_PACKET_STATE/watch.log")"
+# One excluded summary naming all three cap=0 seats AND the intentional/
+# stale split: starco (money_only) + lite-corpse (corpse) are intentional,
+# dudco (stale) is stale (fleet-ops#2435 corpse joins the intentional set).
+grep -qE "pick_seat: excluded 3 seats \(cap=0: 3; dead: 0; not-in-allowlist: 0\) \[cap0-intentional: 2; cap0-stale: 1\]" "$PI_PACKET_STATE/watch.log" \
+  || fail "1432-capclass: summary must fold the cap=0 intentional/stale/corpse classification, got log: $(cat "$PI_PACKET_STATE/watch.log")"
 # Per-seat cap=0 lines stay silenced (at_capacity_events metric predicate 0).
 _1432_pred=$(grep 'cap=' "$PI_PACKET_STATE/watch.log" 2>/dev/null | grep -c 'skipped' || true)
 _1432_pred=${_1432_pred:-0}
 if (( _1432_pred > 0 )); then
   fail "1432-capclass: at_capacity_events metric predicate (cap= + skipped) must be 0, was $_1432_pred. log: $(cat "$PI_PACKET_STATE/watch.log")"
 fi
-ok "1432-capclass: cap=0 classification (1 intentional / 1 stale) folded into the excluded summary; metric predicate 0"
+ok "1432-capclass: cap=0 classification (2 intentional incl. corpse / 1 stale) folded into the excluded summary; metric predicate 0"
+
+# (c6) fleet-ops#1418: dispatcher idle with 219 ready, 0 dispatches, 9229
+#      at-capacity skips. The window combined (a) a stale cap=0 quota seat,
+#      (b) a healthy provider absent from the cap map, (c) a light-only
+#      healthy seat, and (d) a single heavy-capable seat that was already
+#      at its model cap. The fix must (i) keep the at_capacity_events metric
+#      predicate at 0 (no per-seat 'skipped (cap=...)' flood), (ii) emit ONE
+#      per-pick excluded + at-capacity + filtered-static summary, and
+#      (iii) pick the heavy-capable seat the instant its single live worker
+#      frees, proving the dispatcher is not permanently wedged.
+mkdir -p "$scratch/1418"
+export PI_PACKET_STATE="$scratch/1418/state"
+mkdir -p "$PI_PACKET_STATE/active-seats"
+rm -f "$PI_PACKET_STATE/prepaid-rr.idx"
+rm -rf "$PI_PACKET_STATE/prepaid-usage"
+export PI_SEAT_HEALTH_LEDGER_DIR="$scratch/1418/ledger"
+mkdir -p "$PI_SEAT_HEALTH_LEDGER_DIR"
+cat >"$scratch/1418/models.json" <<'JSON'
+{
+  "providers": {
+    "heavyfree": {
+      "models": [ { "id": "heavy", "reasoning": true, "contextWindow": 250000 } ]
+    },
+    "lightfree": {
+      "models": [ { "id": "light", "contextWindow": 16000 } ]
+    },
+    "staleco": {
+      "models": [ { "id": "stale-model", "contextWindow": 250000 } ]
+    },
+    "notwired": {
+      "models": [ { "id": "new-model", "reasoning": true, "contextWindow": 250000 } ]
+    }
+  }
+}
+JSON
+cat >"$scratch/1418/caps.json" <<'JSON'
+{
+  "ram_gb_per_worker": 1.5,
+  "free_providers_in_order": ["heavyfree", "lightfree"],
+  "providers": {
+    "heavyfree": { "cap": 1, "class": "free", "models": { "heavy": 1 } },
+    "lightfree": { "cap": 2, "class": "free", "models": { "light": 2 } },
+    "staleco":   { "cap": 0, "class": "free", "intentional_cap_zero": "stale", "reason": "fleet-ops#1418 stale quota seat" }
+  }
+}
+JSON
+export PI_MODELS_JSON="$scratch/1418/models.json"
+export SEAT_CAPS_JSON="$scratch/1418/caps.json"
+# healthy ledger for every inventory seat, including the absent-cap-map notwired.
+for _p in heavyfree lightfree staleco notwired; do
+  _m="heavy"; [[ "$_p" == "lightfree" ]] && _m="light"; [[ "$_p" == "staleco" ]] && _m="stale-model"; [[ "$_p" == "notwired" ]] && _m="new-model"
+  _obs=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  jq -nc --arg p "$_p" --arg m "$_m" --arg obs "$_obs" \
+      '{provider:$p, model:$m, health_class:"healthy", seat_dead:false, observed_at:$obs, source:"after_provider_response"}' \
+      > "$PI_SEAT_HEALTH_LEDGER_DIR/${_p}__${_m}.json"
+done
+# one live heavyfree/heavy worker: the single heavy-capable seat is saturated.
+unit="pi-test-1418-heavy"
+jq -nc --arg p "heavyfree" --arg m "heavy" --arg u "$unit" \
+    '{provider:$p, model:$m, unit:$u, started_at:"2026-08-27T22:00:00Z"}' \
+    > "$PI_PACKET_STATE/active-seats/${unit}.json"
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 1' "$lib" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" != "0" ]] || fail "1418-idle: with the only heavy-capable seat saturated, heavy pick must return empty (rc=0 returned, out=$out)"
+[[ -z "$out" ]] || fail "1418-idle: heavy pick must return empty stdout when no seat is available, got: $out"
+# Metric predicate "cap=" AND "skipped" must remain 0 — no per-seat flood.
+_1418_pred=$(grep 'cap=' "$PI_PACKET_STATE/watch.log" 2>/dev/null | grep -c 'skipped' || true)
+_1418_pred=${_1418_pred:-0}
+if (( _1418_pred > 0 )); then
+  fail "1418-idle: at_capacity_events metric predicate (cap= + skipped) must be 0, was $_1418_pred — per-seat 'skipped (... cap=...)' lines leaked. log: $(cat "$PI_PACKET_STATE/watch.log")"
+fi
+# Exactly one per-pick excluded summary, naming both stale cap=0 and not-in-allowlist.
+grep -qE "pick_seat: excluded 2 seats \(cap=0: 1; dead: 0; not-in-allowlist: 1\) \[cap0-intentional: 0; cap0-stale: 1\] \[notwired/new-model,staleco/stale-model\]" "$PI_PACKET_STATE/watch.log" \
+  || fail "1418-idle: expected excluded summary 'cap=0: 1; not-in-allowlist: 1 [cap0-intentional: 0; cap0-stale: 1] [notwired/new-model,staleco/stale-model]', got log: $(cat "$PI_PACKET_STATE/watch.log")"
+# Exactly one per-pick at-capacity summary for heavyfree/heavy.
+grep -qE "pick_seat: at-capacity 1 seats \[heavyfree/heavy\]" "$PI_PACKET_STATE/watch.log" \
+  || fail "1418-idle: expected at-capacity summary for heavyfree/heavy, got log: $(cat "$PI_PACKET_STATE/watch.log")"
+# Exactly one filtered-static summary for the light-only seat.
+grep -qE "pick_seat: filtered-static 1 seats \(not-capable: 1; quality-ban: 0\) \[lightfree/light\]" "$PI_PACKET_STATE/watch.log" \
+  || fail "1418-idle: expected filtered-static summary for lightfree/light, got log: $(cat "$PI_PACKET_STATE/watch.log")"
+ok "1418-idle: heavy-capable seat saturated + stale/not-in-allowlist healthy -> rc!=0, 0 per-seat flood, 3 per-pick summaries"
+# When the heavy-capable worker frees, the dispatcher must pick it immediately.
+rm -f "$PI_PACKET_STATE/active-seats/${unit}.json"
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 1' "$lib" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "1418-recover: freed heavy seat must be pickable, got rc=$rc"
+[[ "$out" == "heavyfree"$'\t'"heavy" ]] || fail "1418-recover: expected heavyfree/heavy, got: $out"
+ok "1418-recover: freed heavy-capable seat is picked, proving a real dispatch can land"
 # restore the env the following (d) 1163-dead test expects: the 1163 model
 # inventory + the 1415 caps map that c4 left in effect.
+
+# --- fleet-ops#1379: provider at-capacity short-circuit ----------------------
+# When a provider is already at its effective cap, every remaining model of
+# that provider is also at that provider-wide cap. The per-pick summary must
+# still count them, but pick_seat must NOT re-run count_active / effective_cap
+# / _aimd_probe_admitted for each one. We prove this by overriding
+# _aimd_probe_admitted to count calls and return 1 (probe rejected). With one
+# active worker on atcapco (cap=1) and two models, only the first model may
+# trigger _aimd_probe_admitted; the second must be short-circuited.
+mkdir -p "$scratch/1379"
+export PI_PACKET_STATE="$scratch/1379/state"
+export PI_MODELS_JSON="$scratch/1379/models.json"
+export SEAT_CAPS_JSON="$scratch/1379/caps.json"
+export PI_SEAT_HEALTH_LEDGER_DIR="$scratch/1379/ledger"
+mkdir -p "$PI_PACKET_STATE/active-seats" "$PI_SEAT_HEALTH_LEDGER_DIR"
+cat >"$PI_MODELS_JSON" <<'JSON'
+{
+  "providers": {
+    "atcapco": { "models": [ { "id": "m1" }, { "id": "m2" } ] },
+    "freeco": { "models": [ { "id": "free1" } ] }
+  }
+}
+JSON
+cat >"$SEAT_CAPS_JSON" <<'JSON'
+{
+  "ram_gb_per_worker": 1.5,
+  "free_providers_in_order": ["freeco", "atcapco"],
+  "providers": {
+    "atcapco": { "cap": 1, "class": "free", "models": { "m1": 1, "m2": 1 } },
+    "freeco": { "cap": 1, "class": "free", "models": { "free1": 1 } }
+  }
+}
+JSON
+jq -nc --arg p "atcapco" --arg m "m1" --arg u "pi-issue-1379" \
+    '{provider:$p, model:$m, unit:$u, started_at:"2026-08-29T10:00:00Z"}' \
+    >"$PI_PACKET_STATE/active-seats/pi-issue-1379.json"
+set +e
+out=$(bash -c '
+    source "$0"
+    load_seat_caps
+    aimd_calls=0
+    _aimd_probe_admitted() { aimd_calls=$((aimd_calls + 1)); return 1; }
+    pick_seat "" "" 0 >"$PI_PACKET_STATE/picked.txt" 2>/dev/null
+    rc=$?
+    seat=$(cat "$PI_PACKET_STATE/picked.txt" 2>/dev/null || true)
+    printf "rc=%s\nseat=%s\naimd=%s\n" "$rc" "$seat" "$aimd_calls"
+' "$lib" 2>/dev/null)
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "1379-shortcircuit: runner failed (rc=$rc): $out"
+[[ "$out" == *"rc=0"* ]] || fail "1379-shortcircuit: expected pick rc=0, got: $out"
+[[ "$out" == *"seat=freeco"$'\t'"free1"* ]] || fail "1379-shortcircuit: expected freeco/free1, got: $out"
+[[ "$out" == *"aimd=1"* ]] || fail "1379-shortcircuit: _aimd_probe_admitted must be called once for the first at-cap model only, got: $out"
+grep -qE "pick_seat: at-capacity 2 seats \[atcapco/m1,atcapco/m2\]" "$PI_PACKET_STATE/watch.log" \
+    || fail "1379-shortcircuit: expected at-capacity 2-seat summary for atcapco, got log: $(cat "$PI_PACKET_STATE/watch.log")"
+_1379_pred=$(grep 'cap=' "$PI_PACKET_STATE/watch.log" 2>/dev/null | grep -c 'skipped' || true)
+_1379_pred=${_1379_pred:-0}
+if (( _1379_pred > 0 )); then
+  fail "1379-shortcircuit: at_capacity_events metric predicate (cap= + skipped) must be 0, was $_1379_pred. log: $(cat "$PI_PACKET_STATE/watch.log")"
+fi
+ok "1379-shortcircuit: provider at-capacity backs off after first model; _aimd_probe_admitted called once"
+# restore the env the following (d) 1163-dead test expects.
 export PI_MODELS_JSON="$scratch/1163/models.json"
 export SEAT_CAPS_JSON="$scratch/1415/caps.json"
 rm -rf "$PI_PACKET_STATE/active-seats"
@@ -2440,6 +3093,9 @@ bash "$here/fleet-failed-command-flagged.test.sh" || fail "fleet-failed-command-
 # fleet-ops#522: session-close lint for debug playbook notes. Same CI
 # constraint (worker token cannot add a P14 line in ci.yml).
 bash "$here/fleet-debug-playbook.test.sh" || fail "fleet-debug-playbook tests failed"
+# fleet-ops#526: session-close lint for a third identical correction.
+# Same CI constraint (worker token cannot add a P14 line in ci.yml).
+bash "$here/fleet-interventions-eliminated.test.sh" || fail "fleet-interventions-eliminated tests failed"
 # fleet-ops#1097 / #1099: bare `cat` of the stale
 #   /home/nish/workspaces/tooling/fleet-ops/bin/fleet-failed-command-flagged
 # path (canonical is tooling/fleet-ops-deploy-clone/bin/...) returned
@@ -2718,6 +3374,32 @@ bash "$here/fleet-failed-command-observe-duplicate-git-branch-force.test.sh" || 
 # session ran the gate against `tests/fleet-no-agent-names.test.sh` and walked
 # past the REJECT. Same CI constraint (worker token cannot add a P14 line).
 bash "$here/fleet-failed-command-no-agent-names-reject.test.sh" || fail "fleet-failed-command-no-agent-names-reject tests failed"
+# fleet-ops#1244: an UNPIPED `gh pr view --json mergedAt,merged` returns
+# `Unknown JSON field: "merged"` + exit 1 (isError=true); a thinking-only
+# note plus a silent `--json title,state` retry does not name the failure.
+# The piped `2>&1 | head` sibling is #1193 (isError=false, stays clean).
+# Hosted here (CI cannot gain a P14 line).
+bash "$here/fleet-failed-command-gh-pr-view-merged.test.sh" || fail "fleet-failed-command-gh-pr-view-merged tests failed"
+# fleet-ops#1142: a `gh issue view --comments --json author,body,createdAt |
+# python3 -c "...d['comments']..."` pipe crashing with `KeyError: 'comments'`,
+# recovered by a successful `gh api graphql` comments query with only a
+# thinking "the same bug" note, is still a swallowed failure. Same #1003
+# class on a DIFFERENT session. Hosted here (CI cannot gain a P14 line).
+bash "$here/fleet-failed-command-gh-json-graphql-recovery.test.sh" || fail "fleet-failed-command-gh-json-graphql-recovery tests failed"
+# fleet-ops#1254: a `bash tests/fleet-failed-command-edit-unmatch.est.sh`
+# (truncated `.test.sh` typo) returning `bash: ...: No such file or directory`
+# + `Command exited with code 127` (isError=true), with no prior harness
+# block, recovered by a silent retry of the real `.test.sh`, is a real
+# swallowed failure (the #677 127-ENOENT cascade exemption needs a prior
+# block; a typo is not a probe). Hosted here (CI cannot gain a P14 line).
+bash "$here/fleet-failed-command-typo-est-sh.test.sh" || fail "fleet-failed-command-typo-est-sh tests failed"
+# fleet-ops#1220: a `bin/fleet-failed-command-flagged` invocation returning
+# `findings=N` + `LOUD [FAILED-COMMAND-SWALLOWED]` + `Command exited with
+# code 1` (isError=true) is a real swallowed failure — the detector's
+# contract is to exit 1 on findings (not a probe), and the
+# FAILED-COMMAND-SWALLOWED lines name OTHER sessions (not a flag of THIS
+# command). Hosted here (CI cannot gain a P14 line).
+bash "$here/fleet-failed-command-detector-bin-exit.test.sh" || fail "fleet-failed-command-detector-bin-exit tests failed"
 # fleet-ops#486: heartbeat wrapper rc capture. Same CI constraint.
 bash "$here/fleet-heartbeat-rc-propagation.test.sh" || fail "fleet-heartbeat-rc-propagation tests failed"
 # fleet-ops#1116: heartbeat tier-1 alarm-vs-failure separation. The
@@ -2751,8 +3433,22 @@ bash "$here/reusable-surface-audit.test.sh" || fail "reusable-surface-audit test
 
 # fleet-ops#703: lock the orcarouter sr-never-vibes citation. Workers
 # cannot add a P14 line in .github/workflows/ci.yml; this file is the
-# listed CI host.
+# listed CI host. The citation test reads the LIVE config/seat-caps.json
+# (it honors SEAT_CAPS_JSON only so a replay drill can point it at a
+# fixture); drop the scratch SEAT_CAPS_JSON this file set above so the
+# hosted test and the rule-6 replay drill below read the live config.
+unset SEAT_CAPS_JSON
 bash "$here/seat-caps-citation.test.sh" || fail "seat-caps-citation tests failed"
+
+# fleet-ops#3864: rule-6 replay drill. Workers cannot add a P14 line in
+# .github/workflows/ci.yml; this file is the listed CI host. The drill
+# synthesizes the #3848 seat-caps.json hunk (ollama cap=0 corpse on a
+# prepaid-quota provider) and proves seat-caps-citation.test.sh now REFUSES
+# it (exit 1) while still exiting 0 on the live config. Hosted here (not from
+# seat-caps-citation.test.sh) to avoid the recursion: the drill runs the
+# citation test as a subprocess, so the citation test itself must not host it.
+bash "$here/seat-caps-citation-rule6-replay.test.sh" \
+  || fail "seat-caps-citation-rule6-replay drill failed (rule 6, fleet-ops#3864)"
 
 # fleet-ops#819: cancelled-while-queued detector. Workers cannot add a
 # P14 line in .github/workflows/ci.yml; this file is the listed CI
@@ -2775,6 +3471,10 @@ bash "$here/fleet-failed-command-compound-ls-permission-denied.test.sh" || fail 
 # that test's header. Not a 1157 change of behaviour; it unblocks P14.
 bash "$here/pi-packet-verdict.test.sh" || fail "pi-packet-verdict tests failed"
 
+# fleet-ops#3272 (PR #3299): pi-packet watch.log logrotate shape + seat-lib
+# journal fallback. Hosted here (seat-lib journal fallback is in lib/seat-lib.sh).
+bash "$here/watch-log-rotation.test.sh" || fail "watch-log-rotation tests failed"
+
 # Leftovers on origin/main that would fail this PR's listing gate.
 bash "$here/bulk-close-pr-landings.test.sh" || fail "bulk-close-pr-landings tests failed"
 bash "$here/salvage-secret-scan.test.sh" || fail "salvage-secret-scan tests failed"
@@ -2788,9 +3488,20 @@ bash "$here/alert-repair-claim-mutex.test.sh" || fail "alert-repair-claim-mutex 
 # is the listed CI host.
 bash "$here/keystone-routing.test.sh" || fail "keystone-routing tests failed"
 
+# fleet-ops#4220: senior-review routes to the senior ladder (find_senior_seat)
+# before the keystone class ladder. Hosted here (no workflow edit).
+bash "$here/senior-review-routing.test.sh" || fail "senior-review-routing tests failed"
+
 # fleet-ops#1167: cursor keystone-only + leftover prepaid is xai-oauth +
 # selection ledger. Hosted here (no workflow edit).
 bash "$here/token-economy-routing.test.sh" || fail "token-economy-routing tests failed"
+
+# fleet-ops#3125: product picks route by the rolling PR-yield ledger
+# (product_order=yield); ties break by class; scout picks stay free-first.
+# fleet-ops#3323 extends the same drill for product_order=value (light orders
+# by yield/cost value; heavy/keystone yield-first then value).
+# Hosted here (no workflow edit).
+bash "$here/seat-lib-yield-order.test.sh" || fail "seat-lib-yield-order tests failed"
 
 # fleet-ops#520: free-tier privacy guard drill. CI lists this file, not the
 # privacy guard test, because workers cannot edit .github/workflows.
@@ -2805,10 +3516,469 @@ bash "$here/repo-privacy-guard.test.sh" || fail "repo-privacy-guard tests failed
 # mark_seat_empty_run + pick_seat from lib/seat-lib.sh.
 bash "$here/pi-issue-run-noop-bench.test.sh" || fail "pi-issue-run-noop-bench tests failed"
 
-# fleet-ops#1408: a seat that no-ops or spawn-fails repeatedly must NOT re-enter
-# rotation at the base backoff every cycle. mark_seat_spawn_fail and
-# mark_seat_empty_run escalate the bench by consecutive_failure_count so each
-# repeated failure benches longer, breaking the re-seat loop. Hosted here for
-# the same reason as the noop-bench test above (listed in ci.yml, runs
-# independent of the p14-test-listing-gate).
+# fleet-ops#2005: a successful pi worker session is blocked from closing if its
+# JSONL has two or more real failed attempts and no four-heading vault playbook.
+# The gate lives in bin/fleet-debug-playbook (session-close gate subcommand)
+# and is enforced by bin/pi-issue-run on the success path.
+bash "$here/pi-issue-run-debug-playbook-gate.test.sh" || fail "pi-issue-run-debug-playbook-gate tests failed"
+
+# fleet-ops#1408/#3531: a seat that fails repeatedly must NOT re-enter
+# rotation at the base backoff every cycle. mark_seat_spawn_fail escalates
+# the bench by consecutive_failure_count so each repeated REAL wall
+# (429/402/500/spawn ETIMEDOUT) benches longer, breaking the re-seat loop.
+# fleet-ops#3531: mark_seat_empty_run now escalates geometrically too
+# (base * 2^(n-1), capped at 6 h / 1800 s for remote agents), using the
+# generic failure-ceiling park so chronic no-op'ers are held out of rotation
+# longer without punishing a single flake.
+# Hosted here for the same reason as the noop-bench test above (listed in
+# ci.yml, runs independent of the p14-test-listing-gate).
 bash "$here/seat-noop-escalation.test.sh" || fail "seat-noop-escalation tests failed"
+
+# fleet-ops#859 (fleet-ops#2001): tests/seat-lib-dispatch.test.sh is a seat
+# lane-fault dispatch regression test landed on main that was never listed in
+# ci.yml nor hosted by a listed test, leaving the P14 test-listing gate red on
+# main. Workers cannot edit .github/workflows/**, so host it here from this
+# already-listed seat-lib test to bring the gate back green.
+bash "$here/seat-lib-dispatch.test.sh" || fail "seat-lib-dispatch tests failed"
+
+# fleet-ops#3072: scout + scout-repair prompts must classify as light so
+# pi-scout-run sets need_capable=0 and pick_seat can use healthy commodity
+# lanes. Without the difficulty: light marker the task_weight heuristic
+# false-positives on prompt boilerplate and locks the scout out of every
+# capable seat when devin/xai-oauth/minimax/straitly are full or walled.
+# Hosted here (workers cannot add a ci.yml line).
+bash "$here/scout-prompt-difficulty.test.sh" || fail "scout-prompt-difficulty tests failed"
+
+# fleet-ops#1362 (fleet-ops#1964): tests/seat-failure-ceiling.test.sh is the park-
+# past-failure-ceiling regression test landed on main in #2003 that was never
+# wired into ci.yml. Host it here from this already-listed seat-lib test so the
+# P14 test-listing gate goes green without a workflow edit.
+bash "$here/seat-failure-ceiling.test.sh" || fail "seat-failure-ceiling tests failed"
+
+# fleet-ops#2594: tests/seat-quota-corpse.test.sh proves the
+# quota_cap -> seat_dead corpse reclassification in mark_seat_quota_bench
+# (the live opencode/mimo-v2.5-free snapshot at c>=25). Hosted here from
+# this already-listed seat-lib test for the same reason as
+# seat-failure-ceiling above (workers cannot edit .github/workflows/**;
+# hosting keeps the P14 test-listing gate green without a workflow edit).
+bash "$here/seat-quota-corpse.test.sh" || fail "seat-quota-corpse tests failed"
+
+# fleet-ops#3324: minimum-usable floor. pick_seat fail-opens the shortest
+# remaining recoverable bench instead of stalling with NO USABLE SEAT.
+# Hosted here from this already-listed seat-lib test so the P14
+# test-listing gate stays green without a workflow edit.
+bash "$here/seat-floor-failopen.test.sh" || fail "seat-floor-failopen tests failed"
+
+# fleet-ops#1512: a wrapper-written spawn-fail/empty-run bench must survive a
+# later healthy observation that seat-health.ts writes to the per-seat ledger
+# (the clobber that re-admitted functionally-dead seats and kept
+# stop-escalation.service failing). The clobber-proof spawn-bench marker is
+# checked by seat_usable before the ledger. Hosted here for the same reason
+# as the noop-bench test above (listed in ci.yml, runs independent of the
+# p14-test-listing-gate).
+bash "$here/seat-spawn-bench-clobber.test.sh" || fail "seat-spawn-bench-clobber tests failed"
+
+# fleet-ops#3602: an empty-run bench must SURVIVE a subsequent successful
+# (HTTP 200) probe until its wall_end, and a seat with an unexpired empty-run
+# bench can NEVER be returned by pick_seat. The clobber-proof spawn-bench
+# marker (#1512) is the survival mechanism; this test proves the contract
+# end-to-end through pick_seat (the routing authority), including after a
+# healthy ledger clobber, and that the marker write is no longer best-effort
+# (a marker-write failure fails loud so the bench is never silently lost to a
+# clobberable ledger). Hosted here for the same reason as the spawn-bench
+# clobber test above (listed in ci.yml, runs independent of the
+# p14-test-listing-gate).
+bash "$here/seat-empty-run-bench-sticks.test.sh" || fail "seat-empty-run-bench-sticks tests failed"
+
+# fleet-ops#3727/#3760: repeated empty-run churn parks at EMPTY_RUN_FAILURE_CEILING=3
+# (not the generic 20) so a chronic no-op'er (ollama/deepseek-v4-flash:0731,
+# 12 empty runs in 2h) converges to the 24h park on the 3rd no-op. Standalone
+# test with production defaults (no ceiling pin).
+bash "$here/seat-empty-run-ceiling-3727.test.sh" || fail "seat-empty-run-ceiling-3727 tests failed"
+
+# --- fleet-ops#1409: seat_usable per-seat fold + NO-USABLE-SEAT backoff ------
+# Isolated fixture: a single benched seat (quota_bench, future bench_until)
+# forces pick_seat into the NO USABLE SEAT path (rc=1), where the #1409 fix
+# (i) folds the per-seat 'benched until...' / 'UNUSABLE...' lines from
+# seat_usable() into ONE per-pick 'unusable N seats' summary, and (ii) backs
+# off -- sleeps PI_SEAT_NOUSABLE_COOLDOWN_S (default 5s, 0 disables) -- so a
+# systemd RestartSec loop stops re-running a full pick_seat pass every second
+# against an already-walled fleet. This is the mechanical guard for the
+# seat scheduler thrash (14717 at-capacity skips in 2h).
+mkdir -p "$scratch/1409"
+cat >"$scratch/1409/models.json" <<'JSON'
+{ "providers": { "opencode": { "models": [ { "id": "mimo-v2.5-free" } ] } } }
+JSON
+cat >"$scratch/1409/caps.json" <<'JSON'
+{ "ram_gb_per_worker": 1.5, "free_providers_in_order": ["opencode"],
+  "providers": { "opencode": { "cap": 2, "class": "free", "models": { "mimo-v2.5-free": 2 } } } }
+JSON
+export PI_MODELS_JSON="$scratch/1409/models.json"
+export SEAT_CAPS_JSON="$scratch/1409/caps.json"
+export PI_SEAT_HEALTH_LEDGER_DIR="$scratch/1409/ledger"
+export PI_PACKET_STATE="$scratch/1409/state"
+export PI_SEAT_CREDENTIAL_PRECHECK=0
+mkdir -p "$PI_SEAT_HEALTH_LEDGER_DIR" "$PI_PACKET_STATE"
+bu_1409=$(date -u -d "@$(( $(date -u +%s) + 3600 ))" +%Y-%m-%dT%H:%M:%SZ)
+jq -n --arg bu "$bu_1409" \
+   '{health_class:"quota_bench", observed_at:"'$(date -u +%Y-%m-%dT%H:%M:%SZ)'", bench_until:$bu}' \
+  > "$PI_SEAT_HEALTH_LEDGER_DIR/opencode__mimo-v2.5-free.json"
+
+# (a) the NO-USABLE-SEAT backoff is wired: a nonzero cooldown delays the rc=1
+#     return by ~cooldown seconds.
+set +e
+_p1409_start=$(date +%s.%N)
+PI_SEAT_NOUSABLE_COOLDOWN_S=2 bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" >/dev/null 2>&1
+_rc1409=$?
+_p1409_end=$(date +%s.%N)
+set -e
+_elapsed1409=$(awk "BEGIN{print ($_p1409_end - $_p1409_start)}")
+[[ "$_rc1409" == "1" ]] || fail "1409-backoff: pick_seat must rc=1 on a walled fleet, got rc=$_rc1409"
+awk "BEGIN{exit !($_elapsed1409 >= 1.5)}" \
+  || fail "1409-backoff: PI_SEAT_NOUSABLE_COOLDOWN_S=2 must delay rc=1 ~2s, elapsed=$_elapsed1409"
+ok "1409-backoff: NO-USABLE-SEAT return backs off PI_SEAT_NOUSABLE_COOLDOWN_S (2s, elapsed ${_elapsed1409}s)"
+
+# (b) cooldown=0 (what the test suite exports) returns fast with no sleep.
+set +e
+_p1409_start=$(date +%s.%N)
+PI_SEAT_NOUSABLE_COOLDOWN_S=0 bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" >/dev/null 2>&1
+_p1409_end=$(date +%s.%N)
+set -e
+_elapsed1409=$(awk "BEGIN{print ($_p1409_end - $_p1409_start)}")
+awk "BEGIN{exit !($_elapsed1409 < 0.8)}" \
+  || fail "1409-backoff: cooldown=0 must return fast, elapsed=$_elapsed1409"
+ok "1409-backoff: PI_SEAT_NOUSABLE_COOLDOWN_S=0 disables the sleep (${_elapsed1409}s)"
+
+# (c) the seat_usable per-seat UNUSABLE/'benched until' lines are folded into
+#     ONE per-pick 'unusable N seats' summary -- no per-seat line leaks.
+: >"$PI_PACKET_STATE/watch.log"
+set +e
+PI_SEAT_NOUSABLE_COOLDOWN_S=0 bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" >/dev/null 2>&1
+set -e
+grep -q "pick_seat: unusable 1 seats" "$PI_PACKET_STATE/watch.log" \
+  || fail "1409-fold: must emit ONE per-pick 'unusable 1 seats' summary; log: $(cat "$PI_PACKET_STATE/watch.log")"
+grep -q "benched until" "$PI_PACKET_STATE/watch.log" \
+  && fail "1409-fold: per-seat 'benched until' line leaked despite the fold; log: $(cat "$PI_PACKET_STATE/watch.log")"
+grep -q "UNUSABLE (quota_bench" "$PI_PACKET_STATE/watch.log" \
+  && fail "1409-fold: per-seat UNUSABLE line leaked despite the fold; log: $(cat "$PI_PACKET_STATE/watch.log")"
+ok "1409-fold: seat_usable per-seat UNUSABLE/'benched until' folded into one summary (0 leaked)"
+
+# --- fleet-ops#3250: seat-yield ledger loading --------------------------------
+SEAT_YIELD_JSON_TEST="$scratch/seat-yield-test.json"
+cat >"$SEAT_YIELD_JSON_TEST" <<'JSON'
+{
+  "devin/glm-5-2": {"yield": 0.25, "sessions": 20, "pr_count": 5, "provisional": false, "cost_per_session": 1.25},
+  "opencode/mimo-v2.5-free": {"yield": 0.5, "sessions": 3, "pr_count": 0, "provisional": true}
+}
+JSON
+
+SEAT_YIELD_JSON="$SEAT_YIELD_JSON_TEST" bash -c 'source "$0"; load_seat_yield; [[ -n "${SEAT_YIELD[devin/glm-5-2]:-}" ]]' "$lib" \
+  || fail "load_seat_yield: must populate SEAT_YIELD from exporter JSON"
+SEAT_YIELD_JSON="$SEAT_YIELD_JSON_TEST" bash -c 'source "$0"; load_seat_yield; seat_yield_for devin glm-5-2' "$lib" \
+  | grep -qE '^0\.25$' \
+  || fail "seat_yield_for devin/glm-5-2 must return 0.25"
+SEAT_YIELD_JSON="$SEAT_YIELD_JSON_TEST" bash -c 'source "$0"; load_seat_yield; seat_yield_for opencode mimo-v2.5-free' "$lib" \
+  | grep -qE '^0\.5$' \
+  || fail "seat_yield_for opencode/mimo-v2.5-free must return 0.5"
+SEAT_YIELD_JSON="$SEAT_YIELD_JSON_TEST" bash -c 'source "$0"; load_seat_yield; seat_yield_for unknown missing' "$lib" \
+  | grep -qE '^0\.5$' \
+  || fail "seat_yield_for unknown/missing must default to 0.5"
+ok "3250: load_seat_yield and seat_yield_for read the exporter's seat-yield.json"
+
+# fleet-ops#3323: the same ledger carries cost_per_session; seats without the
+# field (or absent entirely) fall back to 0 so the 0.001 value floor prices
+# them as free.
+SEAT_YIELD_JSON="$SEAT_YIELD_JSON_TEST" bash -c 'source "$0"; load_seat_yield; seat_cost_for devin glm-5-2' "$lib" \
+  | grep -qE '^1\.25$' \
+  || fail "seat_cost_for devin/glm-5-2 must return 1.25"
+SEAT_YIELD_JSON="$SEAT_YIELD_JSON_TEST" bash -c 'source "$0"; load_seat_yield; seat_cost_for opencode mimo-v2.5-free' "$lib" \
+  | grep -qE '^0$' \
+  || fail "seat_cost_for opencode/mimo-v2.5-free (no cost field) must default to 0"
+SEAT_YIELD_JSON="$SEAT_YIELD_JSON_TEST" bash -c 'source "$0"; load_seat_yield; seat_cost_for unknown missing' "$lib" \
+  | grep -qE '^0$' \
+  || fail "seat_cost_for unknown/missing must default to 0"
+ok "3323: seat_cost_for reads cost_per_session, defaults to 0 for unpriced seats"
+
+# --- fleet-ops#3241: stale cap=0 expires to default, never persists silently --
+# A stale cap=0 seat (intentional_cap_zero="stale") with a reason dated older
+# than SEAT_CAP_ZERO_STALE_TTL_S is re-admitted at SEAT_CAP_ZERO_STALE_DEFAULT;
+# a fresh-dated or undated stale seat stays 0, but the undated one is logged
+# loudly (cap0-stale-undated). Intentional cap=0 (corpse/dead_decoy/money_only)
+# never expires. Model-level stale seats expire on their own .reason — the
+# pre-#3241 gap was that model .reason was never loaded, so a model-level
+# stale cap could never expire.
+_cap0_caps="$scratch/seat-caps-cap0expire.json"
+_cap0_today="$(date -u +%F)"
+cat >"$_cap0_caps" <<JSON
+{
+  "ram_gb_per_worker": 1.5,
+  "providers": {
+    "oldstale":   { "cap": 0, "class": "free", "intentional_cap_zero": "stale",
+                    "reason": "2020-01-01 re-audition: endpoint 404" },
+    "freshstale": { "cap": 0, "class": "free", "intentional_cap_zero": "stale",
+                    "reason": "${_cap0_today} re-audition: endpoint 404" },
+    "nodate":     { "cap": 0, "class": "free", "intentional_cap_zero": "stale" },
+    "corpseco":   { "cap": 0, "class": "free", "intentional_cap_zero": "corpse",
+                    "reason": "2020-01-01 retired: slug gone" },
+    "modelprov":  { "cap": 2, "class": "free", "models": {
+      "stale-old":    { "cap": 0, "intentional_cap_zero": "stale",
+                        "reason": "2020-01-01 re-audition: HTTP 400 model unavailable" },
+      "stale-nodate": { "cap": 0, "intentional_cap_zero": "stale" }
+    } }
+  }
+}
+JSON
+
+export SEAT_CAPS_JSON="$_cap0_caps"
+export PI_PACKET_STATE="$scratch/state-cap0expire"
+mkdir -p "$PI_PACKET_STATE"
+_cap0_out=$(bash -c 'source "$0"; load_seat_caps;
+                     echo "oldstale=$(provider_cap oldstale)";
+                     echo "freshstale=$(provider_cap freshstale)";
+                     echo "nodate=$(provider_cap nodate)";
+                     echo "corpseco=$(provider_cap corpseco)";
+                     echo "model-old=$(model_cap modelprov stale-old)";
+                     echo "model-nodate=$(model_cap modelprov stale-nodate)"' "$lib" 2>/dev/null)
+
+grep -qx "oldstale=1" <<<"$_cap0_out" \
+  || fail "3241: dated-old provider stale cap=0 must expire to default 1, got: $_cap0_out"
+grep -qx "freshstale=0" <<<"$_cap0_out" \
+  || fail "3241: fresh-dated stale cap=0 must stay 0 until TTL, got: $_cap0_out"
+grep -qx "nodate=0" <<<"$_cap0_out" \
+  || fail "3241: undated stale cap=0 must stay 0 (no date to age from), got: $_cap0_out"
+grep -qx "corpseco=0" <<<"$_cap0_out" \
+  || fail "3241: intentional (corpse) cap=0 must NEVER expire, got: $_cap0_out"
+grep -qx "model-old=1" <<<"$_cap0_out" \
+  || fail "3241: model-level stale cap=0 must expire on its own .reason date, got: $_cap0_out"
+grep -qx "model-nodate=0" <<<"$_cap0_out" \
+  || fail "3241: model-level undated stale cap=0 must stay 0, got: $_cap0_out"
+
+_cap0_log="$PI_PACKET_STATE/watch.log"
+grep -qE "cap0-stale-expire: oldstale .* re-admitted at cap=1" "$_cap0_log" \
+  || fail "3241: expire must log cap0-stale-expire for oldstale, got: $(cat "$_cap0_log")"
+grep -qE "cap0-stale-expire: modelprov/stale-old .* re-admitted at cap=1" "$_cap0_log" \
+  || fail "3241: expire must log cap0-stale-expire for modelprov/stale-old, got: $(cat "$_cap0_log")"
+grep -q "cap0-stale-undated: nodate " "$_cap0_log" \
+  || fail "3241: undated stale must log cap0-stale-undated (never silent), got: $(cat "$_cap0_log")"
+grep -q "cap0-stale-undated: modelprov/stale-nodate " "$_cap0_log" \
+  || fail "3241: undated model stale must log cap0-stale-undated, got: $(cat "$_cap0_log")"
+grep -q "cap0-stale-expire: freshstale" "$_cap0_log" \
+  && fail "3241: freshstale must not be expired"
+grep -qE "cap0-stale-(expire|undated): corpseco" "$_cap0_log" \
+  && fail "3241: intentional corpse seat must produce neither expire nor undated lines"
+ok "3241: dated stale expires to default, fresh holds, undated logged loudly, intentional never expires, model-level reason honored"
+
+# The kill switch: SEAT_CAP_ZERO_STALE_EXPIRE=0 disables the mechanism.
+export PI_PACKET_STATE="$scratch/state-cap0expire-off"
+mkdir -p "$PI_PACKET_STATE"
+_cap0_off=$(SEAT_CAP_ZERO_STALE_EXPIRE=0 bash -c 'source "$0"; load_seat_caps; provider_cap oldstale' "$lib" 2>/dev/null)
+[[ "$_cap0_off" == "0" ]] \
+  || fail "3241: SEAT_CAP_ZERO_STALE_EXPIRE=0 must disable expiry, got provider_cap=$_cap0_off"
+grep -q "cap0-stale-expire" "$PI_PACKET_STATE/watch.log" 2>/dev/null \
+  && fail "3241: no expire lines expected when the mechanism is disabled"
+ok "3241: SEAT_CAP_ZERO_STALE_EXPIRE=0 disables expiry"
+
+# --- fleet-ops#4129: cap0-stale re-probe admission is light-only ------------
+# A stale cap=0 seat re-admitted by _expire_stale_cap0_seats must be light-only
+# until a re-probe proves it answers. The 2026-09-07 incident put a heavy
+# fable-check on a cap0-stale laguna free seat the instant it was re-admitted,
+# before any probe had run. Proves:
+#   1. seat_is_reprobe_light_only returns 0 for an expired stale seat, 1 for a
+#      non-stale / intentional / fresh seat.
+#   2. pick_seat skips the re-probe seat for heavy (need_capable=1) even when
+#      the seat is capable, and logs the light-only skip line.
+#   3. pick_seat count-mode admits the re-probe seat for light (it is a slot).
+#   4. The cap0-stale-expire log line now carries the light-only marker.
+_reprobe_caps="$scratch/seat-caps-reprobe.json"
+cat >"$_reprobe_caps" <<'JSON'
+{
+  "ram_gb_per_worker": 1.5,
+  "free_providers_in_order": ["ollama", "laguna"],
+  "providers": {
+    "laguna":    { "cap": 0, "class": "free", "intentional_cap_zero": "stale",
+                   "reason": "2020-01-01 re-audition: endpoint 404",
+                   "models": { "laguna-free-model": 2 } },
+    "ollama":    { "cap": 2, "class": "free", "models": { "deepseek-v4-flash:0731": 2 } }
+  }
+}
+JSON
+# models.json: laguna's model is capable (reasoning=true) so the ONLY thing
+# gating it out of heavy is the re-probe light-only marker — proving the gate
+# is not shadowed by the capable filter.
+cat >"$scratch/models-reprobe.json" <<'JSON'
+{
+  "providers": {
+    "laguna": {
+      "models": [
+        { "id": "laguna-free-model", "cost": { "input": 0 }, "reasoning": true, "contextWindow": 256000 }
+      ]
+    },
+    "ollama": {
+      "models": [
+        { "id": "deepseek-v4-flash:0731", "cost": { "input": 0 } }
+      ]
+    }
+  }
+}
+JSON
+export PI_MODELS_JSON="$scratch/models-reprobe.json"
+export SEAT_CAPS_JSON="$_reprobe_caps"
+export PI_PACKET_STATE="$scratch/state-reprobe"
+mkdir -p "$PI_PACKET_STATE"
+_reprobe_ledger="$scratch/ledger-reprobe"
+mkdir -p "$_reprobe_ledger"
+export PI_SEAT_HEALTH_LEDGER_DIR="$_reprobe_ledger"
+
+# 1. seat_is_reprobe_light_only: laguna expired -> 0; ollama never stale -> 1.
+set +e
+_reprobe_is=$(bash -c 'source "$0"; load_seat_caps;
+  seat_is_reprobe_light_only "laguna" "laguna-free-model" && echo "laguna=rc0" || echo "laguna=rc1";
+  seat_is_reprobe_light_only "ollama" "deepseek-v4-flash:0731" && echo "ollama=rc0" || echo "ollama=rc1"' "$lib" 2>/dev/null)
+set -e
+echo "$_reprobe_is" | grep -qx "laguna=rc0" \
+  || fail "4129: expired stale laguna must be reprobe-light-only (rc=0), got: $_reprobe_is"
+echo "$_reprobe_is" | grep -qx "ollama=rc1" \
+  || fail "4129: ollama (never stale) must NOT be reprobe-light-only (rc=1), got: $_reprobe_is"
+# And the provider cap actually expired to 1 (the admission happened).
+_reprobe_cap=$(bash -c 'source "$0"; load_seat_caps; provider_cap laguna' "$lib" 2>/dev/null)
+[[ "$_reprobe_cap" == "1" ]] \
+  || fail "4129: laguna stale provider cap=0 must expire to cap=1, got provider_cap=$_reprobe_cap"
+ok "4129: seat_is_reprobe_light_only flags the expired stale seat; ollama stays clear"
+
+# 4. The expire log line carries the light-only marker.
+grep -qE "cap0-stale-expire: laguna.*light-only, fleet-ops#4129" "$PI_PACKET_STATE/watch.log" \
+  || fail "4129: expire log must carry light-only marker, got: $(cat "$PI_PACKET_STATE/watch.log")"
+ok "4129: cap0-stale-expire log carries the light-only marker"
+
+# 2. pick_seat skips the re-probe seat for heavy (need_capable=1) even though
+#    laguna-free-model is capable. Clear the log so the skip line is fresh.
+rm -f "$PI_PACKET_STATE/watch.log"
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 1 "" heavy' "$lib" 2>/dev/null)
+rc=$?
+set -e
+if echo "$out" | grep -q "laguna"; then
+  fail "4129: re-probe seat laguna must NOT be picked for heavy (got: $out)"
+fi
+grep -q "cap0-stale re-probe seat — light issues only, fleet-ops#4129" "$PI_PACKET_STATE/watch.log" 2>/dev/null \
+  || fail "4129: heavy pick must log the re-probe light-only skip, got log: $(cat "$PI_PACKET_STATE/watch.log")"
+ok "4129: pick_seat skips re-probe seat for heavy (light-only skip logged)"
+
+# 3. pick_seat count-mode admits the re-probe seat for light.
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; PICK_SEAT_COUNT_SLOTS=1 pick_seat "" "" 0 "" light' "$lib" 2>/dev/null)
+rc=$?
+set -e
+echo "$out" | grep -qE '^[0-9]+$' || fail "4129: count-mode light must return a number (got: $out)"
+_count=$(echo "$out" | tail -1)
+(( _count >= 1 )) || fail "4129: re-probe seat should count as a light slot (got count=$_count)"
+ok "4129: pick_seat count-mode admits re-probe seat for light (count=$_count)"
+
+# Restore the main test fixtures so later sections are not affected.
+export PI_MODELS_JSON="$scratch/models.json"
+export SEAT_CAPS_JSON="$scratch/seat-caps.json"
+
+# fleet-ops#3559: a WRAPPER bench (mark_seat_empty_run / mark_seat_spawn_fail)
+# must co-write the legacy single-record seat-health sidecar
+# (pi-seat-health.json), so the seat-health probe honours the empty-run/spawn-fail
+# bench instead of keeping the seat healthy/200 until the out-of-repo
+# seat-health.ts extension's next observation. The live ollama/
+# deepseek-v4-flash:0731 loop benched 4x while pi-seat-health.json stayed
+# health_class=healthy/http 200 — the bench and the probe disagreed and the seat
+# kept being re-selected. Each bench path uses its own scratch sidecar + ledger.
+_sidecar_scratch="$scratch/sidecar-3559"
+mkdir -p "$_sidecar_scratch"
+# fleet-ops#3661: the seat-key guard is fail-closed while a caps file exists.
+# The 3559 calls run under the cap0-expire fixture exported above, which has
+# no ollama/devin entries — give these calls a fixture that lists both seats
+# so the bench writes pass the guard.
+cat >"$_sidecar_scratch/caps.json" <<'JSON'
+{ "providers": {
+    "ollama": { "cap": 2, "class": "free", "models": { "deepseek-v4-flash:0731": 2 } },
+    "devin":  { "cap": 2, "class": "prepaid", "models": { "glm-5-2": 2 } }
+} }
+JSON
+_sidecar_q="$(PI_SEAT_HEALTH_SIDECAR="$_sidecar_scratch/empty.json" \
+  PI_SEAT_HEALTH_LEDGER_DIR="$_sidecar_scratch/ledger" \
+  SEAT_CAPS_JSON="$_sidecar_scratch/caps.json" \
+  bash -c 'source "$0"; mark_seat_empty_run "ollama" "deepseek-v4-flash:0731" "t3559:noop" >/dev/null 2>&1; jq -r .health_class "$PI_SEAT_HEALTH_SIDECAR" 2>/dev/null' "$lib")"
+[[ -f "$_sidecar_scratch/empty.json" ]] \
+  || fail "3559: wrapper empty-run bench must co-write the sidecar pi-seat-health.json"
+[[ "$_sidecar_q" = "transient_fault" ]] \
+  || fail "3559: sidecar must report transient_fault after an empty-run bench, got $_sidecar_q"
+_sidecar_fm="$(PI_SEAT_HEALTH_SIDECAR="$_sidecar_scratch/empty.json" \
+  PI_SEAT_HEALTH_LEDGER_DIR="$_sidecar_scratch/ledger" \
+  bash -c 'source "$0"; jq -r .failure_mode "$PI_SEAT_HEALTH_SIDECAR"' "$lib")"
+[[ "$_sidecar_fm" = "empty_run" ]] \
+  || fail "3559: sidecar failure_mode must be empty_run, got $_sidecar_fm"
+_sidecar_u="$(PI_SEAT_HEALTH_SIDECAR="$_sidecar_scratch/empty.json" \
+  PI_SEAT_HEALTH_LEDGER_DIR="$_sidecar_scratch/ledger" \
+  bash -c 'source "$0"; u="$(jq -r .usable_at "$PI_SEAT_HEALTH_SIDECAR")"; _seat_in_future "$u" && printf "%s" "$u"' "$lib")"
+[[ -n "$_sidecar_u" ]] \
+  || fail "3559: sidecar usable_at must be in the future after a bench, got '$_sidecar_u'"
+_sidecar_http="$(PI_SEAT_HEALTH_SIDECAR="$_sidecar_scratch/empty.json" \
+  PI_SEAT_HEALTH_LEDGER_DIR="$_sidecar_scratch/ledger" \
+  bash -c 'source "$0"; jq -r .http_status "$PI_SEAT_HEALTH_SIDECAR"' "$lib")"
+[[ "$_sidecar_http" = "200" ]] \
+  || fail "3559: empty-run bench sidecar http_status must be 200, got $_sidecar_http"
+ok "3559: wrapper empty-run bench is visible in pi-seat-health.json (transient_fault/empty_run/future usable_at, not healthy)"
+
+# spawn_fail -> sidecar carries failure_mode=spawn_fail, not healthy.
+_sidecar_q="$(PI_SEAT_HEALTH_SIDECAR="$_sidecar_scratch/spawn.json" \
+  PI_SEAT_HEALTH_LEDGER_DIR="$_sidecar_scratch/ledger-spawn" \
+  SEAT_CAPS_JSON="$_sidecar_scratch/caps.json" \
+  bash -c 'source "$0"; mark_seat_spawn_fail "devin" "glm-5-2" "t3559:spawn" >/dev/null 2>&1; jq -r .health_class "$PI_SEAT_HEALTH_SIDECAR" 2>/dev/null' "$lib")"
+_sidecar_fm="$(PI_SEAT_HEALTH_SIDECAR="$_sidecar_scratch/spawn.json" \
+  PI_SEAT_HEALTH_LEDGER_DIR="$_sidecar_scratch/ledger-spawn" \
+  bash -c 'source "$0"; jq -r .failure_mode "$PI_SEAT_HEALTH_SIDECAR"' "$lib")"
+[[ -f "$_sidecar_scratch/spawn.json" ]] \
+  || fail "3559: wrapper spawn-fail bench must co-write the sidecar pi-seat-health.json"
+[[ "$_sidecar_fm" = "spawn_fail" ]] \
+  || fail "3559: sidecar failure_mode must be spawn_fail, got $_sidecar_fm"
+[[ "$_sidecar_q" = "transient_fault" ]] \
+  || fail "3559: spawn-fail sidecar must report transient_fault, got $_sidecar_q"
+ok "3559: wrapper spawn-fail bench is visible in pi-seat-health.json (transient_fault/spawn_fail, not healthy)"
+
+# fleet-ops#3723: OpenRouter free-model daily request budget replay drill.
+# Workers cannot add a P14 line in .github/workflows/ci.yml; this file is the
+# listed CI host for the new free-model daily-budget bench test.
+bash "$here/seat-lib-free-daily-budget.test.sh" || fail "seat-lib-free-daily-budget tests failed"
+
+# fleet-ops#3724: paid deepseek product_only + USD/day spend cap replay drill.
+# Workers cannot add a P14 line in .github/workflows/ci.yml; this file is the
+# listed CI host for the new product_only/spend-cap bench test.
+bash "$here/seat-lib-product-only-spend-cap.test.sh" || fail "seat-lib-product-only-spend-cap tests failed"
+
+# fleet-ops#3826: a ceiling-parked spawn_fail seat must not be re-offered on
+# a false-healthy seat-health.ts ledger write (after_provider_response).
+# Workers cannot add a P14 line in .github/workflows/ci.yml; this file is the
+# listed CI host for the new chronic-spawn-fail bench test.
+bash "$here/seat-spawn-bench-ceiling-false-healthy.test.sh" || fail "seat-spawn-bench-ceiling-false-healthy tests failed"
+
+# fleet-ops#3889: a chronic spawn_fail streak past a threshold is classed a
+# corpse (ledger + marker seat_dead=true) and held regardless of HTTP status.
+# Workers cannot add a P14 line in .github/workflows/ci.yml; this file is the
+# listed CI host for the new spawn-fail corpse bench test.
+bash "$here/seat-spawn-corpse.test.sh" || fail "seat-spawn-corpse tests failed"
+
+# fleet-ops#4018: a probe-output filename fragment (a model id ending in
+# `-.out`) must never land in the seat ledger, even when seat-caps.json is
+# missing (the #3661 fail-open must not re-admit the phantom). Workers cannot
+# add a P14 line in .github/workflows/ci.yml; this file is the listed CI host
+# for the new phantom-.out-suffix bench test.
+bash "$here/seat-phantom-out-suffix.test.sh" || fail "seat-phantom-out-suffix tests failed"
+
+# fleet-ops#4271 (session-waste #4260): a seat cannot hold cap > 0 while its
+# trailing-7-day yield is 0 PRs over >= 20 picks. Workers cannot add a P14
+# line in .github/workflows/ci.yml; this file is the listed CI host for the
+# new zero-yield cap invariant test. The test reads the LIVE config/seat-caps.json
+# (it honors SEAT_CAPS_JSON only so a replay drill can point it at a fixture);
+# drop the scratch SEAT_CAPS_JSON this file set above so the hosted test reads
+# the live config.
+unset SEAT_CAPS_JSON
+bash "$here/seat-caps-zero-yield.test.sh" || fail "seat-caps-zero-yield tests failed"
+
+# fleet-ops#4219 P3a: PI_SEAT_SOURCE env switch routes the six worker callers
+# to LiteLLM groups. Workers cannot add a P14 line in .github/workflows/ci.yml;
+# this file is the listed CI host for the new seat-source test.
+bash "$here/pi-seat-source-litellm.test.sh" || fail "pi-seat-source-litellm tests failed"

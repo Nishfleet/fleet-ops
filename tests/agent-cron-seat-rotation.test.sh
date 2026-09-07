@@ -475,6 +475,7 @@ while read -r src _dest; do
   case "$src" in
     systemd/*.timer)
       case "$src" in *@*) continue ;; esac   # templates instantiated by the reconciler
+      case "$src" in systemd/system/*) continue ;; esac   # system-scope: enabled via install.sh --system, not the generic --user loop
       unit_file="$repo_root/$src"
       [ -f "$unit_file" ] || fail "MANIFEST timer src missing in repo: $src"
       grep -qE '^\[Install\]$' "$unit_file" 2>/dev/null || continue   # siterep-deploy deliberately omits [Install]
@@ -562,3 +563,9 @@ ok "agent-cron seat rotation: gate replaced by pick_seat, transient 429 routes t
 # siblings above: workers cannot edit .github/workflows/ci.yml, so the
 # listed agent-cron-seat-rotation.test.sh hosts the sibling guard test.
 bash "$here/agent-cron-workdir-guard.test.sh" || fail "agent-cron-workdir-guard tests failed"
+
+# fleet-ops#4181 P2: the fable-check -> litellm/judge routing test lives in
+# this file's P14 family (agent-cron-run). Same CI constraint: workers
+# cannot edit .github/workflows/ci.yml, so the listed
+# agent-cron-seat-rotation.test.sh hosts the litellm-routing sibling test.
+bash "$here/agent-cron-fable-check-litellm-routing.test.sh" || fail "agent-cron-fable-check-litellm-routing tests failed"

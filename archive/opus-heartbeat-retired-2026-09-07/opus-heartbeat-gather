@@ -1,0 +1,1749 @@
+#!/usr/bin/env python3
+"""opus-heartbeat-gather — compact JSON snapshot from EXISTING instruments.
+
+No new probes. Reads systemd, Prometheus, textfiles, seat ledger, logs, gh.
+Stdout = one JSON object. Ugly numbers unedited.
+"""
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+
+STATE = Path(os.environ.get("OPUS_HB_STATE", "/home/nish/.local/state/opus-heartbeat"))
+PROM = os.environ.get("PROM_URL", "http://127.0.0.1:9090")
+XDG = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+HOME = Path(os.environ.get("HOME", "/home/nish"))
+TEXTDIR = Path("/var/lib/prometheus/node-exporter")
+SEATS = Path(os.environ.get("SEATS_DIR", "/home/nish/workspaces/agent-state/lanes/seats"))
+# fleet-ops#3983: seat-caps.json is the source of truth for enrolled seats.
+# The live caps file the seat organs actually use comes first (same source as
+# lib/seat-lib.sh SEAT_CAPS_JSON and libexec/fleet-metrics-export.py), then
+# the repo checkouts as fallbacks. Used to exclude cap=0 intentional_cap_zero
+# corpses from the census so the duty officer does not re-file issues about
+# already-retired seats (the FleetQueueSelfMaintenanceRatioHigh generator).
+SEAT_CAPS_LIVE = Path(
+    os.environ.get("SEAT_CAPS_JSON", "/home/nish/.local/state/pi-packet/seat-caps.json")
+)
+SEAT_CAPS_REPO = Path(
+    "/home/nish/workspaces/tooling/fleet-ops/config/seat-caps.json"
+)
+SEAT_CAPS_FALLBACK = Path(
+    "/home/nish/workspaces/products/fleet-ops/config/seat-caps.json"
+)
+CLAIMS = Path("/home/nish/workspaces/agent-state/ready-work-claims.log")
+ACTIONS = Path("/home/nish/workspaces/agent-state/alert-repair/actions.log")
+WATCH = Path("/home/nish/.local/state/pi-packet/watch.log")
+CONSOLE = Path("/home/nish/workspaces/tooling/fleet-console-pi/data.json")
+WINDOW = 7200  # 2h
+# fleet-ops#3189: scout staleness bound. The pi-scout@ timers run on
+# OnCalendar=*-*-* 00/4:00:00 + RandomizedDelaySec=300
+# (systemd/pi-scout@.timer), so the gap between two consecutive timer
+# triggers is ~4h +/- 5m — max idle 14700s. The old 2h bound (age > 7200)
+# matched nothing on the live cadence: every healthy 4h cycle looked
+# "drifting" and the heartbeat filed #3189 at age 11452s, inside the
+# cadence. This bound must EXCEED 4h + 5m jitter; 15000 is the same value
+# as fleet-work-supply-canary's FLEET_WORK_SUPPLY_MAX_IDLE_S default
+# (fleet-ops#1144: "must exceed the scout timer's normal max idle of
+# OnCalendar 4h + RandomizedDelaySec 5m = 14700s, so a healthy cadence
+# never false-positives"). OPUS_HB_SCOUT_STALE_S overrides for tests/seams.
+SCOUT_STALE_S = int(os.environ.get("OPUS_HB_SCOUT_STALE_S", "15000"))
+# fleet-ops#2806: one probe interval (matches seat-caps.json
+# walled_comeback.min_probe_interval_s=900). The releaser
+# (bin/fleet-seat-comeback-release) re-probes a walled seat within this
+# window of its usable_at passing, so a seat a few minutes past is mid-
+# cycle, not overdue. usable_at_overdue only fires when the wall is past by
+# MORE than this boundary — the releaser had a full probe cycle and did not
+# act (bench_until is NOT part of the check: the extension re-anchors it
+# forward on every failed probe, so it can never show the stuck state).
+COMEBACK_GRACE_S = 900
+# fleet-ops#1382: THOROUGH 6-hourly pass. When OPUS_HB_THOROUGH=1 the
+# launcher's thorough service asks gather to APPEND a deep-battery section
+# (snapshot.thorough) covering every rotation slot from the heartbeat spec
+# plus a 24h trend window. The light 2h run leaves this unset and is
+# unchanged: no thorough key, WINDOW stays 2h, queue_frozen() keys untouched.
+THOROUGH = os.environ.get("OPUS_HB_THOROUGH", "") == "1"
+THOROUGH_WINDOW = 86400  # 24h trend window for the deep pass
+ENROLLED_REPOS = ("0509", "fleet-ops")
+VAULT = Path("/home/nish/workspaces/tooling/nish-vault")
+ESCALATIONS = Path("/home/nish/workspaces/agent-state/NISH-ESCALATIONS.md")
+ALERT_REPAIR = Path("/home/nish/workspaces/agent-state/alert-repair")
+QUALITY_SLO = Path("/home/nish/workspaces/agent-state/quality-slo/snapshot.json")
+DRILL_PROM = TEXTDIR / "fleet-resilience-drill.prom"
+# fleet-ops#4118: the worktree reaper's last-run summary. The reaper
+# (bin/fleet-worktree-reaper) writes a JSON breakdown here on every timer
+# tick; the heartbeat surfaces it so the judge can see what the reaper
+# did about worktree_dirs (reaped vs skipped_dirty vs skipped_notpushed)
+# and the oldest worktrees still on disk, instead of a bare count that
+# hides whether the drain is working.
+WORKTREE_REAPER_SUMMARY = Path(
+    os.environ.get("FLEET_WORKTREE_REAPER_SUMMARY", "/home/nish/workspaces/agent-state/worktree-reaper-last-run.json")
+)
+
+
+def now_epoch() -> int:
+    return int(time.time())
+
+
+def iso_utc() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def run(argv, timeout=15, env=None):
+    e = os.environ.copy()
+    e["XDG_RUNTIME_DIR"] = XDG
+    if env:
+        e.update(env)
+    try:
+        p = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=e,
+        )
+        return p.returncode, p.stdout or "", p.stderr or ""
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as ex:
+        return 124, "", str(ex)
+
+
+def http_json(url, timeout=8):
+    try:
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read().decode("utf-8", "replace"))
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as ex:
+        return {"_error": str(ex)}
+
+
+def promql(query):
+    q = urllib.parse.urlencode({"query": query})
+    doc = http_json(f"{PROM}/api/v1/query?{q}")
+    if doc.get("status") != "success":
+        return None, doc.get("_error") or doc.get("error") or "promql_fail"
+    rows = doc.get("data", {}).get("result") or []
+    if not rows:
+        return None, "empty"
+    return rows, None
+
+
+def scalar(query):
+    rows, err = promql(query)
+    if err or not rows:
+        return None
+    try:
+        return float(rows[0]["value"][1])
+    except (KeyError, IndexError, TypeError, ValueError):
+        return None
+
+
+def parse_prom_file(path: Path):
+    out = []
+    if not path.is_file():
+        return out
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return out
+    for line in text.splitlines():
+        if not line or line.startswith("#"):
+            continue
+        out.append(line)
+    return out
+
+
+def metric_map(lines, name):
+    """Parse NAME{labels} value lines into {label_tuple_or_None: float}."""
+    found = {}
+    prefix = name
+    for line in lines:
+        if not line.startswith(prefix):
+            continue
+        rest = line[len(prefix) :]
+        labels = {}
+        if rest.startswith("{"):
+            end = rest.find("}")
+            if end < 0:
+                continue
+            body, rest = rest[1:end], rest[end + 1 :]
+            for part in body.split(","):
+                if "=" not in part:
+                    continue
+                k, v = part.split("=", 1)
+                labels[k.strip()] = v.strip().strip('"')
+        rest = rest.strip()
+        try:
+            val = float(rest.split()[0])
+        except (ValueError, IndexError):
+            continue
+        key = tuple(sorted(labels.items())) if labels else None
+        found[key] = val
+    return found
+
+
+def prom_failed_names(rows):
+    """Unit names whose node_systemd_unit_state{state="failed"} value is 1
+    in an instant-vector result — the same series and the same == 1 match
+    the SystemUnitFailed alert evaluates (config/fleet_rules.yml). Rows with
+    value 0 are currently-fine units and never merge."""
+    names = []
+    for r in rows or []:
+        try:
+            if float(r.get("value", [0, "0"])[1]) == 1.0:
+                names.append(r.get("metric", {}).get("name") or "")
+        except (ValueError, TypeError, IndexError, KeyError):
+            continue
+    return [n for n in names if n]
+
+
+def merge_prom_failed(system, prom_failed):
+    """fleet-ops#2751: a single instant `systemctl --failed` query can miss a
+    transient system unit that node_exporter still sees failed — a flapping
+    unit (failed -> activating -> failed, e.g. netplan's
+    systemd-networkd-wait-online.service) dodges the instant query while the
+    15s node scrape catches the failed phase. The 2026-09-02T01:30:13Z
+    snapshot reported failed_system=0 while SystemUnitFailed fired critical
+    since 01:17:40Z: the snapshot lied, the alert plane was truthful.
+    Cross-check the systemctl result against the alert's own series
+    (node_systemd_unit_state{state="failed"} == 1) and merge any
+    Prometheus-seen failed unit into names/count so a transient failure
+    stays held visible. User scope is unchanged: node_exporter's systemd
+    collector is system-scope only, so there is no prom series for user
+    units to cross-check."""
+    missing = [n for n in prom_failed if n not in system["names"]]
+    if not missing:
+        return system
+    merged = dict(system)
+    merged["names"] = list(system["names"]) + missing
+    merged["count"] = len(merged["names"])
+    merged["prom_merged"] = missing
+    return merged
+
+
+def parse_failed_units_output(rc, out, scope):
+    names = []
+    for line in out.splitlines():
+        # UNIT LOAD ACTIVE SUB DESCRIPTION — skip header
+        if line.startswith("UNIT ") or line.startswith("  "):
+            continue
+        parts = line.split()
+        if len(parts) >= 4 and parts[3] == "failed":
+            names.append(parts[0])
+        elif "failed" in line and parts:
+            # --plain --no-legend: first field is unit
+            if parts[0].endswith(".service") or parts[0].endswith(".timer"):
+                names.append(parts[0])
+    return {"scope": scope, "rc": rc, "names": names, "count": len(names)}
+
+
+def failed_units():
+    u_rc, u_out, _ = run(
+        ["systemctl", "--user", "--failed", "--no-pager", "--plain", "--no-legend"]
+    )
+    s_rc, s_out, _ = run(
+        ["systemctl", "--failed", "--no-pager", "--plain", "--no-legend"]
+    )
+    system = parse_failed_units_output(s_rc, s_out, "system")
+    # fleet-ops#2751: cross-check the instant systemctl query against the
+    # same node_exporter series the SystemUnitFailed alert reads, so a
+    # transient/flapping system failure stays visible in the snapshot.
+    rows, err = promql('node_systemd_unit_state{state="failed"}')
+    if err:
+        system["crosscheck"] = {
+            "source": 'node_systemd_unit_state{state="failed"} == 1',
+            "status": "prom_unavailable",
+            "error": err,
+        }
+    else:
+        system = merge_prom_failed(system, prom_failed_names(rows))
+        system["crosscheck"] = {
+            "source": 'node_systemd_unit_state{state="failed"} == 1',
+            "status": "ok",
+            "prom_merged": system.get("prom_merged", []),
+        }
+    return {
+        "user": parse_failed_units_output(u_rc, u_out, "user"),
+        "system": system,
+    }
+
+
+def prom_alerts():
+    doc = http_json(f"{PROM}/api/v1/alerts")
+    if "_error" in doc:
+        return {"error": doc["_error"], "firing": [], "pending": []}
+    firing, pending = [], []
+    for a in doc.get("data", {}).get("alerts") or []:
+        labels = a.get("labels") or {}
+        item = {
+            "name": labels.get("alertname"),
+            "state": a.get("state"),
+            "severity": labels.get("severity"),
+            "service": labels.get("service"),
+            "activeAt": a.get("activeAt"),
+            "value": a.get("value"),
+        }
+        st = a.get("state")
+        if st == "firing":
+            firing.append(item)
+        elif st == "pending":
+            pending.append(item)
+    return {
+        "firing_n": len(firing),
+        "pending_n": len(pending),
+        "firing": firing,
+        "pending": pending,
+    }
+
+
+def chain_stats():
+    lines = parse_prom_file(TEXTDIR / "fleet-chains.prom")
+    if not lines:
+        return {"present": False}
+    open_m = metric_map(lines, "fleet_chain_open")
+    stalled_m = metric_map(lines, "fleet_chain_stalled")
+    cycle_m = metric_map(lines, "fleet_chain_cycle_seconds")
+
+    def expand(m):
+        rows = []
+        total = 0.0
+        for k, v in m.items():
+            labels = dict(k) if k else {}
+            rows.append({"labels": labels, "value": v})
+            total += v
+        return {"total": total, "rows": rows}
+
+    return {
+        "present": True,
+        "open": expand(open_m),
+        "stalled": expand(stalled_m),
+        "cycle": expand(cycle_m),
+    }
+
+
+def _intentional_corpse_keys():
+    """Build a set of ``provider/model`` keys for cap=0 intentional_cap_zero=corpse rows.
+
+    Mirrors libexec/fleet-metrics-export.py _seat_caps_model_cap_map +
+    _read_dead_credentials: a cap=0 row is never picked, so a dead seat on
+    it is not an actionable fault. The duty officer snapshot must exclude
+    these so it does not re-file issues about already-retired seats every
+    tick (fleet-ops#3983: 8 duplicate MiniMax corpse PRs in 7d, 35.6% of
+    self-maintenance merges).
+
+    Only ``intentional_cap_zero=corpse`` rows are excluded — ``stale`` rows
+    may still need visibility. Returns a frozenset (empty when the config is
+    missing/unparseable, so a missing config never silently hides corpses).
+    """
+    for caps_path in (SEAT_CAPS_LIVE, SEAT_CAPS_REPO, SEAT_CAPS_FALLBACK):
+        try:
+            data = json.loads(caps_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        providers = data.get("providers") or {}
+        if not isinstance(providers, dict):
+            continue
+        keys = set()
+        for prov, cfg in providers.items():
+            if not isinstance(cfg, dict):
+                continue
+            models = cfg.get("models") or {}
+            if not isinstance(models, dict):
+                continue
+            for model, val in models.items():
+                if not isinstance(val, dict):
+                    continue
+                if val.get("intentional_cap_zero") == "corpse":
+                    keys.add(f"{prov}/{model}")
+        return frozenset(keys)
+    return frozenset()
+
+
+_INTENTIONAL_CORPSE_KEYS = _intentional_corpse_keys()
+
+
+def _is_excluded_seat(p: Path, d: dict) -> bool:
+    """True for pseudo-fixture seats that must NOT appear in the real census.
+
+    Three kinds of non-census seats live alongside real ledgers in the seats
+    dir:
+
+    - .spawn-bench markers (fleet-ops#1512): clobber-proof wrapper bench
+      files named like ``foo__bar.model.spawn-bench.json``. They carry only
+      ``usable_at`` + provenance and are consulted inline by seat_usable
+      in seat-lib.sh; they are NOT independent seats and must not inflate
+      the census or the comeback-overdue count.
+
+    - test__test / test__test-model fixtures: synthetic provider == "test"
+      entries used by seat-lib.test.sh. They are never real routable seats.
+
+    - cap=0 intentional_cap_zero=corpse rows (fleet-ops#3983): a model
+      retired at cap 0 with intentional_cap_zero=corpse in seat-caps.json
+      is never picked, so a dead-seat ledger on it is not an actionable
+      fault. The metric exporter already excludes these from
+      fleet_pi_seat_dead_credential_total; the gather must do the same so
+      the duty officer does not re-file issues about the same retired
+      corpse every tick. A cap>0 seat with a stale corpse ledger is NOT
+      excluded — that is a real inconsistency the duty officer should see.
+    """
+    if ".spawn-bench" in p.name:
+        return True
+    if d.get("provider") == "test":
+        return True
+    if _INTENTIONAL_CORPSE_KEYS:
+        prov = d.get("provider", "") or ""
+        model = d.get("model", "") or ""
+        if f"{prov}/{model}" in _INTENTIONAL_CORPSE_KEYS:
+            return True
+    return False
+
+
+# fleet-ops#2407: release-at-usable_at classes — the router (seat_usable in
+# lib/seat-lib.sh) FAIL-OPENS the seat once its wall clock (bench_until ??
+# usable_at) has passed for these classes. quota_exhausted / credentials_bad
+# / corpse are held unconditionally until a healthy observation (billing or
+# credential repair), so they are never release-at-expiry. Keep in lock-step
+# with seat_usable's branches and libexec/fleet-metrics-export.py.
+_RELEASE_AT_EXPIRY_CLASSES = frozenset(
+    {"overload_bench", "quota_bench", "hang_bench", "transient_fault", "rate_limited"}
+)
+
+# fleet-ops#3737/#3795: freshness window for an expired spawn-bench marker
+# that still gates the seat. Matches EMPTY_RUN_COUNT_WINDOW_S /
+# SEAT_PARK_WALL_S in lib/seat-lib.sh and SPAWN_BENCH_FRESH_S in
+# libexec/fleet-metrics-export.py (24 h). Older than this the marker is
+# archaeology and fail-open.
+_SPAWN_BENCH_FRESH_S = 86400
+
+
+def _wall_clock(d):
+    """ISO wall clock for one seat ledger: bench_until ?? usable_at."""
+    return d.get("bench_until") or d.get("usable_at")
+
+
+def _seat_is_released(d, now):
+    """True when now >= usable_at for a release-at-expiry class.
+
+    fleet-ops#2407: a walled seat is RELEASED the moment its wall clock passes
+    — the router fail-opens it then, so the census must stop counting it as
+    walled until the next observation happens to reclassify it (a healthy
+    write, or a fresh failure re-anchoring the clock). quota_exhausted and
+    seat_dead corpses never release here: they stay walled for the loud
+    comeback-overdue clock instead.
+    """
+    if d.get("seat_dead") is True:
+        return False
+    if (d.get("health_class") or "unknown") not in _RELEASE_AT_EXPIRY_CLASSES:
+        return False
+    end = _parse_ts(_wall_clock(d))
+    if end is None:
+        return False
+    return end < now
+
+
+def _held_bench_overlay(p, now):
+    """Return a census overlay for a seat with a HELD spawn-bench marker, else None.
+
+    fleet-ops#3509: the empty-run bencher (mark_seat_empty_run /
+    mark_seat_spawn_fail in lib/seat-lib.sh) writes a clobber-proof
+    .spawn-bench.json marker (fleet-ops#1512) NEXT TO the per-seat health
+    ledger. The pi seat-health extension re-writes the LEDGER back to
+    health_class=healthy on a later 200 OK, so a bench-held seat that has
+    since answered one simple packet shows healthy/walled=false in the
+    census while the router still refuses to route agentic work to it — it
+    keeps getting re-seated and burning empty runs (live: ollama/\
+    deepseek-v4-flash:0731 benched with escalating backoff while the census
+    said healthy/walled=false). A HELD wrapper bench is operator/wrapper-
+    authored and is more authoritative than a later healthy observation
+    (fleet-ops#2493 in libexec/fleet-metrics-export.py). When the marker's
+    usable_at is still in the future the seat is WALLED until then
+    regardless of the ledger; when it has passed the bench is over, the
+    seat fail-opens (matches seat_usable and _spawn_bench_active), and no
+    overlay applies.
+
+    fleet-ops#3795: seat_usable holds the bench in TWO cases —
+      (a) usable_at strictly in the future (the active bench), or
+      (b) usable_at expired/absent BUT the marker is FRESH (written within
+          _SPAWN_BENCH_FRESH_S, 24h — matches EMPTY_RUN_COUNT_WINDOW_S /
+          SEAT_PARK_WALL_S in lib/seat-lib.sh and SPAWN_BENCH_FRESH_S in
+          libexec/fleet-metrics-export.py) and still the seat's latest
+          evidence: no sibling-ledger observed_at newer than written_at.
+          A later ledger observation is post-bench evidence — a run that
+          produced output writes healthy with no following marker — so
+          case (b) releases on it; otherwise the comeback organ probes
+          the seat before re-admission and the census must agree the seat
+          is not healthy while it is probe-gated. Without case (b) a
+          clobbered-healthy ledger reports an unprobed dead-weight seat
+          as available (the ollama/deepseek-v4-flash:0731 empty-run churn
+          this issue names: 25 no-ops in 2h while the census said healthy).
+    """
+    if not p.name.endswith(".json"):
+        return None
+    marker = p.with_name(p.stem + ".spawn-bench.json")
+    if not marker.is_file():
+        return None
+    try:
+        b = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(b, dict):
+        return None
+    end = _parse_ts(b.get("usable_at"))
+    if end is not None and end > now:
+        # Case (a): active bench — overlay applies.
+        pass
+    else:
+        # Case (b): expired or clockless bench — held only while the
+        # marker is fresh and remains the seat's latest evidence.
+        written = _parse_ts(b.get("written_at"))
+        if written is None or now - written > _SPAWN_BENCH_FRESH_S:
+            return None  # stale marker -> fail-open
+        try:
+            led = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            led = None
+        obs = _parse_ts(led.get("observed_at")) if isinstance(led, dict) else None
+        if obs is not None and obs > written:
+            return None  # newer ledger obs -> post-bench evidence, release
+    overlay = {
+        # Effective class: the wrapper bench is the real wall, and a
+        # non-healthy class makes the census count it walled (fleet-ops#2493).
+        "health_class": "spawn_bench",
+        "usable_at": b.get("usable_at"),
+        "consecutive_failure_count": b.get("consecutive_failure_count"),
+        "failure_mode": b.get("failure_mode"),
+        "bench_overlay": True,
+        "bench_reason": b.get("reason"),
+        "bench_backoff_s": b.get("backoff_s"),
+        "bench_written_at": b.get("written_at"),
+    }
+    return {k: v for k, v in overlay.items() if v is not None}
+
+
+def seat_table():
+    rows = []
+    excluded_n = 0
+    if not SEATS.is_dir():
+        return {"present": False, "seats": [], "excluded_n": 0}
+    now = now_epoch()
+    for p in sorted(SEATS.glob("*.json")):
+        try:
+            d = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            rows.append({"file": p.name, "error": "unreadable"})
+            continue
+        if _is_excluded_seat(p, d):
+            excluded_n += 1
+            continue
+        bench = _held_bench_overlay(p, now)
+        if bench:
+            # fleet-ops#3509: a HELD wrapper spawn-bench is authoritative
+            # over a later healthy LEDGER write — overlay the marker's wall
+            # clock + durable count so a bench-held seat shows walled in the
+            # census until the bench expires, instead of healthy with no wall
+            # (which silently lets it keep being re-seated and burning runs).
+            _ledger_hc = d.get("health_class") or "unknown"
+            d = {**d, **bench}
+            d.setdefault("ledger_health_class", _ledger_hc)
+        klass = d.get("health_class") or "unknown"
+        wall_end = _wall_clock(d)
+        released = klass != "healthy" and _seat_is_released(d, now)
+        # fleet-ops#2435: a corpse (seat_dead=true, terminal "corpse" class,
+        # no comeback clock by construction #2415) is DEAD capacity, not
+        # WALLED capacity. Walled means "held by a wall clock that will
+        # fail open at expiry" — a corpse never releases and is only
+        # re-entered by manual repair (#2327), so counting it walled
+        # depresses the walled/healthy census with capacity that is not
+        # coming back (live: opencode/muse-spark-1.2-contributor-free at
+        # c=150 straight 500s sat in seats_walled forever).
+        dead = d.get("seat_dead") is True
+        rows.append(
+            {
+                "id": p.stem,
+                "provider": d.get("provider"),
+                "model": d.get("model"),
+                "health_class": klass,
+                "ledger_health_class": d.get("ledger_health_class"),
+                "bench_overlay": d.get("bench_overlay"),
+                "bench_reason": d.get("bench_reason"),
+                "bench_backoff_s": d.get("bench_backoff_s"),
+                "bench_written_at": d.get("bench_written_at"),
+                # fleet-ops#2407: walled only while the wall is HELD (future
+                # clock or no clock / non-releasable class). A released seat
+                # (expired clock on a release-at-expiry class) is available
+                # capacity — the router admits it — not a walled seat. A
+                # corpse (#2435) is neither walled nor released — dead.
+                "walled": klass != "healthy" and not released and not dead,
+                "released": released,
+                "dead": dead,
+                "wall_class": None if klass == "healthy" else klass,
+                "usable_at": d.get("usable_at"),
+                "bench_until": d.get("bench_until"),
+                "wall_end": wall_end,
+                "retry_after": d.get("retry_after"),
+                "seat_dead": d.get("seat_dead"),
+                "consecutive_failure_count": d.get("consecutive_failure_count"),
+                "observed_at": d.get("observed_at"),
+                "http_status": d.get("http_status"),
+                "failure_mode": d.get("failure_mode"),
+            }
+        )
+    healthy = sum(1 for r in rows if r.get("health_class") == "healthy")
+    walled = sum(1 for r in rows if r.get("walled"))
+    released_n = sum(1 for r in rows if r.get("released"))
+    dead_n = sum(1 for r in rows if r.get("dead"))
+    return {
+        "present": True,
+        "n": len(rows),
+        "healthy_n": healthy,
+        "walled_n": walled,
+        "released_n": released_n,
+        "dead_n": dead_n,
+        "excluded_n": excluded_n,
+        "seats": rows,
+    }
+
+
+def fleet_prom_bits():
+    lines = parse_prom_file(TEXTDIR / "fleet.prom")
+    ready = metric_map(lines, "fleet_ready_work")
+    ci = metric_map(lines, "fleet_main_ci_green")
+    ready_v = None
+    if ready:
+        ready_v = next(iter(ready.values()))
+    ci_map = {}
+    for k, v in ci.items():
+        labels = dict(k) if k else {}
+        repo = labels.get("repo") or "_"
+        ci_map[repo] = int(v)
+    return {"ready_work": ready_v, "fleet_main_ci_green": ci_map, "present": bool(lines)}
+
+
+def _parse_ts(s):
+    if s is None or isinstance(s, (int, float, bool)):
+        # numeric timestamps (epoch seconds) — seat ledger stores these as ints
+        if isinstance(s, (int, float)) and not isinstance(s, bool) and s > 0:
+            return float(s)
+        return None
+    s = str(s).strip().rstrip("Z")
+    try:
+        return datetime.fromisoformat(s).replace(tzinfo=timezone.utc).timestamp()
+    except ValueError:
+        return None
+
+
+TS_LINE = re.compile(r"^\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)\]")
+ISO_START = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)")
+
+
+def tail_count(path: Path, since: float, predicates, max_bytes=8_000_000):
+    """Count lines in the last max_bytes whose timestamp >= since matching predicates.
+
+    predicates: dict name -> callable(line) -> bool
+    """
+    counts = {k: 0 for k in predicates}
+    samples = {k: [] for k in predicates}
+    if not path.is_file():
+        return {"present": False, "counts": counts, "samples": samples}
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as f:
+            if size > max_bytes:
+                f.seek(size - max_bytes)
+                f.readline()  # drop partial
+            text = f.read().decode("utf-8", "replace")
+    except OSError as ex:
+        return {"present": False, "error": str(ex), "counts": counts, "samples": samples}
+    n_in_window = 0
+    for line in text.splitlines():
+        m = TS_LINE.match(line) or ISO_START.match(line)
+        if not m:
+            continue
+        ts = _parse_ts(m.group(1))
+        if ts is None or ts < since:
+            continue
+        n_in_window += 1
+        for name, pred in predicates.items():
+            if pred(line):
+                counts[name] += 1
+                if len(samples[name]) < 8:
+                    samples[name].append(line[:240])
+    return {
+        "present": True,
+        "lines_in_window": n_in_window,
+        "counts": counts,
+        "samples": samples,
+    }
+
+
+def claims_last_2h(since):
+    info = tail_count(
+        CLAIMS,
+        since,
+        {"claimed": lambda l: "claimed" in l.lower()},
+        max_bytes=2_000_000,
+    )
+    return {
+        "present": info.get("present"),
+        "n": info.get("counts", {}).get("claimed", 0),
+        "samples": info.get("samples", {}).get("claimed", []),
+    }
+
+
+def waste_and_capacity(since):
+    watch = tail_count(
+        WATCH,
+        since,
+        {
+            "empty_run": lambda l: ("stdout=0B" in l) or ("no-op" in l.lower()),
+            "at_capacity": lambda l: ("cap=" in l and "skipped" in l),
+        },
+    )
+    acts = tail_count(
+        ACTIONS,
+        since,
+        {
+            "redispatch": lambda l: "REDISPATCH" in l,
+            "dispatch": lambda l: " DISPATCH " in l or l.startswith("[") and "] DISPATCH " in l,
+            "skip": lambda l: "SKIP" in l,
+        },
+        max_bytes=2_000_000,
+    )
+    return {
+        "empty_runs_last_2h": watch.get("counts", {}).get("empty_run", 0),
+        "at_capacity_events_last_2h": watch.get("counts", {}).get("at_capacity", 0),
+        "redispatches_last_2h": acts.get("counts", {}).get("redispatch", 0),
+        "dispatches_last_2h": acts.get("counts", {}).get("dispatch", 0),
+        "skips_last_2h": acts.get("counts", {}).get("skip", 0),
+        "watch_present": watch.get("present"),
+        "actions_present": acts.get("present"),
+        "empty_run_samples": watch.get("samples", {}).get("empty_run", []),
+        "at_capacity_samples": watch.get("samples", {}).get("at_capacity", []),
+        "redispatch_samples": acts.get("samples", {}).get("redispatch", []),
+    }
+
+
+def host_stats():
+    load1 = scalar("node_load1")
+    mem_avail = scalar("node_memory_MemAvailable_bytes")
+    mem_total = scalar("node_memory_MemTotal_bytes")
+    # root fs
+    disk_avail = scalar(
+        'node_filesystem_avail_bytes{mountpoint="/",fstype!~"tmpfs|overlay"}'
+    )
+    disk_size = scalar(
+        'node_filesystem_size_bytes{mountpoint="/",fstype!~"tmpfs|overlay"}'
+    )
+    ram_pct = None
+    disk_pct_free = None
+    if mem_avail is not None and mem_total:
+        ram_pct = round(100.0 * (1.0 - mem_avail / mem_total), 2)
+    if disk_avail is not None and disk_size:
+        disk_pct_free = round(100.0 * disk_avail / disk_size, 2)
+    return {
+        "load1": load1,
+        "mem_avail_bytes": mem_avail,
+        "mem_total_bytes": mem_total,
+        "ram_used_pct": ram_pct,
+        "disk_avail_bytes": disk_avail,
+        "disk_size_bytes": disk_size,
+        "disk_free_pct": disk_pct_free,
+    }
+
+
+def digest_status():
+    rc, out, err = run(
+        [
+            "systemctl",
+            "--user",
+            "show",
+            "daily-digest.service",
+            "-p",
+            "Result",
+            "-p",
+            "ExecMainStatus",
+            "-p",
+            "ExecMainExitTimestamp",
+            "-p",
+            "ActiveState",
+            "--no-pager",
+        ]
+    )
+    fields = {}
+    for line in out.splitlines():
+        if "=" in line:
+            k, v = line.split("=", 1)
+            fields[k] = v
+    return {
+        "rc": rc,
+        "result": fields.get("Result"),
+        "exec_main_status": fields.get("ExecMainStatus"),
+        "exec_main_exit_timestamp": fields.get("ExecMainExitTimestamp"),
+        "active_state": fields.get("ActiveState"),
+        "error": err.strip() or None,
+    }
+
+
+def scout_last_run():
+    rc, out, err = run(
+        [
+            "systemctl",
+            "--user",
+            "list-timers",
+            "--all",
+            "--no-pager",
+            "pi-scout@*",
+        ]
+    )
+    # Fallback: list all and filter — some systemd versions ignore the pattern
+    if "pi-scout@" not in out:
+        rc2, out2, _ = run(
+            ["systemctl", "--user", "list-timers", "--all", "--no-pager"]
+        )
+        if rc2 == 0:
+            out = "\n".join(l for l in out2.splitlines() if "pi-scout@" in l)
+            rc = rc2
+    rows = []
+    now = now_epoch()
+    for line in out.splitlines():
+        if "pi-scout@" not in line:
+            continue
+        # LAST is a human date; also ask systemd show
+        unit = None
+        for tok in line.split():
+            if tok.startswith("pi-scout@") and tok.endswith(".timer"):
+                unit = tok
+                break
+        if not unit:
+            continue
+        src, sout, _ = run(
+            [
+                "systemctl",
+                "--user",
+                "show",
+                unit,
+                "-p",
+                "LastTriggerUSec",
+                "-p",
+                "NextElapseUSecRealtime",
+                "--no-pager",
+            ]
+        )
+        last_us = None
+        next_us = None
+        for sl in sout.splitlines():
+            if sl.startswith("LastTriggerUSec="):
+                last_us = sl.split("=", 1)[1]
+            elif sl.startswith("NextElapseUSecRealtime="):
+                next_us = sl.split("=", 1)[1]
+        last_epoch = _systemd_timestamp_to_epoch(last_us)
+        age = None if last_epoch is None else max(0, now - last_epoch)
+        rows.append(
+            {
+                "timer": unit,
+                "last_trigger": last_us,
+                "last_epoch": last_epoch,
+                "age_s": age,
+                "next": next_us,
+            }
+        )
+    oldest = None
+    if rows:
+        ages = [r["age_s"] for r in rows if r["age_s"] is not None]
+        oldest = max(ages) if ages else None
+    # stale_after_s lets consumers compare oldest_age_s against the real
+    # scout-cadence bound instead of the snapshot window (fleet-ops#3189).
+    return {
+        "rc": rc,
+        "n": len(rows),
+        "oldest_age_s": oldest,
+        "stale_after_s": SCOUT_STALE_S,
+        "timers": rows,
+        "error": err.strip() or None,
+    }
+
+
+def _systemd_timestamp_to_epoch(s):
+    if not s or s in ("n/a", "0"):
+        return None
+    # "Thu 2026-08-27 20:00:56 IST" or microseconds since epoch
+    if s.isdigit():
+        us = int(s)
+        if us <= 0:
+            return None
+        return us // 1_000_000
+    rc, out, _ = run(["date", "-d", s, "+%s"])
+    if rc == 0 and out.strip().isdigit():
+        return int(out.strip())
+    return None
+
+
+def disputed_tiles():
+    # Prefer exporter if the console verify organ is live
+    lines = parse_prom_file(TEXTDIR / "fleet-console-tiles.prom")
+    if lines:
+        mm = metric_map(lines, "fleet_console_tile_mismatch")
+        n = sum(1 for v in mm.values() if v == 1)
+        return {"source": "fleet-console-tiles.prom", "n": n, "tiles": [
+            dict(k)["tile"] for k, v in mm.items() if k and v == 1
+        ]}
+    if not CONSOLE.is_file():
+        return {"source": "missing", "n": None}
+    try:
+        doc = json.loads(CONSOLE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as ex:
+        return {"source": "data.json", "error": str(ex), "n": None}
+    tiles = doc.get("tiles") or {}
+    names = []
+    for name, t in tiles.items():
+        if not isinstance(t, dict):
+            continue
+        if t.get("disputed") is True or t.get("ok") is False:
+            names.append(name)
+    return {
+        "source": "fleet-console-pi/data.json",
+        "n": len(names),
+        "tiles": names,
+        "tile_count": len(tiles),
+        "generated_at": doc.get("generated_at"),
+    }
+
+
+def gh_rate():
+    rc, out, err = run(["gh", "api", "rate_limit"], timeout=20)
+    if rc != 0:
+        return {"error": err.strip() or f"gh_rc={rc}", "remaining": None}
+    try:
+        doc = json.loads(out)
+    except json.JSONDecodeError:
+        return {"error": "gh_json", "remaining": None}
+    rate = doc.get("rate") or {}
+    return {
+        "limit": rate.get("limit"),
+        "remaining": rate.get("remaining"),
+        "reset": rate.get("reset"),
+        "used": rate.get("used"),
+    }
+
+
+def flatten_for_delta(snap):
+    """Scalar-ish view for delta. RAW, not softened."""
+    fu = snap.get("failed_units") or {}
+    alerts = snap.get("prometheus_alerts") or {}
+    chain = snap.get("fleet_chain") or {}
+    seats = snap.get("seats") or {}
+    fleet = snap.get("fleet") or {}
+    waste = snap.get("waste") or {}
+    host = snap.get("host") or {}
+    scout = snap.get("scout") or {}
+    disputed = snap.get("disputed_tiles") or {}
+    gh = snap.get("gh_rate_limit") or {}
+    ci = fleet.get("fleet_main_ci_green") or {}
+    return {
+        "failed_user": (fu.get("user") or {}).get("count"),
+        "failed_system": (fu.get("system") or {}).get("count"),
+        "alerts_firing": alerts.get("firing_n"),
+        "alerts_pending": alerts.get("pending_n"),
+        "chain_open_total": (chain.get("open") or {}).get("total"),
+        "chain_stalled_total": (chain.get("stalled") or {}).get("total"),
+        "seats_healthy": seats.get("healthy_n"),
+        "seats_walled": seats.get("walled_n"),
+        "seats_dead": seats.get("dead_n"),
+        "seats_excluded": seats.get("excluded_n"),
+        "ready_work": fleet.get("ready_work"),
+        "claims_last_2h": (snap.get("claims_last_2h") or {}).get("n"),
+        "empty_runs_last_2h": waste.get("empty_runs_last_2h"),
+        "redispatches_last_2h": waste.get("redispatches_last_2h"),
+        "at_capacity_events_last_2h": waste.get("at_capacity_events_last_2h"),
+        "ci_red_repos": sorted([r for r, v in ci.items() if v == 0]),
+        "load1": host.get("load1"),
+        "ram_used_pct": host.get("ram_used_pct"),
+        "disk_free_pct": host.get("disk_free_pct"),
+        "scout_oldest_age_s": scout.get("oldest_age_s"),
+        "scout_stale_after_s": scout.get("stale_after_s"),
+        "disputed_n": disputed.get("n"),
+        "gh_remaining": gh.get("remaining"),
+    }
+
+
+def delta_vs_prev(current):
+    prev_path = STATE / "snapshot.prev.json"
+    if not prev_path.is_file():
+        return {"present": False, "note": "no previous snapshot"}
+    try:
+        prev = json.loads(prev_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as ex:
+        return {"present": False, "error": str(ex)}
+    a = flatten_for_delta(prev)
+    b = flatten_for_delta(current)
+    changed = {}
+    for k in sorted(set(a) | set(b)):
+        if a.get(k) != b.get(k):
+            changed[k] = {"from": a.get(k), "to": b.get(k)}
+    return {
+        "present": True,
+        "prev_ts": prev.get("ts"),
+        "n_changed": len(changed),
+        "changed": changed,
+    }
+
+
+# --- fleet-ops#1382: THOROUGH deep battery ----------------------------------
+# Every rotation slot from the heartbeat spec. Each slot is a defensive,
+# read-only probe that reuses existing instruments (gh, prom textfiles,
+# seat ledger, journal, filesystem). A slot NEVER raises: on any failure
+# it returns an error object so the deep pass degrades loudly (the judge
+# flags a missing slot as a fault) rather than crashing gather.
+THOROUGH_SLOTS = (
+    "user_journey_probe",
+    "random_merged_pr_verify",
+    "one_drill",
+    "seat_probes_walled_comebacks",
+    "doc_claims_sample",
+    "backup_freshness",
+    "hygiene_counts",
+    "escalation_drain",
+    "quality_shares",
+    "gh_budget",
+    "tailscale_reboot_spot",
+)
+
+
+def _safe(fn):
+    try:
+        return fn()
+    except Exception as ex:  # defensive: a slot fault is data, not a crash
+        return {"error": f"{type(ex).__name__}: {ex}"}
+
+
+def t_user_journey_probe():
+    """Most-recent merged PR per enrolled repo — a user-journey spot check."""
+    out = []
+    for repo in ENROLLED_REPOS:
+        rc, stdout, err = run(
+            ["gh", "pr", "list", "-R", f"Nishfleet/{repo}", "--state", "merged",
+             "-L", "1", "--json", "number,title,mergedAt,headRefName"],
+            timeout=20,
+        )
+        if rc != 0:
+            out.append({"repo": repo, "error": (err or "").strip() or f"gh_rc={rc}"})
+            continue
+        try:
+            rows = json.loads(stdout)
+        except json.JSONDecodeError:
+            out.append({"repo": repo, "error": "gh_json"})
+            continue
+        out.append({"repo": repo, **(rows[0] if rows else {"merged": None})})
+    return {"slots": out}
+
+
+def _extract_verify_line(body):
+    """Pull the Verification:/run-proof: cue from a PR body (display only).
+
+    Kept for the verify_claim display field. Classification lives in
+    _receipt_classifier — the shared grammar — so this line check can no
+    longer disagree with the merge gate (fleet-ops#3731).
+    """
+    if not body:
+        return None
+    for line in body.splitlines():
+        s = line.strip()
+        low = s.lower()
+        if low.startswith("verification:") or low.startswith("run-proof:"):
+            return s
+    return None
+
+
+# fleet-ops#3731: ONE receipt grammar for the whole fleet. The slot's own
+# line-start check classified a verified PR (fleet-ops#3717, body carried
+# `## Verification` + a fenced run) as has_verify_cue=false and the judge
+# filed a false unverified-merge finding. The authority is
+# lib/exec-review-receipt.py — the same has_receipt() the worker --body
+# gate, the heartbeat scan/disarm, and the tier1 arm gate all call —
+# loaded from the installed copy (symlinked into the deploy clone, so the
+# merged grammar is live here on the next deploy). Any load failure falls
+# back to the legacy line check; the slot reports which grammar ran.
+RECEIPT_LIB = os.environ.get(
+    "OPUS_HB_RECEIPT_LIB",
+    "/home/nish/.local/lib/pi-packet/exec-review-receipt.py",
+)
+
+
+def _receipt_classifier():
+    """Return (has_receipt_fn, grammar_label). Never raises."""
+    try:
+        import importlib.machinery
+        import importlib.util
+
+        loader = importlib.machinery.SourceFileLoader(
+            "exec_review_receipt", RECEIPT_LIB
+        )
+        spec = importlib.util.spec_from_file_location(
+            "exec_review_receipt", RECEIPT_LIB, loader=loader
+        )
+        if spec is None or spec.loader is None:
+            raise ImportError(f"no spec for {RECEIPT_LIB}")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod.has_receipt, "shared"
+    except Exception:
+        return lambda body: _extract_verify_line(body) is not None, "fallback-line"
+
+
+def t_random_merged_pr_verify():
+    """Random merged PR in the last 24h and its claimed verification cue.
+
+    Re-execution of an arbitrary PR's verify command is not allowlisted (and
+    would be a side effect), so this slot SAMPLES the claim: it picks one
+    recently-merged PR and reports whether the body carries a verification
+    receipt under the SHARED grammar (lib/exec-review-receipt.py). The
+    judge reviews plausibility; a missing cue on a merged PR is itself a
+    finding (unverified merge).
+
+    fleet-ops#3731: the slot also reports the FULL 24h classification —
+    candidates_24h, missing_cue count and the missing slugs (revert/
+    heads exempt, same as the tier1 arm gate) — so one sampled false
+    negative can never again masquerade as the fleet-wide rate.
+    """
+    has_receipt, grammar = _receipt_classifier()
+    cut = now_epoch() - THOROUGH_WINDOW
+    candidates = []
+    for repo in ENROLLED_REPOS:
+        rc, stdout, err = run(
+            ["gh", "pr", "list", "-R", f"Nishfleet/{repo}", "--state", "merged",
+             "-L", "50", "--json", "number,title,mergedAt,body,headRefName"],
+            timeout=25,
+        )
+        if rc != 0:
+            continue
+        try:
+            rows = json.loads(stdout)
+        except json.JSONDecodeError:
+            continue
+        for r in rows:
+            mt = _parse_ts(r.get("mergedAt") or "")
+            if mt is None or mt < cut:
+                continue
+            r["repo"] = repo
+            candidates.append(r)
+    if not candidates:
+        return {"picked": None, "reason": "no merged PR in 24h window",
+                "grammar": grammar}
+    missing = []
+    pool = []
+    for r in candidates:
+        head = str(r.get("headRefName") or "")
+        if head.startswith("revert/"):
+            continue  # auto-revert: no worker, no cue — same tier1 exemption
+        pool.append(r)
+        if not has_receipt(str(r.get("body") or "")):
+            missing.append(f"{r.get('repo')}#{r.get('number')}")
+    import random
+    pick = random.choice(pool or candidates)
+    verify = _extract_verify_line(pick.get("body"))
+    pick_ok = has_receipt(str(pick.get("body") or ""))
+    return {
+        "picked": {"repo": pick.get("repo"), "number": pick.get("number"),
+                   "title": pick.get("title"), "mergedAt": pick.get("mergedAt")},
+        "verify_claim": verify,
+        "has_verify_cue": pick_ok,
+        "grammar": grammar,
+        "candidates_24h": len(candidates),
+        "classified_24h": len(pool),
+        "missing_cue": len(missing),
+        "missing_slugs": missing[:10],
+    }
+
+
+def check_verify_cue_gate(fixture_path):
+    """Hermetic self-check for the merged-PR verify-cue slot (fleet-ops#3731).
+
+    Drives the SAME receipt classification the slot uses, offline, so the
+    regression test needs no live gh. Fixture JSON:
+      {"cases": [{"name": str, "body": str, "expect": true|false}, ...]}
+    Prints {"grammar": ..., "mismatches": [...]} and exits 0 when every
+    case matches its expected receipt verdict, 1 otherwise."""
+    import json as _json
+
+    has_receipt, grammar = _receipt_classifier()
+    data = _json.loads(Path(fixture_path).read_text(encoding="utf-8"))
+    cases = data.get("cases") or []
+    mismatches = []
+    results = {}
+    for c in cases:
+        got = bool(has_receipt(str(c.get("body") or "")))
+        results[c.get("name")] = got
+        if got != bool(c.get("expect")):
+            mismatches.append(c.get("name"))
+    print(_json.dumps(
+        {"grammar": grammar, "results": results, "mismatches": mismatches},
+        separators=(",", ":"),
+    ))
+    return 0 if not mismatches else 1
+
+
+def t_one_drill():
+    """Last resilience-drill result from its exporter textfile (read-only)."""
+    lines = parse_prom_file(DRILL_PROM)
+    if not lines:
+        return {"present": False}
+    last_green = metric_map(lines, "fleet_resilience_drill_last_green_seconds")
+    pass_m = metric_map(lines, "fleet_resilience_drill_plane_pass")
+    fail_m = metric_map(lines, "fleet_resilience_drill_plane_fail")
+    skip_m = metric_map(lines, "fleet_resilience_drill_plane_skip")
+    lg = next(iter(last_green.values()), None) if last_green else None
+    age = None
+    if lg is not None:
+        age = max(0, now_epoch() - int(lg))
+    return {
+        "present": True,
+        "last_green_epoch": int(lg) if lg is not None else None,
+        "age_s": age,
+        "planes_pass": sum(1 for v in pass_m.values() if v == 1),
+        "planes_fail": sum(1 for v in fail_m.values() if v == 1),
+        "planes_skip": sum(1 for v in skip_m.values() if v == 1),
+        "failed_planes": [dict(k)["plane"] for k, v in fail_m.items() if k and v == 1],
+    }
+
+
+def t_seat_probes_walled_comebacks():
+    """Per-walled-seat comeback clock (usable_at/retry_after overdue?).
+
+    fleet-ops#2152: two arithmetic and census bugs fixed here:
+      1. retry_after is a *duration in seconds* (delta from observed_at),
+         not an epoch timestamp. Treating it as an epoch made 1857600 land
+         on 1970-01-22, so retry_after_overdue was always True. The correct
+         deadline is observed_at_epoch + retry_after_seconds; the seat is
+         comeback-overdue only once that deadline has passed AND there is
+         no usable_at carrying a later reset.
+      2. .spawn-bench markers and test__ fixtures are excluded — they are
+         bench markers / synthetic entries, not real routable seats.
+    """
+    if not SEATS.is_dir():
+        return {"present": False, "walled": [], "excluded_n": 0}
+    now = now_epoch()
+    walled = []
+    excluded_n = 0
+    for p in sorted(SEATS.glob("*.json")):
+        try:
+            d = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if _is_excluded_seat(p, d):
+            excluded_n += 1
+            continue
+        # fleet-ops#2435: a corpse (seat_dead=true) is terminal — retired,
+        # not walled. It carries no comeback clock by construction (#2415),
+        # so it has no place in the per-walled-seat comeback probe at all;
+        # dead_n in the census is its record. Mirrors _read_comeback_overdue
+        # in libexec/fleet-metrics-export.py.
+        if d.get("seat_dead") is True:
+            continue
+        klass = d.get("health_class") or "unknown"
+        if klass == "healthy":
+            continue
+        usable = d.get("usable_at")
+        retry_after = d.get("retry_after")
+        observed = d.get("observed_at")
+        row = {
+            "id": p.stem,
+            "wall_class": klass,
+            "usable_at": usable,
+            "retry_after": retry_after,
+            "observed_at": observed,
+            "http_status": d.get("http_status"),
+            "failure_mode": d.get("failure_mode"),
+        }
+        # usable_at is an absolute ISO timestamp → parse to epoch directly.
+        usable_epoch = _parse_ts(usable)
+        if usable_epoch is not None:
+            row["usable_at_epoch"] = int(usable_epoch)
+            # fleet-ops#2806: grace of one probe interval. A wall passed within
+            # the grace window is mid-cycle — the release organ re-probes it
+            # on the next 15-min tick (re-anchor on failure, unwall on
+            # success), so it is NOT overdue yet. Overdue means the wall is
+            # past by more than one probe interval: the releaser had a full
+            # cycle to act and did not.
+            row["usable_at_overdue"] = usable_epoch < (now - COMEBACK_GRACE_S)
+        # retry_after is a *duration in seconds* from observed_at, NOT an
+        # epoch. Compute the absolute deadline as observed_at + retry_after
+        # and flag overdue only when that deadline has passed.
+        if retry_after is not None and observed is not None:
+            obs_epoch = _parse_ts(observed)
+            if obs_epoch is not None and retry_after > 0:
+                deadline = obs_epoch + retry_after
+                row["retry_after_epoch"] = int(deadline)
+                row["retry_after_overdue"] = deadline < now
+        walled.append(row)
+    # A seat is comeback-overdue when its usable_at has passed (the
+    # advertised reset window elapsed) OR its retry_after deadline has
+    # elapsed — but only the corrected computation above feeds this count.
+    overdue = sum(
+        1 for r in walled
+        if r.get("usable_at_overdue") or r.get("retry_after_overdue")
+    )
+    return {
+        "present": True,
+        "walled_n": len(walled),
+        "comeback_overdue_n": overdue,
+        "excluded_n": excluded_n,
+        "walled": walled,
+    }
+
+
+def t_doc_claims_sample():
+    """Sample path claims from a house doc and verify they exist on disk."""
+    doc = Path("/home/nish/AGENTS.md")
+    if not doc.is_file():
+        return {"present": False, "doc": str(doc)}
+    try:
+        text = doc.read_text(encoding="utf-8", errors="replace")
+    except OSError as ex:
+        return {"present": False, "error": str(ex)}
+    claims = re.findall(r"`?(~/[^` \n]+|/home/nish/[^` \n]+)`?", text)
+    # de-dup, keep order, sample up to 8
+    seen = set()
+    uniq = []
+    for c in claims:
+        c = c.rstrip(".,;:)`")
+        expanded = c.replace("~", "/home/nish", 1) if c.startswith("~") else c
+        if expanded in seen:
+            continue
+        seen.add(expanded)
+        uniq.append(expanded)
+        if len(uniq) >= 8:
+            break
+    sample = []
+    for path in uniq:
+        sample.append({"path": path, "exists": Path(path).exists()})
+    missing = [s["path"] for s in sample if not s["exists"]]
+    return {"present": True, "doc": str(doc), "sampled": sample, "missing_n": len(missing)}
+
+
+def t_backup_freshness():
+    """Restore-drill timer last result + backup-state file freshness."""
+    rc, out, err = run(
+        ["systemctl", "--user", "show", "fleet-restore-drill.timer",
+         "-p", "LastTriggerUSec", "-p", "Result", "-p", "ActiveState", "--no-pager"]
+    )
+    fields = {}
+    for line in out.splitlines():
+        if "=" in line:
+            k, v = line.split("=", 1)
+            fields[k] = v
+    last_us = fields.get("LastTriggerUSec")
+    last_epoch = _systemd_timestamp_to_epoch(last_us)
+    age = None if last_epoch is None else max(0, now_epoch() - last_epoch)
+    # newest file under alert-repair that looks like a restore/backup marker
+    newest = None
+    if ALERT_REPAIR.is_dir():
+        best = 0
+        for name in ("fleet-restore-drill", "backup"):
+            for p in ALERT_REPAIR.glob(f"{name}*"):
+                try:
+                    m = p.stat().st_mtime
+                except OSError:
+                    continue
+                if m > best:
+                    best = m
+                    newest = {"path": str(p), "mtime_epoch": int(best),
+                              "age_s": max(0, now_epoch() - int(best))}
+    return {
+        "timer_present": bool(fields),
+        "timer_last_epoch": last_epoch,
+        "timer_age_s": age,
+        "timer_result": fields.get("Result"),
+        "timer_active_state": fields.get("ActiveState"),
+        "newest_backup_marker": newest,
+    }
+
+
+# fleet-ops#4118: surface the worktree reaper's last-run result so the
+# heartbeat can gauge whether the drain is working. Returns a compact
+# object: present + ts + the count fields that say what the reaper did
+# (reaped, skipped_dirty, skipped_notpushed, skipped_young, skipped_live,
+# post_count, bound_breached) + the oldest worktrees still on disk
+# (sorted by age_s desc, top N) so the judge can see per-worktree
+# age/owner without grepping the full TSV. Degrades to present:false when
+# the summary is missing/unparseable/stale (a missing reaper result is
+# data, not a crash — same defensive contract as every other slot).
+REAPER_STALE_S = 7 * 86400  # a reaper summary older than 7d is stale
+REAPER_OLDEST_N = 10        # top-N oldest worktrees in the snapshot
+
+
+def worktree_reaper_result():
+    p = WORKTREE_REAPER_SUMMARY
+    if not p.is_file():
+        return {"present": False, "reason": "summary-missing"}
+    try:
+        doc = json.loads(p.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, ValueError):
+        return {"present": False, "reason": "summary-unparseable"}
+    ts = doc.get("ts")
+    age_s = None
+    if isinstance(ts, str):
+        try:
+            age_s = now_epoch() - int(datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp())
+        except ValueError:
+            age_s = None
+    if age_s is not None and age_s > REAPER_STALE_S:
+        return {"present": False, "reason": "summary-stale", "ts": ts, "age_s": age_s}
+    # Oldest worktrees still on disk: the reaper's `worktrees` array
+    # carries every scanned dir with its age_s. Sort desc, take top N.
+    wts = doc.get("worktrees") or []
+    oldest = []
+    if isinstance(wts, list):
+        sortable = [w for w in wts if isinstance(w, dict) and isinstance(w.get("age_s"), (int, float))]
+        sortable.sort(key=lambda w: w.get("age_s", 0), reverse=True)
+        oldest = sortable[:REAPER_OLDEST_N]
+    return {
+        "present": True,
+        "ts": ts,
+        "age_s": age_s,
+        "scanned": doc.get("scanned"),
+        "reaped": doc.get("reaped"),
+        "post_count": doc.get("post_count"),
+        "pre_count": doc.get("pre_count"),
+        "bound_breached": doc.get("bound_breached"),
+        "skipped_dirty": doc.get("skipped_dirty"),
+        "skipped_notpushed": doc.get("skipped_notpushed"),
+        "skipped_young": doc.get("skipped_young"),
+        "skipped_live": doc.get("skipped_live"),
+        "skipped_unmerged": doc.get("skipped_unmerged"),
+        "skipped_notterminal": doc.get("skipped_notterminal"),
+        "salvaged": doc.get("salvaged"),
+        "salvage_candidates": doc.get("salvage_candidates"),
+        "failed": doc.get("failed"),
+        "report_rows": doc.get("report_rows"),
+        "report_capped": doc.get("report_capped"),
+        "oldest": oldest,
+    }
+
+
+def t_hygiene_counts():
+    """Stale scouts, orphan worktrees, vault sync-conflicts, failed units."""
+    # stale scouts: oldest scout age already in snapshot; recompute count of
+    # scouts whose last trigger is older than SCOUT_STALE_S (4h cadence +
+    # jitter, fleet-ops#3189 — NOT the 2h window; see the constant).
+    rc, out, _ = run(["systemctl", "--user", "list-timers", "--all", "--no-pager"])
+    stale_scouts = 0
+    now = now_epoch()
+    scout_rows = []
+    for line in out.splitlines():
+        if "pi-scout@" not in line:
+            continue
+        unit = None
+        for tok in line.split():
+            if tok.startswith("pi-scout@") and tok.endswith(".timer"):
+                unit = tok
+                break
+        if not unit:
+            continue
+        s_rc, s_out, _ = run(["systemctl", "--user", "show", unit, "-p", "LastTriggerUSec", "--no-pager"])
+        last_us = None
+        for sl in s_out.splitlines():
+            if sl.startswith("LastTriggerUSec="):
+                last_us = sl.split("=", 1)[1]
+        le = _systemd_timestamp_to_epoch(last_us)
+        age = None if le is None else now - le
+        if age is not None and age > SCOUT_STALE_S:
+            stale_scouts += 1
+        scout_rows.append({"timer": unit, "age_s": age})
+    # orphan worktrees: agent-worktrees dirs not on origin (best-effort count)
+    worktree_root = Path("/home/nish/workspaces/agent-worktrees")
+    orphan_wt = 0
+    if worktree_root.is_dir():
+        for d in worktree_root.iterdir():
+            if not d.is_dir():
+                continue
+            rc2, out2, _ = run(["git", "-C", str(d), "worktree", "list", "--porcelain"], timeout=10)
+            # cheap presence check: a git dir counts as a worktree
+            if rc2 == 0:
+                orphan_wt += 1
+    # vault sync-conflicts (vault writes must stop if any exist)
+    conflicts = []
+    if VAULT.is_dir():
+        for p in VAULT.rglob("*.sync-conflict-*"):
+            conflicts.append(str(p))
+            if len(conflicts) >= 20:
+                break
+    fu = failed_units()
+    return {
+        "failed_user": (fu.get("user") or {}).get("count"),
+        "failed_system": (fu.get("system") or {}).get("count"),
+        "stale_scouts": stale_scouts,
+        "scout_timers": scout_rows,
+        "worktree_dirs": orphan_wt,
+        "worktree_reaper": worktree_reaper_result(),
+        "vault_sync_conflicts_n": len(conflicts),
+        "vault_sync_conflicts_sample": conflicts[:5],
+    }
+
+
+def t_escalation_drain():
+    """NISH-ESCALATIONS.md volume + alert-repair packet churn in 24h."""
+    esc_lines = None
+    if ESCALATIONS.is_file():
+        try:
+            esc_lines = sum(1 for _ in ESCALATIONS.open(encoding="utf-8", errors="replace"))
+        except OSError:
+            esc_lines = None
+    cut = now_epoch() - THOROUGH_WINDOW
+    packets = []
+    if ALERT_REPAIR.is_dir():
+        for p in ALERT_REPAIR.glob("packet-*.md"):
+            try:
+                m = p.stat().st_mtime
+            except OSError:
+                continue
+            if m >= cut:
+                packets.append({"file": p.name, "mtime_epoch": int(m)})
+    packets.sort(key=lambda x: x["mtime_epoch"])
+    oldest_age = None
+    if packets:
+        oldest_age = max(0, now_epoch() - packets[0]["mtime_epoch"])
+    return {
+        "escalations_lines": esc_lines,
+        "packets_24h": len(packets),
+        "oldest_packet_age_s": oldest_age,
+        "packets_sample": packets[:5],
+    }
+
+
+def t_quality_shares():
+    """Quality-SLO snapshot key fields (read-only)."""
+    if not QUALITY_SLO.is_file():
+        return {"present": False}
+    try:
+        doc = json.loads(QUALITY_SLO.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as ex:
+        return {"present": False, "error": str(ex)}
+    # keep it compact: top-level scalars + a few list lengths
+    compact = {}
+    for k, v in doc.items():
+        if isinstance(v, (str, int, float, bool)) or v is None:
+            compact[k] = v
+        elif isinstance(v, list):
+            compact[k] = f"list[{len(v)}]"
+        elif isinstance(v, dict):
+            compact[k] = f"dict[{len(v)}]"
+    return {"present": True, "fields": compact}
+
+
+def t_gh_budget():
+    """gh rate-limit budget + 24h usage trend (remaining/reset/used)."""
+    base = gh_rate()
+    # 24h gh-api call estimate from the actions.log DISPATCH/gh lines
+    since = now_epoch() - THOROUGH_WINDOW
+    info = tail_count(
+        ACTIONS,
+        since,
+        {"gh_calls": lambda l: "gh issue" in l or "gh pr" in l or "gh api" in l},
+        max_bytes=4_000_000,
+    )
+    return {
+        "rate_limit": base,
+        "gh_api_lines_24h": info.get("counts", {}).get("gh_calls", 0),
+        "actions_present": info.get("present"),
+    }
+
+
+def t_tailscale_reboot_spot():
+    """Tailscale liveness, uptime, last boot, reboot-required, needrestart."""
+    rc, out, err = run(["tailscale", "status"], timeout=8)
+    ts_ok = rc == 0 and "failed to connect" not in (out + err).lower()
+    up_rc, up_out, _ = run(["uptime", "-s"], timeout=5)
+    boot = up_out.strip() if up_rc == 0 else None
+    boot_epoch = None
+    if boot:
+        rc2, d_out, _ = run(["date", "-d", boot, "+%s"], timeout=5)
+        if rc2 == 0 and d_out.strip().isdigit():
+            boot_epoch = int(d_out.strip())
+    reboot_required = Path("/var/run/reboot-required").is_file()
+    # needrestart presence (best-effort, non-fatal)
+    nr_rc, nr_out, _ = run(["needrestart", "-b"], timeout=10)
+    needrestart_pending = None
+    if nr_rc == 0:
+        needrestart_pending = any("NEEDRESTART" in l for l in nr_out.splitlines())
+    return {
+        "tailscale_ok": ts_ok,
+        "tailscale_error": None if ts_ok else (err or out).strip()[:200] or f"rc={rc}",
+        "uptime_since": boot,
+        "boot_epoch": boot_epoch,
+        "uptime_s": None if boot_epoch is None else max(0, now_epoch() - boot_epoch),
+        "reboot_required": reboot_required,
+        "needrestart_pending": needrestart_pending,
+    }
+
+
+def t_trend_24h():
+    """Verdict trend over the trailing 24h from the journal."""
+    journal = STATE / "journal.jsonl"
+    cut = now_epoch() - THOROUGH_WINDOW
+    counts = {"SMOOTH": 0, "FAULTS": 0, "AUTH_WALL": 0, "NO_VERDICT": 0, "other": 0}
+    n = 0
+    if journal.is_file():
+        try:
+            with journal.open(encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        d = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    ep = d.get("epoch") or 0
+                    if ep < cut:
+                        continue
+                    n += 1
+                    v = d.get("verdict")
+                    if v in counts:
+                        counts[v] += 1
+                    else:
+                        counts["other"] += 1
+        except OSError:
+            pass
+    return {"runs_24h": n, "verdicts": counts}
+
+
+def thorough_battery():
+    """Append the full deep battery. Called only when OPUS_HB_THOROUGH=1."""
+    slots = {}
+    slots["user_journey_probe"] = _safe(t_user_journey_probe)
+    slots["random_merged_pr_verify"] = _safe(t_random_merged_pr_verify)
+    slots["one_drill"] = _safe(t_one_drill)
+    slots["seat_probes_walled_comebacks"] = _safe(t_seat_probes_walled_comebacks)
+    slots["doc_claims_sample"] = _safe(t_doc_claims_sample)
+    slots["backup_freshness"] = _safe(t_backup_freshness)
+    slots["hygiene_counts"] = _safe(t_hygiene_counts)
+    slots["escalation_drain"] = _safe(t_escalation_drain)
+    slots["quality_shares"] = _safe(t_quality_shares)
+    slots["gh_budget"] = _safe(t_gh_budget)
+    slots["tailscale_reboot_spot"] = _safe(t_tailscale_reboot_spot)
+    slots["trend_24h"] = _safe(t_trend_24h)
+    return {"mode": "THOROUGH", "window_s": THOROUGH_WINDOW, "slots_present": list(slots.keys()), "slots": slots}
+
+
+def check_failed_units_gate(fixture_path):
+    """fleet-ops#2751 self-check: run parse + merge_prom_failed on a fixture
+    file so the regression test does not need live systemctl or a live
+    Prometheus. Fixture JSON:
+      {
+        "name": "<scenario>",
+        "systemctl": {"rc": 0, "out": ""},
+        "prom_rows": [{"metric": {"name": "u.service", "state": "failed"},
+                       "value": [0, "1"]}],   // omit to simulate prom down
+        "expect": {"names": [...], "count": N, "prom_merged": [...]}
+      }
+    Prints the merged system block and exits 0 when every expect key matches,
+    1 otherwise."""
+    import json as _json
+
+    data = _json.loads(Path(fixture_path).read_text(encoding="utf-8"))
+    sysctl = data.get("systemctl") or {"rc": 0, "out": ""}
+    system = parse_failed_units_output(int(sysctl.get("rc", 0)), (sysctl.get("out") or ""), "system")
+    if data.get("prom_rows") is None:
+        system["crosscheck"] = {
+            "source": 'node_systemd_unit_state{state="failed"} == 1',
+            "status": "prom_unavailable",
+            "error": "fixture_simulated_prom_down",
+        }
+    else:
+        system = merge_prom_failed(system, prom_failed_names(data.get("prom_rows")))
+        system["crosscheck"] = {
+            "source": 'node_systemd_unit_state{state="failed"} == 1',
+            "status": "ok",
+            "prom_merged": system.get("prom_merged", []),
+        }
+    expect = data.get("expect") or {}
+    ok = True
+    for key, want in expect.items():
+        got = system.get(key)
+        if got != want:
+            ok = False
+            print(f"MISMATCH {key}: expected={want!r} got={got!r}", file=sys.stderr)
+    print(_json.dumps(system, separators=(",", ":"), default=str))
+    return 0 if ok else 1
+
+
+def check_scout_staleness_gate(fixture_path):
+    """Hermetic self-check for the scout staleness gate (fleet-ops#3189).
+
+    The pi-scout@ timers fire on a 4h cadence, so an age must be compared
+    against SCOUT_STALE_S (15000s) — not the 2h snapshot window — or every
+    healthy cycle is flagged "stale". This subcommand drives the SAME gate
+    logic in isolation so the regression test does not need live systemctl.
+    Fixture JSON:
+      {
+        "rows": [{"timer": "pi-scout@0509.timer", "age_s": 11452}, ...],
+        "expect_stale": ["pi-scout@0509.timer", ...]
+      }
+    Prints the stale set and exits 0 when the stale rows match expect_stale,
+    1 otherwise."""
+    import json as _json
+
+    data = _json.loads(Path(fixture_path).read_text(encoding="utf-8"))
+    rows = data.get("rows") or []
+    stale = []
+    for r in rows:
+        age = r.get("age_s")
+        if age is not None and age > SCOUT_STALE_S:
+            stale.append(r.get("timer"))
+    stale = sorted(t for t in stale if t is not None)
+    expect = sorted(data.get("expect_stale") or [])
+    ok = stale == expect
+    if not ok:
+        print(f"MISMATCH expect_stale={expect!r} got={stale!r}", file=sys.stderr)
+    print(_json.dumps(
+        {"stale_scouts": len(stale), "stale_rows": stale, "stale_after_s": SCOUT_STALE_S},
+        separators=(",", ":"),
+    ))
+    return 0 if ok else 1
+
+
+def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if len(argv) == 2 and argv[0] == "--check-failed-units-gate":
+        return check_failed_units_gate(argv[1])
+    if len(argv) == 2 and argv[0] == "--check-scout-staleness-gate":
+        return check_scout_staleness_gate(argv[1])
+    if len(argv) == 2 and argv[0] == "--check-verify-cue-gate":
+        return check_verify_cue_gate(argv[1])
+    since = now_epoch() - WINDOW
+    snap = {
+        "ts": iso_utc(),
+        "epoch": now_epoch(),
+        "window_s": WINDOW,
+        "host": None,
+        "failed_units": failed_units(),
+        "prometheus_alerts": prom_alerts(),
+        "fleet_chain": chain_stats(),
+        "seats": seat_table(),
+        "fleet": fleet_prom_bits(),
+        "claims_last_2h": claims_last_2h(since),
+        "waste": waste_and_capacity(since),
+        "digest": digest_status(),
+        "scout": scout_last_run(),
+        "disputed_tiles": disputed_tiles(),
+        "gh_rate_limit": gh_rate(),
+    }
+    snap["host"] = host_stats()
+    snap["flat"] = flatten_for_delta(snap)
+    snap["delta"] = delta_vs_prev(snap)
+    if THOROUGH:
+        snap["thorough"] = thorough_battery()
+    json.dump(snap, sys.stdout, separators=(",", ":"), default=str)
+    sys.stdout.write("\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

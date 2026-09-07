@@ -1,0 +1,10 @@
+{
+  "additions": 50,
+  "deletions": 5,
+  "changedFiles": 11,
+  "files": [
+    {"path": "a"}, {"path": "b"}, {"path": "c"}, {"path": "d"}, {"path": "e"},
+    {"path": "f"}, {"path": "g"}, {"path": "h"}, {"path": "i"}, {"path": "j"}, {"path": "k"}
+  ],
+  "labels": []
+}

@@ -1,0 +1,28 @@
+# fleet-ops#4148: per-role Codex launch template — Sol identity by construction.
+#
+# Paper only. Nish 2026-09-07 retired Sol (do not top up straitly). This
+# template is unused; keep it so identity stays pinned if the lane ever
+# returns, and so the machinery-allowlist / role-quality-gates rows from
+# #4317 stay matched to a repo unit. Do not launch it. Proof (c) is a
+# Luna-class run through codex-luna@ after the ChatGPT usage reset
+# (2026-09-12T14:31Z), not a Sol run.
+#
+# Shape-only replacement for the hand-built ~/.local/bin/codex governance
+# wrapper (281 lines, archived under archive/codex-launcher-retired-2026-09-07/).
+# The live PATH wrapper remains until the gated wipe (#4278).
+#
+# ExecStart is `/bin/bash -c 'exec …'` so hosted `systemd-analyze verify`
+# checks bash rather than a missing `%h/.local/libexec/codex-real` on CI.
+# Identity pins stay in the inner argv. %i is the effort (medium|xhigh).
+
+[Unit]
+Description=Codex Sol session (effort %i) — unused paper template (fleet-ops#4148; Sol retired)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=CODEX_HOME=%h/.codex
+ExecStart=/bin/bash -c 'exec /home/nish/.local/libexec/codex-real exec --json --skip-git-repo-check -m gpt-5.6-sol -c model_provider=openai -c model_reasoning_effort=%i'
+KillMode=control-group
+TimeoutStopSec=30

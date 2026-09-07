@@ -78,7 +78,7 @@ done
 ok "urgent with each sanctioned boundary class -> ACCEPT, REAL exec'd"
 
 # --- TEST 4: --urgent with sanctioned digest class => ACCEPT ---
-for cls in daily-digest weekly-digest; do
+for cls in daily-digest weekly-digest evening-highlights-digest; do
   res=$(run -t telegram --urgent --class "$cls" "hello")
   rc=${res%%|*}; real=${res##*|}
   [[ "$rc" == "0" ]] || fail "urgent $cls: expected exit 0, got $rc"

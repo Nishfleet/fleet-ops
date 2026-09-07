@@ -81,7 +81,10 @@ m._timer_active = lambda u: 1
 m._read_seat = lambda: (1, time.time())
 m._merged_prs_detail = lambda: []
 m._repo_snapshot = lambda: None
-m._queue_composition = lambda: None
+m._queue_composition = lambda: {
+    "ready-work": {"total": 0, "self": 0},
+    "agent-ready": {"total": 0, "self": 0},
+}
 m._escalations_24h = lambda: {}
 m._repair_log_counts_24h = lambda: (0, 0)
 m._worker_units = lambda: []
@@ -89,6 +92,8 @@ m._standalone_pi_print_count = lambda u: 0
 m._maintenance_quiescing = lambda: 0
 m._keystone_routing_counts = lambda: (0, 0, None)
 m._ping_healthcheck = lambda: None
+m._fetch_openrouter_credits = lambda: None
+m._fetch_xkiro_usage = lambda: None
 m._truth_staleness = lambda: None
 m._waste_ledger = lambda: None
 m._GH_FETCHED_THIS_RUN = False

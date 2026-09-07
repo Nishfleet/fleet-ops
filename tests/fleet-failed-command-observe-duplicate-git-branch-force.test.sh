@@ -34,7 +34,7 @@
 #   2. later tick with the marker already on the leftover: closes it,
 #      still leaves the unrelated issue open.
 #   3. still-dirty slug: the leftover is neither commented nor closed.
-#   4. prompt-side citation lock: prompts/worker.md cites #985 (next
+#   4. prompt-side citation lock: prompts/lib/failed-command-flagged.py cites #985 (next
 #      to #849, the original of the 01a04105 git-branch-force pile).
 #   5. detector-side citation lock: lib/failed-command-flagged.py
 #      docstring cites #985 (next to #849).
@@ -305,9 +305,9 @@ ok "live #985: still-dirty slug leaves the leftover duplicate open"
 # this file adds the #985 citation next to #849 — #985 is the leftover
 # open duplicate of #849 in the 01a04105 git-branch-force pile.
 worker="$repo_root/prompts/worker.md"
-grep -q 'fleet-ops#849, #985' "$worker" \
-  || fail "prompts/worker.md must cite fleet-ops#985 next to #849 (the 01a04105 git-branch-force leftover-duplicate citation)"
-ok "worker.md cites #985 next to #849"
+grep -q 'fleet-ops#849, #985' "$lib" \
+  || fail "lib/failed-command-flagged.py must cite fleet-ops#985 next to #849 (the 01a04105 git-branch-force leftover-duplicate citation)"
+ok "lib/failed-command-flagged.py cites #985 next to #849"
 
 # --- 5. detector-side citation lock for #985 ---------------------------------
 # The lib docstring is the standing-rule contract for the next detector

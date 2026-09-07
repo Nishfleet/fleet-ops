@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+# fleet-rebuild-verify-check — reject a rebuild/masking change with no VERIFY
+# evidence (fleet-ops#3191).
+#
+# Standing rule (Nish, 2026-09-04): a PR that touches the bare-metal rebuild
+# manifest, the unit-masking config, or the rebuild scripts/runbook/test must
+# carry a VERIFY line proving the live host state was checked. The trigger is
+# fleet-ops#3141: a rebuild/systemd-masking change merged with
+# has_verify_cue=false and verify_claim=null — no recorded verification that
+# wait-online was actually unmasked on the host.
+#
+# This gate closes that class. prove-one-run-check (fleet-ops#378) only fires
+# for a NEW unit/timer/workflow; a manifest edit slips past it. The
+# execution-is-review canary (fleet-ops#537) scans OPEN worker PRs after the
+# fact and auto-files, but a rebuild/masking edit can merge before the
+# heartbeat tick. This gate is the pre-PR drill that rejects the PR before it
+# opens, same shape as prove-one-run-check / research-before-build-check.
+#
+# Usage:
+#   fleet-rebuild-verify-check --body FILE --name-status FILE
+#   git diff --name-status origin/main...HEAD | fleet-rebuild-verify-check --body FILE --name-status -
+#
+# Exit 0: diff does not touch a rebuild/masking path, or proof present.
+# Exit 1: diff touches a rebuild/masking path and no proof (the drill reject).
+# Exit 2: usage error.
+#
+# Trigger paths (any status A/M/R/C/D — "touching", not just "adding"):
+#   config/bare-metal-rebuild-manifest.json   the masking config + rebuild inventory
+#   bin/fleet-bare-metal-rebuild              the rebuild script
+#   bin/fleet-bare-metal-rebuild-drill        the rebuild drill
+#   lib/bare-metal-masked-units.sh            the masking helper
+#   docs/bare-metal-rebuild.md                the runbook
+#   tests/fleet-bare-metal-rebuild.test.sh    the rebuild test
+#
+# Proof markers (any one is enough — same grammar as prove-one-run-check and
+# lib/exec-review-receipt.py):
+#   1. A line matching ^run-proof:\s+\S+
+#   2. A Verification: section (heading or inline) carrying a run-cue:
+#      journalctl, systemctl, https?://, exit N, rc=N, a fenced code block,
+#      ALL PHASES PASSED, a `$ ` prompt line, or `ok: N`.
+#
+# The GitHub required-check workflow is a follow-up (nishfleet-worker has no
+# Workflows permission). This binary is the gate; tests are the drill.
+
+set -euo pipefail
+
+usage() {
+    printf 'usage: fleet-rebuild-verify-check --body FILE --name-status FILE|-\n' >&2
+    exit 2
+}
+
+body_file=""
+name_status_file=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --body)
+            [ $# -ge 2 ] || usage
+            body_file="$2"
+            shift 2
+            ;;
+        --name-status)
+            [ $# -ge 2 ] || usage
+            name_status_file="$2"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            ;;
+        *)
+            usage
+            ;;
+    esac
+done
+
+# shellcheck disable=SC2015  # A && B || C IS the guard pattern here, not "if-then-else" — both clauses are checks that should route to usage().
+if [ -z "$body_file" ] || [ -z "$name_status_file" ]; then
+    usage
+fi
+[ -f "$body_file" ] || { printf 'fleet-rebuild-verify-check: body file not found: %s\n' "$body_file" >&2; exit 2; }
+
+# --- rebuild/masking path? -------------------------------------------------
+# git diff --name-status: A\tpath, M\tpath, R100\told\tnew, C100\told\tnew,
+# D\tpath. Unlike prove-one-run-check (new machinery only), this gate fires
+# on ANY change to a rebuild/masking path — a manifest edit is the incident
+# class (fleet-ops#3141 modified the manifest, it did not add a new unit).
+is_rebuild_path() {
+    local path="$1"
+    case "$path" in
+        config/bare-metal-rebuild-manifest.json) return 0 ;;
+        bin/fleet-bare-metal-rebuild) return 0 ;;
+        bin/fleet-bare-metal-rebuild-drill) return 0 ;;
+        lib/bare-metal-masked-units.sh) return 0 ;;
+        docs/bare-metal-rebuild.md) return 0 ;;
+        tests/fleet-bare-metal-rebuild.test.sh) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+touched=""
+while IFS=$'\t' read -r col1 col2 col3 || [ -n "${col1:-}" ]; do
+    [ -n "${col1:-}" ] || continue
+    local_status="${col1:0:1}"
+    path=""
+    case "$local_status" in
+        A|M|D) path="$col2" ;;
+        C|R) path="${col3:-$col2}" ;;
+        *) continue ;;
+    esac
+    [ -n "$path" ] || continue
+    if is_rebuild_path "$path"; then
+        touched="${touched:+$touched }$path"
+    fi
+done < <(if [ "$name_status_file" = "-" ]; then cat; else cat "$name_status_file"; fi)
+
+if [ -z "$touched" ]; then
+    printf 'SKIP: no rebuild/masking path in the diff\n'
+    exit 0
+fi
+
+# --- proof? ----------------------------------------------------------------
+body="$(cat "$body_file")"
+
+if printf '%s\n' "$body" | grep -qE '^[[:space:]]*run-proof:[[:space:]]*\S+'; then
+    printf 'OK: run-proof: marker present (rebuild/masking paths: %s)\n' "$touched"
+    exit 0
+fi
+
+set +e
+printf '%s\n' "$body" | awk '
+    BEGIN { in_v=0; matched=0 }
+    {
+        if ($0 ~ /^#+[[:space:]]+[Vv]erification[[:space:]]*$/ \
+            || $0 ~ /^#+[[:space:]]+[Vv]erification:[[:space:]]*$/ \
+            || $0 ~ /\*{2}[[:space:]]*[Vv]erification:?[[:space:]]*\*{0,2}[[:space:]]*$/ \
+            || $0 ~ /(^|[[:space:]])[Vv]erification:[[:space:]]*/) {
+            in_v=1
+        }
+        if (!in_v) next
+        if ($0 ~ /(^|[^[:alnum:]_])journalctl([^[:alnum:]_]|$)/ \
+            || $0 ~ /(^|[^[:alnum:]_])systemctl([^[:alnum:]_]|$)/ \
+            || $0 ~ /https?:\/\// \
+            || $0 ~ /exit[[:space:]]+[0-9]/ || $0 ~ /rc=[0-9]/ \
+            || $0 ~ /```/ \
+            || $0 ~ /ALL PHASES PASSED/ \
+            || $0 ~ /^[[:space:]]*\$ / \
+            || $0 ~ /ok: [0-9]/ ) {
+            matched=1
+        }
+    }
+    END { exit (matched ? 0 : 1) }
+'
+awk_rc=$?
+set -e
+
+if [ "$awk_rc" -eq 0 ]; then
+    printf 'OK: Verification: section carries a run-cue (rebuild/masking paths: %s)\n' "$touched"
+    exit 0
+fi
+
+printf 'REJECT: rebuild/masking path (%s) with no run-proof. A change to the rebuild manifest, unit-masking config, or rebuild scripts/runbook/test must carry a run-proof: line or a Verification: section with a real run cue (e.g. `systemctl is-enabled <unit>` output, journalctl transcript, or the rebuild --manifest-check / drill output). A masking change merged with no live-state proof is the fleet-ops#3141 incident class.\n' "$touched" >&2
+exit 1

@@ -107,6 +107,29 @@ grep -q '"salvage_status":"quarantined"' "$FLEET_DISPATCH_LEDGER" \
     || fail "secret salvage must mark salvage_quarantined"
 ok "secret hit → local branch, salvage_quarantined, no push"
 
+# --- 4b. PI_SALVAGE_NO_PUSH=1 banks locally without pushing (fleet-ops#3023)
+# Callers that already know the remote cannot accept the push (archived
+# repo) use this to skip the doomed network round-trip; the local wip
+# ref + ledger record still land.
+clone="$(make_clone no-push)"
+printf 'dirty\n' >"$clone/dirty.txt"
+export PI_SALVAGE_WORKDIR="$clone"
+export PI_SALVAGE_UNIT="unit-nopush"
+export PI_SALVAGE_NOW="20260827T160300Z"
+export PI_SALVAGE_NO_PUSH=1
+export SERVICE_RESULT=signal EXIT_CODE=killed EXIT_STATUS=KILL
+"$salvage"
+if git -C "$scratch/no-push.git" show-ref --verify -q refs/heads/wip/unit-nopush-20260827T160300Z; then
+    fail "NO_PUSH salvage must NOT push to origin"
+fi
+git -C "$clone" for-each-ref 'refs/heads/wip/unit-nopush-20260827T160300Z' \
+    | grep -q . \
+    || fail "NO_PUSH salvage must still create the local wip ref"
+grep -q '"salvage_status":"local"' "$FLEET_DISPATCH_LEDGER" \
+    || fail "NO_PUSH salvage must mark salvage_status=local"
+unset PI_SALVAGE_NO_PUSH
+ok "PI_SALVAGE_NO_PUSH=1 banks locally, skips the push"
+
 # --- 5. pi-systemd-run dry-run wires ExecStopPost --------------------------
 out="$("$wrapper" --dry-run --unit salvage-shape --working-directory "$clone" -- /bin/true)"
 printf '%s\n' "$out" | grep -q 'ExecStopPost=' || fail "dry-run must set ExecStopPost: $out"
@@ -116,8 +139,13 @@ printf '%s\n' "$out" | grep -q 'PI_SALVAGE_WORKDIR' || fail "dry-run must export
 ok "pi-systemd-run dry-run wires ExecStopPost + TimeoutStopSec=180"
 
 out="$(PI_SALVAGE_DISABLE=1 "$wrapper" --dry-run --unit salvage-off -- /bin/true)"
-printf '%s\n' "$out" | grep -q 'ExecStopPost=' && fail "PI_SALVAGE_DISABLE=1 must omit ExecStopPost: $out"
-ok "PI_SALVAGE_DISABLE=1 omits the salvage hook"
+# fleet-ops#4266: PI_SALVAGE_DISABLE drops ONLY the salvage leg; the
+# dead-man ExecStopPost must stay armed (a disabled salvage must not also
+# disable the death detector).
+printf '%s\n' "$out" | grep -q 'pi-salvage-worktree' && fail "PI_SALVAGE_DISABLE=1 must omit the salvage hook: $out"
+printf '%s\n' "$out" | grep -q 'ExecStopPost=.*pi-detached-deadman' \
+  || fail "PI_SALVAGE_DISABLE=1 must keep the dead-man ExecStopPost: $out"
+ok "PI_SALVAGE_DISABLE=1 omits salvage, keeps the dead-man hook"
 
 # --- 6. WIP GC: merged deleted; open-ledger kept; stale unreferenced deleted
 gcroot="$scratch/gc-products"

@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+# opus-heartbeat-run — launcher for the fleet2 Opus 5 heartbeat.
+#
+# LIVES OUTSIDE THE fleet2 WORKTREE ON PURPOSE. The previous copy sat in
+# fleet2/bin/, was never committed, and a live-tree branch flip deleted it on
+# 2026-08-20; every wake after that died with exit 127 ("governed-run: command
+# not found"). Standing rule: units must never depend on branch-local files.
+# Do not move this back into fleet2/bin.
+#
+# Four silent-failure modes this wrapper exists to make LOUD:
+#
+#   1. Expired Claude OAuth (2026-08-19): every wake died at the login wall for
+#      20h and receipts simply stopped. The interactive login on this host is
+#      still dead (~/.claude/.credentials.json has zeroed tokens), so we first
+#      fall back to the long-lived CLAUDE_CODE_OAUTH_TOKEN that already lives
+#      in the retired Telegram bridge env on this host — same account, already
+#      provisioned, nothing copied anywhere. If that is gone too, page Nish
+#      once per 12h via hermes send with the exact fix, write a loud receipt
+#      line, exit 75.
+#
+#   2. Missing or empty prompt file (2026-08-20): `-p "$(cat ...)"` collapsed
+#      to an empty string and claude answered "Input must be provided...". We
+#      refuse to launch a blank Opus session instead. Exit 78.
+#
+#   3. A session that overruns. The prompt tells it to finish in 15 min; the
+#      unit kills the cgroup at 35. We stop it at 33 so this wrapper still gets
+#      to write a receipt line before systemd SIGKILLs everything. Exit 124.
+#
+#   4. A session that runs but never writes its receipt line. The prompt is
+#      explicit: "No line = failed run." We synthesise a NO-RECEIPT line so the
+#      gap shows up in the log instead of looking like a clean run.
+#
+# Never echoes a credential. Everything it has to say goes to $LOG.
+
+set -uo pipefail
+
+F=/home/nish/fleet2
+LOG=$F/var/log/opus-heartbeat.log
+PROMPT=/home/nish/.local/libexec/fleet2-heartbeat-prompt.md
+BRIEF=$F/var/log/heartbeat-brief.md
+COOLDOWN=$F/var/log/.auth-page-last
+TGENV=/home/nish/.claude-telegram/.env
+
+# Burn guard, two minutes under the unit's TimeoutStartSec=35min.
+BURN_GUARD=33m
+# A pre-run audit brief older than this is not evidence about the fleet now.
+BRIEF_STALE_SEC=10800
+# Telegram the login page at most this often.
+PAGE_COOLDOWN_SEC=43200
+
+ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+receipt() { echo "$(ts) | $*" >>"$LOG"; }
+
+mkdir -p "$(dirname "$LOG")"
+touch "$LOG"
+
+# --- prompt must exist and be non-empty -------------------------------------
+if [ ! -s "$PROMPT" ]; then
+  receipt "PROMPT-MISSING: $PROMPT absent or empty — refusing to launch a blank Opus session"
+  exit 78
+fi
+
+# --- auth: prefer the already-provisioned long-lived token ------------------
+# Read in a subshell so only this one variable escapes the bridge env.
+if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ -r "$TGENV" ]; then
+  CLAUDE_CODE_OAUTH_TOKEN=$(
+    set -a
+    # shellcheck disable=SC1090
+    . "$TGENV" >/dev/null 2>&1
+    set +a
+    printf '%s' "${CLAUDE_CODE_OAUTH_TOKEN:-}"
+  )
+  [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ] && export CLAUDE_CODE_OAUTH_TOKEN
+fi
+
+# --- brief freshness --------------------------------------------------------
+# The pre-run brief came from bin/heartbeat-audit, lost in the same branch flip
+# and not rebuilt. The prompt tells the session to trust the brief's green
+# areas WITHOUT re-checking, so an absent or stale brief has to be declared
+# unreliable — the prompt already defines exactly that contract.
+BRIEF_NOTE=""
+if [ ! -s "$BRIEF" ]; then
+  BRIEF_NOTE="no pre-run brief exists at $BRIEF"
+else
+  brief_age=$(( $(date +%s) - $(stat -c %Y "$BRIEF") ))
+  if [ "$brief_age" -ge "$BRIEF_STALE_SEC" ]; then
+    BRIEF_NOTE="the brief at $BRIEF is $((brief_age / 3600))h old"
+  fi
+fi
+
+PROMPT_TEXT=$(cat "$PROMPT")
+if [ -n "$BRIEF_NOTE" ]; then
+  PROMPT_TEXT="$PROMPT_TEXT
+
+## RUNTIME NOTE from the launcher (this run only)
+
+TRIAGE UNRELIABLE: $BRIEF_NOTE. bin/heartbeat-audit was lost in the 2026-08-20
+branch flip and has not been rebuilt yet, so treat the brief as absent: trust
+none of its green areas, and work the checklist from live shell commands."
+fi
+
+# --- run --------------------------------------------------------------------
+OUT=$(mktemp)
+trap 'rm -f "$OUT"' EXIT
+
+MARK=$(wc -c <"$LOG")
+
+timeout --signal=TERM --kill-after=60s "$BURN_GUARD" \
+  /usr/bin/claude --model claude-opus-5 --dangerously-skip-permissions \
+  -p "$PROMPT_TEXT" >"$OUT" 2>&1
+RC=$?
+
+cat "$OUT" >>"$LOG"
+
+# --- auth wall --------------------------------------------------------------
+if grep -qiE "OAuth session expired|Failed to authenticate|not logged in" "$OUT"; then
+  receipt "AUTH-EXPIRED: heartbeat cannot run until Nish re-logs-in (ssh -t netcup-rs2000 claude /login)"
+  age=999999
+  [ -e "$COOLDOWN" ] && age=$(( $(date +%s) - $(stat -c %Y "$COOLDOWN") ))
+  if [ "$age" -ge "$PAGE_COOLDOWN_SEC" ]; then
+    touch "$COOLDOWN"
+    MSG="netcup-rs2000: the Claude login expired, so the Opus heartbeat cannot run. Only you can fix it (2 min): run  ssh -t netcup-rs2000 claude /login  and follow the browser prompt. The dumb watchdogs keep covering meanwhile. This message repeats at most every 12h."
+    # Route through hermes send (fleet-ops#4145): the hand-built Telegram bridge
+    # is retired; hermes is the single phone path. CREDENTIAL-BOUNDARY is a
+    # sanctioned urgent class, so --urgent honours the bypass and the page
+    # reaches Nish even when the outbound ceiling is full.
+    printf '%s' "$MSG" | hermes send -t telegram --urgent --class CREDENTIAL-BOUNDARY 2>>"$LOG" || true
+  fi
+  exit 75
+fi
+
+# --- burn guard tripped -----------------------------------------------------
+if [ "$RC" -eq 124 ] || [ "$RC" -eq 137 ]; then
+  receipt "BURN-GUARD: session killed at $BURN_GUARD before it finished"
+  exit 124
+fi
+
+# --- receipt line present? --------------------------------------------------
+# "No line = failed run" (prompt, Receipt section). Make the gap visible.
+if ! tail -c "+$((MARK + 1))" "$LOG" | grep -q '| inflight='; then
+  receipt "NO-RECEIPT: session exited rc=$RC without writing its receipt line — treat as a failed run"
+  [ "$RC" -eq 0 ] && exit 70
+fi
+
+exit "$RC"

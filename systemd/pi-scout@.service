@@ -22,4 +22,4 @@ ExecStartPre=-/bin/bash -c 'exec /home/nish/.local/bin/scout-futility-check begi
 # (same shape as stop-escalation.service / unit-escalation@.service).
 ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/pi-scout-run %i scout'
 ExecStopPost=-/bin/bash -c 'exec /home/nish/.local/bin/scout-futility-check end %i'
-TimeoutStartSec=1800
+TimeoutStartSec=3600

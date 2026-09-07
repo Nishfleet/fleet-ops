@@ -35,6 +35,46 @@ export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 export HOME="${HOME:-/home/nish}"
 export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH}"
 
+# Use the nishfleet-worker App token for any GitHub write. Fail closed if
+# the App cannot mint and no token was inherited from a parent organ, so a
+# dead App never falls through to the human gh identity (fleet-ops#3445).
+# Human gh is read-only for organs; GH Actions (tests) has no App creds and
+# stubs gh as read-only, so skip minting there.
+if [[ -z "${GH_TOKEN:-}" && "${GITHUB_ACTIONS:-}" != "true" && "${GH:-gh}" == "gh" ]]; then
+    export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
+    _wt="${NISHFLEET_WORKER_TOKEN_BIN:-${HOME:-/home/nish}/.local/bin/worker-token}"
+    _minted="$("$_wt" --print)" || { echo "fleet-ops#3445: $_wt --print failed - refusing human-gh writes" >&2; exit 1; }
+    eval "$_minted"
+    unset _wt _minted
+fi
+
+# GitHub secondary rate-limit state (fleet-ops#3445). Written when a write
+# fails with "submitted too quickly"; the gate below holds the whole tick
+# until the 60s x attempt backoff expires instead of failing the tick.
+GH_SECONDARY_STATE_DIR="${PI_INTAKE_GH_SECONDARY_STATE_DIR:-/home/nish/workspaces/agent-state/pi-intake}"
+GH_SECONDARY_STATE="$GH_SECONDARY_STATE_DIR/gh-secondary-rate.json"
+
+_gh_secondary_read() {
+    if [[ -f "$GH_SECONDARY_STATE" ]]; then
+        cat "$GH_SECONDARY_STATE" 2>/dev/null || echo '{}'
+    else
+        echo '{}'
+    fi
+}
+
+_gh_secondary_write() {
+    local attempt="$1" backoff_until="$2"
+    mkdir -p "$GH_SECONDARY_STATE_DIR"
+    python3 -c "import json,sys; json.dump({'submitted_too_quickly':1,'attempt':$attempt,'backoff_until':$backoff_until,'updated_at':$(date +%s)}, sys.stdout)" > "$GH_SECONDARY_STATE.tmp"
+    mv -f "$GH_SECONDARY_STATE.tmp" "$GH_SECONDARY_STATE"
+}
+
+_gh_secondary_clear() {
+    mkdir -p "$GH_SECONDARY_STATE_DIR"
+    python3 -c "import json,sys; json.dump({'submitted_too_quickly':0,'attempt':0,'backoff_until':0,'updated_at':$(date +%s)}, sys.stdout)" > "$GH_SECONDARY_STATE.tmp"
+    mv -f "$GH_SECONDARY_STATE.tmp" "$GH_SECONDARY_STATE"
+}
+
 # SYSTEMCTL seam (fleet-ops#1546): tests inject a fake to drive the
 # start-limit healer + post-condition verification deterministically.
 SYSTEMCTL="${SYSTEMCTL:-systemctl}"
@@ -53,6 +93,27 @@ if ! flock -n 9; then
     echo "pi-intake-tick: $REPO tick already running (no-op)"
     exit 0
 fi
+# fleet-ops#3695: worker-exit top-up debounce. pi-issue@ workers start this
+# tick from their stop path (systemd/pi-issue@.service ExecStopPost) so a
+# freed slot is refilled within a minute instead of at the next 20-minute
+# timer tick. A cohort finishing together must cost ONE tick, not one per
+# worker: a tick that starts within PI_INTAKE_DEBOUNCE_SEC of the previous
+# tick's finish sleeps out the remainder — holding the flock, so the rest of
+# the cohort no-ops above — and then runs once, seeing every slot the cohort
+# freed. It sleeps rather than skips so the last worker of a cohort can never
+# leave its slot idle until the timer. The timer tick pays the delay at most
+# once. The stamp lives in the runtime lockdir (tmpfs, per boot).
+_debounce_sec="${PI_INTAKE_DEBOUNCE_SEC:-60}"
+_debounce_stamp="$lockdir/${REPO}.last-tick"
+if [[ -f "$_debounce_stamp" ]]; then
+    _debounce_mtime=$(stat -c %Y "$_debounce_stamp" 2>/dev/null || echo 0)
+    _debounce_age=$(( $(date +%s) - _debounce_mtime ))
+    if (( _debounce_age >= 0 && _debounce_age < _debounce_sec )); then
+        echo "pi-intake-tick: $REPO tick finished ${_debounce_age}s ago (debounce ${_debounce_sec}s) — coalescing: sleep $(( _debounce_sec - _debounce_age ))s, then run"
+        sleep $(( _debounce_sec - _debounce_age ))
+    fi
+fi
+trap 'touch "$_debounce_stamp" 2>/dev/null || true' EXIT
 # ISSUE_STATE_DIR is used for the worker packet written for pi-issue-run.
 # It must NOT be named STATE_DIR: seat-lib.sh redefines that for its own
 # pi-packet state (watch.log, active-seats, attempts) when it is sourced below.
@@ -61,10 +122,95 @@ fi
 # a hardcoded /home/nish path crashes `set -e` with exit 1 on a GitHub-hosted
 # runner where the runner user cannot create /home/nish (fleet-ops#1407).
 ISSUE_STATE_DIR="${PI_INTAKE_ISSUE_STATE_DIR:-/home/nish/.local/state/pi-issues}"
+# fleet-ops#1455: the claims index is the durable record of which issues were
+# actually claimed in this tick. The fleet judge (fable-check.md) reads it
+# for the claims-signal; fleet-restore-drill (B.2) reads it to know which
+# issues are claimed after a restore. Overridable for tests so a GitHub-hosted runner
+# does not have to write under /home/nish.
+CLAIMS_LOG="${PI_INTAKE_CLAIMS_LOG:-/home/nish/workspaces/agent-state/ready-work-claims.log}"
+# fleet-ops#2133: reclaim cooldown. When pi-issue-failed-reap releases a
+# failed worker's claim back to agent-ready, it writes a per-issue
+# .cooldown marker file (UTC timestamp). Intake skips the issue for this
+# many seconds so the spawn-die-respawn loop is broken: the seat-health
+# ledger gets time to bench the killing seat, and the issue does not
+# immediately re-enter the claimable pool. 900s = 15min is > the seat
+# bench backoff (300s) and ~2x the intake timer interval, so recovery is
+# automatic once the cooldown expires. Overridable for tests.
+RECLAIM_COOLDOWN_S="${PI_INTAKE_RECLAIM_COOLDOWN_S:-900}"
+# fleet-ops#2462: hard cap on total re-claims per issue. The reclaim cooldown
+# (above) breaks the tight spawn-die-respawn loop, but an issue whose every
+# seat fails with a systemic provider error (503/429/500 storm, fleet-ops#1526)
+# still drains the seat pool one 900s cooldown at a time — 27 re-claims in
+# 24h despite the cooldown. MAX_RECLAIMS caps the TOTAL number of times an
+# issue can be re-claimed (first claim + re-claims) across all seats before
+# intake stops re-claiming it and escalates. The counter is per-issue in
+# $ATTEMPTS_DIR/pi-issue-${REPO}-${N}.reclaim-count; pi-issue-failed-reap
+# increments it when it releases a failed claim, and pi-issue-run records
+# the first (initial) claim. A successful PR open resets the counter to 0
+# so a legitimately-fixed issue is never permanently locked out.
+# Default 8: 1 initial + 7 re-claims gives the seat pool time to recover
+# (each seat bench is 600-900s, so 8 passes covers ~2h of provider storm)
+# without letting a stuck item starve the fleet for days.
+MAX_RECLAIMS="${PI_INTAKE_MAX_RECLAIMS:-8}"
+# fleet-ops#2772: claim-loop window gate. The #2462 reclaim-count cap is a
+# per-issue bump file that pi-issue-run RESETS on any non-empty-output run
+# (even one that opens no PR) and that only the failed-reap path increments
+# — so a seat-storm spin survives the cap (observed: fleet-ops line=2672
+# claimed 11x in 12h, 4x in the last 2h, dispatches_last_2h=0, #2772). This
+# gate counts raw claims for the same line from the claims log (the durable
+# append-only record, fleet-ops#1455) over a sliding window and fails the
+# claim LOUD (agent-blocked + machine-readable blocked-on) once
+# MAX_CLAIMS_IN_WINDOW claims happened inside RECLAIM_WINDOW_S — immune to
+# counter-file resets and to reap-path gaps. Defaults match the loop shape
+# that first flagged the spin: 4 claims in 2h. The 15-min reclaim cooldown
+# spaces failed claims, so 4-in-window is ~1h of continuous spinning, not a
+# burst of legitimate retries; and the gate sits AFTER the branch-liveness
+# check, so a live worker or open PR never trips it. Overridable for tests.
+RECLAIM_WINDOW_S="${PI_INTAKE_RECLAIM_WINDOW_S:-7200}"
+MAX_CLAIMS_IN_WINDOW="${PI_INTAKE_RECLAIM_MAX_CLAIMS:-4}"
+# The reclaim-cooldown reader below reads $ATTEMPTS_DIR/pi-issue-*.cooldown
+# — the same dir pi-issue-failed-reap writes (both use
+# ${PI_PACKET_STATE:-$HOME/.local/state/pi-packet}/attempts). seat-lib.sh
+# binds ATTEMPTS_DIR when it is sourced, but the test stub path (SEAT_LIB
+# override) does not, so under `set -u` the cooldown read killed the tick
+# mid-claim with an unbound variable and P14 CI went red on main
+# (fleet-ops#2281/#2326). Bind it here with the same default so every path
+# reaches that read with a defined value; seat-lib.sh re-sets the identical
+# path when it is sourced live, so behavior is unchanged.
+ATTEMPTS_DIR="${ATTEMPTS_DIR:-${PI_PACKET_STATE:-$HOME/.local/state/pi-packet}/attempts}"
 WORKER_PROMPT="/home/nish/.pi/agent/prompts/worker.md"
+# fleet-ops#3247: repo-conditional worker prompt blocks. The D1 schema +
+# gate-integrity block ships only for 0509 (ideally only when the issue body
+# names migrations/ or .github/); the GEO/AEO block ships only when the issue
+# carries a geo/aeo label. Assembled at packet-write below so non-0509 and
+# non-geo packets stay lean. Overridable for tests; checkout fallback so a
+# worktree run resolves the fragments before install.sh copies them.
+WORKER_BLOCKS_DIR="${PI_INTAKE_WORKER_BLOCKS_DIR:-/home/nish/.pi/agent/prompts/worker-blocks}"
+D1_GATE_INTEGRITY_BLOCK="d1-gate-integrity.md"
+GEO_AEO_BLOCK="geo-aeo.md"
+# Repo that receives the D1 + gate-integrity block. Overridable for tests.
+D1_GATE_REPO="${PI_INTAKE_D1_GATE_REPO:-0509}"
+# When non-empty, the D1 + gate-integrity block is further gated on the issue
+# body naming one of these substrings (newline-separated). Empty = always
+# append for the D1_GATE_REPO (the core requirement). Overridable for tests.
+D1_GATE_BODY_NEEDLES="${PI_INTAKE_D1_GATE_BODY_NEEDLES:-migrations/
+.github/}"
 # SEAT_LIB may be overridden by tests via env var (like pi-issue-run).
 # Default is the live install path; tests inject a stub via SEAT_LIB.
 SEAT_LIB="${SEAT_LIB:-/home/nish/.local/lib/pi-packet/seat-lib.sh}"
+# fleet-ops#1250: claim-step prior-art gate. Tests override the path.
+PRIOR_ART_BIN="${PRIOR_ART_CLAIM_CHECK:-$HOME/.local/bin/prior-art-claim-check}"
+# fleet-ops#3254: self-maintenance claim budget. In a fleet-ops tick every
+# claim is a self-maintenance (control-plane) claim, so the tick caps them
+# at SELF_MAINT_CLAIM_PCT of the available slots (floor 1) so control-plane
+# work cannot devour the fleet; product ticks (0509) stay uncapped. A
+# critical-path / escalate-senior issue is exempt (claims even past the
+# cap). The fleet-ops#180 gap-audit yield rule (which made product repos
+# yield to fleet-ops gap-audit work) is retired by this cap. Overridable
+# for tests.
+SELF_MAINT_CLAIM_PCT="${PI_INTAKE_SELF_MAINT_CLAIM_PCT:-20}"
+# Label that marks a self-maintenance issue as exempt from the 20% cap.
+CRITICAL_PATH_LABEL="${PI_INTAKE_CRITICAL_PATH_LABEL:-critical-path}"
 # PRECEDENCE_BAND_LIB may be overridden by tests. Checkout fallback so a
 # worktree run still loads the sibling lib before install.sh copies it.
 PRECEDENCE_BAND_LIB="${PRECEDENCE_BAND_LIB:-/home/nish/.local/lib/pi-packet/precedence-band.sh}"
@@ -72,14 +218,36 @@ _tick_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ ! -f "$PRECEDENCE_BAND_LIB" && -f "$_tick_dir/precedence-band.sh" ]]; then
     PRECEDENCE_BAND_LIB="$_tick_dir/precedence-band.sh"
 fi
+# Checkout fallback for the worker-blocks dir (same pattern as
+# PRECEDENCE_BAND_LIB above): a worktree run resolves the fragments from the
+# repo checkout before install.sh symlinks them into ~/.pi/agent/prompts.
+if [[ ! -d "$WORKER_BLOCKS_DIR" ]]; then
+    _blocks_fallback="$_tick_dir/../prompts/worker-blocks"
+    if [[ -d "$_blocks_fallback" ]]; then
+        WORKER_BLOCKS_DIR="$(cd "$_blocks_fallback" && pwd)"
+    fi
+fi
+# fleet-ops#3309: claim-step size bounce. Tests override the path.
+SPEC_GATE_PY="${AGENT_READY_SPEC_GATE:-}"
+if [[ -z "$SPEC_GATE_PY" ]]; then
+    if [[ -f "$_tick_dir/agent-ready-spec-gate.py" ]]; then
+        SPEC_GATE_PY="$_tick_dir/agent-ready-spec-gate.py"
+    elif [[ -f "$_tick_dir/../lib/agent-ready-spec-gate.py" ]]; then
+        SPEC_GATE_PY="$_tick_dir/../lib/agent-ready-spec-gate.py"
+    else
+        SPEC_GATE_PY="$HOME/.local/lib/pi-packet/agent-ready-spec-gate.py"
+    fi
+fi
 [[ -f "$PRECEDENCE_BAND_LIB" ]] || {
     echo "pi-intake-tick: precedence-band lib missing: $PRECEDENCE_BAND_LIB" >&2
     exit 1
 }
 
 # shellcheck source=/home/nish/.local/lib/pi-packet/seat-lib.sh
+# shellcheck disable=SC1091  # external lib, absent in hosted CI
 . "$SEAT_LIB"
 # shellcheck source=/home/nish/.local/lib/pi-packet/precedence-band.sh
+# shellcheck disable=SC1091  # external lib, absent in hosted CI
 . "$PRECEDENCE_BAND_LIB"
 # Each tick starts with a clean floor latch. The file is keyed on $$ so a
 # leftover from a recycled PID cannot freeze the floor for this tick
@@ -90,6 +258,87 @@ precedence_band_pending_clear
 # starvation floor frozen for the whole tick.
 precedence_band_pending_starvation_clear
 
+if [[ ! -x "$PRIOR_ART_BIN" ]]; then
+    echo "pi-intake-tick: prior-art-claim-check missing at $PRIOR_ART_BIN" >&2
+    exit 1
+fi
+if [[ ! -f "$SPEC_GATE_PY" ]]; then
+    echo "pi-intake-tick: agent-ready-spec-gate missing at $SPEC_GATE_PY" >&2
+    exit 1
+fi
+
+# GitHub API rate-limit PRE-CHECK (fleet-ops#2523). The tick makes several
+# gh calls (issue list, PR list, label edits) before the mid-tick rate-limit
+# gate (fleet-ops#1350) below. When the core budget is nearly exhausted, those
+# calls fail or burn seats on retries, stalling dispatch. This pre-check runs
+# BEFORE the first gh call and skips the whole tick (exit 0) when headroom is
+# low. It reads the SAME side-car state file the exporter writes every 60s
+# (agent-state/pi-intake/gh-rate-limit.json) — a cached result, never a fresh
+# gh api call that would itself consume quota. The tick runs every 5 min, so
+# skipping one tick is safe; the next tick re-checks. Thresholds: skip when
+# remaining < 500 OR headroom < 10% (remaining/limit). A missing or stale
+# state file fails OPEN (the throttle is a soft gate, not a blocker).
+gh_rl_pre_path="${PI_INTAKE_GH_RATE_LIMIT_STATE:-/home/nish/workspaces/agent-state/pi-intake/gh-rate-limit.json}"
+gh_rl_pre_max_age="${PI_INTAKE_GH_RATE_LIMIT_MAX_AGE:-120}"
+gh_rl_pre_skip_min="${PI_INTAKE_GH_RATE_LIMIT_SKIP_MIN:-500}"
+gh_rl_pre_skip_pct="${PI_INTAKE_GH_RATE_LIMIT_SKIP_PCT:-10}"
+if [[ -r "$gh_rl_pre_path" ]]; then
+    _gh_rl_pre_json=$(cat "$gh_rl_pre_path" 2>/dev/null) || _gh_rl_pre_json=
+    if [[ -n "$_gh_rl_pre_json" ]]; then
+        # Prefer resources.core: the exporter MIN-aggregates remaining/limit
+        # across core/search/graphql, so top-level is the search floor (30/30)
+        # while REST core is ~5000. The #4352 pre-check remaining<500 then
+        # skipped every tick. Fall back to top-level for old sidecars.
+        _gh_rl_pre_remaining=$(printf '%s' "$_gh_rl_pre_json" | jq -r '.resources.core.remaining // .remaining // 0' 2>/dev/null) || _gh_rl_pre_remaining=0
+        _gh_rl_pre_limit=$(printf '%s' "$_gh_rl_pre_json" | jq -r '.resources.core.limit // .limit // 0' 2>/dev/null) || _gh_rl_pre_limit=0
+        _gh_rl_pre_fetched=$(printf '%s' "$_gh_rl_pre_json" | jq -r '.fetched_at // 0' 2>/dev/null) || _gh_rl_pre_fetched=0
+        _gh_rl_pre_now=$(date +%s)
+        _gh_rl_pre_age=$(( _gh_rl_pre_now - ${_gh_rl_pre_fetched%.*} ))
+        if (( _gh_rl_pre_age > gh_rl_pre_max_age )); then
+            echo "gh rate-limit pre-check state stale (age=${_gh_rl_pre_age}s > max=${gh_rl_pre_max_age}s); failing open — gate: gh_rate_limit pre-check stale"
+        else
+            _gh_rl_pre_headroom=0
+            if (( _gh_rl_pre_limit > 0 )); then
+                _gh_rl_pre_headroom=$(( _gh_rl_pre_remaining * 100 / _gh_rl_pre_limit ))
+            fi
+            if (( _gh_rl_pre_remaining < gh_rl_pre_skip_min )) || (( _gh_rl_pre_headroom < gh_rl_pre_skip_pct )); then
+                # Export fleet_intake_tick_skipped_rate_limit_total (per-repo
+                # prom file, same convention as the reconciler/umbrella counters).
+                _rl_skip_prom_base="${PI_INTAKE_RL_SKIP_PROM:-/var/lib/prometheus/node-exporter/fleet-intake-tick-skipped-rate-limit}"
+                _rl_skip_prom="${_rl_skip_prom_base}-${REPO}.prom"
+                _rl_skip_prev=0
+                if [[ -f "$_rl_skip_prom" ]]; then
+                    _rl_skip_prev=$(awk -v r="$REPO" '
+                        $0 ~ "fleet_intake_tick_skipped_rate_limit_total\\{repo=\""r"\"\\}" {
+                            gsub(/[^0-9.]/, "", $2); v = int($2);
+                            if (v > 0) print v; else print 0; exit
+                        }
+                        END { if (NR == 0) print 0 }
+                    ' "$_rl_skip_prom" 2>/dev/null || echo 0)
+                    _rl_skip_prev="${_rl_skip_prev:-0}"
+                fi
+                _rl_skip_new=$(( _rl_skip_prev + 1 ))
+                mkdir -p "$(dirname "$_rl_skip_prom")" 2>/dev/null || true
+                if {
+                    printf '# HELP fleet_intake_tick_skipped_rate_limit_total Cumulative number of intake ticks skipped because GitHub API rate-limit headroom was low (fleet-ops#2523).
+'
+                    printf '# TYPE fleet_intake_tick_skipped_rate_limit_total counter
+'
+                    printf 'fleet_intake_tick_skipped_rate_limit_total{repo="%s"} %d\n' "$REPO" "$_rl_skip_new"
+                } > "$_rl_skip_prom.tmp" 2>/dev/null; then
+                    mv "$_rl_skip_prom.tmp" "$_rl_skip_prom" 2>/dev/null || true
+                fi
+                echo "rate-limit headroom low, skipping intake tick (remaining=${_gh_rl_pre_remaining}/${_gh_rl_pre_limit}, headroom=${_gh_rl_pre_headroom}% < ${gh_rl_pre_skip_pct}% or < ${gh_rl_pre_skip_min}); skipped_total=$_rl_skip_new"
+                exit 0
+            fi
+        fi
+    else
+        echo "gh rate-limit pre-check state file unreadable or empty; failing open — gate: gh_rate_limit pre-check missing"
+    fi
+else
+    echo "gh rate-limit pre-check state file missing; failing open — gate: gh_rate_limit pre-check missing"
+fi
+
 # Step 1: list ready work
 # Limit 250 (auditor 2026-08-28, summon unit-failure fleet-heartbeat): the
 # prior --limit 50 returned only the 50 NEWEST agent-ready issues (gh issue
@@ -99,10 +348,82 @@ precedence_band_pending_starvation_clear
 # (all visible issues were non-leverage → skip-surge-leverage), causing
 # fleet starvation (222 ready, 0 running). 250 covers the observed ceiling
 # with headroom; the early surge skip below keeps the tick fast.
-issues_json=$(gh issue list -R "$FULL" -l agent-ready --state open --json number,title --limit 250 2>&1) || {
+issues_json=$(gh issue list -R "$FULL" -l agent-ready --state open --json number,title,labels --limit 250 2>&1) || {
     echo "gh issue list failed: $issues_json" >&2
     exit 1
 }
+
+# fleet-ops#234: escalate-senior issues are senior-panel-owned, never a
+# regular-worker claim. The model-based orderer (pi-intake-priority order,
+# lib/intake-priority.sh) drops them via select(.escalation != true); the
+# deterministic tick must do the same or regular workers get dispatched on
+# senior-auditor escalations (the #2007 live class: pi-issue@fleet-ops-2007
+# claimed an [escalate-senior] scout-futility wrapper that
+# pi-escalation-audit was already convening a three-senior panel on). The
+# label is fetched above so the filter is a pure jq pass; the senior-auditor
+# panel lists escalate-senior directly (not agent-ready), so dropping them
+# here does not hide them from the panel.
+ESCALATE_LABEL="${PI_INTAKE_ESCALATE_LABEL:-escalate-senior}"
+issues_json=$(jq -c --arg esc "$ESCALATE_LABEL" \
+    '[.[] | select((.labels // []) | map(if type == "object" then (.name // empty) else . end) | index($esc) == null)]' \
+    <<<"$issues_json" 2>/dev/null || printf '[]')
+
+# fleet-ops#3295: umbrella-labeled issues are tracking parents, not
+# claimable work (label desc: "tracking parent; not claimable"). The
+# lifecycle-label-sweep guard stops NEW umbrella issues from getting
+# agent-ready, but an umbrella issue may already carry agent-ready (e.g.
+# #3128 was labeled agent-ready before this guard landed, or a manual
+# label edit re-added it). This filter is the intake-side guard so the
+# tick never dispatches a worker on a tracker with no implementable work
+# — the dead-seat loop where the worker claims, finds nothing to do, and
+# dies or releases. Same jq shape as the escalate-senior filter above;
+# the label is fetched in the initial list so this is a pure jq pass.
+# fleet_umbrella_dispatch_total counts umbrella issues found in the
+# agent-ready list BEFORE this filter drops them — a non-zero value means
+# the sweep guard broke or someone manually labeled an umbrella issue
+# agent-ready, but this filter still prevents the dispatch. The counter
+# is informational (not a blocker); a sustained rise is a regression
+# signal on the sweep guard.
+UMBRELLA_LABEL="${PI_INTAKE_UMBRELLA_LABEL:-umbrella}"
+umbrella_dispatch_seen=$(printf '%s' "$issues_json" | jq --arg umb "$UMBRELLA_LABEL" \
+    '[(. // []) | .[] | select((.labels // []) | map(if type == "object" then (.name // empty) else . end) | index($umb) != null)] | length' 2>/dev/null || echo 0)
+issues_json=$(jq -c --arg umb "$UMBRELLA_LABEL" \
+    '[.[] | select((.labels // []) | map(if type == "object" then (.name // empty) else . end) | index($umb) == null)]' \
+    <<<"$issues_json" 2>/dev/null || printf '[]')
+
+# fleet-ops#3295: export fleet_umbrella_dispatch_total — cumulative count
+# of umbrella-labeled issues found in the agent-ready list (the near-
+# dispatch count). With both guards (sweep + intake filter) this trends to
+# 0; a non-zero value means the sweep guard broke or a manual label edit
+# re-added agent-ready to an umbrella issue, but the intake filter still
+# prevents the dispatch. Same per-repo prom-file convention as the
+# reconciler counter. Written BEFORE the no-ready-issues early exit so a
+# tick that found only umbrella issues still records them. Tests override
+# the path via PI_INTAKE_UMBRELLA_PROM.
+umbrella_prom_base="${PI_INTAKE_UMBRELLA_PROM:-/var/lib/prometheus/node-exporter/fleet-umbrella-dispatch}"
+umbrella_prom="${umbrella_prom_base}-${REPO}.prom"
+_umbrella_prev_total=0
+if [[ -f "$umbrella_prom" ]]; then
+    _umbrella_prev_total=$(awk -v r="$REPO" '
+        $0 ~ "fleet_umbrella_dispatch_total\\{repo=\""r"\"\\}" {
+            gsub(/[^0-9.]/, "", $2); v = int($2);
+            if (v > 0) print v; else print 0; exit
+        }
+        END { if (NR == 0) print 0 }
+    ' "$umbrella_prom" 2>/dev/null || echo 0)
+    _umbrella_prev_total="${_umbrella_prev_total:-0}"
+fi
+_umbrella_new_total=$(( _umbrella_prev_total + umbrella_dispatch_seen ))
+if {
+    printf '# HELP fleet_umbrella_dispatch_total Cumulative number of umbrella-labeled issues found in the agent-ready list by the intake tick (fleet-ops#3295). Trends to 0 with both guards; non-zero means the sweep guard broke but the intake filter still prevents dispatch.\n'
+    printf '# TYPE fleet_umbrella_dispatch_total counter\n'
+    printf 'fleet_umbrella_dispatch_total{repo="%s"} %d\n' "$REPO" "$_umbrella_new_total"
+} > "$umbrella_prom.tmp" 2>/dev/null; then
+    mv "$umbrella_prom.tmp" "$umbrella_prom" 2>/dev/null || true
+fi
+if (( umbrella_dispatch_seen > 0 )); then
+    echo "umbrella-dispatch-seen: delta=$umbrella_dispatch_seen total=$_umbrella_new_total repo=$REPO (intake filter prevented dispatch)"
+fi
 
 # fleet-ops#1464 — reconciler-caught counter. Every time the poll finds
 # ready work, it means the GH webhook (workers/github-push-forward/ →
@@ -114,7 +435,7 @@ issues_json=$(gh issue list -R "$FULL" -l agent-ready --state open --json number
 # fleet-intake-reconciler-stale alerts on (see config/fleet_rules.yml).
 #
 # Per-repo prom file (matches the existing per-repo metric convention,
-# e.g. fleet-opus-heartbeat.prom is repo-scoped via Pi seat labels):
+# e.g. fleet-intake-reconciler-<repo>.prom is repo-scoped via Pi seat labels):
 # a single shared file would be clobbered by parallel pi-intake@<repo>
 # timers. Naming: ${base}-<repo>.prom, default base fleet-intake-reconciler.
 reconciler_caught=0
@@ -129,22 +450,278 @@ reconciler_prom="${reconciler_prom_base}-${REPO}.prom"
 # is the intake-side guard so the two never fight. Filtering on body text
 # (not just label) also covers the stale-label window where an issue is still
 # agent-ready but carries a blocker.
+# fleet-ops#4395 belt-and-braces: a `blocked-on:` line naming an issue/PR that
+# is CLOSED/MERGED must NOT count as blocked. blocked-reconcile owns the
+# agent-blocked label and clears closed-ref blockers on its 30-min sweep, but
+# the intake-side guard must not re-claim an issue whose blocker is already
+# resolved (the stale-label window). This helper resolves each machine-
+# checkable blocker target's live state via gh and returns 0 (blocked) only
+# while at least one target is still open. Special markers (nish-decision,
+# orchestrator, infra, senior-review) are not issue refs and always count as
+# blocked. Fail-safe: a gh error leaves the issue blocked (never claim on a
+# lookup failure).
+#
+# Args: $1=body  $2=repo (Nishfleet/<repo>)  $3=issue number
+# Returns: 0 = blocked (do not claim), 1 = not blocked (claimable)
 blocked_filter() {
+    local body="$1" repo="$2" num="$3"
+    local line ref owner rname target_num
+    local any_machine=0 any_open=0
+    if ! printf '%s' "$body" | grep -qE '^blocked-on:'; then
+        return 1
+    fi
+    while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        ref=$(printf '%s' "$line" | sed -E 's/^blocked-on:[[:space:]]*//' | sed -E 's/[[:space:]]+$//')
+        case "$ref" in
+            nish-decision|orchestrator|infra|senior-review)
+                # Special marker — not an issue ref; always a live blocker.
+                any_open=1
+                continue
+                ;;
+        esac
+        # Resolve the target ref to owner/repo/number.
+        if [[ "$ref" =~ ^https://github\.com/([^/]+)/([^/]+)/(issues|pull)/([0-9]+)/?$ ]]; then
+            owner="${BASH_REMATCH[1]}"; rname="${BASH_REMATCH[2]}"
+            target_num="${BASH_REMATCH[4]}"
+        elif [[ "$ref" =~ ^([^/]+)/([^/]+)#([0-9]+)$ ]]; then
+            owner="${BASH_REMATCH[1]}"; rname="${BASH_REMATCH[2]}"; target_num="${BASH_REMATCH[3]}"
+        elif [[ "$ref" =~ ^#([0-9]+)$ ]]; then
+            owner="${repo%%/*}"; rname="${repo#*/}"; target_num="${BASH_REMATCH[1]}"
+        else
+            # Unparseable ref — treat as a live blocker (fail-safe).
+            any_open=1
+            continue
+        fi
+        any_machine=1
+        # Resolve the target's live state. A PR is checked via the pulls
+        # endpoint so a merged PR counts as cleared.
+        local state_json is_pr state merged
+        if ! state_json=$(gh api "repos/${owner}/${rname}/issues/${target_num}" 2>/dev/null); then
+            any_open=1
+            continue
+        fi
+        is_pr=$(printf '%s' "$state_json" | jq -r 'if .pull_request then "yes" else "no" end' 2>/dev/null || echo no)
+        if [ "$is_pr" = "yes" ]; then
+            if ! state_json=$(gh api "repos/${owner}/${rname}/pulls/${target_num}" 2>/dev/null); then
+                any_open=1
+                continue
+            fi
+            merged=$(printf '%s' "$state_json" | jq -r '.merged' 2>/dev/null || echo false)
+            if [ "$merged" = "true" ]; then
+                # Merged PR clears the blocker.
+                continue
+            fi
+            # A closed-unmerged PR is still a blocker (fleet-ops#364).
+            any_open=1
+            continue
+        fi
+        state=$(printf '%s' "$state_json" | jq -r '.state' 2>/dev/null || echo open)
+        if [ "$state" != "closed" ]; then
+            any_open=1
+        fi
+    done < <(printf '%s' "$body" | grep -E '^blocked-on:')
+    if [ "$any_machine" -eq 1 ] && [ "$any_open" -eq 0 ]; then
+        echo "issue $num ($repo): stale blocker — all blocked-on targets closed/merged; letting through"
+        return 1
+    fi
+    return 0
+}
+
+# Vacation park (fleet-ops#1165, vacation-audit-20260827 finding 12):
+# 0509's required-verifier-integrity gate blocks any PR that touches a
+# protected verifier/deploy file unless a repo admin posts an exact
+# `verifier-attest: <40-hex head sha>` comment. The repo has exactly one
+# collaborator, so independent APPROVED review is structurally impossible
+# and the sole-admin attestation is the only unblock — and workers must
+# NEVER post that comment (the 2026-08-26 attestation breach). During
+# Nish's vacation window, parking these issues at intake prevents workers
+# from opening attest-stuck PRs that sit red until Nish returns (existing
+# red PRs #1295/#1281/#1273 stay open; this only stops NEW claims).
+#
+# The skip is date-bounded: after PROTECTED_VERIFIER_VACATION_UNTIL the
+# filter passes and intake resumes — the issue stays agent-ready throughout
+# the window, so no unpark/relabel mechanism is needed. The gate itself is
+# unchanged (do not weaken or remove it). All seams are env-overridable so
+# the regression test can drive the date, repo, and file list without
+# touching the real 0509 checkout or the clock.
+PROTECTED_VERIFIER_VACATION_REPO="${PI_INTAKE_PROTECTED_VERIFIER_VACATION_REPO:-0509}"
+PROTECTED_VERIFIER_VACATION_FROM="${PI_INTAKE_PROTECTED_VERIFIER_VACATION_FROM:-2026-08-28}"
+PROTECTED_VERIFIER_VACATION_UNTIL="${PI_INTAKE_PROTECTED_VERIFIER_VACATION_UNTIL:-2026-09-08}"
+# Mirrors the protected_files list in
+# 0509 .github/scripts/required-verifier-integrity.sh. A drift here vs.
+# that script is a follow-up, not a blocker for this park.
+_pvv_default_files=(
+    ".github/workflows/ci.yml"
+    ".github/workflows/secret-scan.yml"
+    ".github/workflows/required-verifier-integrity.yml"
+    ".github/scripts/required-verifier-integrity.sh"
+    ".github/scripts/test-required-verifier-integrity.sh"
+    ".github/workflows/deploy-production.yml"
+    ".github/workflows/finalize-production-soak.yml"
+    "scripts/ci-verify-production-candidate.sh"
+    "scripts/ci-verify-provider-main-cas.sh"
+)
+protected_verifier_vacation_filter() {
+    # $1 = issue body. Returns 0 (skip this issue) when a protected
+    # verifier/deploy path appears in the body AND today is inside the
+    # vacation window [FROM, UNTIL] inclusive. Returns 1 otherwise.
     local body="$1"
-    if printf '%s' "$body" | grep -qE '^blocked-on:'; then
-        return 0
+    [[ "$REPO" == "$PROTECTED_VERIFIER_VACATION_REPO" ]] || return 1
+    local today="${PI_INTAKE_PROTECTED_VERIFIER_VACATION_TODAY:-$(date -u +%Y-%m-%d)}"
+    # YYYY-MM-DD lexicographic compare == chronological. Skip only inside
+    # the window; after UNTIL the filter passes so intake resumes.
+    if [[ "$today" < "$PROTECTED_VERIFIER_VACATION_FROM" \
+          || "$today" > "$PROTECTED_VERIFIER_VACATION_UNTIL" ]]; then
+        return 1
+    fi
+    local f
+    if [[ -n "${PI_INTAKE_PROTECTED_VERIFIER_VACATION_FILES:-}" ]]; then
+        while IFS= read -r f; do
+            [[ -n "$f" ]] || continue
+            if printf '%s' "$body" | grep -qF -- "$f"; then
+                return 0
+            fi
+        done <<<"$PI_INTAKE_PROTECTED_VERIFIER_VACATION_FILES"
+    else
+        for f in "${_pvv_default_files[@]}"; do
+            if printf '%s' "$body" | grep -qF -- "$f"; then
+                return 0
+            fi
+        done
     fi
     return 1
 }
 
+# fleet-ops#3247: repo-conditional worker prompt blocks. Two helpers decide
+# whether a conditional fragment is appended to the packet at write time:
+#   d1_gate_integrity_needed: repo == D1_GATE_REPO (0509) AND, when
+#     D1_GATE_BODY_NEEDLES is non-empty, the issue body names at least one
+#     needle (migrations/ or .github/). Returns 0 = append, 1 = skip.
+#   geo_aeo_needed: the issue labels include a name containing "geo" or "aeo"
+#     (case-insensitive). Returns 0 = append, 1 = skip.
+# Both are pure functions of ($REPO, $body, labels_json) — no side effects, no
+# network — so the bash drill in the regression test can reproduce them
+# verbatim without a live gh/systemd environment.
+d1_gate_integrity_needed() {
+    # $1 = issue body. Uses $REPO from the tick scope.
+    local body="$1"
+    [[ "$REPO" == "$D1_GATE_REPO" ]] || return 1
+    # No body needles configured = always append for the D1 gate repo.
+    [[ -n "$D1_GATE_BODY_NEEDLES" ]] || return 0
+    local needle
+    while IFS= read -r needle; do
+        [[ -n "$needle" ]] || continue
+        if printf '%s' "$body" | grep -qF -- "$needle"; then
+            return 0
+        fi
+    done <<<"$D1_GATE_BODY_NEEDLES"
+    return 1
+}
+
+# fleet-ops#3120/#3238 (2026-09-05): difficulty comes from the ISSUE, never from
+# the packet size. The packet is worker.md (~32 KB) + a TARGET line, so
+# seat-lib's task_weight fallback (HEAVY_PKT_BYTES=8192) classified EVERY issue
+# heavy and routed all work to the small capable pool while ollama and the free
+# seats sat idle. Rules: keystone label/title -> keystone; label heavy, or body
+# > DIFFICULTY_HEAVY_BODY_BYTES, or more than DIFFICULTY_HEAVY_REQUIRED
+# `- required:` lines -> heavy; else light. Emitted as the packet's first line,
+# which packet_difficulty already honours.
+DIFFICULTY_HEAVY_BODY_BYTES="${PI_INTAKE_DIFFICULTY_HEAVY_BODY_BYTES:-6000}"
+DIFFICULTY_HEAVY_REQUIRED="${PI_INTAKE_DIFFICULTY_HEAVY_REQUIRED:-2}"
+issue_difficulty() {
+    local labels_json="$1" title="$2" body="$3" lowered bytes req marker
+    # keystone only by LABEL or an explicit `keystone:` title prefix — a title that
+    # merely mentions the word (e.g. "Manager loop for heavy/keystone issues — part 3/9")
+    # must not route a one-line child to the senior seats (2026-09-05 misfire).
+    lowered="${title,,}"
+    if [[ "$labels_json" == *'"keystone"'* || "$lowered" == keystone:* ]]; then echo "keystone"; return; fi
+    if [[ "$labels_json" == *'"heavy"'* ]]; then echo "heavy"; return; fi
+    # fleet-ops#4248: an explicit author marker in the issue body decides the
+    # class when no keystone/heavy LABEL already did. Nish's standing lever for
+    # spending the Cursor senior pool is "put `difficulty: senior-review` at the
+    # top of the issue body so pick_seat routes it to the senior ladder", but
+    # intake recomputed the header from title/labels/body-size and wrote its own
+    # value as the packet's FIRST line; packet_difficulty() (lib/seat-lib.sh)
+    # takes the first match, so the marker was silently dropped and
+    # senior-review work ran as weight=light on a worker seat. Deliberately
+    # placed AFTER the label checks: the marker can only decide an unlabelled
+    # packet, never downgrade a curated keystone/heavy label. Vocabulary is kept
+    # identical to packet_difficulty(): keystone|senior-review|heavy|light, plus
+    # the `keystone: true` / `senior-review: true` boolean forms it already
+    # documents. An unknown value falls through to the size heuristic, so a typo
+    # degrades to the previous behaviour rather than emitting an unroutable
+    # packet.
+    marker=$(printf '%s\n' "${body,,}" \
+        | grep -oE '^[[:space:]]*difficulty:[[:space:]]*(keystone|senior-review|heavy|light)[[:space:]]*$' \
+        | head -1 || true)
+    if [[ -n "$marker" ]]; then
+        marker="${marker#*:}"
+        echo "${marker//[[:space:]]/}"
+        return
+    fi
+    if printf '%s\n' "${body,,}" \
+        | grep -qE '^[[:space:]]*keystone:[[:space:]]*(true|yes|1)[[:space:]]*$'; then
+        echo "keystone"; return
+    fi
+    if printf '%s\n' "${body,,}" \
+        | grep -qE '^[[:space:]]*senior-review:[[:space:]]*(true|yes|1)[[:space:]]*$'; then
+        echo "senior-review"; return
+    fi
+    bytes=$(printf '%s' "$body" | wc -c); bytes=${bytes//[^0-9]/}
+    req=$(printf '%s\n' "$body" | grep -ciE '^[[:space:]]*-[[:space:]]*required[^:]*:' || true)
+    if (( ${bytes:-0} > DIFFICULTY_HEAVY_BODY_BYTES )) || (( ${req:-0} > DIFFICULTY_HEAVY_REQUIRED )); then
+        echo "heavy"; return
+    fi
+    echo "light"
+}
+
+geo_aeo_needed() {
+    # $1 = labels JSON array (from gh issue list --json labels), e.g.
+    # [{"name":"agent-ready",...},{"name":"geo",...}]. Returns 0 when any
+    # label name contains "geo" or "aeo" (case-insensitive).
+    local labels_json="${1:-}"
+    [[ -n "$labels_json" ]] || return 1
+    printf '%s' "$labels_json" | jq -e \
+        'any(.[]?; (.name // "") | test("geo|aeo"; "i"))' >/dev/null 2>&1
+}
+
+# fleet-ops#4016: event-driven work supply. An empty ready pool is the one
+# signal that this repo ran out of work; do not sit on it until the
+# 4-hourly pi-scout@<repo>.timer fires (2026-09-06T16:47Z: 0509 ready=0 for
+# hours while the scout timer's next slot was 20:00Z). Start the repo's own
+# scout unit from the empty branch. No new organ: the unit's ExecCondition
+# (fleet-work-supply-canary gate: rest at >=24h runway) and the futility
+# tracker (ExecStartPre/ExecStopPost) still apply, so this only runs a
+# scout the timer would have been allowed to run. Debounce: skip while a
+# scout run is live (active/activating); the 20-min tick period bounds
+# re-triggers when the run stays dry. PI_INTAKE_SCOUT_ON_EMPTY=0 disables.
+scout_on_empty() {
+    [[ "${PI_INTAKE_SCOUT_ON_EMPTY:-1}" == "1" ]] || return 0
+    local unit="pi-scout@${REPO}.service" state
+    state=$("$SYSTEMCTL" --user show -p ActiveState --value "$unit" 2>/dev/null || true)
+    case "$state" in
+        active|activating|reloading)
+            echo "scout-on-empty: $unit $state — skip (debounce)"
+            return 0
+            ;;
+    esac
+    echo "scout-on-empty: ready=0 for $REPO — starting $unit (ExecCondition gate applies)"
+    "$SYSTEMCTL" --user start --no-block "$unit" 2>&1 \
+        || echo "scout-on-empty: start $unit failed rc=$? (non-fatal)"
+    return 0
+}
+
 if [[ -z "$issues_json" ]] || [[ "$issues_json" == "[]" ]]; then
     echo "no ready issues"
+    scout_on_empty
     exit 0
 fi
 
 ready_count=$(jq 'length' <<<"$issues_json" 2>/dev/null || echo 0)
 if (( ready_count == 0 )); then
     echo "no ready issues"
+    scout_on_empty
     exit 0
 fi
 
@@ -178,7 +755,9 @@ fi
 _reconciler_new_total=$(( _reconciler_prev_total + reconciler_caught ))
 
 mkdir -p "$(dirname "$reconciler_prom")" 2>/dev/null || true
-{
+# Best-effort prom export: an if/then (not A && B || C) keeps set -e from
+# killing the tick on a transient prom-write failure (SC2015-safe).
+if {
     printf '# HELP fleet_intake_reconciler_caught_total Cumulative number of agent-ready issues the slow poll caught that the GitHub webhook did not catch first (fleet-ops#1464).\n'
     printf '# TYPE fleet_intake_reconciler_caught_total counter\n'
     printf 'fleet_intake_reconciler_caught_total{repo="%s"} %d\n' "$REPO" "$_reconciler_new_total"
@@ -188,8 +767,342 @@ mkdir -p "$(dirname "$reconciler_prom")" 2>/dev/null || true
     printf '# HELP fleet_intake_reconciler_last_count Number of agent-ready issues found by the most recent slow poll (per repo).\n'
     printf '# TYPE fleet_intake_reconciler_last_count gauge\n'
     printf 'fleet_intake_reconciler_last_count{repo="%s"} %d\n' "$REPO" "$reconciler_caught"
-} > "$reconciler_prom.tmp" 2>/dev/null && mv "$reconciler_prom.tmp" "$reconciler_prom" 2>/dev/null || true
+} > "$reconciler_prom.tmp" 2>/dev/null; then
+    mv "$reconciler_prom.tmp" "$reconciler_prom" 2>/dev/null || true
+fi
 echo "reconciler-caught: delta=$reconciler_caught total=$_reconciler_new_total repo=$REPO prom=$reconciler_prom"
+
+# >>> audition-lane funcs BEGIN (extracted by tests/audition-lane.test.sh — keep both markers)
+# fleet-ops#3322: audition lane. Inject new candidate seats from
+# config/model-candidates.json (a committed seed from the Last30Days best-value
+# research doc) into the LIVE caps as cap 1, audition: true, light issues only.
+# Retire audition seats at 10 sessions / 7 days / $1 cost cap, and file a
+# verdict issue (promote or audition-failed) via fleet-issue-file so a worker
+# lands the config/seat-caps.json PR. No new organ — reuses the existing
+# fleet-issue-file filer and the existing yield ledger. Prepaid-quota
+# providers are never auditioned (defence in depth at read time).
+MODEL_CANDIDATES_JSON="${PI_MODEL_CANDIDATES_JSON:-$HOME/.local/state/pi-packet/model-candidates.json}"
+AUDITION_DROPPED_JSON="${PI_AUDITION_DROPPED_JSON:-$HOME/.local/state/pi-packet/audition-dropped.json}"
+# fleet-ops#3811: seats the tick may NOT remove (config-declared provider-level
+# audition:true, e.g. xkiro) get their verdict filed once into this map so the
+# tick does not re-file the same verdict issue every tick while the seat waits
+# on its config/seat-caps.json PR.
+AUDITION_VERDICTED_JSON="${PI_AUDITION_VERDICTED_JSON:-$HOME/.local/state/pi-packet/audition-verdicted.json}"
+AUDITION_MAX_SESSIONS="${PI_AUDITION_MAX_SESSIONS:-10}"
+AUDITION_MAX_AGE_S="${PI_AUDITION_MAX_AGE_S:-604800}"   # 7 days
+AUDITION_MAX_COST_USD="${PI_AUDITION_MAX_COST_USD:-1}"
+AUDITION_RETRY_DAYS="${PI_AUDITION_RETRY_DAYS:-30}"
+_ISSUE_FILE_BIN="${FLEET_ISSUE_FILE:-$(cd "$_tick_dir/.." && pwd)/bin/fleet-issue-file}"
+[[ -x "$_ISSUE_FILE_BIN" ]] || _ISSUE_FILE_BIN="${FLEET_ISSUE_FILE:-$HOME/.local/bin/fleet-issue-file}"
+
+audition_inject_and_retire() {
+    [[ -f "$MODEL_CANDIDATES_JSON" ]] || return 0
+    [[ -f "$SEAT_CAPS_JSON" ]] || return 0
+    command -v jq >/dev/null 2>&1 || return 0
+
+    # Load the prepaid provider set from the LIVE caps (defence in depth:
+    # the candidate file excludes prepaid, but the tick re-checks here so a
+    # stale or hand-edited candidate file can never audition a prepaid seat).
+    local prepaid
+    prepaid=$(jq -r '.prepaid_providers_in_order // [] | .[]' "$SEAT_CAPS_JSON" 2>/dev/null)
+
+    # Load the dropped-candidate cooldown map ({provider/model: drop_date}).
+    # A candidate dropped < AUDITION_RETRY_DAYS ago is not re-injected.
+    local now_epoch
+    now_epoch=$(date +%s)
+    local _dropped_json=""
+    [[ -f "$AUDITION_DROPPED_JSON" ]] && _dropped_json=$(cat "$AUDITION_DROPPED_JSON" 2>/dev/null || true)
+
+    local now_iso
+    now_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+    # --- Phase 1: inject new candidates ---
+    # For each candidate not already in the LIVE caps and not prepaid, inject
+    # it as a new provider entry with cap 1, audition: true, and a model row
+    # with cap 1, audition: true. The LIVE caps file is the only place these
+    # live until promoted (config/seat-caps.json is untouched by the tick).
+    local injected=0
+    local tmp_caps
+    tmp_caps=$(mktemp)
+    # Start from the current LIVE caps; jq merges each candidate in.
+    cp -f "$SEAT_CAPS_JSON" "$tmp_caps"
+
+    while IFS=$'\t' read -r cp cm cc; do
+        [[ -n "$cp" && -n "$cm" ]] || continue
+        # Skip prepaid providers (never auditioned — standing rule).
+        if [[ -n "$prepaid" ]] && grep -qx "$cp" <<<"$prepaid"; then
+            echo "audition: skip $cp/$cm (prepaid-quota provider — never auditioned)"
+            continue
+        fi
+        # Skip if dropped < AUDITION_RETRY_DAYS ago.
+        local _ck="$cp/$cm" _drop_ts _drop_age
+        if [[ -n "$_dropped_json" ]]; then
+            _drop_ts=$(printf '%s' "$_dropped_json" | jq -r --arg k "$_ck" '.[$k] // empty' 2>/dev/null || true)
+            if [[ "$_drop_ts" =~ ^[0-9]+$ ]]; then
+                _drop_age=$(( now_epoch - _drop_ts ))
+                if (( _drop_age < AUDITION_RETRY_DAYS * 86400 )); then
+                    echo "audition: skip $cp/$cm (dropped ${_drop_age}s ago, retry in $(( AUDITION_RETRY_DAYS * 86400 - _drop_age ))s)"
+                    continue
+                fi
+            fi
+        fi
+        local class="${cc:-metered}"
+        [[ "$class" == "subscription" ]] && class="prepaid-quota"
+        # Defence in depth: never inject a prepaid-quota class candidate.
+        [[ "$class" == "prepaid-quota" ]] && { echo "audition: skip $cp/$cm (class prepaid-quota — never auditioned)"; continue; }
+        # Skip if the model is already in the LIVE caps (already wired or
+        # auditioning) — the candidate is only injected when the MODEL is new.
+        if jq -e --arg p "$cp" --arg m "$cm" '.providers[$p].models[$m]' "$tmp_caps" >/dev/null 2>&1; then
+            continue
+        fi
+        local next_caps
+        if jq -e --arg p "$cp" '.providers[$p]' "$tmp_caps" >/dev/null 2>&1; then
+            # Provider already exists (a prior candidate on the same provider,
+            # or a live provider): add the model to its models map with cap 1,
+            # audition: true. Model-level audition only — the provider's other
+            # models are untouched. If the provider cap is 0 (a parked/stale
+            # provider), bump it to 1 so the audition model can actually run.
+            next_caps=$(jq --arg p "$cp" --arg m "$cm" --arg ts "$now_iso" '
+                .providers[$p].models[$m] = { "cap": 1, "audition": true }
+                | if ((.providers[$p].audition_started // "") == "") then .providers[$p].audition_started = $ts else . end
+                | if ((.providers[$p].cap // 0) == 0) then .providers[$p].cap = 1 else . end
+            ' "$tmp_caps" 2>/dev/null) || continue
+        else
+            # Provider does not exist: create it with cap 1, class, audition:
+            # true, and the model row with cap 1, audition: true.
+            # audition_started records the injection time for the 7-day age cap.
+            next_caps=$(jq --arg p "$cp" --arg m "$cm" --arg cls "$class" --arg ts "$now_iso" '
+                .providers[$p] = {
+                    "cap": 1,
+                    "class": $cls,
+                    "audition": true,
+                    "audition_started": $ts,
+                    "models": { ($m): { "cap": 1, "audition": true } }
+                }
+            ' "$tmp_caps" 2>/dev/null) || continue
+        fi
+        printf '%s' "$next_caps" > "$tmp_caps"
+        echo "audition: injected $cp/$cm (cap 1, class $class, light only, $now_iso)"
+        injected=$((injected + 1))
+    done < <(jq -r '.candidates[]? | [.provider, .model, .class] | @tsv' "$MODEL_CANDIDATES_JSON" 2>/dev/null || true)
+
+    # --- Phase 2: retire audition seats that hit a cap ---
+    # Walk the LIVE caps for providers/models carrying audition: true, read
+    # the yield ledger for their session count and cost, and retire any that
+    # hit 10 sessions / 7 days / $1 cost. A retired seat is removed from the
+    # LIVE caps and a verdict issue is filed via fleet-issue-file.
+    #
+    # fleet-ops#3811: the tick may only REMOVE seats it injected itself —
+    # a model entry that is an object with audition: true. A provider-level
+    # audition: true on SCALAR model rows is config-declared (e.g. xkiro was
+    # wired via config PR #3505): the tick does not own those rows. Deleting
+    # them here strands the seat's health ledgers as SEAT-KEY-INVALID phantoms
+    # for fleet-seat-comeback-release (their walls can never drain) until the
+    # next deploy reinstalls them — a permanent flap that was observed live as
+    # FleetSeatComebackNeverReleased. Config-declared seats still get their
+    # verdict issue filed once (it drives the promote/drop config PR) but are
+    # left in the LIVE caps.
+    local retired=0
+    local yield_json=""
+    [[ -f "$SEAT_YIELD_JSON" ]] && yield_json=$(cat "$SEAT_YIELD_JSON" 2>/dev/null || true)
+
+    # Collect audition seats from the (potentially updated) tmp caps. The 4th
+    # field is 1 when the MODEL row is a tick-injected object
+    # ({cap:1,audition:true}) — only those rows may be deleted below.
+    local audition_seats=""
+    audition_seats=$(jq -r '
+        .providers | to_entries[] | .key as $p | .value as $v |
+        (if ($v|type) == "object" then ($v.models // {}) else {} end) | to_entries[] |
+        select( ((.value|type) == "object" and .value.audition == true) or (($v.audition // false) == true) ) |
+        "\($p)\t\(.key)\t\($v.audition_started // "")\t\(if ((.value|type) == "object" and (.value.audition // false) == true) then "1" else "0" end)"
+    ' "$tmp_caps" 2>/dev/null || true)
+
+    # Seats whose verdict issue was already filed (config-declared seats are
+    # kept, so without this map the tick would re-file every run).
+    local _verdicted_json=""
+    [[ -f "$AUDITION_VERDICTED_JSON" ]] && _verdicted_json=$(cat "$AUDITION_VERDICTED_JSON" 2>/dev/null || true)
+
+    # Fleet median yield (for the promote threshold). Computed from the yield
+    # ledger across all seats with >= 20 sessions (non-provisional).
+    local fleet_median=0.0
+    if [[ -n "$yield_json" ]]; then
+        fleet_median=$(printf '%s' "$yield_json" | jq -r '
+            [to_entries[] | select(.value.provisional != true) | .value.yield]
+            | if length > 0 then sort | .[length / 2 | floor] else 0.0 end
+        ' 2>/dev/null || echo 0.0)
+    fi
+
+    while IFS=$'\t' read -r rp rm rstarted rtick_injected; do
+        [[ -n "$rp" && -n "$rm" ]] || continue
+        local _sessions=0 _cost=0.0 _yield=0.5 _age=0
+        if [[ -n "$yield_json" ]]; then
+            _sessions=$(printf '%s' "$yield_json" | jq -r --arg k "$rp/$rm" '.[$k].sessions // 0' 2>/dev/null || echo 0)
+            _cost=$(printf '%s' "$yield_json" | jq -r --arg k "$rp/$rm" '.[$k].cost_usd // (.cost_per_session // 0) * (.sessions // 0)' 2>/dev/null || echo 0)
+            _yield=$(printf '%s' "$yield_json" | jq -r --arg k "$rp/$rm" '.[$k].yield // 0.5' 2>/dev/null || echo 0.5)
+        fi
+        if [[ "$rstarted" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T ]]; then
+            local _started_epoch
+            _started_epoch=$(date -u -d "$rstarted" +%s 2>/dev/null) || _started_epoch=0
+            [[ "$_started_epoch" =~ ^[0-9]+$ ]] && _age=$(( now_epoch - _started_epoch ))
+        fi
+        # Retirement thresholds: 10 sessions OR 7 days OR $1 cost.
+        if (( _sessions >= AUDITION_MAX_SESSIONS )) \
+            || (( _age >= AUDITION_MAX_AGE_S )) \
+            || awk -v c="$_cost" -v m="$AUDITION_MAX_COST_USD" 'BEGIN{exit !(c+0 >= m+0)}'; then
+            local _verdict
+            # fleet-ops#3811: config-declared seat (provider-level audition:
+            # true, scalar model row — the tick did not inject it). Removing
+            # it from the LIVE caps strands its health ledgers as
+            # SEAT-KEY-INVALID phantoms for comeback-release until the next
+            # deploy reinstalls it — a permanent flap. File the verdict issue
+            # once (it drives the promote/drop config PR) and keep the seat.
+            if [[ "$rtick_injected" != "1" ]]; then
+                if _audition_verdicted_has "$rp/$rm" "$_verdicted_json"; then
+                    : # verdict already filed — config PR pending
+                elif _verdict=$(_audition_file_verdict "$rp" "$rm" "$_yield" "$_sessions" "$_cost" "$fleet_median"); then
+                    _audition_record_verdict "$rp/$rm" "$now_epoch"
+                    echo "audition: config-declared seat $rp/$rm at cap — verdict $_verdict filed, seat kept in live caps (removal is a config/seat-caps.json PR, fleet-ops#3811)"
+                else
+                    echo "audition: config-declared seat $rp/$rm at cap — verdict filing failed, seat kept in live caps (fleet-ops#3811)"
+                fi
+                continue
+            fi
+            # Tick-injected seat: file the verdict BEFORE deleting. If the
+            # filing fails the seat stays in the LIVE caps and the tick
+            # retries next run — retiring without the verdict issue is silent
+            # seat loss: the promote/drop never reaches config/seat-caps.json
+            # (fleet-ops#3811 — observed live: --repo "fleet-ops" was rejected
+            # by gh's OWNER/REPO check and the captured error text also
+            # polluted _verdict, breaking the drop-cooldown compare).
+            if ! _verdict=$(_audition_file_verdict "$rp" "$rm" "$_yield" "$_sessions" "$_cost" "$fleet_median"); then
+                echo "audition: keep $rp/$rm (verdict filing failed — seat stays in live caps, retry next tick; fleet-ops#3811)"
+                continue
+            fi
+            # Retire: remove the model from the provider, and if the provider
+            # has no models left, remove the provider entirely. Write via a
+            # temp file so tmp_caps (the path) is not clobbered by the jq
+            # output before the write.
+            local _retire_tmp
+            _retire_tmp=$(mktemp)
+            if jq --arg p "$rp" --arg m "$rm" '
+                del(.providers[$p].models[$m])
+                | if (.providers[$p].models | length) == 0 then del(.providers[$p]) else . end
+            ' "$tmp_caps" > "$_retire_tmp" 2>/dev/null; then
+                mv -f "$_retire_tmp" "$tmp_caps"
+            else
+                rm -f "$_retire_tmp"
+            fi
+            # Only a DROPPED (audition-failed) seat gets the 30-day cooldown —
+            # a promoted seat is no longer a candidate, so it must not be
+            # blocked from re-audition if it is later dropped from
+            # config/seat-caps.json.
+            if [[ "$_verdict" == "audition-failed" ]]; then
+                _audition_record_drop "$rp/$rm" "$now_epoch"
+            fi
+            echo "audition: retired $rp/$rm (sessions=$_sessions age=${_age}s cost=\$$_cost yield=$_yield fleet_median=$fleet_median verdict=$_verdict)"
+            retired=$((retired + 1))
+        fi
+    done <<<"$audition_seats"
+
+    # Commit the updated LIVE caps atomically (only if changed).
+    if ! cmp -s "$tmp_caps" "$SEAT_CAPS_JSON"; then
+        mv -f "$tmp_caps" "$SEAT_CAPS_JSON"
+        # Force seat-lib to reload caps on the next pick_seat call.
+        _seat_caps_loaded=0
+    else
+        rm -f "$tmp_caps"
+    fi
+
+    if (( injected > 0 || retired > 0 )); then
+        echo "audition: injected=$injected retired=$retired"
+    fi
+}
+
+# Record a dropped candidate in the cooldown map.
+_audition_record_drop() {
+    local key="$1" epoch="$2"
+    [[ -n "$key" ]] || return 0
+    local tmp
+    tmp=$(mktemp)
+    local cur=""
+    [[ -f "$AUDITION_DROPPED_JSON" ]] && cur=$(cat "$AUDITION_DROPPED_JSON" 2>/dev/null || true)
+    if [[ -z "$cur" ]]; then cur='{}'; fi
+    printf '%s' "$cur" | jq --arg k "$key" --argjson t "$epoch" '.[$k] = $t' > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
+    mv -f "$tmp" "$AUDITION_DROPPED_JSON"
+}
+
+# True when the verdict for $1 (provider/model) was already filed. $2 is the
+# preloaded AUDITION_VERDICTED_JSON content (may be empty).
+_audition_verdicted_has() {
+    local key="$1" json="${2:-}"
+    [[ -n "$key" && -n "$json" ]] || return 1
+    printf '%s' "$json" | jq -e --arg k "$key" '.[$k] != null' >/dev/null 2>&1
+}
+
+# Record a filed verdict for a kept (config-declared) seat so it is not
+# re-filed every tick (fleet-ops#3811).
+_audition_record_verdict() {
+    local key="$1" epoch="$2"
+    [[ -n "$key" ]] || return 0
+    local tmp
+    tmp=$(mktemp)
+    local cur=""
+    [[ -f "$AUDITION_VERDICTED_JSON" ]] && cur=$(cat "$AUDITION_VERDICTED_JSON" 2>/dev/null || true)
+    if [[ -z "$cur" ]]; then cur='{}'; fi
+    printf '%s' "$cur" | jq --arg k "$key" --argjson t "$epoch" '.[$k] = $t' > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
+    mv -f "$tmp" "$AUDITION_VERDICTED_JSON"
+}
+
+# File a promote or audition-failed verdict issue via fleet-issue-file.
+# Reuses the existing organ (fleet-ops#3322 orchestrator decision Q2: option c).
+# Prints the verdict ("promote" or "audition-failed") on stdout so the caller
+# can apply the 30-day cooldown only to dropped seats. Returns non-zero when
+# the issue could not be filed — the caller must then keep the seat in the
+# LIVE caps (retirement without a filed verdict is silent seat loss,
+# fleet-ops#3811).
+_audition_file_verdict() {
+    local p="$1" m="$2" y="$3" s="$4" c="$5" median="$6"
+    local title body verdict
+    # A seat with zero yield must not "promote" on a degenerate fleet median of
+    # 0.0 (no non-provisional baseline) — promotion needs a positive yield at
+    # or above the median (fleet-ops#3811: xkiro seats at yield 0.0 after 20
+    # sessions were about to be filed as "promote").
+    if awk -v y="$y" -v m="$median" 'BEGIN{exit !((y+0) > 0 && (y+0) >= (m+0))}'; then
+        verdict="promote"
+        title="promote $p/$m into seat-caps (yield $(printf '%.0f' "$(awk "BEGIN{print $y*100}")")%, cost \$$c)"
+        body="Audition complete (fleet-ops#3322). The seat $p/$m reached $s sessions with yield $(printf '%.1f' "$(awk "BEGIN{print $y*100}")")% (fleet median $(printf '%.1f' "$(awk "BEGIN{print $median*100}")")%) and total cost \$$c. Promote: add $p/$m to config/seat-caps.json with an appropriate cap. Numbers: sessions=$s yield=$y cost_usd=$c fleet_median=$median."
+    else
+        verdict="audition-failed"
+        title="drop $p/$m — audition-failed: yield $(printf '%.0f' "$(awk "BEGIN{print $y*100}")")%, cost \$$c"
+        body="Audition complete (fleet-ops#3322). The seat $p/$m reached $s sessions with yield $(printf '%.1f' "$(awk "BEGIN{print $y*100}")")% (fleet median $(printf '%.1f' "$(awk "BEGIN{print $median*100}")")%) and total cost \$$c. Drop: add a dated \`audition-failed:\` note to config/seat-caps.json so $p/$m is not re-tried for 30 days. Numbers: sessions=$s yield=$y cost_usd=$c fleet_median=$median."
+    fi
+    # File via fleet-issue-file with the agent-ready label so a worker picks
+    # it up. gh requires the OWNER/REPO form (fleet-ops#3811: "--repo fleet-ops"
+    # failed every filing). The filer's output is captured into _file_out —
+    # sending it to this function's stdout would pollute the caller's
+    # $(verdict) capture and silently break the drop-cooldown compare.
+    if [[ -x "$_ISSUE_FILE_BIN" ]]; then
+        local _file_out
+        if ! _file_out=$("$_ISSUE_FILE_BIN" file --repo "Nishfleet/fleet-ops" --title "$title" --body "$body" --label agent-ready 2>&1); then
+            echo "audition: WARNING — fleet-issue-file failed for $verdict $p/$m: $_file_out (seat kept, retry next tick)" >&2
+            return 1
+        fi
+    else
+        echo "audition: WARNING — fleet-issue-file not executable at $_ISSUE_FILE_BIN for $verdict $p/$m (seat kept, retry next tick)" >&2
+        return 1
+    fi
+    printf '%s' "$verdict"
+}
+
+# <<< audition-lane funcs END
+
+# Run the audition lane (fail-open: any error is logged and the tick continues).
+audition_inject_and_retire 2>&1 || echo "audition: non-fatal error (fail-open)"
+
+# fleet-ops#3690: reset per-tick per-provider spawn counters at the start of
+# each tick so pick_seat's tick_spawn_cap gate counts only this tick's spawns.
+# Best-effort: a write failure degrades the cap to unlimited (never blocks).
+reset_tick_spawn_counts 2>/dev/null || true
 
 # Step 2: capacity (P4-A — fleet-ops config/seat-caps.json, not a hardcoded cap)
 caps_sum=$(total_seat_cap 2>/dev/null || echo 0)
@@ -199,16 +1112,32 @@ if (( caps_sum > 0 && caps_sum < ram_cap )); then
 else
     total_cap=$ram_cap
 fi
-active=$(count_active_total 2>/dev/null || echo 0)
+active=$(active_ram_charge 2>/dev/null || echo 0)
 issue=$(count_active_issue 2>/dev/null || echo 0)
 org=$(count_active_org 2>/dev/null || echo 0)
 org_res=$(org_reserve 2>/dev/null || echo 2)
-slots=$(( total_cap - active ))
+# active_ram_charge is fractional (per-repo MemoryHigh / fallback, fleet-ops#3679),
+# so compute slots in awk, not bash integer math. slots = remaining fallback
+# worker capacity (integer count of how many more light workers fit).
+slots=$(awk -v t="$total_cap" -v a="$active" 'BEGIN{ s=t-a; if(s<0)s=0; print int(s) }')
 
 if (( slots <= 0 )); then
     echo "at capacity (total_cap=$total_cap, active=$active, issue=$issue, org=$org, org_reserve=$org_res)"
     exit 0
 fi
+
+# fleet-ops#3861: load_seat_caps must run in the PARENT shell so the
+# spawn_stagger_s (SEAT_SPAWN_STAGGER_S) the claim loop sleeps actually
+# carries the config/seat-caps.json value. Every other call site in this
+# tick is a command substitution ($(pick_seat ...) below), which runs in a
+# subshell where load_seat_caps sets SEAT_* vars that die when the subshell
+# exits — so SEAT_SPAWN_STAGGER_S never reached the parent and the 5s cohort
+# stagger stayed inert (fleet-ops#3784). Audition (above) may have rewritten
+# the LIVE caps, so load AFTER it reads the current file for the probes and
+# the claim loop below. Fail-open: a missing/unparseable caps file falls
+# back to SEAT_SPAWN_STAGGER_S=0 inside load_seat_caps.
+_seat_caps_loaded=0
+load_seat_caps || true
 
 # GitHub API rate-limit gate (fleet-ops#1350, 2026-08-27 #1167 ceiling
 # addendum). The 5000/hr core budget is the next binding constraint past
@@ -249,6 +1178,24 @@ else
     echo "gh rate-limit state file missing; failing open — gate: gh_rate_limit missing"
 fi
 
+# GitHub secondary rate-limit gate (fleet-ops#3445): the write loops below
+# persist this state when "submitted too quickly" exhausts its retries and
+# give the tick a 60s x attempt backoff. While the backoff is active, hold
+# the whole tick (do not fail it) so the claim push is not orphaned and the
+# human-gh secondary limit is not hammered further.
+_gh_secondary_json=$(_gh_secondary_read)
+_gh_secondary_active=$(printf '%s' "$_gh_secondary_json" | jq -r '.submitted_too_quickly // 0')
+_gh_secondary_backoff=$(printf '%s' "$_gh_secondary_json" | jq -r '.backoff_until // 0')
+_gh_secondary_now=$(date +%s)
+if [[ "$_gh_secondary_active" == "1" && $_gh_secondary_backoff -gt $_gh_secondary_now ]]; then
+    _gh_secondary_attempt=$(printf '%s' "$_gh_secondary_json" | jq -r '.attempt // 0')
+    _gh_secondary_wait=$(( _gh_secondary_backoff - _gh_secondary_now ))
+    echo "gh secondary rate-limit active (attempt=${_gh_secondary_attempt}, back in ${_gh_secondary_wait}s); holding claims this tick — gate: gh_rate_limit secondary"
+    exit 0
+elif [[ "$_gh_secondary_active" == "1" && $_gh_secondary_backoff -le $_gh_secondary_now ]]; then
+    _gh_secondary_clear
+fi
+
 # Seat gate (auditor 2026-08-26T18:1xZ, summon fleet-ops-378 unit-failure):
 # capacity slots are NOT proof a worker can run. With every allowlisted
 # heavy-capable seat benched/quota-exhausted, a claimed issue spawns a
@@ -266,6 +1213,63 @@ if ! heavy_seat=$(pick_seat "" "" 1 2>/dev/null); then
     exit 0
 fi
 
+# Usable seat-slot gate (fleet-ops#3732): capacity slots (RAM/config) are not
+# seat slots. 2026-09-05 21:30-21:33Z this tick claimed 12 issues into a pool
+# whose only usable seat was at its learned cap; every unit died at pick_seat,
+# the claims bounced, and the reclaim counters walked the issues into
+# nish-decision blocks. Count the slots pick_seat would actually fill (same
+# filter chain, no probe, no pick) and never claim more than that.
+# Fails OPEN when the count seam is unavailable (seat-lib without count
+# mode, a stubbed pick_seat, a non-numeric reply): a broken counter must
+# never freeze intake — same rule as the product-first gate below. Only a
+# definite 0 holds claims.
+usable_light_slots=$(PICK_SEAT_COUNT_SLOTS=1 pick_seat "" "" 0 "" light 2>/dev/null || echo "")
+if [[ ! "$usable_light_slots" =~ ^[0-9]+$ ]]; then
+    echo "usable seat-slot count unavailable (pick_seat count mode returned '${usable_light_slots:0:60}'); seat-slot gate fails open, keeping slots=$slots (fleet-ops#3732)"
+    usable_light_slots=$slots
+fi
+if (( usable_light_slots <= 0 )); then
+    echo "no usable seat slot (slots=$slots, usable_light_slots=0); holding claims this tick — gate: no usable seat slot"
+    exit 0
+fi
+if (( usable_light_slots < slots )); then
+    echo "usable seat slots $usable_light_slots < capacity slots $slots; claiming at most $usable_light_slots this tick (fleet-ops#3732)"
+    slots=$usable_light_slots
+fi
+
+# Product-first precedence (fleet-ops#2519): when the queue
+# self-maintenance ratio exceeds PRODUCT_FIRST_SELF_RATIO_MAX (default
+# 0.5), hold the self-maintenance repo (fleet-ops) in the intake buffer —
+# its agent-ready issues are not admitted to the dispatch queue, so fleet
+# capacity goes to product repos. Product repos are never gated. Fails
+# open (admits) when the ratio is unavailable, so a dead metrics exporter
+# never freezes the fleet; the fleet_queue_product_ratio metric is
+# exported best-effort every tick so the precedence is observable.
+#
+# Only the self-maintenance repo is held: the gate checks
+# config/self-maintenance-repos.json (default ["fleet-ops"]), not a
+# hardcoded name, so a repo graduating to product is not gated.
+#
+# fleet-ops#2626: the hold must NOT hard-exit the tick. If it did, a
+# self-maintenance ratio inflated by duplicate/churn agent-ready issues
+# while product repos are simultaneously blocked (an all-up hard stall)
+# would leave the whole fleet at 0 dispatches — the FleetUndersaturated
+# failure this issue fixes. So we mark the repo held (_pfirst_held=1) and
+# let the precedence-band FLOOR lanes below (machinery #1452, starvation
+# #1448, band bootstrap, surge floor, leverage, multiplier) admit EXACTLY
+# ONE claim per tick. That keeps the only-available-supply repo from
+# starving the fleet to idle while still sending capacity to product repos
+# when product work exists.
+product_first_export_product_ratio
+_pfirst_held=0
+if product_first_is_self_maintenance "$REPO"; then
+    _pfirst_ratio="$(product_first_ratio 2>/dev/null || echo unavail)"
+    if product_first_hold; then
+        echo "held-in-buffer: ($REPO is self-maintenance, self-maintenance ratio $_pfirst_ratio > $PRODUCT_FIRST_SELF_RATIO_MAX) — product-first precedence, product repos only; floor lanes still dispatch one claim"
+        _pfirst_held=1
+    fi
+fi
+
 # Pre-fetch origin once before the loop
 git -C "$REPO_DIR" fetch origin 2>&1 || {
     echo "git fetch origin failed" >&2
@@ -274,9 +1278,29 @@ git -C "$REPO_DIR" fetch origin 2>&1 || {
 
 mkdir -p "$ISSUE_STATE_DIR"
 
-# Step 3: process issues in ascending number order
-mapfile -t numbers < <(jq -r 'sort_by(.number) | .[].number' <<<"$issues_json")
-mapfile -t titles  < <(jq -r 'sort_by(.number) | .[].title'  <<<"$issues_json")
+# fleet-ops#2772: snapshot the claims log once per tick for the claim-loop
+# gate below. A single read keeps the per-issue awk pass cheap (the log is
+# small and append-only; every worker already appends one line per claim).
+# Same-tick claims cannot be missed: a claim record for issue N is appended
+# only AFTER N has passed the gate, so the snapshot is consistent for every
+# N processed in this tick. Missing/unreadable log -> empty snapshot -> the
+# gate no-ops (fail-open), which also keeps drove-tick tests inert.
+_claims_log_snapshot=""
+if [[ -r "$CLAIMS_LOG" ]]; then
+    _claims_log_snapshot=$(cat "$CLAIMS_LOG" 2>/dev/null || true)
+fi
+
+# Step 3: process issues critical-path first, then ascending number order
+# (0509#1691, fleet-ops#3710). A plain ascending order let a late, deploy-blocking
+# critical-path issue (0509#1691) sit "skipped-capacity" behind 18 older
+# ready issues for four ticks. Same rule as lib/intake-priority.sh rule 2
+# (critical before the tail; lowest number first inside a tier). ONE
+# expression builds all three arrays so numbers/titles/labels stay aligned.
+# shellcheck disable=SC2016  # jq program: $cp is a jq --arg, not shell
+_claim_order='sort_by([(if (((.labels // []) | map(if type == "object" then (.name // empty) else . end) | index($cp)) != null) then 0 else 1 end), .number])'
+mapfile -t numbers < <(jq -r --arg cp "$CRITICAL_PATH_LABEL" "$_claim_order | .[].number" <<<"$issues_json")
+mapfile -t titles  < <(jq -r --arg cp "$CRITICAL_PATH_LABEL" "$_claim_order | .[].title"  <<<"$issues_json")
+mapfile -t labels  < <(jq -c --arg cp "$CRITICAL_PATH_LABEL" "$_claim_order | .[].labels" <<<"$issues_json")
 
 # Cache the precedence-band phase once (auditor 2026-08-28): with 221 ready
 # issues, calling precedence_band_phase per-issue would re-read the JSON 221
@@ -303,6 +1327,21 @@ if [[ "$REPO" == "fleet-ops" && "$_band_phase" == "surge" ]]; then
     done
 fi
 
+# fleet-ops#3254: self-maintenance (fleet-ops) claim budget. Product repos
+# (0509) are never capped. For a fleet-ops tick, cap the number of
+# self-maintenance claims at SELF_MAINT_CLAIM_PCT of this tick's available
+# slots (floor 1), so a giant fleet-ops agent-ready backlog cannot flood the
+# fleet while product work waits. A critical-path / escalate-senior issue is
+# exempt from the cap and claims even past the budget. Computed once from the
+# tick-start slots count (slots already includes the per-claim decrement
+# below, so capture the base once here).
+_self_maint_cap=0
+_self_maint_claims=0
+if product_first_is_self_maintenance "$REPO" || [[ "$REPO" == "fleet-ops" ]]; then
+    _self_maint_cap=$(( slots * SELF_MAINT_CLAIM_PCT / 100 ))
+    (( _self_maint_cap < 1 )) && _self_maint_cap=1
+fi
+
 for i in "${!numbers[@]}"; do
     N="${numbers[$i]}"
     title="${titles[$i]}"
@@ -310,6 +1349,23 @@ for i in "${!numbers[@]}"; do
     if (( slots <= 0 )); then
         echo "issue $N ($title): skipped-capacity"
         continue
+    fi
+
+    # fleet-ops#3254: self-maintenance (fleet-ops) claim cap. Once this tick
+    # has spent its SELF_MAINT_CLAIM_PCT budget on non-exempt fleet-ops
+    # claims, stop admitting more ordinary control-plane issues so capacity
+    # stays for product. A critical-path label marks the issue exempt (it
+    # claims even past the cap); escalate-senior issues were already dropped
+    # from the ready set above. Checked here (on the cheap labels array)
+    # before the body fetch so a capped-out tick does no per-issue network.
+    if (( _self_maint_cap > 0 && _self_maint_claims >= _self_maint_cap )); then
+        if printf '%s' "${labels[$i]}" | jq -e --arg cp "$CRITICAL_PATH_LABEL" \
+            '[.[]?.name // empty] | index($cp) != null' >/dev/null 2>&1; then
+            : # exempt — claim even past the cap
+        else
+            echo "issue $N ($title): skipped-self-maintenance-cap (claimed $_self_maint_claims >= cap $_self_maint_cap)"
+            continue
+        fi
     fi
 
     # Early surge-phase skip (auditor 2026-08-28, summon unit-failure
@@ -333,24 +1389,180 @@ for i in "${!numbers[@]}"; do
         fi
     fi
 
+    # fleet-ops#2133: reclaim cooldown. A failed worker's claim was released
+    # by pi-issue-failed-reap, which wrote a .cooldown marker. Skip this issue
+    # for RECLAIM_COOLDOWN_S so the spawn-die-respawn loop is broken (the
+    # seat-health ledger gets time to bench the killing seat). After expiry,
+    # remove the marker and allow the claim. Checked BEFORE the git fetch /
+    # ls-remote so a cooldown'd issue costs zero network calls this tick.
+    _cooldown_file="$ATTEMPTS_DIR/pi-issue-${REPO}-${N}.cooldown"
+    if [[ -f "$_cooldown_file" ]]; then
+        _cd_ts=$(cat "$_cooldown_file" 2>/dev/null || true)
+        _cd_epoch=$(date -u -d "$_cd_ts" +%s 2>/dev/null) || _cd_epoch=0
+        _now_epoch=$(date -u +%s)
+        _cd_age=$(( _now_epoch - _cd_epoch ))
+        if (( _cd_epoch > 0 && _cd_age < RECLAIM_COOLDOWN_S )); then
+            echo "issue $N ($title): skipped-reclaim-cooldown (age=${_cd_age}s < ${RECLAIM_COOLDOWN_S}s)"
+            continue
+        fi
+        # Cooldown expired — clear the marker so the issue is claimable again.
+        rm -f "$_cooldown_file" 2>/dev/null || true
+    fi
+
+    # fleet-ops#2462: reclaim-count cap. A failed worker's claim is released
+    # by pi-issue-failed-reap, which increments a per-issue reclaim-count file.
+    # If the issue has been re-claimed past MAX_RECLAIMS, intake stops
+    # re-claiming and escalates: the issue is labelled agent-blocked with a
+    # machine-readable blocked-on line so a human reviews why every seat fails.
+    # A successful PR open resets the counter so a legitimately-fixed issue is
+    # never permanently locked out. Checked before the git fetch / ls-remote
+    # for zero network cost.
+    _rc_now_epoch=$(date -u +%s)
+    _reclaim_count_file="$ATTEMPTS_DIR/pi-issue-${REPO}-${N}.reclaim-count"
+    _rc_current=0
+    if [[ -f "$_reclaim_count_file" ]]; then
+        _rc_current=$(cat "$_reclaim_count_file" 2>/dev/null || echo 0)
+        _rc_current=${_rc_current//[^0-9]/}
+        _rc_current=${_rc_current:-0}
+    fi
+    if (( _rc_current >= MAX_RECLAIMS )); then
+        # fleet-ops#3310: the WORK cap (real work failures) does not block on
+        # first hit — it forces the next claim onto a DIFFERENT seat CLASS via
+        # a per-issue .prefer-class ladder (prepaid -> metered -> senior),
+        # resetting reclaim-count to 1 so the new class gets a fresh budget.
+        # Only when every class has been tried (ladder exhausted) does intake
+        # block — and then with a machine-readable blocked-on: infra
+        # (the senior conference is the orchestrator's job, and a conference
+        # that never runs must not be the only unblocking path; blocked-reconcile
+        # auto-releases an infra block after 2h when a healthy capable seat
+        # exists, and escalates to blocked-on: senior-review on a second release
+        # within 24h). Infra deaths
+        # never reach this cap at all (pi-issue-run / -failed-reap split them
+        # onto .infra-death), so a provider storm can no longer park the issue.
+        _pref_file="$ATTEMPTS_DIR/pi-issue-${REPO}-${N}.prefer-class"
+        _cur_pref=""
+        if [[ -f "$_pref_file" ]]; then
+            _cur_pref=$(cat "$_pref_file" 2>/dev/null || true)
+        fi
+        _next_pref="prepaid"
+        case "$_cur_pref" in
+            "")        _next_pref="prepaid" ;;
+            prepaid)   _next_pref="metered" ;;
+            metered)   _next_pref="senior" ;;
+            senior)    _next_pref="block" ;;
+        esac
+        if [[ "$_next_pref" != "block" ]]; then
+            printf '%s' "$_next_pref" > "$_pref_file" 2>/dev/null || true
+            # Fresh class budget: the new class starts at 1, not at the cap.
+            printf '1' > "$_reclaim_count_file" 2>/dev/null || true
+            echo "issue $N ($title): skipped-max-reclaims (work-cap=$_rc_current) - advancing seat class to $_next_pref (fresh claim budget)" >&2
+            continue
+        fi
+        echo "issue $N ($title): skipped-max-reclaims (count=$_rc_current) - every seat class (prepaid/metered/senior) exhausted, escalating to agent-blocked" >&2
+        gh issue edit "$N" -R "$FULL" --add-label agent-blocked --remove-label agent-ready 2>/dev/null || true
+        gh issue comment "$N" -R "$FULL" --body "fleet-ops#3310: issue $N has been re-claimed $_rc_current times (work-cap=$MAX_RECLAIMS) across every seat class (prepaid/metered/senior). Real work failures have exhausted the seat pool; re-queuing is the orchestrator's decision, not a senior conference that never runs.
+
+blocked-on: infra" 2>/dev/null || true
+        continue
+    fi
+
+    # fleet-ops#2462: systemic-failure skip. When every usable seat fails
+    # for the same issue within a recovery window, the failure is systemic
+    # (a provider-wide outage, not a seat fault). pi-issue-failed-reap writes
+    # a .systemic marker when it detects the issue exhausted every usable
+    # seat. Intake respects it: the issue stays agent-ready but is not
+    # re-claimed until the marker ages out, giving the seat pool time to
+    # recover from the provider storm.
+    _systemic_file="$ATTEMPTS_DIR/pi-issue-${REPO}-${N}.systemic"
+    if [[ -f "$_systemic_file" ]]; then
+        _sys_ts=$(cat "$_systemic_file" 2>/dev/null || true)
+        if [[ -n "$_sys_ts" ]]; then
+            _sys_epoch=$(date -u -d "$_sys_ts" +%s 2>/dev/null) || _sys_epoch=0
+            _sys_age=$(( _rc_now_epoch - _sys_epoch ))
+            if (( _sys_epoch > 0 && _sys_age < RECLAIM_COOLDOWN_S )); then
+                echo "issue $N ($title): skipped-systemic-failure (seeded $_sys_age ago, all seats failed - waiting for provider recovery)"
+                continue
+            fi
+            rm -f "$_systemic_file" 2>/dev/null || true
+        fi
+    fi
+
     # Per-issue fetch (keeps origin/main fresh)
     git -C "$REPO_DIR" fetch origin 2>&1 || {
         echo "git fetch origin failed for issue $N" >&2
         exit 1
     }
 
-    # Check if another agent already holds the claim branch
+    # Check if another agent already holds the claim branch.
+    # fleet-ops#2133: a bare skip on ANY claim branch left stale claims stuck
+    # forever (skipped-claim-lost) — a worker that died without the reaper
+    # firing, or exited 0 without opening a PR, left a branch that intake
+    # skipped every tick while the issue stayed agent-ready. Now: if the
+    # worker unit is live OR an open PR exists from this branch, skip
+    # correctly (work in flight / in review). Otherwise the claim is stale —
+    # delete the branch and fall through to re-claim.
     remote=$(git -C "$REPO_DIR" ls-remote origin "refs/heads/claim/issue-$N" 2>&1) || {
         echo "git ls-remote failed for issue $N: $remote" >&2
         exit 1
     }
     if [[ -n "$remote" ]]; then
-        echo "issue $N ($title): skipped-claim-lost"
-        continue
+        _claim_unit="pi-issue@${REPO}-${N}.service"
+        _claim_state=$("$SYSTEMCTL" --user is-active "$_claim_unit" 2>/dev/null || true)
+        if [[ "$_claim_state" == "active" || "$_claim_state" == "activating" ]]; then
+            echo "issue $N ($title): skipped-claim-live (worker $_claim_unit $_claim_state)"
+            continue
+        fi
+        # No live worker. Is there an open PR from this branch? If so, the
+        # work is done and in review — skip (do not re-claim finished work).
+        _claim_prs=$(gh api "repos/$FULL/pulls?state=open&head=${FULL%%/*}:claim/issue-$N&per_page=1" 2>/dev/null || true)
+        _claim_pr_count=$(printf '%s' "$_claim_prs" | jq 'length // 0' 2>/dev/null || echo 0)
+        if (( _claim_pr_count > 0 )); then
+            echo "issue $N ($title): skipped-claim-pr-open (open PR from claim/issue-$N)"
+            continue
+        fi
+        # Stale claim: no live worker, no open PR. The worker died without
+        # the reaper firing (or the reaper failed transiently). Release the
+        # stale branch so this tick can re-claim it cleanly.
+        if git -C "$REPO_DIR" push origin ":refs/heads/claim/issue-$N" >/dev/null 2>&1; then
+            echo "issue $N ($title): released-stale-claim (no live worker, no open PR — branch deleted, re-claiming)"
+        else
+            echo "issue $N ($title): skipped-claim-lost (stale branch delete failed; will retry next tick)"
+            continue
+        fi
     fi
 
-    # One body fetch serves both the blocker filter and the rent-paying band
-    # (band-multiplier lives on the body). A failed view is fail-closed: skip
+    # fleet-ops#2772: claim-loop gate. By this point the branch-liveness
+    # check above has ruled out a live worker (skipped-claim-live) and an
+    # open PR (skipped-claim-pr-open), so every claim in the window that got
+    # this far was a dead spawn. Count this line's raw claims in the claims
+    # log over the sliding window; at or past the cap, the next claim is
+    # another paddle into the seat pool — fail it LOUD instead of spinning:
+    # agent-blocked + machine-readable blocked-on so blocked-reconcile / the
+    # senior conference pick it up (same escalate pattern as #2462
+    # skipped-max-reclaims). The record format is 4 space-separated fields:
+    # <ISO-Z ts> claimed line=<N> repo=<repo>; timestamps compare
+    # lexicographically (ISO-8601 UTC, zero-padded) — no mktime needed.
+    if [[ -n "$_claims_log_snapshot" ]]; then
+        _cl_now_epoch=$(date -u +%s)
+        _cl_cutoff=$(date -u -d "@$(( _cl_now_epoch - RECLAIM_WINDOW_S ))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) \
+            || _cl_cutoff="1970-01-01T00:00:00Z"
+        _cl_window_claims=$(awk -v n="$N" -v repo="$REPO" -v cutoff="$_cl_cutoff" '
+            $3 == "line=" n && $4 == "repo=" repo && $1 >= cutoff { c++ }
+            END { print c+0 }
+        ' <<<"$_claims_log_snapshot" 2>/dev/null || echo 0)
+        if (( _cl_window_claims >= MAX_CLAIMS_IN_WINDOW )); then
+            echo "issue $N ($title): skipped-claim-loop (claimed ${_cl_window_claims}x in ${RECLAIM_WINDOW_S}s window, cap=$MAX_CLAIMS_IN_WINDOW) - escalating to agent-blocked" >&2
+            gh issue edit "$N" -R "$FULL" --add-label agent-blocked --add-label needs-orchestrator --remove-label agent-ready 2>/dev/null || true
+            gh issue comment "$N" -R "$FULL" --body "fleet-ops#2772: issue $N has been claimed ${_cl_window_claims} times in the last ${RECLAIM_WINDOW_S}s (cap=$MAX_CLAIMS_IN_WINDOW) with no open PR — the claim path is spinning dead workers into the seat pool instead of completing. Routing to the orchestrator decision sweep (fleet-ops#4260), not Nish: a claim-loop break is not a money/legal/product-direction/customer-data question.
+
+blocked-on: orchestrator" 2>/dev/null || true
+            continue
+        fi
+    fi
+
+    # One body fetch serves the blocker filter (blocked-on: in body).
+    # The rent-paying band (band-multiplier) now uses labels (priority/emergency)
+    # from the initial issue list. A failed view is fail-closed: skip
     # this issue this tick rather than claim a possibly-blocked or
     # out-of-band issue. The next tick retries.
     body=$(gh issue view "$N" -R "$FULL" --json body --jq '.body // ""' 2>/dev/null) || {
@@ -361,24 +1573,100 @@ for i in "${!numbers[@]}"; do
     # Blocker filter: never claim an issue whose body carries a blocked-on:
     # line (machine dep or nish-decision). The claim is a no-op spawn churn
     # otherwise. Audit finding 2026-08-26: fleet-ops#87 looped exactly this way.
-    if blocked_filter "$body"; then
+    if blocked_filter "$body" "$FULL" "$N"; then
         echo "issue $N ($title): skipped-blocked-on"
+        continue
+    fi
+
+    # fleet-ops#3309: more than 2 live required: lines bounce (agent-blocked)
+    # and must not push a claim branch. Struck-through lines do not count.
+    # Umbrella-labeled issues are exempt (tracking parents, never claimable).
+    comments=$(gh issue view "$N" -R "$FULL" --json comments --jq '[.comments[]?.body // empty] | join("\n")' 2>/dev/null) || {
+        echo "issue $N ($title): skipped-comments-unreadable"
+        continue
+    }
+    _size_dir=$(mktemp -d)
+    printf '%s' "$body" >"$_size_dir/body"
+    printf '%s' "$comments" >"$_size_dir/comments"
+    set +e
+    size_out=$(python3 "$SPEC_GATE_PY" check-size --body "$_size_dir/body" --comments "$_size_dir/comments" --labels "${labels[$i]:-}" 2>&1)
+    size_rc=$?
+    set -e
+    rm -rf "$_size_dir"
+    if (( size_rc == 1 )); then
+        echo "issue $N ($title): skipped-oversized"
+        gh issue edit "$N" -R "$FULL" --remove-label agent-ready --add-label agent-blocked 2>/dev/null || true
+        gh issue comment "$N" -R "$FULL" --body "$size_out" 2>/dev/null || true
+        continue
+    fi
+    if (( size_rc != 0 )); then
+        echo "agent-ready-spec-gate check-size failed for issue $N (rc=$size_rc): $size_out" >&2
+        exit 1
+    fi
+
+    # fleet-ops#1250: build-shaped issues without a Prior art section bounce
+    # (agent-blocked) and must not push a claim branch. The checker fetches
+    # the body itself unless PRIOR_ART_CLAIM_CHECK is a stub.
+    set +e
+    bounce_out=$("$PRIOR_ART_BIN" bounce -R "$FULL" --issue "$N" 2>&1)
+    bounce_rc=$?
+    set -e
+    if (( bounce_rc == 1 )); then
+        echo "issue $N ($title): skipped-spec-incomplete"
+        continue
+    fi
+    if (( bounce_rc != 0 )); then
+        echo "prior-art-claim-check bounce failed for issue $N (rc=$bounce_rc): $bounce_out" >&2
+        exit 1
+    fi
+
+    # Vacation park (fleet-ops#1165, audit finding 12): for 0509, skip
+    # claiming any agent-ready issue whose body names a protected
+    # verifier/deploy file while inside the vacation window. This is the
+    # intake-side prevention so workers do not open attest-stuck PRs that
+    # sit red until Nish returns. The issue stays agent-ready and becomes
+    # claimable again after the window; the gate is unchanged.
+    if protected_verifier_vacation_filter "$body"; then
+        echo "issue $N ($title): skipped-protected-verifier-vacation"
         continue
     fi
 
     # Rent-paying band (fleet-ops#1223): until cutoff_utc, fleet-ops intake
     # claims only surge_leverage_issues; after cutoff, a new machinery claim
     # that would push live share over machinery_max_pct is skipped unless the
-    # body carries `band-multiplier: N`. One repair lane always runs when
+    # issue carries a `priority` or `emergency` label. One repair lane always runs when
     # live machinery == 0 (fleet-ops#1452 floor). Skip, do not fail the tick —
     # product ticks still run, and the next fleet-ops tick retries when a
     # slot opens.
-    # Legit-work guard (fleet-ops#1516): pass title for quality classification
+    # Legit-work guard (fleet-ops#1516): pass title and body for quality classification
     # to allow empty-product surge expansion only for upgrade/repair work.
-    band_reason=$(precedence_band_allow_claim "$REPO" "$N" "$body" "$title") || {
+    band_reason=$(precedence_band_allow_claim "$REPO" "$N" "${labels[$i]}" "$body" "$title") || {
         echo "issue $N ($title): skipped-precedence-band ($band_reason)"
         continue
     }
+
+    # Product-first held repo (fleet-ops#2626): when the self-maintenance
+    # ratio holds this repo, only the precedence-band FLOOR lanes may claim
+    # (one lane per tick, latched by precedence_band_allow_claim) so the
+    # queue can never hard-stall at 0 dispatches. Every other fleet-ops
+    # claim stays held so capacity still goes to product repos when product
+    # work exists. Without this, a ratio inflated by duplicate/churn issues
+    # while product repos are blocked would idle every worker.
+    # allow-band-surge-legit (fleet-ops#1516) is admitted too: it only fires
+    # when BAND_PRODUCT==0 (precedence-band.sh:363), i.e. no product work is
+    # competing, so holding it would idle every worker for nothing — the
+    # exact FleetUndersaturated stall fleet-ops#2841 diagnosed.
+    if [[ "$_pfirst_held" == "1" ]]; then
+        case "$band_reason" in
+            allow-band-bootstrap|allow-band-floor|allow-starvation-floor|allow-surge-floor|allow-surge-leverage|allow-multiplier|allow-band-surge-legit)
+                echo "issue $N ($title): held-in-buffer floor lane ($band_reason) — one claim, queue not hard-stalled"
+                ;;
+            *)
+                echo "issue $N ($title): skipped-product-first-held ($band_reason)"
+                continue
+                ;;
+        esac
+    fi
 
     # Atomic create-only claim push (claim branch IS the work branch)
     status=0
@@ -396,18 +1684,36 @@ for i in "${!numbers[@]}"; do
     # Tolerate permanent label-state errors (agent-ready already removed
     # by a prior tick/auditor): if agent-in-progress is already set and
     # agent-ready is gone, the issue is in the desired state — no-op.
+    # Secondary rate limit ("submitted too quickly") backs off 60s x attempt
+    # and, when it exhausts all retries, persists the backoff state so the
+    # gate above holds future ticks instead of hammering the limit (fleet-ops#3445).
+    edit_attempt=0
     edit_out=""
     edit_rc=0
     for _ in 1 2 3; do
-        edit_out=$(gh issue edit "$N" -R "$FULL" --remove-label agent-ready --add-label agent-in-progress 2>&1)
-        edit_rc=$?
+        edit_attempt=$(( edit_attempt + 1 ))
+        edit_rc=0
+        edit_out=$(gh issue edit "$N" -R "$FULL" --remove-label agent-ready --add-label agent-in-progress 2>&1) || edit_rc=$?
         if [[ $edit_rc -eq 0 ]]; then break; fi
         case "$edit_out" in
-            *"submitted too quickly"*|*"secondary rate"*|*"429"*) sleep 5 ;;
+            *"submitted too quickly"*|*"secondary rate"*|*"429"*) sleep $((60 * edit_attempt)) ;;
             *) break ;;
         esac
     done
     if [[ $edit_rc -ne 0 ]]; then
+        case "$edit_out" in
+            *"submitted too quickly"*|*"secondary rate"*|*"429"*)
+                _ss_state=$(_gh_secondary_read)
+                _ss_attempt=$(printf '%s' "$_ss_state" | jq -r '.attempt // 0')
+                _ss_new_attempt=$(( _ss_attempt + edit_attempt ))
+                _ss_now=$(date +%s)
+                _ss_backoff=$(( _ss_now + 60 * _ss_new_attempt ))
+                _gh_secondary_write "$_ss_new_attempt" "$_ss_backoff"
+                git -C "$REPO_DIR" push origin ":refs/heads/claim/issue-$N" >/dev/null 2>&1 || true
+                echo "issue $N ($title): gh secondary rate limit after $edit_attempt attempts; backing off 60s x $_ss_new_attempt and releasing claim branch — gate: gh_rate_limit secondary" >&2
+                exit 0
+                ;;
+        esac
         labels_json=$(gh issue view "$N" -R "$FULL" --json labels --jq '.labels | map(.name)' 2>/dev/null || true)
         if echo "$labels_json" | grep -q '"agent-in-progress"' && ! echo "$labels_json" | grep -q '"agent-ready"'; then
             echo "issue $N: labels already in target state (agent-in-progress set, agent-ready removed) — idempotent skip"
@@ -418,29 +1724,56 @@ for i in "${!numbers[@]}"; do
     fi
 
     # GitHub secondary rate limits on addComment ("submitted too quickly")
-    # are transient — retry with backoff (fleet-ops#1350 pattern). A
+    # are transient — retry with 60s x attempt backoff (fleet-ops#3445). A
     # permanent failure (auth, 404, etc.) still exits 1 after exhaustion.
     comment_body="claimed by pi-issue-${REPO}-${N} at $(date -u +%FT%TZ)"
     comment_out=""
     comment_rc=0
+    comment_attempt=0
     for _ in 1 2 3; do
-        comment_out=$(gh issue comment "$N" -R "$FULL" --body "$comment_body" 2>&1)
-        comment_rc=$?
+        comment_attempt=$(( comment_attempt + 1 ))
+        comment_rc=0
+        comment_out=$(gh issue comment "$N" -R "$FULL" --body "$comment_body" 2>&1) || comment_rc=$?
         if [[ $comment_rc -eq 0 ]]; then break; fi
         case "$comment_out" in
-            *"submitted too quickly"*|*"secondary rate"*|*"429"*) sleep 5 ;;
+            *"submitted too quickly"*|*"secondary rate"*|*"429"*) sleep $((60 * comment_attempt)) ;;
             *) break ;;  # permanent error — do not retry
         esac
     done
     if [[ $comment_rc -ne 0 ]]; then
-        echo "gh issue comment failed for $N: $comment_out" >&2
-        exit 1
+        # The comment is a GH-visibility nicety, not load-bearing: the claim
+        # branch + label flip + claims log are the authoritative record, and
+        # the worker packet + unit start below do not depend on it. A
+        # sustained GitHub secondary rate limit ("submitted too quickly")
+        # must not abandon an otherwise-valid claim and orphan the worker
+        # spawn — that is the same loss the set -e guard above prevents.
+        # Log loud and continue to spawn the worker.
+        echo "issue $N: claim comment skipped (gh secondary rate limit after 3 retries: $comment_out)" >&2
     fi
 
-    # Write the worker packet so pi-issue-run can pick its own seat at run time
+    # Write the worker packet so pi-issue-run can pick its own seat at run time.
+    # fleet-ops#3247: append repo-conditional blocks AFTER the base prompt so
+    # D1 + gate-integrity ships only for 0509 (ideally only when the body names
+    # migrations/ or .github/) and GEO/AEO ships only for geo/aeo-labelled
+    # issues. Non-0509 / non-geo packets stay lean. A missing fragment file is
+    # non-fatal: the packet is still written with the base prompt + TARGET line
+    # so the worker runs rather than not at all (same fail-open posture as the
+    # keystone marker in pi-issue-start).
     packet_path="$ISSUE_STATE_DIR/${REPO}-${N}.in"
+    difficulty="$(issue_difficulty "${labels[$i]}" "$title" "$body")"
     {
+        echo "difficulty: $difficulty"
         cat "$WORKER_PROMPT"
+        if d1_gate_integrity_needed "$body" \
+            && [[ -f "$WORKER_BLOCKS_DIR/$D1_GATE_INTEGRITY_BLOCK" ]]; then
+            echo
+            cat "$WORKER_BLOCKS_DIR/$D1_GATE_INTEGRITY_BLOCK"
+        fi
+        if geo_aeo_needed "${labels[$i]}" \
+            && [[ -f "$WORKER_BLOCKS_DIR/$GEO_AEO_BLOCK" ]]; then
+            echo
+            cat "$WORKER_BLOCKS_DIR/$GEO_AEO_BLOCK"
+        fi
         echo
         echo "TARGET: repo $FULL issue $N unit pi-issue-${REPO}-${N}"
     } > "$packet_path"
@@ -458,22 +1791,41 @@ for i in "${!numbers[@]}"; do
         continue
     fi
 
-    # fleet-ops#1558: per-repo MemoryMax/MemoryHigh via per-instance drop-in
-    # before start. Template keeps MemoryMax=6G/MemoryHigh=3G; this overrides
-    # for known repos (fleet-ops light 1536M/1G, 0509 browser 2G/1536M). Missing
-    # table row = keep template. daemon-reload so the fresh drop-in is seen
-    # on the subsequent start (oneshot units are not lingering-loaded).
-    mem_row=$(worker_memory_for_repo "$REPO" 2>/dev/null || true)
+    # fleet-ops#1558 + #3281: per-repo MemoryMax/MemoryHigh via per-instance
+    # drop-in before start. Template keeps MemoryMax=6G/MemoryHigh=3G; this
+    # overrides for known repos (fleet-ops + 0509 MemoryMax=4G, throttle band
+    # removed per fleet-ops#3930) and for heavy|keystone issues (heavy class
+    # 3G/2G, fleet-ops#3281).
+    # Missing table row = keep template. daemon-reload so the fresh drop-in is
+    # seen on the subsequent start (oneshot units are not lingering-loaded).
+    mem_row=$(worker_memory_for_difficulty "$REPO" "$difficulty" 2>/dev/null || true)
     if [[ -n "$mem_row" ]]; then
         IFS=$'\t' read -r mem_max mem_high <<<"$mem_row"
         drop_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/${unit}.d"
         mkdir -p "$drop_dir"
         drop_tmp="$drop_dir/memory.conf.tmp.$$"
         {
-            printf '# fleet-ops#1558: per-repo memory cap (written by intake)\n'
+            printf '# fleet-ops#1558/#3281: per-repo/per-difficulty memory cap (written by intake)\n'
             printf '[Service]\n'
             [[ -n "$mem_max" ]] && printf 'MemoryMax=%s\n' "$mem_max"
-            [[ -n "$mem_high" ]] && printf 'MemoryHigh=%s\n' "$mem_high"
+            # fleet-ops#3930 correction: an empty mem_high means the row DROPPED
+            # the throttle band (fleet-ops + 0509). An OMITTED MemoryHigh= line
+            # does not clear it -- the unit still inherits the template's
+            # MemoryHigh=3G, so the pressure-kill fix never took effect on live
+            # workers (measured: every running pi-issue@* unit still showed
+            # MemoryHigh=3221225472 after #3938/#3950 merged). Writing the key
+            # with an EMPTY value is systemd's own reset syntax and clears the
+            # inherited template value (verified: systemctl --user show reports
+            # MemoryHigh=infinity after an empty override, vs MemoryHigh=3G with
+            # the key omitted).
+            if [[ -n "$mem_high" ]]; then
+                printf 'MemoryHigh=%s\n' "$mem_high"
+            else
+                printf 'MemoryHigh=\n'
+            fi
+            # fleet-ops#3611: keep the worker off swap so a runaway is OOM-killed
+            # locally instead of thrashing the host and killing unrelated units.
+            printf 'MemorySwapMax=0\n'
         } > "$drop_tmp"
         if ! cmp -s "$drop_tmp" "$drop_dir/memory.conf" 2>/dev/null; then
             mv -f "$drop_tmp" "$drop_dir/memory.conf"
@@ -560,6 +1912,48 @@ for i in "${!numbers[@]}"; do
     fi
 
     echo "issue $N ($title): claimed+spawned"
+    # fleet-ops#3784: stagger cohort spawns so clone/npm/pi startup peaks do
+    # not overlap (oomd slice-pressure kills at tick time). Sleep a few
+    # seconds between systemctl start --no-block calls. 0 disables. The value
+    # is loaded from seat-caps.json spawn_stagger_s by load_seat_caps (called
+    # in the parent shell after the capacity step above — fleet-ops#3861, so
+    # the value survives the pick_seat subshells into this read); default 0
+    # if the caps file is absent.
+    SEAT_SPAWN_STAGGER_S=${SEAT_SPAWN_STAGGER_S:-0}
+    if (( SEAT_SPAWN_STAGGER_S > 0 )); then
+        # Log the value actually slept so a claim tick proves the configured
+        # stagger engaged (fleet-ops#3861).
+        echo "issue $N ($title): spawn stagger ${SEAT_SPAWN_STAGGER_S}s (seat-caps spawn_stagger_s)"
+        sleep "$SEAT_SPAWN_STAGGER_S"
+    fi
+    # fleet-ops#1455: write a durable claim record so the fleet judge
+    # and fleet-restore-drill can see the claim. Guard above means we only
+    # append after a verified branch+packet+unit spawn.
+    _claims_dir="$(dirname "$CLAIMS_LOG")"
+    mkdir -p "$_claims_dir" 2>/dev/null || true
+    printf '%s claimed line=%s repo=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$N" "$REPO" >> "$CLAIMS_LOG" 2>/dev/null || true
+    # fleet-ops#2462: initialize the reclaim-count to 1 on the first claim.
+    # pi-issue-failed-reap increments it on each failed re-claim; when it
+    # reaches MAX_RECLAIMS, intake skips the issue. A stale count file from
+    # a prior claim cycle would have been cleared by the success/reset path
+    # -- only write if absent so a re-claim (after cooldown expiry) does not
+    # clobber an already-incremented count.
+    # fleet-ops#3254: count this self-maintenance claim toward the 20% cap.
+    # Exempt issues (critical-path label) were admitted past the cap, so skip
+    # the increment for them — only ordinary control-plane claims consume the
+    # budget and eventually cap the tick.
+    if (( _self_maint_cap > 0 )); then
+        if printf '%s' "${labels[$i]}" | jq -e --arg cp "$CRITICAL_PATH_LABEL" \
+            '[.[]?.name // empty] | index($cp) != null' >/dev/null 2>&1; then
+            : # exempt — does not consume the self-maintenance budget
+        else
+            _self_maint_claims=$(( _self_maint_claims + 1 ))
+        fi
+    fi
+    _rc_init_file="$ATTEMPTS_DIR/pi-issue-${REPO}-${N}.reclaim-count"
+    if [[ ! -f "$_rc_init_file" ]]; then
+        printf '1' > "$_rc_init_file" 2>/dev/null || true
+    fi
     slots=$(( slots - 1 ))
 done
 

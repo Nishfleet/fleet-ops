@@ -42,9 +42,19 @@ STATE_DIR="${AUDIT_STATE_DIR:-$HOME/.local/state/fleet-audit}"
 TALLY_BIN="${AUDIT_TALLY_BIN:-/home/nish/.local/bin/pi-audit-tally}"
 PENDING_AGE_S="${AUDIT_PENDING_AGE_S:-2400}"
 
+# fleet-ops#3962: a SKIP vote is not a verdict — pi-audit-tally counts only
+# PASS/FAIL, so a 1-1-SKIP panel stays PENDING forever. A stale SKIP (older
+# than AUDIT_SKIP_RECAST_AFTER_S) is treated as MISSING: the vote file is
+# renamed aside and the role's pi-audit@ unit is re-started through the
+# existing missing-vote path. After AUDIT_SKIP_RECAST_MAX recasts the SKIP
+# is left in place and a single SKIP-EXHAUSTED line is logged (once, via a
+# marker file). No tie-break in the tally — 1 PASS is not an admission.
+SKIP_RECAST_AFTER_S="${AUDIT_SKIP_RECAST_AFTER_S:-1800}"
+SKIP_RECAST_MAX="${AUDIT_SKIP_RECAST_MAX:-3}"
+
 mkdir -p "$LOG_DIR" "$STATE_DIR"
 
-ROLES=(devin free-glm-5-3 straitly)
+ROLES=(devin free-glm senior)
 
 # fleet-ops#146 (storm-tolerant panel):
 # Cap how many pi-audit@ units this tick may START --no-block. Without
@@ -77,13 +87,23 @@ command -v jq >/dev/null 2>&1 || { log "FATAL: jq missing"; exit 2; }
 repo_list() { jq -r '.repos[]?.name' "$INTAKE_JSON" 2>/dev/null || true; }
 
 scout_candidates() {
+    # fleet-ops#2766: fetch labels too so discarded+scout-candidate dual-
+    # labeled leftovers (from the pre-#2766 requeue loop) can be skipped
+    # and healed without burning the per-tick start cap on dead work.
+    # fleet-ops#3121: also fetch author so the owner-authored admission
+    # bypass (nish3451 + spec gate -> straight to agent-ready, no panel)
+    # is evaluated without an extra gh round-trip per candidate.
     local repo="$1"
     local out
-    out=$("$GH" issue list -R "Nishfleet/$repo" -l scout-candidate --state open --json number --limit 200 2>&1) || {
+    out=$("$GH" issue list -R "Nishfleet/$repo" -l scout-candidate --state open --json number,labels,author --limit 200 2>&1) || {
         log "$repo: scout-candidate list gh FAILED: $out"
         return 1
     }
-    printf '%s\n' "$out" | jq -r '.[] | .number'
+    # Emit "number\thas_discarded\tauthor" so the caller can skip terminal
+    # rejects and bridge owner-authored candidates without a body round-trip.
+    # labels defaults to [] so older fixtures / partial JSON still parse.
+    # author is the nested {login:...} object from gh -> take .author.login.
+    printf '%s\n' "$out" | jq -r '.[] | "\(.number)\t\([(.labels // [])[].name] | index("discarded") != null)\t\(.author.login // "")"'
 }
 
 unit_name() {
@@ -122,6 +142,63 @@ pending_since_s() {
     then_s=$(date -u -d "$(cat "$stamp")" +%s 2>/dev/null || echo 0)
     [ "$then_s" -gt 0 ] 2>/dev/null || return 1
     printf '%s\n' $(( now - then_s ))
+}
+
+# fleet-ops#3962: SKIP-vote recast helpers. A SKIP vote file exists on disk
+# so the pre-fix loop counted it as present, but pi-audit-tally ignores SKIP
+# (counts only PASS/FAIL), leaving 1-1-SKIP panels PENDING forever. These
+# helpers let process_candidate detect a stale SKIP, rename it aside, and
+# re-run the role's audit unit through the existing missing-vote path.
+
+vote_verdict() {
+    local v="$1"
+    [ -f "$v" ] || return 1
+    jq -r '.verdict // empty' "$v" 2>/dev/null
+}
+
+vote_age_s() {
+    local v="$1" at now then_s
+    [ -f "$v" ] || return 1
+    at=$(jq -r '.at // empty' "$v" 2>/dev/null)
+    [ -n "$at" ] || return 1
+    now=$(date -u +%s)
+    then_s=$(date -u -d "$at" +%s 2>/dev/null || echo 0)
+    [ "$then_s" -gt 0 ] 2>/dev/null || return 1
+    printf '%s\n' $(( now - then_s ))
+}
+
+vote_at_epoch() {
+    local v="$1" at
+    [ -f "$v" ] || return 1
+    at=$(jq -r '.at // empty' "$v" 2>/dev/null)
+    [ -n "$at" ] || return 1
+    date -u -d "$at" +%s 2>/dev/null
+}
+
+recast_count() {
+    # Counts prior SKIP recasts for a role: <role>.vote.skip-* files in the
+    # candidate dir. The .skip-exhausted marker does NOT match this glob.
+    local repo="$1" candidate="$2" role="$3" dir n
+    dir="$STATE_DIR/$repo/$candidate"
+    [ -d "$dir" ] || { printf '0\n'; return; }
+    shopt -s nullglob
+    # shellcheck disable=SC2034 # n counts the recast files; contents unused.
+    recast_files=( "$dir/$role.vote.skip-"* )
+    n=${#recast_files[@]}
+    shopt -u nullglob
+    printf '%s\n' "$n"
+}
+
+skip_exhausted_log() {
+    # Logs SKIP-EXHAUSTED once per role per candidate via a marker file so
+    # the line is not repeated every tick.
+    local repo="$1" candidate="$2" role="$3" dir marker
+    dir="$STATE_DIR/$repo/$candidate"
+    marker="$dir/$role.skip-exhausted"
+    [ -f "$marker" ] && return
+    mkdir -p "$dir" 2>/dev/null || true
+    log "$repo/#$candidate: SKIP-EXHAUSTED for $role — $SKIP_RECAST_MAX recasts done, SKIP left in place (fleet-ops#3962)"
+    date -u +%Y-%m-%dT%H:%M:%SZ > "$marker" 2>/dev/null || true
 }
 
 start_audit() {
@@ -168,14 +245,55 @@ recover_failed_audit() {
 }
 
 process_candidate() {
-    local repo="$1" candidate="$2"
+    local repo="$1" candidate="$2" author="$3"
     local missing=0 active=0 failed=0
     local v role unit state
+
+    # fleet-ops#3121: admission bypass for owner-authored issues. A candidate
+    # authored by nish3451 whose body passes the agent-ready spec gate goes
+    # straight to agent-ready (no three-seat panel — the owner already
+    # decided). Logged one line per bypass. Only fires for nish3451 + a real
+    # spec-gate PASS; anything else falls through to the panel.
+    if [ "$author" = "nish3451" ] && owner_bridges_to_ready "$repo" "$candidate"; then
+        return
+    fi
 
     for role in "${ROLES[@]}"; do
         v=$(vote_path "$repo" "$candidate" "$role")
         if [ -f "$v" ]; then
-            continue
+            # fleet-ops#3962: a SKIP vote is not a verdict. pi-audit-tally
+            # counts only PASS/FAIL, so a 1-1-SKIP panel stays PENDING
+            # forever. A stale SKIP (older than AUDIT_SKIP_RECAST_AFTER_S)
+            # is treated as MISSING: rename it aside and fall through to
+            # the missing-vote path so the role's pi-audit@ unit re-runs.
+            # After AUDIT_SKIP_RECAST_MAX recasts, leave the SKIP in place
+            # and log SKIP-EXHAUSTED once. A fresh SKIP (not yet stale) or
+            # any non-SKIP verdict stays present as before.
+            if [ "$(vote_verdict "$v" 2>/dev/null)" = "SKIP" ]; then
+                local s_age s_n s_epoch s_dir
+                s_age=$(vote_age_s "$v" 2>/dev/null || echo "")
+                if [ -n "$s_age" ] && [ "$s_age" -ge "$SKIP_RECAST_AFTER_S" ]; then
+                    s_n=$(recast_count "$repo" "$candidate" "$role")
+                    if [ "$s_n" -ge "$SKIP_RECAST_MAX" ]; then
+                        skip_exhausted_log "$repo" "$candidate" "$role"
+                        continue
+                    fi
+                    s_epoch=$(vote_at_epoch "$v" 2>/dev/null || date -u +%s)
+                    s_dir=$(dirname "$v")
+                    if mv "$v" "$s_dir/$role.vote.skip-$s_epoch" 2>/dev/null; then
+                        log "$repo/#$candidate: stale SKIP for $role (age=${s_age}s) recast $((s_n+1))/$SKIP_RECAST_MAX — vote renamed, re-starting unit (fleet-ops#3962)"
+                    else
+                        # Rename failed — leave the SKIP and treat as present
+                        # so we do not spin the unit every tick.
+                        log "$repo/#$candidate: stale SKIP for $role rename FAILED — leaving vote in place"
+                        continue
+                    fi
+                else
+                    continue
+                fi
+            else
+                continue
+            fi
         fi
         unit=$(unit_name "$repo" "$candidate" "$role")
         state=$(unit_state "$unit")
@@ -239,14 +357,78 @@ process_candidate() {
     fi
 }
 
+# fleet-ops#2766: a discarded+scout-candidate dual-label leftover is
+# terminal — drop scout-candidate so the next tick does not re-list it
+# (lifecycle-label-sweep also heals, but the auditor is the hotter path
+# and must not spend TICK_MAX_START slots on dead work). Fail-open: a
+# gh blip leaves the dual-label for the next tick / the sweep.
+heal_discarded_scout() {
+    local repo="$1" candidate="$2"
+    log "$repo/#$candidate: discarded+scout-candidate dual-label — drop scout-candidate (fleet-ops#2766)"
+    if ! "$GH" issue edit "$candidate" -R "Nishfleet/$repo" --remove-label scout-candidate >/dev/null 2>&1; then
+        log "$repo/#$candidate: remove-label scout-candidate FAILED — retry next tick"
+        return 1
+    fi
+    rm -f "$(pending_stamp "$repo" "$candidate")" 2>/dev/null || true
+    return 0
+}
+
+spec_gate_py() {
+    if [ -n "${AGENT_READY_SPEC_GATE:-}" ]; then
+        printf '%s\n' "$AGENT_READY_SPEC_GATE"
+        return 0
+    fi
+    local here
+    here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    if [ -f "$here/../lib/agent-ready-spec-gate.py" ]; then
+        printf '%s\n' "$here/../lib/agent-ready-spec-gate.py"
+        return 0
+    fi
+    printf '%s\n' "/home/nish/.local/lib/pi-packet/agent-ready-spec-gate.py"
+}
+
+issue_passes_spec_gate() {
+    local body="$1" repo="$2" py
+    py=$(spec_gate_py)
+    [ -f "$py" ] || return 1
+    printf '%s' "$body" | python3 "$py" check-body --repo "$repo" >/dev/null
+}
+
+# fleet-ops#3121: owner-authored admission bypass. Caller has already
+# confirmed author == nish3451; here we fetch the body, run the agent-ready
+# spec gate, and if it PASSES apply agent-ready directly (no panel) and log
+# one line. Returns 0 when the bridge happened, 1 otherwise (caller falls
+# through to the panel).
+owner_bridges_to_ready() {
+    local repo="$1" candidate="$2"
+    local j body
+    j=$("$GH" issue view "$candidate" -R "Nishfleet/$repo" --json body 2>/dev/null || printf '{}')
+    body=$(printf '%s\n' "$j" | jq -r '.body // empty')
+    if ! issue_passes_spec_gate "$body" "$repo"; then
+        log "$repo/#$candidate owner-authored but SPEC-GATE-REFUSED — panel admission"
+        return 1
+    fi
+    log "$repo/#$candidate OWNER-BYPASS: nish3451 authored + spec gate passed — agent-ready without panel"
+    if ! "$GH" issue edit "$candidate" -R "Nishfleet/$repo" --remove-label scout-candidate --add-label agent-ready >/dev/null 2>&1; then
+        log "$repo/#$candidate OWNER-BYPASS gh edit FAILED"
+        return 1
+    fi
+    rm -f "$(pending_stamp "$repo" "$candidate")" 2>/dev/null || true
+    return 0
+}
+
 main() {
     local repo
     while IFS= read -r repo; do
         [ -n "$repo" ] || continue
-        local candidate
-        while IFS= read -r candidate; do
+        local candidate has_discarded author
+        while IFS=$'\t' read -r candidate has_discarded author; do
             [ -n "$candidate" ] || continue
-            process_candidate "$repo" "$candidate" || true
+            if [ "$has_discarded" = "true" ]; then
+                heal_discarded_scout "$repo" "$candidate" || true
+                continue
+            fi
+            process_candidate "$repo" "$candidate" "$author" || true
         done < <(scout_candidates "$repo" 2>/dev/null || true)
     done < <(repo_list)
 }

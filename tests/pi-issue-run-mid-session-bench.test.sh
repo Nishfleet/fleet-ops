@@ -50,6 +50,7 @@ mkdir -p "$LEDGER"
 
 export PI_PACKET_STATE="$STATE_DIR"
 export PI_SEAT_HEALTH_LEDGER_DIR="$LEDGER"
+export PI_SEAT_HEALTH_SIDECAR="$scratch/pi-seat-health.json"
 export PI_ISSUES_DIR="$ISSUES_DIR"
 export PI_MODELS_JSON="$scratch/models.json"
 export SEAT_CAPS_JSON="$scratch/seat-caps.json"

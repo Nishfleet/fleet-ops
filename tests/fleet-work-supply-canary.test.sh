@@ -4,6 +4,10 @@
 # Proves the 24h/12h drain trigger (fleet-ops#540) offline:
 #   1. Hours math: famine, floor drain, go-ham, generate, rest.
 #   2. gate: generate/go-ham exit 0; rest exit 1; gh fail exit 255.
+#   2c. gate supply floor: created-24h<20 or ready<40 -> run=0 despite rest
+#       hours; fleet-ops exempt; unmeasured -> runway rule (fleet-ops#3547).
+#   2b. gate auto-park: consecutive_dry>=N + hours<BUFFER_H -> rest=1;
+#       lifts at hours>=BUFFER_H; no state / dry<N -> run=0 (fleet-ops#3418).
 #   3. Canary clean: wired ExecCondition, prompt, workers ungated,
 #      auditor panel, hours in generate zone -> exit 0, OK.
 #   4. Hardcoded ExecCondition -> exit 1, LOUD.
@@ -44,7 +48,11 @@ export FLEET_WORK_SUPPLY_REPO="Nishfleet/fleet-ops"
 export FLEET_WORK_SUPPLY_FILE=1
 export FLEET_WORK_SUPPLY_LIB="$lib"
 export FLEET_OPS_REPO="$scratch/repo"
-export FLEET_WORK_SUPPLY_MAX_IDLE_S=9000
+# Default MAX_IDLE_S is 15000 (see bin/fleet-work-supply-canary, fleet-ops#1144):
+# must exceed the scout timer's normal max idle of OnCalendar 4h +
+# RandomizedDelaySec 5m = 14700s. We do NOT override it here so the default
+# is exercised end-to-end; scenario 8a pins the cadence-race fix.
+export FLEET_WORK_SUPPLY_MAX_IDLE_S=15000
 
 # --- hours math (source the lib) -------------------------------------------
 # shellcheck source=../lib/work-supply.sh
@@ -207,6 +215,163 @@ rm -f "$scratch/gh_broken"
 [[ "$gate_rc" == "255" ]] || fail "gate gh fail must exit 255, got $gate_rc"
 ok "scenario2: gate exit 0/1/255"
 
+# --- 2b. auto-park a green-and-sterile scout (fleet-ops#3418) ---------------
+# The scout-futility tracker escalated (consecutive_dry >= N) and the buffer
+# is still below BUFFER_H -> the gate parks (rest=1) so the sterile loop stops
+# burning cycles. Lifts when the buffer refills (hours >= BUFFER_H). No state
+# file or consecutive_dry < N -> never parks.
+park_state_dir="$scratch/scout-futility-state"
+mkdir -p "$park_state_dir"
+export SCOUT_FUTILITY_STATE_DIR="$park_state_dir"
+export SCOUT_FUTILITY_N=3
+export SCOUT_FUTILITY_BUFFER_H=12
+# Pin supply healthy (created-24h>=20 AND ready>=40) so this park scenario
+# tests the park alone: a thin supply floor overrides the park (asserted at
+# the end of this block) — fleet-ops#3547.
+export FLEET_WORK_SUPPLY_CREATED_24H=65
+export FLEET_WORK_SUPPLY_READY=65
+write_state_file() {
+  local repo="$1" dry="$2"
+  cat >"$park_state_dir/${repo}.state" <<EOF
+# scout-futility state
+consecutive_dry=${dry}
+consecutive_wall=0
+EOF
+}
+# consecutive_dry=3 (>= N), hours=5 (< BUFFER_H) -> parked (rest=1).
+write_state_file demo 3
+export FLEET_WORK_SUPPLY_HOURS=5
+set +e
+"$bin" gate demo >/dev/null 2>&1
+gate_rc=$?
+set -e
+[[ "$gate_rc" == "1" ]] || fail "scenario2b: parked scout (dry=3, hours=5) must rest=1, got $gate_rc"
+# consecutive_dry=5 (> N), hours=10 (< BUFFER_H) -> still parked.
+write_state_file demo 5
+export FLEET_WORK_SUPPLY_HOURS=10
+set +e
+"$bin" gate demo >/dev/null 2>&1
+gate_rc=$?
+set -e
+[[ "$gate_rc" == "1" ]] || fail "scenario2b: parked scout (dry=5, hours=10) must rest=1, got $gate_rc"
+# Lift: consecutive_dry=3 (>= N) but hours=12 (>= BUFFER_H) -> run=0.
+write_state_file demo 3
+export FLEET_WORK_SUPPLY_HOURS=12
+set +e
+"$bin" gate demo >/dev/null 2>&1
+gate_rc=$?
+set -e
+[[ "$gate_rc" == "0" ]] || fail "scenario2b: lifted park (dry=3, hours=12) must run=0, got $gate_rc"
+# Lift: consecutive_dry=3, hours=20 (generate zone) -> run=0.
+export FLEET_WORK_SUPPLY_HOURS=20
+set +e
+"$bin" gate demo >/dev/null 2>&1
+gate_rc=$?
+set -e
+[[ "$gate_rc" == "0" ]] || fail "scenario2b: lifted park (dry=3, hours=20) must run=0, got $gate_rc"
+# Not parked: consecutive_dry=2 (< N), hours=5 -> run=0 (go-ham runs).
+write_state_file demo 2
+export FLEET_WORK_SUPPLY_HOURS=5
+set +e
+"$bin" gate demo >/dev/null 2>&1
+gate_rc=$?
+set -e
+[[ "$gate_rc" == "0" ]] || fail "scenario2b: not parked (dry=2 < N, hours=5) must run=0, got $gate_rc"
+# No state file -> never parks even at go-ham.
+rm -f "$park_state_dir/demo.state"
+set +e
+"$bin" gate demo >/dev/null 2>&1
+gate_rc=$?
+set -e
+[[ "$gate_rc" == "0" ]] || fail "scenario2b: no state file (hours=5) must run=0, got $gate_rc"
+# Park overrides go-ham but NOT rest: dry=3, hours=30 -> rest=1 (action=rest,
+# park is redundant but must not change the rest verdict).
+write_state_file demo 3
+export FLEET_WORK_SUPPLY_HOURS=30
+set +e
+"$bin" gate demo >/dev/null 2>&1
+gate_rc=$?
+set -e
+[[ "$gate_rc" == "1" ]] || fail "scenario2b: rest zone (dry=3, hours=30) must rest=1, got $gate_rc"
+# fleet-ops#3547: THIN SUPPLY overrides the park. dry=3 (>= N), hours=5
+# (< BUFFER_H) would park, but created-24h=5 < 20 opens the floor -> run=0;
+# a parked scout must try again when the buffer is critical, the park's
+# escalate-senior path has not refilled it.
+write_state_file demo 3
+export FLEET_WORK_SUPPLY_HOURS=5
+export FLEET_WORK_SUPPLY_CREATED_24H=5
+set +e; "$bin" gate demo >/dev/null 2>&1; gate_rc=$?; set -e
+[[ "$gate_rc" == "0" ]] || fail "scenario2b: floor-open (created=5) overrides park (dry=3,hours=5) must run=0, got $gate_rc"
+unset FLEET_WORK_SUPPLY_HOURS SCOUT_FUTILITY_STATE_DIR SCOUT_FUTILITY_N SCOUT_FUTILITY_BUFFER_H FLEET_WORK_SUPPLY_CREATED_24H FLEET_WORK_SUPPLY_READY
+rm -rf "$park_state_dir"
+ok "scenario2b: auto-park rests when consecutive_dry>=N and hours<BUFFER_H; lifts at hours>=BUFFER_H (fleet-ops#3418)"
+
+# --- 2c. product-supply floor (fleet-ops#3547) ------------------------------
+# Runway alone cannot see "blocked issues re-released, nobody filing":
+# 2026-09-05 the 0509 scout rested at hours=66 while only 5 issues had been
+# created in 24h. Rest now needs BOTH runway >= REST_H AND live supply
+# (created-24h >= 20 and agent-ready >= 40). fleet-ops (control plane) is
+# exempt: its scout must not be pushed harder (#3254 budget).
+export FLEET_WORK_SUPPLY_HOURS=66
+export FLEET_WORK_SUPPLY_READY=65
+export FLEET_WORK_SUPPLY_CREATED_24H=5
+set +e; "$bin" gate 0509 >/dev/null 2>&1; gate_rc=$?; set -e
+[[ "$gate_rc" == "0" ]] || fail "scenario2c: created_24h=5 hours=66 must run=0, got $gate_rc"
+export FLEET_WORK_SUPPLY_CREATED_24H=30
+set +e; "$bin" gate 0509 >/dev/null 2>&1; gate_rc=$?; set -e
+[[ "$gate_rc" == "1" ]] || fail "scenario2c: created_24h=30 ready=65 hours=66 must rest=1, got $gate_rc"
+export FLEET_WORK_SUPPLY_READY=30
+set +e; "$bin" gate 0509 >/dev/null 2>&1; gate_rc=$?; set -e
+[[ "$gate_rc" == "0" ]] || fail "scenario2c: ready=30 (<40) hours=66 must run=0 even at created_24h=30, got $gate_rc"
+export FLEET_WORK_SUPPLY_CREATED_24H=5
+set +e; "$bin" gate fleet-ops >/dev/null 2>&1; gate_rc=$?; set -e
+[[ "$gate_rc" == "1" ]] || fail "scenario2c: fleet-ops is exempt from the floor; hours=66 must rest=1, got $gate_rc"
+unset FLEET_WORK_SUPPLY_CREATED_24H
+export FLEET_WORK_SUPPLY_READY=65
+set +e; "$bin" gate 0509 >/dev/null 2>&1; gate_rc=$?; set -e
+[[ "$gate_rc" == "1" ]] || fail "scenario2c: created-24h unmeasured (fake gh) + ready=65 hours=66 must rest=1 (runway rule), got $gate_rc"
+unset FLEET_WORK_SUPPLY_HOURS FLEET_WORK_SUPPLY_READY
+ok "scenario2c: supply floor runs the scout at created-24h<20 or ready<40; fleet-ops exempt; unmeasured -> runway rule (fleet-ops#3547)"
+
+# --- 2d. created-24h counts real supply only ---------------------------------
+# 2026-09-06: 0509 auto-revert.yml filed 40 "AUTO-REVERT HALT" notices in
+# 24h while Deploy production was red; created_24h read 73 with 0 product
+# issues agent-ready, so the floor stayed closed and the scout rested on
+# noise. Real supply excludes HALT notices and noise-class issues. The fake
+# gh here applies the --jq expression so the filter is exercised for real.
+gh_jq="$scratch/gh_jq"
+cat >"$gh_jq" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${GH_LOG:-/dev/null}"
+jqexpr=""; prev=""
+for a in "$@"; do [[ "$prev" == "--jq" ]] && jqexpr="$a"; prev="$a"; done
+case "$*" in
+  *"issue list"*"created:>="*) jq -r "${jqexpr:-.}" "${GH_CREATED_FIXTURE}"; exit 0 ;;
+  *"issue list"*"-l agent-ready"*"--state closed"*) echo '[]'; exit 0 ;;
+  *"issue list"*"-l agent-ready"*) cat "${WORK_READY:-/dev/null}" 2>/dev/null || echo 0; exit 0 ;;
+  *"issue list"*) echo '[]'; exit 0 ;;
+  *"issue create"*) echo "https://github.com/Nishfleet/fleet-ops/issues/999"; exit 0 ;;
+esac
+exit 0
+FAKE
+chmod +x "$gh_jq"
+export GH_CREATED_FIXTURE="$scratch/created.json"
+jq -n '[range(22)|{number:(1800+.),title:"AUTO-REVERT HALT: main moved after the red commit",labels:[]}]
+  + [range(2)|{number:(1900+.),title:"main CI red: fix failing workflow",labels:[{name:"noise-class"}]}]
+  + [range(3)|{number:(1950+.),title:"fix(search): real product finding \(.)",labels:[{name:"scout-candidate"}]}]' >"$GH_CREATED_FIXTURE"
+export GH="$gh_jq"
+export FLEET_WORK_SUPPLY_HOURS=66
+export FLEET_WORK_SUPPLY_READY=65
+unset FLEET_WORK_SUPPLY_CREATED_24H
+: >"$gh_log"
+set +e; gate_out=$("$bin" gate 0509 2>&1); gate_rc=$?; set -e
+[[ "$gate_rc" == "0" ]] || fail "scenario2d: 27 created of which 24 are AUTO-REVERT HALT / noise-class must count 3 (<20) and run=0, got rc=$gate_rc ($gate_out)"
+grep -q 'created_24h=3 ' <<<"$gate_out" || grep -rqs 'created_24h=3 ' "$scratch" || fail "scenario2d: must log created_24h=3 ($gate_out)"
+grep -q -- '--json number,title,labels' "$gh_log" || fail "scenario2d: must fetch title+labels to filter (gh=$(cat "$gh_log"))"
+export GH="$gh_fake"
+unset FLEET_WORK_SUPPLY_HOURS FLEET_WORK_SUPPLY_READY
+ok "scenario2d: created-24h excludes AUTO-REVERT HALT and noise-class issues"
+
 # --- 3. clean canary --------------------------------------------------------
 write_wired_checkout
 : >"$gh_log"; : >"$triage"
@@ -276,6 +441,28 @@ run_canary
 grep -q 'WORK-SUPPLY-GO-HAM' <<<"$env_out" || fail "scenario8: must LOUD go-ham ($env_out)"
 grep -q 'issue create' "$gh_log" || fail "scenario8: must file (gh=$(cat "$gh_log"))"
 ok "scenario8: idle scout under 12h fail-loud + files"
+
+# --- 8a. normal scout cadence is NOT a false positive (fleet-ops#1144) -------
+# The scout timer fires every 4h (OnCalendar=*-*-* 00/4:00:00) with up to 5m
+# jitter, so normal pre-fire idle reaches ~14700s. The prior 9000s default
+# flagged this as go-ham-idle on every heartbeat whenever work <12h. With the
+# 15000s default, a healthy 14000s idle (just under the next fire) must NOT
+# file or fail loud.
+write_wired_checkout
+: >"$gh_log"; : >"$triage"
+export FLEET_WORK_SUPPLY_HOURS=5
+export FLEET_WORK_SUPPLY_SCOUT_STATE=inactive
+export FLEET_WORK_SUPPLY_LAST_TRIGGER_AGE_S=14000
+run_canary
+[[ "$env_rc" == "0" ]] || fail "scenario8a: normal cadence must exit 0, got rc=$env_rc ($env_out)"
+if grep -q 'WORK-SUPPLY-GO-HAM' <<<"$env_out"; then
+  fail "scenario8a: must NOT LOUD go-ham for normal cadence ($env_out)"
+fi
+if grep -q 'issue create' "$gh_log"; then
+  fail "scenario8a: must NOT file for normal cadence (gh=$(cat "$gh_log"))"
+fi
+ok "scenario8a: normal 4h-cadence idle is not a false positive (#1144)"
+unset FLEET_WORK_SUPPLY_LAST_TRIGGER_AGE_S
 
 # --- 9. dedup ---------------------------------------------------------------
 : >"$gh_log"; : >"$triage"

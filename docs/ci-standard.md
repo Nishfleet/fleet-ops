@@ -23,7 +23,12 @@ Other repos: `uses: Nishfleet/fleet-ops/.github/workflows/reusable-pr-checks.yml
 `v1` moves only for compatible changes. A break is `v2`.
 
 `.github/workflows/reusable-auto-merge-arm.yml` is the matching auto-merge job.
-Callers keep the `pull_request` trigger and pass `AUTO_REVERT_PAT` explicitly.
+Callers keep the `pull_request` trigger and pass the `NISHFLEET_WORKER_APP_ID`
+and `NISHFLEET_WORKER_PRIVATE_KEY` secrets explicitly. The reusable workflow
+mints a nishfleet-worker App installation token per run and arms under that,
+not `GITHUB_TOKEN` (would not trigger push workflows on main) and not a
+human PAT (made Nish the triggering actor of every merge, so GitHub emailed
+him per red workflow per merge — fleet-ops#1469).
 
 `template/.github/workflows/` is the starter caller set for a new repo.
 

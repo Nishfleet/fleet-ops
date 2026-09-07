@@ -151,4 +151,74 @@ printf '%s\n' "$out" | grep -q '^SKIP:' \
     || fail "E3: drop-in is not a new unit, got: $out"
 ok "E3: drop-in add is SKIP"
 
+# ============================================================================
+# Phase F: net-positive gate (fleet-ops#3256) — a net-positive diff must carry
+# a net-positive-because: line, or the gate REJECTs it.
+# ============================================================================
+check_net() {
+    local body="$1" numstat="$2"
+    printf '%s\n' "$body" >"$scratch/body.md"
+    printf '%s\n' "$numstat" >"$scratch/num.txt"
+    "$bin" --body "$scratch/body.md" --name-status "$scratch/ns.txt" --numstat "$scratch/num.txt"
+}
+
+# F1: net-positive diff without net-positive-because: must reject
+body=$'## Summary\n- changed\n'
+if check_net "$body" $'10\t2\tbin/foo' >/dev/null 2>&1; then
+    fail "F1: net-positive diff without net-positive-because: must reject"
+fi
+ok "F1: net-positive diff without net-positive-because: rejected"
+
+# F2: net-positive diff with net-positive-because: must accept
+body=$'## Summary\n- changed\nnet-positive-because: adds a needed detector\n'
+if check_net "$body" $'10\t2\tbin/foo' >/dev/null; then
+    ok "F2: net-positive diff with net-positive-because: accepted"
+else
+    fail "F2: net-positive diff with net-positive-because: must accept"
+fi
+
+# F3: net-negative diff must accept (no marker needed)
+if check_net "$body" $'2\t10\tbin/foo' >/dev/null; then
+    ok "F3: net-negative diff accepted"
+else
+    fail "F3: net-negative diff must accept"
+fi
+
+# F4: neutral diff (0 net) must accept
+if check_net "$body" $'5\t5\tbin/foo' >/dev/null; then
+    ok "F4: neutral diff accepted"
+else
+    fail "F4: neutral diff must accept"
+fi
+
+# F5: binary-only numstat (-	-) is neutral and must accept
+if check_net "$body" $'-\t-\tbin/foo' >/dev/null; then
+    ok "F5: binary-only numstat accepted as neutral"
+else
+    fail "F5: binary-only numstat must accept"
+fi
+
+# F6: empty net-positive-because: value must reject
+body=$'## Summary\n- changed\nnet-positive-because:\n'
+if check_net "$body" $'10\t2\tbin/foo' >/dev/null 2>&1; then
+    fail "F6: empty net-positive-because: value must reject"
+fi
+ok "F6: empty net-positive-because: value rejected"
+
+# F7: net-positive diff that ALSO adds new machinery with no run-proof rejects
+#     (both gates fire; the machinery reject wins)
+body=$'## Summary\n- adds a timer\n'
+if check_net "$body" $'10\t2\tsystemd/foo.timer' >/dev/null 2>&1; then
+    fail "F7: net-positive + new timer without run-proof must reject"
+fi
+ok "F7: net-positive + new timer without run-proof rejected"
+
+# F8: net-positive diff with marker AND new machinery with run-proof accepts
+body=$'## Summary\n- adds a timer\nrun-proof: journal \"fleet-blind-audit.service\" lines below\nnet-positive-because: adds a needed timer\n'
+if check_net "$body" $'10\t2\tsystemd/foo.timer' >/dev/null; then
+    ok "F8: net-positive + new timer with run-proof and marker accepted"
+else
+    fail "F8: net-positive + new timer with run-proof and marker must accept"
+fi
+
 echo "all phases passed"

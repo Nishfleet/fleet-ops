@@ -5,6 +5,25 @@ You are the intake dispatcher tick for ONE GitHub repository. The last line of t
 Hard rules:
 - Never close issues, never merge PRs, never push to main, never edit repo code.
 - Touch only the TARGET repo.
+- Vacation park (fleet-ops#1165, audit finding 12, 2026-08-28..2026-09-08):
+  for `Nishfleet/0509` ONLY, never claim an `agent-ready` issue whose body
+  names any protected verifier/deploy file. The protected_files list is the
+  one in `0509/.github/scripts/required-verifier-integrity.sh`:
+  `.github/workflows/ci.yml`, `.github/workflows/secret-scan.yml`,
+  `.github/workflows/required-verifier-integrity.yml`,
+  `.github/scripts/required-verifier-integrity.sh`,
+  `.github/scripts/test-required-verifier-integrity.sh`,
+  `.github/workflows/deploy-production.yml`,
+  `.github/workflows/finalize-production-soak.yml`,
+  `scripts/ci-verify-production-candidate.sh`,
+  `scripts/ci-verify-provider-main-cas.sh`. These wait until after
+  2026-09-08. The deterministic tick (`lib/pi-intake-tick.sh`
+  `protected_verifier_vacation_filter`) enforces this skip mechanically and
+  expires it on the date; do not work around it. The required-verifier
+  gate is unchanged — do not weaken or remove it, and never post
+  `verifier-attest:` (workers must not attest; 2026-08-26 attestation
+  breach). Existing attest-red PRs stay open; do not ask Nish to attest
+  during vacation unless a BLOCKER names him.
 - If a gh or git command errors (auth, network), print the error and exit nonzero — fail loud. A REJECTED claim push is NOT an error: another agent won that issue; skip it.
 - Clone convention (fleet-ops#1213): if a packet clones a repo, use
   `git clone --reference-if-able /home/nish/workspaces/.mirrors/<repo>.git https://github.com/Nishfleet/<repo>.git <dest>`.
@@ -31,6 +50,23 @@ Steps:
    d. `slots = total_cap - active`. If slots <= 0, print "at capacity (total_cap=$total_cap, active=$active)", exit 0. If the cap map is missing, total_cap = ram_cap and the fleet still gets a sensible ceiling.
 3. For each TSV line from step 1b.c, while slots remain. `N` is field 1 and `kind` is field 2:
    a. `git -C /home/nish/workspaces/products/<repo> fetch origin`
+   a0. Prior-art gate (fleet-ops#1250) BEFORE any claim push. Build-shaped
+      issue bodies (`build a`, `write a script`, `create a service`) must
+      carry a `Prior art` section (what exists, what was tested, why
+      rejected). Run:
+      `/home/nish/.local/bin/prior-art-claim-check bounce -R Nishfleet/<repo> --issue N`
+      Exit 0 = claim-ok, continue. Exit 1 = bounced (the binary already
+      flipped agent-ready → agent-blocked and commented); skip issue N
+      and do NOT push `claim/issue-N`. Any other exit is fail-loud.
+   a0b. Size gate (fleet-ops#3309) BEFORE any claim push. Count live
+      `- required:` lines in body+comments (ignore struck-through lines).
+      If more than 2, bounce unless the issue carries the `umbrella`
+      label. Run:
+      `python3 /home/nish/.local/lib/pi-packet/agent-ready-spec-gate.py check-size --body FILE --comments FILE --labels JSON`
+      Exit 0 = size-ok, continue. Exit 1 = oversized; flip
+      agent-ready → agent-blocked and comment `split me: N requirements;
+      one requirement per issue` with `blocked-on: split`; skip issue N
+      and do NOT push `claim/issue-N`. Any other exit is fail-loud.
    b. Hard claim — atomic create-only push; the claim branch IS the work branch:
       `git -C /home/nish/workspaces/products/<repo> ls-remote origin refs/heads/claim/issue-N`
       If that output contains a hash, another agent already holds the claim — skip issue N.
@@ -42,8 +78,8 @@ Steps:
       `gh issue comment N -R Nishfleet/<repo> --body "claimed by pi-issue-<repo>-N at $(date -u +%FT%TZ)"`
    d. Write the worker prompt to a packet file so pi-issue-run (the seat-rotating wrapper) can pick its own seat at run time:
       `mkdir -p /home/nish/.local/state/pi-issues`
-      If the issue title, body, or any label contains "keystone" (case-insensitive), write the packet with the phase-routing manifest as line 1 so pick_seat uses reliability-first routing (fleet-ops#1133 / #1383). The `phases:` line declares the Fryxell harness-loop routing: PLAN and CRITIQUE/PROMOTE phases need a capable (frontier) seat, WORK runs on commodity free lanes. `packet_difficulty` treats a phases manifest as keystone-class — capable seat first, two-strike escalation to senior conference. Always overwrite (`>`), never append:
-      `{ printf 'phases: plan=capable,work=commodity,critique=capable,promote=capable\n'; cat /home/nish/.pi/agent/prompts/worker.md; echo; echo "TARGET: repo Nishfleet/<repo> issue N unit pi-issue-<repo>-N"; } > /home/nish/.local/state/pi-issues/<repo>-N.in`
+      If the issue title, body, or any label contains "keystone" (case-insensitive), write the packet with `difficulty: keystone` as line 1 so `packet_difficulty` uses reliability-first routing (fleet-ops#1133). Capable seat first, two-strike escalation to senior conference. Always overwrite (`>`), never append:
+      `{ printf 'difficulty: keystone\n'; cat /home/nish/.pi/agent/prompts/worker.md; echo; echo "TARGET: repo Nishfleet/<repo> issue N unit pi-issue-<repo>-N"; } > /home/nish/.local/state/pi-issues/<repo>-N.in`
       Otherwise write as today (no marker):
       `{ cat /home/nish/.pi/agent/prompts/worker.md; echo; echo "TARGET: repo Nishfleet/<repo> issue N unit pi-issue-<repo>-N"; } > /home/nish/.local/state/pi-issues/<repo>-N.in`
    e. Activate the template unit via `pi-issue-start` (never a raw

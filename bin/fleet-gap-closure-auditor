@@ -58,6 +58,11 @@ mkdir -p "$(dirname "$stdout")"
 SEAT_LEDGER_DIR="${PI_SEAT_HEALTH_LEDGER_DIR:-/home/nish/workspaces/agent-state/lanes/seats}"
 SEAT_HEALTH_FILE="${PI_SEAT_HEALTH_FILE:-/home/nish/workspaces/agent-state/lanes/pi-seat-health.json}"
 
+# Set by seat_preflight_ok before each refusal so the NOT-DONE verdict carries
+# the precise reason (fleet-ops#4209): quota_bench until X, seat_dead, missing
+# ledger, rate_limited until X — not a generic catch-all.
+PREFLIGHT_REASON=""
+
 log() { printf '[%s] [fleet-gap-closure-auditor] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; }
 
 in_future() {
@@ -114,28 +119,33 @@ seat_preflight_ok() {
     fi
 
     if [ -z "${hc:-}" ]; then
+        PREFLIGHT_REASON="no health data"
         log "refusing $p/$m: no health data"
         return 1
     fi
 
     if [ "$dead" = "true" ]; then
+        PREFLIGHT_REASON="seat_dead=true"
         log "refusing $p/$m: seat_dead=true"
         return 1
     fi
 
     case "$hc" in
         credentials_bad|quota_exhausted)
+            PREFLIGHT_REASON="health_class=$hc"
             log "refusing $p/$m: health_class=$hc"
             return 1
             ;;
         quota_bench|overload_bench|hang_bench)
             if [ -n "${bench_until:-}" ] && in_future "$bench_until"; then
+                PREFLIGHT_REASON="benched until $bench_until ($hc)"
                 log "refusing $p/$m: benched until $bench_until ($hc)"
                 return 1
             fi
             ;;
         rate_limited)
             if observed_fresh "$obs" 1800 && [ -n "${usable_at:-}" ] && in_future "$usable_at"; then
+                PREFLIGHT_REASON="rate_limited until $usable_at"
                 log "refusing $p/$m: rate_limited until $usable_at"
                 return 1
             fi
@@ -143,6 +153,7 @@ seat_preflight_ok() {
     esac
 
     if [ -n "${usable_at:-}" ] && in_future "$usable_at"; then
+        PREFLIGHT_REASON="usable_at $usable_at in future"
         log "refusing $p/$m: usable_at $usable_at in future"
         return 1
     fi
@@ -162,11 +173,13 @@ if [ "$DRY_RUN" = "1" ]; then
 fi
 
 if ! seat_preflight_ok "$provider" "$model"; then
+    if [ -z "$PREFLIGHT_REASON" ]; then PREFLIGHT_REASON="no health data or dead"; fi
     jq -c -n \
         --arg provider "$provider" \
         --arg model "$model" \
-        --arg reason "seat preflight refused $provider/$model (no health data or dead)" \
-        '{vote:"NOT-DONE", reason:$reason, _seat_preflight:true, provider:$provider, model:$model}' >"$stdout"
+        --arg reason "seat preflight refused $provider/$model ($PREFLIGHT_REASON)" \
+        --arg preflight_reason "$PREFLIGHT_REASON" \
+        '{vote:"NOT-DONE", reason:$reason, _seat_preflight:true, preflight_reason:$preflight_reason, provider:$provider, model:$model}' >"$stdout"
     exit 0
 fi
 

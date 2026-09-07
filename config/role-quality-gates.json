@@ -124,10 +124,13 @@
       ],
       "units": [
         "fleet-heartbeat.service",
-        "pi-packet@.service"
+        "pi-packet@.service",
+        "pi-packet-logrotate.service",
+        "memory-index-autocompact.service"
       ],
       "prompts": [
-        "heartbeat.md"
+        "heartbeat.md",
+        "orchestrator-decision-sweep.md"
       ],
       "bypass_checks": [
         "orchestrator_verdict_guard"
@@ -154,19 +157,14 @@
     },
     {
       "id": "truth-staleness",
-      "gate": "weekly checker cross-checks standing docs against live state",
+      "gate": "checker cross-checks standing docs against live state; TruthStalenessMismatch alerts on mismatches (timer + issue filing retired in fleet-ops#4149)",
       "proof": [
         "libexec/staleness-checker.py",
         "tests/staleness-checker.test.sh",
         "config/fleet_rules.yml",
-        "systemd/fleet-truth-staleness-check.timer",
-        "systemd/fleet-truth-staleness-check.service",
         "systemd/fleet-metrics-export.service.d/staleness-checker.conf"
       ],
-      "units": [
-        "fleet-truth-staleness-check.timer",
-        "fleet-truth-staleness-check.service"
-      ],
+      "units": [],
       "prompts": [],
       "bypass_checks": []
     },
@@ -232,6 +230,31 @@
       "bypass_checks": [
         "rulebook_redteam_backups"
       ]
+    },
+    {
+      "id": "litellm-proxy",
+      "gate": "P1 paper organ \u2014 proxy + Postgres + Redis + /health canary; live install is Nish-gated (docs/litellm-postgres-setup.md); organ-heartbeat invariant + absent() rules enforce observability",
+      "proof": [
+        "systemd/fleet-litellm-proxy.service",
+        "systemd/fleet-litellm-postgres.service",
+        "systemd/fleet-litellm-redis.service",
+        "systemd/fleet-litellm-health-canary.service",
+        "systemd/fleet-litellm-health-canary.timer",
+        "libexec/fleet-litellm-health-canary.py",
+        "config/litellm-proxy.yaml",
+        "config/fleet-organs.json",
+        "config/fleet_rules.yml",
+        "tests/fleet-litellm-organ.test.sh",
+        "docs/litellm-postgres-setup.md"
+      ],
+      "units": [
+        "fleet-litellm-proxy.service",
+        "fleet-litellm-postgres.service",
+        "fleet-litellm-redis.service",
+        "fleet-litellm-health-canary.service"
+      ],
+      "prompts": [],
+      "bypass_checks": []
     }
   ]
 }

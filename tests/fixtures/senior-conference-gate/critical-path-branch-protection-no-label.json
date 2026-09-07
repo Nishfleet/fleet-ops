@@ -1,0 +1,9 @@
+{
+  "additions": 3,
+  "deletions": 1,
+  "changedFiles": 1,
+  "files": [
+    {"path": ".github/scripts/repo-standards-apply.mjs"}
+  ],
+  "labels": []
+}

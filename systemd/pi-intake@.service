@@ -3,7 +3,10 @@ Description=Pi fleet issue intake tick for Nishfleet/%i
 OnFailure=pi-intake-repair@%i.service
 # Retry ladder is systemd's own; StartLimit* must live in [Unit].
 StartLimitIntervalSec=1h
-StartLimitBurst=8
+# fleet-ops#3695: worker-exit top-ups (pi-issue@.service ExecStopPost) start
+# this unit up to once per debounce window (60 s). At 8/h the start limit
+# tripped on a busy hour and silenced the timer tick with it.
+StartLimitBurst=90
 
 [Service]
 Type=simple

@@ -28,6 +28,14 @@ branch is not an ancestor of origin/main. DRIFT-OFF-MAIN auto-files (deduped).
 `--file-off-main` files that class without running the rest of the canary so
 fleet-ops-deploy can file when it blocks before the canary runs.
 
+fleet-ops#2725: the deploy-clone on main but dirty (uncommitted tracked
+changes) or diverged (HEAD not an ancestor of origin/main) also blocks
+merge-to-live, but the off-main auto-file does not fire (the branch IS
+main). DRIFT-CHECKOUT auto-files that class (deduped).
+`--file-deploy-blocked-main` files that class without running the rest of
+the canary so fleet-ops-deploy can file when it blocks before the canary
+runs.
+
 Environment seams (overridden by tests):
   FLEET_OPS_CHECKOUT              path to the fleet-ops deploy checkout
   FLEET_OPS_AUDIT_LOG             drift audit log (default: ~/.local/state/fleet-ops/drift-audit.log)
@@ -37,7 +45,7 @@ Environment seams (overridden by tests):
   FLEET_OPS_WORKSPACES_ROOT       default /home/nish/workspaces
   FLEET_OPS_CANONICAL_CHECKOUT    default <workspaces>/tooling/fleet-ops-deploy-clone
   FLEET_OPS_ALLOW_NONCANONICAL    set to 1 to skip the source-path gate
-  FLEET_OPS_DRIFT_FILE            1 (default) auto-file DRIFT-SOURCE, DRIFT-MISSING-EXEC, DRIFT-PAPER-OVER, DRIFT-PRODUCTS-SYMLINK, DRIFT-OFF-MAIN, DRIFT-VOLATILE; 0 skip gh
+  FLEET_OPS_DRIFT_FILE            1 (default) auto-file DRIFT-SOURCE, DRIFT-MISSING-EXEC, DRIFT-PAPER-OVER, DRIFT-PRODUCTS-SYMLINK, DRIFT-OFF-MAIN, DRIFT-DEPLOY-BLOCKED-MAIN, DRIFT-VOLATILE, DRIFT-METRICS-DROPIN; 0 skip gh
   FLEET_OPS_DRIFT_CLOSE           1 (default) close a drift issue on a later green tick once it carries `resolved-at:`; 0 only comment (fleet-ops#1156)
   FLEET_OPS_DRIFT_REPO            default Nishfleet/fleet-ops
   FLEET_OPS_RETARGET_BIN          fleet-ops-retarget-products (default: next to this file)
@@ -54,6 +62,42 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+
+
+def _ensure_worker_token() -> None:
+    """Use the nishfleet-worker App token for any GitHub write (fleet-ops#3445).
+
+    Fail closed if the App cannot mint and no token was inherited from a parent
+    organ, so a dead App never falls through to the human gh identity. Human gh
+    is read-only for organs. GH Actions (tests) has no App creds and stubs gh
+    as read-only, so skip minting there.
+    """
+    if os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_ACTIONS") == "true":
+        return
+    # A test injects a fake gh (GH != 'gh'); no human gh write is possible, so
+    # skip minting there too. Production callers never set GH.
+    if os.environ.get("GH", "gh") != "gh":
+        return
+    wt = os.environ.get(
+        "NISHFLEET_WORKER_TOKEN_BIN",
+        f"{os.environ.get('HOME', '/home/nish')}/.local/bin/worker-token",
+    )
+    try:
+        out = subprocess.run(
+            [wt, "--print"], capture_output=True, text=True, timeout=30
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print("fleet-ops#3445: worker-token --print failed - refusing human-gh writes: %s" % exc, file=sys.stderr)
+        sys.exit(1)
+    if out.returncode != 0:
+        print("fleet-ops#3445: worker-token --print rc=%s - refusing human-gh writes: %s" % (out.returncode, out.stderr.strip()[:200]), file=sys.stderr)
+        sys.exit(1)
+    for line in out.stdout.splitlines():
+        if line.startswith("export GH_TOKEN="):
+            os.environ["GH_TOKEN"] = line[len("export GH_TOKEN="):].strip()
+            return
+    print("fleet-ops#3445: worker-token --print output not an export GH_TOKEN line - refusing human-gh writes", file=sys.stderr)
+    sys.exit(1)
 
 
 HOME = Path(os.environ.get("HOME", "/home/nish"))
@@ -93,8 +137,25 @@ ORPHAN_EXEC_MARKER = "orphan-execstart: fleet-ops#285"
 PAPER_OVER_MARKER = "paper-over-dropin: fleet-ops#370"
 PRODUCTS_MARKER = "products-symlink-stale: fleet-ops#410"
 OFF_MAIN_MARKER = "deploy-clone-off-main: fleet-ops#477"
+# MANIFEST entries installed as file COPIES (not symlinks) by design; exempt
+# from the must-be-a-symlink check. Keep in lockstep with MANIFEST
+# (fleet-ops#2910 seat-caps.json, #3838 pi-models.json, #3858 the gap).
+COPY_INSTALLED_SRC_NAMES = {"seat-caps.json", "pi-models.json", "model-candidates.json"}
 HOTPATCH_MARKER = "stale-overwrite-hot-patch: fleet-ops#463"
 VOLATILE_MARKER = "volatile-unit-path: fleet-ops#369"
+# fleet-ops#2725: the deploy-clone on main but dirty/diverged is a distinct
+# class from off-main (the branch IS main). It blocks merge-to-live with the
+# same DEPLOY-BLOCKED line but had no auto-file path, so it sat silent until
+# the blind-audit caught it 30+ min later. This marker gives the class its
+# own auto-file + observe-to-close wiring.
+DEPLOY_BLOCKED_MAIN_MARKER = "deploy-blocked-on-main: fleet-ops#2725"
+# fleet-ops#2920: a MANIFEST-listed fleet-metrics-export drop-in missing
+# from the live merged unit. The general check_live_matches_origin_main runs
+# after check_checkout, which exits on DRIFT-OFF-MAIN — so while the
+# deploy-clone is stuck on a non-main branch (the #2920 root cause), new
+# organs' drop-ins never reach live and the dark-organ symptom is invisible.
+# This marker gives the class its own auto-file + observe-to-close wiring.
+METRICS_DROPIN_MARKER = "metrics-export-dropin-missing: fleet-ops#2920"
 
 DRIFT_MARKERS = (
     SOURCE_MARKER,
@@ -104,6 +165,8 @@ DRIFT_MARKERS = (
     OFF_MAIN_MARKER,
     HOTPATCH_MARKER,
     VOLATILE_MARKER,
+    DEPLOY_BLOCKED_MAIN_MARKER,
+    METRICS_DROPIN_MARKER,
 )
 
 PAPER_OVER_DROPIN = (
@@ -299,6 +362,37 @@ def auto_file_off_main(msg: str) -> None:
     )
 
 
+def auto_file_deploy_blocked_main(msg: str) -> None:
+    """File one issue if the deploy-clone is on main but dirty or diverged.
+
+    fleet-ops#2725: a dirty working tree (uncommitted tracked changes) or a
+    HEAD that is not an ancestor of origin/main (a hot-patch commit not yet
+    on origin/main) blocks merge-to-live with the same DEPLOY-BLOCKED line
+    as off-main, but the off-main auto-file does not fire (the branch IS
+    main). Without this auto-file the block sat silent for 30+ min until
+    the blind-audit caught it. The drift canary and fleet-ops-deploy both
+    call this so the class is filed from whichever runs first.
+    """
+    extra = (
+        "The canonical deploy-clone is on branch main but merge-to-live is "
+        "blocked: either the working tree has uncommitted tracked changes "
+        "(a hot-patch not yet on a PR) or HEAD is not an ancestor of "
+        "origin/main (a local commit not yet merged). fleet-ops-deploy "
+        "refuses to fast-forward until the checkout is clean and an "
+        "ancestor of origin/main. Resolve by committing the change on a "
+        "branch/PR and merging it, or by discarding the local hot-patch if "
+        "it is already superseded (git checkout/restore the file, or "
+        "git reset --hard origin/main when the local commit is obsolete). "
+        "This canary auto-files that class (fleet-ops#2725)."
+    )
+    auto_file_drift(
+        DEPLOY_BLOCKED_MAIN_MARKER,
+        "Live fleet-ops-deploy-clone is on main but dirty/diverged, blocking merge-to-live",
+        extra,
+        msg,
+    )
+
+
 def auto_file_volatile(msg: str) -> None:
     """File one issue if a unit file or enable-link resolves into a volatile path.
 
@@ -318,6 +412,35 @@ def auto_file_volatile(msg: str) -> None:
     auto_file_drift(
         VOLATILE_MARKER,
         "Installed unit or enable-link resolves into a volatile path",
+        extra,
+        msg,
+    )
+
+
+def auto_file_metrics_dropin(msg: str) -> None:
+    """File one issue when a MANIFEST-listed metrics-export drop-in is absent
+    from the live merged unit (fleet-ops#2920).
+
+    The deploy-clone being on a non-main branch is the known root cause
+    (fleet-ops#477): install.sh runs from that checkout, so a MANIFEST that
+    predates a new organ's drop-in never lands it. The off-main block is
+    filed separately by check_checkout / fleet-ops-deploy; this filing is
+    for the dark-organ symptom itself so it cannot sit silent behind the
+    off-main exit.
+    """
+    extra = (
+        "Repair: restore the deploy-clone to main and run bin/fleet-ops-deploy, "
+        "or install the missing drop-in from `git show origin/main:<src>` "
+        "into ~/.config/systemd/user/fleet-metrics-export.service.d/ and "
+        "`systemctl --user daemon-reload`. The deploy-clone on a non-main "
+        "branch (fleet-ops#477) is the root cause — install.sh runs from "
+        "that checkout so a MANIFEST predating the organ never lands the "
+        "drop-in. Verify with: systemctl --user cat fleet-metrics-export.service "
+        "| grep <drop-in-name>."
+    )
+    auto_file_drift(
+        METRICS_DROPIN_MARKER,
+        "fix(metrics-export): MANIFEST-listed drop-in missing from live unit",
         extra,
         msg,
     )
@@ -366,6 +489,8 @@ def observe_close_drift_issues(
         PRODUCTS_MARKER: "products/fleet-ops symlink",
         OFF_MAIN_MARKER: "off-main deploy-clone",
         HOTPATCH_MARKER: "hot-patch",
+        DEPLOY_BLOCKED_MAIN_MARKER: "deploy-blocked on main",
+        METRICS_DROPIN_MARKER: "metrics-export drop-in missing",
     }
 
     markers = (only_marker,) if only_marker else DRIFT_MARKERS
@@ -512,9 +637,33 @@ def check_canonical_source(checkout: Path, expected_dests: dict[str, Path]) -> N
     if is_under(checkout_r, ws_r) and checkout_r != canon_r:
         findings.append(f"checkout {checkout_r} is not the canonical checkout {canon_r}")
 
-    for dest in expected_dests:
+    for dest, src in expected_dests.items():
         dest_path = Path(dest)
         if dest.startswith("/etc/"):
+            continue
+        # fleet-ops#2910: seat-caps.json is intentionally a regular file copy
+        # (not a symlink) so `git reset --hard` on the deploy-clone cannot
+        # silently rewrite the live config; check_live_matches_origin_main
+        # still compares its bytes to origin/main, and install.sh still guards
+        # cap downgrades. fleet-ops#3838 added config/pi-models.json
+        # (-> ~/.pi/agent/models.json) as a copy for the same reason but did
+        # not exempt it, so every deploy tick went LOUD DEPLOY-CHECK-FAILED on
+        # a DIFF-FILE finding for a file that is a copy by design (fleet-ops#3858).
+        # Exempt every MANIFEST copy-install; the set is pinned to MANIFEST by
+        # tests/fleet-ops-drift-copy-install-exempt.test.sh.
+        if src.name in COPY_INSTALLED_SRC_NAMES:
+            continue
+        # fleet-ops#3263: Pi provider extensions (template/extensions/**) are
+        # installed as file COPIES, not symlinks. A symlink into the deploy-clone
+        # working tree resolves their relative import `../seat-health.ts` against the
+        # repo tree, where that sibling does not live -> runtime import failure on
+        # every extension load (proven: Bun and Node both resolve relative imports
+        # against the symlink's real path). A copy keeps resolution on the live
+        # extensions dir, where seat-health.ts lives. Exempt from the symlink check.
+        # src here is the RESOLVED absolute path; we need the relative src from
+        # the manifest. Check if the dest is an extension path.
+        dest_str = str(dest)
+        if "/.pi/agent/extensions/" in dest_str:
             continue
         if dest_path.is_symlink():
             try:
@@ -718,6 +867,86 @@ def is_volatile_outside_checkout(resolved: Path, checkout: Path) -> bool:
     return False
 
 
+def check_metrics_export_dropins(checkout: Path) -> None:
+    """Fail when a MANIFEST-listed fleet-metrics-export drop-in is absent
+    from the live merged unit (fleet-ops#2920).
+
+    Runs BEFORE check_checkout so the dark-organ symptom is surfaced even
+    while the deploy-clone is on a non-main branch — the root cause that
+    makes check_live_matches_origin_main unreachable (check_checkout exits
+    on DRIFT-OFF-MAIN first). MANIFEST is read from the origin/main blob,
+    never the working tree, so an off-main checkout cannot mask the
+    expected drop-in set.
+
+    The off-main root cause is filed independently by check_checkout and
+    fleet-ops-deploy; this check files the missing-drop-in symptom itself.
+    """
+    if not SKIP_FETCH:
+        rc, _, err = run(["git", "-C", str(checkout), "fetch", "origin"], check=False)
+        if rc != 0:
+            # Don't fail-loud here: check_checkout re-fetches and owns the
+            # fetch-failure class. This check just degrades to the stale
+            # origin/main below, or skips if that is also unresolvable.
+            log(f"metrics-dropin check: git fetch origin failed ({err.strip()}); trying stale origin/main")
+    rc, origin_main, _ = run(["git", "-C", str(checkout), "rev-parse", "origin/main"], check=False)
+    if rc != 0:
+        # No origin/main to read the expected drop-in set from (e.g. a
+        # non-canonical hotfix checkout in tests, or a freshly-cloned repo
+        # with no remote ref). Skip rather than fail-loud so the existing
+        # DRIFT-SOURCE / DRIFT-CHECKOUT checks still surface the bad
+        # checkout class (fleet-ops#176, #477).
+        log("metrics-dropin check: origin/main unresolvable; skipping (defer to DRIFT-SOURCE/DRIFT-CHECKOUT)")
+        return
+    origin_main = origin_main.strip()
+
+    manifest_bytes = git_show_bytes(checkout, f"{origin_main}:MANIFEST")
+    if manifest_bytes is None:
+        fail_loud("DRIFT-ORIGIN", f"origin/main ({origin_main[:12]}) has no MANIFEST")
+
+    expected_dropins: list[str] = []
+    for line in manifest_bytes.decode("utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split(None, 1)
+        if len(parts) != 2:
+            continue
+        src, dest = parts[0], parts[1]
+        if "/fleet-metrics-export.service.d/" in dest and dest.endswith(".conf"):
+            expected_dropins.append(dest)
+
+    if not expected_dropins:
+        log("no fleet-metrics-export drop-ins in MANIFEST")
+        return
+
+    # `systemctl --user cat` prints a `# <drop-in-path>` comment line at the
+    # top of each drop-in fragment, so substring matching on the dest path
+    # confirms the drop-in is loaded into the merged unit (not just present
+    # on disk before a daemon-reload).
+    rc, cat_out, cat_err = run(
+        [SYSTEMCTL, "--user", "cat", "fleet-metrics-export.service"], check=False
+    )
+    if rc != 0:
+        msg = (
+            f"systemctl --user cat fleet-metrics-export.service failed "
+            f"(rc={rc}): {(cat_err or cat_out).strip()}"
+        )
+        auto_file_metrics_dropin(msg)
+        fail_loud("DRIFT-METRICS-DROPIN", msg)
+    merged = cat_out + cat_err
+
+    missing = [d for d in expected_dropins if d not in merged]
+    if missing:
+        msg = (
+            "MANIFEST-listed fleet-metrics-export drop-in(s) missing from "
+            f"the live merged unit (origin/main {origin_main[:12]}):\n"
+            + "\n".join(missing)
+        )
+        auto_file_metrics_dropin(msg)
+        fail_loud("DRIFT-METRICS-DROPIN", msg)
+    log(f"all {len(expected_dropins)} fleet-metrics-export drop-ins present in live unit")
+
+
 def check_live_matches_origin_main(checkout: Path) -> None:
     """Compare live dest bytes to origin/main blobs, never the working tree.
 
@@ -745,6 +974,10 @@ def check_live_matches_origin_main(checkout: Path) -> None:
             continue
         src, dest = parts[0], parts[1]
         if dest.startswith("/etc/"):
+            continue
+        # Skip npm-pin entries - these are pinned to the installed pi-coding-agent
+        # package examples, not from the fleet-ops repo origin/main.
+        if src.startswith("npm-pin:"):
             continue
         expected = git_show_bytes(checkout, f"{origin_main}:{src}")
         if expected is None:
@@ -891,7 +1124,29 @@ def check_checkout(checkout: Path) -> None:
         auto_file_off_main(msg)
         fail_loud("DRIFT-OFF-MAIN", msg)
 
+    # fleet-ops#2725: a HEAD that is not an ancestor of origin/main is a
+    # diverged/hot-patch commit on main — merge --ff-only would refuse it,
+    # so merge-to-live is blocked. This is a distinct class from plain
+    # stale-behind (HEAD is an ancestor, just behind) which deploy
+    # fast-forwards. Auto-file so the block does not sit silent until the
+    # blind-audit catches it 30+ min later.
     if head != origin_main:
+        rc_anc, _, _ = run(
+            ["git", "-C", str(checkout), "merge-base", "--is-ancestor", "HEAD", "origin/main"],
+            check=False,
+        )
+        if rc_anc != 0:
+            msg = (
+                f"canonical checkout on main is diverged: HEAD {head[:12]} "
+                f"is not an ancestor of origin/main {origin_main[:12]} "
+                f"(hot-patch commit not on origin/main; fleet-ops#2725)"
+            )
+            auto_file_deploy_blocked_main(msg)
+            fail_loud("DRIFT-CHECKOUT", msg)
+        # Plain stale-behind (HEAD is an ancestor, just behind origin/main)
+        # is not a block: deploy fast-forwards it. Keep the fail_loud so a
+        # canary-only run still flags drift, but do not auto-file — the
+        # next deploy tick resolves it.
         fail_loud("DRIFT-CHECKOUT", f"checkout stale: HEAD {head[:12]} != origin/main {origin_main[:12]}")
 
     rc, porcelain, _ = run(
@@ -901,7 +1156,13 @@ def check_checkout(checkout: Path) -> None:
     if rc != 0:
         fail_loud("DRIFT-CHECKOUT", f"git status failed: {porcelain}")
     if porcelain.strip():
-        fail_loud("DRIFT-CHECKOUT", f"checkout has uncommitted tracked changes:\n{porcelain.strip()}")
+        msg = (
+            f"canonical checkout on main has uncommitted tracked changes "
+            f"(HEAD {head[:12]}, origin/main {origin_main[:12]}; "
+            f"hot-patch not yet on a PR; fleet-ops#2725):\n{porcelain.strip()}"
+        )
+        auto_file_deploy_blocked_main(msg)
+        fail_loud("DRIFT-CHECKOUT", msg)
 
     # Off-main class is binary: branch is main or not. Observe-to-close the
     # matching open issue as soon as we know the branch is main, so the
@@ -909,6 +1170,10 @@ def check_checkout(checkout: Path) -> None:
     # still be red (fleet-ops#774). The end-of-canary observe_close_drift_issues
     # call dedups on the comment blob, so this is idempotent.
     observe_close_drift_issues(checkout, head, only_marker=OFF_MAIN_MARKER)
+    # fleet-ops#2725: deploy-blocked-on-main is also binary once we reach here
+    # (clean + on main + at origin/main means the block is gone). Observe-to-
+    # close its open issue the same tick, independent of later checks.
+    observe_close_drift_issues(checkout, head, only_marker=DEPLOY_BLOCKED_MAIN_MARKER)
 
     log(f"checkout {checkout} is at origin/main ({head[:12]}) and clean")
 
@@ -1095,6 +1360,8 @@ def check_missing_execstarts() -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
+    _ensure_worker_token()
+
     args = list(sys.argv[1:] if argv is None else argv)
     if args[:1] == ["--file-install-refuse"]:
         if len(args) < 4:
@@ -1114,12 +1381,28 @@ def main(argv: list[str] | None = None) -> None:
         auto_file_off_main(msg)
         sys.exit(0)
 
+    if args[:1] == ["--file-deploy-blocked-main"]:
+        msg = (
+            args[1]
+            if len(args) > 1
+            else "canonical deploy-clone is on main but dirty/diverged, blocking merge-to-live (fleet-ops#2725)"
+        )
+        auto_file_deploy_blocked_main(msg)
+        sys.exit(0)
+
     checkout = find_checkout()
     expected_dests, expected_enabled = parse_manifest(checkout)
 
     check_papered_heartbeat_dropin()
     check_volatile_canary_bin()
     check_products_symlink()
+    # fleet-ops#2920: run before check_canonical_source / check_checkout so a
+    # missing metrics-export drop-in is surfaced even while the deploy-clone
+    # is off-main or dests are hand-installed copies (DRIFT-SOURCE / DRIFT-
+    # OFF-MAIN exit before check_live_matches_origin_main, hiding the dark-
+    # organ symptom). This check reads MANIFEST from the origin/main blob and
+    # the live merged unit, so it does not trust the checkout working tree.
+    check_metrics_export_dropins(checkout)
     check_canonical_source(checkout, expected_dests)
     check_checkout(checkout)
     check_manifest_install(checkout)

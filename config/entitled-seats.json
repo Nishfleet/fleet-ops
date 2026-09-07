@@ -27,13 +27,33 @@
     {
       "id": "grok",
       "class": "prepaid-quota",
-      "note": "SuperGrok. Entitled but unwired until fleet-ops#41 (pi has no grok-cli adapter)."
+      "note": "SuperGrok. Entitled but unwired until fleet-ops#41 (pi has no grok-cli adapter). 2026-08-29 fleet-ops#1380: the grok dead-decoy provider is pruned from the live seat list in ~/.pi/agent/models.json and bin/fleet-seat-live-validate no longer re-paints the grok__grok-* phantom ledger — xai-oauth (below) is the sole live SuperGrok seat, so health counts stop reporting the decoy as walled capacity. Kept cap=0 dead_decoy for auditability."
     },
     {
       "id": "xai-oauth",
       "class": "prepaid-quota",
       "quota_window": "weekly",
       "note": "SuperGrok via stnly/pi-grok OAuth proxy (fleet-ops#1163). Live pi --print 2026-08-27 returned 200 for grok-4.6 and grok-4.5; weekly meter moved within minutes. Provider cap=1, models grok-4.6/grok-4.5, alternate never-stack."
+    },
+    {
+      "id": "runinfra",
+      "class": "prepaid-quota",
+      "note": "RunInfra deepseek-v4-flash worker seat (fleet-ops#4205, Nish 2026-09-07). Prepaid balance, cap 4, never a judge/senior seat. HTTP 402 = balance wall (Nish-only top-up), not a transient fault."
+    },
+    {
+      "id": "crof",
+      "class": "prepaid-quota",
+      "note": "CrofAI deepseek-v4-flash-0731 worker seat (fleet-ops#4262, Nish 2026-09-07). Prepaid balance, cap 2, NOT audition. Never a judge/senior seat. HTTP 402 = balance wall (Nish-only top-up), not a transient fault."
+    },
+    {
+      "id": "entrim",
+      "class": "prepaid-quota",
+      "note": "Entrim deepseek-ai/DeepSeek-V4-Flash worker seat (fleet-ops#4262, Nish 2026-09-07). Prepaid balance, cap 2, NOT audition. Never a judge/senior seat. HTTP 402 = balance wall (Nish-only top-up), not a transient fault."
+    },
+    {
+      "id": "alibaba-coding",
+      "class": "prepaid-quota",
+      "note": "Alibaba Model Studio Token Plan Personal Standard mid tier (fleet-ops#4329, Nish 2026-09-07). $18/mo, 10,000 credits/month, 3-4 concurrent, service PAUSES at the monthly or 7-day window cap, no rollover, no credits API (console only). Provider cap 3, 7 models. Tiers: qwen3.8-max senior candidate (audition on senior-review packets); qwen3.7-max + deepseek-v4-pro + qwen3.7-plus + glm-5.2 capable workers; deepseek-v4-flash-0731 + qwen3.8-flash cheap workers (light packets). Terms say interactive-only / no automation (same class as the GLM coding plan) — recorded here; Nish's call already made. Feeds the #4242 audit; all 7 models in the #4262 audition set. HTTP 429/402 = quota wall (monthly or 7-day window cap), not a transient fault."
     },
     {
       "id": "minimax",
@@ -63,12 +83,12 @@
     {
       "id": "commandcode",
       "class": "free",
-      "note": "Command Code free lane. Allowlist is deepseek/deepseek-v4-flash, minimax/minimax-m3-free (fleet-ops#637), and poolside/laguna-s-2.1-free (fleet-ops#638)."
+      "note": "Command Code free lane. Allowlist is deepseek/deepseek-v4-flash, minimax/minimax-m3-free (fleet-ops#637; RETIRED corpse 2026-09-01 fleet-ops#2700, re-verified 2026-09-02 fleet-ops#2742), and poolside/laguna-s-2.1-free (fleet-ops#638)."
     },
     {
       "id": "opencode",
       "class": "free",
-      "note": "OpenCode Zen (ledger name opencode-go). hy3-free, mimo-v2.5-free (fleet-ops#640), nemotron-3.5-lightning-free (fleet-ops#911), and nemotron-3-ultra-free (fleet-ops#910) are live; deepseek-v4-flash-free benched at cap=0 after pi spawn returned 'Model is unavailable' (2026-08-27, fleet-ops#639); x-preview-f-free benched at cap=0 after pi spawn returned 'Model x-preview-f-free is not supported' (HTTP 401, 2026-08-27, fleet-ops#811). 2026-08-27 06:51Z re-audition (fleet-ops#912): Pi `--list-models` now advertises the slug with cost 0/0/0/0, but direct live spawn (n=3 with `PONG` and a tool-packet probe) still returns HTTP 401 and `PACKET-VERDICT tools=0 class=no-tools`; incumbent `hy3-free` returns 200 with `PACKET-VERDICT tools=1 class=worked`, so the failure is the model, not the provider/key. Cap stays 0 pending a passing re-audition. muse-spark-1.2-contributor-free benched at cap=0 after live spawn returned HTTP 500 Internal server error (n=3, PACKET-VERDICT tools=0 class=no-tools, 2026-08-28, fleet-ops#1224); billing sibling muse-spark-1.2 not wired. MiniMax M3 is not wired (no free slug; fleet-ops#435 watches the catalog)."
+      "note": "OpenCode Zen (ledger name opencode-go). mimo-v2.5-free (fleet-ops#640), nemotron-3.5-lightning-free (fleet-ops#911), and nemotron-3-ultra-free (fleet-ops#910) are live. hy3-free RETIRED 2026-09-02 (fleet-ops#2667): live spawn n=3 returned HTTP 401 ModelError 'Model hy3-free is not supported' while the control nemotron-3-ultra-free returned PONG on the same key, so the provider dropped the slug \u2014 benched at cap=0 intentional_cap_zero=corpse; the slug is still advertised in `pi --list-models`, so the catalog is not the authority, the live spawn is. deepseek-v4-flash-free benched at cap=0 after pi spawn returned 'Model is unavailable' (2026-08-27, fleet-ops#639); x-preview-f-free benched at cap=0 after pi spawn returned 'Model x-preview-f-free is not supported' (HTTP 401, 2026-08-27, fleet-ops#811). 2026-08-27 06:51Z re-audition (fleet-ops#912): Pi `--list-models` now advertises the slug with cost 0/0/0/0, but direct live spawn (n=3 with `PONG` and a tool-packet probe) still returns HTTP 401 and `PACKET-VERDICT tools=0 class=no-tools`; incumbent `hy3-free` returns 200 with `PACKET-VERDICT tools=1 class=worked`, so the failure is the model, not the provider/key. Cap stays 0 pending a passing re-audition. muse-spark-1.2-contributor-free benched at cap=0 after live spawn returned HTTP 500 Internal server error (n=3, PACKET-VERDICT tools=0 class=no-tools, 2026-08-28, fleet-ops#1224; re-audition 2026-08-29 still HTTP 500 n=3, fleet-ops#759); billing sibling muse-spark-1.2 not wired. MiniMax M3 is not wired (no free slug; fleet-ops#435 watches the catalog)."
     },
     {
       "id": "orcarouter",

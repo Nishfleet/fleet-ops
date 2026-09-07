@@ -11,4 +11,4 @@ WorkingDirectory=/home/nish
 # is walled. Do not pin --provider here — a hardcoded repair seat is how
 # this unit sat activating on quota_exhausted glm-5-2 (fleet-ops#130).
 ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/pi-scout-run %i scout-repair'
-TimeoutStartSec=1800
+TimeoutStartSec=3600

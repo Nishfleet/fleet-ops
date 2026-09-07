@@ -86,6 +86,13 @@ case "$cmd" in
             [[ -n "$repo" ]] || { echo "pi-intake-priority order: need --repo, --issues-file, or JSON on stdin" >&2; exit 2; }
             local_json="$("$GH" issue list -R "Nishfleet/$repo" -l agent-ready --state open --json number,title,labels,createdAt --limit 50)"
         fi
+        # fleet-ops#3313: a non-fleet-ops queue never claims a control-plane
+        # chore filed as '[fleet-ops#N] ...' — those belong in fleet-ops (the
+        # workflow-file edit lands from nish3451 with an attest). 2026-09-04:
+        # 10 such issues in 0509 took 4 capable seats and produced no product.
+        if [[ -n "$repo" && "$repo" != "fleet-ops" && -n "$local_json" ]]; then
+            local_json="$(printf '%s\n' "$local_json" | jq -c '[.[] | select(((.title // "") | startswith("[fleet-ops#")) | not)]')"
+        fi
         if [[ -z "$local_json" || "$local_json" == "[]" ]]; then
             exit 0
         fi

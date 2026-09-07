@@ -1,4 +1,17 @@
 #!/usr/bin/env bash
+
+# Use the nishfleet-worker App token for any GitHub write. Fail closed if
+# the App cannot mint and no token was inherited from a parent organ, so a
+# dead App never falls through to the human gh identity (fleet-ops#3445).
+# Human gh is read-only for organs; GH Actions (tests) has no App creds and
+# stubs gh as read-only, so skip minting there.
+if [[ -z "${GH_TOKEN:-}" && "${GITHUB_ACTIONS:-}" != "true" && "${GH:-gh}" == "gh" ]]; then
+    export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
+    _wt="${NISHFLEET_WORKER_TOKEN_BIN:-${HOME:-/home/nish}/.local/bin/worker-token}"
+    _minted="$("$_wt" --print)" || { echo "fleet-ops#3445: $_wt --print failed - refusing human-gh writes" >&2; exit 1; }
+    eval "$_minted"
+    unset _wt _minted
+fi
 # pi-issue-failed-reap — release a claim after its worker exhausts retries.
 #
 # Triggered by pi-issue@.service OnFailure=pi-issue-failed@%i.service.
@@ -166,13 +179,22 @@ state_json=$(gh api "repos/$repo_slug/issues/$issue" 2>&1) || {
 # REST `state` is lowercase; normalize for downstream comparisons.
 issue_state=$(printf '%s' "$state_json" | jq -r '.state // "UNKNOWN"' | tr '[:lower:]' '[:upper:]')
 in_progress=$(printf '%s' "$state_json" | jq -e '[.labels[]?.name] | any(. == "agent-in-progress")' >/dev/null 2>&1 && echo yes || echo no)
+# fleet-ops#3763: a dead worker's claim release must not re-queue an issue
+# that was deliberately parked with agent-blocked (a worker posted blocked-on:,
+# or intake escalated via max-reclaims/claim-loop). Re-adding agent-ready
+# re-arms the spawn churn the block was meant to stop. blocked-reconcile owns
+# the unblock; the reaper only clears the stale agent-in-progress tag here.
+agent_blocked=$(printf '%s' "$state_json" | jq -e '[.labels[]?.name] | any(. == "agent-blocked")' >/dev/null 2>&1 && echo yes || echo no)
 
-log "state=$issue_state in_progress=$in_progress for $repo_slug#$issue"
+log "state=$issue_state in_progress=$in_progress agent_blocked=$agent_blocked for $repo_slug#$issue"
 
 # --- branch cleanup: only if no open PR from this branch --------------------
 # Same REST-vs-GraphQL split: `gh pr list --json` is GraphQL; use `gh api` REST
 # with a head=<branch> filter and count the result.
-open_pr_json=$(gh api "repos/$repo_slug/pulls?state=open&head=${repo_slug#*/}:${branch_name}&per_page=1" 2>&1) || {
+# The REST head filter is owner:branch (Nishfleet:claim/...), NOT repo:branch.
+# 2026-09-05: ${repo_slug#*/} produced "fleet-ops:claim/..." which matches
+# nothing, so the guard saw 0 open PRs and deleted branches with live PRs.
+open_pr_json=$(gh api "repos/$repo_slug/pulls?state=open&head=${repo_slug%/*}:${branch_name}&per_page=1" 2>&1) || {
     log "gh api repos/$repo_slug/pulls failed: $(printf '%s' "$open_pr_json" | head -c 200)"
     log_to_triage "CLAIM-REAP-TRANSIENT-SKIP" "step=pr_list instance=$instance branch=$branch_name reason=gh_api_failed"
     log "transient gh failure on PR list — exiting 0 and letting the 30-min orphan sweep pick this up"
@@ -216,7 +238,21 @@ fi
 
 if [[ "$issue_state" == "OPEN" ]]; then
     label_ok=no
-    if gh issue edit "$issue" -R "$repo_slug" --remove-label agent-in-progress --add-label agent-ready 2>/dev/null; then
+    # fleet-ops#3763: when the issue is agent-blocked, only clear the stale
+    # agent-in-progress tag — do NOT re-add agent-ready. A parked issue
+    # re-queued by the reaper spins a new worker that hits the same block,
+    # posts the same blocked-on:, and dies again (the #3763 loop: 4 claims
+    # in 40 min, StartLimitBurst). blocked-reconcile flips agent-blocked ->
+    # agent-ready once the blocker resolves.
+    if [[ "$agent_blocked" == "yes" ]]; then
+        if gh issue edit "$issue" -R "$repo_slug" --remove-label agent-in-progress 2>/dev/null; then
+            label_ok=yes
+            log "issue $repo_slug#$issue is agent-blocked; cleared agent-in-progress only (left agent-blocked for blocked-reconcile)"
+        else
+            log "label flip (remove in-progress only, agent-blocked held) failed on $repo_slug#$issue"
+            log_to_triage "CLAIM-REAP-LABEL-FAIL" "instance=$instance step=open_labels_blocked"
+        fi
+    elif gh issue edit "$issue" -R "$repo_slug" --remove-label agent-in-progress --add-label agent-ready 2>/dev/null; then
         label_ok=yes
     else
         log "label flip (remove in-progress / add ready) failed on $repo_slug#$issue"
@@ -229,6 +265,119 @@ if [[ "$issue_state" == "OPEN" ]]; then
         log "comment post failed on $repo_slug#$issue (label flip already attempted)"
     fi
     log_to_triage "CLAIM-RELEASED" "instance=$instance repo=$repo_slug branch=$branch_name branch_deleted=$branch_deleted label_flipped=$label_ok comment_posted=$comment_ok"
+    # --- reclaim cooldown (fleet-ops#2133, auditor 2026-08-30) -----------------
+    # A failed worker's claim was just released back to agent-ready. Without a
+    # cooldown, the next intake tick (every ~8min) re-claims the same issue,
+    # spawns a new worker, and pick_seat routes to another free seat that dies
+    # the same way — a spawn-die-respawn loop that burned #2133 6x in one day
+    # (05:52, 07:01, 08:26, 09:23 IST + 2 more). The cooldown marker tells
+    # intake to skip this issue for PI_INTAKE_RECLAIM_COOLDOWN_S (default 900s
+    # = 15min), giving the seat-health ledger time to bench the killing seat
+    # and breaking the tight loop. Only written when the branch was actually
+    # deleted (the reclaim path); the open-PR shortcut exits before here.
+    if [[ "$branch_deleted" == "yes" ]]; then
+        cooldown_file="$ATTEMPTS_DIR/pi-issue-${instance}.cooldown"
+        if date -u +%Y-%m-%dT%H:%M:%SZ >"$cooldown_file" 2>/dev/null; then
+            log "wrote reclaim cooldown marker for $instance (branch deleted, OPEN issue re-queued with backoff)"
+        else
+            log "WARN: could not write cooldown marker $cooldown_file"
+        fi
+        log_to_triage "RECLAIM-COOLDOWN-SET" "instance=$instance repo=$repo_slug issue=$issue cooldown=$cooldown_file"
+    fi
+
+    # fleet-ops#2462 + #3310: reclaim-count / infra-death split. Each failed
+    # re-claim is one strike against MAX_RECLAIMS (see pi-intake-tick.sh) —
+    # EXCEPT infrastructure deaths (provider hang/signal/timeout/ceiling), which
+    # the worker could never have avoided. Those increment the separate
+    # .infra-death counter and leave the .reclaim-count WORK cap untouched, so
+    # a provider storm cannot park an issue for a senior conference. The death
+    # class comes from the .last-death-class marker pi-issue-run writes on every
+    # failure exit; an absent marker (back-compat with pre-3310 deaths) counts
+    # as a work failure exactly as before. A successful PR open resets the
+    # counters.
+    _death_class="work"
+    _lc_file="$ATTEMPTS_DIR/pi-issue-${instance}.last-death-class"
+    if [[ -f "$_lc_file" ]]; then
+        _death_class=$(cat "$_lc_file" 2>/dev/null || echo work)
+        _death_class=${_death_class//[^A-Za-z]/}
+        [[ "$_death_class" == "infra" || "$_death_class" == "work" ]] || _death_class="work"
+    fi
+    if [[ "$_death_class" == "infra" ]]; then
+        _id_file="$ATTEMPTS_DIR/pi-issue-${instance}.infra-death"
+        _id_prev=0
+        if [[ -f "$_id_file" ]]; then
+            _id_prev=$(cat "$_id_file" 2>/dev/null || echo 0)
+            _id_prev=${_id_prev//[^0-9]/}
+            _id_prev=${_id_prev:-0}
+        fi
+        _id_new=$(( _id_prev + 1 ))
+        if printf '%s' "$_id_new" > "$_id_file" 2>/dev/null; then
+            log "incremented infra-death to $_id_new for $instance (was $_id_prev) — reclaim-count WORK cap untouched"
+            log_to_triage "INFRA-DEATH-INCREMENTED" "instance=$instance count=$_id_new death_class=infra"
+        else
+            log "WARN: could not write infra-death $_id_file"
+        fi
+    else
+        _rc_file="$ATTEMPTS_DIR/pi-issue-${instance}.reclaim-count"
+        _rc_prev=0
+        if [[ -f "$_rc_file" ]]; then
+            _rc_prev=$(cat "$_rc_file" 2>/dev/null || echo 0)
+            _rc_prev=${_rc_prev//[^0-9]/}
+            _rc_prev=${_rc_prev:-0}
+        fi
+        _rc_new=$(( _rc_prev + 1 ))
+        if printf '%s' "$_rc_new" > "$_rc_file" 2>/dev/null; then
+            log "incremented reclaim-count to $_rc_new for $instance (was $_rc_prev)"
+            log_to_triage "RECLAIM-COUNT-INCREMENTED" "instance=$instance count=$_rc_new death_class=work"
+        else
+            log "WARN: could not write reclaim-count $_rc_file"
+        fi
+    fi
+
+    # fleet-ops#2462: systemic-failure detection. When the issue has failed
+    # on every seat in the tried-seats list AND all those seats are now
+    # benched (seat-health ledger says unusable), the failure is systemic —
+    # a provider-wide outage (503/429/500 storm), not per-seat faults.
+    # Write a .systemic marker so the next intake tick skips re-claiming
+    # until the seat pool recovers, instead of spawning another worker
+    # into a dead provider. The tried-seats list is the evidence: one entry
+    # per failed attempt; if every entry is benched, the issue has exhausted
+    # every available seat.
+    _tried_file="$ATTEMPTS_DIR/pi-issue-${instance}.tried-seats"
+    _systemic_file="$ATTEMPTS_DIR/pi-issue-${instance}.systemic"
+    if [[ -f "$_tried_file" ]]; then
+        _seat_lib="${SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
+        _src_seat_lib=""
+        if [[ -f "$_seat_lib" ]]; then
+            # shellcheck disable=SC1090
+            _src_seat_lib=$(source "$_seat_lib" 2>/dev/null && echo yes || echo no)
+        fi
+        _all_benched=1
+        _seat_scan_total=0
+        _seat_scan_benched=0
+        while IFS= read -r _ts_line; do
+            [[ -z "$_ts_line" ]] && continue
+            _ts_provider="${_ts_line%%/*}"
+            _ts_model="${_ts_line#*/}"
+            [[ -n "$_ts_provider" && -n "$_ts_model" ]] || continue
+            _seat_scan_total=$(( _seat_scan_total + 1 ))
+            if [[ "$_src_seat_lib" == "yes" ]] && declare -F seat_usable >/dev/null 2>&1; then
+                if ! seat_usable "$_ts_provider" "$_ts_model" 2>/dev/null; then
+                    _seat_scan_benched=$(( _seat_scan_benched + 1 ))
+                fi
+            fi
+        done < "$_tried_file"
+        # A systemic marker fires only when every tried seat is benched AND
+        # we saw at least one seat (otherwise there is no exhaustion to signal).
+        # If seat-lib is absent (CI), we cannot evaluate seat_usable — skip
+        # the marker (fail-open: re-claim normally).
+        if (( _seat_scan_total > 0 && _seat_scan_total == _seat_scan_benched )); then
+            if date -u +%Y-%m-%dT%H:%M:%SZ > "$_systemic_file" 2>/dev/null; then
+                log "SYSTEMIC-FAILURE detected for $instance: all $_seat_scan_total tried seats are benched — writing .systemic marker (intake will skip re-claim until recovery)"
+                log_to_triage "SYSTEMIC-FAILURE-DETECTED" "instance=$instance seats_tried=$_seat_scan_total seats_benched=$_seat_scan_benched"
+            fi
+        fi
+    fi
 elif [[ "$issue_state" == "CLOSED" ]]; then
     label_ok=no
     if [[ "$in_progress" == "yes" ]]; then
@@ -241,6 +390,18 @@ elif [[ "$issue_state" == "CLOSED" ]]; then
     fi
     should_archive_packets=1
     log_to_triage "CLAIM-CLOSED-CLEANUP" "instance=$instance repo=$repo_slug branch=$branch_name branch_deleted=$branch_deleted label_removed=$label_ok"
+    # fleet-ops#2462 + #3310: reset reclaim-count + clear systemic / ladder
+    # markers on close. A closed issue means the work shipped (merged PR): the
+    # per-issue state files must clear so a future re-open starts fresh, not
+    # inheriting a stale cap, systemic marker, preferred seat class, or
+    # accumulated infra-death count from a prior failure cycle.
+    rm -f "$ATTEMPTS_DIR/pi-issue-${instance}.reclaim-count" 2>/dev/null || true
+    rm -f "$ATTEMPTS_DIR/pi-issue-${instance}.systemic" 2>/dev/null || true
+    rm -f "$ATTEMPTS_DIR/pi-issue-${instance}.infra-death" 2>/dev/null || true
+    rm -f "$ATTEMPTS_DIR/pi-issue-${instance}.last-death-class" 2>/dev/null || true
+    rm -f "$ATTEMPTS_DIR/pi-issue-${instance}.prefer-class" 2>/dev/null || true
+    log "reset reclaim-count + cleared systemic/ladder markers for $instance (issue closed)"
+    log_to_triage "CLAIM-CLOSED-RESET" "instance=$instance repo=$repo_slug"
 else
     log "unknown issue state '$issue_state' for $repo_slug#$issue; leaving labels"
     log_to_triage "CLAIM-REAP-UNKNOWN-STATE" "instance=$instance state=$issue_state"

@@ -84,7 +84,7 @@ m.RUNNERS["fleet_paused"] = lambda t: 0
 m.RUNNERS["open_prs_prom"] = lambda t: 0
 m.RUNNERS["shipped_prom"] = lambda t: 0
 m.RUNNERS["main_ci_prom"] = lambda t: 0
-m.RUNNERS["alerts_am"] = lambda t: 0
+m.RUNNERS["alerts_prom"] = lambda t: 0
 m.RUNNERS["running_pi_execstart"] = lambda t: 0
 m.SKIP_GH = True
 
@@ -142,6 +142,18 @@ assert m._within(10, 11, {"mode": "exact"}) is False
 assert m._within(0, 0, {"mode": "percent", "pct": 15}) is True
 print("OK: percent vs exact tolerance")
 
+# --- shipped_24h spot tolerance is tight (fleet-ops#3984) ---
+# The product-slo spot check used to be 20%, which hid a 12% miss (57 vs
+# 65). It must be tight (2% or abs<=2) so that class is caught, while a
+# small cache lag (delta<=2) still passes.
+sh_spec = m.SPECS["shipped_24h"]
+assert sh_spec["spot"]["tolerance"] == {"mode": "percent", "pct": 2}, \
+    sh_spec["spot"]["tolerance"]
+assert m._within(57, 65, {"mode": "percent", "pct": 2}) is False  # 12% miss caught
+assert m._within(47, 47, {"mode": "percent", "pct": 2}) is True   # exact
+assert m._within(47, 48, {"mode": "percent", "pct": 2}) is True   # abs<=2 floor
+print("OK: shipped_24h spot tolerance tightened to 2% or abs<=2")
+
 # --- attach_specs covers every tile ---
 empty = {"tiles": {k: {} for k in m.SPECS}}
 m.attach_specs(empty)
@@ -151,7 +163,80 @@ for name, spec in m.SPECS.items():
     assert v["field"] == spec["field"], name
 print("OK: every tile spec has a verify.cmd")
 
-# --- inject overlay ---
+# --- firing_alerts ground truth mirrors the tile writer's Prometheus query ---
+# fleet-ops#3637: the verifier must re-read the SAME Prometheus /api/v1/alerts
+# the writer claims to mirror (state=firing, Watchdog excluded), NOT
+# Alertmanager /api/v2/alerts, which is a deduplicated view and disagrees
+# with Prometheus by design. Lock the spec so it can't drift back to AM.
+fa_spec = m.SPECS["firing_alerts"]
+assert fa_spec["runner"] == "alerts_prom", fa_spec["runner"]
+assert "api/v1/alerts" in fa_spec["cmd"], fa_spec["cmd"]
+assert "api/v2/alerts" not in fa_spec["cmd"], fa_spec["cmd"]
+# Parity: run_alerts_prom counts firing (non-Watchdog) entries exactly like
+# the writer's collect_firing_alerts, given the same Prometheus payload.
+fa_payload = {"status": "success", "data": {"alerts": [
+    {"state": "firing", "labels": {"alertname": "A"}},
+    {"state": "firing", "labels": {"alertname": "A"}},       # duplicate instance = 2
+    {"state": "pending", "labels": {"alertname": "B"}},      # pending not counted
+    {"state": "inactive", "labels": {"alertname": "C"}},
+    {"state": "firing", "labels": {"alertname": "Watchdog"}},  # excluded
+]}}
+calls = []
+_orig_http = m._http_json
+def fake_prom(url, timeout=m.VERIFY_TIMEOUT):
+    calls.append(url)
+    assert "/api/v1/alerts" in url and "9093" not in url, url
+    return fa_payload
+m._http_json = fake_prom
+assert m.run_alerts_prom({"count": 99}) == 2, "must count 2 firing non-Watchdog"
+assert calls, "run_alerts_prom must query Prometheus"
+assert all("api/v2/alerts" not in u for u in calls), "must not query Alertmanager"
+m._http_json = _orig_http
+print("OK: firing_alerts verifier mirrors writer's Prometheus /api/v1/alerts")
+
+# --- fleet-ops#3674: running_pi churn race is SKIP, not DISPUTE ---
+# The tile snapshots the running-pi unit set at generate time; the verifier
+# re-scans the SAME live systemd source ~2s later. When a worker starts or
+# stops in that window, the two counts legitimately differ — a timing
+# artifact, not a lying tile. The verifier must skip (match=None, no
+# DISPUTE) when the live set has moved, exactly like shipped_24h's race
+# gate (#2690). A tile that disagrees with its OWN recorded unit set
+# (a genuine lie) still DISPUTES.
+calls_rp = []
+def fake_running_pi_units():
+    calls_rp.append(1)
+    return ["pi-issue@a.service", "pi-issue@b.service", "pi-issue@c.service"]  # live now (3)
+m._running_pi_units = fake_running_pi_units
+
+# Live count differs from tile count AND live set moved since the tile's
+# snapshot (tile saw a,b; live now has a,b,c — a worker just started)
+# -> churn race -> SKIP.
+rp_race = tile(count=2, units=["pi-issue@a.service", "pi-issue@b.service"])
+try:
+    m.run_running_pi_execstart(rp_race)
+    raise AssertionError("expected VerifyError race on churn")
+except m.VerifyError as e:
+    assert "race" in str(e).lower(), str(e)
+print("OK: running_pi churn race -> VerifyError (SKIP, not DISPUTE)")
+
+# Live set matches the tile's snapshot and count -> exact match.
+def fake_running_pi_units_match():
+    return ["pi-issue@a.service", "pi-issue@b.service"]
+m._running_pi_units = fake_running_pi_units_match
+rp_ok = tile(count=2, units=["pi-issue@a.service", "pi-issue@b.service"])
+assert m.run_running_pi_execstart(rp_ok) == 2
+print("OK: running_pi stable set -> exact count")
+
+# Tile with NO recorded unit snapshot (e.g. injection) is not race-gated;
+# the verifier reports the live count and the caller compares against the
+# tile's displayed value.
+def fake_running_pi_units_3():
+    return ["pi-issue@a.service", "pi-issue@b.service", "pi-issue@d.service"]
+m._running_pi_units = fake_running_pi_units_3
+assert m.run_running_pi_execstart(tile(count=2)) == 3
+print("OK: running_pi no-snapshot tile -> live count returned (lie detection intact)")
+
+# End-to-end: inject a lie into a snapshot-matching tile -> DISPUTED.
 doc4 = json.loads(json.dumps(doc))
 data4 = scratch / "inject.json"
 prom4 = scratch / "inject.prom"
@@ -282,6 +367,308 @@ for name in ("open_prs", "shipped_24h", "main_ci", "firing_alerts",
 print("OK: generate() stamps verify.cmd on every tile")
 PY
 ok "generate stamps verify.cmd"
+
+# =========================================================================
+# 12b. fleet-ops#3563: a held spawn-bench marker renders the seat tile as
+#      spawn_bench, not healthy — a benched seat is never reported healthy
+# =========================================================================
+_3563_LEDGER="$scratch/ledger-3563"
+_3563_HEALTH="$scratch/seat-health-3563.json"
+mkdir -p "$_3563_LEDGER"
+_3563_LEDGER="$_3563_LEDGER" _3563_HEALTH="$_3563_HEALTH" \
+python3 - "$gen" <<'PY' || fail "3563: console seat-bench overlay failed"
+import importlib.util, json, os, sys, time
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("g", sys.argv[1])
+g = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(g)
+
+g.SEAT_LEDGER = Path(os.environ["_3563_LEDGER"])
+g.SEAT_HEALTH = Path(os.environ["_3563_HEALTH"])
+g._running_units = lambda: []
+g._pi_argv_count = lambda: 0
+
+future = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() + 3600)) + "Z"
+past = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - 60)) + "Z"
+now = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + ".000Z"
+
+g.SEAT_HEALTH.write_text(json.dumps({
+    "provider": "ollama", "model": "deepseek-v4-flash:0731",
+    "http_status": 200, "health_class": "healthy",
+    "observed_at": now,
+}), encoding="utf-8")
+marker = g.SEAT_LEDGER / "ollama__deepseek-v4-flash_0731.spawn-bench.json"
+marker.write_text(json.dumps({
+    "provider": "ollama", "model": "deepseek-v4-flash:0731",
+    "usable_at": future, "failure_mode": "empty_run",
+    "consecutive_failure_count": 3}), encoding="utf-8")
+
+tile = g.collect_running_pi()
+assert tile["health_class"] == "spawn_bench", tile
+assert "spawn_bench" in tile.get("note", ""), tile
+print("OK: held spawn-bench renders the seat tile as spawn_bench, not healthy")
+
+# Expired marker -> fail-open, the healthy observation renders normally.
+marker.write_text(json.dumps({
+    "provider": "ollama", "model": "deepseek-v4-flash:0731",
+    "usable_at": past, "failure_mode": "empty_run"}), encoding="utf-8")
+tile = g.collect_running_pi()
+assert tile["health_class"] == "healthy", tile
+print("OK: expired spawn-bench leaves the healthy reading alone")
+
+# fleet-ops#3795: an EXPIRED-but-FRESH marker still gates the seat
+# (the #3737 probe-gate hold). seat_usable refuses to route agentic work
+# to a seat whose marker is fresh and still the latest evidence, even
+# after usable_at passes — the comeback organ probes before re-admission.
+# The tile must agree: a clobbered-healthy sidecar with NO ledger
+# observation newer than the marker's written_at must render spawn_bench,
+# not healthy, or the census says "seat healthy" while the router holds
+# the seat and the empty-run churn the issue names continues unseen.
+written = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - 1200)) + "Z"
+usable_expired = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - 300)) + "Z"
+obs_older = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - 1500)) + ".000Z"
+g.SEAT_HEALTH.write_text(json.dumps({
+    "provider": "ollama", "model": "deepseek-v4-flash:0731",
+    "http_status": 200, "health_class": "healthy",
+    "observed_at": obs_older,
+}), encoding="utf-8")
+(g.SEAT_LEDGER / "ollama__deepseek-v4-flash_0731.json").write_text(json.dumps({
+    "provider": "ollama", "model": "deepseek-v4-flash:0731",
+    "http_status": 200, "health_class": "healthy",
+    "observed_at": obs_older, "consecutive_failure_count": 0,
+}), encoding="utf-8")
+marker.write_text(json.dumps({
+    "provider": "ollama", "model": "deepseek-v4-flash:0731",
+    "usable_at": usable_expired, "written_at": written,
+    "failure_mode": "empty_run", "consecutive_failure_count": 4,
+}), encoding="utf-8")
+tile = g.collect_running_pi()
+assert tile["health_class"] == "spawn_bench", (
+    f"expired-but-fresh marker with no newer ledger obs must render "
+    f"spawn_bench (probe-gate hold), got {tile.get('health_class')}: {tile}")
+print("OK: expired-but-fresh spawn-bench renders spawn_bench, not healthy (fleet-ops#3795)")
+
+# A ledger observation NEWER than the marker's written_at is post-bench
+# evidence (a run that produced output) -> case (b) releases, healthy stands.
+obs_newer = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - 60)) + ".000Z"
+(g.SEAT_LEDGER / "ollama__deepseek-v4-flash_0731.json").write_text(json.dumps({
+    "provider": "ollama", "model": "deepseek-v4-flash:0731",
+    "http_status": 200, "health_class": "healthy",
+    "observed_at": obs_newer, "consecutive_failure_count": 0,
+}), encoding="utf-8")
+tile = g.collect_running_pi()
+assert tile["health_class"] == "healthy", (
+    f"newer ledger obs must release the expired-but-fresh hold, "
+    f"got {tile.get('health_class')}: {tile}")
+print("OK: newer ledger observation releases the expired-but-fresh hold (fleet-ops#3795)")
+
+# A stale marker (written > 24h ago) is archaeology -> fail-open.
+stale_written = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - 100000)) + "Z"
+marker.write_text(json.dumps({
+    "provider": "ollama", "model": "deepseek-v4-flash:0731",
+    "usable_at": usable_expired, "written_at": stale_written,
+    "failure_mode": "empty_run", "consecutive_failure_count": 4,
+}), encoding="utf-8")
+tile = g.collect_running_pi()
+assert tile["health_class"] == "healthy", (
+    f"stale marker (>24h) must fail-open, got {tile.get('health_class')}: {tile}")
+print("OK: stale (>24h) expired marker fails open (fleet-ops#3795)")
+
+# --- fleet-ops#3828: corpse + ceiling fences (mirror of #3889/#3826) -------
+# A chronic spawn_fail corpse (marker seat_dead=true, count=47) or a
+# ceiling-parked seat (count >= 20 for spawn_fail) must render spawn_bench
+# even when the sibling ledger carries a NEWER healthy 200 observation
+# (after_provider_response carries status+headers only, never the rc — an
+# rc=1 spawn failure reads as a healthy 200). Only a recovery probe
+# (source=comeback_release on the ledger) re-proves the seat.
+written = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - 60)) + "Z"
+usable_expired = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - 300)) + "Z"
+obs_newer = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - 30)) + ".000Z"
+ldg = g.SEAT_LEDGER / "ollama__deepseek-v4-flash_0731.json"
+# Scenario G — corpse fence: marker seat_dead=true + expired usable_at +
+# a NEWER healthy ledger. The corpse must win (TERMINAL until recovery).
+g.SEAT_HEALTH.write_text(json.dumps({
+    "provider": "ollama", "model": "deepseek-v4-flash:0731",
+    "http_status": 200, "health_class": "healthy",
+    "observed_at": obs_newer,
+}), encoding="utf-8")
+ldg.write_text(json.dumps({
+    "provider": "ollama", "model": "deepseek-v4-flash:0731",
+    "http_status": 200, "health_class": "healthy",
+    "observed_at": obs_newer, "consecutive_failure_count": 0,
+}), encoding="utf-8")
+marker.write_text(json.dumps({
+    "provider": "ollama", "model": "deepseek-v4-flash:0731",
+    "usable_at": usable_expired, "written_at": written,
+    "failure_mode": "spawn_fail", "consecutive_failure_count": 47,
+    "seat_dead": True,
+}), encoding="utf-8")
+tile = g.collect_running_pi()
+assert tile["health_class"] == "spawn_bench", (
+    f"corpse marker must render spawn_bench despite newer healthy ledger, "
+    f"got {tile.get('health_class')}: {tile}")
+print("OK: corpse marker renders spawn_bench despite newer healthy ledger (fleet-ops#3828)")
+# A recovery probe (source=comeback_release) re-proves the corpse.
+ldg.write_text(json.dumps({
+    "provider": "ollama", "model": "deepseek-v4-flash:0731",
+    "http_status": 200, "health_class": "healthy",
+    "observed_at": obs_newer, "consecutive_failure_count": 0,
+    "source": "comeback_release",
+}), encoding="utf-8")
+tile = g.collect_running_pi()
+assert tile["health_class"] == "healthy", (
+    f"comeback_release must release a corpse marker, "
+    f"got {tile.get('health_class')}: {tile}")
+print("OK: comeback_release recovery releases a corpse marker (fleet-ops#3828)")
+
+# Scenario H — ceiling fence: non-corpse marker whose count crossed the
+# failure ceiling, usable_at expired, ledger has a NEWER healthy write.
+# The ceiling must hold despite the newer observation.
+ldg.write_text(json.dumps({
+    "provider": "ollama", "model": "deepseek-v4-flash:0731",
+    "http_status": 200, "health_class": "healthy",
+    "observed_at": obs_newer, "consecutive_failure_count": 0,
+}), encoding="utf-8")
+marker.write_text(json.dumps({
+    "provider": "ollama", "model": "deepseek-v4-flash:0731",
+    "usable_at": usable_expired, "written_at": written,
+    "failure_mode": "spawn_fail", "consecutive_failure_count": 47,
+    "seat_dead": False,
+}), encoding="utf-8")
+tile = g.collect_running_pi()
+assert tile["health_class"] == "spawn_bench", (
+    f"ceiling marker must render spawn_bench despite newer healthy ledger, "
+    f"got {tile.get('health_class')}: {tile}")
+print("OK: ceiling marker renders spawn_bench despite newer healthy ledger (fleet-ops#3828)")
+# Below the ceiling the healthy (later) observation wins again (released).
+marker.write_text(json.dumps({
+    "provider": "ollama", "model": "deepseek-v4-flash:0731",
+    "usable_at": usable_expired, "written_at": written,
+    "failure_mode": "spawn_fail", "consecutive_failure_count": 3,
+    "seat_dead": False,
+}), encoding="utf-8")
+tile = g.collect_running_pi()
+assert tile["health_class"] == "healthy", (
+    f"sub-ceiling marker count must release the seat, "
+    f"got {tile.get('health_class')}: {tile}")
+print("OK: sub-ceiling marker count releases the seat (fail-open)")
+# Empty-run seats use the lower _EMPTY_RUN_FAILURE_CEILING (5).
+marker.write_text(json.dumps({
+    "provider": "ollama", "model": "deepseek-v4-flash:0731",
+    "usable_at": usable_expired, "written_at": written,
+    "failure_mode": "empty_run", "consecutive_failure_count": 5,
+    "seat_dead": False,
+}), encoding="utf-8")
+tile = g.collect_running_pi()
+assert tile["health_class"] == "spawn_bench", (
+    f"empty_run count=5 at its ceiling must render spawn_bench, "
+    f"got {tile.get('health_class')}: {tile}")
+print("OK: empty_run ceiling (5) holds at its lower threshold (fleet-ops#3828)")
+# comeback_release releases a ceiling-parked seat too.
+ldg.write_text(json.dumps({
+    "provider": "ollama", "model": "deepseek-v4-flash:0731",
+    "http_status": 200, "health_class": "healthy",
+    "observed_at": obs_newer, "consecutive_failure_count": 0,
+    "source": "comeback_release",
+}), encoding="utf-8")
+marker.write_text(json.dumps({
+    "provider": "ollama", "model": "deepseek-v4-flash:0731",
+    "usable_at": usable_expired, "written_at": written,
+    "failure_mode": "spawn_fail", "consecutive_failure_count": 47,
+    "seat_dead": False,
+}), encoding="utf-8")
+tile = g.collect_running_pi()
+assert tile["health_class"] == "healthy", (
+    f"comeback_release must release a ceiling-parked seat, "
+    f"got {tile.get('health_class')}: {tile}")
+print("OK: comeback_release re-proves a ceiling-parked seat (fleet-ops#3828)")
+PY
+ok "fleet-ops#3563/#3795: console tile overlays the spawn-bench marker — a benched seat never shows healthy"
+ok "fleet-ops#3828: console tile corpse + ceiling fences — N spawn_fail demotes the ledger read"
+
+# =========================================================================
+# 12c. fleet-ops#4217: PI WORK tile shows quota remaining % for the seat
+# =========================================================================
+_4217_HEALTH="$scratch/seat-health-4217.json"
+_4217_HEALTH="$_4217_HEALTH" \
+python3 - "$gen" <<'PY' || fail "4217: console quota display failed"
+import importlib.util, json, os, sys, time
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("g", sys.argv[1])
+g = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(g)
+
+g.SEAT_HEALTH = Path(os.environ["_4217_HEALTH"])
+g._running_units = lambda: []
+g._pi_argv_count = lambda: 0
+
+now = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + ".000Z"
+g.SEAT_HEALTH.write_text(json.dumps({
+    "provider": "claude", "model": "opus-4",
+    "http_status": 200, "health_class": "healthy",
+    "observed_at": now,
+}), encoding="utf-8")
+
+# Stub _prom_query to return quota data for claude
+def fake_prom(expr, timeout=5):
+    if "remaining_pct" in expr and "claude" in expr:
+        return [
+            {"metric": {"provider": "claude", "window": "session", "source": "api"}, "value": 92.0},
+            {"metric": {"provider": "claude", "window": "weekly", "source": "api"}, "value": 46.0},
+        ]
+    if "reset_seconds" in expr and "claude" in expr:
+        return [
+            {"metric": {"provider": "claude", "window": "session"}, "value": 12000.0},
+            {"metric": {"provider": "claude", "window": "weekly"}, "value": 580000.0},
+        ]
+    return []
+
+g._prom_query = fake_prom
+
+tile = g.collect_running_pi()
+assert tile["health_class"] == "healthy", tile
+assert "quota" in tile.get("note", ""), f"note missing quota: {tile}"
+assert "session=92.0%" in tile["note"], f"note missing session pct: {tile}"
+assert "weekly=46.0%" in tile["note"], f"note missing weekly pct: {tile}"
+assert tile.get("quota_source") == "api", tile
+assert len(tile.get("quota_rows", [])) == 2, tile
+print("OK: PI WORK tile shows quota remaining % for the seat (fleet-ops#4217)")
+
+# No quota data (provider not in fleet.prom) -> tile still works, no quota in note
+g.SEAT_HEALTH.write_text(json.dumps({
+    "provider": "minimax", "model": "MiniMax-M3",
+    "http_status": 200, "health_class": "healthy",
+    "observed_at": now,
+}), encoding="utf-8")
+
+def fake_prom_no_quota(expr, timeout=5):
+    return []
+
+g._prom_query = fake_prom_no_quota
+tile = g.collect_running_pi()
+assert tile["health_class"] == "healthy", tile
+assert "quota" not in tile.get("note", ""), f"note should not have quota: {tile}"
+assert tile.get("quota_source") is None, tile
+print("OK: PI WORK tile works without quota data (fleet-ops#4217)")
+
+# Prometheus down -> tile still works
+def fake_prom_down(expr, timeout=5):
+    raise g.PromError("offline")
+
+g._prom_query = fake_prom_down
+g.SEAT_HEALTH.write_text(json.dumps({
+    "provider": "claude", "model": "opus-4",
+    "http_status": 200, "health_class": "healthy",
+    "observed_at": now,
+}), encoding="utf-8")
+tile = g.collect_running_pi()
+assert tile["health_class"] == "healthy", tile
+assert "quota" not in tile.get("note", ""), f"prom down: note should not have quota: {tile}"
+print("OK: PI WORK tile works when Prometheus is down (fleet-ops#4217)")
+PY
+ok "fleet-ops#4217: PI WORK tile shows quota remaining % for the current seat"
 
 # =========================================================================
 # 13. drill --check

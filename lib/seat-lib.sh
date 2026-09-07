@@ -43,13 +43,30 @@ export HOME="${HOME:-/home/nish}"
 STATE_DIR="${PI_PACKET_STATE:-$HOME/.local/state/pi-packet}"
 ATTEMPTS_DIR="$STATE_DIR/attempts"
 ACTIVE_SEATS_DIR="$STATE_DIR/active-seats"
-LOG_FILE="$STATE_DIR/watch.log"
+# SEAT_LOG_FILE pins the seat_log target to a specific file instead of the
+# state-dir watch.log (fleet-ops#3928): a test harness that would otherwise
+# write to the production watch.log can redirect the audit line to its own
+# scratch file without moving the whole PI_PACKET_STATE dir. Unset in
+# production, so this keeps the live LOG_FILE behaviour byte-for-byte.
+LOG_FILE="${SEAT_LOG_FILE:-$STATE_DIR/watch.log}"
+# Worker packet dir (pi-issue-run reads <inst>.in here; intake writes it).
+# Used by count_active_heavy to read each active unit's difficulty line.
+PI_ISSUES_DIR="${PI_ISSUES_DIR:-$HOME/.local/state/pi-issues}"
 
 MODELS_JSON="${PI_MODELS_JSON:-$HOME/.pi/agent/models.json}"
 # Per-seat health ledger (authority). Written atomically by the pi
 # seat-health extension (one file per provider+model). Read-only here:
 # no polling, no network — file reads only.
 LEDGER_DIR="${PI_SEAT_HEALTH_LEDGER_DIR:-/home/nish/workspaces/agent-state/lanes/seats}"
+# Legacy single-record seat-health sidecar (pi-seat-health.json). The out-of-repo
+# seat-health.ts extension writes it on every observation (including a healthy 200
+# from a simple packet), so when the WRAPPER benches a seat (mark_seat_empty_run /
+# mark_seat_spawn_fail) the sidecar keeps reporting health_class=healthy/http 200
+# until the extension's next observation — the seat-health probe and the wrapper
+# bench disagree, the seat keeps being re-selected and burns issues (fleet-ops#3559).
+# The wrapper co-writes this sidecar on a wrapper bench so the record honours it.
+# Env override matches seat-health.ts (PI_SEAT_HEALTH_SIDECAR); tests stub it.
+SEAT_HEALTH_SIDECAR="${PI_SEAT_HEALTH_SIDECAR:-$HOME/workspaces/agent-state/lanes/pi-seat-health.json}"
 STALE_SECS=21600   # 6h — observed_at older than this counts as no-data
 RATE_LIMIT_FRESH_SECS=1800  # 30 min — a rate_limited marker is only trusted while freshly observed; older than this, retry the seat
 PI_BIN="${PI_BIN:-$HOME/.local/bin/pi}"
@@ -62,18 +79,79 @@ SEAT_CAPS_JSON="${SEAT_CAPS_JSON:-$HOME/.local/state/pi-packet/seat-caps.json}"
 QUALITY_ROUTING_JSON="${QUALITY_ROUTING_JSON:-$HOME/.local/state/pi-packet/quality-routing.json}"
 QUALITY_SCOREBOARD_JSON="${QUALITY_SCOREBOARD_JSON:-$HOME/workspaces/agent-state/quality-scoreboard/snapshot.json}"
 QUALITY_ROUTING_PY="${QUALITY_ROUTING_PY:-$HOME/.local/lib/pi-packet/quality-routing.py}"
+# fleet-ops#3250: per-seat rolling PR-yield ledger, written by
+# libexec/fleet-metrics-export.py. pick_seat loads it once per call.
+SEAT_YIELD_JSON="${SEAT_YIELD_JSON:-$HOME/.local/state/pi-packet/seat-yield.json}"
 HEAVY_PKT_BYTES="${PI_PACKET_HEAVY_BYTES:-8192}"
 
 mkdir -p "$ATTEMPTS_DIR" "$ACTIVE_SEATS_DIR"
+
+# Runtime probe for the systemd-cat fallback (fleet-ops#3272).
+_SEAT_SYSTEMD_CAT="$(command -v systemd-cat 2>/dev/null || true)"
+
+# Decide whether the durable log goes to the watch.log file or to the journal.
+# File is used when the user-level logrotate config is present (so the file is
+# kept small), or when the LOG_FILE is not the production watch.log (i.e., a
+# test harness has set PI_PACKET_STATE to a scratch dir). Otherwise fall back
+# to systemd-cat so the log lands in journald's own rotation instead of an
+# unbounded flat file.
+_seat_log_uses_file() {
+    if [[ -n "${SEAT_LOG_FORCE_FILE:-}" ]]; then
+        return 0
+    fi
+    local logrotate_conf="${SEAT_LOGROTATE_CONF:-$HOME/.config/logrotate.conf}"
+    if [[ -f "$logrotate_conf" ]]; then
+        return 0
+    fi
+    local prod_state="$HOME/.local/state/pi-packet"
+    case "$LOG_FILE" in
+        "$prod_state"/*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
 
 seat_log() {
     local line ts
     ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     printf -v line '[%s] %s\n' "$ts" "$*"
-    # Durable audit trail in watch.log. Also emit to stderr so systemd's
-    # journal / `systemctl status` shows the reason (fleet-ops#342).
-    printf '%s' "$line" >>"$LOG_FILE"
+    if _seat_log_uses_file; then
+        # Durable audit trail in watch.log. logrotate is the rotation owner
+        # when ~/.config/logrotate.conf is present (fleet-ops#3272).
+        printf '%s' "$line" >>"$LOG_FILE"
+    elif [[ -n "$_SEAT_SYSTEMD_CAT" ]]; then
+        # No user logrotate: avoid an unbounded flat file by writing to the
+        # systemd journal. 'journalctl -t pi-packet' reads the seat log.
+        printf '%s' "$line" | "$_SEAT_SYSTEMD_CAT" --identifier=pi-packet --priority=info 2>/dev/null || \
+            printf '%s' "$line" >>"$LOG_FILE"
+    else
+        # Final fallback: still append to the file even if unrotated, because
+        # losing the audit trail is worse than an unbounded log on a host
+        # that somehow has no journal and no logrotate.
+        printf '%s' "$line" >>"$LOG_FILE"
+    fi
+    # Also emit to stderr so systemd's journal / `systemctl status` shows the
+    # reason (fleet-ops#342).
     printf '%s' "$line" >&2
+}
+
+# fleet-ops#4219 P3a: LiteLLM seat routing. When PI_SEAT_SOURCE=litellm,
+# callers resolve their seat from the LiteLLM proxy (model group) instead
+# of pick_seat. The proxy handles fallback, cooldown, and health checks.
+# PI_SEAT_SOURCE=seat-lib (the default) keeps the existing pick_seat path.
+# This function returns provider<TAB>model, the same shape as pick_seat.
+# Args: $1 = LiteLLM model group (worker-cheap, worker-capable, senior,
+#   judge, worker-private). Callers pass their group; pi-packet-run passes
+#   worker-private when the packet targets a private repo.
+# Env: PI_SEAT_SOURCE (default: seat-lib).
+# Returns: 0 always; prints provider<TAB>model on stdout.
+litellm_pick_seat() {
+    local group="${1:-worker-cheap}"
+    printf 'litellm\t%s\n' "$group"
+}
+
+# True when the fleet is routing through LiteLLM instead of seat-lib.
+litellm_source() {
+    [[ "${PI_SEAT_SOURCE:-seat-lib}" == "litellm" ]]
 }
 
 now_s() { date -u +%s; }
@@ -159,6 +237,56 @@ packet_repo() {
     printf '%s' "$repo"
 }
 
+# --- product-repo flag (fleet-ops#3724) -------------------------------------
+# Source of truth: config/intake-repos.json `repos[].product`. A seat marked
+# product_only in seat-caps.json is a metered last-resort seat that may only
+# ever serve a product repo — never fleet-ops (control plane) and never an
+# unclassified repo. Fail-closed: a missing flag, an unlisted repo, or a
+# missing/unparseable config resolves to not-product, so a paid seat can
+# never silently serve a repo that is not a declared product repo.
+INTAKE_REPOS_JSON="${FLEET_INTAKE_REPOS_JSON:-}"
+_intake_repos_loaded=0
+declare -A REPO_PRODUCT_MAP=()
+
+# Resolve the intake-repos.json path: explicit FLEET_INTAKE_REPOS_JSON first,
+# then the known fleet-ops checkouts on this VPS (products first, then the
+# tooling checkouts the deploy/mirror lanes keep).
+_intake_repos_path() {
+    if [[ -n "$INTAKE_REPOS_JSON" && -f "$INTAKE_REPOS_JSON" ]]; then
+        printf '%s' "$INTAKE_REPOS_JSON"
+        return 0
+    fi
+    local c
+    for c in \
+        "$HOME/workspaces/products/fleet-ops/config/intake-repos.json" \
+        "$HOME/workspaces/tooling/fleet-ops/config/intake-repos.json" \
+        "$HOME/workspaces/tooling/fleet-ops-deploy-clone/config/intake-repos.json"; do
+        [[ -f "$c" ]] && { printf '%s' "$c"; return 0; }
+    done
+    return 1
+}
+
+load_repo_product() {
+    REPO_PRODUCT_MAP=()
+    _intake_repos_loaded=1
+    local f
+    f=$(_intake_repos_path) || return 1
+    local repo prod
+    while IFS=$'\t' read -r repo prod; do
+        [[ -n "$repo" ]] || continue
+        [[ "$prod" == "true" ]] && REPO_PRODUCT_MAP["$repo"]=1
+    done < <(jq -r '.repos[]? | [.name, (.product // false | tostring)] | @tsv' "$f" 2>/dev/null || true)
+}
+
+# repo_is_product <repo> -> 0 when <repo> is a declared product repo
+# (intake-repos.json product flag), 1 otherwise. Fail-closed on empty repo,
+# unlisted repo, or missing/unparseable config.
+repo_is_product() {
+    local repo="$1"
+    if (( ! _intake_repos_loaded )); then load_repo_product || true; fi
+    [[ -n "$repo" && "${REPO_PRODUCT_MAP[$repo]:-0}" == "1" ]]
+}
+
 # --- capacity map (P4-A) ----------------------------------------------------
 # Read once per shell. Returns 0 on success, 1 if the map is missing/unreadable.
 # Caller is expected to fall back to "no caps" behaviour (allow everything)
@@ -170,6 +298,7 @@ declare -A SEAT_MODEL_CAP=()
 declare -A SEAT_MODEL_CLASS=()
 declare -A SEAT_PROVIDER_CLASS=()
 declare -A SEAT_PROVIDER_BENCH_DEFAULT=()
+declare -A SEAT_PROVIDER_REMOTE_AGENT=()
 # fleet-ops 2026-08-27 #652 hot-patch: 503-overload bench defaults per provider.
 # Distinct from SEAT_PROVIDER_BENCH_DEFAULT (quota/cap wall): overload is a
 # transient "upstream provider is temporarily unavailable" that the existing
@@ -181,8 +310,20 @@ declare -A SEAT_PROVIDER_QUOTA_WINDOW=()
 declare -A SEAT_PROVIDER_WEEKLY_BUDGET=()
 # fleet-ops#217/#424 AIMD: probe ceiling, hard-ceiling flag, dated cap=0 reason.
 declare -A SEAT_PROVIDER_MAX_PROBE=()
+# fleet-ops#3125: model-granularity AIMD probe ceiling (devin glm-5-2 -> 6,
+# swe-1-7 -> 8). Loaded from per-model object rows that carry
+# max_probe_ceiling next to cap; absent means the declared model cap is the
+# hard ceiling (no model-level probe).
+declare -A SEAT_MODEL_PROBE_CEILING=()
 declare -A SEAT_PROVIDER_HARD_CEILING=()
 declare -A SEAT_PROVIDER_REASON=()
+# fleet-ops#3690: per-tick per-provider spawn cap. Limits how many NEW
+# sessions pick_seat routes to a provider within a single intake tick so a
+# fresh fleet (learned-caps reset) does not burst N spawns on one provider
+# and trip resource_exhausted. 0 = unlimited. Loaded from tick_spawn_cap on
+# the provider block in seat-caps.json; the intake tick resets the counter
+# file at the start of each tick.
+declare -A SEAT_TICK_SPAWN_CAP=()
 # fleet-ops#1432: classification of cap=0 seats as intentional (dead_decoy /
 # money_only) vs stale (broken endpoint, TPM ceiling, exhausted quota). Drives
 # the summary line in _build_excluded_set so the operator sees at a glance
@@ -190,10 +331,38 @@ declare -A SEAT_PROVIDER_REASON=()
 # "provider" for provider-level cap=0, "provider/model" for model-level.
 declare -A SEAT_CAP_ZERO_CLASS_INTENTIONAL=()
 declare -A SEAT_CAP_ZERO_CLASS_STALE=()
+# fleet-ops#3322: audition lane. A seat carrying audition: true in the LIVE
+# caps is only eligible for packet_difficulty light (cap 1, 10 sessions / 7d /
+# $1 cost cap, injected by lib/pi-intake-tick.sh from config/model-candidates.json).
+# Keyed on "provider" for provider-level audition, "provider/model" for model-level.
+declare -A SEAT_AUDITION=()
+# fleet-ops#4129: a stale cap=0 seat re-admitted by _expire_stale_cap0_seats is
+# marked light-only here. The seat was cap=0 because it was broken (endpoint 404,
+# TPM ceiling, exhausted quota); re-admitting it at cap=1 lets pick_seat re-probe
+# on a LIGHT packet, but it must NOT land heavy/keystone/senior-review work until
+# the re-probe proves the seat answers. Keyed on "provider" for provider-level
+# re-admission, "provider/model" for model-level. Cleared by load_seat_caps and
+# re-populated only when a seat actually expires; a re-probe that succeeds clears
+# the marker via the seat-health observation path (the bench writers re-wall a
+# still-broken seat, which does not touch this map — the next load_seat_caps
+# drops it only if the seat is no longer stale-cap=0).
+declare -A SEAT_REPROBE_LIGHT_ONLY=()
 SEAT_FREE_ORDER=""
 SEAT_PREPAID_ORDER=""
-SEAT_VOLUME_ORDER=""
-declare -A SEAT_KEYSTONE_ONLY=()
+# fleet-ops#3125: seat-caps product_order. "yield" routes product picks
+# (PI_PICK_ROLE=product) through the rolling PR-yield ledger instead of the
+# free-first ladder; "value" (fleet-ops#3323) ranks by yield/cost with a
+# quality-first key on heavy/keystone; empty/absent keeps the class-bucket
+# ladder.
+SEAT_PRODUCT_ORDER=""
+# fleet-ops#3121: the senior (judge/orchestrator/reviewer) role seat ladder,
+# in priority order (provider/model). First usable seat wins. Replaces the
+# dead straitly role and the old keystone_only_providers dual mechanism.
+SEAT_SENIOR_ORDER=()
+# fleet-ops#3121: cursor weekly ceiling for the senior ladder. When cursor's
+# prepaid-usage count for the week hits this, find_senior_seat skips cursor
+# and falls through to the next seat (xai-oauth/grok-4.6). 0 = no ceiling.
+SEAT_SENIOR_CURSOR_CEILING=0
 SEAT_CURSOR_OVERAGE_MODEL="cursor-grok-4.6-high"
 SEAT_CURSOR_INCLUDED_EXHAUSTED=0
 SEAT_CURSOR_DAILY_TARGET_USD=16
@@ -209,11 +378,40 @@ SEAT_RAM_GB_PER_WORKER=1.5
 # running; they just cannot fill the RAM ceiling and skip ready issues.
 SEAT_ORG_RESERVE=2
 SEAT_PACE_PCT="${SEAT_PACE_PCT:-80}"
+# fleet-ops#3723: per-provider daily request budget for free-model accounts
+# whose cap is per-ACCOUNT (OpenRouter free models). When the shared counter
+# of assistant turns across the provider's *:free sessions today (UTC) reaches
+# this, every free model on the provider benches until 00:00 UTC. Keyed on
+# provider name. 0 = no daily budget (default; only OpenRouter carries one).
+declare -A SEAT_FREE_DAILY_REQUEST_BUDGET=()
+
+# fleet-ops#3724: per-seat routing guard for a metered seat that may only
+# ever serve PRODUCT repos (config/intake-repos.json `product` flag on the
+# repos[] entry — fleet-ops is control plane, never product). Keyed on
+# "provider/model". A seat with SEAT_PRODUCT_ONLY[p/m]=1 is collected in a
+# last-resort bucket pick_seat appends after every other class, so it is
+# offered only when no free/prepaid seat is usable.
+declare -A SEAT_PRODUCT_ONLY=()
+# fleet-ops#3724: per-seat daily USD spend cap measured from Pi session
+# usage.cost (the same source the fleet-ops#3283 fleet_seat_spend_usd export
+# aggregates). When today's (UTC) spend on the seat reaches this, seat-lib
+# benches it until 00:00 UTC with a dated ledger reason — an external budget
+# wall (health_class=quota_bench, consecutive_failure_count=0), never charged
+# to the work item. Keyed on "provider/model". Absent = no daily spend cap.
+declare -A SEAT_DAILY_SPEND_CAP_USD=()
 
 # fleet-ops#457: lanes whose snapshot metrics exceed quality-routing.json
 # cuts. Empty when the scoreboard is missing/stale. Loaded once per pick.
 _quality_routing_loaded=0
 declare -A QUALITY_HEAVY_BAN=()
+
+# fleet-ops#3250: per-seat rolling PR-yield ledger. Loaded once per pick so
+# downstream gating has fresh data; missing/stale -> empty -> 0.5 fallback.
+# fleet-ops#3323: the same ledger carries cost_per_session (mean usage.cost
+# per session over the window) so product picks can rank by value.
+_seat_yield_loaded=0
+declare -A SEAT_YIELD=()
+declare -A SEAT_COST=()
 
 load_quality_routing() {
     QUALITY_HEAVY_BAN=()
@@ -237,6 +435,74 @@ load_quality_routing() {
         --scoreboard "${QUALITY_SCOREBOARD_JSON:-}" 2>/dev/null || true)
 }
 
+# fleet-ops#3250: load the per-seat rolling PR-yield ledger written by the
+# metrics exporter. Fail-open: a missing/unparseable JSON leaves SEAT_YIELD
+# empty and every seat falls back to the 0.5 provisional yield.
+load_seat_yield() {
+    SEAT_YIELD=()
+    SEAT_COST=()
+    _seat_yield_loaded=1
+    [[ -f "$SEAT_YIELD_JSON" ]] || return 0
+    [[ -s "$SEAT_YIELD_JSON" ]] || return 0
+    command -v jq >/dev/null 2>&1 || return 0
+    local seat y _sessions _provisional c
+    while IFS=$'\t' read -r seat y _sessions _provisional c; do
+        [[ -n "$seat" ]] || continue
+        SEAT_YIELD["$seat"]="$y"
+        SEAT_COST["$seat"]="$c"
+    done < <(
+        jq -r 'to_entries[]
+               | [ .key,
+                   (.value.yield // 0.5 | tostring),
+                   (.value.sessions // 0 | tostring),
+                   (.value.provisional // true | tostring),
+                   (.value.cost_per_session // 0 | tostring) ]
+               | @tsv' "$SEAT_YIELD_JSON" 2>/dev/null || true
+    )
+}
+
+# Return the yield for a seat (0..1, default 0.5 for unknown/new seats).
+# Echoes nothing and returns 1 if the seat argument is empty.
+seat_yield_for() {
+    local p="${1:-}" m="${2:-}"
+    [[ -n "$p" && -n "$m" ]] || return 1
+    if (( ! _seat_yield_loaded )); then load_seat_yield || true; fi
+    echo "${SEAT_YIELD[$p/$m]:-0.5}"
+}
+
+# fleet-ops#3323: return the rolling cost per session for a seat. Unknown
+# seats default to 0 — the value floor clamps cost to 0.001, so an
+# unmeasured seat prices as free and is tried, not starved.
+# Echoes nothing and returns 1 if the seat argument is empty.
+seat_cost_for() {
+    local p="${1:-}" m="${2:-}"
+    [[ -n "$p" && -n "$m" ]] || return 1
+    if (( ! _seat_yield_loaded )); then load_seat_yield || true; fi
+    echo "${SEAT_COST[$p/$m]:-0}"
+}
+
+# fleet-ops#3322: return 0 if the seat is an audition seat (provider-level or
+# model-level audition: true in the LIVE caps). Audition seats are only
+# eligible for packet_difficulty light — pick_seat gates them out of every
+# other difficulty. Returns 1 (not audition) for unknown/empty seats.
+seat_is_audition() {
+    local p="${1:-}" m="${2:-}"
+    [[ -n "$p" && -n "$m" ]] || return 1
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    [[ -n "${SEAT_AUDITION[$p]:-}" || -n "${SEAT_AUDITION[$p/$m]:-}" ]]
+}
+
+# fleet-ops#4129: return 0 if the seat was re-admitted from a stale cap=0 by
+# _expire_stale_cap0_seats and is therefore light-only until a re-probe proves
+# it answers. pick_seat gates it out of every non-light difficulty, same shape
+# as seat_is_audition. Returns 1 (not re-probe-light-only) for unknown/empty.
+seat_is_reprobe_light_only() {
+    local p="${1:-}" m="${2:-}"
+    [[ -n "$p" && -n "$m" ]] || return 1
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    [[ -n "${SEAT_REPROBE_LIGHT_ONLY[$p]:-}" || -n "${SEAT_REPROBE_LIGHT_ONLY[$p/$m]:-}" ]]
+}
+
 load_seat_caps() {
     SEAT_PROVIDER_CAP=()
     SEAT_MODEL_CAP=()
@@ -249,12 +515,19 @@ load_seat_caps() {
     SEAT_PROVIDER_MAX_PROBE=()
     SEAT_PROVIDER_HARD_CEILING=()
     SEAT_PROVIDER_REASON=()
+    SEAT_TICK_SPAWN_CAP=()
     SEAT_CAP_ZERO_CLASS_INTENTIONAL=()
     SEAT_CAP_ZERO_CLASS_STALE=()
+    SEAT_PRODUCT_ONLY=()
+    SEAT_DAILY_SPEND_CAP_USD=()
+    SEAT_AUDITION=()
+    SEAT_REPROBE_LIGHT_ONLY=()
     SEAT_FREE_ORDER=""
     SEAT_PREPAID_ORDER=""
-    SEAT_VOLUME_ORDER=""
-    SEAT_KEYSTONE_ONLY=()
+    SEAT_PRODUCT_ORDER=""
+    SEAT_MODEL_PROBE_CEILING=()
+    SEAT_SENIOR_ORDER=()
+    SEAT_SENIOR_CURSOR_CEILING=0
     SEAT_CURSOR_OVERAGE_MODEL="cursor-grok-4.6-high"
     SEAT_CURSOR_INCLUDED_EXHAUSTED=0
     SEAT_CURSOR_DAILY_TARGET_USD=16
@@ -267,6 +540,7 @@ load_seat_caps() {
     SEAT_RAM_GB_PER_WORKER=1.5
     SEAT_ORG_RESERVE=2
     SEAT_TARGET_CONCURRENT=25
+    SEAT_SPAWN_STAGGER_S=0
 
     [[ -f "$SEAT_CAPS_JSON" ]] || { seat_log "seat-caps: NO CAPS FILE at $SEAT_CAPS_JSON — falling back to no-cap behaviour"; return 1; }
     if ! jq -e . "$SEAT_CAPS_JSON" >/dev/null 2>&1; then
@@ -274,13 +548,17 @@ load_seat_caps() {
         return 1
     fi
 
-    local ram ores tgt
+    local ram ores tgt stagger
     ram=$(jq -r '.ram_gb_per_worker // 1.5' "$SEAT_CAPS_JSON")
     [[ "$ram" =~ ^[0-9]+(\.[0-9]+)?$ ]] && SEAT_RAM_GB_PER_WORKER="$ram"
     ores=$(jq -r '.org_reserve // 2' "$SEAT_CAPS_JSON")
     [[ "$ores" =~ ^[0-9]+$ ]] && SEAT_ORG_RESERVE="$ores"
     tgt=$(jq -r '.target_concurrent // 25' "$SEAT_CAPS_JSON")
     [[ "$tgt" =~ ^[0-9]+$ ]] && SEAT_TARGET_CONCURRENT="$tgt"
+    # fleet-ops#3784: seconds to sleep between cohort spawns so clone/npm/pi
+    # startup peaks do not overlap (oomd slice-pressure kills). 0 disables.
+    stagger=$(jq -r '.spawn_stagger_s // 0' "$SEAT_CAPS_JSON")
+    [[ "$stagger" =~ ^[0-9]+$ ]] && SEAT_SPAWN_STAGGER_S="$stagger"
 
     # fleet-ops#602: the read loops below must use LOCAL variables. bash's
     # `local` is DYNAMIC scoping, so a bare `p`/`m` here would write into the
@@ -288,10 +566,10 @@ load_seat_caps() {
     # would have its own $p/$m clobbered to the last jq line before its lookup
     # ran, returning 0 for every unlisted-model seat and NO-USABLE-SEAT for
     # the whole free role (pi-audit@ free-glm-5-3 unit-failure loop 2026-08-27).
-    local p m cap class bench_def max_probe hard reason window budget ko ov_model ov_ex ov_usd cb
+    local p m cap class bench_def max_probe hard reason window budget ko ov_model ov_ex ov_usd cb icz remote audition tick_cap
     # Unit separator (\x1f), not TSV: bash `read` collapses consecutive tabs
     # so optional empty fields (max_probe_ceiling, reason) would vanish.
-    while IFS=$'\x1f\n' read -r p cap class bench_def max_probe hard reason icz; do
+    while IFS=$'\x1f\n' read -r p cap class bench_def max_probe hard reason icz remote audition tick_cap; do
         [[ -n "$p" ]] || continue
         SEAT_PROVIDER_CAP["$p"]="$cap"
         # subscription is the pre-#387 name for prepaid-quota.
@@ -303,12 +581,29 @@ load_seat_caps() {
         [[ "$max_probe" =~ ^[0-9]+$ ]] && SEAT_PROVIDER_MAX_PROBE["$p"]="$max_probe"
         [[ "$hard" == "true" ]] && SEAT_PROVIDER_HARD_CEILING["$p"]=1
         [[ -n "$reason" ]] && SEAT_PROVIDER_REASON["$p"]="$reason"
+        # fleet-ops#3690: per-tick spawn cap (0 = unlimited).
+        [[ "$tick_cap" =~ ^[0-9]+$ ]] && SEAT_TICK_SPAWN_CAP["$p"]="$tick_cap"
         # fleet-ops#1432: classification of cap=0 seats (intentional vs stale).
-        if [[ "$icz" == "dead_decoy" || "$icz" == "money_only" ]]; then
+        # fleet-ops#2435: "corpse" joins the intentional set — a model whose
+        # ledger is seat_dead (terminal "corpse" class, no comeback clock)
+        # is retired, never re-auditioned, so its cap-0 skip classifies as
+        # intentional (by design), not stale (re-audit when the external
+        # condition clears). fleet-ops#4271: "yield" joins the intentional set
+        # — a seat retired for zero PR yield (0 PRs over >= 20 picks) is
+        # intentional, never auto-expired; the re-audition path (yield gate
+        # #3251) is the only way back in.
+        if [[ "$icz" == "dead_decoy" || "$icz" == "money_only" || "$icz" == "corpse" || "$icz" == "yield" ]]; then
             SEAT_CAP_ZERO_CLASS_INTENTIONAL["$p"]="$icz"
         elif [[ "$icz" == "stale" ]]; then
             SEAT_CAP_ZERO_CLASS_STALE["$p"]="$icz"
         fi
+        # fleet-ops#3531: remote agents (e.g. devin) run outside the local
+        # harness and must be judged by session outcome, not local tool count.
+        [[ "$remote" == "true" ]] && SEAT_PROVIDER_REMOTE_AGENT["$p"]=1
+        # fleet-ops#3322: provider-level audition flag (xkiro free-tier seats
+        # carry it at provider level via #3505). A seat carrying audition: true
+        # is only eligible for packet_difficulty light — pick_seat gates it.
+        [[ "$audition" == "true" ]] && SEAT_AUDITION["$p"]=1
     # A provider may be a bare number (shorthand for cap=N, class=free, no
     # models — e.g. "devin": 0). Indexing .value.cap on a number crashes jq
     # and, with `2>/dev/null || true`, silently empties the whole cap map —
@@ -318,13 +613,15 @@ load_seat_caps() {
     # provider_quota_bench_default returns 0 (no default, writer fails open).
     # max_probe_ceiling / hard_ceiling / reason (fleet-ops#217) likewise
     # optional; absent fields emit "" so the guards above skip them.
-    done < <(jq -r '.providers | to_entries[] | .key as $k | .value as $v | [$k, (if ($v|type)=="number" then $v else ($v.cap // 0) end), (if ($v|type)=="number" then "free" else ($v.class // "free") end), (if ($v|type)=="object" then ($v.quota_bench_default_s // "") else "" end), (if ($v|type)=="object" then ($v.max_probe_ceiling // "") else "" end), (if ($v|type)=="object" then ($v.hard_ceiling // false) else false end), (if ($v|type)=="object" then ($v.reason // "") else "" end), (if ($v|type)=="object" then ($v.intentional_cap_zero // "") else "" end)] | join("\u001f")' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    done < <(jq -r '.providers | to_entries[] | .key as $k | .value as $v | [$k, (if ($v|type)=="number" then $v else ($v.cap // 0) end), (if ($v|type)=="number" then "free" else ($v.class // "free") end), (if ($v|type)=="object" then ($v.quota_bench_default_s // "") else "" end), (if ($v|type)=="object" then ($v.max_probe_ceiling // "") else "" end), (if ($v|type)=="object" then ($v.hard_ceiling // false) else false end), (if ($v|type)=="object" then ($v.reason // "") else "" end), (if ($v|type)=="object" then ($v.intentional_cap_zero // "") else "" end), (if ($v|type)=="object" then ($v.remote_agent // "") else "" end), (if ($v|type)=="object" then ($v.audition // false) else false end), (if ($v|type)=="object" then ($v.tick_spawn_cap // "") else "" end)] | join("\u001f")' "$SEAT_CAPS_JSON" 2>/dev/null || true)
 
-    while IFS=$'\t' read -r p m cap class; do
+    while IFS=$'\x1f\n' read -r p m cap class mprobe maudition; do
         [[ -n "$p" && -n "$m" ]] || continue
-        # Models map may be a bare number (cap) or an object {cap, class}.
-        # Per-model class is an override for a free lane inside a mixed
-        # provider (e.g. cline has prepaid-pass seats and a free z-ai GLM).
+        # Models map may be a bare number (cap) or an object {cap, class,
+        # max_probe_ceiling}. Per-model class is an override for a free lane
+        # inside a mixed provider (e.g. cline has prepaid-pass seats and a
+        # free z-ai GLM); max_probe_ceiling opts the seat into model-level
+        # AIMD probing (fleet-ops#3125).
         if [[ "$cap" =~ ^[0-9]+$ ]]; then
             SEAT_MODEL_CAP["$p/$m"]="$cap"
         else
@@ -333,36 +630,73 @@ load_seat_caps() {
             mcap=$(jq -r '.cap // 0' <<<"$cap" 2>/dev/null)
             [[ "$mcap" =~ ^[0-9]+$ ]] && SEAT_MODEL_CAP["$p/$m"]="$mcap"
         fi
+        if [[ "$mprobe" =~ ^[0-9]+$ ]]; then
+            SEAT_MODEL_PROBE_CEILING["$p/$m"]="$mprobe"
+        fi
         if [[ -n "$class" ]]; then
             [[ "$class" == "subscription" ]] && class="prepaid-quota"
             SEAT_MODEL_CLASS["$p/$m"]="$class"
         fi
+        # fleet-ops#3322: model-level audition flag. A candidate injected by
+        # the intake tick from config/model-candidates.json carries audition:
+        # true at model level (cap 1, light issues only).
+        [[ "$maudition" == "true" ]] && SEAT_AUDITION["$p/$m"]=1
         # fleet-ops#1432: model-level intentional_cap_zero classification.
         # Only present when the model value is an object (not a bare number).
         if [[ ! "$cap" =~ ^[0-9]+$ ]]; then
             local icz
             icz=$(jq -r '.intentional_cap_zero // ""' <<<"$cap" 2>/dev/null || true)
-            if [[ "$icz" == "dead_decoy" || "$icz" == "money_only" ]]; then
+            # fleet-ops#2435: "corpse" is intentional too — see the provider
+            # loop comment. Matches the ledger's terminal corpse class.
+            # fleet-ops#4271: "yield" (zero-PR retirement) is intentional too —
+            # never auto-expired; re-audition only via the yield gate (#3251).
+            if [[ "$icz" == "dead_decoy" || "$icz" == "money_only" || "$icz" == "corpse" || "$icz" == "yield" ]]; then
                 SEAT_CAP_ZERO_CLASS_INTENTIONAL["$p/$m"]="$icz"
             elif [[ "$icz" == "stale" ]]; then
                 SEAT_CAP_ZERO_CLASS_STALE["$p/$m"]="$icz"
             fi
+            # fleet-ops#3241: a model-level stale cap=0 expires on the date
+            # in its own .reason. Without this load the reason was invisible
+            # to _expire_stale_cap0_seats, so a model-level stale seat could
+            # never expire and persisted at cap=0 silently forever.
+            local mreason
+            mreason=$(jq -r '.reason // ""' <<<"$cap" 2>/dev/null || true)
+            [[ -n "$mreason" ]] && SEAT_PROVIDER_REASON["$p/$m"]="$mreason"
+            # fleet-ops#3724: product_only + daily_spend_cap_usd model flags.
+            # product_only: pick_seat offers the seat only for a packet whose
+            # repo carries the product flag in config/intake-repos.json, and
+            # only after every free/prepaid seat is unusable (last-resort
+            # bucket). daily_spend_cap_usd: when today's (UTC) Pi usage.cost
+            # on the seat reaches it, the seat benches until 00:00 UTC.
+            local mpo mspend
+            mpo=$(jq -r '.product_only // false' <<<"$cap" 2>/dev/null || true)
+            [[ "$mpo" == "true" ]] && SEAT_PRODUCT_ONLY["$p/$m"]=1
+            mspend=$(jq -r '.daily_spend_cap_usd // ""' <<<"$cap" 2>/dev/null || true)
+            [[ "$mspend" =~ ^[0-9]+(\.[0-9]+)?$ ]] && SEAT_DAILY_SPEND_CAP_USD["$p/$m"]="$mspend"
         fi
-    # Same bare-number guard as the providers loop: .value.models on a bare
-    # number crashes jq before `// {}` can rescue it, emptying all model caps.
-    done < <(jq -r '.providers | to_entries[] | .key as $p | .value as $v | (if ($v|type)=="object" then ($v.models // {}) else {} end) | to_entries[] | [$p, .key, (.value // 0 | tostring), (if (.value|type)=="object" then (.value.class // "") else "" end)] | @tsv' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    # Unit separator (\x1f), not TSV, for the same reason the providers loop
+    # uses it: bash `read` collapses consecutive tabs, so an empty per-model
+    # `class` would shift `max_probe_ceiling` out of mprobe and the model
+    # probe ceilings would silently never load (fleet-ops#3125).
+    done < <(jq -r '.providers | to_entries[] | .key as $p | .value as $v | (if ($v|type)=="object" then ($v.models // {}) else {} end) | to_entries[] | [$p, .key, (.value // 0 | tostring), (if (.value|type)=="object" then (.value.class // "") else "" end), (if (.value|type)=="object" then (.value.max_probe_ceiling // "") else "" end), (if (.value|type)=="object" then (.value.audition // false) else false end)] | join("\u001f")' "$SEAT_CAPS_JSON" 2>/dev/null || true)
 
     SEAT_FREE_ORDER=$(jq -r '.free_providers_in_order // [] | join(" ")' "$SEAT_CAPS_JSON" 2>/dev/null || true)
     SEAT_PREPAID_ORDER=$(jq -r '.prepaid_providers_in_order // [] | join(" ")' "$SEAT_CAPS_JSON" 2>/dev/null || true)
-    # fleet-ops#1178: cross-class volume front-of-ladder (ollama -> devin ->
-    # commandcode -> cline FIRST). Empty means legacy free-then-prepaid behaviour.
-    SEAT_VOLUME_ORDER=$(jq -r '.volume_providers_in_order // [] | join(" ")' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    # fleet-ops#3125: product_order selects the product-pick ordering.
+    # "yield" = rank every candidate by the rolling PR-yield ledger.
+    SEAT_PRODUCT_ORDER=$(jq -r '.product_order // ""' "$SEAT_CAPS_JSON" 2>/dev/null || true)
 
-    # fleet-ops#1167: cursor (and any listed provider) is keystone/senior-review only.
-    while IFS= read -r ko; do
-        [[ -n "$ko" ]] || continue
-        SEAT_KEYSTONE_ONLY["$ko"]=1
-    done < <(jq -r '.keystone_only_providers // [] | .[]' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    # fleet-ops#3121: senior role seat ladder (replaces keystone_only_providers
+    # — one mechanism, not two; cursor stays keystone/senior-review via the
+    # hardcoded _provider_is_keystone_only gate below, and the senior ladder
+    # lists the seats a senior call may draw, in priority order).
+    while IFS= read -r sn; do
+        [[ -n "$sn" ]] || continue
+        SEAT_SENIOR_ORDER+=("$sn")
+    done < <(jq -r '.senior_seats_in_order // [] | .[]' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    local sr_ceiling
+    sr_ceiling=$(jq -r '.senior_cursor_weekly_ceiling // 0' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    [[ "$sr_ceiling" =~ ^[0-9]+$ ]] && SEAT_SENIOR_CURSOR_CEILING="$sr_ceiling"
     ov_model=$(jq -r '.cursor_overage.overage_model // empty' "$SEAT_CAPS_JSON" 2>/dev/null || true)
     [[ -n "$ov_model" ]] && SEAT_CURSOR_OVERAGE_MODEL="$ov_model"
     ov_ex=$(jq -r '.cursor_overage.included_exhausted // false' "$SEAT_CAPS_JSON" 2>/dev/null || true)
@@ -396,7 +730,119 @@ load_seat_caps() {
         [[ "$obench" =~ ^[0-9]+$ ]] && SEAT_PROVIDER_OVERLOAD_BENCH_DEFAULT["$p"]="$obench"
     done < <(jq -r '.providers | to_entries[] | .key as $k | .value as $v | (if ($v|type)=="object" then [$k, ($v.overload_bench_default_s // $v["503_bench_default_s"] // "")] else [$k, ""] end) | @tsv' "$SEAT_CAPS_JSON" 2>/dev/null || true)
 
+    # fleet-ops#3723: per-provider daily request budget for free-model
+    # accounts whose cap is per-ACCOUNT (OpenRouter free models). The budget
+    # is shared across every *:free model on the provider; seat-lib counts
+    # assistant turns in today's (UTC) Pi session files and benches all free
+    # models on the provider once the counter hits the cap. 0/absent = no
+    # daily budget (only OpenRouter carries one today).
+    while IFS=$'\t' read -r p budget; do
+        [[ -n "$p" ]] || continue
+        [[ "$budget" =~ ^[0-9]+$ ]] && (( budget > 0 )) && SEAT_FREE_DAILY_REQUEST_BUDGET["$p"]="$budget"
+    done < <(jq -r '.providers | to_entries[] | .key as $k | .value as $v | (if ($v|type)=="object" then [$k, ($v.free_model_daily_request_budget // "")] else [$k, ""] end) | @tsv' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+
+    # fleet-ops#3111: expire-to-default for stale cap=0 seats. A stale cap=0
+    # seat (intentional_cap_zero="stale") has a dated reason — "2026-08-28
+    # re-audition: endpoint 404". The 2026-09-03 incident showed stale seats
+    # lingering at cap=0 for weeks with nobody re-auditioning them (groq sat
+    # since 2026-08-28, inferx since 2026-08-28, orcarouter since 2026-08-27)
+    # while the fleet starved. After SEAT_CAP_ZERO_STALE_TTL_S (default 14d),
+    # a stale cap=0 seat is automatically re-admitted at cap=1 so pick_seat
+    # re-probes it on the next cycle — if the external condition cleared, the
+    # seat is back; if it did not, the bench writers re-wall it and the
+    # operator re-dates the reason. A seat with no parseable date in its
+    # reason is NOT expired (we don't know when it was marked stale — expiring
+    # it immediately would break the #1432 classification tests) but it IS
+    # logged loudly as cap0-stale-undated so it can never persist silently
+    # (fleet-ops#3241). Intentional
+    # cap=0 seats (dead_decoy, money_only, corpse) are NEVER expired — they
+    # are by-design. Tests set SEAT_CAP_ZERO_STALE_EXPIRE=0 to disable.
+    _expire_stale_cap0_seats
+
     _seat_caps_loaded=1
+    return 0
+}
+
+# fleet-ops#3873: per-seat hang-watchdog timeout. A slow seat (e.g.
+# ollama/deepseek-v4-flash:0731) does 14-149 tool calls then gets rc=124
+# killed at the global 2520s (42 min) watchdog before writing final text —
+# every run scored as worked-no-text / empty. The seat answers 200 and does
+# real work; the timeout is too short for that seat. seat-caps.json declares
+# a provider-level hang_timeout_s override; this helper reads it and falls
+# back to the global default. pi-issue-run calls it after picking the seat.
+# A value < 60s is ignored (defensive: a misconfigured sub-minute timeout
+# would kill every session). Returns the timeout in seconds on stdout.
+seat_hang_timeout_s() {
+    local p="$1" m="$2" v
+    (( ${_seat_caps_loaded:-0} )) || load_seat_caps >/dev/null 2>&1 || true
+    v=$(jq -r --arg p "$p" '.providers[$p].hang_timeout_s // empty' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    if [[ "$v" =~ ^[0-9]+$ ]] && (( v >= 60 )); then
+        printf '%s\n' "$v"
+        return 0
+    fi
+    printf '%s\n' "${PI_HANG_TIMEOUT_S:-2520}"
+}
+
+# fleet-ops#3111: expire stale cap=0 seats to a default cap so pick_seat
+# re-probes them after SEAT_CAP_ZERO_STALE_TTL_S. Reads the reason date from
+# the SEAT_PROVIDER_REASON / model-level reason; if older than the TTL (or no
+# date), bumps the cap to SEAT_CAP_ZERO_STALE_DEFAULT (default 1). Idempotent:
+# re-running load_seat_caps re-evaluates against the current time. Best-effort
+# logging so the operator sees which seats expired.
+SEAT_CAP_ZERO_STALE_TTL_S="${SEAT_CAP_ZERO_STALE_TTL_S:-1209600}"  # 14 days
+SEAT_CAP_ZERO_STALE_DEFAULT="${SEAT_CAP_ZERO_STALE_DEFAULT:-1}"
+SEAT_CAP_ZERO_STALE_EXPIRE="${SEAT_CAP_ZERO_STALE_EXPIRE:-1}"
+
+_expire_stale_cap0_seats() {
+    (( ${SEAT_CAP_ZERO_STALE_EXPIRE:-1} )) || return 0
+    (( ${#SEAT_CAP_ZERO_CLASS_STALE[@]} > 0 )) || return 0
+    local now_s ttl default
+    now_s=$(date -u +%s)
+    ttl="${SEAT_CAP_ZERO_STALE_TTL_S:-1209600}"
+    default="${SEAT_CAP_ZERO_STALE_DEFAULT:-1}"
+    [[ "$ttl" =~ ^[0-9]+$ ]] || ttl=1209600
+    [[ "$default" =~ ^[0-9]+$ ]] || default=1
+    local key reason date_s cap
+    for key in "${!SEAT_CAP_ZERO_CLASS_STALE[@]}"; do
+        # Only expire seats still at cap=0.
+        cap="${SEAT_PROVIDER_CAP[$key]:-}"
+        # Model-level key (contains "/"): check SEAT_MODEL_CAP.
+        if [[ "$key" == */* ]]; then
+            cap="${SEAT_MODEL_CAP[$key]:-}"
+        fi
+        [[ "$cap" == "0" ]] || continue
+        reason="${SEAT_PROVIDER_REASON[$key]:-}"
+        # Extract the first YYYY-MM-DD from the reason. No parseable date ->
+        # do NOT expire (we don't know when it was marked stale; expiring
+        # immediately would re-probe seats that may still be genuinely
+        # broken) but DO log loudly: an undated stale cap can never expire,
+        # so without this line it persists silently forever (fleet-ops#3241).
+        date_s=0
+        local date_str=""
+        if [[ "$reason" =~ ([0-9]{4})-([0-9]{2})-([0-9]{2}) ]]; then
+            date_str="${BASH_REMATCH[0]}"
+            date_s=$(date -u -d "$date_str" +%s 2>/dev/null || echo 0)
+        fi
+        if (( date_s <= 0 )); then
+            seat_log "cap0-stale-undated: $key stale cap=0 has no dated reason; it can never expire — audit the seat and date the reason (fleet-ops#3241)"
+            continue
+        fi
+        if (( now_s - date_s >= ttl )); then
+            if [[ "$key" == */* ]]; then
+                SEAT_MODEL_CAP[$key]="$default"
+            else
+                SEAT_PROVIDER_CAP[$key]="$default"
+            fi
+            # fleet-ops#4129: a re-admitted stale cap=0 seat was broken (404,
+            # TPM ceiling, exhausted quota). Re-probe it on LIGHT only — never
+            # heavy/keystone/senior-review — until a light re-probe proves it
+            # answers. The 2026-09-07 incident put a heavy fable-check on a
+            # cap0-stale laguna free seat the instant it was re-admitted, before
+            # any probe had run. Keyed identically to the cap write above.
+            SEAT_REPROBE_LIGHT_ONLY[$key]=1
+            seat_log "cap0-stale-expire: $key stale cap=0 expired (age=$((now_s - date_s))s; reason dated ${date_str}) -> re-admitted at cap=$default for re-probe (light-only, fleet-ops#4129) (fleet-ops#3111)"
+        fi
+    done
     return 0
 }
 
@@ -453,6 +899,17 @@ model_class_of() {
     echo "$c"
 }
 
+# True (return 0) when the provider is configured as a remote agent. Remote
+# agents (e.g. devin) run outside the local Pi harness, so a session may finish
+# with zero local tool calls while still producing a real outcome (e.g. a PR
+# URL). Empty-run detection must judge by outcome, not by local tool count
+# (fleet-ops#3531).
+provider_remote_agent() {
+    local p="$1"
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    [[ "${SEAT_PROVIDER_REMOTE_AGENT[$p]:-0}" == "1" ]]
+}
+
 # Default bench window (seconds) for a provider's quota/cap 429 when the
 # error text carries no explicit reset window (fleet-ops#90). 0 = no default
 # configured; the writer then fails open (no marker) and relies on the
@@ -461,6 +918,126 @@ provider_quota_bench_default() {
     local p="$1"
     if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
     echo "${SEAT_PROVIDER_BENCH_DEFAULT[$p]:-0}"
+}
+
+# --- live quota reset from fleet-metrics-export (fleet-ops#4217) ------------
+# The exporter writes fleet_seat_quota_{remaining_pct,reset_seconds,
+# observed_seconds}{provider,window} into the node_exporter textfile from each
+# provider's OWN usage endpoint. When a quota wall's error text carries no
+# parseable reset window, a fresh live row beats the static
+# quota_bench_default_s guess in seat-caps.json: it is the provider's real
+# reset horizon (the issue's motivation: xai benched 7d for a 1.5d reset).
+#
+# Only EXHAUSTED windows count (remaining_pct <= SEAT_LIVE_QUOTA_EXHAUSTED_PCT,
+# default 1): a window with 95% left resetting in 14h is not this wall's
+# recovery time, and benching on it would re-create the opposite over-bench
+# (Devin benched 22h at 94% weekly left). Across exhausted windows the MINIMUM
+# positive reset wins — the soonest the seat can plausibly recover.
+#
+# reset_seconds is as-of-observation, so observed_seconds is subtracted;
+# observations older than SEAT_LIVE_QUOTA_STALE_S (900s, the exporter's own
+# QUOTA_STALE_S) are not trusted.
+#
+# Echoes integer seconds > 0, or 0 when there is no usable live figure (file
+# missing/unreadable, no rows for the provider, stale observation, no exhausted
+# window, or the reset has already passed). Callers fall back to the static
+# default — this helper must never brick a bench decision.
+SEAT_LIVE_QUOTA_PROM="${SEAT_LIVE_QUOTA_PROM:-/var/lib/prometheus/node-exporter/fleet.prom}"
+SEAT_LIVE_QUOTA_STALE_S="${SEAT_LIVE_QUOTA_STALE_S:-900}"
+SEAT_LIVE_QUOTA_EXHAUSTED_PCT="${SEAT_LIVE_QUOTA_EXHAUSTED_PCT:-1}"
+
+provider_live_reset_s() {
+    local p="$1"
+    [[ -r "$SEAT_LIVE_QUOTA_PROM" ]] || { echo 0; return 0; }
+    awk -v prov="$p" -v stale="$SEAT_LIVE_QUOTA_STALE_S" -v thresh="$SEAT_LIVE_QUOTA_EXHAUSTED_PCT" '
+        function label(line, key,    re, s) {
+            re = key "=\"[^\"]*\""
+            if (match(line, re)) {
+                s = substr(line, RSTART, RLENGTH)
+                sub("^" key "=\"", "", s)
+                sub("\"$", "", s)
+                return s
+            }
+            return ""
+        }
+        /^fleet_seat_quota_observed_seconds\{/ && label($1, "provider") == prov {
+            obs = $2 + 0; have_obs = 1
+        }
+        /^fleet_seat_quota_remaining_pct\{/ && label($1, "provider") == prov {
+            rem[label($1, "window")] = $2 + 0
+        }
+        /^fleet_seat_quota_reset_seconds\{/ && label($1, "provider") == prov {
+            rst[label($1, "window")] = $2 + 0
+        }
+        END {
+            if (!have_obs || obs > stale + 0) { print 0; exit }
+            best = 0
+            for (w in rst) {
+                if (!(w in rem) || rem[w] > thresh + 0) continue
+                live = int(rst[w] - obs)
+                if (live <= 0) continue
+                if (best == 0 || live < best) best = live
+            }
+            print best
+        }
+    ' "$SEAT_LIVE_QUOTA_PROM" 2>/dev/null || echo 0
+}
+
+# --- wall ceiling: the provider's real reset horizon (fleet-ops#2563) -------
+# A vendor can advertise a reset window far longer than its own quota cycle.
+# Live: cline/cline-pass/minimax-m3 came back HTTP 402 with
+# retry_after=1530000 (17.7 days), so the ledger was written
+# usable_at=2026-09-19 from a provider whose seat-caps.json row declares
+# quota_window="weekly". A 19-day wall on a weekly-resetting seat is not a
+# quota window; it is a seat frozen for three reset cycles, and nothing else
+# bounds it (consecutive_failure_count was 6, nowhere near
+# SEAT_FAILURE_CEILING=20, so the failure-ceiling park never engages).
+#
+# The bound already exists in config as `quota_window` — it was loaded into
+# SEAT_PROVIDER_QUOTA_WINDOW and read by exactly one consumer (_prepaid_paced,
+# weekly-pace only). This turns it into the wall ceiling too, so no new config
+# key is needed: a provider that declares its reset cycle gets its walls capped
+# at one cycle and is re-probed at that cadence instead of frozen for the whole
+# vendor-claimed countdown. A provider with no quota_window keeps the legacy
+# behaviour (0 = no ceiling).
+#
+# The ceiling is a RE-PROBE CADENCE, not a claim the quota reset: seat_usable
+# fail-opens after the wall, the probe either works or re-benches for one more
+# cycle. Cost of being wrong is one failed probe per cycle; cost of honouring
+# the vendor number is a dead seat for weeks.
+provider_wall_ceiling_s() {
+    local p="$1"
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    case "${SEAT_PROVIDER_QUOTA_WINDOW[$p]:-}" in
+        hourly)  echo 3600 ;;
+        daily)   echo 86400 ;;
+        weekly)  echo 604800 ;;
+        monthly) echo 2678400 ;;   # 31d — the longest real monthly cycle
+        *)       echo 0 ;;
+    esac
+}
+
+# Echo the effective wall ISO timestamp for a provider, capped at the
+# provider's reset horizon measured from <anchor> (the marker's observed_at,
+# or now when that is empty/unparseable). Echoes <wall> unchanged when the
+# provider declares no quota_window, when either timestamp will not parse, or
+# when the wall is already inside the horizon. Never widens a wall.
+_wall_capped_at_horizon() {
+    local p="$1" anchor="$2" wall="$3"
+    local ceil wall_s anchor_s max_s
+    ceil=$(provider_wall_ceiling_s "$p")
+    if [[ ! "$ceil" =~ ^[0-9]+$ ]] || (( ceil <= 0 )); then printf '%s' "$wall"; return 0; fi
+    wall_s=$(date -u -d "$wall" +%s 2>/dev/null || echo 0)
+    [[ "$wall_s" =~ ^[0-9]+$ ]] && (( wall_s > 0 )) || { printf '%s' "$wall"; return 0; }
+    anchor_s=0
+    [[ -n "$anchor" ]] && anchor_s=$(date -u -d "$anchor" +%s 2>/dev/null || echo 0)
+    [[ "$anchor_s" =~ ^[0-9]+$ ]] && (( anchor_s > 0 )) || anchor_s=$(date -u +%s)
+    max_s=$(( anchor_s + ceil ))
+    if (( wall_s > max_s )); then
+        date -u -d "@$max_s" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || printf '%s' "$wall"
+        return 0
+    fi
+    printf '%s' "$wall"
 }
 
 # Default bench window (seconds) for a provider's 503/upstream-overload storm
@@ -472,6 +1049,56 @@ provider_overload_bench_default() {
     local p="$1"
     if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
     echo "${SEAT_PROVIDER_OVERLOAD_BENCH_DEFAULT[$p]:-0}"
+}
+
+# --- Provider-overload wedge (fleet-ops#2661) -------------------------------
+# A partial 503 storm (PONG probes pass but tool-loading 503s) benches 2+
+# seats on the SAME provider inside a short window, and each of those walls expiry
+# shortly after— so per-seat bench expiry alone would re-release them straight back
+# into the storm. The escalation lanes (stop-escalation-dispatch,
+# alert-repair-dispatch) must NEVER land on a provider mid-storm: they are the
+# lanes that diagnose/repair the storm's damage, and a dispatch into the storm just
+# dies the same way the workers died. This helper counts this provider's seats
+# currently or recently in overload_bench: a seat whose overload wall end
+# (bench_until ?? usable_at) is still in the future OR expired within the trailing
+# PROVIDER_OVERLOAD_WEDGE_WINDOW_S. When the count reaches
+# PROVIDER_OVERLOAD_WEDGE_MIN (2) the provider is WEDGED — pick_seat's
+# gated skip and alert-repair-dispatch's Python mirror exclude it from the
+# escalation ladder entirely. Workers do NOT set the gate env: their per-seat
+# seat_usable() benches are the right granularity for them; the wedge is the
+# escalation-only isolation the issue asks for.
+PROVIDER_OVERLOAD_WEDGE_WINDOW_S="${PROVIDER_OVERLOAD_WEDGE_WINDOW_S:-1800}"
+PROVIDER_OVERLOAD_WEDGE_MIN="${PROVIDER_OVERLOAD_WEDGE_MIN:-2}"
+
+# Returns 0 (wedged) when this provider has >= PROVIDER_OVERLOAD_WEDGE_MIN
+# seats in overload_bench whose wall end is in the future or expired within
+# the trailing window; 1 (not wedged) otherwise. Never raises: a missing/
+# unreadable ledger dir or a bad timestamp counts nothing (fail-open: a flaky
+# read must not brick the whole pick).
+provider_overload_wedged() {
+    local p="$1" f hc p2 wall_end we now_e window_s min_n count=0
+    now_e=$(_seat_now_epoch)
+    window_s="${PROVIDER_OVERLOAD_WEDGE_WINDOW_S:-1800}"
+    min_n="${PROVIDER_OVERLOAD_WEDGE_MIN:-2}"
+    for f in "$LEDGER_DIR"/*__*.json; do
+        [[ -f "$f" ]] || continue
+        [[ "$(basename "$f")" != *".spawn-bench.json" ]] || continue
+        hc=$(jq -r '.health_class // ""' "$f" 2>/dev/null || true)
+        [[ "$hc" == "overload_bench" ]] || continue
+        p2=$(jq -r '.provider // ""' "$f" 2>/dev/null || true)
+        [[ "$p2" == "$p" ]] || continue
+        wall_end=$(jq -r '(.bench_until // .usable_at // "")' "$f" 2>/dev/null || true)
+        [[ -n "$wall_end" ]] || continue
+        we=$(date -u -d "${wall_end%Z}" +%s 2>/dev/null || echo 0)
+        [[ "$we" =~ ^[0-9]+$ ]] || continue
+        # Wall end in the future OR expired within the trailing window — i.e.
+        # this seat was in overload_bench within that window. A seat whose wall
+        # expired longer ago is not recent storm evidence and must not wedge.
+        (( we >= now_e - window_s )) || continue
+        count=$((count + 1))
+        (( count >= min_n )) && return 0
+    done
+    return 1
 }
 
 # --- AIMD learned caps (fleet-ops#217, re-land #424) ------------------------
@@ -494,18 +1121,26 @@ LEARNED_CAPS_AUDIT="${LEARNED_CAPS_AUDIT:-$HOME/.local/state/pi-packet/learned-c
 _seat_learned_loaded=0
 declare -A LEARNED_CAP=()
 declare -A LEARNED_BENCH_UNTIL=()
+# fleet-ops#3690: ramp flag. A provider whose cap block changed on deploy is
+# seeded at floor/2 with ramp=true so the next tick starts low and climbs +1
+# per probe instead of bursting to declared. While ramp=true the declared
+# floor clamp is bypassed (eff may sit below declared); graduating to declared
+# clears the flag and normal AIMD resumes.
+declare -A LEARNED_RAMP=()
 
 load_learned_caps() {
     LEARNED_CAP=()
     LEARNED_BENCH_UNTIL=()
+    LEARNED_RAMP=()
     _seat_learned_loaded=1
     [[ -f "$LEARNED_CAPS_JSON" ]] || return 0
-    local p lc bu
-    while IFS=$'\x1f\n' read -r p lc bu; do
+    local p lc bu ramp
+    while IFS=$'\x1f\n' read -r p lc bu ramp; do
         [[ -n "$p" ]] || continue
         [[ "$lc" =~ ^[0-9]+$ ]] && LEARNED_CAP["$p"]="$lc"
         [[ -n "$bu" ]] && LEARNED_BENCH_UNTIL["$p"]="$bu"
-    done < <(jq -r '.providers // {} | to_entries[] | [.key, (.value.learned_cap//""), (.value.bench_until//"")] | join("\u001f")' "$LEARNED_CAPS_JSON" 2>/dev/null || true)
+        [[ "$ramp" == "true" ]] && LEARNED_RAMP["$p"]=1
+    done < <(jq -r '.providers // {} | to_entries[] | [.key, (.value.learned_cap//""), (.value.bench_until//""), (.value.ramp|tostring)] | join("\u001f")' "$LEARNED_CAPS_JSON" 2>/dev/null || true)
 }
 
 # Hard upper bound a provider may probe to. Absent -> declared cap (no
@@ -590,38 +1225,77 @@ _provider_bench_until() {
     echo "$soonest"
 }
 
+# fleet-ops#3677: cap the AIMD backoff bench so a prepaid seat re-probes
+# within 15-30 min of a resource_exhausted, NOT the hours the per-seat
+# ledger's wall may carry (the Devin sub was ~85-97% unused while one backoff
+# pinned learned_cap=2 of 7 declared for ~6h). floor/2 remains the immediate
+# cap reduction; the bench is only a "don't re-probe" gate. Growth never
+# exceeds the provider's real quota reset window (devin quota_bench_default_s
+# =900), with 1800s as the hard ceiling when the provider sets no default.
+# Args: provider ledger_bench_until (RFC3339, may be empty). Echoes a capped
+# bench_until, or empty when $2 is empty.
+_provider_backoff_bench_until() {
+    local p="$1" raw="$2"
+    local cap_s=1800 rw now_s raw_s capped_s
+    rw=$(provider_quota_bench_default "$p")
+    if [[ "$rw" =~ ^[0-9]+$ ]] && (( rw > 0 )); then
+        (( rw < cap_s )) && cap_s=$rw
+    fi
+    [[ -n "$raw" ]] || { echo ""; return; }
+    now_s=$(date -u +%s)
+    raw_s=$(date -u -d "$raw" +%s 2>/dev/null || echo 0)
+    capped_s=$(( now_s + cap_s ))
+    if (( raw_s > 0 && raw_s <= capped_s )); then
+        echo "$raw"
+    else
+        date -u -d "@$capped_s" +%Y-%m-%dT%H:%M:%SZ
+    fi
+}
+
 _learned_audit() {
     local line="$1"
     printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$line" >>"$LEARNED_CAPS_AUDIT" 2>/dev/null || true
 }
 
 _set_learned_in_memory() {
-    local p="$1" lc="$2" bench="${3:-}"
+    local p="$1" lc="$2" bench="${3:-}" ramp="${4:-}"
     LEARNED_CAP["$p"]="$lc"
     if [[ -n "$bench" ]]; then
         LEARNED_BENCH_UNTIL["$p"]="$bench"
     else
         unset 'LEARNED_BENCH_UNTIL[$p]'
     fi
+    if [[ "$ramp" == "1" ]]; then
+        LEARNED_RAMP["$p"]=1
+    elif [[ "$ramp" == "0" ]]; then
+        unset 'LEARNED_RAMP[$p]'
+    fi
 }
 
 # Persist learned state for one provider and emit an audit line.
-# Args: provider learned_cap result bench_until
-# result in {probe, backoff, decay}.
+# Args: provider learned_cap result bench_until [ramp]
+# result in {probe, backoff, decay, ramp}. ramp in {0,1}; absent preserves the
+# current in-memory LEARNED_RAMP[$p] (so probes during a ramp keep the flag
+# until graduation clears it explicitly with ramp=0).
 _record_learned_cap() {
-    local p="$1" lc="$2" result="$3" bench="${4:-}"
+    local p="$1" lc="$2" result="$3" bench="${4:-}" ramp="${5:-}"
     [[ "$lc" =~ ^[0-9]+$ ]] || return 1
+    # Absent ramp arg: preserve the current flag (probe during ramp stays ramp).
+    local ramp_val="${LEARNED_RAMP[$p]:-0}"
+    [[ "$ramp" == "0" || "$ramp" == "1" ]] && ramp_val="$ramp"
     mkdir -p "$(dirname "$LEARNED_CAPS_JSON")" 2>/dev/null || true
     local tmp="$LEARNED_CAPS_JSON.tmp.$$.$RANDOM" now_utc
     now_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    local ramp_json
+    [[ "$ramp_val" == "1" ]] && ramp_json="true" || ramp_json="false"
     if [[ -f "$LEARNED_CAPS_JSON" ]] && jq -e . "$LEARNED_CAPS_JSON" >/dev/null 2>&1; then
         # Merge via object addition, not $ps[$p] = ... jq 1.7 rejects
         # assignment through a variable-held object ("Invalid path
         # expression") and the fallback would then rewrite the file with
         # only this provider, wiping sibling learned caps.
         if jq --arg p "$p" --argjson lc "$lc" --arg r "$result" \
-                --arg b "$bench" --arg t "$now_utc" \
-            '.providers = ((.providers // {}) + {($p): {learned_cap:$lc, last_result:$r, bench_until:(if $b == "" then null else $b end), last_at:$t}})' \
+                --arg b "$bench" --arg t "$now_utc" --argjson ramp "$ramp_json" \
+            '.providers = ((.providers // {}) + {($p): {learned_cap:$lc, last_result:$r, bench_until:(if $b == "" then null else $b end), ramp:$ramp, last_at:$t}})' \
             "$LEARNED_CAPS_JSON" >"$tmp" 2>/dev/null; then
             :
         else
@@ -634,31 +1308,191 @@ _record_learned_cap() {
     if [[ -z "$tmp" || ! -s "$tmp" ]]; then
         tmp="$LEARNED_CAPS_JSON.tmp.$$.$RANDOM"
         if ! jq -nc --arg p "$p" --argjson lc "$lc" --arg r "$result" \
-            --arg b "$bench" --arg t "$now_utc" \
-            '{providers: {($p): {learned_cap:$lc, last_result:$r, bench_until:(if $b == "" then null else $b end), last_at:$t}}}' >"$tmp" 2>/dev/null; then
+            --arg b "$bench" --arg t "$now_utc" --argjson ramp "$ramp_json" \
+            '{providers: {($p): {learned_cap:$lc, last_result:$r, bench_until:(if $b == "" then null else $b end), ramp:$ramp, last_at:$t}}}' >"$tmp" 2>/dev/null; then
             seat_log "aimd: state write FAILED for $p (lc=$lc result=$result) — in-memory only"
             rm -f "$tmp" 2>/dev/null || true
-            _set_learned_in_memory "$p" "$lc" "$bench"
+            _set_learned_in_memory "$p" "$lc" "$bench" "$ramp_val"
             return 0
         fi
     fi
     chmod 0644 "$tmp" 2>/dev/null || true
     if mv "$tmp" "$LEARNED_CAPS_JSON" 2>/dev/null; then
-        _set_learned_in_memory "$p" "$lc" "$bench"
+        _set_learned_in_memory "$p" "$lc" "$bench" "$ramp_val"
         local bench_desc="no bench"
-        [[ -n "$bench" ]] && bench_desc="bench_until=$bench"
-        _learned_audit "aimd $p: learned_cap=$lc result=$result $bench_desc"
+        if [[ -n "$bench" ]]; then
+            local bs nowb
+            nowb=$(date -u +%s)
+            bs=$(date -u -d "$bench" +%s 2>/dev/null || echo 0)
+            bs=$(( bs > nowb ? bs - nowb : 0 ))
+            bench_desc="bench=${bs}s bench_until=$bench"
+        fi
+        local ramp_desc=""
+        [[ "$ramp_val" == "1" ]] && ramp_desc=" ramp"
+        _learned_audit "aimd $p: learned_cap=$lc result=$result$bench_desc$ramp_desc"
         return 0
     fi
     seat_log "aimd: state rename FAILED for $p at $LEARNED_CAPS_JSON — in-memory only"
     rm -f "$tmp" 2>/dev/null || true
-    _set_learned_in_memory "$p" "$lc" "$bench"
+    _set_learned_in_memory "$p" "$lc" "$bench" "$ramp_val"
+    return 0
+}
+
+# fleet-ops#3690: reset learned AIMD state ONLY for providers whose
+# providers.<p> block changed between the old and new seat-caps.json, not the
+# whole file. A ram_gb_per_worker / worker_memory / spawn_stagger_s edit
+# touches top-level fields and must NOT reset AIMD — the old whole-file wipe
+# (install.sh pre-#3690) dropped every provider to null and the next tick
+# burst to declared caps (5 devin spawns at once, all rc=143 in <30s). For
+# each changed provider, drop its learned entries (the "p" key and any "p/*"
+# model keys) and seed learned_cap=floor/2 with ramp=true so the next tick
+# starts low and ramps +1 per probe instead of bursting to declared.
+# Unchanged providers keep their learned state. Best-effort: a jq failure
+# logs and leaves the file unchanged. Args: old_caps new_caps learned_caps
+reset_learned_caps_on_provider_change() {
+    local old_caps="$1" new_caps="$2" learned="$3"
+    [[ -f "$old_caps" && -f "$new_caps" && -f "$learned" ]] || return 0
+    command -v jq >/dev/null 2>&1 || return 0
+    cmp -s "$old_caps" "$new_caps" && return 0
+    local now_utc bak tmp changed_list
+    now_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    changed_list=$(jq -n --slurpfile old "$old_caps" --slurpfile new "$new_caps" '
+        ($old[0].providers // {}) as $o | ($new[0].providers // {}) as $n |
+        (($o | keys) + ($n | keys)) | unique | .[] |
+        select(($o[.] // "" | tostring) != ($n[.] // "" | tostring))
+    ' 2>/dev/null || true)
+    [[ -n "$changed_list" ]] || return 0
+    bak="$learned.bak-$(date -u +%Y%m%dT%H%M%SZ)"
+    cp -f "$learned" "$bak" 2>/dev/null || true
+    tmp="$learned.tmp.$$.$RANDOM"
+    if jq -n --slurpfile old "$old_caps" --slurpfile new "$new_caps" \
+            --slurpfile lc "$learned" --arg t "$now_utc" '
+        ($old[0].providers // {}) as $o |
+        ($new[0].providers // {}) as $n |
+        ($lc[0].providers // {}) as $prov |
+        (($o | keys) + ($n | keys)) as $all |
+        ($all | unique | map(select(($o[.] // "" | tostring) != ($n[.] // "" | tostring)))) as $changed |
+        ($changed | map(. + "/")) as $pfxs |
+        {
+            providers: (
+                ($prov | with_entries(select(
+                    .key as $k |
+                    ($changed | index($k) | not) and
+                    ($pfxs | map(. as $pfx | $k | startswith($pfx)) | any | not)
+                ))) +
+                ($changed | map(. as $p |
+                    ($n | has($p)) as $exists |
+                    if $exists then
+                        ($n[$p]) as $pv |
+                        {($p): {
+                            learned_cap: (($pv | if type == "number" then . else (.cap // 1) end) | if . < 2 then 1 else (. / 2 | floor) end),
+                            last_result: "ramp",
+                            ramp: true,
+                            bench_until: null,
+                            last_at: $t
+                        }}
+                    else empty end
+                ) | add // {})
+            )
+        }
+    ' >"$tmp" 2>/dev/null && mv -f "$tmp" "$learned" 2>/dev/null; then
+        local changed_flat="${changed_list//$'\n'/ }"
+        echo "reset learned-caps.json for providers: ${changed_flat} (seat-caps.json per-provider change, fleet-ops#3690)"
+        return 0
+    fi
+    rm -f "$tmp" 2>/dev/null || true
+    seat_log "aimd: per-provider learned-caps reset FAILED (jq error) — leaving $learned unchanged" 2>/dev/null || true
+    return 0
+}
+
+# fleet-ops#3690: per-tick per-provider spawn cap. Limits how many NEW
+# sessions pick_seat routes to a provider within a single intake tick so a
+# fresh fleet (learned-caps reset) does not burst N spawns on one provider
+# and trip resource_exhausted (5 devin spawns at once, all rc=143 in <30s).
+# The intake tick calls reset_tick_spawn_counts at the start of each tick to
+# zero the counter file; pick_seat calls tick_spawn_cap_exceeded before
+# routing and tick_spawn_cap_record after a successful pick. A provider
+# without tick_spawn_cap in seat-caps.json is unlimited (returns 1 = not
+# exceeded). The counter file is $STATE_DIR/tick-spawn-counts.json:
+# {"devin": 2, ...}. Tests override via SEAT_TICK_SPAWN_COUNTS_JSON.
+SEAT_TICK_SPAWN_COUNTS_JSON="${SEAT_TICK_SPAWN_COUNTS_JSON:-$STATE_DIR/tick-spawn-counts.json}"
+
+# Reset all per-tick spawn counters to 0. Called by the intake tick at the
+# start of each tick. Best-effort: a write failure logs and continues (the
+# cap degrades to unlimited, never blocks intake).
+reset_tick_spawn_counts() {
+    local dir
+    dir=$(dirname "$SEAT_TICK_SPAWN_COUNTS_JSON" 2>/dev/null || echo "$STATE_DIR")
+    mkdir -p "$dir" 2>/dev/null || true
+    local tmp="$SEAT_TICK_SPAWN_COUNTS_JSON.tmp.$$.$RANDOM"
+    if jq -nc '{}' >"$tmp" 2>/dev/null && mv -f "$tmp" "$SEAT_TICK_SPAWN_COUNTS_JSON" 2>/dev/null; then
+        return 0
+    fi
+    rm -f "$tmp" 2>/dev/null || true
+    seat_log "tick-spawn: reset FAILED at $SEAT_TICK_SPAWN_COUNTS_JSON — cap degrades to unlimited" 2>/dev/null || true
+    return 0
+}
+
+# Echo the current spawn count for a provider (0 if the file is missing or
+# unparseable). Args: provider
+_tick_spawn_count() {
+    local p="$1"
+    [[ -f "$SEAT_TICK_SPAWN_COUNTS_JSON" ]] || { echo 0; return; }
+    local n
+    n=$(jq -r --arg p "$p" '.[$p] // 0' "$SEAT_TICK_SPAWN_COUNTS_JSON" 2>/dev/null || echo 0)
+    [[ "$n" =~ ^[0-9]+$ ]] || n=0
+    echo "$n"
+}
+
+# Return 0 (exceeded) if the provider has hit its per-tick spawn cap, 1
+# (not exceeded) otherwise. A provider without SEAT_TICK_SPAWN_CAP or with
+# cap=0 is unlimited. Args: provider
+tick_spawn_cap_exceeded() {
+    local p="$1"
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    local cap="${SEAT_TICK_SPAWN_CAP[$p]:-0}"
+    [[ "$cap" =~ ^[0-9]+$ ]] || cap=0
+    (( cap > 0 )) || return 1
+    local n
+    n=$(_tick_spawn_count "$p")
+    (( n >= cap )) && return 0
+    return 1
+}
+
+# Increment the per-tick spawn counter for a provider after a successful
+# pick. Best-effort: a write failure logs and continues. Args: provider
+tick_spawn_cap_record() {
+    local p="$1"
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    local cap="${SEAT_TICK_SPAWN_CAP[$p]:-0}"
+    [[ "$cap" =~ ^[0-9]+$ ]] || cap=0
+    (( cap > 0 )) || return 0
+    local dir
+    dir=$(dirname "$SEAT_TICK_SPAWN_COUNTS_JSON" 2>/dev/null || echo "$STATE_DIR")
+    mkdir -p "$dir" 2>/dev/null || true
+    local tmp="$SEAT_TICK_SPAWN_COUNTS_JSON.tmp.$$.$RANDOM"
+    if [[ -f "$SEAT_TICK_SPAWN_COUNTS_JSON" ]] && jq -e . "$SEAT_TICK_SPAWN_COUNTS_JSON" >/dev/null 2>&1; then
+        if jq --arg p "$p" '.[$p] = ((.[$p] // 0) + 1)' "$SEAT_TICK_SPAWN_COUNTS_JSON" >"$tmp" 2>/dev/null \
+            && mv -f "$tmp" "$SEAT_TICK_SPAWN_COUNTS_JSON" 2>/dev/null; then
+            return 0
+        fi
+    else
+        if jq -nc --arg p "$p" '{($p): 1}' >"$tmp" 2>/dev/null \
+            && mv -f "$tmp" "$SEAT_TICK_SPAWN_COUNTS_JSON" 2>/dev/null; then
+            return 0
+        fi
+    fi
+    rm -f "$tmp" 2>/dev/null || true
+    seat_log "tick-spawn: record FAILED for $p — counter not incremented" 2>/dev/null || true
     return 0
 }
 
 # Effective cap pick_seat honours. Records backoff on a fresh 429.
 # Order: hard_ceiling -> fresh 429 backoff -> bench in effect -> decay ->
-# clamp learned to [declared, ceiling].
+# clamp learned to [declared, ceiling]. fleet-ops#3690: a ramp=true entry
+# (seeded by install.sh when the provider's cap block changed) bypasses the
+# declared floor clamp so the provider starts at floor/2 and climbs +1 per
+# probe; graduating to declared clears the flag.
 effective_provider_cap() {
     local p="$1"
     if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
@@ -670,15 +1504,20 @@ effective_provider_cap() {
         return
     fi
     ceiling=$(max_probe_ceiling "$p")
+    local ramp="${LEARNED_RAMP[$p]:-0}"
     if provider_has_recent_error "$p"; then
         local backoff=$(( declared / 2 ))
         (( backoff < 1 )) && backoff=1
         local bench
         bench=$(_provider_bench_until "$p")
+        bench=$(_provider_backoff_bench_until "$p" "$bench")
         local cur="${LEARNED_CAP[$p]:-}"
         local cur_bench="${LEARNED_BENCH_UNTIL[$p]:-}"
         if [[ "$cur" != "$backoff" || "$cur_bench" != "$bench" ]]; then
-            _record_learned_cap "$p" "$backoff" "backoff" "$bench"
+            # Preserve the ramp flag through a backoff: a provider still
+            # ramping that hits a 429 backs off but stays in ramp mode so
+            # it re-climbs from the backed-off value, not a burst to declared.
+            _record_learned_cap "$p" "$backoff" "backoff" "$bench" "$ramp"
         fi
         echo "$backoff"
         return
@@ -693,17 +1532,40 @@ effective_provider_cap() {
     if [[ -n "$bench" ]] && ! _seat_in_future "$bench"; then
         local cur="${LEARNED_CAP[$p]:-}"
         if [[ "$cur" =~ ^[0-9]+$ ]] && (( cur != declared )); then
-            _record_learned_cap "$p" "$declared" "decay" ""
+            # Bench expired in ramp mode: restart the ramp from floor/2
+            # (fleet-ops#3690). In normal mode, decay to declared.
+            if [[ "$ramp" == "1" ]]; then
+                local restart=$(( declared / 2 ))
+                (( restart < 1 )) && restart=1
+                _record_learned_cap "$p" "$restart" "ramp" "" 1
+                echo "$restart"
+            else
+                _record_learned_cap "$p" "$declared" "decay" ""
+                echo "$declared"
+            fi
+            return
         elif [[ -n "$cur" ]]; then
             _record_learned_cap "$p" "$declared" "decay" ""
+            echo "$declared"
+            return
         fi
-        echo "$declared"
-        return
     fi
     local current="${LEARNED_CAP[$p]:-}"
     if [[ ! "$current" =~ ^[0-9]+$ ]]; then current="$declared"; fi
     local eff=$(( current < ceiling ? current : ceiling ))
-    (( eff < declared )) && eff=$declared
+    # fleet-ops#3690: only clamp to the declared floor when NOT ramping. A
+    # ramp=true entry may sit below declared (floor/2 start) and must not be
+    # bumped back to declared — that would defeat the slow start and burst.
+    if [[ "$ramp" != "1" ]]; then
+        (( eff < declared )) && eff=$declared
+    else
+        (( eff < 1 )) && eff=1
+        # Graduation: once the ramp reaches declared, clear the flag and
+        # resume normal AIMD (declared is now the floor again).
+        if (( eff >= declared )); then
+            _record_learned_cap "$p" "$eff" "decay" "" 0
+        fi
+    fi
     echo "$eff"
 }
 
@@ -722,11 +1584,114 @@ _aimd_probe_admitted() {
     local ram_cap active_total
     ram_cap=$(ram_governor_cap) || ram_cap=0
     [[ "$ram_cap" =~ ^[0-9]+$ ]] || ram_cap=0
-    active_total=$(count_active_total)
-    (( ram_cap > active_total )) || return 1
+    active_total=$(active_ram_charge)
+    # active_ram_charge is fractional (per-repo MemoryHigh / fallback), so
+    # compare in awk, not bash integer math (fleet-ops#3679).
+    awk -v cap="$ram_cap" -v act="$active_total" 'BEGIN{ exit !(cap > act) }' || return 1
     local new=$(( eff + 1 ))
     (( new > ceiling )) && new=$ceiling
-    _record_learned_cap "$p" "$new" "probe" ""
+    # fleet-ops#3690: a probe that reaches declared graduates the provider
+    # out of ramp mode (clears the flag); below declared, keep ramping.
+    local declared
+    declared=$(provider_cap "$p")
+    if [[ "${LEARNED_RAMP[$p]:-0}" == "1" ]] && (( new >= declared )); then
+        _record_learned_cap "$p" "$new" "probe" "" 0
+    else
+        _record_learned_cap "$p" "$new" "probe" ""
+    fi
+    return 0
+}
+
+# --- Model-granularity AIMD (fleet-ops#3125) --------------------------------
+# Same contract as the provider-level AIMD above, keyed on "provider/model".
+# A model row that carries max_probe_ceiling (e.g. devin glm-5-2 declared 3 /
+# probe to 6) may probe above its declared model cap; a model row without one
+# keeps the declared cap as a hard ceiling (the pre-#3125 behaviour for every
+# seat). Learned state is recorded under the "p/m" key in learned-caps.json —
+# the providers map keys are opaque strings, so a "devin/glm-5-2" key sits
+# next to "devin" without collision. install.sh resets learned-caps.json when
+# a deploy changes seat-caps.json so a stale learned cap never pins a raised
+# declared floor.
+#
+# effective_model_cap <p> <m> -> echoes the model cap pick_seat honours.
+# Order: no ceiling declared -> declared; provider hard_ceiling -> declared;
+# fresh provider error -> backoff (declared/2, floor 1); bench held ->
+# learned; bench expired -> decay to declared; else learned clamped to
+# [declared, ceiling].
+effective_model_cap() {
+    local p="$1" m="$2"
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    if (( ! _seat_learned_loaded )); then load_learned_caps || true; fi
+    local declared ceiling
+    declared=$(model_cap "$p" "$m")
+    ceiling="${SEAT_MODEL_PROBE_CEILING[$p/$m]:-}"
+    # No declared model probe ceiling (or one at/below the declared cap)
+    # means the declared model cap is the binding value exactly as before.
+    if [[ ! "$ceiling" =~ ^[0-9]+$ ]] || (( ceiling <= declared )); then
+        echo "$declared"
+        return
+    fi
+    if provider_hard_ceiling "$p"; then
+        echo "$declared"
+        return
+    fi
+    local key="$p/$m"
+    if provider_has_recent_error "$p"; then
+        local backoff=$(( declared / 2 ))
+        (( backoff < 1 )) && backoff=1
+        local bench
+        bench=$(_provider_bench_until "$p")
+        bench=$(_provider_backoff_bench_until "$p" "$bench")
+        local cur="${LEARNED_CAP[$key]:-}"
+        local cur_bench="${LEARNED_BENCH_UNTIL[$key]:-}"
+        if [[ "$cur" != "$backoff" || "$cur_bench" != "$bench" ]]; then
+            _record_learned_cap "$key" "$backoff" "backoff" "$bench"
+        fi
+        echo "$backoff"
+        return
+    fi
+    local bench="${LEARNED_BENCH_UNTIL[$key]:-}"
+    if [[ -n "$bench" ]] && _seat_in_future "$bench"; then
+        local backed="${LEARNED_CAP[$key]:-}"
+        [[ "$backed" =~ ^[0-9]+$ ]] || backed="$declared"
+        echo "$backed"
+        return
+    fi
+    if [[ -n "$bench" ]] && ! _seat_in_future "$bench"; then
+        _record_learned_cap "$key" "$declared" "decay" ""
+        echo "$declared"
+        return
+    fi
+    local current="${LEARNED_CAP[$key]:-}"
+    if [[ ! "$current" =~ ^[0-9]+$ ]]; then current="$declared"; fi
+    local eff=$(( current < ceiling ? current : ceiling ))
+    (( eff < declared )) && eff=$declared
+    echo "$eff"
+}
+
+# Model-level probe admission. Returns 0 (admit one extra on this seat) iff
+# ALL of: provider not hard_ceiling, the model row declares a probe ceiling,
+# eff < ceiling, active == eff, zero provider errors, RAM governor headroom.
+# Records learned_cap=eff+1 under the "p/m" key with result=probe.
+# Args: provider model eff_cap active_count
+_model_probe_admitted() {
+    local p="$1" m="$2" eff="$3" active="$4"
+    if provider_hard_ceiling "$p"; then return 1; fi
+    local ceiling="${SEAT_MODEL_PROBE_CEILING[$p/$m]:-}"
+    [[ "$ceiling" =~ ^[0-9]+$ ]] || return 1
+    (( eff < ceiling )) || return 1
+    (( active == eff )) || return 1
+    if provider_has_recent_error "$p"; then return 1; fi
+    local ram_cap active_total
+    ram_cap=$(ram_governor_cap) || ram_cap=0
+    [[ "$ram_cap" =~ ^[0-9]+$ ]] || ram_cap=0
+    active_total=$(active_ram_charge)
+    # active_ram_charge is fractional (per-repo MemoryHigh / fallback), so
+    # compare in awk, not bash integer math (fleet-ops#3679).
+    awk -v cap="$ram_cap" -v act="$active_total" 'BEGIN{ exit !(cap > act) }' || return 1
+    local new=$(( eff + 1 ))
+    (( new > ceiling )) && new=$ceiling
+    _record_learned_cap "$p/$m" "$new" "probe" ""
     return 0
 }
 
@@ -817,6 +1782,45 @@ admit_ceiling() {
     fi
 }
 
+# Convert a systemd memory quantity (1536M, 1G, 1.25G, 2G) to GB (decimal).
+# Prints 0 if the string is not a plain <number><K|M|G> quantity.
+_systemd_quantity_gb() {
+    local q="$1" num unit
+    [[ "$q" =~ ^([0-9]+(\.[0-9]+)?)([KMG])$ ]] || { echo 0; return; }
+    num="${BASH_REMATCH[1]}"
+    unit="${BASH_REMATCH[3]}"
+    case "$unit" in
+        K) awk -v n="$num" 'BEGIN{ printf "%.3f", n/1024/1024 }' ;;
+        M) awk -v n="$num" 'BEGIN{ printf "%.3f", n/1024 }' ;;
+        G) awk -v n="$num" 'BEGIN{ printf "%.3f", n }' ;;
+    esac
+}
+
+# Per-repo RAM charge in GB for a worker of <repo> at <difficulty>.
+# heavy|keystone -> 1.0 GB (fleet-ops#3495). Else the repo's MemoryHigh
+# from worker_memory.<repo> (0509/fleet-ops no longer set MemoryHigh after
+# fleet-ops#3930 dropped the throttle band, so they fall back to 1.0), converted
+# to GB. Repos without a row fall back to ram_gb_per_worker (1.0, fleet-ops#4164).
+# This is what admission charges each active worker, so a browser worker
+# consumes its real share of MemAvailable instead of the flat 1.0 GB.
+ram_charge_gb_for() {
+    local repo="$1" difficulty="$2" high gb
+    if [[ "$difficulty" == "heavy" || "$difficulty" == "keystone" ]]; then
+        echo "1.0"
+        return
+    fi
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    high=$(jq -r --arg r "$repo" '.worker_memory[$r].MemoryHigh // empty' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    if [[ -n "$high" ]]; then
+        gb=$(_systemd_quantity_gb "$high")
+        if awk -v g="$gb" 'BEGIN{ exit !(g > 0) }'; then
+            echo "$gb"
+            return
+        fi
+    fi
+    echo "$SEAT_RAM_GB_PER_WORKER"
+}
+
 # Per-repo MemoryMax/MemoryHigh from seat-caps.json worker_memory.<repo>.
 # Prints "MemoryMax\tMemoryHigh" or empty if the repo has no row (caller keeps
 # the template defaults). systemd quantity strings pass through unchanged.
@@ -828,6 +1832,25 @@ worker_memory_for_repo() {
     high=$(jq -r --arg r "$repo" '.worker_memory[$r].MemoryHigh // empty' "$SEAT_CAPS_JSON" 2>/dev/null || true)
     [[ -n "$max" || -n "$high" ]] || return 0
     printf '%s\t%s\n' "$max" "$high"
+}
+
+# Per-difficulty MemoryMax/MemoryHigh from seat-caps.json worker_memory.
+# heavy|keystone -> the "heavy" class (MemoryMax=3G/MemoryHigh=2G, fleet-ops#3281)
+# so a manager worker running 8 parallel scouts + 1 implementer is bounded;
+# any other difficulty falls back to worker_memory_for_repo. Prints
+# "MemoryMax\tMemoryHigh" or empty (caller keeps the template defaults).
+worker_memory_for_difficulty() {
+    local repo="$1" difficulty="$2" max high
+    if [[ "$difficulty" == "heavy" || "$difficulty" == "keystone" ]]; then
+        if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+        [[ -f "$SEAT_CAPS_JSON" ]] || return 0
+        max=$(jq -r '.worker_memory["heavy"].MemoryMax // empty' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+        high=$(jq -r '.worker_memory["heavy"].MemoryHigh // empty' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+        [[ -n "$max" || -n "$high" ]] || return 0
+        printf '%s\t%s\n' "$max" "$high"
+        return
+    fi
+    worker_memory_for_repo "$repo"
 }
 
 # Per-repo Environment variables from seat-caps.json worker_env.<repo>.
@@ -904,6 +1927,11 @@ task_weight() {
     fi
     sz=$(wc -c < "$pkt" 2>/dev/null || echo 0)
     sz=${sz//[^0-9]/}; sz=${sz:-0}
+    # fleet-ops#3238 (2026-09-05): the packet carries the whole worker prompt
+    # (~32 KB); subtract it so the fallback measures the issue-specific part.
+    local base="${PI_PACKET_BASE_PROMPT:-$HOME/.pi/agent/prompts/worker.md}" bsz=0
+    if [[ -f "$base" ]]; then bsz=$(wc -c < "$base" 2>/dev/null || echo 0); bsz=${bsz//[^0-9]/}; fi
+    (( sz > ${bsz:-0} )) && sz=$((sz - bsz))
     if (( sz > HEAVY_PKT_BYTES )); then
         echo "heavy"; return
     fi
@@ -913,29 +1941,20 @@ task_weight() {
     echo "light"
 }
 
-# fleet-ops#1133 + fleet-ops#1383: explicit difficulty/phase marker on a
-# packet. Scans the packet for a manifest line:
+# fleet-ops#1133: explicit difficulty marker on a packet. Scans the packet
+# for a manifest line:
 #   difficulty: keystone|senior-review|heavy|light
-#   phases: plan=capable,work=commodity,critique=capable,promote=capable
 #   keystone: true
 #   senior-review: true
-# A phases manifest implies keystone routing (capable seat first, two-strike
-# escalation to senior conference) because at least one phase needs a capable
-# (frontier) seat. First match wins. Falls back to task_weight() when no
-# marker is present. Missing file -> light.
+# First match wins. Falls back to task_weight() when no marker is present.
+# Missing file -> light.
 packet_difficulty() {
     local pkt="$1" line lowered
     if [[ ! -f "$pkt" ]]; then
         echo "light"
         return
     fi
-    # fleet-ops#1383: a phases manifest implies keystone routing.
-    # Capture-and-discard: packet_has_phases prints the manifest line on
-    # success; we only care about the exit status here.
-    if packet_has_phases "$pkt" >/dev/null 2>&1; then
-        echo "keystone"
-        return
-    fi
+
     while IFS= read -r line || [[ -n "$line" ]]; do
         lowered="${line,,}"
         if [[ "$lowered" =~ ^difficulty:[[:space:]]*(keystone|senior-review|heavy|light)[[:space:]]*$ ]]; then
@@ -954,29 +1973,6 @@ packet_difficulty() {
     task_weight "$pkt"
 }
 
-# fleet-ops#1383: detect a packet-level phases manifest. A `phases:` line
-# declares the per-phase seat-class routing intent of the Fryxell harness
-# loop (explore->plan->work->critique->promote). Capable phases (plan, critique,
-# promote) need a strong seat; the commodity work phase is eligible for free
-# lanes. The manifest is purely declarative — it folds into the existing
-# difficulty gate (packet_difficulty returns keystone), never spawning sibling
-# tasks (depth-1 spawn-guard, fleet-ops#1260).
-# Args: $1 = packet file path.
-# Returns 0 (true) if the packet declares a phases manifest; prints the raw
-# manifest line. Returns 1 if no phases line is found.
-packet_has_phases() {
-    local pkt="$1" line lowered
-    [[ -f "$pkt" ]] || return 1
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        lowered="${line,,}"
-        if [[ "$lowered" =~ ^phases:[[:space:]]*(.+)[[:space:]]*$ ]]; then
-            printf '%s\n' "$line"
-            return 0
-        fi
-    done < "$pkt"
-    return 1
-}
-
 # fleet-ops#1167: keystone and senior-review share the cursor gate and
 # reliability-first walk. Volume packets do not.
 _is_keystone_class() {
@@ -984,10 +1980,91 @@ _is_keystone_class() {
 }
 
 # fleet-ops#1167: cursor is keystone-only even if the config list is omitted.
+# fleet-ops#3121: keystone_only_providers config key deleted; the hardcoded
+# cursor check is the sole gate (one mechanism, not two).
 _provider_is_keystone_only() {
     local p="$1"
     [[ "$p" == "cursor" ]] && return 0
-    [[ -n "${SEAT_KEYSTONE_ONLY[$p]:-}" ]] && return 0
+    return 1
+}
+
+# fleet-ops#3121: resolve the senior (judge/orchestrator/reviewer) role seat.
+# Returns the FIRST usable seat from senior_seats_in_order (priority order);
+# a walled seat is skipped, never a unit failure. If the whole ladder is
+# walled, falls through to any usable capable seat (the "walled role resolves
+# to its fallback" rule). Fail-closed: prints nothing and returns 1 only when
+# NO seat anywhere is usable in this moment — callers treat that as a lane
+# fault (exit 0, no vote, retry next tick), not a crash.
+#
+# Prints "provider<TAB>model" on stdout. Re-entrant safe: this is a plain
+# read of the already-loaded SEAT_SENIOR_ORDER; load_seat_caps must have run
+# (pick_seat / callers force-load it).
+find_senior_seat() {
+    local sn p m _tk
+    for sn in "${SEAT_SENIOR_ORDER[@]}"; do
+        [[ -n "$sn" ]] || continue
+        p="${sn%%/*}"
+        m="${sn#*/}"
+        [[ -n "$p" && -n "$m" ]] || continue
+        [[ "$(model_cap "$p" "$m" 2>/dev/null || echo 0)" -gt 0 ]] 2>/dev/null || continue
+        # fleet-ops#4220: respect pick_seat's per-cycle tried map so a
+        # Restart= cycle walks past a seat that already failed this cycle.
+        # Standalone callers have no assoc `tried`. An unset or scalar
+        # `tried` is NOT associative, so `$p/$m` would be arithmetic
+        # (`cursor` unbound under `set -u`). Honor the map only when it
+        # is actually `declare -A`.
+        if [[ "$(declare -p tried 2>/dev/null || true)" == *"declare -A"* ]]; then
+            _tk="$p/$m"
+            [[ -n "${tried[$_tk]:-}" ]] && continue
+        fi
+        # fleet-ops#3121: cursor weekly ceiling. When cursor's prepaid-usage
+        # count for the week hits SEAT_SENIOR_CURSOR_CEILING, skip cursor and
+        # fall through to the next seat in the ladder (xai-oauth/grok-4.6).
+        if [[ "$p" == "cursor" && "${SEAT_SENIOR_CURSOR_CEILING:-0}" -gt 0 ]]; then
+            local _cu
+            _cu=$(_prepaid_usage cursor 2>/dev/null || echo 0)
+            if [[ "$_cu" -ge "${SEAT_SENIOR_CURSOR_CEILING}" ]]; then
+                seat_log "find_senior_seat: cursor weekly usage $_cu >= ceiling $SEAT_SENIOR_CURSOR_CEILING; skipping to next senior seat"
+                continue
+            fi
+        fi
+        seat_usable "$p" "$m" 2>/dev/null || continue
+        printf '%s\t%s\n' "$p" "$m"
+        return 0
+    done
+    # Whole senior ladder walled — fall through to any usable capable seat.
+    seat_log "find_senior_seat: senior ladder exhausted/walled; falling through to any capable seat"
+    local ep em ec
+    while IFS=$'\t' read -r ep em _ ec; do
+        [[ -n "$ep" && -n "$em" ]] || continue
+        [[ "$ec" == "1" ]] || continue
+        seat_usable "$ep" "$em" 2>/dev/null || continue
+        printf '%s\t%s\n' "$ep" "$em"
+        return 0
+    done < <(enumerate_seats)
+    return 1
+}
+
+# fleet-ops#3709: is ANY entry of senior_seats_in_order usable right now?
+# Returns 0 when at least one senior seat is usable, 1 when the whole
+# senior ladder is walled. This is the reviewer-round fallback gate: when
+# no senior seat is usable, the worker opens the product PR WITHOUT the
+# auto-merge arm and marks the body `review: skipped, no capable seat` so
+# the loose-ends surface it. Unlike find_senior_seat, this does
+# NOT fall through to a non-senior capable seat — the reviewer must run on
+# a senior seat or not at all (never armed unreviewed, never skipped
+# silently). Re-entrant safe: a plain read of the already-loaded
+# SEAT_SENIOR_ORDER; load_seat_caps must have run.
+senior_seat_available() {
+    local sn p m
+    for sn in "${SEAT_SENIOR_ORDER[@]}"; do
+        [[ -n "$sn" ]] || continue
+        p="${sn%%/*}"
+        m="${sn#*/}"
+        [[ -n "$p" && -n "$m" ]] || continue
+        [[ "$(model_cap "$p" "$m" 2>/dev/null || echo 0)" -gt 0 ]] 2>/dev/null || continue
+        seat_usable "$p" "$m" 2>/dev/null && return 0
+    done
     return 1
 }
 
@@ -1007,38 +2084,18 @@ keystone_record_event() {
 # fleet-ops#1167: every pick is a 24h selection event. Fail-open.
 # Also refreshes fleet_seat_selection_24h{provider=} via the node_exporter
 # textfile collector (same pattern as pi-packet-verdict writing fleet-verdict.prom).
-# fleet-ops#1383: record a seat selection event in the JSONL ledger.
-# Args: provider model difficulty [phases]
-# phases (optional): the packet phases manifest (e.g.
-#   "plan=capable,work=commodity,critique=capable,promote=capable") or
-#   "none"). Recorded so the waste ledger (#1211) can attribute
-#   frontier-token share to capable phases vs the commodity work phase.
+# Args: provider model difficulty
 # Fail-open: a write error must never brick pick_seat.
 record_seat_selection() {
     local p="${1:-}" m="${2:-}" difficulty="${3:-light}"
-    local phases="${4:-${PI_PACKET_PHASES:-none}}"
     local ledger="${SEAT_SELECTION_LEDGER:-$STATE_DIR/seat-selection.jsonl}"
     p="${p//[^A-Za-z0-9._/-]/}"
     m="${m//[^A-Za-z0-9._/-]/}"
     difficulty="${difficulty//[^A-Za-z0-9._-]/}"
-    phases="${phases//[^A-Za-z0-9._=,]/_}"
     mkdir -p "$(dirname "$ledger")" 2>/dev/null || return 0
-    printf '{"ts":"%s","provider":"%s","model":"%s","difficulty":"%s","phases":"%s"}\n' \
-        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$p" "$m" "$difficulty" "$phases" >>"$ledger" 2>/dev/null || true
+    printf '{"ts":"%s","provider":"%s","model":"%s","difficulty":"%s"}\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$p" "$m" "$difficulty" >>"$ledger" 2>/dev/null || true
     export_seat_selection_prom
-}
-
-# fleet-ops#1383: extract the phases manifest value from a packet (strip
-# the "phases:" prefix) or echo "none". Helper for callers that already
-# hold the packet path; keeps the JSONL ledger shape stable for consumers
-# that only read difficulty.
-packet_phases() {
-    local pkt="$1" man
-    if man=$(packet_has_phases "$pkt" 2>/dev/null) && [[ -n "$man" ]]; then
-        echo "$man" | sed 's/^phases:[[:space:]]*//I; s/[[:space:]]*$//'
-    else
-        echo "none"
-    fi
 }
 
 # Rewrite fleet_seat_selection_24h{provider=} from the JSONL ledger.
@@ -1071,6 +2128,42 @@ export_seat_selection_prom() {
     fi
 }
 
+# fleet-ops#3661: reject a provider/model pair that is not a real seat in
+# seat-caps.json (providers.<p>.models.<m>). A phantom key (e.g. a probe
+# output filename fragment like "swe-1-7-.out") must never be written to
+# the ledger, probed, or dispatched. Returns 0 when the pair is a real
+# seat (or the caps file is missing — fail-open so a missing caps file
+# never bricks the ladder); 1 when the pair is not in the caps map.
+#
+# fleet-ops#4018: a model whose id carries a `\.out` suffix is a probe-output
+# filename fragment, NEVER a real seat model. It is rejected BEFORE the
+# caps-missing fail-open: a phantom model read back from pi-seat-health.json
+# / a stray ledger would otherwise pass the fail-open and be re-dispatched,
+# so the seat-health extension re-writes the phantom `<model>-.out.json`
+# ledger and splits the reactive bench off the real ledger (self-
+# perpetuation: live devin__glm-5-2-.out.json / xai-oauth__grok-4-6-.out.json).
+_seat_key_in_caps() {
+    local p="$1" m="$2"
+    # Never a real model id — reject regardless of the caps fail-open.
+    [[ "$m" != *.out ]] || return 1
+    [[ -f "$SEAT_CAPS_JSON" ]] || return 0
+    jq -e --arg p "$p" --arg m "$m" \
+        '.providers[$p].models[$m] != null' "$SEAT_CAPS_JSON" >/dev/null 2>&1
+}
+
+# fleet-ops#3661: LOUD reject a phantom seat key. Logs the SEAT-KEY-INVALID
+# line naming the writer and returns 1 (so the caller skips the write /
+# probe / dispatch). The writer field is the calling function name so the
+# next phantom names its author.
+_seat_key_guard() {
+    local p="$1" m="$2" writer="$3"
+    if _seat_key_in_caps "$p" "$m"; then
+        return 0
+    fi
+    seat_log "LOUD SEAT-KEY-INVALID $p/$m writer=$writer"
+    return 1
+}
+
 # Mirror of seat-health.ts seatLedgerPath: sanitise provider/model so model
 # ids containing '/' (e.g. deepseek/deepseek-v4-flash) survive on disk.
 seat_ledger_path() {
@@ -1078,6 +2171,397 @@ seat_ledger_path() {
     ps="${p//[^A-Za-z0-9._-]/_}"
     ms="${m//[^A-Za-z0-9._-]/_}"
     printf '%s/%s__%s.json\n' "$LEDGER_DIR" "$ps" "$ms"
+}
+
+# fleet-ops#3723: OpenRouter's free-model request budget is per ACCOUNT, not
+# per key (openrouter.ai/docs/api-reference/limits: "Making additional accounts
+# or API keys will not affect your rate limits, as we govern capacity globally").
+# The documented daily cap (50 req/day with < $10 credits, 1000 with >= $10) is
+# shared across every *:free model on the provider. seat-lib counts assistant
+# turns (each turn = one model request) across the provider's *:free sessions
+# today (UTC) and benches every free model on the provider once the shared
+# counter hits the configured budget, until 00:00 UTC. The bench is NOT charged
+# to the work item: no consecutive_failure_count increment, no yield penalty
+# (it is an account-wide external limit, not a seat fault). Reuses the existing
+# quota_bench/usable_at ledger fields; no new state file.
+#
+# Pi session files live under $FLEET_SESSIONS_DIR (default ~/.pi/agent/sessions)
+# as pi-issue-*/<timestamp>_<id>.jsonl. Each assistant message in a session =
+# one model request. A session's provider/model is the first model_change event.
+# We count only sessions whose model id ends in ":free" on the given provider
+# and whose session timestamp is in the current UTC day.
+#
+# Args: provider
+# Prints: integer request count for today (UTC). 0 on any error (fail-open).
+_provider_free_daily_request_count() {
+    local p="$1"
+    local sessions_dir="${FLEET_SESSIONS_DIR:-$HOME/.pi/agent/sessions}"
+    [[ -d "$sessions_dir" ]] || { printf '0'; return 0; }
+    # Today's UTC date prefix (YYYY-MM-DD). Session timestamps are ISO 8601 UTC
+    # like 2026-09-06T05:11:27.532Z, so a prefix match on the filename's date
+    # is exact and cheap (no per-line parse for the date).
+    local today
+    today=$(date -u +%Y-%m-%d)
+    [[ -n "$today" ]] || { printf '0'; return 0; }
+    # Count assistant messages across every pi-issue session file whose name
+    # starts with today's UTC date. We grep for the provider in model_change
+    # and the :free suffix on the modelId to decide whether the session counts,
+    # then count "role":"assistant" lines in it. A single jq pass per file
+    # would be cleaner but ~hundreds of files per day makes a streaming grep
+    # far cheaper; the assistant-role line is structurally unique per turn.
+    local count=0
+    local f provider model has_free=0
+    while IFS= read -r f; do
+        [[ -n "$f" ]] || continue
+        has_free=0
+        # First model_change with this provider and a :free model id marks the
+        # session as counting. A session is single-provider (pi pins one model),
+        # so the first match is authoritative.
+        while IFS= read -r line; do
+            [[ "$line" == *'"type":"model_change"'* || "$line" == *'"type": "model_change"'* ]] || continue
+            provider=$(printf '%s' "$line" | jq -r '.provider // ""' 2>/dev/null || true)
+            model=$(printf '%s' "$line" | jq -r '.modelId // ""' 2>/dev/null || true)
+            if [[ "$provider" == "$p" && "$model" == *":free" ]]; then
+                has_free=1
+                break
+            fi
+        done < "$f" 2>/dev/null || continue
+        (( has_free )) || continue
+        # Count assistant turns in this session. Each assistant message = one
+        # request to the model. grep -c is a fast byte scan; the role field is
+        # structurally unique per assistant turn.
+        local n
+        n=$(grep -c '"role":"assistant"' "$f" 2>/dev/null || true)
+        [[ "$n" =~ ^[0-9]+$ ]] || n=0
+        count=$((count + n))
+    done < <(find "$sessions_dir" -maxdepth 2 -type f -name "${today}T*.jsonl" 2>/dev/null || true)
+    printf '%s' "$count"
+}
+
+# fleet-ops#3723: bench every free model on a provider for the rest of the
+# UTC day when the shared daily request counter hits the configured budget.
+# Writes a quota_bench ledger entry (reuses the existing fields — no new
+# state file) with bench_until = next 00:00 UTC. NOT charged to the work
+# item: consecutive_failure_count stays at 0 and no yield penalty is applied
+# (the bench writer for daily-budget is separate from mark_seat_quota_bench,
+# which escalates the count). Best-effort: a write failure fails open (the
+# counter re-evaluates next pick).
+# Args: provider model
+_mark_seat_free_daily_budget_bench() {
+    local p="$1" m="$2"
+    local path now_utc now_s midnight_s bench_until
+    path=$(seat_ledger_path "$p" "$m")
+    mkdir -p "$LEDGER_DIR" 2>/dev/null || true
+    now_s=$(date -u +%s)
+    now_utc=$(date -u -d "@$now_s" +%Y-%m-%dT%H:%M:%SZ)
+    # Next 00:00 UTC. If we are exactly at midnight, bench for the full day
+    # (the counter just rolled, so this is defensive; the next pick re-counts).
+    midnight_s=$(date -u -d "$(date -u -d "@$now_s" +%Y-%m-%d) tomorrow" +%s 2>/dev/null || echo $((now_s + 86400)))
+    (( midnight_s <= now_s )) && midnight_s=$((now_s + 86400))
+    bench_until=$(date -u -d "@$midnight_s" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
+    local tmp="$path.bench.$$.$RANDOM.tmp"
+    # consecutive_failure_count is 0 — this is an account-wide external limit,
+    # not a seat fault, so it must NOT escalate the bench or trip the failure
+    # ceiling. The ledger's quota_bench branch in seat_usable holds the seat
+    # until bench_until; once midnight passes the bench expires (fail-open) and
+    # the counter restarts at 0 for the new UTC day.
+    if jq -nc \
+        --arg provider "$p" --arg model "$m" \
+        --arg observed "$now_utc" --arg bench "$bench_until" --arg usable "$bench_until" \
+        --argjson http_status 429 --argjson retry_after null \
+        --argjson retryable true --argjson seat_dead false --argjson poison_ladder false \
+        --argjson count 0 \
+        '{
+          provider:$provider, model:$model,
+          http_status:$http_status, retry_after:$retry_after,
+          health_class:"quota_bench",
+          retryable:$retryable, seat_dead:$seat_dead, poison_ladder:$poison_ladder,
+          observed_at:$observed,
+          source:"free_daily_budget",
+          failure_mode:"quota_cap",
+          bench_until:$bench,
+          usable_at:$usable,
+          consecutive_failure_count:$count
+        }' > "$tmp" 2>/dev/null; then
+        chmod 0644 "$tmp" 2>/dev/null || true
+        if mv "$tmp" "$path" 2>/dev/null; then
+            seat_log "free-daily-budget: benched $p/$m until $bench_until (account-wide free-model daily cap reached; not charged to work item — fleet-ops#3723)"
+            return 0
+        fi
+        rm -f "$tmp" 2>/dev/null || true
+        seat_log "free-daily-budget: ledger rename FAILED for $p/$m — fail-open (counter re-evaluates next pick)"
+        return 1
+    fi
+    rm -f "$tmp" 2>/dev/null || true
+    seat_log "free-daily-budget: jq compose FAILED for $p/$m — marker NOT written"
+    return 1
+}
+
+# fleet-ops#3723: true if the provider has a free-model daily request budget
+# configured AND the shared counter of assistant turns across the provider's
+# *:free sessions today (UTC) has reached it. When true, the caller benches
+# every free model on the provider for the rest of the UTC day. Caches the
+# count per pick (one scan per provider per pick_seat call).
+# Args: provider
+# Returns: 0 if budget reached (bench), 1 otherwise
+_provider_free_daily_budget_reached() {
+    local p="$1"
+    local budget="${SEAT_FREE_DAILY_REQUEST_BUDGET[$p]:-0}"
+    [[ "$budget" =~ ^[0-9]+$ ]] || return 1
+    (( budget > 0 )) || return 1
+    # Per-pick cache so the candidate loop does not re-scan sessions per model.
+    local cache_key="_FRDB_COUNT_$p"
+    local count="${!cache_key:-}"
+    if [[ -z "$count" ]]; then
+        count=$(_provider_free_daily_request_count "$p")
+        [[ "$count" =~ ^[0-9]+$ ]] || count=0
+        printf -v "$cache_key" '%s' "$count"
+    fi
+    (( count >= budget ))
+}
+
+# fleet-ops#3724: today's (UTC) spend in USD on one seat, measured from Pi
+# session usage.cost — the same field the fleet-ops#3283 fleet_seat_spend_usd
+# export aggregates. We scan session jsonl files that can carry today's spend
+# (named today OR modified today — a session started before midnight keeps
+# appending after it, so the filename prefix alone would miss it), keep the
+# sessions pinned to this seat (first model_change provider+modelId match),
+# and sum message.usage.cost.total on messages timestamped today.
+#
+# Args: provider model
+# Prints: today's spend in USD (float). 0 on any error (fail-open).
+_seat_daily_spend_usd() {
+    local p="$1" m="$2"
+    local sessions_dir="${FLEET_SESSIONS_DIR:-$HOME/.pi/agent/sessions}"
+    [[ -d "$sessions_dir" ]] || { printf '0'; return 0; }
+    command -v jq >/dev/null 2>&1 || { printf '0'; return 0; }
+    local today today_s
+    today=$(date -u +%Y-%m-%d)
+    today_s=$(date -u -d "${today}T00:00:00Z" +%s 2>/dev/null || true)
+    [[ -n "$today" && -n "$today_s" ]] || { printf '0'; return 0; }
+    local total=0
+    local f spend hit line provider model
+    while IFS= read -r f; do
+        [[ -n "$f" ]] || continue
+        # Session pinned to this seat? A session is single-model, so the
+        # first model_change event is authoritative (same rule as the
+        # free-model daily budget counter, fleet-ops#3723).
+        hit=0
+        while IFS= read -r line; do
+            [[ "$line" == *'"type":"model_change"'* || "$line" == *'"type": "model_change"'* ]] || continue
+            provider=$(printf '%s' "$line" | jq -r '.provider // ""' 2>/dev/null || true)
+            model=$(printf '%s' "$line" | jq -r '.modelId // ""' 2>/dev/null || true)
+            [[ "$provider" == "$p" && "$model" == "$m" ]] && hit=1
+            break
+        done < "$f" 2>/dev/null || continue
+        (( hit )) || continue
+        # Sum usage.cost.total over message lines timestamped today (UTC).
+        # grep '"cost"' prefilters so jq only parses cost-bearing lines.
+        spend=$(grep '"cost"' "$f" 2>/dev/null \
+            | jq -s --arg d "$today" \
+                '[.[] | select(.type == "message" and ((.timestamp // "") | startswith($d))) | (.message.usage.cost.total // 0)] | add // 0' \
+                2>/dev/null || true)
+        if [[ "$spend" =~ ^[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?$ ]]; then
+            total=$(awk -v a="$total" -v b="$spend" 'BEGIN{printf "%.6f", a+b}')
+        fi
+    done < <(find "$sessions_dir" -type f -name '*.jsonl' \
+                \( -name "${today}T*.jsonl" -o -newermt "@${today_s}" \) 2>/dev/null || true)
+    printf '%s' "$total"
+}
+
+# fleet-ops#3724: true when the seat's configured daily_spend_cap_usd has
+# been reached by today's (UTC) Pi usage.cost on the seat. Caches the sum per
+# pick (one scan per seat per pick_seat call).
+# Args: provider model
+# Returns: 0 if the cap is reached (bench), 1 otherwise.
+_seat_daily_spend_cap_reached() {
+    local p="$1" m="$2"
+    local cap="${SEAT_DAILY_SPEND_CAP_USD[$p/$m]:-0}"
+    [[ "$cap" =~ ^[0-9]+(\.[0-9]+)?$ ]] || return 1
+    local cache_key="_SDSC_${p//[^A-Za-z0-9_]/_}__${m//[^A-Za-z0-9_]/_}"
+    local spend="${!cache_key:-}"
+    if [[ -z "$spend" ]]; then
+        spend=$(_seat_daily_spend_usd "$p" "$m")
+        [[ "$spend" =~ ^[0-9] ]] || spend=0
+        printf -v "$cache_key" '%s' "$spend"
+    fi
+    awk -v s="$spend" -v c="$cap" 'BEGIN{exit !(s+0 >= c+0)}'
+}
+
+# fleet-ops#3724: bench a seat for the rest of the UTC day when its
+# daily_spend_cap_usd is reached. Reuses the quota_bench/usable_at ledger
+# shape (same as the free-model daily budget, fleet-ops#3723): the entry is a
+# money wall (health_class=quota_bench, failure_mode=quota_cap) so the
+# seat-floor fail-open never lifts it, consecutive_failure_count stays 0 (an
+# external budget limit, not a seat fault — never charged to the work item),
+# and the ledger carries a dated `reason` naming the day the cap fired.
+# Best-effort: a write failure fails open (the counter re-evaluates next pick).
+# Args: provider model
+_mark_seat_spend_cap_bench() {
+    local p="$1" m="$2"
+    local cap="${SEAT_DAILY_SPEND_CAP_USD[$p/$m]:-0}"
+    local path now_utc now_s midnight_s bench_until
+    path=$(seat_ledger_path "$p" "$m")
+    mkdir -p "$LEDGER_DIR" 2>/dev/null || true
+    now_s=$(date -u +%s)
+    now_utc=$(date -u -d "@$now_s" +%Y-%m-%dT%H:%M:%SZ)
+    midnight_s=$(date -u -d "$(date -u -d "@$now_s" +%Y-%m-%d) tomorrow" +%s 2>/dev/null || echo $((now_s + 86400)))
+    (( midnight_s <= now_s )) && midnight_s=$((now_s + 86400))
+    bench_until=$(date -u -d "@$midnight_s" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
+    local reason="${now_utc%%T*} daily spend cap USD ${cap}/day reached (Pi usage.cost, fleet-ops#3283 source); seat benched until 00:00 UTC — fleet-ops#3724"
+    local tmp="$path.bench.$$.$RANDOM.tmp"
+    if jq -nc \
+        --arg provider "$p" --arg model "$m" \
+        --arg observed "$now_utc" --arg bench "$bench_until" --arg usable "$bench_until" \
+        --arg reason "$reason" \
+        --argjson http_status 429 --argjson retry_after null \
+        --argjson retryable true --argjson seat_dead false --argjson poison_ladder false \
+        --argjson count 0 \
+        '{
+          provider:$provider, model:$model,
+          http_status:$http_status, retry_after:$retry_after,
+          health_class:"quota_bench",
+          retryable:$retryable, seat_dead:$seat_dead, poison_ladder:$poison_ladder,
+          observed_at:$observed,
+          source:"daily_spend_cap",
+          failure_mode:"quota_cap",
+          bench_until:$bench,
+          usable_at:$usable,
+          reason:$reason,
+          consecutive_failure_count:$count
+        }' > "$tmp" 2>/dev/null; then
+        chmod 0644 "$tmp" 2>/dev/null || true
+        if mv "$tmp" "$path" 2>/dev/null; then
+            seat_log "daily-spend-cap: benched $p/$m until $bench_until (USD ${cap}/day cap reached; not charged to work item — fleet-ops#3724)"
+            return 0
+        fi
+        rm -f "$tmp" 2>/dev/null || true
+        seat_log "daily-spend-cap: ledger rename FAILED for $p/$m — fail-open (counter re-evaluates next pick)"
+        return 1
+    fi
+    rm -f "$tmp" 2>/dev/null || true
+    seat_log "daily-spend-cap: jq compose FAILED for $p/$m — marker NOT written"
+    return 1
+}
+
+# fleet-ops#1512: separate spawn-fail/empty-run bench marker. The per-seat
+# ledger is co-written by the pi seat-health.ts extension (after_provider_response
+# / cli_spawn) AND by these wrapper-side mark_seat_* functions. A seat that is
+# HTTP-200 with a non-empty body but functionally dead for an agentic packet
+# (tools=0 / no diagnosis block) gets benched by mark_seat_spawn_fail as
+# transient_fault + future usable_at — but a LATER healthy observation from
+# seat-health.ts (a different worker's simple packet that produced output)
+# clobbers the ledger back to health_class:"healthy" + null usable_at, so
+# seat_usable re-admits the dead seat on the next trip and the organ fails
+# again. This marker file is written ONLY by the wrapper (mark_seat_spawn_fail
+# / mark_seat_empty_run) and never by seat-health.ts, so the bench survives the
+# clobber. seat_usable checks it before trusting a stale healthy ledger entry.
+#
+# fleet-ops#2627: the marker ALSO carries the wrapper-side consecutive_failure_
+# count and failure_mode (empty_run / spawn_fail / unknown). The ledger's
+# count is reset to 0 by seat-health.ts's healthy clobber, so the wrapper's
+# escalating backoff and the failure-ceiling park MUST NOT depend on the
+# clobberable ledger. Merging count INTO the marker on every writer call
+# lets the count survive the clobber and the #1362 park actually engage for
+# a CHRONIC no-op'ing seat (the live 18 empty runs in 2h on healthy-reporting
+# seats: opencode/nemotron-3-ultra-free, openrouter/deepseek/deepseek-v4-flash-0731).
+seat_spawn_bench_path() {
+    local p="$1" m="$2" ps ms
+    ps="${p//[^A-Za-z0-9._-]/_}"
+    ms="${m//[^A-Za-z0-9._-]/_}"
+    printf '%s/%s__%s.spawn-bench.json\n' "$LEDGER_DIR" "$ps" "$ms"
+}
+
+# Write the spawn-fail/empty-run bench marker. Best-effort: a write failure
+# must not block the ledger write or the exit-0 quiet contract. The marker
+# carries usable_at (the field seat_usable checks) + provenance + the
+# wrapper-side consecutive_failure_count and failure_mode. The count makes
+# the marker the DURABLE count authority for the bench class: seat-health.ts
+# clobbers the ledger back to health_class=healthy/count=0 on a later 200
+# observation, so a wrapper bench's escalating backoff and the failure-ceiling
+# park MUST NOT depend on the clobberable ledger. Merging count INTO the
+# marker on every writer call lets the count survive the clobber and the
+# failure-ceiling park actually engage for a CHRONIC no-op'ing seat (the live
+# 18 empty runs in 2h on healthy-reporting seats — fleet-ops#2627).
+# Args: provider model usable_at reason backoff_s count failure_mode [seat_dead]
+# fleet-ops#3889: the trailing [seat_dead] (optional, default false) lets the
+# spawn_fail writer project a durable corpse (seat_dead=true) onto the
+# clobber-proof marker. seat-health.ts resets the LEDGER's seat_dead to false
+# on every transport 200 (the false-healthy clobber the live
+# xkiro/deepseek-v4-flash at 47 spawn_fail showed) — the marker is the only
+# record seat-health.ts never touches, so a spawn_fail corpse must live there
+# to survive the clobber.
+_seat_write_spawn_bench() {
+    local p="$1" m="$2" usable="$3" reason="$4" backoff="$5"
+    local count="${6:-0}" mode="${7:-unknown}" seat_dead="${8:-false}"
+    local path now_utc tmp
+    # fleet-ops#3661: never write a spawn-bench marker for a phantom seat key.
+    if ! _seat_key_guard "$p" "$m" "_seat_write_spawn_bench"; then return 1; fi
+    path=$(seat_spawn_bench_path "$p" "$m")
+    [[ "$count" =~ ^[0-9]+$ ]] || count=0
+    [[ "$seat_dead" == "true" || "$seat_dead" == "false" ]] || seat_dead=false
+    now_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    tmp="$path.$$.$RANDOM.tmp"
+    if jq -nc \
+        --arg provider "$p" --arg model "$m" --arg usable "$usable" \
+        --arg reason "$reason" --arg written "$now_utc" --argjson backoff "$backoff" \
+        --arg mode "$mode" --argjson count "$count" --argjson seat_dead "$seat_dead" \
+        --arg writer "_seat_write_spawn_bench" \
+        '{provider:$provider, model:$model, usable_at:$usable,
+          reason:$reason, written_at:$written, backoff_s:$backoff,
+          failure_mode:$mode, consecutive_failure_count:$count,
+          seat_dead:$seat_dead, writer:$writer}' \
+        > "$tmp" 2>/dev/null; then
+        chmod 0644 "$tmp" 2>/dev/null || true
+        mv "$tmp" "$path" 2>/dev/null || { rm -f "$tmp" 2>/dev/null || true; return 1; }
+        _seat_co_write_sidecar "$p" "$m" "$mode" "$usable" "$now_utc" || true
+        return 0
+    fi
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+}
+
+# fleet-ops#3559: co-write the legacy single-record seat-health sidecar
+# (pi-seat-health.json) when the WRAPPER benches a seat. seat-health.ts writes
+# this file on every observation and, on a later simple packet's healthy 200,
+# reports the benched seat as health_class=healthy/http 200 — the sidecar probe
+# and the wrapper's empty_run/spawn_fail bench disagree, so the seat keeps being
+# re-selected and burning issues. The wrapper owns the bench (it ran the packet
+# that no-op'ed), so it projects the bench to the sidecar the same way the
+# per-seat spawn-bench marker is written. Best-effort: a sidecar write failure
+# must not fail the bench (the marker is the routing authority; this is the
+# record).
+# Args: provider model failure_mode usable_at observed_at_utc
+_seat_co_write_sidecar() {
+    local p="$1" m="$2" mode="$3" usable="$4" observed="$5"
+    local http_status retryable source
+    [[ -n "$SEAT_HEALTH_SIDECAR" ]] || return 0
+    case "$mode" in
+        empty_run)  http_status=200; source="cli_spawn" ;;
+        spawn_fail) http_status=0;   source="cli_timeout" ;;
+        *)          http_status=0;   source="cli_timeout" ;;
+    esac
+    retryable=true
+    local tmp="$SEAT_HEALTH_SIDECAR.$$.$RANDOM.tmp"
+    mkdir -p "$(dirname "$SEAT_HEALTH_SIDECAR")" 2>/dev/null || return 1
+    if jq -nc \
+        --arg provider "$p" --arg model "$m" \
+        --argjson http_status "$http_status" --argjson retry_after_null null \
+        --arg health_class "transient_fault" --argjson retryable "$retryable" \
+        --argjson seat_dead false --argjson poison_ladder false \
+        --arg observed "$observed" --arg source "$source" --arg mode "$mode" \
+        --arg usable "$usable" \
+        '{provider:$provider, model:$model, http_status:$http_status,
+          retry_after:$retry_after_null, health_class:$health_class,
+          retryable:$retryable, seat_dead:$seat_dead, poison_ladder:$poison_ladder,
+          observed_at:$observed, source:$source, failure_mode:$mode, usable_at:$usable}' \
+        > "$tmp" 2>/dev/null; then
+        chmod 0644 "$tmp" 2>/dev/null || true
+        mv -f "$tmp" "$SEAT_HEALTH_SIDECAR" 2>/dev/null || { rm -f "$tmp" 2>/dev/null || true; return 1; }
+        return 0
+    fi
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
 }
 
 # True if observed_at is within STALE_SECS of now (i.e. fresh enough to trust).
@@ -1112,6 +2596,47 @@ _seat_in_future() {
     (( ts_s > now ))
 }
 
+# Seconds until an ISO timestamp, or return 1 if it is missing / not future.
+# Used by the #3324 minimum-usable floor to pick the shortest remaining bench.
+_seat_remaining_s() {
+    local ts="$1" now ts_s
+    [[ -n "$ts" ]] || return 1
+    now=$(_seat_now_epoch)
+    ts_s=$(date -u -d "$ts" +%s 2>/dev/null || echo 0)
+    [[ "$ts_s" =~ ^[0-9]+$ ]] || return 1
+    (( ts_s > now )) || return 1
+    printf '%s\n' "$((ts_s - now))"
+}
+
+# True if a corpse-retired copy of this seat exists in a dated
+# seats-corpse-retired-<UTC-ts>/ audit dir from the last 7 days.
+# fleet-ops#3669: the corpse-retirement caller (bin/fleet-seat-comeback-release)
+# physically MOVES a terminal corpse ledger out of the live roster into a
+# dated audit dir. Before this check, a seat whose ledger was moved away fell
+# through to the "NO HEALTH DATA (no ledger file) — assuming usable" fail-open
+# and pick_seat re-picked the deliberately-retired dead seat, burning claims
+# (hetzner 2 claims in 6 min, 2026-09-05). A corpse-retired copy within the
+# last 7 days means the seat was deliberately retired; it must stay UNPICKABLE.
+# (The primary fix is write_parked_ledger leaving a seat_dead=true parked
+# ledger in the live roster; this is the read-side fence for seats retired
+# before that writer existed.)
+_seat_has_recent_corpse_retired() {
+    local p="$1" m="$2" ps ms base now_e cutoff d ts
+    ps="${p//[^A-Za-z0-9._-]/_}"
+    ms="${m//[^A-Za-z0-9._-]/_}"
+    base="$(dirname "$LEDGER_DIR")"
+    now_e=$(_seat_now_epoch)
+    cutoff=$(( now_e - 604800 ))  # 7 days
+    for d in "$base"/seats-corpse-retired-*; do
+        [[ -d "$d" ]] || continue
+        [[ -f "$d/${ps}__${ms}.json" ]] || continue
+        ts=$(date -u -d "${d##*seats-corpse-retired-}" +%s 2>/dev/null || echo 0)
+        [[ "$ts" =~ ^[0-9]+$ ]] || continue
+        (( ts >= cutoff )) && return 0
+    done
+    return 1
+}
+
 # Seat health: read the per-seat ledger and decide if a SPECIFIC seat is usable
 # right now. Returns 0 if usable, non-zero otherwise.
 #
@@ -1120,9 +2645,19 @@ _seat_in_future() {
 #
 # Decision:
 #   - no file / unparseable / stale observed_at (> STALE_SECS) -> USABLE, but
-#     log a loud "no health data" line (do not brick the ladder).
-#   - seat_dead=true                              -> unusable (credentials_bad)
-#   - health_class in {credentials_bad, quota_exhausted} -> unusable
+#     log a loud "no health data" line (do not brick the ladder). EXCEPTIONS:
+#     a seat_dead=true corpse is UNUSABLE regardless of observed_at staleness
+#     (fleet-ops#2327 — death is not a freshness question; only a probe
+#     success writes a healthy observation and clears the corpse); a
+#     quota_exhausted seat whose usable_at (or bench_until) is still in the
+#     future is UNUSABLE for the same reason quota_bench is — the advertised
+#     reset window outlives STALE_SECS (live 2026-09-02: two cline-pass 402s
+#     with usable_at 16d out; the 6h fail-open re-offered them, they 402'd
+#     again, and FleetProviderQuotaExhausted never aged out of its 1h window).
+#   - seat_dead=true                              -> unusable (corpse, terminal)
+#   - health_class in {credentials_bad, quota_exhausted} -> unusable WHILE
+#     the observation is fresh; quota_exhausted with a future usable_at is
+#     also unusable when the observation is stale (see above).
 #   - quota_bench (fleet-ops#90): a hard-capped seat benched for its advertised
 #     reset window. UNUSABLE while bench_until is in the future (one log line
 #     per skip: "benched until <ts>"); once bench_until passes the seat is
@@ -1134,12 +2669,152 @@ _seat_in_future() {
 #   - rate_limited: excluded while the marker is FRESH (observed_at <
 #     RATE_LIMIT_FRESH_SECS=30min) and usable_at is in the future; once the
 #     marker ages past 30min the seat is RETRIED (rate limit may have reset).
+#     fleet-ops#3586: past SEAT_FAILURE_CEILING consecutive 429s (the live
+#     xkiro c=48-63 shape) a rate_limited seat is NOT a transient rate limit
+#     — it is unusable — and the read-side park fence holds it behind the
+#     long wall instead of the endless 15-min re-wall loop.
+#   - transient_fault past SEAT_FAILURE_CEILING consecutive failures -> unusable
+#     (parked behind the long wall until observed_at + SEAT_PARK_WALL_S, then
+#     fail-opens — the fleet-ops#2288 read-side fence for extension-written
+#     flat-window markers whose write-side escalation lives in the out-of-repo
+#     extension).
 #   - otherwise                                   -> usable.
 seat_usable() {
-    local p="$1" m="$2" f hc dead observed usable_at bench_until
+    local p="$1" m="$2" f hc dead observed usable_at bench_until fail_count
+    # fleet-ops#1512: clobber-proof spawn-fail/empty-run bench marker. The
+    # ledger is co-written by seat-health.ts, which can flip a benched seat
+    # back to health_class:"healthy" + null usable_at on a later healthy HTTP
+    # observation (a different worker's simple packet that produced output).
+    # That clobber re-admits a seat the wrapper benched for being functionally
+    # dead for agentic work (tools=0 / no diagnosis block), so the organ
+    # re-picks it and fails again. This marker is written ONLY by the wrapper
+    # (mark_seat_spawn_fail / mark_seat_empty_run) and never by seat-health.ts,
+    # so the bench survives the clobber. Checked FIRST, before the ledger is
+    # even read: a fresh marker wins regardless of what the ledger says (or
+    # whether the ledger file exists at all).
+    local sb_path sb_usable sb_written sb_written_s sb_lf sb_obs sb_obs_s
+    local sb_corpse_dead sb_corpse_src
+    sb_path=$(seat_spawn_bench_path "$p" "$m")
+    if [[ -f "$sb_path" ]]; then
+        # fleet-ops#3889: a spawn_fail CORPSE (marker seat_dead=true) is held
+        # TERMINALLY and DURABLY, regardless of the clock (usable_at) and
+        # regardless of the #3737 marker-age fail-open — that fail-open exists
+        # to bound a stalled comeback organ's hold on a RECOVERABLE bench, but a
+        # marker-declared corpse is the writer's verdict that the seat cannot
+        # even spawn, and it survives the false-healthy 200 that clobbers the
+        # ledger to seat_dead=false. Only a real recovery probe (the comeback
+        # organ writing source="comeback_release" + seat_dead=false to the
+        # ledger) re-proves the seat; until then it stays unpickable.
+        sb_corpse_dead=$(jq -r '.seat_dead // false' "$sb_path" 2>/dev/null || echo false)
+        if [[ "$sb_corpse_dead" == "true" ]]; then
+            sb_corpse_src=""
+            sb_lf=$(seat_ledger_path "$p" "$m")
+            [[ -f "$sb_lf" ]] && sb_corpse_src=$(jq -r '.source // ""' "$sb_lf" 2>/dev/null || true)
+            if [[ "$sb_corpse_src" != "comeback_release" ]]; then
+                (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE (marker-declared spawn-fail corpse seat_dead=true — held durably for a recovery probe, fleet-ops#3889)"
+                return 1
+            fi
+            # Recovered corpse: a comeback probe succeeded and re-wrote the
+            # ledger (fresh observed_at, source=comeback_release, seat_dead=
+            # false). The corpse marker is now stale — drop its clock/age holds
+            # so the (healthy) ledger decides.
+            sb_usable=""
+            sb_written=""
+        fi
+        # Non-corpse markers re-read their own usable_at below. A marker-
+        # corpse that survives to here has ALREADY been released as a real
+        # recovery (the held-corpse branch returned 1 above), so its clock is
+        # cleared (sb_usable="") and the ledger decides — no future-hold.
+        if [[ "$sb_corpse_dead" != "true" ]]; then
+            sb_usable=$(jq -r '.usable_at // ""' "$sb_path" 2>/dev/null || true)
+            if [[ -n "$sb_usable" ]] && _seat_in_future "$sb_usable"; then
+                seat_log "seat $p/$m: UNUSABLE (spawn-bench until $sb_usable — wrapper bench held)"
+                return 1
+            fi
+        fi
+        # fleet-ops#3737: an expired (or clockless) wrapper bench must NOT
+        # silently fail-open while the marker is still the latest evidence
+        # for the seat. seat-health.ts records a transport 200 as healthy
+        # during the very run that then exits 0 with 0-byte stdout —
+        # pi's after_provider_response event carries status+headers only,
+        # never the body, so an empty completion is indistinguishable from
+        # a healthy response — and that healthy write clobbers the ledger's
+        # copy of the bench. Before this change an expired marker fell
+        # through to the clobbered ledger and the next work item became the
+        # de-facto probe (live: ollama/deepseek-v4-flash:0731, 12 empty
+        # runs in 2h — every bench expiry re-admitted a still-dead seat).
+        #
+        # Hold while ALL of these are true:
+        #   - the marker is FRESH: written within EMPTY_RUN_COUNT_WINDOW_S
+        #     (the same 24 h window the count-merge uses). Older than that
+        #     is archaeology — fail-open so a stalled comeback organ cannot
+        #     strand the seat forever;
+        #   - the ledger carries NO observation newer than the marker's
+        #     written_at. A newer entry is post-bench evidence: a run that
+        #     produced output writes healthy with no following marker, so
+        #     observed_at > written_at means a real run already paid the
+        #     discovery cost — fall through and let the ledger decide.
+        # The hold is released by fleet-seat-comeback-release: its
+        # tool-using probe writes a fresh healthy observation on success
+        # (observed_at > written_at lifts this check) and re-benches the
+        # marker on failure. Re-admission is probe-gated, not clock-gated,
+        # so a dead-weight seat never costs a work item a turn.
+        sb_written=$(jq -r '.written_at // ""' "$sb_path" 2>/dev/null || true)
+        sb_written_s=$(date -u -d "$sb_written" +%s 2>/dev/null || echo 0)
+        if [[ "$sb_written_s" =~ ^[0-9]+$ ]] && (( sb_written_s > 0 )) \
+            && (( $(_seat_now_epoch) - sb_written_s <= ${EMPTY_RUN_COUNT_WINDOW_S:-86400} )); then
+            sb_lf=$(seat_ledger_path "$p" "$m")
+            sb_obs=""
+            [[ -f "$sb_lf" ]] && sb_obs=$(jq -r '.observed_at // ""' "$sb_lf" 2>/dev/null || true)
+            sb_obs_s=$(date -u -d "$sb_obs" +%s 2>/dev/null || echo 0)
+            [[ "$sb_obs_s" =~ ^[0-9]+$ ]] || sb_obs_s=0
+            if (( sb_obs_s <= sb_written_s )); then
+                (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE (wrapper bench ${sb_usable:-none} expired, marker is latest evidence — held for comeback-release probe, fleet-ops#3737)"
+                return 1
+            fi
+            # fleet-ops#3826: a seat whose marker count is past the failure
+            # ceiling is CHRONICALLY spawn-failing. seat-health.ts logs a
+            # transport 200 as healthy during the very run that then exits 0
+            # with 0-byte stdout (after_provider_response carries status+
+            # headers only, never the body), so its healthy write
+            # (observed_at > marker written_at) is NOT recovery evidence —
+            # it is the same false-healthy #3737 guards against. Without this
+            # fence the seat is re-offered to a work item every park-wall
+            # expiry (24h), spawn-fails again (no_block:rc=1), and the count
+            # climbs forever while the ledger stays health_class=healthy /
+            # http 200 (live: xkiro/deepseek-v4-flash at 47 consecutive
+            # spawn_fail). Only a comeback-release tool-using probe
+            # (source="comeback_release") is real recovery for a
+            # ceiling-parked seat; hold until then. The marker age gate
+            # above (>24h fail-open) still bounds a dead comeback organ.
+            local sb_mcount sb_mmode sb_ceil sb_lsrc
+            sb_mcount=$(jq -r '.consecutive_failure_count // 0' "$sb_path" 2>/dev/null || echo 0)
+            [[ "$sb_mcount" =~ ^[0-9]+$ ]] || sb_mcount=0
+            sb_mmode=$(jq -r '.failure_mode // ""' "$sb_path" 2>/dev/null || true)
+            sb_ceil="${SEAT_FAILURE_CEILING:-20}"
+            [[ "$sb_mmode" == "empty_run" ]] && sb_ceil="${EMPTY_RUN_FAILURE_CEILING:-5}"
+            if _seat_parked_by_ceiling "$sb_mcount" "$sb_ceil"; then
+                sb_lsrc=""
+                [[ -f "$sb_lf" ]] && sb_lsrc=$(jq -r '.source // ""' "$sb_lf" 2>/dev/null || true)
+                if [[ "$sb_lsrc" != "comeback_release" ]]; then
+                    (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE (marker count=$sb_mcount >= ${sb_ceil} ceiling, ledger healthy write source=${sb_lsrc:-none} is not comeback_release — held for tool-using probe, fleet-ops#3826)"
+                    return 1
+                fi
+            fi
+        fi
+    fi
     f=$(seat_ledger_path "$p" "$m")
     if [[ ! -f "$f" ]]; then
-        seat_log "seat $p/$m: NO HEALTH DATA (no ledger file) — assuming usable"
+        # fleet-ops#3669: a seat whose corpse ledger was physically moved into a
+        # dated seats-corpse-retired-<ts>/ audit dir must NOT fall through to
+        # the fail-open below — that re-picked the deliberately-retired dead
+        # seat and burned claims. A corpse-retired copy within the last 7 days
+        # means the seat was retired on purpose; keep it UNPICKABLE.
+        if _seat_has_recent_corpse_retired "$p" "$m"; then
+            (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE (corpse-retired copy within last 7 days — deliberately retired, fleet-ops#3669)"
+            return 1
+        fi
+        (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: NO HEALTH DATA (no ledger file) — assuming usable"
         return 0
     fi
     # Unit-separator join (not TSV): bash `read` treats tab as IFS whitespace
@@ -1147,25 +2822,39 @@ seat_usable() {
     # usable_at is empty (the 9d fixture and any ledger without usable_at).
     # \x1f is not whitespace, so empty fields survive. Include newline in IFS
     # so the trailing jq newline is not glued onto bench_until.
-    IFS=$'\x1f'$'\n' read -r hc dead observed usable_at bench_until < <(
-        jq -r '[(.health_class//""),(.seat_dead|tostring),(.observed_at//""),(.usable_at//""),(.bench_until//"")] | join("\u001f")' "$f" 2>/dev/null || true
+    IFS=$'\x1f'$'\n' read -r hc dead observed usable_at bench_until fail_count fail_mode < <(
+        jq -r '[(.health_class//""),(.seat_dead|tostring),(.observed_at//""),(.usable_at//""),(.bench_until//""),(.consecutive_failure_count//0),(.failure_mode//"")] | join("\u001f")' "$f" 2>/dev/null || true
     )
     if [[ -z "$hc" ]]; then
-        seat_log "seat $p/$m: NO HEALTH DATA (ledger unparseable) — assuming usable"
+        (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: NO HEALTH DATA (ledger unparseable) — assuming usable"
         return 0
     fi
     # quota_bench BEFORE stale-observed_at: bench_until is the source of truth
     # for the advertised reset window, which can outlive STALE_SECS.
     if [[ "$hc" == "quota_bench" ]]; then
+        # fleet-ops#2563: the read side caps too. quota_bench markers are also
+        # written by the OUT-OF-REPO seat-health extension straight from the
+        # vendor's Retry-After (live: 1530000s = 17.7d on a weekly-resetting
+        # provider), so the write-side geometric cap cannot reach them. Same
+        # fence shape as the #2288 transient_fault park: hold the seat only to
+        # the provider's reset horizon, then fail open and re-probe.
+        if [[ -n "$bench_until" ]]; then
+            local capped_bench
+            capped_bench=$(_wall_capped_at_horizon "$p" "$observed" "$bench_until")
+            if [[ "$capped_bench" != "$bench_until" ]]; then
+                seat_log "seat $p/$m: quota_bench wall $bench_until CAPPED to $capped_bench (provider reset horizon from quota_window — re-probe cadence, fleet-ops#2563)"
+                bench_until="$capped_bench"
+            fi
+        fi
         if [[ -n "$bench_until" ]] && _seat_in_future "$bench_until"; then
-            seat_log "seat $p/$m: benched until $bench_until (quota_bench)"
+            (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: benched until $bench_until (quota_bench)"
             return 1
         fi
         if [[ -n "$bench_until" ]]; then
             seat_log "seat $p/$m: bench expired ($bench_until passed) — assuming usable (fail-open)"
             return 0
         fi
-        seat_log "seat $p/$m: UNUSABLE (quota_bench with no bench_until — defensive block)"
+        (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE (quota_bench with no bench_until — defensive block)"
         return 1
     fi
     # fleet-ops #652 hot-patch: overload_bench (503 / upstream-overload) is
@@ -1178,14 +2867,14 @@ seat_usable() {
     # overload_bench distinction.
     if [[ "$hc" == "overload_bench" ]]; then
         if [[ -n "$bench_until" ]] && _seat_in_future "$bench_until"; then
-            seat_log "seat $p/$m: benched until $bench_until (overload_bench)"
+            (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: benched until $bench_until (overload_bench)"
             return 1
         fi
         if [[ -n "$bench_until" ]]; then
             seat_log "seat $p/$m: bench expired ($bench_until passed) — assuming usable (fail-open)"
             return 0
         fi
-        seat_log "seat $p/$m: UNUSABLE (overload_bench with no bench_until — defensive block)"
+        (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE (overload_bench with no bench_until — defensive block)"
         return 1
     fi
     # Auditor 2026-08-27: hang_bench (model accepted request but never
@@ -1194,42 +2883,128 @@ seat_usable() {
     # is not starved if the hang self-clears.
     if [[ "$hc" == "hang_bench" ]]; then
         if [[ -n "$bench_until" ]] && _seat_in_future "$bench_until"; then
-            seat_log "seat $p/$m: benched until $bench_until (hang_bench)"
+            (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: benched until $bench_until (hang_bench)"
             return 1
         fi
         if [[ -n "$bench_until" ]]; then
             seat_log "seat $p/$m: hang bench expired ($bench_until passed) — assuming usable (fail-open)"
             return 0
         fi
-        seat_log "seat $p/$m: UNUSABLE (hang_bench with no bench_until — defensive block)"
+        (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE (hang_bench with no bench_until — defensive block)"
         return 1
+    fi
+    # fleet-ops#2327: a corpse (seat_dead=true) is TERMINALLY excluded. The
+    # stale-observed_at fail-open below must NOT resurrect it: a seat that
+    # failed past the corpse threshold stays off the ladder until a healthy
+    # observation (seat_dead=false, count=0, class back to healthy) is
+    # recorded. Before this change a corpse whose observed_at aged past
+    # STALE_SECS was
+    # "assumed usable" again — workers re-picked the guaranteed-failing seat
+    # and the consecutive_failure_count kept climbing (muse-spark:
+    # 80 -> 150 straight 500s while it sat cap=0 in the map). Death is not a
+    # freshness question; no fleet mechanism auto-writes the healthy
+    # observation anymore (the seat-walled-probe weekly probe was deleted,
+    # fleet-ops#2394) — a corpse re-enters only after manual intervention
+    # (re-auth / provider recovery), surfaced by the FleetDeadCredentialSeats
+    # alert.
+    if [[ "$dead" == "true" ]]; then
+        (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE (seat_dead=true, class=$hc)"
+        return 1
+    fi
+    # quota_exhausted BEFORE stale-observed_at: usable_at (fallback:
+    # bench_until) is the advertised reset, which outlives STALE_SECS
+    # the same way quota_bench's bench_until does. Live 2026-09-02:
+    # cline-pass/deepseek-v4-flash + cline-pass/minimax-m3 both 402 with
+    # usable_at 16d out (retry_after ~1.4e6s from parseCliRetryAfter
+    # "resets in Nd Nh"). After 6h the stale fail-open re-offered them,
+    # they 402'd again, consecutive_failure_count climbed, and the
+    # fleet-ops#2712 1h window never emptied so FleetProviderQuotaExhausted
+    # stayed firing. Honour the wall until usable_at; once it passes,
+    # fail-open exactly once (one probe, not a 6h re-offer loop).
+    if [[ "$hc" == "quota_exhausted" ]]; then
+        local qe_until="$usable_at"
+        [[ -z "$qe_until" ]] && qe_until="$bench_until"
+        if [[ -n "$qe_until" ]] && _seat_in_future "$qe_until"; then
+            (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE (quota_exhausted until $qe_until)"
+            return 1
+        fi
+        if [[ -n "$qe_until" ]]; then
+            seat_log "seat $p/$m: quota_exhausted wall expired ($qe_until passed) — assuming usable (fail-open)"
+            return 0
+        fi
+        # No usable_at/bench_until: keep the existing unconditional hold
+        # while the observation is fresh; if it is stale, fall through to
+        # the 6h fail-open (no advertised reset to honour).
+        if _seat_observed_fresh "$observed"; then
+            (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE (health_class=quota_exhausted)"
+            return 1
+        fi
+        seat_log "seat $p/$m: NO HEALTH DATA (observed_at ${observed:-<empty>} stale >${STALE_SECS}s, quota_exhausted with no usable_at) — assuming usable"
+        return 0
+    fi
+    # fleet-ops#2288: extension-written transient_fault markers (source
+    # provider_fetch / after_provider_response) carry a FLAT usable_at window
+    # from the seat-health extension; the write-side escalation lives in that
+    # OUT-OF-REPO extension (#1422/#2145) and the bash fences (#1362/#1408)
+    # cover bash-written markers only. So a seat whose ledger shows
+    # transient_fault with a runaway consecutive_failure_count (live:
+    # opencode/muse-spark-1.2-contributor-free at 149 straight HTTP 500s)
+    # was re-offered every flat-window cycle (30s), even from a stale pre-fix
+    # ledger. Park the READ side with the same long wall the marker writers
+    # use: past the failure ceiling a transient_fault ledger is held until
+    # observed_at + SEAT_PARK_WALL_S, then fail-opens (one probe per park
+    # wall, not per flat window). Same contract as #1362: a healthy write
+    # resets count to 0, so a recovered seat is never walled permanently.
+    # fleet-ops#3727: empty runs use a lower EMPTY_RUN_FAILURE_CEILING (default
+    # 3 per fleet-ops#3760) so a chronic no-op'er parks on the read side at the
+    # same threshold the writer parks at, not the generic 20.
+    # fleet-ops#3586: rate_limited is the SAME flat/re-walled class as
+    # transient_fault — a seat that keeps answering http 429 with a short
+    # usable_at (~15min) gets re-walled every cycle and its count climbs
+    # (live: xkiro/deepseek-v4-flash c=63, deepseek-v4-pro c=52,
+    # minimax-m3:free c=48 all 429 rate_limited). A seat that has failed
+    # N>=SEAT_FAILURE_CEILING times consecutively is not rate-limited (a
+    # 1-15min wall would have cleared long ago), it is unusable. So the
+    # read-side park fence below covers rate_limited too: past the ceiling
+    # it is held behind the long wall instead of the flat re-offer loop.
+    local _park_ceil="${SEAT_FAILURE_CEILING:-20}"
+    [[ "$fail_mode" == "empty_run" ]] && _park_ceil="${EMPTY_RUN_FAILURE_CEILING:-3}"
+    if [[ ( "$hc" == "transient_fault" || "$hc" == "rate_limited" ) && -n "$observed" ]] && _seat_parked_by_ceiling "$fail_count" "$_park_ceil"; then
+        local park_end_s park_end_iso
+        park_end_s=$(($(date -u -d "$observed" +%s 2>/dev/null || echo 0) + $(_park_wall_s "$fail_count" "$_park_ceil")))
+        park_end_iso=$(date -u -d "@$park_end_s" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$observed")
+        if _seat_in_future "$park_end_iso"; then
+            (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE ($hc count=$fail_count >= ${_park_ceil}, parked until $park_end_iso — long wall, not flat re-offer)"
+            return 1
+        fi
     fi
     if ! _seat_observed_fresh "$observed"; then
         seat_log "seat $p/$m: NO HEALTH DATA (observed_at ${observed:-<empty>} stale >${STALE_SECS}s) — assuming usable"
         return 0
     fi
-    if [[ "$dead" == "true" ]]; then
-        seat_log "seat $p/$m: UNUSABLE (seat_dead=true, class=$hc)"
+    if [[ "$hc" == "credentials_bad" ]]; then
+        (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE (health_class=$hc)"
         return 1
     fi
-    if [[ "$hc" == "quota_exhausted" || "$hc" == "credentials_bad" ]]; then
-        seat_log "seat $p/$m: UNUSABLE (health_class=$hc)"
-        return 1
-    fi
-    # rate_limited: trust only while the marker is fresh (<30 min) AND usable_at
-    # is still in the future. A fresh marker with usable_at in the past means the
-    # window already reset -> usable. A stale marker (>30 min) means the rate
-    # limit may have reset -> retry (usable).
+    # rate_limited: the authoritative signal is usable_at. If usable_at is in
+    # the future, the seat is still benched — regardless of marker freshness.
+    # Only when usable_at has passed (or is empty) do we consider marker freshness:
+    #   - fresh marker + no usable_at -> still unusable (conservative)
+    #   - stale marker + usable_at passed/empty -> retry (rate limit may have reset)
     if [[ "$hc" == "rate_limited" ]]; then
-        if _seat_rate_limit_fresh "$observed" && [[ -n "$usable_at" ]] && _seat_in_future "$usable_at"; then
-            seat_log "seat $p/$m: UNUSABLE (rate_limited until $usable_at, observed ${observed:-<empty>})"
+        if [[ -n "$usable_at" ]] && _seat_in_future "$usable_at"; then
+            (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE (rate_limited until $usable_at, observed ${observed:-<empty>})"
             return 1
         fi
-        seat_log "seat $p/$m: retrying after rate_limited (observed ${observed:-<empty>} aged past ${RATE_LIMIT_FRESH_SECS}s or usable_at passed) — assuming usable"
+        if _seat_rate_limit_fresh "$observed"; then
+            (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE (rate_limited, observed ${observed:-<empty>}, no usable_at or usable_at passed)"
+            return 1
+        fi
+        seat_log "seat $p/$m: retrying after rate_limited (observed ${observed:-<empty>} aged past ${RATE_LIMIT_FRESH_SECS}s, usable_at passed or empty) — assuming usable"
         return 0
     fi
     if [[ -n "$usable_at" ]] && _seat_in_future "$usable_at"; then
-        seat_log "seat $p/$m: UNUSABLE (backoff until $usable_at, class=$hc)"
+        (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE (backoff until $usable_at, class=$hc)"
         return 1
     fi
     return 0
@@ -1818,6 +3593,80 @@ count_active_total() {
     echo $(( issue + charge ))
 }
 
+# Count active pi-issue workers whose packet difficulty is heavy|keystone.
+# The RAM governor charges these at 1.0 GB (2x the light 0.5 GB, fleet-ops#3281),
+# so the intake slot computation and AIMD probe admission weight them double.
+# Reads the packet's `difficulty:` line (written by intake) for each active
+# unit; a missing/unreadable packet is treated as light (fail-open). Org/
+# repair packets (pi-packet-*) are never heavy and are not counted here.
+count_active_heavy() {
+    local n=0 f unit inst pkt diff
+    while IFS= read -r f; do
+        unit=$(jq -r '.unit // ""' "$f" 2>/dev/null || true)
+        [[ "$unit" == pi-issue-* ]] || continue
+        inst="${unit#pi-issue-}"
+        pkt="$PI_ISSUES_DIR/${inst}.in"
+        diff=$(packet_difficulty "$pkt" 2>/dev/null || true)
+        [[ "$diff" == "heavy" || "$diff" == "keystone" ]] && n=$((n+1))
+    done < <(_seat_live_registry_files)
+    # Legacy ExecStart path: pi-issue@<inst>.service units not already in the
+    # registry (dedup matches count_active_issue).
+    local u
+    while IFS= read -r u; do
+        [[ "$u" == pi-issue@*.service ]] || continue
+        inst="${u#pi-issue@}"; inst="${inst%.service}"
+        [[ -f "$ACTIVE_SEATS_DIR/pi-issue-${inst}.json" ]] && continue
+        pkt="$PI_ISSUES_DIR/${inst}.in"
+        diff=$(packet_difficulty "$pkt" 2>/dev/null || true)
+        [[ "$diff" == "heavy" || "$diff" == "keystone" ]] && n=$((n+1))
+    done < <(_seat_list_pi_exec)
+    echo "$n"
+}
+
+# Total RAM charge of active workers in light-worker units (1 unit = the
+# fallback ram_gb_per_worker). Each issue worker is charged its repo's
+# MemoryHigh (heavy|keystone at 1.0 GB, fleet-ops#3495) divided by the
+# fallback. 0509/fleet-ops no longer set MemoryHigh after fleet-ops#3930
+# dropped the throttle band, so they fall back to the flat 1 unit each.
+# Org/repair packets stay at 1x (capped at org_reserve).
+# This is what the RAM governor's cap is compared against so heavy/browser
+# workers consume their real share of MemAvailable.
+active_ram_charge() {
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    local total=0 f unit inst pkt repo diff gb fallback
+    fallback="$SEAT_RAM_GB_PER_WORKER"
+    # Registry pass (new path).
+    while IFS= read -r f; do
+        unit=$(jq -r '.unit // ""' "$f" 2>/dev/null || true)
+        [[ "$unit" == pi-issue-* ]] || continue
+        inst="${unit#pi-issue-}"
+        pkt="$PI_ISSUES_DIR/${inst}.in"
+        repo=$(packet_repo "$pkt" 2>/dev/null || true)
+        diff=$(packet_difficulty "$pkt" 2>/dev/null || true)
+        gb=$(ram_charge_gb_for "$repo" "$diff")
+        total=$(awk -v t="$total" -v g="$gb" -v f="$fallback" 'BEGIN{ printf "%.3f", t + g/f }')
+    done < <(_seat_live_registry_files)
+    # Legacy ExecStart pass (dedup matches count_active_issue).
+    local u
+    while IFS= read -r u; do
+        [[ "$u" == pi-issue@*.service ]] || continue
+        inst="${u#pi-issue@}"; inst="${inst%.service}"
+        [[ -f "$ACTIVE_SEATS_DIR/pi-issue-${inst}.json" ]] && continue
+        pkt="$PI_ISSUES_DIR/${inst}.in"
+        repo=$(packet_repo "$pkt" 2>/dev/null || true)
+        diff=$(packet_difficulty "$pkt" 2>/dev/null || true)
+        gb=$(ram_charge_gb_for "$repo" "$diff")
+        total=$(awk -v t="$total" -v g="$gb" -v f="$fallback" 'BEGIN{ printf "%.3f", t + g/f }')
+    done < <(_seat_list_pi_exec)
+    # Org/repair packets at 1x, capped at org_reserve.
+    local org reserve
+    org=$(count_active_org)
+    reserve=$(org_reserve)
+    (( org > reserve )) && org=$reserve
+    total=$(awk -v t="$total" -v o="$org" 'BEGIN{ printf "%.3f", t + o }')
+    echo "$total"
+}
+
 # Count workers in `activating/auto-restart` across all fleet worker units.
 # fleet-ops#63: these are crash-loopers — the unit holds its seat and
 # its claim branch but does no work. The heartbeat publishes this as
@@ -2077,15 +3926,16 @@ _build_excluded_set() {
     fi
 
     # 2) seat_dead=true in the ledger -> exclude that seat.
-    # Walk the ledger directory; for every JSON file with a fresh
-    # observed_at and seat_dead=true, mark the seat excluded. This is
-    # the equivalent of seat_usable()'s dead-branch but does it once
-    # for the whole ladder instead of N times in the loop.
-    # We use the SANITISED form (matching the ledger file name) and
-    # the loop consults _is_seat_excluded_sanitised which sanitises
-    # its (raw) provider/model and looks the seat up.
+    # Walk the ledger directory; for every JSON file with seat_dead=true,
+    # mark the seat excluded. fleet-ops#2327: this is NOT freshness-gated —
+    # between weekly probes a corpse's observed_at naturally ages past
+    # STALE_SECS, and re-admitting it on staleness is the exact re-pick loop
+    # that grew muse-spark's count 80 -> 150. The P4-A stale-retry inversion
+    # applies to HEALTHY/transient markers (retry a seat that may have
+    # recovered), never to a corpse: only a successful probe writes a
+    # healthy observation and clears seat_dead. This mirrors seat_usable().
     if [[ -d "$LEDGER_DIR" ]] && command -v jq >/dev/null 2>&1; then
-        local f hc dead observed
+        local f dead
         while IFS= read -r f; do
             [[ -f "$f" ]] || continue
             # Cheap pre-check: only files that contain a seat_dead=true
@@ -2094,15 +3944,8 @@ _build_excluded_set() {
             # a space after the colon ("seat_dead": true), so the pattern
             # tolerates optional whitespace.
             grep -qE '"seat_dead":[[:space:]]*true' "$f" 2>/dev/null || continue
-            IFS=$'\x1f' read -r hc dead observed < <(
-                jq -r '[(.health_class//""),(.seat_dead|tostring),(.observed_at//"")] | join("\u001f")' "$f" 2>/dev/null || true
-            )
+            dead=$(jq -r '.seat_dead // false | tostring' "$f" 2>/dev/null || echo false)
             [[ "$dead" == "true" ]] || continue
-            if ! _seat_observed_fresh "$observed"; then
-                # Stale observed_at -> the P4-A inversion says retry;
-                # a stale dead marker is not authoritative.
-                continue
-            fi
             # Decode provider/model from the file name
             # "<sanitised-provider>__<sanitised-model>.json"
             local base="${f##*/}"
@@ -2167,6 +4010,208 @@ _seat_is_dead() {
 # only free seats available returns rc=1 instead of leaking to a free lane.
 # Dispatch wrappers derive this from config/repo-privacy.json via repo_privacy
 # / packet_repo.
+# fleet-ops#3324: health_class values the minimum-usable floor may fail-open.
+# A money wall (402 / quota_exhausted / corpse / credentials_bad) is NEVER
+# fail-opened; those stay on the loud-stall path. empty_run is a
+# failure_mode on a transient_fault ledger (mark_seat_empty_run), so the
+# floor matches it via failure_mode as well as health_class.
+# fleet-ops#3675: empty_run / spawn_fail benches are NO LONGER floor-lifted
+# (see _seat_floor_shortest_bench) — a no-op bench is a HOLD, not a
+# recoverable stall, and lifting it re-burns issues on a seat that just
+# no-op'ed. The classes below are the remaining recoverable benches the
+# floor may lift.
+SEAT_FLOOR_FAILOPEN_CLASSES="transient_fault rate_limited overload_bench"
+
+# True if this ledger row is a money wall the floor must never lift.
+# Args: health_class seat_dead [failure_mode]
+_seat_floor_is_money_wall() {
+    local hc="$1" dead="$2" fm="${3:-}" fail_count="${4:-0}"
+    [[ "$dead" == "true" ]] && return 0
+    # fleet-ops#3531: a seat parked past SEAT_FAILURE_CEILING is a corpse in
+    # all but label. The ledger is co-written (wrapper bench writers + the
+    # seat-health.ts extension), so a corpse's class/seat_dead flip back to a
+    # recoverable bench on the next 503/429 while the count keeps climbing
+    # (live 2026-09-05: hetzner/Qwen count=31 and xkiro count=84-99 were
+    # floor-lifted 6x in 40s, each lift a burned claim + StartLimitBurst).
+    # The count is the one field every writer merges, so it is the wall.
+    _seat_parked_by_ceiling "$fail_count" && return 0
+    case "$hc" in
+        quota_exhausted|quota_bench|credentials_bad|corpse) return 0 ;;
+    esac
+    case "$fm" in
+        quota_exhausted|quota_cap|credentials_bad) return 0 ;;
+    esac
+    return 1
+}
+
+# True if this ledger row is a recoverable bench the floor may lift.
+# Args: health_class [failure_mode]
+_seat_floor_is_failopen_class() {
+    local hc="$1" fm="${2:-}"
+    case " $SEAT_FLOOR_FAILOPEN_CLASSES " in
+        *" $hc "*) return 0 ;;
+    esac
+    return 1
+}
+
+# Remaining seconds on a benched seat, or empty if it has no future wall.
+# Prefers bench_until, then usable_at, then the spawn-bench marker, then
+# the #2288 park wall (observed_at + SEAT_PARK_WALL_S) for a parked
+# transient_fault. A missing future timestamp is treated as remaining=0
+# so a class-matching seat with a stale/empty wall still wins over a stall.
+# Prints the remaining seconds (0 if none). Always returns 0.
+_seat_floor_remaining_s() {
+    local p="$1" m="$2" hc="$3" observed="$4" usable_at="$5" bench_until="$6" fail_count="${7:-0}"
+    local rem sb_path sb_usable park_end_iso
+    rem=$(_seat_remaining_s "$bench_until" 2>/dev/null || true)
+    if [[ -z "$rem" ]]; then
+        rem=$(_seat_remaining_s "$usable_at" 2>/dev/null || true)
+    fi
+    if [[ -z "$rem" ]]; then
+        sb_path=$(seat_spawn_bench_path "$p" "$m")
+        if [[ -f "$sb_path" ]]; then
+            sb_usable=$(jq -r '.usable_at // ""' "$sb_path" 2>/dev/null || true)
+            rem=$(_seat_remaining_s "$sb_usable" 2>/dev/null || true)
+        fi
+    fi
+    if [[ -z "$rem" && "$hc" == "transient_fault" && -n "$observed" ]] \
+        && _seat_parked_by_ceiling "$fail_count"; then
+        park_end_iso=$(date -u -d "@$(( $(date -u -d "$observed" +%s 2>/dev/null || echo 0) + $(_park_wall_s "$fail_count") ))" \
+            +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
+        rem=$(_seat_remaining_s "$park_end_iso" 2>/dev/null || true)
+    fi
+    printf '%s\n' "${rem:-0}"
+    return 0
+}
+
+# Increment fleet_seat_floor_failopen_total in a node-exporter textfile.
+# Counter semantics: read the current value, add 1, rewrite. Fail-open:
+# a write error never bricks pick_seat. Default file is under STATE_DIR so
+# tests cannot poison the live collector; production copies there when
+# STATE_DIR is the live path (same pattern as export_seat_selection_prom).
+_emit_seat_floor_failopen() {
+    local out="${SEAT_FLOOR_FAILOPEN_PROM:-$STATE_DIR/fleet-seat-floor-failopen.prom}"
+    local dir pub tmp cur
+    dir=$(dirname "$out")
+    mkdir -p "$dir" 2>/dev/null || return 0
+    cur=0
+    if [[ -f "$out" ]]; then
+        cur=$(awk '/^fleet_seat_floor_failopen_total / {print $2; exit}' "$out" 2>/dev/null || echo 0)
+        [[ "$cur" =~ ^[0-9]+$ ]] || cur=0
+    fi
+    cur=$((cur + 1))
+    tmp="$out.$$.$RANDOM.tmp"
+    {
+        echo "# HELP fleet_seat_floor_failopen_total pick_seat fail-opened the shortest remaining recoverable bench instead of stalling (fleet-ops#3324)."
+        echo "# TYPE fleet_seat_floor_failopen_total counter"
+        printf 'fleet_seat_floor_failopen_total %s\n' "$cur"
+    } >"$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
+    mv "$tmp" "$out" 2>/dev/null || { rm -f "$tmp"; return 0; }
+    if [[ -z "${SEAT_FLOOR_FAILOPEN_PROM:-}" && "$STATE_DIR" == "${HOME}/.local/state/pi-packet" ]]; then
+        pub="/var/lib/prometheus/node-exporter/fleet-seat-floor-failopen.prom"
+        if [[ -d "$(dirname "$pub")" && -w "$(dirname "$pub")" ]]; then
+            cp "$out" "$pub" 2>/dev/null || true
+        fi
+    fi
+    return 0
+}
+
+# Walk the seats that seat_usable just rejected and, if at least one is a
+# recoverable (non-money) bench, return the one with the shortest remaining
+# wall. Prints "provider\tmodel\tremaining_s" and returns 0 on a hit;
+# returns 1 when nothing is eligible (money walls / corpses / cap=0 stay
+# on the loud-stall path). Privacy: a private target never fail-opens a
+# free-class seat. need_capable: a heavy pick never fail-opens a seat that
+# is not capable. tried-file seats stay excluded. Credential, keystone-only,
+# and quality-ban filters match the pick loop so the floor cannot route to
+# a seat pick_seat would refuse even when healthy.
+_seat_floor_shortest_bench() {
+    local privacy="${1:-public}" need_capable="${2:-0}" tried_file="${3:-}" difficulty="${4:-light}"
+    local p m class capable f hc dead observed usable_at bench_until fail_count fm
+    local rem best_rem="" best_p="" best_m="" p_cap m_cap
+    declare -A floor_tried=()
+    if [[ -n "$tried_file" && -f "$tried_file" ]]; then
+        local tp tm
+        while IFS=/ read -r tp tm; do
+            [[ -n "$tp" ]] && floor_tried["$tp/$tm"]=1
+        done <"$tried_file"
+    fi
+    while IFS=$'\t' read -r p m _ capable; do
+        [[ -n "$p" && -n "$m" ]] || continue
+        [[ -n "${floor_tried[$p/$m]:-}" ]] && continue
+        [[ -n "${_EXCLUDED_REASON[$p/$m]:-}" ]] && continue
+        if _seat_is_dead "$p" "$m"; then
+            continue
+        fi
+        [[ -z "${SEAT_PROVIDER_CAP[$p]:-}" ]] && continue
+        p_cap=$(provider_cap "$p")
+        (( p_cap == 0 )) && continue
+        [[ -z "${SEAT_MODEL_CAP[$p/$m]:-}" ]] && continue
+        m_cap=$(model_cap "$p" "$m")
+        (( m_cap == 0 )) && continue
+        if ! provider_has_credential "$p"; then
+            continue
+        fi
+        if _provider_is_keystone_only "$p" && ! _is_keystone_class "$difficulty"; then
+            continue
+        fi
+        if (( need_capable )) && [[ "$capable" != "1" ]]; then
+            continue
+        fi
+        if (( need_capable )) && [[ -n "${QUALITY_HEAVY_BAN[$p/$m]:-}" ]]; then
+            continue
+        fi
+        class=$(model_class_of "$p" "$m")
+        if [[ "$privacy" == "private" && "$class" == "free" ]]; then
+            continue
+        fi
+        f=$(seat_ledger_path "$p" "$m")
+        hc="" dead="false" observed="" usable_at="" bench_until="" fail_count=0 fm=""
+        if [[ -f "$f" ]]; then
+            IFS=$'\x1f'$'\n' read -r hc dead observed usable_at bench_until fail_count fm < <(
+                jq -r '[(.health_class//""),(.seat_dead|tostring),(.observed_at//""),(.usable_at//""),(.bench_until//""),(.consecutive_failure_count//0),(.failure_mode//"")] | join("\u001f")' "$f" 2>/dev/null || true
+            )
+        fi
+        _seat_floor_is_money_wall "$hc" "$dead" "$fm" "$fail_count" && continue
+        # fleet-ops#3675: a no-op bench (empty_run / spawn_fail) is meant to
+        # HOLD the seat out of rotation. The floor must NOT lift it — running
+        # on a no-op seat burns issues (live: ollama/deepseek-v4-flash:0731
+        # no-op'ed 30x/2h, floor-lifted every bench, count climbed to 13).
+        # Let the bench hold so the count reaches the failure ceiling and
+        # parks the seat.
+        case "$fm" in
+            empty_run|spawn_fail) continue ;;
+        esac
+        if ! _seat_floor_is_failopen_class "$hc" "$fm"; then
+            # Wrapper spawn-bench can outlive a healthy ledger clobber
+            # (fleet-ops#1512). A no-op bench (empty_run / spawn_fail) on the
+            # marker is a HOLD, not a floor candidate (fleet-ops#3675) — the
+            # floor must not lift it. Anything else is not a floor candidate.
+            local sb_path sb_usable sb_mode
+            sb_path=$(seat_spawn_bench_path "$p" "$m")
+            [[ -f "$sb_path" ]] || continue
+            sb_usable=$(jq -r '.usable_at // ""' "$sb_path" 2>/dev/null || true)
+            sb_mode=$(jq -r '.failure_mode // ""' "$sb_path" 2>/dev/null || true)
+            _seat_in_future "$sb_usable" || continue
+            case "$sb_mode" in
+                empty_run|spawn_fail) continue ;;
+                unknown) fm="$sb_mode" ;;
+                *) continue ;;
+            esac
+        fi
+        rem=$(_seat_floor_remaining_s "$p" "$m" "$hc" "$observed" "$usable_at" "$bench_until" "$fail_count")
+        [[ "$rem" =~ ^[0-9]+$ ]] || rem=0
+        if [[ -z "$best_rem" ]] || (( rem < best_rem )); then
+            best_rem="$rem"
+            best_p="$p"
+            best_m="$m"
+        fi
+    done < <(enumerate_seats)
+    [[ -n "$best_p" ]] || return 1
+    printf '%s\t%s\t%s\n' "$best_p" "$best_m" "$best_rem"
+    return 0
+}
+
 # Prints: "provider\tmodel" or nothing if none available.
 pick_seat() {
     local fail_p="$1" fail_m="$2" need_capable="${3:-0}" tried_file="${4:-}" difficulty="${5:-light}"
@@ -2183,6 +4228,9 @@ pick_seat() {
     # Ensure caps are loaded (P4-A).
     if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
     if (( ! _quality_routing_loaded )); then load_quality_routing || true; fi
+    # fleet-ops#3250: read the PR-yield ledger written by fleet-metrics-export.
+    # The data is not used for gating in this issue; that lands in #3251.
+    if (( ! _seat_yield_loaded )); then load_seat_yield || true; fi
 
     if _is_keystone_class "$difficulty"; then
         need_capable=1
@@ -2192,6 +4240,15 @@ pick_seat() {
     # per selection pass (fleet-ops#36). A provider with several models
     # shares one credential; the cache stops us re-running its apiKey
     # command per model.
+    # fleet-ops#3732: slot-count mode. PICK_SEAT_COUNT_SLOTS=1 walks the SAME
+    # filter chain as a pick but never picks a seat, never admits an AIMD probe
+    # and never logs a summary; it echoes the number of light slots this pick
+    # would actually fill: per provider, min(sum over its accepted models of
+    # max(0, eff_model_cap - active), max(0, eff_provider_cap - active)).
+    # The intake tick bounds its claims by this so it never claims into a wall.
+    local _count_mode="${PICK_SEAT_COUNT_SLOTS:-0}"
+    local -A _count_model_head=() _count_prov_head=()
+
     _cred_cache=()
 
     # Build the set of tried seats for exclusion.
@@ -2199,10 +4256,34 @@ pick_seat() {
     tried["$fail_p/$fail_m"]=1
     local tried_count=0
     if [[ -n "$tried_file" && -f "$tried_file" ]]; then
-        local tp tm
+        local tp tm _tried_pruned=0
+        local -a _tried_kept=()
+        # Silence per-seat UNUSABLE lines during the prune walk; one
+        # drop line below is the operator-visible record.
+        local _SEAT_USABLE_SILENT=1
         while IFS=/ read -r tp tm; do
-            [[ -n "$tp" ]] && tried["$tp/$tm"]=1 && tried_count=$((tried_count + 1))
+            [[ -n "$tp" && -n "$tm" ]] || continue
+            # fleet-ops#4220: senior-review tried-seats is the Restart=
+            # skip list only while the bench holds. Once seat_usable is
+            # true (bench expired or never written), the line is stale
+            # and must not pin cursor past the bench. Keystone still
+            # counts every tried line as a strike (fleet-ops#1133).
+            if [[ "$difficulty" == "senior-review" ]] && seat_usable "$tp" "$tm"; then
+                seat_log "pick_seat: dropping stale tried $tp/$tm (bench expired — fleet-ops#4220)"
+                _tried_pruned=1
+                continue
+            fi
+            tried["$tp/$tm"]=1
+            tried_count=$((tried_count + 1))
+            _tried_kept+=("$tp/$tm")
         done <"$tried_file"
+        if ((_tried_pruned)); then
+            if ((${#_tried_kept[@]} > 0)); then
+                printf '%s\n' "${_tried_kept[@]}" >"$tried_file"
+            else
+                : >"$tried_file"
+            fi
+        fi
     fi
 
     # Pre-compute the "definitively excluded" set ONCE per call
@@ -2225,6 +4306,18 @@ pick_seat() {
     # condition clears). Surfaced in the summary so the operator sees at a
     # glance which cap=0 seats are by-design vs which warrant re-audition.
     local _excluded_cap0_intentional_n=0 _excluded_cap0_stale_n=0
+
+    # fleet-ops#1409: fold seat_usable() per-seat UNUSABLE log lines into a
+    # per-pick summary. A permanently-benched seat (e.g. cline-pass minimax-m3
+    # quota_bench until Sep 19) was logged N times per pick_seat call by every
+    # concurrent worker — the remaining flood source after #1449's cap=0/dead
+    # fold and #1624's at-capacity fold (rate_limited, quota_bench,
+    # overload_bench, hang_bench, quota_exhausted, credentials_bad, backoff).
+    # When _SEAT_USABLE_SILENT is set, seat_usable() skips the per-seat log
+    # and the caller tallies the count + sample for ONE per-pick summary.
+    local _SEAT_USABLE_SILENT=1
+    local _seat_unusable_n=0
+    local -a _seat_unusable_sample=()
     local _p _m _er
     if [[ -f "$MODELS_JSON" ]] && command -v jq >/dev/null 2>&1; then
         while IFS=$'\t' read -r _p _m; do
@@ -2287,6 +4380,12 @@ pick_seat() {
     #      seat cannot be drained dry while others sit idle
     #   3) metered last (per-token; spend after prepaid/free)
     local -a free_seats=() prepaid_seats=() metered_seats=()
+    # fleet-ops#3724: seats flagged product_only in seat-caps.json are kept
+    # out of every class bucket and appended at the very end of whichever
+    # order this pick uses, so a paid last-resort seat is offered only when
+    # no free/prepaid (or other) seat is usable — and only to a packet whose
+    # repo carries the product flag in config/intake-repos.json.
+    local -a product_only_seats=()
 
     # fleet-ops#1624: at-capacity (cap reached, seat busy not broken) skip
     # counter + sample. The per-seat "skipped (provider/model cap=N reached)"
@@ -2299,6 +4398,9 @@ pick_seat() {
     # seconds and starve a cap=1 lane for the whole window.
     local _at_capacity_n=0
     local -a _at_capacity_sample=()
+    # fleet-ops#1379: remember providers whose effective cap is reached this
+    # pick so the remaining models are not re-polled.
+    local -A _at_cap_provider=()
 
     # fleet-ops#1297: fold the STATIC heavy-pick skip classes too. A model's
     # `capable` flag for a given difficulty and the quality-routing ban do not
@@ -2372,6 +4474,15 @@ pick_seat() {
             seat_log "seat $p/$m skipped (model cap=0)"
             continue
         fi
+        # fleet-ops#3690: per-tick per-provider spawn cap. Skip the provider's
+        # seats once tick_spawn_cap new sessions have been routed to it this
+        # tick. The intake tick resets the counter at the start of each tick.
+        # Count mode (PICK_SEAT_COUNT_SLOTS=1) skips the gate so slot counting
+        # still reflects raw seat availability.
+        if (( ! _count_mode )) && tick_spawn_cap_exceeded "$p"; then
+            seat_log "seat $p/$m skipped (per-tick spawn cap reached for $p — fleet-ops#3690)"
+            continue
+        fi
         if ! provider_has_credential "$p"; then
             # provider_has_credential already logged the rejection reason.
             # Defence in depth on top of the cap map (fleet-ops#36): an
@@ -2390,6 +4501,26 @@ pick_seat() {
                 continue
             fi
         fi
+        # fleet-ops#3322: audition lane. A seat carrying audition: true (injected
+        # by the intake tick from config/model-candidates.json) is only eligible
+        # for packet_difficulty light — cap 1, 10 sessions / 7d / $1 cost cap.
+        # Skip it for heavy/keystone/senior-review so an unproven candidate
+        # never lands high-stakes work. The count-mode walk honours the same
+        # gate so intake does not claim into an audition-only pool for heavy.
+        if seat_is_audition "$p" "$m" && [[ "$difficulty" != "light" ]]; then
+            seat_log "seat $p/$m skipped (audition seat — light issues only, fleet-ops#3322)"
+            continue
+        fi
+        # fleet-ops#4129: a stale cap=0 seat re-admitted for re-probe is
+        # light-only until a probe proves it answers. Skip it for every
+        # non-light difficulty so a freshly re-admitted dead free seat never
+        # lands a heavy/keystone/senior-review packet. Same shape as the
+        # audition gate above; count-mode honours it so intake does not claim
+        # into a re-probe-only pool for heavy.
+        if seat_is_reprobe_light_only "$p" "$m" && [[ "$difficulty" != "light" ]]; then
+            seat_log "seat $p/$m skipped (cap0-stale re-probe seat — light issues only, fleet-ops#4129)"
+            continue
+        fi
         if (( need_capable )) && [[ "$capable" != "1" ]]; then
             # fleet-ops#1297: silence the per-seat "not capable for heavy task"
             # line — it was the dominant watch.log flood (28k/2h) when a heavy
@@ -2403,8 +4534,49 @@ pick_seat() {
             _qban_n=$((_qban_n + 1))
             continue
         fi
+        # fleet-ops#2661: escalation-lane provider-wedge check (gated). The
+        # 503-storm lane isolation: only stop-escalation-dispatch (and the
+        # Python mirror inside alert-repair-dispatch) set
+        # FLEET_ESCALATION_WEDGE_CHECK=1, so only the escalation lanes refuse
+        # a provider with >=2 seats recently in overload_bench (mid-storm).
+        # Workers keep per-seat seat_usable() routing only — their benches are the
+        # right granularity for them;the wedge is the escalation-only isolation.
+        if [[ "${FLEET_ESCALATION_WEDGE_CHECK:-0}" == "1" ]] && provider_overload_wedged "$p"; then
+            seat_log "seat $p/$m skipped (provider $p overload-wedged — ${PROVIDER_OVERLOAD_WEDGE_MIN:-2}+ overload_bench seats within ${PROVIDER_OVERLOAD_WEDGE_WINDOW_S:-1800}s; escalation lanes only)"
+            continue
+        fi
         if ! seat_usable "$p" "$m"; then
-            # seat_usable already logged the UNUSABLE reason from the ledger.
+            # fleet-ops#1409: seat_usable runs silent (per-seat log suppressed)
+            # when _SEAT_USABLE_SILENT=1. Count the UNUSABLE seat + keep a
+            # sample for the per-pick summary emitted below.
+            _seat_unusable_n=$((_seat_unusable_n + 1))
+            _seat_unusable_sample+=("$p/$m")
+            continue
+        fi
+        # fleet-ops#3723: per-account free-model daily request budget
+        # (OpenRouter). The budget is shared across every *:free model on the
+        # provider; once today's (UTC) assistant-turn count hits the cap, every
+        # free model on the provider is benched until 00:00 UTC — NOT charged
+        # to the work item (no consecutive_failure_count, no yield penalty).
+        # Only applies to models whose id ends in :free on a provider with a
+        # configured free_model_daily_request_budget. The bench writer is
+        # separate from mark_seat_quota_bench so the count stays at 0 and the
+        # failure ceiling never trips on an account-wide external limit.
+        if [[ "$m" == *":free" ]] \
+            && [[ -n "${SEAT_FREE_DAILY_REQUEST_BUDGET[$p]:-}" ]] \
+            && _provider_free_daily_budget_reached "$p"; then
+            _mark_seat_free_daily_budget_bench "$p" "$m" || true
+            _seat_unusable_n=$((_seat_unusable_n + 1))
+            _seat_unusable_sample+=("$p/$m")
+            continue
+        fi
+        # fleet-ops#1379: once a provider is at effective cap for this pick,
+        # all of its remaining models share that provider-wide cap. Back off
+        # instead of re-running count_active / effective_provider_cap / AIMD
+        # probe for each one. The per-pick at-capacity summary still counts them.
+        if [[ -n "${_at_cap_provider[$p]:-}" ]]; then
+            _at_capacity_n=$((_at_capacity_n + 1))
+            _at_capacity_sample+=("$p/$m")
             continue
         fi
         # P4-A + AIMD (#217/#424): honour the learned effective cap, and
@@ -2413,26 +4585,47 @@ pick_seat() {
         p_active=$(count_active_on_provider "$p")
         eff_cap=$(effective_provider_cap "$p")
         if (( eff_cap > 0 )) && (( p_active >= eff_cap )); then
+            if (( _count_mode )); then
+                # fleet-ops#3732 counting only: an at-cap provider contributes 0, no probe
+                _at_cap_provider[$p]=1
+                continue
+            fi
             if _aimd_probe_admitted "$p" "$eff_cap" "$p_active"; then
                 seat_log "seat $p/$m AIMD probe admitted (provider $p cap $eff_cap -> $((eff_cap + 1)): $p_active active, zero errors, RAM headroom)"
             else
-                # fleet-ops#1624: silence the per-seat "skipped (provider cap
-                # reached)" line — it was the at_capacity_events flood source
-                # (1006/2h against cap=1 seats). Counted into the per-pick
-                # at-capacity summary below instead. The seat is still
+                # fleet-ops#1624/#1379: silence the per-seat "skipped (provider
+                # cap reached)" line — it was the at_capacity_events flood
+                # source (1006/2h against cap=1 seats). Counted into the
+                # per-pick at-capacity summary below instead, and the provider's
+                # remaining models are not re-polled this pick. The seat is still
                 # re-evaluated next pick (a busy seat frees when its worker
-                # exits); only the per-seat log line is dropped.
+                # exits); only the per-seat log line is dropped. A literal
+                # cooldown would hide a seat that frees in seconds and starve a
+                # cap=1 lane for the whole window.
+                _at_cap_provider[$p]=1
                 _at_capacity_n=$((_at_capacity_n + 1))
                 _at_capacity_sample+=("$p/$m")
                 continue
             fi
         fi
+        # fleet-ops#3125: model-level AIMD. effective_model_cap is the declared
+        # cap unless the model row declares a max_probe_ceiling (devin seats);
+        # when it does, the same AIMD rules apply at model granularity and a
+        # saturated seat admits one additive probe below the ceiling.
         m_active=$(count_active_on_seat "$p" "$m")
-        if (( m_cap > 0 )) && (( m_active >= m_cap )); then
-            # fleet-ops#1624: same flood fix for the model-cap-reached branch.
-            _at_capacity_n=$((_at_capacity_n + 1))
-            _at_capacity_sample+=("$p/$m")
-            continue
+        m_eff_cap=$(effective_model_cap "$p" "$m")
+        if (( m_eff_cap > 0 )) && (( m_active >= m_eff_cap )); then
+            if (( _count_mode )); then
+                continue
+            fi
+            if _model_probe_admitted "$p" "$m" "$m_eff_cap" "$m_active"; then
+                seat_log "seat $p/$m AIMD model probe admitted (model cap $m_eff_cap -> $((m_eff_cap + 1)): $m_active active, zero errors, RAM headroom)"
+            else
+                # fleet-ops#1624: same flood fix for the model-cap-reached branch.
+                _at_capacity_n=$((_at_capacity_n + 1))
+                _at_capacity_sample+=("$p/$m")
+                continue
+            fi
         fi
 
         class=$(model_class_of "$p" "$m")
@@ -2447,12 +4640,60 @@ pick_seat() {
             seat_log "seat $p/$m skipped (free-tier privacy: private-repo target, free-class lane blocked)"
             continue
         fi
+        if (( _count_mode )); then
+            # fleet-ops#3732: seat accepted — accumulate headroom, do not pick.
+            local _ph _mh
+            if (( eff_cap > 0 )); then _ph=$(( eff_cap - p_active )); else _ph=999; fi
+            if (( m_eff_cap > 0 )); then _mh=$(( m_eff_cap - m_active )); else _mh=999; fi
+            (( _ph < 0 )) && _ph=0
+            (( _mh < 0 )) && _mh=0
+            _count_prov_head[$p]=$_ph
+            _count_model_head[$p]=$(( ${_count_model_head[$p]:-0} + _mh ))
+            continue
+        fi
+        # fleet-ops#3724: product_only seat gate. A seat flagged product_only
+        # in seat-caps.json is a metered last-resort seat that may only ever
+        # serve a packet whose repo carries the product flag in
+        # config/intake-repos.json — fleet-ops is control plane and an
+        # unclassified packet repo fails closed, so it can never land here.
+        # The seat joins product_only_seats (appended after every class in
+        # every order) so it is offered only when no free/prepaid seat is
+        # usable. When a daily_spend_cap_usd is configured, reaching today's
+        # (UTC) Pi usage.cost on the seat benches it until 00:00 UTC — a
+        # money wall (quota_bench/quota_cap ledger entry, consecutive
+        # failure count 0), never charged to the work item.
+        if [[ -n "${SEAT_PRODUCT_ONLY[$p/$m]:-}" ]]; then
+            if ! repo_is_product "${PI_PACKET_REPO:-}"; then
+                seat_log "seat $p/$m skipped (product_only: packet repo '${PI_PACKET_REPO:-none}' is not a declared product repo — fleet-ops#3724)"
+                continue
+            fi
+            if _seat_daily_spend_cap_reached "$p" "$m"; then
+                _mark_seat_spend_cap_bench "$p" "$m" || true
+                _seat_unusable_n=$((_seat_unusable_n + 1))
+                _seat_unusable_sample+=("$p/$m")
+                continue
+            fi
+            product_only_seats+=("$p"$'\t'"$m")
+            continue
+        fi
         case "$class" in
             prepaid-quota) prepaid_seats+=("$p"$'\t'"$m") ;;
             metered)       metered_seats+=("$p"$'\t'"$m") ;;
             *)             free_seats+=("$p"$'\t'"$m") ;;
         esac
     done < <(enumerate_seats)
+
+    if (( _count_mode )); then
+        local _ct=0 _cp _cph _cmh
+        for _cp in "${!_count_prov_head[@]}"; do
+            _cph=${_count_prov_head[$_cp]}
+            _cmh=${_count_model_head[$_cp]:-0}
+            (( _cmh < _cph )) && _cph=$_cmh
+            _ct=$(( _ct + _cph ))
+        done
+        echo "$_ct"
+        return 0
+    fi
 
     # fleet-ops#1449: ONE summary line per pick_seat call for the seats
     # that the pre-computed excluded set silently filtered out. The
@@ -2579,52 +4820,184 @@ pick_seat() {
     # fleet-ops#1133 keystone inverts cost-first: prepaid (strongest class)
     # first, then metered, free last. Skip prepaid round-robin so a hard
     # packet cannot rotate onto ollama-flash as "just another prepaid".
-    # Skip volume front-of-ladder (#1178) on keystone so reliability beats
-    # cheap. Unmarked packets keep volume-first, then leftover free,
-    # leftover prepaid (alternate), then metered.
-    local -a volume_seats=() leftover_free=() leftover_prepaid=()
-    if ! _is_keystone_class "$difficulty" && [[ -n "$SEAT_VOLUME_ORDER" ]]; then
-        declare -A _vol_seen=()
-        local _vp _fm
-        for _vp in $SEAT_VOLUME_ORDER; do
-            _vol_seen["$_vp"]=1
-        done
-        for _fm in "${free_seats[@]:-}" "${prepaid_seats[@]:-}"; do
-            [[ -n "$_fm" ]] || continue
-            p="${_fm%%$'\t'*}"
-            if [[ -n "${_vol_seen[$p]:-}" ]]; then
-                volume_seats+=("$_fm")
+    # fleet-ops#3125: product_order=yield. Product picks (PI_PICK_ROLE=
+    # product, exported by pi-issue-run / pi-packet-run) rank every candidate
+    # seat by the rolling last-20-sessions PR yield in seat-yield.json (the
+    # #3250 ledger, loaded via load_seat_yield/seat_yield_for), descending;
+    # ties break by class (prepaid-quota -> metered -> free, so prepaid subs
+    # still drain first among equal performers) then by each bucket's
+    # existing order. A seat absent from the ledger, or provisional (<20
+    # measured sessions), carries 0.5 — new seats are tried, not starved.
+    # fleet-ops#3323: product_order=value. The ledger also carries
+    # cost_per_session (rolling mean usage.cost per session); value =
+    # yield / max(cost_per_session, 0.001). For packet_difficulty light the
+    # key is value alone, so free seats (cost ~0, floored to 0.001) sort
+    # first at equal yield. For heavy/keystone the key is yield first
+    # (quality) then value, so a free seat with 2% yield still loses to a
+    # paid seat with 70% yield on heavy work. The value order also covers
+    # keystone-class product picks (the class ladder below only sees
+    # non-product or product_order=yield picks).
+    local -a product_seats=()
+    if [[ "${PI_PICK_ROLE:-scout}" == "product" ]] \
+        && [[ "$SEAT_PRODUCT_ORDER" == "value" ]]; then
+        local _qfirst=0
+        if [[ "$difficulty" == "heavy" ]] || _is_keystone_class "$difficulty"; then
+            _qfirst=1
+        fi
+        local -a _vranked=()
+        mapfile -t _vranked < <(
+            _i=0
+            for _fm in "${prepaid_seats[@]:-}" "${metered_seats[@]:-}" "${free_seats[@]:-}"; do
+                [[ -n "$_fm" ]] || continue
+                _p="${_fm%%$'\t'*}"
+                _m="${_fm#*$'\t'}"
+                _yld=$(seat_yield_for "$_p" "$_m")
+                _cost=$(seat_cost_for "$_p" "$_m")
+                printf '%s\t%s\t%s\t%s\n' "$_yld" "$_cost" "$_i" "$_fm"
+                _i=$((_i + 1))
+            done | awk -F'\t' -v q="$_qfirst" 'BEGIN{OFS="\t"} {
+                y=$1+0; c=$2+0; if (c<0.001) c=0.001; v=y/c;
+                if (q) printf "%.6f\t%.6f\t%s\t%s\t%s\t%.6f\t%.6f\n", y, v, $3, $4, $5, y, v;
+                else   printf "%.6f\t%.6f\t%s\t%s\t%s\t%.6f\t%.6f\n", v, y, $3, $4, $5, y, v;
+            }' | sort -t$'\t' -k1,1nr -k2,2nr -k3,3n
+        )
+        local _vline _vlog="" _vn=0
+        for _vline in "${_vranked[@]:-}"; do
+            [[ -n "$_vline" ]] || continue
+            local _k1 _k2 _vi _vp _vm _vy _vv
+            IFS=$'\t' read -r _k1 _k2 _vi _vp _vm _vy _vv <<<"$_vline"
+            product_seats+=("${_vp}"$'\t'"${_vm}")
+            if (( _vn < 6 )); then
+                _vlog+="${_vp}/${_vm}@y=${_vy},v=${_vv} "
+                _vn=$((_vn + 1))
             fi
         done
-        if (( ${#volume_seats[@]} > 0 )); then
-            mapfile -t volume_seats < <(_order_seats_by "$SEAT_VOLUME_ORDER" "${volume_seats[@]}")
+        # One line per pick so the operator sees the computed value order.
+        if (( ${#product_seats[@]} > 0 )); then
+            seat_log "pick_seat: value-order (product,${difficulty}): ${_vlog% }"
         fi
-        for _fm in "${free_seats[@]:-}"; do
-            [[ -n "$_fm" ]] || continue
-            p="${_fm%%$'\t'*}"
-            [[ -n "${_vol_seen[$p]:-}" ]] && continue
-            leftover_free+=("$_fm")
+    elif ! _is_keystone_class "$difficulty" \
+        && [[ "${PI_PICK_ROLE:-scout}" == "product" ]] \
+        && [[ "$SEAT_PRODUCT_ORDER" == "yield" ]]; then
+        local -a _yranked=()
+        mapfile -t _yranked < <(
+            _i=0
+            for _fm in "${prepaid_seats[@]:-}" "${metered_seats[@]:-}" "${free_seats[@]:-}"; do
+                [[ -n "$_fm" ]] || continue
+                _p="${_fm%%$'\t'*}"
+                _m="${_fm#*$'\t'}"
+                _yld=$(seat_yield_for "$_p" "$_m")
+                case "$(model_class_of "$_p" "$_m")" in
+                    prepaid-quota) _rank=0 ;;
+                    metered)       _rank=1 ;;
+                    *)             _rank=2 ;;
+                esac
+                printf '%s\t%s\t%s\t%s\n' "$_yld" "$_rank" "$_i" "$_fm"
+                _i=$((_i + 1))
+            done | sort -t$'\t' -k1,1nr -k2,2n -k3,3n
+        )
+        local _yline _ylog="" _yn=0
+        for _yline in "${_yranked[@]:-}"; do
+            [[ -n "$_yline" ]] || continue
+            local _ys _yr _yi _yp _ym
+            IFS=$'\t' read -r _ys _yr _yi _yp _ym <<<"$_yline"
+            product_seats+=("${_yp}"$'\t'"${_ym}")
+            if (( _yn < 6 )); then
+                _ylog+="${_yp}/${_ym}@${_ys} "
+                _yn=$((_yn + 1))
+            fi
         done
-        for _fm in "${prepaid_seats[@]:-}"; do
-            [[ -n "$_fm" ]] || continue
-            p="${_fm%%$'\t'*}"
-            [[ -n "${_vol_seen[$p]:-}" ]] && continue
-            leftover_prepaid+=("$_fm")
-        done
-        if (( ${#leftover_free[@]} > 0 )); then
-            free_seats=("${leftover_free[@]}")
-        else
-            free_seats=()
-        fi
-        if (( ${#leftover_prepaid[@]} > 0 )); then
-            prepaid_seats=("${leftover_prepaid[@]}")
-        else
-            prepaid_seats=()
+        # One line per pick so the operator sees the computed yield order.
+        if (( ${#product_seats[@]} > 0 )); then
+            seat_log "pick_seat: yield-order (product): ${_ylog% }"
         fi
     fi
 
-    local chosen="" chosen_p=""
-    if _is_keystone_class "$difficulty"; then
+    local chosen="" chosen_p="" chosen_m=""
+    # fleet-ops#3310: seat-class preference (PI_PICK_PREFER_CLASS). When the
+    # WORK reclaim cap fires, intake writes a per-issue .prefer-class marker
+    # and the next claim forces pick_seat onto a DIFFERENT seat CLASS instead
+    # of blocking (prepaid -> metered -> senior ladder). Reuses the existing
+    # class buckets from the loop above plus find_senior_seat (the #3121 senior
+    # ladder). An empty preferred class (depleted bucket / walled senior) falls
+    # through to the normal yield ladder below so a depleted class never stalls
+    # the work item. Skipped for keystone (keystone already pins the strongest
+    # class) and when the variable is empty (normal picks).
+    if [[ -n "${PI_PICK_PREFER_CLASS:-}" ]] && ! _is_keystone_class "$difficulty"; then
+        case "$PI_PICK_PREFER_CLASS" in
+            senior)
+                if _sl=$(find_senior_seat 2>/dev/null); then
+                    chosen="$_sl"
+                    chosen_p="${chosen%%$'\t'*}"
+                    chosen_m="${chosen#*$'\t'}"
+                    seat_log "pick_seat: prefer-class=senior routing to $chosen"
+                fi
+                ;;
+            prepaid|metered|free)
+                local -a _pref_bucket=()
+                case "$PI_PICK_PREFER_CLASS" in
+                    prepaid) _pref_bucket=("${prepaid_seats[@]:-}") ;;
+                    metered) _pref_bucket=("${metered_seats[@]:-}") ;;
+                    free)    _pref_bucket=("${free_seats[@]:-}") ;;
+                esac
+                if (( ${#_pref_bucket[@]} > 0 )); then
+                    chosen="${_pref_bucket[0]}"
+                    chosen_p="${chosen%%$'\t'*}"
+                    chosen_m="${chosen#*$'\t'}"
+                    if [[ "$PI_PICK_PREFER_CLASS" == "prepaid" \
+                        && "$(model_class_of "$chosen_p" "$chosen_m")" == "prepaid-quota" ]]; then
+                        _record_prepaid_pick "$chosen_p"
+                    fi
+                    seat_log "pick_seat: prefer-class=$PI_PICK_PREFER_CLASS routing to $chosen"
+                fi
+                ;;
+        esac
+    fi
+    # The class ladder below runs only when the prefer-class override did not
+    # already pick a seat (an empty preferred bucket / walled senior falls
+    # through to the normal yield ladder).
+    # fleet-ops#4220: senior-review packets route through the senior ladder
+    # (SEAT_SENIOR_ORDER: cursor → xai-oauth → openrouter) BEFORE the keystone
+    # class ladder. The class ladder walks prepaid_providers_in_order, which in
+    # the live config leads with ollama — so without this gate a senior-review
+    # packet landed on ollama instead of cursor. The buckets above already
+    # passed all cap/bench/tried/credential checks, so walking the senior order
+    # against them reuses the existing rails (no duplicated cap logic). Falls
+    # through to the class ladder when no senior seat is in the buckets (walled
+    # role resolves to its fallback, not a stall).
+    if [[ -z "${chosen:-}" && "$difficulty" == "senior-review" ]]; then
+        local _sn _sp _sm _bucket_seat
+        for _sn in "${SEAT_SENIOR_ORDER[@]:-}"; do
+            [[ -n "$_sn" ]] || continue
+            _sp="${_sn%%/*}"
+            _sm="${_sn#*/}"
+            [[ -n "$_sp" && -n "$_sm" ]] || continue
+            for _bucket_seat in "${prepaid_seats[@]:-}" "${metered_seats[@]:-}" "${free_seats[@]:-}" "${product_only_seats[@]:-}"; do
+                [[ "$_bucket_seat" == "$_sp"$'\t'"$_sm" ]] || continue
+                chosen="$_bucket_seat"
+                chosen_p="$_sp"
+                chosen_m="$_sm"
+                if [[ "$(model_class_of "$chosen_p" "$chosen_m")" == "prepaid-quota" ]]; then
+                    _record_prepaid_pick "$chosen_p"
+                fi
+                seat_log "pick_seat: senior-review routing to $chosen_p/$chosen_m"
+                break 2
+            done
+        done
+    fi
+    if [[ -z "${chosen:-}" ]]; then
+    if (( ${#product_seats[@]} > 0 )); then
+        chosen="${product_seats[0]}"
+        chosen_p="${chosen%%$'\t'*}"
+        chosen_m="${chosen#*$'\t'}"
+        # Prepaid seats still burn weekly pacing when the ledger picks them.
+        if [[ "$(model_class_of "$chosen_p" "$chosen_m")" == "prepaid-quota" ]]; then
+            _record_prepaid_pick "$chosen_p"
+        fi
+        if _is_keystone_class "$difficulty"; then
+            seat_log "pick_seat: KEYSTONE routing to $chosen (product ledger order, yield-first)"
+        fi
+    elif _is_keystone_class "$difficulty"; then
         if (( ${#prepaid_seats[@]} > 0 )); then
             chosen="${prepaid_seats[0]}"
             chosen_p="${chosen%%$'\t'*}"
@@ -2636,14 +5009,9 @@ pick_seat() {
         elif (( ${#free_seats[@]} > 0 )); then
             chosen="${free_seats[0]}"
             seat_log "pick_seat: KEYSTONE routing to $chosen (free last-resort)"
-        fi
-    elif (( ${#volume_seats[@]} > 0 )); then
-        chosen="${volume_seats[0]}"
-        chosen_p="${chosen%%$'\t'*}"
-        chosen_m="${chosen#*$'\t'}"
-        # Prepaid members of the volume set still burn weekly pacing.
-        if [[ "$(model_class_of "$chosen_p" "$chosen_m")" == "prepaid-quota" ]]; then
-            _record_prepaid_pick "$chosen_p"
+        elif (( ${#product_only_seats[@]} > 0 )); then
+            chosen="${product_only_seats[0]}"
+            seat_log "pick_seat: KEYSTONE routing to $chosen (product_only last-resort — fleet-ops#3724)"
         fi
     elif (( ${#free_seats[@]} > 0 )); then
         chosen="${free_seats[0]}"
@@ -2653,23 +5021,86 @@ pick_seat() {
         _record_prepaid_pick "$chosen_p"
     elif (( ${#metered_seats[@]} > 0 )); then
         chosen="${metered_seats[0]}"
+    elif (( ${#product_only_seats[@]} > 0 )); then
+        # fleet-ops#3724: product_only seats are the seat of last resort —
+        # reached only when every free/prepaid/metered seat was unusable this
+        # pick, and only for a packet repo flagged product in
+        # config/intake-repos.json (the repo gate ran in the loop above).
+        chosen="${product_only_seats[0]}"
+        seat_log "pick_seat: routing to product_only last-resort seat $chosen (no free/prepaid seat usable — fleet-ops#3724)"
+    fi
     fi
     if [[ -n "$chosen" ]]; then
         record_seat_selection "${chosen%%$'\t'*}" "${chosen#*$'\t'}" "$difficulty"
         if _is_keystone_class "$difficulty"; then
             keystone_record_event routed "${chosen%%$'\t'*}" "${chosen#*$'\t'}"
         fi
+        # fleet-ops#3690: count this pick against the provider's per-tick
+        # spawn cap so the next pick_seat in the same tick sees it.
+        tick_spawn_cap_record "${chosen%%$'\t'*}"
         printf '%s\n' "$chosen"
         return 0
+    fi
+
+    # fleet-ops#1409: per-pick summary for the seat_usable UNUSABLE seats folded
+    # during the loop above. Same pattern as the excluded/at-capacity/static
+    # summaries — replaces N per-seat "UNUSABLE (…)" / "benched until (…)" log
+    # lines with ONE per-pick line. Format is stable: "pick_seat: unusable N
+    # seats [sample]" so a future grep can pin the count.
+    if (( _seat_unusable_n > 0 )); then
+        local _su_sorted=()
+        if (( ${#_seat_unusable_sample[@]} > 0 )); then
+            mapfile -t _su_sorted < <(printf '%s\n' "${_seat_unusable_sample[@]}" | sort | uniq)
+            _su_sorted=("${_su_sorted[@]:0:6}")
+        fi
+        local _su_sample_str=""
+        if (( ${#_su_sorted[@]} > 0 )); then
+            _su_sample_str=$(printf '%s\n' "${_su_sorted[@]}" | paste -sd, -)
+        fi
+        seat_log "pick_seat: unusable ${_seat_unusable_n} seats [${_su_sample_str}]"
+    fi
+
+    # fleet-ops#3324: minimum-usable floor. When the capable set is empty
+    # but at least one benched seat is a recoverable class (transient_fault,
+    # rate_limited, empty_run, overload_bench) — not a money wall
+    # (402 / quota_exhausted / quota_bench / corpse / credentials_bad) —
+    # fail-open the one with the shortest remaining bench instead of stalling.
+    # Turns a starved tick into a slightly-early retry. Money-walled seats
+    # stay on the loud-stall path below.
+    local _floor_line _floor_p _floor_m _floor_left
+    if _floor_line=$(_seat_floor_shortest_bench "$privacy" "$need_capable" "$tried_file" "$difficulty"); then
+        IFS=$'\t' read -r _floor_p _floor_m _floor_left <<<"$_floor_line"
+        if [[ -n "$_floor_p" && -n "$_floor_m" ]]; then
+            [[ "$_floor_left" =~ ^[0-9]+$ ]] || _floor_left=0
+            seat_log "seat-floor: fail-open ${_floor_p}/${_floor_m} (bench had ${_floor_left}s left)"
+            _emit_seat_floor_failopen
+            record_seat_selection "$_floor_p" "$_floor_m" "$difficulty"
+            if _is_keystone_class "$difficulty"; then
+                keystone_record_event routed "$_floor_p" "$_floor_m"
+            fi
+            # fleet-ops#3690: count floor-fallback picks too.
+            tick_spawn_cap_record "$_floor_p"
+            printf '%s\t%s\n' "$_floor_p" "$_floor_m"
+            return 0
+        fi
     fi
 
     # P15: loud stall beats a garbage seat. Every allowlisted seat was dead or
     # capped — return 1 (caller must not spawn anything) and say so, rather
     # than falling back to a non-allowlisted model.
+    # fleet-ops#1409: cooldown before returning when no seat is available —
+    # prevents the systemd RestartSec timer from immediately re-firing another
+    # full pick_seat pass against an already walled fleet (the per-second
+    # thrash loop: pick_seat → NO USABLE SEAT → exit 1 → restart → pick_seat).
     if [[ "$privacy" == "private" ]]; then
         seat_log "pick_seat: NO USABLE SEAT — every non-free allowlisted seat is dead/capped/rate-limited, and free-class lanes are blocked for this private-repo target (free-tier privacy line, fleet-ops#520). Refusing to route outside the cap map or to a free lane."
     else
         seat_log "pick_seat: NO USABLE SEAT — every allowlisted seat is dead/capped/rate-limited. Refusing to route outside the cap map."
+    fi
+    local _cooldown="${PI_SEAT_NOUSABLE_COOLDOWN_S:-5}"
+    [[ "$_cooldown" =~ ^[0-9]+$ ]] || _cooldown=5
+    if (( _cooldown > 0 )); then
+        sleep "$_cooldown"
     fi
     return 1
 }
@@ -2726,7 +5157,8 @@ SPAWN_FAIL_BACKOFF_S="${SPAWN_FAIL_BACKOFF_S:-300}"  # 5 min — longer than
 # the seat-health.ts default 60s because spawn ETIMEDOUT is the devin-503
 # signature, and 60s would let the same dead seat be picked 4x in 5 min.
 SPAWN_FAIL_MAX_S="${SPAWN_FAIL_MAX_S:-120}"
-# fleet-ops#1408: a seat that no-ops or spawn-fails in a loop must NOT re-enter
+# fleet-ops#1408: a seat that spawn-fails in a loop (a REAL provider wall:
+# non-zero exit, HTTP 429/402/500, spawn ETIMEDOUT) must NOT re-enter
 # rotation at the base backoff every cycle. Escalate the bench by
 # consecutive_failure_count so each repeated failure benches longer, breaking
 # the re-seat loop (12 no-ops in 2h on opencode/nemotron-3-ultra-free at a flat
@@ -2734,6 +5166,8 @@ SPAWN_FAIL_MAX_S="${SPAWN_FAIL_MAX_S:-120}"
 # recovered seat is never walled permanently — seat_usable fail-opens after
 # usable_at regardless of count, and seat-health.ts resets the count to 0 on a
 # healthy in-session observation, so the escalation is fair.
+# fleet-ops#2343: EMPTY RUNS (provider no-op, exit 0 + <OUT_MIN stdout) are
+# NOT a wall and must NOT take this ladder — see mark_seat_empty_run.
 SPAWN_FAIL_BACKOFF_CAP_S="${SPAWN_FAIL_BACKOFF_CAP_S:-3600}"  # 1 h
 
 # _escalated_backoff base count [cap]
@@ -2758,6 +5192,206 @@ _escalated_backoff() {
     done
     (( b > cap )) && b="$cap"
     printf '%s' "$b"
+}
+
+# fleet-ops#3531: geometric bench cap for the error-class writers. The
+# normal backoff window doubles on each consecutive failure, capped at 6 h
+# (21600 s). The long failure-ceiling park (SEAT_FAILURE_CEILING, default 20,
+# to SEAT_PARK_WALL_S, default 24 h) is applied ON TOP of this cap.
+SEAT_BENCH_GEOMETRIC_CAP_S="${SEAT_BENCH_GEOMETRIC_CAP_S:-21600}"
+
+# fleet-ops#3531: remote prepaid seats (e.g. devin) must not be benched for
+# more than 30 min on a false empty run. Their empty-run geometric backoff is
+# capped at 1800 s instead of the 6 h default.
+SEAT_REMOTE_AGENT_EMPTY_RUN_CAP_S="${SEAT_REMOTE_AGENT_EMPTY_RUN_CAP_S:-1800}"
+
+# _geometric_bench_window base count [cap] [ceil_override]
+# Compute a bench window that doubles per consecutive failure, capped at <cap>,
+# and then parked at the failure ceiling. This is the single helper shared by
+# the overload, quota, and empty-run writers. The optional 4th arg overrides
+# the failure ceiling for this call (fleet-ops#3727: empty runs use a lower
+# EMPTY_RUN_FAILURE_CEILING than the generic SEAT_FAILURE_CEILING).
+_geometric_bench_window() {
+    local base="${1:-300}" count="${2:-1}" cap="${3:-$SEAT_BENCH_GEOMETRIC_CAP_S}" ceil_ovr="${4:-}"
+    [[ "$base" =~ ^[0-9]+$ ]] || base=300
+    [[ "$count" =~ ^[0-9]+$ ]] || count=1
+    [[ "$cap" =~ ^[0-9]+$ ]] || cap=21600
+    local window
+    window=$(_escalated_backoff "$base" "$count" "$cap")
+    _failure_ceiling_wall "$count" "$window" "$ceil_ovr"
+}
+
+# --- failure-count ceiling (fleet-ops#1362) ---------------------------------
+# Before this, the escalated backoff capped at 1h (spawn; the empty/no-op
+# side was also escalated to 2h until fleet-ops#2343 flattened it to
+# EMPTY_RUN_BACKOFF_S — a provider no-op is not a wall) and the
+# quota/overload/hang benches used a FLAT provider default every cycle, so a
+# seat that kept failing re-entered rotation every cap/flat interval forever.
+# consecutive_failure_count climbed to 72 on devin/glm-5-2 (HTTP 429), 64 on
+# opencode/muse-spark-1.2-contributor-free (HTTP 500), 63 on
+# opencode/mimo-v2.5-free (HTTP 429) while the bench never grew past ~15min —
+# the prober kept hammering them and burning probe budget on guaranteed
+# failures. The ceiling parks a seat behind a long wall once its
+# consecutive_failure_count crosses SEAT_FAILURE_CEILING, so a chronically
+# failing seat is probed once per park wall instead of once per base backoff.
+#
+# Design: the park is a LONGER WALL, not seat_dead=true. seat_usable fail-opens
+# after usable_at / bench_until regardless of count (the #1408 contract), and
+# seat-health.ts resets consecutive_failure_count to 0 on a healthy in-session
+# observation — so a recovered seat is re-tried at the base backoff, not walled
+# permanently. Setting seat_dead=true would either be redundant (the bench
+# branches short-circuit before the seat_dead check) or break fail-open for
+# transient_fault markers (seat_dead holds past usable_at). The long wall keeps
+# the fail-open contract intact while still parking the seat.
+#
+# fleet-ops#2594: lower the ceiling default from 60 to 20. At 60 the
+# read-side transient_fault fence (line ~1318) never engaged on the live
+# poolside/laguna-s-2.1-free (c=21, transient_fault, 30s flat re-offer loop
+# per the gap-audit snapshot), and the bash quota/overload/hang benches
+# re-walled every provider-default interval for every seat below the ceiling.
+# At 20 the long wall engages three times sooner — a chronically failing
+# seat is probed once per park wall instead of hammering the flat cadence
+# for ~20 wasted cycles first. The number is operator-tunable via env and
+# the existing test overrides (`export SEAT_FAILURE_CEILING=N`) preserve
+# their assertions byte-identically.
+SEAT_FAILURE_CEILING="${SEAT_FAILURE_CEILING:-20}"
+SEAT_PARK_WALL_S="${SEAT_PARK_WALL_S:-86400}"  # 24 h — probe once per day, not per 15min
+# fleet-ops#3941: the failure-ceiling park wall ESCALATES with the count
+# instead of resetting to a flat SEAT_PARK_WALL_S every cycle. A seat that
+# has failed 47 times straight (live: xkiro/deepseek-v4-flash) was re-offered
+# every 24h park-wall expiry and re-walled at the SAME 24h — the wall never
+# grew, so a chronically-dead seat was probed once per day forever. Now the
+# wall grows one SEAT_PARK_WALL_S per failure past the ceiling, capped at
+# SEAT_PARK_WALL_MAX_S (default 7 days), so a seat that keeps failing is
+# probed less and less often.
+SEAT_PARK_WALL_MAX_S="${SEAT_PARK_WALL_MAX_S:-604800}"  # 7 days — cap on the escalated park wall
+
+# --- corpse reclassification (fleet-ops#2594) ------------------------------
+# The bash quota_bench writer (mark_seat_quota_bench) was excluded from the
+# seat-health.ts corpse logic (#2145): that path covers transient_http /
+# rate_limit / cli_timeout / transient_other / empty_run by count, and
+# quota_exhausted by age, but quota_cap (the bash writer's failure_mode) was
+# not in either branch. Consequence: opencode/mimo-v2.5-free at 42
+# consecutive 429s sat at health_class=quota_bench forever — the bench
+# expired after the 24h park wall, the prober retried, the seat failed
+# again, the cycle repeated, and count kept climbing on a seat that was
+# clearly dead (live snapshot in the #2594 audit). This threshold applies
+# the corpse reclassification in the bash writer: at merged_count >=
+# SEAT_DEAD_CONSECUTIVE_THRESHOLD the quota_bench ledger is written with
+# seat_dead=true, and seat_usable holds the seat TERMINALLY (no auto
+# fail-open — only a healthy observation, fleet-ops#2327, clears the
+# corpse). Default matches seat-health.ts's seat_dead_consecutive_threshold
+# (25) so the two writers agree on the corpse boundary. Lower than the
+# 25-consecutive quarantine_threshold the extension uses is intentional:
+# park first (the bench window), corpse later (terminal exclusion).
+SEAT_DEAD_CONSECUTIVE_THRESHOLD="${SEAT_DEAD_CONSECUTIVE_THRESHOLD:-25}"
+
+# True (return 0) if a consecutive_failure_count crosses the corpse threshold
+# — i.e. the seat should be written with seat_dead=true. Same defensive
+# pattern as _seat_parked_by_ceiling: non-numeric inputs fall back to 0/false.
+_seat_dead_by_threshold() {
+    local count="${1:-0}"
+    [[ "$count" =~ ^[0-9]+$ ]] || count=0
+    local thr="${SEAT_DEAD_CONSECUTIVE_THRESHOLD:-25}"
+    [[ "$thr" =~ ^[0-9]+$ ]] || thr=25
+    (( count >= thr ))
+}
+
+# _park_wall_s count [ceil_override]
+# Echo the failure-ceiling park wall in seconds, ESCALATING with the count
+# past the ceiling instead of resetting to a flat SEAT_PARK_WALL_S every
+# cycle (fleet-ops#3941). count < ceil -> 0 (not parked; the caller uses the
+# base backoff). count == ceil -> SEAT_PARK_WALL_S (first park). Each further
+# failure adds one park wall, capped at SEAT_PARK_WALL_MAX_S. The optional
+# 2nd arg overrides the ceiling (empty-run uses EMPTY_RUN_FAILURE_CEILING).
+# Defensive: non-numeric inputs fall back to 0 / defaults.
+_park_wall_s() {
+    local count="${1:-0}" ceil_override="${2:-}"
+    [[ "$count" =~ ^[0-9]+$ ]] || count=0
+    local ceil="${SEAT_FAILURE_CEILING:-20}"
+    [[ -n "$ceil_override" ]] && ceil="$ceil_override"
+    [[ "$ceil" =~ ^[0-9]+$ ]] || ceil=20
+    local park="${SEAT_PARK_WALL_S:-86400}"
+    [[ "$park" =~ ^[0-9]+$ ]] || park=86400
+    local max="${SEAT_PARK_WALL_MAX_S:-604800}"
+    [[ "$max" =~ ^[0-9]+$ ]] || max=604800
+    if (( count < ceil )); then
+        printf '0'
+        return 0
+    fi
+    local extra=$(( count - ceil + 1 ))
+    local wall=$(( park * extra ))
+    (( wall > max )) && wall="$max"
+    printf '%s' "$wall"
+}
+
+# Echo the effective park wall seconds for a consecutive_failure_count and a
+# computed base backoff/window. When count >= SEAT_FAILURE_CEILING the wall is
+# forced to the ESCALATED park wall (_park_wall_s, fleet-ops#3941); otherwise
+# the base is echoed unchanged. An optional 3rd argument overrides the ceiling
+# for this call (legacy).
+# fleet-ops#3531: all writers now share the generic SEAT_FAILURE_CEILING.
+# Defensive: non-numeric inputs fall back to the base / count=0.
+_failure_ceiling_wall() {
+    local count="${1:-0}" base="${2:-300}" ceil_override="${3:-}"
+    [[ "$count" =~ ^[0-9]+$ ]] || count=0
+    [[ "$base" =~ ^[0-9]+$ ]] || base=300
+    local ceil="${SEAT_FAILURE_CEILING:-20}"
+    [[ -n "$ceil_override" ]] && ceil="$ceil_override"
+    [[ "$ceil" =~ ^[0-9]+$ ]] || ceil=20
+    if (( count >= ceil )); then
+        printf '%s' "$(_park_wall_s "$count" "$ceil_override")"
+        return 0
+    fi
+    printf '%s' "$base"
+}
+
+# True (return 0) if count has crossed the failure ceiling. Optional 2nd
+# argument overrides the ceiling for this call (fleet-ops#2627 same-shape
+# override as _failure_ceiling_wall).
+_seat_parked_by_ceiling() {
+    local count="${1:-0}" ceil_override="${2:-}"
+    [[ "$count" =~ ^[0-9]+$ ]] || count=0
+    local ceil="${SEAT_FAILURE_CEILING:-20}"
+    [[ -n "$ceil_override" ]] && ceil="$ceil_override"
+    [[ "$ceil" =~ ^[0-9]+$ ]] || ceil=20
+    (( count >= ceil ))
+}
+
+# Emit the fleet_seat_failure_ceiling_parked metric for a parked seat. One
+# gauge line per parked seat (provider,model labels); merging preserves the
+# other seats' lines so a multi-seat park does not clobber the file. Fail-open:
+# a write error never bricks the marker. Default file is under STATE_DIR so
+# tests cannot poison the live node_exporter dir; production copies to the
+# public textfile collector when STATE_DIR is the live path (same pattern as
+# export_seat_selection_prom).
+_emit_failure_ceiling_metric() {
+    local p="$1" m="$2" count="${3:-0}"
+    local out="${SEAT_FAILURE_CEILING_PROM:-$STATE_DIR/fleet-seat-failure-ceiling.prom}"
+    local dir pub tmp sp sm
+    dir=$(dirname "$out")
+    mkdir -p "$dir" 2>/dev/null || return 0
+    sp="${p//[^A-Za-z0-9._/-]/_}"
+    sm="${m//[^A-Za-z0-9._/-]/_}"
+    [[ "$count" =~ ^[0-9]+$ ]] || count=0
+    tmp="$out.$$.$RANDOM.tmp"
+    {
+        echo "# HELP fleet_seat_failure_ceiling_parked Seats parked past the consecutive-failure ceiling (fleet-ops#1362)."
+        echo "# TYPE fleet_seat_failure_ceiling_parked gauge"
+        # Preserve other seats' gauge lines; drop any stale line for this seat.
+        if [[ -f "$out" ]]; then
+            grep -E '^fleet_seat_failure_ceiling_parked' "$out" 2>/dev/null \
+                | grep -vE "fleet_seat_failure_ceiling_parked\\{provider=\"${sp}\",model=\"${sm}\"\\}" || true
+        fi
+        printf 'fleet_seat_failure_ceiling_parked{provider="%s",model="%s"} %s\n' "$sp" "$sm" "$count"
+    } >"$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
+    mv "$tmp" "$out" 2>/dev/null || { rm -f "$tmp"; return 0; }
+    if [[ -z "${SEAT_FAILURE_CEILING_PROM:-}" && "$STATE_DIR" == "${HOME}/.local/state/pi-packet" ]]; then
+        pub="/var/lib/prometheus/node-exporter/fleet-seat-failure-ceiling.prom"
+        if [[ -d "$(dirname "$pub")" && -w "$(dirname "$pub")" ]]; then
+            cp "$out" "$pub" 2>/dev/null || true
+        fi
+    fi
 }
 
 # Returns 0 if the worker output looks like a spawn-phase failure (ETIMEDOUT
@@ -2788,8 +5422,72 @@ is_spawn_etimeout() {
     return 1
 }
 
+# --- transport-down gate (fleet-ops#3111) -----------------------------------
+# When the pi transport itself is down (clobbered bin, broken cli.js), EVERY
+# run fails with the same empty/no-op/rc=124 shape and would be charged to the
+# SEAT by the bench writers below — poisoning every seat with 24h benches
+# while the fault is the transport, not any seat. The 2026-09-03 incident
+# starved the fleet for 33h this way: consecutive_failure_count hit 43/23/20
+# and pick_seat stayed NO USABLE SEAT even after the bin was restored, because
+# the benches had to be quarantined by hand.
+#
+# Gate: every bench writer first asks _transport_is_down. If the transport is
+# down, it writes NOTHING per-seat and instead records one transport-down
+# marker (the run is charged to transport, never to the seat). On transport
+# recovery the pi-transport-self-heal wrapper sweeps poisoned benches; this
+# gate ensures no NEW ones are written while the bin is clobbered.
+#
+# Fail-open: if pi-transport-check is unavailable or
+# PI_SEAT_LIB_CHECK_TRANSPORT=0 (tests), the gate is skipped so benching is
+# not suppressed on a box without the probe. The probe is the existing guard
+# (cli.js shebang+size+--version); a cheap `pi --version` semver test is the
+# fallback when the probe bin is absent.
+SEAT_TRANSPORT_DOWN_MARKER="${SEAT_TRANSPORT_DOWN_MARKER:-$STATE_DIR/transport-down.json}"
+PI_SEAT_LIB_CHECK_TRANSPORT="${PI_SEAT_LIB_CHECK_TRANSPORT:-1}"
+
+_transport_is_down() {
+    (( ${PI_SEAT_LIB_CHECK_TRANSPORT:-1} )) || return 1
+    local probe="${PI_TRANSPORT_CHECK:-/home/nish/.local/bin/pi-transport-check}"
+    if [[ -x "$probe" ]]; then
+        "$probe" >/dev/null 2>&1 || return 0
+        return 1
+    fi
+    # Fleet-ops#3111 contract: "benching is not suppressed on a box without
+    # the probe." Probe ABSENT -> health is undeterminable, not down —
+    # fail-open, unconditionally. The old `pi --version` fallback here broke
+    # that contract: every P14 test stubs PI_BIN with a fake pi whose
+    # --version is not semver, so CI judged the transport DOWN and every
+    # bench writer went silent (red on main from #3235 through #3335, run
+    # 33901937578: pi-issue-run-noop-bench "per-seat ledger missing"). The
+    # probe is what protects real boxes (it detects a clobbered cli.js — the
+    # #3238 incident); a box without the probe has no gate and no lie.
+    return 1
+}
+
+# Record one transport-down marker (idempotent per down-window: refreshes the
+# timestamp so a single marker spans the whole outage). Best-effort: a write
+# failure never blocks the caller's fail-open path.
+_mark_transport_down() {
+    local p="$1" m="$2"
+    local dir
+    dir=$(dirname "$SEAT_TRANSPORT_DOWN_MARKER" 2>/dev/null || echo "$STATE_DIR")
+    mkdir -p "$dir" 2>/dev/null || return 0
+    local now_utc
+    now_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    local tmp="$SEAT_TRANSPORT_DOWN_MARKER.$$.$RANDOM.tmp"
+    jq -nc --arg ts "$now_utc" --arg p "$p" --arg m "$m" \
+        '{transport:"down", observed_at:$ts, last_charged_provider:$p, last_charged_model:$m}' \
+        >"$tmp" 2>/dev/null && chmod 0644 "$tmp" 2>/dev/null && mv -f "$tmp" "$SEAT_TRANSPORT_DOWN_MARKER" 2>/dev/null \
+        || rm -f "$tmp" 2>/dev/null || true
+    seat_log "transport-down: $p/$m run charged to TRANSPORT, not the seat (pi-transport-check failed) — no per-seat bench written (fleet-ops#3111)"
+    return 0
+}
+
 mark_seat_spawn_fail() {
     local p="$1" m="$2" reason="${3:-spawn_etimeout}"
+    # fleet-ops#3661: never write a ledger for a phantom seat key.
+    if ! _seat_key_guard "$p" "$m" "mark_seat_spawn_fail"; then return 1; fi
+    if _transport_is_down; then _mark_transport_down "$p" "$m"; return 1; fi
     local path
     path=$(seat_ledger_path "$p" "$m")
     mkdir -p "$LEDGER_DIR" 2>/dev/null || true
@@ -2797,12 +5495,61 @@ mark_seat_spawn_fail() {
     local now_utc
     now_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-    # Merge consecutive_failure_count from any existing entry (so a real
-    # session-time 429 resetting later doesn't briefly flip us back to 0).
-    local prev_count=0
+    # Merge consecutive_failure_count from the wrapper's clobber-proof
+    # spawn-bench marker FIRST (any failure_mode, written recently), then
+    # the (clobberable) ledger. Take the max as the prior count. A STALE
+    # marker (older than EMPTY_RUN_MARKER_FRESH_S) means seat-health.ts
+    # produced a healthy observation AFTER the bench expired — the recovery
+    # signal — so fall through to the ledger and start fresh. The marker is
+    # a SINGLE file per seat shared by mark_seat_empty_run and
+    # mark_seat_spawn_fail, so the count must accumulate across
+    # failure_mode classes (fleet-ops#2786: a seat that alternates between
+    # empty_run and spawn_fail must still reach the failure-ceiling park;
+    # reading only the clobberable ledger lets a healthy observation reset
+    # the count to 0 between wrapper writes — the same #2627 reset pattern
+    # the marker was built to bust).
+    # fleet-ops#3749: class-aware freshness. The marker is a SINGLE file
+    # shared by mark_seat_empty_run and mark_seat_spawn_fail, so a
+    # spawn-fail write can clobber an empty-run marker. The empty-run
+    # writer uses EMPTY_RUN_COUNT_WINDOW_S (24 h) for freshness; if the
+    # spawn-fail writer applied its own 30 min window to an empty-run
+    # marker, a spawn-fail >30 min after an empty-run would treat the
+    # marker as stale, reset the count to 1, and overwrite the file —
+    # destroying the empty-run count the #2786 cross-class contract is
+    # meant to preserve. Live: ollama/deepseek-v4-flash:0731 reached
+    # count=5/backoff=14400s at 22:49Z, a spawn-fail ~37 min later reset
+    # the count to 1, and the next empty-run merged from the clobbered
+    # marker + ledger to count=4 — the count went BACKWARDS. Use the
+    # empty-run window when the marker was written by empty_run, and the
+    # spawn-fail window (30 min) otherwise. spawn_fail -> spawn_fail
+    # still resets after 30 min (spawn storms are clustered); only the
+    # cross-class empty_run -> spawn_fail case widens.
+    local prev_count=0 sb_mcount sb_written sb_marker_path now_s written_s sb_fmode sb_window
+    sb_marker_path=$(seat_spawn_bench_path "$p" "$m")
+    if [[ -f "$sb_marker_path" ]]; then
+        sb_mcount=$(jq -r '.consecutive_failure_count // 0' "$sb_marker_path" 2>/dev/null || echo 0)
+        [[ "$sb_mcount" =~ ^[0-9]+$ ]] || sb_mcount=0
+        sb_written=$(jq -r '.written_at // ""' "$sb_marker_path" 2>/dev/null || true)
+        sb_fmode=$(jq -r '.failure_mode // ""' "$sb_marker_path" 2>/dev/null || true)
+        if [[ "$sb_fmode" == "empty_run" ]]; then
+            sb_window="${EMPTY_RUN_COUNT_WINDOW_S:-86400}"
+        else
+            sb_window="${EMPTY_RUN_MARKER_FRESH_S:-1800}"
+        fi
+        if [[ -n "$sb_written" ]]; then
+            now_s=$(date -u +%s)
+            written_s=$(date -u -d "$sb_written" +%s 2>/dev/null || echo 0)
+            if [[ "$written_s" =~ ^[0-9]+$ ]] && (( written_s > 0 )) \
+                && (( now_s - written_s <= sb_window )); then
+                prev_count="$sb_mcount"
+            fi
+        fi
+    fi
     if [[ -f "$path" ]]; then
-        prev_count=$(jq -r '.consecutive_failure_count // 0' "$path" 2>/dev/null || echo 0)
-        [[ "$prev_count" =~ ^[0-9]+$ ]] || prev_count=0
+        local ledger_count
+        ledger_count=$(jq -r '.consecutive_failure_count // 0' "$path" 2>/dev/null || echo 0)
+        [[ "$ledger_count" =~ ^[0-9]+$ ]] || ledger_count=0
+        [[ "$ledger_count" -gt "$prev_count" ]] && prev_count="$ledger_count"
     fi
     local merged_count=$((prev_count + 1))
     # fleet-ops#1408: escalate the bench by consecutive_failure_count so a
@@ -2810,16 +5557,39 @@ mark_seat_spawn_fail() {
     # cycle instead of re-entering rotation every base-backoff seconds.
     local backoff
     backoff=$(_escalated_backoff "$SPAWN_FAIL_BACKOFF_S" "$merged_count" "$SPAWN_FAIL_BACKOFF_CAP_S")
+    # fleet-ops#1362: once count crosses the failure ceiling, park the seat
+    # behind the long wall so the prober stops hammering it every base backoff.
+    backoff=$(_failure_ceiling_wall "$merged_count" "$backoff")
     # Compute usable_at = now + backoff (ISO 8601, bash portable: -d @ + offsets).
     local usable_at
     usable_at=$(date -u -d "@$(($(date -u +%s) + backoff))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
+
+    # fleet-ops#3889: corpse reclassification for a CHRONIC spawn_fail streak.
+    # seat-health.ts logs a transport 200 as healthy during the very run that
+    # then exits 0 with 0-byte stdout (after_provider_response carries status+
+    # headers only, never the body), so the LEDGER stays health_class=healthy /
+    # http 200 / seat_dead=false while the wrapper's benchmark climbs forever —
+    # live xkiro/deepseek-v4-flash reached 47 consecutive spawn_fail with the
+    # ledger healthy, re-offered every flat 24h park-wall expiry. Mirror the
+    # quota writer (fleet-ops#2594): once merged_count crosses
+    # SEAT_DEAD_CONSECUTIVE_THRESHOLD (default 25, matching seat-health.ts) the
+    # spawn_fail bench is written seat_dead=true so the seat is classed a
+    # CORPSE regardless of the HTTP 200, the roster/census count it dead, and
+    # seat_usable holds it terminally (only a recovery probe re-proves it). The
+    # corpse is ALSO carried onto the clobber-proof spawn-bench marker so the
+    # false-healthy ledger clobber cannot resurrect it.
+    local seat_dead=false
+    if _seat_dead_by_threshold "$merged_count"; then
+        seat_dead=true
+    fi
 
     if ! jq -nc \
         --arg provider "$p" --arg model "$m" --arg reason "$reason" \
         --arg observed "$now_utc" --arg usable "$usable_at" \
         --argjson http_status 0 --argjson retry_after null \
-        --argjson retryable true --argjson seat_dead false --argjson poison_ladder false \
+        --argjson retryable true --argjson seat_dead "$seat_dead" --argjson poison_ladder false \
         --argjson backoff "$backoff" --argjson merged "$merged_count" \
+        --arg writer "mark_seat_spawn_fail" \
         '{
           provider:$provider, model:$model,
           http_status:$http_status, retry_after:$retry_after,
@@ -2831,7 +5601,8 @@ mark_seat_spawn_fail() {
           usable_at:$usable,
           consecutive_failure_count:$merged,
           spawn_fail_reason:$reason,
-          spawn_fail_backoff_s:$backoff
+          spawn_fail_backoff_s:$backoff,
+          writer:$writer
         }' > "$tmp" 2>/dev/null; then
         seat_log "spawn-fail: jq compose FAILED for $p/$m (reason=$reason) — marker NOT written"
         rm -f "$tmp" 2>/dev/null || true
@@ -2839,7 +5610,26 @@ mark_seat_spawn_fail() {
     fi
     chmod 0644 "$tmp" 2>/dev/null || true
     if mv "$tmp" "$path" 2>/dev/null; then
-        seat_log "spawn-fail: marked $p/$m unusable until $usable_at (reason=$reason, backoff=${backoff}s, count=$merged_count)"
+        if [[ "$seat_dead" == "true" ]]; then
+            seat_log "spawn-fail: $p/$m CORPSE reclassified (count=$merged_count >= ${SEAT_DEAD_CONSECUTIVE_THRESHOLD}); usable_at=$usable_at kept as comeback clock (fleet-ops#3889); re-released only by a recovery probe / healthy observation clears seat_dead=false"
+        else
+            seat_log "spawn-fail: marked $p/$m unusable until $usable_at (reason=$reason, backoff=${backoff}s, count=$merged_count)"
+            if _seat_parked_by_ceiling "$merged_count"; then
+                _emit_failure_ceiling_metric "$p" "$m" "$merged_count"
+                seat_log "spawn-fail: $p/$m PARKED past failure ceiling (count=$merged_count >= ${SEAT_FAILURE_CEILING}, wall=${backoff}s)"
+            fi
+        fi
+        # fleet-ops#1512: also write the clobber-proof spawn-bench marker so
+        # seat_usable honours this bench even if seat-health.ts later writes a
+        # healthy observation to the ledger. Best-effort: a marker write
+        # failure does not undo the ledger write above. fleet-ops#2627: also
+        # carry the consecutive_failure_count and failure_mode so the marker
+        # is the durable count authority for the bench class — the ledger's
+        # count is reset to 0 by seat-health.ts's healthy clobber, and the
+        # failure-ceiling park must engage from the marker-carried count.
+        # fleet-ops#3889: a spawn_fail corpse (seat_dead=true) is carried onto
+        # the marker too so the false-healthy 200 clobber cannot resurrect it.
+        _seat_write_spawn_bench "$p" "$m" "$usable_at" "$reason" "$backoff" "$merged_count" "spawn_fail" "$seat_dead" 2>/dev/null || true
         return 0
     fi
     seat_log "spawn-fail: rename FAILED for $p/$m at $path (reason=$reason)"
@@ -2865,14 +5655,120 @@ mark_seat_spawn_fail() {
 # the extension is not wired. Ledger shape is byte-compatible with
 # SeatLedgerEntry (seat-health.ts); seat_usable skips via the generic
 # usable_at check and fail-opens after.
+# fleet-ops#2343: an empty run is a provider NO-OP, not a quota wall, and
+# must NOT escalate by count. The fleet-ops#1408 ladder (900 -> 1800 -> 3600
+# -> 7200s) churned HEALTHY seats: openrouter/deepseek/deepseek-v4-flash-0731
+# produced 3 empty runs in 2h (fleet-ops-1384, stdout=0B), got benched 900s
+# and re-seated in-process each time, and the count ladder kept extending a
+# working seat's bench to hours after a handful of no-ops. The no-op cooldown
+# is FLAT: every empty run benches for EMPTY_RUN_BACKOFF_S, and only the
+# fleet-ops#1362 failure-ceiling park (60 consecutive failures = 24h wall, the
+# extreme dead-seat guard) ever lengthens it. The count still merges for
+# observability and for that ceiling, but it does not drive a bench ladder the
+# way a real quota/rate/5xx wall (mark_seat_spawn_fail) does. Recovery is one
+# successful run (count -> 0 via seat-health.ts).
+#
+# fleet-ops#2627: the count must ACCUMULATE across healthy ledger clobbers.
+# seat-health.ts writes health_class=healthy/count=0 to the ledger on a later
+# 200 observation, so reading only the ledger lets a chronic no-op'er reset
+# its count to 0 between every wrapper write (live: openrouter/deepseek/
+# deepseek-v4-flash-0731 no-op'ed 5+ times in 2h with every ledger write
+# showing count=1, the #1362 park never fired, 18 empty runs/2h). The
+# wrapper-side spawn-bench marker (fleet-ops#1512) is clobber-proof — read
+# the count from the marker FIRST (any failure_mode, written recently),
+# fall back to the ledger, take the max as the prior count, then pass the
+# merged count +1 to the marker writer so the marker carries it forward
+# across the next clobber. EMPTY_RUN_MARKER_FRESH_S bounds the merge: a
+# STALE marker means the seat produced a healthy observation after the
+# bench expired (count was reset to 0 by seat-health.ts — the recovery
+# signal), so fall through to the ledger and start a fresh count.
+# fleet-ops#2786: the marker is a SINGLE file per seat shared by both
+# mark_seat_empty_run and mark_seat_spawn_fail. A same-class-only merge
+# (the original #2627 design) loses the empty_run count the instant a
+# spawn_fail marker overwrites the file — live: opencode/nemotron-3-ultra-free
+# produced 10 empty runs over 3 days, every marker showing count=1 because
+# a spawn_fail marker sat between empty runs and the same-class check
+# skipped it. The fix: merge the count from ANY recent marker regardless
+# of failure_mode. The counts share one file, so cross-class accumulation
+# is the only way the failure-ceiling park ever fires for a seat that
+# alternates between empty_run and spawn_fail. fleet-ops#3531: the bench
+# now escalates geometrically (base * 2^(n-1), capped at 6 h, 1800 s for
+# remote agents) and uses the generic SEAT_FAILURE_CEILING (default 20) so
+# a free-lane no-op'er parks at the same threshold as any other wall.
+# fleet-ops#3046: the prior default of 10 was too high for the live
+# nemotron-3-ultra-free loop — 9 empty runs in 2h on the same issue
+# (fleet-ops-2778) never reached 10 because the count-merge window
+# (EMPTY_RUN_COUNT_WINDOW_S, 6 h) reset the count on every 3rd run as the
+# 6 h window slid past the first no-op. A ceiling of 3 parks the seat
+# on the 3rd no-op in the SAME 6 h window, so the loop cannot outpace the
+# count-merge window the way 10 did. fleet-ops#3531: the bench now
+# escalates geometrically (base * 2^(n-1), capped at 6 h, 1800 s for
+# remote agents) so a repeat no-op'er is held out of rotation longer even
+# before the failure-ceiling park.
+#
+# fleet-ops#2934: the count-merge window for EMPTY RUNS is LONGER than the
+# spawn-fail window. EMPTY_RUN_MARKER_FRESH_S (30 min) was the merge bound
+# for BOTH classes, but an intermittent no-op'er gaps its empty runs by
+# more than 30 min (live 2026-09-02: openrouter/deepseek/deepseek-v4-flash-
+# 0731 no-op'ed at 18:40:08Z count=2, then 20:22:31Z count=1 — the 1h42m
+# gap aged the marker past 30 min, the count reset, the ceiling never
+# fired, the seat re-entered rotation every 900 s and no-op'ed again). A
+# provider no-op is intermittent, not clustered the way a spawn-fail storm
+# is, so the recovery signal (no new empty run for N min) needs a longer
+# N to be trustworthy. fleet-ops#3675: EMPTY_RUN_COUNT_WINDOW_S was widened
+# from 2 h to the max empty-run bench (SEAT_BENCH_GEOMETRIC_CAP_S, 6 h) so a
+# chronic no-op'er's count survives the geometric bench. fleet-ops#3666: that
+# was still shorter than the failure-ceiling park wall (SEAT_PARK_WALL_S,
+# 24 h). A parked seat is held out of rotation by its marker's usable_at for
+# the full 24 h, so "no new empty run for 6 h" is NOT a recovery signal for a
+# parked seat — it is just the park holding. The global seat-health probe can
+# clobber the ledger to health_class=healthy/count=0 during the park (a 200
+# HTTP observation on a no-op'ing seat), so once the marker aged past 6 h the
+# count-merge fell through to the clobbered ledger, the count reset to 1, and
+# the next no-op at the 24 h boundary dropped the bench back to the 900 s base
+# — the 24 h park was overwritten by a 30 min flat cooldown and the dead seat
+# re-entered the no-op loop (live: ollama/deepseek-v4-flash:0731, 24 no-op
+# runs/2h, 86400 s bench written then lost). The window now defaults to the
+# PARK WALL (SEAT_PARK_WALL_S, 24 h) so the marker-carried count survives the
+# full park: a no-op at the 24 h boundary merges the marker count (not the
+# clobbered ledger), re-parks immediately, and the seat stays out of rotation.
+# A marker older than 24 h means the seat went a full park wall without being
+# probed AND without no-op'ing — the real recovery signal — so the count
+# resets. spawn_fail keeps the 30-min window (spawn storms are clustered; a
+# 24 h spawn-fail window would let a long-ago spawn_fail inflate a fresh
+# empty-run count). The bench escalates geometrically (fleet-ops#3531); the
+# COUNT-accumulation window now spans the full park, so the failure-ceiling
+# park persists across the boundary instead of resetting to the base.
 EMPTY_RUN_BACKOFF_S="${EMPTY_RUN_BACKOFF_S:-900}"  # 15 min
-# fleet-ops#1408: escalate the empty-run bench by consecutive_failure_count,
-# same ladder as spawn-fail but with a higher cap (empty runs waste a full
-# session's tokens for nothing, so a repeat offender stays benched longer).
-EMPTY_RUN_BACKOFF_CAP_S="${EMPTY_RUN_BACKOFF_CAP_S:-7200}"  # 2 h
+EMPTY_RUN_MARKER_FRESH_S="${EMPTY_RUN_MARKER_FRESH_S:-1800}"  # 30 min — spawn-fail count-merge window (see comment above)
+# default = park wall (24 h) so a chronic no-op'er's count survives the full
+# failure-ceiling park, not just the geometric bench cap (fleet-ops#3666).
+EMPTY_RUN_COUNT_WINDOW_S="${EMPTY_RUN_COUNT_WINDOW_S:-$SEAT_PARK_WALL_S}"
+# fleet-ops#3727: a SEPARATE, lower failure ceiling for empty runs. The generic
+# SEAT_FAILURE_CEILING (default 20) was unified in fleet-ops#3531, but a chronic
+# no-op'er (ollama/deepseek-v4-flash:0731, 12 empty runs in 2h) churned for 20
+# cycles before the 24h park engaged — the geometric cap (6h) re-offered the
+# seat every 6h and the count climbed too slowly. A provider no-op is a LANE
+# FAULT, not a quota wall: a few no-ops in the same 24h count-merge window is a
+# strong signal the seat is functionally dead for agentic work, so park it
+# behind the 24h wall instead of the 20th. The generic ceiling still applies to
+# spawn_fail / quota / overload (real walls that recover differently). Tests
+# that pin a low ceiling for empty-run park isolation set BOTH
+# SEAT_FAILURE_CEILING and EMPTY_RUN_FAILURE_CEILING.
+# fleet-ops#3760: lowered from 5 to 3. The 12-empty-runs-in-2h churn (4 issues
+# filed this week: #3749/#3737/#3730/#3727) showed 5 was still too slow to
+# converge — the geometric bench (900s -> 1800s -> 3600s -> 7200s) re-offered
+# the seat four times before the 24h park, and any count-merge reset let it
+# churn again. 3 no-ops in the 24h count-merge window parks on the 3rd no-op:
+# the geometric bench holds (900s -> 1800s) for the first two, then the 24h
+# wall fires. This is the max_bench_retries cap from the #3760 spec.
+EMPTY_RUN_FAILURE_CEILING="${EMPTY_RUN_FAILURE_CEILING:-3}"
 
 mark_seat_empty_run() {
     local p="$1" m="$2" reason="${3:-empty_run}"
+    # fleet-ops#3661: never write a ledger for a phantom seat key.
+    if ! _seat_key_guard "$p" "$m" "mark_seat_empty_run"; then return 1; fi
+    if _transport_is_down; then _mark_transport_down "$p" "$m"; return 1; fi
     local path
     path=$(seat_ledger_path "$p" "$m")
     mkdir -p "$LEDGER_DIR" 2>/dev/null || true
@@ -2880,18 +5776,86 @@ mark_seat_empty_run() {
     local now_utc
     now_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-    # Merge consecutive_failure_count from any existing entry (same policy
-    # as mark_seat_spawn_fail: a real session-time 429 resetting later does
-    # not briefly flip us back to 0).
-    local prev_count=0
+    # fleet-ops#2627/#2786: merge consecutive_failure_count from the
+    # wrapper's clobber-proof spawn-bench marker FIRST (any failure_mode,
+    # written recently), then the (clobberable) ledger. Take the max as
+    # the prior count. A STALE marker (older than
+    # EMPTY_RUN_COUNT_WINDOW_S, default 24 h = SEAT_PARK_WALL_S — fleet-ops#3666)
+    # means the seat went a full park wall without no-op'ing — the real
+    # recovery signal — so we fall through to the ledger (which seat-health.ts
+    # clobbered to count=0) and start fresh. The window is LONGER than
+    # mark_seat_spawn_fail's (EMPTY_RUN_MARKER_FRESH_S, 30 min) because a
+    # provider no-op is intermittent, not clustered: a 30 min window let a
+    # ~1h42m gap reset the count on the live deepseek-v4-flash-0731 seat
+    # so the failure-ceiling park never fired. The marker is a SINGLE file
+    # per seat shared by mark_seat_empty_run and mark_seat_spawn_fail, so
+    # the count must accumulate across failure_mode classes (fleet-ops#2786:
+    # a same-class-only merge lost the empty_run count the instant a
+    # spawn_fail marker overwrote the file — live: 10 empty runs on
+    # opencode/nemotron-3-ultra-free, every marker count=1).
+    # fleet-ops#3749 (symmetric completion): class-aware freshness, mirroring
+    # the #3849 fix in mark_seat_spawn_fail. The marker is a SINGLE file shared
+    # by mark_seat_empty_run and mark_seat_spawn_fail, so an empty-run write can
+    # read a marker left by a spawn_fail. The empty-run writer used
+    # EMPTY_RUN_COUNT_WINDOW_S (24 h) for ALL markers, including spawn_fail
+    # markers — so a spawn_fail marker older than the 30 min spawn-fail window
+    # but inside 24 h was merged into a fresh empty-run count, inflating it
+    # (the very inflation the comment above warns against: "a 24 h spawn-fail
+    # window would let a long-ago spawn_fail inflate a fresh empty-run count").
+    # spawn storms are clustered (30 min): a spawn_fail older than 30 min is
+    # stale, the spawn problem is over, and a fresh empty-run is a separate
+    # fault — the spawn_fail count must NOT carry over. Use the marker's
+    # failure_mode to select the window: an empty_run marker uses
+    # EMPTY_RUN_COUNT_WINDOW_S (24 h); a spawn_fail marker uses
+    # EMPTY_RUN_MARKER_FRESH_S (30 min). empty_run -> empty_run still uses the
+    # 24 h window (intermittent, long recovery signal); only the cross-class
+    # spawn_fail -> empty_run case narrows to the spawn-fail window.
+    local prev_count=0 sb_mcount sb_written sb_marker_path now_s written_s sb_fmode sb_window
+    sb_marker_path=$(seat_spawn_bench_path "$p" "$m")
+    if [[ -f "$sb_marker_path" ]]; then
+        sb_mcount=$(jq -r '.consecutive_failure_count // 0' "$sb_marker_path" 2>/dev/null || echo 0)
+        [[ "$sb_mcount" =~ ^[0-9]+$ ]] || sb_mcount=0
+        sb_written=$(jq -r '.written_at // ""' "$sb_marker_path" 2>/dev/null || true)
+        sb_fmode=$(jq -r '.failure_mode // ""' "$sb_marker_path" 2>/dev/null || true)
+        if [[ "$sb_fmode" == "empty_run" ]]; then
+            sb_window="${EMPTY_RUN_COUNT_WINDOW_S:-$SEAT_PARK_WALL_S}"
+        else
+            sb_window="${EMPTY_RUN_MARKER_FRESH_S:-1800}"
+        fi
+        if [[ -n "$sb_written" ]]; then
+            now_s=$(date -u +%s)
+            written_s=$(date -u -d "$sb_written" +%s 2>/dev/null || echo 0)
+            if [[ "$written_s" =~ ^[0-9]+$ ]] && (( written_s > 0 )) \
+                && (( now_s - written_s <= sb_window )); then
+                prev_count="$sb_mcount"
+            fi
+        fi
+    fi
     if [[ -f "$path" ]]; then
-        prev_count=$(jq -r '.consecutive_failure_count // 0' "$path" 2>/dev/null || echo 0)
-        [[ "$prev_count" =~ ^[0-9]+$ ]] || prev_count=0
+        local ledger_count
+        ledger_count=$(jq -r '.consecutive_failure_count // 0' "$path" 2>/dev/null || echo 0)
+        [[ "$ledger_count" =~ ^[0-9]+$ ]] || ledger_count=0
+        [[ "$ledger_count" -gt "$prev_count" ]] && prev_count="$ledger_count"
     fi
     local merged_count=$((prev_count + 1))
-    # fleet-ops#1408: escalate the bench by consecutive_failure_count.
+    # fleet-ops#3531: empty runs now escalate geometrically by count
+    # (base * 2^(n-1), capped at 6 h). Remote agents (e.g. devin) run outside
+    # the local harness, so a false empty run is capped at 30 min (1800 s) to
+    # avoid punishing a healthy remote seat — the tighter cap applies only to
+    # prepaid-quota seats (a paid seat idled by a false verdict is real
+    # money). The long failure-ceiling park (SEAT_PARK_WALL_S, default 24 h)
+    # still applies on top. fleet-ops#3727: empty runs use a SEPARATE, lower
+    # failure ceiling (EMPTY_RUN_FAILURE_CEILING, default 3 per fleet-ops#3760)
+    # so a chronic no-op'er parks on the 3rd no-op, not the 20th — the generic
+    # 20 let ollama/deepseek-v4-flash:0731 churn 12 empty runs in 2h without
+    # parking.
+    local cap
+    cap="$SEAT_BENCH_GEOMETRIC_CAP_S"
+    if provider_remote_agent "$p" && [[ "$(model_class_of "$p" "$m")" == "prepaid-quota" ]]; then
+        cap="$SEAT_REMOTE_AGENT_EMPTY_RUN_CAP_S"
+    fi
     local backoff
-    backoff=$(_escalated_backoff "$EMPTY_RUN_BACKOFF_S" "$merged_count" "$EMPTY_RUN_BACKOFF_CAP_S")
+    backoff=$(_geometric_bench_window "$EMPTY_RUN_BACKOFF_S" "$merged_count" "$cap" "$EMPTY_RUN_FAILURE_CEILING")
     # Compute usable_at = now + backoff (ISO 8601, bash portable).
     local usable_at
     usable_at=$(date -u -d "@$(($(date -u +%s) + backoff))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
@@ -2902,6 +5866,7 @@ mark_seat_empty_run() {
         --argjson http_status 200 --argjson retry_after null \
         --argjson retryable true --argjson seat_dead false --argjson poison_ladder false \
         --argjson backoff "$backoff" --argjson merged "$merged_count" \
+        --arg writer "mark_seat_empty_run" \
         '{
           provider:$provider, model:$model,
           http_status:$http_status, retry_after:$retry_after,
@@ -2913,7 +5878,8 @@ mark_seat_empty_run() {
           usable_at:$usable,
           consecutive_failure_count:$merged,
           empty_run_reason:$reason,
-          empty_run_backoff_s:$backoff
+          empty_run_backoff_s:$backoff,
+          writer:$writer
         }' > "$tmp" 2>/dev/null; then
         seat_log "empty-run: jq compose FAILED for $p/$m (reason=$reason) — marker NOT written"
         rm -f "$tmp" 2>/dev/null || true
@@ -2922,10 +5888,332 @@ mark_seat_empty_run() {
     chmod 0644 "$tmp" 2>/dev/null || true
     if mv "$tmp" "$path" 2>/dev/null; then
         seat_log "empty-run: marked $p/$m unusable until $usable_at (reason=$reason, backoff=${backoff}s, count=$merged_count)"
+        # fleet-ops#3727: park check uses the empty-run-specific failure ceiling
+        # (EMPTY_RUN_FAILURE_CEILING, default 3 per fleet-ops#3760). The
+        # geometric backoff (capped at 6 h, 1800 s for remote agents) grows the
+        # bench below the ceiling; once crossed, the seat is parked behind the
+        # long wall.
+        if _seat_parked_by_ceiling "$merged_count" "$EMPTY_RUN_FAILURE_CEILING"; then
+            _emit_failure_ceiling_metric "$p" "$m" "$merged_count"
+            seat_log "empty-run: $p/$m PARKED past failure ceiling (count=$merged_count >= ${EMPTY_RUN_FAILURE_CEILING}, wall=${backoff}s)"
+        fi
+        # fleet-ops#1512: clobber-proof spawn-bench marker (same rationale as
+        # mark_seat_spawn_fail). fleet-ops#2627: also carry the
+        # consecutive_failure_count and failure_mode=empty_run so the next
+        # empty-run call merges from this marker across any healthy ledger
+        # clobber, and the chronic-no-op park engages from the durable count.
+        # fleet-ops#3602: the marker write is NOT best-effort. The ledger is
+        # co-written by seat-health.ts, which clobbers it back to
+        # health_class=healthy / count=0 / usable_at=null on a later HTTP-200
+        # observation (a different worker's simple packet). When the marker
+        # write failed silently (the old `2>/dev/null || true`), the bench
+        # lived ONLY in the clobberable ledger, the next 200 probe cleared it,
+        # and pick_seat re-offered the no-op'ing seat — live
+        # ollama/deepseek-v4-flash:0731 was re-benched 8x in 2h (count=6,7,8)
+        # yet still offered healthy. The marker is the survival mechanism, so
+        # a marker write failure fails LOUD (return 1): the bench either has a
+        # clobber-proof marker that survives until wall_end, or the caller
+        # (pi-issue-run) logs the failure and falls back to tried-seats
+        # exclusion for the current run — never a silent degradation to a
+        # clobberable-only bench.
+        if ! _seat_write_spawn_bench "$p" "$m" "$usable_at" "$reason" "$backoff" "$merged_count" "empty_run" 2>/dev/null; then
+            seat_log "empty-run: LOUD marker-write FAILED for $p/$m at $sb_marker_path (reason=$reason) — bench NOT clobber-proof, relying on tried-seats exclusion (fleet-ops#3602)"
+            return 1
+        fi
         return 0
     fi
     seat_log "empty-run: rename FAILED for $p/$m at $path (reason=$reason)"
     rm -f "$tmp" 2>/dev/null || true
+    return 1
+}
+
+# --- worked-no-text bench (fleet-ops#3847) --------------------------------
+# fleet-ops#3714 taught pi-issue-run that a session which made tool calls did
+# real work: when a model ends its turn ON a tool call (deepseek-v4-flash:0731
+# via ollama closes with structured_output and no trailing text), pi --print
+# emits no final text, so stdout is 0B while the verdict on stderr already says
+# tools=N class=worked. Those runs are NOT provider no-ops and must not be
+# benched as empty runs. But a single 0B-stdout run is not proof of a broken
+# seat either — it is the live 2026-09-06 case (fleet-ops#3847):
+# ollama/deepseek-v4-flash:0731 produced 0B final text on 5/5 runs in 2h
+# (fleet-ops-3714, 0509-1731, fleet-ops-3727, fleet-ops-3322, fleet-ops-3730;
+# 197 tool calls, zero deliverables) and each was classified worked-no-text and
+# deliberately NOT benched. Whatever the classification, N consecutive
+# 0B-stdout runs is a broken seat. These helpers keep a per-seat counter of
+# consecutive worked-no-text runs (durable, across separate pi-issue-run
+# invocations and across issues) and bench the seat via mark_seat_empty_run
+# once the count reaches WORKED_NO_TEXT_THRESHOLD. The counter resets on a
+# real-output run (out_bytes >= OUT_MIN) and on the bench itself.
+WORKED_NO_TEXT_THRESHOLD="${WORKED_NO_TEXT_THRESHOLD:-5}"
+# A worked-no-text run that happened more than this many seconds ago is stale
+# (the seat went a healthy stretch in between) and starts a fresh count.
+WORKED_NO_TEXT_WINDOW_S="${WORKED_NO_TEXT_WINDOW_S:-7200}"  # 2 h
+
+seat_worked_no_text_path() {
+    local p="$1" m="$2" ps ms
+    ps="${p//[^A-Za-z0-9._-]/_}"
+    ms="${m//[^A-Za-z0-9._-]/_}"
+    printf '%s/%s__%s.worked-no-text.json\n' "$LEDGER_DIR" "$ps" "$ms"
+}
+
+# Increment the per-seat consecutive worked-no-text counter and, once it
+# reaches WORKED_NO_TEXT_THRESHOLD, bench the seat via mark_seat_empty_run and
+# reset the counter. Returns 0 (bench fired) when the threshold is reached,
+# 1 otherwise. Best-effort: a counter write failure must not block the
+# caller's fall-through (the run is still treated as worked-no-text).
+mark_seat_worked_no_text() {
+    local p="$1" m="$2" reason="${3:-worked-no-text}"
+    if ! _seat_key_guard "$p" "$m" "mark_seat_worked_no_text"; then return 1; fi
+    local path now_utc now_s prev prev_written written_s count tmp
+    path=$(seat_worked_no_text_path "$p" "$m")
+    mkdir -p "$LEDGER_DIR" 2>/dev/null || true
+    now_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    now_s=$(date -u +%s)
+    prev=0
+    if [[ -f "$path" ]]; then
+        prev=$(jq -r '.consecutive_worked_no_text // 0' "$path" 2>/dev/null || echo 0)
+        [[ "$prev" =~ ^[0-9]+$ ]] || prev=0
+        prev_written=$(jq -r '.written_at // ""' "$path" 2>/dev/null || true)
+        if [[ -n "$prev_written" ]]; then
+            written_s=$(date -u -d "$prev_written" +%s 2>/dev/null || echo 0)
+            if [[ "$written_s" =~ ^[0-9]+$ ]] && (( written_s > 0 )) \
+                && (( now_s - written_s > ${WORKED_NO_TEXT_WINDOW_S:-7200} )); then
+                prev=0  # stale: a healthy stretch elapsed, start fresh
+            fi
+        fi
+    fi
+    count=$((prev + 1))
+    tmp="$path.$$.$RANDOM.tmp"
+    if jq -nc --arg p "$p" --arg m "$m" --arg written "$now_utc" --arg reason "$reason" \
+        --argjson count "$count" \
+        '{provider:$p, model:$m, consecutive_worked_no_text:$count, written_at:$written, reason:$reason}' \
+        >"$tmp" 2>/dev/null; then
+        chmod 0644 "$tmp" 2>/dev/null || true
+        mv "$tmp" "$path" 2>/dev/null || { rm -f "$tmp" 2>/dev/null || true; }
+    else
+        rm -f "$tmp" 2>/dev/null || true
+    fi
+    seat_log "worked-no-text: $p/$m consecutive 0B-stdout runs = $count (threshold ${WORKED_NO_TEXT_THRESHOLD:-5})"
+    if (( count >= ${WORKED_NO_TEXT_THRESHOLD:-5} )); then
+        seat_log "worked-no-text: $p/$m hit ${count} consecutive 0B-stdout runs — BENCHING via empty_run (fleet-ops#3847)"
+        mark_seat_empty_run "$p" "$m" "pi-issue:worked-no-text:x${count}:${reason}" || true
+        rm -f "$path" 2>/dev/null || true  # reset after the bench
+        return 0
+    fi
+    return 1
+}
+
+# Reset the per-seat consecutive worked-no-text counter. Called on a real-output
+# run (out_bytes >= OUT_MIN) so a recovered seat starts fresh.
+reset_seat_worked_no_text() {
+    local p="$1" m="$2" path
+    path=$(seat_worked_no_text_path "$p" "$m")
+    rm -f "$path" 2>/dev/null || true
+}
+
+# --- error-class registry dispatch (fleet-ops#859) -----------------------
+# Data-driven lane-fault dispatch. seat-caps.json declares an `error_classes`
+# map: each class names a matcher function, a writer function, a trigger_order,
+# and a default_window_s_seconds. pi-issue-run (and any other caller) invokes
+# _dispatch_lane_faults <provider> <model> <out> <err> on a non-zero pi exit;
+# it iterates the registry by trigger_order, calling _matcher_dispatch once
+# per class, and on the FIRST match calls _writer_dispatch and returns — one
+# writer wins, no double-bench. New classes are config-only: add a row to
+# seat-caps.json, a matcher function, a case branch in _matcher_dispatch /
+# _writer_dispatch, and one regression test.
+#
+# Why the dispatch tables are a `case` (not eval): bash function dispatch by
+# name via eval is fragile under set -euo pipefail and unreadable to auditors.
+# A case table is explicit, grep-able, and fails loud on an unregistered name
+# instead of silently no-op'ing. Adding a class IS two code edits (case branch
+# + seat-caps.json row), not zero — that is the explicit-registration contract:
+# a misspelled matcher name must NOT silently resolve to nothing.
+
+# _matcher_dispatch <matcher_name> <out> <err>
+# Calls the named matcher function with (out, err). Returns the matcher's
+# exit code (0=match, nonzero=no-match). Returns 1 for an unknown name so
+# a stale config row is a loud fail, not a silent skip.
+_matcher_dispatch() {
+    local matcher="$1" out="$2" err="$3"
+    case "$matcher" in
+        is_quota_cap_error) is_quota_cap_error "$out" "$err" ;;
+        is_overload_error)  is_overload_error "$out" "$err" ;;
+        *)                  return 1 ;;
+    esac
+}
+
+# _writer_dispatch <writer_name> <provider> <model> <text>
+# Calls the named writer function with (provider, model, text). Returns the
+# writer's exit code (0=marker written, 1=fail-open / no default). Unknown
+# names return 1.
+_writer_dispatch() {
+    local writer="$1" p="$2" m="$3" text="$4"
+    case "$writer" in
+        mark_seat_quota_bench)    mark_seat_quota_bench "$p" "$m" "$text" ;;
+        mark_seat_overload_bench) mark_seat_overload_bench "$p" "$m" "$text" ;;
+        *)                        return 1 ;;
+    esac
+}
+
+# _load_error_classes [json_path]
+# Echoes one class entry per line as: <trigger_order>	<class_name>	<matcher>	<writer>
+# Sorted ascending by trigger_order. Returns 1 if the error_classes block is
+# missing or empty (callers fall back gracefully — no dispatch, no bench).
+_load_error_classes() {
+    local json="${1:-$SEAT_CAPS_JSON}"
+    [[ -f "$json" ]] || return 1
+    jq -r '
+      if (.error_classes // {}) | length == 0 then empty
+      else
+        .error_classes | to_entries[]
+        | [.value.trigger_order // 999, .key, (.value.matcher // ""), (.value.writer // "")]
+        | @tsv
+      end
+    ' "$json" 2>/dev/null | sort -t$'	' -k1,1n || true
+}
+
+# _dispatch_lane_faults <provider> <model> <out> <err>
+# Single entry point for pi-issue-run's post-mortem dispatch. Iterates the
+# error_classes registry by trigger_order; the FIRST class whose matcher
+# returns 0 fires its writer and the function returns (no later class fires).
+# This is the "one writer wins, no double-bench" contract: a body that matches
+# two classes (e.g. a 503 storm that also mentions "limit") gets benched by
+# the lowest trigger_order class only.
+#
+# Returns 0 if any class matched and its writer was attempted (whether the
+# writer wrote a marker or failed-open), 1 if no class matched.
+_dispatch_lane_faults() {
+    local p="$1" m="$2" out="$3" err="$4"
+    local order cls matcher writer
+    while IFS=$'	' read -r order cls matcher writer; do
+        [[ -n "$cls" && -n "$matcher" && -n "$writer" ]] || continue
+        if _matcher_dispatch "$matcher" "$out" "$err"; then
+            if _writer_dispatch "$writer" "$p" "$m" "$out"$'
+'"$err"; then
+                return 0
+            fi
+            seat_log "dispatch: $cls matcher fired but writer $writer failed-open for $p/$m"
+            return 0
+        fi
+    done < <(_load_error_classes)
+    return 1
+}
+
+# --- fast-death error classification (fleet-ops#3766) ----------------------
+# A fast death (pi exits non-zero with 0 tool calls) that matches NO existing
+# detector leaves the seat ledger at health_class=healthy (a probe overwrote
+# it) while pick_seat logged UNUSABLE — the seat flaps between probe-healthy
+# and run-dead every few minutes and each flap burns a claim. The seat
+# retirement rule (2026-09-05) requires citing the ERROR CLASS before any cap
+# change; with no error text nobody can classify the death, so the seat can
+# neither be benched honestly nor cleared. These helpers give every fast death
+# a classifiable literal: session_tool_calls counts the session, classify_death_error
+# reuses the existing matchers to derive an error_class (unknown if none match)
+# plus the raw tail, and _seat_merge_error_class writes last_error_class +
+# bench_reason into the existing ledger file (a field-merge, not a new organ).
+
+# session_tool_calls <session_jsonl_path>
+# Counts completed tool calls in a pi session jsonl. Each toolResult message
+# is one tool call that ran. Returns 0 on parse failure (fail-open).
+session_tool_calls() {
+    local f="${1:-}"
+    [[ -n "$f" && -f "$f" ]] || { printf '0'; return 0; }
+    local n
+    n=$(jq -r 'select(.message.role? == "toolResult") | .message.toolCallId // empty' "$f" 2>/dev/null | grep -c . 2>/dev/null || true)
+    [[ "$n" =~ ^[0-9]+$ ]] || n=0
+    printf '%s' "$n"
+}
+
+# classify_death_error <out_file> <err_file> <session_jsonl>
+# Prints two lines: the error_class and the literal error tail (<=300 chars).
+# Reuses the existing matchers (is_quota_cap_error, is_overload_error,
+# is_spawn_etimeout, is_mid_session_death) so a fast death always carries a
+# classifiable literal. An unclassifiable death is "unknown" with the raw tail.
+classify_death_error() {
+    local out="${1:-}" err="${2:-}" sess="${3:-}"
+    local out_text="" err_text=""
+    [[ -n "$out" && -f "$out" ]] && out_text=$(cat "$out" 2>/dev/null || true)
+    [[ -n "$err" && -f "$err" ]] && err_text=$(cat "$err" 2>/dev/null || true)
+    local cls="unknown"
+    if is_quota_cap_error "$out_text" "$err_text"; then
+        cls="quota_cap"
+    elif is_overload_error "$out_text" "$err_text"; then
+        cls="overload_503"
+    elif is_spawn_etimeout "$out_text" "$err_text"; then
+        cls="spawn_etimeout"
+    elif is_mid_session_death "$err"; then
+        cls="mid_session_death"
+    elif [[ -n "$err_text" ]] && grep -qiE 'spawnSync.*ETIMEDOUT|ETIMEDOUT.*spawnSync' <<<"$err_text" 2>/dev/null; then
+        cls="hang_etimedout"
+    fi
+    # Literal: prefer the session-error line (#3238 surfaces it into err),
+    # then the last non-empty stderr line, then the session jsonl errorMessage.
+    local literal=""
+    if [[ -n "$err_text" ]]; then
+        literal=$(grep -E '^session-error:' <<<"$err_text" 2>/dev/null | tail -1 | sed 's/^session-error: //' | head -c 300 || true)
+    fi
+    if [[ -z "$literal" && -n "$err_text" ]]; then
+        literal=$(grep -vE '^[[:space:]]*$' <<<"$err_text" 2>/dev/null | tail -1 | head -c 300 || true)
+    fi
+    if [[ -z "$literal" && -n "$sess" && -f "$sess" ]]; then
+        literal=$(jq -r 'select(.message.stopReason? == "error") | .message.errorMessage // empty' "$sess" 2>/dev/null | tail -1 | head -c 300 || true)
+    fi
+    [[ -z "$literal" ]] && literal="(no error text captured)"
+    printf '%s\n%s\n' "$cls" "$literal"
+}
+
+# _seat_merge_error_class <provider> <model> <error_class> <bench_reason>
+# Merges last_error_class + bench_reason into the existing seat ledger file
+# (in-place jq edit). Same ledger file the mark_seat_* writers use — a
+# field-merge, not a new organ. Best-effort: a missing ledger or jq failure
+# returns 1, never blocks the caller's exit path.
+_seat_merge_error_class() {
+    local p="$1" m="$2" cls="${3:-unknown}" reason="${4:-}"
+    if ! _seat_key_guard "$p" "$m" "_seat_merge_error_class"; then return 1; fi
+    local path
+    path=$(seat_ledger_path "$p" "$m")
+    [[ -f "$path" ]] || return 1
+    local tmp="$path.errcls.$$.$RANDOM.tmp"
+    if jq --arg ec "$cls" --arg br "$reason" \
+        '.last_error_class=$ec | .bench_reason=$br' "$path" >"$tmp" 2>/dev/null; then
+        chmod 0644 "$tmp" 2>/dev/null || true
+        if mv "$tmp" "$path" 2>/dev/null; then
+            return 0
+        fi
+    fi
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+}
+
+# _seat_is_benched <provider> <model>
+# Returns 0 if the seat ledger already shows an active bench (a non-healthy
+# health_class, a future bench_until/usable_at, or an unexpired spawn-bench
+# marker), 1 otherwise. Used by the fast-death fallthrough bench (fleet-ops#3766)
+# so it never overwrites a bench a prior detector (hang_bench / quota / overload
+# / mid-session) already wrote — the fallthrough is only for a seat that is
+# genuinely unbenched and flapping.
+_seat_is_benched() {
+    local p="$1" m="$2"
+    local sb_path sb_usable
+    sb_path=$(seat_spawn_bench_path "$p" "$m")
+    if [[ -f "$sb_path" ]]; then
+        sb_usable=$(jq -r '.usable_at // ""' "$sb_path" 2>/dev/null || true)
+        if [[ -n "$sb_usable" ]] && _seat_in_future "$sb_usable"; then
+            return 0
+        fi
+    fi
+    local f hc bench_until usable_at
+    f=$(seat_ledger_path "$p" "$m")
+    [[ -f "$f" ]] || return 1
+    IFS=$'\x1f'$'\n' read -r hc bench_until usable_at < <(
+        jq -r '[(.health_class//""),(.bench_until//""),(.usable_at//"")] | join("\u001f")' "$f" 2>/dev/null || true
+    )
+    [[ -z "$hc" ]] && return 1
+    # Any non-healthy class is a bench (hang_bench / quota_bench / overload_bench
+    # / transient_fault / corpse) — never overwrite it with a fresh spawn-fail.
+    [[ "$hc" != "healthy" ]] && return 0
+    if [[ -n "$bench_until" ]] && _seat_in_future "$bench_until"; then return 0; fi
+    if [[ -n "$usable_at" ]] && _seat_in_future "$usable_at"; then return 0; fi
     return 1
 }
 
@@ -3042,7 +6330,7 @@ is_quota_cap_error() {
     local combined="$out"$'\n'"$err"
     [[ -n "$combined" ]] || return 1
     # Quota/cap signal words (hard wall, not a transient retry).
-    if ! grep -qiE 'weekly[[:space:]]+(clinepass[[:space:]]+)?limit|daily[[:space:]]+limit|quota[[:space:]]+(exhausted|exceeded|reached)|INFERENCE_CAP_ERROR|usage[[:space:]]+limit|plan[[:space:]]+limit|out[[:space:]]+of[[:space:]]+credits|message[[:space:]]+rate[[:space:]]+limit|rate[[:space:]]+limit[[:space:]]+(exceeded|reached)|cap[[:space:]]+(exceeded|reached)|exceeded[[:space:]]+your' <<<"$combined"; then
+    if ! grep -qiE 'weekly[[:space:]]+(clinepass[[:space:]]+)?limit|daily[[:space:]]+limit|quota[[:space:]]+(exhausted|exceeded|reached)|usage[[:space:]]+balance[[:space:]]+exhausted|budget_exceeded|credit[[:space:]]+balance[[:space:]]+depleted|free-model[[:space:]]+token[[:space:]]+quota|resource_exhausted|Connection error, send a message to continue retrying|INFERENCE_CAP_ERROR|usage[[:space:]]+limit|plan[[:space:]]+limit|out[[:space:]]+of[[:space:]]+credits|message[[:space:]]+rate[[:space:]]+limit|rate[[:space:]]+limit[[:space:]]+(exceeded|reached)|cap[[:space:]]+(exceeded|reached)|exceeded[[:space:]]+your' <<<"$combined"; then
         return 1
     fi
     # A reset signal: an explicit window OR a "resets" keyword. The provider
@@ -3053,7 +6341,16 @@ is_quota_cap_error() {
     fi
     # Hard-cap keyword alone (e.g. "weekly Clinepass limit") with no window
     # text still qualifies: the caller falls back to the provider default.
-    if grep -qiE 'weekly[[:space:]]+(clinepass[[:space:]]+)?limit|daily[[:space:]]+limit|INFERENCE_CAP_ERROR' <<<"$combined"; then
+    # FreeUsageLimitError (opencode/mimo free-tier 429, no reset window) is a
+    # provider-side free-quota exhaustion — a hard wall, not a transient retry.
+    # "usage balance exhausted" (xai-oauth Grok Build HTTP 402, fleet-ops 2026-09-05:
+    # 15 sessions/24h died at 1s, never benched) is a prepaid-balance wall with no
+    # reset text — the weekly provider default in seat-caps.json applies.
+    # "Credit balance depleted" / budget_exceeded (mergegateway HTTP 402,
+    # fleet-ops#3973, 2026-09-06: three seats died at 1s, booked
+    # error_class=unknown) is the same prepaid-balance wall: classify it; with
+    # no provider default the writer fails open and the reactive ledger benches.
+    if grep -qiE 'weekly[[:space:]]+(clinepass[[:space:]]+)?limit|daily[[:space:]]+limit|INFERENCE_CAP_ERROR|FreeUsageLimitError|usage[[:space:]]+balance[[:space:]]+exhausted|budget_exceeded|credit[[:space:]]+balance[[:space:]]+depleted|usage[[:space:]]+limit[[:space:]]+for[[:space:]]+the[[:space:]]+current[[:space:]]+free[[:space:]]+model|free-model[[:space:]]+token[[:space:]]+quota|resource_exhausted' <<<"$combined"; then
         return 0
     fi
     return 1
@@ -3070,6 +6367,9 @@ is_quota_cap_error() {
 # jq/rename failure).
 mark_seat_quota_bench() {
     local p="$1" m="$2" text="${3:-}"
+    # fleet-ops#3661: never write a ledger for a phantom seat key.
+    if ! _seat_key_guard "$p" "$m" "mark_seat_quota_bench"; then return 1; fi
+    if _transport_is_down; then _mark_transport_down "$p" "$m"; return 1; fi
     local path
     path=$(seat_ledger_path "$p" "$m")
     mkdir -p "$LEDGER_DIR" 2>/dev/null || true
@@ -3077,6 +6377,17 @@ mark_seat_quota_bench() {
     local window_s=0 parsed
     parsed=$(_parse_reset_window_s "$text" 2>/dev/null || true)
     [[ "$parsed" =~ ^[0-9]+$ ]] && window_s="$parsed"
+    if (( window_s <= 0 )); then
+        # fleet-ops#4217: the provider's own live quota (fresh observation of
+        # an EXHAUSTED window) is the real reset horizon — it beats the static
+        # quota_bench_default_s below. 0 (no live figure) falls through.
+        local live
+        live=$(provider_live_reset_s "$p")
+        if [[ "$live" =~ ^[0-9]+$ ]] && (( live > 0 )); then
+            window_s="$live"
+            seat_log "quota-bench: $p/$m benching on live fleet_seat_quota reset ${live}s (exhausted window, fleet-ops#4217)"
+        fi
+    fi
     if (( window_s <= 0 )); then
         local def
         def=$(provider_quota_bench_default "$p")
@@ -3091,7 +6402,6 @@ mark_seat_quota_bench() {
     local now_utc now_s bench_until
     now_s=$(date -u +%s)
     now_utc=$(date -u -d "@$now_s" +%Y-%m-%dT%H:%M:%SZ)
-    bench_until=$(date -u -d "@$((now_s + window_s))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
 
     # Merge consecutive_failure_count from any existing entry.
     local prev_count=0
@@ -3100,6 +6410,43 @@ mark_seat_quota_bench() {
         [[ "$prev_count" =~ ^[0-9]+$ ]] || prev_count=0
     fi
     local merged_count=$((prev_count + 1))
+    # fleet-ops#3531: escalate the bench geometrically by count (base * 2^(n-1),
+    # capped at 6 h), then park at the failure ceiling. The quota/cap path used
+    # a FLAT provider default every cycle, so a chronically walled seat re-entered
+    # rotation every window forever (count climbed to 72 on devin/glm-5-2 at a
+    # ~15min default). bench_until is computed from the escalated window so the
+    # bench branch in seat_usable holds the effective wall.
+    window_s=$(_geometric_bench_window "$window_s" "$merged_count")
+    bench_until=$(date -u -d "@$((now_s + window_s))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
+
+    # fleet-ops#2594: corpse reclassification for quota_cap. seat-health.ts
+    # (#2145) covers transient_http/rate_limit/cli_timeout/transient_other/
+    # empty_run by count and quota_exhausted by age — but the bash writer's
+    # failure_mode=quota_cap was excluded from both branches, so a seat like
+    # opencode/mimo-v2.5-free at 42 consecutive 429s stayed quota_bench
+    # forever, re-offered after each park wall and never terminal. At
+    # merged_count >= SEAT_DEAD_CONSECUTIVE_THRESHOLD (default 25, matching
+    # seat-health.ts) the ledger is written with seat_dead=true so the roster
+    # and census count the seat dead and the alert surface stays loud.
+    #
+    # fleet-ops#3377: as originally written the corpse branch ALSO cleared
+    # bench_until/usable_at (the fleet-ops#2415/#2422 "no-comeback-clock"
+    # convention). For a quota_cap seat that is wrong: a quota wall is
+    # TIME-BASED and resets, so clearing the clock means no release time is
+    # ever reached — the seat is permanently dead instead of cooling down
+    # (live 2026-09-04: opencode/mimo-v2.5-free at c=33 sat seat_dead=true
+    # with bench_until=""). A concrete bench_until is now KEPT on the corpse
+    # so that (a) seat_usable's quota_bench branch holds the seat benched
+    # while the clock is future and (b) fleet-seat-comeback-release tool-uses
+    # the seat once the clock passes and a healthy observation clears
+    # seat_dead=false (fleet-ops#2638: a quota_cap corpse is not in
+    # _corpse_is_recoverable_mode, so with no wall it would be retired as
+    # permanent). seat_dead=true still flags the corpse to the roster/census;
+    # only the no-comeback-clock clear is dropped.
+    local seat_dead=false
+    if _seat_dead_by_threshold "$merged_count"; then
+        seat_dead=true
+    fi
 
     local tmp="$path.bench.$$.$RANDOM.tmp"
     if ! jq -nc \
@@ -3107,7 +6454,8 @@ mark_seat_quota_bench() {
         --arg observed "$now_utc" --arg bench "$bench_until" --arg usable "$bench_until" \
         --argjson window "$window_s" --argjson merged "$merged_count" \
         --argjson http_status 429 --argjson retry_after null \
-        --argjson retryable true --argjson seat_dead false --argjson poison_ladder false \
+        --argjson retryable true --argjson seat_dead "$seat_dead" --argjson poison_ladder false \
+        --arg writer "mark_seat_quota_bench" \
         '{
           provider:$provider, model:$model,
           http_status:$http_status, retry_after:$retry_after,
@@ -3119,7 +6467,8 @@ mark_seat_quota_bench() {
           bench_until:$bench,
           usable_at:$usable,
           bench_window_s:$window,
-          consecutive_failure_count:$merged
+          consecutive_failure_count:$merged,
+          writer:$writer
         }' > "$tmp" 2>/dev/null; then
         seat_log "quota-bench: jq compose FAILED for $p/$m — marker NOT written"
         rm -f "$tmp" 2>/dev/null || true
@@ -3127,10 +6476,84 @@ mark_seat_quota_bench() {
     fi
     chmod 0644 "$tmp" 2>/dev/null || true
     if mv "$tmp" "$path" 2>/dev/null; then
-        seat_log "quota-bench: benched $p/$m until $bench_until (window=${window_s}s, count=$merged_count)"
+        if [[ "$seat_dead" == "true" ]]; then
+            seat_log "quota-bench: $p/$m CORPSE reclassified (count=$merged_count >= ${SEAT_DEAD_CONSECUTIVE_THRESHOLD}); bench_until=$bench_until kept as comeback clock (fleet-ops#3377); re-released once it passes / a healthy observation clears seat_dead=false (fleet-ops#2594)"
+        else
+            seat_log "quota-bench: benched $p/$m until $bench_until (window=${window_s}s, count=$merged_count)"
+            if _seat_parked_by_ceiling "$merged_count"; then
+                _emit_failure_ceiling_metric "$p" "$m" "$merged_count"
+                seat_log "quota-bench: $p/$m PARKED past failure ceiling (count=$merged_count >= ${SEAT_FAILURE_CEILING}, wall=${window_s}s)"
+            fi
+        fi
         return 0
     fi
     seat_log "quota-bench: rename FAILED for $p/$m at $path"
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+}
+
+# --- corpse-retirement parked ledger (fleet-ops#3669) -----------------------
+# Write a terminal "parked" ledger for a seat that the corpse-retirement
+# caller (bin/fleet-seat-comeback-release) has physically moved out of the
+# live roster into a dated seats-corpse-retired-<ts>/ audit dir. Before this
+# writer, the move left NO ledger in the live roster, so seat_usable fell
+# through to the "NO HEALTH DATA (no ledger file) — assuming usable" fail-open
+# and pick_seat re-picked the deliberately-retired dead seat (hetzner burned
+# 2 claims in 6 min, 2026-09-05). The parked ledger keeps the seat UNPICKABLE:
+# seat_usable sees seat_dead=true / health_class=parked / usable_at far future
+# and refuses it. Best-effort: a write failure is logged but must not fail the
+# caller's own exit. Returns 0 if the parked ledger was written, 1 otherwise.
+write_parked_ledger() {
+    local p="$1" m="$2" reason="${3:-corpse-retired}"
+    local path now_utc now_s far_future tmp
+    # fleet-ops#3661: never write a ledger for a phantom seat key.
+    if ! _seat_key_guard "$p" "$m" "write_parked_ledger"; then return 1; fi
+    path=$(seat_ledger_path "$p" "$m")
+    mkdir -p "$LEDGER_DIR" 2>/dev/null || true
+    now_s=$(date -u +%s)
+    now_utc=$(date -u -d "@$now_s" +%Y-%m-%dT%H:%M:%SZ)
+    # Far future: 10 years out, so seat_usable's future-usable_at check always
+    # holds the seat off the ladder (and seat_dead=true is the terminal block).
+    far_future=$(date -u -d "@$((now_s + 315360000))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
+    tmp="$path.park.$$.$RANDOM.tmp"
+    # fleet-ops#3603: a corpse ledger that carries NO bench_reason reads as the
+    # fail-open corpse shape (fleet-ops#1890/#2712) to the seat-health census /
+    # corpse snapshot, which re-files the same durably-benched corpse ticket
+    # every tick as "bench_reason=null". Record the durable bench literal here
+    # so a corpse-retired ledger (cap=0 + intentional_cap_zero=corpse is the
+    # real bench; pick_seat never offers it) is recognisable as benched, never
+    # fail-open.
+    br="corpse-retired: cap=0 corpse bench, pick_seat never offers (durable, fleet-ops#2716/#3669)"
+    if ! jq -nc \
+        --arg provider "$p" --arg model "$m" \
+        --arg observed "$now_utc" --arg usable "$far_future" \
+        --arg br "$br" \
+        --argjson seat_dead true --argjson poison_ladder false \
+        '{
+          provider:$provider, model:$model,
+          http_status:null, retry_after:null,
+          health_class:"parked",
+          retryable:false, seat_dead:$seat_dead, poison_ladder:$poison_ladder,
+          observed_at:$observed,
+          source:"corpse_retirement",
+          failure_mode:"corpse_retired",
+          last_error_class:"corpse_retired",
+          bench_reason:$br,
+          bench_until:$usable,
+          usable_at:$usable,
+          consecutive_failure_count:0,
+          writer:"write_parked_ledger"
+        }' > "$tmp" 2>/dev/null; then
+        seat_log "parked-ledger: jq compose FAILED for $p/$m — parked ledger NOT written"
+        rm -f "$tmp" 2>/dev/null || true
+        return 1
+    fi
+    chmod 0644 "$tmp" 2>/dev/null || true
+    if mv "$tmp" "$path" 2>/dev/null; then
+        seat_log "parked-ledger: $p/$m parked (seat_dead=true, class=parked, usable_at=$far_future, reason=$reason)"
+        return 0
+    fi
+    seat_log "parked-ledger: rename FAILED for $p/$m at $path"
     rm -f "$tmp" 2>/dev/null || true
     return 1
 }
@@ -3169,16 +6592,21 @@ is_overload_error() {
     local out="$1" err="$2"
     local combined="$out"$'\n'"$err"
     [[ -n "$combined" ]] || return 1
-    # Three ACCEPT shapes, each independently sufficient (any one of):
+    # Four ACCEPT shapes, each independently sufficient (any one of):
     #   (a) the commandcode-specific 503 "Upstream model provider is
     #       temporarily unavailable" — the live fleet-ops#652 body.
     #   (b) an HTTP 503 status with a Retry-After / "try again" hint.
     #   (c) a generic "upstream ... overloaded" (e.g. OpenAI/Anthropic
     #       502/503 wording).
+    #   (d) a generic "A server error occurred. Please try again." — the
+    #       xkiro 5xx body (fleet-ops#3738): pi surfaces it as rc=1 with no
+    #       status code, so without this shape it falls through to
+    #       no_block:rc=1 spawn-fail and accumulates a 47-count park
+    #       instead of a short overload bench.
     # Bare "503" or bare "temporarily unavailable" WITHOUT any of the
     # above co-occurring context is NOT a match (avoid false positives on
     # log lines that mention 503 in passing, or a flaky network call).
-    if grep -qiE 'upstream[[:space:]]+(model[[:space:]]+)?provider[[:space:]]+is[[:space:]]+temporarily[[:space:]]+unavailable|upstream[[:space:]]+(is[[:space:]]+)?overloaded|overloaded[[:space:]]+upstream' <<<"$combined"; then
+    if grep -qiE 'upstream[[:space:]]+(model[[:space:]]+)?provider[[:space:]]+is[[:space:]]+temporarily[[:space:]]+unavailable|upstream[[:space:]]+(is[[:space:]]+)?overloaded|overloaded[[:space:]]+upstream|server[[:space:]]+error[[:space:]]+occurred[[:space:]]*\.?[[:space:]]*please[[:space:]]+try[[:space:]]+again' <<<"$combined"; then
         return 0
     fi
     if grep -qiE '503[[:space:]]+(service[[:space:]]+unavailable|backend|upstream|bad[[:space:]]+gateway|gateway[[:space:]]+timeout)|http[[:space:]]*503|status[[:space:]]*:[[:space:]]*503|"status":[[:space:]]*503' <<<"$combined"; then
@@ -3207,6 +6635,9 @@ is_overload_error() {
 # jq/rename failure).
 mark_seat_overload_bench() {
     local p="$1" m="$2" text="${3:-}"
+    # fleet-ops#3661: never write a ledger for a phantom seat key.
+    if ! _seat_key_guard "$p" "$m" "mark_seat_overload_bench"; then return 1; fi
+    if _transport_is_down; then _mark_transport_down "$p" "$m"; return 1; fi
     local path
     path=$(seat_ledger_path "$p" "$m")
     mkdir -p "$LEDGER_DIR" 2>/dev/null || true
@@ -3230,7 +6661,6 @@ mark_seat_overload_bench() {
     local now_utc now_s bench_until
     now_s=$(date -u +%s)
     now_utc=$(date -u -d "@$now_s" +%Y-%m-%dT%H:%M:%SZ)
-    bench_until=$(date -u -d "@$((now_s + window_s))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
 
     # Merge consecutive_failure_count from any existing entry.
     local prev_count=0
@@ -3239,6 +6669,18 @@ mark_seat_overload_bench() {
         [[ "$prev_count" =~ ^[0-9]+$ ]] || prev_count=0
     fi
     local merged_count=$((prev_count + 1))
+    # fleet-ops#3531: escalate the bench geometrically by count (base * 2^(n-1),
+    # capped at 6 h), then park at the failure ceiling.
+    window_s=$(_geometric_bench_window "$window_s" "$merged_count")
+    bench_until=$(date -u -d "@$((now_s + window_s))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
+    # fleet-ops#3531: a 503 on a corpse must not resurrect it. Keep the
+    # existing seat_dead (same rule as mark_seat_quota_bench); a fresh
+    # ledger starts false.
+    local prev_dead=false
+    if [[ -f "$path" ]]; then
+        prev_dead=$(jq -r 'if .seat_dead == true then "true" else "false" end' "$path" 2>/dev/null || echo false)
+        [[ "$prev_dead" == "true" ]] || prev_dead=false
+    fi
 
     local tmp="$path.overload.$$.$RANDOM.tmp"
     if ! jq -nc \
@@ -3246,7 +6688,8 @@ mark_seat_overload_bench() {
         --arg observed "$now_utc" --arg bench "$bench_until" --arg usable "$bench_until" \
         --argjson window "$window_s" --argjson merged "$merged_count" \
         --argjson http_status 503 --argjson retry_after null \
-        --argjson retryable true --argjson seat_dead false --argjson poison_ladder false \
+        --argjson retryable true --argjson seat_dead "$prev_dead" --argjson poison_ladder false \
+        --arg writer "mark_seat_overload_bench" \
         '{
           provider:$provider, model:$model,
           http_status:$http_status, retry_after:$retry_after,
@@ -3258,7 +6701,8 @@ mark_seat_overload_bench() {
           bench_until:$bench,
           usable_at:$usable,
           bench_window_s:$window,
-          consecutive_failure_count:$merged
+          consecutive_failure_count:$merged,
+          writer:$writer
         }' > "$tmp" 2>/dev/null; then
         seat_log "overload-bench: jq compose FAILED for $p/$m — marker NOT written"
         rm -f "$tmp" 2>/dev/null || true
@@ -3267,6 +6711,10 @@ mark_seat_overload_bench() {
     chmod 0644 "$tmp" 2>/dev/null || true
     if mv "$tmp" "$path" 2>/dev/null; then
         seat_log "overload-bench: benched $p/$m until $bench_until (window=${window_s}s, count=$merged_count)"
+        if _seat_parked_by_ceiling "$merged_count"; then
+            _emit_failure_ceiling_metric "$p" "$m" "$merged_count"
+            seat_log "overload-bench: $p/$m PARKED past failure ceiling (count=$merged_count >= ${SEAT_FAILURE_CEILING}, wall=${window_s}s)"
+        fi
         return 0
     fi
     seat_log "overload-bench: rename FAILED for $p/$m at $path"
@@ -3295,6 +6743,9 @@ mark_seat_overload_bench() {
 # "retry after Ns" or "resets in N" window we use it.
 mark_seat_hang_bench() {
     local p="$1" m="$2" text="${3:-}"
+    # fleet-ops#3661: never write a ledger for a phantom seat key.
+    if ! _seat_key_guard "$p" "$m" "mark_seat_hang_bench"; then return 1; fi
+    if _transport_is_down; then _mark_transport_down "$p" "$m"; return 1; fi
     local path
     path=$(seat_ledger_path "$p" "$m")
     mkdir -p "$LEDGER_DIR" 2>/dev/null || true
@@ -3317,11 +6768,15 @@ mark_seat_hang_bench() {
         [[ "$prev_count" =~ ^[0-9]+$ ]] || prev_count=0
     fi
     local merged_count=$((prev_count + 1))
+    # fleet-ops#1362: park past the failure ceiling (long wall override).
+    window_s=$(_failure_ceiling_wall "$merged_count" "$window_s")
+    bench_until=$(date -u -d "@$(($(date -u +%s) + window_s))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
 
     local tmp="$path.hang.$$.$RANDOM.tmp"
     if ! jq -nc \
         --arg provider "$p" --arg model "$m" --arg observed "$now_utc" --arg bench_until "$bench_until" \
         --argjson window_s "$window_s" --argjson merged "$merged_count" \
+        --arg writer "mark_seat_hang_bench" \
         '{
           provider:$provider, model:$model,
           http_status:0, retry_after:null,
@@ -3332,7 +6787,8 @@ mark_seat_hang_bench() {
           failure_mode:"hang_no_response",
           bench_until:$bench_until,
           hang_window_s:$window_s,
-          consecutive_failure_count:$merged
+          consecutive_failure_count:$merged,
+          writer:$writer
         }' > "$tmp" 2>/dev/null; then
         seat_log "hang-bench: jq compose FAILED for $p/$m — marker NOT written"
         rm -f "$tmp" 2>/dev/null || true
@@ -3341,6 +6797,10 @@ mark_seat_hang_bench() {
     chmod 0644 "$tmp" 2>/dev/null || true
     if mv "$tmp" "$path" 2>/dev/null; then
         seat_log "hang-bench: benched $p/$m until $bench_until (window=${window_s}s, count=$merged_count) — hung unit TimeoutStartSec / PI_HANG_TIMEOUT_S"
+        if _seat_parked_by_ceiling "$merged_count"; then
+            _emit_failure_ceiling_metric "$p" "$m" "$merged_count"
+            seat_log "hang-bench: $p/$m PARKED past failure ceiling (count=$merged_count >= ${SEAT_FAILURE_CEILING}, wall=${window_s}s)"
+        fi
         return 0
     fi
     seat_log "hang-bench: rename FAILED for $p/$m at $path"

@@ -22,8 +22,6 @@ This document is the runbook for that hand-off.
 | Receiver systemd unit            | `systemd/gh-webhook-receiver.service`                     |
 | Synthetic canary script          | `bin/gh-webhook-canary.py`                                |
 | Canary systemd unit + timer      | `systemd/gh-webhook-canary.{service,timer}`               |
-| Dead-man watchdog script         | `bin/gh-webhook-canary-deadman.py`                        |
-| Dead-man systemd unit + timer    | `systemd/gh-webhook-canary-deadman.{service,timer}`       |
 | Intake cadence slow-down         | `systemd/pi-intake@.timer` (`*:00/15` → `*:00/20`)        |
 | Reconciler-caught counter        | `lib/pi-intake-tick.sh`                                   |
 | Organ registry entries           | `config/fleet-organs.json`                                |
@@ -116,7 +114,7 @@ In `https://github.com/organizations/Nishfleet/settings/hooks`, add:
 | Content type   | `application/json`                                          |
 | Secret         | The same hex from step 3                                    |
 | SSL verify     | enabled                                                     |
-| Events         | Issues, Workflow runs                                       |
+| Events         | Issues, Workflow runs, Pull requests                       |
 
 Or use `gh api` on a personal token with org-webhook scope:
 
@@ -127,7 +125,7 @@ gh api --method POST /orgs/Nishfleet/hooks \
     -F config[content_type]='json' \
     -F config[secret]="$(cat ~/.config/fleet-ops/gh-webhook.secret)" \
     -F config[insecure_ssl]='false' \
-    -F events[]='issues' -F events[]='workflow_run' \
+    -F events[]='issues' -F events[]='workflow_run' -F events[]='pull_request' \
     -F active=true
 ```
 
@@ -141,7 +139,6 @@ install.sh                       # picks up the new systemd units + bins
 systemctl --user daemon-reload
 systemctl --user enable --now gh-webhook-receiver.service
 systemctl --user enable --now gh-webhook-canary.timer
-systemctl --user enable --now gh-webhook-canary-deadman.timer
 ```
 
 Verify:
@@ -152,28 +149,27 @@ curl -sS http://127.0.0.1:8088/healthz | jq .
 # Synthetic canary hits the receiver from inside the VPS — no tunnel involved.
 systemctl --user start gh-webhook-canary.service
 journalctl --user -u gh-webhook-canary.service -n 5
-# After ~5 min, deadman should report status=ok and NOT page.
-systemctl --user start gh-webhook-canary-deadman.service
-journalctl --user -u gh-webhook-canary-deadman.service -n 5
 ```
 
-### 6. Wire the (optional) healthchecks.io fail URL
+### 6. Wire the (optional) healthchecks.io ping URL
 
-The dead-man can ping an external dead-man's switch when the canary
-goes red. To enable, set in the user's systemd environment:
+The canary pings an external healthchecks.io URL on each green run
+(ping-on-success). If the push channel stops going green, healthchecks.io
+stops receiving pings and alerts externally. To enable, set the URL in a
+local env file (never in the repo):
 
 ```sh
-mkdir -p ~/.config/systemd/user/gh-webhook-canary-deadman.service.d
-cat > ~/.config/systemd/user/gh-webhook-canary-deadman.service.d/override.conf <<'EOF'
-[Service]
-Environment=GH_WEBHOOK_HEALTHCHECKS_FAIL_URL=https://hc-ping.com/<uuid-fail>
+mkdir -p ~/.config/fleet-ops
+cat > ~/.config/fleet-ops/gh-webhook-hc.env <<'EOF'
+GH_WEBHOOK_HEALTHCHECKS_URL=https://hc-ping.com/<uuid>
 EOF
 systemctl --user daemon-reload
 ```
 
-The dead-man does NOT page healthchecks.io on every red evaluation —
-it throttles to once per 30 minutes via the alert-repair triage file
-to prevent alert storms when the path is down for hours.
+The canary pings healthchecks.io on every green run; the internal
+dead-man is the `FleetGhWebhookCanaryAbsent` absent() rule in
+`config/fleet_rules.yml`, which pages the alert-repair rail when the
+series is missing or stale.
 
 ## Why these design choices
 
@@ -210,6 +206,38 @@ finds ready work, that means the edge-triggered path missed it. The
 `fleet_intake_reconciler_caught_total` counter exposes this to the
 alert rail.
 
+**Why does a closed PR fire the worktree reaper?**
+
+A merged or closed PR leaves its `claim/issue-<N>` worktree behind
+(~440MB each). The reaper's Mode A reaps MERGED immediately and
+CLOSED after the age gate (fleet-ops#3023), so both terminal states
+must trigger it. The receiver dispatches `pull_request/closed` to
+`fleet-worktree-reaper.service` (fleet-ops#3269); `systemctl start` on
+an already-active oneshot is a no-op, so a burst of closes dedupes
+naturally. The daily timer stays as the level-triggered backstop for
+webhooks that never arrive.
+
+**fleet-ops#3270: heartbeat GitHub-reading sections moved behind webhooks**
+
+Four sections that previously ran inside `fleet-heartbeat-tier1` every
+15 min now fire on the matching GitHub event via this receiver. The
+heartbeat timer dropped to 60 min and keeps only host-local sections
+(deploy, queue, reclaim, failed-unit recovery, RAM, seat-health,
+canaries). Each new dispatch has a companion backstop timer for
+webhooks that never arrive:
+
+| Event | Dispatch | Backstop timer | Was heartbeat § |
+|---|---|---|---|
+| `issues/opened` + `issues/labeled` | `lifecycle-label-sweep.service` | `lifecycle-label-sweep.timer` (hourly) | §6b |
+| `pull_request/closed` | `fleet-merged-pr-close.service` | `fleet-merged-pr-close.timer` (hourly) | §19 |
+| `issues/closed` | `fleet-issue-close-duplicates.service` | `fleet-issue-close-duplicates.timer` (daily) | §21 |
+
+`pull_request/closed` is a multi-fan-out: it fires BOTH
+`fleet-worktree-reaper.service` (fleet-ops#3269) AND
+`fleet-merged-pr-close.service` (fleet-ops#3270). systemd's oneshot
+semantics guarantee a re-dispatch of an already-active unit is a no-op,
+so the webhook fast-path and the backstop timer do not fight.
+
 **Why 20-min cadence (and not 15 or 30)?**
 
 The issue says 15-30 minutes; we picked 20 because:
@@ -227,9 +255,9 @@ The issue says 15-30 minutes; we picked 20 because:
 |-----------------------------------------|---------------------------------------------------------|
 | Worker unreachable from GH               | GitHub retries + pings CF; alert-repair never fires      |
 | Tunnel down                             | Worker returns 200 with `forward:"failed"` to GH        |
-| Receiver service dead                   | Worker logs forward failure; dead-man pages in 15 min    |
+| Receiver service dead                   | Worker logs forward failure; absent() rule pages in 15 min    |
 | HMAC secret rotated, mismatched         | Receiver returns 401; GH retries with same payload      |
-| Canary script broken                    | Dead-man pages in 15 min                                |
+| Canary script broken                    | absent() rule pages in 15 min                                |
 | Intake reconciler slow                  | `fleet_intake_reconciler_caught_total` rises            |
 | Org webhook deleted                     | Receiver silent; canary still green; no signal yet — file new issue if this state persists |
 
@@ -245,3 +273,38 @@ The issue says 15-30 minutes; we picked 20 because:
 - **Multi-tenant orgs.** The Worker is single-tenant (Nishfleet); the
   secret is bound via `wrangler secret`, so multi-tenant would need
   one Worker per tenant.
+
+## Incident record: FleetGhWebhookReceiverAbsent (fleet-ops#1594)
+
+**Event:** `FleetGhWebhookReceiverAbsent` fired for ~6h on 2026-08-28
+(08:26Z to ~15:56Z). The push channel itself was brand-new — #1524 landed
+~2 minutes before the alert first fired.
+
+**Root cause:** #1607 — the receiver's heartbeat prom file used
+single-quoted label values (Python `repr()`). node-exporter's textfile
+collector silently drops those, so `absent(fleet_gh_webhook_receiver_last_green_seconds)`
+fired forever regardless of channel health. This was the first-day
+teething of a new organ, not a long-standing drift; the fix (#1607),
+the canonical intake-repos path (#1659), and the annotation pointing at
+the real cause (#1954) all landed within hours.
+
+**Prevention already shipped (this class is mechanically guarded):**
+- The `FleetGhWebhookCanaryAbsent` absent() rule reads the canary series
+  and pages the alert-repair rail when it is missing or stale; the
+  canary also pings healthchecks.io on each green run for an external
+  dead-man.
+- `gh-webhook-receiver.service` carries `Restart=on-failure`, so a crash
+  auto-recovers at the machine level.
+- Offline lock tests pin the label format (#1607), the HMAC/dispatch
+  contract, the organ `absent()` rules, and the live-end-to-end path.
+
+**Restore + live proof (2026-08-29):** receiver restarted onto the
+canonical deploy-clone intake path (`enrolled=['0509','fleet-ops']`);
+live e2e (`bash tests/gh-webhook-receiver-live-e2e.test.sh`) shows
+canary → receiver → prom file → node-exporter → Prometheus with the
+`FleetGhWebhookReceiverAbsent` expression CLEAR.
+
+**Remaining deferred gate:** the five offline lock tests are tracked but
+not wired into `.github/workflows/ci.yml`, so the #1594 regression has
+no pre-merge gate yet. This is a workflow change the worker App token
+cannot push; filed as #1969 for Nish's scope.

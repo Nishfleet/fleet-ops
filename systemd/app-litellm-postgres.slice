@@ -1,0 +1,8 @@
+# fleet-ops#4130 P1: Postgres for LiteLLM budgets/keys/spend. Pinned to
+# MemoryMax=1G (P0 design doc §3) so the catalog cannot grow unbounded on
+# a 15 GB RAM-governed VPS. Local socket only — no network listener
+# (docs/litellm-postgres-setup.md). Separate slice from the proxy so a
+# slow query cannot push the proxy past its own MemoryMax.
+[Slice]
+CPUQuota=100%
+MemoryMax=1G

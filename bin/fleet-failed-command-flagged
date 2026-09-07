@@ -158,6 +158,7 @@ if [[ "$FILE_ISSUES" == "1" ]] && command -v "$GH" >/dev/null 2>&1; then
 fi
 
 filed=0
+deferred=0
 if [[ "$finding_count" != "0" ]]; then
     while IFS= read -r row; do
         [[ -n "$row" ]] || continue
@@ -167,7 +168,10 @@ if [[ "$finding_count" != "0" ]]; then
         loud "FAILED-COMMAND-SWALLOWED" "session=$slug path=$path snippet=$snippet"
 
         [[ "$FILE_ISSUES" == "1" ]] || continue
-        [[ "$filed" -lt "$CAP" ]] || continue
+        if [[ "$filed" -ge "$CAP" ]]; then
+            deferred=$((deferred + 1))
+            continue
+        fi
         command -v "$GH" >/dev/null 2>&1 || continue
 
         signal="signal: failed-command-flagged/${slug}"
@@ -368,5 +372,8 @@ if [[ "$finding_count" == "0" ]]; then
     exit 0
 fi
 
-loud "FAILED-COMMAND-FAIL" "swallowed failures=$finding_count — a failed command was walked past; heartbeat tick will fail"
+# fleet-ops#2726 (gap-audit): the loud-fail line sizes the debt. filed =
+# new issues created this tick; deferred = findings paced by the per-tick
+# cap that remain findings (never dropped — the next tick files them).
+loud "FAILED-COMMAND-FAIL" "swallowed failures=$finding_count (filed=$filed deferred=$deferred) — a failed command was walked past; heartbeat tick will fail"
 exit 1

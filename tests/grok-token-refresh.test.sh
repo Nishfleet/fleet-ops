@@ -8,7 +8,7 @@
 #   2. no xai-oauth provider / no refresh           -> SKIP, exit 0.
 #   3. access still has >TTL_S of life              -> SKIP, exit 0,
 #                                                     auth.json unchanged,
-#                                                     last_success preserved.
+#                                                     last_success advances.
 #   4. POST returns 200 + new tokens                -> OK, exit 0,
 #                                                     auth.json rewritten,
 #                                                     metric written.
@@ -36,7 +36,9 @@
 #  21. Heartbeat wiring (tier1 picks up the absent() rule + organ entry).
 #  22. MANIFEST ships the script + both units.
 #  23. seat-caps reason + _comment_grok cite grok-token-refresh.
-#  24. SKIP after a prior success preserves last_success (no false alarm).
+#  24. SKIP after a prior success advances last_success to now (no false alarm).
+#  25. REJECT preserves last_success (failed grant is not a healthy run).
+#  26. TOKEN_TTL_S default is 18000 (5h) — a 4h-life token is refreshed, not SKIPped.
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -188,6 +190,30 @@ assert_metric_outcome() {
     [[ "$got" == "1" ]] || fail "metric outcome=$want expected 1, got '$got' (textfile: $(cat "$TEXTFILE" 2>/dev/null || echo MISSING))"
 }
 
+# Assert last_success advanced to roughly now (within ±120s). A SKIP is a
+# successful run and must advance last_success so the absent() organ rule
+# does not false-alarm on a healthy idle seat (fleet-ops#2817).
+assert_last_success_advanced() {
+    local label="$1"
+    local got now
+    got="$(awk '/^fleet_grok_token_refresh_last_success_seconds / {print $2}' "$TEXTFILE" 2>/dev/null || echo 0)"
+    now="$(date -u +%s)"
+    [[ "$got" =~ ^[0-9]+$ ]] || fail "$label: last_success not numeric: '$got'"
+    (( got > 0 )) || fail "$label: last_success must be non-zero, got $got"
+    local diff=$(( now - got ))
+    if (( diff < -120 || diff > 120 )); then
+        fail "$label: last_success=$got not within ±120s of now=$now (diff=${diff}s)"
+    fi
+}
+
+# Assert last_success was preserved (NOT advanced) — used for REJECT paths.
+assert_last_success_preserved() {
+    local label="$1" expected="$2"
+    local got
+    got="$(awk '/^fleet_grok_token_refresh_last_success_seconds / {print $2}' "$TEXTFILE" 2>/dev/null || echo 0)"
+    [[ "$got" == "$expected" ]] || fail "$label: last_success must stay $expected, got $got"
+}
+
 # --- 1. auth.json missing -> SKIP, exit 0 ----------------------------------
 rm -f "$AUTH_JSON"
 : >"$GROK_CURL_LOG"
@@ -217,7 +243,7 @@ run_script
 grep -q 'SKIP' <<<"$out" || fail "scenario2b: must log SKIP: $out"
 ok "scenario2b: no refresh under xai-oauth -> SKIP, no curl"
 
-# --- 3. access still fresh -> SKIP, exit 0 ---------------------------------
+# --- 3. access still fresh -> SKIP, exit 0, last_success advances ----------
 : >"$GROK_CURL_LOG"
 write_auth "RT-FIXTURE-NOT-A-REAL-TOKEN-001" $(( ($(date -u +%s) + 86400) * 1000 ))
 before_hash="$(sha256sum "$AUTH_JSON" | awk '{print $1}')"
@@ -226,7 +252,9 @@ run_script
 ! grep -F 'POST' "$GROK_CURL_LOG" >/dev/null 2>&1 || fail "scenario3: must not call curl"
 after_hash="$(sha256sum "$AUTH_JSON" | awk '{print $1}')"
 [[ "$before_hash" == "$after_hash" ]] || fail "scenario3: auth.json was modified on SKIP"
-ok "scenario3: fresh access -> SKIP, auth.json untouched"
+assert_metric_outcome "skipped"
+assert_last_success_advanced "scenario3"
+ok "scenario3: fresh access -> SKIP, auth.json untouched, last_success advanced"
 
 # --- 4. POST 200 with new tokens -> OK -------------------------------------
 : >"$GROK_CURL_LOG"
@@ -485,9 +513,12 @@ jq -e '."_comment_grok" | contains("grok-token-refresh")' "$seat_caps" >/dev/nul
     || fail "scenario23: seat-caps _comment_grok must cite grok-token-refresh"
 ok "scenario23: seat-caps reason + _comment_grok cite grok-token-refresh"
 
-# --- 24. SKIP preserves last_success (no false alarm) ---------------------
-# Seed a prior success metric, then force a fresh-token SKIP. last_success
-# must stay at the seeded value — zeroing it would trip the absent() rule.
+# --- 24. SKIP advances last_success (no false alarm) ----------------------
+# Seed a stale prior success metric, then force a fresh-token SKIP.
+# last_success must ADVANCE to now — a SKIP is a successful run. The old
+# preserve-on-skip logic let last_success go stale while the timer kept
+# SKIPping a fresh token, firing a false FleetGrokTokenRefreshStale
+# (fleet-ops#2817).
 printf 'fleet_grok_token_refresh_last_success_seconds 1700000000\n' >"$TEXTFILE"
 printf 'fleet_grok_token_refresh_outcome{outcome="success"} 1\n' >>"$TEXTFILE"
 printf 'fleet_grok_token_refresh_outcome{outcome="skipped"} 0\n' >>"$TEXTFILE"
@@ -496,9 +527,50 @@ write_auth "RT-FIXTURE-NOT-A-REAL-TOKEN-001" $(( ($(date -u +%s) + 86400) * 1000
 : >"$GROK_CURL_LOG"
 run_script
 [[ "$rc" -eq 0 ]] || fail "scenario24: expected rc=0, got $rc ($out)"
-got_ls="$(awk '/^fleet_grok_token_refresh_last_success_seconds / {print $2}' "$TEXTFILE")"
-[[ "$got_ls" == "1700000000" ]] || fail "scenario24: last_success must stay 1700000000 on SKIP, got $got_ls"
 assert_metric_outcome "skipped"
-ok "scenario24: SKIP preserves last_success (no absent() false alarm)"
+assert_last_success_advanced "scenario24"
+ok "scenario24: SKIP advances last_success to now (no absent() false alarm)"
 
-echo "OK: grok-token-refresh: skip paths, success path, reject paths, refresh-omitted keep, no token leak, idempotent, lock, prom rewrite, organ + rules + manifest wired, last_success preserved on skip"
+# --- 25. REJECT preserves last_success (failed grant is not a healthy run) --
+# A failed OAuth grant must NOT advance last_success — only SUCCESS and SKIP
+# do. Otherwise a persistently-failing refresh would silently look healthy.
+: >"$GROK_CURL_LOG"
+write_auth "RT-FIXTURE-NOT-A-REAL-TOKEN-001" $(( ($(date -u +%s) - 60) * 1000 ))
+seed_reject=$(( $(date -u +%s) - 3600 ))
+printf 'fleet_grok_token_refresh_last_success_seconds %s\n' "$seed_reject" >"$TEXTFILE"
+printf 'fleet_grok_token_refresh_outcome{outcome="success"} 0\n' >>"$TEXTFILE"
+printf 'fleet_grok_token_refresh_outcome{outcome="skipped"} 0\n' >>"$TEXTFILE"
+printf 'fleet_grok_token_refresh_outcome{outcome="reject"} 1\n' >>"$TEXTFILE"
+unset GROK_CURL_FIXTURE
+export GROK_CURL_STATUS=500
+run_script
+[[ "$rc" -eq 1 ]] || fail "scenario25: expected rc=1, got $rc ($out)"
+assert_metric_outcome "reject"
+assert_last_success_preserved "scenario25" "$seed_reject"
+ok "scenario25: REJECT preserves last_success (failed grant is not a healthy run)"
+
+# --- 26. TOKEN_TTL_S default is 18000 (5h), not 1800 (30 min) --------------
+# fleet-ops#2817: the old 1800s default let the stored token age past its
+# 6h lifetime between 4h timer ticks. 18000s (5h) means a token with <5h
+# of life is always refreshed at the next tick.
+grep -E 'GROK_TOKEN_REFRESH_TOKEN_TTL_S:-18000' "$bin" >/dev/null \
+    || fail "scenario26: TOKEN_TTL_S default must be 18000 in the script"
+# A token with 4h (14400s) of life must be REFRESHED under the new default
+# (14400 < 18000), not SKIPped. run_script inherits the test's 1800 override,
+# so unset it for this scenario and re-export after.
+: >"$GROK_CURL_LOG"
+write_auth "RT-FIXTURE-NOT-A-REAL-TOKEN-001" $(( ($(date -u +%s) + 14400) * 1000 ))
+export GROK_CURL_FIXTURE="$fixture_ok"
+export GROK_CURL_STATUS=200
+saved_ttl="$GROK_TOKEN_REFRESH_TOKEN_TTL_S"
+unset GROK_TOKEN_REFRESH_TOKEN_TTL_S
+run_script
+export GROK_TOKEN_REFRESH_TOKEN_TTL_S="$saved_ttl"
+[[ "$rc" -eq 0 ]] || fail "scenario26: expected rc=0, got $rc ($out)"
+grep -F 'POST' "$GROK_CURL_LOG" >/dev/null 2>&1 \
+    || fail "scenario26: token with 4h life must be refreshed under 18000s default, not SKIPped"
+got_access="$(jq -r '.["xai-oauth"].access' "$AUTH_JSON")"
+[[ "$got_access" == "AT-NEW" ]] || fail "scenario26: expected access rotated to AT-NEW, got $got_access"
+ok "scenario26: TOKEN_TTL_S default 18000 -> 4h-life token is refreshed, not SKIPped"
+
+echo "OK: grok-token-refresh: skip paths, success path, reject paths, refresh-omitted keep, no token leak, idempotent, lock, prom rewrite, organ + rules + manifest wired, last_success advances on skip+success, preserved on reject, TTL_S default 18000"

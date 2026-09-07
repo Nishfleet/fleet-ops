@@ -203,7 +203,7 @@ That file is the batched CI standard for every current and future repo: one
 job, `timeout-minutes`, PR concurrency, npm cache, job-level path gating, and
 gitleaks. Callers pass `inputs`; they do not copy the steps. The four required
 check names stay as local jobs because a `uses:` job reports as
-`caller / callee` and branch protection still lists `Gitleaks`, `Semgrep`,
+`caller / callee` and branch protection still lists `Gitleaks`, `semgrep`,
 `Shellcheck`, and `systemd-analyze`.
 
 New repos copy `template/.github/workflows/` (wired to this repo at `@v1`).
@@ -350,7 +350,6 @@ silent reversions that prompted this issue have no recurrence path.
 
 ## Excluded pending manual review
 
-- `inish-publish-on-token.path`
 - `backlog-console-refresh.service.retired-20260819`
 
 ## Live paths are NOT touched by this repo
@@ -412,7 +411,12 @@ trips.
 RAM governor divides `MemAvailable` by. It is sized on typical-worker
 cgroup `memory.current` (0.6 GiB, fleet-ops#1168) with the tail bounded
 three ways (per-worker `MemoryHigh=3G` throttle, `MemoryMax=6G` hard stop,
-and `TimeoutStartSec=45min` to kill a wedge). A re-derive is one command:
+and `TimeoutStartSec=45min` to kill a wedge). Known repos override the
+caps via intake-written per-instance drop-ins: fleet-ops#3930 set
+`MemoryMax=4G` with **no `MemoryHigh`** for fleet-ops + 0509 (the throttle
+band is what makes oomd pressure-kill a random sibling, so it was removed;
+4G is now the hard stop with a clean local OOM at the cap). A re-derive is
+one command:
 
 ```
 ram-measure                          # one-line summary

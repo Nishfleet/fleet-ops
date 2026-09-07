@@ -32,6 +32,25 @@ BORDERLINE_THRESHOLD = 0.40
 KEY_BONUS = 0.10
 LIST_LIMIT = 200
 
+# close-duplicates: only `agent-ready` issues (unclaimed) are safe to close —
+# agent-in-progress has a live worker, agent-blocked is Nish-gated, red-on-main
+# is a reserved class. Keep the oldest (lowest number) open issue as canonical.
+CLOSE_CAP = 10
+CLOSE_OK_ENV = "FLEET_CLOSE_DUPLICATES_OK"
+CLOSE_REVIEW_LOG_ENV = "FLEET_CLOSE_DUPLICATES_REVIEW_LOG"
+# cluster size above which close-duplicates stops closing and comments only,
+# filing one dup-cluster review line (fleet-ops#3161). A large cluster held
+# together only by a shared primary signal floor is the known false-positive
+# shape; comment-only keeps the marker without risking mass wrong closes.
+CLUSTER_CLOSE_MAX = 4
+# Issues authored by the repo owner are never auto-closed — comment only
+# (fleet-ops#3161). Nish-endorsed critical-path packets must survive a
+# bogus duplicate sweep.
+OWNER_LOGIN = "nish3451"
+PROTECTED_LABELS = frozenset(
+    {"agent-in-progress", "agent-blocked", "red-on-main", "critical-path"}
+)
+
 # Common key paths that appear in many unrelated issues and therefore
 # carry no duplicate signal. Filtered from the shared-key bonus so the
 # sweep does not collapse 30 unrelated "edit ci.yml" issues into one
@@ -74,6 +93,25 @@ INSTANCE_RE = re.compile(
     r"|siterep-deploy|siterep-uptime)@[A-Za-z0-9_.-]+\b"
 )
 
+# --- signal keys -----------------------------------------------------------
+# Structured signals survive wording differences.  Explicit `signal:` markers
+# are the most reliable; derived signals capture alert names, failure/health
+# classes, and the seat-corpse/walled root-cause cluster from fleet-ops#2899.
+
+SIGNAL_BONUS = 0.15
+SIGNAL_BONUS_MAX = 0.30
+PRIMARY_SIGNAL_FLOOR = 0.70
+
+SIGNAL_RE = re.compile(r"^signal:\s*(\S+)", re.MULTILINE | re.IGNORECASE)
+ALERT_RE = re.compile(r"\b(Fleet[A-Z][A-Za-z]+)\b")
+FAILURE_MODE_RE = re.compile(r"\bfailure_mode\s*[:=]\s*([A-Za-z0-9_-]+)\b")
+HEALTH_CLASS_RE = re.compile(r"\bhealth_class\s*[:=]\s*([A-Za-z0-9_-]+)\b")
+SEAT_DEAD_RE = re.compile(r"\bseat_dead\s*[:=]\s*true\b")
+
+COMMON_SIGNALS = frozenset()
+PRIMARY_SIGNAL_PREFIXES = ("signal/", "fleet/seat-crisis")
+
+
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parent
 DEFAULT_INTAKE = REPO_ROOT / "config" / "intake-repos.json"
@@ -113,27 +151,109 @@ def key_paths(text: str) -> set[str]:
     return {p.lower() for p in found}
 
 
+def _has_seat_crisis(text: str) -> bool:
+    """Detect the fleet-ops#2899 seat-corpse/walled/credentials root cause cluster.
+
+    Requires both a seat context and a failure state/cause.  This is intentionally
+    specific: a generic "seat cap" or "healthy seats" mention must not trigger.
+    """
+    low = (text or "").lower()
+    seat = bool(
+        re.search(r"\bseats?\b", text)
+        or re.search(r"\bfleet(?:slo|dead|seat)", text, re.IGNORECASE)
+        or "health_class=corpse" in low
+        or "manual_repair_corpse" in low
+        or "seat_dead" in low
+    )
+    cause = bool(
+        "corpse" in low
+        or "dead" in low
+        or "walled" in low
+        or "comeback" in low
+        or "credentials_bad" in low
+        or "credentials bad" in low
+        or "manual_repair_corpse" in low
+        or "health_class=corpse" in low
+        or "seat_dead" in low
+    )
+    return seat and cause
+
+
+def signal_keys(text: str) -> set[str]:
+    """Return canonical structured signal keys extracted from text."""
+    out: set[str] = set()
+
+    # Explicit `signal:` markers (e.g. `signal: scout-futility/foo`) are the most
+    # reliable primary signals.  Any two issues carrying the same marker group.
+    for m in SIGNAL_RE.finditer(text or ""):
+        marker = m.group(1).strip().rstrip(".").lower()
+        if marker:
+            out.add(f"signal/{marker}")
+
+    # Alert, failure-mode, and health-class fields are noisy but useful as
+    # secondary signals; they boost the score without forcing a duplicate.
+    for m in ALERT_RE.finditer(text or ""):
+        out.add(f"alert/{m.group(1).lower()}")
+    for m in FAILURE_MODE_RE.finditer(text or ""):
+        out.add(f"failure/{m.group(1).lower()}")
+    for m in HEALTH_CLASS_RE.finditer(text or ""):
+        out.add(f"health/{m.group(1).lower()}")
+    for m in SEAT_DEAD_RE.finditer(text or ""):
+        out.add("health/corpse")
+        out.add("state/seat-dead")
+
+    # Derived primary signal for the seat-corpse/walled/credentials cluster
+    # described in fleet-ops#2899.  Two issues with this signal are treated as
+    # duplicates of the same root cause, regardless of wording differences.
+    if _has_seat_crisis(text):
+        out.add("fleet/seat-crisis")
+
+    return out
+
+
+def _is_primary_signal(signal: str) -> bool:
+    return signal.startswith(PRIMARY_SIGNAL_PREFIXES)
+
+
 def score_pair(
     title_a: str,
     body_a: str,
     title_b: str,
     body_b: str,
 ) -> dict:
-    """Return {score, title_overlap, body_overlap, shared_keys}."""
+    """Return scoring details including token overlap, key paths, and signals."""
     t = overlap(title_a, title_b)
     combined_a = f"{title_a}\n{body_a}"
     combined_b = f"{title_b}\n{body_b}"
     b = overlap(combined_a, combined_b)
     shared = key_paths(combined_a) & key_paths(combined_b)
     specific_shared = {k for k in shared if k not in COMMON_KEY_PATHS}
-    bonus = KEY_BONUS if specific_shared else 0.0
-    score = min(1.0, max(t, b) + bonus)
+    key_bonus = KEY_BONUS if specific_shared else 0.0
+
+    signals_a = signal_keys(combined_a)
+    signals_b = signal_keys(combined_b)
+    shared_signals = signals_a & signals_b
+    primary_shared = {s for s in shared_signals if _is_primary_signal(s)}
+    secondary_shared = shared_signals - primary_shared - COMMON_SIGNALS
+    secondary_bonus = min(SIGNAL_BONUS * len(secondary_shared), SIGNAL_BONUS_MAX)
+
+    score = min(1.0, max(t, b) + key_bonus + secondary_bonus)
+    if primary_shared:
+        score = max(score, PRIMARY_SIGNAL_FLOOR)
+
     return {
         "score": round(score, 4),
         "title_overlap": round(t, 4),
         "body_overlap": round(b, 4),
+        # max(t, b) is the pairwise token-overlap signal a close-duplicates
+        # CLOSE must clear on its own (fleet-ops#3161). Primary/secondary
+        # signal floors may raise `score` to a duplicate-class cluster, but
+        # they can never authorise a close — only token overlap can.
+        "token_overlap_max": round(max(t, b), 4),
         "shared_keys": sorted(shared),
         "specific_shared_keys": sorted(specific_shared),
+        "shared_signals": sorted(shared_signals),
+        "primary_shared_signals": sorted(primary_shared),
     }
 
 
@@ -192,9 +312,22 @@ def load_open_from_json(path: str) -> list[dict]:
                 "body": item.get("body") or "",
                 "url": item.get("url") or "",
                 "repository": item.get("repository") or item.get("repo") or "",
+                "labels": list(item.get("labels") or []),
+                "author": _author_login(item.get("author")),
             }
         )
     return out
+
+
+def _author_login(author) -> str:
+    """Normalise the gh `author` field (object {login: ...} or a bare string)
+    to a login. Missing/unknown authors resolve to "" so close-duplicates can
+    treat only a confirmed OWNER_LOGIN as owner-authored (fleet-ops#3161)."""
+    if not author:
+        return ""
+    if isinstance(author, dict):
+        return (author.get("login") or "").strip()
+    return str(author).strip()
 
 
 def gh_list_open(repo: str) -> list[dict]:
@@ -210,7 +343,7 @@ def gh_list_open(repo: str) -> list[dict]:
             "--limit",
             str(LIST_LIMIT),
             "--json",
-            "number,title,body,url",
+            "number,title,body,url,labels,author",
         ],
         capture_output=True,
         text=True,
@@ -229,6 +362,12 @@ def gh_list_open(repo: str) -> list[dict]:
         number = item.get("number")
         if not isinstance(number, int):
             continue
+        labels = []
+        for lab in item.get("labels") or []:
+            if isinstance(lab, dict) and lab.get("name"):
+                labels.append(lab["name"])
+            elif isinstance(lab, str):
+                labels.append(lab)
         out.append(
             {
                 "number": number,
@@ -236,6 +375,8 @@ def gh_list_open(repo: str) -> list[dict]:
                 "body": item.get("body") or "",
                 "url": item.get("url") or "",
                 "repository": repo,
+                "labels": labels,
+                "author": _author_login(item.get("author")),
             }
         )
     return out
@@ -305,6 +446,54 @@ def duplicate_marker(ref: str, score: float) -> str:
 def gh_comment(repo: str, number: int, body: str) -> tuple[int, str]:
     proc = subprocess.run(
         [gh_bin(), "issue", "comment", str(number), "--repo", repo, "--body", body],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return proc.returncode, (proc.stdout or "").strip() or (proc.stderr or "").strip()
+
+
+def issue_has_dup_marker(repo: str, number: int, canon_ref: str) -> bool:
+    """True if the issue already carries a `possible-duplicate-of: <canon_ref>`
+    marker comment (fleet-ops#3728).
+
+    The close-duplicates sweep re-ran every tick and re-posted the SAME
+    marker on protected duplicates (~20 identical comments on #3728)
+    because a protected canonical can never be closed, so the comment-only
+    branch fired every run with no memory of the prior marker. This lets
+    the sweep skip an issue it has already marked for that canonical.
+
+    Fail-open: a gh error returns False (no marker seen) so the marker is
+    still posted — the idempotency is a best-effort spam cut, not a gate
+    that can suppress the duplicate signal on a transient gh failure.
+    """
+    try:
+        proc = subprocess.run(
+            [gh_bin(), "issue", "view", str(number), "--repo", repo,
+             "--json", "comments"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if proc.returncode != 0:
+        return False
+    try:
+        data = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError:
+        return False
+    needle = f"possible-duplicate-of: {canon_ref}"
+    for c in data.get("comments") or []:
+        if isinstance(c, dict) and needle in (c.get("body") or ""):
+            return True
+    return False
+
+
+def gh_close(repo: str, number: int, comment: str) -> tuple[int, str]:
+    proc = subprocess.run(
+        [gh_bin(), "issue", "close", str(number), "--repo", repo, "--comment", comment],
         capture_output=True,
         text=True,
         check=False,
@@ -459,23 +648,15 @@ def cmd_file(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_sweep(args: argparse.Namespace) -> int:
-    repos = list(args.repo or [])
-    if not repos and not args.from_json:
-        repos = enrolled_repos()
-    issues: list[dict] = []
-    if args.from_json:
-        issues = load_open_from_json(args.from_json)
-    else:
-        seen: set[tuple[str, int]] = set()
-        for repo in repos:
-            for issue in gh_list_open(repo):
-                key = (issue["repository"], issue["number"])
-                if key in seen:
-                    continue
-                seen.add(key)
-                issues.append(issue)
+def cluster_issues(issues: list[dict]) -> list[dict]:
+    """Cluster open issues by same-problem similarity (fleet-ops#1212 sweep).
 
+    Returns a list of cluster dicts (sorted by descending max_score then size):
+      {"kind": "duplicate"|"borderline", "max_score": float, "size": int,
+       "issues": [{"repository","number","title","url","labels"}, ...]}
+    Only clusters with >=2 members are returned. Each member carries its
+    labels so callers (close-duplicates) can filter by claim state.
+    """
     n = len(issues)
     parent = list(range(n))
 
@@ -548,14 +729,36 @@ def cmd_sweep(args: argparse.Namespace) -> int:
                         "number": issues[i]["number"],
                         "title": issues[i].get("title") or "",
                         "url": issues[i].get("url") or "",
+                        "labels": list(issues[i].get("labels") or []),
                     }
                     for i in sorted(kept, key=lambda k: (issues[k].get("repository") or "", issues[k]["number"]))
                 ],
             }
         )
     clusters.sort(key=lambda c: (-c["max_score"], -c["size"]))
+    return clusters
+
+
+def cmd_sweep(args: argparse.Namespace) -> int:
+    repos = list(args.repo or [])
+    if not repos and not args.from_json:
+        repos = enrolled_repos()
+    issues: list[dict] = []
+    if args.from_json:
+        issues = load_open_from_json(args.from_json)
+    else:
+        seen: set[tuple[str, int]] = set()
+        for repo in repos:
+            for issue in gh_list_open(repo):
+                key = (issue["repository"], issue["number"])
+                if key in seen:
+                    continue
+                seen.add(key)
+                issues.append(issue)
+
+    clusters = cluster_issues(issues)
     report = {
-        "open_count": n,
+        "open_count": len(issues),
         "repos": repos,
         "threshold_duplicate": DUP_THRESHOLD,
         "threshold_borderline": BORDERLINE_THRESHOLD,
@@ -563,6 +766,273 @@ def cmd_sweep(args: argparse.Namespace) -> int:
         "clusters": clusters,
     }
     text = json.dumps(report, indent=2, sort_keys=True)
+    print(text)
+    if args.output_json:
+        Path(args.output_json).write_text(text + "\n", encoding="utf-8")
+    return 0
+
+
+def _closeable(issue: dict) -> bool:
+    """An issue is safe to auto-close as a duplicate only when it is
+    agent-ready (unclaimed, in the dispatch queue), not carrying a protected
+    label, and not authored by the repo owner. agent-in-progress has a live
+    worker; agent-blocked is Nish-gated; red-on-main is a reserved escalation
+    class; critical-path is an intake priority; owner-authored issues are
+    Nish-endorsed packets (fleet-ops#3161). All of these get a comment only."""
+    labels = set(issue.get("labels") or [])
+    if "agent-ready" not in labels:
+        return False
+    if labels & PROTECTED_LABELS:
+        return False
+    if (issue.get("author") or "") == OWNER_LOGIN:
+        return False
+    return True
+
+
+def _dup_comment_body(ref: str, canon_ref: str, score: float, reason: str, kind: str) -> str:
+    """Build the duplicate marker comment body.
+
+    kind="close"  -> a `duplicate-of` close comment (same-repo canonical,
+                     pairwise token overlap cleared DUP_THRESHOLD).
+    kind="comment" -> a `possible-duplicate-of` comment that does NOT close;
+                     reason explains why (protected / low-overlap /
+                     cluster-size). Never cites a cross-repo canonical in a
+                     close comment because cross-repo never reaches kind=close.
+    """
+    if kind == "close":
+        return (
+            f"<!-- duplicate-of: {canon_ref} score={score:.2f} -->\n"
+            f"Closing as duplicate of {canon_ref} "
+            f"(fleet-issue-file close-duplicates, pairwise score={score:.2f}). "
+            f"The oldest open issue in this repo's cluster is the canonical.\n"
+        )
+    return (
+        f"<!-- possible-duplicate-of: {canon_ref} score={score:.2f} reason={reason} -->\n"
+        f"Possible duplicate of {canon_ref} (score {score:.2f}). "
+        f"Not auto-closed: {reason}.\n"
+    )
+
+
+def _closes_by_label_zero() -> dict:
+    return {
+        "cross_repo=true,protected=true": 0,
+        "cross_repo=true,protected=false": 0,
+        "cross_repo=false,protected=true": 0,
+        "cross_repo=false,protected=false": 0,
+    }
+
+
+def cmd_close_duplicates(args: argparse.Namespace) -> int:
+    """Drain the duplicate backlog the sweep identifies (fleet-ops#2762).
+
+    Close rules (fleet-ops#3161 — the primary-signal floor + cross-repo
+    canonical once closed 18 issues incl. two Nish-endorsed critical-path
+    packets as score=1.00 duplicates of an unrelated 0509 CI issue):
+      - A CLOSE requires pairwise token overlap max(t,b) >= DUP_THRESHOLD
+        on its own. Primary/secondary signal floors may cluster issues and
+        produce a possible-duplicate COMMENT, never a close.
+      - The canonical is the oldest open issue IN THE SAME REPO. Cross-repo
+        similarity is comment-only; a close comment never cites a cross-repo
+        canonical.
+      - PROTECTED_LABELS includes critical-path; issues authored by the repo
+        owner (nish3451) are never auto-closed — comment only.
+      - A close cites the pairwise score to the canonical, not a transitive
+        cluster max score. Clusters larger than CLUSTER_CLOSE_MAX are
+        comment-only and file one dup-cluster review line.
+    Capped per run. Fail-closed: FLEET_CLOSE_DUPLICATES_OK=1 required to
+    actually close (one-off tests cannot phantom-close)."""
+    ok = os.environ.get(CLOSE_OK_ENV, "0") == "1"
+    repos = list(args.repo or [])
+    if not repos and not args.from_json:
+        repos = enrolled_repos()
+    issues: list[dict] = []
+    if args.from_json:
+        issues = load_open_from_json(args.from_json)
+    else:
+        seen: set[tuple[str, int]] = set()
+        for repo in repos:
+            for issue in gh_list_open(repo):
+                key = (issue["repository"], issue["number"])
+                if key in seen:
+                    continue
+                seen.add(key)
+                issues.append(issue)
+
+    clusters = [c for c in cluster_issues(issues) if c["kind"] == "duplicate"]
+    cap = args.cap if args.cap is not None else CLOSE_CAP
+    # Full issue index (cluster members carry labels but not body/author, so
+    # look up the source issue for pairwise scoring and the owner check).
+    index = {(i.get("repository") or "", i["number"]): i for i in issues}
+    review_log = os.environ.get(CLOSE_REVIEW_LOG_ENV, "")
+
+    closed = 0
+    commented = 0
+    skipped = 0
+    actions = []
+    cluster_reviews = []
+    closes_by_label = _closes_by_label_zero()
+
+    for cluster in clusters:
+        members = sorted(
+            cluster["issues"],
+            key=lambda i: (i.get("repository") or "", i["number"]),
+        )
+        size = len(members)
+        too_big = size > CLUSTER_CLOSE_MAX
+        # Canonical is per-repo: the oldest (lowest number) open issue in
+        # the SAME repo. A member that is its repo's canonical is never
+        # acted on; a member with no same-repo peer is its own canonical.
+        by_repo: dict[str, list[dict]] = {}
+        for m in members:
+            by_repo.setdefault(m.get("repository") or "", []).append(m)
+        repo_canon = {
+            repo: sorted(ms, key=lambda i: i["number"])[0]
+            for repo, ms in by_repo.items()
+        }
+
+        if too_big:
+            canon_refs = sorted(
+                issue_ref({"repository": r, "number": c["number"]})
+                for r, c in repo_canon.items()
+            )
+            review = (
+                f"dup-cluster review: cluster of {size} issues across "
+                f"{len(by_repo)} repo(s) — comment-only "
+                f"(size > {CLUSTER_CLOSE_MAX}); canonicals: "
+                f"{', '.join(canon_refs)}"
+            )
+            cluster_reviews.append(review)
+            if review_log:
+                try:
+                    with open(review_log, "a", encoding="utf-8") as fh:
+                        fh.write(review + "\n")
+                except OSError:
+                    pass
+
+        for m in members:
+            repo = m.get("repository") or ""
+            ref = issue_ref({"repository": repo, "number": m["number"]})
+            canon = repo_canon.get(repo)
+            if canon is None or canon["number"] == m["number"]:
+                # This member is its repo's canonical — never acted on.
+                continue
+            canon_ref = issue_ref({"repository": repo, "number": canon["number"]})
+            mi = index.get((repo, m["number"]), m)
+            ci = index.get((repo, canon["number"]), canon)
+            pair = score_pair(
+                mi.get("title") or "",
+                mi.get("body") or "",
+                ci.get("title") or "",
+                ci.get("body") or "",
+            )
+            score = pair["score"]
+            token_max = pair["token_overlap_max"]
+            protected = not _closeable(mi)
+
+            reason = None
+            if too_big:
+                reason = "cluster-size"
+            elif protected:
+                reason = "protected"
+            elif token_max < DUP_THRESHOLD:
+                # The pair only reached duplicate-class via a signal floor,
+                # not token overlap. Comment only (fleet-ops#3161).
+                reason = "low-overlap"
+
+            if reason is not None:
+                body = _dup_comment_body(ref, canon_ref, score, reason, "comment")
+                if args.dry_run:
+                    print(
+                        f"[close-duplicates] dry-run comment {ref} -> {canon_ref} ({reason})",
+                        file=sys.stderr,
+                    )
+                    actions.append(
+                        {"ref": ref, "canonical": canon_ref, "action": "comment",
+                         "reason": reason, "score": score}
+                    )
+                    commented += 1
+                    continue
+                # fleet-ops#3728: skip re-posting a possible-duplicate marker
+                # the issue already carries for this canonical. Without this
+                # the sweep re-commented every tick on protected duplicates
+                # (a protected canonical can never close, so the comment-only
+                # branch fired every run) and accumulated ~20 identical
+                # marker comments on #3728. One marker is enough; the
+                # duplicate signal is already on the issue.
+                if issue_has_dup_marker(repo, m["number"], canon_ref):
+                    print(
+                        f"[close-duplicates] already-marked {ref} -> {canon_ref} ({reason}); skip",
+                        file=sys.stderr,
+                    )
+                    actions.append(
+                        {"ref": ref, "canonical": canon_ref, "action": "skip",
+                         "reason": f"already-marked:{reason}", "score": score}
+                    )
+                    skipped += 1
+                    continue
+                rc, out = gh_comment(repo, m["number"], body)
+                if rc == 0:
+                    print(
+                        f"[close-duplicates] commented {ref} -> {canon_ref} ({reason})",
+                        file=sys.stderr,
+                    )
+                    actions.append(
+                        {"ref": ref, "canonical": canon_ref, "action": "comment",
+                         "reason": reason, "score": score}
+                    )
+                    commented += 1
+                else:
+                    print(f"[close-duplicates] comment failed {ref}: {out}", file=sys.stderr)
+                    skipped += 1
+                continue
+
+            # Close path: same-repo canonical, token overlap cleared, closeable.
+            if closed >= cap:
+                print(f"[close-duplicates] cap reached ({cap}); skip close {ref}", file=sys.stderr)
+                skipped += 1
+                continue
+            body = _dup_comment_body(ref, canon_ref, score, "duplicate", "close")
+            if args.dry_run or not ok:
+                label = "dry-run close" if args.dry_run else "close-blocked (OK!=1)"
+                print(f"[close-duplicates] {label} {ref} -> {canon_ref}", file=sys.stderr)
+                actions.append(
+                    {"ref": ref, "canonical": canon_ref,
+                     "action": "close" if args.dry_run else "noop",
+                     "reason": label, "score": score}
+                )
+                if args.dry_run:
+                    closed += 1
+                    closes_by_label["cross_repo=false,protected=false"] += 1
+                else:
+                    skipped += 1
+                continue
+            rc, out = gh_close(repo, m["number"], body)
+            if rc == 0:
+                print(f"[close-duplicates] CLOSED {ref} -> {canon_ref}", file=sys.stderr)
+                actions.append(
+                    {"ref": ref, "canonical": canon_ref, "action": "close",
+                     "reason": "duplicate", "score": score}
+                )
+                closed += 1
+                closes_by_label["cross_repo=false,protected=false"] += 1
+            else:
+                print(f"[close-duplicates] close failed {ref}: {out}", file=sys.stderr)
+                skipped += 1
+
+    summary = {
+        "open_count": len(issues),
+        "duplicate_clusters": len(clusters),
+        "closed": closed,
+        "commented": commented,
+        "skipped": skipped,
+        "cap": cap,
+        "ok": ok,
+        "dry_run": args.dry_run,
+        "actions": actions,
+        "cluster_reviews": cluster_reviews,
+        "closes_by_label": closes_by_label,
+    }
+    text = json.dumps(summary, indent=2, sort_keys=True)
     print(text)
     if args.output_json:
         Path(args.output_json).write_text(text + "\n", encoding="utf-8")
@@ -597,6 +1067,17 @@ def build_parser() -> argparse.ArgumentParser:
     sc.add_argument("--body", default="")
     sc.add_argument("--against-json", required=True)
     sc.set_defaults(func=cmd_score)
+
+    cd = sub.add_parser(
+        "close-duplicates",
+        help="close agent-ready duplicate-cluster members, keeping the oldest (fleet-ops#2762)",
+    )
+    cd.add_argument("--repo", "-R", action="append", default=[])
+    cd.add_argument("--from-json", default="")
+    cd.add_argument("--output-json", default="")
+    cd.add_argument("--cap", type=int, default=None)
+    cd.add_argument("--dry-run", action="store_true")
+    cd.set_defaults(func=cmd_close_duplicates)
     return p
 
 

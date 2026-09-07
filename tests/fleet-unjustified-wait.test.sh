@@ -12,6 +12,13 @@
 #   3. quota_exhausted/rate_limited seat with NO usable_at -> exit 1.
 #   4. credentials_bad seat WITHOUT seat_dead=true -> exit 1 (missing clock).
 #   5. seat_dead=true with a non-dead class -> exit 1 (inconsistent).
+#   5b. seat_dead=true with health_class=corpse (credentials_bad) -> exit 0
+#       (REGRESSION GUARD fleet-ops#2724/#2667; pre-fix LOUD every tick).
+#   5c. seat_dead=true with health_class=corpse (transient_http) -> exit 0
+#       (the corpse class covers non-credential failure modes too; the
+#       filter must not over-key on failure_mode, fleet-ops#2327/#2415).
+#   5d. seat_dead=false with health_class=corpse -> exit 1 (missing dead
+#       marker on a corpse is the matching inconsistent write).
 #   6. STOP-REASON with an illegal reason -> exit 1.
 #   7. READY-WORK stalled claim (CLAIMED, old, no DONE, no after:) with
 #      REPAIR=0 -> exit 1 (audit-only path still LOUD).
@@ -227,12 +234,117 @@ rc=$(run_bin)
 ok "seat_dead=true with non-dead class is flagged"
 rm -f "$scratch/seats/dead-healthy.json"
 
+# --- 5b. seat_dead=true with corpse class — REGRESSION GUARD (fleet-ops#2724) -
+# The live evidence on 2026-09-01: commandcode/minimax-m3-free carried
+# seat_dead=true, health_class=corpse, failure_mode=credentials_bad
+# (HTTP 403). seat-health.ts writes health_class="corpse" for any seat
+# past SEAT_DEAD_CONSECUTIVE_THRESHOLD (fleet-ops#2327/#2415). The legacy
+# dead-class filter (hc=="credentials_bad") missed the corpse and LOUDed
+# every tick, pinning heartbeat tier 1 at unjustified_rc=1 forever.
+# After the fix, a corpse seat with dead=true is clean: the dead marker
+# IS the named clock, and the seat is RETIRED (no usable_at comeback).
+cat >"$scratch/seats/corpse-creds.json" <<'JSON'
+{"provider":"commandcode","model":"minimax-m3-free","health_class":"corpse","seat_dead":true,"failure_mode":"credentials_bad","http_status":403,"observed_at":"2026-09-01T20:59:10.284Z"}
+JSON
+rc=$(run_bin)
+[[ "$rc" == "0" ]] || { cat "$scratch/err.log"; fail "corpse seat_dead=true should exit 0 (got $rc)"; }
+grep -q "UNJUSTIFIED-WAIT-OK" "$scratch/err.log" || { cat "$scratch/err.log"; fail "corpse seat missing UNJUSTIFIED-WAIT-OK"; }
+if grep -q "dead marker without credentials_bad|corpse" "$scratch/err.log"; then
+  cat "$scratch/err.log"; fail "corpse seat was falsely flagged as inconsistent"
+fi
+ok "corpse seat_dead=true (credentials_bad failure_mode) is clean"
+
+# --- 5c. seat_dead=true with corpse class — TRANSIENT failure_mode (fleet-ops#2724) -
+# The corpse escalation applies to ANY failure mode past the threshold
+# (credentials_bad for 401/403, transient_http for 5xx storms, etc). A
+# corpse with a non-credential failure_mode is still retired — same
+# clock (the dead marker), same "no usable_at comeback" contract. The
+# filter must not over-key on failure_mode.
+cat >"$scratch/seats/corpse-transient.json" <<'JSON'
+{"provider":"opencode","model":"muse-spark-1.2-contributor-free","health_class":"corpse","seat_dead":true,"failure_mode":"transient_http","http_status":500,"observed_at":"2026-08-30T09:02:18.000Z"}
+JSON
+rc=$(run_bin)
+[[ "$rc" == "0" ]] || { cat "$scratch/err.log"; fail "corpse seat_dead=true (transient_http) should exit 0 (got $rc)"; }
+grep -q "UNJUSTIFIED-WAIT-OK" "$scratch/err.log" || { cat "$scratch/err.log"; fail "transient corpse missing UNJUSTIFIED-WAIT-OK"; }
+if grep -q "dead marker without credentials_bad|corpse" "$scratch/err.log"; then
+  cat "$scratch/err.log"; fail "transient corpse was falsely flagged as inconsistent"
+fi
+ok "corpse seat_dead=true (transient_http failure_mode) is clean"
+
+# --- 5e. seat_dead=true with parked class — REGRESSION GUARD (fleet-ops#3706/#3669) -
+# The live evidence on 2026-09-06: commandcode/minimax/minimax-m3-free was
+# retired by retire_corpse + write_parked_ledger (fleet-ops#2716/#3669) after
+# the provider permanently retired the free slug (HTTP 403, cap=0,
+# intentional_cap_zero=corpse). The parked ledger carries seat_dead=true,
+# health_class=parked, failure_mode=corpse_retired, a far-future usable_at —
+# the seat is RETIRED and unpickable. The pre-fix dead-class filter only
+# accepted credentials_bad|corpse, so the parked ledger tripped a false-
+# positive UNJUSTIFIED-WAIT every heartbeat tick ("dead marker without
+# credentials_bad|corpse (clock inconsistent)"), failing TOP GEAR and
+# auto-filing stale alerts about an already-retired seat (fleet-ops#3706).
+# After the fix, a parked seat with dead=true is clean: the dead marker IS
+# the named clock, same as a corpse.
+cat >"$scratch/seats/parked-corpse.json" <<'JSON'
+{"provider":"commandcode","model":"minimax/minimax-m3-free","health_class":"parked","seat_dead":true,"failure_mode":"corpse_retired","source":"corpse_retirement","http_status":null,"observed_at":"2026-09-06T15:15:47Z","usable_at":"2036-09-03T15:15:47Z","bench_until":"2036-09-03T15:15:47Z","bench_reason":"corpse-retired: cap=0 corpse bench, pick_seat never offers (durable, fleet-ops#2716/#3669)","consecutive_failure_count":0,"writer":"write_parked_ledger"}
+JSON
+rc=$(run_bin)
+[[ "$rc" == "0" ]] || { cat "$scratch/err.log"; fail "parked seat_dead=true should exit 0 (got $rc)"; }
+grep -q "UNJUSTIFIED-WAIT-OK" "$scratch/err.log" || { cat "$scratch/err.log"; fail "parked seat missing UNJUSTIFIED-WAIT-OK"; }
+if grep -q "dead marker without credentials_bad|corpse" "$scratch/err.log"; then
+  cat "$scratch/err.log"; fail "parked seat was falsely flagged as inconsistent"
+fi
+ok "parked seat_dead=true (corpse_retired) is clean (fleet-ops#3706/#3669)"
+rm -f "$scratch/seats/parked-corpse.json"
+
+# --- 5d. seat_dead=false with corpse class — inconsistent write (fleet-ops#2724) -
+# The OTHER half of the guard: a corpse with NO dead marker is still
+# inconsistent. seat-health.ts writes both atomically (seat-health.ts:768
+# merged.seat_dead = true; merged.health_class = "corpse"), but a corrupt
+# or hand-edited record could split them. The named clock for corpse is
+# the dead marker — without it the audit must LOUD.
+cat >"$scratch/seats/corpse-nodead.json" <<'JSON'
+{"provider":"commandcode","model":"minimax-m3-free","health_class":"corpse","seat_dead":false,"failure_mode":"credentials_bad","http_status":403,"observed_at":"2026-09-01T20:59:10.284Z"}
+JSON
+rc=$(run_bin)
+[[ "$rc" == "1" ]] || { cat "$scratch/err.log"; fail "corpse seat_dead=false should exit 1 (got $rc)"; }
+grep -q "dead marker missing" "$scratch/err.log" || { cat "$scratch/err.log"; fail "corpse seat_dead=false missing dead-marker-missing loud"; }
+ok "corpse seat_dead=false is flagged as missing dead marker"
+rm -f "$scratch/seats/corpse-creds.json" "$scratch/seats/corpse-transient.json" "$scratch/seats/corpse-nodead.json"
+
+# --- 5e. seat_dead=true with quota_bench class + bench_until — REGRESSION GUARD ---
+# A quota_bench seat is a legitimate dead state: seat-health.ts writes
+# seat_dead=true with health_class=quota_bench and a bench_until clock
+# (the reset time). The dead-marker filter must accept quota_bench the
+# same way it accepts credentials_bad/corpse — otherwise every benched
+# quota seat trips a false UNJUSTIFIED-WAIT every tick and heartbeat
+# tier 1 returns unjustified_rc=1 forever (observed on xkiro minimax-m3
+# free, bench_until 2026-09-13). The no-bench_until case is still caught
+# by the quota_bench branch above.
+cat >"$scratch/seats/quota-bench-dead.json" <<'JSON'
+{"provider":"xkiro","model":"minimax/minimax-m3:free","health_class":"quota_bench","seat_dead":true,"failure_mode":"quota_cap","http_status":429,"bench_until":"2026-09-13T19:43:11Z","usable_at":"2026-09-13T19:43:11Z","observed_at":"2026-09-06T19:43:11Z"}
+JSON
+rc=$(run_bin)
+[[ "$rc" == "0" ]] || { cat "$scratch/err.log"; fail "quota_bench seat_dead=true with bench_until should exit 0 (got $rc)"; }
+grep -q "UNJUSTIFIED-WAIT-OK" "$scratch/err.log" || { cat "$scratch/err.log"; fail "quota_bench seat missing UNJUSTIFIED-WAIT-OK"; }
+if grep -q "dead marker without credentials_bad|corpse" "$scratch/err.log"; then
+  cat "$scratch/err.log"; fail "quota_bench seat was falsely flagged as inconsistent"
+fi
+ok "quota_bench seat_dead=true with bench_until is clean"
+rm -f "$scratch/seats/quota-bench-dead.json"
+
 # --- 6. STOP-REASON illegal reason -------------------------------------------
 printf '%s\n' '{"reason":"mystery-wait","detail":{}}' >"$scratch/STOP-REASON.json"
 rc=$(run_bin)
 [[ "$rc" == "1" ]] || fail "illegal STOP-REASON reason should exit 1 (got $rc)"
 grep -q "mystery-wait" "$scratch/err.log" || fail "missing reason mention"
 ok "illegal STOP-REASON reason is flagged"
+# alert-repair-stalled is a sanctioned escalation hop
+# (writes STOP-REASON itself; carries its own hop budget clock). Must be legal.
+printf '%s\n' '{"reason":"alert-repair-stalled","detail":{"hop":"verify"}}' >"$scratch/STOP-REASON.json"
+rc=$(run_bin)
+[[ "$rc" == "0" ]] || fail "alert-repair-stalled should be a legal terminal state (got rc=$rc)"
+grep -q "UNJUSTIFIED-WAIT-OK" "$scratch/err.log" || fail "alert-repair-stalled missing OK line"
+ok "alert-repair-stalled is a legal terminal state"
 printf '%s\n' '{"reason":"unit-failure","detail":{}}' >"$scratch/STOP-REASON.json"
 
 # --- 7. stalled READY-WORK claim (audit-only, REPAIR=0) ----------------------

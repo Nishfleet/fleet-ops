@@ -114,3 +114,36 @@ line above. Violations route to senior-conference adjudication
 POVs; NISH-RESERVED via boundary-notify — the only path that reaches
 Nish). You may still REJECT a PASS from the gate (rubber-stamp
 `authorized-by-nish:` reasons) but you may not APPROVE a gate REJECT.
+
+## Automatic criterion: serious builds get the conference (fleet-ops#3756)
+
+Ledger line (verbatim):
+
+STANDING, NON-NEGOTIABLE: Multi-hour/serious builds are "carefully evaluated and audited by senior escalation matrix conferring amongst themselves" BEFORE merge — mechanically, automatically, for every build that trips the seriousness gate (control-plane scope, large diff, keystone spec). The panel verdict is a required check; automerge waits for it. (fleet-ops #223, ledger 2026-08-26.)
+
+A PR that trips the seriousness gate needs this conference before merge.
+The gate trips when ANY of these hold:
+- lines changed (additions + deletions) > 500, OR
+- files touched > 10, OR
+- touches a critical path: deploy, migrations, security, branch-protection.
+
+The `conference-approved` label is the mechanical bypass this conference
+stamps when it APPROVES. 0509#1712 merged with 721 additions across 10
+files and no conference verdict because the seriousness gate was
+prose-only — nothing mechanically flagged the PR as serious. This
+criterion closes that gap: the conference mechanically rejects any
+serious PR that is not yet approved.
+
+Do not re-derive the automatic half. Run the mechanical gate on the PR
+JSON (additions, deletions, changedFiles, files, labels):
+
+```
+fleet-senior-conference-gate evaluate --input pr.json
+```
+
+Exit 1 / `"verdict":"REJECT"` is an automatic REJECT — the PR is
+serious and not yet approved. Cite the ledger line above. APPROVE
+adds the `conference-approved` label (the bypass); a REJECT leaves
+the PR unapproved. You may still REJECT a PASS from the gate (a
+serious PR whose diff is risky despite the label) but you may not
+APPROVE a gate REJECT.

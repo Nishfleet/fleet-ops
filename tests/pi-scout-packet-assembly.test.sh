@@ -81,6 +81,12 @@ export PACKET_TRANSFORMATION_DIR="$scratch/agent-state/0509-transformation"
 export PACKET_NORTH_STAR_FILE="$scratch/tooling/nish-vault/north-star.md"
 export PACKET_GH="$fake_gh"
 
+# Hermetic usage/walk seams (fleet-ops#3149): tests must not touch the real CF
+# token, the network, or a browser. Each empty source must DROP, never fail
+# assembly.
+export PACKET_CF_FILE="$scratch/no-cf.env"
+export PACKET_MONEY_PATH_WALK=0
+
 source "$repo_root/lib/packet-assembly.sh"
 
 packet="$scratch/packet.md"
@@ -88,7 +94,7 @@ packet_assemble_0509_scout "$repo_root/prompts/scout.md" 0509 "$packet" || fail 
 
 [[ -f "$packet" ]] || fail "packet file was not written"
 
-# 1. All four sections present.
+# 1. All four research sections present.
 grep -q '## Market signal' "$packet" || fail "packet missing market signal section"
 grep -q '## Transformation campaign state' "$packet" || fail "packet missing category research section"
 grep -q '## North-star rule' "$packet" || fail "packet missing north-star section"
@@ -96,6 +102,65 @@ grep -q '## Recent merged PR titles' "$packet" || fail "packet missing recent PR
 grep -q 'TARGET REPO: Nishfleet/0509' "$packet" || fail "packet missing TARGET line"
 grep -q 'RESEARCH CONTEXT' "$packet" || fail "packet missing research context header"
 ok "packet assembly includes all four research sections and TARGET line"
+
+# 1b. Usage block (fleet-ops#3149): header present; empty sources DROP with a
+# marker and the all-empty NOTE, and never fail assembly.
+grep -q '## Usage (live product telemetry' "$packet" || fail "packet missing usage block header"
+grep -q '### Money-path walk: skipped (PACKET_MONEY_PATH_WALK=0)' "$packet" \
+  || fail "walk must be skipped (not fail) when PACKET_MONEY_PATH_WALK=0"
+grep -q 'no CF token file at' "$packet" || fail "missing CF token must leave a drop marker, not fail assembly"
+grep -q 'every usage source is empty' "$packet" || fail "all-usage-empty NOTE must appear when every source drops"
+ok "usage block assembles and drops empty sources without failing"
+
+# 1c. Prompt contract (fleet-ops#3149): usage citation, money-path walk, and
+# scout self-score must be present in the scout prompt.
+grep -q 'scout-yield' "$repo_root/prompts/scout.md" || fail "scout prompt missing scout-yield self-score"
+grep -q 'A.5 Money-path walk' "$repo_root/prompts/scout.md" || fail "scout prompt missing money-path walk subsection"
+grep -q 'A.6 Usage citation' "$repo_root/prompts/scout.md" || fail "scout prompt missing usage citation rule"
+ok "scout prompt carries usage citation, money-path walk, and scout-yield"
+
+# 1d. CF analytics source is OPTIONAL (fleet-ops#3172): when the sanctioned
+# token lacks zone.analytics.read the GraphQL call returns a 403 authz error;
+# the source logs a one-line `usage-source: cloudflare-analytics UNAVAILABLE
+# (token scope)` marker and DROPS (returns 1) — it must never fail the scout
+# run or drop the whole usage block.
+cf_token_file="$scratch/cf-token.env"
+printf 'CLOUDFLARE_API_TOKEN="fake-token"\n' >"$cf_token_file"
+# Override curl so the GraphQL call returns the real 403 authz shape without
+# touching the network.
+cat >"$scratch/curl" <<'EOF'
+#!/usr/bin/env bash
+# Only the GraphQL call is faked; anything else (zone id) is not reached here.
+printf '%s' '{"errors":[{"message":"Actor '"'"'com.cloudflare.api.token.abc'"'"' does not have permission '"'"'com.cloudflare.api.account.zone.analytics.read'"'"' for zone 0509"}]}'
+EOF
+chmod +x "$scratch/curl"
+PATH="$scratch:$PATH" PACKET_CF_FILE="$cf_token_file" PACKET_CF_ZONE="0509" \
+    bash -c 'source "$1"; packet_cf_analytics_usage 0509.io 7' _ "$repo_root/lib/packet-assembly.sh" \
+    >"$scratch/cf-403.out" 2>&1 || true
+grep -q 'usage-source: cloudflare-analytics UNAVAILABLE (token scope)' "$scratch/cf-403.out" \
+  || fail "CF 403 must log the usage-source UNAVAILABLE line, got: $(cat "$scratch/cf-403.out")"
+grep -q 'does not have permission' "$scratch/cf-403.out" \
+  || fail "CF 403 must keep the visible drop marker"
+ok "CF analytics source is optional: 403 logs usage-source UNAVAILABLE and drops, never fails the scout"
+
+# 1e. Reader path for the working sources (fleet-ops#3172): lp_run_audit and
+# /search query log dump dirs are read into the usage block when present, and
+# a missing dump dir DROPS with a marker instead of failing.
+usage_dir="$scratch/usage-dump"
+mkdir -p "$usage_dir/lp" "$usage_dir/search"
+printf '{"tag":"lp_run_audit","stage":"cta_extract","outcome":"ok"}\n' \
+  >"$usage_dir/lp/audit-20260904.ndjson"
+printf '{"q":"sneaker","hits":3}\n' >"$usage_dir/search/search-20260904.ndjson"
+PACKET_LP_AUDIT_DIR="$usage_dir/lp" PACKET_SEARCH_LOG_DIR="$usage_dir/search" \
+    bash -c 'source "$1"; packet_local_usage "lp_run_audit / landing-page telemetry" "$PACKET_LP_AUDIT_DIR" "*.ndjson"; packet_local_usage "/search query log" "$PACKET_SEARCH_LOG_DIR" "*.ndjson"' \
+    _ "$repo_root/lib/packet-assembly.sh" >"$scratch/reader.out" 2>&1
+grep -q 'lp_run_audit / landing-page telemetry (newest: audit-20260904.ndjson)' "$scratch/reader.out" \
+  || fail "lp_run_audit dump must be read into the usage block, got: $(cat "$scratch/reader.out")"
+grep -q '/search query log (newest: search-20260904.ndjson)' "$scratch/reader.out" \
+  || fail "/search query log dump must be read into the usage block, got: $(cat "$scratch/reader.out")"
+grep -q '"tag":"lp_run_audit"' "$scratch/reader.out" \
+  || fail "lp_run_audit dump content must appear verbatim"
+ok "reader path reads lp_run_audit and /search query log dumps into the usage block"
 
 # 2. Stale market signal (> 36h) returns 1.
 stale_dir="$scratch/stale-signal"

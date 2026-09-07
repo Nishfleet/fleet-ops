@@ -173,8 +173,14 @@ printf '%s\n' '{"candidates":[]}' >"$scratch/empty-seams.json"
 # below actually prints. Under set -e a failing bin would exit the test
 # script silently before rc=$? runs (the fleet-ops#280 "no FAIL line" symptom).
 rc=0
+# fleet-ops#3618: set a dummy GH_TOKEN so bin/fleet-blind-audit and
+# bin/fleet-issue-file skip their worker-token mint + PATH rewrite (the
+# block guarded by `-z GH_TOKEN && GITHUB_ACTIONS != true && GH == gh`).
+# Without this, a VPS run shadows $scratch/fakebin/gh behind the real gh
+# and files real gap-audit issues from the test fixtures (#3617/#3618).
 PATH="$scratch/fakebin:$PATH" \
   GH_CREATE_LOG="$scratch/gh-create.log" \
+  GH_TOKEN="test-no-real-gh" \
   AUDIT_REPO="Nishfleet/fleet-ops" \
   AUDIT_REPO_ROOT="$repo_root" \
   AUDIT_STATE_DIR="$scratch/state" \
@@ -522,12 +528,62 @@ ok "open #367-marker issue suppresses a second detector file"
 # so it runs in CI without a workflow-file edit (P14 hosted-test pattern).
 bash "$here/manual-seam-lens.test.sh"
 
+# fleet-ops#2771: host the deliberate-states registry regression test (a
+# row with a passed expiry is a spurious gap-audit waiting to fire) from the
+# listed blind-audit test so it runs in CI without a workflow-file edit.
+bash "$here/deliberate-states-registry.test.sh"
+
+# fleet-ops#3683: host the closed-but-undelivered detector drill (flags an
+# issue closed after a PR tried to deliver it but no referencing PR merged)
+# from the listed blind-audit test so it runs in CI without a workflow-file
+# edit (the nishfleet-worker App token has no Workflows permission).
+bash "$here/closed-undelivered-detector.test.sh"
+
 # fleet-ops#838: no | head -N truncation pipes survive under set -o pipefail.
 # grep -mN is the safe replacement; head -c on a file is fine.
 if grep -nE '\| +head +-[0-9]' "$bin"; then
     fail "fleet-blind-audit contains | head -N pipe that risks SIGPIPE (fleet-ops#838)"
 fi
 ok "no head -N truncation pipes in fleet-blind-audit"
+
+# ============================================================================
+# fleet-ops#3680: panel evidence-quality gate. A "stale file" freshness
+# finding whose evidence is a bare `find ... -mtime` enumeration of a
+# directory (naming no specific decision-driving file) must be FAILed even
+# when no duplicate open issue exists — otherwise it files non-actionable
+# worker issues that catch reports/logs/backups which are supposed to be old.
+# A finding that names the specific file (with an extension) is actionable
+# and passes the gate.
+# ============================================================================
+panel_lib="$repo_root/lib/blind-audit-panel.py"
+
+run_panel() {
+    printf '%s' "$1" | python3 "$panel_lib"
+}
+
+# Case 1: bare `find -mtime`, no file path with extension anywhere -> FAIL.
+case1='{"finding":{"rank":1,"title":"stale agent-state file","body":"Duplicate of the open gap-audit issue.","severity":"high","evidence":"find /home/nish/workspaces/agent-state -mtime +1"},"open_issues":[],"recent_merges":[],"deliberate_states":[]}'
+case1_v=$(run_panel "$case1" | jq -r '.verdict')
+case1_r=$(run_panel "$case1" | jq -r '.reason')
+[[ "$case1_v" == "FAIL" ]] \
+    || fail "#3680 gate: bare find -mtime finding should FAIL, got $case1_v"
+[[ "$case1_r" == *"overly-broad freshness finding"* ]] \
+    || fail "#3680 gate: FAIL reason should name the gate, got: $case1_r"
+
+# Case 2: `find -mtime` evidence BUT the body names a specific file -> PASS
+# (actionable: the finding tells a worker exactly which file to check).
+case2='{"finding":{"rank":1,"title":"fleet-repos.json stale","body":"~/.local/state/fleet-heartbeat/fleet-repos.json drives the heartbeat queue and is never freshness-checked; find -mtime +1 shows it stale","severity":"high","evidence":"find /home/nish/.local/state/fleet-heartbeat -mtime +1"},"open_issues":[],"recent_merges":[],"deliberate_states":[]}'
+case2_v=$(run_panel "$case2" | jq -r '.verdict')
+[[ "$case2_v" == "PASS" ]] \
+    || fail "#3680 gate: find -mtime finding that names a specific file should PASS, got $case2_v"
+
+# Case 3: stat-based evidence (no find -mtime) is unaffected -> PASS.
+case3='{"finding":{"rank":1,"title":"visual-quality-waves.md stale 6 days","body":"auditor prompt reads it as program status","severity":"low","evidence":"stat -c %y /home/nish/workspaces/agent-state/visual-quality-waves.md = 2026-08-28; prompts/auditor.md line 4"},"open_issues":[],"recent_merges":[],"deliberate_states":[]}'
+case3_v=$(run_panel "$case3" | jq -r '.verdict')
+[[ "$case3_v" == "PASS" ]] \
+    || fail "#3680 gate: stat-based freshness finding should PASS (gate only targets find -mtime), got $case3_v"
+
+ok "panel #3680 gate: rejects bare find -mtime freshness findings, passes named-file findings"
 
 echo "OK: fleet-blind-audit.test.sh"
 

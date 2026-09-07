@@ -66,7 +66,7 @@
 #   5. same shape plus a later user-facing flag -> clean.
 #   6. contrast: successful isError=false content that quotes
 #      `Tool  not found` is content, not a finding.
-#   7. worker.md cites fleet-ops#1242 and the live empty-name wording.
+#   7. lib/failed-command-flagged.py cites fleet-ops#1242 and the live empty-name wording.
 #   8. lib/failed-command-flagged.py docstring cites fleet-ops#1242.
 #   9. seat-lib.test.sh hosts this file (CI cannot gain a P14 line).
 #  10. live #1252 sibling: empty-name toolCall AFTER successful bash
@@ -202,13 +202,13 @@ count=$(jq '.findings | length' <<<"$report")
 ok "successful isError=false content quoting Tool  not found is not flagged (contrast with #1242)"
 rm -f "$sessions/empty-tool-name-quoted-content.jsonl"
 
-# --- 7. prompts/worker.md cites fleet-ops#1242 (prompt-side lock) ----------
+# --- 7. prompts/lib/failed-command-flagged.py cites fleet-ops#1242 (detector-side lock: case list moved to lib, fleet-ops#3246) ----------
 [[ -f "$worker" ]] || fail "missing $worker"
-grep -q 'fleet-ops#1242' "$worker" \
-  || fail "prompts/worker.md must cite fleet-ops#1242 (prompt-side lock)"
-grep -q 'Tool  not found' "$worker" \
-  || fail "prompts/worker.md must name the live two-space 'Tool  not found' wording"
-ok "worker.md cites fleet-ops#1242 and the live empty-name wording"
+grep -q 'fleet-ops#1242' "$lib" \
+  || fail "lib/failed-command-flagged.py must cite fleet-ops#1242 (detector-side lock: case list moved to lib, fleet-ops#3246)"
+grep -q 'Tool  not found' "$lib" \
+  || fail "lib/failed-command-flagged.py must name the live two-space 'Tool  not found' wording"
+ok "lib/failed-command-flagged.py cites fleet-ops#1242 and the live empty-name wording"
 
 # --- 8. lib/failed-command-flagged.py docstring cites fleet-ops#1242 ------
 grep -q 'fleet-ops#1242' "$lib" \

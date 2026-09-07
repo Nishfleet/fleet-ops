@@ -633,6 +633,171 @@ function emitIssues(repository, alerts) {
   }
 }
 
+/**
+ * @param {string} repository
+ * @param {number} issueNumber
+ */
+function closeIssue(repository, issueNumber) {
+  try {
+    execFileSync(
+      "gh",
+      [
+        "api",
+        "-X",
+        "PATCH",
+        `repos/${repository}/issues/${issueNumber}`,
+        "-f",
+        "state=closed",
+      ],
+      { encoding: "utf8", env: process.env, timeout: 60_000 },
+    );
+    console.error(`closed ${repository}#${issueNumber} for red-on-main (workflow green)`);
+  } catch (error) {
+    console.error(
+      `issue_close_failed on ${repository}#${issueNumber}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
+
+/**
+ * Parse the workflow name from a red-on-main detector issue body marker.
+ * Marker form: `<!-- red-on-main-detector:workflow=<name> -->`.
+ *
+ * @param {string} body
+ * @returns {string | null}
+ */
+export function parseWorkflowMarker(body) {
+  if (typeof body !== "string") return null;
+  const m = body.match(/<!--\s*red-on-main-detector:workflow=([^>]+?)\s*-->/u);
+  return m ? m[1] : null;
+}
+
+/**
+ * Decide whether an open red-on-main issue should be auto-closed now that
+ * its workflow may have recovered. Pure function — no GitHub calls — so it
+ * is unit-testable the same way the stop-the-line detector's buildDecision
+ * is.
+ *
+ * Close iff:
+ *   - the issue body carries a detector marker (so we know the workflow),
+ *   - the workflow is NOT in the still-firing alert set this tick, and
+ *   - the workflow's latest completed main run is green (success).
+ *
+ * @param {string} issueBody
+ * @param {RedAlert[]} firingAlerts Alerts still firing this tick.
+ * @param {{ conclusion: string } | null} latestRun Latest completed main run.
+ * @returns {boolean}
+ */
+export function shouldCloseIssue(issueBody, firingAlerts, latestRun) {
+  const workflow = parseWorkflowMarker(issueBody);
+  if (!workflow) return false;
+  if (firingAlerts.some((a) => a.workflow === workflow)) return false;
+  if (!latestRun) return false;
+  return latestRun.conclusion === "success";
+}
+
+/**
+ * Auto-close open red-on-main issues whose workflow has since gone green.
+ * Mirrors the stop-the-line detector's auto-unfreeze-on-green: the open
+ * issue is the alert, and the alert clears when the workflow's latest
+ * completed main run is green. Without this, every red-on-main issue
+ * stayed open until a human closed it, long after main recovered.
+ *
+ * @param {string} repository
+ * @param {RedAlert[]} alerts The alerts still firing this tick (do not close those).
+ */
+function resolveGreenIssues(repository, alerts) {
+  let openIssues;
+  try {
+    const stdout = execFileSync(
+      "gh",
+      [
+        "issue",
+        "list",
+        "--repo",
+        repository,
+        "--state",
+        "open",
+        "--label",
+        LABEL,
+        "--limit",
+        "100",
+        "--json",
+        "number,body",
+        "--jq",
+        ".[]",
+      ],
+      { encoding: "utf8", env: process.env, maxBuffer: 64 * 1024 * 1024, timeout: 60_000 },
+    );
+    openIssues = [];
+    for (const line of stdout.split(/\r?\n/u)) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        const issue = JSON.parse(trimmed);
+        if (Number.isFinite(issue.number)) openIssues.push(issue);
+      } catch {
+        // Ignore stray lines.
+      }
+    }
+  } catch {
+    // No label, no issues, or no permission — nothing to close.
+    return;
+  }
+
+  for (const issue of openIssues) {
+    if (typeof issue.body !== "string") continue;
+    const workflow = parseWorkflowMarker(issue.body);
+    if (!workflow) continue;
+    // The workflow did not fail this tick, so we have no cached workflow_id.
+    // Fetch the latest completed main run by name to decide green vs red.
+    const latestRun = fetchLatestMainRunByName(repository, workflow);
+    if (shouldCloseIssue(issue.body, alerts, latestRun)) {
+      closeIssue(repository, Number(issue.number));
+    }
+  }
+}
+
+/**
+ * Fetch the most recent completed main run matching a workflow by name,
+ * when we do not have the workflow_id cached (the workflow did not fail
+ * this tick). Lists recent completed main runs and picks the newest whose
+ * name matches.
+ *
+ * @param {string} repository
+ * @param {string} workflow
+ * @returns {WorkflowRun | null}
+ */
+function fetchLatestMainRunByName(repository, workflow) {
+  const sinceIso = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const raw = ghApiJson(
+    `repos/${repository}/actions/runs`,
+    `[.workflow_runs[]? | select(.head_branch == ${jqString("main")} and .status == "completed") | ` +
+      `{id: .id, name: .name, workflow_id: .workflow_id, event: .event, ` +
+      `conclusion: .conclusion, head_branch: .head_branch, head_sha: .head_sha, ` +
+      `created_at: .created_at, html_url: .html_url}]`,
+    {
+      paginate: false,
+      query: {
+        per_page: 100,
+        branch: "main",
+        status: "completed",
+        created: `>=${sinceIso}`,
+      },
+      timeoutMs: 60_000,
+    },
+  );
+  const runs = Array.isArray(raw) ? raw : [];
+  const matching = runs.filter(
+    (r) => r && r.head_branch === "main" && r.name === workflow,
+  );
+  if (matching.length === 0) return null;
+  matching.sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
+  return matching[0];
+}
+
 function printUsage() {
   console.log(`Usage: red-on-main-detector.mjs [options]
 
@@ -766,6 +931,11 @@ async function main() {
     // or comments. Multiple failures for the same workflow in one run will
     // update the same issue.
     emitIssues(repository, alerts);
+    // Close open red-on-main issues whose workflow has since gone green
+    // (fleet-ops#3507). Without this, alert issues stayed open for hours
+    // after main recovered, polluting the agent-ready queue with stale
+    // alerts that no longer reflected live state.
+    resolveGreenIssues(repository, alerts);
   }
 }
 

@@ -1,0 +1,59 @@
+{
+  "repository": "Nishfleet/fleet-ops",
+  "failures": [
+    {
+      "repo": "Nishfleet/fleet-ops",
+      "workflow": "CI",
+      "job": "codex-node-checks",
+      "step": "assert",
+      "assertion": "AssertionError: x",
+      "run_id": 5001,
+      "run_url": "https://github.com/Nishfleet/fleet-ops/actions/runs/5001",
+      "job_id": 6001,
+      "job_url": "https://github.com/Nishfleet/fleet-ops/runs/6001",
+      "event": "merge_group",
+      "head_branch": "gh-readonly-queue/main/pr-500-abc",
+      "head_sha": "abc",
+      "pr": 500,
+      "created_at": "2026-09-05T01:00:00Z"
+    },
+    {
+      "repo": "Nishfleet/fleet-ops",
+      "workflow": "CI",
+      "job": "codex-node-checks",
+      "step": "assert",
+      "assertion": "AssertionError: x",
+      "run_id": 5002,
+      "run_url": "https://github.com/Nishfleet/fleet-ops/actions/runs/5001",
+      "job_id": 6001,
+      "job_url": "https://github.com/Nishfleet/fleet-ops/runs/6001",
+      "event": "merge_group",
+      "head_branch": "gh-readonly-queue/main/pr-500-abc",
+      "head_sha": "abc",
+      "pr": 500,
+      "created_at": "2026-09-05T02:00:00Z"
+    },
+    {
+      "repo": "Nishfleet/fleet-ops",
+      "workflow": "CI",
+      "job": "codex-node-checks",
+      "step": "assert",
+      "assertion": "AssertionError: x",
+      "run_id": 5003,
+      "run_url": "https://github.com/Nishfleet/fleet-ops/actions/runs/5001",
+      "job_id": 6001,
+      "job_url": "https://github.com/Nishfleet/fleet-ops/runs/6001",
+      "event": "merge_group",
+      "head_branch": "gh-readonly-queue/main/pr-500-abc",
+      "head_sha": "abc",
+      "pr": 500,
+      "created_at": "2026-09-05T03:00:00Z"
+    }
+  ],
+  "signature_issues": [
+    {
+      "signature": "Nishfleet/fleet-ops\u241fCI\u241fcodex-node-checks\u241fassert\u241fAssertionError: x\u241fmerge_group",
+      "number": 4242
+    }
+  ]
+}

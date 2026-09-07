@@ -27,8 +27,9 @@ REPAIR_PROMPT_SUFFIX = "-repair.md"
 # interactive-session-reap (fleet-ops#592) reaps idle scopes; it is not a
 # work-producing role. vault-conflict-resolver (fleet-ops#529 / #636) is the
 # Syncthing freeze handler; vault-knowledge-format is the daily lint timer
-# for vault shape (fleet-ops#525). Both are plumbing, same class.
-# fleet-metrics-export (fleet-ops#1180) is the periodic Prometheus textfile
+# for vault shape (fleet-ops#525). fleet-baseline-delta (fleet-ops#1151) is
+# the weekly MAD strangeness pre-pass — deterministic plumbing, not a
+# judging role. fleet-metrics-export (fleet-ops#1180) is the periodic Prometheus textfile
 # exporter (writes /var/lib/prometheus/node-exporter/fleet.prom every 5m);
 # it is observability plumbing, not a judging/building role.
 # fleet-aeo-probe (fleet-ops#1236) is the weekly 0509 citation probe; it
@@ -39,6 +40,11 @@ NON_ROLE_UNIT_PREFIXES = (
     "stop-escalation",
     "unit-escalation",
     "escalation-daily",
+    # fleet-ops#2773: escalation-drain is the bounded-file maintainer for
+    # NISH-ESCALATIONS.md + alert-repair packets (archives resolved/out-
+    # of-class lines, deletes ledger-terminated packets). Runs no model,
+    # owns no prompt, produces no work items — plumbing, not a role.
+    "escalation-drain",
     "intake-reconcile",
     "fleet-restore",
     "fleet-resilience",
@@ -47,18 +53,44 @@ NON_ROLE_UNIT_PREFIXES = (
     "fleet-console",
     "fleet-heartbeat-failed-notify",
     "fleet-deploy-check",
-    # fleet-ops#468/#1610: alert-repair COMPLETION canary. It reads
-    # Prometheus alert chains / actions.log, climbs the stall ladder and
-    # writes a detector-red terminal — observability plumbing that runs no
-    # model and owns no prompt, so it has no role gate.
-    "fleet-completion-canary",
     "fleet-seat-recovery",
     "interactive-session-reap",
     "agent-cron-",
     "app-pi",
     "vault-conflict",
     "vault-knowledge-format",
+    # fleet-ops#1151: week-over-week MAD strangeness pre-pass for the
+    # Weekly Fleet Review. Writes a ranked |z|>3 report to the review
+    # input dir + fleet-baseline-delta.prom. Deterministic plumbing, not
+    # a judging role.
+    "fleet-baseline-delta",
     "fleet-metrics-export",
+    # fleet-ops#2227: fleet-worktree-reaper GCs orphan agent worktrees on
+    # merged+terminal claims (deletes git worktrees, runs no model, owns no
+    # prompt, produces no work items). Deterministic plumbing, not a role;
+    # its gate is tests/fleet-worktree-reaper.test.sh.
+    "fleet-worktree-reaper",
+    # fleet-ops#3270: the three heartbeat sections that only read GitHub
+    # state (lifecycle-label-sweep, merged-pr observe-to-close,
+    # close-duplicates) moved behind webhook triggers.
+    # Each is a webhook-triggered oneshot that wraps an existing helper
+    # (lifecycle-label-sweep, fleet-merged-pr-close,
+    # fleet-issue-file close-duplicates); they
+    # run no model, own no prompt and produce no work items — same
+    # dispatch-plumbing class as fleet-worktree-reaper above. Their own
+    # gates are the per-helper tests (tests/lifecycle-label-sweep.test.sh,
+    # tests/fleet-merged-pr-close.test.sh) plus the absent() rule on each
+    # unit's heartbeat metric.
+    "lifecycle-label-sweep",
+    "fleet-merged-pr-close",
+    "fleet-issue-close-duplicates",
+    # fleet-ops#2421: fleet-seat-comeback-release is plumbing (re-probes a
+    # walled seat whose wall clock has passed and unwalls a provably-usable
+    # one), not a work-producing role — it runs no model of its own, owns no
+    # judging prompt and produces no work items. Its gate is
+    # tests/fleet-seat-comeback-release.test.sh plus the absent()/stalled
+    # rules on its heartbeat metric.
+    "fleet-seat-comeback-release",
     # fleet-ops#1152: standing-rules-render is a file-render maintenance
     # unit (canonical -> marked regions of CLAUDE.md/AGENTS.md). It runs
     # no model, owns no prompt and produces no work items, so it has no
@@ -104,6 +136,21 @@ NON_ROLE_UNIT_PREFIXES = (
     # and produces no work items — same class as fleet-aeo-probe. Its own
     # gate is the drift --check plus tests/agent-scheduler-drift.test.sh.
     "agent-scheduler-drift",
+    # fleet-ops#3735: 0509-search-tier-canary is a daily six-domain /search
+    # tier regression canary (Nishfleet/0509#1452). It runs a node script,
+    # owns no judging prompt and produces no work items — observability
+    # plumbing, not a role. Its own
+    # gate is the unit's failed state plus the search-tier-canary check in
+    # the 0509 product repo.
+    "0509-search-tier",
+    # fleet-ops#4148: codex-sol@ / codex-luna@ are per-role Codex launch
+    # templates (shape-only paper). The ExecStart pins identity (model,
+    # provider, effort) so a launch cannot express another role; they own
+    # no judging prompt and produce no work items — launch plumbing, not a
+    # role. Their gate is the machinery-allowlist row (class (a), repo) +
+    # the codex-launcher-retired pin test.
+    "codex-sol",
+    "codex-luna",
 )
 
 
@@ -250,10 +297,10 @@ def check_weekly_fleet_review_output_contract(repo: Path, _role: dict[str, Any])
     if "claimed work only" not in text:
         return "prompts/weekly-fleet-review.md drops the 'claimed work only' output rule (no Nish report)"
     if "blind" not in text.lower():
-        return "prompts/weekly-fleet-review.md drops the blind 6-lens structure"
+        return "prompts/weekly-fleet-review.md drops the blind 8-lens structure"
     if "L6 SECURITY" not in text:
         return "prompts/weekly-fleet-review.md drops the L6 SECURITY lens (fleet-ops#1146 Nish addition)"
-    if '"lens": "throughput|quality|machinery|truth|outside|security"' not in text:
+    if '"lens": "throughput|quality|machinery|truth|outside|security|slo|alert_quality"' not in text:
         return "prompts/weekly-fleet-review.md lens enum does not include security"
     return None
 

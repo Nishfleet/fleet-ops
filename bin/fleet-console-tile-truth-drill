@@ -100,7 +100,7 @@ cat >"$scratch/data.json" <<'JSON'
       "items": [{"repo": "Nishfleet/fleet-ops", "count": 10}]
     },
     "shipped_24h": {
-      "source": "prometheus:fleet_merged_prs_24h",
+      "source": "prometheus:fleet_product_merged_24h",
       "stale_after_s": 900,
       "ok": true,
       "observed_at": 1787846400,

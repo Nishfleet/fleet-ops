@@ -5,6 +5,10 @@
 # varying ages, assert UNVERIFIED is applied exactly when (now - observed)
 # > ttl, and assert the [recall: N loaded, M UNVERIFIED] receipt.
 #
+# Also locks fleet-ops#1320 context mode: `memoryctl-recall context` rewires a
+# live `memoryctl context` packet through the same TTL layer, printing the
+# same receipt and rewriting expired bodies.
+#
 # Offline. Does not touch the live vault. check-command strings are printed,
 # never executed.
 
@@ -199,5 +203,120 @@ bundled_first="$(printf '%s\n' "$bundled_out" | head -n 1)"
 [[ "$bundled_first" == '[recall: 12 loaded, 6 UNVERIFIED]' ]] \
   || fail "bundled-default receipt wrong, got: $bundled_first"
 ok "bundled ttl-policy.md is the default --policy"
+
+# ---------------------------------------------------------------------------
+# Context mode (fleet-ops#1320): `memoryctl-recall context` rewires a live
+# `memoryctl context` packet through the same TTL layer. A stub memoryctl
+# prints a canned packet so this stays hermetic (no live vault touch).
+#   - fresh note section -> body untouched
+#   - stale note section -> UNVERIFIED: body + literal check-command
+#   - check-command is printed, never executed
+#   - unresolvable / KB section (not a vault file) -> untouched, uncounted
+#   - a failing memoryctl (vault gates) propagates its exit code + stderr
+# ---------------------------------------------------------------------------
+packet_fixture="$scratch/packet.txt"
+{
+  printf '%s\n' "# Task Memory Packet" "" \
+    '- Agent: `claude-vps`' "- Task: probe" "" \
+    "- Sources selected: 4 of at most 8" '- Context receipt: `test-1`' "" \
+    "Treat these as leads. Re-verify drift-prone facts against the live repo or runtime." ""
+  printf '%s\n' "## drill-fresh.md" "" "heartbeat timer is active" ""
+  printf '%s\n' "## drill-stale.md" "" "heartbeat timer is active" ""
+  printf '%s\n' "## no-exec.md" "" "stale health" ""
+  printf '%s\n' '## kb/record.md  (surface: test "probe")' "" "not a vault note" ""
+} > "$packet_fixture"
+
+cat > "$scratch/memoryctl-stub" <<'STUB'
+#!/usr/bin/env bash
+cat "$MEMORYCTL_FIXTURE"
+STUB
+chmod +x "$scratch/memoryctl-stub"
+
+context_out="$(
+  MEMORYCTL_BIN="$scratch/memoryctl-stub" MEMORYCTL_FIXTURE="$packet_fixture" \
+    python3 "$bin" context --vault "$notes" --policy "$policy" --now "$now" \
+      --agent claude-vps --query probe
+)" || fail "context-mode recall exited nonzero"
+
+printf '%s\n' "$context_out" >"$scratch/context.txt"
+
+# The receipt counts vault-note sections (3) and expired ones (stale + no-exec).
+printf '%s\n' "$context_out" | grep -qF '[recall: 3 loaded, 2 UNVERIFIED]' \
+  || fail "context-mode receipt wrong: $(printf '%s\n' "$context_out" | grep -F '[recall:' || true)"
+ok "context-mode receipt is [recall: 3 loaded, 2 UNVERIFIED]"
+
+# Receipt is placed before the first section; the packet header is untouched.
+header_ok="$(printf '%s\n' "$context_out" | sed -n '1,/^\[recall:/p')"
+grep -qF "# Task Memory Packet" <<<"$header_ok" \
+  && grep -qF -- '- Context receipt: `test-1`' <<<"$header_ok" \
+  && grep -qF "Treat these as leads." <<<"$header_ok" \
+  || fail "context-mode packet header was altered"
+ok "context-mode keeps the memoryctl packet header intact"
+
+# Fresh section body is untouched (no UNVERIFIED prefix).
+printf '%s\n' "$context_out" | awk '
+  $0 == "## drill-fresh.md" {p=1; next}
+  p && /^## / {exit}
+  p {print}
+' | grep -qF "heartbeat timer is active" \
+  || fail "context-mode fresh section lost its body"
+printf '%s\n' "$context_out" | awk '
+  $0 == "## drill-fresh.md" {p=1; next}
+  p && /^## / {exit}
+  p {print}
+' | grep -q '^UNVERIFIED:' \
+  && fail "context-mode fresh section marked UNVERIFIED"
+ok "context-mode fresh note keeps the original body"
+
+# Stale section becomes UNVERIFIED with its literal check-command.
+stale_section="$(printf '%s\n' "$context_out" | awk '
+  $0 == "## drill-stale.md" {p=1; next}
+  p && /^## / {exit}
+  p {print}
+')"
+grep -qF "UNVERIFIED: heartbeat timer is active" <<<"$stale_section" \
+  || fail "context-mode stale section not rewritten, got: $stale_section"
+grep -qxF "systemctl --user is-active fleet-heartbeat.timer" <<<"$stale_section" \
+  || fail "context-mode stale section missing literal check-command"
+ok "context-mode rewrites expired bodies and prints the check-command"
+
+# check-command is printed, never executed: the no-exec section is rewritten
+# but the pwned file must not exist (same contract as directory mode).
+[[ ! -e "$pwned" ]] || fail "context-mode executed a check-command (created $pwned)"
+printf '%s\n' "$context_out" | grep -qF "UNVERIFIED: stale health" \
+  || fail "context-mode no-exec section not rewritten"
+printf '%s\n' "$context_out" | grep -qF "touch $pwned" \
+  || fail "context-mode no-exec section missing its printed check-command"
+ok "context-mode prints check-commands without executing them"
+
+# Unresolvable (KB-shape) section passes through untouched and uncounted.
+kb_section="$(printf '%s\n' "$context_out" | awk '
+  $0 == "## kb/record.md  (surface: test \"probe\")" {p=1; next}
+  p && /^## / {exit}
+  p {print}
+')"
+grep -qF "not a vault note" <<<"$kb_section" \
+  || fail "context-mode KB section altered"
+[[ "$kb_section" != *UNVERIFIED* ]] \
+  || fail "context-mode KB section marked UNVERIFIED"
+ok "context-mode passes non-vault sections through untouched"
+
+# A failing memoryctl (e.g. a vault gate) must propagate, not be swallowed.
+cat > "$scratch/memoryctl-fail" <<'FAIL'
+#!/usr/bin/env bash
+echo "memoryctl: newer memory awaits approval for this scope: 3 pending" >&2
+exit 2
+FAIL
+chmod +x "$scratch/memoryctl-fail"
+set +e
+MEMORYCTL_BIN="$scratch/memoryctl-fail" \
+  python3 "$bin" context --vault "$notes" --policy "$policy" --now "$now" \
+    --agent claude-vps --query probe >/dev/null 2>"$scratch/fail.err"
+fail_rc=$?
+set -e
+[[ "$fail_rc" -eq 2 ]] || fail "memoryctl failure not propagated, rc=$fail_rc"
+grep -qF "newer memory awaits approval" "$scratch/fail.err" \
+  || fail "memoryctl failure stderr not propagated"
+ok "context-mode propagates memoryctl vault-gate failures"
 
 echo "ALL OK: TTL applied exactly when (now - observed) > ttl; receipt matches"

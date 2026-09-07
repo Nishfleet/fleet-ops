@@ -49,7 +49,7 @@
 #      ("the read failed with ENOENT") -> clean.
 #   3. cause prose alone (no later flag) is still a finding even when
 #      the archived cat succeeds.
-#   4. worker.md cites fleet-ops#1059 (prompt-side lock).
+#   4. lib/failed-command-flagged.py cites fleet-ops#1059 (detector-side lock: case list moved to lib, fleet-ops#3246).
 #   5. lib/failed-command-flagged.py docstring cites fleet-ops#1059.
 #   6. seat-lib.test.sh hosts this file (CI cannot gain a new workflow line).
 
@@ -147,14 +147,14 @@ count=$(jq '.findings | length' <<<"$report")
 ok "cause prose alone (no failure named) is still flagged even when the archived cat succeeds"
 rm -f "$sessions/read-enoent-cause-prose-only.jsonl"
 
-# --- 4. worker.md cites fleet-ops#1059 (prompt-side lock) -------------------
+# --- 4. lib/failed-command-flagged.py cites fleet-ops#1059 (detector-side lock: case list moved to lib, fleet-ops#3246) -------------------
 worker="$repo_root/prompts/worker.md"
 [[ -f "$worker" ]] || fail "missing $worker"
-grep -q 'fleet-ops#1059' "$worker" \
-  || fail "prompts/worker.md must cite fleet-ops#1059 (prompt-side lock for the archived-packet read-ENOENT class)"
-grep -q 'fleet-ops-938.in' "$worker" \
-  || fail "prompts/worker.md must name the live #1059 archived-packet path so workers flag the shape"
-ok "worker.md cites fleet-ops#1059 and the live archived-packet path"
+grep -q 'fleet-ops#1059' "$lib" \
+  || fail "lib/failed-command-flagged.py must cite fleet-ops#1059 (detector-side lock for the archived-packet read-ENOENT class)"
+grep -q 'fleet-ops-938.in' "$lib" \
+  || fail "lib/failed-command-flagged.py must name the live #1059 archived-packet path so workers flag the shape"
+ok "lib/failed-command-flagged.py cites fleet-ops#1059 and the live archived-packet path"
 
 # --- 5. lib/failed-command-flagged.py docstring cites fleet-ops#1059 --------
 # The lib docstring is the standing-rule contract for the next detector

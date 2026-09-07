@@ -1,0 +1,1706 @@
+#!/usr/bin/env bash
+# fleet-seat-comeback-release — the ACTIVE release path for walled seats
+# (fleet-ops#2421).
+#
+# Problem: a seat whose wall clock (bench_until ?? usable_at) has passed is
+# FAIL-OPEN by the router (seat_usable in lib/seat-lib.sh), but nothing
+# actively re-probes it. The wall clears only when a worker happens to
+# re-pick the seat and the out-of-repo seat-health extension records the
+# outcome. The 2026-08-30T18:30:09Z census showed straitly/gpt-5.6-sol
+# quota_exhausted with usable_at an hour in the past still walled=true,
+# released=false; FleetSeatComebackOverdue was pending at value=3 and
+# released_n stayed 0 across the whole roster — nothing had EVER been
+# released. The fleet-ops#2407 metric-side release (seat_table released
+# flag in the gather, _seat_is_released in fleet-metrics-export.py)
+# only reclassifies the CENSUS; it releases nothing.
+#
+# This bin IS the release path. On a wall clock passing it sends a TOOL-USING
+# probe through the REAL router (pi --print --provider P --model M,the
+# same probe seat-health.ts classifies): the packet forces a bash roundtrip
+# (run `echo $((6*7))` via the bash tool,and reply with the integer), so a
+# seat that only answers inline but 503s on tool loading stays walled (the
+# partial-storm class, fleet-ops#2661): the computed token must appear in
+# the output before the seat is released.
+
+#     is provably usable: this bin writes the healthy observation ITSELF
+#     (unwall: health_class=healthy, seat_dead=false, count 0, wall clock
+#     cleared), so the release does not depend on the extension's response
+#     hook. The healthy write lands in the ledger -> fleet-seat-recovery.path
+#     fires -> pi-intake is primed the moment the seat re-enters the ladder.
+#   - probe failure -> the extension re-anchors usable_at from the real
+#     HTTP response (fresh wall); the seat stays walled until that window
+#     passes and the next comeback is owed. A corpse reclassification
+#     (seat_dead=true, health_class=corpse) is terminal, EXCEPT a no-wall
+#     corpse from a RECOVERABLE source — the prober-created no-wall corpse
+#     (failure_mode=comeback_never_released, fleet-ops#3156) AND a no-wall
+#     corpse from a transient failure mode (rate_limit / transient_http /
+#     cli_timeout / transient_other / empty_run / overload, fleet-ops#3229)
+#     — which gets a second-chance re-probe: on success it is unwalled
+#     (transitions out of corpse), on failure it is explicitly retired
+#     immediately. fleet-ops#3508: a FAILED re-probe that does NOT establish a
+#     wall is only a terminal retire for permanent classes — a no-wall
+#     rate_limit corpse whose probe failed WITHOUT the extension re-anchoring
+#     (timeout, no HTTP) gets a BOUNDED comeback clock (usable_at = now +
+#     walled_comeback.rate_limit_s, default 900s) instead, because a 429
+#     rate limit resets over a bounded window; the seat re-enters the walled
+#     path and is re-probed when the clock passes. A no-wall corpse from a
+#     PERMANENT class (credentials_bad
+#     401/403, quota_exhausted-by-age 402) and any corpse still owed a
+#     comeback clock (future wall) keep the 6h grace hold before physical
+#     retirement. fleet-ops#3301: if THIS sweep's failed probe already
+#     re-anchored a future wall (the extension wrote usable_at from a real
+#     HTTP 429, rebench_seat skipped), do NOT corpse — a no-wall corpse
+#     write would wipe the retry window the extension just set (lived
+#     2026-09-04T16:30Z opencode/mimo-v2.5-free: 429 +15min then CORPSED
+#     with usable_at=null, 27 failures, never released).
+#
+# Loud backstop (fleet-ops#2421): after the sweep, if walled seats still
+# hold EXPIRED wall clocks AND nothing was released this run, the release
+# path is broken (probe blocked, extension not re-anchoring, provider not
+# routable) — the run exits 1, writes fleet_seat_comeback_release_stalled=1
+# to the textfile and does NOT update the last-green timestamp. The
+# FleetSeatComebackReleaseStalled prom rule (1h sustained) is the loud
+# alert; the absent/stale rule on the last-green timestamp pages a dead
+# organ.
+#
+# Deliberate exclusions (the two bugs that killed the predecessor
+# seat-walled-probe, fleet-ops#2394): .spawn-bench bench-marker pseudo-seats
+# and test__ fixtures (provider == "test") are never probed. Corpse seats
+# (seat_dead=true) are normally never probed either: they carry no comeback
+# clock (fleet-ops#2415) and FleetDeadCredentialSeats owns the still-live
+# credentials_bad class. fleet-ops#3156 CARVES OUT a recoverable subclass —
+# a PROBER-created no-wall corpse (failure_mode comeback_never_released /
+# source comeback_release_corpse, no wall clock) gets a single
+# second-chance re-probe: on success it is unwalled (transitions OUT of
+# corpse), on failure it is explicitly retired at once instead of sitting
+# through the full grace window. fleet-ops#3229 widens the carve-out to a
+# no-wall corpse from a RECOVERABLE transient failure mode (rate_limit /
+# transient_http / cli_timeout / transient_other / empty_run / overload) —
+# a transient condition can clear on its own, so one bounded probe during
+# grace lets the seat recover the moment it clears. A no-wall corpse from
+# a PERMANENT class (credentials_bad 401/403, quota_exhausted-by-age 402)
+# and any corpse still owed a comeback (future wall) keep the
+# terminal/hold behavior below. fleet-ops#2716: a
+# corpse that has aged past the
+# corpse grace window (CORPSE_GRACE_S, default 6h) is PHYSICALLY retired
+# out of the live roster here — seat-caps.json retiring the slug (cap 0 +
+# intentional_cap_zero=corpse, #2708) stops the rotation but leaves the
+# corpse ledger in lanes/seats/, where the daily-digest 'Total seen', the
+# opus-heartbeat-gather seat_table n and any capacity denominator keep
+# counting it as live roster membership. The terminal lifecycle step is a
+# dated move into lanes/seats-corpse-retired-<UTC-ts>/ (the live
+# commandcode/minimax/minimax-m3-free corpse that survived #2708 is the
+# issue evidence).
+#
+# Design (no new machinery):
+#   - min-probe interval per seat (state file), default 900s — matches
+#     seat-caps.json walled_comeback.min_probe_interval_s, so a failed
+#     probe that the extension did NOT re-anchor is not hammered every
+#     15-min tick (it renders steel-loud via the stalled check instead).
+#   - Times out each probe (default 45s). A clean sweep with nothing to do
+#     exits 0; the one-shot unit treats a no-op as success, not failure.
+#
+# Usage: fleet-seat-comeback-release [--dry-run]
+#
+# Env (tests):
+#   PI_SEAT_HEALTH_LEDGER_DIR   seat ledger dir (default
+#                               /home/nish/workspaces/agent-state/lanes/seats)
+#   PI_BIN                      pi binary (default /home/nish/.local/bin/pi)
+#   FLEET_SEAT_COMEBACK_STATE   state json (default
+#                               /home/nish/.local/state/fleet-seat-comeback-release.json)
+#   FLEET_SEAT_COMEBACK_PROM    textfile .prom (default
+#                               /var/lib/prometheus/node-exporter/fleet-seat-comeback-release.prom)
+#   FLEET_SEAT_COMEBACK_MIN_INTERVAL_S  per-seat min probe interval (default 900)
+#   FLEET_SEAT_COMEBACK_TIMEOUT_S       probe timeout (default 45)
+#   FLEET_SEAT_COMEBACK_CORPSE_GRACE_S  corpse-ledger retirement grace
+#                                       (default 21600 = 6h, fleet-ops#2716)
+#   FLEET_SEAT_COMEBACK_CORPSE_RUNAWAY_MULT  runaway-corpse count multiple
+#                                       (default 4, fleet-ops#3638)
+#   FLEET_SEAT_COMEBACK_NOW              ISO timestamp override (tests)
+#
+# Exit: 0 clean sweep. 1 when the release path is stuck (walled seats hold
+# expired wall clocks and nothing was released) or on internal error.
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+AS="${AGENT_STATE:-/home/nish/workspaces/agent-state}"
+LEDGER="${PI_SEAT_HEALTH_LEDGER_DIR:-$AS/lanes/seats}"
+PI_BIN="${PI_BIN:-/home/nish/.local/bin/pi}"
+STATE_FILE="${FLEET_SEAT_COMEBACK_STATE:-$HOME/.local/state/fleet-seat-comeback-release.json}"
+PROM_FILE="${FLEET_SEAT_COMEBACK_PROM:-/var/lib/prometheus/node-exporter/fleet-seat-comeback-release.prom}"
+MIN_INTERVAL="${FLEET_SEAT_COMEBACK_MIN_INTERVAL_S:-900}"
+PROBE_TIMEOUT="${FLEET_SEAT_COMEBACK_TIMEOUT_S:-45}"
+# fleet-ops#2493: when a probe fails, the seat-health extension can only
+# re-anchor the wall clock if a real HTTP response arrived. A probe that
+# timed out (rc=124) or exited with a generic failure (rc=1) leaves the
+# ledger with a STALE wall clock in the past; the next 15-min tick finds
+# the same expired wall, probes again, fails again — an indefinite loop
+# that wastes probe budget and keeps the FleetSeatComebackOverdue metric
+# pending. Re-bench HERE on probe failure: advance usable_at/bench_until
+# to now + REBENCH_BACKOFF_S so the wall is in the future and the next
+# tick skips the seat until the new window passes. The next probe
+# (after the new window) either refreshes the wall (real response
+# -> extension re-anchors) or unwalls the seat (probe succeeds) or
+# re-benches again. Without this, a perpetually-failing seat burns a
+# slot every 15 min and the loud-stall check fires forever.
+REBENCH_BACKOFF_S="${FLEET_SEAT_COMEBACK_REBENCH_BACKOFF_S:-900}"
+# fleet-ops#3737: freshness window for the wrapper bench marker
+# (<seat>.spawn-bench.json, written by mark_seat_empty_run /
+# mark_seat_spawn_fail). A marker younger than this whose usable_at has
+# expired and which is still the seat's latest evidence (no newer ledger
+# observed_at) owes a comeback probe before the seat is re-admitted —
+# seat_usable holds it meanwhile. Matches EMPTY_RUN_COUNT_WINDOW_S /
+# SEAT_PARK_WALL_S in lib/seat-lib.sh (24 h): older than that is
+# archaeology and the marker no longer gates.
+SPAWN_BENCH_FRESH_S="${FLEET_SEAT_COMEBACK_SPAWN_BENCH_FRESH_S:-86400}"
+# fleet-ops#2638: corpse the seat when consecutive_failure_count crosses
+# the threshold after a probe failure. Matches SEAT_DEAD_CONSECUTIVE_THRESHOLD
+# in lib/seat-lib.sh (also default 25) so the comeback-release path agrees
+# with the bash writer's corpse boundary on quota_cap (fleet-ops#2594) and
+# the seat-health.ts seat_dead_consecutive_threshold. Without this, a seat
+# that fails 25+ times under the prober (overload_bench, transient_fault,
+# rate_limited) lingers as a chronically-walled seat forever, burning a
+# probe slot every re-bench window. Corpse at the same threshold so every
+# class converges on the same corpse boundary.
+SEAT_DEAD_CONSECUTIVE_THRESHOLD="${SEAT_DEAD_CONSECUTIVE_THRESHOLD:-25}"
+# fleet-ops#2716: corpse-ledger retirement grace. A corpse (seat_dead=true,
+# health_class=corpse) is the TERMINAL seat state (#2327/#2415): it carries
+# no comeback clock and seat_usable holds it off the ladder, but its LEDGER
+# FILE still sits in lanes/seats/, where the census counts it as live roster
+# membership. This bin already owns the rest of the seat lifecycle
+# (corpse-on-threshold, #2638), so it also owns the terminal step: a corpse
+# ledger whose observed_at has aged past CORPSE_GRACE_S is physically moved
+# into lanes/seats-corpse-retired-<UTC-ts>/. The grace window lets a fresh
+# corpse reclassification recover via a healthy observation (seat-lib
+# clears a corpse on a successful probe) before the ledger is retired.
+CORPSE_GRACE_S="${FLEET_SEAT_COMEBACK_CORPSE_GRACE_S:-21600}"
+# fleet-ops#3508: the bounded comeback window for a no-wall rate_limit corpse
+# whose second-chance re-probe failed WITHOUT the extension re-anchoring a
+# wall (probe timeout / no HTTP response). A 429 rate limit resets over a
+# bounded window (seat-caps.json walled_comeback.rate_limit_s, default
+# 900s), so such a corpse gets usable_at = now + RATE_LIMIT_COMEBACK_S and
+# re-enters the normal walled path instead of being force-retired as a
+# terminal corpse the moment one probe fails.
+RATE_LIMIT_COMEBACK_S="${FLEET_SEAT_COMEBACK_RATE_LIMIT_S:-900}"
+# fleet-ops#3638: runaway-corpse multiple. A no-wall corpse whose
+# consecutive_failure_count has climbed to >= CORPSE_RUNAWAY_MULT x
+# SEAT_DEAD_CONSECUTIVE_THRESHOLD has demonstrably burned through many
+# second-chance re-probes. The lived bug: a comeback_never_released corpse
+# bounces corpse -> second-chance re-probe -> extension reclassifies to a
+# walled state (rate_limited / quota_bench) during the probe -> "extension
+# reclassified, no longer a corpse" -> walled seat re-probes, fails, and
+# re-corpses at count+2 with a FRESH observed_at. retire_corpse's 6h grace
+# keys on observed_at, so each re-corpse RESETS the grace window and the
+# seat is never reaped — count climbs to 117/109 (the lived xkiro seats),
+# FleetSeatComebackNeverReleased stays pending, the live roster keeps
+# counting a dead seat. Once the count crosses this multiple the corpse is
+# force-retired immediately (grace bypass): the second-chance re-probe is
+# for a FRESH corpse (count near threshold); a runaway corpse has had its
+# chances and is permanently excluded so the seat count reflects a dead
+# seat, not a forever-bouncing corpse. Default 4x (100 at threshold 25) —
+# catches the reported 117/109 case while leaving genuine slow-recovery
+# seats room below the line. The guard is scoped to the NON-recoverable
+# prober corpse (fleet-ops#3229 / test 17b): a corpse in a RECOVERABLE
+# transient mode (rate_limit / transient_http / cli_timeout /
+# transient_other / empty_run / overload) is never runaway-force-retired —
+# it keeps the bounded second-chance re-probe because a transient
+# condition clears on its own.
+CORPSE_RUNAWAY_MULT="${FLEET_SEAT_COMEBACK_CORPSE_RUNAWAY_MULT:-4}"
+[[ "$CORPSE_RUNAWAY_MULT" =~ ^[0-9]+$ ]] || CORPSE_RUNAWAY_MULT=4
+(( CORPSE_RUNAWAY_MULT >= 1 )) || CORPSE_RUNAWAY_MULT=4
+# fleet-ops#3176: the provider-quota-exhausted alert window in
+# libexec/fleet-metrics-export.py (PROVIDER_QUOTA_WINDOW_S, default 3600s).
+# A quota_exhausted (HTTP 402) seat whose observed_at is STILL inside this
+# window must NOT be probed: a fresh 402 re-anchors observed_at=now and
+# refreshes the 1h window, so FleetProviderQuotaExhausted never ages out
+# (the 1h==1h deadlock). The seat-health extension now defaults a no-Retry-
+# After 402 to free_balance_exhausted_s=86400 (strictly longer than this
+# window), so the probe cadence dwarfs the window; this gate is the
+# belt-and-suspenders for a shorter provider Retry-After or a legacy ledger.
+PROVIDER_QUOTA_WINDOW_S="${FLEET_SEAT_COMEBACK_PQE_WINDOW_S:-3600}"
+NOW_ISO="${FLEET_SEAT_COMEBACK_NOW:-}"
+# fleet-ops#2661: the provider-wide overload wall reuses the learned-caps
+# mechanism a lib/seat-lib.sh provides (_record_learned_cap,_seat_now_epoch);
+# source it so the wall write lives in ONE canonical place, not a third copy.
+
+# Fleet adaptation:this bin keeps its OWN state file and log(); seat-lib's
+# seat_log / state dirs are untouched by the sweep-operated code below.
+
+# fleet-ops#2661: seat-lib's freshness helpers must see the SAME frozen clock
+# as the sweep's own now_iso/now_epoch in tests. Export the override so a
+# sourced seat-lib reads the test clock, not the host wall clock.
+[[ -n "$NOW_ISO" ]] && export FLEET_SEAT_RECOVERY_NOW="$NOW_ISO"
+SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
+if [[ -f "$SEAT_LIB" ]]; then source "$SEAT_LIB" || true; fi
+
+# fleet-ops#2661: consecutive-overload escalation. A probe failure on an
+# overload_bench seat is an overload_503 strike on that provider; >=MIN strikes
+# within the 2h window arm an EXPONENTIAL provider-wide wall (learned-caps.json
+# providers.<p>.bench_until), so a partial 503 storm cannot keep releasing walls
+# straight back into the storm every bench window. cap=1 is the floor the
+# learned-caps mechanism can express (same as its rate-limit backoff floor).
+OVERLOAD_STRIKE_WINDOW_S="${FLEET_SEAT_COMEBACK_OVERLOAD_STRIKE_WINDOW_S:-7200}"
+OVERLOAD_WALL_MIN_STRIKES="${FLEET_SEAT_COMEBACK_OVERLOAD_WALL_MIN_STRIKES:-4}"
+OVERLOAD_WALL_BASE_S="${FLEET_SEAT_COMEBACK_OVERLOAD_WALL_BASE_S:-1800}"
+OVERLOAD_WALL_MAX_S="${FLEET_SEAT_COMEBACK_OVERLOAD_WALL_MAX_S:-21600}"
+PROBE_TOKEN="${FLEET_SEAT_COMEBACK_PROBE_TOKEN:-42}"
+DRY_RUN=0
+[[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
+
+log() {
+    printf '[%s] [fleet-seat-comeback-release] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+# fleet-ops#3661: phantom-key guard. Uses seat-lib's _seat_key_in_caps when
+# seat-lib is sourced; otherwise fail-open (no caps file / no seat-lib on
+# hosted CI -> treat every key as valid so a missing seat-lib never bricks
+# the sweep).
+_seat_key_valid() {
+    if declare -F _seat_key_in_caps >/dev/null 2>&1; then
+        _seat_key_in_caps "$1" "$2"
+    else
+        return 0
+    fi
+}
+
+# fleet-ops#3993: distinguish a REAL provider seat that is merely absent
+# from the seat-caps models map (cap=0 parked for re-audition, a provider
+# config out of date, a retired slug still holding a ledger) from a TRUE
+# probe-output PHANTOM (a model id that is a unit output filename fragment
+# like "glm-5-2-.out" / "swe-1-7-.out" / "grok-4-6-.out", fleet-ops#3661).
+# The seat-caps `_seat_key_in_caps` guard over-rejects: it answers false for
+# every seat without an exact providers.<p>.models.<m> row, yet most of those
+# are REAL routable seats (mergegateway/*, openrouter/*, straitly/gpt-5.6-sol,
+# zenmux, groq, orcarouter/*) that the release organ SHOULD re-probe when
+# their wall expires — the lived finding: orcarouter/orcarouter/free stuck
+# 6h+ past usable_at because the release organ skipped it as "phantom" and
+# never re-auditioned it. The distinguishing signal is the model id itself:
+# a real model never ends in a dot-file extension. Reject (return 0 / true)
+# ONLY those probe-artifact ids; everything else is safe to re-probe.
+_seat_is_probe_artifact() {
+    # A probe-output fragment ends in .out/.err/.log (the unit output file
+    # the prober captured the model id from, the #3661/#4018 shape). Real
+    # fleet model ids (glm-5-2, gpt-5.6-sol, deepseek-v4-flash-0731,
+    # z-ai/glm-5.3-flash, orcarouter/free, ...) never end in a dot-file ext.
+    [[ "${1:-}" =~ \.(out|err|log)$ ]]
+}
+
+now_epoch() {
+    if [[ -n "$NOW_ISO" ]]; then
+        date -u -d "$NOW_ISO" +%s 2>/dev/null || date -u +%s
+    else
+        date -u +%s
+    fi
+}
+
+now_iso() {
+    if [[ -n "$NOW_ISO" ]]; then
+        printf '%s\n' "$NOW_ISO"
+    else
+        date -u +%Y-%m-%dT%H:%M:%SZ
+    fi
+}
+
+# Pure epoch (UTC) of an ISO timestamp, or empty. Accepts trailing Z.
+# An EMPTY input is empty (never parsed as "now" — GNU `date -d ""`
+# silently means now, so a clockless ledger entry would otherwise look
+# like a wall clock held at the current time and defeat every
+# wall-clock check; fleet-ops#2716 pinned this in the corpse-retirement
+# path with a frozen clock).
+ts_epoch() {
+    local t="$1" e
+    [[ -n "$t" ]] || return 0
+    t="${t%Z}"
+    e=$(date -u -d "$t" +%s 2>/dev/null || true)
+    [[ "$e" =~ ^[0-9]+$ ]] && printf '%s\n' "$e" || true
+}
+
+wall_end_of() {
+    # bench_until ?? usable_at — the router (seat_usable) prefers bench_until
+    # and falls back to usable_at; mirror that.
+    jq -r '(.bench_until // .usable_at // "")' "$1" 2>/dev/null || true
+}
+
+# fleet-ops#3176: a quota_exhausted (HTTP 402) seat whose observed_at is
+# STILL inside PROVIDER_QUOTA_WINDOW_S is intentionally held — comeback-
+# release must NOT probe it. A fresh 402 re-anchors observed_at=now and
+# refreshes the 1h PQE window, so FleetProviderQuotaExhausted never ages
+# out (the 1h==1h deadlock). The seat waits for the window to age out;
+# only then does the next probe fire (observed_at outside the window, so a
+# 402 re-anchor fires PQE for 1h and then ages out, not forever). This
+# helper is the shared gate for the sweep, the post-sweep expired count,
+# and the interval-breach check so an intentionally-held PQE-window seat
+# is not probed, not counted as stuck, and not counted as breached.
+# Returns 0 (true) when the seat is quota_exhausted AND observed_at is
+# inside the window; 1 otherwise. Mirrors the exporter's inside-window
+# test: (now - epoch) <= PROVIDER_QUOTA_WINDOW_S.
+quota_exhausted_in_pqe_window() {
+    local f="$1" hc obs obs_e now_e age
+    hc=$(jq -r '.health_class // ""' "$f" 2>/dev/null || true)
+    [[ "$hc" == "quota_exhausted" ]] || return 1
+    obs=$(jq -r '.observed_at // ""' "$f" 2>/dev/null || true)
+    obs_e=$(ts_epoch "$obs")
+    [[ -n "$obs_e" ]] || return 1
+    now_e=$(now_epoch)
+    age=$(( now_e - obs_e ))
+    (( age <= PROVIDER_QUOTA_WINDOW_S )) && return 0
+    return 1
+}
+
+# --- state (per-seat last probe time + cumulative counters) ---------------
+load_state() {
+    if [[ -f "$STATE_FILE" ]]; then
+        jq -c '.' "$STATE_FILE" 2>/dev/null || printf '%s\n' '{"last_probe":{},"probed_total":0,"released_total":0,"walls_total":0,"corpse_total":0,"retired_total":0,"overload_strikes":{},"own_failures":{}}'
+    else
+        printf '%s\n' '{"last_probe":{},"probed_total":0,"released_total":0,"walls_total":0,"corpse_total":0,"retired_total":0,"overload_strikes":{},"own_failures":{}}'
+    fi
+}
+
+save_state() {
+    local state="$1"
+    mkdir -p "$(dirname "$STATE_FILE")"
+    printf '%s\n' "$state" > "$STATE_FILE.tmp"
+    mv "$STATE_FILE.tmp" "$STATE_FILE"
+}
+
+# --- textfile metrics ------------------------------------------------------
+write_prom() {
+    local last_green="$1" stalled="$2" probed="$3" released="$4" expired="$5" corpse_total="$6" retired="$7" breached="$8" breached_lines="$9"
+    mkdir -p "$(dirname "$PROM_FILE")"
+    {
+        printf '# HELP fleet_seat_comeback_release_last_green_seconds Last sweep that completed cleanly — no stuck release path (fleet-ops#2421).\n'
+        printf '# TYPE fleet_seat_comeback_release_last_green_seconds gauge\n'
+        if [[ -n "$last_green" ]]; then
+            printf 'fleet_seat_comeback_release_last_green_seconds %s\n' "$last_green"
+        fi
+        printf '# HELP fleet_seat_comeback_release_stalled 1 while walled seats hold expired wall clocks and nothing was released (fleet-ops#2421).\n'
+        printf '# TYPE fleet_seat_comeback_release_stalled gauge\n'
+        printf 'fleet_seat_comeback_release_stalled %s\n' "$stalled"
+        printf '# HELP fleet_seat_comeback_release_probed_total Probes sent by the come-back release organ (fleet-ops#2421).\n'
+        printf '# TYPE fleet_seat_comeback_release_probed_total counter\n'
+        printf 'fleet_seat_comeback_release_probed_total %s\n' "$probed"
+        printf '# HELP fleet_seat_comeback_release_released_total Seats released (unwalled) by the come-back release organ (fleet-ops#2421).\n'
+        printf '# TYPE fleet_seat_comeback_release_released_total counter\n'
+        printf 'fleet_seat_comeback_release_released_total %s\n' "$released"
+        printf '# HELP fleet_seat_comeback_release_walled_expired Walled seats still holding an expired wall clock after the sweep (fleet-ops#2421).\n'
+        printf '# TYPE fleet_seat_comeback_release_walled_expired gauge\n'
+        printf 'fleet_seat_comeback_release_walled_expired %s\n' "$expired"
+        # fleet-ops#2638: cumulative counter of seats the prober has
+        # terminally corpsed after consecutive_failure_count crossed
+        # SEAT_DEAD_CONSECUTIVE_THRESHOLD. Sustained > 0 here means the
+        # release path is converting chronically-walled seats into corpses
+        # instead of letting them re-bench forever (the lived never-probed
+        # comeback failure). The FleetSeatComebackCorpse alert (config/
+        # fleet_rules.yml) pages when this counter stops advancing for >6h
+        # while fleet_seat_comeback_overdue_total is sustained > 0.
+        printf '# HELP fleet_seat_comeback_release_corpse_total Seats terminally corpsed by the come-back release organ after the consecutive-failure threshold (fleet-ops#2638).\n'
+        printf '# TYPE fleet_seat_comeback_release_corpse_total counter\n'
+        printf 'fleet_seat_comeback_release_corpse_total %s\n' "$corpse_total"
+        # fleet-ops#2716: cumulative counter of corpse ledgers physically
+        # retired out of the live roster past the corpse grace window. A
+        # sustained climb here is the organ doing its terminal lifecycle
+        # step (retiring corpses the seat-health extension or the prober
+        # has TERM-ED); the count includes the credentials_bad→corpse
+        # reclassification class that seat-caps.json has already retired
+        # from rotation (commandcode/minimax/minimax-m3-free, #2708).
+        printf '# HELP fleet_seat_comeback_release_retired_total Corpse ledgers physically retired out of the live roster after the corpse grace window (fleet-ops#2716).\n'
+        printf '# TYPE fleet_seat_comeback_release_retired_total counter\n'
+        printf 'fleet_seat_comeback_release_retired_total %s\n' "$retired"
+        # fleet-ops#2806: interval-breach visibility. A walled seat whose
+        # usable_at has been in the past for MORE than one probe interval
+        # (MIN_INTERVAL, default 900s) after a completed sweep means the
+        # releaser had a full probe cycle to act (re-probe -> re-anchor or
+        # unwall) and did not: the sweep is not reaching the seat, the
+        # timer is dead, or the sweep crashed mid-loop. That state is the
+        # exact "overdue by more than one probe interval" this gauge fails
+        # loud on: the sweep exits 1 (OnFailure escalates, last-green stays
+        # stale) and the per-seat series names the seat.
+        printf '# HELP fleet_seat_comeback_release_interval_breached_total Walled seats whose usable_at is past by more than one probe interval after a completed sweep (fleet-ops#2806).\n'
+        printf '# TYPE fleet_seat_comeback_release_interval_breached_total gauge\n'
+        printf 'fleet_seat_comeback_release_interval_breached_total %s\n' "$breached"
+        printf '# HELP fleet_seat_comeback_release_interval_breached 1 for each seat past usable_at by more than one probe interval after a completed sweep (fleet-ops#2806).\n'
+        printf '# TYPE fleet_seat_comeback_release_interval_breached gauge\n'
+        [[ -z "$breached_lines" ]] || printf '%s\n' "$breached_lines"
+    } > "$PROM_FILE.tmp"
+    mv "$PROM_FILE.tmp" "$PROM_FILE"
+}
+
+# --- probe -------------------------------------------------------------------
+# fleet-ops#2661:the probe is TOOL-USING now — NOT a 1-token "Reply with
+# exactly: OK" inline answer. A partial 503 storm is PONG-compatible: short
+# inline replies pass but TOOL-LOADING 503s, so an inline-only "OK" probe
+# would unwall the seat straight back into the storm (the minimax/poolside
+# 3x-rebench evidence the issue names). The probe forces a bash-tool roundtrip:the
+# model MUST run `echo $((6*7))` via the bash tool and reply with the integer that
+# it prints; a seat that only answers inline (no tool result in the transcript) fails the
+# probe and stays benched. The success check requires the computed token
+# (PROBE_TOKEN, default 42) in the output. Returns 0 on success,  1 on
+# failure/timeout/inline-only. A live probe ALSO records the real response via
+# the seat-health extension; this bin writes the unwall itself on success so the
+# release does not wait on the extension.
+probe_seat() {
+    local p="$1" m="$2" out rc
+    if (( DRY_RUN )); then
+        log "DRY-RUN: would probe $p/$m with 'echo \$((6*7))' via bash tool (tool-using probe)"
+        return 0
+    fi
+    log "probing $p/$m (wall passed — tool-using bash-compute probe)"
+    # Capture rc BEFORE any || true so a failing probe cannot masquerade as
+    # a success under set -e (the substitution must not abort the sweep).
+    set +e
+    out=$(timeout "$PROBE_TIMEOUT" "$PI_BIN" --print --provider "$p" --model "$m" \
+        "Tool-using liveness probe. Run the command \`echo \$((6*7))\` via the bash tool and reply with exactly the integer it prints. Do not answer without running the tool first. A seat that answers inline without a tool result FAILS this probe." 2>/dev/null)
+    rc=$?
+    set -e
+    # Success requires a tool roundtrip: exit 0 + non-empty output containing
+    # the computed token. An inline "OK" (PONG-ok, no tool result) does NOT
+    # contain the token — the seat stays benched (fleet-ops#2661 regression pin).
+    if (( rc == 0 )) && [[ -n "$out" ]] && grep -qw "$PROBE_TOKEN" <<<"$out"; then
+        log "probe $p/$m SUCCEEDED (tool-using — released)"
+        return 0
+    fi
+    log "probe $p/$m failed (rc=$rc, out=${out:0:120}…, no computed tool token) — seat stays walled; the extension re-anchors on the real response"
+    return 1
+}
+# Write the healthy observation that UNWALLS a seat. Mirrors the
+# seat-health extension's writeSeatLedgerEntry healthy branch (failure_mode
+# "none" -> count 0, seat_dead false, usable_at null). Guarded: only writes
+# if the seat's *original* failure clock (usable_at) is still in the past
+# at write time — a concurrent fresh failure that re-anchored usable_at to
+# the future must win (so we don't clobber a brand-new provider-side
+# 5xx/429 with a stale success). fleet-ops#2638: bench_until is NOT checked
+# here — bench_until is the prober's own re-bench hold, not a provider
+# signal. A successful probe is the freshest possible evidence of usability
+# and the unwall must land regardless of bench_until. This is the
+# "force-probe unwall" path: usable_at past + held bench_until + successful
+# probe -> unwall. The pre-#2638 code conflated usable_at with bench_until
+# via wall_end_of and silently refused to unwall force-probed seats, the
+# exact never-probed-comeback failure the issue names.
+unwall_seat() {
+    local p="$1" m="$2" f="$3" usable we now_e
+    now_e=$(now_epoch)
+    usable=$(jq -r '.usable_at // ""' "$f" 2>/dev/null || true)
+    we=$(ts_epoch "$usable")
+    if [[ -n "$we" ]] && (( we >= now_e )); then
+        log "skip unwall $p/$m: usable_at moved to the future ($usable) — concurrent failure re-anchored"
+        return 1
+    fi
+    if (( DRY_RUN )); then
+        log "DRY-RUN: would unwall $p/$m (write healthy observation)"
+        return 0
+    fi
+    local tmp="$f.$$.tmp"
+    jq -n \
+        --arg p "$p" --arg m "$m" --arg now "$(now_iso)" \
+        '{provider:$p, model:$m, http_status:200, retry_after:null,
+          health_class:"healthy", retryable:false, seat_dead:false,
+          poison_ladder:false, failure_mode:"none", observed_at:$now,
+          usable_at:null, bench_until:null, consecutive_failure_count:0,
+          source:"comeback_release", writer:"unwall_seat"}' > "$tmp"
+    chmod 600 "$tmp" 2>/dev/null || true
+    mv "$tmp" "$f"
+    log "UNWALLED $p/$m (healthy observation written)"
+    return 0
+}
+
+# Write a fresh bench for a seat whose probe failed. The probe-failed
+# branch of probe_seat logs "seat stays walled; the extension re-anchors
+# on the real response", but that re-anchor only fires when the probe
+# actually returned an HTTP response the extension could classify — a
+# timeout (rc=124) or a generic failure (rc=1) leaves the ledger with
+# a STALE wall clock in the past. Without re-benching, the next 15-min
+# tick finds the same expired wall, re-probes, re-fails, and the loop
+# runs forever (the loud-stall check fires every tick, the
+# FleetSeatComebackOverdue metric stays pending).
+#
+# Re-bench advances usable_at AND bench_until to now + REBENCH_BACKOFF_S
+# so the wall-in-future check above skips the seat on the next tick
+# (the only remaining throttle). The new ledger entry carries
+# source: "comeback_release_rebench" so the failure provenance is
+# distinguishable from a fresh provider-side failure (the next probe
+# after the new window either refreshes the wall or unwalls the seat
+# — a perpetual re-bench loop converges the same way a perpetual
+# probe-fail loop would, but at a slower cadence: 1 bench window per
+# failed probe instead of 1 probe every 15 min).
+#
+# Guarded: only writes if the current wall clock is STILL in the past
+# (a concurrent fresh provider failure that re-anchored to the future
+# must win). Merges consecutive_failure_count from the prior entry so
+# the count keeps climbing across re-benches and the corpse / quarantine
+# thresholds eventually engage on a chronically-walled seat.
+rebench_seat() {
+    local p="$1" m="$2" f="$3" wall_end we now_e now_utc bench_until usable_at
+    now_e=$(now_epoch)
+    now_utc=$(now_iso)
+    wall_end=$(wall_end_of "$f")
+    we=$(ts_epoch "$wall_end")
+    if [[ -n "$we" ]] && (( we >= now_e )); then
+        log "skip rebench $p/$m: wall moved to the future ($wall_end) — concurrent failure re-anchored"
+        return 1
+    fi
+    if (( DRY_RUN )); then
+        log "DRY-RUN: would rebench $p/$m (write fresh bench, backoff=${REBENCH_BACKOFF_S}s)"
+        return 0
+    fi
+    bench_until=$(date -u -d "@$((now_e + REBENCH_BACKOFF_S))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
+    usable_at="$bench_until"
+    local prev_count=0 prev_hc=""
+    if [[ -f "$f" ]]; then
+        prev_count=$(jq -r '.consecutive_failure_count // 0' "$f" 2>/dev/null || echo 0)
+        [[ "$prev_count" =~ ^[0-9]+$ ]] || prev_count=0
+        prev_hc=$(jq -r '.health_class // ""' "$f" 2>/dev/null || echo "")
+    fi
+    local merged_count=$((prev_count + 1))
+    # fleet-ops#2661: PRESERVE the overload class across the rebench. The old
+    # code rewrote every rebench to transient_fault (failure_mode
+    # comeback_rebench,, which RESET the overload_503 class on every bench window
+    # (the "currently resetting per bench window" gap the issue names): the
+    # per-seat ledger stopped counting as overload for the provider-wedge check
+    # (needs overload_bench seats within the last 30 min), the 3x
+    # re-bench storm looked like "transient_fault vanished" instead of the
+    # overload_503 run the auditor must see, and no provider-wide wall could
+    # arm. A seat benched for overload stays overload_bench across re-benches:
+    # (1) seat_usable / wedge count / the auditor rollup keep seeing it;
+    # (2) each re-bench is a fresh consecutive overload_503 strike on that
+    # provider (register_overload_strike in the sweep loop below), so 4
+    # strikes within  2h arm the exponential provider-wide wall.
+
+    local hc="transient_fault" fm="comeback_rebench"
+    if [[ "$prev_hc" == "overload_bench" ]]; then
+        hc="overload_bench"
+        fm="overload_503"
+    fi
+    local tmp="$f.$$.tmp"
+    if ! jq -nc \
+        --arg provider "$p" --arg model "$m" --arg now "$now_utc" \
+        --arg bench "$bench_until" --arg usable "$usable_at" \
+        --arg hc "$hc" --arg fm "$fm" \
+        --argjson backoff "$REBENCH_BACKOFF_S" --argjson merged "$merged_count" \
+        '{provider:$provider, model:$model, http_status:null, retry_after:null,
+          health_class:$hc, retryable:true, seat_dead:false,
+          poison_ladder:false, observed_at:$now, source:"comeback_release_rebench",
+          failure_mode:$fm, usable_at:$usable, bench_until:$bench,
+          bench_window_s:$backoff, consecutive_failure_count:$merged,
+          writer:"rebench_seat"}'         > "$tmp" 2>/dev/null; then
+        log "rebench $p/$m: jq compose FAILED — bench NOT written"
+        rm -f "$tmp" 2>/dev/null || true
+        return 1
+    fi
+    chmod 600 "$tmp" 2>/dev/null || true
+    if ! mv "$tmp" "$f" 2>/dev/null; then
+        log "rebench $p/$m: rename FAILED at $f — bench NOT written"
+        rm -f "$tmp" 2>/dev/null || true
+        return 1
+    fi
+    log "REBENCHED $p/$m (fresh bench until $bench_until, backoff=${REBENCH_BACKOFF_S}s, class=$hc, failure_mode=$fm, count=$merged_count)"
+    return 0
+}
+
+# fleet-ops#3737: re-bench a WRAPPER bench marker (<seat>.spawn-bench.json)
+# after a failed comeback probe. Mirrors rebench_seat for the clobber-proof
+# surface: advance usable_at to now + REBENCH_BACKOFF_S (or the 24 h park
+# wall once the merged count crosses the failure ceiling — the same
+# SEAT_FAILURE_CEILING/SEAT_PARK_WALL_S semantics the wrapper's
+# mark_seat_empty_run uses) and refresh written_at so the marker stays the
+# seat's latest evidence and the router's probe-gate hold (seat_usable,
+# fleet-ops#3737) keeps the seat out of rotation without burning a work
+# item. The count bumps so a chronically-dead seat still converges on the
+# park without any real packet paying for the discovery.
+rebench_wrapper_marker() {
+    local p="$1" m="$2" mk="$3"
+    local prev_count prev_mode merged backoff usable tmp
+    prev_count=$(jq -r '.consecutive_failure_count // 0' "$mk" 2>/dev/null || echo 0)
+    [[ "$prev_count" =~ ^[0-9]+$ ]] || prev_count=0
+    prev_mode=$(jq -r '.failure_mode // "unknown"' "$mk" 2>/dev/null || echo "unknown")
+    [[ -n "$prev_mode" ]] || prev_mode="unknown"
+    merged=$((prev_count + 1))
+    backoff="$REBENCH_BACKOFF_S"
+    if (( merged >= ${SEAT_FAILURE_CEILING:-20} )); then
+        # fleet-ops#3941: escalate the park wall with the count past the
+        # ceiling (_park_wall_s, capped at SEAT_PARK_WALL_MAX_S) instead of a
+        # flat SEAT_PARK_WALL_S. The seat-lib source is conditional, so fall
+        # back to the flat 24h wall if the helper is unavailable.
+        if declare -F _park_wall_s >/dev/null 2>&1; then
+            backoff="$(_park_wall_s "$merged")"
+        else
+            backoff="${SEAT_PARK_WALL_S:-86400}"
+        fi
+    fi
+    usable=$(date -u -d "@$(($(now_epoch) + backoff))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || now_iso)
+    if (( DRY_RUN )); then
+        log "DRY-RUN: would re-bench wrapper marker $p/$m until $usable (probe failed; count=$merged, mode=$prev_mode)"
+        return 0
+    fi
+    tmp="$mk.$$.tmp"
+    if jq -nc \
+        --arg provider "$p" --arg model "$m" --arg usable "$usable" \
+        --arg reason "comeback-release: probe failed — wrapper bench re-benched" \
+        --arg written "$(now_iso)" --argjson backoff "$backoff" \
+        --arg mode "$prev_mode" --argjson count "$merged" \
+        '{provider:$provider, model:$model, usable_at:$usable,
+          reason:$reason, written_at:$written, backoff_s:$backoff,
+          failure_mode:$mode, consecutive_failure_count:$count,
+          writer:"comeback_release_rebench"}' > "$tmp" 2>/dev/null; then
+        chmod 600 "$tmp" 2>/dev/null || true
+        if mv "$tmp" "$mk" 2>/dev/null; then
+            log "re-benched wrapper marker $p/$m until $usable (probe failed; count=$merged, mode=$prev_mode)"
+            return 0
+        fi
+    fi
+    rm -f "$tmp" 2>/dev/null || true
+    log "re-bench wrapper marker $p/$m FAILED — marker left as-is (expired; router hold persists while fresh)"
+    return 1
+}
+# --- fleet-ops#2661: consecutive overload_503 strike bookkeeping ---------
+# A failed probe of an overload_bench seat is an overload_503 strike on that
+# provider (the rebench preserved the overload class, so the ledger still says
+# overload_bench after the rebench). A provider-wide wall arms once >= MIN
+# consecutive strikes land within the 2h window — reusing the learned-caps
+# bench_until mechanism already used for the rate_limit/quota classes (the
+# effective cap backs off to the floor while bench_until is in the future).
+seat_is_overload_bench() {
+    local p="$1" m="$2" f hc
+    f=$(seat_ledger_path "$p" "$m" 2>/dev/null || true)
+    [[ -f "$f" ]] || return 1
+    hc=$(jq -r '.health_class // ""' "$f" 2>/dev/null || true)
+    [[ "$hc" == "overload_bench" ]]
+}
+reset_overload_strikes() {
+    local p="$1"
+    unset 'STRIKE_COUNT[$p]' 'STRIKE_FIRST[$p]' 'STRIKE_LAST[$p]'
+}
+register_overload_strike() {
+    local p="$1" c first now_e now_iso fe
+    c="${STRIKE_COUNT[$p]:-0}"
+    first="${STRIKE_FIRST[$p]:-}"
+    now_e=$(now_epoch)
+    now_iso=$(now_iso)
+    if (( c == 0 )) || [[ -z "$first" ]]; then
+        c=1
+        first="$now_iso"
+    else
+        fe=$(ts_epoch "$first")
+        if [[ -n "$fe" ]] && (( now_e - fe > OVERLOAD_STRIKE_WINDOW_S )); then
+            c=1
+            first="$now_iso"
+        else
+            c=$((c + 1))
+        fi
+    fi
+    STRIKE_COUNT["$p"]="$c"
+    STRIKE_FIRST["$p"]="$first"
+    STRIKE_LAST["$p"]="$now_iso"
+    log "overload strike $p #$c (first $first, window ${OVERLOAD_STRIKE_WINDOW_S}s)"
+}
+maybe_overload_wall() {
+    local p="$1" c first fe now_e now_utc bench_until wall_s exp
+    c="${STRIKE_COUNT[$p]:-0}"
+    (( c >= OVERLOAD_WALL_MIN_STRIKES )) || return 0
+    first="${STRIKE_FIRST[$p]:-}"
+    fe=$(ts_epoch "$first")
+    [[ -n "$fe" ]] || return 0
+    now_e=$(now_epoch)
+    (( now_e - fe <= OVERLOAD_STRIKE_WINDOW_S )) || return 0
+    exp=$(( c - OVERLOAD_WALL_MIN_STRIKES ))
+    wall_s=$OVERLOAD_WALL_BASE_S
+    if (( exp > 0 )); then
+        wall_s=$(( OVERLOAD_WALL_BASE_S * (2 ** exp) ))
+    fi
+    (( wall_s > OVERLOAD_WALL_MAX_S )) && wall_s=$OVERLOAD_WALL_MAX_S
+    now_utc=$(now_iso)
+    bench_until=$(date -u -d "@$((now_e + wall_s))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
+    # Reuse the existing learned-caps provider-wide wall (_record_learned_cap):
+    # the rate_limit/quota classes use the same primitive). cap=1 is the
+    # floor (same as the rate-limit backoff floor) — a storming provider keeps
+    # at most 1 concurrent seat until the exponential wall decays.
+
+    if _record_learned_cap "$p" 1 "overload_wall" "$bench_until"; then
+        WALLS_TOTAL=$((WALLS_TOTAL + 1))
+        log "OVERLOAD WALL $p: $c overload strikes within ${OVERLOAD_STRIKE_WINDOW_S}s — provider-wide bench until $bench_until (wall=${wall_s}s, exponential cap ${OVERLOAD_WALL_MAX_S}s)"
+    fi
+}
+
+# fleet-ops#3229: a no-wall corpse from a RECOVERABLE (transient) failure
+# mode gets the same second-chance re-probe the #3156 carve-out gives the
+# prober-created no-wall corpse. A transient corpse (rate_limit 429s,
+# transient_http 500s, cli_timeout, transient_other, empty_run, overload)
+# can clear on its own — a rate-limit wall lifts, an upstream 503 storm
+# passes — so one bounded re-probe during the 6h grace lets the seat
+# recover the moment the transient condition clears, instead of sitting
+# dead for the full grace window with no probe ever fired (the lived
+# opencode/mimo-v2.5-free c=30 rate_limit corpse that parked for 6h).
+# credentials_bad (401/403 — the model is gone / the key is bad) and
+# quota_exhausted-by-age (402 — billing repair) are NOT recoverable by
+# re-probing, so they keep the original hold. Returns 0 (true) when the
+# failure_mode is a recoverable transient mode. The mode set mirrors
+# shouldMarkSeatDead's count-based transient branch (seat-health.ts) so
+# the two writers agree on which corpses are recoverable.
+_corpse_is_recoverable_mode() {
+    local fm="${1:-}"
+    case "$fm" in
+        rate_limit|transient_http|cli_timeout|transient_other|empty_run|overload)
+            return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# fleet-ops#3947: a corpse ledger that carries NO bench_reason reads as the
+# fail-open corpse shape to the seat-health census/snapshot, which re-files
+# the same "no bench overlay" ticket every tick. Two shapes land here with
+# bench_reason=null: (a) a FRESH credentials_bad 401/403 corpse the
+# seat-health extension just escalated (seat_dead=true, usable_at=null, no
+# bench_reason — write_parked_ledger has not run yet), and (b) an OLD
+# pre-#3603 parked corpse (bench_until=far_future, no bench_reason) that
+# retire_corpse's future-wall hold never re-parks. Returns 0 (true) when the
+# ledger has a non-empty bench_reason, 1 when it is missing/empty.
+_corpse_has_bench_reason() {
+    local br
+    br=$(jq -r '.bench_reason // ""' "$1" 2>/dev/null || true)
+    [[ -n "$br" ]]
+}
+
+# fleet-ops#3947: backfill the durable bench literal on a held corpse via the
+# existing _seat_merge_error_class field-merge (preserves health_class /
+# failure_mode / seat_dead so FleetDeadCredentialSeats still fires on the
+# credentials_bad signal). Best-effort: a merge failure is logged but does
+# not block the sweep. The literal records WHY the seat is benched
+# (seat_dead=true -> pick_seat never offers) so the census recognises a held
+# corpse as durably benched the moment the sweep sees it, not 6h later when
+# retire_corpse finally parks it (and never for the future-wall shape).
+_backfill_corpse_bench_reason() {
+    local p="$1" m="$2" f="$3"
+    [[ -f "$f" ]] || return 1
+    _corpse_has_bench_reason "$f" && return 0
+    local _cfm _cbr
+    _cfm=$(jq -r '.failure_mode // "corpse"' "$f" 2>/dev/null || echo "corpse")
+    _cbr="seat_dead=true corpse, pick_seat never offers (durable, fleet-ops#3947)"
+    if declare -F _seat_merge_error_class >/dev/null 2>&1; then
+        _seat_merge_error_class "$p" "$m" "$_cfm" "$_cbr" \
+            || log "bench_reason backfill FAILED for $p/$m (best-effort, fleet-ops#3947)"
+    fi
+}
+
+# fleet-ops#2638: corpse a seat whose consecutive_failure_count has crossed
+# the threshold after a probe failure. The bash writer (mark_seat_quota_bench,
+# fleet-ops#2594) corpsed quota_cap at the same threshold but the prober's
+# path (overload_bench / transient_fault / rate_limited) had no corpse step —
+# a chronically-failing seat re-benched every 15 min forever, count climbing,
+# router never freeing the seat. Write seat_dead=true with cleared wall
+# clocks (the fleet-ops#2415/#2422 "no-comeback-clock" convention seat_usable
+# already holds terminally for seat_dead=true, fleet-ops#2327). The recovery
+# contract is unchanged: only a healthy observation clears the corpse.
+#
+# Guarded: only writes if the current count is actually past threshold
+# (a concurrent healthy observation that reset the count must win). Mirrors
+# the unwall/rebench guard pattern above.
+corpse_seat() {
+    local p="$1" m="$2" f="$3" count="${4:-}"
+    [[ -f "$f" ]] || return 1
+    # fleet-ops#2806: the caller may pass the MERGED failure streak (max of
+    # the ledger's own consecutive_failure_count and this organ's per-seat
+    # own-failure streak). When empty, fall back to the ledger count (the
+    # pre-#2806 semantic the corpse tests pin).
+    if [[ -z "$count" ]]; then
+        count=$(jq -r '.consecutive_failure_count // 0' "$f" 2>/dev/null || echo 0)
+    fi
+    [[ "$count" =~ ^[0-9]+$ ]] || count=0
+    if (( count < SEAT_DEAD_CONSECUTIVE_THRESHOLD )); then
+        return 1
+    fi
+    if (( DRY_RUN )); then
+        log "DRY-RUN: would corpse $p/$m (count=$count >= ${SEAT_DEAD_CONSECUTIVE_THRESHOLD})"
+        return 0
+    fi
+    local tmp="$f.$$.tmp"
+    if ! jq -nc \
+        --arg provider "$p" --arg model "$m" --arg now "$(now_iso)" \
+        --argjson count "$count" --argjson thr "$SEAT_DEAD_CONSECUTIVE_THRESHOLD" \
+        '{provider:$provider, model:$model, http_status:null, retry_after:null,
+          health_class:"corpse", retryable:false, seat_dead:true,
+          poison_ladder:false, observed_at:$now,
+          source:"comeback_release_corpse",
+          failure_mode:"comeback_never_released",
+          usable_at:null, bench_until:null,
+          consecutive_failure_count:$count,
+          corpse_threshold:$thr, writer:"corpse_seat"}' > "$tmp" 2>/dev/null; then
+        log "corpse $p/$m: jq compose FAILED — corpse NOT written"
+        rm -f "$tmp" 2>/dev/null || true
+        return 1
+    fi
+    chmod 600 "$tmp" 2>/dev/null || true
+    if ! mv "$tmp" "$f" 2>/dev/null; then
+        log "corpse $p/$m: rename FAILED at $f — corpse NOT written"
+        rm -f "$tmp" 2>/dev/null || true
+        return 1
+    fi
+    CORPSE_TOTAL=$((CORPSE_TOTAL + 1))
+    log "CORPSED $p/$m (count=$count >= ${SEAT_DEAD_CONSECUTIVE_THRESHOLD}, source=comeback_release_corpse, fleet-ops#2638)"
+    return 0
+}
+
+# fleet-ops#3508: give a no-wall rate_limit corpse a BOUNDED comeback clock
+# instead of immediate terminal retirement. A 429 rate limit resets over a
+# bounded window (walled_comeback.rate_limit_s, default 900s) — force-
+# retiring on a single failed second-chance re-probe (which may be a probe
+# timeout with no HTTP response, so the extension never re-anchors a wall)
+# falsely retires a seat that would clear on its own. Re-write the ledger
+# to health_class=rate_limited / seat_dead=false / usable_at=now +
+# RATE_LIMIT_COMEBACK_S, preserving the failure count, so the seat re-enters
+# the normal walled path and is re-probed when the clock passes (the seat-
+# probe's next snapshot sees a scheduled retry, not a terminal corpse).
+# Returns 0 on write success, 1 on compose/rename failure.
+reanchor_bounded_comeback() {
+    local p="$1" m="$2" f="$3" count now now_e usable
+    [[ -f "$f" ]] || return 1
+    count=$(jq -r '.consecutive_failure_count // 0' "$f" 2>/dev/null || echo 0)
+    [[ "$count" =~ ^[0-9]+$ ]] || count=0
+    now=$(now_iso)
+    now_e=$(now_epoch)
+    usable=$(date -u -d "@$(( now_e + RATE_LIMIT_COMEBACK_S ))" +%Y-%m-%dT%H:%M:%S.000Z 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)
+    if (( DRY_RUN )); then
+        log "DRY-RUN: would re-anchor bounded comeback for $p/$m (usable_at +${RATE_LIMIT_COMEBACK_S}s)"
+        return 0
+    fi
+    local tmp="$f.$$.tmp"
+    if ! jq -nc \
+        --arg provider "$p" --arg model "$m" \
+        --arg now "$now" --arg usable "$usable" \
+        --argjson count "$count" \
+        '{provider:$provider, model:$model, http_status:429, retry_after:null,
+          health_class:"rate_limited", retryable:true, seat_dead:false,
+          poison_ladder:false, observed_at:$now, source:"comeback_release_corpse",
+          failure_mode:"rate_limit", usable_at:$usable, bench_until:null,
+          consecutive_failure_count:$count, writer:"reanchor_bounded_comeback"}' > "$tmp" 2>/dev/null; then
+        log "bounded comeback $p/$m: jq compose FAILED — not written"
+        rm -f "$tmp" 2>/dev/null || true
+        return 1
+    fi
+    chmod 600 "$tmp" 2>/dev/null || true
+    if ! mv "$tmp" "$f" 2>/dev/null; then
+        log "bounded comeback $p/$m: rename FAILED at $f — not written"
+        rm -f "$tmp" 2>/dev/null || true
+        return 1
+    fi
+    return 0
+}
+
+# --- corpse-ledger retirement (fleet-ops#2716) ------------------------------
+# Physically retire a terminal corpse ledger OUT of the live roster. A
+# corpse (seat_dead=true, health_class=corpse) is the TERMINAL seat state
+# (fleet-ops#2327/#2415): it carries no comeback clock, seat_usable holds
+# it off the ladder, and the census (daily-digest 'Total seen',
+# opus-heartbeat-gather seat_table n, any seat capacity denominator)
+# counts the LEDGER FILE as live roster membership. Retiring the slug in
+# config/seat-caps.json (cap 0 + intentional_cap_zero=corpse,
+# fleet-ops#2708) stops the ROTATION but leaves the corpse ledger in
+# lanes/seats/ — the lived commandcode/minimax/minimax-m3-free case that
+# issue 2716 names (still present as health_class=corpse at the snapshot
+# hours after #2708 merged). The terminal lifecycle step is a physical
+# move into a dated audit dir (seats-corpse-retired-<UTC-ts>/, same
+# pattern the deadcred quarantine and the fleet-ops#2469/#2540 drafts
+# use).
+#
+# Grace: a corpse ledger is only retired once its observed_at has aged
+# past CORPSE_GRACE_S (default 6h). A fresh corpse reclassification
+# (e.g. a credentials_bad probe escalated to corpse by #2327) can still
+# recover via a healthy observation (seat-lib clears a corpse on a
+# successful probe) — the grace window is that recovery chance.
+#
+# Defensive holds: a corpse ledger that still carries a FUTURE wall clock
+# is never retired (a clock means a comeback is still owed — the
+# fleet-ops#2394 predecessor-killer shape); a corpse without observed_at
+# is never retired (cannot be aged).
+#
+# Returns 0 when retired (or would be, in dry-run), 1 when held or not a
+# corpse (not an error; callers use `|| true` so a hold/failure cannot
+# abort the sweep). Holds are SILENT (the expected steady state — a
+# corpse inside its grace window sits for CORPSE_GRACE_S by design, so
+# logging it every 15-min tick is noise); only the retirement itself
+# (RETIRED) and the dry-run preview (DRY-RUN: would retire) are logged.
+#
+# Optional 4th argument `force` (non-zero) bypasses the grace window. It is
+# used by the fleet-ops#3156 no-wall corpse re-probe path: a second-chance
+# re-probe failed, so the corpse is explicitly retired immediately rather
+# than waiting the full 6h for a recovery that the prober just disproved.
+retire_corpse() {
+    local p="$1" m="$2" f="$3" force="${4:-0}" hc obs obs_e now_e age we wall_end
+    hc=$(jq -r '.health_class // ""' "$f" 2>/dev/null || true)
+    [[ "$hc" == "corpse" ]] || return 1
+    now_e=$(now_epoch)
+    wall_end=$(wall_end_of "$f")
+    we=$(ts_epoch "$wall_end")
+    # Defensive: a corpse that still carries a future wall clock is held —
+    # the clock means a comeback is still owed (fleet-ops#2394 shape).
+    [[ -z "$we" || "$we" -le "$now_e" ]] || return 1
+    obs=$(jq -r '.observed_at // ""' "$f" 2>/dev/null || true)
+    obs_e=$(ts_epoch "$obs")
+    # A corpse without observed_at cannot be aged — held.
+    [[ -n "$obs_e" ]] || return 1
+    age=$(( now_e - obs_e ))
+    # A corpse inside the grace window is still in its recovery window
+    # (a healthy observation clears the corpse, seat-lib) — held.
+    # fleet-ops#3156: a failed no-wall re-probe forces immediate retirement.
+    if (( ! force )); then
+        (( age >= CORPSE_GRACE_S )) || return 1
+    fi
+    if (( DRY_RUN )); then
+        if (( force )); then
+            log "DRY-RUN: would retire $p/$m (corpse re-probe failed, explicitly retired, age=${age}s, fleet-ops#3156)"
+        else
+            log "DRY-RUN: would retire $p/$m (corpse aged ${age}s >= grace ${CORPSE_GRACE_S}s)"
+        fi
+        return 0
+    fi
+    local retired_dir="${CORPSE_RETIRE_DIR:-}"
+    [[ -d "$retired_dir" ]] || mkdir -p "$retired_dir" 2>/dev/null || {
+        log "retire $p/$m: cannot create $retired_dir — ledger NOT retired"
+        return 1
+    }
+    if ! mv "$f" "$retired_dir/" 2>/dev/null; then
+        log "retire $p/$m: mv FAILED at $f — ledger NOT retired"
+        return 1
+    fi
+    # fleet-ops#3669: the move alone leaves NO ledger in the live roster, so
+    # seat_usable falls through to "NO HEALTH DATA (no ledger file) — assuming
+    # usable" and pick_seat re-picks the deliberately-retired dead seat. Write
+    # a seat_dead=true / health_class=parked / usable_at far-future parked
+    # ledger in the live roster so the seat stays UNPICKABLE. Best-effort: a
+    # write failure is logged but does not fail the sweep (the read-side
+    # corpse-retired fence in seat_usable is the backstop).
+    write_parked_ledger "$p" "$m" "corpse-retired" || true
+    RETIRED_TOTAL=$((RETIRED_TOTAL + 1))
+    if (( force )); then
+        log "RETIRED $p/$m (corpse explicitly retired after failed no-wall re-probe, age=${age}s, moved to $retired_dir, fleet-ops#3156)"
+    else
+        log "RETIRED $p/$m (corpse aged ${age}s >= grace ${CORPSE_GRACE_S}s, moved to $retired_dir)"
+    fi
+    return 0
+}
+
+# fleet-ops#3993: retire a TRUE probe-artifact PHANTOM ledger out of the live
+# roster. A phantom (model id a unit-output filename fragment like
+# "swe-1-7-.out") is NOT a routable seat: `_seat_key_in_caps` refuses it, so
+# the release organ can never unwall it — yet the exhaustive seat census and
+# the thorough heartbeat detector (opus-heartbeat-gather seat_probes_
+# walled_comebacks) keep counting it comeback-overdue as long as the ledger
+# sits in lanes/seats/. The lived case: devin/glm-5-2-.out stuck past usable_at
+# with nothing ever clearing it (the #3891/#3917 phantom metrics fix excludes
+# it from fleet_seat_comeback_overdue_total but nothing RETIRES the ledger, so
+# the census still reads it walled/overdue). The release organ already owns the
+# terminal retire step for corpse ledgers (fleet-ops#2716, retire_corpse); a
+# phantom gets the same terminal treatment: physically moved out of the live
+# roster into a dated audit dir. No parked ledger is written (write_parked_
+# ledger rejects phantoms via `_seat_key_guard`, fleet-ops#3661 — and phantoms
+# are never routable, so nothing can re-pick one).
+#
+# Defensive hold: a phantom still carrying a FUTURE wall clock is held
+# (freshly-written garbage — give the upstream writer a window to correct
+# before it is retired; mirrors the corpse defensive hold, fleet-ops#2394).
+# Retire only once the wall is past or absent, so the retire is deterministic
+# (wall + one sweep).
+#
+# Returns 0 when retired (or would be, dry-run), 1 when held or on failure.
+retire_phantom_ledger() {
+    local p="$1" m="$2" f="$3" wall_end we now_e
+    now_e=$(now_epoch)
+    wall_end=$(wall_end_of "$f")
+    we=$(ts_epoch "$wall_end")
+    if [[ -n "$we" ]] && (( we > now_e )); then
+        log "HOLD phantom $p/$m: wall clock $wall_end in the future — retire when it passes (fleet-ops#3993)"
+        return 1
+    fi
+    if (( DRY_RUN )); then
+        log "DRY-RUN: would retire phantom $p/$m (probe-output fragment — never routable, retiring out of roster)"
+        return 0
+    fi
+    local retired_dir="${PHANTOM_RETIRE_DIR:-}"
+    [[ -d "$retired_dir" ]] || mkdir -p "$retired_dir" 2>/dev/null || {
+        log "retire $p/$m: cannot create $retired_dir — phantom left in place"
+        return 1
+    }
+    if ! mv "$f" "$retired_dir/" 2>/dev/null; then
+        log "retire $p/$m: mv FAILED at $f — phantom left in place"
+        return 1
+    fi
+    log "RETIRED PHANTOM $p/$m (probe-output fragment, moved to $retired_dir, fleet-ops#3993)"
+    return 0
+}
+
+# --- sweep -------------------------------------------------------------------
+main() {
+    local now state probed_total released_total probed=0 released_this_run=0
+    now=$(now_epoch)
+    state=$(load_state)
+    probed_total=$(jq -r '(.probed_total // 0)' <<<"$state")
+    released_total=$(jq -r '(.released_total // 0)' <<<"$state")
+    CORPSE_TOTAL=$(jq -r '(.corpse_total // 0)' <<<"$state")
+    [[ "$CORPSE_TOTAL" =~ ^[0-9]+$ ]] || CORPSE_TOTAL=0
+    RETIRED_TOTAL=$(jq -r '(.retired_total // 0)' <<<"$state")
+    [[ "$RETIRED_TOTAL" =~ ^[0-9]+$ ]] || RETIRED_TOTAL=0
+    # fleet-ops#2806: this organ's own per-seat consecutive FAILED probe
+    # streak, independent of the seat-health extension's counter. The
+    # extension only increments on real HTTP responses and only at its
+    # own cadence (the lived nemotron/mimo case: count 15->17 across 8h of
+    # 15-min release probes, because most probes fail without a response
+    # the extension writes). Seeded from the ledger count at first sighting
+    # so the two counters start equal, then advanced on EVERY release-probe
+    # failure (even when the extension re-anchored the wall first). This
+    # makes the corpse-out cadence deterministic (~25 failed probes at the
+    # 15-min tick) instead of hostage to the extension's write rate — a
+    # chronically-failing seat corpses and is then retired out of the
+    # roster, so seats_dead stops padding the seat-availability SLO.
+    declare -A OWN_FAIL=()
+    local ofk ofv
+    while IFS=$'\t' read -r ofk ofv; do
+        [[ -n "$ofk" ]] || continue
+        OWN_FAIL["$ofk"]="$ofv"
+    done < <(jq -r '(.own_failures // {}) | to_entries[] | [.key, (.value|tostring)] | @tsv' <<<"$state" 2>/dev/null || true)
+    # fleet-ops#2716: one dated retirement dir per sweep, next to the live
+    # ledger dir (dirname of the ledger), so a sweep that retires several
+    # corpses lands them all in one audit dir.
+    CORPSE_RETIRE_DIR="$(dirname "$LEDGER")/seats-corpse-retired-$(now_iso)"
+    # fleet-ops#3993: one dated dir per sweep for probe-artifact phantoms the
+    # release organ retires out of the live roster (parallel to the corpse-
+    # retirement dir above). A phantom can never be unwalled, so the terminal
+    # step is the move out — the census / thorough detector stop counting it.
+    PHANTOM_RETIRE_DIR="$(dirname "$LEDGER")/seats-phantom-retired-$(now_iso)"
+
+    if [[ ! -d "$LEDGER" ]]; then
+        log "ledger dir missing: $LEDGER"
+        write_prom "" 0 "$probed_total" "$released_total" 0 "$CORPSE_TOTAL" "$RETIRED_TOTAL" 0 ""
+        return 1
+    fi
+
+    declare -A last_probe=()
+    local k v
+    while IFS=$'\t' read -r k v; do
+        [[ -n "$k" ]] || continue
+        last_probe["$k"]="$v"
+    done < <(jq -r '(.last_probe // {}) | to_entries[] | [.key, (.value|tostring)] | @tsv' <<<"$state" 2>/dev/null || true)
+
+    # fleet-ops#2661: consecutive overload_503 strike state (per-provider).
+    declare -A STRIKE_COUNT=() STRIKE_FIRST=() STRIKE_LAST=()
+    local pk pc pf pl
+    while IFS=$'\t' read -r pk pc pf pl; do
+        [[ -n "$pk" ]] || continue
+        STRIKE_COUNT["$pk"]="$pc"
+        [[ -n "$pf" ]] && STRIKE_FIRST["$pk"]="$pf"
+        [[ -n "$pl" ]] && STRIKE_LAST["$pk"]="$pl"
+    done < <(jq -r '(.overload_strikes // {}) | to_entries[] | [.key, (.value.count // 0 |tostring), (.value.first_at // ""), (.value.last_at // "")] | @tsv' <<<"$state" 2>/dev/null || true)
+    WALLS_TOTAL=$(jq -r '(.walls_total // 0)' <<<"$state")
+    [[ "$WALLS_TOTAL" =~ ^[0-9]+$ ]] || WALLS_TOTAL=0
+
+
+    local f base wall_end we
+    for f in "$LEDGER"/*__*.json; do
+        [[ -f "$f" ]] || continue
+        base="$(basename "$f")"
+        # The two predecessor-killer exclusions: pseudo-seats and fixtures.
+        [[ "$base" != *".spawn-bench.json" ]] || continue
+        p=$(jq -r '.provider // ""' "$f" 2>/dev/null || true)
+        [[ -n "$p" && "$p" != "test" ]] || continue
+        m=$(jq -r '.model // ""' "$f" 2>/dev/null || true)
+        [[ -n "$m" ]] || continue
+        # fleet-ops#3661: a provider/model pair that is not a real seat in
+        # seat-caps.json (providers.<p>.models.<m>) is a PHANTOM key (e.g. a
+        # probe-output filename fragment like "swe-1-7-.out"). A phantom must
+        # never be probed or dispatched. fleet-ops#3993 narrows the blanket
+        # skip: `_seat_key_in_caps` ALSO rejects REAL provider seats whose
+        # caps models row is merely missing (cap=0 parked for re-audition, a
+        # provider config out of date like orcarouter / mergegateway /
+        # openrouter/deepseek-v4-*). Those ARE routable and must be re-probed
+        # when their wall expires — that is the automated re-audition — so
+        # only a TRUE probe-artifact id (model ends in .out/.err/.log) is a
+        # hard phantom; it is RETIRED out of the live roster (it can never be
+        # unwalled, so leaving it makes the census/detector count it overdue
+        # forever, fleet-ops#3993).
+        if ! _seat_key_valid "$p" "$m"; then
+            if _seat_is_probe_artifact "$m"; then
+                log "LOUD SEAT-KEY-INVALID $p/$m writer=fleet-seat-comeback-release (phantom)"
+                retire_phantom_ledger "$p" "$m" "$f" \
+                    || true
+                continue
+            fi
+            log "seat $p/$m absent from seat-caps models but real key (model not a probe artifact) — re-probe on wall expiry / re-audition (fleet-ops#3993)"
+            # NO continue: fall through to the normal wall-clock handling so a
+            # real seat with an expired usable_at gets probed (not left stuck).
+        fi
+        hc=$(jq -r '.health_class // ""' "$f" 2>/dev/null || true)
+        # A healthy seat resets this organ's own-failure streak for that
+        # seat (recovery happened — via a real worker or a successful
+        # probe). The streak must NOT persist across a healthy interlude:
+        # it is a streak of CONSECUTIVE release-organ probe failures, and
+        # a healthy observation breaks it even when the organ was not the
+        # one that probed. Without this, a seat that recovered and then
+        # re-walled would carry its old streak forward and corpse too fast.
+        if [[ "$hc" == "healthy" ]]; then
+            OWN_FAIL["$base"]="0"
+            # fleet-ops#3737: a "healthy" ledger does NOT prove release when
+            # the seat carries a fresh wrapper bench marker
+            # (<base>.spawn-bench.json). seat-health.ts writes healthy on ANY
+            # transport 200 — the after_provider_response event carries
+            # status+headers only, never the body — so the very run that then
+            # exits 0 with 0-byte stdout (empty_run) or a failed spawn
+            # (spawn_fail) leaves a healthy ledger entry while the bench
+            # lives only in the clobber-proof marker. The router now holds
+            # an expired marker until this organ probes the seat
+            # (lib/seat-lib.sh seat_usable, same issue): a fresh marker
+            # (written within SPAWN_BENCH_FRESH_S) whose usable_at has passed
+            # and whose written_at is NOT superseded by a newer ledger
+            # observed_at is the seat's latest evidence — it owes a comeback
+            # probe. Probe success -> unwall_seat writes a fresh healthy
+            # observation (observed_at > written_at lifts the router hold).
+            # Probe failure -> re-bench the marker so the seat stays out
+            # WITHOUT a work item paying for the discovery (live: ollama/
+            # deepseek-v4-flash:0731, 12 empty runs in 2h — each bench
+            # expiry silently re-admitted the still-dead seat).
+            local _mk="${f%.json}.spawn-bench.json"
+            local _mk_usable _mk_written _mk_usable_e _mk_written_e _mk_obs_e
+            if [[ -f "$_mk" ]]; then
+                _mk_usable=$(jq -r '.usable_at // ""' "$_mk" 2>/dev/null || true)
+                _mk_written=$(jq -r '.written_at // ""' "$_mk" 2>/dev/null || true)
+                _mk_usable_e=$(ts_epoch "$_mk_usable")
+                _mk_written_e=$(ts_epoch "$_mk_written")
+                _mk_obs_e=$(ts_epoch "$(jq -r '.observed_at // ""' "$f" 2>/dev/null || true)")
+                if [[ -n "$_mk_written_e" ]] \
+                    && (( now - _mk_written_e <= SPAWN_BENCH_FRESH_S )) \
+                    && { [[ -z "$_mk_usable_e" ]] || (( _mk_usable_e <= now )); } \
+                    && { [[ -z "$_mk_obs_e" ]] || (( _mk_obs_e <= _mk_written_e )); }; then
+                    log "probe $p/$m: healthy ledger but expired wrapper bench marker (usable_at=${_mk_usable:-none}, written_at=$_mk_written) is latest evidence — comeback probe before re-admission (fleet-ops#3737)"
+                    last_probe["$base"]="$(now_epoch)"
+                    if probe_seat "$p" "$m"; then
+                        ((probed++)) || true
+                        reset_overload_strikes "$p"
+                        if unwall_seat "$p" "$m" "$f"; then
+                            ((released_this_run++)) || true
+                        fi
+                    else
+                        ((probed++)) || true
+                        OWN_FAIL["$base"]=$(( ${OWN_FAIL["$base"]:-0} + 1 ))
+                        rebench_wrapper_marker "$p" "$m" "$_mk" \
+                            || log "wrapper marker re-bench failed for $p/$m (fleet-ops#3737)"
+                    fi
+                fi
+            fi
+            continue
+        fi
+        [[ "$hc" != "healthy" ]] || continue
+        dead=$(jq -r '(.seat_dead // false)' "$f" 2>/dev/null || true)
+        # A corpse is terminal (fleet-ops#2327/#2415): no usable_at comeback
+        # clock, FleetDeadCredentialSeats owns the still-live credentials_bad
+        # class. Never probed here. fleet-ops#2716: it is also RETIRED here —
+        # a corpse ledger must not stay in the live roster forever (the
+        # commandcode/minimax/m3-free case: seat-caps.json retired the slug
+        # in #2708 but the ledger survived). retire_corpse physically moves
+        # it once its observed_at has aged past the corpse grace window.
+        if [[ "$dead" == "true" ]]; then
+            if retire_corpse "$p" "$m" "$f"; then
+                continue
+            fi
+            # fleet-ops#3947: retire_corpse HELD this corpse (fresh inside the
+            # 6h grace window, or an old pre-#3603 parked corpse with a
+            # far-future bench_until it never re-parks). Either way the corpse
+            # sits in the live roster with bench_reason=null and reads as the
+            # fail-open corpse shape to the seat-health census, which re-files
+            # the same "no bench overlay" ticket every tick. Backfill the
+            # durable bench literal NOW via a field-merge that preserves
+            # health_class / failure_mode / seat_dead (so the credentials_bad
+            # alert signal stays live until retire_corpse finally parks it).
+            _backfill_corpse_bench_reason "$p" "$m" "$f"
+            # fleet-ops#3156: a no-wall corpse (prober-created, failure_mode
+            # "comeback_never_released") gets a second-chance re-probe instead
+            # of sitting idle for the full 6h grace. A successful re-probe
+            # unwalls it (transitions out of corpse); a failed re-probe is
+            # explicit terminal retirement. Corpses with a future wall or from
+            # a non-recoverable source (credentials_bad / quota_exhausted-by-
+            # age — permanent, re-probing cannot help) keep the original grace
+            # hold. fleet-ops#3229: a no-wall corpse from a RECOVERABLE
+            # transient failure mode (rate_limit / transient_http / cli_timeout
+            # / transient_other / empty_run / overload) gets the SAME
+            # second-chance re-probe — a transient condition can clear on its
+            # own, so one bounded probe during grace lets the seat recover the
+            # moment it clears instead of parking dead for the full 6h window.
+            local _cwe _cwall_end _cfm _csrc
+            _cwall_end=$(wall_end_of "$f")
+            _cwe=$(ts_epoch "$_cwall_end")
+            _cfm=$(jq -r '.failure_mode // ""' "$f" 2>/dev/null || true)
+            _csrc=$(jq -r '.source // ""' "$f" 2>/dev/null || true)
+            if [[ -z "$_cwe" ]] && { [[ "$_cfm" == "comeback_never_released" || "$_csrc" == "comeback_release_corpse" ]] || _corpse_is_recoverable_mode "$_cfm"; }; then
+                # fleet-ops#3638: RUNAWAY CORPSE guard. A PROBER-CREATED
+                # no-wall corpse (failure_mode=comeback_never_released /
+                # source=comeback_release_corpse — the class with no wall
+                # and no self-recovery) whose consecutive_failure_count has
+                # climbed to >= CORPSE_RUNAWAY_MULT x threshold has already
+                # burned through many second-chance re-probes. The bounce
+                # cycle (corpse -> re-probe -> extension reclassifies to
+                # walled -> re-probe fails -> re-corpse at count+2 with a
+                # FRESH observed_at) resets retire_corpse's 6h grace on
+                # every re-corpse, so the no-force retire never fires and
+                # the count climbs without bound (lived xkiro seats at
+                # 117/109). Once the count crosses the runaway line the
+                # corpse is permanently excluded: force-retire it here so
+                # the live roster seat count reflects a dead seat, not a
+                # forever-bouncing corpse. The second-chance re-probe below
+                # is for a FRESH corpse (count near threshold); a runaway
+                # corpse has had its chances.
+                #
+                # SCOPE (fleet-ops#3229 / test 17b): the guard fires ONLY
+                # for the non-recoverable PROBER corpse. A corpse in a
+                # RECOVERABLE transient failure mode (rate_limit,
+                # transient_http, cli_timeout, transient_other, empty_run,
+                # overload) is NEVER force-retired here — a transient
+                # condition clears on its own, so even a long-storming
+                # transient corpse keeps the bounded second-chance re-probe
+                # (the lived devin/glm-5-2 transient_http count=150 path the
+                # existing test pins). The xkiro comeback_never_released
+                # class is non-recoverable by definition, so the guard and
+                # the recoverable re-probe cannot conflict.
+                local _runaway_count _runaway_line
+                _runaway_count=$(jq -r '.consecutive_failure_count // 0' "$f" 2>/dev/null || echo 0)
+                [[ "$_runaway_count" =~ ^[0-9]+$ ]] || _runaway_count=0
+                _runaway_line=$(( CORPSE_RUNAWAY_MULT * SEAT_DEAD_CONSECUTIVE_THRESHOLD ))
+                if ! _corpse_is_recoverable_mode "$_cfm" && (( _runaway_count >= _runaway_line )); then
+                    log "RUNAWAY corpse $p/$m: count=$_runaway_count >= ${CORPSE_RUNAWAY_MULT}x threshold ${SEAT_DEAD_CONSECUTIVE_THRESHOLD} (line=${_runaway_line}) — force-retire, second chances exhausted (fleet-ops#3638)"
+                    if retire_corpse "$p" "$m" "$f" 1; then
+                        log "explicitly retired $p/$m as runaway corpse (count=$_runaway_count, fleet-ops#3638)"
+                    else
+                        log "runaway corpse $p/$m: retire failed — held"
+                    fi
+                    last_probe["$base"]="$(now_epoch)"
+                    continue
+                fi
+                log "corpse re-probe $p/$m: no wall, second-chance re-probe (fleet-ops#3156)"
+                if probe_seat "$p" "$m"; then
+                    ((probed++)) || true
+                    reset_overload_strikes "$p"
+                    # A successful probe clears the organ streak too.
+                    OWN_FAIL["$base"]="0"
+                    if unwall_seat "$p" "$m" "$f"; then
+                        ((released_this_run++)) || true
+                    fi
+                else
+                    ((probed++)) || true
+                    # Failed second-chance re-probe. The probe ran through
+                    # pi --print, which triggers the seat-health extension —
+                    # the extension may have reclassified the corpse DURING
+                    # the probe (fleet-ops#3179: a 402 quota_exhausted
+                    # response re-wrote the ledger with health_class
+                    # quota_exhausted, seat_dead=false, usable_at 24h in the
+                    # future). In that race the ledger is NO LONGER a corpse:
+                    # the seat has a comeback clock from the extension and
+                    # will be re-probed when that wall expires. Force-retire
+                    # only when the ledger is STILL a corpse (the extension
+                    # did not write — e.g. a timeout with no HTTP response).
+                    # Without this check, retire_corpse sees a non-corpse
+                    # file, returns 1, and the log says "retire failed — held"
+                    # even though the seat was reclassified, not held.
+                    local _post_hc _post_dead
+                    _post_hc=$(jq -r '.health_class // ""' "$f" 2>/dev/null || true)
+                    _post_dead=$(jq -r '(.seat_dead // false)' "$f" 2>/dev/null || true)
+                    if [[ "$_post_hc" == "corpse" && "$_post_dead" == "true" ]]; then
+                        # fleet-ops#3508: a rate_limit corpse is TIME-BASED
+                        # (a 429 resets), so a failed re-probe must not be a
+                        # terminal retire. If the extension did not re-anchor
+                        # (probe timeout, no HTTP), give the corpse a bounded
+                        # comeback clock instead of retiring it out of the
+                        # roster — the next wall-clock sweep re-probes it
+                        # when the window passes. Only the stuck prober-corpse
+                        # (comeback_never_released, non-recoverable) keeps the
+                        # immediate #3156 retire.
+                        if [[ "$_cfm" == "rate_limit" ]]; then
+                            if reanchor_bounded_comeback "$p" "$m" "$f"; then
+                                log "bounded comeback $p/$m: rate_limit corpse re-anchored to usable_at +${RATE_LIMIT_COMEBACK_S}s, seat re-enters the walled path (fleet-ops#3508)"
+                            else
+                                log "bounded comeback $p/$m: re-anchor failed — held"
+                            fi
+                        else
+                            if retire_corpse "$p" "$m" "$f" 1; then
+                                log "explicitly retired $p/$m after failed no-wall corpse re-probe (fleet-ops#3156)"
+                            else
+                                log "corpse re-probe $p/$m: retire failed — held"
+                            fi
+                        fi
+                    else
+                        log "corpse re-probe $p/$m: extension reclassified to health_class=$_post_hc seat_dead=$_post_dead during probe — no longer a corpse, walled by extension (fleet-ops#3179)"
+                    fi
+                fi
+                last_probe["$base"]="$(now_epoch)"
+            fi
+            continue
+        fi
+
+        # fleet-ops#2806: seed this organ's own-failure streak from the
+        # ledger's consecutive_failure_count the first time the seat is
+        # seen, so the two counters start equal (a mid-flight seat carries
+        # its extension-counted history into the organ's streak).
+        if [[ -z "${OWN_FAIL["$base"]:-}" ]]; then
+            local _seed_count
+            _seed_count=$(jq -r '.consecutive_failure_count // 0' "$f" 2>/dev/null || echo 0)
+            [[ "$_seed_count" =~ ^[0-9]+$ ]] || _seed_count=0
+            OWN_FAIL["$base"]="$_seed_count"
+        fi
+
+        wall_end=$(wall_end_of "$f")
+        we=$(ts_epoch "$wall_end")
+        # fleet-ops#3176: a quota_exhausted seat whose observed_at is STILL
+        # inside PROVIDER_QUOTA_WINDOW_S is intentionally held — do NOT probe.
+        # A fresh 402 re-anchors observed_at=now and refreshes the 1h PQE
+        # window, so FleetProviderQuotaExhausted never ages out (the 1h==1h
+        # deadlock). The seat waits for the window to age out; only then does
+        # the next probe fire. The ledger is left UNTOUCHED so observed_at
+        # can age out honestly (no re-bench, no re-anchor, no corpse). This
+        # is the belt-and-suspenders for a shorter provider Retry-After or a
+        # legacy ledger with a 1h usable_at; the seat-health extension now
+        # defaults a no-Retry-After 402 to 86400s, so the probe cadence
+        # already dwarfs the window for the common case. Placed BEFORE the
+        # wall-clock block so a held-bench_until force-probe does not log a
+        # misleading "force probe" line for a seat that is held by the PQE
+        # window, not by a re-bench.
+        if quota_exhausted_in_pqe_window "$f"; then
+            log "skip probe $p/$m: quota_exhausted observed_at still inside the ${PROVIDER_QUOTA_WINDOW_S}s PQE window — hold so the 1h alert can age out (fleet-ops#3176)"
+            continue
+        fi
+        # fleet-ops#2638: track usable_at SEPARATELY from bench_until. The
+        # bin's wall_end_of prefers bench_until — when a prior probe failed
+        # and rebench_seat advanced bench_until=now+REBENCH_BACKOFF_S, the
+        # original usable_at (set by the original failure) is still in the
+        # past. The "release this seat" signal comes from usable_at (the
+        # advertised reset window from the provider); bench_until is the
+        # prober's own re-bench hold. Conflating them with wall_end_of lets
+        # the re-bench cycle hold a chronically-failing seat indefinitely
+        # (the lived 2026-09-01T09:45Z heartbeat case: poolside/laguna
+        # usable_at past, comeback_overdue_n=1, but the bin kept re-benching
+        # on a fresh bench_until, never freeing the seat). Probe when EITHER
+        # clock is past — an overdue usable_at forces a real probe even when
+        # the most recent bench_until is still held.
+        usable_at_field=$(jq -r '.usable_at // ""' "$f" 2>/dev/null || true)
+        usable_epoch=$(ts_epoch "$usable_at_field")
+        # fleet-ops#3156: a non-dead seat with no wall clock is no longer
+        # silently skipped; it is re-probed here. A successful probe unwalls
+        # it; a failed probe re-benches (or corpses at the threshold). The
+        # no-wall state is a stuck comeback, not a defensive hold.
+        if [[ -n "$we" ]] && (( we > now )); then
+            # bench_until is held. Skip UNLESS usable_at (the original
+            # failure clock) is past — force the probe to break the
+            # re-bench loop (fleet-ops#2638).
+            if [[ -z "$usable_epoch" ]] || (( usable_epoch > now )); then
+                continue  # both clocks held (or usable_at empty): skip
+            fi
+            log "force probe $p/$m: usable_at $usable_at_field past, bench_until $wall_end held by re-bench — unstick (fleet-ops#2638)"
+        fi
+        if [[ -z "$we" ]] && [[ -n "$usable_epoch" ]] && (( usable_epoch > now )); then
+            # No bench_until but usable_at is held (defensive / legacy shape).
+            # Skip — the seat is held by usable_at alone.
+            continue
+        fi
+
+        # Wall clock has PASSED (or usable_at past with held bench_until) ->
+        # the seat owes a comeback. Override the
+        # per-seat min-probe interval when the wall is expired: a probe
+        # that the extension could NOT re-anchor (rc=124 timeout with no
+        # HTTP response, or a provider that returned a wall-clock class
+        # the extension does not yet classify) leaves a stale wall clock
+        # in the ledger. When the wall is expired AND a recent probe
+        # failed, skipping creates an indefinite LOUD stall every 15 min
+        # (fleet-ops#2421 follow-up, 2026-08-31 straitly/gpt-5.6-sol).
+        # The wall-in-future check above already keeps future-wall seats
+        # out of this loop; the min-interval only mattered when an
+        # expired-wall seat was being hammered. Probe so the wall can be
+        # refreshed (extension re-anchors from a real response) or the
+        # seat can be unwalled (probe succeeds). The LOUD check below
+        # still fires when EVERY probe attempt keeps failing — the loud
+        # signal is reserved for the genuine stuck case, not the
+        # re-anchor gap.
+        local lastp="${last_probe["$base"]:-0}"
+        if (( lastp > 0 )) && (( now - lastp < MIN_INTERVAL )); then
+            log "override min-interval for $p/$m: wall expired, last probe $(( now - lastp ))s ago (< ${MIN_INTERVAL}s) — re-probing to refresh stale wall or unwall"
+        fi
+
+        if probe_seat "$p" "$m"; then
+            ((probed++)) || true
+            # fleet-ops#2661: a successful tool-using probe proves the provider
+            # executes real work — any overload storm (if one was building) is over
+            # for this provider. Reset its consecutive strike counter.
+            reset_overload_strikes "$p"
+            # fleet-ops#2806: a successful probe resets THIS organ's own
+            # failure streak for the seat (the streak is consecutive
+            # failures; one success breaks it).
+            OWN_FAIL["$base"]="0"
+            if unwall_seat "$p" "$m" "$f"; then
+                ((released_this_run++)) || true
+            fi
+        else
+            ((probed++)) || true
+            # fleet-ops#3176: capture the health_class BEFORE rebench_seat
+            # clobbers it to transient_fault (rebench_seat only preserves
+            # overload_bench; quota_exhausted is rewritten to transient_fault).
+            # The pre-rebench class is the truth for the corpse-by-count guard
+            # below: a 402 (quota_exhausted) is time-based, not count-based,
+            # and must NOT be corpseed by the prober's count threshold.
+            local _pre_rebench_hc
+            _pre_rebench_hc=$(jq -r '.health_class // ""' "$f" 2>/dev/null || true)
+            # fleet-ops#2806: advance this organ's own consecutive-failure
+            # streak on EVERY probe failure, regardless of whether the
+            # extension re-anchored the wall first (the #2493 skip path).
+            # The merged streak (max of own and ledger counts, both have
+            # moved on a real failure) is the corpse trigger below — see
+            # the own_failures declaration comment for the cadence rationale.
+            local _own_now=$(( ${OWN_FAIL["$base"]:-0} + 1 ))
+            OWN_FAIL["$base"]="$_own_now"
+            # fleet-ops#2493: re-bench HERE on probe failure. The comment
+            # above used to say "the extension re-anchors usable_at from
+            # the real response; if it does NOT (broken extension /
+            # unroutable provider), the seat stays expired and the stalled
+            # check below renders loud" — true for the loud signal, but
+            # the seat also stays overdue for the next 15-min tick,
+            # which re-probes the same stale wall and re-fails. Re-bench
+            # advances the wall clock to now + REBENCH_BACKOFF_S so the
+            # next tick skips the seat (wall-in-future check) until the
+            # new window passes. Without this, a chronically-walled seat
+            # burns a probe slot every 15 min and the overdue metric
+            # stays pending forever (the lived fleet-ops#2493 case:
+            # straitly/deepseek-v4-pro and opencode/mimo-v2.5-free both
+            # past usable_at, both re-probed-and-re-failed across many
+            # ticks). On the next tick after the re-bench, the wall-in-
+            # future check skips the seat; when the re-bench window
+            # expires, the next tick probes again. A successful probe
+            # then unwalls (the common recovery path); a failed probe
+            # re-benches again at the slower cadence. The loud-stall
+            # check below still fires when EVERY probe attempt keeps
+            # failing across re-bench windows (the genuine stuck case).
+            local _rebench_rc=0
+            rebench_seat "$p" "$m" "$f" || _rebench_rc=$?
+            # fleet-ops#2638: after re-bench the ledger's
+            # consecutive_failure_count has incremented. If it has crossed
+            # SEAT_DEAD_CONSECUTIVE_THRESHOLD the seat is terminally dead —
+            # corpse it so seat_usable holds it permanently (no more
+            # re-bench loop) and the next sweep skips it entirely. This
+            # converts the lived "never-probed comeback" cycle (poolside
+            # 23x 503s, mimo 42x 429s, both keep re-benching without ever
+            # recovering) into a terminal corpse write that frees the
+            # comeback-overdue slot. The live fleet_seat_comeback_corpse_total
+            # counter and per-seat never-released series make the stuck
+            # case visible before threshold.
+            # fleet-ops#2806: corpse on the MERGED streak — max of the
+            # ledger's count (which the extension or the re-bench above
+            # advanced on a real failure) and this organ's own streak
+            # (which advances even when the extension re-anchored first
+            # and the re-bench skipped). Either counter crossing the
+            # threshold is the terminal signal.
+            local _ledger_count _merged
+            _ledger_count=$(jq -r '.consecutive_failure_count // 0' "$f" 2>/dev/null || echo 0)
+            [[ "$_ledger_count" =~ ^[0-9]+$ ]] || _ledger_count=0
+            _merged=$_ledger_count
+            (( ${OWN_FAIL["$base"]:-0} > _merged )) && _merged=${OWN_FAIL["$base"]:-0}
+            # fleet-ops#3176: do NOT corpse a quota_exhausted (HTTP 402) seat
+            # by count. quota_exhausted is TIME-based per seat-health.ts
+            # shouldMarkSeatDead (corpse when observed_at age >=
+            # seat_dead_quota_age_s=86400), NOT count-based — a 402 with a
+            # fresh observed_at is a normal walled seat waiting for its reset
+            # window, not a corpse. The live straitly/gpt-5.6-sol was CORPSED
+            # at count=38>=25 by this prober's count-based corpse path, even
+            # though its observed_at was only ~1h old (the 1h==1h re-probe
+            # loop inflated the count). Skip the count-based corpse for
+            # quota_exhausted; the time-based corpse fires in seat-health.ts
+            # when the 402 has not cleared in 24h. The re-bench above still
+            # advances the wall so the seat is not hammered every tick. Use
+            # the PRE-rebench class: rebench_seat clobbers quota_exhausted to
+            # transient_fault (it only preserves overload_bench), so reading
+            # the ledger here would see transient_fault and the guard would
+            # never fire.
+            if [[ "$_pre_rebench_hc" == "quota_exhausted" ]]; then
+                log "skip corpse $p/$m: quota_exhausted is time-based (seat_dead at observed_at age >= 24h), not count-based — re-benched, not corpseed (fleet-ops#3176)"
+            elif (( _rebench_rc != 0 )); then
+                # fleet-ops#3301: only skip corpse when a FUTURE wall is
+                # actually on the ledger. rebench_seat returns 1 for two
+                # reasons: (a) the extension re-anchored usable_at into the
+                # future (the lived 2026-09-04T16:30Z mimo 429 path — honour
+                # that window), (b) jq compose / rename failed and the wall
+                # is still in the past (still corpse; a no-wall corpse is
+                # the right terminal write when nothing set a retry clock).
+                local _post_wall _post_we
+                _post_wall=$(wall_end_of "$f")
+                _post_we=$(ts_epoch "$_post_wall")
+                if [[ -n "$_post_we" ]] && (( _post_we > now )); then
+                    log "skip corpse $p/$m: extension re-anchored a future wall this sweep — retry window stands (fleet-ops#3301)"
+                else
+                    corpse_seat "$p" "$m" "$f" "$_merged" || true
+                fi
+            else
+                corpse_seat "$p" "$m" "$f" "$_merged" || true
+            fi
+            # fleet-ops#2661: a probe failure on an overload_bench seat is an
+            # overload_503 strike on that provider. the rebench preserved the overload
+            # class (in rebench_seat above), so the ledger still classes it
+            # overload_bench — count the strike and arm the exponential provider-wide
+            # wall once >=MIN strikes land within the 2h window (a bench window
+            # per strike — the "currently resetting per bench window" gap the issue names).
+            if seat_is_overload_bench "$p" "$m"; then
+                register_overload_strike "$p"
+                maybe_overload_wall "$p"
+            fi
+        fi
+        last_probe["$base"]="$(now_epoch)"
+    done
+
+    # Post-sweep truth: recount EXPIRED wall clocks from the LEDGER itself
+    # (a re-anchored seat is no longer expired; a cleared wall is healthy).
+    local expired=0
+    for f in "$LEDGER"/*__*.json; do
+        [[ -f "$f" ]] || continue
+        base="$(basename "$f")"
+        [[ "$base" != *".spawn-bench.json" ]] || continue
+        p=$(jq -r '.provider // ""' "$f" 2>/dev/null || true)
+        [[ "$p" != "test" ]] || continue
+        [[ -n "$p" ]] || continue
+        m=$(jq -r '.model // ""' "$f" 2>/dev/null || true)
+        # fleet-ops#3993: exclude only a TRUE probe-artifact phantom (model id
+        # ends in .out/.err/.log) from the expired/breach recounts — an
+        # artifact phantom is never routable, so it can never trip the
+        # loud-stall or interval-breach checks (past-wall ones are retired in
+        # the main loop; held future-wall ones are not past). A REAL seat that
+        # happens to be absent from the caps models map IS routable and is
+        # acted on in the main loop, so it is counted here like any seat.
+        _seat_is_probe_artifact "$m" && continue
+        hc=$(jq -r '.health_class // ""' "$f" 2>/dev/null || true)
+        [[ "$hc" != "healthy" ]] || continue
+        dead=$(jq -r '(.seat_dead // false)' "$f" 2>/dev/null || true)
+        [[ "$dead" != "true" ]] || continue
+        # fleet-ops#3176: a quota_exhausted seat held inside the PQE window
+        # is intentionally not probed (a fresh 402 would refresh the 1h
+        # alert window). It is not "stuck" — the release path is operating
+        # correctly by holding it. Exclude it from the expired count so the
+        # loud-stall check does not page on a deliberate hold.
+        quota_exhausted_in_pqe_window "$f" && continue
+        wall_end=$(wall_end_of "$f")
+        we=$(ts_epoch "$wall_end")
+        if [[ -n "$we" ]] && (( we <= now )); then
+            expired=$((expired + 1))
+        fi
+    done
+
+    # fleet-ops#2806 second loud check: INTERVAL BREACH. Where the stalled
+    # check above keys on wall_end_of (bench_until ?? usable_at) — a clock
+    # the extension or a re-bench advances INTO THE FUTURE on every failed
+    # probe, so it is ~never past at sweep end (the lived nemotron 8h
+    # chronic-failure rendered zero loud signals) — this check keys on the
+    # RAW usable_at (the same field the thorough snapshot's
+    # usable_at_overdue reads). A seat that ends the sweep with usable_at
+    # still in the past by MORE than one probe interval (MIN_INTERVAL,
+    # default 900s) was never acted on this run: the sweep missed it, the
+    # timer died, or the sweep crashed mid-loop. That is "overdue by more
+    # than one probe interval" made loud: the releaser had a full cycle to
+    # re-probe (re-anchor or unwall) and did not.
+    local breached=0 breached_lines=""
+    for f in "$LEDGER"/*__*.json; do
+        [[ -f "$f" ]] || continue
+        base="$(basename "$f")"
+        [[ "$base" != *".spawn-bench.json" ]] || continue
+        p=$(jq -r '.provider // ""' "$f" 2>/dev/null || true)
+        [[ "$p" != "test" ]] || continue
+        [[ -n "$p" ]] || continue
+        m=$(jq -r '.model // ""' "$f" 2>/dev/null || true)
+        # fleet-ops#3993: exclude only a TRUE probe-artifact phantom from the
+        # breach recount (same rule as the expired-count loop, so real-but-
+        # unconfigured seats that end the sweep still past usable_at by more
+        # than a probe interval are flagged as a releaser miss).
+        _seat_is_probe_artifact "$m" && continue
+        hc=$(jq -r '.health_class // ""' "$f" 2>/dev/null || true)
+        [[ "$hc" != "healthy" ]] || continue
+        dead=$(jq -r '(.seat_dead // false)' "$f" 2>/dev/null || true)
+        [[ "$dead" != "true" ]] || continue
+        # fleet-ops#3176: a quota_exhausted seat held inside the PQE window
+        # is intentionally not probed (see the expired-count exclusion above).
+        # Exclude it from the interval-breach check too — the releaser did
+        # not "miss a full probe cycle", it deliberately held the seat so
+        # the 1h alert window can age out.
+        quota_exhausted_in_pqe_window "$f" && continue
+        local seat_usable us_e
+        seat_usable=$(jq -r '.usable_at // ""' "$f" 2>/dev/null || true)
+        us_e=$(ts_epoch "$seat_usable")
+        # No usable_at: fall back to the wall clock for the breach read
+        # (a bench-only seat whose bench sat past for >1 interval is just
+        # as stuck — the wall clock IS the comeback clock for that class).
+        if [[ -z "$us_e" ]]; then
+            us_e=$(ts_epoch "$(wall_end_of "$f")")
+        fi
+        [[ -n "$us_e" ]] || continue
+        if (( now - us_e > MIN_INTERVAL )); then
+            breached=$((breached + 1))
+            breached_lines+="fleet_seat_comeback_release_interval_breached{seat=\"$base\"} 1"$'\n'
+            log "INTERVAL BREACH $base: usable_at ${seat_usable:-$(wall_end_of "$f")} past by $(( now - us_e ))s (> ${MIN_INTERVAL}s) after sweep — releaser had a full probe cycle and did not act"
+        fi
+    done
+
+    probed_total=$((probed_total + probed))
+    released_total=$((released_total + released_this_run))
+
+    if (( DRY_RUN )); then
+        log "DRY-RUN sweep complete: probed=$probed released=$released_this_run (no writes)"
+        return 0
+    fi
+
+    local last_probe_json=""
+    local kk
+    for kk in "${!last_probe[@]}"; do
+        last_probe_json+="$(jq -nc --arg k "$kk" --argjson v "${last_probe[$kk]}" '{key:$k,value:$v}'),"
+    done
+    last_probe_json="${last_probe_json%,}"
+    local strikes_json="" sp
+    for sp in "${!STRIKE_COUNT[@]}"; do
+        strikes_json+="$(jq -nc --arg p "$sp" --argjson c "${STRIKE_COUNT[$sp]}" \
+            --arg f "${STRIKE_FIRST[$sp]:-}" --arg l "${STRIKE_LAST[$sp]:-}" \
+            '{provider:$p,count:$c,first_at:$f,last_at:$l}'),"
+    done
+    strikes_json="${strikes_json%,}"
+    local own_json="" of
+    for of in "${!OWN_FAIL[@]}"; do
+        own_json+="$(jq -nc --arg k "$of" --argjson v "${OWN_FAIL[$of]}" '{key:$k,value:$v}'),"
+    done
+    own_json="${own_json%,}"
+    save_state "$(jq -nc --argjson lp "[$last_probe_json]" \
+        --argjson pt "$probed_total" --argjson rt "$released_total" \
+        --argjson wt "$WALLS_TOTAL" --argjson ct "$CORPSE_TOTAL" \
+        --argjson rr "$RETIRED_TOTAL" \
+        --argjson os "[$strikes_json]" \
+        --argjson own "[$own_json]" \
+        '{last_probe: ($lp | from_entries), probed_total: $pt, released_total: $rt,
+          walls_total: $wt, corpse_total: $ct, retired_total: $rr,
+          overload_strikes: ($os | map({key:.provider, value: {count:.count, first_at:.first_at, last_at:.last_at}}) |from_entries),
+          own_failures: ($own | from_entries)}')"
+
+    # The fleet-ops#2421 loud check: walled seats still hold expired wall
+    # clocks AND nothing was released this run -> the release path did not
+    # operate (no release, no re-anchor). Fail loudly; keep last-green
+    # stale so the absent/stale rule also fires. fleet-ops#2806: the
+    # interval-breach loud check is its own channel — even when something
+    # WAS released, a seat that stayed past usable_at by >1 probe interval
+    # after the sweep is a releaser miss and must fail loud. In the
+    # read-only-ledger shape BOTH fire; each renders its own LOUD line and
+    # the unit exits 1 once (OnFailure escalates, last-green stays stale).
+    local loud_rc=0 stalled_flag=0
+    if (( expired > 0 )) && (( released_this_run == 0 )); then
+        log "LOUD [COMEBACK-RELEASE-STALLED] released_this_run=0 while $expired walled seat(s) still hold expired wall clocks — release path not operating"
+        stalled_flag=1
+        loud_rc=1
+    fi
+    if (( breached > 0 )); then
+        log "LOUD [COMEBACK-RELEASE-INTERVAL-BREACH] $breached walled seat(s) past usable_at by > ${MIN_INTERVAL}s after sweep — releaser missed a full probe cycle"
+        loud_rc=1
+    fi
+    if (( loud_rc )); then
+        write_prom "" "$stalled_flag" "$probed_total" "$released_total" "$expired" "$CORPSE_TOTAL" "$RETIRED_TOTAL" "$breached" "$breached_lines"
+        return 1
+    fi
+
+    log "sweep complete: probed=$probed released=$released_this_run expired_after=$expired (cumulative released_total=$released_total corpse_total=$CORPSE_TOTAL retired_total=$RETIRED_TOTAL)"
+    write_prom "$(now_epoch)" 0 "$probed_total" "$released_total" "$expired" "$CORPSE_TOTAL" "$RETIRED_TOTAL" "$breached" "$breached_lines"
+    return 0
+}
+
+main "$@"

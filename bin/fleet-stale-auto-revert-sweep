@@ -33,6 +33,28 @@ export HOME="${HOME:-/home/nish}"
 export PATH="${PATH:-/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin}"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
+# --- help ---------------------------------------------------------------
+# fleet-ops#2889: --help/-h must print usage and exit 0 without taking the
+# flock, listing PRs, or closing stale reverts.
+case "${1:-}" in
+    --help|-h)
+        cat <<'HELP'
+fleet-stale-auto-revert-sweep — close auto-revert PRs whose reverted
+commit is no longer main HEAD (fleet-ops#349).
+
+Usage: fleet-stale-auto-revert-sweep [--help|-h]
+
+Modes:
+  --decide HEAD_REF TITLE MAIN_SHA   print stale|fresh|ignore (no network)
+  (default)                          sweep listed repos
+
+Exit 0 on a clean sweep, overlapping no-op, or dry-run. Non-zero only
+on missing jq/gh or a fatal usage error.
+HELP
+        exit 0
+        ;;
+esac
+
 decide() {
     local head="$1" title="$2" main_sha="$3"
     local short main_lc short_lc

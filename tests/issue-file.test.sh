@@ -140,6 +140,33 @@ size=$(jq '[.clusters[].size] | max' <<<"$sweep")
 [[ "$size" -ge 3 ]] || fail "redo cluster must have size >= 3, got $sweep"
 ok "sweep clusters the 3-issue redo group (clusters=$count max_size=$size)"
 
+# --- 6b. semantic seat-corpse/walled clustering via signal keys (fleet-ops#2899) -
+cat >"$scratch/seat-corpse.json" <<'JSON'
+{
+  "issues": [
+    {"number": 21, "repository": "Nishfleet/fleet-ops", "title": "Two seats dead on credentials_bad: commandcode/minimax-m3-free (403)", "body": "Snapshot: commandcode__minimax_minimax-m3-free http_status=403 failure_mode=credentials_bad consecutive_failure_count=3 seat_dead=true."},
+    {"number": 22, "repository": "Nishfleet/fleet-ops", "title": "Seat pool collapsing: healthy 12->9, walled 5->8", "body": "FleetSloSeatAvailSlowBurn firing since 2026-08-31; comeback never released; walled until 2026-09-19."},
+    {"number": 23, "repository": "Nishfleet/fleet-ops", "title": "FleetSloSeatAvailSlowBurn escalated and still firing", "body": "FleetSloSeatAvailSlowBurn firing since 2026-08-31; 2 dead, 5 walled, 6 quota_exhausted."},
+    {"number": 24, "repository": "Nishfleet/fleet-ops", "title": "Dark-mode contrast on the billing page", "body": "Agency CTA contrast is 2.14:1 in dark theme."}
+  ]
+}
+JSON
+
+out=$(score "Seat commandcode/minimax-m3-free is a credentials_bad corpse (403)" "commandcode__minimax_minimax-m3-free health_class=corpse, failure_mode=credentials_bad, seat_dead=true." "$scratch/seat-corpse.json")
+kind=$(jq -r .kind <<<"$out")
+sc=$(jq -r .score <<<"$out")
+ps=$(jq -r '.primary_shared_signals[]' <<<"$out")
+[[ "$kind" == "duplicate" ]] || fail "semantic seat-corpse pair must be duplicate, got $out"
+[[ -n "$ps" ]] || fail "expected a primary shared signal, got $out"
+ok "semantic seat-corpse pair is duplicate (score=$sc, primary=$ps)"
+
+sweep=$(python3 "$lib" sweep --from-json "$scratch/seat-corpse.json")
+count=$(jq '.cluster_count' <<<"$sweep")
+size=$(jq '[.clusters[].size] | max' <<<"$sweep")
+[[ "$count" -ge 1 ]] || fail "sweep must find the seat-corpse cluster, got $sweep"
+[[ "$size" -ge 3 ]] || fail "seat-corpse cluster must have size >= 3, got $sweep"
+ok "sweep clusters the 3-issue seat-corpse group (clusters=$count max_size=$size)"
+
 # --- 7. fake gh: comment vs create -----------------------------------------
 mkdir -p "$scratch/fakebin"
 cat >"$scratch/fakebin/gh" <<'GH'

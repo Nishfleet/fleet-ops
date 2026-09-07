@@ -92,6 +92,9 @@ bash "$here/intake-priority.test.sh"
 # (workers cannot edit .github/workflows/ci.yml). Same bash "$here/..."
 # host pattern as the priority drill above.
 bash "$here/pi-intake-tick-seat-gate.test.sh"
+# fleet-ops#1250: claim-step prior-art bounce (CI hook; keep this call).
+# ci.yml lists this file; workers cannot add a new verify-command line.
+bash "$here/prior-art-claim-check.test.sh"
 # --- 6. fleet-ops#1546 spawn post-condition + start-limit healer (CI hook) --
 # tests/pi-intake-tick-spawn-postcondition.test.sh locks the healer
 # (reset-failed on a start-limit-locked unit) and the post-condition
@@ -102,3 +105,79 @@ bash "$here/pi-intake-tick-spawn-postcondition.test.sh"
 # tests/pi-intake-gh-rate-limit.test.sh locks the side-car throttle in
 # lib/pi-intake-tick.sh. ci.yml lists this file, so the drill runs here.
 bash "$here/pi-intake-gh-rate-limit.test.sh"
+# --- 8. fleet-ops#1455 claims-index write (CI hook) -----------------------
+# tests/pi-intake-tick-claims-log.test.sh locks the append to
+# ready-work-claims.log on each successful claim+spawn. Without it the
+# heartbeat reports claims_last_2h=0 while claims are happening, and
+# watchers auto-file false "Intake starvation" issues. ci.yml lists this
+# file, so the drill runs here instead of a new workflow line.
+bash "$here/pi-intake-tick-claims-log.test.sh"
+# --- 9. fleet-ops#234/#2007 escalate-senior exclusion (CI hook) -----------
+# tests/pi-intake-tick-escalate-senior-exclusion.test.sh (added by PR
+# #2044) locks the exclude-escalate-senior filter in
+# lib/pi-intake-tick.sh: a regular worker must never be dispatched on a
+# senior-auditor-owned escalation (the #2007 live class). ci.yml lists
+# this file, so the drill runs here instead of a new workflow line.
+bash "$here/pi-intake-tick-escalate-senior-exclusion.test.sh"
+# --- 10. fleet-ops#2040 set -e claim-set-e guard (CI hook) ---------------
+# tests/pi-intake-tick-claim-set-e-guard.test.sh (added by PR #2040) locks
+# the retry guards in lib/pi-intake-tick.sh so a GitHub secondary rate
+# limit on gh issue edit/comment cannot abort the tick before the worker
+# spawns (fleet-ops#2040 live class). ci.yml lists this file, so the drill
+# runs here instead of a new workflow line.
+bash "$here/pi-intake-tick-claim-set-e-guard.test.sh"
+# --- 11. fleet-ops#1165 protected-verifier vacation park (CI hook) -------
+# tests/pi-intake-tick-protected-verifier-vacation.test.sh locks the
+# 0509-only, date-bounded skip in lib/pi-intake-tick.sh that parks
+# agent-ready issues whose body names a protected verifier/deploy file
+# during Nish's vacation, so workers do not open attest-stuck PRs that
+# sit red on the required-verifier-integrity gate until Nish returns.
+# ci.yml lists this file, so the drill runs here instead of a new
+# workflow line (workers cannot edit .github/workflows/ci.yml).
+bash "$here/pi-intake-tick-protected-verifier-vacation.test.sh"
+
+# --- 12. fleet-ops#3247 repo-conditional worker prompt blocks (CI hook) --
+# tests/pi-intake-tick-repo-conditional-blocks.test.sh locks the
+# conditional D1/gate-integrity + GEO/AEO prompt-block assembly in
+# lib/pi-intake-tick.sh (packet-write time). ci.yml lists this file, so
+# the drill runs here instead of a new workflow line (workers cannot edit
+# .github/workflows/ci.yml).
+bash "$here/pi-intake-tick-repo-conditional-blocks.test.sh"
+
+# --- 13. fleet-ops#3295 umbrella-label exclusion (CI hook) ------------
+# tests/pi-intake-tick-umbrella-exclusion.test.sh locks the intake tick's
+# umbrella-label drop (same family as escalate-senior-exclusion). ci.yml
+# lists this file, so the drill runs here instead of a workflow line.
+bash "$here/pi-intake-tick-umbrella-exclusion.test.sh"
+
+# --- 14. fleet-ops#3248 worker packet size ceiling (CI hook) ------------
+# tests/worker-packet-size.test.sh locks the rendered worker packet
+# (worker.md + TARGET line, assembled as lib/pi-intake-tick.sh writes it)
+# to <=12 KB non-0509 / <=20 KB 0509. ci.yml lists this file, so the
+# drill runs here instead of a new workflow line.
+bash "$here/worker-packet-size.test.sh"
+
+# --- 15. fleet-ops#3254 self-maintenance claim cap (CI hook) -----------
+# tests/pi-intake-tick-self-maint-cap.test.sh locks the deterministic
+# tick's 20% per-tick cap on fleet-ops (self-maintenance) claims (floor 1,
+# critical-path exempt, product repos uncapped) — part 1/4 of the
+# self-limiting-budget split. ci.yml lists this file, so the drill runs
+# here instead of a new workflow line.
+bash "$here/pi-intake-tick-self-maint-cap.test.sh"
+
+# --- 16. fleet-ops#3784 cohort-spawn stagger (CI hook) ------------------
+# tests/pi-intake-tick-spawn-stagger.test.sh locks the spawn_stagger_s
+# config value (seat-caps.json) + the tick's sleep between systemctl
+# start --no-block calls so clone/npm/pi startup peaks do not overlap
+# (oomd slice-pressure kills at tick time). ci.yml lists this file, so
+# the drill runs here instead of a new workflow line (workers cannot edit
+# .github/workflows/ci.yml).
+bash "$here/pi-intake-tick-spawn-stagger.test.sh"
+
+# --- 17. fleet-ops#4395 stale-blocker belt-and-braces (CI hook) --------
+# tests/pi-intake-tick-blocked-filter-stale.test.sh locks the intake
+# tick's blocked_filter: a `blocked-on:` line naming a CLOSED/MERGED
+# issue/PR must NOT count as blocked (stale blocker). ci.yml lists this
+# file, so the drill runs here instead of a new workflow line (workers
+# cannot edit .github/workflows/ci.yml).
+bash "$here/pi-intake-tick-blocked-filter-stale.test.sh"

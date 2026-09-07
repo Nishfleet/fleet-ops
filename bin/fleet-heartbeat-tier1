@@ -1,4 +1,17 @@
 #!/usr/bin/env bash
+
+# Use the nishfleet-worker App token for any GitHub write. Fail closed if
+# the App cannot mint and no token was inherited from a parent organ, so a
+# dead App never falls through to the human gh identity (fleet-ops#3445).
+# Human gh is read-only for organs; GH Actions (tests) has no App creds and
+# stubs gh as read-only, so skip minting there.
+if [[ -z "${GH_TOKEN:-}" && "${GITHUB_ACTIONS:-}" != "true" && "${GH:-gh}" == "gh" ]]; then
+    export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
+    _wt="${NISHFLEET_WORKER_TOKEN_BIN:-${HOME:-/home/nish}/.local/bin/worker-token}"
+    _minted="$("$_wt" --print)" || { echo "fleet-ops#3445: $_wt --print failed - refusing human-gh writes" >&2; exit 1; }
+    eval "$_minted"
+    unset _wt _minted
+fi
 # fleet-heartbeat-tier1 — deterministic, no-LLM ops (P13, 2026-08-25).
 #
 # Runs every tick. Zero quota. Keeps the pipeline flowing even when every
@@ -45,11 +58,11 @@
 #      machine-checkable dependency is closed/merged, flip back to
 #      agent-ready. Nish-decision blocks stay labelled and are published
 #      (count + oldest age) into the triage file.
-#   6b. Lifecycle-label unlabeled open issues (fleet-ops#376). Intake only
-#      sees agent-ready, so an issue with no lifecycle label is invisible
-#      forever. Sweep enrolled repos; default agent-ready; AUTO-REVERT
-#      SKIP/HALT → noise-class; FLAG-for-Nish → nish-reserved; drill:*
-#      titles → drill:lifecycle. Log relabeled=N on the tick line.
+#   6b. Lifecycle-label unlabeled open issues (fleet-ops#376). MOVED to
+#      webhook triggers (fleet-ops#3270): now runs as
+#      lifecycle-label-sweep.service dispatched by gh-webhook-receiver on
+#      issues/opened + issues/labeled, with lifecycle-label-sweep.timer
+#      as the hourly backstop. The heartbeat no longer runs this section.
 #   8. Undersaturation alarm + throughput line (fleet-ops#75). Delegates to
 #      bin/fleet-heartbeat-undersaturation: counts ready/claimed work and
 #      live pi-issue workers; if work>0 and running==0 it repairs (reset-
@@ -131,6 +144,12 @@
 #      and a meter-check evidence file within minutes of the first active draw.
 #      Fail loud on allowlist/routing violations; observe-to-open on the
 #      first-draw meter check.
+#  36.5 Product-ratio cache freshness (fleet-ops#2595). fleet-queue-
+#      product-ratio.prom mtime must be <30 min; a stale or missing file
+#      means the queue-composition-cache is dead and the product-first
+#      precedence (fleet-ops#2519) is silently failing open every tick.
+#      Loud + tier-1 fail when stale, so the silent-fail-open regression
+#      can never burn 48h of alert cycles again.
 #  37. AIMD leftover-meter canary (fleet-ops#424). Every tick, prove the
 #      AIMD reader still lives in seat-lib.sh. If the code vanishes and
 #      learned-caps-audit.log remains, go LOUD and auto-file so a leftover
@@ -154,9 +173,15 @@ REPOS_JSON="${FLEET_REPOS_JSON:-/home/nish/.local/state/fleet-heartbeat/fleet-re
 mkdir -p "$LOG_DIR"
 
 # Per-tick log file (UTC timestamp; one file per fire, easy to diff).
+# Opened in APPEND mode: helpers invoked with `2>>"$TICK_LOG"` open their own
+# append fd to the same path, and a truncate-write `exec 3>` here would let
+# this fd's offset overwrite their appended lines (fleet-ops#2080: the
+# merged-pr-close helper's per-issue output vanished from every tick log,
+# hiding the stale-branch skip that kept #1135 cycling). Append mode keeps
+# every writer's lines regardless of which fd they use.
 TICK_TS=$(date -u +%Y%m%dT%H%M%SZ)
 TICK_LOG="$LOG_DIR/tier1-$TICK_TS.log"
-exec 3>"$TICK_LOG"
+exec 3>>"$TICK_LOG"
 
 log() {
     local line
@@ -260,7 +285,7 @@ classify_failure() {
     local journal="$1"
     local low
     low=$(printf '%s' "$journal" | tr '[:upper:]' '[:lower:]')
-    if printf '%s' "$low" | grep -qiE 'rate limit|reached.*message.*limit|429|too many requests|etimedout|connection timed out|connect etimedout|econn|handshake.*timeout|spawn.*timeout|timed out waiting|retryable.*true|transient_fault'; then
+    if printf '%s' "$low" | grep -qiE 'rate[- ]?limit|reached.*message.*limit|429|too many requests|etimedout|connection timed out|connect etimedout|econn|handshake.*timeout|spawn.*timeout|timed out waiting|retryable.*true|transient_fault|no usable seat|no healthy seat|every.*allowlisted.*seat.*dead'; then
         printf 'transient-lane'; return
     fi
     if printf '%s' "$low" | grep -qiE 'start.*limit|startlimitburst|start-limit|start-limit-hit'; then
@@ -338,15 +363,16 @@ unit_recovery_class() {
         pi-scout-repair@*.service)  printf 'recover' ;;
         fleet-seat-recovery.path)   printf 'recover' ;;
         fleet-seat-recovery.service) printf 'recover' ;;
-        # Infrastructure path/timer organs (fleet-ops#1521 line 1): these
+        # Infrastructure service organs (fleet-ops#1521 line 1): these
         # wedge on start-limit-hit when inotify retriggering blows the
         # default 5/10s burst. They are idempotent oneshots (fetch+rev-compare,
         # generate+push) safe to reset-failed + start. The 2026-08-28 incident
         # needed a hand reset-failed + restart on fleet-console-pi and
         # fleet-deploy-check; this floor makes heartbeat recover them.
-        fleet-console-pi.path)     printf 'recover' ;;
+        # The .path units were removed (fleet-ops#2123/#2125, #1460 class):
+        # they self-retriggered on replace-by-rename inotify events. Only the
+        # .service entries remain; the timers carry the cadence.
         fleet-console-pi.service)  printf 'recover' ;;
-        fleet-deploy-check.path)   printf 'recover' ;;
         fleet-deploy-check.service) printf 'recover' ;;
         *)                          printf 'observe' ;;
     esac
@@ -645,6 +671,57 @@ while IFS= read -r repo; do
             fi
         fi
 
+        # fleet-ops#2675 + fleet-ops#3731: verify cue gate. A merged PR must
+        # carry a verification receipt so fleet_verified_merge_ratio
+        # (fleet-ops#1136) stays honest. ONE shared classifier —
+        # bin/fleet-exec-review-canary --body (lib/exec-review-receipt.py) —
+        # is the grammar authority: the prior inline copy here knew only
+        # `^verification:`/`^run-proof:` line starts and diverged from both
+        # the worker-side gate and the THOROUGH merged-PR sampler (three
+        # copies, three verdicts on the same body — #3731). Auto-revert PRs
+        # (revert/*) stay exempt — they restore green main automatically and
+        # have no worker to produce a verify cue.
+        # Fail-open on a missing/broken helper (same posture as the
+        # merge-trample gate above): a packaging gap must not freeze the
+        # queue.
+        is_revert=0
+        case "$pr_head" in
+            revert/*) is_revert=1 ;;
+        esac
+        if [ "$is_revert" -eq 0 ]; then
+            verify_gate="${FLEET_VERIFY_CUE_GATE:-fleet-exec-review-canary}"
+            if command -v "$verify_gate" >/dev/null 2>&1; then
+                pr_body=$(gh pr view "$pr_num" -R "$repo" --json body --jq '.body // ""' 2>/dev/null) || pr_body=""
+                vf=$(mktemp -t fleet-verify-cue.XXXXXX 2>/dev/null) || vf=""
+                if [ -n "$vf" ]; then
+                    printf '%s' "$pr_body" > "$vf"
+                    verify_rc=0
+                    # --body exits 1 for BOTH a real no-receipt reject and
+                    # a broken helper (missing python3/lib prints REJECT too)
+                    # — only the "no run receipt" text is a true gate hit.
+                    "$verify_gate" --body "$vf" >"$vf.out" 2>&1 || verify_rc=$?
+                    gate_out=$(cat "$vf.out" 2>/dev/null)
+                    rm -f "$vf" "$vf.out"
+                    if [ "$verify_rc" -eq 0 ]; then
+                        :  # receipt present — proceed to arm
+                    elif [ "$verify_rc" -eq 1 ] \
+                        && printf '%s' "$gate_out" | grep -q 'no run receipt'; then
+                        log "2.  - $repo#$pr_num ($pr_head): NO VERIFY CUE — skip arm (fleet-ops#2675/#3731)"
+                        skipped=$((skipped+1))
+                        continue
+                    else
+                        log "2.  - $repo#$pr_num ($pr_head): verify-cue gate rc=$verify_rc (${gate_out:-no output}) — fail-open arm"
+                    fi
+                else
+                    log "2.  - $repo#$pr_num ($pr_head): verify-cue gate scratch failed — fail-open arm"
+                fi
+            else
+                log "2.  - $repo#$pr_num ($pr_head): verify-cue gate missing ($verify_gate) — fail-open arm"
+            fi
+        else
+            log "2.  - $repo#$pr_num ($pr_head): REVERT PR — verify cue exempt (fleet-ops#2675)"
+        fi
+
         # Green: enable auto-merge (squash is the fleet default; matches
         # 0509's ruleset config and every other repo's branch protection).
         # --auto is idempotent: if already set, gh exits 0 with a notice.
@@ -685,7 +762,7 @@ while IFS= read -r repo; do
     short=$(printf '%s' "$repo" | awk -F/ '{print $2}')
 
     issues_json=$(gh issue list -R "$repo" -l agent-in-progress --state open \
-        --json number,title --jq '.[]' 2>/dev/null) || {
+        --json number,title,labels --jq '.[]' 2>/dev/null) || {
             log "3.  - $repo: gh issue list FAILED — skip"
             continue
         }
@@ -693,6 +770,13 @@ while IFS= read -r repo; do
     while IFS= read -r issue_row; do
         [ -z "$issue_row" ] && continue
         issue_n=$(printf '%s' "$issue_row" | jq -r '.number')
+        # fleet-ops#3763: an issue can carry agent-in-progress AND agent-blocked
+        # simultaneously (a worker posted blocked-on: then died, or intake
+        # escalated while a stale in-progress tag lingered). Releasing such a
+        # claim must NOT re-add agent-ready — that re-queues a deliberately
+        # parked issue and re-arms the spawn churn the block was meant to stop.
+        # blocked-reconcile owns the agent-blocked -> agent-ready flip.
+        agent_blocked=$(printf '%s' "$issue_row" | jq -e '[.labels[]?.name] | any(. == "agent-blocked")' >/dev/null 2>&1 && echo yes || echo no)
 
         # Is a pi-issue worker for this claim currently doing work?
         # fleet-ops#63: --state=running misses both activating/start
@@ -735,6 +819,18 @@ while IFS= read -r repo; do
 
         # Orphan. Release it.
         branch="claim/issue-${issue_n}"
+        # fleet-ops#3617: clear the dead worker's stale failed state now that
+        # the claim is being released. pi-issue@* units are `observe`-class at
+        # §4 (the reaper + intake re-dispatch are their retry path), so the
+        # heartbeat never reset-failed them before — a released claim left the
+        # unit sitting in `failed` forever, and the audit's failed-units lens
+        # re-filed it as an "orphan systemd unit is failed" gap-audit every
+        # cycle. Safe: the worker is confirmed dead (checked above), the claim
+        # is being released, and ConditionPathExists on the .in packet makes an
+        # accidental restart a clean SKIP. reset-failed is a no-op if the unit
+        # is not currently failed.
+        systemctl --user reset-failed "pi-issue@${short}-${issue_n}.service" 2>/dev/null \
+            && log "3.  - $repo#$issue_n: reset-failed dead worker unit pi-issue@${short}-${issue_n}.service" || true
         if gh api "repos/${repo}/git/refs/heads/${branch}" >/dev/null 2>&1; then
             if gh api "repos/${repo}/git/refs/heads/${branch}" -X DELETE >/dev/null 2>&1; then
                 log "3.  - $repo#$issue_n: deleted branch $branch"
@@ -744,7 +840,49 @@ while IFS= read -r repo; do
             fi
         fi
 
-        if gh issue edit "$issue_n" -R "$repo" \
+        # fleet-ops#4274: a verification-only issue whose worker posted
+        # VERDICT: PASS is terminal — observe-to-close closes it on the next
+        # tick. Do NOT re-queue (adding agent-ready would re-dispatch a worker
+        # to re-do already-passing verification — the 12-day loop that burned
+        # 0509#972). Release the claim without re-queue, like the agent-blocked
+        # path. VERDICT: FAIL or no verdict → fall through to the normal
+        # re-queue so a worker retries.
+        verification_only=$(printf '%s' "$issue_row" | jq -e '[.labels[]?.name] | any(. == "verification-only")' >/dev/null 2>&1 && echo yes || echo no)
+        if [[ "$verification_only" == "yes" ]]; then
+            verdict_pass=no
+            if issue_comments=$(gh issue view "$issue_n" -R "$repo" --json comments --jq '.[]?.body // empty' 2>/dev/null); then
+                if printf '%s' "$issue_comments" | grep -Eiq '^VERDICT:[[:space:]]+PASS([[:space:]]|$)'; then
+                    verdict_pass=yes
+                fi
+            fi
+            if [[ "$verdict_pass" == "yes" ]]; then
+                if gh issue edit "$issue_n" -R "$repo" --remove-label agent-in-progress 2>/dev/null; then
+                    gh issue comment "$issue_n" -R "$repo" \
+                        --body "claim branch released by fleet-heartbeat at $(date -u +%FT%TZ) (verification-only VERDICT: PASS; not re-queued — observe-to-close closes it; fleet-ops#4274)" \
+                        >/dev/null 2>&1 || true
+                    log "3.  - $repo#$issue_n: RELEASED (verification-only VERDICT: PASS, not re-queued — observe-to-close closes it)"
+                    released=$((released+1))
+                else
+                    log "3.  - $repo#$issue_n: label flip FAILED (verification-only PASS held) — will retry next tick"
+                fi
+                continue
+            fi
+        fi
+
+        if [[ "$agent_blocked" == "yes" ]]; then
+            # fleet-ops#3763: parked issue — clear the stale in-progress tag
+            # only; leave agent-blocked for blocked-reconcile to resolve.
+            if gh issue edit "$issue_n" -R "$repo" \
+                --remove-label agent-in-progress 2>/dev/null; then
+                gh issue comment "$issue_n" -R "$repo" \
+                    --body "claim branch released by fleet-heartbeat at $(date -u +%FT%TZ) (no live worker, no open PR; agent-blocked held — not re-queued)" \
+                    >/dev/null 2>&1 || true
+                log "3.  - $repo#$issue_n: RELEASED (agent-blocked held, not re-queued)"
+                released=$((released+1))
+            else
+                log "3.  - $repo#$issue_n: label flip FAILED (agent-blocked held) — will retry next tick"
+            fi
+        elif gh issue edit "$issue_n" -R "$repo" \
             --remove-label agent-in-progress --add-label agent-ready 2>/dev/null; then
             gh issue comment "$issue_n" -R "$repo" \
                 --body "claim branch released by fleet-heartbeat at $(date -u +%FT%TZ) (no live worker, no open PR)" \
@@ -815,13 +953,14 @@ fi
 # instance, and the reset+start floor does not depend on any agent lane
 # being healthy.
 #
-# The 2026-08-28 incident (#1521 line 1): fleet-console-pi.path and
-# fleet-deploy-check.path wedged on start-limit-hit (inotify retriggering
+# The 2026-08-28 incident (#1521 line 1): fleet-console-pi and
+# fleet-deploy-check wedged on start-limit-hit (inotify retriggering
 # blew the default 5/10s burst before the StartLimit* fix in #1522/#1509
-# landed, and a .path can still wedge if its service fails repeatedly).
-# They needed a hand reset-failed + restart. The matcher now also covers
-# these infrastructure path/timer organs, and unit_recovery_class marks
-# them `recover` (idempotent oneshots, safe to restart).
+# landed). They needed a hand reset-failed + restart. The matcher now
+# also covers these infrastructure service organs, and unit_recovery_class
+# marks them `recover` (idempotent oneshots, safe to restart). The .path
+# units were removed (#2123/#2125, #1460 class): they self-retriggered on
+# replace-by-rename inotify events; the timers carry the cadence.
 #
 # Idempotency: a per-unit JSON state file tracks attempts and escalation so
 # the N-attempt ceiling is real and the triage file is not spammed.
@@ -836,7 +975,7 @@ log "4. failed-units pass starting"
 
 mapfile -t failed_units < <(systemctl --user list-units --state=failed --no-legend --plain 2>/dev/null \
     | awk '{print $1}' \
-    | grep -E '^(pi-(intake|intake-repair|scout|scout-repair|packet|packet-failed|issue|issue-failed)@|fable-p|fleet-seat-recovery\.(path|service)$|fleet-console-pi\.(path|service)$|fleet-deploy-check\.(path|service)$)' \
+    | grep -E '^(pi-(intake|intake-repair|scout|scout-repair|packet|packet-failed|issue|issue-failed)@|fable-p|fleet-seat-recovery\.(path|service)$|fleet-console-pi\.service$|fleet-deploy-check\.service$)' \
     || true)
 
 for unit in "${failed_units[@]}"; do
@@ -1086,6 +1225,10 @@ fi
 # nishfleet-worker App has no webhooks (credentials/app-manifest.json
 # events=[]), so there is no event to subscribe to. Heartbeat's existing
 # 30-minute timer is the observer; this is not a new schedule.
+# fleet-ops#4260: the same sweep is the event source for the orchestrator
+# decision drain — when it sees an open needs-orchestrator issue older than
+# 1h it starts agent-cron-orchestrator-decision-sweep.service. No timer on
+# that unit; the label/reconcile output is the event.
 BLOCKED_BIN="${FLEET_BLOCKED_RECONCILE:-/home/nish/.local/bin/blocked-reconcile}"
 blocked_rc=0
 if require_manifest_helper "$BLOCKED_BIN"; then
@@ -1112,38 +1255,16 @@ fi
 # ============================================================================
 # 6b. LIFECYCLE-LABEL UNLABELED OPEN ISSUES (fleet-ops#376)
 # ============================================================================
-# Named reason for this sweep: intake's ExecCondition / list is
-# `-l agent-ready`. An issue filed with no lifecycle label never enters
-# the queue (live: #290/#304/#308 sat OPEN unlabeled while the
-# conference-gate re-land died around them). The GitHub App has no
-# webhooks, so there is no event to subscribe to. Heartbeat's existing
-# 30-minute timer is the observer; this is not a new schedule.
+# fleet-ops#3270: MOVED behind webhook triggers. The sweep now runs as
+# lifecycle-label-sweep.service, dispatched by gh-webhook-receiver on
+# issues/opened + issues/labeled (so a freshly-opened or freshly-labeled
+# issue gets its lifecycle label in seconds, not in the next tick). The
+# companion lifecycle-label-sweep.timer is the hourly backstop for
+# webhooks that never arrive. The heartbeat timer (now 60 min) keeps
+# only host-local sections. Variables retained as 0 for the tier 1
+# complete log line + exit-code propagation (downstream reads them).
 relabeled=0
 lifecycle_rc=0
-LIFECYCLE_BIN="${FLEET_LIFECYCLE_SWEEP:-/home/nish/.local/bin/lifecycle-label-sweep}"
-if require_manifest_helper "$LIFECYCLE_BIN"; then
-    log "6b. lifecycle-label-sweep starting"
-    lifecycle_repos=$(jq -r '.repos[]? | "Nishfleet/" + .name' "$INTAKE_REPOS_JSON")
-    lifecycle_out=""
-    if lifecycle_out=$(LIFECYCLE_SWEEP_REPOS="$lifecycle_repos" \
-        LIFECYCLE_SWEEP_LOCKDIR="${XDG_RUNTIME_DIR}/lifecycle-label-sweep" \
-        LIFECYCLE_SWEEP_INTAKE_JSON="$INTAKE_REPOS_JSON" \
-        "$LIFECYCLE_BIN"); then
-        log "6b. lifecycle-label-sweep done: $lifecycle_out"
-        relabeled=$(printf '%s' "$lifecycle_out" | sed -n 's/.*relabeled=\([0-9][0-9]*\).*/\1/p')
-        relabeled=${relabeled:-0}
-    else
-        log "6b. lifecycle-label-sweep FAILED — next tick retries"
-    fi
-else
-    _req=$?
-    if [ "$_req" -eq 1 ]; then
-        loud "HELPER-MISSING" "lifecycle-label-sweep helper missing at $LIFECYCLE_BIN — MANIFEST dest; silent skip disabled the lifecycle-label sweep (fleet-ops#485)"
-        lifecycle_rc=1
-    else
-        log "6b. lifecycle-label-sweep helper missing at $LIFECYCLE_BIN — skip (not installed)"
-    fi
-fi
 
 # ============================================================================
 # 7. DEGRADED-LANE REPORT (fleet-ops#63)
@@ -1486,7 +1607,7 @@ if [ -x "$FINDINGS_QUEUED_BIN" ]; then
         log "15. findings-queued session-close lint complete"
     else
         findings_queued_rc=$?
-        log "15. findings-queued session-close lint FAILED (rc=$findings_queued_rc) — a finding was named in chat and never filed; unit will land in --state=failed"
+        log "15. findings-queued session-close lint ALARM (rc=$findings_queued_rc) — a finding was named in chat and never filed; LOUD + auto-filed, observe-to-close"
     fi
 else
     log "15. findings-queued helper missing at $FINDINGS_QUEUED_BIN — skip (not installed; re-run ./install.sh)"
@@ -1549,7 +1670,9 @@ DEBUG_PLAYBOOK_BIN="${FLEET_DEBUG_PLAYBOOK_BIN:-/home/nish/.local/bin/fleet-debu
 debug_playbook_rc=0
 if [ -x "$DEBUG_PLAYBOOK_BIN" ]; then
     log "18. debug-playbook session-close lint starting"
-    if "$DEBUG_PLAYBOOK_BIN"; then
+    # fleet-ops#2005: observe-to-close is fail-closed; enable only in the
+    # production heartbeat so one-off tests cannot phantom-close real issues.
+    if FLEET_DEBUG_PLAYBOOK_OK_TO_CLOSE=1 "$DEBUG_PLAYBOOK_BIN"; then
         log "18. debug-playbook session-close lint complete"
     else
         debug_playbook_rc=$?
@@ -1558,6 +1681,55 @@ if [ -x "$DEBUG_PLAYBOOK_BIN" ]; then
 else
     log "18. debug-playbook helper missing at $DEBUG_PLAYBOOK_BIN — skip (not installed; re-run ./install.sh)"
 fi
+
+# ============================================================================
+# 19. MERGED-PR OBSERVE-TO-CLOSE (fleet-ops#1435)
+# ============================================================================
+# fleet-ops#3270: MOVED behind webhook triggers. The close now runs as
+# fleet-merged-pr-close.service, dispatched by gh-webhook-receiver on
+# pull_request/closed (merged OR closed) so a merged PR triggers the
+# close check in seconds. The companion fleet-merged-pr-close.timer is
+# the hourly backstop for webhooks that never arrive. The heartbeat
+# timer (now 60 min) keeps only host-local sections. Variable retained
+# as 0 for the tier 1 complete log line + exit-code propagation.
+merged_pr_close_rc=0
+
+# ============================================================================
+# 20. INTERVENTIONS-ELIMINATED SESSION-CLOSE LINT (fleet-ops#526)
+# ============================================================================
+# Every tick, prove "interventions get eliminated, not repeated": recent
+# Pi sessions whose correction-shaped user (or self-caught assistant)
+# text clusters to a third identical attempt are LOUD + auto-filed. The
+# tick logs the alarm so a silently-absorbed correction cannot recur
+# unnoticed. rc=1 is the alarm (already loud + auto-filed); only a
+# helper crash (rc >= 2) trips the unit (fleet-ops#1116).
+INTERVENTIONS_BIN="${FLEET_INTERVENTIONS_ELIMINATED:-/home/nish/.local/bin/fleet-interventions-eliminated}"
+interventions_eliminated_rc=0
+if [ -x "$INTERVENTIONS_BIN" ]; then
+    log "20. interventions-eliminated session-close lint starting"
+    if "$INTERVENTIONS_BIN"; then
+        log "20. interventions-eliminated session-close lint complete"
+    else
+        interventions_eliminated_rc=$?
+        log "20. interventions-eliminated session-close lint FAILED (rc=$interventions_eliminated_rc) — the same correction recurred a third time"
+    fi
+else
+    log "20. interventions-eliminated helper missing at $INTERVENTIONS_BIN — skip (not installed; re-run ./install.sh)"
+fi
+
+# ============================================================================
+# 21. DUPLICATE-ISSUE DRAIN (fleet-ops#2762)
+# ============================================================================
+# fleet-ops#3270: MOVED behind webhook triggers. The drain now runs as
+# fleet-issue-close-duplicates.service, dispatched by gh-webhook-receiver
+# on issues/closed so closing one duplicate triggers a re-drain of the
+# remaining cohort. The companion fleet-issue-close-duplicates.timer is
+# the daily backstop for webhooks that never arrive (a duplicate is
+# waste but not breakage — the canonical issue still gets dispatched).
+# The heartbeat timer (now 60 min) keeps only host-local sections.
+# Variable retained as 0 for the tier 1 complete log line + exit-code
+# propagation.
+close_duplicates_rc=0
 
 # ============================================================================
 # 15. UNJUSTIFIED-WAIT DETECTOR (fleet-ops#468 TOP GEAR invariant)
@@ -1768,7 +1940,39 @@ else
 fi
 
 # ============================================================================
-# 19. PER-ROLE QUALITY-GATE AUDIT (fleet-ops#457)
+# 19. QUALITY SLO SCOREBOARD — recompute + 24h staleness guard (fleet-ops#2444)
+# ============================================================================
+# Every tick, recompute the north-star quality snapshot from GitHub + journals
+# (never agent self-scores) so the scoreboard is never 4-days stale while a
+# live ratio alert needs it. A pre-run snapshot older than the 24h ceiling is
+# LOUD (stale numbers were served) before the recompute heals it. The
+# generator exports fleet_quality_slo_last_computed_seconds; a dead recompute
+# path trips the FleetQualitySloStale absent()/>24h alert (config/fleet_rules.yml)
+# instead of silently serving old numbers. No new scheduler — this is the
+# existing heartbeat tick. The generator's own cycle FAIL files escalate-senior
+# and is the page (tick stays up); a broken generator fails this block.
+QUALITY_SLO_BIN="${FLEET_QUALITY_SLO:-/home/nish/.local/bin/fleet-quality-slo}"
+quality_slo_rc=0
+if require_manifest_helper "$QUALITY_SLO_BIN"; then
+    log "19. quality-slo scoreboard starting"
+    if "$QUALITY_SLO_BIN"; then
+        log "19. quality-slo scoreboard complete"
+    else
+        quality_slo_rc=$?
+        log "19. quality-slo generator FAILED (rc=$quality_slo_rc) — metric stopped computing or compute broke; unit will land in --state=failed (fleet-ops#2444)"
+    fi
+else
+    _req=$?
+    if [ "$_req" -eq 1 ]; then
+        loud "HELPER-MISSING" "quality-slo missing at $QUALITY_SLO_BIN — MANIFEST dest; silent skip would leave the north star scoreboard stale (fleet-ops#2444)"
+        quality_slo_rc=1
+    else
+        log "19. quality-slo missing at $QUALITY_SLO_BIN — skip (not installed)"
+    fi
+fi
+
+# ============================================================================
+# 20. PER-ROLE QUALITY-GATE AUDIT (fleet-ops#457)
 # ============================================================================
 # Every role's output must pass a gate it cannot bypass. This mechanical
 # checker re-runs the catalog every tick so a new role cannot ship gateless.
@@ -1777,19 +1981,19 @@ fi
 ROLE_GATE_BIN="${FLEET_ROLE_GATE_AUDIT:-/home/nish/.local/bin/fleet-role-gate-audit}"
 role_gate_rc=0
 if [ -x "$ROLE_GATE_BIN" ]; then
-    log "19. role-gate audit starting"
+    log "20. role-gate audit starting"
     if "$ROLE_GATE_BIN"; then
-        log "19. role-gate audit complete"
+        log "20. role-gate audit complete"
     else
         role_gate_rc=$?
-        log "19. role-gate audit FAILED (rc=$role_gate_rc) — auditor broken; unit will land in --state=failed"
+        log "20. role-gate audit FAILED (rc=$role_gate_rc) — auditor broken; unit will land in --state=failed"
     fi
 else
-    log "19. role-gate audit missing at $ROLE_GATE_BIN — skip (not installed)"
+    log "20. role-gate audit missing at $ROLE_GATE_BIN — skip (not installed)"
 fi
 
 # ============================================================================
-# 20. RESEARCHER DISPATCH (fleet-ops#458)
+# 21. RESEARCHER DISPATCH (fleet-ops#458)
 # ============================================================================
 # Auditors judge the current bar. Researchers move the bar to the frontier.
 # No new scheduler: this tick evaluates named triggers and starts
@@ -1800,15 +2004,15 @@ fi
 RESEARCHER_DISPATCH_BIN="${FLEET_RESEARCHER_DISPATCH:-/home/nish/.local/bin/fleet-researcher-dispatch}"
 researcher_dispatch_rc=0
 if [ -x "$RESEARCHER_DISPATCH_BIN" ]; then
-    log "20. researcher dispatch starting"
+    log "21. researcher dispatch starting"
     if "$RESEARCHER_DISPATCH_BIN"; then
-        log "20. researcher dispatch complete"
+        log "21. researcher dispatch complete"
     else
         researcher_dispatch_rc=$?
-        log "20. researcher dispatch FAILED (rc=$researcher_dispatch_rc) — helper broken; unit will land in --state=failed"
+        log "21. researcher dispatch FAILED (rc=$researcher_dispatch_rc) — helper broken; unit will land in --state=failed"
     fi
 else
-    log "20. researcher dispatch missing at $RESEARCHER_DISPATCH_BIN — skip (not installed)"
+    log "21. researcher dispatch missing at $RESEARCHER_DISPATCH_BIN — skip (not installed)"
 fi
 
 # ============================================================================
@@ -1827,7 +2031,22 @@ FREE_ROSTER_CANARY_BIN="${FLEET_FREE_ROSTER_CANARY:-/home/nish/.local/bin/fleet-
 free_roster_canary_rc=0
 if [ -x "$FREE_ROSTER_CANARY_BIN" ]; then
     log "21. free-model roster canary starting"
-    if "$FREE_ROSTER_CANARY_BIN"; then
+    # observe-to-close is OPT-IN per call (fleet-ops#995). The canary
+    # defaults to skip so a worker run from a worktree against the worker
+    # gh credentials can never auto-close a real issue. The production
+    # heartbeat is the only trusted caller; we set the env here as a
+    # per-call argument (not exported globally) so a sibling process in the
+    # same shell cannot inherit it. The canary ALSO requires a fresh
+    # sentinel file at $FLEET_FREE_ROSTER_OBSERVE_SENTINEL (default
+    # /run/user/$(id -u)/fleet-free-roster-trusted) — we touch it here so
+    # the close path is only open to a tick the heartbeat actually drove.
+    free_roster_sentinel="${FLEET_FREE_ROSTER_OBSERVE_SENTINEL:-/run/user/$(id -u)/fleet-free-roster-trusted}"
+    mkdir -p "$(dirname "$free_roster_sentinel")" 2>/dev/null || true
+    touch "$free_roster_sentinel" 2>/dev/null || \
+        log "21. WARN: could not refresh $free_roster_sentinel; observe-to-close will skip"
+    if FLEET_FREE_ROSTER_OBSERVE_TO_CLOSE=1 \
+       FLEET_FREE_ROSTER_OBSERVE_SENTINEL="$free_roster_sentinel" \
+       "$FREE_ROSTER_CANARY_BIN"; then
         log "21. free-model roster canary complete"
     else
         free_roster_canary_rc=$?
@@ -2111,34 +2330,6 @@ fi
 
 
 # ============================================================================
-# 33. VOLUME LANE ORDER CANARY (fleet-ops#1178)
-# ============================================================================
-# decisions-ledger 2026-08-27 Worker lane order (Nish, emphatic: "can't
-# stress enough"): ollama -> devin -> commandcode -> cline FIRST. This
-# canary locks volume_providers_in_order, refuses a dark volume seat or a
-# cursor-in-volume sneak, and proves seat-lib still has the volume_seats
-# bucket. xai-oauth unwired is observe-to-open (coordinates #1163).
-VOLUME_ORDER_CANARY_BIN="${FLEET_VOLUME_ORDER_CANARY:-/home/nish/.local/bin/fleet-volume-lane-order-canary}"
-volume_order_canary_rc=0
-if require_manifest_helper "$VOLUME_ORDER_CANARY_BIN"; then
-    log "33. volume lane order canary starting"
-    if "$VOLUME_ORDER_CANARY_BIN"; then
-        log "33. volume lane order canary complete"
-    else
-        volume_order_canary_rc=$?
-        log "33. volume lane order canary FAILED (rc=$volume_order_canary_rc) — volume front-of-ladder broken; unit will land in --state=failed"
-    fi
-else
-    _req=$?
-    if [ "$_req" -eq 1 ]; then
-        loud "HELPER-MISSING" "volume lane order canary missing at $VOLUME_ORDER_CANARY_BIN — MANIFEST dest; silent skip disabled the volume-order check (fleet-ops#1178)"
-        volume_order_canary_rc=1
-    else
-        log "33. volume lane order canary missing at $VOLUME_ORDER_CANARY_BIN — skip (not installed)"
-    fi
-fi
-
-# ============================================================================
 # 34. GEO/AEO CANARY (fleet-ops#1245)
 # ============================================================================
 # decisions-ledger 2026-08-27 GEO/AEO: fleet executes measurement +
@@ -2225,6 +2416,60 @@ else
     else
         log "36. precedence-band canary missing at $PRECEDENCE_BAND_CANARY_BIN — skip (not installed)"
     fi
+fi
+
+# ============================================================================
+# 36.5 PRODUCT-RATIO CACHE FRESHNESS (fleet-ops#2595)
+# ============================================================================
+# fleet-ops#2519 + #2539 ship a product-first precedence band that HOLDs
+# the self-maintenance repo when the queue self-maintenance ratio > 0.5.
+# The hold is observable (a fleet_queue_product_ratio gauge is exported
+# best-effort by the intake tick), but the implementation fails OPEN when
+# the queue-composition-cache is unavailable — which is the correct
+# posture for a dead metrics exporter (the fleet must never freeze). The
+# same fail-open posture is also the failure mode that makes a stuck
+# exporter invisible: if the cache stops refreshing, the hold silently
+# admits every tick and the self-maintenance ratio stays pinned at ~0.78
+# without the precedence ever engaging. The shipped PR has no live-cache
+# verification step.
+#
+# This block closes that hole: every tick, the heartbeat stat()s the
+# merged product-ratio prom. If the file is missing OR its mtime is older
+# than PRODUCT_RATIO_CACHE_FRESHNESS_S (default 1800s = 30 min, 1x the
+# heartbeat cadence with a 50% safety margin), the cache is presumed
+# dead and the heartbeat fails LOUD. Without this guard, the
+# FleetQueueSelfMaintenanceRatioHigh alert fires for 48h+ with the
+# precedence silently failing open the whole time (NISH-ESCALATIONS.md
+# 2026-08-30T13:30Z through 2026-08-31T18:30Z, 6 entries in 30h).
+#
+# Fail-loud = the unit lands in --state=failed, unit-escalation picks it
+# up, the heartbeat tier-2 surface sees the regression. The prom is
+# best-effort and may be absent on a fresh boot; a hard `requires install`
+# would be brittle (the file lands in MANIFEST only after #2539 ships),
+# so a missing prom is also a fail (the precedence is observable, and
+# a missing observable is itself drift). The threshold is overridable via
+# PRODUCT_RATIO_CACHE_FRESHNESS_S so a test or a longer heartbeat cadence
+# can pin it.
+product_ratio_prom="${PRODUCT_RATIO_PROM_PATH:-/var/lib/prometheus/node-exporter/fleet-queue-product-ratio.prom}"
+product_ratio_freshness_s="${PRODUCT_RATIO_CACHE_FRESHNESS_S:-1800}"
+product_ratio_cache_rc=0
+if [ -f "$product_ratio_prom" ]; then
+    product_ratio_mtime=$(stat -c %Y "$product_ratio_prom" 2>/dev/null || echo 0)
+    product_ratio_now=$(date -u +%s)
+    product_ratio_age=$((product_ratio_now - product_ratio_mtime))
+    if [ "$product_ratio_age" -gt "$product_ratio_freshness_s" ]; then
+        loud "PRECEDENCE-BAND-CACHE-STALE" \
+            "fleet-queue-product-ratio.prom age=${product_ratio_age}s exceeds threshold ${product_ratio_freshness_s}s (path=$product_ratio_prom) — queue-composition-cache is dead, product-first precedence is silently failing open; the self-maintenance ratio hold is not engaging"
+        log "36.5. product-ratio cache STALE age=${product_ratio_age}s threshold=${product_ratio_freshness_s}s"
+        product_ratio_cache_rc=1
+    else
+        log "36.5. product-ratio cache fresh (age=${product_ratio_age}s threshold=${product_ratio_freshness_s}s)"
+    fi
+else
+    loud "PRECEDENCE-BAND-CACHE-MISSING" \
+        "fleet-queue-product-ratio.prom missing at $product_ratio_prom — queue-composition-cache is absent, product-first precedence is silently failing open"
+    log "36.5. product-ratio cache MISSING path=$product_ratio_prom"
+    product_ratio_cache_rc=1
 fi
 
 # ============================================================================
@@ -2369,9 +2614,147 @@ else
 fi
 
 # ============================================================================
+# 42. TAILSCALE LOCALAPI SOCKET REACHABILITY CANARY (fleet-ops#2151)
+# ============================================================================
+# SSH is Tailscale-only on this box. The ACL canary (block 28) reads the
+# compiled PacketFilter via `sudo -n tailscale debug netmap`; sudo bypasses
+# the /run/tailscale socket-dir permission, so a 0700 RuntimeDirectoryMode
+# (or any socket-permission fault) reads CLEAN to the ACL watch while the
+# unprivileged `tailscale status` the SSH path and every fleet user-land
+# tool relies on is dead. That is the 2026-08-30 lockout near-miss: daemon
+# pid alive, socket unreachable, ACL watch green. This canary runs
+# `tailscale status` AS THE UNPRIVILEGED USER (no sudo) and fails loud if
+# the localapi socket is unreachable or the tailnet is isolated. No new
+# scheduler.
+TAILSCALE_LOCALAPI_CANARY_BIN="${FLEET_TAILSCALE_LOCALAPI_CANARY:-/home/nish/.local/bin/fleet-tailscale-localapi-canary}"
+tailscale_localapi_canary_rc=0
+if [ -x "$TAILSCALE_LOCALAPI_CANARY_BIN" ]; then
+    log "42. Tailscale localapi socket reachability canary starting"
+    if "$TAILSCALE_LOCALAPI_CANARY_BIN"; then
+        log "42. Tailscale localapi socket reachability canary complete"
+    else
+        tailscale_localapi_canary_rc=$?
+        log "42. Tailscale localapi socket reachability canary FAILED (rc=$tailscale_localapi_canary_rc) — unprivileged tailscale status cannot reach localapi or tailnet isolated; unit will land in --state=failed"
+    fi
+else
+    log "42. Tailscale localapi socket reachability canary missing at $TAILSCALE_LOCALAPI_CANARY_BIN — skip (not installed)"
+fi
+
+# ============================================================================
+# 43. LOOSE-ENDS CANARY — "Nothing sits half-done, and no question dies
+# unanswered" (fleet-ops#528, sr-nothing-half-done, Nish 2026-08-20)
+# ============================================================================
+# fleet-ops#3270: MOVED behind webhook triggers. The canary now runs as
+# fleet-loose-ends-canary.service, dispatched by gh-webhook-receiver on
+# pull_request/opened (a brand-new in-flight PR is half-done by
+# definition until it lands). The companion fleet-loose-ends-canary.timer
+# is the hourly backstop for webhooks that never arrive (the canary's
+# 24h idle threshold is the real freshness contract, so an hourly
+# backstop catches a missed webhook well inside that window). The
+# heartbeat timer (now 60 min) keeps only host-local sections. Variable
+# retained as 0 for the tier 1 complete log line + exit-code propagation.
+loose_ends_canary_rc=0
+
+# ============================================================================
+# 44. EMPTY-RUN BURST CANARY (fleet-ops#2666)
+# ============================================================================
+# incident 2026-09-01 12:48Z-14:11Z: waste.empty_runs_last_2h jumped 0 -> 6 on
+# minimax/MiniMax-M3 + openrouter/deepseek-v4-flash-0731 (both healthy seats
+# per pi-seat-health.json). The #902 empty-run class is a 24h detector and
+# misses a 2h burst on healthy seats — sharp signal the 24h gauge masks.
+# This canary is the class prevention: file `fix(empty-run-burst):` on a
+# fresh burst with per-sample cause classification, and observe-to-close
+# when the count drops back below threshold.
+EMPTY_BURST_CANARY_BIN="${FLEET_EMPTY_BURST_CANARY:-/home/nish/.local/bin/fleet-empty-run-burst-canary}"
+empty_burst_canary_rc=0
+if require_manifest_helper "$EMPTY_BURST_CANARY_BIN"; then
+    log "44. empty-run burst canary starting"
+    if "$EMPTY_BURST_CANARY_BIN"; then
+        log "44. empty-run burst canary complete"
+    else
+        empty_burst_canary_rc=$?
+        log "44. empty-run burst canary FAILED (rc=$empty_burst_canary_rc) — burst detector broken; unit will land in --state=failed"
+    fi
+else
+    _req=$?
+    if [ "$_req" -eq 1 ]; then
+        loud "HELPER-MISSING" "empty-run burst canary missing at $EMPTY_BURST_CANARY_BIN — MANIFEST dest; silent skip disabled the empty-run-burst check (fleet-ops#2666)"
+        empty_burst_canary_rc=1
+    else
+        log "44. empty-run burst canary missing at $EMPTY_BURST_CANARY_BIN — skip (not installed)"
+    fi
+fi
+
+# ============================================================================
+# 45. SCOUT-LEAK CANARY (fleet-ops#3123)
+# ============================================================================
+# ScoutEffectivenessLow (config/fleet_rules.yml) fires when the 14d
+# effectiveness ratio < 0.1 with runs > 0 — the scout runs but its output
+# is not translating to merged work. The alert reports the symptom; this
+# canary is the mechanical isolation: it reads the same scanner gauges the
+# alert reads (lib/scout-effectiveness.py's node-exporter .prom) and
+# computes the leak at each pipeline gate (duped / never-ready /
+# unclaimed / unmerged), auto-files a `fix(scout-leak):` mechanism issue
+# for the dominant stage, and observe-to-closes when the alert resolves or
+# the stage drains to 0. Files instead of just reporting — the accept for
+# #3123 bans a detector that says "effectiveness low" without isolating the
+# stage.
+SCOUT_LEAK_CANARY_BIN="${FLEET_SCOUT_LEAK_CANARY:-/home/nish/.local/bin/fleet-scout-leak-canary}"
+scout_leak_canary_rc=0
+if require_manifest_helper "$SCOUT_LEAK_CANARY_BIN"; then
+    log "45. scout-leak canary starting"
+    if "$SCOUT_LEAK_CANARY_BIN"; then
+        log "45. scout-leak canary complete"
+    else
+        scout_leak_canary_rc=$?
+        log "45. scout-leak canary FAILED (rc=$scout_leak_canary_rc) — leak detector broken; unit will land in --state=failed"
+    fi
+else
+    _req=$?
+    if [ "$_req" -eq 1 ]; then
+        loud "HELPER-MISSING" "scout-leak canary missing at $SCOUT_LEAK_CANARY_BIN — MANIFEST dest; silent skip disabled the ScoutEffectivenessLow leak isolation (fleet-ops#3123)"
+        scout_leak_canary_rc=1
+    else
+        log "45. scout-leak canary missing at $SCOUT_LEAK_CANARY_BIN — skip (not installed)"
+    fi
+fi
+
+# ============================================================================
+# 46. RESEARCH-SWEEP CANARY (fleet-ops#3130)
+# ============================================================================
+# The Weekly Fleet Review ratchet needs research input to know what "the
+# frontier" is. This canary is the mechanical guard that the researcher
+# role actually ran AND produced >= 1 mechanism proposal in the trailing
+# 7 days. It reads the researcher's own state sink
+# (agent-state/fleet-researcher/state.json, written by
+# fleet-researcher-run) and asserts both invariants; on violation it
+# auto-files a `fix(research-sweep):` mechanism issue, and observe-to-
+# closes when the sweep is healthy again. A run that files nothing is a
+# missed sweep — the ratchet starves even though the timer fired.
+RESEARCH_SWEEP_CANARY_BIN="${FLEET_RESEARCH_SWEEP_CANARY:-/home/nish/.local/bin/fleet-research-sweep-canary}"
+research_sweep_canary_rc=0
+if require_manifest_helper "$RESEARCH_SWEEP_CANARY_BIN"; then
+    log "46. research-sweep canary starting"
+    if "$RESEARCH_SWEEP_CANARY_BIN"; then
+        log "46. research-sweep canary complete"
+    else
+        research_sweep_canary_rc=$?
+        log "46. research-sweep canary FAILED (rc=$research_sweep_canary_rc) — sweep detector broken; unit will land in --state=failed"
+    fi
+else
+    _req=$?
+    if [ "$_req" -eq 1 ]; then
+        loud "HELPER-MISSING" "research-sweep canary missing at $RESEARCH_SWEEP_CANARY_BIN — MANIFEST dest; silent skip disabled the continuous-research prevention guard (fleet-ops#3130)"
+        research_sweep_canary_rc=1
+    else
+        log "46. research-sweep canary missing at $RESEARCH_SWEEP_CANARY_BIN — skip (not installed)"
+    fi
+fi
+
+# ============================================================================
 # done
 # ============================================================================
-log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} stale_revert_rc=${stale_revert_rc:-0} claim_reconcile_rc=${claim_reconcile_rc:-0} lifecycle_rc=${lifecycle_rc:-0} low_water_rc=$low_water_rc auditor_rc=${auditor_rc:-0} audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc ram_measure_rc=${ram_measure_rc:-0} canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc opencode_m3_canary_rc=$opencode_m3_canary_rc paid_flash_canary_rc=$paid_flash_canary_rc role_gate_rc=${role_gate_rc:-0} researcher_dispatch_rc=$researcher_dispatch_rc findings_queued_rc=${findings_queued_rc:-0} decisions_ledger_rc=${decisions_ledger_rc:-0} failed_command_rc=${failed_command_rc:-0} debug_playbook_rc=${debug_playbook_rc:-0} unjustified_rc=${unjustified_rc:-0} max_speed_rc=${max_speed_rc:-0} escalation_completion_rc=${escalation_completion_rc:-0} free_roster_canary_rc=${free_roster_canary_rc:-0} pi_extensions_canary_rc=${pi_extensions_canary_rc:-0} cline_glm53_canary_rc=${cline_glm53_canary_rc:-0} repo_visibility_canary_rc=${repo_visibility_canary_rc:-0} straitly_canary_rc=${straitly_canary_rc:-0} exec_review_canary_rc=${exec_review_canary_rc:-0} work_supply_canary_rc=${work_supply_canary_rc:-0} tailscale_acl_canary_rc=${tailscale_acl_canary_rc:-0} verify_harness_canary_rc=${verify_harness_canary_rc:-0} seat_live_validate_rc=${seat_live_validate_rc:-0} cred_expiry_canary_rc=${cred_expiry_canary_rc:-0} cf_token_canary_rc=${cf_token_canary_rc:-0} volume_order_canary_rc=${volume_order_canary_rc:-0} geo_aeo_canary_rc=${geo_aeo_canary_rc:-0} quality_ratchet_canary_rc=${quality_ratchet_canary_rc:-0} precedence_band_canary_rc=${precedence_band_canary_rc:-0} gap_loop_rc=${gap_loop_rc:-0} aimd_canary_rc=${aimd_canary_rc:-0} prepaid_util_canary_rc=${prepaid_util_canary_rc:-0} rulebook_canary=${rulebook_canary_status:-unset} vibes_canary_rc=${vibes_canary_rc:-0} skills_symlink_canary_rc=${skills_symlink_canary_rc:-0}"
+log "tier 1 complete: queued=$queued orphan_released=$released failed_seen=$seen failed_repaired=$repaired failed_requeued=$requeued failed_still_failed=$still_failed failed_exhausted=$exhausted failed_escalated=$escd timers_verified=$verified timers_re_enabled=$re_enabled degraded=$degraded undersat_rc=$undersat_rc blocked_rc=${blocked_rc:-0} stale_revert_rc=${stale_revert_rc:-0} claim_reconcile_rc=${claim_reconcile_rc:-0} lifecycle_rc=${lifecycle_rc:-0} low_water_rc=$low_water_rc auditor_rc=${auditor_rc:-0} audit_started=$audit_started audit_canary=$audit_canary_status relabeled=$relabeled deploy_rc=$deploy_rc redpr_rc=$redpr_rc ram_measure_rc=${ram_measure_rc:-0} canary_rc=$canary_rc entitled_canary_rc=$entitled_canary_rc worker_app_canary_rc=$worker_app_canary_rc opencode_m3_canary_rc=$opencode_m3_canary_rc paid_flash_canary_rc=$paid_flash_canary_rc role_gate_rc=${role_gate_rc:-0} researcher_dispatch_rc=$researcher_dispatch_rc quality_slo_rc=${quality_slo_rc:-0} findings_queued_rc=${findings_queued_rc:-0} decisions_ledger_rc=${decisions_ledger_rc:-0} failed_command_rc=${failed_command_rc:-0} debug_playbook_rc=${debug_playbook_rc:-0} interventions_eliminated_rc=${interventions_eliminated_rc:-0} unjustified_rc=${unjustified_rc:-0} max_speed_rc=${max_speed_rc:-0} escalation_completion_rc=${escalation_completion_rc:-0} free_roster_canary_rc=${free_roster_canary_rc:-0} pi_extensions_canary_rc=${pi_extensions_canary_rc:-0} cline_glm53_canary_rc=${cline_glm53_canary_rc:-0} repo_visibility_canary_rc=${repo_visibility_canary_rc:-0} straitly_canary_rc=${straitly_canary_rc:-0} exec_review_canary_rc=${exec_review_canary_rc:-0} work_supply_canary_rc=${work_supply_canary_rc:-0} tailscale_acl_canary_rc=${tailscale_acl_canary_rc:-0} verify_harness_canary_rc=${verify_harness_canary_rc:-0} seat_live_validate_rc=${seat_live_validate_rc:-0} cred_expiry_canary_rc=${cred_expiry_canary_rc:-0} cf_token_canary_rc=${cf_token_canary_rc:-0} geo_aeo_canary_rc=${geo_aeo_canary_rc:-0} quality_ratchet_canary_rc=${quality_ratchet_canary_rc:-0} precedence_band_canary_rc=${precedence_band_canary_rc:-0} product_ratio_cache_rc=${product_ratio_cache_rc:-0} gap_loop_rc=${gap_loop_rc:-0} aimd_canary_rc=${aimd_canary_rc:-0} prepaid_util_canary_rc=${prepaid_util_canary_rc:-0} rulebook_canary=${rulebook_canary_status:-unset} vibes_canary_rc=${vibes_canary_rc:-0} skills_symlink_canary_rc=${skills_symlink_canary_rc:-0} tailscale_localapi_canary_rc=${tailscale_localapi_canary_rc:-0} loose_ends_canary_rc=${loose_ends_canary_rc:-0} empty_burst_canary_rc=${empty_burst_canary_rc:-0} scout_leak_canary_rc=${scout_leak_canary_rc:-0} research_sweep_canary_rc=${research_sweep_canary_rc:-0}"
 # Propagate the first non-zero fail-loud exit. Deploy, missing MANIFEST
 # helpers, undersaturation, red-pr-repair, or a heartbeat canary may fail
 # loud; all route to the same escalation (fleet-heartbeat.service ->
@@ -2435,6 +2818,9 @@ fi
 if [ "${paid_flash_canary_rc:-0}" -ne 0 ]; then
     exit "$paid_flash_canary_rc"
 fi
+if [ "${quality_slo_rc:-0}" -ne 0 ]; then
+    exit "$quality_slo_rc"
+fi
 if [ "${role_gate_rc:-0}" -ne 0 ]; then
     exit "$role_gate_rc"
 fi
@@ -2482,9 +2868,6 @@ fi
 if [ "${cf_token_canary_rc:-0}" -ne 0 ]; then
     exit "$cf_token_canary_rc"
 fi
-if [ "${volume_order_canary_rc:-0}" -ne 0 ]; then
-    exit "$volume_order_canary_rc"
-fi
 if [ "${geo_aeo_canary_rc:-0}" -ne 0 ]; then
     exit "$geo_aeo_canary_rc"
 fi
@@ -2493,6 +2876,14 @@ if [ "${quality_ratchet_canary_rc:-0}" -ne 0 ]; then
 fi
 if [ "${precedence_band_canary_rc:-0}" -ne 0 ]; then
     exit "$precedence_band_canary_rc"
+fi
+# product-ratio cache freshness (fleet-ops#2595): a stale or missing
+# fleet-queue-product-ratio.prom means the queue-composition-cache is dead
+# and the product-first precedence is silently failing open every tick. Fail
+# loud so the unit lands in --state=failed and unit-escalation surfaces the
+# regression — a dead exporter must not sit silent for 48h again.
+if [ "${product_ratio_cache_rc:-0}" -ne 0 ]; then
+    exit "$product_ratio_cache_rc"
 fi
 if [ "${aimd_canary_rc:-0}" -ne 0 ]; then
     exit "$aimd_canary_rc"
@@ -2509,10 +2900,53 @@ fi
 if [ "${skills_symlink_canary_rc:-0}" -ne 0 ]; then
     exit "$skills_symlink_canary_rc"
 fi
+# tailscale-localapi: fail-loud. SSH is Tailscale-only; an unreachable
+# localapi socket to unprivileged callers is a lockout building. The ACL
+# canary (sudo-based) cannot see this class — propagate every non-zero
+# (fleet-ops#2151).
+if [ "${tailscale_localapi_canary_rc:-0}" -ne 0 ]; then
+    exit "$tailscale_localapi_canary_rc"
+fi
+# loose-ends: only propagate when the helper CRASHED (rc >= 2). exit 1
+# means "watcher broken / MANIFEST dest missing" — already loud via
+# HELPER-MISSING; landing the unit in --state=failed every 15 min for
+# it is the trip-loop we are fixing (fleet-ops#1116). rc>=2 = real
+# crash (python import fail, classifier exception) — propagate.
+if [ "${loose_ends_canary_rc:-0}" -ge 2 ]; then
+    exit "$loose_ends_canary_rc"
+fi
+# empty-run burst: only propagate when the helper CRASHED (rc >= 2).
+# exit 1 means "watcher broken / samples inconsistent" — already loud via
+# LOUD [EMPTY-BURST-WATCHER-BROKEN] and the canary auto-files; landing the
+# unit in --state=failed every 15 min for it is the trip-loop pattern we
+# avoid (fleet-ops#1116). rc>=2 = real crash (jq missing, fixture
+# permissions, sed regex blow-up).
+if [ "${empty_burst_canary_rc:-0}" -ge 2 ]; then
+    exit "$empty_burst_canary_rc"
+fi
+# scout-leak: only propagate when the helper CRASHED (rc >= 2). exit 1
+# means "watcher broken / .prom missing / unparseable" — already loud via
+# LOUD [SCOUT-LEAK-WATCHER-BROKEN] and any DATA-NOT-READY wait exits 0;
+# landing the unit in --state=failed every 15 min for those is the
+# trip-loop pattern we avoid (fleet-ops#1116). rc>=2 = real crash (jq/
+# awk missing, fixture permissions).
+if [ "${scout_leak_canary_rc:-0}" -ge 2 ]; then
+    exit "$scout_leak_canary_rc"
+fi
+if [ "${research_sweep_canary_rc:-0}" -ge 2 ]; then
+    exit "$research_sweep_canary_rc"
+fi
 if [ "${gap_loop_rc:-0}" -ne 0 ]; then
     exit "$gap_loop_rc"
 fi
-if [ "${findings_queued_rc:-0}" -ne 0 ]; then
+# findings-queued: only propagate when the helper CRASHED (rc >= 2).
+# exit 1 means "a finding was named in chat and never filed" — already
+# loud + auto-filed (deduped against the open issue) + observe-to-close-
+# drained; landing the unit in --state=failed every 15 min for it is the
+# trip-loop we are fixing (fleet-ops#1116). A helper crash (rc>=2, e.g.
+# FINDINGS-QUEUED-BROKEN) still trips the unit — see bin/fleet-findings-
+# queued's exit-code contract.
+if [ "${findings_queued_rc:-0}" -ge 2 ]; then
     exit "$findings_queued_rc"
 fi
 # decisions-ledger: only propagate when the helper CRASHED (rc >= 2).
@@ -2535,6 +2969,27 @@ fi
 # unit on the backlog (fleet-ops#1116).
 if [ "${debug_playbook_rc:-0}" -ge 2 ]; then
     exit "$debug_playbook_rc"
+fi
+# merged-pr observe-to-close: only propagate when the helper CRASHED
+# (rc >= 2). A found candidate is normal operation — the helper closes the
+# issue with evidence; landing the unit in --state=failed for doing its
+# observe-to-close job is a trip-loop (fleet-ops#1116 pattern).
+if [ "${merged_pr_close_rc:-0}" -ge 2 ]; then
+    exit "$merged_pr_close_rc"
+fi
+# interventions-eliminated: only propagate when the helper CRASHED (rc >= 2).
+# exit 1 means "the same correction recurred a third time" — already
+# loud + auto-filed + observe-to-close-drained; landing the unit in
+# --state=failed every 15 min for it is the trip-loop we are fixing
+# (fleet-ops#1116).
+if [ "${interventions_eliminated_rc:-0}" -ge 2 ]; then
+    exit "$interventions_eliminated_rc"
+fi
+# duplicate-issue drain: only propagate when the helper CRASHED (rc >= 2).
+# rc 0 = drained (possibly zero); the drain is best-effort and never trips
+# the unit for finding duplicates (fleet-ops#1116 pattern).
+if [ "${close_duplicates_rc:-0}" -ge 2 ]; then
+    exit "$close_duplicates_rc"
 fi
 # unjustified-wait: only propagate when the helper CRASHED (rc >= 2).
 # exit 1 means "TOP GEAR invariant violated" — already loud + auto-

@@ -21,9 +21,20 @@
 #                          re-reads the drop-ins. --system takes no part in
 #                          daemon-reload for the user instance — call without
 #                          --system first for that.
+#                          A changed config/fleet_rules.yml also gets
+#                          `sudo systemctl reload prometheus` (ExecReload is
+#                          kill -HUP), and every group in the installed file
+#                          is proven present in GET /api/v1/rules
+#                          (fleet-ops#1307); the reload is skipped when the
+#                          file bytes did not change.
 #   --check --system     — drift detection for system-scope entries only.
 #                          Useful for "is this box up to date?" without
 #                          changing anything.
+#
+# fleet-ops#3277: a MANIFEST src of `npm-pin:<rel>` is not a repo file. It
+# pins dest as a symlink at $PI_PACKAGE_EXAMPLES/<rel> (the installed pi
+# package examples/). Used for the stock subagent agents.ts + workflow
+# prompts so a pi reinstall cannot silently drop delegation.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; rc=0
 manifest="$here/MANIFEST"
@@ -34,6 +45,8 @@ mode=""
 check_system=0
 user_unit_changed=0
 system_unit_changed=0
+system_rules_changed=0
+system_audit_changed=0
 declare -a to_enable=()
 for arg in "$@"; do
   case "$arg" in
@@ -293,6 +306,53 @@ sys.exit(1)
 PY
 }
 
+# fleet-ops#4205: the live seat-caps.json state file is a regular file COPY
+# (fleet-ops#2910) that install.sh overwrites from config/seat-caps.json on
+# every deploy. A hand-added provider row in the live file (e.g. a newly
+# wired seat like runinfra/deepseek-v4-flash) was silently dropped by that
+# overwrite. Merge unknown provider rows from the live file into the repo
+# copy before installing: every provider the repo does NOT declare is
+# preserved, so a hand-wired seat survives a deploy. The repo remains the
+# source of truth for every provider it knows about (a repo row always wins
+# over the live row for the same provider). This only ADDS rows the repo
+# lacks — it never lowers a cap — so it is compatible with the #371
+# cap-downgrade guard above. Writes the merged JSON to stdout; on any
+# unparseable input it falls back to the repo copy unchanged.
+seat_caps_merge_unknown_providers() {
+    local dest=$1 repo=$2
+    local live
+    live=$(live_target_file "$dest")
+    [ -n "$live" ] && [ -e "$live" ] || { cat "$repo"; return 0; }
+    [ "$live" = "$repo" ] && { cat "$repo"; return 0; }
+    python3 - "$live" "$repo" <<'PY'
+import json, sys
+
+def load(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        return None
+
+live = load(sys.argv[1])
+repo = load(sys.argv[2])
+if not isinstance(live, dict) or not isinstance(repo, dict):
+    sys.stdout.write(open(sys.argv[2], encoding="utf-8").read())
+    sys.exit(0)
+lp = live.get("providers")
+rp = repo.get("providers")
+if not isinstance(lp, dict) or not isinstance(rp, dict):
+    sys.stdout.write(open(sys.argv[2], encoding="utf-8").read())
+    sys.exit(0)
+merged = json.loads(json.dumps(repo))
+for name, prov in lp.items():
+    if name not in rp:
+        merged["providers"][name] = prov
+json.dump(merged, sys.stdout, indent=2, ensure_ascii=False)
+sys.stdout.write("\n")
+PY
+}
+
 # fleet-ops#372: the hand-built heartbeat drop-in pointed FLEET_OPS_DRIFT_BIN
 # at a GC-able worktree and made the canary self-compare. Canonical checkout
 # is now pinned on fleet-heartbeat.service; remove the paper-over if present.
@@ -310,10 +370,253 @@ remove_papered_heartbeat_dropin() {
     fi
 }
 
+# fleet-ops#2924: live bandage for FleetScoutStale (chmod 0644 + drop 0-valued
+# series) written 2026-08-28 "until PR #1395 deploys". #1395 merged
+# 2026-08-27T20:05:29Z (write fleet-scout.prom mode 0644). The drop-in is
+# leftover and still rewrites the prom file on every scout. Only touch it
+# when this MANIFEST installs into the live user unit dir.
+remove_stale_scout_prom_mode_dropin() {
+    local user_systemd="${HOME}/.config/systemd/user"
+    local dropin="${user_systemd}/pi-scout@.service.d/20-prom-mode.conf"
+    grep -q " ${user_systemd}/" "$manifest" 2>/dev/null || return 0
+    if [ -e "$dropin" ] || [ -L "$dropin" ]; then
+        rm -f "$dropin"
+        echo "removed stale scout prom-mode drop-in: $dropin (fleet-ops#2924)"
+        user_unit_changed=1
+    fi
+}
+
+# fleet-ops#4112: the fleet-auto-deploy unit was deleted as stale machinery
+# (WFR 2026-08-30, reports/machinery-deletion-review-2026-08-30.md). Its
+# hand-placed drop-in dir ~/.config/systemd/user/fleet-auto-deploy.timer.d/
+# survived the deletion and is invisible to a unit-name-only hunt
+# (fleet-ops#2924 / #1548) because the unit no longer exists. The override
+# only rewrote [Timer] OnCalendar — no ExecStart/ExecStartPre, not new
+# machinery — so absorb-into-repo is wrong (there is no unit to source it).
+# Remove the orphaned dir; only touch it when this MANIFEST installs into
+# the live user unit dir.
+remove_orphaned_fleet_auto_deploy_dropin() {
+    local user_systemd="${HOME}/.config/systemd/user"
+    local dropin_dir="${user_systemd}/fleet-auto-deploy.timer.d"
+    grep -q " ${user_systemd}/" "$manifest" 2>/dev/null || return 0
+    if [ -d "$dropin_dir" ]; then
+        rm -rf "$dropin_dir"
+        echo "removed orphaned fleet-auto-deploy.timer.d drop-in dir: $dropin_dir (fleet-ops#4112)"
+        user_unit_changed=1
+    fi
+}
+
+# fleet-ops#4114: the fleet-auto-ship unit was deleted as stale machinery
+# (WFR 2026-08-30, reports/machinery-deletion-review-2026-08-30.md). Its
+# hand-placed drop-in dir ~/.config/systemd/user/fleet-auto-ship.service.d/
+# survived the deletion and is invisible to a unit-name-only hunt
+# (fleet-ops#2924 / #1548) because the unit no longer exists. The dir also
+# carries .bak files (override.conf.bak-audit-timeout-20260811,
+# zz-gate-retry.conf.bak-time-audit-20260812). Not new machinery — there is
+# no unit to source it — so absorb-into-repo is wrong. Remove the orphaned
+# dir; only touch it when this MANIFEST installs into the live user unit dir.
+remove_orphaned_fleet_auto_ship_dropin() {
+    local user_systemd="${HOME}/.config/systemd/user"
+    local dropin_dir="${user_systemd}/fleet-auto-ship.service.d"
+    grep -q " ${user_systemd}/" "$manifest" 2>/dev/null || return 0
+    if [ -d "$dropin_dir" ]; then
+        rm -rf "$dropin_dir"
+        echo "removed orphaned fleet-auto-ship.service.d drop-in dir: $dropin_dir (fleet-ops#4114)"
+        user_unit_changed=1
+    fi
+}
+
+# fleet-ops#4126: the fleet-cheap-triage unit lived in the control plane,
+# which was deleted on 2026-08-23 ("Everything runs through Pi, directly.
+# No launchers." — vault global-standing-rules.md). The live unit file,
+# timer, the cheap-triage.py lane script, and the gate/fleet-gate binary it
+# called are all gone; only the hand-placed drop-in dir
+# ~/.config/systemd/user/fleet-cheap-triage.service.d/ survived the deletion
+# and is invisible to a unit-name-only hunt (fleet-ops#2924 / #1548) because
+# the unit no longer exists. The dir also carries .bak files
+# (override.conf.bak-pulse-c51af7b13e-20260811,
+# override.conf.bak-time-audit-20260812). Not new machinery — there is no
+# unit to source it — so absorb-into-repo is wrong. Remove the orphaned
+# dir; only touch it when this MANIFEST installs into the live user unit dir.
+remove_orphaned_fleet_cheap_triage_dropin() {
+    local user_systemd="${HOME}/.config/systemd/user"
+    local dropin_dir="${user_systemd}/fleet-cheap-triage.service.d"
+    grep -q " ${user_systemd}/" "$manifest" 2>/dev/null || return 0
+    if [ -d "$dropin_dir" ]; then
+        rm -rf "$dropin_dir"
+        echo "removed orphaned fleet-cheap-triage.service.d drop-in dir: $dropin_dir (fleet-ops#4126)"
+        user_unit_changed=1
+    fi
+}
+
+# fleet-ops#4151: the fleet-e2e-heartbeat unit was an end-to-end proof that
+# the fleet ships (control-plane lane fleet-e2e-heartbeat.py). The live unit
+# file, timer, the lane script, and the gate/fleet-gate binary it called are
+# all gone; only the hand-placed drop-in dir
+# ~/.config/systemd/user/fleet-e2e-heartbeat.service.d/ survived the deletion
+# and is invisible to a unit-name-only hunt (fleet-ops#2924 / #1548) because
+# the unit no longer exists. The dir also carries .bak files
+# (override.conf.bak-pulse-a69537d453-20260811,
+# override.conf.bak-time-audit-20260812,
+# override.conf.bak-unit-fix-20260811T130719Z). Not new machinery — there is
+# no unit to source it — so absorb-into-repo is wrong. Remove the orphaned
+# dir; only touch it when this MANIFEST installs into the live user unit dir.
+remove_orphaned_fleet_e2e_heartbeat_dropin() {
+    local user_systemd="${HOME}/.config/systemd/user"
+    local dropin_dir="${user_systemd}/fleet-e2e-heartbeat.service.d"
+    grep -q " ${user_systemd}/" "$manifest" 2>/dev/null || return 0
+    if [ -d "$dropin_dir" ]; then
+        rm -rf "$dropin_dir"
+        echo "removed orphaned fleet-e2e-heartbeat.service.d drop-in dir: $dropin_dir (fleet-ops#4151)"
+        user_unit_changed=1
+    fi
+}
+
+# fleet-ops#4146: retire the three dead-man canaries (gh-webhook-canary-
+# deadman, fleet-completion-canary, fleet-loose-ends-canary). Their units
+# and timers are gone from MANIFEST; stop+disable any live leftovers and
+# remove the prom files they wrote so the node-exporter textfile dir does
+# not keep serving retired series. The gh-webhook-canary producer stays
+# (its dead-man is now the FleetGhWebhookCanaryAbsent absent() rule + a
+# healthchecks.io ping-on-success).
+remove_retired_canaries() {
+    local unit p
+    for unit in \
+        gh-webhook-canary-deadman.service gh-webhook-canary-deadman.timer \
+        fleet-completion-canary.service fleet-completion-canary.timer \
+        fleet-loose-ends-canary.service fleet-loose-ends-canary.timer
+    do
+        p="${HOME}/.config/systemd/user/$unit"
+        # `-f` is false for a dangling symlink (its target is gone), so the
+        # #4182 retire left the unit symlinks on disk: they pointed at
+        # systemd/ files deleted from the deploy clone, `-f` skipped them,
+        # and the live timers stayed, reddening the timer-manifest drill
+        # (fleet-ops#4199). `-e || -L` catches both real files and dangling
+        # symlinks.
+        if [ -e "$p" ] || [ -L "$p" ]; then
+            "$SYSTEMCTL" --user stop "$unit" 2>/dev/null || true
+            "$SYSTEMCTL" --user disable "$unit" 2>/dev/null || true
+            rm -f "$p"
+            echo "retired unit removed: $unit (fleet-ops#4146)"
+            user_unit_changed=1
+        fi
+        # `systemctl --user disable` cannot resolve a dangling unit, so it
+        # leaves the timers.target.wants symlink behind. Remove it explicitly
+        # so the timer-manifest live check stops seeing the retired timer.
+        p="${HOME}/.config/systemd/user/timers.target.wants/$unit"
+        if [ -e "$p" ] || [ -L "$p" ]; then
+            rm -f "$p"
+            echo "retired wants symlink removed: $unit (fleet-ops#4146)"
+            user_unit_changed=1
+        fi
+    done
+    # Remove the prom files the retired canaries wrote (deadman metric,
+    # fleet_chain_* family). The gh-webhook-canary prom file stays.
+    rm -f /var/lib/prometheus/node-exporter/fleet-chains.prom
+    # Strip the deadman block from the gh-webhook-canary prom file if a
+    # stale copy still carries it.
+    if [ -f /var/lib/prometheus/node-exporter/fleet-gh-webhook-canary.prom ]; then
+        sed -i '/fleet_gh_webhook_canary_deadman_paged_total/d; /fleet_gh_webhook_canary_deadman_last_status/d' \
+            /var/lib/prometheus/node-exporter/fleet-gh-webhook-canary.prom 2>/dev/null || true
+    fi
+}
+
+remove_retired_staleness_timer() {
+    local unit p
+    # fleet-ops#4149: the hand-built weekly truth-staleness timer + its
+    # issue-filing service are retired — the TruthStalenessMismatch alert
+    # rule (config/fleet_rules.yml) replaced them. Stop/disable/remove the
+    # live units on any box that still has them.
+    for unit in fleet-truth-staleness-check.timer fleet-truth-staleness-check.service
+    do
+        p="${HOME}/.config/systemd/user/$unit"
+        # `-e || -L` catches real files AND dangling symlinks (fleet-ops#4199).
+        if [ -e "$p" ] || [ -L "$p" ]; then
+            "$SYSTEMCTL" --user stop "$unit" 2>/dev/null || true
+            "$SYSTEMCTL" --user disable "$unit" 2>/dev/null || true
+            rm -f "$p"
+            echo "retired unit removed: $unit (fleet-ops#4149)"
+            user_unit_changed=1
+        fi
+        p="${HOME}/.config/systemd/user/timers.target.wants/$unit"
+        if [ -e "$p" ] || [ -L "$p" ]; then
+            rm -f "$p"
+            echo "retired wants symlink removed: $unit (fleet-ops#4149)"
+            user_unit_changed=1
+        fi
+    done
+    # Wipe backup/retired unit files parked in the user systemd dir
+    # (fleet-ops#4149 acceptance: backups are rm'd, not parked). systemd
+    # ignores files with unknown suffixes, so any *.bak* / *.retired* at
+    # the top level is inert cruft from a retired or mutated mechanism —
+    # never a live unit. These are NOT tracked in MANIFEST — they only
+    # ever exist on a live box, so a repo grep cannot prove them gone;
+    # this function does.
+    rm -f "${HOME}"/.config/systemd/user/*.bak* "${HOME}"/.config/systemd/user/*.retired*
+}
+
+# fleet-ops#3126 revert: the provider-shim prompt scan landed by #4356 is
+# retired. template/extensions/** install as COPIES (fleet-ops#3263) and this
+# installer has no generic prune for a copy dropped from MANIFEST, so the live
+# module would linger in ~/.pi/agent/extensions after the revert and
+# fleet-pi-extensions-canary would scream unproven-wired on every heartbeat
+# (already filed once: fleet-ops#4372). Remove it explicitly, same idiom as
+# the retired units above.
+remove_retired_provider_spawn_guard() {
+    local p="${HOME}/.pi/agent/extensions/provider-spawn-guard.ts"
+    # `-e || -L` catches real files and dangling symlinks (fleet-ops#4199).
+    if [ -e "$p" ] || [ -L "$p" ]; then
+        rm -f "$p"
+        echo "retired pi extension removed: provider-spawn-guard.ts (fleet-ops#3126 revert)"
+    fi
+}
+
 # Drift-or-install one entry. `_skip=1` means skip — out of scope for the
 # current mode. `_install_user` defaults to ln -s; `install_system` defaults
 # to sudo install -D.
 #
+# fleet-ops#1307: after a prometheus HUP, prove every group in the installed
+# fleet_rules.yml is actually loaded via GET /api/v1/rules (PM_RULES_URL;
+# file:// allowed for tests). A parse error in one group silently drops it
+# from the API while prometheus keeps serving the old rules — the class of
+# gap that left a merged alert rule unloaded. Reads the installed file
+# (PM_RULES_FILE). Exit 0 = every file group is loaded; exit 1 = proof
+# failed, and install.sh --system must be loud.
+prove_rules_loaded() {
+    local rules_file=$1 url=$2
+    python3 - "$rules_file" "$url" <<'PY'
+import json, re, sys, urllib.request
+
+rules_file, url = sys.argv[1], sys.argv[2]
+try:
+    with open(rules_file, encoding="utf-8") as f:
+        text = f.read()
+except OSError as exc:
+    sys.stderr.write(f"install.sh rules-proof: cannot read {rules_file}: {exc}\n")
+    sys.exit(1)
+expected = sorted(set(g.strip(chr(34) + chr(39)) for g in re.findall(r"(?m)^\s*-\s*name:\s*(\S+)", text)))
+if not expected:
+    sys.stdout.write(f"install.sh rules-proof: {rules_file} defines no groups; nothing to prove\n")
+    sys.exit(0)
+try:
+    payload = urllib.request.urlopen(url, timeout=5).read().decode("utf-8")
+except Exception as exc:
+    sys.stderr.write(f"install.sh rules-proof: cannot fetch {url}: {exc}\n")
+    sys.exit(1)
+try:
+    loaded = sorted(set(g["name"] for g in json.loads(payload)["data"]["groups"]))
+except (KeyError, TypeError, ValueError) as exc:
+    sys.stderr.write(f"install.sh rules-proof: unexpected {url} payload: {exc}\n")
+    sys.exit(1)
+missing = [g for g in expected if g not in loaded]
+if missing:
+    sys.stderr.write(f"install.sh rules-proof: FAIL groups not loaded: {missing} (fleet-ops#1307)\n")
+    sys.exit(1)
+sys.stdout.write(f"install.sh rules-proof: {len(expected)} group(s) loaded: {' '.join(expected)}\n")
+sys.exit(0)
+PY
+}
+
 # Comment-junk check (fleet-ops#156 finding 11): the old MANIFEST parser
 # created symlinks named after the second token of a comment line (e.g.
 # `# P14: ...` became a symlink called `P14: ...`). This scans the MANIFEST
@@ -340,12 +643,79 @@ check_comment_junk() {
   done < "$manifest"
 }
 
+# fleet-ops#3273: config sprawl. A .bak next to a managed MANIFEST file is a
+# leftover copy, not loaded, and it confuses every grep. The manifest check
+# must fail if any such .bak (or .bak-*) exists in the same directory.
+check_bak_sprawl() {
+  local src dest dir base entry
+  while read -r src dest || [ -n "$src" ]; do
+    [ -z "$src" ] && continue
+    # Skip whole-line comments and entries with no destination.
+    case "$src" in '#'*) continue ;; esac
+    [ -n "$dest" ] || continue
+
+    # Skip system files (under /etc/) since we cannot clean them without sudo
+    # and they are managed by the system package manager / admin process.
+    case "$dest" in /etc/*) continue ;; esac
+
+    if [[ "$dest" == /* ]]; then
+      dir=$(dirname "$dest")
+      base=$(basename "$dest")
+    else
+      dir=$(dirname "$PWD/$dest")
+      base=$(basename "$dest")
+    fi
+
+    # Look for any file or directory whose name starts with the managed
+    # file's basename followed by '.bak'. A glob that matches nothing still
+    # yields the literal pattern; the existence test filters it out.
+    for entry in "$dir/$base.bak"*; do
+      if [ -e "$entry" ] || [ -L "$entry" ]; then
+        echo "DIFF: $entry (.bak next to managed MANIFEST file $dest)"
+        rc=1
+      fi
+    done
+  done < "$manifest"
+}
+
+# fleet-ops#3263: Pi provider extensions (template/extensions/**) are
+# installed as file COPIES, not symlinks. A symlink into the deploy-clone
+# working tree resolves their relative import `../seat-health.ts` against the
+# repo tree, where that sibling does not live -> runtime import failure on
+# every extension load (proven: Bun and Node both resolve relative imports
+# against the symlink's real path). A copy keeps resolution on the live
+# extensions dir, where seat-health.ts lives. Same decoupling the
+# seat-caps.json copy gets (fleet-ops#2910).
+is_extension_src() { case $1 in template/extensions/*) return 0;; *) return 1;; esac; }
+
+# fleet-ops#3277: resolve npm-pin:<rel> against the installed pi examples dir.
+PI_PACKAGE_EXAMPLES="${PI_PACKAGE_EXAMPLES:-/home/nish/.local/lib/node_modules/@earendil-works/pi-coding-agent/examples}"
+
 process_entry() {
   local src=$1 dest=$2 skip=$3
-  local repo why=""
-  repo=$(readlink -f "$here/$src")
+  local repo why="" npm_pin=0
+  if [[ "$src" == npm-pin:* ]]; then
+    npm_pin=1
+    local pin_rel="${src#npm-pin:}"
+    repo=$(readlink -f "$PI_PACKAGE_EXAMPLES/$pin_rel" 2>/dev/null || true)
+    if [[ -z "$repo" || ! -e "$repo" ]]; then
+      echo "DIFF: $dest (npm-pin missing: $PI_PACKAGE_EXAMPLES/$pin_rel)"
+      rc=1
+      return 0
+    fi
+  else
+    repo=$(readlink -f "$here/$src")
+  fi
 
   if [ "$skip" = 1 ]; then return 0; fi
+
+  # fleet-ops#3322: model-candidates.json is a committed seed config (seeded
+  # from the Last30Days best-value research doc). Skip both drift and install
+  # when the source does not exist yet (fresh checkout, CI) so a missing seed
+  # never fails install.sh or drift checks — the audition lane is fail-open.
+  if [[ "$src" == config/model-candidates.json && ! -f "$repo" ]]; then
+    return 0
+  fi
 
   if [ "$mode" = "--" ]; then
     # Drift detection: symlink to repo OR byte-identical regular file = OK.
@@ -375,6 +745,22 @@ process_entry() {
     if [[ "$src" == systemd/system/* ]] && ! unit_file_matches "$dest" "$repo"; then
         system_unit_changed=1
     fi
+    # fleet-ops#1307: prometheus re-reads fleet_rules.yml only on HUP
+    # (systemctl reload; ExecReload is kill -HUP), so a changed copy needs a
+    # reload + proof, not just the systemd daemon-reload below. Byte-compare
+    # BEFORE install: a diff or a first install sets the flag; a
+    # byte-identical re-install skips the reload. PM_RULES_FILE overrides
+    # the live file path for tests.
+    if [[ "$src" == config/fleet_rules.yml ]] && ! cmp -s "${PM_RULES_FILE:-$dest}" "$repo" 2>/dev/null; then
+        system_rules_changed=1
+    fi
+    # fleet-ops#4266: audit rules are loaded at boot by auditd from
+    # /etc/audit/rules.d/; apply a change to the RUNNING daemon via
+    # augenrules --load (idempotent — regenerates audit.rules + reloads
+    # auditd). Only when auditd is actually installed on this box.
+    if [[ "$src" == config/audit/rules.d/* ]] && ! cmp -s "$dest" "$repo" 2>/dev/null; then
+        system_audit_changed=1
+    fi
     sudo install -D -m 0644 -o root -g root "$repo" "$dest"
     echo "installed (system): $dest"
   else
@@ -388,17 +774,19 @@ process_entry() {
         if seat_caps_is_origin_main_blob "$repo"; then
             :
         elif why=$(seat_caps_would_downgrade "$dest" "$repo"); then
-            echo "REFUSE: $dest would lower live seat caps ($why) from $repo (fleet-ops#371)"
+            echo "NONFATAL REFUSE: $dest would lower live seat caps ($why) from $repo (fleet-ops#371)"
             rc=1
             return 0
         elif live_newer_than_repo "$dest" "$repo"; then
-            echo "REFUSE: $dest is newer than repo copy $repo and the content differs (will not overwrite live config)"
+            echo "NONFATAL REFUSE: $dest is newer than repo copy $repo and the content differs (will not overwrite live config)"
             file_install_refuse "$dest" "$repo"
             rc=1
             return 0
         fi
+    elif [[ "$npm_pin" = 1 ]]; then
+        : # dest is a pin to the installed package; always retarget
     elif live_newer_than_repo "$dest" "$repo"; then
-        echo "REFUSE: $dest is newer than repo copy $repo and the content differs (will not overwrite live config)"
+        echo "NONFATAL REFUSE: $dest is newer than repo copy $repo and the content differs (will not overwrite live config)"
         file_install_refuse "$dest" "$repo"
         rc=1
         return 0
@@ -410,7 +798,70 @@ process_entry() {
         to_enable+=("$(basename "$src")")
     fi
     mkdir -p "$(dirname "$dest")"
-    ln -sfn "$repo" "$dest"
+    # fleet-ops#2910: seat-caps.json is a regular file COPY, not a symlink.
+    # A symlink into the deploy-clone working tree means every
+    # `git reset --hard origin/main` silently rewrites the live config (the
+    # auditor re-applied the hot-patch 34+ times). A copy decouples the live
+    # config from the git working tree so only this install step — with its
+    # cap-downgrade guard above — can update it. rm -f first so a prior
+    # symlink dest is replaced by the copy, not written through.
+    # template/extensions/** get the same copy semantics (fleet-ops#3263):
+    # the providers import ../seat-health.ts relative to their own file, and
+    # a repo-tree symlink would resolve that against a nonexistent sibling.
+    # config/pi-models.json is copy-installed too (fleet-ops#3722): live pi
+    # model config must not silently change with the git working tree.
+    # config/model-candidates.json is copy-installed too (fleet-ops#3322):
+    # the audition seed lives in the LIVE state dir next to seat-caps.json.
+    if [[ "$src" == config/seat-caps.json ]] || [[ "$src" == config/pi-models.json ]] || [[ "$src" == config/model-candidates.json ]] || is_extension_src "$src"; then
+        # fleet-ops#3125/#3262/#3690: when a provider's cap block changes,
+        # reset its learned AIMD state so a stale learned cap / bench from the
+        # old config never pins a raised declared floor or ceiling. The
+        # pre-install dest differs from the repo copy only on a real change
+        # (this install step refuses cap downgrades above), so an idempotent
+        # `install.sh` run is a no-op. fleet-ops#3690: reset ONLY the
+        # providers whose providers.<p> block changed (hashed per-provider),
+        # not the whole file — a ram_gb_per_worker / worker_memory edit must
+        # not reset AIMD. Each reset provider is seeded at floor/2 with
+        # ramp=true so the next tick ramps +1 per probe instead of bursting.
+        if [[ "$src" == config/seat-caps.json && -f "$dest" ]] && ! cmp -s "$dest" "$repo"; then
+            learned="$HOME/.local/state/pi-packet/learned-caps.json"
+            if [[ -f "$learned" ]]; then
+                if [[ -f "$here/lib/seat-lib.sh" ]] && command -v jq >/dev/null 2>&1; then
+                    # shellcheck source=lib/seat-lib.sh
+                    source "$here/lib/seat-lib.sh" 2>/dev/null || true
+                    reset_learned_caps_on_provider_change "$dest" "$repo" "$learned" || true
+                else
+                    # seat-lib.sh or jq unavailable: fall back to the legacy
+                    # whole-file reset so a stale learned cap never pins a
+                    # raised floor (the pre-#3690 behaviour).
+                    mv -f "$learned" "$learned.bak-$(date -u +%Y%m%dT%H%M%SZ)"
+                    echo "reset learned-caps.json (seat-caps.json changed; seat-lib.sh unavailable for per-provider reset)"
+                fi
+            fi
+        fi
+        # fleet-ops#4205: merge unknown provider rows from the live state
+        # file into the repo copy so a hand-wired seat (e.g. runinfra)
+        # survives a deploy instead of being silently dropped. The repo
+        # stays the source of truth for every provider it declares.
+        # Resolve the live file BEFORE rm -f removes the dest symlink.
+        # $src is local src=$1 (a string); the heredoc in
+        # seat_caps_merge_unknown_providers above corrupts shellcheck 0.11's
+        # array-tracking for the rest of this function, so it misreports a
+        # plain string as an array. Line 777 uses the same $src in a case
+        # at global scope with no warning.
+        # shellcheck disable=SC2128
+        if [[ "$src" == config/seat-caps.json ]]; then
+            seat_caps_merge_unknown_providers "$dest" "$repo" > "$dest.merge.$$"
+            rm -f "$dest"
+            install -D -m 0644 "$dest.merge.$$" "$dest"
+            rm -f "$dest.merge.$$"
+        else
+            rm -f "$dest"
+            install -D -m 0644 "$repo" "$dest"
+        fi
+    else
+        ln -sfn "$repo" "$dest"
+    fi
   fi
 }
 
@@ -437,11 +888,20 @@ done < "$manifest"
 
 if [ "$mode" = "--" ]; then
   check_comment_junk
+  check_bak_sprawl
   exit "$rc"
 fi
 
 if [ "$do_user_install" = 1 ]; then
   remove_papered_heartbeat_dropin
+  remove_stale_scout_prom_mode_dropin
+  remove_orphaned_fleet_auto_deploy_dropin
+  remove_orphaned_fleet_auto_ship_dropin
+  remove_orphaned_fleet_cheap_triage_dropin
+  remove_orphaned_fleet_e2e_heartbeat_dropin
+  remove_retired_canaries
+  remove_retired_staleness_timer
+  remove_retired_provider_spawn_guard
   # Only daemon-reload when a user-scope systemd unit/drop-in actually
   # changed. First install on a fresh box still reloads because every unit
   # is new. Bin/prompt/config changes do not waste a reload.
@@ -458,6 +918,16 @@ if [ "$do_user_install" = 1 ]; then
           if ! is_unit_enabled "$unit"; then
             "$SYSTEMCTL" --user enable --now "$unit"
             echo "enabled+started: $unit"
+          elif ! "$SYSTEMCTL" --user is-active --quiet "$unit" 2>/dev/null; then
+            # Enabled but not active/running: a prior enable landed without
+            # --now (or the start was lost), so the generic loop above used
+            # to skip this unit forever (fleet-ops#2089: staleness timer was
+            # enabled but inactive, NextElapse=infinity, never scheduled).
+            # `enable --now` on an already-enabled unit starts it; this
+            # self-heals the whole enabled-but-inactive class, not just one
+            # timer.
+            "$SYSTEMCTL" --user enable --now "$unit"
+            echo "started: $unit (was enabled but inactive)"
           fi
           ;;
         *.service)
@@ -519,11 +989,68 @@ if [ "$do_user_install" = 1 ]; then
       "$SYSTEMCTL" --user enable --now fleet-aeo-probe.timer
     fi
   fi
+  # fleet-ops#1151: weekly baseline-delta pre-pass. Same #183 class.
+  if [ -f "$here/systemd/fleet-baseline-delta.timer" ]; then
+    if ! is_unit_enabled fleet-baseline-delta.timer; then
+      "$SYSTEMCTL" --user enable --now fleet-baseline-delta.timer
+    fi
+  fi
 elif [ "$do_system_install" = 1 ]; then
   # daemon-reload needs to happen at system scope; we are still in the user
   # session, so it must go through sudo.
   if [ "$system_unit_changed" = 1 ]; then
     sudo systemctl daemon-reload
+  fi
+  # fleet-ops#1307: install -D does not HUP prometheus (ExecReload is
+  # kill -HUP), so a changed fleet_rules.yml would sit unloaded until the
+  # next restart. Reload only when the file bytes actually changed, then
+  # prove every group in the installed file appears in GET /api/v1/rules —
+  # a group that fails to parse never loads, and Prometheus keeps serving
+  # the old rules.
+  if [ "$system_rules_changed" = 1 ]; then
+    if sudo systemctl is-active --quiet prometheus 2>/dev/null; then
+      if ! sudo systemctl reload prometheus; then
+        echo "install.sh: prometheus reload failed after fleet_rules.yml change (fleet-ops#1307)" >&2
+        rc=1
+      elif ! prove_rules_loaded "${PM_RULES_FILE:-/etc/prometheus/fleet_rules.yml}" \
+                                "${PM_RULES_URL:-http://127.0.0.1:9090/api/v1/rules}"; then
+        echo "install.sh: rules proof failed — new fleet_rules.yml groups not all loaded (fleet-ops#1307)" >&2
+        rc=1
+      fi
+    else
+      echo "install.sh: prometheus not active — skipped reload + rules proof (fleet-ops#1307)" >&2
+    fi
+  fi
+  # fleet-ops#1160: vps-post-reboot-verify.timer is system-scope (the
+  # service it triggers is system-scope too). Install --system does not
+  # auto-enable system units (is_installable_unit excludes systemd/system/*),
+  # so enable it here — same class as the user timer --now enables above.
+  if [ -f "$here/systemd/system/vps-post-reboot-verify.timer" ]; then
+    if ! sudo systemctl is-enabled vps-post-reboot-verify.timer 2>/dev/null; then
+      sudo systemctl enable --now vps-post-reboot-verify.timer \
+        || { echo "install.sh: failed to enable vps-post-reboot-verify.timer" >&2; rc=1; }
+      echo "enabled+started: vps-post-reboot-verify.timer (system)"
+    elif ! sudo systemctl is-active --quiet vps-post-reboot-verify.timer 2>/dev/null; then
+      sudo systemctl start vps-post-reboot-verify.timer \
+        || { echo "install.sh: failed to start vps-post-reboot-verify.timer" >&2; rc=1; }
+      echo "started: vps-post-reboot-verify.timer (system, was enabled but inactive)"
+    fi
+  fi
+  # fleet-ops#4266: a changed audit rules.d file needs augenrules --load to
+  # reach the RUNNING auditd (the rules.d file alone only takes effect at
+  # boot). auditd absent = note only (the package install is the bare-metal
+  # manifest / vps-weekly-update concern).
+  if [ "$system_audit_changed" = 1 ]; then
+    if sudo systemctl is-active --quiet auditd 2>/dev/null; then
+      if ! sudo augenrules --load >/dev/null 2>&1; then
+        echo "install.sh: augenrules --load failed after audit rules change (fleet-ops#4266)" >&2
+        rc=1
+      else
+        echo "install.sh: audit rules loaded (fleet-ops#4266)"
+      fi
+    else
+      echo "install.sh: auditd not active — audit rules file installed, will load at boot (fleet-ops#4266)" >&2
+    fi
   fi
 fi
 exit "$rc"

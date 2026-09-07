@@ -174,6 +174,16 @@ grep -q 'escalation-daily-sweep.timer' "$unit_write" \
   || fail "unit-escalation-write: must exclude escalation-daily-sweep.timer"
 grep -q 'resilience-drill-stub\*' "$unit_write" \
   || fail "unit-escalation-write: must exclude resilience-drill-stub* (#455 drill stubs)"
+grep -q 'notify-probe.service' "$unit_write" \
+  || fail "unit-escalation-write: must exclude notify-probe.service (deliberate-failure probe)"
+grep -q 'notify-probe.onfail.service' "$unit_write" \
+  || fail "unit-escalation-write: must exclude notify-probe.onfail.service (deliberate-failure probe onfail)"
+grep -qF 'probe-*.service' "$unit_write" \
+  || fail "unit-escalation-write: must exclude probe-*.service (fleet-ops#1526 live-drill scaffolding)"
+grep -qF 'multi-*-sink.service' "$unit_write" \
+  || fail "unit-escalation-write: must exclude multi-*-sink.service (fleet-ops#1526 live-drill scaffolding)"
+grep -qF 'pi-issue@*.service' "$unit_write" \
+  || fail "unit-escalation-write: must exclude pi-issue@*.service (#2133/#2475 amplifier: pi-issue workers have own failure handling via OnFailure=pi-issue-failed@%i)"
 ok "unit-escalation-write self-trigger guard"
 
 # 12. systemd-analyze verify on the unit files (.service, .path, .timer).
@@ -191,3 +201,10 @@ else
 fi
 
 ok "escalation-units-shape: all units, drop-ins, and helpers are present, MANIFESTed, shaped, and verified"
+
+# fleet-ops#2677 + #2773: host the escalation-drain behavior test here.
+# Hosting from an already-listed test keeps it in the CI reachable set
+# without a .github/workflows edit (the worker App token cannot push
+# workflows). The drain is the bounded-file maintainer for the escalation
+# layer this file shape-locks.
+bash "$here/fleet-escalation-drain.test.sh"

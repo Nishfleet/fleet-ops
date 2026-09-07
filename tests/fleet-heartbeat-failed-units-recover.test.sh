@@ -70,9 +70,7 @@ for u in \
     fable-p123.service \
     fleet-seat-recovery.path \
     fleet-seat-recovery.service \
-    fleet-console-pi.path \
     fleet-console-pi.service \
-    fleet-deploy-check.path \
     fleet-deploy-check.service
 do
     matches "$u" || fail "matcher must admit fleet unit: $u (regex: $matcher_re)"
@@ -91,6 +89,20 @@ do
     fi
 done
 ok "matcher rejects non-fleet units (heartbeat does not adopt host services)"
+
+# The self-retriggering .path units were removed (fleet-ops#2123/#2125,
+# #1460 class): they watched files rewritten by replace-by-rename, so every
+# fetch/export re-fired them. The matcher must NOT admit the deleted .path
+# units anymore — only the .service + timer cadence remains.
+for u in \
+    fleet-deploy-check.path \
+    fleet-console-pi.path
+do
+    if matches "$u"; then
+        fail "matcher must NOT admit deleted self-retriggering .path unit: $u (regex: $matcher_re)"
+    fi
+done
+ok "deleted self-retriggering .path units are not admitted by the matcher"
 
 # The old §4 hyphen-only matcher must be gone. pi-issue-* (hyphen) never
 # matched the at-sign template instance, which is the #28 bug. The exact old
@@ -114,15 +126,26 @@ for u in \
     pi-scout-repair@0509.service \
     fleet-seat-recovery.path \
     fleet-seat-recovery.service \
-    fleet-console-pi.path \
     fleet-console-pi.service \
-    fleet-deploy-check.path \
     fleet-deploy-check.service
 do
     [[ "$(unit_recovery_class "$u")" == "recover" ]] \
         || fail "unit_recovery_class($u) must be recover (supply/repair/infra, safe to restart)"
 done
 ok "supply/repair/infra units classify as recover"
+
+# The deleted self-retriggering .path units (fleet-ops#2123/#2125) must
+# classify as observe now — there is no .path recover branch left, so a
+# stray failed .path (impossible once install.sh drops the link) would not
+# be heartbeat-restarted.
+for u in \
+    fleet-deploy-check.path \
+    fleet-console-pi.path
+do
+    [[ "$(unit_recovery_class "$u")" == "observe" ]] \
+        || fail "deleted .path unit $u must classify as observe (no .path recover branch)"
+done
+ok "deleted self-retriggering .path units classify as observe (not recovered)"
 
 for u in \
     pi-issue@fleet-ops-28.service \

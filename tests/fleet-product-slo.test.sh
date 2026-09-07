@@ -1,0 +1,650 @@
+#!/usr/bin/env bash
+# tests/fleet-product-slo.test.sh
+#
+# fleet-ops#2755: product delivery SLO family. Offline (no live gh).
+# Hosted by tests/ci-standards-audit.test.sh so P14 runs it without a
+# workflow-file edit.
+#
+# Proves:
+#   (a) throughput_weekly counts non-revert merges in the trailing 7d
+#   (b) lead_time_days excludes revert PRs (median of non-revert only)
+#   (c) revert_rate = reverts / merges over trailing 28d
+#   (d) product repo list = intake-repos.json repos[] minus
+#       self-maintenance-repos.json (fleet-ops dropped; 0509 kept)
+#   (e) empty window still emits fleet_product_slo_last_run_seconds
+#   (f) main() end-to-end writes a textfile with exact metric names
+#   (g) MANIFEST installs the helper + exporter drop-in (no new timer)
+#   (h) fleet_rules.yml ships FleetProductSloAbsent + ProductThroughputStalled
+#       + ProductLeadTimeDegrading + ProductRevertRateHigh
+#   (i) config/fleet-organs.json registers the organ
+#   (j) console shipped_24h source is fleet_product_merged_24h
+
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "$here/.." && pwd)"
+helper="$repo_root/lib/fleet-product-slo.py"
+rules="$repo_root/config/fleet_rules.yml"
+manifest="$repo_root/MANIFEST"
+dropin="$repo_root/systemd/fleet-metrics-export.service.d/product-slo.conf"
+organs="$repo_root/config/fleet-organs.json"
+intake="$repo_root/config/intake-repos.json"
+selfm="$repo_root/config/self-maintenance-repos.json"
+generate="$repo_root/libexec/fleet-console-pi/generate.py"
+verify="$repo_root/libexec/fleet-console-pi/verify.py"
+
+fail() { echo "FAIL: $*" >&2; exit 1; }
+ok()   { echo "OK: $*"; }
+
+[[ -f "$helper" ]] || fail "missing $helper"
+[[ -f "$rules" ]] || fail "missing $rules"
+[[ -f "$dropin" ]] || fail "missing $dropin"
+[[ -f "$organs" ]] || fail "missing $organs"
+[[ -f "$intake" ]] || fail "missing $intake"
+[[ -f "$selfm" ]] || fail "missing $selfm"
+command -v python3 >/dev/null 2>&1 || fail "python3 required"
+command -v jq >/dev/null 2>&1 || fail "jq required"
+
+scratch="$(mktemp -d -t product-slo-test.XXXXXX)"
+trap 'rm -rf "$scratch"' EXIT INT TERM
+
+# Fixed "now": 2026-09-02T12:00:00Z
+NOW_ISO="2026-09-02T12:00:00Z"
+NOW_TS=1788350400
+
+# =========================================================================
+# (d) product repos = intake minus self-maintenance
+# =========================================================================
+python3 - "$helper" "$intake" "$selfm" <<'PY' || fail "product repo list failed"
+import importlib.util, json, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("ps", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+sys.modules["ps"] = m
+spec.loader.exec_module(m)
+
+repos = m.load_product_repos(Path(sys.argv[2]), Path(sys.argv[3]))
+assert "0509" in repos, repos
+assert "fleet-ops" not in repos, repos
+# Sanity: intake has both; self-maint drops fleet-ops.
+intake = json.loads(Path(sys.argv[2]).read_text())
+enrolled = {r["name"] for r in intake["repos"]}
+assert "0509" in enrolled and "fleet-ops" in enrolled
+print("OK: product repos =", repos)
+PY
+ok "(d) respects intake-repos.json product repo list (fleet-ops excluded)"
+
+# =========================================================================
+# (a)(b)(c) compute_repo_slo: throughput, lead time excludes reverts, rate
+# =========================================================================
+python3 - "$helper" <<'PY' || fail "compute_repo_slo failed"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ps", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+sys.modules["ps"] = m
+spec.loader.exec_module(m)
+
+NOW = 1788350400  # 2026-09-02T12:00:00Z
+DAY = 86400
+
+prs = [
+    # Non-revert, merged 2d ago, issue filed 5d before merge -> lead=5
+    m.MergedPR(number=10, repo="0509", title="feat: landing", head_ref="claim/issue-10",
+               merged_ts=NOW - 2 * DAY, issue_created_ts=NOW - 2 * DAY - 5 * DAY),
+    # Non-revert, merged 3d ago, issue filed 9d before merge -> lead=9
+    m.MergedPR(number=11, repo="0509", title="fix: billing", head_ref="claim/issue-11",
+               merged_ts=NOW - 3 * DAY, issue_created_ts=NOW - 3 * DAY - 9 * DAY),
+    # Revert of #10, merged 1d ago — MUST NOT count in throughput or lead
+    m.MergedPR(number=12, repo="0509", title="Revert \"feat: landing\"", head_ref="revert/10",
+               merged_ts=NOW - 1 * DAY, issue_created_ts=NOW - 1 * DAY - 1 * DAY),
+    # Non-revert outside the 7d window (10d ago) — still in 28d for revert_rate den
+    m.MergedPR(number=13, repo="0509", title="feat: old", head_ref="claim/issue-13",
+               merged_ts=NOW - 10 * DAY, issue_created_ts=NOW - 20 * DAY),
+    # Revert outside week but inside 28d
+    m.MergedPR(number=14, repo="0509", title="Revert \"feat: old\"", head_ref="revert/13",
+               merged_ts=NOW - 9 * DAY, issue_created_ts=None),
+    # Control-plane merge — ignored for 0509 stats
+    m.MergedPR(number=99, repo="fleet-ops", title="fix: exporter", head_ref="claim/issue-99",
+               merged_ts=NOW - 1 * DAY, issue_created_ts=NOW - 2 * DAY),
+    # Non-revert in last 24h
+    m.MergedPR(number=15, repo="0509", title="feat: today", head_ref="claim/issue-15",
+               merged_ts=NOW - 0.5 * DAY, issue_created_ts=NOW - 2 * DAY),
+]
+
+s = m.compute_repo_slo("0509", prs, now_ts=NOW)
+
+# (a) weekly non-revert: #10, #11, #15 (not #12 revert, not #13 outside week)
+assert s.throughput_weekly == 3, f"throughput={s.throughput_weekly}"
+
+# (b) lead time excludes reverts: samples 5 and 9 and (2-0.5? wait #15: merged NOW-0.5d, created NOW-2d -> 1.5d)
+# leads: #10=5, #11=9, #15=1.5 -> median = 5
+assert abs(s.lead_time_days - 5.0) < 1e-9, f"lead={s.lead_time_days} samples={s.lead_samples}"
+assert all(x != 1.0 for x in s.lead_samples), "revert lead must not appear"
+
+# (c) revert_rate over 28d: reverts=#12,#14 (2); merges=all 0509 in 28d = #10..#15 = 6
+assert s.merges_28d == 6, s.merges_28d
+assert s.reverts_28d == 2, s.reverts_28d
+assert abs(s.revert_rate - 2 / 6) < 1e-9, s.revert_rate
+
+# 24h non-revert: only #15
+assert s.merged_24h == 1, s.merged_24h
+
+print("OK: compute_repo_slo a/b/c")
+PY
+ok "(a)(b)(c) throughput / lead-time-excludes-reverts / revert_rate"
+
+# =========================================================================
+# (e) empty window still emits heartbeat + zeros
+# =========================================================================
+# export_prom writes to FLEET_PRODUCT_SLO_OUT (like (f)); without it the
+# default /var/lib/prometheus/node-exporter path is not writable in hosted
+# CI, so the write fails before assertions run (FileNotFoundError, 2026-09-02).
+export FLEET_PRODUCT_SLO_OUT="$scratch/heartbeat.prom"
+python3 - "$helper" <<'PY' || fail "empty heartbeat failed"
+import importlib.util, sys
+from datetime import datetime, timezone
+spec = importlib.util.spec_from_file_location("ps", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+sys.modules["ps"] = m
+spec.loader.exec_module(m)
+
+now = datetime(2026, 9, 2, 12, 0, 0, tzinfo=timezone.utc)
+body = m.export_prom([m.RepoSLO(repo="0509")], now=now)
+assert "fleet_product_slo_last_run_seconds" in body
+assert 'fleet_product_throughput_weekly{repo="0509"} 0' in body
+assert 'fleet_product_lead_time_days{repo="0509"} 0.000000' in body
+assert 'fleet_product_revert_rate{repo="0509"} 0.000000' in body
+assert 'fleet_product_merged_24h{repo="0509"} 0' in body
+print("OK: empty heartbeat")
+PY
+ok "(e) empty window emits heartbeat + zeros"
+
+# =========================================================================
+# (f) main() end-to-end via fixture
+# =========================================================================
+cat >"$scratch/fixture.json" <<'JSON'
+{
+  "repos": ["0509"],
+  "prs": [
+    {
+      "number": 1,
+      "repo": "0509",
+      "title": "feat: a",
+      "head_ref": "claim/1",
+      "merged_ts": 1788264000,
+      "issue_created_ts": 1788004800
+    },
+    {
+      "number": 2,
+      "repo": "0509",
+      "title": "Revert \"feat: a\"",
+      "head_ref": "revert/1",
+      "merged_ts": 1788300000,
+      "issue_created_ts": null
+    },
+    {
+      "number": 3,
+      "repo": "0509",
+      "title": "feat: b",
+      "head_ref": "claim/3",
+      "merged_ts": 1788333600,
+      "issue_created_ts": 1788240000
+    }
+  ]
+}
+JSON
+# merged_ts: 1788264000 = NOW-1d, 1788300000 = NOW-14h, 1788333600 = NOW-4.67h
+# issue leads: #1 = (1788264000-1788004800)/86400 = 3.0d; #3 = (1788333600-1788240000)/86400 = 1.0833d
+
+OUT="$scratch/out.prom"
+FLEET_PRODUCT_SLO_OUT="$OUT" \
+FLEET_PRODUCT_SLO_NOW="$NOW_ISO" \
+FLEET_PRODUCT_SLO_FIXTURE="$scratch/fixture.json" \
+  python3 "$helper" --stdout >"$scratch/stdout.prom"
+[[ -f "$OUT" ]] || fail "main() did not write $OUT"
+grep -q 'fleet_product_throughput_weekly{repo="0509"} 2' "$OUT" \
+  || fail "fixture throughput want 2 (non-reverts #1+#3): $(grep throughput "$OUT")"
+# #1 merged_ts = NOW-1d = exactly DAY_S ago; day_cut = NOW - DAY_S, condition is
+# day_cut < merged <= now so #1 is NOT in 24h. Only #3 counts -> merged_24h=1.
+grep -q 'fleet_product_merged_24h{repo="0509"} 1' "$OUT" \
+  || fail "fixture 24h want 1 (#3 only; #1 is exactly 1d ago): $(grep merged_24h "$OUT")"
+grep -q 'fleet_product_revert_rate{repo="0509"} 0.333333' "$OUT" \
+  || fail "fixture revert_rate want 1/3: $(grep revert_rate "$OUT")"
+grep -q 'fleet_product_slo_last_run_seconds ' "$OUT" \
+  || fail "missing heartbeat"
+# HELP/TYPE once each
+for metric in fleet_product_throughput_weekly fleet_product_lead_time_days \
+              fleet_product_revert_rate fleet_product_merged_24h \
+              fleet_product_slo_last_run_seconds; do
+  help_count=$(grep -c "^# HELP $metric " "$OUT" || true)
+  type_count=$(grep -c "^# TYPE $metric " "$OUT" || true)
+  [[ "$help_count" -eq 1 ]] || fail "$metric HELP count=$help_count"
+  [[ "$type_count" -eq 1 ]] || fail "$metric TYPE count=$type_count"
+done
+# lead median of [3.0, 1.083333...] = average of both sorted mid = (1.0833+3)/2 for even? 
+# statistics.median of 2 values = average. Check roughly.
+python3 - "$OUT" <<'PY' || fail "lead_time parse"
+import sys, re
+text = open(sys.argv[1]).read()
+m = re.search(r'fleet_product_lead_time_days\{repo="0509"\} ([0-9.]+)', text)
+assert m, text
+val = float(m.group(1))
+# samples: 3.0 and (1788333600-1788240000)/86400 = 93600/86400 = 1.083333...
+# median of two = avg = 2.041666...
+assert abs(val - 2.041666666) < 1e-5, val
+print("OK: lead_time", val)
+PY
+ok "(f) main() fixture end-to-end textfile"
+
+# =========================================================================
+# (g) MANIFEST + drop-in + no new timer
+# =========================================================================
+grep -Fxq "lib/fleet-product-slo.py /home/nish/.local/lib/pi-packet/fleet-product-slo.py" "$manifest" \
+  || fail "MANIFEST missing lib/fleet-product-slo.py dest"
+grep -Fxq "systemd/fleet-metrics-export.service.d/product-slo.conf /home/nish/.config/systemd/user/fleet-metrics-export.service.d/product-slo.conf" "$manifest" \
+  || fail "MANIFEST missing product-slo drop-in"
+grep -q "ExecStart=-/bin/bash -c 'exec /usr/bin/python3 /home/nish/.local/lib/pi-packet/fleet-product-slo.py'" "$dropin" \
+  || fail "drop-in must ExecStart=- the helper under ~/.local/lib/pi-packet/"
+[[ ! -f "$repo_root/systemd/fleet-product-slo.timer" ]] \
+  || fail "must not add a new timer; piggyback fleet-metrics-export (accept §5 rejected as new organ)"
+[[ ! -f "$repo_root/systemd/fleet-product-slo.service" ]] \
+  || fail "must not add a new service; piggyback fleet-metrics-export"
+ok "(g) MANIFEST + drop-in wiring; no new timer"
+
+# =========================================================================
+# (h)(i) Rules + organ registry
+# =========================================================================
+grep -q 'alert: FleetProductSloAbsent' "$rules" \
+  || fail "rules missing FleetProductSloAbsent"
+grep -q 'absent(fleet_product_slo_last_run_seconds)' "$rules" \
+  || fail "Absent rule must watch fleet_product_slo_last_run_seconds"
+grep -q 'alert: ProductThroughputStalled' "$rules" \
+  || fail "rules missing ProductThroughputStalled"
+grep -q 'alert: ProductLeadTimeDegrading' "$rules" \
+  || fail "rules missing ProductLeadTimeDegrading"
+grep -q 'alert: ProductRevertRateHigh' "$rules" \
+  || fail "rules missing ProductRevertRateHigh"
+grep -q 'fleet_product_throughput_weekly{repo="0509"}' "$rules" \
+  || fail "ProductThroughputStalled must gate on throughput weekly"
+grep -q 'fleet_product_lead_time_days{repo="0509"} > 14' "$rules" \
+  || fail "ProductLeadTimeDegrading must gate on lead_time > 14"
+grep -q 'fleet_product_revert_rate{repo="0509"} > 0.15' "$rules" \
+  || fail "ProductRevertRateHigh must gate on revert_rate > 0.15"
+
+jq -e '.organs[] | select(.name=="product-slo")
+  | select(.heartbeat_metric=="fleet_product_slo_last_run_seconds")
+  | select(.absent_alert=="FleetProductSloAbsent")' "$organs" >/dev/null \
+  || fail "fleet-organs.json missing product-slo organ"
+ok "(h)(i) rules + organ registry"
+
+# =========================================================================
+# (j) console tile single source of truth
+# =========================================================================
+grep -q 'fleet_product_merged_24h' "$generate" \
+  || fail "generate.py must read fleet_product_merged_24h"
+grep -q 'prometheus:fleet_product_merged_24h' "$generate" \
+  || fail "generate.py shipped tile source must be fleet_product_merged_24h"
+! grep -q 'src = "prometheus:fleet_merged_prs_24h"' "$generate" \
+  || fail "generate.py must not still source shipped_24h from fleet_merged_prs_24h"
+grep -q 'sum(fleet_product_merged_24h)' "$verify" \
+  || fail "verify.py shipped_prom must sum fleet_product_merged_24h"
+ok "(j) console shipped_24h reads fleet_product_merged_24h"
+
+# =========================================================================
+# (k) fleet-ops#3519 per-repo quality metrics + committed ceilings
+# =========================================================================
+export FLEET_PRODUCT_SLO_OUT="$scratch/quality.prom"
+FLEET_PRODUCT_SLO_SESSIONS="$scratch/sessions" \
+python3 - "$helper" "$repo_root/config/quality-ratchet.json" <<'PY' || fail "quality metrics failed"
+import importlib.util, json, os, sys
+from datetime import datetime, timezone
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("ps", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+sys.modules["ps"] = m
+spec.loader.exec_module(m)
+
+# Point sessions at an empty dir so sessions_to_pr_pct == 0 (no host noise).
+m.SESSIONS_DIR = Path(sys.argv[3]) if len(sys.argv) > 3 else Path("/nonexistent-sessions")
+NOW = 1788350400  # 2026-09-02T12:00:00Z
+DAY = 86400
+prs = [
+    # feat merged 2d ago, tied to an issue filed 3d ago (in-week link, NO
+    # defect label) — normal throughput, must NOT count as a defect (#3587).
+    m.MergedPR(number=1, repo="0509", title="feat: a", head_ref="claim/1",
+               merged_ts=NOW - 2 * DAY, issue_created_ts=NOW - 3 * DAY),
+    # revert merged 1d ago (in-week) with no linked issue
+    m.MergedPR(number=2, repo="0509", title="Revert feat: a", head_ref="revert/1",
+               merged_ts=NOW - 1 * DAY, issue_created_ts=None),
+    # old merge, outside week
+    m.MergedPR(number=3, repo="0509", title="feat: old", head_ref="claim/3",
+               merged_ts=NOW - 10 * DAY, issue_created_ts=None),
+    # defect-fix merged 1.5d ago, closes a bug-labeled issue filed 2d ago
+    # (in-week) — a real post-merge defect report, MUST count (#3587).
+    m.MergedPR(number=4, repo="0509", title="fix: billing crash", head_ref="claim/4",
+               merged_ts=NOW - 1.5 * DAY, issue_created_ts=NOW - 2 * DAY,
+               defect_issue_created_ts=NOW - 2 * DAY),
+    # fix merged 1d ago closing an in-week issue with NO defect label — a
+    # pre-existing fix, not a post-merge defect; must NOT count (#3587).
+    m.MergedPR(number=5, repo="0509", title="fix: copy", head_ref="claim/5",
+               merged_ts=NOW - 1 * DAY, issue_created_ts=NOW - 2 * DAY),
+]
+s = m.compute_repo_slo("0509", prs, now_ts=NOW)
+# merges_7d = #1,#2,#4,#5 = 4; reverts_7d = 1 -> 25/100
+assert s.merges_7d == 4, s.merges_7d
+assert abs(s.quality_reverts_per_100 - 25.0) < 1e-9, s.quality_reverts_per_100
+# defects: only #4 closes an in-week defect-labeled issue -> 1/4 = 25/100.
+# #1 (feat, no label) and #5 (fix, no label) are normal throughput, NOT defects.
+assert abs(s.quality_defects_per_100 - 25.0) < 1e-9, s.quality_defects_per_100
+assert s.quality_sessions_to_pr_pct == 0.0, s.quality_sessions_to_pr_pct
+print("OK: compute quality metrics (reverts 25/100, defects 25/100, sessions 0)")
+
+# Direction lock (fleet-ops#3519): sessions_to_pr_pct = 100 * sessions / merges
+# (sessions per 100 merged PRs; high = churning = bad). With 4 in-week session
+# dirs and 4 in-week merges, the metric must be 100.0 — NOT 25.0 (the inverted
+# 100 * merges / sessions shape that previously fired a false ceiling alert).
+sess_root = Path(os.environ.get("FLEET_PRODUCT_SLO_SESSIONS", "/nonexistent-sessions"))
+sess_root.mkdir(parents=True, exist_ok=True)
+m.SESSIONS_DIR = sess_root
+import time as _time
+recent = _time.time()
+for n in (10, 11, 12, 13):
+    d = sess_root / f"pi-issue-0509-{n}"
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / "session.jsonl"
+    p.write_text("{}\n")
+    os.utime(str(p), (recent, recent))
+s2 = m.compute_repo_slo("0509", prs, now_ts=NOW)
+assert s2.sessions_7d == 4, s2.sessions_7d
+assert abs(s2.quality_sessions_to_pr_pct - 100.0) < 1e-9, s2.quality_sessions_to_pr_pct
+print("OK: sessions_to_pr_pct direction = 100 * sessions / merges (100.0 for 4 sessions / 4 merges)")
+
+# Ceilings load from config/quality-ratchet.json.
+ratchet_path = sys.argv[2]
+raw = json.loads(Path(ratchet_path).read_text())
+# module reads candidates; force the config path so the test is hermetic
+m._QUALITY_RATCHET_CANDIDATES = [ratchet_path]
+ceil = m.load_ceilings(["0509", "futurerepo"])
+assert ceil["0509"]["reverts_per_100_merges"] == 4.5, ceil
+assert ceil["0509"]["sessions_to_pr_pct"] == 33.0, ceil
+# _default fallback arms a future repo
+assert ceil["futurerepo"]["post_merge_defects_per_100"] == 40.0, ceil
+print("OK: ceilings loaded from config/quality-ratchet.json (+ _default fallback)")
+
+# Export carries the quality families + ceiling series.
+body = m.export_prom([s], now=m.parse_iso("2026-09-02T12:00:00Z"))
+assert 'fleet_product_quality_reverts_per_100{repo="0509"} 25.000000' in body
+assert 'fleet_product_quality_post_merge_defects_per_100{repo="0509"} 25.000000' in body
+assert 'fleet_product_quality_sessions_to_pr_pct{repo="0509"} 0.000000' in body
+assert 'fleet_product_quality_ceiling{repo="0509",metric="reverts_per_100_merges"} 4.500000' in body
+assert 'fleet_product_quality_ceiling{repo="0509",metric="sessions_to_pr_pct"} 33.000000' in body
+assert 'fleet_product_quality_ceiling{repo="0509",metric="post_merge_defects_per_100"} 40.000000' in body
+print("OK: export carries quality gauges + ceilings")
+PY
+ok "(k) per-repo quality metrics + committed ceilings"
+
+# =========================================================================
+# (l) fleet-ops#3532 --repo-check: arm-gate verdict vs committed ceiling
+# =========================================================================
+cat >"$scratch/ratchet-3532.json" <<'JSON'
+{
+  "ceilings": {
+    "_default": {"reverts_per_100_merges": 10.0, "red_on_main_minutes": 360.0},
+    "calm": {"reverts_per_100_merges": 60.0, "red_on_main_minutes": 360.0}
+  }
+}
+JSON
+cat >"$scratch/repo-check-fixture.json" <<'JSON'
+{
+  "repos": ["0509", "calm"],
+  "prs": [
+    {"number": 1, "repo": "0509", "title": "feat: a", "head_ref": "claim/1",
+     "merged_ts": 1788300000, "issue_created_ts": null},
+    {"number": 2, "repo": "0509", "title": "Revert feat: a", "head_ref": "revert/1",
+     "merged_ts": 1788326400, "issue_created_ts": null},
+    {"number": 3, "repo": "calm", "title": "feat: x", "head_ref": "claim/3",
+     "merged_ts": 1788330000, "issue_created_ts": null},
+    {"number": 4, "repo": "calm", "title": "feat: y", "head_ref": "claim/4",
+     "merged_ts": 1788340000, "issue_created_ts": null}
+  ]
+}
+JSON
+# 0509: merges_7d=2, reverts_7d=1 -> 50/100 vs _default ceiling 10 -> breach.
+FLEET_PRODUCT_SLO_FIXTURE="$scratch/repo-check-fixture.json" \
+FLEET_PRODUCT_SLO_NOW="$NOW_ISO" \
+FLEET_QUALITY_RATCHET_JSON="$scratch/ratchet-3532.json" \
+FLEET_PRODUCT_SLO_SESSIONS="$scratch/sessions" \
+  python3 "$helper" --repo-check 0509 >"$scratch/v0509.json" \
+  || fail "--repo-check 0509 exited nonzero"
+jq -e '.ok == false
+  and .breached == ["reverts_per_100_merges"]
+  and .measured.reverts_per_100_merges == 50
+  and .ceiling.reverts_per_100_merges == 10
+  and .ceiling.red_on_main_minutes == 360
+  and .merges_7d == 2
+  and (.unmeasured | index("red_on_main_minutes") != null)' \
+  "$scratch/v0509.json" >/dev/null \
+  || fail "--repo-check 0509 verdict wrong: $(cat "$scratch/v0509.json")"
+
+# calm: merges_7d=2, reverts=0 -> 0/100 vs ceiling 60 -> arms.
+FLEET_PRODUCT_SLO_FIXTURE="$scratch/repo-check-fixture.json" \
+FLEET_PRODUCT_SLO_NOW="$NOW_ISO" \
+FLEET_QUALITY_RATCHET_JSON="$scratch/ratchet-3532.json" \
+FLEET_PRODUCT_SLO_SESSIONS="$scratch/sessions" \
+  python3 "$helper" --repo-check calm >"$scratch/vcalm.json" \
+  || fail "--repo-check calm exited nonzero"
+jq -e '.ok == true and .breached == []
+  and .measured.reverts_per_100_merges == 0
+  and .ceiling.reverts_per_100_merges == 60
+  and .merges_7d == 2' "$scratch/vcalm.json" >/dev/null \
+  || fail "--repo-check calm verdict wrong: $(cat "$scratch/vcalm.json")"
+
+# Unenrolled repo: no merges and the _default ceiling row -> arms.
+FLEET_PRODUCT_SLO_FIXTURE="$scratch/repo-check-fixture.json" \
+FLEET_PRODUCT_SLO_NOW="$NOW_ISO" \
+FLEET_QUALITY_RATCHET_JSON="$scratch/ratchet-3532.json" \
+FLEET_PRODUCT_SLO_SESSIONS="$scratch/sessions" \
+  python3 "$helper" --repo-check futurerepo >"$scratch/vfuture.json" \
+  || fail "--repo-check futurerepo exited nonzero"
+jq -e '.ok == true and .breached == [] and .merges_7d == 0
+  and .ceiling.reverts_per_100_merges == 10' \
+  "$scratch/vfuture.json" >/dev/null \
+  || fail "--repo-check futurerepo verdict wrong: $(cat "$scratch/vfuture.json")"
+
+# Measurement failure (no gh) -> exit 1, no verdict on stdout: the workflow
+# step reads that as fail-open.
+if FLEET_PRODUCT_SLO_GH="$scratch/no-such-gh" \
+   FLEET_QUALITY_RATCHET_JSON="$scratch/ratchet-3532.json" \
+   FLEET_PRODUCT_SLO_NOW="$NOW_ISO" \
+   python3 "$helper" --repo-check 0509 >"$scratch/vfail.json" 2>/dev/null; then
+  fail "--repo-check with no gh must exit nonzero"
+fi
+[[ ! -s "$scratch/vfail.json" ]] \
+  || fail "--repo-check failure must not print a verdict"
+
+# The workflow gate shape: fetch pinned lib + ceiling, run --repo-check,
+# refuse to arm on breach.
+arm_wf="$repo_root/.github/workflows/reusable-auto-merge-arm.yml"
+grep -q 'id: quality' "$arm_wf" \
+  || fail "reusable-auto-merge-arm.yml must define the quality step"
+grep -q -- '--repo-check' "$arm_wf" \
+  || fail "reusable-auto-merge-arm.yml must call --repo-check"
+grep -q 'config/quality-ratchet.json' "$arm_wf" \
+  || fail "reusable-auto-merge-arm.yml must read the committed ceiling"
+grep -q 'stop-the-line: quality ceiling breached' "$arm_wf" \
+  || fail "reusable-auto-merge-arm.yml must print the stop-the-line verdict"
+grep -q "steps.quality.outputs.breached == 'false'" "$arm_wf" \
+  || fail "Arm auto-merge must gate on steps.quality.outputs.breached"
+ok "(l) --repo-check verdict + arm-gate wiring (fleet-ops#3532)"
+
+# =========================================================================
+# (m) fleet-ops#4039: LabelConnection retry — merged_24h survives a GitHub
+# GraphQL gateway error on the nested labels subquery. A mock gh returns the
+# LabelConnection schema error when the query carries `labels(first:`, and
+# valid merged-PR data (no labels) when it does not. The exporter must retry
+# without labels and still return PRs (so merged_24h keeps flowing); only the
+# defect_issue_created_ts quality field degrades to None.
+# =========================================================================
+mock_gh="$scratch/gh-labelconnection"
+cat >"$mock_gh" <<'PY'
+#!/usr/bin/env python3
+import json, sys
+payload = json.load(sys.stdin)
+query = payload.get("query", "")
+# Page 1 with labels -> LabelConnection schema error (the GitHub gateway bug).
+# Any query without the labels subquery -> valid merged-PR data.
+if "labels(first: 20)" in query:
+    print(json.dumps({"errors": [{"message": "Field 'name' doesn't exist on type 'LabelConnection'"}]}))
+    sys.exit(0)
+# Valid response: one non-revert merge in the last 24h, one revert, with
+# closing-issue references but NO labels (the stripped-query shape).
+now = 1788350400  # 2026-09-02T12:00:00Z (matches NOW_ISO)
+day = 86400
+nodes = [
+    {
+        "number": 21,
+        "title": "feat: shipped today",
+        "headRefName": "claim/issue-21",
+        "mergedAt": "2026-09-02T08:00:00Z",  # ~4h ago, inside 24h
+        "repository": {"nameWithOwner": "Nishfleet/0509"},
+        "closingIssuesReferences": {"nodes": [
+            {"number": 20, "createdAt": "2026-09-01T08:00:00Z"}
+        ]},
+    },
+    {
+        "number": 22,
+        "title": "Revert \"feat: shipped today\"",
+        "headRefName": "revert/21",
+        "mergedAt": "2026-09-02T09:00:00Z",  # ~3h ago, inside 24h, revert
+        "repository": {"nameWithOwner": "Nishfleet/0509"},
+        "closingIssuesReferences": {"nodes": []},
+    },
+]
+print(json.dumps({"data": {"search": {
+    "pageInfo": {"hasNextPage": False, "endCursor": None},
+    "nodes": nodes,
+}}}))
+PY
+chmod +x "$mock_gh"
+
+CACHE_4039="$scratch/product-slo-cache-4039.json"
+FLEET_PRODUCT_SLO_GH="$mock_gh" \
+FLEET_PRODUCT_SLO_CACHE="$CACHE_4039" \
+FLEET_PRODUCT_SLO_NOW="$NOW_ISO" \
+FLEET_PRODUCT_SLO_OUT="$scratch/out-4039.prom" \
+  python3 - "$helper" <<'PY' || fail "LabelConnection retry failed"
+import importlib.util, json, os, sys
+from datetime import datetime, timezone
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("fps", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+sys.modules["fps"] = m
+spec.loader.exec_module(m)
+
+now = m.parse_iso("2026-09-02T12:00:00Z")
+repos = ["0509"]
+prs = m.load_merged_prs(now, repos)
+assert prs is not None, "load_merged_prs returned None — LabelConnection retry did not fire"
+assert len(prs) == 2, f"expected 2 PRs, got {len(prs)}"
+# merged_24h: only the non-revert (#21) counts; the revert (#22) is excluded.
+slo = m.compute_repo_slo("0509", prs, now_ts=now.timestamp())
+assert slo.merged_24h == 1, f"merged_24h want 1, got {slo.merged_24h}"
+# defect_issue_created_ts degrades to None (labels stripped) — the quality
+# metric yields 0, but the delivery tile source is intact.
+for p in prs:
+    assert p.defect_issue_created_ts is None, "labels stripped path must not set defect_issue_created_ts"
+assert slo.quality_defects_per_100 == 0.0, "defects must be 0 without labels"
+# Cache was written from the stripped-query fetch.
+cache = json.loads(Path(os.environ["FLEET_PRODUCT_SLO_CACHE"]).read_text())
+assert "prs" in cache and len(cache["prs"]) == 2, "cache must hold the 2 PRs"
+print("OK: LabelConnection retry — merged_24h=1 preserved, defect metric degraded to 0")
+PY
+ok "(m) LabelConnection retry keeps merged_24h flowing (fleet-ops#4039)"
+
+# =========================================================================
+# (n) fleet-ops#4073: the LabelConnection schema error also surfaces as a
+# non-2xx HTTP status, so `gh api graphql` exits rc!=0 with the error on
+# stderr (observed in production at 2026-09-06T23:15Z: `gh graphql rc=1:
+# gh: Field 'name' doesn't exist on type 'LabelConnection'`). The #4102
+# payload-error retry (test m) checks payload.get("errors") and never fires
+# on the rc!=0 path — _gh_graphql returned None and stale cache was served,
+# so merged_24h drifted and ConsoleLying re-fired. This test's mock gh exits
+# rc=1 with the LabelConnection error on STDERR when the query carries
+# `labels(first:`, and returns valid merged-PR data (no labels) when it does
+# not. The exporter must retry without labels and still return PRs.
+# =========================================================================
+mock_gh_rc="$scratch/gh-labelconnection-rc"
+cat >"$mock_gh_rc" <<'PY'
+#!/usr/bin/env python3
+import json, sys
+payload = json.load(sys.stdin)
+query = payload.get("query", "")
+# Page 1 with labels -> rc=1 + LabelConnection on stderr (the production
+# gateway-bug shape that bypassed #4102's payload-error retry).
+if "labels(first: 20)" in query:
+    sys.stderr.write(
+        "gh: Field 'name' doesn't exist on type 'LabelConnection'\n"
+    )
+    sys.exit(1)
+# Valid response once labels are stripped: one non-revert merge in 24h.
+now = 1788350400  # 2026-09-02T12:00:00Z (matches NOW_ISO)
+nodes = [
+    {
+        "number": 31,
+        "title": "feat: shipped today (rc-variant)",
+        "headRefName": "claim/issue-31",
+        "mergedAt": "2026-09-02T08:00:00Z",
+        "repository": {"nameWithOwner": "Nishfleet/0509"},
+        "closingIssuesReferences": {"nodes": [
+            {"number": 30, "createdAt": "2026-09-01T08:00:00Z"}
+        ]},
+    },
+]
+print(json.dumps({"data": {"search": {
+    "pageInfo": {"hasNextPage": False, "endCursor": None},
+    "nodes": nodes,
+}}}))
+PY
+chmod +x "$mock_gh_rc"
+
+CACHE_4073="$scratch/product-slo-cache-4073.json"
+FLEET_PRODUCT_SLO_GH="$mock_gh_rc" \
+FLEET_PRODUCT_SLO_CACHE="$CACHE_4073" \
+FLEET_PRODUCT_SLO_NOW="$NOW_ISO" \
+FLEET_PRODUCT_SLO_OUT="$scratch/out-4073.prom" \
+  python3 - "$helper" <<'PY' || fail "LabelConnection rc!=0 retry failed"
+import importlib.util, json, os, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("fps", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+sys.modules["fps"] = m
+spec.loader.exec_module(m)
+
+now = m.parse_iso("2026-09-02T12:00:00Z")
+repos = ["0509"]
+prs = m.load_merged_prs(now, repos)
+assert prs is not None, "load_merged_prs returned None — rc!=0 LabelConnection retry did not fire"
+assert len(prs) == 1, f"expected 1 PR, got {len(prs)}"
+# merged_24h: the one non-revert merge counts.
+slo = m.compute_repo_slo("0509", prs, now_ts=now.timestamp())
+assert slo.merged_24h == 1, f"merged_24h want 1, got {slo.merged_24h}"
+# defect_issue_created_ts degrades to None (labels stripped).
+for p in prs:
+    assert p.defect_issue_created_ts is None, "labels stripped path must not set defect_issue_created_ts"
+cache = json.loads(Path(os.environ["FLEET_PRODUCT_SLO_CACHE"]).read_text())
+assert "prs" in cache and len(cache["prs"]) == 1, "cache must hold the 1 PR"
+print("OK: LabelConnection rc!=0 retry — merged_24h=1 preserved, defect metric degraded to 0")
+PY
+ok "(n) LabelConnection rc!=0/stderr retry keeps merged_24h flowing (fleet-ops#4073)"
+
+# =========================================================================
+# promtool (optional)
+# =========================================================================
+if command -v promtool >/dev/null 2>&1; then
+  promtool check rules "$rules" >/dev/null \
+    || fail "promtool check rules failed"
+  ok "promtool check rules"
+else
+  echo "SKIP: promtool not on PATH"
+fi
+
+echo "OK: fleet-product-slo: throughput, lead-time-excludes-reverts, revert-rate, intake list, MANIFEST, rules, organ, console source"

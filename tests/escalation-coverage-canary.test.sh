@@ -137,8 +137,38 @@ export AGENT_STATE="$state"
 export FLEET_ESCALATION_CANARY_DELIVERY="$state/.escalation-delivery"
 export FLEET_ESCALATION_CANARY_REDCI="$state/.red-ci-ownerless-guard"
 export FLEET_ESCALATION_CANARY_BRIDGE="$state/.red-check-senior-auditor-bridge"
+# Block 13 (portable standards): standards-drift makes live gh API calls to
+# enrolled repos. Off by default in the test; a dedicated drill turns it on
+# with a fake gh.
+export FLEET_ESCALATION_CANARY_SKIP_STANDARDS_DRIFT=1
 export LOADED_UNITS="$loaded"
 export ON_FAILURE_DIR="$onf_dir"
+
+# Block 13 (fleet-ops#4266): detached-work lint reads the audit trail.
+# Hermetic default: a stub ausearch with an EMPTY fixture, so every
+# scenario is deterministic even when ausearch is installed on the runner
+# (the block-14 scenarios 2e/2f/2g override AUSEARCH_FIXTURE per run).
+printf '' >"$scratch/.ausearch-default.txt"
+cat >"$scratch/ausearch-stub" <<'SH'
+#!/usr/bin/env bash
+cat "$AUSEARCH_FIXTURE" 2>/dev/null || true
+SH
+chmod +x "$scratch/ausearch-stub"
+export AUSEARCH="$scratch/ausearch-stub"
+export AUSEARCH_FIXTURE="$scratch/.ausearch-default.txt"
+
+# Block 13 rule-loaded guard (fleet-ops#4266): the canary only trusts an
+# empty ausearch result when the fleet-unit-run rule is confirmed loaded in
+# the running auditd (auditctl -l). Hermetic default: a stub auditctl that
+# reports the rule loaded, so the block-14 scenarios exercise the ausearch
+# verdict path deterministically (the rule-loaded PENDING path is covered by
+# scenario 2h).
+cat >"$scratch/auditctl-stub" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "-w /usr/bin/systemd-run -p x -F auid=1000 -k fleet-unit-run"
+SH
+chmod +x "$scratch/auditctl-stub"
+export AUDITCTL="$scratch/auditctl-stub"
 
 # Block 10 (fleet-ops#388): backup-staleness state for the fake systemctl.
 # Block 11 (fleet-ops#529): vault-conflict-resolver state uses the same dir.
@@ -512,19 +542,116 @@ grep -q 'unit=naked.timer' "$triage" || fail "scenario2c: triage must name naked
 ok "scenario2c: missing-escalation timer unit named and canary exits 1 (fleet-ops#618)"
 
 # ============================================================================
-# Scenario 2d (fleet-ops#618): source lock. A future edit that lists only
-# --type=service (or greps only .service$) reopens the hole. The canary
-# must request service,path,timer in one list-units call.
+# Scenario 2d (fleet-ops#618 + fleet-ops#4266): source lock. A future edit
+# that lists only --type=service (or greps only .service$) reopens the hole.
+# The canary must request service,path,timer,scope in one list-units call
+# (#4266 closed the `systemd-run --user --scope` escalation bypass).
 # ============================================================================
 canary_src="$repo_root/bin/fleet-escalation-canary"
-grep -F -- '--type=service,path,timer' "$canary_src" >/dev/null \
-  || fail "scenario2d: canary must list-units --type=service,path,timer (fleet-ops#618)"
-if grep -n -- '--type=service' "$canary_src" | grep -v -- 'service,path,timer' >/dev/null; then
+grep -F -- '--type=service,path,timer,scope' "$canary_src" >/dev/null \
+  || fail "scenario2d: canary must list-units --type=service,path,timer,scope (fleet-ops#618/#4266)"
+if grep -n -- '--type=service' "$canary_src" | grep -v -- 'service,path,timer,scope' >/dev/null; then
   fail "scenario2d: canary still has a service-only --type= list-units (fleet-ops#618)"
 fi
 grep -E "grep '\\\\.service\\\$'" "$canary_src" >/dev/null \
   && fail "scenario2d: canary still filters loaded units to .service only (fleet-ops#618)" || true
-ok "scenario2d: canary source enumerates service, path, and timer (fleet-ops#618 class lock)"
+ok "scenario2d: canary source enumerates service, path, timer, and scope (fleet-ops#618/#4266 class lock)"
+# ============================================================================
+# Scenario 2e (fleet-ops#4266): block 14 detached-work lint — empty audit
+# trail is clean (exit 0, no DETACHED-RAW-UNIT).
+# ============================================================================
+reset_state
+cover "good-worker.service"
+exclude "unit-escalation@foo.service"
+sanctioned_wrapper "pi-issue-run"
+write_intake "0509"
+write_claim_repos "Nishfleet/0509"
+
+aufile="$scratch/ausearch-empty.txt"
+: >"$aufile"
+cat >"$scratch/ausearch-stub" <<'SH'
+#!/usr/bin/env bash
+cat "$AUSEARCH_FIXTURE" 2>/dev/null || true
+SH
+chmod +x "$scratch/ausearch-stub"
+AUSEARCH="$scratch/ausearch-stub" AUSEARCH_FIXTURE="$aufile" run_canary
+
+[[ "$env_rc" == 0 ]] || fail "scenario2e: empty audit trail must exit 0, got $env_rc ($env_out)"
+! grep -q 'DETACHED-RAW-UNIT' "$triage" || fail "scenario2e: empty trail must not trip the raw-unit lint"
+ok "scenario2e: empty systemd-run audit trail is clean (fleet-ops#4266)"
+
+# ============================================================================
+# Scenario 2f (fleet-ops#4266): a RAW systemd-run transient in the last 24h
+# (no --property=OnFailure in the execve args) is a VIOLATION naming the
+# unit. This is the exact silent-death class #4266 exists to catch.
+# ============================================================================
+reset_state
+cover "good-worker.service"
+exclude "unit-escalation@foo.service"
+sanctioned_wrapper "pi-issue-run"
+write_intake "0509"
+write_claim_repos "Nishfleet/0509"
+
+aufile="$scratch/ausearch-raw.txt"
+cat >"$aufile" <<'SH'
+type=EXECVE msg=audit(1776000000.123:456): argc=6 a0="systemd-run" a1="--user" a2="--collect" a3="--unit=raw-scoop" a4="-- /bin/sleep 1"
+SH
+AUSEARCH="$scratch/ausearch-stub" AUSEARCH_FIXTURE="$aufile" run_canary
+
+[[ "$env_rc" == 1 ]] || fail "scenario2f: raw systemd-run must exit 1, got $env_rc ($env_out)"
+grep -q 'DETACHED-RAW-UNIT' "$triage" || fail "scenario2f: triage missing DETACHED-RAW-UNIT"
+grep -q 'unit=raw-scoop' "$triage" || fail "scenario2f: triage must name raw-scoop"
+ok "scenario2f: raw systemd-run transient named and canary exits 1 (fleet-ops#4266)"
+
+# ============================================================================
+# Scenario 2g (fleet-ops#4266): a pi-systemd-run execve (carries the
+# OnFailure property) is clean — the lint must not flag sanctioned launches.
+# ============================================================================
+reset_state
+cover "good-worker.service"
+exclude "unit-escalation@foo.service"
+sanctioned_wrapper "pi-issue-run"
+write_intake "0509"
+write_claim_repos "Nishfleet/0509"
+
+aufile="$scratch/ausearch-covered.txt"
+cat >"$aufile" <<'SH'
+type=EXECVE msg=audit(1776000000.124:457): argc=8 a0="systemd-run" a1="--user" a2="--unit=good-scoop" a3="--property=OnFailure=unit-escalation@good-scoop.service.service" a4="-- /bin/sleep 1"
+SH
+AUSEARCH="$scratch/ausearch-stub" AUSEARCH_FIXTURE="$aufile" run_canary
+
+[[ "$env_rc" == 0 ]] || fail "scenario2g: pi-systemd-run execve must exit 0, got $env_rc ($env_out)"
+! grep -q 'DETACHED-RAW-UNIT' "$triage" || fail "scenario2g: covered execve must not trip the lint"
+ok "scenario2g: pi-systemd-run execve (with OnFailure) is clean (fleet-ops#4266)"
+
+# ============================================================================
+# Scenario 2h (fleet-ops#4266): auditd present but the fleet-unit-run rule
+# NOT loaded in the running daemon -> PENDING (loud, not fail). An empty
+# ausearch result must not be trusted as "clean" when the rule that would
+# produce it is absent — that is the false-clean gap.
+# ============================================================================
+reset_state
+cover "good-worker.service"
+exclude "unit-escalation@foo.service"
+sanctioned_wrapper "pi-issue-run"
+write_intake "0509"
+write_claim_repos "Nishfleet/0509"
+
+cat >"$scratch/auditctl-empty" <<'SH'
+#!/usr/bin/env bash
+# no fleet-unit-run rule loaded
+printf '%s\n' "-w /usr/bin/systemctl -p x -F auid=1000 -k fleet-unit-stop"
+SH
+chmod +x "$scratch/auditctl-empty"
+
+AUDITCTL="$scratch/auditctl-empty" run_canary
+
+[[ "$env_rc" == 0 ]] || fail "scenario2h: rule-not-loaded must exit 0 (PENDING, not fail), got $env_rc ($env_out)"
+grep -q 'ESCALATION-CANARY-PENDING' "$triage" || fail "scenario2h: triage missing PENDING for rule-not-loaded"
+! grep -q 'DETACHED-RAW-UNIT' "$triage" || fail "scenario2h: rule-not-loaded must not trip the raw-unit lint"
+ok "scenario2h: fleet-unit-run rule not loaded -> PENDING, not false-clean (fleet-ops#4266)"
+
+
 
 # ============================================================================
 # Scenario 3: VPS plane — a bin script runs pi --print --provider unwrapped
@@ -1148,6 +1275,168 @@ ok "scenario27: skip flag suppresses block 12"
 
 ok "escalation-coverage-canary: block 12 free-tier privacy guard (fleet-ops#520) covered"
 
+# ============================================================================
+# Block 13 (portable standards, P11-B): standards-drift prevention
+# ============================================================================
+# A fake gh that answers the two calls the standards-drift block makes:
+#   gh issue list -R <repo> --state open ...  -> [] (no open issues)
+#   gh api repos/<repo>/contents/.github/workflows/<file> --jq '.name'
+#     -> the filename when the workflow is in the "present" set, else exit 1
+#     (a 404 — the gate is missing).
+# The block files drift issues via $ISSUE_FILE (fleet-issue-file), which we
+# mock with a fake that records the call and prints a URL.
+gh_fake="$scratch/gh"
+cat >"$gh_fake" <<'FAKEGH'
+#!/usr/bin/env bash
+# args: issue list -R <repo> --state open --limit 200 --json number,body,title
+if [[ "$1" == "issue" && "$2" == "list" ]]; then
+  echo '[]'
+  exit 0
+fi
+# args: api repos/<repo>/contents/.github/workflows/<file> --jq .name
+if [[ "$1" == "api" ]]; then
+  path="$2"
+  file="${path##*/}"
+  if [[ -f "$SD_PRESENT_DIR/$file" ]]; then
+    echo "$file"
+    exit 0
+  fi
+  echo "not found" >&2
+  exit 1
+fi
+echo "unhandled gh: $*" >&2
+exit 1
+FAKEGH
+chmod +x "$gh_fake"
+
+issue_file_fake="$scratch/issue-file"
+cat >"$issue_file_fake" <<'FAKEIF'
+#!/usr/bin/env bash
+# args: file -R <repo> --title <title> --body <body>
+# Record the title so the test can assert the drift issue was filed.
+echo "$*" >>"$SD_FILED_LOG"
+echo "https://github.com/Nishfleet/fleet-ops/issues/99999"
+exit 0
+FAKEIF
+chmod +x "$issue_file_fake"
+
+# Scenario 28: skip flag suppresses block 13
+reset_state
+cover "fleet-heartbeat.service"
+cover "pi-issue@.service"
+sanctioned_wrapper pi-issue-run
+wire_delivery
+write_covered_vault
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_DELIVERY"
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_REDCI"
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_BRIDGE"
+# Skip flag is already exported in common env; assert it suppresses block 13.
+
+run_canary
+
+[[ "$env_rc" == 0 ]] || fail "scenario28: skip flag must keep exit 0, got $env_rc ($env_out)"
+grep -q 'SKIP (FLEET_ESCALATION_CANARY_SKIP_STANDARDS_DRIFT=1)' <<<"$env_out" \
+  || fail "scenario28: canary must log the SKIP"
+! grep -q 'standards drift' "$triage" || fail "scenario28: skip flag must suppress standards drift"
+ok "scenario28: skip flag suppresses block 13"
+
+# Scenario 29: a repo missing a standard gate -> VIOLATION naming it
+reset_state
+cover "fleet-heartbeat.service"
+cover "pi-issue@.service"
+sanctioned_wrapper pi-issue-run
+wire_delivery
+write_covered_vault
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_DELIVERY"
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_REDCI"
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_BRIDGE"
+write_intake "0509" "drift-repo"
+# drift-repo is in claim_repos so block 7 (#124) does not add a second
+# violation — the only violation is the standards drift.
+write_claim_repos "Nishfleet/drift-repo"
+# Present set: only secret-scan.yml exists on drift-repo; the rest are missing.
+sd_present="$scratch/sd-present"
+mkdir -p "$sd_present"
+touch "$sd_present/secret-scan.yml"
+export SD_PRESENT_DIR="$sd_present"
+export GH="$gh_fake"
+unset FLEET_ESCALATION_CANARY_SKIP_STANDARDS_DRIFT
+
+run_canary
+
+unset SD_PRESENT_DIR
+unset GH
+[[ "$env_rc" == 1 ]] || fail "scenario29: must exit 1 (drift), got $env_rc ($env_out)"
+grep -q 'standards drift: Nishfleet/drift-repo missing standard gate' "$triage" \
+  || fail "scenario29: triage must name the missing gate"
+grep -q 'Nishfleet/drift-repo missing standard gate semgrep.yml' "$triage" \
+  || fail "scenario29: triage must name semgrep.yml specifically"
+! grep -q 'Nishfleet/0509 missing' "$triage" \
+  || fail "scenario29: local-richer 0509 must not be flagged"
+ok "scenario29: missing standard gate -> VIOLATION naming it (local-richer skipped)"
+
+# Scenario 30: auto-file — missing gate files a drift issue via fake issue-file
+reset_state
+cover "fleet-heartbeat.service"
+cover "pi-issue@.service"
+sanctioned_wrapper pi-issue-run
+wire_delivery
+write_covered_vault
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_DELIVERY"
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_REDCI"
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_BRIDGE"
+write_intake "drift-repo"
+write_claim_repos "Nishfleet/drift-repo"
+sd_present="$scratch/sd-present2"
+mkdir -p "$sd_present"
+touch "$sd_present/secret-scan.yml"
+sd_filed="$scratch/sd-filed.log"
+: >"$sd_filed"
+export SD_PRESENT_DIR="$sd_present"
+export SD_FILED_LOG="$sd_filed"
+export GH="$gh_fake"
+export FLEET_ISSUE_FILE="$issue_file_fake"
+export FLEET_STANDARDS_DRIFT_FILE_ISSUES=1
+unset FLEET_ESCALATION_CANARY_SKIP_STANDARDS_DRIFT
+
+run_canary
+
+unset SD_PRESENT_DIR SD_FILED_LOG GH FLEET_ISSUE_FILE FLEET_STANDARDS_DRIFT_FILE_ISSUES
+[[ "$env_rc" == 1 ]] || fail "scenario30: must exit 1 (drift), got $env_rc ($env_out)"
+grep -q 'FILED standards-drift' <<<"$env_out" \
+  || fail "scenario30: canary must log the filed drift issue"
+grep -q 'standards drift: Nishfleet/drift-repo missing semgrep.yml' "$sd_filed" \
+  || fail "scenario30: fake issue-file must have been called for semgrep.yml"
+ok "scenario30: missing gate auto-files a standards-drift issue"
+
+# Scenario 31: all gates present -> OK (no drift)
+reset_state
+cover "fleet-heartbeat.service"
+cover "pi-issue@.service"
+sanctioned_wrapper pi-issue-run
+wire_delivery
+write_covered_vault
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_DELIVERY"
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_REDCI"
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_BRIDGE"
+write_intake "drift-repo"
+write_claim_repos "Nishfleet/drift-repo"
+sd_present="$scratch/sd-present3"
+mkdir -p "$sd_present"
+touch "$sd_present/secret-scan.yml" "$sd_present/semgrep.yml" "$sd_present/review-gate.yml" "$sd_present/auto-enqueue.yml"
+export SD_PRESENT_DIR="$sd_present"
+export GH="$gh_fake"
+unset FLEET_ESCALATION_CANARY_SKIP_STANDARDS_DRIFT
+
+run_canary
+
+unset SD_PRESENT_DIR GH
+[[ "$env_rc" == 0 ]] || fail "scenario31: must exit 0 (no drift), got $env_rc ($env_out)"
+! grep -q 'standards drift' "$triage" || fail "scenario31: no drift must not raise standards drift"
+ok "scenario31: all gates present -> OK (no drift)"
+
+ok "escalation-coverage-canary: block 13 standards-drift prevention (P11-B) covered"
+
 
 # fleet-ops#387: entitled-vs-wired is a sibling heartbeat canary. Invoked from
 # this CI-listed file so hosted runners run it without a workflow edit
@@ -1174,16 +1463,20 @@ bash "$here/fleet-resilience-drill.test.sh"
 # push .github/workflows/**).
 bash "$here/fleet-escalation-completion.test.sh"
 
-# fleet-ops#468/#1610: alert-repair COMPLETION canary (hop clocks + stall
-# ladder + bounded verify timeout so a verify hop cannot hold the chain open
-# indefinitely). Invoked from this CI-listed file so hosted runners run it
-# without a workflow edit (worker tokens cannot push .github/workflows/**).
-bash "$here/fleet-completion-canary.test.sh"
+# fleet-ops#2444: quality-SLO scoreboard recompute-on-tick + >24h staleness
+# guard. Invoked from this CI-listed file so hosted runners run it without a
+# workflow edit (worker tokens cannot push .github/workflows/**).
+bash "$here/quality-slo-staleness.test.sh"
 
 # fleet-ops#536: proven-only Pi extension allowlist. Invoked from this
 # CI-listed file so hosted runners run it without a workflow edit
 # (worker tokens cannot push .github/workflows/**).
 bash "$here/fleet-pi-extensions-canary.test.sh"
+
+# fleet-ops#4382: pin vendor-native safety modes in devin/cursor templates.
+# Invoked from this CI-listed file so hosted runners run it without a
+# workflow edit (worker tokens cannot push .github/workflows/**).
+bash "$here/fleet-provider-no-dangerous-modes.test.sh"
 
 # fleet-ops#634: free-model roster canary. Invoked from this CI-listed file
 # so hosted runners run it without a workflow edit (worker tokens cannot

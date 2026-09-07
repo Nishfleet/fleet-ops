@@ -12,7 +12,9 @@
 #
 # Also locks: ledger line is non-empty, the cross-repo short form is
 # allowed, fully-qualified same-repo is allowed, empty body / no closes
-# is allowed, no dispatcher / no new unit (gate is evaluate-only).
+# is allowed, no dispatcher / no new unit (gate is evaluate-only; the
+# pre-create mode added for fleet-ops#3960 checks only the same-repo
+# short-owner form before gh pr create).
 #
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -139,6 +141,54 @@ set -e
 [[ "$rc" -eq 1 ]] || fail "prose-mention-without-closing must exit 1, got $rc: $out"
 jq -e '.verdict=="REJECT"' <<<"$out" >/dev/null || fail "must REJECT: $out"
 ok "drill REJECT: prose mention without a real closing reference (worker must add 'Closes #N')"
+
+# --- fleet-ops#3960 pre-create mode ----------------------------------------
+# The worker pre-`gh pr create` body gate (wired into
+# bin/fleet-exec-review-canary --body) runs this mode: no live
+# closingIssuesReferences exists yet, so only the same-repo short-owner
+# form is checked. A correct `Closes #N` (or fully-qualified) body must
+# PASS here even though its parsed-closes list is, not-yet, empty.
+pre_create_fixture() {
+  python3 -c 'import json,sys;print(json.dumps({"body":sys.argv[1],"base_repository":"Nishfleet/fleet-ops"}))' "$1"
+}
+
+# --- pre-create REJECTs the same-repo short-owner form (the #3952 bug shape) ---
+set +e
+out=$(pre_create_fixture $'\nCloses fleet-ops#3873\n' | "$gate" pre-create --input - 2>&1)
+rc=$?
+set -e
+[[ "$rc" -eq 1 ]] || fail "pre-create must REJECT Closes fleet-ops#3873, got $rc: $out"
+jq -e '.verdict=="REJECT"' <<<"$out" >/dev/null || fail "pre-create must REJECT: $out"
+jq -e '.bad_references[0].match | test("Closes fleet-ops#3873")' <<<"$out" >/dev/null \
+  || fail "pre-create REJECT must name Closes fleet-ops#3873: $out"
+ok "drill REJECT (pre-create): same-repo short-owner 'Closes fleet-ops#3873' (#3952 shape)"
+
+# --- pre-create PASSes the correct bare form (Closes #N) -------------------
+set +e
+out=$(pre_create_fixture $'\nCloses #3873\n' | "$gate" pre-create --input - 2>&1)
+rc=$?
+set -e
+[[ "$rc" -eq 0 ]] || fail "pre-create must PASS Closes #3873, got $rc: $out"
+jq -e '.verdict=="PASS"' <<<"$out" >/dev/null || fail "pre-create must PASS: $out"
+ok "PASS (pre-create): correct bare 'Closes #3873'"
+
+# --- pre-create PASSes the fully-qualified same-repo form ------------------
+set +e
+out=$(pre_create_fixture $'\nCloses Nishfleet/fleet-ops#3873\n' | "$gate" pre-create --input - 2>&1)
+rc=$?
+set -e
+[[ "$rc" -eq 0 ]] || fail "pre-create must PASS fully-qualified, got $rc: $out"
+jq -e '.verdict=="PASS"' <<<"$out" >/dev/null || fail "pre-create must PASS: $out"
+ok "PASS (pre-create): fully-qualified 'Closes Nishfleet/fleet-ops#3873'"
+
+# --- pre-create PASSes a body with no closing reference --------------------
+set +e
+out=$(pre_create_fixture $'## Summary\njust prose\n' | "$gate" pre-create --input - 2>&1)
+rc=$?
+set -e
+[[ "$rc" -eq 0 ]] || fail "pre-create must PASS no-ref body, got $rc: $out"
+jq -e '.verdict=="PASS"' <<<"$out" >/dev/null || fail "pre-create must PASS: $out"
+ok "PASS (pre-create): no closing reference"
 
 # --- senior conference references the gate verbatim -----------------------
 grep -F -q 'fleet-same-repo-closes-gate evaluate' "$repo_root/prompts/senior-conference.md" \

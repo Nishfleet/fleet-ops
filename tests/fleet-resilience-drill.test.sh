@@ -72,6 +72,16 @@ grep -q '^Restart=no$' "$svc" || fail "service: Restart=no (timer is the retry)"
 grep -q '^TimeoutStartSec=3min$' "$svc" || fail "service: TimeoutStartSec=3min"
 ok "service: oneshot, bounded, no restart, execs drill"
 
+# 1b. Metric-export default (2026-08-28 ResilienceDrillAbsent class fix,
+#     fleet-ops#1536): the drill's prom default MUST be the node-exporter
+#     textfile directory, the one Prometheus scrapes. A default pointing at
+#     $AGENT_STATE went unseen for a week of green runs (the incident), so
+#     a run without the env override (manual, or a future unit rewrite that
+#     drops the env line) must STILL land where the alert can see it.
+grep -q '^PROM_FILE="${FLEET_RES_DRILL_PROM_FILE:-/var/lib/prometheus/node-exporter/fleet-resilience-drill.prom}"$' "$drill" \
+  || fail "drill default prom path must be the node-exporter textfile dir (fleet-ops#1536)"
+ok "drill: default prom path is the scraped node-exporter textfile dir"
+
 # 2. Timer: daily cycle, persistent, named reason in comments, timers.target.
 grep -q '^OnCalendar=\*-\*-\* 05:47:00$' "$tmr" || fail "timer: OnCalendar must be daily 05:47"
 grep -q '^Persistent=true$' "$tmr" || fail "timer: Persistent=true"
@@ -205,6 +215,56 @@ printf '%s\n' "$out" | grep -qi 'skip' || fail "unset URL must log skip, got: $o
 ok "keystone-hc-ping skips when URL unset (exit 0)"
 
 # ============================================================================
+# detached mode (fleet-ops#4266): /start + success + /fail with the same
+# run id riding as the healthchecks.io `rid` parameter.
+# ============================================================================
+printf 'HC_URL_DETACHED=https://hc-ping.example/detached-base-uuid\n' >>"$envfile"
+
+# 1. start ping -> BASE/start?rid=<runid>
+: >"$CURL_LOG"
+out="$(PI_DEADMAN_DISPATCH=11111111-2222-3333-4444-555555555555 \
+    "$ping" detached start 2>&1)" || fail "detached start must exit 0"grep -q 'https://hc-ping.example/detached-base-uuid/start?rid=11111111-2222-3333-4444-555555555555' "$CURL_LOG" \
+  || fail "detached start must build BASE/start?rid=<runid>: $(cat "$CURL_LOG")"
+printf '%s\n' "$out" | grep -qi 'ping ok' || fail "detached start must log ok, got: $out"
+ok "detached start -> BASE/start?rid=<runid>"
+
+# 2. fail ping -> BASE/fail?rid=<runid>
+: >"$CURL_LOG"
+PI_DEADMAN_DISPATCH=11111111-2222-3333-4444-555555555555 "$ping" detached fail >/dev/null 2>&1 \
+  || fail "detached fail must exit 0"
+grep -q 'fail?rid=11111111-2222-3333-4444-555555555555' "$CURL_LOG" \
+  || fail "detached fail must build BASE/fail?rid=<runid>: $(cat "$CURL_LOG")"
+ok "detached fail -> BASE/fail?rid=<runid>"
+
+# 3. success ping -> BASE?rid=<runid> (no suffix: healthchecks semantics)
+: >"$CURL_LOG"
+PI_DEADMAN_DISPATCH=11111111-2222-3333-4444-555555555555 "$ping" detached success >/dev/null 2>&1 \
+  || fail "detached success must exit 0"
+grep -q 'detached-base-uuid?rid=11111111-2222-3333-4444-555555555555' "$CURL_LOG" \
+  || fail "detached success must build BASE?rid=<runid>: $(cat "$CURL_LOG")"
+ok "detached success -> BASE?rid=<runid> (same rid as start)"
+
+# 4. no run id -> silent skip, no curl
+: >"$CURL_LOG"
+out="$("$ping" detached start 2>&1)" || fail "detached without run id must exit 0"
+grep -q . "$CURL_LOG" && fail "detached without run id must not curl"
+printf '%s\n' "$out" | grep -qi 'PI_DEADMAN_DISPATCH unset' || fail "missing run id must log skip, got: $out"
+ok "detached without run id skips (PI_DEADMAN_DISPATCH unset)"
+
+# 5. curl failure (e.g. 404 check deleted) still exits 0 — best-effort
+cat >"$scratch/curl-fail" <<'CURL'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${CURL_LOG:-/dev/null}"
+exit 1
+CURL
+chmod +x "$scratch/curl-fail"
+: >"$CURL_LOG"
+out="$(CURL="$scratch/curl-fail" PI_DEADMAN_DISPATCH=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee \
+    "$ping" detached start 2>&1)" || fail "detached with failing curl must exit 0"
+printf '%s\n' "$out" | grep -qi 'best-effort' || fail "curl failure must log best-effort, got: $out"
+ok "detached ping failure is best-effort (exit 0)"
+
+# ============================================================================
 # Drill behavioural tests
 # ============================================================================
 export HOME="$scratch/home"
@@ -318,6 +378,10 @@ export SYSTEMD_RUN="$systemd_run_fake"
 export SS="$ss_fake"
 export FLEET_OPS_REPO="$repo"
 export AGENT_STATE="$state"
+# The drill's default prom path is the node-exporter textfile dir (the
+# 2026-08-28 ResilienceDrillAbsent class fix); tests pin the override to
+# scratch so a test run never writes to the live scraped directory.
+export FLEET_RES_DRILL_PROM_FILE="$state/fleet-resilience-drill/resilience-drill.prom"
 export FLEET_HEARTBEAT_TRIAGE="$triage"
 export FLEET_RESILIENCE_DRILL_OFFLINE=1
 export FLEET_RES_DRILL_AUTOFILE_DISABLE=1
@@ -435,7 +499,7 @@ prom="$state/fleet-resilience-drill/resilience-drill.prom"
 [[ -f "$prom" ]] || fail "missing prom file: $prom"
 grep -q '^fleet_resilience_drill_last_green_seconds [1-9][0-9]*$' "$prom" \
   || fail "prom last_green_seconds not updated on green run (got: $(grep '^fleet_resilience_drill_last_green_seconds' "$prom" || echo missing))"
-# queue_freeze SKIPs when the opus-heartbeat launcher is not installed (CI),
+# queue_freeze SKIPs when the retired opus-heartbeat launcher is not installed,
 # so accept pass=1 OR skip=1 — matching the per-plane status assertion above.
 # A green run must never record fail=1 for a #1463 plane.
 if ! grep -q '^fleet_resilience_drill_plane_pass{plane="queue_freeze"} 1$' "$prom" \

@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# fleet-senior-conference-gate — seriousness gate for fleet-ops#3756.
+#
+# Pure evaluator. No dispatch, no retry, no GitHub writes.
+# A PR that trips the seriousness gate (lines changed > 500 OR files touched
+# > 10 OR touches a critical path: deploy, migrations, security,
+# branch-protection) is REJECT unless it carries the `conference-approved`
+# label — the mechanical bypass the senior-auditor conference stamps when
+# it APPROVES (ledger 2026-08-26 "serious builds get the senior conference").
+#
+# The 0509#1712 incident: 721 additions across 10 files merged with no
+# conference verdict because the seriousness gate was prose-only. This
+# evaluator is the reusable core both the senior conference (as an
+# automatic criterion in prompts/senior-conference.md) and a CI status
+# check call, so the "serious" classification is computed once.
+#
+# Usage:
+#   fleet-senior-conference-gate [--input pr.json]          # evaluate
+#   fleet-senior-conference-gate --ledger-line
+#
+# The implementation lives in lib/senior-conference-gate.py.
+
+set -euo pipefail
+
+here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+lib="${SENIOR_CONFERENCE_GATE_LIB:-$here/../lib/pi-packet/senior-conference-gate.py}"
+[ -f "$lib" ] || lib="$here/../lib/senior-conference-gate.py"
+[ -f "$lib" ] || { echo "fleet-senior-conference-gate: library missing: $lib" >&2; exit 2; }
+
+exec python3 "$lib" "$@"

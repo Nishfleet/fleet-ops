@@ -1,4 +1,17 @@
 #!/usr/bin/env bash
+
+# Use the nishfleet-worker App token for any GitHub write. Fail closed if
+# the App cannot mint and no token was inherited from a parent organ, so a
+# dead App never falls through to the human gh identity (fleet-ops#3445).
+# Human gh is read-only for organs; GH Actions (tests) has no App creds and
+# stubs gh as read-only, so skip minting there.
+if [[ -z "${GH_TOKEN:-}" && "${GITHUB_ACTIONS:-}" != "true" && "${GH:-gh}" == "gh" ]]; then
+    export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
+    _wt="${NISHFLEET_WORKER_TOKEN_BIN:-${HOME:-/home/nish}/.local/bin/worker-token}"
+    _minted="$("$_wt" --print)" || { echo "fleet-ops#3445: $_wt --print failed - refusing human-gh writes" >&2; exit 1; }
+    eval "$_minted"
+    unset _wt _minted
+fi
 # blocked-reconcile — re-examine agent-blocked issues (fleet-ops#29).
 #
 # Named reason this is a sweep, not an event: the blocking condition
@@ -35,6 +48,12 @@
 #   BLOCKED_RECONCILE_STICKY_SECS  min age before editing last-checked
 #                                  comment (default 21600 = 6h)
 #   BLOCKED_RECONCILE_DRY_RUN      if 1, print actions and mutate nothing
+#   BLOCKED_RECONCILE_ORCHESTRATOR_UNIT     on-demand service started when an
+#                                  open needs-orchestrator issue is aged
+#                                  (default agent-cron-orchestrator-decision-
+#                                  sweep.service; empty disables)
+#   BLOCKED_RECONCILE_ORCHESTRATOR_MIN_AGE_S  age threshold, default 3600 (1h)
+#   BLOCKED_RECONCILE_SYSTEMCTL    systemctl binary (tests stub it)
 #
 # Modes:
 #   --extract   read one issue JSON on stdin, print {kind,deps} (no network)
@@ -53,12 +72,23 @@ EXTRACT_PY='
 import json, re, sys
 
 NISH = "nish-decision"
+ORCHESTRATOR = "orchestrator"
 URL = re.compile(
     r"^https://github\.com/([\w.-]+)/([\w.-]+)/(issues|pull)/(\d+)/?$"
 )
 OWNED = re.compile(r"^([\w.-]+)/([\w.-]+)#(\d+)$")
 HASH = re.compile(r"^#(\d+)$")
 BLOCKED_ON = re.compile(r"(?im)^blocked-on:\s*(.+?)\s*$")
+# Valid nish-decision reasons (fleet-ops#4260 — the canonical Nish-reserved
+# list): money/pay/price/pricing/billing, legal, brand, product direction,
+# customer data/deletion, or an authority Nish explicitly reserved. Any other
+# use of `blocked-on: nish-decision` is rewritten to
+# `blocked-on: orchestrator`.
+NISH_REASON = re.compile(
+    r"(?i)\b(money|pay|price|pricing|billing|legal|brand|deletion|"
+    r"product[\s/-]*direction|customer[\s/-]*data|reserved)\b"
+)
+COMMENT_ID_URL = re.compile(r"#issuecomment-(\d+)$")
 BLOCKED_BY = re.compile(
     r"(?i)blocked by\s+"
     r"(https://github\.com/[\w.-]+/[\w.-]+/(?:issues|pull)/\d+"
@@ -81,6 +111,31 @@ def live_text(text):
     return "\n".join(lines)
 
 
+def reject_nish_decisions(text):
+    """Rewrite invalid `blocked-on: nish-decision` lines to orchestrator.
+
+    A `blocked-on: nish-decision` line is valid only if the same text
+    (title, body, or comment) names an allowed reason: money/pay/price/
+    billing, legal, product direction/brand, or customer data/deletion.
+    Returns (new_text, count_of_rewritten_lines).
+    """
+    if not BLOCKED_ON.search(text):
+        return text, 0
+    if NISH_REASON.search(text):
+        return text, 0
+    count = 0
+
+    def repl(m):
+        nonlocal count
+        if m.group(1).strip().lower() == NISH:
+            count += 1
+            return "blocked-on: orchestrator"
+        return m.group(0)
+
+    new_text = BLOCKED_ON.sub(repl, text)
+    return new_text, count
+
+
 def comments_have_decision_resolved(comments):
     for c in comments:
         b = (c.get("body") if isinstance(c, dict) else "") or ""
@@ -98,6 +153,8 @@ def comments_have_decision_resolved(comments):
 
 def parse_ref(raw, owner, repo):
     raw = (raw or "").strip().rstrip(".,;")
+    if raw.lower() == ORCHESTRATOR:
+        return {"kind": ORCHESTRATOR}
     if raw.lower() == NISH:
         return {"kind": NISH}
     m = URL.match(raw)
@@ -128,7 +185,7 @@ def parse_ref(raw, owner, repo):
 
 
 def add_dep(deps, seen, parsed, owner, repo, self_n):
-    if parsed is None or parsed.get("kind") == NISH:
+    if parsed is None or parsed.get("kind") in (NISH, ORCHESTRATOR):
         return parsed is not None and parsed.get("kind") == NISH
     if (
         parsed["owner"] == owner
@@ -180,19 +237,88 @@ def extract(issue):
     title = issue.get("title") or ""
     body = issue.get("body") or ""
     comments = issue.get("comments") or []
+
+    # Resolve nish from the original text first. If the decision is already
+    # resolved (decision-resolved: in a comment/body with no live blocked-on:),
+    # do not rewrite the nish lines — the issue will requeue naturally.
     live_body = live_text(body)
     nish_resolved = comments_have_decision_resolved(comments)
     if DECISION_RESOLVED.search(live_body) and not BLOCKED_ON.search(live_body):
         nish_resolved = True
-    texts = [live_text(title), live_text(body)]
-    for c in comments:
-        b = (c.get("body") if isinstance(c, dict) else "") or ""
+
+    # Reject invalid `blocked-on: nish-decision` lines and build the list
+    # of edits to apply. A line is valid only if the same text names an
+    # allowed reason: money/pay/price/billing, legal, product direction/
+    # brand, or customer data/deletion. Skip rewriting when nish_resolved is
+    # already true so a resolved decision stays resolved.
+    rejected = []
+    rejected_count = 0
+
+    if nish_resolved:
+        new_title = live_text(title)
+        new_body = live_body
+        new_comments = list(comments)
+    else:
+        new_title, title_rej = reject_nish_decisions(live_text(title))
+        if title_rej:
+            rejected.append({"where": "title", "new_text": new_title})
+            rejected_count += title_rej
+
+        new_body, body_rej = reject_nish_decisions(live_text(body))
+        if body_rej:
+            rejected.append({"where": "body", "new_text": new_body})
+            rejected_count += body_rej
+
+        new_comments = []
+        for i, c in enumerate(comments):
+            if not isinstance(c, dict):
+                new_comments.append(c)
+                continue
+            b = c.get("body") or ""
+            if SKIP_COMMENT.match(b.lstrip()):
+                new_comments.append(c)
+                continue
+            new_b, b_rej = reject_nish_decisions(live_text(b))
+            if b_rej:
+                url = c.get("url") or ""
+                m = COMMENT_ID_URL.search(url)
+                cid = m.group(1) if m else ""
+                if not cid and str(c.get("id") or "").isdigit():
+                    cid = str(c["id"])
+                rejected.append({
+                    "where": "comment",
+                    "index": i,
+                    "id": cid,
+                    "new_text": new_b,
+                })
+                rejected_count += b_rej
+                new_c = dict(c)
+                new_c["body"] = new_b
+                new_comments.append(new_c)
+            else:
+                new_comments.append(c)
+
+    # Resolve nish-decision from the rewritten text. A line now reading
+    # `blocked-on: orchestrator` is still a live blocker, so it still
+    # suppresses a decision-resolved marker in the same comment/body.
+    live_body = live_text(new_body)
+    nish_resolved = comments_have_decision_resolved(new_comments)
+    if DECISION_RESOLVED.search(live_body) and not BLOCKED_ON.search(live_body):
+        nish_resolved = True
+
+    texts = [live_text(new_title), live_body]
+    for c in new_comments:
+        if not isinstance(c, dict):
+            continue
+        b = c.get("body") or ""
         if SKIP_COMMENT.match(b.lstrip()):
             continue
         texts.append(live_text(b))
+
     deps = []
     seen = set()
     nish = False
+    orchestrator = False
     for node in blocked_by_nodes(issue, owner, repo):
         add_dep(deps, seen, node, owner, repo, self_n)
     for text in texts:
@@ -201,12 +327,18 @@ def extract(issue):
             if parsed is None:
                 nish = True
                 continue
+            if parsed.get("kind") == ORCHESTRATOR:
+                orchestrator = True
+                continue
             if add_dep(deps, seen, parsed, owner, repo, self_n):
                 nish = True
         for m in BLOCKED_BY.finditer(text):
             parsed = parse_ref(m.group(1), owner, repo)
             if parsed is None:
                 nish = True
+                continue
+            if parsed.get("kind") == ORCHESTRATOR:
+                orchestrator = True
                 continue
             if add_dep(deps, seen, parsed, owner, repo, self_n):
                 nish = True
@@ -217,13 +349,24 @@ def extract(issue):
         "deps": deps,
         "nish": bool(nish),
         "nish_resolved": bool(nish_resolved),
+        "orchestrator": bool(orchestrator),
+        "rejected_count": rejected_count,
+        "rejected_nish_decisions": rejected,
     }
 
 
 def main():
     raw = sys.stdin.read()
     if not raw.strip():
-        print(json.dumps({"kind": NISH, "deps": [], "nish": False, "nish_resolved": False}))
+        print(json.dumps({
+            "kind": NISH,
+            "deps": [],
+            "nish": False,
+            "nish_resolved": False,
+            "orchestrator": False,
+            "rejected_count": 0,
+            "rejected_nish_decisions": [],
+        }))
         return
     print(json.dumps(extract(json.loads(raw)), separators=(",", ":")))
 
@@ -243,6 +386,10 @@ STATE="${BLOCKED_RECONCILE_STATE:-/home/nish/.local/state/fleet-heartbeat/blocke
 LOCKDIR="${BLOCKED_RECONCILE_LOCKDIR:-${XDG_RUNTIME_DIR}/blocked-reconcile}"
 STICKY_SECS="${BLOCKED_RECONCILE_STICKY_SECS:-21600}"
 DRY="${BLOCKED_RECONCILE_DRY_RUN:-0}"
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PI_PACKET_STATE="${PI_PACKET_STATE:-$HOME/.local/state/pi-packet}"
+ATTEMPTS_DIR="$PI_PACKET_STATE/attempts"
 
 log() {
     printf '[%s] [blocked-reconcile] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
@@ -288,10 +435,11 @@ NOW_S=$(now_s)
 requeued=0
 still=0
 skipped=0
+rejected_nish=0
 
 # remaining_line is accumulated as JSON objects, one per still-blocked issue.
 remaining_file=$(mktemp)
-trap 'rm -f "$remaining_file"' EXIT
+trap 'rm -f "$remaining_file" "${orch_file:-}" "${orch_ages_file:-}"' EXIT
 : >"$remaining_file"
 
 extract_issue() {
@@ -372,6 +520,42 @@ requeue_issue() {
     gh issue edit "$num" -R "$repo" --remove-label agent-blocked --add-label agent-ready >/dev/null
 }
 
+apply_rejected_edits() {
+    local repo="$1" num="$2" rejected_json="$3"
+    local body_new cid cbody
+
+    body_new=$(printf '%s' "$rejected_json" | jq -r '[.[] | select(.where == "body")] | .[0].new_text // empty')
+    if [ -n "$body_new" ]; then
+        if [ "$DRY" = "1" ]; then
+            log "DRY $repo#$num: rewrite body (blocked-on: nish-decision -> orchestrator)"
+        else
+            gh issue edit "$num" -R "$repo" --body "$body_new" >/dev/null
+        fi
+    fi
+
+    while IFS= read -r item; do
+        [ -z "$item" ] && continue
+        cid=$(printf '%s' "$item" | jq -r '.id')
+        cbody=$(printf '%s' "$item" | jq -r '.new_text')
+        if [ -n "$cid" ] && [ -n "$cbody" ]; then
+            if [ "$DRY" = "1" ]; then
+                log "DRY $repo#$num: PATCH comment $cid (blocked-on: nish-decision -> orchestrator)"
+            else
+                gh api -X PATCH "repos/${repo}/issues/comments/${cid}" -f body="$cbody" >/dev/null
+            fi
+        fi
+    done < <(printf '%s' "$rejected_json" | jq -c '.[] | select(.where == "comment")')
+}
+
+ensure_orchestrator_label() {
+    local repo="$1" num="$2"
+    if [ "$DRY" = "1" ]; then
+        log "DRY $repo#$num: add needs-orchestrator label"
+        return 0
+    fi
+    gh issue edit "$num" -R "$repo" --add-label needs-orchestrator >/dev/null
+}
+
 rewrite_triage() {
     local snapshot="$1"
     python3 - "$TRIAGE" "$snapshot" <<'PY'
@@ -409,6 +593,128 @@ with open(path, "w", encoding="utf-8") as f:
 PY
 }
 
+# fleet-ops#3310/#3527: per-issue difficulty mirror of pi-intake-tick's logic.
+# Defaults are the same as the tick; test overrides via env.
+DIFFICULTY_HEAVY_BODY_BYTES="${PI_INTAKE_DIFFICULTY_HEAVY_BODY_BYTES:-6000}"
+DIFFICULTY_HEAVY_REQUIRED="${PI_INTAKE_DIFFICULTY_HEAVY_REQUIRED:-2}"
+
+issue_difficulty() {
+    local labels_json="$1" title="$2" body="$3" lowered bytes req
+    lowered="${title,,}"
+    if [[ "$labels_json" == *'"keystone"'* || "$lowered" == keystone:* ]]; then echo "keystone"; return; fi
+    if [[ "$labels_json" == *'"heavy"'* ]]; then echo "heavy"; return; fi
+    bytes=$(printf '%s' "$body" | wc -c); bytes=${bytes//[^0-9]/}
+    req=$(printf '%s\n' "$body" | grep -ciE '^[[:space:]]*-[[:space:]]*required[^:]*:' || true)
+    if (( ${bytes:-0} > DIFFICULTY_HEAVY_BODY_BYTES )) || (( ${req:-0} > DIFFICULTY_HEAVY_REQUIRED )); then
+        echo "heavy"; return
+    fi
+    echo "light"
+}
+
+# fleet-ops#3310/#3527: latest live blocked-on: <marker> timestamp from the
+# issue body or a non-struck comment. Returns empty if none.
+latest_live_blocked_on_ts() {
+    local view_json_text="$1" marker="$2"
+    python3 - "$view_json_text" "$marker" <<'PY'
+import json, re, sys
+text, marker = sys.argv[1], sys.argv[2]
+pat = re.compile(r"(?im)^blocked-on:\s*" + re.escape(marker) + r"\s*$")
+struck = re.compile(r"^\s*(?:[-*]\s+)?~~.+~~\s*$")
+issue = json.loads(text)
+latest = None
+
+def is_live(body):
+    return bool(pat.search("\n".join(
+        line for line in (body or "").splitlines() if not struck.match(line)
+    )))
+
+def consider(ts, body):
+    global latest
+    if not ts or not is_live(body):
+        return
+    if latest is None or ts > latest:
+        latest = ts
+
+consider(issue.get("createdAt"), issue.get("body"))
+for c in issue.get("comments") or []:
+    consider(c.get("createdAt"), c.get("body"))
+print(latest or "")
+PY
+}
+
+# fleet-ops#3310/#3527: count previous infra-block auto-releases within 24h.
+# The marker is in the release comment body.
+count_recent_infra_releases() {
+    local view_json_text="$1" now_s="$2"
+    local cutoff=$(( now_s - 86400 ))
+    local count=0 ts ts_s
+    while IFS= read -r ts; do
+        [[ -n "$ts" ]] || continue
+        ts_s=$(date -u -d "$ts" +%s 2>/dev/null || echo 0)
+        [[ "$ts_s" =~ ^[0-9]+$ ]] || continue
+        if (( ts_s >= cutoff )); then
+            count=$((count + 1))
+        fi
+    done < <(printf '%s' "$view_json_text" | jq -r '[.comments[]? // [] | select(.body | test("blocked-reconcile: infra-block released"; "i")) | .createdAt] | .[]')
+    echo "$count"
+}
+
+# fleet-ops#3310/#3527: dry-run pick_seat with a temp state dir so no real
+# selection is recorded; verify the returned seat is actually healthy and
+# capable for the issue's difficulty. Prints "provider/model" and returns 0
+# if a healthy capable seat exists, 1 otherwise.
+# shellcheck disable=SC2030,SC2031
+# The two $(...) subshells below deliberately export PI_PACKET_STATE/HOME into
+# a throwaway scope so seat-lib writes land in a temp dir, never the live state.
+healthy_capable_seat_for_issue() {
+    local difficulty="$1"
+    local need_capable=0
+    [[ "$difficulty" == "heavy" || "$difficulty" == "keystone" ]] && need_capable=1
+    local _state _out _p _m _seat
+    _state=$(mktemp -d)
+    mkdir -p "$_state/active-seats"
+    # Re-use live active-seats so the cap check is realistic; all other writes
+    # (prepaid-usage, seat-selection.jsonl, keystone-events) stay in the temp.
+    if [[ -d "$PI_PACKET_STATE/active-seats" ]]; then
+        cp -R "$PI_PACKET_STATE/active-seats/"* "$_state/active-seats/" 2>/dev/null || true
+    fi
+    _out=$(
+        export PI_PACKET_STATE="$_state"
+        export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+        export HOME="${HOME:-/home/nish}"
+        source "$REPO_ROOT/lib/seat-lib.sh"
+        pick_seat "" "" "$need_capable" "" "$difficulty" public 2>/dev/null || true
+    )
+    rm -rf "$_state"
+    [[ -n "$_out" ]] || return 1
+    _p="${_out%%$'\t'*}"
+    _m="${_out#*$'\t'}"
+    [[ -n "$_p" && -n "$_m" ]] || return 1
+    _state=$(mktemp -d)
+    _seat=$(
+        export PI_PACKET_STATE="$_state"
+        source "$REPO_ROOT/lib/seat-lib.sh"
+        if seat_usable "$_p" "$_m" >/dev/null 2>&1; then
+            printf '%s/%s' "$_p" "$_m"
+        fi
+    )
+    rm -rf "$_state"
+    [[ -n "$_seat" ]] || return 1
+    printf '%s\n' "$_seat"
+}
+
+# fleet-ops#3310/#3527: reset the WORK cap and systemic-failure markers so the
+# re-queued issue gets a fresh claim budget.
+reset_reclaim_and_systemic() {
+    local repo="$1" num="$2"
+    local inst="${repo#*/}-${num}"
+    # shellcheck disable=SC2031
+    # ATTEMPTS_DIR is only re-assigned inside the isolated subshell of the
+    # picker above (fleet-ops#3310); the global value is unchanged here.
+    rm -f "$ATTEMPTS_DIR/pi-issue-${inst}.reclaim-count" \
+          "$ATTEMPTS_DIR/pi-issue-${inst}.systemic" 2>/dev/null || true
+}
+
 log "sweep starting now=$NOW_ISO"
 
 while IFS= read -r repo; do
@@ -431,7 +737,7 @@ while IFS= read -r repo; do
             continue
         fi
 
-        if ! view_json=$(gh issue view "$num" -R "$repo" --json title,body,createdAt,comments 2>/dev/null); then
+        if ! view_json=$(gh issue view "$num" -R "$repo" --json title,body,createdAt,comments,labels 2>/dev/null); then
             log "  $repo#$num: gh issue view FAILED — skip"
             skipped=$((skipped + 1))
             continue
@@ -448,6 +754,17 @@ while IFS= read -r repo; do
         fi
         extracted=$(extract_issue "$payload")
         kind=$(printf '%s' "$extracted" | jq -r '.kind')
+        rejected_count=$(printf '%s' "$extracted" | jq -r '.rejected_count // 0')
+        rejected_json=$(printf '%s' "$extracted" | jq -c '.rejected_nish_decisions // []')
+        orchestrator=$(printf '%s' "$extracted" | jq -r '.orchestrator // false')
+
+        if [ "$rejected_count" -gt 0 ]; then
+            apply_rejected_edits "$repo" "$num" "$rejected_json"
+            ensure_orchestrator_label "$repo" "$num"
+            rejected_nish=$((rejected_nish + rejected_count))
+            log "  $repo#$num: rejected $rejected_count nish-decision line(s); relabelled needs-orchestrator"
+        fi
+
         created_s=$(date -u -d "$created" +%s 2>/dev/null || echo 0)
         age_h=0
         if [ "$created_s" -gt 0 ]; then
@@ -507,6 +824,110 @@ while IFS= read -r repo; do
             fi
         fi
 
+        if [ "$orchestrator" = "true" ]; then
+            machine=1
+            all_cleared=0
+            # fleet-ops#4260: publish kind=orchestrator so the snapshot's
+            # per-kind counts (fleet_blocked_issues{kind}) separate an
+            # orchestrator decision wait from a Nish-reserved one. A live
+            # unresolved nish-decision keeps precedence — Nish is the harder
+            # constraint.
+            if ! { [ "$nish_flag" = "true" ] && [ "$nish_resolved" != "true" ]; }; then
+                kind="orchestrator"
+            fi
+            if [ -n "$remaining" ]; then
+                remaining="$remaining, orchestrator"
+            else
+                remaining="orchestrator"
+            fi
+        fi
+
+        # fleet-ops#3310/#3527: handle blocked-on: infra and blocked-on: senior-review.
+        # Infra blocks are auto-released after 2h when a healthy capable seat
+        # exists; a second release within 24h escalates to senior-review.
+        _infra_ts=$(latest_live_blocked_on_ts "$view_json" "infra")
+        _senior_ts=$(latest_live_blocked_on_ts "$view_json" "senior-review")
+        _infra_age_s=0
+        _infra_age_h=0
+        if [ -n "$_infra_ts" ]; then
+            _infra_epoch=$(date -u -d "$_infra_ts" +%s 2>/dev/null || echo 0)
+            _infra_age_s=$((NOW_S - _infra_epoch))
+            _infra_age_h=$((_infra_age_s / 3600))
+        fi
+        _senior_epoch=0
+        _senior_age_s=0
+        if [ -n "$_senior_ts" ]; then
+            _senior_epoch=$(date -u -d "$_senior_ts" +%s 2>/dev/null || echo 0)
+            _senior_age_s=$((NOW_S - _senior_epoch))
+        fi
+        _infra_block=0
+        _senior_block=0
+        if [ -n "$_senior_ts" ] && { [ -z "$_infra_ts" ] || [ "$_senior_epoch" -ge "$_infra_epoch" ]; }; then
+            _senior_block=1
+        elif [ -n "$_infra_ts" ]; then
+            _infra_block=1
+        fi
+
+        if [ "$_senior_block" -eq 1 ]; then
+            kind="senior-review"
+            machine=1
+            all_cleared=0
+            remaining="senior-review"
+        elif [ "$_infra_block" -eq 1 ]; then
+            kind="infra"
+            machine=1
+            all_cleared=0
+            if [ -n "$_infra_ts" ] && [ "$_infra_age_s" -ge 7200 ]; then
+                _recent_releases=$(count_recent_infra_releases "$view_json" "$NOW_S")
+                if [ "$_recent_releases" -ge 1 ]; then
+                    # Second infra release within 24h: escalate to senior-review.
+                    kind="senior-review"
+                    remaining="senior-review (escalated from infra after second release within 24h)"
+                    _escalate_body="fleet-ops#3310/#3527: this issue was auto-released from an infra block within the last 24h and is now blocked again. A second release is not safe; escalating to senior review.
+
+blocked-on: senior-review"
+                    if [ "$DRY" = "1" ]; then
+                        log "DRY $repo#$num: escalate infra -> senior-review (second release within 24h)"
+                    else
+                        gh issue comment "$num" -R "$repo" --body "$_escalate_body" >/dev/null
+                    fi
+                    log "  $repo#$num: ESCALATED infra -> senior-review (second release within 24h)"
+                    sticky="blocked-checked: ${NOW_ISO} still-blocked kind=${kind} age=${age_h}h remaining=${remaining}"
+                    upsert_sticky "$repo" "$num" "$sticky"
+                    still=$((still + 1))
+                    jq -nc --arg ref "${repo}#${num}" --arg kind "$kind" --argjson age "$age_h" \
+                        --arg remaining "$remaining" \
+                        '{ref:$ref, kind:$kind, age_h:$age, remaining:$remaining}' >>"$remaining_file"
+                    continue
+                fi
+
+                # Aged infra block: re-queue if a healthy capable seat exists.
+                _labels_json=$(printf '%s' "$view_json" | jq -c '.labels // []')
+                _title=$(printf '%s' "$view_json" | jq -r '.title // ""')
+                _body=$(printf '%s' "$view_json" | jq -r '.body // ""')
+                _difficulty=$(issue_difficulty "$_labels_json" "$_title" "$_body")
+                _seat=$(healthy_capable_seat_for_issue "$_difficulty" 2>/dev/null || true)
+                if [ -n "$_seat" ]; then
+                    reset_reclaim_and_systemic "$repo" "$num"
+                    _reason="fleet-ops#3310/#3527: infra block aged ${_infra_age_h}h and a healthy capable seat exists (${_seat}). Re-claiming should now use a recovered seat instead of parking. Re-set reclaim-count and .systemic; re-queued as agent-ready.
+
+blocked-reconcile: infra-block released at ${NOW_ISO}"
+                    if [ "$DRY" = "1" ]; then
+                        log "DRY $repo#$num: requeue infra block (aged ${_infra_age_h}h, seat ${_seat})"
+                    else
+                        requeue_issue "$repo" "$num" "$_reason"
+                    fi
+                    log "  $repo#$num: REQUEUED infra block (aged ${_infra_age_h}h, seat ${_seat})"
+                    requeued=$((requeued + 1))
+                    continue
+                else
+                    remaining="infra (no healthy capable seat for ${_difficulty})"
+                fi
+            else
+                remaining="infra (too young: ${_infra_age_h}h < 2h)"
+            fi
+        fi
+
         if [ "$machine" -eq 0 ]; then
             all_cleared=0
         fi
@@ -535,6 +956,108 @@ while IFS= read -r repo; do
     done < <(printf '%s' "$list_json" | jq -c '.[]')
 done <<< "$repos"
 
+# --- fleet-ops#4260: needs-orchestrator drain -------------------------------
+# The agent-blocked loop above only sees issues carrying that label. The
+# needs-orchestrator class is wider: it also covers issues a worker labelled
+# without agent-blocked, and it is the class this sweep must ROUTE, not just
+# re-stamp ("a reconcile that only stamps still-blocked never drains").
+# Collect every open needs-orchestrator issue per enrolled repo into the
+# snapshot (the fleet_blocked_issues{kind="needs-orchestrator"} metric source)
+# and, when any is older than ORCH_MIN_AGE_S (default 1h), start the
+# orchestrator decision pass — event-driven on this sweep's output, not a
+# timer: the App has no webhooks, so the heartbeat's existing 30-minute
+# reconcile IS the observer. The hourly escalation-drain stays the dead-man
+# backstop.
+ORCH_UNIT="${BLOCKED_RECONCILE_ORCHESTRATOR_UNIT:-agent-cron-orchestrator-decision-sweep.service}"
+ORCH_MIN_AGE_S="${BLOCKED_RECONCILE_ORCHESTRATOR_MIN_AGE_S:-3600}"
+SYSTEMCTL_BIN="${BLOCKED_RECONCILE_SYSTEMCTL:-systemctl}"
+
+orch_file=$(mktemp)
+orch_ages_file=$(mktemp)
+: >"$orch_file"
+: >"$orch_ages_file"
+orch_aged=0
+while IFS= read -r repo; do
+    [ -z "$repo" ] && continue
+    if ! orch_json=$(gh issue list -R "$repo" -l needs-orchestrator --state open \
+        --json number,createdAt,labels --limit 200 2>/dev/null); then
+        log "  $repo: needs-orchestrator list FAILED — skip"
+        continue
+    fi
+    while IFS= read -r orow; do
+        [ -z "$orow" ] && continue
+        # An in-progress issue has a live worker; it is not parked.
+        if printf '%s' "$orow" | jq -e '[.labels[].name] | index("agent-in-progress")' >/dev/null 2>&1; then
+            continue
+        fi
+        onum=$(printf '%s' "$orow" | jq -r '.number')
+        ocreated=$(printf '%s' "$orow" | jq -r '.createdAt')
+        ocreated_s=$(date -u -d "$ocreated" +%s 2>/dev/null || echo 0)
+        oage_s=0
+        if [ "$ocreated_s" -gt 0 ]; then
+            oage_s=$((NOW_S - ocreated_s))
+        fi
+        jq -nc --arg ref "${repo}#${onum}" --argjson age "$oage_s" \
+            '{ref:$ref, age_s:$age}' >>"$orch_file"
+        printf '%s\n' "$oage_s" >>"$orch_ages_file"
+        if [ "$oage_s" -ge "$ORCH_MIN_AGE_S" ]; then
+            orch_aged=1
+        fi
+    done < <(printf '%s' "$orch_json" | jq -c '.[]')
+done <<< "$repos"
+
+# Belt: an agent-blocked issue parked on `blocked-on: orchestrator` must
+# trigger the sweep even when its needs-orchestrator label is missing (the
+# label sweep above is the metric source, but the trigger is the drain — a
+# label-less orchestrator block is exactly the parked class #4260 fixes).
+# remaining_file items carry age_h, so the seconds threshold maps to
+# age_h >= ORCH_MIN_AGE_S/3600 (conservative: strictly older than 1h).
+_orch_min_age_h=$((ORCH_MIN_AGE_S / 3600))
+if ((_orch_min_age_h < 1)); then
+    _orch_min_age_h=1
+fi
+if [ "$orch_aged" != "1" ] && [ -s "$remaining_file" ]; then
+    if jq -se --argjson min_h "$_orch_min_age_h" \
+        '[.[] | select(.kind == "orchestrator" and .age_h >= $min_h)] | length > 0' \
+        "$remaining_file" >/dev/null 2>&1; then
+        orch_aged=1
+    fi
+fi
+
+orch_items_json=$(if [ -s "$orch_file" ]; then jq -s '.' "$orch_file"; else echo '[]'; fi)
+orch_count=$(printf '%s' "$orch_items_json" | jq 'length')
+orch_oldest_s=$(printf '%s' "$orch_items_json" | jq -r 'if length==0 then 0 else max_by(.age_s).age_s end')
+# p50 (median) of the needs-orchestrator ages — the alert source for
+# fleet_blocked_issue_age_seconds{kind="needs-orchestrator",quantile="0.5"}.
+orch_p50_s=$(python3 - "$orch_ages_file" <<'PY'
+import sys
+ages = []
+try:
+    with open(sys.argv[1], encoding="utf-8") as f:
+        ages = sorted(int(x) for x in f.read().split() if x.strip())
+except (OSError, ValueError):
+    ages = []
+if not ages:
+    print(0)
+else:
+    n = len(ages)
+    print(ages[n // 2] if n % 2 else (ages[n // 2 - 1] + ages[n // 2]) // 2)
+PY
+)
+rm -f "$orch_file" "$orch_ages_file"
+
+if [ "$DRY" != "1" ] && [ -n "$ORCH_UNIT" ] && [ "$orch_aged" = "1" ]; then
+    if "$SYSTEMCTL_BIN" --user is-active --quiet "$ORCH_UNIT" 2>/dev/null; then
+        log "orchestrator decision sweep already active — not re-queuing ($ORCH_UNIT)"
+    elif "$SYSTEMCTL_BIN" --user --no-block start "$ORCH_UNIT" 2>/dev/null; then
+        log "orchestrator decision sweep STARTED ($ORCH_UNIT) — needs-orchestrator count=$orch_count oldest_age_s=$orch_oldest_s"
+    else
+        log "WARN: orchestrator decision sweep start FAILED ($ORCH_UNIT) — $orch_count needs-orchestrator item(s) stay parked"
+    fi
+elif [ "$orch_aged" = "1" ]; then
+    log "needs-orchestrator aged items present (count=$orch_count oldest_age_s=$orch_oldest_s) — trigger skipped (DRY or unit unset)"
+fi
+
 items_json=$(if [ -s "$remaining_file" ]; then jq -s '.' "$remaining_file"; else echo '[]'; fi)
 count=$(printf '%s' "$items_json" | jq 'length')
 oldest=$(printf '%s' "$items_json" | jq -r 'if length==0 then empty else max_by(.age_h) | .ref end')
@@ -542,13 +1065,21 @@ oldest_age=$(printf '%s' "$items_json" | jq -r 'if length==0 then empty else max
 
 snapshot=$(jq -nc --arg updated "$NOW_ISO" --argjson count "$count" \
     --arg oldest "${oldest:-}" --arg oldest_age "${oldest_age:-}" \
-    --argjson items "$items_json" \
+    --argjson items "$items_json" --argjson rejected_nish "$rejected_nish" \
+    --argjson orch_items "$orch_items_json" --argjson orch_p50 "$orch_p50_s" \
     '{
       updated:$updated,
       count:$count,
       oldest: (if $oldest == "" then null else $oldest end),
       oldest_age_h: (if $oldest_age == "" then null else ($oldest_age|tonumber) end),
-      items:$items
+      items:$items,
+      rejected_nish_decisions:$rejected_nish,
+      needs_orchestrator: {
+        count: ($orch_items | length),
+        oldest_age_s: (if ($orch_items | length) == 0 then 0 else ($orch_items | max_by(.age_s).age_s) end),
+        p50_age_s: $orch_p50,
+        items: $orch_items
+      }
     }')
 
 if [ "$DRY" != "1" ]; then
@@ -556,7 +1087,7 @@ if [ "$DRY" != "1" ]; then
     rewrite_triage "$snapshot"
 fi
 
-log "sweep done: still=$still requeued=$requeued skipped=$skipped count=$count oldest=${oldest:-none} oldest_age_h=${oldest_age:-none}"
-printf 'blocked-queue count=%s oldest_age_h=%s oldest=%s requeued=%s\n' \
-    "$count" "${oldest_age:-none}" "${oldest:-none}" "$requeued"
+log "sweep done: still=$still requeued=$requeued skipped=$skipped rejected_nish=$rejected_nish count=$count oldest=${oldest:-none} oldest_age_h=${oldest_age:-none} needs_orchestrator=$orch_count orch_p50_s=$orch_p50_s"
+printf 'blocked-queue count=%s oldest_age_h=%s oldest=%s requeued=%s rejected_nish=%s needs_orchestrator=%s\n' \
+    "$count" "${oldest_age:-none}" "${oldest:-none}" "$requeued" "$rejected_nish" "$orch_count"
 exit 0

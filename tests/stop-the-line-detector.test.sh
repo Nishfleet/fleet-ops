@@ -111,6 +111,41 @@ const r6 = classifyHalt([
 ]);
 if (r6.halt) throw new Error("non-main branch runs must NOT halt");
 
+// failure + cancelled = halt (fleet-ops#2911). A cancelled CI run on main
+// means the pipeline status is UNKNOWN — fail-closed red. Without this, a
+// sequence of cancelled runs (each superseded by a newer push) masks a
+// sustained red and the merge queue never freezes.
+const r7 = classifyHalt([
+  { id: 20, name: "CI", conclusion: "failure", head_branch: "main", head_sha: "a", created_at: "2026-08-28T00:00:00Z", html_url: "u20" },
+  { id: 21, name: "CI", conclusion: "cancelled", head_branch: "main", head_sha: "b", created_at: "2026-08-28T00:01:00Z", html_url: "u21" },
+]);
+if (!r7.halt) throw new Error("failure + cancelled must halt (fail-closed, fleet-ops#2911)");
+if (r7.halted_workflow !== "CI") throw new Error("failure+cancelled halt workflow must be CI");
+if (r7.halted_runs.length !== 2) throw new Error("failure+cancelled must carry both runs in history");
+
+// cancelled + cancelled = halt (two unknowns = red pipeline).
+const r8 = classifyHalt([
+  { id: 30, name: "CI", conclusion: "cancelled", head_branch: "main", head_sha: "a", created_at: "2026-08-28T00:00:00Z", html_url: "u30" },
+  { id: 31, name: "CI", conclusion: "cancelled", head_branch: "main", head_sha: "b", created_at: "2026-08-28T00:01:00Z", html_url: "u31" },
+]);
+if (!r8.halt) throw new Error("cancelled + cancelled must halt (two unknowns = red, fleet-ops#2911)");
+
+// green clears a cancelled run (a green run for the same SHA wins).
+const r9 = classifyHalt([
+  { id: 40, name: "CI", conclusion: "failure", head_branch: "main", head_sha: "a", created_at: "2026-08-28T00:00:00Z", html_url: "u40" },
+  { id: 41, name: "CI", conclusion: "success", head_branch: "main", head_sha: "b", created_at: "2026-08-28T00:01:00Z", html_url: "u41" },
+  { id: 42, name: "CI", conclusion: "cancelled", head_branch: "main", head_sha: "c", created_at: "2026-08-28T00:02:00Z", html_url: "u42" },
+]);
+if (r9.halt) throw new Error("failure-green-cancelled must NOT halt (green cleared the red before the cancelled)");
+
+// greenRunForWorkflow: a cancelled run after the last green blocks unfreeze.
+const gr = greenRunForWorkflow([
+  { id: 50, name: "CI", conclusion: "failure", head_branch: "main", head_sha: "a", created_at: "2026-08-28T00:00:00Z", html_url: "u50" },
+  { id: 51, name: "CI", conclusion: "success", head_branch: "main", head_sha: "b", created_at: "2026-08-28T00:01:00Z", html_url: "u51" },
+  { id: 52, name: "CI", conclusion: "cancelled", head_branch: "main", head_sha: "c", created_at: "2026-08-28T00:02:00Z", html_url: "u52" },
+], "CI");
+if (gr !== null) throw new Error("greenRunForWorkflow must NOT unfreeze when a cancelled run follows the last green (fleet-ops#2911)");
+
 // isSkippedWorkflow semantics.
 if (isSkippedWorkflow("Auto revert") !== true) throw new Error("Auto revert must skip");
 if (isSkippedWorkflow("Red on main detector") !== true) throw new Error("Red on main detector must skip");
@@ -314,6 +349,25 @@ const r = JSON.parse(readFileSync("/tmp/stl-no-consec.json", "utf8"));
 if (r.decision.action !== "noop") throw new Error(`red-green (no consecutive reds) must action=noop, got ${r.decision.action}`);
 console.log("OK: red-green (no consecutive reds) -> noop (single transient red is not a halt)");
 ' || fail "no-consecutive replay failed"
+
+# --- replay: cancelled-runs-mask-red -> open (fleet-ops#2911) ---------------
+# Live 2026-09-02: CI went FAILURE on SHA A (20:56), then every subsequent
+# push's CI run was CANCELLED by a newer push (21:04, 21:06, 21:13). The
+# pipeline was red (P14 gate failure) for 17+ minutes, but the stop-the-line
+# detector said "noop" because cancelled != failure and the detector required
+# two consecutive FAILURE verdicts. PRs kept merging onto the red pipeline.
+# A cancelled CI run on main means the pipeline status is UNKNOWN —
+# fail-closed red (trunk stays green). The failure + first cancelled pair
+# must trigger the halt.
+node "$script" --from-json "$fixtures/cancelled-masks-red.json" --format json --output-json /tmp/stl-cancel.json >/dev/null
+node --input-type=module -e '
+import { readFileSync } from "node:fs";
+const r = JSON.parse(readFileSync("/tmp/stl-cancel.json", "utf8"));
+if (r.decision.action !== "open") throw new Error(`cancelled-masks-red must action=open, got ${r.decision.action}`);
+if (r.decision.workflow !== "CI") throw new Error(`cancelled-masks-red workflow must be CI, got ${r.decision.workflow}`);
+if (r.decision.red_runs.length < 2) throw new Error(`cancelled-masks-red must carry the failure + first cancelled as the red pair, got ${r.decision.red_runs.length}`);
+console.log("OK: cancelled-runs-mask-red -> open (failure + cancelled = halt, fleet-ops#2911)");
+' || fail "cancelled-masks-red replay failed"
 
 # --- workflow shape: stop-the-line-detector.yml -----------------------------
 grep -q 'workflow_call:' "$repo_root/.github/workflows/stop-the-line-detector.yml" \

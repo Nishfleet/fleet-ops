@@ -20,6 +20,13 @@
 #      pair this issue specifies.
 #   5. install.sh accepts --check, --system, --check --system; refuses
 #      unknown args.
+#   6. fleet-ops#1499: the user-scope BASE unit files
+#      (fleet-metrics-export.{service,timer}) are repo-owned under systemd/
+#      AND have exact MANIFEST entries, and the metrics-export drop-ins
+#      (fleet-metrics-export.service.d/) are kept + MANIFEST-listed. The
+#      #1480 audit found these base units hand-placed in
+#      ~/.config/systemd/user/ bypassing the repo; #2097 moved them in.
+#      This guard stops the migration gap silently re-opening.
 #
 # Lock-and-leave. If any invariant fails, exit 1 and CI fails.
 
@@ -135,6 +142,33 @@ ok "install.sh --system: handles missing passwordless sudo path"
 
 echo "OK: system drop-ins shape locked (50-ram-governor + 50-no-distro-oomd-kill + tailscaled Restart=always, MANIFEST entries live, install.sh routing works)"
 
+# --- 6. fleet-ops#1499: user-scope BASE units repo-owned + MANIFEST-listed --
+# The #1480 audit found these base unit files hand-placed in
+# ~/.config/systemd/user/ and bypassing the repo; #2097 moved them into
+# systemd/ + MANIFEST. Lock both halves: base units repo-owned + listed, and
+# the metrics-export drop-ins kept + listed.
+me_svc="$repo_root/systemd/fleet-metrics-export.service"
+me_tmr="$repo_root/systemd/fleet-metrics-export.timer"
+[[ -f "$me_svc" ]] || fail "missing base unit: $me_svc"
+[[ -f "$me_tmr" ]] || fail "missing base unit: $me_tmr"
+
+for entry in \
+  "systemd/fleet-metrics-export.service /home/nish/.config/systemd/user/fleet-metrics-export.service" \
+  "systemd/fleet-metrics-export.timer /home/nish/.config/systemd/user/fleet-metrics-export.timer" \
+; do
+  grep -Fxq "$entry" "$manifest" \
+    || fail "MANIFEST missing base-unit entry (fleet-ops#1499): $entry"
+done
+ok "fleet-ops#1499: metrics-export base units repo-owned + MANIFEST-listed"
+
+me_dropdir="$repo_root/systemd/fleet-metrics-export.service.d"
+for d in 10-git-mirrors.conf staleness-checker.conf waste-ledger.conf; do
+  [[ -f "$me_dropdir/$d" ]] || fail "missing drop-in (fleet-ops#1499 keep-drop-ins): $me_dropdir/$d"
+  grep -Fxq "systemd/fleet-metrics-export.service.d/$d /home/nish/.config/systemd/user/fleet-metrics-export.service.d/$d" "$manifest" \
+    || fail "MANIFEST missing drop-in entry (fleet-ops#1499): systemd/fleet-metrics-export.service.d/$d"
+done
+ok "fleet-ops#1499: metrics-export drop-ins kept (10-git-mirrors + staleness-checker + waste-ledger) + MANIFEST-listed"
+
 # fleet-ops#62: drill tooling. CI lists THIS file explicitly; the worker
 # GitHub App cannot add a workflow step, so the drill test rides along.
 bash "$here/oomd-drill.test.sh"
@@ -142,3 +176,7 @@ bash "$here/oomd-drill.test.sh"
 # fleet-ops#92: slice syntax. Same CI-list constraint; the dedicated
 # unit-verify job cannot gain systemd/*.slice without a workflow push.
 bash "$here/systemd-analyze-slices.test.sh"
+
+# fleet-ops#3280: fleet-work.slice TasksMax=8000 + spawn-guard 7500/8000.
+# Same CI-list constraint; workers cannot push .github/workflows/**.
+bash "$here/fleet-work-slice-tasksmax.test.sh"

@@ -45,8 +45,8 @@
 #      with EISDIR, it is now the blocker") -> clean.
 #   4. live #1243: read on e2e/fixtures directory -> EISDIR +
 #      unrelated prose -> still a finding.
-#   5. worker.md cites fleet-ops#1170 and fleet-ops#1243
-#      (prompt-side lock).
+#   5. lib/failed-command-flagged.py cites fleet-ops#1170 and fleet-ops#1243
+#      (detector-side lock: case list moved to lib, fleet-ops#3246).
 #   6. lib/failed-command-flagged.py docstring cites #1170 and
 #      #1243 (lib contract for the next detector maintainer).
 #   7. seat-lib.test.sh hosts this file (CI cannot gain a P14 line).
@@ -170,20 +170,20 @@ grep -q 'EISDIR: illegal operation on a directory, read' <<<"$snippet" \
 ok "read EISDIR with later unrelated prose is still flagged"
 rm -f "$sessions/read-eisdir-unrelated-prose.jsonl"
 
-# --- 5. worker.md cites fleet-ops#1170 and fleet-ops#1243 ------------------
+# --- 5. lib/failed-command-flagged.py cites fleet-ops#1170 and fleet-ops#1243 ------------------
 worker="$repo_root/prompts/worker.md"
 [[ -f "$worker" ]] || fail "missing $worker"
-grep -q 'fleet-ops#1170' "$worker" \
-  || fail "prompts/worker.md must cite fleet-ops#1170 (prompt-side lock for the live EISDIR wording)"
-grep -q 'fleet-ops#1243' "$worker" \
-  || fail "prompts/worker.md must cite fleet-ops#1243 (prompt-side lock for the 01a043ee EISDIR sibling)"
-grep -q "EISDIR: illegal operation on a directory, read" "$worker" \
-  || fail "prompts/worker.md must name the live EISDIR wording so workers flag it"
-grep -q '0509-work/e2e/fixtures' "$worker" \
-  || fail "prompts/worker.md must name the live #1243 directory path so workers flag the shape"
-grep -q 'printStackTrace threshold' "$worker" \
-  || fail "prompts/worker.md must name the live #1243 printStackTrace prose so workers flag the shape"
-ok "worker.md cites fleet-ops#1170, fleet-ops#1243, and the live EISDIR wording"
+grep -q 'fleet-ops#1170' "$lib" \
+  || fail "lib/failed-command-flagged.py must cite fleet-ops#1170 (detector-side lock for the live EISDIR wording)"
+grep -q 'fleet-ops#1243' "$lib" \
+  || fail "lib/failed-command-flagged.py must cite fleet-ops#1243 (detector-side lock for the 01a043ee EISDIR sibling)"
+grep -q "EISDIR: illegal operation on a directory, read" "$lib" \
+  || fail "lib/failed-command-flagged.py must name the live EISDIR wording so workers flag it"
+grep -q '0509-work/e2e/fixtures' "$lib" \
+  || fail "lib/failed-command-flagged.py must name the live #1243 directory path so workers flag the shape"
+grep -q 'printStackTrace threshold' "$lib" \
+  || fail "lib/failed-command-flagged.py must name the live #1243 printStackTrace prose so workers flag the shape"
+ok "lib/failed-command-flagged.py cites fleet-ops#1170, fleet-ops#1243, and the live EISDIR wording"
 
 # --- 6. lib/failed-command-flagged.py docstring cites #1170 and #1243 ------
 # The lib docstring is the standing-rule contract for the next detector

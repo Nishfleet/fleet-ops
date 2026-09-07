@@ -1,0 +1,16 @@
+{
+  "window_days": 14,
+  "conference_verdicts": [
+    {"pr": 10, "verdict": "APPROVE", "later": null},
+    {"pr": 11, "verdict": "APPROVE", "later": null},
+    {"pr": 12, "verdict": "REJECT", "later": null}
+  ],
+  "merges": [{"number": 1}, {"number": 2}, {"number": 3}, {"number": 4}, {"number": 5}],
+  "auto_reverts": [],
+  "defect_issues": [{"number": 20}],
+  "file_churn": {"touched": 100, "reedited": 20},
+  "drills": {"ran": 10, "passed": 10},
+  "canary_regressions": 0,
+  "scout": {"candidates": 20, "futile": 2},
+  "throughput": {"merges": 5, "saturation_pct": 80}
+}

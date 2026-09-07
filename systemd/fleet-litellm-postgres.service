@@ -1,0 +1,31 @@
+[Unit]
+Description=Fleet LiteLLM Postgres — budgets/keys/spend (fleet-ops#4130 P1)
+Documentation=https://github.com/Nishfleet/fleet-ops/issues/4130
+# Fleet-owned Postgres cluster (NOT the distro system service). The
+# cluster lives at %h/.local/share/fleet-litellm-postgres, owned by the
+# user, loopback-only on 127.0.0.1:5432. This is a real long-running
+# daemon — the proxy Requires= it and the canary probes it. The distro
+# postgresql@*-main system service is NOT used by this organ (it was
+# installed by an earlier live-install attempt and is now redundant; the
+# runbook disables it). Live install (initdb + role/DB) is in
+# docs/litellm-postgres-setup.md.
+ConditionPathExists=%h/.local/share/fleet-litellm-postgres/postgresql.conf
+
+[Service]
+Type=simple
+Slice=app-litellm-postgres.slice
+Environment=HOME=%h
+# The cluster's postgresql.conf pins listen_addresses=127.0.0.1, port=5432,
+# and unix_socket_directories=<pgdata>/run. No network listener beyond
+# loopback; the socket dir is user-owned so pg_isready -h <pgdata>/run
+# works without sudo.
+ExecStart=/usr/lib/postgresql/16/bin/postgres -D %h/.local/share/fleet-litellm-postgres
+Restart=on-failure
+RestartSec=3s
+TimeoutStopSec=30
+# Hardening: the cluster dir is the only write path it needs.
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

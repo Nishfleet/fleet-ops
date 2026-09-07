@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# External integrity check for the pi transport (cli.js). Fails loud if
+# cli.js is missing, wrong shebang, too small, or `pi --version` doesn't
+# print a bare semver. Run by pi-transport-check.service (path + timer).
+#
+# fleet-ops#3277: `--subagent` asserts the subagent load handshake so a
+# pi reinstall cannot silently drop delegation. Default (no flag) stays
+# cli.js-only: self-heal and seat-lib _transport_is_down must not treat a
+# missing subagent as a clobbered bin.
+set -euo pipefail
+
+DO_CLI=1
+DO_SUBAGENT=0
+
+fail() {
+  echo "PI-TRANSPORT-CORRUPT: $1" >&2
+  exit 1
+}
+
+usage() {
+  echo "usage: pi-transport-check [--subagent] [cli.js-path] [pi-bin]" >&2
+  exit 2
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --subagent) DO_SUBAGENT=1; DO_CLI=0; shift ;;
+    --cli-only) DO_CLI=1; DO_SUBAGENT=0; shift ;;
+    -h|--help) usage ;;
+    --) shift; break ;;
+    -*) fail "unknown flag '$1'" ;;
+    *) break ;;
+  esac
+done
+
+CLI_PATH="${1:-/home/nish/.local/lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js}"
+if [[ $# -gt 0 ]]; then shift; fi
+PI_BIN="${1:-/home/nish/.local/bin/pi}"
+if [[ $# -gt 0 ]]; then shift; fi
+if [[ $# -gt 0 ]]; then
+  fail "unexpected extra args: $*"
+fi
+
+# --- cli.js probe (default) ------------------------------------------------
+if (( DO_CLI )); then
+  # 1. cli.js exists and is a regular file (follow symlinks)
+  resolved="$(readlink -f -- "$CLI_PATH" 2>/dev/null || true)"
+  if [[ -z "$resolved" ]] || [[ ! -f "$resolved" ]]; then
+    fail "$CLI_PATH missing or not a regular file (symlinks followed)"
+  fi
+
+  # 2. First line is exactly #!/usr/bin/env node
+  first_line="$(head -n 1 -- "$resolved" 2>/dev/null || true)"
+  if [[ "$first_line" != "#!/usr/bin/env node" ]]; then
+    fail "first line was '$first_line' (expected exactly '#!/usr/bin/env node')"
+  fi
+
+  # 3. Size >= 300 bytes (real loader ~710; incident stub was 76)
+  size="$(stat -c %s -- "$resolved")"
+  if (( size < 300 )); then
+    fail "size $size bytes < 300 minimum"
+  fi
+
+  # 4. timeout 30 "$PI_BIN" --version produces a bare semver on first line
+  if ! ver_output="$(timeout 30 "$PI_BIN" --version 2>&1)"; then
+    fail "'$PI_BIN --version' exited nonzero; output: ${ver_output:-<none>}"
+  fi
+  first_ver_line="$(printf '%s\n' "$ver_output" | head -n 1)"
+  if ! [[ "$first_ver_line" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    fail "--version first line '$first_ver_line' is not a bare semver"
+  fi
+
+  echo "PI-TRANSPORT-OK size=$size version=$first_ver_line"
+fi
+
+# --- subagent EXTLOAD (fleet-ops#3277) -------------------------------------
+# Cheap file checks only. Do not spawn pi: this flag runs at worker start.
+if (( DO_SUBAGENT )); then
+  idx="${PI_SUBAGENT_INDEX:-$HOME/.pi/agent/extensions/subagent/index.ts}"
+  agents_ts="${PI_SUBAGENT_AGENTS_TS:-$HOME/.pi/agent/extensions/subagent/agents.ts}"
+  agents_dir="${PI_SUBAGENT_AGENTS_DIR:-$HOME/.pi/agent/agents}"
+
+  if [[ ! -e "$idx" ]]; then
+    fail "subagent index missing: $idx"
+  fi
+  if ! grep -q 'EXTLOAD-OK extension=subagent' "$idx" 2>/dev/null; then
+    fail "subagent EXTLOAD handshake missing in $idx"
+  fi
+  if [[ ! -e "$agents_ts" ]]; then
+    fail "subagent agents.ts missing: $agents_ts"
+  fi
+  for name in planner reviewer scout worker; do
+    def="$agents_dir/$name.md"
+    if [[ ! -e "$def" ]]; then
+      fail "unpinned agent def missing: $def"
+    fi
+    if grep -qE '^model:' "$def"; then
+      fail "agent def $def is pinned (has model:); fleet defs stay unpinned"
+    fi
+  done
+  echo "EXTLOAD-OK extension=subagent mode=print-safe"
+fi
+
+exit 0

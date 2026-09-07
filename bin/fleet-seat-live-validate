@@ -1,4 +1,17 @@
 #!/usr/bin/env bash
+
+# Use the nishfleet-worker App token for any GitHub write. Fail closed if
+# the App cannot mint and no token was inherited from a parent organ, so a
+# dead App never falls through to the human gh identity (fleet-ops#3445).
+# Human gh is read-only for organs; GH Actions (tests) has no App creds and
+# stubs gh as read-only, so skip minting there.
+if [[ -z "${GH_TOKEN:-}" && "${GITHUB_ACTIONS:-}" != "true" && "${GH:-gh}" == "gh" ]]; then
+    export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
+    _wt="${NISHFLEET_WORKER_TOKEN_BIN:-${HOME:-/home/nish}/.local/bin/worker-token}"
+    _minted="$("$_wt" --print)" || { echo "fleet-ops#3445: $_wt --print failed - refusing human-gh writes" >&2; exit 1; }
+    eval "$_minted"
+    unset _wt _minted
+fi
 # fleet-seat-live-validate — SuperGrok credential liveness (fleet-ops#917).
 #
 # Class this prevents: a prepaid SuperGrok seat that LOOKS ready because a
@@ -67,6 +80,11 @@ AUTH_JSON="$GROK_HOME/auth.json"
 # pi-grok extension actually uses for xai-oauth provider calls.
 PI_AGENT_AUTH_JSON="${PI_AGENT_AUTH_JSON:-$HOME/.pi/agent/auth.json}"
 LEDGER_DIR="${PI_SEAT_HEALTH_LEDGER_DIR:-/home/nish/workspaces/agent-state/lanes/seats}"
+# fleet-ops#3661: the seat-caps allowlist. A provider/model pair that is not
+# present here (providers.<p>.models.<m>) is a PHANTOM seat key and must
+# never be written to the ledger. Overridable for self-tests.
+SEAT_CAPS_JSON="${FLEET_SEAT_CAPS_JSON:-$HOME/.local/state/pi-packet/seat-caps.json}"
+MODELS_JSON="${FLEET_MODELS_JSON:-$HOME/.pi/agent/models.json}"
 TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
 REPO="${FLEET_SEAT_LIVE_VALIDATE_REPO:-Nishfleet/fleet-ops}"
 FILE_ISSUES="${FLEET_SEAT_LIVE_VALIDATE_FILE:-1}"
@@ -132,10 +150,40 @@ seat_ledger_path() {
     printf '%s/%s__%s.json\n' "$LEDGER_DIR" "$ps" "$ms"
 }
 
+# fleet-ops#3661: reject a provider/model pair that is not a real seat in
+# seat-caps.json (providers.<p>.models.<m>). A phantom key (e.g. a probe
+# output filename fragment like "swe-1-7-.out") must never be written to
+# the ledger. Returns 0 when the pair is a real seat (or the caps file is
+# missing — fail-open so a missing caps file never bricks the watch); 1
+# when the pair is not in the caps map.
+# fleet-ops#4018: reject a `\.out`-suffixed model (probe-output filename
+# fragment) before the fail-open so a missing caps file cannot re-admit a
+# phantom ledger.
+_seat_key_in_caps() {
+    local p="$1" m="$2"
+    [[ "$m" != *.out ]] || return 1
+    [[ -f "$SEAT_CAPS_JSON" ]] || return 0
+    jq -e --arg p "$p" --arg m "$m" \
+        '.providers[$p].models[$m] != null' "$SEAT_CAPS_JSON" >/dev/null 2>&1
+}
+
+# fleet-ops#3661: LOUD reject a phantom seat key. Logs the SEAT-KEY-INVALID
+# line naming the writer and returns 1 (so the caller skips the write).
+_seat_key_guard() {
+    local p="$1" m="$2" writer="$3"
+    if _seat_key_in_caps "$p" "$m"; then
+        return 0
+    fi
+    log "LOUD SEAT-KEY-INVALID $p/$m writer=$writer"
+    return 1
+}
+
 # Write one per-seat ledger record. Never includes credential material.
 write_ledger() {
     local provider="$1" model="$2" http_status="$3" health_class="$4" seat_dead="$5" failure_mode="$6"
     local path tmp observed retryable
+    # fleet-ops#3661: never write a ledger for a phantom seat key.
+    if ! _seat_key_guard "$provider" "$model" "fleet-seat-live-validate"; then return 1; fi
     mkdir -p "$LEDGER_DIR"
     observed=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     if [[ "$health_class" == "healthy" ]]; then
@@ -154,6 +202,7 @@ write_ledger() {
         --argjson seat_dead "$seat_dead" \
         --arg observed_at "$observed" \
         --arg failure_mode "$failure_mode" \
+        --arg writer "fleet-seat-live-validate" \
         '{
             provider: $provider,
             model: $model,
@@ -167,15 +216,37 @@ write_ledger() {
             source: "cli_spawn",
             failure_mode: $failure_mode,
             usable_at: null,
-            consecutive_failure_count: (if $health_class == "healthy" then 0 else 1 end)
+            consecutive_failure_count: (if $health_class == "healthy" then 0 else 1 end),
+            writer: $writer
         }' >"$tmp"
     chmod 600 "$tmp" 2>/dev/null || true
     mv -f "$tmp" "$path"
     chmod 600 "$path" 2>/dev/null || true
 }
 
+# Is `grok` still an enumerated seat (present as a provider in models.json)?
+# fleet-ops#1380 prunes the grok dead-decoy provider from the live seat list
+# (it is superseded by xai-oauth, which carries grok-4.5/4.6 on the healthy
+# subscription proxy path). Once pruned, grok is no longer emitted by
+# enumerate_seats, so painting a `grok__grok-*` ledger entry each tick only
+# reports phantom walled capacity in health counts. When a human re-wires
+# grok (`grok login --device-auth` + re-adding it to models.json), painting
+# resumes automatically. If models.json is missing/unreadable we fail open
+# (paint as before) so the dead-decoy watch is never silently dropped.
+grok_enumerated() {
+    if [[ -f "$MODELS_JSON" ]] && command -v jq >/dev/null 2>&1; then
+        jq -e '.providers.grok != null' "$MODELS_JSON" >/dev/null 2>&1
+    else
+        return 0
+    fi
+}
+
 write_both_models() {
     local provider="$1" http_status="$2" health_class="$3" seat_dead="$4" failure_mode="$5"
+    if [[ "$provider" == "grok" ]] && ! grok_enumerated; then
+        log "grok decoy pruned from models.json (fleet-ops#1380): skipping grok__grok-* ledger write; health-count phantom not re-painted (triage/auto-file still fire)"
+        return 0
+    fi
     write_ledger "$provider" "grok-4.6" "$http_status" "$health_class" "$seat_dead" "$failure_mode"
     write_ledger "$provider" "grok-4.5" "$http_status" "$health_class" "$seat_dead" "$failure_mode"
 }

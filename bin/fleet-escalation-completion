@@ -199,6 +199,59 @@ auditor_claimed() {
 
 chain_state_file() { printf '%s/%s.json\n' "$STATE_DIR" "$1"; }
 
+# Orphan-chain sweep (fleet-ops#2614). The state dir accumulates one
+# .json per chain-hash. When a same-unit re-fire writes a fresh STOP-REASON,
+# the OLD hash's state file is orphaned (the main flow only updates the
+# hash of the CURRENT STOP-REASON). With the writer-side same-unit
+# re-fire dedupe in unit-escalation-write the orphan rate drops to near
+# zero, but cross-unit re-fires (a transient fault on a NEW unit that
+# races the previous trip's resolution) still leak one file per race.
+# Without a sweep those files sit in_flight forever — they never get the
+# terminal=green|pending-closeout|nish-wall|expired update because the main
+# flow's `cf=$(chain_state_file "$hash")` only ever points at the current
+# hash. Two-track pruning:
+#   * stale-past-budget (first_seen < now-BUDGET and no terminal field):
+#     mark terminal=expired. Lets a follow-up `find -mmin` reaper delete
+#     the file without losing the evidence that a chain ran (the JSON
+#     keeps first_seen and the orphan hash).
+#   * stale-cross-hash (terminal already set but file older than 2x
+#     budget): delete outright. The chain closed; the file is garbage.
+# Both run inside the existing flow so no new organ / no new metric.
+sweep_orphan_chains() {
+    local current_hash="$1"
+    local prune_marked=0
+    local prune_deleted=0
+    # Best-effort: tolerate missing jq, missing state dir, unreadable files.
+    [ -d "$STATE_DIR" ] || return 0
+    local f now_s age_s
+    now_s="$(date -u +%s)"
+    for f in "$STATE_DIR"/*.json; do
+        [ -e "$f" ] || continue
+        local fhash
+        fhash=$(basename "$f" .json)
+        [ "$fhash" = "$current_hash" ] && continue
+        first_seen=$(jq -r '.first_seen // 0' "$f" 2>/dev/null || echo 0)
+        terminal=$(jq -r '.terminal // ""' "$f" 2>/dev/null || echo "")
+        case "$first_seen" in ''|*[!0-9]*) first_seen=0 ;; esac
+        age_s=$(( now_s - first_seen ))
+        if [ -z "$terminal" ] && [ "$first_seen" -gt 0 ] && [ "$age_s" -ge "$BUDGET" ]; then
+            # In-flight past budget. Mark terminal=expired so it stops
+            # being considered "open" by anything that reads the file.
+            # Preserve original first_seen; reset stall_count so a fresh
+            # chain with the same hash starts clean.
+            printf '{"hash":"%s","first_seen":%s,"stall_count":0,"terminal":"expired"}\n' \
+                "$fhash" "$first_seen" > "$f" 2>/dev/null || true
+            prune_marked=$((prune_marked + 1))
+        elif [ -n "$terminal" ] && [ "$age_s" -ge $(( BUDGET * 2 )) ]; then
+            rm -f "$f" 2>/dev/null || true
+            prune_deleted=$((prune_deleted + 1))
+        fi
+    done
+    if [ "$prune_marked" -gt 0 ] || [ "$prune_deleted" -gt 0 ]; then
+        log "orphan-chain sweep: marked=$prune_marked deleted=$prune_deleted current_hash=${current_hash:0:12}"
+    fi
+}
+
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
@@ -209,6 +262,12 @@ violations=0
 # Prune the state dir of chains older than 2x budget; nothing to enforce.
 if [[ ! -f "$STOP_REASON" ]] || reason_is_terminal "$(jq -r '.reason // ""' "$STOP_REASON" 2>/dev/null || true)"; then
     # Prune: old chain files (older than 2x budget) are historical.
+    # Fleet-ops#2614: when STOP-REASON is absent/terminal, treat ALL state
+    # files as orphans (no current hash to compare against) and apply the
+    # same expired+aged-terminal rules. Without this, the orphan chain
+    # files left behind from a previous open trip sit forever until a
+    # later tick happens to find the dir + 2x budget.
+    sweep_orphan_chains "__no_current_hash__"
     find "$STATE_DIR" -name '*.json' -mmin +$(( (BUDGET * 2) / 60 )) -delete 2>/dev/null || true
     log "no open escalation chain (STOP-REASON absent or terminal) — clean"
     exit 0
@@ -218,6 +277,12 @@ reason=$(jq -r '.reason // ""' "$STOP_REASON" 2>/dev/null || true)
 unit=$(jq -r '.detail.unit // ""' "$STOP_REASON" 2>/dev/null || true)
 hash=$(sha256sum "$STOP_REASON" | awk '{print $1}')
 log "open escalation chain: reason=$reason unit=$unit hash=${hash:0:12}"
+
+# Fleet-ops#2614: prune orphan chain state files BEFORE the main logic.
+# Without this the orphan rate (one file per cross-unit re-fire race) leaks
+# until 2x budget; with the sweep they are marked terminal=expired in this
+# tick so they stop appearing as "in_flight" if anything scans the dir.
+sweep_orphan_chains "$hash"
 
 # Pipeline-active guard: a live dispatch means the closeout is in flight —
 # the chain is progressing, not stalled. Use the mocked systemctl in tests.

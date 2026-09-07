@@ -1080,6 +1080,65 @@ grep -rl "signal: failed-command-flagged/" "$scratch/gh-issues" | wc -l | grep -
 ok "auto-file dedupes the signal key on a second run"
 rm -f "$sessions/swallowed.jsonl"
 
+# --- 7a-prime. FAIL line sizes the debt (fleet-ops#2726) ---------------------
+# With a per-tick CAP of 1 and 3 findings, the first tick files 1 and defers
+# 2; the FAIL line reports both so the loud-fail state is observable. On the
+# next tick the already-filed finding is deduped and ONE more files (deferred
+# findings are never dropped — they stay findings and the next tick drains
+# them).
+rm -rf "$gh_store"/*
+mkdir -p "$gh_store"
+for i in one two three; do
+  write_session "capfc-$i" '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_bad","name":"bash","arguments":{"command":"false"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_bad","toolName":"bash","isError":true,"content":[{"type":"text","text":"\n\nCommand exited with code 1"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Moving on."}]}}'
+done
+set +e
+FLEET_FAILED_COMMAND_SESSIONS="$scratch/sessions" \
+FLEET_FAILED_COMMAND_LIB="$lib" \
+FLEET_FAILED_COMMAND_WINDOW_HOURS="24" \
+FLEET_FAILED_COMMAND_GRACE_MINUTES="0" \
+FLEET_FAILED_COMMAND_NOW="2026-08-27T00:10:00Z" \
+FLEET_FAILED_COMMAND_FILE_ISSUES=1 \
+FLEET_FAILED_COMMAND_CAP=1 \
+FLEET_FAILED_COMMAND_LEDGER="$scratch/ledger-capfc" \
+FLEET_FAILED_COMMAND_ISSUE_REPO="Nishfleet/fleet-ops" \
+GH="$scratch/gh" \
+GH_MOCK_STORE="$gh_store" \
+FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
+  "$bin" >/dev/null 2>"$scratch/err-capfc.log"
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "cap run should exit 1 (got $rc) $(cat "$scratch/err-capfc.log")"
+grep -q "FAILED-COMMAND-FAIL" "$scratch/err-capfc.log" || fail "cap run missing FAIL line $(cat "$scratch/err-capfc.log")"
+grep -q "filed=1 deferred=2" "$scratch/err-capfc.log" || fail "FAIL line must report filed=1 deferred=2 $(cat "$scratch/err-capfc.log")"
+ok "FAIL line sizes the debt: filed=1 deferred=2 (fleet-ops#2726)"
+# Second tick: the already-filed finding is deduped (not re-filed), and one
+# more of the two deferred findings is processed via the filing-time
+# same-problem gate (fleet-ops#1212) — deferred findings are never silently
+# dropped. FAIL line moves to filed=1 deferred=1.
+set +e
+FLEET_FAILED_COMMAND_SESSIONS="$scratch/sessions" \
+FLEET_FAILED_COMMAND_LIB="$lib" \
+FLEET_FAILED_COMMAND_WINDOW_HOURS="24" \
+FLEET_FAILED_COMMAND_GRACE_MINUTES="0" \
+FLEET_FAILED_COMMAND_NOW="2026-08-27T00:10:00Z" \
+FLEET_FAILED_COMMAND_FILE_ISSUES=1 \
+FLEET_FAILED_COMMAND_CAP=1 \
+FLEET_FAILED_COMMAND_LEDGER="$scratch/ledger-capfc" \
+FLEET_FAILED_COMMAND_ISSUE_REPO="Nishfleet/fleet-ops" \
+GH="$scratch/gh" \
+GH_MOCK_STORE="$gh_store" \
+FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
+  "$bin" >/dev/null 2>"$scratch/err-capfc2.log"
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "second cap run should exit 1 (got $rc)"
+grep -q "already open" "$scratch/err-capfc2.log" || fail "second tick must dedupe the already-open finding $(cat "$scratch/err-capfc2.log")"
+grep -q "filed=1 deferred=1" "$scratch/err-capfc2.log" || fail "second tick must drain one deferred finding (filed=1 deferred=1) $(cat "$scratch/err-capfc2.log")"
+ok "deferred findings are drained on the next tick, never silently dropped (fleet-ops#2726)"
+for i in one two three; do rm -f "$sessions/capfc-$i.jsonl"; done
+
 # --- 7b. origin #650: cp /tmp/install.sh cannot-stat walked past -------------
 write_session "install-cp" '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_cp","name":"bash","arguments":{"command":"cp /tmp/install.sh /tmp/agent-cron-seat.6nGbWr/install.sh"}}]}}
 {"type":"message","message":{"role":"toolResult","toolCallId":"call_cp","toolName":"bash","isError":true,"content":[{"type":"text","text":"Scratch: /tmp/agent-cron-seat.6nGbWr cp: cannot stat '"'"'/tmp/install.sh'"'"': No such file or directory\n\nCommand exited with code 1"}]}}

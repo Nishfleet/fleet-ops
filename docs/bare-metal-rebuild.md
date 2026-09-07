@@ -119,6 +119,52 @@ systemctl --user daemon-reload
 `install.sh` symlinks the user units and copies the system-scope entries. It
 enables non-template timers and services that have `[Install]`.
 
+`fleet-bare-metal-rebuild --apply` also masks every unit listed in the
+manifest's `masked_units` (fleet-ops#2122). These are system units that drive
+hardware the VPS does not have — `openipmi.service` on a box with no IPMI BMC.
+Masking at provision time stops the unit re-entering failed state and paging
+`SystemUnitFailed` every alert cycle. `fleet-bare-metal-rebuild --check`
+verifies each is still masked, so drift is caught.
+
+#### Do NOT mask `systemd-networkd-wait-online.service` (fleet-ops#3103)
+
+`systemd-networkd-wait-online.service` must **not** be added to
+`masked_units`. The 2026-09-03..04 SystemUnitFailed incident (live 2026-09-04,
+fleet-ops#3103) is the counter-example:
+
+- Root cause of the flapping failure: the netplan-generated .network left eth0
+  Setup stuck at `configuring` (networkd waited on a DHCPv6 lease that never
+  arrives on this host), so wait-online could never reach its online condition
+  and exited 1 (Result=exit-code), paging `SystemUnitFailed`. The host was
+  online the whole time (eth0 routable, default route via 159.195.212.1).
+- The repair is the network/setup completing, not a mask: when eth0 reaches
+  `routable (configured)` (networkctl status eth0), wait-online succeeds
+  immediately. The static netplan config (no DHCPv6) is correct.
+- Masking does not hold here: netplan owns this unit and regenerates + re-enables
+  it on netplan apply, silently removing an /etc/systemd/system mask within
+  minutes. A `masked_units` entry for it makes `--check`/`live_check` report a
+  permanent violation (unit not masked) and cannot keep it masked anyway.
+  A 2026-09-04 double-merge briefly added it to `masked_units`; it was reverted
+  the same day for these reasons.
+
+If it flaps again, verify eth0 setup completes (`networkctl status eth0` shows
+`routable (configured)`), reset the failed state or `systemctl restart
+systemd-networkd-wait-online`, and confirm the netplan config stays static only.
+Do not mask it and do not hand-edit away netplan's regeneration of it.
+
+### No revival quarantine-boot gate
+
+There is no quarantine-boot gate and none is required. A 2026-08-28 ledger
+entry once queued a `hostinger-kvm4` revival with a quarantine-boot
+requirement (its disk predates the purges); a same-day entry retired and
+**voided** that revival — the box is decommissioned, "never revive, never
+investigate", and `netcup-rs2000` is the sole fleet host. The
+`masked_units` provision-time masking above is the only mask-all-old-units
+gate this host needs, because there is no second host rejoining the fleet.
+See `config/rule-enforcement.json` rows `led-2026-08-28-hostinger-kvm4-revival`
+(voided) and `led-2026-08-28-hostinger-kvm4-retired`, and the decisions
+ledger for 2026-08-28. Closes fleet-ops#2136.
+
 ### 8. Verify the live state
 
 Run the drills:

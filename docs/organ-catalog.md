@@ -24,7 +24,10 @@ cheaper than building, because prose bans lose to urgency at decision time.
 
 | Job class | Existing owner | Unit / mechanism | Ref |
 |---|---|---|---|
-| Fleet heartbeat / liveness | fleet-heartbeat | `fleet-heartbeat.timer` | #468 |
+| Fleet heartbeat / liveness (host-local) | fleet-heartbeat | `fleet-heartbeat.timer` | #468, #3270 |
+| Lifecycle-label sweep (webhook) | lifecycle-label-sweep | `lifecycle-label-sweep.{service,timer}` | #3270 |
+| Merged-PR observe-to-close (webhook) | fleet-merged-pr-close | `fleet-merged-pr-close.{service,timer}` | #3270 |
+| Duplicate-issue drain (webhook) | fleet-issue-close-duplicates | `fleet-issue-close-duplicates.{service,timer}` | #3270 |
 | Tight merge→live deploy | fleet-deploy-check | `fleet-deploy-check.timer` | #468, TOP GEAR |
 | Blind audit / gap-closure | fleet-blind-audit | `fleet-blind-audit.timer` | #377 |
 | Resilience drill | fleet-resilience-drill | `fleet-resilience-drill.timer` | #1010 |
@@ -33,11 +36,11 @@ cheaper than building, because prose bans lose to urgency at decision time.
 | OOM drill hog | oomd-drill-hog | `oomd-drill-hog.service` | #1010 |
 | Weekly review / watches | fleet-weekly-fleet-review | `fleet-weekly-fleet-review.timer` | #1146 |
 | Asset census | fleet-asset-census | `fleet-asset-census.timer` | #1149 |
+| Baseline-delta | fleet-baseline-delta | `fleet-baseline-delta.timer` | #1151 |
 | GEO/AEO probe | fleet-aeo-probe | `fleet-aeo-probe.timer` | #1245 |
 | Console tile truth | fleet-console-pi | `fleet-console-pi.timer` | #1157 |
 | Seat recovery | fleet-seat-recovery | `fleet-seat-recovery.{path,service}` | seat governor |
 | Metrics export | fleet-metrics-export | `fleet-metrics-export.timer` | organ: metrics-export |
-| Completion canary | fleet-completion-canary | `fleet-completion-canary.timer` | organ: completion-canary |
 | Scout canary | pi-scout@ | `pi-scout@.timer` | organ: scout |
 | Intake (per repo) | pi-intake@ | `pi-intake@<repo>.timer` | intake-repos.json |
 | Intake repair | pi-intake-repair@ | `pi-intake-repair@<repo>.timer` | stock Pi |
@@ -56,7 +59,6 @@ cheaper than building, because prose bans lose to urgency at decision time.
 | Siterep live canary | siterep-live-canary | `siterep-live-canary.timer` | canary |
 | Siterep uptime | siterep-uptime | `siterep-uptime.timer` | uptime rail |
 | Quality research (weekly) | quality-research-weekly | `quality-research-weekly.timer` | #457 |
-| Opus duty-officer watch | opus-heartbeat(+ -thorough) | `opus-heartbeat*.timer` | Nish-ordered |
 | Boundary-notify (Nish-reserved) | nish-boundary-notify | `nish-boundary-notify.service` | standing rule |
 | Memory curator | nish-memory-curator | `nish-memory-curator.timer` | memory compound |
 | VPS maintenance (quiesce/deadman/update) | vps-maintenance-* / vps-weekly-update | `vps-maintenance-*.timer` | systemd-by-default |
@@ -64,8 +66,10 @@ cheaper than building, because prose bans lose to urgency at decision time.
 | Alert→repair bridge | prometheus-am-executor | `prometheus-am-executor.service` | alert pipeline |
 | Transport integrity | pi-transport-check | `pi-transport-check.timer` | Pi transport |
 | Daily digest | daily-digest | `daily-digest.timer` | Pi-era data |
+| Evening highlights digest | evening-highlights-digest | `evening-highlights-digest.timer` | fleet-ops#1384 (vacation window) |
 | Product nightly site check | tinystudio-live-site-check | `tinystudio-live-site-check.timer` | product-ops |
 | Product cron | agent-cron-0509-* | `agent-cron-0509-*.timer` | product cron |
+| pi-packet log rotation | pi-packet-logrotate | `pi-packet-logrotate.timer` | #3272 |
 
 ## Job classes with NO existing organ — do not build, propose
 

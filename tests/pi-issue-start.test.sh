@@ -78,3 +78,12 @@ bash "$here/pstack-worker-prompt.test.sh" || fail "pstack worker prompt contract
 # pi-systemd-run, never nohup. Hosted here for the same CI-host reason
 # (workers have no Workflows permission).
 bash "$here/worker-prompt-systemd-run.test.sh" || fail "worker-prompt-systemd-run tests failed"
+# fleet-ops#3274 (child of #3140): heavy|keystone packets run the worker as
+# MANAGER (plan phases, delegate to fresh stock worker/reviewer subagents,
+# tick .fleet/plan.md). Hosted here so CI fails if someone deletes the
+# manager-mode section from worker.md without a workflow edit (fleet-ops#82).
+bash "$here/worker-prompt-manager-mode.test.sh" || fail "worker-prompt-manager-mode tests failed"
+# fleet-ops#3708: one reviewer round before the auto-merge arm on product
+# PRs, adjudicated in the PR body. Hosted here for the same CI-host reason
+# (workers have no Workflows permission).
+bash "$here/worker-prompt-reviewer-round.test.sh" || fail "worker-prompt-reviewer-round tests failed"

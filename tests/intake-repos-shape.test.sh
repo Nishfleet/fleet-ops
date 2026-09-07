@@ -128,6 +128,9 @@ bash "$here/intake-reconcile-deploy-checkout.test.sh"
 # fleet-ops#376: unlabeled open issues must get a lifecycle label within one
 # existing heartbeat tick. Named ci.yml step is out of band for the worker App.
 bash "$here/lifecycle-label-sweep.test.sh"
+# fleet-ops#4022: scout-candidate admission/bounce + cooldown re-apply guard.
+# Named ci.yml step is out of band for the worker App, so it nests here.
+bash "$here/lifecycle-label-sweep-admission.test.sh"
 # fleet-ops#156 finding 9 / #177 / #239: heartbeat queue, claim, and
 # verify_timers must all derive from this file. Named ci.yml steps are
 # out of band for the worker App.

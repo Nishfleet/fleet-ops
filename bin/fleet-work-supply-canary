@@ -1,4 +1,17 @@
 #!/usr/bin/env bash
+
+# Use the nishfleet-worker App token for any GitHub write. Fail closed if
+# the App cannot mint and no token was inherited from a parent organ, so a
+# dead App never falls through to the human gh identity (fleet-ops#3445).
+# Human gh is read-only for organs; GH Actions (tests) has no App creds and
+# stubs gh as read-only, so skip minting there.
+if [[ -z "${GH_TOKEN:-}" && "${GITHUB_ACTIONS:-}" != "true" && "${GH:-gh}" == "gh" ]]; then
+    export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
+    _wt="${NISHFLEET_WORKER_TOKEN_BIN:-${HOME:-/home/nish}/.local/bin/worker-token}"
+    _minted="$("$_wt" --print)" || { echo "fleet-ops#3445: $_wt --print failed - refusing human-gh writes" >&2; exit 1; }
+    eval "$_minted"
+    unset _wt _minted
+fi
 # fleet-work-supply-canary — 24h/12h drain trigger (fleet-ops#540).
 #
 # Ledger 2026-08-26: scouts run on a 24-hour work buffer; rest when the
@@ -17,6 +30,14 @@
 # Subcommands:
 #   (default) / canary   heartbeat canary (fail-loud)
 #   gate <repo>          systemd ExecCondition: 0=run, 1=rest, 255=error
+#                        fleet-ops#3547: rest needs BOTH runway >= REST_H
+#                        AND live supply (created-24h >= 20, agent-ready
+#                        >= 40); thin supply runs the scout regardless of
+#                        runway. fleet-ops itself is exempt (#3254 budget).
+#                        fleet-ops#3418: also rests (1) when the scout is
+#                        parked (scout-futility consecutive_dry >= N and
+#                        hours < BUFFER_H) so a green-and-sterile loop stops
+#                        burning cycles; lifts when hours >= BUFFER_H.
 #   hours <repo>         JSON snapshot of ready/drain/hours/action
 #   --help               usage
 #
@@ -27,7 +48,12 @@
 #   4. auditor panel (prompts/auditor.md, 2-of-3 gate) is missing.
 #   5. gh watch broken (list failed, jq missing).
 #   6. Live: hours < 12 and the scout has been idle longer than
-#      FLEET_WORK_SUPPLY_MAX_IDLE_S (default 9000 = 2.5h).
+#      FLEET_WORK_SUPPLY_MAX_IDLE_S (default 15000 = ~4.17h; must exceed the
+#      scout timer's normal max idle of OnCalendar 4h + RandomizedDelaySec 5m
+#      = 14700s, so a healthy cadence never false-positives. fleet-ops#1144:
+#      the prior 9000s default was below the 4h timer interval, so the scout
+#      was ALWAYS "idle" >2.5h in the 1.5h pre-fire window and the canary
+#      filed a go-ham-idle violation on every heartbeat whenever work <12h).
 #
 # No new scheduler. Run by fleet-heartbeat-tier1 block 27.
 #
@@ -36,10 +62,16 @@
 #   FLEET_WORK_SUPPLY_CLOSED_JSON   closed-issue JSON fixture
 #   FLEET_WORK_SUPPLY_NOW_EPOCH     clock (default date -u +%s)
 #   FLEET_WORK_SUPPLY_HOURS         skip measurement; use this hours value
+#   FLEET_WORK_SUPPLY_CREATED_24H   override issues-created-last-24h (gate floor)
+#   FLEET_WORK_SUPPLY_MIN_CREATED_24H  gate floor, default 20 (fleet-ops#3547)
+#   FLEET_WORK_SUPPLY_MIN_READY     gate floor, default 40 (fleet-ops#3547)
+#   FLEET_WORK_SUPPLY_FLOOR_SKIP_REPOS  repos exempt from the floor, default
+#                                   "fleet-ops" (control plane, #3254 budget)
 #   FLEET_WORK_SUPPLY_WINDOW_H      drain window hours (default 6)
 #   FLEET_WORK_SUPPLY_GOHAM_H       default 12
 #   FLEET_WORK_SUPPLY_REST_H        default 24
-#   FLEET_WORK_SUPPLY_MAX_IDLE_S    default 9000
+#   FLEET_WORK_SUPPLY_MAX_IDLE_S    default 15000 (must exceed scout timer
+#                                     cadence 4h + 5m jitter = 14700s; see #1144)
 #   FLEET_WORK_SUPPLY_SCOUT_STATE   active|activating|inactive fixture
 #   FLEET_WORK_SUPPLY_LAST_TRIGGER_AGE_S  idle age fixture
 #   FLEET_INTAKE_REPOS_JSON
@@ -77,7 +109,7 @@ INTAKE_JSON="${FLEET_INTAKE_REPOS_JSON:-$FLEET_OPS_REPO/config/intake-repos.json
 TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
 REPO="${FLEET_WORK_SUPPLY_REPO:-Nishfleet/fleet-ops}"
 FILE_ISSUES="${FLEET_WORK_SUPPLY_FILE:-1}"
-MAX_IDLE_S="${FLEET_WORK_SUPPLY_MAX_IDLE_S:-9000}"
+MAX_IDLE_S="${FLEET_WORK_SUPPLY_MAX_IDLE_S:-15000}"
 
 usage() {
     cat <<'EOF'
@@ -162,6 +194,63 @@ fetch_ready() {
     printf '%s\n' "$n"
 }
 
+# Issues created in Nishfleet/<short> in the last 24h (any state, any label).
+# Empty string on gh failure. fleet-ops#3547: hours-of-work alone cannot tell
+# "workers draining a healthy buffer" from "blocked issues were re-released
+# and nobody is filing product work" — 2026-09-05 the 0509 scout rested at
+# hours=63-66 while created-24h had fallen to 5 (late Aug: 40-100/day).
+# Real supply only: AUTO-REVERT HALT notices (0509 auto-revert.yml files one
+# per push while a post-merge check is red — 40 in 24h on 2026-09-06) and
+# noise-class issues are not work. Same filter in bin/scout-futility-check.
+SUPPLY_ISSUE_COUNT_JQ='[.[]|select((.title|startswith("AUTO-REVERT HALT")|not) and ([.labels[]?.name]|index("noise-class")|not))]|length'
+fetch_created_24h() {
+    local short="$1" n since now_s
+    if [[ -n "${FLEET_WORK_SUPPLY_CREATED_24H:-}" ]]; then
+        printf '%s\n' "$FLEET_WORK_SUPPLY_CREATED_24H"
+        return 0
+    fi
+    now_s="${FLEET_WORK_SUPPLY_NOW_EPOCH:-$(date -u +%s)}"
+    since=$(date -u -d "@$((now_s - 86400))" +%Y-%m-%dT%H:%M:%SZ)
+    n=$("$GH" issue list -R "Nishfleet/${short}" --state all --limit 200 \
+        --search "created:>=${since}" --json number,title,labels \
+        --jq "$SUPPLY_ISSUE_COUNT_JQ" 2>/dev/null || true)
+    printf '%s\n' "$n"
+}
+
+# fleet-ops#3547: product-supply floor. Returns 0 (floor OPEN -> run the
+# scout) when the repo's supply is thin regardless of runway: issues created
+# in the last 24h < MIN_CREATED (default 20) or agent-ready < MIN_READY
+# (default 40). Returns 1 when supply is healthy or the repo is exempt
+# (fleet-ops: the control plane's own scout must not be pushed harder — the
+# 20% self-maintenance budget, fleet-ops#3254). If created-24h cannot be
+# measured the floor stays closed and the runway rule decides (logged), so a
+# gh hiccup never turns into a scout storm.
+supply_floor_open() {
+    local short="$1" snap="$2" ready created min_created min_ready r
+    local -a skip
+    read -r -a skip <<<"${FLEET_WORK_SUPPLY_FLOOR_SKIP_REPOS:-fleet-ops}"
+    for r in "${skip[@]}"; do
+        [[ "$short" == "$r" ]] && return 1
+    done
+    min_created="${FLEET_WORK_SUPPLY_MIN_CREATED_24H:-20}"
+    min_ready="${FLEET_WORK_SUPPLY_MIN_READY:-40}"
+    is_uint "$min_created" || min_created=20
+    is_uint "$min_ready" || min_ready=40
+    ready=$(jq -r '.ready' <<<"$snap")
+    is_uint "$ready" || ready=0
+    created=$(fetch_created_24h "$short")
+    if ! is_uint "$created"; then
+        log "gate: $short supply floor: created-24h unmeasured ('${created}') — runway rule decides"
+        return 1
+    fi
+    if [[ "$created" -lt "$min_created" || "$ready" -lt "$min_ready" ]]; then
+        log "gate: $short supply floor OPEN: created_24h=$created (min $min_created) ready=$ready (min $min_ready) — run the scout regardless of runway (fleet-ops#3547)"
+        return 0
+    fi
+    log "gate: $short supply floor closed: created_24h=$created ready=$ready — runway rule decides"
+    return 1
+}
+
 # Fetch closed agent-ready JSON. Empty on failure.
 fetch_closed_json() {
     local short="$1"
@@ -215,13 +304,51 @@ cmd_hours() {
 
 # ExecCondition: 0 run (hours < 24), 1 skip rest, 255 error.
 cmd_gate() {
-    local short="$1" snap hours action
+    local short="$1" snap hours action park_state pdry park_n park_buf
     valid_repo "$short" || { log "gate: invalid repo '$short'"; return 255; }
     snap=$(snapshot "$short") || { log "gate: gh/measurement failed for $short"; return 255; }
     hours=$(jq -r '.hours_of_work' <<<"$snap")
     action=$(jq -r '.action' <<<"$snap")
     log "gate: $short hours=$hours action=$action"
+    # fleet-ops#3547: runway alone is not supply. Thin product supply
+    # (created-24h < 20 or agent-ready < 40) opens the floor and runs the
+    # scout regardless of runway. The floor also takes precedence over a
+    # scout-futility park: a critically thin repo that the futility tracker
+    # parked is exactly when the scout must try again — the park's
+    # escalate-senior path has not refilled supply (that is why the floor is
+    # open) and one scout run is not the burn the park guards against.
+    # fleet-ops is exempt (supply_floor_open returns closed). Returns 0 (run)
+    # before the park or runway rest can bind.
+    if supply_floor_open "$short" "$snap"; then
+        return 0
+    fi
+    # fleet-ops#3418: auto-park a green-and-sterile scout. Once
+    # scout-futility-check has escalated (consecutive_dry >= N), the scout
+    # has proven N times it cannot grow the buffer below BUFFER_H. Running
+    # it every 4h burns cycles for nothing — the escalate-senior ticket is
+    # the resolution path. Park (rest) until the buffer refills (hours >=
+    # BUFFER_H), then lift so the scout gets another chance; a still-sterile
+    # run re-increments consecutive_dry and re-parks. The park is stable:
+    # ExecStopPost on a skipped scout does NOT increment consecutive_dry
+    # (fleet-ops#1277 missing-begin branch), the timer still fires so
+    # FleetScoutStale stays quiet (last_run_epoch is refreshed by that
+    # branch), and the go-ham-idle canary never fires because the timer's
+    # LastTriggerUSec stays inside MAX_IDLE_S (4h cadence < 15000s).
+    park_n="${SCOUT_FUTILITY_N:-3}"
+    park_buf="${SCOUT_FUTILITY_BUFFER_H:-${SCOUT_FUTILITY_BUFFER:-12}}"
+    park_state="${SCOUT_FUTILITY_STATE_DIR:-$HOME/.local/state/scout-futility}/${short}.state"
+    if [[ -f "$park_state" ]]; then
+        pdry=$(grep -E "^consecutive_dry=" "$park_state" 2>/dev/null | head -n1 | cut -d= -f2-)
+        if is_uint "$pdry" && is_uint "$park_n" && is_uint "$park_buf" \
+            && [[ "$pdry" -ge "$park_n" ]] && is_uint "$hours" \
+            && [[ "$hours" -lt "$park_buf" ]]; then
+            log "gate: $short parked (scout-futility consecutive_dry=$pdry >= N=$park_n, hours=$hours < buffer=$park_buf) — rest until buffer refills; escalate-senior ticket is the resolution path"
+            return 1
+        fi
+    fi
     if [[ "$action" == "rest" ]]; then
+        # Runway rest binds only when the supply floor (checked above) is
+        # closed, i.e. supply is healthy (created-24h >= 20 and ready >= 40).
         return 1
     fi
     return 0

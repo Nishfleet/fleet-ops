@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# fleet-who-stopped — answer "who stopped it" from the audit trail
+# (fleet-ops#4266). A clean `systemctl stop` of a healthy unit yields
+# Result=success and OnFailure never fires; the audit record of the
+# systemctl/kill execve is the only trace. This helper is the repo-side
+# query for that trail, used by:
+#   - pi-detached-deadman (ExecStopPost) — the line lands in the unit
+#     journal and therefore the STOP-REASON detail,
+#   - the DetachedJobDied repair worker — post the line to the auditor.
+#
+# REQUIREMENT: auditd + the execve watch shipped as
+# config/audit/rules.d/30-fleet-unit-stop.rules (installed by
+# install.sh --system; auditd is in bare-metal-rebuild-manifest.json
+# packages.core). Without auditd this exits 0 with a loud note — a
+# diagnostic helper must never fail the repair it is feeding.
+#
+# Usage: fleet-who-stopped [--last N] <unit>...
+#   --last N   cap decoded events (default 3)
+#
+# Prints the decoded audit records (ausearch -i) whose text names the unit,
+# most recent last. Exit 0 always (best-effort).
+
+set -Eeuo pipefail
+
+ausearch_bin="$(command -v ausearch || true)"
+last=3
+units=()
+
+emit_usage() { echo "usage: fleet-who-stopped [--last N] <unit>..." >&2; }
+
+# join_by sep "$@" — join args with sep without touching IFS.
+join_by() {
+    local sep="$1"; shift
+    local out="" first=1 item
+    for item in "$@"; do
+        if [[ $first -eq 1 ]]; then
+            out="$item"; first=0
+        else
+            out+="$sep$item"
+        fi
+    done
+    printf '%s' "$out"
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --last)
+            [[ $# -ge 2 && "$2" =~ ^[0-9]+$ ]] || { emit_usage; exit 2; }
+            last="$2"; shift 2 ;;
+        -h|--help) emit_usage; exit 0 ;;
+        *)
+            [[ "$1" == "--" ]] && { shift; continue; }
+            units+=("$1"); shift ;;
+    esac
+done
+[[ ${#units[@]} -ge 1 ]] || { emit_usage; exit 2; }
+
+if [[ -z "$ausearch_bin" ]]; then
+    echo "fleet-who-stopped: ausearch NOT INSTALLED — run 'install.sh --system' and install auditd (apt-get -y install auditd) or wait for vps-weekly-update" >&2
+    exit 0
+fi
+
+# ausearch needs either root (sudo -n) or CAP_AUDIT_READ (bare call).
+raw=""
+if command -v sudo >/dev/null 2>&1; then
+    raw="$(sudo -n "$ausearch_bin" -k fleet-unit-stop -ts yesterday -i 2>/dev/null || true)"
+fi
+if [[ -z "$raw" ]]; then
+    raw="$( "$ausearch_bin" -k fleet-unit-stop -ts yesterday -i 2>/dev/null || true)"
+fi
+if [[ -z "$raw" ]]; then
+    echo "fleet-who-stopped: no audit trail for key=fleet-unit-stop — is auditd running and rules loaded (ausearch -k fleet-unit-stop | head)?" >&2
+    exit 0
+fi
+
+# The key covers EVERY systemctl/kill execve; narrow to records naming the
+# unit(s). Multi-line decoded records are separated by '----'.
+matched=""
+current=""
+while IFS= read -r line; do
+    if [[ "$line" == "----" ]]; then
+        if [[ -n "$current" ]]; then
+            for u in "${units[@]}"; do
+                if [[ "$current" == *"$u"* ]]; then
+                    matched+="$current"$'\n'
+                    break
+                fi
+            done
+        fi
+        current=""
+        continue
+    fi
+    current+="$line"$'\n'
+done <<<"$raw"
+if [[ -n "$current" ]]; then
+    for u in "${units[@]}"; do
+        if [[ "$current" == *"$u"* ]]; then
+            matched+="$current"$'\n'
+            break
+        fi
+    done
+fi
+
+if [[ -z "$matched" ]]; then
+    echo "fleet-who-stopped: no audit records naming $(join_by , "${units[@]}") in the last 24h (key=fleet-unit-stop, all systemctl/kill execve)" >&2
+    exit 0
+fi
+
+echo "fleet-who-stopped: audit trail for: $(join_by , "${units[@]}")"
+awk -v n="$last" 'BEGIN{RS=""} {rec[NR]=$0} END {for (i=NR-n+1; i<=NR && i>=1; i++) print rec[i] "\n"}' <<<"$matched"
+exit 0

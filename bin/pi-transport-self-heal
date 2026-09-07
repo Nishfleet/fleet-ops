@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+# Self-heal the pi transport when the ~/.local/bin/pi symlink/bin is clobbered.
+# Wired as ExecStart on pi-transport-check.service via a drop-in (fleet-ops#3111):
+# the base unit's ExecStart (the pi-transport-check probe, owned by the pi
+# package) is detection-only and escalates via OnFailure — but the escalation
+# path itself runs pi, so a clobbered bin meant nothing could repair it and the
+# fleet starved for 33h while every empty run poisoned a seat bench.
+#
+# This wrapper IS the ExecStart. It is guarded by the existing pi-transport-check
+# probe (it calls the probe before and after healing), and heals via
+# `npm rebuild -g @earendil-works/pi-coding-agent` — npm re-creates the bin
+# symlink, so there is NO hand-written symlink logic (Nish 2026-09-04). If npm
+# rebuild cannot, it reinstalls the pinned version from the installed
+# package.json. Only if the package ITSELF is broken does it exit 1, so the
+# existing OnFailure=unit-escalation@%n.service path (10-no-direct-notify.conf)
+# fires for a genuinely unrecoverable transport.
+#
+# On a successful heal it also sweeps per-seat benches written during the
+# transport-down window into a quarantine dir (mirroring the 2026-09-04 manual
+# repair), so pick_seat does not stay NO USABLE SEAT on seats poisoned while the
+# bin was clobbered.
+set -euo pipefail
+
+PKG="@earendil-works/pi-coding-agent"
+PKG_DIR="/home/nish/.local/lib/node_modules/@earendil-works/pi-coding-agent"
+PI_BIN="${PI_BIN:-/home/nish/.local/bin/pi}"
+PROBE="${PI_TRANSPORT_CHECK:-/home/nish/.local/bin/pi-transport-check}"
+STATE_DIR="${PI_TRANSPORT_HEAL_STATE:-/home/nish/.local/state/pi-packet}"
+SEAT_LEDGER_DIR="${SEAT_LEDGER_DIR:-/home/nish/workspaces/agent-state/lanes/seats}"
+QUARANTINE_BASE="${SEAT_LEDGER_DIR}-bench-poisoned-pi-transport"
+
+log()  { printf '%s\n' "$*" >&2; }
+healed(){ printf 'PI-TRANSPORT-HEALED %s\n' "$1"; }
+run_probe() { "$PROBE" >/dev/null 2>&1; }
+
+# --- poisoned-bench sweep ---------------------------------------------------
+# On transport recovery, move per-seat bench markers written during the
+# transport-down window to a quarantine dir so pick_seat re-admits the seats
+# instead of staying NO USABLE SEAT. Mirrors the 2026-09-04 manual repair
+# (seats-bench-poisoned-pi-transport-<ts>/). Best-effort: a sweep failure
+# never fails the heal (the transport is already back). A healthy observation
+# (health_class=healthy) is NEVER swept — it is real.
+sweep_poisoned_benches() {
+	local stamp="$1"
+	[[ -d "$SEAT_LEDGER_DIR" ]] || return 0
+	local q="$QUARANTINE_BASE-$stamp"
+	mkdir -p "$q" 2>/dev/null || return 0
+	local f moved=0 cls
+	while IFS= read -r -d '' f; do
+		cls=$(jq -r '.health_class // ""' "$f" 2>/dev/null || true)
+		[[ "$cls" == "healthy" || -z "$cls" ]] && continue
+		if mv "$f" "$q/" 2>/dev/null; then
+			moved=$((moved + 1))
+		fi
+	done < <(find "$SEAT_LEDGER_DIR" -maxdepth 1 -type f -name '*.json' -print0 2>/dev/null)
+	if (( moved > 0 )); then
+		log "PI-TRANSPORT-HEAL: quarantined $moved poisoned seat bench marker(s) to $q"
+	fi
+	return 0
+}
+
+# 1. Healthy? Nothing to do.
+if run_probe; then
+	printf 'PI-TRANSPORT-OK (no heal needed)\n'
+	exit 0
+fi
+
+log "PI-TRANSPORT-CORRUPT: pi-transport-check failed; attempting npm rebuild self-heal"
+
+# Preserve the clobbered artifact for forensics (cheap; not symlink logic —
+# npm rebuild overwrites it next). Best-effort, never blocks the heal.
+ts="$(date -u +%Y%m%dT%H%M%SZ)"
+if [[ -e "$PI_BIN" || -L "$PI_BIN" ]]; then
+	mkdir -p "$STATE_DIR" 2>/dev/null || true
+	mv -f "$PI_BIN" "$STATE_DIR/pi-bin-clobbered-$ts" 2>/dev/null || true
+fi
+
+# 2. Heal via npm rebuild (recreates the bin symlink). No hand-written symlink.
+if npm rebuild -g "$PKG" >/dev/null 2>&1; then
+	if run_probe; then
+		sweep_poisoned_benches "$ts"
+		healed "via npm rebuild"
+		exit 0
+	fi
+	log "PI-TRANSPORT-HEAL: npm rebuild ran but probe still fails"
+else
+	log "PI-TRANSPORT-HEAL: npm rebuild exited nonzero"
+fi
+
+# 3. npm rebuild could not; reinstall the pinned version.
+pinned="$(python3 -c "import json;print(json.load(open('$PKG_DIR/package.json'))['version'])" 2>/dev/null || true)"
+if [[ -n "$pinned" ]]; then
+	log "PI-TRANSPORT-HEAL: npm install -g $PKG@$pinned"
+	if npm install -g "$PKG@$pinned" >/dev/null 2>&1; then
+		if run_probe; then
+			sweep_poisoned_benches "$ts"
+			healed "via npm install@$pinned"
+			exit 0
+		fi
+		log "PI-TRANSPORT-HEAL: npm install ran but probe still fails"
+	else
+		log "PI-TRANSPORT-HEAL: npm install exited nonzero"
+	fi
+fi
+
+# 4. Unrecoverable — package itself broken. Escalate via the existing
+#    OnFailure=unit-escalation@%n.service path (this exit 1 triggers it).
+log "PI-TRANSPORT-CORRUPT: self-heal failed; package itself may be broken"
+exit 1

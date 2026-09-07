@@ -1,0 +1,16 @@
+{
+  "closed_issues": [
+    {
+      "number": 414,
+      "title": "feat(fleet): re-land the pi-audit@ senior-auditor panel",
+      "labels": [{"name": "agent-in-progress"}],
+      "closedAt": "2026-08-26T20:15:19Z",
+      "closedByPullRequestsReferences": [
+        {"number": 555, "url": "https://github.com/Nishfleet/fleet-ops/pull/555"}
+      ]
+    }
+  ],
+  "merged_prs": [
+    {"number": 555, "mergedAt": "2026-08-26T20:15:17Z"}
+  ]
+}

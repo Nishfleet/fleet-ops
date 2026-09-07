@@ -77,7 +77,7 @@ done < <(jq -r '.timers | keys[]' "$MANIFEST" | sort)
 
 ok "all manifest entries have required fields with valid enum values"
 
-# --- Shape lock: every .timer in systemd/ has a manifest entry ---
+# --- Shape lock: every .timer in systemd/ (incl. systemd/system/) has a manifest entry ---
 
 missing_repo=0
 while IFS= read -r timer_file; do
@@ -92,9 +92,9 @@ while IFS= read -r timer_file; do
     if [[ "$timer_name" == *"@"* ]] && jq -e ".timers[\"$base\"]" "$MANIFEST" >/dev/null 2>&1; then
         continue
     fi
-    echo "FAIL: systemd/$timer_name has no manifest entry" >&2
+    echo "FAIL: $timer_file has no manifest entry" >&2
     missing_repo=1
-done < <(find "$REPO_ROOT/systemd" -maxdepth 1 -name '*.timer' -type f 2>/dev/null | sort)
+done < <(find "$REPO_ROOT/systemd" -name '*.timer' -type f 2>/dev/null | sort)
 
 [[ $missing_repo -eq 0 ]] || fail "one or more repo .timer files missing from manifest"
 
@@ -134,8 +134,11 @@ if git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 fi
 [[ -n "$ORIGIN_MANIFEST" ]] && ok "origin/main manifest fetched for stale-checkout guard"
 
-# System timers we exclude (OS-managed, not fleet)
+# Non-fleet timers we exclude (OS- or runner-image-managed, not fleet).
 SYSTEM_TIMERS=(
+    # GitHub ubuntu-latest runner image ships podman's user timer as a unit
+    # file; it is image noise, not a fleet schedule (red-on-main 2026-09-02).
+    "podman-auto-update.timer"
     "launchpadlib-cache-clean.timer"
     "systemd-tmpfiles-clean.timer"
     "apt-daily-upgrade.timer"

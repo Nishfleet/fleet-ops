@@ -74,20 +74,38 @@ drill_timer_mask() {
         record "$name" true "dry-run: is-enabled reports masked is the canary/reconciler predicate"
         return 0
     fi
-    local stub="gap-closure-drill-stub-mask.timer"
-    "$SYSTEMCTL" --user mask --runtime "$stub" || {
-        record "$name" false "could not runtime-mask $stub"
+    # The real detector (lib/bare-metal-masked-units.sh) checks
+    # `is-enabled == "masked"` on provisioned masked units. The stub timer is
+    # installed as a symlink to the repo file; `mask --runtime` on a symlinked
+    # permanent unit creates a /dev/null runtime symlink but `is-enabled` still
+    # reports `enabled-runtime` (systemd quirk), so the stub is the wrong
+    # vehicle. Prove the predicate on a throwaway non-symlink unit file that
+    # can be genuinely masked, mirroring provision-time `apply_rebuild` masks.
+    local runtime_dir="${XDG_RUNTIME_DIR}/systemd/user"
+    local probe="gap-closure-drill-mask-probe.service"
+    local probe_file="$runtime_dir/$probe"
+    mkdir -p "$runtime_dir"
+    printf '[Unit]\nDescription=throwaway mask probe\n[Service]\nType=oneshot\nExecStart=/bin/true\n' >"$probe_file" || {
+        record "$name" false "could not write probe unit $probe_file"
+        return 0
+    }
+    "$SYSTEMCTL" --user daemon-reload 2>/dev/null || true
+    "$SYSTEMCTL" --user mask "$probe" 2>/dev/null || {
+        rm -f "$probe_file" ~/.config/systemd/user/"$probe"
+        record "$name" false "could not mask probe $probe"
         return 0
     }
     local en
-    en="$("$SYSTEMCTL" --user is-enabled "$stub" 2>/dev/null || true)"
-    "$SYSTEMCTL" --user unmask "$stub" 2>/dev/null || true
+    en="$("$SYSTEMCTL" --user is-enabled "$probe" 2>/dev/null || true)"
+    "$SYSTEMCTL" --user unmask "$probe" 2>/dev/null || true
+    rm -f "$probe_file" ~/.config/systemd/user/"$probe"
+    "$SYSTEMCTL" --user daemon-reload 2>/dev/null || true
     case "$en" in
         masked|masked-runtime)
-            record "$name" true "runtime-mask of $stub reported is-enabled=$en"
+            record "$name" true "mask of probe $probe reported is-enabled=$en"
             ;;
         *)
-            record "$name" false "runtime-mask of $stub reported is-enabled=$en (want masked)"
+            record "$name" false "mask of probe $probe reported is-enabled=$en (want masked)"
             ;;
     esac
 }
@@ -102,7 +120,7 @@ drill_failed_units_signal() {
     "$SYSTEMCTL" --user reset-failed "$stub" 2>/dev/null || true
     "$SYSTEMCTL" --user start "$stub" && true
     local found
-    found="$("$SYSTEMCTL" --user --state=failed --no-legend --no-pager 2>/dev/null | awk '{print $1}' | grep -Fx "$stub" || true)"
+    found="$("$SYSTEMCTL" --user --state=failed --no-legend --no-pager --plain 2>/dev/null | awk '{print $1}' | grep -Fx "$stub" || true)"
     "$SYSTEMCTL" --user reset-failed "$stub" 2>/dev/null || true
     if [ -n "$found" ]; then
         record "$name" true "failed stub $stub visible in --state=failed"

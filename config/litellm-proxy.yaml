@@ -1,0 +1,206 @@
+# fleet-ops#4130 P1 — LiteLLM proxy router config (shape reference).
+#
+# This file is the repo-resident shape. The LIVE config lives at
+# ~/.config/fleet-ops/litellm-proxy.yaml and is operator-owned so that
+# credential resolvers never enter the repo. This file is NOT a MANIFEST
+# install target on purpose — copying placeholders over a live router would
+# cut its seats (fleet-ops#4174 reopen). The live copy is created by hand
+# per docs/litellm-postgres-setup.md section 3, and section 3a's start
+# wrapper exports the env vars named below.
+#
+# All LiteLLM feature claims below are verified against current LiteLLM
+# docs (docs.litellm.ai, retrieved 2026-09-07) — see
+# docs/design/litellm-vs-seat-lib.md for the per-feature citations and
+# the three gaps the docs expose (concurrency counting, health-check V2
+# reactive-only, prepaid expiry-week pacing approximate).
+#
+# Model groups map to the four Pi provider models in
+# docs/design/litellm-vs-seat-lib.md §2. Deployments are drawn from
+# config/entitled-seats.json + config/seat-caps.json. Caps below mirror
+# the live seat-caps provider caps (rpm/tpm/max_parallel_requests) so
+# the proxy enforces the same bounds seat-lib does today; P3 deletes
+# the seat-lib side.
+#
+# PLACEHOLDERS ONLY — no real key is in this file. The live copy resolves
+# each seat's key through LiteLLM's env-var secret form:
+#
+#   api_key: os.environ/<PROVIDER>_API_KEY
+#
+# CORRECTION (fleet-ops#4174 reopen, measured on the installed organ):
+# litellm 1.98 does NOT support a command-style api_key resolver. That was
+# this file's original assumption and it is wrong — the only supported
+# inline resolver is the os.environ form below (litellm secret_managers),
+# so something has to put the value in the environment. That is what
+# ~/.local/bin/fleet-litellm-proxy-start does (runbook §3a): it sources the
+# existing credential env files and execs litellm, so no key value ever
+# lands in this file, the unit file, or git.
+
+model_list:
+  # --- worker-cheap: free lanes first, then prepaid, metered last ---
+  # order: 1 = free, 2 = prepaid, 3 = metered (fallback order)
+  - model_name: worker-cheap
+    litellm_params:
+      model: openai/deepseek-v4-flash
+      api_base: https://opencode.example/v1
+      api_key: os.environ/OPENCODE_API_KEY
+      tags: ["free"]
+      order: 1
+      rpm: 3
+      max_parallel_requests: 3
+  - model_name: worker-cheap
+    litellm_params:
+      model: openai/deepseek-v4-flash
+      api_base: https://commandcode.example/v1
+      api_key: os.environ/COMMANDCODE_API_KEY
+      tags: ["free"]
+      order: 1
+      rpm: 3
+      max_parallel_requests: 4
+  - model_name: worker-cheap
+    litellm_params:
+      model: openai/Qwen3.6-35B-A3B-FP8
+      api_base: https://hetzner.example/v1
+      api_key: os.environ/HETZNER_API_KEY
+      tags: ["free"]
+      order: 1
+      rpm: 2
+      max_parallel_requests: 1
+  - model_name: worker-cheap
+    litellm_params:
+      model: openai/glm-5-2
+      api_base: https://devin.example/v1
+      api_key: os.environ/DEVIN_API_KEY
+      tags: ["prepaid"]
+      order: 2
+      max_parallel_requests: 4
+  - model_name: worker-cheap
+    litellm_params:
+      model: openai/deepseek-v4-pro
+      api_base: https://straitly.example/v1
+      api_key: os.environ/STRAITLY_API_KEY
+      tags: ["metered"]
+      order: 3
+      max_parallel_requests: 2
+    model_info:
+      # straitly returns 402 on credit exhaustion, which LiteLLM surfaces
+      # as litellm.BadRequestError. Pin the deployment to cool down on the
+      # FIRST such error (fleet-ops#4404) so simple-shuffle stops re-picking
+      # it every ~5 min until the provider resets. This key lives in the
+      # per-deployment model_info on purpose: LiteLLM's cooldown decision
+      # reads deployment model_info.allowed_fails_policy (see
+      # litellm/router_utils/cooldown_handlers.py), NOT the router-level
+      # key, which only governs retries and the health-filter toggle.
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
+
+  # --- worker-capable: prepaid strong models ---
+  - model_name: worker-capable
+    litellm_params:
+      model: openai/swe-1-7
+      api_base: https://devin.example/v1
+      api_key: os.environ/DEVIN_API_KEY
+      tags: ["prepaid"]
+      order: 1
+      max_parallel_requests: 4
+  - model_name: worker-capable
+    litellm_params:
+      model: openai/minimax-m3
+      api_base: https://minimax.example/v1
+      api_key: os.environ/MINIMAX_API_KEY
+      tags: ["metered"]
+      order: 2
+      max_parallel_requests: 2
+
+  # --- senior: ordered fallback ladder (seat-caps senior_seats_in_order) ---
+  - model_name: senior
+    litellm_params:
+      model: openai/cursor-grok-4.6-high
+      api_base: https://cursor.example/v1
+      api_key: os.environ/CURSOR_API_KEY
+      tags: ["prepaid", "senior"]
+      order: 1
+      max_parallel_requests: 1
+  - model_name: senior
+    litellm_params:
+      model: openai/grok-4.6
+      api_base: https://xai-oauth.example/v1
+      api_key: os.environ/XAI_OAUTH_ACCESS_TOKEN
+      tags: ["prepaid", "senior"]
+      order: 2
+      max_parallel_requests: 2
+  - model_name: senior
+    litellm_params:
+      model: openai/deepseek-v4-flash-0731
+      api_base: https://openrouter.example/v1
+      api_key: os.environ/OPENROUTER_API_KEY
+      tags: ["metered", "senior"]
+      order: 3
+      max_parallel_requests: 4
+
+  # --- judge: same ladder, separate group for spend tagging (P2 consumer) ---
+  - model_name: judge
+    litellm_params:
+      model: openai/cursor-grok-4.6-high
+      api_base: https://cursor.example/v1
+      api_key: os.environ/CURSOR_API_KEY
+      tags: ["prepaid", "judge"]
+      order: 1
+      max_parallel_requests: 1
+
+router_settings:
+  routing_strategy: simple-shuffle
+  fallbacks:
+    # worker-cheap falls to worker-capable, which must NOT dead-end: give it
+    # a terminal healthy route (senior). This mirrors the issue fix direction
+    # (fleet-ops#4404) and avoids a cheap<->capable ping-pong loop by keeping
+    # senior as the last-resort healthy group.
+    - worker-cheap: [worker-capable, senior]
+    - worker-capable: [senior]
+    - senior: [worker-capable]
+    - judge: [senior]
+  # cooldown_time + allowed_fails replace seat-lib's bench windows. Gap
+  # #2 (health-check V2 reactive-only): 429/408 no longer auto-bench in
+  # V2, so allowed_fails_policy pins quota-class to 1 fail to preserve
+  # the current "bench on first 429" behaviour. See design doc §1 gap 2.
+  cooldown_time: 60
+  allowed_fails: 2
+  num_retries: 2
+  timeout: 1800
+  enable_tag_filtering: true
+  # provider_budget_config replaces cursor weekly ceiling + metered
+  # spend caps. Wall-clock periods (1d, 7d), not ISO-week — gap #3 names
+  # the approximation for prepaid expiry-week pacing.
+  provider_budget_config:
+    cursor:    { budget_limit: 16, time_period: 1d }
+    straitly:  { budget_limit: 5,  time_period: 1d }
+
+litellm_settings:
+  # The prometheus callback mounts the /metrics ASGI endpoint that the
+  # fleet's Prometheus scrape job (config/prometheus.yml) polls. Without
+  # this the scrape returns 404 and no litellm_deployment_* gauges land
+  # in Prometheus (fleet-ops#4174 reopen).
+  callbacks: ["prometheus"]
+  # The proxy binds 127.0.0.1 only; requiring auth for /metrics blocks the
+  # Prometheus scrape job which has no bearer token.
+  require_auth_for_metrics_endpoint: false
+  drop_params: true
+
+general_settings:
+  # master_key + virtual keys are operator-owned (live config, not repo).
+  # The live copy sets master_key from a credential resolver and mints
+  # sk-fleet-worker / sk-fleet-senior / sk-fleet-private virtual keys
+  # with model allowlists (private = paid deployments only, fail-closed).
+  background_health_checks: true
+  health_check_interval: 60
+  # Postgres for budgets/keys/spend, Redis for the router fast path
+  # (cooldown cache, provider budget spend).
+  #
+  # NOTE (fleet-ops#4174 reopen): LiteLLM's Prisma layer reads the DB from
+  # the DATABASE_URL ENVIRONMENT, not from this key — the wrapper exports
+  # postgresql://litellm@localhost:5432/litellm. A socket-less form like
+  # `postgresql:///litellm` is rejected by the query engine with P1012, so
+  # this key is documentation of intent only; the env var is what binds.
+  # The cluster itself stays loopback-only (listen_addresses = '127.0.0.1'
+  # in its postgresql.conf); there is no network listener off-box.
+  database_url: postgresql://litellm@localhost:5432/litellm
+  redis_url: redis://127.0.0.1:6379

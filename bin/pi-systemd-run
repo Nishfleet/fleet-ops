@@ -31,6 +31,18 @@
 #   --deadline MIN         Dispatch deadline in minutes (default 90). The
 #                          completion canary re-dispatches entries still open
 #                          past this deadline whose unit is dead/missing.
+#                          Also sets RuntimeMaxSec=<MIN>min so a Type=simple
+#                          unit self-terminates at that budget instead of
+#                          holding hop=run open (fleet-ops#3328). Also the
+#                          healthchecks.io grace proxy (dead-man deadline).
+#   --deliverable PATH     The artifact the run MUST produce (default: none).
+#                          When set, the ExecStopPost dead-man (pi-detached-
+#                          deadman) marks the run FAILED if the file is
+#                          missing at stop time — EVEN when the unit exited 0
+#                          (the exact fleet-ops#4266 gap: a systemctl stop of
+#                          a healthy unit yields Result=success and OnFailure
+#                          never fires). Relative path = under --working-
+#                          directory.
 #   --provider NAME        Provider of the dispatched seat (recorded in the
 #                          dispatch ledger; used for re-dispatch seat rotation).
 #                          If omitted, parsed from the COMMAND when it is
@@ -42,6 +54,31 @@
 #   --hop N                Chain hop number (default 0). The original dispatch
 #                          is hop 0; each re-dispatch increments it.
 #
+# Dead-man (fleet-ops#4266): every real launch arms three rails so a
+# detached job that ENDS without its deliverable fails loudly instead of
+# silently going away:
+#   1. --property=OnFailure=unit-escalation@${unit}.service.service — the
+#      SAME shape the global drop-in service.d/10-escalate.conf produces via
+#      %%n (template instance = full unit name INCLUDING .service). Explicit
+#      here because systemd-run rejects %%n itself in --property values, and
+#      because a fresh manager may not yet have loaded the drop-in (proven
+#      live 2026-09-07: transients came up with empty OnFailure until
+#      daemon-reload). Belt alongside the drop-in's braces.
+#   2. ExecStartPost keystone-hc-ping detached start — /start ping with the
+#      per-run rid on the dedicated HC_URL_DETACHED check (silent skip when
+#      the URL is not provisioned yet).
+#   3. ExecStopPost <salvage> + <pi-detached-deadman> (two separate
+#      --property=ExecStopPost= directives; a `;`-joined value is NOT split
+#      by --property= — proven live 2026-09-07 — and would 203/EXEC) — the
+#      verdict hook.
+#      SERVICE_RESULT != success OR (--deliverable set AND file absent) =
+#      died: /fail ping + fleet_detached_job_died{unit,...} 1 textfile gauge
+#      (-> DetachedJobDied alert -> repair packet that relaunches the
+#      RECORDED command line) + STOP-REASON via unit-escalation-write for
+#      clean-stop deaths (OnFailure never fires there). Healthy stop
+#      (Result=success + deliverable present): success ping, series cleared.
+#      Always exits 0.
+#
 # Salvage (fleet-ops#1204): every real dispatch sets ExecStopPost to
 # pi-salvage-worktree and TimeoutStopSec=180 so a SIGTERM/SIGKILL/nonzero
 # exit banks a dirty worktree onto wip/<unit>-<ts>. --working-directory is
@@ -50,7 +87,9 @@
 # Dispatch ledger (fleet-ops#1009): every real dispatch with --stdin appends
 # one JSONL entry to $FLEET_DISPATCH_LEDGER (default
 # $AGENT_STATE/dispatch-ledger.jsonl): {id, chain_id, hop, ts, unit,
-# packet_path, provider, model, deadline_min, deadline_ts, status, retries}.
+# packet_path, provider, model, deadline_min, deadline_ts, cmdline, status,
+# retries}. The cmdline field is the repo-side record the repair worker
+# reads for relaunch (fleet-ops#4266).
 # The packet is COPIED into $FLEET_DISPATCH_PACKET_DIR (default
 # $AGENT_STATE/dispatch-packets) BEFORE systemd-run so the completion canary
 # can re-issue the SAME packet file after the originating session scratchpad
@@ -61,7 +100,8 @@
 #   SYSTEMD_RUN, SYSTEMCTL, PI_SALVAGE_BIN, PI_SALVAGE_DISABLE, AGENT_STATE,
 #   FLEET_DISPATCH_LEDGER, FLEET_DISPATCH_PACKET_DIR,
 #   FLEET_DISPATCH_LEDGER_NO_WRITE (1 = skip the append, for tests that
-#   only want the systemd-run shape)
+#   only want the systemd-run shape). Dead-man seams: PI_DEADMAN_BIN,
+#   PI_DEADMAN_TEXTFILE, PI_DEADMAN_DRYRUN, KEYSTONE_HC_ENV,
 #
 # Exit:
 #   0  started, already-running no-op, or dry-run
@@ -75,7 +115,7 @@ SYSTEMCTL="${SYSTEMCTL:-systemctl}"
 
 usage() {
     cat <<'EOF' >&2
-usage: pi-systemd-run [--dry-run] [--unit NAME] [--working-directory DIR] [--stdin FILE] [--deadline MIN] [--provider NAME] [--model NAME] [--chain-id ID] [--hop N] -- COMMAND [ARGS...]
+usage: pi-systemd-run [--dry-run] [--unit NAME] [--working-directory DIR] [--stdin FILE] [--deadline MIN] [--deliverable PATH] [--provider NAME] [--model NAME] [--chain-id ID] [--hop N] -- COMMAND [ARGS...]
 
 Run COMMAND as a user systemd unit so it outlives this session.
     Never use nohup or trailing & — those die with the launching shell.
@@ -88,6 +128,7 @@ unit=""
 workdir="${HOME:-/home/nish}"
 stdin_file=""
 deadline_min="90"
+deliverable=""
 provider=""
 model=""
 chain_id=""
@@ -114,6 +155,11 @@ while [[ $# -gt 0 ]]; do
         --deadline)
             [[ $# -ge 2 ]] || usage
             deadline_min="$2"
+            shift 2
+            ;;
+        --deliverable)
+            [[ $# -ge 2 ]] || usage
+            deliverable="$2"
             shift 2
             ;;
         --provider)
@@ -197,6 +243,13 @@ if [[ -n "$stdin_file" ]]; then
     stdin_file="$(readlink -f "$stdin_file")"
 fi
 
+if [[ -n "$deliverable" ]]; then
+    # Absolute path for the ExecStopPost check: the unit's WorkingDirectory
+    # is $workdir, so relative = under it. The file usually does NOT exist
+    # at launch (the run creates it), so no -f test here.
+    [[ "$deliverable" == /* ]] || deliverable="$workdir/$deliverable"
+fi
+
 # Already-running no-op: do not count a second start toward StartLimitBurst.
 if [[ "$dry_run" != "1" ]]; then
     state="$("$SYSTEMCTL" --user is-active "${unit}.service" 2>/dev/null || true)"
@@ -215,6 +268,14 @@ fi
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 salvage_bin="${PI_SALVAGE_BIN:-$here/pi-salvage-worktree}"
+deadman_bin="${PI_DEADMAN_BIN:-$here/pi-detached-deadman}"
+ping_bin="${PI_DEADMAN_PING_BIN:-$here/keystone-hc-ping}"
+
+# fleet-ops#4266: one run id per dispatch — the healthchecks.io `rid` AND
+# the id that ties the ExecStopPost verdict to this launch. Generated here
+# (not in the ledger block) so the dead-man is armed for every real launch,
+# --stdin or not.
+dispatch_id="$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)"
 
 cmd=(
     "$SYSTEMD_RUN" --user
@@ -244,9 +305,50 @@ if [[ "${PI_SALVAGE_DISABLE:-0}" != "1" ]]; then
             cmd+=(--setenv="$v")
         fi
     done
-    cmd+=(--property="ExecStopPost=${salvage_bin}")
-    cmd+=(--property=TimeoutStopSec=180)
 fi
+# TimeoutStopSec always: the dead-man verdict (ping + textfile + possibly
+# STOP-REASON) may push past the 90s user default too.
+cmd+=(--property=TimeoutStopSec=180)
+
+# --- dead-man (fleet-ops#4266) ---------------------------------------------
+# Every launch arms the rails; keystone-hc-ping skips silently when
+# HC_URL_DETACHED is not provisioned, and the deadman no-ops for runs not
+# started via pi-systemd-run (no PI_DEADMAN_DISPATCH).
+cmd+=(--setenv=PI_DEADMAN_DISPATCH="$dispatch_id")
+cmd+=(--setenv=PI_DEADMAN_UNIT="$unit")
+cmd+=(--setenv=PI_DEADMAN_CMDLINE="$*")
+cmd+=(--setenv=PI_DEADMAN_DEADLINE="$deadline_min")
+if [[ -n "$deliverable" ]]; then
+    cmd+=(--setenv=PI_DEADMAN_DELIVERABLE="$deliverable")
+fi
+for v in KEYSTONE_HC_ENV PI_DEADMAN_TEXTFILE PI_DEADMAN_DRYRUN \
+         PI_DEADMAN_ESCALATION_BIN PI_DEADMAN_WHOSTOPPED_BIN AGENT_STATE; do
+    if [[ -n "${!v:-}" ]]; then
+        cmd+=(--setenv="$v")
+    fi
+ done
+# OnFailure — the SAME shape the global drop-in service.d/10-escalate.conf
+# produces via %n (template instance = full unit name INCLUDING the .service
+# suffix). Explicit here because systemd-run REJECTS %n in --property
+# values, and the escalation must not depend on a manager that has not yet
+# loaded the drop-in (proven live 2026-09-07: transients had empty OnFailure
+# until daemon-reload). Belt alongside the drop-in's braces.
+cmd+=(--property="OnFailure=unit-escalation@${unit}.service.service")
+cmd+=(--property="ExecStartPost=${ping_bin} detached start")
+if [[ "${PI_SALVAGE_DISABLE:-0}" != "1" ]]; then
+    # Repeated --property=ExecStopPost= APPENDS (proven live 2026-09-07): a
+    # `;`-joined value is NOT split by --property= and execs as one literal
+    # path (203/EXEC). Two directives: salvage the worktree first, then the
+    # dead-man verdict. Both always exit 0.
+    cmd+=(--property="ExecStopPost=${salvage_bin}")
+fi
+cmd+=(--property="ExecStopPost=${deadman_bin}")
+# CLOCK_RUN / dispatch-plane deadline is a kill, not just a ledger field.
+# Type=simple (systemd-run default) honours RuntimeMaxSec; a hung pi worker
+# then SIGTERMs at the budget instead of sitting ActiveState=active forever
+# (live fleet-ops#3328: alert-repair-FleetMainRed-20260904T161106Z had no
+# cap and held hop=run past 70 min). TimeoutStopSec=180 still covers salvage.
+cmd+=(--property="RuntimeMaxSec=${deadline_min}min")
 
 # --- Dispatch ledger: copy the packet into agent-state BEFORE building the --
 # StandardInput property (fleet-ops#1009). (a) the unit reads the durable
@@ -331,12 +433,13 @@ entry = {
     "model": sys.argv[8],
     "deadline_min": int(sys.argv[9]),
     "deadline_ts": sys.argv[10],
+    "cmdline": sys.argv[11],
     "status": "open",
     "retries": int(sys.argv[3]),
 }
 sys.stdout.write(json.dumps(entry, separators=(",", ":")) + "\n")
 ' "$dispatch_id" "$chain_id" "$hop" "$dispatch_ts" "$unit" "$packet_path" \
-      "$provider" "$model" "$deadline_min" "$deadline_ts" >> "$LEDGER"
+      "$provider" "$model" "$deadline_min" "$deadline_ts" "$*" >> "$LEDGER"
     echo "pi-systemd-run: ledger entry id=$dispatch_id chain=$chain_id hop=$hop unit=$unit"
 fi
 

@@ -1,12 +1,21 @@
 # systemd-oomd policy for the pi worker slice. POLICY ONLY — no memory bounds
-# live here; those are per-worker MemoryHigh=3G/MemoryMax=6G on pi-issue@.service.
+# live here; those are per-worker MemoryMax on pi-issue@<repo>-<N>.service
+# (fleet-ops + 0509 MemoryMax=4G with NO MemoryHigh per fleet-ops#3930; the
+# pi-issue@.service template keeps MemoryHigh=3G/MemoryMax=6G as the
+# no-table fallback; heavy manager workers 3G/2G).
 #
 # Killing is the EXCEPTION, not the norm (Nish, 2026-08-26). Three layers, in
 # order, and oomd is the last:
 #   1. MIN_FREE_RAM_MB=2500 launch floor  -> ~13.1 GiB soft cap. PREVENTS work
 #      starting. This is the brake that should do essentially all the work.
-#   2. per-worker MemoryHigh=3G           -> THROTTLES and reclaims one worker.
-#      No process dies.
+#   2. per-worker MemoryMax=4G            -> BOUNDS one worker. fleet-ops#3930
+#      DROPPED the MemoryHigh throttle band for fleet-ops + 0509: MemoryHigh
+#      throttling is what made oomd pressure-kill a random sibling (6
+#      pi-issue@* kills in 1h on a 15 GB box; pi-issue@0509-1752 killed at a
+#      94.3M peak — victim was not the offender). Without the band a worker
+#      that exceeds 4G is OOM-killed locally at the cap and oomd has no
+#      throttle-to-kill path on the worker slice. No process dies from
+#      throttling; only a genuine 4G overflow dies, locally.
 #   3. this                                -> KILLS, only when 1 and 2 have both
 #      failed and the host is genuinely in trouble.
 #
@@ -25,8 +34,9 @@
 # Duration is NOT settable per-slice: ManagedOOMMemoryPressureDurationSec is
 # not a valid key in systemd 255 (verified - systemd-analyze reports
 # 'Unknown key name ... ignoring'). It is global only, as
-# DefaultMemoryPressureDurationSec in /etc/systemd/oomd.conf, set to 60s
-# there: at 80% a 30s spike is survivable, a full sustained minute is not.
+# DefaultMemoryPressureDurationSec in /etc/systemd/oomd.conf.d/99-fleet.conf,
+# repo-owned at systemd/system/oomd.conf.d/99-fleet.conf (fleet-ops#3971),
+# set to 60s there: at 80% a 30s spike is survivable, a full sustained minute is not.
 #
 # Provenance (fleet-ops#71): the kill path is now PROVEN, not assumed.
 # Bounded thrasher (MemoryHigh=128M, MemoryMax=1G, MemorySwapMax=0,
@@ -57,11 +67,12 @@
 # lifelines or the supervisor that would repair a reaped worker.
 #
 # Policy stack (outermost → innermost):
-#   /etc/systemd/oomd.conf.d/99-fleet.conf            60s pressure duration
+#   systemd/system/oomd.conf.d/99-fleet.conf → /etc/systemd/oomd.conf.d/99-fleet.conf
+#                                                   60s pressure duration (fleet-ops#3971)
 #   /etc/systemd/system/user-1000.slice.d/...         12 GiB cap + 80% kill (this issue)
 #   user@1000.service                                 50% stock kill (now neutralized — this issue)
 #   this slice (app-pi\x2dissue.slice)                80% kill (the LAST resort for fleet workers)
-#   per-worker MemoryHigh=3G / MemoryMax=6G           throttle-and-bound
+#   per-worker MemoryMax=4G (fleet-ops+0509, no MemoryHigh — fleet-ops#3930)  bound-and-local-OOM
 #   MIN_FREE_RAM_MB=2500 launch floor                 prevent work starting
 [Slice]
 ManagedOOMMemoryPressure=kill

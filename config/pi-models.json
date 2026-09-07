@@ -1,0 +1,879 @@
+{
+  "_comment": "fleet2 / PI TUNING PACKET (2026-08-18) \u00a75: register endpoints properly. MiniMax is a custom provider not in the built-in catalog \u2014 register it explicitly so the cache prefix metadata is right. Groq and OpenRouter are built into pi, but we model-override the gpt-oss-20b entry Groq runs so the cacheRead price and 131k context are correct. 2026-09-06 fleet-ops#3722: this file is now MANIFEST-managed (config/pi-models.json -> ~/.pi/agent/models.json, installed as a copy by install.sh). Edit the repo copy, never this live file by hand. The four openrouter :free seats (minimax-m3, glm-5.2, nemotron-3-ultra-550b, gemma-4-31b-it) are registered in modelOverrides with cost 0 so enumerate_seats emits them; caps live in config/seat-caps.json. openrouter/xkiro apiKeys were literal secrets in this file \u2014 they are now !command refs like every other provider (no secret in the repo).",
+  "providers": {
+    "minimax": {
+      "name": "MiniMax (fleet2)",
+      "baseUrl": "https://api.minimax.io/anthropic",
+      "api": "anthropic-messages",
+      "apiKey": "!/home/nish/.local/bin/claude-minimax-key",
+      "headers": {
+        "anthropic-version": "2023-06-01"
+      },
+      "compat": {
+        "supportsLongCacheRetention": true
+      },
+      "models": [
+        {
+          "id": "MiniMax-M3",
+          "name": "MiniMax M3 (Yearly Plus)",
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ],
+          "contextWindow": 1000000,
+          "maxTokens": 128000,
+          "cost": {
+            "input": 0.3,
+            "output": 1.2,
+            "cacheRead": 0.06,
+            "cacheWrite": 0.375
+          }
+        }
+      ]
+    },
+    "groq": {
+      "baseUrl": "https://api.groq.com/openai/v1",
+      "api": "openai-completions",
+      "models": [
+        {
+          "id": "openai/gpt-oss-20b",
+          "name": "Groq gpt-oss-20b",
+          "contextWindow": 131072,
+          "maxTokens": 32768
+        }
+      ],
+      "apiKey": "!cut -d= -f2 /home/nish/fleet2/etc/groq.env"
+    },
+    "openrouter": {
+      "modelOverrides": {
+        "deepseek/deepseek-v4-flash-0731": {
+          "contextWindow": 1310720,
+          "maxTokens": 32768,
+          "reasoning": false
+        },
+        "deepseek/deepseek-v4-pro-0813": {
+          "contextWindow": 128000,
+          "maxTokens": 32768,
+          "reasoning": true
+        },
+        "poolside/laguna-s-2.1:free": {
+          "contextWindow": 131072,
+          "maxTokens": 8192,
+          "reasoning": false,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        },
+        "minimax/minimax-m3:free": {
+          "reasoning": true,
+          "contextWindow": 1048576,
+          "maxTokens": 65536,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        },
+        "z-ai/glm-5.2:free": {
+          "reasoning": true,
+          "contextWindow": 256000,
+          "maxTokens": 230400,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        },
+        "nvidia/nemotron-3-ultra-550b-a55b:free": {
+          "reasoning": true,
+          "contextWindow": 1000000,
+          "maxTokens": 65536,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        },
+        "google/gemma-4-31b-it:free": {
+          "reasoning": true,
+          "contextWindow": 262144,
+          "maxTokens": 32768,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        },
+        "deepseek/deepseek-v4-flash": {
+          "contextWindow": 1310720,
+          "maxTokens": 32768,
+          "reasoning": false,
+          "openRouterRouting": {
+            "order": [
+              "StreamLake"
+            ],
+            "allow_fallbacks": true
+          }
+        }
+      },
+      "apiKey": "!cut -d= -f2 /home/nish/fleet2/etc/openrouter.env",
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "api": "openai-completions",
+      "compat": {
+        "thinkingTokenBudgetField": "thinking_token_budget"
+      }
+    },
+    "commandcode": {
+      "baseUrl": "https://api.commandcode.ai/provider/v1",
+      "api": "openai-completions",
+      "models": [
+        {
+          "id": "minimax/minimax-m3-free",
+          "name": "MiniMax M3 FREE via CommandCode",
+          "contextWindow": 1000000,
+          "maxTokens": 32000,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        },
+        {
+          "id": "deepseek/deepseek-v4-flash",
+          "name": "DeepSeek V4 Flash via CommandCode",
+          "contextWindow": 131072,
+          "maxTokens": 16384
+        },
+        {
+          "id": "meta/muse-spark-1.2-contributor",
+          "name": "Muse Spark 1.2 Contributor via CommandCode (GOAT plan)",
+          "contextWindow": 1000000,
+          "maxTokens": 32000
+        },
+        {
+          "id": "poolside/laguna-s-2.1-free",
+          "name": "Laguna S 2.1 FREE via CommandCode (TRAINS ON INPUTS - public repos only)",
+          "contextWindow": 262144,
+          "maxTokens": 32000
+        }
+      ],
+      "apiKey": "!cut -d= -f2 /home/nish/fleet2/etc/commandcode.env"
+    },
+    "bai": {
+      "baseUrl": "https://api.b.ai/v1",
+      "api": "openai-completions",
+      "apiKey": "!cut -d= -f2 /home/nish/fleet2/etc/bai.env",
+      "models": [
+        {
+          "id": "deepseek-v4-flash",
+          "name": "DeepSeek V4 Flash FREE via b.ai (free tier)",
+          "contextWindow": 131072,
+          "maxTokens": 16384,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        },
+        {
+          "id": "deepseek-v4-flash-vision-exp",
+          "name": "DeepSeek V4 Flash Vision EXP FREE via b.ai (free tier, vision)",
+          "contextWindow": 131072,
+          "maxTokens": 16384,
+          "input": [
+            "text",
+            "image"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        }
+      ]
+    },
+    "opencode": {
+      "baseUrl": "https://opencode.ai/zen/v1",
+      "api": "openai-completions",
+      "apiKey": "!cut -d= -f2 /home/nish/fleet2/etc/opencode.env",
+      "compat": {
+        "thinkingTokenBudgetField": "thinking_token_budget"
+      },
+      "models": [
+        {
+          "id": "deepseek-v4-flash-free",
+          "name": "DeepSeek V4 Flash FREE via OpenCode Zen",
+          "contextWindow": 131072,
+          "maxTokens": 16384
+        },
+        {
+          "id": "hy3-free",
+          "name": "Hunyuan 3 FREE via OpenCode Zen",
+          "contextWindow": 131072,
+          "maxTokens": 16384
+        },
+        {
+          "id": "mimo-v2.5-free",
+          "name": "MiMo V2.5 FREE via OpenCode Zen",
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ],
+          "contextWindow": 200000,
+          "maxTokens": 32000,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        },
+        {
+          "id": "nemotron-3-ultra-free",
+          "name": "Nemotron 3 Ultra FREE via OpenCode Zen",
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "contextWindow": 1000000,
+          "maxTokens": 128000,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        },
+        {
+          "id": "muse-spark-1.2-contributor-free",
+          "name": "Muse Spark 1.2 Contributor FREE via OpenCode Zen",
+          "contextWindow": 1000000,
+          "maxTokens": 32000
+        }
+      ]
+    },
+    "mergegateway": {
+      "name": "Merge Gateway (mg_ key, $10 free credits)",
+      "baseUrl": "https://api-gateway.merge.dev/v1",
+      "api": "openai-completions",
+      "apiKey": "!cut -d= -f2 /home/nish/fleet2/etc/mergegateway.env",
+      "models": [
+        {
+          "id": "deepseek/deepseek-v4-flash",
+          "name": "DeepSeek V4 Flash via Merge Gateway",
+          "contextWindow": 131072,
+          "maxTokens": 16384
+        },
+        {
+          "id": "anthropic/claude-sonnet-5",
+          "name": "Claude Sonnet 5 via Merge Gateway",
+          "contextWindow": 200000,
+          "maxTokens": 32000
+        },
+        {
+          "id": "minimax/minimax-m3",
+          "name": "MiniMax M3 via Merge Gateway",
+          "contextWindow": 1000000,
+          "maxTokens": 32000
+        },
+        {
+          "id": "google/gemini-3.7-flash",
+          "name": "Gemini 3.7 Flash via Merge Gateway",
+          "contextWindow": 1000000,
+          "maxTokens": 32000
+        }
+      ]
+    },
+    "opencode-anthropic": {
+      "baseUrl": "https://opencode.ai/zen/v1",
+      "api": "anthropic-messages",
+      "apiKey": "!cut -d= -f2 /home/nish/fleet2/etc/opencode.env",
+      "models": [
+        {
+          "id": "claude-fable-5",
+          "name": "Claude Fable 5 via Zen",
+          "contextWindow": 200000,
+          "maxTokens": 32000
+        },
+        {
+          "id": "claude-opus-5",
+          "name": "Claude Opus 5 via Zen",
+          "contextWindow": 200000,
+          "maxTokens": 32000
+        }
+      ]
+    },
+    "ollama": {
+      "baseUrl": "https://ollama.com/v1",
+      "api": "openai-completions",
+      "apiKey": "!cut -d= -f2 /home/nish/fleet2/etc/ollama.env",
+      "models": [
+        {
+          "id": "deepseek-v4-flash:0731",
+          "name": "DS4 Flash via Ollama Pro",
+          "contextWindow": 1000000,
+          "maxTokens": 16384,
+          "samplingParams": {
+            "reasoning_effort": "none"
+          },
+          "_comment_reasoning": "fleet-ops#4234: the endpoint reasons by default and charges reasoning to the output budget. reasoning_effort:none is the only value that turns it off (low/medium/high, think:false and chat_template_kwargs{thinking:false} all still return reasoning and zero content). Pi already clamps this seat's thinkingLevel to off because reasoning is not declared here, so this makes the wire match Pi's own view."
+        },
+        {
+          "id": "deepseek-v4-pro:0813",
+          "name": "DS4 Pro via Ollama Pro",
+          "contextWindow": 131072,
+          "maxTokens": 16384
+        },
+        {
+          "id": "kimi-k2.7-code",
+          "name": "Kimi K2.7 Code via Ollama (free audition)",
+          "contextWindow": 131072,
+          "maxTokens": 16384
+        },
+        {
+          "id": "gpt-oss:20b",
+          "name": "GPT-OSS 20B via Ollama Pro",
+          "contextWindow": 131072,
+          "maxTokens": 16384
+        }
+      ],
+      "compat": {
+        "maxTokensField": "max_tokens"
+      },
+      "_comment_max_tokens_field": "fleet-ops#4234: ollama.com's OpenAI-compat endpoint reads ONLY max_tokens; it accepts max_completion_tokens and silently drops it. Pi's useMaxTokens allowlist (openai-completions detectCompat) does not include ollama.com, so without this compat override every request ran at the endpoint's 65536 ceiling instead of the 16384 configured here, and 80 sessions in 7d ended as one 65536-token reasoning block with zero answer."
+    },
+    "hetzner": {
+      "baseUrl": "https://inference.hetzner.com/api/v1",
+      "api": "openai-completions",
+      "apiKey": "!cut -d= -f2 /home/nish/fleet2/etc/hetzner.env",
+      "models": [
+        {
+          "id": "Qwen/Qwen3.6-35B-A3B-FP8",
+          "name": "Qwen3.6-35B via Hetzner (free experimental)",
+          "contextWindow": 131072,
+          "maxTokens": 16384
+        }
+      ]
+    },
+    "cline": {
+      "baseUrl": "https://api.cline.bot/api/v1",
+      "api": "openai-completions",
+      "apiKey": "!cut -d= -f2 /home/nish/fleet2/etc/cline.env",
+      "models": [
+        {
+          "id": "cline-pass/deepseek-v4-flash",
+          "name": "DS4 Flash via ClinePass (subscription)",
+          "contextWindow": 131072,
+          "maxTokens": 16384
+        },
+        {
+          "id": "cline-pass/minimax-m3",
+          "name": "MiniMax M3 via ClinePass (backup pipe, subscription)",
+          "contextWindow": 200000,
+          "maxTokens": 32000
+        },
+        {
+          "id": "z-ai/glm-5.3-flash",
+          "name": "GLM 5.3 Flash FREE via ClinePass (bypasses weekly cap)",
+          "contextWindow": 131072,
+          "maxTokens": 16384,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        }
+      ]
+    },
+    "orcarouter": {
+      "baseUrl": "https://api.orcarouter.ai/v1",
+      "api": "openai-completions",
+      "apiKey": "!cut -d= -f2 /home/nish/fleet2/etc/orcarouter.env",
+      "models": [
+        {
+          "id": "orcarouter/free",
+          "name": "OrcaRouter rotating free (difficulty-routed)",
+          "contextWindow": 131072,
+          "maxTokens": 16384
+        }
+      ]
+    },
+    "zenmux": {
+      "baseUrl": "https://zenmux.ai/api/v1",
+      "api": "openai-completions",
+      "apiKey": "!cut -d= -f2 /home/nish/fleet2/etc/zenmux.env",
+      "models": [
+        {
+          "id": "z-ai/glm-4.7-flash-free",
+          "name": "GLM-4.7-flash via ZenMux (free)",
+          "contextWindow": 131072,
+          "maxTokens": 16384
+        },
+        {
+          "id": "deepseek/deepseek-v4-flash",
+          "name": "DeepSeek V4 Flash via ZenMux (paid $5)",
+          "contextWindow": 131072,
+          "maxTokens": 16384
+        }
+      ]
+    },
+    "inferx": {
+      "baseUrl": "https://model.inferx.net/endpoints/v1",
+      "api": "openai-completions",
+      "apiKey": "!cut -d= -f2 /home/nish/fleet2/etc/inferx.env",
+      "models": [
+        {
+          "id": "deepseek-v4-flash",
+          "name": "DS4 Flash via InferX (100% off promo)",
+          "contextWindow": 131072,
+          "maxTokens": 16384
+        }
+      ]
+    },
+    "devin": {
+      "name": "Devin",
+      "api": "devin-cli",
+      "baseUrl": "https://api.devin.ai",
+      "apiKey": "!cut -d= -f2 /home/nish/fleet2/etc/devin.env",
+      "models": [
+        {
+          "id": "glm-5-2",
+          "name": "GLM-5.2 High",
+          "contextWindow": 200000,
+          "maxTokens": 131072
+        },
+        {
+          "id": "swe-1-7",
+          "name": "SWE-1.7 Max",
+          "contextWindow": 262144,
+          "maxTokens": 131072
+        }
+      ]
+    },
+    "cursor": {
+      "name": "Cursor",
+      "api": "cursor-cli",
+      "baseUrl": "https://api2.cursor.sh",
+      "apiKey": "!cut -d= -f2 /home/nish/fleet2/etc/cursor.env",
+      "models": [
+        {
+          "id": "composer-2.5",
+          "name": "Composer 2.5",
+          "contextWindow": 128000,
+          "maxTokens": 64000
+        },
+        {
+          "id": "cursor-grok-4.6-high",
+          "name": "Cursor Grok 4.6 High",
+          "contextWindow": 500000,
+          "maxTokens": 500000
+        }
+      ]
+    },
+    "straitly": {
+      "name": "Straitly (alpha, $50 gift credit)",
+      "baseUrl": "https://api.straitly.ai/v1",
+      "api": "openai-completions",
+      "apiKey": "!sed -n 's/^STRAITLY_API_KEY=//p' /home/nish/.config/straitly/straitly.env",
+      "models": [
+        {
+          "id": "deepseek/deepseek-v4-pro",
+          "name": "DeepSeek V4 Pro (Straitly escalation)",
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ],
+          "contextWindow": 350000,
+          "maxTokens": 32768,
+          "cost": {
+            "input": 0.4225,
+            "output": 0.845,
+            "cacheRead": 0.0356,
+            "cacheWrite": 0.4225
+          },
+          "thinkingLevelMap": {
+            "minimal": "low",
+            "low": "low",
+            "medium": "medium",
+            "high": "high",
+            "xhigh": "xhigh",
+            "max": "max"
+          }
+        },
+        {
+          "id": "gpt-5.6-sol",
+          "name": "GPT-5.6 Sol (Straitly)",
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ],
+          "contextWindow": 1050000,
+          "maxTokens": 32000,
+          "cost": {
+            "input": 2.5,
+            "output": 15.0,
+            "cacheRead": 0.25,
+            "cacheWrite": 3.125
+          }
+        },
+        {
+          "id": "qwen/qwen3.8-max",
+          "name": "Qwen3.8 Max (Straitly)",
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ],
+          "contextWindow": 350000,
+          "maxTokens": 32768,
+          "cost": {
+            "input": 2.0,
+            "output": 6.0,
+            "cacheRead": 0.25,
+            "cacheWrite": 2.5
+          }
+        }
+      ],
+      "compat": {
+        "thinkingFormat": "openrouter",
+        "supportsReasoningEffort": true,
+        "thinkingTokenBudgetField": "thinking_token_budget"
+      }
+    },
+    "xai-oauth": {
+      "name": "xAI (SuperGrok Subscription)",
+      "api": "openai-responses",
+      "baseUrl": "https://cli-chat-proxy.grok.com/v1",
+      "models": [
+        {
+          "id": "grok-4.6",
+          "name": "Grok 4.6",
+          "reasoning": true,
+          "contextWindow": 500000,
+          "maxTokens": 131072,
+          "input": [
+            "text",
+            "image"
+          ],
+          "cost": {
+            "input": 2,
+            "output": 6,
+            "cacheRead": 0.5,
+            "cacheWrite": 0
+          }
+        },
+        {
+          "id": "grok-4.5",
+          "name": "Grok 4.5",
+          "reasoning": true,
+          "contextWindow": 500000,
+          "maxTokens": 131072,
+          "input": [
+            "text",
+            "image"
+          ],
+          "cost": {
+            "input": 2,
+            "output": 6,
+            "cacheRead": 0.5,
+            "cacheWrite": 0
+          }
+        }
+      ],
+      "_note": "fleet-ops#1163 (2026-08-27): SuperGrok prepaid weekly sub via stnly/pi-grok OAuth provider. The runtime provider is registered by the pi-grok extension; this static entry mirrors it so seat-lib enumerate_seats() emits the seat and pick_seat can route to it. Class in seat-caps.json is prepaid-quota (alternation discipline, cap=1, never stack)."
+    },
+    "xkiro": {
+      "baseUrl": "https://api.xkiro.com/v1",
+      "api": "openai-completions",
+      "apiKey": "!cut -d= -f2 /home/nish/.config/xkiro/.env",
+      "compat": {
+        "thinkingTokenBudgetField": "thinking_token_budget"
+      },
+      "models": [
+        {
+          "id": "deepseek/deepseek-v4-flash",
+          "name": "xKiro DeepSeek V4 Flash (free tier)",
+          "reasoning": true,
+          "contextWindow": 1048576,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "maxTokens": 65536
+        },
+        {
+          "id": "deepseek/deepseek-v4-pro",
+          "name": "xKiro DeepSeek V4 Pro (free tier)",
+          "reasoning": true,
+          "contextWindow": 1048576,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "maxTokens": 65536
+        },
+        {
+          "id": "minimax/minimax-m3:free",
+          "name": "xKiro MiniMax M3 (free tier)",
+          "reasoning": true,
+          "contextWindow": 1000000,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "maxTokens": 65536
+        }
+      ]
+    },
+    "runinfra": {
+      "baseUrl": "https://api.runinfra.ai/v1",
+      "api": "openai-completions",
+      "apiKey": "!cut -d= -f2 /home/nish/fleet2/etc/runinfra.env",
+      "models": [
+        {
+          "id": "deepseek-v4-flash",
+          "name": "DeepSeek V4 Flash via RunInfra",
+          "contextWindow": 1000000,
+          "maxTokens": 32768,
+          "reasoning": false,
+          "cost": {
+            "input": 0.13,
+            "output": 0.27,
+            "cacheRead": 0.01,
+            "cacheWrite": 0
+          },
+          "_comment_4262": "fleet-ops#4262: runinfra's models registration is durable here. #4207 landed the seat-caps/entitled rows only; install.sh copy-installs pi-models.json verbatim (the unknown-provider merge exists only for seat-caps.json), so the 2026-09-07 14:10Z deploy silently dropped runinfra+crof+entrim from the live models.json. Landed verbatim from the pre-#4234 live file (models.json.pre-4234-20260907T133107Z)."
+        }
+      ]
+    },
+    "crof": {
+      "baseUrl": "https://crof.ai/v1",
+      "api": "openai-completions",
+      "apiKey": "!cut -d= -f2 /home/nish/fleet2/etc/crof.env",
+      "models": [
+        {
+          "id": "deepseek-v4-flash-0731",
+          "name": "DeepSeek V4 Flash 0731 (Q8_0) via CrofAI",
+          "contextWindow": 1000000,
+          "maxTokens": 32768,
+          "reasoning": false,
+          "cost": {
+            "input": 0.08,
+            "output": 0.1,
+            "cacheRead": 0.003,
+            "cacheWrite": 0
+          },
+          "samplingParams": {
+            "reasoning_effort": "none"
+          },
+          "_comment_reasoning": "fleet-ops#4234/#4262: same treatment as the merged #4234 fix for ollama.com \u2014 CrofAI serves DeepSeek V4 Flash 0731 and reasons by default, charging reasoning to the output budget; reasoning_effort:none is the only value that turns it off (landed verbatim from the pre-#4234 live file). Pi already clamps this seat's thinkingLevel to off because reasoning is not declared here, so this makes the wire match Pi's own view."
+        }
+      ]
+    },
+    "entrim": {
+      "baseUrl": "https://api.entrim.ai/v1",
+      "api": "openai-completions",
+      "apiKey": "!cut -d= -f2 /home/nish/fleet2/etc/entrim.env",
+      "models": [
+        {
+          "id": "deepseek-ai/DeepSeek-V4-Flash",
+          "name": "DeepSeek V4 Flash via Entrim",
+          "contextWindow": 1000000,
+          "maxTokens": 32768,
+          "reasoning": false,
+          "cost": {
+            "input": 0.09,
+            "output": 0.17,
+            "cacheRead": 0.09,
+            "cacheWrite": 0
+          },
+          "_comment_4262": "fleet-ops#4262: landed verbatim from the live file (pre-#4234 backup). cacheRead=input (0.09) until measured \u2014 Entrim's cache-read pricing is not known yet."
+        }
+      ]
+    },
+    "alibaba-coding": {
+      "baseUrl": "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+      "api": "openai-completions",
+      "apiKey": "!cut -d= -f2 /home/nish/fleet2/etc/alibaba-coding.env",
+      "models": [
+        {
+          "id": "qwen3.8-max",
+          "name": "qwen3.8-max via Alibaba Token Plan (SG)",
+          "contextWindow": 256000,
+          "maxTokens": 32768,
+          "reasoning": true,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        },
+        {
+          "id": "qwen3.7-max",
+          "name": "qwen3.7-max via Alibaba Token Plan (SG)",
+          "contextWindow": 256000,
+          "maxTokens": 32768,
+          "reasoning": true,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        },
+        {
+          "id": "qwen3.7-plus",
+          "name": "qwen3.7-plus via Alibaba Token Plan (SG)",
+          "contextWindow": 1000000,
+          "maxTokens": 32768,
+          "reasoning": true,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        },
+        {
+          "id": "qwen3.8-flash",
+          "name": "qwen3.8-flash via Alibaba Token Plan (SG)",
+          "contextWindow": 1000000,
+          "maxTokens": 32768,
+          "reasoning": false,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "samplingParams": {
+            "enable_thinking": false
+          }
+        },
+        {
+          "id": "glm-5.2",
+          "name": "glm-5.2 via Alibaba Token Plan (SG)",
+          "contextWindow": 200000,
+          "maxTokens": 32768,
+          "reasoning": true,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        },
+        {
+          "id": "deepseek-v4-pro",
+          "name": "deepseek-v4-pro via Alibaba Token Plan (SG)",
+          "contextWindow": 128000,
+          "maxTokens": 32768,
+          "reasoning": true,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        },
+        {
+          "id": "deepseek-v4-flash-0731",
+          "name": "deepseek-v4-flash-0731 via Alibaba Token Plan (SG)",
+          "contextWindow": 1000000,
+          "maxTokens": 32768,
+          "reasoning": false,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "samplingParams": {
+            "enable_thinking": false
+          }
+        }
+      ],
+      "compat": {
+        "supportsDeveloperRole": false,
+        "supportsReasoningEffort": false,
+        "thinkingTokenBudgetField": "thinking_budget"
+      },
+      "_comment_4329": "fleet-ops#4329: alibaba-coding's models registration is durable here. install.sh copy-installs pi-models.json verbatim (the unknown-provider merge exists only for seat-caps.json), so without this row a deploy would silently drop the provider from the live models.json — the same trap #4262 caught for runinfra/crof/entrim. Landed verbatim from the live ~/.pi/agent/models.json (smoke-tested SEAT-OK 2026-09-07). compat.supportsDeveloperRole=false (the endpoint 400s on Pi's developer role); thinking on for the reasoning models, enable_thinking=false for qwen3.8-flash + deepseek-v4-flash-0731."
+    },
+    "litellm": {
+      "name": "LiteLLM proxy (fleet seat routing, fleet-ops#4130 P2+P3a)",
+      "baseUrl": "http://127.0.0.1:4000",
+      "api": "openai-completions",
+      "apiKey": "!/home/nish/.local/bin/fleet-litellm-key master",
+      "models": [
+        {
+          "id": "judge",
+          "name": "LiteLLM judge group (senior ladder with proxy-owned fallbacks)",
+          "contextWindow": 500000,
+          "maxTokens": 8192,
+          "reasoning": true,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "_comment_4181": "fleet-ops#4181 P2: first consumer (agent-cron-run fable-check). The fallback chain lives in the operator-owned ~/.config/fleet-ops/litellm-proxy.yaml router_settings.fallbacks. Cost is 0 here because the proxy tracks spend in Postgres against the real upstream seats; pi's cost map would double-count."
+        },
+        {
+          "id": "worker-cheap",
+          "name": "LiteLLM worker-cheap (free lanes first)",
+          "contextWindow": 1000000,
+          "maxTokens": 32768
+        },
+        {
+          "id": "worker-capable",
+          "name": "LiteLLM worker-capable (strong models)",
+          "contextWindow": 256000,
+          "maxTokens": 32768
+        },
+        {
+          "id": "senior",
+          "name": "LiteLLM senior (ordered fallback ladder)",
+          "contextWindow": 500000,
+          "maxTokens": 131072
+        },
+        {
+          "id": "worker-private",
+          "name": "LiteLLM worker-private (paid only, private repos)",
+          "contextWindow": 256000,
+          "maxTokens": 32768
+        }
+      ],
+      "_comment_4219": "fleet-ops#4219 P3a: single provider, all five model groups. P2 pinned the apiKey to the judge-scoped virtual key; P3a's callers need the worker groups too and pi holds one apiKey per provider, so the resolver now emits the master key (fleet-litellm-key master) which accesses every group. Per-tier virtual keys (sk-fleet-worker/senior/private) return in P3b for per-tier spend attribution; group/tag spend tracking in the proxy Postgres is unaffected. The resolver reads the operator-owned env files; no key value is in this file."
+    }
+  }
+}

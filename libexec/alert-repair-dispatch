@@ -36,6 +36,21 @@ PACKET_DIR = Path(os.environ.get(
     "/home/nish/workspaces/agent-state/alert-repair",
 ))
 LOG = PACKET_DIR / "actions.log"
+
+# Class-park awareness (auditor 2026-08-31T11:1xZ, fleet-ops#2495 follow-up).
+# fleet-completion-canary writes `decision_class_until` into per-alert
+# state files under fleet-completion-canary/open/<alertname>.json when it
+# parks a still-firing structural-red alert's class so a fresh dispatch
+# unit on the SAME alert no longer re-summons the senior-auditor pipeline.
+# Alertmanager's AMX receiver fires every repeat_interval (6h) regardless
+# of the canary's verdict; without this mirror, this dispatcher spawns a
+# new unit that walks into the same lane fault + escalates again — the
+# observed 7-dispatch loop for FleetQueueSelfMaintenanceRatioHigh
+# (2026-08-30..31).
+CLASS_PARK_DIR = Path(os.environ.get(
+    "CLASS_PARK_DIR",
+    "/home/nish/workspaces/agent-state/fleet-completion-canary/open",
+))
 # LoadStorm is handled deterministically by load-storm-brake (wired in
 # prometheus-am-executor config.yml via match_labels). The LLM root-cause
 # worker for that class comes AFTER, via the STOP-REASON.json the brake
@@ -46,9 +61,62 @@ LOG = PACKET_DIR / "actions.log"
 # spawn a real repair worker; the canary drives the drill by faking a
 # DISPATCH line + a transient unit and watching the ladder.
 # WasteRatioRising (fleet-ops#1211) is a TREND alert for Weekly Review.
+# FleetSloSeatAvailSlowBurn (fleet-ops#2429) is the same WFR-input class:
+# the seat_availability SLO is a slow-burn gauge that "feeds the weekly
+# fleet review" (fleet-ops#1291). Repair is mechanism-impossible — seat
+# compliance is operator/Nish-owned (credentials, quotas, seat health);
+# no repair worker can raise it. The metric bug (compliance pinned at
+# 1/13 regardless of real health) was fixed in PR #2377; the remaining
+# signal (e.g. 0.846 < 0.9) is honest and clears only when seats recover
+# + the 6h smoothing window flushes. Without the skip, Alertmanager's 6h
+# repeat spawned a worker every cycle into the same unrepairable alert
+# (live 2026-08-30 dispatches 07:00/11:57/17:57, each running, failing
+# and escalating — the 'chain ran and failed to clear it' loop).
 # severity=none is not enough: this dispatcher keys on alertname, not
 # severity, so the name must live in SKIP_SET or a firing trend pages.
-SKIP_SET = {"Watchdog", "FleetTestAlert", "LoadStorm", "CanaryDrill", "WasteRatioRising"}
+SKIP_SET = {"Watchdog", "FleetTestAlert", "LoadStorm", "CanaryDrill",
+           "WasteRatioRising", "FleetSloSeatAvailSlowBurn",
+           # WFR-input slow-burn SLO (fleet-ops#1291/2429): the main_green
+           # burn-rate rule is a lagging integrator — it clears only when
+           # ~30min of all-green samples flush the 30m window and ~6h flush
+           # the 6h window, regardless of any repair worker. Repair is
+           # mechanism-impossible (an alert-repair worker cannot rewind the
+           # burn windows; the underlying CI red is owned by FleetMainRed).
+           # Without the skip, Alertmanager's 6h repeat dispatched a worker
+           # every cycle: 6+ dispatches in 3 days (2026-08-30..09-01), every
+           # one Failed/RESOLVED with the same verdict, and each new chain
+           # stalled at hop=verify until its deadline — the exact verify
+           # stall fleet-ops#2672 was filed for (chain_stalled=1 at
+           # 2026-09-01T15:23Z). Workers' own class-park (decision_class_until)
+           # is the stopgap; this skip is the durable rail.
+           "FleetSloMainGreenSlowBurn",
+           # WFR-input trend regression (fleet-ops#1136): the WFR ratchets.
+           # Trend alert (delta, not level) — repair mechanism-impossible; an
+           # alert-repair worker cannot reverse a 24h delta in turn.
+           "FleetSelfMaintenanceRegression",
+           # WFR-input trend regression (fleet-ops#1136): the WFR ratchets.
+           # Trend alert (delta, not level) — repair mechanism-impossible; an
+           # alert-repair worker cannot reverse a 24h delta in turn.
+           "FleetQualityChurnRegression",
+           # WFR-input trend regression (fleet-ops#1136): the WFR ratchets.
+           # Trend alert (delta, not level) — repair mechanism-impossible; an
+           # alert-repair worker cannot reverse a 24h delta in turn.
+           "FleetVerifiedMergeRegression",
+           # fleet-ops#3367: consistency check, not a repairable alert. The
+           # SLO compliance and green-map rollup both derive from the same
+           # main_ci dict; a disagreement means a stale/frozen SLO gauge
+           # (config parse failure, exporter crash mid-emit). An alert-repair
+           # worker cannot fix a stale Prometheus gauge — the fix is in the
+           # exporter code (emit instrumented=0 on config failure, which this
+           # PR already ships). Skip to avoid a verify-stall loop.
+           "FleetSloMainGreenGreenMapDisagree",
+           # fleet-ops#3180: 24h lagging count / trend alert. The
+           # fleet_escalations_24h metric is a rolling 24-hour gauge; a worker
+           # cannot repair it because it clears only as the 24-hour window ages
+           # out. Dispatching a repair worker re-summons the same unrepairable
+           # alert every 6 hours. Skip it here so the issue worker can fix the
+           # metric/rule at its own pace.
+           "FleetEscalationStorm"}
 
 # Seat selection — pick a healthy lane instead of hardcoding one. The
 # recorded seat in pi-seat-health.json wins if it is healthy AND observed
@@ -68,6 +136,13 @@ SEAT_HEALTH_FILE = os.environ.get(
 SEAT_LEDGER_DIR = os.environ.get(
     "SEAT_LEDGER_DIR",
     "/home/nish/workspaces/agent-state/lanes/seats",
+)
+# fleet-ops#3661: the seat-caps allowlist. A provider/model pair that is not
+# present here (providers.<p>.models.<m>) is a PHANTOM seat key and must
+# never be dispatched. Overridable for self-tests.
+SEAT_CAPS_JSON = os.environ.get(
+    "SEAT_CAPS_JSON",
+    "/home/nish/.local/state/pi-packet/seat-caps.json",
 )
 FALLBACK_LADDER = [
     ("devin", "glm-5-2"),
@@ -153,6 +228,58 @@ def _sanitise(s):
     return re.sub(r"[^A-Za-z0-9._-]", "_", s)
 
 
+def _loud(msg):
+    """Emit a LOUD line to stderr and the actions.log (fleet-ops#3661)."""
+    line = f"[{utcnow()}] LOUD {msg}"
+    print(line, file=sys.stderr)
+    try:
+        with LOG.open("a") as f:
+            f.write(line + "\n")
+    except OSError:
+        pass
+
+
+def _seat_key_in_caps(provider, model):
+    """True if (provider, model) is a real seat in seat-caps.json.
+
+    fleet-ops#3661: a pair not present in providers.<p>.models.<m> is a
+    PHANTOM seat key (e.g. a probe-output filename fragment like
+    "swe-1-7-.out") and must never be dispatched. Fail-open when the caps
+    file is missing/unparseable so a missing caps file never bricks the
+    dispatch ladder.
+
+    fleet-ops#4018: a model id carrying a `.out` suffix is a probe-output
+    filename fragment, never a real seat model. Reject it BEFORE the
+    fail-open, so a phantom model read back from pi-seat-health.json (the
+    single-record sidecar _select_seat prioritises) cannot pass the
+    caps-missing fail-open and be re-dispatched as `--model <model>-.out` —
+    the seat-health extension then re-writes the phantom `<model>-.out.json`
+    ledger, self-perpetuating the split (live devin__glm-5-2-.out.json /
+    xai-oauth__grok-4-6-.out.json).
+    """
+    if str(model).endswith(".out"):
+        return False
+    try:
+        caps = json.loads(Path(SEAT_CAPS_JSON).read_text())
+    except (OSError, json.JSONDecodeError):
+        return True
+    try:
+        return caps.get("providers", {}).get(provider, {}).get("models", {}).get(model) is not None
+    except AttributeError:
+        return True
+
+
+def _seat_key_valid(provider, model):
+    """LOUD-reject a phantom seat key; True when the pair is a real seat.
+
+    fleet-ops#3661: unknown key -> skip + LOUD, never probe or dispatch.
+    """
+    if _seat_key_in_caps(provider, model):
+        return True
+    _loud(f"SEAT-KEY-INVALID {provider}/{model} writer=alert-repair-dispatch")
+    return False
+
+
 def _in_future(ts):
     if not ts:
         return False
@@ -161,6 +288,27 @@ def _in_future(ts):
             time.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S"))
     except ValueError:
         return False
+
+
+def _class_park_active(name):
+    """Return iso `decision_class_until` if the canary has parked this
+    alert's class and the park is still in the future, else None.
+
+    Reads agent-state/fleet-completion-canary/open/<name>.json (the same
+    file the canary writes — no new contract, no new state). A missing
+    file or unparseable timestamp means "not parked" (fail-open: a flaky
+    read must not block every dispatch, mirroring the alert-repair-claim
+    posture for rc=2). The canary already enforces equivalence via
+    `now < class_dt`; this helper reuses the same _in_future comparison.
+    """
+    try:
+        d = json.loads((CLASS_PARK_DIR / f"{name}.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    until = d.get("decision_class_until")
+    if not until:
+        return None
+    return until if _in_future(until) else None
 
 
 def _fresh(ts):
@@ -173,15 +321,144 @@ def _fresh(ts):
         return False
 
 
+def _provider_overload_wedged(provider):
+    """True if this provider is mid a partial 503 storm (fleet-ops#2661).
+    Mirrors lib/seat-lib.sh provider_overload_wedged(): a provider with >=2 of
+    its seats in overload_bench whose wall end (bench_until ?? usable_at) is in
+    the future or expired within the trailing 1800s is WEDGED — the escalation
+    lanes must NEVER land on it (a dispatch into the storm just dies the same way
+    the workers died)."""
+    WINDOW_S = 1800
+    MIN_SEATS = 2
+    n = 0
+    now = time.time()
+    try:
+        for f in sorted(Path(SEAT_LEDGER_DIR).iterdir()):
+            if not f.is_file() or "__" not in f.name or not f.name.endswith(".json"):
+                continue
+            if ".spawn-bench" in f.name:
+                continue
+            try:
+                d = json.loads(f.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            if d.get("provider") != provider:
+                continue
+            if d.get("health_class") != "overload_bench":
+                continue
+            end = d.get("bench_until") or d.get("usable_at") or ""
+            if not end:
+                continue
+            try:
+                we = calendar.timegm(time.strptime(end[:19], "%Y-%m-%dT%H:%M:%S"))
+            except ValueError:
+                continue
+            if we >= now - WINDOW_S:
+                n += 1
+                if n >= MIN_SEATS:
+                    return True
+    except OSError:
+        return False
+    return False
+
+
+def _spawn_bench_held(provider, model):
+    """Return True if the wrapper's spawn-bench sibling benched this seat.
+
+    Reads <ledger>/<provider>__<model>.spawn-bench.json — the clobber-proof
+    empty-run/spawn-fail marker written ONLY by the wrapper
+    (mark_seat_empty_run / mark_seat_spawn_fail, fleet-ops#1512) and never by
+    seat-health.ts, whose next 200-OK observation re-writes the LEDGER to
+    health_class=healthy + null usable_at. A ledger showing healthy while the
+    sibling bench is held is exactly the "healthy on paper, benched in
+    reality" split that re-seated the verify hop onto
+    openrouter/deepseek/deepseek-v4-flash-0731 (empty-run bench, 0B stdout,
+    provider no-op) at 15:22:13Z on 2026-09-01 (fleet-ops#2672): the seat
+    returned nothing, and the chain stayed stuck at hop=verify. Mirrors
+    lib/seat-lib.sh seat_usable() (checks the marker FIRST, before the
+    ledger) and libexec/fleet-metrics-export.py _spawn_bench_marker_held().
+
+    fleet-ops#3737: an expired marker no longer fails open while it is still
+    the seat's latest evidence — the router holds a FRESH expired marker
+    (written within the 24 h count-merge window, no newer ledger
+    observed_at) until the comeback organ probes the seat. Mirror the same
+    rule here so repair hops do not route onto a probe-gated seat.
+
+    fleet-ops#3828 (mirror of seat_usable #3889/#3826): this function also
+    holds the bench in two more cases the clock rules miss, so a repair hop
+    never routes onto a seat the router already excludes. (1) corpse fence:
+    a marker-declared corpse (seat_dead=true, a chronic spawn_fail past the
+    corpse threshold) is held terminally, regardless of usable_at or a later
+    false-healthy ledger clobber — only a recovery probe
+    (source=comeback_release) releases it. (2) ceiling fence: a FRESH marker
+    whose count is at/past the failure ceiling (20 for spawn_fail, 5 for
+    empty_run) stays held even when the sibling ledger carries a NEWER
+    healthy observation (the after_provider_response 200 that carries
+    status+headers only, never the exit rc), unless source=comeback_release.
+    """
+    f = (Path(SEAT_LEDGER_DIR)
+         / f"{_sanitise(provider)}__{_sanitise(model)}.spawn-bench.json")
+    try:
+        d = json.loads(f.read_text())
+    except (OSError, json.JSONDecodeError):
+        return False
+    lf = (Path(SEAT_LEDGER_DIR)
+          / f"{_sanitise(provider)}__{_sanitise(model)}.json")
+
+    def _ledger_source():
+        try:
+            j = json.loads(lf.read_text())
+            return j.get("source") if isinstance(j, dict) else ""
+        except (OSError, json.JSONDecodeError):
+            return ""
+
+    # fleet-ops#3889 corpse fence: terminal until a real recovery probe.
+    if d.get("seat_dead") is True:
+        if _ledger_source() != "comeback_release":
+            return True
+        # Recovered corpse: fall through, the fresh ledger now decides.
+    if _in_future(d.get("usable_at") or ""):
+        return True
+    written = d.get("written_at") or ""
+    try:
+        w = calendar.timegm(time.strptime(written[:19], "%Y-%m-%dT%H:%M:%S"))
+    except (ValueError, TypeError):
+        return False
+    if time.time() - w > 86400:
+        return False
+    try:
+        obs = json.loads(lf.read_text()).get("observed_at") or ""
+        o = calendar.timegm(time.strptime(obs[:19], "%Y-%m-%dT%H:%M:%S"))
+    except (OSError, json.JSONDecodeError, ValueError, TypeError):
+        return True
+    if o <= w:
+        return True
+    # fleet-ops#3826 ceiling fence: a NEWER healthy observation is the
+    # false-healthy clobber, not recovery, for a ceiling-parked seat.
+    try:
+        mcount = int(d.get("consecutive_failure_count") or 0)
+    except (TypeError, ValueError):
+        mcount = 0
+    _ceil = 5 if (d.get("failure_mode") or "") == "empty_run" else 20
+    if mcount >= _ceil and _ledger_source() != "comeback_release":
+        return True
+    return False
+
+
 def _seat_walled(provider, model):
     """Return True if the per-seat ledger marks this seat walled (unusable).
 
-    Mirrors lib/seat-lib.sh seat_usable(): seat_dead, hard-fail health
-    classes, bench classes while bench_until is in the future, a fresh
-    rate_limited marker with usable_at in the future, and any usable_at in
-    the future. No ledger file / unparseable -> assume usable (fail-open),
-    so a missing ledger never bricks the ladder.
+    Mirrors lib/seat-lib.sh seat_usable(): the wrapper's spawn-bench sibling
+    (empty-run/spawn-fail marker, fleet-ops#1512) is checked FIRST — a held
+    bench outranks a later healthy ledger observation, because the bench
+    survives the seat-health clobber while the ledger does not; then
+    seat_dead, hard-fail health classes, bench classes while bench_until is
+    in the future, a fresh rate_limited marker with usable_at in the future,
+    and any usable_at in the future. No ledger file / unparseable -> assume
+    usable (fail-open), so a missing ledger never bricks the ladder.
     """
+    if _spawn_bench_held(provider, model):
+        return True
     f = Path(SEAT_LEDGER_DIR) / f"{_sanitise(provider)}__{_sanitise(model)}.json"
     try:
         d = json.loads(f.read_text())
@@ -221,18 +498,27 @@ def _enumerate_ledger_seats():
         except (OSError, json.JSONDecodeError):
             continue
         p, m = d.get("provider"), d.get("model")
-        if p and m:
+        # fleet-ops#3661: never dispatch a phantom seat key (skip + LOUD).
+        if p and m and _seat_key_valid(p, m):
             yield p, m
 
 
 def _select_seat(exclude):
-    """Return (provider, model, reason) or None.
+    """Return (seat_or_None, wedged_skipped). A seat is (provider, model, reason)
+    or None when no candidate is usable. wedged_skipped is True when a candidate
+    was excluded for the overload provider-wedge (fleet-ops#2661), so the caller can
+    distinguish "every lane wedged (transient 503 storm" — refuse the dispatch)
+    from "every lane genuinely walled (billing/quota" — legacy park-on-first).
 
     Excludes seats that are walled (per-seat ledger) or on a walled /
     excluded provider. Re-selects from the per-seat ledger rather than
-    parking on a walled seat (fleet-ops#1556).
+    parking on a walled seat (fleet-ops#1556). A provider with >=2 seats in
+    overload_bench within the trailing 30 min is skipped entirely (fleet-ops#2661).
     """
-    # 1. Recorded seat (pi-seat-health.json) wins if healthy, fresh, usable.
+    wedged_skipped = False
+    # 1. Recorded seat (pi-seat-health.json) wins if healthy, fresh, usable
+    #    AND not overload-wedged (fleet-ops#2661: a stormed provider must never
+    #    host an escalation repair dispatch, regardless of its recorded health).
     try:
         d = json.loads(Path(SEAT_HEALTH_FILE).read_text())
         obs = d.get("observed_at")
@@ -244,30 +530,52 @@ def _select_seat(exclude):
             except ValueError:
                 fresh = False
         p, m = d.get("provider"), d.get("model")
-        if (d.get("health_class") == "healthy" and fresh and p and m
-                and p not in WALLED_PROVIDERS and p not in exclude
-                and not _seat_walled(p, m)):
-            return p, m, "healthy"
+        if p and m:
+            if _provider_overload_wedged(p):
+                wedged_skipped = True
+            elif (d.get("health_class") == "healthy" and fresh and p and m
+                    and p not in WALLED_PROVIDERS and p not in exclude
+                    and _seat_key_valid(p, m)
+                    and not _seat_walled(p, m)):
+                return (p, m, "healthy"), False
     except (OSError, json.JSONDecodeError):
         pass
-    # 2. Fallback ladder, skipping walled seats and excluded providers.
+    # 2. Fallback ladder, skipping walled seats, excluded providers and
+    #    overload-wedged providers (fleet-ops#2661).
     for p, m in FALLBACK_LADDER:
+
+        if _provider_overload_wedged(p):
+            wedged_skipped = True
+            continue
         if (p not in WALLED_PROVIDERS and p not in exclude
+                and _seat_key_valid(p, m)
                 and not _seat_walled(p, m)):
-            return p, m, "fallback"
+            return (p, m, "fallback"), False
     # 3. Re-select from the per-seat ledger rather than park on a walled seat.
+
     for p, m in _enumerate_ledger_seats():
+        if _provider_overload_wedged(p):
+            wedged_skipped = True
+            continue
         if (p not in WALLED_PROVIDERS and p not in exclude
                 and not _seat_walled(p, m)):
-            return p, m, "re-selected"
-    return None
+            return (p, m, "re-selected"), False
+    return None, wedged_skipped
 
 
 def _pick_seat():
-    """Return (provider, model, reason). No probing, no retries."""
-    seat = _select_seat(set())
+    """Return (provider, model, reason) or None. No probing, no retries.
+
+    fleet-ops#2661: when every candidate lane is overload-wedged (transient
+    503 storm), return None so the caller refuses the dispatch and spawns
+    NOTHING. A genuinely-walled ladder (billing/quota/corpse — a money wall
+    the worker must escalate to senior) keeps the legacy park-on
+    FALLBACK_LADDER[0] so the money wall still reaches the senior pipeline."""
+    seat, wedged = _select_seat(set())
     if seat:
         return seat
+    if wedged:
+        return None
     return FALLBACK_LADDER[0][0], FALLBACK_LADDER[0][1], "fallback"
 
 
@@ -294,7 +602,7 @@ def main():
                 excl = {p for p in sys.argv[i + 1].split(",") if p}
         except ValueError:
             pass
-        seat = _select_seat(excl)
+        seat, _ = _select_seat(excl)
         if seat:
             print(f"{seat[0]}\t{seat[1]}\t{seat[2]}")
             return 0
@@ -334,6 +642,25 @@ def main():
                     f"reason=skip-list\n"
                 )
             print(f"[{utcnow()}] SKIP alertname={name} (in skip-list)", file=sys.stderr)
+            return 0
+
+    # Class-park skip (auditor 2026-08-31T11:1xZ): honor fleet-completion-canary's
+    # `decision_class_until` verdict. If the canary has parked this alert's
+    # class (e.g. FleetQueueSelfMaintenanceRatioHigh — a structural-signal
+    # alert whose Nish-reserved root cannot be cleared in-turn), a fresh
+    # AMX dispatch MUST NOT spawn a new unit; the existing chain owns the
+    # escalation. Park expiry re-opens the dispatch window on the next
+    # AMX fire after `decision_class_until + repeat_interval`.
+    for name in alertnames:
+        until = _class_park_active(name)
+        if until:
+            with LOG.open("a") as f:
+                f.write(
+                    f"[{utcnow()}] SKIP alertname={name} receiver={receiver} "
+                    f"reason=class-park until={until}\n"
+                )
+            print(f"[{utcnow()}] SKIP alertname={name} (class-park "
+                  f"until={until})", file=sys.stderr)
             return 0
 
     # Common (group) labels.
@@ -449,8 +776,52 @@ def main():
               f"receiver={receiver}", file=sys.stderr)
         return 0
 
-    # Dispatch — pick a healthy lane (no hardcoded seat).
-    provider, model, seat_reason = _pick_seat()
+    # Dispatch — pick a healthy lane (no hardcoded seat). fleet-ops#2661:
+    # when every candidate lane is overload-wedged (transient 503 storm, partial),
+    # _pick_seat returns None — NEVER park a repair/spawn on a storming provider;
+    # log `skipped-wedged` and spawn NOTHING (the alert re-fires on the next
+    # AMX repeat_interval(6h); a stormed lane is worse than no lane).
+    picked = _pick_seat()
+    if not picked:
+        with LOG.open("a") as f:
+            f.write(
+                f"[{utcnow()}] SKIP alertname={joined} receiver={receiver} "
+                f"reason=all-seats-wedged\n"
+            )
+        print(f"[{utcnow()}] SKIP alertname={joined} reason=all-seats-wedged (storm lane isolation; refusing dispatch)", file=sys.stderr)
+        return 0
+    provider, model, seat_reason = picked
+
+    # fleet-ops#2495 follow-up (repair worker 2026-09-01T13:0xZ): honour a
+    # no-spawn request BEFORE touching pi-systemd-run.
+    #
+    # tests/alert-repair-class-park-skip.test.sh calls this script directly and
+    # advertises itself as "hermetic, no live 9090/systemd". It redirected
+    # PACKET_DIR, CLASS_PARK_DIR, SEAT_* and CLAIM_BIN — but there was no way to
+    # suppress the spawn, so every run fired REAL pi-systemd-run units for its
+    # fixture alertnames (NoClassParkAlert / ClassExpiredAlert / NoParkKeyAlert).
+    # Each became a real worker asked to repair an alert that has no Prometheus
+    # rule, could not resolve it, exited non-zero, and re-summoned the senior
+    # auditor via OnFailure — who ran the test again. That is precisely the
+    # amplification loop this test was written to prevent, with the test as the
+    # cause: 100+ phantom packets and 4 concurrent phantom workers on
+    # 2026-08-31..09-01.
+    #
+    # Unset (production) behaviour is byte-for-byte unchanged: the guard is
+    # opt-in only. Placed after _pick_seat() so tests still exercise seat
+    # selection, packet rendering and the claim path.
+    if os.environ.get("ALERT_REPAIR_NO_SPAWN"):
+        with LOG.open("a") as f:
+            f.write(
+                f"[{utcnow()}] NO-SPAWN alertname={joined} unit={unit} "
+                f"seat={provider}/{model} reason={seat_reason} "
+                f"packet={packet} suppressed_by=ALERT_REPAIR_NO_SPAWN\n"
+            )
+        print(f"[{utcnow()}] NO-SPAWN alertname={joined} unit={unit} "
+              f"seat={provider}/{model} reason={seat_reason} "
+              f"suppressed_by=ALERT_REPAIR_NO_SPAWN", file=sys.stderr)
+        return 0
+
     env = os.environ.copy()
     env["PATH"] = f"{os.environ.get('HOME', '/home/nish')}/.local/bin:" + env.get("PATH", "")
     env["XDG_RUNTIME_DIR"] = "/run/user/1000"
@@ -458,6 +829,11 @@ def main():
         "pi-systemd-run",
         "--unit", unit,
         "--stdin", str(packet),
+        # CLOCK_RUN is 3600s (packet 11). --deadline drives RuntimeMaxSec so
+        # the unit self-terminates at the run-hop budget instead of holding
+        # fleet_chain_stalled{hop=run} open (fleet-ops#3328). pi-systemd-run's
+        # default 90 min is the dispatch-plane orphan window, not this hop.
+        "--deadline", "60",
         "--",
         "pi", "--print",
         "--provider", provider,

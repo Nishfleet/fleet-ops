@@ -516,6 +516,8 @@ PI_AUDIT_INSTANCE=dead-token GAP_LOOP_STATE_DIR="$state_dir" \
   || fail "dead seat must be refused, got $(cat "$scratch/pkt/dead.json")"
 [[ "$(jq -r '._seat_preflight' "$scratch/pkt/dead.json")" == "true" ]] \
   || fail "dead seat refusal must be flagged as preflight"
+[[ "$(jq -r '.preflight_reason' "$scratch/pkt/dead.json")" == "seat_dead=true" ]] \
+  || fail "dead seat refusal must carry the precise reason, got $(jq -r '.preflight_reason' "$scratch/pkt/dead.json")"
 ok "fleet-gap-closure-auditor refuses dead seat"
 
 # 2. absent zenmux/glm-5.3-free (no ledger, no global match).
@@ -531,6 +533,8 @@ PI_AUDIT_INSTANCE=absent-token GAP_LOOP_STATE_DIR="$state_dir" \
   || fail "absent seat must be refused, got $(cat "$scratch/pkt/absent.json")"
 [[ "$(jq -r '._seat_preflight' "$scratch/pkt/absent.json")" == "true" ]] \
   || fail "absent seat refusal must be flagged as preflight"
+[[ "$(jq -r '.preflight_reason' "$scratch/pkt/absent.json")" == "no health data" ]] \
+  || fail "absent seat refusal must carry the precise reason, got $(jq -r '.preflight_reason' "$scratch/pkt/absent.json")"
 ok "fleet-gap-closure-auditor refuses absent seat"
 
 # 3. healthy devin/glm-5-2 runs the fake pi and returns DONE.
@@ -572,5 +576,247 @@ GAP_LOOP_CONF_ID="$conf_id" GAP_LOOP_DRY_RUN=1 GAP_LOOP_STATE_DIR="$state_dir" \
 [[ "$(jq -r '.unanimous_done' "$state_dir/conferences/$conf_id/verdict.json")" == "true" ]] \
   || fail "termination dry-run (3 DONE stubs) must be unanimous, got $(cat "$state_dir/conferences/$conf_id/verdict.json")"
 ok "conference dry-run tallies unanimous DONE from three stubs"
+
+# ---------------------------------------------------------------------------
+# fleet-ops#4210: the glm-5-3 auditor must resolve to a LIVE wired free-GLM
+# seat (seat-lib health ledger), not the hardcoded unwired
+# zenmux/z-ai/glm-5.3-free slug that made every termination conference file a
+# mechanical gap-audit dissent.
+# ---------------------------------------------------------------------------
+res_seat_state="$state_dir/resolve-seats"
+res_caps="$state_dir/resolve-caps"
+mkdir -p "$res_seat_state" "$res_caps" "$res_caps/pp"
+cat >"$res_caps/seat-caps.json" <<'CAPS'
+{"providers":{"cline":{"cap":2,"class":"prepaid-quota","models":{"z-ai/glm-5.3-flash":{"cap":1,"class":"free"}}},"devin":{"cap":2,"class":"prepaid-quota","models":{"glm-5-2":{"cap":1}}}},"senior_seats_in_order":[]}
+CAPS
+NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+cat >"$res_seat_state/cline__z-ai_glm-5.3-flash.json" <<EOF
+{"provider":"cline","model":"z-ai/glm-5.3-flash","health_class":"healthy","seat_dead":false,"observed_at":"$NOW","source":"test"}
+EOF
+# Scenario A: cline/z-ai/glm-5.3-flash wired + healthy -> glm-5-3 lands there.
+res_conf="resolve-conf"
+mkdir -p "$state_dir/conferences/$res_conf"
+printf 'termination\n' >"$state_dir/conferences/$res_conf/mode"
+printf '{"cycle":1}\n' >"$state_dir/state.json"
+GAP_LOOP_CONF_ID="$res_conf" GAP_LOOP_DRY_RUN=1 GAP_LOOP_STATE_DIR="$state_dir" \
+  GAP_LOOP_TALLY_BIN="$tally" GAP_LOOP_GH="$scratch/bin/gh" \
+  GAP_LOOP_SYSTEMCTL="$scratch/bin/systemctl" \
+  PI_PACKET_SEAT_LIB="$repo_root/lib/seat-lib.sh" \
+  SEAT_CAPS_JSON="$res_caps/seat-caps.json" \
+  PI_MODELS_JSON="$res_caps/models.json" \
+  PI_SEAT_HEALTH_LEDGER_DIR="$res_seat_state" \
+  PI_SEAT_HEALTH_FILE="$res_caps/global-seat-health.json" \
+  PI_PACKET_STATE="$res_caps/pp" SEAT_LOG_FILE="$res_caps/pp/watch.log" \
+  "$conf"
+[[ -f "$state_dir/conferences/$res_conf/verdict.json" ]] \
+  || fail "resolve conference must complete in dry-run"
+gj="$state_dir/pi-audit-jobs/${res_conf}-r1-glm-5-3/job.json"
+[[ -f "$gj" ]] || fail "conference must write a glm-5-3 job: $gj"
+[[ "$(jq -r '.provider' "$gj")" == "cline" && "$(jq -r '.model' "$gj")" == "z-ai/glm-5.3-flash" ]] \
+  || fail "glm-5-3 must resolve to the live wired free seat, got $(jq -c '{provider,model}' "$gj")"
+ok "glm-5-3 resolves to live wired free-GLM seat (cline/z-ai/glm-5.3-flash)"
+
+# Scenario B: the wired free seat is dead and no other free seat exists ->
+# glm-5-3 keeps the ladder slug so the preflight refusal (and dissent) still
+# surfaces the wall.
+cat >"$res_seat_state/cline__z-ai_glm-5.3-flash.json" <<EOF
+{"provider":"cline","model":"z-ai/glm-5.3-flash","health_class":"healthy","seat_dead":true,"observed_at":"$NOW","source":"test"}
+EOF
+res_conf2="resolve-conf-b"
+mkdir -p "$state_dir/conferences/$res_conf2"
+printf 'termination\n' >"$state_dir/conferences/$res_conf2/mode"
+printf '{"cycle":1}\n' >"$state_dir/state.json"
+GAP_LOOP_CONF_ID="$res_conf2" GAP_LOOP_DRY_RUN=1 GAP_LOOP_STATE_DIR="$state_dir" \
+  GAP_LOOP_TALLY_BIN="$tally" GAP_LOOP_GH="$scratch/bin/gh" \
+  GAP_LOOP_SYSTEMCTL="$scratch/bin/systemctl" \
+  PI_PACKET_SEAT_LIB="$repo_root/lib/seat-lib.sh" \
+  SEAT_CAPS_JSON="$res_caps/seat-caps.json" \
+  PI_MODELS_JSON="$res_caps/models.json" \
+  PI_SEAT_HEALTH_LEDGER_DIR="$res_seat_state" \
+  PI_SEAT_HEALTH_FILE="$res_caps/global-seat-health.json" \
+  PI_PACKET_STATE="$res_caps/pp" SEAT_LOG_FILE="$res_caps/pp/watch.log" \
+  "$conf"
+gj2="$state_dir/pi-audit-jobs/${res_conf2}-r1-glm-5-3/job.json"
+[[ -f "$gj2" ]] || fail "conference must write a glm-5-3 job: $gj2"
+[[ "$(jq -r '.provider' "$gj2")" == "zenmux" && "$(jq -r '.model' "$gj2")" == "z-ai/glm-5.3-free" ]] \
+  || fail "glm-5-3 must keep the ladder slug when nothing is usable, got $(jq -c '{provider,model}' "$gj2")"
+ok "glm-5-3 keeps ladder slug when no free seat is usable (preflight surfaces wall)"
+
+# Scenario C: ladder + every free seat unusable, but a capable seat is live ->
+# glm-5-3 falls back to the first usable capable seat (pi-audit-run
+# resolve_free_role shape), so the loop can converge while free lanes are all
+# benched.
+cat >"$res_caps/seat-caps.json" <<'CAPS'
+{"providers":{"cline":{"cap":2,"class":"prepaid-quota","models":{"z-ai/glm-5.3-flash":{"cap":1,"class":"free"}}},"cursor":{"cap":2,"class":"capable","models":{"cursor-grok-4.6-high":{"cap":1,"class":"capable"}}},"devin":{"cap":2,"class":"prepaid-quota","models":{"glm-5-2":{"cap":1}}}},"senior_seats_in_order":[]}
+CAPS
+cat >"$res_caps/models.json" <<'MODELS'
+{"providers":{"cursor":{"models":[{"id":"cursor-grok-4.6-high","reasoning":true}]}}}
+MODELS
+cat >"$res_seat_state/cursor__cursor-grok-4.6-high.json" <<EOF
+{"provider":"cursor","model":"cursor-grok-4.6-high","health_class":"healthy","seat_dead":false,"observed_at":"$NOW","source":"test"}
+EOF
+res_conf3="resolve-conf-c"
+mkdir -p "$state_dir/conferences/$res_conf3"
+printf 'termination\n' >"$state_dir/conferences/$res_conf3/mode"
+printf '{"cycle":1}\n' >"$state_dir/state.json"
+GAP_LOOP_CONF_ID="$res_conf3" GAP_LOOP_DRY_RUN=1 GAP_LOOP_STATE_DIR="$state_dir" \
+  GAP_LOOP_TALLY_BIN="$tally" GAP_LOOP_GH="$scratch/bin/gh" \
+  GAP_LOOP_SYSTEMCTL="$scratch/bin/systemctl" \
+  PI_PACKET_SEAT_LIB="$repo_root/lib/seat-lib.sh" \
+  SEAT_CAPS_JSON="$res_caps/seat-caps.json" \
+  PI_MODELS_JSON="$res_caps/models.json" \
+  PI_SEAT_HEALTH_LEDGER_DIR="$res_seat_state" \
+  PI_SEAT_HEALTH_FILE="$res_caps/global-seat-health.json" \
+  PI_PACKET_STATE="$res_caps/pp" SEAT_LOG_FILE="$res_caps/pp/watch.log" \
+  "$conf"
+gj3="$state_dir/pi-audit-jobs/${res_conf3}-r1-glm-5-3/job.json"
+[[ -f "$gj3" ]] || fail "conference must write a glm-5-3 job: $gj3"
+[[ "$(jq -r '.provider' "$gj3")" == "cursor" && "$(jq -r '.model' "$gj3")" == "cursor-grok-4.6-high" ]] \
+  || fail "glm-5-3 must fall back to a usable capable seat, got $(jq -c '{provider,model}' "$gj3")"
+ok "glm-5-3 falls back to usable capable seat when no free seat is live"
+
+# ---------------------------------------------------------------------------
+# fleet-ops#4209: the glm-5-2 auditor must resolve to a LIVE wired seat, not
+# the hardcoded devin/glm-5-2 that the auditor preflight refused when the
+# devin lane was quota-benched (cycle-4 termination conference
+# 2026-09-07T10:49:54Z: devin/glm-5-2 benched until 2026-09-08T09:01:04Z — a
+# no-show dissent, not an auditor judgment). Resolves through a devin ladder
+# (glm-5-2 then swe-1-7) and falls back to any usable capable seat, keeping
+# the ladder slug only when nothing anywhere is usable so a genuine wall
+# still surfaces as a preflight refusal.
+# ---------------------------------------------------------------------------
+res_seat_state2="$state_dir/resolve-seats-2"
+res_caps2="$state_dir/resolve-caps-2"
+mkdir -p "$res_seat_state2" "$res_caps2" "$res_caps2/pp"
+cat >"$res_caps2/seat-caps.json" <<'CAPS'
+{"providers":{"devin":{"cap":2,"class":"prepaid-quota","models":{"glm-5-2":{"cap":1},"swe-1-7":{"cap":1}}}},"senior_seats_in_order":[]}
+CAPS
+cat >"$res_caps2/models.json" <<'MODELS'
+{"providers":{"devin":{"models":[{"id":"glm-5-2"},{"id":"swe-1-7"}]}}}
+MODELS
+NOW2="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+FUTURE2="$(date -u -d '+2 days' +%Y-%m-%dT%H:%M:%SZ)"
+
+# Scenario A: devin/glm-5-2 wired + healthy -> glm-5-2 lands there (the
+# common case is unchanged).
+cat >"$res_seat_state2/devin__glm-5-2.json" <<EOF
+{"provider":"devin","model":"glm-5-2","health_class":"healthy","seat_dead":false,"observed_at":"$NOW2","source":"test"}
+EOF
+res_conf4="resolve-conf-2a"
+mkdir -p "$state_dir/conferences/$res_conf4"
+printf 'termination\n' >"$state_dir/conferences/$res_conf4/mode"
+printf '{"cycle":1}\n' >"$state_dir/state.json"
+GAP_LOOP_CONF_ID="$res_conf4" GAP_LOOP_DRY_RUN=1 GAP_LOOP_STATE_DIR="$state_dir" \
+  GAP_LOOP_TALLY_BIN="$tally" GAP_LOOP_GH="$scratch/bin/gh" \
+  GAP_LOOP_SYSTEMCTL="$scratch/bin/systemctl" \
+  PI_PACKET_SEAT_LIB="$repo_root/lib/seat-lib.sh" \
+  SEAT_CAPS_JSON="$res_caps2/seat-caps.json" \
+  PI_MODELS_JSON="$res_caps2/models.json" \
+  PI_SEAT_HEALTH_LEDGER_DIR="$res_seat_state2" \
+  PI_SEAT_HEALTH_FILE="$res_caps2/global-seat-health.json" \
+  PI_PACKET_STATE="$res_caps2/pp" SEAT_LOG_FILE="$res_caps2/pp/watch.log" \
+  "$conf"
+[[ -f "$state_dir/conferences/$res_conf4/verdict.json" ]] \
+  || fail "resolve conference must complete in dry-run"
+gj4="$state_dir/pi-audit-jobs/${res_conf4}-r1-glm-5-2/job.json"
+[[ -f "$gj4" ]] || fail "conference must write a glm-5-2 job: $gj4"
+[[ "$(jq -r '.provider' "$gj4")" == "devin" && "$(jq -r '.model' "$gj4")" == "glm-5-2" ]] \
+  || fail "glm-5-2 must keep the live devin/glm-5-2 seat when healthy, got $(jq -c '{provider,model}' "$gj4")"
+ok "glm-5-2 resolves to live devin/glm-5-2 when healthy (common case unchanged)"
+
+# Scenario B: devin/glm-5-2 quota-benched (the cycle-4 wall) but
+# devin/swe-1-7 wired + healthy -> glm-5-2 lands on the other devin seat.
+cat >"$res_seat_state2/devin__glm-5-2.json" <<EOF
+{"provider":"devin","model":"glm-5-2","health_class":"quota_bench","seat_dead":false,"observed_at":"$NOW2","bench_until":"$FUTURE2","source":"test"}
+EOF
+cat >"$res_seat_state2/devin__swe-1-7.json" <<EOF
+{"provider":"devin","model":"swe-1-7","health_class":"healthy","seat_dead":false,"observed_at":"$NOW2","source":"test"}
+EOF
+res_conf5="resolve-conf-2b"
+mkdir -p "$state_dir/conferences/$res_conf5"
+printf 'termination\n' >"$state_dir/conferences/$res_conf5/mode"
+printf '{"cycle":1}\n' >"$state_dir/state.json"
+GAP_LOOP_CONF_ID="$res_conf5" GAP_LOOP_DRY_RUN=1 GAP_LOOP_STATE_DIR="$state_dir" \
+  GAP_LOOP_TALLY_BIN="$tally" GAP_LOOP_GH="$scratch/bin/gh" \
+  GAP_LOOP_SYSTEMCTL="$scratch/bin/systemctl" \
+  PI_PACKET_SEAT_LIB="$repo_root/lib/seat-lib.sh" \
+  SEAT_CAPS_JSON="$res_caps2/seat-caps.json" \
+  PI_MODELS_JSON="$res_caps2/models.json" \
+  PI_SEAT_HEALTH_LEDGER_DIR="$res_seat_state2" \
+  PI_SEAT_HEALTH_FILE="$res_caps2/global-seat-health.json" \
+  PI_PACKET_STATE="$res_caps2/pp" SEAT_LOG_FILE="$res_caps2/pp/watch.log" \
+  "$conf"
+gj5="$state_dir/pi-audit-jobs/${res_conf5}-r1-glm-5-2/job.json"
+[[ -f "$gj5" ]] || fail "conference must write a glm-5-2 job: $gj5"
+[[ "$(jq -r '.provider' "$gj5")" == "devin" && "$(jq -r '.model' "$gj5")" == "swe-1-7" ]] \
+  || fail "glm-5-2 must fall over to the live devin/swe-1-7 when glm-5-2 is benched, got $(jq -c '{provider,model}' "$gj5")"
+ok "glm-5-2 falls over to live devin/swe-1-7 when glm-5-2 is quota-benched"
+
+# Scenario C: the whole devin ladder unusable, but a capable seat is live ->
+# glm-5-2 falls back to the first usable capable seat (pi-audit-run
+# resolve_free_role shape), so the loop can converge while the devin lane is
+# down.
+cat >"$res_caps2/seat-caps.json" <<'CAPS'
+{"providers":{"cursor":{"cap":2,"class":"capable","models":{"cursor-grok-4.6-high":{"cap":1,"class":"capable"}}},"devin":{"cap":2,"class":"prepaid-quota","models":{"glm-5-2":{"cap":1},"swe-1-7":{"cap":1}}}},"senior_seats_in_order":[]}
+CAPS
+cat >"$res_caps2/models.json" <<'MODELS'
+{"providers":{"cursor":{"models":[{"id":"cursor-grok-4.6-high","reasoning":true}]},"devin":{"models":[{"id":"glm-5-2"},{"id":"swe-1-7"}]}}}
+MODELS
+cat >"$res_seat_state2/devin__glm-5-2.json" <<EOF
+{"provider":"devin","model":"glm-5-2","health_class":"healthy","seat_dead":true,"observed_at":"$NOW2","source":"test"}
+EOF
+cat >"$res_seat_state2/devin__swe-1-7.json" <<EOF
+{"provider":"devin","model":"swe-1-7","health_class":"healthy","seat_dead":true,"observed_at":"$NOW2","source":"test"}
+EOF
+cat >"$res_seat_state2/cursor__cursor-grok-4.6-high.json" <<EOF
+{"provider":"cursor","model":"cursor-grok-4.6-high","health_class":"healthy","seat_dead":false,"observed_at":"$NOW2","source":"test"}
+EOF
+res_conf6="resolve-conf-2c"
+mkdir -p "$state_dir/conferences/$res_conf6"
+printf 'termination\n' >"$state_dir/conferences/$res_conf6/mode"
+printf '{"cycle":1}\n' >"$state_dir/state.json"
+GAP_LOOP_CONF_ID="$res_conf6" GAP_LOOP_DRY_RUN=1 GAP_LOOP_STATE_DIR="$state_dir" \
+  GAP_LOOP_TALLY_BIN="$tally" GAP_LOOP_GH="$scratch/bin/gh" \
+  GAP_LOOP_SYSTEMCTL="$scratch/bin/systemctl" \
+  PI_PACKET_SEAT_LIB="$repo_root/lib/seat-lib.sh" \
+  SEAT_CAPS_JSON="$res_caps2/seat-caps.json" \
+  PI_MODELS_JSON="$res_caps2/models.json" \
+  PI_SEAT_HEALTH_LEDGER_DIR="$res_seat_state2" \
+  PI_SEAT_HEALTH_FILE="$res_caps2/global-seat-health.json" \
+  PI_PACKET_STATE="$res_caps2/pp" SEAT_LOG_FILE="$res_caps2/pp/watch.log" \
+  "$conf"
+gj6="$state_dir/pi-audit-jobs/${res_conf6}-r1-glm-5-2/job.json"
+[[ -f "$gj6" ]] || fail "conference must write a glm-5-2 job: $gj6"
+[[ "$(jq -r '.provider' "$gj6")" == "cursor" && "$(jq -r '.model' "$gj6")" == "cursor-grok-4.6-high" ]] \
+  || fail "glm-5-2 must fall back to a usable capable seat when the devin ladder is down, got $(jq -c '{provider,model}' "$gj6")"
+ok "glm-5-2 falls back to usable capable seat when the devin ladder is down"
+
+# Scenario D: devin ladder down and no other seat usable -> glm-5-2 keeps
+# the ladder slug devin/glm-5-2 so the auditor preflight refusal (and the
+# dissent) still surface the wall honestly.
+cat >"$res_seat_state2/cursor__cursor-grok-4.6-high.json" <<EOF
+{"provider":"cursor","model":"cursor-grok-4.6-high","health_class":"healthy","seat_dead":true,"observed_at":"$NOW2","source":"test"}
+EOF
+res_conf7="resolve-conf-2d"
+mkdir -p "$state_dir/conferences/$res_conf7"
+printf 'termination\n' >"$state_dir/conferences/$res_conf7/mode"
+printf '{"cycle":1}\n' >"$state_dir/state.json"
+GAP_LOOP_CONF_ID="$res_conf7" GAP_LOOP_DRY_RUN=1 GAP_LOOP_STATE_DIR="$state_dir" \
+  GAP_LOOP_TALLY_BIN="$tally" GAP_LOOP_GH="$scratch/bin/gh" \
+  GAP_LOOP_SYSTEMCTL="$scratch/bin/systemctl" \
+  PI_PACKET_SEAT_LIB="$repo_root/lib/seat-lib.sh" \
+  SEAT_CAPS_JSON="$res_caps2/seat-caps.json" \
+  PI_MODELS_JSON="$res_caps2/models.json" \
+  PI_SEAT_HEALTH_LEDGER_DIR="$res_seat_state2" \
+  PI_SEAT_HEALTH_FILE="$res_caps2/global-seat-health.json" \
+  PI_PACKET_STATE="$res_caps2/pp" SEAT_LOG_FILE="$res_caps2/pp/watch.log" \
+  "$conf" 2>"$res_caps2/conf-d.log"
+gj7="$state_dir/pi-audit-jobs/${res_conf7}-r1-glm-5-2/job.json"
+[[ -f "$gj7" ]] || fail "conference must write a glm-5-2 job: $gj7"
+[[ "$(jq -r '.provider' "$gj7")" == "devin" && "$(jq -r '.model' "$gj7")" == "glm-5-2" ]] \
+  || fail "glm-5-2 must keep the ladder slug when nothing is usable, got $(jq -c '{provider,model}' "$gj7")"
+grep -q "no usable devin seat" "$res_caps2/conf-d.log" \
+  || fail "conference must log the ladder-slug fallback, got: $(cat "$res_caps2/conf-d.log")"
+ok "glm-5-2 keeps ladder slug when no seat is usable (preflight surfaces wall)"
 
 echo "OK: fleet-ops#180 gap-closure loop acceptance (stubbed) pass"

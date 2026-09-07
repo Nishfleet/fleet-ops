@@ -1,4 +1,17 @@
 #!/usr/bin/env bash
+
+# Use the nishfleet-worker App token for any GitHub write. Fail closed if
+# the App cannot mint and no token was inherited from a parent organ, so a
+# dead App never falls through to the human gh identity (fleet-ops#3445).
+# Human gh is read-only for organs; GH Actions (tests) has no App creds and
+# stubs gh as read-only, so skip minting there.
+if [[ -z "${GH_TOKEN:-}" && "${GITHUB_ACTIONS:-}" != "true" && "${GH:-gh}" == "gh" ]]; then
+    export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
+    _wt="${NISHFLEET_WORKER_TOKEN_BIN:-${HOME:-/home/nish}/.local/bin/worker-token}"
+    _minted="$("$_wt" --print)" || { echo "fleet-ops#3445: $_wt --print failed - refusing human-gh writes" >&2; exit 1; }
+    eval "$_minted"
+    unset _wt _minted
+fi
 # fleet-blind-audit — one mechanical no-context sweep of the repo + live state.
 #
 # This is the ExecStart of fleet-blind-audit.service. It:
@@ -31,7 +44,7 @@
 #   AUDIT_SEAT_LIB          seat-lib.sh path
 #   AUDIT_PI_BIN            pi binary (default: ~/.local/bin/pi)
 #   AUDIT_PANEL_BIN         panel binary (default: ~/.local/bin/fleet-blind-audit-panel)
-#   AUDIT_MAX_FINDINGS      cap on filed issues per run (default: 5)
+#   AUDIT_MAX_FINDINGS      cap on filed issues per run (default: 1)
 #   AUDIT_DRY_RUN           if 1, do not run pi or file issues
 #   AUDIT_DRILL             if 1, skip pi/seat and file AUDIT_DRILL_FINDINGS
 #   AUDIT_DRILL_FINDINGS    findings JSON for AUDIT_DRILL=1
@@ -65,7 +78,7 @@ PROMPT="${AUDIT_PROMPT:-$HOME/.pi/agent/prompts/blind-audit.md}"
 PLAN_FILE="${AUDIT_PLAN_FILE:-/home/nish/workspaces/agent-state/fleet-restoration-2026-08-25.md}"
 PI_BIN="${AUDIT_PI_BIN:-$HOME/.local/bin/pi}"
 PANEL_BIN="${AUDIT_PANEL_BIN:-$HOME/.local/bin/fleet-blind-audit-panel}"
-MAX_FINDINGS="${AUDIT_MAX_FINDINGS:-5}"
+MAX_FINDINGS="${AUDIT_MAX_FINDINGS:-1}"
 DRY_RUN="${AUDIT_DRY_RUN:-0}"
 DRILL="${AUDIT_DRILL:-0}"
 AUDIT_NONCANON_MARKER="audit-target-noncanonical: fleet-ops#367"
@@ -104,7 +117,7 @@ Environment:
   AUDIT_PLAN_FILE       fleet plan file for stamps
   AUDIT_PI_BIN          pi binary
   AUDIT_PANEL_BIN       panel binary
-  AUDIT_MAX_FINDINGS    cap on filed issues per run (default: 5)
+  AUDIT_MAX_FINDINGS    cap on filed issues per run (default: 1)
   AUDIT_DRY_RUN         if 1, do not run pi or file issues
   AUDIT_DRILL           if 1, skip pi/seat and file AUDIT_DRILL_FINDINGS
   AUDIT_FAKE_NOW        ISO-8601 UTC override for tests
@@ -328,7 +341,16 @@ EOF
     log "DRILL: loaded findings from $drill_src"
 else
 # --- pick a capable seat ---------------------------------------------------
-seat=$(pick_seat "" "" 1 "" || true)
+# fleet-ops#3121: blind audit is a senior-review judge seat — prefer the
+# senior ladder (senior_seats_in_order, first usable wins) so a walled
+# senior seat is skipped, never a failure; fall back to any capable seat via
+# pick_seat so the reviews never NO-USABLE-SEAT for want of a special seat.
+seat=""
+if command -v find_senior_seat >/dev/null 2>&1; then
+    load_seat_caps >/dev/null 2>&1 || true
+    seat=$(find_senior_seat || true)
+fi
+[ -n "$seat" ] || seat=$(pick_seat "" "" 1 "" || true)
 if [ -z "$seat" ]; then
     log "FATAL: no capable seat available"
     exit 1
@@ -347,12 +369,17 @@ repo_files=$(find "$REPO_ROOT" -type f -not -path '*/\.git/*' 2>/dev/null | sort
 systemctl_failed=$(systemctl --user list-units --state=failed --no-legend --plain 2>/dev/null | awk '{print $1}' | grep -E '^(pi-|fleet-|siterep-)' || true)
 systemctl_timers=$(systemctl --user list-timers --no-legend 2>/dev/null | awk '{print $1, $3}' || true)
 open_issues=$(gh issue list -R "$REPO" --state open --json number,title,labels -L 50 2>/dev/null || echo '[]')
-closed_issues=$(gh issue list -R "$REPO" --state closed --json number,title,labels,closedAt -L 100 2>/dev/null || echo '[]')
+closed_issues=$(gh issue list -R "$REPO" --state closed --json number,title,labels,closedAt,closedByPullRequestsReferences -L 100 2>/dev/null || echo '[]')
 recent_merges=$(gh pr list -R "$REPO" --state merged --json number,title,mergedAt -L 20 2>/dev/null || echo '[]')
+# Wide merged-PR set for the closed-but-undelivered hunt (fleet-ops#3683):
+# covers the referencing PRs of the last 100 closed issues. Not printed, so
+# the wider window costs no reviewer context.
+merged_prs=$(gh pr list -R "$REPO" --state merged --json number,mergedAt -L 200 2>/dev/null || echo '[]')
 GATE_LIB="${AUDIT_MECHANISM_GATE:-$HOME/.local/lib/pi-packet/failure-mechanism-gate.py}"
 [ -f "$GATE_LIB" ] || GATE_LIB="$repo_fallback/lib/failure-mechanism-gate.py"
 MACHINERY_GATE_LIB="${AUDIT_MACHINERY_GATE:-$HOME/.local/lib/pi-packet/machinery-authorization-gate.py}"
 [ -f "$MACHINERY_GATE_LIB" ] || MACHINERY_GATE_LIB="$repo_fallback/lib/machinery-authorization-gate.py"
+CLOSED_UNDELIVERED_LIB="${AUDIT_CLOSED_UNDELIVERED_LIB:-$repo_fallback/lib/closed-undelivered-gate.py}"
 
 # Parse deliberate-states into a JSON list for the packet.
 deliberate_json='[]'
@@ -573,6 +600,34 @@ if [ -f "$MACHINERY_GATE_LIB" ]; then
     log "machinery hunt merged ($(printf '%s' "$mach_out" | jq '.findings | length') hits)"
 else
     log "WARN: machinery-authorization gate missing ($MACHINERY_GATE_LIB); machinery hunt skipped"
+fi
+
+# --- mechanical closed-but-undelivered hunt (fleet-ops#3683) ---------------
+# An issue closed after a PR tried to deliver it, but none of the referencing
+# PRs merged, is an automatic finding. Replaces the hand-verification seam
+# filed in #3683 with a mechanical detector so dropped deliveries do not wait
+# for a human to notice them.
+if [ -f "$CLOSED_UNDELIVERED_LIB" ]; then
+    cud_in=$(jq -n \
+        --argjson closed "${closed_issues:-[]}" \
+        --argjson merged "${merged_prs:-[]}" \
+        '{closed_issues:$closed, merged_prs:$merged}')
+    cud_out=$(printf '%s' "$cud_in" | python3 "$CLOSED_UNDELIVERED_LIB" hunt 2>/dev/null || echo '{"findings":[]}')
+    if ! printf '%s' "$cud_out" | jq -e 'type=="object" and has("findings")' >/dev/null 2>&1; then
+        cud_out='{"findings":[]}'
+    fi
+    if ! printf '%s' "$findings" | jq -e 'type=="object" and has("findings")' >/dev/null 2>&1; then
+        if printf '%s' "$findings" | jq -e 'type=="array"' >/dev/null 2>&1; then
+            findings=$(printf '%s' "$findings" | jq '{findings: .}')
+        else
+            findings='{"findings":[]}'
+        fi
+    fi
+    findings=$(jq -s '{findings: (.[0].findings + .[1].findings)}' \
+        <(printf '%s' "$findings") <(printf '%s' "$cud_out"))
+    log "closed-but-undelivered hunt merged ($(printf '%s' "$cud_out" | jq '.findings | length') hits)"
+else
+    log "WARN: closed-undelivered gate missing ($CLOSED_UNDELIVERED_LIB); hunt skipped"
 fi
 
 # --- manual-seam lens: match, file unmatched, write the report table ------

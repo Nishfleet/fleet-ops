@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+# fleet-close-and-archive-repo — retire a dead repo: close every open PR
+# with one comment, then archive the repo with `gh repo archive`
+# (fleet-ops#3268, child of the waste-cut decision fleet-ops#3128).
+#
+# Why this exists (issue fleet-ops#3128 report F7): a dead repo (Nishfleet/
+# fleet2, the forbidden second dispatcher) had ~199 inert open PRs that
+# inflated the console open-PR tile. Closing them is one thing; the tile
+# only excludes them once the repo is ARCHIVED ("Console open-PR tile
+# excludes archived repos"). This is the reusable mechanism so a later
+# dead repo is retired the same way instead of by hand.
+#
+# DRY-RUN BY DEFAULT. Point it at a repo, it lists what it would do.
+# `--apply` actually closes and archives.
+#
+# SCOPE NOTE (fleet-ops#3268): closing PRs needs only Pull-requests write,
+# which the worker App token has. Archiving a repo needs Administration on
+# the repo, which the nishfleet-worker App token deliberately does NOT have
+# (same class as the branch-protection wall). So when run under the worker
+# App token, `--apply` closes the open PRs (worker-scope) and then reports
+# the archive step as ADMIN-GATED with the exact command for a scope that
+# has Administration to run. It never claims the archive happened. This is
+# a documented scope boundary, surfaced loudly, not swallowed.
+#
+# USAGE
+#   fleet-close-and-archive-repo                        # dry-run, Nishfleet/fleet2
+#   fleet-close-and-archive-repo --repo OWNER/REPO      # dry-run on another repo
+#   fleet-close-and-archive-repo --repo OWNER/REPO --apply
+#   fleet-close-and-archive-repo --comment TEXT --repo OWNER/REPO --apply
+#   fleet-close-and-archive-repo --json
+#
+# EXIT CODES
+#   0   success (incl. dry-run, nothing open, or close done + archive gated)
+#   2   missing prereq (gh / GH_TOKEN / repo arg)
+#   3   partial failure (some PR closes failed; see stderr for which)
+#   4   hard failure (listing open PRs failed)
+#
+# ENVIRONMENT SEAMS (tests overlay these; live defaults are the real gh):
+#   FLEET_CAA_GH            gh binary (tests stub this)
+#   FLEET_CAA_REPO          target repo
+#   FLEET_CAA_COMMENT       the one closing comment
+#   FLEET_CAA_APPLY         1 to act, "" dry-run
+#   FLEET_CAA_JSON           1 to print machine-readable summary
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+GH="${FLEET_CAA_GH:-gh}"
+REPO="${FLEET_CAA_REPO:-Nishfleet/fleet2}"
+APPLY="${FLEET_CAA_APPLY:-}"
+JSON_OUT="${FLEET_CAA_JSON:-}"
+COMMENT="${FLEET_CAA_COMMENT:-}"
+
+DEFAULT_COMMENT=$'Retiring this repository: every open pull request is being closed in bulk so the repo can be archived (fleet-ops#3128, #3268). Open PRs on an archived repo are orphaned. Reopen in a new repo/branch if the work is still wanted.'
+
+# --- arg parsing (also settable via env seams for tests) -------------------
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --repo) REPO="${2:-}"; shift 2 ;;
+        --comment) COMMENT="${2:-}"; shift 2 ;;
+        --apply) APPLY=1; shift ;;
+        --dry-run) APPLY=""; shift ;;
+        --json) JSON_OUT=1; shift ;;
+        -h|--help)
+            printf '%s\n' \
+                "usage: fleet-close-and-archive-repo [--repo OWNER/REPO] [--comment TEXT] [--apply] [--json]" \
+                "  Dry-run by default. --apply closes all open PRs and archives the repo."
+            exit 0
+            ;;
+        *) printf 'fleet-close-and-archive-repo: unknown arg %s\n' "$1" >&2; exit 2 ;;
+    esac
+done
+[[ -n "$REPO" ]] || { printf 'missing --repo\n' >&2; exit 2; }
+[[ "$COMMENT" != "" ]] || COMMENT="$DEFAULT_COMMENT"
+
+# --- prereq -----------------------------------------------------------------
+command -v "$GH" >/dev/null 2>&1 \
+    || { printf 'fleet-close-and-archive-repo: gh not found (%s)\n' "$GH" >&2; exit 2; }
+if [[ -z "${GH_TOKEN:-}" && -z "${FLEET_CAA_NO_TOKEN:-}" ]]; then
+    printf 'fleet-close-and-archive-repo: GH_TOKEN empty\n' >&2
+    exit 2
+fi
+
+log() { printf '[fleet-close-and-archive-repo] %s\n' "$*" >&2; }
+
+# --- archive step -----------------------------------------------------------
+# Closing PRs is worker-scope. Archiving is Administration-scope. This step
+# ATTEMPTS the archive and reports the outcome honestly: success (exit 0),
+# or admin-gated (the App token lacks Administration, surfaced loudly with
+# the exact command a scope with Administration runs). It never claims the
+# repo was archived when the archive call did not succeed.
+archive_step() {
+    local r="$1"
+    local out rc
+    set +e
+    out="$("$GH" repo archive "$r" --yes 2>&1)"
+    rc=$?
+    set -e
+    if [[ "$rc" == "0" ]]; then
+        log "archived $r"
+    else
+        # Administration-gated (worker App token lacks it) or other failure.
+        printf 'fleet-close-and-archive-repo: ARCHIVE-ADMIN-GATED %s — archive not performed\n' "$r" >&2
+        printf '  requires Administration; run: %s repo archive %s --yes\n' "$GH" "$r" >&2
+        local err
+        err="$(printf '%s\n' "$out" | head -1)"
+        if [[ -n "$err" && "$err" != *"Resource not accessible"* && "$err" != *"403"* ]]; then
+            printf '  archive attempt error: %s\n' "$err" >&2
+        fi
+    fi
+}
+
+# --- enumerate open PRs ----------------------------------------------------
+# REST /search is the only reliable way to enumerate ALL open PRs (incl.
+# non-docs titles) — same reason bulk-close-pr-landings.mjs uses it.
+open_prs_json="$("$GH" api "search/issues?q=repo:${REPO}+is:pr+is:open&per_page=100" --paginate 2>/dev/null)" \
+    || { printf 'fleet-close-and-archive-repo: listing open PRs failed\n' >&2; exit 4; }
+
+# Count open PRs across the (possibly paginated) search results.
+count_open=0
+if printf '%s' "$open_prs_json" | grep -q '"total_count"'; then
+    count_open=$(printf '%s' "$open_prs_json" | grep -o '"total_count":[0-9]*' | head -1 | grep -o '[0-9]*')
+fi
+numbers=()
+while IFS= read -r l; do [[ -n "$l" ]] && numbers+=("$l"); done < <(printf '%s\n' "$open_prs_json" | grep -o '"number":[0-9]*' | grep -o '[0-9]*' | sort -n -u)
+
+if [[ -n "$JSON_OUT" ]]; then
+    printf '{"repo":"%s","open_prs":%s,"apply":%s,"to_close":[%s]}\n' \
+        "$REPO" "$count_open" "$(( APPLY ? 1 : 0 ))" \
+        "$(printf '%s' "${numbers[*]}" | tr ' ' ',')"
+fi
+
+log "repo=$REPO open_prs=$count_open mode=$([ -n "$APPLY" ] && echo apply || echo dry-run)"
+
+if [[ "$count_open" == "0" ]]; then
+    log "no open PRs to close; repo already clean"
+    if [[ -z "$APPLY" ]]; then
+        log "would archive: $GH repo archive $REPO --yes  (requires Administration)"
+    else
+        archive_step "$REPO"
+    fi
+    exit 0
+fi
+
+# --- close each open PR with the one comment -------------------------------
+closed=0; failures=0
+for n in "${numbers[@]:-}"; do
+    if [[ -z "$APPLY" ]]; then
+        log "would close #$n (one comment)"
+        continue
+    fi
+    if "$GH" pr close "$n" --repo "$REPO" -c "$COMMENT" >>/dev/null 2>&1; then
+        closed=$((closed+1)); log "closed #$n"
+    else
+        failures=$((failures+1)); printf 'fleet-close-and-archive-repo: close failed #%s\n' "$n" >&2
+    fi
+done
+
+if [[ -n "$APPLY" && "$failures" -gt 0 ]]; then
+    printf 'fleet-close-and-archive-repo: %s PR close(s) failed; not archiving until clean\n' "$failures" >&2
+    exit 3
+fi
+
+# --- archive -----------------------------------------------------------------
+if [[ -n "$APPLY" ]]; then
+    archive_step "$REPO"
+fi
+
+log "done: repo=$REPO closed=$closed failed=$failures archived=reported"
+exit 0

@@ -33,7 +33,39 @@ printf '%s\n' "$out" | grep -qv 'nohup' || fail "dry-run must not mention nohup:
 ok "dry-run is systemd-run --user --collect --no-block"
 printf '%s\n' "$out" | grep -q 'ExecStopPost=' || fail "dry-run must set ExecStopPost (fleet-ops#1204): $out"
 printf '%s\n' "$out" | grep -q 'TimeoutStopSec=180' || fail "dry-run must set TimeoutStopSec=180: $out"
-ok "dry-run wires ExecStopPost salvage"
+printf '%s\n' "$out" | grep -q 'RuntimeMaxSec=90min' || fail "dry-run must set RuntimeMaxSec from default --deadline 90 (fleet-ops#3328): $out"
+ok "dry-run wires ExecStopPost salvage + RuntimeMaxSec"
+
+# fleet-ops#4266: the dead-man rail must be armed on EVERY launch.
+printf '%s\n' "$out" | grep -q 'OnFailure=unit-escalation@issue26-shape.service.service' \
+  || fail "dry-run must set the explicit OnFailure escalation property (fleet-ops#4266): $out"
+printf '%s\n' "$out" | grep -Fq 'keystone-hc-ping\ detached\ start' \
+  || fail "dry-run must arm the /start dead-man ping (fleet-ops#4266): $out"
+printf '%s\n' "$out" | grep -q 'ExecStopPost=.*pi-detached-deadman' \
+  || fail "dry-run must wire the dead-man ExecStopPost (fleet-ops#4266): $out"
+printf '%s\n' "$out" | grep -q 'PI_DEADMAN_DISPATCH=' \
+  || fail "dry-run must set PI_DEADMAN_DISPATCH (fleet-ops#4266): $out"
+printf '%s\n' "$out" | grep -q 'PI_DEADMAN_CMDLINE=sleep\\ 1' \
+  || fail "dry-run must record PI_DEADMAN_CMDLINE (fleet-ops#4266): $out"
+printf '%s\n' "$out" | grep -q 'PI_DEADMAN_DEADLINE=90' \
+  || fail "dry-run must pass --deadline into the dead-man (fleet-ops#4266): $out"
+ok "dry-run arms the #4266 dead-man rail (OnFailure + /start ping + deadman ExecStopPost)"
+
+# --deliverable must surface as PI_DEADMAN_DELIVERABLE for the verdict hook.
+out="$("$bin" --dry-run --unit issue26-dl --deliverable /tmp/issue26-dl.md -- sleep 1)"
+printf '%s\n' "$out" | grep -q 'PI_DEADMAN_DELIVERABLE=/tmp/issue26-dl.md' \
+  || fail "--deliverable must surface in PI_DEADMAN_DELIVERABLE (fleet-ops#4266): $out"
+ok "dry-run --deliverable wires PI_DEADMAN_DELIVERABLE"
+
+# Naked (no flag) call: the dead-man must STILL be armed (dispatch id
+# generated unconditionally) with no deliverable — the healthchecks rail
+# still watches the run.
+out="$("$bin" --dry-run --unit issue26-naked -- sleep 1)"
+printf '%s\n' "$out" | grep -q 'PI_DEADMAN_DISPATCH=' \
+  || fail "naked call must still arm the dead-man (fleet-ops#4266): $out"
+printf '%s\n' "$out" | grep -q 'PI_DEADMAN_DELIVERABLE' \
+  && fail "naked call must NOT set a deliverable: $out"
+ok "naked call still arms the dead-man without a deliverable"
 
 # --- 2. --stdin becomes StandardInput=file: --------------------------------
 pkt="$(mktemp)"
@@ -163,6 +195,12 @@ bash "$here/pi-salvage-worktree.test.sh" || fail "pi-salvage-worktree tests fail
 # a workflow edit (nishfleet-worker cannot push .github/workflows/**).
 bash "$here/git-mirror-update.test.sh" || fail "git-mirror-update tests failed"
 
+# fleet-ops#4266: nested so hosted CI runs the pi-systemd-run dead-man
+# verdict-hook tests without a workflow edit (nishfleet-worker cannot push
+# .github/workflows/**). Hermetic: fake escalation writer, fake who-stopped,
+# scratch textfile, unset-URL HC env.
+bash "$here/pi-detached-deadman.test.sh" || fail "pi-detached-deadman tests failed"
+
 # ============================================================================
 # Dispatch ledger (fleet-ops#1009)
 # ============================================================================
@@ -221,6 +259,22 @@ set -e
 [[ ! -s "$scratch2/sr.log" ]] || fail "dry-run must not call systemd-run"
 [[ ! -f "$LEDGER" ]] || fail "dry-run must not write ledger"
 ok "dry-run accepts --deadline/--provider/--model/--chain-id/--hop (fleet-ops#1009)"
+# fleet-ops#3328: --deadline must become RuntimeMaxSec so the unit dies at
+# the budget instead of holding hop=run. Re-run the same dry-run and read
+# stdout (the previous block discarded it).
+out="$(SYSTEMD_RUN="$scratch2/fake-systemd-run" \
+SYSTEMCTL="$scratch2/fake-systemctl" \
+PI_SALVAGE_DISABLE=1 \
+AGENT_STATE="$AS" \
+FLEET_DISPATCH_LEDGER="$LEDGER" \
+FLEET_DISPATCH_LEDGER_NO_WRITE=1 \
+  "$bin" --dry-run --unit testunit --stdin "$pkt" \
+    --deadline 30 --provider devin --model glm-5-2 \
+    --chain-id chain-x --hop 0 \
+    -- pi --print --provider devin --model glm-5-2)"
+printf '%s\n' "$out" | grep -q 'RuntimeMaxSec=30min' \
+  || fail "--deadline 30 must set RuntimeMaxSec=30min (fleet-ops#3328): $out"
+ok "--deadline 30 wires RuntimeMaxSec=30min (fleet-ops#3328)"
 
 # --- 8. real dispatch: ledger append + packet copy + provider parse --------
 : > "$scratch2/sr.log"
@@ -256,6 +310,7 @@ assert d["model"] == "glm-5-2", d        # parsed from COMMAND
 assert d["deadline_min"] == 5, d
 assert d["deadline_ts"] != "", d
 assert d["packet_path"] != "", d
+assert d["cmdline"] == "pi --print --provider devin --model glm-5-2", d
 assert d["retries"] == 0, d
 print("ledger entry OK")
 PY

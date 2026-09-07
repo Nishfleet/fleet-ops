@@ -251,7 +251,13 @@ fi
 # / dead=false seat is a lane fault, not a Nish escalation.  Use the same
 # pick_seat ladder the workers use.  Only when every usable seat is walled does
 # the ladder return empty -- that is the real "fully walled ladder" signal.
-# ---------------------------------------------------------------------------
+# fleet-ops#2661: escalate-lane 503-storm isolation.  pick_seat skips a
+# provider with >=2 seats recently in overload_bench ONLY when
+# FLEET_ESCALATION_WEDGE_CHECK=1 -- the AUDITOR must never be dispatched into
+# the storm that just killed the workers.  Workers (unset) keep per-seat
+# routing only.  The gate env is exported here so the same pick_seat ladder
+# serves both classes without changing worker behaviour.
+export FLEET_ESCALATION_WEDGE_CHECK=1
 pick_seat_with_retry() {
   local tried_file="$1"
   local seat

@@ -104,6 +104,23 @@ STATE_DIR="${PI_PACKET_STATE:-$HOME/.local/state/pi-packet}"
 LEDGER_DIR="${PI_SEAT_HEALTH_LEDGER_DIR:-/home/nish/workspaces/agent-state/lanes/seats}"
 ACTIVE_SEATS_DIR="$STATE_DIR/active-seats"
 
+# --- Cursor $400 'API Usage' pool measured spend reader (fleet-ops#4206) ---
+# Cursor's DashboardService.GetCurrentPeriodUsage returns the on-demand
+# spend-limit pool (spendLimitUsage) in cents — the $400 'API Usage' budget
+# Nish wants spent on cursor-grok-4.6-high senior/keystone work before the
+# billing cycle resets. The reader is the meter check that proves
+# included_exhausted and feeds fleet_prepaid_spend_usd{provider=cursor} so
+# the FleetCursorPrepaidBurnPacingLow rule can pace it. No new unit: this
+# runs inside the existing canary tick and writes a node_exporter textfile
+# (same pattern as fleet-queue-product-ratio.prom from heartbeat-tier1).
+CURSOR_AUTH_JSON="${CURSOR_AUTH_JSON:-$HOME/.config/cursor/auth.json}"
+CURSOR_USAGE_ENDPOINT="${CURSOR_USAGE_ENDPOINT:-https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage}"
+CURSOR_USAGE_URL="${CURSOR_USAGE_URL:-}"  # test fixture: file:// or path to a JSON response
+PREPAID_SPEND_DIR="${FLEET_PREPAID_SPEND_DIR:-$STATE_DIR/prepaid-spend}"
+PREPAID_PROM_PATH="${FLEET_PREPAID_PROM_PATH:-/var/lib/prometheus/node-exporter/prepaid-spend.prom}"
+ETIMEDOUT_HORIZON_H="${FLEET_PREPAID_ETIMEDOUT_HORIZON_H:-24}"
+CURL="${CURL:-curl}"
+
 log() {
     printf '[%s] [fleet-prepaid-util-canary] %s\n' \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
@@ -221,6 +238,145 @@ provider_benched() {
     done
     shopt -u nullglob
     return 1
+}
+
+# --- Cursor $400 pool measured spend (fleet-ops#4206) ---------------------
+# Reads the on-demand spend-limit pool from Cursor's DashboardService. The
+# accessToken is read from ~/.config/cursor/auth.json (where cursor-agent
+# stores it) and sent ONLY to api2.cursor.sh over HTTPS — never logged.
+# Returns a tab-separated row on stdout:
+#   spend_usd<TAB>pool_usd<TAB>cycle_end_s<TAB>included_exhausted<TAB>updated_s
+# or empty on any failure (no metric emitted; the absent() rule fires).
+cursor_measured_spend() {
+    local token resp cycle_end_ms spend_limit spend_remaining included_spend included_limit
+    local spend_usd pool_usd cycle_end_s inc_ex
+    # Test seam: a fixture file/URL replaces the live API call.
+    if [[ -n "$CURSOR_USAGE_URL" ]]; then
+        if [[ -f "$CURSOR_USAGE_URL" ]]; then
+            resp=$(cat "$CURSOR_USAGE_URL" 2>/dev/null || true)
+        else
+            resp=$("$CURL" -s -m 15 "$CURSOR_USAGE_URL" 2>/dev/null || true)
+        fi
+    else
+        [[ -f "$CURSOR_AUTH_JSON" ]] || { echo ""; return; }
+        token=$(jq -r '.accessToken // empty' "$CURSOR_AUTH_JSON" 2>/dev/null || true)
+        [[ -n "$token" ]] || { echo ""; return; }
+        resp=$("$CURL" -s -m 15 -X POST \
+            -H "Authorization: Bearer $token" \
+            -H "Content-Type: application/json" \
+            -d '{}' "$CURSOR_USAGE_ENDPOINT" 2>/dev/null || true)
+    fi
+    [[ -n "$resp" ]] || { echo ""; return; }
+    if ! echo "$resp" | jq -e '.spendLimitUsage' >/dev/null 2>&1; then
+        echo ""; return
+    fi
+    cycle_end_ms=$(echo "$resp" | jq -r '.billingCycleEnd // 0' 2>/dev/null || echo 0)
+    spend_limit=$(echo "$resp" | jq -r '.spendLimitUsage.individualLimit // .spendLimitUsage.pooledLimit // 0' 2>/dev/null || echo 0)
+    spend_remaining=$(echo "$resp" | jq -r '.spendLimitUsage.individualRemaining // .spendLimitUsage.pooledRemaining // 0' 2>/dev/null || echo 0)
+    included_spend=$(echo "$resp" | jq -r '.planUsage.includedSpend // 0' 2>/dev/null || echo 0)
+    included_limit=$(echo "$resp" | jq -r '.planUsage.limit // 0' 2>/dev/null || echo 0)
+    [[ "$cycle_end_ms" =~ ^[0-9]+$ ]] || cycle_end_ms=0
+    [[ "$spend_limit" =~ ^[0-9]+$ ]] || spend_limit=0
+    [[ "$spend_remaining" =~ ^[0-9]+$ ]] || spend_remaining=0
+    [[ "$included_spend" =~ ^[0-9]+$ ]] || included_spend=0
+    [[ "$included_limit" =~ ^[0-9]+$ ]] || included_limit=0
+    # cents -> USD. spend = pool limit - remaining (the on-demand pool used).
+    pool_usd=$(awk -v l="$spend_limit" 'BEGIN{printf "%.6f", l/100}')
+    spend_usd=$(awk -v l="$spend_limit" -v r="$spend_remaining" 'BEGIN{printf "%.6f", (l-r)/100}')
+    cycle_end_s=$(( cycle_end_ms / 1000 ))
+    if (( included_limit > 0 )) && (( included_spend >= included_limit )); then
+        inc_ex=1
+    else
+        inc_ex=0
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\n' "$spend_usd" "$pool_usd" "$cycle_end_s" "$inc_ex" "$(date -u +%s)"
+}
+
+# Write the prepaid-spend state file + node_exporter textfile for cursor.
+# State file: $PREPAID_SPEND_DIR/cursor.json (consumed by the judge + this
+# canary's heartbeat). Textfile: $PREPAID_PROM_PATH (node_exporter reads ALL
+# .prom in the dir; this file owns ONLY fleet_prepaid_* — no shadowing of
+# fleet.prom, which does not emit these families).
+emit_cursor_prepaid_spend() {
+    local row spend_usd pool_usd cycle_end_s inc_ex updated_s
+    row=$(cursor_measured_spend) || row=""
+    [[ -n "$row" ]] || { log "cursor spend reader: no data (auth missing or API unreachable) — metric omitted, absent() rule will fire"; return; }
+    IFS=$'\t' read -r spend_usd pool_usd cycle_end_s inc_ex updated_s <<<"$row"
+    mkdir -p "$PREPAID_SPEND_DIR" 2>/dev/null || true
+    local state="$PREPAID_SPEND_DIR/cursor.json"
+    cat >"$state" 2>/dev/null <<JSON || log "WARN: could not write cursor spend state $state"
+{
+  "provider": "cursor",
+  "spend_usd": $spend_usd,
+  "pool_usd": $pool_usd,
+  "cycle_end_s": $cycle_end_s,
+  "included_exhausted": $inc_ex,
+  "updated_s": $updated_s,
+  "observed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "source": "cursor-dashboard-getcurrentperiodusage"
+}
+JSON
+    # node_exporter textfile (atomic write; 0644 so node_exporter uid can read).
+    local tmp="${PREPAID_PROM_PATH}.$$"
+    {
+        printf '# HELP fleet_prepaid_spend_usd On-demand (spend-limit) pool spend in USD for prepaid providers, from the vendor dashboard API (fleet-ops#4206).\n'
+        printf '# TYPE fleet_prepaid_spend_usd gauge\n'
+        printf 'fleet_prepaid_spend_usd{provider="cursor"} %s\n' "$spend_usd"
+        printf '# HELP fleet_prepaid_pool_usd On-demand (spend-limit) pool limit in USD for prepaid providers (fleet-ops#4206).\n'
+        printf '# TYPE fleet_prepaid_pool_usd gauge\n'
+        printf 'fleet_prepaid_pool_usd{provider="cursor"} %s\n' "$pool_usd"
+        printf '# HELP fleet_prepaid_cycle_end_timestamp Unix seconds at which the prepaid billing cycle resets (fleet-ops#4206).\n'
+        printf '# TYPE fleet_prepaid_cycle_end_timestamp gauge\n'
+        printf 'fleet_prepaid_cycle_end_timestamp{provider="cursor"} %s\n' "$cycle_end_s"
+        printf '# HELP fleet_prepaid_spend_updated_timestamp Unix seconds at which the spend reader last succeeded (fleet-ops#4206).\n'
+        printf '# TYPE fleet_prepaid_spend_updated_timestamp gauge\n'
+        printf 'fleet_prepaid_spend_updated_timestamp{provider="cursor"} %s\n' "$updated_s"
+        printf '# HELP fleet_prepaid_included_exhausted 1 when the included plan usage is exhausted (the on-demand pool is open), 0 otherwise (fleet-ops#4206).\n'
+        printf '# TYPE fleet_prepaid_included_exhausted gauge\n'
+        printf 'fleet_prepaid_included_exhausted{provider="cursor"} %s\n' "$inc_ex"
+    } >"$tmp" 2>/dev/null
+    if chmod 0644 "$tmp" 2>/dev/null && mv -f "$tmp" "$PREPAID_PROM_PATH" 2>/dev/null; then
+        :
+    else
+        rm -f "$tmp" 2>/dev/null
+        log "WARN: could not write prepaid-spend.prom $PREPAID_PROM_PATH"
+    fi
+    log "cursor spend reader: spend_usd=$spend_usd pool_usd=$pool_usd cycle_end_s=$cycle_end_s included_exhausted=$inc_ex -> $PREPAID_PROM_PATH"
+}
+
+# --- ETIMEDOUT watch at cap 2 (fleet-ops#4206) ----------------------------
+# cursor/cursor-grok-4.6-high was raised 1->2 to spend the $400 pool. The
+# safety revert: if a cli_timeout (spawnSync ETIMEDOUT) lands in the cursor
+# seat ledger while cap >= 2, auto-file a 'lower cursor cap to 1' finding so
+# a worker PRs the cap back down. The seat-health extension already benches
+# the faulted seat (cli_timeout is a transient bench); this watch prevents
+# the 2nd concurrent slot from inheriting the same blast radius.
+cursor_cap_value() {
+    jq -r '.providers.cursor.cap // 0' "$SEAT_CAPS_JSON" 2>/dev/null || echo 0
+}
+
+cursor_recent_cli_timeout() {
+    # Echoes the model name of the most recent cursor cli_timeout within the
+    # horizon, or empty. $1 = horizon hours.
+    local horizon_h="$1" now_s f fm obs obs_s
+    now_s=$(date -u -d "$NOW" +%s 2>/dev/null || echo 0)
+    local horizon_s=$(( horizon_h * 3600 ))
+    shopt -s nullglob
+    for f in "$LEDGER_DIR/cursor__"*.json; do
+        [[ -f "$f" ]] || continue
+        fm=$(jq -r '.failure_mode // ""' "$f" 2>/dev/null || true)
+        [[ "$fm" == "cli_timeout" ]] || continue
+        obs=$(jq -r '.observed_at // ""' "$f" 2>/dev/null || true)
+        [[ -n "$obs" ]] || continue
+        obs_s=$(date -u -d "$obs" +%s 2>/dev/null || echo 0)
+        if [[ "$obs_s" =~ ^[0-9]+$ ]] && (( now_s - obs_s <= horizon_s )); then
+            shopt -u nullglob
+            jq -r '.model // "unknown"' "$f" 2>/dev/null || echo "unknown"
+            return 0
+        fi
+    done
+    shopt -u nullglob
+    echo ""
 }
 
 # Ready work = open agent-ready + agent-in-progress across enrolled intake
@@ -367,4 +523,28 @@ if (( filed > 0 )); then
 else
     loud "PREPAID-UTIL-OK" "gates clean; prepaid ladder complete; no expiry-waste this tick"
 fi
+
+# ---- Cursor $400 pool measured spend (fleet-ops#4206) --------------------
+# Emit fleet_prepaid_spend_usd{provider=cursor} + pool/cycle/included from
+# the DashboardService API. Non-fatal: a missing/unreachable reader leaves
+# the metric absent (the FleetCursorPrepaidSpendReaderAbsent rule fires).
+emit_cursor_prepaid_spend
+
+# ---- ETIMEDOUT watch at cap 2 (fleet-ops#4206) ---------------------------
+# If the cursor seat ledger carries a fresh cli_timeout while cap >= 2,
+# auto-file a 'lower cursor cap to 1' finding. Non-fatal: the seat-health
+# extension already benched the faulted seat; this watch prevents the 2nd
+# concurrent slot from inheriting the same blast radius.
+cursor_cap=$(cursor_cap_value)
+if [[ "$cursor_cap" =~ ^[2-9][0-9]*$ ]]; then
+    timeout_model=$(cursor_recent_cli_timeout "$ETIMEDOUT_HORIZON_H")
+    if [[ -n "$timeout_model" ]]; then
+        loud "PREPAID-UTIL-CURSOR-ETIMEDOUT-AT-CAP-2" \
+            "cursor/${timeout_model} cli_timeout within ${ETIMEDOUT_HORIZON_H}h while cap=${cursor_cap} — filing lower-cap-to-1"
+        file_finding "cursor" "etimedout-cap-rollback" \
+            "cursor cap ${cursor_cap} -> 1: cli_timeout on cursor/${timeout_model} within ${ETIMEDOUT_HORIZON_H}h (fleet-ops#4206)" \
+            "fleet-prepaid-util-canary (fleet-ops#4206) detected a fresh cli_timeout (spawnSync ETIMEDOUT) on cursor/${timeout_model} while the cursor provider cap is ${cursor_cap}. The cap was raised 1->2 by fleet-ops#4206 to spend the \$400 'API Usage' on-demand pool; the ETIMEDOUT watch is the safety revert. The seat-health extension already benched the faulted seat (cli_timeout is a transient bench); this finding asks a worker to PR \`config/seat-caps.json\` back to \`.providers.cursor.cap = 1\` and both model caps to 1, with a dated reason citing this cli_timeout, and to run tests/seat-lib-aimd, tests/fleet-token-economy, and tests/seat-caps-citation together (the three suites that pin config values). Do NOT touch other providers."
+    fi
+fi
+
 exit 0

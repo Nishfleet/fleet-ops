@@ -1,0 +1,18 @@
+[Unit]
+Description=Hourly escalation drain (fleet-ops#2677 + #2773)
+
+# Named reason for this schedule: NISH-ESCALATIONS.md + alert-repair packet
+# accumulation is structural (every SENIOR-AUDITOR CAP-REACHED and every
+# Alertmanager webhook appends to one of these). Hourly bounds the live
+# file size to roughly one cycle's worth of growth; the daily sweep
+# (escalation-daily-sweep.timer) is the dead-man floor if the drain dies.
+# Cadence lands on :13 to avoid the heartbeat-cluster slots (:17/:47).
+
+[Timer]
+OnCalendar=*:13
+RandomizedDelaySec=60
+Persistent=true
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

@@ -2,9 +2,9 @@
 
 Audit owner: fleet-ops#1480
 Date: 2026-08-28
-Host: **netcup-rs2000** (the issue body says `hostinger-kvm4`; the fleet runs on
-netcup-rs2000, so this is the live target. `hostinger-kvm4` is stale host text —
-filed as a doc nit, not a class-(c) item.)
+Host: **netcup-rs2000** (the issue body originally said `hostinger-kvm4`; the fleet
+runs on netcup-rs2000, so this is the live target. The stale host text was corrected
+in the issue body 2026-08-30 via fleet-ops#1501 — a doc nit, not a class-(c) item.)
 
 ## What this audit is
 
@@ -132,7 +132,7 @@ should move into `systemd/` so the repo owns it. Filed as a follow-up.
 | tinystudio-live-site-check | 2026-08-24 | `tinystudio-live-site-check` | product nightly site check |
 | pi-packet-escalate@ | 2026-08-25 | (template) | escalation template |
 | prometheus-am-executor | 2026-08-27 | `prometheus-am-executor` | alert→repair bridge (existing infra) |
-| memory-index-autocompact | 2026-08-24 | `memory-index-autocompact` | Claude auto-memory index compaction |
+| memory-index-autocompact | 2026-08-24 | `memory-index-autocompact` | **ADJUDICATED 2026-08-30: EXCEPTION-APPROVED** (migrated to repo as class (b) sanctioned maintenance script; distinct from nish-memory-curator (vault memory vs Claude auto-memory). Script has tier-1 deterministic dedupe + tier-2 Opus headless compaction; path unit triggers on MEMORY.md growth) |
 
 ### Class (c) — unsanctioned build (follow-up issues filed)
 
@@ -143,13 +143,13 @@ criteria; no blind mass-delete.
 
 | Unit | First run | Banned class | Follow-up |
 |---|---|---|---|
-| auditor-stdio-test | 2026-08-26 | test debris (ExecStart is `cat > /tmp/…`) | #1492 |
-| ready-work | 2026-08-25 | dispatcher ("one continuation packet per firing") | #1493 |
+| auditor-stdio-test | 2026-08-26 | test debris (ExecStart is `cat > /tmp/…`) | #1492 — **ADJUDICATED 2026-08-30: MECHANICAL-INSTEAD** (deleted; not fleet machinery — a stdio-ordering test fixture left installed as a user unit; no repo trace, no live safety gate depends on it; live unit file deleted + disabled) |
+| ready-work | 2026-08-25 | dispatcher ("one continuation packet per firing") | #1493 — adjudicated MECHANICAL-INSTEAD (deleted; routes through Pi stock dispatch `pi-packet@`) |
 | open-question-sweep | 2026-08-24 | watchdog / poller ("re-drive stalled open questions") | #1494 |
 | agent-scheduler-drift | 2026-08-25 | watchdog ("enforce agent-agnostic scheduling rule") | #1495 |
 | siterep-pr-conflict-watchdog | 2026-08-24 | watchdog ("conflicting open-PR pile exceeds cap") | #1496 — **ADJUDICATED 2026-08-29: MECHANICAL-INSTEAD** (GH Actions workflow `pr-conflict-watchdog.yml` in `nish3451/siterep` already provides this check via the sanctioned repo channel; VPS timer was a hand-placed redundant duplicate, already disabled; live unit + script deleted; cost concern is Nish's money decision) |
-| quality-baseline-research | 2026-08-25 | dispatcher ("research refresh via Pi worker") | #1497 |
-| memory-index-autocompact | 2026-08-24 | (borderline b/c — filed for adjudication) | #1498 |
+| quality-baseline-research | 2026-08-25 | dispatcher ("research refresh via Pi worker") | #1497 — **ADJUDICATED 2026-08-30: MECHANICAL-INSTEAD** (deleted; quality research is owned by the sanctioned `quality-research-weekly` class (a) repo-sourced per `docs/organ-catalog.md`. Hand-placed `quality-baseline-research.service/.timer` + `~/.local/bin/quality-baseline-refresh` was a hand-rolled dispatcher with no repo base, built 2026-08-25 (day before the ban). Both runs produced SKIP-WITH-NUDGE — zero research in 5 days, no gate it depends on is live. `visual-quality-waves.md` stays as the escalation-layer program doc; only the dispatcher was deleted. Same shape as #1493) |
+| memory-index-autocompact | 2026-08-24 | (borderline b/c — filed for adjudication) | #1498 — **ADJUDICATED 2026-08-30: EXCEPTION-APPROVED** (migrated to repo as class (b) sanctioned maintenance script; distinct from nish-memory-curator (vault memory vs Claude auto-memory). Script has tier-1 deterministic dedupe + tier-2 Opus headless compaction; path unit triggers on MEMORY.md growth) |
 
 ### Out of scope — dev/infra tools, not fleet machinery
 
@@ -260,13 +260,13 @@ instead.
 ## Follow-up issues filed
 
 Class (c) — adjudicate / delete-disable:
-- #1492 auditor-stdio-test (delete test debris)
+- #1492 auditor-stdio-test (delete test debris) — **ADJUDICATED 2026-08-30: MECHANICAL-INSTEAD** (deleted)
 - #1493 ready-work (adjudicate dispatcher)
 - #1494 open-question-sweep (adjudicate watchdog/poller)
 - #1495 agent-scheduler-drift (adjudicate watchdog)
 - #1496 siterep-pr-conflict-watchdog (adjudicate watchdog)
-- #1497 quality-baseline-research (adjudicate dispatcher)
-- #1498 memory-index-autocompact (adjudicate borderline b/c)
+- #1497 quality-baseline-research (adjudicate dispatcher) — **ADJUDICATED 2026-08-30: MECHANICAL-INSTEAD**
+- #1498 memory-index-autocompact (adjudicate borderline b/c) — **ADJUDICATED 2026-08-30: EXCEPTION-APPROVED**
 
 Other:
 - #1499 migration gap: `fleet-completion-canary` + `fleet-metrics-export` base

@@ -11,14 +11,27 @@ name: Auto-merge arm
 # or `[no-merge]` in the title. Scheduled sweeps that must never self-merge
 # open DRAFT PRs.
 #
-# Arms with AUTO_REVERT_PAT, not GITHUB_TOKEN: a merge performed under
-# GITHUB_TOKEN would not trigger push workflows on main (deploy verification,
-# auto-revert), silently disarming the safety net. If the PAT is missing the
-# run fails LOUD and the PR waits for a human — the correct fallback.
+# Arms under a nishfleet-worker App installation token, not GITHUB_TOKEN and
+# not a human PAT (fleet-ops#1469): a merge under GITHUB_TOKEN would not
+# trigger push workflows on main (deploy verification, auto-revert), silently
+# disarming the safety net; a merge under the old AUTO_REVERT_PAT made Nish
+# the triggering actor of every merge, so GitHub emailed him one failure
+# notice per red workflow per merge (30+ hand-deleted on 2026-08-28). The App
+# is a real actor (push workflows still fire) but not Nish, so the failure
+# emails stop reaching him. If the App secrets are missing the reusable
+# workflow fails LOUD and the PR waits for a human — the correct fallback.
+#
+# The `arm` job is a required check (fleet-ops#1340): it runs the
+# merge-trample gate so a trampling PR cannot merge even if the heartbeat path
+# is down. That requires `synchronize` in the trigger — a required check must
+# re-report on the latest head, and without `synchronize` a pushed-to PR would
+# leave the check stale and block the merge. Re-running on a push re-arms
+# auto-merge (idempotent) and re-evaluates the freeze/quality/trample gates on
+# the new head.
 
 on:
   pull_request:
-    types: [opened, ready_for_review]
+    types: [opened, ready_for_review, synchronize]
 
 # fleet-ops#1457 (stop-the-line): grants `issues: read` so the reusable arm
 # workflow can probe for an open `stop-the-line` issue before arming. A
@@ -36,4 +49,5 @@ jobs:
   arm:
     uses: ./.github/workflows/reusable-auto-merge-arm.yml
     secrets:
-      AUTO_REVERT_PAT: ${{ secrets.AUTO_REVERT_PAT }}
+      NISHFLEET_WORKER_APP_ID: ${{ secrets.NISHFLEET_WORKER_APP_ID }}
+      NISHFLEET_WORKER_PRIVATE_KEY: ${{ secrets.NISHFLEET_WORKER_PRIVATE_KEY }}

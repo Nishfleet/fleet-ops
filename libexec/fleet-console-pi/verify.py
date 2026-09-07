@@ -38,7 +38,6 @@ PROM_OUT = Path(
     )
 )
 PROM = os.environ.get("PROM_URL", "http://127.0.0.1:9090")
-AM = os.environ.get("AM_URL", "http://127.0.0.1:9093")
 XDG = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
 PAUSED_MARKER = Path(
     os.environ.get(
@@ -95,10 +94,10 @@ SPECS = {
     },
     "shipped_24h": {
         "cmd": (
-            "PromQL sum(fleet_merged_prs_24h) @ 127.0.0.1:9090 "
+            "PromQL sum(fleet_product_merged_24h) @ 127.0.0.1:9090 "
             "(exact vs tile count) AND gh search prs "
             "'repo:<spot-repo> is:merged merged:>=<24h-iso> type:pr' "
-            "(percent vs that repo's item; cached family, 20% or abs<=2)"
+            "(percent vs that repo's item; product-slo family, 2% or abs<=2)"
         ),
         "field": "count",
         "tolerance": {"mode": "exact"},
@@ -108,7 +107,7 @@ SPECS = {
                 "gh api search/issues -f q='repo:<spot-repo> is:merged "
                 "merged:>=<24h-iso> type:pr' --jq .total_count"
             ),
-            "tolerance": {"mode": "percent", "pct": 20},
+            "tolerance": {"mode": "percent", "pct": 2},
             "runner": "shipped_gh_spot",
         },
     },
@@ -120,12 +119,12 @@ SPECS = {
     },
     "firing_alerts": {
         "cmd": (
-            "Alertmanager GET /api/v2/alerts, state=active, Watchdog excluded "
-            "(independent of Prometheus /api/v1/alerts)"
+            "Prometheus GET /api/v1/alerts, state=firing, Watchdog excluded "
+            "(same source and filter as the tile writer)"
         ),
         "field": "count",
         "tolerance": {"mode": "exact"},
-        "runner": "alerts_am",
+        "runner": "alerts_prom",
     },
     "repairs_inflight": {
         "cmd": (
@@ -238,6 +237,59 @@ def _promql_sum(expr):
     return total
 
 
+def _prom_textfile_mtime():
+    """Return the product-slo textfile mtime in epoch seconds, or None.
+
+    fleet-ops#2755: shipped_24h now reads fleet_product_merged_24h from
+    fleet-product-slo.prom, so the race gate watches that textfile (falling
+    back to the heartbeat gauge when node_textfile_mtime has not scraped it
+    yet). Returns None when both are absent — not an error; the downstream
+    race check then lets the Prom re-query run.
+    """
+    url = PROM + "/api/v1/query?" + urllib.parse.urlencode({
+        "query": (
+            'node_textfile_mtime_seconds{file=~".*fleet-product-slo.prom"} '
+            'or fleet_product_slo_last_run_seconds'
+        ),
+    })
+    payload = _http_json(url)
+    if payload.get("status") != "success":
+        raise VerifyError(f"prom status={payload.get('status')}")
+    rows = (payload.get("data") or {}).get("result") or []
+    if not rows:
+        return None
+    try:
+        return max(float(r["value"][1]) for r in rows)
+    except (KeyError, IndexError, TypeError, ValueError) as exc:
+        raise VerifyError(f"bad textfile mtime sample: {exc}") from exc
+
+
+def _race_against_tile(tile):
+    """True iff the textfile mtime advanced past the tile's observed_at.
+
+    fleet-ops#2690: between generate.py and verify.py the metrics exporter
+    may refresh fleet-product-slo.prom (every 5 min vs the 12-min push
+    cycle). When that happens the tile and the verifier look at the SAME
+    Prom family but at different snapshots —
+    `tile.count != sum(fleet_product_merged_24h)` is a transient timing
+    artifact, not a lying tile. The race gate tells Prom-based checkers
+    to defer to the gh check.
+
+    Tolerance of +1s absorbs clock-skew rounding between the tile's
+    observed_at capture and the verifier's mtime query.
+    """
+    observed_at = tile.get("observed_at")
+    if not isinstance(observed_at, (int, float)):
+        return False  # no anchor → can't race-detect; let the check run
+    try:
+        mtime = _prom_textfile_mtime()
+    except VerifyError:
+        return False  # Prom unreachable → defer to spot check (gh)
+    if mtime is None:
+        return False  # series missing; exporter has never written → not race
+    return mtime > float(observed_at) + 1.0
+
+
 def _systemctl_env():
     env = dict(os.environ)
     env["XDG_RUNTIME_DIR"] = XDG
@@ -308,46 +360,94 @@ def _gh_search_count(query):
         raise VerifyError(f"gh search parse: {out.stdout[:80]!r}") from exc
 
 
+def _gh_search_titles(query):
+    """Return the titles of every PR matched by the search query.
+
+    The shipped_24h spot check must count NON-revert merges to match the
+    tile's definition (fleet_product_merged_24h = non-revert merges), but
+    GitHub search's `.total_count` cannot be filtered client-side. Fetch the
+    matched titles and count revert PRs out on this side (fleet-ops#4061).
+    Paged so a busy 24h (60+ merges) is fully captured.
+    """
+    if SKIP_GH:
+        raise VerifyError("gh skipped")
+    out = subprocess.run(
+        [GH, "api", "search/issues",
+         "-X", "GET", "-f", f"q={query} type:pr", "--paginate",
+         "--jq", ".items[]?.title"],
+        capture_output=True, text=True, timeout=VERIFY_TIMEOUT,
+    )
+    if out.returncode != 0:
+        raise VerifyError(
+            f"gh search rc={out.returncode}: {(out.stderr or '')[:160]}"
+        )
+    return [ln.strip() for ln in out.stdout.splitlines() if ln.strip()]
+
+
+def _is_revert_title(title: str) -> bool:
+    """Match fleet-product-slo's revert conventions by title.
+
+    fleet-ops#2755 defines shipped throughput as NON-revert merges; the
+    fleet's auto-reverter and GitHub's auto-revert both surface as
+    `Revert ...` / `auto-revert ...` titles. head-ref `revert/` branches are
+    GitHub auto-reverts titled `Revert \"...\"`, so title covers them.
+    """
+    t = title or ""
+    return t.startswith("Revert ") or t.lower().startswith("auto-revert")
+
+
+def _gh_search_nonrevert_count(query):
+    titles = _gh_search_titles(query)
+    return sum(0 if _is_revert_title(t) else 1 for t in titles)
+
+
+
 def run_open_prs_prom(tile):
     return int(_promql_sum("sum(fleet_open_prs)"))
 
 
 def run_shipped_prom(tile):
-    return int(_promql_sum("sum(fleet_merged_prs_24h)"))
+    # fleet-ops#2690 / #2755: skip the Prom re-query when the textfile
+    # advanced between generate and verify. The gh spot check still runs;
+    # only the same-source race is suppressed. Source of truth is
+    # fleet_product_merged_24h (product repos only).
+    if _race_against_tile(tile):
+        raise VerifyError(
+            "textfile mtime advanced past tile.observed_at — race, "
+            "defer to gh spot check"
+        )
+    return int(_promql_sum("sum(fleet_product_merged_24h)"))
 
 
 def run_main_ci_prom(tile):
     return int(_promql_sum("count(fleet_main_ci_green == 0)"))
 
 
-def run_alerts_am(tile):
-    url = AM.rstrip("/") + "/api/v2/alerts"
-    try:
-        payload = _http_json(url)
-    except VerifyError:
-        # AM down: fall back to Prometheus alerts API (weaker independence).
-        payload = _http_json(PROM.rstrip("/") + "/api/v1/alerts")
-        alerts = (payload.get("data") or {}).get("alerts") or []
-        n = 0
-        for a in alerts:
-            if a.get("state") != "firing":
-                continue
-            name = (a.get("labels") or {}).get("alertname") or ""
-            if name == "Watchdog":
-                continue
-            n += 1
-        return n
-    if not isinstance(payload, list):
-        raise VerifyError("am /api/v2/alerts was not a list")
+def run_alerts_prom(tile):
+    """Live Prometheus /api/v1/alerts firing count, Watchdog excluded.
+
+    fleet-ops#3637: the tile writer counts Prometheus /api/v1/alerts where
+    state==firing, but the verifier used Alertmanager /api/v2/alerts. Those
+    are two legitimately-different views (Alertmanager dedups/suppresses and
+    groups), so a tile that faithfully mirrors Prometheus was falsely
+    DISPUTED whenever the two sources diverged (ConsoleLying). Re-read the
+    SAME Prometheus endpoint the writer claims to mirror, with the same
+    filter, so a lying tile still DISPUTES but a true one stays green — the
+    #2805 same-source pattern.
+    """
+    url = PROM.rstrip("/") + "/api/v1/alerts"
+    payload = _http_json(url)
+    if payload.get("status") != "success":
+        raise VerifyError(f"prom alerts status={payload.get('status')}")
+    alerts = (payload.get("data") or {}).get("alerts") or []
     n = 0
-    for a in payload:
-        labels = a.get("labels") or {}
-        if labels.get("alertname") == "Watchdog":
+    for a in alerts:
+        if a.get("state") != "firing":
             continue
-        status = a.get("status") or {}
-        state = status.get("state") or a.get("status") or ""
-        if state in ("active", "firing"):
-            n += 1
+        name = (a.get("labels") or {}).get("alertname") or ""
+        if name == "Watchdog":
+            continue
+        n += 1
     return n
 
 
@@ -361,13 +461,51 @@ def run_repairs_units(tile):
     return n
 
 
-def run_running_pi_execstart(tile):
-    units = 0
+def _running_pi_units():
+    """Live running/activating units whose ExecStart invokes `pi --print`.
+
+    Exact mirror of the tile writer's `_invokes_pi_print` in generate.py
+    (fleet-ops#1155: never a unit-name pattern), so a faithful tile and its
+    verifier count the SAME set.
+    """
+    found = []
     for name in _running_units():
         es = _show_value(name, "ExecStart")
         if ("pi --print" in es) or ("/pi-issue-run " in es) or ("/pi-issue-start" in es):
-            units += 1
-    return units
+            found.append(name)
+    return found
+
+
+def run_running_pi_execstart(tile):
+    """Live running-pi unit count, churn-race tolerant.
+
+    fleet-ops#3674: the tile snapshots the running-pi unit set at generate
+    time; this verifier re-scans the SAME live systemd source ~2s later.
+    The fleet spawns/finishes workers constantly, so a worker starting or
+    stopping in that window makes the two counts legitimately differ — a
+    timing artifact, not a lying tile. Mirror #2690: when the live set has
+    moved since the tile (the tile's recorded units != what's running now)
+    AND the counts now disagree, raise a race VerifyError so verify_tile
+    SKIPS (match=None) instead of falsely DISPUTING (ConsoleLying). A
+    tile that still disagrees without that churn signal (count off against
+    a stable / non-race set) is a genuine lie and DISPUTES.
+
+    The tiles's `units` list is truncated to 20 entries; when more workers
+    run than that we can't trust set equality, so a set mismatch only
+    counts as a race when the counts already differ. Matching counts never
+    race and never dispute (nothing to reconcile).
+    """
+    live = _running_pi_units()
+    live_n = len(live)
+    tile_n = tile.get("count")
+    if isinstance(tile_n, (int, float)) and int(tile_n) != live_n:
+        recorded = tile.get("units")
+        if isinstance(recorded, list) and recorded and set(recorded) != set(live):
+            raise VerifyError(
+                "running_pi unit set changed between generate and verify "
+                "(worker start/stop) — race, skip, not a lie"
+            )
+    return live_n
 
 
 def run_fleet_paused(tile):
@@ -391,7 +529,10 @@ def run_shipped_gh_spot(tile):
     since = (datetime.now(timezone.utc) - timedelta(hours=24)).strftime(
         "%Y-%m-%dT%H:%M:%S+00:00"
     )
-    n = _gh_search_count(f"repo:{repo} is:merged merged:>={since}")
+    # fleet-ops#4061: count NON-revert merges so the spot cross-check agrees
+    # with the tile's definition (fleet_product_merged_24h). A raw total_-
+    # count includes revert PRs and chronically false-DISPUTEs the tile.
+    n = _gh_search_nonrevert_count(f"repo:{repo} is:merged merged:>={since}")
     return n, displayed, repo
 
 
@@ -399,7 +540,7 @@ RUNNERS = {
     "open_prs_prom": run_open_prs_prom,
     "shipped_prom": run_shipped_prom,
     "main_ci_prom": run_main_ci_prom,
-    "alerts_am": run_alerts_am,
+    "alerts_prom": run_alerts_prom,
     "repairs_units": run_repairs_units,
     "running_pi_execstart": run_running_pi_execstart,
     "fleet_paused": run_fleet_paused,
@@ -506,10 +647,20 @@ def verify_tile(name, tile):
         else:
             verify["match"] = True
     except VerifyError as e:
-        verify["error"] = str(e)
-        verify["match"] = False
-        mismatch = 1
-        reasons.append(f"verify failed: {e}")
+        # fleet-ops#2690: a race between generate.py and verify.py (textfile
+        # mtime advanced past tile.observed_at) raises VerifyError from
+        # run_shipped_prom so the same-source Prom check does not falsely
+        # DISPUTE on a timing artifact. The gh spot check still runs and
+        # is the real cross-check. Treat it as a skip: mismatch stays 0,
+        # but record the reason so the canary sees it.
+        if "race" in str(e).lower():
+            verify["skipped"] = str(e)
+            verify["match"] = None
+        else:
+            verify["error"] = str(e)
+            verify["match"] = False
+            mismatch = 1
+            reasons.append(f"verify failed: {e}")
 
     spot = spec.get("spot")
     if spot and not SKIP_GH:

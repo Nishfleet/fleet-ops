@@ -82,6 +82,13 @@ JSON
 DEFAULT_NOW="2026-08-28T01:00:00Z"
 
 run_canary() {
+  # Honor an externally-set FLEET_PRECEDENCE_BAND_CANARY_STATE so a
+  # scenario can drive a private state file. Otherwise default to a
+  # scratch path so this test never reads/writes the live
+  # ~/.local/state/pi-packet/precedence-band-canary.state.json.
+  if [ -z "${FLEET_PRECEDENCE_BAND_CANARY_STATE:-}" ]; then
+    export FLEET_PRECEDENCE_BAND_CANARY_STATE="$scratch/canary-default.state.json"
+  fi
   FLEET_PRECEDENCE_BAND_POLICY="${1:-$scratch/policy.json}" \
   FLEET_PRECEDENCE_UNITS_FILE="${2:-$scratch/units.txt}" \
   FLEET_PRECEDENCE_BAND_PRIOR="${3:-$scratch/missing.prior.json}" \
@@ -156,13 +163,37 @@ cat >"$scratch/units.txt" <<'UNITS'
 pi-issue@0509-1299.service
 pi-issue@fleet-ops-1234.service
 UNITS
+# 7a: first drift inside the hysteresis window debounces to WARN (exit 0).
+# fleet-ops#2595: a transient mixed state (one non-leverage fleet-ops
+# claim in flight while a product repo is between intake ticks) is the
+# 2026-08-31 08:11-08:12Z class that used to summon an auditor every
+# tick. The first tick is now a WARN; the second consecutive fails loud.
+surge_state_a="$scratch/surge-7a.state.json"
+: >"$surge_state_a"
 set +e
-out=$(run_canary "$scratch/policy.json" "$scratch/units.txt" "$scratch/missing.prior.json" "2026-08-28T01:00:00Z")
+out=$(FLEET_PRECEDENCE_BAND_CANARY_STATE="$surge_state_a" \
+  run_canary "$scratch/policy.json" "$scratch/units.txt" "$scratch/missing.prior.json" "2026-08-28T01:00:00Z")
 rc=$?
 set -e
-[[ "$rc" == "1" ]] || fail "scenario7: surge non-leverage must exit 1, got $rc ($out)"
-grep -q 'surge-phase non-leverage' <<<"$out" || fail "scenario7: must name surge-phase non-leverage ($out)"
-ok "scenario7: surge refuses a non-leverage fleet-ops claim"
+[[ "$rc" == "0" ]] || fail "scenario7a: first surge non-leverage drift must debounce to exit 0 (WARN), got rc=$rc ($out)"
+grep -q 'surge-phase non-leverage' <<<"$out" || fail "scenario7a: must name surge-phase non-leverage ($out)"
+grep -q 'PRECEDENCE-BAND-HYSTERESIS-WARN' <<<"$out" || fail "scenario7a: must emit HYSTERESIS-WARN line ($out)"
+jq -e '.consecutive_rejects == 1' "$surge_state_a" >/dev/null \
+    || fail "scenario7a: state file must record consecutive_rejects=1 after first drift"
+ok "scenario7a: first surge non-leverage drift debounces to WARN (fleet-ops#2595 hysteresis)"
+# 7b: a SECOND consecutive drift inside the hysteresis window escalates
+# to LOUD PRECEDENCE-BAND-HYSTERESIS-FAIL and exit 1. NOW is 5 min
+# after the first drift (within the 45-min hysteresis window).
+set +e
+out=$(FLEET_PRECEDENCE_BAND_CANARY_STATE="$surge_state_a" \
+  run_canary "$scratch/policy.json" "$scratch/units.txt" "$scratch/missing.prior.json" "2026-08-28T01:05:00Z")
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "scenario7b: second consecutive surge non-leverage drift must fail loud (rc=1), got rc=$rc ($out)"
+grep -q 'PRECEDENCE-BAND-HYSTERESIS-FAIL' <<<"$out" || fail "scenario7b: must emit HYSTERESIS-FAIL line ($out)"
+jq -e '.consecutive_rejects == 2' "$surge_state_a" >/dev/null \
+    || fail "scenario7b: state file must record consecutive_rejects=2 after second drift"
+ok "scenario7b: second consecutive surge non-leverage drift fails loud (hysteresis armed)"
 
 # --- 8. surge phase, leverage fleet-ops claim only --------------------------
 cat >"$scratch/units.txt" <<'UNITS'
@@ -177,7 +208,7 @@ set -e
 grep -q 'PRECEDENCE-BAND-OK' <<<"$out" || fail "scenario8: must log OK ($out)"
 ok "scenario8: surge accepts leverage-only fleet-ops claims"
 
-# --- 9. band phase, machinery share over cap --------------------------------
+# --- 9. band phase, machinery share over cap (hysteresis-armed, fleet-ops#2595) ---
 cat >"$scratch/units.txt" <<'UNITS'
 pi-issue@0509-1299.service
 pi-issue@0509-1302.service
@@ -187,13 +218,31 @@ pi-issue@fleet-ops-101.service
 pi-issue@fleet-ops-102.service
 pi-issue@fleet-ops-103.service
 UNITS
+# 9a: first drift inside the hysteresis window debounces to WARN (exit 0).
+band_state_a="$scratch/band-9a.state.json"
+: >"$band_state_a"
 set +e
-out=$(run_canary "$scratch/policy.json" "$scratch/units.txt" "$scratch/missing.prior.json" "2026-08-28T03:30:00Z")
+out=$(FLEET_PRECEDENCE_BAND_CANARY_STATE="$band_state_a" \
+  run_canary "$scratch/policy.json" "$scratch/units.txt" "$scratch/missing.prior.json" "2026-08-28T03:30:00Z")
 rc=$?
 set -e
-[[ "$rc" == "1" ]] || fail "scenario9: band over-cap must exit 1, got $rc ($out)"
-grep -q 'over the cap' <<<"$out" || fail "scenario9: must name over the cap ($out)"
-ok "scenario9: band rejects live machinery share > cap"
+[[ "$rc" == "0" ]] || fail "scenario9a: first band over-cap drift must debounce to exit 0 (WARN), got rc=$rc ($out)"
+grep -q 'over the cap' <<<"$out" || fail "scenario9a: must name over the cap ($out)"
+grep -q 'PRECEDENCE-BAND-HYSTERESIS-WARN' <<<"$out" || fail "scenario9a: must emit HYSTERESIS-WARN line ($out)"
+jq -e '.consecutive_rejects == 1' "$band_state_a" >/dev/null \
+    || fail "scenario9a: state file must record consecutive_rejects=1 after first drift"
+ok "scenario9a: first band over-cap drift debounces to WARN (fleet-ops#2595 hysteresis)"
+# 9b: a SECOND consecutive drift inside the window fails loud (exit 1).
+set +e
+out=$(FLEET_PRECEDENCE_BAND_CANARY_STATE="$band_state_a" \
+  run_canary "$scratch/policy.json" "$scratch/units.txt" "$scratch/missing.prior.json" "2026-08-28T03:35:00Z")
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "scenario9b: second consecutive band over-cap drift must fail loud (rc=1), got rc=$rc ($out)"
+grep -q 'PRECEDENCE-BAND-HYSTERESIS-FAIL' <<<"$out" || fail "scenario9b: must emit HYSTERESIS-FAIL line ($out)"
+jq -e '.consecutive_rejects == 2' "$band_state_a" >/dev/null \
+    || fail "scenario9b: state file must record consecutive_rejects=2 after second drift"
+ok "scenario9b: second consecutive band over-cap drift fails loud (hysteresis armed)"
 
 # --- 10. band phase, machinery share at cap ---------------------------------
 cat >"$scratch/units.txt" <<'UNITS'
@@ -252,13 +301,96 @@ pi-issue@0509-1299.service
 pi-issue@fleet-ops-1452.service
 pi-issue@fleet-ops-101.service
 UNITS
+# 10d: same hysteresis contract — first drift debounces, second consecutive
+# fails loud. The state file is fresh per scenario so consecutive_rejects
+# starts at 0 and the first invocation is WARN-only.
+band_state_d="$scratch/band-10d.state.json"
+: >"$band_state_d"
+set +e
+out=$(FLEET_PRECEDENCE_BAND_CANARY_STATE="$band_state_d" \
+  run_canary "$scratch/policy.json" "$scratch/units.txt" "$scratch/missing.prior.json" "2026-08-28T03:30:00Z")
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "scenario10d (first): 2 machinery + 1 product first drift must debounce, got rc=$rc ($out)"
+grep -q 'over the cap' <<<"$out" || fail "scenario10d (first): must name over the cap ($out)"
+ok "scenario10d (first): 2 machinery + 1 product first drift debounces to WARN"
+set +e
+out=$(FLEET_PRECEDENCE_BAND_CANARY_STATE="$band_state_d" \
+  run_canary "$scratch/policy.json" "$scratch/units.txt" "$scratch/missing.prior.json" "2026-08-28T03:35:00Z")
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "scenario10d (second): 2 machinery + 1 product second drift must fail loud, got rc=$rc ($out)"
+grep -q 'PRECEDENCE-BAND-HYSTERESIS-FAIL' <<<"$out" || fail "scenario10d (second): must emit HYSTERESIS-FAIL ($out)"
+ok "scenario10d (second): 2 machinery + 1 product second drift fails loud"
+
+# --- 10e. band phase, all-machinery with ZERO live product is NOT drift ------
+# fleet-ops#1421: the rent-paying band is a RATIO among live units. When zero
+# product units are live (all product work blocked-on / between intake ticks)
+# there is no product share to protect, so 100% machinery is the only possible
+# value and the ratio is undefined. Flagging "100% > 30%" here is the same
+# disease as the surge-leverage-exhaustion false positive (#1431): a watcher
+# misreading a legitimate intake state as drift. The live trip on 2026-08-29
+# (10 machinery / 0 product, all 7 0509 agent-ready issues blocked-on) cried
+# wolf for ~1h and would have auto-filed a false starvation cluster. Product
+# intake health is the undersaturation watchdog's job, not this canary's.
+cat >"$scratch/units.txt" <<'UNITS'
+pi-issue@fleet-ops-1421.service
+pi-issue@fleet-ops-1431.service
+pi-issue@fleet-ops-1448.service
+pi-issue@fleet-ops-1452.service
+pi-issue@fleet-ops-101.service
+pi-issue@fleet-ops-102.service
+pi-issue@fleet-ops-103.service
+pi-issue@fleet-ops-104.service
+pi-issue@fleet-ops-105.service
+pi-issue@fleet-ops-106.service
+UNITS
+# 10 machinery / 0 product = 100% machinery > 30% cap, but product_count == 0
+# so the ratio is undefined -> legitimate, must exit 0.
 set +e
 out=$(run_canary "$scratch/policy.json" "$scratch/units.txt" "$scratch/missing.prior.json" "2026-08-28T03:30:00Z")
 rc=$?
 set -e
-[[ "$rc" == "1" ]] || fail "scenario10d: 2 machinery + 1 product must exit 1, got $rc ($out)"
-grep -q 'over the cap' <<<"$out" || fail "scenario10d: must name over the cap ($out)"
-ok "scenario10d: canary still rejects a second repair lane at low-n"
+[[ "$rc" == "0" ]] || fail "scenario10e: all-machinery + 0 live product must exit 0, got $rc ($out)"
+grep -q 'PRECEDENCE-BAND-OK' <<<"$out" || fail "scenario10e: must log OK ($out)"
+ok "scenario10e: canary accepts 100% machinery when zero product is live (ratio undefined, fleet-ops#1421)"
+
+# --- 10f. band phase, machinery crowding out LIVE product is still drift -----
+# Negative control for 10e: the moment even ONE product unit is live, the
+# ratio is defined and 100%-ish machinery over the cap is real drift again.
+cat >"$scratch/units.txt" <<'UNITS'
+pi-issue@0509-1299.service
+pi-issue@fleet-ops-1421.service
+pi-issue@fleet-ops-1431.service
+pi-issue@fleet-ops-1448.service
+pi-issue@fleet-ops-1452.service
+pi-issue@fleet-ops-101.service
+pi-issue@fleet-ops-102.service
+pi-issue@fleet-ops-103.service
+pi-issue@fleet-ops-104.service
+pi-issue@fleet-ops-105.service
+UNITS
+# 9 machinery / 10 total = 90% > 30% cap, product_count == 1 -> real drift.
+# Hysteresis contract (fleet-ops#2595): first drift debounces, second
+# consecutive fails loud. State file is fresh per scenario.
+band_state_f="$scratch/band-10f.state.json"
+: >"$band_state_f"
+set +e
+out=$(FLEET_PRECEDENCE_BAND_CANARY_STATE="$band_state_f" \
+  run_canary "$scratch/policy.json" "$scratch/units.txt" "$scratch/missing.prior.json" "2026-08-28T03:30:00Z")
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "scenario10f (first): 9 machinery + 1 product first drift must debounce, got rc=$rc ($out)"
+grep -q 'over the cap' <<<"$out" || fail "scenario10f (first): must name over the cap ($out)"
+ok "scenario10f (first): 9 machinery + 1 product first drift debounces to WARN"
+set +e
+out=$(FLEET_PRECEDENCE_BAND_CANARY_STATE="$band_state_f" \
+  run_canary "$scratch/policy.json" "$scratch/units.txt" "$scratch/missing.prior.json" "2026-08-28T03:35:00Z")
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "scenario10f (second): 9 machinery + 1 product second drift must fail loud, got rc=$rc ($out)"
+grep -q 'PRECEDENCE-BAND-HYSTERESIS-FAIL' <<<"$out" || fail "scenario10f (second): must emit HYSTERESIS-FAIL ($out)"
+ok "scenario10f (second): 9 machinery + 1 product second drift fails loud (no weakening of ratio enforcement)"
 
 # --- 11. ratchet: loosening without wfr_waiver_on ---------------------------
 base_policy_json | jq '.machinery_max_pct = 30' | clean_policy
@@ -339,8 +471,8 @@ printf '%s\n' "$mech" | grep -qE 'machinery_max_pct(<=|<)30' \
   || fail "mechanism must lock machinery to <=30% (got: $mech)"
 printf '%s\n' "$mech" | grep -qE 'product_min_pct(>=|>)70' \
   || fail "mechanism must lock product to >=70% (got: $mech)"
-printf '%s\n' "$mech" | grep -q 'band-multiplier' \
-  || fail "mechanism must lock band-multiplier escape (got: $mech)"
+printf '%s\n' "$mech" | grep -qE 'priority|emergency' \
+  || fail "mechanism must lock priority or emergency label escape (got: $mech)"
 printf '%s\n' "$mech" | grep -q 'weekly-fleet-review' \
   || fail "mechanism must name weekly-fleet-review as the dial owner (got: $mech)"
 printf '%s\n' "$mech" | grep -q 'tighten' \
@@ -401,7 +533,7 @@ set +e
 # 17a: non-leverage WITH a live machinery worker running is still surge-skipped
 # (the fleet-ops queue is not hard-stalled — a machinery lane is in flight).
 : >"$scratch/units.txt"; printf 'pi-issue@fleet-ops-101.service\n' >>"$scratch/units.txt"
-reason=$(precedence_band_allow_claim fleet-ops 9999 "")
+reason=$(precedence_band_allow_claim fleet-ops 9999 '[]' "" "")
 rc=$?
 set -e
 [[ "$rc" == "1" ]] || fail "scenario17a: surge non-leverage with live machinery must rc=1, got $rc ($reason)"
@@ -416,7 +548,7 @@ set +e
 export BAND_PENDING_FILE="$scratch/pending.latch"
 rm -f "$BAND_PENDING_FILE"
 : >"$scratch/units.txt"
-reason=$(precedence_band_allow_claim fleet-ops 9998 "")
+reason=$(precedence_band_allow_claim fleet-ops 9998 '[]' "" "")
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "scenario17a2: surge floor must rc=0, got $rc ($reason)"
@@ -427,7 +559,7 @@ ok "scenario17a2: surge admits one repair lane when no machinery is live (floor)
 # 17a3: the surge floor is latched — a SECOND non-leverage claim in the same
 # tick is refused (exactly one lane, not a drain of the overnight queue).
 set +e
-reason=$(precedence_band_allow_claim fleet-ops 9997 "")
+reason=$(precedence_band_allow_claim fleet-ops 9997 '[]' "" "")
 rc=$?
 set -e
 [[ "$rc" == "1" ]] || fail "scenario17a3: surge floor latch must refuse the second claim, got $rc ($reason)"
@@ -436,7 +568,7 @@ set -e
 ok "scenario17a3: surge floor is latched — one lane per tick, then skip"
 
 set +e
-reason=$(precedence_band_allow_claim fleet-ops 1223 "")
+reason=$(precedence_band_allow_claim fleet-ops 1223 '[]' "" "")
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "scenario17b: surge leverage must rc=0, got $rc ($reason)"
@@ -473,7 +605,7 @@ pi-issue@fleet-ops-103.service
 UNITS
 # 3 machinery / 3 total; a fourth machinery claim is 4/4 = 100% > 30%.
 set +e
-reason=$(precedence_band_allow_claim fleet-ops 104 "")
+reason=$(precedence_band_allow_claim fleet-ops 104 '[]' "" "")
 rc=$?
 set -e
 [[ "$rc" == "1" ]] || fail "scenario17e: band over-cap must rc=1, got $rc ($reason)"
@@ -482,13 +614,13 @@ set -e
 ok "scenario17e: band skips a machinery claim that would breach the cap"
 
 set +e
-reason=$(precedence_band_allow_claim fleet-ops 104 $'band-multiplier: 2\n')
+reason=$(precedence_band_allow_claim fleet-ops 104 '[{"name": "priority"}]' "" "")
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "scenario17f: multiplier must rc=0, got $rc ($reason)"
 [[ "$reason" == "allow-multiplier" ]] \
   || fail "scenario17f: expected allow-multiplier, got $reason"
-ok "scenario17f: band-multiplier lets machinery jump the cap"
+ok "scenario17f: priority label lets machinery jump the cap"
 
 # --- 17g. legit-work quality classification function -----------------------
 # shellcheck source=/dev/null
@@ -649,7 +781,7 @@ rm -f "$BAND_PENDING_FILE"
 
 # Empty product, legit work (feat) -> allow-band-surge-legit
 set +e
-reason=$(precedence_band_allow_claim fleet-ops 104 "" "feat: add new feature")
+reason=$(precedence_band_allow_claim fleet-ops 104 '[]' "" "feat: add new feature")
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "scenario17s: empty-product + feat must rc=0, got $rc ($reason)"
@@ -659,7 +791,7 @@ ok "scenario17s: empty-product surge allows legit work (feat/upgrade)"
 # Empty product, legit work (fix) -> allow-band-surge-legit
 rm -f "$BAND_PENDING_FILE"
 set +e
-reason=$(precedence_band_allow_claim fleet-ops 105 "" "fix: resolve bug")
+reason=$(precedence_band_allow_claim fleet-ops 105 '[]' "" "fix: resolve bug")
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "scenario17t: empty-product + fix must rc=0, got $rc ($reason)"
@@ -669,7 +801,7 @@ ok "scenario17t: empty-product surge allows legit work (fix/repair)"
 # Empty product, legit work (test) -> allow-band-surge-legit
 rm -f "$BAND_PENDING_FILE"
 set +e
-reason=$(precedence_band_allow_claim fleet-ops 106 "" "test: add unit test")
+reason=$(precedence_band_allow_claim fleet-ops 106 '[]' "" "test: add unit test")
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "scenario17u: empty-product + test must rc=0, got $rc ($reason)"
@@ -679,7 +811,7 @@ ok "scenario17u: empty-product surge allows legit work (test/repair)"
 # Empty product, churn work (chore) -> skip-band
 rm -f "$BAND_PENDING_FILE"
 set +e
-reason=$(precedence_band_allow_claim fleet-ops 107 "" "chore: update deps")
+reason=$(precedence_band_allow_claim fleet-ops 107 '[]' "" "chore: update deps")
 rc=$?
 set -e
 [[ "$rc" == "1" ]] || fail "scenario17v: empty-product + chore must rc=1, got $rc ($reason)"
@@ -689,7 +821,7 @@ ok "scenario17v: empty-product surge rejects churn work (chore)"
 # Empty product, churn work (refactor) -> skip-band
 rm -f "$BAND_PENDING_FILE"
 set +e
-reason=$(precedence_band_allow_claim fleet-ops 108 "" "refactor: clean up code")
+reason=$(precedence_band_allow_claim fleet-ops 108 '[]' "" "refactor: clean up code")
 rc=$?
 set -e
 [[ "$rc" == "1" ]] || fail "scenario17w: empty-product + refactor must rc=1, got $rc ($reason)"
@@ -699,7 +831,7 @@ ok "scenario17w: empty-product surge rejects churn work (refactor)"
 # Empty product, churn work (no prefix) -> skip-band (safe catch-all)
 rm -f "$BAND_PENDING_FILE"
 set +e
-reason=$(precedence_band_allow_claim fleet-ops 109 "" "random title no prefix")
+reason=$(precedence_band_allow_claim fleet-ops 109 '[]' "" "random title no prefix")
 rc=$?
 set -e
 [[ "$rc" == "1" ]] || fail "scenario17x: empty-product + no-prefix must rc=1, got $rc ($reason)"
@@ -709,7 +841,7 @@ ok "scenario17x: empty-product surge rejects churn work (no-prefix catch-all)"
 # Empty product, empty title -> skip-band (safe catch-all)
 rm -f "$BAND_PENDING_FILE"
 set +e
-reason=$(precedence_band_allow_claim fleet-ops 110 "" "")
+reason=$(precedence_band_allow_claim fleet-ops 110 '[]' "" "")
 rc=$?
 set -e
 [[ "$rc" == "1" ]] || fail "scenario17y: empty-product + empty-title must rc=1, got $rc ($reason)"
@@ -727,7 +859,7 @@ UNITS
 export FLEET_PRECEDENCE_UNITS_FILE="$scratch/units-with-product.txt"
 rm -f "$BAND_PENDING_FILE"
 set +e
-reason=$(precedence_band_allow_claim fleet-ops 104 "" "feat: add new feature")
+reason=$(precedence_band_allow_claim fleet-ops 104 '[]' "" "feat: add new feature")
 rc=$?
 set -e
 [[ "$rc" == "1" ]] || fail "scenario17z: product-not-empty + feat must rc=1, got $rc ($reason)"
@@ -744,7 +876,7 @@ UNITS
 export FLEET_PRECEDENCE_UNITS_FILE="$scratch/units-empty.txt"
 rm -f "$BAND_PENDING_FILE"
 set +e
-reason=$(precedence_band_allow_claim fleet-ops 9999 "")
+reason=$(precedence_band_allow_claim fleet-ops 9999 '[]' "" "")
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "scenario17aa: bootstrap must rc=0, got $rc ($reason)"
@@ -770,7 +902,7 @@ for product_n in 1 2 3; do
   done
   export FLEET_PRECEDENCE_UNITS_FILE="$scratch/units-floor.txt"
   set +e
-  reason=$(precedence_band_allow_claim fleet-ops 1452 "")
+  reason=$(precedence_band_allow_claim fleet-ops 1452 '[]' "" "")
   rc=$?
   set -e
   [[ "$rc" == "0" ]] \
@@ -789,7 +921,7 @@ pi-issue@fleet-ops-101.service
 UNITS
 export FLEET_PRECEDENCE_UNITS_FILE="$scratch/units-floor.txt"
 set +e
-reason=$(precedence_band_allow_claim fleet-ops 1452 "")
+reason=$(precedence_band_allow_claim fleet-ops 1452 '[]' "" "")
 rc=$?
 set -e
 [[ "$rc" == "1" ]] \
@@ -812,14 +944,14 @@ pi-issue@0509-1302.service
 UNITS
 export FLEET_PRECEDENCE_UNITS_FILE="$scratch/units-floor.txt"
 set +e
-reason=$(precedence_band_allow_claim fleet-ops 1452 "")
+reason=$(precedence_band_allow_claim fleet-ops 1452 '[]' "" "")
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "scenario19e: first floor claim must rc=0, got $rc ($reason)"
 [[ "$reason" == "allow-band-floor" ]] \
   || fail "scenario19e: expected allow-band-floor, got $reason"
 set +e
-reason=$(precedence_band_allow_claim fleet-ops 1453 "")
+reason=$(precedence_band_allow_claim fleet-ops 1453 '[]' "" "")
 rc=$?
 set -e
 [[ "$rc" == "1" ]] || fail "scenario19e: second claim same process must rc=1, got $rc ($reason)"
@@ -856,7 +988,7 @@ export FLEET_PRECEDENCE_UNITS_FILE="$scratch/units-starvation.txt"
 # Starvation-class issue (dispatch pipeline not consuming the queue) must get
 # the reserved lane despite over-cap and saturated product.
 set +e
-reason=$(precedence_band_allow_claim fleet-ops 1449 "" "Intake starvation: 224 ready items, 2 dispatches in 2h with 13 healthy seats")
+reason=$(precedence_band_allow_claim fleet-ops 1449 '[]' "" "Intake starvation: 224 ready items, 2 dispatches in 2h with 13 healthy seats")
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "scenario19f: starvation must rc=0, got $rc ($reason)"
@@ -866,7 +998,7 @@ ok "scenario19f: starvation-class issue gets one floor lane despite over-cap+sat
 # The starvation floor is latched: a SECOND starvation claim in the same
 # tick is refused so it cannot drain the overnight queue.
 set +e
-reason=$(precedence_band_allow_claim fleet-ops 1450 "" "Intake starvation: 229 ready items, 0 claims in 2h")
+reason=$(precedence_band_allow_claim fleet-ops 1450 '[]' "" "Intake starvation: 229 ready items, 0 claims in 2h")
 rc=$?
 set -e
 [[ "$rc" == "1" ]] || fail "scenario19g: starvation latch must rc=1, got $rc ($reason)"
@@ -877,7 +1009,7 @@ ok "scenario19g: starvation floor is latched — one lane per tick, then skip"
 # position is still skip-band (only starvation-class is floor-eligible).
 rm -f "$BAND_PENDING_STARVATION_FILE"
 set +e
-reason=$(precedence_band_allow_claim fleet-ops 1451 "" "fix: resolve a specific booking bug")
+reason=$(precedence_band_allow_claim fleet-ops 1451 '[]' "" "fix: resolve a specific booking bug")
 rc=$?
 set -e
 [[ "$rc" == "1" ]] || fail "scenario19h: non-starvation over-cap must rc=1, got $rc ($reason)"
@@ -887,7 +1019,7 @@ ok "scenario19h: non-starvation repair stays skip-band (only starvation is floor
 # Starvation detection must NOT fire on an empty title/body (safe catch-all).
 rm -f "$BAND_PENDING_STARVATION_FILE"
 set +e
-reason=$(precedence_band_allow_claim fleet-ops 1452 "" "")
+reason=$(precedence_band_allow_claim fleet-ops 1452 '[]' "" "")
 rc=$?
 set -e
 [[ "$rc" == "1" ]] || fail "scenario19i: empty starvation title must rc=1, got $rc ($reason)"
@@ -924,3 +1056,268 @@ grep -q 'phase=surge' <<<"$out" \
 ok "scenario18: run_canary default NOW is pinned (time-invariant drill)"
 
 ok "precedence-band: production clean, policy locks, surge, band cap, ratchet, heartbeat, matrix, intake-tick"
+
+# --- 20. Product-first precedence (fleet-ops#2519) ------------------------
+# When the queue self-maintenance ratio exceeds 0.5, the intake tick holds
+# the self-maintenance repo (fleet-ops) in the intake buffer: its agent-ready
+# issues are NOT admitted to the dispatch queue, so fleet capacity goes to
+# product repos. Product repos are never gated; an unavailable cache fails
+# OPEN (admits) so a dead metrics exporter never freezes the fleet. Proves:
+#   a. The tick wires the gate (static grep) BEFORE the claim loop, so a
+#      hold yields 0 fleet-ops dispatches.
+#   b. A synthetic queue with 70% fleet-ops (self=7, total=10) HOLDS
+#      fleet-ops dispatch.
+#   c. The same synthetic queue ADMITS a product repo.
+#   d. ratio / product-ratio math (0.7 -> 0.3).
+#   e. A below-threshold queue (0.4) admits fleet-ops.
+#   f. Unavailable cache fails open (admits).
+#   g. fleet_queue_product_ratio is exported to the prom path.
+
+tick="$repo_root/lib/pi-intake-tick.sh"
+grep -qF 'product_first_export_product_ratio' "$tick" \
+    || fail "scenario20a: tick must call product_first_export_product_ratio"
+grep -qF 'product_first_hold' "$tick" \
+    || fail "scenario20a: tick must call product_first_hold"
+grep -qF 'held-in-buffer' "$tick" \
+    || fail "scenario20a: tick must print held-in-buffer when the precedence holds"
+gate_line=$(grep -n 'product_first_export_product_ratio' "$tick" | head -1 | cut -d: -f1)
+loop_line=$(grep -nF 'for i in "${!numbers[@]}"' "$tick" | head -1 | cut -d: -f1)
+[[ -n "$gate_line" && -n "$loop_line" && "$gate_line" -lt "$loop_line" ]] \
+    || fail "scenario20a: product-first gate must precede the claim loop (gate line $gate_line, loop line $loop_line)"
+ok "scenario20a: tick wires the product-first gate before the claim loop"
+
+qc_70="$scratch/qc-70.json"
+printf '%s\n' '{"ts": 0, "data": {"agent-ready": {"total": 10, "self": 7}, "ready-work": {"total": 10, "self": 7}}}' >"$qc_70"
+qc_40="$scratch/qc-40.json"
+printf '%s\n' '{"ts": 0, "data": {"agent-ready": {"total": 10, "self": 4}, "ready-work": {"total": 10, "self": 4}}}' >"$qc_40"
+
+# Reproduce the tick's gate decision: source the shlib with the synthetic
+# cache and evaluate the exact functions the tick calls.
+drill_product_first_gate() {
+    local repo="$1" cache="$2"
+    (
+        # shellcheck disable=SC2030,SC2031
+        export PRODUCT_FIRST_QUEUE_CACHE="$cache"
+        # shellcheck disable=SC2030,SC2031
+        export PRODUCT_FIRST_QUEUE="agent-ready"
+        # shellcheck disable=SC2030,SC2031
+        export PRODUCT_FIRST_SELF_RATIO_MAX="0.5"
+        . "$shlib"
+        product_first_is_self_maintenance "$repo" || { echo admit-product; exit 0; }
+        if product_first_hold; then
+            echo hold
+        else
+            echo admit
+        fi
+    )
+}
+
+out=$(drill_product_first_gate fleet-ops "$qc_70")
+[[ "$out" == hold ]] \
+    || fail "scenario20b: 70%% fleet-ops synthetic queue must HOLD fleet-ops dispatch, got $out"
+ok "scenario20b: 70%% fleet-ops synthetic queue yields 0 fleet-ops dispatches (hold)"
+
+out=$(drill_product_first_gate 0509 "$qc_70")
+[[ "$out" == admit-product ]] \
+    || fail "scenario20c: product repo must admit at 70%% self-maintenance, got $out"
+ok "scenario20c: product repos still dispatch despite high self-maintenance ratio"
+
+(
+    # shellcheck disable=SC2030,SC2031
+    export PRODUCT_FIRST_QUEUE_CACHE="$qc_70"
+    # shellcheck disable=SC2030,SC2031
+    export PRODUCT_FIRST_QUEUE="agent-ready"
+    . "$shlib"
+    r=$(product_first_ratio) || fail "scenario20d: product_first_ratio failed"
+    [[ "$r" == "0.700000" ]] || fail "scenario20d: expected ratio 0.700000, got $r"
+    pr=$(product_first_product_ratio) || fail "scenario20d: product_first_product_ratio failed"
+    [[ "$pr" == "0.300000" ]] || fail "scenario20d: expected product ratio 0.300000, got $pr"
+)
+ok "scenario20d: ratio/product-ratio math (0.7 self -> 0.3 product)"
+
+out=$(drill_product_first_gate fleet-ops "$qc_40")
+[[ "$out" == admit ]] \
+    || fail "scenario20e: 40%% fleet-ops queue must ADMIT fleet-ops, got $out"
+ok "scenario20e: below-threshold queue admits fleet-ops (ratio cools -> dispatch resumes)"
+
+out=$(drill_product_first_gate fleet-ops "$scratch/does-not-exist.json")
+[[ "$out" == admit ]] \
+    || fail "scenario20f: unavailable cache must fail open (admit), got $out"
+ok "scenario20f: unavailable queue cache fails open (dead exporter never freezes the fleet)"
+
+prom_dir="$scratch/prom"
+(
+    # shellcheck disable=SC2030,SC2031
+    export PRODUCT_FIRST_QUEUE_CACHE="$qc_70"
+    # shellcheck disable=SC2030,SC2031
+    export PRODUCT_FIRST_QUEUE="agent-ready"
+    # shellcheck disable=SC2030,SC2031
+    export PRODUCT_FIRST_PROM="$prom_dir/fleet-queue-product-ratio.prom"
+    . "$shlib"
+    product_first_export_product_ratio
+)
+grep -q 'fleet_queue_product_ratio{queue="agent-ready"} 0.300000' "$prom_dir/fleet-queue-product-ratio.prom" \
+    || fail "scenario20g: fleet_queue_product_ratio not exported correctly"
+ok "scenario20g: fleet_queue_product_ratio exported by the intake tick path (1 - self-maintenance ratio)"
+
+# --- 22. Product-ratio cache freshness check (fleet-ops#2595) ------------
+# PR #2539 ships a product-first precedence band that HOLDs the
+# self-maintenance repo when the queue self-maintenance ratio > 0.5.
+# The hold is observable via fleet_queue_product_ratio prom, but the
+# implementation fails OPEN when the queue-composition-cache is
+# unavailable — which is the correct posture for a dead metrics
+# exporter. The same fail-open posture is also the failure mode that
+# makes a stuck exporter invisible: the hold silently admits every
+# tick and the ratio stays pinned at ~0.78 without the precedence
+# ever engaging. Block 36.5 in fleet-heartbeat-tier1 closes that hole
+# by stat()ing the prom every tick and failing LOUD when the mtime
+# exceeds 30 min.
+tier1="$repo_root/bin/fleet-heartbeat-tier1"
+grep -qE '^# 36\.5 PRODUCT-RATIO CACHE FRESHNESS' "$tier1" \
+    || fail "scenario22: heartbeat-tier1 must wire block 36.5 (product-ratio cache freshness)"
+grep -qE 'PRODUCT_RATIO_PROM_PATH|product-ratio\.prom' "$tier1" \
+    || fail "scenario22: heartbeat-tier1 must reference the product-ratio prom path"
+grep -qE 'PRECEDENCE-BAND-CACHE-STALE' "$tier1" \
+    || fail "scenario22: heartbeat-tier1 must emit PRECEDENCE-BAND-CACHE-STALE on staleness"
+grep -qE 'PRECEDENCE-BAND-CACHE-MISSING' "$tier1" \
+    || fail "scenario22: heartbeat-tier1 must emit PRECEDENCE-BAND-CACHE-MISSING on absence"
+grep -qE 'PRODUCT_RATIO_CACHE_FRESHNESS_S' "$tier1" \
+    || fail "scenario22: heartbeat-tier1 must read the freshness threshold from PRODUCT_RATIO_CACHE_FRESHNESS_S"
+grep -qE 'product_ratio_cache_rc' "$tier1" \
+    || fail "scenario22: heartbeat-tier1 must exit-loud on product_ratio_cache_rc (fail-loud contract)"
+ok "scenario22: heartbeat-tier1 wires the product-ratio cache freshness block 36.5"
+
+# 22a: prove the freshness math under controlled mtime via a sourced
+# helper. Block 36.5 is bash + stat, but the test runs without invoking
+# the full 2700-line heartbeat. Extract the same lines into a subshell
+# and drive it with a scratch prom + an env-overridable threshold.
+freshness_drive() {
+    local prom="$1" threshold="$2"
+    if [ -f "$prom" ]; then
+        local mtime now age
+        mtime=$(stat -c %Y "$prom" 2>/dev/null || echo 0)
+        now=$(date -u +%s)
+        age=$((now - mtime))
+        if [ "$age" -gt "$threshold" ]; then
+            echo "STALE age=${age}s threshold=${threshold}s"
+            return 1
+        fi
+        echo "FRESH age=${age}s threshold=${threshold}s"
+        return 0
+    fi
+    echo "MISSING path=$prom"
+    return 1
+}
+
+prom_fresh="$scratch/fresh.prom"
+prom_stale="$scratch/stale.prom"
+prom_old_threshold="$scratch/fresh-300.prom"
+printf '# HELP fleet_queue_product_ratio product ratio\n' >"$prom_fresh"
+printf 'fleet_queue_product_ratio{queue="agent-ready"} 0.500000\n' >>"$prom_fresh"
+cp "$prom_fresh" "$prom_stale"
+cp "$prom_fresh" "$prom_old_threshold"
+# 1 hour ago — well past the 30 min default.
+touch -d '1 hour ago' "$prom_stale" 2>/dev/null || touch -t "$(date -u -d '1 hour ago' +%Y%m%d%H%M.%S 2>/dev/null || echo 202401010000)" "$prom_stale" 2>/dev/null || true
+
+set +e
+out=$(freshness_drive "$prom_fresh" 1800); rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "scenario22a: fresh prom must report OK (rc=0), got rc=$rc out=$out"
+[[ "$out" == "FRESH"* ]] || fail "scenario22a: fresh prom must print FRESH line, got $out"
+ok "scenario22a: fresh prom (mtime=now) reports FRESH and exits 0"
+
+set +e
+out=$(freshness_drive "$prom_stale" 1800); rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "scenario22b: stale prom (1h old) must fail loud (rc=1), got rc=$rc out=$out"
+[[ "$out" == "STALE"* ]] || fail "scenario22b: stale prom must print STALE line, got $out"
+ok "scenario22b: stale prom (1h old, threshold 1800s) fails loud"
+
+set +e
+out=$(freshness_drive "$prom_fresh" 600); rc=$?
+set -e
+# Threshold 600s = 10 min. A fresh file (mtime=now, age ~0s) should pass.
+# This proves the threshold is overridable so a longer heartbeat cadence
+# can pin it without a code change.
+[[ "$rc" == "0" ]] || fail "scenario22c: PROD_RATIO_CACHE_FRESHNESS_S must be overridable, got rc=$rc out=$out"
+[[ "$out" == "FRESH"* ]] || fail "scenario22c: tighter threshold still passes a fresh prom, got $out"
+ok "scenario22c: PRODUCT_RATIO_CACHE_FRESHNESS_S threshold is overridable (600s vs 1800s default)"
+
+set +e
+out=$(freshness_drive "$scratch/does-not-exist.prom" 1800); rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "scenario22d: missing prom must fail loud (rc=1), got rc=$rc out=$out"
+[[ "$out" == "MISSING"* ]] || fail "scenario22d: missing prom must print MISSING line, got $out"
+ok "scenario22d: missing prom fails loud (path missing)"
+
+ok "precedence-band: product-first precedence (fleet-ops#2519) — 70%% fleet-ops holds, product admits, metric exported"
+
+# --- scenario 21: product-first hold must NOT hard-stall the fleet --------
+# fleet-ops#2626 (undersaturation). Root cause: the product-first hold
+# (scenario20) used to `exit 0` unconditionally when the self-maintenance
+# ratio > 0.5, bypassing the precedence-band FLOOR lanes entirely. When the
+# ratio was inflated by duplicate/churn agent-ready issues AND product repos
+# were simultaneously blocked (0509 blocked-on fleet-ops CI deps), the whole
+# fleet idled at 0 dispatches -> FleetUndersaturated. Fix: the hold marks the
+# repo `_pfirst_held` and the claim loop still admits EXACTLY ONE floor lane
+# (machinery #1452 / starvation #1448 / bootstrap / surge floor / leverage /
+# multiplier) per tick, while holding every other fleet-ops claim. Proves:
+#   a. the tick sets _pfirst_held=1 instead of hard-exiting on hold;
+#   b. a normal in-cap fleet-ops claim is skipped during the hold;
+#   c. the machinery-floor relief route is allowed during the hold (one lane);
+#   d. the starvation-floor relief route is allowed during the hold (one lane).
+ok "precedence-band: fleet-ops#2626 product-first hold no longer hard-stalls the fleet"
+grep -qF '_pfirst_held=1' "$tick" \
+    || fail "scenario21a: tick must mark _pfirst_held=1 on hold (not hard-exit)" 
+grep -qF 'skipped-product-first-held' "$tick" \
+    || fail "scenario21a: tick must skip non-floor claims during the hold"
+gate_hold_line=$(grep -n 'if product_first_hold; then' "$tick" | head -1 | cut -d: -f1)
+after_hold=$(sed -n "$((gate_hold_line+1)),$((gate_hold_line+4))p" "$tick" | tr '\n' ' ')
+if printf '%s' "$after_hold" | grep -q 'exit'; then
+    fail "scenario21a: product_first_hold block must not hard-exit (got: $after_hold)"
+fi
+ok "scenario21a: tick holds via _pfirst_held flag, not a hard exit"
+
+# Mirror the exact case-gate the tick applies to a precedence_band_allow_claim
+# reason while the repo is held (see lib/pi-intake-tick.sh claim loop).
+hold_gate() {
+    local band_reason="$1"
+    case "$band_reason" in
+        allow-band-bootstrap|allow-band-floor|allow-starvation-floor|allow-surge-floor|allow-surge-leverage|allow-multiplier|allow-band-surge-legit)
+            echo "allow-floor"
+            ;;
+        *)
+            echo "skip"
+            ;;
+    esac
+}
+
+# b. In-cap normal claim (allow-band) is held.
+[[ "$(hold_gate allow-band)" == "skip" ]] \
+    || fail "scenario21b: allow-band must be skipped during a product-first hold"
+ok "scenario21b: non-floor fleet-ops claims stay held (capacity -> product)"
+
+# c. Machinery floor: when live machinery == 0, precedence_band_allow_claim
+#    returns allow-band-floor, and the hold gate admits it (one lane).
+for r in allow-band-bootstrap allow-band-floor allow-surge-floor; do
+    [[ "$(hold_gate "$r")" == "allow-floor" ]] \
+        || fail "scenario21c: $r must be admitted (one floor lane) during hold"
+done
+ok "scenario21c: machinery/bootstrap/surge floor lanes dispatch one claim during hold"
+
+# d. Starvation floor (fleet-ops#1448) relief is also admitted during hold.
+[[ "$(hold_gate allow-starvation-floor)" == "allow-floor" ]] \
+    || fail "scenario21d: allow-starvation-floor must be admitted during hold"
+[[ "$(hold_gate allow-multiplier)" == "allow-floor" ]] \
+    || fail "scenario21d: allow-multiplier must be admitted during hold"
+
+# e. allow-band-surge-legit (fleet-ops#1516) is admitted during a product-first
+#    hold. It only fires when BAND_PRODUCT==0 (precedence-band.sh:363), i.e. no
+#    product work is competing, so holding it idles every worker for nothing —
+#    the FleetUndersaturated stall fleet-ops#2841 diagnosed. The prior
+#    scenario21b assertion that it must be skipped codified the bug.
+[[ "$(hold_gate allow-band-surge-legit)" == "allow-floor" ]] \
+    || fail "scenario21e: allow-band-surge-legit must be admitted during hold (BAND_PRODUCT==0 guard makes it safe)"
+ok "scenario21e: allow-band-surge-legit admitted during hold (fleet-ops#2841)"
+
+ok "precedence-band: product-first hold keeps one floor lane (fleet-ops#2626) — never a whole-fleet hard stall"

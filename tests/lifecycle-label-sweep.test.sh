@@ -152,6 +152,11 @@ FAKE
 chmod +x "$scratch/bin/gh" "$bin"
 export FAKE_DIR="$scratch"
 export PATH="$scratch/bin:$PATH"
+# fleet-ops#3445/#4091: the live script mints an App token and re-exports
+# PATH with /home/nish/.local/bin first when GH_TOKEN is unset, which would
+# bypass the fake gh and hit the real GitHub API. Set a stub GH_TOKEN so
+# the token-minting block is skipped and the fake gh on PATH is used.
+export GH_TOKEN="test-stub"
 export LIFECYCLE_SWEEP_LOCKDIR="$scratch/lock"
 export LIFECYCLE_SWEEP_REPOS="Nishfleet/0509"
 export LIFECYCLE_SWEEP_NOW="2026-08-26T16:00:00Z"
@@ -327,11 +332,14 @@ grep -q 'issue close 4242' "$scratch/closes.log" \
 ok "drill: unlabeled fixture is labeled after one tick, then closed"
 
 # Case 10: contracts
-grep -q 'lifecycle-label-sweep' "$repo_root/bin/fleet-heartbeat-tier1" \
-  || fail "tier1 must call lifecycle-label-sweep"
+# fleet-ops#3270: lifecycle-label-sweep moved from heartbeat tier1 §6b to
+# lifecycle-label-sweep.service (webhook-triggered). The contract now
+# checks the .service unit, not tier1.
+grep -q 'lifecycle-label-sweep' "$repo_root/systemd/lifecycle-label-sweep.service" \
+  || fail "lifecycle-label-sweep.service must call lifecycle-label-sweep"
 grep -q 'bin/lifecycle-label-sweep' "$repo_root/MANIFEST" \
   || fail "MANIFEST must install bin/lifecycle-label-sweep"
-ok "contracts: tier1 call + MANIFEST entry present"
+ok "contracts: .service unit call + MANIFEST entry present"
 
 # Case 11: failed-command observe-to-close on fleet-ops → observe-to-close,
 # not agent-ready (fleet-ops#1401). The body must carry the signal marker.
@@ -454,5 +462,145 @@ grep -q 'reclassified=0' <<<"$out" || fail "observe-to-close reclassified: $out"
 [[ -s "$scratch/edits.log" ]] && fail "observe-to-close must not edit: $(cat "$scratch/edits.log")"
 ok "class-lock issue already under observe-to-close is left alone (idempotent)"
 export LIFECYCLE_SWEEP_REPOS="Nishfleet/0509"
+
+# Case 14: discarded alone is a lifecycle label — sweep must NOT re-add
+# scout-candidate (fleet-ops#2766). Live #1140 loop: discard drops
+# scout-candidate, sweep treated the issue as unlabeled, re-added
+# scout-candidate, panel re-discarded — 4 cycles in 90 min.
+cat >"$scratch/list.json" <<'JSON'
+[{"number":1140,"title":"feat(gate): require implementer and attestor to be different identities","labels":[{"name":"discarded"}]}]
+JSON
+: >"$scratch/edits.log"
+: >"$scratch/comments.log"
+out=$("$bin" 2>"$scratch/err14.txt")
+grep -q 'relabeled=0' <<<"$out" || fail "discarded-alone relabeled: $out"
+[[ -s "$scratch/edits.log" ]] && fail "discarded-alone must not edit: $(cat "$scratch/edits.log")"
+ok "discarded alone is a lifecycle label — sweep leaves it alone (fleet-ops#2766)"
+
+# Case 14b: discarded+scout-candidate dual-label leftover is healed by
+# dropping scout-candidate (fleet-ops#2766). Pre-fix leftovers still
+# carry both labels; the heal pass makes discarded alone the terminal
+# state so the auditor stops listing them.
+cat >"$scratch/list.json" <<'JSON'
+[{"number":1558,"title":"Remove or document dormant Slack/WhatsApp delivery channels","labels":[{"name":"scout-candidate"},{"name":"discarded"}]}]
+JSON
+: >"$scratch/edits.log"
+out=$("$bin" 2>"$scratch/err14b.txt")
+grep -q 'healed=1' <<<"$out" || fail "dual-label heal: $out"
+grep -q -- '--remove-label scout-candidate' "$scratch/edits.log" \
+  || fail "dual-label must drop scout-candidate: $(cat "$scratch/edits.log")"
+if grep -q -- '--add-label' "$scratch/edits.log"; then
+  fail "dual-label must not add any label: $(cat "$scratch/edits.log")"
+fi
+ok "discarded+scout-candidate dual-label → drop scout-candidate (fleet-ops#2766)"
+
+# Case 14c: an unlabeled product issue still becomes scout-candidate
+# (admission path unchanged by the discarded lifecycle addition).
+cat >"$scratch/list.json" <<'JSON'
+[{"number":9999,"title":"fix(search): empty state lacks cross-link","labels":[]}]
+JSON
+: >"$scratch/edits.log"
+out=$("$bin" 2>"$scratch/err14c.txt")
+grep -q 'relabeled=1' <<<"$out" || fail "unlabeled product still relabeled: $out"
+grep -q -- '--add-label scout-candidate' "$scratch/edits.log" \
+  || fail "unlabeled product must still get scout-candidate: $(cat "$scratch/edits.log")"
+ok "unlabeled product issue still → scout-candidate after discarded lifecycle addition"
+
+# Case 15: umbrella-labeled unlabeled issue → nish-reserved, NOT agent-ready
+# (fleet-ops#3295). Umbrella = "tracking parent; not claimable". Without
+# this guard the sweep defaults every unlabeled open issue to agent-ready
+# (fleet-ops) / scout-candidate (product), intake dispatches a worker on
+# the tracker, the worker finds no implementable work, and dies — a pure
+# dead-seat loop (live #3128: 6 claims in one day).
+export LIFECYCLE_SWEEP_REPOS="Nishfleet/fleet-ops"
+cat >"$scratch/list.json" <<'JSON'
+[{"number":3128,"title":"umbrella: seat health observability gaps","labels":[{"name":"umbrella"}]}]
+JSON
+: >"$scratch/edits.log"
+: >"$scratch/comments.log"
+out=$("$bin" 2>"$scratch/err15.txt")
+grep -q 'relabeled=1' <<<"$out" || fail "umbrella relabeled: $out"
+grep -q -- '--add-label nish-reserved' "$scratch/edits.log" \
+  || fail "umbrella must get nish-reserved: $(cat "$scratch/edits.log")"
+if grep -q -- '--add-label agent-ready' "$scratch/edits.log"; then
+  fail "umbrella must NOT get agent-ready: $(cat "$scratch/edits.log")"
+fi
+ok "umbrella-labeled unlabeled issue → nish-reserved (not agent-ready) (fleet-ops#3295)"
+
+# Case 15b: umbrella on a product repo → nish-reserved, NOT scout-candidate.
+# Umbrella means "not claimable" regardless of repo.
+export LIFECYCLE_SWEEP_REPOS="Nishfleet/0509"
+cat >"$scratch/list.json" <<'JSON'
+[{"number":3120,"title":"umbrella: product tracking parent","labels":[{"name":"umbrella"}]}]
+JSON
+: >"$scratch/edits.log"
+out=$("$bin" 2>"$scratch/err15b.txt")
+grep -q 'relabeled=1' <<<"$out" || fail "umbrella product relabeled: $out"
+grep -q -- '--add-label nish-reserved' "$scratch/edits.log" \
+  || fail "umbrella product must get nish-reserved: $(cat "$scratch/edits.log")"
+if grep -q -- '--add-label scout-candidate' "$scratch/edits.log"; then
+  fail "umbrella product must NOT get scout-candidate: $(cat "$scratch/edits.log")"
+fi
+ok "umbrella-labeled unlabeled product issue → nish-reserved (not scout-candidate) (fleet-ops#3295)"
+
+# Case 15c: umbrella + gap-audit → nish-reserved (umbrella wins; "not
+# claimable" regardless of any other topic label).
+export LIFECYCLE_SWEEP_REPOS="Nishfleet/fleet-ops"
+cat >"$scratch/list.json" <<'JSON'
+[{"number":3125,"title":"umbrella: gap-audit tracking parent","labels":[{"name":"umbrella"},{"name":"gap-audit"}]}]
+JSON
+: >"$scratch/edits.log"
+out=$("$bin" 2>"$scratch/err15c.txt")
+grep -q -- '--add-label nish-reserved' "$scratch/edits.log" \
+  || fail "umbrella+gap-audit must get nish-reserved: $(cat "$scratch/edits.log")"
+if grep -q -- '--add-label agent-ready' "$scratch/edits.log"; then
+  fail "umbrella+gap-audit must NOT get agent-ready: $(cat "$scratch/edits.log")"
+fi
+ok "umbrella + gap-audit → nish-reserved (umbrella wins over gap-audit) (fleet-ops#3295)"
+
+# Case 15d: a non-umbrella unlabeled fleet-ops issue still → agent-ready
+# (the guard does not break the default path).
+cat >"$scratch/list.json" <<'JSON'
+[{"number":3300,"title":"feat(quality): inescapable per-role gates","body":"- required: a named gate / CI check / drill\n","labels":[]}]
+JSON
+: >"$scratch/edits.log"
+out=$("$bin" 2>"$scratch/err15d.txt")
+grep -q -- '--add-label agent-ready' "$scratch/edits.log" \
+  || fail "non-umbrella fleet-ops issue must still get agent-ready: $(cat "$scratch/edits.log")"
+ok "non-umbrella unlabeled fleet-ops issue still → agent-ready (guard does not break default)"
+export LIFECYCLE_SWEEP_REPOS="Nishfleet/0509"
+
+# Case 16 (fleet-ops#4091): the bulk `gh issue list` call must NOT request
+# `.comments`. Requesting comments for every open issue in one GraphQL
+# round-trip makes GitHub 504 on repos with many open issues (fleet-ops
+# ~336), skipping the whole repo and starving product supply. Comments are
+# fetched lazily per-issue via `gh issue view --json comments` only where
+# the bounce-cooldown check needs them. Prove both halves:
+#   (a) the list call's --json arg has no `comments` field
+#   (b) a scout-candidate issue that fails the spec gate and is >72h old
+#       triggers exactly one `gh issue view --json comments` call (the
+#       lazy fetch), not zero and not one-per-row-in-the-list.
+: >"$scratch/gh.log"
+cat >"$scratch/list.json" <<'JSON'
+[{"number":7000,"title":"scout-candidate that fails the spec gate","body":"no spec lines here","labels":[{"name":"scout-candidate"}],"createdAt":"2026-08-01T00:00:00Z"}]
+JSON
+# view-7000.json returns an empty comments array (no bounce marker present)
+cat >"$scratch/view-7000.json" <<'JSON'
+{"comments":[]}
+JSON
+: >"$scratch/edits.log"
+out=$("$bin" 2>"$scratch/err16.txt" || true)
+# (a) the list call must not request comments
+if grep -q -- '--json number,title,labels,body,comments,createdAt' "$scratch/gh.log"; then
+  fail "fleet-ops#4091: bulk list must NOT request .comments (causes 504): $(grep 'issue list' "$scratch/gh.log")"
+fi
+grep -q -- '--json number,title,labels,body,createdAt' "$scratch/gh.log" \
+  || fail "fleet-ops#4091: bulk list must still request number,title,labels,body,createdAt: $(grep 'issue list' "$scratch/gh.log")"
+ok "fleet-ops#4091: bulk gh issue list does NOT request .comments (no 504)"
+# (b) the lazy fetch ran exactly once for the scout-candidate bounce check
+view_calls=$(grep -c -- 'issue view 7000' "$scratch/gh.log" || true)
+[[ "$view_calls" -eq 1 ]] \
+  || fail "fleet-ops#4091: expected exactly 1 gh issue view for the bounce check, got $view_calls: $(grep 'issue view' "$scratch/gh.log")"
+ok "fleet-ops#4091: comments fetched lazily once per scout-candidate bounce check (not on bulk list)"
 
 echo "all lifecycle-label-sweep cases passed"

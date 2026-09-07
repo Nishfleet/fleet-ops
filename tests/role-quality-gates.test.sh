@@ -63,11 +63,41 @@ if "researcher_delta_contract" not in (row.get("bypass_checks") or []):
 PY
 ok "catalog: researcher role is gated (fleet-ops#592)"
 
-# fleet-ops#592 / #636 / #1180 / #1513: session-reap, vault-conflict-resolver,
+# fleet-ops#1571: the 2026-08-28 main CI red was caused by the gap-closure
+# conference/research prompts and auditor/conference units landing without
+# catalog rows. Dropping them must fail even if the live audit happens to be
+# green for other reasons.
+python3 - "$catalog" <<'PY' || fail "senior-auditor catalog row missing gap-closure gates (fleet-ops#1571)"
+import json, sys
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+row = next((r for r in data["roles"] if r.get("id") == "senior-auditor"), None)
+if row is None:
+    raise SystemExit("senior-auditor role missing")
+required_prompts = (
+    "gap-closure-conference.md",
+    "gap-closure-conference-round2.md",
+    "gap-closure-research.md",
+    "gap-closure-research-round2.md",
+)
+missing_prompts = [p for p in required_prompts if p not in (row.get("prompts") or [])]
+if missing_prompts:
+    raise SystemExit("senior-auditor prompts missing: " + ", ".join(missing_prompts))
+required_units = (
+    "fleet-gap-closure-auditor@.service",
+    "fleet-gap-closure-conference.service",
+)
+missing_units = [u for u in required_units if u not in (row.get("units") or [])]
+if missing_units:
+    raise SystemExit("senior-auditor units missing: " + ", ".join(missing_units))
+PY
+ok "catalog: senior-auditor role gates gap-closure conference/research (fleet-ops#1571)"
+
+# fleet-ops#592 / #636 / #1180 / #1151 / #1513: session-reap, vault-conflict-resolver,
 # the vault knowledge-format lint timer, the fleet-metrics-export Prometheus
-# textfile exporter, and the pi-intake-trigger oneshot are plumbing, not
-# work-producing roles. Dropping any prefix re-reds the audit (the live
-# catalog test is not enough if the unit file is also gone).
+# textfile exporter, the fleet-baseline-delta weekly pre-pass, and the
+# pi-intake-trigger oneshot are plumbing, not work-producing roles. Dropping
+# any prefix re-reds the audit (the live catalog test is not enough if the
+# unit file is also gone).
 python3 - "$lib" "$repo_root" <<'PY' || fail "plumbing unit skip missing"
 import importlib.util
 import sys
@@ -81,6 +111,7 @@ required = (
     "vault-knowledge-format",
     "vault-conflict",
     "fleet-metrics-export",
+    "fleet-baseline-delta",
     "standing-rules-render",
     "fleet-aeo",
     "pi-intake-trigger",
@@ -100,6 +131,7 @@ leaked = [
         "vault-knowledge-format.service",
         "vault-conflict-resolver.service",
         "fleet-metrics-export.service",
+        "fleet-baseline-delta.service",
         "standing-rules-render.service",
         "fleet-aeo-probe.service",
         "pi-intake-trigger.service",
@@ -113,7 +145,7 @@ leaked = [
 if leaked:
     raise SystemExit("discover_units leaked plumbing unit: " + ", ".join(leaked))
 PY
-ok "plumbing skips: session-reap, vault-conflict-resolver, vault-knowledge-format, fleet-metrics-export, standing-rules-render, fleet-aeo-probe, pi-intake-trigger, gap-closure-drill/loop (fleet-ops#1180, #1152, #1236, #180, #1513)"
+ok "plumbing skips: session-reap, vault-conflict-resolver, vault-knowledge-format, fleet-metrics-export, baseline-delta, standing-rules-render, fleet-aeo-probe, pi-intake-trigger, gap-closure-drill/loop (fleet-ops#1180, #1151, #1152, #1236, #180, #1513)"
 
 # fleet-ops#1152: behaviour-locked. Build a scratch repo with a real
 # standing-rules-render.service on disk (the canonical-render unit that
@@ -348,6 +380,16 @@ esac
 exit 0
 FAKE
 chmod +x "$scratch/fakebin/gh"
+# fleet-ops#3445: the auditor files via bin/fleet-issue-file, which mints a
+# worker App token via NISHFLEET_WORKER_TOKEN_BIN (default
+# $HOME/.local/bin/worker-token). The test's HOME is a scratch dir with no
+# real token, so stub the mint to a fake token — gh is stubbed anyway.
+cat >"$scratch/fakebin/worker-token" <<'EOF'
+#!/usr/bin/env bash
+printf 'export GH_TOKEN=fake-test-token-cccccccccccccccc\n'
+EOF
+chmod +x "$scratch/fakebin/worker-token"
+export NISHFLEET_WORKER_TOKEN_BIN="$scratch/fakebin/worker-token"
 
 run_audit() {
   set +e

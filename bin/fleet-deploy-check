@@ -17,6 +17,19 @@
 #   - flock: one deploy at a time (a deploy already running or a heartbeat
 #     block 0 deploy in flight means this check yields — never concurrent)
 #
+# Deploy-clone read-only gate (fleet-ops#3758): the deploy clone is the live
+# install source and must stay a clean origin/main. Workers that need to edit
+# fleet-ops code use separate git worktrees, never the deploy clone. When a
+# worker breaks that rule (in-progress tracked edits or stray untracked files
+# in the deploy clone), this check flags it with a DEPLOY-CHECK-DIRTY-CLONE
+# LOUD line on EVERY tick - regardless of whether origin/main moved - so the
+# violation is surfaced within the 2-min cadence instead of sitting silent
+# until a merge arrives. The LOUD line lists the offending paths to make the
+# culprit obvious. The dirty state is not itself fatal here: fleet-ops-deploy
+# still rejects a dirty clone and auto-files the deploy-blocked issue (and
+# self-rescues an abandoned clone), so this gate is visibility + the existing
+# rejection, not a deployment skip.
+#
 # Environment seams (tests):
 #   FLEET_OPS_CHECKOUT            checkout to watch (default: canonical clone)
 #   FLEET_OPS_DEPLOY_BIN          deploy binary (default: $checkout/bin/fleet-ops-deploy)
@@ -73,10 +86,148 @@ deploy_in_flight() {
     python3 "$WIPE_LIB" argv-running fleet-ops-deploy >/dev/null 2>&1
 }
 
+# Return the offending paths in a dirty deploy clone, or empty when it is
+# clean. Uses plain `git status --porcelain` (with untracked) so "clean"
+# means truly porcelain-empty - a worker leaving either a tracked edit or a
+# stray untracked file in the deploy clone trips the gate.
+deploy_clone_dirty() {
+    git -C "$CHECKOUT" status --porcelain 2>/dev/null | cut -c4-
+}
+
+# Per-tick gate (fleet-ops#4166): a worker running install.sh from a
+# non-canonical worktree (FLEET_OPS_ALLOW_NONCANONICAL=1) retargets EVERY
+# live fleet systemd unit symlink at that GC-able worktree. When the
+# worktree is rotated/removed, the unit files vanish -> systemd logs
+# "Unit to trigger vanished" / "Failed with result 'resources'" -> the
+# canary stops -> the chain gauge goes absent -> FleetCompletionCanaryAbsent
+# (3h backstop). The drift canary (fleet-ops-drift check_canonical_source)
+# detects this on the 30-min heartbeat cadence and the heartbeat's own
+# install.sh repairs it, but a worktree removed inside that 30-min window
+# blinds the fleet before the heartbeat can repair it (live 2026-09-07:
+# pi-issue@fleet-ops-4146 retargeted all unit symlinks at its worktree, then
+# the worktree was removed at 07:33Z; the completion canary went blind until
+# the 08:05Z recovery). This per-tick gate closes the detect->repair loop
+# to the 2-min deploy-check cadence: detect a live fleet unit symlink whose
+# target is non-canonical (under the workspaces root but not the canonical
+# checkout) or dangling (target vanished), and retarget it to canonical via
+# the sanctioned install.sh, so a worktree removal can never blind the
+# fleet. The repair is the same install.sh the heartbeat runs; it retargets
+# non-canonical symlinks to canonical (fleet-ops#1189) and daemon-reloads.
+# Compare-only mode (FLEET_DEPLOY_CHECK_NO_DEPLOY=1) detects+LOUDs only.
+noncanonical_unit_symlinks() {
+    local unit_dir="${FLEET_DEPLOY_CHECK_UNIT_DIR:-$HOME/.config/systemd/user}"
+    local canon ws_root f link target
+    canon=$(readlink -f "${FLEET_OPS_CANONICAL_CHECKOUT:-$CHECKOUT}" 2>/dev/null || printf '%s\n' "$CHECKOUT")
+    ws_root=$(readlink -f "${FLEET_OPS_WORKSPACES_ROOT:-/home/nish/workspaces}" 2>/dev/null || printf '%s\n' '/home/nish/workspaces')
+    [[ -d "$unit_dir" ]] || return 0
+    shopt -s nullglob
+    for f in "$unit_dir"/*.service "$unit_dir"/*.timer; do
+        [[ -L "$f" ]] || continue
+        # Only fleet-managed unit symlinks point at a systemd/ path; skip
+        # any foreign/distro unit symlinks that live in the same dir.
+        link=$(readlink "$f" 2>/dev/null || true)
+        case "$link" in */systemd/*) ;; *) continue ;; esac
+        if target=$(readlink -f "$f" 2>/dev/null) && [[ -n "$target" ]]; then
+            case "$target" in
+                "$canon"|"$canon"/*) continue ;;
+                "$ws_root"|"$ws_root"/*) printf '%s\n' "$f" ;;
+            esac
+        else
+            # Dangling symlink (target vanished) — the exact condition that
+            # blinded the fleet at 07:33Z. Flag it so install.sh retargets.
+            printf '%s\n' "$f"
+        fi
+    done
+    shopt -u nullglob
+}
+
+repair_noncanonical_units() {
+    local install_bin="${FLEET_DEPLOY_CHECK_INSTALL_BIN:-$CHECKOUT/install.sh}"
+    if [[ ! -x "$install_bin" ]] && [[ ! -f "$install_bin" ]]; then
+        loud "DEPLOY-CHECK-NONCANONICAL-UNITS" \
+            "cannot repair: install.sh not found at $install_bin"
+        return 0
+    fi
+    log "retargeting non-canonical unit symlinks via $install_bin"
+    local rc=0
+    local out
+    out=$(bash "$install_bin" 2>&1) || rc=$?
+    if [[ "$rc" -ne 0 ]]; then
+        # Surface the first failure line (REFUSE, NONFATAL REFUSE, install.sh
+        # fatal, or DIFF) so the loud message names the failing repair step
+        # instead of only the exit code.
+        local reason
+        reason=$(printf '%s\n' "$out" | grep -m1 -E '^(NONFATAL |install\.sh: |DIFF:|REFUSE:)' || true)
+        if [[ -n "$reason" ]]; then
+            loud "DEPLOY-CHECK-NONCANONICAL-UNITS" \
+                "install.sh repair reported: $reason (rc=$rc; retry next tick)"
+        else
+            loud "DEPLOY-CHECK-NONCANONICAL-UNITS" \
+                "install.sh repair exited rc=$rc (retry next tick)"
+        fi
+    else
+        log "non-canonical unit symlinks retargeted to canonical (rc=0)"
+    fi
+}
+
+# Join at most five paths (plus a remainder count) for the LOUD line, so the
+# message stays readable even if a worker dirtied many files.
+clip_paths() {
+    local max=5 i n joined
+    readarray -t paths <<<"$1"
+    n=${#paths[@]}
+    if (( n > max )); then n=$max; fi
+    joined=""
+    for ((i = 0; i < n; i++)); do
+        [[ -n "$joined" ]] && joined+=","
+        joined+="${paths[i]}"
+    done
+    [[ $n -gt 0 ]] || return 0
+    printf -v out '%s' "$joined"
+    if (( ${#paths[@]} > max )); then
+        out+=",+$(( ${#paths[@]} - max )) more"
+    fi
+}
+
 main() {
+    # Per-tick non-canonical unit symlink gate (fleet-ops#4166): a worker's
+    # non-canonical install.sh retargets every live fleet unit symlink at a
+    # GC-able worktree; removing it blinds the fleet (Unit to trigger
+    # vanished -> canary stops -> chain gauge absent). Detect + repair on
+    # the 2-min cadence so a worktree removal can never blind the fleet
+    # before the 30-min heartbeat repairs it. This runs BEFORE the
+    # checkout-missing early return: a blinded unit symlink is an independent
+    # fault that must surface even when the checkout is also missing, and
+    # the repair only needs install.sh (which may still exist). Compare-only
+    # mode LOUDs only.
+    local nc_list nc_disp
+    nc_list=$(noncanonical_unit_symlinks)
+    if [[ -n "$nc_list" ]]; then
+        clip_paths "$nc_list"
+        nc_disp="$out"
+        loud "DEPLOY-CHECK-NONCANONICAL-UNITS" \
+            "live fleet unit symlinks point at a non-canonical/vanished target (fleet-ops#4166): $nc_disp"
+        if [[ "$NO_DEPLOY" != "1" ]]; then
+            repair_noncanonical_units
+        fi
+    fi
+
     if [[ ! -d "$CHECKOUT/.git" ]] && [[ ! -f "$CHECKOUT/.git" ]]; then
         loud "DEPLOY-CHECK-CHECKOUT-MISSING" "checkout $CHECKOUT is not a git worktree — nothing to watch"
         return 0
+    fi
+
+    # Read-only gate: flag a dirty deploy clone on every tick. Visibility
+    # first - the offending paths go in the LOUD line. Do NOT return early:
+    # fleet-ops-deploy still needs to run when origin/main moved so it can
+    # reject-dirty / auto-file / self-rescue the abandoned clone.
+    local dirty_list dirty_disp out
+    dirty_list=$(deploy_clone_dirty)
+    if [[ -n "$dirty_list" ]]; then
+        clip_paths "$dirty_list"
+        dirty_disp="$out"
+        loud "DEPLOY-CHECK-DIRTY-CLONE" \
+            "deploy clone $CHECKOUT is dirty (must stay clean origin/main; workers edit in worktrees, not the deploy clone - fleet-ops#3758): $dirty_disp"
     fi
 
     local before after rc=0

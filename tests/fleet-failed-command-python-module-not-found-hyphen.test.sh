@@ -66,7 +66,7 @@
 #      fails with ModuleNotFoundError but the agent then names the
 #      failure in user-facing text in the same turn → clean. Same
 #      family, opposite verdict.
-#   5. worker.md cites fleet-ops#937 (prompt-side lock).
+#   5. lib/failed-command-flagged.py cites fleet-ops#937 (detector-side lock: case list moved to lib, fleet-ops#3246).
 #   6. lib/failed-command-flagged.py docstring cites fleet-ops#937
 #      (detector-side lock).
 #   7. seat-lib.test.sh hosts this file (CI cannot gain a new P14
@@ -204,14 +204,14 @@ count=$(jq '.findings | length' <<<"$report")
 ok "python3 -c ModuleNotFoundError (typo) plus later user-facing flag is clean"
 rm -f "$sessions/python-modnotfound-named.jsonl"
 
-# --- 5. worker.md cites fleet-ops#937 (prompt-side lock) ----------------
+# --- 5. lib/failed-command-flagged.py cites fleet-ops#937 (detector-side lock: case list moved to lib, fleet-ops#3246) ----------------
 worker="$repo_root/prompts/worker.md"
 [[ -f "$worker" ]] || fail "missing $worker"
-grep -q 'fleet-ops#937' "$worker" \
-  || fail "prompts/worker.md must cite fleet-ops#937 (prompt-side lock for the live hyphenated-module shape)"
-grep -q "ModuleNotFoundError" "$worker" \
-  || fail "prompts/worker.md must name the live #937 ModuleNotFoundError wording so workers flag it"
-ok "worker.md cites fleet-ops#937 and the live ModuleNotFoundError wording"
+grep -q 'fleet-ops#937' "$lib" \
+  || fail "lib/failed-command-flagged.py must cite fleet-ops#937 (detector-side lock for the live hyphenated-module shape)"
+grep -q "ModuleNotFoundError" "$lib" \
+  || fail "lib/failed-command-flagged.py must name the live #937 ModuleNotFoundError wording so workers flag it"
+ok "lib/failed-command-flagged.py cites fleet-ops#937 and the live ModuleNotFoundError wording"
 
 # --- 6. lib/failed-command-flagged.py docstring cites fleet-ops#937 ----
 # (detector-side lock). A future refactor that drops the #937

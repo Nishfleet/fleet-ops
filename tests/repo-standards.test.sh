@@ -92,6 +92,67 @@ assert(REPO_TYPES.archive.skip === true, "archive type is skipped");
 JS
 ok "standards lib: classifyRepo + type table"
 
+# --- fleet-ops#248: standard required contexts are produced verbatim -------
+# repo-standards-apply.mjs applies THIN_CALLERS[].required to branch
+# protection (union, case-sensitive). A required context whose casing does
+# not match the workflow job name exactly would stall every PR in that repo
+# (the context never reports). fleet-ops ci.yml was the only repo whose job
+# name differed (Semgrep vs the standard's semgrep); this locks the parity
+# so BP apply stays safe.
+# fleet-ops#70: when fleet-ops folds the four local jobs into the batched
+# P14 tests caller (scan-secrets: true, no local Gitleaks/semgrep/etc.),
+# the standard required contexts are NOT applied to fleet-ops branch
+# protection — only "P14 tests / PR checks" is. So the parity check is
+# skipped for the folded contexts when the batched caller is in use.
+node --input-type=module - <<'JS'
+import { THIN_CALLERS } from "./.github/scripts/repo-standards.lib.mjs";
+import { readFileSync } from "node:fs";
+const yaml = readFileSync(".github/workflows/ci.yml", "utf8");
+// Job-level `name:` lines are indented exactly 4 spaces; step names start
+// with "- name:" (6+ spaces) and the top-level workflow name has none.
+const jobNames = [...yaml.matchAll(/^\s{4}name: (.+)$/gm)].map((m) => m[1].trim());
+const requiredCtxs = [];
+for (const tc of THIN_CALLERS) for (const r of tc.required) if (!requiredCtxs.includes(r)) requiredCtxs.push(r);
+// fleet-ops#70: if the batched caller is used (scan-secrets: true), the
+// four standard contexts are folded into "P14 tests / PR checks" and are
+// not separate job names. Skip the parity check for those contexts.
+const folded = /scan-secrets:\s*true/.test(yaml);
+const checkCtxs = folded ? requiredCtxs.filter((c) => !["Gitleaks", "semgrep", "Shellcheck", "systemd-analyze"].includes(c)) : requiredCtxs;
+const missing = checkCtxs.filter((c) => !jobNames.includes(c));
+if (missing.length > 0) {
+  console.error(`FAIL: required context(s) with no producing ci.yml job name: ${missing.join(", ")} (case-sensitive; ci.yml job names = ${jobNames.join(", ")})`);
+  process.exit(1);
+}
+if (folded) {
+  console.error(`ok: batched caller in use (scan-secrets: true); ${checkCtxs.length} non-folded standard required context(s) (${checkCtxs.join(", ")}) match ci.yml job names (${jobNames.join(", ")}); Gitleaks/semgrep/Shellcheck/systemd-analyze folded into P14 tests (fleet-ops#70)`);
+} else {
+  console.error(`ok: all ${requiredCtxs.length} standard required context(s) (${requiredCtxs.join(", ")}) are produced verbatim by ci.yml jobs (${jobNames.join(", ")})`);
+}
+JS
+ok "standard required contexts match ci.yml job names exactly (fleet-ops#248)"
+
+# --- stray worker notes at the repo root (fleet-ops#3682 committed pr-body-3376.md + verification-3376.md) ---
+stray=""
+for f in pr-body-*.md verification-*.md PR_BODY*.md; do [ -e "$f" ] && stray="$stray$f "; done
+if [ -z "$stray" ]; then ok "repo root carries no stray worker notes (pr-body-*.md / verification-*.md)"; else ko "stray worker notes at repo root: $stray — PR bodies belong in the PR, not the tree"; fi
+
+# --- fleet-ops#488: repo-standards-sync wires in verify-fleet-sync-pat ---
+# The workflow used to only check the secret was non-empty. A dead/under-scoped
+# token sailed past and failed later inside BetaHuhn with a vague "Resource not
+# accessible by personal access token" (the #488 root cause). The probe step
+# (bin/verify-fleet-sync-pat, fleet-ops#482) catches it LOUD before the sync.
+sync_yml=".github/workflows/repo-standards-sync.yml"
+if grep -q 'bin/verify-fleet-sync-pat' "$sync_yml"; then
+  ok "repo-standards-sync runs verify-fleet-sync-pat before the sync step (fleet-ops#488)"
+else
+  ko "repo-standards-sync is missing the verify-fleet-sync-pat probe step (fleet-ops#488)"
+fi
+if grep -q 'Blocked on: FLEET_SYNC_PAT' "$sync_yml"; then
+  ko "repo-standards-sync still carries the stale 'Blocked on' comment (fleet-ops#488)"
+else
+  ok "repo-standards-sync stale 'Blocked on' comment removed (fleet-ops#488)"
+fi
+
 echo
 echo "repo-standards tests: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

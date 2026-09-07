@@ -35,6 +35,7 @@ import {
   signature,
   extractPrNumber,
   detectRepeatDeterministic,
+  selectBlockingRepeats,
   summarizeSignatures,
   summarizeEventSplit,
   renderAlert,
@@ -287,7 +288,44 @@ if (splitNoTotal.rows[0].failure_rate !== 0) throw new Error("failure rate must 
 if (splitNoTotal.primary !== null) throw new Error("primary must be null when total is unknown");
 if (splitNoTotal.divergence_pp !== 0) throw new Error("divergence must be 0 when total is unknown");
 
-console.log("OK: normalizeAssertion, extractPrNumber, signature, detect (fire/quiet2/quietSpan/slide/diffAssert), renderAlert, summarizeSignatures, summarizeEventSplit (with and without totals)");
+// selectBlockingRepeats: the repo-scoped gate contract (fleet-ops#3480).
+//   - cross-repo repeat never blocks (a 0509 loop from a fleet-ops gate)
+//   - same-repo repeat inside the now-anchored lookback blocks
+//   - same-repo repeat outside the now-anchored lookback does not block
+//   - same-repo repeat whose fix PR references its tracking issue is excluded
+const blk = {
+  repo: "Nishfleet/fleet-ops", workflow: "CI", job: "j", step: "s",
+  assertion: "a", signature: "sig1", count: 3,
+  first_at: "2026-09-05T01:00:00Z", last_at: "2026-09-05T03:00:00Z",
+  runs: [], threshold: 3, window_hours: 6, event: "merge_group",
+};
+const blkNow = Date.parse("2026-09-05T04:00:00Z");
+if (selectBlockingRepeats([blk], { ownRepo: "Nishfleet/0509", nowMs: blkNow }).length !== 0) {
+  throw new Error("cross-repo repeat must never block");
+}
+const blkSame = selectBlockingRepeats([blk], { ownRepo: "Nishfleet/fleet-ops", nowMs: blkNow, lookbackHours: 24 });
+if (blkSame.length !== 1) throw new Error("same-repo repeat inside the lookback must block");
+// lookback 1h -> windowStart 03:00Z; the 03:30Z anchor leaves last_at out of window.
+if (selectBlockingRepeats([blk], { ownRepo: "Nishfleet/fleet-ops", nowMs: Date.parse("2026-09-05T04:30:00Z"), lookbackHours: 1 }).length !== 0) {
+  throw new Error("same-repo repeat outside the now-anchored lookback must not block");
+}
+if (selectBlockingRepeats([], { ownRepo: "", nowMs: blkNow }).length !== 0) {
+  throw new Error("empty own-repo must not block (unscoped run stays alert-only)");
+}
+const blkExcluded = selectBlockingRepeats([blk], {
+  ownRepo: "Nishfleet/fleet-ops", nowMs: blkNow, lookbackHours: 24,
+  prBody: "Fix the flaky step. Fixes #7",
+  signatureIssues: [{ signature: "sig1", number: 7 }],
+});
+if (blkExcluded.length !== 0) throw new Error("fix PR referencing its tracking issue must not block");
+const blkWrongFix = selectBlockingRepeats([blk], {
+  ownRepo: "Nishfleet/fleet-ops", nowMs: blkNow, lookbackHours: 24,
+  prBody: "Fix other thing. Fixes #9999",
+  signatureIssues: [{ signature: "sig1", number: 7 }],
+});
+if (blkWrongFix.length !== 1) throw new Error("fix PR referencing the WRONG issue must still block");
+
+console.log("OK: normalizeAssertion, extractPrNumber, signature, detect (fire/quiet2/quietSpan/slide/diffAssert), renderAlert, summarizeSignatures, summarizeEventSplit, selectBlockingRepeats");
 ' || fail "pure function tests failed"
 
 # --- replay: Deploy production wrangler loop must fire -----------------------
@@ -392,6 +430,74 @@ echo "$split_human" | grep -q "Event split" || fail "human report must include E
 echo "$split_human" | grep -q "pull_request" || fail "human report must name pull_request in the split"
 echo "$split_human" | grep -q "merge_group" || fail "human report must name merge_group in the split"
 echo "$split_human" | grep -q "divergence" || fail "human report must name the divergence"
+
+# --- repo-scoped blocking gate (fleet-ops#3480) ------------------------------
+# A fleet-ops PR with green fleet-ops tests must NOT be blocked by a 0509
+# failure cluster. The detector blocks ONLY signatures in the PR's OWN repo,
+# inside the now-anchored lookback, and not excluded by a fix-PR reference.
+prbody_tmp="$(mktemp)"
+
+gate_run() { # args: fixture own-repo now [pr-body]
+  local extra=()
+  if [ "$#" -ge 4 ] && [ -n "$4" ]; then extra=(--pr-body "$4"); fi
+  node "$script" --from-json "$1" --block --own-repo "$2" --now "$3" "${extra[@]}" --format json >/dev/null 2>&1
+}
+
+# 1. same-repo cluster -> the PR gate FAILS (exit 1).
+set +e
+gate_run "$fixtures/same-repo-loop.json" "Nishfleet/fleet-ops" "2026-09-05T04:00:00Z"
+rc_same=$?
+set -e
+if [ "$rc_same" -ne 1 ]; then fail "same-repo cluster must exit 1 (block), got $rc_same"; fi
+
+# 2. cross-repo cluster -> advisory only, exit 0: NEVER a failing check for
+#    the fleet-ops PR (the deadlock this fix removes). Still reported.
+set +e
+gate_run "$fixtures/merge-queue-loop.json" "Nishfleet/fleet-ops" "2026-08-25T23:00:00Z"
+rc_cross=$?
+set -e
+if [ "$rc_cross" -ne 0 ]; then fail "cross-repo cluster must exit 0 (advisory), got $rc_cross"; fi
+
+cross_json="$(node "$script" --from-json "$fixtures/merge-queue-loop.json" --block --own-repo Nishfleet/fleet-ops --now 2026-08-25T23:00:00Z --format json)"
+echo "$cross_json" | node --input-type=module -e '
+import { readFileSync } from "node:fs";
+const report = JSON.parse(readFileSync(0, "utf8"));
+if (!Array.isArray(report.repeats) || report.repeats.length !== 1) {
+  throw new Error("cross-repo repeat must still be reported (advisory)");
+}
+if (!Array.isArray(report.blocking) || report.blocking.length !== 0) {
+  throw new Error("cross-repo repeat must never block the gate (advisory only)");
+}
+console.log("OK: cross-repo repeat reported (1) but blocking (0) — exit 0, advisory");
+'
+
+# 3. PR body 'Fixes <signature issue>' -> exit 0: the fix PR is not blocked.
+printf 'Fix the flaky assert. Fixes #4242\n' > "$prbody_tmp"
+set +e
+gate_run "$fixtures/same-repo-loop.json" "Nishfleet/fleet-ops" "2026-09-05T04:00:00Z" "$prbody_tmp"
+rc_fix=$?
+set -e
+if [ "$rc_fix" -ne 0 ]; then fail "same-repo cluster with Fixes #4242 must exit 0, got $rc_fix"; fi
+
+# 4. wrong fix reference -> still exit 1 (only the matching tracking issue
+#    un-blocks; a passing reference must never weaken the gate).
+printf 'Fix other thing. Fixes #9999\n' > "$prbody_tmp"
+set +e
+gate_run "$fixtures/same-repo-loop.json" "Nishfleet/fleet-ops" "2026-09-05T04:00:00Z" "$prbody_tmp"
+rc_wrong=$?
+set -e
+if [ "$rc_wrong" -ne 1 ]; then fail "same-repo cluster with non-matching Fixes must still exit 1, got $rc_wrong"; fi
+
+# 5. stale same-repo cluster (last failure beyond the now-anchored lookback)
+#    -> exit 0: the window is anchored to now, not to the oldest sample.
+set +e
+gate_run "$fixtures/same-repo-loop.json" "Nishfleet/fleet-ops" "2026-09-06T04:00:00Z"
+rc_stale=$?
+set -e
+if [ "$rc_stale" -ne 0 ]; then fail "stale same-repo cluster (outside now-anchored lookback) must exit 0, got $rc_stale"; fi
+
+rm -f "$prbody_tmp"
+echo "OK: repo-scoped blocking gate — same-repo=1 cross-repo=0 Fixes#=0 wrong-Fixes#=1 stale=0"
 
 # --- human report copy for the original repeat fixtures ---------------------
 human="$(node "$script" --from-json "$fixtures/deploy-production-loop.json" --format human)"

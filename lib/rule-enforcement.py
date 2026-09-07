@@ -348,6 +348,42 @@ def fallback_id_from_source(source: str) -> str:
     return _fallback_id({"kind": kind, "key": key})
 
 
+# An issue whose body carries a `needs-interactive` marker is an ACTIVE
+# human-action fault the canary DETECTS but cannot FIX (e.g. the grok CLI
+# seat is dead and Nish must `grok login --device-auth`). The rule-enforcement
+# canary "covers" such a signal every tick because coverage means DETECTED,
+# not FIXED — so the observe-to-close loop would otherwise post
+# `canary-covered:` and then close the ticket while the fault is still live,
+# the canary re-files next tick, and the class recurs indefinitely
+# (fleet-ops#2006: 4 SuperGrok-dead tickets filed and closed in ~4h on
+# 2026-08-29 while the seat stayed dead). Such issues are excluded from
+# observe_targets and close_targets so the live fault stays open until a
+# human actually fixes it. The marker is the same one the seat-live-validate
+# canary stamps on its auto-filed tickets — a standalone status line ending
+# in the token `needs-interactive` (e.g. `seat-live-validate: grok
+# needs-interactive`). The regex also matches a leading
+# `needs-interactive: <reason>` form so any future canary adopting the same
+# convention is covered. `needs-interactive` is a specific hyphenated token
+# that does not appear in normal mechanism-issue prose, so a word-boundary
+# match on a marker-shaped line is safe.
+NEEDS_INTERACTIVE_RE = re.compile(
+    r"(?m)^\s*(?:needs-interactive\b|\S[^\n]*\bneeds-interactive\b\s*)$",
+    re.I,
+)
+
+
+def is_needs_interactive(issue: dict[str, Any]) -> bool:
+    """True when an issue's body carries a `needs-interactive` marker.
+
+    Only the body is inspected — the marker is the canary's own declaration
+    that this is a live human-action fault. Comments are not checked so a
+    stray `canary-covered:` comment cannot rescue an issue into the close
+    path.
+    """
+    body = str((issue or {}).get("body") or "")
+    return bool(NEEDS_INTERACTIVE_RE.search(body))
+
+
 def issue_matches_covered(body: str, row: dict[str, Any]) -> bool:
     """True when an auto-filed mechanism issue refers to this enforced row.
 
@@ -402,6 +438,12 @@ def observe_targets(
         number = issue.get("number")
         if not isinstance(number, int):
             continue
+        # needs-interactive guard (fleet-ops#2006): a live human-action fault
+        # the canary detects but cannot fix must not be commented as covered
+        # — "covered" means detected, not fixed, and a canary-covered comment
+        # is the precondition for the close step. Skip such issues entirely.
+        if is_needs_interactive(issue):
+            continue
         body = str(issue.get("body") or "")
         comment_bits = []
         for comment in issue.get("comments") or []:
@@ -450,6 +492,13 @@ def close_targets(
     Issues whose rule is not `enforced` are never closed here — a queued or
     uncovered row has no green report to close on. Caps at
     auto_file_cap_per_tick.
+
+    needs-interactive guard (fleet-ops#2006): an issue whose body carries a
+    `needs-interactive:` marker is a LIVE human-action fault the canary
+    detects but cannot fix. "Covered" means detected, not fixed — closing
+    such an issue while the fault is still live makes the canary re-file it
+    next tick, so the class recurs indefinitely. Such issues are never
+    closed here, even when they carry the canary-covered marker.
     """
     cap = int(report.get("auto_file_cap_per_tick") or 5)
     rows = [
@@ -463,6 +512,11 @@ def close_targets(
             continue
         number = issue.get("number")
         if not isinstance(number, int):
+            continue
+        # needs-interactive guard (fleet-ops#2006): never close a live
+        # human-action fault while it is still unfixed, even if a prior tick
+        # stamped canary-covered on it.
+        if is_needs_interactive(issue):
             continue
         body = str(issue.get("body") or "")
         comment_bits = []
