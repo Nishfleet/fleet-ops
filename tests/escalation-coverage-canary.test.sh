@@ -137,6 +137,10 @@ export AGENT_STATE="$state"
 export FLEET_ESCALATION_CANARY_DELIVERY="$state/.escalation-delivery"
 export FLEET_ESCALATION_CANARY_REDCI="$state/.red-ci-ownerless-guard"
 export FLEET_ESCALATION_CANARY_BRIDGE="$state/.red-check-senior-auditor-bridge"
+# Block 13 (portable standards): standards-drift makes live gh API calls to
+# enrolled repos. Off by default in the test; a dedicated drill turns it on
+# with a fake gh.
+export FLEET_ESCALATION_CANARY_SKIP_STANDARDS_DRIFT=1
 export LOADED_UNITS="$loaded"
 export ON_FAILURE_DIR="$onf_dir"
 
@@ -1147,6 +1151,168 @@ grep -q 'SKIP (FLEET_ESCALATION_CANARY_SKIP_PRIVACY_GUARD=1)' <<<"$env_out" \
 ok "scenario27: skip flag suppresses block 12"
 
 ok "escalation-coverage-canary: block 12 free-tier privacy guard (fleet-ops#520) covered"
+
+# ============================================================================
+# Block 13 (portable standards, P11-B): standards-drift prevention
+# ============================================================================
+# A fake gh that answers the two calls the standards-drift block makes:
+#   gh issue list -R <repo> --state open ...  -> [] (no open issues)
+#   gh api repos/<repo>/contents/.github/workflows/<file> --jq '.name'
+#     -> the filename when the workflow is in the "present" set, else exit 1
+#     (a 404 — the gate is missing).
+# The block files drift issues via $ISSUE_FILE (fleet-issue-file), which we
+# mock with a fake that records the call and prints a URL.
+gh_fake="$scratch/gh"
+cat >"$gh_fake" <<'FAKEGH'
+#!/usr/bin/env bash
+# args: issue list -R <repo> --state open --limit 200 --json number,body,title
+if [[ "$1" == "issue" && "$2" == "list" ]]; then
+  echo '[]'
+  exit 0
+fi
+# args: api repos/<repo>/contents/.github/workflows/<file> --jq .name
+if [[ "$1" == "api" ]]; then
+  path="$2"
+  file="${path##*/}"
+  if [[ -f "$SD_PRESENT_DIR/$file" ]]; then
+    echo "$file"
+    exit 0
+  fi
+  echo "not found" >&2
+  exit 1
+fi
+echo "unhandled gh: $*" >&2
+exit 1
+FAKEGH
+chmod +x "$gh_fake"
+
+issue_file_fake="$scratch/issue-file"
+cat >"$issue_file_fake" <<'FAKEIF'
+#!/usr/bin/env bash
+# args: file -R <repo> --title <title> --body <body>
+# Record the title so the test can assert the drift issue was filed.
+echo "$*" >>"$SD_FILED_LOG"
+echo "https://github.com/Nishfleet/fleet-ops/issues/99999"
+exit 0
+FAKEIF
+chmod +x "$issue_file_fake"
+
+# Scenario 28: skip flag suppresses block 13
+reset_state
+cover "fleet-heartbeat.service"
+cover "pi-issue@.service"
+sanctioned_wrapper pi-issue-run
+wire_delivery
+write_covered_vault
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_DELIVERY"
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_REDCI"
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_BRIDGE"
+# Skip flag is already exported in common env; assert it suppresses block 13.
+
+run_canary
+
+[[ "$env_rc" == 0 ]] || fail "scenario28: skip flag must keep exit 0, got $env_rc ($env_out)"
+grep -q 'SKIP (FLEET_ESCALATION_CANARY_SKIP_STANDARDS_DRIFT=1)' <<<"$env_out" \
+  || fail "scenario28: canary must log the SKIP"
+! grep -q 'standards drift' "$triage" || fail "scenario28: skip flag must suppress standards drift"
+ok "scenario28: skip flag suppresses block 13"
+
+# Scenario 29: a repo missing a standard gate -> VIOLATION naming it
+reset_state
+cover "fleet-heartbeat.service"
+cover "pi-issue@.service"
+sanctioned_wrapper pi-issue-run
+wire_delivery
+write_covered_vault
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_DELIVERY"
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_REDCI"
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_BRIDGE"
+write_intake "0509" "drift-repo"
+# drift-repo is in claim_repos so block 7 (#124) does not add a second
+# violation — the only violation is the standards drift.
+write_claim_repos "Nishfleet/drift-repo"
+# Present set: only secret-scan.yml exists on drift-repo; the rest are missing.
+sd_present="$scratch/sd-present"
+mkdir -p "$sd_present"
+touch "$sd_present/secret-scan.yml"
+export SD_PRESENT_DIR="$sd_present"
+export GH="$gh_fake"
+unset FLEET_ESCALATION_CANARY_SKIP_STANDARDS_DRIFT
+
+run_canary
+
+unset SD_PRESENT_DIR
+unset GH
+[[ "$env_rc" == 1 ]] || fail "scenario29: must exit 1 (drift), got $env_rc ($env_out)"
+grep -q 'standards drift: Nishfleet/drift-repo missing standard gate' "$triage" \
+  || fail "scenario29: triage must name the missing gate"
+grep -q 'Nishfleet/drift-repo missing standard gate semgrep.yml' "$triage" \
+  || fail "scenario29: triage must name semgrep.yml specifically"
+! grep -q 'Nishfleet/0509 missing' "$triage" \
+  || fail "scenario29: local-richer 0509 must not be flagged"
+ok "scenario29: missing standard gate -> VIOLATION naming it (local-richer skipped)"
+
+# Scenario 30: auto-file — missing gate files a drift issue via fake issue-file
+reset_state
+cover "fleet-heartbeat.service"
+cover "pi-issue@.service"
+sanctioned_wrapper pi-issue-run
+wire_delivery
+write_covered_vault
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_DELIVERY"
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_REDCI"
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_BRIDGE"
+write_intake "drift-repo"
+write_claim_repos "Nishfleet/drift-repo"
+sd_present="$scratch/sd-present2"
+mkdir -p "$sd_present"
+touch "$sd_present/secret-scan.yml"
+sd_filed="$scratch/sd-filed.log"
+: >"$sd_filed"
+export SD_PRESENT_DIR="$sd_present"
+export SD_FILED_LOG="$sd_filed"
+export GH="$gh_fake"
+export FLEET_ISSUE_FILE="$issue_file_fake"
+export FLEET_STANDARDS_DRIFT_FILE_ISSUES=1
+unset FLEET_ESCALATION_CANARY_SKIP_STANDARDS_DRIFT
+
+run_canary
+
+unset SD_PRESENT_DIR SD_FILED_LOG GH FLEET_ISSUE_FILE FLEET_STANDARDS_DRIFT_FILE_ISSUES
+[[ "$env_rc" == 1 ]] || fail "scenario30: must exit 1 (drift), got $env_rc ($env_out)"
+grep -q 'FILED standards-drift' <<<"$env_out" \
+  || fail "scenario30: canary must log the filed drift issue"
+grep -q 'standards drift: Nishfleet/drift-repo missing semgrep.yml' "$sd_filed" \
+  || fail "scenario30: fake issue-file must have been called for semgrep.yml"
+ok "scenario30: missing gate auto-files a standards-drift issue"
+
+# Scenario 31: all gates present -> OK (no drift)
+reset_state
+cover "fleet-heartbeat.service"
+cover "pi-issue@.service"
+sanctioned_wrapper pi-issue-run
+wire_delivery
+write_covered_vault
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_DELIVERY"
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_REDCI"
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_BRIDGE"
+write_intake "drift-repo"
+write_claim_repos "Nishfleet/drift-repo"
+sd_present="$scratch/sd-present3"
+mkdir -p "$sd_present"
+touch "$sd_present/secret-scan.yml" "$sd_present/semgrep.yml" "$sd_present/review-gate.yml" "$sd_present/auto-enqueue.yml"
+export SD_PRESENT_DIR="$sd_present"
+export GH="$gh_fake"
+unset FLEET_ESCALATION_CANARY_SKIP_STANDARDS_DRIFT
+
+run_canary
+
+unset SD_PRESENT_DIR GH
+[[ "$env_rc" == 0 ]] || fail "scenario31: must exit 0 (no drift), got $env_rc ($env_out)"
+! grep -q 'standards drift' "$triage" || fail "scenario31: no drift must not raise standards drift"
+ok "scenario31: all gates present -> OK (no drift)"
+
+ok "escalation-coverage-canary: block 13 standards-drift prevention (P11-B) covered"
 
 
 # fleet-ops#387: entitled-vs-wired is a sibling heartbeat canary. Invoked from
