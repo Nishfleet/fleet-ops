@@ -43,6 +43,12 @@ Correct two unresolvable action@<sha> pins in `.github/workflows/ci-standards-au
 - [ ] phase 4: `bin/fleet-token-efficiency-check` → green
 - [ ] phase 4: Step 8 senior reviewer round skipped — fleet-ops is NOT a product repo per `config/intake-repos.json`
 
+## Phase 2/3 reviewer output (record per manager protocol)
+- **Act on**: none
+- **Consider**: none
+- **Noted**: diff scope exactly the 3 expected files; SHAs verified byte-for-byte; ci.yml edit placement and indent correct; test is hermetic, 6-line registry, both checks present, references fleet-ops#1296; P14 orphan gate green (405 tests accounted for); no agent attribution
+- **Dismissed (with reason)**: whitespace-brittleness concern — registry lines matched verbatim after `sed 's/^uses: //' | sort -u`; inline `# vX.Y.Z` comments not captured by the SHA regex
+
 ## Phase 5 — Commit + push (nish3451 token) + PR + arm
 - [ ] phase 5: commit authored/committed with Nish identity (workflow-file push requires nish3451 token)
 - [ ] phase 5: single `fix(workflows):` commit covering all 3 files; NO Co-Authored-By trailer; NO agent names

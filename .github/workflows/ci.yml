@@ -290,6 +290,10 @@ jobs:
         bash tests/fleet-escalation-completion.test.sh
         bash tests/rule-enforcement.test.sh
         bash tests/reusable-workflows.test.sh
+        # fleet-ops#1296: reject typo'd/unregistered action@<sha> pins in
+        # .github/workflows/** before a scheduled workflow fails to resolve
+        # its checkout and drags main's statusCheckRollup red.
+        bash tests/workflow-action-pin-guard.test.sh
         # fleet-ops#359: lock the auto-revert gate and the reopen-on-revert
         # behavior so a reverted merge can no longer leave its issues closed.
         bash tests/auto-revert-required-check-gate.test.sh

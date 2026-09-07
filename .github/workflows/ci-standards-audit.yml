@@ -92,7 +92,7 @@ jobs:
           fi
 
       - name: Checkout fleet-ops
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410b181273ba90b1 # v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: Nishfleet/fleet-ops
           ref: ${{ github.workflow_sha }}
@@ -119,7 +119,7 @@ jobs:
             --output-markdown gap-matrix.md
 
       - name: Upload matrix artifacts
-        uses: actions/upload-artifact@507de32f7b3f094b774c69e437be4eb0721c607a # v4.6.0
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ci-standards-gap-matrix
           path: |
