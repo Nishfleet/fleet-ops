@@ -65,7 +65,13 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: Nishfleet/fleet-ops
-          ref: ${{ github.workflow_sha }}
+          # Pin to fleet-ops main; the previous `github.workflow_sha` is the
+          # SHA of the CALLER repo's stop-the-line-watch.yml, which doesn't
+          # exist in fleet-ops — every run died on
+          # 'fatal: remote error: upload-pack: not our ref <sha>' and the
+          # detector never ran, which held the deploy gate open in a
+          # permanent FAILURE -> main red feedback loop (fleet-ops#red-deploy).
+          ref: main
           persist-credentials: false
 
       - name: Run detector
