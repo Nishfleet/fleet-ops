@@ -287,6 +287,8 @@ systemd/agent-cron-0509-daily-market-signal.timer /home/nish/.config/systemd/use
 # class (a) — same shape as siterep-live-canary / agent-cron-0509-*.
 systemd/0509-search-tier-canary.service /home/nish/.config/systemd/user/0509-search-tier-canary.service
 systemd/0509-search-tier-canary.timer /home/nish/.config/systemd/user/0509-search-tier-canary.timer
+systemd/0509-demo-brand-timeline-canary.service /home/nish/.config/systemd/user/0509-demo-brand-timeline-canary.service
+systemd/0509-demo-brand-timeline-canary.timer /dev/null
 # fleet-ops#1495: agent-scheduler drift detector — the named mechanical
 # enforcement (layer 3) for the endorsed "standing machinery is
 # agent-agnostic" rule (vault global-standing-rules.md). Migrated from a

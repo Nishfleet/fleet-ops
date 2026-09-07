@@ -1,0 +1,33 @@
+[Unit]
+Description=0509 demo-brand offer timeline public-surface canary (issue #1899)
+# Fails (exit non-zero) when any of the five demo brands' /timeline/:domain
+# page does not render a non-empty dated ledger on production 0509.io
+# (HTTP 200 + "As of" affordance + a rendered f9-timeline-entry row).
+# The D1 row-count canary cannot see the proof-gate dark state (rows stored
+# but public timeline 410, issue #1284): this probes the real public surface
+# so the gap surfaces as a failed unit + incident instead of hiding.
+# Deliberately a user unit on the fleet VPS (like 0509-search-tier-canary,
+# issue #1452): the worker GitHub App token cannot create or update
+# .github/workflows files, and the check needs no secrets — only outbound
+# HTTPS to 0509.io.
+# Runs from a dedicated read-only checkout that self-syncs to main on every
+# run (ExecStartPre), so it never touches the shared products/0509 checkout.
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/nish/workspaces/agent-state/0509-timeline-canary
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=CANARY_EVIDENCE_DIR=/home/nish/workspaces/agent-state/cron-output
+ExecStartPre=/usr/bin/env git -C /home/nish/workspaces/agent-state/0509-timeline-canary fetch origin main
+ExecStartPre=/usr/bin/env git -C /home/nish/workspaces/agent-state/0509-timeline-canary reset --hard origin/main
+ExecStart=/usr/bin/env node scripts/canary-demo-brand-timeline.mjs --http
+# Evidence: one plain-text run log; the unit's failed state is the loud
+# signal (systemctl --user list-units --failed) and the log keeps the
+# per-brand HTTP verdicts for observe-to-close.
+StandardOutput=append:/home/nish/workspaces/agent-state/cron-output/0509-demo-brand-timeline-canary.log
+StandardError=inherit
+# Five fetches with retries worst case (~5 x 20s + backoff) must still finish.
+TimeoutStartSec=30min
+# A failed canary must stay failed for operators; do not restart into a loop.
+Restart=no

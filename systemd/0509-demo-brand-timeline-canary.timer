@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily 06:10 IST — 0509 demo-brand timeline public-surface canary (issue #1899)
+
+[Timer]
+OnCalendar=*-*-* 06:10:00 Asia/Kolkata
+Persistent=true
+AccuracySec=2min
+Unit=0509-demo-brand-timeline-canary.service
+
+[Install]
+WantedBy=timers.target
