@@ -82,8 +82,11 @@ ok "Test 6: skipped-claim path checks for a live worker unit"
 # === Test 7: skipped-claim-lost checks for open PR before skipping ===
 grep -qF 'skipped-claim-pr-open' "$tick" \
     || fail "skipped-claim-pr-open message not found"
-grep -qF 'repos/$FULL/pulls?state=open&head=${FULL#*/}:claim/issue-$N' "$tick" \
-    || fail "open PR check (gh api pulls) not found in skipped-claim path"
+# The head= filter is <owner>:<branch>. This assertion used to pin
+# head=${FULL#*/} (the REPO name), which is what let the always-empty probe
+# survive review — see tests/claim-pr-head-owner.test.sh.
+grep -qF 'repos/$FULL/pulls?state=open&head=${FULL%%/*}:claim/issue-$N' "$tick" \
+    || fail "open PR check (gh api pulls) not found, or not owner-scoped, in skipped-claim path"
 ok "Test 7: skipped-claim path checks for an open PR before skipping"
 
 # === Test 8: stale claim (no live worker, no open PR) is released ===

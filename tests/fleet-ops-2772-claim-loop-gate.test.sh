@@ -150,8 +150,11 @@ ok "Test 6d: window drill keeps repos exact (repo=0509 counts only its own recor
 # === Test 7: pi-issue-run success reset is PR-gated ===
 grep -qF 'issue_num="${inst##*-}"' "$run" \
     || fail "issue number derivation not found in pi-issue-run"
-grep -qF 'repos/Nishfleet/${pkt_repo}/pulls?state=open&head=${pkt_repo}:claim/issue-${issue_num}' "$run" \
-    || fail "open-PR shipped check (gh api pulls from claim branch) not found in pi-issue-run"
+# head= is <owner>:<branch>. This assertion used to pin head=${pkt_repo}
+# (the REPO name), which made the always-empty probe look tested — see
+# tests/claim-pr-head-owner.test.sh.
+grep -qF 'repos/Nishfleet/${pkt_repo}/pulls?state=open&head=Nishfleet:claim/issue-${issue_num}' "$run" \
+    || fail "open-PR shipped check (gh api pulls from claim branch) not found, or not owner-scoped, in pi-issue-run"
 grep -qF 'repos/Nishfleet/${pkt_repo}/issues/${issue_num}' "$run" \
     || fail "issue-state shipped check (gh api issues) not found in pi-issue-run"
 grep -qF 'reclaim-count NOT reset' "$run" \
