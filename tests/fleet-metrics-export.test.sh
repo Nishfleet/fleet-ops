@@ -2152,6 +2152,88 @@ PY
 ok "fleet-ops#3312: fleet_nish_decision_rejected_total emitted (missing/legit/unparseable)"
 
 # =========================================================================
+# fleet-ops#4260: fleet_blocked_issues{kind} + needs-orchestrator age stats.
+# Every kind is always emitted (0 when absent) so a stale family cannot
+# false-fire or false-clear FleetNeedsOrchestratorStale.
+# =========================================================================
+python3 - "$exporter" <<'PY' || fail "blocked-queue per-kind metric emission failed"
+import importlib.util, json, sys, tempfile
+from pathlib import Path
+def load(p, name):
+    spec = importlib.util.spec_from_file_location(name, p)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+m = load(sys.argv[1], "fme")
+
+KINDS = ["work-item", "nish-decision", "orchestrator", "infra",
+         "senior-review", "needs-orchestrator"]
+
+# 1. Missing file -> all kinds present at 0, age series present at 0.
+with tempfile.TemporaryDirectory() as td:
+    m.BLOCKED_QUEUE_JSON = Path(td) / "missing.json"
+    lines = []
+    m._emit_blocked_reconcile(lines)
+    out = "\n".join(lines)
+    assert out.count("# HELP fleet_blocked_issues") == 1, out
+    assert out.count("# TYPE fleet_blocked_issues") == 1, out
+    for k in KINDS:
+        assert f'fleet_blocked_issues{{kind="{k}"}} 0' in out, out
+    assert 'fleet_blocked_issue_age_seconds{kind="needs-orchestrator",quantile="0.5"} 0' in out, out
+    assert 'fleet_blocked_issue_age_seconds{kind="needs-orchestrator",quantile="1"} 0' in out, out
+    print("OK: missing file -> all kinds at 0, age series at 0")
+
+# 2. A snapshot with mixed kinds + a needs_orchestrator block.
+with tempfile.TemporaryDirectory() as td:
+    p = Path(td) / "blocked-queue.json"
+    p.write_text(json.dumps({
+        "count": 3,
+        "items": [
+            {"ref": "Nishfleet/fleet-ops#1", "kind": "work-item", "age_h": 2},
+            {"ref": "Nishfleet/fleet-ops#2", "kind": "orchestrator", "age_h": 5},
+            {"ref": "Nishfleet/fleet-ops#3", "kind": "nish-decision", "age_h": 9},
+        ],
+        "needs_orchestrator": {"count": 4, "oldest_age_s": 9000,
+                               "p50_age_s": 5400, "items": []},
+    }))
+    m.BLOCKED_QUEUE_JSON = p
+    lines = []
+    m._emit_blocked_reconcile(lines)
+    out = "\n".join(lines)
+    assert 'fleet_blocked_issues{kind="work-item"} 1' in out, out
+    assert 'fleet_blocked_issues{kind="orchestrator"} 1' in out, out
+    assert 'fleet_blocked_issues{kind="nish-decision"} 1' in out, out
+    assert 'fleet_blocked_issues{kind="infra"} 0' in out, out
+    assert 'fleet_blocked_issues{kind="needs-orchestrator"} 4' in out, out
+    assert 'fleet_blocked_issue_age_seconds{kind="needs-orchestrator",quantile="0.5"} 5400' in out, out
+    assert 'fleet_blocked_issue_age_seconds{kind="needs-orchestrator",quantile="1"} 9000' in out, out
+    print("OK: per-kind counts + needs-orchestrator age stats emitted")
+
+# 3. Unparseable file -> all kinds at 0 (no crash).
+with tempfile.TemporaryDirectory() as td:
+    p = Path(td) / "bad.json"
+    p.write_text("{not json")
+    m.BLOCKED_QUEUE_JSON = p
+    lines = []
+    m._emit_blocked_reconcile(lines)
+    out = "\n".join(lines)
+    for k in KINDS:
+        assert f'fleet_blocked_issues{{kind="{k}"}} 0' in out, out
+    print("OK: unparseable file -> all kinds at 0 (no crash)")
+PY
+
+ok "fleet-ops#4260: fleet_blocked_issues{kind} + needs-orchestrator age emitted (missing/legit/unparseable)"
+
+# The alert that consumes the series must exist in the rules file and point
+# at the p50 series with a repair path naming the decision-sweep unit.
+grep -q 'alert: FleetNeedsOrchestratorStale' "$repo_root/config/fleet_rules.yml" \
+    || fail "fleet_rules.yml missing FleetNeedsOrchestratorStale"
+grep -q 'fleet_blocked_issue_age_seconds{kind="needs-orchestrator",quantile="0.5"}' "$repo_root/config/fleet_rules.yml" \
+    || fail "FleetNeedsOrchestratorStale must key on the needs-orchestrator p50 series"
+grep -q 'agent-cron-orchestrator-decision-sweep' "$repo_root/config/fleet_rules.yml" \
+    || fail "alert description must name the decision-sweep unit so the repair packet runs it"
+
+# =========================================================================
 # 17. fleet-ops#3250: per-seat rolling last-20 issue-work session PR yield.
 # =========================================================================
 python3 - "$exporter" "$scratch" <<'PY' || fail "seat-yield logic failed"

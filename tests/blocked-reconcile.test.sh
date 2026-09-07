@@ -151,6 +151,16 @@ case "$1" in
   issue)
     case "$2" in
       list)
+        # fleet-ops#4260: the reconcile also lists the needs-orchestrator
+        # label; serve that query from list-orch.json (default empty).
+        if [[ "$*" == *needs-orchestrator* ]]; then
+          if [[ -f "$FAKE_DIR/list-orch.json" ]]; then
+            cat "$FAKE_DIR/list-orch.json"
+          else
+            echo '[]'
+          fi
+          exit 0
+        fi
         cat "$FAKE_DIR/list.json"
         exit 0
         ;;
@@ -203,6 +213,20 @@ case "$1" in
 esac
 FAKE
 chmod +x "$scratch/bin/gh"
+
+# fleet-ops#4260: stub systemctl so the needs-orchestrator trigger can never
+# start a real unit under test. is-active reports inactive so the start path
+# is exercised; every call is logged to systemctl.log.
+cat >"$scratch/bin/systemctl" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$FAKE_DIR/systemctl.log"
+if [[ "$*" == *is-active* ]]; then
+  exit 1
+fi
+exit 0
+FAKE
+chmod +x "$scratch/bin/systemctl"
+
 export FAKE_DIR="$scratch"
 export PATH="$scratch/bin:$PATH"
 export BLOCKED_RECONCILE_LOCKDIR="$scratch/lock"
@@ -519,6 +543,78 @@ grep -q 'requeued=0' <<<"$out" || fail "senior-review must not requeue: $out"
 grep -q 'count=1' <<<"$out" || fail "senior-review must stay in queue: $out"
 grep -q 'remaining=senior-review' "$scratch/comments.log" || fail "senior-review sticky missing: $(cat "$scratch/comments.log")"
 ok "blocked-on: senior-review stays blocked"
+
+# Case 8e: fleet-ops#4260 — a blocked-on: orchestrator item publishes
+# kind=orchestrator in the snapshot (it must not masquerade as nish-decision).
+cat >"$scratch/list.json" <<'JSON'
+[{"number":97,"title":"orch kind test","createdAt":"2026-08-25T06:00:00Z","labels":[{"name":"agent-blocked"}]}]
+JSON
+cat >"$scratch/view-97.json" <<'JSON'
+{"title":"orch kind test","body":"blocked-on: orchestrator\n","createdAt":"2026-08-25T06:00:00Z","labels":[{"name":"agent-blocked"}],"comments":[]}
+JSON
+: >"$scratch/edits.log"
+: >"$scratch/comments.log"
+: >"$scratch/systemctl.log"
+
+out=$("$bin" 2>"$scratch/err-orch-kind.txt")
+grep -q 'count=1' <<<"$out" || fail "orchestrator item stays in queue: $out"
+[[ "$(jq -r '.items[0].kind' "$scratch/state.json")" == "orchestrator" ]] \
+    || fail "orchestrator item must publish kind=orchestrator: $(cat "$scratch/state.json")"
+grep -q 'kind=orchestrator' "$scratch/comments.log" \
+    || fail "sticky must name kind=orchestrator: $(cat "$scratch/comments.log")"
+# Belt path (fleet-ops#4260): an aged kind=orchestrator item triggers the
+# decision sweep even with an empty needs-orchestrator label list — the
+# trigger rides the blocked queue itself, not only the label.
+grep -q 'start agent-cron-orchestrator-decision-sweep.service' "$scratch/systemctl.log" \
+    || fail "aged orchestrator-blocked item must trigger the sweep: $(cat "$scratch/systemctl.log")"
+ok "blocked-on: orchestrator publishes kind=orchestrator in the snapshot"
+
+# Case 11: fleet-ops#4260 — an aged needs-orchestrator issue triggers the
+# orchestrator decision sweep (stock systemctl start, stubbed here).
+cat >"$scratch/list.json" <<'JSON'
+[]
+JSON
+cat >"$scratch/list-orch.json" <<'JSON'
+[{"number":200,"createdAt":"2026-08-25T22:00:00Z","labels":[{"name":"needs-orchestrator"}]}]
+JSON
+: >"$scratch/systemctl.log"
+
+out=$("$bin" 2>"$scratch/err-orch.txt")
+grep -q 'needs_orchestrator=1' <<<"$out" || fail "needs-orchestrator count missing: $out"
+grep -q 'start agent-cron-orchestrator-decision-sweep.service' "$scratch/systemctl.log" \
+    || fail "aged needs-orchestrator must start the decision sweep: $(cat "$scratch/systemctl.log")"
+[[ "$(jq -r '.needs_orchestrator.count' "$scratch/state.json")" == "1" ]] \
+    || fail "snapshot needs_orchestrator.count: $(cat "$scratch/state.json")"
+[[ "$(jq -r '.needs_orchestrator.p50_age_s' "$scratch/state.json")" == "7200" ]] \
+    || fail "snapshot needs_orchestrator.p50_age_s: $(cat "$scratch/state.json")"
+ok "aged needs-orchestrator item starts the orchestrator decision sweep"
+
+# Case 11b: a young needs-orchestrator item does NOT trigger the sweep.
+cat >"$scratch/list-orch.json" <<'JSON'
+[{"number":201,"createdAt":"2026-08-25T23:30:00Z","labels":[{"name":"needs-orchestrator"}]}]
+JSON
+: >"$scratch/systemctl.log"
+
+out=$("$bin" 2>"$scratch/err-orch-young.txt")
+grep -q 'needs_orchestrator=1' <<<"$out" || fail "young item still counted: $out"
+if grep -q 'start ' "$scratch/systemctl.log"; then
+    fail "young needs-orchestrator must not start the sweep: $(cat "$scratch/systemctl.log")"
+fi
+ok "young needs-orchestrator item is counted but does not trigger the sweep"
+
+# Case 11c: an agent-in-progress needs-orchestrator item is skipped (a live
+# worker owns it — it is not parked).
+cat >"$scratch/list-orch.json" <<'JSON'
+[{"number":202,"createdAt":"2026-08-25T10:00:00Z","labels":[{"name":"needs-orchestrator"},{"name":"agent-in-progress"}]}]
+JSON
+: >"$scratch/systemctl.log"
+
+out=$("$bin" 2>"$scratch/err-orch-inprog.txt")
+grep -q 'needs_orchestrator=0' <<<"$out" || fail "in-progress item must not count: $out"
+[[ ! -s "$scratch/systemctl.log" ]] || fail "in-progress item must not trigger: $(cat "$scratch/systemctl.log")"
+ok "agent-in-progress needs-orchestrator item is skipped"
+
+rm -f "$scratch/list-orch.json"
 
 # Case 9: overlapping flock no-op
 export BLOCKED_RECONCILE_LOCKDIR="$scratch/lock-overlap"

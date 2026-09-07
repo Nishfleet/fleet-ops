@@ -273,13 +273,16 @@ else:
 PY
 )"
 
-# --- Section 9: live escalations (fleet-ops#3996) ------------------------------
+# --- Section 9: live escalations (fleet-ops#3996, widened by #4260) ---------
 # Surfaces the still-live boundary entries in NISH-ESCALATIONS.md so Nish
 # can see what needs his attention in the morning digest. The hourly drain
 # (fleet-escalation-drain) already archived resolved money-wall entries, so
 # whatever is in the live file is still live. Counts formal class-gated
 # entries (MONEY-BOUNDARY etc.) and prose sections (## date — title), and
-# lists the first line of each (truncated). Absent file -> graceful line.
+# quotes the TOP 3 in full enough to carry each entry's `— recommended:`
+# tail (the orchestrator decision sweep writes its one-line recommendation
+# into the entry line), so Nish can answer in one line each. Absent file ->
+# graceful line.
 NISH_ESC="${FLEET_ESCALATION_NISH:-/home/nish/workspaces/agent-state/NISH-ESCALATIONS.md}"
 esc_line="$(NISH_ESC="$NISH_ESC" python3 <<'PY'
 import os, re, sys
@@ -302,22 +305,23 @@ entries = []
 for ln in lines:
     m = class_re.match(ln)
     if m:
-        # First 80 chars of the entry line (truncated for the digest).
-        text = ln.rstrip()[:80]
+        # Wide enough to carry the `— recommended:` tail the decision sweep
+        # appends so the digest quotes question + answer (fleet-ops#4260).
+        text = ln.rstrip()[:200]
         entries.append(text)
         continue
     m = prose_re.match(ln)
     if m:
-        text = m.group(1).strip()[:80]
+        text = m.group(1).strip()[:200]
         entries.append(text)
 if not entries:
     print("• No live escalations — ledger is empty.")
 else:
-    print(f"• {len(entries)} live escalation(s) needing your attention:")
-    for e in entries[:8]:
+    print(f"• {len(entries)} live escalation(s) needing your attention (top 3, each answerable in one line):")
+    for e in entries[:3]:
         print(f"  - {e}")
-    if len(entries) > 8:
-        print(f"  ... and {len(entries) - 8} more (see NISH-ESCALATIONS.md).")
+    if len(entries) > 3:
+        print(f"  ... and {len(entries) - 3} more (see NISH-ESCALATIONS.md).")
 PY
 )"
 

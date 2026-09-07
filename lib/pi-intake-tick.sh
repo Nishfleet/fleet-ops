@@ -1379,10 +1379,10 @@ blocked-on: infra" 2>/dev/null || true
         ' <<<"$_claims_log_snapshot" 2>/dev/null || echo 0)
         if (( _cl_window_claims >= MAX_CLAIMS_IN_WINDOW )); then
             echo "issue $N ($title): skipped-claim-loop (claimed ${_cl_window_claims}x in ${RECLAIM_WINDOW_S}s window, cap=$MAX_CLAIMS_IN_WINDOW) - escalating to agent-blocked" >&2
-            gh issue edit "$N" -R "$FULL" --add-label agent-blocked --remove-label agent-ready 2>/dev/null || true
-            gh issue comment "$N" -R "$FULL" --body "fleet-ops#2772: issue $N has been claimed ${_cl_window_claims} times in the last ${RECLAIM_WINDOW_S}s (cap=$MAX_CLAIMS_IN_WINDOW) with no open PR — the claim path is spinning dead workers into the seat pool instead of completing. Escalating to senior conference for review.
+            gh issue edit "$N" -R "$FULL" --add-label agent-blocked --add-label needs-orchestrator --remove-label agent-ready 2>/dev/null || true
+            gh issue comment "$N" -R "$FULL" --body "fleet-ops#2772: issue $N has been claimed ${_cl_window_claims} times in the last ${RECLAIM_WINDOW_S}s (cap=$MAX_CLAIMS_IN_WINDOW) with no open PR — the claim path is spinning dead workers into the seat pool instead of completing. Routing to the orchestrator decision sweep (fleet-ops#4260), not Nish: a claim-loop break is not a money/legal/product-direction/customer-data question.
 
-blocked-on: nish-decision" 2>/dev/null || true
+blocked-on: orchestrator" 2>/dev/null || true
             continue
         fi
     fi

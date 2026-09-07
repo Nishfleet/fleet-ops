@@ -520,6 +520,23 @@ groups:
           summary: "queue {{ $labels.queue }} 7-day self-maintenance ratio stayed above 64% (fleet2 death-number) for 6 hours"
           description: "avg_over_time(fleet_queue_self_maintenance_ratio{queue=\"{{ $labels.queue }}\"}[7d]) has been above 0.64 (the fleet2 death-number) for 6+ hours. fleet2 died at 64% self-maintenance; a sustained high ratio in the intake queue means the fleet is queueing machinery work faster than product work. The 7d window absorbs the momentary dips and export gaps that reset the old 1w for: and kept this alert pending forever (fleet-ops#2171). The ratio is exported only when total>0. Feeds Weekly Review scoring and the precedence-sunset question. Inspect fleet_queue_total and fleet_queue_self_maintenance_total for the queue."
 
+      # fleet-ops#4260: needs-orchestrator items must drain through the
+      # orchestrator decision pass within ~2h. blocked-reconcile (heartbeat
+      # block 6) already starts agent-cron-orchestrator-decision-sweep.service
+      # on sight of an item older than 1h; this alert is the backstop for a
+      # reconcile that dies or a sweep run that fails — the repair packet
+      # re-runs the decision pass by hand. p50 (not max) so one legitimately
+      # parked item cannot hold the alert open while the class drains.
+      - alert: FleetNeedsOrchestratorStale
+        expr: fleet_blocked_issue_age_seconds{kind="needs-orchestrator",quantile="0.5"} > 7200
+        for: 30m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "needs-orchestrator issues parked with a median age over 2h — the decision drain is not running"
+          description: "fleet-ops#4260: p50 age of open needs-orchestrator issues exceeded 2h. The drain is agent-cron-orchestrator-decision-sweep.service (stock agent-cron-run + prompts/orchestrator-decision-sweep.md, senior-review seat). Repair: run `systemctl --user start agent-cron-orchestrator-decision-sweep.service`, then check `journalctl --user -u agent-cron-orchestrator-decision-sweep -n 80` and the snapshot at /home/nish/.local/state/fleet-heartbeat/blocked-queue.json (needs_orchestrator block). If every seat fails the unit, escalate the seat fault — do not re-park the issues."
+
   - name: fleet_waste
     rules:
       # Organ heartbeat (fleet-ops#1010). fleet_waste_runs{kind="total"} is

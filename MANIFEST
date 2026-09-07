@@ -279,6 +279,13 @@ bin/pi-intake-repair-run /home/nish/.local/bin/pi-intake-repair-run
 bin/agent-cron-run /home/nish/.local/bin/agent-cron-run
 systemd/agent-cron-0509-daily-market-signal.service /home/nish/.config/systemd/user/agent-cron-0509-daily-market-signal.service
 systemd/agent-cron-0509-daily-market-signal.timer /home/nish/.config/systemd/user/agent-cron-0509-daily-market-signal.timer
+# fleet-ops#4260: orchestrator decision sweep — drains needs-orchestrator.
+# On-demand service only (no timer): blocked-reconcile starts it when an
+# open needs-orchestrator issue is older than 1h; the prompt's
+# `difficulty: senior-review` marker routes it to the senior seat ladder
+# through the stock agent-cron-run (no new wrapper).
+systemd/agent-cron-orchestrator-decision-sweep.service /home/nish/.config/systemd/user/agent-cron-orchestrator-decision-sweep.service
+prompts/orchestrator-decision-sweep.md /home/nish/.pi/agent/prompts/orchestrator-decision-sweep.md
 # fleet-ops#3735: daily §1.8 six-domain /search tier regression canary for
 # 0509 (issue Nishfleet/0509#1452). Absorbed from a hand-placed real file
 # into the repo so the machinery-authorization hunt stops flagging it as

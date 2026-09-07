@@ -1,0 +1,40 @@
+[Unit]
+Description=Agent-agnostic cron: orchestrator decision sweep (fleet-ops#4260)
+
+# Started ON DEMAND by bin/blocked-reconcile when an open needs-orchestrator
+# issue is older than BLOCKED_RECONCILE_ORCHESTRATOR_MIN_AGE_S (default 1h),
+# or by hand (`systemctl --user start agent-cron-orchestrator-decision-sweep`).
+# Event-driven on the reconcile output — deliberately NO .timer
+# (fleet-ops#4260: "not a timer"; the hourly escalation-drain is the
+# dead-man backstop). No [Install] section: nothing should pull this in as a
+# boot target; `systemctl --user start` works on a non-enabled unit.
+#
+# ExecStart is the stock agent-cron-run (fleet-ops#143 seat rotation,
+# PI_HANG_TIMEOUT_S watchdog, quota-bench). No new wrapper — the agent logic
+# lives in prompts/orchestrator-decision-sweep.md, whose
+# `difficulty: senior-review` marker routes the run to the senior seat
+# ladder via pick_seat (fleet-ops#4220).
+StartLimitIntervalSec=1h
+StartLimitBurst=4
+
+[Service]
+Type=oneshot
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+# agent-state is the neutral workdir: the sweep reads GitHub issues and
+# writes its report into cron-output; it must never land in a product
+# checkout or the deploy clone.
+Environment=WORKDIR=/home/nish/workspaces/agent-state
+Environment=LOG_DIR=/home/nish/workspaces/agent-state/cron-output
+Environment=PROMPTS_DIR=/home/nish/.pi/agent/prompts
+Environment=PI_BIN=/home/nish/.local/bin/pi
+ExecStart=/home/nish/.local/bin/agent-cron-run orchestrator-decision-sweep
+# Retry policy — same shape as agent-cron-0509-daily-market-signal: a walled
+# seat re-runs ExecStart, which picks a DIFFERENT seat each retry.
+# StartLimitBurst bounds the retry window.
+Restart=on-failure
+RestartSec=900
+# Hang detection: a cron active longer than this is terminated into `failed`.
+# agent-cron-run bounds pi itself (PI_HANG_TIMEOUT_S=42min) below this.
+TimeoutStartSec=45min

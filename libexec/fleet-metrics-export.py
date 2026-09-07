@@ -4151,25 +4151,81 @@ BLOCKED_QUEUE_JSON = Path(
 HELP_NBR = "# HELP fleet_nish_decision_rejected_total Number of `blocked-on: nish-decision` lines rejected and rewritten to `blocked-on: orchestrator` in the last blocked-reconcile sweep (fleet-ops#3312)."
 TYPE_NBR = "# TYPE fleet_nish_decision_rejected_total gauge"
 
+# fleet-ops#4260: the blocked queue must be observable BY KIND so a parked
+# needs-orchestrator class is visible before a human notices the fleet went
+# idle. `kind` values come from the reconcile snapshot: the agent-blocked
+# queue kinds (work-item/nish-decision/orchestrator/infra/senior-review) plus
+# needs-orchestrator, which counts the label sweep across ALL open issues —
+# a wider set, overlapping the others by design (an issue can be both
+# agent-blocked and needs-orchestrator). Every kind is always emitted (0 when
+# absent) so a stale family cannot false-fire or false-clear an alert.
+_BLOCKED_KINDS = (
+    "work-item",
+    "nish-decision",
+    "orchestrator",
+    "infra",
+    "senior-review",
+    "needs-orchestrator",
+)
+HELP_FBI = "# HELP fleet_blocked_issues Open blocked issues by kind from the last blocked-reconcile sweep (fleet-ops#4260). kind=needs-orchestrator counts the label sweep across all open issues; the other kinds count the agent-blocked queue."
+TYPE_FBI = "# TYPE fleet_blocked_issues gauge"
+HELP_FBIA = "# HELP fleet_blocked_issue_age_seconds Age stats for blocked issues by kind, seconds since issue creation, from the last blocked-reconcile sweep (fleet-ops#4260)."
+TYPE_FBIA = "# TYPE fleet_blocked_issue_age_seconds gauge"
+
 
 def _emit_blocked_reconcile(lines):
-    """Append fleet_nish_decision_rejected_total.
+    """Append blocked-queue metrics.
 
     Reads the last blocked-reconcile sweep summary. A missing or
-    unparseable file emits 0 so the metric family is always present.
+    unparseable file emits zeros so the metric families are always present.
     """
     count = 0
+    by_kind = {k: 0 for k in _BLOCKED_KINDS}
+    orch_p50 = 0
+    orch_oldest = 0
     try:
         data = json.loads(BLOCKED_QUEUE_JSON.read_text(encoding="utf-8"))
         raw = data.get("rejected_nish_decisions")
         if isinstance(raw, (int, float)):
             count = int(raw)
+        for item in data.get("items") or []:
+            k = item.get("kind") if isinstance(item, dict) else None
+            if k in by_kind:
+                by_kind[k] += 1
+        orch = data.get("needs_orchestrator")
+        if isinstance(orch, dict):
+            oc = orch.get("count")
+            if isinstance(oc, (int, float)):
+                by_kind["needs-orchestrator"] = int(oc)
+            for key, dest in (("p50_age_s", "p50"), ("oldest_age_s", "oldest")):
+                v = orch.get(key)
+                if isinstance(v, (int, float)):
+                    if dest == "p50":
+                        orch_p50 = int(v)
+                    else:
+                        orch_oldest = int(v)
     except (OSError, json.JSONDecodeError):
         pass
     lines.append("")
     lines.append(HELP_NBR)
     lines.append(TYPE_NBR)
     lines.append(f"fleet_nish_decision_rejected_total {count}")
+    lines.append("")
+    lines.append(HELP_FBI)
+    lines.append(TYPE_FBI)
+    for k in _BLOCKED_KINDS:
+        lines.append(f'fleet_blocked_issues{{kind="{k}"}} {by_kind[k]}')
+    lines.append("")
+    lines.append(HELP_FBIA)
+    lines.append(TYPE_FBIA)
+    lines.append(
+        'fleet_blocked_issue_age_seconds{kind="needs-orchestrator",quantile="0.5"} '
+        f"{orch_p50}"
+    )
+    lines.append(
+        'fleet_blocked_issue_age_seconds{kind="needs-orchestrator",quantile="1"} '
+        f"{orch_oldest}"
+    )
 
 
 # --- close-duplicates close guard (fleet-ops#3161) ------------------------

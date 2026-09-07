@@ -1196,6 +1196,10 @@ fi
 # nishfleet-worker App has no webhooks (credentials/app-manifest.json
 # events=[]), so there is no event to subscribe to. Heartbeat's existing
 # 30-minute timer is the observer; this is not a new schedule.
+# fleet-ops#4260: the same sweep is the event source for the orchestrator
+# decision drain — when it sees an open needs-orchestrator issue older than
+# 1h it starts agent-cron-orchestrator-decision-sweep.service. No timer on
+# that unit; the label/reconcile output is the event.
 BLOCKED_BIN="${FLEET_BLOCKED_RECONCILE:-/home/nish/.local/bin/blocked-reconcile}"
 blocked_rc=0
 if require_manifest_helper "$BLOCKED_BIN"; then

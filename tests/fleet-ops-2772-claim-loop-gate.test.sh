@@ -17,7 +17,8 @@
 #      (overridable), and snapshots the claims log once per tick.
 #   2. In the claim loop, AFTER the branch-liveness / open-PR checks, a
 #      skipped-claim-loop gate counts raw claims for THIS line in the
-#      sliding window and escalates (agent-blocked + blocked-on:
+#      sliding window and escalates (agent-blocked + needs-orchestrator +
+#      blocked-on: orchestrator — fleet-ops#4260 reroutes the class off
 #      nish-decision) when the count reaches the cap — fail loud instead
 #      of spinning.
 #   3. The gate counts exactly `claimed line=<N> repo=<repo>` records in
@@ -76,10 +77,12 @@ ok "Test 3: skipped-claim-loop gate counts exact same-line claims in the window"
 # === Test 4: gate escalates loud (agent-blocked + blocked-on) ===
 grep -qF 'escalating to agent-blocked' "$tick" \
     || fail "gate escalation message not found"
-grep -qF -- '--add-label agent-blocked --remove-label agent-ready' "$tick" \
-    || fail "gate must flip to agent-blocked and remove agent-ready (leaves the ready set)"
-grep -qF 'blocked-on: nish-decision' "$tick" \
-    || fail "gate escalation must emit machine-readable blocked-on: nish-decision"
+grep -qF -- '--add-label agent-blocked --add-label needs-orchestrator --remove-label agent-ready' "$tick" \
+    || fail "gate must flip to agent-blocked + needs-orchestrator and remove agent-ready (leaves the ready set)"
+# fleet-ops#4260: the escalation default is the orchestrator drain, not a
+# nish-decision — a claim loop names no Nish-reserved reason.
+grep -qF 'blocked-on: orchestrator' "$tick" \
+    || fail "gate escalation must emit machine-readable blocked-on: orchestrator"
 ok "Test 4: gate escalates loud — agent-blocked label + blocked-on line"
 
 # === Test 5: gate sits AFTER branch-liveness / open-PR checks, BEFORE the
