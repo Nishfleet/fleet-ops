@@ -81,6 +81,17 @@ model_list:
       tags: ["metered"]
       order: 3
       max_parallel_requests: 2
+    model_info:
+      # straitly returns 402 on credit exhaustion, which LiteLLM surfaces
+      # as litellm.BadRequestError. Pin the deployment to cool down on the
+      # FIRST such error (fleet-ops#4404) so simple-shuffle stops re-picking
+      # it every ~5 min until the provider resets. This key lives in the
+      # per-deployment model_info on purpose: LiteLLM's cooldown decision
+      # reads deployment model_info.allowed_fails_policy (see
+      # litellm/router_utils/cooldown_handlers.py), NOT the router-level
+      # key, which only governs retries and the health-filter toggle.
+      allowed_fails_policy:
+        BadRequestErrorAllowedFails: 1
 
   # --- worker-capable: prepaid strong models ---
   - model_name: worker-capable
@@ -139,7 +150,12 @@ model_list:
 router_settings:
   routing_strategy: simple-shuffle
   fallbacks:
-    - worker-cheap: [worker-capable]
+    # worker-cheap falls to worker-capable, which must NOT dead-end: give it
+    # a terminal healthy route (senior). This mirrors the issue fix direction
+    # (fleet-ops#4404) and avoids a cheap<->capable ping-pong loop by keeping
+    # senior as the last-resort healthy group.
+    - worker-cheap: [worker-capable, senior]
+    - worker-capable: [senior]
     - senior: [worker-capable]
     - judge: [senior]
   # cooldown_time + allowed_fails replace seat-lib's bench windows. Gap
