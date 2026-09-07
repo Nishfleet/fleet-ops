@@ -1308,41 +1308,41 @@ groups:
           summary: "observe-to-close metric family vanished"
           description: "fleet_observe_to_close_total is absent for 15+ minutes — the merged-pr-close summary is not being written or the exporter is not emitting the family. Check bin/fleet-merged-pr-close in the heartbeat tick log and the merged-pr-close.json summary path. fleet-ops#3231."
       - alert: FleetLitellmProxyAbsent
-        expr: absent(fleet_litellm_proxy_up{endpoint="readiness"}) or fleet_litellm_proxy_up{endpoint="readiness"} == 0
+        expr: (absent(fleet_litellm_proxy_up{endpoint="readiness"}) or fleet_litellm_proxy_up{endpoint="readiness"} == 0) unless fleet_litellm_organ_installed == 0
         for: 2m
         labels:
           severity: critical
           service: fleet
         annotations:
           summary: "LiteLLM proxy organ absent or down (fleet-ops#4130 P1)"
-          description: "fleet_litellm_proxy_up is absent for 2+ minutes (organ not installed/dead) or 0 (proxy unreachable on 127.0.0.1:4000/health/readiness). The proxy is the routing organ in front of every seat; its death benches the whole fleet. Repair: check journalctl --user -u fleet-litellm-proxy.service and the /health canary at journalctl --user -u fleet-litellm-health-canary.service. P4 drill: workers must fail loud <60s when this fires. fleet-ops#4130."
+          description: "fleet_litellm_proxy_up is absent for 2+ minutes or 0 (proxy unreachable on 127.0.0.1:4000/health/readiness) while the organ is installed (fleet_litellm_organ_installed=1). The unless-gate suppresses this while the P1 organ is deliberately NOT live-installed (Nish-gated, fleet-ops#4174): the canary then writes organ_installed=0 and the alert must not fire; once the venv exists the canary writes 1 and real organ death fires again. The proxy is the routing organ in front of every seat; its death benches the whole fleet. Repair: check journalctl --user -u fleet-litellm-proxy.service and the /health canary at journalctl --user -u fleet-litellm-health-canary.service. P4 drill: workers must fail loud <60s when this fires. fleet-ops#4130, #4221."
       - alert: FleetLitellmPostgresAbsent
-        expr: absent(fleet_litellm_postgres_up) or fleet_litellm_postgres_up == 0
+        expr: (absent(fleet_litellm_postgres_up) or fleet_litellm_postgres_up == 0) unless fleet_litellm_organ_installed == 0
         for: 2m
         labels:
           severity: critical
           service: fleet
         annotations:
           summary: "LiteLLM Postgres organ absent or down (fleet-ops#4130 P1)"
-          description: "fleet_litellm_postgres_up is absent for 2+ minutes (organ not installed) or 0 (pg_isready failed on the local socket). Postgres backs budgets/keys/spend; without it budgets fail open (docs/proxy/users). Repair: check journalctl --user -u fleet-litellm-postgres.service and pg_isready -h /var/run/postgresql. Runbook: docs/litellm-postgres-setup.md. fleet-ops#4130."
+          description: "fleet_litellm_postgres_up is absent for 2+ minutes or 0 (pg_isready failed on the local socket) while the organ is installed (fleet_litellm_organ_installed=1). The unless-gate suppresses this while the P1 organ family is deliberately NOT live-installed (Nish-gated, fleet-ops#4174): the canary then writes organ_installed=0. Postgres backs budgets/keys/spend; without it budgets fail open (docs/proxy/users). Repair: check journalctl --user -u fleet-litellm-postgres.service and pg_isready -h /var/run/postgresql. Runbook: docs/litellm-postgres-setup.md. fleet-ops#4130, #4221."
       - alert: FleetLitellmRedisAbsent
-        expr: absent(fleet_litellm_redis_up) or fleet_litellm_redis_up == 0
+        expr: (absent(fleet_litellm_redis_up) or fleet_litellm_redis_up == 0) unless fleet_litellm_organ_installed == 0
         for: 2m
         labels:
           severity: warning
           service: fleet
         annotations:
           summary: "LiteLLM Redis organ absent or down (fleet-ops#4130 P1)"
-          description: "fleet_litellm_redis_up is absent for 2+ minutes (organ not installed) or 0 (redis-cli PING did not return PONG on 127.0.0.1:6379). Redis backs the router fast path (cooldown cache, provider budget spend); without it the proxy falls back to per-request state. Repair: check journalctl --user -u fleet-litellm-redis.service. Runbook: docs/litellm-postgres-setup.md (Redis section). fleet-ops#4130."
+          description: "fleet_litellm_redis_up is absent for 2+ minutes or 0 (redis-cli PING did not return PONG on 127.0.0.1:6379) while the organ is installed (fleet_litellm_organ_installed=1). The unless-gate suppresses this while the P1 organ family is deliberately NOT live-installed (Nish-gated, fleet-ops#4174): the canary then writes organ_installed=0. Redis backs the router fast path (cooldown cache, provider budget spend); without it the proxy falls back to per-request state. Repair: check journalctl --user -u fleet-litellm-redis.service. Runbook: docs/litellm-postgres-setup.md (Redis section). fleet-ops#4130, #4221."
       - alert: FleetLitellmHealthCanaryAbsent
-        expr: absent(fleet_litellm_proxy_last_green_seconds)
+        expr: absent(fleet_litellm_proxy_last_green_seconds) unless fleet_litellm_organ_installed == 0
         for: 3m
         labels:
           severity: warning
           service: fleet
         annotations:
           summary: "LiteLLM /health canary freshness vanished (fleet-ops#4130 P1)"
-          description: "fleet_litellm_proxy_last_green_seconds is absent for 3+ minutes — the 60s health canary (libexec/fleet-litellm-health-canary.py) is not running or has never seen proxy_up=1. The canary timer is fleet-litellm-health-canary.timer. Check journalctl --user -u fleet-litellm-health-canary.service. fleet-ops#4130."
+          description: "fleet_litellm_proxy_last_green_seconds is absent for 3+ minutes while the organ is installed (fleet_litellm_organ_installed=1) — the 60s health canary (libexec/fleet-litellm-health-canary.py) is not running or has never seen proxy_up=1. The unless-gate suppresses this while the P1 organ is deliberately NOT live-installed (Nish-gated, fleet-ops#4174): the fail-open canary then writes organ_installed=0 and never last_green (fleet-ops#4221), so this alert must not fire. Once the venv exists the canary writes 1 and freshness loss fires again; if the canary itself dies, organ_installed goes stale, the gate drops, and the alert fires. The canary timer is fleet-litellm-health-canary.timer. Check journalctl --user -u fleet-litellm-health-canary.service. fleet-ops#4130, #4221."
 
   # fleet-ops#4141: recording rules that replace the derived numbers the
   # retired opus-heartbeat-gather computed from raw sources (systemd,

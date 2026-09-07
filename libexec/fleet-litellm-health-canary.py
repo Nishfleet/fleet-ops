@@ -6,6 +6,7 @@ Polls the LiteLLM proxy at 127.0.0.1:4000/health/readiness every tick and
 exports:
 
   fleet_litellm_proxy_up{endpoint="readiness"} 1|0
+  fleet_litellm_organ_installed 1|0
   fleet_litellm_proxy_healthy_deployments{group="..."} <count>
   fleet_litellm_proxy_unhealthy_deployments{group="..."} <count>
   fleet_litellm_proxy_last_green_seconds            <unix ts>
@@ -223,11 +224,15 @@ def render_prom(
     groups: dict[str, dict[str, int]],
     pg_up: int,
     redis_up: int,
+    organ_installed: int,
 ) -> str:
     lines: list[str] = []
     lines.append(f'# HELP fleet_litellm_proxy_up 1 if /health/readiness returned 200, 0 on 5xx, absent if organ dead')
     lines.append('# TYPE fleet_litellm_proxy_up gauge')
     lines.append(f'fleet_litellm_proxy_up{{endpoint="readiness"}} {int(proxy_up)}')
+    lines.append('# HELP fleet_litellm_organ_installed 1 if the proxy organ venv is present, 0 if not (Nish-gated live install not done). Gates the absent() rules so a deliberately-uninstalled organ does not fire them (fleet-ops#4221).')
+    lines.append('# TYPE fleet_litellm_organ_installed gauge')
+    lines.append(f'fleet_litellm_organ_installed {int(organ_installed)}')
     lines.append('# HELP fleet_litellm_proxy_healthy_deployments count of healthy deployments per model group')
     lines.append('# TYPE fleet_litellm_proxy_healthy_deployments gauge')
     lines.append('# HELP fleet_litellm_proxy_unhealthy_deployments count of unhealthy deployments per model group')
@@ -263,14 +268,18 @@ def main(argv: list[str] | None = None) -> int:
     now = _now()
 
     # Fail-open when the organ is not installed (Nish-gated live install not yet
-    # done). Write the prom file with the metrics present at 0 and exit 0 — do
-    # NOT fail loud. The absent() rules are gated on the organ being installed
-    # (fleet-ops#4174 P1: paper, not live deploy). When Nish installs the venv,
-    # this canary resumes fail-loud on real organ death.
+    # done). Write the prom file with the metrics present at 0, export
+    # fleet_litellm_organ_installed=0, and exit 0 — do NOT fail loud. The
+    # absent() rules are gated on the organ being installed via
+    # `unless fleet_litellm_organ_installed == 0` (fleet-ops#4174 P1: paper, not
+    # live deploy), so a deliberately-uninstalled organ stays silent and the
+    # canary keeps a live liveness signal (proxy_up=0 present). When Nish
+    # installs the venv, organ_installed flips to 1 and this canary resumes
+    # fail-loud on real organ death.
     if not _organ_installed(args.venv):
         pg_up = _probe_postgres(DEFAULT_PG_HOST)
         redis_up = _probe_redis(DEFAULT_REDIS_HOST, DEFAULT_REDIS_PORT)
-        _atomic_write(Path(args.prom), render_prom(now, 0, {}, pg_up, redis_up))
+        _atomic_write(Path(args.prom), render_prom(now, 0, {}, pg_up, redis_up, 0))
         if not args.quiet:
             print(
                 "fleet-litellm-health-canary: proxy organ not installed "
@@ -290,13 +299,13 @@ def main(argv: list[str] | None = None) -> int:
         # drop-in climbs the ladder. This is the P4 drill condition.
         if not args.quiet:
             print(f"fleet-litellm-health-canary: proxy unreachable at {url} (organ dead)", file=sys.stderr)
-        _atomic_write(Path(args.prom), render_prom(now, 0, {}, pg_up, redis_up))
+        _atomic_write(Path(args.prom), render_prom(now, 0, {}, pg_up, redis_up, 1))
         return 1
 
     proxy_up = 1 if status == 200 else 0
     groups = _parse_readiness(body) if proxy_up else {}
 
-    _atomic_write(Path(args.prom), render_prom(now, proxy_up, groups, pg_up, redis_up))
+    _atomic_write(Path(args.prom), render_prom(now, proxy_up, groups, pg_up, redis_up, 1))
 
     state = {
         "now": int(now),

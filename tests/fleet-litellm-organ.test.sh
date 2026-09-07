@@ -119,6 +119,8 @@ FLEET_LITELLM_NOW=1700000000 \
 python3 "$canary" --quiet || fail "5: canary proxy_up=1 path must exit 0"
 grep -q 'fleet_litellm_proxy_up{endpoint="readiness"} 1' "$scratch/up.prom" \
     || fail "5: prom missing proxy_up=1"
+grep -q 'fleet_litellm_organ_installed 1' "$scratch/up.prom" \
+    || fail "5: installed prom missing organ_installed=1"
 grep -q 'fleet_litellm_postgres_up 1' "$scratch/up.prom" \
     || fail "5: prom missing postgres_up=1"
 grep -q 'fleet_litellm_redis_up 1' "$scratch/up.prom" \
@@ -135,6 +137,8 @@ FLEET_LITELLM_STUB_INSTALLED=1 \
 python3 "$canary" --quiet && fail "5: canary organ-dead path must exit 1"
 grep -q 'fleet_litellm_proxy_up{endpoint="readiness"} 0' "$scratch/dead.prom" \
     || fail "5: organ-dead prom missing proxy_up=0"
+grep -q 'fleet_litellm_organ_installed 1' "$scratch/dead.prom" \
+    || fail "5: organ-dead prom missing organ_installed=1 (installed marker stays 1 when organ dies)"
 ok "5: canary compiles, proxy_up=1 path exits 0, organ-dead path exits 1"
 
 # --- 5b: organ-not-installed path (Nish-gated live install not yet done) -> exit 0, no fail-loud
@@ -147,6 +151,8 @@ FLEET_LITELLM_STUB_REDIS=1 \
 python3 "$canary" --quiet || fail "5b: canary organ-not-installed path must exit 0 (fail-open)"
 grep -q 'fleet_litellm_proxy_up{endpoint="readiness"} 0' "$scratch/notinst.prom" \
     || fail "5b: not-installed prom missing proxy_up=0"
+grep -q 'fleet_litellm_organ_installed 0' "$scratch/notinst.prom" \
+    || fail "5b: not-installed prom missing organ_installed=0 (the absent() rule gate)"
 ok "5b: canary fails open (exit 0) when the proxy organ is not installed"
 
 # --- 6: no real credential in the repo config (placeholders only)
