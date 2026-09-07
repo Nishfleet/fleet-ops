@@ -360,45 +360,76 @@ def _gh_search_count(query):
         raise VerifyError(f"gh search parse: {out.stdout[:80]!r}") from exc
 
 
-def _gh_search_titles(query):
-    """Return the titles of every PR matched by the search query.
+def _gh_search_prs(query):
+    """Return (title, head_ref) for every PR matched by the search query.
 
     The shipped_24h spot check must count NON-revert merges to match the
     tile's definition (fleet_product_merged_24h = non-revert merges), but
     GitHub search's `.total_count` cannot be filtered client-side. Fetch the
-    matched titles and count revert PRs out on this side (fleet-ops#4061).
-    Paged so a busy 24h (60+ merges) is fully captured.
+    matched titles AND head refs and count revert PRs out on this side
+    (fleet-ops#4061). Paged so a busy 24h (60+ merges) is fully captured.
+
+    The head ref is required because fleet-product-slo's `is_revert` flags
+    `revert/` head-ref branches as reverts regardless of title, and the
+    fleet's auto-reverter titles those `revert: auto-restore green main`
+    (lowercase `revert:`, not `Revert ` / `auto-revert`) — a title-only
+    filter chronically false-DISPUTES the tile (fleet-ops#4061 regression).
     """
     if SKIP_GH:
         raise VerifyError("gh skipped")
     out = subprocess.run(
         [GH, "api", "search/issues",
          "-X", "GET", "-f", f"q={query} type:pr", "--paginate",
-         "--jq", ".items[]?.title"],
+         "--jq", r'.items[]? | "\(.title)\t\(.head.ref)"'],
         capture_output=True, text=True, timeout=VERIFY_TIMEOUT,
     )
     if out.returncode != 0:
         raise VerifyError(
             f"gh search rc={out.returncode}: {(out.stderr or '')[:160]}"
         )
-    return [ln.strip() for ln in out.stdout.splitlines() if ln.strip()]
+    pairs = []
+    for ln in out.stdout.splitlines():
+        ln = ln.strip()
+        if not ln:
+            continue
+        # Tab-separated by the jq template. Tolerate a bare title (no tab)
+        # so a fake gh emitting only titles still works — head_ref "" never
+        # matches the `revert/` prefix, falling through to the title checks.
+        if "\t" in ln:
+            title, head_ref = ln.split("\t", 1)
+        else:
+            title, head_ref = ln, ""
+        pairs.append((title, head_ref))
+    return pairs
+
+
+def _is_revert(title: str, head_ref: str = "") -> bool:
+    """Mirror fleet-product-slo's `is_revert` exactly (fleet-ops#2755).
+
+    A PR is a revert if its head ref starts with `revert/`, or its title
+    starts with `Revert `, or its title starts (case-insensitively) with
+    `auto-revert`. The tile's collector uses all three; the spot cross-check
+    must too, or it over-counts and false-DISPUTES the tile.
+    """
+    t = title or ""
+    h = head_ref or ""
+    if h.startswith("revert/"):
+        return True
+    if t.startswith("Revert "):
+        return True
+    if t.lower().startswith("auto-revert"):
+        return True
+    return False
 
 
 def _is_revert_title(title: str) -> bool:
-    """Match fleet-product-slo's revert conventions by title.
-
-    fleet-ops#2755 defines shipped throughput as NON-revert merges; the
-    fleet's auto-reverter and GitHub's auto-revert both surface as
-    `Revert ...` / `auto-revert ...` titles. head-ref `revert/` branches are
-    GitHub auto-reverts titled `Revert \"...\"`, so title covers them.
-    """
-    t = title or ""
-    return t.startswith("Revert ") or t.lower().startswith("auto-revert")
+    """Title-only revert check (back-compat for callers without head ref)."""
+    return _is_revert(title, "")
 
 
 def _gh_search_nonrevert_count(query):
-    titles = _gh_search_titles(query)
-    return sum(0 if _is_revert_title(t) else 1 for t in titles)
+    prs = _gh_search_prs(query)
+    return sum(0 if _is_revert(t, h) else 1 for (t, h) in prs)
 
 
 

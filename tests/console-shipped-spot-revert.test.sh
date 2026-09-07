@@ -59,6 +59,16 @@ assert m._is_revert_title("feat(search): plain copy") is False
 assert m._is_revert_title("fix(seat-lib): corpse retirement") is False
 print("OK: _is_revert_title matches fleet-product-slo revert conventions")
 
+# _is_revert head-ref path (fleet-ops#4061 regression): the fleet auto-reverter
+# titles PRs `revert: auto-restore green main` (lowercase `revert:`, not
+# `Revert ` / `auto-revert`) on a `revert/<sha>` head ref. A title-only filter
+# misses them and false-DISPUTES the tile. The head ref must catch them.
+assert m._is_revert("revert: auto-restore green main", "revert/3a1d316") is True
+assert m._is_revert("revert: auto-restore green main", "") is False
+assert m._is_revert("feat(search): plain copy", "feature/search") is False
+assert m._is_revert("Revert \"fix\"", "main") is True
+print("OK: _is_revert head-ref path catches revert/ branches title misses")
+
 # gh skip still skips, never disputes (existing safety)
 m.SKIP_GH = True
 try:
