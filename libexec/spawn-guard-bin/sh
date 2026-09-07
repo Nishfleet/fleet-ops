@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# sh shim — below-agent spawn guard (fleet-ops#3126). dash (the usual `sh`
+# on this box) reads neither BASH_ENV nor ENV non-interactively and has no
+# DEBUG trap, so dash sessions cannot be wrapped from inside. Their
+# enforcement comes from the tool shims (git/rm/sudo/systemctl/wrangler/
+# npm/tee resolve through PATH). This shim makes the pass-through explicit
+# and, on a machine where `sh` is bash, exports the BASH_ENV payload so the
+# trap installs there too.
+if [[ "${FLEET_SPAWN_GUARD:-0}" == "1" ]]; then
+    _sg_sh_style="$(PATH="$(dirname "$(readlink -f "$0")")" true 2>/dev/null; readlink -f "$(command -v sh 2>/dev/null || echo sh)")"
+    if [[ "$_sg_sh_style" == *bash* ]]; then
+        _sg_env="${FLEET_SPAWN_GUARD_ENV:-}"
+        if [[ -z "$_sg_env" ]]; then
+            [[ -f "$HOME/.local/lib/pi-packet/spawn-guard-env.sh" ]] && _sg_env="$HOME/.local/lib/pi-packet/spawn-guard-env.sh"
+        fi
+        if [[ -n "$_sg_env" && -f "$_sg_env" ]]; then
+            export FLEET_SPAWN_GUARD=1
+            export BASH_ENV="$_sg_env"
+        fi
+        unset _sg_env
+    fi
+    unset _sg_sh_style
+fi
+_sg_guard_dir="$(dirname "$(readlink -f "$0")")"
+_sg_path_rest=""
+for _sg_dir in ${PATH//:/ }; do
+    [[ -n "$_sg_dir" && "$_sg_dir" != "$_sg_guard_dir" ]] && _sg_path_rest="${_sg_path_rest}${_sg_path_rest:+:}${_sg_dir}"
+done
+_sg_real="$(PATH="$_sg_path_rest" command -v sh 2>/dev/null)"
+if [[ -z "$_sg_real" ]]; then
+    echo "fleet-spawn-guard: cannot locate real sh" >&2
+    exit 3
+fi
+exec "$_sg_real" "$@"

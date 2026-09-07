@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# npm shim — below-agent spawn guard (fleet-ops#3126). Blocks
+# `npm run deploy` (0509's deploy entry point) when the vendor calls npm
+# directly, then execs real npm for everything else.
+if [[ "${FLEET_SPAWN_GUARD:-0}" == "1" ]]; then
+    _sg_core="${FLEET_SPAWN_GUARD_CORE:-}"
+    [[ -n "$_sg_core" && -f "$_sg_core" ]] || _sg_core="$HOME/.local/lib/pi-packet/spawn-guard-core.sh"
+    if [[ -f "$_sg_core" ]]; then
+        # shellcheck disable=SC1090
+        . "$_sg_core"
+        _sg_reason="$(spawn_guard_check_command "npm $*" "$PWD")"
+        if [[ -n "$_sg_reason" ]]; then
+            spawn_guard_block "$_sg_reason" "npm $*" "$PWD"
+            exit 2
+        fi
+        unset _sg_reason
+    fi
+    unset _sg_core
+fi
+_sg_guard_dir="$(dirname "$(readlink -f "$0")")"
+_sg_path_rest=""
+for _sg_dir in ${PATH//:/ }; do
+    [[ -n "$_sg_dir" && "$_sg_dir" != "$_sg_guard_dir" ]] && _sg_path_rest="${_sg_path_rest}${_sg_path_rest:+:}${_sg_dir}"
+done
+_sg_real="$(PATH="$_sg_path_rest" command -v npm 2>/dev/null)"
+if [[ -z "$_sg_real" ]]; then
+    echo "fleet-spawn-guard: cannot locate real npm" >&2
+    exit 3
+fi
+exec "$_sg_real" "$@"
