@@ -922,6 +922,53 @@ set -e
     || fail "scenario12d: dest did not pick up the merged cap"
 ok "scenario12d: origin/main seat-caps blob lands as a regular file copy (merged cap drop)"
 
+# --- scenario 12h: install.sh MERGES unknown provider rows from the live ---
+# state file instead of dropping them (fleet-ops#4205). The live seat-caps
+# copy is a regular file (fleet-ops#2910) that install.sh overwrites from
+# config/seat-caps.json on every deploy; a hand-added provider row (e.g. a
+# newly wired seat like runinfra/deepseek-v4-flash) was silently dropped by
+# that overwrite. Prove the merge preserves a provider the repo does NOT
+# declare, while a provider the repo DOES declare keeps the repo's version.
+merge_repo="$scratch/merge-seat-caps"
+mkdir -p "$merge_repo/config"
+cp "$repo_root/install.sh" "$merge_repo/install.sh"
+chmod +x "$merge_repo/install.sh"
+cat >"$merge_repo/config/seat-caps.json" <<'JSON'
+{"providers":{"devin":{"cap":4}}}
+JSON
+cat >"$scratch/live-caps-merge.json" <<'JSON'
+{"providers":{"devin":{"cap":4},"runinfra":{"cap":4,"class":"prepaid-quota","models":{"deepseek-v4-flash":4}}}}
+JSON
+touch -d '2020-01-01T00:00:00' "$merge_repo/config/seat-caps.json"
+touch -d '2026-08-26T20:35:00' "$scratch/live-caps-merge.json"
+caps_dest_merge="$scratch/caps-dest-merge"
+ln -sfn "$scratch/live-caps-merge.json" "$caps_dest_merge"
+cat >"$merge_repo/MANIFEST" <<MANIFEST
+config/seat-caps.json $caps_dest_merge
+MANIFEST
+git -C "$merge_repo" init -q -b main
+git -C "$merge_repo" config user.email "test@example.com"
+git -C "$merge_repo" config user.name "Test"
+git -C "$merge_repo" add config/seat-caps.json MANIFEST install.sh
+git -C "$merge_repo" commit -q -m "seat-caps without runinfra"
+git -C "$merge_repo" update-ref refs/remotes/origin/main HEAD
+set +e
+merge_out=$(PATH="$scratch:$PATH" "$merge_repo/install.sh" 2>&1)
+merge_rc=$?
+set -e
+[[ "$merge_rc" -eq 0 ]] || fail "scenario12h: install.sh should succeed, got rc=$merge_rc out=$merge_out"
+[[ -f "$caps_dest_merge" && ! -L "$caps_dest_merge" ]] \
+    || fail "scenario12h: dest must be a regular file copy after install"
+# The unknown provider (runinfra) must survive the deploy.
+[[ "$(jq -r '.providers.runinfra.cap' "$caps_dest_merge")" = "4" ]] \
+    || fail "scenario12h: unknown provider runinfra was dropped by the deploy (fleet-ops#4205)"
+[[ "$(jq -r '.providers.runinfra.class' "$caps_dest_merge")" = "prepaid-quota" ]] \
+    || fail "scenario12h: runinfra class was not preserved"
+# A provider the repo DOES declare keeps the repo's version (source of truth).
+[[ "$(jq -r '.providers.devin.cap' "$caps_dest_merge")" = "4" ]] \
+    || fail "scenario12h: repo-declared provider devin must keep the repo version"
+ok "scenario12h: install.sh merges unknown provider rows from the live state file (fleet-ops#4205)"
+
 # --- scenario 12f: git reset --hard must NOT wipe the live seat-caps copy ----
 # fleet-ops#2910: the live seat-caps.json used to be a symlink into the
 # deploy-clone working tree, so `git reset --hard origin/main` silently
