@@ -709,9 +709,8 @@ bash "$here/0509-surface-probe-deleted.test.sh"
 # gh/prometheus/systemd).
 bash "$here/fleet-litellm-organ.test.sh"
 
-# fleet-ops#4148 (child of #4140 row 9): the hand-built codex launcher
-# governance wrapper + governed-run + agent-governor-runtime were retired;
-# per-role unit templates systemd/codex-sol@.service + codex-luna@.service
-# (identity pinned in ExecStart) replace them. Hosted here so P14 runs the
-# deletion pin without a workflow-file edit. Hermetic (repo-only checks).
+# fleet-ops#4148 (child of #4140 row 9): shape-only per-role unit templates
+# systemd/codex-sol@.service + codex-luna@.service (identity pinned in
+# ExecStart). Live wrapper wipe is gated. Hosted here so P14 runs the shape
+# pin without a workflow-file edit. Hermetic (repo-only checks).
 bash "$here/codex-launcher-retired.test.sh"

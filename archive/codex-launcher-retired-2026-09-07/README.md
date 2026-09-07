@@ -6,9 +6,11 @@ DECISIONS comment on #4148, resolved by the claude-vps orchestrator).
 
 These files were loose under `~/.local` and never tracked in any git repo.
 This directory is the archive — git history is the backup (same rule as
-fleet-ops#4141). Live copies were wiped with `rm`, not parked.
+fleet-ops#4141). Orchestrator option (3) 2026-09-07: the live wrapper remains
+until a green proof (c) on a Sol-capable seat returning HTTP 200. Do not treat
+this archive as a wipe of ~/.local.
 
-| File | Live path (deleted) | Lines (live) | Purpose |
+| File | Live path (still present) | Lines (live) | Purpose |
 |---|---|---|---|
 | `codex` | `~/.local/bin/codex` | 281 | PATH wrapper that gated real Codex agent sessions before exec |
 | `governed-run` | `~/.local/bin/governed-run` | 31 | Ad-hoc supervised-run helper importing the runtime |
@@ -50,6 +52,9 @@ systemd `KillMode=control-group`).
   issue is #4148; #4159 closed as duplicate; unit/timer wipe is out of scope
   (that is #4158); archive first, then templates, then one real Sol packet run
   through `codex-sol@`, only then wipe.
+- Orchestrator option (3) 2026-09-07: templates stay shape-only. Proof (c)
+  failed (ChatGPT-account auth rejects `gpt-5.6-sol`; straitly is
+  quota_exhausted). No deletion this claim.
 
 Do not rebuild unless the per-role unit templates are retired AND a launch-time
 identity gate is genuinely required again — and even then prefer an

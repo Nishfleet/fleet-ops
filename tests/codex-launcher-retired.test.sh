@@ -1,31 +1,33 @@
 #!/usr/bin/env bash
 # tests/codex-launcher-retired.test.sh
 #
-# fleet-ops#4148 (child of #4140 row 9): the hand-built codex launcher
-# governance stack — ~/.local/bin/codex wrapper (281 lines) + governed-run
-# (31) + ~/.local/libexec/agent-governor-runtime/ (~3,664 lines, incl. one
-# .bak) — was retired 2026-09-07 under the "nothing hand built" umbrella
-# (#4140). Replaced by per-role systemd unit templates
-# (systemd/codex-sol@.service, systemd/codex-luna@.service) whose ExecStart
-# hard-codes model/provider/effort so launch identity holds by construction
-# (DECISIONS on #4148; #4159 closed as duplicate). The wrapper/runtime were
-# live-only; the archive commit is the git backup (same rule as #4141).
+# fleet-ops#4148 (child of #4140 row 9): shape-only landing of per-role
+# systemd unit templates (systemd/codex-sol@.service, systemd/codex-luna@.service)
+# whose ExecStart hard-codes model/provider/effort so launch identity holds
+# by construction (DECISIONS on #4148; orchestrator option 3 2026-09-07;
+# #4159 closed as duplicate). The live PATH wrapper + governed-run +
+# agent-governor-runtime stay in place until a green proof (c) on a
+# Sol-capable seat returning HTTP 200. The archive commit is the git backup
+# of the loose ~/.local files (same rule as #4141); it is not a wipe.
 #
-# This test pins the retirement + the replacement:
-#   1. No wrapper/runtime/governed-run file in active code dirs (bin/, lib/,
-#      libexec/) — archive/codex-launcher-retired-2026-09-07/ is the only home.
-#   2. No reference to the retired names in active code paths (prompts/,
-#      config/, systemd/, MANIFEST).
-#   3. The design doc row 9 verdict records the retirement.
-#   4. The replacement templates exist in systemd/ + MANIFEST and pin
-#      identity in ExecStart: real binary path (codex-real), explicit model,
+# This test pins the shape-only replacement:
+#   1. No wrapper/runtime/governed-run file in active repo dirs (bin/, lib/,
+#      libexec/) — archive/codex-launcher-retired-2026-09-07/ is the only home
+#      inside git. (Live ~/.local copies are out of scope for this hermetic
+#      test; the wipe is a follow-up.)
+#   2. No reference to those names in active code paths (prompts/, config/,
+#      systemd/, MANIFEST).
+#   3. The design doc row 9 verdict records SHAPE-ONLY + wipe gated.
+#   4. The templates exist in systemd/ + MANIFEST and pin identity in
+#      ExecStart: real binary path (codex-real), explicit model,
 #      model_provider=openai, and a fixed effort (Sol effort = instance %i
 #      sanctioned medium/xhigh; Luna effort = max). A template that omits a
 #      pin or reintroduces the wrapper path fails this test.
+#   5. The archive README must not claim the live copies were wiped.
 #
-# A rebuild that re-adds any of these to active code without a Nish-endorsed
+# A rebuild that re-adds a wrapper to active repo code without a Nish-endorsed
 # exception fails this test. The machinery-authorization-gate (fleet-ops#1548)
-# is the mechanical prevention; this test is the deletion pin.
+# is the mechanical prevention; this test is the shape pin.
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -57,12 +59,16 @@ for path in prompts config systemd MANIFEST; do
 done
 ok "no reference to governed-run / agent-governor-runtime in prompts/, config/, systemd/, MANIFEST"
 
-# --- 3. design doc row 9 verdict is recorded ---------------------------------
-if ! grep -q 'codex launcher.*DONE.*#4148' \
+# --- 3. design doc row 9 verdict is SHAPE-ONLY, wipe gated -------------------
+if ! grep -q 'codex launcher.*SHAPE-ONLY.*#4148' \
      "$repo_root/docs/design/hand-built-vs-off-the-shelf.md"; then
-  fail "design doc row 9 must record the codex launcher retirement (#4148)"
+  fail "design doc row 9 must record SHAPE-ONLY (#4148)"
 fi
-ok "design doc row 9 records the codex launcher verdict"
+if ! grep -q 'wipe gated' \
+     "$repo_root/docs/design/hand-built-vs-off-the-shelf.md"; then
+  fail "design doc row 9 must record that the wipe is gated"
+fi
+ok "design doc row 9 records SHAPE-ONLY and wipe gated"
 
 # --- 4. archive exists --------------------------------------------------------
 [[ -f "$repo_root/archive/codex-launcher-retired-2026-09-07/codex" ]] \
@@ -71,9 +77,14 @@ ok "design doc row 9 records the codex launcher verdict"
   || fail "archive missing agent-governor-runtime"
 [[ -f "$repo_root/archive/codex-launcher-retired-2026-09-07/governed-run" ]] \
   || fail "archive missing governed-run"
-[[ -f "$repo_root/archive/codex-launcher-retired-2026-09-07/README.md" ]] \
-  || fail "archive missing README"
-ok "archive/codex-launcher-retired-2026-09-07/ is complete"
+readme="$repo_root/archive/codex-launcher-retired-2026-09-07/README.md"
+[[ -f "$readme" ]] || fail "archive missing README"
+if grep -qiE 'Live copies were wiped|live copies were deleted' "$readme"; then
+  fail "archive README must not claim a wipe that option 3 forbade"
+fi
+grep -q 'live wrapper remains' "$readme" \
+  || fail "archive README must say the live wrapper remains"
+ok "archive/codex-launcher-retired-2026-09-07/ is complete and does not claim a wipe"
 
 # --- 5. replacement templates exist and pin identity --------------------------
 sol="$repo_root/systemd/codex-sol@.service"

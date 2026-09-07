@@ -76,7 +76,7 @@ DEFAULT_TARGETS = [
         "preimplement_phrase": "every Codex agent and subagent",
         "seat_check_phrase": "holds the\nlast observed provider/model, HTTP status and `health_class`. Confirm `observed_at` is recent before trusting it.",
         "old_launcher_block": "\n\nThe old DeepSeek/MiniMax/Luna launcher ladder and `_system/shared-memory/codex-model-routing.md` are SUPERSEDED - history only.",
-        "sol_identity_block": "\nSol at `medium` is orchestration/integration/review/proof only and performs **no** implementation edits. Default orchestrator identity is `gpt-5.6-sol` at `medium`. Sol has no Pi transport and launches through the `codex-sol@` systemd unit template (identity pinned in ExecStart, fleet-ops#4148).\n\nExact model/effort identity is fail-closed: prove host, provider, model, role and effort from runtime evidence before launch. Missing proof means no launch. No silent substitution.",
+        "sol_identity_block": "\nSol at `medium` is orchestration/integration/review/proof only and performs **no** implementation edits. Default orchestrator identity is `gpt-5.6-sol` at `medium`. Sol has no Pi transport and still launches through the `codex` wrapper.\n\nExact model/effort identity is fail-closed: prove host, provider, model, role and effort from runtime evidence before launch. Missing proof means no launch. No silent substitution.",
         "failure_response_block": "",
     },
 ]

@@ -639,9 +639,9 @@ systemd/camofox-browser.service.d/xvfb-auth-gate.conf /home/nish/.config/systemd
 # (blind-audit fleet-ops#2924 / #1548). Absorb so deploy symlinks it;
 # pure ManagedOOM* / memory cap override, not new machinery.
 systemd/codex-remote-control.service.d/20-oom-avoid.conf /home/nish/.config/systemd/user/codex-remote-control.service.d/20-oom-avoid.conf
-# fleet-ops#4148: per-role Codex launch templates (paper) replacing the
-# retired ~/.local/bin/codex governance wrapper. ExecStart hard-codes
-# model/provider/effort so identity holds by construction; see each file.
+# fleet-ops#4148: per-role Codex launch templates (paper, shape-only).
+# ExecStart hard-codes model/provider/effort so identity holds by
+# construction. Live PATH wrapper remains until the gated wipe; see each file.
 systemd/codex-sol@.service /home/nish/.config/systemd/user/codex-sol@.service
 systemd/codex-luna@.service /home/nish/.config/systemd/user/codex-luna@.service
 # fleet-ops#4108: fable-fleet-check is a hand-placed infra tool (allowlist

@@ -1,8 +1,10 @@
 # fleet-ops#4148: per-role Codex launch template — Luna identity by construction.
 #
-# Replaces the retired hand-built ~/.local/bin/codex governance wrapper
-# (archived under archive/codex-launcher-retired-2026-09-07/). The wrapper
-# enforced for Luna: model=gpt-5.6-luna, provider=openai, effort=max,
+# Shape-only replacement for the hand-built ~/.local/bin/codex governance
+# wrapper (archived under archive/codex-launcher-retired-2026-09-07/).
+# The live PATH wrapper remains until the gated wipe (option 3, #4148).
+# The wrapper enforced for Luna: model=gpt-5.6-luna, provider=openai,
+# effort=max,
 # fork_turns=none, agent_type=executor_luna (certified_policy). This unit
 # pins model/provider/effort in a fixed ExecStart; the instance (%i) is a
 # free run label (e.g. codex-luna@20260907). A launch through this unit

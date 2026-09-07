@@ -1,7 +1,8 @@
 # fleet-ops#4148: per-role Codex launch template — Sol identity by construction.
 #
-# Replaces the retired hand-built ~/.local/bin/codex governance wrapper
-# (281 lines, archived under archive/codex-launcher-retired-2026-09-07/).
+# Shape-only replacement for the hand-built ~/.local/bin/codex governance
+# wrapper (281 lines, archived under archive/codex-launcher-retired-2026-09-07/).
+# The live PATH wrapper remains until the gated wipe (option 3, #4148).
 # The wrapper enforced: model=gpt-5.6-sol, provider=openai, effort in
 # {medium, xhigh} (certified_policy SOL_EFFORTS), and rejected --oss /
 # --local-provider. This unit pins the same identity in a fixed ExecStart;

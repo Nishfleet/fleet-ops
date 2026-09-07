@@ -349,13 +349,13 @@
       "unit": "codex-sol@",
       "class": "a",
       "source": "repo",
-      "note": "per-role Codex launch template (fleet-ops#4148) replacing the retired codex governance wrapper; identity pinned in ExecStart (gpt-5.6-sol, openai, effort=instance)"
+      "note": "per-role Codex launch template (fleet-ops#4148) shape-only; live PATH wrapper remains until wipe; identity pinned in ExecStart (gpt-5.6-sol, openai, effort=instance)"
     },
     {
       "unit": "codex-luna@",
       "class": "a",
       "source": "repo",
-      "note": "per-role Codex launch template (fleet-ops#4148) replacing the retired codex governance wrapper; identity pinned in ExecStart (gpt-5.6-luna, openai, effort=max)"
+      "note": "per-role Codex launch template (fleet-ops#4148) shape-only; live PATH wrapper remains until wipe; identity pinned in ExecStart (gpt-5.6-luna, openai, effort=max)"
     },
     {
       "unit": "memory-index-autocompact",
