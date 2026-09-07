@@ -1855,20 +1855,23 @@ _provider_is_keystone_only() {
 # read of the already-loaded SEAT_SENIOR_ORDER; load_seat_caps must have run
 # (pick_seat / callers force-load it).
 find_senior_seat() {
-    local sn p m
+    local sn p m _tk
     for sn in "${SEAT_SENIOR_ORDER[@]}"; do
         [[ -n "$sn" ]] || continue
         p="${sn%%/*}"
         m="${sn#*/}"
         [[ -n "$p" && -n "$m" ]] || continue
         [[ "$(model_cap "$p" "$m" 2>/dev/null || echo 0)" -gt 0 ]] 2>/dev/null || continue
-        # fleet-ops#4220: respect the per-cycle tried-seats set so a
-        # senior-review Restart= cycle walks the senior ladder past a seat
-        # that already failed this cycle (not the whole ladder). The tried
-        # associative array is built by pick_seat; when find_senior_seat is
-        # called standalone (no pick_seat in scope) the array is unset and
-        # the :- default is empty, so the check is a no-op.
-        [[ -n "${tried[$p/$m]:-}" ]] && continue
+        # fleet-ops#4220: respect pick_seat's per-cycle tried map so a
+        # Restart= cycle walks past a seat that already failed this cycle.
+        # Standalone callers have no assoc `tried`. An unset or scalar
+        # `tried` is NOT associative, so `$p/$m` would be arithmetic
+        # (`cursor` unbound under `set -u`). Honor the map only when it
+        # is actually `declare -A`.
+        if [[ "$(declare -p tried 2>/dev/null || true)" == *"declare -A"* ]]; then
+            _tk="$p/$m"
+            [[ -n "${tried[$_tk]:-}" ]] && continue
+        fi
         # fleet-ops#3121: cursor weekly ceiling. When cursor's prepaid-usage
         # count for the week hits SEAT_SENIOR_CURSOR_CEILING, skip cursor and
         # fall through to the next seat in the ladder (xai-oauth/grok-4.6).
@@ -4094,10 +4097,34 @@ pick_seat() {
     tried["$fail_p/$fail_m"]=1
     local tried_count=0
     if [[ -n "$tried_file" && -f "$tried_file" ]]; then
-        local tp tm
+        local tp tm _tried_pruned=0
+        local -a _tried_kept=()
+        # Silence per-seat UNUSABLE lines during the prune walk; one
+        # drop line below is the operator-visible record.
+        local _SEAT_USABLE_SILENT=1
         while IFS=/ read -r tp tm; do
-            [[ -n "$tp" ]] && tried["$tp/$tm"]=1 && tried_count=$((tried_count + 1))
+            [[ -n "$tp" && -n "$tm" ]] || continue
+            # fleet-ops#4220: senior-review tried-seats is the Restart=
+            # skip list only while the bench holds. Once seat_usable is
+            # true (bench expired or never written), the line is stale
+            # and must not pin cursor past the bench. Keystone still
+            # counts every tried line as a strike (fleet-ops#1133).
+            if [[ "$difficulty" == "senior-review" ]] && seat_usable "$tp" "$tm"; then
+                seat_log "pick_seat: dropping stale tried $tp/$tm (bench expired — fleet-ops#4220)"
+                _tried_pruned=1
+                continue
+            fi
+            tried["$tp/$tm"]=1
+            tried_count=$((tried_count + 1))
+            _tried_kept+=("$tp/$tm")
         done <"$tried_file"
+        if ((_tried_pruned)); then
+            if ((${#_tried_kept[@]} > 0)); then
+                printf '%s\n' "${_tried_kept[@]}" >"$tried_file"
+            else
+                : >"$tried_file"
+            fi
+        fi
     fi
 
     # Pre-compute the "definitively excluded" set ONCE per call

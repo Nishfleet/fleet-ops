@@ -17,10 +17,12 @@
 #   2. senior-review with cursor at-cap → xai-oauth (next senior), NOT ollama.
 #      This is the live bug: the keystone class ladder picked ollama because
 #      cursor was busy; find_senior_seat skips at-cap cursor and returns xai.
-#   3. senior-review with cursor tried → xai-oauth (next senior), not ollama.
+#   3. senior-review with cursor tried AND still benched → xai-oauth (next
+#      senior), not ollama. Restart= skip holds only while the bench holds.
 #   4. whole senior ladder walled → keystone class ladder fallback.
-#   5. stale tried-seats entry does NOT block cursor past the bench: a fresh
-#      cycle (tried-file reset) with the bench cleared picks cursor again.
+#   5. stale tried-seats entry does NOT block cursor past the bench: cursor
+#      remains in the tried file after a prior ETIMEDOUT, but bench_until
+#      has passed, so pick_seat drops the line and lands on cursor.
 #
 # Hosted by tests/seat-lib.test.sh (workers cannot add a ci.yml line).
 # Offline. Scratch models/caps so live seat-caps cannot leak.
@@ -136,13 +138,20 @@ sr2=$(pick 1 senior-review) || fail "2: senior-review with cursor at-cap must su
 ok "2: senior-review with cursor at-cap → xai-oauth (next senior, NOT ollama)"
 rm -f "$active/pi-issue-test-cursor-busy.json"
 
-# --- 3. cursor tried → xai-oauth (next senior), not ollama --------------------
+# --- 3. cursor tried AND benched → xai-oauth (next senior), not ollama --------
+# Restart= skip is the bench, not a durable pin. A live quota_bench on cursor
+# plus a tried-seats line must still walk to the next senior seat.
+bench_live=$(date -u -d '+1 hour' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "2099-01-01T00:00:00Z")
+cat >"$ledger/cursor__cursor-grok-4.6-high.json" <<JSON
+{"provider":"cursor","model":"cursor-grok-4.6-high","health_class":"quota_bench","seat_dead":false,"bench_until":"$bench_live","observed_at":"$(date -u +%Y-%m-%dT%H:%M:%SZ)","bench_reason":"test-bench"}
+JSON
 tried_cursor="$scratch/tried-cursor.txt"
 printf 'cursor/cursor-grok-4.6-high\n' >"$tried_cursor"
-sr3=$(pick 1 senior-review "$tried_cursor") || fail "3: senior-review with cursor tried must succeed"
+sr3=$(pick 1 senior-review "$tried_cursor") || fail "3: senior-review with cursor tried+benched must succeed"
 [[ "$sr3" == "xai-oauth	grok-4.6" ]] \
-  || fail "3: after cursor strike expected xai-oauth/grok-4.6 (next senior), got: $sr3"
-ok "3: senior-review with cursor tried → xai-oauth (next senior seat, not ollama)"
+  || fail "3: after cursor strike while benched expected xai-oauth/grok-4.6 (next senior), got: $sr3"
+ok "3: senior-review with cursor tried+benched → xai-oauth (next senior seat, not ollama)"
+rm -f "$ledger/cursor__cursor-grok-4.6-high.json"
 
 # --- 4. whole senior ladder walled → keystone class ladder fallback -----------
 # Bench cursor and xai-oauth so find_senior_seat falls through. ollama is the
@@ -161,15 +170,40 @@ ok "4: senior-review with walled senior ladder → ollama (keystone class ladder
 rm -f "$ledger/cursor__cursor-grok-4.6-high.json" "$ledger/xai-oauth__grok-4.6.json"
 
 # --- 5. stale tried-seats does NOT block cursor past the bench ----------------
-# A fresh cycle (tried-file reset by agent-cron-run on success/no-seat) with
-# the bench cleared picks cursor again. The tried-file is per-cycle only; the
-# bench (seat_usable) is the durable authority.
-fresh_tried="$scratch/tried-empty.txt"
-: >"$fresh_tried"
-sr5=$(pick 1 senior-review "$fresh_tried") || fail "5: senior-review fresh cycle must succeed"
+# The live pin: agent-cron-run left cursor in the tried file after an
+# ETIMEDOUT, the spawn-fail bench expired, and the next timer still skipped
+# cursor. The bench is the durable authority; the tried line must drop.
+stale_tried="$scratch/tried-stale-cursor.txt"
+printf 'cursor/cursor-grok-4.6-high\n' >"$stale_tried"
+past_ts=$(date -u -d '-1 hour' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "2000-01-01T00:00:00Z")
+cat >"$ledger/cursor__cursor-grok-4.6-high.json" <<JSON
+{"provider":"cursor","model":"cursor-grok-4.6-high","health_class":"quota_bench","seat_dead":false,"bench_until":"$past_ts","observed_at":"$past_ts","bench_reason":"expired-test-bench"}
+JSON
+sr5=$(pick 1 senior-review "$stale_tried") || fail "5: senior-review with stale tried+expired bench must succeed"
 [[ "$sr5" == "cursor	cursor-grok-4.6-high" ]] \
-  || fail "5: fresh cycle with cleared bench expected cursor, got: $sr5"
-ok "5: stale tried-seats entry does not block cursor past the bench (fresh cycle picks cursor)"
+  || fail "5: expired bench must not stay pinned by tried-seats, expected cursor, got: $sr5"
+grep -qxF 'cursor/cursor-grok-4.6-high' "$stale_tried" \
+  && fail "5: pick_seat must rewrite tried-seats and drop the expired cursor line, still has: $(cat "$stale_tried")"
+grep -q 'dropping stale tried cursor/cursor-grok-4.6-high' "$scratch/seat.log" \
+  || fail "5: seat.log must record the stale-tried drop, got: $(cat "$scratch/seat.log")"
+ok "5: stale tried-seats entry expires with the bench (cursor is pickable again, line dropped)"
+rm -f "$ledger/cursor__cursor-grok-4.6-high.json"
+
+# --- 6. find_senior_seat standalone must not crash under set -u --------------
+# #4231 added a tried-map lookup in find_senior_seat. When `tried` is unset
+# the subscript `$p/$m` is arithmetic, so `cursor` is unbound under set -u.
+sr6=$(
+    export PI_PACKET_STATE="$state"
+    export PI_SEAT_HEALTH_LEDGER_DIR="$ledger"
+    # Inherit a scalar `tried` the way a dirty environment can; the lookup
+    # must not treat $p/$m as arithmetic.
+    export tried=scalar-not-an-array
+    : >"$scratch/seat.log"
+    bash -c 'set -u; source "$0"; load_seat_caps; find_senior_seat' "$lib" 2>/dev/null
+) || fail "6: find_senior_seat standalone under set -u must succeed"
+[[ "$sr6" == "cursor	cursor-grok-4.6-high" ]] \
+  || fail "6: standalone find_senior_seat expected cursor, got: $sr6"
+ok "6: find_senior_seat standalone under set -u returns cursor (no unbound crash)"
 
 # --- contract: nested under the CI host ---------------------------------------
 grep -Fq 'bash "$here/senior-review-routing.test.sh"' "$here/seat-lib.test.sh" \
