@@ -1026,3 +1026,24 @@ systemd/fleet-seat-comeback-release.timer /home/nish/.config/systemd/user/fleet-
 libexec/fleet-baseline-delta.py /home/nish/.local/libexec/fleet-baseline-delta.py
 systemd/fleet-baseline-delta.service /home/nish/.config/systemd/user/fleet-baseline-delta.service
 systemd/fleet-baseline-delta.timer /home/nish/.config/systemd/user/fleet-baseline-delta.timer
+
+# fleet-ops#4130 P1: LiteLLM proxy organ — proxy + Postgres + Redis as
+# systemd USER units in dedicated slices, plus a 60s /health canary.
+# The proxy is a long-running daemon (Type=simple, Restart=on-failure)
+# in front of every seat; Postgres backs budgets/keys/spend; Redis backs
+# the router fast path. The /health canary exports the organ heartbeat
+# metrics (fleet_litellm_proxy_up, _postgres_up, _redis_up) + per-group
+# readiness. Live install (apt + pip + start) is Nish-gated; the runbook
+# is docs/litellm-postgres-setup.md. The repo config
+# (config/litellm-proxy.yaml) is the shape reference — the live copy at
+# ~/.config/fleet-ops/litellm-proxy.yaml holds the credential resolvers.
+systemd/app-litellm.slice /home/nish/.config/systemd/user/app-litellm.slice
+systemd/app-litellm-postgres.slice /home/nish/.config/systemd/user/app-litellm-postgres.slice
+systemd/app-litellm-redis.slice /home/nish/.config/systemd/user/app-litellm-redis.slice
+systemd/fleet-litellm-proxy.service /home/nish/.config/systemd/user/fleet-litellm-proxy.service
+systemd/fleet-litellm-postgres.service /home/nish/.config/systemd/user/fleet-litellm-postgres.service
+systemd/fleet-litellm-redis.service /home/nish/.config/systemd/user/fleet-litellm-redis.service
+config/litellm-proxy.yaml /home/nish/.config/fleet-ops/litellm-proxy.yaml
+libexec/fleet-litellm-health-canary.py /home/nish/.local/libexec/fleet-litellm-health-canary.py
+systemd/fleet-litellm-health-canary.service /home/nish/.config/systemd/user/fleet-litellm-health-canary.service
+systemd/fleet-litellm-health-canary.timer /home/nish/.config/systemd/user/fleet-litellm-health-canary.timer

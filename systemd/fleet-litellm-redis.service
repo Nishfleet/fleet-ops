@@ -1,0 +1,22 @@
+[Unit]
+Description=Fleet LiteLLM Redis — router fast path (fleet-ops#4130 P1)
+Documentation=https://github.com/Nishfleet/fleet-ops/issues/4130
+# Redis for the LiteLLM router: cooldown cache + provider_budget_config
+# spend tracking across proxy restarts. Ephemeral state only — budgets
+# persist in Postgres. The live install (apt install redis-server,
+# bind 127.0.0.1, maxmemory 128mb) is Nish-gated; the runbook is
+# docs/litellm-postgres-setup.md (Redis section).
+ConditionPathExists=/etc/redis/redis.conf
+
+[Service]
+Type=simple
+Slice=app-litellm-redis.slice
+ExecStart=/usr/bin/env /usr/bin/redis-server /etc/redis/redis.conf --bind 127.0.0.1 --maxmemory 128mb --maxmemory-policy allkeys-lru --port 6379
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

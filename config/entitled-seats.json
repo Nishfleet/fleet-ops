@@ -36,6 +36,11 @@
       "note": "SuperGrok via stnly/pi-grok OAuth proxy (fleet-ops#1163). Live pi --print 2026-08-27 returned 200 for grok-4.6 and grok-4.5; weekly meter moved within minutes. Provider cap=1, models grok-4.6/grok-4.5, alternate never-stack."
     },
     {
+      "id": "runinfra",
+      "class": "prepaid-quota",
+      "note": "RunInfra deepseek-v4-flash worker seat (fleet-ops#4205, Nish 2026-09-07). Prepaid balance, cap 4, never a judge/senior seat. HTTP 402 = balance wall (Nish-only top-up), not a transient fault."
+    },
+    {
       "id": "minimax",
       "class": "metered",
       "note": "MiniMax-M3 direct, per-token."

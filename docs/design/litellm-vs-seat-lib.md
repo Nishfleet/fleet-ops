@@ -387,3 +387,56 @@ new `expiry_order_prepaid` helper (~20 lines) if gap #3 is kept.
 Net: seat-lib.sh deleted; ~6150 lines removed; ~420 lines move to
 `lib/worker-verdict.sh`; ~20 lines new helper. PR body carries the
 `git diff --stat` net.
+
+---
+
+## P1 status — proxy organ (fleet-ops#4174, child of #4130)
+
+P1 ships the proxy organ as paper + installable units. The live install
+(apt + pip + start) is Nish-gated; the runbook is
+`docs/litellm-postgres-setup.md`.
+
+Shipped in P1:
+
+- `systemd/fleet-litellm-proxy.service` — long-running daemon,
+  `Restart=on-failure`, `RestartSec=2s`, slice `app-litellm.slice`,
+  `MemoryMax=1G`, loopback only (`127.0.0.1:4000`).
+- `systemd/app-litellm.slice` / `app-litellm-postgres.slice` /
+  `app-litellm-redis.slice` — dedicated slices so a DB bloat cannot
+  push the proxy past its ceiling.
+- `systemd/fleet-litellm-postgres.service` + slice — distro Postgres,
+  `MemoryMax=1G`, local socket only.
+- `systemd/fleet-litellm-redis.service` + slice — distro Redis,
+  `MemoryMax=128M`, bind `127.0.0.1`.
+- `config/litellm-proxy.yaml` — the router config from §2, with
+  `api_key: command:...` placeholders (no real key in the repo). The
+  live copy at `~/.config/fleet-ops/litellm-proxy.yaml` holds the
+  credential resolvers.
+- `libexec/fleet-litellm-health-canary.py` + service + 60s timer —
+  polls `/health/readiness`, exports `fleet_litellm_proxy_up`,
+  `fleet_litellm_postgres_up`, `fleet_litellm_redis_up` + per-group
+  readiness. Connection-refused (organ dead) exits 1 so the global
+  `service.d/10-escalate.conf` drop-in climbs the ladder.
+- `config/fleet-organs.json` — four new organs (`litellm-proxy`,
+  `litellm-postgres`, `litellm-redis`, `litellm-health-canary`).
+- `config/fleet_rules.yml` — four new `absent()` rules
+  (`FleetLitellmProxyAbsent`, `FleetLitellmPostgresAbsent`,
+  `FleetLitellmRedisAbsent`, `FleetLitellmHealthCanaryAbsent`).
+- `config/prometheus.yml` — new `litellm` scrape job →
+  `127.0.0.1:4000/metrics`.
+
+Net machinery count for P1: +3 systemd units (proxy/postgres/redis) +
+1 canary unit/timer = +4 running units, +1 config yaml, +1 canary bin.
+This is the P1 add; the P3 delete (~6000 lines seat-lib + ~10 canaries)
+is what makes the program net-negative. Recorded here for the program
+ledger.
+
+Rollback for P1: `systemctl --user stop fleet-litellm-proxy
+fleet-litellm-postgres fleet-litellm-redis` + remove the `litellm` prom
+scrape job. No consumer yet (P2 lands the first consumer), so stopping
+the organ has zero fleet impact.
+
+P2 (next phase, to be filed): first consumer — route
+`agent-cron-run fable-check` to `litellm/judge`, prove one hourly run
+end-to-end through the proxy with the proxy log showing the fallback
+chain honoured.

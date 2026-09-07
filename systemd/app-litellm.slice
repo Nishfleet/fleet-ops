@@ -1,0 +1,13 @@
+# fleet-ops#4130 P1: CPU/Memory ceiling for the LiteLLM proxy organ
+# (proxy + Postgres + Redis). The proxy is a long-running daemon in front
+# of every seat; a RAM runaway here starves the worker slice. 200% CPU =
+# 2 cores (the proxy is mostly I/O-bound on localhost upstreams);
+# MemoryMax=1G matches the P0 design doc §3 cap. Postgres and Redis get
+# their own slices below so a DB bloat cannot push the proxy past its
+# ceiling and vice versa.
+#
+# Drop-in-removable: delete this file + the three service unit files and
+# daemon-reload to revert. The MANIFEST line keeps the install idempotent.
+[Slice]
+CPUQuota=200%
+MemoryMax=1G

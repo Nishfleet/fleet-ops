@@ -150,9 +150,13 @@
         "z-ai/glm-4.7-flash-free": {
           "cap": 1,
           "class": "free"
+        },
+        "deepseek/deepseek-v4-flash": {
+          "cap": 2,
+          "reason": "2026-09-07 fleet-ops#4205 (Nish scope-add 'ollama cloud and the rest'): land the paid ZenMux deepseek-v4-flash lane as a metered worker seat, cap 2. It answers SEAT-OK live but was absent from the seat-caps models allowlist, so fleet-seat-comeback-release logged it as 'absent from seat-caps models but real key' every tick and pick_seat never picked it. Meter check (fleet-ops#42: never wire a slug that can bill credits without a meter check): ZenMux is credit-based ($5 flat wallet; /models API returns no per-token pricing, confirmed 2026-08-29 fleet-ops#384), so daily_spend_cap_usd is NOT set here — Pi usage.cost cannot track per-token spend with no pricing, so that meter would be inert and misleading. The meter IS the wallet balance: HTTP 402 when the $5 is exhausted is a balance wall (same 402-as-balance-wall shape as runinfra in this same issue), benched by the provider quota_bench_default_s=3600 — never a transient fault to retry. The $5 wallet is the hard bound on spend; cap=2 limits concurrency. No max_probe_ceiling -> cap pinned at 2 (no upward AIMD probe on a paid seat). Not product_only: Nish declared it a worker seat (serves all enrolled repos, fleet-ops included). Metered class keeps it in the last-resort bucket after free + prepaid. Remove only with a ledger line."
         }
       },
-      "_comment_1442": "2026-08-29 fleet-ops#1442 (queue-starvation audit): zenmux had NO models map, so pick_seat skipped every zenmux row as not-in-allowlist even though z-ai/glm-4.7-flash-free was healthy (HTTP 200, observed 2026-08-28T14:27Z) and genuinely free. Live zenmux /models API: display_name 'Z.AI: GLM 4.7 Flash (Free)', pricings.completion[0].value=0 perMTokens USD. Live pi --print spawn: PACKET-VERDICT tools=1 class=worked, ANSWER=42, exit 0. Per-model class=free override (model_class_of, fleet-ops#384) buckets it free so the free-tier privacy line and ladder order apply even though the provider class is metered — same shape as cline/z-ai/glm-5.3-flash. The paid credit lane deepseek/deepseek-v4-flash is deliberately NOT in the allowlist (fleet-ops#42: never wire a slug that can bill credits without a meter check). cap=1 capacity-is-measured; the seat rate-limited (429) after 3 probes in 2 min during this audit, so cap stays 1 until a league mean beats a servable incumbent — the walled_comeback rate_limit_s=900 handles transient free-tier TPM walls. NOT added to free_providers_in_order (cline precedent: a metered/prepaid provider with a free model override is not in the free-order list; the free model is still bucketed and picked, just after the free-class providers).",
+      "_comment_1442": "2026-08-29 fleet-ops#1442 (queue-starvation audit): zenmux had NO models map, so pick_seat skipped every zenmux row as not-in-allowlist even though z-ai/glm-4.7-flash-free was healthy (HTTP 200, observed 2026-08-28T14:27Z) and genuinely free. Live zenmux /models API: display_name 'Z.AI: GLM 4.7 Flash (Free)', pricings.completion[0].value=0 perMTokens USD. Live pi --print spawn: PACKET-VERDICT tools=1 class=worked, ANSWER=42, exit 0. Per-model class=free override (model_class_of, fleet-ops#384) buckets it free so the free-tier privacy line and ladder order apply even though the provider class is metered — same shape as cline/z-ai/glm-5.3-flash. cap=1 capacity-is-measured; the seat rate-limited (429) after 3 probes in 2 min during this audit, so cap stays 1 until a league mean beats a servable incumbent — the walled_comeback rate_limit_s=900 handles transient free-tier TPM walls. NOT added to free_providers_in_order (cline precedent: a metered/prepaid provider with a free model override is not in the free-order list; the free model is still bucketed and picked, just after the free-class providers). The paid credit lane deepseek/deepseek-v4-flash was deliberately held out of the allowlist under fleet-ops#42 until a meter check was wired; it is now landed (2026-09-07, fleet-ops#4205) with the 402-balance-wall meter — see its model reason.",
       "quota_bench_default_s": 3600,
       "_comment_quota_bench": "2026-09-05 (orchestrator fable-check): z-ai/glm-4.7-flash-free died 21 times in 3h (watch.log 05:00-08:15Z, pi exited 1 in 18-19s) on HTTP 429 type=rate_limit \"You have reached the usage limit for the current free model\" with no reset window. mark_seat_quota_bench failed open (no provider default) and the seat was re-picked until the 25-failure corpse threshold, burning StartLimitBurst on #3254/#3519. 3600s mirrors walled_comeback.daily_quota_s and the xkiro free-tier default: one bounded re-probe per hour, never a permanent exclusion."
     },
@@ -337,6 +341,15 @@
       },
       "_comment_audition_20260905": "Nish 2026-09-05: audition on the xKiro free plan (the USD 5 wallet must stay at 5). Free tier = 5,000,000 tokens/day on free-tier models; probed 2026-09-05 (n=3 models): deepseek-v4-flash, deepseek-v4-pro and minimax-m3:free each answered a real wc -l tool task correctly in 6-18s; the response echoes the model id (identity rule holds); GET /v1/usage returns free_tokens used/limit/remaining and wallet balance (meter, #3283). Provider block lives in ~/.pi/agent/models.json. Promote or drop by the yield ledger after ~10 WORKING sessions each; paid tiers never without Nish.",
       "_comment_503_20260906": "fleet-ops#3738: xkiro returns a generic 5xx 'A server error occurred. Please try again.' (pi surfaces it as rc=1 with no status code). Without a 503_bench_default_s, is_overload_error now classifies the body (shape d in seat-lib.sh) but mark_seat_overload_bench fails open (no marker) and the seat re-enters rotation immediately. 600s matches commandcode's overload default and gives the reactive seat-health ledger time to land before the bench expires; the geometric escalator (#3531) still backs off repeat 5xx storms."
+    },
+    "runinfra": {
+      "cap": 4,
+      "class": "prepaid-quota",
+      "quota_bench_default_s": 86400,
+      "models": {
+        "deepseek-v4-flash": 4
+      },
+      "_comment_runinfra": "fleet-ops#4205 (Nish 2026-09-07): RunInfra (https://api.runinfra.ai/v1, model deepseek-v4-flash, key resolved by '!cut -d= -f2 /home/nish/fleet2/etc/runinfra.env' already in ~/.pi/agent/models.json) is a WORKER seat, cap 4, class prepaid. It is never a judge/senior seat. contextWindow 1M (capable=1). quota_bench_default_s 86400 (24h): a quota/cap 429 whose error text carries no explicit reset window benches the seat for a day, not the 900s devin default. 402-as-balance-wall: RunInfra returns HTTP 402 when the prepaid balance is exhausted — that is a MONEY wall (Nish-only top-up), never a transient fault to retry; the quota_bench path benches it and the seat-dead quota-age rule (seat_dead_quota_age_s 86400) turns a 24h-old 402 into a corpse needing billing repair. Do not flip this row to free or metered without a ledger line."
     }
   },
   "product_order": "value",
@@ -352,7 +365,8 @@
     "devin",
     "cline",
     "cursor",
-    "xai-oauth"
+    "xai-oauth",
+    "runinfra"
   ],
   "_comment_senior_order": "fleet-ops#3121: the senior (judge/orchestrator/reviewer) role's seat ladder. Replaces the dead straitly role and the old keystone_only_providers dual mechanism — ONE mechanism now. First usable seat in the list wins; a walled seat is skipped, not a unit failure; if the whole list is walled the resolver falls through to any usable capable seat. cursor cap 2 concurrent (fleet-ops#4206, raised 1->2 to spend the $400 API pool); senior draws count against the existing prepaid-usage/cursor.json weekly meter (ceiling 300/week), after which the list falls through to xai grok and then openrouter deepseek. Nish 2026-09-04: devin (devin/glm-5-2), free-glm (zenmux/z-ai/glm-5.3-free, cline/z-ai/glm-5.3-flash), senior (this list) are the three judge roles; senior replaces straitly everywhere.",
   "senior_seats_in_order": [

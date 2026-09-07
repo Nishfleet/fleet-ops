@@ -505,6 +505,12 @@
       "classification": "scheduled",
       "cadence": "3h",
       "source": "user-config"
+    },
+    "fleet-litellm-health-canary.timer": {
+      "reason": "60s LiteLLM proxy /health/readiness probe (fleet-ops#4130 P1) — the proxy is a daemon whose death must surface in <2 min, not on the 5-min metrics-export cadence. The 60s timer is the named reason (organ-death latency).",
+      "classification": "scheduled",
+      "cadence": "1min",
+      "source": "repo"
     }
   }
 }

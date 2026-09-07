@@ -1,0 +1,18 @@
+[Unit]
+Description=Fleet LiteLLM /health/readiness canary (fleet-ops#4130 P1)
+Documentation=https://github.com/Nishfleet/fleet-ops/issues/4130
+# 60s timer (not the 5-min metrics-export cadence) because the proxy is a
+# daemon whose death must surface in <2 min. The 60s timer is the named
+# reason; the absent() rule is FleetLitellmHealthCanaryAbsent.
+#
+# OnFailure is wired by the global service.d/10-escalate.conf drop-in:
+# a connection-refused (organ dead) exit climbs the ladder.
+
+[Service]
+Type=oneshot
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+ExecStart=/usr/bin/python3 /home/nish/.local/libexec/fleet-litellm-health-canary.py
+TimeoutStartSec=30
+Restart=no

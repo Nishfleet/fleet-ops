@@ -231,6 +231,48 @@
         "lib/fleet-product-slo.py",
         "systemd/fleet-metrics-export.service.d/product-slo.conf"
       ]
+    },
+    {
+      "name": "litellm-proxy",
+      "kind": "guard",
+      "heartbeat_metric": "fleet_litellm_proxy_up",
+      "absent_alert": "FleetLitellmProxyAbsent",
+      "files": [
+        "systemd/fleet-litellm-proxy.service",
+        "systemd/app-litellm.slice",
+        "config/litellm-proxy.yaml"
+      ]
+    },
+    {
+      "name": "litellm-postgres",
+      "kind": "guard",
+      "heartbeat_metric": "fleet_litellm_postgres_up",
+      "absent_alert": "FleetLitellmPostgresAbsent",
+      "files": [
+        "systemd/fleet-litellm-postgres.service",
+        "systemd/app-litellm-postgres.slice"
+      ]
+    },
+    {
+      "name": "litellm-redis",
+      "kind": "guard",
+      "heartbeat_metric": "fleet_litellm_redis_up",
+      "absent_alert": "FleetLitellmRedisAbsent",
+      "files": [
+        "systemd/fleet-litellm-redis.service",
+        "systemd/app-litellm-redis.slice"
+      ]
+    },
+    {
+      "name": "litellm-health-canary",
+      "kind": "canary",
+      "heartbeat_metric": "fleet_litellm_proxy_last_green_seconds",
+      "absent_alert": "FleetLitellmHealthCanaryAbsent",
+      "files": [
+        "libexec/fleet-litellm-health-canary.py",
+        "systemd/fleet-litellm-health-canary.service",
+        "systemd/fleet-litellm-health-canary.timer"
+      ]
     }
   ]
 }
