@@ -81,7 +81,7 @@ eight lenses:
   unit, `fleet.prom` liveness, absent() rules in `config/fleet_rules.yml`),
   (3) overlap with another organ or a stock systemd/Pi primitive. Keeping
   needs justification; deleting is free. Safety organs (deadman,
-  orphan-watchdog, maintenance window) are exempt but still get a
+  maintenance window) are exempt but still get a
   justification line. Any organ scoring no-harm + no-fires-to-real-work +
   overlap gets a deletion proposal filed through the queue (plain issue,
   provenance `wfr-action/deletion-review`). Read

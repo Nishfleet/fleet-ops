@@ -15,7 +15,7 @@
 #
 # Only severity=page reaches the phone. critical/warning/none reach
 # repair-dispatch (alert-repair-dispatch), which spawns a repair worker or
-# skips (SKIP_SET: Watchdog, FleetTestAlert, LoadStorm, CanaryDrill,
+# skips (SKIP_SET: Watchdog, FleetTestAlert, CanaryDrill,
 # WasteRatioRising). A repair worker never texts Nish; its outcome folds into
 # the daily digest. A page is reserved for the one meta-alert that means the
 # repair path itself is down (RepairDispatchDown) — the last resort.
