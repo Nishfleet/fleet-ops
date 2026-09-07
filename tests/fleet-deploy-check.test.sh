@@ -247,6 +247,181 @@ if grep -q "DEPLOY-CHECK-DIRTY-CLONE" "$scratch/err.log"; then
 fi
 ok "clean clone produces no DIRTY-CLONE loud"
 
+# --- 12. non-canonical unit symlink -> LOUD + repair (fleet-ops#4166) --------
+# A worker's non-canonical install.sh retargets every live fleet unit symlink
+# at a GC-able worktree; removing it blinds the fleet (Unit to trigger
+# vanished -> canary stops -> chain gauge absent). The per-tick gate must
+# detect a unit symlink whose target is non-canonical (under the workspaces
+# root but not the canonical checkout) or dangling, LOUD, and repair via the
+# sanctioned install.sh. Prove: detect, LOUD, repair invoked, exit 0.
+unit_dir="$scratch/units"
+canon_dir="$scratch/canon"
+ws_root="$scratch/ws"
+worktree_dir="$scratch/ws/issue-fleet-ops-4141"
+mkdir -p "$unit_dir" "$canon_dir/systemd" "$worktree_dir/systemd"
+# Canonical unit file (the repair target).
+cat >"$canon_dir/systemd/fleet-completion-canary.service" <<'UNIT'
+[Unit]
+Description=canary
+[Service]
+ExecStart=/bin/true
+UNIT
+# A fake install.sh that retargets a unit symlink at the canonical checkout.
+cat >"$canon_dir/install.sh" <<'INSTALL'
+#!/usr/bin/env bash
+set -euo pipefail
+unit_dir="${FLEET_DEPLOY_CHECK_UNIT_DIR:?}"
+canon="$(readlink -f "${FLEET_OPS_CANONICAL_CHECKOUT:-$1}")"
+ln -sfn "$canon/systemd/fleet-completion-canary.service" \
+  "$unit_dir/fleet-completion-canary.service"
+INSTALL
+chmod +x "$canon_dir/install.sh"
+# A worktree unit file (the non-canonical source a worker installed from).
+cat >"$worktree_dir/systemd/fleet-completion-canary.service" <<'UNIT'
+[Unit]
+Description=canary
+[Service]
+ExecStart=/bin/true
+UNIT
+# Live symlink points at the GC-able worktree (the hijack).
+ln -sfn "$worktree_dir/systemd/fleet-completion-canary.service" \
+  "$unit_dir/fleet-completion-canary.service"
+
+: > "$scratch/err.log"
+rc=$(FLEET_OPS_CHECKOUT="$canon_dir" \
+     FLEET_OPS_DEPLOY_BIN="$deploy_spy" \
+     FLEET_DEPLOY_CHECK_LOCK="$lock" \
+     FLEET_DEPLOY_CHECK_NO_DEPLOY=0 \
+     FLEET_DEPLOY_CHECK_UNIT_DIR="$unit_dir" \
+     FLEET_DEPLOY_CHECK_INSTALL_BIN="$canon_dir/install.sh" \
+     FLEET_OPS_CANONICAL_CHECKOUT="$canon_dir" \
+     FLEET_OPS_WORKSPACES_ROOT="$ws_root" \
+     FLEET_HEARTBEAT_TRIAGE="$triage" \
+     DEPLOY_SPY_LOG="$DEPLOY_SPY_LOG" \
+       "$bin" >/dev/null 2>"$scratch/err.log"; echo $?)
+[[ "$rc" == "0" ]] || fail "non-canonical unit symlink should exit 0 (got $rc)"
+grep -q "DEPLOY-CHECK-NONCANONICAL-UNITS" "$scratch/err.log" \
+  || fail "non-canonical unit symlink must loud DEPLOY-CHECK-NONCANONICAL-UNITS"
+grep -q "fleet-completion-canary.service" "$scratch/err.log" \
+  || fail "LOUD line must name the offending unit symlink"
+# Repair: the symlink must now point at the canonical checkout.
+target=$(readlink -f "$unit_dir/fleet-completion-canary.service")
+case "$target" in
+  "$canon_dir"*) ;;
+  *) fail "repair must retarget at canonical; got $target" ;;
+esac
+ok "non-canonical unit symlink louds + repairs to canonical (fleet-ops#4166)"
+
+# --- 12b. dangling unit symlink (target vanished) -> LOUD + repair ---------
+# The exact 07:33Z condition: the worktree was removed, so the symlink target
+# vanished. install.sh retargets it back to canonical. Re-hijack the symlink
+# at the worktree first (test 12's repair retargeted it to canonical), then
+# remove the worktree to make the symlink dangle.
+ln -sfn "$worktree_dir/systemd/fleet-completion-canary.service" \
+  "$unit_dir/fleet-completion-canary.service"
+rm -rf "$worktree_dir"
+: > "$scratch/err.log"
+rc=$(FLEET_OPS_CHECKOUT="$canon_dir" \
+     FLEET_OPS_DEPLOY_BIN="$deploy_spy" \
+     FLEET_DEPLOY_CHECK_LOCK="$lock" \
+     FLEET_DEPLOY_CHECK_NO_DEPLOY=0 \
+     FLEET_DEPLOY_CHECK_UNIT_DIR="$unit_dir" \
+     FLEET_DEPLOY_CHECK_INSTALL_BIN="$canon_dir/install.sh" \
+     FLEET_OPS_CANONICAL_CHECKOUT="$canon_dir" \
+     FLEET_OPS_WORKSPACES_ROOT="$ws_root" \
+     FLEET_HEARTBEAT_TRIAGE="$triage" \
+     DEPLOY_SPY_LOG="$DEPLOY_SPY_LOG" \
+       "$bin" >/dev/null 2>"$scratch/err.log"; echo $?)
+[[ "$rc" == "0" ]] || fail "dangling unit symlink should exit 0 (got $rc)"
+grep -q "DEPLOY-CHECK-NONCANONICAL-UNITS" "$scratch/err.log" \
+  || fail "dangling unit symlink must loud DEPLOY-CHECK-NONCANONICAL-UNITS"
+target=$(readlink -f "$unit_dir/fleet-completion-canary.service")
+case "$target" in
+  "$canon_dir"*) ;;
+  *) fail "repair must retarget dangling symlink at canonical; got $target" ;;
+esac
+ok "dangling unit symlink (vanished target) louds + repairs (fleet-ops#4166)"
+
+# --- 12c. compare-only mode -> LOUD only, no repair -----------------------
+# FLEET_DEPLOY_CHECK_NO_DEPLOY=1 must LOUD but NOT repair (auditors need to
+# see the drift without mutation). Re-hijack the symlink first.
+mkdir -p "$worktree_dir/systemd"
+cat >"$worktree_dir/systemd/fleet-completion-canary.service" <<'UNIT'
+[Unit]
+Description=canary
+[Service]
+ExecStart=/bin/true
+UNIT
+ln -sfn "$worktree_dir/systemd/fleet-completion-canary.service" \
+  "$unit_dir/fleet-completion-canary.service"
+: > "$scratch/err.log"
+rc=$(FLEET_OPS_CHECKOUT="$canon_dir" \
+     FLEET_OPS_DEPLOY_BIN="$deploy_spy" \
+     FLEET_DEPLOY_CHECK_LOCK="$lock" \
+     FLEET_DEPLOY_CHECK_NO_DEPLOY=1 \
+     FLEET_DEPLOY_CHECK_UNIT_DIR="$unit_dir" \
+     FLEET_DEPLOY_CHECK_INSTALL_BIN="$canon_dir/install.sh" \
+     FLEET_OPS_CANONICAL_CHECKOUT="$canon_dir" \
+     FLEET_OPS_WORKSPACES_ROOT="$ws_root" \
+     FLEET_HEARTBEAT_TRIAGE="$triage" \
+     DEPLOY_SPY_LOG="$DEPLOY_SPY_LOG" \
+       "$bin" >/dev/null 2>"$scratch/err.log"; echo $?)
+[[ "$rc" == "0" ]] || fail "compare-only non-canonical should exit 0 (got $rc)"
+grep -q "DEPLOY-CHECK-NONCANONICAL-UNITS" "$scratch/err.log" \
+  || fail "compare-only must still LOUD DEPLOY-CHECK-NONCANONICAL-UNITS"
+# Symlink must still point at the worktree (no repair in compare-only).
+target=$(readlink "$unit_dir/fleet-completion-canary.service")
+case "$target" in
+  "$worktree_dir"*) ;;
+  *) fail "compare-only must NOT repair; symlink should still point at worktree, got $target" ;;
+esac
+ok "compare-only mode louds but does not repair (fleet-ops#4166)"
+
+# --- 12d. canonical unit symlink -> no LOUD --------------------------------
+# A unit symlink already pointing at the canonical checkout must not trip the
+# gate (no noise on the healthy path).
+ln -sfn "$canon_dir/systemd/fleet-completion-canary.service" \
+  "$unit_dir/fleet-completion-canary.service"
+: > "$scratch/err.log"
+rc=$(FLEET_OPS_CHECKOUT="$canon_dir" \
+     FLEET_OPS_DEPLOY_BIN="$deploy_spy" \
+     FLEET_DEPLOY_CHECK_LOCK="$lock" \
+     FLEET_DEPLOY_CHECK_NO_DEPLOY=0 \
+     FLEET_DEPLOY_CHECK_UNIT_DIR="$unit_dir" \
+     FLEET_DEPLOY_CHECK_INSTALL_BIN="$canon_dir/install.sh" \
+     FLEET_OPS_CANONICAL_CHECKOUT="$canon_dir" \
+     FLEET_OPS_WORKSPACES_ROOT="$ws_root" \
+     FLEET_HEARTBEAT_TRIAGE="$triage" \
+     DEPLOY_SPY_LOG="$DEPLOY_SPY_LOG" \
+       "$bin" >/dev/null 2>"$scratch/err.log"; echo $?)
+[[ "$rc" == "0" ]] || fail "canonical unit symlink should exit 0 (got $rc)"
+if grep -q "DEPLOY-CHECK-NONCANONICAL-UNITS" "$scratch/err.log"; then
+  fail "canonical unit symlink must not loud DEPLOY-CHECK-NONCANONICAL-UNITS"
+fi
+ok "canonical unit symlink produces no NONCANONICAL-UNITS loud"
+
+# --- 12e. non-fleet unit symlink is skipped --------------------------------
+# A foreign/distro unit symlink that does NOT point at a systemd/ path must
+# not trip the gate (only fleet-managed unit symlinks point at systemd/).
+ln -sfn /usr/lib/systemd/user/dbus.service "$unit_dir/dbus.service"
+: > "$scratch/err.log"
+rc=$(FLEET_OPS_CHECKOUT="$canon_dir" \
+     FLEET_OPS_DEPLOY_BIN="$deploy_spy" \
+     FLEET_DEPLOY_CHECK_LOCK="$lock" \
+     FLEET_DEPLOY_CHECK_NO_DEPLOY=0 \
+     FLEET_DEPLOY_CHECK_UNIT_DIR="$unit_dir" \
+     FLEET_DEPLOY_CHECK_INSTALL_BIN="$canon_dir/install.sh" \
+     FLEET_OPS_CANONICAL_CHECKOUT="$canon_dir" \
+     FLEET_OPS_WORKSPACES_ROOT="$ws_root" \
+     FLEET_HEARTBEAT_TRIAGE="$triage" \
+     DEPLOY_SPY_LOG="$DEPLOY_SPY_LOG" \
+       "$bin" >/dev/null 2>"$scratch/err.log"; echo $?)
+[[ "$rc" == "0" ]] || fail "foreign unit symlink should exit 0 (got $rc)"
+if grep -q "DEPLOY-CHECK-NONCANONICAL-UNITS" "$scratch/err.log"; then
+  fail "foreign (non-systemd/) unit symlink must not loud DEPLOY-CHECK-NONCANONICAL-UNITS"
+fi
+ok "foreign (non-systemd/) unit symlink is skipped"
+
 # --- 8. fleet-ops#598: unpinned defaultBranch=master is the CI failure ------
 # Drill: a bare origin whose HEAD stays on master after a main push makes
 # clone + `git push origin main` fail with `src refspec main does not match
