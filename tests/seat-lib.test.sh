@@ -3695,6 +3695,106 @@ grep -q "cap0-stale-expire" "$PI_PACKET_STATE/watch.log" 2>/dev/null \
   && fail "3241: no expire lines expected when the mechanism is disabled"
 ok "3241: SEAT_CAP_ZERO_STALE_EXPIRE=0 disables expiry"
 
+# --- fleet-ops#4129: cap0-stale re-probe admission is light-only ------------
+# A stale cap=0 seat re-admitted by _expire_stale_cap0_seats must be light-only
+# until a re-probe proves it answers. The 2026-09-07 incident put a heavy
+# fable-check on a cap0-stale laguna free seat the instant it was re-admitted,
+# before any probe had run. Proves:
+#   1. seat_is_reprobe_light_only returns 0 for an expired stale seat, 1 for a
+#      non-stale / intentional / fresh seat.
+#   2. pick_seat skips the re-probe seat for heavy (need_capable=1) even when
+#      the seat is capable, and logs the light-only skip line.
+#   3. pick_seat count-mode admits the re-probe seat for light (it is a slot).
+#   4. The cap0-stale-expire log line now carries the light-only marker.
+_reprobe_caps="$scratch/seat-caps-reprobe.json"
+cat >"$_reprobe_caps" <<'JSON'
+{
+  "ram_gb_per_worker": 1.5,
+  "free_providers_in_order": ["ollama", "laguna"],
+  "providers": {
+    "laguna":    { "cap": 0, "class": "free", "intentional_cap_zero": "stale",
+                   "reason": "2020-01-01 re-audition: endpoint 404",
+                   "models": { "laguna-free-model": 2 } },
+    "ollama":    { "cap": 2, "class": "free", "models": { "deepseek-v4-flash:0731": 2 } }
+  }
+}
+JSON
+# models.json: laguna's model is capable (reasoning=true) so the ONLY thing
+# gating it out of heavy is the re-probe light-only marker — proving the gate
+# is not shadowed by the capable filter.
+cat >"$scratch/models-reprobe.json" <<'JSON'
+{
+  "providers": {
+    "laguna": {
+      "models": [
+        { "id": "laguna-free-model", "cost": { "input": 0 }, "reasoning": true, "contextWindow": 256000 }
+      ]
+    },
+    "ollama": {
+      "models": [
+        { "id": "deepseek-v4-flash:0731", "cost": { "input": 0 } }
+      ]
+    }
+  }
+}
+JSON
+export PI_MODELS_JSON="$scratch/models-reprobe.json"
+export SEAT_CAPS_JSON="$_reprobe_caps"
+export PI_PACKET_STATE="$scratch/state-reprobe"
+mkdir -p "$PI_PACKET_STATE"
+_reprobe_ledger="$scratch/ledger-reprobe"
+mkdir -p "$_reprobe_ledger"
+export PI_SEAT_HEALTH_LEDGER_DIR="$_reprobe_ledger"
+
+# 1. seat_is_reprobe_light_only: laguna expired -> 0; ollama never stale -> 1.
+set +e
+_reprobe_is=$(bash -c 'source "$0"; load_seat_caps;
+  seat_is_reprobe_light_only "laguna" "laguna-free-model" && echo "laguna=rc0" || echo "laguna=rc1";
+  seat_is_reprobe_light_only "ollama" "deepseek-v4-flash:0731" && echo "ollama=rc0" || echo "ollama=rc1"' "$lib" 2>/dev/null)
+set -e
+echo "$_reprobe_is" | grep -qx "laguna=rc0" \
+  || fail "4129: expired stale laguna must be reprobe-light-only (rc=0), got: $_reprobe_is"
+echo "$_reprobe_is" | grep -qx "ollama=rc1" \
+  || fail "4129: ollama (never stale) must NOT be reprobe-light-only (rc=1), got: $_reprobe_is"
+# And the provider cap actually expired to 1 (the admission happened).
+_reprobe_cap=$(bash -c 'source "$0"; load_seat_caps; provider_cap laguna' "$lib" 2>/dev/null)
+[[ "$_reprobe_cap" == "1" ]] \
+  || fail "4129: laguna stale provider cap=0 must expire to cap=1, got provider_cap=$_reprobe_cap"
+ok "4129: seat_is_reprobe_light_only flags the expired stale seat; ollama stays clear"
+
+# 4. The expire log line carries the light-only marker.
+grep -qE "cap0-stale-expire: laguna.*light-only, fleet-ops#4129" "$PI_PACKET_STATE/watch.log" \
+  || fail "4129: expire log must carry light-only marker, got: $(cat "$PI_PACKET_STATE/watch.log")"
+ok "4129: cap0-stale-expire log carries the light-only marker"
+
+# 2. pick_seat skips the re-probe seat for heavy (need_capable=1) even though
+#    laguna-free-model is capable. Clear the log so the skip line is fresh.
+rm -f "$PI_PACKET_STATE/watch.log"
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 1 "" heavy' "$lib" 2>/dev/null)
+rc=$?
+set -e
+if echo "$out" | grep -q "laguna"; then
+  fail "4129: re-probe seat laguna must NOT be picked for heavy (got: $out)"
+fi
+grep -q "cap0-stale re-probe seat — light issues only, fleet-ops#4129" "$PI_PACKET_STATE/watch.log" 2>/dev/null \
+  || fail "4129: heavy pick must log the re-probe light-only skip, got log: $(cat "$PI_PACKET_STATE/watch.log")"
+ok "4129: pick_seat skips re-probe seat for heavy (light-only skip logged)"
+
+# 3. pick_seat count-mode admits the re-probe seat for light.
+set +e
+out=$(bash -c 'source "$0"; load_seat_caps; PICK_SEAT_COUNT_SLOTS=1 pick_seat "" "" 0 "" light' "$lib" 2>/dev/null)
+rc=$?
+set -e
+echo "$out" | grep -qE '^[0-9]+$' || fail "4129: count-mode light must return a number (got: $out)"
+_count=$(echo "$out" | tail -1)
+(( _count >= 1 )) || fail "4129: re-probe seat should count as a light slot (got count=$_count)"
+ok "4129: pick_seat count-mode admits re-probe seat for light (count=$_count)"
+
+# Restore the main test fixtures so later sections are not affected.
+export PI_MODELS_JSON="$scratch/models.json"
+export SEAT_CAPS_JSON="$scratch/seat-caps.json"
+
 # fleet-ops#3559: a WRAPPER bench (mark_seat_empty_run / mark_seat_spawn_fail)
 # must co-write the legacy single-record seat-health sidecar
 # (pi-seat-health.json), so the seat-health probe honours the empty-run/spawn-fail

@@ -316,6 +316,17 @@ declare -A SEAT_CAP_ZERO_CLASS_STALE=()
 # $1 cost cap, injected by lib/pi-intake-tick.sh from config/model-candidates.json).
 # Keyed on "provider" for provider-level audition, "provider/model" for model-level.
 declare -A SEAT_AUDITION=()
+# fleet-ops#4129: a stale cap=0 seat re-admitted by _expire_stale_cap0_seats is
+# marked light-only here. The seat was cap=0 because it was broken (endpoint 404,
+# TPM ceiling, exhausted quota); re-admitting it at cap=1 lets pick_seat re-probe
+# on a LIGHT packet, but it must NOT land heavy/keystone/senior-review work until
+# the re-probe proves the seat answers. Keyed on "provider" for provider-level
+# re-admission, "provider/model" for model-level. Cleared by load_seat_caps and
+# re-populated only when a seat actually expires; a re-probe that succeeds clears
+# the marker via the seat-health observation path (the bench writers re-wall a
+# still-broken seat, which does not touch this map — the next load_seat_caps
+# drops it only if the seat is no longer stale-cap=0).
+declare -A SEAT_REPROBE_LIGHT_ONLY=()
 SEAT_FREE_ORDER=""
 SEAT_PREPAID_ORDER=""
 # fleet-ops#3125: seat-caps product_order. "yield" routes product picks
@@ -461,6 +472,17 @@ seat_is_audition() {
     [[ -n "${SEAT_AUDITION[$p]:-}" || -n "${SEAT_AUDITION[$p/$m]:-}" ]]
 }
 
+# fleet-ops#4129: return 0 if the seat was re-admitted from a stale cap=0 by
+# _expire_stale_cap0_seats and is therefore light-only until a re-probe proves
+# it answers. pick_seat gates it out of every non-light difficulty, same shape
+# as seat_is_audition. Returns 1 (not re-probe-light-only) for unknown/empty.
+seat_is_reprobe_light_only() {
+    local p="${1:-}" m="${2:-}"
+    [[ -n "$p" && -n "$m" ]] || return 1
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    [[ -n "${SEAT_REPROBE_LIGHT_ONLY[$p]:-}" || -n "${SEAT_REPROBE_LIGHT_ONLY[$p/$m]:-}" ]]
+}
+
 load_seat_caps() {
     SEAT_PROVIDER_CAP=()
     SEAT_MODEL_CAP=()
@@ -479,6 +501,7 @@ load_seat_caps() {
     SEAT_PRODUCT_ONLY=()
     SEAT_DAILY_SPEND_CAP_USD=()
     SEAT_AUDITION=()
+    SEAT_REPROBE_LIGHT_ONLY=()
     SEAT_FREE_ORDER=""
     SEAT_PREPAID_ORDER=""
     SEAT_PRODUCT_ORDER=""
@@ -785,7 +808,14 @@ _expire_stale_cap0_seats() {
             else
                 SEAT_PROVIDER_CAP[$key]="$default"
             fi
-            seat_log "cap0-stale-expire: $key stale cap=0 expired (age=$((now_s - date_s))s; reason dated ${date_str}) -> re-admitted at cap=$default for re-probe (fleet-ops#3111)"
+            # fleet-ops#4129: a re-admitted stale cap=0 seat was broken (404,
+            # TPM ceiling, exhausted quota). Re-probe it on LIGHT only — never
+            # heavy/keystone/senior-review — until a light re-probe proves it
+            # answers. The 2026-09-07 incident put a heavy fable-check on a
+            # cap0-stale laguna free seat the instant it was re-admitted, before
+            # any probe had run. Keyed identically to the cap write above.
+            SEAT_REPROBE_LIGHT_ONLY[$key]=1
+            seat_log "cap0-stale-expire: $key stale cap=0 expired (age=$((now_s - date_s))s; reason dated ${date_str}) -> re-admitted at cap=$default for re-probe (light-only, fleet-ops#4129) (fleet-ops#3111)"
         fi
     done
     return 0
@@ -4286,6 +4316,16 @@ pick_seat() {
         # gate so intake does not claim into an audition-only pool for heavy.
         if seat_is_audition "$p" "$m" && [[ "$difficulty" != "light" ]]; then
             seat_log "seat $p/$m skipped (audition seat — light issues only, fleet-ops#3322)"
+            continue
+        fi
+        # fleet-ops#4129: a stale cap=0 seat re-admitted for re-probe is
+        # light-only until a probe proves it answers. Skip it for every
+        # non-light difficulty so a freshly re-admitted dead free seat never
+        # lands a heavy/keystone/senior-review packet. Same shape as the
+        # audition gate above; count-mode honours it so intake does not claim
+        # into a re-probe-only pool for heavy.
+        if seat_is_reprobe_light_only "$p" "$m" && [[ "$difficulty" != "light" ]]; then
+            seat_log "seat $p/$m skipped (cap0-stale re-probe seat — light issues only, fleet-ops#4129)"
             continue
         fi
         if (( need_capable )) && [[ "$capable" != "1" ]]; then
