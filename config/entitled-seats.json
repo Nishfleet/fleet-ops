@@ -51,6 +51,11 @@
       "note": "Entrim deepseek-ai/DeepSeek-V4-Flash worker seat (fleet-ops#4262, Nish 2026-09-07). Prepaid balance, cap 2, NOT audition. Never a judge/senior seat. HTTP 402 = balance wall (Nish-only top-up), not a transient fault."
     },
     {
+      "id": "alibaba-coding",
+      "class": "prepaid-quota",
+      "note": "Alibaba Model Studio Token Plan Personal Standard mid tier (fleet-ops#4329, Nish 2026-09-07). $18/mo, 10,000 credits/month, 3-4 concurrent, service PAUSES at the monthly or 7-day window cap, no rollover, no credits API (console only). Provider cap 3, 7 models. Tiers: qwen3.8-max senior candidate (audition on senior-review packets); qwen3.7-max + deepseek-v4-pro + qwen3.7-plus + glm-5.2 capable workers; deepseek-v4-flash-0731 + qwen3.8-flash cheap workers (light packets). Terms say interactive-only / no automation (same class as the GLM coding plan) — recorded here; Nish's call already made. Feeds the #4242 audit; all 7 models in the #4262 audition set. HTTP 429/402 = quota wall (monthly or 7-day window cap), not a transient fault."
+    },
+    {
       "id": "minimax",
       "class": "metered",
       "note": "MiniMax-M3 direct, per-token."

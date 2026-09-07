@@ -395,6 +395,21 @@
         "deepseek-ai/DeepSeek-V4-Flash": 2
       },
       "_comment_entrim": "fleet-ops#4262 (Nish 2026-09-07): Entrim (https://api.entrim.ai/v1, model deepseek-ai/DeepSeek-V4-Flash, key resolved by '!cut -d= -f2 /home/nish/fleet2/etc/entrim.env') is a WORKER seat, cap 2, class prepaid, NOT audition. contextWindow 1M (capable=1). quota_bench_default_s 86400 (24h): a quota/cap 429 with no explicit reset window benches a day. 402-as-balance-wall: HTTP 402 = prepaid balance exhausted — MONEY wall (Nish-only top-up), never a transient fault; the seat-dead quota-age rule turns a 24h-old 402 into a billing-repair corpse. No max_probe_ceiling: cap stays pinned at 2 (no upward AIMD probe on a paid seat). cacheRead=input until measured (pi-models.json)."
+    },
+    "alibaba-coding": {
+      "cap": 3,
+      "class": "prepaid-quota",
+      "quota_bench_default_s": 604800,
+      "models": {
+        "qwen3.8-max": 1,
+        "qwen3.7-max": 1,
+        "qwen3.7-plus": 1,
+        "glm-5.2": 1,
+        "deepseek-v4-pro": 1,
+        "deepseek-v4-flash-0731": 1,
+        "qwen3.8-flash": 1
+      },
+      "_comment_alibaba": "fleet-ops#4329 (Nish 2026-09-07): Alibaba Model Studio Token Plan, Personal Standard mid tier (https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1, key resolved by '!cut -d= -f2 /home/nish/fleet2/etc/alibaba-coding.env', provider id alibaba-coding). $18/mo, 10,000 credits/month, 3-4 concurrent agents, service PAUSES at either the monthly or the 7-day window cap, no rollover, no credits API — console only. class prepaid, provider cap 3 (plan says 3-4 concurrent; ETIMEDOUT/429 -> 2). Tiers: qwen3.8-max (thinking) = senior candidate, audition on senior-review packets; qwen3.7-max + deepseek-v4-pro + qwen3.7-plus + glm-5.2 = capable workers; deepseek-v4-flash-0731 + qwen3.8-flash = cheap workers (light packets). Pacing: credits are per-request and depend on model/thinking/tool calls, so measure — read remaining credits from the console via the #4217 VPS login (source=dashboard) and target 10,000/month ≈ 2,300 per 7-day window; expiry-first ordering (an expiring monthly grant beats non-expiring seats) but never above Cursor's expiring pool in senior work. Terms say interactive-only / no automation (same class as the GLM coding plan) — recorded here; Nish's call already made. Feeds the #4242 audit; all 7 models in the #4262 audition set. quota_bench_default_s 604800 (7d): a quota/cap 429 with no explicit reset window benches a week (the 7-day window pacing), not the 900s devin default; the #4217 pipeline supplies real reset times when it lands. No max_probe_ceiling: cap stays pinned at 3 (no upward AIMD probe on a paid seat). compat.supportsDeveloperRole=false (the endpoint 400s on Pi's developer role); thinking on for the reasoning models, enable_thinking=false for qwen3.8-flash + deepseek-v4-flash-0731 (wired in pi-models.json)."
     }
   },
   "product_order": "value",
@@ -410,6 +425,7 @@
     "devin",
     "cline",
     "cursor",
+    "alibaba-coding",
     "xai-oauth",
     "runinfra",
     "crof",

@@ -696,6 +696,114 @@
           "_comment_4262": "fleet-ops#4262: landed verbatim from the live file (pre-#4234 backup). cacheRead=input (0.09) until measured — Entrim's cache-read pricing is not known yet."
         }
       ]
+    },
+    "alibaba-coding": {
+      "baseUrl": "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+      "api": "openai-completions",
+      "apiKey": "!cut -d= -f2 /home/nish/fleet2/etc/alibaba-coding.env",
+      "models": [
+        {
+          "id": "qwen3.8-max",
+          "name": "qwen3.8-max via Alibaba Token Plan (SG)",
+          "contextWindow": 256000,
+          "maxTokens": 32768,
+          "reasoning": true,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        },
+        {
+          "id": "qwen3.7-max",
+          "name": "qwen3.7-max via Alibaba Token Plan (SG)",
+          "contextWindow": 256000,
+          "maxTokens": 32768,
+          "reasoning": true,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        },
+        {
+          "id": "qwen3.7-plus",
+          "name": "qwen3.7-plus via Alibaba Token Plan (SG)",
+          "contextWindow": 1000000,
+          "maxTokens": 32768,
+          "reasoning": true,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        },
+        {
+          "id": "qwen3.8-flash",
+          "name": "qwen3.8-flash via Alibaba Token Plan (SG)",
+          "contextWindow": 1000000,
+          "maxTokens": 32768,
+          "reasoning": false,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "samplingParams": {
+            "enable_thinking": false
+          }
+        },
+        {
+          "id": "glm-5.2",
+          "name": "glm-5.2 via Alibaba Token Plan (SG)",
+          "contextWindow": 200000,
+          "maxTokens": 32768,
+          "reasoning": true,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        },
+        {
+          "id": "deepseek-v4-pro",
+          "name": "deepseek-v4-pro via Alibaba Token Plan (SG)",
+          "contextWindow": 128000,
+          "maxTokens": 32768,
+          "reasoning": true,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          }
+        },
+        {
+          "id": "deepseek-v4-flash-0731",
+          "name": "deepseek-v4-flash-0731 via Alibaba Token Plan (SG)",
+          "contextWindow": 1000000,
+          "maxTokens": 32768,
+          "reasoning": false,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "samplingParams": {
+            "enable_thinking": false
+          }
+        }
+      ],
+      "compat": {
+        "supportsDeveloperRole": false
+      },
+      "_comment_4329": "fleet-ops#4329: alibaba-coding's models registration is durable here. install.sh copy-installs pi-models.json verbatim (the unknown-provider merge exists only for seat-caps.json), so without this row a deploy would silently drop the provider from the live models.json — the same trap #4262 caught for runinfra/crof/entrim. Landed verbatim from the live ~/.pi/agent/models.json (smoke-tested SEAT-OK 2026-09-07). compat.supportsDeveloperRole=false (the endpoint 400s on Pi's developer role); thinking on for the reasoning models, enable_thinking=false for qwen3.8-flash + deepseek-v4-flash-0731."
     }
   }
 }
