@@ -815,6 +815,32 @@ def compute_all(
     return [compute_repo_slo(repo, prs, now_ts=now_ts) for repo in repos]
 
 
+# fleet-ops#3759: the replay drill. Recomputes the quality proxies over a
+# historical merged-PR set (the cached 28d envelope, or a fixture) and prints
+# per-repo per-metric JSON so the proxy can be checked against a
+# hand-classified sample. This is the issue's termination command — it proves
+# the proxy matches manual classification on historical merges without
+# touching live alert state.
+def backtest(
+    repos: list[str],
+    prs: list[MergedPR],
+    *,
+    now: datetime,
+) -> dict[str, Any]:
+    now_ts = now.timestamp()
+    out: dict[str, Any] = {"window": "4w", "now": now.isoformat(), "repos": {}}
+    for repo in repos:
+        repo_prs = [p for p in prs if p.repo == repo]
+        slo = compute_repo_slo(repo, repo_prs, now_ts=now_ts)
+        out["repos"][repo] = {
+            "merges_7d": slo.merges_7d,
+            "reverts_per_100_merges": slo.quality_reverts_per_100,
+            "post_merge_defects_per_100": slo.quality_defects_per_100,
+            "sessions_to_pr_pct": slo.quality_sessions_to_pr_pct,
+        }
+    return out
+
+
 # --- export ----------------------------------------------------------------
 
 
@@ -1022,10 +1048,15 @@ def usage() -> int:
     print(
         "usage: fleet-product-slo.py [--stdout] [--help]\n"
         "       fleet-product-slo.py --repo-check <repo>\n"
+        "       fleet-product-slo.py --backtest <window> --repo <repo> [--repo <repo> ...]\n"
         "  Computes product delivery SLOs and writes\n"
         f"  {OUT} (override with FLEET_PRODUCT_SLO_OUT).\n"
         "  --repo-check prints the one-repo quality-ceiling verdict as\n"
         "  JSON (the auto-merge-arm gate input; exit 1 on fetch failure).\n"
+        "  --backtest replays the quality proxies over the cached 28d merged-PR\n"
+        "  set (or a fixture) and prints per-repo per-metric JSON — the\n"
+        "  fleet-ops#3759 termination drill proving the proxy matches manual\n"
+        "  classification on historical merges. <window> is 4w (28d).\n"
         "  Offline fixture: FLEET_PRODUCT_SLO_FIXTURE=/path/to.json",
         file=sys.stderr,
     )
@@ -1036,6 +1067,8 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(argv if argv is not None else sys.argv[1:])
     to_stdout = False
     repo_check_repo: str | None = None
+    backtest_window: str | None = None
+    backtest_repos: list[str] = []
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -1052,6 +1085,20 @@ def main(argv: list[str] | None = None) -> int:
             repo_check_repo = argv[i + 1]
             i += 2
             continue
+        if a == "--backtest":
+            if i + 1 >= len(argv):
+                print("product-slo: --backtest needs a window (4w)", file=sys.stderr)
+                return usage()
+            backtest_window = argv[i + 1]
+            i += 2
+            continue
+        if a == "--repo":
+            if i + 1 >= len(argv):
+                print("product-slo: --repo needs a repo name", file=sys.stderr)
+                return usage()
+            backtest_repos.append(argv[i + 1])
+            i += 2
+            continue
         print(f"product-slo: unknown flag {a}", file=sys.stderr)
         return usage()
 
@@ -1062,6 +1109,33 @@ def main(argv: list[str] | None = None) -> int:
             print(f"product-slo repo-check failed: {exc}", file=sys.stderr)
             return 1
         print(json.dumps(verdict, sort_keys=True))
+        return 0
+
+    if backtest_window is not None:
+        if backtest_window != "4w":
+            print(
+                f"product-slo: unsupported backtest window {backtest_window!r} "
+                "(only 4w)",
+                file=sys.stderr,
+            )
+            return usage()
+        if not backtest_repos:
+            print("product-slo: --backtest needs at least one --repo", file=sys.stderr)
+            return usage()
+        end = now_dt()
+        try:
+            if FIXTURE:
+                _, prs = load_fixture(FIXTURE)
+            else:
+                prs_or_none = load_merged_prs(end, backtest_repos)
+                if prs_or_none is None:
+                    raise RuntimeError("merged-PR fetch failed and no usable cache")
+                prs = prs_or_none
+            result = backtest(backtest_repos, prs, now=end)
+        except Exception as exc:  # noqa: BLE001 — caller decides fail-open
+            print(f"product-slo backtest failed: {exc}", file=sys.stderr)
+            return 1
+        print(json.dumps(result, sort_keys=True))
         return 0
 
     end = now_dt()

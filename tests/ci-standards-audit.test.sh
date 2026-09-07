@@ -589,6 +589,12 @@ bash "$here/scout-effectiveness.test.sh"
 # Hermetic test (no gh/prometheus/systemd) — runs fine in hosted CI.
 bash "$here/fleet-product-slo.test.sh"
 
+# fleet-ops#3759: the quality-ceiling proxy replay drill (--backtest 4w
+# --repo <r>). Hosted here so P14 runs it without a workflow-file edit (the
+# worker App cannot push .github/workflows/**). Hermetic test (fixture, no
+# live gh) — runs fine in hosted CI.
+bash "$here/fleet-product-slo-backtest.test.sh"
+
 # fleet-ops#2920 (PR #2937 follow-up): the drift-canary metrics drop-in
 # test landed on main without a ci.yml listing or a host, so P14 ran red
 # on "1 test file(s) are neither in ci.yml, hosted by a listed test,
