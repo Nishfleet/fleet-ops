@@ -97,8 +97,7 @@ print("OK: correlate")
 # CanaryEffectivenessLow was 0/0 caught vs 2+1+1 missed because
 # 0509#1132 (2026-08-26), 0509#1411 (2026-08-28) and fleet-ops#1466
 # (2026-08-28 04:58Z) all predate the organs' first observed run
-# (probe 2026-08-29T02:30Z, completion-canary 2026-08-28T21:52Z,
-# resilience-drill 2026-08-29T00:25Z). A canary cannot miss a
+# (probe 2026-08-29T02:30Z, resilience-drill 2026-08-29T00:25Z). A canary cannot miss a
 # regression it was not yet watching. Post-observe misses still count.
 first_probe = 1_000.0
 pre_inc = m.Incident(repo="Nishfleet/0509", ts=first_probe - 86_400, number=1132)
@@ -116,12 +115,11 @@ assert by_obs["0509-surface-probe"].missed == 1, by_obs["0509-surface-probe"]
 # Organs with zero observed events must not inherit another organ's
 # product-repo incidents as misses (fleet-ops#1466 vs resilience-drill).
 by_none = {s.organ: s for s in m.compute_all(
-    [m.Event(organ="fleet-completion-canary", ts=first_probe, kind="run")],
+    [m.Event(organ="fleet-resilience-drill", ts=first_probe, kind="run")],
     [m.Incident(repo="Nishfleet/fleet-ops", ts=first_probe - 100, number=1466)],
 )}
-assert by_none["fleet-completion-canary"].missed == 0, by_none["fleet-completion-canary"]
 assert by_none["fleet-resilience-drill"].missed == 0, by_none["fleet-resilience-drill"]
-assert by_none["fleet-completion-canary"].caught == 0
+assert by_none["fleet-resilience-drill"].caught == 0
 print("OK: pre-observe")
 PY
 ok "helpers: correlate caught vs missed; organs do not cross-contaminate"
@@ -142,12 +140,10 @@ grep -q '^fleet_canary_effectiveness_last_run_seconds 1788350400$' "$FLEET_CANAR
   || fail "heartbeat epoch wrong: $(grep fleet_canary_effectiveness_last_run_seconds "$FLEET_CANARY_EFF_OUT" || echo missing)"
 grep -q 'fleet_canary_effectiveness_ratio{organ="0509-surface-probe"} 0.000000' "$FLEET_CANARY_EFF_OUT" \
   || fail "empty window must emit ratio 0 for 0509-surface-probe"
-grep -q 'fleet_canary_runs_total{organ="fleet-completion-canary"} 0' "$FLEET_CANARY_EFF_OUT" \
-  || fail "empty window must emit runs=0 for completion-canary"
-grep -q 'fleet_canary_runs_total{organ="siterep-live-canary"} 0' "$FLEET_CANARY_EFF_OUT" \
-  || fail "empty window must emit runs=0 for siterep-live-canary"
 grep -q 'fleet_canary_runs_total{organ="fleet-resilience-drill"} 0' "$FLEET_CANARY_EFF_OUT" \
   || fail "empty window must emit runs=0 for resilience-drill"
+grep -q 'fleet_canary_runs_total{organ="siterep-live-canary"} 0' "$FLEET_CANARY_EFF_OUT" \
+  || fail "empty window must emit runs=0 for siterep-live-canary"
 ok "empty window emits heartbeat + per-organ zeros"
 
 # =========================================================================
@@ -155,9 +151,8 @@ ok "empty window emits heartbeat + per-organ zeros"
 # =========================================================================
 # Window ends 2026-09-02T12:00:00Z. Place events inside 30d.
 # 0509-surface-probe: failure at T-2h, bug issue 1h later → caught
-# fleet-completion-canary: run+failure at T-3h, no incident → failures=1, caught=0
+# fleet-resilience-drill: run+failure at T-3h, no incident → failures=1, caught=0
 # siterep-live-canary: run only, bug with no prior failure → missed
-# fleet-resilience-drill: run+failure, bug 2h later → caught
 python3 - <<'PY' >"$scratch/fixture.json"
 import json
 end = 1788350400  # 2026-09-02T12:00:00Z
@@ -165,13 +160,10 @@ events = [
     {"organ": "0509-surface-probe", "ts": end - 7200, "kind": "run"},
     {"organ": "0509-surface-probe", "ts": end - 7200, "kind": "failure",
      "detail": "fleet_probe_success=0"},
-    {"organ": "fleet-completion-canary", "ts": end - 10800, "kind": "run"},
-    {"organ": "fleet-completion-canary", "ts": end - 10800, "kind": "failure",
+    {"organ": "fleet-resilience-drill", "ts": end - 10800, "kind": "run"},
+    {"organ": "fleet-resilience-drill", "ts": end - 10800, "kind": "failure",
      "detail": "Failed with result 'exit-code'."},
     {"organ": "siterep-live-canary", "ts": end - 3600, "kind": "run"},
-    {"organ": "fleet-resilience-drill", "ts": end - 14400, "kind": "run"},
-    {"organ": "fleet-resilience-drill", "ts": end - 14400, "kind": "failure",
-     "detail": "fleet_resilience_drill_all_pass=0"},
 ]
 incidents = [
     {"repo": "Nishfleet/0509", "ts": end - 3600, "number": 101,
@@ -197,17 +189,11 @@ grep -q 'fleet_canary_missed_regressions_total{organ="0509-surface-probe"} 0' "$
 grep -q 'fleet_canary_effectiveness_ratio{organ="0509-surface-probe"} 1.000000' "$FLEET_CANARY_EFF_OUT" \
   || fail "0509 ratio should be 1.0"
 
-grep -q 'fleet_canary_failures_total{organ="fleet-completion-canary"} 1' "$FLEET_CANARY_EFF_OUT" \
-  || fail "completion-canary failures=1"
+grep -q 'fleet_canary_failures_total{organ="fleet-resilience-drill"} 1' "$FLEET_CANARY_EFF_OUT" \
+  || fail "resilience-drill failures=1"
 
-# fleet-ops is product_repos for BOTH completion-canary and resilience-drill.
-# Incident 303 at end-7200: resilience failed at end-14400 (within 24h) AND
-# completion failed at end-10800 (also within 24h). Both organs catch it —
-# each organ independently asks "did *I* fail before this incident?".
 grep -q 'fleet_canary_caught_regressions_total{organ="fleet-resilience-drill"} 1' "$FLEET_CANARY_EFF_OUT" \
   || fail "resilience should catch 1"
-grep -q 'fleet_canary_caught_regressions_total{organ="fleet-completion-canary"} 1' "$FLEET_CANARY_EFF_OUT" \
-  || fail "completion-canary also catches the shared fleet-ops incident"
 
 grep -q 'fleet_canary_missed_regressions_total{organ="siterep-live-canary"} 1' "$FLEET_CANARY_EFF_OUT" \
   || fail "siterep should miss 1"

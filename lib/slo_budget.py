@@ -19,8 +19,8 @@ Google SRE Workbook, Chapter 5 (Alerting on SLOs):
     burn-rate over avg_over_time(fleet_slo_compliance[W]) —
     burn_rate = (1 - avg_over_time(compliance[W])) / (1 - target),
     fast burn = 14.4x (1h AND 5m), slow burn = 1x (6h AND 30m).
-  * THRESHOLD-GAUGE SLOs (waste_ratio, gh_rate_limit_headroom,
-    chain_repair_latency): the error-budget ratio model does not fit a
+  * THRESHOLD-GAUGE SLOs (waste_ratio, gh_rate_limit_headroom): the
+    error-budget ratio model does not fit a
     single threshold gauge (Workbook applies burn-rate to ratio SLIs);
     these get canonical threshold-window alerts (value beyond target for
     a sustained window) instead.

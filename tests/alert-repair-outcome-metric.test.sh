@@ -58,9 +58,9 @@ lines = [
     f"{ts(20)} RESOLVED alertname=ClassExpiredAlert root_cause=PHANTOM_ALERT_drill_scenario_4 fix=NONE_required source=repair-dispatch",
     f"{ts(30)} RESOLVED alertname=ClassExpiredAlert root_cause=PHANTOM_ALERT_no_real_rule fix=NONE_required source=repair-dispatch",
     f"{ts(40)} RESOLVED alertname=ClassExpiredAlert repo=Nishfleet/siterep-public root_cause=transient_upstream_failure_re_runs=1 fix=no_retry_needed",
-    f"{ts(50)} RESOLVED alertname=ClassExpiredAlert reason=drill-cleanup source=fleet-completion-canary",
+    f"{ts(50)} RESOLVED alertname=ClassExpiredAlert reason=drill-cleanup source=repair-dispatch",
     # A dispatch line for the same alertname must not disturb the counts.
-    f"{ts(60)} DISPATCH alertname=ClassExpiredAlert unit=alert-repair-x source=fleet-completion-canary",
+    f"{ts(60)} DISPATCH alertname=ClassExpiredAlert unit=alert-repair-x source=repair-dispatch",
 ]
 log.write_text("\n".join(lines) + "\n")
 

@@ -6,9 +6,9 @@ Description=Fleet orchestrator heartbeat (durable, session-independent, host-loc
 # bound and died 4x today on session hops; this timer is owned by the
 # user systemd instance, not by any agent or tmux session.
 #
-# fleet-ops#3270: the four sections that only read GitHub state
-# (lifecycle-label-sweep, merged-pr observe-to-close, close-duplicates,
-# loose-ends-canary) moved behind webhook triggers (gh-webhook-receiver
+# fleet-ops#3270: the three sections that only read GitHub state
+# (lifecycle-label-sweep, merged-pr observe-to-close, close-duplicates)
+# moved behind webhook triggers (gh-webhook-receiver
 # dispatches to their own .service units). tier 1 now keeps only
 # host-local sections: merge-to-live deploy, queue green PRs, release
 # orphaned claims, recover failed units, verify scout/intake timers,

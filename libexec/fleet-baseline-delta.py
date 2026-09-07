@@ -3,7 +3,7 @@
 # Prometheus URLs are operator-controlled (default http://127.0.0.1:9090);
 # http_json refuses any non-http(s) scheme before urlopen, so the dynamic-
 # urllib file-read vector semgrep flags is closed by construction. Same
-# suppression as bin/fleet-completion-canary.py / bin/gh-webhook-canary.py.
+# suppression as bin/gh-webhook-canary.py.
 """fleet-baseline-delta — week-over-week MAD strangeness report (fleet-ops#1151).
 
 Queries Prometheus for every fleet_* series and a small set of key node_*
@@ -76,7 +76,7 @@ KEY_NODE = (
 # seconds, *_reset), this week's median sits roughly one week above the
 # trailing medians every single week, so a robust-z pass would re-flag the
 # whole clock family each week as noise. Exclude them by name shape; genuine
-# duration gauges (fleet_chain_cycle_seconds, fleet_probe_latency_seconds)
+# duration gauges (fleet_probe_latency_seconds)
 # do not match and stay in the scan.
 CLOCK_NAME_RE = re.compile(
     r"(last_run|last_green|last_success|last_trigger|last_admission|fetched|observed|timestamp|heartbeat)_seconds$"

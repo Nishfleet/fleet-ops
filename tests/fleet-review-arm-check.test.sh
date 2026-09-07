@@ -4,8 +4,8 @@
 # fleet-ops#3709 (part 2/2 of #3264): reviewer-round fallback — when no
 # entry of senior_seats_in_order is usable, the product worker opens the
 # PR WITHOUT `gh pr merge --auto` and marks the body with the literal
-# line `review: skipped, no capable seat` so the loose-ends canary
-# surfaces it. Never skipped silently, never armed unreviewed.
+# line `review: skipped, no capable seat` so the loose-ends surface it.
+# Never skipped silently, never armed unreviewed.
 #
 # Replay drill. Offline. Proves:
 #
@@ -14,10 +14,7 @@
 #      usable.
 #   2. bin/fleet-review-arm-check exits 1 when no senior seat is usable
 #      (the "open without the arm + body line" gate) and 0 when one is.
-#   3. The loose-ends canary lists a worker PR whose body carries
-#      `review: skipped, no capable seat` as a review-skipped-pr finding
-#      even when it is fresh (immediate loose end, not the 24h window).
-#   4. prompts/worker.md carries the fallback instruction (the worker
+#   3. prompts/worker.md carries the fallback instruction (the worker
 #      knows to open without the arm and add the body line).
 #
 # Hosted by tests/ci-standards-audit.test.sh so P14 runs it without a
@@ -28,8 +25,6 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
 lib="$repo_root/lib/seat-lib.sh"
 arm_check="$repo_root/bin/fleet-review-arm-check"
-canary="$repo_root/bin/fleet-loose-ends-canary"
-loose_lib="$repo_root/lib/loose-ends.py"
 worker="$repo_root/prompts/worker.md"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -37,8 +32,6 @@ ok()   { echo "OK: $*"; }
 
 [[ -f "$lib" ]] || fail "missing $lib"
 [[ -x "$arm_check" ]] || fail "not executable: $arm_check"
-[[ -x "$canary" ]] || fail "not executable: $canary"
-[[ -f "$loose_lib" ]] || fail "missing $loose_lib"
 [[ -f "$worker" ]] || fail "missing $worker"
 command -v jq >/dev/null 2>&1 || fail "jq required"
 command -v python3 >/dev/null 2>&1 || fail "python3 required"
@@ -70,11 +63,8 @@ mkdir -p "$ledger"
 
 # A future bench_until (quota_bench) benches a seat. The bench must be in
 # the future relative to the REAL clock (seat_usable compares against now),
-# so use a far-future wall. NOW is a separate fixed timestamp for the canary
-# age computation (FLEET_LOOSE_ENDS_NOW).
-NOW=1787918400  # 2026-08-28T12:00:00Z
+# so use a far-future wall.
 BENCH_UNTIL="2099-01-01T00:00:00Z"
-FUTURE="2099-01-01T00:00:00Z"
 
 bench_seat() {
     local p="$1" m="$2"
@@ -144,43 +134,11 @@ grep -q 'no capable' "$scratch/help.out" \
     || fail "2c: --help must document the fallback body line"
 ok "2c: fleet-review-arm-check --help documents the fallback"
 
-# --- 3. loose-ends canary lists a review-skipped PR ------------------------
-# A worker PR whose body carries the marker is an immediate loose end,
-# listed even when fresh (no 24h wait).
-cat >"$scratch/prs.json" <<JSON
-[
-  {"repo":"Nishfleet/0509","number":20,"title":"product PR no seat","url":"https://x/20","createdAt":"${FUTURE}","headRefName":"claim/issue-20","isDraft":false,"author":{"login":"nishfleet-worker[bot]"},"body":"## Summary\\n\\nreview: skipped, no capable seat\\n"},
-  {"repo":"Nishfleet/0509","number":21,"title":"normal fresh worker","url":"https://x/21","createdAt":"${FUTURE}","headRefName":"claim/issue-21","isDraft":false,"author":{"login":"nishfleet-worker[bot]"},"body":"## Summary\\nnormal"}
-]
-JSON
-: >"$scratch/empty-q.md"
-set +e
-env -u FLEET_LOOSE_ENDS_NAG_HOURS \
-    FLEET_LOOSE_ENDS_PRS_FILE="$scratch/prs.json" \
-    FLEET_LOOSE_ENDS_QUESTIONS="$scratch/empty-q.md" \
-    FLEET_LOOSE_ENDS_SCAN_PRS="1" \
-    FLEET_LOOSE_ENDS_SCAN_WORKTREES="0" \
-    FLEET_LOOSE_ENDS_FILE="0" \
-    FLEET_LOOSE_ENDS_CLOSE="0" \
-    FLEET_LOOSE_ENDS_NOW="$(python3 -c "import datetime;print(datetime.datetime.fromtimestamp($NOW,datetime.timezone.utc).isoformat().replace('+00:00','Z'))")" \
-    "$canary" --prs-only >"$scratch/c.out" 2>"$scratch/c.err"
-c_rc=$?
-set -e
-[[ "$c_rc" == "0" ]] || fail "3: canary must exit 0, got $c_rc ($(cat "$scratch/c.err"))"
-grep -q 'Nishfleet/0509#20' "$scratch/c.err" \
-    || fail "3: review-skipped PR #20 must be listed ($(cat "$scratch/c.err"))"
-grep -q 'review-skipped-pr' "$scratch/c.err" \
-    || fail "3: review-skipped PR must be classified review-skipped-pr"
-if grep -q 'Nishfleet/0509#21' "$scratch/c.err"; then
-    fail "3: normal fresh worker PR #21 must NOT be listed"
-fi
-ok "3: loose-ends canary lists the review-skipped PR immediately, skips a normal fresh PR"
-
-# --- 4. worker.md carries the fallback instruction -------------------------
+# --- 3. worker.md carries the fallback instruction -------------------------
 grep -q 'review: skipped, no capable seat' "$worker" \
     || fail "4: worker.md must carry the fallback body line"
 grep -q 'fleet-review-arm-check' "$worker" \
     || fail "4: worker.md must reference fleet-review-arm-check"
-ok "4: worker.md carries the no-capable-seat fallback instruction"
+ok "3: worker.md carries the no-capable-seat fallback instruction"
 
 echo "fleet-review-arm-check: PASS"

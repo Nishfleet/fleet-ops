@@ -42,13 +42,11 @@ workflow_run, action=completed, conclusion=success
 pull_request, action=closed (merged OR closed)
         → start fleet-worktree-reaper.service  (fleet-ops#3269)
         + start fleet-merged-pr-close.service  (fleet-ops#3270)
-pull_request, action=opened (new in-flight PR)
-        → start fleet-loose-ends-canary.service  (fleet-ops#3270)
 ping    → no-op (200)
 
-The four sections that previously ran only on the
+The three sections that previously ran only on the
 fleet-heartbeat.timer (lifecycle-label-sweep, merged-pr-close,
-close-duplicates, loose-ends-canary) now also fire on the matching
+close-duplicates) now also fire on the matching
 GitHub event via this receiver. The heartbeat tick (now 60 min) is
 the level-triggered backstop for webhooks that never arrive.
 
@@ -240,12 +238,11 @@ def dispatch(event: str, action: str, label: str, repo: str, conclusion: str,
                  f"pull_request/{action}/merged={pr_merged} → fleet-merged-pr-close"),
             ]
         if action == "opened":
-            # fleet-ops#3270: a brand-new in-flight PR is half-done by
-            # definition until it lands; the loose-ends canary catches
-            # the >24h-without-merge class. Cheap to run, dedupes with
-            # the timer backstop.
-            return [("fleet-loose-ends-canary.service",
-                     f"pull_request/{action} → fleet-loose-ends-canary")]
+            # fleet-ops#4146: the loose-ends canary was retired; the
+            # >24h-without-merge class is now GitHub's own actions/stale
+            # on a schedule in each repo (label stale-unarmed, comment,
+            # never close). Nothing to dispatch here.
+            return [("", f"pull_request: ignored (action={action})")]
         return [("", f"pull_request: ignored (action={action})")]
 
     if event == "issues":

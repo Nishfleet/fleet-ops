@@ -4,7 +4,7 @@
 # fleet-ops#2614: when a unit (e.g. fleet-heartbeat.service) keeps failing on
 # every scheduler tick while a structural fault is unfixed, the writer must
 # NOT generate a fresh STOP-REASON per fire — that orphan-prunes the prior
-# chain state file, holds fleet_chain_open{plane=unit-escalation,hop=trip}
+# chain state file, holds the unit-escalation trip open
 # at 1 forever, and burns the senior-auditor's 2-dispatch budget on a single
 # root cause. The writer-side dedupe collapses same-unit re-fires inside
 # SAME_UNIT_REFIRE_WINDOW_S (default 600s) to a single STOP-REASON; the

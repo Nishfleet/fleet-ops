@@ -1895,7 +1895,7 @@ find_senior_seat() {
 # senior ladder is walled. This is the reviewer-round fallback gate: when
 # no senior seat is usable, the worker opens the product PR WITHOUT the
 # auto-merge arm and marks the body `review: skipped, no capable seat` so
-# the loose-ends canary surfaces it. Unlike find_senior_seat, this does
+# the loose-ends surface it. Unlike find_senior_seat, this does
 # NOT fall through to a non-senior capable seat — the reviewer must run on
 # a senior seat or not at all (never armed unreviewed, never skipped
 # silently). Re-entrant safe: a plain read of the already-loaded
