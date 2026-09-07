@@ -5,15 +5,20 @@
 # 2026-08-28 (00:12 + 00:15 IST) — the Nish-reserved channel delivered 7h
 # late during an active Grok-401 incident. The root cause (seats= grep abort
 # under set -euo pipefail) was fixed by #1349; this test locks the REMAINING
-# mechanical guarantee from #1458: on delivery failure the unit must
-#   (a) retry hermes on a short backoff, AND
-#   (b) fall back to a delivery path that does NOT share the failed
-#       dependency (the direct Telegram Bot API, bypassing hermes).
+# mechanical guarantee from #1458: on delivery failure the unit must retry
+# hermes on a short backoff, and if hermes is exhausted it must exit 1 (loud
+# — OnFailure summons an auditor).
+#
+# fleet-ops#4145: the direct Telegram Bot API fallback was retired with the
+# hand-built claude-telegram-bridge.py. Hermes is now the single phone path.
+# This test was rewritten to match: there is no fallback path, so a hermes
+# outage is LOUD (exit 1) instead of silently bypassed. The retry count and
+# loud-failure guarantees from #1458 still hold; the fallback guarantee does
+# not (it is gone by design).
 #
 # The drill forces a hermes failure (a fake hermes that always exits 1) and
-# proves both the retry count and the fallback fire. A second scenario proves
-# that when both paths fail the script exits 1 (loud — OnFailure summons an
-# auditor). A third scenario proves a spurious trigger (no unseen entries)
+# proves the retry count fires and the run exits 1. A succeeding fake hermes
+# proves delivery marks the entry seen. A spurious trigger (no unseen entries)
 # exits 0, not 1.
 #
 # Runs offline against temp files. No live state, no real Telegram send.
@@ -46,116 +51,90 @@ escalations="$state/NISH-ESCALATIONS.md"
 entry_line="2026-08-28T00:12:20Z LEGAL-BOUNDARY hash=drill-1458-legal-basics"
 {
   printf '%s\n' "$entry_line"
-  printf '  SUMMARY: drill test for fleet-ops#1458 retry + fallback\n'
-  printf '  NISH DECISION NEEDED: prove retry and fallback both fire\n'
+  printf '  SUMMARY: drill test for fleet-ops#1458 retry + loud failure\n'
+  printf '  NISH DECISION NEEDED: prove retry fires and failure is loud\n'
 } > "$escalations"
 
 # Fake hermes that always fails — logs each invocation (one line each) so the
 # test can count retries. Exits 1 to simulate a hermes outage.
-fake_hermes="$tmp/fake-hermes"
-cat > "$fake_hermes" <<'EOF'
+fake_hermes_fail="$tmp/fake-hermes-fail"
+cat > "$fake_hermes_fail" <<'EOF'
 #!/usr/bin/env bash
 printf 'hermes-invoked\n' >> "$HERMES_LOG"
 exit 1
 EOF
-chmod +x "$fake_hermes"
+chmod +x "$fake_hermes_fail"
 
-# Fake fallback curl that always succeeds — logs each invocation (one line
-# each) so the test can prove the fallback fired. Installed as $tmp/curl so
-# PATH lookup finds it before the real /usr/bin/curl. Exits 0.
-fake_curl="$tmp/curl"
-cat > "$fake_curl" <<'EOF'
+# Fake hermes that always succeeds — logs each invocation so the test can
+# prove delivery. Exits 0.
+fake_hermes_ok="$tmp/fake-hermes-ok"
+cat > "$fake_hermes_ok" <<'EOF'
 #!/usr/bin/env bash
-printf 'curl-invoked\n' >> "$CURL_LOG"
+printf 'hermes-invoked\n' >> "$HERMES_LOG"
 exit 0
 EOF
-chmod +x "$fake_curl"
+chmod +x "$fake_hermes_ok"
 
-# A fake Telegram bridge env with dummy values (the script reads the token
-# and chat_id from here; the fake curl never actually calls the API).
-tgenv="$tmp/tg.env"
-{
-  printf 'CLAUDE_TELEGRAM_BOT_TOKEN=drill-dummy-token\n'
-  printf 'CLAUDE_TELEGRAM_ALLOWED_USER_ID=1144372019\n'
-} > "$tgenv"
-
-# --- scenario 1: hermes fails, retry fires, fallback delivers ---------------
-echo "--- scenario 1: hermes fails -> retry -> fallback delivers ---"
+# --- scenario 1: hermes fails -> retry fires -> exit 1 (loud, no fallback) ---
+echo "--- scenario 1: hermes fails -> retry -> exit 1 (loud, no fallback) ---"
 hermes_log="$tmp/hermes.log"; : > "$hermes_log"
-curl_log="$tmp/curl.log"; : > "$curl_log"
 
 # BOUNDARY_NOTIFY_BACKOFF="0 0" makes retries instant (no real sleep) so the
 # test is fast. The script still iterates 3 times (initial + 2 backoffs).
+set +e
 UNIT_ESCALATION_AGENT_STATE="$state" \
-BOUNDARY_NOTIFY_HERMES="$fake_hermes" \
-BOUNDARY_NOTIFY_TGENV="$tgenv" \
+BOUNDARY_NOTIFY_HERMES="$fake_hermes_fail" \
 BOUNDARY_NOTIFY_BACKOFF="0 0" \
-BOUNDARY_NOTIFY_FALLBACK=1 \
 HERMES_LOG="$hermes_log" \
-CURL_LOG="$curl_log" \
-PATH="$tmp:/usr/bin:/bin" \
-bash "$script" > "$tmp/out1" 2>"$tmp/err1" || true
+bash "$script" > "$tmp/out1" 2>"$tmp/err1"
+rc=$?
+set -e
 
 hermes_calls=$(wc -l < "$hermes_log")
-curl_calls=$(wc -l < "$curl_log")
-echo "hermes invocations: $hermes_calls, fallback curl invocations: $curl_calls"
+echo "hermes invocations: $hermes_calls, exit: $rc"
 
 [[ "$hermes_calls" -ge 3 ]] \
   || fail "hermes must retry at least 3 times (initial + 2 backoffs); got $hermes_calls"
 ok "hermes retried $hermes_calls times (>= 3)"
 
-[[ "$curl_calls" -eq 1 ]] \
-  || fail "fallback must fire exactly once after hermes exhausts; got $curl_calls"
-ok "fallback direct-API fired once"
+[[ "$rc" -eq 1 ]] \
+  || fail "hermes exhausted must exit 1 (loud for OnFailure, no fallback); got $rc"
+ok "hermes exhaustion exits 1 (loud, no fallback)"
 
-grep -q "delivered (fallback direct API)" "$tmp/out1" \
-  || fail "output must report fallback delivery; got: $(cat "$tmp/out1")"
-ok "fallback delivery reported in output"
+grep -q "DELIVERY FAILED" "$tmp/err1" \
+  || fail "stderr must report DELIVERY FAILED; got: $(cat "$tmp/err1")"
+ok "DELIVERY FAILED reported on stderr"
 
-# The entry must be marked seen (delivered).
+# The entry must NOT be marked seen (delivery failed — retry next trigger).
 key=$(printf '%s' "$entry_line" | sha256sum | cut -c1-32)
 grep -qxF "$key" "$seen" \
-  || fail "delivered entry must be marked seen"
-ok "delivered entry marked seen"
+  && fail "failed delivery must NOT be marked seen" || ok "failed delivery not marked seen"
 
-# --- scenario 2: both hermes AND fallback fail -> exit 1 (loud) -------------
-echo "--- scenario 2: both paths fail -> exit 1 ---"
+# --- scenario 2: hermes succeeds on first try -> delivered, exit 0 ----------
+echo "--- scenario 2: hermes succeeds -> delivered, exit 0 ---"
 : > "$seen"
-# Replace fake curl with one that fails.
-cat > "$tmp/curl" <<'EOF'
-#!/usr/bin/env bash
-printf 'curl-invoked\n' >> "$CURL_LOG"
-exit 1
-EOF
-chmod +x "$tmp/curl"
 hermes_log2="$tmp/hermes2.log"; : > "$hermes_log2"
-curl_log2="$tmp/curl2.log"; : > "$curl_log2"
 
 set +e
 UNIT_ESCALATION_AGENT_STATE="$state" \
-BOUNDARY_NOTIFY_HERMES="$fake_hermes" \
-BOUNDARY_NOTIFY_TGENV="$tgenv" \
+BOUNDARY_NOTIFY_HERMES="$fake_hermes_ok" \
 BOUNDARY_NOTIFY_BACKOFF="0 0" \
-BOUNDARY_NOTIFY_FALLBACK=1 \
 HERMES_LOG="$hermes_log2" \
-CURL_LOG="$curl_log2" \
-PATH="$tmp:/usr/bin:/bin" \
 bash "$script" > "$tmp/out2" 2>"$tmp/err2"
-rc=$?
+rc2=$?
 set -e
 
-echo "exit code: $rc"
-[[ "$rc" -eq 1 ]] \
-  || fail "both paths failing must exit 1 (loud for OnFailure); got $rc"
-ok "both-paths-fail exits 1 (loud)"
+echo "exit: $rc2"
+[[ "$rc2" -eq 0 ]] || fail "successful delivery must exit 0; got $rc2"
+ok "hermes success exits 0"
 
-grep -q "DELIVERY FAILED" "$tmp/err2" \
-  || fail "stderr must report DELIVERY FAILED; got: $(cat "$tmp/err2")"
-ok "DELIVERY FAILED reported on stderr"
+grep -q "delivered (hermes, attempt 1)" "$tmp/out2" \
+  || fail "output must report hermes delivery; got: $(cat "$tmp/out2")"
+ok "hermes delivery reported in output"
 
-# Entry must NOT be marked seen (delivery failed — retry next trigger).
 grep -qxF "$key" "$seen" \
-  && fail "failed delivery must NOT be marked seen" || ok "failed delivery not marked seen"
+  || fail "delivered entry must be marked seen"
+ok "delivered entry marked seen"
 
 # --- scenario 3: spurious trigger, no unseen entries -> exit 0 --------------
 echo "--- scenario 3: spurious trigger (all seen) -> exit 0 ---"
@@ -166,12 +145,9 @@ hermes_log3="$tmp/hermes3.log"; : > "$hermes_log3"
 
 set +e
 UNIT_ESCALATION_AGENT_STATE="$state" \
-BOUNDARY_NOTIFY_HERMES="$fake_hermes" \
-BOUNDARY_NOTIFY_TGENV="$tgenv" \
+BOUNDARY_NOTIFY_HERMES="$fake_hermes_fail" \
 BOUNDARY_NOTIFY_BACKOFF="0 0" \
-BOUNDARY_NOTIFY_FALLBACK=1 \
 HERMES_LOG="$hermes_log3" \
-PATH="$tmp:/usr/bin:/bin" \
 bash "$script" > "$tmp/out3" 2>"$tmp/err3"
 rc3=$?
 set -e
@@ -193,12 +169,9 @@ printf '# empty\n' > "$escalations"
 
 set +e
 UNIT_ESCALATION_AGENT_STATE="$state" \
-BOUNDARY_NOTIFY_HERMES="$fake_hermes" \
-BOUNDARY_NOTIFY_TGENV="$tgenv" \
+BOUNDARY_NOTIFY_HERMES="$fake_hermes_fail" \
 BOUNDARY_NOTIFY_BACKOFF="0 0" \
-BOUNDARY_NOTIFY_FALLBACK=1 \
 HERMES_LOG="$hermes_log3" \
-PATH="$tmp:/usr/bin:/bin" \
 bash "$script" > "$tmp/out4" 2>"$tmp/err4"
 rc4=$?
 set -e
@@ -208,52 +181,41 @@ echo "exit code: $rc4"
   || fail "no boundary entries must exit 0 (grep no-match must not abort); got $rc4"
 ok "no-entries trigger exits 0 (grep no-match does not abort)"
 
-# --- scenario 5: prose-format reserved entry is NOT silently dropped -------
+# --- scenario 5: prose-format reserved entry is delivered via hermes --------
 # fleet-ops#4048: the old parser only matched the timestamp shape, so a prose
 # section (`## YYYY-MM-DD — title` with a NISH ACTION bullet) was never
 # delivered while the unit exited 0. The prose-scan detector must deliver it.
-# Fake hermes still fails here, so the fallback curl must carry the delivery
-# (proving the prose path reuses the same retry/fallback machinery).
-echo "--- scenario 5: prose-format reserved entry is delivered, not silent ---"
+# Here hermes SUCCEEDS, so the prose path must deliver via hermes (proving the
+# prose path reuses the same retry machinery).
+echo "--- scenario 5: prose-format reserved entry is delivered via hermes ---"
 cat > "$escalations" <<'EOS'
 ## 2026-09-08 — drill prose NISH ACTION (fleet-ops#4048)
 - **NISH ACTION (money — drill that prose delivery fires):** no-op drill ask; the detector must deliver this, not exit silently.
 EOS
 : > "$seen"
-# Restore the succeeding fake curl for this scenario.
-cat > "$tmp/curl" <<'EOF'
-#!/usr/bin/env bash
-printf 'curl-invoked\n' >> "$CURL_LOG"
-exit 0
-EOF
-chmod +x "$tmp/curl"
-curl_log5="$tmp/curl5.log"; : > "$curl_log5"
+hermes_log5="$tmp/hermes5.log"; : > "$hermes_log5"
 
 set +e
 UNIT_ESCALATION_AGENT_STATE="$state" \
-BOUNDARY_NOTIFY_HERMES="$fake_hermes" \
-BOUNDARY_NOTIFY_TGENV="$tgenv" \
+BOUNDARY_NOTIFY_HERMES="$fake_hermes_ok" \
 BOUNDARY_NOTIFY_BACKOFF="0 0" \
-BOUNDARY_NOTIFY_FALLBACK=1 \
-HERMES_LOG="$hermes_log3" \
-CURL_LOG="$curl_log5" \
-PATH="$tmp:/usr/bin:/bin" \
+HERMES_LOG="$hermes_log5" \
 bash "$script" > "$tmp/out5" 2>"$tmp/err5"
 rc5=$?
 set -e
 echo "exit code: $rc5"
 
 # The run must NOT be a silent green: the prose NISH ACTION must be reported
-# as delivered (here on the fallback path since fake hermes always fails).
-grep -q "delivered (fallback direct API)" "$tmp/out5" \
-  || fail "prose reserved entry must be delivered, not silently dropped; out=$(cat "$tmp/out5")"
-ok "prose NISH ACTION delivered (not a silent green)"
+# as delivered via hermes.
+grep -q "delivered (hermes, attempt 1)" "$tmp/out5" \
+  || fail "prose reserved entry must be delivered via hermes, not silently dropped; out=$(cat "$tmp/out5")"
+ok "prose NISH ACTION delivered via hermes (not a silent green)"
 
-fallback_curl5=$(wc -l < "$curl_log5")
-echo "fallback curl invocations: $fallback_curl5"
-[[ "$fallback_curl5" -ge 1 ]] \
-  || fail "prose delivery must fire the fallback at least once; got $fallback_curl5"
-ok "prose path reused the retry/fallback machinery"
+hermes_calls5=$(wc -l < "$hermes_log5")
+echo "hermes invocations: $hermes_calls5"
+[[ "$hermes_calls5" -ge 1 ]] \
+  || fail "prose delivery must invoke hermes at least once; got $hermes_calls5"
+ok "prose path reused the retry machinery"
 
 # The prose marker must be marked seen (de-duped on the next trigger).
 prose_line="## 2026-09-08 — drill prose NISH ACTION (fleet-ops#4048)|- **NISH ACTION (money — drill that prose delivery fires):** no-op drill ask; the detector must deliver this, not exit silently."
@@ -271,24 +233,13 @@ cat > "$escalations" <<'EOS'
 - **NISH DECISION NEEDED (drill):** this prose item must trip exit 1 when undeliverable.
 EOS
 : > "$seen"
-# Failing fake curl again (both delivery paths blocked).
-cat > "$tmp/curl" <<'EOF'
-#!/usr/bin/env bash
-printf 'curl-invoked\n' >> "$CURL_LOG"
-exit 1
-EOF
-chmod +x "$tmp/curl"
-curl_log6="$tmp/curl6.log"; : > "$curl_log6"
+hermes_log6="$tmp/hermes6.log"; : > "$hermes_log6"
 
 set +e
 UNIT_ESCALATION_AGENT_STATE="$state" \
-BOUNDARY_NOTIFY_HERMES="$fake_hermes" \
-BOUNDARY_NOTIFY_TGENV="$tgenv" \
+BOUNDARY_NOTIFY_HERMES="$fake_hermes_fail" \
 BOUNDARY_NOTIFY_BACKOFF="0 0" \
-BOUNDARY_NOTIFY_FALLBACK=1 \
-HERMES_LOG="$hermes_log3" \
-CURL_LOG="$curl_log6" \
-PATH="$tmp:/usr/bin:/bin" \
+HERMES_LOG="$hermes_log6" \
 bash "$script" > "$tmp/out6" 2>"$tmp/err6"
 rc6=$?
 set -e
@@ -313,28 +264,18 @@ echo "--- scenario 7: prose older than last delivered entry is not backfiled ---
   printf '2026-09-07T00:20:00Z MONEY-BOUNDARY newest-delivered-slug\n'
 } > "$escalations"
 : > "$seen"
-curl_log7="$tmp/curl7.log"; : > "$curl_log7"
-# Succeeding curl; but the entry-format line (newest, dated 09-07) is the only
+hermes_log7="$tmp/hermes7.log"; : > "$hermes_log7"
+# Succeeding hermes; but the entry-format line (newest, dated 09-07) is the only
 # thing the boundary scan may deliver, so mark it seen in advance to force a
 # pure "nothing new" run.
 entry_key=$(printf '%s' '2026-09-07T00:20:00Z MONEY-BOUNDARY newest-delivered-slug' | sha256sum | cut -c1-32)
 printf '%s\n' "$entry_key" > "$seen"
-cat > "$tmp/curl" <<'EOF'
-#!/usr/bin/env bash
-printf 'curl-invoked\n' >> "$CURL_LOG"
-exit 0
-EOF
-chmod +x "$tmp/curl"
 
 set +e
 UNIT_ESCALATION_AGENT_STATE="$state" \
-BOUNDARY_NOTIFY_HERMES="$fake_hermes" \
-BOUNDARY_NOTIFY_TGENV="$tgenv" \
+BOUNDARY_NOTIFY_HERMES="$fake_hermes_ok" \
 BOUNDARY_NOTIFY_BACKOFF="0 0" \
-BOUNDARY_NOTIFY_FALLBACK=1 \
-HERMES_LOG="$hermes_log3" \
-CURL_LOG="$curl_log7" \
-PATH="$tmp:/usr/bin:/bin" \
+HERMES_LOG="$hermes_log7" \
 bash "$script" > "$tmp/out7" 2>"$tmp/err7"
 rc7=$?
 set -e
@@ -346,16 +287,16 @@ if grep -q "old ask" "$tmp/out7"; then
 else
   ok "prose older than last-delivered entry not backfiled"
 fi
-# Deliveries (fallback) must be zero for this trigger: nothing unseen remains.
-fallback_curl7=$(wc -l < "$curl_log7")
-echo "fallback curl invocations: $fallback_curl7"
+# Deliveries (hermes) must be zero for this trigger: nothing unseen remains.
+hermes_calls7=$(wc -l < "$hermes_log7")
+echo "hermes invocations: $hermes_calls7"
 set +e
-[ "$rc7" -eq 0 ] && [ "$fallback_curl7" -eq 0 ]
+[ "$rc7" -eq 0 ] && [ "$hermes_calls7" -eq 0 ]
 rc7b=$?
 set -e
 [[ "$rc7b" -eq 0 ]] \
-  || fail "old-prose-only trigger must exit 0 with zero deliveries (nothing new); rc=$rc7 fallback=$fallback_curl7"
+  || fail "old-prose-only trigger must exit 0 with zero deliveries (nothing new); rc=$rc7 hermes=$hermes_calls7"
 ok "old-prose-only trigger exits 0 with zero deliveries"
 
 echo ""
-echo "OK: nish-boundary-notify retry + fallback drill (fleet-ops#1458) + prose detector (fleet-ops#4048) — 7/7 scenarios pass"
+echo "OK: nish-boundary-notify retry + loud-failure drill (fleet-ops#1458 + #4145) + prose detector (#4048) — 7/7 scenarios pass"
