@@ -247,6 +247,7 @@ jobs:
         # skips for 15min, stale claims with no live worker/PR are released).
         bash tests/pi-issue-failed-reap-cooldown.test.sh
         bash tests/pi-intake-tick-reclaim-cooldown.test.sh
+        bash tests/claim-pr-head-owner.test.sh
         bash tests/pi-intake-tick-difficulty-from-issue.test.sh
         bash tests/pi-intake-topup.test.sh
         bash tests/pi-intake-tick-scout-on-empty.test.sh
