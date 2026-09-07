@@ -73,11 +73,6 @@
       "proof": "live VPS 2026-08-26; stop-hook judge for destructive calls"
     },
     {
-      "id": "structured-output",
-      "kind": "global-file",
-      "proof": "live VPS 2026-08-23; stock Pi structured_output tool"
-    },
-    {
       "id": "subagent",
       "kind": "global-dir",
       "proof": "live VPS 2026-08-23; stock Pi subagent, constrained by spawn-guard-core"
@@ -108,6 +103,11 @@
       "id": "git-checkpoint",
       "kind": "global-file",
       "reason": "disabled-20260825-stash-collision: stash collides with other agents"
+    },
+    {
+      "id": "structured-output",
+      "kind": "global-file",
+      "reason": "disabled-20260907-print-mode-0B: terminate:true ends the turn on a tool call, so the session's last message is a toolResult and `pi --print` text mode writes nothing (dist/modes/print-mode.js prints text blocks of the last message only when its role is \"assistant\"). 92 ollama sessions in 7d, 51 of 81 worked-no-text runs; the final answer already existed in 49 of them and was discarded. Nothing in pi-issue-run or the packet asks for the tool (fleet-ops#4234)."
     }
   ]
 }

@@ -310,7 +310,11 @@
           "id": "deepseek-v4-flash:0731",
           "name": "DS4 Flash via Ollama Pro",
           "contextWindow": 1000000,
-          "maxTokens": 16384
+          "maxTokens": 16384,
+          "samplingParams": {
+            "reasoning_effort": "none"
+          },
+          "_comment_reasoning": "fleet-ops#4234: the endpoint reasons by default and charges reasoning to the output budget. reasoning_effort:none is the only value that turns it off (low/medium/high, think:false and chat_template_kwargs{thinking:false} all still return reasoning and zero content). Pi already clamps this seat's thinkingLevel to off because reasoning is not declared here, so this makes the wire match Pi's own view."
         },
         {
           "id": "deepseek-v4-pro:0813",
@@ -330,7 +334,11 @@
           "contextWindow": 131072,
           "maxTokens": 16384
         }
-      ]
+      ],
+      "compat": {
+        "maxTokensField": "max_tokens"
+      },
+      "_comment_max_tokens_field": "fleet-ops#4234: ollama.com's OpenAI-compat endpoint reads ONLY max_tokens; it accepts max_completion_tokens and silently drops it. Pi's useMaxTokens allowlist (openai-completions detectCompat) does not include ollama.com, so without this compat override every request ran at the endpoint's 65536 ceiling instead of the 16384 configured here, and 80 sessions in 7d ended as one 65536-token reasoning block with zero answer."
     },
     "hetzner": {
       "baseUrl": "https://inference.hetzner.com/api/v1",
