@@ -381,6 +381,16 @@ groups:
           summary: "memory available below 8% for 10m"
           description: "node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.08"
 
+      - alert: FleetOomdKillsHigh
+        expr: sum(fleet_oomd_kills_6h) > 3
+        for: 5m
+        labels:
+          severity: critical
+          service: fleet
+        annotations:
+          summary: "systemd-oomd killed > 3 app-pi-issue.slice workers in 6h — raise ram_gb_per_worker back to 2.0"
+          description: "sum(fleet_oomd_kills_6h) > 3 for 5m (fleet-ops#4164). systemd-oomd is pressure-killing fleet workers. The repair packet must raise the live ram_gb_per_worker charge in ~/.local/state/pi-packet/seat-caps.json back to 2.0 (the #3679 brake) and verify via a pi-intake tick that total_cap drops to ~4. Per-unit kills by unit are in fleet_oomd_kills_6h{unit=...}. Do NOT raise the slice MemoryHigh above 12G."
+
   - name: fleet_self_observation
     rules:
       - alert: FleetThroughputCollapse

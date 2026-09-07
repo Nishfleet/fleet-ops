@@ -167,6 +167,8 @@ HELP_MPR = "# HELP fleet_merged_prs_24h Merged PR count per repo in the trailing
 TYPE_MPR = "# TYPE fleet_merged_prs_24h gauge"
 HELP_ESC = "# HELP fleet_escalations_24h Count of unit-escalation@ instances in the last 24h (top 20)."
 TYPE_ESC = "# TYPE fleet_escalations_24h gauge"
+HELP_OOMD = "# HELP fleet_oomd_kills_6h systemd-oomd kills of app-pi-issue.slice units in the trailing 6h, by unit (fleet-ops#4164). A rise > 3 in 6h trips FleetOomdKillsHigh, whose repair packet raises the live ram_gb_per_worker charge back to 2.0. Counts only oomd-managed kills (MESSAGE=Killed unit or Killed process), not kernel OOM."
+TYPE_OOMD = "# TYPE fleet_oomd_kills_6h gauge"
 HELP_RDISP = "# HELP fleet_repair_dispatch_24h DISPATCH lines in alert-repair actions.log within 24h."
 TYPE_RDISP = "# TYPE fleet_repair_dispatch_24h gauge"
 HELP_RSKIP = "# HELP fleet_repair_skip_24h SKIP lines in alert-repair actions.log within 24h."
@@ -2061,6 +2063,68 @@ def _escalations_24h():
         m = re.search(r"Starting unit-escalation@(.+?)\.service", line)
         if m and not _is_excluded(m.group(1)):
             counts[m.group(1)] += 1
+    return dict(counts.most_common(20))
+
+
+def _oomd_kills_6h():
+    """Count systemd-oomd kills of app-pi-issue.slice units in the last 6h.
+
+    fleet-ops#4164: a rise > 3 in 6h trips FleetOomdKillsHigh, whose repair
+    packet raises the live ram_gb_per_worker charge back to 2.0. Counts only
+    oomd-managed kills (systemd-oomd logs "Killed unit ..." or
+    "Killed process ..."), not kernel OOM. Scoped to the app-pi-issue.slice
+    cgroup so host-level oomd kills (unrelated services) do not trip the
+    fleet alert. Returns a dict {unit: count} (top 20).
+
+    Overridable for tests via FLEET_OOMD_JOURNAL_STUB (a file whose lines
+    stand in for journalctl --output=cat output).
+    """
+    stub = os.environ.get("FLEET_OOMD_JOURNAL_STUB")
+    if stub:
+        try:
+            with open(stub) as f:
+                stdout = f.read()
+        except OSError:
+            return {}
+        rc = 0
+    else:
+        try:
+            r = subprocess.run(
+                [
+                    "journalctl", "--user",
+                    "--since", "6 hours ago",
+                    "--no-pager",
+                    "--output=cat",
+                    "SYSTEMD_OOMD_KILL=1",
+                ],
+                capture_output=True, text=True, timeout=JOURNAL_TIMEOUT,
+                env={**os.environ, "XDG_RUNTIME_DIR": XDG},
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            print(f"oomd-kills journalctl failed: {exc}", file=sys.stderr)
+            return {}
+        rc = r.returncode
+        stdout = r.stdout
+    if rc != 0 and not stub:
+        print(f"oomd-kills journalctl rc={rc}", file=sys.stderr)
+        return {}
+    counts = Counter()
+    for line in stdout.splitlines():
+        # systemd-oomd log lines (cat output): "Killed unit <name>.service."
+        # or "Killed unit <name>.slice." or
+        # "Killed process <pid> (<comm>) in unit <name>.service."
+        m = re.search(r"in unit (\S+?)\.service", line)
+        if not m:
+            m = re.search(r"Killed unit (\S+?)\.(service|slice)", line)
+        if not m:
+            continue
+        unit = m.group(1)
+        # Scope to fleet worker units (pi-issue@* under app-pi-issue.slice)
+        # and the slice itself. A host-level oomd kill of an unrelated
+        # service is not a fleet signal.
+        if not (unit.startswith("pi-issue@") or unit == "app-pi-issue"):
+            continue
+        counts[unit] += 1
     return dict(counts.most_common(20))
 
 
@@ -4692,6 +4756,16 @@ def main():
     for unit in sorted(esc_counts):
         lines.append(
             f'fleet_escalations_24h{{unit="{unit}"}} {esc_counts[unit]}'
+        )
+
+    # oomd kills of app-pi-issue.slice units in the last 6h (fleet-ops#4164).
+    oomd_counts = _oomd_kills_6h()
+    lines.append("")
+    lines.append(HELP_OOMD)
+    lines.append(TYPE_OOMD)
+    for unit in sorted(oomd_counts):
+        lines.append(
+            f'fleet_oomd_kills_6h{{unit="{unit}"}} {oomd_counts[unit]}'
         )
 
     # Repair dispatch / skip counts.

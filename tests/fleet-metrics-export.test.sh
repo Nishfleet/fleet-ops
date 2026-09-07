@@ -776,6 +776,7 @@ m._queue_composition = lambda: {
     "agent-ready": {"total": 6, "self": 2},
 }
 m._escalations_24h = lambda: {}
+m._oomd_kills_6h = lambda: {}
 m._repair_log_counts_24h = lambda: (0, 0)
 m._worker_units = lambda: []
 m._standalone_pi_print_count = lambda u: 0
@@ -882,6 +883,7 @@ m._queue_composition = lambda: {
     "agent-ready": {"total": 6, "self": 4},
 }
 m._escalations_24h = lambda: {}
+m._oomd_kills_6h = lambda: {}
 m._repair_log_counts_24h = lambda: (0, 0)
 m._worker_units = lambda: []
 m._standalone_pi_print_count = lambda u: 0
@@ -966,6 +968,7 @@ m._merged_prs_detail = lambda: None
 m._repo_snapshot = lambda: None
 m._queue_composition = lambda: None  # null ready_work source
 m._escalations_24h = lambda: {}
+m._oomd_kills_6h = lambda: {}
 m._repair_log_counts_24h = lambda: (0, 0)
 m._worker_units = lambda: []
 m._standalone_pi_print_count = lambda u: 0
@@ -1026,6 +1029,7 @@ m._merged_prs_detail = lambda: None
 m._repo_snapshot = lambda: None
 m._queue_composition = lambda: None
 m._escalations_24h = lambda: {}
+m._oomd_kills_6h = lambda: {}
 m._repair_log_counts_24h = lambda: (0, 0)
 m._worker_units = lambda: []
 m._standalone_pi_print_count = lambda u: 0
@@ -1417,6 +1421,7 @@ m._queue_composition = lambda: {
     "agent-ready": {"total": 6, "self": 2},
 }
 m._escalations_24h = lambda: {}
+m._oomd_kills_6h = lambda: {}
 m._repair_log_counts_24h = lambda: (0, 0)
 m._worker_units = lambda: []
 m._standalone_pi_print_count = lambda u: 0
@@ -2732,6 +2737,7 @@ m._queue_composition = lambda: {
     "agent-ready": {"total": 6, "self": 2},
 }
 m._escalations_24h = lambda: {}
+m._oomd_kills_6h = lambda: {}
 m._repair_log_counts_24h = lambda: (0, 0)
 m._worker_units = lambda: []
 m._standalone_pi_print_count = lambda u: 0
@@ -2932,3 +2938,137 @@ print("OK: _gh_latest_ci_verdict treats cancelled as no-verdict (fleet-ops#3558)
 PY
 
 ok "fleet-ops#3558: cancelled CI runs are not a red verdict"
+
+
+# =========================================================================
+# fleet-ops#4164: fleet_oomd_kills_6h metric + FleetOomdKillsHigh alert.
+# The metric scrapes journalctl for systemd-oomd kills of app-pi-issue.slice
+# units in the last 6h; the alert (sum > 3 for 5m) routes to repair-dispatch
+# (severity=critical, NOT page) so a repair packet raises the live
+# ram_gb_per_worker charge back to 2.0. Pins:
+#   - the metric HELP/TYPE constants exist and name the alert + the 2.0 raise
+#   - _oomd_kills_6h parses both oomd log shapes ("Killed unit ..." and
+#     "Killed process ... in unit ..."), scopes to pi-issue@*/app-pi-issue,
+#     and ignores unrelated services + kernel OOM lines
+#   - main() emits the gauge lines for a stubbed journal
+#   - fleet_rules.yml carries FleetOomdKillsHigh with the right expr/severity
+# =========================================================================
+python3 - "$exporter" <<'PY' || fail "oomd metric constants/helpers missing"
+import importlib.util, sys
+exp_path = sys.argv[1]
+spec = importlib.util.spec_from_file_location("fme", exp_path)
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+assert hasattr(m, "HELP_OOMD") and "fleet_oomd_kills_6h" in m.HELP_OOMD, m.HELP_OOMD
+assert hasattr(m, "TYPE_OOMD") and "fleet_oomd_kills_6h" in m.TYPE_OOMD, m.TYPE_OOMD
+assert "FleetOomdKillsHigh" in m.HELP_OOMD, "HELP must name the alert"
+assert "2.0" in m.HELP_OOMD, "HELP must name the 2.0 raise"
+assert callable(m._oomd_kills_6h), "_oomd_kills_6h must be callable"
+print("OK: HELP_OOMD/TYPE_OOMD constants + _oomd_kills_6h helper present")
+PY
+
+# Parse both oomd log shapes, scope to fleet units, ignore noise.
+OOMD_STUB="$scratch/oomd-journal.txt"
+cat >"$OOMD_STUB" <<'EOF'
+Killed process 12345 (pi) in unit pi-issue@fleet-ops-4164.service.
+Killed process 12346 (pi) in unit pi-issue@0509-1752.service.
+Killed unit pi-issue@fleet-ops-3737.service.
+Killed unit app-pi-issue.slice.
+Killed process 999 (node) in unit some-other-app.service.
+out of memory: Killed process 4242 (chrome) total-vm:4096kB anon-rss:2048kB
+Killed process 12347 (pi) in unit pi-issue@fleet-ops-4164.service.
+EOF
+python3 - "$exporter" "$OOMD_STUB" <<'PY' || fail "_oomd_kills_6h parse/scope failed"
+import importlib.util, os, sys
+exp_path, stub = sys.argv[1], sys.argv[2]
+spec = importlib.util.spec_from_file_location("fme", exp_path)
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+os.environ["FLEET_OOMD_JOURNAL_STUB"] = stub
+counts = m._oomd_kills_6h()
+# pi-issue@fleet-ops-4164 killed twice (process + process), pi-issue@0509-1752
+# once (process), pi-issue@fleet-ops-3737 once (unit), app-pi-issue once (unit).
+assert counts.get("pi-issue@fleet-ops-4164") == 2, counts
+assert counts.get("pi-issue@0509-1752") == 1, counts
+assert counts.get("pi-issue@fleet-ops-3737") == 1, counts
+assert counts.get("app-pi-issue") == 1, counts
+# Unrelated service and kernel OOM line must NOT be counted.
+assert "some-other-app" not in counts, counts
+assert all("chrome" not in k for k in counts), counts
+assert sum(counts.values()) == 5, counts
+print(f"OK: _oomd_kills_6h parsed both log shapes, scoped to fleet units, ignored noise (n={sum(counts.values())})")
+PY
+
+# main() emits the gauge lines for a stubbed journal.
+OOMD_OUT="$scratch/oomd-out.prom"
+python3 - "$exporter" "$OOMD_OUT" "$OOMD_STUB" <<'PY' || fail "main() oomd emission failed"
+import importlib.util, json, os, sys
+from pathlib import Path
+exp_path, out_path, stub = sys.argv[1], sys.argv[2], sys.argv[3]
+spec = importlib.util.spec_from_file_location("fme", exp_path)
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+os.environ["FLEET_OOMD_JOURNAL_STUB"] = stub
+m.OUT = Path(out_path)
+m.SELF_MAINT_JSON_DEFAULT = Path("/nonexistent/sm.json")
+m.SELF_MAINT_JSON_FALLBACK = Path("/nonexistent/sm2.json")
+m.SEAT_HEALTH = Path("/nonexistent/seat.json")
+m.SEAT_LEDGER = Path("/nonexistent/ledger")
+m.SEAT_CAPS_DEFAULT = Path("/nonexistent/caps.json")
+m.SEAT_CAPS_FALLBACK = Path("/nonexistent/caps2.json")
+m.SEAT_CAPS_LIVE = Path("/nonexistent/caps3.json")
+m.HC_URL_FILE = Path("/nonexistent/hc.url")
+m.ACTIONS_LOG = Path("/nonexistent/actions.log")
+m.MAINTENANCE_FLAG = Path("/nonexistent/maint.json")
+m.INTAKE_JSON_DEFAULT = Path("/nonexistent/intake.json")
+m.INTAKE_JSON_FALLBACK = Path("/nonexistent/intake2.json")
+m.KEYSTONE_LEDGER = Path("/nonexistent/keystone.jsonl")
+m.STALENESS_CACHE = Path("/nonexistent/stale.json")
+m.PR_CACHE_DIR = Path(os.path.dirname(out_path))
+m.DETAIL_CACHE = Path(os.path.dirname(out_path)) / "detail.cache.json"
+m._list_timers = lambda: [{"unit": "fleet-metrics-export.timer", "last_usec": 0}]
+m._timer_active = lambda unit: 1
+m._read_seat = lambda: (1, 0)
+m._merged_prs_detail = lambda: []
+m._repo_snapshot = lambda: None
+m._queue_composition = lambda: {"ready-work": {"total": 0, "self": 0}, "agent-ready": {"total": 0, "self": 0}}
+m._escalations_24h = lambda: {}
+m._repair_log_counts_24h = lambda: (0, 0)
+m._worker_units = lambda: []
+m._standalone_pi_print_count = lambda u: 0
+m._maintenance_quiescing = lambda: 0
+m._keystone_routing_counts = lambda: (0, 0, None)
+m._ping_healthcheck = lambda: None
+m._fetch_openrouter_credits = lambda: None
+m._fetch_xkiro_usage = lambda: None
+m._GH_FETCHED_THIS_RUN = False
+rc = m.main()
+assert rc == 0, f"main rc={rc}"
+body = Path(out_path).read_text()
+assert "# HELP fleet_oomd_kills_6h" in body, "missing HELP"
+assert "# TYPE fleet_oomd_kills_6h gauge" in body, "missing TYPE"
+assert 'fleet_oomd_kills_6h{unit="pi-issue@fleet-ops-4164"} 2' in body, body
+assert 'fleet_oomd_kills_6h{unit="app-pi-issue"} 1' in body, body
+# one HELP / one TYPE
+assert body.count("# HELP fleet_oomd_kills_6h") == 1, "duplicate HELP"
+assert body.count("# TYPE fleet_oomd_kills_6h") == 1, "duplicate TYPE"
+print("OK: main() emits fleet_oomd_kills_6h gauges (HELP/TYPE once) for a stubbed journal")
+PY
+
+# Alert rule shape: name, expr, severity=critical (repair-dispatch, NOT page).
+grep -q "alert: FleetOomdKillsHigh" "$rules" \
+  || fail "fleet_rules.yml missing FleetOomdKillsHigh (fleet-ops#4164)"
+grep -q 'sum(fleet_oomd_kills_6h) > 3' "$rules" \
+  || fail "FleetOomdKillsHigh must trip on sum(fleet_oomd_kills_6h) > 3"
+oomd_block="$(awk '/- alert: FleetOomdKillsHigh/,/- alert: FleetThroughputCollapse/' "$rules")"
+[[ -n "$oomd_block" ]] || fail "could not extract FleetOomdKillsHigh block"
+grep -q "severity: critical" <<<"$oomd_block" \
+  || fail "FleetOomdKillsHigh must be severity=critical (repair-dispatch route, not phone page)"
+grep -q "service: fleet" <<<"$oomd_block" \
+  || fail "FleetOomdKillsHigh must carry service=fleet"
+grep -q "ram_gb_per_worker" <<<"$oomd_block" \
+  || fail "FleetOomdKillsHigh description must name ram_gb_per_worker (the live charge to raise)"
+grep -q "2.0" <<<"$oomd_block" \
+  || fail "FleetOomdKillsHigh description must name the 2.0 raise target"
+# Must NOT be severity=page (only RepairDispatchDown pages).
+if grep -q "severity: page" <<<"$oomd_block"; then
+  fail "FleetOomdKillsHigh must NOT be severity=page (only RepairDispatchDown pages)"
+fi
+ok "fleet-ops#4164: FleetOomdKillsHigh rule shape (expr, severity=critical, names ram_gb_per_worker 2.0 raise)"
