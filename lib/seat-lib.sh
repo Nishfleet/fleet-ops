@@ -1856,6 +1856,11 @@ _provider_is_keystone_only() {
 # (pick_seat / callers force-load it).
 find_senior_seat() {
     local sn p m
+    # fleet-ops#4220: tried is an associative array built by pick_seat. When
+    # find_senior_seat is called standalone (no pick_seat in scope) the array
+    # is unset; declare it here so the ${tried[$p/$m]:-} expansion below is
+    # safe and becomes a no-op instead of an unbound-variable crash.
+    local -A tried=()
     for sn in "${SEAT_SENIOR_ORDER[@]}"; do
         [[ -n "$sn" ]] || continue
         p="${sn%%/*}"
