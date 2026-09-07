@@ -134,5 +134,32 @@ rc=${rc:-0}
   || fail "fleet-heartbeat.service MUST NOT be excluded. Got skip: $out"
 ok "fleet-heartbeat.service -> NOT excluded (genuine never-say-next stays routed)"
 
+# ---- Case E (fleet-ops#4266): live-dummy*.service -> SKIPPED ----
+# The detached dead-man's LIVE PROOF unit (pi-systemd-run --unit live-dummy
+# --deliverable ... stopped at exit 0 with no deliverable) is a DELIBERATE
+# stop-without-deliverable — its STOP-REASON is the verdict being proven, not
+# a fault. Without the exclusion every dead-man proof summons the senior
+# auditor (observed 2026-09-07T15:45:05Z). Proof units are ephemeral
+# (--collect) and named live-dummy* by convention; a REAL detached job never
+# carries that name, so the carve-out cannot mask a genuine dead-man failure.
+printf '{"reason":"should-not-change"}\n' > "$SR"
+out=$("$writer" "live-dummy.service" 2>&1) || rc=$?
+rc=${rc:-0}
+grep -q "skipping excluded unit" <<<"$out" \
+  || fail "live-dummy.service must be excluded (dead-man proof unit), got: $out"
+[[ "$(cat "$SR")" == '{"reason":"should-not-change"}' ]] \
+  || fail "writer must NOT write STOP-REASON for live-dummy.service (got: $(cat "$SR"))"
+ok "live-dummy.service -> STOP-REASON not written (dead-man proof unit, fleet-ops#4266)"
+
+# ---- Case F (fleet-ops#4266): a REAL detached job (pi-job-*) -> NOT excluded ----
+# The carve-out is scoped to live-dummy* only; a genuine detached job that
+# dies without its deliverable must still escalate.
+printf '{"reason":"should-not-change"}\n' > "$SR"
+out=$("$writer" "pi-job-20260907T150000Z-1234.service" 2>&1) || rc=$?
+rc=${rc:-0}
+! grep -q "skipping excluded unit" <<<"$out" \
+  || fail "pi-job-* MUST NOT be excluded (genuine detached job stays routed). Got skip: $out"
+ok "pi-job-* -> NOT excluded (genuine detached job stays routed, fleet-ops#4266)"
+
 echo
 echo "unit-escalation-write: pi-issue@* exclusion proven (fleet-ops#2133/#2475, PR #2193)"
