@@ -44,8 +44,7 @@ Attribution rule (issue accept §1):
     = ignored (the canary was not yet watching; cannot miss)
 
 Sources:
-  - Prometheus query_range for probe/drill gauges (0509-surface-probe,
-    fleet-resilience-drill)
+  - Prometheus query_range for drill gauges (fleet-resilience-drill)
   - journalctl --user for oneshot unit Result= (fleet-completion-canary,
     siterep-live-canary)
   - `gh issue list` for bug/regression-labeled issues in each organ's
@@ -177,14 +176,6 @@ class Organ:
 
 
 ORGANS: tuple[Organ, ...] = (
-    Organ(
-        name="0509-surface-probe",
-        product_repos=("Nishfleet/0509",),
-        failure_metric="fleet_probe_success",
-        failure_labels={"probe": "0509-surface"},
-        run_metric="fleet_surface_probe_last_run_seconds",
-        run_labels={"probe": "0509-surface"},
-    ),
     Organ(
         name="fleet-completion-canary",
         product_repos=("Nishfleet/fleet-ops",),
@@ -902,7 +893,7 @@ def self_test() -> int:
     fail_ts = end - 7200.0
     inc_ts = end - 3600.0
     incident = {
-        "repo": "Nishfleet/0509",
+        "repo": "Nishfleet/fleet-ops",
         "ts": inc_ts,
         "number": 999999,
         "labels": ["bug"],
@@ -927,13 +918,13 @@ def self_test() -> int:
                 {
                     "events": [
                         {
-                            "organ": "0509-surface-probe",
+                            "organ": "fleet-completion-canary",
                             "ts": fail_ts,
                             "kind": "run",
                             "detail": "self-test run",
                         },
                         {
-                            "organ": "0509-surface-probe",
+                            "organ": "fleet-completion-canary",
                             "ts": fail_ts,
                             "kind": "failure",
                             "detail": "self-test injected failure",
@@ -966,7 +957,7 @@ def self_test() -> int:
                 return 1
             body = out_path.read_text()
             if (
-                'fleet_canary_caught_regressions_total{organ="0509-surface-probe"} 1'
+                'fleet_canary_caught_regressions_total{organ="fleet-completion-canary"} 1'
                 not in body
             ):
                 print(
@@ -976,7 +967,7 @@ def self_test() -> int:
                 )
                 return 1
             if (
-                'fleet_canary_effectiveness_ratio{organ="0509-surface-probe"} 1.000000'
+                'fleet_canary_effectiveness_ratio{organ="fleet-completion-canary"} 1.000000'
                 not in body
             ):
                 print(
