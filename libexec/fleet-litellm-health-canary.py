@@ -121,7 +121,7 @@ def _fetch(url: str, timeout: float) -> tuple[int, str]:
             return 200, fh.read()
     try:
         req = urllib.request.Request(url, headers={"Accept": "application/json"})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosem: dynamic-urllib-use-detected
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             return int(resp.status), resp.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as e:
         return int(e.code), e.read().decode("utf-8", errors="replace")
