@@ -717,6 +717,12 @@ process_entry() {
   fi
 
   if [ "$mode" = "--" ]; then
+    # fleet-ops#4379: litellm-proxy.yaml is seed-once (operator-owned live).
+    # Skip drift when the live file exists — it is expected to differ from
+    # the repo shape reference and must not flag as DIFF.
+    if [[ "$src" == config/litellm-proxy.yaml ]] && { [ -e "$dest" ] || [ -L "$dest" ]; }; then
+      return 0
+    fi
     # Drift detection: symlink to repo OR byte-identical regular file = OK.
     if [ -L "$dest" ]; then
       if [ "$(readlink -f "$dest" 2>/dev/null)" = "$repo" ]; then return 0; fi
@@ -775,6 +781,14 @@ process_entry() {
             rc=1
             return 0
         fi
+    elif [[ "$src" == config/litellm-proxy.yaml ]]; then
+        # fleet-ops#4379: litellm-proxy.yaml is seed-once (operator-owned live).
+        # Install only when the live path is absent (fresh checkout). When
+        # present, the live copy is authoritative — log and skip, no rc hit.
+        if [ -e "$dest" ] || [ -L "$dest" ]; then
+            echo "INFO: $dest is operator-owned (seed-once); not overwritten (fleet-ops#4379)"
+            return 0
+        fi
     elif [[ "$npm_pin" = 1 ]]; then
         : # dest is a pin to the installed package; always retarget
     elif live_newer_than_repo "$dest" "$repo"; then
@@ -804,7 +818,9 @@ process_entry() {
     # model config must not silently change with the git working tree.
     # config/model-candidates.json is copy-installed too (fleet-ops#3322):
     # the audition seed lives in the LIVE state dir next to seat-caps.json.
-    if [[ "$src" == config/seat-caps.json ]] || [[ "$src" == config/pi-models.json ]] || [[ "$src" == config/model-candidates.json ]] || is_extension_src "$src"; then
+    # config/litellm-proxy.yaml is copy-installed too (fleet-ops#4379):
+    # seed-once; the live copy is operator-owned and authoritative.
+    if [[ "$src" == config/seat-caps.json ]] || [[ "$src" == config/pi-models.json ]] || [[ "$src" == config/model-candidates.json ]] || [[ "$src" == config/litellm-proxy.yaml ]] || is_extension_src "$src"; then
         # fleet-ops#3125/#3262/#3690: when a provider's cap block changes,
         # reset its learned AIMD state so a stale learned cap / bench from the
         # old config never pins a raised declared floor or ceiling. The

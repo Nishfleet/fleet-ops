@@ -1,10 +1,11 @@
-# fleet-ops#4130 P1 — LiteLLM proxy router config (shape reference).
+# fleet-ops#4130 P1 — LiteLLM proxy router config (seed / shape reference).
 #
-# This file is the repo-resident shape. The LIVE config lives at
-# ~/.config/fleet-ops/litellm-proxy.yaml and is operator-owned so that
-# credential resolvers (the models.json `!cmd` style) never enter the
-# repo. install.sh copies this to the live path on deploy; the live copy
-# is where `api_key: command:...` resolvers get filled in.
+# SEED-ONCE: install.sh copies this file to the live path ONLY when no
+# live file exists yet (fresh checkout / first deploy). After that the
+# LIVE config at ~/.config/fleet-ops/litellm-proxy.yaml is operator-owned
+# and authoritative — deploy never overwrites it (fleet-ops#4379).
+# Credential resolvers (the models.json `!cmd` style) never enter the
+# repo; the live copy is where `api_key: command:...` resolvers live.
 #
 # All LiteLLM feature claims below are verified against current LiteLLM
 # docs (docs.litellm.ai, retrieved 2026-09-07) — see
@@ -22,8 +23,9 @@
 # PLACEHOLDERS ONLY — no real key is in this file. The live copy uses
 # `api_key: command:/home/nish/.local/bin/<resolver>` for each seat,
 # matching the existing models.json `!/path/to/cmd` resolver pattern.
-# Verified: LiteLLM accepts `api_key: command:...` via litellm_params
-# (docs virtual_keys).
+# LiteLLM accepts `api_key: command:...` via litellm_params (docs
+# virtual_keys) — but this repo file does NOT exercise that path; only
+# the live copy does.
 
 model_list:
   # --- worker-cheap: free lanes first, then prepaid, metered last ---
