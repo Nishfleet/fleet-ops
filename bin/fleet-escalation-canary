@@ -122,6 +122,7 @@
 #   FLEET_STANDARDS_DRIFT_FILE_ISSUES  1 (default) auto-file drift issues; 0 skips
 #   FLEET_STANDARDS_DRIFT_MECHANISMS   space-separated thin-caller workflow filenames (tests override)
 #   AUSEARCH                            default ausearch (block 14, tests stub it)
+#   AUDITCTL                            default auditctl (block 14 rule-loaded guard, tests stub it)
 #   FLEET_ESCALATION_CANARY_SKIP_DETACHED  1 skips block 14 (offline tests)
 
 set -Eeuo pipefail
@@ -1120,6 +1121,24 @@ elif ! command -v ausearch >/dev/null 2>&1 && [[ -z "${AUSEARCH:-}" ]]; then
     pending=$((pending + 1))
 else
     ausearch_bin="${AUSEARCH:-ausearch}"
+    # False-clean guard: an empty ausearch result is only trustworthy if the
+    # fleet-unit-run rule is actually loaded in the RUNNING auditd. auditd
+    # installed but rules not yet applied (install.sh --system copies the
+    # rules.d file; augenrules --load applies it) would otherwise report
+    # "clean" while raw systemd-run goes uncaught. auditctl -l lists the
+    # live rules; absent auditctl or no fleet-unit-run line = PENDING (loud,
+    # not fail), matching the ausearch-not-installed handling.
+    rule_loaded=0
+    auditctl_bin="${AUDITCTL:-auditctl}"
+    if command -v "$auditctl_bin" >/dev/null 2>&1; then
+        if sudo -n "$auditctl_bin" -l 2>/dev/null | grep -q 'fleet-unit-run'; then
+            rule_loaded=1
+        fi
+    fi
+    if [[ "$rule_loaded" != "1" ]]; then
+        loud "ESCALATION-CANARY-PENDING" "detached-work lint: auditd present but fleet-unit-run rule not loaded in the running daemon ($(date -u +%Y-%m-%dT%H:%M:%SZ)) — run 'sudo augenrules --load' (install.sh --system does this on a rules change)"
+        pending=$((pending + 1))
+    else
     raw="$("$ausearch_bin" -k fleet-unit-run -ts yesterday -i 2>/dev/null || true)"
     if [[ -z "$raw" ]]; then
         log "14.  - no systemd-run execve in the last 24h (key=fleet-unit-run) — clean"
@@ -1140,6 +1159,7 @@ else
         else
             log "14.  - all plausible systemd-run execve records carry OnFailure — only pi-systemd-run transients in the last 24h"
         fi
+    fi
     fi
 fi
 
