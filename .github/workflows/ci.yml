@@ -120,6 +120,10 @@ jobs:
             /home/nish/.local/bin/fleet-asset-census \
             /home/nish/.local/bin/agent-scheduler-drift-check \
             /home/nish/.local/bin/memory-index-autocompact \
+            /home/nish/.local/libexec/fleet-litellm-health-canary.py \
+            /home/nish/.local/venvs/litellm/bin/litellm \
+            /usr/lib/postgresql/14/bin/postgres \
+            /usr/bin/redis-server \
             /home/nish/workspaces/tooling/fleet-console-pi/push.sh
           do
             sudo install -D -m 0755 /dev/null "$p"
