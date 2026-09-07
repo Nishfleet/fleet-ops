@@ -573,4 +573,102 @@ GAP_LOOP_CONF_ID="$conf_id" GAP_LOOP_DRY_RUN=1 GAP_LOOP_STATE_DIR="$state_dir" \
   || fail "termination dry-run (3 DONE stubs) must be unanimous, got $(cat "$state_dir/conferences/$conf_id/verdict.json")"
 ok "conference dry-run tallies unanimous DONE from three stubs"
 
+# ---------------------------------------------------------------------------
+# fleet-ops#4210: the glm-5-3 auditor must resolve to a LIVE wired free-GLM
+# seat (seat-lib health ledger), not the hardcoded unwired
+# zenmux/z-ai/glm-5.3-free slug that made every termination conference file a
+# mechanical gap-audit dissent.
+# ---------------------------------------------------------------------------
+res_seat_state="$state_dir/resolve-seats"
+res_caps="$state_dir/resolve-caps"
+mkdir -p "$res_seat_state" "$res_caps" "$res_caps/pp"
+cat >"$res_caps/seat-caps.json" <<'CAPS'
+{"providers":{"cline":{"cap":2,"class":"prepaid-quota","models":{"z-ai/glm-5.3-flash":{"cap":1,"class":"free"}}},"devin":{"cap":2,"class":"prepaid-quota","models":{"glm-5-2":{"cap":1}}}},"senior_seats_in_order":[]}
+CAPS
+NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+cat >"$res_seat_state/cline__z-ai_glm-5.3-flash.json" <<EOF
+{"provider":"cline","model":"z-ai/glm-5.3-flash","health_class":"healthy","seat_dead":false,"observed_at":"$NOW","source":"test"}
+EOF
+# Scenario A: cline/z-ai/glm-5.3-flash wired + healthy -> glm-5-3 lands there.
+res_conf="resolve-conf"
+mkdir -p "$state_dir/conferences/$res_conf"
+printf 'termination\n' >"$state_dir/conferences/$res_conf/mode"
+printf '{"cycle":1}\n' >"$state_dir/state.json"
+GAP_LOOP_CONF_ID="$res_conf" GAP_LOOP_DRY_RUN=1 GAP_LOOP_STATE_DIR="$state_dir" \
+  GAP_LOOP_TALLY_BIN="$tally" GAP_LOOP_GH="$scratch/bin/gh" \
+  GAP_LOOP_SYSTEMCTL="$scratch/bin/systemctl" \
+  PI_PACKET_SEAT_LIB="$repo_root/lib/seat-lib.sh" \
+  SEAT_CAPS_JSON="$res_caps/seat-caps.json" \
+  PI_MODELS_JSON="$res_caps/models.json" \
+  PI_SEAT_HEALTH_LEDGER_DIR="$res_seat_state" \
+  PI_SEAT_HEALTH_FILE="$res_caps/global-seat-health.json" \
+  PI_PACKET_STATE="$res_caps/pp" SEAT_LOG_FILE="$res_caps/pp/watch.log" \
+  "$conf"
+[[ -f "$state_dir/conferences/$res_conf/verdict.json" ]] \
+  || fail "resolve conference must complete in dry-run"
+gj="$state_dir/pi-audit-jobs/${res_conf}-r1-glm-5-3/job.json"
+[[ -f "$gj" ]] || fail "conference must write a glm-5-3 job: $gj"
+[[ "$(jq -r '.provider' "$gj")" == "cline" && "$(jq -r '.model' "$gj")" == "z-ai/glm-5.3-flash" ]] \
+  || fail "glm-5-3 must resolve to the live wired free seat, got $(jq -c '{provider,model}' "$gj")"
+ok "glm-5-3 resolves to live wired free-GLM seat (cline/z-ai/glm-5.3-flash)"
+
+# Scenario B: the wired free seat is dead and no other free seat exists ->
+# glm-5-3 keeps the ladder slug so the preflight refusal (and dissent) still
+# surfaces the wall.
+cat >"$res_seat_state/cline__z-ai_glm-5.3-flash.json" <<EOF
+{"provider":"cline","model":"z-ai/glm-5.3-flash","health_class":"healthy","seat_dead":true,"observed_at":"$NOW","source":"test"}
+EOF
+res_conf2="resolve-conf-b"
+mkdir -p "$state_dir/conferences/$res_conf2"
+printf 'termination\n' >"$state_dir/conferences/$res_conf2/mode"
+printf '{"cycle":1}\n' >"$state_dir/state.json"
+GAP_LOOP_CONF_ID="$res_conf2" GAP_LOOP_DRY_RUN=1 GAP_LOOP_STATE_DIR="$state_dir" \
+  GAP_LOOP_TALLY_BIN="$tally" GAP_LOOP_GH="$scratch/bin/gh" \
+  GAP_LOOP_SYSTEMCTL="$scratch/bin/systemctl" \
+  PI_PACKET_SEAT_LIB="$repo_root/lib/seat-lib.sh" \
+  SEAT_CAPS_JSON="$res_caps/seat-caps.json" \
+  PI_MODELS_JSON="$res_caps/models.json" \
+  PI_SEAT_HEALTH_LEDGER_DIR="$res_seat_state" \
+  PI_SEAT_HEALTH_FILE="$res_caps/global-seat-health.json" \
+  PI_PACKET_STATE="$res_caps/pp" SEAT_LOG_FILE="$res_caps/pp/watch.log" \
+  "$conf"
+gj2="$state_dir/pi-audit-jobs/${res_conf2}-r1-glm-5-3/job.json"
+[[ -f "$gj2" ]] || fail "conference must write a glm-5-3 job: $gj2"
+[[ "$(jq -r '.provider' "$gj2")" == "zenmux" && "$(jq -r '.model' "$gj2")" == "z-ai/glm-5.3-free" ]] \
+  || fail "glm-5-3 must keep the ladder slug when nothing is usable, got $(jq -c '{provider,model}' "$gj2")"
+ok "glm-5-3 keeps ladder slug when no free seat is usable (preflight surfaces wall)"
+
+# Scenario C: ladder + every free seat unusable, but a capable seat is live ->
+# glm-5-3 falls back to the first usable capable seat (pi-audit-run
+# resolve_free_role shape), so the loop can converge while free lanes are all
+# benched.
+cat >"$res_caps/seat-caps.json" <<'CAPS'
+{"providers":{"cline":{"cap":2,"class":"prepaid-quota","models":{"z-ai/glm-5.3-flash":{"cap":1,"class":"free"}}},"cursor":{"cap":2,"class":"capable","models":{"cursor-grok-4.6-high":{"cap":1,"class":"capable"}}},"devin":{"cap":2,"class":"prepaid-quota","models":{"glm-5-2":{"cap":1}}}},"senior_seats_in_order":[]}
+CAPS
+cat >"$res_caps/models.json" <<'MODELS'
+{"providers":{"cursor":{"models":[{"id":"cursor-grok-4.6-high","reasoning":true}]}}}
+MODELS
+cat >"$res_seat_state/cursor__cursor-grok-4.6-high.json" <<EOF
+{"provider":"cursor","model":"cursor-grok-4.6-high","health_class":"healthy","seat_dead":false,"observed_at":"$NOW","source":"test"}
+EOF
+res_conf3="resolve-conf-c"
+mkdir -p "$state_dir/conferences/$res_conf3"
+printf 'termination\n' >"$state_dir/conferences/$res_conf3/mode"
+printf '{"cycle":1}\n' >"$state_dir/state.json"
+GAP_LOOP_CONF_ID="$res_conf3" GAP_LOOP_DRY_RUN=1 GAP_LOOP_STATE_DIR="$state_dir" \
+  GAP_LOOP_TALLY_BIN="$tally" GAP_LOOP_GH="$scratch/bin/gh" \
+  GAP_LOOP_SYSTEMCTL="$scratch/bin/systemctl" \
+  PI_PACKET_SEAT_LIB="$repo_root/lib/seat-lib.sh" \
+  SEAT_CAPS_JSON="$res_caps/seat-caps.json" \
+  PI_MODELS_JSON="$res_caps/models.json" \
+  PI_SEAT_HEALTH_LEDGER_DIR="$res_seat_state" \
+  PI_SEAT_HEALTH_FILE="$res_caps/global-seat-health.json" \
+  PI_PACKET_STATE="$res_caps/pp" SEAT_LOG_FILE="$res_caps/pp/watch.log" \
+  "$conf"
+gj3="$state_dir/pi-audit-jobs/${res_conf3}-r1-glm-5-3/job.json"
+[[ -f "$gj3" ]] || fail "conference must write a glm-5-3 job: $gj3"
+[[ "$(jq -r '.provider' "$gj3")" == "cursor" && "$(jq -r '.model' "$gj3")" == "cursor-grok-4.6-high" ]] \
+  || fail "glm-5-3 must fall back to a usable capable seat, got $(jq -c '{provider,model}' "$gj3")"
+ok "glm-5-3 falls back to usable capable seat when no free seat is live"
+
 echo "OK: fleet-ops#180 gap-closure loop acceptance (stubbed) pass"
