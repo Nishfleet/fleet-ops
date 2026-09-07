@@ -1586,10 +1586,8 @@ if declare -F litellm_ready >/dev/null 2>&1; then
         echo "no usable LiteLLM proxy (slots=$slots); holding claims this tick — gate: litellm_ready"
         exit 0
     fi
-    heavy_seat=$(printf 'litellm\tworker-capable\n')
 else
     echo "litellm_ready unavailable; seat-slot gate fails open, keeping slots=$slots (fleet-ops#4263)"
-    heavy_seat=$(printf 'litellm\tworker-capable\n')
 fi
 
 # Usable seat-slot gate (fleet-ops#3732 / #4263): capacity slots (RAM) are
