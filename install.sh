@@ -46,6 +46,7 @@ check_system=0
 user_unit_changed=0
 system_unit_changed=0
 system_rules_changed=0
+system_audit_changed=0
 declare -a to_enable=()
 for arg in "$@"; do
   case "$arg" in
@@ -753,6 +754,13 @@ process_entry() {
     if [[ "$src" == config/fleet_rules.yml ]] && ! cmp -s "${PM_RULES_FILE:-$dest}" "$repo" 2>/dev/null; then
         system_rules_changed=1
     fi
+    # fleet-ops#4266: audit rules are loaded at boot by auditd from
+    # /etc/audit/rules.d/; apply a change to the RUNNING daemon via
+    # augenrules --load (idempotent — regenerates audit.rules + reloads
+    # auditd). Only when auditd is actually installed on this box.
+    if [[ "$src" == config/audit/rules.d/* ]] && ! cmp -s "$dest" "$repo" 2>/dev/null; then
+        system_audit_changed=1
+    fi
     sudo install -D -m 0644 -o root -g root "$repo" "$dest"
     echo "installed (system): $dest"
   else
@@ -1026,6 +1034,22 @@ elif [ "$do_system_install" = 1 ]; then
       sudo systemctl start vps-post-reboot-verify.timer \
         || { echo "install.sh: failed to start vps-post-reboot-verify.timer" >&2; rc=1; }
       echo "started: vps-post-reboot-verify.timer (system, was enabled but inactive)"
+    fi
+  fi
+  # fleet-ops#4266: a changed audit rules.d file needs augenrules --load to
+  # reach the RUNNING auditd (the rules.d file alone only takes effect at
+  # boot). auditd absent = note only (the package install is the bare-metal
+  # manifest / vps-weekly-update concern).
+  if [ "$system_audit_changed" = 1 ]; then
+    if sudo systemctl is-active --quiet auditd 2>/dev/null; then
+      if ! sudo augenrules --load >/dev/null 2>&1; then
+        echo "install.sh: augenrules --load failed after audit rules change (fleet-ops#4266)" >&2
+        rc=1
+      else
+        echo "install.sh: audit rules loaded (fleet-ops#4266)"
+      fi
+    else
+      echo "install.sh: auditd not active — audit rules file installed, will load at boot (fleet-ops#4266)" >&2
     fi
   fi
 fi

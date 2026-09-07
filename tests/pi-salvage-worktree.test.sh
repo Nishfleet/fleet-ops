@@ -139,8 +139,13 @@ printf '%s\n' "$out" | grep -q 'PI_SALVAGE_WORKDIR' || fail "dry-run must export
 ok "pi-systemd-run dry-run wires ExecStopPost + TimeoutStopSec=180"
 
 out="$(PI_SALVAGE_DISABLE=1 "$wrapper" --dry-run --unit salvage-off -- /bin/true)"
-printf '%s\n' "$out" | grep -q 'ExecStopPost=' && fail "PI_SALVAGE_DISABLE=1 must omit ExecStopPost: $out"
-ok "PI_SALVAGE_DISABLE=1 omits the salvage hook"
+# fleet-ops#4266: PI_SALVAGE_DISABLE drops ONLY the salvage leg; the
+# dead-man ExecStopPost must stay armed (a disabled salvage must not also
+# disable the death detector).
+printf '%s\n' "$out" | grep -q 'pi-salvage-worktree' && fail "PI_SALVAGE_DISABLE=1 must omit the salvage hook: $out"
+printf '%s\n' "$out" | grep -q 'ExecStopPost=.*pi-detached-deadman' \
+  || fail "PI_SALVAGE_DISABLE=1 must keep the dead-man ExecStopPost: $out"
+ok "PI_SALVAGE_DISABLE=1 omits salvage, keeps the dead-man hook"
 
 # --- 6. WIP GC: merged deleted; open-ledger kept; stale unreferenced deleted
 gcroot="$scratch/gc-products"

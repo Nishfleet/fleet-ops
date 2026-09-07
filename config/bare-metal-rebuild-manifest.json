@@ -43,6 +43,7 @@
       "prometheus",
       "prometheus-node-exporter",
       "prometheus-alertmanager",
+      "auditd",
       "docker-ce",
       "docker-ce-cli",
       "docker-compose-plugin",
