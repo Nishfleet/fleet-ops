@@ -157,10 +157,11 @@ grep -q 'fleet_litellm_redis_up 1' "$scratch/up.prom" \
     || fail "5: prom missing redis_up=1"
 grep -q 'fleet_litellm_proxy_last_green_seconds 1700000000' "$scratch/up.prom" \
     || fail "5: prom missing last_green_seconds"
-# organ-dead path: connection refused -> exit 1, prom still written with proxy_up=0
+# organ-dead path: connection refused with zero tolerance -> exit 1, prom still written with proxy_up=0
 FLEET_LITELLM_PROM="$scratch/dead.prom" \
 FLEET_LITELLM_STATE="$scratch/dead.json" \
 FLEET_LITELLM_PROXY_URL=http://127.0.0.1:1 \
+FLEET_LITELLM_DEAD_TOLERANCE_S=0 \
 FLEET_LITELLM_STUB_PG=1 \
 FLEET_LITELLM_STUB_REDIS=1 \
 FLEET_LITELLM_STUB_INSTALLED=1 \
@@ -189,7 +190,38 @@ grep -q 'fleet_litellm_proxy_healthy_deployments{group="proxy"} 1' "$scratch/sim
     || fail "5c: simple-format prom missing proxy group healthy=1"
 ok "5c: canary handles LiteLLM simple readiness format (proxy group synthesised)"
 
-ok "5: canary compiles, proxy_up=1 path exits 0, organ-dead path exits 1"
+ok "5: canary compiles, proxy_up=1 path exits 0, sustained organ-dead exits 1"
+
+# --- 5e: single connection-refused tick inside a restart window holds (exit 0),
+# prom still written proxy_up=0 and dead_since persisted for the next tick.
+printf '{"dead_since": 1699999995, "proxy_up": 0}'> "$scratch/hold.json"
+FLEET_LITELLM_PROM="$scratch/hold.prom" \
+FLEET_LITELLM_STATE="$scratch/hold.json" \
+FLEET_LITELLM_PROXY_URL=http://127.0.0.1:1 \
+FLEET_LITELLM_DEAD_TOLERANCE_S=60 \
+FLEET_LITELLM_NOW=1700000000 \
+FLEET_LITELLM_STUB_PG=1 \
+FLEET_LITELLM_STUB_REDIS=1 \
+FLEET_LITELLM_STUB_INSTALLED=1 \
+python3 "$canary" --quiet || fail "5e: single dead tick inside tolerance must hold (exit 0)"
+grep -q 'fleet_litellm_proxy_up{endpoint="readiness"} 0' "$scratch/hold.prom" \
+    || fail "5e: held tick prom missing proxy_up=0"
+grep -q '"dead_since": 1699999995' "$scratch/hold.json" \
+    || fail "5e: held tick must persist dead_since"
+ok "5e: single dead tick inside a restart window is held (proxy_up=0, exit 0)"
+
+# --- 5f: dead longer than the tolerance -> exit 1 (real organ death surfaces)
+printf '{"dead_since": 1699999880, "proxy_up": 0}'> "$scratch/deadlong.json"
+FLEET_LITELLM_PROM="$scratch/deadlong.prom" \
+FLEET_LITELLM_STATE="$scratch/deadlong.json" \
+FLEET_LITELLM_PROXY_URL=http://127.0.0.1:1 \
+FLEET_LITELLM_DEAD_TOLERANCE_S=60 \
+FLEET_LITELLM_NOW=1700000000 \
+FLEET_LITELLM_STUB_PG=1 \
+FLEET_LITELLM_STUB_REDIS=1 \
+FLEET_LITELLM_STUB_INSTALLED=1 \
+python3 "$canary" --quiet && fail "5f: dead past tolerance must exit 1"
+ok "5f: sustained dead past the tolerance exits 1 (fail-loud preserved)"
 
 # --- 5b: organ-not-installed path (Nish-gated live install not yet done) -> exit 0, no fail-loud
 FLEET_LITELLM_PROM="$scratch/notinst.prom" \
