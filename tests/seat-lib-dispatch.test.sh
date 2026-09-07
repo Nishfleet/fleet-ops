@@ -33,6 +33,9 @@ command -v jq >/dev/null || fail "jq required"
 
 scratch="$(mktemp -d -t seat-lib-dispatch.XXXXXX)"
 trap 'rm -rf "$scratch"' EXIT INT TERM
+# fleet-ops#4217: hermetic live-quota lookup — real fleet_seat_quota_* rows in
+# the VPS node_exporter textfile must not leak into the default-window tests.
+export SEAT_LIVE_QUOTA_PROM="$scratch/no-live-quota.prom"
 
 # Offline: no live systemd units in cap accounting.
 export PI_SEAT_LIB_CHECK_SYSTEMD=0

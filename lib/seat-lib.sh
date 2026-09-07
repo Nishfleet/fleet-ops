@@ -900,6 +900,69 @@ provider_quota_bench_default() {
     echo "${SEAT_PROVIDER_BENCH_DEFAULT[$p]:-0}"
 }
 
+# --- live quota reset from fleet-metrics-export (fleet-ops#4217) ------------
+# The exporter writes fleet_seat_quota_{remaining_pct,reset_seconds,
+# observed_seconds}{provider,window} into the node_exporter textfile from each
+# provider's OWN usage endpoint. When a quota wall's error text carries no
+# parseable reset window, a fresh live row beats the static
+# quota_bench_default_s guess in seat-caps.json: it is the provider's real
+# reset horizon (the issue's motivation: xai benched 7d for a 1.5d reset).
+#
+# Only EXHAUSTED windows count (remaining_pct <= SEAT_LIVE_QUOTA_EXHAUSTED_PCT,
+# default 1): a window with 95% left resetting in 14h is not this wall's
+# recovery time, and benching on it would re-create the opposite over-bench
+# (Devin benched 22h at 94% weekly left). Across exhausted windows the MINIMUM
+# positive reset wins — the soonest the seat can plausibly recover.
+#
+# reset_seconds is as-of-observation, so observed_seconds is subtracted;
+# observations older than SEAT_LIVE_QUOTA_STALE_S (900s, the exporter's own
+# QUOTA_STALE_S) are not trusted.
+#
+# Echoes integer seconds > 0, or 0 when there is no usable live figure (file
+# missing/unreadable, no rows for the provider, stale observation, no exhausted
+# window, or the reset has already passed). Callers fall back to the static
+# default — this helper must never brick a bench decision.
+SEAT_LIVE_QUOTA_PROM="${SEAT_LIVE_QUOTA_PROM:-/var/lib/prometheus/node-exporter/fleet.prom}"
+SEAT_LIVE_QUOTA_STALE_S="${SEAT_LIVE_QUOTA_STALE_S:-900}"
+SEAT_LIVE_QUOTA_EXHAUSTED_PCT="${SEAT_LIVE_QUOTA_EXHAUSTED_PCT:-1}"
+
+provider_live_reset_s() {
+    local p="$1"
+    [[ -r "$SEAT_LIVE_QUOTA_PROM" ]] || { echo 0; return 0; }
+    awk -v prov="$p" -v stale="$SEAT_LIVE_QUOTA_STALE_S" -v thresh="$SEAT_LIVE_QUOTA_EXHAUSTED_PCT" '
+        function label(line, key,    re, s) {
+            re = key "=\"[^\"]*\""
+            if (match(line, re)) {
+                s = substr(line, RSTART, RLENGTH)
+                sub("^" key "=\"", "", s)
+                sub("\"$", "", s)
+                return s
+            }
+            return ""
+        }
+        /^fleet_seat_quota_observed_seconds\{/ && label($1, "provider") == prov {
+            obs = $2 + 0; have_obs = 1
+        }
+        /^fleet_seat_quota_remaining_pct\{/ && label($1, "provider") == prov {
+            rem[label($1, "window")] = $2 + 0
+        }
+        /^fleet_seat_quota_reset_seconds\{/ && label($1, "provider") == prov {
+            rst[label($1, "window")] = $2 + 0
+        }
+        END {
+            if (!have_obs || obs > stale + 0) { print 0; exit }
+            best = 0
+            for (w in rst) {
+                if (!(w in rem) || rem[w] > thresh + 0) continue
+                live = int(rst[w] - obs)
+                if (live <= 0) continue
+                if (best == 0 || live < best) best = live
+            }
+            print best
+        }
+    ' "$SEAT_LIVE_QUOTA_PROM" 2>/dev/null || echo 0
+}
+
 # --- wall ceiling: the provider's real reset horizon (fleet-ops#2563) -------
 # A vendor can advertise a reset window far longer than its own quota cycle.
 # Live: cline/cline-pass/minimax-m3 came back HTTP 402 with
@@ -6294,6 +6357,17 @@ mark_seat_quota_bench() {
     local window_s=0 parsed
     parsed=$(_parse_reset_window_s "$text" 2>/dev/null || true)
     [[ "$parsed" =~ ^[0-9]+$ ]] && window_s="$parsed"
+    if (( window_s <= 0 )); then
+        # fleet-ops#4217: the provider's own live quota (fresh observation of
+        # an EXHAUSTED window) is the real reset horizon — it beats the static
+        # quota_bench_default_s below. 0 (no live figure) falls through.
+        local live
+        live=$(provider_live_reset_s "$p")
+        if [[ "$live" =~ ^[0-9]+$ ]] && (( live > 0 )); then
+            window_s="$live"
+            seat_log "quota-bench: $p/$m benching on live fleet_seat_quota reset ${live}s (exhausted window, fleet-ops#4217)"
+        fi
+    fi
     if (( window_s <= 0 )); then
         local def
         def=$(provider_quota_bench_default "$p")
