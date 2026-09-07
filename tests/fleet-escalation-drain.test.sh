@@ -547,5 +547,85 @@ grep -q "nish_condition_resolved=1" "$scratch/run9.stderr" \
     || fail "scenario 9: no seat dir -> must report 1 resolved; stderr: $(cat "$scratch/run9.stderr")"
 ok "scenario 9: no seat dir -> absent providers treated as not-walled (entry archived)"
 
+# ---------------------------------------------------------------------------
+# Scenario 10: body-level RESOLVED marker drain (fleet-ops#3996). A formal
+# class-gated entry (CREDENTIAL-BOUNDARY) whose continuation lines carry
+# `  RESOLVED 2026-...Z:` is archived by drain_nish even though the header
+# class is NOT literally RESOLVED. A prose section with `- **RESOLVED by
+# orchestrator ...**` is archived by drain_nish_conditions. A live entry
+# (no RESOLVED marker, no resolved condition) is kept.
+#
+# This is the gap PR #4099 left: entries that record their own resolution in
+# the body, not the header, were never aged out — the live file grew
+# monotonically. This scenario proves the body-RESOLVED pass closes it.
+# ---------------------------------------------------------------------------
+rm -rf "$AS/lanes/seats"
+mkdir -p "$AS/lanes/seats"
+# No seat files -> no provider walls (conservative default).
+{
+    printf '# Nish escalations\n'
+    printf '\n'
+    printf 'One line per escalation.\n'
+    printf 'Three lines of header.\n'
+    printf 'Four lines of header.\n'
+    printf '\n'
+    printf 'Format: entry line.\n'
+    # Formal CREDENTIAL-BOUNDARY with body RESOLVED marker (archived by drain_nish)
+    printf '2026-08-26T16:57Z CREDENTIAL-BOUNDARY hash=auto-revert-pat count=1\n'
+    printf '  SUMMARY: fleet-ops auto-revert workflow fails on every main push.\n'
+    printf '  NISH DECISION NEEDED: regenerate the AUTO_REVERT PAT.\n'
+    printf '  RESOLVED 2026-08-27T06:07Z: fixed via the nishfleet-worker GitHub App.\n'
+    # Prose section with body RESOLVED marker (archived by drain_nish_conditions)
+    printf '## 2026-09-05 - 0509 AUTO-REVERT HALT #1687: main red on Gate-B E2E\n'
+    printf '%s\n' '- State: main is in a sustained red chain.'
+    printf '%s\n' '- **RESOLVED by orchestrator (fable-fleet-check):** the revert-order question is not Nish'"'"'s.'
+    # Live entry: no RESOLVED marker, no money-wall condition (kept)
+    printf '## 2026-09-07 - ORACLE ALWAYS FREE: signup needs Nish card\n'
+    printf '%s\n' '- NISH ACTION: sign up at cloud.oracle.com/free.'
+} > "$AS/NISH-ESCALATIONS.md"
+
+rm -f "$AS/lanes/nish-boundary-notify.seen"
+
+FLEET_ESCALATION_DRAIN_AGENT_STATE="$AS" \
+FLEET_ESCALATION_DRAIN_NISH="$AS/NISH-ESCALATIONS.md" \
+FLEET_ESCALATION_DRAIN_SEEN="$AS/lanes/nish-boundary-notify.seen" \
+FLEET_ESCALATION_DRAIN_PACKET_DIR="$AS/alert-repair" \
+FLEET_ESCALATION_DRAIN_SEAT_DIR="$AS/lanes/seats" \
+FLEET_ESCALATION_DRAIN_MAX_LINES=50 \
+    bash "$bin" 2>"$scratch/run10.stderr"
+
+# The formal CREDENTIAL-BOUNDARY with body RESOLVED must be ARCHIVED.
+grep -qF "auto-revert-pat" "$AS/NISH-ESCALATIONS.md" \
+    && fail "scenario 10: formal entry with body RESOLVED must be archived" || true
+# The prose section with body RESOLVED must be ARCHIVED.
+grep -qF "AUTO-REVERT HALT #1687" "$AS/NISH-ESCALATIONS.md" \
+    && fail "scenario 10: prose section with body RESOLVED must be archived" || true
+# The live entry (no RESOLVED) must be KEPT.
+grep -qF "ORACLE ALWAYS FREE" "$AS/NISH-ESCALATIONS.md" \
+    || fail "scenario 10: live entry without RESOLVED must be kept"
+# The summary must report the body-resolved split.
+grep -q "nish_body_resolved=2" "$scratch/run10.stderr" \
+    || fail "scenario 10: summary must report 2 body_resolved; stderr: $(cat "$scratch/run10.stderr")"
+# The archive must contain the resolved entries.
+day10="$(date -u +%Y-%m-%d)"
+archive10="$AS/nish-escalations-archive/$day10.md"
+grep -qF "auto-revert-pat" "$archive10" \
+    || fail "scenario 10: archive must contain formal body-RESOLVED entry"
+grep -qF "AUTO-REVERT HALT #1687" "$archive10" \
+    || fail "scenario 10: archive must contain prose body-RESOLVED section"
+ok "scenario 10: body-level RESOLVED entries archived; live entry kept; split reported"
+
+# Idempotency: re-running on the drained file is a no-op.
+FLEET_ESCALATION_DRAIN_AGENT_STATE="$AS" \
+FLEET_ESCALATION_DRAIN_NISH="$AS/NISH-ESCALATIONS.md" \
+FLEET_ESCALATION_DRAIN_SEEN="$AS/lanes/nish-boundary-notify.seen" \
+FLEET_ESCALATION_DRAIN_PACKET_DIR="$AS/alert-repair" \
+FLEET_ESCALATION_DRAIN_SEAT_DIR="$AS/lanes/seats" \
+FLEET_ESCALATION_DRAIN_MAX_LINES=50 \
+    bash "$bin" 2>"$scratch/run10b.stderr"
+grep -q "nish_body_resolved=0" "$scratch/run10b.stderr" \
+    || fail "scenario 10: re-run must report 0 body_resolved (idempotent); stderr: $(cat "$scratch/run10b.stderr")"
+ok "scenario 10: re-run is idempotent (0 body_resolved on second pass)"
+
 echo
 echo "fleet-escalation-drain: all scenarios passed (fleet-ops#2677 + #2773 + #3996)"

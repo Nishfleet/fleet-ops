@@ -132,8 +132,23 @@ nish_archived=0
 nish_bounded=0
 nish_condition_resolved=0
 nish_condition_live=0
+nish_body_resolved=0
 packet_deleted=0
 packet_skipped=0
+
+# Body-level RESOLVED marker regex (fleet-ops#3996). Entries whose header class
+# is NOT literally RESOLVED/REVOKED-BY-PROBE can still carry a resolution marker
+# in their continuation lines — e.g. `  RESOLVED 2026-08-27T06:07Z: ...` under a
+# CREDENTIAL-BOUNDARY header, or `- **RESOLVED by orchestrator ...**` in a prose
+# section. These are closed conditions the drain must age out. The regex matches
+# RESOLVED followed by either ` by ` (prose attribution) or a 4-digit year
+# (formal timestamp), avoiding false positives on the bare word in random prose.
+# NOTE: the default cannot use ${var:-...} inline because the regex's own braces
+# ({4}) would close the parameter expansion; assign the default separately.
+BODY_RESOLVED_RE="${FLEET_ESCALATION_DRAIN_BODY_RESOLVED_RE:-}"
+if [ -z "$BODY_RESOLVED_RE" ]; then
+    BODY_RESOLVED_RE='RESOLVED[[:space:]]+(by[[:space:]]|[0-9]{4}-)'
+fi
 
 # ---------------------------------------------------------------------------
 # 1. NISH-ESCALATIONS.md drain
@@ -218,6 +233,24 @@ drain_nish() {
     flush_entry() {
         # Append current_entry to the destination chosen by header_class.
         local fe_ln
+        # Body-level RESOLVED promotion (fleet-ops#3996): a class-gated
+        # boundary entry (CREDENTIAL-BOUNDARY, MONEY-BOUNDARY, etc.) whose
+        # continuation lines carry a RESOLVED marker is a closed condition —
+        # promote from keep to archive so the live file only holds open
+        # boundaries. The header class stays RESOLVED/REVOKED-BY-PROBE for
+        # the original unconditional-archive path; this catches the case
+        # where the resolution is recorded in the body, not the header.
+        if [ "$header_class" = "keep" ] && [ "${#current_entry[@]}" -gt 1 ]; then
+            local body_text=""
+            local bi
+            for ((bi = 1; bi < ${#current_entry[@]}; bi++)); do
+                body_text="$body_text"$'\n'"${current_entry[$bi]}"
+            done
+            if printf '%s' "$body_text" | grep -qiE "$BODY_RESOLVED_RE"; then
+                header_class="archive"
+                nish_body_resolved=$((nish_body_resolved + 1))
+            fi
+        fi
         case "$header_class" in
             archive)
                 for fe_ln in "${current_entry[@]}"; do
@@ -273,6 +306,20 @@ drain_nish() {
                 continue
             fi
             header_class="archive"
+            continue
+        fi
+
+        # Prose section header (`## ...`): flush the current formal entry so
+        # its continuation lines do not absorb the prose section. The prose
+        # section itself is kept here as a stray line — drain_nish_conditions
+        # handles prose-section condition/body-RESOLVED drain in a separate
+        # pass. Without this boundary, a formal entry with a body-RESOLVED
+        # marker would archive every prose section below it (fleet-ops#3996).
+        if [[ "$line" =~ ^##[[:space:]] ]]; then
+            if [ "${#current_entry[@]}" -gt 0 ]; then
+                flush_entry
+            fi
+            kept_lines+=("$line")
             continue
         fi
 
@@ -514,6 +561,7 @@ drain_nish_conditions() {
     local block_type=""   # header | formal | prose | other
     local block_text=""
     local line_ind=0
+    local cond_body_resolved=0
 
     flush_block() {
         if [ "${#current_block[@]}" -eq 0 ]; then
@@ -552,9 +600,17 @@ drain_nish_conditions() {
                 fi
                 ;;
             prose)
-                # Prose section: check if it is a money-wall entry with
-                # resolved providers.
-                if printf '%s' "$block_text" | grep -qiE "($MONEY_KEYWORDS)" && \
+                # Prose section: first check for a body-level RESOLVED marker
+                # (fleet-ops#3996) — e.g. `- **RESOLVED by orchestrator ...**`.
+                # A prose section that records its own resolution is a closed
+                # condition regardless of money-wall status; archive it.
+                if printf '%s' "$block_text" | grep -qiE "$BODY_RESOLVED_RE"; then
+                    local ln
+                    for ln in "${current_block[@]}"; do archive_lines+=("$ln"); done
+                    nish_body_resolved=$((nish_body_resolved + 1))
+                    cond_body_resolved=$((cond_body_resolved + 1))
+                # Then check if it is a money-wall entry with resolved providers.
+                elif printf '%s' "$block_text" | grep -qiE "($MONEY_KEYWORDS)" && \
                    printf '%s' "$block_text" | grep -qiE "($PROVIDER_NAMES)"; then
                     if _block_providers_resolved "$block_text"; then
                         local ln
@@ -651,7 +707,7 @@ drain_nish_conditions() {
         flush_block
     fi
 
-    if [ "$nish_condition_resolved" -eq 0 ]; then
+    if [ "$nish_condition_resolved" -eq 0 ] && [ "$cond_body_resolved" -eq 0 ]; then
         rm -f "$tmp_nish" "$tmp_archive"
         if [ "$nish_condition_live" -gt 0 ]; then
             log "condition-drain: $nish_condition_live live money-wall entries (no resolved conditions to archive)"
@@ -660,7 +716,7 @@ drain_nish_conditions() {
     fi
 
     if [ "$DRY_RUN" = "1" ]; then
-        log "DRY: condition-drain would archive $nish_condition_resolved resolved money-wall entries ($nish_condition_live still live)"
+        log "DRY: condition-drain would archive $nish_condition_resolved resolved money-wall + $cond_body_resolved body-resolved entries ($nish_condition_live still live)"
         rm -f "$tmp_nish" "$tmp_archive"
         return 0
     fi
@@ -695,7 +751,7 @@ drain_nish_conditions() {
 
     local new_lines
     new_lines=$(wc -l < "$NISH")
-    log "condition-drain: resolved=$nish_condition_resolved live=$nish_condition_live live_lines=$new_lines (was $old_lines) archive=$archive_path"
+    log "condition-drain: resolved=$nish_condition_resolved body_resolved=$cond_body_resolved live=$nish_condition_live live_lines=$new_lines (was $old_lines) archive=$archive_path"
     return 0
 }
 
@@ -810,5 +866,5 @@ drain_nish
 drain_nish_conditions
 drain_packets
 
-log "summary: nish_archived=$nish_archived nish_bounded=$nish_bounded nish_condition_resolved=$nish_condition_resolved nish_condition_live=$nish_condition_live packet_deleted=$packet_deleted packet_skipped=$packet_skipped dry_run=$DRY_RUN"
+log "summary: nish_archived=$nish_archived nish_bounded=$nish_bounded nish_body_resolved=$nish_body_resolved nish_condition_resolved=$nish_condition_resolved nish_condition_live=$nish_condition_live packet_deleted=$packet_deleted packet_skipped=$packet_skipped dry_run=$DRY_RUN"
 exit 0
