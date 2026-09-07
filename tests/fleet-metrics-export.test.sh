@@ -760,6 +760,7 @@ m.MAINTENANCE_FLAG = Path("/nonexistent/maint.json")
 m.INTAKE_JSON_DEFAULT = Path("/nonexistent/intake.json")
 m.INTAKE_JSON_FALLBACK = Path("/nonexistent/intake2.json")
 m.KEYSTONE_LEDGER = Path("/nonexistent/keystone.jsonl")
+m.WORKTREE_REAPER_SUMMARY = Path("/nonexistent/reaper.json")
 m.STALENESS_CACHE = Path("/nonexistent/stale.json")
 m.PR_CACHE_DIR = Path(os.path.dirname(out_path))
 m.DETAIL_CACHE = Path(os.path.dirname(out_path)) / "detail.cache.json"
@@ -871,6 +872,7 @@ m.MAINTENANCE_FLAG = Path("/nonexistent/maint.json")
 m.INTAKE_JSON_DEFAULT = Path("/nonexistent/intake.json")
 m.INTAKE_JSON_FALLBACK = Path("/nonexistent/intake2.json")
 m.KEYSTONE_LEDGER = Path("/nonexistent/keystone.jsonl")
+m.WORKTREE_REAPER_SUMMARY = Path("/nonexistent/reaper.json")
 m.STALENESS_CACHE = Path("/nonexistent/stale.json")
 m.DETAIL_CACHE = Path(out_path).parent / "detail.cache.json"
 
@@ -962,6 +964,7 @@ m.MAINTENANCE_FLAG = Path("/nonexistent/maint.json")
 m.INTAKE_JSON_DEFAULT = Path("/nonexistent/intake.json")
 m.INTAKE_JSON_FALLBACK = Path("/nonexistent/intake2.json")
 m.KEYSTONE_LEDGER = Path("/nonexistent/keystone.jsonl")
+m.WORKTREE_REAPER_SUMMARY = Path("/nonexistent/reaper.json")
 m.STALENESS_CACHE = Path("/nonexistent/stale.json")
 m.DETAIL_CACHE = Path(os.path.dirname(out_path)) / "detail.cache.json"
 m.GH_RATE_LIMIT_CACHE = Path(os.path.dirname(out_path)) / "rl.cache.json"
@@ -1026,6 +1029,7 @@ m.MAINTENANCE_FLAG = Path("/nonexistent/maint.json")
 m.INTAKE_JSON_DEFAULT = Path("/nonexistent/intake.json")
 m.INTAKE_JSON_FALLBACK = Path("/nonexistent/intake2.json")
 m.KEYSTONE_LEDGER = Path("/nonexistent/keystone.jsonl")
+m.WORKTREE_REAPER_SUMMARY = Path("/nonexistent/reaper.json")
 m.STALENESS_CACHE = Path("/nonexistent/stale.json")
 m.DETAIL_CACHE = Path(os.path.dirname(out_path)) / "detail.cache.json"
 m.GH_RATE_LIMIT_CACHE = Path(os.path.dirname(out_path)) / "rl.cache.json"
@@ -1417,6 +1421,7 @@ m.MAINTENANCE_FLAG = Path("/nonexistent/maint.json")
 m.INTAKE_JSON_DEFAULT = Path("/nonexistent/intake.json")
 m.INTAKE_JSON_FALLBACK = Path("/nonexistent/intake2.json")
 m.KEYSTONE_LEDGER = Path("/nonexistent/keystone.jsonl")
+m.WORKTREE_REAPER_SUMMARY = Path("/nonexistent/reaper.json")
 m.STALENESS_CACHE = Path("/nonexistent/stale.json")
 # Stub network/gh/systemctl-dependent paths so main() runs offline.
 # fleet-ops#2797: _queue_composition MUST be assigned. main() fail-louds
@@ -2733,6 +2738,7 @@ m.MAINTENANCE_FLAG = Path("/nonexistent/maint.json")
 m.INTAKE_JSON_DEFAULT = Path("/nonexistent/intake.json")
 m.INTAKE_JSON_FALLBACK = Path("/nonexistent/intake2.json")
 m.KEYSTONE_LEDGER = Path("/nonexistent/keystone.jsonl")
+m.WORKTREE_REAPER_SUMMARY = Path("/nonexistent/reaper.json")
 m.STALENESS_CACHE = Path("/nonexistent/stale.json")
 m.DETAIL_CACHE = m.PR_CACHE_DIR / "detail.cache.json"
 m.OPENROUTER_BALANCE_CACHE = m.PR_CACHE_DIR / "openrouter-balance.json"
@@ -3195,6 +3201,7 @@ m.MAINTENANCE_FLAG = Path("/nonexistent/maint.json")
 m.INTAKE_JSON_DEFAULT = Path("/nonexistent/intake.json")
 m.INTAKE_JSON_FALLBACK = Path("/nonexistent/intake2.json")
 m.KEYSTONE_LEDGER = Path("/nonexistent/keystone.jsonl")
+m.WORKTREE_REAPER_SUMMARY = Path("/nonexistent/reaper.json")
 m.STALENESS_CACHE = Path("/nonexistent/stale.json")
 m.PR_CACHE_DIR = Path(os.path.dirname(out_path))
 m.DETAIL_CACHE = Path(os.path.dirname(out_path)) / "detail.cache.json"
@@ -3250,3 +3257,198 @@ if grep -q "severity: page" <<<"$oomd_block"; then
   fail "FleetOomdKillsHigh must NOT be severity=page (only RepairDispatchDown pages)"
 fi
 ok "fleet-ops#4164: FleetOomdKillsHigh rule shape (expr, severity=critical, names ram_gb_per_worker 2.0 raise)"
+
+# =========================================================================
+# fleet-ops#4118: worktree reaper gauge family. The reaper
+# (bin/fleet-worktree-reaper) writes a daily summary JSON; the exporter
+# reads it to emit the count metric the heartbeat can gauge
+# (fleet_worktree_dirs) plus a liveness signal. Pins:
+#   - _read_worktree_reaper parses a present summary into the count fields
+#   - degradation: missing / unparseable / stale summary -> present=False
+#   - main() emits the present gauge always, and the count + heartbeat
+#     gauges only when the summary is present and fresh
+# =========================================================================
+python3 - "$exporter" <<'PY' || fail "worktree reaper constants/helper missing"
+import importlib.util, sys
+exp_path = sys.argv[1]
+spec = importlib.util.spec_from_file_location("fme", exp_path)
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+assert hasattr(m, "HELP_WTP") and "fleet_worktree_reaper_present" in m.HELP_WTP, m.HELP_WTP
+assert hasattr(m, "TYPE_WTP") and "fleet_worktree_reaper_present" in m.TYPE_WTP, m.TYPE_WTP
+assert hasattr(m, "HELP_WTD") and "fleet_worktree_dirs" in m.HELP_WTD, m.HELP_WTD
+assert hasattr(m, "TYPE_WTD") and "fleet_worktree_dirs" in m.TYPE_WTD, m.TYPE_WTD
+assert hasattr(m, "HELP_WTR") and "fleet_worktree_reaped" in m.HELP_WTR, m.HELP_WTR
+assert hasattr(m, "HELP_WTHB") and "fleet_worktree_reaper_heartbeat_seconds" in m.HELP_WTHB, m.HELP_WTHB
+assert callable(m._read_worktree_reaper), "_read_worktree_reaper must be callable"
+print("OK: worktree reaper HELP/TYPE constants + _read_worktree_reaper helper present")
+PY
+
+# _read_worktree_reaper: present summary -> counts; missing/unparseable/stale -> present=False.
+WT_SUMMARY="$scratch/reaper-summary.json"
+cat >"$WT_SUMMARY" <<'JSON'
+{"script":"fleet-worktree-reaper","ts":"2026-09-07T13:33:53Z","scanned":307,"reaped":14,"post_count":326,"pre_count":341,"bound_breached":0,"skipped_dirty":60,"skipped_notpushed":137,"skipped_live":9,"skipped_young":14,"skipped_unmerged":60,"skipped_notterminal":12,"salvaged":0,"failed":1}
+JSON
+python3 - "$exporter" "$WT_SUMMARY" <<'PY' || fail "_read_worktree_reaper parse/degrade failed"
+import importlib.util, json, os, sys, time
+from pathlib import Path
+exp_path, summary = sys.argv[1], sys.argv[2]
+spec = importlib.util.spec_from_file_location("fme", exp_path)
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+
+# present summary
+m.WORKTREE_REAPER_SUMMARY = Path(summary)
+r = m._read_worktree_reaper()
+assert r["present"] is True, r
+assert r["post_count"] == 326, r
+assert r["reaped"] == 14, r
+assert r["scanned"] == 307, r
+assert r["bound_breached"] == 0, r
+assert r["skipped_dirty"] == 60, r
+assert r["age_s"] is not None and r["age_s"] >= 0, r
+print("OK: _read_worktree_reaper parses a present summary into count fields")
+
+# missing
+m.WORKTREE_REAPER_SUMMARY = Path("/nonexistent/reaper.json")
+r = m._read_worktree_reaper()
+assert r["present"] is False and r["reason"] == "summary-missing", r
+print("OK: _read_worktree_reaper degrades to summary-missing")
+
+# unparseable
+bad = Path(summary + ".bad")
+bad.write_text("{not json")
+m.WORKTREE_REAPER_SUMMARY = bad
+r = m._read_worktree_reaper()
+assert r["present"] is False and r["reason"] == "summary-unparseable", r
+print("OK: _read_worktree_reaper degrades to summary-unparseable")
+
+# stale (older than WORKTREE_REAPER_STALE_S)
+stale = Path(summary + ".stale")
+stale_ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - m.WORKTREE_REAPER_STALE_S - 3600))
+stale.write_text(json.dumps({"ts": stale_ts, "post_count": 5}))
+m.WORKTREE_REAPER_SUMMARY = stale
+r = m._read_worktree_reaper()
+assert r["present"] is False and r["reason"] == "summary-stale", r
+print("OK: _read_worktree_reaper degrades to summary-stale")
+PY
+
+# main() emits the present gauge always; count + heartbeat gauges only when present+fresh.
+WT_OUT="$scratch/wt-out.prom"
+python3 - "$exporter" "$WT_OUT" "$WT_SUMMARY" <<'PY' || fail "main() worktree gauge emission failed"
+import importlib.util, json, os, sys
+from pathlib import Path
+exp_path, out_path, summary = sys.argv[1], sys.argv[2], sys.argv[3]
+spec = importlib.util.spec_from_file_location("fme", exp_path)
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+m.OUT = Path(out_path)
+m.SELF_MAINT_JSON_DEFAULT = Path("/nonexistent/sm.json")
+m.SELF_MAINT_JSON_FALLBACK = Path("/nonexistent/sm2.json")
+m.SEAT_HEALTH = Path("/nonexistent/seat.json")
+m.SEAT_LEDGER = Path("/nonexistent/ledger")
+m.SEAT_CAPS_DEFAULT = Path("/nonexistent/caps.json")
+m.SEAT_CAPS_FALLBACK = Path("/nonexistent/caps2.json")
+m.SEAT_CAPS_LIVE = Path("/nonexistent/caps3.json")
+m.HC_URL_FILE = Path("/nonexistent/hc.url")
+m.ACTIONS_LOG = Path("/nonexistent/actions.log")
+m.MAINTENANCE_FLAG = Path("/nonexistent/maint.json")
+m.INTAKE_JSON_DEFAULT = Path("/nonexistent/intake.json")
+m.INTAKE_JSON_FALLBACK = Path("/nonexistent/intake2.json")
+m.KEYSTONE_LEDGER = Path("/nonexistent/keystone.jsonl")
+m.STALENESS_CACHE = Path("/nonexistent/stale.json")
+m.PR_CACHE_DIR = Path(os.path.dirname(out_path))
+m.DETAIL_CACHE = Path(os.path.dirname(out_path)) / "detail.cache.json"
+m.WORKTREE_REAPER_SUMMARY = Path(summary)
+m._list_timers = lambda: [{"unit": "fleet-metrics-export.timer", "last_usec": 0}]
+m._timer_active = lambda unit: 1
+m._read_seat = lambda: (1, 0)
+m._merged_prs_detail = lambda: []
+m._repo_snapshot = lambda: None
+m._queue_composition = lambda: {"ready-work": {"total": 0, "self": 0}, "agent-ready": {"total": 0, "self": 0}}
+m._escalations_24h = lambda: {}
+m._oomd_kills_6h = lambda: {}
+m._repair_log_counts_24h = lambda: (0, 0)
+m._worker_units = lambda: []
+m._standalone_pi_print_count = lambda u: 0
+m._maintenance_quiescing = lambda: 0
+m._keystone_routing_counts = lambda: (0, 0, None)
+m._ping_healthcheck = lambda: None
+m._fetch_openrouter_credits = lambda: None
+m._fetch_xkiro_usage = lambda: None
+m._fetch_openrouter_key = lambda: None
+m._fetch_claude_usage = lambda: None
+m._fetch_codex_usage = lambda: None
+m._GH_FETCHED_THIS_RUN = False
+rc = m.main()
+assert rc == 0, f"main rc={rc}"
+body = Path(out_path).read_text()
+# present + count + reaped + heartbeat gauges emitted for a fresh summary.
+assert "fleet_worktree_reaper_present 1" in body, body
+assert "fleet_worktree_dirs 326" in body, body
+assert "fleet_worktree_reaped 14" in body, body
+assert "# HELP fleet_worktree_dirs" in body, "missing HELP"
+assert "# TYPE fleet_worktree_dirs gauge" in body, "missing TYPE"
+assert "# HELP fleet_worktree_reaper_present" in body, "missing present HELP"
+assert "# TYPE fleet_worktree_reaper_present gauge" in body, "missing present TYPE"
+assert "fleet_worktree_reaper_heartbeat_seconds " in body, "missing heartbeat gauge"
+# one HELP / one TYPE per metric name
+assert body.count("# HELP fleet_worktree_dirs") == 1, "duplicate HELP"
+assert body.count("# TYPE fleet_worktree_dirs") == 1, "duplicate TYPE"
+assert body.count("# HELP fleet_worktree_reaper_present") == 1, "duplicate present HELP"
+assert body.count("# TYPE fleet_worktree_reaper_present") == 1, "duplicate present TYPE"
+print("OK: main() emits worktree reaper gauges (present + count + reaped + heartbeat) for a fresh summary")
+PY
+
+# main() with a MISSING summary: present gauge = 0, count gauges omitted.
+WT_OUT2="$scratch/wt-out2.prom"
+python3 - "$exporter" "$WT_OUT2" <<'PY' || fail "main() worktree gauge missing-summary failed"
+import importlib.util, os, sys
+from pathlib import Path
+exp_path, out_path = sys.argv[1], sys.argv[2]
+spec = importlib.util.spec_from_file_location("fme", exp_path)
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+m.OUT = Path(out_path)
+m.SELF_MAINT_JSON_DEFAULT = Path("/nonexistent/sm.json")
+m.SELF_MAINT_JSON_FALLBACK = Path("/nonexistent/sm2.json")
+m.SEAT_HEALTH = Path("/nonexistent/seat.json")
+m.SEAT_LEDGER = Path("/nonexistent/ledger")
+m.SEAT_CAPS_DEFAULT = Path("/nonexistent/caps.json")
+m.SEAT_CAPS_FALLBACK = Path("/nonexistent/caps2.json")
+m.SEAT_CAPS_LIVE = Path("/nonexistent/caps3.json")
+m.HC_URL_FILE = Path("/nonexistent/hc.url")
+m.ACTIONS_LOG = Path("/nonexistent/actions.log")
+m.MAINTENANCE_FLAG = Path("/nonexistent/maint.json")
+m.INTAKE_JSON_DEFAULT = Path("/nonexistent/intake.json")
+m.INTAKE_JSON_FALLBACK = Path("/nonexistent/intake2.json")
+m.KEYSTONE_LEDGER = Path("/nonexistent/keystone.jsonl")
+m.STALENESS_CACHE = Path("/nonexistent/stale.json")
+m.PR_CACHE_DIR = Path(os.path.dirname(out_path))
+m.DETAIL_CACHE = Path(os.path.dirname(out_path)) / "detail.cache.json"
+m.WORKTREE_REAPER_SUMMARY = Path("/nonexistent/reaper.json")
+m._list_timers = lambda: [{"unit": "fleet-metrics-export.timer", "last_usec": 0}]
+m._timer_active = lambda unit: 1
+m._read_seat = lambda: (1, 0)
+m._merged_prs_detail = lambda: []
+m._repo_snapshot = lambda: None
+m._queue_composition = lambda: {"ready-work": {"total": 0, "self": 0}, "agent-ready": {"total": 0, "self": 0}}
+m._escalations_24h = lambda: {}
+m._oomd_kills_6h = lambda: {}
+m._repair_log_counts_24h = lambda: (0, 0)
+m._worker_units = lambda: []
+m._standalone_pi_print_count = lambda u: 0
+m._maintenance_quiescing = lambda: 0
+m._keystone_routing_counts = lambda: (0, 0, None)
+m._ping_healthcheck = lambda: None
+m._fetch_openrouter_credits = lambda: None
+m._fetch_xkiro_usage = lambda: None
+m._fetch_openrouter_key = lambda: None
+m._fetch_claude_usage = lambda: None
+m._fetch_codex_usage = lambda: None
+m._GH_FETCHED_THIS_RUN = False
+rc = m.main()
+assert rc == 0, f"main rc={rc}"
+body = Path(out_path).read_text()
+assert "fleet_worktree_reaper_present 0" in body, body
+assert "fleet_worktree_dirs" not in body, "count gauge must be omitted when summary missing: " + body
+assert "fleet_worktree_reaped" not in body, "reaped gauge must be omitted when summary missing: " + body
+print("OK: main() emits present=0 and omits count gauges when the summary is missing")
+PY
+ok "fleet-ops#4118: worktree reaper gauge family (present + count + reaped + heartbeat)"

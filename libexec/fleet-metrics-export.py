@@ -293,6 +293,49 @@ KEYSTONE_LEDGER = Path(
     "/home/nish/.local/state/pi-packet/keystone-routing.jsonl"
 )
 
+# Worktree reaper summary (fleet-ops#4118). bin/fleet-worktree-reaper writes
+# a JSON breakdown here on every daily timer run: post_count (dirs left under
+# agent-worktrees after the reap), reaped, skipped_* breakdown, and the run
+# timestamp. The heartbeat exporter reads it to emit the count metric the
+# heartbeat can gauge (fleet_worktree_dirs) plus a liveness signal. A summary
+# older than WORKTREE_REAPER_STALE_S (7d, matching the retired opus-heartbeat
+# REAPER_STALE_S) is treated as stale — the reaper missed a week of daily runs.
+WORKTREE_REAPER_SUMMARY = Path(
+    "/home/nish/workspaces/agent-state/worktree-reaper-last-run.json"
+)
+WORKTREE_REAPER_STALE_S = 7 * 86400
+
+# Worktree reaper gauge family (fleet-ops#4118). fleet_worktree_dirs is the
+# count of dirs left under agent-worktrees after the last reap — the
+# unbounded-growth invariant the issue tracks. fleet_worktree_reaped_total is
+# how many the reaper removed that run. The present gauge is ALWAYS emitted so
+# the heartbeat can tell a dead reaper (0) from a healthy one (1); the count
+# gauges are emitted only when the summary is present and fresh (a missing or
+# stale summary means the count is unknown, not 0).
+HELP_WTP = (
+    "# HELP fleet_worktree_reaper_present 1 when the worktree reaper's last-run "
+    "summary is present and fresh, 0 when missing/unparseable/stale. The "
+    "liveness signal for the reaper organ (fleet-ops#4118)."
+)
+TYPE_WTP = "# TYPE fleet_worktree_reaper_present gauge"
+HELP_WTD = (
+    "# HELP fleet_worktree_dirs Number of directories left under agent-worktrees "
+    "after the last worktree-reaper run (post_count). The count metric the "
+    "heartbeat gauges for unbounded worktree sprawl (fleet-ops#4118)."
+)
+TYPE_WTD = "# TYPE fleet_worktree_dirs gauge"
+HELP_WTR = (
+    "# HELP fleet_worktree_reaped Number of worktrees the reaper removed "
+    "in its last run (fleet-ops#4118)."
+)
+TYPE_WTR = "# TYPE fleet_worktree_reaped gauge"
+HELP_WTHB = (
+    "# HELP fleet_worktree_reaper_heartbeat_seconds Epoch (s) of the reaper's "
+    "last-run summary timestamp. Its presence is the freshness signal for the "
+    "reaper organ; absent() fires when the reaper is dead (fleet-ops#4118)."
+)
+TYPE_WTHB = "# TYPE fleet_worktree_reaper_heartbeat_seconds gauge"
+
 # Truth staleness metrics (fleet-ops#1137: cross-check standing docs vs live
 # state). The staleness checker exports fleet_truth_staleness_last_run_seconds,
 # fleet_truth_staleness_total_claims, and
@@ -2862,6 +2905,62 @@ def _keystone_routing_counts():
     return routed, escalated, st.st_mtime
 
 
+def _read_worktree_reaper():
+    """Read the worktree reaper's last-run summary (fleet-ops#4118).
+
+    bin/fleet-worktree-reaper writes a JSON breakdown to
+    WORKTREE_REAPER_SUMMARY on every daily timer run. This surfaces the count
+    the heartbeat can gauge: post_count (dirs left under agent-worktrees after
+    the reap), reaped (how many the reaper removed), and the run timestamp for
+    freshness. Degrades to present=False when the summary is missing,
+    unparseable, or stale (older than WORKTREE_REAPER_STALE_S) so the heartbeat
+    can tell a dead reaper from a healthy one — a missing reaper result is
+    data, not a crash.
+
+    Returns a dict with present + the count fields, or present=False with a
+    reason.
+    """
+    try:
+        doc = json.loads(
+            WORKTREE_REAPER_SUMMARY.read_text(encoding="utf-8", errors="replace")
+        )
+    except OSError:
+        return {"present": False, "reason": "summary-missing"}
+    except json.JSONDecodeError:
+        return {"present": False, "reason": "summary-unparseable"}
+    ts = doc.get("ts")
+    age_s = None
+    if isinstance(ts, str):
+        ts_epoch = _parse_iso_utc(ts)
+        if ts_epoch is not None:
+            age_s = time.time() - ts_epoch
+    if age_s is not None and age_s > WORKTREE_REAPER_STALE_S:
+        return {
+            "present": False,
+            "reason": "summary-stale",
+            "ts": ts,
+            "age_s": age_s,
+        }
+    return {
+        "present": True,
+        "ts": ts,
+        "age_s": age_s,
+        "post_count": doc.get("post_count"),
+        "pre_count": doc.get("pre_count"),
+        "reaped": doc.get("reaped"),
+        "scanned": doc.get("scanned"),
+        "bound_breached": doc.get("bound_breached"),
+        "skipped_dirty": doc.get("skipped_dirty"),
+        "skipped_notpushed": doc.get("skipped_notpushed"),
+        "skipped_live": doc.get("skipped_live"),
+        "skipped_young": doc.get("skipped_young"),
+        "skipped_unmerged": doc.get("skipped_unmerged"),
+        "skipped_notterminal": doc.get("skipped_notterminal"),
+        "salvaged": doc.get("salvaged"),
+        "failed": doc.get("failed"),
+    }
+
+
 # --- Self-maintenance + PR quality (fleet-ops#1136) ------------------------
 
 # Conventional-commit prefix -> quality class. The issue's "to start" heuristic:
@@ -5145,6 +5244,35 @@ def main():
         lines.append(HELP_KHB)
         lines.append(TYPE_KHB)
         lines.append(f"fleet_keystone_routing_heartbeat_seconds {k_mtime:.3f}")
+
+    # --- Worktree reaper gauge (fleet-ops#4118) ---
+    # The reaper (bin/fleet-worktree-reaper) writes a daily summary JSON. The
+    # present gauge is ALWAYS emitted so the heartbeat can tell a dead reaper
+    # (0) from a healthy one (1); the count + heartbeat gauges are emitted only
+    # when the summary is present and fresh (a missing/stale summary means the
+    # count is unknown, not 0). fleet_worktree_dirs is the count metric the
+    # heartbeat gauges for unbounded worktree sprawl.
+    wt = _read_worktree_reaper()
+    lines.append("")
+    lines.append(HELP_WTP)
+    lines.append(TYPE_WTP)
+    lines.append(f"fleet_worktree_reaper_present {1 if wt.get('present') else 0}")
+    if wt.get("present"):
+        lines.append("")
+        lines.append(HELP_WTD)
+        lines.append(TYPE_WTD)
+        lines.append(f"fleet_worktree_dirs {int(wt.get('post_count') or 0)}")
+        lines.append("")
+        lines.append(HELP_WTR)
+        lines.append(TYPE_WTR)
+        lines.append(f"fleet_worktree_reaped {int(wt.get('reaped') or 0)}")
+        if isinstance(wt.get("ts"), str):
+            ts_epoch = _parse_iso_utc(wt["ts"])
+            if ts_epoch is not None:
+                lines.append("")
+                lines.append(HELP_WTHB)
+                lines.append(TYPE_WTHB)
+                lines.append(f"fleet_worktree_reaper_heartbeat_seconds {ts_epoch}")
 
     # --- Seat yield ledger (fleet-ops#3250) ---
     # Computed from the agent's own pi-issue session files. Per-seat rolling
