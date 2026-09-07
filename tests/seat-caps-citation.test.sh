@@ -395,7 +395,12 @@ done < <(jq -r '
     | (.value.class // "free") as $cls
     | [$p, $cls, (.value.reason // "")] | @tsv
 ' "$caps")
-# Model-level cap=0 entries on a paid provider.
+# Model-level cap=0 entries on a paid provider. fleet-ops#4271: a model with
+# a class:free override on a metered/prepaid provider is a FREE seat (costs
+# nothing — the cline/z-ai/glm-5.3-flash, openrouter :free, zenmux/z-ai/
+# glm-4.7-flash-free precedent). The retirement rule's evidence threshold
+# protects spend, so it does not apply to a free model; the jq below skips
+# model entries whose own class is "free" (same as a free-class provider).
 while IFS=$'\t' read -r prov model pclass reason; do
     [[ -n "$prov" ]] || continue
     [[ "$pclass" == "prepaid-quota" || "$pclass" == "metered" ]] || continue
@@ -430,6 +435,7 @@ done < <(jq -r '
     | ($v | if type == "object" then (.intentional_cap_zero // "") else "" end) as $icz
     | select($icz | IN("corpse","yield","stale-yield"))
     | select($cls | IN("prepaid-quota","metered"))
+    | select(($v | if type == "object" then (.class // "") else "" end) != "free")
     | [$p, $m, $cls, ($v | if type == "object" then (.reason // "") else "" end)] | @tsv
 ' "$caps")
 if (( r6_bad > 0 )); then

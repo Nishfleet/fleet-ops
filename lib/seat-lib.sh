@@ -568,8 +568,11 @@ load_seat_caps() {
         # ledger is seat_dead (terminal "corpse" class, no comeback clock)
         # is retired, never re-auditioned, so its cap-0 skip classifies as
         # intentional (by design), not stale (re-audit when the external
-        # condition clears).
-        if [[ "$icz" == "dead_decoy" || "$icz" == "money_only" || "$icz" == "corpse" ]]; then
+        # condition clears). fleet-ops#4271: "yield" joins the intentional set
+        # — a seat retired for zero PR yield (0 PRs over >= 20 picks) is
+        # intentional, never auto-expired; the re-audition path (yield gate
+        # #3251) is the only way back in.
+        if [[ "$icz" == "dead_decoy" || "$icz" == "money_only" || "$icz" == "corpse" || "$icz" == "yield" ]]; then
             SEAT_CAP_ZERO_CLASS_INTENTIONAL["$p"]="$icz"
         elif [[ "$icz" == "stale" ]]; then
             SEAT_CAP_ZERO_CLASS_STALE["$p"]="$icz"
@@ -625,7 +628,9 @@ load_seat_caps() {
             icz=$(jq -r '.intentional_cap_zero // ""' <<<"$cap" 2>/dev/null || true)
             # fleet-ops#2435: "corpse" is intentional too — see the provider
             # loop comment. Matches the ledger's terminal corpse class.
-            if [[ "$icz" == "dead_decoy" || "$icz" == "money_only" || "$icz" == "corpse" ]]; then
+            # fleet-ops#4271: "yield" (zero-PR retirement) is intentional too —
+            # never auto-expired; re-audition only via the yield gate (#3251).
+            if [[ "$icz" == "dead_decoy" || "$icz" == "money_only" || "$icz" == "corpse" || "$icz" == "yield" ]]; then
                 SEAT_CAP_ZERO_CLASS_INTENTIONAL["$p/$m"]="$icz"
             elif [[ "$icz" == "stale" ]]; then
                 SEAT_CAP_ZERO_CLASS_STALE["$p/$m"]="$icz"
