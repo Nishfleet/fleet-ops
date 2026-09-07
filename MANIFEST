@@ -1059,5 +1059,6 @@ systemd/fleet-litellm-postgres.service /home/nish/.config/systemd/user/fleet-lit
 systemd/fleet-litellm-redis.service /home/nish/.config/systemd/user/fleet-litellm-redis.service
 config/litellm-proxy.yaml /home/nish/.config/fleet-ops/litellm-proxy.yaml
 libexec/fleet-litellm-health-canary.py /home/nish/.local/libexec/fleet-litellm-health-canary.py
+bin/fleet-litellm-key /home/nish/.local/bin/fleet-litellm-key
 systemd/fleet-litellm-health-canary.service /home/nish/.config/systemd/user/fleet-litellm-health-canary.service
 systemd/fleet-litellm-health-canary.timer /home/nish/.config/systemd/user/fleet-litellm-health-canary.timer

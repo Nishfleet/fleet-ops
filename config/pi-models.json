@@ -1,5 +1,5 @@
 {
-  "_comment": "fleet2 / PI TUNING PACKET (2026-08-18) §5: register endpoints properly. MiniMax is a custom provider not in the built-in catalog — register it explicitly so the cache prefix metadata is right. Groq and OpenRouter are built into pi, but we model-override the gpt-oss-20b entry Groq runs so the cacheRead price and 131k context are correct. 2026-09-06 fleet-ops#3722: this file is now MANIFEST-managed (config/pi-models.json -> ~/.pi/agent/models.json, installed as a copy by install.sh). Edit the repo copy, never this live file by hand. The four openrouter :free seats (minimax-m3, glm-5.2, nemotron-3-ultra-550b, gemma-4-31b-it) are registered in modelOverrides with cost 0 so enumerate_seats emits them; caps live in config/seat-caps.json. openrouter/xkiro apiKeys were literal secrets in this file — they are now !command refs like every other provider (no secret in the repo).",
+  "_comment": "fleet2 / PI TUNING PACKET (2026-08-18) \u00a75: register endpoints properly. MiniMax is a custom provider not in the built-in catalog \u2014 register it explicitly so the cache prefix metadata is right. Groq and OpenRouter are built into pi, but we model-override the gpt-oss-20b entry Groq runs so the cacheRead price and 131k context are correct. 2026-09-06 fleet-ops#3722: this file is now MANIFEST-managed (config/pi-models.json -> ~/.pi/agent/models.json, installed as a copy by install.sh). Edit the repo copy, never this live file by hand. The four openrouter :free seats (minimax-m3, glm-5.2, nemotron-3-ultra-550b, gemma-4-31b-it) are registered in modelOverrides with cost 0 so enumerate_seats emits them; caps live in config/seat-caps.json. openrouter/xkiro apiKeys were literal secrets in this file \u2014 they are now !command refs like every other provider (no secret in the repo).",
   "providers": {
     "minimax": {
       "name": "MiniMax (fleet2)",
@@ -682,7 +682,7 @@
           "samplingParams": {
             "reasoning_effort": "none"
           },
-          "_comment_reasoning": "fleet-ops#4234/#4262: same treatment as the merged #4234 fix for ollama.com — CrofAI serves DeepSeek V4 Flash 0731 and reasons by default, charging reasoning to the output budget; reasoning_effort:none is the only value that turns it off (landed verbatim from the pre-#4234 live file). Pi already clamps this seat's thinkingLevel to off because reasoning is not declared here, so this makes the wire match Pi's own view."
+          "_comment_reasoning": "fleet-ops#4234/#4262: same treatment as the merged #4234 fix for ollama.com \u2014 CrofAI serves DeepSeek V4 Flash 0731 and reasons by default, charging reasoning to the output budget; reasoning_effort:none is the only value that turns it off (landed verbatim from the pre-#4234 live file). Pi already clamps this seat's thinkingLevel to off because reasoning is not declared here, so this makes the wire match Pi's own view."
         }
       ]
     },
@@ -703,7 +703,7 @@
             "cacheRead": 0.09,
             "cacheWrite": 0
           },
-          "_comment_4262": "fleet-ops#4262: landed verbatim from the live file (pre-#4234 backup). cacheRead=input (0.09) until measured — Entrim's cache-read pricing is not known yet."
+          "_comment_4262": "fleet-ops#4262: landed verbatim from the live file (pre-#4234 backup). cacheRead=input (0.09) until measured \u2014 Entrim's cache-read pricing is not known yet."
         }
       ]
     },
@@ -818,14 +818,14 @@
       "_comment_4329": "fleet-ops#4329: alibaba-coding's models registration is durable here. install.sh copy-installs pi-models.json verbatim (the unknown-provider merge exists only for seat-caps.json), so without this row a deploy would silently drop the provider from the live models.json — the same trap #4262 caught for runinfra/crof/entrim. Landed verbatim from the live ~/.pi/agent/models.json (smoke-tested SEAT-OK 2026-09-07). compat.supportsDeveloperRole=false (the endpoint 400s on Pi's developer role); thinking on for the reasoning models, enable_thinking=false for qwen3.8-flash + deepseek-v4-flash-0731."
     },
     "litellm": {
-      "name": "LiteLLM proxy (fleet-ops#4130 P2 — first consumer: fable-check)",
+      "name": "LiteLLM proxy (fleet seat routing, fleet-ops#4130 P2+P3a)",
       "baseUrl": "http://127.0.0.1:4000",
       "api": "openai-completions",
-      "apiKey": "!/home/nish/.local/bin/fleet-litellm-key judge",
+      "apiKey": "!/home/nish/.local/bin/fleet-litellm-key master",
       "models": [
         {
           "id": "judge",
-          "name": "LiteLLM judge group (senior ladder: cursor grok-4.6-high -> xai grok-4.6 -> openrouter deepseek-v4-flash-0731 -> worker-capable)",
+          "name": "LiteLLM judge group (senior ladder with proxy-owned fallbacks)",
           "contextWindow": 500000,
           "maxTokens": 8192,
           "reasoning": true,
@@ -835,9 +835,34 @@
             "cacheRead": 0,
             "cacheWrite": 0
           },
-          "_comment_4181": "fleet-ops#4181 P2: the proxy mints a virtual key (sk-fleet-senior) whose model allowlist pins the judge group. The fallback chain is configured in the live ~/.config/fleet-ops/litellm-proxy.yaml router_settings.fallbacks. Cost is 0 here because the proxy tracks spend in Postgres against the real upstream seats; pi's cost map would double-count. P3 deletes seat-lib and moves all workers to litellm groups."
+          "_comment_4181": "fleet-ops#4181 P2: first consumer (agent-cron-run fable-check). The fallback chain lives in the operator-owned ~/.config/fleet-ops/litellm-proxy.yaml router_settings.fallbacks. Cost is 0 here because the proxy tracks spend in Postgres against the real upstream seats; pi's cost map would double-count."
+        },
+        {
+          "id": "worker-cheap",
+          "name": "LiteLLM worker-cheap (free lanes first)",
+          "contextWindow": 1000000,
+          "maxTokens": 32768
+        },
+        {
+          "id": "worker-capable",
+          "name": "LiteLLM worker-capable (strong models)",
+          "contextWindow": 256000,
+          "maxTokens": 32768
+        },
+        {
+          "id": "senior",
+          "name": "LiteLLM senior (ordered fallback ladder)",
+          "contextWindow": 500000,
+          "maxTokens": 131072
+        },
+        {
+          "id": "worker-private",
+          "name": "LiteLLM worker-private (paid only, private repos)",
+          "contextWindow": 256000,
+          "maxTokens": 32768
         }
-      ]
+      ],
+      "_comment_4219": "fleet-ops#4219 P3a: single provider, all five model groups. P2 pinned the apiKey to the judge-scoped virtual key; P3a's callers need the worker groups too and pi holds one apiKey per provider, so the resolver now emits the master key (fleet-litellm-key master) which accesses every group. Per-tier virtual keys (sk-fleet-worker/senior/private) return in P3b for per-tier spend attribution; group/tag spend tracking in the proxy Postgres is unaffected. The resolver reads the operator-owned env files; no key value is in this file."
     }
   }
 }

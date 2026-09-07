@@ -94,7 +94,15 @@ seat_log "pi-packet-run: $pid target repo=${pkt_repo:-<none>} privacy=$pkt_priva
 # repo carries the product flag in config/intake-repos.json.
 export PI_PACKET_REPO="${pkt_repo:-}"
 
-seat=$(pick_seat "$fail_p" "$fail_m" "$need_capable" "$tried_file" "$difficulty" "$pkt_privacy" || true)
+# fleet-ops#4219 P3a: PI_SEAT_SOURCE switch.
+if [[ "${PI_SEAT_SOURCE:-seat-lib}" == "litellm" ]]; then
+    _lit_group="worker-cheap"
+    [[ "$pkt_privacy" == "private" ]] && _lit_group="worker-private"
+    seat=$(litellm_pick_seat "$_lit_group")
+    seat_log "pi-packet-run: $pid PI_SEAT_SOURCE=litellm group=$_lit_group (privacy=$pkt_privacy)"
+else
+    seat=$(pick_seat "$fail_p" "$fail_m" "$need_capable" "$tried_file" "$difficulty" "$pkt_privacy" || true)
+fi
 if [[ -z "$seat" ]]; then
     if [[ "$difficulty" == "keystone" ]]; then
         seat_log "pi-packet-run: KEYSTONE ESCALATION for $pid (tried: $(tr '\n' ' ' < "$tried_file" 2>/dev/null || true)) — exiting 1 so OnFailure summons senior conference"

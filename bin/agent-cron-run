@@ -79,17 +79,21 @@ need_capable=0
 
 # fleet-ops#4181 P2: fable-check routes through the LiteLLM proxy to the
 # judge group (senior ladder with fallback) instead of seat-lib pick_seat.
-# The proxy owns the fallback chain (cursor -> xai -> openrouter ->
-# worker-capable) per its router_settings.fallbacks; seat-lib still owns
-# every other caller until P3. AGENT_CRON_LITELLM_PROVIDER /
+# The proxy owns the fallback chain per its router_settings.fallbacks;
+# seat-lib still owns every other caller until P3. AGENT_CRON_LITELLM_PROVIDER /
 # AGENT_CRON_LITELLM_MODEL let tests override without a live proxy.
+# fleet-ops#4219 P3a: PI_SEAT_SOURCE=litellm extends the same routing to
+# every slug (group=judge) while both paths stay live; default seat-lib.
 if [[ "$slug" == "fable-check" ]] && [[ -z "${AGENT_CRON_SKIP_LITELLM:-}" ]]; then
     np="${AGENT_CRON_LITELLM_PROVIDER:-litellm}"
     nm="${AGENT_CRON_LITELLM_MODEL:-judge}"
     seat="$np	$nm"
     seat_log "agent-cron-run: $slug routed to LiteLLM proxy $np/$nm (fleet-ops#4181 P2)"
+elif [[ "${PI_SEAT_SOURCE:-seat-lib}" == "litellm" ]]; then
+    seat=$(printf 'litellm\tjudge\n')
+    seat_log "agent-cron-run: $slug PI_SEAT_SOURCE=litellm group=judge"
 else
-seat=$(pick_seat "" "" "$need_capable" "$tried_file" "$difficulty" || true)
+    seat=$(pick_seat "" "" "$need_capable" "$tried_file" "$difficulty" || true)
 fi
 if [[ -z "$seat" ]]; then
     seat_log "agent-cron-run: $slug no healthy seat available (tried: $(tr '\n' ' ' <"$tried_file" 2>/dev/null))"

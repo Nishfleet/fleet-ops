@@ -539,7 +539,12 @@ main() {
     fi
 
     local seat provider model
-    if ! seat=$(resolve_seat "$role"); then
+    # fleet-ops#4219 P3a: PI_SEAT_SOURCE switch.
+    # When litellm, all auditor roles collapse to worker-cheap.
+    if [[ "${PI_SEAT_SOURCE:-seat-lib}" == "litellm" ]]; then
+        seat=$(printf 'litellm\tworker-cheap\n')
+        log "PI_SEAT_SOURCE=litellm: $role -> litellm/worker-cheap"
+    elif ! seat=$(resolve_seat "$role"); then
         # fleet-ops#146 (binding addendum): an auditor seat wall is a LANE
         # FAULT, not a runner failure. "Auditor seat walled/timeout = lane fault
         # per the standing rule: bounded retry through the ladder, never charged

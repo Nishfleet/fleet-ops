@@ -134,6 +134,26 @@ seat_log() {
     printf '%s' "$line" >&2
 }
 
+# fleet-ops#4219 P3a: LiteLLM seat routing. When PI_SEAT_SOURCE=litellm,
+# callers resolve their seat from the LiteLLM proxy (model group) instead
+# of pick_seat. The proxy handles fallback, cooldown, and health checks.
+# PI_SEAT_SOURCE=seat-lib (the default) keeps the existing pick_seat path.
+# This function returns provider<TAB>model, the same shape as pick_seat.
+# Args: $1 = LiteLLM model group (worker-cheap, worker-capable, senior,
+#   judge, worker-private). Callers pass their group; pi-packet-run passes
+#   worker-private when the packet targets a private repo.
+# Env: PI_SEAT_SOURCE (default: seat-lib).
+# Returns: 0 always; prints provider<TAB>model on stdout.
+litellm_pick_seat() {
+    local group="${1:-worker-cheap}"
+    printf 'litellm\t%s\n' "$group"
+}
+
+# True when the fleet is routing through LiteLLM instead of seat-lib.
+litellm_source() {
+    [[ "${PI_SEAT_SOURCE:-seat-lib}" == "litellm" ]]
+}
+
 now_s() { date -u +%s; }
 
 # Single source of truth for "now" inside seat-lib's freshness/expire
