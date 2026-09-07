@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tests/gate-integrity-reusable-828.test.sh
 #
-# Lock the contract between the parked reusable-gate-integrity workflow and
+# Lock the contract between the reusable-gate-integrity workflow and
 # the decision script (fleet-ops#828 / 0509#1273).
 #
 # The reusable's Python step does the permission-API prefetch and ships the
@@ -20,7 +20,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 DECISION="$REPO_ROOT/.github/scripts/gate-integrity.sh"
-REUSABLE="$REPO_ROOT/docs/pending-gate-integrity/reusable-gate-integrity.yml"
+REUSABLE="$REPO_ROOT/.github/workflows/reusable-gate-integrity.yml"
 [[ -f "$DECISION" ]] || { echo "FAIL: missing $DECISION" >&2; exit 1; }
 [[ -f "$REUSABLE" ]] || { echo "FAIL: missing $REUSABLE" >&2; exit 1; }
 

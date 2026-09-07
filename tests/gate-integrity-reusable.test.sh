@@ -6,7 +6,7 @@
 #   2. Candidate checkout is forbidden (base-owned detector).
 #   3. Repo-specific globs are inputs (and/or `.fleet/gate-integrity.yml`).
 #   4. Thin template caller points at fleet-ops; no copied decision steps.
-#   5. If the GitHub-callable path exists, it matches the parked source.
+#   5. The reusable lives under .github/workflows/ and is the callable source.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
@@ -14,8 +14,7 @@ repo_root="$(cd "$here/.." && pwd)"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
-src="$repo_root/docs/pending-gate-integrity/reusable-gate-integrity.yml"
-callable="$repo_root/.github/workflows/reusable-gate-integrity.yml"
+src="$repo_root/.github/workflows/reusable-gate-integrity.yml"
 caller="$repo_root/template/.github/workflows/gate-integrity.yml"
 template_cfg="$repo_root/template/.fleet/gate-integrity.yml"
 decision="$repo_root/.github/scripts/gate-integrity.sh"
@@ -87,12 +86,7 @@ if got[0]["gate_globs"] != got[1]["gate_globs"] or got[0]["ratchet_paths"] != go
 PY
 ok "template config matches the default fixture"
 
-if [[ -f "$callable" ]]; then
-  cmp -s "$callable" "$src" || fail "callable workflow drifted from parked source"
-  ok "callable workflow matches parked source"
-else
-  echo "NOTE: $callable is absent — nishfleet-worker cannot push .github/workflows/**; parked source is $src"
-fi
+ok "reusable workflow is callable from .github/workflows/"
 
 # fleet-ops#497: CI host lock. Workers cannot add a verify-command line.
 # This file must stay listed in ci.yml OR invoked from seat-lib.test.sh.
