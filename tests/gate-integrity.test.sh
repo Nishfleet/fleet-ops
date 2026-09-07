@@ -657,13 +657,21 @@ test "$FAIL_COUNT" -eq 0
 
 # fleet-ops#497: CI host lock. Workers cannot add a verify-command line.
 # This file must stay listed in ci.yml OR invoked from seat-lib.test.sh.
+# The reusable workflow copies only this test + the decision script into a
+# decision-only tree (see gi-regression in reusable-gate-integrity.yml); skip
+# the lock there the same way workflow_shape already does.
 ci_yml="$repo_root/.github/workflows/ci.yml"
-listed=0
-hosted=0
-grep -Fq 'bash tests/gate-integrity.test.sh' "$ci_yml" && listed=1 || true
-grep -Fq 'bash "$here/gate-integrity.test.sh"' "$SCRIPT_DIR/seat-lib.test.sh" && hosted=1 || true
-if [[ "$listed" -eq 0 && "$hosted" -eq 0 ]]; then
-  printf 'FAIL: gate-integrity.test.sh has no CI host (fleet-ops#497): list it in ci.yml or invoke it from seat-lib.test.sh\n' >&2
-  exit 1
+seat_lib="$SCRIPT_DIR/seat-lib.test.sh"
+if [[ ! -f "$ci_yml" && ! -f "$seat_lib" ]]; then
+  printf 'ok   ci_host (skipped; decision-only tree)\n'
+else
+  listed=0
+  hosted=0
+  grep -Fq 'bash tests/gate-integrity.test.sh' "$ci_yml" && listed=1 || true
+  grep -Fq 'bash "$here/gate-integrity.test.sh"' "$seat_lib" && hosted=1 || true
+  if [[ "$listed" -eq 0 && "$hosted" -eq 0 ]]; then
+    printf 'FAIL: gate-integrity.test.sh has no CI host (fleet-ops#497): list it in ci.yml or invoke it from seat-lib.test.sh\n' >&2
+    exit 1
+  fi
+  printf 'ok   ci_host (ci.yml listed=%s, seat-lib hosted=%s)\n' "$listed" "$hosted"
 fi
-printf 'ok   ci_host (ci.yml listed=%s, seat-lib hosted=%s)\n' "$listed" "$hosted"
