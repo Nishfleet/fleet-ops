@@ -28,6 +28,20 @@ units=()
 
 emit_usage() { echo "usage: fleet-who-stopped [--last N] <unit>..." >&2; }
 
+# join_by sep "$@" — join args with sep without touching IFS.
+join_by() {
+    local sep="$1"; shift
+    local out="" first=1 item
+    for item in "$@"; do
+        if [[ $first -eq 1 ]]; then
+            out="$item"; first=0
+        else
+            out+="$sep$item"
+        fi
+    done
+    printf '%s' "$out"
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --last)
@@ -88,10 +102,10 @@ if [[ -n "$current" ]]; then
 fi
 
 if [[ -z "$matched" ]]; then
-    echo "fleet-who-stopped: no audit records naming $(IFS=,; echo "${units[*]}") in the last 24h (key=fleet-unit-stop, all systemctl/kill execve)" >&2
+    echo "fleet-who-stopped: no audit records naming $(join_by , "${units[@]}") in the last 24h (key=fleet-unit-stop, all systemctl/kill execve)" >&2
     exit 0
 fi
 
-echo "fleet-who-stopped: audit trail for: $(IFS=,; echo "${units[*]}")"
+echo "fleet-who-stopped: audit trail for: $(join_by , "${units[@]}")"
 awk -v n="$last" 'BEGIN{RS=""} {rec[NR]=$0} END {for (i=NR-n+1; i<=NR && i>=1; i++) print rec[i] "\n"}' <<<"$matched"
 exit 0
