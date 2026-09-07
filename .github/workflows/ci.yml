@@ -71,7 +71,7 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s extglob
-          files=(bin/!(*.py|*.ts) install.sh)
+          files=(bin/!(*.py|*.ts) .github/scripts/gate-integrity.sh install.sh)
           shellcheck -x "${files[@]}"
 
   unit-verify:
@@ -325,6 +325,7 @@ jobs:
         # fleet-ops#828: lock the gate-integrity decision script's
         # line-anchored attestation extraction (multi-line attest comments).
         bash tests/gate-integrity.test.sh
+        bash tests/gate-integrity-config.test.sh
         # fleet-ops#1136: pin the self-maintenance ratio, upgrade/repair/churn
         # classification, queue composition, and verified-merges numerator
         # (non-null diff AND delivery evidence) in the metrics exporter, plus
