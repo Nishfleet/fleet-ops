@@ -122,6 +122,12 @@ live_skip[opus-heartbeat-verify-cue-gate.test.sh]=1
 # SEAT_CAPS_JSON to pin the cap=0 intentional_cap_zero=corpse exclusion.
 # Live/VPS-only — cannot run in hosted CI (gather script absent).
 live_skip[opus-heartbeat-corpse-exclusion.test.sh]=1
+# fleet-ops#4118: opus-heartbeat-worktree-reaper-gauge drives the installed
+# gather at /home/nish/.local/libexec/opus-heartbeat-gather in THOROUGH mode
+# with FLEET_WORKTREE_REAPER_SUMMARY pointed at fixture JSON, pinning the
+# worktree_reaper gauge in hygiene_counts. Live/VPS-only — cannot run in
+# hosted CI (gather script absent).
+live_skip[opus-heartbeat-worktree-reaper-gauge.test.sh]=1
 # fleet-ops#1498: memory-index-autocompact-migrated runs `systemd-analyze verify`
 # on a unit whose ExecStart points to /home/nish/.local/bin/memory-index-autocompact
 # (VPS-only), absent on hosted runners. Live/VPS-only — cannot run in hosted CI.

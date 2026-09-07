@@ -205,6 +205,16 @@
 #                    $AGENT_STATE/worktree-reaper-last-run.json). Use
 #                    --no-summary-file to disable.
 #   --no-summary-file  Skip writing the summary JSON.
+#   --report-file P  Write a per-worktree TSV (path, owner_repo, branch,
+#                    mode, age_s, verdict, reason) to P and fold it into
+#                    the summary JSON as a `worktrees` array
+#                    (fleet-ops#4118). Default: a temp file alongside the
+#                    summary when --summary-file is set, else disabled.
+#                    Use --no-report-file to disable.
+#   --no-report-file  Skip the per-worktree report.
+#   --report-limit N  Cap the `worktrees` array at N rows (default 200).
+#                    The count fields in the summary carry the full totals
+#                    regardless; report_capped=1 marks a capped sample.
 #
 # Environment seams (tests):
 #   SYSTEMCTL          systemctl binary
@@ -257,6 +267,18 @@ LEDGER="${FLEET_DISPATCH_LEDGER:-$AGENT_STATE/dispatch-ledger.jsonl}"
 # vs skipped_notpushed — without grepping journalctl. Default writes to
 # agent-state/worktree-reaper-last-run.json; set to "" to disable.
 SUMMARY_FILE="${FLEET_WORKTREE_REAPER_SUMMARY_FILE:-$AGENT_STATE/worktree-reaper-last-run.json}"
+# Per-worktree report (fleet-ops#4118): a TSV the reaper appends one row to
+# per scanned worktree/dir, then folds into the summary JSON as a
+# `worktrees` array. Columns:
+#   path \t owner_repo \t branch \t mode \t age_s \t verdict \t reason
+# `verdict` is one of reaped|skipped|failed; `reason` is the gate that
+# decided it (live|dirty|unmerged|notpushed|notterminal|young|merged|
+# closed|ledger-terminal|on-origin|stale|salvage-limit|gh-fail|remove-fail|
+# salvage-banked|plain-dir). Capped at --report-limit rows (default 200) so
+# the JSON stays small; the count fields in the summary carry the full
+# totals regardless. Set to "" to disable the per-worktree report.
+REPORT_FILE="${FLEET_WORKTREE_REAPER_REPORT_FILE:-auto}"
+REPORT_LIMIT="${FLEET_WORKTREE_REAPER_REPORT_LIMIT:-200}"
 
 usage() {
     # Print the whole header comment block (line 2 through the first
@@ -276,6 +298,9 @@ while [ $# -gt 0 ]; do
         --max-worktrees) MAX_WORKTREES="${2:?--max-worktrees needs an N}"; shift 2 ;;
         --summary-file) SUMMARY_FILE="${2:?--summary-file needs a PATH}"; shift 2 ;;
         --no-summary-file) SUMMARY_FILE=""; shift ;;
+        --report-file) REPORT_FILE="${2:?--report-file needs a PATH}"; shift 2 ;;
+        --no-report-file) REPORT_FILE=""; shift ;;
+        --report-limit) REPORT_LIMIT="${2:?--report-limit needs an N}"; shift 2 ;;
         -h|--help) usage ;;
         *) echo "fleet-worktree-reaper: unknown arg: $1" >&2; exit 2 ;;
     esac
@@ -284,6 +309,20 @@ done
 [[ "$SALVAGE_AGE_DAYS" =~ ^[0-9]+$ ]] || { echo "fleet-worktree-reaper: --salvage-age-days must be a non-negative integer" >&2; exit 2; }
 [[ "$SALVAGE_LIMIT" =~ ^[0-9]+$ ]] || { echo "fleet-worktree-reaper: --salvage-limit must be a non-negative integer" >&2; exit 2; }
 [[ "$MAX_WORKTREES" =~ ^[0-9]+$ ]] || { echo "fleet-worktree-reaper: --max-worktrees must be a non-negative integer" >&2; exit 2; }
+[[ "$REPORT_LIMIT" =~ ^[0-9]+$ ]] || { echo "fleet-worktree-reaper: --report-limit must be a non-negative integer" >&2; exit 2; }
+# Resolve the "auto" report-file default: a sibling of the summary file
+# (same dir, .worktrees.tsv extension) when --summary-file is set, else
+# disabled. --no-report-file and an explicit --report-file override this.
+# The report is an intermediate; the summary JSON folds its rows into a
+# `worktrees` array (fleet-ops#4118). The sibling file is left on disk so
+# the duty officer can grep it without jq.
+if [ "$REPORT_FILE" = "auto" ]; then
+    if [ -n "$SUMMARY_FILE" ]; then
+        REPORT_FILE="${SUMMARY_FILE%.json}.worktrees.tsv"
+    else
+        REPORT_FILE=""
+    fi
+fi
 # Mode D stale gate in seconds; the _S env seam overrides the days
 # computation so tests can use small values (mirrors NOW_EPOCH).
 SALVAGE_AGE_S="${FLEET_WORKTREE_REAPER_SALVAGE_AGE_S:-$(( SALVAGE_AGE_DAYS * 86400 ))}"
@@ -296,6 +335,28 @@ command -v "$SYSTEMCTL" >/dev/null 2>&1 || { echo "fleet-worktree-reaper: system
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
 log() { printf '[%s] [worktree-reaper] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; }
+
+# --- per-worktree report (fleet-ops#4118) -----------------------------------
+# A TSV the per-worktree loop appends one row to per scanned dir. Folded
+# into the summary JSON as a `worktrees` array at the end so the duty
+# officer (and the heartbeat) can see per-worktree age/owner/verdict
+# without grepping journalctl. Capped at REPORT_LIMIT rows; the count
+# fields carry the full totals regardless. Disabled when REPORT_FILE="".
+report_rows=0
+report_ts=""
+if [ -n "$REPORT_FILE" ]; then
+    report_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    : >"$REPORT_FILE" 2>/dev/null || { log "report-file not writable: $REPORT_FILE — disabling"; REPORT_FILE=""; }
+fi
+# report_row <path> <owner_repo> <branch> <mode> <age_s> <verdict> <reason>
+# Appends a TSV row to $REPORT_FILE (if enabled and under the cap). The
+# caller owns the values; this helper only does the cap + write.
+report_row() {
+    [ -n "$REPORT_FILE" ] || return 0
+    [ "$report_rows" -lt "$REPORT_LIMIT" ] || return 0
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5" "$6" "$7" >>"$REPORT_FILE" 2>/dev/null || true
+    report_rows=$((report_rows + 1))
+}
 
 # --- discover parent repos from worktree .git pointers --------------------
 # Each worktree dir has a .git file: `gitdir: <parent>/.git/worktrees/<name>`.
@@ -707,12 +768,18 @@ for parent in "${parents[@]}"; do
             B) total_pi_path=$((total_pi_path + 1)) ;;
             C) total_other=$((total_other + 1)) ;;
         esac
+        # Per-worktree report (fleet-ops#4118): age is computed once so
+        # every verdict row carries the same value. owner_repo is the
+        # parent's resolved owner/repo (empty for paths the parent loop
+        # could not resolve — should not happen here, but defensive).
+        wt_age_s=$(( $(now_epoch) - $(worktree_age_seconds "$path") ))
 
         # Common gates: live worker (only when path matches pi-issue
         # shape) + clean tree (all modes).
         if [ -n "$pshort" ] && [ -n "$pn" ] && is_live_worker "$pshort" "$pn"; then
             skipped_live=$((skipped_live + 1))
             log "  $path: SKIP live worker ($branch, mode=$mode, unit=pi-issue-$pshort-$pn)"
+            report_row "$path" "$owner_repo" "$branch" "$mode" "$wt_age_s" skipped live
             continue
         fi
         wt_banked=0
@@ -754,6 +821,7 @@ for parent in "${parents[@]}"; do
             if [ "$wt_banked" = 0 ]; then
                 skipped_dirty=$((skipped_dirty + 1))
                 log "  $path: SKIP dirty ($branch, mode=$mode)"
+                report_row "$path" "$owner_repo" "$branch" "$mode" "$wt_age_s" skipped dirty
                 continue
             fi
         fi
@@ -765,6 +833,7 @@ for parent in "${parents[@]}"; do
             if [ "$gh_ok" = 0 ]; then
                 skipped_unmerged=$((skipped_unmerged + 1))
                 log "  $path: SKIP gh-fail repo ($branch)"
+                report_row "$path" "$owner_repo" "$branch" "$mode" "$wt_age_s" skipped gh-fail
                 continue
             fi
             a_kind=""
@@ -783,12 +852,14 @@ for parent in "${parents[@]}"; do
                 if [ "$age_s" -lt "$min_age_s" ]; then
                     skipped_young=$((skipped_young + 1))
                     log "  $path: SKIP-A closed-too-young ($branch, age=${age_s}s < ${min_age_s}s)"
+                    report_row "$path" "$owner_repo" "$branch" "$mode" "$wt_age_s" skipped young
                     continue
                 fi
                 a_kind="closed"
             else
                 skipped_unmerged=$((skipped_unmerged + 1))
                 log "  $path: SKIP not-merged ($branch)"
+                report_row "$path" "$owner_repo" "$branch" "$mode" "$wt_age_s" skipped unmerged
                 continue
             fi
             if [ "$DRY_RUN" = 1 ]; then
@@ -796,6 +867,7 @@ for parent in "${parents[@]}"; do
                 [ "$a_kind" = "closed" ] && reaped_a_closed=$((reaped_a_closed + 1))
                 reaped=$((reaped + 1))
                 log "  $path: DRY-REAP-A ($branch, $a_kind, terminal, clean)"
+                report_row "$path" "$owner_repo" "$branch" "$mode" "$wt_age_s" reaped "$a_kind"
                 continue
             fi
             if git -C "$parent" worktree remove "$path" 2>/dev/null; then
@@ -803,9 +875,11 @@ for parent in "${parents[@]}"; do
                 [ "$a_kind" = "closed" ] && reaped_a_closed=$((reaped_a_closed + 1))
                 reaped=$((reaped + 1))
                 log "  $path: REAPED-A ($branch, $a_kind)"
+                report_row "$path" "$owner_repo" "$branch" "$mode" "$wt_age_s" reaped "$a_kind"
             else
                 failed=$((failed + 1))
                 log "  $path: REMOVE-A FAILED ($branch) — left in place"
+                report_row "$path" "$owner_repo" "$branch" "$mode" "$wt_age_s" failed remove-fail
             fi
         elif [ "$mode" = "B" ]; then
             # Mode B: ledger-terminal + HEAD on origin. The ledger is
@@ -815,6 +889,7 @@ for parent in "${parents[@]}"; do
             if ! unit_terminal_in_ledger "$unit"; then
                 skipped_notterminal=$((skipped_notterminal + 1))
                 log "  $path: SKIP-B not-ledger-terminal ($branch, unit=$unit)"
+                report_row "$path" "$owner_repo" "$branch" "$mode" "$wt_age_s" skipped notterminal
                 continue
             fi
             # Use the per-parent cache if available; fall back to the
@@ -826,12 +901,14 @@ for parent in "${parents[@]}"; do
                     if ! head_on_origin_cached "$path" "$origin_cache"; then
                         skipped_notpushed=$((skipped_notpushed + 1))
                         log "  $path: SKIP-B head-not-on-origin ($branch) — work is local; refuse"
+                        report_row "$path" "$owner_repo" "$branch" "$mode" "$wt_age_s" skipped notpushed
                         continue
                     fi
                 else
                     if ! head_on_origin "$path"; then
                         skipped_notpushed=$((skipped_notpushed + 1))
                         log "  $path: SKIP-B head-not-on-origin ($branch) — work is local; refuse"
+                        report_row "$path" "$owner_repo" "$branch" "$mode" "$wt_age_s" skipped notpushed
                         continue
                     fi
                 fi
@@ -840,15 +917,18 @@ for parent in "${parents[@]}"; do
                 reaped_b=$((reaped_b + 1))
                 reaped=$((reaped + 1))
                 log "  $path: DRY-REAP-B ($branch, mode=B ledger-terminal=$unit, clean, pushed)"
+                report_row "$path" "$owner_repo" "$branch" "$mode" "$wt_age_s" reaped ledger-terminal
                 continue
             fi
             if git -C "$parent" worktree remove "$path" 2>/dev/null; then
                 reaped_b=$((reaped_b + 1))
                 reaped=$((reaped + 1))
                 log "  $path: REAPED-B ($branch, mode=B)"
+                report_row "$path" "$owner_repo" "$branch" "$mode" "$wt_age_s" reaped ledger-terminal
             else
                 failed=$((failed + 1))
                 log "  $path: REMOVE-B FAILED ($branch) — left in place"
+                report_row "$path" "$owner_repo" "$branch" "$mode" "$wt_age_s" failed remove-fail
             fi
         else
             # Mode C: HEAD on origin (vault safe-cleanup order) + age
@@ -863,11 +943,13 @@ for parent in "${parents[@]}"; do
                 if [ "$origin_cache_ok" = 0 ]; then
                     skipped_notpushed=$((skipped_notpushed + 1))
                     log "  $path: SKIP-C origin-cache-fail ($branch) — fail safe"
+                    report_row "$path" "$owner_repo" "$branch" "$mode" "$wt_age_s" skipped notpushed
                     continue
                 fi
                 if ! head_on_origin_cached "$path" "$origin_cache"; then
                     skipped_notpushed=$((skipped_notpushed + 1))
                     log "  $path: SKIP-C head-not-on-origin ($branch) — work is local; refuse"
+                    report_row "$path" "$owner_repo" "$branch" "$mode" "$wt_age_s" skipped notpushed
                     continue
                 fi
             fi
@@ -881,21 +963,25 @@ for parent in "${parents[@]}"; do
             if [ "$age_s" -lt "$min_age_s" ]; then
                 skipped_young=$((skipped_young + 1))
                 log "  $path: SKIP-C too-young ($branch, age=${age_s}s < ${min_age_s}s)"
+                report_row "$path" "$owner_repo" "$branch" "$mode" "$wt_age_s" skipped young
                 continue
             fi
             if [ "$DRY_RUN" = 1 ]; then
                 reaped_c=$((reaped_c + 1))
                 reaped=$((reaped + 1))
                 log "  $path: DRY-REAP-C ($branch, mode=C on-origin, clean, age=${age_s}s)"
+                report_row "$path" "$owner_repo" "$branch" "$mode" "$wt_age_s" reaped on-origin
                 continue
             fi
             if git -C "$parent" worktree remove "$path" 2>/dev/null; then
                 reaped_c=$((reaped_c + 1))
                 reaped=$((reaped + 1))
                 log "  $path: REAPED-C ($branch, mode=C)"
+                report_row "$path" "$owner_repo" "$branch" "$mode" "$wt_age_s" reaped on-origin
             else
                 failed=$((failed + 1))
                 log "  $path: REMOVE-C FAILED ($branch) — left in place"
+                report_row "$path" "$owner_repo" "$branch" "$mode" "$wt_age_s" failed remove-fail
             fi
         fi
     done
@@ -936,10 +1022,13 @@ while IFS= read -r d; do
     mode_e_scanned=$((mode_e_scanned + 1))
     wt_mtime=$(worktree_age_seconds "$d")
     age_s=$(( $(now_epoch) - wt_mtime ))
+    # Mode E rows carry mode=E and owner_repo="" (these dirs are not
+    # registered worktrees of any parent — there is no resolved repo).
     # STALE gate — same long grace as Mode D.
     if [ "$age_s" -lt "$SALVAGE_AGE_S" ]; then
         skipped_e_young=$((skipped_e_young + 1))
         log "  $d: SKIP-E too-young (age=${age_s}s < ${SALVAGE_AGE_S}s)"
+        report_row "$d" "" "(unregistered)" "E" "$age_s" skipped young
         continue
     fi
     # LIVE gate — defense in depth for pi-issue-shaped paths.
@@ -949,6 +1038,7 @@ while IFS= read -r d; do
         if is_live_worker "$e_pshort" "$e_pn"; then
             skipped_e_live=$((skipped_e_live + 1))
             log "  $d: SKIP-E live worker (unit=pi-issue-$e_pshort-$e_pn)"
+            report_row "$d" "" "(unregistered)" "E" "$age_s" skipped live
             continue
         fi
     fi
@@ -958,11 +1048,13 @@ while IFS= read -r d; do
            || [ -n "$(git -C "$d" status --porcelain 2>/dev/null)" ]; then
             skipped_e_dirty=$((skipped_e_dirty + 1))
             log "  $d: SKIP-E dirty clone"
+            report_row "$d" "" "(unregistered)" "E" "$age_s" skipped dirty
             continue
         fi
         if ! head_on_origin "$d"; then
             skipped_e_notpushed=$((skipped_e_notpushed + 1))
             log "  $d: SKIP-E head-not-on-origin clone — work is local; refuse"
+            report_row "$d" "" "(unregistered)" "E" "$age_s" skipped notpushed
             continue
         fi
         if [ "$DRY_RUN" = 1 ]; then
@@ -970,6 +1062,7 @@ while IFS= read -r d; do
             reaped_e_clone=$((reaped_e_clone + 1))
             reaped=$((reaped + 1))
             log "  $d: DRY-REAP-E1 (clone, on-origin, clean, stale, age=${age_s}s)"
+            report_row "$d" "" "(unregistered)" "E" "$age_s" reaped on-origin
             continue
         fi
         if rm -rf -- "$d" 2>/dev/null; then
@@ -977,9 +1070,11 @@ while IFS= read -r d; do
             reaped_e_clone=$((reaped_e_clone + 1))
             reaped=$((reaped + 1))
             log "  $d: REAPED-E1 (clone, on-origin, clean, stale)"
+            report_row "$d" "" "(unregistered)" "E" "$age_s" reaped on-origin
         else
             failed=$((failed + 1))
             log "  $d: REMOVE-E1 FAILED — left in place"
+            report_row "$d" "" "(unregistered)" "E" "$age_s" failed remove-fail
         fi
     else
         # E2: plain dir, no `.git`. No git gates possible — the stale
@@ -991,6 +1086,7 @@ while IFS= read -r d; do
             reaped_e_plain=$((reaped_e_plain + 1))
             reaped=$((reaped + 1))
             log "  $d: DRY-REAP-E2 (plain dir, stale, age=${age_s}s)"
+            report_row "$d" "" "(unregistered)" "E" "$age_s" reaped plain-dir
             continue
         fi
         if rm -rf -- "$d" 2>/dev/null; then
@@ -998,9 +1094,11 @@ while IFS= read -r d; do
             reaped_e_plain=$((reaped_e_plain + 1))
             reaped=$((reaped + 1))
             log "  $d: REAPED-E2 (plain dir, stale)"
+            report_row "$d" "" "(unregistered)" "E" "$age_s" reaped plain-dir
         else
             failed=$((failed + 1))
             log "  $d: REMOVE-E2 FAILED — left in place"
+            report_row "$d" "" "(unregistered)" "E" "$age_s" failed remove-fail
         fi
     fi
 done < <(find "$ROOT" -mindepth 1 -maxdepth 1 -type d ! -name '.*' 2>/dev/null)
@@ -1054,6 +1152,42 @@ if [ -n "$SUMMARY_FILE" ]; then
         "$total_claim" "$total_pi_path" "$total_other" \
         "$mode_e_scanned" "$skipped_e_young" "$skipped_e_live" "$skipped_e_dirty" "$skipped_e_notpushed" \
         "$MAX_WORKTREES" "$pre_count" "$post_count" "$bound_breached")
+    # Fold the per-worktree report (fleet-ops#4118) into the summary as a
+    # `worktrees` array + report metadata. The TSV is parsed by jq; a
+    # missing/empty/unparseable report degrades to an empty array (the
+    # count fields above still carry the full totals). report_capped is
+    # 1 when report_rows hit REPORT_LIMIT (the array is a sample, not the
+    # full set).
+    report_capped=0
+    if [ "$report_rows" -ge "$REPORT_LIMIT" ] && [ "$REPORT_LIMIT" -gt 0 ]; then
+        report_capped=1
+    fi
+    worktrees_json="[]"
+    if [ -n "$REPORT_FILE" ] && [ -s "$REPORT_FILE" ]; then
+        worktrees_json=$(jq -R -s '
+            split("\n")
+            | map(select(length > 0))
+            | map(split("\t"))
+            | map({
+                path: .[0],
+                owner_repo: .[1],
+                branch: .[2],
+                mode: .[3],
+                age_s: (.[4] | tonumber),
+                verdict: .[5],
+                reason: .[6]
+              })' "$REPORT_FILE" 2>/dev/null) || worktrees_json="[]"
+    fi
+    merged_json=$(printf '%s' "$summary_json" | jq --argjson wts "$worktrees_json" \
+        --argjson rrows "$report_rows" --argjson rlimit "$REPORT_LIMIT" \
+        --argjson rcapped "$report_capped" --arg rts "$report_ts" \
+        '. + {worktrees: $wts, report_rows: $rrows, report_limit: $rlimit, report_capped: $rcapped, report_ts: $rts}' 2>/dev/null) \
+        || true
+    if [ -n "$merged_json" ]; then
+        summary_json="$merged_json"
+    else
+        log "summary-json worktrees merge FAILED — writing counts-only summary"
+    fi
     if ! printf '%s\n' "$summary_json" >"$SUMMARY_FILE.tmp.$$" 2>/dev/null \
        || ! mv -f "$SUMMARY_FILE.tmp.$$" "$SUMMARY_FILE" 2>/dev/null; then
         log "summary-file write FAILED ($SUMMARY_FILE) — non-fatal"

@@ -66,6 +66,17 @@
 #        + REAPED-C (read-only origin can never take the bank)
 #
 #   16. MANIFEST + unit files present    -> install rail intact
+#
+#   Per-worktree report (fleet-ops#4118) — summary JSON carries a
+#   `worktrees` array with per-worktree path/owner/branch/mode/age/verdict:
+#    55. --summary-file (default report) -> worktrees[] non-empty, each row
+#        has path/owner_repo/branch/mode/age_s/verdict/reason; a reaped
+#        row and a skipped row both appear; report_rows matches the array
+#        length; report_capped is 0 under the limit.
+#    56. --no-report-file -> worktrees[] is empty, report_rows is 0.
+#    57. --report-limit 1 -> worktrees[] capped at 1 row, report_capped=1.
+#    58. --report-file PATH -> the TSV is written to PATH and parsed into
+#        the summary worktrees[] array.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
@@ -271,6 +282,12 @@ export FAKE_LIVE="$scratch/live"
 export FAKE_SALVAGE_DIR="$scratch/salvage-state"
 export PI_SALVAGE_BIN="$scratch/bin/pi-salvage-worktree"
 export FLEET_WORKTREE_REAPER_MERGED_LIMIT=5000
+# Isolate AGENT_STATE so test runs that rely on the default --summary-file
+# path (cases 1-22 etc.) do not overwrite the live
+# agent-state/worktree-reaper-last-run.json (fleet-ops#4118). The default
+# summary + report files land under the scratch dir instead.
+export AGENT_STATE="$scratch/agent-state"
+mkdir -p "$AGENT_STATE"
 
 # --- build repos + worktrees ----------------------------------------------
 parent_a="$(make_repo fleet-ops)"
@@ -1197,6 +1214,93 @@ jq -e '.salvage_attempts >= 2' "$summary_raise" >/dev/null 2>&1 \
 ok "case54: pre-pass raises salvage cap when over bound (aggressive drain)"
 rm -f "$summary_raise"
 rm -rf "$bound_root"/*; rm -rf "$bound_root"/.* 2>/dev/null || true
+
+# =====================================================================
+# Per-worktree report (fleet-ops#4118): the summary JSON carries a
+# `worktrees` array with one row per scanned dir (path, owner_repo,
+# branch, mode, age_s, verdict, reason) so the duty officer and the
+# heartbeat can see per-worktree age/owner without grepping journalctl.
+# The count fields still carry the full totals; the array is capped at
+# --report-limit (default 200) with report_capped marking a sample.
+# =====================================================================
+
+# --- 55. default report -> worktrees[] non-empty with both verdicts --------
+# One reaped (Mode C, pushed, clean, old) + one skipped (Mode C, young).
+# The summary must carry a worktrees[] array whose rows have all seven
+# columns, include at least one reaped and one skipped, and whose
+# report_rows matches the array length.
+summary_55="$(mktemp -t wt-reaper-55.XXXXXX)"
+add_modec_worktree "$parent_a" "$wroot" "fix-branch-5500" "fix/mode-c-5500" 1 0 1
+add_modec_worktree "$parent_a" "$wroot" "fix-branch-5501" "fix/mode-c-5501" 1 0 0
+out_55=$("$bin" --root "$wroot" --summary-file "$summary_55" 2>&1) || true
+jq -e 'has("worktrees") and (.worktrees | type == "array")' "$summary_55" >/dev/null 2>&1 \
+    || fail "case55: summary missing worktrees array; content: $(cat "$summary_55")"
+n55=$(jq '.worktrees | length' "$summary_55")
+[ "$n55" -ge 2 ] || fail "case55: worktrees[] should have >=2 rows, got $n55; content: $(cat "$summary_55")"
+# Every row has the seven columns.
+jq -e '.worktrees[] | has("path") and has("owner_repo") and has("branch") and has("mode") and has("age_s") and has("verdict") and has("reason")' \
+    "$summary_55" >/dev/null 2>&1 \
+    || fail "case55: a worktrees row is missing a column; content: $(cat "$summary_55")"
+# At least one reaped and one skipped row.
+jq -e '[.worktrees[].verdict] | any(. == "reaped")' "$summary_55" >/dev/null 2>&1 \
+    || fail "case55: no reaped row in worktrees[]; content: $(cat "$summary_55")"
+jq -e '[.worktrees[].verdict] | any(. == "skipped")' "$summary_55" >/dev/null 2>&1 \
+    || fail "case55: no skipped row in worktrees[]; content: $(cat "$summary_55")"
+# report_rows matches the array length; report_capped is 0 under the default limit.
+jq -e ".report_rows == $n55" "$summary_55" >/dev/null 2>&1 \
+    || fail "case55: report_rows must equal worktrees[] length ($n55); content: $(cat "$summary_55")"
+jq -e '.report_capped == 0' "$summary_55" >/dev/null 2>&1 \
+    || fail "case55: report_capped must be 0 under the limit; content: $(cat "$summary_55")"
+# The reaped row's owner_repo is the parent's resolved owner/repo (a
+# file:// URL -> the last path segment is the repo name; the reaper
+# strips the scheme so owner_repo ends with /fleet-ops).
+jq -e '[.worktrees[] | select(.verdict == "reaped")] | all(.owner_repo | endswith("/fleet-ops"))' \
+    "$summary_55" >/dev/null 2>&1 \
+    || fail "case55: reaped row owner_repo must end with /fleet-ops; content: $(cat "$summary_55")"
+ok "case55: default report -> worktrees[] non-empty with both verdicts + owner_repo"
+rm -f "$summary_55"
+
+# --- 56. --no-report-file -> worktrees[] empty, report_rows 0 --------------
+summary_56="$(mktemp -t wt-reaper-56.XXXXXX)"
+add_modec_worktree "$parent_a" "$wroot" "fix-branch-5600" "fix/mode-c-5600" 1 0 1
+out_56=$("$bin" --root "$wroot" --summary-file "$summary_56" --no-report-file 2>&1) || true
+jq -e 'has("worktrees") and (.worktrees | length == 0)' "$summary_56" >/dev/null 2>&1 \
+    || fail "case56: --no-report-file must yield worktrees[] empty; content: $(cat "$summary_56")"
+jq -e '.report_rows == 0' "$summary_56" >/dev/null 2>&1 \
+    || fail "case56: report_rows must be 0; content: $(cat "$summary_56")"
+ok "case56: --no-report-file -> worktrees[] empty, report_rows 0"
+rm -f "$summary_56"
+
+# --- 57. --report-limit 1 -> worktrees[] capped at 1, report_capped=1 -----
+summary_57="$(mktemp -t wt-reaper-57.XXXXXX)"
+add_modec_worktree "$parent_a" "$wroot" "fix-branch-5700" "fix/mode-c-5700" 1 0 1
+add_modec_worktree "$parent_a" "$wroot" "fix-branch-5701" "fix/mode-c-5701" 1 0 1
+out_57=$("$bin" --root "$wroot" --summary-file "$summary_57" --report-limit 1 2>&1) || true
+jq -e '.worktrees | length == 1' "$summary_57" >/dev/null 2>&1 \
+    || fail "case57: worktrees[] must be capped at 1; content: $(cat "$summary_57")"
+jq -e '.report_capped == 1' "$summary_57" >/dev/null 2>&1 \
+    || fail "case57: report_capped must be 1; content: $(cat "$summary_57")"
+jq -e '.report_limit == 1' "$summary_57" >/dev/null 2>&1 \
+    || fail "case57: report_limit must be 1; content: $(cat "$summary_57")"
+ok "case57: --report-limit 1 -> worktrees[] capped at 1, report_capped=1"
+rm -f "$summary_57"
+
+# --- 58. --report-file PATH -> TSV written + parsed into worktrees[] ------
+summary_58="$(mktemp -t wt-reaper-58.XXXXXX)"
+report_58="$(mktemp -t wt-reaper-58-report.XXXXXX)"
+add_modec_worktree "$parent_a" "$wroot" "fix-branch-5800" "fix/mode-c-5800" 1 0 1
+out_58=$("$bin" --root "$wroot" --summary-file "$summary_58" --report-file "$report_58" 2>&1) || true
+[ -s "$report_58" ] || fail "case58: report TSV not written; output: $out_58"
+# TSV has 7 tab-separated columns per non-empty line.
+awk -F'\t' 'NF==7 {ok=1} NF>0 && NF!=7 {exit 1} END{if(!ok) exit 2}' "$report_58" \
+    || fail "case58: report TSV rows must have 7 columns; content: $(cat "$report_58")"
+# The summary worktrees[] length matches the TSV non-empty line count.
+tsv_n=$(grep -c . "$report_58" || true)
+json_n=$(jq '.worktrees | length' "$summary_58")
+[ "$tsv_n" = "$json_n" ] \
+    || fail "case58: TSV rows ($tsv_n) must match worktrees[] length ($json_n); content: $(cat "$summary_58")"
+ok "case58: --report-file PATH -> TSV written + parsed into worktrees[]"
+rm -f "$summary_58" "$report_58"
 
 # --- 16. install rail intact -----------------------------------------------
 for f in bin/fleet-worktree-reaper \
