@@ -211,5 +211,41 @@ if grep -q "ConditionPathExists" "$TIMER_UNIT"; then
 fi
 ok "vps-post-reboot-verify.timer comment updated for the no-condition path (fleet-ops#3994)"
 
+# --------------------------------------------------------------- 7. TWO-WINDOW ESCALATION (fleet-ops#4116)
+# fleet-ops#4116: the weekly window must APPLY the reboot or RECORD WHY it
+# declined (reboot-declined-reason), and vps-post-reboot-verify must fail LOUD
+# when the same reboot-required survives TWO consecutive windows (a per-window
+# streak that escalates on the second, instead of a routine urgent forever).
+# These are static shape checks; the live files are $STATE/reboot-required-
+# streak and $STATE/reboot-declined-reason managed on the host.
 echo ""
-echo "ALL TESTS PASSED -- fleet-ops#1160 mechanism verified + #3829 exec-bit guard + #3994 reboot-required survival detector"
+echo "Checking two-consecutive-window escalation (fleet-ops#4116)..."
+
+# The window must error-check the reboot and record a decline reason.
+if ! grep -q "systemctl reboot" "$WEEKLY"; then
+  fail "vps-weekly-update must call systemctl reboot in the REBOOT path (fleet-ops#4116)"
+fi
+if ! grep -q "systemctl reboot && exit 0" "$WEEKLY"; then
+  fail "vps-weekly-update must error-check the reboot so a declined reboot is not reported as a successful reboot (fleet-ops#4116)"
+fi
+if ! grep -q "reboot-declined-reason" "$WEEKLY"; then
+  fail "vps-weekly-update must record a declined reboot to \$STATE/reboot-declined-reason (fleet-ops#4116)"
+fi
+
+# The survivor must track a consecutive-window streak and escalate loud at 2.
+if ! grep -q "reboot-required-streak" "$SCRIPT"; then
+  fail "vps-post-reboot-verify missing the consecutive-window streak state (fleet-ops#4116)"
+fi
+if ! grep -q "TWO CONSECUTIVE" "$SCRIPT"; then
+  fail "vps-post-reboot-verify missing the TWO CONSECUTIVE fail-loud branch (fleet-ops#4116)"
+fi
+if ! grep -q -- '-ge 2' "$SCRIPT"; then
+  fail "vps-post-reboot-verify must escalate when the streak reaches two windows (fleet-ops#4116)"
+fi
+if ! grep -q "streak reset" "$SCRIPT"; then
+  fail "vps-post-reboot-verify must reset the streak when the flag is cleared (fleet-ops#4116)"
+fi
+ok "vps-weekly-update applies or records a declined reboot; vps-post-reboot-verify escalates loud on two consecutive windows (fleet-ops#4116)"
+
+echo ""
+echo "ALL TESTS PASSED -- fleet-ops#1160 mechanism verified + #3829 exec-bit guard + #3994 reboot-required survival detector + #4116 two-window escalation"

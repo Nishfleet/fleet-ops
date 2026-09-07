@@ -191,8 +191,21 @@ FAILURES: $(printf '%s; ' "${FAILURES[@]}")"
   fi
   broadcast "MAINTENANCE: rebooting now for $PKGS_R"
   sync
-  sudo -n systemctl reboot
-  exit 0
+  # fleet-ops#4116: APPLY the reboot, and if it is DECLINED (systemctl reboot
+  # fails) record WHY instead of exiting 0 as if it rebooted. Otherwise the
+  # surviving flag would pass one window unrecorded and the two-window
+  # escalation in vps-post-reboot-verify could not explain the streak.
+  sudo -n systemctl reboot && exit 0
+  REBOOT_RC=$?
+  DECLINE="systemctl reboot failed (rc=$REBOOT_RC) — /var/run/reboot-required survives (pending: ${PKGS_R})"  # recorded below to $STATE/reboot-declined-reason
+  rm -f "$STATE/resume-after-boot"
+  printf '%s\n' "$DECLINE" > "$STATE/reboot-declined-reason"
+  fail "REBOOT DECLINED: $DECLINE"
+  notify urgent "MAINTENANCE REBOOT FAILED on $(hostname): reboot declined (rc=$REBOOT_RC). The flag survives this window — vps-post-reboot-verify tracks consecutive windows and escalates on the second (fleet-ops#4116)."
+  broadcast "MAINTENANCE: reboot command FAILED — reboot-required flag survives (fleet-ops#4116)"
+  # Fall through to RESUME below: restart agents and clear the pause flag, then
+  # exit non-zero because FAILURES is non-empty. The 04:00 post-reboot-verify
+  # (no resume marker, pause clear, flag present) records survival #1.
 fi
 
 say "RESUME"

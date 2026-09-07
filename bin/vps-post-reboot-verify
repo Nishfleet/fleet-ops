@@ -12,20 +12,44 @@ exec > >(tee "$STATE/post-reboot.log") 2>&1
 # but never checks the reboot flag. Now: if the window is no longer in
 # progress (pause flag clear) and reboot-required is still set, surface it
 # loudly so it is never missed between the window and the next THOROUGH pass.
+STREAK_FILE="$STATE/reboot-required-streak"
 if [ ! -f "$STATE/resume-after-boot" ]; then
   if agent-maintenance-status >/dev/null 2>&1; then
     # Pause flag is clear -> window finished (success or failure). Check the
     # reboot flag it was supposed to clear.
     if [ -f /var/run/reboot-required ]; then
       PKGS_R=$(tr '\n' ' ' < /var/run/reboot-required.pkgs 2>/dev/null)
+      # fleet-ops#4116: count consecutive windows the flag has survived. The
+      # first survival is the routine urgent from #3994; a SECOND consecutive
+      # survival means the window is NOT consuming the flag — escalate loud
+      # instead of paging the same message every Sunday in the noise.
+      streak=$([ -f "$STREAK_FILE" ] && cat "$STREAK_FILE" || echo 0)
+      streak=$((streak + 1))
+      printf '%s\n' "$streak" > "$STREAK_FILE"
+      DECLINE=""
+      [ -f "$STATE/reboot-declined-reason" ] && DECLINE=" $(head -1 "$STATE/reboot-declined-reason")"
+      if [ "$streak" -ge 2 ]; then
+        say "REBOOT-REQUIRED SURVIVED TWO CONSECUTIVE WINDOWS (fleet-ops#4116)"
+        note "kernel running: $(uname -r)"
+        note "consecutive surviving windows: $streak"
+        note "reboot-required.pkgs: ${PKGS_R:-<unknown>}"
+        note "window decline reason:${DECLINE:- <none recorded>}"
+        note "the Sunday window ran but the flag survived twice — check $STATE/update.log and vps-weekly-update.service; this WILL recur weekly until resolved"
+        broadcast "MAINTENANCE: reboot-required survived TWO consecutive windows on $(hostname) — the flag is NOT being consumed. kernel=$(uname -r), pending: ${PKGS_R:-unknown}. Investigate vps-weekly-update.service."
+        notify urgent "VPS $(hostname): reboot-required flag survived TWO consecutive maintenance windows (streak=$streak)! kernel=$(uname -r), pending: ${PKGS_R:-unknown}. Decline reason:${DECLINE:- <none recorded>}. The Sunday window is not consuming the flag — investigate vps-weekly-update.service. Log: $STATE/update.log" || true
+        exit 1
+      fi
       say "REBOOT-REQUIRED SURVIVED THE MAINTENANCE WINDOW (fleet-ops#3994)"
       note "kernel running: $(uname -r)"
       note "reboot-required.pkgs: ${PKGS_R:-<unknown>}"
+      note "consecutive surviving windows: $streak of 2 — the NEXT survival escalates loud (fleet-ops#4116)"
       note "the window did not reboot — check $STATE/update.log and the vps-weekly-update.service journal"
-      notify urgent "VPS $(hostname): reboot-required flag survived the maintenance window. kernel=$(uname -r), pending: ${PKGS_R:-unknown}. The Sunday window did not reboot — check vps-weekly-update.service. Next window will clear it; no auto-reboot outside the sanctioned window." || true
+      notify urgent "VPS $(hostname): reboot-required flag survived the maintenance window (consecutive=$streak/2). kernel=$(uname -r), pending: ${PKGS_R:-unknown}. The Sunday window did not reboot — check vps-weekly-update.service. If the flag survives one more window this escalates loud." || true
       exit 1
     fi
-    note "no resume marker, no reboot-required flag — window completed clean (fleet-ops#3994)"
+    # Flag cleared (rebooted or resolved) — reset the consecutive-window streak.
+    rm -f "$STREAK_FILE" "$STATE/reboot-declined-reason"
+    note "no resume marker, no reboot-required flag — window completed clean (fleet-ops#3994, streak reset)"
   else
     note "maintenance window still in progress (pause flag set) — skipping reboot-required check (fleet-ops#3994)"
   fi
@@ -73,7 +97,7 @@ fi
 # --------------------------------------------------------------- END TAILSCALE RECOVER
 
 set_flag clear '' ''
-rm -f "$STATE/resume-after-boot"
+rm -f "$STATE/resume-after-boot" "$STATE/reboot-required-streak" "$STATE/reboot-declined-reason"
 
 # LEGAL-BRAKE: hardware — let boot-time units settle before judging them
 sleep 30  # let boot-time units settle before judging them
