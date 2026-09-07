@@ -35,6 +35,11 @@
 #  15. tier1 contract: the queue-pass arm gate calls the SHARED
 #      classifier (fleet-exec-review-canary --body via
 #      FLEET_VERIFY_CUE_GATE) instead of a private grep grammar.
+#  16. Any-author hard gate (fleet-ops#4117): an armed HUMAN PR without
+#      a receipt is disarmed (the merge block) but NOT filed; an armed
+#      human PR WITH a receipt is never disarmed. The 2026-09-07 24h
+#      sample flagged 0509#1848 and fleet-ops#4094 — both human-armed
+#      merges with no VERIFY grammar.
 #
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -865,4 +870,93 @@ grep -q 'no run receipt' "$tier1" \
   || fail "15: tier1 must distinguish a true reject ('no run receipt') from a broken helper"
 ok "15: tier1 queue-pass arm gate uses the shared classifier (one grammar)"
 
-echo "OK: fleet-exec-review-canary: receipt gate, skip drill, observe-to-open, observe-to-close, dedupe, broken watch, grammar extension, disarm hard gate"
+# --- 16. any-author hard gate (fleet-ops#4117) -------------------------------
+# A human-armed PR without a receipt is the same silent pass as a
+# worker-armed one. The disarm hard gate applies to any armed author;
+# filing stays worker-only (a human PR is not a worker skip to file
+# about). The 2026-09-07 24h sample flagged 0509#1848 and fleet-ops#4094
+# — both human-armed merges with no VERIFY grammar.
+
+# 16a. armed human PR, no receipt -> disarmed, NOT filed
+cat >"$scratch/prs-human-armed-skip.json" <<'JSON'
+[
+  {
+    "repo": "Nishfleet/0509",
+    "number": 1848,
+    "title": "fix(search): tablet title collapse",
+    "body": "## What\nResponsive layout fix.\n\n## Verification\n- Full canonical release proof: 73/73 passed, 7.9 min local run.",
+    "createdAt": "2026-08-26T23:00:00Z",
+    "url": "https://github.com/Nishfleet/0509/pull/1848",
+    "headRefName": "fix/journey1-tablet-empty-race",
+    "author": {"login": "nish3451", "is_bot": false},
+    "autoMergeRequest": {"enabledAt": "2026-08-26T23:05:00Z"}
+  }
+]
+JSON
+rm -f "$gh_store"/issue-* "$gh_store/disarmed"
+: >"$triage"
+FLEET_EXEC_REVIEW_FILE=1 run_scan "$scratch/prs-human-armed-skip.json" \
+  || fail "16a: armed human skip must stay exit 0 ($(cat "$scratch/scan.err"))"
+grep -q 'EXEC-REVIEW-DISARM' "$scratch/scan.err" \
+  || fail "16a: expected EXEC-REVIEW-DISARM for armed human PR ($(cat "$scratch/scan.err"))"
+grep -q 'human PR Nishfleet/0509#1848' "$scratch/scan.err" \
+  || fail "16a: LOUD line must name the human PR ($(cat "$scratch/scan.err"))"
+grep -qxF 'Nishfleet/0509#1848' "$gh_store/disarmed" \
+  || fail "16a: gh pr merge --disable-auto not called for human PR ($(cat "$gh_store/disarmed" 2>/dev/null))"
+[[ -z "$(ls -A "$gh_store" 2>/dev/null | grep '^issue-' || true)" ]] \
+  || fail "16a: must NOT file an issue for a human PR ($(ls -A "$gh_store" 2>/dev/null | grep '^issue-'))"
+ok "16a: armed human PR without receipt is disarmed but NOT filed (any-author hard gate)"
+
+# 16b. armed human PR WITH receipt -> no finding, no disarm
+cat >"$scratch/prs-human-armed-ok.json" <<'JSON'
+[
+  {
+    "repo": "Nishfleet/fleet-ops",
+    "number": 4095,
+    "title": "fix: human with receipt",
+    "body": "## Summary\nchanged\n\n## Test plan\n\n- [x] `bash tests/foo.test.sh` — exit 0\n",
+    "createdAt": "2026-08-26T23:00:00Z",
+    "url": "https://github.com/Nishfleet/fleet-ops/pull/4095",
+    "headRefName": "fix/human-receipt",
+    "author": {"login": "nish3451", "is_bot": false},
+    "autoMergeRequest": {"enabledAt": "2026-08-26T23:05:00Z"}
+  }
+]
+JSON
+rm -f "$gh_store"/issue-* "$gh_store/disarmed"
+: >"$triage"
+FLEET_EXEC_REVIEW_FILE=1 run_scan "$scratch/prs-human-armed-ok.json" \
+  || fail "16b: armed human receipt PR must exit 0 ($(cat "$scratch/scan.err"))"
+grep -q 'EXEC-REVIEW-OK' "$scratch/scan.err" \
+  || fail "16b: expected EXEC-REVIEW-OK ($(cat "$scratch/scan.err"))"
+[[ ! -s "$gh_store/disarmed" ]] || fail "16b: receipt PR must never be disarmed"
+ok "16b: armed human PR with a receipt is never disarmed"
+
+# 16c. unarmed human PR, no receipt -> skipped (no disarm, no file)
+cat >"$scratch/prs-human-unarmed-skip.json" <<'JSON'
+[
+  {
+    "repo": "Nishfleet/fleet-ops",
+    "number": 702,
+    "title": "docs: human direct merge",
+    "body": "no receipt here",
+    "createdAt": "2026-08-26T23:00:00Z",
+    "url": "https://github.com/Nishfleet/fleet-ops/pull/702",
+    "headRefName": "docs/human",
+    "author": {"login": "nish3451", "is_bot": false},
+    "autoMergeRequest": null
+  }
+]
+JSON
+rm -f "$gh_store"/issue-* "$gh_store/disarmed"
+: >"$triage"
+FLEET_EXEC_REVIEW_FILE=1 run_scan "$scratch/prs-human-unarmed-skip.json" \
+  || fail "16c: unarmed human skip must exit 0 ($(cat "$scratch/scan.err"))"
+grep -q 'EXEC-REVIEW-OK' "$scratch/scan.err" \
+  || fail "16c: expected EXEC-REVIEW-OK ($(cat "$scratch/scan.err"))"
+[[ ! -s "$gh_store/disarmed" ]] || fail "16c: unarmed human PR must not be disarmed"
+[[ -z "$(ls -A "$gh_store" 2>/dev/null | grep '^issue-' || true)" ]] \
+  || fail "16c: must not file on an unarmed human PR"
+ok "16c: unarmed human PR without receipt is skipped (cannot block a direct merge)"
+
+echo "OK: fleet-exec-review-canary: receipt gate, skip drill, observe-to-open, observe-to-close, dedupe, broken watch, grammar extension, disarm hard gate, any-author hard gate"

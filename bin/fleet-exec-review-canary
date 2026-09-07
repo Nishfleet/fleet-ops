@@ -17,18 +17,21 @@
 # Modes:
 #   --body FILE   local worker gate. Exit 0 if the body has a receipt,
 #                 exit 1 if it does not. No gh.
-#   (default)     heartbeat scan of recent OPEN nishfleet-worker PRs on
-#                 enrolled repos. Missing receipt -> auto-file
-#                 (observe-to-open, tick stays green). Watcher broken
+#   (default)     heartbeat scan of recent OPEN PRs on enrolled repos
+#                 (any author). A worker PR missing the receipt ->
+#                 auto-file (observe-to-open, tick stays green). An
+#                 armed PR of ANY author missing the receipt -> disarmed
+#                 (fleet-ops#4117 hard gate). Watcher broken
 #                 (gh/python/helper) -> exit 1 LOUD. Merged history is
 #                 out of scope; the --body gate covers new PRs before
 #                 they open.
 #
-# fleet-ops#3731 hard gate: a finding whose PR is ARMED for auto-merge
-# gets `gh pr merge --disable-auto` — the merge cannot complete until a
-# receipt lands and the queue pass re-arms. Without this the canary only
-# filed an issue while `gh pr merge --auto` (armed by the worker itself)
-# completed unverified: the silent pass the issue names.
+# fleet-ops#3731/#4117 hard gate: a finding whose PR is ARMED for
+# auto-merge gets `gh pr merge --disable-auto` — the merge cannot
+# complete until a receipt lands and the queue pass re-arms. Without
+# this the canary only filed an issue while `gh pr merge --auto`
+# (armed by the worker itself, or a human) completed unverified: the
+# silent pass the issue names.
 # FLEET_EXEC_REVIEW_DISARM=0 restores observe-only behaviour (tests).
 #
 # Observe-to-close (fleet-ops#729, same two-tick shape as #650/#521): a
@@ -206,8 +209,12 @@ else
     for repo in "${repos[@]}"; do
         [[ -n "$repo" ]] || continue
         set +e
-        chunk=$("$GH" pr list -R "$repo" --app nishfleet-worker --state open \
-            --limit 50 --json number,title,body,createdAt,url,headRefName,author,autoMergeRequest 2>"$scratch/gh.err")
+        # fleet-ops#4117: drop --app nishfleet-worker so an armed human
+        # PR without a receipt is also seen and disarmed. The classifier
+        # (lib/exec-review-receipt.py) separates worker (filed) from
+        # human (disarmed only) findings.
+        chunk=$("$GH" pr list -R "$repo" --state open \
+            --limit 100 --json number,title,body,createdAt,url,headRefName,author,autoMergeRequest 2>"$scratch/gh.err")
         gh_rc=$?
         set -e
         if [[ "$gh_rc" -ne 0 ]] || ! jq -e 'type == "array"' >/dev/null 2>&1 <<<"$chunk"; then
@@ -266,16 +273,16 @@ if [[ "$finding_count" != "0" ]]; then
         slug=$(jq -r '.slug' <<<"$row")
         url=$(jq -r '.url' <<<"$row")
         title_pr=$(jq -r '.title' <<<"$row")
-        loud "EXEC-REVIEW-SKIP" "worker PR $slug has no run receipt url=$url title=$title_pr"
+        author_class=$(jq -r '.author_class // "worker"' <<<"$row")
+        loud "EXEC-REVIEW-SKIP" "$author_class PR $slug has no run receipt url=$url title=$title_pr"
 
-        # fleet-ops#3731: absence of the cue is a HARD GATE, not a silent
-        # pass. An armed auto-merge on a no-receipt worker PR is the exact
-        # path that merged unverified work (the worker arms its own PR via
-        # `gh pr merge --auto`; this canary tick is the only independent
-        # organ that sees it before merge). Disarm it: the merge then
-        # cannot complete until a receipt lands and the heartbeat queue
-        # pass re-arms. FLEET_EXEC_REVIEW_DISARM=0 keeps the observe-only
-        # behaviour for tests/drills.
+        # fleet-ops#3731/#4117: absence of the cue is a HARD GATE, not a
+        # silent pass. An armed auto-merge on a no-receipt PR is the exact
+        # path that merged unverified work — worker or human (the
+        # 2026-09-07 sample flagged two human-armed merges). Disarm it: the
+        # merge then cannot complete until a receipt lands and the heartbeat
+        # queue pass re-arms. FLEET_EXEC_REVIEW_DISARM=0 keeps the
+        # observe-only behaviour for tests/drills.
         if [[ "${FLEET_EXEC_REVIEW_DISARM:-1}" == "1" ]] \
             && [[ "$(jq -r '.auto_merge_armed // false' <<<"$row")" == "true" ]] \
             && command -v "$GH" >/dev/null 2>&1; then
@@ -298,6 +305,10 @@ if [[ "$finding_count" != "0" ]]; then
         [[ "$FILE_ISSUES" == "1" ]] || continue
         [[ "$filed" -lt "$CAP" ]] || continue
         command -v "$GH" >/dev/null 2>&1 || continue
+        # fleet-ops#4117: a human finding is disarmed (the merge block)
+        # but not filed — a human PR is not a worker skip to open an
+        # issue about; the disarm + LOUD line is the signal.
+        [[ "$author_class" == "worker" ]] || continue
 
         signal="signal: exec-review-receipt/${slug}"
         if printf '%s' "$open_json" | jq -e --arg s "$signal" \

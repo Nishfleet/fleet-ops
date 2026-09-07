@@ -183,15 +183,30 @@ def scan_prs(
         if not isinstance(pr, dict):
             continue
         scanned += 1
-        if not is_worker_pr(pr):
-            skipped_human += 1
-            continue
         created = _created_ts(pr)
         if created is None or (now - created) > window_s or created > now + 60:
             skipped_old += 1
             continue
         if has_receipt(str(pr.get("body") or "")):
             skipped_receipt += 1
+            continue
+        # No receipt in window. fleet-ops#4117: the disarm hard gate
+        # applies to ANY armed author — a human-armed PR without a
+        # receipt is the same silent pass as a worker-armed one (the
+        # 2026-09-07 24h sample flagged 0509#1848 and fleet-ops#4094,
+        # both human-armed merges with no VERIFY grammar). Filing stays
+        # worker-only: a human PR is not a worker skip to open an issue
+        # about. An unarmed human PR is a direct merge the canary cannot
+        # block between ticks (no Administration scope for a status
+        # check), so it is skipped, not filed.
+        worker = is_worker_pr(pr)
+        armed = bool(pr.get("autoMergeRequest"))
+        if worker:
+            author_class = "worker"
+        elif armed:
+            author_class = "human"
+        else:
+            skipped_human += 1
             continue
         number = pr.get("number")
         repo = str(pr.get("repo") or "")
@@ -206,7 +221,10 @@ def scan_prs(
                 "title": str(pr.get("title") or ""),
                 # fleet-ops#3731: an ARMED no-receipt PR is the silent
                 # pass this gate exists to close — the caller disarms it.
-                "auto_merge_armed": bool(pr.get("autoMergeRequest")),
+                "auto_merge_armed": armed,
+                # fleet-ops#4117: worker findings are filed; human
+                # findings are disarmed only.
+                "author_class": author_class,
             }
         )
     return {
