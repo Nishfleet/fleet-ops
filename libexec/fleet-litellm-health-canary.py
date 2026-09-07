@@ -49,7 +49,12 @@ Environment seams (tests):
   FLEET_LITELLM_STUB        path to a stub JSON response (tests)
   FLEET_LITELLM_PG_ISREADY  pg_isready binary (default searched on PATH)
   FLEET_LITELLM_REDIS_CLI   redis-cli binary (default searched on PATH)
-  FLEET_LITELLM_PG_HOST     postgres host (default /var/run/postgresql)
+  FLEET_LITELLM_PG_HOST     postgres host or socket dir (default the
+                            fleet-owned cluster's own run dir;
+                            pg_isready defaults to /var/run/postgresql,
+                            which is root:postgres-owned and unwritable by
+                            the user running the cluster)
+  FLEET_LITELLM_PG_PORT     postgres port (default 5432)
   FLEET_LITELLM_PG_DB       postgres database name (default litellm)
   FLEET_LITELLM_PG_USER     postgres user name (default litellm)
   FLEET_LITELLM_REDIS_HOST  redis host (default 127.0.0.1)
@@ -89,8 +94,10 @@ DEFAULT_STATE = Path(
 )
 DEFAULT_TIMEOUT_S = float(os.environ.get("FLEET_LITELLM_TIMEOUT_S", "10"))
 DEFAULT_PG_HOST = os.environ.get(
-    "FLEET_LITELLM_PG_HOST", "/home/nish/.local/share/fleet-litellm-postgres/run"
+    "FLEET_LITELLM_PG_HOST",
+    "/home/nish/.local/share/fleet-litellm-postgres/run",
 )
+DEFAULT_PG_PORT = os.environ.get("FLEET_LITELLM_PG_PORT", "5432")
 DEFAULT_REDIS_HOST = os.environ.get("FLEET_LITELLM_REDIS_HOST", "127.0.0.1")
 DEFAULT_REDIS_PORT = os.environ.get("FLEET_LITELLM_REDIS_PORT", "6379")
 
@@ -209,7 +216,7 @@ def _parse_readiness(body: str) -> dict[str, Any]:
     return out
 
 
-def _probe_postgres(pg_host: str) -> int:
+def _probe_postgres(pg_host: str = DEFAULT_PG_HOST) -> int:
     """1 if pg_isready succeeds, 0 otherwise. Missing binary -> 0 (organ absent).
 
     Connects as user=litellm to database=litellm — the fleet-owned cluster
@@ -316,7 +323,7 @@ def main(argv: list[str] | None = None) -> int:
     # installs the venv, organ_installed flips to 1 and this canary resumes
     # fail-loud on real organ death.
     if not _organ_installed(args.venv):
-        pg_up = _probe_postgres(DEFAULT_PG_HOST)
+        pg_up = _probe_postgres()
         redis_up = _probe_redis(DEFAULT_REDIS_HOST, DEFAULT_REDIS_PORT)
         _atomic_write(Path(args.prom), render_prom(now, 0, {}, pg_up, redis_up, 0))
         if not args.quiet:
@@ -330,7 +337,7 @@ def main(argv: list[str] | None = None) -> int:
     url = args.proxy_url.rstrip("/") + "/health/readiness"
     status, body = _fetch(url, args.timeout)
 
-    pg_up = _probe_postgres(DEFAULT_PG_HOST)
+    pg_up = _probe_postgres()
     redis_up = _probe_redis(DEFAULT_REDIS_HOST, DEFAULT_REDIS_PORT)
 
     if status == 0:

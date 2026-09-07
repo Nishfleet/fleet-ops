@@ -1064,15 +1064,21 @@ systemd/fleet-baseline-delta.timer /home/nish/.config/systemd/user/fleet-baselin
 # metrics (fleet_litellm_proxy_up, _postgres_up, _redis_up) + per-group
 # readiness. Live install (apt + pip + start) is Nish-gated; the runbook
 # is docs/litellm-postgres-setup.md. The repo config
-# (config/litellm-proxy.yaml) is the shape reference — the live copy at
-# ~/.config/fleet-ops/litellm-proxy.yaml holds the credential resolvers.
+# (config/litellm-proxy.yaml) is the SHAPE reference only: it carries
+# example baseUrls and os.environ/ key names, never real values. It is
+# deliberately NOT a MANIFEST install line — symlinking or copying it over
+# ~/.config/fleet-ops/litellm-proxy.yaml replaces the operator's live
+# router (real baseUrls, the seat set that is actually usable) with
+# placeholders. That clobber is what fleet-ops#4219's backup
+# (litellm-proxy.yaml.bak-4219) exists to recover from. The live path is
+# created by runbook §3, and the proxy unit's ConditionPathExists gates on
+# it so an uninstalled organ stays condition-skipped instead of dying.
 systemd/app-litellm.slice /home/nish/.config/systemd/user/app-litellm.slice
 systemd/app-litellm-postgres.slice /home/nish/.config/systemd/user/app-litellm-postgres.slice
 systemd/app-litellm-redis.slice /home/nish/.config/systemd/user/app-litellm-redis.slice
 systemd/fleet-litellm-proxy.service /home/nish/.config/systemd/user/fleet-litellm-proxy.service
 systemd/fleet-litellm-postgres.service /home/nish/.config/systemd/user/fleet-litellm-postgres.service
 systemd/fleet-litellm-redis.service /home/nish/.config/systemd/user/fleet-litellm-redis.service
-config/litellm-proxy.yaml /home/nish/.config/fleet-ops/litellm-proxy.yaml
 libexec/fleet-litellm-health-canary.py /home/nish/.local/libexec/fleet-litellm-health-canary.py
 systemd/fleet-litellm-health-canary.service /home/nish/.config/systemd/user/fleet-litellm-health-canary.service
 systemd/fleet-litellm-health-canary.timer /home/nish/.config/systemd/user/fleet-litellm-health-canary.timer

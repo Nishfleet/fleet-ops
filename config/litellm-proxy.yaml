@@ -2,9 +2,11 @@
 #
 # This file is the repo-resident shape. The LIVE config lives at
 # ~/.config/fleet-ops/litellm-proxy.yaml and is operator-owned so that
-# credential resolvers (the models.json `!cmd` style) never enter the
-# repo. install.sh copies this to the live path on deploy; the live copy
-# is where `api_key: command:...` resolvers get filled in.
+# credential resolvers never enter the repo. This file is NOT a MANIFEST
+# install target on purpose — copying placeholders over a live router would
+# cut its seats (fleet-ops#4174 reopen). The live copy is created by hand
+# per docs/litellm-postgres-setup.md section 3, and section 3a's start
+# wrapper exports the env vars named below.
 #
 # All LiteLLM feature claims below are verified against current LiteLLM
 # docs (docs.litellm.ai, retrieved 2026-09-07) — see
@@ -19,11 +21,19 @@
 # the proxy enforces the same bounds seat-lib does today; P3 deletes
 # the seat-lib side.
 #
-# PLACEHOLDERS ONLY — no real key is in this file. The live copy uses
-# `api_key: command:/home/nish/.local/bin/<resolver>` for each seat,
-# matching the existing models.json `!/path/to/cmd` resolver pattern.
-# Verified: LiteLLM accepts `api_key: command:...` via litellm_params
-# (docs virtual_keys).
+# PLACEHOLDERS ONLY — no real key is in this file. The live copy resolves
+# each seat's key through LiteLLM's env-var secret form:
+#
+#   api_key: os.environ/<PROVIDER>_API_KEY
+#
+# CORRECTION (fleet-ops#4174 reopen, measured on the installed organ):
+# litellm 1.98 does NOT support a command-style api_key resolver. That was
+# this file's original assumption and it is wrong — the only supported
+# inline resolver is the os.environ form below (litellm secret_managers),
+# so something has to put the value in the environment. That is what
+# ~/.local/bin/fleet-litellm-proxy-start does (runbook §3a): it sources the
+# existing credential env files and execs litellm, so no key value ever
+# lands in this file, the unit file, or git.
 
 model_list:
   # --- worker-cheap: free lanes first, then prepaid, metered last ---
@@ -32,7 +42,7 @@ model_list:
     litellm_params:
       model: openai/deepseek-v4-flash
       api_base: https://opencode.example/v1
-      api_key: command:/home/nish/.local/bin/opencode-key
+      api_key: os.environ/OPENCODE_API_KEY
       tags: ["free"]
       order: 1
       rpm: 3
@@ -41,7 +51,7 @@ model_list:
     litellm_params:
       model: openai/deepseek-v4-flash
       api_base: https://commandcode.example/v1
-      api_key: command:/home/nish/.local/bin/commandcode-key
+      api_key: os.environ/COMMANDCODE_API_KEY
       tags: ["free"]
       order: 1
       rpm: 3
@@ -50,7 +60,7 @@ model_list:
     litellm_params:
       model: openai/Qwen3.6-35B-A3B-FP8
       api_base: https://hetzner.example/v1
-      api_key: command:/home/nish/.local/bin/hetzner-key
+      api_key: os.environ/HETZNER_API_KEY
       tags: ["free"]
       order: 1
       rpm: 2
@@ -59,7 +69,7 @@ model_list:
     litellm_params:
       model: openai/glm-5-2
       api_base: https://devin.example/v1
-      api_key: command:/home/nish/.local/bin/devin-key
+      api_key: os.environ/DEVIN_API_KEY
       tags: ["prepaid"]
       order: 2
       max_parallel_requests: 4
@@ -67,7 +77,7 @@ model_list:
     litellm_params:
       model: openai/deepseek-v4-pro
       api_base: https://straitly.example/v1
-      api_key: command:/home/nish/.local/bin/straitly-key
+      api_key: os.environ/STRAITLY_API_KEY
       tags: ["metered"]
       order: 3
       max_parallel_requests: 2
@@ -77,7 +87,7 @@ model_list:
     litellm_params:
       model: openai/swe-1-7
       api_base: https://devin.example/v1
-      api_key: command:/home/nish/.local/bin/devin-key
+      api_key: os.environ/DEVIN_API_KEY
       tags: ["prepaid"]
       order: 1
       max_parallel_requests: 4
@@ -85,7 +95,7 @@ model_list:
     litellm_params:
       model: openai/minimax-m3
       api_base: https://minimax.example/v1
-      api_key: command:/home/nish/.local/bin/minimax-key
+      api_key: os.environ/MINIMAX_API_KEY
       tags: ["metered"]
       order: 2
       max_parallel_requests: 2
@@ -95,7 +105,7 @@ model_list:
     litellm_params:
       model: openai/cursor-grok-4.6-high
       api_base: https://cursor.example/v1
-      api_key: command:/home/nish/.local/bin/cursor-key
+      api_key: os.environ/CURSOR_API_KEY
       tags: ["prepaid", "senior"]
       order: 1
       max_parallel_requests: 1
@@ -103,7 +113,7 @@ model_list:
     litellm_params:
       model: openai/grok-4.6
       api_base: https://xai-oauth.example/v1
-      api_key: command:/home/nish/.local/bin/xai-oauth-key
+      api_key: os.environ/XAI_OAUTH_ACCESS_TOKEN
       tags: ["prepaid", "senior"]
       order: 2
       max_parallel_requests: 2
@@ -111,7 +121,7 @@ model_list:
     litellm_params:
       model: openai/deepseek-v4-flash-0731
       api_base: https://openrouter.example/v1
-      api_key: command:/home/nish/.local/bin/openrouter-key
+      api_key: os.environ/OPENROUTER_API_KEY
       tags: ["metered", "senior"]
       order: 3
       max_parallel_requests: 4
@@ -121,7 +131,7 @@ model_list:
     litellm_params:
       model: openai/cursor-grok-4.6-high
       api_base: https://cursor.example/v1
-      api_key: command:/home/nish/.local/bin/cursor-key
+      api_key: os.environ/CURSOR_API_KEY
       tags: ["prepaid", "judge"]
       order: 1
       max_parallel_requests: 1
@@ -166,7 +176,15 @@ general_settings:
   # with model allowlists (private = paid deployments only, fail-closed).
   background_health_checks: true
   health_check_interval: 60
-  # Postgres for budgets/keys/spend (local socket, no network listener).
-  # Redis for the router fast path (cooldown cache, provider budget spend).
-  database_url: postgresql:///litellm
+  # Postgres for budgets/keys/spend, Redis for the router fast path
+  # (cooldown cache, provider budget spend).
+  #
+  # NOTE (fleet-ops#4174 reopen): LiteLLM's Prisma layer reads the DB from
+  # the DATABASE_URL ENVIRONMENT, not from this key — the wrapper exports
+  # postgresql://litellm@localhost:5432/litellm. A socket-less form like
+  # `postgresql:///litellm` is rejected by the query engine with P1012, so
+  # this key is documentation of intent only; the env var is what binds.
+  # The cluster itself stays loopback-only (listen_addresses = '127.0.0.1'
+  # in its postgresql.conf); there is no network listener off-box.
+  database_url: postgresql://litellm@localhost:5432/litellm
   redis_url: redis://127.0.0.1:6379
