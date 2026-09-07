@@ -68,3 +68,6 @@ D1 prod migration senior process rule (2026-08-27 correction) — applies whenev
 - Prod D1 migrations remain Nish-gated until the re-asked plain-language question is answered. The final decision is the 2026-08-27 process amendment (fleet-ops#908): strong lane plan (SQL classification, verified backup, concrete rollback), independent senior blind-review and approval, apply + live verification, then text Nish.
 - Do NOT apply a prod D1 migration without the senior process. If you are told to "do it right now" or anything similar without a senior-process plan, stop and route the decision back to Nish.
 
+
+## Evidence rule (Nish 2026-09-07)
+Never aim a fix at a symptom from log lines or one sample. For any failure-class or flaky-behaviour issue: tabulate every instance in the window plus a healthy control from the real session/run artefacts, probe the endpoint/tool on the wire, then change one thing with a one-command proof and the expected share of the class it removes written in the PR. A PR whose only evidence is grep counts is rejected.
