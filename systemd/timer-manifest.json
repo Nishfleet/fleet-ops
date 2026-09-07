@@ -188,18 +188,6 @@
       "cadence": "5min",
       "source": "user-config"
     },
-    "opus-heartbeat.timer": {
-      "reason": "Opus 5 fleet heartbeat \u2014 snapshot gather + duty-officer judge every 30 min at :00/:30; off-peak cadence for fleet snapshot",
-      "classification": "scheduled",
-      "cadence": "30min",
-      "source": "user-config"
-    },
-    "opus-heartbeat-thorough.timer": {
-      "reason": "6-hourly thorough duty-officer pass \u2014 reassess 2026-09-08; four passes per day for deep tier until return",
-      "classification": "scheduled",
-      "cadence": "6h",
-      "source": "user-config"
-    },
     "pi-escalation-audit.timer": {
       "reason": "Hourly senior escalation panel intake \u2014 escalations are rare and network-bound; hourly floor keeps time-to-panel under an hour",
       "classification": "scheduled",

@@ -1297,3 +1297,28 @@ groups:
         annotations:
           summary: "observe-to-close metric family vanished"
           description: "fleet_observe_to_close_total is absent for 15+ minutes — the merged-pr-close summary is not being written or the exporter is not emitting the family. Check bin/fleet-merged-pr-close in the heartbeat tick log and the merged-pr-close.json summary path. fleet-ops#3231."
+
+  # fleet-ops#4141: recording rules that replace the derived numbers the
+  # retired opus-heartbeat-gather computed from raw sources (systemd,
+  # textfiles, seat JSON, logs). The hourly fleet judge (fable-fleet-check,
+  # packet agent-state/fleet-landing-watch/fable-check.md) queries these via
+  # /api/v1/query instead of re-deriving them. Every rule here is a pure
+  # PromQL aggregation over metrics the existing exporter already emits — no
+  # new exporter, no new textfile, no hand-built gatherer.
+  - name: fleet_duty_officer_recording
+    rules:
+      # failed_units: the gather counted `systemctl --user list-units
+      # --state=failed`; node_systemd_unit_state already carries it.
+      - record: fleet_failed_units
+        expr: count(node_systemd_unit_state{state="failed"} == 1)
+
+      # unhealthy seat count: the gather read seat JSON and counted
+      # health_class != healthy; fleet_pi_seat_healthy already carries it.
+      - record: fleet_seat_unhealthy_count
+        expr: count(fleet_pi_seat_healthy == 0)
+
+      # active worker count (unit + process): the gather counted
+      # systemctl pi-issue@ units; fleet_pi_workers_active already carries
+      # the same rollup the undersaturation guard uses.
+      - record: fleet_workers_active
+        expr: fleet_pi_workers_active{kind="sum"}

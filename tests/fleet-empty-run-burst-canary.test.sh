@@ -26,9 +26,8 @@
 #      dest missing fails loud; burst tick alarm does not).
 #  13. pi-issue-run parse_unit / parse_seat_from_err helpers handle the
 #      live watch-log and err-file shapes used in #2666.
-#  14. Production seat-caps / heartbeat / opus-heartbeat snapshot are
-#      still parseable after the new canary is added (regression
-#      check).
+#  14. Production seat-caps / heartbeat are still parseable after the
+#      new canary is added (regression check).
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -488,20 +487,14 @@ grep -q 'opencode/nemotron-3-ultra-free' "$issue_file_log" || fail "scenario 13:
 grep -q 'mid-session-death' "$issue_file_log" || fail "scenario 13: must classify exit-143 as mid-session-death"
 ok "scenario 13: live watch-log + err-file shape parse correctly"
 
-# 14. regression: production seat-caps / heartbeat / snapshot
-#     (opus-heartbeat) are still parseable after the canary was added.
-# Use jq to read each; fail if any of them is now broken by the new
-# tier-1 wiring.
+# 14. regression: production seat-caps / heartbeat are still parseable
+#     after the canary was added. Use jq to read each; fail if any of them
+#     is now broken by the new tier-1 wiring.
 [[ -f "$repo_root/config/seat-caps.json" ]] || fail "scenario 14: seat-caps.json missing"
 jq -e 'type == "object" and (.providers | type == "object")' "$repo_root/config/seat-caps.json" >/dev/null \
     || fail "scenario 14: production seat-caps.json no longer parseable"
 [[ -f "$repo_root/bin/fleet-heartbeat-tier1" ]]
 bash -n "$repo_root/bin/fleet-heartbeat-tier1" || fail "scenario 14: tier-1 has a bash syntax error"
-# The live snapshot is a sanity check, not a fail; if missing, skip.
-if [[ -f "$HOME/.local/state/opus-heartbeat/snapshot.json" ]]; then
-    jq -e 'type == "object" and (.waste | type == "object")' "$HOME/.local/state/opus-heartbeat/snapshot.json" >/dev/null \
-        || fail "scenario 14: live opus-heartbeat snapshot no longer parseable"
-fi
 ok "scenario 14: regression — production files still parse after the canary was added"
 
 # 15. canary rc=0 on a clean tick; rc=1 on a watcher-broken tick;

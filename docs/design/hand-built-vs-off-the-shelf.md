@@ -31,7 +31,7 @@ Live snapshot 2026-09-07:
 
 | # | Mechanism | Lines (live) | Owner unit(s) | Off-the-shelf replacement | What gets DELETED | Verdict |
 |---|---|---|---|---|---|---|
-| 1 | opus-heartbeat family | 3,249 (+7,858 .bak) | `opus-heartbeat.timer` + `heartbeat-audit` + `opus-heartbeat-run` + `opus-heartbeat-fallback` | PromQL recording rules + Alertmanager; judge packet reads `/api/v1/query` | gather + heartbeat + audit + run + fallback + 6 `.bak` copies | **GO** |
+| 1 | opus-heartbeat family | 3,249 (+7,858 .bak) | `opus-heartbeat.timer` + `heartbeat-audit` + `opus-heartbeat-run` + `opus-heartbeat-fallback` | PromQL recording rules + Alertmanager; judge packet reads `/api/v1/query` | gather + heartbeat + audit + run + fallback + 6 `.bak` copies | **DONE** (#4141) |
 | 2 | repo-sync-snapshot.py | 1,311 | `repo-sync-snapshot.timer` | (none — see row detail) | (none — see row detail) | **NO-GO** (misdescribed: not an org PR/CI snapshot; see row detail) |
 | 3 | venue-claim + open-question | 1,810 | `venue-claim` / `open-question` (webhook/timer) | GitHub issue assignment + Projects, Actions concurrency groups, flock/systemd for local locks | venue-claim, open-question | **DONE** (retired 2026-09-07, #4143) |
 | 4 | fleet-pr-rebase | 0 (already retired) | — | GitHub merge queue + auto-merge + `gh pr update-branch` | already gone (git history only) | **NO-GO** (already retired) |
@@ -45,20 +45,21 @@ Live snapshot 2026-09-07:
 
 ## 3. Per-row detail
 
-### Row 1 — opus-heartbeat family → PromQL + Alertmanager (GO)
+### Row 1 — opus-heartbeat family → PromQL + Alertmanager (DONE, #4141)
 
-Live lines: `opus-heartbeat-gather` 1,749, `opus-heartbeat` 771,
+Retired 2026-09-07. Live lines were: `opus-heartbeat-gather` 1,749, `opus-heartbeat` 771,
 `heartbeat-audit` 470, `opus-heartbeat-run` 146, `opus-heartbeat-fallback`
 113 = **3,249 lines**. Plus **6 `.bak` copies of gather** in libexec
 (1,166 + 1,214 + 1,235 + 1,353 + 1,413 + 1,477 = **7,858 lines**) — git is the
-backup; delete all six.
+backup; all deleted.
 
-The family re-derives fleet state (unit health, timers, PRs, claims) that
-Prometheus already holds. Replacement: PromQL recording rules + Alertmanager;
-the judge packet reads `/api/v1/query` instead of re-gathering.
-
-**GO.** Delete 3,249 lines + 7,858 `.bak` lines. New organ: none — Prometheus
-and Alertmanager already run. Filed as issue (see §6).
+The family re-derived fleet state (unit health, timers, PRs, claims) that
+Prometheus already holds. Replacement: PromQL recording rules (group
+`fleet_duty_officer_recording` in `config/fleet_rules.yml`) + the existing
+hourly fleet judge (`fable-fleet-check.service`, packet
+`agent-state/fleet-landing-watch/fable-check.md`) which now queries
+`/api/v1/query` with an anti-fabrication rule. The 5 live scripts were
+archived to `archive/opus-heartbeat-retired-2026-09-07/` before deletion.
 
 ### Row 2 — repo-sync-snapshot.py → NO-GO (misdescribed seed map)
 
@@ -266,7 +267,7 @@ Row 11 classify rows are filed as classify issues.
 
 | Row | Filed issue |
 |---|---|
-| 1 opus-heartbeat family | #4153 |
+| 1 opus-heartbeat family | #4141 (DONE) |
 | 2 repo-sync-snapshot.py | #4154 (NO-GO — filed from the wrong row; see §3 row 2) |
 | 3 venue-claim + open-question | #4143 (dup #4155) |
 | 5 claude-telegram-bridge.py | #4156 |

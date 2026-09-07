@@ -59,7 +59,6 @@ cheaper than building, because prose bans lose to urgency at decision time.
 | Siterep live canary | siterep-live-canary | `siterep-live-canary.timer` | canary |
 | Siterep uptime | siterep-uptime | `siterep-uptime.timer` | uptime rail |
 | Quality research (weekly) | quality-research-weekly | `quality-research-weekly.timer` | #457 |
-| Opus duty-officer watch | opus-heartbeat(+ -thorough) | `opus-heartbeat*.timer` | Nish-ordered |
 | Boundary-notify (Nish-reserved) | nish-boundary-notify | `nish-boundary-notify.service` | standing rule |
 | Memory curator | nish-memory-curator | `nish-memory-curator.timer` | memory compound |
 | VPS maintenance (quiesce/deadman/update) | vps-maintenance-* / vps-weekly-update | `vps-maintenance-*.timer` | systemd-by-default |

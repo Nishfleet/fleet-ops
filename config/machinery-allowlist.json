@@ -227,18 +227,6 @@
       "source": "repo"
     },
     {
-      "unit": "opus-heartbeat",
-      "class": "a",
-      "source": "hand-placed",
-      "endorsement": "ledger: Nish-ordered watch during absence"
-    },
-    {
-      "unit": "opus-heartbeat-thorough",
-      "class": "a",
-      "source": "hand-placed",
-      "endorsement": "timer desc: Nish until 2026-09-08 return"
-    },
-    {
       "unit": "fable-fleet-check",
       "class": "a",
       "source": "hand-placed",

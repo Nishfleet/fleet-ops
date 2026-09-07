@@ -158,8 +158,8 @@ eight lenses:
 
 The deletion-review block is part of the machinery lens, not a new lens:
 its findings use `"lens": "machinery"` in the Findings JSON. Optimization:
-the 09-08 scheduled-expiry cohort (opus-heartbeat, opus-heartbeat-thorough,
-evening-highlights-digest) is the standing first look each cycle.
+the scheduled-expiry cohort (evening-highlights-digest) is the standing
+first look each cycle.
 
 Each lens file MUST end with a `## Findings` heading and a JSON block:
 

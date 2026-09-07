@@ -74,60 +74,9 @@ done
 declare -A live_skip
 live_skip[worker-token-live.test.sh]=1
 live_skip[pi-worker-execstart-live.test.sh]=1
-# fleet-ops#1453: opus-heartbeat tests read VPS-local state (the launcher
-# binary at /home/nish/.local/libexec/opus-heartbeat and the judge prompt
-# at /home/nish/.local/share/opus-heartbeat/judge-prompt.md). They are
-# live/VPS-only and cannot run in hosted CI.
-live_skip[opus-heartbeat-allowlist-gate.test.sh]=1
-live_skip[opus-heartbeat-follow-through.test.sh]=1
-live_skip[opus-heartbeat-replayed-frozen-snapshot.test.sh]=1
-# fleet-ops#1382: opus-heartbeat THOROUGH-mode test reads VPS-local state
-# (the launcher binary, the gather script, the judge prompt, and the
-# thorough service unit). Live/VPS-only — cannot run in hosted CI.
-live_skip[opus-heartbeat-thorough-mode.test.sh]=1
-# fleet-ops#2152: opus-heartbeat-seat-comeback invokes the VPS-deployed
-# opus-heartbeat-gather launcher (/home/nish/.local/libexec/), which is
-# absent on hosted runners. Live/VPS-only — cannot run in hosted CI.
-live_skip[opus-heartbeat-seat-comeback.test.sh]=1
-# fleet-ops#2517: opus-heartbeat-fabricated-transcript-gate reads VPS-local
-# state (the launcher binary at /home/nish/.local/libexec/opus-heartbeat
-# and the judge prompt at /home/nish/.local/share/opus-heartbeat/
-# judge-prompt.md). Live/VPS-only — cannot run in hosted CI.
-live_skip[opus-heartbeat-fabricated-transcript-gate.test.sh]=1
-# fleet-ops#2711: opus-heartbeat-frozen-claims-gate drives the launcher
-# --check-allowlist subcommand against fixture snapshots and pins the
-# live launcher + judge prompt for the claims-aware gate shape. Live/
-# VPS-only — cannot run in hosted CI (launcher binary absent).
-live_skip[opus-heartbeat-frozen-claims-gate.test.sh]=1
-# fleet-ops#2751: opus-heartbeat-failed-units-gate drives the gather's
-# --check-failed-units-gate subcommand against fixture snapshots and pins
-# the installed gather at /home/nish/.local/libexec/opus-heartbeat-gather
-# plus the live snapshot. Live/VPS-only — cannot run in hosted CI (gather
-# script absent).
-live_skip[opus-heartbeat-failed-units-gate.test.sh]=1
-# fleet-ops#3189: opus-heartbeat-scout-staleness-gate drives the gather's
-# --check-scout-staleness-gate subcommand against fixture snapshots and
-# pins the installed gather at /home/nish/.local/libexec/opus-heartbeat-
-# gather plus the live snapshot. Live/VPS-only — cannot run in hosted CI
-# (gather script absent).
-live_skip[opus-heartbeat-scout-staleness-gate.test.sh]=1
-# fleet-ops#3731: opus-heartbeat-verify-cue-gate drives the gather's
-# --check-verify-cue-gate subcommand against real merged-body shapes and
-# pins the installed gather at /home/nish/.local/libexec/opus-heartbeat-
-# gather for the shared-grammar plumbing. Live/VPS-only — cannot run in
-# hosted CI (gather script absent).
-live_skip[opus-heartbeat-verify-cue-gate.test.sh]=1
-# fleet-ops#3983: opus-heartbeat-corpse-exclusion drives the installed gather
-# at /home/nish/.local/libexec/opus-heartbeat-gather with a synthetic
-# SEAT_CAPS_JSON to pin the cap=0 intentional_cap_zero=corpse exclusion.
-# Live/VPS-only — cannot run in hosted CI (gather script absent).
-live_skip[opus-heartbeat-corpse-exclusion.test.sh]=1
-# fleet-ops#4118: opus-heartbeat-worktree-reaper-gauge drives the installed
-# gather at /home/nish/.local/libexec/opus-heartbeat-gather in THOROUGH mode
-# with FLEET_WORKTREE_REAPER_SUMMARY pointed at fixture JSON, pinning the
-# worktree_reaper gauge in hygiene_counts. Live/VPS-only — cannot run in
-# hosted CI (gather script absent).
-live_skip[opus-heartbeat-worktree-reaper-gauge.test.sh]=1
+# fleet-ops#4141: the 12 opus-heartbeat-* tests were deleted (the opus-
+# heartbeat family was retired — recording rules + fable-check.md replaced
+# it). No live_skip entries needed for deleted tests.
 # fleet-ops#1498: memory-index-autocompact-migrated runs `systemd-analyze verify`
 # on a unit whose ExecStart points to /home/nish/.local/bin/memory-index-autocompact
 # (VPS-only), absent on hosted runners. Live/VPS-only — cannot run in hosted CI.

@@ -15,7 +15,7 @@
 #    is NOT set in the env (tests that set it win).
 #
 # 2. Worked-no-text not scored as empty (acceptance points b/c):
-#    The opus-heartbeat gather script counts a watch.log line as an empty
+#    The fleet metrics exporter counts a watch.log line as an empty
 #    run when it contains "stdout=0B" or "no-op". The worked-no-text log
 #    line previously contained BOTH ("stdout=0B" and "NOT a provider
 #    no-op"), so every worked-no-text run inflated empty_runs_last_2h and
@@ -124,7 +124,7 @@ v=$(seat_hang_timeout_s "ollama" "deepseek-v4-flash:0731")
 ok "seat_hang_timeout_s: sub-60 override ignored, fallback = 2520s"
 
 # --- 2. worked-no-text log line does NOT match the gather empty_run lambda --
-# The opus-heartbeat-gather empty_run lambda is:
+# The fleet metrics exporter empty_run lambda is:
 #   ("stdout=0B" in l) or ("no-op" in l.lower())
 # The worked-no-text line must NOT match. A genuine provider-no-op line MUST.
 gather_empty_run_match() {
