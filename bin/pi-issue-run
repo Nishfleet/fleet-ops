@@ -338,11 +338,13 @@ export PI_PICK_PREFER_CLASS
 # one-liner: no tried-seats files, no ledgers, no bench markers.
 PI_SEAT_SOURCE="${PI_SEAT_SOURCE:-seat-lib}"
 if [[ "$PI_SEAT_SOURCE" == "litellm" ]]; then
-    np="litellm"
     nm="worker-cheap"
     [[ "$need_capable" == "1" ]] && nm="worker-capable"
     if [[ "$pkt_privacy" == "private" ]]; then
         np="litellm-private"
+        nm="worker-private"
+    else
+        np="litellm-worker"
     fi
     seat_log "pi-issue-run: $inst running on $np/$nm (weight=$difficulty, seat_source=litellm)"
 else

@@ -77,6 +77,15 @@ fi
 need_capable=0
 [[ "$difficulty" == "heavy" || "$difficulty" == "keystone" ]] && need_capable=1
 
+# fleet-ops#4130 P3a: PI_SEAT_SOURCE=litellm routes this caller to the
+# LiteLLM proxy judge group instead of pick_seat. Default seat-lib is
+# unchanged. (P2 #4181 was to land this; it did not merge, so P3a carries
+# the agent-cron-run switch alongside the other five worker callers.)
+PI_SEAT_SOURCE="${PI_SEAT_SOURCE:-seat-lib}"
+if [[ "$PI_SEAT_SOURCE" == "litellm" ]]; then
+    np="litellm"
+    nm="judge"
+else
 seat=$(pick_seat "" "" "$need_capable" "$tried_file" "$difficulty" || true)
 if [[ -z "$seat" ]]; then
     seat_log "agent-cron-run: $slug no healthy seat available (tried: $(tr '\n' ' ' <"$tried_file" 2>/dev/null))"
@@ -95,6 +104,7 @@ fi
 
 np=$(printf '%s' "$seat" | cut -f1)
 nm=$(printf '%s' "$seat" | cut -f2)
+fi
 
 # Defensive recreate (fleet-ops#63): $ATTEMPTS_DIR can vanish mid-run.
 mkdir -p "$ATTEMPTS_DIR" 2>/dev/null || {

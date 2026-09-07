@@ -5,13 +5,13 @@
 # worker seat-selection callers to their LiteLLM proxy group instead of
 # pick_seat, while the default seat-lib path is unchanged.
 #
-#   pi-issue-run        -> litellm/worker-cheap (light) | worker-capable (heavy)
-#                          litellm-private for a private-repo target
-#   pi-packet-run       -> litellm/worker-cheap (light) | worker-capable (heavy)
-#                          litellm-private for a private-repo target
-#   pi-scout-run        -> litellm/worker-cheap
-#   pi-audit-run        -> litellm/worker-cheap
-#   fleet-researcher-run-> litellm/worker-cheap
+#   pi-issue-run        -> litellm-worker/worker-cheap (light) | worker-capable (heavy)
+#                          litellm-private/worker-private for a private-repo target
+#   pi-packet-run       -> litellm-worker/worker-cheap (light) | worker-capable (heavy)
+#                          litellm-private/worker-private for a private-repo target
+#   pi-scout-run        -> litellm-worker/worker-cheap
+#   pi-audit-run        -> litellm-worker/worker-cheap
+#   fleet-researcher-run-> litellm-worker/worker-cheap
 #
 # Runs offline: seat-lib, systemctl, worker-token and pi are all stubbed. No
 # Claude, no systemd user session, no network, no live state dir.
@@ -134,13 +134,13 @@ set +e
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "pi-issue-run litellm light must exit 0, got $rc"
-grep -q -- '--provider litellm' "$record_args" \
-  || fail "pi-issue-run litellm must use --provider litellm, got: $(cat "$record_args")"
+grep -q -- '--provider litellm-worker' "$record_args" \
+  || fail "pi-issue-run litellm must use --provider litellm-worker, got: $(cat "$record_args")"
 grep -q -- '--model worker-cheap' "$record_args" \
   || fail "pi-issue-run litellm light must use --model worker-cheap, got: $(cat "$record_args")"
-ok "pi-issue-run PI_SEAT_SOURCE=litellm light -> litellm/worker-cheap"
+ok "pi-issue-run PI_SEAT_SOURCE=litellm light -> litellm-worker/worker-cheap"
 
-# --- pi-issue-run: heavy -> litellm/worker-capable --------------------------
+# --- pi-issue-run: heavy -> litellm-worker/worker-capable -------------------
 cat >"$pkt" <<'PKT'
 difficulty: heavy
 TARGET: repo Nishfleet/fleet-ops issue 1 unit test
@@ -151,11 +151,13 @@ set +e
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "pi-issue-run litellm heavy must exit 0, got $rc"
+grep -q -- '--provider litellm-worker' "$record_args" \
+  || fail "pi-issue-run litellm heavy must use --provider litellm-worker, got: $(cat "$record_args")"
 grep -q -- '--model worker-capable' "$record_args" \
   || fail "pi-issue-run litellm heavy must use --model worker-capable, got: $(cat "$record_args")"
-ok "pi-issue-run PI_SEAT_SOURCE=litellm heavy -> litellm/worker-capable"
+ok "pi-issue-run PI_SEAT_SOURCE=litellm heavy -> litellm-worker/worker-capable"
 
-# --- pi-issue-run: private repo -> litellm-private --------------------------
+# --- pi-issue-run: private repo -> litellm-private/worker-private -----------
 cat >"$pkt" <<'PKT'
 TARGET: repo Nishfleet/siterep-public issue 1 unit test
 PKT
@@ -213,7 +215,9 @@ set -e
 [[ "$rc" == "0" ]] || fail "pi-issue-run litellm private must exit 0, got $rc"
 grep -q -- '--provider litellm-private' "$record_args" \
   || fail "pi-issue-run litellm private must use --provider litellm-private, got: $(cat "$record_args")"
-ok "pi-issue-run PI_SEAT_SOURCE=litellm private repo -> litellm-private"
+grep -q -- '--model worker-private' "$record_args" \
+  || fail "pi-issue-run litellm private must use --model worker-private, got: $(cat "$record_args")"
+ok "pi-issue-run PI_SEAT_SOURCE=litellm private repo -> litellm-private/worker-private"
 
 # restore the public stub for the remaining cases
 cat >"$stub_lib" <<'LIB'
@@ -279,7 +283,7 @@ grep -q -- '--model glm-5-2' "$record_args" \
   || fail "pi-issue-run default must use pick_seat model glm-5-2, got: $(cat "$record_args")"
 ok "pi-issue-run default seat-lib unchanged (devin/glm-5-2)"
 
-# --- pi-packet-run: light -> litellm/worker-cheap ---------------------------
+# --- pi-packet-run: light -> litellm-worker/worker-cheap --------------------
 export PI_SEAT_SOURCE=litellm
 export PI_PACKET_RUN_OUT_MIN=1
 pkt2="$scratch/pkt2.md"
@@ -292,13 +296,13 @@ set +e
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "pi-packet-run litellm light must exit 0, got $rc"
-grep -q -- '--provider litellm' "$record_args" \
-  || fail "pi-packet-run litellm must use --provider litellm, got: $(cat "$record_args")"
+grep -q -- '--provider litellm-worker' "$record_args" \
+  || fail "pi-packet-run litellm must use --provider litellm-worker, got: $(cat "$record_args")"
 grep -q -- '--model worker-cheap' "$record_args" \
   || fail "pi-packet-run litellm light must use --model worker-cheap, got: $(cat "$record_args")"
-ok "pi-packet-run PI_SEAT_SOURCE=litellm light -> litellm/worker-cheap"
+ok "pi-packet-run PI_SEAT_SOURCE=litellm light -> litellm-worker/worker-cheap"
 
-# --- pi-packet-run: heavy -> litellm/worker-capable ------------------------
+# --- pi-packet-run: heavy -> litellm-worker/worker-capable -----------------
 cat >"$pkt2" <<'PKT'
 difficulty: heavy
 TARGET: repo Nishfleet/fleet-ops issue 1 unit test
@@ -309,24 +313,26 @@ set +e
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "pi-packet-run litellm heavy must exit 0, got $rc"
+grep -q -- '--provider litellm-worker' "$record_args" \
+  || fail "pi-packet-run litellm heavy must use --provider litellm-worker, got: $(cat "$record_args")"
 grep -q -- '--model worker-capable' "$record_args" \
   || fail "pi-packet-run litellm heavy must use --model worker-capable, got: $(cat "$record_args")"
-ok "pi-packet-run PI_SEAT_SOURCE=litellm heavy -> litellm/worker-capable"
+ok "pi-packet-run PI_SEAT_SOURCE=litellm heavy -> litellm-worker/worker-capable"
 
-# --- pi-scout-run: -> litellm/worker-cheap ----------------------------------
+# --- pi-scout-run: -> litellm-worker/worker-cheap ---------------------------
 rm -f "$record_args" "$record_stdin"
 set +e
 "$repo_root/bin/pi-scout-run" fleet-ops scout >/dev/null 2>&1
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "pi-scout-run litellm must exit 0, got $rc"
-grep -q -- '--provider litellm' "$record_args" \
-  || fail "pi-scout-run litellm must use --provider litellm, got: $(cat "$record_args")"
+grep -q -- '--provider litellm-worker' "$record_args" \
+  || fail "pi-scout-run litellm must use --provider litellm-worker, got: $(cat "$record_args")"
 grep -q -- '--model worker-cheap' "$record_args" \
   || fail "pi-scout-run litellm must use --model worker-cheap, got: $(cat "$record_args")"
-ok "pi-scout-run PI_SEAT_SOURCE=litellm -> litellm/worker-cheap"
+ok "pi-scout-run PI_SEAT_SOURCE=litellm -> litellm-worker/worker-cheap"
 
-# --- fleet-researcher-run: -> litellm/worker-cheap --------------------------
+# --- fleet-researcher-run: -> litellm-worker/worker-cheap -------------------
 export RESEARCHER_STATE_DIR="$scratch/researcher-state"
 export RESEARCHER_DRY_RUN=0
 export RESEARCHER_PROMPT="$repo_root/prompts/researcher.md"
@@ -337,13 +343,13 @@ set +e
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "fleet-researcher-run litellm must exit 0, got $rc"
-grep -q -- '--provider litellm' "$record_args" \
-  || fail "fleet-researcher-run litellm must use --provider litellm, got: $(cat "$record_args")"
+grep -q -- '--provider litellm-worker' "$record_args" \
+  || fail "fleet-researcher-run litellm must use --provider litellm-worker, got: $(cat "$record_args")"
 grep -q -- '--model worker-cheap' "$record_args" \
   || fail "fleet-researcher-run litellm must use --model worker-cheap, got: $(cat "$record_args")"
-ok "fleet-researcher-run PI_SEAT_SOURCE=litellm -> litellm/worker-cheap"
+ok "fleet-researcher-run PI_SEAT_SOURCE=litellm -> litellm-worker/worker-cheap"
 
-# --- pi-audit-run: -> litellm/worker-cheap ----------------------------------
+# --- pi-audit-run: -> litellm-worker/worker-cheap ---------------------------
 export AUDIT_STATE_DIR="$scratch/audit-state"
 export AUDIT_PROMPT="$repo_root/prompts/auditor.md"
 export AUDIT_DRY_RUN=1
@@ -353,8 +359,32 @@ out=$("$repo_root/bin/pi-audit-run" fleet-ops--1--devin 2>&1)
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "pi-audit-run litellm must exit 0, got $rc"
-printf '%s\n' "$out" | grep -q 'litellm/worker-cheap' \
-  || fail "pi-audit-run litellm must resolve to litellm/worker-cheap, got: $out"
-ok "pi-audit-run PI_SEAT_SOURCE=litellm -> litellm/worker-cheap"
+printf '%s\n' "$out" | grep -q 'litellm-worker/worker-cheap' \
+  || fail "pi-audit-run litellm must resolve to litellm-worker/worker-cheap, got: $out"
+ok "pi-audit-run PI_SEAT_SOURCE=litellm -> litellm-worker/worker-cheap"
 
-echo "ALL OK: PI_SEAT_SOURCE=litellm routes the five worker callers to their LiteLLM group; default seat-lib unchanged"
+# --- agent-cron-run: -> litellm/judge ---------------------------------------
+# agent-cron-run needs a WORKDIR (not $HOME) and a prompt file.
+cron_prompts="$scratch/cron-prompts"
+cron_log="$scratch/cron-log"
+mkdir -p "$cron_prompts" "$cron_log"
+printf '# cron prompt\n' >"$cron_prompts/test.md"
+export PROMPTS_DIR="$cron_prompts"
+export LOG_DIR="$cron_log"
+export WORKDIR="$scratch/work"
+mkdir -p "$WORKDIR"
+export AGENT_CRON_ALLOW_HOME_WORKDIR=1
+rm -f "$record_args" "$record_stdin"
+set +e
+"$repo_root/bin/agent-cron-run" test >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "agent-cron-run litellm must exit 0, got $rc"
+grep -q -- '--provider litellm' "$record_args" \
+  || fail "agent-cron-run litellm must use --provider litellm, got: $(cat "$record_args")"
+grep -q -- '--model judge' "$record_args" \
+  || fail "agent-cron-run litellm must use --model judge, got: $(cat "$record_args")"
+ok "agent-cron-run PI_SEAT_SOURCE=litellm -> litellm/judge"
+unset AGENT_CRON_ALLOW_HOME_WORKDIR
+
+echo "ALL OK: PI_SEAT_SOURCE=litellm routes the six worker callers to their LiteLLM group; default seat-lib unchanged"

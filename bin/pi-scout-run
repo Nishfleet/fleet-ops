@@ -74,7 +74,7 @@ export PI_PACKET_REPO="$repo"
 # Scout work is light, so the group is always worker-cheap.
 PI_SEAT_SOURCE="${PI_SEAT_SOURCE:-seat-lib}"
 if [[ "$PI_SEAT_SOURCE" == "litellm" ]]; then
-    np="litellm"
+    np="litellm-worker"
     nm="worker-cheap"
 else
     seat=$(pick_seat "" "" "$need_capable" "" "$difficulty" "$scout_privacy" || true)

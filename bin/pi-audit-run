@@ -300,7 +300,7 @@ resolve_seat() {
     # LiteLLM proxy group (worker-cheap) instead of the seat-lib ladder.
     # Default seat-lib is unchanged.
     if [ "${PI_SEAT_SOURCE:-seat-lib}" = "litellm" ]; then
-        printf 'litellm\tworker-cheap\n'
+        printf 'litellm-worker\tworker-cheap\n'
         return 0
     fi
     case "$role" in

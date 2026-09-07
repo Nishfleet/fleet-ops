@@ -89,7 +89,7 @@ python3 "$LIB" init --state "$state" >/dev/null
 # Default seat-lib is unchanged.
 pick_researcher_seat() {
     if [ "${PI_SEAT_SOURCE:-seat-lib}" = "litellm" ]; then
-        printf 'litellm\tworker-cheap\n'
+        printf 'litellm-worker\tworker-cheap\n'
         return 0
     fi
     if [ -f "$SEAT_LIB" ]; then
