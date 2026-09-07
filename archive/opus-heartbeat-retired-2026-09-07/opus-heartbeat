@@ -1,0 +1,771 @@
+#!/usr/bin/env bash
+# opus-heartbeat — gather snapshot, judge with Opus 5, execute allowlisted actions.
+# Lives OUTSIDE any git worktree. Do not move into fleet-ops/bin.
+#
+# On Claude auth/quota wall: fail loud (exit 75) AFTER dispatching the Pi
+# fallback so the watch never silently stops. OnFailure still inherits
+# unit-escalation via service.d/10-escalate.conf.
+set -Eeuo pipefail
+
+LIBEXEC="${OPUS_HB_LIBEXEC:-/home/nish/.local/libexec}"
+STATE="${OPUS_HB_STATE:-/home/nish/.local/state/opus-heartbeat}"
+SHARE="${OPUS_HB_SHARE:-/home/nish/.local/share/opus-heartbeat}"
+TEXTFILE="${OPUS_HB_TEXTFILE:-/var/lib/prometheus/node-exporter/fleet-opus-heartbeat.prom}"
+PROMPT_FILE="$SHARE/judge-prompt.md"
+GATHER="$LIBEXEC/opus-heartbeat-gather"
+FALLBACK="$LIBEXEC/opus-heartbeat-fallback"
+JOURNAL="$STATE/journal.jsonl"
+ACTIONS_LOG="$STATE/actions.log"
+RUNLOG="$STATE/run.log"
+SNAP="$STATE/snapshot.json"
+PREV="$STATE/snapshot.prev.json"
+VERDICT_FILE="$STATE/last-verdict.txt"
+CLAUDE_OUT="$STATE/last-claude.txt"
+BURN_GUARD="${OPUS_HB_BURN:-6m}"
+MODEL="${OPUS_HB_MODEL:-claude-opus-5}"
+# fleet-ops#1382: THOROUGH 6-hourly pass. The thorough service sets
+# OPUS_HB_THOROUGH=1; gather appends the deep battery + 24h trend, and the
+# judge prompt gets a MODE: THOROUGH note plus a 60-line output cap (vs the
+# light 2h run's 30-line cap). Burn guard is raised so the deeper snapshot
+# and longer verdict have room. The light run is byte-identical to before
+# when the env is unset.
+THOROUGH="${OPUS_HB_THOROUGH:-}"
+if [ "$THOROUGH" = "1" ]; then
+  BURN_GUARD="${OPUS_HB_BURN:-12m}"
+fi
+# --- fleet-ops#2660 (per-action timeout) -----------------------------------
+# Live case 2026-09-01T19:08:04Z: the Opus judge emitted
+#   `systemctl --user start pi-scout-repair@fleet-ops.service`
+# as its first FAULTS action. `bash -c` ran without a per-action timeout, so
+# the hung `start` call held the wrapper open until systemd's
+# TimeoutStartSec=8min SIGTERM'd the whole tree — the action never logged
+# `EXEC-RC=`, the heartbeat sat failed, and OnFailure= summoned the auditor.
+# Same class has tripped at 2026-08-29T04:00Z and 2026-08-31T16:00Z (2 in 3
+# days prior). Fix: wrap every action in a per-call `timeout`. 90s covers a
+# slow `gh issue create` against a wedged GraphQL pool (the worst observed
+# recent case ~50s) with headroom; 120s gives the same for thorough runs.
+ACTION_TIMEOUT="${OPUS_HB_ACTION_TIMEOUT:-90s}"
+ACTION_KILL_AFTER="${OPUS_HB_ACTION_KILL_AFTER:-10s}"
+
+ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+log() { printf '%s %s\n' "$(ts)" "$*" >>"$RUNLOG"; }
+act() { printf '%s %s\n' "$(ts)" "$*" >>"$ACTIONS_LOG"; }
+
+mkdir -p "$STATE" "$SHARE" "$(dirname "$TEXTFILE")"
+touch "$JOURNAL" "$ACTIONS_LOG" "$RUNLOG"
+
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
+
+# Pull long-lived setup-token if the manager env did not inject it.
+if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ -r /home/nish/.config/environment.d/50-agent-secrets.conf ]; then
+  CLAUDE_CODE_OAUTH_TOKEN=$(
+    set -a
+    # shellcheck disable=SC1091
+    . /home/nish/.config/environment.d/50-agent-secrets.conf >/dev/null 2>&1
+    set +a
+    printf '%s' "${CLAUDE_CODE_OAUTH_TOKEN:-}"
+  )
+  [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ] && export CLAUDE_CODE_OAUTH_TOKEN
+fi
+
+rotate_journal() {
+  if [ -f "$JOURNAL" ]; then
+    local bytes
+    bytes=$(wc -c <"$JOURNAL")
+    if [ "$bytes" -gt 5242880 ]; then
+      mv -f "$JOURNAL" "$JOURNAL.1"
+      : >"$JOURNAL"
+    fi
+  fi
+}
+
+write_metrics() {
+  local last_run="$1" verdict_n="$2" runs24="$3" rc="$4"
+  local tmp last_block=""
+  # last_run=0 means no Opus verdict this tick. Keep the previous timestamp
+  # so stale() clocks from the last real verdict; if none exists, omit the
+  # gauge so absent() owns the hole (never export epoch 0).
+  if [ "$last_run" = "0" ] && [ -f "$TEXTFILE" ]; then
+    last_run="$(awk '/^fleet_opus_heartbeat_last_run /{print $2}' "$TEXTFILE")"
+    last_run="${last_run:-0}"
+  fi
+  if [ -n "$last_run" ] && [ "$last_run" != "0" ]; then
+    last_block="# HELP fleet_opus_heartbeat_last_run Unix epoch of last Opus heartbeat that produced a verdict.
+# TYPE fleet_opus_heartbeat_last_run gauge
+fleet_opus_heartbeat_last_run $last_run"
+  fi
+  tmp="$(mktemp -p "$(dirname "$TEXTFILE")" .opus-hb.XXXXXX)"
+  cat >"$tmp" <<EOF
+${last_block}
+# HELP fleet_opus_heartbeat_runs_24h Opus heartbeat runs in the trailing 24h (journal lines).
+# TYPE fleet_opus_heartbeat_runs_24h gauge
+fleet_opus_heartbeat_runs_24h $runs24
+# HELP fleet_opus_heartbeat_verdict 1=SMOOTH 0=FAULTS -1=judge-failed
+# TYPE fleet_opus_heartbeat_verdict gauge
+fleet_opus_heartbeat_verdict $verdict_n
+# HELP fleet_opus_heartbeat_rc wrapper exit code of the last run.
+# TYPE fleet_opus_heartbeat_rc gauge
+fleet_opus_heartbeat_rc $rc
+EOF
+  chmod 644 "$tmp"
+  mv -f "$tmp" "$TEXTFILE"
+}
+
+runs_24h() {
+  python3 - "$JOURNAL" <<'PY'
+import sys, time
+path = sys.argv[1]
+cut = time.time() - 86400
+n = 0
+try:
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                import json
+                d = json.loads(line)
+            except Exception:
+                n += 1
+                continue
+            ep = d.get("epoch") or 0
+            if ep >= cut:
+                n += 1
+except FileNotFoundError:
+    pass
+print(n)
+PY
+}
+
+auth_walled() {
+  local f="$1"
+  grep -qiE 'OAuth session expired|Failed to authenticate|not logged in|Please run /login|HTTP 429|rate limit|usage limit|quota' "$f"
+}
+
+extract_actions() {
+  python3 - "$1" <<'PY'
+import re, sys
+text = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+m = re.search(r"```(?:bash|sh)?\n(.*?)```", text, re.S)
+if not m:
+    sys.exit(0)
+print(m.group(1).rstrip())
+PY
+}
+
+# --- fleet-ops#2517: fabricated-transcript sanity gate ---------------------
+# Live case 2026-08-31T10:30:37Z: Opus emitted literal `<invoke name="Bash">`
+# blocks and invented JSON tool results, with rc=0 and a final `VERDICT:`
+# line. The previous gate accepted any text whose first VERDICT line parsed,
+# so a fabricated transcript could reach the action allowlist (and execute
+# the emitted shell block).
+#
+# This gate rejects output containing tool-call syntax — even when a
+# `VERDICT:` line is present — so the action allowlist NEVER sees a
+# fabricated transcript. The detection is text-only, byte-cheap (two
+# `grep -F` calls against the captured output), and rejects on either
+# marker:
+#   - `<invoke`     — Claude Code's tool-call opener (XML-style)
+#   - `<parameter`  — Claude Code's tool-call parameter opener
+# Either alone is sufficient; both together is the common shape but
+# either alone has been observed.
+#
+# The integration point sits AFTER VERDICT detection (so the post-VERDICT
+# reason text is irrelevant) and BEFORE action extraction (so a fabricated
+# block can never reach the allowlist). Coverage is attempted via fallback
+# dispatch; the unit exits 0 with a distinct metric so the duty officer's
+# "failed units must be EMPTY" invariant holds and the run shows up as
+# covered, not silent. The FABRICATED_TRANSCRIPT journal entry is the
+# receipt the next duty officer reads.
+fabricated_transcript_gate() {
+  local file="$1"
+  # Both markers count. Order matters only for the diagnostic line.
+  if grep -qF '<invoke' "$file" 2>/dev/null; then
+    printf 'FABRICATED marker=<invoke\n'
+    return 0
+  fi
+  if grep -qF '<parameter' "$file" 2>/dev/null; then
+    printf 'FABRICATED marker=<parameter\n'
+    return 0
+  fi
+  printf 'OK\n'
+  return 1
+}
+
+# counter persistence — the FABRICATED_TRANSCRIPT count is a lifetime
+# counter on the prom textfile (one increment per detected run). It
+# survives reboots because the textfile lives under /var/lib/prometheus.
+fabricated_transcript_bump() {
+  local current=0
+  if [[ -f "$TEXTFILE" ]]; then
+    current="$(awk '/^fleet_opus_heartbeat_fabricated_transcript_total /{print $2}' "$TEXTFILE" || true)"
+    current="${current:-0}"
+  fi
+  if ! [[ "$current" =~ ^[0-9]+$ ]]; then
+    current=0
+  fi
+  printf '%s\n' "$((current + 1))"
+}
+
+# queue_frozen — fleet-ops#1453, fleet-ops#2711.
+# Reads the latest snapshot and decides whether the agent-ready queue is
+# actually frozen. The narrow direct-dispatch lever
+# (pi-systemd-run --unit repair-*) is permitted ONLY in this state; under
+# any other condition it MUST be rejected so the heartbeat's only unfrozen
+# lever remains `gh issue create` (which routes work through intake).
+#
+# Frozen iff:
+#   waste.dispatches_last_2h <= OPUS_HB_FROZEN_DISPATCHES (default 1)
+#   AND
+#   claims_last_2h          <= OPUS_HB_FROZEN_CLAIMS     (default 1)
+#   AND
+#   fleet.ready_work         >  OPUS_HB_FROZEN_READY      (default 50)
+#
+# fleet-ops#2711: dispatches_last_2h measures the alert-repair pipeline
+# (DISPATCH events in alert-repair/actions.log); claims_last_2h measures
+# the pi-issue pipeline (claim records in ready-work-claims.log). They
+# are independent streams. The earlier gate (dispatches + ready only)
+# fired a false-positive "frozen queue" when alert-repair was idle but
+# pi-issue was alive — the live snapshot at 2026-09-01T21:30:13Z showed
+# exactly that shape (dispatches=0, claims=30, ready=31) and would have
+# triggered the lever as soon as ready_work crossed 50, despite pi-issue
+# dispatching claims every minute. Both pipelines must be silent before
+# the lever fires: a zero-dispatch/nonzero-claim window is HEALTHY
+# (alert-repair idle, pi-issue alive) and must NOT be classified frozen.
+#
+# Returns 0 = frozen, 1 = not frozen (or snapshot unreadable). The narrow
+# lever does NOT activate just because work is backing up; a working queue
+# with steady claims (or steady dispatches) is the healthy case and must
+# keep its only route through intake. Three checks bound the lever to
+# genuine queue death across BOTH pipelines.
+queue_frozen() {
+  python3 - "$SNAP" <<'PY'
+import json, sys, os
+frozen_dispatches = int(os.environ.get("OPUS_HB_FROZEN_DISPATCHES", "1"))
+frozen_claims     = int(os.environ.get("OPUS_HB_FROZEN_CLAIMS", "1"))
+frozen_ready      = int(os.environ.get("OPUS_HB_FROZEN_READY", "50"))
+path = sys.argv[1]
+try:
+    with open(path, encoding="utf-8") as fh:
+        snap = json.loads(fh.read())
+except (FileNotFoundError, json.JSONDecodeError, OSError):
+    sys.exit(1)
+fleet = snap.get("fleet") or {}
+waste = snap.get("waste") or {}
+try:
+    ready = float(fleet.get("ready_work") or 0)
+except (TypeError, ValueError):
+    ready = 0.0
+try:
+    dispatch = float(waste.get("dispatches_last_2h") or 0)
+except (TypeError, ValueError):
+    dispatch = 0.0
+# fleet-ops#2711: claims live at top-level claims_last_2h.n (canonical,
+# written by opus-heartbeat-gather) with a flat.claims_last_2h fallback
+# for fixtures that only carry the flat form. Either suffices; missing
+# is treated as 0 (snapshot unreadable in this field → not frozen on
+# this dimension alone, the other two still gate).
+claims_obj = snap.get("claims_last_2h") or {}
+claims_n = claims_obj.get("n") if isinstance(claims_obj, dict) else None
+flat = snap.get("flat") or {}
+if claims_n is None:
+    try:
+        claims_n = float(flat.get("claims_last_2h") or 0)
+    except (TypeError, ValueError):
+        claims_n = 0.0
+else:
+    try:
+        claims_n = float(claims_n)
+    except (TypeError, ValueError):
+        claims_n = 0.0
+if (dispatch <= frozen_dispatches
+        and claims_n <= frozen_claims
+        and ready > frozen_ready):
+    sys.exit(0)
+sys.exit(1)
+PY
+}
+
+allowlisted() {
+  local line="$1"
+  case "$line" in
+    ""|\#*) return 0 ;;
+  esac
+  # gh issue create/comment only
+  if [[ "$line" =~ ^gh[[:space:]]+issue[[:space:]]+(create|comment)[[:space:]] ]]; then
+    return 0
+  fi
+  # start a concrete user unit (not a slice, not restart, not the
+  # escalation template — starting unit-escalation@ from this wrapper
+  # is recursion; first proven run 2026-08-27 did that and it is banned)
+  if [[ "$line" =~ ^systemctl[[:space:]]+--user[[:space:]]+start[[:space:]]+[A-Za-z0-9:@_.-]+\.(service|timer)$ ]]; then
+    if [[ "$line" == *unit-escalation@* ]]; then
+      return 1
+    fi
+    return 0
+  fi
+  # repair packet dispatch — fleet-ops#1453 narrow direct-dispatch lever.
+  # Only `--unit repair-*` is permitted, and ONLY when queue_frozen() is
+  # true. When the queue is alive (the common case), this branch must
+  # return 1 so the heartbeat's only unfrozen action remains
+  # `gh issue create`; otherwise the heartbeat keeps feeding the very
+  # intake queue it is supposed to monitor (the live #1453 symptom).
+  if [[ "$line" =~ ^pi-systemd-run[[:space:]]+--unit[[:space:]]+repair- ]]; then
+    if [[ "$line" == *nohup* ]]; then
+      return 1
+    fi
+    if queue_frozen; then
+      return 0
+    fi
+    return 1
+  fi
+  # Any other pi-systemd-run shape (non-repair- prefix) is FORBIDDEN by the
+  # narrow-lever rule. The live pre-#1453 allowlist accepted any
+  # `pi-systemd-run --unit <anything>`, which is the loophole that lets a
+  # judge reach for any seat directly. The fleet-ops#1453 fix narrows it:
+  # only `--unit repair-*` clears the gate, and only when the queue is
+  # frozen. Otherwise the heartbeat's lever is `gh issue create` (the
+  # intake path).
+  if [[ "$line" =~ ^pi-systemd-run[[:space:]] ]]; then
+    return 1
+  fi
+  # boundary append to the one sanctioned file
+  if [[ "$line" == *"/home/nish/workspaces/agent-state/NISH-ESCALATIONS.md"* ]] && [[ "$line" == *">>"* ]]; then
+    return 0
+  fi
+  return 1
+}
+
+run_actions() {
+  local block="$1"
+  local n=0
+  local skipped=0
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [ -z "$line" ] && continue
+    [[ "$line" == \#* ]] && continue
+    if ! allowlisted "$line"; then
+      act "SKIP-NOT-ALLOWLISTED: $line"
+      skipped=$((skipped + 1))
+      continue
+    fi
+    act "EXEC: $line"
+    set +e
+    # Wrap every action with `timeout` so a hung `systemctl --user start`
+    # or stuck `gh issue create` cannot hold the wrapper past its watchdog.
+    # SIGTERM first (gives the action a chance to clean up), SIGKILL after
+    # `--kill-after`. rc=124 is the conventional timeout signal.
+    #
+    # GNU coreutils 9.4 `timeout` accepts fractional seconds (1.5s) but
+    # NOT the `ms` suffix. Translate user-supplied `*ms` to integer
+    # seconds so OPUS_HB_ACTION_KILL_AFTER=300ms does not silently fail
+    # with rc=125 (timeout: invalid time interval).
+    local KA="$ACTION_KILL_AFTER"
+    if [[ "$KA" == *ms ]]; then
+      local ms="${KA%ms}"
+      KA="$(( (ms + 999) / 1000 ))s"
+    fi
+    timeout --signal=TERM --kill-after="$KA" "$ACTION_TIMEOUT" \
+      bash -c "$line" >>"$RUNLOG" 2>&1
+    local rc=$?
+    set -e
+    if [ "$rc" -eq 124 ]; then
+      act "EXEC-RC=$rc TIMEOUT=${ACTION_TIMEOUT} line=$line"
+    else
+      act "EXEC-RC=$rc"
+    fi
+    n=$((n + 1))
+  done <<<"$block"
+  printf '%s %s\n' "$n" "$skipped"
+}
+
+# --- self-check flag (fleet-ops#1453) ---------------------------------------
+# The narrow direct-dispatch lever (pi-systemd-run --unit repair-*) is the
+# ONLY way the heartbeat can dispatch a packet itself, and it must only be
+# allowed when the queue is frozen. The --check-allowlist flag lets a test
+# drive the gate with a mocked snapshot and an arbitrary command line; exit 0
+# = allowed, exit 1 = SKIP-NOT-ALLOWLISTED. The flag short-circuits BEFORE
+# gather so tests do not need a live Prometheus, seat ledger, or Opus run.
+# Defined here so allowlisted() and queue_frozen() are already in scope.
+if [ "${1:-}" = "--check-allowlist" ]; then
+  shift
+  TEST_LINE="${1:-}"
+  if [ -z "$TEST_LINE" ]; then
+    echo "opus-heartbeat: --check-allowlist requires a command line argument" >&2
+    exit 2
+  fi
+  if [ ! -s "$SNAP" ]; then
+    echo "opus-heartbeat: --check-allowlist needs a snapshot at $SNAP (run gather first)" >&2
+    exit 1
+  fi
+  if allowlisted "$TEST_LINE"; then
+    if [[ "$TEST_LINE" =~ ^pi-systemd-run[[:space:]]+--unit[[:space:]]+repair- ]]; then
+      printf 'ALLOW queue_frozen=1 line=%s\n' "$TEST_LINE"
+    else
+      printf 'ALLOW line=%s\n' "$TEST_LINE"
+    fi
+    exit 0
+  else
+    if [[ "$TEST_LINE" =~ ^pi-systemd-run[[:space:]]+--unit[[:space:]]+repair- ]] \
+       && ! queue_frozen; then
+      printf 'SKIP-QUEUE-NOT-FROZEN line=%s\n' "$TEST_LINE"
+    else
+      printf 'SKIP-NOT-ALLOWLISTED line=%s\n' "$TEST_LINE"
+    fi
+    exit 1
+  fi
+fi
+
+# --- fleet-ops#1382: --print-prompt self-check ------------------------------
+# Lets a test assert the prompt assembly (static prompt + MODE note + snapshot
+# path) WITHOUT running Opus. Short-circuits before gather so no live
+# Prometheus/seat ledger/Opus is needed. Prints the assembled prompt text to
+# stdout and exits 0. The snapshot is read from $SNAP if present; otherwise a
+# placeholder line is emitted so the test can assert the MODE note shape.
+if [ "${1:-}" = "--print-prompt" ]; then
+  if [ ! -s "$PROMPT_FILE" ]; then
+    echo "opus-heartbeat: --print-prompt needs the judge prompt at $PROMPT_FILE" >&2
+    exit 78
+  fi
+  mode_note=""
+  if [ "$THOROUGH" = "1" ]; then
+    mode_note=$'\n\nMODE: THOROUGH — this is the 6-hourly deep pass. The snapshot carries a "thorough" object with the full deep battery (every rotation slot) and a 24h trend window. You may use up to 60 output lines. Cover the deep-battery slots in your FAULTS list, not just the light 2h gauges.'
+  fi
+  snap_block="(snapshot omitted — no snapshot at $SNAP)"
+  if [ -s "$SNAP" ]; then
+    snap_block="$(cat "$SNAP")"
+  fi
+  printf '%s%s\n\nSNAPSHOT (JSON, unedited):\n%s\n' "$(cat "$PROMPT_FILE")" "$mode_note" "$snap_block"
+  exit 0
+fi
+
+# --- fleet-ops#2517: --check-fabricated-gate self-check --------------------
+# Lets a test assert the output sanity gate end-to-end with a fake
+# Claude output file. Short-circuits before gather so no live
+# Prometheus/seat ledger/Opus is needed. Exits 0 on FABRICATED, 1 on
+# OK, 2 on bad usage. The flag is the durable way to lock the gate; the
+# production integration sits between VERDICT detection and action
+# extraction (so a fabricated transcript can never reach the allowlist).
+# Note: gate function returns 0 on FABRICATED (gate fired) and 1 on OK
+# (gate did NOT fire) — the rc mirrors the gate's outcome, not bash's
+# truthiness, so a test can assert "rc=1 means clean" without parsing
+# stdout. `|| rc=$?` swallows the set -e abort on the substitution's
+# non-zero rc the same way --check-allowlist does.
+if [ "${1:-}" = "--check-fabricated-gate" ]; then
+  shift
+  TEST_FILE="${1:-}"
+  if [ -z "$TEST_FILE" ]; then
+    echo "opus-heartbeat: --check-fabricated-gate requires a file argument" >&2
+    exit 2
+  fi
+  if [ ! -r "$TEST_FILE" ]; then
+    echo "opus-heartbeat: --check-fabricated-gate cannot read $TEST_FILE" >&2
+    exit 2
+  fi
+  # The gate function prints FABRICATED/OK to stdout. Capture verbatim.
+  # Save the gate's rc BEFORE the `|| true` swallows it for set -e.
+  set +e
+  out="$(fabricated_transcript_gate "$TEST_FILE")"
+  rc=$?
+  set -e
+  printf '%s\n' "$out"
+  exit $rc
+fi
+
+# --- fleet-ops#2517: --run-fabricated-scenario self-check -------------------
+# Lets a test drive the post-judge integration (gate + journal + metric
+# + exit code) with a fake Claude output file. Skips gather AND Opus so
+# no live Prometheus / seat ledger / Opus is needed, but executes the
+# same dispatch fallback / journal write / metrics write that the real
+# run does. The fallback script is also a stub here (we replace
+# FALLBACK with `true`) so the test does not actually spin up Pi.
+# Exits the same way the real run would (0 on gate fires, 0 on clean
+# pass-through). This is the proof the gate is wired end-to-end.
+if [ "${1:-}" = "--run-fabricated-scenario" ]; then
+  shift
+  TEST_FILE="${1:-}"
+  if [ -z "$TEST_FILE" ]; then
+    echo "opus-heartbeat: --run-fabricated-scenario requires a file argument" >&2
+    exit 2
+  fi
+  if [ ! -r "$TEST_FILE" ]; then
+    echo "opus-heartbeat: --run-fabricated-scenario cannot read $TEST_FILE" >&2
+    exit 2
+  fi
+  mkdir -p "$STATE"
+  touch "$JOURNAL" "$ACTIONS_LOG" "$RUNLOG"
+  # Replace the fallback with a no-op so we do not actually spin up Pi.
+  FALLBACK=true
+  CLAUDE_OUT="$TEST_FILE"
+  # SNAP may be absent in scenario tests; default 0 bytes in that case.
+  if [ -s "$SNAP" ]; then
+    SNAP_BYTES=$(wc -c <"$SNAP")
+  else
+    SNAP_BYTES=0
+  fi
+  CLAUDE_RC=0
+  # Mimic the production integration block.
+  set +e
+  gate_out="$(fabricated_transcript_gate "$CLAUDE_OUT")"
+  gate_rc=$?
+  set -e
+  if [ "$gate_rc" -eq 0 ]; then
+    log "FABRICATED-TRANSCRIPT gate=$gate_out"
+    act "FALLBACK-DISPATCH reason=fabricated-transcript (scenario test)"
+    "$FALLBACK" "$SNAP" 2>/dev/null || true
+    ft_count="$(fabricated_transcript_bump)"
+    log "DONE verdict=FABRICATED_TRANSCRIPT covered=fallback ft_total=$ft_count (scenario)"
+    python3 - <<PY
+import json, time
+from pathlib import Path
+p = Path("$JOURNAL")
+rec = {"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "epoch": int(time.time()),
+       "verdict": "FABRICATED_TRANSCRIPT", "claude_rc": 0,
+       "snap_bytes": $SNAP_BYTES, "marker": "$gate_out", "scenario": 1}
+p.open("a").write(json.dumps(rec)+"\n")
+PY
+    rotate_journal
+    last_run="$(date +%s)"
+    tmp="$(mktemp -p "$(dirname "$TEXTFILE")" .opus-hb.XXXXXX)"
+    cat >"$tmp" <<EOF
+# HELP fleet_opus_heartbeat_last_run Unix epoch of last Opus heartbeat that produced a verdict.
+# TYPE fleet_opus_heartbeat_last_run gauge
+fleet_opus_heartbeat_last_run $last_run
+# HELP fleet_opus_heartbeat_runs_24h Opus heartbeat runs in the trailing 24h (journal lines).
+# TYPE fleet_opus_heartbeat_runs_24h gauge
+fleet_opus_heartbeat_runs_24h $(runs_24h)
+# HELP fleet_opus_heartbeat_verdict 1=SMOOTH 0=FAULTS -1=judge-failed -2=fabricated-transcript
+# TYPE fleet_opus_heartbeat_verdict gauge
+fleet_opus_heartbeat_verdict -2
+# HELP fleet_opus_heartbeat_rc wrapper exit code of the last run.
+# TYPE fleet_opus_heartbeat_rc gauge
+fleet_opus_heartbeat_rc 0
+# HELP fleet_opus_heartbeat_fabricated_transcript_total Lifetime count of runs the sanity gate rejected for tool-call syntax. Loud signal that Opus emitted a fabricated transcript that the dispatch path would otherwise execute. fleet-ops#2517.
+# TYPE fleet_opus_heartbeat_fabricated_transcript_total counter
+fleet_opus_heartbeat_fabricated_transcript_total $ft_count
+EOF
+    chmod 644 "$tmp"
+    mv -f "$tmp" "$TEXTFILE"
+    printf 'SCENARIO-FABRICATED rc=0 marker=%s ft_total=%s\n' "$gate_out" "$ft_count"
+    exit 0
+  fi
+  # Clean path — just print OK and exit 0; the test asserts the absence
+  # of FABRICATED_TRANSCRIPT in the journal and the absence of the
+  # counter metric in the textfile.
+  printf 'SCENARIO-OK\n'
+  exit 0
+fi
+
+# --- gather -----------------------------------------------------------------
+log "GATHER start"
+if ! python3 "$GATHER" >"$SNAP.tmp"; then
+  log "GATHER fail"
+  echo "GATHER failed" >&2
+  write_metrics 0 -1 "$(runs_24h)" 1
+  exit 1
+fi
+mv -f "$SNAP.tmp" "$SNAP"
+SNAP_BYTES=$(wc -c <"$SNAP")
+log "GATHER ok bytes=$SNAP_BYTES"
+if [ -f "$SNAP" ]; then
+  cp -f "$SNAP" "$PREV.next"
+fi
+
+# --- judge ------------------------------------------------------------------
+if [ ! -s "$PROMPT_FILE" ]; then
+  log "PROMPT-MISSING $PROMPT_FILE"
+  write_metrics 0 -1 "$(runs_24h)" 78
+  exit 78
+fi
+
+PROMPT_TEXT="$(cat "$PROMPT_FILE")"
+# fleet-ops#1382: append the MODE: THOROUGH note for the deep pass so the
+# judge knows to cover the deep-battery slots and may use up to 60 lines.
+if [ "$THOROUGH" = "1" ]; then
+  PROMPT_TEXT="$PROMPT_TEXT
+
+MODE: THOROUGH — this is the 6-hourly deep pass. The snapshot carries a \"thorough\" object with the full deep battery (every rotation slot) and a 24h trend window. You may use up to 60 output lines. Cover the deep-battery slots in your FAULTS list, not just the light 2h gauges."
+fi
+PROMPT_TEXT="$PROMPT_TEXT
+
+SNAPSHOT (JSON, unedited):
+$(cat "$SNAP")
+"
+
+log "OPUS start model=$MODEL"
+# Proven headless flags (fleet2 wrapper + live PONG 2026-08-27): -p, --model,
+# --dangerously-skip-permissions. --tools "" does NOT reliably disable tools
+# in Claude Code 2.1.236 (model still emits <invoke> blocks). Use
+# --disallowed-tools with explicit list instead. --effort/--output-format hung
+# a 90s ping with no stdout; do not use them here.
+set +e
+timeout --signal=TERM --kill-after=30s "$BURN_GUARD" \
+  /usr/bin/claude --model "$MODEL" --dangerously-skip-permissions \
+  --disallowed-tools "Bash,Edit,Read,Write,Glob,Grep,Task,WebFetch,WebSearch" \
+  -p "$PROMPT_TEXT" >"$CLAUDE_OUT" 2>"$STATE/last-claude.err"
+CLAUDE_RC=$?
+set -e
+cat "$STATE/last-claude.err" >>"$RUNLOG" || true
+log "OPUS rc=$CLAUDE_RC bytes=$(wc -c <"$CLAUDE_OUT")"
+
+VERDICT="UNKNOWN"
+if grep -qiE '^[[:space:]]*VERDICT:[[:space:]]*SMOOTH' "$CLAUDE_OUT"; then
+  VERDICT="SMOOTH"
+elif grep -qiE '^[[:space:]]*VERDICT:[[:space:]]*FAULTS' "$CLAUDE_OUT"; then
+  VERDICT="FAULTS"
+fi
+printf '%s\n' "$VERDICT" >"$VERDICT_FILE"
+log "VERDICT=$VERDICT"
+
+# Auth/quota wall: fail loud, dispatch fallback, do NOT pretend Opus ran.
+if [ "$CLAUDE_RC" -ne 0 ] || [ "$VERDICT" = "UNKNOWN" ]; then
+  if auth_walled "$CLAUDE_OUT" || auth_walled "$STATE/last-claude.err"; then
+    log "AUTH-OR-QUOTA-WALL rc=$CLAUDE_RC"
+    act "FALLBACK-DISPATCH reason=auth-or-quota"
+    "$FALLBACK" "$SNAP" || true
+    python3 - <<PY
+import json, time
+from pathlib import Path
+p = Path("$JOURNAL")
+rec = {"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "epoch": int(time.time()),
+       "verdict": "AUTH_WALL", "claude_rc": $CLAUDE_RC, "snap_bytes": $SNAP_BYTES}
+p.open("a").write(json.dumps(rec)+"\n")
+PY
+    rotate_journal
+    # Do not stamp last_run as a successful Opus verdict — stale/absent rail must see the hole.
+    write_metrics 0 -1 "$(runs_24h)" 75
+    [ -f "$PREV.next" ] && mv -f "$PREV.next" "$PREV"
+    exit 75
+  fi
+fi
+
+if [ "$CLAUDE_RC" -eq 124 ] || [ "$CLAUDE_RC" -eq 137 ]; then
+  log "BURN-GUARD"
+  write_metrics 0 -1 "$(runs_24h)" 124
+  [ -f "$PREV.next" ] && mv -f "$PREV.next" "$PREV"
+  exit 124
+fi
+
+if [ "$VERDICT" = "UNKNOWN" ]; then
+  log "NO-VERDICT rc=$CLAUDE_RC — fallback"
+  act "FALLBACK-DISPATCH reason=no-verdict"
+  "$FALLBACK" "$SNAP" || true
+  python3 - <<PY
+import json, time
+from pathlib import Path
+p = Path("$JOURNAL")
+rec = {"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "epoch": int(time.time()),
+       "verdict": "NO_VERDICT", "claude_rc": $CLAUDE_RC, "snap_bytes": $SNAP_BYTES}
+p.open("a").write(json.dumps(rec)+"\n")
+PY
+  rotate_journal
+  write_metrics 0 -1 "$(runs_24h)" 70
+  [ -f "$PREV.next" ] && mv -f "$PREV.next" "$PREV"
+  exit 70
+fi
+
+# --- fleet-ops#2517: fabricated-transcript gate ----------------------------
+# Even with a clean VERDICT line, if the output contains tool-call syntax
+# the model fabricated a transcript. The live case at 2026-08-31T10:30:37Z
+# had `<invoke name="Bash">` blocks AND a final `VERDICT:` line; the old
+# gate accepted it, the action block contained a `gh issue list` line, and
+# the wrapper would have executed that allowlisted command against
+# invented outputs. Reject BEFORE action extraction: dispatch fallback
+# for coverage, log FABRICATED_TRANSCRIPT, exit 0 (covered, not failed)
+# so the duty officer's "failed units must be EMPTY" invariant holds.
+# The FABRICATED_TRANSCRIPT journal entry + lifetime counter on the
+# textfile are the receipts; the next duty officer can audit the count.
+# Capture the gate rc explicitly under set +e so a non-zero (clean) rc
+# does not trip set -e; the if-condition then fires on rc=0 (FABRICATED).
+set +e
+gate_out="$(fabricated_transcript_gate "$CLAUDE_OUT")"
+gate_rc=$?
+set -e
+if [ "$gate_rc" -eq 0 ]; then
+  log "FABRICATED-TRANSCRIPT gate=$gate_out"
+  act "FALLBACK-DISPATCH reason=fabricated-transcript"
+  "$FALLBACK" "$SNAP" || true
+  ft_count="$(fabricated_transcript_bump)"
+  python3 - <<PY
+import json, time
+from pathlib import Path
+p = Path("$JOURNAL")
+rec = {"ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "epoch": int(time.time()),
+       "verdict": "FABRICATED_TRANSCRIPT", "claude_rc": $CLAUDE_RC,
+       "snap_bytes": $SNAP_BYTES, "marker": "$gate_out"}
+p.open("a").write(json.dumps(rec)+"\n")
+PY
+  rotate_journal
+  # Stamp the success epoch so the stale/absent rail still ticks
+  # (coverage was real), but record rc=0 with verdict=-1 in the
+  # fleet_opus_heartbeat_verdict gauge so dashboards see the gate fired.
+  # The FABRICATED_TRANSCRIPT counter on the textfile is the loud signal
+  # the next duty officer reads; rc=0 means the unit does NOT sit failed.
+  tmp="$(mktemp -p "$(dirname "$TEXTFILE")" .opus-hb.XXXXXX)"
+  last_block=""
+  last_run="$(date +%s)"
+  last_block="# HELP fleet_opus_heartbeat_last_run Unix epoch of last Opus heartbeat that produced a verdict.
+# TYPE fleet_opus_heartbeat_last_run gauge
+fleet_opus_heartbeat_last_run $last_run"
+  cat >"$tmp" <<EOF
+${last_block}
+# HELP fleet_opus_heartbeat_runs_24h Opus heartbeat runs in the trailing 24h (journal lines).
+# TYPE fleet_opus_heartbeat_runs_24h gauge
+fleet_opus_heartbeat_runs_24h $(runs_24h)
+# HELP fleet_opus_heartbeat_verdict 1=SMOOTH 0=FAULTS -1=judge-failed -2=fabricated-transcript
+# TYPE fleet_opus_heartbeat_verdict gauge
+fleet_opus_heartbeat_verdict -2
+# HELP fleet_opus_heartbeat_rc wrapper exit code of the last run.
+# TYPE fleet_opus_heartbeat_rc gauge
+fleet_opus_heartbeat_rc 0
+# HELP fleet_opus_heartbeat_fabricated_transcript_total Lifetime count of runs the sanity gate rejected for tool-call syntax. Loud signal that Opus emitted a fabricated transcript that the dispatch path would otherwise execute. fleet-ops#2517.
+# TYPE fleet_opus_heartbeat_fabricated_transcript_total counter
+fleet_opus_heartbeat_fabricated_transcript_total $ft_count
+EOF
+  chmod 644 "$tmp"
+  mv -f "$tmp" "$TEXTFILE"
+  [ -f "$PREV.next" ] && mv -f "$PREV.next" "$PREV"
+  log "DONE verdict=FABRICATED_TRANSCRIPT covered=fallback ft_total=$ft_count"
+  exit 0
+fi
+
+# --- actions ----------------------------------------------------------------
+ACTION_N=0
+ACTION_SKIP=0
+if [ "$VERDICT" = "FAULTS" ]; then
+  BLOCK="$(extract_actions "$CLAUDE_OUT" || true)"
+  if [ -n "${BLOCK:-}" ]; then
+    read -r ACTION_N ACTION_SKIP <<<"$(run_actions "$BLOCK")"
+  else
+    act "NO-ACTIONS-BLOCK verdict=FAULTS"
+  fi
+fi
+
+VERDICT_N=1
+[ "$VERDICT" = "FAULTS" ] && VERDICT_N=0
+
+python3 - <<PY
+import json, time
+from pathlib import Path
+p = Path("$JOURNAL")
+rec = {
+  "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+  "epoch": int(time.time()),
+  "mode": "$([ "$THOROUGH" = "1" ] && echo thorough || echo light)",
+  "verdict": "$VERDICT",
+  "claude_rc": $CLAUDE_RC,
+  "snap_bytes": $SNAP_BYTES,
+  "actions_exec": $ACTION_N,
+  "actions_skipped": $ACTION_SKIP,
+}
+p.open("a").write(json.dumps(rec)+"\n")
+PY
+rotate_journal
+write_metrics "$(date +%s)" "$VERDICT_N" "$(runs_24h)" 0
+[ -f "$PREV.next" ] && mv -f "$PREV.next" "$PREV"
+log "DONE verdict=$VERDICT actions=$ACTION_N skipped=$ACTION_SKIP"
+exit 0
