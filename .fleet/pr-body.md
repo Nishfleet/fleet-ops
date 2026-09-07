@@ -86,6 +86,15 @@ OK: fleet-ops#455 resilience drill acceptance pass
 EXIT: 0
 ```
 
+Gate fixes (this PR, after rebase onto #4331):
+- `bin/fleet-who-stopped`: replaced the global-IFS join with a local
+  `join_by` helper — clears semgrep `bash.lang.security.ifs-tampering`.
+- `bin/fleet-escalation-canary`: split the standards-drift arrays with
+  `read -ra` instead of unquoted word-splitting — clears shellcheck SC2206
+  (pre-existing on main, blocking the required Shellcheck gate).
+- Rebased onto latest main to pick up #4331 (research-sweep shellcheck +
+  gate-integrity isolated-tree host lock).
+
 ## run-proof
 
 - `tests/pi-detached-deadman.test.sh` — new, runs in the P14 `tests:` job
