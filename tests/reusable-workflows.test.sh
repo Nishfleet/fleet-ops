@@ -109,4 +109,22 @@ bash "$here/p11b-pending-or-callable.test.sh"
 # it stays in the P14 reachable set without a workflow edit.
 bash "$here/stale-pending-or-callable.test.sh"
 
+# fleet-ops#4294: the docs-only fast path must not treat .github/** as docs.
+# The classifier regex is in reusable-pr-checks.yml; pin its behaviour here so
+# the regression (^.git matching .github/**) cannot recur invisibly.
+classifier_pattern=$(grep -oP '\^\\\.git[^"'"'"']*' "$pr_checks" | head -1)
+if [[ "$classifier_pattern" != '^\.git/' ]]; then
+  fail "docs-only classifier must use '^\\.git/' (trailing slash) to avoid treating .github/** as docs (fleet-ops#4294); got '$classifier_pattern'"
+fi
+ok "docs-only classifier uses '^\\.git/' (fleet-ops#4294)"
+
+# Live repro: .github/workflows/ci.yml must classify as code, docs/x.md as docs.
+if ! printf '.github/workflows/ci.yml\n' | grep -Eiv '\.(md|mdx|txt|rst|csv)$|^docs/|^\.lane/|^README|^CHANGELOG|^LICENSE|^\.git/' | grep -q .; then
+  fail ".github/workflows/ci.yml must classify as code (fleet-ops#4294)"
+fi
+if printf 'docs/x.md\n' | grep -Eiv '\.(md|mdx|txt|rst|csv)$|^docs/|^\.lane/|^README|^CHANGELOG|^LICENSE|^\.git/' | grep -q .; then
+  fail "docs/x.md must still classify as docs (fleet-ops#4294)"
+fi
+ok ".github/** classifies as code, docs/** as docs (fleet-ops#4294)"
+
 echo "OK: reusable workflow set is shape-locked"

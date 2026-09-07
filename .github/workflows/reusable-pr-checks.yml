@@ -102,7 +102,7 @@ jobs:
             exit 0
           fi
           if git diff --name-only "$base" "${HEAD}" \
-            | grep -Eiv '\.(md|mdx|txt|rst|csv)$|^docs/|^\.lane/|^README|^CHANGELOG|^LICENSE|^\.git' \
+            | grep -Eiv '\.(md|mdx|txt|rst|csv)$|^docs/|^\.lane/|^README|^CHANGELOG|^LICENSE|^\.git/' \
             | grep -q .; then
             echo "code=true" >> "$GITHUB_OUTPUT"
           else
