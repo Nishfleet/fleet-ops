@@ -3888,3 +3888,13 @@ bash "$here/seat-spawn-corpse.test.sh" || fail "seat-spawn-corpse tests failed"
 # add a P14 line in .github/workflows/ci.yml; this file is the listed CI host
 # for the new phantom-.out-suffix bench test.
 bash "$here/seat-phantom-out-suffix.test.sh" || fail "seat-phantom-out-suffix tests failed"
+
+# fleet-ops#4271 (session-waste #4260): a seat cannot hold cap > 0 while its
+# trailing-7-day yield is 0 PRs over >= 20 picks. Workers cannot add a P14
+# line in .github/workflows/ci.yml; this file is the listed CI host for the
+# new zero-yield cap invariant test. The test reads the LIVE config/seat-caps.json
+# (it honors SEAT_CAPS_JSON only so a replay drill can point it at a fixture);
+# drop the scratch SEAT_CAPS_JSON this file set above so the hosted test reads
+# the live config.
+unset SEAT_CAPS_JSON
+bash "$here/seat-caps-zero-yield.test.sh" || fail "seat-caps-zero-yield tests failed"
