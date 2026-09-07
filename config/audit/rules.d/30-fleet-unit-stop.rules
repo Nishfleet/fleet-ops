@@ -25,3 +25,19 @@
 -w /usr/bin/kill      -p x -F auid=1000 -k fleet-unit-stop
 -w /bin/systemctl     -p x -F auid=1000 -k fleet-unit-stop
 -w /bin/kill          -p x -F auid=1000 -k fleet-unit-stop
+# =============================================================================
+# fleet-ops#4266 — raw systemd-run lint trail (canary block 13)
+# =============================================================================
+# The escalation canary's detached-work lint (block 13) reads the audit
+# trail of systemd-run execve by auid=1000 to catch a raw `systemd-run
+# --user` transient created WITHOUT --property=OnFailure (a clean stop of
+# such a unit dies silently — the exact #4266 gap). pi-systemd-run always
+# adds the OnFailure property, so a compliant execve carries it; a raw one
+# does not. Watch the systemd-run binary (and its /bin symlink) so the
+# lint has a trail to query. Key fleet-unit-run is distinct from the
+# fleet-unit-stop key above (who-stopped) so the two queries stay clean.
+#
+# Query: ausearch -k fleet-unit-run -ts yesterday -i  (canary block 13)
+# =============================================================================
+-w /usr/bin/systemd-run -p x -F auid=1000 -k fleet-unit-run
+-w /bin/systemd-run     -p x -F auid=1000 -k fleet-unit-run

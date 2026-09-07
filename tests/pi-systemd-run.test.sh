@@ -195,6 +195,12 @@ bash "$here/pi-salvage-worktree.test.sh" || fail "pi-salvage-worktree tests fail
 # a workflow edit (nishfleet-worker cannot push .github/workflows/**).
 bash "$here/git-mirror-update.test.sh" || fail "git-mirror-update tests failed"
 
+# fleet-ops#4266: nested so hosted CI runs the pi-systemd-run dead-man
+# verdict-hook tests without a workflow edit (nishfleet-worker cannot push
+# .github/workflows/**). Hermetic: fake escalation writer, fake who-stopped,
+# scratch textfile, unset-URL HC env.
+bash "$here/pi-detached-deadman.test.sh" || fail "pi-detached-deadman tests failed"
+
 # ============================================================================
 # Dispatch ledger (fleet-ops#1009)
 # ============================================================================
