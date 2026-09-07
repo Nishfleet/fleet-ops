@@ -312,6 +312,16 @@ jobs:
         # behavior so a reverted merge can no longer leave its issues closed.
         bash tests/auto-revert-required-check-gate.test.sh
         bash tests/reopen-reverted-issues.test.sh
+        # fleet-ops#4396 (closes #3647 #3648 #3649 #3654): four suites that
+        # already existed and passed on main but were never in the P14
+        # verify-command list, so a regression in any of them could land
+        # unseen. They sat blocked only because the worker App token cannot
+        # push .github/workflows/**; this is an admin-lane push, not a Nish
+        # decision. All four verified rc=0 on origin/main 46cd075 before add.
+        bash tests/heartbeat-watchman.test.sh
+        bash tests/pi-packet-run.test.sh
+        bash tests/intake-reconcile.test.sh
+        bash tests/exec-review-prompt.test.sh
         # fleet-ops#407: prove a real end-to-end run before shipping new
         # units/timers/workflows. The drill (test) always runs; the live
         # PR-body check only runs for pull_request events and exits 0/SKIP
