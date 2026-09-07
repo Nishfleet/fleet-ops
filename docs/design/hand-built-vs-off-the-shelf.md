@@ -39,7 +39,7 @@ Live snapshot 2026-09-07:
 | 6 | seat prom writers + corpse-retire + comeback-release | 2,163 | `fleet-seat-comeback-release.timer` + seat-lib | LiteLLM health checks/cooldowns/budgets (fleet-ops#4130) | corpse-retire, comeback-release, 3 `.prom` writers | **GO** (covered by #4130) |
 | 7 | dead-man canaries: gh-webhook-canary-deadman.py + fleet-completion-canary + loose-ends | 2,267+ | `fleet-completion-canary.timer` + `fleet-loose-ends-canary.timer` | healthchecks.io (account exists) + Prometheus `absent()`/Watchdog rules | deadman.py, completion-canary, loose-ends canary | **GO** |
 | 8 | load-storm-brake + agent-orphan-watchdog | 376 | `load-storm-brake` / `agent-orphan-watchdog` | systemd-oomd, CPUWeight/IOWeight, cgroup scoping (`systemd-run --scope`, `KillMode=control-group`) | both scripts | **GO** |
-| 9 | codex launcher (wrapper + governed-run + agent-governor-runtime) | 3,976 (+281 `.bak`) | `codex` (launcher) | per-role systemd unit templates `codex-sol@.service` + `codex-luna@.service` — identity pinned in ExecStart (model/provider/effort fixed) | codex wrapper + agent-governor-runtime + governed-run | **DONE** (#4148; #4159 closed as dup) |
+| 9 | codex launcher (wrapper + governed-run + agent-governor-runtime) | 3,976 (+281 `.bak`) | `codex` (launcher) | per-role systemd unit templates `codex-sol@.service` + `codex-luna@.service` — identity pinned in ExecStart (model/provider/effort fixed) | codex wrapper + agent-governor-runtime + governed-run | **BLOCKED AT PROOF** (#4148; #4159 closed as dup) |
 | 10 | fleet-* timers (47 units) | classify | 20 `fleet-*.timer` | Prometheus alert rule / GitHub Actions scheduled workflow / genuine drill | the non-drill timers | **PARTIAL** (see §4) |
 | 11 | memory-index-dedupe.py + hermes-staff generator + oracle-* + 0509-surface-probe | 702 | various | classify | classify | **DONE** (hermes-staff GO retired 2026-09-07 #4150; memory-index-dedupe NO-GO kept; oracle-* GO retired #4162; 0509-surface-probe GO retired #1150) |
 
@@ -157,7 +157,7 @@ impossible.
 **GO.** Delete 376 lines. No new organ (systemd-oomd already deployed,
 fleet-ops#3971). Filed as issue.
 
-### Row 9 — codex launcher → per-role systemd unit templates (DONE #4148)
+### Row 9 — codex launcher → per-role systemd unit templates (BLOCKED AT PROOF #4148)
 
 Live: `~/.local/bin/codex` 281 lines + `~/.local/bin/governed-run` 31 lines +
 `~/.local/libexec/agent-governor-runtime/` ~3,664 lines (+ one 281-line
@@ -176,11 +176,20 @@ ExecStart was dropped and listed in the #4148 PR body (`agent_type`,
 `fork_turns`, `--oss`/`--local-provider` denial, broker decision, signal
 supervision — the last replaced natively by systemd `KillMode=control-group`).
 
-**DONE** (#4148). Archived to `archive/codex-launcher-retired-2026-09-07/`
-(wrapper + runtime + governed-run; git history is the backup, same rule as
-#4141), live copies wiped, callers repointed to `codex-real`, vault
-never-rebuild ledger updated. No new organ: the two templates are launch
-paper, not scheduled machinery.
+**BLOCKED AT PROOF** (#4148; #4159 closed as duplicate). Archived to
+`archive/codex-launcher-retired-2026-09-07/` (wrapper + runtime +
+governed-run; git history is the backup, same rule as #4141) and the two
+templates are committed + live-linked. The DECISIONS proof run (one real
+Sol packet through `codex-sol@`) FAILED: codex-real authenticates on this
+host as a ChatGPT account (`~/.codex/auth.json` `auth_mode=chatgpt`;
+stored `OPENAI_API_KEY` entry is null) and the API rejects `gpt-5.6-sol`
+(400, "not supported when using Codex with a ChatGPT account"). The
+fleet's live Sol lane is provider `straitly` (`lanes/seats/
+straitly__gpt-5.6-sol.json`, quota_exhausted since 2026-09-06). Per
+DECISIONS (c): stop, post log, no deletion — live wrapper + runtime +
+governed-run are UNTOUCHED and the wipe is blocked until the corrected
+launch path is authorized. Templates are launch paper, not scheduled
+machinery; no new organ.
 
 ### Row 10 — fleet-* timers → classify (PARTIAL, see §4)
 

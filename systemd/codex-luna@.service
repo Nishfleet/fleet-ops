@@ -27,6 +27,6 @@ Wants=network-online.target
 [Service]
 Type=simple
 Environment=CODEX_HOME=%h/.codex
-ExecStart=%h/.local/libexec/codex-real exec --json -m gpt-5.6-luna -c model_provider=openai -c model_reasoning_effort=max
+ExecStart=%h/.local/libexec/codex-real exec --json --skip-git-repo-check -m gpt-5.6-luna -c model_provider=openai -c model_reasoning_effort=max
 KillMode=control-group
 TimeoutStopSec=30

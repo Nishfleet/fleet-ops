@@ -82,6 +82,8 @@ luna="$repo_root/systemd/codex-luna@.service"
 [[ -f "$luna" ]] || fail "missing replacement template systemd/codex-luna@.service"
 grep -qF 'codex-real' "$sol" || fail "codex-sol@ must launch the real binary (codex-real), not a wrapper"
 grep -qF 'codex-real' "$luna" || fail "codex-luna@ must launch the real binary (codex-real), not a wrapper"
+grep -qF -e '--skip-git-repo-check' "$sol" || fail "codex-sol@ must carry --skip-git-repo-check (trust/git gate would block packet runs)"
+grep -qF -e '--skip-git-repo-check' "$luna" || fail "codex-luna@ must carry --skip-git-repo-check (trust/git gate would block packet runs)"
 for pin in '-m gpt-5.6-sol' 'model_provider=openai' 'model_reasoning_effort=%i'; do
   grep -qF -e "$pin" "$sol" || fail "codex-sol@ must pin '$pin' in ExecStart"
 done
