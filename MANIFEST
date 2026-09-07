@@ -671,6 +671,13 @@ systemd/codex-luna@.service /home/nish/.config/systemd/user/codex-luna@.service
 # (blind-audit fleet-ops#2924 / #1548). Absorb so deploy symlinks it;
 # pure ManagedOOM* override, not new machinery.
 systemd/fable-fleet-check.service.d/20-oom-avoid.conf /home/nish/.config/systemd/user/fable-fleet-check.service.d/20-oom-avoid.conf
+# fleet-ops#4415: fable-fleet-check skip-litellm drop-in was a real file under
+# the live drop-in dir (blind-audit fleet-ops#2924 / #1548). Absorb so deploy
+# symlinks it; TEMPORARY (fleet-ops#4410) — pure Environment override via the
+# AGENT_CRON_SKIP_LITELLM escape hatch, not new machinery. REMOVE WHEN the
+# durable seat-lib fallback lands (fleet-ops#4410) or openrouter credits are
+# restored AND the P3 native Cursor adapter exists.
+systemd/fable-fleet-check.service.d/30-skip-litellm-drained.conf /home/nish/.config/systemd/user/fable-fleet-check.service.d/30-skip-litellm-drained.conf
 # fleet-ops#3111: self-heal drop-in. Overrides ExecStart with the
 # pi-transport-self-heal wrapper (npm rebuild; no hand-written symlink).
 systemd/pi-transport-check.service.d/20-self-heal.conf /home/nish/.config/systemd/user/pi-transport-check.service.d/20-self-heal.conf
