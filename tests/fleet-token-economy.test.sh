@@ -116,8 +116,8 @@ ok "product_order=value, volume order retired, devin AIMD not hard_ceiling with 
 
 # --- prepaid order, then leftover prepaid after (fleet-ops#1178/#3125) ----
 prepaid_order=$(jq -r '.prepaid_providers_in_order | join(" ")' "$caps")
-[[ "$prepaid_order" == "ollama devin cline cursor xai-oauth runinfra crof entrim" ]] \
-  || fail "prepaid order must be 'ollama devin cline cursor xai-oauth runinfra crof entrim', got: $prepaid_order"
+[[ "$prepaid_order" == "ollama devin cline cursor alibaba-coding xai-oauth runinfra crof entrim" ]] \
+  || fail "prepaid order must be 'ollama devin cline cursor alibaba-coding xai-oauth runinfra crof entrim', got: $prepaid_order"
 
 devin_cap=$(jq -r '.providers.devin.cap // empty' "$caps")
 [[ -n "$devin_cap" ]] || fail "devin cap must be present, got: empty"
@@ -128,7 +128,7 @@ entry_has_dated_reason '.providers.devin' \
 devin_class=$(jq -r '.providers.devin.class // empty' "$caps")
 [[ "$devin_class" == "prepaid-quota" ]] || fail "devin class must be prepaid-quota, got: $devin_class"
 
-ok "prepaid order ollama devin cline cursor xai-oauth runinfra crof entrim; devin cap carries a dated reason, class prepaid-quota"
+ok "prepaid order ollama devin cline cursor alibaba-coding xai-oauth runinfra crof entrim; devin cap carries a dated reason, class prepaid-quota"
 
 # --- xai-oauth (SuperGrok): cap justified by dated reason, grok-4.5 cap=0 intentional ---
 xai_cap=$(jq -r '.providers["xai-oauth"].cap // empty' "$caps")
