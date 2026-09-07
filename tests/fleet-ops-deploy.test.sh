@@ -103,10 +103,14 @@ grep -q 'remove_stale_scout_prom_mode_dropin' "$repo_root/install.sh" \
     || fail "install.sh must remove the stale scout 20-prom-mode drop-in (fleet-ops#2924)"
 grep -q 'remove_orphaned_fleet_auto_deploy_dropin' "$repo_root/install.sh" \
     || fail "install.sh must remove the orphaned fleet-auto-deploy.timer.d drop-in (fleet-ops#4112)"
+grep -q 'remove_orphaned_fleet_auto_ship_dropin' "$repo_root/install.sh" \
+    || fail "install.sh must remove the orphaned fleet-auto-ship.service.d drop-in (fleet-ops#4114)"
 grep -q 'pi-scout@.service.d/20-prom-mode.conf' "$repo_root/bin/fleet-ops-deploy" \
     || fail "fleet-ops-deploy must remove the stale scout 20-prom-mode drop-in (fleet-ops#2924)"
 grep -q 'fleet-auto-deploy.timer.d' "$repo_root/bin/fleet-ops-deploy" \
     || fail "fleet-ops-deploy must remove the orphaned fleet-auto-deploy.timer.d drop-in (fleet-ops#4112)"
+grep -q 'fleet-auto-ship.service.d' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "fleet-ops-deploy must remove the orphaned fleet-auto-ship.service.d drop-in (fleet-ops#4114)"
 grep -q 'systemd/pi-intake@.service.d/10-use-tick.conf' "$repo_root/MANIFEST" \
     || fail "MANIFEST must list 10-use-tick.conf (fleet-ops#2924 absorb)"
 [[ -f "$repo_root/systemd/pi-intake@.service.d/10-use-tick.conf" ]] \
@@ -805,6 +809,19 @@ printf '[Timer]\nOnCalendar=\nOnCalendar=*-*-* *:23:00\n' > "$orphan_dir/overrid
 PATH="$scratch:$PATH" "$install" >/dev/null 2>&1 || true
 [[ ! -d "$orphan_dir" ]] || fail "scenario12b-orphan: orphaned fleet-auto-deploy.timer.d drop-in dir was not removed"
 ok "scenario12b-orphan: install.sh removes the orphaned fleet-auto-deploy.timer.d drop-in dir (fleet-ops#4112)"
+
+# fleet-ops#4114: orphaned drop-in dir for the deleted fleet-auto-ship unit.
+# install.sh must remove the whole dir on a user-scope install, even though
+# the unit itself no longer exists (so a unit-name-only hunt cannot see it).
+# The dir also carries .bak files — rm -rf must clear them too.
+orphan_ship_dir="$HOME/.config/systemd/user/fleet-auto-ship.service.d"
+mkdir -p "$orphan_ship_dir"
+printf '[Service]\nExecStart=\nExecStart=/bin/true\n' > "$orphan_ship_dir/override.conf"
+printf '[Service]\nExecStart=\nExecStart=/bin/false\n' > "$orphan_ship_dir/zz-gate-retry.conf"
+printf 'bak\n' > "$orphan_ship_dir/override.conf.bak-audit-timeout-20260811"
+PATH="$scratch:$PATH" "$install" >/dev/null 2>&1 || true
+[[ ! -d "$orphan_ship_dir" ]] || fail "scenario12b-orphan-ship: orphaned fleet-auto-ship.service.d drop-in dir was not removed"
+ok "scenario12b-orphan-ship: install.sh removes the orphaned fleet-auto-ship.service.d drop-in dir (fleet-ops#4114)"
 
 # --- scenario 12c: cap drop with NEWER repo mtime (fleet-ops#371) ------------
 # git checkout of a stale commit stamps the working tree now, so the #372
