@@ -33,7 +33,7 @@ Live snapshot 2026-09-07:
 |---|---|---|---|---|---|---|
 | 1 | opus-heartbeat family | 3,249 (+7,858 .bak) | `opus-heartbeat.timer` + `heartbeat-audit` + `opus-heartbeat-run` + `opus-heartbeat-fallback` | PromQL recording rules + Alertmanager; judge packet reads `/api/v1/query` | gather + heartbeat + audit + run + fallback + 6 `.bak` copies | **GO** |
 | 2 | repo-sync-snapshot.py | 1,311 | `repo-sync-snapshot.timer` | `gh` GraphQL directly, or a github-exporter for Prometheus | repo-sync-snapshot.py | **GO** |
-| 3 | venue-claim + open-question | 1,810 | `venue-claim` / `open-question` (webhook/timer) | GitHub issue assignment + Projects, Actions concurrency groups, flock/systemd for local locks | venue-claim, open-question | **GO** |
+| 3 | venue-claim + open-question | 1,810 | `venue-claim` / `open-question` (webhook/timer) | GitHub issue assignment + Projects, Actions concurrency groups, flock/systemd for local locks | venue-claim, open-question | **DONE** (retired 2026-09-07, #4143) |
 | 4 | fleet-pr-rebase | 0 (already retired) | — | GitHub merge queue + auto-merge + `gh pr update-branch` | already gone (git history only) | **NO-GO** (already retired) |
 | 5 | claude-telegram-bridge.py | 412 (+753 .bak) | `claude-telegram-bridge` | Hermes (Nish-owned) — one Telegram path | bridge + 2 `.bak` | **GO** (Nish decision on Telegram path) |
 | 6 | seat prom writers + corpse-retire + comeback-release | 2,163 | `fleet-seat-comeback-release.timer` + seat-lib | LiteLLM health checks/cooldowns/budgets (fleet-ops#4130) | corpse-retire, comeback-release, 3 `.prom` writers | **GO** (covered by #4130) |
@@ -68,13 +68,16 @@ directly, or a github-exporter for Prometheus.
 **GO.** Delete 1,311 lines. No new organ (gh CLI / github-exporter are
 off-the-shelf). Filed as issue.
 
-### Row 3 — venue-claim + open-question → GitHub native (GO)
+### Row 3 — venue-claim + open-question → GitHub native (DONE)
 
 Live: `venue-claim` 1,008, `open-question` 802 = **1,810 lines**. Claim/lock/
 queue semantics. Replacement: GitHub issue assignment + Projects, Actions
 concurrency groups, flock/systemd for local locks.
 
-**GO.** Delete 1,810 lines. No new organ. Filed as issue.
+**DONE (2026-09-07, #4143).** Both scripts were orphaned (no units, no data
+dir) and are wiped from the live path. The fleet already runs claim/lock/queue
+on GitHub issue assignment + Projects, Actions concurrency groups, and
+flock/systemd. No new organ.
 
 ### Row 4 — fleet-pr-rebase → already retired (NO-GO)
 
@@ -180,7 +183,7 @@ GO-row deletions (rows 1, 2, 3, 5, 6, 7, 8, 9 + row-10 GO timers):
 |---|---|
 | 1 opus-heartbeat family | 3,249 (+7,858 `.bak`) |
 | 2 repo-sync-snapshot.py | 1,311 |
-| 3 venue-claim + open-question | 1,810 |
+| 3 venue-claim + open-question | 1,810 (retired 2026-09-07) |
 | 5 claude-telegram-bridge.py | 412 (+753 `.bak`) |
 | 6 seat prom writers + corpse-retire + comeback-release | 2,163 |
 | 7 dead-man canaries | 2,267+ |
@@ -210,7 +213,7 @@ Row 11 classify rows are filed as classify issues.
 |---|---|
 | 1 opus-heartbeat family | #4153 |
 | 2 repo-sync-snapshot.py | #4154 |
-| 3 venue-claim + open-question | #4155 |
+| 3 venue-claim + open-question | #4143 (dup #4155) |
 | 5 claude-telegram-bridge.py | #4156 |
 | 7 dead-man canaries | #4157 |
 | 8 load-storm-brake + agent-orphan-watchdog | #4158 |

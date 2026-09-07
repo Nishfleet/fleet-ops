@@ -669,3 +669,12 @@ bash "$here/pi-audit-run-strip-preamble.test.sh"
 # drop of this host line fails by name. Hermetic (mock PATH + canned
 # Prometheus response + capture hermes stub, no gh/prometheus/systemd).
 bash "$here/daily-digest.test.sh"
+
+# fleet-ops#4143 (child of #4140 row 3): the hand-built claim/lock/queue
+# scripts venue-claim + open-question were retired (live-only, orphaned).
+# Hosted here so P14 runs the deletion pin without a workflow-file edit (the
+# worker App cannot push .github/workflows/**). The named pin in
+# tests/p14-test-listing-gate.test.sh is the class-prevention so a future
+# drop of this host line fails by name. Hermetic (repo-only checks, no
+# gh/prometheus/systemd).
+bash "$here/venue-claim-open-question-deleted.test.sh"
