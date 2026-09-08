@@ -273,6 +273,27 @@ def find_existing_signal(issues: list[dict[str, Any]], signal: str) -> dict[str,
     return None
 
 
+def _hydrate_comments(
+    issue: dict[str, Any],
+    repo: str,
+    gh: str,
+    dry_run: bool,
+    cache: dict[int, list[dict[str, Any]]],
+) -> None:
+    """Attach comments to a deduped issue if they were not included in the
+    bulk list (fleet-ops#4552). The bulk list omits comments to avoid the 504;
+    only the heartbeat throttle needs them, so they are fetched per-issue the
+    first time that issue is touched in a run.
+    """
+    if "comments" in issue:
+        return
+    number = issue.get("number")
+    if not isinstance(number, int):
+        issue["comments"] = []
+        return
+    issue["comments"] = _issue_comments(repo, number, gh, dry_run, cache)
+
+
 def has_recent_heartbeat_comment(issue: dict[str, Any], now: datetime, min_hours: int) -> bool:
     marker = "detector heartbeat: still alarmed"
     for comment in issue.get("comments") or []:
@@ -291,6 +312,45 @@ def has_recent_heartbeat_comment(issue: dict[str, Any], now: datetime, min_hours
     return False
 
 
+def _issue_comments(
+    repo: str,
+    number: int,
+    gh: str,
+    dry_run: bool,
+    cache: dict[int, list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    """Return the comments for one issue, fetched lazily.
+
+    The bulk issue list deliberately omits comments so a single GraphQL call
+    does not time out at open-issue volume (fleet-ops#4552). The daily
+    heartbeat throttle is the only consumer that needs comment bodies, and it
+    touches a bounded set (currently-alarmed deduped issues) per tick, so it
+    fetches them one issue at a time. Results are cached per run; failures are
+    cached as [] so a transient timeout degrades to "no recent comment" (post
+    a heartbeat) rather than crashing the reconciler.
+    """
+    if number in cache:
+        return cache[number]
+    if dry_run:
+        cache[number] = []
+        return cache[number]
+    proc = subprocess.run(
+        [gh, "issue", "view", str(number), "-R", repo, "--json", "comments"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    comments: list[dict[str, Any]] = []
+    if proc.returncode == 0 and (proc.stdout or "").strip():
+        try:
+            parsed = json.loads(proc.stdout)
+            comments = parsed.get("comments") or []
+        except json.JSONDecodeError:
+            comments = []
+    cache[number] = comments
+    return comments
+
+
 def load_open_issues(
     repo: str,
     gh: str,
@@ -298,6 +358,14 @@ def load_open_issues(
 ) -> list[dict[str, Any]]:
     if from_json:
         return json.loads(Path(from_json).read_text(encoding="utf-8"))
+    # fetch the issue list WITHOUT comments: requesting the full comment
+    # bodies for up to 300 open issues in one GraphQL call routinely times
+    # out (HTTP 504) at fleet open-issue volume, which made this loader
+    # return [] every tick. With an empty open_issues the observe-to-close
+    # pass had nothing to close, so green alarm issues (and the per-slug
+    # DEBUG-PLAYBOOK class that re-claims them) never closed. Comments are
+    # only needed for the daily-heartbeat throttle, which fetches them
+    # lazily per-issue in has_recent_heartbeat_comment (fleet-ops#4552).
     proc = subprocess.run(
         [
             gh,
@@ -310,7 +378,7 @@ def load_open_issues(
             "--limit",
             "300",
             "--json",
-            "number,title,body,labels,createdAt,comments",
+            "number,title,body,labels,createdAt",
         ],
         capture_output=True,
         text=True,
@@ -442,11 +510,13 @@ def reconcile(
     # File or heartbeat-comment.
     filed_count = 0
     capped_sigs: list[str] = []
+    comment_cache: dict[int, list[dict[str, Any]]] = {}
     for sig in sorted(current_signals):
         alarm = signal_to_alarm[sig]
         existing = open_by_signal.get(sig)
         if existing:
             summary["deduped"] += 1
+            _hydrate_comments(existing, repo, gh, dry_run, comment_cache)
             if not has_recent_heartbeat_comment(existing, now, comment_min_hours):
                 comment_body = (
                     f"detector heartbeat: still alarmed for `{sig}` "

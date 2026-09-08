@@ -315,4 +315,35 @@ grep -q 'SIGNAL_RECONCILE_LIB=' "$repo_root/bin/fleet-heartbeat-tier1" \
     || fail "scenario 10: tier1 must locate the reconciler lib"
 ok "scenario 10: heartbeat-tier1 wires the detector->queue reconciler"
 
+# ---------------------------------------------------------------------------
+# 11. Live loader: bulk issue list must NOT fetch comments (fleet-ops#4552).
+#     Requesting the full comment bodies for up to 300 open issues in one
+#     GraphQL call 504-timeouts at fleet open-issue volume, so the loader
+#     returned [] every tick and observe-to-close never ran (green alarm
+#     issues stayed open and re-claimed). The bulk list now omits comments;
+#     the heartbeat throttle hydrates them lazily per-issue. Prove: the live
+#     `gh issue list` JSON field list does not request comments, and a green
+#     filed-format issue is still observe-to-closed over that loader.
+# ---------------------------------------------------------------------------
+cat > "$tmp/open11.json" <<'EOF'
+[{"number": 2011, "body": "The heartbeat detector filed this alarm.\n\n`loud/debug-playbook-missing/2026-09-08t07-35-48z-0509-1279-abc123`\n", "labels": [{"name": "agent-ready"}], "createdAt": "2026-08-28T10:00:00Z"}]
+EOF
+# green triage: the filed-format signal is NOT alarmed -> observe-to-close.
+cat > "$tmp/triage11_green.md" <<'EOF'
+[2026-08-28T13:30:00Z] [WEEKLY-FLEET-REVIEW-PASS] cycle verdict pass
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+env "${common_env[@]}" FAKE_GH_OPEN_ISSUES="$tmp/open11.json" \
+    python3 "$lib" --triage "$tmp/triage11_green.md" --tick-start "2026-08-28T13:30:00Z" \
+    --ok-to-close 1 --json --now "2026-08-28T13:45:00Z" > "$tmp/summary11.json"
+jq -e '.closed == 1' "$tmp/summary11.json" >/dev/null \
+    || fail "scenario 11: live loader failed to observe-to-close a green filed-format issue (got: $(cat "$tmp/summary11.json"))"
+# bulk list must not request comments (the 504 cause).
+grep -q 'issue list' "$tmp/gh.log" || fail "scenario 11: expected a live gh issue list call"
+if grep -Eq 'issue list.*(--json|--jq).*comments' "$tmp/gh.log"; then
+    fail "scenario 11: bulk gh issue list must not request comments (504 cause)"
+fi
+ok "scenario 11: live loader omits comments from the bulk list and observe-to-close still works"
+
 ok "all signal-reconcile scenarios passed"
