@@ -53,7 +53,7 @@
     {
       "id": "alibaba-coding",
       "class": "prepaid-quota",
-      "note": "Alibaba Model Studio Token Plan Personal Standard mid tier (fleet-ops#4329, Nish 2026-09-07). $18/mo, 10,000 credits/month, 3-4 concurrent, service PAUSES at the monthly or 7-day window cap, no rollover, no credits API (console only). Provider cap 3, 7 models. Tiers: qwen3.8-max senior candidate (audition on senior-review packets); qwen3.7-max + deepseek-v4-pro + qwen3.7-plus + glm-5.2 capable workers; deepseek-v4-flash-0731 + qwen3.8-flash cheap workers (light packets). Terms say interactive-only / no automation (same class as the GLM coding plan) — recorded here; Nish's call already made. Feeds the #4242 audit; all 7 models in the #4262 audition set. HTTP 429/402 = quota wall (monthly or 7-day window cap), not a transient fault."
+      "note": "Alibaba Model Studio Token Plan Personal Standard mid tier (fleet-ops#4329, Nish 2026-09-07; RE-SCOPED 2026-09-08 #4445). $18/mo, credits per 7-day window, 3-4 concurrent, service PAUSES at the window cap, no rollover, no credits API (console only). Provider cap 0 (2026-09-08): NO worker use of ANY alibaba model — every model is cap 0 (intentional_cap_zero=judge_hold, dated reasons). qwen3.8-max is on the senior/judge roster (senior_seats_in_order) as a JUDGE ONLY, inert until the config-driven judge_only worker gate lands (fleet-ops#4445 follow-up). The prior 2026-09-07 worker re-shape (7 models, cap 3) burned the full 7-day window in ~11h (#4445) and is withdrawn. HTTP 429/402 = quota wall, not a transient fault."
     },
     {
       "id": "minimax",

@@ -398,19 +398,48 @@
       "_comment_entrim": "fleet-ops#4262 (Nish 2026-09-07): Entrim (https://api.entrim.ai/v1, model deepseek-ai/DeepSeek-V4-Flash, key resolved by '!cut -d= -f2 /home/nish/fleet2/etc/entrim.env') is a WORKER seat, cap 2, class prepaid, NOT audition. contextWindow 1M (capable=1). quota_bench_default_s 86400 (24h): a quota/cap 429 with no explicit reset window benches a day. 402-as-balance-wall: HTTP 402 = prepaid balance exhausted — MONEY wall (Nish-only top-up), never a transient fault; the seat-dead quota-age rule turns a 24h-old 402 into a billing-repair corpse. No max_probe_ceiling: cap stays pinned at 2 (no upward AIMD probe on a paid seat). cacheRead=input until measured (pi-models.json)."
     },
     "alibaba-coding": {
-      "cap": 3,
+      "cap": 0,
       "class": "prepaid-quota",
       "quota_bench_default_s": 604800,
+      "reason": "2026-09-08 Nish re-scope (fleet-ops#4445): NO worker use of ANY alibaba model — every model capped 0 (intentional_cap_zero=judge_hold, dated reasons). Provider cap 0. qwen3.8-max is the rostered judge candidate (senior_seats_in_order), inert until the config-driven judge_only gate lands (follow-up). The 2026-09-07 worker-shape wiring (7 models cap 1, cap 3) burned the whole 7-day token-plan window in ~11h (n=128 prepaid calls, #4445 population 09-07 17:30Z to 09-08 03:10Z) and is withdrawn. Alibaba Model Studio Token Plan, Personal Standard mid tier (https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1, key via '!cut -d= -f2 /home/nish/fleet2/etc/alibaba-coding.env'). Credits reset per 7-day window, not per month. HTTP 429/402 = quota wall, not a transient fault.",
       "models": {
-        "qwen3.8-max": 1,
-        "qwen3.7-max": 1,
-        "qwen3.7-plus": 1,
-        "glm-5.2": 1,
-        "deepseek-v4-pro": 1,
-        "deepseek-v4-flash-0731": 1,
-        "qwen3.8-flash": 1
+        "qwen3.8-max": {
+          "cap": 0,
+          "intentional_cap_zero": "judge_hold",
+          "reason": "2026-09-08 Nish re-scope (#4445): qwen3.8-max is a judge on the roster ONLY - no worker use of any alibaba model (n=128 prepaid-usage calls burned the whole 7-day token-plan window in ~11h, #4329/#4445). cap 0 with the provider. Rostered in senior_seats_in_order; activates as a usable judge only when the config-driven judge_only worker gate lands (fleet-ops#4445 follow-up). Not stale - never auto-expire."
+        },
+        "qwen3.7-max": {
+          "cap": 0,
+          "intentional_cap_zero": "judge_hold",
+          "reason": "2026-09-08 Nish re-scope (#4445): no worker use of any alibaba model — n=128 prepaid-usage calls burned the whole 7-day token-plan window in ~11h (fleet-ops#4329/#4445). cap 0 with the provider. Not stale - never auto-expire."
+        },
+        "qwen3.7-plus": {
+          "cap": 0,
+          "intentional_cap_zero": "judge_hold",
+          "reason": "2026-09-08 Nish re-scope (#4445): no worker use of any alibaba model — n=128 prepaid-usage calls burned the whole 7-day token-plan window in ~11h (fleet-ops#4329/#4445). cap 0 with the provider. Not stale - never auto-expire."
+        },
+        "glm-5.2": {
+          "cap": 0,
+          "intentional_cap_zero": "judge_hold",
+          "reason": "2026-09-08 Nish re-scope (#4445): no worker use of any alibaba model — n=128 prepaid-usage calls burned the whole 7-day token-plan window in ~11h (fleet-ops#4329/#4445). cap 0 with the provider. Not stale - never auto-expire."
+        },
+        "deepseek-v4-pro": {
+          "cap": 0,
+          "intentional_cap_zero": "judge_hold",
+          "reason": "2026-09-08 Nish re-scope (#4445): no worker use of any alibaba model — n=128 prepaid-usage calls burned the whole 7-day token-plan window in ~11h (fleet-ops#4329/#4445). cap 0 with the provider. Not stale - never auto-expire."
+        },
+        "deepseek-v4-flash-0731": {
+          "cap": 0,
+          "intentional_cap_zero": "judge_hold",
+          "reason": "2026-09-08 Nish re-scope (#4445): no worker use of any alibaba model — n=128 prepaid-usage calls burned the whole 7-day token-plan window in ~11h (fleet-ops#4329/#4445). cap 0 with the provider. Not stale - never auto-expire."
+        },
+        "qwen3.8-flash": {
+          "cap": 0,
+          "intentional_cap_zero": "judge_hold",
+          "reason": "2026-09-08 Nish re-scope (#4445): no worker use of any alibaba model — n=128 prepaid-usage calls burned the whole 7-day token-plan window in ~11h (fleet-ops#4329/#4445). cap 0 with the provider. Not stale - never auto-expire."
+        }
       },
-      "_comment_alibaba": "fleet-ops#4329 (Nish 2026-09-07): Alibaba Model Studio Token Plan, Personal Standard mid tier (https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1, key resolved by '!cut -d= -f2 /home/nish/fleet2/etc/alibaba-coding.env', provider id alibaba-coding). $18/mo, 10,000 credits/month, 3-4 concurrent agents, service PAUSES at either the monthly or the 7-day window cap, no rollover, no credits API — console only. class prepaid, provider cap 3 (plan says 3-4 concurrent; ETIMEDOUT/429 -> 2). Tiers: qwen3.8-max (thinking) = senior candidate, audition on senior-review packets; qwen3.7-max + deepseek-v4-pro + qwen3.7-plus + glm-5.2 = capable workers; deepseek-v4-flash-0731 + qwen3.8-flash = cheap workers (light packets). Pacing: credits are per-request and depend on model/thinking/tool calls, so measure — read remaining credits from the console via the #4217 VPS login (source=dashboard) and target 10,000/month ≈ 2,300 per 7-day window; expiry-first ordering (an expiring monthly grant beats non-expiring seats) but never above Cursor's expiring pool in senior work. Terms say interactive-only / no automation (same class as the GLM coding plan) — recorded here; Nish's call already made. Feeds the #4242 audit; all 7 models in the #4262 audition set. quota_bench_default_s 604800 (7d): a quota/cap 429 with no explicit reset window benches a week (the 7-day window pacing), not the 900s devin default; the #4217 pipeline supplies real reset times when it lands. No max_probe_ceiling: cap stays pinned at 3 (no upward AIMD probe on a paid seat). compat.supportsDeveloperRole=false (the endpoint 400s on Pi's developer role); thinking on for the reasoning models, enable_thinking=false for qwen3.8-flash + deepseek-v4-flash-0731 (wired in pi-models.json)."
+      "_comment_alibaba": "fleet-ops#4329 (Nish 2026-09-07) then RE-SCOPED (Nish 2026-09-08, #4445): Alibaba Model Studio Token Plan, Personal Standard mid tier (https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1, key resolved by '!cut -d= -f2 /home/nish/fleet2/etc/alibaba-coding.env', provider id alibaba-coding). Class prepaid-quota, provider cap set to 0 (2026-09-08): EVERY alibaba-coding model is capped 0 and pick_seat never offers this provider to a worker. The 2026-09-07 worker-shape wiring (all 7 models cap 1, cap 3) burned the full 7-day token-plan credit window in ~11h (n=128 prepaid-usage calls, #4445 population 2026-09-07 17:30Z to 09-08 03:10Z) and is WITHDRAWN by Nish 2026-09-08. qwen3.8-max stays wired as a JUDGE on the roster (senior_seats_in_order) but at model cap 0 it cannot be drawn until a config-driven judge_only gate lands (fleet-ops#4445 follow-up) that lets find_senior_seat use it while pick_seat keeps it out of worker selection. quota_bench_default_s 604800 (7d) retained for the reset-window pacing. compat.supportsDeveloperRole=false. Dated reasons on every cap-0 row carry a measurement marker (n=128) per rule 1 (fleet-ops#3504)."
     }
   },
   "product_order": "value",
@@ -433,11 +462,12 @@
     "runinfra",
     "entrim"
   ],
-  "_comment_senior_order": "fleet-ops#3121: the senior (judge/orchestrator/reviewer) role's seat ladder. Replaces the dead straitly role and the old keystone_only_providers dual mechanism — ONE mechanism now. First usable seat in the list wins; a walled seat is skipped, not a unit failure; if the whole list is walled the resolver falls through to any usable capable seat. cursor cap 2 concurrent (fleet-ops#4206, raised 1->2 to spend the $400 API pool); senior draws count against the existing prepaid-usage/cursor.json weekly meter (ceiling 300/week), after which the list falls through to xai grok and then openrouter deepseek. Nish 2026-09-04: devin (devin/glm-5-2), free-glm (zenmux/z-ai/glm-5.3-free, cline/z-ai/glm-5.3-flash), senior (this list) are the three judge roles; senior replaces straitly everywhere.",
+  "_comment_senior_order": "fleet-ops#3121: the senior (judge/orchestrator/reviewer) role's seat ladder. Replaces the dead straitly role and the old keystone_only_providers dual mechanism — ONE mechanism now. First usable seat in the list wins; a walled seat is skipped, not a unit failure; if the whole list is walled the resolver falls through to any usable capable seat. cursor cap 2 concurrent (fleet-ops#4206, raised 1->2 to spend the $400 API pool); senior draws count against the existing prepaid-usage/cursor.json weekly meter (ceiling 300/week), after which the list falls through to xai grok and then openrouter deepseek. Nish 2026-09-04: devin (devin/glm-5-2), free-glm (zenmux/z-ai/glm-5.3-free, cline/z-ai/glm-5.3-flash), senior (this list) are the three judge roles; senior replaces straitly everywhere. 2026-09-08 (Nish re-scope, #4445): alibaba-coding/qwen3.8-max is added as a judge on the roster. It is currently inert (model cap 0 — no worker use of any alibaba model) so find_senior_seat / senior_seat_available skip it silently until a config-driven judge_only gate lands (fleet-ops#4445 follow-up); it is listed LAST so it never displaces an already-usable senior seat.",
   "senior_seats_in_order": [
     "cursor/cursor-grok-4.6-high",
     "xai-oauth/grok-4.6",
-    "openrouter/deepseek/deepseek-v4-flash-0731"
+    "openrouter/deepseek/deepseek-v4-flash-0731",
+    "alibaba-coding/qwen3.8-max"
   ],
   "senior_cursor_weekly_ceiling": 300,
   "cursor_overage": {

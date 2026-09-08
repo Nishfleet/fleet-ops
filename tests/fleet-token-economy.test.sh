@@ -131,6 +131,30 @@ devin_class=$(jq -r '.providers.devin.class // empty' "$caps")
 
 ok "prepaid order ollama devin cline cursor alibaba-coding xai-oauth runinfra crof entrim; devin cap carries a dated reason, class prepaid-quota"
 
+# --- alibaba-coding: no worker use of ANY alibaba model (fleet-ops#4445 re-scope) ---
+# Nish 2026-09-08: qwen3.8-max is a judge on the roster ONLY; no worker use of
+# any alibaba model. So the provider AND every model must be cap 0 (pick_seat
+# skips cap-0 seats), each with an intentional_cap_zero marker and a dated reason.
+ali_provider_cap=$(jq -r '.providers["alibaba-coding"].cap // empty' "$caps")
+[[ "$ali_provider_cap" == "0" ]] \
+  || fail "alibaba-coding provider cap must be 0 (no worker use of any alibaba model, fleet-ops#4445), got: $ali_provider_cap"
+_alibaba_models=$(jq -r '.providers["alibaba-coding"].models | keys[]' "$caps")
+[[ -n "$_alibaba_models" ]] || fail "alibaba-coding has no models in the allowlist"
+_bad_ali=0
+_ali_seen=0
+for _ali_m in $_alibaba_models; do
+  _ali_seen=$((_ali_seen + 1))
+  _ali_cap=$(jq -r --arg m "$_ali_m" '.providers["alibaba-coding"].models[$m] | if type=="object" then (.cap // 0) else 0 end' "$caps")
+  _ali_icz=$(jq -r --arg m "$_ali_m" '.providers["alibaba-coding"].models[$m].intentional_cap_zero // empty' "$caps")
+  [[ "$_ali_cap" == "0" && -n "$_ali_icz" ]] || { _bad_ali=$((_bad_ali + 1)); echo "  alibaba $_ali_m cap=$_ali_cap icz=$_ali_icz" >&2; }
+  [[ "$_ali_icz" != "stale" ]] || { _bad_ali=$((_bad_ali + 1)); echo "  alibaba $_ali_m must not be stale (must never auto-expire)" >&2; }
+done
+[[ "$_ali_seen" -ge 1 ]] || fail "alibaba-coding models allowlist is empty"
+[[ "$_bad_ali" == "0" ]] \
+  || fail "$_bad_ali alibaba-coding model(s) not cap 0 with an intentional (non-stale) marker — no worker use of any alibaba model (fleet-ops#4445)"
+ok "alibaba-coding: provider + all ${_ali_seen} models cap 0, judge_hold marker, no worker use (fleet-ops#4445)"
+
+
 # --- xai-oauth (SuperGrok): cap justified by dated reason, grok-4.5 cap=0 intentional ---
 xai_cap=$(jq -r '.providers["xai-oauth"].cap // empty' "$caps")
 [[ -n "$xai_cap" ]] || fail "xai-oauth cap must be present, got: empty"
