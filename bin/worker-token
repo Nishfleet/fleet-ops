@@ -138,7 +138,12 @@ get_installation_id() {
   local jwt cache_age now
   now="$(date +%s)"
   mkdir -p "$(dirname "$INSTALL_CACHE")"
-  ( umask 077; : > "$INSTALL_CACHE" )
+  # Create the cache if missing (0600), but NEVER truncate an existing one —
+  # truncating here made the 5-min TTL dead code: every mint re-did live
+  # discovery, maximising exposure to transient /app/installations failures.
+  if [[ ! -e "$INSTALL_CACHE" ]]; then
+    ( umask 077; : > "$INSTALL_CACHE" )
+  fi
   if [[ -s "$INSTALL_CACHE" ]]; then
     cache_age=$((now - $(stat -c %Y "$INSTALL_CACHE" 2>/dev/null || echo 0)))
     if (( cache_age < INSTALL_TTL_S )); then
@@ -173,6 +178,14 @@ get_installation_id() {
   done
   if [[ -z "$list" ]]; then
     echo "worker-token: app/installations lookup failed — degraded" >&2
+    exit 3
+  fi
+  # A failed curl still leaves its error text in $list (e.g. "curl: (22) The
+  # requested URL returned error: 404"); guard against misreading that as a
+  # VALID but org-less installation list — that produced the misleading
+  # "no installation ... in org" diagnosis seen in trip journal entries.
+  if ! printf '%s' "$list" | jq empty >/dev/null 2>&1; then
+    echo "worker-token: app/installations lookup returned invalid payload — degraded" >&2
     exit 3
   fi
   printf '%s' "$list" | jq '{installations: .}' > "$INSTALL_CACHE" 2>/dev/null || {
