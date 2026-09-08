@@ -18,6 +18,11 @@
       "proof": "live VPS 2026-08-23; Cursor Ultra custom provider"
     },
     {
+      "id": "cursor-cloud-provider",
+      "kind": "global-dir",
+      "proof": "live VPS 2026-09-08; Cursor Cloud Agents custom provider (fleet-ops#4455), PONG probe against api.cursor.com/v1 HTTP 201+200"
+    },
+    {
       "id": "devin-provider",
       "kind": "global-dir",
       "proof": "live VPS 2026-08-23; Devin Pro custom provider"

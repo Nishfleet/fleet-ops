@@ -489,6 +489,28 @@
         }
       ]
     },
+    "cursor-cloud": {
+      "name": "Cursor Cloud",
+      "api": "cursor-cloud",
+      "baseUrl": "https://api.cursor.com/v1",
+      "apiKey": "!cut -d= -f2 /home/nish/fleet2/etc/cursor.env",
+      "models": [
+        {
+          "id": "grok-4.6",
+          "name": "Cursor Grok 4.6 (Cloud Agent)",
+          "contextWindow": 500000,
+          "maxTokens": 131072,
+          "reasoning": true,
+          "input": ["text", "image"],
+          "cost": {
+            "input": 2.0,
+            "cacheRead": 0.5,
+            "cacheWrite": 0,
+            "output": 6.0
+          }
+        }
+      ]
+    },
     "straitly": {
       "name": "Straitly (alpha, $50 gift credit)",
       "baseUrl": "https://api.straitly.ai/v1",

@@ -68,6 +68,18 @@
         "cursor-grok-4.6-high": 2
       }
     },
+    "cursor-cloud": {
+      "cap": 2,
+      "class": "prepaid-quota",
+      "remote_agent": true,
+      "quota_bench_default_s": 604800,
+      "price_usd_per_m": "input 2.00 / cacheRead 0.50 / output 6.00 (Cursor Models table, Grok 4.6 non-fast)",
+      "models": {
+        "grok-4.6": 2
+      },
+      "_comment_4455": "fleet-ops#4455 (Nish 2026-09-08): wire the idle $400 Cursor API pool as a WORKER remote-agent seat (devin-style). Endpoint https://api.cursor.com/v1 (Cloud Agents API) — NOT the IDE api2.cursor.sh. Key: same User API key as the IDE seat from ~/fleet2/etc/cursor.env (orchestrator unblock, 2026-09-08: the crsr_…4872 key is a Cloud Agent API key; do NOT create cursor-api.env). Model grok-4.6 non-fast only (Nish bans -fast, memory cursor-pools-and-no-fast-models; catalog has no -fast slug). pool_reset: the $400 'API Usage' on-demand pool resets at the monthly billing cycle (~2026-09-22), so cursor-cloud is expiry-first — ordered ahead of non-expiring balances in prepaid_providers_in_order. cap 2 (matches the Cloud Agents capacity; control-plane rate limit is 20 r/min per endpoint). remote_agent=true: sessions run outside the local harness and complete without local tool calls, judged by PR URL (has_session_pr_url). Repo constraint: the Cloud Agents API can only launch against repos connected to Cursor's GH app (GET /v1/repositories) — among Nishfleet repos only Nishfleet/0509 is currently accessible, used as the launch target. quota_bench_default_s 604800 (7d): a quota/cap 429 with no explicit reset benches the seat for the pool cycle. price_usd_per_m is the docs number for the acceptance jq; the machine-ready cost lives in config/pi-models.json providers.cursor-cloud.models[0].cost.",
+      "_model_lock_4455": "grok-4.6 only, non-fast (Nish lock, memory cursor-pools-and-no-fast-models 2026-09-07)."
+    },
     "cline": {
       "cap": 2,
       "class": "prepaid-quota",
@@ -456,6 +468,7 @@
     "devin",
     "cline",
     "cursor",
+    "cursor-cloud",
     "alibaba-coding",
     "xai-oauth",
     "crof",

@@ -116,9 +116,12 @@ ok "product_order=value, volume order retired, devin AIMD not hard_ceiling with 
 
 # --- prepaid order, then leftover prepaid after (fleet-ops#1178/#3125) ----
 # 2026-09-07 (Nish 'switch the zenmux workload to crof'): crof moved ahead of runinfra — it is the cheapest measured DeepSeek V4 Flash seat ($0.08/$0.003/$0.10 vs runinfra $0.13/$0.01/$0.27).
+# 2026-09-08 (fleet-ops#4455): cursor-cloud added right after cursor — both draw from the expiring
+# $400 Cursor API pool (resets ~2026-09-22) and are ordered ahead of non-expiring balances
+# (alibaba-coding, xai-oauth, crof, runinfra, entrim) per expiry-first.
 prepaid_order=$(jq -r '.prepaid_providers_in_order | join(" ")' "$caps")
-[[ "$prepaid_order" == "ollama devin cline cursor alibaba-coding xai-oauth crof runinfra entrim" ]] \
-  || fail "prepaid order must be 'ollama devin cline cursor alibaba-coding xai-oauth crof runinfra entrim', got: $prepaid_order"
+[[ "$prepaid_order" == "ollama devin cline cursor cursor-cloud alibaba-coding xai-oauth crof runinfra entrim" ]] \
+  || fail "prepaid order must be 'ollama devin cline cursor cursor-cloud alibaba-coding xai-oauth crof runinfra entrim', got: $prepaid_order"
 
 devin_cap=$(jq -r '.providers.devin.cap // empty' "$caps")
 [[ -n "$devin_cap" ]] || fail "devin cap must be present, got: empty"
@@ -129,7 +132,7 @@ entry_has_dated_reason '.providers.devin' \
 devin_class=$(jq -r '.providers.devin.class // empty' "$caps")
 [[ "$devin_class" == "prepaid-quota" ]] || fail "devin class must be prepaid-quota, got: $devin_class"
 
-ok "prepaid order ollama devin cline cursor alibaba-coding xai-oauth runinfra crof entrim; devin cap carries a dated reason, class prepaid-quota"
+ok "prepaid order ollama devin cline cursor cursor-cloud alibaba-coding xai-oauth crof runinfra entrim; devin cap carries a dated reason, class prepaid-quota"
 
 # --- alibaba-coding: no worker use of ANY alibaba model (fleet-ops#4445 re-scope) ---
 # Nish 2026-09-08: qwen3.8-max is a judge on the roster ONLY; no worker use of
