@@ -87,4 +87,10 @@ ok "seats= grep is no-match safe (no-seat boundary entries reach the send step)"
 ok "no-seat body survives set -euo pipefail (empty seats, reaches send)"
 ok "nish-boundary-notify is syntactically valid bash"
 
+# fleet-ops#4474: the confirmed-question deliverer (Nish question store) reads
+# the same binary; host its question-store test here so it stays P14-reachable
+# without a workflow-scope edit (worker App token cannot touch workflows).
+bash "$here/nish-boundary-notify-questions.test.sh" || fail "nish-boundary-notify questions test failed (fleet-ops#4474)"
+ok "nish-boundary-notify questions mode hosted (fleet-ops#4474)"
+
 echo "OK: every Nish-reserved token is present in CLASSES (fleet-ops#1164)"

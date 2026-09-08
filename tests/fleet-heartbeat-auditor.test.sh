@@ -759,4 +759,15 @@ ok "pi-audit-run regression test hosted (fleet-ops#776)"
 bash "$here/pi-audit-run-product-repo-reality.test.sh" || fail "pi-audit-run product-repo-reality test failed"
 ok "pi-audit-run product-repo-reality hosted (fleet-ops#3966)"
 
+# fleet-ops#4474: the Nish-question conference gate runs on this same panel
+# (pi-audit@ for every open undecided `question` issue, NISH/MATRIX votes,
+# then pi-audit-tally routes). The question-mode tests must stay P14-reachable;
+# hosted here because the worker App token cannot edit .github/workflows/**.
+bash "$here/pi-audit-run-question.test.sh" || fail "pi-audit-run question-mode test failed (fleet-ops#4474)"
+ok "pi-audit-run question mode hosted (fleet-ops#4474)"
+bash "$here/pi-audit-tally-question.test.sh" || fail "pi-audit-tally question-mode test failed (fleet-ops#4474)"
+ok "pi-audit-tally question mode hosted (fleet-ops#4474)"
+bash "$here/fleet-heartbeat-auditor-question.test.sh" || fail "fleet-heartbeat-auditor question test failed (fleet-ops#4474)"
+ok "fleet-heartbeat-auditor question mode hosted (fleet-ops#4474)"
+
 ok "fleet-heartbeat-auditor: starts missing pi-audit units, recovers failed ones, tallies 2-of-3, fails closed, raises stale-pending alarm"
