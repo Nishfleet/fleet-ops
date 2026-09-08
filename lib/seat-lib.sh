@@ -3892,9 +3892,12 @@ _pick_expiring_floor_seat() {
             behind+=("$p"$'\t'"$m")
         fi
     done
-    if (( ${#behind[@]} > 0 )); then
-        _rr_pick "$STATE_DIR/prepaid-floor-rr.idx" "${behind[@]}"
-    fi
+    # fleet-ops#4507: an `if` whose condition is false and which has no else
+    # branch exits 0, so without this explicit `return 1` the function
+    # SUCCEEDS with empty stdout whenever no seat is behind pace — the call
+    # site then "picks" the empty seat "/" and records a phantom prepaid use.
+    (( ${#behind[@]} > 0 )) || return 1
+    _rr_pick "$STATE_DIR/prepaid-floor-rr.idx" "${behind[@]}"
 }
 
 # Re-order a seat list (provider\tmodel entries) by a provider-order string.
@@ -5123,7 +5126,7 @@ pick_seat() {
     # yields only to keystone (strongest-capable seat) and to an explicit
     # prefer-class / senior-review override that already set `chosen` above.
     if [[ -z "${chosen:-}" ]] && ! _is_keystone_class "$difficulty"; then
-        if _floor=$(_pick_expiring_floor_seat); then
+        if _floor=$(_pick_expiring_floor_seat) && [[ -n "$_floor" ]]; then
             chosen="$_floor"
             chosen_p="${chosen%%$'\t'*}"
             chosen_m="${chosen#*$'\t'}"
