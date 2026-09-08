@@ -240,15 +240,24 @@ provider_benched() {
     return 1
 }
 
-# --- Cursor $400 pool measured spend (fleet-ops#4206) ---------------------
+# --- Cursor $400 pool measured spend (fleet-ops#4206, amended #4566) ------
 # Reads the on-demand spend-limit pool from Cursor's DashboardService. The
 # accessToken is read from ~/.config/cursor/auth.json (where cursor-agent
 # stores it) and sent ONLY to api2.cursor.sh over HTTPS — never logged.
+# fleet-ops#4566: the live probe showed spendLimitUsage carries NO limits
+# (Nish keeps the on-demand overage at 0), so spend_usd/pool_usd parse to 0
+# forever. The real expiring $400 is the Ultra INCLUDED API bucket:
+# planUsage.apiPercentUsed x planUsage.limit (dashboard "API usage: N% used").
+# Parse it and emit api_bucket_* so the number is traceable to Cursor.
+# included_exhausted is computed from totalPercentUsed >= 100 — the old
+# includedSpend >= limit compare misfired (planUsage.includedSpend equals the
+# limit on a bonus-exhausted account while apiPercentUsed is still low).
 # Returns a tab-separated row on stdout:
-#   spend_usd<TAB>pool_usd<TAB>cycle_end_s<TAB>included_exhausted<TAB>updated_s
+#   spend_usd<TAB>pool_usd<TAB>cycle_end_s<TAB>included_exhausted<TAB>updated_s<TAB>api_used_usd<TAB>api_remaining_usd<TAB>api_limit_usd<TAB>total_pct
 # or empty on any failure (no metric emitted; the absent() rule fires).
 cursor_measured_spend() {
     local token resp cycle_end_ms spend_limit spend_remaining included_spend included_limit
+    local api_pct api_limit_cents api_used_usd api_remaining_usd api_limit_usd total_pct
     local spend_usd pool_usd cycle_end_s inc_ex
     # Test seam: a fixture file/URL replaces the live API call.
     if [[ -n "$CURSOR_USAGE_URL" ]]; then
@@ -273,23 +282,34 @@ cursor_measured_spend() {
     cycle_end_ms=$(echo "$resp" | jq -r '.billingCycleEnd // 0' 2>/dev/null || echo 0)
     spend_limit=$(echo "$resp" | jq -r '.spendLimitUsage.individualLimit // .spendLimitUsage.pooledLimit // 0' 2>/dev/null || echo 0)
     spend_remaining=$(echo "$resp" | jq -r '.spendLimitUsage.individualRemaining // .spendLimitUsage.pooledRemaining // 0' 2>/dev/null || echo 0)
-    included_spend=$(echo "$resp" | jq -r '.planUsage.includedSpend // 0' 2>/dev/null || echo 0)
-    included_limit=$(echo "$resp" | jq -r '.planUsage.limit // 0' 2>/dev/null || echo 0)
+    api_pct=$(echo "$resp" | jq -r '.planUsage.apiPercentUsed // 0' 2>/dev/null || echo 0)
+    api_limit_cents=$(echo "$resp" | jq -r '.planUsage.limit // 0' 2>/dev/null || echo 0)
+    total_pct=$(echo "$resp" | jq -r '.planUsage.totalPercentUsed // 0' 2>/dev/null || echo 0)
     [[ "$cycle_end_ms" =~ ^[0-9]+$ ]] || cycle_end_ms=0
     [[ "$spend_limit" =~ ^[0-9]+$ ]] || spend_limit=0
     [[ "$spend_remaining" =~ ^[0-9]+$ ]] || spend_remaining=0
-    [[ "$included_spend" =~ ^[0-9]+$ ]] || included_spend=0
-    [[ "$included_limit" =~ ^[0-9]+$ ]] || included_limit=0
-    # cents -> USD. spend = pool limit - remaining (the on-demand pool used).
+    [[ "$api_pct" =~ ^[0-9]+(\.[0-9]+)?$ ]] || api_pct=0
+    [[ "$api_limit_cents" =~ ^[0-9]+$ ]] || api_limit_cents=0
+    [[ "$total_pct" =~ ^[0-9]+(\.[0-9]+)?$ ]] || total_pct=0
+    # cents -> USD. spend = pool limit - remaining (the on-demand pool used;
+    # both are 0 while the on-demand overage limit stays 0 — fleet-ops#4566).
     pool_usd=$(awk -v l="$spend_limit" 'BEGIN{printf "%.6f", l/100}')
     spend_usd=$(awk -v l="$spend_limit" -v r="$spend_remaining" 'BEGIN{printf "%.6f", (l-r)/100}')
+    # Included API bucket: apiPercentUsed x limit (both from planUsage).
+    api_limit_usd=$(awk -v l="$api_limit_cents" 'BEGIN{printf "%.6f", l/100}')
+    api_used_usd=$(awk -v p="$api_pct" -v l="$api_limit_usd" 'BEGIN{printf "%.6f", p/100*l}')
+    api_remaining_usd=$(awk -v u="$api_used_usd" -v l="$api_limit_usd" 'BEGIN{printf "%.6f", (l>u)?l-u:0}')
     cycle_end_s=$(( cycle_end_ms / 1000 ))
-    if (( included_limit > 0 )) && (( included_spend >= included_limit )); then
+    # Included plan exhausted = the whole included+bonus allowance spent out
+    # (totalPercentUsed >= 100), not the old includedSpend>=limit misparse.
+    if awk -v t="$total_pct" 'BEGIN{exit !(t+0 >= 100)}'; then
         inc_ex=1
     else
         inc_ex=0
     fi
-    printf '%s\t%s\t%s\t%s\t%s\n' "$spend_usd" "$pool_usd" "$cycle_end_s" "$inc_ex" "$(date -u +%s)"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$spend_usd" "$pool_usd" "$cycle_end_s" "$inc_ex" "$(date -u +%s)" \
+        "$api_used_usd" "$api_remaining_usd" "$api_limit_usd" "$total_pct"
 }
 
 # Write the prepaid-spend state file + node_exporter textfile for cursor.
@@ -298,10 +318,10 @@ cursor_measured_spend() {
 # .prom in the dir; this file owns ONLY fleet_prepaid_* — no shadowing of
 # fleet.prom, which does not emit these families).
 emit_cursor_prepaid_spend() {
-    local row spend_usd pool_usd cycle_end_s inc_ex updated_s
+    local row spend_usd pool_usd cycle_end_s inc_ex updated_s api_used_usd api_remaining_usd api_limit_usd total_pct
     row=$(cursor_measured_spend) || row=""
     [[ -n "$row" ]] || { log "cursor spend reader: no data (auth missing or API unreachable) — metric omitted, absent() rule will fire"; return; }
-    IFS=$'\t' read -r spend_usd pool_usd cycle_end_s inc_ex updated_s <<<"$row"
+    IFS=$'\t' read -r spend_usd pool_usd cycle_end_s inc_ex updated_s api_used_usd api_remaining_usd api_limit_usd total_pct <<<"$row"
     mkdir -p "$PREPAID_SPEND_DIR" 2>/dev/null || true
     local state="$PREPAID_SPEND_DIR/cursor.json"
     cat >"$state" 2>/dev/null <<JSON || log "WARN: could not write cursor spend state $state"
@@ -311,6 +331,10 @@ emit_cursor_prepaid_spend() {
   "pool_usd": $pool_usd,
   "cycle_end_s": $cycle_end_s,
   "included_exhausted": $inc_ex,
+  "api_bucket_used_usd": $api_used_usd,
+  "api_bucket_remaining_usd": $api_remaining_usd,
+  "api_bucket_limit_usd": $api_limit_usd,
+  "total_percent_used": $total_pct,
   "updated_s": $updated_s,
   "observed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "source": "cursor-dashboard-getcurrentperiodusage"
@@ -334,6 +358,12 @@ JSON
         printf '# HELP fleet_prepaid_included_exhausted 1 when the included plan usage is exhausted (the on-demand pool is open), 0 otherwise (fleet-ops#4206).\n'
         printf '# TYPE fleet_prepaid_included_exhausted gauge\n'
         printf 'fleet_prepaid_included_exhausted{provider="cursor"} %s\n' "$inc_ex"
+        printf '# HELP fleet_cursor_api_bucket_used_usd Cursor Ultra INCLUDED API bucket used, apiPercentUsed x limit, from GetCurrentPeriodUsage (fleet-ops#4566).\n'
+        printf '# TYPE fleet_cursor_api_bucket_used_usd gauge\n'
+        printf 'fleet_cursor_api_bucket_used_usd{provider="cursor"} %s\n' "$api_used_usd"
+        printf '# HELP fleet_cursor_api_bucket_remaining_usd Cursor Ultra INCLUDED API bucket remaining before cycle reset (fleet-ops#4566).\n'
+        printf '# TYPE fleet_cursor_api_bucket_remaining_usd gauge\n'
+        printf 'fleet_cursor_api_bucket_remaining_usd{provider="cursor"} %s\n' "$api_remaining_usd"
     } >"$tmp" 2>/dev/null
     if chmod 0644 "$tmp" 2>/dev/null && mv -f "$tmp" "$PREPAID_PROM_PATH" 2>/dev/null; then
         :
@@ -341,7 +371,7 @@ JSON
         rm -f "$tmp" 2>/dev/null
         log "WARN: could not write prepaid-spend.prom $PREPAID_PROM_PATH"
     fi
-    log "cursor spend reader: spend_usd=$spend_usd pool_usd=$pool_usd cycle_end_s=$cycle_end_s included_exhausted=$inc_ex -> $PREPAID_PROM_PATH"
+    log "cursor spend reader: spend_usd=$spend_usd pool_usd=$pool_usd cycle_end_s=$cycle_end_s included_exhausted=$inc_ex api_used_usd=$api_used_usd api_remaining_usd=$api_remaining_usd -> $PREPAID_PROM_PATH"
 }
 
 # --- ETIMEDOUT watch at cap 2 (fleet-ops#4206) ----------------------------

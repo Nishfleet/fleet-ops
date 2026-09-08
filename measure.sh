@@ -7,7 +7,10 @@
 # prom metric consume.
 #
 # Output (machine-readable on stdout, one idea per line):
-#   usd_24h: metered=<n> flat_share=<n> unavailable=<seats>
+#   usd_24h: metered=<n> flat_share=<n> cursor_today=<n|UNAVAILABLE:<why>> cursor_api_cycle_usd=<n|UNAVAILABLE:<why>> unavailable=<seats>
+#              cursor_today is the trailing-24h delta of Cursor's own
+#              GetCurrentPeriodUsage included-API-bucket spend (fleet-ops#4566);
+#              cursor_api_cycle_usd is the cycle-to-date cumulative.
 #   usd_per_merged_pr: <n>
 #
 #   metered    = marginal USD from tracked-metered seats over the trailing 24h
@@ -46,6 +49,63 @@ for repo in $repo_list; do
     merged_24h=$((merged_24h + (n + 0)))
   fi
 done
+
+# --- cursor_today: real Cursor-side API-bucket burn (fleet-ops#4566) -------
+# The token-derived usd_today for cursor is structurally $0 (prepaid-quota
+# class, no rate card), which reported a false 0.000000 as fact. The real
+# number is Cursor's own GetCurrentPeriodUsage API bucket, written by
+# bin/fleet-prepaid-util-canary into prepaid-spend/cursor.json
+# (api_bucket_used_usd, cycle-to-date cumulative). cursor_today = the trailing
+# 24h DELTA of that cumulative figure, computed against a history of samples
+# this script appends on every run. Until >= CURSOR_TODAY_MIN_H hours of
+# history exists it reports UNAVAILABLE:cursor-history-warming — never a
+# fabricated $0. cursor_api_cycle_usd (cycle-to-date) is always real once the
+# canary has run. Reconciliation command for a human:
+#   token=$(jq -r .accessToken ~/.config/cursor/auth.json); curl -s -X POST \
+#     -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
+#     -d '{}' https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage \
+#     | jq '.planUsage | {apiPercentUsed, limit}'
+# apiPercentUsed x (limit/100) = api_bucket_used_usd = cursor_api_cycle_usd.
+cursor_today_figure() {
+    local state_dir hist now_s latest_usd latest_s line ts used base_ts base_usd last_ts
+    state_dir="${PI_PACKET_STATE:-$HOME/.local/state/pi-packet}"
+    hist="$state_dir/prepaid-spend/cursor-history.jsonl"
+    local state_json="$state_dir/prepaid-spend/cursor.json"
+    [[ -f "$state_json" ]] || { echo "UNAVAILABLE:no-cursor-state"; return; }
+    latest_usd=$(jq -r '.api_bucket_used_usd // empty' "$state_json" 2>/dev/null || true)
+    latest_s=$(jq -r '.updated_s // empty' "$state_json" 2>/dev/null || true)
+    [[ -n "$latest_usd" && -n "$latest_s" ]] || { echo "UNAVAILABLE:no-api-bucket-field"; return; }
+    now_s=$(date -u +%s)
+    mkdir -p "$(dirname "$hist")" 2>/dev/null || true
+    # Append (deduped: skip if the last sample is < 300s old).
+    last_ts=0
+    [[ -f "$hist" ]] && last_ts=$(tail -n 1 "$hist" 2>/dev/null | jq -r '.updated_s // 0' 2>/dev/null || echo 0)
+    if (( now_s - last_ts >= 300 )); then
+        printf '{"updated_s":%s,"api_bucket_used_usd":%s}\n' "$latest_s" "$latest_usd" >> "$hist" 2>/dev/null || true
+    fi
+    min_age_s=$(( ${CURSOR_TODAY_MIN_H:-24} * 3600 ))
+    base_ts=""; base_usd=""
+    while IFS= read -r line; do
+        [[ -n "$line" ]] || continue
+        ts=$(printf '%s' "$line" | jq -r '.updated_s // 0' 2>/dev/null || echo 0)
+        used=$(printf '%s' "$line" | jq -r '.api_bucket_used_usd // 0' 2>/dev/null || echo 0)
+        if (( now_s - ts >= min_age_s )); then base_ts=$ts; base_usd=$used; fi
+    done < "$hist"
+    if [[ -z "$base_ts" ]]; then
+        echo "UNAVAILABLE:cursor-history-warming"
+        return
+    fi
+    # Cycle reset between base and now makes the delta meaningless.
+    cycle_end_s=$(jq -r '.cycle_end_s // 0' "$state_json" 2>/dev/null || echo 0)
+    if (( cycle_end_s > 0 && base_ts < cycle_end_s && now_s >= cycle_end_s )); then
+        echo "UNAVAILABLE:cycle-reset-in-window"
+        return
+    fi
+    awk -v n="$latest_usd" -v b="$base_usd" 'BEGIN{d=n-b; printf "%.4f", (d<0)?0:d}'
+}
+CURSOR_TODAY_FIGURE="$(cursor_today_figure)"
+export CURSOR_TODAY_FIGURE
+export CURSOR_API_CYCLE_USD="$(jq -r '.api_bucket_used_usd // "UNAVAILABLE:no-cursor-state"' "${PI_PACKET_STATE:-$HOME/.local/state/pi-packet}/prepaid-spend/cursor.json" 2>/dev/null || echo UNAVAILABLE:no-cursor-state)"
 
 # Compute the USD numbers via the shared helper (kept in lock-step with the
 # fleet_usd_24h prom exporter).
@@ -89,7 +149,9 @@ if merged_24h and merged_24h > 0:
 else:
     per_line = "usd_per_merged_pr: UNAVAILABLE:no-merged-pr-in-24h"
 
-print(f"usd_24h: metered={metered:.4f} flat_share={flat_share:.4f} unavailable={unavailable or 'none'}")
+# cursor_today: the real Cursor-side figure (24h delta of the GetCurrentPeriodUsage
+# API bucket, or an UNAVAILABLE:<why> label — never a fabricated $0; fleet-ops#4566).
+print(f"usd_24h: metered={metered:.4f} flat_share={flat_share:.4f} cursor_today={os.environ.get('CURSOR_TODAY_FIGURE', 'UNAVAILABLE:no-cursor-state')} cursor_api_cycle_usd={os.environ.get('CURSOR_API_CYCLE_USD', 'UNAVAILABLE:no-cursor-state')} unavailable={unavailable or 'none'}")
 print(per_line)
 # A JSON blob for consumers that prefer structured output (the judge header's
 # third line is built from usd_24h above; this is the raw detail).
@@ -102,6 +164,8 @@ print(
             "merged_pr_24h": merged_24h,
             "usd_per_merged_pr": round(usd_per_pr, 4) if merged_24h else None,
             "unavailable": sorted(unavailable.split(",")) if unavailable else [],
+            "cursor_today": os.environ.get('CURSOR_TODAY_FIGURE', 'UNAVAILABLE:no-cursor-state'),
+            "cursor_api_cycle_usd": os.environ.get('CURSOR_API_CYCLE_USD', 'UNAVAILABLE:no-cursor-state'),
         }
     )
 )

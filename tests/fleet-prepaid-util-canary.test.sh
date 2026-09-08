@@ -383,11 +383,53 @@ grep -q '^fleet_prepaid_pool_usd{provider="cursor"} 400\.000000' "$prom_out" \
   || fail "scenario15: pool_usd must be 400.00"
 grep -q '^fleet_prepaid_cycle_end_timestamp{provider="cursor"} 1790049771' "$prom_out" \
   || fail "scenario15: cycle_end_timestamp must be 1790049771"
-grep -q '^fleet_prepaid_included_exhausted{provider="cursor"} 1' "$prom_out" \
-  || fail "scenario15: included_exhausted must be 1 (includedSpend 40000 >= limit 40000)"
+# fleet-ops#4566: included_exhausted is now totalPercentUsed >= 100 (the old
+# includedSpend>=limit compare misfired on bonus-exhausted accounts).
+grep -q '^fleet_prepaid_included_exhausted{provider="cursor"} 0' "$prom_out" \
+  || fail "scenario15: included_exhausted must be 0 (totalPercentUsed 61.628 < 100)"
+# API bucket: apiPercentUsed 0.018 x $400 limit = $0.072 used.
+grep -q '^fleet_cursor_api_bucket_used_usd{provider="cursor"} 0.072000' "$prom_out" \
+  || fail "scenario15: api bucket used must be 0.072 (0.018% x 400)"
+grep -q '^fleet_cursor_api_bucket_remaining_usd{provider="cursor"} 399.928000' "$prom_out" \
+  || fail "scenario15: api bucket remaining must be 399.928"
+grep -q '"api_bucket_used_usd": 0.072' "$spend_state/cursor.json" \
+  || fail "scenario15: state must carry api_bucket_used_usd"
 grep -q 'cursor spend reader: spend_usd=150' <<<"$spend_out" \
   || fail "scenario15: missing spend reader log line"
 ok "scenario15: cursor spend reader emits fleet_prepaid_spend_usd{provider=cursor} from DashboardService fixture"
+
+# --- 15b. fleet-ops#4566: live-shaped response — spendLimitUsage has NO
+# limits (on-demand overage set to 0), the real $400 is the included API
+# bucket (apiPercentUsed 2.84 x $400 = $11.36 used, $388.64 remaining).
+: >"$gh_log"; : >"$triage"
+rm -f "$prom_out"
+cat >"$scratch/cursor-usage-live.json" <<'JSON'
+{"billingCycleStart":"1787371371000","billingCycleEnd":"1790049771000","planUsage":{"totalSpend":242731,"includedSpend":40000,"bonusSpend":202731,"limit":40000,"autoPercentUsed":80.437,"apiPercentUsed":2.84,"totalPercentUsed":69.35},"spendLimitUsage":{"limitType":"user"},"enabled":true,"displayMessage":"You've hit your usage limit"}
+JSON
+set +e
+live_out=$(
+  CURSOR_USAGE_URL="$scratch/cursor-usage-live.json" \
+  FLEET_PREPAID_SPEND_DIR="$spend_state" \
+  FLEET_PREPAID_PROM_PATH="$prom_out" \
+  FLEET_ENTITLED_SEATS_JSON="$scratch/entitled-seats.json" \
+  SEAT_CAPS_JSON="$scratch/seat-caps.json" \
+  FLEET_OPS_REPO="$scratch" \
+  "$bin" 2>&1
+)
+live_rc=$?
+set -e
+[[ "$live_rc" == "0" ]] || fail "scenario15b: expected rc=0, got $live_rc ($live_out)"
+grep -q '^fleet_prepaid_spend_usd{provider="cursor"} 0.000000' "$prom_out" \
+  || fail "scenario15b: on-demand spend must parse 0 when spendLimitUsage carries no limits"
+grep -q '^fleet_cursor_api_bucket_used_usd{provider="cursor"} 11.360000' "$prom_out" \
+  || fail "scenario15b: api bucket used must be 11.36 (2.84% x 400)"
+grep -q '^fleet_cursor_api_bucket_remaining_usd{provider="cursor"} 388.640000' "$prom_out" \
+  || fail "scenario15b: api bucket remaining must be 388.64"
+grep -q '^fleet_prepaid_included_exhausted{provider="cursor"} 0' "$prom_out" \
+  || fail "scenario15b: included_exhausted must be 0 (totalPercentUsed 69.35 < 100)"
+grep -q '"api_bucket_remaining_usd": 388.64' "$spend_state/cursor.json" \
+  || fail "scenario15b: state must carry api_bucket_remaining_usd"
+ok "scenario15b: live-shaped response parses the included API bucket (fleet-ops#4566)"
 
 # --- 16. Cursor spend reader: missing fixture -> no .prom (absent rule fires)
 : >"$gh_log"; : >"$triage"
