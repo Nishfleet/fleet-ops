@@ -678,6 +678,12 @@ systemd/fable-fleet-check.service.d/20-oom-avoid.conf /home/nish/.config/systemd
 # durable seat-lib fallback lands (fleet-ops#4410) or openrouter credits are
 # restored AND the P3 native Cursor adapter exists.
 systemd/fable-fleet-check.service.d/30-skip-litellm-drained.conf /home/nish/.config/systemd/user/fable-fleet-check.service.d/30-skip-litellm-drained.conf
+# fleet-ops#4455: dedicated Kimi K3 judge POV (pi cursor/kimi-k3-max), the
+# main consumer of the Ultra 'Other Models' $400/month bucket. Repo-sourced
+# (NOT a hand-placed unit, unlike fable-fleet-check-opus) so deploy symlinks
+# and enables it. Report written to cron-output with the seat= header.
+systemd/fable-fleet-check-kimi.service /home/nish/.config/systemd/user/fable-fleet-check-kimi.service
+systemd/fable-fleet-check-kimi.timer /home/nish/.config/systemd/user/fable-fleet-check-kimi.timer
 # fleet-ops#3111: self-heal drop-in. Overrides ExecStart with the
 # pi-transport-self-heal wrapper (npm rebuild; no hand-written symlink).
 systemd/pi-transport-check.service.d/20-self-heal.conf /home/nish/.config/systemd/user/pi-transport-check.service.d/20-self-heal.conf

@@ -6,9 +6,11 @@
  *                --auto-review --trust --workspace <workspace> -- <prompt>
  *
  * Credential: $CURSOR_API_KEY from ~/fleet2/etc/cursor.env
- * Models (NON-NEGOTIABLE LOCK, Nish 2026-08-22):
+ * Models (NON-NEGOTIABLE LOCK, Nish 2026-08-22; kimi added 2026-09-08):
  *   composer-2.5         — Cursor Composer 2.5
  *   cursor-grok-4.6-high — Cursor Grok 4.6 High
+ *   kimi-k3-high         — Kimi K3 (judge/orchestrator only, fleet-ops#4455)
+ *   kimi-k3-max          — Kimi K3 (judge/orchestrator only, fleet-ops#4455)
  */
 
 import {
@@ -82,14 +84,20 @@ loadFleetEnv();
 // =============================================================================
 
 // =============================================================================
-// NISH TWO-MODEL LOCK (2026-08-22, NON-NEGOTIABLE) — runtime enforcement.
-// The model catalog below is only a listing; Pi will happily pass any
-// --model string straight through to cursor-agent. The launcher
-// implementation-worker-cursor-sub enforces this at runtime, so this
+// NISH MODEL LOCK (2026-08-22, NON-NEGOTIABLE; kimi added 2026-09-08 fleet-ops#4455)
+// — runtime enforcement. The model catalog below is only a listing; Pi will
+// happily pass any --model string straight through to cursor-agent. The
+// launcher implementation-worker-cursor-sub enforces this at runtime, so this
 // extension must too, or an unlocked model draws the prepaid Ultra seat.
+//
+// fleet-ops#4455 (Nish 2026-09-08 11:00 IST, final): kimi-k3-max / kimi-k3-high
+// are JUDGE/ORCHESTRATOR ONLY (never worker-tier). They draw the Cursor Ultra
+// 'Other Models' $400/month bucket, consumed through the hourly Kimi judge unit
+// (fable-fleet-check-kimi) + senior/planner/spec/adjudication/conference
+// packets. No `-fast`/`-low` variants anywhere (Nish 2026-09-07).
 // =============================================================================
 
-const CURSOR_MODEL_LOCK = ["composer-2.5", "cursor-grok-4.6-high"] as const;
+const CURSOR_MODEL_LOCK = ["composer-2.5", "cursor-grok-4.6-high", "kimi-k3-high", "kimi-k3-max"] as const;
 
 function assertLockedModel(id: string): void {
 	if (!(CURSOR_MODEL_LOCK as readonly string[]).includes(id)) {
@@ -238,6 +246,24 @@ export default function (pi: ExtensionAPI) {
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 				contextWindow: 500000,
 				maxTokens: 500000,
+			},
+			{
+				id: "kimi-k3-high",
+				name: "Kimi K3 (High)",
+				reasoning: true,
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 256000,
+				maxTokens: 128000,
+			},
+			{
+				id: "kimi-k3-max",
+				name: "Kimi K3",
+				reasoning: true,
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 256000,
+				maxTokens: 128000,
 			},
 		],
 		// Delegate all streaming to the custom impl — not a standard API

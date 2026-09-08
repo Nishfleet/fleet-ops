@@ -22,7 +22,7 @@
     {
       "id": "cursor",
       "class": "prepaid-quota",
-      "note": "Cursor subscription."
+      "note": "Cursor subscription. 2026-09-08 (fleet-ops#4455): kimi-k3-max / kimi-k3-high added as JUDGE/ORCHESTRATOR-ONLY models on this seat (never worker-tier), drawing the Ultra 'Other Models' $400/month bucket through the hourly fable-fleet-check-kimi judge unit + senior/planner/spec/adjudication/conference packets. Model cap 4, no fast/low variants, on-demand overage limit never spent."
     },
     {
       "id": "grok",

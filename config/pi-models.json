@@ -486,6 +486,18 @@
           "name": "Cursor Grok 4.6 High",
           "contextWindow": 500000,
           "maxTokens": 500000
+        },
+        {
+          "id": "kimi-k3-high",
+          "name": "Kimi K3 (High)",
+          "contextWindow": 256000,
+          "maxTokens": 128000
+        },
+        {
+          "id": "kimi-k3-max",
+          "name": "Kimi K3",
+          "contextWindow": 256000,
+          "maxTokens": 128000
         }
       ]
     },
