@@ -500,6 +500,19 @@ while IFS= read -r repo; do
                 murl="${mp#*|}"; murl="${murl%%|*}"
                 if [ "$OK_TO_CLOSE" = "1" ]; then
                     post_note "$repo" "$num" "$murl" "$mnum" protected
+                    # fleet-ops#4540: park the protected merged issue. The
+                    # protected note alone leaves the issue agent-ready, so
+                    # the intake re-claims it on a slow spin (~3 runs/2h on
+                    # #4460) that every anti-loop gate misses. The
+                    # awaiting-runtime-gate label is the park state: the
+                    # intake tick skips labelled issues until the named
+                    # runtime event fires or Nish closes the issue. No new
+                    # timer.
+                    if "$GH" issue edit "$num" -R "$repo" --add-label awaiting-runtime-gate >/dev/null 2>&1; then
+                        log "  $repo#$num: PARKED (awaiting-runtime-gate added — intake skips re-claim, fleet-ops#4540)"
+                    else
+                        log "  $repo#$num: WARN: awaiting-runtime-gate label add failed — intake park detector will retry next tick"
+                    fi
                 else
                     log "  $repo#$num: PROTECTED-delivery candidate (merged PR #$mnum) but FLEET_MERGED_PR_CLOSE_OK != 1 — no write"
                 fi

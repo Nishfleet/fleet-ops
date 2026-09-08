@@ -168,6 +168,22 @@ MAX_RECLAIMS="${PI_INTAKE_MAX_RECLAIMS:-8}"
 # check, so a live worker or open PR never trips it. Overridable for tests.
 RECLAIM_WINDOW_S="${PI_INTAKE_RECLAIM_WINDOW_S:-7200}"
 MAX_CLAIMS_IN_WINDOW="${PI_INTAKE_RECLAIM_MAX_CLAIMS:-4}"
+# fleet-ops#4540: park cap for the protected-merged slow-spaced reclaim
+# spin. A protected (owner-authored or critical-path) OPEN issue whose
+# delivery PR is already MERGED and whose body carries a `termination:`
+# clause naming a future runtime event stays OPEN by design (observe-to-close
+# is comment-only on protected issues, fleet-ops#1435). The existing
+# anti-loop gates all miss the SLOW spin: MAX_RECLAIMS (#2462) resets to 0
+# on any non-empty-output run and the window gate (#2772) sees only ~3
+# claims per 2h at the 15-min cooldown spacing (< cap 4). Live case: #4460
+# re-claimed 9x in 9h after PR #4498 merged (~36 wasted runs over 4 days).
+# This cap counts CUMULATIVE (all-time, not windowed) claims for the issue
+# line from the claims log; past it, a protected issue with a
+# termination clause and a merged claim-branch delivery PR is parked under
+# the awaiting-runtime-gate label until the named runtime event fires or
+# Nish closes the issue. No new timer — the label is the state. Overridable
+# for tests.
+PARK_MAX_CLAIMS="${PI_INTAKE_PARK_MAX_CLAIMS:-3}"
 # The reclaim-cooldown reader below reads $ATTEMPTS_DIR/pi-issue-*.cooldown
 # — the same dir pi-issue-failed-reap writes (both use
 # ${PI_PACKET_STATE:-$HOME/.local/state/pi-packet}/attempts). seat-lib.sh
@@ -1437,6 +1453,18 @@ for i in "${!numbers[@]}"; do
         fi
     fi
 
+    # fleet-ops#4540: parked issues are never re-claimed. A protected issue
+    # with a merged delivery PR and a future-date-gate `termination:` clause
+    # carries the awaiting-runtime-gate label (applied by this tick's park
+    # detector below, or by bin/fleet-merged-pr-close when it posts the
+    # protected observe-to-close note). The label check is cheap (labels
+    # from the initial issue list, no network) and precedes the body fetch
+    # so a parked issue costs zero per-issue network calls.
+    if printf '%s' "${labels[$i]:-}" | jq -e 'map(.name // empty) | index("awaiting-runtime-gate") != null' >/dev/null 2>&1; then
+        echo "issue $N ($title): skipped-awaiting-runtime-gate (parked: merged delivery PR + future runtime gate, fleet-ops#4540)"
+        continue
+    fi
+
     # Early surge-phase skip (auditor 2026-08-28, summon unit-failure
     # fleet-heartbeat): during surge, only surge_leverage_issues are
     # claimable. Checking this BEFORE the body fetch avoids 200+ gh issue
@@ -1634,10 +1662,41 @@ blocked-on: orchestrator" 2>/dev/null || true
     # from the initial issue list. A failed view is fail-closed: skip
     # this issue this tick rather than claim a possibly-blocked or
     # out-of-band issue. The next tick retries.
-    body=$(gh issue view "$N" -R "$FULL" --json body --jq '.body // ""' 2>/dev/null) || {
+    _body_json=$(gh issue view "$N" -R "$FULL" --json body,author 2>/dev/null) || {
         echo "issue $N ($title): skipped-body-unreadable"
         continue
     }
+    body=$(printf '%s' "$_body_json" | jq -r '.body // ""')
+    _issue_author=$(printf '%s' "$_body_json" | jq -r '.author.login // ""')
+
+    # fleet-ops#4540: park detector — protected merged issue, slow-spaced
+    # reclaim spin. Cumulative (all-time) claim count from the claims-log
+    # snapshot; a protected issue with a `termination:` clause and a merged
+    # claim-branch delivery PR past PARK_MAX_CLAIMS is parked under the
+    # awaiting-runtime-gate label. The gh pr list probe only runs when the
+    # cheap preconditions (claim volume + protection + termination clause)
+    # hold, so an ordinary issue costs nothing extra.
+    _park_claims=0
+    if [[ -n "$_claims_log_snapshot" ]]; then
+        _park_claims=$(awk -v n="$N" -v repo="$REPO" '$3 == "line=" n && $4 == "repo=" repo { c++ } END { print c+0 }' <<<"$_claims_log_snapshot" 2>/dev/null || echo 0)
+    fi
+    if (( _park_claims > PARK_MAX_CLAIMS )); then
+        _park_protected=0
+        if printf '%s' "${labels[$i]:-}" | jq -e '[.[]?.name // empty] | index("critical-path") != null' >/dev/null 2>&1; then
+            _park_protected=1
+        fi
+        [[ "$_issue_author" == "nish3451" ]] && _park_protected=1
+        if (( _park_protected == 1 )) && printf '%s' "$body" | grep -qi 'termination:'; then
+            _park_merged=$(gh pr list -R "$FULL" --head "claim/issue-$N" --state merged --json number,url,mergedAt 2>/dev/null || echo "[]")
+            if printf '%s' "$_park_merged" | jq -e 'length > 0' >/dev/null 2>&1; then
+                _park_pr=$(printf '%s' "$_park_merged" | jq -r '.[0].number')
+                echo "issue $N ($title): skipped-parked-protected-merged ($_park_claims cumulative claims > cap $PARK_MAX_CLAIMS; merged PR #$_park_pr delivered it; awaiting runtime gate)" >&2
+                gh issue edit "$N" -R "$FULL" --add-label awaiting-runtime-gate --remove-label agent-ready 2>/dev/null || true
+                gh issue comment "$N" -R "$FULL" --body "fleet-ops#4540: issue $N is protected (owner-authored or critical-path) with a merged delivery PR (claim/issue-$N, PR #$_park_pr) and a \`termination:\` clause naming a future runtime event. observe-to-close stays comment-only on protected issues (fleet-ops#1435), so the issue stays OPEN by design — but it has been re-claimed ${_park_claims} times since the merge on a slow spin every anti-loop gate misses (#2462 counter resets on non-empty output; #2772 window sees only ~3 claims per 2h at the 15-min cooldown spacing). Parking it: labelled \`awaiting-runtime-gate\`, removed from agent-ready; the intake will not re-claim it until the named runtime event fires (clear the label then) or Nish closes the issue. No new timer." 2>/dev/null || true
+                continue
+            fi
+        fi
+    fi
 
     # fleet-ops#3575: fetch comments up-front so a comment-level `blocked-on:`
     # stops the re-claim. Comments were already needed for the spec gate

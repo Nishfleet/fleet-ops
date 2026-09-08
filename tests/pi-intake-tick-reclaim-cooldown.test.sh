@@ -133,4 +133,12 @@ bash "$here/fleet-ops-2772-claim-loop-gate.test.sh" || fail "fleet-ops-2772 clai
 # dispatch family as the #2772 host above.
 bash "$here/fleet-ops-4273-escalation-never-nish-decision.test.sh" || fail "fleet-ops-4273 escalation nish-decision regression tests failed"
 
+# fleet-ops#4540: the protected-merged slow-spaced reclaim spin — the
+# awaiting-runtime-gate park detector (cumulative claim cap on protected
+# issues with a merged delivery PR + future-date-gate termination clause).
+# Hosted here from pi-intake-tick-awaiting-runtime-gate.test.sh (the worker
+# App cannot push .github/workflows/**). Same intake dispatch family as the
+# #2772/#4273 hosts above.
+bash "$here/pi-intake-tick-awaiting-runtime-gate.test.sh" || fail "fleet-ops-4540 awaiting-runtime-gate park detector tests failed"
+
 echo "ALL OK: intake-tick reclaim cooldown + stale-claim release (fleet-ops#2133)"
