@@ -111,6 +111,25 @@ candidate_is_epic_linked() {
 
 log() { printf '[%s] [pi-audit-tally] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; }
 
+# fleet-ops#4503: a SKIP whose seat is recast-exhausted (fleet-ops#3962 marker
+# "$dir/<role>.skip-exhausted", written after AUDIT_SKIP_RECAST_MAX recasts)
+# can never be recast again — that seat will never vote. Counting it as a
+# recorded SKIP wedges the panel at PENDING forever (2 FAIL + exhausted SKIP
+# never reached a verdict) and AUDITOR-PANEL-PENDING fired on every heartbeat
+# tick. An exhausted SKIP is an abstention that no longer blocks: it drops out
+# of the SKIP gate so the arrived real votes decide (2-of-2). Reads the
+# <role>\t<verdict> pairs already collected in the votes JSON.
+exhausted_skip_count() {
+    local dir="$1" votes="$2" n=0 role verdict
+    while IFS=$'\t' read -r role verdict; do
+        [ -n "$role" ] || continue
+        if [ "$verdict" = "SKIP" ] && [ -f "$dir/$role.skip-exhausted" ]; then
+            n=$(( n + 1 ))
+        fi
+    done <<<"$(printf '%s\n' "$votes" | jq -r '.[] | "\(.role)\t\(.verdict)"' 2>/dev/null || true)"
+    printf '%s\n' "$n"
+}
+
 [ $# -eq 2 ] || { log "usage: pi-audit-tally <repo> <candidate>"; exit 2; }
 repo="$1"
 candidate="$2"
@@ -157,8 +176,11 @@ tally_question() {
     # A SKIP is a seat that did not vote, not a vote. It never shrinks the
     # denominator: with a SKIP recorded the panel is PENDING until the third
     # seat returns (fleet-ops#4451 arithmetic).
-    if [ "$skip" -gt 0 ] && [ "$real" -lt "$PANEL_QUORUM" ]; then
-        log "$repo/#$candidate question PENDING: $real real vote(s) of $PANEL_QUORUM, $skip SKIP recorded"
+    local exhausted blocking_skips
+    exhausted=$(exhausted_skip_count "$dir" "$votes")
+    blocking_skips=$(( skip - exhausted ))
+    if [ "$blocking_skips" -gt 0 ] && [ "$real" -lt "$PANEL_QUORUM" ]; then
+        log "$repo/#$candidate question PENDING: $real real vote(s) of $PANEL_QUORUM, $skip SKIP recorded ($exhausted exhausted, fleet-ops#4503)"
         exit 0
     fi
 
@@ -339,14 +361,22 @@ main() {
     # PENDING until the third seat returns, never 2-of-2.
     #
     # The gate is deliberately narrow: it fires only when a SKIP was actually
-    # RECORDED. A recorded SKIP is proof the panel had a third seat and it
-    # declined, so two verdicts are not a majority of three. When no SKIP file
-    # exists the tally has no evidence a third seat was ever dispatched, and
-    # the pre-existing convention (the arrived votes decide) stands - that
-    # convention is pinned by tests/fleet-heartbeat-auditor.test.sh and is not
-    # this issue's fault to change.
-    if [ "$skip" -gt 0 ] && [ "$real" -lt "$PANEL_QUORUM" ]; then
-        log "$repo/#$candidate PENDING: $real real vote(s) of $PANEL_QUORUM, $skip SKIP recorded (a SKIP does not shrink the denominator)"
+    # RECORDED and the seat is still recast-able. A recorded SKIP is proof the
+    # panel had a third seat and it declined, so two verdicts are not a
+    # majority of three. When no SKIP file exists the tally has no evidence a
+    # third seat was ever dispatched, and the pre-existing convention (the
+    # arrived votes decide) stands - that convention is pinned by
+    # tests/fleet-heartbeat-auditor.test.sh and is not this issue's fault to
+    # change.
+    # fleet-ops#4503: a seat whose recast budget is exhausted (its
+    # <role>.skip-exhausted marker exists, fleet-ops#3962) can never vote
+    # again, so its SKIP must not hold the panel hostage — it drops out of the
+    # gate and the arrived real votes decide (2-of-2).
+    local exhausted blocking_skips
+    exhausted=$(exhausted_skip_count "$dir" "$votes")
+    blocking_skips=$(( skip - exhausted ))
+    if [ "$blocking_skips" -gt 0 ] && [ "$real" -lt "$PANEL_QUORUM" ]; then
+        log "$repo/#$candidate PENDING: $real real vote(s) of $PANEL_QUORUM, $skip SKIP recorded ($exhausted exhausted, fleet-ops#4503) (a recast-able SKIP does not shrink the denominator)"
         exit 0
     fi
 
