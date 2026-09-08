@@ -3228,8 +3228,8 @@ devin_payload = {
             "planInfo": {"planName": "Pro"},
             "dailyQuotaRemainingPercent": 96,
             "weeklyQuotaRemainingPercent": 93,
-            "dailyQuotaResetAtUnix": 1788854400,
-            "weeklyQuotaResetAtUnix": 1789286400,
+            "dailyQuotaResetAtUnix": int(time.time()) + 3600,
+            "weeklyQuotaResetAtUnix": int(time.time()) + 5 * 86400,
         },
     }
 }

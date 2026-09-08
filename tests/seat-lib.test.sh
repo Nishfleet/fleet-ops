@@ -2147,6 +2147,37 @@ while IFS= read -r line; do
 done <<< "$floor_got"
 ok "expiring floor: two behind-pace expiring seats alternate and front-run the flat seat (#4467)"
 
+# --- fleet-ops#4507: no seat behind pace must be a MISS, not an empty pick ---
+#
+# `_pick_expiring_floor_seat` ended in `if (( ${#behind[@]} > 0 )); then ... fi`.
+# A bash `if` with a false condition and no else branch exits 0, so with every
+# expiring seat ON pace the function returned SUCCESS with empty stdout. The
+# call site took that as a pick: it logged "expiring-pace floor routing to /"
+# and called `_record_prepaid_pick ""`, creating a phantom `prepaid-usage/.json`
+# ledger entry. Measured on the live box 2026-09-08: 215 "routing to /" lines
+# in watch.log and ZERO real floor picks — the #4467 feature had never once
+# fired for real. Fixture: both expiring seats are ON pace (count == budget),
+# so the floor must MISS and the normal ledger order must decide.
+for prov in expired-a expired-b flatseat; do
+  jq -nc --arg w "$week" --argjson c 100 '{week:$w,count:$c}' \
+    > "$PI_PACKET_STATE/prepaid-usage/${prov}.json"
+done
+rm -f "$PI_PACKET_STATE/prepaid-usage/.json" "$PI_PACKET_STATE/prepaid-floor-rr.idx"
+set +e
+onpace_rc=$(bash -c 'source "$0"; load_seat_caps; _pick_expiring_floor_seat >/dev/null 2>&1; echo $?' "$lib" 2>/dev/null)
+onpace_out=$(bash -c 'source "$0"; load_seat_caps; _pick_expiring_floor_seat 2>/dev/null' "$lib" 2>/dev/null)
+onpace_pick=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" 2>/dev/null)
+set -e
+[[ "$onpace_rc" != "0" ]] \
+  || fail "expiring floor: with every expiring seat on pace the floor must MISS (rc!=0), got rc=$onpace_rc out=[$onpace_out] (#4507)"
+[[ -z "$onpace_out" ]] \
+  || fail "expiring floor: a missing floor must emit nothing, got [$onpace_out] (#4507)"
+[[ -n "$onpace_pick" && "$onpace_pick" != $'\t'* ]] \
+  || fail "expiring floor: pick_seat must fall through to a real seat, got [$onpace_pick] (#4507)"
+[[ ! -e "$PI_PACKET_STATE/prepaid-usage/.json" ]] \
+  || fail "expiring floor: an empty pick must never record a phantom prepaid use (prepaid-usage/.json) (#4507)"
+ok "expiring floor: on-pace fleet is a floor MISS, no empty pick, no phantom ledger write (#4507)"
+
 # --- fleet-ops#1163: xai-oauth (SuperGrok sub) prepaid weekly seat --------
 #
 # fleet-ops#1163 was closed by PR #1436 (merged 2026-08-28T01:02:18Z):
@@ -4051,6 +4082,11 @@ bash "$here/seat-lib-free-daily-budget.test.sh" || fail "seat-lib-free-daily-bud
 # Workers cannot add a P14 line in .github/workflows/ci.yml; this file is the
 # listed CI host for the new product_only/spend-cap bench test.
 bash "$here/seat-lib-product-only-spend-cap.test.sh" || fail "seat-lib-product-only-spend-cap tests failed"
+
+# fleet-ops#4453: Pareto Pass token-derived provider daily-budget spend meter.
+# Workers cannot add a P14 line in .github/workflows/ci.yml; this file is the
+# listed CI host for the new provider-daily-budget bench test.
+bash "$here/seat-lib-provider-daily-budget.test.sh" || fail "seat-lib-provider-daily-budget tests failed"
 
 # fleet-ops#3826: a ceiling-parked spawn_fail seat must not be re-offered on
 # a false-healthy seat-health.ts ledger write (after_provider_response).

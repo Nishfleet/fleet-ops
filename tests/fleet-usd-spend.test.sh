@@ -130,8 +130,16 @@ PY
 )"
 echo "$expout" | grep -qE 'fleet_usd_24h\{kind="metered"\}' || fail "exporter did not emit fleet_usd_24h{kind=metered}; got: $expout"
 echo "$expout" | grep -qE 'fleet_usd_24h\{kind="flat_share"\}' || fail "exporter did not emit fleet_usd_24h{kind=flat_share}"
-echo "$expout" | grep -qE 'fleet_usd_per_merged_pr' || fail "exporter did not emit fleet_usd_per_merged_pr"
-ok "exporter emits fleet_usd_24h + fleet_usd_per_merged_pr"
+# fleet-ops#4459 regression: the label VALUE must be quoted. Prometheus
+# exposition format requires quoted label values; `merged_prs=133` is a parse
+# error, and the node_exporter textfile collector drops the ENTIRE file on one
+# bad line — so an unquoted value took fleet_usd_24h dark with it
+# (node_textfile_scrape_error=1, observed live 2026-09-08T09:0xZ).
+echo "$expout" | grep -qE 'fleet_usd_per_merged_pr\{merged_prs="[0-9]+"\} [0-9]' \
+  || fail "exporter must emit fleet_usd_per_merged_pr with a QUOTED label value (textfile-parseable); got: $(echo "$expout" | grep fleet_usd_per_merged_pr)"
+echo "$expout" | grep -qE 'fleet_usd_per_merged_pr\{merged_prs=[0-9]' \
+  && fail "exporter emitted an unquoted merged_prs label value — node_exporter drops the whole textfile on that line"
+ok "exporter emits fleet_usd_24h + fleet_usd_per_merged_pr with a quoted, parseable label (#4459)"
 
 # 6. UNAVAILABLE never fabricated: a provider with no rate card records UNAVAILABLE
 #    in the prepaid-usage counter.
