@@ -256,7 +256,7 @@ provider_benched() {
 #   spend_usd<TAB>pool_usd<TAB>cycle_end_s<TAB>included_exhausted<TAB>updated_s<TAB>api_used_usd<TAB>api_remaining_usd<TAB>api_limit_usd<TAB>total_pct
 # or empty on any failure (no metric emitted; the absent() rule fires).
 cursor_measured_spend() {
-    local token resp cycle_end_ms spend_limit spend_remaining included_spend included_limit
+    local token resp cycle_end_ms spend_limit spend_remaining
     local api_pct api_limit_cents api_used_usd api_remaining_usd api_limit_usd total_pct
     local spend_usd pool_usd cycle_end_s inc_ex
     # Test seam: a fixture file/URL replaces the live API call.
