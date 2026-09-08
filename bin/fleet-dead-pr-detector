@@ -1,0 +1,182 @@
+#!/usr/bin/env bash
+
+# Use the nishfleet-worker App token for any GitHub write. Fail closed if
+# the App cannot mint and no token was inherited from a parent organ, so a
+# dead App never falls through to the human gh identity (fleet-ops#3445).
+# Human gh is read-only for organs; GH Actions (tests) has no App creds and
+# stubs gh as read-only, so skip minting there.
+if [[ -z "${GH_TOKEN:-}" && "${GITHUB_ACTIONS:-}" != "true" && "${GH:-gh}" == "gh" ]]; then
+    export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
+    _wt="${NISHFLEET_WORKER_TOKEN_BIN:-${HOME:-/home/nish}/.local/bin/worker-token}"
+    _minted="$("$_wt" --print)" || { echo "fleet-ops#3445: $_wt --print failed - refusing human-gh writes" >&2; exit 1; }
+    eval "$_minted"
+    unset _wt _minted
+fi
+# fleet-dead-pr-detector — flag open CONFLICTING PRs whose parent issue is
+# already resolved (fleet-ops#4468).
+#
+# The class: an open PR that GitHub reports as `mergeable: CONFLICTING` but
+# whose work was already shipped by a merged/closed fix on the default
+# branch. Nothing detects it automatically — the branch sits red until a
+# manual sweep. When its parent issue is MERGED or CLOSED the PR is dead:
+# the branch cannot merge and its work already landed.
+#
+# Parent-originating issue resolution is deterministic, exact-number only
+# (never substring; #11352 must not match issue 1135 — same convention as
+# fleet-merged-pr-close). Priority, first match wins:
+#   1. explicit delivery trailer in the body — `Closes|Fixes|Resolves
+#      #N`, `Closed #N`, with an optional `<repo>#N` /
+#      `<owner>/<repo>#N` prefix
+#   2. `Relates to #N` in the body
+#   3. head branch `claim/issue-<N>`
+#   4. first bounded `#N` reference in the body (word-boundary, N >= 1,
+#      optional repo prefix accepted)
+# A CONFLICTING PR with no resolvable parent is NOT dead-classified — we
+# cannot prove a resolved parent, so it is skipped, never guessed.
+#
+# Runs as ExecStartPre of the fleet-merged-pr-close unit (same rail, no new
+# timer). A found dead PR exits 1 so the unit fails and the existing
+# OnFailure escalation pages instead of the branch lingering until a manual
+# sweep.
+#
+# Output: one `dead-pr:` evidence line + one human line per dead PR, then
+# the measure line `dead_conflicting_prs=<n>` as the LAST stdout line.
+# Logging is stderr only; stdout is machine-readable.
+#
+# Exit codes: 0 clean (no dead conflicting PRs), 1 when at least one dead
+# conflicting PR is proven, 2 on any gh/jq infra failure (fail-closed —
+# never a false green).
+#
+# Environment seams (tests override all of these):
+#   GH             gh binary (mockable)
+#   DEAD_PR_REPO   owner/repo to scan (default Nishfleet/fleet-ops)
+
+set -euo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="${PATH:-/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+GH="${GH:-gh}"
+REPO="${DEAD_PR_REPO:-Nishfleet/fleet-ops}"
+
+log() {
+    printf '[fleet-dead-pr-detector] %s\n' "$*" >&2
+}
+
+loud() {
+    local tag="$1"; shift
+    log "LOUD [$tag] $*"
+}
+
+command -v "$GH" >/dev/null 2>&1 || { loud "DEAD-PR-BROKEN" "gh missing at $GH"; exit 2; }
+command -v jq >/dev/null 2>&1 || { loud "DEAD-PR-BROKEN" "jq missing"; exit 2; }
+
+# Delivery/related/reference patterns, exact-number bounded with an optional
+# repo prefix — mirrors fleet-merged-pr-close (#1135 must never match
+# #11352; the closing keyword family and `Relates to` forms are as GitHub
+# accepts them).
+TRAILER_RE='(^|[^0-9A-Za-z])(Clos(es?|ed)|Fix(es|ed)?|Resolv(es?|ed))[[:space:]]+([A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)?)?#[1-9][0-9]*([^0-9A-Za-z]|$)'
+RELATES_RE='(^|[^0-9A-Za-z])Relat(es|ed)[[:space:]]+to[[:space:]]+#[1-9][0-9]*([^0-9A-Za-z]|$)'
+REF_RE='(^|[^0-9A-Za-z])([A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)?)?#[1-9][0-9]*([^0-9A-Za-z]|$)'
+
+# first_num TEXT PATTERN — the first bounded issue number matched by PATTERN
+# in TEXT, top-to-bottom; empty when none.
+first_num() {
+    local text="$1" pattern="$2" match
+    match="$(printf '%s\n' "$text" | grep -Eio "$pattern" | head -n 1 || true)"
+    [ -n "$match" ] || return 0
+    printf '%s' "$match" | grep -Eio '#[1-9][0-9]*' | head -n 1 | tr -d '#'
+}
+
+# branch_num HEAD — the issue number when HEAD is claim/issue-<N>; empty
+# otherwise.
+branch_num() {
+    local head="$1" n
+    case "$head" in
+        claim/issue-*)
+            n="${head#claim/issue-}"
+            if [[ "$n" =~ ^[1-9][0-9]*$ ]]; then
+                printf '%s' "$n"
+            fi
+            ;;
+    esac
+}
+
+# resolve_parent BODY HEAD — deterministic parent-originating issue number
+# per the priority in the header comment.
+resolve_parent() {
+    local body="$1" head="$2" n
+    n="$(first_num "$body" "$TRAILER_RE")"
+    [ -n "$n" ] || n="$(first_num "$body" "$RELATES_RE")"
+    [ -n "$n" ] || n="$(branch_num "$head")"
+    [ -n "$n" ] || n="$(first_num "$body" "$REF_RE")"
+    printf '%s' "$n"
+}
+
+log "dead-conflicting-PR scan starting (repo=$REPO, gh=$GH)"
+
+# Open PRs, one fetch. A non-zero rc or empty output is an infra failure —
+# fail closed so a broken call can never read as a clean sweep.
+if ! prs_json=$("$GH" pr list -R "$REPO" --state open \
+    --json number,title,headRefName,mergeable,body 2>&1); then
+    loud "DEAD-PR-GH" "$REPO: gh pr list failed"
+    exit 2
+fi
+if [ -z "$prs_json" ]; then
+    loud "DEAD-PR-GH" "$REPO: gh pr list returned empty output"
+    exit 2
+fi
+if ! printf '%s' "$prs_json" | jq -e 'type == "array"' >/dev/null 2>&1; then
+    loud "DEAD-PR-BROKEN" "$REPO: gh pr list output is not a JSON array"
+    exit 2
+fi
+
+scanned=0
+dead=0
+
+while IFS= read -r pr; do
+    [ -z "$pr" ] && continue
+    num="$(printf '%s' "$pr" | jq -r '.number')"
+    title="$(printf '%s' "$pr" | jq -r '.title')"
+    head="$(printf '%s' "$pr" | jq -r '.headRefName // ""')"
+    body="$(printf '%s' "$pr" | jq -r '.body // ""')"
+    scanned=$((scanned + 1))
+
+    parent="$(resolve_parent "$body" "$head")"
+    if [ -z "$parent" ]; then
+        log "PR #$num: CONFLICTING but no resolvable parent issue — not dead-classified, skipped"
+        continue
+    fi
+
+    if ! issue_json=$("$GH" issue view "$parent" -R "$REPO" --json state,title 2>&1); then
+        loud "DEAD-PR-GH" "$REPO: gh issue view #$parent failed for PR #$num"
+        exit 2
+    fi
+    if ! state="$(printf '%s' "$issue_json" | jq -r '.state // ""' 2>/dev/null)"; then
+        loud "DEAD-PR-BROKEN" "$REPO: could not read state of issue #$parent (PR #$num)"
+        exit 2
+    fi
+    if [ -z "$state" ]; then
+        loud "DEAD-PR-BROKEN" "$REPO: no state for issue #$parent (PR #$num)"
+        exit 2
+    fi
+
+    if [ "$state" = "MERGED" ] || [ "$state" = "CLOSED" ]; then
+        dead=$((dead + 1))
+        url="https://github.com/${REPO}/issues/${parent}"
+        printf 'dead-pr: %s %s parent=%s parent-state=%s %s\n' \
+            "$num" "$title" "$parent" "$state" "$url"
+        printf 'dead-pr-human: PR #%s is a dead conflicting branch — parent issue #%s is %s (%s); the fix already shipped, the branch cannot merge.\n' \
+            "$num" "$parent" "$state" "$url"
+    else
+        log "PR #$num: parent #$parent state=$state — still live, not dead"
+    fi
+done < <(printf '%s' "$prs_json" | jq -c '.[] | select(.mergeable == "CONFLICTING")')
+
+printf 'dead_conflicting_prs=%s\n' "$dead"
+log "scan done: conflicting=$scanned dead=$dead"
+if [ "$dead" -gt 0 ]; then
+    exit 1
+fi
+exit 0

@@ -23,6 +23,11 @@ Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=FLEET_MERGED_PR_CLOSE_OK=1
 Environment=MERGED_PR_CLOSE_INTAKE_JSON=/home/nish/workspaces/products/fleet-ops/config/intake-repos.json
 WorkingDirectory=/home/nish
+# fleet-ops#4468: dead-conflicting-PR detector runs before the observe-to-
+# close pass. A CONFLICTING open PR whose parent issue is MERGED/CLOSED fails
+# the unit (exit 1) so OnFailure escalation pages instead of the dead branch
+# lingering until a manual sweep. No new timer: piggybacks this rail.
+ExecStartPre=/home/nish/.local/bin/fleet-dead-pr-detector
 ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/fleet-merged-pr-close'
 TimeoutStartSec=10min
 # Never restart: the webhook (or the backstop timer) is the retry.

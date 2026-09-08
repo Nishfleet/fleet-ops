@@ -164,6 +164,10 @@ bin/fleet-debug-playbook /home/nish/.local/bin/fleet-debug-playbook
 # but forgot to close (the forgotten-Closes-trailer class). Heartbeat-tier1;
 # close gated behind FLEET_MERGED_PR_CLOSE_OK=1.
 bin/fleet-merged-pr-close /home/nish/.local/bin/fleet-merged-pr-close
+# fleet-ops#4468: dead-conflicting-PR detector — flag CONFLICTING open PRs
+# whose parent issue is MERGED/CLOSED (fail-loud exit 1). Runs as
+# ExecStartPre of the fleet-merged-pr-close unit; no new timer.
+bin/fleet-dead-pr-detector /home/nish/.local/bin/fleet-dead-pr-detector
 # fleet-ops#526: session-close lint for "interventions get eliminated,
 # not repeated". Heartbeat-tier1 block 20; fail-loud + auto-file on a
 # third identical correction in the window.
