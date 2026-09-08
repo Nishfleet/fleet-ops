@@ -21,7 +21,7 @@ Metric family:
 Sources:
   - config/intake-repos.json repos[] (product candidates)
   - config/self-maintenance-repos.json (control-plane exclusion)
-  - gh GraphQL search of merged PRs per product repo (cached, 15m TTL)
+  - gh GraphQL search of merged PRs per product repo (cached, 4m TTL)
 
 Piggybacks fleet-metrics-export.service via
 systemd/fleet-metrics-export.service.d/product-slo.conf — no new timer
@@ -84,12 +84,12 @@ FIXTURE = os.environ.get("FLEET_PRODUCT_SLO_FIXTURE", "")
 NOW_ISO = os.environ.get("FLEET_PRODUCT_SLO_NOW", "")
 GH = os.environ.get("FLEET_PRODUCT_SLO_GH", "gh")
 ORG = os.environ.get("FLEET_PRODUCT_SLO_ORG", "Nishfleet")
-# fleet-ops#3984: 15m TTL (was 6h). The shipped_24h tile reads this cache,
-# so a 6h-stale cache undercounted the trailing-24h window by up to ~8
-# merges (the "window edge" miss). 15m keeps the 24h count within the
-# console verifier's abs<=2 tolerance while staying well under the gh
-# search rate limit (per-repo fetch, ~10 pages per refresh).
-TTL = int(os.environ.get("FLEET_PRODUCT_SLO_TTL", "900"))  # 15m
+# fleet-ops#3416: 4m TTL. The shipped_24h tile reads this cache, so a
+# stale cache undercounts the trailing-24h window and disputes the console
+# verifier's abs<=2 tolerance. 5-min exporter tick refetches gh each tick
+# (staleness <=4m, under tile stale_after_s=900), while the per-repo fetch
+# stays ~12 refetches/hr x 1-2 pages — trivial vs the 5,000/hr gh budget.
+TTL = int(os.environ.get("FLEET_PRODUCT_SLO_TTL", "240"))  # 4m
 STALE = int(os.environ.get("FLEET_PRODUCT_SLO_STALE", "86400"))  # 24h
 GH_TIMEOUT = 60
 GH_PAGES = 10
