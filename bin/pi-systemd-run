@@ -53,6 +53,17 @@
 #                          so the chain is tracked across hops.
 #   --hop N                Chain hop number (default 0). The original dispatch
 #                          is hop 0; each re-dispatch increments it.
+#   --unmanaged REASON     Dated escape for a .timer unit name that has no
+#                          systemd/timer-manifest.json entry: pass a DATED
+#                          reason (must start YYYY-MM-DD) so a deliberately
+#                          hand-placed timer can be installed ONE way and one
+#                          way only. No blanket allowlist (fleet-ops#4472).
+#
+# Timer-MANIFEST gate (fleet-ops#4472): a --unit that names a user .timer is
+# refused unless it has an entry in systemd/timer-manifest.json (exact or
+# template match), via bin/timer-manifest-guard. This is the install-time
+# rail that stops an unregistered live timer from existing — the ten-repeat
+# defect #3198/#3317/#3336/#3338/#4128/#4218/#4247/#4327/#4291/#4400.
 #
 # Dead-man (fleet-ops#4266): every real launch arms three rails so a
 # detached job that ENDS without its deliverable fails loudly instead of
@@ -115,10 +126,12 @@ SYSTEMCTL="${SYSTEMCTL:-systemctl}"
 
 usage() {
     cat <<'EOF' >&2
-usage: pi-systemd-run [--dry-run] [--unit NAME] [--working-directory DIR] [--stdin FILE] [--deadline MIN] [--deliverable PATH] [--provider NAME] [--model NAME] [--chain-id ID] [--hop N] -- COMMAND [ARGS...]
+usage: pi-systemd-run [--dry-run] [--unit NAME] [--working-directory DIR] [--stdin FILE] [--deadline MIN] [--deliverable PATH] [--provider NAME] [--model NAME] [--chain-id ID] [--hop N] [--unmanaged 'YYYY-MM-DD reason'] -- COMMAND [ARGS...]
 
 Run COMMAND as a user systemd unit so it outlives this session.
     Never use nohup or trailing & — those die with the launching shell.
+    A --unit that names a .timer is refused unless it has an entry in
+    systemd/timer-manifest.json (fleet-ops#4472).
 EOF
     exit 2
 }
@@ -133,6 +146,7 @@ provider=""
 model=""
 chain_id=""
 hop="0"
+unmanaged=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -180,6 +194,11 @@ while [[ $# -gt 0 ]]; do
         --hop)
             [[ $# -ge 2 ]] || usage
             hop="$2"
+            shift 2
+            ;;
+        --unmanaged)
+            [[ $# -ge 2 ]] || usage
+            unmanaged="$2"
             shift 2
             ;;
         --) shift; break ;;
@@ -235,6 +254,31 @@ unit="${unit%.service}"
 # systemd unit names: alphanumerics, '.', '_', '-', ':', '\'.
 unit="${unit//[^A-Za-z0-9:_.\\-]/_}"
 [[ -n "$unit" ]] || { echo "pi-systemd-run: empty --unit after sanitise" >&2; exit 2; }
+
+# --- Timer-MANIFEST gate (fleet-ops#4472) ------------------------------------
+# A --unit that names a user .timer is the install rail for a schedule. Refuse
+# it unless it has an entry in systemd/timer-manifest.json (exact or template
+# match). This is the durable, at-creation prevention that the after-the-fact
+# live check cannot give: the ten-repeat defect #3198..#4400 was always caught
+# AFTER install. The ONLY escape is --unmanaged with a dated (YYYY-MM-DD)
+# reason — no blanket allowlist. Runs before any dispatch/ledger side effect
+# so an unregistered timer is never even staged.
+if [[ "$unit" == *".timer" ]]; then
+    guard_src="${BASH_SOURCE[0]}"
+    if command -v readlink >/dev/null 2>&1; then
+        guard_src="$(readlink -f "$guard_src" 2>/dev/null || echo "$guard_src")"
+    fi
+    guard_here="$(cd "$(dirname "$guard_src")" && pwd)"
+    guard_bin="${PI_TIMER_GUARD_BIN:-$guard_here/timer-manifest-guard}"
+    guard_args=(--manifest "$guard_here/../systemd/timer-manifest.json")
+    if [[ -n "$unmanaged" ]]; then
+        guard_args+=(--unmanaged "$unmanaged")
+    fi
+    if ! "$guard_bin" "${guard_args[@]}" -- "$unit"; then
+        echo "pi-systemd-run: refuse to install unmanaged timer $unit (fleet-ops#4472)" >&2
+        exit 2
+    fi
+fi
 
 [[ -d "$workdir" ]] || { echo "pi-systemd-run: working directory not found: $workdir" >&2; exit 2; }
 
