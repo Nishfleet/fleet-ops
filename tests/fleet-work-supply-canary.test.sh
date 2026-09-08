@@ -83,6 +83,32 @@ old_json=$(jq -n --arg ts "$(date -u -d '@'"$((now - 3600*10))" +%Y-%m-%dT%H:%M:
   || fail "math: closed 10h ago is outside 6h window"
 ok "scenario1: hours math famine/floor/go-ham/generate/rest"
 
+# --- scenario1b: drain falls back to the intake journal claims/hour ---------
+# (fleet-ops#4450). When closed-in-window is 0 the runway must derive the
+# drain from the pi-intake journal's claimed+spawned rate, not the 1/h proxy.
+# Fixture: ready=8, 96 claims in a 6h window = 16/h -> runway 0.5h.
+_hours="$(WORK_SUPPLY_CLAIMED_COUNT=96 work_supply_hours 8 0 6 0509)"
+[[ "$_hours" == "1" ]] || fail "scenario1b: ready=8 closed=0 with 96 claims/6h -> runway hours must be 1 (ceil 0.5), got '$_hours'"
+_runway="$(WORK_SUPPLY_CLAIMED_COUNT=96 bash -c 'source "$1"; work_supply_hours 8 0 6 0509 >/dev/null; printf "%s" "$WORK_SUPPLY_RUNWAY_H"' -- "$lib")"
+[[ "$_runway" == "0.5" ]] || fail "scenario1b: ready=8 / drain=16h must show the fractional runway 0.5h, got '$_runway'"
+# With NO claims measured, closed=0 + repo -> fallback to the 1/h proxy.
+[[ "$(WORK_SUPPLY_CLAIMED_COUNT=0 work_supply_hours 8 0 6 0509)" == "8" ]] \
+  || fail "scenario1b: no drain signal + repo -> 1/h fallback returns ready (8h)"
+ok "scenario1b: closed-window=0 falls back to intake-journal drain (16/h -> 0.5h runway)"
+
+# --- scenario1c: per-run label_budget from the drain (fleet-ops#4450 item 3) --
+# Product repos: max(8, ceil(drain*4)) capped 40; control-plane stays 8.
+repo_is_product() { case "$1" in 0509) return 0 ;; *) return 1 ;; esac; }
+[[ "$(WORK_SUPPLY_CLAIMED_COUNT=96 work_supply_label_budget 0509)" == "40" ]] \
+  || fail "scenario1c: 0509 at 16/h drain must cap budget at 40, got '$(WORK_SUPPLY_CLAIMED_COUNT=96 work_supply_label_budget 0509)'"
+[[ "$(WORK_SUPPLY_CLAIMED_COUNT=24 work_supply_label_budget 0509)" == "16" ]] \
+  || fail "scenario1c: 0509 at 4/h drain -> ceil(4*4)=16, got '$(WORK_SUPPLY_CLAIMED_COUNT=24 work_supply_label_budget 0509)'"
+[[ "$(WORK_SUPPLY_CLAIMED_COUNT=0 work_supply_label_budget 0509)" == "8" ]] \
+  || fail "scenario1c: 0509 no-drain must floor at 8, got '$(WORK_SUPPLY_CLAIMED_COUNT=0 work_supply_label_budget 0509)'"
+[[ "$(WORK_SUPPLY_CLAIMED_COUNT=96 work_supply_label_budget fleet-ops)" == "8" ]] \
+  || fail "scenario1c: fleet-ops (control-plane) must stay at 8 even at high drain"
+ok "scenario1c: label_budget = max(8, ceil(drain*4)) capped 40 (product); fleet-ops stays 8"
+
 gh_log="$scratch/gh.log"
 gh_fake="$scratch/gh"
 cat >"$gh_fake" <<'FAKE'

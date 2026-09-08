@@ -288,7 +288,7 @@ snapshot() {
     closed_json=$(fetch_closed_json "$short") || return 1
     now_s="${FLEET_WORK_SUPPLY_NOW_EPOCH:-$(date -u +%s)}"
     closed=$(work_supply_closed_in_window "$closed_json" "$window" "$now_s")
-    hours=$(work_supply_hours "$ready" "$closed" "$window")
+    hours=$(work_supply_hours "$ready" "$closed" "$window" "$short")
     action=$(work_supply_action "$hours")
     jq -n --arg repo "$short" --argjson ready "$ready" --argjson closed "$closed" \
         --argjson window "$window" --argjson hours "$hours" --arg action "$action" \

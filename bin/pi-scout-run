@@ -33,6 +33,17 @@ PACKET_ASM_LIB="${PI_PACKET_ASSEMBLY_LIB:-$HOME/.local/lib/pi-packet/packet-asse
 # shellcheck source=../lib/packet-assembly.sh source-path=SCRIPTDIR
 source "$PACKET_ASM_LIB"
 
+# fleet-ops#4450 item 3: per-run scout label_budget from the drain rate.
+# Best-effort source of lib/work-supply.sh: when it is absent the budget
+# falls back to the 8 floor (the scout prompt's default), so a missing lib
+# never breaks the scout.
+# shellcheck disable=SC1091
+WS_LIB="${PI_PACKET_WS_LIB:-$HOME/.local/lib/pi-packet/work-supply.sh}"
+if [[ -f "$WS_LIB" ]]; then
+    # shellcheck disable=SC1091
+    source "$WS_LIB"
+fi
+
 PI_BIN="${PI_BIN:-$HOME/.local/bin/pi}"
 PROMPT_DIR="${SCOUT_PROMPT_DIR:-$HOME/.pi/agent/prompts}"
 
@@ -87,6 +98,23 @@ nm=$(printf '%s' "$seat" | cut -f2)
 
 seat_log "pi-scout-run: $repo/$prompt_name running on $np/$nm (weight=$difficulty)"
 
+# fleet-ops#4450 item 3: per-run scout label_budget from the drain rate (product
+# repos only: max(8, ceil(drain*4)) capped 40; control-plane stays at 8).
+# The concrete number is injected into the packet as a run-specific
+# `label_budget = <N>` line that overrides the prompt's default 8, so the
+# model obeys the derived budget without any per-repo prompt edit. Passed
+# through the SCOUT_LABEL_BUDGET env var for tests to pin/prove.
+label_budget=8
+if declare -F work_supply_label_budget >/dev/null 2>&1; then
+    label_budget=$(work_supply_label_budget "$repo" 2>/dev/null || printf '8\n')
+    case "$label_budget" in
+        ''|*[!0-9]*) label_budget=8 ;;
+    esac
+fi
+label_budget="${SCOUT_LABEL_BUDGET:-$label_budget}"
+export SCOUT_LABEL_BUDGET="$label_budget"
+seat_log "pi-scout-run: $repo/$prompt_name label_budget=$label_budget (fleet-ops#4450)"
+
 # Build the packet.
 # - 0509 scout: use the shared packet-assembly library (research-seeded).
 # - Everything else: prompt + TARGET line (legacy shape).
@@ -102,12 +130,15 @@ case "$prompt_name" in
                 exit 1
             fi
             seat_log "pi-scout-run: $repo/$prompt_name research-seeded packet assembled"
+            printf '\nlabel_budget = %s (fleet-ops#4450: derived from the drain rate; overrides the default above)\n' "$label_budget" >> "$packet"
             "$PI_BIN" --print --provider "$np" --model "$nm" < "$packet"
         else
             {
                 cat "$prompt_file"
                 echo
                 echo "TARGET REPO: Nishfleet/${repo}"
+                echo
+                printf 'label_budget = %s (fleet-ops#4450: derived from the drain rate; overrides the default above)\n' "$label_budget"
             } | "$PI_BIN" --print --provider "$np" --model "$nm"
         fi
         ;;

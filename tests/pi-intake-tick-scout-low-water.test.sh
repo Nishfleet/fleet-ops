@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
-# pi-intake-tick-scout-on-empty.test.sh — event-driven work supply (fleet-ops#4016).
+# pi-intake-tick-scout-low-water.test.sh — low-water supply trigger (fleet-ops#4450).
 #
-# When the intake tick finds zero ready issues for a repo it must start the
-# repo's existing pi-scout@<repo>.service (--no-block) instead of waiting for
-# the 4-hourly scout timer. Contract:
-#   1. ready pool empty + scout unit inactive  -> `systemctl --user start
-#      --no-block pi-scout@<repo>.service` is issued exactly once, tick exits 0.
-#   2. ready pool empty + scout unit active/activating -> no start (debounce).
-#   3. PI_INTAKE_SCOUT_ON_EMPTY=0 -> no start.
-#   4. ready pool non-empty -> no start (the normal claim path is untouched).
-# The systemctl seam is the existing SYSTEMCTL variable (fleet-ops#1546).
+# When the end of an intake tick leaves the ready pool at or below the
+# measured drain rate, the tick must start the repo's existing
+# pi-scout@<repo>.service (--no-block) instead of waiting for the 4h scout
+# timer. Contract:
+#   1. ready_after < drain_per_hour + scout inactive  -> one `systemctl --user
+#      start --no-block pi-scout@<repo>.service`, tick exits 0.
+#   2. ready_after < drain_per_hour + scout active/activating -> no start
+#      (debounce), "low-water ... skip (debounce)" logged.
+#   3. ready_after >= drain_per_hour -> no start (pool can feed workers).
+#   4. PI_INTAKE_SCOUT_LOW_WATER=0 -> no start.
+# Drain is injected via WORK_SUPPLY_CLAIMED_COUNT (work-supply seam): 96
+# claims in a 6h window = 16 issues/hour; 0 claims = the 1/h fallback.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
@@ -18,7 +21,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 [[ -f "$tick" ]] || fail "tick script missing: $tick"
 
-scratch="$(mktemp -d -t pirt-scout-empty.XXXXXX)"
+scratch="$(mktemp -d -t pirt-scout-lowwater.XXXXXX)"
 trap 'rm -rf "$scratch"' EXIT INT TERM
 mkdir -p "$scratch/run" "$scratch/secondary" "$scratch/bin"
 
@@ -41,8 +44,6 @@ prior_art_stub="$scratch/prior-art-claim-check"
 printf 'exit 0\n' >"$prior_art_stub"
 chmod +x "$prior_art_stub"
 
-# Fake systemctl: records every argv line; answers `show -p ActiveState`
-# from $FAKE_SCOUT_STATE so the debounce branch is testable.
 cat >"$scratch/bin/fake-systemctl" <<'SH'
 #!/usr/bin/env bash
 echo "$*" >>"${FAKE_SYSTEMCTL_LOG:?}"
@@ -63,7 +64,6 @@ cat >"$scratch/gh-rate-limit.json" <<JSON
  "reset": $(( $(date +%s) + 3600 )), "fetched_at": $(date +%s)}
 JSON
 
-# $GH_ISSUES is what `gh issue list` returns.
 gh() {
     if [[ "$1" == "issue" && "$2" == "list" ]]; then
         printf '%s\n' "${GH_ISSUES:-[]}"
@@ -85,7 +85,7 @@ git() {
 export -f gh git
 
 run_tick() {
-    # $1 = repo, $2 = scout ActiveState, $3 = GH issues json, $4 = flag (1/0)
+    # $1 = repo, $2 = scout ActiveState, $3 = GH issues json, $4 = claimed count
     local log="$scratch/systemctl.$RANDOM.log"
     : >"$log"
     env \
@@ -101,7 +101,7 @@ run_tick() {
         PI_INTAKE_GH_SECONDARY_STATE_DIR="$scratch/secondary" \
         PI_INTAKE_ISSUE_STATE_DIR="$scratch/pi-issues" \
         PI_INTAKE_WS_LIB="$repo_root/lib/work-supply.sh" \
-        WORK_SUPPLY_CLAIMED_COUNT="0" \
+        WORK_SUPPLY_CLAIMED_COUNT="$4" \
         SEAT_LIB="$stubs" \
         PRECEDENCE_BAND_LIB="$stubs" \
         PRIOR_ART_CLAIM_CHECK="$prior_art_stub" \
@@ -110,47 +110,46 @@ run_tick() {
         FAKE_SYSTEMCTL_LOG="$log" \
         FAKE_SCOUT_STATE="$2" \
         GH_ISSUES="$3" \
-        PI_INTAKE_SCOUT_ON_EMPTY="$4" \
         bash "$tick" "$1" >"$scratch/out" 2>&1 || fail "tick rc=$? for $1/$2: $(cat "$scratch/out")"
     cat "$log"
 }
 
 starts() { grep -cF -- "start --no-block pi-scout@$1.service" || true; }
 
-# 1. empty + inactive -> exactly one start, exit 0
-calls="$(run_tick 0509 inactive '[]' 1)"
+# 1. ready_after(=1) < drain(16/h via 96 claims) + inactive -> start once
+calls="$(run_tick 0509 inactive '[{"number":12345,"title":"low"}]' 96)"
 n="$(printf '%s\n' "$calls" | starts 0509)"
-[[ "$n" == "1" ]] || fail "empty+inactive must start pi-scout@0509.service once, got $n: $calls / $(cat "$scratch/out")"
-grep -qF 'no ready issues' "$scratch/out" || fail "empty branch must still log 'no ready issues'"
-grep -qF 'scout-on-empty: ready=0 for 0509' "$scratch/out" || fail "must log the scout-on-empty start line: $(cat "$scratch/out")"
-ok "empty pool + inactive scout -> one --no-block start of pi-scout@0509.service"
+[[ "$n" == "1" ]] || fail "low pool below drain must start pi-scout@0509.service once, got $n: $calls / $(cat "$scratch/out")"
+grep -qF 'low-water: ready=' "$scratch/out" || fail "must log the low-water line: $(cat "$scratch/out")"
+grep -qF 'drain=16' "$scratch/out" || fail "low-water log must show the drain rate: $(cat "$scratch/out")"
+ok "low-water: pool below drain -> one --no-block start (drain 16/h)"
 
-# 2. empty + activating -> debounce, no start
-calls="$(run_tick 0509 activating '[]' 1)"
+# 2. low + scout activating -> debounce, no start
+calls="$(run_tick 0509 activating '[{"number":12345,"title":"low"}]' 96)"
 n="$(printf '%s\n' "$calls" | starts 0509)"
-[[ "$n" == "0" ]] || fail "empty+activating must NOT start the scout (debounce), got $n"
-grep -qF 'skip (debounce)' "$scratch/out" || fail "debounce must be logged: $(cat "$scratch/out")"
-ok "empty pool + live scout run -> debounced, no start"
+[[ "$n" == "0" ]] || fail "low+activating must NOT start the scout (debounce), got $n"
+grep -qF 'low-water:' "$scratch/out" || fail "low-water debounce must be logged: $(cat "$scratch/out")"
+ok "low-water + live scout run -> debounced, no start"
 
-# 3. flag off -> no start
-calls="$(run_tick 0509 inactive '[]' 0)"
+# 3. ready_after >= drain -> no start (pool can feed workers)
+# drain=1/h (0 claims fallback); pool of 50 ready issues stays above 1 even
+# if this tick claims a few.
+pool50=$(jq -n '[range(1;51) | {number:(12000+.), title:("t"+tostring)}]')
+calls="$(run_tick 0509 inactive "$pool50" 0)"
 n="$(printf '%s\n' "$calls" | starts 0509)"
-[[ "$n" == "0" ]] || fail "PI_INTAKE_SCOUT_ON_EMPTY=0 must NOT start the scout, got $n"
-ok "PI_INTAKE_SCOUT_ON_EMPTY=0 -> no start"
+[[ "$n" == "0" ]] || fail "pool at/above drain must NOT start the scout, got $n"
+ok "ready_after >= drain -> no scout start"
 
-# 4. non-empty pool -> no scout start (claim path untouched)
-calls="$(run_tick fleet-ops inactive '[{"number":12345,"title":"test claim"}]' 1)"
-n="$(printf '%s\n' "$calls" | starts fleet-ops)"
-[[ "$n" == "0" ]] || fail "non-empty pool must NOT start the scout, got $n"
-ok "non-empty pool -> no scout start"
+# 4. PI_INTAKE_SCOUT_LOW_WATER=0 -> no start
+calls="$(PI_INTAKE_SCOUT_LOW_WATER=0 run_tick 0509 inactive '[{"number":12345,"title":"low"}]' 96)"
+n="$(printf '%s\n' "$calls" | starts 0509)"
+[[ "$n" == "0" ]] || fail "PI_INTAKE_SCOUT_LOW_WATER=0 must NOT start the scout, got $n"
+ok "PI_INTAKE_SCOUT_LOW_WATER=0 -> no start"
 
-# Contract pin: the seam uses the SYSTEMCTL variable, not a bare systemctl.
-grep -qE '"\$SYSTEMCTL" --user start --no-block "\$unit"' "$tick" \
-    || fail "scout_on_empty must start the unit through the SYSTEMCTL seam"
-ok "scout_on_empty routes through the SYSTEMCTL seam"
-
-# fleet-ops#4450: the low-water sibling test. The worker App cannot push
-# .github/workflows/**, so this (already-listed) test hosts it to keep it in
-# the P14 reachable set (p14-test-listing-gate).
-bash "$here/pi-intake-tick-scout-low-water.test.sh"
-echo "PASS: pi-intake-tick-scout-on-empty"
+# Contract pin: routes through the SYSTEMCTL seam, reuses pi-scout@<repo>.
+grep -qF '"$SYSTEMCTL" --user start --no-block "$unit"' "$tick" \
+    || fail "scout_low_water must start the unit through the SYSTEMCTL seam"
+grep -qF 'low-water: ready=' "$tick" \
+    || fail "low-water must log the start line with ready + drain"
+ok "scout_low_water routes through the SYSTEMCTL seam"
+echo "PASS: pi-intake-tick-scout-low-water"

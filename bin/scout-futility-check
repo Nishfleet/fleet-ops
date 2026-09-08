@@ -204,10 +204,35 @@ runway_hours() {
         closed=0
     fi
     if type work_supply_hours >/dev/null 2>&1; then
-        work_supply_hours "$ready" "$closed" "$window"
+        work_supply_hours "$ready" "$closed" "$window" "$repo"
+        _src="${WORK_SUPPLY_DRAIN_SOURCE:-fallback}"
+        _run="${WORK_SUPPLY_RUNWAY_H:-$ready}"
     else
+        _src=fallback
+        _run="$ready"
         printf '%s\n' "$ready"
     fi
+    # fleet-ops#4450: expose the drain source + fractional runway (`ready/drain`)
+    # to the caller. runway_hours is invoked under command substitution, whose
+    # subshell drops the lib's globals back to the caller — persist them to a
+    # per-repo scratch file so cmd_begin / cmd_end (in their own shell) can
+    # read them for the log lines. Written before the return so the caller
+    # reads this measurement's source, not a stale one.
+    if [[ -n "$repo" && -d "${STATE_DIR:-}" ]]; then
+        printf 'source=%s\nrunway=%s\n' "$_src" "$_run" > "$STATE_DIR/$repo.runway" 2>/dev/null || true
+    fi
+    return 0
+}
+
+# read_runway_field <repo> <source|runway>
+# Read one value back from the per-repo .runway scratch that runway_hours
+# wrote. The scratch may legitimately not exist yet (e.g. a missing-begin
+# end, or a call that early-returned before the write), so the caller gets
+# empty rather than letting awk's rc=2 on a missing file trip set -e.
+read_runway_field() {
+    local repo="$1" key="$2" f="$STATE_DIR/$repo.runway"
+    [[ -f "$f" ]] || { printf '\n'; return 0; }
+    awk -F= -v k="$key" '$1==k{print $2}' "$f" 2>/dev/null || true
 }
 
 state_path() {
@@ -525,6 +550,12 @@ cmd_begin() {
     now_s=$(date -u +%s)
     before_hours=$(runway_hours "$repo" "$before" "$now_s")
     is_uint "$before_hours" || before_hours="$before"
+    # fleet-ops#4450: log the drain source + fractional runway (`ready/drain`)
+    # so the runway is provable against the drain rate, never the raw count.
+    before_runway=$(read_runway_field "$repo" runway)
+    before_source=$(read_runway_field "$repo" source)
+    before_runway="${before_runway:-$before_hours}"
+    before_source="${before_source:-fallback}"
     write_state "$file" \
         "before=${before}" \
         "before_hours=${before_hours}" \
@@ -537,7 +568,7 @@ cmd_begin() {
         "last_run_epoch=${now_s}" \
         "updated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     export_last_run
-    log "begin: $repo ready_before=$before runway_before=${before_hours}h last_run_epoch=$now_s"
+    log "begin: $repo ready_before=$before runway_before=${before_runway}h source=${before_source} last_run_epoch=$now_s"
 }
 
 resolve_exit() {
@@ -583,6 +614,10 @@ cmd_end() {
         now_s=$(date -u +%s)
         after_hours=$(runway_hours "$repo" "$after" "$now_s")
         is_uint "$after_hours" || after_hours="$after"
+        after_runway=$(read_runway_field "$repo" runway)
+        after_source=$(read_runway_field "$repo" source)
+        after_runway="${after_runway:-$after_hours}"
+        after_source="${after_source:-fallback}"
         dry=$(read_field "$file" consecutive_dry)
         is_uint "$dry" || dry=0
         wall_count=$(read_field "$file" consecutive_wall)
@@ -610,7 +645,7 @@ cmd_end() {
             "last_run_epoch=${last_run}" \
             "updated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
         export_last_run
-        log "end: $repo missing begin snapshot — created snapshot (success-run); refreshed last_run_epoch=$last_run not counted as dry consecutive_dry=$dry consecutive_wall=$wall_count runway_after=${after_hours}h"
+        log "end: $repo missing begin snapshot — created snapshot (success-run); refreshed last_run_epoch=$last_run not counted as dry consecutive_dry=$dry consecutive_wall=$wall_count runway_after=${after_runway}h source=${after_source}"
         return 0
     fi
     after=$(ready_count "$repo")
@@ -621,6 +656,10 @@ cmd_end() {
     now_s=$(date -u +%s)
     after_hours=$(runway_hours "$repo" "$after" "$now_s")
     is_uint "$after_hours" || after_hours="$after"
+    after_runway=$(read_runway_field "$repo" runway)
+    after_source=$(read_runway_field "$repo" source)
+    after_runway="${after_runway:-$after_hours}"
+    after_source="${after_source:-fallback}"
     dry=$(read_field "$file" consecutive_dry)
     is_uint "$dry" || dry=0
     wall_count=$(read_field "$file" consecutive_wall)
@@ -665,14 +704,14 @@ cmd_end() {
     elif [[ "$after_hours" -ge "$BUFFER_H" ]]; then
         next_dry=0
         next_wall=0
-        log "end: $repo runway_after=${after_hours}h >= buffer=${BUFFER_H}h — reset consecutive_dry + consecutive_wall"
+        log "end: $repo runway_after=${after_runway}h source=${after_source} (cap ${after_hours}h) >= buffer=${BUFFER_H}h — reset consecutive_dry + consecutive_wall"
     elif [[ "$after_hours" -gt "$before_hours" ]]; then
         next_dry=0
         next_wall=0
-        log "end: $repo runway ${before_hours} -> ${after_hours}h (net increase) — reset consecutive_dry + consecutive_wall"
+        log "end: $repo runway ${before_hours} -> ${after_runway}h source=${after_source} (cap ${after_hours}h, net increase) — reset consecutive_dry + consecutive_wall"
     else
         next_dry=$((dry + 1))
-        log "end: $repo runway ${before_hours} -> ${after_hours}h (no net increase, below buffer=${BUFFER_H}h) consecutive_dry=$next_dry"
+        log "end: $repo runway ${before_hours} -> ${after_runway}h source=${after_source} (cap ${after_hours}h, no net increase, below buffer=${BUFFER_H}h) consecutive_dry=$next_dry"
         if [[ "$next_dry" -ge "$N" ]]; then
             loud "SCOUT-FUTILITY" "repo=Nishfleet/${repo} consecutive_dry=${next_dry} (N=${N}) runway ${before_hours}->${after_hours}h below buffer=${BUFFER_H}h. green scout filed nothing; escalate-senior, do not restart"
             file_escalation "$repo" "$next_dry" "$before_hours" "$after_hours"

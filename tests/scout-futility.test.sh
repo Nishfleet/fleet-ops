@@ -97,6 +97,11 @@ export SCOUT_FUTILITY_REPO="Nishfleet/fleet-ops"
 export SCOUT_FUTILITY_FILE=1
 export SCOUT_FUTILITY_READY_COUNT=2
 export SCOUT_FUTILITY_PROM="$scratch/fleet-scout.prom"
+# Deterministic drain fallback: with no closed-issues JSON fixture set, the
+# runway must use the 1/h fallback unless a specific test sets a claimed-count
+# fixture. 0 here pins the old closed=0 -> fallback behaviour on hosts where
+# the real pi-intake journal exists (fleet-ops#4450).
+export WORK_SUPPLY_CLAIMED_COUNT=0
 
 gh_log="$scratch/gh.log"
 open_issues="$scratch/open-issues.json"
@@ -552,6 +557,35 @@ grep -q 'SCOUT-FUTILITY' "$triage" \
   || fail "scenario16: missing LOUD SCOUT-FUTILITY for runway < 12h"
 ok "scenario16: runway in hours — high drain turns 12 ready items into 6h buffer, escalates"
 unset SCOUT_FUTILITY_CLOSED_JSON
+
+# --- 16b. drain falls back to the intake-journal claims/hour (fleet-ops#4450) --
+# An agent-ready issue stays open for hours after a claim until its PR merges,
+# so `closed in window` is 0 even at a ~16/h spawn rate. When the closed-window
+# number is 0 the runway must derive the drain rate from the pi-intake journal's
+# claimed+spawned count, not the old 1/h count-as-hours proxy. Fixture: ready=8,
+# drain=16/h (96 claims in a 6h window via WORK_SUPPLY_CLAIMED_COUNT).
+# Acceptance: log shows `runway_before=<ready/drain>h` (0.5h) with
+# `source=intake-journal`, and the runway drives the futility decision (0.5h,
+# well below the 12h buffer -> an 8-item pool is NOT 8h of runway).
+: >"$gh_log"
+: >"$triage"
+echo '[]' >"$open_issues"
+rm -f "$state/0509.state" "$state/0509.runway"
+export SCOUT_FUTILITY_READY_COUNT=8
+export WORK_SUPPLY_CLAIMED_COUNT=96
+printf '%s\n' 'before=8' 'consecutive_dry=2' >"$state/0509.state"
+"$bin" begin 0509 2>"$scratch/begin16b.log"
+grep -q 'runway_before=0.5h source=intake-journal' "$scratch/begin16b.log" \
+  || fail "scenario16b: begin log must show runway_before=0.5h source=intake-journal, got: $(cat "$scratch/begin16b.log")"
+! grep -q 'runway_before=8h' "$scratch/begin16b.log" \
+  || fail "scenario16b: runway must NOT fall back to the raw ready count (8h)"
+"$bin" end 0509 0 >/dev/null
+[[ "$(state_field consecutive_dry)" == "3" ]] \
+  || fail "scenario16b: 8 ready at 16/h drain = 0.5h runway (< 12h); must escalate, got '$(state_field consecutive_dry)'"
+grep -q 'SCOUT-FUTILITY' "$triage" \
+  || fail "scenario16b: missing LOUD SCOUT-FUTILITY for 0.5h runway"
+ok "scenario16b: closed-window=0 falls back to intake-journal drain; ready=8/drain=16h -> runway 0.5h"
+unset WORK_SUPPLY_CLAIMED_COUNT
 
 # --- 17. provider-wall crash loop (fleet-ops#2468) ---------------------------
 # N consecutive crashes where EVERY journal error line matches a provider-wall

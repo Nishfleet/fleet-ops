@@ -70,6 +70,8 @@ grep -q -- '--model MiniMax-M3' "$record_args" \
   || fail "pi must be called with --model MiniMax-M3, got: $(cat "$record_args")"
 grep -q 'TARGET REPO: Nishfleet/fleet-ops' "$record_stdin" \
   || fail "packet must contain TARGET REPO line, got: $(head "$record_stdin")"
+grep -q 'label_budget = 8' "$record_stdin" \
+  || fail "packet must inject a run-specific label_budget line (fleet-ops#4450), got: $(head -c 400 "$record_stdin")"
 [[ "$out" == "scout output" ]] || fail "wrapper stdout mismatch: $out"
 ok "scout wrapper runs pi with the rotated provider/model and exits cleanly"
 

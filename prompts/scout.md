@@ -39,7 +39,13 @@ systemd `ExecCondition` skips this run when remaining work is >= 24 hours at the
 
 Workers stay at max always. Never idle a worker because the buffer is high.
 
-Let `label_budget = 8`. You may apply `scout-candidate` (or `agent-ready` on fleet-ops only) to at most `label_budget` issues this run (new or relabeled).
+Let `label_budget = 8` be the DEFAULT cap. The packet's run-specific
+`label_budget = <N>` line (appended by pi-scout-run, fleet-ops#4450) is the
+budget for THIS run — derived from the drain rate at this repo, capped at 40
+for product repos; fleet-ops stays at 8. If a run-specific line is present,
+use that number instead of the default. You may apply `scout-candidate` (or
+`agent-ready` on fleet-ops only) to at most `label_budget` issues this run
+(new or relabeled).
 
 ## Step 1 — Dedupe corpus (one gh batch, match locally)
 

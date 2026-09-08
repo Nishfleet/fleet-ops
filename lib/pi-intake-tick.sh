@@ -246,6 +246,15 @@ fi
 # shellcheck source=/home/nish/.local/lib/pi-packet/seat-lib.sh
 # shellcheck disable=SC1091  # external lib, absent in hosted CI
 . "$SEAT_LIB"
+# fleet-ops#4450: shared work-supply drain math (claims/hour fallback,
+# low-water drain rate). Best-effort source so a missing lib never bricks the
+# tick; the low-water trigger degrades to a no-op when the lib is absent.
+# shellcheck disable=SC1091  # external lib, absent in hosted CI
+WS_LIB="${PI_INTAKE_WS_LIB:-/home/nish/.local/lib/pi-packet/work-supply.sh}"
+if [[ -f "$WS_LIB" ]]; then
+    # shellcheck disable=SC1091
+    . "$WS_LIB"
+fi
 # shellcheck source=/home/nish/.local/lib/pi-packet/precedence-band.sh
 # shellcheck disable=SC1091  # external lib, absent in hosted CI
 . "$PRECEDENCE_BAND_LIB"
@@ -712,6 +721,45 @@ scout_on_empty() {
     return 0
 }
 
+# fleet-ops#4450 item 2: LOW-WATER supply trigger, fired from the end of the
+# tick. scout_on_empty only reacts at ready==0; the low-water branch reacts
+# as soon as the ready pool falls AT OR BELOW the measured drain rate — at
+# 16/h the pool would otherwise sit empty most of the hour waiting for the
+# 4h scout timer. Event-driven; reuses the repo's existing pi-scout@<repo>
+# service via the SYSTEMCTL seam, same debounce as scout_on_empty, and the
+# unit's ExecCondition (fleet-work-supply-canary gate) still decides whether
+# a scout is allowed. No new timer, no new unit. PI_INTAKE_SCOUT_LOW_WATER=0
+# disables. Drain comes from lib/work-supply.sh (closed-window first, then
+# the intake journal claims/hour); absent lib -> no-op.
+scout_low_water() {
+    local unit="pi-scout@${REPO}.service" state drain after="${1:-0}"
+    [[ "${PI_INTAKE_SCOUT_LOW_WATER:-1}" == "1" ]] || return 0
+    if ! declare -F work_supply_drain_per_hour >/dev/null 2>&1; then
+        echo "low-water: work-supply lib absent — no-op (fleet-ops#4450)"
+        return 0
+    fi
+    drain=$(work_supply_drain_per_hour "$REPO" 2>/dev/null || printf '1\n')
+    case "$drain" in
+        ''|*[!0-9.]*) drain=0 ;;
+    esac
+    # ready_after < drain_per_hour -> the pool drains faster than it is
+    # replenished; fire the scout now rather than at the next 4h timer.
+    if ! awk -v a="$after" -v d="$drain" 'BEGIN{exit !(a < d)}' 2>/dev/null; then
+        return 0
+    fi
+    state=$("$SYSTEMCTL" --user show -p ActiveState --value "$unit" 2>/dev/null || true)
+    case "$state" in
+        active|activating|reloading)
+            echo "low-water: $unit $state — skip (debounce) ready=$after drain=$drain/h"
+            return 0
+            ;;
+    esac
+    echo "low-water: ready=${after} drain=${drain}/h -> scout started"
+    "$SYSTEMCTL" --user start --no-block "$unit" 2>&1 \
+        || echo "low-water: start $unit failed rc=$? (non-fatal)"
+    return 0
+}
+
 if [[ -z "$issues_json" ]] || [[ "$issues_json" == "[]" ]]; then
     echo "no ready issues"
     scout_on_empty
@@ -719,6 +767,10 @@ if [[ -z "$issues_json" ]] || [[ "$issues_json" == "[]" ]]; then
 fi
 
 ready_count=$(jq 'length' <<<"$issues_json" 2>/dev/null || echo 0)
+# fleet-ops#4450: count claims actually spawned this tick so the closing
+# low-water check sees the READY POOL AFTER this tick's drain, not the pool
+# at tick start.
+_claimed_this_tick=0
 if (( ready_count == 0 )); then
     echo "no ready issues"
     scout_on_empty
@@ -1912,6 +1964,7 @@ blocked-on: orchestrator" 2>/dev/null || true
     fi
 
     echo "issue $N ($title): claimed+spawned"
+    _claimed_this_tick=$(( _claimed_this_tick + 1 ))
     # fleet-ops#3784: stagger cohort spawns so clone/npm/pi startup peaks do
     # not overlap (oomd slice-pressure kills at tick time). Sleep a few
     # seconds between systemctl start --no-block calls. 0 disables. The value
@@ -1956,5 +2009,16 @@ blocked-on: orchestrator" 2>/dev/null || true
     fi
     slots=$(( slots - 1 ))
 done
+
+# fleet-ops#4450 item 2: LOW-WATER supply trigger at the end of the tick.
+# ready_after = the agent-ready pool left after this tick's claims. When it
+# is at or below the measured drain rate the pool cannot feed the workers
+# until the next scout timer, so start the repo's own pi-scout@<repo>
+# service now. Ready_after can be 0 when this tick drained the pool (the
+# scout_on_empty branch above only fires when the pool was empty at START);
+# the low-water branch re-fires when it became empty BECAUSE of this tick.
+_ready_after=$(( ready_count - _claimed_this_tick ))
+(( _ready_after < 0 )) && _ready_after=0
+scout_low_water "$_ready_after"
 
 exit 0
