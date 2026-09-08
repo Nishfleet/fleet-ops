@@ -229,6 +229,31 @@ grep -q 'issue close 1135' "$scratch/closes.log" || fail "claim-branch close mus
 grep -q '"claim-branch":1' "$scratch/summary.json" || fail "summary must count the claim-branch close: $(cat "$scratch/summary.json")"
 ok "close-on: claim/issue-N branch delivery -> close with reason=claim-branch"
 
+# --- Case 2c: close ON — repo-prefixed `Closes <repo>#N` trailer is a
+# delivery, not a bare mention (fleet-ops#4428). A merged delivery PR that
+# writes the repo-prefixed shorthand on its trailer — live: PR #4429
+# "## Closes fleet-ops#4428" — was classified by references_issue as a mere
+# MENTION, so observe-to-close never closed the delivered issue and it
+# re-claimed forever (#1135-class stranded issue). Both the bare-owner form
+# (`Closes fleet-ops#N`) and the full form (`Closes <owner>/<repo>#N`) must
+# read as the same close keyword as `Closes #N`. ---
+set_fixtures "$NOOP_ISSUE" \
+  '[{"number":4429,"title":"fix(seat-live-validate): never clear a quota wall with a token-liveness probe","body":"## Problem\n\n## Fix\n\nCloses fleet-ops#1135","mergedAt":"2026-09-08T00:45:52Z","url":"https://github.com/Nishfleet/fleet-ops/pull/4429","headRefName":"claim/issue-4429"}]'
+out=$(run FLEET_MERGED_PR_CLOSE_OK=1)
+grep -q 'CLOSED' <<<"$out" || fail "repo-prefixed Closes trailer should close: $out"
+grep -q 'via closes-trailer' <<<"$out" || fail "repo-prefixed close must be attributed to closes-trailer: $out"
+grep -q 'issue close 1135' "$scratch/closes.log" || fail "repo-prefixed closes-trailer must call gh issue close: $(cat "$scratch/closes.log")"
+grep -q '"bare-mention":0' "$scratch/summary.json" || fail "repo-prefixed closes-trailer must NOT count as bare-mention: $(cat "$scratch/summary.json")"
+ok "close-on: repo-prefixed Closes trailer (fleet-ops#4428 live form) -> closes-trailer delivery, closes"
+
+# --- Case 2d: full-form `Closes <owner>/<repo>#N` trailer is a delivery ---
+set_fixtures "$NOOP_ISSUE" \
+  '[{"number":1432,"title":"feat: full-form","body":"work done. Closes Nishfleet/fleet-ops#1135","mergedAt":"2026-08-28T00:22:21Z","url":"https://github.com/Nishfleet/fleet-ops/pull/1432","headRefName":"fix/full"}]'
+out=$(run FLEET_MERGED_PR_CLOSE_OK=1)
+grep -q 'CLOSED' <<<"$out" || fail "full-form Closes trailer should close: $out"
+grep -q 'issue close 1135' "$scratch/closes.log" || fail "full-form closes-trailer must call gh issue close: $(cat "$scratch/closes.log")"
+ok "close-on: full-path Closes <owner>/<repo>#N trailer -> closes-trailer delivery, closes"
+
 # --- Case 3: open PR on the claim branch -> skip (work in flight) ---
 set_fixtures "$NOOP_ISSUE" "$TRAILER_PR" '[{"number":1}]'
 out=$(run FLEET_MERGED_PR_CLOSE_OK=1)

@@ -212,10 +212,18 @@ references_issue() {
 # exact-number bounded (#1135 must not match #11352), and requires a
 # whitespace gap between the keyword and the reference so "Closes#1135"
 # (not a GitHub form) does not match.
+#
+# The reference may be prefixed with a repo name, in the same syntax
+# `references_issue` already accepts: `Closes #N`, `Closes <repo>#N` or
+# `Closes <owner>/<repo>#N` all read as the same close keyword. Without
+# this, a merged delivery PR that writes the repo-prefixed shorthand on its
+# trailer (live: PR #4429 "## Closes fleet-ops#4428") is classified as a
+# bare MENTION by references_issue and observe-to-close never closes the
+# delivered issue — it re-claims forever (#1135-class stranded issue).
 trailer_delivery() {
     local text="$1" n="$2"
     printf '%s' "$text" \
-        | grep -Eiq "(^|[^0-9A-Za-z])(Clos(es?|ed)|Fix(es|ed)?|Resolv(es?|ed))[[:space:]]+#${n}([^0-9A-Za-z]|$)"
+        | grep -Eiq "(^|[^0-9A-Za-z])(Clos(es?|ed)|Fix(es|ed)?|Resolv(es?|ed))[[:space:]]+([A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)?)?#${n}([^0-9A-Za-z]|$)"
 }
 
 # relates_to_issue TEXT N — does TEXT carry an explicit `Relates to #N`
