@@ -229,6 +229,10 @@ systemd/fleet-metrics-export.service.d/10-git-mirrors.conf /home/nish/.config/sy
 # fault cannot fail Prometheus export.
 libexec/fleet-waste-export.py /home/nish/.local/libexec/fleet-waste-export.py
 systemd/fleet-metrics-export.service.d/waste-ledger.conf /home/nish/.config/systemd/user/fleet-metrics-export.service.d/waste-ledger.conf
+# fleet-ops#4460: blind-spot counters. Read by the judge measure.sh and the
+# weekly review. Pure logic, no new timer; a fault is observability, so a
+# leading '-' prevents a blind-spot read from failing its caller.
+libexec/fleet-blindspot-count.py /home/nish/.local/libexec/fleet-blindspot-count.py
 # fleet-ops#2757: canary effectiveness family. Piggybacks the existing 5-min
 # fleet-metrics-export tick (no new timer). Leading '-' so a canary-
 # effectiveness fault cannot fail Prometheus export. Installs under

@@ -3538,6 +3538,13 @@ bash "$here/pi-issue-run-noop-bench.test.sh" || fail "pi-issue-run-noop-bench te
 # ci.yml (workers cannot push .github/workflows/**).
 bash "$here/pi-issue-run-empty-success.test.sh" || fail "pi-issue-run-empty-success tests failed"
 
+# fleet-ops#4460: blind-spot counters for the weekly review and the judge.
+# libexec/fleet-blindspot-count.py reads the decisions-ledger + fable-state
+# and emits new_measures_7d / caught_by_hand_7d (the metric invariant is
+# new_measures_7d >= caught_by_hand_7d). Hosted here because this file is
+# listed directly in ci.yml (workers cannot push .github/workflows/**).
+bash "$here/fleet-blindspot-count.test.sh" || fail "fleet-blindspot-count tests failed"
+
 # fleet-ops#2005: a successful pi worker session is blocked from closing if its
 # JSONL has two or more real failed attempts and no four-heading vault playbook.
 # The gate lives in bin/fleet-debug-playbook (session-close gate subcommand)
