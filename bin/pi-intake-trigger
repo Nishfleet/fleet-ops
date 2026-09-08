@@ -8,7 +8,7 @@
 set -euo pipefail
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
-TRIGGER_DIR="/home/nish/workspaces/agent-state/pi-intake-triggers"
+TRIGGER_DIR="${PI_INTAKE_TRIGGER_DIR:-/home/nish/workspaces/agent-state/pi-intake-triggers}"
 mkdir -p "$TRIGGER_DIR"
 
 log() { printf '[%s] [pi-intake-trigger] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; }
@@ -20,7 +20,9 @@ for trigger_file in "$TRIGGER_DIR"/*; do
     [[ -n "$repo" ]] || continue
 
     log "Triggering pi-intake@$repo"
-    systemctl --user start "pi-intake@$repo.service" || log "Failed to start pi-intake@$repo (may already be running)"
+    # --no-block: the intake unit owns its own runtime; a blocking start made
+    # this oneshot inherit it and blow its 30s TimeoutStartSec (fleet-ops#4561).
+    systemctl --user start --no-block "pi-intake@$repo.service" || log "Failed to start pi-intake@$repo (may already be running)"
 
     # Remove the trigger file after processing
     rm -f "$trigger_file"
