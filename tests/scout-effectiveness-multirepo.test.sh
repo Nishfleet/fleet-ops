@@ -133,6 +133,42 @@ grep -q 'fleet_scout_effectiveness_uncovered_repo' "$FLEET_SCOUT_EFF_OUT" \
 ok "both repos computed + attributed by filed label; no false uncovered alert"
 
 # =========================================================================
+# 2b. Lifecycle-union regression: the fleet-ops agent-ready filed label is
+#     NOT stable — the claim gate removes agent-ready when it applies
+#     agent-in-progress (pi-intake-tick.sh, fleet-ops#3123). load_pipeline_issues
+#     must union the lifecycle labels for agent-ready exactly as it does for
+#     scout-candidate, or claimed/merged issues drop out of the cohort and
+#     ScoutEffectivenessLow under-counts fleet-ops yield.
+# =========================================================================
+python3 - "$helper" <<'PY' || fail "scout-pipeline lifecycle union failed"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("se", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+sys.modules["se"] = m
+spec.loader.exec_module(m)
+
+# Both scout-candidate and agent-ready are unstable (removed on progression).
+assert "scout-candidate" in m.UNSTABLE_FILED_LABELS
+assert "agent-ready" in m.UNSTABLE_FILED_LABELS
+
+# Dispatcher unions the lifecycle labels for both unstable filed labels.
+calls = []
+orig = m.load_issues_gh
+def fake(repo, label):
+    calls.append(label)
+    return []
+m.load_issues_gh = fake
+m.load_pipeline_issues("Nishfleet/fleet-ops", "agent-ready")
+assert calls == list(m.LIFECYCLE_LABELS), calls
+calls = []
+m.load_pipeline_issues("Nishfleet/0509", "scout-candidate")
+assert calls == list(m.LIFECYCLE_LABELS), calls
+m.load_issues_gh = orig
+print("OK: agent-ready and scout-candidate both union lifecycle labels")
+PY
+ok "scout-pipeline: fleet-ops agent-ready unions lifecycle labels (claim removes it)"
+
+# =========================================================================
 # 3. Uncovered-repo loud alert: an enrolled repo with no metric is loud
 # =========================================================================
 # Fixture intake-repos.json with an extra enrolled repo (newrepo) that the

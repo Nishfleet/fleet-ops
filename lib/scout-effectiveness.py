@@ -39,8 +39,9 @@ Sources:
     the journal is empty.
   - `gh issue list` union of scout-candidate / agent-ready /
     agent-in-progress / discarded. pi-audit-tally drops scout-candidate
-    on promote, so a candidate-only query silently loses the issues
-    that actually merged (fleet-ops#3170).
+    on promote and the claim gate removes agent-ready when
+    agent-in-progress is applied, so a single-label query silently loses
+    the issues that actually progressed / merged (fleet-ops#3170).
   - `gh pr list --state merged` for PR bodies referencing issue numbers
 
 Piggybacks fleet-metrics-export.service via
@@ -109,6 +110,14 @@ FILED_LABELS = {
     "0509": "scout-candidate",
     "fleet-ops": "agent-ready",
 }
+# Filed labels that are not stable — the label is removed when the issue
+# progresses. scout-candidate is dropped on promote-to-agent-ready
+# (pi-audit-tally, fleet-ops#3170); agent-ready is removed on claim when
+# agent-in-progress is applied (pi-intake-tick.sh, worker claim gate,
+# fleet-ops#3123). For these repos the cohort must union the lifecycle
+# labels, otherwise claimed/merged issues lose their filed label and vanish
+# from the metrics (the fleet-ops ScoutEffectivenessLow under-count).
+UNSTABLE_FILED_LABELS = frozenset(("scout-candidate", "agent-ready"))
 DUPE_HOURS = float(os.environ.get("FLEET_SCOUT_EFF_DUPE_HOURS", "1"))
 READY_HOURS = float(os.environ.get("FLEET_SCOUT_EFF_READY_HOURS", "24"))
 MERGE_DAYS = int(os.environ.get("FLEET_SCOUT_EFF_MERGE_DAYS", "14"))
@@ -573,12 +582,14 @@ def load_pipeline_issues(repo_full: str, filed_label: str) -> list[ScoutIssue]:
     """Load a repo's scout-filed issues by its filed label.
 
     0509's scout files with scout-candidate; the fleet-ops control-plane
-    scout applies agent-ready directly. For scout-candidate repos we union
-    the lifecycle labels so promoted issues that lost scout-candidate still
-    count (fleet-ops#3170); for the other filed labels the label alone is
-    the cohort (fleet-ops#3152).
+    scout applies agent-ready directly. For filed labels that are NOT
+    stable (the label is removed when the issue progresses — scout-candidate
+    on promote-to-agent-ready, agent-ready on claim-to-in-progress) we
+    union the lifecycle labels so progressed issues that lost their filed
+    label still count (fleet-ops#3170, this leak re-fired for fleet-ops).
+    Only a stable filed label is the cohort by itself (fleet-ops#3152).
     """
-    if filed_label == "scout-candidate":
+    if filed_label in UNSTABLE_FILED_LABELS:
         groups = [load_issues_gh(repo_full, lab) for lab in LIFECYCLE_LABELS]
     else:
         groups = [load_issues_gh(repo_full, filed_label)]
