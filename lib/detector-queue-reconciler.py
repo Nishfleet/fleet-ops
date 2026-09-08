@@ -67,6 +67,11 @@ TRIAGE_RE = re.compile(
     r"\[([A-Z][A-Z0-9_-]*)\] (.*)$"
 )
 SIGNAL_RE = re.compile(r"signal:\s*([^\s`]+)")
+# fleet-ops#4512: issues filed by the reconciler itself carry the signal as a
+# backticked line (`` `loud/<tag>/<key>` ``) — issue_body() never emits the
+# literal `signal:` prefix SIGNAL_RE requires. Observe-to-close therefore
+# never saw its own filings and could not close them on a green tick.
+BACKTICK_SIGNAL_RE = re.compile(r"`(loud/[a-z0-9-]+/[^\s`]+)`")
 UNIT_EQ_RE = re.compile(r"(?:^|[\s,])unit=([A-Za-z0-9_@.:-]+\.(?:service|timer|path|socket|target|slice))")
 UNIT_BARE_RE = re.compile(
     r"\b([A-Za-z0-9_@.:-]+\.(?:service|timer|path|socket|target|slice))\b"
@@ -426,6 +431,10 @@ def reconcile(
     for issue in open_issues:
         body = issue.get("body") or ""
         for m in SIGNAL_RE.finditer(body):
+            sig = m.group(1).strip()
+            if sig:
+                open_by_signal[sig] = issue
+        for m in BACKTICK_SIGNAL_RE.finditer(body):
             sig = m.group(1).strip()
             if sig:
                 open_by_signal[sig] = issue

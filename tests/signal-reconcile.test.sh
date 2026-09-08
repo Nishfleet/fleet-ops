@@ -276,6 +276,35 @@ grep -q "loud/debug-playbook-gate-block/2026-09-08t07-35-48z-0509-1279-abc123" "
 ok "scenario 9c: DEBUG-PLAYBOOK-GATE-BLOCK keys on session=, not snippet tokens"
 
 # ---------------------------------------------------------------------------
+# 9d. Observe-to-close matches the reconciler's own filed body format
+#     (fleet-ops#4512). issue_body() writes the signal as a backticked line
+#     (`loud/<tag>/<key>`) with no literal `signal:` prefix, so SIGNAL_RE
+#     never saw the reconciler's own filings and they could never go green.
+# ---------------------------------------------------------------------------
+# Alarm still live -> the filed-format issue stays open (deduped, not refiled).
+cat > "$tmp/open9d.json" <<'EOF'
+[{"number": 4512, "body": "The heartbeat detector reported this alarm on a real tick.\n\n- alarm tag: `DEBUG-PLAYBOOK-MISSING`\n\nDo NOT close this issue on PR merge alone.\n\n`loud/debug-playbook-missing/2026-09-08t07-35-48z-0509-1279-abc123`\n", "labels": [{"name": "agent-ready"}], "createdAt": "2026-08-28T10:00:00Z", "comments": []}]
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/open9d.json" "$tmp/triage9b.md" > "$tmp/summary9d.json"
+jq -e '.closed == 0' "$tmp/summary9d.json" >/dev/null \
+    || fail "scenario 9d: filed-format issue must stay open while the alarm is live"
+grep -q 'detector heartbeat: still alarmed' "$tmp/gh.log" \
+    || fail "scenario 9d: expected a heartbeat comment on the filed-format issue"
+ok "scenario 9d: filed-format (backticked) signal is tracked while red"
+
+# Alarm gone -> observe-to-close closes the filed-format issue.
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/open9d.json" "$tmp/triage1.md" > "$tmp/summary9d2.json"
+jq -e '.closed == 1' "$tmp/summary9d2.json" >/dev/null \
+    || fail "scenario 9d: expected observe-to-close on a filed-format body"
+grep -q "issue close" "$tmp/gh.log" \
+    || fail "scenario 9d: expected gh issue close"
+ok "scenario 9d: filed-format (backticked) signal closes on green (observe-to-close)"
+
+# ---------------------------------------------------------------------------
 # 10. Tier1 wiring contract.
 # ---------------------------------------------------------------------------
 grep -q 'detector-queue-reconciler' "$repo_root/bin/fleet-heartbeat-tier1" \
