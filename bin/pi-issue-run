@@ -269,8 +269,6 @@ difficulty="$weight"
 if declare -F packet_difficulty >/dev/null 2>&1; then
     difficulty=$(packet_difficulty "$pkt")
 fi
-need_capable=0
-[[ "$difficulty" == "heavy" || "$difficulty" == "keystone" ]] && need_capable=1
 
 # fleet-ops#4639: intake stamps seat-rung: repair on critical-path claims
 # made while the reserved repair rung is armed. pick_seat then falls back

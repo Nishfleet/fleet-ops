@@ -67,6 +67,13 @@ check "agent-cron-run uses judge" \
 check "pi-issue-run does not call pick_seat" \
     bash -c '! grep -qE "\$\(pick_seat" "$0"' "$repo_root/bin/pi-issue-run"
 
+# Proxy fallbacks own worker-capable. Leftover need_capable= trips SC2034
+# on pi-issue-run and fails P14 (claim-loop-gate Test 8).
+for _f in pi-issue-run pi-packet-run pi-scout-run agent-cron-run; do
+    check "$_f does not assign leftover need_capable" \
+        bash -c '! grep -qE "^[[:space:]]*need_capable=" "$0"' "$repo_root/bin/$_f"
+done
+
 ok "pi-issue-run has no pick_seat call"
 (( ++pass ))
 

@@ -69,15 +69,12 @@ export AGENT_CRON_SLUG="$slug" WORKDIR AGENT_CRON_RUN_TS="$TS"
 test -f "$PROMPT" || { echo "FATAL: prompt missing: $PROMPT" >&2; exit 1; }
 
 # --- pick a healthy seat for THIS attempt (fleet-ops#143) -------------------
-# Cron prompts are light probes/answers (market signal, daily summary); they
-# do not edit code, so need_capable=0 unless task_weight says otherwise.
+# Cron prompts are light probes/answers (market signal, daily summary).
 weight=$(task_weight "$PROMPT")
 difficulty="$weight"
 if declare -F packet_difficulty >/dev/null 2>&1; then
     difficulty=$(packet_difficulty "$PROMPT")
 fi
-need_capable=0
-[[ "$difficulty" == "heavy" || "$difficulty" == "keystone" ]] && need_capable=1
 
 # fleet-ops#4263 P3b: every cron slug routes through LiteLLM.
 # fable-check uses judge; other slugs use worker-cheap.

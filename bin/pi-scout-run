@@ -59,16 +59,12 @@ prompt_file="$PROMPT_DIR/${prompt_name}.md"
 
 [[ -f "$prompt_file" ]] || { echo "pi-scout-run: prompt not found: $prompt_file" >&2; exit 1; }
 
-# Choose a healthy seat. Compute need_capable from the task weight so a
-# heavy repair prompt gets a capable seat, while the lighter scout prompt
-# can use any healthy seat.
+# Classify weight for logs. P3b: LiteLLM worker-cheap owns fallbacks.
 weight=$(task_weight "$prompt_file")
 difficulty="$weight"
 if declare -F packet_difficulty >/dev/null 2>&1; then
     difficulty=$(packet_difficulty "$prompt_file")
 fi
-need_capable=0
-[[ "$difficulty" == "heavy" || "$difficulty" == "keystone" ]] && need_capable=1
 
 # Free-tier privacy line (fleet-ops#520): a private-repo target never routes
 # to a free-class lane. Resolve visibility via config/repo-privacy.json
