@@ -4052,6 +4052,11 @@ bash "$here/seat-lib-free-daily-budget.test.sh" || fail "seat-lib-free-daily-bud
 # listed CI host for the new product_only/spend-cap bench test.
 bash "$here/seat-lib-product-only-spend-cap.test.sh" || fail "seat-lib-product-only-spend-cap tests failed"
 
+# fleet-ops#4453: Pareto Pass token-derived provider daily-budget spend meter.
+# Workers cannot add a P14 line in .github/workflows/ci.yml; this file is the
+# listed CI host for the new provider-daily-budget bench test.
+bash "$here/seat-lib-provider-daily-budget.test.sh" || fail "seat-lib-provider-daily-budget tests failed"
+
 # fleet-ops#3826: a ceiling-parked spawn_fail seat must not be re-offered on
 # a false-healthy seat-health.ts ledger write (after_provider_response).
 # Workers cannot add a P14 line in .github/workflows/ci.yml; this file is the

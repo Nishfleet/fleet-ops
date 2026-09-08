@@ -56,6 +56,12 @@
       "note": "Alibaba Model Studio Token Plan Personal Standard mid tier (fleet-ops#4329, Nish 2026-09-07; RE-SCOPED 2026-09-08 #4445). $18/mo, credits per 7-day window, 3-4 concurrent, service PAUSES at the window cap, no rollover, no credits API (console only). Provider cap 0 (2026-09-08): NO worker use of ANY alibaba model — every model is cap 0 (intentional_cap_zero=judge_hold, dated reasons). qwen3.8-max is on the senior/judge roster (senior_seats_in_order) as a JUDGE ONLY, inert until the config-driven judge_only worker gate lands (fleet-ops#4445 follow-up). The prior 2026-09-07 worker re-shape (7 models, cap 3) burned the full 7-day window in ~11h (#4445) and is withdrawn. HTTP 429/402 = quota wall, not a transient fault."
     },
     {
+      "id": "paretoinference",
+      "class": "prepaid-quota",
+      "quota_window": "daily",
+      "note": "Pareto Inference Pareto Pass (fleet-ops#4453, Nish 2026-09-08). $3/week -> up to $20 of model usage each day; daily allowance expires at 23:59, unused $ is lost (https://docs.paretoinference.com/pareto-pass.md). Workers deepseek/deepseek-v4-flash + z-ai/glm-5.3-flash only, cap 4, glm-5.3 cap 0 (money_only). Spend-metered to $19.50/day on the existing prepaid-usage counter (token-derived; usage.cost reports 0.0 on the Pass). Drawn FIRST among prepaid worker seats (expiry-first rule). Never a judge/senior seat. 401 = bad key (fail loud); 429 = quota/concurrency wall (bench 15 min, not seat-dead)."
+    },
+    {
       "id": "minimax",
       "class": "metered",
       "note": "MiniMax-M3 direct, per-token."
