@@ -12,7 +12,8 @@
 #       and quality-research-weekly)
 #   (e) install.sh enable --now the timer (fleet-ops#183 class)
 #   (f) prompt locks the 5-action cap, the signal-attribution rule,
-#       the blind 8-lens structure (incl. L6 SECURITY), and the "claimed work only" output
+#       the blind 8-lens structure (incl. L6 SECURITY), the "claimed work only" output,
+#       and the fleet-ops#4471 stale CONFLICTING-PR namecheck
 #   (g) role-quality-gates catalog ships the new role with the bypass
 #       check helper, and live audit is green
 #   (h) agent-cron-run with this slug succeeds on a stubbed pi (the
@@ -130,7 +131,19 @@ grep -q 'WFR/baseline-delta.md' "$prompt" \
   || fail "prompt must read WFR/baseline-delta.md (baseline-delta pre-pass, fleet-ops#1151)"
 grep -q 'never pages' "$prompt" \
   || fail "prompt must state the pre-pass never pages"
-ok "(f) prompt locks the 5-action cap, signal, blind 8-lens structure (incl. SECURITY), claimed-work-only, baseline-delta input"
+# fleet-ops#4471: L1 names every open-origin CONFLICTING PR older than 7
+# days so the land-or-close sweep is mechanical. Prompt text landed in
+# #4488; this lock is the test gate (fleet-ops#366) so the section cannot
+# vanish without CI failing.
+grep -q 'Stale CONFLICTING-PR namecheck (fleet-ops#4471)' "$prompt" \
+  || fail "prompt must lock the fleet-ops#4471 stale CONFLICTING-PR namecheck"
+grep -q 'mergeable:CONFLICTING' "$prompt" \
+  || fail "prompt must name mergeable:CONFLICTING for the #4471 namecheck"
+grep -q 'older than 7 days' "$prompt" \
+  || fail "prompt must name the 7-day stale CONFLICTING cutoff (fleet-ops#4471)"
+grep -Fq 'gh pr list -R Nishfleet/fleet-ops --state open --json number,title,mergeable,updatedAt' "$prompt" \
+  || fail "prompt must pin the gh pr list query for the CONFLICTING namecheck"
+ok "(f) prompt locks the 5-action cap, signal, blind 8-lens structure (incl. SECURITY), claimed-work-only, baseline-delta input, #4471 CONFLICTING namecheck"
 
 # (g) role-quality-gates catalog + bypass check helper
 jq -e '.roles[] | select(.id == "weekly-fleet-review")' "$role_gates" >/dev/null \
