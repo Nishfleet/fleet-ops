@@ -1701,6 +1701,25 @@ blocked-on: orchestrator" 2>/dev/null || true
                 gh issue comment "$N" -R "$FULL" --body "fleet-ops#4540: issue $N is protected (owner-authored or critical-path) with a merged delivery PR (claim/issue-$N, PR #$_park_pr) and a \`termination:\` clause naming a future runtime event. observe-to-close stays comment-only on protected issues (fleet-ops#1435), so the issue stays OPEN by design — but it has been re-claimed ${_park_claims} times since the merge on a slow spin every anti-loop gate misses (#2462 counter resets on non-empty output; #2772 window sees only ~3 claims per 2h at the 15-min cooldown spacing). Parking it: labelled \`awaiting-runtime-gate\`, removed from agent-ready; the intake will not re-claim it until the named runtime event fires (clear the label then) or Nish closes the issue. No new timer." 2>/dev/null || true
                 continue
             fi
+        elif (( _park_protected == 0 )) && printf '%s' "$body" | grep -qi 'termination:' && printf '%s' "$body" | grep -qi 'gh pr view'; then
+            # fleet-ops#4553: land-or-close spin. A NON-protected (bot-authored,
+            # no critical-path) OPEN issue whose \`termination:\` clause NAMES
+            # OTHER PRs via \`gh pr view\` — the land-or-close shape. Acceptance
+            # is met by driving other PRs to merge (#1992, #4070), the worker
+            # cannot \`gh issue close\` (land-or-close issues are closed by Nish),
+            # and there is NO claim-branch delivery PR, so the #4540 detector
+            # (which requires protection + a merged claim-branch PR) and the
+            # reset (#2462) / window (#2772) gates all miss the same slow-spaced
+            # spin. Probe merged claim-branch PRs and park when absent.
+            _park_merged=$(gh pr list -R "$FULL" --head "claim/issue-$N" --state merged --json number,url,mergedAt 2>/dev/null || echo "[]")
+            if ! printf '%s' "$_park_merged" | jq -e 'length > 0' >/dev/null 2>&1; then
+                echo "issue $N ($title): skipped-parked-land-or-close ($_park_claims cumulative claims > cap $PARK_MAX_CLAIMS; termination: names other PRs; no claim-branch delivery PR; awaiting Nish to close)" >&2
+                gh label create awaiting-runtime-gate -R "$FULL" --color D4C5F9 \
+                    --description "Parked: land-or-close issue whose termination: met by other PRs; do not claim (fleet-ops#4553)" --force >/dev/null 2>&1 || true
+                gh issue edit "$N" -R "$FULL" --add-label awaiting-runtime-gate --remove-label agent-ready 2>/dev/null || true
+                gh issue comment "$N" -R "$FULL" --body "fleet-ops#4553: issue $N is a land-or-close ticket — its \`termination:\` clause names OTHER PRs (\`gh pr view\`) and it has no merged claim-branch delivery PR, so acceptance is met without opening its own PR. Land-or-close issues stay OPEN by design (the worker cannot \`gh issue close\`), and the reset (#2462) and window (#2772) gates miss the slow-spaced spin, so this issue has been re-claimed ${_park_claims} times since its PRs landed. Parking it: labelled \`awaiting-runtime-gate\`, removed from agent-ready; the intake will not re-claim it until Nish closes the issue or the label is cleared." 2>/dev/null || true
+                continue
+            fi
         fi
     fi
 
