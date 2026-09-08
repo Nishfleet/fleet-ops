@@ -61,6 +61,22 @@ eight lenses:
   claim-reconcile backlogs, time-to-merge, agents per seat, daily rate of
   new `agent-ready` issues, the ratio of triage-passed to triage-stuck.
   Use `gh search issues` / `gh issue list` to pull the numbers live.
+
+  **Stale CONFLICTING-PR namecheck (fleet-ops#4471)** — every run must also
+  pull the fleet-ops open-PR queue and NAME every PR that is
+  `mergeable:CONFLICTING` AND older than 7 days, regardless of its
+  originating issue's state. A conflicting branch can never auto-merge and
+  holds stale code a worker may mistake for live intent; a 7-day-old
+  conflicting branch is either a fix that needs a rebase-and-land or a dead
+  branch that needs close-with-evidence. Run
+  `gh pr list -R Nishfleet/fleet-ops --state open --json number,title,mergeable,updatedAt`;
+  for each entry that is `mergeable:CONFLICTING` and last updated more than
+  7 days ago, resolve the originating issue (`Closes/Relates to/fixes #N` in
+  the PR body, or the named issue chain) and name its state in the lens
+  output: either file a rebase-and-land action, or close the branch with a
+  dated, evidence-bearing comment (grep proof the intent landed elsewhere or
+  the feature was retired). This makes the sweep mechanical rather than
+  hand-picked. Do NOT run a raw poller/sleep loop; one live query per run.
 - **L2 output QUALITY** — deep-read a SAMPLE of this week's merged PRs
   (at least 5, more if cheap). Judge, do not count. For each, name one
   specific thing the PR did right AND one specific thing it could have
