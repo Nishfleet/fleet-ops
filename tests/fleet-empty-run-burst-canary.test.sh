@@ -53,6 +53,10 @@ triage="$scratch/triage.md"
 export HOME="$scratch/home"
 mkdir -p "$HOME"
 export FLEET_HEARTBEAT_TRIAGE="$triage"
+# opus-heartbeat is RETIRED (fleet-ops#4141); tests exercise the watcher-broken
+# branches with FLEET_EMPTY_BURST_FORCE_WATCHER=1 (as if the organ were still
+# installed). The retired fail-open branch is scenario 0 below.
+export FLEET_EMPTY_BURST_FORCE_WATCHER=1
 export FLEET_EMPTY_BURST_REPO="Nishfleet/fleet-ops"
 export FLEET_EMPTY_BURST_FILE=1
 export FLEET_OPS_REPO="$repo_root"
@@ -166,6 +170,28 @@ write_err() {
     local unit="$1" body="$2"
     printf '%s' "$body" >"$receipts/${unit}.err"
 }
+
+# 0. Source organ retired (fleet-ops#4141): launcher absent + snapshot missing -> exit 0 fail-open
+unset FLEET_EMPTY_BURST_FORCE_WATCHER
+if [[ -x "$HOME/.local/bin/opus-heartbeat" ]]; then
+    mv "$HOME/.local/bin/opus-heartbeat" "$scratch/opus-heartbeat.saved" || true
+fi
+with_launcher=""
+if [[ -x "$scratch/opus-heartbeat.saved" ]]; then
+    with_launcher=1
+fi
+export FLEET_EMPTY_BURST_SNAPSHOT="$scratch/does-not-exist-retired.json"
+set +e
+"$bin" >"$scratch/out" 2>"$scratch/err"
+rc=$?
+set -e
+[[ "$rc" -eq 0 ]] || fail "scenario 0: retired launcher absent, expected fail-open exit 0, got $rc"
+grep -q 'fail-open, exit 0' "$scratch/err" || fail "scenario 0: expected retired fail-open log, got: $(cat "$scratch/err")"
+ok "scenario 0: retired launcher absent -> exit 0 fail-open"
+export FLEET_EMPTY_BURST_FORCE_WATCHER=1
+[[ -n "$with_launcher" ]] && mv "$scratch/opus-heartbeat.saved" "$HOME/.local/bin/opus-heartbeat" || true
+# restore watcher-broken seam for subsequent scenarios
+: >"$triage"
 
 # 1. Snapshot missing
 export FLEET_EMPTY_BURST_SNAPSHOT="$scratch/does-not-exist.json"
