@@ -203,6 +203,9 @@ bash "$here/issue-file.test.sh"
 # .github/workflows/**).
 bash "$here/same-repo-closes-gate.test.sh"
 
+# fleet-ops#4468 dead-conflicting-PR detector
+bash "$here/fleet-dead-pr-detector.test.sh"
+
 # fleet-ops#1229: merge-trample gate. Hosted here so P14 runs the drill
 # without a workflow-file edit.
 bash "$here/merge-trample-gate.test.sh"

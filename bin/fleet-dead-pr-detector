@@ -23,7 +23,17 @@ fi
 #
 # Parent-originating issue resolution is deterministic, exact-number only
 # (never substring; #11352 must not match issue 1135 — same convention as
-# fleet-merged-pr-close). Priority, first match wins:
+# fleet-merged-pr-close). The body is scrubbed BEFORE any matching — refs
+# that can never name a parent issue of the scanned repo are removed:
+#   0. cross-repo qualified refs — `owner/repo#N`, `owner/repo #N` and
+#      the short `repo#N` form, when the repo is neither the scanned repo
+#      (Nishfleet/fleet-ops) nor its short name (fleet-ops).
+#      `Nishfleet/fleet-ops#N` and `fleet-ops#N` survive the scrub
+#   0b. PR-marked refs — `PR #N`, `pull #N`, `pull request #N`: a PR
+#      reference is never an issue parent. "Companion to
+#      Nishfleet/siterep-public PR #36" thus leaves no refs and resolves
+#      no bogus fleet-ops parent #36
+# Then, first match wins on the SCRUBBED body:
 #   1. explicit delivery trailer in the body — `Closes|Fixes|Resolves
 #      #N`, `Closed #N`, with an optional `<repo>#N` /
 #      `<owner>/<repo>#N` prefix
@@ -91,6 +101,32 @@ first_num() {
 
 # branch_num HEAD — the issue number when HEAD is claim/issue-<N>; empty
 # otherwise.
+#
+# scrub_body TEXT — strip refs that can never name a parent-originating
+# issue of the scanned repo before any matching:
+#   - cross-repo qualified refs: `owner/repo#N`, `owner/repo #N`, and the
+#     short `repo#N` form, whenever the repo is neither the scanned repo
+#     (Nishfleet/fleet-ops) nor its short name (fleet-ops). Bare prose
+#     `word #N` refs (space between word and #N) are NOT touched, so
+#     `Fixes #595` trailers and plain `#N` mentions survive
+#   - PR-marked refs: `PR #N`, `pull #N`, `pull request #N` — a PR
+#     reference is never an issue parent
+# Same-repo qualifiers (`Nishfleet/fleet-ops#N`, `fleet-ops#N`) survive.
+# Sed only, no regex lookahead: the keep-forms are parked on @-wrapped
+# sentinels first, the removals run, then the sentinels are restored.
+scrub_body() {
+    local text="$1" out
+    out="$(printf '%s\n' "$text" | sed -E \
+        -e 's%Nishfleet/fleet-ops%@@FULLKEEP@@%g' \
+        -e 's%fleet-ops%@@SHORTKEEP@@%g' \
+        -e 's%(^|[^0-9A-Za-z])[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+[[:space:]]*#[1-9][0-9]*([^0-9A-Za-z]|$)%\1\2%g' \
+        -e 's%(^|[^0-9A-Za-z])[A-Za-z0-9_.-]+#[1-9][0-9]*([^0-9A-Za-z]|$)%\1\2%g' \
+        -e 's%(^|[^0-9A-Za-z])(pr|pull-request|pull[[:space:]]+request|pull)[[:space:]]*#[1-9][0-9]*([^0-9A-Za-z]|$)%\1\3%gi' \
+        -e 's%@@FULLKEEP@@%Nishfleet/fleet-ops%g' \
+        -e 's%@@SHORTKEEP@@%fleet-ops%g')"
+    printf '%s' "$out"
+}
+
 branch_num() {
     local head="$1" n
     case "$head" in
@@ -106,11 +142,12 @@ branch_num() {
 # resolve_parent BODY HEAD — deterministic parent-originating issue number
 # per the priority in the header comment.
 resolve_parent() {
-    local body="$1" head="$2" n
-    n="$(first_num "$body" "$TRAILER_RE")"
-    [ -n "$n" ] || n="$(first_num "$body" "$RELATES_RE")"
+    local body="$1" head="$2" scrubbed n
+    scrubbed="$(scrub_body "$body")"
+    n="$(first_num "$scrubbed" "$TRAILER_RE")"
+    [ -n "$n" ] || n="$(first_num "$scrubbed" "$RELATES_RE")"
     [ -n "$n" ] || n="$(branch_num "$head")"
-    [ -n "$n" ] || n="$(first_num "$body" "$REF_RE")"
+    [ -n "$n" ] || n="$(first_num "$scrubbed" "$REF_RE")"
     printf '%s' "$n"
 }
 
