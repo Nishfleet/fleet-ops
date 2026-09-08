@@ -109,6 +109,28 @@ header.top{position:sticky;top:0;z-index:9;background:color-mix(in srgb,var(--in
 
 .pill{font-size:13.5px;border-radius:3px;padding:5px 11px;border:1px solid var(--line);color:var(--mut);white-space:nowrap}
 .pill.up{border-color:var(--teal);color:var(--teal)}
+
+/* Questions for Nish (fleet-ops#4475) */
+.q-chip{font:700 13px/1 ui-monospace,"SF Mono",Menlo,monospace;border-radius:10px;
+  padding:4px 10px;border:1px solid var(--line);color:var(--mut);cursor:pointer;transition:color .15s,border-color .15s}
+.q-chip.q-conf{border-color:var(--gold);color:var(--gold)}
+.q-chip.q-conf.on{background:var(--gold);color:#12100a}
+.q-chip.q-answer{border-color:var(--ok);color:var(--ok)}
+.q-chip.q-answer.on{background:var(--ok);color:#12100a}
+.q-72h{background:var(--risk);color:#fff;font:600 14px/1.5 ui-sans-serif,-apple-system,sans-serif;
+  padding:11px 16px;text-align:center}
+.q-card{background:var(--panel);border-top:1px solid var(--line);padding:14px 16px}
+.q-card.old{border-left:3px solid var(--risk)}
+.q-card .q-line{font-size:16.5px;line-height:1.5;margin:0 0 4px}
+.q-card .q-opt{margin:0 0 8px;color:var(--mut);font-size:14.5px;white-space:pre-wrap}
+.q-card .q-meta{display:flex;align-items:center;gap:10px;font:700 13px/1.7 ui-monospace,"SF Mono",Menlo,monospace;color:var(--teal);flex-wrap:wrap}
+.q-card .q-reason{color:var(--mut);font:14px/1.5 ui-sans-serif;font-weight:400}
+.q-card.old .q-age{color:var(--risk);font-weight:700}
+.q-card .q-copy{font:inherit;background:transparent;border:1px solid var(--gold);color:var(--gold);
+  border-radius:3px;padding:4px 10px;cursor:pointer}
+.q-card .q-copy:hover,.q-card .q-copy:focus-visible{border-color:var(--text);color:var(--text)}
+.q-state{font-size:11px;border:1px solid var(--line);border-radius:3px;padding:1px 7px;font-weight:600;color:var(--dim)}
+.q-card.old .q-state{color:var(--risk);border-color:var(--risk)}
 .draft{color:var(--warn);font-size:11px;border:1px solid var(--warn);
   border-radius:3px;padding:1px 7px;font-weight:600}
 .ref{font:700 13px/1.7 ui-monospace,"SF Mono",Menlo,monospace;
@@ -152,6 +174,7 @@ a:focus-visible,summary:focus-visible,button:focus-visible{outline:2px solid var
   <div id="frozen" class="frozen" hidden></div>
   <div id="paused"></div>
   <div id="band" class="band"></div>
+  <section class="prod" id="section-questions"><div class="ph"><h2>Questions for Nish</h2><span class="tag" id="questions-src"></span><div class="state"><span class="led" id="questions-led"></span><span class="q-chip" id="q-chip-inconf" hidden title="questions in conference"></span><span class="q-chip" id="q-chip-answered" hidden title="recently answered"></span></div></div><div id="q-72h" class="q-72h" hidden></div><div id="questions-body"></div></section>
   <section class="prod" id="section-prs"><div class="ph"><h2>Open PRs</h2><span class="tag" id="prs-src"></span><div class="state"><span class="led" id="prs-led"></span></div></div><div id="prs-body"></div></section>
   <section class="prod" id="section-shipped"><div class="ph"><h2>Shipped in the last 24h</h2><span class="tag" id="shipped-src"></span><div class="state"><span class="led" id="shipped-led"></span></div></div><div id="shipped-body"></div></section>
   <section class="prod" id="section-ci"><div class="ph"><h2>MAIN RED</h2><span class="tag" id="ci-src"></span><div class="state"><span class="led" id="ci-led"></span></div></div><div id="ci-body"></div></section>
@@ -233,6 +256,79 @@ function repoCountRows(items, cap, moreLabel){
   return html;
 }
 
+const ANSWER_TEMPLATE = "decision-resolved: <your answer>";
+
+function questionCard(question){
+  // A question card. `old` marks a question older than 24h (red state).
+  const age = (q) => { const h = Number(q.age_h); return isFinite(h) ? Math.round(h) : 0; };
+  const isOld = Number(question.age_h) >= 24;
+  const opts = (question.options || "").trim();
+  const refLink = question.url ? `<a href="${esc(question.url)}" target="_blank" rel="noopener">${esc(question.ref)}</a>` : esc(question.ref || "");
+  const qtext = esc(question.question || "");
+  return `<div class="q-card${isOld ? " old" : ""}" data-state="${esc(question.state || "in-conference")}">
+    <p class="q-line">${qtext}</p>
+    ${opts ? `<pre class="q-opt">options: ${esc(opts)}</pre>` : ""}
+    <div class="q-meta">
+      <span class="q-age" title="asked ${esc(question.asked_at || "")}">asked ${age(question)}h ago</span>
+      <span class="ref">${refLink}</span>
+      ${question.conference_reason ? `<span class="q-reason">${esc(question.conference_reason)}</span>` : ""}
+      <span class="q-state">${esc(question.state || "in-conference")}</span>
+      <button class="q-copy" aria-label="copy answer template" type="button"
+        data-copy="decision-resolved: <your answer> (${qtext})">copy answer</button>
+    </div>
+  </div>`;
+}
+
+function renderQuestions(d, q){
+  const srcEl = document.getElementById("questions-src");
+  const led = document.getElementById("questions-led");
+  const body = document.getElementById("questions-body");
+  const bar = document.getElementById("q-72h");
+  const chipConf = document.getElementById("q-chip-inconf");
+  const chipAns = document.getElementById("q-chip-answered");
+  const items = (Array.isArray(d.questions)) ? d.questions : [];
+
+  const fr = freshness(q);
+  const live = fr.state === "ok";
+  srcEl.textContent = q.source || "";
+  led.className = "led" + (live ? " on" : "");
+  bar.hidden = true; chipConf.hidden = true; chipAns.hidden = true;
+
+  if (!live){
+    body.innerHTML = `<p class="empty">${esc(fr.reason || "source unavailable")}</p>`;
+    return;
+  }
+
+  const forNish = items.filter(x => x.state === "for-nish");
+  const inConf = items.filter(x => x.state === "in-conference");
+  const answered = items.filter(x => x.state === "answered");
+
+  // Counter chips, hidden when the group is empty. Default view is
+  // for-nish only; a chip toggles its group in on the next render.
+  chipConf.hidden = inConf.length === 0;
+  chipConf.className = "q-chip q-conf" + (window.__qShowConf ? " on" : "");
+  chipConf.textContent = "in conference " + inConf.length;
+  chipAns.hidden = answered.length === 0;
+  chipAns.className = "q-chip q-answer" + (window.__qShowAns ? " on" : "");
+  chipAns.textContent = "answered " + answered.length;
+
+  // 72h red bar at the top when the OLDEST for-nish question is past 72h.
+  const oldest = forNish.reduce((m, x) => Math.max(m, Number(x.age_h) || 0), 0);
+  if (oldest >= 72){
+    bar.hidden = false;
+    bar.textContent = "⚠ A question is over 72 hours old — it needs an answer. Oldest for-nish: " + oldest + "h.";
+  }
+
+  const shown = window.__qShowConf ? [...forNish, ...inConf]
+    : (window.__qShowAns ? [...forNish, ...answered]
+       : forNish);
+  if (!shown.length){
+    body.innerHTML = `<p class="empty">no unanswered questions for you right now</p>`;
+    return;
+  }
+  body.innerHTML = shown.map(x => questionCard(x)).join("");
+}
+
 function render(d){
   if (!d) return;
   const t = d.tiles || {};
@@ -309,6 +405,9 @@ function render(d){
     <button class="${cellCls("cell", rp)}" aria-expanded="false"><div class="k">REPAIRS</div>${rpVal}${rpSub ? `<div class="s">${esc(rpSub)}</div>` : ""}${explainToggleHTML(rp, "Running alert-repair-* transient units; subtitle is fleet_repair_dispatch_24h.")}</button>`;
 
   // ---- Sections
+
+  // Questions for Nish (fleet-ops#4475) — must render FIRST.
+  renderQuestions(d, t.questions || {});
 
   const [prLive, prFr] = freshState(o);
   document.getElementById("prs-src").textContent = o.source || "";
@@ -409,11 +508,35 @@ function render(d){
 // ---- Explain toggles (event delegation)
 document.addEventListener("click", function(e){
   const cell = e.target.closest(".band .cell");
-  if (!cell) return;
-  const panel = cell.querySelector(".explain-x");
-  if (!panel) return;
-  const open = panel.classList.toggle("open");
-  cell.setAttribute("aria-expanded", open);
+  if (cell){
+    const panel = cell.querySelector(".explain-x");
+    if (panel){
+      const open = panel.classList.toggle("open");
+      cell.setAttribute("aria-expanded", open);
+    }
+    return;
+  }
+  const copy = e.target.closest(".q-copy");
+  if (copy){
+    const text = copy.getAttribute("data-copy") || ANSWER_TEMPLATE;
+    const done = () => { copy.textContent = "copied ✓"; setTimeout(() => copy.textContent = "copy answer", 1600); };
+    if (navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(done).catch(done);
+    } else {
+      const ta = document.createElement("textarea");
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); } catch(_){}
+      document.body.removeChild(ta); done();
+    }
+    return;
+  }
+  const chip = e.target.closest(".q-chip");
+  if (chip){
+    if (chip.classList.contains("q-conf")) window.__qShowConf = !window.__qShowConf;
+    else if (chip.classList.contains("q-answer")) window.__qShowAns = !window.__qShowAns;
+    load();  // re-render with the toggled view
+    return;
+  }
 });
 
 // ---- Load
