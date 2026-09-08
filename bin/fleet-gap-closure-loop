@@ -31,6 +31,14 @@ DRILL_UNIT="${GAP_LOOP_DRILL_UNIT:-fleet-gap-closure-drill.service}"
 SLO_BIN="${GAP_LOOP_SLO_BIN:-}"
 DRY_RUN="${GAP_LOOP_DRY_RUN:-0}"
 DISABLE="${GAP_LOOP_DISABLE:-0}"
+# fleet-ops#4524: the loop used to convene a full 3-senior-auditor termination
+# conference (and file a dissent on any NOT-DONE) after a SINGLE clean cycle,
+# even immediately after a FAIL verdict. The cycle-6 senior dissent called this
+# out ("consecutive_clean is only 1 after last_verdict FAIL"). A termination
+# conference is the expensive, diverging decision point; it must only convene
+# after a sustained run of clean measurements, not one green snapshot. The floor
+# is the number of consecutive clean cycles required before phase=conference.
+CONF_CLEAN_FLOOR="${GAP_LOOP_CONF_CLEAN_FLOOR:-2}"
 
 here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 [ -n "$SLO_BIN" ] || SLO_BIN="$here/fleet-gap-closure-slo"
@@ -234,8 +242,20 @@ phase_measure() {
     if [ "$findings" -eq 0 ] 2>/dev/null && [ "$drills" = "true" ] && [ "$green" = "true" ]; then
         cc="$(state_read '.consecutive_clean')"
         cc=$((cc + 1))
-        state_jq --argjson c "$cc" '.consecutive_clean = $c | .dispatched = {} | .phase = "conference"'
-        log "cycle $cycle: CLEAN -> conference (consecutive_clean=$cc)"
+        if [ "$cc" -ge "$CONF_CLEAN_FLOOR" ]; then
+            state_jq --argjson c "$cc" '.consecutive_clean = $c | .dispatched = {} | .phase = "conference"'
+            log "cycle $cycle: CLEAN x$cc >= floor $CONF_CLEAN_FLOOR -> conference"
+        else
+            # fleet-ops#4524: not enough consecutive clean cycles yet to stake a
+            # termination conference on it. Re-audit; keep consecutive_clean so
+            # sustained green can reach the floor, but do NOT bump last_verdict
+            # to FAIL (this cycle was clean, just too soon to convene).
+            next=$((cycle + 1))
+            due="$(research_due_for "$next")"
+            state_jq --argjson c "$cc" --argjson n "$next" --argjson d "$due" \
+                '.consecutive_clean = $c | .cycle = $n | .research_due = $d | .dispatched = {} | .phase = "audit"'
+            log "cycle $cycle: CLEAN x$cc below floor $CONF_CLEAN_FLOOR -> re-audit cycle $next"
+        fi
     else
         next=$((cycle + 1))
         due="$(research_due_for "$next")"

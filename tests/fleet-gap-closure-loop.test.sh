@@ -257,6 +257,7 @@ export GAP_LOOP_FAKE_NOW="2026-08-26T16:00:00Z"
 export GAP_LOOP_SLO_BIN="$slo"
 export GAP_LOOP_DISABLE=0
 export GAP_LOOP_REPO="Nishfleet/fleet-ops"
+export GAP_LOOP_CONF_CLEAN_FLOOR=2
 
 tick() { "$loop"; }
 
@@ -329,7 +330,10 @@ ok "cycle with findings -> no conference (re-audit cycle 2)"
 # ---------------------------------------------------------------------------
 # Clean cycle + green SLOs -> conference; 2-of-3 continues; unanimous closes
 # ---------------------------------------------------------------------------
-# Jump to measure of a clean cycle.
+# fleet-ops#4524: a single clean cycle must NOT convene the termination
+# conference when consecutive_clean is below the floor (default 2). It re-audits
+# and keeps consecutive_clean, and must NOT mark last_verdict=FAIL on a clean
+# cycle (it is clean, just too soon to convene).
 cat >"$state_dir/state.json" <<'JSON'
 {
   "cycle": 2,
@@ -344,14 +348,44 @@ cat >"$state_dir/state.json" <<'JSON'
   "research_due": false,
   "dispatched": {},
   "verdict_history": [],
+  "last_verdict": "FAIL",
   "updated_at": "2026-08-26T16:00:00Z"
 }
 JSON
 printf '{"all_pass":true,"results":[{"name":"x","pass":true}]}\n' >"$state_dir/drill-results.json"
 printf '[]\n' >"$gaps_file"
 tick
-[[ "$(phase)" == "conference" ]] || fail "clean+green+drills must convene conference, got $(phase)"
-ok "clean cycle + green SLOs -> conference convened"
+[[ "$(phase)" == "audit" ]] || fail "clean below floor must NOT convene conference, got $(phase)"
+[[ "$(jq -r '.consecutive_clean' "$state_dir/state.json")" == "1" ]] \
+  || fail "below-floor clean must keep consecutive_clean=1, got $(jq -c .consecutive_clean "$state_dir/state.json")"
+[[ "$(jq -r '.last_verdict' "$state_dir/state.json")" == "FAIL" ]] \
+  || fail "clean below floor must NOT rewrite last_verdict to FAIL, got $(jq -c .last_verdict "$state_dir/state.json")"
+ok "clean below floor -> re-audit, consecutive_clean kept, last_verdict untouched"
+
+# A second consecutive clean cycle reaches the floor and convenes conference.
+cat >"$state_dir/state.json" <<'JSON'
+{
+  "cycle": 3,
+  "phase": "measure",
+  "cycle_findings": 0,
+  "consecutive_clean": 1,
+  "drills_pass": true,
+  "drill_results": [],
+  "slo_snapshot": {},
+  "slos_green": null,
+  "precedence": "loop",
+  "research_due": false,
+  "dispatched": {},
+  "verdict_history": [],
+  "last_verdict": "FAIL",
+  "updated_at": "2026-08-26T16:00:00Z"
+}
+JSON
+printf '{"all_pass":true,"results":[{"name":"x","pass":true}]}\n' >"$state_dir/drill-results.json"
+printf '[]\n' >"$gaps_file"
+tick
+[[ "$(phase)" == "conference" ]] || fail "clean at floor must convene conference, got $(phase)"
+ok "clean cycle at floor -> conference convened"
 
 # Dispatch conference (writes mode=termination).
 tick
