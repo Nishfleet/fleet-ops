@@ -19,10 +19,23 @@ Type=oneshot
 Environment=HOME=/home/nish
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_RUNTIME_DIR=/run/user/1000
-Environment=WORKDIR=/home/nish/workspaces/products/0509
+# issue #2018 (Nishfleet/0509): the seat previously ran in the SHARED product
+# checkout, where another agent's unsaved scratch file blocked the whole morning
+# report at the clean-checkout gate. The seat now owns a dedicated worktree under
+# agent-state, refreshed each run, so no other agent's work can ever block it.
+# The seat only ever refreshes its OWN directory — it never touches the shared
+# checkout and never moves or deletes any other agent's file. Fail-loud behaviour
+# is preserved; see prompts/0509-daily-market-signal.md "Failure semantics".
+Environment=WORKDIR=/home/nish/workspaces/agent-state/0509-daily-market-signal-worktree
 Environment=LOG_DIR=/home/nish/workspaces/agent-state/cron-output
 Environment=PROMPTS_DIR=/home/nish/.pi/agent/prompts
 Environment=PI_BIN=/home/nish/.local/bin/pi
+# Provision + refresh the seat's dedicated worktree (a standalone clone of the
+# public Nishfleet/0509 repo at origin/main). First run clones; later runs
+# fetch + reset + clean so the report always runs against current main and never
+# into another agent's leftover files. Failures exit non-zero so the existing
+# Restart=on-failure seat-rotation retry still applies (fail-loud preserved).
+ExecStartPre=/bin/sh -c 'W=/home/nish/workspaces/agent-state/0509-daily-market-signal-worktree; U=https://github.com/Nishfleet/0509.git; if [ -d "$W/.git" ]; then git -C "$W" fetch --quiet --depth 1 origin main || { echo "0509-daily-market-signal pre: fetch failed" >&2; exit 1; }; git -C "$W" reset --hard --quiet origin/main || { echo "0509-daily-market-signal pre: reset failed" >&2; exit 1; }; git -C "$W" clean -fdq || { echo "0509-daily-market-signal pre: clean failed" >&2; exit 1; }; else git clone --quiet --depth 1 "$U" "$W" || { echo "0509-daily-market-signal pre: clone failed" >&2; exit 1; }; fi'
 ExecStart=/home/nish/.local/bin/agent-cron-run 0509-daily-market-signal
 # Retry policy — a transient fleet 429 delays the job, not kills it for the
 # day. systemd re-runs ExecStart (which re-seats via pick_seat) up to

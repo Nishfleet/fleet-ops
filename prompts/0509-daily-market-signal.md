@@ -19,7 +19,7 @@ scheduler. The system-managed workdir is injected by the runner; the seat
 The contract for this report is:
 
 ```
-/home/nish/workspaces/products/0509/automation/HERMES_MARKET_SIGNAL.md
+$WORKDIR/automation/HERMES_MARKET_SIGNAL.md
 ```
 
 Read it first, end to end. **The contract wins** over this prompt and over anything
@@ -31,7 +31,7 @@ cluster was returned.
 ## What you do, in order
 
 1. **Confirm substrate.** Verify the runner has set `AGENT_CRON_SLUG=0509-daily-market-signal`
-   and `WORKDIR=/home/nish/workspaces/products/0509`. Print both. Exit 1 if absent.
+   and `WORKDIR=/home/nish/workspaces/agent-state/0509-daily-market-signal-worktree`. Print both. Exit 1 if absent.
 2. **Fetch and clean.** `cd "$WORKDIR" && git fetch -q origin main && git status --porcelain`.
    Fail if the checkout is dirty.
 3. **Vault conflict gate.** Fail if any `*.sync-conflict-*` exists under
