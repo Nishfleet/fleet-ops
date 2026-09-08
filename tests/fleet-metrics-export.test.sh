@@ -3228,8 +3228,10 @@ devin_payload = {
             "planInfo": {"planName": "Pro"},
             "dailyQuotaRemainingPercent": 96,
             "weeklyQuotaRemainingPercent": 93,
-            "dailyQuotaResetAtUnix": 1788854400,
-            "weeklyQuotaResetAtUnix": 1789286400,
+            # relative resets so the fixture never expires (a fixed live
+            # epoch went stale 2026-09-08T08:00Z and broke P14 CI for hours).
+            "dailyQuotaResetAtUnix": int(time.time()) + 7200,
+            "weeklyQuotaResetAtUnix": int(time.time()) + 172800,
         },
     }
 }

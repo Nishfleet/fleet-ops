@@ -130,8 +130,8 @@ PY
 )"
 echo "$expout" | grep -qE 'fleet_usd_24h\{kind="metered"\}' || fail "exporter did not emit fleet_usd_24h{kind=metered}; got: $expout"
 echo "$expout" | grep -qE 'fleet_usd_24h\{kind="flat_share"\}' || fail "exporter did not emit fleet_usd_24h{kind=flat_share}"
-echo "$expout" | grep -qE 'fleet_usd_per_merged_pr' || fail "exporter did not emit fleet_usd_per_merged_pr"
-ok "exporter emits fleet_usd_24h + fleet_usd_per_merged_pr"
+echo "$expout" | grep -qE 'fleet_usd_per_merged_pr\{merged_prs="[0-9]+"\}' || fail "fleet_usd_per_merged_pr must carry a QUOTED merged_prs label — an unquoted merged_prs=NNN makes node_exporter's textfile collector REJECT the whole fleet.prom (silent absence of every fleet metric, the 2026-09-08 FleetGhRateLimitAbsent incident); got: $expout"
+ok "exporter emits fleet_usd_24h + fleet_usd_per_merged_pr (quoted label, textfile-parseable)"
 
 # 6. UNAVAILABLE never fabricated: a provider with no rate card records UNAVAILABLE
 #    in the prepaid-usage counter.
