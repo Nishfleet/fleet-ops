@@ -3760,7 +3760,9 @@ _record_prepaid_pick() {
 # seat rate card) into the same prepaid-usage/<provider>.json counter that
 # pacing reads. The counter file grows a `usd` field: {week,count,usd}. A seat
 # with no rate card (and no flat plan) records usd=UNAVAILABLE:<why> — never a
-# fabricated $0 (fleet-ops#4459 required).
+# fabricated $0 (fleet-ops#4459 required). remote_agent seats (Devin) record
+# usd=UNAVAILABLE:remote (their local session carries no meterable usage; the
+# flat prepaid share is attributed separately, fleet-ops#4459 Do.2).
 _session_usd_from_usage() {
     # $1=rate input $2=rate output $3=rate cached (USD per 1M); $4=input tokens
     # $5=output tokens $6=cacheRead tokens (int counts)
@@ -3782,12 +3784,20 @@ _record_prepaid_usd() {
     rate_out=$(jq -r ".providers[\"$p\"].usd_per_1m_output // 0" "$SEAT_CAPS_JSON" 2>/dev/null || echo 0)
     rate_cache=$(jq -r ".providers[\"$p\"].usd_per_1m_cached // 0" "$SEAT_CAPS_JSON" 2>/dev/null || echo 0)
     flat=$(jq -r ".providers[\"$p\"].flat_usd_per_month // 0" "$SEAT_CAPS_JSON" 2>/dev/null || echo 0)
+    remote=$(jq -r ".providers[\"$p\"].remote_agent // false" "$SEAT_CAPS_JSON" 2>/dev/null || echo false)
     local in_tok out_tok cache_tok usd prev_count
     in_tok=$(jq -s '[.[] | .message.usage.input? // 0] | add // 0' "$sess" 2>/dev/null || echo 0)
     out_tok=$(jq -s '[.[] | .message.usage.output? // 0] | add // 0' "$sess" 2>/dev/null || echo 0)
     cache_tok=$(jq -s '[.[] | .message.usage.cacheRead? // 0] | add // 0' "$sess" 2>/dev/null || echo 0)
     if [[ "$rate_in" == "0" && "$rate_out" == "0" && "$rate_cache" == "0" && "$flat" == "0" ]]; then
-        usd="UNAVAILABLE:no-rate-card"
+        # fleet-ops#4459 Do.2: remote-agent seats (Devin) leave no local usage
+        # to meter; attribute the flat prepaid share only. Report UNAVAILABLE:remote
+        # (never a fabricated $0; flat share is summed from flat_usd_per_month).
+        if [[ "$remote" == "true" ]]; then
+            usd="UNAVAILABLE:remote"
+        else
+            usd="UNAVAILABLE:no-rate-card"
+        fi
     else
         usd=$(_session_usd_from_usage "$rate_in" "$rate_out" "$rate_cache" "$in_tok" "$out_tok" "$cache_tok")
     fi

@@ -129,4 +129,21 @@ unavail="$(cat "$pystate/prepaid-usage/some-no-rate-seat.json" | jq -r '.usd' 2>
 [[ "$unavail" == UNAVAILABLE:* ]] || fail "no-rate-card seat did not record UNAVAILABLE (got: $unavail) — must not fabricate \$0"
 ok "no-rate-card seat records UNAVAILABLE (not a fabricated \$0)"
 
+# 6b. Fleet-ops#4459 Do.2: a remote_agent seat (Devin) with no rate card
+#     records UNAVAILABLE:remote (flat-share-only), not the generic no-rate-card.
+remote_state="$scratch/remote-state"
+PI_PACKET_STATE="$remote_state" bash - <<SH 2>/dev/null || true
+source "$repo_root/lib/seat-lib.sh"
+export STATE_DIR="$remote_state"
+export SEAT_CAPS_JSON="$caps"
+mkdir -p "\$STATE_DIR/prepaid-usage" "\$STATE_DIR"
+sess="$scratch/dev.jsonl"
+printf '%s\n' '{"type":"message","message":{"role":"assistant","usage":{"input":1,"output":1,"cacheRead":0}}}' > "\$sess"
+_record_prepaid_usd devin "\$sess"
+rm -f "\$sess"
+SH
+remote_usd="$(cat "$remote_state/prepaid-usage/devin.json" | jq -r '.usd' 2>/dev/null || true)"
+[[ "$remote_usd" == "UNAVAILABLE:remote" ]] || fail "devin (remote_agent) did not record UNAVAILABLE:remote (got: $remote_usd)"
+ok "remote_agent seat records UNAVAILABLE:remote (flat-share-only, not fabricated)"
+
 echo "PASS"
