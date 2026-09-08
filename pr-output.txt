@@ -1,0 +1,40 @@
+Repeat-deterministic failure detector — Nishfleet/0509
+Sampled 28 failures over 6h (threshold 3 within 6h) at 2026-08-25T21:42:47.186Z
+
+Repeat-deterministic failures: 3
+  - Failure signature "CI / codex-node-checks / Test" (event=merge_group) failed 7 times in 6h (assertion: "AssertionError: expected 'Design-system ratchet violations (new…' to be '' // Object.is equality"). This is a repeat-deterministic failure — re-arm or re-queue will not help. Classify before retrying: assertion failure -> stop; infra/network/timeout -> retry with backoff.
+      repo:      Nishfleet/0509
+      first:     2026-08-25T15:47:33Z
+      last:      2026-08-25T18:17:53Z
+      runs:      https://github.com/Nishfleet/0509/actions/runs/32867983292, https://github.com/Nishfleet/0509/actions/runs/32871113075, https://github.com/Nishfleet/0509/actions/runs/32871158424, https://github.com/Nishfleet/0509/actions/runs/32874091008, https://github.com/Nishfleet/0509/actions/runs/32877005190, https://github.com/Nishfleet/0509/actions/runs/32880029511, https://github.com/Nishfleet/0509/actions/runs/32882931757
+  - Failure signature "Gate integrity / gate-integrity / Evaluate gate integrity" (event=pull_request_target) failed 7 times in 6h (assertion: "Process completed with exit code 1."). This is a repeat-deterministic failure — re-arm or re-queue will not help. Classify before retrying: assertion failure -> stop; infra/network/timeout -> retry with backoff.
+      repo:      Nishfleet/0509
+      first:     2026-08-25T17:22:52Z
+      last:      2026-08-25T18:42:26Z
+      runs:      https://github.com/Nishfleet/0509/actions/runs/32877539651, https://github.com/Nishfleet/0509/actions/runs/32878869453, https://github.com/Nishfleet/0509/actions/runs/32879446749, https://github.com/Nishfleet/0509/actions/runs/32879607181, https://github.com/Nishfleet/0509/actions/runs/32882201460, https://github.com/Nishfleet/0509/actions/runs/32882256085, https://github.com/Nishfleet/0509/actions/runs/32885326420
+  - Failure signature "Ratchet auto-tighten / Tighten design-system ratchet ceilings / Verify pinned main checkout" (event=push) failed 4 times in 6h (assertion: "Process completed with exit code 1."). This is a repeat-deterministic failure — re-arm or re-queue will not help. Classify before retrying: assertion failure -> stop; infra/network/timeout -> retry with backoff.
+      repo:      Nishfleet/0509
+      first:     2026-08-25T17:41:02Z
+      last:      2026-08-25T18:53:26Z
+      runs:      https://github.com/Nishfleet/0509/actions/runs/32879324192, https://github.com/Nishfleet/0509/actions/runs/32880027778, https://github.com/Nishfleet/0509/actions/runs/32880319465, https://github.com/Nishfleet/0509/actions/runs/32886394512
+
+Top failure signatures: 5 (count desc, most-recent first as tiebreak)
+   1. [pull_request_target] Gate integrity / gate-integrity / Evaluate gate integrity x7 :: Process completed with exit code 1.
+        2026-08-25T17:22:52Z -> 2026-08-25T18:42:26Z | 7 run url(s)
+   2. [merge_group] CI / codex-node-checks / Test x7 :: AssertionError: expected 'Design-system ratchet violations (new…' to be '' // Object.is equality
+        2026-08-25T15:47:33Z -> 2026-08-25T18:17:53Z | 7 run url(s)
+   3. [push] Ratchet auto-tighten / Tighten design-system ratchet ceilings / Verify pinned main checkout x4 :: Process completed with exit code 1.
+        2026-08-25T17:41:02Z -> 2026-08-25T18:53:26Z | 4 run url(s)
+   4. [push] .github/workflows/d1-remote-restore-evidence.yml / (job) / (run) x2
+        2026-08-25T21:42:23Z -> 2026-08-25T21:42:27Z | 2 run url(s)
+   5. [push] .github/workflows/d1-backup-r2.yml / (job) / (run) x2
+        2026-08-25T21:42:24Z -> 2026-08-25T21:42:26Z | 2 run url(s)
+Event split: 28 failures across 7 event type(s) (248 total runs sampled)
+  - dynamic        failed=   0 (0.00%)
+  - merge_group    failed=   7 (9.33%)
+  - pull_request   failed=   4 (6.78%)
+  - pull_request_target failed=   9 (34.62%)
+  - push           failed=   8 (19.51%)
+  - schedule       failed=   0 (0.00%)
+  - workflow_run   failed=   0 (0.00%)
+  pull_request (6.78%) vs merge_group (9.33%) — divergence: +2.55pp (>0 means queue-side gap, the semantic-merge-conflict signature)
