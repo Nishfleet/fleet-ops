@@ -651,7 +651,17 @@ def compute(env=None):
     blocked_ts = _blocked_timestamps(events) if events is not None else []
     latency = []
     for m in merged:
-        if m < journal_start - 86400:
+        # A merge that happened before the journal began (m < journal_start)
+        # has an unmeasured wait: its DEPLOY-BLOCKED / DEPLOY-CHECK-FAILED
+        # context (if any) is lost to the journal rotation boundary, so the
+        # sample is either unmeasurable or the block-context is unknowable.
+        # Counting it as deploy latency after a blocked episode is the
+        # DeployBlockedStuck hangover this function exists to prevent
+        # (fleet-ops#3136): e.g. 2026-09-08 live, 8 pre-journal Sep-04 merges
+        # leaked 1860-4436s waits into p95 and kept DeploymentLatencyHigh red
+        # for ~3 weeks. The previous generous 24h margin (journal_start -
+        # 86400) let those leak. Exclude outright — not measurable.
+        if m < journal_start:
             continue  # deploy record predates the journal — not measurable
         for g in greens:
             if g >= m:
