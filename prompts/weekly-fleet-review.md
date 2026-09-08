@@ -50,6 +50,33 @@ and proposes up to 5 changes that move the bar. Same seat, different lens.
 Fail loud if any `*.sync-conflict-*` exists under
 `/home/nish/workspaces/tooling/nish-vault`.
 
+## Caught by hand this week (FIRST section the review opens with)
+
+Everything in this section comes from the week's `decisions-ledger.md`
+entries, the judge's `new-measure:` header lines, and Nish's Telegram/chat
+corrections — the things no metric surfaced first. The weekly review opens
+with these, before any lens: this is the blind-spot detector (fleet-ops#4460).
+The judge only sees what its `measure.sh` measures; the review exists to
+catch what the judge is blind to.
+
+1. **List every finding caught by hand this week.** Read the week's
+   `decisions-ledger.md` entries (fleet-ops#4460), the judge's
+   `new-measure: <what>` header lines in the fable-check run output
+   (agent-state clock, trailing 7 days), and any Nish Telegram/chat
+   correction from this week. For each, answer: which `measure.sh` line now
+   covers it (cite the commit), or file the missing measure line as an
+   `agent-ready` issue inside the review's ≤5 actions.
+2. **Red review.** A finding caught by hand TWICE with no `measure.sh` line
+   covering it is a RED review: it is a blind spot the fleet chose not to
+   close, and the review must say so explicitly and file the measure line
+   as an action before anything else.
+3. **Use the counts.** `measure.sh` prints `new_measures_7d=<n>` and
+   `caught_by_hand_7d=<n>` from the decisions-ledger + fable-state. Confirm
+   the review's own counts against them. The metric is
+   `caught_by_hand_7d` trending to 0 and
+   `new_measures_7d >= caught_by_hand_7d` every week: every caught-by-hand
+   item must have a measure line that same week.
+
 ## Phase 1 — BLIND 8-lens research (write each lens to its own file)
 
 The spec says "blind" — each lens is written **without** reading the
