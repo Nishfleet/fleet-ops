@@ -247,8 +247,13 @@ apply_question_route() {
             # Extract the precedent text from a MATRIX vote's reason. grep
             # exits 1 on no match; under set -e/-o pipefail guard the whole
             # substitution so an absent precedent falls through to orchestrator.
+            # fleet-ops#4503: no byte-cap on the extracted precedent. This
+            # feeds an issue-comment body, not model context (and the vote
+            # reasons are already posted in full by the other routes), so a
+            # head -c cap was both unnecessary and a token-efficiency
+            # anti-pattern shape (fleet-token-efficiency-check).
             local answer
-            answer=$(printf '%s' "$matrix_reasons" | grep -ioE '\bprecedent:[[:space:]]*.*' -m1 | sed -E 's/^.*\bprecedent:[[:space:]]*//I' | head -c 300 || true)
+            answer=$(printf '%s' "$matrix_reasons" | grep -ioE '\bprecedent:[[:space:]]*.*' -m1 | sed -E 's/^.*\bprecedent:[[:space:]]*//I' || true)
             if [ -n "$answer" ]; then
                 "$GH" issue comment "$candidate" -R "Nishfleet/$repo" \
                     --body "decision-resolved: the decisions ledger already answers this (precedent: $answer). Removing from the question tab. (fleet-ops#4474)" \
