@@ -710,6 +710,57 @@ gj3="$state_dir/pi-audit-jobs/${res_conf3}-r1-glm-5-3/job.json"
 ok "glm-5-3 falls back to usable capable seat when no free seat is live"
 
 # ---------------------------------------------------------------------------
+# fleet-ops#4523: a wired free-class seat with NO health ledger (an unwired
+# or never-probed slug sitting in enumerate_seats) must NOT throw "hc:
+# unbound variable" under `set -u` and abort resolve_free_glm_conf_seat.
+# Before the fix, production's full models.json made the resolver scan past a
+# no-ledger free seat first, crash the whole command-substitution subshell,
+# and fall back to the unwired zenmux/z-ai/glm-5.3-free ladder slug -> a
+# preflight refusal -> a blind-seat dissent every conference. The resolver
+# must skip the no-ledger seat and still fall through to a usable capable
+# seat.
+cap5="$state_dir/resolve-caps-d"
+mkdir -p "$cap5"
+cat >"$cap5/seat-caps.json" <<'CAPS'
+{"providers":{
+  "cline":{"cap":2,"class":"prepaid-quota","models":{"z-ai/glm-5.3-flash":{"cap":1,"class":"free"}}},
+  "zenmux":{"cap":2,"class":"prepaid-quota","models":{"z-ai/glm-4.7-flash-free":{"cap":1,"class":"free"}}},
+  "cursor":{"cap":2,"class":"capable","models":{"cursor-grok-4.6-high":{"cap":1,"class":"capable"}}}
+},"senior_seats_in_order":[]}
+CAPS
+cat >"$cap5/models.json" <<'MODELS'
+{"providers":{"zenmux":{"models":[{"id":"z-ai/glm-4.7-flash-free","reasoning":false}]},"cursor":{"models":[{"id":"cursor-grok-4.6-high","reasoning":true}]}}}
+MODELS
+# cline free-GLM ladder seat dead -> step 1 empty. cursor capable seat live.
+# NO ledger for zenmux/z-ai/glm-4.7-flash-free -> the resolver must skip it
+# (non-match), not crash, and land on cursor.
+cat >"$res_seat_state/cline__z-ai_glm-5.3-flash.json" <<EOF
+{"provider":"cline","model":"z-ai/glm-5.3-flash","health_class":"healthy","seat_dead":true,"observed_at":"$NOW","source":"test"}
+EOF
+cat >"$res_seat_state/cursor__cursor-grok-4.6-high.json" <<EOF
+{"provider":"cursor","model":"cursor-grok-4.6-high","health_class":"healthy","seat_dead":false,"observed_at":"$NOW","source":"test"}
+EOF
+res_conf4="resolve-conf-d"
+mkdir -p "$state_dir/conferences/$res_conf4"
+printf 'termination\n' >"$state_dir/conferences/$res_conf4/mode"
+printf '{"cycle":1}\n' >"$state_dir/state.json"
+GAP_LOOP_CONF_ID="$res_conf4" GAP_LOOP_DRY_RUN=1 GAP_LOOP_STATE_DIR="$state_dir" \
+  GAP_LOOP_TALLY_BIN="$tally" GAP_LOOP_GH="$scratch/bin/gh" \
+  GAP_LOOP_SYSTEMCTL="$scratch/bin/systemctl" \
+  PI_PACKET_SEAT_LIB="$repo_root/lib/seat-lib.sh" \
+  SEAT_CAPS_JSON="$cap5/seat-caps.json" \
+  PI_MODELS_JSON="$cap5/models.json" \
+  PI_SEAT_HEALTH_LEDGER_DIR="$res_seat_state" \
+  PI_SEAT_HEALTH_FILE="$cap5/global-seat-health.json" \
+  PI_PACKET_STATE="$cap5/pp" SEAT_LOG_FILE="$cap5/pp/watch.log" \
+  "$conf"
+gj4="$state_dir/pi-audit-jobs/${res_conf4}-r1-glm-5-3/job.json"
+[[ -f "$gj4" ]] || fail "conference must write a glm-5-3 job: $gj4"
+[[ "$(jq -r '.provider' "$gj4")" == "cursor" && "$(jq -r '.model' "$gj4")" == "cursor-grok-4.6-high" ]] \
+  || fail "glm-5-3 must skip the no-ledger free seat and fall back to the usable capable seat, got $(jq -c '{provider,model}' "$gj4")"
+ok "glm-5-3 skips a no-ledger free seat without crashing (set -u / fleet-ops#4523)"
+
+# ---------------------------------------------------------------------------
 # fleet-ops#4209: the glm-5-2 auditor must resolve to a LIVE wired seat, not
 # the hardcoded devin/glm-5-2 that the auditor preflight refused when the
 # devin lane was quota-benched (cycle-4 termination conference

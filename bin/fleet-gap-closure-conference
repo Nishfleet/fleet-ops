@@ -88,7 +88,19 @@ _conf_seat_has_health_data() {
             hc=$(jq -r '.health_class // ""' "$SEAT_HEALTH_FILE" 2>/dev/null || true)
         fi
     fi
-    [ -n "$hc" ]
+    # fleet-ops#4523: under `set -u`, `[ -n "$hc" ]` aborts the whole
+    # resolve_free_glm_conf_seat subshell with "hc: unbound variable" when a
+    # candidate seat has NO health ledger (no ledger file and the global
+    # sidecar does not name this exact provider/model) — `local hc` leaves it
+    # unset, and referencing it is a fatal nounset error, not a false test.
+    # In production enumerate_seats scans the full models.json, so the first
+    # wired free-class seat without a ledger crashed the resolver and glm-5-3
+    # fell back to the unwired zenmux/z-ai/glm-5.3-free ladder slug, whose
+    # preflight always refuses -> a blind-seat dissent every conference
+    # (cycle-4 #4210, cycle-6 #4523). `${hc:-}` makes a no-ledger seat a
+    # normal non-match so the resolver skips it and falls through to a live
+    # usable seat instead of aborting.
+    [ -n "${hc:-}" ]
 }
 resolve_free_glm_conf_seat() {
     local SEAT_LIB_PATH slug p m
