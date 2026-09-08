@@ -122,6 +122,9 @@ CF_TOKEN_CANDIDATES = [
 # None without any network call (the gauges then stay absent). This keeps the
 # offline unit test deterministic and proves the "no fabricated 0" rule.
 OUTCOME_SKIP = os.environ.get("FLEET_PRODUCT_OUTCOME", "")
+# Hex alphabet for validating the Cloudflare D1 account/database IDs before
+# they are interpolated into the fixed api.cloudflare.com URL (fleet-ops#4456).
+_HEX = "0123456789abcdefABCDEF"
 # fleet-ops#3984: 15m TTL (was 6h). The shipped_24h tile reads this cache,
 # so a 6h-stale cache undercounted the trailing-24h window by up to ~8
 # merges (the "window edge" miss). 15m keeps the 24h count within the
@@ -1058,6 +1061,18 @@ def _read_cf_token() -> str | None:
     return None
 
 
+def _is_d1_id(value: str) -> bool:
+    """True when value is a Cloudflare D1 ID: hex, optionally dash-separated.
+    Strips dashes (UUID form) and requires the remainder be 32 hex chars.
+    fleet-ops#4456 — gates the two ID segments before they are interpolated
+    into the fixed api.cloudflare.com URL.
+    """
+    if not isinstance(value, str) or not value:
+        return False
+    digits = value.replace("-", "")
+    return len(digits) == 32 and all(c in _HEX for c in digits)
+
+
 _D1_QUERIES = {
     "signups_24h": (
         "SELECT COUNT(*) AS n FROM user "
@@ -1101,9 +1116,23 @@ def _product_outcome() -> dict[str, int] | None:
             file=sys.stderr,
         )
         return None
+    # Host and path are literals; only the two Cloudflare ID segments come
+    # from config. Each is validated as 32 hex chars (dashes, as in a UUID
+    # form, allowed for the database id) before the URL is built, so a
+    # tampered env value cannot smuggle a scheme/`..`/`//` — the only
+    # reachable endpoint is api.cloudflare.com (sgscan
+    # dynamic-urllib-use-detected is a confirmed false positive here).
+    account = D1["account"]
+    database = D1["database"]
+    if not _is_d1_id(account):
+        print("product-slo: invalid D1 account id (must be hex)", file=sys.stderr)
+        return None
+    if not _is_d1_id(database):
+        print("product-slo: invalid D1 database id (must be hex)", file=sys.stderr)
+        return None
     url = (
         "https://api.cloudflare.com/client/v4/accounts/"
-        f"{D1['account']}/d1/database/{D1['database']}/query"
+        f"{account}/d1/database/{database}/query"
     )
     out: dict[str, int] = {}
     for key, sql in _D1_QUERIES.items():
@@ -1118,6 +1147,8 @@ def _product_outcome() -> dict[str, int] | None:
             method="POST",
         )
         try:
+            # Host/path literals; only 32-hex-validated ID segments in the path.
+            # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
             with urlopen(req, timeout=15) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
         except (OSError, ValueError, _HTTPError) as exc:
