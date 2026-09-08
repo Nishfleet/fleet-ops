@@ -470,13 +470,19 @@ reconciler_prom="${reconciler_prom_base}-${REPO}.prom"
 # blocked. Fail-safe: a gh error leaves the issue blocked (never claim on a
 # lookup failure).
 #
-# Args: $1=body  $2=repo (Nishfleet/<repo>)  $3=issue number
+# Args: $1=body  $2=repo (Nishfleet/<repo>)  $3=issue number  $4=comments (optional)
+# The comment scan closes fleet-ops#3575: the worker bounce protocol puts
+# machine-readable `blocked-on:` lines in a comment, not the body, so a
+# blocked issue whose blocker lives only in comments must not re-claim.
+# blocked-reconcile already reads comments (issue JSON), so this keeps the
+# intake-side guard consistent with reconcile's view of the same blocker.
 # Returns: 0 = blocked (do not claim), 1 = not blocked (claimable)
 blocked_filter() {
-    local body="$1" repo="$2" num="$3"
+    local body="$1" repo="$2" num="$3" comments="${4:-}"
     local line ref owner rname target_num
-    local any_machine=0 any_open=0
-    if ! printf '%s' "$body" | grep -qE '^blocked-on:'; then
+    local any_machine=0 any_open=0 text
+    text="$(printf '%s\n%s' "$body" "${comments:-}")"
+    if ! printf '%s' "$text" | grep -qE '^blocked-on:'; then
         return 1
     fi
     while IFS= read -r line; do
@@ -529,7 +535,7 @@ blocked_filter() {
         if [ "$state" != "closed" ]; then
             any_open=1
         fi
-    done < <(printf '%s' "$body" | grep -E '^blocked-on:')
+    done < <(printf '%s' "$text" | grep -E '^blocked-on:')
     if [ "$any_machine" -eq 1 ] && [ "$any_open" -eq 0 ]; then
         echo "issue $num ($repo): stale blocker — all blocked-on targets closed/merged; letting through"
         return 1
@@ -1612,7 +1618,7 @@ blocked-on: orchestrator" 2>/dev/null || true
         fi
     fi
 
-    # One body fetch serves the blocker filter (blocked-on: in body).
+    # One body fetch serves the blocker filter (blocked-on: in body/comments).
     # The rent-paying band (band-multiplier) now uses labels (priority/emergency)
     # from the initial issue list. A failed view is fail-closed: skip
     # this issue this tick rather than claim a possibly-blocked or
@@ -1622,10 +1628,23 @@ blocked-on: orchestrator" 2>/dev/null || true
         continue
     }
 
-    # Blocker filter: never claim an issue whose body carries a blocked-on:
-    # line (machine dep or nish-decision). The claim is a no-op spawn churn
-    # otherwise. Audit finding 2026-08-26: fleet-ops#87 looped exactly this way.
-    if blocked_filter "$body" "$FULL" "$N"; then
+    # fleet-ops#3575: fetch comments up-front so a comment-level `blocked-on:`
+    # stops the re-claim. Comments were already needed for the spec gate
+    # below; fetching here (before the blocker filter) lets blocked_filter
+    # scan them. Fail-closed (never claim on a lookup failure) — the same
+    # skip the spec gate used to emit.
+    comments=$(gh issue view "$N" -R "$FULL" --json comments --jq '[.comments[]?.body // empty] | join("\n")' 2>/dev/null) || {
+        echo "issue $N ($title): skipped-comments-unreadable"
+        continue
+    }
+
+    # Blocker filter: never claim an issue whose body or comments carry a
+    # blocked-on: line (machine dep or nish-decision). The claim is a no-op
+    # spawn churn otherwise. fleet-ops#3575: the worker bounce protocol puts
+    # machine-readable blocked-on: lines in a comment, not the body, so the
+    # filter must scan comments too. Audit finding 2026-08-26: fleet-ops#87
+    # looped exactly this way.
+    if blocked_filter "$body" "$FULL" "$N" "$comments"; then
         echo "issue $N ($title): skipped-blocked-on"
         continue
     fi
@@ -1633,10 +1652,6 @@ blocked-on: orchestrator" 2>/dev/null || true
     # fleet-ops#3309: more than 2 live required: lines bounce (agent-blocked)
     # and must not push a claim branch. Struck-through lines do not count.
     # Umbrella-labeled issues are exempt (tracking parents, never claimable).
-    comments=$(gh issue view "$N" -R "$FULL" --json comments --jq '[.comments[]?.body // empty] | join("\n")' 2>/dev/null) || {
-        echo "issue $N ($title): skipped-comments-unreadable"
-        continue
-    }
     _size_dir=$(mktemp -d)
     printf '%s' "$body" >"$_size_dir/body"
     printf '%s' "$comments" >"$_size_dir/comments"
