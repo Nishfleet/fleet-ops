@@ -109,6 +109,8 @@ grep -q 'remove_orphaned_fleet_cheap_triage_dropin' "$repo_root/install.sh" \
     || fail "install.sh must remove the orphaned fleet-cheap-triage.service.d drop-in (fleet-ops#4126)"
 grep -q 'remove_orphaned_fleet_e2e_heartbeat_dropin' "$repo_root/install.sh" \
     || fail "install.sh must remove the orphaned fleet-e2e-heartbeat.service.d drop-in (fleet-ops#4151)"
+grep -q 'remove_orphaned_fleet_hourly_audit_dropin' "$repo_root/install.sh" \
+    || fail "install.sh must remove the orphaned fleet-hourly-audit.service.d drop-in (fleet-ops#4430)"
 grep -q 'pi-scout@.service.d/20-prom-mode.conf' "$repo_root/bin/fleet-ops-deploy" \
     || fail "fleet-ops-deploy must remove the stale scout 20-prom-mode drop-in (fleet-ops#2924)"
 grep -q 'fleet-auto-deploy.timer.d' "$repo_root/bin/fleet-ops-deploy" \
@@ -119,6 +121,8 @@ grep -q 'fleet-cheap-triage.service.d' "$repo_root/bin/fleet-ops-deploy" \
     || fail "fleet-ops-deploy must remove the orphaned fleet-cheap-triage.service.d drop-in (fleet-ops#4126)"
 grep -q 'fleet-e2e-heartbeat.service.d' "$repo_root/bin/fleet-ops-deploy" \
     || fail "fleet-ops-deploy must remove the orphaned fleet-e2e-heartbeat.service.d drop-in (fleet-ops#4151)"
+grep -q 'fleet-hourly-audit.service.d' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "fleet-ops-deploy must remove the orphaned fleet-hourly-audit.service.d drop-in (fleet-ops#4430)"
 grep -q 'systemd/pi-intake@.service.d/10-use-tick.conf' "$repo_root/MANIFEST" \
     || fail "MANIFEST must list 10-use-tick.conf (fleet-ops#2924 absorb)"
 [[ -f "$repo_root/systemd/pi-intake@.service.d/10-use-tick.conf" ]] \
@@ -859,6 +863,22 @@ printf 'bak\n' > "$orphan_e2e_dir/override.conf.bak-unit-fix-20260811T130719Z"
 PATH="$scratch:$PATH" "$install" >/dev/null 2>&1 || true
 [[ ! -d "$orphan_e2e_dir" ]] || fail "scenario12b-orphan-e2e: orphaned fleet-e2e-heartbeat.service.d drop-in dir was not removed"
 ok "scenario12b-orphan-e2e: install.sh removes the orphaned fleet-e2e-heartbeat.service.d drop-in dir (fleet-ops#4151)"
+
+# fleet-ops#4430: orphaned drop-in dir for the deleted fleet-hourly-audit
+# unit (control-plane machinery deleted 2026-08-23; the unit file, timer,
+# hourly-audit.py lane, gate/fleet-gate and gate-retry.sh it referenced are
+# all gone). The drop-in dir carries the ExecStart/ExecStartPre override plus
+# .bak files; systemd cannot resolve the unit so nothing source-checks it —
+# only a live install can clear it.
+orphan_hourly_dir="$HOME/.config/systemd/user/fleet-hourly-audit.service.d"
+mkdir -p "$orphan_hourly_dir"
+printf '# fleet-gate wrapper (sealed packet 2026-08-11)\n[Service]\nTimeoutStartSec=3h 30min\nExecStart=\nExecStart=/home/nish/workspaces/agent-state/gate/fleet-gate run --label fleet-hourly-audit -- /usr/bin/python3 /home/nish/workspaces/agent-state/lanes/hourly-audit.py\nSuccessExitStatus=75\n' > "$orphan_hourly_dir/override.conf"
+printf 'bak\n' > "$orphan_hourly_dir/override.conf.bak-timer-sweep-20260811"
+printf 'gate-retry\n' > "$orphan_hourly_dir/zz-gate-retry.conf"
+printf 'bak\n' > "$orphan_hourly_dir/zz-gate-retry.conf.bak-time-audit-20260812"
+PATH="$scratch:$PATH" "$install" >/dev/null 2>&1 || true
+[[ ! -d "$orphan_hourly_dir" ]] || fail "scenario12b-orphan-hourly: orphaned fleet-hourly-audit.service.d drop-in dir was not removed"
+ok "scenario12b-orphan-hourly: install.sh removes the orphaned fleet-hourly-audit.service.d drop-in dir (fleet-ops#4430)"
 
 # --- scenario 12c: cap drop with NEWER repo mtime (fleet-ops#371) ------------
 # git checkout of a stale commit stamps the working tree now, so the #372
