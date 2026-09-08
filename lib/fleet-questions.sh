@@ -33,6 +33,16 @@
 #                            line (default), 0 = count only
 #   FLEET_QUESTION_FILEREPO  repo short name to file the found issues into
 #                            (default: first repo in FLEET_QUESTION_REPOS)
+#   FLEET_QUESTION_STALE_STATE state file for stale-question dedupe (default
+#                            under $AGENT_STATE/lanes)
+#
+# Stale-question detector (fleet-ops#4562 accept 5): a `question`+`priority`
+# issue with NO `decision-resolved:` comment after 24h is a wedged direction
+# question — the panel never returned a verdict (exactly what #4518 did for
+# 8 days until #4562 fixed it by hand). The detector names each stale one on
+# the `questions:` line (stale=<n>) and auto-files ONE `agent-ready` fix
+# issue per stale question, deduped by issue number, so the gap surfaces
+# without a human finding it.
 
 set -euo pipefail
 
@@ -93,8 +103,94 @@ fq_question_rows() {
     done < <(fq_repos)
 }
 
+# Print one row per open `question`+`priority` issue: `<number> <repo> <age_h>`
+# (fleet-ops#4562 stale-question detector input).
+fq_stale_rows() {
+    local gh now repo out
+    gh="$(fq_gh)"
+    now="$(fq_now_epoch)"
+    [ -n "$now" ] || return 0
+    while IFS= read -r repo; do
+        [ -n "$repo" ] || continue
+        out="$($gh issue list -R "Nishfleet/$repo" --state open --limit 300 \
+            --json number,labels,createdAt 2>/dev/null || true)"
+        [ -n "$out" ] || continue
+        printf '%s' "$out" | jq -r --arg now "$now" '
+          .[]
+          | ( [.labels[].name] ) as $L
+          | ( ($L | index("question")) != null ) as $hasq
+          | ( ($L | index("priority")) != null ) as $hasp
+          | select($hasq and $hasp)
+          | "\(.number) " + (.createdAt // "")' | \
+        while read -r num iso; do
+            local ep age
+            age=0
+            if [ -n "$iso" ]; then
+                ep="$(date -u -d "$iso" +%s 2>/dev/null | tr -d '\n' || true)"
+                if [ -n "$ep" ] && [ "$ep" -gt 0 ] 2>/dev/null; then
+                    age=$(( (now - ep) / 3600 ))
+                fi
+            fi
+            printf '%s %s %s\n' "$num" "$repo" "$age"
+        done
+    done < <(fq_repos)
+}
+
+# Exit 0 iff issue <num> on Nishfleet/<repo> has a comment starting with
+# `decision-resolved:` (unreadable -> returns 1, fails closed to stale).
+fq_has_decision_resolved() {
+    local repo="$1" num="$2" out
+    out="$($(fq_gh) issue view "$num" -R "Nishfleet/$repo" --json comments 2>/dev/null | \
+        jq -r '[.comments[].body] | any(startswith("decision-resolved:"))' 2>/dev/null || true)"
+    [ "$out" = "true" ]
+}
+
+# Stale-question detector (fleet-ops#4562 accept 5). For every open
+# `question`+`priority` issue older than 24h with no `decision-resolved:`
+# comment: count it, and (unless FLEET_QUESTION_AUTOFILE=0) file ONE
+# `agent-ready` fix issue per stale question, deduped by issue number in the
+# state file. Prints the stale count.
+fq_stale_detector() {
+    local state autofile filerepo num repo age key
+    state="${FLEET_QUESTION_STALE_STATE:-$(fq_default_state_dir)/fleet-question-stale.seen}"
+    autofile="${FLEET_QUESTION_AUTOFILE:-1}"
+    filerepo="${FLEET_QUESTION_FILEREPO:-}"
+    [ -n "$filerepo" ] || filerepo="$(fq_repos | head -1 | tr -d '\n')"
+    mkdir -p "$(dirname "$state")" 2>/dev/null || true
+    touch "$state" 2>/dev/null || true
+    local stale=0
+    while IFS=' ' read -r num repo age; do
+        [ -n "${num:-}" ] || continue
+        [ "$age" -ge 24 ] 2>/dev/null || continue
+        fq_has_decision_resolved "$repo" "$num" && continue
+        stale=$((stale + 1))
+        key="${repo}#${num}"
+        grep -qxF "$key" "$state" 2>/dev/null && continue
+        printf '%s\n' "$key" >> "$state"
+        [ "$autofile" = "1" ] || continue
+        local bodyf
+        bodyf="$(mktemp 2>/dev/null || printf '%s.body' "$state")"
+        {
+            printf 'The senior panel never returned a verdict on this question.\n\n'
+            printf 'Observed (fleet-ops#4562 stale-question detector, %s):\n' "$(date -u +%FT%TZ)"
+            printf -- '- Nishfleet/%s#%s is labelled `question` + `priority`, is %sh old, and has NO `decision-resolved:` comment.\n\n' "$repo" "$num" "$age"
+            printf 'accept:\n'
+            printf -- '1. Run the senior panel (Nish-question auditor) on Nishfleet/%s#%s with Nish standing priors as inputs.\n' "$repo" "$num"
+            printf -- '2. Post a `decision-resolved:` comment on it marked MATRIX-decided, Nish-vetoable.\n'
+            printf -- '3. If Nish already answered in prose elsewhere, ledger the answer and point #N at it instead.\n\n'
+            printf 'verify: gh issue view %s -R Nishfleet/%s --json comments -q %s | grep -q %s\n' "$num" "$repo" "'.comments[].body'" "'^decision-resolved:'"
+            printf 'rollback: none (comment-only).\ndedupe: the stale question itself; this detector files once per issue (state-deduped).\n'
+        } > "$bodyf" 2>/dev/null || { rm -f "$bodyf"; continue; }
+        "$(fq_gh)" issue create -R "Nishfleet/$filerepo" --label agent-ready \
+            --title "Stale question: Nishfleet/$repo#$num has no decision-resolved verdict after ${age}h" \
+            --body-file "$bodyf" >/dev/null 2>&1 || true
+        rm -f "$bodyf"
+    done < <(fq_stale_rows)
+    printf '%s' "$stale"
+}
+
 # Print measure.sh's `questions:` line:
-#   questions: for-nish=<n> oldest=<h>h in-conference=<n> unfiled=<n>
+#   questions: for-nish=<n> oldest=<h>h in-conference=<n> unfiled=<n> stale=<n>
 fleet_questions_line() {
     local for_nish=0 in_conf=0 oldest=0 kind age unfiled
     while read -r kind age; do
@@ -109,8 +205,9 @@ fleet_questions_line() {
     done < <(fq_question_rows)
 
     unfiled="$(fq_unfiled_count)"
-    printf 'questions: for-nish=%s oldest=%sh in-conference=%s unfiled=%s\n' \
-        "$for_nish" "$oldest" "$in_conf" "$unfiled"
+    stale="$(fq_stale_detector)"
+    printf 'questions: for-nish=%s oldest=%sh in-conference=%s unfiled=%s stale=%s\n' \
+        "$for_nish" "$oldest" "$in_conf" "$unfiled" "$stale"
 }
 
 # Is $line a likely *unfiled* question (lives outside the store)? Heuristics
