@@ -255,6 +255,22 @@
       ],
       "prompts": [],
       "bypass_checks": []
+    },
+    {
+      "id": "judge",
+      "gate": "hourly fable-check judge: every reported number is a verbatim measure.sh line, and the blind-spot invariant holds \u2014 new_measures_7d >= caught_by_hand_7d (fleet-ops#4460) \u2014 every caught-by-hand item gets a measure.sh line the same run or it is a fault",
+      "proof": [
+        "prompts/fable-check.md",
+        "libexec/fleet-blindspot-count.py",
+        "prompts/weekly-fleet-review.md",
+        "systemd/fable-fleet-check.service.d/20-oom-avoid.conf",
+        "systemd/fable-fleet-check.service.d/30-skip-litellm-drained.conf"
+      ],
+      "units": [],
+      "prompts": [
+        "fable-check.md"
+      ],
+      "bypass_checks": []
     }
   ]
 }

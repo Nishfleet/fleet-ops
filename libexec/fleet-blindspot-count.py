@@ -41,7 +41,10 @@ from pathlib import Path
 
 HOME = os.environ.get("HOME", "/home/nish")
 AS = Path(os.environ.get("AGENT_STATE", f"{HOME}/workspaces/agent-state"))
-LEDGER = Path(os.environ.get("FLEET_LEDGER", str(AS / "nish-vault/_system/shared-memory/decisions-ledger.md")))
+# The vault is under workspace tooling, not agent-state (weekly-fleet-review.md
+# input 1 references the same canonical path). Default here so a naked live
+# run reads the real ledger, not 0-from-a-missing-file.
+LEDGER = Path(os.environ.get("FLEET_LEDGER", f"{HOME}/workspaces/tooling/nish-vault/_system/shared-memory/decisions-ledger.md"))
 FABLE_STATE = Path(os.environ.get("FLEET_FABLE_STATE", str(AS / "fleet-landing-watch/fable-state.json")))
 FABLE_OUT_DIR = Path(os.environ.get("FLEET_FABLE_OUT_DIR", str(AS / "cron-output")))
 WINDOW_DAYS = int(os.environ.get("FLEET_WINDOW_DAYS", "7"))
