@@ -254,6 +254,28 @@ grep -q "loud/debug-playbook-missing/2026-09-08t07-35-48z-0509-1279-abc123" "$tm
 ok "scenario 9b: DEBUG-PLAYBOOK-MISSING keys on session=, not snippet tokens"
 
 # ---------------------------------------------------------------------------
+# 9c. DEBUG-PLAYBOOK-GATE-BLOCK keys on session= too (fleet-ops#4516). Same
+#     noisy-snippet defect as 9b: the gate LOUD line carries the counted
+#     attempt's stdout as `snippet=`, which produced
+#     `loud/debug-playbook-gate-block/_dirty-worktree-audit.py`.
+# ---------------------------------------------------------------------------
+cat > "$tmp/empty9c.json" <<'EOF'
+[]
+EOF
+cat > "$tmp/triage9c.md" <<'EOF'
+[2026-08-28T13:30:00Z] [DEBUG-PLAYBOOK-GATE-BLOCK] session=2026-09-08t07-35-48z-0509-1279-abc123 attempts=4 snippet=agent-cron-run agent-scheduler-drift-check _dirty-worktree-audit.py escalation-daily-sweep
+EOF
+true > "$tmp/filed9c.jsonl"
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/empty9c.json" "$tmp/triage9c.md" > "$tmp/summary9c.json"
+jq -e '.filed == 1' "$tmp/summary9c.json" >/dev/null \
+    || fail "scenario 9c: expected one filed"
+grep -q "loud/debug-playbook-gate-block/2026-09-08t07-35-48z-0509-1279-abc123" "$tmp/filed.jsonl" \
+    || fail "scenario 9c: signal must key on the session slug, got: $(cat "$tmp/filed.jsonl")"
+ok "scenario 9c: DEBUG-PLAYBOOK-GATE-BLOCK keys on session=, not snippet tokens"
+
+# ---------------------------------------------------------------------------
 # 10. Tier1 wiring contract.
 # ---------------------------------------------------------------------------
 grep -q 'detector-queue-reconciler' "$repo_root/bin/fleet-heartbeat-tier1" \
