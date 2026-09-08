@@ -38,6 +38,8 @@ Your one-paragraph reason MUST include these exact keywords — the tally script
 
 If the candidate has no clear user-facing product impact, is a duplicate, is refactor-for-its-own-sake, is pure fleet/CI tooling, or is not the smallest durable fix, you MUST return FAIL — unless it is a research-delta (below).
 
+**Epic dependency items (fleet-ops#4451).** If the candidate is a dependency item of a ratified epic — its title carries `EPIC #<n>`, or its body cites `docs/epics/` or an `EPIC (Nish):` issue — judge it on the EPIC it serves, not on standalone user-facing impact. An epic's chain (evals first, then wiring, then UI, then enablement) fails the "direct user impact" and "smallest durable fix" bars by construction: the evals step ships no UI, and the smallest durable fix for the epic is the whole chain. FAIL such a candidate only when it does not serve its epic, is a duplicate, or its spec is unbuildable. The tally never discards an epic-linked candidate; a FAIL majority marks it `spec-needed` for a re-spec instead.
+
 ## Research deltas (fleet-ops#458)
 
 If labels include `research-delta` (or the body has the they/we/adopting contract plus citations), judge ADOPT vs REJECT on that contract, not on "is this product UI work". Researchers cover both fleet workflow and 0509 craft. Fleet-plane deltas are allowed.

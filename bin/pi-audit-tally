@@ -31,6 +31,7 @@ fi
 #   AUDIT_GH           gh override
 #   AUDIT_DRY_RUN      1 = log, do not mutate labels
 #   ESCALATE_AFTER     refuse EVIDENCE-REFUSED N times before escalate-senior (default 3)
+#   AUDIT_PANEL_QUORUM real (non-SKIP) votes needed before any verdict (default 3)
 
 set -euo pipefail
 
@@ -41,6 +42,7 @@ export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 STATE_DIR="${AUDIT_STATE_DIR:-$HOME/.local/state/fleet-audit}"
 DRY_RUN="${AUDIT_DRY_RUN:-0}"
 ESCALATE_AFTER="${ESCALATE_AFTER:-3}"
+PANEL_QUORUM="${AUDIT_PANEL_QUORUM:-3}"
 
 spec_gate_py() {
     if [ -n "${AGENT_READY_SPEC_GATE:-}" ]; then
@@ -92,6 +94,21 @@ reason_has_evidence() {
     return 1
 }
 
+# fleet-ops#4451: an epic's dependency chain cannot be judged as a standalone
+# candidate. The auditor bar in prompts/auditor.md asks for direct user-facing
+# impact and the smallest durable fix; a Q1-evals / Q2-wiring / Q3-UI chain
+# fails both by construction, which is how the panel discarded all six scoped
+# items of Nish-ratified EPIC Nishfleet/0509#1367 (#1382-#1387) between 09-05
+# and 09-07. A candidate that belongs to an epic is never discarded here.
+candidate_is_epic_linked() {
+    local title="$1" body="$2"
+    grep -qE 'EPIC #[0-9]+' <<<"$title" && return 0
+    grep -qE 'EPIC #[0-9]+' <<<"$body" && return 0
+    grep -qF 'docs/epics/' <<<"$body" && return 0
+    grep -qE 'EPIC \(Nish\):' <<<"$body" && return 0
+    return 1
+}
+
 log() { printf '[%s] [pi-audit-tally] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; }
 
 [ $# -eq 2 ] || { log "usage: pi-audit-tally <repo> <candidate>"; exit 2; }
@@ -116,19 +133,57 @@ votes_json() {
 }
 
 main() {
-    local dir votes pass fail reasons
+    local dir votes pass fail skip real reasons issue_labels issue_title
     dir=$(case_dir)
     if [ ! -d "$dir" ]; then
         log "no votes yet for $repo/#$candidate"
         exit 0
     fi
 
+    # fleet-ops#4451: read the issue ONCE, before any vote arithmetic, so the
+    # idempotence and epic guards below can decide without a second API call.
+    # The pass branch reuses issue_body instead of re-fetching it.
+    issue_json=$("$GH" issue view "$candidate" -R "Nishfleet/$repo" --json body,title,labels 2>/dev/null || true)
+    issue_body=$(printf '%s' "$issue_json" | jq -r '.body // empty' 2>/dev/null || true)
+    issue_title=$(printf '%s' "$issue_json" | jq -r '.title // empty' 2>/dev/null || true)
+    issue_labels=$(printf '%s' "$issue_json" | jq -r '[.labels[]?.name] | join(",")' 2>/dev/null || true)
+
+    # fleet-ops#4451 (idempotence): a candidate that already carries a verdict
+    # label is DECIDED. Re-tallying it writes nothing new but re-comments every
+    # heartbeat tick: 0509#1382 collected 243 identical "Senior auditor panel
+    # ... discarded" comments this way. Exit before any write.
+    case ",$issue_labels," in
+        *,discarded,*|*,agent-ready,*)
+            log "$repo/#$candidate already decided (labels: $issue_labels) - no re-tally, no comment (fleet-ops#4451)"
+            exit 0
+            ;;
+    esac
+
     votes=$(votes_json)
     pass=$(printf '%s\n' "$votes" | jq '[.[] | select(.verdict == "PASS")] | length')
     fail=$(printf '%s\n' "$votes" | jq '[.[] | select(.verdict == "FAIL")] | length')
+    skip=$(printf '%s\n' "$votes" | jq '[.[] | select(.verdict == "SKIP")] | length')
+    real=$(( pass + fail ))
     reasons=$(printf '%s\n' "$votes" | jq -r '[.[] | "\(.role): \(.verdict) - \(.reason)"] | join("\n")')
 
-    log "$repo/#$candidate votes: PASS=$pass FAIL=$fail"
+    log "$repo/#$candidate votes: PASS=$pass FAIL=$fail SKIP=$skip real=$real quorum=$PANEL_QUORUM"
+
+    # fleet-ops#4451 (SKIP arithmetic): a SKIP is a seat that did not vote, not
+    # a vote. It must not shrink the denominator. "2-of-3" means two real
+    # verdicts out of three real votes; with a SKIP in the panel the result is
+    # PENDING until the third seat returns, never 2-of-2.
+    #
+    # The gate is deliberately narrow: it fires only when a SKIP was actually
+    # RECORDED. A recorded SKIP is proof the panel had a third seat and it
+    # declined, so two verdicts are not a majority of three. When no SKIP file
+    # exists the tally has no evidence a third seat was ever dispatched, and
+    # the pre-existing convention (the arrived votes decide) stands - that
+    # convention is pinned by tests/fleet-heartbeat-auditor.test.sh and is not
+    # this issue's fault to change.
+    if [ "$skip" -gt 0 ] && [ "$real" -lt "$PANEL_QUORUM" ]; then
+        log "$repo/#$candidate PENDING: $real real vote(s) of $PANEL_QUORUM, $skip SKIP recorded (a SKIP does not shrink the denominator)"
+        exit 0
+    fi
 
     if [ "$pass" -ge 2 ]; then
         # fleet-ops#543: 2-of-3 PASS is not enough without a spec.
@@ -136,8 +191,7 @@ main() {
         # reasons — keyword-only compliance is not a judgement.
         # fleet-ops#3573: fetch the body first so the evidence gate can accept
         # a tool-less auditor's citation of this candidate# + a body path.
-        issue_json=$("$GH" issue view "$candidate" -R "Nishfleet/$repo" --json body 2>/dev/null || true)
-        issue_body=$(printf '%s' "$issue_json" | jq -r '.body // empty')
+        # issue_json/issue_body were fetched once at the top of main (fleet-ops#4451).
         local pass_reasons evidenceless r_b64 r
         pass_reasons=$(printf '%s\n' "$votes" | jq -r '[.[] | select(.verdict == "PASS") | .reason] | join("\n")')
         evidenceless=0
@@ -223,6 +277,23 @@ main() {
     fi
 
     if [ "$fail" -ge 2 ]; then
+        # fleet-ops#4451 (epic guard): never discard a candidate that belongs to
+        # a Nish-ratified epic. A FAIL majority on an epic child means the SPEC
+        # is thin, not that the work is unwanted - so it gets spec-needed, keeps
+        # scout-candidate, and stays in the queue for a re-spec.
+        if candidate_is_epic_linked "$issue_title" "$issue_body"; then
+            log "$repo/#$candidate EPIC-GUARD: 2-of-3 FAIL on an epic-linked candidate - spec-needed, NOT discarded (fleet-ops#4451)"
+            if [ "$DRY_RUN" = "1" ]; then
+                log "DRY-RUN: would add spec-needed + keep scout-candidate + comment for $repo/#$candidate"
+            else
+                "$GH" issue edit "$candidate" -R "Nishfleet/$repo" --add-label spec-needed >/dev/null 2>&1 || \
+                    log "$repo/#$candidate: gh issue edit FAILED (spec-needed)"
+                "$GH" issue comment "$candidate" -R "Nishfleet/$repo" \
+                    --body "epic guard (fleet-ops#4451): the senior auditor panel returned 2-of-3 FAIL, but this candidate is a dependency item of a Nish-ratified epic, so it is NOT discarded. A dependency item is judged on the epic it serves, not on standalone user-facing impact. Label set to spec-needed; scout-candidate kept so a re-spec can re-enter the queue. Failing bar(s):\n\n$reasons" \
+                    >/dev/null 2>&1 || log "$repo/#$candidate: gh issue comment FAILED (epic guard)"
+            fi
+            exit 0
+        fi
         log "$repo/#$candidate discarded (2-of-3 FAIL)"
         if [ "$DRY_RUN" = "1" ]; then
             log "DRY-RUN: would add discarded + remove scout-candidate + comment for $repo/#$candidate"
@@ -239,7 +310,7 @@ main() {
         exit 0
     fi
 
-    log "$repo/#$candidate remains PENDING (PASS=$pass FAIL=$fail)"
+    log "$repo/#$candidate remains PENDING (PASS=$pass FAIL=$fail SKIP=$skip)"
     exit 0
 }
 
