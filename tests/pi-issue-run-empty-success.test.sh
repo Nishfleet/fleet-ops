@@ -1,0 +1,234 @@
+#!/usr/bin/env bash
+# tests/pi-issue-run-empty-success.test.sh
+#
+# fleet-ops#4457: a run that ends SUCCESS (real output, exit 0) but opens NO
+# PR and does NOT close the issue is an EMPTY-SUCCESS — a wasted claim. The
+# blind spot measured 51% of sessions logging "SUCCESS" while shipping
+# nothing. Every such session must be classed `empty-success`:
+#   (1) a `PACKET-VERDICT class=empty-success seat=<prov>/<model> output_bytes=<n>`
+#       line is appended to the .out packet (so the accept criterion and the
+#       judge's measure.sh can grep `class=empty-success`);
+#   (2) a per-seat empty-success counter is written to the seat ledger
+#       (*.empty-success.json) so the top offender seats can be named.
+# It is NOT benched (the seat produced real text — not a seat fault) and the
+# exit code stays 0 (a real-output success). Control: a run that DID ship a PR
+# is a real success — no empty-success class, no counter increment.
+#
+# Runs entirely offline: stubbed models.json, seat-caps.json, ledger dir, a
+# fake pi and gh, and PI_ISSUES_DIR redirected into scratch.
+
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "$here/.." && pwd)"
+bin="$repo_root/bin/pi-issue-run"
+
+fail() { echo "FAIL: $*" >&2; exit 1; }
+ok()   { echo "OK: $*"; }
+
+[[ -x "$bin" ]] || fail "not executable: $bin"
+
+scratch="$(mktemp -d -t pi-issue-empty-success.XXXXXX)"
+trap 'rm -rf "$scratch"' EXIT INT TERM
+
+export HOME="$scratch/home"
+mkdir -p "$HOME"
+
+# P14: the worker App creds file must exist and mint before pi runs.
+mkdir -p "$HOME/.config/fleet-worker"
+: >"$HOME/.config/fleet-worker/nishfleet-worker.env"
+chmod 600 "$HOME/.config/fleet-worker/nishfleet-worker.env"
+
+STATE_DIR="$scratch/state"
+mkdir -p "$STATE_DIR/attempts" "$STATE_DIR/active-seats"
+ISSUES_DIR="$scratch/issues"
+mkdir -p "$ISSUES_DIR"
+LEDGER="$scratch/ledger"
+mkdir -p "$LEDGER"
+
+export PI_PACKET_STATE="$STATE_DIR"
+export PI_SEAT_HEALTH_LEDGER_DIR="$LEDGER"
+export PI_SEAT_HEALTH_SIDECAR="$scratch/pi-seat-health.json"
+export PI_ISSUES_DIR="$ISSUES_DIR"
+export PI_MODELS_JSON="$scratch/models.json"
+export SEAT_CAPS_JSON="$scratch/seat-caps.json"
+export XDG_RUNTIME_DIR="$scratch/xdg"
+export PI_SEAT_LIB_CHECK_SYSTEMD=0
+mkdir -p "$XDG_RUNTIME_DIR"
+
+stub_bin="$scratch/stub-bin"
+mkdir -p "$stub_bin"
+
+# Fake pi: real output, exit 0 — a genuine success that produced text but (per
+# the gh stub below) shipped no PR. This is the empty-success fixture.
+cat >"$stub_bin/pi" <<'STUB'
+#!/usr/bin/env bash
+printf 'Real output: I looked at the issue but did not open a PR.\n'
+exit 0
+STUB
+chmod +x "$stub_bin/pi"
+
+cat >"$stub_bin/gh" <<'STUB'
+#!/usr/bin/env bash
+# Default: no open PR, issue open -> empty-success. Set GH_SHIP=1 to simulate
+# a shipped PR.
+if [[ "${GH_SHIP:-0}" == "1" ]]; then
+    if [[ "$*" == *"--jq"* ]]; then
+        printf 'open\n'
+        exit 0
+    fi
+    printf '[{"number":42,"state":"open"}]\n'
+    exit 0
+fi
+if [[ "$*" == *"--jq"* ]]; then
+    printf 'open\n'
+    exit 0
+fi
+printf '[]\n'
+exit 0
+STUB
+chmod +x "$stub_bin/gh"
+
+cat >"$stub_bin/worker-token" <<'STUB'
+#!/usr/bin/env bash
+printf 'export GH_TOKEN=fake-test-token-cccccccccccccccc\n'
+exit 0
+STUB
+chmod +x "$stub_bin/worker-token"
+export WORKER_TOKEN_BIN="$stub_bin/worker-token"
+
+cat >"$stub_bin/systemctl" <<'STUB'
+#!/usr/bin/env bash
+args=" $* "
+if [[ "$args" == *" list-units "* ]]; then
+  for i in 1 2 3 4; do
+    printf 'pi-issue@poison-glm-5-2-%s.service loaded active running poison\n' "$i"
+    printf 'pi-issue@poison-swe-1-7-%s.service loaded active running poison\n' "$i"
+  done
+  exit 0
+fi
+if [[ "$args" == *" show "* ]] && [[ "$args" == *"ExecStart"* ]]; then
+  if [[ "$args" == *"glm-5-2"* ]]; then
+    printf '/home/nish/.local/bin/pi --print --provider devin --model glm-5-2\n'
+  else
+    printf '/home/nish/.local/bin/pi --print --provider devin --model swe-1-7\n'
+  fi
+  exit 0
+fi
+exit 0
+STUB
+chmod +x "$stub_bin/systemctl"
+
+export PATH="$stub_bin:/usr/local/bin:/usr/bin:/bin"
+export PI_BIN="$stub_bin/pi"
+
+cat >"$PI_MODELS_JSON" <<'JSON'
+{
+  "providers": {
+    "devin": {
+      "models": [
+        { "id": "glm-5-2", "cost": { "input": 0 }, "reasoning": true, "contextWindow": 200000 },
+        { "id": "swe-1-7", "cost": { "input": 0 }, "reasoning": true, "contextWindow": 200000 }
+      ]
+    }
+  }
+}
+JSON
+
+cat >"$SEAT_CAPS_JSON" <<'JSON'
+{
+  "ram_gb_per_worker": 1.5,
+  "free_providers_in_order": [],
+  "providers": {
+    "devin": { "cap": 4, "class": "subscription", "remote_agent": true, "models": { "glm-5-2": 4, "swe-1-7": 4 } }
+  }
+}
+JSON
+
+export PI_PACKET_SEAT_LIB="$repo_root/lib/seat-lib.sh"
+export EMPTY_RUN_RETRY_MAX=0
+
+# =============================================================================
+# (a) SUCCESS + real output + no PR, issue open -> empty-success class.
+# =============================================================================
+inst="fleet-ops-4457"
+printf 'Implement one GitHub issue: fleet-ops#4457.\nTARGET: repo Nishfleet/fleet-ops issue 4457 unit pi-issue-fleet-ops-4457\n' >"$ISSUES_DIR/${inst}.in"
+
+set +e
+bash "$bin" "$inst" >"$scratch/run.out" 2>"$scratch/run.err"
+rc=$?
+set -e
+
+[[ "$rc" == "0" ]] \
+  || fail "empty-success is a real-output SUCCESS — must exit 0 (not benched, not a failing claim), got rc=$rc err=$(cat "$scratch/run.err")"
+
+# (1) the .out packet carries the class=empty-success PACKET-VERDICT line with
+#     seat and output bytes.
+out=$(cat "$PI_ISSUES_DIR/${inst}.out" 2>/dev/null || true)
+echo "$out" | grep -qF 'PACKET-VERDICT class=empty-success' \
+  || fail "output must carry a PACKET-VERDICT class=empty-success line, got: $out"
+echo "$out" | grep -qF 'class=empty-success seat=devin/' \
+  || fail "empty-success line must name the seat, got: $out"
+echo "$out" | grep -qE 'class=empty-success seat=devin/[0-9A-Za-z.-]+ output_bytes=[0-9]+' \
+  || fail "empty-success line must carry output_bytes, got: $out"
+ok "empty-success: PACKET-VERDICT class=empty-success seat=<np>/<nm> output_bytes=<n> appended to .out"
+
+# (2) the per-seat empty-success counter is written to the seat ledger.
+es_ledger=$(ls "$LEDGER"/*.empty-success.json 2>/dev/null | head -n1 || true)
+[[ -n "$es_ledger" ]] || fail "per-seat empty-success ledger missing: $(ls "$LEDGER")"
+count=$(jq -r '.empty_success_count // 0' "$es_ledger" 2>/dev/null)
+[[ "$count" == "1" ]] \
+  || fail "empty-success counter must be 1 after one empty-success, got '$count': $(cat "$es_ledger")"
+ok "per-seat empty-success counter written to seat ledger (*.empty-success.json, count=1)"
+
+# The run must NOT be benched (no empty_run ledger, no spawn-fail ledger).
+no_bench_ledger() {
+    local f
+    for f in "$LEDGER"/*.json; do
+        [[ -f "$f" ]] || continue
+        [[ "$f" == *.empty-success.json ]] && continue
+        return 1
+    done
+    return 0
+}
+no_bench_ledger || fail "empty-success must NOT create a bench ledger; got: $(ls "$LEDGER")"
+ok "empty-success is not benched (no empty_run/spawn-fail ledger) — seat produced real text"
+
+# reclaim-count is NOT reset (claim-loop cap stays tall, fleet-ops#2462/#2772).
+rc_file="$STATE_DIR/attempts/pi-issue-${inst}.reclaim-count"
+[[ -f "$rc_file" ]] || fail "reclaim-count must NOT be reset on empty-success (claim-loop cap stays tall)"
+ok "reclaim-count NOT reset (claim-loop cap stays tall)"
+
+# =============================================================================
+# (b) control: SUCCESS + real output + a PR WAS shipped -> real success, NO
+#     empty-success class, counter unchanged.
+# =============================================================================
+printf 'Implement one GitHub issue: fleet-ops#9999.\nTARGET: repo Nishfleet/fleet-ops issue 9999 unit pi-issue-fleet-ops-9999\n' >"$ISSUES_DIR/fleet-ops-9999.in"
+GH_SHIP=1 bash "$bin" "fleet-ops-9999" >"$scratch/run-ship.out" 2>"$scratch/run-ship.err" || {
+    cat "$scratch/run-ship.err"; fail "shipped success must exit 0";
+}
+out_ship=$(cat "$PI_ISSUES_DIR/fleet-ops-9999.out" 2>/dev/null || true)
+echo "$out_ship" | grep -qF 'Real output' \
+  || fail "shipped run output missing, got: $out_ship"
+if echo "$out_ship" | grep -qF 'class=empty-success'; then
+    fail "a run that shipped a PR must NOT be classed empty-success, got: $out_ship"
+fi
+# Counter stays 1 (only the first empty-success was counted).
+es_ledger2=$(ls "$LEDGER"/*.empty-success.json 2>/dev/null | head -n1 || true)
+[[ -n "$es_ledger2" ]] || fail "empty-success ledger should still exist"
+count2=$(jq -r '.empty_success_count // 0' "$es_ledger2" 2>/dev/null)
+[[ "$count2" == "1" ]] \
+  || fail "shipped success must not increment the empty-success counter, got '$count2'"
+ok "shipped success (control): NOT classed empty-success, counter unchanged"
+
+# =============================================================================
+# (c) accumulation: a second empty-success on the SAME seat bumps the counter.
+# =============================================================================
+: >"$STATE_DIR/attempts/pi-issue-fleet-ops-4457.tried-seats" 2>/dev/null || true
+bash "$bin" "fleet-ops-4457" >"$scratch/run2.out" 2>"$scratch/run2.err" || fail "second empty-success must exit 0"
+es_ledger3=$(ls "$LEDGER"/*.empty-success.json 2>/dev/null | head -n1 || true)
+count3=$(jq -r '.empty_success_count // 0' "$es_ledger3" 2>/dev/null)
+[[ "$count3" == "2" ]] \
+  || fail "second empty-success on the same seat must bump count to 2, got '$count3': $(cat "$es_ledger3")"
+ok "empty-success counter accumulates on the seat (count=2 after two runs)"
+
+ok "fleet-ops#4457: SUCCESS-no-PR is classed empty-success (verdict + seat ledger), not benched, shipped control stays clean"

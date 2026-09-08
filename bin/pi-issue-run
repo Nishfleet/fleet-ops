@@ -1031,7 +1031,20 @@ if [[ "$_shipped" == "yes" ]]; then
     rm -f "$ATTEMPTS_DIR/pi-issue-${inst}.last-death-class" 2>/dev/null || true
     seat_log "pi-issue-run: $inst SUCCESS reset reclaim-count + systemic marker (shipped: PR open or issue closed)"
 else
-    seat_log "pi-issue-run: $inst SUCCESS but no open PR from claim/issue-${issue_num} and issue ${_cl_issue_state:-unknown} — reclaim-count NOT reset (claim-loop cap stays tall)"
+    # fleet-ops#4457: a run that ends SUCCESS (real output, exit 0) but opened NO PR
+    # and did NOT close the issue is an EMPTY-SUCCESS — a waste class (the
+    # blind spot: 51% of SUCCESS sessions ship nothing). It is NOT benched (the
+    # seat produced real text — not a seat fault) but it IS counted: (1) a
+    # PACKET-VERDICT class=empty-success line is appended to the .out packet so
+    # the accept criterion and the judge's measure.sh can grep it; (2) a per-seat
+    # empty-success counter is written to the seat ledger so the top offenders
+    # can be named. The reclaim-count is NOT reset (the claim-loop cap stays
+    # tall, fleet-ops#2462/#2772).
+    if ! grep -qE 'PACKET-VERDICT[[:space:]]+class=empty-success' "$out_file" 2>/dev/null; then
+        printf 'PACKET-VERDICT class=empty-success seat=%s/%s output_bytes=%s\n' "$np" "$nm" "$out_bytes" >>"$out_file" 2>/dev/null || true
+    fi
+    mark_seat_empty_success "$np" "$nm" "$out_bytes" "pi-issue:$inst:no-PR:$issue_num" || true
+    seat_log "pi-issue-run: $inst SUCCESS class=empty-success on $np/$nm (output=${out_bytes}B, no PR open from claim/issue-${issue_num}, issue ${_cl_issue_state:-unknown}) — reclaim-count NOT reset (claim-loop cap stays tall)"
 fi
 
 exit 0
