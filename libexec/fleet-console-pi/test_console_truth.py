@@ -87,6 +87,9 @@ def test_zero_is_ok_when_cache_fresh(monkeypatch):
 
     monkeypatch.setattr(G, "_prom_query", q)
     monkeypatch.setattr(G, "_textfile_mtime", lambda: now)
+    # shipped_24h now reads fleet_product_merged_24h keyed on the
+    # product-slo textfile (fleet-ops#2755), not fleet.prom.
+    monkeypatch.setattr(G, "_product_slo_mtime", lambda: now)
     sh = G.collect_shipped()
     assert sh["ok"] is True
     assert sh["count"] == 0
@@ -153,7 +156,7 @@ def test_generated_doc_has_freshness_contract_on_every_tile():
     doc = G.generate()
     expected = {
         "open_prs", "shipped_24h", "main_ci", "firing_alerts",
-        "repairs_inflight", "running_pi", "fleet_state",
+        "repairs_inflight", "running_pi", "fleet_state", "questions",
     }
     assert expected <= set(doc["tiles"])
     for name, tile in doc["tiles"].items():
@@ -187,18 +190,188 @@ def test_stale_tile_renders_dash_in_shell_logic():
     assert freshness(dead) == "dash"
 
 
-def test_generator_makes_zero_github_calls():
+def test_metric_tiles_make_zero_github_calls():
+    """Metric tiles read the monitoring plane (Prometheus/systemd), never
+    GitHub (fleet-ops#1157). The ONE declared exception is the questions
+    tile (fleet-ops#4475), whose store IS a GitHub issue with the
+    `question` label — it reads GitHub directly and fails closed.
+    """
+    import ast
     src = Path(G.__file__).read_text()
-    assert "/home/nish/fleet2" not in src
-    assert "improvement-loop" not in src
-    assert '"gh"' not in src and "'gh'" not in src
-    assert "github:" not in src
-    # Live seat file is required; the rest of lanes/ is not.
+    tree = ast.parse(src)
+    # The `gh` CLI binary is invoked in exactly one place: _gh_json.
+    gh_calls = []
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute):
+            pass
+        if isinstance(n, ast.List) and n.elts:
+            first = n.elts[0]
+            if isinstance(first, ast.Constant) and first.value == "gh":
+                gh_calls.append(n)
+    assert len(gh_calls) == 1, f"gh binary should be invoked once, got {len(gh_calls)}"
+    # That one call must live inside _gh_json (the questions family).
+    call_lineno = gh_calls[0].lineno
+    def _within(name, start, end):
+        for n in ast.walk(tree):
+            if isinstance(n, ast.FunctionDef) and n.name == name:
+                return n.lineno <= start <= (n.end_lineno or 0)
+        return False
+    # _gh_json is the sole gh bridge; find its span by name via its body.
+    def _func_span(name):
+        for n in ast.walk(tree):
+            if isinstance(n, ast.FunctionDef) and n.name == name:
+                return (n.lineno, n.end_lineno or 0)
+        return None
+    span = _func_span("_gh_json")
+    assert span, "_gh_json missing"
+    assert span[0] <= call_lineno <= span[1], "gh call must live in _gh_json"
+    # The metric-tile collectors must not reach for the gh bridge.
+    metric_collectors = {"collect_shipped", "collect_open_prs", "collect_main_ci",
+                         "collect_firing_alerts", "collect_repairs_inflight",
+                         "collect_running_pi", "collect_fleet_state"}
+    for name in metric_collectors:
+        fsrc = ast.get_source_segment(src, next(n for n in ast.walk(tree)
+            if isinstance(n, ast.FunctionDef) and n.name == name)) or ""
+        assert "_gh_json" not in fsrc and "_gh_questions" not in fsrc, \
+            f"{name} must not call GitHub"
+    # The questions family exists and is the declared exception.
+    assert "_gh_json" in src and "_gh_questions" in src and "collect_questions" in src
+    # Metric tiles still key on the monitoring plane.
     assert "pi-seat-health.json" in src
     assert "127.0.0.1:9090" in src
     # PI WORK never counts by unit-name prefix (fleet-ops#1155).
     assert "pgrep -c" not in src and "pgrep -f" not in src
     assert "_invokes_pi_print" in src
+
+
+def test_questions_fixture_classifies_three_states(monkeypatch):
+    """The questions collector classifies one for-nish, one in-conference and
+    one answered question, fails closed on a gh error, and surfaces them
+    top-level as `questions` (the shell reads that key)."""
+    now = time.time()
+    import uuid
+    def gh(args, timeout=25):
+        argv = list(args)
+        if argv[0] == "search":
+            return [
+                {
+                    "number": 101, "title": "Money question",
+                    "url": "https://x/101", "createdAt": G.now_iso(),
+                    "repository": {"nameWithOwner": "Nishfleet/fleet-ops"},
+                    "labels": [{"name": "question"}, {"name": "nish-reserved"}],
+                    "body": "question: should we raise prices?\noptions: a | b | c\nreason: money is reserved\nblocked-on: nish-decision",
+                },
+                {
+                    "number": 102, "title": "Router choice",
+                    "url": "https://x/102", "createdAt": G.now_iso(),
+                    "repository": {"nameWithOwner": "Nishfleet/fleet-ops"},
+                    "labels": [{"name": "question"}],
+                    "body": "question: pick router X or Y?\noptions: x | y",
+                },
+                {
+                    "number": 103, "title": "Answered thing",
+                    "url": "https://x/103", "createdAt": G.now_iso(),
+                    "repository": {"nameWithOwner": "Nishfleet/fleet-ops"},
+                    "labels": [{"name": "question"}, {"name": "conference-approved"}],
+                    "body": "question: pick a color?\noptions: red | blue",
+                },
+            ]
+        # issue view --json comments
+        by_number = {
+            101: [],
+            102: [],
+            103: [{"body": "decision-resolved: blue", "createdAt": G.now_iso()}],
+        }
+        num = None
+        for a in argv:
+            if isinstance(a, str) and a.isdigit():
+                num = int(a)
+        return by_number.get(num, [])
+
+    monkeypatch.setattr(G, "_gh_json", gh)
+    tile = G.collect_questions()
+    assert tile["ok"] is True
+    by_state = {x["state"] for x in tile["items"]}
+    assert by_state == {"for-nish", "in-conference", "answered"}
+    reasons = {x["conference_reason"] for x in tile["items"]}
+    assert "money is reserved" in reasons
+    # All three, and the answered one carries the decision.
+    for x in tile["items"]:
+        assert x["question"]
+        assert x["options"]
+        assert x["age_h"] >= 0
+        assert x["ref"]
+
+    # Fails closed to source-unavailable on a gh error, never an empty list.
+    def boom(*a, **k):
+        raise RuntimeError("simulated github outage")
+    monkeypatch.setattr(G, "_gh_json", boom)
+    bad = G.collect_questions()
+    assert bad["ok"] is False
+    assert bad["observed_at"] is None
+    assert "github" in bad["reason"]
+
+
+def test_questions_section_renders_exactly_one_card_by_default():
+    """The 'Questions for Nish' section shows ONLY for-nish cards by default
+    (fleet-ops#4475): of a fixture with one for-nish, one in-conference and
+    one answered question, exactly one card renders. The console is read-only:
+    no copy button, no write path; each card carries the Q:<repo>#<n> handle
+    and the 'answer by telling Claude or Hermes' line."""
+    items = [
+        {"ref": "a#1", "state": "for-nish", "question": "q1", "options": "x", "age_h": 1},
+        {"ref": "b#2", "state": "in-conference", "question": "q2", "options": "x", "age_h": 1},
+        {"ref": "b#3", "state": "answered", "question": "q3", "options": "x", "age_h": 1},
+    ]
+    default_cards = [x for x in items if x["state"] == "for-nish"]
+    assert len(default_cards) == 1
+    # The shell wires the same filter: the section body is for-nish only.
+    src = Path(__file__).resolve().parent.joinpath("shell.html").read_text()
+    assert "section-questions" in src
+    assert "Questions for Nish" in src
+    assert "in conference " in src and "answered " in src  # counter chips
+    assert "q-72h" in src
+    assert "for-nish" in src
+    # The section renders the Q:<repo>#<n> handle and the answer-by line.
+    assert "answer by telling Claude or Hermes" in src
+    assert "Q:" in src
+    assert "q-handle" in src
+    # Read-only by design (fleet-ops#4475 required): no copy button, no write path.
+    assert "q-copy" not in src
+    assert "data-copy" not in src
+    assert "ANSWER_TEMPLATE" not in src
+    assert "navigator.clipboard" not in src
+
+
+def test_answered_young_kept_old_dropped(monkeypatch):
+    """An answered question is kept for 24h (ANSWERED_KEEP_S) then dropped
+    from the tab (fleet-ops#4475)."""
+    import datetime as _dt
+    old = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=48)).strftime(
+        "%Y-%m-%dT%H:%M:%S+00:00")
+    fresh = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=2)).strftime(
+        "%Y-%m-%dT%H:%M:%S+00:00")
+    # Direct classify, no subprocess.
+    issue = {"labels": [{"name": "question"}]}
+    old_ans = G._classify_question(issue,
+        [{"body": "decision-resolved: a", "createdAt": old}])
+    fresh_ans = G._classify_question(issue,
+        [{"body": "decision-resolved: b", "createdAt": fresh}])
+    assert old_ans[0] == "answered"  # still answered class; the <48h drop
+    assert fresh_ans[0] == "answered"
+    # _gh_questions drops the stale answer (>24h).
+    def gh(args, timeout=25):
+        argv = list(args)
+        if argv[0] == "search":
+            return [{"number": 9, "title": "q", "url": "https://x/9",
+                     "createdAt": old,
+                     "repository": {"nameWithOwner": "Nishfleet/fleet-ops"},
+                     "labels": [{"name": "question"}],
+                     "body": "question: hi?\noptions: yes | no"}]
+        return [{"body": "decision-resolved: hi", "createdAt": old}]
+    monkeypatch.setattr(G, "_gh_json", gh)
+    items = G._gh_questions()
+    assert items == [], "an answered question >24h old must not render"
 
 
 def test_shell_renders_emdash_not_unknown():

@@ -4,7 +4,11 @@
 Tiles pull from the shared monitoring plane: Prometheus on 127.0.0.1:9090
 for merged PRs, open PRs, main-branch CI, repair dispatches, and firing
 alerts; pi-seat-health.json plus live transient systemd units for PI WORK
-and repairs-in-flight. The generator makes zero GitHub API calls.
+and repairs-in-flight. Every metric tile makes zero GitHub API calls.
+
+The one exception is the `questions` tile (fleet-ops#4475): the questions
+store IS an open GitHub issue with the `question` label, so it reads GitHub
+directly (via `gh`) and fails closed to source-unavailable on any error.
 
 Every tile carries a freshness contract (observed_at + stale_after_s +
 source + explain). A missing or stale metric renders unknown (the shell
@@ -36,6 +40,18 @@ PROM = "http://127.0.0.1:9090"
 PROM_STALE_S = 15 * 60          # exporter fires every 5 min; 2+ misses = stale
 SEAT_STALE_S = 30 * 60
 PROC_STALE_S = 5 * 60
+# Questions tile (part 2 of the 2026-09-08 decision). Cadence is 12 min;
+# a question must appear within one cadence of its label, so 2.5 cycles is
+# a generous freshness window that still fails closed on a frozen query.
+QUESTION_STALE_S = 30 * 60
+# An `answered` question is kept on the tab for 24h after its answer, then
+# dropped (its decision-resolved: comment is the answer; it re-queues via
+# blocked-reconcile). Older than this it must not render.
+ANSWERED_KEEP_S = 24 * 60 * 60
+# Labels a question must carry for its ask to have passed the senior
+# conference gate (fleet-ops#4474): conference-approved or the older
+# nish-reserved both mean "worth bothering Nish".
+FOR_NISH_LABELS = ("conference-approved", "nish-reserved")
 REPAIR_STALE_S = 20 * 60       # >1.5 push cycles (CADENCE_MIN=12); younger renders, older renders —
 FLEET_STALE_S = 60 * 60
 FLEET_PAUSED_MARKER = Path("/home/nish/workspaces/agent-state/FLEET-PAUSED")
@@ -690,6 +706,167 @@ def collect_running_pi():
     )
 
 
+def _gh_json(args, timeout=25):
+    """Run a `gh` subprocess and return parsed JSON. Raises on failure.
+
+    The questions tile is the one console source the issue (fleet-ops#4475)
+    requires to read GitHub directly — every open issue org-wide with the
+    `question` label. A non-zero gh exit or non-JSON output raises so the
+    caller fails closed to "source unavailable", never an empty list.
+    """
+    out = subprocess.run(
+        ["gh"] + args, capture_output=True, text=True, timeout=timeout,
+    )
+    if out.returncode != 0:
+        raise RuntimeError(
+            f"gh {' '.join(args[:3])} rc={out.returncode}: "
+            f"{(out.stderr or '').strip()[:160]}"
+        )
+    try:
+        return json.loads(out.stdout or "null")
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"gh output not JSON: {e}") from e
+
+
+def _body_field(body, key):
+    """Value of the first `key: ...` line in an issue body (or '')."""
+    for line in (body or "").splitlines():
+        ls = line.strip()
+        if ls.startswith(key + ":"):
+            return ls[len(key) + 1:].strip()
+    return ""
+
+
+def _conference_reason(issue, comments):
+    """One-line conference reason for the question, or '' when absent."""
+    texts = [issue.get("body") or ""] + [
+        c.get("body") or "" for c in (comments or [])
+    ]
+    for text in texts:
+        for line in text.splitlines():
+            ls = line.strip()
+            if ls.lower().startswith("reason:"):
+                return ls[len("reason:"):].strip() or ""
+    return ""
+
+
+def _answer_epoch(comments):
+    """Epoch of the most recent decision-resolved: comment body, or None."""
+    latest = None
+    for c in (comments or []):
+        body = c.get("body") or ""
+        if "decision-resolved:" not in body:
+            continue
+        created = c.get("createdAt")
+        if not created:
+            continue
+        try:
+            epoch = datetime.fromisoformat(created.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            continue
+        if latest is None or epoch > latest:
+            latest = epoch
+    return latest
+
+
+def _classify_question(issue, comments):
+    """Classify one open question issue.
+
+    Returns (state, conference_reason):
+      - 'answered'   has a decision-resolved: comment, kept ANSWERED_KEEP_S
+      - 'for-nish'   no answer; carries a FOR_NISH_LABELS (passed the gate)
+      - 'in-conference' no answer and no gate verdict yet
+    The conference one-line reason is lifted from a `reason:` line in the
+    body or any comment (part-1 verdicts carry it); '' when absent.
+    """
+    reason = _conference_reason(issue, comments)
+    answer_epoch = _answer_epoch(comments)
+    if answer_epoch is not None:
+        return ("answered", reason)
+    labels = {l.get("name") for l in (issue.get("labels") or [])}
+    if labels & set(FOR_NISH_LABELS):
+        return ("for-nish", reason)
+    return ("in-conference", reason)
+
+
+def _gh_questions():
+    """Return the classified list of open `question` issues across the org.
+
+    One search for the current population, then one comment fetch per issue
+    (to detect decision-resolved: answers and the conference reason). Raises
+    on any gh failure so collect_questions fails closed — never an empty
+    list when the source is unreachable.
+    """
+    q = _gh_json([
+        "search", "issues", "--owner", ORG, "--state", "open",
+        "--label", "question",
+        "--json", "number,title,url,createdAt,updatedAt,repository,labels,body",
+    ])
+    items = []
+    now = time.time()
+    for issue in (q or []):
+        repo = (issue.get("repository") or {}).get("nameWithOwner") or ORG
+        number = issue.get("number")
+        comments = _gh_json([
+            "issue", "view", f"{ORG}/{repo.split('/')[-1]}" if repo.startswith(ORG) else repo,
+            str(number), "--json", "comments",
+            "--jq", ".comments || []",
+        ]) if number is not None else []
+        if not isinstance(comments, list):
+            comments = []
+        state, reason = _classify_question(issue, comments)
+        if state == "answered":
+            answer_epoch = _answer_epoch(comments)
+            if answer_epoch is None or now - answer_epoch > ANSWERED_KEEP_S:
+                # Answered >24h ago — no longer on the tab.
+                continue
+        body = issue.get("body") or ""
+        createdAt = issue.get("createdAt") or now_iso()
+        try:
+            asked_epoch = datetime.fromisoformat(
+                createdAt.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            asked_epoch = now
+        items.append({
+            "repo": repo,
+            "number": number,
+            "ref": f"{repo.split('/')[-1]}#{number}",
+            "handle": f"Q:{repo.split('/')[-1]}#{number}",
+            "url": issue.get("url") or "",
+            "question": _body_field(body, "question") or (issue.get("title") or "").strip(),
+            "options": _body_field(body, "options"),
+            "asked_at": createdAt,
+            "age_h": round(max(now - asked_epoch, 0) / 3600.0, 1),
+            "state": state,
+            "conference_reason": reason,
+        })
+    items.sort(key=lambda x: x["age_h"], reverse=True)  # oldest ask first
+    return items
+
+
+def collect_questions():
+    """Live-truth tile for the 'Questions for Nish' section.
+
+    Source is GitHub directly (the `question` label is the single store,
+    fleet-ops#4474). Fails closed to source-unavailable on any gh error —
+    never an empty list when the query failed.
+    """
+    src = "github:open question-label issues (Nishfleet org)"
+    explain = ("Open issues org-wide carrying the `question` label. Each is "
+               "classified: for-nish (has conference-approved or nish-reserved), "
+               "in-conference (no gate verdict yet), or answered (has a "
+               "decision-resolved: comment, kept 24h then dropped). Answers are "
+               "GitHub comments; blocked-reconcile re-queues the work. The tab has "
+               "no write path.")
+    try:
+        items = _gh_questions()
+    except Exception as e:
+        return _unknown(src, QUESTION_STALE_S,
+                        f"github query failed: {str(e)[:160]}", explain=explain)
+    return _tile(src, QUESTION_STALE_S, True, time.time(),
+                 count=len(items), items=items, explain=explain)
+
+
 def collect_fleet_state():
     src = "local:FLEET-PAUSED + systemd user timers"
     explain = ("Fleet pause marker at agent-state/FLEET-PAUSED plus the live "
@@ -725,6 +902,12 @@ def generate():
     doc["tiles"]["repairs_inflight"] = collect_repairs_inflight()
     doc["tiles"]["running_pi"] = collect_running_pi()
     doc["tiles"]["fleet_state"] = collect_fleet_state()
+    # fleet-ops#4475: the questions tile is a full section, not a band cell.
+    # It lives under tiles (freshness contract + independent verify) and is
+    # ALSO surfaced top-level as `questions` for the shell to render first.
+    q = collect_questions()
+    doc["tiles"]["questions"] = q
+    doc["questions"] = q.get("items") or []
     repos = set()
     for key in ("open_prs", "shipped_24h", "main_ci"):
         for item in doc["tiles"][key].get("items") or []:
@@ -755,10 +938,12 @@ def main():
     ci = tiles.get("main_ci", {})
     al = tiles.get("firing_alerts", {})
     rp = tiles.get("repairs_inflight", {})
+    q = tiles.get("questions", {})
     print(f"generated {doc['generated_at']} "
           f"open_prs={op.get('count','—')} shipped={sh.get('count','—')} "
           f"main_red={ci.get('red_count','—')} "
           f"alerts={al.get('count','—')} repairs={rp.get('count','—')} "
+          f"questions={q.get('count','—')} "
           f"in {doc['gen_seconds']}s -> {OUT_JSON}")
 
 
