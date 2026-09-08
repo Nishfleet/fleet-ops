@@ -1201,6 +1201,30 @@ rm -f "$state/0509.state"
   || fail "scenario17q: 'NO USABLE SEAT' must be wall-class, got consecutive_wall='$(state_field consecutive_wall 0509)'"
 ok "scenario17q: 'NO USABLE SEAT' all-caps pick_seat diagnostic is wall-class"
 
+# Scenario 17r: runinfra 402 insufficient_credits wall-classes (auditor
+# 2026-09-08). The real 22:47:44Z scout crash journal on runinfra/
+# deepseek-v4-flash carried a JSON 402 with code `insufficient_credits`
+# (underscore) + message `Out of credits: balance $0.0300...` (spaced).
+# PROVIDER_WALL_PATTERNS had `insufficient credits` (spaced) and
+# `out-of-credits` (hyphenated) but NOT the underscored code or the
+# spaced message, so the crash classified "not provider-wall";
+# consecutive_wall stayed 0, the #2351/#2468 dedupe gate never engaged,
+# and every scout 402 re-summoned a fresh SENIOR AUDITOR (14 exit-code
+# fails on 2026-09-08). Pin both live tokens against the production-mixed
+# journal.
+{
+    printf 'EXTLOAD-OK extension=packet-verdict mode=print-safe\n'
+    printf '402: {"current_balance_cents":3,"required_cents":4,"topup_url":"https://runinfra.ai/settings/cost#credits","message":"Out of credits: balance $0.0300, required $0.0400. Add credits at https://runinfra.ai/settings/cost#credits to continue.","type":"permission_error","param":null,"code":"insufficient_credits"}\n'
+    printf 'PACKET-VERDICT tools=16 class=worked\n'
+    printf 'pi-scout@0509.service: Main process exited, code=exited, status=1/FAILURE\n'
+} >"$scratch/journalctl-body.txt"
+rm -f "$state/0509.state"
+"$bin" begin 0509 >/dev/null
+"$bin" end 0509 1 >/dev/null
+[[ "$(state_field consecutive_wall 0509)" == "1" ]] \
+  || fail "scenario17r: runinfra 402 insufficient_credits must be wall-class, got consecutive_wall='$(state_field consecutive_wall 0509)'"
+ok "scenario17r: runinfra 402 insufficient_credits ('Out of credits') is wall-class"
+
 # Reset journalctl stub + state file so subsequent test runs (if any) start clean.
 unset JOURNALCTL JOURNALCTL_BODY_FILE
 rm -f "$scratch/journalctl-body.txt"
