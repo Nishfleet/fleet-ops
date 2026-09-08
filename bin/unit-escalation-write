@@ -89,6 +89,18 @@ fi
 # MONITOR_UNIT delivery, and the multi-source MONITOR_UNIT-absent shape).
 # Their failure is the probe test itself, not a fault; the probe's own
 # onfail handler is the assertion sink.
+# gap-closure-drill-stub-*.service are the fleet-ops#180 gap-closure drill
+# stubs (fleet-gap-closure-drill: `drill_unit_escalation` + `drill_timer_mask`
+# use a throwaway ExecStart=/bin/false unit to prove the escalation/timer
+# OnFailure= chain fires). The stub failing IS the drill working, not a
+# fault; the drill's own drill-results.jsonl is the assertion sink. Without
+# the exclusion, every drill spin writes a STOP-REASON for the throwaway
+# stub, the drill reset-failed resets the unit (so the detector looks green)
+# but never closes the chain, and the next heartbeat tick's
+# fleet-escalation-completion sees a non-terminal STOP-REASON on a green
+# unit with an idle pipeline -> STALE-TRIP -> heartbeat unit failure -> a
+# fresh auditor summons PER DRILL CYCLE (observed 2026-09-08 chain
+# 084f91cf6395; same class as the #3926 fleet-orphan-reset-probe@* fix).
 # pi-issue@* (fleet-ops#2133/#2475, PR #2193): pi-issue workers already have
 # their own failure handling — systemd Restart=on-failure (StartLimitBurst=3)
 # + OnFailure=pi-issue-failed@%i.service (reaps claim, releases labels,
@@ -120,7 +132,7 @@ fi
 # REAL detached job never carries that name, so this carve-out cannot mask
 # a genuine dead-man failure.
 case "$UNIT" in
-  unit-escalation@*|stop-escalation.service|stop-escalation.path|ready-work.service|escalation-daily-sweep.service|escalation-daily-sweep.timer|resilience-drill-stub*|notify-probe.service|notify-probe.onfail.service|probe-*.service|fleet-orphan-reset-probe@*.service|multi-*-sink.service|pi-issue@*.service|init.scope|app-*.scope|live-dummy*)
+  unit-escalation@*|stop-escalation.service|stop-escalation.path|ready-work.service|escalation-daily-sweep.service|escalation-daily-sweep.timer|resilience-drill-stub*|gap-closure-drill-stub*.service|gap-closure-drill-mask-probe.service|notify-probe.service|notify-probe.onfail.service|probe-*.service|fleet-orphan-reset-probe@*.service|multi-*-sink.service|pi-issue@*.service|init.scope|app-*.scope|live-dummy*)
     echo "unit-escalation-write: skipping excluded unit '$UNIT' (no self-trigger / own failure handling)" >&2
     exit 0
     ;;
