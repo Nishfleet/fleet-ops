@@ -192,6 +192,11 @@ case "$*" in
   *"issue list"*gap-audit*"--state closed"*)
     echo 0
     ;;
+  *"issue list"*stop-the-line*)
+    # fleet-ops#4522: frozen-line gate. STL_FROZEN=1 simulates an open
+    # stop-the-line issue (production deploy red on consecutive commits).
+    if [ "${STL_FROZEN:-0}" = "1" ]; then echo 1; else echo 0; fi
+    ;;
   *"issue list"*)
     echo 0
     ;;
@@ -248,6 +253,7 @@ chmod +x "$scratch/bin/systemctl"
 export PATH="$scratch/bin:$PATH"
 export GAPS_JSON="$gaps_file"
 export CREATES_LOG="$creates"
+export STL_FROZEN=0
 export GAP_LOOP_STATE_DIR="$state_dir"
 export GAP_LOOP_PRECEDENCE_FILE="$prec"
 export GAP_LOOP_GH="$scratch/bin/gh"
@@ -474,6 +480,42 @@ export -n GAP_LOOP_FAKE_GH_RATE_LIMIT
 printf '%s' "$rl_out" | grep -q "GraphQL rate limit exhausted" \
   || fail "rate-limit skip must log the guard, got: $rl_out"
 ok "gap_board_count GraphQL rate-limit guard: exit 0, state unchanged, log"
+
+# ---------------------------------------------------------------------------
+# fleet-ops#4522: a stop-the-line freeze must defer the termination
+# conference (never convene on a red/frozen pipeline), not file a dissent.
+# ---------------------------------------------------------------------------
+cat >"$state_dir/state.json" <<'JSON'
+{
+  "cycle": 7,
+  "phase": "measure",
+  "cycle_findings": 0,
+  "consecutive_clean": 0,
+  "drills_pass": true,
+  "drill_results": [],
+  "slo_snapshot": {},
+  "slos_green": null,
+  "precedence": "loop",
+  "research_due": false,
+  "dispatched": {},
+  "verdict_history": [],
+  "last_verdict": "",
+  "updated_at": "2026-08-26T16:00:00Z"
+}
+JSON
+printf '{"all_pass":true,"results":[{"name":"x","pass":true}]}\n' >"$state_dir/drill-results.json"
+printf '[]\n' >"$gaps_file"
+# Frozen line must defer, not convene.
+export STL_FROZEN=1
+"$loop"
+[[ "$(phase)" == "audit" ]] \
+  || fail "frozen line must defer conference and re-audit, got phase=$(phase)"
+[[ "$(cycle)" == "8" ]] \
+  || fail "frozen-line deferral must increment cycle, got cycle=$(cycle)"
+[[ "$(jq -r '.consecutive_clean' "$state_dir/state.json")" == "0" ]] \
+  || fail "frozen-line deferral must reset consecutive_clean"
+export STL_FROZEN=0
+ok "stop-the-line freeze defers the termination conference (no conference, no dissent)"
 
 # ---------------------------------------------------------------------------
 # SLO: #153 placeholder; drill pass rate gates green

@@ -92,6 +92,35 @@ gap_board_count() {
     return 1
 }
 
+# fleet-ops#4522: stop-the-line freeze gate for the termination conference.
+# An OPEN stop-the-line issue (fleet-ops#1457: same workflow red on two
+# consecutive main commits) freezes the line — production deploy is red, so
+# no green deploy is landing. Convening the termination conference on a
+# frozen line is pointless: the senior auditors (correctly) refuse to vote
+# DONE while production is not green, the conference files a NOT-DONE
+# dissent (fleet-ops#4522/#4523/#4524), and the loop spins. Mirror the exact
+# labels/title probe the auto-merge-arm freeze gate uses
+# (.github/workflows/reusable-auto-merge-arm.yml).
+# Prints FROZEN / OPEN / __RATE_LIMITED__ and returns 0; returns 1 on a
+# hard probe failure (the caller must exit the parent; this function is
+# often invoked inside $()).
+stop_the_line_active() {
+    local out rc=0
+    out="$("$GH" issue list -R "$REPO" --state open --limit 100 \
+        --search 'stop-the-line: in:title frozen in:title' \
+        --json number --jq 'length' 2>&1)" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        if [ "$out" -ge 1 ] 2>/dev/null; then printf 'FROZEN'; else printf 'OPEN'; fi
+        return 0
+    fi
+    if printf '%s' "$out" | grep -qiE 'API rate limit|rate limit'; then
+        printf '__RATE_LIMITED__'
+        return 0
+    fi
+    printf '%s' "gh issue list stop-the-line failed (rc=$rc): $out"
+    return 1
+}
+
 unit_done() {
     local st
     st="$("$SYSTEMCTL" --user is-active "$1" 2>/dev/null || echo "unknown")"
@@ -239,6 +268,31 @@ phase_measure() {
     cycle="$(state_read '.cycle')"
     findings="$(state_read '.cycle_findings')"
     drills="$(state_read '.drills_pass')"
+
+    # fleet-ops#4522: never convene the termination conference while the
+    # production line is frozen (an open stop-the-line issue, fleet-ops#1457).
+    # The auditors refuse DONE on a red pipeline, so the conference only
+    # files a dissent and the loop re-audits — ignoring the freeze changes
+    # nothing at the conference downstream, so gate it here. Defer to the
+    # next audit cycle; the freeze auto-clears on the next green run.
+    local stl stl_rc=0
+    stl="$(stop_the_line_active)" || stl_rc=$?
+    if [ "$stl_rc" -ne 0 ]; then
+        fail_loud "$stl"
+    fi
+    if [ "$stl" = "__RATE_LIMITED__" ]; then
+        log "GraphQL rate limit exhausted; skipping this tick (state unchanged)"
+        exit 0
+    fi
+    if [ "$stl" = "FROZEN" ]; then
+        next=$((cycle + 1))
+        due="$(research_due_for "$next")"
+        state_jq --argjson n "$next" --argjson d "$due" \
+            '.consecutive_clean = 0 | .cycle = $n | .research_due = $d | .dispatched = {} | .phase = "audit"'
+        log "cycle $cycle: stop-the-line FROZEN (fleet-ops#1457) — deferring termination conference, re-audit cycle $next"
+        return 0
+    fi
+
     if [ "$findings" -eq 0 ] 2>/dev/null && [ "$drills" = "true" ] && [ "$green" = "true" ]; then
         cc="$(state_read '.consecutive_clean')"
         cc=$((cc + 1))
