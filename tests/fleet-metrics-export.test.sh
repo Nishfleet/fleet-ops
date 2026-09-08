@@ -3213,7 +3213,13 @@ print("OK: _fetch_cursor_usage maps planUsage.totalPercentUsed + billingCycleEnd
 # 9. _fetch_devin_usage maps GetUserStatus planStatus.dailyQuotaRemainingPercent /
 #    weeklyQuotaRemainingPercent (percent REMAINING) -> remaining_pct, and the
 #    dailyQuotaResetAtUnix / weeklyQuotaResetAtUnix (epoch seconds) -> reset_s.
-#    Stub the key + urlopen to avoid network.
+#    Stub the key + urlopen to avoid network. The reset epochs are relative to
+#    run time (now + offsets), NOT hardcoded calendar instants: a hardcoded
+#    epoch goes stale the moment it passes and reds this test for every PR
+#    (2026-09-08: dailyQuotaResetAtUnix=1788854400 was 08:00Z that day;
+#    fleet-metrics-export red'd on main CI with "devin daily reset_s 0.0").
+_future_daily = int(time.time()) + 3600
+_future_weekly = _future_daily + 5 * 86400
 devin_payload = {
     "userStatus": {
         "pro": True,
@@ -3221,8 +3227,8 @@ devin_payload = {
             "planInfo": {"planName": "Pro"},
             "dailyQuotaRemainingPercent": 96,
             "weeklyQuotaRemainingPercent": 93,
-            "dailyQuotaResetAtUnix": 1788854400,
-            "weeklyQuotaResetAtUnix": 1789286400,
+            "dailyQuotaResetAtUnix": _future_daily,
+            "weeklyQuotaResetAtUnix": _future_weekly,
         },
     }
 }
