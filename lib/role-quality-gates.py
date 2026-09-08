@@ -83,6 +83,14 @@ NON_ROLE_UNIT_PREFIXES = (
     # unit's heartbeat metric.
     "lifecycle-label-sweep",
     "fleet-merged-pr-close",
+    # fleet-ops#4557: fleet-judge-block-disarm is the webhook fast-path
+    # half of the judge-block gate. It runs bin/fleet-judge-block-gate
+    # --sweep on pull_request/labeled blocked-by-judge to disarm an armed
+    # auto-merge; the tier1 arming refusal is the level-triggered backstop.
+    # Same class as lifecycle-label-sweep / fleet-merged-pr-close above:
+    # webhook-triggered oneshot, runs no model, owns no prompt and produces
+    # no work items. Its gate is tests/fleet-judge-block-gate.test.sh.
+    "fleet-judge-block-disarm",
     "fleet-issue-close-duplicates",
     # fleet-ops#2421: fleet-seat-comeback-release is plumbing (re-probes a
     # walled seat whose wall clock has passed and unwalls a provably-usable

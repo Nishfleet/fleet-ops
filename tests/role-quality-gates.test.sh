@@ -347,8 +347,35 @@ for u in fleet-gap-closure-loop.service fleet-gap-closure-drill.service gap-clos
 done
 ok "behaviour lock: gap-closure loop/drill/stub units are not flagged (fleet-ops#1563)"
 
+# fleet-ops#4557: behaviour-locked. Build a scratch repo with a real
+# fleet-judge-block-disarm.service on disk and prove the audit emits no
+# `unit:fleet-judge-block-disarm.service` finding. The structural-prefix
+# test above would still pass if a future refactor moved the skip out
+# of NON_ROLE_UNIT_PREFIXES; this behaviour test would not. The unit is
+# webhook-triggered disarm plumbing (runs bin/fleet-judge-block-gate
+# --sweep on pull_request/labeled blocked-by-judge), same class as
+# lifecycle-label-sweep / fleet-merged-pr-close — no model, no prompt,
+# no work items, so it must stay out of the role catalog.
+scratch4557=$(mktemp -d -t role-gates-4557.XXXXXX)
+trap 'rm -rf "$scratch1563" "$scratch1513" "$scratch4557"' EXIT INT TERM
+mkdir -p "$scratch4557/systemd" "$scratch4557/prompts" "$scratch4557/bin" "$scratch4557/config" "$scratch4557/tests"
+cat >"$scratch4557/systemd/fleet-judge-block-disarm.service" <<'UNIT'
+[Unit]
+Description=Judge-block disarm (fixture for fleet-ops#4557)
+[Service]
+Type=oneshot
+ExecStart=/home/nish/.local/bin/fleet-judge-block-gate --sweep
+UNIT
+cp "$catalog" "$scratch4557/config/role-quality-gates.json"
+audit4557_out=$(python3 "$lib" audit --repo-root "$scratch4557" --catalog "$scratch4557/config/role-quality-gates.json" 2>&1) || true
+echo "$audit4557_out" | jq -e . >/dev/null || fail "scratch audit did not emit JSON: $audit4557_out"
+if echo "$audit4557_out" | jq -e '.findings[] | select(.id == "unit:fleet-judge-block-disarm.service")' >/dev/null; then
+  fail "fleet-ops#4557 regression: fleet-judge-block-disarm.service leaked into ungated-role findings: $(echo "$audit4557_out" | jq -c '.findings')"
+fi
+ok "behaviour lock: fleet-judge-block-disarm.service is not flagged (fleet-ops#4557)"
+
 scratch=$(mktemp -d -t role-gates.XXXXXX)
-trap 'rm -rf "$scratch1563" "$scratch1513" "$scratch"' EXIT INT TERM
+trap 'rm -rf "$scratch1563" "$scratch1513" "$scratch4557" "$scratch"' EXIT INT TERM
 mkdir -p "$scratch/fakebin"
 : >"$scratch/triage.md"
 : >"$scratch/gh.log"
