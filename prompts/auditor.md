@@ -25,6 +25,10 @@ No markdown headings, no bullet lists, no code blocks. Two lines only. The parag
 
 Should this candidate issue be labeled `agent-ready` and worked by a fleet lane? The bar is: the issue must be a durable, high-quality product improvement that is clearly worth a lane's time.
 
+## Epic dependency items (fleet-ops#4451)
+
+If this candidate is a dependency item of a Nish epic (its title carries `EPIC #[0-9]+`, or its body cites `docs/epics/` or a `EPIC (Nish):` epic), judge it **on the epic**, not on standalone user impact. An epic's later phases are not "smallest durable fix" standing alone and its early phases have no direct user-facing impact yet — that is the epic's shape, not a reason to discard. Never FAIL such an item for being a self-contained product unit; the tally will route a FAIL majority to `spec-needed` and keep it as `scout-candidate` so the epic is not dismantled.
+
 ## What your reason must address
 
 Your one-paragraph reason MUST include these exact keywords — the tally script verifies them literally:

@@ -71,6 +71,62 @@ issue_passes_spec_gate() {
 # must carry repo-specific evidence — an issue number (#N), a path, or a URL —
 # or the admission (2-of-3 PASS) is keyword-babble, not a senior verdict.
 # Returns 0 when the reason names evidence, 1 when it is keyword-only.
+# fleet-ops#4451 epic guard: a candidate that belongs to a Nish epic is NEVER
+# discarded by the panel. It is epic-linked if its TITLE matches `EPIC #[0-9]+`
+# or its BODY cites `docs/epics/` or names a `EPIC (Nish):` epic. These three
+# signals are read from the candidate's own issue (the title/body the auditors
+# were handed), so no extra GitHub round-trips are needed. Returns 0 when the
+# candidate is epic-linked, 1 otherwise.
+# fleet-ops#4451: the epic's dependency chain (evals-before-specs Q1, then
+# wiring Q2, then UI Q3, then enablement Q5) fails the scout candidate bar by
+# construction — a later Q is not "smallest durable fix" standing alone, and an
+# early Q has no direct user-facing impact yet. So the panel must never discard
+# it; on a FAIL majority it gets spec-needed and a comment naming the failing
+# bar instead (the auditor prompt's new line judges these on the epic).
+is_epic_linked() {
+    local title="$1" body="$2"
+    # (1) title matches `EPIC #1367` (child-of-epic convention).
+    if [[ "$title" =~ EPIC[[:space:]]*#[0-9]+ ]]; then
+        return 0
+    fi
+    # (2) body cites a docs/epics file.
+    if [[ "$body" == *"docs/epics/"* ]]; then
+        return 0
+    fi
+    # (3) body names a `EPIC (Nish):` epic literally.
+    if [[ "$body" == *"EPIC (Nish):"* ]]; then
+        return 0
+    fi
+    return 1
+}
+
+# fleet-ops#4451: fetch the candidate issue once (title, body, labels) so the
+# idempotency guard, the epic guard, the spec gate and the evidence gate all
+# read one GitHub round-trip. On failure it degrades to empty values (fail
+# open on the read; the write gates still decide).
+fetch_candidate_issue() {
+    local cand="$1" rp="$2"
+    local j
+    j=$("$GH" issue view "$cand" -R "Nishfleet/$rp" --json title,body,labels 2>/dev/null || true)
+    issue_title=$(printf '%s\n' "$j" | jq -r '.title // empty' 2>/dev/null || true)
+    issue_body=$(printf '%s\n' "$j" | jq -r '.body // empty' 2>/dev/null || true)
+    issue_label_names=$(printf '%s\n' "$j" | jq -r '[.labels[]?.name] | join(",")' 2>/dev/null || true)
+}
+
+# fleet-ops#4451 idempotency: a candidate that already carries a decided
+# label (discarded / agent-ready / spec-needed) OR a local `.decided` marker
+# must never be re-tallied or re-commented. Without this the tally re-ran on
+# every heartbeat for an already-discarded candidate and spammed 243 identical
+# "Senior auditor panel ... discarded" comments on #1382.
+candidate_decided() {
+    local labels="$1" dir="$2"
+    case ",$labels," in
+        *,discarded,*|*,agent-ready,*|*,spec-needed,*) return 0 ;;
+    esac
+    [ -f "$dir/.decided" ] && return 0
+    return 1
+}
+
 reason_has_evidence() {
     local r="$1" candidate="$2" body="$3"
     # (1) Existing repo-specific evidence: any issue number, URL, or path.
@@ -116,28 +172,77 @@ votes_json() {
 }
 
 main() {
-    local dir votes pass fail reasons
+    local dir votes pass fail skip real reasons issue_json issue_title issue_body issue_label_names
     dir=$(case_dir)
     if [ ! -d "$dir" ]; then
         log "no votes yet for $repo/#$candidate"
         exit 0
     fi
 
+    # fleet-ops#4451: fetch the candidate issue once (title, body, labels) and
+    # read labels FIRST. A candidate that already carries a decided label, or
+    # a locally-marked decision, is a no-op — exit 0 with NO write. This is
+    # the idempotence fix that stops the heartbeat re-running the tally on an
+    # already-decided candidate and re-commenting 243 times on one issue.
+    issue_json=$("$GH" issue view "$candidate" -R "Nishfleet/$repo" --json title,body,labels 2>/dev/null || true)
+    issue_title=$(printf '%s\n' "$issue_json" | jq -r '.title // empty' 2>/dev/null || true)
+    issue_body=$(printf '%s\n' "$issue_json" | jq -r '.body // empty' 2>/dev/null || true)
+    issue_label_names=$(printf '%s\n' "$issue_json" | jq -r '[.labels[]?.name] | join(",")' 2>/dev/null || true)
+    if candidate_decided "$issue_label_names" "$dir"; then
+        log "$repo/#$candidate already decided (discarded/agent-ready/spec-needed or .decided marker) — no-op"
+        exit 0
+    fi
+
     votes=$(votes_json)
     pass=$(printf '%s\n' "$votes" | jq '[.[] | select(.verdict == "PASS")] | length')
     fail=$(printf '%s\n' "$votes" | jq '[.[] | select(.verdict == "FAIL")] | length')
+    skip=$(printf '%s\n' "$votes" | jq '[.[] | select(.verdict == "SKIP")] | length')
+    real=$(( pass + fail ))
     reasons=$(printf '%s\n' "$votes" | jq -r '[.[] | "\(.role): \(.verdict) - \(.reason)"] | join("\n")')
 
-    log "$repo/#$candidate votes: PASS=$pass FAIL=$fail"
+    log "$repo/#$candidate votes: PASS=$pass FAIL=$fail SKIP=$skip (real=$real)"
+
+    # fleet-ops#4451 vote arithmetic: SKIP votes do not count in the
+    # denominator. When a SKIP is present the panel has at most 2 real votes
+    # (PASS+FAIL), so the result is PENDING until the third seat returns —
+    # never 2-of-2 (an admit/discard on 2 real votes while the third SKIPs).
+    # A panel with no SKIP and 2 real votes is a normal 2-of-3 in progress
+    # and still decides when it reaches a majority.
+    if [ "$skip" -gt 0 ] && [ "$real" -lt 3 ]; then
+        log "$repo/#$candidate remains PENDING (real votes=$real < 3 with SKIP=$skip) — never 2-of-2 (fleet-ops#4451)"
+        exit 0
+    fi
+
+    # fleet-ops#4451 epic guard: an epic-linked candidate is NEVER discarded.
+    # On a FAIL majority it gets spec-needed + a comment naming the failing
+    # bar and STAYS scout-candidate. The audit prompt's one new line makes the
+    # panel judge a Nish epic's items on the epic, not on standalone impact.
+    if [ "$fail" -ge 2 ] && is_epic_linked "$issue_title" "$issue_body"; then
+        log "$repo/#$candidate EPIC-LINKED with $fail FAIL — spec-needed, never discarded (fleet-ops#4451)"
+        if [ "$DRY_RUN" = "1" ]; then
+            log "DRY-RUN: would add spec-needed (keep scout-candidate) + comment for epic-linked $repo/#$candidate"
+        else
+            if ! "$GH" issue edit "$candidate" -R "Nishfleet/$repo" --add-label spec-needed >/dev/null 2>&1; then
+                log "$repo/#$candidate: gh issue edit FAILED (spec-needed epic)"
+                exit 1
+            fi
+            local bar
+            bar=$(printf '%s\n' "$reasons" | head -1)
+            if ! "$GH" issue comment "$candidate" -R "Nishfleet/$repo" --body "spec-needed (fleet-ops#4451): this is a dependency item of Nish EPIC $issue_title — the panel bar is written for standalone scout candidates, so it is NEVER discarded. Panel returned FAIL for: $bar. The failing bar applies to the epic's user impact, not this item in isolation." >/dev/null 2>&1; then
+                log "$repo/#$candidate: gh issue comment FAILED (spec-needed epic)"
+            fi
+        fi
+        printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$dir/.decided" 2>/dev/null || true
+        exit 0
+    fi
 
     if [ "$pass" -ge 2 ]; then
         # fleet-ops#543: 2-of-3 PASS is not enough without a spec.
         # fleet-ops#3121: nor without repo-specific evidence in the PASS
         # reasons — keyword-only compliance is not a judgement.
-        # fleet-ops#3573: fetch the body first so the evidence gate can accept
-        # a tool-less auditor's citation of this candidate# + a body path.
-        issue_json=$("$GH" issue view "$candidate" -R "Nishfleet/$repo" --json body 2>/dev/null || true)
-        issue_body=$(printf '%s' "$issue_json" | jq -r '.body // empty')
+        # fleet-ops#3573: the body is already fetched above so the evidence
+        # gate can accept a tool-less auditor's citation of this candidate#
+        # + a body path.
         local pass_reasons evidenceless r_b64 r
         pass_reasons=$(printf '%s\n' "$votes" | jq -r '[.[] | select(.verdict == "PASS") | .reason] | join("\n")')
         evidenceless=0
@@ -219,6 +324,7 @@ main() {
                 exit 1
             fi
         fi
+        printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$dir/.decided" 2>/dev/null || true
         exit 0
     fi
 
@@ -236,6 +342,7 @@ main() {
                 log "$repo/#$candidate: gh issue comment FAILED (discard)"
             fi
         fi
+        printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$dir/.decided" 2>/dev/null || true
         exit 0
     fi
 

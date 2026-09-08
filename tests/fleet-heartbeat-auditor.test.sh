@@ -114,10 +114,20 @@ case "$*" in
     exit 0
     ;;
   *"issue view"*)
-    if [[ -f "${GH_ISSUE_BODY:-/dev/nonexistent}" ]]; then
-      jq -n --rawfile b "${GH_ISSUE_BODY}" '{title:"test",body:$b,labels:[]}'
+    lbls="[]"
+    if [[ -f "${GH_ISSUE_LABELS:-/dev/nonexistent}" ]]; then
+      lbls="$(cat "${GH_ISSUE_LABELS}")"
+    fi
+    if [[ -f "${GH_ISSUE_BODY:-/dev/nonexistent}" ]] && [[ -f "${GH_ISSUE_TITLE:-/dev/nonexistent}" ]]; then
+      jq -n --rawfile b "${GH_ISSUE_BODY}" --arg t "$(cat "${GH_ISSUE_TITLE}")" --argjson l "$lbls" \
+          '{title:$t,body:$b,labels:$l}'
+    elif [[ -f "${GH_ISSUE_BODY:-/dev/nonexistent}" ]]; then
+      jq -n --rawfile b "${GH_ISSUE_BODY}" --argjson l "$lbls" '{title:"test",body:$b,labels:$l}'
+    elif [[ -f "${GH_ISSUE_TITLE:-/dev/nonexistent}" ]]; then
+      jq -n --arg t "$(cat "${GH_ISSUE_TITLE}")" --argjson l "$lbls" \
+          '{title:$t,body:"termination: test -f README.md\naccept: ship the fix\n",labels:$l}'
     else
-      printf '{"title":"test","body":"termination: test -f README.md\\naccept: ship the fix\\n","labels":[]}\n'
+      printf '{"title":"test","body":"termination: test -f README.md\\naccept: ship the fix\\n","labels":%s}\n' "$lbls"
     fi
     exit 0
     ;;
@@ -734,6 +744,142 @@ n_exh2=$(printf '%s\n' "$env_out" | grep -c 'SKIP-EXHAUSTED' || true)
 [[ "$n_exh2" -eq 0 ]] \
     || fail "scenario16b: SKIP-EXHAUSTED must be logged ONCE, not every tick (got $n_exh2 this tick: $env_out)"
 ok "scenario16: 3 prior recasts -> no start, single SKIP-EXHAUSTED line, not repeated (fleet-ops#3962)"
+
+# ============================================================================
+# Scenario 17 (fleet-ops#4451, idempotent tally): run the auditor TWICE on a
+# 2-FAIL/1-PASS fixture that discards. The first run writes a `.decided`
+# marker in the candidate's state dir; the second run sees it and skips the
+# tally entirely — exactly ONE panel comment across two runs, never the
+# 243-comment spam of #1382.
+# ============================================================================
+reset_state
+printf '52\n' >"$CANDIDATES"
+: >"$ACTIVE_UNITS"
+write_vote demo 52 devin FAIL "duplicate of #1; no north star"
+write_vote demo 52 free-glm FAIL "parity work only"
+write_vote demo 52 senior PASS "ok"
+
+run_auditor
+[[ "$env_rc" == 0 ]] || fail "scenario17: first auditor run must exit 0, got $env_rc ($env_out)"
+[[ -f "$state_dir/demo/52/.decided" ]] || fail "scenario17: first run must write .decided marker"
+
+# Second run on the SAME state dir — the decided marker must suppress the tally.
+run_auditor
+[[ "$env_rc" == 0 ]] || fail "scenario17: second auditor run must exit 0, got $env_rc ($env_out)"
+# Count issue comment calls across both runs in the shared gh_calls log.
+n_comments_total=$(grep -c 'issue comment' "$gh_calls" 2>/dev/null || true)
+[[ "$n_comments_total" -le 1 ]] \
+    || fail "scenario17: exactly one panel comment expected across two runs, got $n_comments_total: $(cat "$gh_calls")"
+printf '%s\n' "$env_out" | grep -q 'decided marker present — skip tally' \
+    || fail "scenario17: second run must log the .decided skip ($env_out)"
+ok "scenario17: idempotent tally — 2 auditor runs on a discarded fixture yield exactly 1 comment (fleet-ops#4451)"
+
+# ============================================================================
+# Scenario 18 (fleet-ops#4451, epic guard): an epic-linked candidate with a
+# FAIL majority (title carries `EPIC #[0-9]+`) is NEVER discarded. It gets
+# `spec-needed`, stays scout-candidate, and gets a comment naming the failing
+# bar. Acceptance: "an epic-linked fixture candidate with 2 FAIL votes ends
+# labeled spec-needed, not discarded."
+# ============================================================================
+reset_state
+: >"$GH_CALLS"
+printf '%s\n' 'full-site watch: wire change detection — EPIC #1367 Q2' >"$scratch/epic-title.txt"
+export GH_ISSUE_TITLE="$scratch/epic-title.txt"
+write_vote demo 53 devin FAIL "not the smallest durable fix"
+write_vote demo 53 free-glm FAIL "no direct user-facing impact"
+write_vote demo 53 senior PASS "ok"
+
+set +e
+AUDIT_DRY_RUN=0 AUDIT_GH="$gh_fake" "$tally_bin" demo 53 >"$scratch/tally_epic" 2>&1
+tally_rc=$?
+set -e
+unset GH_ISSUE_TITLE
+[[ "$tally_rc" == 0 ]] || fail "scenario18: tally exit $tally_rc ($(cat "$scratch/tally_epic"))"
+# Must NOT add the discarded label.
+grep -q 'add-label discarded' "$gh_calls" && fail "scenario18: epic-linked candidate must NOT be discarded ($(cat "$gh_calls"))"
+grep -q 'remove-label scout-candidate' "$gh_calls" && fail "scenario18: epic-linked candidate must STAY scout-candidate"
+# Must add spec-needed and comment.
+grep -q 'add-label spec-needed' "$gh_calls" || fail "scenario18: must add spec-needed ($(cat "$gh_calls"))"
+grep -q 'issue comment' "$gh_calls" || fail "scenario18: must comment the failing bar"
+grep -q 'EPIC-LINKED' "$scratch/tally_epic" || fail "scenario18: must log EPIC-LINKED ($(cat "$scratch/tally_epic"))"
+[[ -f "$state_dir/demo/53/.decided" ]] || fail "scenario18: epic spec-needed must write .decided marker"
+ok "scenario18: epic-linked FAIL majority -> spec-needed, stays scout-candidate, never discarded (fleet-ops#4451)"
+
+# ============================================================================
+# Scenario 18b (fleet-ops#4451): an epic whose body cites docs/epics/ is ALSO
+# guarded. Prove the docs/epics/ signal path (second leg of the OR).
+# ============================================================================
+reset_state
+: >"$GH_CALLS"
+printf '%s\n' 'scout candidate citing the epic doc' >"$scratch/epic2-title.txt"
+printf 'see docs/epics/competitor-watch.md for the plan\n' >"$scratch/epic2-body.txt"
+export GH_ISSUE_TITLE="$scratch/epic2-title.txt"
+export GH_ISSUE_BODY="$scratch/epic2-body.txt"
+write_vote demo 54 devin FAIL "not the smallest durable fix"
+write_vote demo 54 free-glm FAIL "no user impact"
+write_vote demo 54 senior PASS "ok"
+
+set +e
+AUDIT_DRY_RUN=0 AUDIT_GH="$gh_fake" "$tally_bin" demo 54 >/dev/null 2>&1
+tally_rc=$?
+set -e
+unset GH_ISSUE_TITLE GH_ISSUE_BODY
+[[ "$tally_rc" == 0 ]] || fail "scenario18b: tally exit $tally_rc"
+grep -q 'add-label spec-needed' "$gh_calls" \
+    || fail "scenario18b: docs/epics/ citation must spec-needed ($(cat "$gh_calls"))"
+grep -q 'add-label discarded' "$gh_calls" && fail "scenario18b: docs/epics/ citation must NOT discard"
+ok "scenario18b: body citing docs/epics/ is epic-guarded (fleet-ops#4451)"
+
+# ============================================================================
+# Scenario 19 (fleet-ops#4451, label idempotency): a candidate that already
+# carries `discarded` is a no-op — the tally exits 0 with NO edit and NO
+# comment even if votes are present.
+# ============================================================================
+reset_state
+: >"$GH_CALLS"
+printf '%s\n' 'already-discarded' >"$scratch/disc-title.txt"
+printf '%s\n' '[{"name":"scout-candidate"},{"name":"discarded"}]' >"$scratch/disc-labels.json"
+export GH_ISSUE_TITLE="$scratch/disc-title.txt"
+export GH_ISSUE_LABELS="$scratch/disc-labels.json"
+write_vote demo 55 devin FAIL "duplicate"
+write_vote demo 55 free-glm FAIL "parity"
+write_vote demo 55 senior FAIL "no"
+
+set +e
+AUDIT_DRY_RUN=0 AUDIT_GH="$gh_fake" "$tally_bin" demo 55 >"$scratch/tally_disc" 2>&1
+tally_rc=$?
+set -e
+unset GH_ISSUE_TITLE GH_ISSUE_LABELS
+[[ "$tally_rc" == 0 ]] || fail "scenario19: tally exit $tally_rc"
+if grep -qE 'issue (edit|comment)' "$gh_calls"; then
+  fail "scenario19: already-discarded candidate must not write ($(cat "$gh_calls"))"
+fi
+grep -q 'already decided' "$scratch/tally_disc" \
+    || fail "scenario19: must log the already-decided no-op ($(cat "$scratch/tally_disc"))"
+ok "scenario19: candidate already carrying discarded -> no-op, no write (fleet-ops#4451)"
+
+# ============================================================================
+# Scenario 20 (fleet-ops#4451, SKIP arithmetic): SKIP votes do not count in
+# the denominator. With one SKIP + 2 FAIL (real=2 < 3), the result is PENDING
+# — never 2-of-2 — so the tally makes NO label edit and NO comment.
+# ============================================================================
+reset_state
+: >"$GH_CALLS"
+write_vote demo 56 devin FAIL "duplicate"
+write_vote demo 56 senior FAIL "parity"
+write_vote demo 56 free-glm SKIP "transient provider failure"
+
+set +e
+AUDIT_DRY_RUN=0 AUDIT_GH="$gh_fake" "$tally_bin" demo 56 >"$scratch/tally_skip" 2>&1
+tally_rc=$?
+set -e
+[[ "$tally_rc" == 0 ]] || fail "scenario20: tally exit $tally_rc ($(cat "$scratch/tally_skip"))"
+if grep -qE 'issue (edit|comment)' "$gh_calls"; then
+  fail "scenario20: 2-FAIL+1-SKIP must not decide ($(cat "$gh_calls"))"
+fi
+grep -q 'remains PENDING' "$scratch/tally_skip" || fail "scenario20: must log PENDING ($(cat "$scratch/tally_skip"))"
+[[ -f "$state_dir/demo/56/.decided" ]] && fail "scenario20: pending must NOT write .decided marker"
+ok "scenario20: 1 SKIP + 2 FAIL -> PENDING, never 2-of-2 discard (fleet-ops#4451)"
 
 # Nested CI host (workers cannot add a ci.yml line).
 grep -Fq 'bash "$here/fleet-heartbeat-auditor.test.sh"' "$here/fleet-heartbeat-low-water-mark.test.sh" \

@@ -249,6 +249,17 @@ process_candidate() {
     local missing=0 active=0 failed=0
     local v role unit state
 
+    # fleet-ops#4451: never re-tally a decided candidate. The tally writes a
+    # `.decided` marker in the state dir when it admits / discards / epic-
+    # spec-needs a candidate; the marker is the belt-and-suspenders twin of
+    # the label-based idempotence guard (a decided candidate normally stops
+    # carrying scout-candidate, but a dual-label leftover or a mid-edit blip
+    # must never re-spam comments).
+    if [ -f "$STATE_DIR/$repo/$candidate/.decided" ]; then
+        log "$repo/#$candidate: decided marker present — skip tally (fleet-ops#4451)"
+        return
+    fi
+
     # fleet-ops#3121: admission bypass for owner-authored issues. A candidate
     # authored by nish3451 whose body passes the agent-ready spec gate goes
     # straight to agent-ready (no three-seat panel — the owner already
