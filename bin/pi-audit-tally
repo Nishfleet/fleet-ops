@@ -317,8 +317,10 @@ main() {
     # otherwise     -> PENDING (SKIP never counts toward 2-of-3).
     case ",$issue_labels," in
         *,question,*)
+            # tally_question always exits (every branch ends in `exit 0`), so
+            # no trailing exit here — shellcheck -x flags a trailing one as
+            # SC2317 unreachable (CI P14 failure on PR #4500).
             tally_question "$dir" "$(printf '%s' "$issue_json")" "$issue_title" "$issue_body"
-            exit 0
             ;;
     esac
 
