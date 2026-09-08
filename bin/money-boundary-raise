@@ -69,8 +69,6 @@ SINCE_HOURS="${MONEY_BOUNDARY_SINCE_HOURS:-24}"
 # cannot leak a non-boundary line into the phone-chokepoint surface.
 CLASSES="${MONEY_BOUNDARY_CLASSES:-MONEY-BOUNDARY|LEGAL-BOUNDARY|PRODUCT-DIRECTION|CUSTOMER-DATA|CREDENTIAL-BOUNDARY|ONE-SHOT-PUBLIC-ACTION}"
 
-log() { printf '[money-boundary-raise] %s\n' "$*" >&2; }
-
 usage() {
     cat <<'EOF' >&2
 usage: money-boundary-raise <provider> [spend_today_usd] [credits_remaining_usd]
@@ -108,8 +106,7 @@ else
 fi
 
 command -v date >/dev/null 2>&1 || { echo "money-boundary-raise: date required" >&2; exit 1; }
-command -v jq >/dev/null 2>&1 || { echo "money-boundary-raise: jq required (bench roster + json writes)"
-    >&2; [ "$CHECK_MODE" -eq 0 ] && exit 1 || true; }
+command -v jq >/dev/null 2>&1 || { echo "money-boundary-raise: jq required (bench roster + json writes)" >&2; [ "$CHECK_MODE" -eq 0 ] && exit 1 || true; }
 
 # class_gate_ok <class> — true only for a sanctioned Nish-reserved class.
 class_gate_ok() {
