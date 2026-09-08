@@ -291,9 +291,10 @@ jq -e '.providers.paretoinference.cap == 4
         and .providers.paretoinference.daily_budget_usd == 20
         and .providers.paretoinference.max_probe_ceiling == 8
         and .providers.paretoinference.models["z-ai/glm-5.3"].cap == 0
-        and .prepaid_providers_in_order[0] == "paretoinference"' \
+        and .prepaid_providers_in_order[0] == "devin"
+        and .prepaid_providers_in_order[1] == "paretoinference"' \
     "$live_caps" >/dev/null \
-    && ok "live seat-caps: cap 4 / daily_budget_usd 20 / glm-5.3:0 / AIMD 8 / first prepaid" \
+    && ok "live seat-caps: cap 4 / daily_budget_usd 20 / glm-5.3:0 / AIMD 8 / devin first, paretoinference overflow (fleet-ops#4558)" \
     || fail "live seat-caps: accept jq failed"
 jq -e '.seats[] | select(.id=="paretoinference") | .class=="prepaid-quota"' \
     "$live_ent" >/dev/null \

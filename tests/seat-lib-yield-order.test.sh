@@ -263,4 +263,142 @@ grep 'value-order (product,light):' "$picklog" | grep -q 'commandcode/poolside/l
   || fail "10: log must show the computed order with yield and value"
 ok "10: pick_seat logs the value order once per pick"
 
-ok "seat-lib-yield-order: product-yield ordering, class tie-break, provisional, scout free-first, log line; value ordering light/heavy/keystone"
+# =========================================================================
+# fleet-ops#4558: light value-order drains by class tier — free first, then
+# prepaid-quota in prepaid_providers_in_order LADDER order (Devin's standing
+# '4 devin seats always working', fleet-ops#4558), then metered by value.
+# Pareto-style metered-adjacent overflow only after the prepaid ladder drains.
+# =========================================================================
+cat >"$scratch/seat-caps-4558.json" <<'JSON'
+{
+  "ram_gb_per_worker": 1.5,
+  "product_order": "value",
+  "free_providers_in_order": ["commandcode"],
+  "prepaid_providers_in_order": ["devin", "xai-oauth"],
+  "walled_comeback": {
+    "min_probe_interval_s": 900,
+    "rate_limit_s": 900,
+    "daily_quota_s": 3600,
+    "monthly_quota_s": 86400,
+    "free_balance_exhausted_s": 86400,
+    "credentials_bad_s": 604800
+  },
+  "providers": {
+    "devin": { "cap": 2, "class": "prepaid-quota", "models": { "glm-5-2": 1 } },
+    "xai-oauth": { "cap": 2, "class": "prepaid-quota", "models": { "grok-4.6": 1 } },
+    "commandcode": { "cap": 2, "class": "free", "models": { "poolside/laguna-s-2.1-free": 1 } },
+    "openrouter": { "cap": 2, "class": "metered", "models": { "deepseek/deepseek-v4-flash-0731": 1 } }
+  }
+}
+JSON
+
+# Ledger: the metered seat has the BEST value (v=1000) and the second prepaid
+# seat beats the first on value too — the 4558 tier must override both.
+#   commandcode free v=500   openrouter metered v=1000
+#   devin prepaid v=700 (ladder 1st)   xai-oauth prepaid v=900 (ladder 2nd)
+cat >"$scratch/seat-yield-4558.json" <<'JSON'
+{
+  "devin/glm-5-2": { "yield": 0.70, "sessions": 30, "pr_count": 21, "provisional": false, "cost_per_session": 0.001 },
+  "xai-oauth/grok-4.6": { "yield": 0.90, "sessions": 25, "pr_count": 22, "provisional": false, "cost_per_session": 0.001 },
+  "commandcode/poolside/laguna-s-2.1-free": { "yield": 0.50, "sessions": 40, "pr_count": 20, "provisional": false, "cost_per_session": 0 },
+  "openrouter/deepseek/deepseek-v4-flash-0731": { "yield": 0.50, "sessions": 25, "pr_count": 12, "provisional": false, "cost_per_session": 0.0005 }
+}
+JSON
+
+# --- 11. light pick drains the prepaid LADDER first, not the best value ----
+tried4558="$scratch/tried-4558.txt"
+printf 'commandcode/poolside/laguna-s-2.1-free\n' >"$tried4558"
+p4558a=$(SEAT_CAPS_JSON="$scratch/seat-caps-4558.json" SEAT_YIELD_JSON="$scratch/seat-yield-4558.json" pick product "$tried4558") \
+  || fail "11: 4558 light pick must succeed"
+[[ "$p4558a" == "devin	glm-5-2" ]] \
+  || fail "11: light tier order expected devin (prepaid ladder 1st) over xai-oauth (v=900) and openrouter (v=1000), got: $p4558a"
+ok "11: light value pick drains the prepaid ladder first — devin beats the higher-value metered seat"
+
+# --- 12. second prepaid in ladder order is overflow before any metered seat -
+tried4558="$scratch/tried-4558.txt"
+printf 'commandcode/poolside/laguna-s-2.1-free\ndevin/glm-5-2\n' >"$tried4558"
+p4558b=$(SEAT_CAPS_JSON="$scratch/seat-caps-4558.json" SEAT_YIELD_JSON="$scratch/seat-yield-4558.json" pick product "$tried4558") \
+  || fail "12: 4558 overflow pick must succeed"
+[[ "$p4558b" == "xai-oauth	grok-4.6" ]] \
+  || fail "12: after devin is tried, the 2nd prepaid (xai-oauth) must be picked before the metered v=1000 seat, got: $p4558b"
+ok "12: prepaid overflow before metered — xai-oauth (ladder 2nd) beats openrouter despite lower value"
+
+# --- 13. metered is the last resort once every prepaid seat is tried --------
+printf 'devin/glm-5-2\nxai-oauth/grok-4.6\ncommandcode/poolside/laguna-s-2.1-free\n' >"$tried4558"
+p4558c=$(SEAT_CAPS_JSON="$scratch/seat-caps-4558.json" SEAT_YIELD_JSON="$scratch/seat-yield-4558.json" pick product "$tried4558") \
+  || fail "13: 4558 last-resort pick must succeed"
+[[ "$p4558c" == "openrouter	deepseek/deepseek-v4-flash-0731" ]] \
+  || fail "13: with free+prepaid tried, the metered seat must be picked, got: $p4558c"
+ok "13: metered seat only after free+prepaid drained"
+
+# --- 14. 4-worker cohort: Devin occupies every slot before any Pareto pick --
+# Mirrors the issue acceptance with a Devin cap of 4 (4 models) vs a Pareto
+# overflow seat, picking 4 workers in sequence with accumulating tried lists.
+cat >"$scratch/models-cohort.json" <<'JSON'
+{
+  "providers": {
+    "devin": {
+      "models": [
+        { "id": "glm-5-2", "cost": { "input": 0 }, "contextWindow": 200000 },
+        { "id": "swe-1-7", "cost": { "input": 0 }, "contextWindow": 200000 },
+        { "id": "w3", "cost": { "input": 0 }, "contextWindow": 200000 },
+        { "id": "w4", "cost": { "input": 0 }, "contextWindow": 200000 }
+      ]
+    },
+    "pareto": {
+      "models": [ { "id": "z-ai/glm-5.3-flash", "cost": { "input": 0 }, "contextWindow": 200000 } ]
+    },
+    "openrouter": {
+      "models": [ { "id": "deepseek/deepseek-v4-flash-0731", "cost": { "input": 0 }, "contextWindow": 200000 } ]
+    }
+  }
+}
+JSON
+cat >"$scratch/seat-caps-cohort.json" <<'JSON'
+{
+  "ram_gb_per_worker": 1.5,
+  "product_order": "value",
+  "free_providers_in_order": [],
+  "prepaid_providers_in_order": ["devin", "pareto"],
+  "walled_comeback": {
+    "min_probe_interval_s": 900,
+    "rate_limit_s": 900,
+    "daily_quota_s": 3600,
+    "monthly_quota_s": 86400,
+    "free_balance_exhausted_s": 86400,
+    "credentials_bad_s": 604800
+  },
+  "providers": {
+    "devin": { "cap": 4, "class": "prepaid-quota", "models": { "glm-5-2": 1, "swe-1-7": 1, "w3": 1, "w4": 1 } },
+    "pareto": { "cap": 4, "class": "prepaid-quota", "models": { "z-ai/glm-5.3-flash": 1 } },
+    "openrouter": { "cap": 4, "class": "metered", "models": { "deepseek/deepseek-v4-flash-0731": 1 } }
+  }
+}
+JSON
+cat >"$scratch/seat-yield-cohort.json" <<'JSON'
+{
+  "devin/glm-5-2": { "yield": 0.80, "sessions": 30, "pr_count": 24, "provisional": false, "cost_per_session": 0.001 },
+  "devin/swe-1-7": { "yield": 0.80, "sessions": 30, "pr_count": 24, "provisional": false, "cost_per_session": 0.001 },
+  "devin/w3": { "yield": 0.80, "sessions": 30, "pr_count": 24, "provisional": false, "cost_per_session": 0.001 },
+  "devin/w4": { "yield": 0.80, "sessions": 30, "pr_count": 24, "provisional": false, "cost_per_session": 0.001 },
+  "pareto/z-ai/glm-5.3-flash": { "yield": 0.95, "sessions": 25, "pr_count": 23, "provisional": false, "cost_per_session": 0.001 },
+  "openrouter/deepseek/deepseek-v4-flash-0731": { "yield": 0.50, "sessions": 25, "pr_count": 12, "provisional": false, "cost_per_session": 0.0005 }
+}
+JSON
+cohort_tried="$scratch/cohort-tried.txt"; : >"$cohort_tried"
+cohort_picks=()
+for _w in 1 2 3 4 5; do
+  _pck=$(PI_MODELS_JSON="$scratch/models-cohort.json" SEAT_CAPS_JSON="$scratch/seat-caps-cohort.json" SEAT_YIELD_JSON="$scratch/seat-yield-cohort.json" pick product "$cohort_tried") \
+    || fail "14: cohort worker $_w pick failed"
+  cohort_p+=("$_pck")
+  printf '%s\n' "${_pck/$'\t'/\/}" >>"$cohort_tried"
+done
+for _w in 0 1 2 3; do
+  [[ "${cohort_p[$_w]}" == devin* ]] \
+    || fail "14: worker $((_w + 1)) must land on devin (got ${cohort_p[$_w]}) — Devin drains to cap before any Pareto pick"
+done
+[[ "${cohort_p[4]}" == pareto$'\t'"z-ai/glm-5.3-flash" ]] \
+  || fail "14: worker 5 (overflow after devin cap) must be pareto, got: ${cohort_p[4]}"
+ok "14: 4-worker cohort — devin takes all 4 slots, pareto only as the 5th (overflow) pick"
+
+ok "seat-lib-yield-order: product-yield ordering, class tie-break, provisional, scout free-first, log line; value ordering light/heavy/keystone; 4558 prepaid-drain tiers"

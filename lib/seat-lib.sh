@@ -5251,12 +5251,25 @@ pick_seat() {
     # paid seat with 70% yield on heavy work. The value order also covers
     # keystone-class product picks (the class ladder below only sees
     # non-product or product_order=yield picks).
+    # fleet-ops#4558: on the LIGHT value key the buckets drain by class tier
+    # before value is consulted across classes: free (costs nothing) first,
+    # then prepaid-quota in prepaid_providers_in_order ladder order (Devin's
+    # standing '4 devin seats always working' — a paid-for seat is drained
+    # before any metered spend), then metered by value. Within a tier the
+    # existing value/yield keys still apply. Heavy/keystone keep the
+    # yield-first (quality) key across tiers unchanged — a free 2%-yield seat
+    # still loses to a paid 70%-yield seat there.
     local -a product_seats=()
     if [[ "${PI_PICK_ROLE:-scout}" == "product" ]] \
         && [[ "$SEAT_PRODUCT_ORDER" == "value" ]]; then
         local _qfirst=0
+        local _vsort="-k1,1nr -k2,2nr -k3,3n"
         if [[ "$difficulty" == "heavy" ]] || _is_keystone_class "$difficulty"; then
             _qfirst=1
+        else
+            # fleet-ops#4558: light drains by class tier (tier, in-tier order,
+            # yield, ladder index). The awk emits 8 fields on this branch.
+            _vsort="-k1,1n -k2,2n -k3,3n -k4,4n"
         fi
         local -a _vranked=()
         mapfile -t _vranked < <(
@@ -5267,19 +5280,36 @@ pick_seat() {
                 _m="${_fm#*$'\t'}"
                 _yld=$(seat_yield_for "$_p" "$_m")
                 _cost=$(seat_cost_for "$_p" "$_m")
-                printf '%s\t%s\t%s\t%s\n' "$_yld" "$_cost" "$_i" "$_fm"
+                # fleet-ops#4558 class tier: free=0, prepaid-quota=1, metered=2.
+                local _tier=0
+                case "$(model_class_of "$_p" "$_m")" in
+                    prepaid-quota) _tier=1 ;;
+                    metered)       _tier=2 ;;
+                esac
+                printf '%s\t%s\t%s\t%s\t%s\n' "$_yld" "$_cost" "$_i" "$_tier" "$_fm"
                 _i=$((_i + 1))
             done | awk -F'\t' -v q="$_qfirst" 'BEGIN{OFS="\t"} {
-                y=$1+0; c=$2+0; if (c<0.001) c=0.001; v=y/c;
-                if (q) printf "%.6f\t%.6f\t%s\t%s\t%s\t%.6f\t%.6f\n", y, v, $3, $4, $5, y, v;
-                else   printf "%.6f\t%.6f\t%s\t%s\t%s\t%.6f\t%.6f\n", v, y, $3, $4, $5, y, v;
-            }' | sort -t$'\t' -k1,1nr -k2,2nr -k3,3n
+                y=$1+0; c=$2+0; if (c<0.001) c=0.001; v=y/c; t=$4+0;
+                if (q) printf "%.6f\t%.6f\t%s\t%s\t%s\t%.6f\t%.6f\n", y, v, $3, $5, $6, y, v;
+                else {
+                    # prepaid drains in ladder order (the _i index over the
+                    # ladder-ordered prepaid bucket); free/metered by value.
+                    subk = (t == 1) ? $3 : -v;
+                    printf "%.6f\t%.6f\t%.6f\t%s\t%s\t%s\t%.6f\t%.6f\n", t, subk, -y, $3, $5, $6, y, v;
+                }
+            }' | sort -t$'\t' ${_vsort:--k1,1nr -k2,2nr -k3,3n}
         )
         local _vline _vlog="" _vn=0
         for _vline in "${_vranked[@]:-}"; do
             [[ -n "$_vline" ]] || continue
             local _k1 _k2 _vi _vp _vm _vy _vv
-            IFS=$'\t' read -r _k1 _k2 _vi _vp _vm _vy _vv <<<"$_vline"
+            if (( _qfirst )); then
+                IFS=$'\t' read -r _k1 _k2 _vi _vp _vm _vy _vv <<<"$_vline"
+            else
+                # fleet-ops#4558 light branch: tier, sub, -yield, idx, p, m, y, v
+                local _kt
+                IFS=$'\t' read -r _kt _k1 _k2 _vi _vp _vm _vy _vv <<<"$_vline"
+            fi
             product_seats+=("${_vp}"$'\t'"${_vm}")
             if (( _vn < 6 )); then
                 _vlog+="${_vp}/${_vm}@y=${_vy},v=${_vv} "

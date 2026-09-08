@@ -118,8 +118,9 @@ ok "product_order=value, volume order retired, devin AIMD not hard_ceiling with 
 # 2026-09-07 (Nish 'switch the zenmux workload to crof'): crof moved ahead of runinfra — it is the cheapest measured DeepSeek V4 Flash seat ($0.08/$0.003/$0.10 vs runinfra $0.13/$0.01/$0.27).
 prepaid_order=$(jq -r '.prepaid_providers_in_order | join(" ")' "$caps")
 # 2026-09-08 (fleet-ops#4453): paretoinference lands first among prepaid - Pareto Inference seat with $20/day spend meter.
-[[ "$prepaid_order" == "paretoinference ollama devin cline cursor alibaba-coding xai-oauth crof runinfra entrim" ]] \
-  || fail "prepaid order must be 'paretoinference ollama devin cline cursor alibaba-coding xai-oauth crof runinfra entrim', got: $prepaid_order"
+# 2026-09-08 (fleet-ops#4558): Nish 2026-09-07 standing order — '4 devin seats always working' — moves devin to the FRONT of the ladder; paretoinference takes overflow after devin's cap.
+[[ "$prepaid_order" == "devin paretoinference ollama cline cursor alibaba-coding xai-oauth crof runinfra entrim" ]] \
+  || fail "prepaid order must be 'devin paretoinference ollama cline cursor alibaba-coding xai-oauth crof runinfra entrim', got: $prepaid_order"
 
 devin_cap=$(jq -r '.providers.devin.cap // empty' "$caps")
 [[ -n "$devin_cap" ]] || fail "devin cap must be present, got: empty"
