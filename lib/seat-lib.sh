@@ -249,18 +249,34 @@ _intake_repos_loaded=0
 declare -A REPO_PRODUCT_MAP=()
 
 # Resolve the intake-repos.json path: explicit FLEET_INTAKE_REPOS_JSON first,
-# then the known fleet-ops checkouts on this VPS (products first, then the
-# tooling checkouts the deploy/mirror lanes keep).
+# then the config CO-LOCATED with this lib (code and config from the same
+# checkout), then the checkout fleet-deploy-check maintains, and only then
+# the legacy sibling checkouts.
+#
+# Why co-located must win (2026-09-08, fleet-ops#4450 follow-up): the legacy
+# order probed ~/workspaces/products/fleet-ops FIRST. That mirror is stale
+# (pinned at 4f7d0e3e, 2026-09-04) and predates the `product` flag #4450
+# added, so it has no product flag at all. A stale sibling checkout could
+# therefore SHADOW the deployed config, and did: REPO_PRODUCT_MAP loaded
+# empty on the live fleet, repo_is_product returned false for 0509,
+# work_supply_label_budget fell back to the floor of 8 against a measured
+# drain of 11.5 issues/h, and every product_only seat was skipped with
+# "packet repo is not a declared product repo". Resolving next to the
+# running code makes that class of shadowing impossible: the config a
+# checkout reads is the one shipped beside the code executing.
 _intake_repos_path() {
-    if [[ -n "$INTAKE_REPOS_JSON" && -f "$INTAKE_REPOS_JSON" ]]; then
+    if [[ -n "${INTAKE_REPOS_JSON:-}" && -f "${INTAKE_REPOS_JSON:-}" ]]; then
         printf '%s' "$INTAKE_REPOS_JSON"
         return 0
     fi
-    local c
-    for c in \
-        "$HOME/workspaces/products/fleet-ops/config/intake-repos.json" \
-        "$HOME/workspaces/tooling/fleet-ops/config/intake-repos.json" \
-        "$HOME/workspaces/tooling/fleet-ops-deploy-clone/config/intake-repos.json"; do
+    local lib_dir c
+    local -a candidates=()
+    lib_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P) || lib_dir=""
+    [[ -n "$lib_dir" ]] && candidates+=("$lib_dir/../config/intake-repos.json")
+    candidates+=("${FLEET_OPS_CHECKOUT:-$HOME/workspaces/tooling/fleet-ops-deploy-clone}/config/intake-repos.json")
+    candidates+=("$HOME/workspaces/products/fleet-ops/config/intake-repos.json")
+    candidates+=("$HOME/workspaces/tooling/fleet-ops/config/intake-repos.json")
+    for c in "${candidates[@]}"; do
         [[ -f "$c" ]] && { printf '%s' "$c"; return 0; }
     done
     return 1
