@@ -1565,6 +1565,11 @@ bash "$here/fleet-usd-spend.test.sh" || fail "fleet-usd-spend tests failed"
 # for the same P14 reason as fleet-usd-spend above (no workflow-scope edit).
 bash "$here/fleet-questions-line.test.sh" || fail "fleet-questions-line tests failed"
 
+# fleet-ops#4562: the stale-question detector (question+priority with no
+# decision-resolved after 24h fails loud and auto-files once, deduped).
+# Hosted here so P14 runs it without a workflow-file edit. Hermetic (fake gh).
+bash "$here/fleet-questions-stale.test.sh" || fail "fleet-questions-stale tests failed"
+
 # =========================================================================
 # 15. fleet-ops#2493: held wrapper spawn-bench outranks a later healthy
 #     observation. The seat-health extension's after_provider_response

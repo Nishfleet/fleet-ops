@@ -248,4 +248,9 @@ bash "$repo_root/tests/scout-futility.test.sh"
 # so the three shipped assembler hits cannot return without a CI fail.
 bash "$repo_root/tests/sr-token-efficiency-debt.test.sh"
 
+# fleet-ops#4562: the RESEARCH CONTEXT Direction block (fed from the decisions
+# ledger, `source: direction#4518`). Hosted here so P14 runs it without a
+# workflow-file edit. Hermetic (fixture ledger).
+bash "$repo_root/tests/packet-direction-block.test.sh"
+
 ok "0509 scout packet assembly: research-seeded, stale-fail-loud, pi-bound"

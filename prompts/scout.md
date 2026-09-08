@@ -62,7 +62,11 @@ Before filing anything, check every candidate against ALL open issue titles/bodi
 
 Work top-down. Stop adding candidates once you have more than 8 strong ones; you will trim in step 4.
 
-For `0509`, read the **RESEARCH CONTEXT** section appended after this prompt first. It contains today's market signal, the ranked transformation bets, the north-star rule, the live **Usage** telemetry block (cloudflare analytics, lp_run_audit, /search query log, inbound email, and the nightly money-path walk), and recent merged PRs. Candidates for `0509` must be grounded in one of those items or in a Nish-authored issue; if a candidate is purely code-shaped and not research/usage-shaped, drop it.
+For `0509`, read the **RESEARCH CONTEXT** section appended after this prompt first. It contains today's market signal, the ranked transformation bets, the north-star rule, the **Direction** block (the current product-direction decision fed from the decisions ledger — see A.7), the live **Usage** telemetry block (cloudflare analytics, lp_run_audit, /search query log, inbound email, and the nightly money-path walk), and recent merged PRs. Candidates for `0509` must be grounded in one of those items or in a Nish-authored issue; if a candidate is purely code-shaped and not research/usage-shaped, drop it.
+
+### A.7 Direction (0509 — authoritative until the metric moves)
+
+The RESEARCH CONTEXT **Direction** block carries the current 0509 product-direction decision from the decisions ledger (`source: direction#4518`, fleet-ops#4518, decided 2026-09-09: acquisition, metric **signups/week**, unpaid distribution only — no paid spend, 0509 stays on the polish track). While that entry stands and `signups_30d` has not moved above zero, at least **half** of each run's filed `0509` candidates MUST cite the Direction block (`source: direction#4518` in A.6 terms) — distribution-shaped candidates outrank feature-shaped ones. A run that files below the half cap still exits 0, but reports `direction_cap: <cited>/<filed>` in the summary so the shortfall is visible.
 
 ### A. Live product signals (FIRST — spend most effort here)
 
@@ -101,13 +105,16 @@ body, not filed as a hard outage unless a real session reproduces it.
 
 ### A.6 Usage citation (preferred; research floor when telemetry is empty/green)
 
-A `0509` candidate's `source:` line SHOULD cite exactly one of: a line from
-the RESEARCH CONTEXT **Usage** block (cloudflare analytics, lp_run_audit,
-/search query log, inbound email, or a money-path walk finding), or a
-Nish-authored issue (`source: nish#<n>`). A code-shaped candidate whose
-`source:` cites none of these is **dropped** — the scout files what customers
-actually see, not work invented from code inspection alone. That
-"code inspection alone" prohibition STAYS even in the fallback below.
+A `0509` candidate's `source:` line SHOULD cite exactly one of: the
+RESEARCH CONTEXT **Direction** block (`source: direction#4518` — ranked
+ABOVE every other citation while the direction entry stands and the metric
+has not moved; see A.7), a line from the RESEARCH CONTEXT **Usage** block
+(cloudflare analytics, lp_run_audit, /search query log, inbound email, or a
+money-path walk finding), or a Nish-authored issue (`source: nish#<n>`).
+A code-shaped candidate whose `source:` cites none of these is **dropped** —
+the scout files what customers actually see, not work invented from code
+inspection alone. That "code inspection alone" prohibition STAYS even in
+the fallback below.
 
 **Research floor (fleet-ops#4560):** if the Usage block reports every source
 empty or green (no signal either way — the normal state for a site with ~0
@@ -228,5 +235,13 @@ Print one line per action:
   `gh pr list -R Nishfleet/<repo> --state merged --json body,mergedAt` and
   `gh issue view <N> -R Nishfleet/<repo> --json closedAt,number`. Print it even
   when both are 0 so the journal and the exporter graph the trend.
+
+  For `0509` the yield metric is the Direction block's funnel metric —
+  currently **signups/week** (D1 `user.createdAt` trailing 7d), NOT merges
+  (fleet-ops#4518, decided 2026-09-09) — so print additionally:
+  `direction-yield: signups_7d=<n> direction_cited=<c>/<f>` where
+  signups_7d is the trailing-7-day signup count from the D1 read in the
+  RESEARCH CONTEXT Direction block and direction_cited/<f> is how many of
+  the filed `0509` candidates cite `direction#4518` (the A.7 half cap).
 
 Exit 0.

@@ -17,6 +17,10 @@ PACKET_MARKET_SIGNAL_DIR="${PACKET_MARKET_SIGNAL_DIR:-$AGENT_STATE_DIR/cron-outp
 PACKET_TRANSFORMATION_DIR="${PACKET_TRANSFORMATION_DIR:-$AGENT_STATE_DIR/0509-transformation}"
 PACKET_PLAN_FILE="${PACKET_PLAN_FILE:-$AGENT_STATE_DIR/fleet-restoration-2026-08-25.md}"
 PACKET_NORTH_STAR_FILE="${PACKET_NORTH_STAR_FILE:-$HOME/workspaces/tooling/nish-vault/03 Knowledge/compiled/shared-memory/global/north-star-edge-ai-cannot-match.md}"
+# fleet-ops#4562 accept 4: Direction block source (decisions ledger + the
+# section heading that carries the current 0509 direction verdict).
+PACKET_DIRECTION_LEDGER_FILE="${PACKET_DIRECTION_LEDGER_FILE:-$HOME/workspaces/tooling/nish-vault/_system/shared-memory/decisions-ledger.md}"
+PACKET_DIRECTION_SECTION="${PACKET_DIRECTION_SECTION:-2026-09-09 — 0509 direction}"
 PACKET_GH="${PACKET_GH:-gh}"
 
 # 0509 usage-telemetry seams (fleet-ops#3149). Each source is best-effort: a
@@ -100,6 +104,37 @@ packet_north_star() {
         printf 'See the compiled north-star memory for the full rule.\n\n'
     fi
     printf '\n'
+}
+
+# packet_direction_block
+# fleet-ops#4562 (accept 4): the 0509 scout RESEARCH CONTEXT gains a
+# **Direction** block carrying the current product-direction decision fed
+# from the decisions ledger (senior panel verdict on #4518, MATRIX-decided,
+# Nish-vetoable). Best-effort: a missing ledger or section degrades to a
+# marker, never fails the scout — but the citation line is always printed so
+# the scout's `source: direction#4518` form is stable.
+packet_direction_block() {
+    local f="$PACKET_DIRECTION_LEDGER_FILE"
+    local section="$PACKET_DIRECTION_SECTION"
+    local printed=0
+    if [[ -f "$f" && -n "$section" ]]; then
+        local frag
+        frag="$(awk -v hdr="$section" '
+            flag && /^## / { if (seen) exit }
+            index($0, hdr) > 0 { flag=1; seen=1; print; next }
+            flag { print }
+        ' "$f" 2>/dev/null)"
+        if [[ -n "$frag" ]]; then
+            printf '## Direction (current product direction — cite as `source: direction#4518`)\n\n'
+            printf '%s\n\n' "$frag"
+            printf 'While this entry stands and the target metric has not moved, at least half of the 0509 candidates you file MUST cite the Direction block (`source: direction#4518`) — see scout prompt A.6/A.7.\n\n'
+            printed=1
+        fi
+    fi
+    if [[ "$printed" == "0" ]]; then
+        printf '## Direction (unavailable)\n\n'
+        printf 'No direction entry found in the decisions ledger. File candidates per A.6 without a Direction citation; do NOT invent one.\n\n'
+    fi
 }
 
 # packet_repo_reality <repo>
@@ -410,6 +445,7 @@ packet_assemble_0509_scout() {
         packet_market_signal 36 || stale=1
         packet_category_research
         packet_north_star
+        packet_direction_block
         packet_usage_block
         packet_repo_reality "$repo"
 
