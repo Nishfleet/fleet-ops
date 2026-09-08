@@ -114,7 +114,7 @@ ing_post() {  # repo num words dry
 }
 
 main() {
-  local arg DRY=0 reply rest n repo num
+  local arg DRY=0 reply rest repo num
   for arg in "$@"; do
     case "$arg" in
       --dry-run) DRY=1 ;;
