@@ -481,3 +481,68 @@ grep -qE "$date_pat" <<<"$wm_cite" \
 grep -qiE '(oomd|kill|pressure|MemoryHigh|throttle|94\.3M|peak|sibling)' <<<"$wm_cite" \
   || fail "scenario13: worker_memory citation must name the oomd pressure-kill evidence (rule 1, fleet-ops#3930)"
 ok "scenario13: worker_memory fleet-ops + 0509 MemoryMax=4G no MemoryHigh, heavy 3G/2G, citation dated + measured (fleet-ops#3930)"
+
+# 14. fleet-ops#4425: providers.litellm block shape + provenance marker.
+#     The orchestrator-relabelled scope for the led-2026-09-08-litellm-p3b
+#     rule-coverage ticket (#4425) is "land a litellm provider block in
+#     config/seat-caps.json, pinned by the config-pinning suites like every
+#     other provider" (judge fable-5.1-xhigh 2026-09-08; #4458 MERGED).
+#     This pins the block against future reverts so a worker who deletes it
+#     (intentionally or accidentally) fails locally before push, not on the
+#     next heartbeat tick. P3b (#4422 / programme #4263) flips parked caps
+#     to operational ones at the litellm cutover, and that flip relies on
+#     the block being present and shaped correctly on disk.
+echo "--- scenario 14: providers.litellm P3b prereq shape + marker (fleet-ops#4425) ---"
+lit_prov=$(jq -r '.providers.litellm // empty' "$caps")
+[[ -n "$lit_prov" ]] || fail "scenario14: providers.litellm block missing — fleet-ops#4425 orchestrator scope (PR #4458); #4422 P3b cutover requires this block"
+lit_cap=$(jq -r '.providers.litellm.cap // empty' "$caps")
+[[ "$lit_cap" == "0" ]] || fail "scenario14: providers.litellm.cap must be 0 (parked until #4422 P3b enables PI_SEAT_SOURCE=litellm). Got: '$lit_cap'"
+lit_class=$(jq -r '.providers.litellm.class // empty' "$caps")
+[[ -n "$lit_class" ]] || fail "scenario14: providers.litellm.class must be set (rule 5, fleet-ops#3504)"
+lit_icz=$(jq -r '.providers.litellm.intentional_cap_zero // empty' "$caps")
+[[ "$lit_icz" == "p3b_pending" ]] || fail "scenario14: providers.litellm.intentional_cap_zero must be 'p3b_pending' (fleet-ops#4425 orchestrator scope). Got: '$lit_icz'"
+lit_reason=$(jq -r '.providers.litellm.reason // ""' "$caps")
+[[ -n "$lit_reason" ]] || fail "scenario14: providers.litellm.reason must be a non-empty dated reason (rule 1, fleet-ops#3504)"
+grep -qE "$date_pat" <<<"$lit_reason" || fail "scenario14: providers.litellm.reason must name a YYYY-MM-DD date (rule 1)"
+grep -qiE "$meas_pat" <<<"$lit_reason" || fail "scenario14: providers.litellm.reason must name a measurement (probe output, seats=0, etc., rule 1)"
+# Top-level provenance marker — the convention other parked-cap providers
+# use (e.g. _comment_<key> on openrouter, _note/<date_field> on others).
+# The litellm block uses _litellm_p3b_<YYYY-MM-DD>. A future rename must
+# keep the date suffix so this test can match it; PR #4458 ships the field.
+lit_marker_keys=$(jq -r '.providers.litellm | keys[] | select(test("^_litellm_p3b_"))' "$caps" 2>/dev/null || true)
+[[ -n "$lit_marker_keys" ]] || fail "scenario14: providers.litellm must carry a _litellm_p3b_<YYYY-MM-DD> top-level provenance marker (fleet-ops#4425 / #4458); no marker key found"
+lit_marker=$(jq -r '.providers.litellm | to_entries[] | select(.key|test("^_litellm_p3b_")) | .value' "$caps" | head -1)
+grep -qE "$date_pat" <<<"$lit_marker" || fail "scenario14: _litellm_p3b_<date> marker must name a YYYY-MM-DD date (rule 1)"
+grep -qiE "$meas_pat" <<<"$lit_marker" || fail "scenario14: _litellm_p3b_<date> marker must name a measurement (rule 1)"
+ok "scenario14: providers.litellm parked shape (cap=0, class=$lit_class, intentional_cap_zero=p3b_pending, dated+measured reason) + _litellm_p3b_<date> marker"
+# Five model groups mirror config/pi-models.json providers.litellm.models.
+# Hardcoded list keeps this test local — if pi-models.json litellm gains or
+# renames a group, update both this list AND config/pi-models.json in the
+# same commit (and the matrix-row proof in config/rule-enforcement.json).
+lit_groups=(judge worker-cheap worker-capable senior worker-private)
+bad_group=0
+for grp in "${lit_groups[@]}"; do
+    gval=$(jq -r --arg g "$grp" '.providers.litellm.models[$g] // empty' "$caps" 2>/dev/null)
+    if [[ -z "$gval" ]]; then
+        echo "  litellm/$grp: missing model group (must mirror config/pi-models.json providers.litellm.models keys)" >&2
+        bad_group=$((bad_group+1)); continue
+    fi
+    gcap=$(jq -r --arg g "$grp" '.providers.litellm.models[$g].cap // empty' "$caps")
+    gicz=$(jq -r --arg g "$grp" '.providers.litellm.models[$g].intentional_cap_zero // empty' "$caps")
+    greason=$(jq -r --arg g "$grp" '.providers.litellm.models[$g].reason // ""' "$caps")
+    if [[ "$gcap" != "0" || "$gicz" != "p3b_pending" || -z "$greason" ]]; then
+        echo "  litellm/$grp: cap=$gcap intentional_cap_zero='$gicz' reason_empty=$([[ -z "$greason" ]] && echo yes || echo no) — must be cap=0, intentional_cap_zero=p3b_pending, with a non-empty dated reason (fleet-ops#4425)" >&2
+        bad_group=$((bad_group+1)); continue
+    fi
+    if ! grep -qE "$date_pat" <<<"$greason"; then
+        echo "  litellm/$grp: reason missing YYYY-MM-DD date (rule 1, fleet-ops#3504)" >&2
+        bad_group=$((bad_group+1)); continue
+    fi
+    if ! grep -qiE "$meas_pat" <<<"$greason"; then
+        echo "  litellm/$grp: reason missing measurement marker (rule 1, fleet-ops#3504)" >&2
+        bad_group=$((bad_group+1)); continue
+    fi
+    ok "litellm/$grp: cap=0 intentional_cap_zero=p3b_pending dated+measured reason"
+done
+[[ "$bad_group" == "0" ]] || fail "scenario14: $bad_group litellm model group(s) fail shape or citation (rules 1 + 3, fleet-ops#3504); see messages above"
+ok "scenario14: providers.litellm parked shape + _litellm_p3b_<date> marker + all five model groups cap=0 intentional_cap_zero=p3b_pending dated+measured (fleet-ops#4425, PR #4458, programme #4263)"
