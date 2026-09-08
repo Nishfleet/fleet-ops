@@ -494,6 +494,17 @@ blocked_filter() {
                 any_open=1
                 continue
                 ;;
+            split)
+                # Spec-gate bounce record, not an independent blocker: the
+                # agent-ready spec gate re-counts live required: lines and
+                # re-bounces (agent-blocked, no claim) on every tick, so a
+                # stale `blocked-on: split` must not wedge an issue whose
+                # split was judge-rejected (0509#1383, 2026-09-08: 4 stale
+                # split comments kept an agent-ready issue unclaimable 7h).
+                # any_machine=1 so an all-split blocker set reads as stale.
+                any_machine=1
+                continue
+                ;;
         esac
         # Resolve the target ref to owner/repo/number.
         if [[ "$ref" =~ ^https://github\.com/([^/]+)/([^/]+)/(issues|pull)/([0-9]+)/?$ ]]; then

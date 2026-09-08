@@ -177,6 +177,34 @@ if blocked_filter "no blocker here" "Nishfleet/0509" "50"; then
 fi
 ok "Test 2o: no comments arg -> unchanged body-only behavior"
 
+# === split marker: a spec-gate bounce record, not an independent blocker ====
+# `blocked-on: split` is written by the agent-ready spec gate when an issue
+# carries >2 live required: lines. The gate re-counts and re-bounces
+# (agent-blocked, no claim) on EVERY tick before any claim, so the marker only
+# records that bounce. Treating it as a live blocker wedges an issue whose
+# split was rejected by a judge decision — 0509#1383 sat agent-ready but
+# unclaimable for 7h on 4 stale split-marker comments (2026-09-08).
+
+# 2p. blocked-on: split in body -> claimable (gate re-bounces if still oversized)
+if blocked_filter "blocked-on: split" "Nishfleet/0509" "50"; then
+    fail "split marker must be claimable (spec gate owns the bounce)"
+fi
+ok "Test 2p: blocked-on: split (body) -> claimable"
+
+# 2q. blocked-on: split only in comments -> claimable
+if blocked_filter "body has no blocker" "Nishfleet/0509" "50" "split me: 3 requirements
+blocked-on: split"; then
+    fail "comment split marker must be claimable"
+fi
+ok "Test 2q: blocked-on: split (comments) -> claimable"
+
+# 2r. split + open issue ref -> still blocked by the open ref
+if ! blocked_filter "blocked-on: split
+blocked-on: #11" "Nishfleet/0509" "50"; then
+    fail "split + open ref must stay blocked"
+fi
+ok "Test 2r: split + open ref -> blocked"
+
 # === Test 3: shellcheck ======================================================
 if command -v shellcheck >/dev/null 2>&1; then
     shellcheck "$tick" --severity=warning
