@@ -253,6 +253,20 @@ if [ -d "$dropin_dir" ]; then
         || log "WARN: daemon-reload after fleet-hourly-audit drop-in removal failed"
 fi
 
+# fleet-ops#4435: orphaned drop-in dir for the deleted fleet-idea-intake
+# unit (hand-placed control-plane machinery; the unit file, timer, the
+# idea-intake/run-intake.py + run-bootstrap.py lanes, campaigns/campaignlib.py,
+# gate/fleet-gate and gate-retry.sh it referenced are all gone). install.sh
+# also removes it on a successful install; remove here too so a dirty/non-ff
+# deploy still clears the invisible leftover.
+dropin_dir="${HOME}/.config/systemd/user/fleet-idea-intake.service.d"
+if [ -d "$dropin_dir" ]; then
+    rm -rf "$dropin_dir"
+    log "removed orphaned fleet-idea-intake.service.d drop-in dir: $dropin_dir (fleet-ops#4435)"
+    systemctl --user daemon-reload >/dev/null 2>&1 \
+        || log "WARN: daemon-reload after fleet-idea-intake drop-in removal failed"
+fi
+
 # The same drop-in pointed FLEET_OPS_DRIFT_BIN at a GC-able worktree. Env
 # for this tick is already set; refusing the path stops the self-compare.
 canary_resolved=$(readlink -f "$CANARY" 2>/dev/null || printf '%s' "$CANARY")
