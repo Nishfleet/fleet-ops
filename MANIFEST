@@ -1089,6 +1089,11 @@ systemd/app-litellm.slice /home/nish/.config/systemd/user/app-litellm.slice
 systemd/app-litellm-postgres.slice /home/nish/.config/systemd/user/app-litellm-postgres.slice
 systemd/app-litellm-redis.slice /home/nish/.config/systemd/user/app-litellm-redis.slice
 systemd/fleet-litellm-proxy.service /home/nish/.config/systemd/user/fleet-litellm-proxy.service
+# fleet-ops#4449: proxy debug drop-in was a real file under the live drop-in
+# dir (blind-audit fleet-ops#2924 / #1548). Absorb so deploy symlinks it; pure
+# Environment=LITELLM_LOG=INFO override that keeps the journal small (DEBUG
+# flooded 161k lines in 2h), not new machinery.
+systemd/fleet-litellm-proxy.service.d/debug.conf /home/nish/.config/systemd/user/fleet-litellm-proxy.service.d/debug.conf
 systemd/fleet-litellm-postgres.service /home/nish/.config/systemd/user/fleet-litellm-postgres.service
 systemd/fleet-litellm-redis.service /home/nish/.config/systemd/user/fleet-litellm-redis.service
 libexec/fleet-litellm-health-canary.py /home/nish/.local/libexec/fleet-litellm-health-canary.py
