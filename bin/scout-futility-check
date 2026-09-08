@@ -61,6 +61,8 @@ fi
 #   SCOUT_FUTILITY_FILE        1 (default) file issues; 0 skip gh create
 #   SCOUT_FUTILITY_READY_COUNT override ready count (fixture scout)
 #   SCOUT_FUTILITY_FILED_COUNT override issues-filed-since-begin (fleet-ops#3547)
+#   SCOUT_FUTILITY_GATE_OPEN   1 gate OPEN, 0 closed, "" measure it live
+#                               (supply floor, fleet-ops#4560 seam for tests)
 #   SCOUT_FUTILITY_CLOSED_JSON closed-issue JSON fixture (file path or literal)
 #   SCOUT_FUTILITY_WS_LIB      path to work-supply.sh (tests/development)
 #   SCOUT_FUTILITY_PROM          textfile path (default
@@ -150,10 +152,12 @@ ready_count() {
 }
 
 # Issues created in Nishfleet/<repo> since begin_at (any state, any label).
-# fleet-ops#3547: the scout files scout-candidate issues, not agent-ready
-# ones (admission panel, fleet-ops#457), so a productive run leaves the
-# agent-ready runway flat and read as "dry" — 2026-09-05 0509 reached
-# consecutive_dry=7 and was parked while its candidates sat in admission.
+# fleet-ops#4560: this count is now only the FALLBACK. The primary filed
+# count is the scout's own `supply: ready_count=<n> filed=<k> labeled=<m>`
+# verdict line (scout prompt Step 5), read back from the unit journal over
+# the begin window — other agents' issues inside the window inflated the gh
+# count (the live 17:31Z run: scout printed filed=0, the gh count said 1,
+# consecutive_dry never tripped, and a green-and-empty scout sat silent).
 # Empty on gh failure or missing begin_at; the caller treats non-numeric as
 # "unknown" (0 filed) so the runway rule still decides.
 # Real filings only: AUTO-REVERT HALT notices and noise-class issues created
@@ -186,6 +190,72 @@ fetch_closed_json() {
     "$GH" issue list -R "Nishfleet/${repo}" -l agent-ready --state closed \
         --limit 100 --search 'sort:updated-desc' \
         --json number,closedAt 2>/dev/null || true
+}
+
+# fleet-ops#4560: the scout's own filed count, from its Step-5 verdict line
+# `supply: ready_count=<n> filed=<k> labeled=<m>` in the pi-scout@<repo>
+# journal since begin_at. Return 1 when no verdict line exists (empty
+# journal, unreadable journalctl, or a run that never reached Step 5); the
+# caller then falls back to the repo issue count.
+verdict_filed_count() {
+    local repo="$1" begin_at="$2" out line filed=""
+    local unit="pi-scout@${repo}.service"
+    if ! command -v "$JOURNALCTL" >/dev/null 2>&1 && [[ ! -x "$JOURNALCTL" ]]; then
+        return 1
+    fi
+    local -a since_args=()
+    [[ -n "$begin_at" ]] && since_args=(--since "$begin_at")
+    out=$("$JOURNALCTL" --user -u "$unit" -n 200 --no-pager -o cat "${since_args[@]}" 2>/dev/null || true)
+    [[ -n "$out" ]] || return 1
+    while IFS= read -r line; do
+        if [[ "$line" =~ supply:\ ready_count=[0-9]+\ filed=([0-9]+) ]]; then
+            filed="${BASH_REMATCH[1]}"
+        fi
+    done <<<"$out"
+    [[ -n "$filed" ]] || return 1
+    printf '%s\n' "$filed"
+}
+
+# fleet-ops#4560: issues created in Nishfleet/<repo> in the last 24h, for the
+# supply-floor check. Same filter as bin/fleet-work-supply-canary.
+created_24h() {
+    local repo="$1" n since now_s
+    if [[ -n "${FLEET_WORK_SUPPLY_CREATED_24H:-}" ]]; then
+        printf '%s\n' "$FLEET_WORK_SUPPLY_CREATED_24H"
+        return 0
+    fi
+    now_s=$(date -u +%s)
+    since=$(date -u -d "@$((now_s - 86400))" +%Y-%m-%dT%H:%M:%SZ)
+    n=$("$GH" issue list -R "Nishfleet/${repo}" --state all --limit 200 \
+        --search "created:>=${since}" --json number,title,labels \
+        --jq "$SUPPLY_ISSUE_COUNT_JQ" 2>/dev/null || true)
+    printf '%s\n' "$n"
+}
+
+# fleet-ops#4560: mirror of fleet-work-supply-canary's supply_floor_open —
+# OPEN when created-24h < MIN_CREATED or agent-ready < MIN_READY, skipped for
+# exempt repos (fleet-ops control plane). Unmeasurable => closed (the runway
+# rule decides), so a gh hiccup never invents a futility ticket.
+supply_gate_open() {
+    local repo="$1" ready created min_created min_ready r
+    if [[ -n "${SCOUT_FUTILITY_GATE_OPEN:-}" ]]; then
+        [[ "$SCOUT_FUTILITY_GATE_OPEN" == "1" ]] && return 0
+        return 1
+    fi
+    local -a skip
+    read -r -a skip <<<"${FLEET_WORK_SUPPLY_FLOOR_SKIP_REPOS:-fleet-ops}"
+    for r in "${skip[@]}"; do
+        [[ "$repo" == "$r" ]] && return 1
+    done
+    min_created="${FLEET_WORK_SUPPLY_MIN_CREATED_24H:-20}"
+    min_ready="${FLEET_WORK_SUPPLY_MIN_READY:-40}"
+    is_uint "$min_created" || min_created=20
+    is_uint "$min_ready" || min_ready=40
+    ready=$(ready_count "$repo")
+    is_uint "$ready" || return 1
+    created=$(created_24h "$repo")
+    is_uint "$created" || return 1
+    [[ "$created" -lt "$min_created" || "$ready" -lt "$min_ready" ]]
 }
 
 runway_hours() {
@@ -536,6 +606,55 @@ EOF
     fi
     rm -f "$body_file"
 }
+# fleet-ops#4560: the dry-while-open class. A green scout that filed nothing
+# while the supply floor was OPEN is the exact starvation signature the #454
+# runway rule cannot see (runway may still be above the buffer, and a
+# miscounted filed number hides it entirely). Three consecutive dry-while-
+# open runs auto-file a fleet-ops issue labeled agent-ready + critical-path
+# naming the dropping rule (scout prompt A.6), under its own signal key so
+# the #2351 dedupe gate keeps it to one ticket.
+file_dwo_escalation() {
+    local repo="$1" dwo="$2"
+    local marker title body_file existing
+    marker=$(printf 'signal: scout-dry-while-open/%s' "$repo")
+    if [[ "$FILE_ISSUES" != "1" ]]; then
+        log "file skipped (SCOUT_FUTILITY_FILE=$FILE_ISSUES) $marker"
+        return 0
+    fi
+    existing=$("$GH" issue list -R "$FILE_REPO" --state open --limit 100 \
+        --json number,body 2>/dev/null \
+        | jq -r --arg m "$marker" \
+            '.[] | select((.body // "") | contains($m)) | .number' \
+        | head -n 1 || true)
+    if [[ -n "$existing" ]]; then
+        log "dedup: open $FILE_REPO#$existing already carries $marker"
+        return 0
+    fi
+    title="[escalate-senior] scout dry-while-open: Nishfleet/${repo} ran green and filed nothing ${dwo}x while the supply gate was OPEN"
+    body_file=$(mktemp)
+    cat >"$body_file" <<EOF
+Scout dry-while-open (fleet-ops#4560). \`pi-scout@${repo}\` exited 0 and filed 0 issues ${dwo} consecutive runs while the work-supply gate reported the floor OPEN (thin created-24h / agent-ready). The supply limiter is starving the queue: a green scout over a thin queue means a dropping rule (scout prompt A.6 usage citation — every Usage source empty/green drops the whole research-derived candidate set) or a counter disagreement between the scout verdict and the tracker. Both classes were fixed in #4560; if this fires again, the fix regressed.
+
+This is a supply-rule problem, not a crash. Do not restart the scout. Route to the senior-auditor panel.
+
+## Evidence
+- repo: Nishfleet/${repo}
+- consecutive_dry_while_open: ${dwo}
+- N: ${N}
+
+${marker}
+EOF
+    if "$ISSUE_FILE" file -R "$FILE_REPO" \
+        --title "$title" \
+        --body-file "$body_file" \
+        --label agent-ready \
+        --label critical-path >/dev/null 2>&1; then
+        log "filed: $title"
+    else
+        log "WARN: gh issue create failed for $marker (dry-while-open)"
+    fi
+    rm -f "$body_file"
+}
 cmd_begin() {
     local repo="$1" before before_hours file now_s
     valid_repo "$repo" || { log "begin: invalid repo '$repo'"; return 0; }
@@ -563,6 +682,7 @@ cmd_begin() {
         "begin_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         "consecutive_dry=$(read_field "$file" consecutive_dry)" \
         "consecutive_wall=$(read_field "$file" consecutive_wall)" \
+        "consecutive_dwo=$(read_field "$file" consecutive_dwo)" \
         "last_after=$(read_field "$file" last_after)" \
         "last_after_hours=$(read_field "$file" last_after_hours)" \
         "last_exit=$(read_field "$file" last_exit)" \
@@ -605,7 +725,7 @@ cmd_end() {
     local repo="$1"
     local exit_code
     exit_code=$(resolve_exit "${2:-}")
-    local file before before_hours after after_hours dry next_dry wall_count next_wall last_run now_s begin_at filed
+    local file before before_hours after after_hours dry next_dry wall_count next_wall last_run now_s begin_at filed dwo next_dwo
     valid_repo "$repo" || { log "end: invalid repo '$repo'"; return 0; }
     is_uint "$N" || { log "end: SCOUT_FUTILITY_N not a uint: $N"; return 0; }
     is_uint "$BUFFER_H" || { log "end: SCOUT_FUTILITY_BUFFER_H not a uint: $BUFFER_H"; return 0; }
@@ -634,6 +754,8 @@ cmd_end() {
         is_uint "$dry" || dry=0
         wall_count=$(read_field "$file" consecutive_wall)
         is_uint "$wall_count" || wall_count=0
+        dwo=$(read_field "$file" consecutive_dwo)
+        is_uint "$dwo" || dwo=0
         # fleet-ops#1277: ExecStopPost still runs when ExecCondition skipped
         # the scout (the rest-skip path), so begin never wrote this tick's
         # epoch. The missing-snapshot branch is reached exactly when no begin
@@ -651,6 +773,7 @@ cmd_end() {
             "begin_at=" \
             "consecutive_dry=${dry}" \
             "consecutive_wall=${wall_count}" \
+            "consecutive_dwo=${dwo}" \
             "last_after=${after}" \
             "last_after_hours=${after_hours}" \
             "last_exit=${exit_code}" \
@@ -676,8 +799,11 @@ cmd_end() {
     is_uint "$dry" || dry=0
     wall_count=$(read_field "$file" consecutive_wall)
     is_uint "$wall_count" || wall_count=0
+    dwo=$(read_field "$file" consecutive_dwo)
+    is_uint "$dwo" || dwo=0
     next_dry=$dry
     next_wall=$wall_count
+    next_dwo=$dwo
     if ! is_uint "$before_hours"; then
         before_hours=$before
     fi
@@ -685,7 +811,16 @@ cmd_end() {
     # on a green exit; crash paths keep their own classification below.
     filed=""
     if [[ "$exit_code" == "0" ]]; then
-        filed=$(filed_since_begin "$repo" "$begin_at")
+        # fleet-ops#4560: the scout's own verdict line is the primary source.
+        # The gh issue-count fallback only fires when the run never printed a
+        # verdict (crash before Step 5, unreadable journal).
+        if vf=$(verdict_filed_count "$repo" "$begin_at"); then
+            filed=$vf
+            log "end: $repo filed=$filed from the scout's own supply verdict line (fleet-ops#4560)"
+        else
+            filed=$(filed_since_begin "$repo" "$begin_at")
+            log "end: $repo no supply verdict line in journal — fallback repo issue count filed=${filed:-unknown}"
+        fi
     fi
     is_uint "$filed" || filed=0
     if [[ "$exit_code" == "$SEAT_SKIP_EXIT" ]]; then
@@ -740,6 +875,25 @@ cmd_end() {
             file_escalation "$repo" "$next_dry" "$before_hours" "$after_hours"
         fi
     fi
+    # fleet-ops#4560: the dry-while-open class. Green + filed=0 + supply floor
+    # OPEN is starvation by construction — the runway rule above cannot see it
+    # when the buffer is still healthy. Independent counter; productive runs
+    # and a closed gate reset it; crash/seat-skip paths leave it untouched.
+    if [[ "$exit_code" == "0" && "$filed" -ge 1 ]]; then
+        next_dwo=0
+    elif [[ "$exit_code" == "0" ]]; then
+        if supply_gate_open "$repo"; then
+            next_dwo=$((dwo + 1))
+            log "end: $repo dry-while-open #${next_dwo} (exit 0, filed=0, supply gate OPEN) — consecutive_dwo=$next_dwo"
+            if [[ "$next_dwo" -ge "$N" ]]; then
+                loud "SCOUT-DRY-WHILE-OPEN" "repo=Nishfleet/${repo} consecutive_dwo=${next_dwo} (N=${N}) green scout filed nothing while the supply gate was OPEN — supply limiter starving the queue (A.6 drop rule); escalate-senior, do not restart"
+                file_dwo_escalation "$repo" "$next_dwo"
+            fi
+        else
+            next_dwo=0
+            log "end: $repo supply gate closed or unmeasurable — reset consecutive_dwo"
+        fi
+    fi
     last_run=$(read_field "$file" last_run_epoch)
     is_uint "$last_run" || last_run=0
     write_state "$file" \
@@ -748,6 +902,7 @@ cmd_end() {
         "begin_at=" \
         "consecutive_dry=${next_dry}" \
         "consecutive_wall=${next_wall}" \
+        "consecutive_dwo=${next_dwo}" \
         "last_before=${before}" \
         "last_before_hours=${before_hours}" \
         "last_after=${after}" \

@@ -58,8 +58,16 @@ record_stdin="$scratch/pi.stdin"
 fresh_signal="$scratch/agent-state/cron-output/0509-daily-market-signal-$(date -u +%Y-%m-%d).md"
 printf '# 0509-daily-market-signal fresh\n- Soft demand signal from SneakerPing.\n' >"$fresh_signal"
 
-# --- fake category research -------------------------------------------------
-printf '# 0509 transformation bets\n## BET 1 — digest ranking\nBuild.\n' >"$scratch/agent-state/0509-transformation/category-research.md"
+# --- fake category research (fleet-ops#4560: 3 transformation bets) ---------
+cat >"$scratch/agent-state/0509-transformation/category-research.md" <<'EOF'
+# 0509 transformation bets
+## BET 1 — digest ranking
+Build.
+## BET 2 — country scope honesty
+Build.
+## BET 3 — pricing visibility
+Build.
+EOF
 
 # --- fake north-star file ---------------------------------------------------
 printf '# North star\nBeat customer edge AI.\n' >"$scratch/tooling/nish-vault/north-star.md"
@@ -118,6 +126,23 @@ grep -q 'scout-yield' "$repo_root/prompts/scout.md" || fail "scout prompt missin
 grep -q 'A.5 Money-path walk' "$repo_root/prompts/scout.md" || fail "scout prompt missing money-path walk subsection"
 grep -q 'A.6 Usage citation' "$repo_root/prompts/scout.md" || fail "scout prompt missing usage citation rule"
 ok "scout prompt carries usage citation, money-path walk, and scout-yield"
+
+# 1c-b. Research floor under an all-empty/all-green Usage block (fleet-ops
+# #4560): the assembled packet (all-green usage + 3 research bets) must
+# INSTRUCT filing >= 1 research-cited candidate tagged usage-uncited, not
+# dropping the whole set. This is the regression drill for the A.6 starve.
+grep -q 'SCOUT_RESEARCH_FLOOR' "$packet" \
+  || fail "packet must carry the SCOUT_RESEARCH_FLOOR research-floor instruction"
+grep -q 'usage-uncited' "$packet" \
+  || fail "packet must instruct the usage-uncited tag"
+! grep -q 'drop every usage-uncited candidate' "$packet" \
+  || fail "packet must no longer instruct dropping every usage-uncited candidate"
+for bet in 'BET 1' 'BET 2' 'BET 3'; do
+    grep -q "$bet" "$packet" || fail "packet missing research bet $bet"
+done
+grep -q 'transformation-bet ID (BET n)' "$repo_root/prompts/scout.md" \
+  || fail "A.6 must name bet IDs as a valid research-floor citation"
+ok "research floor: all-green usage + 3 bets => packet instructs filing research-cited candidates (fleet-ops#4560)"
 
 # 1d. CF analytics source is OPTIONAL (fleet-ops#3172): when the sanctioned
 # token lacks zone.analytics.read the GraphQL call returns a 403 authz error;

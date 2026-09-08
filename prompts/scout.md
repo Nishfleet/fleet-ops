@@ -99,16 +99,26 @@ capping walk-sourced candidates at **4** per run. A walk finding that is a
 `429` (rate limit) on a shared-VPS IP should be noted as such in the candidate
 body, not filed as a hard outage unless a real session reproduces it.
 
-### A.6 Usage citation (required for every 0509 candidate)
+### A.6 Usage citation (preferred; research floor when telemetry is empty/green)
 
-Every `0509` candidate's `source:` line MUST cite exactly one of: a line from
+A `0509` candidate's `source:` line SHOULD cite exactly one of: a line from
 the RESEARCH CONTEXT **Usage** block (cloudflare analytics, lp_run_audit,
 /search query log, inbound email, or a money-path walk finding), or a
 Nish-authored issue (`source: nish#<n>`). A code-shaped candidate whose
 `source:` cites none of these is **dropped** — the scout files what customers
-actually see, not work invented from code inspection alone. If the Usage block
-reports every source empty, drop every usage-uncited candidate and rely on
-your own market-signal / money-path-walk observations.
+actually see, not work invented from code inspection alone. That
+"code inspection alone" prohibition STAYS even in the fallback below.
+
+**Research floor (fleet-ops#4560):** if the Usage block reports every source
+empty or green (no signal either way — the normal state for a site with ~0
+signups), do NOT drop the whole candidate set. File up to
+`SCOUT_RESEARCH_FLOOR` (default 5) research-grounded candidates per run whose
+`source:` cites a market-signal line, a transformation-bet ID (BET n), the
+north-star rule, or a recent merged-PR title — the same valid citation forms
+as the top-level rule. Tag each of them `scout-candidate` + `usage-uncited`
+so the conference can rank them below telemetry-cited work. A healthy site
+with no traffic must still produce a fed queue; a starved queue from a green
+Usage block is a supply bug, not a spec win.
 
 ### B. Stale or conflicting PRs (SECOND)
 

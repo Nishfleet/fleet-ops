@@ -102,6 +102,11 @@ export SCOUT_FUTILITY_PROM="$scratch/fleet-scout.prom"
 # fixture. 0 here pins the old closed=0 -> fallback behaviour on hosts where
 # the real pi-intake journal exists (fleet-ops#4450).
 export WORK_SUPPLY_CLAIMED_COUNT=0
+# fleet-ops#4560: the dry-while-open class measures the supply gate live by
+# default (test gh serves empty lists => gate OPEN everywhere). Scenarios 2-15
+# predate the class; pin the gate CLOSED here and drill it explicitly in the
+# scenario16+ blocks.
+export SCOUT_FUTILITY_GATE_OPEN=0
 
 gh_log="$scratch/gh.log"
 open_issues="$scratch/open-issues.json"
@@ -1225,9 +1230,140 @@ rm -f "$state/0509.state"
   || fail "scenario17r: runinfra 402 insufficient_credits must be wall-class, got consecutive_wall='$(state_field consecutive_wall 0509)'"
 ok "scenario17r: runinfra 402 insufficient_credits ('Out of credits') is wall-class"
 
+# --- 18. filed count comes from the scout's own supply verdict line ---------
+# fleet-ops#4560: the gh issue-count fallback was inflated by OTHER agents'
+# issues inside the begin window (live 2026-09-08 17:31Z: scout printed
+# filed=0, the counter read filed=1, consecutive_dry never tripped). The
+# primary source is now the journal verdict line. Prove both directions:
+# a verdict filed=0 overrides an inflating gh count, and a verdict filed>=1
+# still scores productive.
+write_journalctl_stub
+: >"$gh_log"; : >"$triage"
+echo '[]' >"$open_issues"
+rm -f "$state/0509.state"
+export SCOUT_FUTILITY_READY_COUNT=2
+export SCOUT_FUTILITY_GATE_OPEN=1
+# gh would report 2 issues created inside the window (the inflating case).
+export GH_CREATED_FIXTURE="$scratch/created-inflate.json"
+jq -n '[{number:4600,title:"someone else filed this",labels:[]},{number:4601,title:"and this",labels:[]}]' >"$GH_CREATED_FIXTURE"
+printf '%s\n' \
+  'EXTLOAD-OK extension=packet-verdict mode=print-safe' \
+  'supply: ready_count=37 filed=0 labeled=0' \
+  >"$scratch/journalctl-body.txt"
+"$bin" begin 0509 >/dev/null
+"$bin" end 0509 0 >/dev/null
+[[ "$(state_field last_filed)" == "0" ]] \
+  || fail "scenario18: verdict line filed=0 must win over the inflating gh count, got last_filed='$(state_field last_filed)'"
+[[ "$(state_field consecutive_dwo 0509)" == "1" ]] \
+  || fail "scenario18: green + filed=0 + gate OPEN must increment consecutive_dwo to 1, got '$(state_field consecutive_dwo 0509)'"
+[[ "$(state_field consecutive_dry)" == "1" ]] \
+  || fail "scenario18: filed=0 must also increment the runway dry counter, got '$(state_field consecutive_dry)'"
+# Productive verdict: filed=2 resets both counters.
+printf '%s\n' \
+  'EXTLOAD-OK extension=packet-verdict mode=print-safe' \
+  'supply: ready_count=37 filed=2 labeled=2' \
+  >"$scratch/journalctl-body.txt"
+"$bin" begin 0509 >/dev/null
+"$bin" end 0509 0 >/dev/null
+[[ "$(state_field last_filed)" == "2" ]] \
+  || fail "scenario18: verdict filed=2 must be read as productive, got last_filed='$(state_field last_filed)'"
+[[ "$(state_field consecutive_dry)" == "0" ]] \
+  || fail "scenario18: productive verdict must reset consecutive_dry"
+[[ "$(state_field consecutive_dwo 0509)" == "0" ]] \
+  || fail "scenario18: productive verdict must reset consecutive_dwo, got '$(state_field consecutive_dwo 0509)'"
+ok "scenario18: filed count read from the scout's own supply verdict line (fleet-ops#4560)"
+
+# --- 19. dry-while-open drill: 3 green filed=0 runs over an OPEN gate -------
+: >"$gh_log"; : >"$triage"
+echo '[]' >"$open_issues"
+rm -f "$state/0509.state"
+printf '%s\n' \
+  'EXTLOAD-OK extension=packet-verdict mode=print-safe' \
+  'supply: ready_count=37 filed=0 labeled=0' \
+  >"$scratch/journalctl-body.txt"
+"$bin" begin 0509 >/dev/null; "$bin" end 0509 0 >/dev/null
+"$bin" begin 0509 >/dev/null; "$bin" end 0509 0 >/dev/null
+[[ "$(state_field consecutive_dwo 0509)" == "2" ]] \
+  || fail "scenario19: two dry-while-open runs must leave consecutive_dwo=2, got '$(state_field consecutive_dwo 0509)'"
+! grep -q 'issue create' "$gh_log" || fail "scenario19: must not file before N"
+"$bin" begin 0509 >/dev/null; "$bin" end 0509 0 >/dev/null
+[[ "$(state_field consecutive_dwo 0509)" == "3" ]] \
+  || fail "scenario19: third dry-while-open run must reach consecutive_dwo=3"
+grep -q 'SCOUT-DRY-WHILE-OPEN' "$triage" \
+  || fail "scenario19: missing LOUD SCOUT-DRY-WHILE-OPEN (triage=$(cat "$triage"))"
+grep -q 'issue create' "$gh_log" \
+  || fail "scenario19: third dry-while-open run must auto-file (log=$(cat "$gh_log"))"
+grep -q -- '--label agent-ready' "$gh_log" \
+  || fail "scenario19: ticket must carry agent-ready"
+grep -q -- '--label critical-path' "$gh_log" \
+  || fail "scenario19: ticket must carry critical-path"
+grep -q 'dry-while-open: Nishfleet/0509' "$gh_log" \
+  || fail "scenario19: title must name the class + repo (log=$(cat "$gh_log"))"
+# The body travels via --body-file; capture it with a recorder gh to assert
+# the A.6 dropping rule is named.
+dwo_body="$scratch/dwo-body.md"
+cat >"$gh_fake" <<FAKE
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"\${GH_LOG:-/dev/null}"
+case "\$*" in
+  *"issue create"*)
+    prev=""
+    for a in "\$@"; do
+      [[ "\$prev" == "--body-file" && -f "\$a" ]] && cp "\$a" "$dwo_body"
+      prev="\$a"
+    done
+    echo "https://github.com/Nishfleet/fleet-ops/issues/999"; exit 0 ;;
+  *"issue list"*)
+    if [[ -f "\${GH_OPEN_ISSUES:-/dev/null}" ]]; then cat "\$GH_OPEN_ISSUES"; else echo '[]'; fi
+    exit 0 ;;
+esac
+exit 0
+FAKE
+chmod +x "$gh_fake"
+rm -f "$state/0509.state"
+echo '[]' >"$open_issues"
+: >"$gh_log"; : >"$triage"
+"$bin" begin 0509 >/dev/null; "$bin" end 0509 0 >/dev/null
+"$bin" begin 0509 >/dev/null; "$bin" end 0509 0 >/dev/null
+"$bin" begin 0509 >/dev/null; "$bin" end 0509 0 >/dev/null
+[[ -f "$dwo_body" ]] || fail "scenario19: did not capture the dry-while-open body"
+grep -q 'A.6' "$dwo_body" \
+  || fail "scenario19: body must name the A.6 dropping rule (body=$(cat "$dwo_body"))"
+grep -Fq 'signal: scout-dry-while-open/0509' "$dwo_body" \
+  || fail "scenario19: body missing the dry-while-open signal key"
+ok "scenario19: 3 dry-while-open runs auto-file agent-ready + critical-path naming A.6"
+
+# --- 20. dry-while-open dedupes on its own signal key -----------------------
+cat >"$open_issues" <<'JSON'
+[{"number": 78, "body": "already open\n\nsignal: scout-dry-while-open/0509\n\nsignal: scout-futility/0509\n"}]
+JSON
+: >"$gh_log"; : >"$triage"
+"$bin" begin 0509 >/dev/null; "$bin" end 0509 0 >/dev/null
+[[ "$(state_field consecutive_dwo 0509)" == "4" ]] \
+  || fail "scenario20: counter keeps climbing past N"
+grep -q 'SCOUT-DRY-WHILE-OPEN' "$triage" \
+  || fail "scenario20: still LOUD past N"
+! grep -q 'issue create' "$gh_log" \
+  || fail "scenario20: must dedupe on signal: scout-dry-while-open/<repo> (log=$(cat "$gh_log"))"
+echo '[]' >"$open_issues"
+ok "scenario20: dry-while-open escalation dedupes on its own signal key"
+
+# --- 21. a closed supply gate resets consecutive_dwo -----------------------
+: >"$gh_log"; : >"$triage"
+rm -f "$state/0509.state"
+export SCOUT_FUTILITY_GATE_OPEN=0
+"$bin" begin 0509 >/dev/null; "$bin" end 0509 0 >/dev/null
+[[ "$(state_field consecutive_dwo 0509)" == "0" ]] \
+  || fail "scenario21: closed gate must keep consecutive_dwo at 0, got '$(state_field consecutive_dwo 0509)'"
+! grep -q 'SCOUT-DRY-WHILE-OPEN' "$triage" || fail "scenario21: closed gate must not LOUD"
+unset SCOUT_FUTILITY_GATE_OPEN
+ok "scenario21: closed supply gate resets consecutive_dwo"
+
 # Reset journalctl stub + state file so subsequent test runs (if any) start clean.
 unset JOURNALCTL JOURNALCTL_BODY_FILE
 rm -f "$scratch/journalctl-body.txt"
+unset GH_CREATED_FIXTURE
+rm -f "$scratch/created-inflate.json"
 ok "scenario17: provider-wall crash loop escalates + dedupes (fleet-ops#2468)"
 
 echo "OK: scout-futility: green-and-empty + provider-wall crash loop escalates after N, never loops quietly"
