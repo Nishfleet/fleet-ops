@@ -614,10 +614,20 @@ issue_difficulty() {
 # fleet-ops#3310/#3527: latest live blocked-on: <marker> timestamp from the
 # issue body or a non-struck comment. Returns empty if none.
 latest_live_blocked_on_ts() {
-    local view_json_text="$1" marker="$2"
-    python3 - "$view_json_text" "$marker" <<'PY'
+    local view_json_text="$1" marker="$2" _tmp_json _rc
+    # fleet-ops#4572: the issue JSON carries every comment, and a hot issue
+    # (the audit panel once re-commented 243 times) blows past Linux's
+    # MAX_ARG_STRLEN — a single argv string caps at 131072 bytes no matter
+    # how large ARG_MAX is. Passing it as argv killed the whole sweep with
+    # "Argument list too long", so no dependent was ever released. Hand the
+    # JSON over on a temp file; only the small marker stays in argv.
+    _tmp_json="$(mktemp "${TMPDIR:-/tmp}/blocked-reconcile-view.XXXXXX")"
+    printf '%s' "$view_json_text" >"$_tmp_json"
+    python3 - "$_tmp_json" "$marker" <<'PY'
 import json, re, sys
-text, marker = sys.argv[1], sys.argv[2]
+path, marker = sys.argv[1], sys.argv[2]
+with open(path, encoding="utf-8") as _fh:
+    text = _fh.read()
 pat = re.compile(r"(?im)^blocked-on:\s*" + re.escape(marker) + r"\s*$")
 struck = re.compile(r"^\s*(?:[-*]\s+)?~~.+~~\s*$")
 issue = json.loads(text)
@@ -640,6 +650,9 @@ for c in issue.get("comments") or []:
     consider(c.get("createdAt"), c.get("body"))
 print(latest or "")
 PY
+    _rc=$?
+    rm -f "$_tmp_json"
+    return "$_rc"
 }
 
 # fleet-ops#3310/#3527: count previous infra-block auto-releases within 24h.
