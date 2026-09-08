@@ -1457,6 +1457,82 @@ def _emit_spend(lines, spend):
         lines.extend(today_rows)
 
 
+_HELP_USD24 = (
+    "# HELP fleet_usd_24h Rate-card cost of the trailing 24h in USD from "
+    "session usage tokens x the seat rate card (fleet-ops#4459). "
+    "metered=per-token seats; flat_share=prorated daily share of flat plans."
+)
+_TYPE_USD24 = "# TYPE fleet_usd_24h gauge"
+_HELP_USD_PER_PR = (
+    "# HELP fleet_usd_per_merged_pr USD (metered + flat_share) 24h / merged "
+    "PRs 24h (fleet-ops#4459). 0 when no PR merged or spend is unreadable."
+)
+_TYPE_USD_PER_PR = "# TYPE fleet_usd_per_merged_pr gauge"
+
+_FLEET_USD_MOD = None
+
+
+def _fleet_usd_mod():
+    """Lazily load lib/fleet_usd.py from ../lib/."""
+    global _FLEET_USD_MOD
+    if _FLEET_USD_MOD is not None:
+        return _FLEET_USD_MOD
+    import importlib.util
+    lib_path = Path(__file__).resolve().parent.parent / "lib" / "fleet_usd.py"
+    spec = importlib.util.spec_from_file_location("fleet_usd", lib_path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["fleet_usd"] = mod
+    spec.loader.exec_module(mod)
+    _FLEET_USD_MOD = mod
+    return mod
+
+
+def _resolve_seat_caps_path():
+    """First readable seat-caps.json (live file first, repo checkouts fallback)."""
+    for path in (SEAT_CAPS_LIVE, SEAT_CAPS_DEFAULT, SEAT_CAPS_FALLBACK):
+        try:
+            path.read_text()
+            return path
+        except OSError:
+            continue
+    return SEAT_CAPS_DEFAULT
+
+
+def _emit_usd_24h(lines, pr_counts):
+    """Emit fleet_usd_24h + fleet_usd_per_merged_pr from rate card x usage.
+
+    Shares the exact rate-card math with measure.sh via lib/fleet_usd.py so the
+    judge header and the prom metric cannot drift. pr_counts is the per-repo
+    merged-PR map from the detailed fetch (may be None if that fetch failed);
+    usd_per_merged_pr is emitted only when a real merge count is available and
+    > 0, else it is UNAVAILABLE — never a fabricated $0."""
+    try:
+        mod = _fleet_usd_mod()
+        caps_path = _resolve_seat_caps_path()
+        rate_card = mod.load_rate_card(str(caps_path))
+        agg, seen_missing, flat = mod.compute_usd_24h(str(SESSIONS_DIR), rate_card)
+        metered = sum(
+            v for prov, v in agg.items() if not rate_card.get(prov, {}).get("flat")
+        )
+        flat_share = sum(flat.values())
+        lines.append("")
+        lines.append(_HELP_USD24)
+        lines.append(_TYPE_USD24)
+        lines.append(f'fleet_usd_24h{{kind="metered"}} {metered:.6f}')
+        lines.append(f'fleet_usd_24h{{kind="flat_share"}} {flat_share:.6f}')
+        if pr_counts and sum(pr_counts.values()) > 0:
+            merged_total = sum(pr_counts.values())
+            lines.append("")
+            lines.append(_HELP_USD_PER_PR)
+            lines.append(_TYPE_USD_PER_PR)
+            per = (metered + flat_share) / merged_total
+            lines.append(
+                f'fleet_usd_per_merged_pr{{merged_prs={merged_total}}} {per:.6f}'
+            )
+    except Exception as exc:  # noqa: BLE001 — metric must never take main() down
+        lines.append(f'# fleet_usd_24h UNAVAILABLE error: {_prom_label(str(exc))[:120]}')
+
+
 def _read_env_key(path, names):
     """Return the first matching key from a dotenv file or env var, or None."""
     if path.is_file():
@@ -5660,6 +5736,8 @@ def main():
     # is fetched from each vendor's own credits/usage endpoint where one exists.
     spend = _compute_spend()
     _emit_spend(lines, spend)
+    # fleet-ops#4459: rate-card USD for the 24h + $/merged-PR, shared with measure.sh
+    _emit_usd_24h(lines, pr_counts)
     openrouter_balance = _cached_vendor_json(
         OPENROUTER_BALANCE_CACHE, _fetch_openrouter_credits, "openrouter_credits"
     )
