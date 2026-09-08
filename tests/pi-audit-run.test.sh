@@ -110,7 +110,17 @@ class_of() {
   esac
 }
 
-model_cap() { printf '1\n'; }
+model_cap() {
+  # fleet-ops#4503: test seam — when AUDIT_TEST_CAP_ZERO_ALL is truthy,
+  # every model reports cap 0 so the any-capable fallback is exercised with
+  # no allocated seat (it must fall through to a lane fault, never select a
+  # cap-0 model). Default: all seats eligible (historic behavior).
+  if [[ -n "${AUDIT_TEST_CAP_ZERO_ALL:-}" ]]; then
+    printf '0\n'
+    return
+  fi
+  printf '1\n'
+}
 
 seat_usable() {
   # fleet-ops#3121: within the senior ladder (seat-caps senior_seats_in_order)
@@ -513,4 +523,34 @@ grep -q 'class=quota_exhausted' "$scratch/scenario9.err" \
   || fail "scenario9: preflight log should name quota_exhausted ($(cat "$scratch/scenario9.err"))"
 ok "scenario9: quota_exhausted preflight writes SKIP, skips pi, leaves observed_at untouched (fleet-ops#3351)"
 
-ok "pi-audit-run: straitly tab fallback fixed, incomplete reasons padded, missing verdict still fails, #1011 clobber contained, walled lane is a lane fault, quota_exhausted preflight closes #3351"
+# -----------------------------------------------------------------------------
+# Scenario 10 (fleet-ops#4503): a capable seat with model cap 0 must never be
+# selected by the any-capable fallback. Before the fix, find_any_capable_seat
+# skipped the model_cap>0 guard that find_free_seat()/find_senior_seat() have,
+# so a cap-0 slug (e.g. commandcode/meta/muse-spark-1.2-contributor) was
+# picked, pi exited 1, a SKIP vote was written, the panel never reached 2-of-3
+# quorum and every long-pending candidate re-armed AUDITOR-PANEL-PENDING.
+# With every seat at cap 0 the free-glm role must be a lane fault: no vote
+# written, exit 0, and a "no usable seat" log line — not a SKIP on a dead
+# slug.
+# -----------------------------------------------------------------------------
+reset_state
+export AUDIT_TEST_CAP_ZERO_ALL=1
+set +e
+PI_RESPONSE=$'PASS\nnorth star, no duplicate.' \
+  bash "$bin" 'demo--101--free-glm-5-3' >"$scratch/scenario10.out" 2>"$scratch/scenario10.err"
+rc10=$?
+set -e
+unset AUDIT_TEST_CAP_ZERO_ALL
+
+[[ "$rc10" == 0 ]] \
+  || fail "scenario10: all-cap-0 free-glm role must be a lane fault (exit 0), got $rc10 ($(cat "$scratch/scenario10.err"))"
+[[ ! -f "$state_dir/demo/101/free-glm-5-3.vote" ]] \
+  || fail "scenario10: must NOT write a vote on a cap-0 seat ($(cat "$scratch/scenario10.err"))"
+[[ ! -s "$calls" ]] \
+  || fail "scenario10: pi must never run on a cap-0 seat (calls=$(cat "$calls"))"
+grep -q 'no usable seat for role free-glm-5-3' "$scratch/scenario10.err" \
+  || fail "scenario10: cap-0 fallback must log the lane-fault line ($(cat "$scratch/scenario10.err"))"
+ok "scenario10: any-capable fallback drops cap-0 seats -> clean lane fault (fleet-ops#4503)"
+
+ok "pi-audit-run: straitly tab fallback fixed, incomplete reasons padded, missing verdict still fails, #1011 clobber contained, walled lane is a lane fault, quota_exhausted preflight closes #3351, cap-0 fallback drops dead slugs"

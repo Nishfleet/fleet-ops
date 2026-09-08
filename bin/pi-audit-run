@@ -199,11 +199,21 @@ find_free_seat() {
 # Fallback: any usable capable seat (not class-restricted). Keeps the panel
 # from NO-USABLE-SEAT'ing when every free seat is momentarily benched while
 # strong seats are healthy. Logged, so the degradation is visible.
+#
+# fleet-ops#4503: a capable seat must still respect its model cap, exactly
+# like find_free_seat()/find_senior_seat() do. enumerate_seats lists every
+# model in pi-models.json (including cap-0, never-allocated slugs such as
+# commandcode/meta/muse-spark-1.2-contributor); without this guard the
+# free-glm fallback keeps selecting a cap-0 model, pi exits 1, a SKIP vote is
+# written, the panel never reaches 2-of-3 quorum and every long-pending
+# candidate re-arms the AUDITOR-PANEL-PENDING alarm. A cap-0 model is a lane
+# fault (no vote, retry next tick), not a dead vote.
 find_any_capable_seat() {
     local p m _capable
     while IFS=$'\t' read -r p m _ _capable; do
         [ -n "$p" ] || continue
         [ "$_capable" = "1" ] || continue
+        [ "$(model_cap "$p" "$m" 2>/dev/null || echo 0)" -gt 0 ] 2>/dev/null || continue
         seat_usable "$p" "$m" 2>/dev/null || continue
         seat_is_poison "$p" "$m" 2>/dev/null && continue
         printf '%s\t%s\n' "$p" "$m"
