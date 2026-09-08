@@ -235,6 +235,10 @@ systemd/vps-weekly-update.service.d/20-wip-gc.conf /home/nish/.config/systemd/us
 # Updated on the existing 5-min fleet-metrics-export tick (no new timer).
 bin/git-mirror-update /home/nish/.local/bin/git-mirror-update
 systemd/fleet-metrics-export.service.d/10-git-mirrors.conf /home/nish/.config/systemd/user/fleet-metrics-export.service.d/10-git-mirrors.conf
+# fleet-ops#4521: this OOM drop-in was a real file under the live drop-in
+# dir (blind-audit fleet-ops#2924 / #1548). Absorb so deploy symlinks it;
+# pure ManagedOOMPreference=avoid override, not new machinery.
+systemd/fleet-metrics-export.service.d/20-oom-avoid.conf /home/nish/.config/systemd/user/fleet-metrics-export.service.d/20-oom-avoid.conf
 # fleet-ops#1211: loss-accounting family. Piggybacks the existing 5-min
 # fleet-metrics-export tick (no new timer). Leading '-' so a waste-ledger
 # fault cannot fail Prometheus export.
