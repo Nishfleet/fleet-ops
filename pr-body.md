@@ -1,77 +1,63 @@
-feat(seat-health): walled-seat comeback probe with weekly credentials_bad issue
+fix(waste): class a SUCCESS-no-ship run as `empty-success` (verdict line + seat ledger), count the fleet-ops issue treadmill (fleet-ops#4457)
 
-## Why
+## Summary
 
-fleet-ops#1348: #1167 landed the `walled_comeback` table in `config/seat-caps.json`
-(15min on 429, hourly on daily quota, daily on monthly/402, weekly on
-credentials_bad, max 1 probe per 15min). `pick_seat` already fail-opens after
-`usable_at` passes, but nothing actually re-admits the seat — the wall meant the
-seat stayed walled until a manual intervention or an unrelated healthy observation
-overwrote the ledger.
+Blind spot (24h population): 127 sessions logged `SUCCESS on <seat>` but only 62 shipped. **51% of "successes" shipped nothing**, and nothing counted them — the judge only reads shipped/24h and sessions-to-PR. Separate but related: workers filed 142 fleet-ops issues/day against a control-plane treadmill that is invisible because only merges are counted.
 
-This PR adds a periodic probe (systemd timer every 15min) that:
-- Reads `usable_at` from the per-seat ledger
-- When `usable_at` has passed, sends a polite 1-token "reply OK" probe through pi
-- A successful probe produces a healthy observation (seat-health.ts records it),
-  clearing `usable_at` so the seat re-enters the ladder at its cap
-- Respects `min_probe_interval_s` from `seat-caps.json` (max 1 probe per seat per tick)
-- `credentials_bad`: probes weekly and files an `agent-ready` issue if still bad
-  (needs fixing, not waiting)
+This makes the waste visible on existing rails (no new organis):
 
-## Scope
+1. **`bin/pi-issue-run` — `empty-success` class.** In the SUCCESS path, a run that produces real output but opens **no PR** and closes **no issue** (the existing `_shipped=no` branch that kept the reclaim-count tall) is now classed `empty-success`: a `PACKET-VERDICT class=empty-success seat=<prov>/<model> output_bytes=<n>` line is appended to the `.out` packet, a per-seat counter (`*.empty-success.json`) is written to the seat ledger via a new `mark_seat_empty_success` in `lib/seat-lib.sh`, and the seat_log line carries the class. It is **NOT** benched (the seat produced real text — not a seat fault) and the exit code stays 0 (a real-output success), so the claim-loop cap (`reclaim-count` not reset, fleet-ops#2462/#2772) still protects the queue. The literal `class=empty-success` is the accept-criterion token.
 
-- `bin/seat-walled-probe` — new script. Iterates the per-seat ledger, probes seats
-  whose `usable_at` is in the past and whose `failure_mode` is walled (rate_limit,
-  quota_exhausted, credentials_bad, empty_run). Uses `--dry-run` and `--probe-all`
-  flags. Exits 0 when there is nothing to probe (common case, not a failure).
-- `systemd/seat-walled-probe.service` + `systemd/seat-walled-probe.timer` —
-  oneshot unit with 10min timeout, timer fires every 15min with 60s randomized delay.
-- `systemd/timer-manifest.json` — entry for the new timer (source: repo, cadence: 15min).
-- `tests/seat-walled-probe.test.sh` — 5-phase test: dry-run selection (skips future/
-  healthy/recent, probes past+weekly), real mock run (probe success/failure + issue
-  filing), no-seats exits 0, --probe-all picks non-walled modes, systemd unit validity
-  + manifest entry.
-- `MANIFEST` — deploy mapping for bin + service + timer.
+2. **`measure.sh` (live out-of-repo: `agent-state/fleet-landing-watch/measure.sh`)** — now prints every run:
+   - `waste: empty-success=<n>/<sessions> tiny-output=<n> top3-empty-success-seats=[...] pct=<p>%`
+   - `fleet-ops issues filed by workers 24h=<n> closed=<n> ... product ready pool=0509:<m>`
+3. **`fable-check.md` (the hourly judge packet, live out-of-repo)** — section 1a instructs the judge: `pct` above 40% two runs in a row = FAULT line (name the top-3 seats); the treadmill is named THE limiter when filed > 100/day while product ready pool < 20. Do not loosen the fleet-ops throttle to relieve it — fix product supply.
 
-**Out of scope**: the census sweep integration. #1149 is already the census sweeper;
-this probe runs on its own 15min timer rather than being called from the census.
+Items 2-3 are live edits to the judge's own measurement script/packet (not tracked by any repo), so they do not appear in this merged diff — this PR ships the durable detector/test (items 1+4); the live files are updated in place with `.bak-4457-<ts>` backups, per the established cross-project-edit pattern (see prior #4266 PR body).
 
-## Tradeoffs
+## Changes
 
-- **Own timer vs census hook.** Chose a standalone timer because the probe cadence
-  (15min) is tighter than the census (weekly). Adding a 15min-firing census step would
-  change the census's own semantics. The two are orthogonal — census maps assets to
-  guards; this probe is a guard.
+- `bin/pi-issue-run`: SUCCESS-no-ship path now writes `PACKET-VERDICT class=empty-success seat=../.. output_bytes=..` + `mark_seat_empty_success` ledger counter + a `class=empty-success` seat_log line. Reclaim-count still NOT reset.
+- `lib/seat-lib.sh`: new `mark_seat_empty_success` (per-seat `*.empty-success.json` counter, best-effort, never blocks the exit-0 success path; not a bench).
+- `tests/pi-issue-run-empty-success.test.sh`: fixture — SUCCESS + real output + no PR -> `class=empty-success` in the .out verdict, per-seat counter increments, seat NOT benched, reclaim-count NOT reset; shipped control -> no empty-success class, counter unchanged.
+- `tests/seat-lib.test.sh`: hosts the new test (workers cannot push `.github/workflows/**`, so hosting from an already-listed test is the P14-compliant route).
 
-## Blast Radius
+Mechanical-fix (fleet-ops#366): the fixture test + the `class=empty-success` verdict are the detector/test that make the 51% blind spot measurable and gate-able; `mark_seat_empty_success` is the observe-to-close helper.
 
-- **Low risk.** New script + new systemd units only. No existing files modified.
-  The script reads (never writes) the per-seat ledger and `seat-caps.json`.
-  Systemd timer is non-mandatory — fleet runs fine without it.
-- **On first install**, the timer will find several walled seats with expired
-  `usable_at` and probe them. This is correct — those seats should have been
-  re-probed already.
+## Closes
+
+Closes Nishfleet/fleet-ops#4457
 
 ## Verification
 
 ```
-bash tests/seat-walled-probe.test.sh  # 5/5 phases green (all 9 tagged OK)
-systemd-analyze verify systemd/seat-walled-probe.service systemd/seat-walled-probe.timer
-shellcheck -x bin/seat-walled-probe  # clean (exit 0)
-sgscan  # no new security findings
+$ bash tests/pi-issue-run-empty-success.test.sh
+OK: empty-success: PACKET-VERDICT class=empty-success seat=<np>/<nm> output_bytes=<n> appended to .out
+OK: per-seat empty-success counter written to seat ledger (*.empty-success.json, count=1)
+OK: empty-success is not benched (no empty_run/spawn-fail ledger) — seat produced real text
+OK: reclaim-count NOT reset (claim-loop cap stays tall)
+OK: shipped success (control): NOT classed empty-success, counter unchanged
+OK: empty-success counter accumulates on the seat (count=2 after two runs)
+OK: fleet-ops#4457: SUCCESS-no-PR is classed empty-success (verdict + seat ledger), not benched, shipped control stays clean
+
+$ bash tests/p14-test-listing-gate.test.sh
+OK: p14-test-listing-gate.test.sh: P14 test list is closed
+
+$ bash tests/pi-issue-run-noop-bench.test.sh   # existing suite, not regressed
+OK: fleet-ops#1378/#3531: in-process no-op retry and remote PR success both work
+... (all OK)
+
+$ bash tests/seat-lib.test.sh
+passed=33 failed=0
+
+$ bash tests/ci-standards-audit.test.sh
+OK: ... (all OK)
 ```
 
-run-proof: tests/seat-walled-probe.test.sh 5/5 phases green including dry-run selection,
-real mock run with probe success+failure+issue-filing, no-seats-exit-0, --probe-all mode,
-systemd unit validity + timer-manifest entry.
+run-proof: `bin/pi-issue-run` + `lib/seat-lib.sh` + `tests/pi-issue-run-empty-success.test.sh` + `tests/seat-lib.test.sh` (host); `class=empty-success` literal is written by pi-issue-run at runtime and read by the live measure.sh `waste:` line; sgscan clean (no new findings).
 
-research: official docs (systemd.timer(5), systemd.service(5)) plus a last30days-scale pass for probe-style free-seat recovery patterns; compared polling to a systemd path-unit trigger on the ledger directory (rejected — path unit fires on every write, every few seconds; polling every 15min is simpler and lower CPU) and checked the existing bin/fleet-seat-recovery + census sweep (#1149) — adopted a standalone systemd timer + bash script because it runs on the existing fleet timer pattern with no new machinery, and the census sweep is weekly (too coarse for a 15min probe cadence).
+## move-safety
 
-help-first: ran `systemctl --help`, `systemd-analyze --help`, `pi --help`, and `bin/fleet-seat-recovery --help` — none can read per-seat ledger JSON, compare timestamps against seat-caps.json walled_comeback durations, or file agent-ready issues via fleet-issue-file; the existing tools do not already do this.
-
-organ-heartbeat: systemd/seat-walled-probe.service systemd/seat-walled-probe.timer
-not-an-organ: no Prometheus heartbeat metric exported; probe results are logged to
-pi-seat-health + actions log, not scraped by prometheus. This is a scheduled probe,
-not an organ under fleet-ops#1010.
-
-Closes #1348
+- No new organs, timers, or workflows.
+- No rebuild/masking (existing files only — no new `bin/` file, so no `research:`/`help-first:` gate is triggered).
+- The empty-success path is additive to an existing branch: it never changes exit codes, never benches a seat, never resets the reclaim-count that was already not being reset.
