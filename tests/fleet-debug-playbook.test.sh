@@ -211,6 +211,67 @@ rc=$(run_bin 0)
 ok "grep/rg exit 1 pair is skipped"
 rm -f "$sessions/greps.jsonl"
 
+# --- 7c. two `ls` existence-probe exit 2 (POSIX no-match, fleet-ops#4512) ---
+# `ls <missing-path>` exits 2 with "cannot access ...: No such file or
+# directory". The failed-command doctrine names `ls` as a no-match probe;
+# it must not count as a real debug attempt. Fixtures are written with
+# python3 because the expected text embeds shell single quotes.
+python3 - <<PYEOF
+import json
+lines = [
+  {"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"l1","name":"bash","arguments":{"command":"ls bin/fleet-no-agent-names-check bin/missing-helper 2>&1"}}]}},
+  {"type":"message","message":{"role":"toolResult","toolCallId":"l1","toolName":"bash","isError":True,"content":[{"type":"text","text":"ls: cannot access 'bin/fleet-no-agent-names-check': No such file or directory\nls: cannot access 'bin/missing-helper': No such file or directory\nCommand exited with code 2"}]}},
+  {"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"l2","name":"bash","arguments":{"command":"ls /tmp/also-missing 2>&1"}}]}},
+  {"type":"message","message":{"role":"toolResult","toolCallId":"l2","toolName":"bash","isError":True,"content":[{"type":"text","text":"ls: cannot access '/tmp/also-missing': No such file or directory\nCommand exited with code 2"}]}}
+]
+with open("$sessions/lsprobe.jsonl","w") as f:
+    f.write("\n".join(json.dumps(o) for o in lines) + "\n")
+PYEOF
+touch -d "2026-08-27T00:00:00Z" "$sessions/lsprobe.jsonl" 2>/dev/null; touch -d "2026-08-27T00:00:00Z" "$sessions/compound.jsonl" 2>/dev/null; touch -d "2026-08-27T00:00:00Z" "$sessions/mixederr.jsonl" 2>/dev/null
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "ls no-match pair should exit 0 (got $rc) $(cat "$scratch/err.log")"
+ok "ls exit 2 no-match pair is skipped (fleet-ops#4512)"
+rm -f "$sessions/lsprobe.jsonl"
+
+# --- 7d. compound `ls bin/ | head` + ls probes + one real failure (#4512) ---
+# The real 0509-1279 shape: stdout listing plus ls no-match stderr, exit 2.
+# Only the real failure counts -> below the two-attempt floor -> exit 0.
+python3 - <<PYEOF
+import json
+lines = [
+  {"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"c1","name":"bash","arguments":{"command":"cd /srv/fleet && ls bin/ 2>&1 | head -30; echo ---; ls bin/fleet-no-agent-names-check bin/_dirty-worktree-audit.py 2>&1"}}]}},
+  {"type":"message","message":{"role":"toolResult","toolCallId":"c1","toolName":"bash","isError":True,"content":[{"type":"text","text":"agent-cron-run\n_dirty-worktree-audit.py\n---\nls: cannot access 'bin/fleet-no-agent-names-check': No such file or directory\nls: cannot access 'bin/_dirty-worktree-audit.py': No such file or directory\nCommand exited with code 2"}]}},
+  {"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"c2","name":"bash","arguments":{"command":"false"}}]}},
+  {"type":"message","message":{"role":"toolResult","toolCallId":"c2","toolName":"bash","isError":True,"content":[{"type":"text","text":"Command exited with code 1"}]}}
+]
+with open("$sessions/compound.jsonl","w") as f:
+    f.write("\n".join(json.dumps(o) for o in lines) + "\n")
+PYEOF
+touch -d "2026-08-27T00:00:00Z" "$sessions/lsprobe.jsonl" 2>/dev/null; touch -d "2026-08-27T00:00:00Z" "$sessions/compound.jsonl" 2>/dev/null; touch -d "2026-08-27T00:00:00Z" "$sessions/mixederr.jsonl" 2>/dev/null
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "compound ls-probe + one real failure should exit 0 (got $rc) $(cat "$scratch/err.log")"
+ok "compound ls-probe command counts as one attempt, not two (fleet-ops#4512)"
+rm -f "$sessions/compound.jsonl"
+
+# --- 7e. exit 2 with ls no-match AND a real error is still real --------------
+# Fail-closed guard: the ls exemption must not swallow mixed failures.
+python3 - <<PYEOF
+import json
+lines = [
+  {"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"m1","name":"bash","arguments":{"command":"ls /tmp/x 2>&1; some-thing-fatal"}}]}},
+  {"type":"message","message":{"role":"toolResult","toolCallId":"m1","toolName":"bash","isError":True,"content":[{"type":"text","text":"ls: cannot access '/tmp/x': No such file or directory\nfatal: bad config\nCommand exited with code 2"}]}},
+  {"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"m2","name":"bash","arguments":{"command":"false"}}]}},
+  {"type":"message","message":{"role":"toolResult","toolCallId":"m2","toolName":"bash","isError":True,"content":[{"type":"text","text":"Command exited with code 1"}]}}
+]
+with open("$sessions/mixederr.jsonl","w") as f:
+    f.write("\n".join(json.dumps(o) for o in lines) + "\n")
+PYEOF
+touch -d "2026-08-27T00:00:00Z" "$sessions/lsprobe.jsonl" 2>/dev/null; touch -d "2026-08-27T00:00:00Z" "$sessions/compound.jsonl" 2>/dev/null; touch -d "2026-08-27T00:00:00Z" "$sessions/mixederr.jsonl" 2>/dev/null
+rc=$(run_bin 0)
+[[ "$rc" == "1" ]] || fail "mixed ls-probe + real error pair should exit 1 (got $rc) $(cat "$scratch/err.log")"
+ok "mixed ls-probe + real error still counts as a real attempt"
+rm -f "$sessions/mixederr.jsonl"
+
 # --- 7b. two schema-validation-only isError toolResults (fleet-ops#2210) -----
 # A cheap model sent a malformed tool call (wrong arg name / {} arguments),
 # Pi rejected it with isError=true + "Validation failed for tool", the model

@@ -12,6 +12,10 @@ The playbook may live in assistant text or in a tool argument (a vault
 write / memoryctl capture). Quoted headings in a PR body still count:
 the rule wants the note filed, not that it was unquoted.
 
+grep/rg/diff exit 1 (POSIX no-match) and `ls` existence probes (exit 2,
+"cannot access ...: No such file or directory") are not failed attempts
+(fleet-ops#4512).
+
 Usage:
   python3 lib/debug-playbook.py scan --root DIR [--now ISO]
       [--window-hours 24] [--grace-minutes 20]
@@ -31,6 +35,19 @@ TIMEOUT_RE = re.compile(r"Command timed out", re.I)
 BENIGN_STAGE_RE = re.compile(
     r"(?:^|[;&|\n]|&&|\|\|)\s*(?:sudo\s+)?"
     r"(?:grep|egrep|fgrep|rg|ripgrep|diff|git\s+grep|git\s+diff)\b",
+    re.I,
+)
+# `ls <path>` on a missing operand exits 2 — the same POSIX no-match signal
+# as grep exit 1. The fleet's failed-command doctrine names `ls` (next to
+# grep/rg/diff/which) as a no-match probe, never a failed command.
+LS_NOMATCH_LINE_RE = re.compile(
+    r"^ls: (?:cannot access|cannot open)\s+'[^']*': No such file or directory$",
+    re.I,
+)
+# Any other error marker in the text keeps the attempt real (fail-closed).
+OTHER_ERR_LINE_RE = re.compile(
+    r"traceback|\berror\b|fatal:|failed|permission denied|timed out"
+    r"|cannot open|not found|refused|denied|invalid|unexpected",
     re.I,
 )
 REAL_ERR_RE = re.compile(
@@ -113,13 +130,41 @@ def _exit_code(text: str) -> int | None:
         return None
 
 
+def _ls_nomatch_only(text: str) -> bool:
+    """True when every error line in the text is an `ls` no-match probe.
+
+    Stdout of the successful parts of the compound command is ignored; the
+    harness footer (`Command exited with code N`) is ignored. Any other
+    error marker keeps the attempt real.
+    """
+    saw_nomatch = False
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line == "---" or line.startswith("Command exited with code"):
+            continue
+        if LS_NOMATCH_LINE_RE.match(line):
+            saw_nomatch = True
+            continue
+        # Bare single-token lines are listing noise (e.g. `ls bin/` stdout
+        # can name a helper like fleet-failed-command-flagged); real error
+        # lines carry spaces/colons (`fatal: bad config`).
+        if re.fullmatch(r"[A-Za-z0-9_./@+-]+", line):
+            continue
+        if OTHER_ERR_LINE_RE.search(line):
+            return False
+    return saw_nomatch
+
+
 def is_benign_no_match(command: str, text: str, code: int | None) -> bool:
-    if code != 1:
+    if code not in (1, 2):
         return False
     if TIMEOUT_RE.search(text):
         return False
     if REAL_ERR_RE.search(text):
         return False
+    if code == 2:
+        # grep never exits 2 on a no-match; exit 2 is `ls` territory.
+        return _ls_nomatch_only(text)
     return BENIGN_STAGE_RE.search(command) is not None
 
 

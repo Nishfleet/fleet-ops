@@ -236,6 +236,24 @@ grep -q "issue edit" "$tmp/gh.log" || fail "scenario 9: expected gh issue edit"
 ok "scenario 9: unclaimed-stall reroutes to escalate-senior"
 
 # ---------------------------------------------------------------------------
+# 9b. DEBUG-PLAYBOOK-MISSING keys on session=, not snippet file tokens
+#     (fleet-ops#4512).
+# ---------------------------------------------------------------------------
+cat > "$tmp/empty9b.json" <<'EOF'
+[]
+EOF
+cat > "$tmp/triage9b.md" <<'EOF'
+[2026-08-28T13:30:00Z] [DEBUG-PLAYBOOK-MISSING] session=2026-09-08t07-35-48z-0509-1279-abc123 attempts=4 path=/home/nish/.pi/agent/sessions/pi-issue-0509-1279/s.jsonl snippet=agent-cron-run attest-identity-gate _dirty-worktree-audit.py escalation-daily-sweep
+EOF
+true > "$tmp/filed.jsonl"
+run "$tmp/empty9b.json" "$tmp/triage9b.md" > "$tmp/summary9b.json"
+jq -e '.filed == 1' "$tmp/summary9b.json" >/dev/null \
+    || fail "scenario 9b: expected one filed"
+grep -q "loud/debug-playbook-missing/2026-09-08t07-35-48z-0509-1279-abc123" "$tmp/filed.jsonl" \
+    || fail "scenario 9b: signal must key on the session slug, got: $(cat "$tmp/filed.jsonl")"
+ok "scenario 9b: DEBUG-PLAYBOOK-MISSING keys on session=, not snippet tokens"
+
+# ---------------------------------------------------------------------------
 # 10. Tier1 wiring contract.
 # ---------------------------------------------------------------------------
 grep -q 'detector-queue-reconciler' "$repo_root/bin/fleet-heartbeat-tier1" \

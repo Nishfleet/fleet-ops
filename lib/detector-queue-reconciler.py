@@ -131,6 +131,17 @@ def _extract_signal_key(tag: str, msg: str) -> list[str]:
                 units.append(m.group(1))
         return [_safe_slug(u, 80) for u in dict.fromkeys(units)]
 
+    # fleet-ops#4512: session-scoped alarms key on the session, not on a
+    # file token harvested from the failure snippet. The DEBUG-PLAYBOOK-MISSING
+    # snippet is stdout of the first counted attempt — keying on its file
+    # tokens produced noisy keys like `_dirty-worktree-audit.py` harvested
+    # from an `ls bin/` listing, and observe-to-close could not track the
+    # actual session.
+    if tag == "DEBUG-PLAYBOOK-MISSING":
+        m = re.search(r"\bsession=(\S+)", msg)
+        if m:
+            return [_safe_slug(m.group(1), 80)]
+
     tokens: list[str] = []
     for m in UNIT_EQ_RE.finditer(msg):
         tokens.append(m.group(1))
