@@ -1137,6 +1137,70 @@ rm -f "$state/fleet-ops.state"
   || fail "scenario17n: insufficient_user_quota journal must increment consecutive_wall, got '$(state_field consecutive_wall fleet-ops)'"
 ok "scenario17n: live insufficient-credits / insufficient_user_quota journals are wall-class"
 
+# Scenario 17o: devin/Cursor spawn timeouts + seat-famine fatal lines are
+# wall-class (auditor 2026-09-08). pi-scout@0509 kept exiting 1 on lane
+# faults (devin `spawnSync ... ETIMEDOUT`, `NO USABLE SEAT`, `no healthy
+# seat available`) but these were NOT in PROVIDER_WALL_PATTERNS, so
+# consecutive_wall stayed 0 and the #2468 dedupe gate never opened — each
+# crash wrote a fresh STOP-REASON (fresh hash) and re-summoned the SENIOR
+# AUDITOR per crash on the same root cause. Seat famine / spawn timeouts are
+# structurally equivalent to a provider wall (fleet-ops#2468), so they must
+# wall-class and let the dedupe gate engage.
+write_journalctl_stub_since
+JOURNALCTL="$scratch/bin/journalctl"
+export JOURNALCTL
+{
+    printf 'EXTLOAD-OK extension=packet-verdict mode=print-safe\n'
+    printf 'EXTLOAD-OK extension=seat-health source=after_provider_response\n'
+    printf 'spawnSync /home/nish/.local/bin/devin ETIMEDOUT\n'
+    printf 'PACKET-VERDICT tools=0 class=no-tools\n'
+    printf 'pi-scout@0509.service: Main process exited, code=exited, status=1/FAILURE\n'
+} >"$scratch/journalctl-body.txt"
+export JOURNALCTL_BODY_FILE="$scratch/journalctl-body.txt"
+: >"$gh_log"
+: >"$triage"
+echo '[]' >"$open_issues"
+rm -f "$state/0509.state"
+"$bin" begin 0509 >/dev/null
+"$bin" end 0509 1 >/dev/null
+[[ "$(state_field consecutive_wall 0509)" == "1" ]] \
+  || fail "scenario17o: devin spawnSync ETIMEDOUT must be wall-class, got consecutive_wall='$(state_field consecutive_wall 0509)'"
+ok "scenario17o: devin spawnSync ETIMEDOUT lane fault is wall-class"
+
+# Scenario 17p: seat-famine fatal line (`pi-scout-run ... no healthy seat
+# available`) wall-classes.
+{
+    printf 'EXTLOAD-OK extension=packet-verdict mode=print-safe\n'
+    printf 'pi-scout-run: 0509/scout no healthy seat available\n'
+    printf 'pi-scout@0509.service: Main process exited, code=exited, status=1/FAILURE\n'
+} >"$scratch/journalctl-body.txt"
+rm -f "$state/0509.state"
+"$bin" begin 0509 >/dev/null
+"$bin" end 0509 1 >/dev/null
+[[ "$(state_field consecutive_wall 0509)" == "1" ]] \
+  || fail "scenario17p: 'no healthy seat available' must be wall-class, got consecutive_wall='$(state_field consecutive_wall 0509)'"
+ok "scenario17p: 'no healthy seat available' seat-famine is wall-class"
+
+# Scenario 17q: uppercase `NO USABLE SEAT` pick_seat diagnostic wall-classes
+# (auditor 2026-09-08). The real 10:51Z crash journal carried
+# `pick_seat: NO USABLE SEAT — every allowlisted seat is dead/capped/
+# rate-limited. Refusing to route outside the cap map.` — an all-caps
+# diagnostic. Without the literal it was a non-benign, non-wall line inside
+# the detect window and demoted the whole crash out of wall-class, keeping
+# consecutive_wall at 0 and re-summoning the auditor per crash.
+{
+    printf 'EXTLOAD-OK extension=packet-verdict mode=print-safe\n'
+    printf 'pick_seat: NO USABLE SEAT — every allowlisted seat is dead/capped/rate-limited. Refusing to route outside the cap map.\n'
+    printf 'pi-scout-run: 0509/scout no healthy seat available\n'
+    printf 'pi-scout@0509.service: Main process exited, code=exited, status=1/FAILURE\n'
+} >"$scratch/journalctl-body.txt"
+rm -f "$state/0509.state"
+"$bin" begin 0509 >/dev/null
+"$bin" end 0509 1 >/dev/null
+[[ "$(state_field consecutive_wall 0509)" == "1" ]] \
+  || fail "scenario17q: 'NO USABLE SEAT' must be wall-class, got consecutive_wall='$(state_field consecutive_wall 0509)'"
+ok "scenario17q: 'NO USABLE SEAT' all-caps pick_seat diagnostic is wall-class"
+
 # Reset journalctl stub + state file so subsequent test runs (if any) start clean.
 unset JOURNALCTL JOURNALCTL_BODY_FILE
 rm -f "$scratch/journalctl-body.txt"
