@@ -522,6 +522,29 @@ remove_orphaned_fleet_idea_intake_dropin() {
     fi
 }
 
+# fleet-ops#4470: the fleet-litellm-proxy drop-in override.conf was a
+# hand-placed real file (not a symlink into the repo systemd/ tree) created
+# during the fleet-ops#4181 live install. Its ExecStart clears+re-sets the
+# exact wrapper path the base unit now carries (systemd/fleet-litellm-proxy
+# #4401), so that half is fully superseded; the only other directive,
+# EnvironmentFile=...litellm-master-key.env, is folded into the base unit
+# (fleet-ops#4470) so the repo unit is the single source of truth and this
+# stray override (invisible to a unit-name-only hunt, fleet-ops#2924 / #1548)
+# is deleted. Not new machinery — just a redundant leftover. Remove only the
+# override.conf file, never the whole dir: the repo-sourced debug.conf
+# symlink must stay. Only touch it when this MANIFEST installs into the
+# live user unit dir.
+remove_superseded_litellm_proxy_override_dropin() {
+    local user_systemd="${HOME}/.config/systemd/user"
+    local dropin="${user_systemd}/fleet-litellm-proxy.service.d/override.conf"
+    grep -q " ${user_systemd}/" "$manifest" 2>/dev/null || return 0
+    if [ -e "$dropin" ] || [ -L "$dropin" ]; then
+        rm -f "$dropin"
+        echo "removed superseded fleet-litellm-proxy override.conf drop-in: $dropin (fleet-ops#4470)"
+        user_unit_changed=1
+    fi
+}
+
 # fleet-ops#4146: retire the three dead-man canaries (gh-webhook-canary-
 # deadman, fleet-completion-canary, fleet-loose-ends-canary). Their units
 # and timers are gone from MANIFEST; stop+disable any live leftovers and
@@ -951,6 +974,7 @@ if [ "$do_user_install" = 1 ]; then
   remove_orphaned_fleet_e2e_heartbeat_dropin
   remove_orphaned_fleet_hourly_audit_dropin
   remove_orphaned_fleet_idea_intake_dropin
+  remove_superseded_litellm_proxy_override_dropin
   remove_retired_canaries
   remove_retired_staleness_timer
   remove_retired_provider_spawn_guard

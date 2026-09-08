@@ -62,6 +62,16 @@ Environment=LITELLM_PROXY_CONFIG=%h/.config/fleet-ops/litellm-proxy.yaml
 # scope ci.yml stub (fleet-ops#4398). /usr/bin/env execs the wrapper via its
 # shebang, so the live organ is unchanged.
 ExecStart=/usr/bin/env /home/nish/.local/bin/fleet-litellm-proxy-start
+# Master key for virtual-key minting (operator-owned, generated once per
+# the runbook and stored root-owned/0600 in ~/.config/fleet-ops — the value
+# is NEVER in the repo). The live config's general_settings.master_key is
+# `os.environ/LITELLM_MASTER_KEY`, so the process env must carry the key;
+# load it here from the operator env file. This was hand-placed as a
+# real-file drop-in override during the fleet-ops#4181 live install and
+# hid from the unit-name-only hunt (fleet-ops#2924 / #1548); folded into
+# the base unit so the repo unit is the single source of truth and the
+# stray override can be deleted (fleet-ops#4470).
+EnvironmentFile=/home/nish/.config/fleet-ops/litellm-master-key.env
 # Restart on any failure (import error, bind conflict, upstream crash).
 # 2s delay + the [Unit]-section StartLimit* above bound the storm. The
 # P4 drill proves workers fail loud <60s when the proxy stays down.
