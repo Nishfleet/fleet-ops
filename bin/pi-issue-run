@@ -488,7 +488,16 @@ pi_rc=0
 # fleet-ops#2005: pin this attempt's session file so the debug-playbook gate
 # can evaluate the exact session that just closed.
 session_id="${inst}-$(date -u +%s%N)"
-if timeout --kill-after=30s "${PI_HANG_TIMEOUT_S}s" "$PI_BIN" --session-dir "$session_dir" --session-id "$session_id" --print --provider "$np" --model "$nm" < "$pkt" >"$out_file" 2>"$err_file"; then
+# fleet-ops#4453: Pareto Pass bills prompt tokens; AGENTS.md dumps are the
+# burn. --no-context-files is the trimmed worker prefix (no AGENTS/CLAUDE
+# discovery). --thinking low matches pi-models samplingParams.reasoning_effort
+# (output is 2x input; reasoning tokens bill as output).
+# https://docs.paretoinference.com/api-reference.md
+pi_argv=(--session-dir "$session_dir" --session-id "$session_id" --print --provider "$np" --model "$nm")
+if [[ "$np" == "paretoinference" ]]; then
+    pi_argv+=(--no-context-files --thinking low)
+fi
+if timeout --kill-after=30s "${PI_HANG_TIMEOUT_S}s" "$PI_BIN" "${pi_argv[@]}" < "$pkt" >"$out_file" 2>"$err_file"; then
     rc=0
     pi_rc=0
 else

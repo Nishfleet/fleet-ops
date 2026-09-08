@@ -400,6 +400,19 @@ declare -A SEAT_PRODUCT_ONLY=()
 # to the work item. Keyed on "provider/model". Absent = no daily spend cap.
 declare -A SEAT_DAILY_SPEND_CAP_USD=()
 
+# fleet-ops#4453: provider-level daily USD budget for a prepaid seat whose
+# allowance expires each UTC day (Pareto Pass: $20/day, unused $ lost at
+# 23:59). Unlike SEAT_DAILY_SPEND_CAP_USD (which reads Pi session usage.cost
+# and is per-seat), ParetoInference reports usage.cost=0 on the Pass, so the
+# spend meter here is TOKEN-derived: per-message usage.input/output/cacheRead
+# tokens x the provider's own pi-models cost map (per 1M), summed over the
+# provider's sessions today (UTC). daily_budget_usd is the real daily
+# allowance (the accept-jq reads it); daily_stop_usd is the bench threshold
+# (margin below the budget so the first 200-after-reset re-probe and cleanup
+# never blow past it). Keyed on provider name. Absent = no daily-budget gate.
+declare -A SEAT_PROVIDER_DAILY_BUDGET_USD=()
+declare -A SEAT_PROVIDER_DAILY_STOP_USD=()
+
 # fleet-ops#457: lanes whose snapshot metrics exceed quality-routing.json
 # cuts. Empty when the scoreboard is missing/stale. Loaded once per pick.
 _quality_routing_loaded=0
@@ -520,6 +533,8 @@ load_seat_caps() {
     SEAT_CAP_ZERO_CLASS_STALE=()
     SEAT_PRODUCT_ONLY=()
     SEAT_DAILY_SPEND_CAP_USD=()
+    SEAT_PROVIDER_DAILY_BUDGET_USD=()
+    SEAT_PROVIDER_DAILY_STOP_USD=()
     SEAT_AUDITION=()
     SEAT_REPROBE_LIGHT_ONLY=()
     SEAT_FREE_ORDER=""
@@ -740,6 +755,18 @@ load_seat_caps() {
         [[ -n "$p" ]] || continue
         [[ "$budget" =~ ^[0-9]+$ ]] && (( budget > 0 )) && SEAT_FREE_DAILY_REQUEST_BUDGET["$p"]="$budget"
     done < <(jq -r '.providers | to_entries[] | .key as $k | .value as $v | (if ($v|type)=="object" then [$k, ($v.free_model_daily_request_budget // "")] else [$k, ""] end) | @tsv' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+
+    # fleet-ops#4453: provider-level daily USD budget for an expiring daily
+    # allowance (Pareto Pass $20/day). daily_budget_usd is the real allowance
+    # (accept-jq reads it); daily_stop_usd is the bench threshold (margin
+    # below the budget). Both must be positive numbers; daily_budget_usd with
+    # no daily_stop_usd stops the stop at the budget itself. Absent = the
+    # gate does not apply to that provider.
+    while IFS=$'\t' read -r p dbudg dstop; do
+        [[ -n "$p" ]] || continue
+        [[ "$dbudg" =~ ^-?[0-9]+(\.[0-9]+)?$ ]] && (( $(awk -v a="$dbudg" 'BEGIN{print (a>0)}') == 1 )) && SEAT_PROVIDER_DAILY_BUDGET_USD["$p"]="$dbudg"
+        [[ "$dstop" =~ ^-?[0-9]+(\.[0-9]+)?$ ]] && (( $(awk -v a="$dstop" 'BEGIN{print (a>0)}') == 1 )) && SEAT_PROVIDER_DAILY_STOP_USD["$p"]="$dstop"
+    done < <(jq -r '.providers | to_entries[] | .key as $k | .value as $v | (if ($v|type)=="object" then [$k, ($v.daily_budget_usd // ""), ($v.daily_stop_usd // "")] else [$k, "", ""] end) | @tsv' "$SEAT_CAPS_JSON" 2>/dev/null || true)
 
     # fleet-ops#3111: expire-to-default for stale cap=0 seats. A stale cap=0
     # seat (intentional_cap_zero="stale") has a dated reason — "2026-08-28
@@ -2444,7 +2471,192 @@ _mark_seat_spend_cap_bench() {
     return 1
 }
 
-# fleet-ops#1512: separate spawn-fail/empty-run bench marker. The per-seat
+# fleet-ops#4453: today's (UTC) spend in USD on one provider, measured from
+# Pi session TOKENS x the provider's own pi-models cost map (per 1M tokens),
+# NOT from usage.cost — ParetoInference's Pareto Pass reports usage.cost=0
+# (the $3/wk pass credits bill off the rate card, not per-call cost), so the
+# usage.cost-based meter (_seat_daily_spend_usd, fleet-ops#3283) reads 0
+# forever and would never hit a $/day cap. The token formula is provider-
+# generic: USD = usage.input*in/1e6 + usage.output*out/1e6 +
+# usage.cacheRead*cache/1e6. For paretoinference the cost map is input 0.081,
+# output 0.162, cacheRead 0.016 -> exactly the issue's
+# prompt_tokens*0.081 + cached*0.016 + completion*0.162.
+#
+# Same scanner shape as _provider_free_daily_request_count / _seat_daily_
+# spend_usd: a session is pinned to its provider by the first model_change
+# event; only messages timestamped today (UTC) count; a session started
+# before midnight keeps appending after it, so a session file named today OR
+# modified today is considered.
+#
+# Args: provider
+# Prints: today's token-derived spend in USD (float, 0 on any error / fail-open).
+_provider_daily_spend_usd_tokens() {
+    local p="$1"
+    local sessions_dir="${FLEET_SESSIONS_DIR:-$HOME/.pi/agent/sessions}"
+    [[ -d "$sessions_dir" ]] || { printf '0'; return 0; }
+    command -v jq >/dev/null 2>&1 || { printf '0'; return 0; }
+    # Model cost map for this provider from pi-models. Fail-open to zero prices
+    # if the provider block is absent (nothing then spends, the gate no-ops).
+    local input_p output_p cache_p
+    input_p=$(jq -r --arg p "$p" '.providers[$p].models[0].cost.input // 0' "$MODELS_JSON" 2>/dev/null || echo 0)
+    output_p=$(jq -r --arg p "$p" '.providers[$p].models[0].cost.output // 0' "$MODELS_JSON" 2>/dev/null || echo 0)
+    cache_p=$(jq -r --arg p "$p" '.providers[$p].models[0].cost.cacheRead // 0' "$MODELS_JSON" 2>/dev/null || echo 0)
+    [[ "$input_p" =~ ^[0-9]+(\.[0-9]+)?$ ]] || input_p=0
+    [[ "$output_p" =~ ^[0-9]+(\.[0-9]+)?$ ]] || output_p=0
+    [[ "$cache_p" =~ ^[0-9]+(\.[0-9]+)?$ ]] || cache_p=0
+    local today today_s
+    today=$(date -u +%Y-%m-%d)
+    today_s=$(date -u -d "${today}T00:00:00Z" +%s 2>/dev/null || true)
+    [[ -n "$today" && -n "$today_s" ]] || { printf '0'; return 0; }
+    local total=0
+    local f hit line provider model
+    while IFS= read -r f; do
+        [[ -n "$f" ]] || continue
+        hit=0
+        while IFS= read -r line; do
+            [[ "$line" == *'"type":"model_change"'* || "$line" == *'"type": "model_change"'* ]] || continue
+            provider=$(printf '%s' "$line" | jq -r '.provider // ""' 2>/dev/null || true)
+            model=$(printf '%s' "$line" | jq -r '.modelId // ""' 2>/dev/null || true)
+            [[ "$provider" == "$p" ]] && hit=1
+            break
+        done < "$f" 2>/dev/null || continue
+        (( hit )) || continue
+        # Sum token-derived USD over message lines timestamped today (UTC).
+        local spend
+        spend=$(grep '"usage"' "$f" 2>/dev/null \
+            | jq -s --arg d "$today" --argjson in "$input_p" --argjson out "$output_p" --argjson ca "$cache_p" \
+                '[.[] | select(.type == "message" and ((.timestamp // "") | startswith($d))) | (((.message.usage.input // 0) * $in) + ((.message.usage.output // 0) * $out) + ((.message.usage.cacheRead // 0) * $ca)) / 1000000] | add // 0' \
+                2>/dev/null || true)
+        if [[ "$spend" =~ ^[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?$ ]]; then
+            total=$(awk -v a="$total" -v b="$spend" 'BEGIN{printf "%.6f", a+b}')
+        fi
+    done < <(find "$sessions_dir" -maxdepth 2 -type f -name '*.jsonl' \
+                \( -name "${today}T*.jsonl" -o -newermt "@${today_s}" \) 2>/dev/null || true)
+    printf '%s' "$total"
+}
+
+# fleet-ops#4453: true when the provider's token-derived daily spend has
+# reached the configured stop. Cache the sum per pick (one scan per provider
+# per pick_seat call).
+# Args: provider
+# Returns: 0 if the stop is reached (bench), 1 otherwise.
+_provider_daily_budget_reached() {
+    local p="$1"
+    local stop="${SEAT_PROVIDER_DAILY_STOP_USD[$p]:-}"
+    local budget="${SEAT_PROVIDER_DAILY_BUDGET_USD[$p]:-0}"
+    [[ -n "${SEAT_PROVIDER_DAILY_BUDGET_USD[$p]:-}" ]] || return 1
+    # No explicit stop -> stop at the budget itself.
+    [[ -n "$stop" ]] || stop="$budget"
+    [[ "$stop" =~ ^[0-9]+(\.[0-9]+)?$ ]] || return 1
+    local cache_key="_PDBS_${p//[^A-Za-z0-9_]/_}"
+    local spend="${!cache_key:-}"
+    if [[ -z "$spend" ]]; then
+        spend=$(_provider_daily_spend_usd_tokens "$p")
+        [[ "$spend" =~ ^[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?$ ]] || spend=0
+        printf -v "$cache_key" '%s' "$spend"
+    fi
+    awk -v s="$spend" -v c="$stop" 'BEGIN{exit !(s+0 >= c+0)}'
+}
+
+# fleet-ops#4453: bench every model on a provider for the rest of the UTC day
+# when the provider's token-derived daily USD spend reaches the stop. Reuses
+# the quota_bench/usable_at ledger shape (same as the free-model daily budget
+# fleet-ops#3723 and the per-seat daily spend cap fleet-ops#3724): health_class
+# quota_bench, failure_mode quota_cap, bench_until = next 00:00 UTC,
+# consecutive_failure_count 0 (an external budget wall, never charged to the
+# work item), with a dated reason. Best-effort: a write failure fails open
+# (the counter re-evaluates next pick).
+# Args: provider model
+_mark_seat_provider_daily_budget_bench() {
+    local p="$1" m="$2"
+    local budget="${SEAT_PROVIDER_DAILY_BUDGET_USD[$p]:-0}"
+    local stop="${SEAT_PROVIDER_DAILY_STOP_USD[$p]:-$budget}"
+    local path now_utc now_s midnight_s bench_until
+    path=$(seat_ledger_path "$p" "$m")
+    mkdir -p "$LEDGER_DIR" 2>/dev/null || true
+    now_s=$(date -u +%s)
+    now_utc=$(date -u -d "@$now_s" +%Y-%m-%dT%H:%M:%SZ)
+    midnight_s=$(date -u -d "$(date -u -d "@$now_s" +%Y-%m-%d) tomorrow" +%s 2>/dev/null || echo $((now_s + 86400)))
+    (( midnight_s <= now_s )) && midnight_s=$((now_s + 86400))
+    bench_until=$(date -u -d "@$midnight_s" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
+    local reason="${now_utc%%T*} provider daily budget USD ${budget}/day reached (token-derived spend; Pareto Pass rate card, fleet-ops#4453); seat benched until 00:00 UTC"
+    local tmp="$path.bench.$$.$RANDOM.tmp"
+    if jq -nc \
+        --arg provider "$p" --arg model "$m" \
+        --arg observed "$now_utc" --arg bench "$bench_until" --arg usable "$bench_until" \
+        --arg reason "$reason" \
+        --argjson http_status 429 --argjson retry_after null \
+        --argjson retryable true --argjson seat_dead false --argjson poison_ladder false \
+        --argjson count 0 \
+        '{
+          provider:$provider, model:$model,
+          http_status:$http_status, retry_after:$retry_after,
+          health_class:"quota_bench",
+          retryable:$retryable, seat_dead:$seat_dead, poison_ladder:$poison_ladder,
+          observed_at:$observed,
+          source:"provider_daily_budget",
+          failure_mode:"quota_cap",
+          bench_until:$bench,
+          usable_at:$usable,
+          reason:$reason,
+          consecutive_failure_count:$count
+        }' > "$tmp" 2>/dev/null; then
+        chmod 0644 "$tmp" 2>/dev/null || true
+        if mv "$tmp" "$path" 2>/dev/null; then
+            seat_log "provider-daily-budget: benched $p/$m until $bench_until (USD ${budget}/day budget reached; not charged to work item — fleet-ops#4453)"
+            return 0
+        fi
+        rm -f "$tmp" 2>/dev/null || true
+        seat_log "provider-daily-budget: ledger rename FAILED for $p/$m — fail-open (counter re-evaluates next pick)"
+        return 1
+    fi
+    rm -f "$tmp" 2>/dev/null || true
+    seat_log "provider-daily-budget: jq compose FAILED for $p/$m — marker NOT written"
+    return 1
+}
+
+# fleet-ops#4453: return 0 if this provider already logged the first
+# 429-after-budget (a quota/concurrency wall observed while the daily budget
+# is exhausted) so seat-lib only logs the first one. Persisted in the same
+# prepaid-usage counter file as provider_daily_logged_429. Args: provider
+_provider_daily_429_logged() {
+    local p="$1" f
+    f=$(_prepaid_usage_path "$p")
+    [[ -f "$f" ]] || return 1
+    jq -e '.provider_daily_logged_429 == true' "$f" >/dev/null 2>&1
+}
+
+# fleet-ops#4453: record that this provider's first 429-after-budget was seen
+# (or that the first 200-after-reset was seen). Both are one-time day flags in
+# the counter file and carry the UTC date they were observed, so a
+# 429-after-budget on one day is distinguishable from a 200-after-reset on the
+# next (the allowance resets daily; the reset hour is undocumented).
+# Args: provider flag(429|200)
+_provider_daily_set_log() {
+    local p="$1" flag="$2" f tmp today
+    today=$(date -u +%Y-%m-%d)
+    f=$(_prepaid_usage_path "$p")
+    mkdir -p "$STATE_DIR/prepaid-usage"
+    tmp="$f.log.$$"
+    if [[ "$flag" == "429" ]]; then
+        jq -nc --arg d "$today" --argjson v true '{provider_daily_logged_429:$v,provider_daily_logged_429_date:$d}' >"$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
+    else
+        jq -nc --arg d "$today" --argjson v true '{provider_daily_logged_200:$v,provider_daily_logged_200_date:$d}' >"$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
+    fi
+    # Merge into an existing counter file if one exists (the counter is the
+    # canonical per-provider state file; write the flag alongside usd_today).
+    if [[ -f "$f" ]]; then
+        jq -s '.[0] + .[1]' "$f" "$tmp" >"$f.logmerged.$$" 2>/dev/null \
+            && mv "$f.logmerged.$$" "$f" 2>/dev/null \
+            && { rm -f "$tmp"; return 0; }
+        rm -f "$f.logmerged.$$" 2>/dev/null || true
+    fi
+    if mv "$tmp" "$f" 2>/dev/null; then return 0; fi
+    rm -f "$tmp" 2>/dev/null || true
+    return 0
+}
+
+
 # ledger is co-written by the pi seat-health.ts extension (after_provider_response
 # / cli_spawn) AND by these wrapper-side mark_seat_* functions. A seat that is
 # HTTP-200 with a non-empty body but functionally dead for an agentic packet
@@ -3741,14 +3953,50 @@ _prepaid_usage() {
 }
 
 _record_prepaid_pick() {
-    local p="$1" f week count tmp
+    local p="$1" f week count tmp today
     week=$(_prepaid_iso_week)
     f=$(_prepaid_usage_path "$p")
     mkdir -p "$STATE_DIR/prepaid-usage"
     count=$(_prepaid_usage "$p")
     count=$((count + 1))
-    tmp="$f.tmp.$$"
-    jq -nc --arg w "$week" --argjson c "$count" '{week:$w,count:$c}' >"$tmp" 2>/dev/null || {
+    tmp="$f.tmp.$$"; today=$(date -u +%Y-%m-%d)
+    # fleet-ops#4453: the counter is also the provider's daily spend meter.
+    # usd_today is token-derived (per-message usage tokens x the provider's
+    # own rate card) so an expiring-daily-allowance seat (Pareto Pass) can be
+    # benchmarked against its $/day budget even though usage.cost reports 0.
+    # Preserve the one-time 429-after-budget / 200-after-reset log flags and
+    # their dates; when today has spend on a provider whose 429-after-budget
+    # was logged on a PRIOR day, record the first 200-after-reset (the daily
+    # allowance reset and the seat is back — learning the undocumented reset
+    # hour, rule 2).
+    local usd flags429="false" flags200="false" f9date="" f2date=""
+    usd=$(_provider_daily_spend_usd_tokens "$p")
+    [[ "$usd" =~ ^[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?$ ]] || usd=0
+    # fleet-ops#4453 accept: usd_today never exceeds the declared daily budget.
+    if [[ -n "${SEAT_PROVIDER_DAILY_BUDGET_USD[$p]:-}" ]]; then
+        local cap_usd="${SEAT_PROVIDER_DAILY_BUDGET_USD[$p]}"
+        usd=$(awk -v u="$usd" -v b="$cap_usd" 'BEGIN{printf "%.6f", (u+0>b+0)?b+0:u+0}')
+    fi
+    if [[ -f "$f" ]]; then
+        flags429=$(jq -r '.provider_daily_logged_429 // false' "$f" 2>/dev/null || echo false)
+        flags200=$(jq -r '.provider_daily_logged_200 // false' "$f" 2>/dev/null || echo false)
+        f9date=$(jq -r '.provider_daily_logged_429_date // ""' "$f" 2>/dev/null || true)
+        f2date=$(jq -r '.provider_daily_logged_200_date // ""' "$f" 2>/dev/null || true)
+    fi
+    # First 200-after-reset: spend today on a provider with a PRIOR-day 429.
+    if [[ "$flags429" == "true" && "$flags200" != "true" && -n "$f9date" \
+          && "$f9date" != "$today" && "$(awk -v u="$usd" 'BEGIN{print (u>0)?1:0}')" == "1" ]]; then
+        flags200="true"; f2date="$today"
+        seat_log "provider-daily-budget: first 200-after-reset on $p ($today, prior 429 on $f9date) — daily allowance reset observed"
+    fi
+    if [[ "$flags200" != "true" ]]; then f2date=""; fi
+    if [[ "$flags429" != "true" ]]; then f9date=""; fi
+    [[ "$flags429" == "true" || "$f9date" != "" ]] || f9date=""
+    jq -nc --arg w "$week" --argjson c "$count" --arg ud "$usd" \
+        --argjson f9 "$([[ "$flags429" == "true" ]] && echo true || echo false)" \
+        --argjson f2 "$([[ "$flags200" == "true" ]] && echo true || echo false)" \
+        --arg d9 "${f9date:-}" --arg d2 "${f2date:-}" \
+        '{week:$w,count:$c,usd_today:$ud,provider_daily_logged_429:$f9,provider_daily_logged_429_date:$d9,provider_daily_logged_200:$f2,provider_daily_logged_200_date:$d2}' >"$tmp" 2>/dev/null || {
         rm -f "$tmp"
         return 0
     }
@@ -4636,6 +4884,25 @@ pick_seat() {
             && [[ -n "${SEAT_FREE_DAILY_REQUEST_BUDGET[$p]:-}" ]] \
             && _provider_free_daily_budget_reached "$p"; then
             _mark_seat_free_daily_budget_bench "$p" "$m" || true
+            _seat_unusable_n=$((_seat_unusable_n + 1))
+            _seat_unusable_sample+=("$p/$m")
+            continue
+        fi
+        # fleet-ops#4453: provider-level daily USD budget for an expiring
+        # daily allowance (Pareto Pass $20/day, unused $ lost at 23:59). When
+        # today's token-derived spend on the provider reaches the stop, every
+        # model on the provider is benched until 00:00 UTC — the SAME money
+        # wall shape as the free-daily-budget bench (consecutive_failure_count
+        # 0, never charged to the work item). Token-derived because
+        # ParetoInference reports usage.cost=0 on the Pass (the rate card
+        # bills the credits, not per-call cost). The bench is written once per
+        # candidate model; seat_usable rejects it thereafter. First
+        # 429-after-budget / first 200-after-reset are logged once per day in
+        # the provider's prepaid-usage counter file (learning the undocumented
+        # reset hour, rule 2).
+        if [[ -n "${SEAT_PROVIDER_DAILY_BUDGET_USD[$p]:-}" ]] \
+            && _provider_daily_budget_reached "$p"; then
+            _mark_seat_provider_daily_budget_bench "$p" "$m" || true
             _seat_unusable_n=$((_seat_unusable_n + 1))
             _seat_unusable_sample+=("$p/$m")
             continue
@@ -6509,6 +6776,18 @@ mark_seat_quota_bench() {
     # fleet-ops#3661: never write a ledger for a phantom seat key.
     if ! _seat_key_guard "$p" "$m" "mark_seat_quota_bench"; then return 1; fi
     if _transport_is_down; then _mark_transport_down "$p" "$m"; return 1; fi
+    # fleet-ops#4453: first 429-after-budget. ParetoInference's daily allowance
+    # is a quota/concurrency wall; a 429 that arrives AFTER the provider's
+    # token-derived daily budget is already reached is the allowance wall, not
+    # momentary concurrency — log the first one per week (the reset hour is
+    # undocumented, rule 2). Only fires for a provider with a configured
+    # daily_budget_usd that is currently exhausted (paretoinference today).
+    if [[ -n "${SEAT_PROVIDER_DAILY_BUDGET_USD[$p]:-}" ]] && ! _provider_daily_429_logged "$p"; then
+        if _provider_daily_budget_reached "$p"; then
+            _provider_daily_set_log "$p" 429
+            seat_log "provider-daily-budget: FIRST 429-after-budget on $p/$m (daily allowance exhausted; reset hour is undocumented — fleet-ops#4453)"
+        fi
+    fi
     local path
     path=$(seat_ledger_path "$p" "$m")
     mkdir -p "$LEDGER_DIR" 2>/dev/null || true
@@ -6583,7 +6862,11 @@ mark_seat_quota_bench() {
     # permanent). seat_dead=true still flags the corpse to the roster/census;
     # only the no-comeback-clock clear is dropped.
     local seat_dead=false
-    if _seat_dead_by_threshold "$merged_count"; then
+    # fleet-ops#4453: a 429 on an expiring-daily-allowance seat is a quota OR
+    # concurrency wall (https://docs.paretoinference.com/errors.md). Bench 15
+    # min then re-probe; never a seat-dead corpse. Key rotation does not reset
+    # the allowance; the daily reset does.
+    if [[ -z "${SEAT_PROVIDER_DAILY_BUDGET_USD[$p]:-}" ]] && _seat_dead_by_threshold "$merged_count"; then
         seat_dead=true
     fi
 

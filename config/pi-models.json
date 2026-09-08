@@ -840,6 +840,76 @@
       },
       "_comment_4329": "fleet-ops#4329: alibaba-coding's models registration is durable here. install.sh copy-installs pi-models.json verbatim (the unknown-provider merge exists only for seat-caps.json), so without this row a deploy would silently drop the provider from the live models.json — the same trap #4262 caught for runinfra/crof/entrim. Landed verbatim from the live ~/.pi/agent/models.json (smoke-tested SEAT-OK 2026-09-07). compat.supportsDeveloperRole=false (the endpoint 400s on Pi's developer role); thinking on for the reasoning models, enable_thinking=false for qwen3.8-flash + deepseek-v4-flash-0731."
     },
+    "paretoinference": {
+      "name": "Pareto Inference (Pareto Pass)",
+      "baseUrl": "https://api.paretoinference.com/v1",
+      "api": "openai-completions",
+      "apiKey": "!cut -d= -f2 /home/nish/fleet2/etc/paretoinference.env",
+      "models": [
+        {
+          "id": "deepseek/deepseek-v4-flash",
+          "name": "DeepSeek V4 Flash via ParetoInference",
+          "contextWindow": 1000000,
+          "maxTokens": 8192,
+          "reasoning": false,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0.081,
+            "output": 0.162,
+            "cacheRead": 0.016,
+            "cacheWrite": 0
+          },
+          "samplingParams": {
+            "reasoning_effort": "low"
+          }
+        },
+        {
+          "id": "z-ai/glm-5.3-flash",
+          "name": "GLM 5.3 Flash via ParetoInference",
+          "contextWindow": 1000000,
+          "maxTokens": 8192,
+          "reasoning": false,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0.075,
+            "output": 0.25,
+            "cacheRead": 0.015,
+            "cacheWrite": 0
+          },
+          "samplingParams": {
+            "reasoning_effort": "low"
+          }
+        },
+        {
+          "id": "z-ai/glm-5.3",
+          "name": "GLM 5.3 via ParetoInference (NOT a worker, cap 0)",
+          "contextWindow": 256000,
+          "maxTokens": 8192,
+          "reasoning": true,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 2.8,
+            "output": 8.8,
+            "cacheRead": 0.52,
+            "cacheWrite": 0
+          },
+          "samplingParams": {
+            "reasoning_effort": "low"
+          }
+        }
+      ],
+      "compat": {
+        "maxTokensField": "max_tokens",
+        "supportsReasoningEffort": true
+      },
+      "_comment_4453": "fleet-ops#4453: Pareto Inference Pareto Pass (https://docs.paretoinference.com/, https://docs.paretoinference.com/api-reference.md, base https://api.paretoinference.com/v1, OpenAI chat-completions, Authorization: Bearer). $3/week, up to $20 of model usage each day. Rate card (https://docs.paretoinference.com/pareto-pass.md) per 1M tokens: deepseek-v4-flash $0.081 in / $0.162 out / $0.016 cached; glm-5.3-flash $0.075 / $0.25 / $0.015; glm-5.3 $2.80 / $8.80 / $0.52. Live probe 2026-09-08T04:04Z: both flash models HTTP 200; usage carries cost, cost_details, cached_tokens, reasoning_tokens. compat.maxTokensField=max_tokens because the API 400s if both max_tokens and max_completion_tokens are sent (api-reference.md). reasoning_effort:low for workers (output is 2x input price; reasoning tokens bill as output), max_tokens 8192. glm-5.3 is registered (so enumerate_seats emits it) but capped at 0 in seat-caps.json — 35x the flash price, never a worker. pi-issue-run passes --no-context-files --thinking low on this provider (context is the cost; no AGENTS.md dump). Session call ceiling 40: pi has no --max-turns (mechanism-impossible as a hard kill without a new watcher); hang-watchdog + first-20-sessions prompt_tokens/call measurement is the observe path."
+    },
     "litellm": {
       "name": "LiteLLM proxy (fleet seat routing, fleet-ops#4130 P2+P3a)",
       "baseUrl": "http://127.0.0.1:4000",
