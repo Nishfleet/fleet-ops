@@ -87,10 +87,19 @@ if [[ "${PI_SEAT_SOURCE:-seat-lib}" == "litellm" ]]; then
 else
     seat=$(pick_seat "" "" "$need_capable" "" "$difficulty" "$scout_privacy" || true)
 fi
+# A saturated seat pool is INFRASTRUCTURE, not a scout failure: the claim
+# workers won the seat race (intake bursts and the #4450 low-water trigger
+# fire on the same tick). Exiting 1 made systemd mark pi-scout@%i FAILED and
+# fired OnFailure=pi-scout-repair@%i, which then failed the same way — a
+# repair hop for a non-fault, plus a failed unit on every guardrail sweep.
+# 75 (EX_TEMPFAIL) is a clean SKIP: SuccessExitStatus=75 in pi-scout@.service
+# keeps the unit green, and scout-futility-check treats 75 as neither dry nor
+# wall. The next intake tick retries once a seat frees.
+readonly SEAT_SKIP_EXIT=75
 if [[ -z "$seat" ]]; then
-    seat_log "pi-scout-run: $repo/$prompt_name no healthy seat available"
-    echo "pi-scout-run: $repo/$prompt_name no healthy seat available" >&2
-    exit 1
+    seat_log "pi-scout-run: $repo/$prompt_name SKIP — no healthy seat available (saturated pool; exit ${SEAT_SKIP_EXIT})"
+    echo "pi-scout-run: $repo/$prompt_name no healthy seat available — skipping (exit ${SEAT_SKIP_EXIT})" >&2
+    exit "$SEAT_SKIP_EXIT"
 fi
 
 np=$(printf '%s' "$seat" | cut -f1)

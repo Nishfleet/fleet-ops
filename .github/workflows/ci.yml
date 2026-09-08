@@ -214,6 +214,13 @@ jobs:
         # listed here by the orchestrator because the worker token lacks workflow scope.
         bash tests/audition-lane.test.sh
         bash tests/pi-audit-tally-epic-guard.test.sh
+        # A saturated seat pool is infrastructure, not a scout outcome: the
+        # no-seat path exits the reserved SKIP code 75 so pi-scout@%i stays
+        # green instead of failing and summoning pi-scout-repair@%i for a
+        # non-fault. Drills the dry-burn trap (SuccessExitStatus makes
+        # SERVICE_RESULT "success") and the wall-streak masking, plus both
+        # control paths. Offline (stubbed gh, real helper).
+        bash tests/pi-scout-seat-skip.test.sh
         # fleet-ops#70: former required jobs, now inside the batched caller.
         # TODO(fleet-ops): add the fleet's orchestration rules config from
         # Nishfleet/siterep-public .semgrep/no-hand-built-orchestration.yml at an

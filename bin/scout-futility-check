@@ -572,10 +572,21 @@ cmd_begin() {
     log "begin: $repo ready_before=$before runway_before=${before_runway}h source=${before_source} last_run_epoch=$now_s"
 }
 
+# Reserved exit code shared with bin/pi-scout-run: "no usable seat" SKIP.
+readonly SEAT_SKIP_EXIT=75
+
 resolve_exit() {
     local arg="${1:-}"
     if is_uint "$arg"; then
         printf '%s\n' "$arg"
+        return 0
+    fi
+    # SuccessExitStatus=75 makes SERVICE_RESULT "success" for the seat SKIP,
+    # so EXIT_STATUS must be inspected FIRST — otherwise a saturated pool
+    # would look like a green run that filed nothing and burn consecutive_dry
+    # until SCOUT-FUTILITY parked the scout.
+    if [[ "${EXIT_STATUS:-}" == "$SEAT_SKIP_EXIT" ]]; then
+        printf '%s\n' "$SEAT_SKIP_EXIT"
         return 0
     fi
     if [[ "${SERVICE_RESULT:-}" == "success" ]]; then
@@ -677,7 +688,18 @@ cmd_end() {
         filed=$(filed_since_begin "$repo" "$begin_at")
     fi
     is_uint "$filed" || filed=0
-    if [[ "$exit_code" != "0" ]]; then
+    if [[ "$exit_code" == "$SEAT_SKIP_EXIT" ]]; then
+        # Seat SKIP: no usable seat because the claim workers saturated the
+        # pool. Infrastructure, not a scout outcome — so it is neither dry
+        # (it never ran, filing nothing proves nothing) nor a provider wall
+        # (nothing was refused upstream). Leave BOTH counters untouched:
+        # incrementing dry would park a healthy scout, and resetting wall to
+        # 0 would mask a genuine provider-wall streak that a saturation tick
+        # happened to interleave with.
+        next_dry=$dry
+        next_wall=$wall_count
+        log "end: $repo exit=$exit_code seat-skip (no usable seat, saturated pool) — leave consecutive_dry=$dry, consecutive_wall=$wall_count"
+    elif [[ "$exit_code" != "0" ]]; then
         # Crash path (fleet-ops#2468): classify the crash by scanning the
         # scout unit's error-priority journal. ALL non-empty error lines
         # matching a provider-wall pattern => wall-class. Increment the

@@ -21,5 +21,10 @@ ExecStartPre=-/bin/bash -c 'exec /home/nish/.local/bin/scout-futility-check begi
 # /bin/bash -c exec keeps systemd-analyze verify from needing a new CI stub
 # (same shape as stop-escalation.service / unit-escalation@.service).
 ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/pi-scout-run %i scout'
+# 75 = pi-scout-run's "no usable seat" SKIP (saturated pool: the claim workers
+# won the seat race). Without this the unit went FAILED and OnFailure summoned
+# pi-scout-repair@%i for a non-fault, which failed identically. Not a
+# SuccessExitStatus fudge of real errors: only this one reserved code.
+SuccessExitStatus=75
 ExecStopPost=-/bin/bash -c 'exec /home/nish/.local/bin/scout-futility-check end %i'
 TimeoutStartSec=3600

@@ -109,7 +109,14 @@ set +e
 out=$("$bin" fleet-ops scout 2>"$scratch/err.log")
 rc=$?
 set -e
-[[ "$rc" == "1" ]] || fail "no seat: wrapper must exit 1, got $rc"
+# The contract this pins is "never run the LLM without a seat" — not "fail the
+# unit". It is now the reserved SKIP code 75 (EX_TEMPFAIL): a saturated pool is
+# infrastructure (the claim workers won the seat race), and exiting 1 made
+# systemd mark pi-scout@%i FAILED and fire OnFailure=pi-scout-repair@%i, which
+# failed the same way — a repair hop for a non-fault. pi-scout@.service carries
+# SuccessExitStatus=75; tests/pi-scout-seat-skip.test.sh drills the
+# classification (neither dry nor provider-wall).
+[[ "$rc" == "75" ]] || fail "no seat: wrapper must exit 75 (reserved SKIP), got $rc"
 grep -q 'no healthy seat available' "$scratch/err.log" \
   || fail "no seat: wrapper must fail loud on stderr, got: $(cat "$scratch/err.log")"
 ok "no healthy seat -> wrapper exits 1 (fail loud)"
