@@ -26,13 +26,14 @@ fi
 # fleet-merged-pr-close). The body is scrubbed BEFORE any matching — refs
 # that can never name a parent issue of the scanned repo are removed:
 #   0. cross-repo qualified refs — `owner/repo#N`, `owner/repo #N` and
-#      the short `repo#N` form, when the repo is neither the scanned repo
-#      (Nishfleet/fleet-ops) nor its short name (fleet-ops).
-#      `Nishfleet/fleet-ops#N` and `fleet-ops#N` survive the scrub
-#   0b. PR-marked refs — `PR #N`, `pull #N`, `pull request #N`: a PR
-#      reference is never an issue parent. "Companion to
-#      Nishfleet/siterep-public PR #36" thus leaves no refs and resolves
-#      no bogus fleet-ops parent #36
+#      the short `repo#N` form, unless the ref is exactly the scanned repo
+#      `Nishfleet/fleet-ops#N` or its short name `fleet-ops#N`. The keep is
+#      the WHOLE token, never a path segment — an other-owner
+#      `acme/fleet-ops#N` is still scrubbed
+#   0b. PR-marked refs — `PR #N`/`PRs #N`, `pull #N`/`pulls #N`, `pull
+#      request(s) #N`, `pull-request(s) #N` (any case): a PR reference is
+#      never an issue parent. "Companion to Nishfleet/siterep-public PR
+#      #36" thus leaves no refs and resolves no bogus fleet-ops parent #36
 # Then, first match wins on the SCRUBBED body:
 #   1. explicit delivery trailer in the body — `Closes|Fixes|Resolves
 #      #N`, `Closed #N`, with an optional `<repo>#N` /
@@ -109,19 +110,22 @@ first_num() {
 #     (Nishfleet/fleet-ops) nor its short name (fleet-ops). Bare prose
 #     `word #N` refs (space between word and #N) are NOT touched, so
 #     `Fixes #595` trailers and plain `#N` mentions survive
-#   - PR-marked refs: `PR #N`, `pull #N`, `pull request #N` — a PR
-#     reference is never an issue parent
-# Same-repo qualifiers (`Nishfleet/fleet-ops#N`, `fleet-ops#N`) survive.
-# Sed only, no regex lookahead: the keep-forms are parked on @-wrapped
-# sentinels first, the removals run, then the sentinels are restored.
+#   - PR-marked refs: `PR #N`/`PRs #N`, `pull #N`/`pulls #N`, `pull
+#     request(s) #N`, `pull-request(s) #N` — a PR reference is never an
+#     issue parent
+# Same-repo qualifiers survive only as whole tokens: `Nishfleet/fleet-ops#N`
+# (full form) and `fleet-ops#N` (short form); `acme/fleet-ops#N` is a
+# cross-repo ref and is scrubbed. Sed only, no regex lookahead: the
+# keep-forms are parked on @-wrapped sentinels first, the removals run,
+# then the sentinels are restored.
 scrub_body() {
     local text="$1" out
     out="$(printf '%s\n' "$text" | sed -E \
-        -e 's%Nishfleet/fleet-ops%@@FULLKEEP@@%g' \
-        -e 's%fleet-ops%@@SHORTKEEP@@%g' \
+        -e 's%([^A-Za-z0-9_.-/]|^)Nishfleet/fleet-ops%\1@@FULLKEEP@@%g' \
+        -e 's%([^A-Za-z0-9_.-/]|^)fleet-ops%\1@@SHORTKEEP@@%g' \
         -e 's%(^|[^0-9A-Za-z])[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+[[:space:]]*#[1-9][0-9]*([^0-9A-Za-z]|$)%\1\2%g' \
         -e 's%(^|[^0-9A-Za-z])[A-Za-z0-9_.-]+#[1-9][0-9]*([^0-9A-Za-z]|$)%\1\2%g' \
-        -e 's%(^|[^0-9A-Za-z])(pr|pull-request|pull[[:space:]]+request|pull)[[:space:]]*#[1-9][0-9]*([^0-9A-Za-z]|$)%\1\3%gi' \
+        -e 's%(^|[^0-9A-Za-z])(prs?|pulls?|pull[[:space:]-]requests?)[[:space:]]*#[1-9][0-9]*([^0-9A-Za-z]|$)%\1\3%gi' \
         -e 's%@@FULLKEEP@@%Nishfleet/fleet-ops%g' \
         -e 's%@@SHORTKEEP@@%fleet-ops%g')"
     printf '%s' "$out"
@@ -155,8 +159,8 @@ log "dead-conflicting-PR scan starting (repo=$REPO, gh=$GH)"
 
 # Open PRs, one fetch. A non-zero rc or empty output is an infra failure —
 # fail closed so a broken call can never read as a clean sweep.
-if ! prs_json=$("$GH" pr list -R "$REPO" --state open \
-    --json number,title,headRefName,mergeable,body 2>&1); then
+if ! prs_json=$("$GH" pr list -R "$REPO" --state open --limit 300 \
+    --json number,title,headRefName,mergeable,body 2>/dev/null); then
     loud "DEAD-PR-GH" "$REPO: gh pr list failed"
     exit 2
 fi
@@ -171,6 +175,9 @@ fi
 
 scanned=0
 dead=0
+# mergeable is null while GitHub computes it asynchronously — count it,
+# never classify it (a null-mergeable PR is not CONFLICTING). Log-only.
+unknown_mergeable="$(printf '%s' "$prs_json" | jq '[.[] | select(.mergeable == null)] | length')"
 
 while IFS= read -r pr; do
     [ -z "$pr" ] && continue
@@ -186,7 +193,7 @@ while IFS= read -r pr; do
         continue
     fi
 
-    if ! issue_json=$("$GH" issue view "$parent" -R "$REPO" --json state,title 2>&1); then
+    if ! issue_json=$("$GH" issue view "$parent" -R "$REPO" --json state,title 2>/dev/null); then
         loud "DEAD-PR-GH" "$REPO: gh issue view #$parent failed for PR #$num"
         exit 2
     fi
@@ -212,7 +219,7 @@ while IFS= read -r pr; do
 done < <(printf '%s' "$prs_json" | jq -c '.[] | select(.mergeable == "CONFLICTING")')
 
 printf 'dead_conflicting_prs=%s\n' "$dead"
-log "scan done: conflicting=$scanned dead=$dead"
+log "scan done: conflicting=$scanned unknown-mergeable=$unknown_mergeable dead=$dead"
 if [ "$dead" -gt 0 ]; then
     exit 1
 fi

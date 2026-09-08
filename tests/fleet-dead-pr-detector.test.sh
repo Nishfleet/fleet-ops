@@ -14,7 +14,8 @@
 #          and the short `repo#N` form, when the repo is neither the
 #          scanned repo (Nishfleet/fleet-ops) nor its short name
 #          (fleet-ops). `Nishfleet/fleet-ops#N` / `fleet-ops#N` survive
-#      0b. PR-marked refs — `PR #N`, `pull #N`, `pull request #N` (a PR
+#      0b. PR-marked refs — `PR #N`/`PRs #N`, `pull #N`/`pulls #N`,
+#          `pull request(s) #N`, `pull-request(s) #N` (any case; a PR
 #          reference is never an issue parent)
 #   1. explicit delivery trailer — `Closes|Fixes|Resolves #N`, `Closed
 #      #N`, with an optional `<repo>#N` / `<owner>/<repo>#N` prefix
@@ -253,6 +254,22 @@ grep -q '^rc=2$' <<<"$rc" || fail "gh missing must exit rc 2: $rc"
 grep -q 'gh missing' "$scratch/stderr.log" || fail "gh missing must LOUD on stderr: $(cat "$scratch/stderr.log")"
 grep -q 'dead_conflicting_prs' "$scratch/stdout.log" && fail "gh missing must not print a measure: $(cat "$scratch/stdout.log")"
 ok "case13: GH=/nonexistent -> exit 2, loud on stderr"
+
+# --- Case 14 (EXACT-NUMBER PIN): `#11352` must resolve issue 11352,
+# never its substring 1135. Conflicting PR body "related ticket #11352"
+# with 11352 OPEN and 1135 CLOSED: if resolution matched 1135 the parent
+# would be CLOSED and the PR dead-flagged — this case fails the detector
+# the moment it touches 1135. ---
+set_fixtures \
+  '[{"number":77,"title":"feat: exact-number pin","headRefName":"fix/exactnum","mergeable":"CONFLICTING","body":"related ticket #11352"}]' \
+  1135:CLOSED 11352:OPEN
+rc=$(run)
+grep -q '^rc=0$' <<<"$rc" || fail "exact-number pin: parent must be 11352 (OPEN), not 1135 (CLOSED): $rc"
+[ "$(last_measure)" = "dead_conflicting_prs=0" ] || fail "exact-number pin: measure must be 0: $(last_measure)"
+grep -q 'issue view 11352' "$scratch/gh.log" || fail "exact-number pin: must query issue 11352: $(cat "$scratch/gh.log")"
+grep -Eq 'issue view 1135([^0-9]|$)' "$scratch/gh.log" && fail "exact-number pin: issue 1135 must never be viewed: $(cat "$scratch/gh.log")"
+grep -q 'still live' "$scratch/stderr.log" || fail "exact-number pin: OPEN parent must be logged as still live: $(cat "$scratch/stderr.log")"
+ok "case14 (exact-number pin): #11352 -> parent 11352 (OPEN), never 1135; clean, exit 0"
 
 # --- No agent names anywhere in detector output ---
 grep -qiE '(^|[[:space:]])(by|with|via|from|using|through|used)[[:space:]]+(the[[:space:]]+)?(claude|codex|devin|cursor|grok|openai|anthropic|deepseek|minimax|copilot|gemini|opus|chatgpt|fable|luna|sol)([^a-z]|$)' \
