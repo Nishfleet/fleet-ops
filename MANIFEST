@@ -1095,3 +1095,8 @@ libexec/fleet-litellm-health-canary.py /home/nish/.local/libexec/fleet-litellm-h
 bin/fleet-litellm-key /home/nish/.local/bin/fleet-litellm-key
 systemd/fleet-litellm-health-canary.service /home/nish/.config/systemd/user/fleet-litellm-health-canary.service
 systemd/fleet-litellm-health-canary.timer /home/nish/.config/systemd/user/fleet-litellm-health-canary.timer
+# fleet-ops#4439: health-canary pg-socket drop-in was a real file under the
+# live drop-in dir (blind-audit fleet-ops#2924 / #1548). Absorb so deploy
+# symlinks it; pure Environment override pointing the postgres probe at the
+# user-level socket dir, not new machinery. fleet-ops#4130.
+systemd/fleet-litellm-health-canary.service.d/10-pg-socket.conf /home/nish/.config/systemd/user/fleet-litellm-health-canary.service.d/10-pg-socket.conf

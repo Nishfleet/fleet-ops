@@ -105,6 +105,20 @@ for f in \
 done
 ok "4: MANIFEST installs every new LiteLLM file"
 
+# --- 4c: the health-canary pg-socket drop-in is repo-sourced (fleet-ops#4439)
+# It was a real file under the live drop-in dir, invisible to the
+# unit-name-only hunt (fleet-ops#2924 / #1548), and is now absorbed into
+# systemd/ + MANIFEST so deploy symlinks it and the hunt stays clean. It is a
+# pure [Service] Environment override pointing the postgres probe at the
+# fleet-owned user-level socket dir (fleet-ops#4130), not new machinery.
+dropin="$repo_root/systemd/fleet-litellm-health-canary.service.d/10-pg-socket.conf"
+[[ -f "$dropin" ]] || fail "4c: repo drop-in missing: $dropin"
+grep -q "^systemd/fleet-litellm-health-canary.service.d/10-pg-socket.conf " "$manifest" \
+    || fail "4c: MANIFEST missing install line for the pg-socket drop-in"
+grep -q 'FLEET_LITELLM_PG_HOST=/home/nish/.local/share/fleet-litellm-postgres/run' "$dropin" \
+    || fail "4c: pg-socket drop-in must set the fleet-owned user-level socket dir"
+ok "4c: health-canary pg-socket drop-in is repo-sourced + in MANIFEST"
+
 # --- 4b: the repo router config is a SHAPE, never an install target
 # (fleet-ops#4174 reopen). The live ~/.config/fleet-ops/litellm-proxy.yaml
 # holds the operator's real baseUrls and seat set; installing the repo copy

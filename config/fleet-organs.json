@@ -269,7 +269,8 @@
       "files": [
         "libexec/fleet-litellm-health-canary.py",
         "systemd/fleet-litellm-health-canary.service",
-        "systemd/fleet-litellm-health-canary.timer"
+        "systemd/fleet-litellm-health-canary.timer",
+        "systemd/fleet-litellm-health-canary.service.d/10-pg-socket.conf"
       ]
     }
   ]
