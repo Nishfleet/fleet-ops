@@ -53,6 +53,11 @@ JSON
 echo '[{"number": 700}]' > "$scratch/reverts.json"
 
 cat >"$scratch/journal.log" <<'JRNL'
+# Lead line so journal_start (17:47:00Z) precedes every mergedAt: a merge
+# that lands before journal coverage (m < journal_start) is UNMEASURABLE
+# (its block-context is lost to the journal boundary) and must not enter
+# the latency p95 (see 4c boundary test; fleet-ops#3136/#2758).
+Sep 02 17:47:00 host fleet-deploy-check[0]: [2026-09-02T17:47:00Z] [fleet-deploy-check] origin/main unchanged (HEAD=zzz) — nothing to do
 Sep 02 17:50:00 host fleet-deploy-check[1]: [2026-09-02T17:50:00Z] [fleet-deploy-check] origin/main moved aaa1 -> bbbb2 — invoking sanctioned deploy
 Sep 02 17:50:01 host systemd[1038]: Finished fleet-deploy-check.service.
 Sep 02 17:53:20 host fleet-deploy-check[2]: [2026-09-02T17:53:20Z] [fleet-deploy-check] origin/main moved bbbb2 -> cccc3 — invoking sanctioned deploy
@@ -221,6 +226,32 @@ env_c["FLEET_DQ_CACHE_DIR"] = f"{scratch}/cache-idle"
 p_c = m.compute(env_c)
 near(p_c["blocked_duration"], 0.0, 1e-4)
 print("OK: idle-tick 'nothing to do' ends the blocked episode (fleet-ops#3136)")
+
+# 4c. journal-boundary: a merge that landed before journal coverage began
+#     (mergedAt < journal_start) is unmeasurable — its DEPLOY-BLOCKED
+#     context, if any, is lost to the journal rotation boundary. Counting
+#     its full wait as deploy latency leaks DeployBlockedStuck into the
+#     p95 and keeps DeploymentLatencyHigh red for the whole window (live
+#     2026-09-08: 8 pre-journal Sep-04 merges leaked 1860-4436s waits;
+#     p95 3865 -> 133 once excluded; fleet-ops#3136/#2758).
+pathlib.Path(f"{scratch}/boundary-journal.log").write_text(
+    "[2026-09-02T17:54:00Z] [fleet-deploy-check] origin/main unchanged (HEAD=z) -- nothing to do\n"
+    "[2026-09-02T17:54:05Z] [fleet-deploy-check] origin/main moved a -> b -- invoking sanctioned deploy\n"
+)
+pathlib.Path(f"{scratch}/boundary-merged.json").write_text(json.dumps([
+    {"number": 20, "mergedAt": "2026-09-02T17:06:00Z"},  # before journal_start 17:54 -> excluded
+    {"number": 21, "mergedAt": "2026-09-02T17:54:05Z"},  # within coverage -> paired with the green
+]))
+env_b = dict(env)
+env_b["FLEET_DQ_MERGED"] = f"{scratch}/boundary-merged.json"
+env_b["FLEET_DQ_JOURNAL"] = f"{scratch}/boundary-journal.log"
+env_b["FLEET_DQ_CACHE_DIR"] = f"{scratch}/cache-boundary"
+p_b = m.compute(env_b)
+# Only merge 21 (a clean, within-coverage merge with a fast green) counts;
+# merge 20 predates journal coverage and must not add a 74min hangover.
+assert p_b["latency_samples"] == 1, p_b["latency_samples"]
+near(p_b["latency_p95"], 0.0)
+print("OK: pre-journal merge excluded from latency p95 (not measurable, fleet-ops#3136)")
 PY
 ok "compute() deterministic fixture math"
 
