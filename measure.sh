@@ -106,3 +106,17 @@ print(
     )
 )
 PY
+
+# --- questions flame: for-nish / oldest / in-conference / unfiled -----------
+# fleet-ops#4476 (part 3): the escalation-matrix side of the judge header.
+# Sourced (not run) from lib/fleet-questions.sh; fails closed to real zeros,
+# an unreachable store stays a real zero (gh calls are guarded). The unfiled
+# scan + auto-file happen here too (the detector lives in measure.sh, so
+# `bash measure.sh | grep -E '^questions:'` proves both the line and the
+# scan).
+if [ -f "$repo_root/lib/fleet-questions.sh" ]; then
+    # shellcheck disable=SC1090,SC1091
+    source "$repo_root/lib/fleet-questions.sh"
+    fleet_questions_line
+fi
+

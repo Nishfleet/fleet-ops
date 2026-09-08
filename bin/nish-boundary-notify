@@ -21,6 +21,16 @@ FILE="$AS/NISH-ESCALATIONS.md"
 SEEN="$AS/lanes/nish-boundary-notify.seen"
 CLASSES='MONEY-BOUNDARY|LEGAL-BOUNDARY|PRODUCT-DIRECTION|CUSTOMER-DATA|CREDENTIAL-BOUNDARY|ONE-SHOT-PUBLIC-ACTION'
 
+## ---- Subcommands (fleet-ops#4476 part 3) -----------------------------------
+# nish-boundary-notify is normal the path-triggered delivery rail (no args).
+# The question path adds three on-demand interfaces:
+#   --dry-run   list confirmed question issues only (never a send) -- proves
+#               gate-confirmed-only before anything reaches MySQL phone.
+#   --digest    one Telegram line per 6h listing ALL unanswered confirmed
+#               questions with age (throttled 1 per 6h in a state marker).
+#   --help      usage.
+MODE="${1:-}"
+
 # --- Delivery: retry hermes (single phone path) -----------------------------
 #
 # fleet-ops#1458: on 2026-08-28 the Nish-reserved channel delivered 7h late
@@ -99,34 +109,57 @@ enrolled_repos() {
     fi
 }
 
-# Emit one line per confirmed question: "repo\ttissue_url\ttitle\tquestion\toptions"
+# Emit one line per confirmed question:
+#   repo\tnumber\tissue_url\ttitle\tquestion\toptions\tcreatedAt
+# These are the ONLY questions that may reach the phone (gate-confirmed,
+# labelled nish-reserved or conference-approved).
 confirmed_questions() {
     local repo
     while IFS= read -r repo; do
         [ -n "$repo" ] || continue
         local out
-        out=$("$GH" issue list -R "Nishfleet/$repo" -l nish-reserved,conference-approved --state open --json number,title,body 2>/dev/null) || continue
+        out=$("$GH" issue list -R "Nishfleet/$repo" -l nish-reserved,conference-approved --state open --json number,title,body,createdAt 2>/dev/null) || continue
         printf '%s\n' "$out" | jq -r --arg repo "$repo" '.[] | [
           $repo,
+          (.number|tostring),
           ("https://github.com/Nishfleet/" + $repo + "/issues/" + (.number|tostring)),
           .title,
           ((.body // "") | split("\n")[] | select(test("^question:")) | sub("^question:[[:space:]]*"; "")),
-          ((.body // "") | split("\n")[] | select(test("^options:")) | sub("^options:[[:space:]]*"; ""))
+          ((.body // "") | split("\n")[] | select(test("^options:")) | sub("^options:[[:space:]]*"; "")),
+          (.createdAt // "")
         ] | @tsv'
     done < <(enrolled_repos)
 }
 
+# The handle Hermes / a Claude session parses to post `decision-resolved:`
+# (fleet-ops#4476 part 3 answer ingestion). One handle per question, unique:
+#   Q:<repo>#<issue-number>
+q_handle() { printf 'Q:%s#%s' "$1" "$2"; }
+
+# Age of an ISO-8601 GitHub createdAt in whole hours (0 if unparseable).
+q_age_h() {
+    local iso="$1" ep now age
+    now="$(date -u +%s 2>/dev/null || echo 0)"
+    ep="$(date -u -d "$iso" +%s 2>/dev/null || echo 0)"
+    age=0
+    if [ "$ep" -gt 0 ] 2>/dev/null && [ "$now" -gt 0 ] 2>/dev/null; then
+        age=$(( (now - ep) / 3600 ))
+    fi
+    printf '%s' "$age"
+}
+
 deliver_confirmed_questions() {
-    local failq=0 key
-    while IFS=$'\t' read -r repo url title q options; do
-        [ -n "$repo" ] && [ -n "$url" ] || continue
+    local failq=0 key num
+    while IFS=$'\t' read -r repo num url title q options created; do
+        [ -n "$repo" ] && [ -n "$num" ] && [ -n "$url" ] || continue
         [ -n "$q" ] || continue
         key=$(printf '%s' "$url" | sha256sum | cut -c1-32)
         grep -qxF "$key" "$SEEN" 2>/dev/null && continue
-        local body
-        body="Q: $q"
+        local body handle
+        handle=$(q_handle "$repo" "$num")
+        body="$handle $q"
         [ -n "$options" ] && body="$body\nOptions: $options"
-        body="$body\nIssue: $url [repo $repo]"
+        body="$body\nAge: $(q_age_h "$created")h"
         # The outbound gate's urgent class-gate honours the MONEY-BOUNDARY
         # bypass; a reserved-set question is the same "needs Nish" class.
         if deliver "$key" "$title" "$body" "MONEY-BOUNDARY"; then
@@ -137,6 +170,80 @@ deliver_confirmed_questions() {
     done < <(confirmed_questions 2>/dev/null || true)
     return "$failq"
 }
+
+# --dry-run: print the confirmed question list WITHOUT sending. Only
+# gate-confirmed questions are ever shown (the query filters by the
+# confirmed labels), so --dry-run proves "only nish-reserved question issues"
+# before anything reaches the phone.
+notify_dry_run() {
+    local repo num url title q options created
+    while IFS=$'\t' read -r repo num url title q options created; do
+        [ -n "$repo" ] && [ -n "$num" ] || continue
+        [ -n "$q" ] || continue
+        printf 'DRY-RUN %s (gate-confirmed, %sh): %s\n' \
+            "$(q_handle "$repo" "$num")" "$(q_age_h "$created")" "$q"
+    done < <(confirmed_questions 2>/dev/null || true)
+}
+
+# --digest: ONE Telegram line per 6h listing all unanswered confirmed
+# questions with age. Throttled 1 per 6h via a timestamp marker next to
+# $SEEN. A digest row always carries the Q: handle so a reply can answer it.
+notify_digest() {
+    local marker="$SEEN.digest" rec num repo url title q options created lines=()
+    # throttle: no more than one digest line per 6h. Absent marker = never
+    # sent -> send once now.
+    local last now
+    last=$(cat "$marker" 2>/dev/null || echo 0)
+    now=$(date -u +%s 2>/dev/null || echo 0)
+    if [ -n "$last" ] && [ "$last" -gt 0 ] 2>/dev/null && [ "$now" -gt 0 ] 2>/dev/null; then
+        if [ $(( (now - last) )) -lt $(( 6 * 3600 )) ] 2>/dev/null; then
+            echo "digest: throttled (last $(( (now - last) / 3600 ))h ago; 1 per 6h)"
+            return 0
+        fi
+    fi
+    while IFS=$'\t' read -r repo num url title q options created; do
+        [ -n "$repo" ] && [ -n "$num" ] || continue
+        [ -n "$q" ] || continue
+        lines+=(" $(q_handle "$repo" "$num") — ${q} [$(q_age_h "$created")h]")
+    done < <(confirmed_questions 2>/dev/null || true)
+    if [ "${#lines[@]}" -eq 0 ]; then
+        printf '%s\n' "$now" > "$marker"   # keep a clean cadence
+        echo "digest: no unanswered confirmed questions"
+        return 0
+    fi
+    local msg="Unanswered questions for Nish (6h digest):"
+    local l
+    for l in "${lines[@]:-}"; do msg="$msg\n$l"; done
+    printf '%s' "$msg" | "$HERMES_BIN" send -t telegram --class MONEY-BOUNDARY </dev/null >/dev/null 2>&1 && {
+        printf '%s\n' "$now" > "$marker"
+        echo "digest: delivered ${#lines[@]} unanswered confirmed question(s)"
+    } || echo "digest: DELIVERY FAILED"
+}
+
+# --help usage.
+notify_help() {
+    cat <<'EOF'
+usage: nish-boundary-notify [--dry-run | --digest | --help]
+
+  (no args)  deliver new confirmed question issues + legacy NISH-ESCALATIONS.md
+             entries (the path-triggered rail)
+  --dry-run  list gate-confirmed question issues only (never sends)
+  --digest   one summary Telegram line per 6h of all unanswered confirmed
+             questions with age (throttled 1 per 6h in $SEEN.digest)
+  --help      this message
+EOF
+}
+
+# Dispatch when an explicit subcommand was given.
+case "$MODE" in
+    --dry-run) notify_dry_run; exit 0 ;;
+    --digest)  notify_digest; exit 0 ;;
+    --help)    notify_help; exit 0 ;;
+    "") : ;;  # the default path-triggered rail
+    *)
+        echo "nish-boundary-notify: unknown argument: $MODE (see --help)" >&2
+        exit 2 ;;
+esac
 
 mkdir -p "$(dirname "$SEEN")"; touch "$SEEN"
 

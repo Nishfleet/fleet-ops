@@ -1,0 +1,170 @@
+#!/usr/bin/env bash
+# bin/fleet-question-answer-ingest — turn a Nish answer (Claude session or a
+# Telegram reply) into the `decision-resolved:` comment that closes the
+# question-issue loop (fleet-ops#4476 part 3).
+#
+# Nish answers questions in a Claude session or by replying on Telegram —
+# never on GitHub (Nish 2026-09-08: "I'll tell you or Hermes instead"). Every
+# Telegram line about a confirmed question carries a stable handle:
+#
+#     Q:<repo>#<issue-number>
+#
+# This helper is the source of that GitHub side effect. Hermes' rule and the
+# Claude `nish-questions-pipeline` memory pipe the reply in on stdin; the
+# worker App token posts the comment (a human gh write is refused).
+#
+# Matching rules (never guess):
+#   - exactly ONE Q:<repo>#<n> handle        -> post
+#       `decision-resolved: <text after the handle, verbatim>` on that issue.
+#   - no handle, exactly ONE open confirmed question -> post to it (the
+#       "reply follows a single outstanding question" case).
+#   - anything else (no/multiple open, multiple handles) -> ONE clarifying
+#       line listing the open handles; nothing posted.
+#
+# Usage:
+#   echo 'Q:fleet-ops#4474 b' | fleet-question-answer-ingest
+#   fleet-question-answer-ingest --help
+#
+# Env (tests):
+#   FLEET_QING_GH         gh override (a non-gh value skips the token mint)
+#   FLEET_QING_INTAKE_JSON intake-repos.json for the enrolled repo list
+
+set -euo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+ing_gh()     { printf '%s' "${FLEET_QING_GH:-gh}"; }
+ing_full()   { printf 'Nishfleet/%s' "$1"; }
+ing_intake() { printf '%s' "${FLEET_QING_INTAKE_JSON:-/home/nish/workspaces/configs/intake-repos.json}"; }
+
+ing_help() {
+    cat <<'EOF'
+usage: fleet-question-answer-ingest [--dry-run] [--help] < reply.txt
+       echo 'Q:fleet-ops#4474 b' | fleet-question-answer-ingest
+
+Turn one Nish answer (a Telegram reply or Claude-session line on stdin) into
+the `decision-resolved:` comment on the named confirmed question.
+
+A reply names a handle `Q:<repo>#<issue>` (the handle every confirmed-question
+Telegram line carries); the text after it is posted verbatim as the decision.
+If the reply names no handle and exactly ONE question is open, that question
+is answered. Any ambiguous case echoes ONE clarifying line listing the open
+handles and never posts (never guess).
+
+  --dry-run   print what would be committed without posting
+  --help      this message
+
+Exit 0 handled; exit 1 commit failure; exit 2 ambiguous / no match.
+EOF
+}
+
+# Fail closed on the write token (fleet-ops#3445). A fake gh (tests) needs no
+# real App token; an inherited GH_TOKEN (parent organ) is already sufficient.
+ing_mint() {
+  local wt minted
+  if [ -n "${GH_TOKEN:-}" ] || [ "$(ing_gh)" != "gh" ]; then return 0; fi
+  wt="${NISHFLEET_WORKER_TOKEN_BIN:-${HOME}/.local/bin/worker-token}"
+  minted="$("$wt" --print 2>/dev/null)" || {
+      echo "fleet-ops#3445: $wt --print failed - refusing human-gh writes" >&2
+      return 1
+  }
+  eval "$minted"
+}
+
+# Open confirmed-question handles across the enrolled repos: `repo#n`.
+ing_open_handles() {
+  local gh repo intake out
+  gh="$(ing_gh)"
+  intake="$(ing_intake)"
+  [ -f "$intake" ] || return 0
+  while IFS= read -r repo; do
+    [ -n "$repo" ] || continue
+    out="$("$gh" issue list -R "Nishfleet/$repo" -l nish-reserved -l conference-approved \
+      --state open --json number 2>/dev/null || true)"
+    [ -n "$out" ] || continue
+    printf '%s' "$out" | jq -r --arg repo "$repo" '.[] | "\($repo)#" + (.number|tostring)' 2>/dev/null || true
+  done < <(jq -r '.repos[]?.name' "$intake" 2>/dev/null || true)
+}
+
+ing_trim() { printf '%s' "$1" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'; }
+
+ing_post() {  # repo num words dry
+  local repo="$1" num="$2" words="$3" dry="$4"
+  words="$(ing_trim "$words")"
+  [ -n "$words" ] || { echo "clarify: no decision text in the reply" >&2; return 2; }
+  if [ "$dry" = "1" ]; then
+    printf 'confirmation: dry-run decision-resolved: %s on Q:%s#%s\n' "$words" "$repo" "$num"
+    return 0
+  fi
+  if ! "$(ing_gh)" issue comment "$num" -R "$(ing_full "$repo")" \
+       --body "decision-resolved: $words" >/dev/null 2>&1; then
+    echo "commit: FAILED posting to Q:$repo#$num" >&2
+    return 1
+  fi
+  printf 'confirmation: posted decision-resolved: %s on Q:%s#%s\n' "$words" "$repo" "$num"
+  return 0
+}
+
+main() {
+  local arg DRY=0 reply rest n repo num
+  for arg in "$@"; do
+    case "$arg" in
+      --dry-run) DRY=1 ;;
+      --help|-h) ing_help; exit 0 ;;
+      *) echo "fleet-question-answer-ingest: unknown arg: $arg" >&2; ing_help >&2; exit 2 ;;
+    esac
+  done
+
+  reply="$( (cat 2>/dev/null) || true )"
+  reply="$(ing_trim "$reply")"
+  [ -n "$reply" ] || { echo "clarify: empty reply" >&2; exit 2; }
+  ing_mint || exit 1
+
+  # collect every Q:<repo>#<n> handle in the reply
+  local handles=() nhandles=0 rest="$reply"
+  while [[ "$rest" =~ Q:([A-Za-z0-9_-]+)#([0-9]+) ]]; do
+    handles+=("${BASH_REMATCH[1]}#${BASH_REMATCH[2]}")
+    nhandles=$((nhandles + 1))
+    rest="${rest/Q:${BASH_REMATCH[1]}#${BASH_REMATCH[2]}/}"
+  done
+
+  local decide_repo decide_num decide_words
+  if [ "$nhandles" -eq 0 ]; then
+    # no handle: answer the single outstanding confirmed question, if exactly one
+    local open=()
+    if [ -f "$(ing_intake)" ]; then
+      mapfile -t open < <(ing_open_handles)
+    fi
+    if [ "${#open[@]}" -lt 1 ]; then
+      echo "clarify: reply names no Q: handle and there are no open questions; nothing matched"
+      exit 2
+    elif [ "${#open[@]}" -gt 1 ]; then
+      printf 'clarify: reply names no Q: handle and %s questions are open; say which: %s\n' \
+        "${#open[@]}" "${open[*]:-}"
+      exit 2
+    fi
+    decide_repo="${open[0]%%#*}"
+    decide_num="${open[0]#*#}"
+    decide_words="$reply"
+  else
+    if [ "$nhandles" -gt 1 ]; then
+      printf 'clarify: reply named %s handles; say which one: %s\n' "$nhandles" "${handles[*]}"
+      exit 2
+    fi
+    decide_repo="${handles[0]%%#*}"
+    decide_num="${handles[0]#*#}"
+    # text after the handle (verbatim, trimmed)
+    decide_words="$reply"
+    if [[ "$reply" =~ Q:${decide_repo}#${decide_num}(.*)$ ]]; then
+      decide_words="${BASH_REMATCH[1]}"
+    fi
+    decide_words="$(ing_trim "$decide_words")"
+  fi
+
+  ing_post "$decide_repo" "$decide_num" "$decide_words" "$DRY"
+  exit $?
+}
+
+main "$@"

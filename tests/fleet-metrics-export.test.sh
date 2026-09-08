@@ -1559,6 +1559,11 @@ bash "$here/console-shipped-24h-race.test.sh" || fail "console-shipped-24h-race 
 # is directly listed in ci.yml and the worker App cannot push
 # .github/workflows/** (P14 hosting rule, fleet-ops#4459).
 bash "$here/fleet-usd-spend.test.sh" || fail "fleet-usd-spend tests failed"
+# fleet-ops#4476 (part 3): the measure.sh `questions:` line (for-nish /
+# oldest / in-conference / unfiled) + the unfiled detector that auto-files a
+# `question` issue for an out-of-store "Nish, should we…?" line. Hosted here
+# for the same P14 reason as fleet-usd-spend above (no workflow-scope edit).
+bash "$here/fleet-questions-line.test.sh" || fail "fleet-questions-line tests failed"
 
 # =========================================================================
 # 15. fleet-ops#2493: held wrapper spawn-bench outranks a later healthy

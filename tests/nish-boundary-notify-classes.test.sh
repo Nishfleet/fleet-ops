@@ -93,4 +93,11 @@ ok "nish-boundary-notify is syntactically valid bash"
 bash "$here/nish-boundary-notify-questions.test.sh" || fail "nish-boundary-notify questions test failed (fleet-ops#4474)"
 ok "nish-boundary-notify questions mode hosted (fleet-ops#4474)"
 
+# fleet-ops#4476 (part 3): answer ingestion — a fixture reply naming a
+# Q:<repo>#<n> handle produces the `decision-resolved:` comment via the
+# worker App token; ambiguous replies never guess (ONE clarifying line).
+# Hosted from the same class suite (family-only, P14-reachable).
+bash "$here/fleet-question-answer-ingest.test.sh" || fail "fleet-question-answer-ingest tests failed (fleet-ops#4476)"
+ok "fleet-question-answer-ingest hosted (fleet-ops#4476)"
+
 echo "OK: every Nish-reserved token is present in CLASSES (fleet-ops#1164)"

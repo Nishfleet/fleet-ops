@@ -202,6 +202,17 @@ lib/fleet_usd.py /home/nish/.local/lib/pi-packet/fleet_usd.py
 # fleet-ops#4459: the usd_24h / usd_per_merged_pr snapshot the judge header's
 # third line and the weekly seat table consume.
 measure.sh /home/nish/.local/bin/measure.sh
+# fleet-ops#4476 (part 3): shared question-queue math + unfiled detector that
+# measure.sh sources for its `questions:` header line (for-nish/oldest/
+# in-conference/unfiled). Lives under lib/ so nish-boundary-notify's wait
+# logic and measure.sh share one source, and so the unfiled auto-file is
+# testable without a new timer (no new units/timers, per the issue's required).
+lib/fleet-questions.sh /home/nish/.local/lib/pi-packet/fleet-questions.sh
+# fleet-ops#4476 (part 3): the answer-ingestion surface — turn a Nish Telegram
+# reply / Claude-session answer into the `decision-resolved:` comment via the
+# worker App token (never a human-gh write). Hermes' rule and the Claude
+# nish-questions-pipeline memory both pipe replies here on stdin.
+bin/fleet-question-answer-ingest /home/nish/.local/bin/fleet-question-answer-ingest
 systemd/pi-issue@.service /home/nish/.config/systemd/user/pi-issue@.service
 systemd/pi-issue-failed@.service /home/nish/.config/systemd/user/pi-issue-failed@.service
 systemd/app-pi\x2dissue.slice /home/nish/.config/systemd/user/app-pi\x2dissue.slice
@@ -1060,6 +1071,10 @@ systemd/gh-webhook-canary.service /home/nish/.config/systemd/user/gh-webhook-can
 systemd/gh-webhook-canary.timer /home/nish/.config/systemd/user/gh-webhook-canary.timer
 
 docs/github-push-channel.md /home/nish/.local/share/fleet-ops/docs/github-push-channel.md
+# fleet-ops#4476 (part 3): the escalation matrix — the single home of the
+# question-route rows (precedent / orchestrator / worker / NISH / matrix-gap).
+docs/escalation-matrix.md /home/nish/.local/share/fleet-ops/docs/escalation-matrix.md
+
 
 # fleet-ops#41: headless OAuth refresh of the live SuperGrok seat
 # (~/.pi/agent/auth.json["xai-oauth"]). 4h timer keeps the prepaid

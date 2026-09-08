@@ -77,6 +77,29 @@ catch what the judge is blind to.
    `new_measures_7d >= caught_by_hand_7d` every week: every caught-by-hand
    item must have a measure line that same week.
 
+## Questions block (fleet-ops#4476)
+
+Every run counts the question pipeline so a stall is never silent. Ask the
+store directly (`gh issue list -R Nishfleet/<repo> --label question`) and
+read this week's `measure.sh` `questions:` line
+(`for-nish=… oldest=…h in-conference=… unfiled=…`). Report four numbers in
+the review, each with its source:
+
+1. **Asked** — question issues opened this week (label `question`).
+2. **Reached Nish** — confirmed (`nish-reserved` / `conference-approved`)
+   this week, i.e. the for-you count that actually went to his phone
+   (`nish-boundary-notify --dry-run` lists them).
+3. **Answered by matrix** — routed `precedent:` / `orchestrator` / `worker`
+   this week (the questions the matrix handled without Nish).
+4. **Matrix gaps closed** — `matrix-gap:` rows resolved into
+   `docs/escalation-matrix.md` this week (those rows live there, and there
+   only).
+
+A `questions:` line whose `oldest` exceeds the 72h detector's bar, an
+`unfiled` count above 0 at run time, or a zero answered-by-matrix with a
+non-zero reached-Nish is a RED review item: name it, file the fix inside the
+≤5 actions.
+
 ## Phase 1 — BLIND 8-lens research (write each lens to its own file)
 
 The spec says "blind" — each lens is written **without** reading the
