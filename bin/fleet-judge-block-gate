@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+# fleet-judge-block-gate — mechanical teeth for the `blocked-by-judge` label
+# (fleet-ops#4557).
+#
+# Incident: 0509#2011 — a judge found the PR weakened the Gate-B above-fold
+# assertion and posted a blocking comment at 16:52Z with auto-merge
+# deliberately NOT armed. The PR merged 90 seconds later anyway, because
+# withholding the arm has no teeth: the worker lane and the tier1 queue
+# pass arm auto-merge independently, and neither honoured any hold label.
+# The weakening landed on main.
+#
+# This helper is the refusal seam in the arming path (not a new organ, not
+# a new detector): a PR carrying the `blocked-by-judge` label is never
+# auto-merge-armed, and any auto-merge already armed on it is disarmed.
+# Removing the label re-permits arming — an addressed block is not a dead
+# end.
+#
+# Modes:
+#   fleet-judge-block-gate --repo <owner/name> --pr <N>
+#       Single-PR mode (the tier1 queue pass calls this before arming).
+#       Exit 0: label absent — arming permitted.
+#       Exit 1: label present — auto-merge disarmed if it was armed
+#               (refusal has teeth, not just prose).
+#       Exit 1: gh read failed — fail-CLOSED. An unreadable label state
+#               must not wave a possibly-blocked PR through the arm
+#               (consistent with tier1's own skip-on-gh-failure posture).
+#       Exit 2: usage error.
+#
+#   fleet-judge-block-gate --sweep
+#       Webhook fast-path actuator (gh-webhook-receiver fires
+#       fleet-judge-block-disarm.service on pull_request/labeled
+#       blocked-by-judge). Disarms auto-merge on EVERY open PR labeled
+#       blocked-by-judge across the enrolled repos, so the block lands the
+#       moment the label is applied, not at the next hourly tier1 tick.
+#       Exit 0 even when individual repos fail (the label event cannot be
+#       retried by GitHub; the tier1 hourly pass is the level-triggered
+#       backstop). Exit 0 with nothing to do is the normal steady state.
+#
+# Deletion-first: reuses the existing label + gh seam; the label is the
+# only signal. No new metric, no new alert, no timer.
+
+set -uo pipefail
+
+LABEL="blocked-by-judge"
+INTAKE_JSON="${FLEET_JUDGE_BLOCK_INTAKE_JSON:-/home/nish/workspaces/products/fleet-ops/config/intake-repos.json}"
+REPOS="${FLEET_JUDGE_BLOCK_REPOS:-}"
+
+usage() {
+    cat <<'USAGE'
+usage: fleet-judge-block-gate --repo <owner/name> --pr <N>
+       fleet-judge-block-gate --sweep
+       fleet-judge-block-gate --help
+
+Single-PR mode: exit 0 when the PR does NOT carry `blocked-by-judge`
+(arming permitted); exit 1 when it does (auto-merge disarmed if armed) or
+when the label state cannot be read (fail-closed). The tier1 queue pass
+calls this before `gh pr merge --auto`.
+
+Sweep mode (--sweep): disarm auto-merge on every open PR labeled
+`blocked-by-judge` across the enrolled repos (config/intake-repos.json).
+Fired by the gh-webhook-receiver on pull_request/labeled so the block has
+teeth within seconds of the judge applying the label.
+USAGE
+}
+
+log() { printf '%s fleet-judge-block-gate: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
+
+# Disarm a single PR if auto-merge is armed. Prints nothing on success.
+disarm_if_armed() {
+    local repo="$1" pr="$2" armed
+    armed=$(gh pr view "$pr" -R "$repo" --json autoMergeRequest \
+        --jq '.autoMergeRequest != null' 2>/dev/null) || armed=""
+    if [ "$armed" = "true" ]; then
+        if gh pr merge "$pr" -R "$repo" --disable-auto >/dev/null 2>&1; then
+            log "$repo#$pr: auto-merge DISARMED (label $LABEL applied — fleet-ops#4557)"
+        else
+            log "$repo#$pr: auto-merge DISARM FAILED — tier1 will retry next tick"
+        fi
+    fi
+}
+
+mode=""
+repo=""
+pr=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --help|-h) usage; exit 0 ;;
+        --repo) repo="${2:-}"; shift 2 ;;
+        --pr) pr="${2:-}"; shift 2 ;;
+        --sweep) mode="sweep"; shift ;;
+        *) echo "fleet-judge-block-gate: unknown argument: $1" >&2; usage >&2; exit 2 ;;
+    esac
+done
+
+if [ "$mode" = "sweep" ]; then
+    # Resolve the enrolled repo list. FLEET_JUDGE_BLOCK_REPOS (space-
+    # separated owner/name) overrides for tests and for non-standard
+    # installs; config/intake-repos.json is the default source of truth.
+    if [ -z "$REPOS" ]; then
+        if [ ! -f "$INTAKE_JSON" ]; then
+            log "intake-repos.json missing at $INTAKE_JSON — nothing to sweep"
+            exit 0
+        fi
+        REPOS=$(python3 - "$INTAKE_JSON" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as f:
+    d = json.load(f)
+repos = d.get("repos", d)
+if isinstance(repos, list):
+    names = [r.get("name", "") if isinstance(r, dict) else str(r) for r in repos]
+else:
+    names = list(repos.keys())
+print("\n".join(n for n in names if n))
+PYEOF
+        ) || REPOS=""
+    fi
+    for r in $REPOS; do
+        # One query per enrolled repo; a repo failure is non-fatal (the
+        # tier1 hourly pass is the backstop for anything missed here).
+        prs=$(gh pr list -R "$r" --state open --label "$LABEL" \
+            --json number --jq '.[].number' 2>/dev/null) || continue
+        for p in $prs; do
+            disarm_if_armed "$r" "$p"
+        done
+    done
+    exit 0
+fi
+
+# Single-PR mode.
+if [ -z "$repo" ] || [ -z "$pr" ]; then
+    echo "fleet-judge-block-gate: --repo and --pr are required (or use --sweep)" >&2
+    usage >&2
+    exit 2
+fi
+
+labeled=$(gh pr view "$pr" -R "$repo" --json labels \
+    --jq 'any(.labels[]?.name; . == "'"$LABEL"'")' 2>/dev/null)
+if [ -z "$labeled" ]; then
+    # Empty output: gh failed (auth, network, PR gone). Fail-CLOSED —
+    # refuse the arm rather than wave a possibly-blocked PR through.
+    log "$repo#$pr: label state unreadable — refusing the arm (fail-closed)"
+    exit 1
+fi
+if [ "$labeled" != "true" ]; then
+    exit 0
+fi
+
+log "$repo#$pr: label $LABEL present — arm REFUSED (fleet-ops#4557)"
+disarm_if_armed "$repo" "$pr"
+exit 1

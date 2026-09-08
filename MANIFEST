@@ -832,6 +832,15 @@ bin/fleet-tailscale-localapi-canary /home/nish/.local/bin/fleet-tailscale-locala
 # worker-facing gate the product worker calls before arming. Installed so
 # the worker can run it from the deploy clone.
 bin/fleet-review-arm-check /home/nish/.local/bin/fleet-review-arm-check
+# fleet-ops#4557: mechanical teeth for the `blocked-by-judge` label. The
+# gate is the refusal seam in the arming path (tier1 queue pass calls it
+# before `gh pr merge --auto`); the disarm actuator is the webhook
+# fast-path (gh-webhook-receiver fires the .service on
+# pull_request/labeled) so a judge block disarms armed auto-merge in
+# seconds. NOT an organ: no timer, no metric, no absent() rule — the
+# hourly tier1 refusal is the backstop.
+bin/fleet-judge-block-gate /home/nish/.local/bin/fleet-judge-block-gate
+systemd/fleet-judge-block-disarm.service /home/nish/.config/systemd/user/fleet-judge-block-disarm.service
 # fleet-ops#2666: empty-run burst canary. Files a `fix(empty-run-burst):`
 # ticket when waste.empty_runs_last_2h >= 3 with non-empty
 # empty_run_samples (the 2h signal the #902 24h detector masks), classifies

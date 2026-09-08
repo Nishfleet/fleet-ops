@@ -215,6 +215,12 @@ bash "$here/merge-trample-gate.test.sh"
 # .github/workflows/**).
 bash "$here/machinery-authorization-gate.test.sh"
 
+# fleet-ops#4557: judge-block arm-refusal replay drill (blocked-by-judge
+# has teeth: refuse the arm, disarm armed auto-merge, unlabel re-permits).
+# Hosted here so P14 runs it without a workflow-file edit (the worker App
+# cannot push .github/workflows/**).
+bash "$here/fleet-judge-block-gate.test.sh"
+
 # fleet-ops#3756: senior-conference seriousness gate. A PR that trips the
 # seriousness gate (lines > 500 OR files > 10 OR touches deploy/migrations/
 # security/branch-protection) is REJECT unless it carries conference-approved.

@@ -589,7 +589,7 @@ while IFS= read -r repo; do
     # Fetch open PRs. --jq filters to fleet-worker head refs and excludes
     # dependabot (handled by its own policy).
     prs_json=$(gh pr list -R "$repo" --state open \
-        --json number,headRefName,isDraft,mergeable,title \
+        --json number,headRefName,isDraft,mergeable,title,labels \
         --jq '[.[] | select((.headRefName | startswith("claim/issue-")) or (.headRefName | test("^(p[0-9]+|lane[0-9]+|revert)/")))]' \
         2>/dev/null) || {
             log "2.  - $repo: gh pr list FAILED — skipping (auth/network?)"
@@ -619,6 +619,30 @@ while IFS= read -r repo; do
 
         if [ "$pr_draft" = "true" ]; then
             log "2.  - $repo#$pr_num ($pr_head): DRAFT — skip"
+            skipped=$((skipped+1))
+            continue
+        fi
+
+        # fleet-ops#4557: a judge block must have teeth. A PR labeled
+        # blocked-by-judge is never armed here, and any auto-merge already
+        # armed on it is disarmed (the gate helper does the disarm; refuse
+        # even if the helper itself fails — fail-CLOSED, same posture as
+        # the gh-failure skips above). Removing the label re-permits
+        # arming on a later tick, so an addressed block is not a dead end.
+        if printf '%s' "$row" | jq -e 'any(.labels[]?.name; . == "blocked-by-judge")' >/dev/null 2>&1; then
+            log "2.  - $repo#$pr_num ($pr_head): BLOCKED-BY-JUDGE — disarm + skip arm (fleet-ops#4557)"
+            judge_gate="${FLEET_JUDGE_BLOCK_GATE:-/home/nish/.local/bin/fleet-judge-block-gate}"
+            if [ -x "$judge_gate" ]; then
+                "$judge_gate" --repo "$repo" --pr "$pr_num" >/dev/null 2>&1 \
+                    || log "2.  - $repo#$pr_num ($pr_head): judge-block gate nonzero — arm still refused"
+            else
+                # Repo-copy fallback (CI/dev checkouts have no ~/.local install).
+                repo_copy="$(cd "$(dirname "$0")" && pwd)/fleet-judge-block-gate"
+                if [ -x "$repo_copy" ]; then
+                    "$repo_copy" --repo "$repo" --pr "$pr_num" >/dev/null 2>&1 \
+                        || log "2.  - $repo#$pr_num ($pr_head): judge-block gate nonzero — arm still refused"
+                fi
+            fi
             skipped=$((skipped+1))
             continue
         fi

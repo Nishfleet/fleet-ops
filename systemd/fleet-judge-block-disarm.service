@@ -1,0 +1,27 @@
+[Unit]
+Description=Judge-block disarm — webhook-triggered (fleet-ops#4557)
+# Named reason for this schedule (vault: "a schedule needs a reason" —
+# this unit has NO timer; it is webhook-triggered only, plus the hourly
+# tier1 arming refusal as the level-triggered backstop):
+# when a judge labels a PR `blocked-by-judge`, any auto-merge already
+# armed on that PR must be disarmed within seconds, not at the next
+# hourly heartbeat (0509#2011 merged 90 seconds after the block comment).
+# This actuator is the webhook fast-path half; bin/fleet-heartbeat-tier1
+# refuses to arm labeled PRs on every pass.
+#
+# OnFailure is wired by the global service.d/10-escalate.conf drop-in
+# (unit-escalation@fleet-judge-block-disarm.service), so a failed disarm
+# escalates via the standard matrix.
+
+[Service]
+Type=oneshot
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+WorkingDirectory=/home/nish
+ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/fleet-judge-block-gate --sweep'
+TimeoutStartSec=5min
+# Never restart: the next label event (or the tier1 hourly pass) is the
+# retry. A failed disarm escalates via the global drop-in, not via
+# Restart=.
+Restart=no

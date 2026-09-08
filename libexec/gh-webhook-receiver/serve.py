@@ -237,6 +237,17 @@ def dispatch(event: str, action: str, label: str, repo: str, conclusion: str,
                 ("fleet-merged-pr-close.service",
                  f"pull_request/{action}/merged={pr_merged} → fleet-merged-pr-close"),
             ]
+        if action == "labeled" and label == "blocked-by-judge":
+            # fleet-ops#4557: a judge block must have teeth within seconds,
+            # not at the next hourly tier1 tick. The judge (reviewer round)
+            # applies `blocked-by-judge` at the same moment it posts the
+            # blocking comment; this webhook fast-path fires the disarm
+            # actuator so any auto-merge already armed on the PR is
+            # disarmed immediately. The sweep is idempotent and cheap
+            # (one `gh pr list --label` per enrolled repo); tier1's hourly
+            # arming refusal is the level-triggered backstop.
+            return [("fleet-judge-block-disarm.service",
+                     f"pull_request/{action}/{label} → fleet-judge-block-disarm")]
         if action == "opened":
             # fleet-ops#4146: the loose-ends canary was retired; the
             # >24h-without-merge class is now GitHub's own actions/stale
@@ -463,6 +474,12 @@ def _make_handler(secret: bytes):
                 elif event == "pull_request":
                     pr = payload.get("pull_request") or {}
                     pr_merged = str(pr.get("merged", "") or "")
+                    # fleet-ops#4557: pull_request label events need the
+                    # label name too (the issues branch above owns the
+                    # same field for issue events; no collision — one
+                    # event hits one branch).
+                    label_obj = payload.get("label") or {}
+                    label = str(label_obj.get("name", "") or "")
 
             units = dispatch(event, action, label, repo, conclusion, DRY,
                             _State.enrolled, pr_merged)
