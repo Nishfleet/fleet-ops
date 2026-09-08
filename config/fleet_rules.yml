@@ -223,6 +223,28 @@ groups:
           summary: "provider-level quota exhaustion — one billing wall, multiple seats 402"
           description: "fleet-ops#2712: a provider has >=2 seats reporting HTTP 402/health_class=quota_exhausted within the last 1h. The per-provider fleet_provider_quota_exhausted{provider=\"...\"} series names the affected provider and its seat count; the seat-health ledger at /home/nish/workspaces/agent-state/lanes/seats lists each seat. This is ONE account-level billing wall, not N independent seat faults — triage the provider's quota/billing, not each seat separately. Until the billing wall clears the seat_availability SLO burn is expected (quota_exhausted seats are held unconditionally; see _SEAT_RELEASE_AT_EXPIRY_CLASSES in libexec/fleet-metrics-export.py)."
 
+      # fleet-ops#4217: a seat's live quota figure has gone stale.
+      # fleet_seat_quota_observed_seconds is "seconds since the quota was last
+      # observed from the provider" — the exporter now stamps it with the real
+      # observation time (the fetch, or the cache's own ts when a dying fetch
+      # serves a stale cache). A healthy read is 0-300s on the 5-min export
+      # cadence. > QUOTA_STALE_S (900s, 15 min) means the provider's own quota
+      # endpoint has stopped answering or its credential/session died, so the
+      # shown remaining% is stale. absent() on the whole family fires when the
+      # exporter's quota path is broken entirely (no provider emits a row). This
+      # is the "Stale >15 min => absent, and an absent() alert" acceptance item
+      # — the metric powering it never reported a real age before, so no alert
+      # could ever fire.
+      - alert: FleetSeatQuotaStale
+        expr: fleet_seat_quota_observed_seconds > 900 or absent(fleet_seat_quota_observed_seconds)
+        for: 5m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "live seat quota observation stale or absent (>15 min, fleet-ops#4217)"
+          description: "fleet-ops#4217: a provider's fleet_seat_quota_observed_seconds is > QUOTA_STALE_S (900s, 15 min) OR the whole fleet_seat_quota family is absent from fleet.prom. The provider's remaining% figure is stale — its quota endpoint stopped answering or its credential/session died on this VPS. The per-provider fleet_seat_quota_observed_seconds{provider=\"...\"} series names the seat; repair the credential/session as in #4233 (credential-blocked API seats) / #4232 (browser-dashboard seats), or investigate the endpoint. A healthy exporter re-fetches every 5 min, so this firing means the provider has not been observed for a full 15 min."
+
       # fleet-ops#3284 (child of #3150): the zero-revenue standing rule needs a
       # hard money boundary, not just a digest line. Two legs, per provider:
       #   - fleet_seat_spend_today_usd > 5 — current-UTC-day metered spend over

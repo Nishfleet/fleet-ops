@@ -3735,3 +3735,65 @@ assert "fleet_worktree_reaped" not in body, "reaped gauge must be omitted when s
 print("OK: main() emits present=0 and omits count gauges when the summary is missing")
 PY
 ok "fleet-ops#4118: worktree reaper gauge family (present + count + reaped + heartbeat)"
+
+# =========================================================================
+# 12. fleet-ops#4217: fleet_seat_quota_observed_seconds reports the REAL age
+#     of the quota figure, and the stale-quota alert rule exists.
+# =========================================================================
+# The pre-fix exporter passed `now` as the quota observation time, so
+# observed_seconds was always ~0 even when a dying fetch served a 25-min-old
+# cache — the metric that must power the "Stale >15 min => absent" alert could
+# never fire because it never reported a real age. This pins: (a) a stale
+# cache returns its own ts as observed_at (truthful age, not None), (b) the
+# emitted observed_seconds is that age (non-zero), and (c) fleet_rules.yml
+# carries the new FleetSeatQuotaStale rule keyed on observed_seconds > 900.
+cat >"$scratch/quota-stale.test.py" <<'PY'
+import importlib.util, json, sys, time
+from pathlib import Path
+exporter, rules, cache_path = sys.argv[1], sys.argv[2], sys.argv[3]
+spec = importlib.util.spec_from_file_location("fme", exporter)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+
+# 1. A stale quota cache: its own ts is 1200s in the past.
+stale_ts = time.time() - 1200
+Path(cache_path).write_text(json.dumps({
+    "ts": stale_ts,
+    "data": [{"pct": 42.0, "reset_s": 3600.0, "window": "daily"}],
+}))
+
+# 2. A dying fetch: cache is older than QUOTA_TTL and the fetcher fails, so
+#    _cached_quota_json must serve the stale cache WITH its true ts.
+data, obs = m._cached_quota_json(Path(cache_path), lambda: None, "testquota")
+assert data is not None, "stale cache should still be served while <= QUOTA_STALE_CACHE"
+assert obs is not None, "stale cache must carry its true observation ts (never fresh-looking None)"
+assert abs(obs - stale_ts) < 2, f"observed_at must be the cache ts, got {obs} (expected ~{stale_ts})"
+
+# 3. Emit through _emit_seat_quota; observed_seconds must be the real age.
+lines = []
+m._emit_seat_quota(lines, "testquota", data, "api", obs)
+obs_line = next(l for l in lines if l.startswith("fleet_seat_quota_observed_seconds"))
+val = float(obs_line.split()[-1])
+assert val > 900, f"observed_seconds must reflect the stale age (>900), got {val}"
+assert val < 1260, f"observed_seconds sanity bound, got {val}"
+
+# 4. A FRESH observation still reports ~0 (a healthy read is not flagged stale).
+lines2 = []
+m._emit_seat_quota(lines2, "testquota", data, "api", time.time())
+obs2 = float(next(l for l in lines2 if l.startswith("fleet_seat_quota_observed_seconds")).split()[-1])
+assert obs2 < 600, f"fresh observation must report ~0 observed_seconds, got {obs2}"
+print("OK: stale quota cache carries its true ts -> fleet_seat_quota_observed_seconds reports real age")
+
+# 5. The stale-quota alert rule exists and keys on the staleness metric.
+Y = __import__("yaml")
+cfg = Y.safe_load(Path(rules).read_text())
+names = [r.get("alert") for g in cfg["groups"] for r in g.get("rules", [])]
+assert "FleetSeatQuotaStale" in names, "fleet_rules.yml must carry the FleetSeatQuotaStale alert (fleet-ops#4217)"
+rule = next(r for g in cfg["groups"] for r in g.get("rules", []) if r.get("alert") == "FleetSeatQuotaStale")
+expr = rule["expr"]
+assert "fleet_seat_quota_observed_seconds" in expr, f"FleetSeatQuotaStale must key on observed_seconds, got: {expr}"
+print("OK: fleet_rules.yml has FleetSeatQuotaStale keyed on fleet_seat_quota_observed_seconds (fleet-ops#4217)")
+PY
+python3 "$scratch/quota-stale.test.py" "$exporter" "$rules" "$scratch/stale-quota-cache.json" \
+  || fail "quota-observed-staleness logic/rule failed"
+ok "fleet-ops#4217: fleet_seat_quota_observed_seconds reports real age; FleetSeatQuotaStale rule present"

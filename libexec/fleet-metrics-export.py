@@ -960,6 +960,22 @@ def _read_cache(path):
         return None, None
 
 
+def _cache_ts(path):
+    """Return the cache's observation ts (epoch), or None if unreadable.
+
+    The quota caches store {"ts": <epoch>, "data": <rows>}; _read_cache ages
+    them for TTL decisions but drops the ts. Quota rows need the real ts so
+    fleet_seat_quota_observed_seconds reports data age, not export time
+    (fleet-ops#4217). None -> caller emits observed_s 0 (fail open).
+    """
+    try:
+        c = json.loads(path.read_text())
+        ts = c.get("ts")
+        return ts if isinstance(ts, (int, float)) else None
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
 def _write_cache(path, data):
     try:
         PR_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -2135,23 +2151,31 @@ def _iso_to_seconds_until(iso_str):
 
 
 def _cached_quota_json(path, fetcher, name):
-    """Return fetched/cached quota data, or None to omit the family.
+    """Return (data, observed_at) for a provider quota, or (None, None) to omit.
 
-    Fresh cache (<=5 min) skips network. On failure, serve cache up to 30 min.
-    One fetch per provider per exporter run.
+    observed_at is the epoch seconds the data was actually observed: now when
+    freshly fetched, or the cache's own ts when served from a stale cache. It
+    feeds fleet_seat_quota_observed_seconds so that metric reports the real
+    age of the quota figure (fleet-ops#4217: "Stale (>15 min) => absent" — a
+    stale observation must be visible, not masked as fresh).
+
+    Fresh cache (<=5 min) skips network. On failure, serve cache up to 30 min
+    (with its true ts), so a dying fetch surfaces as growing observed_seconds
+    and trips the stale-quota alert instead of silently emitting a frozen,
+    fresh-looking 0. One fetch per provider per exporter run.
     """
     cached, cache_age = _read_cache(path)
     if cache_age is not None and cache_age <= QUOTA_TTL and cached is not None:
-        return cached
+        return cached, _cache_ts(path)
     data = fetcher()
     if data is not None:
         _write_cache(path, data)
-        return data
+        return data, time.time()
     if cached is not None and cache_age is not None and cache_age <= QUOTA_STALE_CACHE:
         print(f"{name} quota fetch failed, serving stale cache (age={int(cache_age)}s)",
               file=sys.stderr)
-        return cached
-    return None
+        return cached, _cache_ts(path)
+    return None, None
 
 
 def _emit_seat_quota(lines, provider, rows, source, observed_at):
@@ -5641,46 +5665,48 @@ def main():
 
     # --- Live seat quotas (fleet-ops#4217) ---
     # VPS-native API reads. Each fetcher is cached independently; a None
-    # return omits that provider's rows (never a frozen value). Browser-
-    # session seats (Grok, Ollama, Z.ai, OpenCode, RunInfra,
-    # ZenMux, Cline, Straitly, MiniMax, CommandCode) are follow-up issues
-    # (#4232 / #4233) — each slots in as one fetcher.
-    openrouter_key = _cached_quota_json(
+    # return omits that provider's rows (never a frozen value). observed_at is
+    # the real observation ts so fleet_seat_quota_observed_seconds reports the
+    # true age of the quota figure — a stale fetch surfaces as growing
+    # observed_seconds, never a fresh-looking 0 (the "Stale (>15 min)" alert
+    # depends on this). Browser-session seats (Grok, Ollama, Z.ai, OpenCode,
+    # RunInfra, ZenMux, Cline, Straitly, MiniMax, CommandCode) are follow-up
+    # issues (#4232 / #4233) — each slots in as one fetcher.
+    openrouter_key, openrouter_key_obs = _cached_quota_json(
         OPENROUTER_KEY_CACHE, _fetch_openrouter_key, "openrouter_key"
     )
-    claude_usage = _cached_quota_json(
+    claude_usage, claude_usage_obs = _cached_quota_json(
         CLAUDE_QUOTA_CACHE, _fetch_claude_usage, "claude_usage"
     )
-    codex_usage = _cached_quota_json(
+    codex_usage, codex_usage_obs = _cached_quota_json(
         CODEX_QUOTA_CACHE, _fetch_codex_usage, "codex_usage"
     )
-    cursor_usage = _cached_quota_json(
+    cursor_usage, cursor_usage_obs = _cached_quota_json(
         CURSOR_QUOTA_CACHE, _fetch_cursor_usage, "cursor_usage"
     )
-    devin_usage = _cached_quota_json(
+    devin_usage, devin_usage_obs = _cached_quota_json(
         DEVIN_QUOTA_CACHE, _fetch_devin_usage, "devin_usage"
     )
-    xkiro_quota = _cached_quota_json(
+    xkiro_quota, xkiro_quota_obs = _cached_quota_json(
         XKIRO_QUOTA_CACHE, _fetch_xkiro_quota, "xkiro_quota"
     )
-    _quota_now = time.time()
     _quota_providers = []
     if isinstance(openrouter_key, dict):
-        _quota_providers.append(("openrouter", [openrouter_key]))
+        _quota_providers.append(("openrouter", [openrouter_key], openrouter_key_obs))
     if isinstance(claude_usage, list):
-        _quota_providers.append(("claude", claude_usage))
+        _quota_providers.append(("claude", claude_usage, claude_usage_obs))
     if isinstance(codex_usage, list):
-        _quota_providers.append(("codex", codex_usage))
+        _quota_providers.append(("codex", codex_usage, codex_usage_obs))
     if isinstance(cursor_usage, list):
-        _quota_providers.append(("cursor", cursor_usage))
+        _quota_providers.append(("cursor", cursor_usage, cursor_usage_obs))
     if isinstance(devin_usage, list):
-        _quota_providers.append(("devin", devin_usage))
+        _quota_providers.append(("devin", devin_usage, devin_usage_obs))
     if isinstance(xkiro_quota, list):
-        _quota_providers.append(("xkiro", xkiro_quota))
+        _quota_providers.append(("xkiro", xkiro_quota, xkiro_quota_obs))
     if _quota_providers:
         _emit_seat_quota_headers(lines)
-        for _prov, _rows in _quota_providers:
-            _emit_seat_quota(lines, _prov, _rows, "api", _quota_now)
+        for _prov, _rows, _obs in _quota_providers:
+            _emit_seat_quota(lines, _prov, _rows, "api", _obs)
 
     # --- Truth staleness (fleet-ops#1137) ---
     # Read the staleness checker's cached results and re-export as Prometheus
