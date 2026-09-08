@@ -999,6 +999,20 @@ bash -c 'source "$0"; is_quota_cap_error "$1" "$2"' "$lib" "" '402: {"message":"
 bash -c 'source "$0"; is_quota_cap_error "$1" "$2"' "$lib" "" 'session-error: 402 budget_exceeded' >/dev/null 2>&1 \
   || fail "9b: bare 402 budget_exceeded code must be a quota/cap wall (fleet-ops#3973)"
 ok "9b: mergegateway 402 'Credit balance depleted' / budget_exceeded -> quota/cap wall (fleet-ops#3973)"
+# fleet-ops#4444 (2026-09-08): Alibaba token-plan 429 body is "Your token-plan
+# 1-week quota has been exhausted. The quota will reset at ..." — `quota` is
+# NOT adjacent to `exhausted` ("has been" intervenes), so the old adjacency
+# regex missed it, the death booked error_class=unknown, mark_seat_quota_bench
+# never fired, and the seat re-entered rotation every cycle (pi-issue@0509-1945
+# flapping in auto-restart). It is a hard 7-day-window cap: must classify as
+# quota_cap so the 604800s quota_bench_default_s in seat-caps.json applies.
+alibaba_err='429: {"message":"Your token-plan 1-week quota has been exhausted. The quota will reset at 09-14 16:14:00 UTC.","id":"ad77e29c-1a0d-43ed-95c1-ec9600afbbca","type":"insufficient_quota","code":"insufficient_quota"}'
+set +e
+bash -c 'source "$0"; is_quota_cap_error "$1" "$2"' "$lib" "" "$alibaba_err" >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "is_quota: Alibaba token-plan 'quota has been exhausted' wall must match (rc=$rc)"
+ok "9b: Alibaba token-plan 'quota has been exhausted' -> quota/cap wall (fleet-ops#4444)"
 set +e
 bash -c 'source "$0"; is_quota_cap_error "$1" "$2"' "$lib" "429 Too Many Requests retry-after: 30" "" >/dev/null 2>&1
 rc=$?
