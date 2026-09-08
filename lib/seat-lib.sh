@@ -6011,6 +6011,51 @@ reset_seat_worked_no_text() {
     rm -f "$path" 2>/dev/null || true
 }
 
+seat_empty_success_path() {
+    local p="$1" m="$2" ps ms
+    ps="${p//[^A-Za-z0-9._-]/_}"
+    ms="${m//[^A-Za-z0-9._-]/_}"
+    printf '%s/%s__%s.empty-success.json\n' "$LEDGER_DIR" "$ps" "$ms"
+}
+
+# --- empty-success ledger (fleet-ops#4457) --------------------------------
+# A run that ends SUCCESS (real output, exit 0) but opened NO PR and did NOT
+# close the issue is an EMPTY-SUCCESS: the seat burned a full session and the
+# work shipped nothing. It is a WASTE class (the issue's 51% blind spot — 127
+# sessions logged "SUCCESS" but only 62 shipped), distinct from the empty-run
+# (tools=0, no final text) which is already benched. An empty-success is NOT a
+# seat fault to bench (the seat produced real text) — it is a wasted claim to
+# COUNT. This writes/increments a per-seat counter so the hourly judge can
+# measure the empty-success share per seat and name the top offenders
+# (measure.sh `waste:` line, fleet-ops#4457). Best-effort: a write failure must
+# never block the caller's exit-0 success path.
+mark_seat_empty_success() {
+    local p="$1" m="$2" output_bytes="${3:-0}" reason="${4:-}"
+    if ! _seat_key_guard "$p" "$m" "mark_seat_empty_success"; then return 0; fi
+    local path now_utc prev count tmp
+    path=$(seat_empty_success_path "$p" "$m")
+    mkdir -p "$LEDGER_DIR" 2>/dev/null || true
+    now_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    prev=0
+    if [[ -f "$path" ]]; then
+        prev=$(jq -r '.empty_success_count // 0' "$path" 2>/dev/null || echo 0)
+        [[ "$prev" =~ ^[0-9]+$ ]] || prev=0
+    fi
+    count=$((prev + 1))
+    tmp="$path.$$.$RANDOM.tmp"
+    if jq -nc --arg p "$p" --arg m "$m" --arg written "$now_utc" \
+        --argjson count "$count" --argjson bytes "${output_bytes:-0}" --arg reason "$reason" \
+        '{provider:$p, model:$m, empty_success_count:$count, last_output_bytes:$bytes, last_occurred_at:$written, reason:$reason}' \
+        >"$tmp" 2>/dev/null; then
+        chmod 0644 "$tmp" 2>/dev/null || true
+        mv "$tmp" "$path" 2>/dev/null || { rm -f "$tmp" 2>/dev/null || true; }
+        seat_log "empty-success: $p/$m count=$count last_output_bytes=$output_bytes (fleet-ops#4457)"
+    else
+        rm -f "$tmp" 2>/dev/null || true
+    fi
+    return 0
+}
+
 # --- error-class registry dispatch (fleet-ops#859) -----------------------
 # Data-driven lane-fault dispatch. seat-caps.json declares an `error_classes`
 # map: each class names a matcher function, a writer function, a trigger_order,

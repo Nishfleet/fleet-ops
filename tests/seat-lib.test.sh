@@ -3530,6 +3530,14 @@ bash "$here/repo-privacy-guard.test.sh" || fail "repo-privacy-guard tests failed
 # mark_seat_empty_run + pick_seat from lib/seat-lib.sh.
 bash "$here/pi-issue-run-noop-bench.test.sh" || fail "pi-issue-run-noop-bench tests failed"
 
+# fleet-ops#4457: a run that ends SUCCESS with real output but opens NO PR and
+# closes NO issue is an EMPTY-SUCCESS — a wasted claim (the 51% blind spot).
+# It must write a `PACKET-VERDICT class=empty-success seat=../.. output_bytes=..`
+# line and a per-seat empty-success ledger counter, and must NOT be benched (the
+# seat produced real text). Hosted here because this file is listed directly in
+# ci.yml (workers cannot push .github/workflows/**).
+bash "$here/pi-issue-run-empty-success.test.sh" || fail "pi-issue-run-empty-success tests failed"
+
 # fleet-ops#2005: a successful pi worker session is blocked from closing if its
 # JSONL has two or more real failed attempts and no four-heading vault playbook.
 # The gate lives in bin/fleet-debug-playbook (session-close gate subcommand)
