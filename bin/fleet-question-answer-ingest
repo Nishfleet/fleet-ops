@@ -64,13 +64,19 @@ EOF
 # real App token; an inherited GH_TOKEN (parent organ) is already sufficient.
 ing_mint() {
   local wt minted
-  if [ -n "${GH_TOKEN:-}" ] || [ "$(ing_gh)" != "gh" ]; then return 0; fi
-  wt="${NISHFLEET_WORKER_TOKEN_BIN:-${HOME}/.local/bin/worker-token}"
-  minted="$("$wt" --print 2>/dev/null)" || {
-      echo "fleet-ops#3445: $wt --print failed - refusing human-gh writes" >&2
-      return 1
-  }
-  eval "$minted"
+  # A stubbed gh (this organ's own tests) needs no real App token.
+  [ "$(ing_gh)" != "gh" ] && return 0
+  # Canonical hardened preamble guard (fleet-ops#3576): mint only for a
+  # production caller — GH_TOKEN unset, not GitHub Actions, default gh.
+  if [[ -z "${GH_TOKEN:-}" && "${GITHUB_ACTIONS:-}" != "true" && "${GH:-gh}" == "gh" ]]; then
+    wt="${NISHFLEET_WORKER_TOKEN_BIN:-${HOME}/.local/bin/worker-token}"
+    minted="$("$wt" --print 2>/dev/null)" || {
+        echo "fleet-ops#3445: $wt --print failed - refusing human-gh writes" >&2
+        return 1
+    }
+    eval "$minted"
+  fi
+  return 0
 }
 
 # Open confirmed-question handles across the enrolled repos: `repo#n`.
