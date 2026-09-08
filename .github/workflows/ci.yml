@@ -102,6 +102,7 @@ jobs:
         bash tests/pi-intake-topup.test.sh
         bash tests/pi-intake-tick-scout-on-empty.test.sh
         bash tests/blocked-reconcile-large-issue-json.test.sh
+        bash tests/pi-intake-tick-land-or-close-park.test.sh
         bash tests/fleet-console-pi-utc.test.sh
         bash tests/pi-issue-run-session-error-feed.test.sh
         bash tests/repair-rotation.test.sh
