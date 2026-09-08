@@ -75,6 +75,24 @@ exit 0
 EOF
 chmod +x "$fake_hermes_ok"
 
+# fleet-ops#4474: nish-boundary-notify now also reads confirmed `question`
+# issues across the enrolled repos. Stub gh and the intake config so the
+# offline tests never touch a live repo: a fake gh returning empty question
+# lists, and an empty intake-repos.json (no repos -> no gh question queries).
+intake_json="$tmp/intake-repos.json"
+cat > "$intake_json" <<'JSON'
+{"repos":[],"excluded":[],"deferred":[]}
+JSON
+fake_gh="$tmp/fake-gh"
+cat > "$fake_gh" <<'EOF'
+#!/usr/bin/env bash
+printf '[]\n'
+exit 0
+EOF
+chmod +x "$fake_gh"
+export BOUNDARY_NOTIFY_GH="$fake_gh"
+export FLEET_INTAKE_REPOS_JSON="$intake_json"
+
 # --- scenario 1: hermes fails -> retry fires -> exit 1 (loud, no fallback) ---
 echo "--- scenario 1: hermes fails -> retry -> exit 1 (loud, no fallback) ---"
 hermes_log="$tmp/hermes.log"; : > "$hermes_log"

@@ -132,6 +132,152 @@ votes_json() {
     jq -s '.' "${files[@]}"
 }
 
+# fleet-ops#4474: tally the senior panel's NISH/MATRIX votes for ONE open
+# `question` issue and route the verdict. Called from main only when the
+# candidate carries the `question` label and is not already decided.
+# The route token in each MATRIX reason is machine-read; the majority route
+# wins. precedent -> post decision-resolved; orchestrator -> rewrite the
+# blocking marker; worker -> relabel agent-ready. SKIP never counts toward
+# 2-of-3 (fleet-ops#4451 arithmetic). Idempotent: a decided question exits
+# before any write.
+tally_question() {
+    local dir="$1" issue_json="$2" issue_title="$3" issue_body="$4"
+    local votes nish matrix skip real reasons nish_reasons matrix_reasons
+    votes=$(votes_json)
+    nish=$(printf '%s\n' "$votes" | jq '[.[] | select(.verdict == "NISH")] | length')
+    matrix=$(printf '%s\n' "$votes" | jq '[.[] | select(.verdict == "MATRIX")] | length')
+    skip=$(printf '%s\n' "$votes" | jq '[.[] | select(.verdict == "SKIP")] | length')
+    real=$(( nish + matrix ))
+    reasons=$(printf '%s\n' "$votes" | jq -r '[.[] | "\(.role): \(.verdict) - \(.reason)"] | join("\n")')
+    nish_reasons=$(printf '%s\n' "$votes" | jq -r '[.[] | select(.verdict == "NISH") | .reason] | join("\n")')
+    matrix_reasons=$(printf '%s\n' "$votes" | jq -r '[.[] | select(.verdict == "MATRIX") | .reason] | join("\n")')
+
+    log "$repo/#$candidate question votes: NISH=$nish MATRIX=$matrix SKIP=$skip real=$real quorum=$PANEL_QUORUM"
+
+    # A SKIP is a seat that did not vote, not a vote. It never shrinks the
+    # denominator: with a SKIP recorded the panel is PENDING until the third
+    # seat returns (fleet-ops#4451 arithmetic).
+    if [ "$skip" -gt 0 ] && [ "$real" -lt "$PANEL_QUORUM" ]; then
+        log "$repo/#$candidate question PENDING: $real real vote(s) of $PANEL_QUORUM, $skip SKIP recorded"
+        exit 0
+    fi
+
+    if [ "$nish" -ge 2 ]; then
+        if [ "$DRY_RUN" = "1" ]; then
+            log "DRY-RUN: would add nish-reserved + comment for $repo/#$candidate"
+        else
+            if ! "$GH" issue edit "$candidate" -R "Nishfleet/$repo" --add-label nish-reserved >/dev/null 2>&1; then
+                log "$repo/#$candidate: gh issue edit FAILED (add nish-reserved)"
+                exit 1
+            fi
+            "$GH" issue comment "$candidate" -R "Nishfleet/$repo" \
+                --body "question panel (2-of-3 NISH, fleet-ops#4474): this ask stays on the Nish tab. Senior panel judged it reserved (money/pricing, legal, brand, product direction, customer-data deletion, or a reserved authority) and not already decided. Reasons:\n\n$nish_reasons" \
+                >/dev/null 2>&1 || log "$repo/#$candidate: gh issue comment FAILED (admit question)"
+        fi
+        log "$repo/#$candidate NISH -> nish-reserved (on the tab, awaiting Nish)"
+        exit 0
+    fi
+
+    if [ "$matrix" -ge 2 ]; then
+        local route
+        route=$(matrix_route "$matrix_reasons")
+        log "$repo/#$candidate MATRIX -> route=$route"
+        if [ "$DRY_RUN" = "1" ]; then
+            log "DRY-RUN: would route $repo/#$candidate via $route + remove question"
+        else
+            apply_question_route "$route" "$matrix_reasons" "$issue_title" "$issue_body"
+        fi
+        exit 0
+    fi
+
+    log "$repo/#$candidate question remains PENDING (NISH=$nish MATRIX=$matrix SKIP=$skip)"
+    exit 0
+}
+
+# Pick the majority route across the MATRIX votes' reasons. A route token is
+# `precedent: <text>`, `orchestrator`, or `worker`. precedent is the strongest
+# (an existing ledger answer), then orchestrator, then worker; mixed panels
+# resolve to the most common token, defaulting to orchestrator.
+matrix_route() {
+    local reasons="$1" lc p o w
+    lc=$(printf '%s' "$reasons" | tr '[:upper:]' '[:lower:]')
+    p=$(printf '%s' "$lc" | grep -c '\bprecedent:' || true)
+    o=$(printf '%s' "$lc" | grep -cE '\borchestrator\b' || true)
+    w=$(printf '%s' "$lc" | grep -cE '\bworker[:?/ ]' || true)
+    if [ "$p" -ge 2 ]; then printf 'precedent\n'; return 0; fi
+    if [ "$o" -ge 2 ]; then printf 'orchestrator\n'; return 0; fi
+    if [ "$w" -ge 2 ]; then printf 'worker\n'; return 0; fi
+    # No token reached a majority: pick the first strongest present, else
+    # orchestrator (the safe non-Nish route, fleet-ops#4260).
+    if [ "$p" -ge 1 ]; then printf 'precedent\n'; return 0; fi
+    if [ "$w" -ge 1 ]; then printf 'worker\n'; return 0; fi
+    printf 'orchestrator\n'
+}
+
+# Apply one MATRIX route, then remove the `question` label so the issue leaves
+# the Nish tab. precedent: post decision-resolved from the ledger line.
+# orchestrator: rewrite `blocked-on: nish-decision` to `blocked-on: orchestrator`,
+# drop the nish-decision blocker. worker: relabel agent-ready with the answer.
+apply_question_route() {
+    local route="$1" matrix_reasons="$2" issue_title="$3" issue_body="$4"
+    case "$route" in
+        precedent)
+            # Extract the precedent text from a MATRIX vote's reason. grep
+            # exits 1 on no match; under set -e/-o pipefail guard the whole
+            # substitution so an absent precedent falls through to orchestrator.
+            local answer
+            answer=$(printf '%s' "$matrix_reasons" | grep -ioE '\bprecedent:[[:space:]]*.*' -m1 | sed -E 's/^.*\bprecedent:[[:space:]]*//I' | head -c 300 || true)
+            if [ -n "$answer" ]; then
+                "$GH" issue comment "$candidate" -R "Nishfleet/$repo" \
+                    --body "decision-resolved: the decisions ledger already answers this (precedent: $answer). Removing from the question tab. (fleet-ops#4474)" \
+                    >/dev/null 2>&1 || log "$repo/#$candidate: gh issue comment FAILED (precedent)"
+            else
+                log "$repo/#$candidate: MATRIX precedent route but no precedent text parsed; treating as orchestrator"
+                route=orchestrator
+            fi
+            ;;
+        worker)
+            "$GH" issue comment "$candidate" -R "Nishfleet/$repo" \
+                --body "question panel (2-of-3 MATRIX, fleet-ops#4474): this is a work task, not a question for Nish. The MATRIX panel already answered it; relabeled agent-ready. Reasons:\n\n$matrix_reasons" \
+                >/dev/null 2>&1 || log "$repo/#$candidate: gh issue comment FAILED (worker)"
+            ;;
+        orchestrator)
+            "$GH" issue comment "$candidate" -R "Nishfleet/$repo" \
+                --body "question panel (2-of-3 MATRIX, fleet-ops#4474): not a question that needs Nish. Routed to the orchestrator decision-sweep (blocked-on: orchestrator). Reasons:\n\n$matrix_reasons" \
+                >/dev/null 2>&1 || log "$repo/#$candidate: gh issue comment FAILED (orchestrator)"
+            ;;
+    esac
+
+    # Rewrite the blocking marker and remove the `question` label for all routes.
+    # The nish-decision blocker may be a whole line OR embedded mid-line after a
+    # note (e.g. "... (money). blocked-on: nish-decision (money: top up straitly)").
+    # Delete any line carrying it; orchestrator then appends its own marker so
+    # the issue stays blocked (for the orchestrator decision-sweep, fleet-ops#4260)
+    # rather than becoming claimable/unrouted. precedent/worker leave no blocker
+    # at all (the question is resolved).
+    local new_body
+    new_body=$(printf '%s' "$issue_body" | grep -v -E 'blocked-on:[[:space:]]*nish-decision' || true)
+    if [ "$route" = "orchestrator" ]; then
+        new_body="$new_body
+blocked-on: orchestrator (fleet-ops#4474 question panel)"
+    fi
+    local body_tmp
+    body_tmp=$(mktemp)
+    printf '%s\n' "$new_body" > "$body_tmp"
+    if ! "$GH" issue edit "$candidate" -R "Nishfleet/$repo" \
+        --remove-label question --body-file "$body_tmp" >/dev/null 2>&1; then
+        log "$repo/#$candidate: gh issue edit FAILED (apply route $route)"
+        rm -f "$body_tmp"
+        exit 1
+    fi
+    rm -f "$body_tmp"
+    if [ "$route" = "worker" ]; then
+        "$GH" issue edit "$candidate" -R "Nishfleet/$repo" --add-label agent-ready >/dev/null 2>&1 || \
+            log "$repo/#$candidate: gh issue edit FAILED (add agent-ready)"
+    fi
+    log "$repo/#$candidate routed via $route; question label removed"
+}
+
 main() {
     local dir votes pass fail skip real reasons issue_labels issue_title
     dir=$(case_dir)
@@ -151,10 +297,27 @@ main() {
     # fleet-ops#4451 (idempotence): a candidate that already carries a verdict
     # label is DECIDED. Re-tallying it writes nothing new but re-comments every
     # heartbeat tick: 0509#1382 collected 243 identical "Senior auditor panel
-    # ... discarded" comments this way. Exit before any write.
+    # ... discarded" comments this way. Exit before any write. fleet-ops#4474:
+    # a question already marked nish-reserved or conference-approved is decided
+    # and must never be re-committed either.
     case ",$issue_labels," in
-        *,discarded,*|*,agent-ready,*)
+        *,discarded,*|*,agent-ready,*|*,nish-reserved,*|*,conference-approved,*)
             log "$repo/#$candidate already decided (labels: $issue_labels) - no re-tally, no comment (fleet-ops#4451)"
+            exit 0
+            ;;
+    esac
+
+    # fleet-ops#4474: a `question` candidate goes through the Nish-question
+    # panel, not the scout admission panel. The senior auditors voted NISH vs
+    # MATRIX (with SKIP for a seat that could not vote). Route the verdict:
+    #  NISH 2-of-3   -> add `nish-reserved` (stays on the Nish tab, question
+    #                   label kept), comment that Nish must answer.
+    #  MATRIX 2-of-3 -> apply the majority route and REMOVE the `question`
+    #                   label so it leaves the tab.
+    # otherwise     -> PENDING (SKIP never counts toward 2-of-3).
+    case ",$issue_labels," in
+        *,question,*)
+            tally_question "$dir" "$(printf '%s' "$issue_json")" "$issue_title" "$issue_body"
             exit 0
             ;;
     esac

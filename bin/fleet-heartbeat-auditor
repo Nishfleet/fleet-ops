@@ -106,6 +106,23 @@ scout_candidates() {
     printf '%s\n' "$out" | jq -r '.[] | "\(.number)\t\([(.labels // [])[].name] | index("discarded") != null)\t\(.author.login // "")"'
 }
 
+# fleet-ops#4474: list open `question` issues per repo that still need the
+# senior panel's NISH-vs-MATRIX verdict. Emits "number\thas_decided\tauthor"
+# (same shape as scout_candidates) so process_candidate can reuse the panel,
+# the vote tree, and the tally path. Terminally-decided questions are skipped
+# here so they do not burn the per-tick start cap on dead work.
+question_candidates() {
+    local repo="$1"
+    local out
+    out=$("$GH" issue list -R "Nishfleet/$repo" -l question --state open --json number,labels,author --limit 200 2>&1) || {
+        log "$repo: question list gh FAILED: $out"
+        return 1
+    }
+    # Emit "number\tlabels-csv\tauthor" (@tsv). The bash side decides is_decided
+    # from the label list rather than doing nested-quote string matching in jq.
+    printf '%s\n' "$out" | jq -r '.[] | [.number, ([.labels // [] | .[].name] | join(",")), (.author.login // "")] | @tsv'
+}
+
 unit_name() {
     local repo="$1" candidate="$2" role="$3"
     printf 'pi-audit@%s--%s--%s.service\n' "$repo" "$candidate" "$role"
@@ -417,6 +434,23 @@ owner_bridges_to_ready() {
     return 0
 }
 
+process_candidate_set() {
+    # Shared candidate walker for scout AND question lists (fleet-ops#4474).
+    # Each line is "number\tlabels-csv\tauthor" so the decided-skip can be
+    # decided here from the actual labels (a terminally-decided question -
+    # nish-reserved / conference-approved - is skipped so the per-tick start
+    # cap is not spent on already-verdict questions).
+    local repo="$1"
+    while IFS=$'\t' read -r candidate labels author; do
+        [ -n "$candidate" ] || continue
+        if printf '%s' "$labels" | grep -qE '(^|,)nish-reserved(,|$)|(^|,)conference-approved(,|$)'; then
+            log "$repo/#$candidate: already decided question (nish-reserved/conference-approved) — skip"
+            continue
+        fi
+        process_candidate "$repo" "$candidate" "$author" || true
+    done
+}
+
 main() {
     local repo
     while IFS= read -r repo; do
@@ -430,6 +464,10 @@ main() {
             fi
             process_candidate "$repo" "$candidate" "$author" || true
         done < <(scout_candidates "$repo" 2>/dev/null || true)
+        # fleet-ops#4474: question candidates run through the SAME pi-audit@
+        # panel and vote tree; the tally detects the `question` label and
+        # applies the NISH/MATRIX routing. Only undecided questions appear.
+        process_candidate_set "$repo" < <(question_candidates "$repo" 2>/dev/null || true) || true
     done < <(repo_list)
 }
 

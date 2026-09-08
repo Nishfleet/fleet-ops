@@ -48,6 +48,8 @@ CLASSES='MONEY-BOUNDARY|LEGAL-BOUNDARY|PRODUCT-DIRECTION|CUSTOMER-DATA|CREDENTIA
 #   BOUNDARY_NOTIFY_BACKOFF = space-separated sleep seconds between hermes retries
 HERMES_BIN=${BOUNDARY_NOTIFY_HERMES:-hermes}
 BACKOFFS=${BOUNDARY_NOTIFY_BACKOFF:-"5 15"}
+GH=${BOUNDARY_NOTIFY_GH:-${GH:-gh}}
+INTAKE_JSON="${FLEET_INTAKE_REPOS_JSON:-/home/nish/workspaces/products/fleet-ops/config/intake-repos.json}"
 
 # deliver <key> <header-line> <body> <class>
 # Tries hermes (with retries). Marks the entry seen on success. Returns
@@ -83,8 +85,74 @@ Full log: $FILE"
   return 1
 }
 
-[ -f "$FILE" ] || exit 0
+# fleet-ops#4474 (part 1: one store): the Nish store is an open `question`
+# issue whose body carries `blocked-on: nish-decision` + a `question:`/
+# `options:` line. A CONFIRMED question (labelled `nish-reserved` or
+# `conference-approved` after the senior conference gate) is the ONLY thing
+# that may reach Nish's phone. This replaces the out-of-band NISH-ESCALATIONS.md
+# as the source of truth: read confirmed questions across the enrolled repos
+# and deliver each via hermes (deduped by $SEEN). NISH-ESCALATIONS.md rows are
+# migrated into `question` issues; the .md below becomes an archive.
+enrolled_repos() {
+    if [ -f "$INTAKE_JSON" ]; then
+        jq -r '.repos[]?.name' "$INTAKE_JSON" 2>/dev/null || true
+    fi
+}
+
+# Emit one line per confirmed question: "repo\ttissue_url\ttitle\tquestion\toptions"
+confirmed_questions() {
+    local repo
+    while IFS= read -r repo; do
+        [ -n "$repo" ] || continue
+        local out
+        out=$("$GH" issue list -R "Nishfleet/$repo" -l nish-reserved,conference-approved --state open --json number,title,body 2>/dev/null) || continue
+        printf '%s\n' "$out" | jq -r --arg repo "$repo" '.[] | [
+          $repo,
+          ("https://github.com/Nishfleet/" + $repo + "/issues/" + (.number|tostring)),
+          .title,
+          ((.body // "") | split("\n")[] | select(test("^question:")) | sub("^question:[[:space:]]*"; "")),
+          ((.body // "") | split("\n")[] | select(test("^options:")) | sub("^options:[[:space:]]*"; ""))
+        ] | @tsv'
+    done < <(enrolled_repos)
+}
+
+deliver_confirmed_questions() {
+    local failq=0 key
+    while IFS=$'\t' read -r repo url title q options; do
+        [ -n "$repo" ] && [ -n "$url" ] || continue
+        [ -n "$q" ] || continue
+        key=$(printf '%s' "$url" | sha256sum | cut -c1-32)
+        grep -qxF "$key" "$SEEN" 2>/dev/null && continue
+        local body
+        body="Q: $q"
+        [ -n "$options" ] && body="$body\nOptions: $options"
+        body="$body\nIssue: $url [repo $repo]"
+        # The outbound gate's urgent class-gate honours the MONEY-BOUNDARY
+        # bypass; a reserved-set question is the same "needs Nish" class.
+        if deliver "$key" "$title" "$body" "MONEY-BOUNDARY"; then
+            :  # deliver() already marks $SEEN on success
+        else
+            failq=1
+        fi
+    done < <(confirmed_questions 2>/dev/null || true)
+    return "$failq"
+}
+
 mkdir -p "$(dirname "$SEEN")"; touch "$SEEN"
+
+# Deliver confirmed question issues FIRST (fleet-ops#4474). A hermes failure on
+# any one is loud (exit 1) so the auditor owns a dead channel. The .md path
+# below stays for legacy rows until migration moves them into issues.
+qfail=0
+if command -v jq >/dev/null 2>&1; then
+    deliver_confirmed_questions || qfail=1
+fi
+
+if [ ! -f "$FILE" ]; then
+    # No legacy escalation file (migrated / archived). Still loud if a
+    # confirmed-question delivery failed above (fleet-ops#4474).
+    exit "${qfail:-0}"
+fi
 
 # Process substitution (not a pipe) so the while loop runs in THIS shell and
 # the fail flag propagates. grep exits 1 on no match; inside <(...) that does
@@ -205,8 +273,9 @@ for rec in "${prose[@]:-}"; do
 $marker" "$class" || prose_fail=1
 done
 
-# A failed delivery (entry-format OR prose; both paths exhausted) must be
+# A failed delivery (entry-format, prose, OR confirmed-question issue) must be
 # loud: exit 1 so OnFailure summons an auditor. A spurious trigger with
 # nothing to deliver exits 0.
-[ "$prose_fail" = 1 ] && fail=1
+[ "${prose_fail:-0}" = 1 ] && fail=1
+[ "${qfail:-0}" = 1 ] && fail=1
 exit "$fail"
