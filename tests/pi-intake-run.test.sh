@@ -181,3 +181,11 @@ bash "$here/pi-intake-tick-spawn-stagger.test.sh"
 # file, so the drill runs here instead of a new workflow line (workers
 # cannot edit .github/workflows/ci.yml).
 bash "$here/pi-intake-tick-blocked-filter-stale.test.sh"
+
+# --- 18. fleet-ops#4561 trigger oneshot no-block (CI hook) -------------
+# tests/pi-intake-trigger-no-block.test.sh drills that pi-intake-trigger
+# starts pi-intake@* with `systemctl --user start --no-block` so the 30s
+# oneshot does not inherit the intake tick's runtime and time out on slow
+# intakes. ci.yml lists this file, so the drill runs here instead of a
+# new workflow line (workers cannot edit .github/workflows/ci.yml).
+bash "$here/pi-intake-trigger-no-block.test.sh"
