@@ -500,3 +500,54 @@ fi
   || fail "scenario13: xai-oauth/grok-4.5 must still be written"
 ok "scenario13: grok decoy pruned from models.json => no grok__grok-* phantom ledger; xai-oauth still written (the #1380 prune)"
 unset FLEET_MODELS_JSON
+
+# --- 14. THE QUOTA-WALL-CLOBBER FIX: token 200 must NOT clear a quota wall ---
+# The 2026-09-06..09-08 loop (5 pi-scout-repair@0509 trips): the seat-
+# health extension recorded HTTP 402 "Grok Build usage balance exhausted"
+# (quota_exhausted, usable_at in the future) from the REAL completion path,
+# but the canary's /v1/models probe returned 200 (token auth is valid) and
+# wrote health_class=healthy onto the same ledger, clobbering the wall.
+# pick_seat then re-offered the drained seat, the scout/repair unit picked
+# it, 402'd, and failed. /v1/models 200 proves the TOKEN is valid, not that
+# the Grok Build USAGE balance has credit — a healthy downgrade must not
+# tear down an unexpired quota wall. Only the seat-health extension's own
+# 200-on-completion (or the comeback tool-using probe) may clear it.
+: >"$gh_log"; : >"$triage"
+mkdir -p "$GROK_HOME"
+printf '%s\n' "{\"dummy\":{\"key\":\"$FAKE_TOKEN\"}}" >"$AUTH_JSON"
+chmod 600 "$AUTH_JSON"
+printf '%s\n' "You are logged in with grok.com." >"$scratch/models.txt"
+export GROK_MODELS_FIXTURE="$scratch/models.txt"
+export GROK_MODELS_RC=0
+future_wall=$(date -u -d '+2 hours' +%Y-%m-%dT%H:%M:%SZ)
+# Pre-seed the xai-oauth/grok-4.6 ledger exactly as the seat-health
+# extension would after a 402: quota_exhausted, usable_at in the future.
+cat >"$PI_SEAT_HEALTH_LEDGER_DIR/xai-oauth__grok-4.6.json" <<WALL
+{
+  "provider": "xai-oauth",
+  "model": "grok-4.6",
+  "http_status": 402,
+  "health_class": "quota_exhausted",
+  "retryable": true,
+  "seat_dead": false,
+  "observed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "source": "provider_fetch",
+  "failure_mode": "quota_exhausted",
+  "usable_at": "$future_wall",
+  "consecutive_failure_count": 1
+}
+WALL
+write_xai_probe ok
+run_canary
+[[ "$env_rc" == "0" ]] || fail "scenario14: expected rc=0, got $env_rc ($env_out)"
+grep -q 'PRESERVE-QUOTA-WALL' <<<"$env_out" \
+  || fail "scenario14: must log PRESERVE-QUOTA-WALL ($env_out)"
+[[ "$(xai_oauth_ledger_class grok-4.6)" == "quota_exhausted" ]] \
+  || fail "scenario14: quota wall was clobbered by token probe — grok-4.6 must stay quota_exhausted"
+jq -e --arg u "$future_wall" '.usable_at == $u' "$PI_SEAT_HEALTH_LEDGER_DIR/xai-oauth__grok-4.6.json" >/dev/null \
+  || fail "scenario14: usable_at wall clock must be preserved unchanged"
+ok "scenario14: token 200 does NOT clear an unexpired quota wall (the 2026-09-06..09-08 wall-clobber loop fix)"
+unset FLEET_XAI_OAUTH_PROBE
+unset GROK_MODELS_FIXTURE
+unset GROK_MODELS_RC
+echo "OK: fleet-seat-live-validate: watcher-broken, unauthenticated, healthy, refresh-failed, dedup, class, timeout, grok-dead+xai-ok, grok-ok+xai-dead, heartbeat wiring, proxy-probe (#1441), prune (#1380), quota-wall-preserve (scenario14)"

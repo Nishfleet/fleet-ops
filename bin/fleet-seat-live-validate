@@ -178,6 +178,36 @@ _seat_key_guard() {
     return 1
 }
 
+# Does the existing ledger entry carry an UNEXPIRED quota wall for this
+# seat? The proxy /v1/models probe proves the TOKEN is auth-valid; it
+# cannot see the Grok Build USAGE balance, which is a separate prepaid
+# bucket (fleet-ops#3176-class: HTTP 402 "Grok Build usage balance
+# exhausted" while the token still 200s on /v1/models). A healthy write
+# here would clobber the quota_exhausted/quota_bench wall the seat-health
+# extension set from the real 402, re-offering a drained seat on the next
+# pick (5 pi-scout-repair@0509 trips 2026-09-06..09-08). Returns 0 when a
+# future-dated quota wall exists (caller must NOT downgrade to healthy);
+# 1 when no wall, the wall is expired, or the file is unreadable
+# (fail-open: a flaky read must never brick the healthy path).
+_seat_quota_wall_holds() {
+    local provider="$1" model="$2" path hc usable bench wall_end wall_e now_e
+    path=$(seat_ledger_path "$provider" "$model")
+    [[ -f "$path" ]] || return 1
+    hc=$(jq -r '.health_class // ""' "$path" 2>/dev/null || true)
+    case "$hc" in
+        quota_exhausted|quota_bench) ;;
+        *) return 1 ;;
+    esac
+    usable=$(jq -r '.usable_at // ""' "$path" 2>/dev/null || true)
+    bench=$(jq -r '.bench_until // ""' "$path" 2>/dev/null || true)
+    wall_end="${bench:-$usable}"
+    [[ -n "$wall_end" ]] || return 1
+    now_e=$(date -u +%s)
+    wall_e=$(date -u -d "${wall_end%Z}" +%s 2>/dev/null || echo 0)
+    [[ "$wall_e" =~ ^[0-9]+$ ]] || return 1
+    (( wall_e > now_e ))
+}
+
 # Write one per-seat ledger record. Never includes credential material.
 write_ledger() {
     local provider="$1" model="$2" http_status="$3" health_class="$4" seat_dead="$5" failure_mode="$6"
@@ -185,6 +215,19 @@ write_ledger() {
     # fleet-ops#3661: never write a ledger for a phantom seat key.
     if ! _seat_key_guard "$provider" "$model" "fleet-seat-live-validate"; then return 1; fi
     mkdir -p "$LEDGER_DIR"
+    # A token-liveness healthy write must not tear down a real quota wall:
+    # /v1/models 200 == token valid; HTTP 402 on completions == the Grok
+    # Build usage balance is drained. Those are orthogonal facts. Only the
+    # seat-health extension's own 200-on-completion (or the comeback
+    # tool-using probe) may clear the wall. Skip the healthy write, keep
+    # the extension's record untouched, log loud so the heartbeat can see
+    # that the drained seat is STILL walled.
+    if [[ "$health_class" == "healthy" ]] && _seat_quota_wall_holds "$provider" "$model"; then
+        local held_until
+        held_until=$(jq -r '(.bench_until // .usable_at // "")' "$(seat_ledger_path "$provider" "$model")" 2>/dev/null || true)
+        log "PRESERVE-QUOTA-WALL $provider/$model: /v1/models 200 proves token auth, not usage balance; existing quota wall (until ${held_until:-unknown}) held — seat stays walled"
+        return 0
+    fi
     observed=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     if [[ "$health_class" == "healthy" ]]; then
         retryable=true
