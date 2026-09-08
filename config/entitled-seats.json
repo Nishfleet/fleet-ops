@@ -22,7 +22,7 @@
     {
       "id": "cursor",
       "class": "prepaid-quota",
-      "note": "Cursor subscription. 2026-09-08 (fleet-ops#4455): kimi-k3-max / kimi-k3-high added as JUDGE/ORCHESTRATOR-ONLY models on this seat (never worker-tier), drawing the Ultra 'Other Models' $400/month bucket through the hourly fable-fleet-check-kimi judge unit + senior/planner/spec/adjudication/conference packets. Model cap 4, no fast/low variants, on-demand overage limit never spent."
+      "note": "Cursor subscription. 2026-09-08 (fleet-ops#4455): kimi-k3-max / kimi-k3-high added as JUDGE/ORCHESTRATOR-ONLY models on this seat (never worker-tier), drawing the Ultra 'Other Models' $400/month bucket through the hourly fable-fleet-check-kimi judge unit + senior/planner/spec/adjudication/conference packets. Model cap 4, no fast/low variants, on-demand overage limit never spent. 2026-09-08 (fleet-ops#4466): the Ultra plan's included 'Grok Bot' agent meter (xAI's desktop/mobile app agent, separate from the Cursor-Models and SuperGrok buckets; resets weekly) is NOT-WIREABLE — xAI's Grok Bot is a GUI app agent that runs on Cursor/xAI's cloud with no CLI, no headless/`--print` mode, no API, and no GitHub-app integration; its auth is an interactive Cursor-account browser login sealed inside the app. Unlike the `cursor` CLI and `xai-oauth` seats it has no driveable surface, so it is not added as a seat (docs: docs.x.ai/grok-bot/faq, docs.x.ai/grok-bot/overview). Recorded in memory `grok-bot-not-wireable.md`; matches the Freebuff precedent. Re-check only if a Grok Bot CLI, headless mode, API, or GitHub-app integration appears."
     },
     {
       "id": "grok",
@@ -54,6 +54,12 @@
       "id": "alibaba-coding",
       "class": "prepaid-quota",
       "note": "Alibaba Model Studio Token Plan Personal Standard mid tier (fleet-ops#4329, Nish 2026-09-07; RE-SCOPED 2026-09-08 #4445). $18/mo, credits per 7-day window, 3-4 concurrent, service PAUSES at the window cap, no rollover, no credits API (console only). Provider cap 0 (2026-09-08): NO worker use of ANY alibaba model — every model is cap 0 (intentional_cap_zero=judge_hold, dated reasons). qwen3.8-max is on the senior/judge roster (senior_seats_in_order) as a JUDGE ONLY, inert until the config-driven judge_only worker gate lands (fleet-ops#4445 follow-up). The prior 2026-09-07 worker re-shape (7 models, cap 3) burned the full 7-day window in ~11h (#4445) and is withdrawn. HTTP 429/402 = quota wall, not a transient fault."
+    },
+    {
+      "id": "paretoinference",
+      "class": "prepaid-quota",
+      "quota_window": "daily",
+      "note": "Pareto Inference Pareto Pass (fleet-ops#4453, Nish 2026-09-08). $3/week -> up to $20 of model usage each day; daily allowance expires at 23:59, unused $ is lost (https://docs.paretoinference.com/pareto-pass.md). Workers deepseek/deepseek-v4-flash + z-ai/glm-5.3-flash only, cap 4, glm-5.3 cap 0 (money_only). Spend-metered to $19.50/day on the existing prepaid-usage counter (token-derived; usage.cost reports 0.0 on the Pass). Drawn FIRST among prepaid worker seats (expiry-first rule). Never a judge/senior seat. 401 = bad key (fail loud); 429 = quota/concurrency wall (bench 15 min, not seat-dead)."
     },
     {
       "id": "minimax",

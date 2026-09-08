@@ -164,6 +164,10 @@ bin/fleet-debug-playbook /home/nish/.local/bin/fleet-debug-playbook
 # but forgot to close (the forgotten-Closes-trailer class). Heartbeat-tier1;
 # close gated behind FLEET_MERGED_PR_CLOSE_OK=1.
 bin/fleet-merged-pr-close /home/nish/.local/bin/fleet-merged-pr-close
+# fleet-ops#4468: dead-conflicting-PR detector — flag CONFLICTING open PRs
+# whose parent issue is MERGED/CLOSED (fail-loud exit 1). Runs as
+# ExecStartPre of the fleet-merged-pr-close unit; no new timer.
+bin/fleet-dead-pr-detector /home/nish/.local/bin/fleet-dead-pr-detector
 # fleet-ops#526: session-close lint for "interventions get eliminated,
 # not repeated". Heartbeat-tier1 block 20; fail-loud + auto-file on a
 # third identical correction in the window.
@@ -191,6 +195,13 @@ lib/slo_budget.py /home/nish/.local/lib/pi-packet/slo_budget.py
 # the issue's rollback contract); the gauges land in fleet.prom on the
 # existing 5-min tick. Same install dir as the other lib modules.
 lib/fleet-deploy-quality.py /home/nish/.local/lib/pi-packet/fleet-deploy-quality.py
+# fleet-ops#4459: rate-card USD math shared by measure.sh and the exporter's
+# fleet_usd_24h metric (like fleet-deploy-quality.py, lazy-loaded inside
+# libexec/fleet-metrics-export.py, no service change).
+lib/fleet_usd.py /home/nish/.local/lib/pi-packet/fleet_usd.py
+# fleet-ops#4459: the usd_24h / usd_per_merged_pr snapshot the judge header's
+# third line and the weekly seat table consume.
+measure.sh /home/nish/.local/bin/measure.sh
 systemd/pi-issue@.service /home/nish/.config/systemd/user/pi-issue@.service
 systemd/pi-issue-failed@.service /home/nish/.config/systemd/user/pi-issue-failed@.service
 systemd/app-pi\x2dissue.slice /home/nish/.config/systemd/user/app-pi\x2dissue.slice
@@ -229,6 +240,10 @@ systemd/fleet-metrics-export.service.d/10-git-mirrors.conf /home/nish/.config/sy
 # fault cannot fail Prometheus export.
 libexec/fleet-waste-export.py /home/nish/.local/libexec/fleet-waste-export.py
 systemd/fleet-metrics-export.service.d/waste-ledger.conf /home/nish/.config/systemd/user/fleet-metrics-export.service.d/waste-ledger.conf
+# fleet-ops#4460: blind-spot counters for the weekly review and the judge.
+# Read by the judge's measure.sh (new_measures_7d / caught_by_hand_7d from
+# the decisions-ledger + fable-state). Pure logic, no new timer.
+libexec/fleet-blindspot-count.py /home/nish/.local/libexec/fleet-blindspot-count.py
 # fleet-ops#2757: canary effectiveness family. Piggybacks the existing 5-min
 # fleet-metrics-export tick (no new timer). Leading '-' so a canary-
 # effectiveness fault cannot fail Prometheus export. Installs under

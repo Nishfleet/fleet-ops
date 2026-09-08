@@ -25,6 +25,11 @@ Usage:
   python3 lib/agent-ready-spec-gate.py check-body --repo fleet-ops
   python3 lib/agent-ready-spec-gate.py check-size
   python3 lib/agent-ready-spec-gate.py check-size --body FILE --comments FILE --labels JSON
+
+An oversized issue is exempt when it carries the `umbrella` label, or when the
+body/comments carry a live `decision-resolved: ... split ...` line — an
+orchestrator's written overrule of one split bounce. Strike the line through to
+restore the bounce.
   python3 lib/agent-ready-spec-gate.py verify --repo-root DIR
 
 Exit codes:
@@ -105,6 +110,17 @@ REQUIRED_RE = re.compile(
     r"(?im)^(?:[-*]\s+)*required(?:[^:\n]*)\s*:\s*"
 )
 
+# An orchestrator may overrule the split bounce in writing, on the issue.
+# Without this the bounce is a loop: the judge reads the packet, decides the
+# requirements are one change, relabels agent-ready — and the next intake tick
+# re-counts the same required: lines and re-posts `blocked-on: split`
+# (0509#1383, bounced twice on 2026-09-08 after the decision). The marker must
+# name the split it overrules, so it is deliberate rather than pasted, and it
+# runs through live_text() so striking it through restores the bounce.
+ADJUDICATED_RE = re.compile(
+    r"(?im)^(?:\*\*|[-*]\s+)*decision-resolved\s*:\s*(.*)$"
+)
+
 
 def _moves_metric(text: str) -> str | None:
     """Return the named metric when the body carries a valid moves: line."""
@@ -132,6 +148,15 @@ def live_text(text: str | None) -> str:
 def count_required(text: str | None) -> int:
     """Count live required: field lines in body and/or comments."""
     return sum(1 for _ in REQUIRED_RE.finditer(live_text(text)))
+
+
+def has_size_adjudication(*texts: str | None) -> bool:
+    """True when a live `decision-resolved:` line overrules the split bounce."""
+    for text in texts:
+        for match in ADJUDICATED_RE.finditer(live_text(text)):
+            if "split" in (match.group(1) or "").lower():
+                return True
+    return False
 
 
 def has_umbrella(labels_raw: str | None) -> bool:
@@ -230,6 +255,12 @@ def cmd_check_size(args: argparse.Namespace) -> int:
         print(f"SPEC-GATE: size-ok umbrella ({n} required:)")
         return 0
     if n > MAX_REQUIRED:
+        if has_size_adjudication(body, comments):
+            print(
+                f"SPEC-GATE: size-ok adjudicated ({n} required:; "
+                "decision-resolved overrules split)"
+            )
+            return 0
         print(f"split me: {n} requirements; one requirement per issue")
         print("blocked-on: split")
         return 1

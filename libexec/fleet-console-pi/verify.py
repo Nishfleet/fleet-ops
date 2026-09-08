@@ -156,6 +156,15 @@ SPECS = {
         "tolerance": {"mode": "exact"},
         "runner": "fleet_paused",
     },
+    "questions": {
+        "cmd": (
+            "gh search issues --owner Nishfleet --state open --label question "
+            "(count of open question issues org-wide == tile count)"
+        ),
+        "field": "count",
+        "tolerance": {"mode": "exact"},
+        "runner": "questions_gh",
+    },
 }
 
 
@@ -518,6 +527,30 @@ def run_fleet_paused(tile):
     return 1 if PAUSED_MARKER.exists() else 0
 
 
+def run_questions_gh(tile):
+    """Count open `question` issues org-wide (GitHub is the store).
+
+    Exact mirror of collect_questions' population search, so a faithful
+    tile and its verifier count the SAME set (fleet-ops#1157 same-source
+    pattern). A gh transport blip is a SKIP, not a DISPUTE.
+    """
+    if SKIP_GH:
+        raise VerifyError("gh skipped")
+    out = subprocess.run(
+        [GH, "search", "issues", "--owner", ORG, "--state", "open",
+         "--label", "question", "--json", "number"],
+        capture_output=True, text=True, timeout=VERIFY_TIMEOUT,
+    )
+    if out.returncode != 0:
+        raise VerifyError(
+            f"gh search rc={out.returncode}: {(out.stderr or '')[:160]}"
+        )
+    try:
+        return len(json.loads(out.stdout or "[]"))
+    except (json.JSONDecodeError, TypeError) as e:
+        raise VerifyError(f"gh search parse: {e}") from e
+
+
 def run_open_prs_gh_spot(tile):
     repo = _spot_repo(tile)
     displayed = _item_count_for_repo(tile, repo)
@@ -553,6 +586,7 @@ RUNNERS = {
     "repairs_units": run_repairs_units,
     "running_pi_execstart": run_running_pi_execstart,
     "fleet_paused": run_fleet_paused,
+    "questions_gh": run_questions_gh,
     "open_prs_gh_spot": run_open_prs_gh_spot,
     "shipped_gh_spot": run_shipped_gh_spot,
 }

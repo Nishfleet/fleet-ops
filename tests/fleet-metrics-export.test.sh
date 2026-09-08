@@ -1553,6 +1553,13 @@ bash "$here/fleet-gh-rate-limit.test.sh" || fail "fleet-gh-rate-limit tests fail
 # .github/workflows/**).
 bash "$here/console-shipped-24h-race.test.sh" || fail "console-shipped-24h-race tests failed"
 
+# fleet-ops#4459: rate-card USD spend rail (measure.sh usd_24h line, the shared
+# lib/fleet_usd.py math, and the fleet_usd_24h / fleet_usd_per_merged_pr prom
+# family the exporter emits). Hosted here because fleet-metrics-export.test.sh
+# is directly listed in ci.yml and the worker App cannot push
+# .github/workflows/** (P14 hosting rule, fleet-ops#4459).
+bash "$here/fleet-usd-spend.test.sh" || fail "fleet-usd-spend tests failed"
+
 # =========================================================================
 # 15. fleet-ops#2493: held wrapper spawn-bench outranks a later healthy
 #     observation. The seat-health extension's after_provider_response

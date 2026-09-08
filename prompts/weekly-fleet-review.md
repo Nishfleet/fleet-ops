@@ -50,6 +50,33 @@ and proposes up to 5 changes that move the bar. Same seat, different lens.
 Fail loud if any `*.sync-conflict-*` exists under
 `/home/nish/workspaces/tooling/nish-vault`.
 
+## Caught by hand this week (FIRST section the review opens with)
+
+Everything in this section comes from the week's `decisions-ledger.md`
+entries, the judge's `new-measure:` header lines, and Nish's Telegram/chat
+corrections — the things no metric surfaced first. The weekly review opens
+with these, before any lens: this is the blind-spot detector (fleet-ops#4460).
+The judge only sees what its `measure.sh` measures; the review exists to
+catch what the judge is blind to.
+
+1. **List every finding caught by hand this week.** Read the week's
+   `decisions-ledger.md` entries (fleet-ops#4460), the judge's
+   `new-measure: <what>` header lines in the fable-check run output
+   (agent-state clock, trailing 7 days), and any Nish Telegram/chat
+   correction from this week. For each, answer: which `measure.sh` line now
+   covers it (cite the commit), or file the missing measure line as an
+   `agent-ready` issue inside the review's ≤5 actions.
+2. **Red review.** A finding caught by hand TWICE with no `measure.sh` line
+   covering it is a RED review: it is a blind spot the fleet chose not to
+   close, and the review must say so explicitly and file the measure line
+   as an action before anything else.
+3. **Use the counts.** `measure.sh` prints `new_measures_7d=<n>` and
+   `caught_by_hand_7d=<n>` from the decisions-ledger + fable-state. Confirm
+   the review's own counts against them. The metric is
+   `caught_by_hand_7d` trending to 0 and
+   `new_measures_7d >= caught_by_hand_7d` every week: every caught-by-hand
+   item must have a measure line that same week.
+
 ## Phase 1 — BLIND 8-lens research (write each lens to its own file)
 
 The spec says "blind" — each lens is written **without** reading the
@@ -61,6 +88,29 @@ eight lenses:
   claim-reconcile backlogs, time-to-merge, agents per seat, daily rate of
   new `agent-ready` issues, the ratio of triage-passed to triage-stuck.
   Use `gh search issues` / `gh issue list` to pull the numbers live.
+
+  **Stale CONFLICTING-PR namecheck (fleet-ops#4471)** — every run must also
+  pull the fleet-ops open-PR queue and NAME every PR that is
+  `mergeable:CONFLICTING` AND older than 7 days, regardless of its
+  originating issue's state. A conflicting branch can never auto-merge and
+  holds stale code a worker may mistake for live intent; a 7-day-old
+  conflicting branch is either a fix that needs a rebase-and-land or a dead
+  branch that needs close-with-evidence. Run
+  `gh pr list -R Nishfleet/fleet-ops --state open --json number,title,mergeable,updatedAt`;
+  for each entry that is `mergeable:CONFLICTING` and last updated more than
+  7 days ago, resolve the originating issue (`Closes/Relates to/fixes #N` in
+  the PR body, or the named issue chain) and name its state in the lens
+  output: either file a rebase-and-land action, or close the branch with a
+  dated, evidence-bearing comment (grep proof the intent landed elsewhere or
+  the feature was retired). This makes the sweep mechanical rather than
+  hand-picked. Do NOT run a raw poller/sleep loop; one live query per run.
+
+  **Dead-conflicting-PR detector (fleet-ops#4468)** — then run
+  `bash bin/fleet-dead-pr-detector` and name `dead_conflicting_prs=<n>` in
+  the lens findings — the permanence check for the fleet-ops#4468 sweep is
+  the count sitting at 0 for two consecutive weeks (a non-zero count means
+  an open CONFLICTING PR whose parent issue already resolved; each one
+  blocks auto-merge and pits stale code against live intent).
 - **L2 output QUALITY** — deep-read a SAMPLE of this week's merged PRs
   (at least 5, more if cheap). Judge, do not count. For each, name one
   specific thing the PR did right AND one specific thing it could have
@@ -73,6 +123,11 @@ eight lenses:
   recent cron-output. Identify any unit that ran but produced no value.
   Read `fleet_waste_ratio` and the per-lane `fleet_waste_empty_runs_24h`
   / `fleet_waste_retries_24h` families (fleet-ops#1211 waste ledger).
+  Then run `bash measure.sh` for the rate-card USD: build the seat table
+  as $/merged PR per seat that week (metered USD from `fleet_usd_24h`
+  summed per provider / that seat's merged PRs; flat seats use their
+  `flat_usd_per_month` share; unreadable seats are `UNAVAILABLE:<why>`, never
+  $0) and name the worst seat by $/merge (fleet-ops#4459).
   WasteRatioRising is a trend alert that feeds this lens; it does not page.
 
   **Deletion review (recurring lens, fleet-ops#1531)** — every run re-scores

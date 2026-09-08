@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+# bin/timer-manifest-guard — INSTALL-TIME gate so a live timer cannot exist
+# without a repo-sourced MANIFEST entry (fleet-ops#4472).
+#
+# The live check (tests/timer-manifest.test.sh, fleet-ops#1460) catches an
+# unmanaged timer only AFTER it is installed. This guard stops an unmanaged
+# timer AT the creation rail, so the fleet's single most repeated defect
+# (#3198/#3317/#3336/#3338/#4128/#4218/#4247/#4327/#4291/#4400) is prevented
+# instead of detected after the fact.
+#
+# For each UNIT (a systemd user .timer unit name) a caller is about to
+# install, this guard exits non-zero unless the unit has an entry in the
+# manifest (systemd/timer-manifest.json) `timers` map, either:
+#   - an exact name match, or
+#   - a template match (pi-intake@0509.timer -> pi-intake@.timer).
+#
+# The ONLY escape from the manifest is --unmanaged with a DATED reason
+# (must start YYYY-MM-DD). There is NO blanket allowlist: every escape names
+# the timer and the date, and the reason must read as the adopt-or-delete
+# deadline for that unit (fleet-ops#4472 acceptance 4). A repo-sourced
+# systemd/*.timer file can NEVER be excused this way — repo-owned units must
+# have a MANIFEST entry (the live check hard-fails them), so the signal is
+# not weakened.
+#
+# Fails closed: if the manifest cannot be read, a .timer install is REFUSED.
+#
+# Flags:
+#   --manifest PATH    Manifest JSON to check against (default: the repo's
+#                      systemd/timer-manifest.json, resolved next to the
+#                      script or via FLEET_OPS_DIR).
+#   --unmanaged REASON Dated one-line escape reason (must start YYYY-MM-DD).
+#                      Only permitted for non-repo, hand-placed timers.
+#
+# Exit:
+#   0  every guarded timer has a manifest entry — or --unmanaged dated reason
+#   2  any timer missing a manifest entry without a dated escape (it NAMES
+#      the missing timer), usage error, or unreadable manifest (fail-closed)
+
+set -euo pipefail
+
+# Resolve the real script dir so this stays correct when invoked through a
+# symlink (the installed /home/nish/.local/bin/pi-systemd-run -> deploy clone).
+SCRIPT_SRC="${BASH_SOURCE[0]}"
+if command -v readlink >/dev/null 2>&1; then
+    SCRIPT_SRC="$(readlink -f "$SCRIPT_SRC" 2>/dev/null || echo "$SCRIPT_SRC")"
+fi
+HERE="$(cd "$(dirname "$SCRIPT_SRC")" && pwd)"
+# Repo root that owns this guard (bin/ is directly under it).
+REPO_ROOT_DEFAULT="${FLEET_OPS_DIR:-$(cd "$HERE/.." && pwd)}"
+
+usage() {
+    cat <<'EOF' >&2
+usage: timer-manifest-guard [--manifest PATH] [--unmanaged 'YYYY-MM-DD reason'] UNIT...
+
+Refuse to install a user .timer unit that has no entry in systemd/timer-manifest.json.
+    The only escape is --unmanaged with a DATED (YYYY-MM-DD ...) reason that names the
+    timer and its adopt-or-delete deadline. Repo-sourced systemd/*.timer files can never
+    be excused this way. Fails closed when the manifest cannot be read.
+EOF
+    exit 2
+}
+
+manifest=""
+unmanaged=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --manifest)
+            [[ $# -ge 2 ]] || usage
+            manifest="$2"
+            shift 2
+            ;;
+        --unmanaged)
+            [[ $# -ge 2 ]] || usage
+            unmanaged="$2"
+            shift 2
+            ;;
+        -h|--help) usage ;;
+        --)
+            shift
+            break
+            ;;
+        -*) echo "timer-manifest-guard: unknown flag: $1" >&2; usage ;;
+        *) break ;;
+    esac
+done
+
+[[ $# -ge 1 ]] || usage
+
+if [[ -z "$manifest" ]]; then
+    manifest="$REPO_ROOT_DEFAULT/systemd/timer-manifest.json"
+fi
+
+# Dated-reason escape: must start YYYY-MM-DD. This is the ONLY thing that
+# keeps a hand-placed timer from failing the guard — never a bare allowlist.
+if [[ -n "$unmanaged" ]]; then
+    [[ "$unmanaged" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2} ]] \
+        || { echo "timer-manifest-guard: --unmanaged reason must start with a YYYY-MM-DD date, got: $unmanaged" >&2; exit 2; }
+fi
+
+if [[ ! -r "$manifest" ]]; then
+    echo "timer-manifest-guard: manifest not readable (failing CLOSED): $manifest" >&2
+    exit 2
+fi
+if ! jq -e '.timers' "$manifest" >/dev/null 2>&1; then
+    echo "timer-manifest-guard: manifest has no .timers map (failing CLOSED): $manifest" >&2
+    exit 2
+fi
+
+decline=0
+for unit in "$@"; do
+    [[ "$unit" == *".timer" ]] || unit="$unit.timer"
+    unit="${unit%.service}"
+
+    # Exact match.
+    if jq -e --arg t "$unit" '.timers[$t]' "$manifest" >/dev/null 2>&1; then
+        echo "timer-manifest-guard: OK $unit (manifest entry)"
+        continue
+    fi
+    # Template match: pi-intake@0509.timer -> pi-intake@.timer.
+    if [[ "$unit" == *"@"* ]]; then
+        tbase="${unit%%@*}@.timer"
+        if jq -e --arg t "$tbase" '.timers[$t]' "$manifest" >/dev/null 2>&1; then
+            echo "timer-manifest-guard: OK $unit (template '$tbase')"
+            continue
+        fi
+    fi
+
+    # No manifest entry. The only escape is a dated --unmanaged reason.
+    if [[ -n "$unmanaged" ]]; then
+        echo "timer-manifest-guard: UNMANAGED $unit ($unmanaged) — dated reason permits install"
+        continue
+    fi
+
+    echo "timer-manifest-guard: REFUSE $unit — no entry in systemd/timer-manifest.json (add a manifest entry, delete the timer, or pass --unmanaged 'YYYY-MM-DD <reason>' with an adopt-or-delete deadline)" >&2
+    decline=1
+done
+
+[[ "$decline" -eq 0 ]] || exit 2
+exit 0

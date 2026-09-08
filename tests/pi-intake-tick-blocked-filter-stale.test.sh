@@ -19,6 +19,12 @@
 #   - gh lookup failure -> blocked (fail-safe, never claim on a lookup error)
 #   - the tick calls blocked_filter with the repo + issue number context
 #   - shellcheck is clean on the tick
+# fleet-ops#3575: comment-level blocked-on lines must also block (the worker
+#   bounce protocol puts machine-readable blocked-on: lines in a COMMENT, not
+#   the body). Prove:
+#   - blocked-on only in comments (open target)   -> blocked
+#   - blocked-on only in comments (closed target) -> stale, claimable
+#   - the tick passes fetched comments to blocked_filter
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -31,10 +37,10 @@ ok()   { echo "OK: $*"; }
 [[ -f "$tick" ]] || fail "lib/pi-intake-tick.sh missing"
 command -v jq >/dev/null 2>&1 || fail "jq missing"
 
-# === Test 1: the tick calls blocked_filter with repo + issue context ========
-grep -qF 'blocked_filter "$body" "$FULL" "$N"' "$tick" \
-    || fail "tick must call blocked_filter with repo + issue number context"
-ok "Test 1: tick passes repo + issue number to blocked_filter"
+# === Test 1: the tick calls blocked_filter with repo + issue + comments context ==
+grep -qF 'blocked_filter "$body" "$FULL" "$N" "$comments"' "$tick" \
+    || fail "tick must call blocked_filter with repo, issue number and comments context"
+ok "Test 1: tick passes repo + issue number + comments to blocked_filter"
 
 # === Test 2: blocked_filter resolves closed/merged targets via stubbed gh ====
 scratch=$(mktemp -d)
@@ -56,6 +62,8 @@ case "$1" in
       repos/Nishfleet/0509/pulls/12) echo '{"state":"closed","merged":true}'; exit 0 ;;
       repos/Nishfleet/0509/issues/13) echo '{"state":"closed","pull_request":{}}'; exit 0 ;;
       repos/Nishfleet/0509/pulls/13) echo '{"state":"closed","merged":false}'; exit 0 ;;
+      repos/Nishfleet/0509/issues/14) echo '{"state":"open"}'; exit 0 ;;
+      repos/Nishfleet/0509/issues/15) echo '{"state":"closed"}'; exit 0 ;;
       *) echo '{"message":"Not Found"}' >&2; exit 1 ;;
     esac ;;
   *) echo "unexpected gh $*" >&2; exit 1 ;;
@@ -137,6 +145,37 @@ if ! blocked_filter "blocked-on: #999" "Nishfleet/0509" "50"; then
     fail "gh lookup failure must stay blocked (fail-safe)"
 fi
 ok "Test 2k: gh lookup failure -> blocked (fail-safe)"
+
+# === fleet-ops#3575: comment-level blocked-on lines ==========================
+# The worker bounce protocol writes machine-readable blocked-on: lines in a
+# COMMENT. A body-only scan lets such an issue re-claim forever. blocked_filter
+# must scan comments (4th arg) the same way it scans the body, incl. its
+# live-state staleness resolution.
+
+# 2i. blocked-on only in comments, OPEN target -> blocked
+if ! blocked_filter "body has no blocker" "Nishfleet/0509" "50" "bounce: dep open
+blocked-on: #14"; then
+    fail "comment-level blocked-on (open target) must stay blocked"
+fi
+ok "Test 2l: comment blocked-on (open) -> blocked"
+
+# 2j. blocked-on only in comments, CLOSED target -> stale, claimable
+if blocked_filter "body has no blocker" "Nishfleet/0509" "50" "blocked-on: #15"; then
+    fail "comment-level blocked-on (closed target) must be stale (claimable)"
+fi
+ok "Test 2m: comment blocked-on (closed) -> stale, claimable"
+
+# 2k. mixed body + comment blockers, all closed -> stale, claimable
+if blocked_filter "blocked-on: #10" "Nishfleet/0509" "50" "blocked-on: #15"; then
+    fail "body+comment all-closed blockers must be stale (claimable)"
+fi
+ok "Test 2n: body+comment all-closed -> stale, claimable"
+
+# 2l. no comments arg -> unchanged single-scan behavior (backward compat)
+if blocked_filter "no blocker here" "Nishfleet/0509" "50"; then
+    fail "no blocked-on anywhere must be claimable"
+fi
+ok "Test 2o: no comments arg -> unchanged body-only behavior"
 
 # === Test 3: shellcheck ======================================================
 if command -v shellcheck >/dev/null 2>&1; then

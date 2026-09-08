@@ -92,6 +92,11 @@
       "cap": 2,
       "class": "metered",
       "reason": "2026-08-27: MiniMax-M3 direct metered ($0.30/M in, $1.20/M out per models.json cost field). cap 2 per metered discipline; last-bucket so subscription seats burn down first. Raise only with yield evidence.",
+      "usd_per_1m_input": 0.3,
+      "usd_per_1m_output": 1.2,
+      "usd_per_1m_cached": 0.06,
+      "flat_usd_per_month": null,
+      "_rate_card": "fleet-ops#4459 2026-09-08: MiniMax-M3 per-token rate card, measured from config/pi-models.json minimax/models[0] cost: $0.30/M in / $1.20/M out / $0.06/M cached (per-1M USD, dated 2026-09-08). class=metered so usd_24h counts the marginal spend.",
       "models": {
         "MiniMax-M3": 2
       }
@@ -314,6 +319,11 @@
       "quota_window": "weekly",
       "weekly_budget": 30,
       "quota_bench_default_s": 604800,
+      "usd_per_1m_input": 2.0,
+      "usd_per_1m_output": 6.0,
+      "usd_per_1m_cached": 0.5,
+      "flat_usd_per_month": null,
+      "_rate_card": "fleet-ops#4459 2026-09-08: grok-4.6 per-token rate card, measured from config/pi-models.json xai-oauth/models[0] cost: $2.00/M in / $6.00/M out / $0.50/M cached (per-1M USD, dated 2026-09-08). Paid via the SuperGrok subscription; the meter reads marginal spend.",
       "models": {
         "grok-4.6": 2,
         "grok-4.5": {
@@ -328,6 +338,11 @@
     "straitly": {
       "cap": 2,
       "class": "metered",
+      "usd_per_1m_input": 0.4225,
+      "usd_per_1m_output": 0.845,
+      "usd_per_1m_cached": 0.0356,
+      "flat_usd_per_month": null,
+      "_rate_card": "fleet-ops#4459 2026-09-08: straitly deepseek/deepseek-v4-pro per-token rate card, measured from config/pi-models.json straitly/models[0] cost: $0.4225/M in / $0.845/M out / $0.0356/M cached (per-1M USD, dated 2026-09-08). class=metered so usd_24h counts marginal spend.",
       "models": {
         "deepseek/deepseek-v4-pro": 2
       },
@@ -378,6 +393,11 @@
       "cap": 4,
       "class": "prepaid-quota",
       "quota_bench_default_s": 86400,
+      "usd_per_1m_input": 0.13,
+      "usd_per_1m_output": 0.27,
+      "usd_per_1m_cached": 0.01,
+      "flat_usd_per_month": null,
+      "_rate_card": "fleet-ops#4459 2026-09-08: runinfra deepseek-v4-flash per-token rate card, measured from config/pi-models.json runinfra/models[0] cost: $0.13/M in / $0.27/M out / $0.01/M cached (per-1M USD, dated 2026-09-08).",
       "models": {
         "deepseek-v4-flash": 4
       },
@@ -387,6 +407,11 @@
       "cap": 2,
       "class": "prepaid-quota",
       "quota_bench_default_s": 86400,
+      "usd_per_1m_input": 0.08,
+      "usd_per_1m_output": 0.1,
+      "usd_per_1m_cached": 0.003,
+      "flat_usd_per_month": null,
+      "_rate_card": "fleet-ops#4459 2026-09-08: DeepSeek V4 Flash 0731 (Q8_0 via CrofAI) per-token rate card, measured from config/pi-models.json crof/models[0] cost: $0.08/M in / $0.10/M out / $0.003/M cached (per-1M USD, dated 2026-09-08). class=prepaid-quota so the metered marginal spend is usage x rate. zenmux paid deepseek-v4-flash carries the same DeepSeek list price (fleet-ops#4205: $0.22/$0.66/$0.007 on zenmux at ~4x this). Used by measure.sh usd_24h and the fleet_usd_24h prom metric.",
       "models": {
         "deepseek-v4-flash-0731": 2
       },
@@ -396,10 +421,33 @@
       "cap": 2,
       "class": "prepaid-quota",
       "quota_bench_default_s": 86400,
+      "usd_per_1m_input": 0.09,
+      "usd_per_1m_output": 0.17,
+      "usd_per_1m_cached": 0.09,
+      "flat_usd_per_month": null,
+      "_rate_card": "fleet-ops#4459 2026-09-08: entrim deepseek-ai/DeepSeek-V4-Flash per-token rate card, measured from config/pi-models.json entrim/models[0] cost: $0.09/M in / $0.17/M out / $0.09/M cached (per-1M USD, dated 2026-09-08).",
       "models": {
         "deepseek-ai/DeepSeek-V4-Flash": 2
       },
       "_comment_entrim": "fleet-ops#4262 (Nish 2026-09-07): Entrim (https://api.entrim.ai/v1, model deepseek-ai/DeepSeek-V4-Flash, key resolved by '!cut -d= -f2 /home/nish/fleet2/etc/entrim.env') is a WORKER seat, cap 2, class prepaid, NOT audition. contextWindow 1M (capable=1). quota_bench_default_s 86400 (24h): a quota/cap 429 with no explicit reset window benches a day. 402-as-balance-wall: HTTP 402 = prepaid balance exhausted — MONEY wall (Nish-only top-up), never a transient fault; the seat-dead quota-age rule turns a 24h-old 402 into a billing-repair corpse. No max_probe_ceiling: cap stays pinned at 2 (no upward AIMD probe on a paid seat). cacheRead=input until measured (pi-models.json)."
+    },
+    "paretoinference": {
+      "cap": 4,
+      "max_probe_ceiling": 8,
+      "class": "prepaid-quota",
+      "quota_bench_default_s": 900,
+      "daily_budget_usd": 20,
+      "daily_stop_usd": 19.5,
+      "models": {
+        "deepseek/deepseek-v4-flash": 4,
+        "z-ai/glm-5.3-flash": 4,
+        "z-ai/glm-5.3": {
+          "cap": 0,
+          "intentional_cap_zero": "money_only",
+          "reason": "2026-09-08 (fleet-ops#4453): GLM 5.3 is 35x the flash price ($2.80/$8.80/$0.52 per 1M vs deepseek-v4-flash $0.081/$0.162/$0.016) — never a worker seat. Registered in pi-models.json so enumerate_seats emits it, then capped 0 here. Not stale - never auto-expire."
+        }
+      },
+      "_comment_paretoinference": "fleet-ops#4453 (Nish 2026-09-08): Pareto Inference Pareto Pass (https://docs.paretoinference.com/pareto-pass.md, https://docs.paretoinference.com/errors.md, base https://api.paretoinference.com/v1, key via '!cut -d= -f2 /home/nish/fleet2/etc/paretoinference.env'). $3/week -> up to $20 of model usage each day; daily allowance EXPIRES at 23:59 (unused $ is lost), so it is FIRST among prepaid worker seats (expiry-first, rule 6) ahead of ollama. WORKER seat, cap 4, max_probe_ceiling 8 (AIMD +1 on clean/zero-error like the devin pattern, hold after the first concurrency 429), class prepaid-quota, never a judge/senior seat. Two worker models: deepseek/deepseek-v4-flash (primary) and z-ai/glm-5.3-flash (second, same price for diversity); z-ai/glm-5.3 capped 0 (money_only). daily_budget_usd 20 is the Pass's real daily allowance; the seats stop at daily_stop_usd 19.50 (margin below the cap so the first 200-after-reset re-probe and cleanup never blow past 20). Error model (https://docs.paretoinference.com/errors.md): 401 bad key (fail loud, credentials_bad), 429 = quota OR concurrency wall ('retry after waiting and reducing concurrent requests'), key rotation does NOT reset the allowance, reset is daily (timezone undocumented) — bench 15 min (quota_bench_default_s 900) then re-probe, never a seat-dead corpse. Spend meter: token-derived (usage.cost reports 0.0 on the Pass) x the rate card into the existing prepaid-usage counter (usd_today) — fleet-ops#4453."
     },
     "alibaba-coding": {
       "cap": 0,
@@ -488,8 +536,9 @@
     "opencode",
     "xkiro"
   ],
-  "_comment_prepaid_order": "2026-09-07 Nish (switch the zenmux workload to crof): crof moved ahead of runinfra because it is the cheapest measured DeepSeek V4 Flash seat - the 166M-token 2026-09-07 day that billed $5.00 on the paid ZenMux lane at DeepSeek list price ($0.22/$0.007/$0.66) costs ~$1.95 on crof ($0.08/$0.003/$0.10) and ~$4.10 on runinfra ($0.13/$0.01/$0.27), so the cheapest seat is drawn first; the paid zenmux slug is parked at cap 0 in the same change.",
+  "_comment_prepaid_order": "2026-09-07 Nish (switch the zenmux workload to crof): crof moved ahead of runinfra because it is the cheapest measured DeepSeek V4 Flash seat - the 166M-token 2026-09-07 day that billed $5.00 on the paid ZenMux lane at DeepSeek list price ($0.22/$0.007/$0.66) costs ~$1.95 on crof ($0.08/$0.003/$0.10) and ~$4.10 on runinfra ($0.13/$0.01/$0.27), so the cheapest seat is drawn first; the paid zenmux slug is parked at cap 0 in the same change. 2026-09-08 (fleet-ops#4453): paretoinference added FIRST ahead of ollama by the expiry-first standing rule — its Pareto Pass daily allowance ($20/day) EXPIRES at 23:59 and unused $ is lost, so it is drawn before non-expiring balances (ollama/devin/crof/runinfra/entrim).",
   "prepaid_providers_in_order": [
+    "paretoinference",
     "ollama",
     "devin",
     "cline",

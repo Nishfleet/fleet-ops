@@ -256,4 +256,13 @@ rm -f "$ORIGIN_MANIFEST"
 timer_count=$(echo "$ALL_LIVE_TIMERS" | grep -c '\.timer' || true)
 manifest_count=$(jq -r '.timers | keys | length' "$MANIFEST")
 ok "all $timer_count live user timers have manifest entries ($manifest_count manifest entries total)"
+
+# fleet-ops#4472: host the install-time guard drill so it runs in hosted CI
+# without a workflow-file edit (nishfleet-worker cannot push .github/workflows/
+# **; the P14 test-listing gate requires every new test to be listed in ci.yml,
+# hosted by a listed test, live, or a known orphan — this file is listed).
+# The guard drill proves the install-time gate fires (negative + positive),
+# the mechanical prevention on top of this after-the-fact live check.
+bash "$SCRIPT_DIR/timer-guard.test.sh" || fail "timer-guard drill failed (install-time timer-MANIFEST gate, fleet-ops#4472)"
+
 exit 0

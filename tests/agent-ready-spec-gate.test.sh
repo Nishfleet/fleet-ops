@@ -228,6 +228,51 @@ grep -q 'split me: 7 requirements; one requirement per issue' <<<"$seven_out" \
   || fail "seven required: must print split me: 7 (out=$seven_out)"
 ok "(o) seven-requirement packet (today's evidence shape) bounces"
 
+# 0509#1383: the judge overruled the split bounce, relabeled agent-ready, and
+# the very next tick re-counted the same lines and re-bounced it. A live
+# decision-resolved: line naming the split must end that loop.
+printf '%s\n' \
+  '- required: first' \
+  '- required: second' \
+  '- required: third' \
+  'decision-resolved: no split - the three bullets are one wiring change' \
+  >"$scratch/adjudicated.md"
+set +e
+adj_out=$(python3 "$py" check-size --body "$scratch/adjudicated.md" 2>&1)
+adj_rc=$?
+set -e
+[[ "$adj_rc" == "0" ]] || fail "decision-resolved must overrule the split (rc=$adj_rc out=$adj_out)"
+grep -q 'adjudicated' <<<"$adj_out" || fail "adjudicated output must say so (out=$adj_out)"
+ok "(p1) a decision-resolved: line overrules the split bounce"
+
+# The overrule may arrive as a comment, which is where an orchestrator posts it.
+printf '%s\n' 'DECISION (judge): keep as one packet' \
+  'decision-resolved: no split - one wiring change' >"$scratch/adj-comment.md"
+set +e
+adjc_out=$(python3 "$py" check-size --body "$scratch/three.md" --comments "$scratch/adj-comment.md" 2>&1)
+adjc_rc=$?
+set -e
+[[ "$adjc_rc" == "0" ]] || fail "decision-resolved in a comment must count (rc=$adjc_rc out=$adjc_out)"
+ok "(p2) the overrule counts when posted as a comment"
+
+# Not a blank cheque: a decision-resolved: line about anything else, or one
+# struck through, leaves the bounce standing.
+printf '%s\n' '- required: first' '- required: second' '- required: third' \
+  'decision-resolved: use the App identity for the push' >"$scratch/adj-other.md"
+set +e
+other_out=$(python3 "$py" check-size --body "$scratch/adj-other.md" 2>&1)
+other_rc=$?
+set -e
+[[ "$other_rc" == "1" ]] || fail "an unrelated decision-resolved: must not exempt (rc=$other_rc out=$other_out)"
+printf '%s\n' '- required: first' '- required: second' '- required: third' \
+  '~~decision-resolved: no split - superseded~~' >"$scratch/adj-struck.md"
+set +e
+struck_adj_out=$(python3 "$py" check-size --body "$scratch/adj-struck.md" 2>&1)
+struck_adj_rc=$?
+set -e
+[[ "$struck_adj_rc" == "1" ]] || fail "a struck overrule must restore the bounce (rc=$struck_adj_rc out=$struck_adj_out)"
+ok "(p3) unrelated or struck-through decision-resolved: lines do not exempt"
+
 printf '%s\n' '- accept: a' '- accept: b' '- accept: c' >"$scratch/accepts.md"
 set +e
 acc_out=$(python3 "$py" check-size --body "$scratch/accepts.md" 2>&1)
