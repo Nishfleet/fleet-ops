@@ -16,12 +16,24 @@ Metric family:
   fleet_product_merged_24h{repo="0509"}          non-revert merges / 24h
                                                  (single source for the
                                                  console shipped_24h tile)
+  fleet_product_signups_24h                       users created / 24h (0509 D1)
+  fleet_product_activated_24h                     signups with first brief ≤5min
+  fleet_product_paying_customers_total            users on a non-free plan
+  fleet_product_briefs_delivered_24h              sent deliveries / 24h
   fleet_product_slo_last_run_seconds             organ heartbeat (always)
+
+The last four (fleet-ops#4456) are the product OUTCOME half — merges are
+DELIVERY, these are whether a user was actually gained. They are read from
+0509's D1 via the sanctioned Cloudflare token (fleet-ops#1166) and are
+emitted ABSENT when that source is unreachable — never a fabricated 0
+(Prometheus absent() surfaces the gap).
 
 Sources:
   - config/intake-repos.json repos[] (product candidates)
   - config/self-maintenance-repos.json (control-plane exclusion)
   - gh GraphQL search of merged PRs per product repo (cached, 4m TTL)
+  - 0509 D1 (fleet-ops#4456): user / user_plan / delivery_attempt via the
+    sanctioned Cloudflare token; absent on unreachable
 
 Piggybacks fleet-metrics-export.service via
 systemd/fleet-metrics-export.service.d/product-slo.conf — no new timer
@@ -33,7 +45,9 @@ Environment seams (tests):
   FLEET_PRODUCT_SLO_OUT, FLEET_PRODUCT_SLO_NOW, FLEET_PRODUCT_SLO_FIXTURE,
   FLEET_PRODUCT_SLO_GH, FLEET_PRODUCT_SLO_CACHE, FLEET_PRODUCT_SLO_TTL,
   FLEET_PRODUCT_SLO_STALE, FLEET_PRODUCT_SLO_INTAKE,
-  FLEET_PRODUCT_SLO_SELF_MAINT, FLEET_PRODUCT_SLO_ORG, HOME
+  FLEET_PRODUCT_SLO_SELF_MAINT, FLEET_PRODUCT_SLO_ORG, HOME,
+  FLEET_PRODUCT_OUTCOME (skip → outcome gauges absent, offline tests),
+  FLEET_PRODUCT_CF_FILE / FLEET_PRODUCT_D1_ACCOUNT / FLEET_PRODUCT_D1_DATABASE
 """
 from __future__ import annotations
 
@@ -48,6 +62,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError as _HTTPError
+from urllib.request import Request, urlopen
 
 HOME = os.environ.get("HOME", "/home/nish")
 AS = Path(os.environ.get("AGENT_STATE", f"{HOME}/workspaces/agent-state"))
@@ -84,6 +100,28 @@ FIXTURE = os.environ.get("FLEET_PRODUCT_SLO_FIXTURE", "")
 NOW_ISO = os.environ.get("FLEET_PRODUCT_SLO_NOW", "")
 GH = os.environ.get("FLEET_PRODUCT_SLO_GH", "gh")
 ORG = os.environ.get("FLEET_PRODUCT_SLO_ORG", "Nishfleet")
+# fleet-ops#4456: product OUTCOME (not delivery) metrics come from 0509's D1
+# (users, plans, deliveries) read with the sanctioned VPS Cloudflare token
+# (fleet-ops#1166 deploy-ci.env). No new organ — same exporter tick, same
+# no-fail-open rule: when the source cannot be read the outcome gauges are
+# EMITTED ABSENT (a Prometheus absent() surfaces it), never a fabricated 0
+# (fleet-ops#4456 required: "no fabricated zeros; UNAVAILABLE, never 0").
+D1 = {
+    "account": os.environ.get("FLEET_PRODUCT_D1_ACCOUNT",
+                              "f670a698e17bf160c8e4679823e68916"),
+    "database": os.environ.get("FLEET_PRODUCT_D1_DATABASE",
+                                "746c6e3d-782e-443a-82d6-28ca93a16294"),
+}
+# The sanctioned CF token file (fleet-ops#1166). Same default as
+# lib/cf-token-canary.py. Never print the token value.
+CF_TOKEN_CANDIDATES = [
+    os.environ.get("FLEET_PRODUCT_CF_FILE", ""),
+    os.path.expanduser("~/.config/cloudflare/deploy-ci.env"),
+]
+# Offline/test seam: FLEET_PRODUCT_OUTCOME=skip makes _product_outcome return
+# None without any network call (the gauges then stay absent). This keeps the
+# offline unit test deterministic and proves the "no fabricated 0" rule.
+OUTCOME_SKIP = os.environ.get("FLEET_PRODUCT_OUTCOME", "")
 # fleet-ops#3416: 4m TTL. The shipped_24h tile reads this cache, so a
 # stale cache undercounts the trailing-24h window and disputes the console
 # verifier's abs<=2 tolerance. 5-min exporter tick refetches gh each tick
@@ -188,6 +226,34 @@ HELP_QCEIL = (
     "Alert rules pair the gauge above against this by (repo, metric)."
 )
 TYPE_QCEIL = "# TYPE fleet_product_quality_ceiling gauge"
+# fleet-ops#4456: product OUTCOME gauges — were signups/activation/paying/
+# briefs gained. Merges are delivery, these are the actual user gain. Read
+# from 0509 D1 (see _product_outcome). Emitted ABSENT when the source is
+# unreachable (never a fabricated 0) so Prometheus absent() stays honest.
+HELP_SU = (
+    "# HELP fleet_product_signups_24h Users created in 0509 D1 in the "
+    "trailing 24h (fleet-ops#4456). Source: 0509 D1 user.createdAt via the "
+    "sanctioned Cloudflare token. Absent when the source is unreachable."
+)
+TYPE_SU = "# TYPE fleet_product_signups_24h gauge"
+HELP_AC = (
+    "# HELP fleet_product_activated_24h Signups in the trailing 24h whose "
+    "first sent brief arrived within 5 minutes of signup (fleet-ops#4456). "
+    "Source: 0509 D1 user JOIN delivery_attempt. Absent when unreachable."
+)
+TYPE_AC = "# TYPE fleet_product_activated_24h gauge"
+HELP_PC = (
+    "# HELP fleet_product_paying_customers_total Users with a non-free plan "
+    "in 0509 D1 (fleet-ops#4456). Source: 0509 D1 user_plan. Absent when "
+    "unreachable."
+)
+TYPE_PC = "# TYPE fleet_product_paying_customers_total gauge"
+HELP_BD = (
+    "# HELP fleet_product_briefs_delivered_24h Sent deliveries in the "
+    "trailing 24h (fleet-ops#4456). Source: 0509 D1 delivery_attempt."
+    " Absent when unreachable."
+)
+TYPE_BD = "# TYPE fleet_product_briefs_delivered_24h gauge"
 HELP_HB = (
     "# HELP fleet_product_slo_last_run_seconds Epoch of the last "
     "product-slo export tick (organ heartbeat, fleet-ops#2755)."
@@ -968,6 +1034,118 @@ def repo_check(repo: str, now: datetime) -> dict[str, Any]:
     }
 
 
+def _read_cf_token() -> str | None:
+    """Return the sanctioned VPS Cloudflare API token, or None.
+
+    fleet-ops#1166: the token file lives at ~/.config/cloudflare/deploy-ci.env
+    and holds CLOUDFLARE_API_TOKEN=<value>. The value is NEVER printed or
+    logged; only whether one was found. Returns None (source unavailable)
+    when no candidate file has a non-empty token.
+    """
+    for cand in CF_TOKEN_CANDIDATES:
+        if not cand:
+            continue
+        try:
+            for line in Path(cand).read_text(
+                encoding="utf-8", errors="ignore"
+            ).splitlines():
+                line = line.strip()
+                prefix = "CLOUDFLARE_API_TOKEN="
+                if line.startswith(prefix):
+                    return line[len(prefix):].strip()
+        except (OSError, UnicodeDecodeError):
+            continue
+    return None
+
+
+_D1_QUERIES = {
+    "signups_24h": (
+        "SELECT COUNT(*) AS n FROM user "
+        "WHERE createdAt >= datetime('now','-1 day');"
+    ),
+    # Signups in the trailing 24h whose first SENT brief arrived within 5
+    # minutes of signup (the activation definition, fleet-ops#4456 BET 7).
+    "activated_24h": (
+        "SELECT COUNT(*) AS n FROM ("
+        "SELECT u.id FROM user u "
+        "JOIN delivery_attempt da ON da.user_id = u.id "
+        "WHERE u.createdAt >= datetime('now','-1 day') "
+        "AND da.status='sent' "
+        "AND (julianday(da.sent_at)-julianday(u.createdAt))*1440.0 <= 5.0 "
+        "GROUP BY u.id);"
+    ),
+    "paying_customers": (
+        "SELECT COUNT(DISTINCT user_id) AS n FROM user_plan "
+        "WHERE plan != 'free';"
+    ),
+    "briefs_delivered_24h": (
+        "SELECT COUNT(*) AS n FROM delivery_attempt "
+        "WHERE status='sent' AND sent_at >= datetime('now','-1 day');"
+    ),
+}
+
+
+def _product_outcome() -> dict[str, int] | None:
+    """Return {signups_24h, activated_24h, paying_customers,
+    briefs_delivered_24h} from 0509's D1, or None when the source is
+    unavailable. fleet-ops#4456: never return a fabricated 0 — Unavailable
+    means the gauges are emitted ABSENT (callers must not write a 0).
+    """
+    if OUTCOME_SKIP:
+        return None
+    token = _read_cf_token()
+    if not token:
+        print(
+            "product-slo: product outcome unavailable: no sanctioned "
+            "Cloudflare token (fleet-ops#4456)",
+            file=sys.stderr,
+        )
+        return None
+    url = (
+        "https://api.cloudflare.com/client/v4/accounts/"
+        f"{D1['account']}/d1/database/{D1['database']}/query"
+    )
+    out: dict[str, int] = {}
+    for key, sql in _D1_QUERIES.items():
+        payload = json.dumps({"sql": sql}).encode("utf-8")
+        req = Request(
+            url,
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except (OSError, ValueError, _HTTPError) as exc:
+            print(
+                f"product-slo: product outcome {key} unavailable: {exc}",
+                file=sys.stderr,
+            )
+            return None
+        if not data.get("success"):
+            print(
+                f"product-slo: product outcome {key} unavailable: "
+                f"cloudflare errors={data.get('errors')}",
+                file=sys.stderr,
+            )
+            return None
+        rows = (data.get("result") or [{}])[0].get("results") or []
+        try:
+            out[key] = int(rows[0]["n"])
+        except (IndexError, KeyError, TypeError, ValueError):
+            print(
+                f"product-slo: product outcome {key} unavailable: "
+                f"unexpected shape {rows!r}",
+                file=sys.stderr,
+            )
+            return None
+    return out
+
+
 def export_prom(slos: list[RepoSLO], *, now: datetime) -> str:
     lines: list[str] = [HELP_TP, TYPE_TP]
     for s in slos:
@@ -1019,6 +1197,15 @@ def export_prom(slos: list[RepoSLO], *, now: datetime) -> str:
                 f'fleet_product_quality_ceiling{{repo="{prom_label(repo)}",'
                 f'metric="{prom_label(metric)}"}} {val:.6f}'
             )
+    # fleet-ops#4456: product OUTCOME gauges from 0509 D1. Emitted only when
+    # the source is readable; when unavailable they are ABSENT (Prometheus
+    # absent() surfaces it) — never a fabricated 0.
+    outcome = _product_outcome()
+    if outcome is not None:
+        lines += ["", HELP_SU, TYPE_SU, f"fleet_product_signups_24h {outcome['signups_24h']}"]
+        lines += ["", HELP_AC, TYPE_AC, f"fleet_product_activated_24h {outcome['activated_24h']}"]
+        lines += ["", HELP_PC, TYPE_PC, f"fleet_product_paying_customers_total {outcome['paying_customers']}"]
+        lines += ["", HELP_BD, TYPE_BD, f"fleet_product_briefs_delivered_24h {outcome['briefs_delivered_24h']}"]
     lines += [
         "",
         HELP_HB,

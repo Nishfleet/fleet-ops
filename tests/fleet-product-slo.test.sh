@@ -18,6 +18,8 @@
 #       + ProductLeadTimeDegrading + ProductRevertRateHigh
 #   (i) config/fleet-organs.json registers the organ
 #   (j) console shipped_24h source is fleet_product_merged_24h
+#   (o) product OUTCOME gauges (signups/activated/paying/briefs, fleet-ops#4456)
+#       are emitted only when the D1 source is reachable — never a fabricated 0
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -150,8 +152,12 @@ ok "(a)(b)(c) throughput / lead-time-excludes-reverts / revert_rate"
 # CI, so the write fails before assertions run (FileNotFoundError, 2026-09-02).
 export FLEET_PRODUCT_SLO_OUT="$scratch/heartbeat.prom"
 python3 - "$helper" <<'PY' || fail "empty heartbeat failed"
-import importlib.util, sys
+import importlib.util, os, sys
 from datetime import datetime, timezone
+# fleet-ops#4456: force the offline path so the outcome gauges stay absent;
+# without this the test would probe 0509 D1 on a host with a real sanctioned
+# CF token and become non-deterministic.
+os.environ["FLEET_PRODUCT_OUTCOME"] = "skip"
 spec = importlib.util.spec_from_file_location("ps", sys.argv[1])
 m = importlib.util.module_from_spec(spec)
 sys.modules["ps"] = m
@@ -164,9 +170,51 @@ assert 'fleet_product_throughput_weekly{repo="0509"} 0' in body
 assert 'fleet_product_lead_time_days{repo="0509"} 0.000000' in body
 assert 'fleet_product_revert_rate{repo="0509"} 0.000000' in body
 assert 'fleet_product_merged_24h{repo="0509"} 0' in body
+# fleet-ops#4456: an unreachable source must emit NO outcome gauge, never a
+# fabricated 0.
+assert "fleet_product_signups_24h" not in body, body
+assert "fleet_product_activated_24h" not in body, body
+assert "fleet_product_paying_customers_total" not in body, body
+assert "fleet_product_briefs_delivered_24h" not in body, body
 print("OK: empty heartbeat")
 PY
-ok "(e) empty window emits heartbeat + zeros"
+ok "(e) empty window emits heartbeat + zeros; unreachable outcome source stays absent"
+
+# =========================================================================
+# (o) fleet-ops#4456: product OUTCOME gauges are emitted with real values when
+#     the D1 source is reachable, and only then.
+# =========================================================================
+python3 - "$helper" <<'PY' || fail "outcome emit failed"
+import importlib.util, os, sys
+from datetime import datetime, timezone
+# Reachable source: monkeypatch _product_outcome (the real one hits D1). The
+# export path must include exactly the four gauges with the returned values.
+os.environ["FLEET_PRODUCT_OUTCOME"] = "skip"  # keep import-side network off
+spec = importlib.util.spec_from_file_location("ps", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+sys.modules["ps"] = m
+spec.loader.exec_module(m)
+m._product_outcome = lambda: {
+    "signups_24h": 3,
+    "activated_24h": 2,
+    "paying_customers": 6,
+    "briefs_delivered_24h": 12,
+}
+
+now = datetime(2026, 9, 2, 12, 0, 0, tzinfo=timezone.utc)
+body = m.export_prom([m.RepoSLO(repo="0509")], now=now)
+assert "fleet_product_signups_24h 3" in body, body
+assert "fleet_product_activated_24h 2" in body, body
+assert "fleet_product_paying_customers_total 6" in body, body
+assert "fleet_product_briefs_delivered_24h 12" in body, body
+# HELP/TYPE each exactly once
+for metric in ("fleet_product_signups_24h", "fleet_product_activated_24h",
+               "fleet_product_paying_customers_total", "fleet_product_briefs_delivered_24h"):
+    assert body.count("# HELP " + metric) == 1, (metric, body)
+    assert body.count("# TYPE " + metric) == 1, (metric, body)
+print("OK: outcome gauges emitted from a reachable source")
+PY
+ok "(o) outcome gauges emitted with real values when the source is reachable"
 
 # =========================================================================
 # (f) main() end-to-end via fixture
