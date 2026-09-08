@@ -1527,7 +1527,7 @@ def _emit_usd_24h(lines, pr_counts):
             lines.append(_TYPE_USD_PER_PR)
             per = (metered + flat_share) / merged_total
             lines.append(
-                f'fleet_usd_per_merged_pr{{merged_prs={merged_total}}} {per:.6f}'
+                f'fleet_usd_per_merged_pr{{merged_prs="{merged_total}"}} {per:.6f}'
             )
     except Exception as exc:  # noqa: BLE001 — metric must never take main() down
         lines.append(f'# fleet_usd_24h UNAVAILABLE error: {_prom_label(str(exc))[:120]}')
