@@ -88,6 +88,29 @@ PY
 echo "$pyout" | grep -q "metered=0.183000" || fail "fleet_usd math wrong for 1M/1M/1M crof (expected 0.183000): $pyout"
 ok "lib/fleet_usd.py computes 0.183 for 1M/1M/1M crof (matching rate card)"
 
+# 4b. compute_usd_24h caches by file mtime so the 5-min exporter tick is cheap
+#     (the shared lib must not re-parse every session jsonl each run). Warm call
+#     returns identical results and hits the cache (fast, no re-parse).
+cache_out="$(
+python3 - <<PY
+time, os, sys, pathlib = __import__("time"), __import__("os"), __import__("sys"), __import__("pathlib")
+sys.path.insert(0, "$repo_root/lib")
+import fleet_usd
+fleet_usd._USD_FILE_CACHE.clear()
+rc = fleet_usd.load_rate_card("$caps")
+sess = pathlib.Path("$scratch/sessions")
+a1,_,_ = fleet_usd.compute_usd_24h(str(sess), rc)
+t0 = time.time()
+a2,_,_ = fleet_usd.compute_usd_24h(str(sess), rc)
+warm = time.time() - t0
+assert a1 == a2, "cache changed result"
+assert warm < 0.01, f"warm call should be cached (took {warm:.3f}s)"
+print("cache warm=%.4fs metered=%s OK" % (warm, sum(a2.values())))
+PY
+)"
+echo "$cache_out" | grep -q "OK" || fail "fleet_usd compute_usd_24h cache warm-read failed: $cache_out"
+ok "fleet_usd.py caches per-file by mtime so re-scans are cheap (no result drift)"
+
 # exporter emits fleet_usd_24h family from the same session tree.
 expout="$(
 SEAT_CAPS_JSON="$caps" FLEET_SESSIONS_DIR="$scratch/sessions" python3 - <<PY

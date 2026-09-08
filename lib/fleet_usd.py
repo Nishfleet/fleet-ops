@@ -20,6 +20,7 @@ UNAVAILABLE:<why> — never fabricated as $0 (fleet-ops#4459 required).
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 RATE_KEY_IN = "usd_per_1m_input"
@@ -137,6 +138,37 @@ def session_marginal_usd(path, rate_card, today_epoch=None, day_seconds=86400.0)
     return {"spend": spend, "missing": missing}
 
 
+# Per-file mtime-keyed cache so the exporter's 5-min tick does not re-parse
+# every session jsonl each run (12k+ files, ~30s cold). Keyed on (path, mtime,
+# day_seconds): a session jsonl is append-only, and the trailing-24h window only
+# slides forward (messages older than the window never re-enter it), so a cached
+# windowed result stays valid for an unchanged file across ticks.
+#   key -> {"spend": {prov: usd}, "missing": {prov}, "mtime": float}
+_USD_FILE_CACHE = {}
+_USD_CACHE_MAX = 4096
+
+
+def _cached_session_marginal(cache_key, rate_card, today_epoch, day_seconds):
+    """session_marginal_usd with an in-process mtime cache (see header)."""
+    path = cache_key
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return None
+    hit = _USD_FILE_CACHE.get(cache_key)
+    if hit and hit.get("mtime") == mtime and hit.get("day") == day_seconds:
+        return hit
+    res = session_marginal_usd(path, rate_card, today_epoch=today_epoch, day_seconds=day_seconds)
+    if res is None:
+        return None
+    entry = {"spend": res.get("spend") or {}, "missing": res.get("missing") or set(),
+             "mtime": mtime, "day": day_seconds}
+    if len(_USD_FILE_CACHE) >= _USD_CACHE_MAX:
+        _USD_FILE_CACHE.clear()
+    _USD_FILE_CACHE[cache_key] = entry
+    return entry
+
+
 def compute_usd_24h(sessions_dir, rate_card, now_epoch=None, day_seconds=86400.0):
     """Aggregate marginal USD over all session jsonl for the trailing 24h.
 
@@ -154,8 +186,8 @@ def compute_usd_24h(sessions_dir, rate_card, now_epoch=None, day_seconds=86400.0
     for path in sessions.rglob("*.jsonl"):
         if not path.is_file():
             continue
-        res = session_marginal_usd(str(path), rate_card, today_epoch=today, day_seconds=day_seconds)
-        if not res:
+        res = _cached_session_marginal(str(path), rate_card, today, day_seconds)
+        if res is None:
             continue
         for prov, usd in (res.get("spend") or {}).items():
             agg[prov] = agg.get(prov, 0.0) + usd
