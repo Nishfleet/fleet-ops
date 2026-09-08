@@ -508,7 +508,14 @@ while IFS= read -r repo; do
                     # intake tick skips labelled issues until the named
                     # runtime event fires or Nish closes the issue. No new
                     # timer.
-                    if "$GH" issue edit "$num" -R "$repo" --add-label awaiting-runtime-gate >/dev/null 2>&1; then
+                    # gh issue edit --add-label does NOT auto-create a missing
+                    # label (it fails "<name> not found"), so ensure the park
+                    # label exists first (idempotent --force). Without this the
+                    # add fails silently and the slow-spaced reclaim spin is NOT
+                    # stopped (fleet-ops#4540).
+                    "$GH" label create awaiting-runtime-gate -R "$repo" --color D4C5F9 \
+                        --description "Parked: protected issue + merged delivery PR awaiting a future runtime gate; do not claim (fleet-ops#4540)" --force >/dev/null 2>&1 || true
+                    if "$GH" issue edit "$num" -R "$repo" --add-label awaiting-runtime-gate --remove-label agent-ready >/dev/null 2>&1; then
                         log "  $repo#$num: PARKED (awaiting-runtime-gate added — intake skips re-claim, fleet-ops#4540)"
                     else
                         log "  $repo#$num: WARN: awaiting-runtime-gate label add failed — intake park detector will retry next tick"

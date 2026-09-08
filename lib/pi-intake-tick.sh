@@ -1691,6 +1691,12 @@ blocked-on: orchestrator" 2>/dev/null || true
             if printf '%s' "$_park_merged" | jq -e 'length > 0' >/dev/null 2>&1; then
                 _park_pr=$(printf '%s' "$_park_merged" | jq -r '.[0].number')
                 echo "issue $N ($title): skipped-parked-protected-merged ($_park_claims cumulative claims > cap $PARK_MAX_CLAIMS; merged PR #$_park_pr delivered it; awaiting runtime gate)" >&2
+                # fleet-ops#4540: gh issue edit --add-label does NOT auto-create a
+                # missing label (it fails \"<name> not found\"), so ensure the park
+                # label exists first (idempotent --force). Without this the add
+                # fails silently and the slow-spaced reclaim spin is NOT stopped.
+                gh label create awaiting-runtime-gate -R "$FULL" --color D4C5F9 \
+                    --description "Parked: protected issue + merged delivery PR awaiting a future runtime gate; do not claim (fleet-ops#4540)" --force >/dev/null 2>&1 || true
                 gh issue edit "$N" -R "$FULL" --add-label awaiting-runtime-gate --remove-label agent-ready 2>/dev/null || true
                 gh issue comment "$N" -R "$FULL" --body "fleet-ops#4540: issue $N is protected (owner-authored or critical-path) with a merged delivery PR (claim/issue-$N, PR #$_park_pr) and a \`termination:\` clause naming a future runtime event. observe-to-close stays comment-only on protected issues (fleet-ops#1435), so the issue stays OPEN by design — but it has been re-claimed ${_park_claims} times since the merge on a slow spin every anti-loop gate misses (#2462 counter resets on non-empty output; #2772 window sees only ~3 claims per 2h at the 15-min cooldown spacing). Parking it: labelled \`awaiting-runtime-gate\`, removed from agent-ready; the intake will not re-claim it until the named runtime event fires (clear the label then) or Nish closes the issue. No new timer." 2>/dev/null || true
                 continue

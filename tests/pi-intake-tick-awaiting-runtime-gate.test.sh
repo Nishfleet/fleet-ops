@@ -91,8 +91,8 @@ ok "Test 6: body fetch carries the author for the owner-authored check"
 # === Test 7: fleet-merged-pr-close parks on the protected-delivery path ===
 grep -qF 'fleet-ops#4540' "$close_bin" \
     || fail "bin/fleet-merged-pr-close missing the #4540 park block"
-grep -qF -- '--add-label awaiting-runtime-gate' "$close_bin" \
-    || fail "bin/fleet-merged-pr-close must add the awaiting-runtime-gate label on the protected-delivery path"
+grep -qF -- '--add-label awaiting-runtime-gate --remove-label agent-ready' "$close_bin" \
+    || fail "bin/fleet-merged-pr-close must add awaiting-runtime-gate AND remove agent-ready on the protected-delivery path (parked is not claimable)"
 park_line=$(grep -n -- '--add-label awaiting-runtime-gate' "$close_bin" | head -1 | cut -d: -f1)
 protected_note_line=$(grep -n 'post_note "$repo" "$num" "$murl" "$mnum" protected' "$close_bin" | head -1 | cut -d: -f1)
 [[ -n "$park_line" && -n "$protected_note_line" ]] || fail "park or protected-note line not found"
@@ -100,13 +100,31 @@ protected_note_line=$(grep -n 'post_note "$repo" "$num" "$murl" "$mnum" protecte
     || fail "the #4540 park label must be added after the protected observe-to-close note (same gated path)"
 ok "Test 7: fleet-merged-pr-close parks alongside the protected note (delivery path)"
 
-# === Test 8: shellcheck ===
+# === Test 8: the park label is ensured (created) before it is added ===
+# gh issue edit --add-label does NOT auto-create a missing label (it fails
+# "<name> not found"), so the park would silently no-op on a repo where the
+# label does not yet exist. Both writers must provision the label first
+# (idempotent --force), and the create must precede the add in source order.
+for f in "$tick" "$close_bin"; do
+    grep -qF 'label create awaiting-runtime-gate' "$f" \
+        || fail "$f: missing 'label create awaiting-runtime-gate' (gh issue edit --add-label cannot auto-create a missing label)"
+    grep -qF -- '--force' "$f" \
+        || fail "$f: label create must be idempotent (--force)"
+    create_line=$(grep -n 'label create awaiting-runtime-gate' "$f" | head -1 | cut -d: -f1)
+    add_line=$(grep -n -- '--add-label awaiting-runtime-gate' "$f" | head -1 | cut -d: -f1)
+    [[ -n "$create_line" && -n "$add_line" ]] || fail "$f: label create or add line not found"
+    (( create_line < add_line )) \
+        || fail "$f: label create (line $create_line) must precede the --add-label (line $add_line)"
+done
+ok "Test 8: awaiting-runtime-gate label is provisioned (create --force) before it is added in both writers"
+
+# === Test 9: shellcheck ===
 if command -v shellcheck >/dev/null 2>&1; then
     shellcheck -x "$tick" --severity=warning
     shellcheck -x "$close_bin" --severity=warning
-    ok "Test 8: shellcheck clean"
+    ok "Test 9: shellcheck clean"
 else
-    echo "SKIP: Test 8: shellcheck not installed"
+    echo "SKIP: Test 9: shellcheck not installed"
 fi
 
 echo "ALL OK: awaiting-runtime-gate park detector (fleet-ops#4540)"
