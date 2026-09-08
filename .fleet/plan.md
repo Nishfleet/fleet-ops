@@ -58,6 +58,7 @@ when all five are closed and `git grep -q "dead_conflicting_prs" origin/main
 
 - [x] phase 7: `git fetch origin` -> main advanced from 836e9af0 (branch base) to d4edac92 with 5 new merges (#4469 #4473 #4479 #4480 #4482)
 - [x] phase 7: `git rebase origin/main` clean (no conflicts); all 6 commits rebased
+- [x] phase 7 (re-entrancy resume, 2026-09-08): main advanced further 4edac92 -> 119ea6e8 (6 new merges incl. #4489 #1582 #4488 #2087 #4486 #4485). #4488 touched `prompts/weekly-fleet-review.md` (L1 stale-CONFLICTING namecheck, fleet-ops#4471) -> rebase conflict on commit d8497344. Resolved KEEPING both #4471's stale-namecheck block AND #4468's `dead_conflicting_prs` line (complementary sweeps). Rebase clean; diff re-scoped to the same 8 files.
 - [x] phase 7: re-run gates after rebase — diff is now scoped (8 files: detector, test, MANIFEST, service ExecStartPre, weekly-review L1, host runner, plan, pr-body) with no unrelated drift
 - [ ] phase 7: force-push rebased `claim/issue-4468` to origin so PR #4484's head points at the rebased tip
 
@@ -94,6 +95,22 @@ when all five are closed and `git grep -q "dead_conflicting_prs" origin/main
   net-positive-because), exec-review-canary OK, no-agent-names OK, token-efficiency
   OK, organ-heartbeat SKIP (not-an-organ), machinery-authorization-gate PASS,
   sgscan clean, p14 gate OK, ci-standards-audit OK, detector suite 14/14 OK.
+- phase 2 DEFECT FIX (re-entrancy resume): commit 0174770a had wrapped the
+  ExecStartPre with a leading `-` (```-/bin/bash -c ...```) claiming it only made
+  a missing-binary runtime error optional. Per systemd.service(5), a `-` prefix
+  on an ExecStartPre command makes ITS failure non-fatal — the unit is NOT
+  considered failed and OnFailure escalation never fires, which silently defeats
+  the whole fail-loud design (acceptance 3) and contradicts the plan + PR body
+  ("fails the unit (exit 1) so OnFailure escalation pages"). Corrected to
+  `ExecStartPre=/bin/bash -c ...` (no `-`), mirroring pi-scout's gate
+  (ExecCondition fail-loud) not its futility-tracker ('-'). `systemd-analyze
+  verify` passes identically with and without the `-` (verified). Detector suite
+  14/14 still green. NOT deployed / NOT in .local/bin yet (PR not merged), so no
+  live-state inconsistency.
+- re-entrancy NOTE: the PR (#4484) had gone `mergeable:CONFLICTING` because main
+  advanced past the phase-7 rebase base (d4edac92). Rebased onto current main
+  (119ea6e8) + resolved the weekly-fleet-review.md conflict, keeping #4471 +
+  #4468. After force-push the PR will be MERGEABLE again.
 
 ## Reviewer adjudication (phase 2/3 diff, reviewer seat pass)
 

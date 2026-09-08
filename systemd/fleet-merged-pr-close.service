@@ -27,10 +27,14 @@ WorkingDirectory=/home/nish
 # close pass. A CONFLICTING open PR whose parent issue is MERGED/CLOSED fails
 # the unit (exit 1) so OnFailure escalation pages instead of the dead branch
 # lingering until a manual sweep. No new timer: piggybacks this rail.
+# NO leading '-' on this ExecStartPre: a dead conflicting PR MUST fail the
+# unit so OnFailure escalates (systemd semantics: a '-' prefix would swallow
+# the detector's non-zero exit and the page would never fire — mirror the
+# pi-scout gate's fail-loud ExecCondition, not its futility-tracker '-').
 # Wrapped in `/bin/bash -c '...'` so the hosted-runner `systemd-analyze
 # verify` only validates `/bin/bash` (a real path on every runner); the
 # `exec ...` keeps the inner process as PID 1's child so signals propagate.
-ExecStartPre=-/bin/bash -c 'exec /home/nish/.local/bin/fleet-dead-pr-detector'
+ExecStartPre=/bin/bash -c 'exec /home/nish/.local/bin/fleet-dead-pr-detector'
 ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/fleet-merged-pr-close'
 TimeoutStartSec=10min
 # Never restart: the webhook (or the backstop timer) is the retry.
