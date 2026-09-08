@@ -305,14 +305,14 @@ d = json.load(open(sys.argv[1]))["ceilings"]
 assert d["0509"]["reverts_per_100_merges"] == 3.3, d
 # p50 of [10,20,15] sorted [10,15,20] = 15; 15 x 1.1 = 16.5 < 40 -> tightened
 assert d["0509"]["post_merge_defects_per_100"] == 16.5, d
-# p50 25 x 1.1 = 27.5 < 33 -> tightened
+# p50 25 x 1.1 = 27.5 < 115 (2026-09-09 mis-seed correction) -> tightened
 assert d["0509"]["sessions_to_pr_pct"] == 27.5, d
 PY
 ok "(j) tighten-ceilings write tightens all three measured ceilings"
 
 # never-loosens: a high p50 must leave the ceiling unchanged
 cat >"$scratch/loose-metrics.json" <<'JSON'
-{"0509": {"reverts_per_100_merges": [6.0, 4.0, 5.0], "post_merge_defects_per_100": [50.0], "sessions_to_pr_pct": [40.0]}}
+{"0509": {"reverts_per_100_merges": [6.0, 4.0, 5.0], "post_merge_defects_per_100": [50.0], "sessions_to_pr_pct": [120.0, 110.0, 118.0]}}
 JSON
 cp "$ratchet" "$scratch/ratchet-copy2.json"
 set +e
@@ -326,9 +326,9 @@ import json, sys
 d = json.load(open(sys.argv[1]))["ceilings"]["0509"]
 # p50 5 x 1.1 = 5.5 > 4.5 -> must stay 4.5
 assert d["reverts_per_100_merges"] == 4.5, d
-# p50 50 -> 55 > 40, stays 40; p50 40 -> 44 > 33, stays 33
+# p50 50 -> 55 > 40, stays 40; p50 118 -> 129.8 > 115, stays 115
 assert d["post_merge_defects_per_100"] == 40.0, d
-assert d["sessions_to_pr_pct"] == 33.0, d
+assert d["sessions_to_pr_pct"] == 115.0, d
 PY
 ok "(j) tighten-ceilings never loosens (high p50 leaves ceilings unchanged)"
 
