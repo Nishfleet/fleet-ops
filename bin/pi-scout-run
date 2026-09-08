@@ -87,6 +87,36 @@ if [[ "${PI_SEAT_SOURCE:-seat-lib}" == "litellm" ]]; then
 else
     seat=$(pick_seat "" "" "$need_capable" "" "$difficulty" "$scout_privacy" || true)
 fi
+# fleet-ops#2133-class: devin (and similar remote-agent CLIs) intermittently
+# hang for tens of minutes inside the pi session and then die with
+# "spawnSync <cli> ETIMEDOUT" (rc!=0, tools=0). The seat-health extension
+# only walls such a seat for 60s (cli_timeout default), so the hung seat is
+# re-offered almost immediately and burns the whole scout window again.
+# Mirror pi-issue-run's hang-bench: long run + ETIMEDOUT signature on stderr
+# => mark_seat_hang_bench so pick_seat skips the seat for the hang window.
+# PI_HANG_BENCH_MIN_S is env-overridable for tests; production default 300s.
+readonly SCOUT_HANG_BENCH_MIN_S="${PI_HANG_BENCH_MIN_S:-300}"
+run_seated_pi() {
+    local rc start_s end_s elapsed err_tmp
+    err_tmp=$(mktemp)
+    start_s=$(date +%s)
+    set +e
+    "$PI_BIN" --print --provider "$np" --model "$nm" 2> "$err_tmp"
+    rc=$?
+    set -e
+    end_s=$(date +%s)
+    elapsed=$((end_s - start_s))
+    if (( rc != 0 )) && (( elapsed > SCOUT_HANG_BENCH_MIN_S )) \
+        && grep -qiE 'spawnSync.*ETIMEDOUT|ETIMEDOUT.*spawnSync' "$err_tmp" 2>/dev/null; then
+        seat_log "pi-scout-run: $repo/$prompt_name LONG HANG spawnSync ETIMEDOUT on $np/$nm after ${elapsed}s (rc=$rc) — benching seat (hang_bench, fleet-ops#2133 class)"
+        if ! mark_seat_hang_bench "$np" "$nm" "$(cat "$err_tmp" 2>/dev/null || true)"; then
+            seat_log "pi-scout-run: WARN hang-bench marker NOT written for $np/$nm — relying on reactive ledger"
+        fi
+    fi
+    rm -f "$err_tmp"
+    return "$rc"
+}
+
 # A saturated seat pool is INFRASTRUCTURE, not a scout failure: the claim
 # workers won the seat race (intake bursts and the #4450 low-water trigger
 # fire on the same tick). Exiting 1 made systemd mark pi-scout@%i FAILED and
@@ -140,7 +170,7 @@ case "$prompt_name" in
             fi
             seat_log "pi-scout-run: $repo/$prompt_name research-seeded packet assembled"
             printf '\nlabel_budget = %s (fleet-ops#4450: derived from the drain rate; overrides the default above)\n' "$label_budget" >> "$packet"
-            "$PI_BIN" --print --provider "$np" --model "$nm" < "$packet"
+            run_seated_pi < "$packet"
         else
             {
                 cat "$prompt_file"
@@ -148,7 +178,7 @@ case "$prompt_name" in
                 echo "TARGET REPO: Nishfleet/${repo}"
                 echo
                 printf 'label_budget = %s (fleet-ops#4450: derived from the drain rate; overrides the default above)\n' "$label_budget"
-            } | "$PI_BIN" --print --provider "$np" --model "$nm"
+            } | run_seated_pi
         fi
         ;;
     scout-repair)
@@ -156,7 +186,7 @@ case "$prompt_name" in
             cat "$prompt_file"
             echo
             echo "TARGET: scout unit pi-scout@${repo}.service, repo Nishfleet/${repo}"
-        } | "$PI_BIN" --print --provider "$np" --model "$nm"
+        } | run_seated_pi
         ;;
     *)
         echo "pi-scout-run: unknown prompt name: $prompt_name" >&2
