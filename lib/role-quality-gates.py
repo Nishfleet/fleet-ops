@@ -139,6 +139,11 @@ NON_ROLE_UNIT_PREFIXES = (
     "fleet-gap-closure-drill",
     "fleet-gap-closure-loop",
     "gap-closure-drill",
+    # fleet-ops#375: chain-e2e drill. Synthetic-fault rehearsal of the whole
+    # failure chain — mechanical plumbing with no model of its own, same
+    # class as the gap-closure drill above.
+    "fleet-chain-e2e-drill",
+    "chain-e2e-drill",
     # fleet-ops#1495: agent-scheduler-drift is a mechanical drift detector
     # (standing-rules enforcement layer 3). It runs no model, owns no prompt
     # and produces no work items — same class as fleet-aeo-probe. Its own

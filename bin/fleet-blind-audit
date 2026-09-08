@@ -794,6 +794,25 @@ done < <(printf '%s\n' "$findings" | jq -c '.findings[]' 2>/dev/null)
     printf 'Filed: %s (cap %s). Unfiled PASS findings: %s.\n' "$filed" "$MAX_FINDINGS" "$unfiled_pass"
 } >> "$REPORT_MD"
 
+# fleet-ops#375: once per audit cycle, run the chain-e2e drill (whole-chain
+# DONE-proof). Piggyback on the existing cadence — no new scheduler. A
+# failing hop is a real finding: the drill appends its own LOUD line and the
+# detector->queue reconciler auto-files it, or (dry-run) this audit records it.
+if [ -x "$here/chain-e2e-drill" ] && [ "${AUDIT_RUN_CHAIN_E2E_DRILL:-1}" = "1" ]; then
+    # The audit's own dry-run flag governs the drill: a dry audit rehearses
+    # wiring only, a live audit runs the isolated fixture fault for real.
+    if CHAIN_E2E_DRY_RUN="${AUDIT_DRY_RUN:-1}" "$here/chain-e2e-drill" \
+        > "$REPORT_DIR/chain-e2e-drill.log" 2>&1; then
+        log "chain-e2e drill: PASS (all six hops)"
+    else
+        # The drill already appended a LOUD finding in live mode; here we
+        # surface the failure in the report without killing the audit.
+        log "chain-e2e drill: FAIL — see $REPORT_DIR/chain-e2e-drill.log"
+    fi
+else
+    log "chain-e2e drill: skipped (binary absent or AUDIT_RUN_CHAIN_E2E_DRILL=0)"
+fi
+
 log "audit complete: filed=$filed unfiled_pass=$unfiled_pass"
 if [ "$unfiled_pass" -gt 0 ]; then
     update_plan_stamp "last-blind-audit-run" "$NOW_ISO (failed, filed=$filed unfiled_pass=$unfiled_pass)"

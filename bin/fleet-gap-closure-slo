@@ -47,6 +47,24 @@ if [ -f "$STATE_DIR/drill-results.json" ]; then
         then ([.results[] | if .pass then 1 else 0 end] | add / length)
         else null end' "$STATE_DIR/drill-results.json" 2>/dev/null || echo "null")"
 fi
+# fleet-ops#375: the chain-e2e drill (whole-chain DONE-proof) writes its own
+# per-hop results; fold its pass rate into the snapshot beside the loop drill.
+chain_e2e_drill_pass_rate="null"
+CHAIN_E2E_STATE_DIR="${CHAIN_E2E_STATE_DIR:-/home/nish/workspaces/agent-state/chain-e2e}"
+if [ -f "$CHAIN_E2E_STATE_DIR/chain-e2e-drill-results.json" ]; then
+    chain_e2e_drill_pass_rate="$(jq -r '
+        if .all_pass == true then 1
+        elif .all_pass == false then 0
+        elif (.results // [] | length) > 0
+        then ([.results[] | if .pass then 1 else 0 end] | add / length)
+        else null end' "$CHAIN_E2E_STATE_DIR/chain-e2e-drill-results.json" 2>/dev/null || echo "null")"
+    # A torn/empty results file must read as null (unknown), never as a
+    # bogus green or a jq --argjson error.
+    case "$chain_e2e_drill_pass_rate" in
+        0|1|"null") : ;;
+        *) chain_e2e_drill_pass_rate="null" ;;
+    esac
+fi
 
 esc_to_nish="null"
 if command -v "$GH" >/dev/null 2>&1; then
@@ -113,6 +131,10 @@ if [ "$drill_pass_rate" != "null" ]; then
     awk_ok="$(awk -v d="$drill_pass_rate" 'BEGIN { print (d+0 >= 1) ? "true" : "false" }')"
     green="$awk_ok"
 fi
+if [ "$chain_e2e_drill_pass_rate" != "null" ]; then
+    awk_chain="$(awk -v d="$chain_e2e_drill_pass_rate" 'BEGIN { print (d+0 >= 1) ? "true" : "false" }')"
+    [ "$awk_chain" = "true" ] || green="false"
+fi
 if [ "$quality_green" != "true" ]; then
     green="false"
 fi
@@ -120,6 +142,7 @@ fi
 jq -c -n \
     --argjson green "$green" \
     --argjson drill_pass_rate "$drill_pass_rate" \
+    --argjson chain_e2e_drill_pass_rate "$chain_e2e_drill_pass_rate" \
     --argjson escalations_to_nish "$esc_to_nish" \
     --argjson pct_auto_repaired "$pct_auto_repaired" \
     --argjson starvation_minutes "$starvation_min" \
@@ -131,6 +154,7 @@ jq -c -n \
         pct_auto_repaired:$pct_auto_repaired,
         queue_starvation_minutes:$starvation_minutes,
         detector_drill_pass_rate:$drill_pass_rate,
+        chain_e2e_drill_pass_rate:$chain_e2e_drill_pass_rate,
         product_vs_control_plane_merge_ratio:$ratio,
         escalations_to_nish:$escalations_to_nish,
         quality:$quality,

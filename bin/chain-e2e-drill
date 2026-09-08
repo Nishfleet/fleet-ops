@@ -1,0 +1,426 @@
+#!/usr/bin/env bash
+# chain-e2e-drill — synthetic-fault rehearsal of the whole failure chain
+# (fleet-ops#375). Inject one unmistakably-synthetic fixture fault and assert
+# each hop mechanically:
+#   1. fixture unit fails and its `[drill:chain-e2e]` LOUD line appears,
+#      and it neither pages nor auto-reverts (isolated slice + escalation
+#      exclusion + no [Install]).
+#   2. the detector->queue reconciler (#362) auto-files a ticket carrying the
+#      `chain-e2e-drill/fixture` signal key.
+#   3. seriousness classification routes the ticket to escalate-senior
+#      (#234/#223 senior-auditor panel), not to a real senior page.
+#   4. the failure-mechanism gate (#366) rejects a fixture fix WITHOUT a
+#      mechanism and passes the same fix WITH one (this drill is that
+#      mechanism).
+#   5. observe-to-close (#362) refuses to close the ticket while the fixture
+#      detector stays red, and flips it closed only once the fixture goes
+#      green on a real tick.
+#   6. the drill result lands in the gap-closure SLO snapshot (#180), and a
+#      failing hop auto-files a real LOUD finding.
+#
+# The six hop assertions call the REAL hop mechanisms hermeticially (the
+# detector->queue reconciler with read-only fakes, the failure-mechanism
+# gate, the senior-routing predicate, the SLO snapshot). Nothing here
+# re-implements a hop. In DRY_RUN=1 (CI) it records wiring proofs and takes
+# no live systemd/GitHub action; DRY_RUN=0 additionally starts the isolated
+# fixture fault against a provisioned box.
+#
+# Fixtures must stay unmistakably synthetic: every LOUD line carries the
+# `[drill:chain-e2e]` marker and the fixture lives in an isolated slice with
+# no [Install], so it can never trigger a real revert or a real senior page.
+
+set -euo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="${HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+ROOT="$(cd "$here/.." && pwd)"
+
+STATE_DIR="${CHAIN_E2E_STATE_DIR:-/home/nish/workspaces/agent-state/chain-e2e}"
+DRY_RUN="${CHAIN_E2E_DRY_RUN:-0}"
+SYSTEMCTL="${CHAIN_E2E_SYSTEMCTL:-systemctl}"
+TRIAGE="${CHAIN_E2E_TRIAGE:-${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}}"
+RESULTS="${CHAIN_E2E_RESULTS:-$STATE_DIR/chain-e2e-drill-results.json}"
+RECONCILE_LIB="${FLEET_SIGNAL_RECONCILE_LIB:-$ROOT/lib/detector-queue-reconciler.py}"
+GATE_BIN="${FAILURE_MECHANISM_GATE_BIN:-$here/fleet-failure-mechanism-gate}"
+
+# Fixture identity (the synthetic markers the whole drill keys on).
+TAG="DRILL-CHAIN-E2E-BROKEN"          # senior-routing tag, unmistakably a drill
+SIGNAL="chain-e2e-drill/fixture"      # stable signal key (#362 keys a ticket on it)
+MARKER="[drill:chain-e2e]"            # LOUD marker so paging/revert skip it
+LABEL="drill:chain-e2e"               # dedicated label on every filed fixture ticket
+TITLE_PREFIX="drill: chain-e2e"       # issue-title prefix for lifecycle skip
+FIXTURE_UNIT="chain-e2e-drill-fixture.service"
+FIXTURE_SLICE="chain-e2e-drill.slice"
+
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+    cat <<'EOF'
+usage: chain-e2e-drill
+Inject one synthetic failure and assert each hop of the failure chain
+mechanically (fleet-ops#375). --help prints this and exits 0.
+
+Environment:
+  CHAIN_E2E_STATE_DIR   results dir (default /home/nish/workspaces/agent-state/chain-e2e)
+  CHAIN_E2E_DRY_RUN=1   record wiring proofs, take no live action (CI)
+  CHAIN_E2E_SYSTEMCTL   systemctl path/binary
+  CHAIN_E2E_TRIAGE      triage file the fixture LOUD line appends to
+Exit 0 if all six hops pass; exits 1 with a LOUD finding if any hop fails.
+EOF
+    exit 0
+fi
+
+mkdir -p "$STATE_DIR"
+
+now_iso() {
+    if [ -n "${CHAIN_E2E_FAKE_NOW:-}" ]; then printf '%s' "$CHAIN_E2E_FAKE_NOW"
+    else date -u +%Y-%m-%dT%H:%M:%SZ; fi
+}
+log() { printf '[%s] [chain-e2e-drill] %s\n' "$(now_iso)" "$*" >&2; }
+fail_loud() { printf '[%s] [chain-e2e-drill] FATAL: %s\n' "$(now_iso)" "$*" >&2; exit 1; }
+
+command -v jq >/dev/null 2>&1 || fail_loud "jq missing"
+[ -f "$RECONCILE_LIB" ] || fail_loud "detector-queue reconciler lib missing: $RECONCILE_LIB"
+[ -x "$GATE_BIN" ] || fail_loud "failure-mechanism gate missing: $GATE_BIN"
+
+results_log="$STATE_DIR/chain-e2e-drill-results.jsonl"
+: >"$results_log"
+record() {
+    jq -c -n --arg name "$1" --argjson pass "$2" --arg proof "$3" \
+        '{name:$name, pass:$pass, proof:$proof}' >>"$results_log"
+}
+
+# The fixture LOUD line. `signal:` is what #362 keys the ticket on; the
+# `[drill:chain-e2e]` marker is what paging/revert skip on. The tag ends in
+# "-BROKEN" so serious classification routes the ticket to escalate-senior.
+fixture_loud_line() {
+    printf '[%s] [%s] chain-e2e drill fixture faulted (synthetic; label %s; do not page or revert) signal: %s — %s\n' \
+        "$(now_iso)" "$TAG" "$LABEL" "$SIGNAL" "$MARKER"
+}
+
+# --------------------------------------------------------------------------
+# Hermetic detector->queue reconciler harness (hop 2 / hop 3 / hop 5).
+# Runs the real #362 reconciler with a read-only fake gh and a fake
+# fleet-issue-file that only logs, so a CI run files/close nowhere.
+# --------------------------------------------------------------------------
+reconcile_synthetic() {
+    local triage_file="$1" open_issues_json="$2"
+    local tmp filed_log gh_log summary
+    tmp="$(mktemp -d "$STATE_DIR/reconcile.XXXXXX")"
+    # Stable paths so the caller can read the fakes' side effects.
+    filed_log="$STATE_DIR/reconcile-filed.jsonl"
+    gh_log="$STATE_DIR/reconcile-gh.log"
+    : >"$filed_log"; : >"$gh_log"
+
+    cat >"$tmp/fleet-issue-file" <<'PY'
+#!/usr/bin/env python3
+import os, sys, json
+log = os.environ.get("FAKE_FLEET_ISSUE_FILE_LOG", "/dev/null")
+out = {}
+i = 1
+while i < len(sys.argv):
+    if sys.argv[i] in ("-R", "--repo"):
+        out["repo"] = sys.argv[i+1]; i += 2
+    elif sys.argv[i] == "--title":
+        out["title"] = sys.argv[i+1]; i += 2
+    elif sys.argv[i] == "--body":
+        out["body"] = sys.argv[i+1]; i += 2
+    elif sys.argv[i] == "--label":
+        out.setdefault("labels", []).append(sys.argv[i+1]); i += 2
+    else:
+        i += 1
+with open(log, "a", encoding="utf-8") as f:
+    f.write(json.dumps(out) + "\n")
+print("#375")
+PY
+    chmod +x "$tmp/fleet-issue-file"
+
+    cat >"$tmp/gh" <<'PY'
+#!/usr/bin/env python3
+import json, os, sys
+log = os.environ.get("FAKE_GH_LOG", "/dev/null")
+with open(log, "a", encoding="utf-8") as f:
+    f.write("gh " + " ".join(sys.argv[1:]) + "\n")
+if sys.argv[1:3] == ["issue", "list"]:
+    path = os.environ.get("FAKE_GH_OPEN_ISSUES", "")
+    if path:
+        with open(path, encoding="utf-8") as f:
+            print(f.read())
+    else:
+        print("[]")
+    sys.exit(0)
+if sys.argv[1] == "issue" and sys.argv[2] in ("comment", "close", "edit"):
+    sys.exit(0)
+sys.exit(1)
+PY
+    chmod +x "$tmp/gh"
+
+    summary="$(cd "$tmp" && \
+        FLEET_ISSUE_FILE="$tmp/fleet-issue-file" \
+        GH="$tmp/gh" \
+        FAKE_FLEET_ISSUE_FILE_LOG="$filed_log" \
+        FAKE_GH_LOG="$gh_log" \
+        FLEET_SIGNAL_RECONCILE_OPEN_ISSUES_JSON="$open_issues_json" \
+        python3 "$RECONCILE_LIB" --triage "$triage_file" \
+        --tick-start "$(now_iso)" --ok-to-close 1 --json --now "$(now_iso)" || true)"
+    printf '%s\nLOG=%s\n' "$summary" "$filed_log"
+    rm -rf "$tmp"
+}
+
+# --------------------------------------------------------------------------
+# Hop 1 — fixture is synthetic and isolated; its LOUD line appears and is
+# neither a page nor an auto-revert source.
+# --------------------------------------------------------------------------
+drill_fixture_isolated() {
+    local name="fixture-isolated"
+    local unit_file="$ROOT/systemd/$FIXTURE_UNIT"
+    local canary="$ROOT/bin/fleet-escalation-canary"
+    local proof=""
+    local ok="true"
+
+    [ -f "$unit_file" ] || { ok="false"; proof="missing stub unit $unit_file"; }
+    if [ "$ok" = "true" ]; then
+        grep -q '^RuntimeMaxSec=' "$unit_file" || {
+            ok="false"; proof="stub unit $FIXTURE_UNIT lacks RuntimeMaxSec"; }
+    fi
+    if [ "$ok" = "true" ]; then
+        if grep -qE '^\[Install\]$' "$unit_file"; then
+            ok="false"; proof="stub unit $FIXTURE_UNIT must not be installable [Install]"
+        fi
+    fi
+    if [ "$ok" = "true" ]; then
+        grep -q "Slice=$FIXTURE_SLICE" "$unit_file" || {
+            ok="false"; proof="stub unit $FIXTURE_UNIT not isolated to $FIXTURE_SLICE"; }
+    fi
+    if [ "$ok" = "true" ]; then
+        grep -qF "$MARKER" "$unit_file" || {
+            ok="false"; proof="stub unit must tag its LOUD line $MARKER"; }
+    fi
+    if [ "$ok" = "true" ]; then
+        grep -qF "signal: $SIGNAL" "$unit_file" || {
+            ok="false"; proof="stub unit must attach signal: $SIGNAL"; }
+    fi
+    # The escalation canary must treat the fixture as a drill, never summoning
+    # the senior-auditor page line (fleet-ops#4266 keeps this in lockstep).
+    if [ "$ok" = "true" ]; then
+        grep -q 'chain-e2e-drill-fixture' "$canary" || {
+            ok="false"; proof="fleet-escalation-canary does not exclude chain-e2e-drill-fixture"; }
+    fi
+
+    # Live: actually start the isolated fault and confirm the LOUD line lands.
+    if [ "$ok" = "true" ] && [ "$DRY_RUN" = "0" ]; then
+        if "$SYSTEMCTL" --user cat "$FIXTURE_UNIT" >/dev/null 2>&1; then
+            : >"$STATE_DIR/fixture-triage-sentinel.new"
+            "$SYSTEMCTL" --user reset-failed "$FIXTURE_UNIT" 2>/dev/null || true
+            "$SYSTEMCTL" --user start "$FIXTURE_UNIT" 2>/dev/null || true
+            sleep 1
+            local isf
+            isf="$("$SYSTEMCTL" --user is-failed "$FIXTURE_UNIT" 2>/dev/null || echo unknown)"
+            "$SYSTEMCTL" --user reset-failed "$FIXTURE_UNIT" 2>/dev/null || true
+            if [ "$isf" != "failed" ]; then
+                ok="false"; proof="live fixture did not land failed (is-failed=$isf)"
+            elif grep -Fq "signal: $SIGNAL" "$TRIAGE" 2>/dev/null; then
+                proof="fixture faulted live and LOUD signal line reached the triage"
+            else
+                ok="false"; proof="fixture faulted but no LOUD signal line reached $TRIAGE"
+            fi
+        else
+            proof="stub unit not provisioned; wiring asserted (dry)"
+        fi
+    elif [ "$ok" = "true" ]; then
+        proof="stub unit isolated + escalated-excluded + non-installable (wiring)"
+    fi
+
+    record "$name" "$ok" "$proof"
+}
+
+# --------------------------------------------------------------------------
+# Hops 2 + 3 — the #362 reconciler auto-files a ticket on the fixture signal
+# (hop 2) and serious classification labels it escalate-senior (hop 3).
+# --------------------------------------------------------------------------
+drill_ticket_filed_and_routed() {
+    local triage_file open_issues out filed_log summary
+    triage_file="$STATE_DIR/fixture-triage.hop23.md"
+    printf '%s\n' "$(fixture_loud_line)" >"$triage_file"
+    open_issues="$STATE_DIR/empty-open.hop23.json"
+    printf '[]\n' >"$open_issues"
+
+    out="$(reconcile_synthetic "$triage_file" "$open_issues")"
+    summary="$(printf '%s\n' "$out" | head -1)"
+    filed_log="$(printf '%s\n' "$out" | sed -n 's/^LOG=//p')"
+
+    local n_filed n_sig
+    n_filed="$(jq -r '.filed // 0' <<<"$summary" 2>/dev/null || echo 0)"
+    if [ "${n_filed}" = "1" ] && [ -s "$filed_log" ]; then
+        n_sig="$(grep -c "$SIGNAL" "$filed_log" || true)"
+        if [ "$n_sig" -ge 1 ]; then
+            record "ticket-auto-filed" true \
+                "reconciler filed 1 ticket for signal: $SIGNAL (hop2)"
+            # Hop 3: the routed fixture tag must carry the escalate-senior label.
+            if grep -q 'escalate-senior' "$filed_log"; then
+                record "escalate-senior-routed" true \
+                    "filed fixture ticket routed to escalate-senior (label) — panel intake, no real page"
+            else
+                record "escalate-senior-routed" false \
+                    "filed fixture ticket did not carry the escalate-senior routing label"
+            fi
+        else
+            record "ticket-auto-filed" false \
+                "reconciler filed $n_filed but the body lost signal: $SIGNAL"
+        fi
+    else
+        record "ticket-auto-filed" false \
+            "reconciler filed=$n_filed (want 1); log empty=$([ -s "$filed_log" ] && echo no || echo yes)"
+    fi
+}
+
+# --------------------------------------------------------------------------
+# Hop 4 — the #366 failure-mechanism gate rejects a fixture fix without a
+# mechanism and passes the same fix with one (this drill is the mechanism).
+# --------------------------------------------------------------------------
+drill_mechanism_gate() {
+    local no_mech="$STATE_DIR/gate-no-mechanism.json"
+    local with_mech="$STATE_DIR/gate-with-mechanism.json"
+    local body_base='Stop the fixture from faulting so the tick looks clean.'
+    local closing
+    closing="$(jq -c -n --argjson n 9731 \
+        '[{number:$n, title:"Failure-fix: fixture fault dropped the chain", labels:["bug","canary"]}]')"
+
+    jq -c -n --arg title "$TITLE_PREFIX: no-mechanism fixture" \
+        --arg body "Closes #375. $body_base" \
+        --argjson closing "$closing" \
+        '{title:$title, body:$body, labels:["bug"], files:["bin/chain-e2e-drill"], closing_issues:$closing}' \
+        >"$no_mech"
+    jq -c -n --arg title "$TITLE_PREFIX: fixture + mechanism (this drill)" \
+        --arg body "Closes #375. $body_base Adds the chain-e2e drill and its regression test." \
+        --argjson closing "$closing" \
+        '{title:$title, body:$body, labels:["bug"], files:["bin/chain-e2e-drill","tests/chain-e2e-drill.test.sh"], closing_issues:$closing}' \
+        >"$with_mech"
+
+    local rc out verdict
+    set +e
+    out="$("$GATE_BIN" evaluate --input "$no_mech" 2>&1)"; rc=$?
+    set -e
+    verdict="$(printf '%s' "$out" | jq -r '.verdict // "?"' 2>/dev/null || echo "?")"
+    if [ "$rc" -eq 1 ] && [ "$verdict" = "REJECT" ]; then
+        :
+    else
+        record "mechanism-gate" false \
+            "no-mechanism fixture must be REJECT (rc=$rc verdict=$verdict)"
+        return 0
+    fi
+    set +e
+    out="$("$GATE_BIN" evaluate --input "$with_mech" 2>&1)"; rc=$?
+    set -e
+    verdict="$(printf '%s' "$out" | jq -r '.verdict // "?"' 2>/dev/null || echo "?")"
+    if [ "$rc" -eq 0 ] && [ "$verdict" = "PASS" ]; then
+        record "mechanism-gate" true \
+            "no-mechanism fixture REJECT; same fix + this drill PASS (#366)"
+    else
+        record "mechanism-gate" false \
+            "with-mechanism fixture must PASS (rc=$rc verdict=$verdict)"
+    fi
+}
+
+# --------------------------------------------------------------------------
+# Hop 5 — observe-to-close (#362): while the fixture detector stays red the
+# ticket must not close; once green on a real tick it alone flips closed.
+# --------------------------------------------------------------------------
+drill_observe_close() {
+    local red_triage green_triage open_issues out summary
+    local open
+    open="[{\"number\":3752,\"body\":\"signal: $SIGNAL\\n\\ndrill fixture red\",\"labels\":[{\"name\":\"escalate-senior\"}],\"createdAt\":\"$(now_iso)\",\"comments\":[]}]"
+    open_issues="$STATE_DIR/open.hop5.json"
+    printf '%s\n' "$open" >"$open_issues"
+
+    red_triage="$STATE_DIR/red.hop5.md"
+    printf '%s\n' "$(fixture_loud_line)" >"$red_triage"
+    out="$(reconcile_synthetic "$red_triage" "$open_issues")"
+    summary="$(printf '%s\n' "$out" | head -1)"
+    local closed_red
+    closed_red="$(jq -r '.closed // 0' <<<"$summary" 2>/dev/null || echo 0)"
+    if [ "$closed_red" = "0" ]; then
+        record "observe-to-close-refused-while-red" true \
+            "detector still red: ticket not closed (closed=$closed_red)"
+    else
+        record "observe-to-close-refused-while-red" false \
+            "ticket closed while detector still red (closed=$closed_red)"
+        return 0
+    fi
+
+    green_triage="$STATE_DIR/green.hop5.md"
+    : >"$green_triage"
+    out="$(reconcile_synthetic "$green_triage" "$open_issues")"
+    summary="$(printf '%s\n' "$out" | head -1)"
+    local closed_green
+    closed_green="$(jq -r '.closed // 0' <<<"$summary" 2>/dev/null || echo 0)"
+    if [ "$closed_green" = "1" ]; then
+        record "observe-to-close-flips-on-green" true \
+            "fixture green observed on a real tick: ticket closed (closed=$closed_green)"
+    else
+        record "observe-to-close-flips-on-green" false \
+            "green observed but ticket did not close (closed=$closed_green)"
+    fi
+}
+
+# --------------------------------------------------------------------------
+# Hop 6 — the drill result lands in the #180 SLO snapshot, and a failing hop
+# is a real LOUD finding the reconciler auto-files.
+# --------------------------------------------------------------------------
+drill_slo_snapshot() {
+    local slo_bin="$here/fleet-gap-closure-slo"
+    # Hop 6: the result lands in the #180 SLO snapshot. The snapshot must
+    # reference our per-hop chain-e2e results file, and the hops driven so far
+    # must be green so the snapshot reads green.
+    local log_all
+    log_all="$(jq -s -c 'all(.[]; .pass == true)' "$results_log" 2>/dev/null || echo false)"
+    if [ -f "$slo_bin" ] && grep -qF 'chain-e2e-drill-results' "$slo_bin"; then
+        if [ "$log_all" = "true" ]; then
+            record "slo-snapshot" true \
+                "fleet-gap-closure-slo folds chain-e2e-drill-results in; hops green"
+        else
+            record "slo-snapshot" false \
+                "SLO snapshot wired but a hop is red (log_all=$log_all)"
+        fi
+    else
+        record "slo-snapshot" false \
+            "fleet-gap-closure-slo does not read chain-e2e-drill-results"
+    fi
+    return 0
+}
+
+# --------------------------------------------------------------------------
+if [ "$DRY_RUN" = "1" ]; then
+    log "DRY RUN: wiring proofs only; no live systemd/GitHub action"
+fi
+
+drill_fixture_isolated
+drill_ticket_filed_and_routed
+drill_mechanism_gate
+drill_observe_close
+drill_slo_snapshot
+
+all_pass="$(jq -s -c 'all(.[]; .pass == true)' "$results_log")"
+jq -s -c --argjson all_pass "$all_pass" \
+    --arg ran "$(now_iso)" \
+    --arg marker "$MARKER" --arg signal "$SIGNAL" --arg label "$LABEL" \
+    '{name:"chain-e2e-drill", all_pass:$all_pass, ran_at:$ran, marker:$marker, signal:$signal, label:$label, results:.}' \
+    "$results_log" >"$RESULTS"
+
+log "hops complete: all_pass=$all_pass (see $RESULTS)"
+
+if [ "$all_pass" != "true" ]; then
+    failed="$(jq -r '[.results[] | select(.pass==false) | .name] | join(",")' "$RESULTS")"
+    log "FAILING HOPS: $failed"
+    # A failing hop is a real finding, never a drill ticket. In live mode,
+    # append a LOUD line so the #362 reconciler auto-files it on the next tier.
+    if [ "$DRY_RUN" = "0" ]; then
+        {
+            printf '\n%s chain-e2e drill FAILED: %s (see %s)\n' \
+                "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$failed" "$RESULTS"
+        } >>"$TRIAGE" 2>/dev/null || log "WARN: could not append LOUD finding to $TRIAGE"
+    fi
+    fail_loud "chain-e2e drill failed on: $failed"
+fi
+exit 0

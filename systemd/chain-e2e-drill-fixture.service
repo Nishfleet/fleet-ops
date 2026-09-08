@@ -1,0 +1,17 @@
+[Unit]
+Description=Throwaway synthetic chain-e2e drill fixture (fleet-ops#375)
+# Emits one unmistakably-synthetic LOUD line (tagged [drill:chain-e2e] with
+# signal: chain-e2e-drill/fixture) to prove the whole failure chain end to
+# end, then exits 1 to land failed. Isolated to chain-e2e-drill.slice, no
+# [Install], bounded — it can never trigger a real revert or a real senior
+# page. fleet-escalation-canary excludes it from escalation (is_escalation_excluded).
+
+[Service]
+Type=oneshot
+Slice=chain-e2e-drill.slice
+Environment=HOME=/home/nish
+Environment=CHAIN_E2E_TRIAGE=/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md
+# Hint at the service a marker + signal so hop-1 wiring greps stay honest.
+ExecStart=/bin/bash -c 'printf "\n[%s] [DRILL-CHAIN-E2E-BROKEN] chain-e2e drill fixture faulted (synthetic; label drill:chain-e2e; do not page or revert) signal: chain-e2e-drill/fixture — [drill:chain-e2e]\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "${CHAIN_E2E_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}" 2>/dev/null; exit 1'
+RuntimeMaxSec=60
+Restart=no

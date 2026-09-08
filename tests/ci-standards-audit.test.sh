@@ -186,6 +186,13 @@ bash "$here/stop-the-line-detector.test.sh"
 # .github/workflows/**).
 bash "$here/signal-reconcile.test.sh"
 
+# fleet-ops#375: whole-chain e2e drill (synthetic failure -> auto-ticket ->
+# senior routing -> mechanical gate -> observe-to-close -> SLO snapshot).
+# Hermetic (DRY_RUN, fake wrappers, scratch state) — hosted here so P14 runs
+# it without a workflow-file edit (the worker App cannot push
+# .github/workflows/**).
+bash "$here/chain-e2e-drill.test.sh"
+
 # fleet-ops#1458: nish-boundary-notify retry + direct Telegram API fallback
 # drill. Landed in #1471 but was not registered in ci.yml (workers cannot
 # push .github/workflows/**). Runs offline against temp files. Hosted here

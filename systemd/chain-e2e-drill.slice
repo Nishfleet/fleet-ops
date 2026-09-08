@@ -1,0 +1,5 @@
+[Unit]
+Description=Isolation slice for chain-e2e drill fixtures (fleet-ops#375)
+# Synthetic fault plane. Keeps the chain-e2e fixture's failure out of every
+# production slice so auto-revert and severe-arbitration cannot mistake it
+# for a real fault. No admission control of its own.

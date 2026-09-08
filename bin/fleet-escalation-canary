@@ -218,6 +218,12 @@ is_escalation_excluded() {
         ready-work*)               return 0 ;;
         escalation-daily-sweep.*)  return 0 ;;
         resilience-drill-stub*)    return 0 ;;
+        # fleet-ops#375: chain-e2e drill fixture. Its intentional 1-fault is
+        # the drill RUNNING, not a real fault; a real escalation would be the
+        # drill itself failing (exit 1), which still escalates normally. The
+        # fixture's LOUD line is still routed to the escalate-senior panel
+        # intake by the reconciler, but never to a real senior page.
+        chain-e2e-drill-fixture*)  return 0 ;;
         # scope.d anti-recursion (fleet-ops#4266): systemd's own per-manager
         # scope + Chromium/flatpak app sandbox scopes must not summon the
         # SENIOR AUDITOR on tab churn. Keep in lockstep with the script
