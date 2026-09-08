@@ -1,0 +1,4 @@
+{
+  "_doc": "Unmanaged-unit allowlist for tests/timer-manifest.test.sh (fleet-ops#4400). Lists user timers that are DELIBERATELY unmanaged: hand-placed units with no repo .timer source, one-shot investigation timers, or transient units created by a hand-run systemd-run. A live timer in this list no longer reddens the fleet check. Every entry requires a DATED reason: the reason field must start with YYYY-MM-DD, the date it was added or last reviewed. A unit may NOT be allowlisted if it has a repo-sourced .timer file (systemd/*.timer): repo-owned timers must have a MANIFEST entry and still hard-fail when missing. Adding or removing an entry goes through a normal PR with review (this file is config, not machinery). Deletion pinned (fleet-ops#4400): the fleet-ops-4219-dualrun-collect.timer/.service were transient leftovers from the #4219 P3a dual-run (PR #4371 merged) and were deleted on 2026-09-08; do not re-create, the phase is closed.",
+  "unmanaged": []
+}

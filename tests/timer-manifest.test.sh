@@ -100,6 +100,51 @@ done < <(find "$REPO_ROOT/systemd" -name '*.timer' -type f 2>/dev/null | sort)
 
 ok "all repo .timer files have manifest entries"
 
+# --- Unmanaged-unit allowlist (fleet-ops#4400) ---
+# Deliberately unmanaged timers (hand-placed with no repo .timer source,
+# one-shot investigations, transients from a hand-run systemd-run) live in
+# config/timer-manifest-unmanaged.json and no longer redden the live check.
+# Shape lock:
+#   - Every entry has unit, a DATED reason (YYYY-MM-DD prefix), and source
+#     (transient | hand-placed | one-shot).
+#   - No allowlisted unit may have a repo .timer file: repo-owned timers
+#     MUST have a MANIFEST entry and STILL hard-fail when missing (never
+#     weakened by the allowlist).
+UNMANAGED_ALLOWLIST="$REPO_ROOT/config/timer-manifest-unmanaged.json"
+if [[ -f "$UNMANAGED_ALLOWLIST" ]]; then
+    jq '.' "$UNMANAGED_ALLOWLIST" >/dev/null || fail "unmanaged allowlist is not valid JSON: $UNMANAGED_ALLOWLIST"
+    # Map of allowlisted unit -> its repo .timer file (for the req-3 guard).
+    declare -A ALLOWED_UNMANAGED=()
+    allowlist_errors=0
+    while IFS= read -r unit; do
+        [[ -z "$unit" ]] && continue
+        reason=$(jq -r --arg u "$unit" '.unmanaged[] | select(.unit==$u) | .reason // empty' "$UNMANAGED_ALLOWLIST")
+        src=$(jq -r --arg u "$unit" '.unmanaged[] | select(.unit==$u) | .source // empty' "$UNMANAGED_ALLOWLIST")
+        if [[ -z "$reason" ]]; then
+            echo "FAIL: allowlist entry '$unit' missing required 'reason'" >&2
+            allowlist_errors=1
+        elif ! [[ "$reason" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2} ]]; then
+            echo "FAIL: allowlist entry '$unit' reason must start with a dated YYYY-MM-DD" >&2
+            allowlist_errors=1
+        fi
+        case "$src" in
+          transient|hand-placed|one-shot) : ;;
+          "") echo "FAIL: allowlist entry '$unit' missing required 'source'" >&2; allowlist_errors=1 ;;
+          *) echo "FAIL: allowlist entry '$unit' has invalid source '$src'" >&2; allowlist_errors=1 ;;
+        esac
+        # Req-3 guard: a repo-owned .timer file must not be allowlisted.
+        if find "$REPO_ROOT/systemd" -name "$unit" -type f 2>/dev/null | grep -q .; then
+            echo "FAIL: allowlist entry '$unit' has a repo-sourced .timer file — repo-owned timers must have a MANIFEST entry, not be allowlisted" >&2
+            allowlist_errors=1
+        fi
+        ALLOWED_UNMANAGED["$unit"]="$reason"
+    done < <(jq -r '.unmanaged[].unit // empty' "$UNMANAGED_ALLOWLIST" 2>/dev/null | sort -u)
+    [[ $allowlist_errors -eq 0 ]] || fail "one or more unmanaged-allowlist entries are invalid"
+    ok "unmanaged allowlist valid: ${#ALLOWED_UNMANAGED[@]} deliberately-unmanaged unit(s)"
+else
+    ok "no unmanaged allowlist — all live timers must be in the manifest"
+fi
+
 # --- Live check: only when systemctl --user is available ---
 
 XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
@@ -167,6 +212,12 @@ while IFS= read -r timer; do
         [[ "$timer" == "$sys" ]] && is_system=1 && break
     done
     [[ $is_system -eq 1 ]] && continue
+
+    # Deliberately unmanaged unit? Skip with a note (fleet-ops#4400).
+    if [[ -n "${ALLOWED_UNMANAGED[$timer]:-}" ]]; then
+        echo "SKIP: live timer '$timer' is a deliberately unmanaged unit (allowlisted: ${ALLOWED_UNMANAGED[$timer]})" >&2
+        continue
+    fi
 
     # Check exact match
     if jq -e ".timers[\"$timer\"]" "$MANIFEST" >/dev/null 2>&1; then

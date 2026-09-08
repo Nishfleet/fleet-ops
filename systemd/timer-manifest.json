@@ -2,6 +2,12 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "Fleet timer manifest \u2014 every user timer must have an entry with a named reason. CI validates live timers against this manifest.",
   "timers": {
+    "0509-demo-brand-timeline-canary.timer": {
+      "reason": "Daily 06:10 IST 0509 demo-brand offer timeline public-surface canary (Nishfleet/0509#1899) \u2014 probes each demo brand's public /timeline page for a rendered dated ledger; deliberately a hand-placed user unit (like 0509-search-tier-canary, #1452) because the worker GitHub App token cannot write .github/workflows and the check needs no secrets, only outbound HTTPS to 0509.io; runs from a dedicated read-only checkout that self-syncs to main (machinery-allowlist class a, fleet-ops#4400)",
+      "classification": "scheduled",
+      "cadence": "daily",
+      "source": "user-config"
+    },
     "0509-search-tier-canary.timer": {
       "reason": "Daily 06:10 IST \u00a71.8 six-domain /search tier regression canary for 0509 (Nishfleet/0509#1452) \u2014 true calendar job; the worker GitHub App token cannot write .github/workflows and the check needs no secrets, only outbound HTTPS to 0509.io (fleet-ops#3735)",
       "classification": "scheduled",
