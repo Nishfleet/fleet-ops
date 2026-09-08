@@ -36,6 +36,8 @@ pick_seat() {
     printf 'minimax\tMiniMax-M3\n'
     return 0
 }
+# fleet-ops#4263 P3b: wrappers call litellm_pick_seat, not pick_seat.
+litellm_pick_seat() { printf 'litellm\tworker-cheap\n'; return 0; }
 EOF
 
 # Fake pi that records args and stdin, then prints output.
@@ -64,10 +66,10 @@ out=$("$bin" fleet-ops scout)
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "scout wrapper must exit 0, got $rc"
-grep -q -- '--provider minimax' "$record_args" \
-  || fail "pi must be called with --provider minimax, got: $(cat "$record_args")"
-grep -q -- '--model MiniMax-M3' "$record_args" \
-  || fail "pi must be called with --model MiniMax-M3, got: $(cat "$record_args")"
+grep -q -- '--provider litellm' "$record_args" \
+  || fail "pi must be called with --provider litellm, got: $(cat "$record_args")"
+grep -q -- '--model worker-cheap' "$record_args" \
+  || fail "pi must be called with --model worker-cheap, got: $(cat "$record_args")"
 grep -q 'TARGET REPO: Nishfleet/fleet-ops' "$record_stdin" \
   || fail "packet must contain TARGET REPO line, got: $(head "$record_stdin")"
 grep -q 'label_budget = 8' "$record_stdin" \
@@ -82,10 +84,10 @@ out=$("$bin" 0509 scout-repair)
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "scout-repair wrapper must exit 0, got $rc"
-grep -q -- '--provider minimax' "$record_args" \
-  || fail "repair: pi must be called with --provider minimax, got: $(cat "$record_args")"
-grep -q -- '--model MiniMax-M3' "$record_args" \
-  || fail "repair: pi must be called with --model MiniMax-M3, got: $(cat "$record_args")"
+grep -q -- '--provider litellm' "$record_args" \
+  || fail "repair: pi must be called with --provider litellm, got: $(cat "$record_args")"
+grep -q -- '--model worker-cheap' "$record_args" \
+  || fail "repair: pi must be called with --model worker-cheap, got: $(cat "$record_args")"
 grep -q 'TARGET: scout unit pi-scout@0509.service, repo Nishfleet/0509' "$record_stdin" \
   || fail "repair packet must contain TARGET line, got: $(head "$record_stdin")"
 ok "scout-repair wrapper builds the correct target line"
@@ -103,6 +105,7 @@ task_weight() { echo "light"; }
 repo_privacy() { echo "public"; }
 packet_repo() { echo ""; }
 pick_seat() { :; return 1; }
+litellm_pick_seat() { :; return 1; }
 EOF
 
 set +e

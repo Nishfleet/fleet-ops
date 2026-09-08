@@ -134,6 +134,8 @@ pick_seat() {
     printf 'devin\tglm-5-2\n'
     return 0
 }
+# fleet-ops#4263 P3b: agent-cron-run calls litellm_pick_seat.
+litellm_pick_seat() { pick_seat; }
 EOF
 
 fake_pi="$scratch/pi"

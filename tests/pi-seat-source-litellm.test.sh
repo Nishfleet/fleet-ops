@@ -76,6 +76,13 @@ for _f in pi-issue-run pi-packet-run pi-scout-run agent-cron-run; do
         bash -c '! grep -qE "^[[:space:]]*need_capable=" "$0"' "$repo_root/bin/$_f"
 done
 
+check "pi-scout-packet-assembly stub defines litellm_pick_seat (P14 #4263)" \
+    grep -q 'litellm_pick_seat()' "$repo_root/tests/pi-scout-packet-assembly.test.sh"
+check "pi-scout-seat-rotation stub defines litellm_pick_seat (P14 #4263)" \
+    grep -q 'litellm_pick_seat()' "$repo_root/tests/pi-scout-seat-rotation.test.sh"
+check "pi-scout-seat-rotation expects --provider litellm" \
+    grep -q -- '--provider litellm' "$repo_root/tests/pi-scout-seat-rotation.test.sh"
+
 ok "pi-issue-run has no pick_seat call"
 (( ++pass ))
 

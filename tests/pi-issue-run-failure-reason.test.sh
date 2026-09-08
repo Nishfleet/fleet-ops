@@ -70,6 +70,7 @@ mkdir -p "\$PI_PACKET_STATE" "\$XDG_RUNTIME_DIR"
 source "$repo_root/lib/seat-lib.sh"
 task_weight() { echo "light"; }
 pick_seat() { printf 'devin\tglm-5-2\n'; return 0; }
+litellm_pick_seat() { printf 'litellm\tworker-cheap\n'; return 0; }
 register_active_seat() { :; }
 clear_active_seat() { :; }
 is_spawn_etimeout() { return 1; }
