@@ -1203,4 +1203,11 @@ ok "rule-enforcement: worktree-reaper drill"
 bash "$here/fleet-ops-1160-regression.test.sh" || fail "vps reboot-survival regression drill failed"
 ok "rule-enforcement: vps reboot-survival regression drill"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, rulebook-redteam, vibes, skills-symlink, bin-exclude, slo-budget, tailscale-localapi-canary, worktree-reaper, and vps-reboot-survival-regression drills"
+# fleet-ops#4477: money-boundary guard — a provider benched source=money_boundary
+# must have a matching MONEY-BOUNDARY ledger line (the missing-ledger-write
+# defect), the deterministic bin/money-boundary-raise path + --check guard.
+# Nested host so P14 runs it without a workflow edit.
+bash "$here/money-boundary-guard.test.sh" || fail "money-boundary guard drill failed"
+ok "rule-enforcement: money-boundary guard drill"
+
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, rulebook-redteam, vibes, skills-symlink, bin-exclude, slo-budget, tailscale-localapi-canary, worktree-reaper, vps-reboot-survival, and money-boundary-guard drills"
