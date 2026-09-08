@@ -68,25 +68,27 @@ no new unit or timer); bin/fleet-dead-pr-detector + tests/fleet-dead-pr-detector
 hosted from tests/ci-standards-audit.test.sh (P14); prompts/weekly-fleet-review.md
 L1 judge line; MANIFEST entry for the new bin.
 
-research: compared `bin/fleet-merged-pr-close` (observe-to-close issues
-delivered by merged PRs — not PR-conflict parentage) and
-`.github/scripts/semantic-conflict-detector.mjs` (conflicting diffs INSIDE a
-PR, not dead-vs-parent-resolution) before building; neither flags a
-CONFLICTING PR whose originating issue resolved, so a dedicated detector is
-the minimal new piece (fleet-ops#4468 "Prevention gap" section).
+research: official docs consulted (gh pr list --help / gh pr view --help); compared the repo's existing rails — `bin/fleet-merged-pr-close` (observe-to-close issues delivered by merged PRs, not PR-conflict parentage) and `.github/scripts/semantic-conflict-detector.mjs` (conflicting diffs INSIDE a PR, not dead-vs-parent-resolution) — and adopted a dedicated detector because neither flags a CONFLICTING PR whose originating issue resolved (fleet-ops#4468 "Prevention gap" section).
 
-help-first: `gh pr list --json mergeable` returns the raw field but has no
-parent-resolution or resolved-parent classification (`gh pr list --help`,
-`gh pr view --help` confirm); the closest existing rail
-(fleet-merged-pr-close) never examines mergeable state or parent issue
-resolution — the detector is the minimal wrapper, reusing its token-minting
-and fail-closed conventions.
+help-first: read the existing rails' --help (`gh pr list --help`, `gh pr view --help`): gh returns the raw mergeable field but has no parent-resolution or resolved-parent classification, and the closest rail (fleet-merged-pr-close) never examines mergeable state or parent issue resolution — the detector is the minimal wrapper, reusing its token-minting and fail-closed conventions.
 
 mechanical-fix: this PR ships the detector + tests + observe-to-close (the
 seven closes) that close the defect class; no `mechanism-impossible` needed.
 
-Test plan: the 13-case hermetic suite is the reproducible gate; live
-end-state proven with the real repo (`dead_conflicting_prs=0`, exit 0, all
-seven PRs CLOSED).
+organ-heartbeat: bin/fleet-dead-pr-detector not-an-organ: GH-API detector
+run as ExecStartPre of the existing fleet-merged-pr-close unit; no own
+systemd unit/timer and no prom metric, so no absent() rule applies
+(fleet-organ-heartbeat-check gate: SKIP).
+
+Test plan: the 14-case hermetic suite (trailer/relates/branch/bare parents,
+live parent no-flag, exact-number pin #11352-vs-1135, cross-repo and PR-ref
+scrub regressions, infra failure exit 2, clean sweep) is the reproducible
+gate; live end-state proven with the real repo (`dead_conflicting_prs=0`,
+exit 0, all seven PRs CLOSED).
 
 Closes #4468
+net-positive-because: the detector (+219 lines) and its hermetic test
+(+267) replace the manual weekly sweep that let five-to-seven dead branches
+linger past their parent's resolution; the code is permanent, deterministic,
+P14-hosted gate machinery that runs hourly on an existing rail (no new
+timer) — not single-use or throwaway.

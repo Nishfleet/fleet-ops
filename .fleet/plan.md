@@ -31,13 +31,13 @@ when all five are closed and `git grep -q "dead_conflicting_prs" origin/main
 
 ## Phase 3 — Mocked-gh test + hosting (hermetic, no network)
 
-- [ ] phase 3: new `tests/fleet-dead-pr-detector.test.sh` (executable, mocked-gh fixture): cases — conflicting+resolved-parent -> dead_conflicting_prs=1 + exit 1 + evidence line; conflicting+open-parent -> clean exit 0; non-conflicting PR -> ignored, exit 0; gh failure/auth error -> exit 2, no false green; clean sweep -> dead_conflicting_prs=0 + exit 0; gh/jq missing -> exit 2
-- [ ] phase 3: host it from the existing P14-listed host runner (verify which: `tests/ci-standards-audit.test.sh` or the established host) so the p14-test-listing gate stays green — NO ci.yml edit (worker App has no workflow scope)
-- [ ] phase 3: new test -> EXIT 0 and p14 test-listing gate -> EXIT 0
+ - [x] phase 3: new `tests/fleet-dead-pr-detector.test.sh` (executable, mocked-gh fixture): cases — conflicting+resolved-parent -> dead_conflicting_prs=1 + exit 1 + evidence line; conflicting+open-parent -> clean exit 0; non-conflicting PR -> ignored, exit 0; gh failure/auth error -> exit 2, no false green; clean sweep -> dead_conflicting_prs=0 + exit 0; gh/jq missing -> exit 2
+ - [x] phase 3: host it from the existing P14-listed host runner (verify which: `tests/ci-standards-audit.test.sh` or the established host) so the p14-test-listing gate stays green — NO ci.yml edit (worker App has no workflow scope)
+ - [x] phase 3: new test -> EXIT 0 and p14 test-listing gate -> EXIT 0
 
 ## Phase 4 — Weekly review PR-section instruction (acceptance 4)
 
-- [ ] phase 4: `prompts/weekly-fleet-review.md` PR-section lens gains one instruction: the judge runs `bin/fleet-dead-pr-detector` and names `dead_conflicting_prs=<n>` in the lens findings — the sweep's permanence check is the count sitting at 0 for two consecutive weeks after the sweep
+- [x] phase 4: `prompts/weekly-fleet-review.md` PR-section lens gains one instruction: the judge runs `bin/fleet-dead-pr-detector` and names `dead_conflicting_prs=<n>` in the lens findings — the sweep's permanence check is the count sitting at 0 for two consecutive weeks after the sweep
 
 ## Phase 5 — Gates -> commit -> PR -> arm (fleet-ops is NOT a product repo: reviewer round skipped, arm directly)
 
@@ -79,3 +79,29 @@ when all five are closed and `git grep -q "dead_conflicting_prs" origin/main
 - phase 2 DONE: detector + MANIFEST + service ExecStartPre commit 918a27a6.
 - stalled: phase 3 — worker#1 returned no commit (truncated reply). Re-dispatched fresh worker
   with the cross-repo parent-resolution bug fix spec + test matrix + p14 hosting.
+- phase 3 DONE (final): commit a9ef2cf3 — reviewer Act-on round landed (--limit 300,
+  plural-PR scrub, exact-number pin case 14, stderr-clean gh calls, owner-match
+  tightening, unknown-mergeable log). Live: dead_conflicting_prs=0 exit 0.
+- phase 4 DONE: commit 955bda74 (weekly-review L1 judge line).
+- phase 5 DONE: gates green — research-before-build OK, prove-one-run OK (+484
+  net-positive-because), exec-review-canary OK, no-agent-names OK, token-efficiency
+  OK, organ-heartbeat SKIP (not-an-organ), machinery-authorization-gate PASS,
+  sgscan clean, p14 gate OK, ci-standards-audit OK, detector suite 14/14 OK.
+
+## Reviewer adjudication (phase 2/3 diff, reviewer seat pass)
+
+- Act on (fixed in a9ef2cf3): no --limit on gh pr list (silent false-green past
+  30) -> --limit 300; plural `PRs #N` surviving the scrub -> plural alternation;
+  exact-number #11352-vs-1135 unpinned -> case 14; 2>&1 on success-path gh calls
+  (JSON corruption / swallowed errors) -> 2>/dev/null + rc check.
+- Consider (fixed same commit): other-owner repo literally named fleet-ops
+  surviving the keep -> whole-token owner match; mergeable:null silently skipped
+  -> unknown-mergeable counter in the log line.
+- Noted: gh issue view never returns MERGED (CLOSED+stateReason); agent-name scan
+  hits are the test's own anti-attribution regex and deleted lines; plan/pr-body
+  rewrites follow the per-run convention (gate-integrity.yml untouched).
+- Dismissed-with-reason: Relates>claim-branch priority (mirrors fleet-merged-pr-close
+  #4317/#4373: branch reuse is untrustworthy, body trailer is the delivery);
+  pull/pull-request alternate forms untested (code-path probed live); cross-repo
+  double-space over-removal (cosmetic, never fabricates); token-minting header
+  byte-identical to the proven rail.
