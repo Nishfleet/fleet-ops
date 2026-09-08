@@ -5122,7 +5122,27 @@ def _ensure_worker_token() -> None:
 
 
 def main():
-    _ensure_worker_token()
+    # fleet-ops#3445's fail-closed guard is about gh WRITES (the week-later
+    # revert-candidate filing below). Everything else in this exporter is
+    # read-only, so a transient worker-token mint failure (GitHub
+    # /app/installations hiccup / rate-limit / stale install cache) must
+    # DEGRADE to a read-only tick, not abort the export — otherwise a token
+    # hiccup fails the metrics write (all fleet_* gauges go stale) and trips
+    # unit-escalation every 5 min for a non-write outage (recurring trips:
+    # 2026-09-05T19:48Z, 20:05Z, 21:17Z, 2026-09-06T09:15Z, 2026-09-08T06:10Z,
+    # fleet-metrics-export.service exit-code 1). When the App token cannot
+    # mint, the write family is skipped; human gh is read-only for organs.
+    gh_write = True
+    try:
+        _ensure_worker_token()
+    except SystemExit:
+        gh_write = False
+        print(
+            "fleet-metrics-export: app token unavailable this tick — running "
+            "READ-ONLY (revert-candidate filing disabled); gh reads may use "
+            "the human identity (read-only)",
+            file=sys.stderr,
+        )
     # fleet-ops#2273: remove the legacy fleet-staleness.prom textfile at the
     # start of every run. The staleness checker used to write there directly;
     # it now emits through this exporter into fleet.prom via the JSON cache.
@@ -5790,7 +5810,13 @@ def main():
     # the metric's 7d value before vs after; if it did not improve, file ONE
     # revert-candidate issue (never re-filed). Non-fatal: a failure is logged
     # and the exporter still writes fleet.prom.
-    _week_later_revert_check()
+    if gh_write:
+        _week_later_revert_check()
+    else:
+        print(
+            "week-later: skipped (app token unavailable — no human-gh write)",
+            file=sys.stderr,
+        )
 
     body = "\n".join(lines) + "\n"
     _atomic_write(OUT, body)
