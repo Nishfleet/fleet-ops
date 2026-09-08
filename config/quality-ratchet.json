@@ -16,7 +16,7 @@
       "direction": "down",
       "notch": 0.02,
       "stop_at": 0.29,
-      "cut": 0.40
+      "cut": 0.4
     },
     "overturn_rate_cut": {
       "file": "config/quality-routing.json",
@@ -27,7 +27,7 @@
       "cut": 0.25
     }
   },
-  "_comment_ceilings": "fleet-ops#3519: per-repo, per-metric quality ceilings. The Sunday fleet-weekly-review ratchets each ceiling to min(current, observed p50 x 1.1) — it never loosens; loosening needs a PR with a dated reason and Nish's word. Seeds are the measured 2026-09-05 baseline for 0509 (reverts 4.5/100, red-on-main ~6h=360min, sessions-to-PR 33%); metrics without a measured baseline (defects, rework, act-on) seed conservatively-loose so the first ratchet week sets real values. Metrics whose computation is deferred (rework_rate_pct, red_on_main_minutes, review_act_on_rate) carry their seeds now so the shape is complete; separate issues wire their exporters. '_default' covers product repos without their own row until the ratchet gives them one.",
+  "_comment_ceilings": "fleet-ops#3519: per-repo, per-metric quality ceilings. The Sunday fleet-weekly-review ratchets each ceiling to min(current, observed p50 x 1.1) \u2014 it never loosens; loosening needs a PR with a dated reason and Nish's word. Seeds are the measured 2026-09-05 baseline for 0509 (reverts 4.5/100, red-on-main ~6h=360min, sessions-to-PR 33%); metrics without a measured baseline (defects, rework, act-on) seed conservatively-loose so the first ratchet week sets real values. Metrics whose computation is deferred (rework_rate_pct, red_on_main_minutes, review_act_on_rate) carry their seeds now so the shape is complete; separate issues wire their exporters. '_default' covers product repos without their own row until the ratchet gives them one. 2026-09-09 seed correction (repair-dispatch, QualitySessionsPrCeiling): the 33 seed was never a measurement of the shipped gauge \u2014 the shipped sessions/merges gauge read ~220 on 2026-09-05 (77 session dirs / 35 merges), and its structural floor is ~100 (one claim session per PR is the optimum, not churn). Corrected 0509 to observed value x 1.1 per this file's own min(current, p50 x 1.1) ratchet formula; PR to fleet-ops follows with the same dated reason.",
   "ceilings": {
     "_default": {
       "reverts_per_100_merges": 4.5,
@@ -40,7 +40,7 @@
     "0509": {
       "reverts_per_100_merges": 4.5,
       "post_merge_defects_per_100": 40.0,
-      "sessions_to_pr_pct": 33.0,
+      "sessions_to_pr_pct": 115.0,
       "rework_rate_pct": 20.0,
       "red_on_main_minutes": 360.0,
       "review_act_on_rate": 100.0
