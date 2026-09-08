@@ -828,6 +828,8 @@ def _read_dead_credentials():
         for f in sorted(SEAT_LEDGER.iterdir()):
             if not f.is_file() or "__" not in f.name or not f.name.endswith(".json"):
                 continue
+            if ".empty-success" in f.name:
+                continue
             try:
                 data = json.loads(f.read_text())
             except (OSError, json.JSONDecodeError):
@@ -3792,6 +3794,8 @@ def _read_comeback_overdue():
                 continue
             if ".spawn-bench" in f.name:
                 continue
+            if ".empty-success" in f.name:
+                continue
             try:
                 data = json.loads(f.read_text())
             except (OSError, json.JSONDecodeError):
@@ -3879,6 +3883,8 @@ def _read_provider_quota_exhausted():
             if not f.is_file() or "__" not in f.name or not f.name.endswith(".json"):
                 continue
             if ".spawn-bench" in f.name:
+                continue
+            if ".empty-success" in f.name:
                 continue
             try:
                 data = json.loads(f.read_text())
@@ -4000,6 +4006,8 @@ def _read_healthy_cap0():
             if not f.is_file() or "__" not in f.name or not f.name.endswith(".json"):
                 continue
             if ".spawn-bench" in f.name:
+                continue
+            if ".empty-success" in f.name:
                 continue
             try:
                 data = json.loads(f.read_text())
@@ -4155,6 +4163,8 @@ def _read_never_released():
             if not f.is_file() or "__" not in f.name or not f.name.endswith(".json"):
                 continue
             if ".spawn-bench" in f.name:
+                continue
+            if ".empty-success" in f.name:
                 continue
             try:
                 data = json.loads(f.read_text())
@@ -4456,6 +4466,8 @@ def _healthy_enrolled_seat_count():
     try:
         for f in SEAT_LEDGER.iterdir():
             if not f.is_file() or "__" not in f.name or not f.name.endswith(".json"):
+                continue
+            if ".empty-success" in f.name:
                 continue
             try:
                 data = json.loads(f.read_text())
