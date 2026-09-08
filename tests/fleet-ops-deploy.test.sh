@@ -113,6 +113,8 @@ grep -q 'remove_orphaned_fleet_hourly_audit_dropin' "$repo_root/install.sh" \
     || fail "install.sh must remove the orphaned fleet-hourly-audit.service.d drop-in (fleet-ops#4430)"
 grep -q 'remove_orphaned_fleet_idea_intake_dropin' "$repo_root/install.sh" \
     || fail "install.sh must remove the orphaned fleet-idea-intake.service.d drop-in (fleet-ops#4435)"
+grep -q 'remove_orphaned_fleet_loop_dropin' "$repo_root/install.sh" \
+    || fail "install.sh must remove the orphaned fleet-loop@.service.d drop-in (fleet-ops#4502)"
 grep -q 'pi-scout@.service.d/20-prom-mode.conf' "$repo_root/bin/fleet-ops-deploy" \
     || fail "fleet-ops-deploy must remove the stale scout 20-prom-mode drop-in (fleet-ops#2924)"
 grep -q 'fleet-auto-deploy.timer.d' "$repo_root/bin/fleet-ops-deploy" \
@@ -127,6 +129,8 @@ grep -q 'fleet-hourly-audit.service.d' "$repo_root/bin/fleet-ops-deploy" \
     || fail "fleet-ops-deploy must remove the orphaned fleet-hourly-audit.service.d drop-in (fleet-ops#4430)"
 grep -q 'fleet-idea-intake.service.d' "$repo_root/bin/fleet-ops-deploy" \
     || fail "fleet-ops-deploy must remove the orphaned fleet-idea-intake.service.d drop-in (fleet-ops#4435)"
+grep -q 'fleet-loop@.service.d' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "fleet-ops-deploy must remove the orphaned fleet-loop@.service.d drop-in (fleet-ops#4502)"
 grep -q 'systemd/pi-intake@.service.d/10-use-tick.conf' "$repo_root/MANIFEST" \
     || fail "MANIFEST must list 10-use-tick.conf (fleet-ops#2924 absorb)"
 [[ -f "$repo_root/systemd/pi-intake@.service.d/10-use-tick.conf" ]] \
@@ -901,6 +905,24 @@ printf 'bak\n' > "$orphan_idea_dir/zz-gate-retry.conf.bak-time-audit-20260812"
 PATH="$scratch:$PATH" "$install" >/dev/null 2>&1 || true
 [[ ! -d "$orphan_idea_dir" ]] || fail "scenario12b-orphan-idea: orphaned fleet-idea-intake.service.d drop-in dir was not removed"
 ok "scenario12b-orphan-idea: install.sh removes the orphaned fleet-idea-intake.service.d drop-in dir (fleet-ops#4435)"
+
+# fleet-ops#4502: orphaned drop-in dir for the deleted fleet-loop@ unit
+# (hand-placed control-plane machinery; the unit file, any timer, and the
+# gate/fleet-gate + fleet-scout-run + gate-retry.sh it referenced are all
+# gone). The drop-in dir carries the ExecStart/TimeoutStartSec/
+# SuccessExitStatus override plus .bak files; systemd cannot resolve the
+# unit so nothing source-checks it — only a live install can clear it.
+orphan_loop_dir="$HOME/.config/systemd/user/fleet-loop@.service.d"
+mkdir -p "$orphan_loop_dir"
+printf '%s' '# fleet-gate wrapper (sealed packet 2026-08-11)\n[Service]\nTimeoutStartSec=4h 45min\nSuccessExitStatus=75\nExecStart=\nExecStart=/home/nish/workspaces/agent-state/gate/fleet-gate run --label fleet-loop@%i -- /home/nish/.local/bin/fleet-scout-run %i --kind loop\n' > "$orphan_loop_dir/override.conf"
+printf 'bak\n' > "$orphan_loop_dir/override.conf.bak-pulse-9e531dac8c-20260811"
+printf 'bak\n' > "$orphan_loop_dir/override.conf.bak-scouts-loops-pass3-20260811"
+printf 'bak\n' > "$orphan_loop_dir/override.conf.bak-loop-scout-backstop-gate-retry-composition-20260813"
+printf 'gate-retry\n' > "$orphan_loop_dir/zz-gate-retry.conf"
+printf 'bak\n' > "$orphan_loop_dir/zz-gate-retry.conf.bak-time-audit-20260812"
+PATH="$scratch:$PATH" "$install" >/dev/null 2>&1 || true
+[[ ! -d "$orphan_loop_dir" ]] || fail "scenario12b-orphan-loop: orphaned fleet-loop@.service.d drop-in dir was not removed"
+ok "scenario12b-orphan-loop: install.sh removes the orphaned fleet-loop@.service.d drop-in dir (fleet-ops#4502)"
 
 # --- scenario 12c: cap drop with NEWER repo mtime (fleet-ops#371) ------------
 # git checkout of a stale commit stamps the working tree now, so the #372
