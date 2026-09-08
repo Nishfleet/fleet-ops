@@ -90,6 +90,7 @@
         "prompts/auditor.md",
         "prompts/escalation-auditor.md",
         "prompts/senior-conference.md",
+        "prompts/nish-question-auditor.md",
         "bin/pi-audit-tally",
         "bin/pi-escalation-audit",
         "bin/pi-escalation-audit-tally"
@@ -105,6 +106,7 @@
         "auditor.md",
         "escalation-auditor.md",
         "senior-conference.md",
+        "nish-question-auditor.md",
         "gap-closure-conference.md",
         "gap-closure-conference-round2.md",
         "gap-closure-research.md",
