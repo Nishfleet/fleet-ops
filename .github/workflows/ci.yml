@@ -214,6 +214,7 @@ jobs:
         # listed here by the orchestrator because the worker token lacks workflow scope.
         bash tests/audition-lane.test.sh
         bash tests/pi-audit-tally-epic-guard.test.sh
+        bash tests/pi-audit-tally-skip-exhausted.test.sh
         # A saturated seat pool is infrastructure, not a scout outcome: the
         # no-seat path exits the reserved SKIP code 75 so pi-scout@%i stays
         # green instead of failing and summoning pi-scout-repair@%i for a
