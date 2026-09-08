@@ -89,6 +89,11 @@ eight lenses:
   recent cron-output. Identify any unit that ran but produced no value.
   Read `fleet_waste_ratio` and the per-lane `fleet_waste_empty_runs_24h`
   / `fleet_waste_retries_24h` families (fleet-ops#1211 waste ledger).
+  Then run `bash measure.sh` for the rate-card USD: build the seat table
+  as $/merged PR per seat that week (metered USD from `fleet_usd_24h`
+  summed per provider / that seat's merged PRs; flat seats use their
+  `flat_usd_per_month` share; unreadable seats are `UNAVAILABLE:<why>`, never
+  $0) and name the worst seat by $/merge (fleet-ops#4459).
   WasteRatioRising is a trend alert that feeds this lens; it does not page.
 
   **Deletion review (recurring lens, fleet-ops#1531)** — every run re-scores

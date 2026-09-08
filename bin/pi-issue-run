@@ -1047,4 +1047,19 @@ else
     seat_log "pi-issue-run: $inst SUCCESS class=empty-success on $np/$nm (output=${out_bytes}B, no PR open from claim/issue-${issue_num}, issue ${_cl_issue_state:-unknown}) — reclaim-count NOT reset (claim-loop cap stays tall)"
 fi
 
+# fleet-ops#4459: record the session's USD spend (usage tokens x rate card)
+# into the prepaid-usage counter for this provider, so measure.sh / the judge
+# header have a per-seat $/merge read. Uses the newest session jsonl.
+_sess_usd=$(find "$session_dir" -maxdepth 1 -name '*.jsonl' -type f -printf '%T@ %p\n' 2>/dev/null \
+    | sort -rn | head -n1 | cut -d' ' -f2-)
+if [[ -n "$_sess_usd" ]]; then
+    if declare -f _record_prepaid_usd >/dev/null 2>&1; then
+        _record_prepaid_usd "$np" "$_sess_usd" \
+            && seat_log "pi-issue-run: $inst recorded session USD for $np into prepaid-usage" \
+            || seat_log "pi-issue-run: $inst _record_prepaid_usd did not write (no rate card / unreadable)"
+    else
+        seat_log "pi-issue-run: $inst _record_prepaid_usd unavailable (seat-lib without fn)"
+    fi
+fi
+
 exit 0

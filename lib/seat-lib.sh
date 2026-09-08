@@ -3755,6 +3755,54 @@ _record_prepaid_pick() {
     mv "$tmp" "$f"
 }
 
+# --- per-session USD spend into the prepaid-usage counter (fleet-ops#4459) ---
+# At run end pi-issue-run records the session's USD (session usage tokens x the
+# seat rate card) into the same prepaid-usage/<provider>.json counter that
+# pacing reads. The counter file grows a `usd` field: {week,count,usd}. A seat
+# with no rate card (and no flat plan) records usd=UNAVAILABLE:<why> — never a
+# fabricated $0 (fleet-ops#4459 required).
+_session_usd_from_usage() {
+    # $1=rate input $2=rate output $3=rate cached (USD per 1M); $4=input tokens
+    # $5=output tokens $6=cacheRead tokens (int counts)
+    awk -v ri="$1" -v ro="$2" -v rc="$3" -v it="${4:-0}" -v ot="${5:-0}" -v ct="${6:-0}" \
+        'BEGIN { printf "%.6f\n", (it*ri + ot*ro + ct*rc)/1000000.0 }'
+}
+
+_record_prepaid_usd() {
+    # $1=provider $2=session jsonl path. Reads the rate card from seat-caps and
+    # sums usage tokens over the session, then merges usd into the counter.
+    local p="$1" sess="$2" f week tmp
+    [[ -f "$sess" ]] || return 0
+    [[ -f "$SEAT_CAPS_JSON" ]] || { seat_log "prepaid-usd: no seat-caps at $SEAT_CAPS_JSON" >&2; return 0; }
+    week=$(_prepaid_iso_week)
+    f=$(_prepaid_usage_path "$p")
+    mkdir -p "$STATE_DIR/prepaid-usage"
+    local rate_in rate_out rate_cache flat
+    rate_in=$(jq -r ".providers[\"$p\"].usd_per_1m_input // 0" "$SEAT_CAPS_JSON" 2>/dev/null || echo 0)
+    rate_out=$(jq -r ".providers[\"$p\"].usd_per_1m_output // 0" "$SEAT_CAPS_JSON" 2>/dev/null || echo 0)
+    rate_cache=$(jq -r ".providers[\"$p\"].usd_per_1m_cached // 0" "$SEAT_CAPS_JSON" 2>/dev/null || echo 0)
+    flat=$(jq -r ".providers[\"$p\"].flat_usd_per_month // 0" "$SEAT_CAPS_JSON" 2>/dev/null || echo 0)
+    local in_tok out_tok cache_tok usd prev_count
+    in_tok=$(jq -s '[.[] | .message.usage.input? // 0] | add // 0' "$sess" 2>/dev/null || echo 0)
+    out_tok=$(jq -s '[.[] | .message.usage.output? // 0] | add // 0' "$sess" 2>/dev/null || echo 0)
+    cache_tok=$(jq -s '[.[] | .message.usage.cacheRead? // 0] | add // 0' "$sess" 2>/dev/null || echo 0)
+    if [[ "$rate_in" == "0" && "$rate_out" == "0" && "$rate_cache" == "0" && "$flat" == "0" ]]; then
+        usd="UNAVAILABLE:no-rate-card"
+    else
+        usd=$(_session_usd_from_usage "$rate_in" "$rate_out" "$rate_cache" "$in_tok" "$out_tok" "$cache_tok")
+    fi
+    prev_count=$(_prepaid_usage "$p")
+    tmp="$f.tmp.$$";
+    if [[ "$usd" == UNAVAILABLE:* ]]; then
+        jq -nc --arg w "$week" --argjson c "$prev_count" --arg u "$usd" \
+            '{week:$w,count:$c,usd:$u}' >"$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
+    else
+        jq -nc --arg w "$week" --argjson c "$prev_count" --argjson u "$usd" \
+            '{week:$w,count:$c,usd:$u}' >"$tmp" 2>/dev/null || { rm -f "$tmp"; return 0; }
+    fi
+    mv "$tmp" "$f"
+}
+
 # Return 0 if this prepaid provider is over the weekly pace threshold.
 _prepaid_paced() {
     local p="$1"
