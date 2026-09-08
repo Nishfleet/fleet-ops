@@ -93,7 +93,7 @@
       "usd_per_1m_output": 1.2,
       "usd_per_1m_cached": 0.06,
       "flat_usd_per_month": null,
-      "_rate_card": "fleet-ops#4459 2026-09-08: MiniMax-M3 per-token rates, source = config/pi-models.json minimax/models[0] cost (input 0.3 / output 1.2 / cacheRead 0.06 per 1M), dated 2026-09-08. class=metered so usd_24h counts the marginal spend.",
+      "_rate_card": "fleet-ops#4459 2026-09-08: MiniMax-M3 per-token rate card, measured from config/pi-models.json minimax/models[0] cost: $0.30/M in / $1.20/M out / $0.06/M cached (per-1M USD, dated 2026-09-08). class=metered so usd_24h counts the marginal spend.",
       "models": {
         "MiniMax-M3": 2
       }
@@ -319,7 +319,7 @@
       "usd_per_1m_output": 6.0,
       "usd_per_1m_cached": 0.5,
       "flat_usd_per_month": null,
-      "_rate_card": "fleet-ops#4459 2026-09-08: grok-4.6 per-token rates, source = config/pi-models.json xai-oauth/models[0] cost (input 2.0 / output 6.0 / cacheRead 0.5 per 1M), dated 2026-09-08. Paid via the SuperGrok subscription; the meter reads marginal spend.",
+      "_rate_card": "fleet-ops#4459 2026-09-08: grok-4.6 per-token rate card, measured from config/pi-models.json xai-oauth/models[0] cost: $2.00/M in / $6.00/M out / $0.50/M cached (per-1M USD, dated 2026-09-08). Paid via the SuperGrok subscription; the meter reads marginal spend.",
       "models": {
         "grok-4.6": 2,
         "grok-4.5": {
@@ -338,7 +338,7 @@
       "usd_per_1m_output": 0.845,
       "usd_per_1m_cached": 0.0356,
       "flat_usd_per_month": null,
-      "_rate_card": "fleet-ops#4459 2026-09-08: straitly deepseek/deepseek-v4-pro per-token rates, source = config/pi-models.json straitly/models[0] cost (input 0.4225 / output 0.845 / cacheRead 0.0356 per 1M), dated 2026-09-08. class=metered so usd_24h counts marginal spend.",
+      "_rate_card": "fleet-ops#4459 2026-09-08: straitly deepseek/deepseek-v4-pro per-token rate card, measured from config/pi-models.json straitly/models[0] cost: $0.4225/M in / $0.845/M out / $0.0356/M cached (per-1M USD, dated 2026-09-08). class=metered so usd_24h counts marginal spend.",
       "models": {
         "deepseek/deepseek-v4-pro": 2
       },
@@ -393,7 +393,7 @@
       "usd_per_1m_output": 0.27,
       "usd_per_1m_cached": 0.01,
       "flat_usd_per_month": null,
-      "_rate_card": "fleet-ops#4459 2026-09-08: runinfra deepseek-v4-flash per-token rates, source = config/pi-models.json runinfra/models[0] cost (input 0.13 / output 0.27 / cacheRead 0.01 per 1M), dated 2026-09-08.",
+      "_rate_card": "fleet-ops#4459 2026-09-08: runinfra deepseek-v4-flash per-token rate card, measured from config/pi-models.json runinfra/models[0] cost: $0.13/M in / $0.27/M out / $0.01/M cached (per-1M USD, dated 2026-09-08).",
       "models": {
         "deepseek-v4-flash": 4
       },
@@ -407,7 +407,7 @@
       "usd_per_1m_output": 0.1,
       "usd_per_1m_cached": 0.003,
       "flat_usd_per_month": null,
-      "_rate_card": "fleet-ops#4459 2026-09-08: DeepSeek V4 Flash 0731 (Q8_0 via CrofAI) per-token rates, source = config/pi-models.json cost field (crof/deepseek-v4-flash-0731: input 0.08 / output 0.1 / cacheRead 0.003 per 1M tokens, mirror of the CrofAI dashboard DeepSeek list price $0.08/$0.10/$0.003), dated 2026-09-08. class=prepaid-quota so the $0.08/0.10 rates are the metered marginal spend per token; no flat plan. zenmux paid deepseek-v4-flash carries the same DeepSeek list price (fleet-ops#4205: $0.22/$0.66/$0.007 on zenmux at ~4x this). Used by measure.sh usd_24h and the fleet_usd_24h prom metric.",
+      "_rate_card": "fleet-ops#4459 2026-09-08: DeepSeek V4 Flash 0731 (Q8_0 via CrofAI) per-token rate card, measured from config/pi-models.json crof/models[0] cost: $0.08/M in / $0.10/M out / $0.003/M cached (per-1M USD, dated 2026-09-08). class=prepaid-quota so the metered marginal spend is usage x rate. zenmux paid deepseek-v4-flash carries the same DeepSeek list price (fleet-ops#4205: $0.22/$0.66/$0.007 on zenmux at ~4x this). Used by measure.sh usd_24h and the fleet_usd_24h prom metric.",
       "models": {
         "deepseek-v4-flash-0731": 2
       },
@@ -421,7 +421,7 @@
       "usd_per_1m_output": 0.17,
       "usd_per_1m_cached": 0.09,
       "flat_usd_per_month": null,
-      "_rate_card": "fleet-ops#4459 2026-09-08: entrim deepseek-ai/DeepSeek-V4-Flash per-token rates, source = config/pi-models.json entrim/models[0] cost (input 0.09 / output 0.17 / cacheRead 0.09 per 1M), dated 2026-09-08.",
+      "_rate_card": "fleet-ops#4459 2026-09-08: entrim deepseek-ai/DeepSeek-V4-Flash per-token rate card, measured from config/pi-models.json entrim/models[0] cost: $0.09/M in / $0.17/M out / $0.09/M cached (per-1M USD, dated 2026-09-08).",
       "models": {
         "deepseek-ai/DeepSeek-V4-Flash": 2
       },
