@@ -540,6 +540,23 @@ Verification: re-run fleet-empty-run-burst-canary with the same SEAT_HEALTH_DIR;
 }
 
 # ============================================================================
+# Gate 0: source organ retired (fail-open, fleet-ops#4141). The opus-heartbeat
+# snapshot generator that produced $SNAPSHOT was RETIRED 2026-09-07; the
+# empty-run signal now lives in the fleet-waste recording rules
+# (fleet_waste_empty_runs_24h, config/fleet_rules.yml). A missing snapshot
+# while the launcher is absent is EXPECTED, not a broken watcher — exit 0
+# instead of failing loud every tick (same organ-retired fail-open shape as
+# fleet-litellm-health-canary, fleet-ops#4221). FLEET_EMPTY_BURST_FORCE_WATCHER=1
+# bypasses the gate so tests can exercise the watcher-broken branch as if the
+# organ were still installed.
+# ============================================================================
+LAUNCHER="${FLEET_EMPTY_BURST_LAUNCHER:-$HOME/.local/bin/opus-heartbeat}"
+if [[ -z "${FLEET_EMPTY_BURST_FORCE_WATCHER:-}" && ! -x "$LAUNCHER" ]]; then
+    log "opus-heartbeat retired (fleet-ops#4141): launcher $LAUNCHER absent — fail-open, exit 0; 2h empty-run burst signal now via fleet_waste_empty_runs_24h recording rule"
+    exit 0
+fi
+
+# ============================================================================
 # Gate 1: snapshot present + parseable.
 # ============================================================================
 if [[ ! -f "$SNAPSHOT" ]]; then
