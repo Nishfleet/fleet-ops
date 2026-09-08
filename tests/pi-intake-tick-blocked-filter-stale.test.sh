@@ -24,7 +24,10 @@
 #   the body). Prove:
 #   - blocked-on only in comments (open target)   -> blocked
 #   - blocked-on only in comments (closed target) -> stale, claimable
-#   - the tick passes fetched comments to blocked_filter
+#   - the tick passes the LATEST comment (not the joined history) to
+#     blocked_filter: a released agent-ready issue (DECISION then relabel)
+#     must not stay skipped-blocked-on because older comments still say
+#     `blocked-on: orchestrator` / `blocked-on: split` (0509#1383/#1981)
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -37,10 +40,12 @@ ok()   { echo "OK: $*"; }
 [[ -f "$tick" ]] || fail "lib/pi-intake-tick.sh missing"
 command -v jq >/dev/null 2>&1 || fail "jq missing"
 
-# === Test 1: the tick calls blocked_filter with repo + issue + comments context ==
-grep -qF 'blocked_filter "$body" "$FULL" "$N" "$comments"' "$tick" \
-    || fail "tick must call blocked_filter with repo, issue number and comments context"
-ok "Test 1: tick passes repo + issue number + comments to blocked_filter"
+# === Test 1: the tick calls blocked_filter with repo + issue + LATEST comment ==
+grep -qF 'blocked_filter "$body" "$FULL" "$N" "$last_comment"' "$tick" \
+    || fail "tick must call blocked_filter with last_comment only (historical bounce lines must not skip a released issue)"
+grep -qF '.comments[-1].body' "$tick" \
+    || fail "tick must take comments[-1].body as last_comment (newest comment)"
+ok "Test 1: tick passes repo + issue number + latest comment to blocked_filter"
 
 # === Test 2: blocked_filter resolves closed/merged targets via stubbed gh ====
 scratch=$(mktemp -d)

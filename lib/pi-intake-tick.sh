@@ -470,7 +470,7 @@ reconciler_prom="${reconciler_prom_base}-${REPO}.prom"
 # blocked. Fail-safe: a gh error leaves the issue blocked (never claim on a
 # lookup failure).
 #
-# Args: $1=body  $2=repo (Nishfleet/<repo>)  $3=issue number  $4=comments (optional)
+# Args: $1=body  $2=repo (Nishfleet/<repo>)  $3=issue number  $4=latest comment only
 # The comment scan closes fleet-ops#3575: the worker bounce protocol puts
 # machine-readable `blocked-on:` lines in a comment, not the body, so a
 # blocked issue whose blocker lives only in comments must not re-claim.
@@ -1633,18 +1633,26 @@ blocked-on: orchestrator" 2>/dev/null || true
     # below; fetching here (before the blocker filter) lets blocked_filter
     # scan them. Fail-closed (never claim on a lookup failure) — the same
     # skip the spec gate used to emit.
-    comments=$(gh issue view "$N" -R "$FULL" --json comments --jq '[.comments[]?.body // empty] | join("\n")' 2>/dev/null) || {
+    # Pass ONLY the latest comment into blocked_filter. Joining every comment
+    # made released agent-ready issues (DECISION + relabel) stay
+    # skipped-blocked-on forever because older bounce lines still said
+    # `blocked-on: orchestrator` / `blocked-on: split` (0509#1383/#1981).
+    # The bounce protocol writes blocked-on on the comment that *is* latest
+    # at bounce time, so comments[-1] still catches a live bounce.
+    _cjson=$(gh issue view "$N" -R "$FULL" --json comments 2>/dev/null) || {
         echo "issue $N ($title): skipped-comments-unreadable"
         continue
     }
+    comments=$(printf '%s' "$_cjson" | jq -r '[.comments[]?.body // empty] | join("\n")')
+    last_comment=$(printf '%s' "$_cjson" | jq -r '.comments[-1].body // ""')
 
-    # Blocker filter: never claim an issue whose body or comments carry a
-    # blocked-on: line (machine dep or nish-decision). The claim is a no-op
+    # Blocker filter: never claim an issue whose body or LATEST comment carry
+    # a blocked-on: line (machine dep or nish-decision). The claim is a no-op
     # spawn churn otherwise. fleet-ops#3575: the worker bounce protocol puts
     # machine-readable blocked-on: lines in a comment, not the body, so the
-    # filter must scan comments too. Audit finding 2026-08-26: fleet-ops#87
+    # filter must scan that comment too. Audit finding 2026-08-26: fleet-ops#87
     # looped exactly this way.
-    if blocked_filter "$body" "$FULL" "$N" "$comments"; then
+    if blocked_filter "$body" "$FULL" "$N" "$last_comment"; then
         echo "issue $N ($title): skipped-blocked-on"
         continue
     fi
