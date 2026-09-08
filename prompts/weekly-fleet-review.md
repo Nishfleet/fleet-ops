@@ -77,6 +77,13 @@ eight lenses:
   dated, evidence-bearing comment (grep proof the intent landed elsewhere or
   the feature was retired). This makes the sweep mechanical rather than
   hand-picked. Do NOT run a raw poller/sleep loop; one live query per run.
+
+  **Dead-conflicting-PR detector (fleet-ops#4468)** — then run
+  `bash bin/fleet-dead-pr-detector` and name `dead_conflicting_prs=<n>` in
+  the lens findings — the permanence check for the fleet-ops#4468 sweep is
+  the count sitting at 0 for two consecutive weeks (a non-zero count means
+  an open CONFLICTING PR whose parent issue already resolved; each one
+  blocks auto-merge and pits stale code against live intent).
 - **L2 output QUALITY** — deep-read a SAMPLE of this week's merged PRs
   (at least 5, more if cheap). Judge, do not count. For each, name one
   specific thing the PR did right AND one specific thing it could have
