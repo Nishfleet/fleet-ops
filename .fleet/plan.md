@@ -41,18 +41,25 @@ when all five are closed and `git grep -q "dead_conflicting_prs" origin/main
 
 ## Phase 5 — Gates -> commit -> PR -> arm (fleet-ops is NOT a product repo: reviewer round skipped, arm directly)
 
-- [ ] phase 5: run gate suite against the diff: sgscan, new test, p14 gate, fleet-bin-exclude-canary, manifest-shape, fleet-organ-heartbeat-check (detector is NOT an organ), fleet-no-agent-names-check, fleet-token-efficiency-check, machinery-authorization-gate
-- [ ] phase 5: `bin/research-before-build-check --body <pr-body>` green (new bin/ file requires research: + help-first: lines)
-- [ ] phase 5: `bin/prove-one-run-check --body <pr-body>` + `bin/fleet-exec-review-canary --body <pr-body>` green
-- [ ] phase 5: single commit covering exactly: `bin/fleet-dead-pr-detector`, `tests/fleet-dead-pr-detector.test.sh`, host test file, `systemd/fleet-merged-pr-close.service`, `MANIFEST`, `prompts/weekly-fleet-review.md` — no agent names anywhere
-- [ ] phase 5: in-worktree `git grep -q "dead_conflicting_prs" -- bin lib` -> rc 0
-- [ ] phase 5: PR body: `Closes Nishfleet/fleet-ops#4468`, research: + help-first: lines, mechanical-fix note, run-proof block
-- [ ] phase 5: `gh pr merge --auto --squash -R Nishfleet/fleet-ops <PR-number>` arms the merge
+- [x] phase 5: run gate suite against the diff: sgscan, new test, p14 gate, fleet-bin-exclude-canary, manifest-shape, fleet-organ-heartbeat-check (detector is NOT an organ), fleet-no-agent-names-check, fleet-token-efficiency-check, machinery-authorization-gate
+- [x] phase 5: `bin/research-before-build-check --body <pr-body>` green (new bin/ file requires research: + help-first: lines)
+- [x] phase 5: `bin/prove-one-run-check --body <pr-body>` + `bin/fleet-exec-review-canary --body <pr-body>` green
+- [x] phase 5: single commit covering exactly: `bin/fleet-dead-pr-detector`, `tests/fleet-dead-pr-detector.test.sh`, host test file, `systemd/fleet-merged-pr-close.service`, `MANIFEST`, `prompts/weekly-fleet-review.md` — no agent names anywhere
+- [x] phase 5: in-worktree `git grep -q "dead_conflicting_prs" -- bin lib` -> rc 0
+- [x] phase 5: PR body: `Closes Nishfleet/fleet-ops#4468`, research: + help-first: lines, mechanical-fix note, run-proof block
+- [x] phase 5: `gh pr merge --auto --squash -R Nishfleet/fleet-ops 4484` arms the merge (auto-merge enabled 2026-09-08T06:21:46Z)
 
 ## Phase 6 — Termination verification
 
-- [ ] phase 6: `gh pr view` for #1016 #1957 #2193 #1301 #4046 all state==CLOSED
-- [ ] phase 6: post-merge, `git grep -q "dead_conflicting_prs" origin/main -- bin lib` -> rc 0 (TERMINATION)
+- [x] phase 6: `gh pr view` for #1016 #1957 #2193 #1301 #4046 all state==CLOSED (also #3289 #9 from detector's first live catch — 7 total)
+- [ ] phase 6: post-merge, `git grep -q "dead_conflicting_prs" origin/main -- bin lib` -> rc 0 (TERMINATION — pending the auto-merge)
+
+## Phase 7 — Re-base forward onto current main (manager re-entrancy)
+
+- [x] phase 7: `git fetch origin` -> main advanced from 836e9af0 (branch base) to d4edac92 with 5 new merges (#4469 #4473 #4479 #4480 #4482)
+- [x] phase 7: `git rebase origin/main` clean (no conflicts); all 6 commits rebased
+- [x] phase 7: re-run gates after rebase — diff is now scoped (8 files: detector, test, MANIFEST, service ExecStartPre, weekly-review L1, host runner, plan, pr-body) with no unrelated drift
+- [ ] phase 7: force-push rebased `claim/issue-4468` to origin so PR #4484's head points at the rebased tip
 
 ## Files to Modify
 - `systemd/fleet-merged-pr-close.service` — add `ExecStartPre=/home/nish/.local/bin/fleet-dead-pr-detector` + named-reason comment (repair of an existing unit)
@@ -76,13 +83,13 @@ when all five are closed and `git grep -q "dead_conflicting_prs" origin/main
   Plus the detector's first live catch: #3289 (parent #3111 CLOSED, fix f294a793/#3562 on main)
   and #9 (fix e657737c/#1561 on main; body's #36 is cross-repo siterep-public PR ref) also
   closed with evidence — dead_conflicting_prs is 0 going into deployed state.
-- phase 2 DONE: detector + MANIFEST + service ExecStartPre commit 918a27a6.
+- phase 2 DONE: detector + MANIFEST + service ExecStartPre commit 1b77daa3.
 - stalled: phase 3 — worker#1 returned no commit (truncated reply). Re-dispatched fresh worker
   with the cross-repo parent-resolution bug fix spec + test matrix + p14 hosting.
-- phase 3 DONE (final): commit a9ef2cf3 — reviewer Act-on round landed (--limit 300,
+- phase 3 DONE (final): commit c9120ad6 — reviewer Act-on round landed (--limit 300,
   plural-PR scrub, exact-number pin case 14, stderr-clean gh calls, owner-match
   tightening, unknown-mergeable log). Live: dead_conflicting_prs=0 exit 0.
-- phase 4 DONE: commit 955bda74 (weekly-review L1 judge line).
+- phase 4 DONE: commit b817692a (weekly-review L1 judge line).
 - phase 5 DONE: gates green — research-before-build OK, prove-one-run OK (+484
   net-positive-because), exec-review-canary OK, no-agent-names OK, token-efficiency
   OK, organ-heartbeat SKIP (not-an-organ), machinery-authorization-gate PASS,
@@ -90,7 +97,7 @@ when all five are closed and `git grep -q "dead_conflicting_prs" origin/main
 
 ## Reviewer adjudication (phase 2/3 diff, reviewer seat pass)
 
-- Act on (fixed in a9ef2cf3): no --limit on gh pr list (silent false-green past
+- Act on (fixed in c9120ad6): no --limit on gh pr list (silent false-green past
   30) -> --limit 300; plural `PRs #N` surviving the scrub -> plural alternation;
   exact-number #11352-vs-1135 unpinned -> case 14; 2>&1 on success-path gh calls
   (JSON corruption / swallowed errors) -> 2>/dev/null + rc check.
