@@ -423,7 +423,7 @@ raw = json.loads(Path(ratchet_path).read_text())
 m._QUALITY_RATCHET_CANDIDATES = [ratchet_path]
 ceil = m.load_ceilings(["0509", "futurerepo"])
 assert ceil["0509"]["reverts_per_100_merges"] == 4.5, ceil
-assert ceil["0509"]["sessions_to_pr_pct"] == 33.0, ceil
+assert ceil["0509"]["sessions_to_pr_pct"] == 115.0, ceil  # 33 -> 115: 2026-09-09 mis-seed correction (fleet-ops#4580)
 # _default fallback arms a future repo
 assert ceil["futurerepo"]["post_merge_defects_per_100"] == 40.0, ceil
 print("OK: ceilings loaded from config/quality-ratchet.json (+ _default fallback)")
@@ -434,7 +434,7 @@ assert 'fleet_product_quality_reverts_per_100{repo="0509"} 25.000000' in body
 assert 'fleet_product_quality_post_merge_defects_per_100{repo="0509"} 25.000000' in body
 assert 'fleet_product_quality_sessions_to_pr_pct{repo="0509"} 0.000000' in body
 assert 'fleet_product_quality_ceiling{repo="0509",metric="reverts_per_100_merges"} 4.500000' in body
-assert 'fleet_product_quality_ceiling{repo="0509",metric="sessions_to_pr_pct"} 33.000000' in body
+assert 'fleet_product_quality_ceiling{repo="0509",metric="sessions_to_pr_pct"} 115.000000' in body
 assert 'fleet_product_quality_ceiling{repo="0509",metric="post_merge_defects_per_100"} 40.000000' in body
 print("OK: export carries quality gauges + ceilings")
 PY
