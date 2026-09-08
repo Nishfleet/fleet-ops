@@ -3769,6 +3769,76 @@ _prepaid_paced() {
     (( usage >= thresh ))
 }
 
+# fleet-ops#4467: elapsed fraction of the current prepaid window (0..1).
+# weekly   -> fraction of the ISO week elapsed since Monday 00:00 UTC
+# monthly  -> fraction of the calendar month elapsed
+# anything else / unparseable -> echoes 0 (no window -> no floor).
+_prepaid_elapsed_fraction() {
+    local p="$1" window dow hour min sec sod
+    window="${SEAT_PROVIDER_QUOTA_WINDOW[$p]:-}"
+    case "$window" in
+        weekly)
+            dow=$(date -u +%u)
+            hour=$(date -u +%H)
+            min=$(date -u +%M)
+            sec=$(date -u +%S)
+            sod=$(( 10#$hour * 3600 + 10#$min * 60 + 10#$sec ))
+            awk -v d="$dow" -v s="$sod" 'BEGIN{printf "%.6f", ((d-1)*86400 + s) / 604800}'
+            ;;
+        monthly)
+            awk -v d="$(date -u +%d)" 'BEGIN{printf "%.6f", (d-1) / 31}'
+            ;;
+        *) echo 0 ;;
+    esac
+}
+
+# fleet-ops#4467: expiring prepaid seats (a reset window + a positive session
+# target) lapse unused while devin+ollama absorb the fleet. Return 0 when this
+# provider is an EXPIRING seat that is BEHIND PACE: its session meter for the
+# current window is below the pace that `elapsed_fraction` of the window
+# implies against its weekly_budget target. Such seats are picked FIRST,
+# round-robin, so prepaid allowance does not roll over burned.
+#
+# meter  = the local prepaid-usage counter (_prepaid_usage, sessions this
+#          ISO week). The dashboard scrape (#4232) / 7-day ledger are the
+#          issue's richer meters; this is the counter seat-lib already keeps.
+# pace   = budget * elapsed_fraction_of_window  (what the seat SHOULD have
+#          used by now to be on track to burn its window fully).
+# Flat non-expiring balances (no quota_window) and expiring seats with no
+# positive target are never behind pace (unaffected).
+_expiring_seat_behind_pace() {
+    local p="$1" window budget
+    window="${SEAT_PROVIDER_QUOTA_WINDOW[$p]:-}"
+    [[ "$window" == "weekly" || "$window" == "monthly" ]] || return 1
+    budget="${SEAT_PROVIDER_WEEKLY_BUDGET[$p]:-0}"
+    [[ "$budget" =~ ^[0-9]+$ ]] || return 1
+    (( budget > 0 )) || return 1
+    local usage pace
+    usage=$(_prepaid_usage "$p")
+    pace=$(_prepaid_elapsed_fraction "$p")
+    awk -v u="$usage" -v b="$budget" -v f="$pace" 'BEGIN{ exit (u >= b*f ? 1 : 0) }'
+}
+
+# fleet-ops#4467: assemble the list of expiring prepaid seats currently behind
+# pace, and round-robin pick ONE (persisted index) so behind-pace seats are
+# tried in rotation rather than the first one being drained. Echoes the picked
+# "provider\tmodel" seat or nothing (no behind-pace expiring seat).
+_pick_expiring_floor_seat() {
+    local -a behind=()
+    local fm p m
+    for fm in "${prepaid_seats[@]:-}"; do
+        [[ -n "$fm" ]] || continue
+        p="${fm%%$'\t'*}"
+        m="${fm#*$'\t'}"
+        if _expiring_seat_behind_pace "$p"; then
+            behind+=("$p"$'\t'"$m")
+        fi
+    done
+    if (( ${#behind[@]} > 0 )); then
+        _rr_pick "$STATE_DIR/prepaid-floor-rr.idx" "${behind[@]}"
+    fi
+}
+
 # Re-order a seat list (provider\tmodel entries) by a provider-order string.
 _order_seats_by() {
     local order="$1"
@@ -4984,6 +5054,24 @@ pick_seat() {
                 break 2
             done
         done
+    fi
+    # fleet-ops#4467: expiring prepaid seats behind pace are picked FIRST,
+    # round-robin, so a lapsing subscription (ClinePass, SuperGrok) is burned
+    # instead of rolling over unused while devin+ollama absorb the fleet.
+    # This overrides the product value/yield ledger (fleet-ops#3323/#3125): a
+    # lapsing prepaid seat wastes money that a marginal yield difference does
+    # not — the floor only front-runs seats that are actually behind pace, so
+    # normal picks (all seeds on pace) keep the ledger order unchanged. It
+    # yields only to keystone (strongest-capable seat) and to an explicit
+    # prefer-class / senior-review override that already set `chosen` above.
+    if [[ -z "${chosen:-}" ]] && ! _is_keystone_class "$difficulty"; then
+        if _floor=$(_pick_expiring_floor_seat); then
+            chosen="$_floor"
+            chosen_p="${chosen%%$'\t'*}"
+            chosen_m="${chosen#*$'\t'}"
+            _record_prepaid_pick "$chosen_p"
+            seat_log "pick_seat: expiring-pace floor routing to $chosen_p/$chosen_m (behind pace, lapsing prepaid)"
+        fi
     fi
     if [[ -z "${chosen:-}" ]]; then
     if (( ${#product_seats[@]} > 0 )); then

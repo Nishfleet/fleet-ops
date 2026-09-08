@@ -2073,6 +2073,80 @@ set -e
   || fail "weekly pace: alpha at 80% of budget must be skipped in favour of beta, got: $out"
 ok "weekly pace: prepaid seat at 80% of weekly_budget is skipped while another prepaid is live"
 
+# --- fleet-ops#4467: expiring prepaid seats behind pace are picked FIRST ---
+#
+# ClinePass and SuperGrok lapse unused while devin+ollama absorb the fleet:
+# the strict pick order means the first usable prepaid seats take everything
+# and a subscription at the tail never gets picked before its window resets.
+# The floor: a prepaid seat with a reset window whose session meter is below
+# `elapsed_fraction_of_window` of its weekly_budget target is picked FIRST,
+# round-robin among all such seats, until on pace. On-pace seats (and flat
+# non-expiring balances) fall back to the normal order.
+#
+# Fixture: TWO expiring weekly seats behind pace (expired-a, expired-b) and
+# ONE flat prepaid seat (no quota_window -> unaffected). Expect the two
+# expiring seats to alternate for every pick; the flat seat is never front-run.
+cat >"$scratch/models-floor.json" <<'JSON'
+{
+  "providers": {
+    "expired-a": { "models": [ { "id": "exp-a", "cost": { "input": 0 } } ] },
+    "expired-b": { "models": [ { "id": "exp-b", "cost": { "input": 0 } } ] },
+    "flatseat": { "models": [ { "id": "flat", "cost": { "input": 0 } } ] }
+  }
+}
+JSON
+cat >"$scratch/seat-caps-floor.json" <<'JSON'
+{
+  "ram_gb_per_worker": 1.5,
+  "prepaid_providers_in_order": ["expired-a", "expired-b", "flatseat"],
+  "providers": {
+    "expired-a": { "cap": 2, "class": "prepaid-quota", "quota_window": "weekly", "weekly_budget": 100, "models": { "exp-a": 2 } },
+    "expired-b": { "cap": 2, "class": "prepaid-quota", "quota_window": "weekly", "weekly_budget": 100, "models": { "exp-b": 2 } },
+    "flatseat": { "cap": 4, "class": "prepaid-quota", "models": { "flat": 4 } }
+  }
+}
+JSON
+ledger="$scratch/ledger-floor"
+mkdir -p "$ledger"
+export PI_MODELS_JSON="$scratch/models-floor.json"
+export SEAT_CAPS_JSON="$scratch/seat-caps-floor.json"
+export PI_SEAT_HEALTH_LEDGER_DIR="$ledger"
+export PI_PACKET_STATE="$scratch/state-floor"
+mkdir -p "$PI_PACKET_STATE/prepaid-usage"
+rm -f "$PI_PACKET_STATE/prepaid-rr.idx" "$PI_PACKET_STATE/prepaid-floor-rr.idx"
+week=$(date -u +%G-W%V)
+# Both expiring seats are behind pace: 0 sessions < budget * elapsed_fraction.
+for prov in expired-a expired-b flatseat; do
+  jq -nc --arg w "$week" --argjson c 0 '{week:$w,count:$c}' \
+    > "$PI_PACKET_STATE/prepaid-usage/${prov}.json"
+done
+set +e
+floor_got=""
+for i in 1 2 3 4; do
+  one=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" 2>/dev/null)
+  floor_got="${floor_got}${one}"$'\n'
+done
+set -e
+# Every pick must be one of the two behind-pace expiring seats (never the flat
+# seat while an expiring seat is still behind pace), and they must alternate.
+if printf '%s' "$floor_got" | grep -q '^flatseat'; then
+  fail "expiring floor: flat (non-expiring) seat must not beat a behind-pace expiring seat, got: $floor_got"
+fi
+_a=$(printf '%s' "$floor_got" | grep -c '^expired-a' || true)
+_b=$(printf '%s' "$floor_got" | grep -c '^expired-b' || true)
+[[ "$_a" == "2" && "$_b" == "2" ]] \
+  || fail "expiring floor: 4 picks must split 2/2 across the two behind-pace expiring seats, got exp-a=$_a exp-b=$_b picks=$floor_got"
+prev=""
+while IFS= read -r line; do
+  [[ -n "$line" ]] || continue
+  p="${line%%\t*}"
+  if [[ -n "$prev" && "$p" == "$prev" ]]; then
+    fail "expiring floor: behind-pace expiring seats must alternate (never stack), got: $floor_got"
+  fi
+  prev="$p"
+done <<< "$floor_got"
+ok "expiring floor: two behind-pace expiring seats alternate and front-run the flat seat (#4467)"
+
 # --- fleet-ops#1163: xai-oauth (SuperGrok sub) prepaid weekly seat --------
 #
 # fleet-ops#1163 was closed by PR #1436 (merged 2026-08-28T01:02:18Z):
