@@ -33,6 +33,8 @@ trap 'rm -rf "$scratch"' EXIT INT TERM
 # shellcheck source=/dev/null
 source "$repo_root/lib/litellm-seat.sh"
 
+check "provider_remote_agent is defined (wrappers call it under set -e if-conditions)" \
+    bash -c 'source "$0"; declare -F provider_remote_agent >/dev/null' "$repo_root/lib/litellm-seat.sh"
 check "SPAWN_FAIL_MAX_S set after source" \
     test "${SPAWN_FAIL_MAX_S}" -gt 0
 check "SPAWN_FAIL_BACKOFF_S set after source" \

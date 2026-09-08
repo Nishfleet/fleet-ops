@@ -33,7 +33,12 @@ set +e; bash "$bin" "$inst" >"$scratch/run.out" 2>"$scratch/run.err"; rc=$?; set
 [[ "$rc" == "1" ]] || fail "runner must exit 1 for systemd re-seat (got $rc): $(tail -3 "$scratch/run.err")"
 grep -q 'session-error: Devin exited with code 1' "$ISSUES_DIR/${inst}.err" || fail "session error was not appended to the err file: $(cat "$ISSUES_DIR/${inst}.err")"
 ok "Test 1: session errorMessage is surfaced into the err file"
-ledger="$LEDGER/devin__swe-1-7.json"; [[ -f "$ledger" ]] || fail "no ledger written for devin/swe-1-7 — detectors did not see the error"
-hc=$(jq -r '.health_class' "$ledger"); [[ "$hc" == "quota_bench" ]] || fail "expected quota_bench for resource_exhausted, got '$hc'"
-ok "Test 2: devin resource_exhausted from the session benches the seat (quota_bench)"
+# P3b: local quota_bench ledgers are gone. Proxy cooldown owns walls.
+# The runner still exits 1 so systemd re-seats; it must not write a
+# per-model ledger (the old pick_seat path wrote $LEDGER/devin__swe-1-7.json).
+shopt -s nullglob
+ledgers=("$LEDGER"/*.json)
+(( ${#ledgers[@]} == 0 )) \
+  || fail "P3b must not write local routing ledgers, got: ${ledgers[*]}"
+ok "Test 2: resource_exhausted does not write a local quota_bench ledger (proxy cooldown owns walls)"
 echo "PASS: pi-issue-run-session-error-feed"

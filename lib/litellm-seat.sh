@@ -430,9 +430,12 @@ mark_seat_empty_run() { seat_log "mark_seat_empty_run: $* (proxy cooldown owns r
 mark_seat_quota_bench() { seat_log "mark_seat_quota_bench: $* (proxy cooldown owns routing)"; return 0; }
 mark_seat_overload_bench() { seat_log "mark_seat_overload_bench: $* (proxy cooldown owns routing)"; return 0; }
 mark_seat_hang_bench() { seat_log "mark_seat_hang_bench: $* (proxy cooldown owns routing)"; return 0; }
-mark_seat_worked_no_text() { return 0; }
+mark_seat_worked_no_text() { return 1; }
 reset_seat_worked_no_text() { return 0; }
 seat_worked_no_text_path() { echo ""; }
+# Local consecutive-count bench is gone. Wrappers still call this; false
+# means "not a remote agent classified here" so the loud-fail path runs.
+provider_remote_agent() { return 1; }
 session_tool_calls() { echo 0; }
 is_spawn_etimeout() { return 1; }
 is_mid_session_death() { return 1; }
