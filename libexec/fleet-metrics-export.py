@@ -2672,6 +2672,17 @@ def _escalations_24h():
         "escalation-daily-sweep.service",
         "escalation-daily-sweep.timer",
         "resilience-drill-stub*",
+        # fleet-ops#180 (PR #4437): the gap-closure drill stubs.
+        # fleet-gap-closure-drill's drill_unit_escalation / drill_timer_mask
+        # spin a throwaway ExecStart=/bin/false unit to prove the escalation
+        # and timer OnFailure= chain fires; the stub failing IS the drill
+        # working. unit-escalation-write refuses the trip, so counting the
+        # unit-escalation@<stub> template START here would still storm
+        # FleetEscalationStorm and summon a fresh auditor per drill cycle
+        # (same class as the #3617 fleet-orphan-reset-probe@* fix). Globs are
+        # suffix-open so they match both the stripped and full unit name.
+        "gap-closure-drill-stub*",
+        "gap-closure-drill-mask-probe*",
         # fleet-ops#3180: resync with the writer's refuse list. The
         # 2026-08-30 pi-issue@* exclusion (fleet-ops#2133/#2475 — workers
         # escalate via their own reaper + re-dispatch lane, never to the
