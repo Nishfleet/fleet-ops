@@ -1,77 +1,48 @@
-feat(seat-health): walled-seat comeback probe with weekly credentials_bad issue
+## Summary
 
-## Why
+fleet-ops#4217 step 2 requires: **"Stale (>15 min) => absent, and an absent() alert."** The exporter's quota family emitted `fleet_seat_quota_observed_seconds` but stamped it with *export time* (`now`) instead of the *observation time*, so it was always `0.0000` — a dying fetch that served a 25-min-old cache still looked fresh. The metric that must power the stale-quota alert could never fire because it never reported a real age, and there was no alert rule on it at all.
 
-fleet-ops#1348: #1167 landed the `walled_comeback` table in `config/seat-caps.json`
-(15min on 429, hourly on daily quota, daily on monthly/402, weekly on
-credentials_bad, max 1 probe per 15min). `pick_seat` already fail-opens after
-`usable_at` passes, but nothing actually re-admits the seat — the wall meant the
-seat stayed walled until a manual intervention or an unrelated healthy observation
-overwrote the ledger.
+This closes that acceptance item:
 
-This PR adds a periodic probe (systemd timer every 15min) that:
-- Reads `usable_at` from the per-seat ledger
-- When `usable_at` has passed, sends a polite 1-token "reply OK" probe through pi
-- A successful probe produces a healthy observation (seat-health.ts records it),
-  clearing `usable_at` so the seat re-enters the ladder at its cap
-- Respects `min_probe_interval_s` from `seat-caps.json` (max 1 probe per seat per tick)
-- `credentials_bad`: probes weekly and files an `agent-ready` issue if still bad
-  (needs fixing, not waiting)
+1. **`_cached_quota_json` now returns the true observation timestamp** with the data (fresh fetch → now; stale-cache serve → the cache's own `ts`). `fleet_seat_quota_observed_seconds` therefore reports the real age of each provider's quota figure.
+2. **New `FleetSeatQuotaStale` Prometheus alert rule** keys on `fleet_seat_quota_observed_seconds > 900` (15 min = `QUOTA_STALE_S`) `or absent(...)` over 5 min — the "absent() alert" the issue asks for, with severity warning.
 
-## Scope
+No new units, no new organs, no new config keys. Edits inside the existing exporter (`libexec/fleet-metrics-export.py`), the existing alert file (`config/fleet_rules.yml`), and its existing test (`tests/fleet-metrics-export.test.sh`).
 
-- `bin/seat-walled-probe` — new script. Iterates the per-seat ledger, probes seats
-  whose `usable_at` is in the past and whose `failure_mode` is walled (rate_limit,
-  quota_exhausted, credentials_bad, empty_run). Uses `--dry-run` and `--probe-all`
-  flags. Exits 0 when there is nothing to probe (common case, not a failure).
-- `systemd/seat-walled-probe.service` + `systemd/seat-walled-probe.timer` —
-  oneshot unit with 10min timeout, timer fires every 15min with 60s randomized delay.
-- `systemd/timer-manifest.json` — entry for the new timer (source: repo, cadence: 15min).
-- `tests/seat-walled-probe.test.sh` — 5-phase test: dry-run selection (skips future/
-  healthy/recent, probes past+weekly), real mock run (probe success/failure + issue
-  filing), no-seats exits 0, --probe-all picks non-walled modes, systemd unit validity
-  + manifest entry.
-- `MANIFEST` — deploy mapping for bin + service + timer.
-
-**Out of scope**: the census sweep integration. #1149 is already the census sweeper;
-this probe runs on its own 15min timer rather than being called from the census.
-
-## Tradeoffs
-
-- **Own timer vs census hook.** Chose a standalone timer because the probe cadence
-  (15min) is tighter than the census (weekly). Adding a 15min-firing census step would
-  change the census's own semantics. The two are orthogonal — census maps assets to
-  guards; this probe is a guard.
-
-## Blast Radius
-
-- **Low risk.** New script + new systemd units only. No existing files modified.
-  The script reads (never writes) the per-seat ledger and `seat-caps.json`.
-  Systemd timer is non-mandatory — fleet runs fine without it.
-- **On first install**, the timer will find several walled seats with expired
-  `usable_at` and probe them. This is correct — those seats should have been
-  re-probed already.
+net-positive-because: the +110 lines are the durable missing alert capability (truthful observed_seconds stamping + a FleetSeatQuotaStale Prometheus rule + its regression test) that fleet-ops#4217 step 2 requires; it replaces a latent defect (stale quota figures masked as fresh 0s) with a working per-seat stale alert — a permanent instrumentation win, not hand-built orchestration.
 
 ## Verification
 
+Live exporter run (read-only caches, temp output — `main()` rc=0):
+
 ```
-bash tests/seat-walled-probe.test.sh  # 5/5 phases green (all 9 tagged OK)
-systemd-analyze verify systemd/seat-walled-probe.service systemd/seat-walled-probe.timer
-shellcheck -x bin/seat-walled-probe  # clean (exit 0)
-sgscan  # no new security findings
+fleet_seat_quota_observed_seconds{provider="codex",source="api"} 27.5930
+fleet_seat_quota_observed_seconds{provider="cursor",source="api"} 27.2553
+fleet_seat_quota_observed_seconds{provider="devin",source="api"} 143.4804
+fleet_seat_quota_observed_seconds{provider="xkiro",source="api"} 27.0372
 ```
 
-run-proof: tests/seat-walled-probe.test.sh 5/5 phases green including dry-run selection,
-real mock run with probe success+failure+issue-filing, no-seats-exit-0, --probe-all mode,
-systemd unit validity + timer-manifest entry.
+The values now reflect the real cache age (pre-fix: all `0.0000` regardless of data age). A provider whose fetch dies and serves cache now shows growing observed_seconds and trips `FleetSeatQuotaStale` at 15 min instead of masking a frozen figure as fresh.
 
-research: official docs (systemd.timer(5), systemd.service(5)) plus a last30days-scale pass for probe-style free-seat recovery patterns; compared polling to a systemd path-unit trigger on the ledger directory (rejected — path unit fires on every write, every few seconds; polling every 15min is simpler and lower CPU) and checked the existing bin/fleet-seat-recovery + census sweep (#1149) — adopted a standalone systemd timer + bash script because it runs on the existing fleet timer pattern with no new machinery, and the census sweep is weekly (too coarse for a 15min probe cadence).
+Test suite (new block 12 in `tests/fleet-metrics-export.test.sh`):
+```
+OK: stale quota cache carries its true ts -> fleet_seat_quota_observed_seconds reports real age
+OK: fleet_rules.yml has FleetSeatQuotaStale keyed on fleet_seat_quota_observed_seconds (fleet-ops#4217)
+OK: fleet-ops#4217: fleet_seat_quota_observed_seconds reports real age; FleetSeatQuotaStale rule present
+```
 
-help-first: ran `systemctl --help`, `systemd-analyze --help`, `pi --help`, and `bin/fleet-seat-recovery --help` — none can read per-seat ledger JSON, compare timestamps against seat-caps.json walled_comeback durations, or file agent-ready issues via fleet-issue-file; the existing tools do not already do this.
+## run-proof:
 
-organ-heartbeat: systemd/seat-walled-probe.service systemd/seat-walled-probe.timer
-not-an-organ: no Prometheus heartbeat metric exported; probe results are logged to
-pi-seat-health + actions log, not scraped by prometheus. This is a scheduled probe,
-not an organ under fleet-ops#1010.
+- `fleet-metrics-export.test.sh` — rc=0 (full suite, incl. new block 12 asserting stale-cache ts → real observed_seconds, and the rule keyed on observed_seconds > 900).
+- `seat-lib.test.sh`, `seat-lib-dispatch.test.sh`, `seat-failure-ceiling.test.sh`, `seat-quota-corpse.test.sh` — rc=0 (downstream `provider_live_reset_s` consumers unaffected).
+- `alertmanager-routing-matrix.test.sh`, `fleet-rules-escalation-storm.test.sh`, `canary-effectiveness.test.sh` — rc=0 (new alert rule does not break routing/matrix).
+- `sgscan` — no new security findings.
+- Live exporter `main()` run — rc=0, truthful observed_seconds across codex/cursor/devin/xkiro.
 
-Closes #1348
+organ-heartbeat: libexec/fleet-metrics-export.py (existing exporter organ), config/fleet_rules.yml (existing alert config), tests/fleet-metrics-export.test.sh (existing test organ). not-an-organ: pr-body.md
+
+## Loose ends
+
+- Pre-existing, unrelated: `tests/rule-enforcement.test.sh` fails on a live-vault drill (`led-2026-09-08-litellm-p3b` ledger entry missing its matrix row) — machine/vault state, no repo diff, not touched by this PR.
+
+Closes #4217
