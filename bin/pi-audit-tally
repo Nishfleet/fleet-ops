@@ -203,7 +203,7 @@ matrix_route() {
     lc=$(printf '%s' "$reasons" | tr '[:upper:]' '[:lower:]')
     p=$(printf '%s' "$lc" | grep -c '\bprecedent:' || true)
     o=$(printf '%s' "$lc" | grep -cE '\borchestrator\b' || true)
-    w=$(printf '%s' "$lc" | grep -cE '\bworker[:?/ ]' || true)
+    w=$(printf '%s' "$lc" | grep -cE '\bworker\b' || true)
     if [ "$p" -ge 2 ]; then printf 'precedent\n'; return 0; fi
     if [ "$o" -ge 2 ]; then printf 'orchestrator\n'; return 0; fi
     if [ "$w" -ge 2 ]; then printf 'worker\n'; return 0; fi
