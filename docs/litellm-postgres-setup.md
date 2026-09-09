@@ -225,6 +225,12 @@ source /home/nish/.config/fleet-ops/litellm-master-key.env
 # The fleet-owned cluster listens on loopback; the socket-only form is
 # rejected by the query engine (P1012).
 export DATABASE_URL=postgresql://litellm@localhost:5432/litellm
+# venv/bin first so `prisma` is on PATH (proxy_cli.py looks it up as a
+# bare binary). PYTHONPATH loads the prisma 0.15 _engine-setter compat
+# hook (fleet-ops#4628) so reconnect does not AttributeError on the
+# dropped _Prisma__engine mangled name.
+export PATH=/home/nish/.local/venvs/litellm/bin:$PATH
+export PYTHONPATH=/home/nish/.local/libexec/fleet-litellm-prisma-compat${PYTHONPATH:+:$PYTHONPATH}
 
 set +a
 exec /home/nish/.local/venvs/litellm/bin/litellm \

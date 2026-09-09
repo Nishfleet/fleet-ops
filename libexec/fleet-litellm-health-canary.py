@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""fleet-litellm-health-canary — LiteLLM proxy /health/readiness probe
-(fleet-ops#4130 P1).
+"""fleet-litellm-health-canary — LiteLLM proxy /health census probe
+(fleet-ops#4130 P1, fleet-ops#4628).
 
-Polls the LiteLLM proxy at 127.0.0.1:4000/health/readiness every tick and
-exports:
+Polls the LiteLLM proxy at 127.0.0.1:4000/health/readiness every tick for
+organ-liveness, then GET /health (master key) for the per-deployment
+census. Exports:
 
   fleet_litellm_proxy_up{endpoint="readiness"} 1|0
   fleet_litellm_organ_installed 1|0
   fleet_litellm_proxy_healthy_deployments{group="..."} <count>
   fleet_litellm_proxy_unhealthy_deployments{group="..."} <count>
+  fleet_litellm_health_census                         <healthy+unhealthy>
+  fleet_litellm_model_list_expected                   <yaml model_list>
   fleet_litellm_proxy_last_green_seconds            <unix ts>
   fleet_litellm_postgres_up                          1|0
   fleet_litellm_redis_up                             1|0
@@ -34,6 +37,16 @@ window that gaps one 60s tick does not false-trip. A single 5xx is recorded as
 proxy_up=0 but does NOT exit 1 (transient — the router's own cooldown handles it);
 only sustained connection-refused (organ dead) exits 1.
 
+Empty-census fail-loud (fleet-ops#4628): GET /health with background_health_checks
+returns the in-memory cache, which starts as {}. After a Prisma reconnect crash
+(engine_process_death / '_Prisma__engine) the cache stays empty even while
+completions return 200 and /health/readiness is healthy. That made this canary
+blind. Once readiness is 200, the canary fetches /health (master key) and
+asserts healthy_endpoints + unhealthy_endpoints is non-empty. An empty census
+is held for FLEET_LITELLM_EMPTY_CENSUS_TOLERANCE_S seconds (default 120 = two
+health_check_intervals) so a restart that has not yet finished its first
+background cycle does not false-trip; after that window, exit 1.
+
 No new scheduler for the proxy_up heartbeat: this canary runs on a 60s
 timer (systemd/fleet-litellm-health-canary.timer) because the proxy is a
 daemon whose death must surface in <2 min, not on the 5-min
@@ -48,7 +61,13 @@ Environment seams (tests):
   FLEET_LITELLM_STATE       state json path
   FLEET_LITELLM_NOW         fixed now for tests
   FLEET_LITELLM_TIMEOUT_S   per-request timeout
-  FLEET_LITELLM_STUB        path to a stub JSON response (tests)
+  FLEET_LITELLM_STUB        path to a stub JSON response (tests; used for both
+                            /health/readiness and /health unless STUB_HEALTH is set)
+  FLEET_LITELLM_STUB_HEALTH path to a stub JSON /health census (tests)
+  FLEET_LITELLM_MASTER_KEY  proxy master key for GET /health (never logged)
+  FLEET_LITELLM_MASTER_KEY_FILE path to KEY=value env file carrying the master key
+  FLEET_LITELLM_CONFIG      live yaml (model_list expected count)
+  FLEET_LITELLM_EMPTY_CENSUS_TOLERANCE_S  hold window for empty /health (default 120)
   FLEET_LITELLM_PG_ISREADY  pg_isready binary (default searched on PATH)
   FLEET_LITELLM_REDIS_CLI   redis-cli binary (default searched on PATH)
   FLEET_LITELLM_PG_HOST     postgres host or socket dir (default the
@@ -103,6 +122,19 @@ DEFAULT_TIMEOUT_S = float(os.environ.get("FLEET_LITELLM_TIMEOUT_S", "10"))
 # climb the escalation ladder on sustained death (<=2 min at the 60s default,
 # honoring the unit's named '<2 min' reason).
 DEFAULT_DEAD_TOLERANCE_S = float(os.environ.get("FLEET_LITELLM_DEAD_TOLERANCE_S", "60"))
+# Two health_check_intervals (config default 60s) so a just-restarted proxy
+# can finish its first background cycle before the empty-census fail-loud.
+DEFAULT_EMPTY_CENSUS_TOLERANCE_S = float(
+    os.environ.get("FLEET_LITELLM_EMPTY_CENSUS_TOLERANCE_S", "120")
+)
+DEFAULT_MASTER_KEY_FILE = os.environ.get(
+    "FLEET_LITELLM_MASTER_KEY_FILE",
+    "/home/nish/.config/fleet-ops/litellm-master-key.env",
+)
+DEFAULT_CONFIG = os.environ.get(
+    "FLEET_LITELLM_CONFIG",
+    "/home/nish/.config/fleet-ops/litellm-proxy.yaml",
+)
 DEFAULT_PG_HOST = os.environ.get(
     "FLEET_LITELLM_PG_HOST",
     "/home/nish/.local/share/fleet-litellm-postgres/run",
