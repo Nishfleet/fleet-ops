@@ -28,8 +28,13 @@ fi
 # This canary is the class prevention: every heartbeat tick, read the
 # live netmap (sudo -n tailscale debug netmap) and fail loud if any
 # PacketFilter rule has this VPS as src toward the Mac as dst.
-# Missing netmap / missing Mac peer / not running on the VPS = watcher
-# broken (fail closed). Auto-files, deduped by marker.
+# Missing Mac peer / not running on the VPS / missing config = watcher
+# broken (fail closed, exit 1). A transient LocalAPI `debug netmap` rc=1
+# is retried (3 attempts over ~30s) and, if still failing, exits 2 as
+# netmap-unknown so the refile detector can tell churn from a confirmed
+# broken watch (fleet-ops#4583). Unknown state must not pass: a stale
+# netmap write with rc=1 is never read as clean. Auto-files, deduped by
+# marker.
 #
 # No new scheduler. Run by fleet-heartbeat-tier1 block 28.
 #
@@ -42,6 +47,8 @@ fi
 #   FLEET_TAILSCALE_ACL_FILE   1 (default) file issues; 0 skip gh
 #   GH                         gh binary (tests stub this)
 #   TAILSCALE_NETMAP_CMD       override for the live fetch
+#   FLEET_TAILSCALE_NETMAP_ATTEMPTS        live-fetch tries (default 3)
+#   FLEET_TAILSCALE_NETMAP_RETRY_SLEEP_S   sleep between tries (default 10)
 
 set -Eeuo pipefail
 
@@ -137,6 +144,8 @@ signal: rule-enforcement/led-tailscale"
 fi
 
 netmap="$scratch/netmap.json"
+NETMAP_ATTEMPTS="${FLEET_TAILSCALE_NETMAP_ATTEMPTS:-3}"
+NETMAP_RETRY_SLEEP_S="${FLEET_TAILSCALE_NETMAP_RETRY_SLEEP_S:-10}"
 if [[ -n "${FLEET_TAILSCALE_NETMAP:-}" ]]; then
     if [[ ! -f "$FLEET_TAILSCALE_NETMAP" ]]; then
         loud "TAILSCALE-ACL-WATCHER-BROKEN" "netmap fixture missing: $FLEET_TAILSCALE_NETMAP"
@@ -149,26 +158,42 @@ signal: rule-enforcement/led-tailscale"
     fi
     cp "$FLEET_TAILSCALE_NETMAP" "$netmap"
 else
-    # Do not log netmap JSON: it carries node keys.
-    set +e
-    if [[ -n "${TAILSCALE_NETMAP_CMD:-}" ]]; then
-        bash -c "$TAILSCALE_NETMAP_CMD" >"$netmap" 2>"$scratch/netmap.err"
-        fetch_rc=$?
-    else
-        # Scratch is ours; sudo wraps only tailscale (redirect must stay user-owned).
-        # shellcheck disable=SC2024
-        sudo -n tailscale debug netmap >"$netmap" 2>"$scratch/netmap.err"
-        fetch_rc=$?
-    fi
-    set -e
+    # Do not log netmap JSON: it carries node keys. rc=1 from LocalAPI is
+    # often a blip (#1437 #1447 #1733 #2333 #3955 closed the same alarm).
+    # Retry, then exit 2 as unknown. Never treat a stale write as clean:
+    # a non-zero fetch_rc discards whatever landed in $netmap.
+    fetch_rc=1
+    attempt=0
+    while [[ "$attempt" -lt "$NETMAP_ATTEMPTS" ]]; do
+        attempt=$((attempt + 1))
+        : >"$netmap"
+        set +e
+        if [[ -n "${TAILSCALE_NETMAP_CMD:-}" ]]; then
+            bash -c "$TAILSCALE_NETMAP_CMD" >"$netmap" 2>"$scratch/netmap.err"
+            fetch_rc=$?
+        else
+            # Scratch is ours; sudo wraps only tailscale (redirect must stay user-owned).
+            # shellcheck disable=SC2024
+            sudo -n tailscale debug netmap >"$netmap" 2>"$scratch/netmap.err"
+            fetch_rc=$?
+        fi
+        set -e
+        if [[ "$fetch_rc" -eq 0 ]] && [[ -s "$netmap" ]]; then
+            break
+        fi
+        log "netmap fetch attempt $attempt/$NETMAP_ATTEMPTS failed (rc=$fetch_rc)"
+        if [[ "$attempt" -lt "$NETMAP_ATTEMPTS" ]]; then
+            sleep "$NETMAP_RETRY_SLEEP_S"
+        fi
+    done
     if [[ "$fetch_rc" -ne 0 ]] || [[ ! -s "$netmap" ]]; then
-        loud "TAILSCALE-ACL-WATCHER-BROKEN" "tailscale debug netmap failed (rc=$fetch_rc)"
-        file_finding "watcher-broken" \
-            "Tailscale ACL lockdown canary cannot read netmap (led-tailscale)" \
-            "\`tailscale debug netmap\` failed (rc=$fetch_rc). The compiled PacketFilter is the only honest read of the grants lockdown; a dead watch must not read as clean.
+        loud "TAILSCALE-ACL-NETMAP-UNKNOWN" "tailscale debug netmap failed after ${attempt} attempts (last rc=$fetch_rc)"
+        file_finding "netmap-unknown" \
+            "Tailscale ACL lockdown canary netmap read unknown (led-tailscale)" \
+            "\`tailscale debug netmap\` failed after ${attempt} attempts (last rc=$fetch_rc). Unknown state, not a confirmed broken watcher. The compiled PacketFilter is the only honest read of the grants lockdown; a stale or empty netmap must not read as clean. Distinct exit 2 so the refile detector can tell this churn class from watcher-broken (exit 1).
 
-signal: rule-enforcement/led-tailscale"
-        exit 1
+signal: rule-enforcement/led-tailscale/netmap-unknown"
+        exit 2
     fi
 fi
 

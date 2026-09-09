@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
 # tests/fleet-tailscale-acl-canary.test.sh
 #
-# Proves the VPS→Mac Tailscale lockdown canary (fleet-ops#544) offline:
+# Proves the VPS→Mac Tailscale lockdown canary (fleet-ops#544 / #4583) offline:
 #   1. Clean: PacketFilter is Mac→VPS only -> OK, no file.
 #   2. Self→Mac allow -> exit 1, LOUD, auto-files.
 #   3. Self→0.0.0.0/0 -> exit 1 (covers the Mac).
 #   4. Missing Mac peer -> exit 1, watcher-broken.
-#   5. Missing netmap fetch -> exit 1, watcher-broken.
+#   5. Persistent netmap fetch rc=1 -> exit 2 (unknown), not watcher-broken.
 #   6. Dedup: open issue already carrying the marker -> no second create.
 #   7. Matrix row is enforced; heartbeat-tier1 wires the canary; MANIFEST
 #      installs it. Nested CI host so this token does not edit workflows.
 #   8. Live VPS netmap (when sudo tailscale works) must pass.
+#   9. Transient fetch rc=1 then success -> exit 0 (fleet-ops#4583).
+#  10. Clean-but-stale netmap (JSON written, fetch rc=1) still fails.
+#  11. Closed netmap-unknown marker is not refiled (churn vs recurrence).
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -45,6 +48,8 @@ export FLEET_TAILSCALE_ACL_FILE=1
 export FLEET_TAILSCALE_ACL_LIB="$lib"
 export FLEET_TAILSCALE_ACL_CONFIG="$cfg"
 export FLEET_OPS_REPO="$repo_root"
+# Tests never wait the live ~30s backoff (fleet-ops#4583).
+export FLEET_TAILSCALE_NETMAP_RETRY_SLEEP_S=0
 
 gh_log="$scratch/gh.log"
 gh_fake="$scratch/gh"
@@ -209,7 +214,7 @@ set -e
 grep -q 'WATCHER-BROKEN' <<<"$out" || fail "scenario4: must LOUD watcher-broken ($out)"
 ok "scenario4: missing Mac peer fails closed"
 
-# --- 5. broken netmap fetch -----------------------------------------------
+# --- 5. persistent netmap fetch rc=1 (unknown, not confirmed broken) ------
 : >"$gh_log"; : >"$triage"
 set +e
 out=$(
@@ -219,9 +224,15 @@ out=$(
 )
 rc=$?
 set -e
-[[ "$rc" == "1" ]] || fail "scenario5: failed fetch must exit 1 (rc=$rc out=$out)"
-grep -q 'WATCHER-BROKEN' <<<"$out" || fail "scenario5: must LOUD watcher-broken ($out)"
-ok "scenario5: dead netmap fetch fails closed"
+[[ "$rc" == "2" ]] || fail "scenario5: persistent fetch rc=1 must exit 2 (rc=$rc out=$out)"
+grep -q 'NETMAP-UNKNOWN' <<<"$out" || fail "scenario5: must LOUD netmap-unknown ($out)"
+if grep -q 'WATCHER-BROKEN' <<<"$out"; then
+  fail "scenario5: persistent fetch must not be confirmed watcher-broken ($out)"
+fi
+grep -q 'issue create' "$gh_log" || fail "scenario5: must auto-file netmap-unknown ($gh_log)"
+grep -q 'tailscale-acl-canary: netmap-unknown' "$gh_log" \
+  || fail "scenario5: filed body must carry netmap-unknown marker ($gh_log)"
+ok "scenario5: persistent netmap fetch exits 2 as unknown, not watcher-broken"
 
 # --- 6. dedup -------------------------------------------------------------
 : >"$gh_log"; : >"$triage"
@@ -274,8 +285,13 @@ grep -F 'tailscale_acl_canary_rc' "$tier1" >/dev/null \
   || fail "tier1 must capture tailscale_acl_canary_rc"
 grep -F -- 'exit "$tailscale_acl_canary_rc"' "$tier1" >/dev/null \
   || fail "tier1 must exit non-zero when the Tailscale ACL gate fails loud"
+grep -F 'rc=2 netmap-unknown' "$tier1" >/dev/null \
+  || fail "tier1 must classify rc=2 as netmap-unknown (churn vs confirmed watcher-broken)"
 grep -q 'bin/fleet-tailscale-acl-canary' "$repo_root/MANIFEST" \
   || fail "MANIFEST must install bin/fleet-tailscale-acl-canary"
+jq -e '.rules[] | select(.id == "led-tailscale") | .mechanism | test("netmap-unknown")' \
+  "$matrix" >/dev/null \
+  || fail "led-tailscale mechanism must name netmap-unknown (distinct from watcher-broken)"
 grep -Fq 'bash "$here/fleet-tailscale-acl-canary.test.sh"' "$here/rule-enforcement.test.sh" \
   || fail "rule-enforcement.test.sh must nest this file (CI cannot gain a new workflow line)"
 ok "scenario7: matrix enforced, heartbeat wired, MANIFEST, nested CI host"
@@ -293,4 +309,83 @@ else
   ok "scenario8: live tailscale netmap not readable (hosted CI) — skip"
 fi
 
-ok "fleet-tailscale-acl-canary: clean, self→mac, wildcard, missing peer, dead fetch, dedup, contracts, live"
+# --- 9. transient fetch rc=1 then success (fleet-ops#4583) ----------------
+: >"$gh_log"; : >"$triage"
+clean_netmap
+transient_cmd="$scratch/transient-netmap.sh"
+cat >"$transient_cmd" <<EOF
+#!/usr/bin/env bash
+state="$scratch/transient.state"
+if [[ ! -f "\$state" ]]; then
+  echo 1 >"\$state"
+  echo "LocalAPI: transient netmap read failure" >&2
+  exit 1
+fi
+cat "$scratch/netmap.json"
+exit 0
+EOF
+chmod +x "$transient_cmd"
+set +e
+out=$(
+  unset FLEET_TAILSCALE_NETMAP
+  TAILSCALE_NETMAP_CMD="$transient_cmd" \
+  "$bin" 2>&1
+)
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "scenario9: transient rc=1 then success must exit 0 (rc=$rc out=$out)"
+grep -q 'OK: compiled PacketFilter' <<<"$out" \
+  || fail "scenario9: must log OK after retry ($out)"
+if grep -q 'issue create' "$gh_log"; then
+  fail "scenario9: must not file on recovered fetch ($gh_log)"
+fi
+ok "scenario9: transient netmap rc=1 then success exits 0"
+
+# --- 10. clean-but-stale netmap (JSON written, fetch rc=1) still fails -----
+: >"$gh_log"; : >"$triage"
+stale_cmd="$scratch/stale-netmap.sh"
+cat >"$stale_cmd" <<EOF
+#!/usr/bin/env bash
+# Write a previously-clean PacketFilter, then fail. Honesty: never treat
+# a stale successful write as a live read.
+cat "$scratch/netmap.json"
+echo "LocalAPI: netmap read failed after write" >&2
+exit 1
+EOF
+chmod +x "$stale_cmd"
+set +e
+out=$(
+  unset FLEET_TAILSCALE_NETMAP
+  TAILSCALE_NETMAP_CMD="$stale_cmd" \
+  "$bin" 2>&1
+)
+rc=$?
+set -e
+[[ "$rc" != "0" ]] || fail "scenario10: stale-but-clean netmap must not pass (out=$out)"
+[[ "$rc" == "2" ]] || fail "scenario10: stale fetch must exit 2 unknown (rc=$rc out=$out)"
+grep -q 'NETMAP-UNKNOWN' <<<"$out" || fail "scenario10: must LOUD netmap-unknown ($out)"
+ok "scenario10: clean-but-stale netmap does not pass"
+
+# --- 11. closed netmap-unknown is not refiled as watcher-broken -----------
+: >"$gh_log"; : >"$triage"
+# Open list is empty (the previous alarm was closed). Persistent fetch
+# must file netmap-unknown, never watcher-broken, so the refile detector
+# can tell churn from a real recurrence.
+set +e
+out=$(
+  unset FLEET_TAILSCALE_NETMAP
+  TAILSCALE_NETMAP_CMD="false" \
+  "$bin" 2>&1
+)
+rc=$?
+set -e
+[[ "$rc" == "2" ]] || fail "scenario11: still exit 2 (rc=$rc out=$out)"
+grep -q 'issue create' "$gh_log" || fail "scenario11: must file netmap-unknown ($gh_log)"
+if grep -q 'tailscale-acl-canary: watcher-broken' "$gh_log"; then
+  fail "scenario11: must not refile as watcher-broken ($gh_log)"
+fi
+grep -q 'tailscale-acl-canary: netmap-unknown' "$gh_log" \
+  || fail "scenario11: filed marker must be netmap-unknown ($gh_log)"
+ok "scenario11: persistent fetch files netmap-unknown, not watcher-broken"
+
+ok "fleet-tailscale-acl-canary: clean, self→mac, wildcard, missing peer, unknown fetch, dedup, contracts, live, retry, stale, refile"
