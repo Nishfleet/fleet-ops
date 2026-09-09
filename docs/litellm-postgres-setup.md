@@ -206,10 +206,8 @@ source /home/nish/fleet2/etc/crof.env
 source /home/nish/.config/straitly/straitly.env
 
 # --- xai-oauth: OAuth access token from auth.json (refreshed every 4h by
-# grok-token-refresh). Read once at proxy start; grok-token-refresh restarts
-# this unit after a successful rotate so the new token is picked up
-# (fleet-ops#4629). cli-chat-proxy identity headers live on the grok-4.6
-# deployments as litellm_params.extra_headers in the live yaml, not here.
+# grok-token-refresh). Read once at proxy start; a refresh needs a proxy
+# restart to pick up. P4 drill covers the stale-token case.
 export XAI_OAUTH_ACCESS_TOKEN=$(/usr/bin/python3 -c "
 import json, sys
 try:
@@ -227,6 +225,12 @@ source /home/nish/.config/fleet-ops/litellm-master-key.env
 # The fleet-owned cluster listens on loopback; the socket-only form is
 # rejected by the query engine (P1012).
 export DATABASE_URL=postgresql://litellm@localhost:5432/litellm
+# venv/bin first so `prisma` is on PATH (proxy_cli.py looks it up as a
+# bare binary). PYTHONPATH loads the prisma 0.15 _engine-setter compat
+# hook (fleet-ops#4628) so reconnect does not AttributeError on the
+# dropped _Prisma__engine mangled name.
+export PATH=/home/nish/.local/venvs/litellm/bin:$PATH
+export PYTHONPATH=/home/nish/.local/libexec/fleet-litellm-prisma-compat${PYTHONPATH:+:$PYTHONPATH}
 
 set +a
 exec /home/nish/.local/venvs/litellm/bin/litellm \
