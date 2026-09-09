@@ -999,6 +999,20 @@ bash -c 'source "$0"; is_quota_cap_error "$1" "$2"' "$lib" "" '402: {"message":"
 bash -c 'source "$0"; is_quota_cap_error "$1" "$2"' "$lib" "" 'session-error: 402 budget_exceeded' >/dev/null 2>&1 \
   || fail "9b: bare 402 budget_exceeded code must be a quota/cap wall (fleet-ops#3973)"
 ok "9b: mergegateway 402 'Credit balance depleted' / budget_exceeded -> quota/cap wall (fleet-ops#3973)"
+# Pareto Inference 429 credit wall (2026-09-09 wire probe): the seat was the
+# fleet's #1 lane (13 of the last 30 picks) and died 91 times in 4h (60x rc=124,
+# 31x rc=1, 1x rc=143). Every death booked an infra rc, so the classifier never
+# saw a quota keyword: the ledger recorded health_class=transient_fault and the
+# wrapper applied a generic 24h bench reasoned "no_block:rc=1" with no
+# error-class citation — a money wall disguised as a hang. A live smoke
+# (systemd-run, provider paretoinference) returned the body below. Classify it:
+# a 429 whose body says the credits are gone is a prepaid wall, never a retry.
+pareto_429='429: {"message":"Insufficient credits for this request. Reduce max_tokens.","type":"budget_error","code":"credit_insufficient"}'
+bash -c 'source "$0"; is_quota_cap_error "$1" "$2"' "$lib" "$pareto_429" "" >/dev/null 2>&1 \
+  || fail "9b: Pareto 429 'Insufficient credits' (budget_error/credit_insufficient) must be a quota/cap wall, not a transient 429"
+bash -c 'source "$0"; is_quota_cap_error "$1" "$2"' "$lib" "" 'session-error: 429 credit_insufficient' >/dev/null 2>&1 \
+  || fail "9b: bare 429 credit_insufficient code must be a quota/cap wall"
+ok "9b: Pareto 429 'Insufficient credits' / budget_error / credit_insufficient -> quota/cap wall"
 # fleet-ops#4444 (2026-09-08): Alibaba token-plan 429 body is "Your token-plan
 # 1-week quota has been exhausted. The quota will reset at ..." — `quota` is
 # NOT adjacent to `exhausted` ("has been" intervenes), so the old adjacency
