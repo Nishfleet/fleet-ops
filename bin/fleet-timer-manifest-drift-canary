@@ -1,0 +1,238 @@
+#!/usr/bin/env bash
+# fleet-timer-manifest-drift-canary — scheduled live timer-manifest drift
+# detector + auto-file + observe-to-close (fleet-ops#4647).
+#
+# The live (VPS) timer-manifest check in tests/timer-manifest.test.sh only
+# ran when a worker/PR happened to invoke it; nothing on the host ran it on
+# a schedule, and nothing auto-filed when it failed. Result: ~9 near-
+# duplicate "live timer missing from manifest" issues filed in one week, each
+# caught by accident. This canary is the PREVENTION: it runs the same live
+# drift check from the existing fleet-heartbeat-tier1 (no new systemd unit),
+# LOUDs one alarm per missing non-transient timer keyed by
+# `signal: timer-manifest/<unit>`, and the existing detector->queue
+# reconciler (fleet-ops#362, heartbeat block 38) auto-files ONE deduped
+# issue per signal and observe-to-closes it when the drift clears on a
+# later heartbeat. The canary itself never calls gh — filing and closing
+# are the reconciler's job (reuse the existing observe-to-close path,
+# mirroring bin/fleet-debug-playbook).
+#
+# Acceptance 3 (fleet-ops#4647): Transient=yes timers are skipped so one-off
+# `systemctl`-created timers (like 0509-backfill-tail-1919.timer) do not
+# surface as permanent drift — those are for actual recurrent timers on the
+# roster.
+#
+# Acceptance 4 (fleet-ops#4647) — scoped decision, made explicit once:
+# ADOPT. Every live user timer (including 0509 repo-owned canaries that a
+# worker App token can only create as a user unit) must have a manifest
+# entry with reason/cadence. The drift check does NOT exempt `user-config`-
+# sourced timers; a missing one is auto-filed and the worker adds the entry
+# (observe-to-close). This matches the existing manifest convention (17
+# user-config entries already present) and stops the per-instance
+# re-litigation. The false-positive window is short: the canary files
+# immediately, the worker adds the entry on the next tick, and the
+# reconciler closes it.
+#
+# No new scheduler. Run by fleet-heartbeat-tier1 (block 47), before the
+# detector->queue reconciler (block 38) so its LOUD lines are seen the same
+# tick.
+#
+# Exit codes (fleet-ops#1116 alarm-vs-failure separation):
+#   0  clean tick (no drift) OR only Transient=yes / system / unmanaged
+#      timers missing — alarm path is the reconciler, not the unit failure
+#   1  drift found (one or more non-transient live timers missing from the
+#      manifest) — LOUD emitted, reconciler auto-files; the heartbeat does
+#      NOT propagate rc=1 to --state=failed (the trip-loop #1116 fixes)
+#   2  helper crash (jq missing, manifest unparseable, systemctl broken) —
+#      heartbeat fails loud and unit lands in --state=failed
+#
+# Environment seams (tests):
+#   FLEET_TIMER_MANIFEST          manifest path
+#                                 (default <repo>/systemd/timer-manifest.json)
+#   FLEET_TIMER_MANIFEST_UNMANAGED  unmanaged allowlist
+#                                 (default <repo>/config/timer-manifest-unmanaged.json)
+#   FLEET_TIMER_MANIFEST_SYSTEMCTL  systemctl command prefix
+#                                 (default "systemctl --user"; tests stub this)
+#   FLEET_HEARTBEAT_TRIAGE        triage file (LOUD lines appended here)
+#   FLEET_TIMER_MANIFEST_REPO     canary source repo (for git stale guard)
+#   FLEET_TIMER_MANIFEST_SKIP_ORIGIN  1 skips the origin/main stale-checkout
+#                                 guard (tests)
+#
+# Usage: fleet-timer-manifest-drift-canary [--help]
+
+set -Eeuo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+_canon_script=$(readlink -f "$0")
+_canon_repo=$(cd "$(dirname "$_canon_script")/.." && pwd)
+FLEET_OPS_REPO="${FLEET_TIMER_MANIFEST_REPO:-$_canon_repo}"
+
+MANIFEST="${FLEET_TIMER_MANIFEST:-$FLEET_OPS_REPO/systemd/timer-manifest.json}"
+UNMANAGED_ALLOWLIST="${FLEET_TIMER_MANIFEST_UNMANAGED:-$FLEET_OPS_REPO/config/timer-manifest-unmanaged.json}"
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+SYSTEMCTL=(${FLEET_TIMER_MANIFEST_SYSTEMCTL:-systemctl --user})
+SKIP_ORIGIN="${FLEET_TIMER_MANIFEST_SKIP_ORIGIN:-0}"
+
+log() {
+    printf '[%s] [fleet-timer-manifest-drift-canary] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+loud() {
+    local tag="$1"; shift
+    local msg="$*"
+    log "LOUD [$tag] $msg"
+    {
+        printf '\n[%s] [%s] %s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+    } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+usage() {
+    cat <<'EOF'
+usage: fleet-timer-manifest-drift-canary [--help]
+
+Scheduled live timer-manifest drift detector. Compares live user timers
+against systemd/timer-manifest.json, LOUDs one alarm per missing non-
+transient timer (signal: timer-manifest/<unit>), and the detector->queue
+reconciler (fleet-ops#362) auto-files + observe-to-closes. No gh calls.
+
+Exit code: 0 clean, 1 drift found (alarm), 2 crash.
+EOF
+}
+
+[[ "${1:-}" == "--help" ]] && { usage; exit 0; }
+
+# Non-fleet timers we exclude (OS- or runner-image-managed, not fleet).
+# Kept in sync with tests/timer-manifest.test.sh.
+SYSTEM_TIMERS=(
+    "podman-auto-update.timer"
+    "launchpadlib-cache-clean.timer"
+    "systemd-tmpfiles-clean.timer"
+    "apt-daily-upgrade.timer"
+    "apt-daily.timer"
+    "logrotate.timer"
+    "man-db.timer"
+    "fwupd-refresh.timer"
+    "motd-news.timer"
+    "ureadahead-stop.timer"
+    "systemd-tmpfiles-setup.timer"
+)
+
+# --- crash guards: jq + manifest must be usable -----------------------------
+command -v jq >/dev/null 2>&1 || { log "FAIL: jq not found"; exit 2; }
+[[ -f "$MANIFEST" ]] || { log "FAIL: manifest not found: $MANIFEST"; exit 2; }
+jq '.' "$MANIFEST" >/dev/null 2>&1 || { log "FAIL: manifest not valid JSON: $MANIFEST"; exit 2; }
+
+# --- is systemctl --user available? (CI has none -> clean skip) -------------
+if ! "${SYSTEMCTL[@]}" list-timers --no-pager >/dev/null 2>&1; then
+    log "systemctl --user not available (CI mode) — live drift check skipped"
+    exit 0
+fi
+
+# --- unmanaged allowlist (fleet-ops#4400) -----------------------------------
+declare -A ALLOWED_UNMANAGED=()
+if [[ -f "$UNMANAGED_ALLOWLIST" ]]; then
+    if jq '.' "$UNMANAGED_ALLOWLIST" >/dev/null 2>&1; then
+        while IFS= read -r unit; do
+            [[ -z "$unit" ]] && continue
+            ALLOWED_UNMANAGED["$unit"]=1
+        done < <(jq -r '.unmanaged[].unit // empty' "$UNMANAGED_ALLOWLIST" 2>/dev/null | sort -u)
+    fi
+fi
+
+# --- stale-checkout guard (fleet-ops#1555): origin/main manifest ------------
+# Before failing on a missing live timer, check origin/main's manifest: if it
+# already covers the timer, the local checkout is simply behind — SKIP that
+# timer rather than filing a false gap. Real gaps (missing from both local
+# AND origin/main) still fail. If the fetch/show is unavailable, the guard is
+# a no-op and the original fail-on-missing behavior is preserved.
+ORIGIN_MANIFEST=""
+if [[ "$SKIP_ORIGIN" != "1" ]] && git -C "$FLEET_OPS_REPO" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    ORIGIN_MANIFEST="$(mktemp)"
+    if ! git -C "$FLEET_OPS_REPO" fetch origin main:refs/timer-manifest-drift-main >/dev/null 2>&1 || \
+       ! git -C "$FLEET_OPS_REPO" show refs/timer-manifest-drift-main:systemd/timer-manifest.json >"$ORIGIN_MANIFEST" 2>/dev/null || \
+       ! jq '.' "$ORIGIN_MANIFEST" >/dev/null 2>&1; then
+        rm -f "$ORIGIN_MANIFEST"
+        ORIGIN_MANIFEST=""
+    fi
+    git -C "$FLEET_OPS_REPO" update-ref -d refs/timer-manifest-drift-main 2>/dev/null || true
+fi
+
+# --- enumerate live user timers (unit files: active + inactive + disabled) ---
+ALL_LIVE_TIMERS=$(
+    "${SYSTEMCTL[@]}" list-unit-files '*.timer' --no-pager --no-legend 2>/dev/null | \
+        awk '/\.timer/ {print $1}' | sort -u | grep -v '^$' || true
+)
+
+drift=0
+timer_count=0
+while IFS= read -r timer; do
+    [[ -z "$timer" ]] && continue
+    timer_count=$((timer_count + 1))
+
+    # Skip system/runner-image timers.
+    is_system=0
+    for sys in "${SYSTEM_TIMERS[@]}"; do
+        [[ "$timer" == "$sys" ]] && is_system=1 && break
+    done
+    [[ $is_system -eq 1 ]] && continue
+
+    # Deliberately unmanaged unit? Skip (fleet-ops#4400).
+    if [[ -n "${ALLOWED_UNMANAGED[$timer]:-}" ]]; then
+        continue
+    fi
+
+    # Acceptance 3: skip Transient=yes timers (one-off systemd-run creations
+    # like 0509-backfill-tail-1919.timer) — those are not roster drift.
+    transient=$("${SYSTEMCTL[@]}" show "$timer" -p Transient --value 2>/dev/null || true)
+    if [[ "$transient" == "yes" ]]; then
+        continue
+    fi
+
+    # Exact match in the local manifest.
+    if jq -e ".timers[\"$timer\"]" "$MANIFEST" >/dev/null 2>&1; then
+        continue
+    fi
+
+    # Template match (pi-intake@0509.timer -> pi-intake@.timer).
+    base="${timer%%@*}@.timer"
+    if [[ "$timer" == *"@"* ]] && jq -e ".timers[\"$base\"]" "$MANIFEST" >/dev/null 2>&1; then
+        continue
+    fi
+
+    # Stale-checkout guard: covered on origin/main -> local is behind, not a
+    # real gap (fleet-ops#1555).
+    if [[ -n "$ORIGIN_MANIFEST" ]]; then
+        if jq -e ".timers[\"$timer\"]" "$ORIGIN_MANIFEST" >/dev/null 2>&1; then
+            log "SKIP: live timer '$timer' missing from LOCAL manifest but present on origin/main — checkout is behind, not a real gap"
+            continue
+        fi
+        obase="${timer%%@*}@.timer"
+        if [[ "$timer" == *"@"* ]] && jq -e ".timers[\"$obase\"]" "$ORIGIN_MANIFEST" >/dev/null 2>&1; then
+            log "SKIP: live timer '$timer' (template '$obase') missing from LOCAL manifest but present on origin/main — checkout is behind, not a real gap"
+            continue
+        fi
+    fi
+
+    # Drift: LOUD one alarm keyed by signal: timer-manifest/<unit>. The
+    # detector->queue reconciler (heartbeat block 38, fleet-ops#362) auto-
+    # files ONE deduped issue for this signal and observe-to-closes it when
+    # the LOUD stops (the timer gets a manifest entry or is removed).
+    loud "TIMER-MANIFEST-DRIFT" \
+        "live timer '$timer' missing from manifest — signal: timer-manifest/$timer"
+    drift=1
+done <<< "$ALL_LIVE_TIMERS"
+
+rm -f "$ORIGIN_MANIFEST"
+
+manifest_count=$(jq -r '.timers | keys | length' "$MANIFEST")
+if [[ $drift -eq 1 ]]; then
+    log "drift found in $timer_count live user timers ($manifest_count manifest entries) — LOUD emitted, reconciler auto-files"
+    exit 1
+fi
+
+log "clean: all $timer_count live user timers have manifest entries ($manifest_count manifest entries total)"
+exit 0

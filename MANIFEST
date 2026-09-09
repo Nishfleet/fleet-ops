@@ -865,6 +865,12 @@ bin/fleet-scout-leak-canary /home/nish/.local/bin/fleet-scout-leak-canary
 # healthy. No new timer; heartbeat-tier1 block 46. Not an organ (exports
 # no heartbeat metric).
 bin/fleet-research-sweep-canary /home/nish/.local/bin/fleet-research-sweep-canary
+# fleet-ops#4647: live timer-manifest drift canary. Runs the live drift check
+# from heartbeat-tier1 block 47 (no new systemd unit), LOUDs one alarm per
+# missing non-transient timer (signal: timer-manifest/<unit>); the detector->
+# queue reconciler (block 38, fleet-ops#362) auto-files + observe-to-closes.
+# Not an organ (no heartbeat metric of its own).
+bin/fleet-timer-manifest-drift-canary /home/nish/.local/bin/fleet-timer-manifest-drift-canary
 # fleet-ops#524: per-repo verification harness canary (sr-verify-harness).
 # Fail-loud if an enrolled product repo HEAD is missing
 # .claude/skills/verify-<app>/SKILL.md with required sections + features/.
