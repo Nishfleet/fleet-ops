@@ -471,6 +471,28 @@ YOAML
   #       fleet_seat_spend_usd row at 99 (a >$5 day in the trailing window)
   #       must NOT fire: the rule must key on the day-less today copy, never
   #       on a day that aged out of "today".
+# fleet-ops#4611: derive the expected annotations from the rule file itself.
+# Hardcoding them meant any annotation edit (fleet-ops#4477 rewrote the
+# spend-boundary repair text to point at bin/money-boundary-raise) left this
+# fixture pinning the OLD wording, turning the suite red on main and blocking
+# every PR that runs it. Deriving makes that drift class impossible.
+sb_annotations() {
+  PROVIDER="$1" RULES="$rules" python3 - <<'PYEOF'
+import json, os, yaml
+provider = os.environ["PROVIDER"]
+doc = yaml.safe_load(open(os.environ["RULES"]))
+for group in doc.get("groups", []):
+    for rule in group.get("rules", []):
+        if rule.get("alert") == "FleetProviderSpendBoundary":
+            ann = rule.get("annotations", {})
+            for key in ("summary", "description"):
+                text = ann[key].replace("{{ $labels.provider }}", provider)
+                print("              %s: %s" % (key, json.dumps(text)))
+            raise SystemExit(0)
+raise SystemExit("FleetProviderSpendBoundary alert not found in %s" % os.environ["RULES"])
+PYEOF
+}
+
   sb_yml="$scratch/fleet-spend-boundary.test.yml"
   cat >"$sb_yml" <<YOAML
 rule_files:
@@ -494,8 +516,7 @@ tests:
               severity: warning
               service: fleet
             exp_annotations:
-              summary: "provider openrouter crossed the USD 5 money boundary — today's spend over 5 or credits remaining under 5"
-              description: 'fleet-ops#3284 (child of #3150, zero-revenue standing rule): provider openrouter breached the money boundary — fleet_seat_spend_today_usd > 5 (current-UTC-day metered spend) and/or fleet_seat_credits_remaining_usd < 5 (vendor-reported balance). Repair worker — do BOTH, in order. (1) Nish route, class ''money'': append ONE line to /home/nish/workspaces/agent-state/NISH-ESCALATIONS.md of the form ''<ISO-8601 UTC> MONEY-BOUNDARY provider=openrouter spend_today_usd=<value> credits_remaining_usd=<value> — provider over the USD 5 boundary; only Nish can approve spend (fleet-ops#3284)''. The MONEY-BOUNDARY class token must be the second whitespace field — that write is what the nish-boundary-notify.path unit delivers to Nish''s phone. (2) Set the provider''s issue-work cap to 0 via the existing quota_bench path: the roster is .providers.openrouter.models in config/seat-caps.json (live copy ~/.local/state/pi-packet/seat-caps.json) — for every model with cap>0 write /home/nish/workspaces/agent-state/lanes/seats/<provider>__<model>.json (sanitise provider/model to [A-Za-z0-9._-]) containing health_class:"quota_bench", retryable:true, seat_dead:false, failure_mode:"quota_cap", source:"money_boundary", consecutive_failure_count:0 (a money wall is not a seat fault — do not escalate the count or trip the corpse threshold), and a FAR-FUTURE bench_until + usable_at (e.g. +365d — this wall holds until Nish clears it, never the ~6h-capped geometric window a normal 429 gets). seat_usable''s quota_bench branch keeps every benched seat out of pick_seat while bench_until is in the future. Then report the entries written. Do NOT top up, re-auth, or un-bench — money is Nish''s alone; only Nish clears the wall.'
+$(sb_annotations openrouter)
   - interval: 1m
     name: spend boundary fires when a provider's credits remaining is under USD 5
     input_series:
@@ -513,8 +534,7 @@ tests:
               severity: warning
               service: fleet
             exp_annotations:
-              summary: "provider minimax crossed the USD 5 money boundary — today's spend over 5 or credits remaining under 5"
-              description: 'fleet-ops#3284 (child of #3150, zero-revenue standing rule): provider minimax breached the money boundary — fleet_seat_spend_today_usd > 5 (current-UTC-day metered spend) and/or fleet_seat_credits_remaining_usd < 5 (vendor-reported balance). Repair worker — do BOTH, in order. (1) Nish route, class ''money'': append ONE line to /home/nish/workspaces/agent-state/NISH-ESCALATIONS.md of the form ''<ISO-8601 UTC> MONEY-BOUNDARY provider=minimax spend_today_usd=<value> credits_remaining_usd=<value> — provider over the USD 5 boundary; only Nish can approve spend (fleet-ops#3284)''. The MONEY-BOUNDARY class token must be the second whitespace field — that write is what the nish-boundary-notify.path unit delivers to Nish''s phone. (2) Set the provider''s issue-work cap to 0 via the existing quota_bench path: the roster is .providers.minimax.models in config/seat-caps.json (live copy ~/.local/state/pi-packet/seat-caps.json) — for every model with cap>0 write /home/nish/workspaces/agent-state/lanes/seats/<provider>__<model>.json (sanitise provider/model to [A-Za-z0-9._-]) containing health_class:"quota_bench", retryable:true, seat_dead:false, failure_mode:"quota_cap", source:"money_boundary", consecutive_failure_count:0 (a money wall is not a seat fault — do not escalate the count or trip the corpse threshold), and a FAR-FUTURE bench_until + usable_at (e.g. +365d — this wall holds until Nish clears it, never the ~6h-capped geometric window a normal 429 gets). seat_usable''s quota_bench branch keeps every benched seat out of pick_seat while bench_until is in the future. Then report the entries written. Do NOT top up, re-auth, or un-bench — money is Nish''s alone; only Nish clears the wall.'
+$(sb_annotations minimax)
   - interval: 1m
     name: spend boundary stays silent under both thresholds and on stale day rows
     input_series:
