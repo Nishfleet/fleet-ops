@@ -2847,16 +2847,28 @@ _seat_write_spawn_bench() {
     [[ "$count" =~ ^[0-9]+$ ]] || count=0
     [[ "$seat_dead" == "true" || "$seat_dead" == "false" ]] || seat_dead=false
     now_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    # fleet-ops#4819: a wrapper bench (empty_run / spawn_fail) is a LANE fault
+    # that seat-health.ts clobbers back to healthy on the next transport 200
+    # (after_provider_response carries status+headers only, never the body).
+    # The marker is the durable disqualifying evidence, so it must carry the
+    # release contract inline: `release_requires: real-work-probe` tells the
+    # next judge (human or automated) that the standing smoke (a tools=0
+    # inline reply) can NEVER release this seat — only a real-work probe
+    # (tools > 0 AND non-empty stdout) may. The citation names the issue that
+    # documents the empty-run churn the bench guards against.
+    local release_requires="real-work-probe" citation="fleet-ops#3737"
     tmp="$path.$$.$RANDOM.tmp"
     if jq -nc \
         --arg provider "$p" --arg model "$m" --arg usable "$usable" \
         --arg reason "$reason" --arg written "$now_utc" --argjson backoff "$backoff" \
         --arg mode "$mode" --argjson count "$count" --argjson seat_dead "$seat_dead" \
         --arg writer "_seat_write_spawn_bench" --arg source "$source" \
+        --arg release_requires "$release_requires" --arg citation "$citation" \
         '{provider:$provider, model:$model, usable_at:$usable,
           reason:$reason, written_at:$written, backoff_s:$backoff,
           failure_mode:$mode, consecutive_failure_count:$count,
-          seat_dead:$seat_dead, writer:$writer, source:$source}' \
+          seat_dead:$seat_dead, writer:$writer, source:$source,
+          release_requires:$release_requires, citation:$citation}' \
         > "$tmp" 2>/dev/null; then
         chmod 0644 "$tmp" 2>/dev/null || true
         mv "$tmp" "$path" 2>/dev/null || { rm -f "$tmp" 2>/dev/null || true; return 1; }
