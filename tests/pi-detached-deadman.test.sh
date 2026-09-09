@@ -18,6 +18,9 @@
 #   8. repeated write/clear cycles never duplicate the HELP/TYPE header
 #      (node_exporter rejects a textfile with a second HELP line) and the
 #      file stays 0644 so node_exporter (User=prometheus) can read it
+#   9. inherited PI_DEADMAN_* with empty SERVICE_RESULT (a live unit's
+#      child ran the binary by hand, not ExecStopPost) is a no-op — it
+#      must not write a died series
 #
 # All hermetic: fake escalation writer, fake who-stopped, scratch textfile,
 # KEYSTONE_HC_ENV pointing at an unset-URL env file so ping fail-opens
@@ -32,6 +35,12 @@ ok()   { echo "OK: $*"; }
 
 [[ -x "$deadman" ]] || fail "not executable: $deadman"
 bash -n "$deadman" || fail "syntax: $deadman"
+
+# Hermetic: a live pi-systemd-run unit inherits PI_DEADMAN_* into every
+# child. The not-armed case and the CLI-noop case must not see those.
+unset PI_DEADMAN_DISPATCH PI_DEADMAN_UNIT PI_DEADMAN_CMDLINE \
+      PI_DEADMAN_DEADLINE PI_DEADMAN_DELIVERABLE SERVICE_RESULT \
+      EXIT_CODE EXIT_STATUS || true
 
 scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT
@@ -160,4 +169,35 @@ else
     echo "SKIP: promtool not installed (CI runner) — header-count assertion only"
 fi
 
-echo "PASS: pi-detached-deadman verdict matrix (8 cases)"
+# --- 9. inherited PI_DEADMAN_* with empty SERVICE_RESULT is a CLI no-op -----
+# Live 2026-09-09: repair workers ran `pi-detached-deadman --help` (the binary
+# has no --help, so it fell through to the verdict path) while PI_DEADMAN_*
+# was inherited from the running unit. Empty SERVICE_RESULT is not a systemd
+# ExecStopPost death; treating it as died cascaded DetachedJobDied onto the
+# repair units themselves.
+: >"$esc_log"
+: >"$tf"
+out="$(env "${common[@]}" PI_DEADMAN_DISPATCH=d-cli PI_DEADMAN_UNIT=u-cli \
+    PI_DEADMAN_CMDLINE="pi --print" PI_DEADMAN_DEADLINE=60 \
+    "$deadman" --help 2>&1)" || fail "inherited-env --help must exit 0"
+printf '%s\n' "$out" | grep -q 'usage: pi-detached-deadman' \
+    || fail "--help must print usage, got: $out"
+grep -q 'fleet_detached_job_died' "$tf" && fail "--help must not write a died series: $(cat "$tf")"
+[[ -s "$esc_log" ]] && fail "--help must not call the STOP-REASON writer"
+
+out="$(env "${common[@]}" PI_DEADMAN_DISPATCH=d-cli PI_DEADMAN_UNIT=u-cli \
+    PI_DEADMAN_CMDLINE="pi --print" PI_DEADMAN_DEADLINE=60 \
+    "$deadman" 2>&1)" || fail "inherited-env bare invocation must exit 0"
+printf '%s\n' "$out" | grep -q 'cli-noop' \
+    || fail "bare inherited-env invocation must log cli-noop, got: $out"
+grep -q 'fleet_detached_job_died' "$tf" && fail "bare inherited-env invocation must not write a died series: $(cat "$tf")"
+[[ -s "$esc_log" ]] && fail "bare inherited-env invocation must not call the STOP-REASON writer"
+
+# ExecStopPost still dies when SERVICE_RESULT is set (the real hook path).
+env "${common[@]}" PI_DEADMAN_DISPATCH=d-cli PI_DEADMAN_UNIT=u-cli \
+    PI_DEADMAN_CMDLINE="pi --print" SERVICE_RESULT=exit-code \
+    "$deadman" 2>/dev/null || fail "real ExecStopPost death must still exit 0"
+grep -q 'unit="u-cli"' "$tf" || fail "real ExecStopPost death must still write the died series"
+ok "inherited PI_DEADMAN_* with empty SERVICE_RESULT is a CLI no-op; ExecStopPost still dies"
+
+echo "PASS: pi-detached-deadman verdict matrix (9 cases)"
