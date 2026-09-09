@@ -2794,10 +2794,21 @@ _seat_text_is_money_wall() {
 }
 
 _seat_clamp_non_money_window_s() {
-    local window="${1:-0}" source="${2:-}"
+    local window="${1:-0}" source="${2:-}" declared="${3:-}"
     local max="${SEAT_NON_MONEY_WALL_MAX_S:-21600}"
     [[ "$window" =~ ^[0-9]+$ ]] || window=0
     [[ "$max" =~ ^[0-9]+$ ]] || max=21600
+    # fleet-ops#4640/#4800: quota_bench_default_s in seat-caps.json is the
+    # operator-declared provider reset window (cline = the 604800 s ClinePass
+    # weekly reset). Clamping THAT to 6 h would release a seat that is provably
+    # walled for a week, and the next tick would smoke it — re-anchoring
+    # observed_at and re-firing FleetProviderQuotaExhausted. Only the declared
+    # window is exempt: a geometric escalation or a 24 h failure-ceiling park
+    # built ON TOP of it is still clamped, and a wrapper rc=1 with no declared
+    # window keeps #4640's 6 h ceiling.
+    if [[ "$declared" =~ ^[0-9]+$ ]] && (( declared > max )); then
+        max="$declared"
+    fi
     if _seat_wall_source_justified "$source"; then
         printf '%s' "$window"
         return 0
@@ -7243,10 +7254,14 @@ mark_seat_quota_bench() {
             seat_log "quota-bench: $p/$m benching on live fleet_seat_quota reset ${live}s (exhausted window, fleet-ops#4217)"
         fi
     fi
+    local declared_window_s=""
     if (( window_s <= 0 )); then
         local def
         def=$(provider_quota_bench_default "$p")
-        [[ "$def" =~ ^[0-9]+$ ]] && window_s="$def"
+        if [[ "$def" =~ ^[0-9]+$ ]]; then
+            window_s="$def"
+            declared_window_s="$def"
+        fi
     fi
 
     if (( window_s <= 0 )); then
@@ -7286,7 +7301,7 @@ mark_seat_quota_bench() {
             wall_source="provider_quota_window"
         fi
     fi
-    window_s=$(_seat_clamp_non_money_window_s "$window_s" "$wall_source")
+    window_s=$(_seat_clamp_non_money_window_s "$window_s" "$wall_source" "$declared_window_s")
     bench_until=$(date -u -d "@$((now_s + window_s))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
 
     # fleet-ops#2594: corpse reclassification for quota_cap. seat-health.ts
