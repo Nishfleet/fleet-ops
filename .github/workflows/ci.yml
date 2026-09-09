@@ -194,6 +194,11 @@ jobs:
         # of the stable files, and catches a pre-#4643 prefix-corrupting
         # regression (difficulty as line 1).
         bash tests/packet-layout.test.sh
+        # fleet-ops#4643: the FleetPromptCacheHitLow alert (the spend guard
+        # on the cache-hit metric) + the seat-caps TTL comment. Pins the
+        # alert shape (per-lane < 0.85 for 6h, severity=warning -> am-executor
+        # not Nish's phone) and that it is NOT in the repair-dispatch SKIP_SET.
+        bash tests/fleet-prompt-cache-hit-alert.test.sh
         # fleet-ops#1235: lock the /etc/default/prometheus retention
         # override (40d) and the deploy restart-vs-reload + headroom guard.
         bash tests/prometheus-retention-40d.test.sh
