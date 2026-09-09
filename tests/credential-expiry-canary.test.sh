@@ -48,9 +48,15 @@ command -v jq >/dev/null 2>&1 || fail "jq missing"
 
 app_ok='{"id":4728578,"name":"nishfleet-worker","created_at":"2026-08-26T16:30:31Z"}'
 
+# Fixed in-window timestamp so the offline verdict cases below are
+# deterministic regardless of the wall clock. VACATION_WINDOW_END is
+# 2026-09-08T23:59:59Z; once the real clock passes it the canary correctly
+# SKIPs, so the mocked PASS/REJECT scenarios must pin an in-window now.
+WINDOW_NOW=2026-09-08T12:00:00Z
+
 # --- 1. GET /app 200 → PASS ------------------------------------------------
 set +e
-out="$("$bin" --app-returns "$app_ok" 2>&1)"
+out="$("$bin" --app-returns "$app_ok" --now "$WINDOW_NOW" 2>&1)"
 rc=$?
 set -e
 [[ "$rc" -eq 0 ]] || fail "GET /app 200 must exit 0, got $rc: $out"
@@ -59,7 +65,7 @@ ok "GET /app 200 → PASS (keys do not expire)"
 
 # --- 2. GET /app 401 → REJECT ----------------------------------------------
 set +e
-out="$("$bin" --app-returns '{}' --app-status 401 2>&1)"
+out="$("$bin" --app-returns '{}' --app-status 401 --now "$WINDOW_NOW" 2>&1)"
 rc=$?
 set -e
 [[ "$rc" -eq 1 ]] || fail "GET /app 401 must exit 1, got $rc: $out"
@@ -69,7 +75,7 @@ ok "GET /app 401 → REJECT (dead App)"
 # --- 3. PAT expiring after window → PASS -----------------------------------
 pat_after=$'HTTP/2 200\ngithub-authentication-token-expiration: 2026-09-09 00:00:00 +0000\n'
 set +e
-out="$("$bin" --app-returns "$app_ok" --pat-headers "$pat_after" 2>&1)"
+out="$("$bin" --app-returns "$app_ok" --pat-headers "$pat_after" --now "$WINDOW_NOW" 2>&1)"
 rc=$?
 set -e
 [[ "$rc" -eq 0 ]] || fail "PAT after window must exit 0, got $rc: $out"
@@ -79,7 +85,7 @@ ok "PAT expiring 2026-09-09 → PASS"
 # --- 4. PAT expiring at window end → REJECT (inclusive) --------------------
 pat_boundary=$'HTTP/2 200\ngithub-authentication-token-expiration: 2026-09-08 23:59:59 +0000\n'
 set +e
-out="$("$bin" --app-returns "$app_ok" --pat-headers "$pat_boundary" 2>&1)"
+out="$("$bin" --app-returns "$app_ok" --pat-headers "$pat_boundary" --now "$WINDOW_NOW" 2>&1)"
 rc=$?
 set -e
 [[ "$rc" -eq 1 ]] || fail "boundary PAT must exit 1, got $rc: $out"
@@ -89,7 +95,7 @@ ok "PAT expiring at window end → REJECT"
 # --- 5. PAT expiring before window → REJECT --------------------------------
 pat_pre=$'HTTP/2 200\ngithub-authentication-token-expiration: 2026-08-30 12:00:00 +0000\n'
 set +e
-out="$("$bin" --app-returns "$app_ok" --pat-headers "$pat_pre" 2>&1)"
+out="$("$bin" --app-returns "$app_ok" --pat-headers "$pat_pre" --now "$WINDOW_NOW" 2>&1)"
 rc=$?
 set -e
 [[ "$rc" -eq 1 ]] || fail "pre-window PAT must exit 1, got $rc: $out"
@@ -99,7 +105,7 @@ ok "PAT expiring before window → REJECT"
 # --- 6. PAT with no expiry header → PASS -----------------------------------
 pat_none=$'HTTP/2 200\ncontent-type: application/json\n'
 set +e
-out="$("$bin" --app-returns "$app_ok" --pat-headers "$pat_none" 2>&1)"
+out="$("$bin" --app-returns "$app_ok" --pat-headers "$pat_none" --now "$WINDOW_NOW" 2>&1)"
 rc=$?
 set -e
 [[ "$rc" -eq 0 ]] || fail "no-expiry PAT must exit 0, got $rc: $out"
@@ -109,7 +115,7 @@ ok "PAT with no expiry header → PASS"
 # --- 7. unparseable PAT expiry → REJECT ------------------------------------
 pat_bad=$'HTTP/2 200\ngithub-authentication-token-expiration: not-a-date\n'
 set +e
-out="$("$bin" --app-returns "$app_ok" --pat-headers "$pat_bad" 2>&1)"
+out="$("$bin" --app-returns "$app_ok" --pat-headers "$pat_bad" --now "$WINDOW_NOW" 2>&1)"
 rc=$?
 set -e
 [[ "$rc" -eq 1 ]] || fail "unparseable PAT expiry must exit 1, got $rc: $out"
@@ -193,7 +199,7 @@ trap 'rm -rf "$scratch"' EXIT INT TERM
 printf 'HTTP/2 200\n' >"$scratch/app.headers"
 printf '%s\n' "$app_ok" >"$scratch/app.body"
 set +e
-out="$("$bin" --from-fixtures "$scratch" 2>&1)"
+out="$("$bin" --from-fixtures "$scratch" --now "$WINDOW_NOW" 2>&1)"
 rc=$?
 set -e
 [[ "$rc" -eq 0 ]] || fail "fixture mode must exit 0, got $rc: $out"
@@ -449,7 +455,7 @@ ok "observe-to-close: still-detected provider is not closed (repeat-tick advisor
 export FLEET_CRED_EXPIRY_STUB_LIST='[{"number":42,"body":"renew xai-oauth signal: cred-expiry/xai-oauth","title":"renew"}]'
 : >"$calls_log"
 set +e
-out="$("$bin" --app-returns '{}' --app-status 401 2>&1)"
+out="$("$bin" --app-returns '{}' --app-status 401 --now "$WINDOW_NOW" 2>&1)"
 rc=$?
 set -e
 [[ "$rc" -eq 1 ]] || \
