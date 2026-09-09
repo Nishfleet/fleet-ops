@@ -200,6 +200,9 @@ lib/fleet-deploy-quality.py /home/nish/.local/lib/pi-packet/fleet-deploy-quality
 # fleet_usd_24h metric (like fleet-deploy-quality.py, lazy-loaded inside
 # libexec/fleet-metrics-export.py, no service change).
 lib/fleet_usd.py /home/nish/.local/lib/pi-packet/fleet_usd.py
+# fleet-ops#4621: Cursor included-API-bucket 24h figure shared by measure.sh,
+# fleet-prepaid-util-canary (writes usd_today), and seat-lib (does not clobber).
+lib/cursor-api-bucket.sh /home/nish/.local/lib/pi-packet/cursor-api-bucket.sh
 # fleet-ops#4459: the usd_24h / usd_per_merged_pr snapshot the judge header's
 # third line and the weekly seat table consume.
 measure.sh /home/nish/.local/bin/measure.sh

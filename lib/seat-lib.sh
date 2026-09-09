@@ -4142,6 +4142,20 @@ _record_prepaid_pick() {
     local usd flags429="false" flags200="false" f9date="" f2date=""
     usd=$(_provider_daily_spend_usd_tokens "$p")
     [[ "$usd" =~ ^[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?$ ]] || usd=0
+    # fleet-ops#4621: cursor-cli sessions record 0 usage tokens and there is
+    # no cursor cost card, so the token meter is structurally $0. The real
+    # spend is Cursor GetCurrentPeriodUsage included-API-bucket 24h delta,
+    # written into this same usd_today field by fleet-prepaid-util-canary.
+    # A pick must not clobber a vendor figure with the token 0; keep the
+    # existing usd_today when it is already a vendor number or UNAVAILABLE
+    # label. Pareto Pass and every other provider keep the token path.
+    if [[ "$p" == "cursor" && -f "$f" ]]; then
+        local _kept
+        _kept=$(jq -r '.usd_today // empty' "$f" 2>/dev/null || true)
+        if [[ -n "$_kept" && "$_kept" != "0" && "$_kept" != "0.000000" ]]; then
+            usd="$_kept"
+        fi
+    fi
     # fleet-ops#4453 accept: usd_today never exceeds the declared daily budget.
     if [[ -n "${SEAT_PROVIDER_DAILY_BUDGET_USD[$p]:-}" ]]; then
         local cap_usd="${SEAT_PROVIDER_DAILY_BUDGET_USD[$p]}"

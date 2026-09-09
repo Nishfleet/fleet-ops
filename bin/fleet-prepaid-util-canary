@@ -121,6 +121,14 @@ PREPAID_PROM_PATH="${FLEET_PREPAID_PROM_PATH:-/var/lib/prometheus/node-exporter/
 ETIMEDOUT_HORIZON_H="${FLEET_PREPAID_ETIMEDOUT_HORIZON_H:-24}"
 CURL="${CURL:-curl}"
 
+# fleet-ops#4621: shared 24h API-bucket figure so usd_today is the vendor
+# number, not the token-derived 0.000000. Source from the repo next to this
+# script (readlink -f), not FLEET_OPS_REPO (tests point that at a scratch dir).
+# shellcheck disable=SC1091
+if [[ -f "$_canon_repo/lib/cursor-api-bucket.sh" ]]; then
+    source "$_canon_repo/lib/cursor-api-bucket.sh"
+fi
+
 log() {
     printf '[%s] [fleet-prepaid-util-canary] %s\n' \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
@@ -372,6 +380,52 @@ JSON
         log "WARN: could not write prepaid-spend.prom $PREPAID_PROM_PATH"
     fi
     log "cursor spend reader: spend_usd=$spend_usd pool_usd=$pool_usd cycle_end_s=$cycle_end_s included_exhausted=$inc_ex api_used_usd=$api_used_usd api_remaining_usd=$api_remaining_usd -> $PREPAID_PROM_PATH"
+    write_cursor_usd_today
+}
+
+# fleet-ops#4621: the judge's landing-watch measure.sh and fable-check both
+# read prepaid-usage/cursor.json usd_today. That field was the token-derived
+# 0.000000 (cursor-cli records 0 usage tokens). Overwrite it with the trailing
+# 24h API-bucket delta (or UNAVAILABLE:<why> — never a fabricated 0). Cycle-to-date
+# is stored alongside as cursor_api_cycle_usd; it is NOT usd_today. Count and
+# the 429/200 flags are preserved — this is a spend overlay, not a pick.
+write_cursor_usd_today() {
+    command -v cursor_today_figure >/dev/null 2>&1 || return 0
+    local figure cycle f tmp week count flags429 flags200 f9date f2date
+    export FLEET_PREPAID_SPEND_DIR="$PREPAID_SPEND_DIR"
+    figure=$(cursor_today_figure)
+    cycle=$(cursor_api_cycle_usd)
+    [[ -n "$figure" ]] || return 0
+    mkdir -p "$STATE_DIR/prepaid-usage" 2>/dev/null || true
+    f="$STATE_DIR/prepaid-usage/cursor.json"
+    tmp="$f.tmp.$$"
+    week=$(iso_week)
+    count=0
+    flags429="false"; flags200="false"; f9date=""; f2date=""
+    if [[ -f "$f" ]]; then
+        week=$(jq -r '.week // empty' "$f" 2>/dev/null || true)
+        [[ -n "$week" ]] || week=$(iso_week)
+        count=$(jq -r '.count // 0' "$f" 2>/dev/null || echo 0)
+        [[ "$count" =~ ^[0-9]+$ ]] || count=0
+        flags429=$(jq -r '.provider_daily_logged_429 // false' "$f" 2>/dev/null || echo false)
+        flags200=$(jq -r '.provider_daily_logged_200 // false' "$f" 2>/dev/null || echo false)
+        f9date=$(jq -r '.provider_daily_logged_429_date // ""' "$f" 2>/dev/null || true)
+        f2date=$(jq -r '.provider_daily_logged_200_date // ""' "$f" 2>/dev/null || true)
+    fi
+    jq -nc --arg w "$week" --argjson c "$count" --arg ud "$figure" --arg cy "$cycle" \
+        --argjson f9 "$([[ "$flags429" == "true" ]] && echo true || echo false)" \
+        --argjson f2 "$([[ "$flags200" == "true" ]] && echo true || echo false)" \
+        --arg d9 "${f9date:-}" --arg d2 "${f2date:-}" \
+        '{week:$w,count:$c,usd_today:$ud,cursor_api_cycle_usd:$cy,
+          usd_today_source:"cursor-dashboard-getcurrentperiodusage",
+          provider_daily_logged_429:$f9,provider_daily_logged_429_date:$d9,
+          provider_daily_logged_200:$f2,provider_daily_logged_200_date:$d2}' >"$tmp" 2>/dev/null || {
+        rm -f "$tmp"
+        log "WARN: could not write cursor usd_today $f"
+        return 0
+    }
+    mv -f "$tmp" "$f" 2>/dev/null || { rm -f "$tmp"; return 0; }
+    log "cursor spend reader: usd_today=$figure cursor_api_cycle_usd=$cycle -> $f"
 }
 
 # --- ETIMEDOUT watch at cap 2 (fleet-ops#4206) ----------------------------
