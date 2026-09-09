@@ -94,4 +94,14 @@ grep -q 'GetCurrentPeriodUsage' "$measure" \
 grep -q 'apiPercentUsed' "$measure" \
     || fail "case 5: measure.sh must document apiPercentUsed x limit reconciliation"
 
-ok "measure-cursor-today: all 5 cases pass"
+# 6. fleet-ops#4621: the shared helper is sourced and its --help names the
+# vendor endpoint (the same command a human uses to re-derive the figure).
+helper="$repo_root/lib/cursor-api-bucket.sh"
+[[ -f "$helper" ]] || fail "case 6: lib/cursor-api-bucket.sh must exist"
+help_out=$(bash "$helper" --help)
+grep -q 'GetCurrentPeriodUsage' <<<"$help_out" \
+    || fail "case 6: helper --help must name GetCurrentPeriodUsage"
+grep -q 'apiPercentUsed' <<<"$help_out" \
+    || fail "case 6: helper --help must name apiPercentUsed x limit"
+
+ok "measure-cursor-today: all 6 cases pass"
