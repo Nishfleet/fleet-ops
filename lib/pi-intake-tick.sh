@@ -1312,35 +1312,74 @@ fi
 # money-walled seat (money stays Nish's, fleet-ops#3284).
 PI_INTAKE_REPAIR_RUNG_AFTER="${PI_INTAKE_REPAIR_RUNG_AFTER:-2}"
 PI_INTAKE_REPAIR_RUNG_MAX_CONCURRENT="${PI_INTAKE_REPAIR_RUNG_MAX_CONCURRENT:-2}"
+# fleet-ops#4820: the rung stands down only after this many CONSECUTIVE
+# ticks with a usable seat (mirrors the arm rule so a single recovered tick
+# cannot flap the rung off and back on).
+PI_INTAKE_REPAIR_RUNG_DISARM_AFTER="${PI_INTAKE_REPAIR_RUNG_DISARM_AFTER:-2}"
 repair_rung_state_file() {
     printf '%s' "${PI_INTAKE_REPAIR_RUNG_STATE:-/home/nish/workspaces/agent-state/pi-intake/repair-rung-state}"
 }
 
-repair_rung_strikes() {
-    local f _n=0
+# State file holds two space-separated integers: <strikes> <disarm_count>.
+# strikes = consecutive low-slot/outage ticks (arms the rung at AFTER).
+# disarm_count = consecutive usable-slot ticks while armed (disarms at
+# DISARM_AFTER). A single field keeps the file one line and tr-safe.
+repair_rung_read() {
+    local f _s=0 _d=0
     f=$(repair_rung_state_file)
-    _n=$(tr -cd '0-9' <"$f" 2>/dev/null || true)
-    [[ "$_n" =~ ^[0-9]+$ ]] || _n=0
-    printf '%s' "$_n"
+    if [[ -f "$f" ]]; then
+        read -r _s _d <"$f" 2>/dev/null || true
+    fi
+    _s=$(printf '%s' "$_s" | tr -cd '0-9')
+    _d=$(printf '%s' "$_d" | tr -cd '0-9')
+    [[ "$_s" =~ ^[0-9]+$ ]] || _s=0
+    [[ "$_d" =~ ^[0-9]+$ ]] || _d=0
+    printf '%s %s' "$_s" "$_d"
+}
+
+repair_rung_strikes() {
+    local _s _d
+    read -r _s _d < <(repair_rung_read)
+    printf '%s' "$_s"
+}
+
+repair_rung_disarm_count() {
+    local _s _d
+    read -r _s _d < <(repair_rung_read)
+    printf '%s' "$_d"
+}
+
+repair_rung_write() {
+    local f
+    f=$(repair_rung_state_file)
+    mkdir -p "$(dirname "$f")" 2>/dev/null || true
+    printf '%s %s' "$1" "$2" >"$f" 2>/dev/null || true
 }
 
 # Count one low-slot/outage tick and return the consecutive strike count.
+# A low-slot tick also resets the disarm counter (recovery is not
+# consecutive across an outage).
 repair_rung_note_outage() {
-    local f _n=0
-    f=$(repair_rung_state_file)
-    _n=$(repair_rung_strikes)
-    _n=$(( _n + 1 ))
-    mkdir -p "$(dirname "$f")" 2>/dev/null || true
-    printf '%s' "$_n" >"$f" 2>/dev/null || true
-    printf '%s' "$_n"
+    local _s _d
+    read -r _s _d < <(repair_rung_read)
+    _s=$(( _s + 1 ))
+    repair_rung_write "$_s" 0
+    printf '%s' "$_s"
+}
+
+# Count one usable-slot tick while the rung is armed and return the
+# consecutive recovery count. Only meaningful when armed; a non-armed tick
+# never calls this.
+repair_rung_note_recovery() {
+    local _s _d
+    read -r _s _d < <(repair_rung_read)
+    _d=$(( _d + 1 ))
+    repair_rung_write "$_s" "$_d"
+    printf '%s' "$_d"
 }
 
 repair_rung_reset() {
-    local f
-    f=$(repair_rung_state_file)
-    if [[ -f "$f" ]]; then
-        printf '0' >"$f" 2>/dev/null || true
-    fi
+    repair_rung_write 0 0
     return 0
 }
 
@@ -1421,10 +1460,31 @@ if (( usable_light_slots < 2 )); then
         exit 0
     fi
 else
-    _rung_prev=$(repair_rung_strikes)
-    repair_rung_reset
-    if (( _rung_prev > 0 )); then
-        echo "REPAIR-RUNG released: usable slots $usable_light_slots >= 2 (was ${_rung_prev} consecutive low-slot ticks, fleet-ops#4639)"
+    # usable slots >= 2. If the rung is armed, count consecutive recovery
+    # ticks and disarm only after DISARM_AFTER of them (fleet-ops#4820) so a
+    # single recovered tick cannot flap the rung off and back on. The rung
+    # stays armed (still claiming critical-path fleet-ops) through the
+    # recovery window. If not armed, a recovered tick just clears the
+    # strike counter (the old single-tick release).
+    _rung_strikes=$(repair_rung_strikes)
+    if (( _rung_strikes >= PI_INTAKE_REPAIR_RUNG_AFTER )); then
+        _rung_disarm=$(repair_rung_note_recovery)
+        _repair_rung_armed=1
+        if (( _rung_disarm >= PI_INTAKE_REPAIR_RUNG_DISARM_AFTER )); then
+            # The seat that cleared it: a light pick (the pool that was
+            # starved) — best-effort, never a fabricated name.
+            _rung_clear_seat=$(pick_seat "" "" 0 "" light 2>/dev/null || true)
+            repair_rung_reset
+            echo "REPAIR-RUNG disarmed: usable slots $usable_light_slots >= 2 for $_rung_disarm consecutive ticks (cleared by seat: ${_rung_clear_seat:-unknown}, fleet-ops#4820)"
+        else
+            echo "REPAIR-RUNG recovery ${_rung_disarm}/${PI_INTAKE_REPAIR_RUNG_DISARM_AFTER}: usable slots $usable_light_slots >= 2, standing down after ${PI_INTAKE_REPAIR_RUNG_DISARM_AFTER} consecutive ticks (fleet-ops#4820)"
+        fi
+    else
+        _rung_prev=$_rung_strikes
+        repair_rung_reset
+        if (( _rung_prev > 0 )); then
+            echo "REPAIR-RUNG released: usable slots $usable_light_slots >= 2 (was ${_rung_prev} consecutive low-slot ticks, fleet-ops#4639)"
+        fi
     fi
 fi
 # The rung claims do NOT come out of the light-slot pool (a critical-path
