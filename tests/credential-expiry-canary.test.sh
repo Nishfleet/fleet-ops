@@ -569,13 +569,17 @@ ok "expired quota wall is not an exemption — still FAIL"
 
 # --- 26e. lib helper: live wall / seat_dead / expired wall -----------------
 python3 -c '
-import importlib.util, sys
+import importlib.util, sys, json, os
 from datetime import datetime, timezone
 spec = importlib.util.spec_from_file_location("cec", sys.argv[1])
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 now = datetime(2026, 8, 30, 5, 0, 0, tzinfo=timezone.utc)
 ledger = sys.argv[2]
 assert hasattr(m, "provider_wall"), "missing provider_wall"
+# 26d left an expired wall; reset to a LIVE wall for the smoke assertion.
+open(os.path.join(ledger, "xai-oauth__grok-4.6.json"), "w").write(
+    json.dumps({"provider":"xai-oauth","health_class":"quota_exhausted","usable_at":"2027-09-09T01:33:44Z","seat_dead":False})
+)
 w = m.provider_wall("xai-oauth", ledger, now=now)
 assert w is not None and w.get("kind") in ("quota_wall", "seat_dead"), w
 print("lib provider_wall OK", w)
@@ -588,6 +592,10 @@ spec = importlib.util.spec_from_file_location("cec", sys.argv[1])
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 now = datetime(2026, 8, 30, 5, 0, 0, tzinfo=timezone.utc)
 ledger = sys.argv[2]
+# reset to an EXPIRED wall (usable_at in the past) for the None assertion.
+open(os.path.join(ledger, "xai-oauth__grok-4.6.json"), "w").write(
+    json.dumps({"provider":"xai-oauth","health_class":"quota_exhausted","usable_at":"2026-08-01T00:00:00Z","seat_dead":False})
+)
 w = m.provider_wall("xai-oauth", ledger, now=now)
 assert w is None, ("expired wall must not count as live", w)
 open(os.path.join(ledger, "xai-oauth__grok-4.6.json"), "w").write(
