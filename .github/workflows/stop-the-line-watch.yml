@@ -47,4 +47,4 @@ jobs:
       issues: write
     with:
       target-repo: ${{ github.repository }}
-      lookback-minutes: 30
+      lookback-minutes: 15
