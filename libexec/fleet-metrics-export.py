@@ -5014,8 +5014,10 @@ def _read_money_boundary_pages():
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
-            # Skip suppressed lines — they did not reach Nish.
-            if line.split(" ", 1)[1:2] == ["suppressed"]:
+            # Skip suppressed lines — they did not reach Nish. The writer
+            # emits `<ts> suppressed reason=...` (the remainder after the
+            # first space starts with "suppressed").
+            if line.split(" ", 1)[1].startswith("suppressed"):
                 continue
             ts = line.split(" ", 1)[0]
             try:

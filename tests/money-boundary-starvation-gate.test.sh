@@ -271,4 +271,26 @@ assert 'fleet_seat_healthy' in src, \
 print("OK: exporter emits fleet_seat_healthy{class=prepaid|free} + nish_boundary_money_pages_total")
 PY
 
+# --- 4b. metric: suppressed pages must NOT count toward the page total -----
+# The success metric is nish_boundary_money_pages_total{reason="provider_credits_dry"}
+# == 0 while a healthy prepaid/free seat exists. A suppressed page (fleet not
+# starved) must not be counted as a real page. Run the exporter's parser
+# against a fixture pages log: one real page + one suppressed line for the
+# same reason — only the real page counts.
+MONEY_BOUNDARY_PAGES_LOG="$AS/lanes/money-boundary-pages.log" python3 - "$metrics" <<'PY'
+import sys, importlib.util, os
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("m", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+log = Path(os.environ["MONEY_BOUNDARY_PAGES_LOG"])
+log.write_text("""2026-09-09T01:29:00Z reason=provider_credits_dry provider=openrouter
+2026-09-09T01:56:00Z suppressed reason=provider_credits_dry provider=openrouter
+""")
+counts = m._read_money_boundary_pages()
+assert counts.get("provider_credits_dry") == 1, \
+    f"suppressed page must not count toward the total; got {counts}"
+print("OK: suppressed page excluded from nish_boundary_money_pages_total")
+PY
+
 ok "money-boundary starvation-gate drill: writer suppresses, notifier revokes, alert gated, metric labeled (fleet-ops#4627)"

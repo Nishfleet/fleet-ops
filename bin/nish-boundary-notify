@@ -284,7 +284,10 @@ while IFS= read -r line; do
   # metered provider is a lane fault, not a money decision — suppress the page,
   # record it as revoked. Fail-loud: when the seat state cannot be read the
   # gate is skipped (the probe gate below still runs).
-  mb_prov=$(printf '%s' "$line" | grep -oE 'MONEY-BOUNDARY provider=[A-Za-z0-9._-]+' | sed 's/.*provider=//')
+  # A no-match grep must not abort under set -euo pipefail (the fleet-ops#1458
+  # class: a `seats= grep` abort silently killed the send). `|| true` keeps a
+  # LEGAL-BOUNDARY / PRODUCT-DIRECTION line (no provider=) flowing to delivery.
+  mb_prov=$(printf '%s' "$line" | grep -oE 'MONEY-BOUNDARY provider=[A-Za-z0-9._-]+' | sed 's/.*provider=//' || true)
   if [ -n "$mb_prov" ] && [ -f "${BOUNDARY_NOTIFY_CAPS:-$HOME/.local/state/pi-packet/seat-caps.json}" ] \
      && [ -d "${BOUNDARY_NOTIFY_SEAT_LEDGER:-$AS/lanes/seats}" ] \
      && command -v jq >/dev/null 2>&1; then
