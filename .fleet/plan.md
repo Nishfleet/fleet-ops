@@ -1,38 +1,12 @@
-# fleet-ops#4453 — land Pareto Inference (Pareto Pass) prepaid worker seat
+# Plan — fix(stop-the-line): watch lookback ≤1.5m starves amnesia-close
 
-Scope: config-3-files + one spend-meter extension on the existing prepaid-usage
-counter. Docs: https://docs.paretoinference.com/ base `https://api.paretoinference.com/v1`,
-OpenAI chat-completions, `Authorization: Bearer`. Rate card verified live
-2026-09-08: deepseek-v4-flash $0.081/$0.162/$0.016; glm-5.3-flash $0.075/$0.25/$0.015;
-glm-5.3 $2.80/$8.80/$0.52. Live probe: `usage.cost` reports 0.0 (pass bills off the
-rate card), so the spend meter MUST be token-derived, not usage.cost.
+- [x] phase 1: add regression + floor-guard tests to tests/stop-the-line-detector.test.sh — a replay/unit case where a green CI run's created_at is OLDER than the old 15m lookback but INSIDE the currently-configured lookback on an open freeze issue asserts buildDecision returns action:"close" (amnesia-close fires); plus a hard-fail guard if the configured lookback-minutes in .github/workflows/stop-the-line-watch.yml is below floor 30. The regression must FAIL on the old 15 config and PASS on the new >=30 config.
+- [x] phase 2: raise lookback-minutes in .github/workflows/stop-the-line-watch.yml from 15 to 30 (>= p99 fleet-ops CI runtime ~22m + margin), keeping the stop-the-line gate itself intact (detector unchanged, no gate weakened)
+- [x] phase 3: run tests/stop-the-line-detector.test.sh green (prove the new regression passes on the 30 config and fails on the old 15), run full tests/ci-standards-audit.test.sh (which hosts the detector test and runs in .github/workflows/ci.yml), and confirm no workflow gate line is weakened
+- [ ] phase 4: open PR `Closes #4588` with Verification + run-proof + research + help-first sections and the gate-integrity-attest requirement surfaced in the body (worker MUST NOT post the `gate-integrity-attest: <40-hex sha>` comment itself — a repo admin attaches it); arm auto-merge. Do NOT manually close #4567 (the deployed detector self-heals it) and do NOT remove/skip any existing test.
 
-## Phases
-- [x] phase 1: config/pi-models.json — `paretoinference` provider block
-- [x] phase 2: config/seat-caps.json — cap 4, class prepaid-quota, daily_budget_usd 20,
-      glm-5.3 cap 0, per-model daily_spend_cap_usd 19.50, prepaid_providers_in_order FIRST
-- [x] phase 3: config/entitled-seats.json — paretoinference seat with docs cited
-- [x] phase 4: seat-lib spend meter — extend prepaid-usage counter to write `usd_today`
-      (token-derived from the provider cost map) + provider daily-budget gate benches
-      seats at the stop, never charges the work item
-- [x] phase 5: test proving usd_today is written and the daily-budget bench fires
-- [x] phase 6: run seat-relevant repo tests + sgscan/crgate + one real pi-issue run
-- [ ] phase 7: PR body (Verification/run-proof/research/help-first) + arm auto-merge
+## Phase review record (manager, per-phase reviewer — no ACTIVATE findings)
 
-## Design decisions
-1. **Budget stop = existing `daily_spend_cap_usd` ledger-bench shape** (fleet-ops#3724),
-   but token-derived: ParetoInference reports `usage.cost`=0 (the $3/wk pass credits
-   bill off the rate card, not per-call cost), so `_seat_daily_spend_usd` (usage.cost)
-   reads 0 forever. The new provider-level meter sums today's session tokens x the
-   provider's OWN cost map from pi-models.json (generic formula:
-   `input*in/1e6 + output*out/1e6 + cacheRead*cache/1e6`). For paretoinference that is
-   exactly the issue's `prompt_tokens*0.081 + cached*0.016 + completion*0.162`.
-2. **`usd_today` lives in the existing prepaid-usage counter file** per the acceptance
-   (`~/.local/state/pi-packet/prepaid-usage/<provider>.json` gains `usd_today`).
-3. **Stop at $19.50** (margin under the $20/day budget so the first 200-after-reset
-   re-probe and cleanup never blow the cap); `daily_budget_usd` 20 is the declared
-   budget, `daily_stop_usd` 19.50 is the bench threshold. Both live on the provider row.
-4. **No new units/timers; no new files** (spend meter reuses the existing counter file
-   + the existing ledger-bench writer). `required:` satisfied.
-5. Ordering: paretoinference first in `prepaid_providers_in_order` (expiry-first — a
-   daily-allowance seat beats non-expiring balances; rule 6).
+- Phase 1–2 review: reviewer found **0 Act-on, 0 blocking** findings. Fix is correct and minimal (single `lookback-minutes` value change + additive tests); the stop-the-line detector/gate lines are untouched. `stop-the-line-detector.test.sh` is CI-wired (ci.yml:181 → ci-standards-audit.test.sh:181), so the floor guard hard-fails PR CI on any re-tighten below 30.
+- CONSIDER (recorded, not re-delegated): (1) floor-guard grep uses `head -n1` / unanchored `[0-9]+`; fine today (verified exactly one `lookback-minutes:` in the watch YAML) but a future stray comment could confuse it; (2) the regression re-implements the fetchRecentMainRuns filter as a ms diff rather than a shared helper — semantic-equivalent today, a maintainability shadow; (3) the static 30m floor tracks the config value, not CI-duration drift — documented in the code comment ("22m observed + margin"); acceptable.
+- NOTED (pre-existing, not caused by this diff): `bash tests/ci-standards-audit.test.sh` trips on `console-tile-verify.test.sh` — "4217: console quota display failed", a live `spawn_bench` count 0 for the benched minimax/MiniMax-M3 seat; reads none of the changed files and fails identically standalone on main.
