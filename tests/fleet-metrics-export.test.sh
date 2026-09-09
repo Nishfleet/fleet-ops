@@ -4457,3 +4457,13 @@ ok "fleet-ops#4481: mint failure writes fleet.prom, exits 0, skips the week-late
 # the P14 path.
 bash "$here/hardcoded-epoch-guard.test.sh"
 ok "fleet-ops#4508: hardcoded-epoch guard green on P14 path"
+
+# fleet-ops#4643: prompt prefix-cache layout — stable prefix first, volatile
+# tail last. Hosted here (not in .github/workflows/ci.yml) so worker tokens
+# can wire it without a workflow-file edit.
+bash "$here/packet-layout.test.sh" || fail "packet-layout tests failed"
+ok "fleet-ops#4643: packet-layout determinism green on P14 path"
+
+# fleet-ops#4643: FleetPromptCacheHitLow alert + seat-caps TTL comment.
+bash "$here/fleet-prompt-cache-hit-alert.test.sh" || fail "fleet-prompt-cache-hit-alert tests failed"
+ok "fleet-ops#4643: fleet-prompt-cache-hit-alert green on P14 path"

@@ -194,8 +194,10 @@ grep -Fq 'bash "$here/keystone-routing.test.sh"' "$here/seat-lib.test.sh" \
   || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
 ok "seat-lib.test.sh hosts this file"
 
+grep -Fq "cat /home/nish/.pi/agent/prompts/worker.md" "$repo_root/prompts/intake.md" \
+  || fail "prompts/intake.md must write worker.md first (fleet-ops#4643 stable prefix)"
 grep -Fq "printf 'difficulty: keystone\\n'" "$repo_root/prompts/intake.md" \
-  || fail "prompts/intake.md must write the difficulty: keystone marker as packet line 1 (fleet-ops#1133)"
+  || fail "prompts/intake.md must write the difficulty: keystone marker AFTER worker.md (fleet-ops#1133/#4643)"
 grep -Fq '} > /home/nish/.local/state/pi-issues/<repo>-N.in' "$repo_root/prompts/intake.md" \
   || fail "prompts/intake.md must still overwrite the packet with >"
 if grep -qE 'worker\.md.*>> /home/nish/.local/state/pi-issues' "$repo_root/prompts/intake.md"; then
