@@ -2142,4 +2142,109 @@ ocd_n=$(overdue_n "$SEATD21")
 [[ "$ocd_n" == "0" ]] || fail "21: comeback-overdue must be 0 after the sweep (both seats reclassified), got $ocd_n"
 ok "21: devin phantom retired + real orcarouter re-probed/re-benched -> comeback-overdue 0 (fleet-ops#3993)"
 
-echo "ALL OK: active come-back release path (fleet-ops#2421) + force-probe-on-overdue-usable_at + corpse-at-threshold + never-released metric (fleet-ops#2638) + own-streak corpse + interval-breach loud check (fleet-ops#2806) + no-wall corpse second-chance re-probe / explicit retire (fleet-ops#3156) + extension-reclassify race (fleet-ops#3179) + PQE 1h==1h deadlock fix (fleet-ops#3176) + skip-corpse-on-reanchored-wall (fleet-ops#3301) + phantom retirement + real-non-caps-seat re-probe (fleet-ops#3993)"
+# ---------------------------------------------------------------------------
+# 22. fleet-ops#4659: comeback-release must honour a FUTURE spawn-bench
+# marker the same way seat_usable does. Lived 2026-09-09: the router's
+# pick_seat held straitly/deepseek-v4-pro (spawn-bench until 2026-09-12)
+# while comeback-release probed because the ledger usable_at (#3176 1h
+# PQE hold) had aged out. A probe on a 402 account wall re-anchors
+# observed_at and retriggers FleetProviderQuotaExhausted.
+#
+# 22a. Listed seat, ledger wall EXPIRED and outside the PQE window, but
+#      spawn-bench usable_at still in the future. Must NOT probe, must NOT
+#      stall/breach (the hold is intentional), ledger left untouched.
+# 22b. Same provider, unlisted slug (the #3993 re-audition path) while a
+#      listed sibling already carries a money_boundary / quota wall. Must
+#      NOT be the 2nd 402 that keeps PQE firing.
+# 22c. Control: listed expired 402 with NO spawn-bench still probes after
+#      the PQE window ages out (the #3176 age-out path must survive).
+# ---------------------------------------------------------------------------
+SEATD22="$TMPD/seats22"
+mkdir -p "$SEATD22"
+cat > "$TMPD/seat-caps22.json" <<'CAPS'
+{
+  "providers": {
+    "straitly": {"models": {"deepseek/deepseek-v4-pro": 1}}
+  }
+}
+CAPS
+# Listed 402, observed_at OUTSIDE the 1h PQE window, usable_at past by
+# more than MIN_INTERVAL — without the spawn-bench hold this is a probe
+# AND an interval-breach. Spawn-bench usable_at is the live 7d hold.
+cat > "$SEATD22/straitly__deepseek_deepseek-v4-pro.json" <<'EOF'
+{"provider":"straitly","model":"deepseek/deepseek-v4-pro","http_status":402,"retry_after":null,"health_class":"quota_exhausted","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T05:20:02Z","source":"provider_fetch","failure_mode":"quota_exhausted","usable_at":"2026-08-30T05:20:02Z","bench_until":"2026-08-30T05:20:02Z","consecutive_failure_count":23}
+EOF
+cat > "$SEATD22/straitly__deepseek_deepseek-v4-pro.spawn-bench.json" <<'EOF'
+{"provider":"straitly","model":"deepseek/deepseek-v4-pro","usable_at":"2026-09-12T18:47:00Z","reason":"pqe-repair 7d hold","written_at":"2026-09-05T18:47:00Z","backoff_s":604800,"failure_mode":"quota_exhausted","consecutive_failure_count":1,"writer":"alert-repair"}
+EOF
+# Unlisted (retired Sol) — #3993 would re-audition this once the ledger
+# wall ages out. Provider already has the listed 402/money wall above.
+cat > "$SEATD22/straitly__gpt-5.6-sol.json" <<'EOF'
+{"provider":"straitly","model":"gpt-5.6-sol","http_status":402,"retry_after":null,"health_class":"quota_exhausted","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T05:20:02Z","source":"provider_fetch","failure_mode":"quota_exhausted","usable_at":"2026-08-30T05:20:02Z","consecutive_failure_count":4}
+EOF
+cat > "$TMPD/pi-probe-log22" <<'EOF'
+#!/usr/bin/env bash
+echo "PROBED $*" >>"${PI_PROBE_LOG:-/dev/null}"
+exit 1
+EOF
+chmod +x "$TMPD/pi-probe-log22"
+: >"$TMPD/probe22.log"
+ST22="$TMPD/state22.json"
+PROM22="$TMPD/release22.prom"
+before_listed=$(cat "$SEATD22/straitly__deepseek_deepseek-v4-pro.json")
+before_unlisted=$(cat "$SEATD22/straitly__gpt-5.6-sol.json")
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$SEATD22" \
+    SEAT_CAPS_JSON="$TMPD/seat-caps22.json" \
+    FLEET_SEAT_COMEBACK_STATE="$ST22" \
+    FLEET_SEAT_COMEBACK_PROM="$PROM22" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" \
+    PI_BIN="$TMPD/pi-probe-log22" \
+    PI_PROBE_LOG="$TMPD/probe22.log" \
+    bash "$BIN" >/dev/null 2>"$TMPD/run22.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "22: spawn-bench-held 402 must exit 0 (intentional hold, not stalled), got $rc ($(cat "$TMPD/run22.err"))"
+[[ ! -s "$TMPD/probe22.log" ]] \
+  || fail "22: must NOT probe a spawn-bench-held 402 or its unlisted sibling: $(cat "$TMPD/probe22.log")"
+grep -q "spawn-bench" "$TMPD/run22.err" \
+  || fail "22: must log the spawn-bench hold for the listed 402: $(cat "$TMPD/run22.err")"
+grep -q "probing straitly/deepseek/deepseek-v4-pro" "$TMPD/run22.err" \
+  && fail "22: listed 402 with future spawn-bench must not be probed: $(cat "$TMPD/run22.err")"
+grep -q "probing straitly/gpt-5.6-sol" "$TMPD/run22.err" \
+  && fail "22: unlisted 402 must not be re-auditioned while the provider already has a quota wall: $(cat "$TMPD/run22.err")"
+grep -qi "COMEBACK-RELEASE-STALLED" "$TMPD/run22.err" \
+  && fail "22: spawn-bench hold must not trip the stalled loud check: $(cat "$TMPD/run22.err")"
+grep -qi "INTERVAL BREACH" "$TMPD/run22.err" \
+  && fail "22: spawn-bench hold must not trip interval-breach: $(cat "$TMPD/run22.err")"
+[[ "$(cat "$SEATD22/straitly__deepseek_deepseek-v4-pro.json")" == "$before_listed" ]] \
+  || fail "22: listed ledger must be left untouched (no re-bench 402 re-anchor)"
+[[ "$(cat "$SEATD22/straitly__gpt-5.6-sol.json")" == "$before_unlisted" ]] \
+  || fail "22: unlisted ledger must be left untouched"
+ok "22a/b: future spawn-bench holds the listed 402; unlisted sibling is not the 2nd 402 (fleet-ops#4659)"
+
+# 22c. Control: same listed 402, NO spawn-bench, PQE window aged out → probe.
+SEATD22c="$TMPD/seats22c"
+mkdir -p "$SEATD22c"
+cat > "$SEATD22c/straitly__deepseek_deepseek-v4-pro.json" <<'EOF'
+{"provider":"straitly","model":"deepseek/deepseek-v4-pro","http_status":402,"retry_after":null,"health_class":"quota_exhausted","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T05:20:02Z","source":"provider_fetch","failure_mode":"quota_exhausted","usable_at":"2026-08-30T05:20:02Z","consecutive_failure_count":23}
+EOF
+: >"$TMPD/probe22c.log"
+ST22c="$TMPD/state22c.json"
+PROM22c="$TMPD/release22c.prom"
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$SEATD22c" \
+    SEAT_CAPS_JSON="$TMPD/seat-caps22.json" \
+    FLEET_SEAT_COMEBACK_STATE="$ST22c" \
+    FLEET_SEAT_COMEBACK_PROM="$PROM22c" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" \
+    PI_BIN="$TMPD/pi-probe-log22" \
+    PI_PROBE_LOG="$TMPD/probe22c.log" \
+    bash "$BIN" >/dev/null 2>"$TMPD/run22c.err"
+rc=$?
+set -e
+grep -q "PROBED.*--provider straitly --model deepseek/deepseek-v4-pro" "$TMPD/probe22c.log" \
+  || fail "22c: expired 402 with no spawn-bench must still probe after PQE ages out: log=$(cat "$TMPD/probe22c.log") err=$(cat "$TMPD/run22c.err")"
+ok "22c: expired 402 without spawn-bench still probes after PQE ages out (fleet-ops#4659)"
+
+echo "ALL OK: active come-back release path (fleet-ops#2421) + force-probe-on-overdue-usable_at + corpse-at-threshold + never-released metric (fleet-ops#2638) + own-streak corpse + interval-breach loud check (fleet-ops#2806) + no-wall corpse second-chance re-probe / explicit retire (fleet-ops#3156) + extension-reclassify race (fleet-ops#3179) + PQE 1h==1h deadlock fix (fleet-ops#3176) + skip-corpse-on-reanchored-wall (fleet-ops#3301) + phantom retirement + real-non-caps-seat re-probe (fleet-ops#3993) + spawn-bench-held 402 skip (fleet-ops#4659)"

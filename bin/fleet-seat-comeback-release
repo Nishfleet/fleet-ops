@@ -352,6 +352,68 @@ quota_exhausted_in_pqe_window() {
     return 1
 }
 
+# fleet-ops#4659: a FUTURE spawn-bench marker is a hold, matching
+# seat_usable (lib/seat-lib.sh checks the marker FIRST and returns
+# UNUSABLE while usable_at is in the future). Comeback-release used to
+# read only the ledger's bench_until // usable_at, so a PQE repair that
+# wrote spawn-bench (7d hold on straitly/deepseek-v4-pro, lived
+# 2026-09-09) stopped routing but not re-probes. A probe on that 402
+# account wall re-anchors observed_at and retriggers
+# FleetProviderQuotaExhausted. Returns 0 (true) while the marker clock
+# is strictly in the future.
+spawn_bench_held() {
+    local p="$1" m="$2" mk usable we now_e ps ms
+    ps="${p//[^A-Za-z0-9._-]/_}"
+    ms="${m//[^A-Za-z0-9._-]/_}"
+    mk="$LEDGER/${ps}__${ms}.spawn-bench.json"
+    [[ -f "$mk" ]] || return 1
+    usable=$(jq -r '.usable_at // ""' "$mk" 2>/dev/null || true)
+    we=$(ts_epoch "$usable")
+    [[ -n "$we" ]] || return 1
+    now_e=$(now_epoch)
+    (( we > now_e )) && return 0
+    return 1
+}
+
+# fleet-ops#4659: true when another seat of this provider already carries
+# a money_boundary / quota account wall. Unlisted (#3993) slugs must not
+# be re-auditioned in that state — a 402 from the unlisted sibling is the
+# 2nd seat that keeps FleetProviderQuotaExhausted firing
+# (MIN_PROVIDER_QUOTA_SEATS=2). The seat being considered is skipped so
+# a lone unlisted 402 with no sibling wall still re-auditions (test 21).
+provider_has_account_wall() {
+    local p="$1" skip_m="$2" gf gp gm gsrc ghc
+    for gf in "$LEDGER"/*__*.json; do
+        [[ -f "$gf" ]] || continue
+        [[ "$(basename "$gf")" != *".spawn-bench.json" ]] || continue
+        gp=$(jq -r '.provider // ""' "$gf" 2>/dev/null || true)
+        [[ "$gp" == "$p" ]] || continue
+        gm=$(jq -r '.model // ""' "$gf" 2>/dev/null || true)
+        [[ "$gm" != "$skip_m" ]] || continue
+        gsrc=$(jq -r '.source // ""' "$gf" 2>/dev/null || true)
+        ghc=$(jq -r '.health_class // ""' "$gf" 2>/dev/null || true)
+        if [[ "$gsrc" == "money_boundary" ]] \
+            || [[ "$ghc" == "quota_exhausted" ]] \
+            || [[ "$ghc" == "quota_bench" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# fleet-ops#4659: intentional hold — not a stalled/breached miss. Used by
+# the post-sweep loud checks so a spawn-bench-held 402 or an unlisted
+# sibling of a provider account wall is not paged as a releaser miss.
+comeback_intentionally_held() {
+    local p="$1" m="$2" f="$3"
+    quota_exhausted_in_pqe_window "$f" && return 0
+    spawn_bench_held "$p" "$m" && return 0
+    if ! _seat_key_valid "$p" "$m" && ! _seat_is_probe_artifact "$m"; then
+        provider_has_account_wall "$p" "$m" && return 0
+    fi
+    return 1
+}
+
 # --- state (per-seat last probe time + cumulative counters) ---------------
 load_state() {
     if [[ -f "$STATE_FILE" ]]; then
@@ -1126,6 +1188,15 @@ main() {
                     || true
                 continue
             fi
+            # fleet-ops#4659: do not re-audition an unlisted slug when the
+            # provider already has a money_boundary / quota account wall.
+            # Retired Sol / unapproved qwen were the 2nd 402 that kept
+            # FleetProviderQuotaExhausted firing after the listed seat's
+            # 1h PQE hold aged out.
+            if provider_has_account_wall "$p" "$m"; then
+                log "skip re-audition $p/$m: absent from seat-caps models and provider already has a money_boundary/quota wall — do not 402-reanchor (fleet-ops#4659)"
+                continue
+            fi
             log "seat $p/$m absent from seat-caps models but real key (model not a probe artifact) — re-probe on wall expiry / re-audition (fleet-ops#3993)"
             # NO continue: fall through to the normal wall-clock handling so a
             # real seat with an expired usable_at gets probed (not left stuck).
@@ -1274,6 +1345,10 @@ main() {
                     last_probe["$base"]="$(now_epoch)"
                     continue
                 fi
+                if spawn_bench_held "$p" "$m"; then
+                    log "skip corpse re-probe $p/$m: spawn-bench usable_at in the future — wrapper bench held (fleet-ops#4659)"
+                    continue
+                fi
                 log "corpse re-probe $p/$m: no wall, second-chance re-probe (fleet-ops#3156)"
                 if probe_seat "$p" "$m"; then
                     ((probed++)) || true
@@ -1363,6 +1438,14 @@ main() {
         # window, not by a re-bench.
         if quota_exhausted_in_pqe_window "$f"; then
             log "skip probe $p/$m: quota_exhausted observed_at still inside the ${PROVIDER_QUOTA_WINDOW_S}s PQE window — hold so the 1h alert can age out (fleet-ops#3176)"
+            continue
+        fi
+        # fleet-ops#4659: honour spawn-bench the same way seat_usable does.
+        # A future marker wins over an aged-out ledger wall (the lived
+        # 2026-09-09 straitly/deepseek-v4-pro probe after the 1h PQE hold
+        # ended while spawn-bench still ran to 2026-09-12).
+        if spawn_bench_held "$p" "$m"; then
+            log "skip probe $p/$m: spawn-bench usable_at in the future — wrapper bench held (fleet-ops#4659)"
             continue
         fi
         # fleet-ops#2638: track usable_at SEPARATELY from bench_until. The
@@ -1576,7 +1659,7 @@ main() {
         # alert window). It is not "stuck" — the release path is operating
         # correctly by holding it. Exclude it from the expired count so the
         # loud-stall check does not page on a deliberate hold.
-        quota_exhausted_in_pqe_window "$f" && continue
+        comeback_intentionally_held "$p" "$m" "$f" && continue
         wall_end=$(wall_end_of "$f")
         we=$(ts_epoch "$wall_end")
         if [[ -n "$we" ]] && (( we <= now )); then
@@ -1614,12 +1697,12 @@ main() {
         [[ "$hc" != "healthy" ]] || continue
         dead=$(jq -r '(.seat_dead // false)' "$f" 2>/dev/null || true)
         [[ "$dead" != "true" ]] || continue
-        # fleet-ops#3176: a quota_exhausted seat held inside the PQE window
-        # is intentionally not probed (see the expired-count exclusion above).
-        # Exclude it from the interval-breach check too — the releaser did
-        # not "miss a full probe cycle", it deliberately held the seat so
-        # the 1h alert window can age out.
-        quota_exhausted_in_pqe_window "$f" && continue
+        # fleet-ops#3176 / #4659: a quota_exhausted seat held inside the
+        # PQE window, a future spawn-bench marker, or an unlisted sibling
+        # of a provider account wall is intentionally not probed. Exclude
+        # those from the interval-breach check too — the releaser did not
+        # miss a full probe cycle.
+        comeback_intentionally_held "$p" "$m" "$f" && continue
         local seat_usable us_e
         seat_usable=$(jq -r '.usable_at // ""' "$f" 2>/dev/null || true)
         us_e=$(ts_epoch "$seat_usable")
