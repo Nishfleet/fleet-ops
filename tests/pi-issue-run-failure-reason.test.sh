@@ -20,10 +20,23 @@ trap 'rm -rf "$scratch"' EXIT INT TERM
 
 export HOME="$scratch/home"
 mkdir -p "$HOME" "$scratch/xdg"
+unset WORKER_APP_CREDS_FILE || true
 state_dir="$scratch/state"
 issues_dir="$scratch/issues"
 ledger_dir="$scratch/ledger"
 mkdir -p "$state_dir" "$issues_dir" "$ledger_dir" "$scratch/bin"
+
+# P14 identity gate (fleet-ops#413/#440) runs before pi. Stub a successful
+# mint so this test still reaches the generic `pi exited` path it owns.
+mkdir -p "$HOME/.config/fleet-worker"
+: >"$HOME/.config/fleet-worker/nishfleet-worker.env"
+chmod 600 "$HOME/.config/fleet-worker/nishfleet-worker.env"
+cat >"$scratch/bin/worker-token" <<'EOF'
+#!/usr/bin/env bash
+printf 'export %s=%s\n' GH_TOKEN fake-test-token-cccccccccccccccc
+exit 0
+EOF
+chmod +x "$scratch/bin/worker-token"
 
 inst="test-issue"
 printf 'packet body for test issue\n' >"$issues_dir/$inst.in"
@@ -64,6 +77,7 @@ export PI_SEAT_HEALTH_LEDGER_DIR="$ledger_dir"
 export PI_PACKET_SEAT_LIB="$stub_lib"
 export PI_ISSUES_DIR="$issues_dir"
 export PI_BIN="$scratch/bin/pi"
+export WORKER_TOKEN_BIN="$scratch/bin/worker-token"
 export XDG_RUNTIME_DIR="$scratch/xdg"
 export PATH="$scratch/bin:$PATH"
 

@@ -201,6 +201,8 @@ jobs:
         bash tests/repair-rotation.test.sh
         bash tests/fleet-claim.test.sh
         bash tests/agent-cron-seat-rotation.test.sh
+        bash tests/agent-cron-failure-reason.test.sh
+        bash tests/pi-issue-run-failure-reason.test.sh
         bash tests/seat-lib.test.sh
         bash tests/seat-lib-degraded.test.sh
         bash tests/stop-escalation-dispatch.test.sh
