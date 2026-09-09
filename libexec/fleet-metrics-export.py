@@ -153,7 +153,7 @@ TYPE_HCAP0P = "# TYPE fleet_seat_healthy_cap0 gauge"
 # seat. This gauge exposes the per-class healthy-enrolled count so the alert
 # rule and the success metric can key on it. A dry metered provider is a lane
 # fault while fleet_seat_healthy{class=~"prepaid|free"} > 0.
-HELP_SHC = "# HELP fleet_seat_healthy Number of healthy enrolled providers by seat class (prepaid-quota / free). A dry metered provider is a lane fault while this is > 0 for prepaid/free; the money-boundary page fires only when the fleet is starved (fleet-ops#4627)."
+HELP_SHC = "# HELP fleet_seat_healthy Number of healthy enrolled providers by seat class (prepaid / free). A dry metered provider is a lane fault while this is > 0 for prepaid/free; the money-boundary page fires only when the fleet is starved (fleet-ops#4627)."
 TYPE_SHC = "# TYPE fleet_seat_healthy gauge"
 # fleet-ops#4627: money-boundary page counter. The writer
 # (bin/money-boundary-raise) appends one line per page to
@@ -4932,9 +4932,11 @@ def _healthy_enrolled_seat_count_by_class():
     provider counts healthy when any of its model ledgers reports
     health_class=healthy and seat_dead != true, or its wall clock has
     released it; a held spawn-bench outranks a later healthy observation).
-    Only prepaid-quota / free classes are populated; metered is omitted
+    Only prepaid / free classes are populated; metered is omitted
     (the issue is about dry metered providers with healthy prepaid/free
-    capacity). Returns {} when the config or ledger is unavailable.
+    capacity). prepaid-quota is emitted as the label "prepaid" to match
+    the issue's class=~"prepaid|free" regex. Returns {} when the config or
+    ledger is unavailable.
     """
     enrolled = _enrolled_seat_providers()
     if not enrolled:
@@ -4966,9 +4968,14 @@ def _healthy_enrolled_seat_count_by_class():
                 healthy.add(prov)
     except OSError:
         return {}
-    counts = {"prepaid-quota": 0, "free": 0}
+    # Map the canonical seat-caps class to the metric label. The issue's
+    # success metric keys on class=~"prepaid|free" (PromQL =~ is fully
+    # anchored), so prepaid-quota -> "prepaid" to match the regex.
+    counts = {"prepaid": 0, "free": 0}
     for prov in healthy:
         cls = classes.get(prov, "free")
+        if cls == "prepaid-quota":
+            cls = "prepaid"
         if cls in counts:
             counts[cls] += 1
     return counts

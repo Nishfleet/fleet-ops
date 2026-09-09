@@ -282,15 +282,26 @@ groups:
       # (the class-'money' page; MONEY-BOUNDARY is Nish-reserved by rule).
       # for:5m rides out a single mid-write textfile scrape or a one-tick
       # export blip; a real breach holds for the rest of the UTC day anyway.
+      #
+      # fleet-ops#4627: starvation gate. A dry METERED provider is a lane
+      # fault, not a money decision, while any prepaid/free seat can carry
+      # the work. The alert fires ONLY when the fleet is starved — zero
+      # healthy prepaid/free seats (fleet_seat_healthy{class=~"prepaid|free"}
+      # == 0 or absent). The `and on()` applies the fleet-wide condition to
+      # every per-provider boundary series, so a firing alert with healthy
+      # prepaid seats is bench+log, never a page. Defense-in-depth: the
+      # writer (bin/money-boundary-raise) and the notifier
+      # (bin/nish-boundary-notify) each re-check the seat state so a
+      # hand-written or stale line is also suppressed.
       - alert: FleetProviderSpendBoundary
-        expr: fleet_seat_spend_today_usd > 5 or fleet_seat_credits_remaining_usd < 5
+        expr: (fleet_seat_spend_today_usd > 5 or fleet_seat_credits_remaining_usd < 5) and on() (sum(fleet_seat_healthy{class=~"prepaid|free"}) == 0 or absent(fleet_seat_healthy{class=~"prepaid|free"}))
         for: 5m
         labels:
           severity: warning
           service: fleet
         annotations:
-          summary: "provider {{ $labels.provider }} crossed the USD 5 money boundary — today's spend over 5 or credits remaining under 5"
-          description: "fleet-ops#3284 (child of #3150, zero-revenue standing rule): provider {{ $labels.provider }} breached the money boundary — fleet_seat_spend_today_usd > 5 (current-UTC-day metered spend) and/or fleet_seat_credits_remaining_usd < 5 (vendor-reported balance). Repair worker — run the deterministic money-wall raise bin/money-boundary-raise in the fleet-ops deploy clone: 'bin/money-boundary-raise {{ $labels.provider }} <spend_today_usd from fleet_seat_spend_today_usd> <credits_remaining_usd from fleet_seat_credits_remaining_usd>'. That ONE script does BOTH required steps IN ORDER in one run (fleet-ops#4477): (1) appends the MONEY-BOUNDARY line to /home/nish/workspaces/agent-state/NISH-ESCALATIONS.md (MONEY-BOUNDARY as the second whitespace field, what nish-boundary-notify.path delivers to Nish's phone), deduped to one phone ping per wall per UTC day, and (2) benches the provider's cap>0 seats via the quota_bench path (source=money_boundary, far-future bench_until +365d, ledger lines under /home/nish/workspaces/agent-state/lanes/seats/) plus the spend-boundary-prebench backup, FAIL-LOUDing (and aborting the bench) if the ledger line cannot be written. Do NOT top up, re-auth, or un-bench — money is Nish's alone; only Nish clears the wall. Then report the entries written."
+          summary: "provider {{ $labels.provider }} crossed the USD 5 money boundary AND the fleet is starved (no healthy prepaid/free seat)"
+          description: "fleet-ops#3284/#4627: provider {{ $labels.provider }} breached the money boundary — fleet_seat_spend_today_usd > 5 (current-UTC-day metered spend) and/or fleet_seat_credits_remaining_usd < 5 (vendor-reported balance) — AND the fleet is starved (fleet_seat_healthy{class=~\"prepaid|free\"} == 0, no healthy prepaid/free seat can carry the work). A dry metered provider with healthy prepaid/free seats is a lane fault, not a money page; this alert is gated to fire only on starvation. Repair worker — run the deterministic money-wall raise bin/money-boundary-raise in the fleet-ops deploy clone: 'bin/money-boundary-raise {{ $labels.provider }} <spend_today_usd from fleet_seat_spend_today_usd> <credits_remaining_usd from fleet_seat_credits_remaining_usd>'. That ONE script does BOTH required steps IN ORDER in one run (fleet-ops#4477): (1) appends the MONEY-BOUNDARY line to /home/nish/workspaces/agent-state/NISH-ESCALATIONS.md (MONEY-BOUNDARY as the second whitespace field, what nish-boundary-notify.path delivers to Nish's phone), deduped to one phone ping per wall per UTC day, and (2) benches the provider's cap>0 seats via the quota_bench path (source=money_boundary, far-future bench_until +365d, ledger lines under /home/nish/workspaces/agent-state/lanes/seats/) plus the spend-boundary-prebench backup, FAIL-LOUDing (and aborting the bench) if the ledger line cannot be written. The script re-checks fleet starvation before writing the ledger line (fleet-ops#4627): if a healthy prepaid/free seat exists it benches + logs without paging. Do NOT top up, re-auth, or un-bench — money is Nish's alone; only Nish clears the wall. Then report the entries written."
 
       - alert: FleetKeystoneRoutingAbsent
         expr: absent(fleet_keystone_routing_heartbeat_seconds)

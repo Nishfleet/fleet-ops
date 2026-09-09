@@ -1210,4 +1210,11 @@ ok "rule-enforcement: vps reboot-survival regression drill"
 bash "$here/money-boundary-guard.test.sh" || fail "money-boundary guard drill failed"
 ok "rule-enforcement: money-boundary guard drill"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, rulebook-redteam, vibes, skills-symlink, bin-exclude, slo-budget, tailscale-localapi-canary, worktree-reaper, vps-reboot-survival, and money-boundary-guard drills"
+# fleet-ops#4627: money-boundary starvation gate — a dry METERED provider is
+# a lane fault while any prepaid/free seat can carry the work. Replays the
+# two 2026-09-09 MONEY-BOUNDARY pages (both suppressed given the live seat
+# state at the time) and checks the alert expression + metric label.
+bash "$here/money-boundary-starvation-gate.test.sh" || fail "money-boundary starvation-gate drill failed"
+ok "rule-enforcement: money-boundary starvation-gate drill"
+
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, rulebook-redteam, vibes, skills-symlink, bin-exclude, slo-budget, tailscale-localapi-canary, worktree-reaper, vps-reboot-survival, money-boundary-guard, and money-boundary-starvation-gate drills"
