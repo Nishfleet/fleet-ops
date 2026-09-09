@@ -55,8 +55,16 @@ REAL_ERR_RE = re.compile(
     r"error TS\d+|API rate limit)",
     re.I,
 )
+# A spawn-guard or harness block is not a ran-and-failed command: the call
+# never executed. This mirrors lib/failed-command-flagged.py (fleet-ops#648,
+# where SPAWN_BLOCKED is the live git_stash_forbidden class). The debug-playbook
+# detector previously only exempted the Pi confirmation-prompt variant
+# ("Dangerous command blocked"), so a SPAWN_BLOCKED was counted as a real failed
+# attempt and could push a session over the two-attempt threshold into a false
+# DEBUG-PLAYBOOK-MISSING alarm (fleet-ops#4620).
 HARNESS_BLOCK_RE = re.compile(
-    r"Dangerous command blocked \(no UI for confirmation\)",
+    r"Dangerous command blocked \(no UI for confirmation\)"
+    r"|SPAWN_BLOCKED reason=",
     re.I,
 )
 SCHEMA_BLOCK_RE = re.compile(
