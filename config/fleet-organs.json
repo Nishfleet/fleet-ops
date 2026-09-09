@@ -238,7 +238,8 @@
       "files": [
         "systemd/fleet-litellm-proxy.service",
         "systemd/app-litellm.slice",
-        "config/litellm-proxy.yaml"
+        "config/litellm-proxy.yaml",
+        "libexec/fleet-litellm-prisma-compat/sitecustomize.py"
       ]
     },
     {

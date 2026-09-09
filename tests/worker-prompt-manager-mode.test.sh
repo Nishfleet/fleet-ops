@@ -125,26 +125,29 @@ ok "spawn-guard reconciled with stock subagents"
 scratch="$(mktemp -d -t worker-prompt-manager-mode.XXXXXX)"
 trap 'rm -rf "$scratch"' EXIT INT TERM
 
-# Rebuild the packet the way lib/pi-intake-tick.sh does (fleet-ops#4643):
-# stable prefix first (worker.md), volatile tail last (difficulty + TARGET).
+# Rebuild the packet the way lib/pi-intake-tick.sh does: difficulty header,
+# then worker.md, then a blank line, then the TARGET line. The tick emits the
+# header for every issue via issue_difficulty(); we only assert the shape.
 build_packet() {
   local diff="$1" out="$2"
   {
+    echo "difficulty: $diff"
     cat "$prompt"
     echo
-    echo "difficulty: $diff"
     echo "TARGET: repo Nishfleet/fleet-ops issue 3274 unit pi-issue-fleet-ops-3274"
   } > "$out"
 }
 
 for d in heavy keystone light; do
   build_packet "$d" "$scratch/$d.in"
-  head -1 "$scratch/$d.in" | grep -q '^# Pi fleet issue worker' \
-    || fail "packet for $d must start with worker.md (got '$(head -1 "$scratch/$d.in")')"
-  grep -q "^difficulty: $d\$" "$scratch/$d.in" \
-    || fail "packet for $d must carry difficulty: $d in the volatile tail"
+  hdr=$(head -1 "$scratch/$d.in")
+  [[ "$hdr" == "difficulty: $d" ]] \
+    || fail "packet header for $d must be 'difficulty: $d' (got '$hdr')"
+  # worker.md body follows the header
+  sed -n '2p' "$scratch/$d.in" | grep -q '^# Pi fleet issue worker' \
+    || fail "worker.md body must follow the difficulty header for $d"
 done
-ok "packet replay: worker.md first, difficulty header in volatile tail (heavy/keystone/light)"
+ok "packet replay: difficulty header is line 1, worker.md follows (heavy/keystone/light)"
 
 # Heavy and keystone packets must contain the manager-mode trigger wording;
 # the light packet must still contain the flat Steps (so light did not get

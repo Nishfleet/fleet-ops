@@ -174,11 +174,11 @@ park_count=$(count_of "$mf")
 [[ "$park_count" == "3" ]] \
     || fail "(b) marker count after 3rd no-op = $park_count, want 3 — the count must reach the production-default ceiling"
 park_wall=$(wall_s_of_marker "$mf")
-(( park_wall >= SEAT_PARK_WALL_S - 120 && park_wall <= SEAT_PARK_WALL_S + 120 )) \
-    || fail "(b) park wall = ${park_wall}s, want ~${SEAT_PARK_WALL_S}s — the failure-ceiling park must fire on the 3rd no-op (fleet-ops#3531)"
+(( park_wall >= ${SEAT_NON_MONEY_WALL_MAX_S:-21600} - 120 && park_wall <= ${SEAT_NON_MONEY_WALL_MAX_S:-21600} + 120 )) \
+    || fail "(b) park wall = ${park_wall}s, want ~${SEAT_NON_MONEY_WALL_MAX_S:-21600}s — the failure-ceiling park must fire on the 3rd no-op (fleet-ops#3531/#4640 6h clamp)"
 if seat_usable "$p" "$m"; then
     fail "(b) seat_usable returned usable on the 3rd-no-op parked seat — the park wall must hold it out of rotation"
 fi
-ok "(b) 3rd no-op: count=3, park wall = ${park_wall}s (~24h), seat HELD UNUSABLE — geometric bench then park (fleet-ops#3531/#3727)"
+ok "(b) 3rd no-op: count=3, park wall = ${park_wall}s (~6h), seat HELD UNUSABLE — geometric bench then park (fleet-ops#3531/#3727/#4640)"
 
 ok "fleet-ops#3531/#3727/#3760: empty-run benches escalate geometrically and park at the empty-run-specific failure ceiling (default 3, not the generic 20)"

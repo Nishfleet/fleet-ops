@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""fleet-litellm-health-canary — LiteLLM proxy /health/readiness probe
-(fleet-ops#4130 P1).
+"""fleet-litellm-health-canary — LiteLLM proxy /health census probe
+(fleet-ops#4130 P1, fleet-ops#4628).
 
-Polls the LiteLLM proxy at 127.0.0.1:4000/health/readiness every tick and
-exports:
+Polls the LiteLLM proxy at 127.0.0.1:4000/health/readiness every tick for
+organ-liveness, then GET /health (master key) for the per-deployment
+census. Exports:
 
   fleet_litellm_proxy_up{endpoint="readiness"} 1|0
   fleet_litellm_organ_installed 1|0
   fleet_litellm_proxy_healthy_deployments{group="..."} <count>
   fleet_litellm_proxy_unhealthy_deployments{group="..."} <count>
+  fleet_litellm_health_census                         <healthy+unhealthy>
+  fleet_litellm_model_list_expected                   <yaml model_list>
   fleet_litellm_proxy_last_green_seconds            <unix ts>
   fleet_litellm_postgres_up                          1|0
   fleet_litellm_redis_up                             1|0
@@ -34,6 +37,16 @@ window that gaps one 60s tick does not false-trip. A single 5xx is recorded as
 proxy_up=0 but does NOT exit 1 (transient — the router's own cooldown handles it);
 only sustained connection-refused (organ dead) exits 1.
 
+Empty-census fail-loud (fleet-ops#4628): GET /health with background_health_checks
+returns the in-memory cache, which starts as {}. After a Prisma reconnect crash
+(engine_process_death / '_Prisma__engine) the cache stays empty even while
+completions return 200 and /health/readiness is healthy. That made this canary
+blind. Once readiness is 200, the canary fetches /health (master key) and
+asserts healthy_endpoints + unhealthy_endpoints is non-empty. An empty census
+is held for FLEET_LITELLM_EMPTY_CENSUS_TOLERANCE_S seconds (default 120 = two
+health_check_intervals) so a restart that has not yet finished its first
+background cycle does not false-trip; after that window, exit 1.
+
 No new scheduler for the proxy_up heartbeat: this canary runs on a 60s
 timer (systemd/fleet-litellm-health-canary.timer) because the proxy is a
 daemon whose death must surface in <2 min, not on the 5-min
@@ -48,7 +61,13 @@ Environment seams (tests):
   FLEET_LITELLM_STATE       state json path
   FLEET_LITELLM_NOW         fixed now for tests
   FLEET_LITELLM_TIMEOUT_S   per-request timeout
-  FLEET_LITELLM_STUB        path to a stub JSON response (tests)
+  FLEET_LITELLM_STUB        path to a stub JSON response (tests; used for both
+                            /health/readiness and /health unless STUB_HEALTH is set)
+  FLEET_LITELLM_STUB_HEALTH path to a stub JSON /health census (tests)
+  FLEET_LITELLM_MASTER_KEY  proxy master key for GET /health (never logged)
+  FLEET_LITELLM_MASTER_KEY_FILE path to KEY=value env file carrying the master key
+  FLEET_LITELLM_CONFIG      live yaml (model_list expected count)
+  FLEET_LITELLM_EMPTY_CENSUS_TOLERANCE_S  hold window for empty /health (default 120)
   FLEET_LITELLM_PG_ISREADY  pg_isready binary (default searched on PATH)
   FLEET_LITELLM_REDIS_CLI   redis-cli binary (default searched on PATH)
   FLEET_LITELLM_PG_HOST     postgres host or socket dir (default the
@@ -103,6 +122,19 @@ DEFAULT_TIMEOUT_S = float(os.environ.get("FLEET_LITELLM_TIMEOUT_S", "10"))
 # climb the escalation ladder on sustained death (<=2 min at the 60s default,
 # honoring the unit's named '<2 min' reason).
 DEFAULT_DEAD_TOLERANCE_S = float(os.environ.get("FLEET_LITELLM_DEAD_TOLERANCE_S", "60"))
+# Two health_check_intervals (config default 60s) so a just-restarted proxy
+# can finish its first background cycle before the empty-census fail-loud.
+DEFAULT_EMPTY_CENSUS_TOLERANCE_S = float(
+    os.environ.get("FLEET_LITELLM_EMPTY_CENSUS_TOLERANCE_S", "120")
+)
+DEFAULT_MASTER_KEY_FILE = os.environ.get(
+    "FLEET_LITELLM_MASTER_KEY_FILE",
+    "/home/nish/.config/fleet-ops/litellm-master-key.env",
+)
+DEFAULT_CONFIG = os.environ.get(
+    "FLEET_LITELLM_CONFIG",
+    "/home/nish/.config/fleet-ops/litellm-proxy.yaml",
+)
 DEFAULT_PG_HOST = os.environ.get(
     "FLEET_LITELLM_PG_HOST",
     "/home/nish/.local/share/fleet-litellm-postgres/run",
@@ -165,17 +197,40 @@ def _now() -> float:
     return time.time()
 
 
-def _fetch(url: str, timeout: float) -> tuple[int, str]:
-    """Return (status_code, body). status_code=0 means connection failed."""
-    stub = os.environ.get("FLEET_LITELLM_STUB")
+def _fetch(
+    url: str,
+    timeout: float,
+    *,
+    headers: dict[str, str] | None = None,
+    kind: str = "readiness",
+) -> tuple[int, str]:
+    """Return (status_code, body). status_code=0 means connection failed.
+
+    kind=readiness uses FLEET_LITELLM_STUB. kind=health prefers
+    FLEET_LITELLM_STUB_HEALTH, then STUB, and honours
+    FLEET_LITELLM_STUB_HEALTH_STATUS for the 401 path (fleet-ops#4628).
+    """
+    if kind == "health":
+        status_raw = os.environ.get("FLEET_LITELLM_STUB_HEALTH_STATUS")
+        if status_raw:
+            try:
+                return int(status_raw), ""
+            except ValueError:
+                return 0, ""
+        stub = os.environ.get("FLEET_LITELLM_STUB_HEALTH") or os.environ.get("FLEET_LITELLM_STUB")
+    else:
+        stub = os.environ.get("FLEET_LITELLM_STUB")
     if stub:
         p = Path(stub)
         if not p.is_file():
             return 0, ""
         with p.open(encoding="utf-8") as fh:
             return 200, fh.read()
+    hdrs = {"Accept": "application/json"}
+    if headers:
+        hdrs.update(headers)
     try:
-        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        req = urllib.request.Request(url, headers=hdrs)
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosem: dynamic-urllib-use-detected
             return int(resp.status), resp.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as e:
@@ -184,56 +239,78 @@ def _fetch(url: str, timeout: float) -> tuple[int, str]:
         return 0, ""
 
 
-def _parse_readiness(body: str) -> dict[str, Any]:
-    """Parse /health/readiness response. Returns {group: {healthy: n, unhealthy: n}}.
+def _endpoint_group_name(ep: Any) -> str:
+    if isinstance(ep, dict):
+        mi = ep.get("model_info") or {}
+        name = (mi.get("model_name") if isinstance(mi, dict) else None) or ep.get("model")
+        if name:
+            return str(name)
+    return "unknown"
 
-    LiteLLM's readiness endpoint returns two formats depending on version
-    and query params:
 
-    1. Detailed: {"healthy_endpoints": [...], "unhealthy_endpoints": [...]}
-       Each endpoint carries model_info; we bucket by model_name (the group
-       alias). This is the format the canary was originally designed for.
+def _parse_census(body: str) -> tuple[dict[str, dict[str, int]], int]:
+    """Parse GET /health. Empty lists are a blind verdict, not 'all healthy'.
 
-    2. Simple: {"status": "healthy"|"unhealthy", "db": "connected"|...}
-       LiteLLM 1.98+ returns this by default without ?detailed=True. No
-       per-group breakdown is available, so we synthesise a single
-       "proxy" group with healthy=1 when status==healthy, unhealthy=1
-       otherwise. This keeps the fleet_litellm_proxy_healthy_deployments
-       gauge meaningful even without per-group detail (fleet-ops#4174
-       reopen: groups=0 despite a healthy proxy).
+    Never synthesise a proxy group from {"status":"healthy"}. That is what
+    made the canary blind after a Prisma engine_process_death (fleet-ops#4628).
     """
     try:
         doc = json.loads(body)
     except (json.JSONDecodeError, ValueError):
-        return {}
-    out: dict[str, dict[str, int]] = {}
+        return {}, 0
+    if not isinstance(doc, dict):
+        return {}, 0
     healthy_eps = doc.get("healthy_endpoints") or []
     unhealthy_eps = doc.get("unhealthy_endpoints") or []
-    if healthy_eps or unhealthy_eps:
-        # Detailed format — bucket by model_name.
-        for ep in healthy_eps:
-            name = "unknown"
-            if isinstance(ep, dict):
-                mi = ep.get("model_info") or {}
-                name = (mi.get("model_name") if isinstance(mi, dict) else None) or ep.get("model") or "unknown"
-            g = out.setdefault(str(name), {"healthy": 0, "unhealthy": 0})
-            g["healthy"] += 1
-        for ep in unhealthy_eps:
-            name = "unknown"
-            if isinstance(ep, dict):
-                mi = ep.get("model_info") or {}
-                name = (mi.get("model_name") if isinstance(mi, dict) else None) or ep.get("model") or "unknown"
-            g = out.setdefault(str(name), {"healthy": 0, "unhealthy": 0})
-            g["unhealthy"] += 1
-    elif isinstance(doc, dict) and "status" in doc:
-        # Simple format — synthesise a single "proxy" group.
-        status = str(doc.get("status", ""))
-        g = out.setdefault("proxy", {"healthy": 0, "unhealthy": 0})
-        if status == "healthy":
-            g["healthy"] = 1
-        else:
-            g["unhealthy"] = 1
-    return out
+    if not isinstance(healthy_eps, list):
+        healthy_eps = []
+    if not isinstance(unhealthy_eps, list):
+        unhealthy_eps = []
+    out: dict[str, dict[str, int]] = {}
+    for ep in healthy_eps:
+        g = out.setdefault(_endpoint_group_name(ep), {"healthy": 0, "unhealthy": 0})
+        g["healthy"] += 1
+    for ep in unhealthy_eps:
+        g = out.setdefault(_endpoint_group_name(ep), {"healthy": 0, "unhealthy": 0})
+        g["unhealthy"] += 1
+    return out, len(healthy_eps) + len(unhealthy_eps)
+
+
+def _count_model_list(path: str) -> int:
+    """Count `- model_name:` entries in the live yaml. Stdlib only."""
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return 0
+    return sum(1 for line in text.splitlines() if line.lstrip().startswith("- model_name:"))
+
+
+def _load_master_key() -> str:
+    """Return the proxy master key. Never log the value."""
+    for name in ("FLEET_LITELLM_MASTER_KEY", "LITELLM_MASTER_KEY"):
+        raw = os.environ.get(name)
+        if raw:
+            return raw.strip().strip('"').strip("'")
+    path = Path(os.environ.get("FLEET_LITELLM_MASTER_KEY_FILE", DEFAULT_MASTER_KEY_FILE))
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                continue
+            key, value = stripped.split("=", 1)
+            if key.strip() in ("LITELLM_MASTER_KEY", "FLEET_LITELLM_MASTER_KEY"):
+                return value.strip().strip('"').strip("'")
+    except OSError:
+        return ""
+    return ""
+
+
+def _health_fetch_is_stubbed() -> bool:
+    return bool(
+        os.environ.get("FLEET_LITELLM_STUB_HEALTH_STATUS")
+        or os.environ.get("FLEET_LITELLM_STUB_HEALTH")
+        or os.environ.get("FLEET_LITELLM_STUB")
+    )
 
 
 def _probe_postgres(pg_host: str = DEFAULT_PG_HOST) -> int:
@@ -291,6 +368,8 @@ def render_prom(
     pg_up: int,
     redis_up: int,
     organ_installed: int,
+    census_n: int = 0,
+    expected_n: int = 0,
 ) -> str:
     lines: list[str] = []
     lines.append(f'# HELP fleet_litellm_proxy_up 1 if /health/readiness returned 200, 0 on 5xx, absent if organ dead')
@@ -307,6 +386,12 @@ def render_prom(
         glabel = gname.replace("\\", "\\\\").replace('"', '\\"')
         lines.append(f'fleet_litellm_proxy_healthy_deployments{{group="{glabel}"}} {counts.get("healthy", 0)}')
         lines.append(f'fleet_litellm_proxy_unhealthy_deployments{{group="{glabel}"}} {counts.get("unhealthy", 0)}')
+    lines.append('# HELP fleet_litellm_health_census healthy_endpoints + unhealthy_endpoints from GET /health')
+    lines.append('# TYPE fleet_litellm_health_census gauge')
+    lines.append(f'fleet_litellm_health_census {int(census_n)}')
+    lines.append('# HELP fleet_litellm_model_list_expected count of - model_name: entries in the live yaml')
+    lines.append('# TYPE fleet_litellm_model_list_expected gauge')
+    lines.append(f'fleet_litellm_model_list_expected {int(expected_n)}')
     lines.append('# HELP fleet_litellm_postgres_up 1 if pg_isready succeeded, 0 otherwise, absent if organ not installed')
     lines.append('# TYPE fleet_litellm_postgres_up gauge')
     lines.append(f'fleet_litellm_postgres_up {int(pg_up)}')
@@ -328,6 +413,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--state", default=str(DEFAULT_STATE))
     p.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_S)
     p.add_argument("--dead-tolerance", type=float, default=DEFAULT_DEAD_TOLERANCE_S)
+    p.add_argument(
+        "--empty-census-tolerance",
+        type=float,
+        default=DEFAULT_EMPTY_CENSUS_TOLERANCE_S,
+    )
     p.add_argument("--venv", default=DEFAULT_VENV)
     p.add_argument("--quiet", action="store_true")
     args = p.parse_args(argv)
@@ -356,7 +446,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     url = args.proxy_url.rstrip("/") + "/health/readiness"
-    status, body = _fetch(url, args.timeout)
+    status, _ready_body = _fetch(url, args.timeout)
 
     pg_up = _probe_postgres()
     redis_up = _probe_redis(DEFAULT_REDIS_HOST, DEFAULT_REDIS_PORT)
@@ -403,28 +493,119 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     proxy_up = 1 if status == 200 else 0
-    groups = _parse_readiness(body) if proxy_up else {}
+    groups: dict[str, dict[str, int]] = {}
+    census_n = 0
+    expected_n = _count_model_list(os.environ.get("FLEET_LITELLM_CONFIG", DEFAULT_CONFIG))
+    census_status = 0
 
-    _atomic_write(Path(args.prom), render_prom(now, proxy_up, groups, pg_up, redis_up, 1))
+    if proxy_up:
+        health_url = args.proxy_url.rstrip("/") + "/health"
+        health_headers: dict[str, str] | None = None
+        if not _health_fetch_is_stubbed():
+            master_key = _load_master_key()
+            if not master_key:
+                census_status = 401
+            else:
+                health_headers = {"Authorization": "Bearer " + master_key}
+        if census_status != 401:
+            census_status, census_body = _fetch(
+                health_url, args.timeout, headers=health_headers, kind="health"
+            )
+        else:
+            census_body = ""
+        if census_status == 401:
+            _atomic_write(
+                Path(args.prom),
+                render_prom(now, proxy_up, {}, pg_up, redis_up, 1, 0, expected_n),
+            )
+            state = {
+                "now": int(now),
+                "proxy_up": proxy_up,
+                "status": status,
+                "census_status": 401,
+                "groups": {},
+                "census": 0,
+                "expected": expected_n,
+                "postgres_up": pg_up,
+                "redis_up": redis_up,
+                "dead_since": None,
+                "empty_since": None,
+            }
+            _atomic_write(Path(args.state), json.dumps(state, indent=2, sort_keys=True))
+            print(
+                "fleet-litellm-health-canary: health-auth-401 GET /health needs the master key",
+                file=sys.stderr,
+            )
+            return 1
+        if census_status == 200:
+            groups, census_n = _parse_census(census_body)
+        if census_n == 0:
+            state = _load_state(args.state)
+            empty_since = state.get("empty_since")
+            if not isinstance(empty_since, (int, float)):
+                empty_since = now
+            elapsed = now - float(empty_since)
+            _atomic_write(
+                Path(args.prom),
+                render_prom(now, proxy_up, {}, pg_up, redis_up, 1, 0, expected_n),
+            )
+            state.update(
+                {
+                    "now": int(now),
+                    "proxy_up": proxy_up,
+                    "status": status,
+                    "census_status": census_status,
+                    "groups": {},
+                    "census": 0,
+                    "expected": expected_n,
+                    "postgres_up": pg_up,
+                    "redis_up": redis_up,
+                    "dead_since": None,
+                    "empty_since": int(empty_since),
+                }
+            )
+            _atomic_write(Path(args.state), json.dumps(state, indent=2, sort_keys=True))
+            msg = (
+                "fleet-litellm-health-canary: health-verdict-empty "
+                f"census=0 expected={expected_n} "
+                f"held={int(elapsed)}s tolerance={int(args.empty_census_tolerance)}s"
+            )
+            if elapsed >= args.empty_census_tolerance:
+                print(msg, file=sys.stderr)
+                return 1
+            if not args.quiet:
+                print(msg, file=sys.stderr)
+            return 0
+
+    _atomic_write(
+        Path(args.prom),
+        render_prom(now, proxy_up, groups, pg_up, redis_up, 1, census_n, expected_n),
+    )
 
     state = {
         "now": int(now),
         "proxy_up": proxy_up,
         "status": status,
+        "census_status": census_status,
         "groups": groups,
+        "census": census_n,
+        "expected": expected_n,
         "postgres_up": pg_up,
         "redis_up": redis_up,
         "dead_since": None,
+        "empty_since": None,
     }
     _atomic_write(Path(args.state), json.dumps(state, indent=2, sort_keys=True))
 
     if not args.quiet:
         print(
             f"fleet-litellm-health-canary: proxy_up={proxy_up} status={status} "
-            f"groups={len(groups)} pg_up={pg_up} redis_up={redis_up}"
+            f"census={census_n} expected={expected_n} groups={len(groups)} "
+            f"pg_up={pg_up} redis_up={redis_up}"
         )
-    # A 5xx is transient (router cooldown handles it); do not exit 1.
-    # Only connection-refused (status==0) exits 1, handled above.
+    # A 5xx on readiness is transient (router cooldown handles it); do not exit 1.
+    # Only connection-refused (status==0), /health 401, or a sustained empty
+    # census exits 1, handled above.
     return 0
 
 

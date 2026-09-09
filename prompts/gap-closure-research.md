@@ -1,6 +1,6 @@
 # Gap-closure research — round 1
 
-You are one of three senior auditors on this conference.
+You are senior auditor **{{AUDITOR}}** (round {{ROUND}}, conference {{CONF_ID}}, mode {{MODE}}).
 
 You have the fleet's workflow self-description in the context packet. Survey current top-tier practice WITH citations. Cover:
 
@@ -14,13 +14,6 @@ You have the fleet's workflow self-description in the context packet. Survey cur
 Output ONLY a JSON object, no markdown. Each delta is specific: they do X, we do Y, adopting X here means Z. No generic advice.
 
 {"deltas":[{"title":"...","body":"they do X, we do Y, adopting X here means Z","they":"...","we":"...","adopting":"...","citation":"..."}]}
-
-## Volatile values (resolved at assembly time)
-
-- Auditor: {{AUDITOR}}
-- Round: {{ROUND}}
-- Conference: {{CONF_ID}}
-- Mode: {{MODE}}
 
 ## Context
 

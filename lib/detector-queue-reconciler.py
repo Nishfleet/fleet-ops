@@ -256,12 +256,18 @@ def routing_labels(tag: str) -> list[str]:
     return ["agent-ready"]
 
 
-def issue_title(tag: str, msg: str) -> str:
+def issue_title(tag: str, msg: str, signal: str = "") -> str:
     short = re.sub(r"^signal:\s*\S+\s*", "", msg)
     short = short.split(" — ", 1)[0].split("::", 1)[0].strip()
     if len(short) > 80:
         short = short[:77] + "..."
-    return f"alarm: {tag} — {short}"
+    base = f"alarm: {tag} — {short}"
+    # Embed the signal key in the title (fleet-ops#4622) so a filed-issue
+    # title check can distinguish a genuine filing from a dedupe-comment
+    # pointer at an unrelated issue.
+    if signal:
+        return f"{base} [{signal}]"
+    return base
 
 
 def issue_body(signal: str, tag: str, msg: str, ts: str) -> str:
@@ -467,6 +473,81 @@ def file_issue(
     return proc.returncode, (proc.stdout or proc.stderr or "").strip()
 
 
+def _parse_issue_number(out: str) -> str:
+    """Extract a GitHub issue number from a fleet-issue-file result.
+
+    fleet-issue-file may emit a URL, a ``#NNN`` token, or a JSON payload with
+    a ``number``/``url`` field (it can also comment on a duplicate and return
+    that existing issue's URL — the wrong-pointer case fleet-ops#4622 fixes).
+    """
+    if not out:
+        return ""
+    m = re.search(r"/issues/(\d+)", out)
+    if m:
+        return m.group(1)
+    m = re.search(r"#(\d+)", out)
+    if m:
+        return m.group(1)
+    try:
+        payload = json.loads(out)
+    except (json.JSONDecodeError, TypeError):
+        return ""
+    if isinstance(payload, dict):
+        for key in ("number", "issue", "id"):
+            val = payload.get(key)
+            if isinstance(val, (int, str)) and str(val).isdigit():
+                return str(val)
+        url = payload.get("url")
+        if isinstance(url, str):
+            m = re.search(r"/issues/(\d+)", url)
+            if m:
+                return m.group(1)
+    return ""
+
+
+def verify_filed_signal(
+    repo: str,
+    out: str,
+    signal: str,
+    gh: str,
+    dry_run: bool,
+    triage: Path | None,
+) -> bool:
+    """Verify the issue just filed (or commented-on by dedupe) carries the
+    signal key in its title (fleet-ops#4622).
+
+    fleet-issue-file dedupes by token overlap and may COMMENT on an unrelated
+    existing issue, returning its URL — a wrong pointer that would silently
+    satisfy observe-to-close next tick. Fetch the returned issue's title and
+    confirm it contains the signal key. On mismatch, emit a LOUD
+    FILED-LINK-MISMATCH so the wrong pointer can never satisfy
+    observe-to-close. Returns True on mismatch (loud), False when the title
+    matches (or the number could not be resolved, e.g. dry-run).
+    """
+    if dry_run:
+        return False
+    number = _parse_issue_number(out)
+    if not number:
+        return False
+    proc = subprocess.run(
+        [gh, "issue", "view", number, "-R", repo, "--json", "title", "--jq", ".title"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    title = (proc.stdout or "").strip()
+    if proc.returncode != 0 or not title or signal not in title:
+        loud(
+            triage,
+            "FILED-LINK-MISMATCH",
+            f"filed issue #{number} title='{title or '<unavailable>'}' does not "
+            f"contain signal key {signal}; a wrong pointer cannot satisfy "
+            f"observe-to-close (fleet-ops#4622)",
+        )
+        return True
+    return False
+
+
 def _parse_iso(ts: str) -> datetime:
     raw = ts.strip()
     if raw.endswith("Z"):
@@ -555,7 +636,7 @@ def reconcile(
             log(f"skip filing {sig} (FILE_ISSUES=0)")
             continue
 
-        title = issue_title(alarm["tag"], alarm["msg"])
+        title = issue_title(alarm["tag"], alarm["msg"], signal=sig)
         body = issue_body(sig, alarm["tag"], alarm["msg"], alarm["ts"])
         labels = routing_labels(alarm["tag"])
         rc, out = file_issue(repo, title, body, labels, issue_file, dry_run)
@@ -563,6 +644,13 @@ def reconcile(
             log(f"filed {sig} -> {out}")
             filed_count += 1
             summary["filed"] += 1
+            # FILED-LINK verify (fleet-ops#4622): fleet-issue-file may dedupe
+            # to an unrelated issue and return its URL. Verify the returned
+            # issue's title carries the signal key; on mismatch emit a LOUD
+            # FILED-LINK-MISMATCH so the wrong pointer can never satisfy
+            # observe-to-close next tick.
+            if verify_filed_signal(repo, out, sig, gh, dry_run, triage):
+                summary["filed_mismatches"] = summary.get("filed_mismatches", 0) + 1
         else:
             log(f"WARN: failed to file {sig} (rc={rc}): {out}")
 

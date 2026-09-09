@@ -505,9 +505,28 @@ blocked_filter() {
         [ -z "$line" ] && continue
         ref=$(printf '%s' "$line" | sed -E 's/^blocked-on:[[:space:]]*//' | sed -E 's/[[:space:]]+$//')
         case "$ref" in
-            nish-decision|orchestrator|infra|senior-review)
+            nish-decision|orchestrator|infra|senior-review|senior-conference)
                 # Special marker — not an issue ref; always a live blocker.
                 any_open=1
+                continue
+                ;;
+            re-open-*)
+                # fleet-ops#4626: date-gate. A future timestamp is a live
+                # blocker; a past timestamp is stale (blocked-reconcile owns
+                # the smoke + label flip; intake must not re-wedge a flipped
+                # issue whose body still carries the spent gate).
+                _dg_rest="${ref#re-open-}"
+                if [[ "$_dg_rest" =~ ^([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(:[0-9]{2})?Z) ]]; then
+                    _dg_iso="${BASH_REMATCH[1]}"
+                    any_machine=1
+                    _dg_epoch=$(date -u -d "$_dg_iso" +%s 2>/dev/null || echo "")
+                    _now_epoch=$(date -u +%s)
+                    if [ -z "$_dg_epoch" ] || [ "$_now_epoch" -lt "$_dg_epoch" ]; then
+                        any_open=1
+                    fi
+                else
+                    any_open=1
+                fi
                 continue
                 ;;
             split)
@@ -667,10 +686,8 @@ d1_gate_integrity_needed() {
 # heavy and routed all work to the small capable pool while ollama and the free
 # seats sat idle. Rules: keystone label/title -> keystone; label heavy, or body
 # > DIFFICULTY_HEAVY_BODY_BYTES, or more than DIFFICULTY_HEAVY_REQUIRED
-# `- required:` lines -> heavy; else light. Emitted AFTER the stable prompt
-# (fleet-ops#4643: prefix cache needs a byte-identical prefix; difficulty
-# is per-issue so it lives in the volatile tail). packet_difficulty scans
-# the whole packet for a standalone `difficulty:` line and still honours it.
+# `- required:` lines -> heavy; else light. Emitted as the packet's first line,
+# which packet_difficulty already honours.
 DIFFICULTY_HEAVY_BODY_BYTES="${PI_INTAKE_DIFFICULTY_HEAVY_BODY_BYTES:-6000}"
 DIFFICULTY_HEAVY_REQUIRED="${PI_INTAKE_DIFFICULTY_HEAVY_REQUIRED:-2}"
 issue_difficulty() {
@@ -686,8 +703,8 @@ issue_difficulty() {
     # spending the Cursor senior pool is "put `difficulty: senior-review` at the
     # top of the issue body so pick_seat routes it to the senior ladder", but
     # intake recomputed the header from title/labels/body-size and wrote its own
-    # value as the packet's difficulty line; packet_difficulty() (lib/seat-lib.sh)
-    # takes the first standalone match, so the marker was silently dropped and
+    # value as the packet's FIRST line; packet_difficulty() (lib/seat-lib.sh)
+    # takes the first match, so the marker was silently dropped and
     # senior-review work ran as weight=light on a worker seat. Deliberately
     # placed AFTER the label checks: the marker can only decide an unlabelled
     # packet, never downgrade a curated keystone/heavy label. Vocabulary is kept
@@ -2065,19 +2082,25 @@ blocked-on: orchestrator" 2>/dev/null || true
     fi
 
     # Write the worker packet so pi-issue-run can pick its own seat at run time.
-    # fleet-ops#4643: [stable prefix][volatile tail]. Stable prefix is worker.md
-    # plus the repo-conditional fragments (D1 / GEO files are themselves stable).
-    # Difficulty and TARGET are per-issue so they come AFTER the last stable byte.
-    # fleet-ops#3247: D1 + gate-integrity ships only for 0509 (ideally only when
-    # the body names migrations/ or .github/) and GEO/AEO ships only for
-    # geo/aeo-labelled issues. Non-0509 / non-geo packets stay lean. A missing
-    # fragment file is non-fatal: the packet is still written with the base
-    # prompt + TARGET line so the worker runs rather than not at all (same
-    # fail-open posture as the keystone marker in pi-issue-start).
+    # fleet-ops#3247: append repo-conditional blocks AFTER the base prompt so
+    # D1 + gate-integrity ships only for 0509 (ideally only when the body names
+    # migrations/ or .github/) and GEO/AEO ships only for geo/aeo-labelled
+    # issues. Non-0509 / non-geo packets stay lean. A missing fragment file is
+    # non-fatal: the packet is still written with the base prompt + TARGET line
+    # so the worker runs rather than not at all (same fail-open posture as the
+    # keystone marker in pi-issue-start).
     packet_path="$ISSUE_STATE_DIR/${REPO}-${N}.in"
     # difficulty was computed at the light-only filter above (fleet-ops#4639:
     # one issue_difficulty pass per issue; the filter and the header share it).
     {
+        echo "difficulty: $difficulty"
+        # fleet-ops#4639: repair-rung claims carry the seat-rung marker so
+        # pi-issue-run arms PI_REPAIR_RUNG and pick_seat may fall back to the
+        # reserved rung ladder (litellm judge -> mergegateway audition ->
+        # cursor keystone cap 1) when every allowlisted seat is dead.
+        if [[ "$_repair_rung_armed" == "1" ]]; then
+            echo "seat-rung: repair"
+        fi
         cat "$WORKER_PROMPT"
         if d1_gate_integrity_needed "$body" \
             && [[ -f "$WORKER_BLOCKS_DIR/$D1_GATE_INTEGRITY_BLOCK" ]]; then
@@ -2090,16 +2113,6 @@ blocked-on: orchestrator" 2>/dev/null || true
             cat "$WORKER_BLOCKS_DIR/$GEO_AEO_BLOCK"
         fi
         echo
-        # Volatile tail (fleet-ops#4643): difficulty, seat-rung and TARGET are
-        # per-issue, so they come AFTER the last stable byte. fleet-ops#4639:
-        # repair-rung claims carry the seat-rung marker so pi-issue-run arms
-        # PI_REPAIR_RUNG and pick_seat may fall back to the reserved rung
-        # ladder (litellm judge -> mergegateway audition -> cursor keystone
-        # cap 1) when every allowlisted seat is dead.
-        echo "difficulty: $difficulty"
-        if [[ "$_repair_rung_armed" == "1" ]]; then
-            echo "seat-rung: repair"
-        fi
         echo "TARGET: repo $FULL issue $N unit pi-issue-${REPO}-${N}"
     } > "$packet_path"
 

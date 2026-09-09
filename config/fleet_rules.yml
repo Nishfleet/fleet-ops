@@ -626,30 +626,6 @@ groups:
           summary: "fleet waste ratio rose 15+ points versus yesterday's 24h window"
           description: "fleet_waste_ratio rose by more than 0.15 versus its value 24h ago, sustained 6h. TREND alert (delta), not a level, not a page — Weekly Fleet Review owns the response. Inspect fleet_waste_empty_runs_24h (the #902 empty-run class) and fleet_waste_retries_24h (the #1204 salvage-bleed class) per lane."
 
-      # fleet-ops#4643: prompt prefix-cache hit ratio. The single biggest
-      # spend lever on metered lanes — uncached input is billed at 10-25x
-      # cached, and the layout change (stable prefix first) only pays when
-      # the prefix is byte-identical across same-type packets. This alert
-      # fires per (provider, packet_type) lane whose 24h cache-hit ratio is
-      # below 85% for 6h, so a lane that records prompt tokens but never
-      # hits the prefix cache surfaces. severity=warning -> repair-dispatch
-      # (am-executor), NOT the phone — a spend optimisation is never a
-      # Nish page. The metric omits lanes with no prompt tokens (no
-      # denominator), so a quiet lane never fires; only an active-low lane
-      # does. Repair: re-check the packet layout for that packet_type
-      # (tests/packet-layout.test.sh) and the provider's cache TTL window
-      # (config/seat-caps.json _comment_4643_cache_ttl) — same-type packets
-      # must land inside the TTL window.
-      - alert: FleetPromptCacheHitLow
-        expr: fleet_prompt_cache_hit_ratio{class="metered"} < 0.85
-        for: 6h
-        labels:
-          severity: warning
-          service: fleet
-        annotations:
-          summary: "prompt prefix-cache hit ratio below 85% for 6h on {{ $labels.provider }}/{{ $labels.packet_type }}"
-          description: "fleet_prompt_cache_hit_ratio{provider=\"{{ $labels.provider }}\",packet_type=\"{{ $labels.packet_type }}\"} < 0.85 for 6h (fleet-ops#4643). Uncached input is 84% of metered spend; target >= 90%. Repair: verify the packet layout keeps a byte-identical stable prefix for this packet_type (bash tests/packet-layout.test.sh) and that same-type packets land inside the provider's cache TTL window (config/seat-caps.json _comment_4643_cache_ttl). Not a Nish page — routes to am-executor."
-
   - name: fleet_canary_effectiveness
     rules:
       # Organ heartbeat (fleet-ops#1010 / #2757). The exporter always emits

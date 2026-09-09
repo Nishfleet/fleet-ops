@@ -133,7 +133,7 @@ mf=$(marker_file "$p" "$m")
 
 # --- S1: sub-threshold spawn_fail stays non-corpse -------------------------
 rm -f "$lf" "$mf"
-if ! mark_seat_spawn_fail "$p" "$m" "no_block:rc=1" >/dev/null 2>&1; then
+if ! mark_seat_spawn_fail "$p" "$m" "test:spawn:no-block" >/dev/null 2>&1; then
     fail "S1: mark_seat_spawn_fail (count=1) failed"
 fi
 ldead=$(jq -r '.seat_dead // false' "$lf" 2>/dev/null || echo false)
@@ -145,7 +145,7 @@ ok "S1: count=1 -> seat_dead=false in ledger + marker (below threshold, unchange
 # --- S2: at-threshold (3) spawn_fail -> corpse in ledger AND marker ---------
 rm -f "$lf" "$mf"
 for i in 1 2 3; do
-    mark_seat_spawn_fail "$p" "$m" "no_block:rc=1" >/dev/null 2>&1 \
+    mark_seat_spawn_fail "$p" "$m" "test:spawn:no-block" >/dev/null 2>&1 \
         || fail "S2: mark_seat_spawn_fail #$i failed"
 done
 c=$(jq -r '.consecutive_failure_count // 0' "$mf")
@@ -160,7 +160,7 @@ ok "S2: count=3 -> CORPSE reclassified in ledger AND projected to marker (seat_d
 # --- exceeds; prove higher counts keep the corpse flag) ---------------------
 rm -f "$lf" "$mf"
 for i in $(seq 1 5); do
-    mark_seat_spawn_fail "$p" "$m" "no_block:rc=1" >/dev/null 2>&1 \
+    mark_seat_spawn_fail "$p" "$m" "test:spawn:no-block" >/dev/null 2>&1 \
         || fail "S3: mark_seat_spawn_fail #$i failed"
 done
 c=$(jq -r '.consecutive_failure_count // 0' "$mf")
@@ -173,7 +173,7 @@ ok "S3: chronic spawn_fail streak keeps corpse flag on the durable marker (live 
 #         false-healthy ledger clobber -----------------------------------------
 rm -f "$lf" "$mf"
 for i in 1 2 3; do
-    mark_seat_spawn_fail "$p" "$m" "no_block:rc=1" >/dev/null 2>&1 \
+    mark_seat_spawn_fail "$p" "$m" "test:spawn:no-block" >/dev/null 2>&1 \
         || fail "S4: mark_seat_spawn_fail #$i failed (setup corpse)"
 done
 mdead=$(jq -r '.seat_dead // false' "$mf")
@@ -211,7 +211,7 @@ ok "S5: comeback_release recovery re-proves and releases the marker corpse"
 # --- S6: a sub-threshold seat still releases on a healthy observation -------
 rm -f "$lf" "$mf"
 export SEAT_DEAD_CONSECUTIVE_THRESHOLD=10
-mark_seat_spawn_fail "$p" "$m" "no_block:rc=1" >/dev/null 2>&1 || fail "S6: sub-threshold setup failed"
+mark_seat_spawn_fail "$p" "$m" "test:spawn:no-block" >/dev/null 2>&1 || fail "S6: sub-threshold setup failed"
 mdead=$(jq -r '.seat_dead // false' "$mf")
 [[ "$mdead" == "false" ]] || fail "S6: harness: marker seat_dead=$mdead, want false"
 # Expire the marker's usable_at but keep written_at FRESH (now) so the #3737

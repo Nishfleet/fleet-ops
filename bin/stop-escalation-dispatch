@@ -448,7 +448,13 @@ if [ "$pi_rc" -ne 0 ] || [ "$has_block" -eq 0 ]; then
     # a write failure must not block the DISPATCH-NO-BLOCK record or the
     # exit-0 quiet contract.
     benched=0; bench_reason="no-block"
-    if is_quota_cap_error "$combined" "" 2>/dev/null; then
+    if [ "$benched" -eq 0 ] && is_credentials_error "$combined" "" 2>/dev/null; then
+      bench_reason="credentials_bad"
+      if mark_seat_credentials_bad "$PROVIDER" "$MODEL" "$combined" 2>/dev/null; then
+        benched=1
+      fi
+    fi
+    if [ "$benched" -eq 0 ] && is_quota_cap_error "$combined" "" 2>/dev/null; then
       bench_reason="quota_cap"
       if mark_seat_quota_bench "$PROVIDER" "$MODEL" "$combined" 2>/dev/null; then
         benched=1
@@ -462,6 +468,8 @@ if [ "$pi_rc" -ne 0 ] || [ "$has_block" -eq 0 ]; then
     fi
     if [ "$benched" -eq 0 ]; then
       bench_reason="no_block:rc=$pi_rc"
+      # fleet-ops#4640: a wrapper exit with no provider HTTP status is a
+      # LANE-FAULT. Do not touch the seat ledger.
       mark_seat_spawn_fail "$PROVIDER" "$MODEL" "$bench_reason" 2>/dev/null || true
     fi
     printf '%s DISPATCH-NO-BLOCK hash=%s provider=%s model=%s pi_rc=%s bench=%s (no diagnosis block; will retry on next trip)\n' "$(ts)" "$hash" "$PROVIDER" "$MODEL" "$pi_rc" "$bench_reason" >> "$LOG"

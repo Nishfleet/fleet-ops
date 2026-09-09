@@ -238,6 +238,7 @@ is_escalation_excluded() {
 # New runners must be added here AND wired to a systemd unit template.
 SANCTIONED_PI_RUNNERS=(
     agent-cron-run
+    blocked-reconcile
     fleet-blind-audit
     fleet-console-tile-truth-drill
     fleet-gap-closure-auditor

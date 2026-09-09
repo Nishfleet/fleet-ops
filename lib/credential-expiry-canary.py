@@ -367,6 +367,86 @@ def pre_expiry_probe(
     return findings
 
 
+# Seat-health ledger classes that represent a quota wall (fleet-ops#4622).
+# A seat walled for a long window cannot be renewed into usefulness; its
+# credential expiry is not actionable and must not fail the heartbeat.
+QUOTA_WALL_CLASSES = ("quota_exhausted", "quota_bench")
+# Canonical seat ledger file name: <provider>__<model>.json. Backup/variant
+# files (.pre-bench-*, .pre-release-*, .empty-success.json, .spawn-bench.json)
+# are skipped so a stale backup does not mask or fake a live wall.
+_SEAT_LEDGER_FILE_RE = re.compile(r"^[^/]+__[^/]+\.json$")
+_SEAT_LEDGER_SKIP = (".empty-success.json", ".spawn-bench.json")
+
+
+def _parse_iso_z(s: str) -> datetime | None:
+    if not s:
+        return None
+    raw = s.strip()
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(raw)
+    except (ValueError, TypeError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def provider_wall(
+    provider: str,
+    ledger_dir: str,
+    now: datetime | None = None,
+) -> dict[str, Any] | None:
+    """Return a live wall descriptor for ``provider`` in the seat ledger, or
+    None (fleet-ops#4622).
+
+    A provider is walled (not actionable for credential renewal) when ANY of
+    its seat ledger files carries:
+
+      - ``seat_dead: true`` -> ``{"kind": "seat_dead"}``, or
+      - a ``health_class`` in :data:`QUOTA_WALL_CLASSES` with a FUTURE
+        ``bench_until`` (preferred) or ``usable_at`` ->
+        ``{"kind": "quota_wall", "wall_until": <iso>}``.
+
+    An expired wall (bench_until/usable_at in the past) is NOT live and
+    returns None — the seat has come back, so the credential expiry is
+    actionable again. Only the canonical ``<provider>__<model>.json`` files
+    are read; backup/variant files are skipped.
+    """
+    if not provider or not ledger_dir or not os.path.isdir(ledger_dir):
+        return None
+    if now is None:
+        now = datetime.now(timezone.utc)
+    for name in sorted(os.listdir(ledger_dir)):
+        if not name.startswith(provider + "__"):
+            continue
+        if not _SEAT_LEDGER_FILE_RE.match(name):
+            continue
+        if any(skip in name for skip in _SEAT_LEDGER_SKIP):
+            continue
+        path = os.path.join(ledger_dir, name)
+        try:
+            with open(path, encoding="utf-8") as fh:
+                rec = json.load(fh)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(rec, dict):
+            continue
+        if rec.get("seat_dead") is True:
+            return {"kind": "seat_dead", "wall_until": None}
+        hc = rec.get("health_class")
+        if hc in QUOTA_WALL_CLASSES:
+            wall_raw = rec.get("bench_until") or rec.get("usable_at")
+            wall_dt = _parse_iso_z(str(wall_raw)) if wall_raw else None
+            if wall_dt is not None and wall_dt > now:
+                return {
+                    "kind": "quota_wall",
+                    "wall_until": wall_dt.isoformat(),
+                }
+    return None
+
+
 def evaluate(
     app_status: int,
     pat_expiry_raw: str | None,
@@ -597,6 +677,13 @@ def main() -> int:
         action="store_true",
         help="Disable the pre-expiry probe (fleet-ops#2134).",
     )
+    parser.add_argument(
+        "--seat-ledger-dir",
+        metavar="DIR",
+        default=None,
+        help="Seat-health ledger dir to exempt quota-walled / seat_dead providers "
+        "(fleet-ops#4622). Online defaults to the live seat ledger.",
+    )
     args = parser.parse_args()
 
     if args.ledger_line:
@@ -694,6 +781,40 @@ def main() -> int:
                 auth_path = os.path.expanduser("~/.pi/agent/auth.json")
             entries = load_auth_expiries(auth_path) if auth_path else []
         pre_expiry_findings = pre_expiry_probe(entries, now=now, threshold_hours=threshold)
+
+    # WALLED / DEAD SEAT EXEMPTION (fleet-ops#4622). A provider whose seat
+    # ledger carries a live quota wall (or seat_dead) cannot be renewed into
+    # usefulness; its credential expiry is not actionable. Downgrade such a
+    # finding to INFO (rc=0, no renewal issue) and drop it from the
+    # machine-readable contract so the wrapper does not auto-file. An expired
+    # wall is not exempt (the seat came back). Logged once with the wall date.
+    seat_ledger_dir = args.seat_ledger_dir or os.environ.get("FLEET_CRED_EXPIRY_SEAT_LEDGER_DIR")
+    if seat_ledger_dir is None and online:
+        seat_ledger_dir = "/home/nish/workspaces/agent-state/lanes/seats"
+    if pre_expiry_findings and seat_ledger_dir:
+        actionable: list[dict[str, Any]] = []
+        for f in pre_expiry_findings:
+            wall = provider_wall(f.get("provider", ""), seat_ledger_dir, now=now)
+            if wall is None:
+                actionable.append(f)
+                continue
+            if wall["kind"] == "seat_dead":
+                print(
+                    "credential-expiry-canary: INFO — provider=%s near expiry "
+                    "but seat_dead (terminal); credential renewal not "
+                    "actionable, no renewal issue filed (fleet-ops#4622)"
+                    % f.get("provider", ""),
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    "credential-expiry-canary: INFO — provider=%s near expiry "
+                    "but under a live quota wall until %s; credential renewal "
+                    "not actionable, no renewal issue filed (fleet-ops#4622)"
+                    % (f.get("provider", ""), wall.get("wall_until") or "?"),
+                    file=sys.stderr,
+                )
+        pre_expiry_findings = actionable
 
     if pre_expiry_findings:
         for f in pre_expiry_findings:

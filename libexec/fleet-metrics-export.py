@@ -1474,18 +1474,6 @@ _HELP_USD_PER_PR = (
 )
 _TYPE_USD_PER_PR = "# TYPE fleet_usd_per_merged_pr gauge"
 
-# fleet-ops#4643: prompt prefix-cache hit ratio. cacheRead is the cached
-# prefix; input is uncached prompt tokens. ratio = cacheRead/(input+cacheRead).
-# class follows the issue's metered/free vocabulary (prepaid-quota seats bill
-# uncached input the same way metered seats do, so they count as metered).
-_HELP_CACHE_HIT = (
-    "# HELP fleet_prompt_cache_hit_ratio Prefix-cache hit ratio for the "
-    "trailing 24h by provider and packet type, from Pi session jsonl usage "
-    "(cacheRead / (input + cacheRead); fleet-ops#4643). 0..1. Omitted when no "
-    "prompt tokens were recorded for that (provider, packet_type) pair."
-)
-_TYPE_CACHE_HIT = "# TYPE fleet_prompt_cache_hit_ratio gauge"
-
 _FLEET_USD_MOD = None
 
 
@@ -1548,39 +1536,6 @@ def _emit_usd_24h(lines, pr_counts):
             )
     except Exception as exc:  # noqa: BLE001 — metric must never take main() down
         lines.append(f'# fleet_usd_24h UNAVAILABLE error: {_prom_label(str(exc))[:120]}')
-
-
-def _emit_cache_hit_ratio(lines):
-    """Emit fleet_prompt_cache_hit_ratio{provider,packet_type,class} (fleet-ops#4643).
-
-    Aggregates cacheRead vs uncached input over the trailing 24h of Pi session
-    jsonl via lib/fleet_usd.compute_cache_hit_24h. Rows with no prompt tokens
-    are omitted by the helper (no denominator). A failure never takes main()
-    down — it emits a UNAVAILABLE comment line, matching _emit_usd_24h.
-    """
-    try:
-        mod = _fleet_usd_mod()
-        caps_path = _resolve_seat_caps_path()
-        rate_card = mod.load_rate_card(str(caps_path))
-        rows = mod.compute_cache_hit_24h(str(SESSIONS_DIR), rate_card)
-        if not rows:
-            return
-        lines.append("")
-        lines.append(_HELP_CACHE_HIT)
-        lines.append(_TYPE_CACHE_HIT)
-        for r in rows:
-            prov = _prom_label(r["provider"])
-            ptype = _prom_label(r["packet_type"])
-            cls = _prom_label(r["class"])
-            lines.append(
-                f'fleet_prompt_cache_hit_ratio{{provider="{prov}",'
-                f'packet_type="{ptype}",class="{cls}"}} {r["ratio"]:.6f}'
-            )
-    except Exception as exc:  # noqa: BLE001 — metric must never take main() down
-        lines.append(
-            f'# fleet_prompt_cache_hit_ratio UNAVAILABLE error: '
-            f'{_prom_label(str(exc))[:120]}'
-        )
 
 
 def _read_env_key(path, names):
@@ -6196,8 +6151,6 @@ def main():
     _emit_spend(lines, spend)
     # fleet-ops#4459: rate-card USD for the 24h + $/merged-PR, shared with measure.sh
     _emit_usd_24h(lines, pr_counts)
-    # fleet-ops#4643: prompt prefix-cache hit ratio (cacheRead vs uncached input)
-    _emit_cache_hit_ratio(lines)
     openrouter_balance = _cached_vendor_json(
         OPENROUTER_BALANCE_CACHE, _fetch_openrouter_credits, "openrouter_credits"
     )

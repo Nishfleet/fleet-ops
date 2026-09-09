@@ -41,6 +41,7 @@ assert px["absent_alert"] == "FleetLitellmProxyAbsent", px
 assert "systemd/fleet-litellm-proxy.service" in px["files"], px
 assert "systemd/app-litellm.slice" in px["files"], px
 assert "config/litellm-proxy.yaml" in px["files"], px
+assert "libexec/fleet-litellm-prisma-compat/sitecustomize.py" in px["files"], px
 pg = organs["litellm-postgres"]
 assert pg["heartbeat_metric"] == "fleet_litellm_postgres_up", pg
 assert pg["absent_alert"] == "FleetLitellmPostgresAbsent", pg
@@ -99,6 +100,7 @@ for f in \
     "systemd/fleet-litellm-postgres.service" \
     "systemd/fleet-litellm-redis.service" \
     "libexec/fleet-litellm-health-canary.py" \
+    "libexec/fleet-litellm-prisma-compat/sitecustomize.py" \
     "systemd/fleet-litellm-health-canary.service" \
     "systemd/fleet-litellm-health-canary.timer"; do
     grep -q "^$f " "$manifest" || fail "4: MANIFEST missing install line for $f"
@@ -172,13 +174,15 @@ grep -q 'fleet_litellm_organ_installed 1' "$scratch/dead.prom" \
     || fail "5: organ-dead prom missing organ_installed=1 (installed marker stays 1 when organ dies)"
 # --- 5c: simple readiness format (LiteLLM 1.98+ default, fleet-ops#4174 reopen)
 # The proxy returns {"status":"healthy","db":"connected"} instead of the
-# detailed endpoints format. The canary must still report proxy_up=1 and
-# a synthesised "proxy" group with healthy=1.
+# detailed endpoints format. The canary must still report proxy_up=1.
+# Group gauges come from GET /health (fleet-ops#4628, tests 11-14).
 simple_stub="$scratch/simple.json"
 printf '{"status":"healthy","db":"connected"}' > "$simple_stub"
+printf 'model_list:\n  - model_name: worker-cheap\n' > "$scratch/simple-models.yaml"
 FLEET_LITELLM_PROM="$scratch/simple.prom" \
 FLEET_LITELLM_STATE="$scratch/simple.state.json" \
 FLEET_LITELLM_STUB="$simple_stub" \
+FLEET_LITELLM_CONFIG="$scratch/simple-models.yaml" \
 FLEET_LITELLM_STUB_PG=1 \
 FLEET_LITELLM_STUB_REDIS=1 \
 FLEET_LITELLM_STUB_INSTALLED=1 \
@@ -186,9 +190,10 @@ FLEET_LITELLM_NOW=1700000100 \
 python3 "$canary" --quiet || fail "5c: canary simple-format path must exit 0"
 grep -q 'fleet_litellm_proxy_up{endpoint="readiness"} 1' "$scratch/simple.prom" \
     || fail "5c: simple-format prom missing proxy_up=1"
-grep -q 'fleet_litellm_proxy_healthy_deployments{group="proxy"} 1' "$scratch/simple.prom" \
-    || fail "5c: simple-format prom missing proxy group healthy=1"
-ok "5c: canary handles LiteLLM simple readiness format (proxy group synthesised)"
+# fleet-ops#4628: a simple {"status":"healthy"} body is NOT a deployment
+# census. Group gauges come from GET /health (tests 11-14). Readiness
+# still proves proxy_up=1.
+ok "5c: canary handles LiteLLM simple readiness format (proxy_up=1)"
 
 ok "5: canary compiles, proxy_up=1 path exits 0, sustained organ-dead exits 1"
 
@@ -253,6 +258,7 @@ rm -f "$scratch/pg.argv"
 FLEET_LITELLM_PROM="$scratch/pg.prom" \
 FLEET_LITELLM_STATE="$scratch/pg.state.json" \
 FLEET_LITELLM_STUB="$simple_stub" \
+FLEET_LITELLM_CONFIG="$scratch/simple-models.yaml" \
 FLEET_LITELLM_STUB_INSTALLED=1 \
 FLEET_LITELLM_STUB_REDIS=1 \
 FLEET_LITELLM_PG_ISREADY="$stubbin" \
@@ -434,5 +440,140 @@ assert found, "no grok-4.6 / xai-oauth deployment found in model_list"
 print(f"grok identity headers OK on {len(found)} deployment(s)")
 PY
 ok "10: grok-4.6 / xai-oauth deployments stamp cli-chat-proxy identity extra_headers (fleet-ops#4629)"
+
+# --- 11: empty /health census is held inside two health_check_intervals
+# (fleet-ops#4628). Readiness can be healthy while GET /health returns
+# healthy_endpoints=[] AND unhealthy_endpoints=[] (Prisma engine_process_death
+# empties the background cache). That must log health-verdict-empty and
+# must NOT pass as a green census.
+printf '{"status":"healthy","db":"connected"}' > "$scratch/ready-ok.json"
+printf '{"healthy_endpoints":[],"unhealthy_endpoints":[]}' > "$scratch/census-empty.json"
+printf 'model_list:\n  - model_name: worker-cheap\n  - model_name: worker-capable\n' > "$scratch/models.yaml"
+printf '{"empty_since": 1699999940, "proxy_up": 1}' > "$scratch/empty-hold.json"
+FLEET_LITELLM_PROM="$scratch/empty-hold.prom" \
+FLEET_LITELLM_STATE="$scratch/empty-hold.json" \
+FLEET_LITELLM_STUB="$scratch/ready-ok.json" \
+FLEET_LITELLM_STUB_HEALTH="$scratch/census-empty.json" \
+FLEET_LITELLM_CONFIG="$scratch/models.yaml" \
+FLEET_LITELLM_EMPTY_CENSUS_TOLERANCE_S=120 \
+FLEET_LITELLM_NOW=1700000000 \
+FLEET_LITELLM_STUB_PG=1 \
+FLEET_LITELLM_STUB_REDIS=1 \
+FLEET_LITELLM_STUB_INSTALLED=1 \
+python3 "$canary" >"$scratch/empty-hold.out" 2>"$scratch/empty-hold.err" \
+    || fail "11: empty census inside 120s must hold (exit 0)"
+grep -q 'health-verdict-empty' "$scratch/empty-hold.err" "$scratch/empty-hold.out" \
+    || fail "11: empty census must log health-verdict-empty, got: $(cat "$scratch/empty-hold.err" "$scratch/empty-hold.out")"
+grep -q 'fleet_litellm_health_census 0' "$scratch/empty-hold.prom" \
+    || fail "11: empty census prom missing fleet_litellm_health_census 0"
+grep -q 'fleet_litellm_model_list_expected 2' "$scratch/empty-hold.prom" \
+    || fail "11: empty census prom missing model_list_expected 2"
+ok "11: empty /health census inside 120s holds and logs health-verdict-empty"
+
+# --- 12: empty census past two health_check_intervals fails loud
+printf '{"empty_since": 1699999800, "proxy_up": 1}' > "$scratch/empty-dead.json"
+FLEET_LITELLM_PROM="$scratch/empty-dead.prom" \
+FLEET_LITELLM_STATE="$scratch/empty-dead.json" \
+FLEET_LITELLM_STUB="$scratch/ready-ok.json" \
+FLEET_LITELLM_STUB_HEALTH="$scratch/census-empty.json" \
+FLEET_LITELLM_CONFIG="$scratch/models.yaml" \
+FLEET_LITELLM_EMPTY_CENSUS_TOLERANCE_S=120 \
+FLEET_LITELLM_NOW=1700000000 \
+FLEET_LITELLM_STUB_PG=1 \
+FLEET_LITELLM_STUB_REDIS=1 \
+FLEET_LITELLM_STUB_INSTALLED=1 \
+python3 "$canary" >"$scratch/empty-dead.out" 2>"$scratch/empty-dead.err" \
+    && fail "12: empty census past 120s must exit 1"
+grep -q 'health-verdict-empty' "$scratch/empty-dead.err" "$scratch/empty-dead.out" \
+    || fail "12: empty-past-tolerance must log health-verdict-empty"
+ok "12: empty /health census past 120s exits 1 (canary no longer blind)"
+
+# --- 13: unauthenticated /health (401) fails loud immediately
+FLEET_LITELLM_PROM="$scratch/auth401.prom" \
+FLEET_LITELLM_STATE="$scratch/auth401.json" \
+FLEET_LITELLM_STUB="$scratch/ready-ok.json" \
+FLEET_LITELLM_STUB_HEALTH_STATUS=401 \
+FLEET_LITELLM_CONFIG="$scratch/models.yaml" \
+FLEET_LITELLM_STUB_PG=1 \
+FLEET_LITELLM_STUB_REDIS=1 \
+FLEET_LITELLM_STUB_INSTALLED=1 \
+python3 "$canary" >"$scratch/auth401.out" 2>"$scratch/auth401.err" \
+    && fail "13: /health 401 must exit 1"
+grep -q 'health-auth-401' "$scratch/auth401.err" "$scratch/auth401.out" \
+    || fail "13: 401 path must log health-auth-401, got: $(cat "$scratch/auth401.err" "$scratch/auth401.out")"
+ok "13: GET /health 401 fails loud (canary must authenticate)"
+
+# --- 14: populated census buckets by group and census == model_list
+printf '{"healthy_endpoints":[{"model_info":{"model_name":"worker-cheap"}},{"model_info":{"model_name":"worker-capable"}}],"unhealthy_endpoints":[]}' > "$scratch/census-full.json"
+FLEET_LITELLM_PROM="$scratch/census-full.prom" \
+FLEET_LITELLM_STATE="$scratch/census-full.json" \
+FLEET_LITELLM_STUB="$scratch/ready-ok.json" \
+FLEET_LITELLM_STUB_HEALTH="$scratch/census-full.json" \
+FLEET_LITELLM_CONFIG="$scratch/models.yaml" \
+FLEET_LITELLM_NOW=1700000200 \
+FLEET_LITELLM_STUB_PG=1 \
+FLEET_LITELLM_STUB_REDIS=1 \
+FLEET_LITELLM_STUB_INSTALLED=1 \
+python3 "$canary" --quiet || fail "14: populated census must exit 0"
+grep -q 'fleet_litellm_health_census 2' "$scratch/census-full.prom" \
+    || fail "14: populated census missing fleet_litellm_health_census 2"
+grep -q 'fleet_litellm_model_list_expected 2' "$scratch/census-full.prom" \
+    || fail "14: populated census missing model_list_expected 2"
+grep -q 'fleet_litellm_proxy_healthy_deployments{group="worker-cheap"} 1' "$scratch/census-full.prom" \
+    || fail "14: populated census must bucket worker-cheap from /health, not synthesise a proxy group"
+ok "14: populated /health census == model_list and buckets by group"
+
+# --- 15: Prisma 0.15 slotted client rejects _Prisma__engine; the compat
+# hook writes through the _engine setter instead (fleet-ops#4628).
+compat="$repo_root/libexec/fleet-litellm-prisma-compat/sitecustomize.py"
+[[ -f "$compat" ]] || fail "15: missing prisma compat sitecustomize"
+python3 - "$compat" <<'PY' || fail "15: prisma _engine setter patch must stop the slotted AttributeError"
+import importlib.util, sys, types
+
+compat = sys.argv[1]
+spec = importlib.util.spec_from_file_location("fleet_litellm_prisma_compat", compat)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+class SlottedPrisma:
+    __slots__ = ("_internal_engine",)
+    def __init__(self):
+        self._internal_engine = None
+    @property
+    def _engine(self):
+        return self._internal_engine
+    @_engine.setter
+    def _engine(self, engine):
+        self._internal_engine = engine
+
+client = SlottedPrisma()
+try:
+    client._Prisma__engine = object()
+except AttributeError:
+    pass
+else:
+    raise SystemExit("slotted Prisma unexpectedly accepted _Prisma__engine")
+
+wrapper_mod = types.ModuleType("fake_prisma_client")
+class PrismaWrapper:
+    @staticmethod
+    def _write_engine(prisma_client, engine):
+        prisma_client._Prisma__engine = engine
+wrapper_mod.PrismaWrapper = PrismaWrapper
+assert mod.patch_write_engine(wrapper_mod) is True
+engine = object()
+wrapper_mod.PrismaWrapper._write_engine(client, engine)
+assert client._internal_engine is engine, "patch must assign through _engine setter"
+print("prisma engine setter OK")
+PY
+ok "15: prisma compat hook writes through _engine (slotted 0.15 no longer AttributeErrors)"
+
+# --- 16: canary unit loads the master key env file so GET /health authenticates
+canary_unit="$repo_root/systemd/fleet-litellm-health-canary.service"
+grep -qE '^EnvironmentFile=-?/home/nish/.config/fleet-ops/litellm-master-key.env$' "$canary_unit" \
+    || fail "16: canary unit must EnvironmentFile the operator master-key env (GET /health is auth-gated)"
+grep -q 'PYTHONPATH=/home/nish/.local/libexec/fleet-litellm-prisma-compat' "$proxy_unit" \
+    || fail "16: proxy unit must set PYTHONPATH to the prisma compat hook"
+ok "16: canary authenticates /health; proxy loads prisma compat via PYTHONPATH"
 
 echo "ALL OK: fleet-litellm-organ"

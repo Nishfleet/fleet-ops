@@ -260,6 +260,7 @@
         "systemd/fleet-litellm-health-canary.service",
         "systemd/fleet-litellm-health-canary.timer",
         "libexec/fleet-litellm-health-canary.py",
+        "libexec/fleet-litellm-prisma-compat/sitecustomize.py",
         "config/litellm-proxy.yaml",
         "config/fleet-organs.json",
         "config/fleet_rules.yml",
