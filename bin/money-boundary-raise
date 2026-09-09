@@ -146,7 +146,7 @@ fleet_starved() {
             prepaid-quota|subscription|free) ;;
             *) continue ;;
         esac
-        for f in "$SEAT_LEDGER_DIR"/${prov}__*.json; do
+        for f in "$SEAT_LEDGER_DIR"/"${prov}"__*.json; do
             [ -f "$f" ] || continue
             case "$(basename "$f")" in
                 *.spawn-bench.json|*.empty-success*) continue ;;

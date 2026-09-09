@@ -300,7 +300,7 @@ while IFS= read -r line; do
             prepaid-quota|subscription|free) ;;
             *) continue ;;
         esac
-        for sf in "$seat_ledger"/${prov}__*.json; do
+        for sf in "$seat_ledger"/"${prov}"__*.json; do
             [ -f "$sf" ] || continue
             case "$(basename "$sf")" in
                 *.spawn-bench.json|*.empty-success*) continue ;;
