@@ -225,8 +225,10 @@ resolve_audit_bin() {
         printf '%s\n' "$bin_name"
         return 0
     fi
-    local IFS=':' _p
-    for _p in $sbin_paths; do
+    local -a _paths
+    IFS=':' read -r -a _paths <<<"$sbin_paths"
+    local _p
+    for _p in "${_paths[@]}"; do
         [[ -x "$_p" ]] || continue
         printf '%s\n' "$_p"
         return 0
