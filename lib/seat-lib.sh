@@ -1489,11 +1489,15 @@ _tick_spawn_count() {
 
 # Return 0 (exceeded) if the provider has hit its per-tick spawn cap, 1
 # (not exceeded) otherwise. A provider without SEAT_TICK_SPAWN_CAP or with
-# cap=0 is unlimited. Args: provider
+# cap=0 is unlimited. fleet-ops#4723: the cap honours the sole-usable-provider
+# AIMD ride (effective_tick_spawn_cap) — a healthy sole provider fills to its
+# live AIMD ceiling instead of idling at the fixed number. Args: provider
+# [difficulty]
 tick_spawn_cap_exceeded() {
-    local p="$1"
+    local p="$1" difficulty="${2:-light}"
     if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
-    local cap="${SEAT_TICK_SPAWN_CAP[$p]:-0}"
+    local cap
+    cap=$(effective_tick_spawn_cap "$p" "$difficulty")
     [[ "$cap" =~ ^[0-9]+$ ]] || cap=0
     (( cap > 0 )) || return 1
     local n
@@ -1527,6 +1531,177 @@ tick_spawn_cap_record() {
     fi
     rm -f "$tmp" 2>/dev/null || true
     seat_log "tick-spawn: record FAILED for $p — counter not incremented" 2>/dev/null || true
+    return 0
+}
+
+# --- fleet-ops#4723: sole-usable-provider AIMD ride for the per-tick cap ----
+# The per-tick spawn cap (#3690) must not hold slots idle when the capped
+# provider is demonstrably healthy AND it is the only provider that can take
+# a spawn: 2-3 live workers against target_concurrent=25 while every other
+# seat is cap-0/dead/quota-walled (2026-09-09 evidence). Ride the live AIMD
+# ceiling instead of the fixed number when ALL of:
+#   - the provider has NO fresh 429/quota wall (provider_has_recent_error),
+#   - the provider has NO recent fast death (rc=143/124-inside-60s books
+#     transient_fault / hang_bench in the seat ledger — the #3690 burst
+#     signature) within SEAT_FAST_DEATH_RECENT_S,
+#   - AIMD holds the provider at or above its declared floor (steady state,
+#     not an active backoff / ramp-restart below declared),
+#   - no OTHER provider can take a new session right now (allowlisted,
+#     credentialed, un-walled, spare provider+model capacity).
+# Otherwise the fixed tick_spawn_cap applies unchanged. The ride only ever
+# RAISES (aimd > fixed); intentional cap-zero rows never reach this gate and
+# a cap-0 provider cap floors effective_provider_cap at 0, so a ride can
+# never widen one. Tests override the window via SEAT_FAST_DEATH_RECENT_S.
+SEAT_FAST_DEATH_RECENT_S="${SEAT_FAST_DEATH_RECENT_S:-3600}"
+
+# Per-process caches so the ledger scans run once per provider per pick_seat
+# pass, not per seat. Reset by pick_seat alongside the active-count cache.
+declare -A _FAST_DEATH_CACHE=()
+declare -A _TICK_RIDE_CACHE=()
+
+_reset_tick_ride_caches() {
+    _FAST_DEATH_CACHE=()
+    _TICK_RIDE_CACHE=()
+}
+
+# provider_has_recent_fast_death <p> -> 0 if any seat ledger of provider $p
+# carries health_class transient_fault or hang_bench with observed_at inside
+# SEAT_FAST_DEATH_RECENT_S. Read-only; a missing/invalid ledger never trips.
+provider_has_recent_fast_death() {
+    local p="$1"
+    if [[ -n "${_FAST_DEATH_CACHE[$p]+x}" ]]; then
+        [[ "${_FAST_DEATH_CACHE[$p]}" == 1 ]] && return 0 || return 1
+    fi
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    local f hc observed found=0 now_s obs_s
+    now_s=$(date -u +%s)
+    while IFS=$'\t' read -r pm m _ _; do
+        [[ "$pm" == "$p" ]] || continue
+        f=$(seat_ledger_path "$p" "$m")
+        [[ -f "$f" ]] || continue
+        IFS=$'\x1f'$'\n' read -r hc observed < <(
+            jq -r '[(.health_class//""),(.observed_at//"")] | join("\u001f")' "$f" 2>/dev/null || true
+        )
+        case "$hc" in
+            transient_fault|hang_bench) ;;
+            *) continue ;;
+        esac
+        [[ -n "$observed" ]] || continue
+        obs_s=$(date -u -d "$observed" +%s 2>/dev/null || echo 0)
+        (( obs_s > 0 )) || continue
+        if (( now_s >= obs_s && now_s - obs_s < SEAT_FAST_DEATH_RECENT_S )); then
+            found=1
+            break
+        fi
+    done < <(enumerate_seats)
+    _FAST_DEATH_CACHE[$p]=$found
+    (( found == 1 )) && return 0
+    return 1
+}
+
+# _tick_cap_other_provider_usable <p> <difficulty> -> 0 if some provider
+# OTHER than $p can take a new session right now: allowlisted (cap map +
+# model map, cap > 0), credentialed, no fresh wall, spare provider capacity,
+# and at least one seat with spare model capacity that is not dead, not
+# benched, and eligible for the packet's lane (keystone-only / audition /
+# re-probe-light-only honoured). Conservative by design: a false "usable"
+# only withholds the ride (status quo), never widens it.
+_tick_cap_other_provider_usable() {
+    local p="$1" difficulty="${2:-light}"
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    if (( ! _seat_learned_loaded )); then load_learned_caps || true; fi
+    local _SEAT_USABLE_SILENT=1
+    local q m q_cap m_cap
+    local -A _q_gate=()
+    while IFS=$'\t' read -r q m _free _capable; do
+        [[ -n "$q" && -n "$m" ]] || continue
+        [[ "$q" != "$p" ]] || continue
+        # Provider-level gate: evaluate once per provider.
+        if [[ -z "${_q_gate[$q]+x}" ]]; then
+            _q_gate[$q]=0
+            q_cap="${SEAT_PROVIDER_CAP[$q]:-}"
+            if [[ -z "$q_cap" ]] || ! [[ "$q_cap" =~ ^[0-9]+$ ]] || (( q_cap == 0 )); then
+                continue
+            fi
+            if ! provider_has_credential "$q"; then continue; fi
+            if provider_has_recent_error "$q"; then continue; fi
+            local q_active q_eff
+            q_active=$(count_active_on_provider "$q")
+            q_eff=$(effective_provider_cap "$q")
+            [[ "$q_eff" =~ ^[0-9]+$ ]] || q_eff=0
+            (( q_active < q_eff )) || continue
+            # Lane gates: a keystone-only provider is never a usable other
+            # for a non-keystone packet; audition / re-probe-light-only seats
+            # never carry a non-light packet.
+            if _provider_is_keystone_only "$q" && ! _is_keystone_class "$difficulty"; then
+                continue
+            fi
+            _q_gate[$q]=1
+        fi
+        [[ "${_q_gate[$q]}" == 1 ]] || continue
+        # Model-level gate.
+        m_cap="${SEAT_MODEL_CAP[$q/$m]:-}"
+        [[ -n "$m_cap" && "$m_cap" =~ ^[0-9]+$ ]] || continue
+        (( m_cap > 0 )) || continue
+        if seat_is_audition "$q" "$m" && [[ "$difficulty" != "light" ]]; then continue; fi
+        if seat_is_reprobe_light_only "$q" "$m" && [[ "$difficulty" != "light" ]]; then continue; fi
+        if _seat_is_dead "$q" "$m"; then continue; fi
+        if ! seat_usable "$q" "$m"; then continue; fi
+        local m_active m_eff
+        m_active=$(count_active_on_seat "$q" "$m")
+        m_eff=$(effective_model_cap "$q" "$m")
+        [[ "$m_eff" =~ ^[0-9]+$ ]] || m_eff=0
+        (( m_active < m_eff )) || continue
+        return 0
+    done < <(enumerate_seats)
+    return 1
+}
+
+# _tick_cap_ride_eligible <p> <difficulty> -> 0 when the provider may ride
+# the live AIMD ceiling this tick (conditions in the block comment above).
+_tick_cap_ride_eligible() {
+    local p="$1" difficulty="${2:-light}"
+    if provider_has_recent_error "$p"; then return 1; fi
+    if provider_has_recent_fast_death "$p"; then return 1; fi
+    local eff declared
+    eff=$(effective_provider_cap "$p")
+    declared=$(provider_cap "$p")
+    [[ "$eff" =~ ^[0-9]+$ && "$declared" =~ ^[0-9]+$ ]] || return 1
+    (( eff >= declared )) || return 1
+    if _tick_cap_other_provider_usable "$p" "$difficulty"; then return 1; fi
+    return 0
+}
+
+# effective_tick_spawn_cap <p> [difficulty] -> echoes the per-tick spawn cap
+# pick_seat honours for provider $p this tick: the fixed tick_spawn_cap, or
+# the live AIMD ceiling when the ride is eligible (never lower than fixed;
+# 0 stays unlimited).
+effective_tick_spawn_cap() {
+    local p="$1" difficulty="${2:-light}"
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    local cap="${SEAT_TICK_SPAWN_CAP[$p]:-0}"
+    [[ "$cap" =~ ^[0-9]+$ ]] || cap=0
+    (( cap > 0 )) || { echo 0; return 0; }
+    if [[ -n "${_TICK_RIDE_CACHE[$p/$difficulty]+x}" ]]; then
+        if [[ "${_TICK_RIDE_CACHE[$p/$difficulty]}" == 1 ]]; then
+            local aimd
+            aimd=$(effective_provider_cap "$p")
+            [[ "$aimd" =~ ^[0-9]+$ ]] || aimd="$cap"
+            (( aimd > cap )) && { echo "$aimd"; return 0; }
+        fi
+        echo "$cap"
+        return 0
+    fi
+    local ride=0
+    if _tick_cap_ride_eligible "$p" "$difficulty"; then ride=1; fi
+    _TICK_RIDE_CACHE[$p/$difficulty]=$ride
+    if (( ride == 1 )); then
+        local aimd
+        aimd=$(effective_provider_cap "$p")
+        [[ "$aimd" =~ ^[0-9]+$ ]] || aimd="$cap"
+        (( aimd > cap )) && { echo "$aimd"; return 0; }
+    fi
+    echo "$cap"
     return 0
 }
 
@@ -4769,6 +4944,10 @@ pick_seat() {
     _PICK_ACTIVE_CACHE_BUILT=0
     _build_pick_active_cache
 
+    # fleet-ops#4723: fresh per-pass ride caches (same lifetime as the
+    # active-count cache above).
+    _reset_tick_ride_caches
+
     # Buckets (fleet-ops#387):
     #   1) free lanes first (true free — never a prepaid seat mislabeled free)
     #   2) prepaid-quota, alternating across live prepaid so one weekly-quota
@@ -4872,9 +5051,13 @@ pick_seat() {
         # fleet-ops#3690: per-tick per-provider spawn cap. Skip the provider's
         # seats once tick_spawn_cap new sessions have been routed to it this
         # tick. The intake tick resets the counter at the start of each tick.
+        # fleet-ops#4723: the effective cap rides the live AIMD ceiling when
+        # the provider is the sole usable one and healthy; difficulty is
+        # passed so lane gates (keystone-only / audition) judge "usable
+        # other" for THIS packet, not a phantom one.
         # Count mode (PICK_SEAT_COUNT_SLOTS=1) skips the gate so slot counting
         # still reflects raw seat availability.
-        if (( ! _count_mode )) && tick_spawn_cap_exceeded "$p"; then
+        if (( ! _count_mode )) && tick_spawn_cap_exceeded "$p" "$difficulty"; then
             seat_log "seat $p/$m skipped (per-tick spawn cap reached for $p — fleet-ops#3690)"
             continue
         fi
