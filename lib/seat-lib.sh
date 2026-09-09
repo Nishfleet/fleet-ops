@@ -1171,19 +1171,54 @@ declare -A LEARNED_BENCH_UNTIL=()
 # clears the flag and normal AIMD resumes.
 declare -A LEARNED_RAMP=()
 
+# fleet-ops#4723: ramp graduates on staleness. A ramp=true entry bypasses the
+# declared floor clamp and climbs only +1 per probe, and a probe needs the
+# provider to be picked. A provider seeded at floor/2 by a deploy cap change
+# and then walled (quota, 429, corpse) is never picked, never probes, and so
+# stays pinned below its declared cap forever once the wall lifts — decay is
+# fast, ramp needs traffic, traffic needs cap. Measured 2026-09-09: xkiro sat
+# at learned_cap=1 of declared 3 with last_at 2026-09-07T16:58Z (42h stale),
+# alongside zenmux, alibaba-coding, crof and straitly, while the intake
+# reported 3 usable seat slots against target_concurrent=25.
+#
+# No AIMD write within LEARNED_RAMP_STALE_S proves no traffic in that window,
+# and no traffic is no evidence of harm, so the slow-start has nothing left to
+# protect: drop the flag and let the declared floor apply again. This is the
+# same graduation effective_provider_cap already performs when a ramp reaches
+# declared, reached by elapsed time instead of by probes. The declared cap is
+# the config-pinned value, and the RAM governor, the usable-seat-slot gate
+# (fleet-ops#3732) and spawn_stagger still bound the resulting spawn rate, so
+# this cannot reproduce the fleet-ops#3690 reset-then-burst (that was a reset
+# of learned_cap itself to null, not a flag graduation).
+LEARNED_RAMP_STALE_S="${LEARNED_RAMP_STALE_S:-21600}"
+
+# 0 (true) iff $1 is an ISO8601 timestamp older than LEARNED_RAMP_STALE_S.
+# An absent or unparseable timestamp is NOT stale: never graduate a ramp on a
+# reading failure, that would be a silent cap raise on bad data.
+_learned_ramp_stale() {
+    local ts="$1" epoch now
+    [[ -n "$ts" ]] || return 1
+    epoch=$(date -u -d "$ts" +%s 2>/dev/null) || return 1
+    [[ "$epoch" =~ ^[0-9]+$ ]] || return 1
+    now=$(date -u +%s)
+    (( now - epoch >= LEARNED_RAMP_STALE_S ))
+}
+
 load_learned_caps() {
     LEARNED_CAP=()
     LEARNED_BENCH_UNTIL=()
     LEARNED_RAMP=()
     _seat_learned_loaded=1
     [[ -f "$LEARNED_CAPS_JSON" ]] || return 0
-    local p lc bu ramp
-    while IFS=$'\x1f\n' read -r p lc bu ramp; do
+    local p lc bu ramp last_at
+    while IFS=$'\x1f\n' read -r p lc bu ramp last_at; do
         [[ -n "$p" ]] || continue
         [[ "$lc" =~ ^[0-9]+$ ]] && LEARNED_CAP["$p"]="$lc"
         [[ -n "$bu" ]] && LEARNED_BENCH_UNTIL["$p"]="$bu"
-        [[ "$ramp" == "true" ]] && LEARNED_RAMP["$p"]=1
-    done < <(jq -r '.providers // {} | to_entries[] | [.key, (.value.learned_cap//""), (.value.bench_until//""), (.value.ramp|tostring)] | join("\u001f")' "$LEARNED_CAPS_JSON" 2>/dev/null || true)
+        if [[ "$ramp" == "true" ]] && ! _learned_ramp_stale "$last_at"; then
+            LEARNED_RAMP["$p"]=1
+        fi
+    done < <(jq -r '.providers // {} | to_entries[] | [.key, (.value.learned_cap//""), (.value.bench_until//""), (.value.ramp|tostring), (.value.last_at//"")] | join("\u001f")' "$LEARNED_CAPS_JSON" 2>/dev/null || true)
 }
 
 # Hard upper bound a provider may probe to. Absent -> declared cap (no
