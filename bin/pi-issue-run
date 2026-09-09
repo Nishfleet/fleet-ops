@@ -587,7 +587,21 @@ if (( rc != 0 )) && (( ! spawn_fail_triggered )); then
     err_for_scan=""
     [[ -f "$out_file" ]] && out_for_scan=$(cat "$out_file" 2>/dev/null || true)
     [[ -f "$err_file" ]] && err_for_scan=$(cat "$err_file" 2>/dev/null || true)
-    if is_credentials_error "$out_for_scan" "$err_for_scan"; then
+    # fleet-ops#4825: the Devin CLI "Refusing to run in an untrusted workspace"
+    # is a CONFIG/TRUST fault, not a seat yield. Bench via
+    # mark_seat_config_fault_bench (short window, NEVER retired) so pick_seat
+    # dodges the seat this cycle without walling it out of the fleet. The real
+    # fix is the managed config key `skip_workspace_trust: true` (pinned by
+    # install.sh); this detector is the safety net. A config/trust fault is
+    # infrastructure, never charged to the work item.
+    if is_workspace_trust_error "$out_for_scan" "$err_for_scan"; then
+        seat_log "pi-issue-run: $inst CONFIG/TRUST WALL on $np/$nm (rc=$rc) — benching seat ${SEAT_CONFIG_FAULT_BENCH_S:-60}s (fleet-ops#4825)"
+        if mark_seat_config_fault_bench "$np" "$nm" "$out_for_scan"$'\n'"$err_for_scan"; then
+            seat_log "pi-issue-run: $inst seat $np/$nm benched (config_fault); next systemd Restart will skip it via pick_seat"
+        else
+            seat_log "pi-issue-run: $inst WARN: config-fault-bench marker NOT written for $np/$nm — relying on reactive ledger + systemd Restart"
+        fi
+    elif is_credentials_error "$out_for_scan" "$err_for_scan"; then
         seat_log "pi-issue-run: $inst CREDENTIALS 401 on $np/$nm (rc=$rc) — 1h credentials_bad bench, corpse only after 24 strikes (fleet-ops#4640)"
         if mark_seat_credentials_bad "$np" "$nm" "$out_for_scan"$'\n'"$err_for_scan"; then
             seat_log "pi-issue-run: $inst seat $np/$nm credentials-bad benched; next Restart skips via usable_at"

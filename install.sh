@@ -671,6 +671,51 @@ remove_retired_provider_spawn_guard() {
     fi
 }
 
+# fleet-ops#4825: pin the Devin CLI workspace-trust key in the managed config.
+# The vendor error message tells you to set `respect_workspace_trust: false`,
+# but the CONFIG field the CLI actually reads is `skip_workspace_trust`. The
+# fleet carried the wrong key, so it was silently ignored and the CLI refused
+# every workspace ("Refusing to run in an untrusted workspace"), walling the
+# devin prepaid seat for ~28h. This merges the CORRECT key into the live
+# ~/.config/devin/config.json on every deploy so a devin auto-update that
+# re-writes the config (with the misleading key) cannot silently re-break the
+# seat. A merge, never an overwrite: the live config carries account fields
+# (devin.org_id) the repo must not clobber. Also drops the misleading
+# respect_workspace_trust key if present so a future reader is not misled.
+ensure_devin_config_trust() {
+    local overlay="$here/template/devin-config.json"
+    local cfg_dir="${HOME}/.config/devin"
+    local cfg="$cfg_dir/config.json"
+    [ -f "$overlay" ] || { echo "install.sh: devin config overlay missing: $overlay" >&2; return 0; }
+    command -v jq >/dev/null 2>&1 || { echo "install.sh: jq unavailable — devin trust key not pinned (fleet-ops#4825)" >&2; return 0; }
+    mkdir -p "$cfg_dir" 2>/dev/null || true
+    if [ ! -f "$cfg" ]; then
+        # Fresh box: seed with the overlay. devin adds its own fields on run.
+        install -D -m 0644 "$overlay" "$cfg" 2>/dev/null \
+            && echo "devin config seeded: $cfg (skip_workspace_trust=true, fleet-ops#4825)"
+        return 0
+    fi
+    # Merge the overlay key in and drop the misleading key. Preserve every
+    # existing field (deep merge via `*`). A failed jq leaves the live file
+    # untouched (tmp + mv).
+    local tmp="$cfg.trust.$$.$RANDOM.tmp"
+    if jq '. * ($overlay[0]) | del(.respect_workspace_trust)' --slurpfile overlay "$overlay" "$cfg" >"$tmp" 2>/dev/null; then
+        if [ -s "$tmp" ]; then
+            chmod 0644 "$tmp" 2>/dev/null || true
+            if mv -f "$tmp" "$cfg" 2>/dev/null; then
+                echo "devin config pinned: skip_workspace_trust=true (fleet-ops#4825)"
+            else
+                rm -f "$tmp" 2>/dev/null || true
+            fi
+        else
+            rm -f "$tmp" 2>/dev/null || true
+        fi
+    else
+        rm -f "$tmp" 2>/dev/null || true
+        echo "install.sh: devin config merge FAILED — live config untouched (fleet-ops#4825)" >&2
+    fi
+}
+
 # Drift-or-install one entry. `_skip=1` means skip — out of scope for the
 # current mode. `_install_user` defaults to ln -s; `install_system` defaults
 # to sudo install -D.
@@ -1006,6 +1051,7 @@ if [ "$do_user_install" = 1 ]; then
   remove_retired_canaries
   remove_retired_staleness_timer
   remove_retired_provider_spawn_guard
+  ensure_devin_config_trust
   # Only daemon-reload when a user-scope systemd unit/drop-in actually
   # changed. First install on a fresh box still reloads because every unit
   # is new. Bin/prompt/config changes do not waste a reload.
