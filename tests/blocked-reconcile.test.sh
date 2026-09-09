@@ -73,6 +73,15 @@ got=$(extract '{"repo":"Nishfleet/0509","number":50,"title":"x","body":"blocked-
 [[ "$(printf '%s' "$got" | jq -r '.rejected_nish_decisions[0].new_text')" == *"blocked-on: orchestrator"* ]] || fail "nish must be rewritten to orchestrator: $got"
 ok "invalid nish-decision is rewritten to orchestrator; dep remains"
 
+# fleet-ops#4260: a credential boundary is Nish-reserved (only he can mint an
+# account token), so `blocked-on: nish-decision` with a credential reason must
+# survive the reconcile instead of being rerouted to the orchestrator, which
+# re-parks the issue as needs-orchestrator (FleetNeedsOrchestratorStale).
+got=$(extract '{"repo":"Nishfleet/0509","number":50,"title":"x","body":"blocked-on: nish-decision\nNish must mint the Cloudflare Analytics:Read credential.\n","comments":[]}')
+[[ "$(printf '%s' "$got" | jq -r '.kind')" == "nish-decision" ]] || fail "credential boundary is Nish-reserved: $got"
+[[ "$(printf '%s' "$got" | jq -r '.rejected_count')" == "0" ]] || fail "credential nish-decision must not be rejected: $got"
+ok "credential boundary stays a nish-decision"
+
 got=$(extract '{"repo":"Nishfleet/0509","number":50,"title":"x","body":"go","comments":[{"body":"claimed by pi-issue-0509-50 at 2026-08-25T05:47:37Z"}]}')
 [[ "$(printf '%s' "$got" | jq -r '.kind')" == "nish-decision" ]] || fail "claim comment: $got"
 ok "claim comments are ignored"

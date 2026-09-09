@@ -81,12 +81,15 @@ HASH = re.compile(r"^#(\d+)$")
 BLOCKED_ON = re.compile(r"(?im)^blocked-on:\s*(.+?)\s*$")
 # Valid nish-decision reasons (fleet-ops#4260 — the canonical Nish-reserved
 # list): money/pay/price/pricing/billing, legal, brand, product direction,
-# customer data/deletion, or an authority Nish explicitly reserved. Any other
-# use of `blocked-on: nish-decision` is rewritten to
-# `blocked-on: orchestrator`.
+# customer data/deletion, credentials, or an authority Nish explicitly
+# reserved. Any other use of `blocked-on: nish-decision` is rewritten to
+# `blocked-on: orchestrator`. "credential" is on the list because only Nish
+# can mint an account token; without it the sweep NISH verdict on a
+# credential-boundary issue is rejected and the issue is re-parked as
+# needs-orchestrator (FleetNeedsOrchestratorStale).
 NISH_REASON = re.compile(
     r"(?i)\b(money|pay|price|pricing|billing|legal|brand|deletion|"
-    r"product[\s/-]*direction|customer[\s/-]*data|reserved)\b"
+    r"credential|product[\s/-]*direction|customer[\s/-]*data|reserved)\b"
 )
 COMMENT_ID_URL = re.compile(r"#issuecomment-(\d+)$")
 BLOCKED_BY = re.compile(
