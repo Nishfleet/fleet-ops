@@ -1083,6 +1083,72 @@ _wall_capped_at_horizon() {
     printf '%s' "$wall"
 }
 
+# fleet-ops#4640: a count=0 quota_cap / quota_exhausted stamp cannot be a real
+# provider quota wall. Live 2026-09-09: minimax/openrouter :free /entrim/straitly
+# carried usable_at=2027-09-08 with consecutive_failure_count=0
+# (alert-repair money-boundary hold, backoff_s=31536000). seat_usable honoured
+# the spawn-bench clock BEFORE the healthy ledger, so pick_seat counted 0
+# light slots while those seats were health=healthy. Cap that class at 6h
+# from the marker's written_at/observed_at. A declared quota_window still
+# wins (weekly Cline 402s are quota_exhausted with count>0 and are not this
+# class). spawn_fail / empty_run keep the #3941 park-wall arithmetic.
+# corpse_retired parked ledgers are untouched.
+SEAT_COUNT0_QUOTA_WALL_CAP_S="${SEAT_COUNT0_QUOTA_WALL_CAP_S:-21600}"
+
+# Echo the error-class wall cap in seconds. 0 = no extra cap (caller keeps
+# the existing wall). Only count=0 quota_cap / quota_exhausted are this
+# class (the live 365d/2027 stamps). spawn_fail / empty_run keep the #3941
+# park-wall arithmetic. count>0 quota_exhausted (live Cline 402s) is a real
+# money wall and is not this class; #2563's quota_window cap still owns
+# ledger quota_bench on windowed providers. For the count=0 class a
+# declared quota_window wins over the 6h default.
+_error_class_wall_cap_s() {
+    local p="$1" mode="${2:-}" count="${3:-0}"
+    local ceil
+    case "$mode" in
+        quota_cap|quota_exhausted) ;;
+        *) printf '0'; return 0 ;;
+    esac
+    [[ "$count" =~ ^[0-9]+$ ]] || count=0
+    if (( count != 0 )); then
+        printf '0'
+        return 0
+    fi
+    ceil=$(provider_wall_ceiling_s "$p")
+    if [[ "$ceil" =~ ^[0-9]+$ ]] && (( ceil > 0 )); then
+        printf '%s' "$ceil"
+        return 0
+    fi
+    printf '%s' "${SEAT_COUNT0_QUOTA_WALL_CAP_S:-21600}"
+}
+
+# Echo <wall> capped at anchor+error-class-cap. Future-dated anchors (live:
+# entrim observed_at=2027-09-08, written to freeze the #2712 1h window) clamp
+# to now so the cap is a re-probe cadence, not another 365d freeze. Never
+# widens a wall. Echoes <wall> unchanged when the class has no cap.
+_wall_capped_at_error_class() {
+    local p="$1" mode="$2" count="$3" anchor="$4" wall="$5"
+    local ceil wall_s anchor_s now_s max_s
+    ceil=$(_error_class_wall_cap_s "$p" "$mode" "$count")
+    if [[ ! "$ceil" =~ ^[0-9]+$ ]] || (( ceil <= 0 )); then
+        printf '%s' "$wall"
+        return 0
+    fi
+    wall_s=$(date -u -d "$wall" +%s 2>/dev/null || echo 0)
+    [[ "$wall_s" =~ ^[0-9]+$ ]] && (( wall_s > 0 )) || { printf '%s' "$wall"; return 0; }
+    now_s=$(date -u +%s)
+    anchor_s=0
+    [[ -n "$anchor" ]] && anchor_s=$(date -u -d "$anchor" +%s 2>/dev/null || echo 0)
+    [[ "$anchor_s" =~ ^[0-9]+$ ]] && (( anchor_s > 0 )) || anchor_s="$now_s"
+    (( anchor_s > now_s )) && anchor_s="$now_s"
+    max_s=$(( anchor_s + ceil ))
+    if (( wall_s > max_s )); then
+        date -u -d "@$max_s" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || printf '%s' "$wall"
+        return 0
+    fi
+    printf '%s' "$wall"
+}
+
 # Default bench window (seconds) for a provider's 503/upstream-overload storm
 # when the error text carries no Retry-After / reset window (fleet-ops #652
 # 2026-08-27 hot-patch). Mirrors provider_quota_bench_default: 0 = no default
@@ -2729,6 +2795,15 @@ _seat_write_spawn_bench() {
     [[ "$count" =~ ^[0-9]+$ ]] || count=0
     [[ "$seat_dead" == "true" || "$seat_dead" == "false" ]] || seat_dead=false
     now_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    # fleet-ops#4640: clamp implausible horizons at write time so an out-of-band
+    # 365d money-boundary stamp cannot land as usable_at=2027. spawn_fail /
+    # empty_run with count>0 keep their caller-computed backoff.
+    usable=$(_wall_capped_at_error_class "$p" "$mode" "$count" "$now_utc" "$usable")
+    local _ecap
+    _ecap=$(_error_class_wall_cap_s "$p" "$mode" "$count")
+    if [[ "$backoff" =~ ^[0-9]+$ && "$_ecap" =~ ^[0-9]+$ ]] && (( _ecap > 0 && backoff > _ecap )); then
+        backoff="$_ecap"
+    fi
     tmp="$path.$$.$RANDOM.tmp"
     if jq -nc \
         --arg provider "$p" --arg model "$m" --arg usable "$usable" \
@@ -2921,7 +2996,7 @@ seat_usable() {
     # even read: a fresh marker wins regardless of what the ledger says (or
     # whether the ledger file exists at all).
     local sb_path sb_usable sb_written sb_written_s sb_lf sb_obs sb_obs_s
-    local sb_corpse_dead sb_corpse_src
+    local sb_corpse_dead sb_corpse_src sb_mode sb_count sb_capped
     sb_path=$(seat_spawn_bench_path "$p" "$m")
     if [[ -f "$sb_path" ]]; then
         # fleet-ops#3889: a spawn_fail CORPSE (marker seat_dead=true) is held
@@ -2954,7 +3029,16 @@ seat_usable() {
         # recovery (the held-corpse branch returned 1 above), so its clock is
         # cleared (sb_usable="") and the ledger decides — no future-hold.
         if [[ "$sb_corpse_dead" != "true" ]]; then
-            sb_usable=$(jq -r '.usable_at // ""' "$sb_path" 2>/dev/null || true)
+            IFS=$'\x1f'$'\n' read -r sb_usable sb_mode sb_count sb_written < <(
+                jq -r '[(.usable_at//""),(.failure_mode//""),(.consecutive_failure_count//0),(.written_at//"")] | join("\u001f")' "$sb_path" 2>/dev/null || true
+            )
+            if [[ -n "$sb_usable" ]]; then
+                sb_capped=$(_wall_capped_at_error_class "$p" "$sb_mode" "$sb_count" "$sb_written" "$sb_usable")
+                if [[ "$sb_capped" != "$sb_usable" ]]; then
+                    seat_log "seat $p/$m: spawn-bench wall $sb_usable CAPPED to $sb_capped (error_class=${sb_mode:-unknown} count=${sb_count:-0} — fleet-ops#4640)"
+                    sb_usable="$sb_capped"
+                fi
+            fi
             if [[ -n "$sb_usable" ]] && _seat_in_future "$sb_usable"; then
                 seat_log "seat $p/$m: UNUSABLE (spawn-bench until $sb_usable — wrapper bench held)"
                 return 1
@@ -3071,6 +3155,14 @@ seat_usable() {
             capped_bench=$(_wall_capped_at_horizon "$p" "$observed" "$bench_until")
             if [[ "$capped_bench" != "$bench_until" ]]; then
                 seat_log "seat $p/$m: quota_bench wall $bench_until CAPPED to $capped_bench (provider reset horizon from quota_window — re-probe cadence, fleet-ops#2563)"
+                bench_until="$capped_bench"
+            fi
+            # fleet-ops#4640: count=0 quota_cap with no quota_window is not a
+            # real reset (live 365d/2027 stamps). Cap after the windowed
+            # horizon so a declared weekly/daily cycle still wins.
+            capped_bench=$(_wall_capped_at_error_class "$p" "${fail_mode:-quota_cap}" "$fail_count" "$observed" "$bench_until")
+            if [[ "$capped_bench" != "$bench_until" ]]; then
+                seat_log "seat $p/$m: quota_bench wall $bench_until CAPPED to $capped_bench (error_class=${fail_mode:-quota_cap} count=${fail_count:-0} — fleet-ops#4640)"
                 bench_until="$capped_bench"
             fi
         fi

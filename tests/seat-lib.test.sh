@@ -3726,6 +3726,11 @@ bash "$here/seat-floor-failopen.test.sh" || fail "seat-floor-failopen tests fail
 # p14-test-listing-gate).
 bash "$here/seat-spawn-bench-clobber.test.sh" || fail "seat-spawn-bench-clobber tests failed"
 
+# fleet-ops#4640: a count=0 quota_cap stamp with usable_at a year out is not
+# a real provider quota wall. Workers cannot add a P14 line in
+# .github/workflows/ci.yml; this file is the listed CI host.
+bash "$here/seat-spawn-bench-horizon.test.sh" || fail "seat-spawn-bench-horizon tests failed"
+
 # fleet-ops#3602: an empty-run bench must SURVIVE a subsequent successful
 # (HTTP 200) probe until its wall_end, and a seat with an unexpired empty-run
 # bench can NEVER be returned by pick_seat. The clobber-proof spawn-bench
