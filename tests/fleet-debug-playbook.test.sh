@@ -287,6 +287,22 @@ rc=$(run_bin 0)
 ok "schema-validation-only isError pair is skipped (fleet-ops#2210)"
 rm -f "$sessions/schemaval.jsonl"
 
+# --- 7f. two SPAWN_BLOCKED-only isError toolResults (fleet-ops#4620) -----------
+# A spawn-guard block (SPAWN_BLOCKED reason=...) means the command never ran;
+# it is not a ran-and-failed command (fleet-ops#648, same class as the Pi
+# confirmation-prompt "Dangerous command blocked"). lib/failed-command-flagged.py
+# exempts it; the debug-playbook detector must too, or a SPAWN_BLOCKED is counted
+# as a real failed attempt and can push a session over the two-attempt threshold
+# into a false DEBUG-PLAYBOOK-MISSING alarm (fleet-ops#4620).
+write_session "spawnblock" '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"sb1","name":"bash","arguments":{"command":"rm -rf /home/nish/workspaces/x"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"sb1","toolName":"bash","isError":true,"content":[{"type":"text","text":"SPAWN_BLOCKED reason=rm_rf_home_or_workspaces. Recursive delete under /home/nish or workspaces/ is forbidden. Delete the exact paths you created, by name."}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"sb2","name":"bash","arguments":{"command":"rm -rf /home/nish/workspaces/y"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"sb2","toolName":"bash","isError":true,"content":[{"type":"text","text":"SPAWN_BLOCKED reason=rm_rf_home_or_workspaces. Recursive delete under /home/nish or workspaces/ is forbidden. Delete the exact paths you created, by name."}]}}'
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "SPAWN_BLOCKED-only pair should exit 0 (got $rc) $(cat "$scratch/err.log")"
+ok "SPAWN_BLOCKED-only isError pair is skipped (fleet-ops#4620)"
+rm -f "$sessions/spawnblock.jsonl"
+
 # --- 8. auto-file + dedupe --------------------------------------------------
 write_session "swallowed" "$FAIL_TWO
 {\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Fixed it.\"}]}}"
