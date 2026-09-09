@@ -4240,3 +4240,13 @@ bash "$here/seat-caps-zero-yield.test.sh" || fail "seat-caps-zero-yield tests fa
 # to LiteLLM groups. Workers cannot add a P14 line in .github/workflows/ci.yml;
 # this file is the listed CI host for the new seat-source test.
 bash "$here/pi-seat-source-litellm.test.sh" || fail "pi-seat-source-litellm tests failed"
+
+# fleet-ops#4825: the Devin CLI "Refusing to run in an untrusted workspace" is
+# a CONFIG/TRUST fault, not a seat yield. The managed config key is
+# skip_workspace_trust (not the misleading respect_workspace_trust the vendor
+# error message names). Workers cannot add a P14 line in
+# .github/workflows/ci.yml; this file is the listed CI host for the new
+# devin-config-trust test (overlay key pin + install.sh merge + seat-lib
+# matcher/bench/classify + regression pin). The test sets its own scratch
+# SEAT_CAPS_JSON/PI_MODELS_JSON so the unset above does not affect it.
+bash "$here/devin-config-trust.test.sh" || fail "devin-config-trust tests failed"
