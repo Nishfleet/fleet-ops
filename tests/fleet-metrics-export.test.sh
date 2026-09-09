@@ -495,7 +495,7 @@ tests:
               service: fleet
             exp_annotations:
               summary: "provider openrouter crossed the USD 5 money boundary — today's spend over 5 or credits remaining under 5"
-              description: 'fleet-ops#3284 (child of #3150, zero-revenue standing rule): provider openrouter breached the money boundary — fleet_seat_spend_today_usd > 5 (current-UTC-day metered spend) and/or fleet_seat_credits_remaining_usd < 5 (vendor-reported balance). Repair worker — do BOTH, in order. (1) Nish route, class ''money'': append ONE line to /home/nish/workspaces/agent-state/NISH-ESCALATIONS.md of the form ''<ISO-8601 UTC> MONEY-BOUNDARY provider=openrouter spend_today_usd=<value> credits_remaining_usd=<value> — provider over the USD 5 boundary; only Nish can approve spend (fleet-ops#3284)''. The MONEY-BOUNDARY class token must be the second whitespace field — that write is what the nish-boundary-notify.path unit delivers to Nish''s phone. (2) Set the provider''s issue-work cap to 0 via the existing quota_bench path: the roster is .providers.openrouter.models in config/seat-caps.json (live copy ~/.local/state/pi-packet/seat-caps.json) — for every model with cap>0 write /home/nish/workspaces/agent-state/lanes/seats/<provider>__<model>.json (sanitise provider/model to [A-Za-z0-9._-]) containing health_class:"quota_bench", retryable:true, seat_dead:false, failure_mode:"quota_cap", source:"money_boundary", consecutive_failure_count:0 (a money wall is not a seat fault — do not escalate the count or trip the corpse threshold), and a FAR-FUTURE bench_until + usable_at (e.g. +365d — this wall holds until Nish clears it, never the ~6h-capped geometric window a normal 429 gets). seat_usable''s quota_bench branch keeps every benched seat out of pick_seat while bench_until is in the future. Then report the entries written. Do NOT top up, re-auth, or un-bench — money is Nish''s alone; only Nish clears the wall.'
+              description: 'fleet-ops#3284 (child of #3150, zero-revenue standing rule): provider openrouter breached the money boundary — fleet_seat_spend_today_usd > 5 (current-UTC-day metered spend) and/or fleet_seat_credits_remaining_usd < 5 (vendor-reported balance). Repair worker — run the deterministic money-wall raise bin/money-boundary-raise in the fleet-ops deploy clone: ''bin/money-boundary-raise openrouter <spend_today_usd from fleet_seat_spend_today_usd> <credits_remaining_usd from fleet_seat_credits_remaining_usd>''. That ONE script does BOTH required steps IN ORDER in one run (fleet-ops#4477): (1) appends the MONEY-BOUNDARY line to /home/nish/workspaces/agent-state/NISH-ESCALATIONS.md (MONEY-BOUNDARY as the second whitespace field, what nish-boundary-notify.path delivers to Nish''s phone), deduped to one phone ping per wall per UTC day, and (2) benches the provider''s cap>0 seats via the quota_bench path (source=money_boundary, far-future bench_until +365d, ledger lines under /home/nish/workspaces/agent-state/lanes/seats/) plus the spend-boundary-prebench backup, FAIL-LOUDing (and aborting the bench) if the ledger line cannot be written. Do NOT top up, re-auth, or un-bench — money is Nish''s alone; only Nish clears the wall. Then report the entries written.'
   - interval: 1m
     name: spend boundary fires when a provider's credits remaining is under USD 5
     input_series:
@@ -514,7 +514,7 @@ tests:
               service: fleet
             exp_annotations:
               summary: "provider minimax crossed the USD 5 money boundary — today's spend over 5 or credits remaining under 5"
-              description: 'fleet-ops#3284 (child of #3150, zero-revenue standing rule): provider minimax breached the money boundary — fleet_seat_spend_today_usd > 5 (current-UTC-day metered spend) and/or fleet_seat_credits_remaining_usd < 5 (vendor-reported balance). Repair worker — do BOTH, in order. (1) Nish route, class ''money'': append ONE line to /home/nish/workspaces/agent-state/NISH-ESCALATIONS.md of the form ''<ISO-8601 UTC> MONEY-BOUNDARY provider=minimax spend_today_usd=<value> credits_remaining_usd=<value> — provider over the USD 5 boundary; only Nish can approve spend (fleet-ops#3284)''. The MONEY-BOUNDARY class token must be the second whitespace field — that write is what the nish-boundary-notify.path unit delivers to Nish''s phone. (2) Set the provider''s issue-work cap to 0 via the existing quota_bench path: the roster is .providers.minimax.models in config/seat-caps.json (live copy ~/.local/state/pi-packet/seat-caps.json) — for every model with cap>0 write /home/nish/workspaces/agent-state/lanes/seats/<provider>__<model>.json (sanitise provider/model to [A-Za-z0-9._-]) containing health_class:"quota_bench", retryable:true, seat_dead:false, failure_mode:"quota_cap", source:"money_boundary", consecutive_failure_count:0 (a money wall is not a seat fault — do not escalate the count or trip the corpse threshold), and a FAR-FUTURE bench_until + usable_at (e.g. +365d — this wall holds until Nish clears it, never the ~6h-capped geometric window a normal 429 gets). seat_usable''s quota_bench branch keeps every benched seat out of pick_seat while bench_until is in the future. Then report the entries written. Do NOT top up, re-auth, or un-bench — money is Nish''s alone; only Nish clears the wall.'
+              description: 'fleet-ops#3284 (child of #3150, zero-revenue standing rule): provider minimax breached the money boundary — fleet_seat_spend_today_usd > 5 (current-UTC-day metered spend) and/or fleet_seat_credits_remaining_usd < 5 (vendor-reported balance). Repair worker — run the deterministic money-wall raise bin/money-boundary-raise in the fleet-ops deploy clone: ''bin/money-boundary-raise minimax <spend_today_usd from fleet_seat_spend_today_usd> <credits_remaining_usd from fleet_seat_credits_remaining_usd>''. That ONE script does BOTH required steps IN ORDER in one run (fleet-ops#4477): (1) appends the MONEY-BOUNDARY line to /home/nish/workspaces/agent-state/NISH-ESCALATIONS.md (MONEY-BOUNDARY as the second whitespace field, what nish-boundary-notify.path delivers to Nish''s phone), deduped to one phone ping per wall per UTC day, and (2) benches the provider''s cap>0 seats via the quota_bench path (source=money_boundary, far-future bench_until +365d, ledger lines under /home/nish/workspaces/agent-state/lanes/seats/) plus the spend-boundary-prebench backup, FAIL-LOUDing (and aborting the bench) if the ledger line cannot be written. Do NOT top up, re-auth, or un-bench — money is Nish''s alone; only Nish clears the wall. Then report the entries written.'
   - interval: 1m
     name: spend boundary stays silent under both thresholds and on stale day rows
     input_series:
@@ -747,6 +747,7 @@ m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 
 m.OUT = Path(out_path)
+m.LEGACY_STALENESS_PROM = Path("/nonexistent/fleet-staleness.prom")
 m.SELF_MAINT_JSON_DEFAULT = Path(sm_cfg)
 m.SELF_MAINT_JSON_FALLBACK = Path("/nonexistent/fb.json")
 m.SEAT_HEALTH = Path("/nonexistent/seat.json")
@@ -864,6 +865,7 @@ spec.loader.exec_module(m)
 
 # Mirror block 10's offline path overrides so the run never touches real state.
 m.OUT = Path(out_path)
+m.LEGACY_STALENESS_PROM = Path("/nonexistent/fleet-staleness.prom")
 m.PR_CACHE_DIR = Path(out_path).parent
 m.SELF_MAINT_JSON_DEFAULT = Path("/nonexistent/sm.json")
 m.SELF_MAINT_JSON_FALLBACK = Path("/nonexistent/fb.json")
@@ -958,6 +960,7 @@ m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 
 m.OUT = Path(out_path)
+m.LEGACY_STALENESS_PROM = Path("/nonexistent/fleet-staleness.prom")
 m.PR_CACHE_DIR = Path(os.path.dirname(out_path))
 m.SELF_MAINT_JSON_DEFAULT = Path("/nonexistent/sm.json")
 m.SELF_MAINT_JSON_FALLBACK = Path("/nonexistent/fb.json")
@@ -1415,6 +1418,7 @@ m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 
 m.OUT = Path(out)
+m.LEGACY_STALENESS_PROM = Path("/nonexistent/fleet-staleness.prom")
 m.SELF_MAINT_JSON_DEFAULT = Path(sm_cfg)
 m.SELF_MAINT_JSON_FALLBACK = Path("/nonexistent/sm-fallback.json")
 m.SEAT_CAPS_DEFAULT = Path(caps_cap0)
@@ -2939,6 +2943,7 @@ _today = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%d")
 )
 
 m.OUT = Path(out_path)
+m.LEGACY_STALENESS_PROM = Path("/nonexistent/fleet-staleness.prom")
 m.PR_CACHE_DIR = Path(scratch) / "cache"
 m.PR_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 m.SESSIONS_DIR = sd.parent
@@ -3496,6 +3501,7 @@ spec = importlib.util.spec_from_file_location("fme", exp_path)
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 os.environ["FLEET_OOMD_JOURNAL_STUB"] = stub
 m.OUT = Path(out_path)
+m.LEGACY_STALENESS_PROM = Path("/nonexistent/fleet-staleness.prom")
 m.SELF_MAINT_JSON_DEFAULT = Path("/nonexistent/sm.json")
 m.SELF_MAINT_JSON_FALLBACK = Path("/nonexistent/sm2.json")
 m.SEAT_HEALTH = Path("/nonexistent/seat.json")
@@ -3651,6 +3657,7 @@ exp_path, out_path, summary = sys.argv[1], sys.argv[2], sys.argv[3]
 spec = importlib.util.spec_from_file_location("fme", exp_path)
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 m.OUT = Path(out_path)
+m.LEGACY_STALENESS_PROM = Path("/nonexistent/fleet-staleness.prom")
 m.SELF_MAINT_JSON_DEFAULT = Path("/nonexistent/sm.json")
 m.SELF_MAINT_JSON_FALLBACK = Path("/nonexistent/sm2.json")
 m.SEAT_HEALTH = Path("/nonexistent/seat.json")
@@ -3717,6 +3724,7 @@ exp_path, out_path = sys.argv[1], sys.argv[2]
 spec = importlib.util.spec_from_file_location("fme", exp_path)
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 m.OUT = Path(out_path)
+m.LEGACY_STALENESS_PROM = Path("/nonexistent/fleet-staleness.prom")
 m.SELF_MAINT_JSON_DEFAULT = Path("/nonexistent/sm.json")
 m.SELF_MAINT_JSON_FALLBACK = Path("/nonexistent/sm2.json")
 m.SEAT_HEALTH = Path("/nonexistent/seat.json")
