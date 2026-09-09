@@ -1435,6 +1435,40 @@ unset SD_PRESENT_DIR GH
 ! grep -q 'standards drift' "$triage" || fail "scenario31: no drift must not raise standards drift"
 ok "scenario31: all gates present -> OK (no drift)"
 
+# Scenario 32: fleet-ops is local-richer (gates folded into ci.yml P14 tests),
+# so the standards-drift block must NOT flag it even with NO thin-caller files
+# present. fleet-ops#4590 judge ruling (2026-09-09): no new organ workflows;
+# retarget the canary at existing natively-run gates instead.
+reset_state
+cover "fleet-heartbeat.service"
+cover "pi-issue@.service"
+sanctioned_wrapper pi-issue-run
+wire_delivery
+write_covered_vault
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_DELIVERY"
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_REDCI"
+printf 'pending\n' >"$FLEET_ESCALATION_CANARY_BRIDGE"
+write_intake "fleet-ops"
+write_claim_repos "Nishfleet/fleet-ops"
+# Emulate a repo that has NONE of the thin-caller workflow files: the pieces
+# the standard thin-caller chain would add are folded into ci.yml (Gitleaks +
+# semgrep + shellcheck + systemd-analyze under the batched "P14 tests" job).
+sd_present="$scratch/sd-present4"
+mkdir -p "$sd_present"   # empty: secret-scan.yml, semgrep.yml, ... all absent
+export SD_PRESENT_DIR="$sd_present"
+export GH="$gh_fake"
+unset FLEET_ESCALATION_CANARY_SKIP_STANDARDS_DRIFT
+
+run_canary
+
+unset SD_PRESENT_DIR GH
+[[ "$env_rc" == 0 ]] || fail "scenario32: fleet-ops local-richer must keep exit 0, got $env_rc ($env_out)"
+! grep -q 'standards drift.*Nishfleet/fleet-ops' "$triage" \
+  || fail "scenario32: fleet-ops must not be flagged for missing thin-caller gates"
+grep -qi 'local-richer.*fleet-ops\|Nishfleet/fleet-ops: local-richer' <<<"$env_out" \
+  || fail "scenario32: canary must log fleet-ops as local-richer"
+ok "scenario32: fleet-ops local-richer -> standards-drift block skips it (no new organs)"
+
 ok "escalation-coverage-canary: block 13 standards-drift prevention (P11-B) covered"
 
 

@@ -1000,9 +1000,12 @@ fi
 # A repo that loses a gate drifts from the standard silently — this block
 # asserts the gates are present (contents read, available to the worker
 # token) and auto-files a "standards drift" issue per repo per missing
-# mechanism (deduped by signal key). Local-richer repos (0509) carry richer
-# local gates and are skipped for the thin-caller check, matching
-# repo-standards-apply.mjs.
+# mechanism (deduped by signal key). Local-richer repos (0509, fleet-ops)
+# carry richer local gates and are skipped for the thin-caller check, matching
+# repo-standards-apply.mjs. fleet-ops runs Gitleaks+Semgrep folded into the
+# batched "P14 tests" job in ci.yml, so treating it as a thin-caller peer
+# would demand four new runner files where the gates already run natively
+# (fleet-ops#4590 judge ruling 2026-09-09: no new organs; retarget canary).
 #
 # FLEET_ESCALATION_CANARY_SKIP_STANDARDS_DRIFT=1 skips this block (offline
 # tests). FLEET_STANDARDS_DRIFT_FILE_ISSUES=0 disables auto-file (drift is
@@ -1019,7 +1022,7 @@ else
     read -r -a _sd_mechanisms <<<"${FLEET_STANDARDS_DRIFT_MECHANISMS:-secret-scan.yml semgrep.yml review-gate.yml auto-enqueue.yml}"
     # Local-richer repos carry richer local gates and are skipped for the
     # thin-caller check (mirrors LOCAL_RICHER in repo-standards.lib.mjs).
-    read -r -a _sd_local_richer <<<"${FLEET_STANDARDS_DRIFT_LOCAL_RICHER:-Nishfleet/0509}"
+    read -r -a _sd_local_richer <<<"${FLEET_STANDARDS_DRIFT_LOCAL_RICHER:-Nishfleet/0509 Nishfleet/fleet-ops}"
 
     if [[ ! -f "$INTAKE_REPOS_JSON" ]]; then
         loud "ESCALATION-CANARY-VIOLATION" "standards drift: intake-repos.json missing at $INTAKE_REPOS_JSON — cannot enumerate enrolled repos"

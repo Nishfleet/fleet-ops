@@ -150,8 +150,20 @@ export const HANDS_OFF = [
 // overwrite (e.g. 0509's hardened secret-scan.yml with its sole-admin
 // attestation path). The sync reports these as "local-richer" and skips the
 // thin-caller migration for that file, filing no PR.
+//
+// fleet-ops is local-richer because it runs Gitleaks+Semgrep folded into the
+// batched "P14 tests" caller in its own ci.yml (scan-secrets: true) and owns
+// extra gates (gate-integrity, mass-close-guard). Requiring the four thin
+// callers would demand four new runner files where the gates already run
+// natively — that is fleet-ops#4590's judge ruling (2026-09-09): no new
+// organs, retarget the drift canary instead.
+//
+// NOTE (fleet-ops#4590): this quirk is fleet-ops-specific. Consumer repos
+// outside LOCAL_RICHER still MUST carry the thin callers; only repos that
+// already produce the gates through a richer local path are exempt.
 export const LOCAL_RICHER = [
   "Nishfleet/0509", // hardened required-verifier-integrity + gate-integrity + sole-admin attestation
+  "Nishfleet/fleet-ops", // gates folded into ci.yml "P14 tests" (scan-secrets: true) + extra local gates
 ];
 
 export function isHandsOff(repo) {

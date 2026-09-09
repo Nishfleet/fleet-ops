@@ -84,6 +84,8 @@ assert(classifyRepo("inish-site", ["HTML"]) === "static_site", "inish-site -> st
 assert(isHandsOff("Nishfleet/fleet2"), "fleet2 is hands-off");
 assert(!isHandsOff("Nishfleet/0509"), "0509 is not hands-off");
 assert(isLocalRicher("Nishfleet/0509"), "0509 is local-richer");
+assert(isLocalRicher("Nishfleet/fleet-ops"), "fleet-ops is local-richer (gates folded into P14 tests, fleet-ops#4590)");
+assert(!isLocalRicher("Nishfleet/siterep-public"), "siterep-public is not local-richer");
 assert(LABEL_TRIAD.length === 3, "label triad has 3 labels");
 assert(THIN_CALLERS.length === 4, "4 thin callers (gitleaks, semgrep, review-gate, auto-enqueue)");
 assert(REPO_TYPES.node_app.merge_queue === true, "node_app has merge queue");
