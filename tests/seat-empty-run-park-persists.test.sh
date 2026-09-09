@@ -177,8 +177,8 @@ park_count=$(count_of "$mf")
 [[ "$park_count" == "3" ]] \
     || fail "(a) marker count after 3 no-ops = $park_count, want 3 (SEAT_FAILURE_CEILING=3)"
 park_wall=$(wall_s_of_marker "$mf")
-(( park_wall >= SEAT_PARK_WALL_S - 120 && park_wall <= SEAT_PARK_WALL_S + 120 )) \
-    || fail "(a) park wall = ${park_wall}s, want ~${SEAT_PARK_WALL_S}s — the failure-ceiling park must fire at count=3"
+(( park_wall >= ${SEAT_NON_MONEY_WALL_MAX_S:-21600} - 120 && park_wall <= ${SEAT_NON_MONEY_WALL_MAX_S:-21600} + 120 )) \
+    || fail "(a) park wall = ${park_wall}s, want ~${SEAT_NON_MONEY_WALL_MAX_S:-21600}s — the failure-ceiling park must fire at count=3 (#4640 6h clamp)"
 # The ledger was clobbered to healthy/count=0 by the last clobber; the
 # marker is the durable count authority.
 ledger_hc=$(jq -r '.health_class // ""' "$lf" 2>/dev/null || true)
@@ -206,9 +206,9 @@ boundary_wall=$(wall_s_of_marker "$mf")
 # count=4, ceiling=3 -> extra=2 -> wall = 2 * 86400 = 172800s. The park
 # re-parks at a LONGER wall (not the 900s base) — the #3666 persistence
 # contract holds and the escalation makes it even stronger.
-(( boundary_wall >= 172800 - 120 && boundary_wall <= 172800 + 120 )) \
-    || fail "(b) boundary park wall = ${boundary_wall}s, want ~172800s (escalated, count=4, ceiling=3 — fleet-ops#3941); the park must RE-PARK from the marker-carried count, NOT drop to the 900s base"
-ok "(b) no-op at the 24h boundary: count 3 -> 4 (marker carries, NOT the clobbered ledger), park RE-PARKS at ${boundary_wall}s (escalated) — the park PERSISTS (fleet-ops#3666)"
+(( boundary_wall >= ${SEAT_NON_MONEY_WALL_MAX_S:-21600} - 120 && boundary_wall <= ${SEAT_NON_MONEY_WALL_MAX_S:-21600} + 120 )) \
+    || fail "(b) boundary park wall = ${boundary_wall}s, want ~${SEAT_NON_MONEY_WALL_MAX_S:-21600}s (#4640 clamp); the park must RE-PARK from the marker-carried count, NOT drop to the 900s base"
+ok "(b) no-op at the 24h boundary: count 3 -> 4 (marker carries, NOT the clobbered ledger), park RE-PARKS at ${boundary_wall}s (#4640 6h clamp) — the park PERSISTS (fleet-ops#3666)"
 
 # --- (c) seat_usable holds the re-parked seat UNUSABLE across the boundary
 if seat_usable "$p" "$m"; then

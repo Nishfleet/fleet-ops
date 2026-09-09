@@ -215,9 +215,9 @@ ok "(a3) marker count=3 while clobbered ledger count=0 — THE MARKER IS THE DUR
 # clobbered ledger (count=0). The marker's usable_at must jump to
 # ~now+SEAT_PARK_WALL_S and seat_usable must hold the parked seat.
 w=$(wall_s_of_marker "$mf")
-(( w >= SEAT_PARK_WALL_S - 120 && w <= SEAT_PARK_WALL_S + 120 )) \
-    || fail "empty-run park wall = ${w}s, want ~${SEAT_PARK_WALL_S}s — the park must fire from the ACCUMULATED marker count at SEAT_FAILURE_CEILING=3"
-ok "(b1) empty-run park wall = ${w}s (~24h) — the #1362 park fires from the accumulated marker count across clobbers (fleet-ops#2627)"
+(( w >= ${SEAT_NON_MONEY_WALL_MAX_S:-21600} - 120 && w <= ${SEAT_NON_MONEY_WALL_MAX_S:-21600} + 120 )) \
+    || fail "empty-run park wall = ${w}s, want ~${SEAT_NON_MONEY_WALL_MAX_S:-21600}s — the park must fire from the ACCUMULATED marker count at SEAT_FAILURE_CEILING=3 (#4640 6h clamp)"
+ok "(b1) empty-run park wall = ${w}s (~6h) — the #1362 park fires from the accumulated marker count across clobbers (fleet-ops#2627/#4640)"
 
 if seat_usable "$p" "$m"; then
     fail "(b2) seat_usable returned usable on the parked empty-run seat — park wall must hold across the marker"
@@ -357,8 +357,8 @@ alt_mode=$(jq -r '.failure_mode // ""' "$mf")
     || fail "(g) alternated marker failure_mode = '$alt_mode', want empty_run (last writer wins)"
 # The 3rd no-op (count=3) must park the seat at ~SEAT_PARK_WALL_S.
 alt_wall=$(wall_s_of_marker "$mf")
-(( alt_wall >= SEAT_PARK_WALL_S - 120 && alt_wall <= SEAT_PARK_WALL_S + 120 )) \
-    || fail "(g) alternated park wall = ${alt_wall}s, want ~${SEAT_PARK_WALL_S}s — the park must fire from the accumulated cross-class count at SEAT_FAILURE_CEILING=3"
+(( alt_wall >= ${SEAT_NON_MONEY_WALL_MAX_S:-21600} - 120 && alt_wall <= ${SEAT_NON_MONEY_WALL_MAX_S:-21600} + 120 )) \
+    || fail "(g) alternated park wall = ${alt_wall}s, want ~${SEAT_NON_MONEY_WALL_MAX_S:-21600}s — the park must fire from the accumulated cross-class count at SEAT_FAILURE_CEILING=3 (#4640 6h clamp)"
 if seat_usable "$p" "$m"; then
     fail "(g) seat_usable returned usable on the alternated parked seat — park wall must hold across the marker"
 fi

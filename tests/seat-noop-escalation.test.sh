@@ -180,18 +180,18 @@ for i in 1 2; do
     ok "empty-run count=${i} backoff=${ed}s (~${want}s, geometric)"
 done
 
-# 3rd no-op: SEAT_FAILURE_CEILING (3 in this test, 20 in production) parks
-# the seat at the SEAT_PARK_WALL_S (24h) wall — the chronic-no-op park.
+# 3rd no-op: SEAT_FAILURE_CEILING parks the seat. fleet-ops#4640 clamps a
+# non-money lane park at 6h.
 mark_seat_empty_run "$p" "$m" "test:empty:3" >/dev/null 2>&1 || fail "mark_seat_empty_run #3 failed"
 ec=$(jq -r '.consecutive_failure_count' "$lf")
 [[ "$ec" == "3" ]] || fail "count after 3 empty-runs = $ec, want 3"
-park="${SEAT_PARK_WALL_S:-86400}"
+park="${SEAT_NON_MONEY_WALL_MAX_S:-21600}"
 prev_epoch=$(date -u +%s)
 eu=$(usable_at_epoch "$lf")
 ed=$((eu - prev_epoch))
 (( ed >= park - 30 && ed <= park + 30 )) \
-  || fail "empty-run #3 backoff = ${ed}s, want ~${park}s (park at SEAT_FAILURE_CEILING, fleet-ops#3531)"
-ok "empty-run count=3 backoff=${ed}s (~${park}s, parked at 3rd no-op — fleet-ops#3531)"
+  || fail "empty-run #3 backoff = ${ed}s, want ~${park}s (park at SEAT_FAILURE_CEILING, fleet-ops#3531/#4640 6h clamp)"
+ok "empty-run count=3 backoff=${ed}s (~${park}s, parked at 3rd no-op — fleet-ops#3531/#4640)"
 
 # --- (3b) park wall ESCALATES at higher counts (fleet-ops#3941) ----------
 # Eight consecutive no-ops earlier breached the old 7200s cap; under
@@ -205,9 +205,9 @@ done
 prev_epoch=$(date -u +%s)
 euc=$(usable_at_epoch "$lf")
 edc=$((euc - prev_epoch))
-(( edc >= 518400 - 30 && edc <= 518400 + 30 )) \
-  || fail "empty-run backoff after 8 failures = ${edc}s, want ~518400s (escalated park wall, count=8, ceiling=3 — fleet-ops#3941)"
-ok "empty-run backoff after 8 no-ops = ${edc}s (escalated park wall, fleet-ops#3941)"
+(( edc >= ${SEAT_NON_MONEY_WALL_MAX_S:-21600} - 30 && edc <= ${SEAT_NON_MONEY_WALL_MAX_S:-21600} + 30 )) \
+  || fail "empty-run backoff after 8 failures = ${edc}s, want ~${SEAT_NON_MONEY_WALL_MAX_S:-21600}s (#4640 6h clamp; still parked, not the 900s base)"
+ok "empty-run backoff after 8 no-ops = ${edc}s (#4640 6h clamp, still parked — fleet-ops#3941/#4640)"
 
 # --- (4) a non-empty completion is NOT punished: seat_usable after bench ---
 # This is the work-complete vs seat-fault split: a no-op seat is benched

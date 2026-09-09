@@ -201,19 +201,22 @@ JSON
             done
             ok "convergence (b): 2 no-ops below ceiling=3: NOT parked, geometric bench holds (900->1800)"
 
-            # (c) 3rd no-op: empty-run failure ceiling engages, 24h park.
+            # (c) 3rd no-op: empty-run failure ceiling engages. fleet-ops#4640
+            # clamps a non-money lane park at 6h (empty_run is not a
+            # provider_quota_window). The #3760 contract that remains is
+            # WHEN it parks (count=3), not a 24h duration.
             mark_seat_empty_run "$p" "$m" "pi-issue:fleet-ops-3760:noop:3" >/dev/null 2>&1 \
                 || fail "convergence (c): mark_seat_empty_run #3 (park) failed"
             park_count=$(count_of "$mf")
             [[ "$park_count" == "3" ]] \
                 || fail "convergence (c): marker count after 3rd no-op = $park_count, want 3"
             park_wall=$(wall_s_of "$mf")
-            (( park_wall >= ${SEAT_PARK_WALL_S:-86400} - 120 && park_wall <= ${SEAT_PARK_WALL_S:-86400} + 120 )) \
-                || fail "convergence (c): park wall = ${park_wall}s, want ~${SEAT_PARK_WALL_S:-86400}s (3rd no-op, fleet-ops#3760)"
+            (( park_wall >= ${SEAT_NON_MONEY_WALL_MAX_S:-21600} - 120 && park_wall <= ${SEAT_NON_MONEY_WALL_MAX_S:-21600} + 120 )) \
+                || fail "convergence (c): park wall = ${park_wall}s, want ~${SEAT_NON_MONEY_WALL_MAX_S:-21600}s (3rd no-op, fleet-ops#3760/#4640 6h clamp)"
             if seat_usable "$p" "$m"; then
                 fail "convergence (c): seat_usable returned usable on the 3rd-no-op parked seat"
             fi
-            ok "convergence (c): 3rd no-op parks behind 24h wall, seat HELD UNUSABLE (fleet-ops#3760)"
+            ok "convergence (c): 3rd no-op parks behind 6h wall, seat HELD UNUSABLE (fleet-ops#3760/#4640)"
 
             # (d) pick_seat must NOT return the parked seat (no re-selection).
             set +e

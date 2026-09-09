@@ -45,7 +45,8 @@ cat >"$PI_MODELS_JSON" <<'JSON'
 {
   "providers": {
     "devin": { "models": [ { "id": "glm-5-2" } ] },
-    "opencode": { "models": [ { "id": "mimo-v2.5-free" } ] }
+    "opencode": { "models": [ { "id": "mimo-v2.5-free" } ] },
+    "cline": { "models": [ { "id": "cline-pass/minimax-m3" } ] }
   }
 }
 JSON
@@ -55,7 +56,8 @@ cat >"$SEAT_CAPS_JSON" <<'JSON'
   "ram_gb_per_worker": 1.5,
   "providers": {
     "devin": { "cap": 4, "class": "subscription", "quota_window": "daily", "quota_bench_default_s": 900, "models": { "glm-5-2": 4 } },
-    "opencode": { "cap": 1, "class": "free", "quota_bench_default_s": 900, "models": { "mimo-v2.5-free": 1 } }
+    "opencode": { "cap": 1, "class": "free", "quota_bench_default_s": 900, "models": { "mimo-v2.5-free": 1 } },
+    "cline": { "cap": 2, "class": "subscription", "quota_bench_default_s": 604800, "models": { "cline-pass/minimax-m3": 2 } }
   }
 }
 JSON
@@ -129,6 +131,16 @@ remain=$(( be - now_s ))
 (( remain > 0 && remain <= 21600 )) \
     || fail "b: 429 default wall ${remain}s must be >0 and <=6h"
 ok "b: 429 without window benches the provider default, <=6h (remain=${remain}s)"
+
+# --- b2) a pin longer than 6h still wins (ClinePass weekly, no quota_window)
+p="cline"; m="cline-pass/minimax-m3"
+lf=$(ledger_file "$p" "$m")
+rm -f "$lf"
+mark_seat_quota_bench "$p" "$m" "INFERENCE_CAP_ERROR: weekly Clinepass limit." >/dev/null 2>&1 \
+    || fail "b2: cline quota_bench_default_s write failed"
+bw=$(jq -r '.bench_window_s' "$lf")
+[[ "$bw" == "604800" ]] || fail "b2: cline bench_window_s expected 604800, got $bw"
+ok "b2: cline weekly pin 604800 survives the 6h clamp"
 
 # --- c) 401 -> 1h credentials_bad; corpse only after 24 --------------------
 p="devin"; m="glm-5-2"

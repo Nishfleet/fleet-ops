@@ -161,12 +161,12 @@ park_count=$(count_of "$mf")
 [[ "$park_count" == "3" ]] \
     || fail "(c) marker count after 3rd no-op = $park_count, want 3"
 park_wall=$(wall_s_of_marker "$mf")
-(( park_wall >= ${SEAT_PARK_WALL_S:-86400} - 120 && park_wall <= ${SEAT_PARK_WALL_S:-86400} + 120 )) \
-    || fail "(c) park wall = ${park_wall}s, want ~${SEAT_PARK_WALL_S:-86400}s — the empty-run failure ceiling must fire on the 3rd no-op (fleet-ops#3760)"
+(( park_wall >= ${SEAT_NON_MONEY_WALL_MAX_S:-21600} - 120 && park_wall <= ${SEAT_NON_MONEY_WALL_MAX_S:-21600} + 120 )) \
+    || fail "(c) park wall = ${park_wall}s, want ~${SEAT_NON_MONEY_WALL_MAX_S:-21600}s — empty-run ceiling fires on the 3rd no-op; #4640 clamps the non-money park at 6h"
 if seat_usable "$p" "$m"; then
     fail "(c) seat_usable returned usable on the 3rd-no-op parked seat — the park wall must hold it out of rotation"
 fi
-ok "(c) 3rd no-op: count=3, park wall = ${park_wall}s (~24h), seat HELD UNUSABLE — empty-run ceiling parks at 3, not 20 (fleet-ops#3760)"
+ok "(c) 3rd no-op: count=3, park wall = ${park_wall}s (~6h), seat HELD UNUSABLE — empty-run ceiling parks at 3, not 20 (fleet-ops#3760/#4640)"
 
 # --- (d) the generic SEAT_FAILURE_CEILING (20) did NOT park the seat ---
 # count=3 < 20 (SEAT_FAILURE_CEILING), so the generic ceiling would NOT have
@@ -181,4 +181,4 @@ if ! _seat_parked_by_ceiling 3 3; then
 fi
 ok "(d) generic ceiling (20) does NOT park at count=3; empty-run ceiling (3) does — the separate ceiling is what fires (fleet-ops#3760)"
 
-ok "fleet-ops#3760: repeated empty runs park at EMPTY_RUN_FAILURE_CEILING=3 (not the generic 20) — chronic no-op churn converges to the 24h park on the 3rd no-op"
+ok "fleet-ops#3760: repeated empty runs park at EMPTY_RUN_FAILURE_CEILING=3 (not the generic 20) — chronic no-op churn parks on the 3rd no-op (#4640 clamps the non-money park at 6h)"
