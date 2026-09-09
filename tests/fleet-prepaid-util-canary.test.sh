@@ -25,6 +25,9 @@
 #  17. ETIMEDOUT watch: cli_timeout at cap 2 -> files lower-cap-to-1.
 #  18. ETIMEDOUT watch: cli_timeout at cap 1 -> quiet (watch is cap>=2 only).
 #  19. ETIMEDOUT watch: stale cli_timeout (>24h) -> quiet.
+#  20. fleet-ops#4621: overlay prepaid-usage/cursor.json usd_today with the
+#      vendor 24h API-bucket delta (or UNAVAILABLE:<why>), never a fabricated
+#      0.000000. Cycle-to-date is a sibling field. Pick count is preserved.
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -430,6 +433,71 @@ grep -q '^fleet_prepaid_included_exhausted{provider="cursor"} 0' "$prom_out" \
 grep -q '"api_bucket_remaining_usd": 388.64' "$spend_state/cursor.json" \
   || fail "scenario15b: state must carry api_bucket_remaining_usd"
 ok "scenario15b: live-shaped response parses the included API bucket (fleet-ops#4566)"
+
+# --- 15c. fleet-ops#4621: overlay prepaid-usage usd_today with the 24h
+# API-bucket delta. Token-derived 0.000000 must not survive a vendor sample
+# that is >= 24h old. Count is preserved (this is a spend overlay, not a pick).
+: >"$gh_log"; : >"$triage"
+now_s=$(date -u +%s)
+old_s=$((now_s - 25 * 3600))
+printf '%s\n' "{\"updated_s\":$old_s,\"api_bucket_used_usd\":5.0}" \
+  >"$spend_state/cursor-history.jsonl"
+mkdir -p "$PI_PACKET_STATE/prepaid-usage"
+printf '%s\n' '{"week":"2026-W35","count":7,"usd_today":"0.000000"}' \
+  >"$PI_PACKET_STATE/prepaid-usage/cursor.json"
+set +e
+overlay_out=$(
+  CURSOR_USAGE_URL="$scratch/cursor-usage-live.json" \
+  FLEET_PREPAID_SPEND_DIR="$spend_state" \
+  FLEET_PREPAID_PROM_PATH="$prom_out" \
+  FLEET_ENTITLED_SEATS_JSON="$scratch/entitled-seats.json" \
+  SEAT_CAPS_JSON="$scratch/seat-caps.json" \
+  FLEET_OPS_REPO="$scratch" \
+  "$bin" 2>&1
+)
+overlay_rc=$?
+set -e
+[[ "$overlay_rc" == "0" ]] || fail "scenario15c: expected rc=0, got $overlay_rc ($overlay_out)"
+usage_f="$PI_PACKET_STATE/prepaid-usage/cursor.json"
+[[ -f "$usage_f" ]] || fail "scenario15c: prepaid-usage/cursor.json missing"
+ut=$(jq -r '.usd_today // empty' "$usage_f")
+[[ "$ut" == "6.3600" ]] \
+  || fail "scenario15c: usd_today must be the 24h delta 6.3600 (11.36-5.00), got '$ut'"
+[[ "$(jq -r '.count' "$usage_f")" == "7" ]] \
+  || fail "scenario15c: overlay must preserve pick count 7, got $(jq -r '.count' "$usage_f")"
+[[ "$(jq -r '.usd_today_source' "$usage_f")" == "cursor-dashboard-getcurrentperiodusage" ]] \
+  || fail "scenario15c: usd_today_source must name the vendor endpoint"
+[[ "$(jq -r '.billing_lane' "$usage_f")" == "ultra-included-api-bucket" ]] \
+  || fail "scenario15c: billing_lane must name the included API bucket, not on-demand"
+cycle=$(jq -r '.cursor_api_cycle_usd' "$usage_f")
+[[ "$cycle" == "11.360000" || "$cycle" == "11.36" ]] \
+  || fail "scenario15c: cursor_api_cycle_usd must be the cycle-to-date vendor figure, got '$cycle'"
+ok "scenario15c: usd_today overlay is the vendor 24h delta, never token 0"
+
+# --- 15d. fleet-ops#4621: warming window is UNAVAILABLE:<why>, never 0.000000.
+: >"$gh_log"; : >"$triage"
+rm -f "$spend_state/cursor-history.jsonl"
+printf '%s\n' '{"week":"2026-W35","count":7,"usd_today":"0.000000"}' \
+  >"$PI_PACKET_STATE/prepaid-usage/cursor.json"
+set +e
+warm_out=$(
+  CURSOR_USAGE_URL="$scratch/cursor-usage-live.json" \
+  FLEET_PREPAID_SPEND_DIR="$spend_state" \
+  FLEET_PREPAID_PROM_PATH="$prom_out" \
+  FLEET_ENTITLED_SEATS_JSON="$scratch/entitled-seats.json" \
+  SEAT_CAPS_JSON="$scratch/seat-caps.json" \
+  FLEET_OPS_REPO="$scratch" \
+  "$bin" 2>&1
+)
+warm_rc=$?
+set -e
+[[ "$warm_rc" == "0" ]] || fail "scenario15d: expected rc=0, got $warm_rc ($warm_out)"
+ut=$(jq -r '.usd_today // empty' "$usage_f")
+[[ "$ut" == "UNAVAILABLE:cursor-history-warming" ]] \
+  || fail "scenario15d: warming must be UNAVAILABLE:cursor-history-warming, not a fabricated 0 (got '$ut')"
+[[ "$ut" != "0.000000" && "$ut" != "0" ]] \
+  || fail "scenario15d: fabricated 0.000000 is the #4621 bug"
+ok "scenario15d: warming usd_today is UNAVAILABLE, never 0.000000"
 
 # --- 16. Cursor spend reader: missing fixture -> no .prom (absent rule fires)
 : >"$gh_log"; : >"$triage"
