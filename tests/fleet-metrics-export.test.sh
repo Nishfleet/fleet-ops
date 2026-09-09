@@ -794,6 +794,7 @@ m._fetch_devin_usage = lambda: None
 m._fetch_xkiro_quota = lambda: None
 m._GH_FETCHED_THIS_RUN = False
 
+m._fetch_signups_7d = lambda: None
 rc = m.main()
 assert rc == 0, f"main rc={rc}"
 body = Path(out_path).read_text()
@@ -909,6 +910,7 @@ m._fetch_cursor_usage = lambda: None
 m._fetch_xkiro_quota = lambda: None
 m._GH_FETCHED_THIS_RUN = False
 
+m._fetch_signups_7d = lambda: None
 rc = m.main()
 assert rc == 0, f"main rc={rc}"
 body = Path(out_path).read_text()
@@ -1000,6 +1002,7 @@ m._fetch_cursor_usage = lambda: None
 m._fetch_xkiro_quota = lambda: None
 m._GH_FETCHED_THIS_RUN = False
 
+m._fetch_signups_7d = lambda: None
 rc = m.main()
 assert rc == 1, f"main() must fail loud on null ready_work, got rc={rc}"
 assert not Path(out_path).exists(), f"main() wrote a partial file on null ready_work: {out_path}"
@@ -1067,12 +1070,14 @@ m._fetch_cursor_usage = lambda: None
 m._fetch_xkiro_quota = lambda: None
 m._GH_FETCHED_THIS_RUN = False
 
+m._fetch_signups_7d = lambda: None
 rc = m.main()
 assert rc == 1, f"main() must fail loud on null ready_work (rc={rc})"
 assert not Path(out_path).exists(), "no fleet.prom on fail-loud"
 assert not Path(legacy).exists(), "legacy fleet-staleness.prom must be cleaned up"
 print("OK: legacy fleet-staleness.prom removed on fail-loud export")
 
+m._fetch_signups_7d = lambda: None
 rc = m.main()
 assert rc == 1
 assert not Path(legacy).exists()
@@ -1469,6 +1474,7 @@ m._fetch_codex_usage = lambda: None
 m._fetch_cursor_usage = lambda: None
 m._fetch_xkiro_quota = lambda: None
 m._GH_FETCHED_THIS_RUN = False
+m._fetch_signups_7d = lambda: None
 rc = m.main()
 assert rc == 0, f"main rc={rc}"
 body = Path(out).read_text()
@@ -2996,6 +3002,7 @@ m._fetch_openrouter_credits = lambda: 6.95
 m._fetch_xkiro_usage = lambda: (999999, 0.0, 0.0)
 m._VENDOR_BALANCE_FETCHED = set()
 
+m._fetch_signups_7d = lambda: None
 rc = m.main()
 assert rc == 0, f"main rc={rc}"
 body = Path(out_path).read_text()
@@ -3535,6 +3542,7 @@ m._fetch_cursor_usage = lambda: None
 m._fetch_devin_usage = lambda: None
 m._fetch_xkiro_quota = lambda: None
 m._GH_FETCHED_THIS_RUN = False
+m._fetch_signups_7d = lambda: None
 rc = m.main()
 assert rc == 0, f"main rc={rc}"
 body = Path(out_path).read_text()
@@ -3688,6 +3696,7 @@ m._fetch_openrouter_key = lambda: None
 m._fetch_claude_usage = lambda: None
 m._fetch_codex_usage = lambda: None
 m._GH_FETCHED_THIS_RUN = False
+m._fetch_signups_7d = lambda: None
 rc = m.main()
 assert rc == 0, f"main rc={rc}"
 body = Path(out_path).read_text()
@@ -3754,6 +3763,7 @@ m._fetch_openrouter_key = lambda: None
 m._fetch_claude_usage = lambda: None
 m._fetch_codex_usage = lambda: None
 m._GH_FETCHED_THIS_RUN = False
+m._fetch_signups_7d = lambda: None
 rc = m.main()
 assert rc == 0, f"main rc={rc}"
 body = Path(out_path).read_text()
@@ -3825,3 +3835,75 @@ PY
 python3 "$scratch/quota-stale.test.py" "$exporter" "$rules" "$scratch/stale-quota-cache.json" \
   || fail "quota-observed-staleness logic/rule failed"
 ok "fleet-ops#4217: fleet_seat_quota_observed_seconds reports real age; FleetSeatQuotaStale rule present"
+
+# =========================================================================
+# 16d. fleet-ops#4582: 0509 signups_7d gauge (direction metric) — mocked D1.
+# =========================================================================
+# The direction metric (signups/week) is read live from 0509's D1 `user`
+# table each tick over the sanctioned Cloudflare REST "query" path (same
+# endpoint + token as lib/fleet-product-slo.py — no new credential).
+# Acceptance pinned here, hermetic (no network, no token file):
+#   (a) a mocked D1 response of 0 rows -> _fetch_signups_7d() returns 0 and
+#       the output carries `fleet_signups_7d 0` (healthy empty table, NOT a
+#       scrape error);
+#   (b) a mocked D1 response of 3 rows -> _fetch_signups_7d() returns 3 and
+#       the output carries `fleet_signups_7d 3`;
+#   (c) a Cloudflare error / unreachable source -> None, so the family is
+#       OMITTED (never a fabricated 0 — the exporter's no-fail-open rule).
+S7_TEST="$scratch/s7.out"
+python3 - "$exporter" "$S7_TEST" <<'PY' || fail "signups_7d unit test failed"
+import importlib.util, json, sys
+from pathlib import Path
+exporter, out_path = sys.argv[1], sys.argv[2]
+spec = importlib.util.spec_from_file_location("fme", exporter)
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+
+class _Resp:
+    def __init__(self, payload):
+        self._b = json.dumps(payload).encode("utf-8")
+    def read(self):
+        return self._b
+    def __enter__(self):
+        return self
+    def __exit__(self, *a):
+        return False
+
+def _run(count_spec):
+    """Return (fetch_result, body). _fetch_signups_7d returns the count;
+    _emit_signups_7d writes it to a lines list as main() would."""
+    m._s7_cf_token = lambda: "fake-token"
+    def _urlopen(req, timeout=15):
+        return _Resp(count_spec)
+    m.urllib.request.urlopen = _urlopen  # noqa: B950
+    got = m._fetch_signups_7d()
+    lines = []
+    m._emit_signups_7d(lines, got)
+    return got, "\n".join(lines)
+
+# (a) empty-but-reachable table -> 0, exported (not an error).
+val, body = _run({"success": True, "result": [{"results": [{"n": 0}]}]})
+assert val == 0, f"empty table must read 0, got {val}"
+assert "fleet_signups_7d 0" in body, "gauge must be present with 0 for an empty table:\n" + body
+assert body.count("# HELP fleet_signups_7d") == 1, body
+assert body.count("# TYPE fleet_signups_7d gauge") == 1, body
+print("OK: D1 mocked response 0 -> fleet_signups_7d 0 present (empty table is a value)")
+
+# (b) three signups -> 3, present.
+val, body = _run({"success": True, "result": [{"results": [{"n": 3}]}]})
+assert val == 3, f"three signups must read 3, got {val}"
+assert "fleet_signups_7d 3" in body, "three signups must be exported: " + body
+print("OK: D1 mocked response 3 -> fleet_signups_7d 3 present")
+
+# (c) Cloudflare error / unreachable source -> None -> family omitted (no 0).
+val, body = _run({"success": False, "errors": [{"message": "boom", "code": 0}]})
+assert val is None, f"cloudflare error must read unavailable (None), got {val}"
+assert "fleet_signups_7d" not in body, "unreachable source must OMIT the family, not emit 0: " + body
+assert "fleet_signups_7d 0" not in body and "fleet_signups_7d 3" not in body, body
+print("OK: D1 unreachable -> family omitted (no fabricated 0)")
+
+# (d) no token -> None (source read gate); never a fabricated 0.
+m._s7_cf_token = lambda: None
+assert m._fetch_signups_7d() is None
+print("OK: no sanctioned token -> None (family omitted)")
+PY
+ok "fleet-ops#4582: signups_7d gauge present for mocked D1 0 and 3, omitted on unreachable"
