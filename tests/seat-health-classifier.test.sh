@@ -168,3 +168,12 @@ run_invariant \
     "non-healthy direction (failed spawn with 403 must stay credentials_bad)"
 
 ok "fleet-ops#2867: exit-0 403-narrative stays healthy; failed-spawn 403 stays credentials_bad"
+
+run_invariant \
+    "inv6: exit-0 error connecting to localhost is transient_fault (fleet-ops#4690)" \
+    "classifyCliOutput" \
+    '["gh: error connecting to localhost (proxy at localhost:3128)", 0]' \
+    "transient_fault" \
+    "non-healthy direction (sandbox localhost class, not empty-success/healthy)"
+
+ok "fleet-ops#4690: classifyCliOutput matches error connecting to localhost on exit 0 as transient_fault, not healthy"

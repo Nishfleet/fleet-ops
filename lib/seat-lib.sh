@@ -953,6 +953,30 @@ provider_remote_agent() {
     [[ "${SEAT_PROVIDER_REMOTE_AGENT[$p]:-0}" == "1" ]]
 }
 
+# fleet-ops#4690: `devin --sandbox` talks to a gh proxy at localhost:3128.
+# If /etc/hosts has no IPv4 localhost, getent ahosts localhost has no
+# 127.0.0.1 line, the sandbox cannot reach the proxy, and every devin run
+# burns as empty-success. This is a HOST class, not a 900s empty-run timer:
+# hold while the class is true, release the instant 127.0.0.1 is back.
+# FLEET_SANDBOX_LOCALHOST_AHOSTS (even empty) is the test seam; unset uses
+# live `getent ahosts localhost`.
+sandbox_localhost_resolves() {
+    local out
+    if [[ -n "${FLEET_SANDBOX_LOCALHOST_AHOSTS+x}" ]]; then
+        out="$FLEET_SANDBOX_LOCALHOST_AHOSTS"
+    else
+        out=$(getent ahosts localhost 2>/dev/null || true)
+    fi
+    grep -q '^127.0.0.1' <<<"$out"
+}
+
+# True when captured stdout/stderr carries the live sandbox proxy signature.
+# Args are TEXT (not paths), matching is_quota_cap_error / is_overload_error.
+is_sandbox_localhost_error() {
+    local out="$1" err="$2"
+    grep -qiF 'error connecting to localhost' <<<"$out"$'\n'"$err"
+}
+
 # Default bench window (seconds) for a provider's quota/cap 429 when the
 # error text carries no explicit reset window (fleet-ops#90). 0 = no default
 # configured; the writer then fails open (no marker) and relies on the
@@ -2944,6 +2968,14 @@ _seat_has_recent_corpse_retired() {
 #   - otherwise                                   -> usable.
 seat_usable() {
     local p="$1" m="$2" f hc dead observed usable_at bench_until fail_count
+    # fleet-ops#4690: hold every devin seat while IPv4 localhost is
+    # unresolvable. Checked BEFORE spawn-bench/ledger so a healthy probe
+    # or 900s empty-run expiry cannot re-offer the seat. The class IS the
+    # missing /etc/hosts line; restoring it is the release.
+    if [[ "$p" == "devin" ]] && ! sandbox_localhost_resolves; then
+        (( ${_SEAT_USABLE_SILENT:-0} )) || seat_log "seat $p/$m: UNUSABLE (sandbox-localhost-unresolvable — /etc/hosts missing 127.0.0.1 localhost)"
+        return 1
+    fi
     # fleet-ops#1512: clobber-proof spawn-fail/empty-run bench marker. The
     # ledger is co-written by seat-health.ts, which can flip a benched seat
     # back to health_class:"healthy" + null usable_at on a later healthy HTTP
@@ -6681,6 +6713,8 @@ classify_death_error() {
         cls="quota_cap"
     elif is_overload_error "$out_text" "$err_text"; then
         cls="overload_503"
+    elif is_sandbox_localhost_error "$out_text" "$err_text"; then
+        cls="sandbox-localhost-unresolvable"
     elif is_spawn_etimeout "$out_text" "$err_text"; then
         cls="spawn_etimeout"
     elif is_mid_session_death "$err"; then

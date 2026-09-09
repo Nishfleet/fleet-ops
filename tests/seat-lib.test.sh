@@ -3711,6 +3711,52 @@ bash "$here/pi-issue-run-noop-bench.test.sh" || fail "pi-issue-run-noop-bench te
 # ci.yml (workers cannot push .github/workflows/**).
 bash "$here/pi-issue-run-empty-success.test.sh" || fail "pi-issue-run-empty-success tests failed"
 
+# fleet-ops#4690: missing 127.0.0.1 localhost holds every devin seat as
+# sandbox-localhost-unresolvable (a host class, not a 900s empty-run timer).
+# Hosted here because this file is listed directly in ci.yml.
+set +e
+FLEET_SANDBOX_LOCALHOST_AHOSTS=$'::1 localhost' bash -c 'source "$0"; sandbox_localhost_resolves' "$lib" >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" != "0" ]] || fail "4690: IPv6-only ahosts must be unresolvable (got rc=0)"
+set +e
+FLEET_SANDBOX_LOCALHOST_AHOSTS=$'127.0.0.1 localhost' bash -c 'source "$0"; sandbox_localhost_resolves' "$lib" >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "4690: 127.0.0.1 ahosts must resolve (got rc=$rc)"
+set +e
+bash -c 'source "$0"; is_sandbox_localhost_error "$1" "$2"' "$lib" "gh: error connecting to localhost" "" >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "4690: is_sandbox_localhost_error must match the live signature"
+set +e
+bash -c 'source "$0"; is_sandbox_localhost_error "$1" "$2"' "$lib" "hello world" "" >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" != "0" ]] || fail "4690: is_sandbox_localhost_error must not match unrelated text"
+printf '%s\n' "error connecting to localhost" >"$scratch/4690.err"
+set +e
+cls=$(bash -c 'source "$0"; classify_death_error "$1" "$2" ""' "$lib" /dev/null "$scratch/4690.err" 2>/dev/null | sed -n '1p')
+set -e
+[[ "$cls" == "sandbox-localhost-unresolvable" ]] \
+  || fail "4690: classify_death_error must name sandbox-localhost-unresolvable, got '$cls'"
+mkdir -p "$scratch/ledger-4690-empty"
+set +e
+FLEET_SANDBOX_LOCALHOST_AHOSTS=$'::1 localhost' \
+PI_SEAT_HEALTH_LEDGER_DIR="$scratch/ledger-4690-empty" \
+bash -c 'source "$0"; seat_usable "$1" "$2"' "$lib" "devin" "glm-5-2" >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" != "0" ]] || fail "4690: seat_usable must refuse devin while IPv4 localhost is unresolvable"
+set +e
+FLEET_SANDBOX_LOCALHOST_AHOSTS=$'::1 localhost' \
+PI_SEAT_HEALTH_LEDGER_DIR="$scratch/ledger-4690-empty" \
+bash -c 'source "$0"; seat_usable "$1" "$2"' "$lib" "ollama" "deepseek-v4-flash:0731" >/dev/null 2>&1
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "4690: non-devin seats must not be held by the localhost class (got rc=$rc)"
+ok "fleet-ops#4690: getent/localhost class holds only devin; classifier names sandbox-localhost-unresolvable"
+
 # fleet-ops#4460: blind-spot counters for the weekly review and the judge.
 # libexec/fleet-blindspot-count.py reads the decisions-ledger + fable-state
 # and emits new_measures_7d / caught_by_hand_7d (the metric invariant is

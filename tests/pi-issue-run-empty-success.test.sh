@@ -231,4 +231,33 @@ count3=$(jq -r '.empty_success_count // 0' "$es_ledger3" 2>/dev/null)
   || fail "second empty-success on the same seat must bump count to 2, got '$count3': $(cat "$es_ledger3")"
 ok "empty-success counter accumulates on the seat (count=2 after two runs)"
 
+# =============================================================================
+# (d) fleet-ops#4690: "error connecting to localhost" is the sandbox-
+#     localhost class, not empty-success and not a 900s empty-run bench.
+# =============================================================================
+cat >"$stub_bin/pi" <<'STUB'
+#!/usr/bin/env bash
+printf 'gh failed: error connecting to localhost (proxy at localhost:3128)\n'
+exit 0
+STUB
+chmod +x "$stub_bin/pi"
+printf 'Implement one GitHub issue: fleet-ops#4690.\nTARGET: repo Nishfleet/fleet-ops issue 4690 unit pi-issue-fleet-ops-4690\n' >"$ISSUES_DIR/fleet-ops-4690.in"
+: >"$STATE_DIR/attempts/pi-issue-fleet-ops-4690.tried-seats" 2>/dev/null || true
+set +e
+bash "$bin" "fleet-ops-4690" >"$scratch/run-4690.out" 2>"$scratch/run-4690.err"
+rc4690=$?
+set -e
+[[ "$rc4690" == "1" ]] \
+  || fail "sandbox-localhost signature must fail the claim (exit 1), got rc=$rc4690 err=$(cat "$scratch/run-4690.err")"
+out4690=$(cat "$PI_ISSUES_DIR/fleet-ops-4690.out" 2>/dev/null || true)
+if echo "$out4690" | grep -qF 'class=empty-success'; then
+    fail "sandbox-localhost must NOT be classed empty-success, got: $out4690"
+fi
+grep -q 'sandbox-localhost-unresolvable' "$scratch/run-4690.err" \
+  || fail "stderr must name class=sandbox-localhost-unresolvable, got: $(cat "$scratch/run-4690.err")"
+if ls "$LEDGER"/*.spawn-bench.json >/dev/null 2>&1; then
+    fail "sandbox-localhost must NOT write a 900s empty-run spawn-bench; got: $(ls "$LEDGER")"
+fi
+ok "sandbox-localhost signature is class=sandbox-localhost-unresolvable, not empty-success, not 900s empty-run"
+
 ok "fleet-ops#4457: SUCCESS-no-PR is classed empty-success (verdict + seat ledger), not benched, shipped control stays clean"

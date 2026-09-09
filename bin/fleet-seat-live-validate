@@ -178,6 +178,27 @@ _seat_key_guard() {
     return 1
 }
 
+# fleet-ops#4690: IPv4 localhost must resolve or `devin --sandbox` cannot
+# reach the gh proxy at localhost:3128. FLEET_SANDBOX_LOCALHOST_AHOSTS
+# (even empty) is the test seam; unset uses live getent.
+sandbox_localhost_resolves() {
+    local out
+    if [[ -n "${FLEET_SANDBOX_LOCALHOST_AHOSTS+x}" ]]; then
+        out="$FLEET_SANDBOX_LOCALHOST_AHOSTS"
+    else
+        out=$(getent ahosts localhost 2>/dev/null || true)
+    fi
+    grep -q '^127.0.0.1' <<<"$out"
+}
+
+mark_devin_sandbox_localhost() {
+    local m
+    while IFS= read -r m; do
+        [[ -n "$m" ]] || continue
+        write_ledger "devin" "$m" 0 transient_fault false sandbox-localhost-unresolvable || true
+    done < <(jq -r '.providers.devin.models // {} | keys[]?' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+}
+
 # Does the existing ledger entry carry an UNEXPIRED quota wall for this
 # seat? The proxy /v1/models probe proves the TOKEN is auth-valid; it
 # cannot see the Grok Build USAGE balance, which is a separate prepaid
@@ -385,6 +406,12 @@ pi_auth_status() {
     status=$(printf '%s' "$raw" | jq -r '.status // empty' 2>/dev/null || true)
     printf '%s\n' "${status:-unknown}"
 }
+
+if ! sandbox_localhost_resolves; then
+    loud "SEAT-LIVE-VALIDATE-SANDBOX-LOCALHOST" "/etc/hosts is missing 127.0.0.1 localhost (getent ahosts localhost has no IPv4 localhost). Devin sandbox cannot reach the gh proxy at localhost:3128. Marking all devin seats unusable with reason sandbox-localhost-unresolvable."
+    mark_devin_sandbox_localhost
+    exit 1
+fi
 
 if ! command -v "$GROK" >/dev/null 2>&1; then
     # grok CLI is missing — the grok/* seat watch is broken, but xai-oauth

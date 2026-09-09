@@ -833,6 +833,19 @@ session_tool_calls() {
     printf '%s\n' "$n"
 }
 
+# fleet-ops#4690: "error connecting to localhost" is a host-level
+# sandbox-localhost class (missing 127.0.0.1 in /etc/hosts), not an
+# empty-run 900s bench and not an empty-success. A shipped PR still wins.
+if is_sandbox_localhost_error "$(cat "$out_file" 2>/dev/null || true)" "$(cat "$err_file" 2>/dev/null || true)"; then
+    if provider_remote_agent "$np" && has_session_pr_url "$out_file" "$err_file" "$session_dir"; then
+        seat_log "pi-issue-run: $inst sandbox-localhost signature present but remote session shipped a PR URL — treating as success"
+    else
+        seat_log "pi-issue-run: $inst class=sandbox-localhost-unresolvable on $np/$nm (error connecting to localhost) — not empty-run 900s, not empty-success; /etc/hosts IPv4 localhost is the class"
+        write_death_class infra
+        exit 1
+    fi
+fi
+
 if (( out_bytes < OUT_MIN )); then
     # fleet-ops#1298: a provider no-op (pi ran, exited 0, stdout < OUT_MIN)
     # is a SEAT FAULT, same class as the verdict tools=0 empty-run

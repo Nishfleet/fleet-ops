@@ -52,7 +52,8 @@ cat > "$scratch/seat-caps.json" <<'CAPS'
 {
   "providers": {
     "grok": {"models": {"grok-4.6": 0, "grok-4.5": 0}},
-    "xai-oauth": {"models": {"grok-4.6": 2, "grok-4.5": 0}}
+    "xai-oauth": {"models": {"grok-4.6": 2, "grok-4.5": 0}},
+    "devin": {"models": {"glm-5-2": 3, "swe-1-7": 4}}
   }
 }
 CAPS
@@ -550,4 +551,27 @@ ok "scenario14: token 200 does NOT clear an unexpired quota wall (the 2026-09-06
 unset FLEET_XAI_OAUTH_PROBE
 unset GROK_MODELS_FIXTURE
 unset GROK_MODELS_RC
-echo "OK: fleet-seat-live-validate: watcher-broken, unauthenticated, healthy, refresh-failed, dedup, class, timeout, grok-dead+xai-ok, grok-ok+xai-dead, heartbeat wiring, proxy-probe (#1441), prune (#1380), quota-wall-preserve (scenario14)"
+
+# --- 15. fleet-ops#4690: missing 127.0.0.1 localhost fails loud and marks
+#     every devin seat sandbox-localhost-unresolvable. The live miss was
+#     IPv6-only localhost in /etc/hosts; getent ahosts localhost then has
+#     no ^127.0.0.1 line. FLEET_SANDBOX_LOCALHOST_AHOSTS is the seam.
+: >"$gh_log"; : >"$triage"
+rm -f "$PI_SEAT_HEALTH_LEDGER_DIR"/devin__*.json
+export FLEET_SANDBOX_LOCALHOST_AHOSTS=$'::1 localhost\n'
+run_canary
+[[ "$env_rc" == "1" ]] || fail "scenario15: expected rc=1, got $env_rc ($env_out)"
+grep -q 'SEAT-LIVE-VALIDATE-SANDBOX-LOCALHOST' "$triage" \
+  || fail "scenario15: missing LOUD sandbox-localhost line in triage ($env_out)"
+grep -q '/etc/hosts' "$triage" \
+  || fail "scenario15: LOUD line must name /etc/hosts ($env_out)"
+grep -q 'sandbox-localhost-unresolvable' "$triage" \
+  || fail "scenario15: LOUD line must name the reason sandbox-localhost-unresolvable"
+[[ "$(jq -r '.failure_mode' "$PI_SEAT_HEALTH_LEDGER_DIR/devin__glm-5-2.json")" == "sandbox-localhost-unresolvable" ]] \
+  || fail "scenario15: glm-5-2 ledger must carry failure_mode=sandbox-localhost-unresolvable"
+[[ "$(jq -r '.failure_mode' "$PI_SEAT_HEALTH_LEDGER_DIR/devin__swe-1-7.json")" == "sandbox-localhost-unresolvable" ]] \
+  || fail "scenario15: swe-1-7 ledger must carry failure_mode=sandbox-localhost-unresolvable"
+ok "scenario15: missing 127.0.0.1 localhost fails loud, names /etc/hosts, marks all devin seats sandbox-localhost-unresolvable"
+unset FLEET_SANDBOX_LOCALHOST_AHOSTS
+
+echo "OK: fleet-seat-live-validate: watcher-broken, unauthenticated, healthy, refresh-failed, dedup, class, timeout, grok-dead+xai-ok, grok-ok+xai-dead, heartbeat wiring, proxy-probe (#1441), prune (#1380), quota-wall-preserve (scenario14), sandbox-localhost (scenario15 fleet-ops#4690)"
