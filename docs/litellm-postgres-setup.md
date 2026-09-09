@@ -206,8 +206,10 @@ source /home/nish/fleet2/etc/crof.env
 source /home/nish/.config/straitly/straitly.env
 
 # --- xai-oauth: OAuth access token from auth.json (refreshed every 4h by
-# grok-token-refresh). Read once at proxy start; a refresh needs a proxy
-# restart to pick up. P4 drill covers the stale-token case.
+# grok-token-refresh). Read once at proxy start; grok-token-refresh restarts
+# this unit after a successful rotate so the new token is picked up
+# (fleet-ops#4629). cli-chat-proxy identity headers live on the grok-4.6
+# deployments as litellm_params.extra_headers in the live yaml, not here.
 export XAI_OAUTH_ACCESS_TOKEN=$(/usr/bin/python3 -c "
 import json, sys
 try:

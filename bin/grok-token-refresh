@@ -69,6 +69,10 @@
 #     xai-oauth.access / .refresh / .expires / .tokenType fields change;
 #     sibling providers and xai-oauth sibling fields (idToken,
 #     tokenEndpoint, baseUrl, type, discovery) are kept untouched.
+#   - fleet-litellm-proxy.service is restarted (try-reload-or-restart) so
+#     the start wrapper re-exports XAI_OAUTH_ACCESS_TOKEN from the new
+#     auth.json. Without this the proxy keeps the token captured at start
+#     and grok-4.6 401s until the next manual bounce (fleet-ops#4629).
 #   - /var/lib/prometheus/node-exporter/fleet-grok-token-refresh.prom
 #     is updated (textfile collector) with:
 #       fleet_grok_token_refresh_last_success_seconds <epoch>
@@ -96,6 +100,12 @@
 #   GROK_TOKEN_REFRESH_LOCK_TIMEOUT_S  lock wait (default 30)
 #   GROK_TOKEN_REFRESH_TEXTFILE     override the prom textfile path
 #   GROK_TOKEN_REFRESH_CURL_BIN     override curl (tests use a stub)
+#   GROK_TOKEN_REFRESH_RELOAD_CMD   command run after a successful rotate so
+#                                   the LiteLLM proxy re-reads auth.json
+#                                   (fleet-ops#4629). Default is
+#                                   `systemctl --user try-reload-or-restart
+#                                   fleet-litellm-proxy.service`. Tests stub
+#                                   this so they never bounce the live organ.
 #   FLEET_GROK_REFRESH_TRIAGE       triage file (heartbeat)
 
 set -Eeuo pipefail
@@ -338,6 +348,34 @@ umask "$umask_orig"
 
 prefix="$(printf '%s' "$new_access" | sha256sum | awk '{print substr($1, 1, 16)}')"
 log "OK access rotated, ${refresh_note}, expires_in=${expires_in}s, access_sha256_prefix=$prefix"
+
+# fleet-ops#4629: the LiteLLM start wrapper exports XAI_OAUTH_ACCESS_TOKEN
+# once. A rotated token that never reaches the running proxy is the
+# stale-at-start half of the 426/401 class. Restart the proxy so the
+# wrapper re-reads auth.json. SKIP/REJECT must not bounce it. Tests stub
+# GROK_TOKEN_REFRESH_RELOAD_CMD so they never bounce the live organ. When
+# unset, skip the reload if the unit is not active (this timer predates
+# LiteLLM and must not fail a healthy rotate on a host without the proxy).
+# An active proxy that fails to restart is loud: otherwise the next 4h
+# tick SKIPs a fresh token and the proxy keeps serving the previous one.
+reload_cmd="${GROK_TOKEN_REFRESH_RELOAD_CMD-}"
+if [[ -n "$reload_cmd" ]]; then
+    if ! "$reload_cmd"; then
+        loud "GROK-TOKEN-REFRESH-RELOAD-FAILED" "token rotated but LiteLLM proxy reload failed: $reload_cmd"
+        write_metric "reject" "$PRIOR_SUCCESS"
+        exit 1
+    fi
+    log "LiteLLM proxy reload requested after token rotate"
+elif /usr/bin/systemctl --user is-active --quiet fleet-litellm-proxy.service; then
+    if ! /usr/bin/systemctl --user try-reload-or-restart fleet-litellm-proxy.service; then
+        loud "GROK-TOKEN-REFRESH-RELOAD-FAILED" "token rotated but fleet-litellm-proxy.service restart failed"
+        write_metric "reject" "$PRIOR_SUCCESS"
+        exit 1
+    fi
+    log "LiteLLM proxy reload requested after token rotate"
+else
+    log "SKIP LiteLLM proxy reload: fleet-litellm-proxy.service not active"
+fi
 
 write_metric "success" "$now_epoch"
 exit 0

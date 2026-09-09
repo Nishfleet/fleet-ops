@@ -369,4 +369,70 @@ if grep -qE 'worker-capable: \[worker-cheap\]' "$cfg"; then
 fi
 ok "9: worker-capable has a terminal fallback (senior); worker-cheap chain no longer dead-ends"
 
+# --- 10: grok-4.6 / xai-oauth deployments send the cli-chat-proxy identity
+# headers (fleet-ops#4629). Live 2026-09-09 08:52 IST: LiteLLM's plain OpenAI
+# client hit https://cli-chat-proxy.grok.com/v1/chat/completions with no
+# x-grok-client-version and the proxy returned 426 "Your Grok CLI version
+# (none) is outdated. Please update to version 0.1.202 or later". The same
+# token with pi-grok's buildProxyHeaders (models.ts) returns 200. The floor
+# is 0.1.202; the fleet stamps 0.2.101 to match fleet-seat-live-validate and
+# the stnly/pi-grok GROK_CLIENT_VERSION default. extra_headers lives on
+# litellm_params (LiteLLM docs.litellm.ai/docs/completion/input: extra_headers
+# is an alternative to headers, forwarded as OpenAI extra_headers).
+python3 - "$cfg" <<'PY' || fail "10: grok-4.6 / xai-oauth deployments must stamp cli-chat-proxy identity extra_headers (fleet-ops#4629)"
+import sys, yaml
+
+def parse_ver(s):
+    parts = []
+    for p in str(s).split("."):
+        try:
+            parts.append(int(p))
+        except ValueError:
+            parts.append(0)
+    return tuple(parts)
+
+cfg = yaml.safe_load(open(sys.argv[1]))
+needed = {
+    "x-grok-client-identifier",
+    "x-grok-client-version",
+    "x-grok-client-mode",
+    "X-XAI-Token-Auth",
+    "x-authenticateresponse",
+}
+floor = parse_ver("0.1.202")
+found = []
+for d in cfg["model_list"]:
+    params = d.get("litellm_params") or {}
+    model = str(params.get("model") or "")
+    base = str(params.get("api_base") or "")
+    # xai-oauth / cli-chat-proxy only. cursor-grok-4.6-high is a Cursor
+    # deployment and does not speak the grok CLI identity headers.
+    is_grok = (
+        model == "openai/grok-4.6"
+        or "cli-chat-proxy" in base
+        or "xai-oauth" in base
+    )
+    if not is_grok:
+        continue
+    found.append((d.get("model_name"), model, base))
+    headers = params.get("extra_headers") or {}
+    assert isinstance(headers, dict) and headers, (
+        f"{d.get('model_name')} {model} @{base} missing litellm_params.extra_headers"
+    )
+    missing = needed - set(headers)
+    assert not missing, (
+        f"{d.get('model_name')} {model} extra_headers missing {sorted(missing)}"
+    )
+    ver = str(headers["x-grok-client-version"])
+    assert parse_ver(ver) >= floor, (
+        f"{d.get('model_name')} x-grok-client-version {ver!r} is below the proxy floor 0.1.202"
+    )
+    ua = headers.get("User-Agent") or headers.get("user-agent") or ""
+    assert ua, f"{d.get('model_name')} extra_headers missing User-Agent"
+    assert ver in ua, f"{d.get('model_name')} User-Agent {ua!r} must carry version {ver}"
+assert found, "no grok-4.6 / xai-oauth deployment found in model_list"
+print(f"grok identity headers OK on {len(found)} deployment(s)")
+PY
+ok "10: grok-4.6 / xai-oauth deployments stamp cli-chat-proxy identity extra_headers (fleet-ops#4629)"
+
 echo "ALL OK: fleet-litellm-organ"

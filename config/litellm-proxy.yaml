@@ -125,6 +125,18 @@ model_list:
       model: openai/grok-4.6
       api_base: https://xai-oauth.example/v1
       api_key: os.environ/XAI_OAUTH_ACCESS_TOKEN
+      # fleet-ops#4629: cli-chat-proxy returns 426 when x-grok-client-version
+      # is missing ("Your Grok CLI version (none) is outdated"). Floor is
+      # 0.1.202; 0.2.101 matches stnly/pi-grok GROK_CLIENT_VERSION and
+      # bin/fleet-seat-live-validate. extra_headers is LiteLLM's documented
+      # alternative to headers (docs.litellm.ai/docs/completion/input).
+      extra_headers:
+        User-Agent: "grok-shell/0.2.101 (linux; x86_64)"
+        x-grok-client-identifier: grok-shell
+        x-grok-client-version: "0.2.101"
+        x-grok-client-mode: interactive
+        X-XAI-Token-Auth: xai-grok-cli
+        x-authenticateresponse: authenticate-response
       tags: ["prepaid", "senior"]
       order: 2
       max_parallel_requests: 2
