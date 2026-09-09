@@ -860,6 +860,95 @@ assert 'fleet_pi_seat_dead_credential{seat="devin__glm-5-2"' not in body, "healt
 print("OK: main() emits self-maintenance + quality + verified-merges families")
 PY
 
+# 10b. fleet-ops#4643: main() emits fleet_prompt_cache_hit_ratio from session
+# jsonl usage (cacheRead vs uncached input), per provider x packet_type, with
+# the issue's metered/free class label. A synthetic sessions dir carries one
+# pi-issue worker session (cached) and one scout session (uncached) so the
+# emitter produces two rows with the right ratio and class.
+echo "=== 10b. fleet-ops#4643 cache-hit ratio emission ==="
+CACHE_SESSIONS="$scratch/cache-sessions"
+mkdir -p "$CACHE_SESSIONS/pi-issue-fleet-ops-1" "$CACHE_SESSIONS/pi-scout-foo"
+# Worker session: provider=paretoinference (metered in seat-caps), 100 uncached
+# input + 900 cacheRead -> ratio 0.9. Pi session jsonl shape: a model_change
+# line sets the provider, then message lines carry usage.
+cat >"$CACHE_SESSIONS/pi-issue-fleet-ops-1/sess.jsonl" <<'JSON'
+{"type":"model_change","provider":"paretoinference"}
+{"type":"message","message":{"provider":"paretoinference","usage":{"input":100,"cacheRead":900,"output":5}}}
+{"type":"message","message":{"provider":"paretoinference","usage":{"input":0,"cacheRead":0,"output":0}}}
+JSON
+# Scout session: provider=cline (metered), 1000 uncached + 0 cacheRead -> 0.0.
+cat >"$CACHE_SESSIONS/pi-scout-foo/sess.jsonl" <<'JSON'
+{"type":"model_change","provider":"cline"}
+{"type":"message","message":{"provider":"cline","usage":{"input":1000,"cacheRead":0,"output":10}}}
+JSON
+CACHE_OUT="$scratch/cache-out.prom"
+# Use the REAL repo seat-caps so the metered/free class resolves for
+# paretoinference and cline (the dead-credential fixture above does not
+# enroll them). The cache-hit emitter reads class from seat-caps.
+REAL_SEAT_CAPS="$repo_root/config/seat-caps.json"
+[[ -f "$REAL_SEAT_CAPS" ]] || fail "real seat-caps not found: $REAL_SEAT_CAPS"
+python3 - "$exporter" "$CACHE_OUT" "$CACHE_SESSIONS" "$REAL_SEAT_CAPS" <<'PY' || fail "cache-hit emission failed"
+import importlib.util, os, sys
+from pathlib import Path
+exporter, out_path, sessions, seat_caps = sys.argv[1:5]
+spec = importlib.util.spec_from_file_location("fme2", exporter)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+m.OUT = Path(out_path)
+m.SESSIONS_DIR = Path(sessions)
+m.SEAT_CAPS_DEFAULT = Path(seat_caps)
+m.SEAT_CAPS_FALLBACK = Path("/nonexistent/fb.json")
+m.SEAT_CAPS_LIVE = Path("/nonexistent/live.json")
+m.SELF_MAINT_JSON_DEFAULT = Path("/nonexistent/sm.json")
+m.SELF_MAINT_JSON_FALLBACK = Path("/nonexistent/sm2.json")
+m.SEAT_HEALTH = Path("/nonexistent/seat.json")
+m.SEAT_LEDGER = Path("/nonexistent/ledger")
+m.HC_URL_FILE = Path("/nonexistent/hc.url")
+m.ACTIONS_LOG = Path("/nonexistent/actions.log")
+m.MAINTENANCE_FLAG = Path("/nonexistent/maint.json")
+m.INTAKE_JSON_DEFAULT = Path("/nonexistent/intake.json")
+m.INTAKE_JSON_FALLBACK = Path("/nonexistent/intake2.json")
+m.KEYSTONE_LEDGER = Path("/nonexistent/keystone.jsonl")
+m.WORKTREE_REAPER_SUMMARY = Path("/nonexistent/reaper.json")
+m.STALENESS_CACHE = Path("/nonexistent/stale.json")
+m.PR_CACHE_DIR = Path(os.path.dirname(out_path))
+m.DETAIL_CACHE = Path(os.path.dirname(out_path)) / "detail.cache.json"
+m._list_timers = lambda: [{"unit": "fleet-metrics-export.timer", "last_usec": 0}]
+m._timer_active = lambda unit: 1
+m._read_seat = lambda: (1, 0)
+m._merged_prs_detail = lambda: []
+m._repo_snapshot = lambda: None
+m._queue_composition = lambda: {"ready-work": {"total": 0, "self": 0}, "agent-ready": {"total": 0, "self": 0}}
+m._escalations_24h = lambda: {}
+m._oomd_kills_6h = lambda: {}
+m._repair_log_counts_24h = lambda: (0, 0)
+m._worker_units = lambda: []
+m._standalone_pi_print_count = lambda u: 0
+m._maintenance_quiescing = lambda: 0
+m._keystone_routing_counts = lambda: (0, 0, None)
+m._ping_healthcheck = lambda: None
+m._fetch_openrouter_credits = lambda: None
+m._fetch_xkiro_usage = lambda: None
+m._fetch_openrouter_key = lambda: None
+m._fetch_claude_usage = lambda: None
+m._fetch_codex_usage = lambda: None
+m._fetch_cursor_usage = lambda: None
+m._fetch_devin_usage = lambda: None
+m._fetch_xkiro_quota = lambda: None
+m._fetch_signups_7d = lambda: None
+m._GH_FETCHED_THIS_RUN = False
+rc = m.main()
+assert rc == 0, f"main rc={rc}"
+body = Path(out_path).read_text()
+assert "# HELP fleet_prompt_cache_hit_ratio" in body, "missing HELP for cache-hit ratio:\n" + body
+assert "# TYPE fleet_prompt_cache_hit_ratio gauge" in body, "missing TYPE for cache-hit ratio:\n" + body
+# Worker row: 900/(100+900) = 0.9, class metered (paretoinference is metered).
+assert 'fleet_prompt_cache_hit_ratio{provider="paretoinference",packet_type="worker",class="metered"} 0.900000' in body, body
+# Scout row: 0/(1000+0) = 0.0, class metered (cline is metered).
+assert 'fleet_prompt_cache_hit_ratio{provider="cline",packet_type="scout",class="metered"} 0.000000' in body, body
+print("OK: main() emits fleet_prompt_cache_hit_ratio{provider,packet_type,class}")
+PY
+
 echo "ALL OK: fleet-metrics-export #1136 logic pinned"
 
 # =========================================================================
