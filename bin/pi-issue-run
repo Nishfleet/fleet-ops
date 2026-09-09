@@ -600,7 +600,7 @@ if (( rc != 0 )) && (( ! spawn_fail_triggered )) && (( spawn_elapsed_s > PI_HANG
     [[ -f "$err_file" ]] && err_for_scan=$(cat "$err_file" 2>/dev/null || true)
     if grep -qiE 'spawnSync.*ETIMEDOUT|ETIMEDOUT.*spawnSync' "$err_file" 2>/dev/null; then
         seat_log "pi-issue-run: $inst DEVIN LONG HANG ETIMEDOUT on $np/$nm after ${spawn_elapsed_s}s (rc=$rc) — benching seat as hang-like failure"
-        if mark_seat_hang_bench "$np" "$nm" "$err_for_scan"; then
+        if mark_seat_hang_bench "$np" "$nm" "$err_for_scan" "$spawn_elapsed_s"; then
             seat_log "pi-issue-run: $inst seat $np/$nm benched (hang_bench); next systemd Restart will skip it via pick_seat (excluded by bench_until)"
         else
             seat_log "pi-issue-run: $inst WARN: hang-bench marker NOT written for $np/$nm — relying on tried-seats exclusion"
@@ -619,7 +619,7 @@ if (( rc != 0 )) && (( rc != 124 )) && (( ! spawn_fail_triggered )) && (( spawn_
     [[ -f "$err_file" ]] && rfi_count=$(grep -o "Ready for input" "$err_file" 2>/dev/null | wc -l)
     if (( rfi_count > 5 )); then
         seat_log "pi-issue-run: $inst READY-FOR-INPUT STALL on $np/$nm after ${spawn_elapsed_s}s (rfi_count=$rfi_count, rc=$rc) — benching seat"
-        if mark_seat_hang_bench "$np" "$nm" "$(cat "$err_file" 2>/dev/null)"; then
+        if mark_seat_hang_bench "$np" "$nm" "$(cat "$err_file" 2>/dev/null)" "$spawn_elapsed_s"; then
             seat_log "pi-issue-run: $inst seat $np/$nm benched (hang_bench rfi); next restart will skip"
         else
             seat_log "pi-issue-run: $inst WARN: hang-bench marker NOT written for $np/$nm"

@@ -7268,10 +7268,12 @@ mark_seat_overload_bench() {
 # window is short (180s) — a hang often self-resolves within a minute or
 # two (the upstream has to drain a stuck connection); a longer default
 # would starve the ladder for no reason. Caller can override with
-# mark_seat_hang_bench <p> <m> <text>; if the text contains an explicit
-# "retry after Ns" or "resets in N" window we use it.
+# mark_seat_hang_bench <p> <m> <text> [observed_elapsed_s]; if the text
+# contains an explicit "retry after Ns" or "resets in N" window we use it,
+# and fleet-ops#4602 raises the window to the observed hang when the caller
+# passes the measured elapsed seconds.
 mark_seat_hang_bench() {
-    local p="$1" m="$2" text="${3:-}"
+    local p="$1" m="$2" text="${3:-}" observed_s="${4:-0}"
     # fleet-ops#3661: never write a ledger for a phantom seat key.
     if ! _seat_key_guard "$p" "$m" "mark_seat_hang_bench"; then return 1; fi
     if _transport_is_down; then _mark_transport_down "$p" "$m"; return 1; fi
@@ -7285,6 +7287,16 @@ mark_seat_hang_bench() {
     local parsed
     parsed=$(_parse_reset_window_s "$text" 2>/dev/null || true)
     [[ "$parsed" =~ ^[0-9]+$ ]] && (( parsed > 0 )) && window_s="$parsed"
+
+    # fleet-ops#4602: scale the window to the OBSERVED hang when the caller
+    # measured one. A seat that deterministically draws ~40 min per pick was
+    # benched a flat 180s, so the next tick re-offered it and it hung again —
+    # ~16 LONG-HANG ETIMEDOUT events on devin/glm-5-2 in 16h, each burning a
+    # worker/scout slot. Never shrink an already-larger window (a parsed
+    # provider reset or the failure-ceiling park below still wins).
+    if [[ "$observed_s" =~ ^[0-9]+$ ]] && (( observed_s > window_s )); then
+        window_s="$observed_s"
+    fi
 
     local now_utc bench_until
     now_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
