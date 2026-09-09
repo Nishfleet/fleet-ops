@@ -1,5 +1,5 @@
 {
-  "_comment": "fleet2 / PI TUNING PACKET (2026-08-18) \u00a75: register endpoints properly. MiniMax is a custom provider not in the built-in catalog \u2014 register it explicitly so the cache prefix metadata is right. Groq and OpenRouter are built into pi, but we model-override the gpt-oss-20b entry Groq runs so the cacheRead price and 131k context are correct. 2026-09-06 fleet-ops#3722: this file is now MANIFEST-managed (config/pi-models.json -> ~/.pi/agent/models.json, installed as a copy by install.sh). Edit the repo copy, never this live file by hand. The four openrouter :free seats (minimax-m3, glm-5.2, nemotron-3-ultra-550b, gemma-4-31b-it) are registered in modelOverrides with cost 0 so enumerate_seats emits them; caps live in config/seat-caps.json. openrouter/xkiro apiKeys were literal secrets in this file \u2014 they are now !command refs like every other provider (no secret in the repo).",
+  "_comment": "fleet2 / PI TUNING PACKET (2026-08-18) §5: register endpoints properly. MiniMax is a custom provider not in the built-in catalog — register it explicitly so the cache prefix metadata is right. Groq and OpenRouter are built into pi, but we model-override the gpt-oss-20b entry Groq runs so the cacheRead price and 131k context are correct. 2026-09-06 fleet-ops#3722: this file is now MANIFEST-managed (config/pi-models.json -> ~/.pi/agent/models.json, installed as a copy by install.sh). Edit the repo copy, never this live file by hand. The four openrouter :free seats (minimax-m3, glm-5.2, nemotron-3-ultra-550b, gemma-4-31b-it) are registered in modelOverrides with cost 0 so enumerate_seats emits them; caps live in config/seat-caps.json. openrouter/xkiro apiKeys were literal secrets in this file — they are now !command refs like every other provider (no secret in the repo).",
   "providers": {
     "minimax": {
       "name": "MiniMax (fleet2)",
@@ -705,7 +705,7 @@
           "samplingParams": {
             "reasoning_effort": "none"
           },
-          "_comment_reasoning": "fleet-ops#4234/#4262: same treatment as the merged #4234 fix for ollama.com \u2014 CrofAI serves DeepSeek V4 Flash 0731 and reasons by default, charging reasoning to the output budget; reasoning_effort:none is the only value that turns it off (landed verbatim from the pre-#4234 live file). Pi already clamps this seat's thinkingLevel to off because reasoning is not declared here, so this makes the wire match Pi's own view."
+          "_comment_reasoning": "fleet-ops#4234/#4262: same treatment as the merged #4234 fix for ollama.com — CrofAI serves DeepSeek V4 Flash 0731 and reasons by default, charging reasoning to the output budget; reasoning_effort:none is the only value that turns it off (landed verbatim from the pre-#4234 live file). Pi already clamps this seat's thinkingLevel to off because reasoning is not declared here, so this makes the wire match Pi's own view."
         }
       ]
     },
@@ -726,7 +726,7 @@
             "cacheRead": 0.09,
             "cacheWrite": 0
           },
-          "_comment_4262": "fleet-ops#4262: landed verbatim from the live file (pre-#4234 backup). cacheRead=input (0.09) until measured \u2014 Entrim's cache-read pricing is not known yet."
+          "_comment_4262": "fleet-ops#4262: landed verbatim from the live file (pre-#4234 backup). cacheRead=input (0.09) until measured — Entrim's cache-read pricing is not known yet."
         }
       ]
     },
@@ -956,6 +956,52 @@
         }
       ],
       "_comment_4219": "fleet-ops#4219 P3a: single provider, all five model groups. P2 pinned the apiKey to the judge-scoped virtual key; P3a's callers need the worker groups too and pi holds one apiKey per provider, so the resolver now emits the master key (fleet-litellm-key master) which accesses every group. Per-tier virtual keys (sk-fleet-worker/senior/private) return in P3b for per-tier spend attribution; group/tag spend tracking in the proxy Postgres is unaffected. The resolver reads the operator-owned env files; no key value is in this file."
+    },
+    "deepseek": {
+      "name": "DeepSeek Direct (last-resort metered)",
+      "baseUrl": "https://api.deepseek.com",
+      "api": "openai-completions",
+      "apiKey": "!sed -n 's/^DEEPSEEK_API_KEY=//p' /home/nish/.config/deepseek/deepseek.env",
+      "models": [
+        {
+          "id": "deepseek-v4-flash",
+          "name": "DeepSeek V4 Flash (direct, last-resort)",
+          "contextWindow": 1000000,
+          "maxTokens": 32768,
+          "reasoning": false,
+          "cost": {
+            "input": 0.44,
+            "output": 1.32,
+            "cacheRead": 0.014,
+            "cacheWrite": 0
+          },
+          "samplingParams": {
+            "reasoning_effort": "none"
+          },
+          "_comment_reasoning": "fleet-ops#4234/#4625: same treatment as the merged #4234 fix for crof/ollama — DeepSeek V4 Flash reasons by default and bills reasoning to the output budget; reasoning_effort:none is the only value that turns it off. Pi clamps this seat's thinkingLevel to off because reasoning is not declared here. This is a LAST-RESORT metered worker seat (fleet-ops#4625) — never waste reasoning tokens on volume work."
+        },
+        {
+          "id": "deepseek-v4-pro",
+          "name": "DeepSeek V4 Pro (direct, last-resort keystone)",
+          "contextWindow": 1000000,
+          "maxTokens": 32768,
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ],
+          "cost": {
+            "input": 1.32,
+            "output": 3.96,
+            "cacheRead": 0.044,
+            "cacheWrite": 1.32
+          },
+          "_comment_4625": "fleet-ops#4625: pro is keystone-class packets only (cap 1), never volume. Reasoning on — pro is the reasoning model. Last-resort metered seat; the 3-pass exhaustion gate (pick_seat) must clear before this is ever admitted."
+        }
+      ],
+      "compat": {
+        "supportsReasoningEffort": true
+      }
     }
   }
 }
