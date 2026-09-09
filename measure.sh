@@ -12,6 +12,7 @@
 #              GetCurrentPeriodUsage included-API-bucket spend (fleet-ops#4566);
 #              cursor_api_cycle_usd is the cycle-to-date cumulative.
 #   usd_per_merged_pr: <n>
+#   repair_rung=armed|off ticks=<n>   (fleet-ops#4820; latched rung visibility)
 #
 #   metered    = marginal USD from tracked-metered seats over the trailing 24h
 #                (rate card in config/seat-caps.json x session usage tokens)
@@ -37,6 +38,25 @@ python="${MEASURE_PYTHON:-python3}"
 
 [[ -f "$lib" ]] || { echo "measure.sh: fleet_usd.py not found: $lib" >&2; exit 1; }
 [[ -f "$seat_caps" ]] || { echo "measure.sh: seat-caps.json not found: $seat_caps" >&2; exit 1; }
+
+# fleet-ops#4820: repair-rung latch visibility (blind-spot rule #4460).
+# Printed first so a later gh/python failure cannot hide the line. The
+# state file is the same one lib/pi-intake-tick.sh writes; missing or
+# unreadable is off ticks=0, never a guess. Armed = strikes >= AFTER.
+_rung_file="${PI_INTAKE_REPAIR_RUNG_STATE:-$HOME/workspaces/agent-state/pi-intake/repair-rung-state}"
+_rung_after="${PI_INTAKE_REPAIR_RUNG_AFTER:-2}"
+_rung_s=0
+_rung_d=0
+if [[ -f "$_rung_file" ]]; then
+    read -r _rung_s _rung_d <"$_rung_file" 2>/dev/null || true
+fi
+_rung_s=$(printf '%s' "${_rung_s:-}" | tr -cd '0-9')
+[[ "$_rung_s" =~ ^[0-9]+$ ]] || _rung_s=0
+if (( _rung_s >= _rung_after )); then
+    echo "repair_rung=armed ticks=${_rung_s}"
+else
+    echo "repair_rung=off ticks=${_rung_s}"
+fi
 
 # Merged PRs across the fleet repos in the trailing 24h (gh is the live truth;
 # a gh failure makes the numerator unknown and is flagged, not silently zeroed).

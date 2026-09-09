@@ -162,11 +162,16 @@ _rung_stubs='
 repair_rung_note_outage() { echo 1; }
 repair_rung_strikes() { echo 0; }
 repair_rung_reset() { true; }
+repair_rung_note_recovery() { echo 0; }
 PI_INTAKE_REPAIR_RUNG_AFTER=2
 PI_INTAKE_REPAIR_RUNG_MAX_CONCURRENT=2
+PI_INTAKE_REPAIR_RUNG_DISARM_AFTER=2
 heavy_seat=""
 REPO=fleet-ops
 _repair_rung_armed=0
+_repair_rung_product_reserve=0
+_rung_clear_seat=""
+_repo_is_product=0
 '
 _out0=$( eval "$_rung_stubs"; pick_seat() { echo 0; }; slots=2; eval "$_gate_block"; echo "CLAIM-STEP-REACHED slots=$slots" ) || true
 grep -qF 'holding claims this tick — gate: no usable seat slot' <<<"$_out0" \
