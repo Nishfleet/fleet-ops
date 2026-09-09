@@ -236,44 +236,65 @@ grep -q "issue edit" "$tmp/gh.log" || fail "scenario 9: expected gh issue edit"
 ok "scenario 9: unclaimed-stall reroutes to escalate-senior"
 
 # ---------------------------------------------------------------------------
-# 9b. DEBUG-PLAYBOOK-MISSING keys on session=, not snippet file tokens
-#     (fleet-ops#4512).
+# 9b. DEBUG-PLAYBOOK-MISSING keys on the RULE, not the session (fleet-ops#4579).
+#     A session-scoped key gave every session its own signal, so the reconciler
+#     filed one issue per session per rule (#4578/#4579 filed 43s apart under
+#     one rule while the aggregate was open). Keying on the rule keeps the noisy
+#     snippet file tokens out (fleet-ops#4512) and makes repeated sessions dedupe
+#     under the rule prefix instead of filing a new issue each time.
 # ---------------------------------------------------------------------------
 cat > "$tmp/empty9b.json" <<'EOF'
 []
 EOF
 cat > "$tmp/triage9b.md" <<'EOF'
-[2026-08-28T13:30:00Z] [DEBUG-PLAYBOOK-MISSING] session=2026-09-08t07-35-48z-0509-1279-abc123 attempts=4 path=/home/nish/.pi/agent/sessions/pi-issue-0509-1279/s.jsonl snippet=agent-cron-run attest-identity-gate _dirty-worktree-audit.py escalation-daily-sweep
+[2026-08-28T13:30:00Z] [DEBUG-PLAYBOOK-MISSING] session=2026-09-08t07-35-47z-0509-1279-abc111 attempts=4 path=/home/nish/.pi/agent/sessions/pi-issue-0509-1279/s.jsonl snippet=agent-cron-run attest-identity-gate _dirty-worktree-audit.py escalation-daily-sweep
 EOF
 true > "$tmp/filed.jsonl"
 run "$tmp/empty9b.json" "$tmp/triage9b.md" > "$tmp/summary9b.json"
-jq -e '.filed == 1' "$tmp/summary9b.json" >/dev/null \
-    || fail "scenario 9b: expected one filed"
-grep -q "loud/debug-playbook-missing/2026-09-08t07-35-48z-0509-1279-abc123" "$tmp/filed.jsonl" \
-    || fail "scenario 9b: signal must key on the session slug, got: $(cat "$tmp/filed.jsonl")"
-ok "scenario 9b: DEBUG-PLAYBOOK-MISSING keys on session=, not snippet tokens"
+jq -e '.filed == 1' "$tmp/summary9b.json" >/dev/null     || fail "scenario 9b: expected one filed"
+grep -q "loud/debug-playbook-missing" "$tmp/filed.jsonl"     || fail "scenario 9b: signal must key on the rule, got: $(cat "$tmp/filed.jsonl")"
+grep -q "loud/debug-playbook-missing/2026-09-08t07-35-47z-0509-1279-abc111" "$tmp/filed.jsonl"     && fail "scenario 9b: signal must NOT key on the session, got: $(cat "$tmp/filed.jsonl")"
+ok "scenario 9b: DEBUG-PLAYBOOK-MISSING keys on the rule, not the session"
 
 # ---------------------------------------------------------------------------
-# 9c. DEBUG-PLAYBOOK-GATE-BLOCK keys on session= too (fleet-ops#4516). Same
-#     noisy-snippet defect as 9b: the gate LOUD line carries the counted
-#     attempt's stdout as `snippet=`, which produced
-#     `loud/debug-playbook-gate-block/_dirty-worktree-audit.py`.
+# 9c. DEBUG-PLAYBOOK-GATE-BLOCK keys on the RULE too (fleet-ops#4516/4579).
+#     Same rule-level dedupe as 9b: no noisy `_dirty-worktree-audit.py` key and
+#     no per-session split.
 # ---------------------------------------------------------------------------
 cat > "$tmp/empty9c.json" <<'EOF'
 []
 EOF
 cat > "$tmp/triage9c.md" <<'EOF'
-[2026-08-28T13:30:00Z] [DEBUG-PLAYBOOK-GATE-BLOCK] session=2026-09-08t07-35-48z-0509-1279-abc123 attempts=4 snippet=agent-cron-run agent-scheduler-drift-check _dirty-worktree-audit.py escalation-daily-sweep
+[2026-08-28T13:30:00Z] [DEBUG-PLAYBOOK-GATE-BLOCK] session=2026-09-08t07-35-48z-0509-1279-abc222 attempts=4 snippet=agent-cron-run agent-scheduler-drift-check _dirty-worktree-audit.py escalation-daily-sweep
 EOF
-true > "$tmp/filed9c.jsonl"
 true > "$tmp/filed.jsonl"
 true > "$tmp/gh.log"
 run "$tmp/empty9c.json" "$tmp/triage9c.md" > "$tmp/summary9c.json"
-jq -e '.filed == 1' "$tmp/summary9c.json" >/dev/null \
-    || fail "scenario 9c: expected one filed"
-grep -q "loud/debug-playbook-gate-block/2026-09-08t07-35-48z-0509-1279-abc123" "$tmp/filed.jsonl" \
-    || fail "scenario 9c: signal must key on the session slug, got: $(cat "$tmp/filed.jsonl")"
-ok "scenario 9c: DEBUG-PLAYBOOK-GATE-BLOCK keys on session=, not snippet tokens"
+jq -e '.filed == 1' "$tmp/summary9c.json" >/dev/null     || fail "scenario 9c: expected one filed"
+grep -q "loud/debug-playbook-gate-block" "$tmp/filed.jsonl"     || fail "scenario 9c: signal must key on the rule, got: $(cat "$tmp/filed.jsonl")"
+grep -q "loud/debug-playbook-gate-block/2026-09-08t07-35-47z-0509-1279-abc222" "$tmp/filed.jsonl"     && fail "scenario 9c: signal must NOT key on the session, got: $(cat "$tmp/filed.jsonl")"
+ok "scenario 9c: DEBUG-PLAYBOOK-GATE-BLOCK keys on the rule, not the session"
+
+# ---------------------------------------------------------------------------
+# 9c-data. Two DEBUG-PLAYBOOK-MISSING sessions, same rule, one heartbeat tick
+#     -> a single rule-level issue is filed, the rest dedupe (fleet-ops#4579).
+#     This is the exact #4578/#4579 regression: two alarm lines with distinct
+#     session ids must collapse to one `loud/debug-playbook-missing` issue, not
+#     two differently-keyed ones.
+# ---------------------------------------------------------------------------
+cat > "$tmp/empty9data.json" <<'EOF'
+[]
+EOF
+cat > "$tmp/triage9data.md" <<'EOF'
+[2026-08-28T13:30:00Z] [DEBUG-PLAYBOOK-MISSING] session=2026-09-08t07-47-01z-0509-1111-aaa111 attempts=1 snippet=red pkg a
+[2026-08-28T13:30:00Z] [DEBUG-PLAYBOOK-MISSING] session=2026-09-08t07-47-02z-0509-2222-bbb222 attempts=2 snippet=red pkg b
+EOF
+true > "$tmp/filed.jsonl"
+run "$tmp/empty9data.json" "$tmp/triage9data.md" > "$tmp/summary9data.json"
+jq -e '.filed == 1' "$tmp/summary9data.json" >/dev/null     || fail "scenario 9data: two DEBUG-PLAYBOOK-MISSING sessions must file ONE issue, got: $(cat "$tmp/summary9data.json")"
+[[ $(wc -l < "$tmp/filed.jsonl") -eq 1 ]]     || fail "scenario 9data: expected one filed line, got $(cat "$tmp/filed.jsonl")"
+grep -q "loud/debug-playbook-missing" "$tmp/filed.jsonl"     || fail "scenario 9data: expected rule-level signal, got: $(cat "$tmp/filed.jsonl")"
+ok "scenario 9c-extra: two sessions under one rule -> one issue (no per-session filings)"
 
 # ---------------------------------------------------------------------------
 # 9d. Observe-to-close matches the reconciler's own filed body format
@@ -283,7 +304,7 @@ ok "scenario 9c: DEBUG-PLAYBOOK-GATE-BLOCK keys on session=, not snippet tokens"
 # ---------------------------------------------------------------------------
 # Alarm still live -> the filed-format issue stays open (deduped, not refiled).
 cat > "$tmp/open9d.json" <<'EOF'
-[{"number": 4512, "body": "The heartbeat detector reported this alarm on a real tick.\n\n- alarm tag: `DEBUG-PLAYBOOK-MISSING`\n\nDo NOT close this issue on PR merge alone.\n\n`loud/debug-playbook-missing/2026-09-08t07-35-48z-0509-1279-abc123`\n", "labels": [{"name": "agent-ready"}], "createdAt": "2026-08-28T10:00:00Z", "comments": []}]
+[{"number": 4512, "body": "The heartbeat detector reported this alarm on a real tick.\n\n- alarm tag: `DEBUG-PLAYBOOK-MISSING`\n\nDo NOT close this issue on PR merge alone.\n\n`loud/debug-playbook-missing`\n", "labels": [{"name": "agent-ready"}], "createdAt": "2026-08-28T10:00:00Z", "comments": []}]
 EOF
 true > "$tmp/filed.jsonl"
 true > "$tmp/gh.log"
@@ -326,7 +347,7 @@ ok "scenario 10: heartbeat-tier1 wires the detector->queue reconciler"
 #     filed-format issue is still observe-to-closed over that loader.
 # ---------------------------------------------------------------------------
 cat > "$tmp/open11.json" <<'EOF'
-[{"number": 2011, "body": "The heartbeat detector filed this alarm.\n\n`loud/debug-playbook-missing/2026-09-08t07-35-48z-0509-1279-abc123`\n", "labels": [{"name": "agent-ready"}], "createdAt": "2026-08-28T10:00:00Z"}]
+[{"number": 2011, "body": "The heartbeat detector filed this alarm.\n\n`loud/debug-playbook-missing`\n", "labels": [{"name": "agent-ready"}], "createdAt": "2026-08-28T10:00:00Z"}]
 EOF
 # green triage: the filed-format signal is NOT alarmed -> observe-to-close.
 cat > "$tmp/triage11_green.md" <<'EOF'
