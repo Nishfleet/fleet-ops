@@ -3927,3 +3927,96 @@ assert m._fetch_signups_7d() is None
 print("OK: no sanctioned token -> None (family omitted)")
 PY
 ok "fleet-ops#4582: signups_7d gauge present for mocked D1 0 and 3, omitted on unreachable"
+
+# =========================================================================
+# fleet-ops#4481: a worker-token mint failure degrades the tick to READ-ONLY.
+# The fleet-ops#3445 guard still refuses a human-identity WRITE (the
+# week-later revert-candidate gh issue create is skipped). The rest of the
+# tick still writes fleet.prom and exits 0, so a transient mint hiccup
+# cannot blank every fleet_* gauge or trip unit-escalation.
+# =========================================================================
+MINT_FAIL_OUT="$scratch/mint-fail.prom"
+MINT_FAIL_BIN="$scratch/worker-token-fail"
+cat >"$MINT_FAIL_BIN" <<'EOF'
+#!/bin/bash
+# Exact trip journal from fleet-metrics-export.service 2026-09-08T06:10:01Z.
+echo "worker-token --print rc=3 - refusing human-gh writes: no installation of nishfleet-worker in org 'Nishfleet'" >&2
+exit 3
+EOF
+chmod +x "$MINT_FAIL_BIN"
+python3 - "$exporter" "$MINT_FAIL_OUT" "$MINT_FAIL_BIN" <<'PY' || fail "mint-failure degrade test failed"
+import contextlib, importlib.util, io, os, sys
+from pathlib import Path
+exp_path, out_path, wt_bin = sys.argv[1], sys.argv[2], sys.argv[3]
+spec = importlib.util.spec_from_file_location("fme", exp_path)
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+
+# Production-shaped env: no inherited token, not Actions, real gh name.
+# Otherwise _ensure_worker_token early-returns and this path is untested.
+os.environ.pop("GITHUB_ACTIONS", None)
+os.environ.pop("GH_TOKEN", None)
+os.environ["GH"] = "gh"
+os.environ["NISHFLEET_WORKER_TOKEN_BIN"] = wt_bin
+
+m.OUT = Path(out_path)
+m.LEGACY_STALENESS_PROM = Path("/nonexistent/fleet-staleness.prom")
+m.SELF_MAINT_JSON_DEFAULT = Path("/nonexistent/sm.json")
+m.SELF_MAINT_JSON_FALLBACK = Path("/nonexistent/sm2.json")
+m.SEAT_HEALTH = Path("/nonexistent/seat.json")
+m.SEAT_LEDGER = Path("/nonexistent/ledger")
+m.SEAT_CAPS_DEFAULT = Path("/nonexistent/caps.json")
+m.SEAT_CAPS_FALLBACK = Path("/nonexistent/caps2.json")
+m.SEAT_CAPS_LIVE = Path("/nonexistent/caps3.json")
+m.HC_URL_FILE = Path("/nonexistent/hc.url")
+m.ACTIONS_LOG = Path("/nonexistent/actions.log")
+m.MAINTENANCE_FLAG = Path("/nonexistent/maint.json")
+m.INTAKE_JSON_DEFAULT = Path("/nonexistent/intake.json")
+m.INTAKE_JSON_FALLBACK = Path("/nonexistent/intake2.json")
+m.KEYSTONE_LEDGER = Path("/nonexistent/keystone.jsonl")
+m.WORKTREE_REAPER_SUMMARY = Path("/nonexistent/reaper.json")
+m.STALENESS_CACHE = Path("/nonexistent/stale.json")
+m.PR_CACHE_DIR = Path(os.path.dirname(out_path))
+m.DETAIL_CACHE = Path(os.path.dirname(out_path)) / "detail.cache.json"
+m._list_timers = lambda: [{"unit": "fleet-metrics-export.timer", "last_usec": 0}]
+m._timer_active = lambda unit: 1
+m._read_seat = lambda: (1, 0)
+m._merged_prs_detail = lambda: []
+m._repo_snapshot = lambda: None
+m._queue_composition = lambda: {"ready-work": {"total": 0, "self": 0}, "agent-ready": {"total": 0, "self": 0}}
+m._escalations_24h = lambda: {}
+m._oomd_kills_6h = lambda: {}
+m._repair_log_counts_24h = lambda: (0, 0)
+m._worker_units = lambda: []
+m._standalone_pi_print_count = lambda u: 0
+m._maintenance_quiescing = lambda: 0
+m._keystone_routing_counts = lambda: (0, 0, None)
+m._ping_healthcheck = lambda: None
+m._fetch_openrouter_credits = lambda: None
+m._fetch_xkiro_usage = lambda: None
+m._fetch_openrouter_key = lambda: None
+m._fetch_claude_usage = lambda: None
+m._fetch_codex_usage = lambda: None
+m._fetch_cursor_usage = lambda: None
+m._fetch_devin_usage = lambda: None
+m._fetch_xkiro_quota = lambda: None
+m._GH_FETCHED_THIS_RUN = False
+m._fetch_signups_7d = lambda: None
+
+def _week_later_must_not_run():
+    raise AssertionError("week-later write must be skipped on mint failure")
+m._week_later_revert_check = _week_later_must_not_run
+
+err = io.StringIO()
+with contextlib.redirect_stderr(err):
+    rc = m.main()
+assert rc == 0, f"mint failure must exit 0 (degrade, not fail-close), got rc={rc} stderr={err.getvalue()}"
+assert Path(out_path).exists(), "mint failure must still write fleet.prom"
+body = Path(out_path).read_text()
+assert "fleet_ready_work" in body, "fleet.prom must carry the ready_work gauge:\n" + body
+log = err.getvalue()
+assert "READ-ONLY" in log, log
+assert "week-later: skipped (app token unavailable — no human-gh write)" in log, log
+assert "app token unavailable this tick" in log, log
+print("OK: token-mint-failure still writes fleet.prom and exits 0 with the write skipped")
+PY
+ok "fleet-ops#4481: mint failure writes fleet.prom, exits 0, skips the week-later write"

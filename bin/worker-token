@@ -157,7 +157,7 @@ get_installation_id() {
       fi
     fi
   fi
-  jwt="$(mint_jwt)"
+  jwt="$(mint_jwt)" || exit 3
   # fleet-ops#3445 class: a transient GitHub API 404 on /app/installations
   # (stale installations cache + live discovery 404) must NOT hard-fail the
   # mint. Bounded retry (3 attempts, 2s apart) absorbs the transient; a
@@ -207,8 +207,16 @@ get_installation_id() {
 # --- mint the access token --------------------------------------------------
 mint_access_token() {
   local jwt id payload response
-  jwt="$(mint_jwt)"
-  id="$(get_installation_id)"
+  jwt="$(mint_jwt)" || exit 3
+  # Nested $(...) swallows `exit` from get_installation_id (bash: an exit
+  # inside a command substitution only ends that subshell). Without the
+  # `|| exit`, a JSON-invalid /app/installations body logged "invalid
+  # payload" then kept minting with an empty id (fleet-ops#4481).
+  id="$(get_installation_id)" || exit 3
+  [[ -n "$id" && "$id" != "null" ]] || {
+    echo "worker-token: empty installation id — degraded" >&2
+    exit 3
+  }
   payload="{}"
   if (( ALL_REPOS )); then
     payload='{}'
@@ -251,7 +259,7 @@ if (( DEGRADE_PROBE )); then
 fi
 
 # --- main: print or exec ----------------------------------------------------
-TOKEN="$(mint_access_token)"
+TOKEN="$(mint_access_token)" || exit 3
 case "$MODE" in
   print)
     # Print ONLY the export line. Never print the JWT or any credential

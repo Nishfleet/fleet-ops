@@ -178,6 +178,109 @@ ok "preamble guard still refuses when GH unset and worker-token missing (fleet-o
 ok "pi-issue-run scream path is present and indexed"
 ok "manifest permissions exactly match the audit cross-check"
 
+# =========================================================================
+# fleet-ops#4481: install-cache TTL is live, and a failed-curl body is not
+# parsed as a valid org-less installation list.
+# =========================================================================
+cache_home="$scratch/cache-home"
+mkdir -p "$cache_home" "$scratch/bin" "$scratch/cache-creds"
+openssl genrsa -out "$scratch/cache-creds/key.pem" 2048 2>/dev/null
+cache_pem="$(cat "$scratch/cache-creds/key.pem")"
+cat >"$scratch/cache-creds/creds.env" <<EOF
+NISHFLEET_WORKER_APP_ID=12345
+NISHFLEET_WORKER_ORG=Nishfleet
+NISHFLEET_WORKER_PRIVATE_KEY="\$(cat <<'NISHFLEET_PEM_EOF'
+$cache_pem
+NISHFLEET_PEM_EOF
+)"
+EOF
+chmod 600 "$scratch/cache-creds/creds.env"
+install_cache="$scratch/installations.json"
+curl_log="$scratch/curl.log"
+cat >"$scratch/bin/curl" <<'EOF'
+#!/bin/bash
+printf '%s\n' "$*" >>"${CURL_LOG:?}"
+url=""
+for a in "$@"; do
+  case "$a" in
+    https://*) url="$a" ;;
+  esac
+done
+case "$url" in
+  */app/installations/[0-9]*/access_tokens)
+    printf '%s\n' '{"token":"ghs_test_token"}'
+    exit 0
+    ;;
+  */app/installations)
+    if [[ "${CURL_INSTALL_BODY:-}" == "non-json" ]]; then
+      echo "curl: (22) The requested URL returned error: 404" >&2
+      exit 22
+    fi
+    printf '%s\n' '[{"id":4242,"account":{"login":"Nishfleet"}}]'
+    exit 0
+    ;;
+esac
+echo "worker-token test curl: unexpected url: $url" >&2
+exit 22
+EOF
+chmod +x "$scratch/bin/curl"
+
+run_worker_print() {
+  env -i \
+    HOME="$cache_home" \
+    PATH="$scratch/bin:$PATH" \
+    WORKER_APP_CREDS_FILE="$scratch/cache-creds/creds.env" \
+    WORKER_INSTALL_CACHE="$install_cache" \
+    WORKER_INSTALL_TTL_S="${WORKER_INSTALL_TTL_S:-300}" \
+    CURL_LOG="$curl_log" \
+    CURL_INSTALL_BODY="${CURL_INSTALL_BODY:-}" \
+    "$bin" --print
+}
+
+: >"$curl_log"
+rm -f "$install_cache"
+set +e
+first_out="$(run_worker_print 2>"$scratch/first.err")"
+first_rc=$?
+set -e
+[[ "$first_rc" == "0" ]] || fail "first mint within stubbed GitHub: expected 0, got $first_rc err=$(cat "$scratch/first.err")"
+[[ "$first_out" == "export GH_TOKEN=ghs_test_token" ]] || fail "first mint stdout: $first_out"
+[[ -s "$install_cache" ]] || fail "first mint must create the install cache"
+first_gets="$(grep -c 'https://api.github.com/app/installations$' "$curl_log" || true)"
+[[ "$first_gets" == "1" ]] || fail "first mint must hit /app/installations once, got $first_gets"
+cache_mtime_before="$(stat -c %Y "$install_cache")"
+
+set +e
+second_out="$(run_worker_print 2>"$scratch/second.err")"
+second_rc=$?
+set -e
+[[ "$second_rc" == "0" ]] || fail "second mint within TTL: expected 0, got $second_rc err=$(cat "$scratch/second.err")"
+[[ "$second_out" == "export GH_TOKEN=ghs_test_token" ]] || fail "second mint stdout: $second_out"
+second_gets="$(grep -c 'https://api.github.com/app/installations$' "$curl_log" || true)"
+[[ "$second_gets" == "1" ]] || fail "second call within TTL must not re-hit /app/installations (got $second_gets)"
+cache_mtime_after="$(stat -c %Y "$install_cache")"
+[[ "$cache_mtime_before" == "$cache_mtime_after" ]] || fail "install cache mtime must be unchanged on a TTL hit"
+ok "worker-token second call within TTL serves from cache"
+
+# Non-JSON curl body (the 2026-09-08 trip: curl 404 text) must be a mint
+# failure, not a parsed org-less installation list.
+: >"$curl_log"
+rm -f "$install_cache"
+export CURL_INSTALL_BODY=non-json
+set +e
+bad_out="$(run_worker_print 2>"$scratch/bad.err")"
+bad_rc=$?
+set -e
+unset CURL_INSTALL_BODY
+[[ "$bad_rc" == "3" ]] || fail "non-JSON /app/installations body: expected exit 3, got $bad_rc out=$bad_out err=$(cat "$scratch/bad.err")"
+[[ -z "$bad_out" ]] || fail "non-JSON mint must print no token, got: $bad_out"
+grep -q "invalid payload" "$scratch/bad.err" \
+  || fail "non-JSON body must be rejected as invalid payload, err=$(cat "$scratch/bad.err")"
+if grep -q "no installation of nishfleet-worker in org" "$scratch/bad.err"; then
+  fail "non-JSON curl text must not be parsed as an org-less install list: $(cat "$scratch/bad.err")"
+fi
+ok "non-JSON curl output is a mint failure, not an install list"
+
 # fleet-ops#413: identity-separation drill, App-identity canary, and
 # pi-issue-run scream path. Chained here because the P14 CI job cannot
 # gain a new workflow step (nishfleet-worker has no Workflows permission).
