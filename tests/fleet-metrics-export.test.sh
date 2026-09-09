@@ -4136,3 +4136,10 @@ assert "app token unavailable this tick" in log, log
 print("OK: token-mint-failure still writes fleet.prom and exits 0 with the write skipped")
 PY
 ok "fleet-ops#4481: mint failure writes fleet.prom, exits 0, skips the week-later write"
+
+# fleet-ops#4508: prevent the next hardcoded-epoch time-bomb from re-red'ing
+# this P14 step. Hosted here (not in .github/workflows/ci.yml) so worker
+# tokens can wire it without a workflow-file edit; this file is already on
+# the P14 path.
+bash "$here/hardcoded-epoch-guard.test.sh"
+ok "fleet-ops#4508: hardcoded-epoch guard green on P14 path"
