@@ -1224,7 +1224,7 @@ groups:
           service: fleet
         annotations:
           summary: "SLO seat_availability slow burn — healthy seats trending below the 90% budget line"
-          description: "WFR input: the seat_availability SLO is in slow burn. Feeds the weekly fleet review. fleet-ops#1291."
+          description: "WFR input: the seat_availability SLO is in slow burn. Repair terminates in the intake REPAIR-RUNG (fleet-ops#4639) — after two consecutive ticks with usable slots < 2, intake claims critical-path fleet-ops on reserved seats (litellm judge / mergegateway audition / cursor keystone). Alert-repair workers cannot raise seats; this warning must not page Nish. fleet-ops#1291."
 
       # --- waste_ratio: threshold-gauge SLO, target 0.10 (max) ---
       # Canonical threshold-window alert (burn-rate ratio model does not fit

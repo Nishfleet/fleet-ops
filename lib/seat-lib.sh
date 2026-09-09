@@ -4642,6 +4642,98 @@ _seat_floor_shortest_bench() {
     return 0
 }
 
+# fleet-ops#4639: reserved repair-rung ladder. pick_seat calls this when
+# PI_REPAIR_RUNG=1 after the normal walk is empty. Order: litellm judge
+# group -> mergegateway audition seats -> cursor keystone at cap 1.
+# Never a money-walled seat. Exempt from yield ranking, keystone-only,
+# and audition light-only filters (those filters are why the reserved
+# seats were idle while worker seats were dead).
+# Args: tried keys (provider/model). Prints provider<TAB>model on success.
+_repair_rung_offer() {
+    local p="$1" m="$2" cursor_cap="${3:-}"
+    local f hc dead fail_count fail_mode m_cap active
+    [[ -n "$p" && -n "$m" ]] || return 1
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    m_cap=$(model_cap "$p" "$m" 2>/dev/null || echo 0)
+    [[ "$m_cap" =~ ^[0-9]+$ ]] || m_cap=0
+    (( m_cap > 0 )) || return 1
+    if ! provider_has_credential "$p"; then
+        return 1
+    fi
+    f=$(seat_ledger_path "$p" "$m")
+    if [[ -f "$f" ]]; then
+        IFS=$'\x1f'$'\n' read -r hc dead _ _ _ fail_count fail_mode < <(
+            jq -r '[(.health_class//""),(.seat_dead|tostring),(.observed_at//""),(.usable_at//""),(.bench_until//""),(.consecutive_failure_count//0),(.failure_mode//"")] | join("\u001f")' "$f" 2>/dev/null || true
+        )
+        if _seat_floor_is_money_wall "${hc:-}" "${dead:-false}" "${fail_mode:-}" "${fail_count:-0}"; then
+            seat_log "REPAIR-RUNG: skip $p/$m (money wall, fleet-ops#4639)"
+            return 1
+        fi
+    fi
+    if ! seat_usable "$p" "$m"; then
+        return 1
+    fi
+    if [[ "$p" == "cursor" && -n "$cursor_cap" ]]; then
+        active=$(count_active_on_provider "$p")
+        [[ "$active" =~ ^[0-9]+$ ]] || active=0
+        if (( active >= cursor_cap )); then
+            seat_log "REPAIR-RUNG: skip $p/$m (cursor cap $cursor_cap already in use, fleet-ops#4639)"
+            return 1
+        fi
+    fi
+    printf '%s\t%s\n' "$p" "$m"
+    return 0
+}
+
+_pick_repair_rung_seat() {
+    local skip_key _p _m _key _line
+    declare -A _rskip=()
+    for skip_key in "$@"; do
+        [[ -n "$skip_key" ]] && _rskip["$skip_key"]=1
+    done
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+
+    # 1. litellm judge group
+    if [[ -z "${_rskip[litellm/judge]:-}" ]]; then
+        if _line=$(_repair_rung_offer litellm judge); then
+            printf '%s\n' "$_line"
+            return 0
+        fi
+    fi
+
+    # 2. mergegateway audition seats (model-level audition: true)
+    for _key in "${!SEAT_AUDITION[@]}"; do
+        [[ "$_key" == mergegateway/* ]] || continue
+        _p=mergegateway
+        _m="${_key#mergegateway/}"
+        [[ -z "${_rskip[$_p/$_m]:-}" ]] || continue
+        if _line=$(_repair_rung_offer "$_p" "$_m"); then
+            printf '%s\n' "$_line"
+            return 0
+        fi
+    done
+
+    # 3. cursor keystone at cap 1 (prefer grok-4.6-high)
+    for _m in cursor-grok-4.6-high composer-2.5; do
+        [[ -z "${_rskip[cursor/$_m]:-}" ]] || continue
+        if _line=$(_repair_rung_offer cursor "$_m" 1); then
+            printf '%s\n' "$_line"
+            return 0
+        fi
+    done
+    for _key in "${!SEAT_MODEL_CAP[@]}"; do
+        [[ "$_key" == cursor/* ]] || continue
+        _m="${_key#cursor/}"
+        [[ "$_m" == "cursor-grok-4.6-high" || "$_m" == "composer-2.5" ]] && continue
+        [[ -z "${_rskip[cursor/$_m]:-}" ]] || continue
+        if _line=$(_repair_rung_offer cursor "$_m" 1); then
+            printf '%s\n' "$_line"
+            return 0
+        fi
+    done
+    return 1
+}
+
 # Prints: "provider\tmodel" or nothing if none available.
 pick_seat() {
     local fail_p="$1" fail_m="$2" need_capable="${3:-0}" tried_file="${4:-}" difficulty="${5:-light}"
@@ -5555,6 +5647,27 @@ pick_seat() {
             _su_sample_str=$(printf '%s\n' "${_su_sorted[@]}" | paste -sd, -)
         fi
         seat_log "pick_seat: unusable ${_seat_unusable_n} seats [${_su_sample_str}]"
+    fi
+
+    # fleet-ops#4639: reserved repair rung. When the packet carries
+    # seat-rung: repair (PI_REPAIR_RUNG=1), try the reserved ladder before
+    # the recoverable-bench floor: litellm judge -> mergegateway audition
+    # -> cursor keystone at cap 1. Money-walled seats stay refused.
+    if [[ "${PI_REPAIR_RUNG:-0}" == "1" ]] && (( ! _count_mode )); then
+        local _rung_line _rp _rm
+        if _rung_line=$(_pick_repair_rung_seat "${!tried[@]}"); then
+            IFS=$'\t' read -r _rp _rm <<<"$_rung_line"
+            if [[ -n "$_rp" && -n "$_rm" ]]; then
+                seat_log "REPAIR-RUNG: picked ${_rp}/${_rm} (fleet-ops#4639)"
+                record_seat_selection "$_rp" "$_rm" "$difficulty"
+                if _is_keystone_class "$difficulty"; then
+                    keystone_record_event routed "$_rp" "$_rm"
+                fi
+                tick_spawn_cap_record "$_rp"
+                printf '%s\t%s\n' "$_rp" "$_rm"
+                return 0
+            fi
+        fi
     fi
 
     # fleet-ops#3324: minimum-usable floor. When the capable set is empty

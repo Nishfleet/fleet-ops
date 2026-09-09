@@ -270,6 +270,16 @@ fi
 need_capable=0
 [[ "$difficulty" == "heavy" || "$difficulty" == "keystone" ]] && need_capable=1
 
+# fleet-ops#4639: intake stamps seat-rung: repair on critical-path claims
+# made while the reserved repair rung is armed. pick_seat then falls back
+# to the reserved ladder (judge -> mergegateway audition -> cursor cap 1)
+# instead of dying on NO USABLE SEAT.
+export PI_REPAIR_RUNG=0
+if [[ -f "$pkt" ]] && grep -qE '^seat-rung:[[:space:]]*repair[[:space:]]*$' "$pkt"; then
+    export PI_REPAIR_RUNG=1
+    seat_log "pi-issue-run: $inst seat-rung=repair (fleet-ops#4639)"
+fi
+
 # Free-tier privacy line (fleet-ops#520): a private-repo target never routes
 # to a free-class lane. Derive the repo from the packet's TARGET line and
 # resolve its visibility via config/repo-privacy.json (fail-closed: an
@@ -334,7 +344,7 @@ export PI_PICK_PREFER_CLASS
 # LiteLLM proxy group (worker-cheap for public, worker-private for private).
 # The proxy handles fallback, cooldown, and health checks internally.
 # Default stays seat-lib until the dual-run proves parity.
-if [[ "${PI_SEAT_SOURCE:-seat-lib}" == "litellm" ]]; then
+if [[ "${PI_SEAT_SOURCE:-seat-lib}" == "litellm" && "${PI_REPAIR_RUNG:-0}" != "1" ]]; then
     _lit_group="worker-cheap"
     [[ "$pkt_privacy" == "private" ]] && _lit_group="worker-private"
     seat=$(litellm_pick_seat "$_lit_group")

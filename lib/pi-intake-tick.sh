@@ -1281,29 +1281,35 @@ elif [[ "$_gh_secondary_active" == "1" && $_gh_secondary_backoff -le $_gh_second
     _gh_secondary_clear
 fi
 
-# Repair rung state helpers (fleet-ops#4639, accept 1). A RESERVED escape
-# from the seat deadlock: every allowlisted seat benched/walled so the
-# seat-repair issues themselves sit skipped-capacity every tick ("repair
-# packets need a seat; no seat exists until the repair lands", #4639).
-# The tick counts consecutive TOTAL seat outages (both the heavy probe and
-# the light pool empty — pick_seat's literal NO USABLE SEAT); from the 2nd
-# consecutive outage the rung opens: critical-path fleet-ops claims ONLY,
-# exempt from yield caps and the light-only/audition filters, capped at 2
-# concurrent rung workers, every rung claim logged REPAIR-RUNG. One counter
-# file; any tick that sees a usable seat resets it. The rung never lists a
-# money-walled seat (the ladder in lib/seat-lib.sh is a hardcoded
-# allowlist of litellm judge / mergegateway audition / cursor keystone) —
-# money stays Nish's (fleet-ops#3284).
+# Repair rung state helpers (fleet-ops#4639). A RESERVED escape from the
+# seat deadlock: every allowlisted seat benched/walled so the seat-repair
+# issues themselves sit skipped-capacity every tick. Trigger: pick_seat
+# returns NO USABLE SEAT, or usable slots < 2, for >= 2 consecutive ticks.
+# Then intake claims critical-path fleet-ops ONLY, exempt from yield caps
+# and the light-only/audition filter, capped at 2 concurrent rung workers,
+# every use logged REPAIR-RUNG. Release as soon as pick_seat reports >= 2
+# usable slots. The worker-side ladder (lib/seat-lib.sh) is litellm judge
+# -> mergegateway audition -> cursor keystone at cap 1; never a
+# money-walled seat (money stays Nish's, fleet-ops#3284).
+PI_INTAKE_REPAIR_RUNG_AFTER="${PI_INTAKE_REPAIR_RUNG_AFTER:-2}"
+PI_INTAKE_REPAIR_RUNG_MAX_CONCURRENT="${PI_INTAKE_REPAIR_RUNG_MAX_CONCURRENT:-2}"
 repair_rung_state_file() {
     printf '%s' "${PI_INTAKE_REPAIR_RUNG_STATE:-/home/nish/workspaces/agent-state/pi-intake/repair-rung-state}"
 }
 
-# Count one total outage and return the consecutive strike count.
-repair_rung_note_outage() {
+repair_rung_strikes() {
     local f _n=0
     f=$(repair_rung_state_file)
     _n=$(tr -cd '0-9' <"$f" 2>/dev/null || true)
     [[ "$_n" =~ ^[0-9]+$ ]] || _n=0
+    printf '%s' "$_n"
+}
+
+# Count one low-slot/outage tick and return the consecutive strike count.
+repair_rung_note_outage() {
+    local f _n=0
+    f=$(repair_rung_state_file)
+    _n=$(repair_rung_strikes)
     _n=$(( _n + 1 ))
     mkdir -p "$(dirname "$f")" 2>/dev/null || true
     printf '%s' "$_n" >"$f" 2>/dev/null || true
@@ -1345,24 +1351,17 @@ repair_rung_concurrent() {
 # back to agent-ready, then the NEXT tick re-claims it — a spawn churn that
 # burned 37 units activating and summoned the auditor.
 #
-# fleet-ops#4639 (orchestrator append 2026-09-09): the old gate exited the
-# WHOLE tick when the heavy probe failed, freezing light claims behind a
-# heavy-only shortage — observed 06:01Z with 4 free slots, 28 ready light
-# 0509 issues and devin/glm-5-2 healthy at cap 3: idle capacity next to
-# claimable work. The anti-churn guarantee (fleet-ops-378) only requires
-# that HEAVY issues are not claimed without a heavy seat. So: heavy probe
-# fails -> claim LIGHT issues only this tick (_light_only_claims=1; the
-# usable_light_slots gate below still holds the tick when the light pool is
-# empty too). BOTH pools empty -> count the outage; from the 2nd
-# consecutive outage the REPAIR-RUNG opens (critical-path fleet-ops only)
-# instead of holding forever — the deadlock that kept the seat-repair
-# issues (#4602 #4628 #4629 #4589) skipped-capacity.
+# fleet-ops#4639: the old gate exited the WHOLE tick when the heavy probe
+# failed, freezing light claims behind a heavy-only shortage. The
+# anti-churn guarantee (fleet-ops-378) only requires that HEAVY issues are
+# not claimed without a heavy seat. So: heavy probe fails -> claim LIGHT
+# issues only this tick. When usable slots < 2 for >= 2 consecutive ticks
+# the REPAIR-RUNG opens (critical-path fleet-ops only) instead of holding
+# forever — the deadlock that kept the seat-repair issues skipped-capacity.
 _light_only_claims=0
 _repair_rung_armed=0
 heavy_seat=$(pick_seat "" "" 1 2>/dev/null) || heavy_seat=""
-if [[ -n "$heavy_seat" ]]; then
-    repair_rung_reset
-else
+if [[ -z "$heavy_seat" ]]; then
     echo "no usable heavy-capable seat (slots=$slots); light-only claims this tick — gate: pick_seat need_capable=1 (fleet-ops#4639)"
     _light_only_claims=1
 fi
@@ -1376,39 +1375,46 @@ fi
 # Fails OPEN when the count seam is unavailable (seat-lib without count
 # mode, a stubbed pick_seat, a non-numeric reply): a broken counter must
 # never freeze intake — same rule as the product-first gate below. Only a
-# definite 0 holds claims.
+# definite 0 holds claims — unless the repair rung is armed.
 usable_light_slots=$(PICK_SEAT_COUNT_SLOTS=1 pick_seat "" "" 0 "" light 2>/dev/null || echo "")
 if [[ ! "$usable_light_slots" =~ ^[0-9]+$ ]]; then
     echo "usable seat-slot count unavailable (pick_seat count mode returned '${usable_light_slots:0:60}'); seat-slot gate fails open, keeping slots=$slots (fleet-ops#3732)"
     usable_light_slots=$slots
 fi
-if (( usable_light_slots <= 0 )); then
-    if [[ -z "$heavy_seat" ]]; then
-        # Heavy AND light pools both empty: a total seat outage. Count it;
-        # from the 2nd consecutive outage arm the repair rung instead of
-        # holding forever (fleet-ops#4639). A non-fleet-ops tick holds: the
-        # rung admits critical-path FLEET-OPS claims only.
-        _rung_strikes=$(repair_rung_note_outage)
-        if (( _rung_strikes >= PI_INTAKE_REPAIR_RUNG_AFTER )); then
-            if [[ "$REPO" != "fleet-ops" ]]; then
+if (( usable_light_slots < 2 )); then
+    # Judge spec (fleet-ops#4639): NO USABLE SEAT *or* usable slots < 2
+    # for >= 2 consecutive ticks opens the rung. A non-fleet-ops tick
+    # never arms it (rung admits critical-path fleet-ops only).
+    _rung_strikes=$(repair_rung_note_outage)
+    if (( _rung_strikes >= PI_INTAKE_REPAIR_RUNG_AFTER )); then
+        if [[ "$REPO" != "fleet-ops" ]]; then
+            if (( usable_light_slots <= 0 )) && [[ -z "$heavy_seat" ]]; then
                 echo "REPAIR-RUNG strike ${_rung_strikes} but repo $REPO is not fleet-ops; holding claims this tick — gate: repair-rung is fleet-ops-only (fleet-ops#4639)"
                 exit 0
             fi
-            _repair_rung_armed=1
-            echo "REPAIR-RUNG armed: ${_rung_strikes} consecutive no-usable-seat ticks — claiming critical-path fleet-ops issues only, cap ${PI_INTAKE_REPAIR_RUNG_MAX_CONCURRENT} concurrent rung workers (fleet-ops#4639)"
         else
-            echo "no usable seat (heavy and light pools empty); holding claims this tick — gate: no usable seat slot (repair-rung strike ${_rung_strikes}/${PI_INTAKE_REPAIR_RUNG_AFTER}, fleet-ops#4639)"
-            exit 0
+            _repair_rung_armed=1
+            echo "REPAIR-RUNG armed: ${_rung_strikes} consecutive ticks with usable slots ${usable_light_slots} < 2 — claiming critical-path fleet-ops issues only, cap ${PI_INTAKE_REPAIR_RUNG_MAX_CONCURRENT} concurrent rung workers (fleet-ops#4639)"
         fi
-    else
-        echo "no usable seat slot (slots=$slots, usable_light_slots=0); holding claims this tick — gate: no usable seat slot"
+    elif (( usable_light_slots <= 0 )) && [[ -z "$heavy_seat" ]]; then
+        echo "no usable seat (heavy and light pools empty); holding claims this tick — gate: no usable seat slot (repair-rung strike ${_rung_strikes}/${PI_INTAKE_REPAIR_RUNG_AFTER}, fleet-ops#4639)"
         exit 0
+    fi
+else
+    _rung_prev=$(repair_rung_strikes)
+    repair_rung_reset
+    if (( _rung_prev > 0 )); then
+        echo "REPAIR-RUNG released: usable slots $usable_light_slots >= 2 (was ${_rung_prev} consecutive low-slot ticks, fleet-ops#4639)"
     fi
 fi
 # The rung claims do NOT come out of the light-slot pool (a critical-path
 # repair issue is usually heavy), so the light-slot clamp below is bypassed
 # while the rung is armed; the rung's own 2-concurrent cap applies instead.
-if (( _repair_rung_armed == 0 && usable_light_slots < slots )); then
+if (( _repair_rung_armed == 1 )); then
+    slots=$PI_INTAKE_REPAIR_RUNG_MAX_CONCURRENT
+elif (( usable_light_slots <= 0 )) && [[ -n "$heavy_seat" ]]; then
+    slots=1
+elif (( usable_light_slots < slots )); then
     echo "usable seat slots $usable_light_slots < capacity slots $slots; claiming at most $usable_light_slots this tick (fleet-ops#3732)"
     slots=$usable_light_slots
 fi
@@ -1511,11 +1517,8 @@ fi
 # exempt from the cap and claims even past the budget. Computed once from the
 # tick-start slots count (slots already includes the per-claim decrement
 # below, so capture the base once here).
-# fleet-ops#4639 knobs: the rung arms after PI_INTAKE_REPAIR_RUNG_AFTER
-# consecutive total-outage ticks (accept 1: >= 2) and admits at most
-# PI_INTAKE_REPAIR_RUNG_MAX_CONCURRENT live rung workers.
-PI_INTAKE_REPAIR_RUNG_AFTER="${PI_INTAKE_REPAIR_RUNG_AFTER:-2}"
-PI_INTAKE_REPAIR_RUNG_MAX_CONCURRENT="${PI_INTAKE_REPAIR_RUNG_MAX_CONCURRENT:-2}"
+# Repair-rung knobs (PI_INTAKE_REPAIR_RUNG_AFTER / MAX_CONCURRENT) are
+# defined with the seat-gate helpers above so they exist before first use.
 _self_maint_cap=0
 _self_maint_claims=0
 if product_first_is_self_maintenance "$REPO" || [[ "$REPO" == "fleet-ops" ]]; then
