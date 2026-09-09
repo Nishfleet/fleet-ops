@@ -286,9 +286,24 @@ export PATH="$scratch/bin:$PATH"
 export BLOCKED_RECONCILE_LOCKDIR="$scratch/lock"
 export BLOCKED_RECONCILE_TRIAGE="$scratch/triage.md"
 export BLOCKED_RECONCILE_STATE="$scratch/state.json"
+# fleet-ops#4794: pin every absolute state path the reconciler can read into
+# the scratch dir so a local run measures the fixture, never the host. The
+# intake JSON is only consulted when BLOCKED_RECONCILE_REPOS is unset, but
+# pinning it here keeps the suite hermetic even if that override is dropped.
+export BLOCKED_RECONCILE_INTAKE_JSON="$scratch/intake.json"
 export BLOCKED_RECONCILE_REPOS="Nishfleet/0509"
 export BLOCKED_RECONCILE_NOW="2026-08-26T00:00:00Z"
 export BLOCKED_RECONCILE_STICKY_SECS=0
+
+# fleet-ops#4794: the live blocked queue must stay untouched by the suite. If
+# BLOCKED_RECONCILE_STATE ever stops pointing at the scratch dir, the run
+# reads (and writes) Nish's real queue and the assertions below go red.
+LIVE_BLOCKED_QUEUE="/home/nish/.local/state/fleet-heartbeat/blocked-queue.json"
+if [[ -f "$LIVE_BLOCKED_QUEUE" ]]; then
+    live_queue_before="$(cat "$LIVE_BLOCKED_QUEUE")"
+else
+    live_queue_before=""
+fi
 
 # fleet-ops#3310/#3527: provide the seat-lib data the infra auto-release path
 # needs for a dry-run pick_seat. A real run uses the fleet's live state.
@@ -342,7 +357,22 @@ grep -q 'requeued=1' <<<"$out" || fail "requeue count: $out"
 grep -q 'remove-label agent-blocked' "$scratch/edits.log" || fail "missing label remove: $(cat "$scratch/edits.log")"
 grep -q 'add-label agent-ready' "$scratch/edits.log" || fail "missing label add: $(cat "$scratch/edits.log")"
 grep -q 'blocker cleared' "$scratch/comments.log" || fail "missing requeue comment: $(cat "$scratch/comments.log")"
+# fleet-ops#4794: prove the run drained the FIXTURE queue, not the host queue.
+# The scratch state.json must reflect the fixture (count=0 after the drain),
+# and the live queue file must be byte-identical to how it was before the run.
+[[ -f "$scratch/state.json" ]] || fail "fixture state.json not written: $(ls -la "$scratch")"
+[[ "$(jq -r '.count' "$scratch/state.json")" == "0" ]] \
+    || fail "fixture state must show the drained fixture, not the host queue: $(cat "$scratch/state.json")"
+if [[ -f "$LIVE_BLOCKED_QUEUE" ]]; then
+    live_queue_after="$(cat "$LIVE_BLOCKED_QUEUE")"
+    [[ "$live_queue_after" == "$live_queue_before" ]] \
+        || fail "live blocked queue was touched by the run: host queue must stay untouched"
+else
+    [[ ! -f "$LIVE_BLOCKED_QUEUE" ]] \
+        || fail "live blocked queue appeared during the run"
+fi
 ok "closed issue dep requeues to agent-ready"
+ok "run drained the fixture queue, not the host queue (fleet-ops#4794)"
 
 # Case 2: open issue dep → still blocked, published
 cat >"$scratch/list.json" <<'JSON'
