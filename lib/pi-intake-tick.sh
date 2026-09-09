@@ -1319,8 +1319,9 @@ repair_rung_note_outage() {
 repair_rung_reset() {
     local f
     f=$(repair_rung_state_file)
-    # shellcheck disable=SC2181  # [[ ]] && write || true is intentional here
-    [[ -f "$f" ]] && printf '0' >"$f" 2>/dev/null || true
+    if [[ -f "$f" ]]; then
+        printf '0' >"$f" 2>/dev/null || true
+    fi
     return 0
 }
 
