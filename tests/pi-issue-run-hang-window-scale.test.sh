@@ -26,6 +26,27 @@ ok()   { echo "OK: $*"; }
 scratch="$(mktemp -d -t hang-window-scale.XXXXXX)"
 trap 'rm -rf "$scratch"' EXIT INT TERM
 
+export HOME="$scratch/home"
+mkdir -p "$HOME"
+
+# fleet-ops#568 class lock: every pi-issue-run-*.test.sh must stub the App
+# identity mint (WORKER_TOKEN_BIN + nishfleet-worker.env), so a fixture that
+# forgets it dies at DEAD APP IDENTITY before the path it owns. This test
+# exercises mark_seat_hang_bench directly and never mints a token, but it
+# lives under the same glob and carries the same stub.
+mkdir -p "$HOME/.config/fleet-worker"
+: >"$HOME/.config/fleet-worker/nishfleet-worker.env"
+chmod 600 "$HOME/.config/fleet-worker/nishfleet-worker.env"
+
+stub_bin="$scratch/stub-bin"
+mkdir -p "$stub_bin"
+cat >"$stub_bin/worker-token" <<'STUB'
+#!/usr/bin/env bash
+echo 'export GH_TOKEN=ghs_stub_token_for_tests'
+STUB
+chmod +x "$stub_bin/worker-token"
+export WORKER_TOKEN_BIN="$stub_bin/worker-token"
+
 cat >"$scratch/seat-caps.json" <<'JSON'
 {
   "ram_gb_per_worker": 1.5,
