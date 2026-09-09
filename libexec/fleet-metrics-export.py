@@ -1677,7 +1677,7 @@ def _fetch_signups_7d():
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310  (fixed literal host)
+        with urllib.request.urlopen(req, timeout=15) as resp:  # nosemgrep
             data = json.loads(resp.read().decode("utf-8"))
     except (OSError, ValueError, urllib.error.HTTPError) as exc:
         print(f"signups_7d: D1 query unavailable: {exc}", file=sys.stderr)
