@@ -122,7 +122,13 @@
 #   FLEET_STANDARDS_DRIFT_FILE_ISSUES  1 (default) auto-file drift issues; 0 skips
 #   FLEET_STANDARDS_DRIFT_MECHANISMS   space-separated thin-caller workflow filenames (tests override)
 #   AUSEARCH                            default ausearch (block 14, tests stub it)
+#   AUSEARCH_SBIN_PATHS                 colon-separated /usr/sbin fallback paths for
+#                                       ausearch (default /usr/sbin/ausearch:/sbin/ausearch;
+#                                       fleet-ops#4733: ausearch ships in /usr/sbin, outside
+#                                       the heartbeat PATH; tests point this at a scratch dir)
 #   AUDITCTL                            default auditctl (block 14 rule-loaded guard, tests stub it)
+#   AUDITCTL_SBIN_PATHS                 colon-separated /usr/sbin fallback paths for auditctl
+#                                       (default /usr/sbin/auditctl:/sbin/auditctl; fleet-ops#4733)
 #   FLEET_ESCALATION_CANARY_SKIP_DETACHED  1 skips block 14 (offline tests)
 
 set -Eeuo pipefail
@@ -199,6 +205,32 @@ loud() {
         printf '\n[%s] [%s] %s\n' \
             "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
     } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+# Resolve an auditd-side binary (ausearch/auditctl) that may live in /usr/sbin,
+# which is NOT in the heartbeat service PATH
+# (/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin). Order: explicit env
+# override > PATH lookup > /usr/sbin and /sbin fallback. Prints the resolved
+# binary (a name on PATH, or an absolute path) on stdout, or nothing when not
+# found. (fleet-ops#4733: ausearch/auditctl ship in /usr/sbin, so
+# `command -v ausearch` failed on a host where auditd is installed and active,
+# firing a false "ausearch not installed" PENDING every heartbeat.)
+resolve_audit_bin() {
+    local env_val="$1" bin_name="$2" sbin_paths="$3"
+    if [[ -n "$env_val" ]]; then
+        printf '%s\n' "$env_val"
+        return 0
+    fi
+    if command -v "$bin_name" >/dev/null 2>&1; then
+        printf '%s\n' "$bin_name"
+        return 0
+    fi
+    local IFS=':' _p
+    for _p in $sbin_paths; do
+        [[ -x "$_p" ]] || continue
+        printf '%s\n' "$_p"
+        return 0
+    done
 }
 
 # Anti-recursion exclusion list for services. These are part of the escalation
@@ -1126,21 +1158,29 @@ fi
 log "14. checking for raw systemd-run transients without OnFailure (audit trail)"
 if [[ "${FLEET_ESCALATION_CANARY_SKIP_DETACHED:-0}" == "1" ]]; then
     log "14.  - skipped (FLEET_ESCALATION_CANARY_SKIP_DETACHED)"
-elif ! command -v ausearch >/dev/null 2>&1 && [[ -z "${AUSEARCH:-}" ]]; then
-    loud "ESCALATION-CANARY-PENDING" "detached-work lint: ausearch not installed ($(date -u +%Y-%m-%dT%H:%M:%SZ)) — install auditd (install.sh --system ships config/audit/rules.d/30-fleet-unit-stop.rules; apt-get -y install auditd or wait for vps-weekly-update)"
-    pending=$((pending + 1))
 else
-    ausearch_bin="${AUSEARCH:-ausearch}"
+    # Resolve ausearch with a /usr/sbin fallback (fleet-ops#4733): ausearch
+    # ships in /usr/sbin, which is NOT in the heartbeat service PATH, so a
+    # bare `command -v ausearch` fails on a host where auditd is installed
+    # and active. The fallback finds the real binary instead of firing a
+    # false "ausearch not installed" PENDING. The genuinely-absent path
+    # (no env, not on PATH, no executable sbin fallback) still fires PENDING.
+    ausearch_bin="$(resolve_audit_bin "${AUSEARCH:-}" ausearch "${AUSEARCH_SBIN_PATHS:-/usr/sbin/ausearch:/sbin/ausearch}")"
+    if [[ -z "$ausearch_bin" ]]; then
+        loud "ESCALATION-CANARY-PENDING" "detached-work lint: ausearch not installed ($(date -u +%Y-%m-%dT%H:%M:%SZ)) — install auditd (install.sh --system ships config/audit/rules.d/30-fleet-unit-stop.rules; apt-get -y install auditd or wait for vps-weekly-update)"
+        pending=$((pending + 1))
+    else
     # False-clean guard: an empty ausearch result is only trustworthy if the
     # fleet-unit-run rule is actually loaded in the RUNNING auditd. auditd
     # installed but rules not yet applied (install.sh --system copies the
     # rules.d file; augenrules --load applies it) would otherwise report
     # "clean" while raw systemd-run goes uncaught. auditctl -l lists the
     # live rules; absent auditctl or no fleet-unit-run line = PENDING (loud,
-    # not fail), matching the ausearch-not-installed handling.
+    # not fail), matching the ausearch-not-installed handling. auditctl is
+    # resolved with the same /usr/sbin fallback (fleet-ops#4733).
     rule_loaded=0
-    auditctl_bin="${AUDITCTL:-auditctl}"
-    if command -v "$auditctl_bin" >/dev/null 2>&1; then
+    auditctl_bin="$(resolve_audit_bin "${AUDITCTL:-}" auditctl "${AUDITCTL_SBIN_PATHS:-/usr/sbin/auditctl:/sbin/auditctl}")"
+    if [[ -n "$auditctl_bin" ]] && command -v "$auditctl_bin" >/dev/null 2>&1; then
         if sudo -n "$auditctl_bin" -l 2>/dev/null | grep -q 'fleet-unit-run'; then
             rule_loaded=1
         fi
@@ -1169,6 +1209,7 @@ else
         else
             log "14.  - all plausible systemd-run execve records carry OnFailure — only pi-systemd-run transients in the last 24h"
         fi
+    fi
     fi
     fi
 fi
