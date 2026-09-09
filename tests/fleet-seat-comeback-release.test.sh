@@ -129,19 +129,28 @@ trap cleanup EXIT INT TERM
 # append to the live watch.log — pin the audit line to the harness scratch
 # instead of the production ~/.local/state/pi-packet/watch.log.
 export SEAT_LOG_FILE="$TMPD/watch.log"
+# fleet-ops#4819: pin the actions.log to the harness scratch so a test release
+# never appends to the live alert-repair actions.log.
+export FLEET_SEAT_COMEBACK_ACTIONS_LOG="$TMPD/actions.log"
 
 # --- stub pi: SUCCESS stub exits 0 with "OK", FAILURE stub exits 1 -------
 cat > "$TMPD/pi-tool-ok" <<'EOF'
 #!/usr/bin/env bash
-# A healthy tool-using probe: prints the computed token of `echo $((6*7))`.
+# A healthy tool-using probe: prints the computed token of `echo $((6*7))`
+# and emits a PACKET-VERDICT tools=1 line on stderr (the authoritative
+# tool-count signal the comeback-release probe parses, fleet-ops#4819).
+printf 'PACKET-VERDICT tools=1 class=worked\n' >&2
 printf '42\n'
 exit 0
 EOF
 cat > "$TMPD/pi-pong-ok" <<'EOF'
 #!/usr/bin/env bash
 # A partial-storm seat: answers inline "OK" but no tool result (no token).
+# Emits PACKET-VERDICT tools=0 class=no-tools on stderr — the standing-smoke
+# shape that must NEVER release an empty-run bench (fleet-ops#4819).
+printf 'PACKET-VERDICT tools=0 class=no-tools\n' >&2
 printf 'OK\n'
-exit  0
+exit 0
 EOF
 cat > "$TMPD/pi-fail" <<'EOF'
 #!/usr/bin/env bash
