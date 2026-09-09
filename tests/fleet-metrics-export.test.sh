@@ -3323,6 +3323,122 @@ PY
 ok "fleet-ops#4217: live seat quota metric family + VPS-native reads (OpenRouter /key, Claude OAuth, Codex OAuth, Cursor, Devin, xKiro, !cut resolver)"
 
 # =========================================================================
+# fleet-ops#4611: the claude OAuth quota meter must emit OR be loud.
+# The pre-fix exporter dropped the whole claude gauge family when
+# _fetch_claude_usage() returned None (HTTP 401/429 past the 30-min stale
+# window), and the generic FleetSeatQuotaStale absent() leg never fired because
+# other providers kept the family present — so a billable seat's meter went
+# silently dark for days. Two hermetic regressions (no network, no live state):
+#   (a) 200-path: a parseable api.anthropic.com/api/oauth/usage payload ->
+#       fleet_seat_quota_remaining_pct{provider="claude",...} (+ reset +
+#       observed) is written to the exported body.
+#   (b) fail-loud: a dead fetch (None) with no servable cache must NOT go
+#       silent — the exporter emits
+#       fleet_seat_quota_observed_seconds{provider="claude",source="stale"}
+#       with a growing value so FleetClaudeQuotaStale fires.
+#   (c) config/fleet_rules.yml carries the FleetClaudeQuotaStale rule keyed on
+#       the claude observed_seconds > 900 OR absent remaining_pct.
+# =========================================================================
+CL_200="$scratch/claude-200.prom"
+CL_FAIL="$scratch/claude-fail.prom"
+cat >"$scratch/claude-quota-4611.test.py" <<'PY'
+import importlib.util, json, os, sys, time
+from pathlib import Path
+exporter, out_path, cache_dir, mode = sys.argv[1:5]
+spec = importlib.util.spec_from_file_location("fme", exporter)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+
+m.OUT = Path(out_path)
+m.PR_CACHE_DIR = Path(cache_dir)
+# Pin every quota/vendor cache + ledger into scratch so the run is hermetic.
+for _name in ("CLAUDE_QUOTA_CACHE","CODEX_QUOTA_CACHE","OPENROUTER_KEY_CACHE",
+              "CURSOR_QUOTA_CACHE","DEVIN_QUOTA_CACHE","XKIRO_QUOTA_CACHE",
+              "OPENROUTER_BALANCE_CACHE","XKIRO_BALANCE_CACHE","SPEND_CACHE",
+              "DETAIL_CACHE"):
+    setattr(m, _name, Path(cache_dir) / (_name.lower() + ".json"))
+m.SELF_MAINT_JSON_DEFAULT = Path("/nonexistent/sm.json")
+m.SELF_MAINT_JSON_FALLBACK = Path("/nonexistent/fb.json")
+m.SEAT_HEALTH = Path("/nonexistent/seat.json")
+m.SEAT_LEDGER = Path("/nonexistent/ledger.json")
+m.SEAT_CAPS_DEFAULT = Path("/nonexistent/caps.json")
+m.SEAT_CAPS_FALLBACK = Path("/nonexistent/caps-fb.json")
+m.SEAT_CAPS_LIVE = Path("/nonexistent/live.json")
+m.HC_URL_FILE = Path("/nonexistent/hc.url")
+m.ACTIONS_LOG = Path("/nonexistent/actions.log")
+m.MAINTENANCE_FLAG = Path("/nonexistent/maint.json")
+m.INTAKE_JSON_DEFAULT = Path("/nonexistent/intake.json")
+m.INTAKE_JSON_FALLBACK = Path("/nonexistent/intake2.json")
+m.KEYSTONE_LEDGER = Path("/nonexistent/keystone.jsonl")
+m.WORKTREE_REAPER_SUMMARY = Path("/nonexistent/reaper.json")
+m.STALENESS_CACHE = Path("/nonexistent/stale.json")
+
+m._list_timers = lambda: [{"unit": "fleet-metrics-export.timer", "last_usec": 0}]
+m._timer_active = lambda unit: 1
+m._read_seat = lambda: (1, 0)
+m._merged_prs_detail = lambda: None
+m._repo_snapshot = lambda: None
+m._queue_composition = lambda: {"ready-work": {"total": 5, "self": 1}, "agent-ready": {"total": 6, "self": 2}}
+m._escalations_24h = lambda: {}
+m._oomd_kills_6h = lambda: {}
+m._repair_log_counts_24h = lambda: (0, 0)
+m._worker_units = lambda: []
+m._standalone_pi_print_count = lambda u: 0
+m._maintenance_quiescing = lambda: 0
+m._keystone_routing_counts = lambda: (0, 0, None)
+m._ping_healthcheck = lambda: None
+m._fetch_openrouter_credits = lambda: None
+m._fetch_xkiro_usage = lambda: None
+m._fetch_openrouter_key = lambda: None
+m._fetch_codex_usage = lambda: None
+m._fetch_cursor_usage = lambda: None
+m._fetch_devin_usage = lambda: None
+m._fetch_xkiro_quota = lambda: None
+m._gh_rate_limit = lambda: None
+m._read_dead_credentials = lambda: (0, [])
+m._fetch_signups_7d = lambda: None
+m._VENDOR_BALANCE_FETCHED = set()
+
+if mode == "200":
+    m._fetch_claude_usage = lambda: [
+        {"pct": 92.0, "reset_s": 2250.0, "window": "session"},
+        {"pct": 46.0, "reset_s": 450.0, "window": "weekly"},
+    ]
+else:
+    m._fetch_claude_usage = lambda: None
+
+rc = m.main()
+assert rc == 0, f"main rc={rc}"
+body = Path(out_path).read_text()
+
+if mode == "200":
+    assert 'fleet_seat_quota_remaining_pct{provider="claude",window="session",source="api"} 92.0000' in body, body
+    assert 'fleet_seat_quota_remaining_pct{provider="claude",window="weekly",source="api"} 46.0000' in body, body
+    assert 'fleet_seat_quota_reset_seconds{provider="claude",window="session",source="api"} 2250.0000' in body, body
+    assert 'fleet_seat_quota_observed_seconds{provider="claude",source="api"}' in body, body
+    print("OK: claude 200-path emits remaining_pct/reset/observed (source=api)")
+else:
+    assert 'fleet_seat_quota_remaining_pct{provider="claude"' not in body, \
+        "dead fetch must not emit a claude remaining_pct: " + body
+    assert 'fleet_seat_quota_observed_seconds{provider="claude",source="stale"}' in body, \
+        "dead claude fetch must emit growing observed_seconds (source=stale), not go silent: " + body
+    print("OK: claude dead fetch fails loud via observed_seconds{source=stale}")
+PY
+python3 "$scratch/claude-quota-4611.test.py" "$exporter" "$CL_200" "$scratch/cl-200-cache" "200" \
+  || fail "claude 200-path emission failed"
+python3 "$scratch/claude-quota-4611.test.py" "$exporter" "$CL_FAIL" "$scratch/cl-fail-cache" "fail" \
+  || fail "claude fail-loud emission failed"
+# rule presence (acceptance #2/#3: the alert fires when the claude gauge is
+# absent/stale > threshold)
+grep -q "alert: FleetClaudeQuotaStale" "$rules" \
+  || fail "fleet_rules.yml missing FleetClaudeQuotaStale"
+grep -q 'fleet_seat_quota_observed_seconds{provider="claude"} > 900' "$rules" \
+  || fail "FleetClaudeQuotaStale must key on claude observed_seconds > 900"
+grep -q 'absent(fleet_seat_quota_remaining_pct{provider="claude"})' "$rules" \
+  || fail "FleetClaudeQuotaStale must also fire when the claude remaining_pct is absent"
+ok "fleet-ops#4611: claude quota emits on 200, fails loud on dead fetch; FleetClaudeQuotaStale rule present"
+
+# =========================================================================
 # fleet-ops#3180: fleet_escalations_24h must not count template starts the
 # escalation pipeline refuses. The metric counts "Starting
 # unit-escalation@<failed-unit>.service" journal lines; unit-escalation-write

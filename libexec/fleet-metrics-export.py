@@ -2402,6 +2402,35 @@ def _cached_quota_json(path, fetcher, name):
     return None, None
 
 
+def _claude_observed_anchor():
+    """Return an epoch the fail-loud claude observed_seconds grows from.
+
+    fleet-ops#4611: _cached_quota_json returns (None, None) once a dead claude
+    fetch (401/429) outlives the 30-min stale-cache window, and the provider
+    used to be dropped silently. This returns the epoch the dark meter counts
+    from: the last good cache ts if a cache ever existed (the meter was live
+    until that point), else a persisted first-miss sidecar so the age grows
+    from the first outage tick instead of a never-seen claude being dropped.
+    """
+    ts = _cache_ts(CLAUDE_QUOTA_CACHE)
+    if ts is not None:
+        return ts
+    sidecar = Path(str(CLAUDE_QUOTA_CACHE) + ".miss")
+    try:
+        c = json.loads(sidecar.read_text())
+        t = c.get("ts")
+        if isinstance(t, (int, float)):
+            return t
+    except (OSError, json.JSONDecodeError):
+        pass
+    try:
+        PR_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        sidecar.write_text(json.dumps({"ts": time.time()}))
+    except OSError:
+        pass
+    return time.time()
+
+
 def _emit_seat_quota(lines, provider, rows, source, observed_at):
     """Append fleet_seat_quota_* rows for one provider.
 
@@ -2433,6 +2462,25 @@ def _emit_seat_quota(lines, provider, rows, source, observed_at):
     lines.append(
         f'fleet_seat_quota_observed_seconds{{provider="{_prom_label(provider)}",'
         f'source="{_prom_label(source)}"}} {observed_s:.4f}'
+    )
+
+
+def _emit_seat_quota_fail_loud(lines, provider, observed_at):
+    """Emit only the observed_seconds gauge for a failing quota provider.
+
+    fleet-ops#4611: a dead fetch (401/429) past the stale-cache window used to
+    drop the provider entirely from _quota_providers, so its whole gauge family
+    went silently absent and — as long as other providers kept emitting — the
+    absent() leg of the stale-quota rule never fired. Emitting the growing
+    observed_seconds gauge with source="stale" keeps the meter loud: the value
+    crosses QUOTA_STALE_S and the FleetClaudeQuotaStale / FleetSeatQuotaStale
+    rule fires instead of a dark money meter being invisible.
+    """
+    now = time.time()
+    observed_s = max(0.0, now - observed_at) if observed_at else QUOTA_STALE_S + 1
+    lines.append(
+        f'fleet_seat_quota_observed_seconds{{provider="{_prom_label(provider)}",'
+        f'source="stale"}} {observed_s:.4f}'
     )
 
 
@@ -5962,6 +6010,16 @@ def main():
         _quota_providers.append(("openrouter", [openrouter_key], openrouter_key_obs))
     if isinstance(claude_usage, list):
         _quota_providers.append(("claude", claude_usage, claude_usage_obs))
+    else:
+        # fleet-ops#4611: claude is a billable OAuth seat that must always meter
+        # when the token is valid. A dead fetch (401/429) that outlives the
+        # 30-min stale window makes _cached_quota_json return (None, None) and
+        # the provider used to be dropped — the whole claude gauge family went
+        # silently absent for days while the generic absent() rule stayed silent
+        # (other providers kept the family present). Emit the observed_seconds
+        # gauge with a growing anchor (source="stale") so FleetClaudeQuotaStale
+        # fires and a dark money meter is loud, not invisible.
+        _quota_providers.append(("claude", None, _claude_observed_anchor()))
     if isinstance(codex_usage, list):
         _quota_providers.append(("codex", codex_usage, codex_usage_obs))
     if isinstance(cursor_usage, list):
@@ -5973,7 +6031,10 @@ def main():
     if _quota_providers:
         _emit_seat_quota_headers(lines)
         for _prov, _rows, _obs in _quota_providers:
-            _emit_seat_quota(lines, _prov, _rows, "api", _obs)
+            if _rows:
+                _emit_seat_quota(lines, _prov, _rows, "api", _obs)
+            else:
+                _emit_seat_quota_fail_loud(lines, _prov, _obs)
 
     # --- Truth staleness (fleet-ops#1137) ---
     # Read the staleness checker's cached results and re-export as Prometheus
