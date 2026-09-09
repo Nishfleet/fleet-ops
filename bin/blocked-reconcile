@@ -869,6 +869,9 @@ run_named_smoke() {
 # One 1-turn packet on alibaba-coding/qwen3.8-max. Pass = HTTP 200 AND the
 # seat ledger is not walled (no future usable_at / bench_until). Fail prints
 # usable_at=<ISO> when the ledger has one so the caller can re-park.
+# shellcheck disable=SC2030,SC2031
+# The subshell below deliberately exports PI_PACKET_STATE/HOME into a
+# throwaway scope so seat-lib writes land in a temp dir, never the live state.
 run_alibaba_smoke_ok() {
     local timeout_s
     timeout_s="${BLOCKED_RECONCILE_SMOKE_TIMEOUT_S:-60}"
