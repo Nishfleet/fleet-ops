@@ -3988,6 +3988,23 @@ _record_prepaid_pick() {
     local usd flags429="false" flags200="false" f9date="" f2date=""
     usd=$(_provider_daily_spend_usd_tokens "$p")
     [[ "$usd" =~ ^[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?$ ]] || usd=0
+    # fleet-ops#4621: for providers whose real spend is read from the vendor
+    # dashboard (prepaid-spend/<p>.json api_bucket_used_usd, written by
+    # bin/fleet-prepaid-util-canary from Cursor's GetCurrentPeriodUsage), use
+    # that real figure instead of the token-derived estimate here. The
+    # token-derived path is structurally $0 for cursor (cursor-cli sessions
+    # record 0 usage tokens and pi-models.json carries no cursor cost), which
+    # reported a false 0.000000 as fact while 50 cursor-grok-4.6-high senior
+    # sessions ran and the $400 Ultra INCLUDED API bucket drained. The dashboard
+    # figure is the expiring API-pool spend (planUsage.apiPercentUsed x limit),
+    # reproducible from the vendor side in one command. A provider with no
+    # prepaid-spend file is unaffected (Pareto Pass keeps its token-derived
+    # meter, fleet-ops#4453).
+    local _real_usd
+    _real_usd=$(jq -r '.api_bucket_used_usd // empty' "$STATE_DIR/prepaid-spend/${p}.json" 2>/dev/null || true)
+    if [[ -n "$_real_usd" && "$_real_usd" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+        usd="$_real_usd"
+    fi
     # fleet-ops#4453 accept: usd_today never exceeds the declared daily budget.
     if [[ -n "${SEAT_PROVIDER_DAILY_BUDGET_USD[$p]:-}" ]]; then
         local cap_usd="${SEAT_PROVIDER_DAILY_BUDGET_USD[$p]}"
