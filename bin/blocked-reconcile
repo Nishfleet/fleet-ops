@@ -20,7 +20,7 @@ fi
 # (credentials/app-manifest.json events=[]), so there is nothing to
 # subscribe to. Heartbeat's existing 30-minute timer is the observer.
 #
-# Two cases, both verified live (fleet-ops#364):
+# Cases, verified live (fleet-ops#364 / #4626):
 #   work-item  — machine-checkable. Explicit `blocked-on:` lines (or a
 #                title/body `blocked by #N` / `owner/repo#N` / GitHub URL).
 #                Query each listed issue/PR; CLOSED / MERGED = resolved.
@@ -31,6 +31,13 @@ fi
 #                `blocked-on: nish-decision` is not an answer (fleet-ops#563).
 #                Until then, leave the label and publish into the heartbeat
 #                triage file.
+#   date-gate  — `blocked-on: re-open-<ISO8601>[-<smoke-name>]` (fleet-ops#4626).
+#                When now >= the timestamp, run the named smoke (if any);
+#                on pass flip agent-blocked → agent-ready; on fail re-park
+#                at the seat usable_at. A future timestamp stays blocked.
+#   unknown-form — a `blocked-on:` value that matches no known form (issue
+#                ref, nish-decision, date-gate, named external). LOUD in
+#                the sweep log so a prose gate can never park silently.
 # When every listed blocker is resolved, flip agent-blocked → agent-ready
 # and comment the evidence. Unparseable issues (no blocked-on lines) stay
 # on the desk-triage route and are never auto-requeued.
@@ -54,9 +61,15 @@ fi
 #                                  sweep.service; empty disables)
 #   BLOCKED_RECONCILE_ORCHESTRATOR_MIN_AGE_S  age threshold, default 3600 (1h)
 #   BLOCKED_RECONCILE_SYSTEMCTL    systemctl binary (tests stub it)
+#   BLOCKED_RECONCILE_SMOKE_DIR    directory of stub smoke executables named
+#                                  after the smoke (tests). Live sweep uses
+#                                  the in-process named smokes instead.
+#   BLOCKED_RECONCILE_SMOKE_TIMEOUT_S  live 1-turn smoke budget (default 60)
 #
 # Modes:
 #   --extract   read one issue JSON on stdin, print {kind,deps} (no network)
+#   --dry-run   sweep but print actions and mutate nothing
+#   --help      print usage and exit 0
 #   (default)   sweep enrolled repos
 #
 # Exit 0 on a clean sweep or overlapping no-op. Non-zero only on
@@ -73,11 +86,21 @@ import json, re, sys
 
 NISH = "nish-decision"
 ORCHESTRATOR = "orchestrator"
+INFRA = "infra"
+SENIOR_REVIEW = "senior-review"
+SPLIT = "split"
+SENIOR_CONFERENCE = "senior-conference"
+NAMED = {NISH, ORCHESTRATOR, INFRA, SENIOR_REVIEW, SPLIT, SENIOR_CONFERENCE}
 URL = re.compile(
     r"^https://github\.com/([\w.-]+)/([\w.-]+)/(issues|pull)/(\d+)/?$"
 )
 OWNED = re.compile(r"^([\w.-]+)/([\w.-]+)#(\d+)$")
 HASH = re.compile(r"^#(\d+)$")
+# fleet-ops#4626: re-open-<ISO8601>[-<smoke-name>]. Compact ISO (no seconds)
+# is accepted and normalised to ...:00Z.
+REOPEN = re.compile(
+    r"^re-open-(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?)Z(?:-([A-Za-z0-9][A-Za-z0-9._-]*))?$"
+)
 BLOCKED_ON = re.compile(r"(?im)^blocked-on:\s*(.+?)\s*$")
 # Valid nish-decision reasons (fleet-ops#4260 — the canonical Nish-reserved
 # list): money/pay/price/pricing/billing, legal, brand, product direction,
@@ -151,12 +174,30 @@ def comments_have_decision_resolved(comments):
     return False
 
 
+def _norm_iso(ts):
+    """Normalise compact `YYYY-MM-DDTHH:MMZ` to `YYYY-MM-DDTHH:MM:00Z`."""
+    if ts.count(":") == 1:
+        return ts + ":00Z" if not ts.endswith("Z") else ts[:-1] + ":00Z"
+    return ts if ts.endswith("Z") else ts + "Z"
+
+
 def parse_ref(raw, owner, repo):
     raw = (raw or "").strip().rstrip(".,;")
-    if raw.lower() == ORCHESTRATOR:
+    low = raw.lower()
+    if low == ORCHESTRATOR:
         return {"kind": ORCHESTRATOR}
-    if raw.lower() == NISH:
+    if low == NISH:
         return {"kind": NISH}
+    if low in NAMED:
+        return {"kind": low}
+    m = REOPEN.match(raw)
+    if m:
+        return {
+            "kind": "date-gate",
+            "at": _norm_iso(m.group(1)),
+            "smoke": m.group(2) or "",
+            "raw": raw,
+        }
     m = URL.match(raw)
     if m:
         return {
@@ -181,12 +222,15 @@ def parse_ref(raw, owner, repo):
             "number": int(m.group(1)),
             "hint": "unknown",
         }
-    return None
+    return {"kind": "unknown-form", "raw": raw}
 
 
 def add_dep(deps, seen, parsed, owner, repo, self_n):
-    if parsed is None or parsed.get("kind") in (NISH, ORCHESTRATOR):
-        return parsed is not None and parsed.get("kind") == NISH
+    if parsed is None:
+        return False
+    kind = parsed.get("kind")
+    if kind in (NISH, ORCHESTRATOR, INFRA, SENIOR_REVIEW, SPLIT, SENIOR_CONFERENCE, "date-gate", "unknown-form"):
+        return kind == NISH
     if (
         parsed["owner"] == owner
         and parsed["repo"] == repo
@@ -319,6 +363,11 @@ def extract(issue):
     seen = set()
     nish = False
     orchestrator = False
+    date_gates = []
+    date_seen = set()
+    unknown_forms = []
+    unknown_seen = set()
+    named = set()
     for node in blocked_by_nodes(issue, owner, repo):
         add_dep(deps, seen, node, owner, repo, self_n)
     for text in texts:
@@ -327,8 +376,28 @@ def extract(issue):
             if parsed is None:
                 nish = True
                 continue
-            if parsed.get("kind") == ORCHESTRATOR:
+            pkind = parsed.get("kind")
+            if pkind == ORCHESTRATOR:
                 orchestrator = True
+                continue
+            if pkind == "date-gate":
+                key = (parsed.get("at"), parsed.get("smoke") or "")
+                if key not in date_seen:
+                    date_seen.add(key)
+                    date_gates.append({
+                        "at": parsed["at"],
+                        "smoke": parsed.get("smoke") or "",
+                        "raw": parsed.get("raw") or "",
+                    })
+                continue
+            if pkind == "unknown-form":
+                raw = parsed.get("raw") or ""
+                if raw and raw not in unknown_seen:
+                    unknown_seen.add(raw)
+                    unknown_forms.append(raw)
+                continue
+            if pkind in NAMED and pkind not in (NISH, ORCHESTRATOR):
+                named.add(pkind)
                 continue
             if add_dep(deps, seen, parsed, owner, repo, self_n):
                 nish = True
@@ -340,16 +409,28 @@ def extract(issue):
             if parsed.get("kind") == ORCHESTRATOR:
                 orchestrator = True
                 continue
+            if parsed.get("kind") in ("date-gate", "unknown-form"):
+                continue
             if add_dep(deps, seen, parsed, owner, repo, self_n):
                 nish = True
     nish_unresolved = bool(nish) and not nish_resolved
-    kind = NISH if (nish_unresolved or not deps) else "work-item"
+    if unknown_forms:
+        kind = "unknown-form"
+    elif date_gates and not nish_unresolved and not deps:
+        kind = "date-gate"
+    elif nish_unresolved or not deps:
+        kind = NISH
+    else:
+        kind = "work-item"
     return {
         "kind": kind,
         "deps": deps,
         "nish": bool(nish),
         "nish_resolved": bool(nish_resolved),
         "orchestrator": bool(orchestrator),
+        "date_gates": date_gates,
+        "unknown_forms": unknown_forms,
+        "named": sorted(named),
         "rejected_count": rejected_count,
         "rejected_nish_decisions": rejected,
     }
@@ -364,6 +445,9 @@ def main():
             "nish": False,
             "nish_resolved": False,
             "orchestrator": False,
+            "date_gates": [],
+            "unknown_forms": [],
+            "named": [],
             "rejected_count": 0,
             "rejected_nish_decisions": [],
         }))
@@ -378,6 +462,36 @@ if __name__ == "__main__":
 if [ "${1:-}" = "--extract" ]; then
     python3 -c "$EXTRACT_PY"
     exit 0
+fi
+
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+    cat <<'USAGE'
+blocked-reconcile — re-examine agent-blocked issues (fleet-ops#29 / #4626).
+
+Usage:
+  blocked-reconcile [--dry-run]     sweep enrolled repos
+  blocked-reconcile --extract       read one issue JSON on stdin, print {kind,deps}
+  blocked-reconcile --help          this text
+
+Known blocked-on: forms:
+  owner/repo#N, #N, GitHub issue/PR URL   work-item (CLOSED/MERGED clears)
+  nish-decision                           Nish-reserved; needs decision-resolved:
+  orchestrator | infra | senior-review | split | senior-conference
+  re-open-<ISO8601>[-<smoke-name>]        date-gate (fleet-ops#4626). When now
+                                          >= the timestamp, run the named smoke
+                                          (if any). Pass flips to agent-ready;
+                                          fail re-parks at the seat usable_at.
+  anything else                           unknown-form, LOUD (never silent)
+
+Environment: BLOCKED_RECONCILE_NOW, BLOCKED_RECONCILE_DRY_RUN=1,
+BLOCKED_RECONCILE_SMOKE_DIR (test stubs), BLOCKED_RECONCILE_REPOS.
+USAGE
+    exit 0
+fi
+
+if [ "${1:-}" = "--dry-run" ]; then
+    BLOCKED_RECONCILE_DRY_RUN=1
+    shift
 fi
 
 INTAKE_JSON="${BLOCKED_RECONCILE_INTAKE_JSON:-/home/nish/workspaces/products/fleet-ops/config/intake-repos.json}"
@@ -716,6 +830,96 @@ healthy_capable_seat_for_issue() {
     printf '%s\n' "$_seat"
 }
 
+# fleet-ops#4626: named smokes for date-gate re-open-<ISO>[-<smoke-name>].
+# Tests drop an executable of the smoke name in BLOCKED_RECONCILE_SMOKE_DIR.
+# Live: alibaba-smoke-ok is a 1-turn pi packet on alibaba-coding/qwen3.8-max
+# that must return HTTP 200 and leave the seat file un-walled. Unknown smoke
+# names fail closed (exit 1) so a typo cannot silently requeue.
+run_named_smoke() {
+    local name="$1" stub rc=0 out="" usable=""
+    if [ -n "${BLOCKED_RECONCILE_SMOKE_DIR:-}" ]; then
+        stub="${BLOCKED_RECONCILE_SMOKE_DIR}/${name}"
+        if [ -x "$stub" ]; then
+            out=$("$stub" 2>&1) || rc=$?
+            printf '%s\n' "$out"
+            usable=$(printf '%s\n' "$out" | sed -n 's/^usable_at=//p' | tail -1)
+            if [ -n "$usable" ]; then
+                printf 'usable_at=%s\n' "$usable"
+            fi
+            return "$rc"
+        fi
+        log "LOUD date-gate smoke stub missing: $stub"
+        return 1
+    fi
+    case "$name" in
+        alibaba-smoke-ok)
+            run_alibaba_smoke_ok
+            return $?
+            ;;
+        "")
+            return 0
+            ;;
+        *)
+            log "LOUD date-gate unknown smoke name: $name"
+            return 1
+            ;;
+    esac
+}
+
+# One 1-turn packet on alibaba-coding/qwen3.8-max. Pass = HTTP 200 AND the
+# seat ledger is not walled (no future usable_at / bench_until). Fail prints
+# usable_at=<ISO> when the ledger has one so the caller can re-park.
+run_alibaba_smoke_ok() {
+    local timeout_s
+    timeout_s="${BLOCKED_RECONCILE_SMOKE_TIMEOUT_S:-60}"
+    # Subshell so sourcing seat-lib cannot leak into the sweep. No `local`
+    # inside the subshell (bash rejects it).
+    (
+        p="alibaba-coding"
+        m="qwen3.8-max"
+        _state=$(mktemp -d)
+        export HOME="${HOME:-/home/nish}"
+        export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+        export PI_PACKET_STATE="$_state"
+        # shellcheck source=/dev/null
+        source "$REPO_ROOT/lib/seat-lib.sh"
+        ledger=$(seat_ledger_path "$p" "$m")
+        usable=""
+        if [ -f "$ledger" ]; then
+            usable=$(jq -r '.usable_at // .bench_until // empty' "$ledger" 2>/dev/null || true)
+            if [ -n "$usable" ]; then
+                now_s=$(date -u -d "$(now_iso)" +%s 2>/dev/null || date -u +%s)
+                wall_s=$(date -u -d "$usable" +%s 2>/dev/null || echo 0)
+                if [ "$wall_s" -gt "$now_s" ]; then
+                    printf 'usable_at=%s\n' "$usable"
+                    rm -rf "$_state"
+                    exit 1
+                fi
+            fi
+        fi
+        if ! command -v pi >/dev/null 2>&1; then
+            rm -rf "$_state"
+            exit 1
+        fi
+        rc=0
+        out=$(timeout "${timeout_s}s" pi --print --no-session --provider "$p" --model "$m" \
+            <<<'Reply with exactly: smoke-ok' 2>&1) || rc=$?
+        rm -rf "$_state"
+        if [ "$rc" -ne 0 ] || [ -z "$out" ]; then
+            [ -n "$usable" ] && printf 'usable_at=%s\n' "$usable"
+            exit 1
+        fi
+        printf '%s\n' "$out" | tail -3
+        exit 0
+    )
+}
+
+# Epoch seconds for a date-gate ISO (compact or full). Empty on parse fail.
+date_gate_epoch() {
+    local ts="$1"
+    date -u -d "$ts" +%s 2>/dev/null || true
+}
+
 # fleet-ops#3310/#3527: reset the WORK cap and systemic-failure markers so the
 # re-queued issue gets a fresh claim budget.
 reset_reclaim_and_systemic() {
@@ -852,6 +1056,93 @@ while IFS= read -r repo; do
                 remaining="$remaining, orchestrator"
             else
                 remaining="orchestrator"
+            fi
+        fi
+
+        # fleet-ops#4626: unknown blocked-on forms are LOUD, never silent nish.
+        _unknown=$(printf '%s' "$extracted" | jq -r '.unknown_forms[]? // empty')
+        if [ -n "$_unknown" ]; then
+            kind="unknown-form"
+            machine=1
+            all_cleared=0
+            remaining="unknown-form: ${_unknown//$'\n'/, }"
+            log "LOUD unknown-form $repo#$num blocked-on: ${_unknown//$'\n'/, }"
+        fi
+
+        # fleet-ops#4626: date-gate re-open-<ISO>[-<smoke>]. Only the latest
+        # gate counts, so a re-park comment is not re-smoked every tick.
+        # Future stays blocked. Past runs the named smoke (if any): pass
+        # requeues, fail re-parks at usable_at (or now+24h if none printed).
+        _dg=""
+        _dg_epoch=0
+        while IFS= read -r _cand; do
+            [ -z "$_cand" ] && continue
+            _cand_at=$(printf '%s' "$_cand" | jq -r '.at')
+            _cand_epoch=$(date_gate_epoch "$_cand_at")
+            [ -n "$_cand_epoch" ] || continue
+            if [ "$_cand_epoch" -ge "$_dg_epoch" ]; then
+                _dg_epoch="$_cand_epoch"
+                _dg="$_cand"
+            fi
+        done < <(printf '%s' "$extracted" | jq -c '.date_gates[]?')
+        if [ -n "$_dg" ]; then
+            _dg_at=$(printf '%s' "$_dg" | jq -r '.at')
+            _dg_smoke=$(printf '%s' "$_dg" | jq -r '.smoke // empty')
+            _dg_epoch=$(date_gate_epoch "$_dg_at")
+            if [ -z "$_dg_epoch" ]; then
+                kind="unknown-form"
+                machine=1
+                all_cleared=0
+                remaining="unknown-form: re-open-$_dg_at (unparseable ISO)"
+                log "LOUD unknown-form $repo#$num unparseable date-gate at=$_dg_at"
+            else
+                kind="date-gate"
+                machine=1
+                if [ "$NOW_S" -lt "$_dg_epoch" ]; then
+                    all_cleared=0
+                    remaining="date-gate re-open-$_dg_at${_dg_smoke:+-$_dg_smoke} (future)"
+                    log "  $repo#$num: date-gate future until $_dg_at${_dg_smoke:+ smoke=$_dg_smoke}"
+                else
+                    _smoke_out=""
+                    _smoke_rc=0
+                    if [ -n "$_dg_smoke" ]; then
+                        if [ "$DRY" = "1" ] && [ -z "${BLOCKED_RECONCILE_SMOKE_DIR:-}" ]; then
+                            log "DRY $repo#$num: would run smoke $_dg_smoke"
+                            _smoke_rc=0
+                        else
+                            _smoke_out=$(run_named_smoke "$_dg_smoke") || _smoke_rc=$?
+                        fi
+                    fi
+                    if [ "$_smoke_rc" -eq 0 ]; then
+                        if [ -n "$cleared" ]; then
+                            cleared="$cleared, date-gate $_dg_at${_dg_smoke:+ smoke=$_dg_smoke}"
+                        else
+                            cleared="date-gate $_dg_at${_dg_smoke:+ smoke=$_dg_smoke}"
+                        fi
+                        log "  $repo#$num: date-gate due $_dg_at smoke=${_dg_smoke:-none} PASS"
+                    else
+                        all_cleared=0
+                        _new_at=$(printf '%s\n' "$_smoke_out" | sed -n 's/^usable_at=//p' | tail -1)
+                        if [ -z "$_new_at" ]; then
+                            _new_at=$(date -u -d "$(now_iso) + 1 day" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+                                || date -u -d "tomorrow" +%Y-%m-%dT%H:%M:%SZ)
+                        fi
+                        _new_raw="re-open-${_new_at}"
+                        if [ -n "$_dg_smoke" ]; then
+                            _new_raw="${_new_raw}-${_dg_smoke}"
+                        fi
+                        remaining="date-gate smoke-fail; re-park $_new_raw"
+                        _repark_body="fleet-ops#4626: date-gate $_dg_at smoke=${_dg_smoke:-none} failed. Re-parking until seat usable_at.
+
+blocked-on: ${_new_raw}"
+                        if [ "$DRY" = "1" ]; then
+                            log "DRY $repo#$num: re-park date-gate at $_new_raw"
+                        else
+                            gh issue comment "$num" -R "$repo" --body "$_repark_body" >/dev/null
+                        fi
+                        log "  $repo#$num: date-gate smoke FAIL; re-parked $_new_raw"
+                    fi
+                fi
             fi
         fi
 

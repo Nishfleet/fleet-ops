@@ -505,9 +505,28 @@ blocked_filter() {
         [ -z "$line" ] && continue
         ref=$(printf '%s' "$line" | sed -E 's/^blocked-on:[[:space:]]*//' | sed -E 's/[[:space:]]+$//')
         case "$ref" in
-            nish-decision|orchestrator|infra|senior-review)
+            nish-decision|orchestrator|infra|senior-review|senior-conference)
                 # Special marker — not an issue ref; always a live blocker.
                 any_open=1
+                continue
+                ;;
+            re-open-*)
+                # fleet-ops#4626: date-gate. A future timestamp is a live
+                # blocker; a past timestamp is stale (blocked-reconcile owns
+                # the smoke + label flip; intake must not re-wedge a flipped
+                # issue whose body still carries the spent gate).
+                _dg_rest="${ref#re-open-}"
+                if [[ "$_dg_rest" =~ ^([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(:[0-9]{2})?Z) ]]; then
+                    _dg_iso="${BASH_REMATCH[1]}"
+                    any_machine=1
+                    _dg_epoch=$(date -u -d "$_dg_iso" +%s 2>/dev/null || echo "")
+                    _now_epoch=$(date -u +%s)
+                    if [ -z "$_dg_epoch" ] || [ "$_now_epoch" -lt "$_dg_epoch" ]; then
+                        any_open=1
+                    fi
+                else
+                    any_open=1
+                fi
                 continue
                 ;;
             split)
