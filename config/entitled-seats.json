@@ -100,6 +100,11 @@
       "id": "orcarouter",
       "class": "free",
       "note": "OrcaRouter rotating free."
+    },
+    {
+      "id": "deepseek",
+      "class": "metered",
+      "note": "DeepSeek direct API (api.deepseek.com, fleet-ops#4625, Nish 2026-09-09). LAST-RESORT metered rung — selected only after every other free / prepaid-quota / metered seat is unusable for a quota, credential, or health reason, verified on THREE consecutive pick evaluations >= 60s apart (lib/seat-lib.sh pick_seat triple-verify gate). A seat at capacity is NOT exhausted (busy != broken). At admission: GET /user/balance; if is_available=false or total_balance <= $0.50 USD, bench + raise MONEY-BOUNDARY via nish-boundary-notify. Models: deepseek-v4-flash (cap 4, worker), deepseek-v4-pro (cap 1, keystone-class only). Pricing from the live DeepSeek pricing page (banked in .fleet/deepseek-pricing-evidence.txt, fetched 2026-09-09). Live balance 2026-09-09: is_available=true, total_balance=$9.99."
     }
   ]
 }
