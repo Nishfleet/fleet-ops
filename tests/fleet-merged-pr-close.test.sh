@@ -67,18 +67,25 @@ case "$1" in
         ;;
       comment)
         # Append the --body so a later `issue view` sees it (dedup test).
+        # One body per line so the result-object mock below can rebuild the
+        # real {"comments":[...]} shape faithfully (fleet-ops#4599).
         body=$(printf '%s' "$*" | sed -n 's/.*--body //p')
-        printf '%s' "$body" >>"$FAKE_DIR/view-comments.txt"
+        printf '%s\n' "$body" >>"$FAKE_DIR/view-comments.txt"
         printf '%s\n' "$*" >>"$FAKE_DIR/comments.log"
         exit 0
         ;;
       view)
-        # --jq extracts comment bodies — return them as raw text lines so
-        # both the dedup grep (existing_comment) and the verdict-marker grep
-        # (verification-only terminal, fleet-ops#4274) work against real
-        # comment text, not a JSON wrapper.
+        # --jq: serve the REAL gh result-object shape {"comments":[...]} and
+        # run the script's OWN --jq expression against it (go-jq behavior),
+        # NOT a pre-flattened raw-text mock. The old mock fed the expression
+        # the array shape it expected, masking the fleet-ops#4599 bug where
+        # `.[]?.body` fails against gh's {"comments":[...]} result object.
+        # gh prints string results raw (jq -r), so emulate that exactly.
         if [[ "$*" == *"--jq"* ]]; then
-          cat "$FAKE_DIR/view-comments.txt" 2>/dev/null || true
+          expr=$(printf '%s' "$*" | sed -n 's/.*--jq //p')
+          jq -Rn '[inputs | {body:.}] | {comments:.}' \
+            < "$FAKE_DIR/view-comments.txt" 2>/dev/null \
+            | jq -r "$expr"
           exit 0
         fi
         printf '[{"body":"%s"}]' "$(cat "$FAKE_DIR/view-comments.txt" 2>/dev/null || true)"
@@ -549,6 +556,37 @@ out=$(run)
 grep -q 'VERDICT: PASS candidate' <<<"$out" || fail "close-off should report verdict candidate: $out"
 [[ -s "$scratch/closes.log" ]] && fail "close-off must not close live issues: $(cat "$scratch/closes.log")"
 ok "verification-only + close OFF -> candidate described, live repo untouched"
+
+# --- Case 11g: REGRESSION — jq expression vs the real gh result-object shape ---
+# fleet-ops#4599: the comments fetch used `.[]?.body // empty`, which fails
+# against gh's {"comments":[...]} result object (gh evaluates --jq against the
+# requested-fields object, not the bare array). Every verification-only tick
+# therefore died at the fetch with MERGED-PR-CLOSE-GH and retried forever.
+# Prove the OLD expression fails and the NEW one survives on the exact
+# result-object input from the issue — go-jq behavior, not a pre-flattened
+# mock (the old mock fed the expression the array shape it expected, which
+# is precisely why the bug shipped).
+result_obj='{"comments":[{"body":"VERDICT: PASS"}]}'
+if printf '%s' "$result_obj" | jq -r '.[]?.body // empty' >/dev/null 2>&1; then
+  fail "old expression must FAIL against the result object, not silently succeed"
+fi
+out=$(printf '%s' "$result_obj" | jq -r '.comments[]?.body // empty')
+grep -q 'VERDICT: PASS' <<<"$out" || fail "new expression must extract the body from the result object: $out"
+ok "regression: .comments[]?.body survives the result-object input; .[]?.body fails (fleet-ops#4599)"
+
+# --- Case 11h: verification-only close works through the REAL mock shape ---
+# The mock now serves {"comments":[...]} and runs the script's own --jq
+# expression (go-jq behavior). With the fix, a VERDICT: PASS comment survives
+# the fetch and the issue closes; without it this case would skip with
+# MERGED-PR-CLOSE-GH. This is the end-to-end regression for #4599.
+set_fixtures \
+  '[{"number":972,"title":"verify the cohort","labels":[{"name":"verification-only"},{"name":"agent-in-progress"}],"body":"verify only","author":{"login":"fleet-issue-bot"}}]' \
+  '[]'
+printf 'VERDICT: PASS\ncohort verified at 2026-08-26\n' >"$scratch/view-comments.txt"
+out=$(run FLEET_MERGED_PR_CLOSE_OK=1)
+grep -q 'CLOSED (verification-only VERDICT: PASS)' <<<"$out" || fail "real-shape mock must close on VERDICT: PASS: $out"
+grep -q 'issue close 972' "$scratch/closes.log" || fail "real-shape mock must call gh issue close 972: $(cat "$scratch/closes.log")"
+ok "verification-only close fires through the real result-object mock (fleet-ops#4599)"
 
 # --- Case 12: crash paths fail closed with rc 2 ---
 # gh missing

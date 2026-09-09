@@ -243,7 +243,7 @@ relates_to_issue() {
 
 existing_comment() {
     local repo="$1" n="$2" marker="$3"
-    "$GH" issue view "$n" -R "$repo" --json comments --jq '.[]?.body // empty' 2>/dev/null \
+    "$GH" issue view "$n" -R "$repo" --json comments --jq '.comments[]?.body // empty' 2>/dev/null \
         | grep -Fq "$marker"
 }
 
@@ -355,7 +355,7 @@ while IFS= read -r repo; do
                 continue
             fi
             if ! issue_comments=$("$GH" issue view "$num" -R "$repo" \
-                    --json comments --jq '.[]?.body // empty' 2>/dev/null); then
+                    --json comments --jq '.comments[]?.body // empty' 2>/dev/null); then
                 loud "MERGED-PR-CLOSE-GH" "$repo#$num: gh issue view comments failed — skip (next tick retries)"
                 continue
             fi
