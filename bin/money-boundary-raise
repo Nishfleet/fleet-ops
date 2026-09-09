@@ -63,6 +63,10 @@ BENCH_DAYS="${MONEY_BOUNDARY_BENCH_DAYS:-365}"
 DRY_RUN="${MONEY_BOUNDARY_DRY_RUN:-0}"
 CHECK_MODE="${MONEY_BOUNDARY_CHECK_MODE:-0}"
 SINCE_HOURS="${MONEY_BOUNDARY_SINCE_HOURS:-24}"
+# fleet-ops#4627: the per-seat health ledger (the router's cooldown state)
+# and the page-counter log. The ledger is the same dir SEAT_DIR benches into.
+SEAT_LEDGER_DIR="${MONEY_BOUNDARY_SEAT_LEDGER:-$AS/lanes/seats}"
+PAGES_LOG="${MONEY_BOUNDARY_PAGES_LOG:-$AS/lanes/money-boundary-pages.log}"
 
 # The same allowlist nish-boundary-notify scans to page Nish. Money is the
 # class this raise writes; refuse anything else so the script structurally
@@ -112,6 +116,52 @@ command -v jq >/dev/null 2>&1 || { echo "money-boundary-raise: jq required (benc
 class_gate_ok() {
     local cls="$1"
     printf '%s\n' "$CLASSES" | tr '|' '\n' | grep -qxF "$cls"
+}
+
+# --- fleet-ops#4627: starvation gate ----------------------------------------
+# A dry METERED provider is a lane fault, not a money decision, while any
+# prepaid/free seat can carry the work. Page Nish ONLY when the fleet is
+# starved. fleet_starved returns 0 (starved) when NO healthy prepaid/free
+# seat exists in seat-caps (+ the per-seat ledger, the router's cooldown
+# state); returns non-zero (not starved) when one does, so the caller
+# benches+logs the dry provider without paging.
+#
+# Fail-loud: when the seat state cannot be read (no caps, no ledger dir, or
+# jq missing) the function returns 0 (starved) so the page STILL fires — a
+# money boundary is the one alert that must never go silent on a blind
+# spot. A dry metered provider with a healthy prepaid/free fleet is the
+# only case this suppresses.
+#
+# A seat is "healthy prepaid/free" when its provider's class in seat-caps
+# is prepaid-quota / subscription / free (subscription is the pre-#387 name
+# for prepaid-quota; mirror lib/seat-lib.sh), the provider cap is > 0, AND
+# its per-seat ledger reports health_class=healthy with seat_dead != true.
+# spawn-bench / empty-success sibling markers are not seat ledgers.
+fleet_starved() {
+    [ -f "$CAPS" ] && [ -d "$SEAT_LEDGER_DIR" ] && command -v jq >/dev/null 2>&1 || return 0
+    local prov class f
+    while IFS=$'\t' read -r prov class; do
+        [ -n "$prov" ] || continue
+        case "$class" in
+            prepaid-quota|subscription|free) ;;
+            *) continue ;;
+        esac
+        for f in "$SEAT_LEDGER_DIR"/${prov}__*.json; do
+            [ -f "$f" ] || continue
+            case "$(basename "$f")" in
+                *.spawn-bench.json|*.empty-success*) continue ;;
+            esac
+            if jq -e '.health_class == "healthy" and .seat_dead != true' "$f" >/dev/null 2>&1; then
+                return 1   # not starved — a healthy prepaid/free seat exists
+            fi
+        done
+    done < <(jq -r '
+        .providers | to_entries[] | .key as $k | .value as $v |
+        (if ($v|type)=="number" then $v else ($v.cap // 0) end) as $cap |
+        select($cap > 0) |
+        [ $k, (if ($v|type)=="number" then "free" else ($v.class // "free") end) ] | @tsv
+    ' "$CAPS" 2>/dev/null || true)
+    return 0   # starved
 }
 
 # --- mode: guard / --check ------------------------------------------------
@@ -212,6 +262,32 @@ else
     append_done=0
 fi
 
+# --- fleet-ops#4627: starvation gate ---------------------------------------
+# reason for the page counter: provider_credits_dry (the credits leg, the
+# case this issue fixes) vs spend_over_boundary (the spend leg). The credits
+# leg is breached when credits_remaining_usd is a real number under 5.
+reason="spend_over_boundary"
+if printf '%s' "$CREDITS" | grep -qE '^-?[0-9]+(\.[0-9]+)?$' \
+   && awk -v c="$CREDITS" 'BEGIN{exit !(c < 5)}'; then
+    reason="provider_credits_dry"
+fi
+
+# A dry METERED provider is a lane fault while any prepaid/free seat can
+# carry the work. Only page when the fleet is starved; otherwise bench the
+# dry provider, log one line, no page. Deduped lines (append_done=1 above)
+# skip the gate — the page already fired today.
+page_suppressed=0
+if [ "$append_done" -eq 0 ] && ! fleet_starved; then
+    page_suppressed=1
+    append_done=1   # passes the hard gate below; NO ledger line is written
+    echo "money-boundary-raise: SUPPRESSED page for provider=${PROVIDER} — fleet not starved (healthy prepaid/free seats exist); benching + logging, no page (fleet-ops#4627)"
+    if [ "$DRY_RUN" -eq 0 ]; then
+        mkdir -p "$(dirname "$PAGES_LOG")" 2>/dev/null || true
+        printf '%s suppressed reason=%s provider=%s — fleet not starved; benched, no page\n' \
+            "$ts" "$reason" "$PROVIDER" >> "$PAGES_LOG" 2>/dev/null || true
+    fi
+fi
+
 # --- ledger append FIRST (before any bench write) -------------------------
 if [ "$append_done" -eq 0 ]; then
     if [ "$DRY_RUN" -eq 1 ]; then
@@ -227,6 +303,11 @@ if [ "$append_done" -eq 0 ]; then
         if grep -qE "^${today}T.* MONEY-BOUNDARY provider=${PROVIDER}([[:space:]]|\$)" "$NISH"; then
             echo "money-boundary-raise: appended ledger line $ledger_line"
             append_done=1
+            # fleet-ops#4627: count the page for the success metric
+            # nish_boundary_money_pages_total{reason=...}. One line per
+            # fresh page (deduped re-runs do not re-count).
+            mkdir -p "$(dirname "$PAGES_LOG")" 2>/dev/null || true
+            printf '%s reason=%s provider=%s\n' "$ts" "$reason" "$PROVIDER" >> "$PAGES_LOG" 2>/dev/null || true
         else
             echo "FAIL-LOUD: MONEY-BOUNDARY provider=${PROVIDER} still not in $NISH after append (bench aborted)" >&2
             exit 1
@@ -295,5 +376,9 @@ else
     echo "money-boundary-raise: no seat-caps roster found ($CAPS); ledger line written, no bench"
 fi
 
-echo "money-boundary-raise: raised money wall for provider=${PROVIDER} (ledger written first, $written seat(s) benched)"
+if [ "$page_suppressed" -eq 1 ]; then
+    echo "money-boundary-raise: benched provider=${PROVIDER} ($written seat(s)), page SUPPRESSED — fleet not starved (fleet-ops#4627)"
+else
+    echo "money-boundary-raise: raised money wall for provider=${PROVIDER} (ledger written first, $written seat(s) benched)"
+fi
 exit 0
