@@ -144,6 +144,31 @@ grep -q 'transformation-bet ID (BET n)' "$repo_root/prompts/scout.md" \
   || fail "A.6 must name bet IDs as a valid research-floor citation"
 ok "research floor: all-green usage + 3 bets => packet instructs filing research-cited candidates (fleet-ops#4560)"
 
+# 1c-c. Acquisition-first intake weighting (fleet-ops#4657): 0509 scout
+# candidates must name a funnel stage, else usage-uncited; while
+# signups-30d == 0, acquisition-class ranks above fix/polish-class inside
+# label_budget (the budget number itself is unchanged). Origin line and
+# one worked example of each class must stay in the prompt.
+grep -q 'funnel stage' "$repo_root/prompts/scout.md" \
+  || fail "scout.md must carry the 0509 funnel-stage rule (fleet-ops#4657)"
+grep -q 'funnel_stage:' "$repo_root/prompts/scout.md" \
+  || fail "scout.md must require a funnel_stage: line on 0509 scout-candidates"
+grep -qE 'usage-uncited.{0,2} instead of' "$repo_root/prompts/scout.md" \
+  || fail "scout.md must send missing funnel-stage candidates to usage-uncited instead of scout-candidate"
+grep -q 'acquisition-class' "$repo_root/prompts/scout.md" \
+  || fail "scout.md must carry the 0509 acquisition-class ranking rule"
+grep -q 'Origin: 2026-09-09 (fleet-ops#4657' "$repo_root/prompts/scout.md" \
+  || fail "scout.md ranking rule must carry the dated origin line (fleet-ops#4657)"
+grep -q 'must NOT block or freeze' "$repo_root/prompts/scout.md" \
+  || fail "scout.md must not freeze fix/polish (0509#2122)"
+grep -q 'Worked example — acquisition-class' "$repo_root/prompts/scout.md" \
+  || fail "scout.md must carry a worked example of acquisition-class"
+grep -q 'Worked example — fix/polish-class' "$repo_root/prompts/scout.md" \
+  || fail "scout.md must carry a worked example of fix/polish-class"
+! grep -qE 'Let `label_budget = [^8]' "$repo_root/prompts/scout.md" \
+  || fail "scout.md must not change the default label_budget = 8"
+ok "0509 acquisition-first intake weighting is in the scout prompt (fleet-ops#4657)"
+
 # 1d. CF analytics source is OPTIONAL (fleet-ops#3172): when the sanctioned
 # token lacks zone.analytics.read the GraphQL call returns a 403 authz error;
 # the source logs a one-line `usage-source: cloudflare-analytics UNAVAILABLE
