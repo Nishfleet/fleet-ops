@@ -122,8 +122,11 @@ ok "guard --check clean when the ledger line exists for every money_boundary sea
 
 # --- 3c. guard --check FAIL-LOUD on a missing ledger line ------------------
 # Add a second money_boundary seat whose provider has NO ledger line.
+# observed_at must be inside SINCE_HOURS (default 24h) or --check skips it.
 mkdir -p "$AS/lanes/seats"
-cat > "$AS/lanes/seats/orphan__model.json" <<'JSON'
+obs="$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ)"
+until="$(date -u -d '365 days' +%Y-%m-%dT%H:%M:%SZ)"
+cat > "$AS/lanes/seats/orphan__model.json" <<JSON
 {
   "provider": "orphan",
   "model": "model",
@@ -131,9 +134,9 @@ cat > "$AS/lanes/seats/orphan__model.json" <<'JSON'
   "retryable": true,
   "seat_dead": false,
   "source": "money_boundary",
-  "observed_at": "2026-09-08T06:00:00Z",
-  "bench_until": "2027-09-08T06:00:00Z",
-  "usable_at": "2027-09-08T06:00:00Z"
+  "observed_at": "$obs",
+  "bench_until": "$until",
+  "usable_at": "$until"
 }
 JSON
 if MONEY_BOUNDARY_AS="$AS" "$script" --check >"$scratch/orphan.log" 2>&1; then
@@ -148,7 +151,7 @@ ok "guard --check FAIL-LOUDs on a missing MONEY-BOUNDARY line for a benched prov
 rm -f "$AS/lanes/seats/orphan__model.json"
 bdir="$AS/alert-repair/spend-boundary-prebench-20260908T070000Z"
 mkdir -p "$bdir"
-cat > "$bdir/orphan__model.json" <<'JSON'
+cat > "$bdir/orphan__model.json" <<JSON
 {
   "provider": "orphan",
   "model": "model",
@@ -156,9 +159,9 @@ cat > "$bdir/orphan__model.json" <<'JSON'
   "retryable": true,
   "seat_dead": false,
   "source": "money_boundary",
-  "observed_at": "2026-09-08T06:00:00Z",
-  "bench_until": "2027-09-08T06:00:00Z",
-  "usable_at": "2027-09-08T06:00:00Z"
+  "observed_at": "$obs",
+  "bench_until": "$until",
+  "usable_at": "$until"
 }
 JSON
 if MONEY_BOUNDARY_AS="$AS" "$script" --check >"$scratch/bdir.log" 2>&1; then
