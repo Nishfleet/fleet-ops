@@ -104,15 +104,19 @@ REOPEN = re.compile(
 BLOCKED_ON = re.compile(r"(?im)^blocked-on:\s*(.+?)\s*$")
 # Valid nish-decision reasons (fleet-ops#4260 — the canonical Nish-reserved
 # list): money/pay/price/pricing/billing, legal, brand, product direction,
-# customer data/deletion, credentials, or an authority Nish explicitly
-# reserved. Any other use of `blocked-on: nish-decision` is rewritten to
-# `blocked-on: orchestrator`. "credential" is on the list because only Nish
-# can mint an account token; without it the sweep NISH verdict on a
-# credential-boundary issue is rejected and the issue is re-parked as
-# needs-orchestrator (FleetNeedsOrchestratorStale).
+# customer data/deletion, credentials/secrets/tokens/account-login, or an
+# authority Nish explicitly reserved. Any other use of `blocked-on:
+# nish-decision` is rewritten to `blocked-on: orchestrator`. Credentials,
+# secrets, tokens, and account-login are on the list because only Nish can
+# mint/rotate an account token or log into an account; without them the sweep
+# NISH verdict on a credential-boundary issue is rejected and the issue is
+# re-parked as needs-orchestrator every tick — a bounce loop that pins
+# needs-orchestrator p50 above the alert threshold (fleet-ops#4776,
+# FleetNeedsOrchestratorStale).
 NISH_REASON = re.compile(
     r"(?i)\b(money|pay|price|pricing|billing|legal|brand|deletion|"
-    r"credential|product[\s/-]*direction|customer[\s/-]*data|reserved)\b"
+    r"credentials?|secret|token|account[\s/-]*login|"
+    r"product[\s/-]*direction|customer[\s/-]*data|reserved)\b"
 )
 COMMENT_ID_URL = re.compile(r"#issuecomment-(\d+)$")
 BLOCKED_BY = re.compile(
@@ -142,7 +146,8 @@ def reject_nish_decisions(text):
 
     A `blocked-on: nish-decision` line is valid only if the same text
     (title, body, or comment) names an allowed reason: money/pay/price/
-    billing, legal, product direction/brand, or customer data/deletion.
+    billing, legal, product direction/brand, customer data/deletion, or
+    credentials/secrets/tokens/account-login.
     Returns (new_text, count_of_rewritten_lines).
     """
     if not BLOCKED_ON.search(text):

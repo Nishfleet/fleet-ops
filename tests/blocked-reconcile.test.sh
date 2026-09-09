@@ -82,6 +82,29 @@ got=$(extract '{"repo":"Nishfleet/0509","number":50,"title":"x","body":"blocked-
 [[ "$(printf '%s' "$got" | jq -r '.rejected_count')" == "0" ]] || fail "credential nish-decision must not be rejected: $got"
 ok "credential boundary stays a nish-decision"
 
+# fleet-ops#4776: credentials (plural), secret, token, and account-login are
+# Nish-reserved too. A blocked-on: nish-decision line with any of these
+# reasons must survive the reconcile (not be rewritten to orchestrator),
+# otherwise the issue bounces between needs-orchestrator and nish-decision
+# every tick (FleetNeedsOrchestratorStale).
+for reason in \
+  "mint a Cloudflare Analytics:Read token needs Nish's login" \
+  "rotate the deploy secret" \
+  "Nish must mint the Cloudflare Analytics:Read credentials." \
+  "blocked on account login — only Nish has the password"; do
+  got=$(extract "$(jq -nc --arg r "$reason" '{repo:"Nishfleet/0509",number:50,title:"x",body:("blocked-on: nish-decision\n"+$r+"\n"),comments:[]}')")
+  [[ "$(printf '%s' "$got" | jq -r '.kind')" == "nish-decision" ]] || fail "nish-reserved reason should stay nish-decision [$reason]: $got"
+  [[ "$(printf '%s' "$got" | jq -r '.rejected_count')" == "0" ]] || fail "nish-reserved reason must not be rejected [$reason]: $got"
+done
+ok "credentials/secret/token/account-login reasons stay nish-decision (fleet-ops#4776)"
+
+# An unrelated reason (no Nish-reserved keyword) is still rejected — existing
+# behavior preserved (fleet-ops#4776 accept bullet 2).
+got=$(extract '{"repo":"Nishfleet/0509","number":50,"title":"x","body":"blocked-on: nish-decision\njust needs a code review and a docs pass\n","comments":[]}')
+[[ "$(printf '%s' "$got" | jq -r '.orchestrator')" == "true" ]] || fail "unrelated reason should set orchestrator flag: $got"
+[[ "$(printf '%s' "$got" | jq -r '.rejected_count')" == "1" ]] || fail "unrelated reason must be rejected: $got"
+ok "unrelated reason is still rejected (existing behavior preserved)"
+
 got=$(extract '{"repo":"Nishfleet/0509","number":50,"title":"x","body":"go","comments":[{"body":"claimed by pi-issue-0509-50 at 2026-08-25T05:47:37Z"}]}')
 [[ "$(printf '%s' "$got" | jq -r '.kind')" == "nish-decision" ]] || fail "claim comment: $got"
 ok "claim comments are ignored"
