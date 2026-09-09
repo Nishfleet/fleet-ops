@@ -1,0 +1,25 @@
+Fetched live 2026-09-09 from https://api-docs.deepseek.com/quick_start/pricing
+(JS-rendered Docusaurus table; read via headless browser innerText.)
+
+Per 1M tokens, PEAK rates (off-peak = half of peak; peak = Mon-Fri 01:00-04:00 & 06:00-10:00 UTC):
+
+  deepseek-v4-flash:
+    input  (cache miss, peak): $0.44
+    output (peak):             $1.32
+    input  (cache hit,  peak): $0.014   -> cost.cacheRead
+  deepseek-v4-pro:
+    input  (cache miss, peak): $1.32
+    output (peak):             $3.96
+    input  (cache hit,  peak): $0.044   -> cost.cacheRead
+
+  Context length: 1M (1,000,000)
+  Max output:     MAXIMUM 384K (repo convention uses a conservative Pi-side maxTokens default, not the API max — see ollama deepseek-v4-flash:0731 maxTokens 16384)
+  Concurrency:    flash 2500, pro 500
+
+config/pi-models.json providers.deepseek (carried to repo by fleet-ops#4712) cost fields match the PEAK rates above:
+  flash: input 0.44, output 1.32, cacheRead 0.014
+  pro:   input 1.32, output 3.96, cacheRead 0.044
+
+Live API re-verified 2026-09-09:
+  GET /models -> deepseek-v4-flash, deepseek-v4-pro, deepseek-v4-flash-vision-exp
+  GET /user/balance -> is_available:true, total_balance 9.99 USD (topped_up 9.99, granted 0.00)
