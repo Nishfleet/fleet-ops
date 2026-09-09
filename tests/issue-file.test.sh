@@ -269,4 +269,7 @@ do
 done
 ok "wired auto-filers route through the helper"
 
+# --- 9. standards-drift dedupe keys on the missing file (fleet-ops#4591) ---
+bash "$here/standards-drift-dedupe.test.sh"
+
 echo "OK: issue-file same-problem dedupe (fleet-ops#1212)"

@@ -111,6 +111,19 @@ SEAT_DEAD_RE = re.compile(r"\bseat_dead\s*[:=]\s*true\b")
 COMMON_SIGNALS = frozenset()
 PRIMARY_SIGNAL_PREFIXES = ("signal/", "fleet/seat-crisis")
 
+# fleet-ops#4591: standards-drift issues are per-FILE problems. Two drift
+# signals from the same family (`standards-drift/<repo>/<file>`) with DIFFERENT
+# file components are distinct problems, even though their bodies share
+# identical boilerplate that would otherwise swing token overlap to ~1.0 and
+# collapse them as score=1.00 duplicates (one closed secret-scan.yml issue
+# silently swallowed semgrep.yml / review-gate.yml / auto-enqueue.yml). This
+# family is "one item per concrete key": distinct keys mean distinct missing
+# files, so the shared template must not count as duplicate evidence.
+SAME_ITEM_SIGNAL_FAMILIES = ("standards-drift",)
+# A divergent same-item pair is never a duplicate; keep it below the borderline
+# so it files clean instead of being collapsed or marked.
+DIVERGENT_SIGNAL_CAP = BORDERLINE_THRESHOLD - 0.01
+
 
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parent
@@ -215,6 +228,22 @@ def _is_primary_signal(signal: str) -> bool:
     return signal.startswith(PRIMARY_SIGNAL_PREFIXES)
 
 
+def _same_item_signal_divergence(
+    signals_a: set[str], signals_b: set[str]
+) -> bool:
+    """True when both sides carry explicit concrete `signal:` keys from the
+    same per-item family (e.g. `standards-drift/<repo>/<file>`) but with
+    disjoint key sets. Distinct concrete keys = distinct problems; the shared
+    boilerplate is a template, not duplicate evidence (fleet-ops#4591)."""
+    for family in SAME_ITEM_SIGNAL_FAMILIES:
+        prefix = f"signal/{family}"
+        a = {k for k in signals_a if k.startswith(prefix)}
+        b = {k for k in signals_b if k.startswith(prefix)}
+        if a and b and not (a & b):
+            return True
+    return False
+
+
 def score_pair(
     title_a: str,
     body_a: str,
@@ -240,6 +269,11 @@ def score_pair(
     score = min(1.0, max(t, b) + key_bonus + secondary_bonus)
     if primary_shared:
         score = max(score, PRIMARY_SIGNAL_FLOOR)
+    if _same_item_signal_divergence(signals_a, signals_b):
+        # Distinct concrete signals in the same per-item family: the token
+        # overlap is shared template boilerplate, not evidence of the same
+        # problem. Cap below borderline so the pair files clean (fleet-ops#4591).
+        score = min(score, DIVERGENT_SIGNAL_CAP)
 
     return {
         "score": round(score, 4),
