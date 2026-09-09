@@ -6,10 +6,12 @@
 # cap. Caps live in config/seat-caps.json (not hardcoded) so fleet-ops PRs can
 # tune them without touching code. Selection order (fleet-ops#387): free
 # lanes first, then prepaid-quota alternating (never stack one prepaid dry),
-# then metered last. prepaid_providers_in_order is expiry-first among
-# prepaid. Caps add an UPPER bound per provider and per model, never a lower
-# one. Classes: free / prepaid-quota / metered (subscription is an alias of
-# prepaid-quota).
+# then metered last, then LAST-RESORT (last_resort:true, deepseek direct).
+# prepaid_providers_in_order is expiry-first among prepaid. Caps add an
+# UPPER bound per provider and per model, never a lower one. Classes: free /
+# prepaid-quota / metered (subscription is an alias of prepaid-quota).
+# last_resort is a rung BELOW every class (fleet-ops#4625): admitted only
+# after 3 consecutive exhaustion observations at least 60 s apart.
 #
 # fleet-ops#1133: a packet that declares `difficulty: keystone` inverts that
 # cost-first walk (prepaid capable first, then metered, free last) and
@@ -408,6 +410,12 @@ declare -A SEAT_FREE_DAILY_REQUEST_BUDGET=()
 # last-resort bucket pick_seat appends after every other class, so it is
 # offered only when no free/prepaid seat is usable.
 declare -A SEAT_PRODUCT_ONLY=()
+# fleet-ops#4625: last_resort seats sit below every class. Keyed on
+# "provider" (provider-level last_resort:true) and "provider/model".
+declare -A SEAT_LAST_RESORT=()
+# fleet-ops#4625: model-level keystone_only (deepseek-v4-pro). Provider-level
+# cursor stays on _provider_is_keystone_only; this map is the model flag.
+declare -A SEAT_KEYSTONE_ONLY=()
 # fleet-ops#3724: per-seat daily USD spend cap measured from Pi session
 # usage.cost (the same source the fleet-ops#3283 fleet_seat_spend_usd export
 # aggregates). When today's (UTC) spend on the seat reaches this, seat-lib
@@ -548,6 +556,8 @@ load_seat_caps() {
     SEAT_CAP_ZERO_CLASS_INTENTIONAL=()
     SEAT_CAP_ZERO_CLASS_STALE=()
     SEAT_PRODUCT_ONLY=()
+    SEAT_LAST_RESORT=()
+    SEAT_KEYSTONE_ONLY=()
     SEAT_DAILY_SPEND_CAP_USD=()
     SEAT_PROVIDER_DAILY_BUDGET_USD=()
     SEAT_PROVIDER_DAILY_STOP_USD=()
@@ -635,6 +645,8 @@ load_seat_caps() {
         # carry it at provider level via #3505). A seat carrying audition: true
         # is only eligible for packet_difficulty light — pick_seat gates it.
         [[ "$audition" == "true" ]] && SEAT_AUDITION["$p"]=1
+        # fleet-ops#4625: provider-level last_resort. Loaded in a dedicated
+        # pass below (jq already consumed this loop's fields).
     # A provider may be a bare number (shorthand for cap=N, class=free, no
     # models — e.g. "devin": 0). Indexing .value.cap on a number crashes jq
     # and, with `2>/dev/null || true`, silently empties the whole cap map —
@@ -704,6 +716,11 @@ load_seat_caps() {
             [[ "$mpo" == "true" ]] && SEAT_PRODUCT_ONLY["$p/$m"]=1
             mspend=$(jq -r '.daily_spend_cap_usd // ""' <<<"$cap" 2>/dev/null || true)
             [[ "$mspend" =~ ^[0-9]+(\.[0-9]+)?$ ]] && SEAT_DAILY_SPEND_CAP_USD["$p/$m"]="$mspend"
+            local mlr mko
+            mlr=$(jq -r '.last_resort // false' <<<"$cap" 2>/dev/null || true)
+            [[ "$mlr" == "true" ]] && SEAT_LAST_RESORT["$p/$m"]=1
+            mko=$(jq -r '.keystone_only // false' <<<"$cap" 2>/dev/null || true)
+            [[ "$mko" == "true" ]] && SEAT_KEYSTONE_ONLY["$p/$m"]=1
         fi
     # Unit separator (\x1f), not TSV, for the same reason the providers loop
     # uses it: bash `read` collapses consecutive tabs, so an empty per-model
