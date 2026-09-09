@@ -587,7 +587,12 @@ if (( rc != 0 )) && (( ! spawn_fail_triggered )); then
     err_for_scan=""
     [[ -f "$out_file" ]] && out_for_scan=$(cat "$out_file" 2>/dev/null || true)
     [[ -f "$err_file" ]] && err_for_scan=$(cat "$err_file" 2>/dev/null || true)
-    if is_quota_cap_error "$out_for_scan" "$err_for_scan"; then
+    if is_credentials_error "$out_for_scan" "$err_for_scan"; then
+        seat_log "pi-issue-run: $inst CREDENTIALS 401 on $np/$nm (rc=$rc) — 1h credentials_bad bench, corpse only after 24 strikes (fleet-ops#4640)"
+        if mark_seat_credentials_bad "$np" "$nm" "$out_for_scan"$'\n'"$err_for_scan"; then
+            seat_log "pi-issue-run: $inst seat $np/$nm credentials-bad benched; next Restart skips via usable_at"
+        fi
+    elif is_quota_cap_error "$out_for_scan" "$err_for_scan"; then
         seat_log "pi-issue-run: $inst QUOTA/CAP WALL on $np/$nm (rc=$rc) — benching seat for its reset window"
         if mark_seat_quota_bench "$np" "$nm" "$out_for_scan"$'\n'"$err_for_scan"; then
             seat_log "pi-issue-run: $inst seat $np/$nm benched; next systemd Restart will skip it via pick_seat (excluded by bench_until)"

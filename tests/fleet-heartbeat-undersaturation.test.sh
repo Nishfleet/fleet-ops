@@ -336,6 +336,15 @@ exit 0
 FAKE
 chmod +x "$pi_bin_fake"
 export PI_BIN="$pi_bin_fake"
+# fleet-ops#4640: running==0 ticks call comeback-release --false-wall-only.
+# Default stub is a no-op so existing wedge/repair scenarios stay hermetic.
+comeback_fake="$scratch/comeback-release"
+cat >"$comeback_fake" <<'FAKE'
+#!/usr/bin/env bash
+exit 0
+FAKE
+chmod +x "$comeback_fake"
+export FLEET_SEAT_COMEBACK_BIN="$comeback_fake"
 export WORK_READY="$scratch/work_ready"
 export WORK_INPROGRESS="$scratch/work_inprogress"
 # fleet-ops#1558: pin the admit floor so scenarios do not read live
@@ -935,6 +944,40 @@ grep -q 'UNDERSAT-REPAIR' "$triage" \
 ! grep -q 'UNDERSAT-FILTER-LIMITED' "$triage" \
     || fail "scenario13b: triage must NOT have UNDERSAT-FILTER-LIMITED (stale claims)"
 ok "scenario13b: ready>>admit + running<admit + STALE claims -> normal repair ladder fires (fleet-ops#3218)"
+
+# Scenario 14 (fleet-ops#4640): ready>0 AND running==0 with recent claims
+# is NOT FILTER-LIMITED. A PONG from a benched non-money seat is a false
+# wall: UNDERSAT-FALSE-WALL, exit 1.
+reset_state
+export FLEET_UNDERSAT_ADMIT_CEILING=5
+printf '29\n' >"$scratch/work_ready"
+printf '0\n' >"$scratch/work_inprogress"
+: >"$scratch/running_units"
+: >"$scratch/failed_units"
+: >"$scratch/live_seat_units"
+now_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+printf '%s claimed line=4640 repo=fleet-ops\n' "$now_ts" >"$claims_log"
+cat >"$comeback_fake" <<'FAKE'
+#!/usr/bin/env bash
+echo "SEAT-WALL-FALSE devin/glm-5-2 writer=mark_seat_quota_bench PONG — released despite future wall (fleet-ops#4640)" >&2
+exit 0
+FAKE
+chmod +x "$comeback_fake"
+
+run_helper
+[[ "$env_rc" == 1 ]] \
+    || fail "scenario14: false-wall PONG must exit 1, got $env_rc ($env_out)"
+grep -q 'UNDERSAT-FALSE-WALL' "$triage" \
+    || fail "scenario14: triage missing UNDERSAT-FALSE-WALL: $(cat "$triage")"
+! grep -q 'UNDERSAT-FILTER-LIMITED' "$triage" \
+    || fail "scenario14: must NOT take FILTER-LIMITED while running==0: $(cat "$triage")"
+ok "scenario14: ready>0 running==0 + PONG -> UNDERSAT-FALSE-WALL, not FILTER-LIMITED (fleet-ops#4640)"
+# Restore the no-op stub for any later scenarios.
+cat >"$comeback_fake" <<'FAKE'
+#!/usr/bin/env bash
+exit 0
+FAKE
+chmod +x "$comeback_fake"
 
 # Restore the default admit pin.
 export FLEET_UNDERSAT_ADMIT_CEILING=25

@@ -3803,6 +3803,11 @@ bash "$here/scout-prompt-difficulty.test.sh" || fail "scout-prompt-difficulty te
 # P14 test-listing gate goes green without a workflow edit.
 bash "$here/seat-failure-ceiling.test.sh" || fail "seat-failure-ceiling tests failed"
 
+# fleet-ops#4640: writer invariant (no_block LANE-FAULT, 6h WALL-REFUSED,
+# 401 1h/24 corpse). Hosted here so the P14 listing gate stays green
+# without a workflow edit.
+bash "$here/seat-wall-cap.test.sh" || fail "seat-wall-cap tests failed"
+
 # fleet-ops#2594: tests/seat-quota-corpse.test.sh proves the
 # quota_cap -> seat_dead corpse reclassification in mark_seat_quota_bench
 # (the live opencode/mimo-v2.5-free snapshot at c>=25). Hosted here from

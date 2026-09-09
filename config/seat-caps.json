@@ -320,7 +320,7 @@
       "class": "prepaid-quota",
       "quota_window": "weekly",
       "weekly_budget": 30,
-      "quota_bench_default_s": 604800,
+      "quota_bench_default_s": 3600,
       "usd_per_1m_input": 2.0,
       "usd_per_1m_output": 6.0,
       "usd_per_1m_cached": 0.5,

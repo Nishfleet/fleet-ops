@@ -97,6 +97,8 @@ mark_seat_spawn_fail() {
 # Mirror the real seat-lib detectors (fleet-ops#623): "insufficient funds" is
 # NOT a quota_cap match in production either, so a 402 falls through to
 # mark_seat_spawn_fail — that is the live tight-loop path this fix targets.
+is_credentials_error() { return 1; }
+mark_seat_credentials_bad() { return 1; }
 is_quota_cap_error() {
   local out="$1" err="$2"
   local combined="$out"$'\n'"$err"

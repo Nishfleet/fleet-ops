@@ -100,7 +100,7 @@
 #   - Times out each probe (default 45s). A clean sweep with nothing to do
 #     exits 0; the one-shot unit treats a no-op as success, not failure.
 #
-# Usage: fleet-seat-comeback-release [--dry-run]
+# Usage: fleet-seat-comeback-release [--dry-run|--help|--false-wall-drill|--false-wall-only]
 #
 # Env (tests):
 #   PI_SEAT_HEALTH_LEDGER_DIR   seat ledger dir (default
@@ -248,8 +248,34 @@ OVERLOAD_WALL_MIN_STRIKES="${FLEET_SEAT_COMEBACK_OVERLOAD_WALL_MIN_STRIKES:-4}"
 OVERLOAD_WALL_BASE_S="${FLEET_SEAT_COMEBACK_OVERLOAD_WALL_BASE_S:-1800}"
 OVERLOAD_WALL_MAX_S="${FLEET_SEAT_COMEBACK_OVERLOAD_WALL_MAX_S:-21600}"
 PROBE_TOKEN="${FLEET_SEAT_COMEBACK_PROBE_TOKEN:-42}"
+PONG_TOKEN="${FLEET_SEAT_COMEBACK_PONG_TOKEN:-PONG}"
+FALSE_WALL_PROBE_S="${FLEET_SEAT_COMEBACK_FALSE_WALL_PROBE_S:-3600}"
 DRY_RUN=0
-[[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
+FALSE_WALL_DRILL=0
+FALSE_WALL_ONLY=0
+case "${1:-}" in
+    --dry-run) DRY_RUN=1 ;;
+    --false-wall-drill) FALSE_WALL_DRILL=1 ;;
+    --false-wall-only) FALSE_WALL_ONLY=1 ;;
+    --help|-h)
+        cat <<'EOF'
+Usage: fleet-seat-comeback-release [--dry-run|--false-wall-drill|--false-wall-only|--help]
+
+Sweep walled seats. Expired walls get a tool-using probe. Non-money
+future walls longer than 1h with cap>0 get a 1-turn PONG at most once
+per hour (fleet-ops#4640); PONG releases the seat and logs
+SEAT-WALL-FALSE.
+
+  --dry-run            log probes, write nothing
+  --false-wall-drill   inject a 24h wall on one cap>0 non-money seat,
+                       probe it, require SEAT-WALL-FALSE + release
+  --false-wall-only    skip expired-wall tool probes; only the hourly
+                       PONG of long non-money walls (undersaturation)
+  --help               this text
+EOF
+        exit 0
+        ;;
+esac
 
 log() {
     printf '[%s] [fleet-seat-comeback-release] %s\n' \
@@ -360,9 +386,11 @@ quota_exhausted_in_pqe_window() {
 # 2026-09-09) stopped routing but not re-probes. A probe on that 402
 # account wall re-anchors observed_at and retriggers
 # FleetProviderQuotaExhausted. Returns 0 (true) while the marker clock
-# is strictly in the future.
+# Returns 0 (true) while the marker clock is strictly in the future AND the
+# wall is a money/402 hold (fleet-ops#4659). A non-money future marker is
+# NOT a hold — fleet-ops#4640 wire-probes those hourly.
 spawn_bench_held() {
-    local p="$1" m="$2" mk usable we now_e ps ms
+    local p="$1" m="$2" mk usable we now_e ps ms f fm
     ps="${p//[^A-Za-z0-9._-]/_}"
     ms="${m//[^A-Za-z0-9._-]/_}"
     mk="$LEDGER/${ps}__${ms}.spawn-bench.json"
@@ -371,7 +399,28 @@ spawn_bench_held() {
     we=$(ts_epoch "$usable")
     [[ -n "$we" ]] || return 1
     now_e=$(now_epoch)
-    (( we > now_e )) && return 0
+    (( we > now_e )) || return 1
+    f="$LEDGER/${ps}__${ms}.json"
+    ledger_is_money_wall "$f" && return 0
+    fm=$(jq -r '.failure_mode // ""' "$mk" 2>/dev/null || true)
+    [[ "$fm" == "quota_exhausted" ]] && return 0
+    return 1
+}
+
+# True when this ledger row is a money wall (#3284 / 402). Those stay
+# un-probed until the wall expires. Everything else is fair game for the
+# hourly false-wall PONG (fleet-ops#4640).
+ledger_is_money_wall() {
+    local f="$1" hc src st fm
+    [[ -f "$f" ]] || return 1
+    hc=$(jq -r '.health_class // ""' "$f" 2>/dev/null || true)
+    src=$(jq -r '.source // ""' "$f" 2>/dev/null || true)
+    st=$(jq -r '.http_status // 0' "$f" 2>/dev/null || true)
+    fm=$(jq -r '.failure_mode // ""' "$f" 2>/dev/null || true)
+    [[ "$src" == "money_boundary" ]] && return 0
+    [[ "$hc" == "quota_exhausted" ]] && return 0
+    [[ "$fm" == "quota_exhausted" ]] && return 0
+    [[ "$st" == "402" ]] && return 0
     return 1
 }
 
@@ -529,6 +578,128 @@ probe_seat() {
     log "probe $p/$m failed (rc=$rc, out=${out:0:120}…, no computed tool token) — seat stays walled; the extension re-anchors on the real response"
     return 1
 }
+
+# fleet-ops#4640: 1-turn PONG. The lived false wall was a wrapper-stamped
+# 365d usable_at while `pi --print` still answered PONG. Tool-using 42 is
+# the expired-wall probe; this is the cheap "is the provider even up"
+# check that must release a non-money future wall.
+probe_seat_pong() {
+    local p="$1" m="$2" out rc
+    if (( DRY_RUN )); then
+        log "DRY-RUN: would PONG-probe $p/$m (1-turn ${PONG_TOKEN})"
+        return 0
+    fi
+    log "false-wall PONG probe $p/$m (fleet-ops#4640)"
+    set +e
+    out=$(timeout "$PROBE_TIMEOUT" "$PI_BIN" --print --provider "$p" --model "$m" \
+        "Reply with exactly: ${PONG_TOKEN}" 2>/dev/null)
+    rc=$?
+    set -e
+    if (( rc == 0 )) && [[ -n "$out" ]] && grep -qw "$PONG_TOKEN" <<<"$out"; then
+        log "PONG $p/$m succeeded"
+        return 0
+    fi
+    log "PONG $p/$m failed (rc=$rc, out=${out:0:120}…) — wall held"
+    return 1
+}
+
+seat_cap_positive() {
+    local p="$1" m="$2" c
+    if declare -F model_cap >/dev/null 2>&1; then
+        c=$(model_cap "$p" "$m")
+        [[ "$c" =~ ^[0-9]+$ ]] && (( c > 0 )) && return 0
+    fi
+    return 1
+}
+
+release_false_wall() {
+    local p="$1" m="$2" f="$3"
+    local writer mk mw
+    writer=$(jq -r '.writer // "unknown"' "$f" 2>/dev/null || echo unknown)
+    mk="${f%.json}.spawn-bench.json"
+    if [[ -f "$mk" ]]; then
+        mw=$(jq -r '.writer // empty' "$mk" 2>/dev/null || true)
+        [[ -n "$mw" ]] && writer="$mw"
+    fi
+    if unwall_seat "$p" "$m" "$f" 1; then
+        rm -f "$mk" 2>/dev/null || true
+        log "SEAT-WALL-FALSE $p/$m writer=$writer PONG — released despite future wall (fleet-ops#4640)"
+        return 0
+    fi
+    return 1
+}
+
+# Hourly PONG of a LONG non-money future wall. Short walls (re-bench,
+# 15-min 429) wait for the expired-wall tool probe. Money walls stay held.
+try_false_wall_release() {
+    local p="$1" m="$2" f="$3" base="$4"
+    local usable_e remain lastp now_e ue
+    ledger_is_money_wall "$f" && return 1
+    seat_cap_positive "$p" "$m" || return 1
+    ue=$(jq -r '.usable_at // ""' "$f" 2>/dev/null || true)
+    usable_e=$(ts_epoch "$ue")
+    [[ -n "$usable_e" ]] || return 1
+    now_e=$(now_epoch)
+    remain=$(( usable_e - now_e ))
+    (( remain > FALSE_WALL_PROBE_S )) || return 1
+    lastp="${last_probe["$base"]:-0}"
+    if (( ! FALSE_WALL_DRILL )) && (( lastp > 0 )) && (( now_e - lastp < FALSE_WALL_PROBE_S )); then
+        log "skip false-wall PONG $p/$m: last probe $((now_e - lastp))s ago (< ${FALSE_WALL_PROBE_S}s)"
+        return 1
+    fi
+    last_probe["$base"]="$now_e"
+    if probe_seat_pong "$p" "$m"; then
+        ((probed++)) || true
+        if declare -F reset_overload_strikes >/dev/null 2>&1; then
+            reset_overload_strikes "$p"
+        fi
+        OWN_FAIL["$base"]="0"
+        release_false_wall "$p" "$m" "$f"
+        return $?
+    fi
+    ((probed++)) || true
+    return 1
+}
+
+run_false_wall_drill() {
+    local p="${FLEET_SEAT_COMEBACK_DRILL_PROVIDER:-}"
+    local m="${FLEET_SEAT_COMEBACK_DRILL_MODEL:-}"
+    local f wall_iso now_e backup
+    now_e=$(now_epoch)
+    if [[ -z "$p" || -z "$m" ]]; then
+        log "FALSE-WALL-DRILL: set FLEET_SEAT_COMEBACK_DRILL_PROVIDER and FLEET_SEAT_COMEBACK_DRILL_MODEL"
+        return 1
+    fi
+    if declare -F seat_ledger_path >/dev/null 2>&1; then
+        f=$(seat_ledger_path "$p" "$m")
+    else
+        f="$LEDGER/${p//[^A-Za-z0-9._-]/_}__${m//[^A-Za-z0-9._-]/_}.json"
+    fi
+    mkdir -p "$(dirname "$f")" 2>/dev/null || true
+    backup="${f}.drill-backup"
+    [[ -f "$f" ]] && cp -a "$f" "$backup"
+    wall_iso=$(date -u -d "@$((now_e + 86400))" +%Y-%m-%dT%H:%M:%SZ)
+    jq -nc --arg p "$p" --arg m "$m" --arg now "$(now_iso)" --arg wall "$wall_iso" \
+        '{provider:$p, model:$m, http_status:429, retry_after:null,
+          health_class:"rate_limited", retryable:true, seat_dead:false,
+          poison_ladder:false, observed_at:$now, source:"false_wall_drill",
+          failure_mode:"rate_limit", usable_at:$wall, bench_until:$wall,
+          consecutive_failure_count:1, writer:"false-wall-drill"}' > "$f"
+    probed=0
+    declare -A OWN_FAIL=()
+    declare -A last_probe=()
+    if probe_seat_pong "$p" "$m" && release_false_wall "$p" "$m" "$f"; then
+        log "FALSE-WALL-DRILL pass $p/$m"
+        rm -f "$backup"
+        return 0
+    fi
+    log "LOUD FALSE-WALL-DRILL FAILED $p/$m — seat did not PONG-release"
+    if [[ -f "$backup" ]]; then
+        mv "$backup" "$f"
+    fi
+    return 1
+}
+
 # Write the healthy observation that UNWALLS a seat. Mirrors the
 # seat-health extension's writeSeatLedgerEntry healthy branch (failure_mode
 # "none" -> count 0, seat_dead false, usable_at null). Guarded: only writes
@@ -544,11 +715,11 @@ probe_seat() {
 # via wall_end_of and silently refused to unwall force-probed seats, the
 # exact never-probed-comeback failure the issue names.
 unwall_seat() {
-    local p="$1" m="$2" f="$3" usable we now_e
+    local p="$1" m="$2" f="$3" force="${4:-0}" usable we now_e
     now_e=$(now_epoch)
     usable=$(jq -r '.usable_at // ""' "$f" 2>/dev/null || true)
     we=$(ts_epoch "$usable")
-    if [[ -n "$we" ]] && (( we >= now_e )); then
+    if [[ "$force" != "1" ]] && [[ -n "$we" ]] && (( we >= now_e )); then
         log "skip unwall $p/$m: usable_at moved to the future ($usable) — concurrent failure re-anchored"
         return 1
     fi
@@ -1096,6 +1267,10 @@ retire_phantom_ledger() {
 # --- sweep -------------------------------------------------------------------
 main() {
     local now state probed_total released_total probed=0 released_this_run=0
+    if (( FALSE_WALL_DRILL )); then
+        run_false_wall_drill
+        return $?
+    fi
     now=$(now_epoch)
     state=$(load_state)
     probed_total=$(jq -r '(.probed_total // 0)' <<<"$state")
@@ -1467,18 +1642,31 @@ main() {
         # silently skipped; it is re-probed here. A successful probe unwalls
         # it; a failed probe re-benches (or corpses at the threshold). The
         # no-wall state is a stuck comeback, not a defensive hold.
+        local future_held=0
         if [[ -n "$we" ]] && (( we > now )); then
             # bench_until is held. Skip UNLESS usable_at (the original
             # failure clock) is past — force the probe to break the
             # re-bench loop (fleet-ops#2638).
             if [[ -z "$usable_epoch" ]] || (( usable_epoch > now )); then
-                continue  # both clocks held (or usable_at empty): skip
+                future_held=1
+            else
+                log "force probe $p/$m: usable_at $usable_at_field past, bench_until $wall_end held by re-bench — unstick (fleet-ops#2638)"
             fi
-            log "force probe $p/$m: usable_at $usable_at_field past, bench_until $wall_end held by re-bench — unstick (fleet-ops#2638)"
         fi
         if [[ -z "$we" ]] && [[ -n "$usable_epoch" ]] && (( usable_epoch > now )); then
             # No bench_until but usable_at is held (defensive / legacy shape).
-            # Skip — the seat is held by usable_at alone.
+            future_held=1
+        fi
+        if (( future_held )); then
+            # fleet-ops#4640: a LONG non-money future wall is a false-wall
+            # candidate. PONG at most hourly. Money walls and short re-bench
+            # holds stay skipped until expiry.
+            if try_false_wall_release "$p" "$m" "$f" "$base"; then
+                ((released_this_run++)) || true
+            fi
+            continue
+        fi
+        if (( FALSE_WALL_ONLY )); then
             continue
         fi
 
@@ -1766,6 +1954,11 @@ main() {
     # after the sweep is a releaser miss and must fail loud. In the
     # read-only-ledger shape BOTH fire; each renders its own LOUD line and
     # the unit exits 1 once (OnFailure escalates, last-green stays stale).
+    if (( FALSE_WALL_ONLY )); then
+        log "false-wall-only sweep complete: probed=$probed released=$released_this_run"
+        return 0
+    fi
+
     local loud_rc=0 stalled_flag=0
     if (( expired > 0 )) && (( released_this_run == 0 )); then
         log "LOUD [COMEBACK-RELEASE-STALLED] released_this_run=0 while $expired walled seat(s) still hold expired wall clocks — release path not operating"
