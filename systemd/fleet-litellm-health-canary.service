@@ -13,6 +13,10 @@ Type=oneshot
 Environment=HOME=/home/nish
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_RUNTIME_DIR=/run/user/1000
+# GET /health is auth-gated (user_api_key_auth). Without this file the canary
+# sees 401 and is blind, which is the fleet-ops#4628 failure. The leading
+# '-' keeps CI/hosts without a live key from failing unit load.
+EnvironmentFile=-/home/nish/.config/fleet-ops/litellm-master-key.env
 ExecStart=/usr/bin/python3 /home/nish/.local/libexec/fleet-litellm-health-canary.py
 TimeoutStartSec=30
 Restart=no
