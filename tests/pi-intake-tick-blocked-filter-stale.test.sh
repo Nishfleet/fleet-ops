@@ -151,6 +151,27 @@ if ! blocked_filter "blocked-on: #999" "Nishfleet/0509" "50"; then
 fi
 ok "Test 2k: gh lookup failure -> blocked (fail-safe)"
 
+# fleet-ops#4626: date-gate. A past re-open-<ISO> is stale (claimable) so a
+# flipped issue whose body still carries the spent gate is not re-wedged.
+# A future gate stays blocked. Unknown form stays blocked (fail-safe).
+# Freeze "now" by wrapping date only when we need a known clock: the filter
+# uses `date -u +%s` / `date -u -d`. We assert against the live clock by
+# picking timestamps firmly in the past and the far future.
+if blocked_filter "blocked-on: re-open-2020-01-01T00:00:00Z-alibaba-smoke-ok" "Nishfleet/fleet-ops" "4447"; then
+    fail "past date-gate must be stale (claimable) so a flipped issue can be claimed"
+fi
+ok "Test 2k-date: past re-open-<ISO> -> stale, claimable"
+
+if ! blocked_filter "blocked-on: re-open-2099-01-01T00:00:00Z-alibaba-smoke-ok" "Nishfleet/fleet-ops" "4447"; then
+    fail "future date-gate must stay blocked"
+fi
+ok "Test 2k-date: future re-open-<ISO> -> blocked"
+
+if ! blocked_filter "blocked-on: wait-for-the-moon" "Nishfleet/fleet-ops" "50"; then
+    fail "unknown blocked-on form must stay blocked (fail-safe)"
+fi
+ok "Test 2k-date: unknown form -> blocked"
+
 # === fleet-ops#3575: comment-level blocked-on lines ==========================
 # The worker bounce protocol writes machine-readable blocked-on: lines in a
 # COMMENT. A body-only scan lets such an issue re-claim forever. blocked_filter

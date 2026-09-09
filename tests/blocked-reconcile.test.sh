@@ -138,6 +138,28 @@ got=$(extract '{"repo":"Nishfleet/0509","number":50,"title":"x","body":"~~blocke
 [[ "$(printf '%s' "$got" | jq -r '.nish')" == "false" ]] || fail "struck nish leaked: $got"
 ok "struck-through blocked-on lines are ignored"
 
+# fleet-ops#4626: date-gate `re-open-<ISO>[-smoke]` is a first-class form, not
+# a silent nish-decision. The live #4447 line is the fixture.
+got=$(extract '{"repo":"Nishfleet/fleet-ops","number":4447,"title":"x","body":"blocked-on: re-open-2026-09-14T16:14Z-alibaba-smoke-ok\n","comments":[]}')
+[[ "$(printf '%s' "$got" | jq -r '.kind')" == "date-gate" ]] || fail "re-open date-gate kind: $got"
+[[ "$(printf '%s' "$got" | jq -r '.nish')" == "false" ]] || fail "date-gate must not be nish-decision: $got"
+[[ "$(printf '%s' "$got" | jq -r '.date_gates[0].at')" == "2026-09-14T16:14:00Z" ]] || fail "date-gate at: $got"
+[[ "$(printf '%s' "$got" | jq -r '.date_gates[0].smoke')" == "alibaba-smoke-ok" ]] || fail "date-gate smoke: $got"
+ok "blocked-on: re-open-<ISO>-<smoke> extracts as date-gate (fleet-ops#4626)"
+
+got=$(extract '{"repo":"Nishfleet/fleet-ops","number":50,"title":"x","body":"blocked-on: re-open-2026-09-14T16:14:00Z\n","comments":[]}')
+[[ "$(printf '%s' "$got" | jq -r '.kind')" == "date-gate" ]] || fail "bare re-open kind: $got"
+[[ "$(printf '%s' "$got" | jq -r '.date_gates[0].smoke')" == "" ]] || fail "bare re-open smoke must be empty: $got"
+ok "blocked-on: re-open-<ISO> with no smoke extracts as date-gate"
+
+# fleet-ops#4626: a blocked-on value that matches no known form is LOUD, not
+# a silent nish-decision, so a prose gate can never park an issue quietly.
+got=$(extract '{"repo":"Nishfleet/fleet-ops","number":50,"title":"x","body":"blocked-on: wait-for-the-moon\n","comments":[]}')
+[[ "$(printf '%s' "$got" | jq -r '.kind')" == "unknown-form" ]] || fail "unknown form kind: $got"
+[[ "$(printf '%s' "$got" | jq -r '.nish')" == "false" ]] || fail "unknown form must not masquerade as nish-decision: $got"
+[[ "$(printf '%s' "$got" | jq -r '.unknown_forms[0]')" == "wait-for-the-moon" ]] || fail "unknown form raw: $got"
+ok "unknown blocked-on form extracts as unknown-form, not nish-decision"
+
 # --- live sweep with mocked gh --------------------------------------------
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
@@ -624,6 +646,91 @@ ok "agent-in-progress needs-orchestrator item is skipped"
 
 rm -f "$scratch/list-orch.json"
 
+# fleet-ops#4626 Case 12a: past date-gate + stub smoke rc=0 -> requeue (label flip).
+# NOW is 2026-08-26 (already past 2026-08-25T00:00:00Z). Smoke is a stub that
+# returns 0 so the named check does not hit a live provider.
+mkdir -p "$scratch/smoke"
+cat >"$scratch/smoke/alibaba-smoke-ok" <<'SMOKE'
+#!/usr/bin/env bash
+exit 0
+SMOKE
+chmod +x "$scratch/smoke/alibaba-smoke-ok"
+export BLOCKED_RECONCILE_SMOKE_DIR="$scratch/smoke"
+cat >"$scratch/list.json" <<'JSON'
+[{"number":4447,"title":"date gate past","createdAt":"2026-08-25T06:00:00Z","labels":[{"name":"agent-blocked"}]}]
+JSON
+cat >"$scratch/view-4447.json" <<'JSON'
+{"title":"date gate past","body":"blocked-on: re-open-2026-08-25T00:00:00Z-alibaba-smoke-ok\n","createdAt":"2026-08-25T06:00:00Z","labels":[{"name":"agent-blocked"}],"comments":[]}
+JSON
+: >"$scratch/edits.log"
+: >"$scratch/comments.log"
+
+out=$("$bin" 2>"$scratch/err-date-past.txt")
+grep -q 'requeued=1' <<<"$out" || fail "past date-gate + smoke 0 must requeue: $out err=$(cat "$scratch/err-date-past.txt")"
+grep -q 'remove-label agent-blocked' "$scratch/edits.log" || fail "past date-gate must drop agent-blocked: $(cat "$scratch/edits.log")"
+grep -q 'add-label agent-ready' "$scratch/edits.log" || fail "past date-gate must add agent-ready: $(cat "$scratch/edits.log")"
+grep -qE 'date-gate|re-open' "$scratch/comments.log" "$scratch/err-date-past.txt" || fail "past date-gate must name the form: comments=$(cat "$scratch/comments.log") err=$(cat "$scratch/err-date-past.txt")"
+ok "past date-gate + stub smoke 0 flips agent-blocked -> agent-ready"
+
+# fleet-ops#4626 Case 12b: future date-gate stays blocked, labels untouched.
+cat >"$scratch/list.json" <<'JSON'
+[{"number":4448,"title":"date gate future","createdAt":"2026-08-25T06:00:00Z","labels":[{"name":"agent-blocked"}]}]
+JSON
+cat >"$scratch/view-4448.json" <<'JSON'
+{"title":"date gate future","body":"blocked-on: re-open-2026-09-14T16:14Z-alibaba-smoke-ok\n","createdAt":"2026-08-25T06:00:00Z","labels":[{"name":"agent-blocked"}],"comments":[]}
+JSON
+: >"$scratch/edits.log"
+: >"$scratch/comments.log"
+
+out=$("$bin" 2>"$scratch/err-date-future.txt")
+grep -q 'requeued=0' <<<"$out" || fail "future date-gate must not requeue: $out"
+[[ -s "$scratch/edits.log" ]] && fail "future date-gate must not flip labels: $(cat "$scratch/edits.log")"
+grep -qE 'date-gate|re-open' "$scratch/err-date-future.txt" "$scratch/comments.log" || fail "future date-gate must stay loud as date-gate: err=$(cat "$scratch/err-date-future.txt") comments=$(cat "$scratch/comments.log")"
+ok "future date-gate stays blocked and is not flipped"
+
+# fleet-ops#4626 Case 12c: unknown form is LOUD (stderr + sticky), never silent.
+cat >"$scratch/list.json" <<'JSON'
+[{"number":4449,"title":"unknown form","createdAt":"2026-08-25T06:00:00Z","labels":[{"name":"agent-blocked"}]}]
+JSON
+cat >"$scratch/view-4449.json" <<'JSON'
+{"title":"unknown form","body":"blocked-on: wait-for-the-moon\n","createdAt":"2026-08-25T06:00:00Z","labels":[{"name":"agent-blocked"}],"comments":[]}
+JSON
+: >"$scratch/edits.log"
+: >"$scratch/comments.log"
+
+out=$("$bin" 2>"$scratch/err-unknown.txt")
+grep -q 'requeued=0' <<<"$out" || fail "unknown form must not requeue: $out"
+[[ -s "$scratch/edits.log" ]] && fail "unknown form must not flip labels: $(cat "$scratch/edits.log")"
+grep -qE 'unknown-form|unknown form|LOUD' "$scratch/err-unknown.txt" || fail "unknown form must be LOUD on stderr: $(cat "$scratch/err-unknown.txt")"
+grep -q 'wait-for-the-moon' "$scratch/err-unknown.txt" "$scratch/comments.log" || fail "unknown form must name the raw value: err=$(cat "$scratch/err-unknown.txt") comments=$(cat "$scratch/comments.log")"
+ok "unknown blocked-on form is LOUD and stays blocked"
+
+# fleet-ops#4626 Case 12d: past date-gate + smoke fail re-parks at usable_at.
+cat >"$scratch/smoke/alibaba-smoke-ok" <<'SMOKE'
+#!/usr/bin/env bash
+# Simulate a walled seat: print usable_at so the reconciler can re-park.
+echo 'usable_at=2026-09-15T03:51:36Z'
+exit 1
+SMOKE
+chmod +x "$scratch/smoke/alibaba-smoke-ok"
+cat >"$scratch/list.json" <<'JSON'
+[{"number":4450,"title":"date gate smoke fail","createdAt":"2026-08-25T06:00:00Z","labels":[{"name":"agent-blocked"}]}]
+JSON
+cat >"$scratch/view-4450.json" <<'JSON'
+{"title":"date gate smoke fail","body":"blocked-on: re-open-2026-08-25T00:00:00Z-alibaba-smoke-ok\n","createdAt":"2026-08-25T06:00:00Z","labels":[{"name":"agent-blocked"}],"comments":[]}
+JSON
+: >"$scratch/edits.log"
+: >"$scratch/comments.log"
+
+out=$("$bin" 2>"$scratch/err-smoke-fail.txt")
+grep -q 'requeued=0' <<<"$out" || fail "failed smoke must not requeue: $out err=$(cat "$scratch/err-smoke-fail.txt")"
+[[ -s "$scratch/edits.log" ]] && fail "failed smoke must not flip labels: $(cat "$scratch/edits.log")"
+grep -q 're-open-2026-09-15T03:51:36Z-alibaba-smoke-ok' "$scratch/comments.log" \
+    || fail "failed smoke must re-park at usable_at: $(cat "$scratch/comments.log")"
+ok "failed smoke re-parks with blocked-on: re-open-<usable_at>-<smoke>"
+
+unset BLOCKED_RECONCILE_SMOKE_DIR
+
 # Case 9: overlapping flock no-op
 export BLOCKED_RECONCILE_LOCKDIR="$scratch/lock-overlap"
 mkdir -p "$BLOCKED_RECONCILE_LOCKDIR"
@@ -639,4 +746,8 @@ grep -q 'blocked-on:' "$repo_root/prompts/worker.md" || fail "worker.md must tel
 grep -q 'decision-resolved:' "$repo_root/prompts/worker.md" || fail "worker.md must tell answerers to write decision-resolved:"
 grep -q '~~blocked-on:' "$repo_root/prompts/worker.md" || fail "worker.md must tell workers to strike through resolved blocked-on lines"
 grep -q 'blocked-reconcile' "$repo_root/bin/fleet-heartbeat-tier1" || fail "tier1 must call blocked-reconcile"
+help_out=$("$bin" --help 2>&1) || fail "--help must exit 0"
+grep -q 're-open-' <<<"$help_out" || fail "--help must document re-open-<ISO> date-gates: $help_out"
+grep -q 'unknown-form' <<<"$help_out" || fail "--help must document unknown-form: $help_out"
 ok "worker.md and heartbeat-tier1 carry the contract"
+ok "--help documents re-open-<ISO> date-gates and unknown-form (fleet-ops#4626)"
