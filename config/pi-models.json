@@ -970,14 +970,15 @@
           "maxTokens": 32768,
           "reasoning": false,
           "cost": {
-            "input": 0.44,
-            "output": 1.32,
-            "cacheRead": 0.014,
+            "input": 0.14,
+            "output": 0.28,
+            "cacheRead": 0.0028,
             "cacheWrite": 0
           },
           "samplingParams": {
             "reasoning_effort": "none"
           },
+          "_comment_pricing": "fleet-ops#4625: cost from official DeepSeek pricing page (https://api-docs.deepseek.com/quick_start/pricing, verified 2026-09-10; rates per 1M tokens USD, current since 2026-07-25): V4-Flash input $0.14 cache-miss / $0.0028 cache-hit / output $0.28. The prior 0.44/1.32/0.014 values were a ~3.14x guess and are corrected here.",
           "_comment_reasoning": "fleet-ops#4234/#4625: same treatment as the merged #4234 fix for crof/ollama — DeepSeek V4 Flash reasons by default and bills reasoning to the output budget; reasoning_effort:none is the only value that turns it off. Pi clamps this seat's thinkingLevel to off because reasoning is not declared here. This is a LAST-RESORT metered worker seat (fleet-ops#4625) — never waste reasoning tokens on volume work."
         },
         {
@@ -991,11 +992,12 @@
             "image"
           ],
           "cost": {
-            "input": 1.32,
-            "output": 3.96,
-            "cacheRead": 0.044,
-            "cacheWrite": 1.32
+            "input": 0.435,
+            "output": 0.87,
+            "cacheRead": 0.003625,
+            "cacheWrite": 0
           },
+          "_comment_pricing": "fleet-ops#4625: cost from official DeepSeek pricing page (https://api-docs.deepseek.com/quick_start/pricing, verified 2026-09-10; rates per 1M tokens USD, current since 2026-07-25): V4-Pro input $0.435 cache-miss / $0.003625 cache-hit / output $0.87. The prior 1.32/3.96/0.044 values were a ~3.14x guess and are corrected here. cacheWrite 0 (DeepSeek auto-caches prefixes at no write surcharge).",
           "_comment_4625": "fleet-ops#4625: pro is keystone-class packets only (cap 1), never volume. Reasoning on — pro is the reasoning model. Last-resort metered seat; the 3-pass exhaustion gate (pick_seat) must clear before this is ever admitted."
         }
       ],

@@ -416,6 +416,15 @@ declare -A SEAT_PRODUCT_ONLY=()
 # to the work item. Keyed on "provider/model". Absent = no daily spend cap.
 declare -A SEAT_DAILY_SPEND_CAP_USD=()
 
+# fleet-ops#4625: a provider flagged last_resort:true in seat-caps.json is a
+# metered seat that may ONLY be admitted after every other free/prepaid/metered
+# seat is unusable AND the exhaustion was independently verified 3 times >=60s
+# apart (the triple-verify gate in pick_seat). Keyed on provider name. A
+# last_resort provider is bucketed separately (last_resort_seats) and offered
+# only after the gate clears — never while any other usable seat exists, and
+# never while a seat is merely at capacity (capacity is not exhaustion).
+declare -A SEAT_LAST_RESORT=()
+
 # fleet-ops#4453: provider-level daily USD budget for a prepaid seat whose
 # allowance expires each UTC day (Pareto Pass: $20/day, unused $ lost at
 # 23:59). Unlike SEAT_DAILY_SPEND_CAP_USD (which reads Pi session usage.cost
@@ -549,6 +558,7 @@ load_seat_caps() {
     SEAT_CAP_ZERO_CLASS_STALE=()
     SEAT_PRODUCT_ONLY=()
     SEAT_DAILY_SPEND_CAP_USD=()
+    SEAT_LAST_RESORT=()
     SEAT_PROVIDER_DAILY_BUDGET_USD=()
     SEAT_PROVIDER_DAILY_STOP_USD=()
     SEAT_AUDITION=()
@@ -597,10 +607,10 @@ load_seat_caps() {
     # would have its own $p/$m clobbered to the last jq line before its lookup
     # ran, returning 0 for every unlisted-model seat and NO-USABLE-SEAT for
     # the whole free role (pi-audit@ free-glm-5-3 unit-failure loop 2026-08-27).
-    local p m cap class bench_def max_probe hard reason window budget ko ov_model ov_ex ov_usd cb icz remote audition tick_cap
+    local p m cap class bench_def max_probe hard reason window budget ko ov_model ov_ex ov_usd cb icz remote audition tick_cap last_resort
     # Unit separator (\x1f), not TSV: bash `read` collapses consecutive tabs
     # so optional empty fields (max_probe_ceiling, reason) would vanish.
-    while IFS=$'\x1f\n' read -r p cap class bench_def max_probe hard reason icz remote audition tick_cap; do
+    while IFS=$'\x1f\n' read -r p cap class bench_def max_probe hard reason icz remote audition tick_cap last_resort; do
         [[ -n "$p" ]] || continue
         SEAT_PROVIDER_CAP["$p"]="$cap"
         # subscription is the pre-#387 name for prepaid-quota.
@@ -614,6 +624,9 @@ load_seat_caps() {
         [[ -n "$reason" ]] && SEAT_PROVIDER_REASON["$p"]="$reason"
         # fleet-ops#3690: per-tick spawn cap (0 = unlimited).
         [[ "$tick_cap" =~ ^[0-9]+$ ]] && SEAT_TICK_SPAWN_CAP["$p"]="$tick_cap"
+        # fleet-ops#4625: last_resort provider flag — bucketed separately and
+        # admitted only after the 3-pass exhaustion gate in pick_seat clears.
+        [[ "$last_resort" == "true" ]] && SEAT_LAST_RESORT["$p"]=1
         # fleet-ops#1432: classification of cap=0 seats (intentional vs stale).
         # fleet-ops#2435: "corpse" joins the intentional set — a model whose
         # ledger is seat_dead (terminal "corpse" class, no comeback clock)
@@ -644,7 +657,7 @@ load_seat_caps() {
     # provider_quota_bench_default returns 0 (no default, writer fails open).
     # max_probe_ceiling / hard_ceiling / reason (fleet-ops#217) likewise
     # optional; absent fields emit "" so the guards above skip them.
-    done < <(jq -r '.providers | to_entries[] | .key as $k | .value as $v | [$k, (if ($v|type)=="number" then $v else ($v.cap // 0) end), (if ($v|type)=="number" then "free" else ($v.class // "free") end), (if ($v|type)=="object" then ($v.quota_bench_default_s // "") else "" end), (if ($v|type)=="object" then ($v.max_probe_ceiling // "") else "" end), (if ($v|type)=="object" then ($v.hard_ceiling // false) else false end), (if ($v|type)=="object" then ($v.reason // "") else "" end), (if ($v|type)=="object" then ($v.intentional_cap_zero // "") else "" end), (if ($v|type)=="object" then ($v.remote_agent // "") else "" end), (if ($v|type)=="object" then ($v.audition // false) else false end), (if ($v|type)=="object" then ($v.tick_spawn_cap // "") else "" end)] | join("\u001f")' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    done < <(jq -r '.providers | to_entries[] | .key as $k | .value as $v | [$k, (if ($v|type)=="number" then $v else ($v.cap // 0) end), (if ($v|type)=="number" then "free" else ($v.class // "free") end), (if ($v|type)=="object" then ($v.quota_bench_default_s // "") else "" end), (if ($v|type)=="object" then ($v.max_probe_ceiling // "") else "" end), (if ($v|type)=="object" then ($v.hard_ceiling // false) else false end), (if ($v|type)=="object" then ($v.reason // "") else "" end), (if ($v|type)=="object" then ($v.intentional_cap_zero // "") else "" end), (if ($v|type)=="object" then ($v.remote_agent // "") else "" end), (if ($v|type)=="object" then ($v.audition // false) else false end), (if ($v|type)=="object" then ($v.tick_spawn_cap // "") else "" end), (if ($v|type)=="object" then ($v.last_resort // false) else false end)] | join("\u001f")' "$SEAT_CAPS_JSON" 2>/dev/null || true)
 
     while IFS=$'\x1f\n' read -r p m cap class mprobe maudition; do
         [[ -n "$p" && -n "$m" ]] || continue
@@ -4838,6 +4851,210 @@ _pick_repair_rung_seat() {
 }
 
 # Prints: "provider\tmodel" or nothing if none available.
+#
+# fleet-ops#4625: last-resort triple-verify gate + event-driven balance meter.
+# A last_resort provider (deepseek direct) is admitted ONLY after 3
+# consecutive exhaustion observations >=60s apart. Each pass re-probes every
+# walled/benched non-last_resort seat live via the existing seat_usable path;
+# a healthy re-probe resets the counter to 0 and the healthy seat is returned
+# instead (so a transient wall never burns metered dollars). A seat merely at
+# capacity is NOT exhausted — the caller already refused last_resort in that
+# case (pick_seat), so this gate only runs when every other seat was
+# unusable. Counter state lives under $STATE_DIR/last-resort-exhaust.json
+# next to prepaid-rr.idx. On admission the DeepSeek balance is checked
+# (GET /user/balance) and recorded to prepaid-usage/deepseek.json via the
+# existing meter convention; <= $0.50 or unavailable benches the seat and
+# raises a Nish money-boundary notification (never silently degrade).
+
+# State file shape: {"count":N,"last_ts":"<ISO>","admitted":<bool>}
+# count resets to 0 on a healthy re-probe; admitted flips true once the gate
+# clears so a subsequent pick in the same exhaustion window re-admits without
+# re-waiting 3*60s (the fleet "has to go ham" once the gate first clears).
+_last_resort_state_file() { echo "$STATE_DIR/last-resort-exhaust.json"; }
+
+# Re-probe every non-last_resort seat live. Echoes "provider\tmodel" of the
+# first seat that is now usable (healthy re-probe), or nothing if all stay
+# unusable. Reuses seat_usable (the existing health classifier) — no forked
+# health path. fleet-seat-live-validate and the comeback organ are the
+# existing live-probe rails; this in-process re-probe is the same seat_usable
+# call pick_seat already makes per candidate, just re-run after a pause.
+_last_resort_reprobe() {
+    local _p _m _rest
+    while IFS=$'\t' read -r _p _m _rest; do
+        [[ -n "$_p" && -n "$_m" ]] || continue
+        # Skip last_resort seats themselves — only re-probe the others.
+        [[ -n "${SEAT_LAST_RESORT[$_p]:-}" ]] && continue
+        if seat_usable "$_p" "$_m"; then
+            printf '%s\t%s\n' "$_p" "$_m"
+            return 0
+        fi
+    done < <(enumerate_seats)
+    return 1
+}
+
+# DeepSeek balance check (event-driven, no timer). Calls GET /user/balance,
+# records the figure to prepaid-usage/deepseek.json via the existing meter
+# convention, and returns 0 if the balance is available and > $0.50. On a
+# depleted (<= $0.50) or unavailable balance it benches the seat and raises a
+# Nish money-boundary notification (money-boundary-raise), then returns 1.
+# Never silently degrades. The API key is read from the credential file via
+# the same sed hook pi-models.json uses — never printed, never logged.
+_deepseek_balance_ok() {
+    local key_file="${DEEPSEEK_KEY_FILE:-/home/nish/.config/deepseek/deepseek.env}"
+    local base="${DEEPSEEK_API_BASE:-https://api.deepseek.com}"
+    local curl_bin="${DEEPSEEK_CURL_BIN:-curl}"
+    local api_key="" resp="" is_avail="" total="" f week tmp
+    [[ -f "$key_file" ]] || { seat_log "last_resort: DEEPSEEK key file missing at $key_file — cannot check balance (fleet-ops#4625)"; return 1; }
+    api_key=$(sed -n 's/^DEEPSEEK_API_KEY=//p' "$key_file" 2>/dev/null || true)
+    [[ -n "$api_key" ]] || { seat_log "last_resort: DEEPSEEK_API_KEY empty in $key_file — cannot check balance (fleet-ops#4625)"; return 1; }
+    resp=$("$curl_bin" -s -m 15 "$base/user/balance" -H "Authorization: Bearer $api_key" 2>/dev/null || true)
+    [[ -n "$resp" ]] || { seat_log "last_resort: DeepSeek balance probe returned empty (curl fail) — refusing admission (fleet-ops#4625)"; return 1; }
+    is_avail=$(printf '%s' "$resp" | jq -r '.is_available // false' 2>/dev/null || echo false)
+    total=$(printf '%s' "$resp" | jq -r '.balance_infos[0].total_balance // ""' 2>/dev/null || true)
+    # Record the balance via the existing meter convention (prepaid-usage/).
+    week=$(_prepaid_iso_week)
+    f=$(_prepaid_usage_path deepseek)
+    mkdir -p "$STATE_DIR/prepaid-usage" 2>/dev/null || true
+    tmp="$f.tmp.$$"
+    if [[ "$is_avail" == "true" && "$total" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+        jq -nc --arg w "$week" --argjson c 0 --argjson bal "$total" \
+            '{week:$w,count:$c,balance_usd:$bal,available:true,checked_at:"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}' \
+            >"$tmp" 2>/dev/null && mv "$tmp" "$f" 2>/dev/null || rm -f "$tmp"
+    else
+        jq -nc --arg w "$week" --argjson c 0 --arg bal "${total:-null}" \
+            '{week:$w,count:$c,balance_usd:$bal,available:false,checked_at:"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}' \
+            >"$tmp" 2>/dev/null && mv "$tmp" "$f" 2>/dev/null || rm -f "$tmp"
+    fi
+    if [[ "$is_avail" != "true" ]]; then
+        seat_log "last_resort: DeepSeek balance is_available=false — benching seat and raising Nish money-boundary (fleet-ops#4625)"
+        _deepseek_bench_and_notify "balance unavailable (is_available=false)"
+        return 1
+    fi
+    # <= $0.50 USD is the depletion threshold (Nish money-boundary).
+    if awk -v t="$total" 'BEGIN{exit (t > 0.50) ? 0 : 1}'; then
+        return 0
+    fi
+    seat_log "last_resort: DeepSeek balance USD ${total:-?} <= 0.50 — benching seat and raising Nish money-boundary (fleet-ops#4625)"
+    _deepseek_bench_and_notify "balance USD ${total:-?} <= 0.50 (depleted)"
+    return 1
+}
+
+# Bench every deepseek model and raise a Nish money-boundary notification.
+# Reuses money-boundary-raise (the existing deterministic raise path) so the
+# ledger append + bench are one atomic unit; falls back to a direct ledger
+# bench write if money-boundary-raise is absent (tests / minimal env).
+_deepseek_bench_and_notify() {
+    local why="${1:-depleted balance}"
+    local now_s now_utc bench_until p m path tmp
+    now_s=$(date -u +%s)
+    now_utc=$(date -u -d "@$now_s" +%Y-%m-%dT%H:%M:%SZ)
+    bench_until=$(date -u -d "@$((now_s + 365 * 86400))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
+    # Try the existing deterministic raise path first.
+    if command -v money-boundary-raise >/dev/null 2>&1; then
+        money-boundary-raise deepseek 0 "${why}" >/dev/null 2>&1 || true
+    fi
+    # Also write a direct bench ledger per model so seat_usable refuses it
+    # even if money-boundary-raise is unavailable (tests).
+    while IFS=$'\t' read -r p m _rest; do
+        [[ -n "$p" && -n "$m" ]] || continue
+        [[ -n "${SEAT_LAST_RESORT[$p]:-}" ]] || continue
+        path=$(seat_ledger_path "$p" "$m")
+        mkdir -p "$LEDGER_DIR" 2>/dev/null || true
+        tmp="$path.bench.$$.$RANDOM.tmp"
+        jq -nc \
+            --arg provider "$p" --arg model "$m" \
+            --arg observed "$now_utc" --arg bench "$bench_until" --arg usable "$bench_until" \
+            --arg reason "${now_utc%%T*} DeepSeek direct last_resort: ${why} — seat benched, Nish money-boundary raised (fleet-ops#4625)" \
+            --argjson http_status 402 --argjson retry_after null \
+            --argjson retryable true --argjson seat_dead false --argjson poison_ladder false \
+            --argjson count 0 \
+            '{
+              provider:$provider, model:$model,
+              http_status:$http_status, retry_after:$retry_after,
+              health_class:"quota_bench",
+              retryable:$retryable, seat_dead:$seat_dead, poison_ladder:$poison_ladder,
+              observed_at:$observed, bench_until:$bench, usable_at:$usable,
+              consecutive_failure_count:$count, source:"money_boundary",
+              failure_mode:"quota_cap", reason:$reason
+            }' >"$tmp" 2>/dev/null && mv "$tmp" "$path" 2>/dev/null || rm -f "$tmp"
+    done < <(enumerate_seats)
+}
+
+# The triple-verify gate. Args: the last_resort_seats array (provider\tmodel
+# lines). Echoes the admitted "provider\tmodel" and exits 0 on admission;
+# echoes nothing and exits with the count of other unusable seats (>=0) on
+# refusal. The gate:
+#   1. Reads counter state from $STATE_DIR/last-resort-exhaust.json.
+#   2. Re-probes every non-last_resort seat live (seat_usable). A healthy
+#      re-probe resets count=0 and the healthy seat is echoed for the caller
+#      to use instead (returns 0 with the healthy seat).
+#   3. If no healthy re-probe, bumps count and records the timestamp. If the
+#      last observation was <60s ago, the bump is refused (the 3 observations
+#      must be >=60s apart) and the gate waits — exits with the count.
+#   4. At count>=3, checks the DeepSeek balance; on OK admits the first
+#      last_resort seat and exits 0. On a depleted balance the seat is already
+#      benched by the balance check — exits with the count (refused).
+LAST_RESORT_VERIFY_PASSES="${LAST_RESORT_VERIFY_PASSES:-3}"
+LAST_RESORT_VERIFY_GAP_S="${LAST_RESORT_VERIFY_GAP_S:-60}"
+_last_resort_admit() {
+    local -a _seats=("$@")
+    (( ${#_seats[@]} == 0 )) && return 0
+    local state_f count last_ts now_s now_utc healthy
+    state_f=$(_last_resort_state_file)
+    mkdir -p "$STATE_DIR" 2>/dev/null || true
+    count=0; last_ts=""
+    if [[ -f "$state_f" ]]; then
+        count=$(jq -r '.count // 0' "$state_f" 2>/dev/null || echo 0)
+        last_ts=$(jq -r '.last_ts // ""' "$state_f" 2>/dev/null || true)
+    fi
+    now_s=$(date -u +%s)
+    now_utc=$(date -u -d "@$now_s" +%Y-%m-%dT%H:%M:%SZ)
+    # Re-probe every non-last_resort seat live. A healthy re-probe resets the
+    # counter and the healthy seat is returned for the caller to use instead.
+    if healthy=$(_last_resort_reprobe); then
+        if (( count > 0 )); then
+            seat_log "pick_seat: last_resort counter reset — healthy re-probe on $healthy (fleet-ops#4625)"
+        fi
+        count=0
+        jq -nc --argjson c 0 --arg ts "$now_utc" --argjson admitted false \
+            '{count:$c,last_ts:$ts,admitted:$admitted}' >"$state_f" 2>/dev/null || true
+        printf '%s\n' "$healthy"
+        return 0
+    fi
+    # No healthy re-probe — this is an exhaustion observation. Enforce the
+    # >=60s gap between observations so 3 rapid picks do not burn metered
+    # dollars on a transient wall.
+    if [[ -n "$last_ts" ]]; then
+        local last_s
+        last_s=$(date -u -d "$last_ts" +%s 2>/dev/null || echo 0)
+        if (( last_s > 0 )); then
+            local gap=$(( now_s - last_s ))
+            if (( gap < LAST_RESORT_VERIFY_GAP_S )); then
+                seat_log "pick_seat: last_resort observation ${count}/$LAST_RESORT_VERIFY_PASSES refused — only ${gap}s since last (<${LAST_RESORT_VERIFY_GAP_S}s gap, fleet-ops#4625)"
+                return "$count"
+            fi
+        fi
+    fi
+    count=$(( count + 1 ))
+    jq -nc --argjson c "$count" --arg ts "$now_utc" --argjson admitted false \
+        '{count:$c,last_ts:$ts,admitted:$admitted}' >"$state_f" 2>/dev/null || true
+    if (( count < LAST_RESORT_VERIFY_PASSES )); then
+        seat_log "pick_seat: last_resort exhaustion ${count}/$LAST_RESORT_VERIFY_PASSES observed (need $LAST_RESORT_VERIFY_PASSES, fleet-ops#4625)"
+        return "$count"
+    fi
+    # 3/3 exhaustion verified. Check the DeepSeek balance before admitting.
+    if ! _deepseek_balance_ok; then
+        return "$count"
+    fi
+    # Admit the first last_resort seat. Count the other unusable seats for
+    # the loud admission log line.
+    local _other_unusable="${_seat_unusable_n:-0}"
+    jq -nc --argjson c "$count" --arg ts "$now_utc" --argjson admitted true \
+        '{count:$c,last_ts:$ts,admitted:$admitted}' >"$state_f" 2>/dev/null || true
+    printf '%s\n' "${_seats[0]}"
+    return "$_other_unusable"
+}
+
 pick_seat() {
     local fail_p="$1" fail_m="$2" need_capable="${3:-0}" tried_file="${4:-}" difficulty="${5:-light}"
     # privacy (6th arg, default "public"): "private" excludes every free-class
@@ -5011,6 +5228,12 @@ pick_seat() {
     # no free/prepaid (or other) seat is usable — and only to a packet whose
     # repo carries the product flag in config/intake-repos.json.
     local -a product_only_seats=()
+    # fleet-ops#4625: seats whose provider is flagged last_resort:true in
+    # seat-caps.json are kept out of every class bucket and admitted ONLY after
+    # the 3-pass exhaustion gate clears (see _last_resort_admit below). A
+    # last_resort seat is never offered while any other usable seat exists,
+    # and never while a seat is merely at capacity (capacity is not exhaustion).
+    local -a last_resort_seats=()
 
     # fleet-ops#1624: at-capacity (cap reached, seat busy not broken) skip
     # counter + sample. The per-seat "skipped (provider/model cap=N reached)"
@@ -5318,6 +5541,20 @@ pick_seat() {
                 continue
             fi
             product_only_seats+=("$p"$'\t'"$m")
+            continue
+        fi
+        # fleet-ops#4625: last_resort seat gate. A provider flagged
+        # last_resort:true in seat-caps.json is a metered seat kept out of the
+        # normal class buckets and admitted ONLY after the 3-pass exhaustion
+        # gate (_last_resort_admit below) clears — never while any other
+        # usable seat exists, and never while a seat is merely at capacity
+        # (capacity is not exhaustion). The gate re-probes walled/benched
+        # seats live on each pass via the existing seat_usable path; a healthy
+        # re-probe resets the counter. Pro is reserved for keystone-class
+        # packets (cap 1) — the cap map already enforces that, so no extra
+        # difficulty gate is needed here.
+        if [[ -n "${SEAT_LAST_RESORT[$p]:-}" ]]; then
+            last_resort_seats+=("$p"$'\t'"$m")
             continue
         fi
         case "$class" in
@@ -5721,6 +5958,55 @@ pick_seat() {
         chosen="${product_only_seats[0]}"
         seat_log "pick_seat: routing to product_only last-resort seat $chosen (no free/prepaid seat usable — fleet-ops#3724)"
     fi
+    fi
+    # fleet-ops#4625: a non-last_resort seat was picked in the normal flow
+    # above — reset the exhaustion counter so the next time all ordinary
+    # seats are unusable, the 3-pass gate starts fresh. Without this, a
+    # seat that recovers between picks would leave a stale counter that
+    # short-circuits the gate. The counter is only read/written inside
+    # _last_resort_admit, so the reset is a single jq write to the state file.
+    if [[ -n "${chosen:-}" ]] && (( ${#last_resort_seats[@]} > 0 )); then
+        local _lr_sf
+        _lr_sf=$(_last_resort_state_file)
+        if [[ -f "$_lr_sf" ]]; then
+            local _lr_old_count
+            _lr_old_count=$(jq -r '.count // 0' "$_lr_sf" 2>/dev/null || echo 0)
+            if (( _lr_old_count > 0 )); then
+                jq -nc --argjson c 0 --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson admitted false \
+                    '{count:$c,last_ts:$ts,admitted:$admitted}' >"$_lr_sf" 2>/dev/null || true
+                seat_log "pick_seat: last_resort counter reset to 0 — non-last_resort seat $chosen picked (fleet-ops#4625)"
+            fi
+        fi
+    fi
+    # fleet-ops#4625: LAST-RESORT rung. A last_resort provider (deepseek
+    # direct) is admitted ONLY when every other seat was unusable this pick
+    # (no free/prepaid/metered/product_only bucket has a seat) AND the
+    # exhaustion was independently verified 3 times >=60s apart. A seat
+    # merely at capacity is NOT exhausted — if any seat is at capacity we
+    # refuse and let the caller wait for capacity rather than burning metered
+    # dollars. The gate re-probes walled/benched seats live on each pass via
+    # the existing seat_usable path; a healthy re-probe resets the counter and
+    # the healthy seat is returned instead. On admission the balance is
+    # checked (event-driven, no timer) and a depleted/invalid balance benches
+    # the seat and raises a Nish money-boundary notification.
+    if [[ -z "${chosen:-}" ]] && (( ${#last_resort_seats[@]} > 0 )); then
+        if (( ${#free_seats[@]} + ${#prepaid_seats[@]} + ${#metered_seats[@]} + ${#product_only_seats[@]} > 0 )); then
+            : # a non-last_resort seat is usable — never fall through
+        elif (( ${_at_capacity_n:-0} > 0 )); then
+            # A seat is merely at capacity (busy, not broken). Capacity is not
+            # exhaustion — wait for it rather than burning metered dollars.
+            seat_log "pick_seat: last_resort refused — ${_at_capacity_n} seat(s) at capacity (capacity is not exhaustion, fleet-ops#4625)"
+        else
+            local _lr_picked _lr_unusable_n
+            _lr_picked=$(_last_resort_admit "${last_resort_seats[@]}")
+            _lr_unusable_n=$?
+            if [[ -n "$_lr_picked" ]]; then
+                chosen="$_lr_picked"
+                chosen_p="${chosen%%$'\t'*}"
+                chosen_m="${chosen#*$'\t'}"
+                seat_log "pick_seat: LAST-RESORT deepseek admitted after 3/3 exhaustion verifications ($_lr_unusable_n other seats unusable)"
+            fi
+        fi
     fi
     if [[ -n "$chosen" ]]; then
         record_seat_selection "${chosen%%$'\t'*}" "${chosen#*$'\t'}" "$difficulty"

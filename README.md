@@ -300,6 +300,14 @@ Two-tier design (so the heartbeat still works if every LLM is dead):
   --model MiniMax-M3`. First healthy seat wins; all dead → loud triage
   line + unit FAILS (systemd's `state=failed` is the page).
 
+The worker seat ladder (`pick_seat` in `lib/seat-lib.sh`) is:
+`free → prepaid-quota → metered → product_only → LAST-RESORT`.
+The LAST-RESORT rung (fleet-ops#4625) is the direct DeepSeek API seat —
+a metered seat admitted only after 3 independent exhaustion verifications
+≥60 s apart, never while any other usable seat exists, and never while a
+seat is merely at capacity. Balance is checked at admission; a depleted
+balance benches the seat and raises a Nish money-boundary notification.
+
 Freshness guard: the orchestrator entry reads the plan file's
 `last-heartbeat:` line and exits 0 immediately if < 20 minutes old, so the
 durable timer does not thrash against a live interactive session.
