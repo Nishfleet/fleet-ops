@@ -51,6 +51,14 @@ GREEN_SUFFIXES = (
 )
 GREEN_TAGS = {"THROUGHPUT", "ESCALATION-CANARY-EXCLUDED", "ESCALATION-CANARY-OK"}
 SKIP_MSG_PREFIXES = ("rule-enforcement:",)
+# Per-session DEBUG-PLAYBOOK-MISSING LOUD lines are the detector's own
+# deterrent log. The detector already files one daily aggregate
+# (fleet-ops#4384). Queuing them as loud/debug-playbook-missing created a
+# never-green issue: any other in-window session re-emits the same
+# rule-level signal every tick, so observe-to-close never fires
+# (fleet-ops#4620). GATE-BLOCK still queues (a real session-close gate
+# failure). FAIL still queues (the daily rollup).
+SKIP_TAGS = {"DEBUG-PLAYBOOK-MISSING"}
 STOPWORDS = frozenset(
     """
     a an the to of and or in on for with this that is are be as at by from
@@ -71,9 +79,10 @@ SIGNAL_RE = re.compile(r"signal:\s*([^\s`]+)")
 # backticked line (`` `loud/<tag>/<key>` ``) — issue_body() never emits the
 # literal `signal:` prefix SIGNAL_RE requires. Observe-to-close therefore
 # never saw its own filings and could not close them on a green tick.
-# fleet-ops#4579: rule-level signals (`` `loud/<tag>` `` with no `/key` suffix)
-# must be recognized too — DEBUG-PLAYBOOK-MISSING now files exactly such a
-# bare rule signal, and dedupe/observe-to-close need to see it back.
+# fleet-ops#4579/#4620: rule-level signals (`` `loud/<tag>` `` with no `/key`
+# suffix) must be recognized too — GATE-BLOCK files exactly such a bare rule
+# signal, and leftover loud/debug-playbook-missing issues still need
+# observe-to-close to see them.
 BACKTICK_SIGNAL_RE = re.compile(r"`((?:loud/[a-z0-9-]+/[^\s`]+)|(?:loud/[a-z0-9-]+))`")
 UNIT_EQ_RE = re.compile(r"(?:^|[\s,])unit=([A-Za-z0-9_@.:-]+\.(?:service|timer|path|socket|target|slice))")
 UNIT_BARE_RE = re.compile(
@@ -146,17 +155,12 @@ def _extract_signal_key(tag: str, msg: str) -> list[str]:
     # `_dirty-worktree-audit.py` harvested from an `ls bin/` listing, and
     # observe-to-close could not track the actual session.
     #
-    # fleet-ops#4579: the session-scoped key defeated rule-level dedupe. Every
-    # session id produced its own signal (`loud/debug-playbook-missing/<session>`),
-    # so the reconciler filed one issue per session per rule while an aggregate
-    # for the same rule was already open — observed 2026-09-08: #4578/#4579 filed
-    # 43s apart under one DEBUG-PLAYBOOK-MISSING rule. Key on the rule itself so
-    # derive_signals() emits the constant `loud/debug-playbook-missing`: at most
-    # one open issue per rule prefix, and further ticks append a heartbeat
-    # comment to the existing issue instead of filing a new one. The session is
-    # still preserved in the issue body (`evidence: session=...`). `unspecified`
-    # is the sentinel derive_signals() maps to the bare rule key.
-    if tag in ("DEBUG-PLAYBOOK-MISSING", "DEBUG-PLAYBOOK-GATE-BLOCK"):
+    # fleet-ops#4579/#4620: DEBUG-PLAYBOOK-MISSING is skipped in
+    # derive_signals() (the detector files its own daily aggregate). GATE-BLOCK
+    # still queues, keyed on the rule itself so a session id or a noisy snippet
+    # file token cannot split or rename the signal (fleet-ops#4512).
+    # `unspecified` is the sentinel derive_signals() maps to the bare rule key.
+    if tag == "DEBUG-PLAYBOOK-GATE-BLOCK":
         return ["unspecified"]
 
     tokens: list[str] = []
@@ -195,7 +199,7 @@ def _extract_signal_key(tag: str, msg: str) -> list[str]:
 
 
 def derive_signals(tag: str, msg: str) -> list[str]:
-    if tag in GREEN_TAGS or tag.endswith(GREEN_SUFFIXES):
+    if tag in GREEN_TAGS or tag in SKIP_TAGS or tag.endswith(GREEN_SUFFIXES):
         return []
     for prefix in SKIP_MSG_PREFIXES:
         if msg.startswith(prefix):
