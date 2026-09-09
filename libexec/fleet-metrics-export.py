@@ -1560,6 +1560,152 @@ def _read_env_key(path, names):
     return None
 
 
+# --- 0509 signups funnel (fleet-ops#4582) --------------------------------
+# The direction metric — signups/week (nish→0509 #4518 direction entry) — was
+# unmeasured on the control plane: every steering decision stressed a number
+# nobody could query. Read it live from 0509's D1 ‘user’ table each tick via
+# the SAME sanctioned VPS Cloudflare token + REST “query” endpoint that
+# lib/fleet-product-slo.py uses (fleet-ops#4456 / fleet-ops#1166) — no new
+# credential is minted. An empty-but-reachable table is a HEALTHY 0 (a real
+# value, never a scrape error); an UNREACHABLE source omits the family (the
+# exporter's “no fabricated 0” rule), so Prometheus absent() surfaces
+# the outage instead of a false zero.
+_S7_D1_ACCOUNT = os.environ.get(
+    "FLEET_PRODUCT_D1_ACCOUNT", "f670a698e17bf160c8e4679823e68916")
+_S7_D1_DATABASE = os.environ.get(
+    "FLEET_PRODUCT_D1_DATABASE", "746c6e3d-782e-443a-82d6-28ca93a16294")
+_S7_CF_TOKEN_CANDIDATES = [
+    os.environ.get("FLEET_PRODUCT_CF_FILE", ""),
+    os.path.expanduser("~/.config/cloudflare/deploy-ci.env"),
+]
+# The SQL is a literal. Only the two Cloudflare ID segments come from config
+# and each is validated 32-hex before URL interpolation (see _S7_url). The
+# 0509 table is ‘user’ (lowercase), matching fleet-purchase-slo.py's live
+# query — the issue's “FROM User” is the conceptual table, not the schema.
+_S7_SQL = (
+    "SELECT COUNT(*) AS n FROM user "
+    "WHERE createdAt >= datetime('now','-7 days');"
+)
+# Hex alphabet for validating the Cloudflare D1 account/database IDs before
+# they are interpolated into the fixed api.cloudflare.com URL (fleet-ops#4456).
+_HEX = "0123456789abcdefABCDEF"
+HELP_S7 = (
+    "# HELP fleet_signups_7d Users created in 0509 D1 in the trailing 7 days "
+    "(fleet-ops#4582). Source: 0509 D1 user.createdAt via the sanctioned "
+    "Cloudflare token (reuses fleet-ops#4456's access path; no new credential). "
+    "0 is a healthy-but-empty table, not a failure; the family is omitted only "
+    "when the D1 source is unreachable."
+)
+TYPE_S7 = "# TYPE fleet_signups_7d gauge"
+
+
+
+def _s7_cf_token():
+    """Return the sanctioned VPS Cloudflare API token, or None.
+
+    fleet-ops#1166: the token file is ~/.config/cloudflare/deploy-ci.env and
+    holds CLOUDFLARE_API_TOKEN=<value>. The value is NEVER printed or logged;
+    only whether one was found is reported.
+    """
+    for cand in _S7_CF_TOKEN_CANDIDATES:
+        if not cand:
+            continue
+        try:
+            for line in Path(cand).read_text(
+                encoding="utf-8", errors="ignore"
+            ).splitlines():
+                line = line.strip()
+                prefix = "CLOUDFLARE_API_TOKEN="
+                if line.startswith(prefix):
+                    return line[len(prefix):].strip()
+        except (OSError, UnicodeDecodeError):
+            continue
+    return None
+
+
+def _s7_is_d1_id(value):
+    """True when value is a Cloudflare D1 ID: 32 hex chars (dashes allowed)."""
+    if not isinstance(value, str) or not value:
+        return False
+    digits = value.replace("-", "")
+    return len(digits) == 32 and all(c in _HEX for c in digits)
+
+
+def _s7_url():
+    """The fixed D1 “query” URL with validated ID segments, or None."""
+    account = _S7_D1_ACCOUNT
+    database = _S7_D1_DATABASE
+    if not _s7_is_d1_id(account):
+        print("signups_7d: invalid D1 account id (must be hex)", file=sys.stderr)
+        return None
+    if not _s7_is_d1_id(database):
+        print("signups_7d: invalid D1 database id (must be hex)", file=sys.stderr)
+        return None
+    return (
+        "https://api.cloudflare.com/client/v4/accounts/"
+        f"{account}/d1/database/{database}/query"
+    )
+
+
+def _fetch_signups_7d():
+    """Return the trailing-7-day 0509 signup count, or None when unavailable.
+
+    None means the source could not be READ (no token / network / Cloudflare
+    error / bad shape) — the emitter then omits the family. A successful query
+    that returns 0 rows returns 0 (a real value). Web call only when a token
+    and valid IDs are present, so offline tests stay hermetic (they stub this
+    function outright).
+    """
+    token = _s7_cf_token()
+    if not token:
+        print(
+            "signups_7d: no sanctioned Cloudflare token (fleet-ops#4582)",
+            file=sys.stderr,
+        )
+        return None
+    url = _s7_url()
+    if url is None:
+        return None
+    payload = json.dumps({"sql": _S7_SQL}).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310  (fixed literal host)
+            data = json.loads(resp.read().decode("utf-8"))
+    except (OSError, ValueError, urllib.error.HTTPError) as exc:
+        print(f"signups_7d: D1 query unavailable: {exc}", file=sys.stderr)
+        return None
+    if not data.get("success"):
+        print(
+            f"signups_7d: D1 unavailable: cloudflare errors={data.get('errors')}",
+            file=sys.stderr,
+        )
+        return None
+    rows = (data.get("result") or [{}])[0].get("results") or []
+    try:
+        return int(rows[0]["n"])
+    except (IndexError, KeyError, TypeError, ValueError):
+        print(f"signups_7d: unexpected shape {rows!r}", file=sys.stderr)
+        return None
+
+
+def _emit_signups_7d(lines, signups):
+    """Append the fleet_signups_7d gauge, or omit the family when None."""
+    if signups is None:
+        return
+    lines.append("")
+    lines.append(HELP_S7)
+    lines.append(TYPE_S7)
+    lines.append(f"fleet_signups_7d {int(signups)}")
+
+
 def _resolve_cut_directive(value):
     """Resolve a pi `!cut -d= -f2 /path/to/file` apiKey directive, or return value.
 
@@ -5862,6 +6008,13 @@ def main():
                 )
     except OSError as exc:
         print(f"staleness cache read: {exc}", file=sys.stderr)
+
+    # --- 0509 signups funnel (fleet-ops#4582) ---
+    # The direction metric (signups/week) read live from 0509's D1 every tick
+    # over the sanctioned Cloudflare path (no new credential). A healthy-empty
+    # table exports 0; an unreachable source returns None and the family is
+    # omitted (never a fabricated 0), so absent() surfaces the outage.
+    _emit_signups_7d(lines, _fetch_signups_7d())
 
     # --- SLO error budgets (fleet-ops#1291) ---
     # Emitted last so every source the SLOs read (CI rollup, seat health,
