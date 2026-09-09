@@ -46,6 +46,24 @@ node "$script" --help >/dev/null || fail "detector --help failed"
 
 cd "$repo_root"
 
+# --- floor guard: watch lookback must stay >= 30 (fleet-ops#4588) ------------
+# The watch passes lookback-minutes to the reusable detector. fleet-ops CI
+# runs take 16-22m, and the workflow_run trigger fires on CI completion, so a
+# lookback shorter than the CI runtime starves the amnesia-close path: the
+# just-completed green run's created_at sits OUTSIDE the window,
+# fetchRecentMainRuns returns 0 runs, and the orphaned freeze issue stays
+# open forever. This guard hard-fails (a CI failure in ci.yml) if anyone
+# re-tightens the lookback below 30.
+watch_yml="$repo_root/.github/workflows/stop-the-line-watch.yml"
+slabel='lookback-minutes:'
+slookback="$(grep -oE "${slabel}[[:space:]]*[0-9]+" "$watch_yml" | grep -oE '[0-9]+' | head -n1)"
+[[ -n "$slookback" ]] || fail "could not parse '$slabel <n>' from $watch_yml"
+if (( slookback < 30 )); then
+  fail "stop-the-line watch lookback-minutes=$slookback is below the 30-min floor; a shorter lookback starves the workflow_run amnesia-close path (the just-completed green CI run falls outside the window -> fetchRecentMainRuns returns 0 runs -> orphaned freeze stays open, fleet-ops#4588). Raise it to >= 30."
+fi
+export STOP_THE_LINE_LOOKBACK="$slookback"
+ok "stop-the-line watch lookback-minutes=$slookback (>= floor 30, fleet-ops#4588)"
+
 # --- pure-function unit tests ------------------------------------------------
 node --input-type=module -e '
 import {
@@ -268,6 +286,42 @@ const dAmnesiaNoWf = buildDecision({
   runs: gAmnesia,
 });
 if (dAmnesiaNoWf.action !== "noop") throw new Error(`amnesia-no-workflow must action=noop, got ${dAmnesiaNoWf.action}`);
+
+// lookback-starvation regression (fleet-ops#4588): the workflow_run tick
+// fires when CI completes, and fleet-ops CI runs take 16-22m, so a 15m watch
+// lookback always places the just-completed green run OUTSIDE the window.
+// fetchRecentMainRuns then returns 0 runs and the amnesia-close path never
+// fires. Replicate the fetchRecentMainRuns filter (keep a run iff created_at is
+// within the configured lookback) and prove a green run at 18m — inside a
+// >=30m lookback, outside 15m — still closes the orphaned freeze issue. This
+// MUST fail when the config is 15 (green not sampled -> 0 runs -> noop) and
+// pass when the config is 30.
+const cfgLookback = Number(process.env.STOP_THE_LINE_LOOKBACK);
+if (!Number.isFinite(cfgLookback) || cfgLookback <= 0) {
+  throw new Error("STOP_THE_LINE_LOOKBACK must be a positive integer (set by the floor-guard step)");
+}
+const nowMs = Date.now();
+const green18 = {
+  id: 9001, name: "CI", conclusion: "success", head_branch: "main",
+  head_sha: "s9", created_at: new Date(nowMs - 18 * 60_000).toISOString(), html_url: "u9001",
+};
+const regSampled = [green18].filter(
+  (r) => nowMs - new Date(r.created_at).getTime() <= cfgLookback * 60_000,
+);
+const dStarv = buildDecision({
+  verdict: noopVerdict,
+  repository: "Nishfleet/fleet-ops",
+  existingIssueNumber: 4588,
+  knownHaltedWorkflow: "CI",
+  runs: regSampled,
+});
+if (dStarv.action !== "close") {
+  throw new Error(`lookback-starvation regression: a green run at 18m (inside a ${cfgLookback}m lookback) must close the orphaned freeze issue (action=close), got action=${dStarv.action}; runs sampled=${regSampled.length}; the configured lookback ${cfgLookback}m starves the amnesia-close path (fleet-ops#4588)`);
+}
+if (!dStarv.unfreeze_run || dStarv.unfreeze_run.run_id !== 9001) {
+  throw new Error(`lookback-starvation regression: unfreeze_run must point at green run 9001, got ${JSON.stringify(dStarv.unfreeze_run)}`);
+}
+console.log(`OK: lookback-starvation regression -> close (18m green sampled at ${cfgLookback}m lookback, fleet-ops#4588)`);
 
 console.log("OK: lookback-amnesia helpers + buildDecision (fleet-ops#1489)");
 ' || fail "pure function tests failed"
