@@ -20,12 +20,6 @@
       "cadence": "daily",
       "source": "repo"
     },
-    "agent-governor-orphan-watchdog.timer": {
-      "reason": "5-min all-agents orphan janitor \u2014 reaps marked descendants whose supervisor is gone; 5-min bounds detection",
-      "classification": "scheduled",
-      "cadence": "5min",
-      "source": "user-config"
-    },
     "agent-scheduler-drift.timer": {
       "reason": "Daily scheduler drift check \u2014 detects drift between declared and actual timer state; runs at 03:00 IST",
       "classification": "scheduled",

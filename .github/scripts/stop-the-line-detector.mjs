@@ -80,6 +80,28 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const DEFAULT_LOOKBACK_MINUTES = 90;
+
+// Hard floor on the lookback window (fleet-ops#4588). The workflow_run tick
+// fires when CI completes, and fleet-ops CI runs take 16-22m, so a lookback
+// shorter than ~22m places the just-completed green run OUTSIDE the window:
+// fetchRecentMainRuns returns 0 runs and the amnesia-close path never fires — the
+// orphaned freeze issue stays open forever. 30m = 22m observed + margin.
+// The watch YAML still passes 15 until the follow-up raise lands (#4598);
+// this clamp keeps amnesia-close alive in the meantime.
+export const MIN_LOOKBACK_MINUTES = 30;
+
+/**
+ * Clamp a lookback value (env or CLI) to the >= MIN_LOOKBACK_MINUTES floor.
+ * Pure: invalid / non-positive input falls back to the floor.
+ * @param {number} n
+ * @returns {number}
+ */
+export function clampLookbackMinutes(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v) || v <= 0) return MIN_LOOKBACK_MINUTES;
+  return Math.max(MIN_LOOKBACK_MINUTES, Math.floor(v));
+}
+
 const DEFAULT_PAGE_SIZE = 100;
 const DEFAULT_LABEL = "stop-the-line";
 const DEFAULT_BRANCH = "main";
@@ -943,7 +965,7 @@ halted workflow.
 
 Options:
   --repo <owner/name>            Target repository (default: env STOP_THE_LINE_REPO)
-  --lookback-minutes <n>         Minutes of recent main runs to sample (default: ${DEFAULT_LOOKBACK_MINUTES})
+  --lookback-minutes <n>         Minutes of recent main runs to sample (default: ${DEFAULT_LOOKBACK_MINUTES}; clamped to a floor of ${MIN_LOOKBACK_MINUTES} — fleet-ops CI runs take 16-22m, so a shorter lookback starves the amnesia-close path, fleet-ops#4588)
   --from-json <path>             Replay stored runs (no GitHub). Test fixtures use this.
   --format <human|json>          Output format (default: human)
   --output-json <path>           Write the JSON report to this path
@@ -953,9 +975,17 @@ Options:
 }
 
 function parseArgs(argv) {
+  const envLookback =
+    Number(process.env.STOP_THE_LINE_LOOKBACK_MINUTES) || DEFAULT_LOOKBACK_MINUTES;
+  const envClamped = clampLookbackMinutes(envLookback);
+  if (envClamped !== envLookback) {
+    console.error(
+      `stop-the-line: STOP_THE_LINE_LOOKBACK_MINUTES=${envLookback} clamped to floor ${envClamped} (fleet-ops#4588: CI runs take 16-22m; a shorter lookback starves amnesia-close)`,
+    );
+  }
   const args = {
     repo: process.env.STOP_THE_LINE_REPO ?? "",
-    lookbackMinutes: Number(process.env.STOP_THE_LINE_LOOKBACK_MINUTES) || DEFAULT_LOOKBACK_MINUTES,
+    lookbackMinutes: envClamped,
     fromJson: "",
     format: "human",
     outputJson: "",
@@ -969,7 +999,14 @@ function parseArgs(argv) {
     } else if (arg === "--repo") {
       args.repo = argv[++i] ?? "";
     } else if (arg === "--lookback-minutes") {
-      args.lookbackMinutes = Math.max(1, Number(argv[++i]) || DEFAULT_LOOKBACK_MINUTES);
+      const rawLookback = Number(argv[++i]) || DEFAULT_LOOKBACK_MINUTES;
+      const clamped = clampLookbackMinutes(rawLookback);
+      if (clamped !== rawLookback) {
+        console.error(
+          `stop-the-line: lookback-minutes ${rawLookback} clamped to floor ${clamped} (fleet-ops#4588: CI runs take 16-22m; a shorter lookback starves amnesia-close)`,
+        );
+      }
+      args.lookbackMinutes = clamped;
     } else if (arg === "--from-json") {
       args.fromJson = argv[++i] ?? "";
     } else if (arg === "--format") {

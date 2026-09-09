@@ -1,38 +1,16 @@
-# fleet-ops#4453 — land Pareto Inference (Pareto Pass) prepaid worker seat
+# Plan — fix(stop-the-line): watch lookback 15m < CI runtime ~16-22m starves amnesia-close (fleet-ops#4588)
 
-Scope: config-3-files + one spend-meter extension on the existing prepaid-usage
-counter. Docs: https://docs.paretoinference.com/ base `https://api.paretoinference.com/v1`,
-OpenAI chat-completions, `Authorization: Bearer`. Rate card verified live
-2026-09-08: deepseek-v4-flash $0.081/$0.162/$0.016; glm-5.3-flash $0.075/$0.25/$0.015;
-glm-5.3 $2.80/$8.80/$0.52. Live probe: `usage.cost` reports 0.0 (pass bills off the
-rate card), so the spend meter MUST be token-derived, not usage.cost.
+> AMENDED (manager, 2026-09-09, per orchestrator DECISION on #4588): the App token cannot push `.github/workflows/**` (prior unit's push rejected: "refusing to allow a GitHub App to create or update workflow"), so the ship gate moves to a **JS lookback floor of 30 in `.github/scripts/stop-the-line-detector.mjs`** — clamp `STOP_THE_LINE_LOOKBACK_MINUTES` (env) and `--lookback-minutes` (CLI) to >= 30 so the watch YAML's 15 cannot starve amnesia-close. YAML bump 15→30 is a follow-up (new issue), NOT this issue's ship gate. Tests assert the JS floor.
 
-## Phases
-- [x] phase 1: config/pi-models.json — `paretoinference` provider block
-- [x] phase 2: config/seat-caps.json — cap 4, class prepaid-quota, daily_budget_usd 20,
-      glm-5.3 cap 0, per-model daily_spend_cap_usd 19.50, prepaid_providers_in_order FIRST
-- [x] phase 3: config/entitled-seats.json — paretoinference seat with docs cited
-- [x] phase 4: seat-lib spend meter — extend prepaid-usage counter to write `usd_today`
-      (token-derived from the provider cost map) + provider daily-budget gate benches
-      seats at the stop, never charges the work item
-- [x] phase 5: test proving usd_today is written and the daily-budget bench fires
-- [x] phase 6: run seat-relevant repo tests + sgscan/crgate + one real pi-issue run
-- [ ] phase 7: PR body (Verification/run-proof/research/help-first) + arm auto-merge
+- [x] phase 1 (ORIGINAL: YAML-derived floor guard + starvation regression) — superseded by amended phase 1b below; original commit 735de644 kept as base.
+- [x] phase 1b (amended): rewrite the floor guard + starvation regression in tests/stop-the-line-detector.test.sh to assert the JS floor, not the YAML value — (a) guard: invoke the detector with `STOP_THE_LINE_LOOKBACK_MINUTES=15` and assert the emitted report's effective `lookback_minutes` is 30; also assert `--lookback-minutes 15` clamps to 30; (b) regression: with effective lookback 30 (from the clamp), the fetchRecentMainRuns ms-filter samples an 18m-old green run and buildDecision returns `action:"close"` (amnesia-close fires). Must FAIL if the JS clamp is removed (effective 15 → 0 sampled runs → noop) and PASS with it. DONE (0c59084a): YAML-grep guard removed; clamp guard on both surfaces + stderr notice asserted; regression asserts the 15m counterfactual (0 sampled) and the clamped 30m close.
+- [x] phase 2 (amended): land the JS floor in `.github/scripts/stop-the-line-detector.mjs` — `MIN_LOOKBACK_MINUTES = 30`, exported pure `clampLookbackMinutes(n)`, applied where env and CLI lookback resolve in parseArgs; restore `.github/workflows/stop-the-line-watch.yml` to `lookback-minutes: 15` (net-unchanged vs origin/main — workflows path is not pushable by this token; YAML raise is follow-up #4598); update --help text; detector gate lines untouched. DONE (4ef772e3): + stderr clamp notice on both surfaces.
+- [x] phase 3: run tests/stop-the-line-detector.test.sh green (regression fails without the clamp, passes with it), run tests/ci-standards-audit.test.sh (pre-existing console-tile-verify failure on main is NOTED, not caused by this diff), confirm no `.github/workflows/**` line changed net vs origin/main and no gate weakened. DONE: with-clamp EXIT 0; neutralized MIN=15 → suite EXIT 1 (env-clamp guard fails first; standalone regression probe: effective=15m sampled=0 action=noop) → restored EXIT 0; probe with clamp: effective=30m sampled=1 action=close unfreeze_run=9001; `git diff origin/main...HEAD -- .github/workflows/` empty; ci-standards-audit EXIT 1 with `FAIL: 4217: console quota display failed` identically on origin/main worktree (PRE-EXISTING, live minimax/MiniMax-M3 seat spawn_bench count 0).
+- [x] phase 4: open PR `Closes #4588` with Verification + run-proof + research + help-first sections; arm auto-merge. Do NOT manually close #4567 (already self-healed CLOSED on the next green run). Do NOT remove/skip any existing test. No `.github/workflows/**` edit in the final diff → no gate-integrity-attest surface.
 
-## Design decisions
-1. **Budget stop = existing `daily_spend_cap_usd` ledger-bench shape** (fleet-ops#3724),
-   but token-derived: ParetoInference reports `usage.cost`=0 (the $3/wk pass credits
-   bill off the rate card, not per-call cost), so `_seat_daily_spend_usd` (usage.cost)
-   reads 0 forever. The new provider-level meter sums today's session tokens x the
-   provider's OWN cost map from pi-models.json (generic formula:
-   `input*in/1e6 + output*out/1e6 + cacheRead*cache/1e6`). For paretoinference that is
-   exactly the issue's `prompt_tokens*0.081 + cached*0.016 + completion*0.162`.
-2. **`usd_today` lives in the existing prepaid-usage counter file** per the acceptance
-   (`~/.local/state/pi-packet/prepaid-usage/<provider>.json` gains `usd_today`).
-3. **Stop at $19.50** (margin under the $20/day budget so the first 200-after-reset
-   re-probe and cleanup never blow the cap); `daily_budget_usd` 20 is the declared
-   budget, `daily_stop_usd` 19.50 is the bench threshold. Both live on the provider row.
-4. **No new units/timers; no new files** (spend meter reuses the existing counter file
-   + the existing ledger-bench writer). `required:` satisfied.
-5. Ordering: paretoinference first in `prepaid_providers_in_order` (expiry-first — a
-   daily-allowance seat beats non-expiring balances; rule 6).
+## Phase review record (manager, per-phase reviewer — no Act-on findings)
+
+- Phase 1–2 (original) review: reviewer found **0 Act-on, 0 blocking** findings on the original YAML-targeted fix (735de644 + 291cc5c6). Fix correct and minimal; detector/gate lines untouched.
+- Phase 1b–2 (amended) review (manager, stock reviewer on `git diff 50e445b9..HEAD`): **0 Act-on, 0 blocking** — no verifier/gate/assertion weakened. Reviewer ran the detector test live (EXIT 0) and a teeth probe (MIN=15 → suite EXIT 1; 15m counterfactual noop confirmed). Act-on: none. CONSIDER (recorded, not re-delegated): (1) `--lookback-minutes 0` falls to default 90 not floor 30 — pre-existing default-fallback semantics, tidy-up candidate for #4598. NOTED: `--from-json` replay reports the clamped lookback (harmless — the clamp only widens the window); ci-standards-audit failure pre-existing on main; YAML-grep guard replacement keeps equivalent-or-stronger teeth in the same commit, satisfying the removal condition.
+- CONSIDER (recorded, not re-delegated): (1) original floor-guard grep used `head -n1` / unanchored `[0-9]+` — replaced by the JS-floor guard in phase 1b; (2) the regression re-implements the fetchRecentMainRuns filter as a ms diff rather than a shared helper — semantic-equivalent today, a maintainability shadow; (3) the static 30m floor tracks config, not CI-duration drift — documented ("22m observed + margin"); acceptable.
+- NOTED (pre-existing, not caused by this diff): `bash tests/ci-standards-audit.test.sh` trips on `console-tile-verify.test.sh` — "4217: console quota display failed", a live `spawn_bench` count 0 for the benched minimax/MiniMax-M3 seat; reads none of the changed files and fails identically standalone on main.

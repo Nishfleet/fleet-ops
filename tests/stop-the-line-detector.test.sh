@@ -46,7 +46,41 @@ node "$script" --help >/dev/null || fail "detector --help failed"
 
 cd "$repo_root"
 
-# --- pure-function unit tests ------------------------------------------------
+# --- JS lookback floor guard (fleet-ops#4588, amended) -----------------------
+# The floor lives in the detector itself (clampLookbackMinutes, MIN=30), not in
+# the watch YAML: the App token cannot push .github/workflows/**, so the YAML
+# raise is follow-up #4598. These invocations prove the clamp bites on BOTH
+# surfaces (env + CLI) with NO network (fixture replay + --output-json).
+clamp_report() {
+  local label="$1"; shift
+  node "$script" --from-json "$fixtures/quiet-runs.json" --format json \
+    --output-json "/tmp/stl-clamp-${label}.json" "$@" >/dev/null 2>/tmp/stl-clamp-stderr
+}
+
+# env surface: STOP_THE_LINE_LOOKBACK_MINUTES=15 must resolve to 30.
+STOP_THE_LINE_LOOKBACK_MINUTES=15 clamp_report env
+[[ -s /tmp/stl-clamp-env.json ]] || fail "env clamp run wrote no report"
+node -e '
+  const r = JSON.parse(require("fs").readFileSync("/tmp/stl-clamp-env.json", "utf8"));
+  if (r.lookback_minutes !== 30) {
+    throw new Error(`env clamp: STOP_THE_LINE_LOOKBACK_MINUTES=15 must resolve lookback_minutes=30, got ${r.lookback_minutes} (fleet-ops#4588)`);
+  }
+' || fail "env clamp guard failed"
+grep -q "clamped to floor 30" /tmp/stl-clamp-stderr \
+  || fail "env clamp must emit a stderr notice (got: $(cat /tmp/stl-clamp-stderr))"
+ok "env clamp: STOP_THE_LINE_LOOKBACK_MINUTES=15 -> lookback_minutes=30 + stderr notice"
+
+# CLI surface: --lookback-minutes 15 must resolve to 30.
+clamp_report cli --lookback-minutes 15
+node -e '
+  const r = JSON.parse(require("fs").readFileSync("/tmp/stl-clamp-cli.json", "utf8"));
+  if (r.lookback_minutes !== 30) {
+    throw new Error(`CLI clamp: --lookback-minutes 15 must resolve lookback_minutes=30, got ${r.lookback_minutes} (fleet-ops#4588)`);
+  }
+' || fail "CLI clamp guard failed"
+ok "CLI clamp: --lookback-minutes 15 -> lookback_minutes=30"
+
+# pure-function unit tests ------------------------------------------------
 node --input-type=module -e '
 import {
   classifyHalt,
@@ -57,6 +91,8 @@ import {
   renderReport,
   parseHaltedWorkflow,
   greenRunForWorkflow,
+  clampLookbackMinutes,
+  MIN_LOOKBACK_MINUTES,
 } from "./.github/scripts/stop-the-line-detector.mjs";
 
 // classifyHalt: red-green-red -> no halt and no unfreeze (no consecutive reds).
@@ -268,6 +304,62 @@ const dAmnesiaNoWf = buildDecision({
   runs: gAmnesia,
 });
 if (dAmnesiaNoWf.action !== "noop") throw new Error(`amnesia-no-workflow must action=noop, got ${dAmnesiaNoWf.action}`);
+
+// lookback-starvation regression (fleet-ops#4588, amended): the workflow_run
+// tick fires when CI completes, and fleet-ops CI runs take 16-22m, so a 15m
+// watch lookback always places the just-completed green run OUTSIDE the
+// window. fetchRecentMainRuns then returns 0 runs and the amnesia-close path
+// never fires. The JS floor (clampLookbackMinutes, MIN=30) must raise the
+// effective window so an 18m-old green run is sampled and buildDecision
+// returns action:"close". Teeth: this block fails if the clamp is removed
+// (import dies) or neutralized (effective window <= 15 -> 0 sampled -> noop).
+if (MIN_LOOKBACK_MINUTES !== 30) {
+  throw new Error(`MIN_LOOKBACK_MINUTES must stay 30 (fleet-ops#4588), got ${MIN_LOOKBACK_MINUTES}`);
+}
+if (clampLookbackMinutes(15) !== 30) {
+  throw new Error(`clampLookbackMinutes(15) must be 30, got ${clampLookbackMinutes(15)}`);
+}
+if (clampLookbackMinutes(0) !== 30 || clampLookbackMinutes(-5) !== 30 || clampLookbackMinutes(Number.NaN) !== 30) {
+  throw new Error("clampLookbackMinutes must fall back to the floor for invalid input");
+}
+if (clampLookbackMinutes(90) !== 90) {
+  throw new Error("clampLookbackMinutes must not touch values above the floor");
+}
+const effectiveLookback = clampLookbackMinutes(15); // what the watch 15 resolves to
+const nowMs = Date.now();
+const green18 = {
+  id: 9001, name: "CI", conclusion: "success", head_branch: "main",
+  head_sha: "s9", created_at: new Date(nowMs - 18 * 60_000).toISOString(), html_url: "u9001",
+};
+// Counterfactual: at the un-clamped 15m window the 18m-old green is NOT
+// sampled (0 runs -> noop). This is the starvation the clamp must prevent.
+const sampledAt15 = [green18].filter(
+  (r) => nowMs - new Date(r.created_at).getTime() <= 15 * 60_000,
+);
+if (sampledAt15.length !== 0) {
+  throw new Error("precondition: an 18m-old green run must be OUTSIDE a 15m lookback");
+}
+// With the clamp: the same run IS sampled inside the effective window.
+const regSampled = [green18].filter(
+  (r) => nowMs - new Date(r.created_at).getTime() <= effectiveLookback * 60_000,
+);
+if (regSampled.length !== 1) {
+  throw new Error(`lookback-starvation regression: effective lookback ${effectiveLookback}m must sample the 18m-old green run, sampled=${regSampled.length}`);
+}
+const dStarv = buildDecision({
+  verdict: noopVerdict,
+  repository: "Nishfleet/fleet-ops",
+  existingIssueNumber: 4588,
+  knownHaltedWorkflow: "CI",
+  runs: regSampled,
+});
+if (dStarv.action !== "close") {
+  throw new Error(`lookback-starvation regression: a green run at 18m (inside the clamped ${effectiveLookback}m window) must close the orphaned freeze issue (action=close), got action=${dStarv.action}; runs sampled=${regSampled.length}; an un-clamped 15m window starves the amnesia-close path (fleet-ops#4588)`);
+}
+if (!dStarv.unfreeze_run || dStarv.unfreeze_run.run_id !== 9001) {
+  throw new Error(`lookback-starvation regression: unfreeze_run must point at green run 9001, got ${JSON.stringify(dStarv.unfreeze_run)}`);
+}
+console.log(`OK: lookback-starvation regression -> close (18m green sampled at clamped ${effectiveLookback}m window, fleet-ops#4588)`);
 
 console.log("OK: lookback-amnesia helpers + buildDecision (fleet-ops#1489)");
 ' || fail "pure function tests failed"

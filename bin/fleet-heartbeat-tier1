@@ -2226,7 +2226,9 @@ fi
 # Pasting acl-draft.json would loosen the live policy. The compiled
 # PacketFilter (`tailscale debug netmap`) is the honest read. Fail loud
 # if this VPS is a src toward the Mac, or if the watch cannot read the
-# netmap. No new scheduler.
+# netmap. rc=1 = confirmed lockdown-broken or watcher-broken; rc=2 =
+# netmap-unknown (transient LocalAPI read failure after retry). Both are
+# non-zero so unknown never passes. No new scheduler.
 TAILSCALE_ACL_CANARY_BIN="${FLEET_TAILSCALE_ACL_CANARY:-/home/nish/.local/bin/fleet-tailscale-acl-canary}"
 tailscale_acl_canary_rc=0
 if [ -x "$TAILSCALE_ACL_CANARY_BIN" ]; then
@@ -2235,7 +2237,11 @@ if [ -x "$TAILSCALE_ACL_CANARY_BIN" ]; then
         log "28. Tailscale VPS→Mac ACL lockdown canary complete"
     else
         tailscale_acl_canary_rc=$?
-        log "28. Tailscale VPS→Mac ACL lockdown canary FAILED (rc=$tailscale_acl_canary_rc) — PacketFilter allows VPS→Mac or watch is broken; unit will land in --state=failed"
+        if [ "$tailscale_acl_canary_rc" -eq 2 ]; then
+            log "28. Tailscale VPS→Mac ACL lockdown canary FAILED (rc=2 netmap-unknown) — transient LocalAPI read, not confirmed watcher-broken; unit will land in --state=failed"
+        else
+            log "28. Tailscale VPS→Mac ACL lockdown canary FAILED (rc=$tailscale_acl_canary_rc) — PacketFilter allows VPS→Mac or watch is broken; unit will land in --state=failed"
+        fi
     fi
 else
     log "28. Tailscale VPS→Mac ACL lockdown canary missing at $TAILSCALE_ACL_CANARY_BIN — skip (not installed)"
