@@ -862,8 +862,12 @@ def _read_dead_credentials():
     return len(seats), seats
 
 
-def _atomic_write(path, text):
-    """Write atomically: tmp in same dir, fsync, os.replace."""
+def _atomic_write(path, text, mode=0o644):
+    """Write atomically: tmp in same dir, fsync, os.replace.
+
+    mode defaults to 0644 so node_exporter (different uid) can read the
+    textfile. Callers writing credentials must pass 0600 (fleet-ops#4670).
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(
         prefix=path.name + ".", suffix=".tmp", dir=str(path.parent)
@@ -880,8 +884,7 @@ def _atomic_write(path, text):
         except OSError:
             pass
         raise
-    # node_exporter (different uid) needs to read the textfile.
-    os.chmod(path, 0o644)
+    os.chmod(path, mode)
 
 
 def _watchdog_firing():
@@ -1977,6 +1980,17 @@ QUOTA_STALE_S = 900  # 15 min — the issue's stale threshold.
 CLAUDE_CREDENTIALS_JSON = Path.home() / ".claude" / ".credentials.json"
 CODEX_AUTH_JSON = Path.home() / ".codex" / "auth.json"
 CLAUDE_OAUTH_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+# OpenUsage ClaudeAuthStore.prodRefreshURL / Claude Code 2.1.260 TOKEN_URL.
+CLAUDE_OAUTH_REFRESH_URL = "https://platform.claude.com/v1/oauth/token"
+# Claude Code prod CLIENT_ID (OpenUsage ClaudeAuthStore.prodClientID).
+CLAUDE_OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"  # gitleaks:allow - public OAuth client id, not a secret
+# OpenUsage ClaudeUsageClient.scopes — the file login's user:profile set.
+CLAUDE_OAUTH_REFRESH_SCOPE = (
+    "user:profile user:inference user:sessions:claude_code "
+    "user:mcp_servers user:file_upload"
+)
+# OpenUsage ClaudeAuthStore.needsRefresh: expiresAt - now <= 5 min.
+CLAUDE_OAUTH_REFRESH_SKEW_MS = 5 * 60 * 1000
 CODEX_WHAM_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 OPENROUTER_KEY_URL = "https://openrouter.ai/api/v1/key"
 CURSOR_AUTH_JSON = Path.home() / ".config" / "cursor" / "auth.json"
@@ -2040,15 +2054,164 @@ def _fetch_openrouter_key():
     return {"pct": pct, "reset_s": reset_s, "window": "key_cap"}
 
 
-def _claude_access_token():
-    """Return the Claude OAuth access token from ~/.claude/.credentials.json, or None."""
+def _read_claude_credentials():
+    """Return (full_file_dict, oauth_dict) from the file login, or (None, None).
+
+    The usage endpoint needs user:profile. CLAUDE_CODE_OAUTH_TOKEN (claude
+    setup-token) is inference-only and 403s; never read it here
+    (fleet-ops#4670; OpenUsage ClaudeAuthStore.inferenceOnly).
+    """
     try:
         data = json.loads(CLAUDE_CREDENTIALS_JSON.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
+        return None, None
+    if not isinstance(data, dict):
+        return None, None
+    oauth = data.get("claudeAiOauth") or {}
+    if not isinstance(oauth, dict):
+        return None, None
+    return data, oauth
+
+
+def _claude_access_token():
+    """Return a live file-login access token, refreshing if near expiry.
+
+    Never returns CLAUDE_CODE_OAUTH_TOKEN. A dead refresh keeps the current
+    access token so a still-valid window can serve one more usage GET; a
+    401 on that GET forces one more refresh via _fetch_claude_usage.
+    """
+    return _ensure_claude_file_token()
+
+
+def _claude_needs_refresh(oauth, now_ms=None):
+    """True when the file access token is inside OpenUsage's 5-min skew."""
+    if not isinstance(oauth, dict):
+        return False
+    expires_at = oauth.get("expiresAt")
+    if not isinstance(expires_at, (int, float)):
+        return False
+    if now_ms is None:
+        now_ms = time.time() * 1000.0
+    return expires_at - now_ms <= CLAUDE_OAUTH_REFRESH_SKEW_MS
+
+
+def _claude_refresh_grant(refresh_token):
+    """POST the OpenUsage refresh grant. Return parsed JSON or None.
+
+    Body shape is OpenUsage ClaudeUsageClient.refreshToken: grant_type,
+    refresh_token, client_id, scope (space-separated, includes user:profile).
+    """
+    if not refresh_token:
         return None
-    oauth = (data or {}).get("claudeAiOauth") or {}
-    token = oauth.get("accessToken")
-    return token or None
+    payload = json.dumps({
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+        "client_id": CLAUDE_OAUTH_CLIENT_ID,
+        "scope": CLAUDE_OAUTH_REFRESH_SCOPE,
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        CLAUDE_OAUTH_REFRESH_URL,
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": _VENDOR_USER_AGENT,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:  # nosemgrep
+            body = json.loads(resp.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, ValueError) as exc:
+        print(f"claude oauth refresh failed: {exc}", file=sys.stderr)
+        return None
+    if not isinstance(body, dict) or not body.get("access_token"):
+        return None
+    return body
+
+
+def _persist_claude_oauth(expected_refresh, new_oauth):
+    """Atomically write rotated oauth if the file refreshToken still matches.
+
+    CAS is best-effort (OpenUsage ClaudeAuthStore.save ifUnchanged): a Mac or
+    CLI writer that rotated first wins, so we do not clobber their new pair.
+    Mode stays 0600. Sibling oauth fields (subscriptionType, rateLimitTier)
+    are preserved; only access/refresh/expiry/scopes are updated.
+    """
+    try:
+        current = json.loads(CLAUDE_CREDENTIALS_JSON.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(current, dict):
+        return False
+    oauth = current.get("claudeAiOauth") or {}
+    if not isinstance(oauth, dict):
+        return False
+    if oauth.get("refreshToken") != expected_refresh:
+        print(
+            "claude oauth persist skipped: file refreshToken changed under us",
+            file=sys.stderr,
+        )
+        return False
+    merged = dict(oauth)
+    merged.update(new_oauth)
+    current["claudeAiOauth"] = merged
+    text = json.dumps(current, separators=(",", ":"))
+    try:
+        _atomic_write(CLAUDE_CREDENTIALS_JSON, text, mode=0o600)
+    except OSError as exc:
+        print(f"claude oauth persist failed: {exc}", file=sys.stderr)
+        return False
+    return True
+
+
+def _ensure_claude_file_token(force=False):
+    """Return the file access token, refreshing when near expiry or forced.
+
+    force=True is the usage-401 recovery path: refresh even if expiresAt
+    still looks healthy (clock skew / early revoke).
+    """
+    _data, oauth = _read_claude_credentials()
+    if oauth is None:
+        return None
+    access = oauth.get("accessToken") or None
+    refresh = oauth.get("refreshToken") or None
+    # Fresh non-empty access skips the grant. A blanked accessToken with a
+    # surviving refresh (the 2026-08-21 signature, minus a fully-blanked pair)
+    # still heals. force=True is the usage-401 path.
+    if not force and access and not _claude_needs_refresh(oauth):
+        return access
+    if not refresh:
+        return access
+    grant = _claude_refresh_grant(refresh)
+    if not grant:
+        return access
+    try:
+        expires_in = float(grant["expires_in"])
+    except (KeyError, TypeError, ValueError):
+        print("claude oauth refresh missing expires_in", file=sys.stderr)
+        return access
+    if expires_in <= 0:
+        print("claude oauth refresh expires_in<=0", file=sys.stderr)
+        return access
+    now_ms = int(time.time() * 1000)
+    new_oauth = {
+        "accessToken": grant["access_token"],
+        "refreshToken": grant.get("refresh_token") or refresh,
+        "expiresAt": now_ms + int(expires_in * 1000),
+    }
+    rte = grant.get("refresh_token_expires_in")
+    if rte is not None:
+        try:
+            new_oauth["refreshTokenExpiresAt"] = now_ms + int(float(rte) * 1000)
+        except (TypeError, ValueError):
+            pass
+    scope = grant.get("scope")
+    if isinstance(scope, str) and scope.strip():
+        new_oauth["scopes"] = scope.split()
+    elif isinstance(scope, list) and scope:
+        new_oauth["scopes"] = [str(s) for s in scope]
+    _persist_claude_oauth(refresh, new_oauth)
+    return new_oauth["accessToken"]
 
 
 def _codex_access_token():
@@ -2062,23 +2225,47 @@ def _codex_access_token():
     return token or None
 
 
+def _claude_usage_request(token):
+    """GET /api/oauth/usage. Return payload dict, or raise."""
+    req = urllib.request.Request(
+        CLAUDE_OAUTH_USAGE_URL,
+        headers={"Authorization": f"Bearer {token}", "User-Agent": _VENDOR_USER_AGENT},
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:  # nosemgrep
+        return json.loads(resp.read().decode("utf-8"))
+
+
 def _fetch_claude_usage():
     """Return Claude OAuth usage quota rows, or None.
 
     api.anthropic.com/api/oauth/usage returns five_hour and seven_day windows
     with utilization (0..100, percent USED) and resets_at (ISO). remaining_pct
     = 100 - utilization. Verified live 2026-09-07.
+
+    fleet-ops#4670: a 401 means the file access token died. Force one refresh
+    of the file login (not CLAUDE_CODE_OAUTH_TOKEN) and retry once. A 429 is
+    not a credential fault; leave it to the stale-cache / fail-loud path.
     """
     token = _claude_access_token()
     if not token:
         return None
-    req = urllib.request.Request(
-        CLAUDE_OAUTH_USAGE_URL,
-        headers={"Authorization": f"Bearer {token}", "User-Agent": _VENDOR_USER_AGENT},
-    )
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:  # nosemgrep
-            payload = json.loads(resp.read().decode("utf-8"))
+        payload = _claude_usage_request(token)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 401:
+            print("claude usage 401: forcing file-token refresh", file=sys.stderr)
+            token = _ensure_claude_file_token(force=True)
+            if not token:
+                print(f"claude usage fetch failed: {exc}", file=sys.stderr)
+                return None
+            try:
+                payload = _claude_usage_request(token)
+            except (OSError, urllib.error.URLError, json.JSONDecodeError, ValueError) as retry_exc:
+                print(f"claude usage fetch failed: {retry_exc}", file=sys.stderr)
+                return None
+        else:
+            print(f"claude usage fetch failed: {exc}", file=sys.stderr)
+            return None
     except (OSError, urllib.error.URLError, json.JSONDecodeError, ValueError) as exc:
         print(f"claude usage fetch failed: {exc}", file=sys.stderr)
         return None
