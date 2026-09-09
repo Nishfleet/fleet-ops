@@ -61,10 +61,15 @@ ok "rate card present + dated sources (crof, minimax, runinfra, entrim, straitly
 scratch="$(mktemp -d -t fme-usd.XXXXXX)"
 trap 'rm -rf "$scratch"' EXIT
 mkdir -p "$scratch/sessions/pi-issue-fleet-ops-0001"
-cat > "$scratch/sessions/pi-issue-fleet-ops-0001/test.jsonl" <<'EOF'
-{"type":"session","timestamp":"2026-09-08T10:00:00Z","id":"a"}
+# Fixture timestamps must be RELATIVE to now: compute_usd_24h() aggregates a
+# trailing 24h window from wall-clock time, so a hardcoded date silently ages
+# out of the window and turns this suite (and therefore main) red with no new
+# commit. fleet-ops: usd-fixture-relative-clock.
+now_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+cat > "$scratch/sessions/pi-issue-fleet-ops-0001/test.jsonl" <<EOF
+{"type":"session","timestamp":"$now_ts","id":"a"}
 {"type":"model_change","provider":"crof","modelId":"deepseek-v4-flash-0731"}
-{"type":"message","timestamp":"2026-09-08T10:00:00Z","message":{"role":"assistant","usage":{"input":1000000,"output":1000000,"cacheRead":1000000,"totalTokens":3000000}}}
+{"type":"message","timestamp":"$now_ts","message":{"role":"assistant","usage":{"input":1000000,"output":1000000,"cacheRead":1000000,"totalTokens":3000000}}}
 EOF
 out="$(FLEET_SESSIONS_DIR="$scratch/sessions" MEASURE_REPOS="" bash "$measure" 2>/dev/null || true)"
 usd_line="$(printf '%s\n' "$out" | grep -E '^usd_24h:' || true)"
