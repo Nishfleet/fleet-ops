@@ -331,11 +331,30 @@ cat >"$stub_dir/gh" <<'STUB'
 #!/usr/bin/env bash
 # Record every call; dispatch on subcommand.
 cmd_log="${FLEET_CRED_EXPIRY_STUB_LOG:-/tmp/cred-expiry-gh-calls.log}"
+printf 'gh %s\n' "$*" >>"$cmd_log"
 case "$1" in
     issue)
         case "$2" in
             list)
                 echo "${FLEET_CRED_EXPIRY_STUB_LIST:-[]}"
+                ;;
+            view)
+                num="$3"
+                title_map="${FLEET_CRED_EXPIRY_STUB_VIEW_TITLES:-}"
+                title="fix(cred-expiry/xai-oauth): renew xai-oauth credential before expiry (auto-filed)"
+                if [[ -n "$title_map" && -f "$title_map" ]]; then
+                    mapped=$(jq -r --arg n "$num" '.[$n] // empty' "$title_map" 2>/dev/null || true)
+                    [[ -n "$mapped" ]] && title="$mapped"
+                fi
+                if printf '%s' " $* " | grep -q -- ' --jq ' ; then
+                    printf '%s\n' "$title"
+                else
+                    jq -n --arg t "$title" '{title:$t}'
+                fi
+                ;;
+            create)
+                printf 'gh issue create %s\n' "$*" >>"$cmd_log"
+                echo "${FLEET_CRED_EXPIRY_STUB_CREATE_URL:-https://github.com/Nishfleet/fleet-ops/issues/8888}"
                 ;;
             comment)
                 printf 'gh issue comment %s\n' "$3" >>"$cmd_log"
@@ -477,4 +496,183 @@ unset GH FLEET_ISSUE_FILE FLEET_CRED_EXPIRY_STUB_LIST FLEET_CRED_EXPIRY_STUB_LOG
 grep -q 'CRED_EXPIRY_CANARY_BIN' "$tier1" || fail "tier1 still references CRED_EXPIRY_CANARY_BIN"
 ok "tier1 block 31 wiring intact after pre-expiry extension"
 
-echo "OK: credential-expiry-canary (fleet-ops#938 + #2134 pre-expiry probe)"
+# ============================================================================
+# WALLED / DEAD SEAT EXEMPTION + FILED-LINK VERIFY (fleet-ops#4622)
+# ============================================================================
+# A seat walled for a year (PRESERVE-QUOTA-WALL until 2027) cannot be renewed
+# into usefulness; its credential expiry is not actionable and must not fail
+# the heartbeat. A FILED pointer whose title does not carry the signal key
+# is a mismatch — fail loud and file a fresh issue.
+
+ledger_dir="$(mktemp -d -t cred-expiry-ledger.XXXXXX)"
+trap 'rm -rf "$scratch" "$stub_dir" "$ledger_dir"' EXIT INT TERM
+
+# --- 26. live quota wall -> INFO, not FAIL, no renewal issue ---------------
+printf '%s\n' '{"provider":"xai-oauth","model":"grok-4.6","health_class":"quota_exhausted","usable_at":"2027-09-09T01:33:44Z","seat_dead":false}' \
+    >"$ledger_dir/xai-oauth__grok-4.6.json"
+set +e
+out="$("$bin" --app-returns "$app_ok" \
+    --auth-entries "[{\"provider\":\"xai-oauth\",\"expires_ms\":$NEAR_EXPIRY_MS}]" \
+    --now "$PROBE_NOW" --seat-ledger-dir "$ledger_dir" 2>&1)"
+rc=$?
+set -e
+[[ "$rc" -eq 0 ]] || fail "quota-walled near-expiry must exit 0 (INFO), got $rc: $out"
+grep -q 'INFO' <<<"$out" || fail "walled seat must print INFO: $out"
+grep -q '2027-09-09' <<<"$out" || fail "walled INFO must name the wall date: $out"
+grep -q 'PRE-EXPIRY-DETECTED' <<<"$out" && \
+    fail "walled seat must NOT print PRE-EXPIRY-DETECTED (that is FAIL): $out"
+ok "quota-walled near-expiry is INFO, not FAIL, and names the wall date"
+
+# --- 26b. seat_dead -> INFO, not FAIL --------------------------------------
+rm -f "$ledger_dir"/*.json
+printf '%s\n' '{"provider":"xai-oauth","model":"grok-4.6","health_class":"corpse","seat_dead":true}' \
+    >"$ledger_dir/xai-oauth__grok-4.6.json"
+set +e
+out="$("$bin" --app-returns "$app_ok" \
+    --auth-entries "[{\"provider\":\"xai-oauth\",\"expires_ms\":$NEAR_EXPIRY_MS}]" \
+    --now "$PROBE_NOW" --seat-ledger-dir "$ledger_dir" 2>&1)"
+rc=$?
+set -e
+[[ "$rc" -eq 0 ]] || fail "seat_dead near-expiry must exit 0 (INFO), got $rc: $out"
+grep -q 'INFO' <<<"$out" || fail "seat_dead must print INFO: $out"
+grep -q 'PRE-EXPIRY-DETECTED' <<<"$out" && \
+    fail "seat_dead must NOT print PRE-EXPIRY-DETECTED: $out"
+ok "seat_dead near-expiry is INFO, not FAIL"
+
+# --- 26c. healthy seat + near-expiry still FAIL (no false exemption) -------
+rm -f "$ledger_dir"/*.json
+printf '%s\n' '{"provider":"xai-oauth","model":"grok-4.6","health_class":"healthy","seat_dead":false,"usable_at":null}' \
+    >"$ledger_dir/xai-oauth__grok-4.6.json"
+set +e
+out="$("$bin" --app-returns "$app_ok" \
+    --auth-entries "[{\"provider\":\"xai-oauth\",\"expires_ms\":$NEAR_EXPIRY_MS}]" \
+    --now "$PROBE_NOW" --seat-ledger-dir "$ledger_dir" 2>&1)"
+rc=$?
+set -e
+[[ "$rc" -eq 1 ]] || fail "healthy near-expiry must still exit 1, got $rc: $out"
+grep -q 'PRE-EXPIRY-DETECTED' <<<"$out" || fail "healthy near-expiry must print PRE-EXPIRY-DETECTED: $out"
+ok "healthy near-expiry still FAIL (wall exemption does not fire)"
+
+# --- 26d. expired quota wall (usable_at in the past) still FAIL ------------
+rm -f "$ledger_dir"/*.json
+printf '%s\n' '{"provider":"xai-oauth","model":"grok-4.6","health_class":"quota_exhausted","usable_at":"2026-08-01T00:00:00Z","seat_dead":false}' \
+    >"$ledger_dir/xai-oauth__grok-4.6.json"
+set +e
+out="$("$bin" --app-returns "$app_ok" \
+    --auth-entries "[{\"provider\":\"xai-oauth\",\"expires_ms\":$NEAR_EXPIRY_MS}]" \
+    --now "$PROBE_NOW" --seat-ledger-dir "$ledger_dir" 2>&1)"
+rc=$?
+set -e
+[[ "$rc" -eq 1 ]] || fail "expired wall must still FAIL, got $rc: $out"
+grep -q 'PRE-EXPIRY-DETECTED' <<<"$out" || fail "expired wall must print PRE-EXPIRY-DETECTED: $out"
+ok "expired quota wall is not an exemption — still FAIL"
+
+# --- 26e. lib helper: live wall / seat_dead / expired wall -----------------
+python3 -c '
+import importlib.util, sys
+from datetime import datetime, timezone
+spec = importlib.util.spec_from_file_location("cec", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+now = datetime(2026, 8, 30, 5, 0, 0, tzinfo=timezone.utc)
+ledger = sys.argv[2]
+assert hasattr(m, "provider_wall"), "missing provider_wall"
+w = m.provider_wall("xai-oauth", ledger, now=now)
+assert w is not None and w.get("kind") in ("quota_wall", "seat_dead"), w
+print("lib provider_wall OK", w)
+' "$lib" "$ledger_dir" || fail "lib provider_wall missing or wrong on expired-wall fixture"
+# 26d left an expired wall in ledger_dir; expired must return None.
+python3 -c '
+import importlib.util, sys, json, os
+from datetime import datetime, timezone
+spec = importlib.util.spec_from_file_location("cec", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+now = datetime(2026, 8, 30, 5, 0, 0, tzinfo=timezone.utc)
+ledger = sys.argv[2]
+w = m.provider_wall("xai-oauth", ledger, now=now)
+assert w is None, ("expired wall must not count as live", w)
+open(os.path.join(ledger, "xai-oauth__grok-4.6.json"), "w").write(
+    json.dumps({"provider":"xai-oauth","health_class":"quota_exhausted","usable_at":"2027-09-09T01:33:44Z","seat_dead":False})
+)
+w = m.provider_wall("xai-oauth", ledger, now=now)
+assert w is not None and w["kind"] == "quota_wall", w
+assert "2027-09-09" in (w.get("wall_until") or ""), w
+open(os.path.join(ledger, "xai-oauth__grok-4.6.json"), "w").write(
+    json.dumps({"provider":"xai-oauth","health_class":"corpse","seat_dead":True})
+)
+w = m.provider_wall("xai-oauth", ledger, now=now)
+assert w is not None and w["kind"] == "seat_dead", w
+print("lib provider_wall cases OK")
+' "$lib" "$ledger_dir" || fail "lib provider_wall cases failed"
+ok "lib provider_wall: live wall / seat_dead / expired-wall"
+
+# --- 27. FILED pointer whose title lacks the signal key -> FILED-LINK-MISMATCH
+# Restore the stubbed gh + fleet-issue-file. The file stub returns #4611
+# (the live wrong pointer: claude meter). View title does not contain
+# cred-expiry/xai-oauth. Wrapper must fail loud, then file a FRESH issue
+# via gh issue create (bypassing fleet-issue-file's token-overlap dedupe).
+export FLEET_CRED_EXPIRY_FILE_ISSUES=1
+export FLEET_CRED_EXPIRY_CLOSE_ISSUES=0
+export GH="$stub_dir/gh"
+export FLEET_ISSUE_FILE="$stub_dir/fleet-issue-file"
+export FLEET_CRED_EXPIRY_STUB_LIST='[]'
+export FLEET_CRED_EXPIRY_STUB_LOG="$calls_log"
+view_titles="$(mktemp -t cred-expiry-titles.XXXXXX)"
+printf '%s\n' '{"4611":"claude OAuth quota meter silently dead","8888":"fix(cred-expiry/xai-oauth): renew xai-oauth credential before expiry (auto-filed)"}' >"$view_titles"
+export FLEET_CRED_EXPIRY_STUB_VIEW_TITLES="$view_titles"
+# fleet-issue-file returns the WRONG issue (the live 02:54Z bug).
+cat >"$stub_dir/fleet-issue-file" <<'STUB'
+#!/usr/bin/env bash
+cmd_log="${FLEET_CRED_EXPIRY_STUB_LOG:-/tmp/cred-expiry-gh-calls.log}"
+printf 'fleet-issue-file file %s\n' "$*" >>"$cmd_log"
+echo "https://github.com/Nishfleet/fleet-ops/issues/4611"
+exit 0
+STUB
+chmod +x "$stub_dir/fleet-issue-file"
+: >"$calls_log"
+# healthy ledger so the probe still fires (not the wall exemption).
+rm -f "$ledger_dir"/*.json
+printf '%s\n' '{"provider":"xai-oauth","model":"grok-4.6","health_class":"healthy","seat_dead":false}' \
+    >"$ledger_dir/xai-oauth__grok-4.6.json"
+set +e
+out="$("$bin" --app-returns "$app_ok" \
+    --auth-entries "[{\"provider\":\"xai-oauth\",\"expires_ms\":$NEAR_EXPIRY_MS}]" \
+    --now "$PROBE_NOW" --seat-ledger-dir "$ledger_dir" 2>&1)"
+rc=$?
+set -e
+[[ "$rc" -eq 1 ]] || fail "FILED-LINK-MISMATCH run must stay fail-loud rc=1, got $rc: $out"
+grep -q 'FILED-LINK-MISMATCH' <<<"$out" || fail "must print FILED-LINK-MISMATCH: $out"
+grep -q 'gh issue create' "$calls_log" || \
+    fail "mismatch must file a fresh issue via gh issue create (bypass dedupe): $(cat "$calls_log")"
+ok "FILED pointer to unrelated #4611 -> FILED-LINK-MISMATCH + fresh gh issue create"
+
+# --- 27b. matching title is accepted (no mismatch, no extra create) --------
+cat >"$stub_dir/fleet-issue-file" <<'STUB'
+#!/usr/bin/env bash
+cmd_log="${FLEET_CRED_EXPIRY_STUB_LOG:-/tmp/cred-expiry-gh-calls.log}"
+printf 'fleet-issue-file file %s\n' "$*" >>"$cmd_log"
+echo "https://github.com/Nishfleet/fleet-ops/issues/9999"
+exit 0
+STUB
+chmod +x "$stub_dir/fleet-issue-file"
+printf '%s\n' '{"9999":"fix(cred-expiry/xai-oauth): renew xai-oauth credential before expiry (auto-filed)"}' >"$view_titles"
+: >"$calls_log"
+set +e
+out="$("$bin" --app-returns "$app_ok" \
+    --auth-entries "[{\"provider\":\"xai-oauth\",\"expires_ms\":$NEAR_EXPIRY_MS}]" \
+    --now "$PROBE_NOW" --seat-ledger-dir "$ledger_dir" 2>&1)"
+rc=$?
+set -e
+[[ "$rc" -eq 1 ]] || fail "matching-title file must stay rc=1 (first detection), got $rc: $out"
+grep -q 'FILED-LINK-MISMATCH' <<<"$out" && \
+    fail "matching title must NOT print FILED-LINK-MISMATCH: $out"
+grep -q 'gh issue create' "$calls_log" && \
+    fail "matching title must NOT fall through to gh issue create: $(cat "$calls_log")"
+grep -q 'fleet-issue-file file' "$calls_log" || fail "matching title must still file via fleet-issue-file"
+ok "matching FILED title is accepted — no FILED-LINK-MISMATCH"
+
+# Restore the offline defaults.
+export FLEET_CRED_EXPIRY_FILE_ISSUES=0
+export FLEET_CRED_EXPIRY_CLOSE_ISSUES=0
+unset GH FLEET_ISSUE_FILE FLEET_CRED_EXPIRY_STUB_LIST FLEET_CRED_EXPIRY_STUB_LOG FLEET_CRED_EXPIRY_STUB_VIEW_TITLES
+
+echo "OK: credential-expiry-canary (fleet-ops#938 + #2134 pre-expiry probe + #4622 walled-seat exemption)"
