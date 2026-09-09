@@ -1171,19 +1171,54 @@ declare -A LEARNED_BENCH_UNTIL=()
 # clears the flag and normal AIMD resumes.
 declare -A LEARNED_RAMP=()
 
+# fleet-ops#4723: ramp graduates on staleness. A ramp=true entry bypasses the
+# declared floor clamp and climbs only +1 per probe, and a probe needs the
+# provider to be picked. A provider seeded at floor/2 by a deploy cap change
+# and then walled (quota, 429, corpse) is never picked, never probes, and so
+# stays pinned below its declared cap forever once the wall lifts — decay is
+# fast, ramp needs traffic, traffic needs cap. Measured 2026-09-09: xkiro sat
+# at learned_cap=1 of declared 3 with last_at 2026-09-07T16:58Z (42h stale),
+# alongside zenmux, alibaba-coding, crof and straitly, while the intake
+# reported 3 usable seat slots against target_concurrent=25.
+#
+# No AIMD write within LEARNED_RAMP_STALE_S proves no traffic in that window,
+# and no traffic is no evidence of harm, so the slow-start has nothing left to
+# protect: drop the flag and let the declared floor apply again. This is the
+# same graduation effective_provider_cap already performs when a ramp reaches
+# declared, reached by elapsed time instead of by probes. The declared cap is
+# the config-pinned value, and the RAM governor, the usable-seat-slot gate
+# (fleet-ops#3732) and spawn_stagger still bound the resulting spawn rate, so
+# this cannot reproduce the fleet-ops#3690 reset-then-burst (that was a reset
+# of learned_cap itself to null, not a flag graduation).
+LEARNED_RAMP_STALE_S="${LEARNED_RAMP_STALE_S:-21600}"
+
+# 0 (true) iff $1 is an ISO8601 timestamp older than LEARNED_RAMP_STALE_S.
+# An absent or unparseable timestamp is NOT stale: never graduate a ramp on a
+# reading failure, that would be a silent cap raise on bad data.
+_learned_ramp_stale() {
+    local ts="$1" epoch now
+    [[ -n "$ts" ]] || return 1
+    epoch=$(date -u -d "$ts" +%s 2>/dev/null) || return 1
+    [[ "$epoch" =~ ^[0-9]+$ ]] || return 1
+    now=$(date -u +%s)
+    (( now - epoch >= LEARNED_RAMP_STALE_S ))
+}
+
 load_learned_caps() {
     LEARNED_CAP=()
     LEARNED_BENCH_UNTIL=()
     LEARNED_RAMP=()
     _seat_learned_loaded=1
     [[ -f "$LEARNED_CAPS_JSON" ]] || return 0
-    local p lc bu ramp
-    while IFS=$'\x1f\n' read -r p lc bu ramp; do
+    local p lc bu ramp last_at
+    while IFS=$'\x1f\n' read -r p lc bu ramp last_at; do
         [[ -n "$p" ]] || continue
         [[ "$lc" =~ ^[0-9]+$ ]] && LEARNED_CAP["$p"]="$lc"
         [[ -n "$bu" ]] && LEARNED_BENCH_UNTIL["$p"]="$bu"
-        [[ "$ramp" == "true" ]] && LEARNED_RAMP["$p"]=1
-    done < <(jq -r '.providers // {} | to_entries[] | [.key, (.value.learned_cap//""), (.value.bench_until//""), (.value.ramp|tostring)] | join("\u001f")' "$LEARNED_CAPS_JSON" 2>/dev/null || true)
+        if [[ "$ramp" == "true" ]] && ! _learned_ramp_stale "$last_at"; then
+            LEARNED_RAMP["$p"]=1
+        fi
+    done < <(jq -r '.providers // {} | to_entries[] | [.key, (.value.learned_cap//""), (.value.bench_until//""), (.value.ramp|tostring), (.value.last_at//"")] | join("\u001f")' "$LEARNED_CAPS_JSON" 2>/dev/null || true)
 }
 
 # Hard upper bound a provider may probe to. Absent -> declared cap (no
@@ -6843,7 +6878,7 @@ is_quota_cap_error() {
     # `quota (exhausted|...)` misses it and the death fell to
     # error_class=unknown, never benched, seat re-picked every cycle. Match
     # `token-plan` and `quota has been` as the hard-wall signal the same way.
-    if ! grep -qiE 'weekly[[:space:]]+(clinepass[[:space:]]+)?limit|daily[[:space:]]+limit|quota[[:space:]]+(exhausted|exceeded|reached)|quota[[:space:]]+has[[:space:]]+been|token-plan|usage[[:space:]]+balance[[:space:]]+exhausted|budget_exceeded|credit[[:space:]]+balance[[:space:]]+depleted|free-model[[:space:]]+token[[:space:]]+quota|resource_exhausted|Connection error, send a message to continue retrying|INFERENCE_CAP_ERROR|usage[[:space:]]+limit|plan[[:space:]]+limit|out[[:space:]]+of[[:space:]]+credits|message[[:space:]]+rate[[:space:]]+limit|rate[[:space:]]+limit[[:space:]]+(exceeded|reached)|cap[[:space:]]+(exceeded|reached)|exceeded[[:space:]]+your' <<<"$combined"; then
+    if ! grep -qiE 'weekly[[:space:]]+(clinepass[[:space:]]+)?limit|daily[[:space:]]+limit|quota[[:space:]]+(exhausted|exceeded|reached)|quota[[:space:]]+has[[:space:]]+been|token-plan|usage[[:space:]]+balance[[:space:]]+exhausted|budget_exceeded|credit[[:space:]]+balance[[:space:]]+depleted|free-model[[:space:]]+token[[:space:]]+quota|resource_exhausted|Connection error, send a message to continue retrying|INFERENCE_CAP_ERROR|usage[[:space:]]+limit|plan[[:space:]]+limit|out[[:space:]]+of[[:space:]]+credits|insufficient[[:space:]]+credits|credit_insufficient|budget_error|message[[:space:]]+rate[[:space:]]+limit|rate[[:space:]]+limit[[:space:]]+(exceeded|reached)|cap[[:space:]]+(exceeded|reached)|exceeded[[:space:]]+your' <<<"$combined"; then
         return 1
     fi
     # A reset signal: an explicit window OR a "resets" keyword. The provider
@@ -6863,7 +6898,13 @@ is_quota_cap_error() {
     # fleet-ops#3973, 2026-09-06: three seats died at 1s, booked
     # error_class=unknown) is the same prepaid-balance wall: classify it; with
     # no provider default the writer fails open and the reactive ledger benches.
-    if grep -qiE 'weekly[[:space:]]+(clinepass[[:space:]]+)?limit|daily[[:space:]]+limit|INFERENCE_CAP_ERROR|FreeUsageLimitError|usage[[:space:]]+balance[[:space:]]+exhausted|budget_exceeded|credit[[:space:]]+balance[[:space:]]+depleted|usage[[:space:]]+limit[[:space:]]+for[[:space:]]+the[[:space:]]+current[[:space:]]+free[[:space:]]+model|free-model[[:space:]]+token[[:space:]]+quota|resource_exhausted' <<<"$combined"; then
+    # "Insufficient credits for this request" / budget_error / credit_insufficient
+    # (Pareto Inference HTTP 429, fleet-ops 2026-09-09: wire probe returned this
+    # body; 91 deaths in 4h booked rc=124/rc=1, health_class=transient_fault and
+    # a generic "no_block:rc=1" bench with no error-class citation) is a prepaid
+    # credit wall wearing a 429, not a rate limit: classify it so the money wall
+    # is never counted as seat yield.
+    if grep -qiE 'weekly[[:space:]]+(clinepass[[:space:]]+)?limit|daily[[:space:]]+limit|INFERENCE_CAP_ERROR|FreeUsageLimitError|usage[[:space:]]+balance[[:space:]]+exhausted|budget_exceeded|budget_error|credit[[:space:]]+balance[[:space:]]+depleted|insufficient[[:space:]]+credits|credit_insufficient|usage[[:space:]]+limit[[:space:]]+for[[:space:]]+the[[:space:]]+current[[:space:]]+free[[:space:]]+model|free-model[[:space:]]+token[[:space:]]+quota|resource_exhausted' <<<"$combined"; then
         return 0
     fi
     return 1

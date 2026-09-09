@@ -628,7 +628,13 @@ ok "#3690: provider-specific change resets only that provider (devin preserved, 
 # Seed a ramp entry for devin (cap=4, learned_cap=2, ramp=true) and verify
 # effective_provider_cap returns 2, not 4.
 rm -f "$state3690"/active-seats/*.json "$scratch/ledger-3690"/*.json
-jq -nc '{providers:{devin:{learned_cap:2,last_result:"ramp",ramp:true,bench_until:null,last_at:"2026-09-05T16:00:00Z"}}}' >"$learned3690"
+# fleet-ops#4723: last_at must be FRESH here. #3690's slow-start applies to a
+# ramp seeded by a deploy cap change, and reset_learned_caps_on_provider_change
+# always writes last_at=now, so a ramp entry is born fresh in production. A
+# hardcoded calendar epoch (was "2026-09-05T16:00:00Z") silently ages into a
+# stale ramp, which now graduates to the declared floor by design — the same
+# hardcoded-epoch rot fleet-ops#4508 hit. The assertion below is unchanged.
+jq -nc --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{providers:{devin:{learned_cap:2,last_result:"ramp",ramp:true,bench_until:null,last_at:$t}}}' >"$learned3690"
 cp "$scratch/caps-3690-old.json" "$caps3690"
 eff=$(SEAT_CAPS_JSON="$caps3690" LEARNED_CAPS_JSON="$learned3690" PI_PACKET_STATE="$state3690" \
     PI_SEAT_HEALTH_LEDGER_DIR="$scratch/ledger-3690" \
@@ -638,7 +644,10 @@ ok "#3690: ramp=true -> effective cap is 2 (floor/2), not 4 (declared) — no fi
 
 # Verify ramp graduates: after a probe to declared, ramp clears.
 # Seed ramp at learned_cap=3 (one below declared 4). A probe to 4 graduates.
-jq -nc '{providers:{devin:{learned_cap:3,last_result:"ramp",ramp:true,bench_until:null,last_at:"2026-09-05T16:00:00Z"}}}' >"$learned3690"
+# fleet-ops#4723: fresh last_at here too. This case must prove graduation BY
+# PROBE; with a stale timestamp it would graduate on staleness instead and
+# pass even if the probe path broke.
+jq -nc --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{providers:{devin:{learned_cap:3,last_result:"ramp",ramp:true,bench_until:null,last_at:$t}}}' >"$learned3690"
 # Seed 3 active devin seats so the probe gate (active==eff) passes.
 for (( i = 0; i < 3; i++ )); do
     jq -nc --arg u "pi-3690-devin-$i" \

@@ -68,6 +68,36 @@ For `0509`, read the **RESEARCH CONTEXT** section appended after this prompt fir
 
 The RESEARCH CONTEXT **Direction** block carries the current 0509 product-direction decision from the decisions ledger (`source: direction#4518`, fleet-ops#4518, decided 2026-09-09: acquisition, metric **signups/week**, unpaid distribution only — no paid spend, 0509 stays on the polish track). While that entry stands and `signups_30d` has not moved above zero, at least **half** of each run's filed `0509` candidates MUST cite the Direction block (`source: direction#4518` in A.6 terms) — distribution-shaped candidates outrank feature-shaped ones. A run that files below the half cap still exits 0, but reports `direction_cap: <cited>/<filed>` in the summary so the shortfall is visible.
 
+### A.8 Acquisition-first intake (0509 only)
+
+Origin: 2026-09-09 (fleet-ops#4657, 0509#2122). For `Nishfleet/0509` ONLY. Other TARGET repos ignore this section. Do not change `label_budget` itself.
+
+**Funnel-stage rule.** Every 0509 candidate that would receive `scout-candidate` MUST name the funnel stage it moves, as a `funnel_stage:` line in the body with exactly one of: `visit` / `signup` / `first watchlist` / `first proof` / `paid`. A candidate with no `funnel_stage:` line is tagged `usage-uncited` instead of `scout-candidate`. File it; do not drop it; do not spend a `label_budget` slot on it. A.6 research-floor candidates still need `funnel_stage:` to receive `scout-candidate`; without it they stay `usage-uncited` only.
+
+**Ranking rule.** While `signups-30d == 0` (source: `scripts/weekly-business-metrics.mjs` once it lands; until then the D1 `user` created_at count in 0509 `docs/ga-metrics.md`, also carried on the RESEARCH CONTEXT Direction block as `signups_30d`), acquisition-class candidates rank above fix/polish-class when applying `scout-candidate` inside `label_budget`. This ranks. It must NOT block or freeze fix/polish/design items (Nish, 2026-09-09T05:38Z, 0509#2122). File them. Label them after the acquisition-class slots are filled.
+
+**Class.** Acquisition-class: `funnel_stage:` is `visit` or `signup` (it moves a stranger onto the site or into an account). Fix/polish-class: `funnel_stage:` is `first watchlist`, `first proof`, or `paid`, or a defect/copy/design item that does not move visit or signup. Both classes still need the `funnel_stage:` line to take a `scout-candidate` slot.
+
+**Worked example — acquisition-class** (label first while `signups-30d == 0`):
+
+```
+funnel_stage: signup
+source: direction#4518
+impact: the homepage CTA 404s, so a visit cannot become a signup
+```
+
+This takes a `scout-candidate` slot ahead of any fix/polish-class candidate.
+
+**Worked example — fix/polish-class** (file and keep; label after acquisition-class):
+
+```
+funnel_stage: first watchlist
+source: nish#1368
+impact: the empty-state copy on /app does not tell a signed-in user how to add a watchlist
+```
+
+This is filed. It is labeled `scout-candidate` only after every acquisition-class candidate that fits `label_budget` has a slot. It is never parked or frozen.
+
 ### A. Live product signals (FIRST — spend most effort here)
 
 Product checkout: `/home/nish/workspaces/products/<repo>` (read-only for inspection).
@@ -123,7 +153,8 @@ signups), do NOT drop the whole candidate set. File up to
 `source:` cites a market-signal line, a transformation-bet ID (BET n), the
 north-star rule, or a recent merged-PR title — the same valid citation forms
 as the top-level rule. Tag each of them `scout-candidate` + `usage-uncited`
-so the conference can rank them below telemetry-cited work. A healthy site
+so the conference can rank them below telemetry-cited work. A.8 still applies:
+without a `funnel_stage:` line the tag is `usage-uncited` only, not `scout-candidate`. A healthy site
 with no traffic must still produce a fed queue; a starved queue from a green
 Usage block is a supply bug, not a spec win.
 
@@ -221,7 +252,7 @@ FAILS fleet/CI tooling by design. Apply `agent-ready` there, still within
 `termination:` command, or `accept:` / `required:` / `metric:`). A
 prose-only body stays unlabeled until it has a spec (fleet-ops#543).
 
-Prefer labeling the highest product-impact issues first. Do not label more than `label_budget` total.
+Prefer labeling the highest product-impact issues first. For `0509` while `signups-30d == 0`, that order is A.8: acquisition-class first, then fix/polish-class. A 0509 candidate with no `funnel_stage:` line gets `usage-uncited` instead of `scout-candidate`. Do not label more than `label_budget` total. Do not change `label_budget` itself.
 
 ## Step 5 — Summary (stdout)
 
@@ -243,5 +274,12 @@ Print one line per action:
   signups_7d is the trailing-7-day signup count from the D1 read in the
   RESEARCH CONTEXT Direction block and direction_cited/<f> is how many of
   the filed `0509` candidates cite `direction#4518` (the A.7 half cap).
+
+  For `0509` also print (fleet-ops#4657):
+  `funnel-stage: cited=<n>/<admitted> acquisition_first=<yes|no>` where
+  cited/admitted is how many `scout-candidate` labels this run went to
+  bodies that named a funnel stage (target 100%), and acquisition_first
+  is `yes` iff no fix/polish-class candidate was labeled `scout-candidate`
+  ahead of an unlabeled acquisition-class candidate while `signups-30d == 0`.
 
 Exit 0.

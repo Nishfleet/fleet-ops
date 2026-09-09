@@ -236,12 +236,14 @@ grep -q "issue edit" "$tmp/gh.log" || fail "scenario 9: expected gh issue edit"
 ok "scenario 9: unclaimed-stall reroutes to escalate-senior"
 
 # ---------------------------------------------------------------------------
-# 9b. DEBUG-PLAYBOOK-MISSING keys on the RULE, not the session (fleet-ops#4579).
-#     A session-scoped key gave every session its own signal, so the reconciler
-#     filed one issue per session per rule (#4578/#4579 filed 43s apart under
-#     one rule while the aggregate was open). Keying on the rule keeps the noisy
-#     snippet file tokens out (fleet-ops#4512) and makes repeated sessions dedupe
-#     under the rule prefix instead of filing a new issue each time.
+# 9b. DEBUG-PLAYBOOK-MISSING is not queued by the reconciler (fleet-ops#4620).
+#     The detector already LOUDs every in-window session AND files one daily
+#     aggregate (fleet-ops#4384). Queuing the per-session MISSING lines as
+#     loud/debug-playbook-missing created a never-green issue: any other
+#     in-window session re-emits the same rule-level signal every tick, so
+#     observe-to-close never fires (live: #4620 stayed open after the named
+#     session aged out of the 24h window, and after PR #4644 exempted the
+#     SPAWN_BLOCKED that originally tripped it).
 # ---------------------------------------------------------------------------
 cat > "$tmp/empty9b.json" <<'EOF'
 []
@@ -251,10 +253,9 @@ cat > "$tmp/triage9b.md" <<'EOF'
 EOF
 true > "$tmp/filed.jsonl"
 run "$tmp/empty9b.json" "$tmp/triage9b.md" > "$tmp/summary9b.json"
-jq -e '.filed == 1' "$tmp/summary9b.json" >/dev/null     || fail "scenario 9b: expected one filed"
-grep -q "loud/debug-playbook-missing" "$tmp/filed.jsonl"     || fail "scenario 9b: signal must key on the rule, got: $(cat "$tmp/filed.jsonl")"
-grep -q "loud/debug-playbook-missing/2026-09-08t07-35-47z-0509-1279-abc111" "$tmp/filed.jsonl"     && fail "scenario 9b: signal must NOT key on the session, got: $(cat "$tmp/filed.jsonl")"
-ok "scenario 9b: DEBUG-PLAYBOOK-MISSING keys on the rule, not the session"
+jq -e '.filed == 0 and .alarm_count == 0' "$tmp/summary9b.json" >/dev/null     || fail "scenario 9b: DEBUG-PLAYBOOK-MISSING must not be queued, got: $(cat "$tmp/summary9b.json")"
+[[ $(wc -l < "$tmp/filed.jsonl") -eq 0 ]]     || fail "scenario 9b: must not file, got: $(cat "$tmp/filed.jsonl")"
+ok "scenario 9b: DEBUG-PLAYBOOK-MISSING is not queued (detector files its own aggregate)"
 
 # ---------------------------------------------------------------------------
 # 9c. DEBUG-PLAYBOOK-GATE-BLOCK keys on the RULE too (fleet-ops#4516/4579).
@@ -276,11 +277,10 @@ grep -q "loud/debug-playbook-gate-block/2026-09-08t07-35-47z-0509-1279-abc222" "
 ok "scenario 9c: DEBUG-PLAYBOOK-GATE-BLOCK keys on the rule, not the session"
 
 # ---------------------------------------------------------------------------
-# 9c-data. Two DEBUG-PLAYBOOK-MISSING sessions, same rule, one heartbeat tick
-#     -> a single rule-level issue is filed, the rest dedupe (fleet-ops#4579).
-#     This is the exact #4578/#4579 regression: two alarm lines with distinct
-#     session ids must collapse to one `loud/debug-playbook-missing` issue, not
-#     two differently-keyed ones.
+# 9c-data. Two DEBUG-PLAYBOOK-MISSING sessions, one heartbeat tick, file ZERO
+#     reconciler issues (fleet-ops#4620). The detector already files one daily
+#     aggregate covering every in-window session (fleet-ops#4384). Queuing the
+#     per-session LOUD lines is the never-green over-file that kept #4620 open.
 # ---------------------------------------------------------------------------
 cat > "$tmp/empty9data.json" <<'EOF'
 []
@@ -291,39 +291,43 @@ cat > "$tmp/triage9data.md" <<'EOF'
 EOF
 true > "$tmp/filed.jsonl"
 run "$tmp/empty9data.json" "$tmp/triage9data.md" > "$tmp/summary9data.json"
-jq -e '.filed == 1' "$tmp/summary9data.json" >/dev/null     || fail "scenario 9data: two DEBUG-PLAYBOOK-MISSING sessions must file ONE issue, got: $(cat "$tmp/summary9data.json")"
-[[ $(wc -l < "$tmp/filed.jsonl") -eq 1 ]]     || fail "scenario 9data: expected one filed line, got $(cat "$tmp/filed.jsonl")"
-grep -q "loud/debug-playbook-missing" "$tmp/filed.jsonl"     || fail "scenario 9data: expected rule-level signal, got: $(cat "$tmp/filed.jsonl")"
-ok "scenario 9c-extra: two sessions under one rule -> one issue (no per-session filings)"
+jq -e '.filed == 0 and .alarm_count == 0' "$tmp/summary9data.json" >/dev/null     || fail "scenario 9data: two DEBUG-PLAYBOOK-MISSING sessions must file ZERO reconciler issues, got: $(cat "$tmp/summary9data.json")"
+[[ $(wc -l < "$tmp/filed.jsonl") -eq 0 ]]     || fail "scenario 9data: expected no filed line, got $(cat "$tmp/filed.jsonl")"
+ok "scenario 9c-extra: two MISSING sessions file zero reconciler issues"
 
 # ---------------------------------------------------------------------------
-# 9d. Observe-to-close matches the reconciler's own filed body format
-#     (fleet-ops#4512). issue_body() writes the signal as a backticked line
-#     (`loud/<tag>/<key>`) with no literal `signal:` prefix, so SIGNAL_RE
-#     never saw the reconciler's own filings and they could never go green.
+# 9d. An already-open loud/debug-playbook-missing issue observe-to-closes even
+#     while per-session MISSING LOUD lines keep firing (fleet-ops#4620). Those
+#     lines are no longer a queued signal, so they cannot keep the issue red.
+#     GATE-BLOCK still queues (scenario 9c). The daily rollup is DEBUG-PLAYBOOK-FAIL.
 # ---------------------------------------------------------------------------
-# Alarm still live -> the filed-format issue stays open (deduped, not refiled).
 cat > "$tmp/open9d.json" <<'EOF'
-[{"number": 4512, "body": "The heartbeat detector reported this alarm on a real tick.\n\n- alarm tag: `DEBUG-PLAYBOOK-MISSING`\n\nDo NOT close this issue on PR merge alone.\n\n`loud/debug-playbook-missing`\n", "labels": [{"name": "agent-ready"}], "createdAt": "2026-08-28T10:00:00Z", "comments": []}]
+[{"number": 4620, "body": "The heartbeat detector reported this alarm on a real tick.\n\n- alarm tag: `DEBUG-PLAYBOOK-MISSING`\n\nDo NOT close this issue on PR merge alone.\n\n`loud/debug-playbook-missing`\n", "labels": [{"name": "agent-ready"}], "createdAt": "2026-08-28T10:00:00Z", "comments": []}]
 EOF
 true > "$tmp/filed.jsonl"
 true > "$tmp/gh.log"
 run "$tmp/open9d.json" "$tmp/triage9b.md" > "$tmp/summary9d.json"
-jq -e '.closed == 0' "$tmp/summary9d.json" >/dev/null \
-    || fail "scenario 9d: filed-format issue must stay open while the alarm is live"
-grep -q 'detector heartbeat: still alarmed' "$tmp/gh.log" \
-    || fail "scenario 9d: expected a heartbeat comment on the filed-format issue"
-ok "scenario 9d: filed-format (backticked) signal is tracked while red"
-
-# Alarm gone -> observe-to-close closes the filed-format issue.
-true > "$tmp/filed.jsonl"
-true > "$tmp/gh.log"
-run "$tmp/open9d.json" "$tmp/triage1.md" > "$tmp/summary9d2.json"
-jq -e '.closed == 1' "$tmp/summary9d2.json" >/dev/null \
-    || fail "scenario 9d: expected observe-to-close on a filed-format body"
+jq -e '.closed == 1 and .filed == 0' "$tmp/summary9d.json" >/dev/null \
+    || fail "scenario 9d: stale loud/debug-playbook-missing must close even while MISSING LOUD lines fire, got: $(cat "$tmp/summary9d.json")"
 grep -q "issue close" "$tmp/gh.log" \
     || fail "scenario 9d: expected gh issue close"
-ok "scenario 9d: filed-format (backticked) signal closes on green (observe-to-close)"
+ok "scenario 9d: stale MISSING issue observe-to-closes while LOUD lines continue"
+
+# ---------------------------------------------------------------------------
+# 9e. DEBUG-PLAYBOOK-FAIL still queues (the daily rollup; fleet-ops#4384).
+#     Skipping MISSING must not swallow the detector's own FAIL line.
+# ---------------------------------------------------------------------------
+cat > "$tmp/triage9e.md" <<'EOF'
+[2026-08-28T13:30:00Z] [DEBUG-PLAYBOOK-MISSING] session=abc attempts=3 snippet=foo
+[2026-08-28T13:30:00Z] [DEBUG-PLAYBOOK-FAIL] missing playbooks=117 (aggregate=2026-09-09 filed=1 debt=116 — a multi-attempt debug never filed the vault note; LOUD + one daily aggregate issue, observe-to-close (fleet-ops#4384)
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/empty9b.json" "$tmp/triage9e.md" > "$tmp/summary9e.json"
+jq -e '.filed == 1' "$tmp/summary9e.json" >/dev/null     || fail "scenario 9e: DEBUG-PLAYBOOK-FAIL must still file, got: $(cat "$tmp/summary9e.json")"
+grep -q "loud/debug-playbook-fail" "$tmp/filed.jsonl"     || fail "scenario 9e: expected FAIL signal, got: $(cat "$tmp/filed.jsonl")"
+grep -q "loud/debug-playbook-missing" "$tmp/filed.jsonl"     && fail "scenario 9e: MISSING must not be queued alongside FAIL, got: $(cat "$tmp/filed.jsonl")"
+ok "scenario 9e: DEBUG-PLAYBOOK-FAIL still queues; MISSING does not"
 
 # ---------------------------------------------------------------------------
 # 10. Tier1 wiring contract.
@@ -347,7 +351,7 @@ ok "scenario 10: heartbeat-tier1 wires the detector->queue reconciler"
 #     filed-format issue is still observe-to-closed over that loader.
 # ---------------------------------------------------------------------------
 cat > "$tmp/open11.json" <<'EOF'
-[{"number": 2011, "body": "The heartbeat detector filed this alarm.\n\n`loud/debug-playbook-missing`\n", "labels": [{"name": "agent-ready"}], "createdAt": "2026-08-28T10:00:00Z"}]
+[{"number": 2011, "body": "The heartbeat detector filed this alarm.\n\n`loud/debug-playbook-gate-block`\n", "labels": [{"name": "agent-ready"}], "createdAt": "2026-08-28T10:00:00Z"}]
 EOF
 # green triage: the filed-format signal is NOT alarmed -> observe-to-close.
 cat > "$tmp/triage11_green.md" <<'EOF'

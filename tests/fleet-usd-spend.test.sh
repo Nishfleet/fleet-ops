@@ -61,10 +61,13 @@ ok "rate card present + dated sources (crof, minimax, runinfra, entrim, straitly
 scratch="$(mktemp -d -t fme-usd.XXXXXX)"
 trap 'rm -rf "$scratch"' EXIT
 mkdir -p "$scratch/sessions/pi-issue-fleet-ops-0001"
-cat > "$scratch/sessions/pi-issue-fleet-ops-0001/test.jsonl" <<'EOF'
-{"type":"session","timestamp":"2026-09-08T10:00:00Z","id":"a"}
+# Fixture timestamp must stay inside the trailing-24h metering window; a
+# hardcoded date ages out and metered silently reads 0 (seen 2026-09-09 10:34Z).
+fixture_ts="$(date -u -d '-1 hour' +%FT%TZ)"
+cat > "$scratch/sessions/pi-issue-fleet-ops-0001/test.jsonl" <<EOF
+{"type":"session","timestamp":"$fixture_ts","id":"a"}
 {"type":"model_change","provider":"crof","modelId":"deepseek-v4-flash-0731"}
-{"type":"message","timestamp":"2026-09-08T10:00:00Z","message":{"role":"assistant","usage":{"input":1000000,"output":1000000,"cacheRead":1000000,"totalTokens":3000000}}}
+{"type":"message","timestamp":"$fixture_ts","message":{"role":"assistant","usage":{"input":1000000,"output":1000000,"cacheRead":1000000,"totalTokens":3000000}}}
 EOF
 out="$(FLEET_SESSIONS_DIR="$scratch/sessions" MEASURE_REPOS="" bash "$measure" 2>/dev/null || true)"
 usd_line="$(printf '%s\n' "$out" | grep -E '^usd_24h:' || true)"

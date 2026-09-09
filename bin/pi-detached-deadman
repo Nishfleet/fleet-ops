@@ -175,7 +175,23 @@ if [[ "${1:-}" == "--clear" ]]; then
     exit 0
 fi
 
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+    echo "usage: pi-detached-deadman [--clear <unit>]" >&2
+    echo "  ExecStopPost verdict hook. CLI use is --clear only." >&2
+    exit 0
+fi
+
 [[ -z "$dispatch" ]] && exit 0          # not armed: pass through untouched
+
+# systemd ExecStopPost always sets SERVICE_RESULT. An empty SERVICE_RESULT
+# with inherited PI_DEADMAN_* means a live unit's child ran this binary by
+# hand (live 2026-09-09: repair workers ran `pi-detached-deadman --help` /
+# bare invocation and tripped DetachedJobDied on themselves, cascading more
+# repair units). CLI diagnostic is not a death.
+if [[ -z "${SERVICE_RESULT:-}" ]]; then
+    log "cli-noop: SERVICE_RESULT unset (not ExecStopPost); inherited dispatch=${dispatch} unit=${unit} — not a death"
+    exit 0
+fi
 
 service_result="${SERVICE_RESULT:-}"
 

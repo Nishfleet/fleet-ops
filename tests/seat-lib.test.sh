@@ -999,6 +999,20 @@ bash -c 'source "$0"; is_quota_cap_error "$1" "$2"' "$lib" "" '402: {"message":"
 bash -c 'source "$0"; is_quota_cap_error "$1" "$2"' "$lib" "" 'session-error: 402 budget_exceeded' >/dev/null 2>&1 \
   || fail "9b: bare 402 budget_exceeded code must be a quota/cap wall (fleet-ops#3973)"
 ok "9b: mergegateway 402 'Credit balance depleted' / budget_exceeded -> quota/cap wall (fleet-ops#3973)"
+# Pareto Inference 429 credit wall (2026-09-09 wire probe): the seat was the
+# fleet's #1 lane (13 of the last 30 picks) and died 91 times in 4h (60x rc=124,
+# 31x rc=1, 1x rc=143). Every death booked an infra rc, so the classifier never
+# saw a quota keyword: the ledger recorded health_class=transient_fault and the
+# wrapper applied a generic 24h bench reasoned "no_block:rc=1" with no
+# error-class citation — a money wall disguised as a hang. A live smoke
+# (systemd-run, provider paretoinference) returned the body below. Classify it:
+# a 429 whose body says the credits are gone is a prepaid wall, never a retry.
+pareto_429='429: {"message":"Insufficient credits for this request. Reduce max_tokens.","type":"budget_error","code":"credit_insufficient"}'
+bash -c 'source "$0"; is_quota_cap_error "$1" "$2"' "$lib" "$pareto_429" "" >/dev/null 2>&1 \
+  || fail "9b: Pareto 429 'Insufficient credits' (budget_error/credit_insufficient) must be a quota/cap wall, not a transient 429"
+bash -c 'source "$0"; is_quota_cap_error "$1" "$2"' "$lib" "" 'session-error: 429 credit_insufficient' >/dev/null 2>&1 \
+  || fail "9b: bare 429 credit_insufficient code must be a quota/cap wall"
+ok "9b: Pareto 429 'Insufficient credits' / budget_error / credit_insufficient -> quota/cap wall"
 # fleet-ops#4444 (2026-09-08): Alibaba token-plan 429 body is "Your token-plan
 # 1-week quota has been exhausted. The quota will reset at ..." — `quota` is
 # NOT adjacent to `exhausted` ("has been" intervenes), so the old adjacency
@@ -1166,6 +1180,57 @@ set -e
 [[ "$rc" != "0" ]] || fail "writer: benched seat (future bench_until) must be UNUSABLE, seat_usable returned 0"
 grep -q "benched until $bu" "$PI_PACKET_STATE/watch.log" \
   || fail "writer: must log 'benched until <ts>' for a skipped benched seat"
+
+# 9c-4640: devin must declare a reset horizon, so a quota wall can never
+# outlive the provider's own quota cycle.
+#
+# Live fault (2026-09-09 09:32Z): devin/glm-5-2 took a bare 429 (retry_after
+# null, no window in the body) at consecutive_failure_count=23.
+# _failure_ceiling_wall escalated the park wall to (23-20+1)*86400 = 345600s
+# = 4 DAYS. devin declared NO quota_window, so provider_wall_ceiling_s
+# (fleet-ops#2563) returned 0 and the read-side horizon fence never engaged —
+# nothing in the fleet bounded that wall. devin was the last heavy-capable
+# provider: pick_seat returned NO USABLE SEAT for every packet, 0 live workers
+# against 51 ready issues, load 1.68, while a 1-turn `pi --print` to both devin
+# seats answered OK rc=0 throughout. The Devin account had 81% of its weekly
+# and 84% of its daily quota unused. A high failure count on a BUSY prepaid
+# seat measures traffic, not death.
+#
+# The fix reuses the organ that already exists rather than adding a second
+# clamp: devin (and paretoinference, same shape, $20/day plan) declare
+# quota_window, so _wall_capped_at_horizon fences an over-long wall at
+# observed_at + horizon. The park-wall escalation itself is untouched
+# (fleet-ops#1362/#3941 keep their contract; tests/seat-failure-ceiling.test.sh
+# still pins the 24h park).
+for prov in devin paretoinference; do
+  qw=$(jq -r --arg p "$prov" '.providers[$p].quota_window // "ABSENT"' "$prod_caps")
+  [[ "$qw" != "ABSENT" ]] \
+    || fail "4640: prepaid provider $prov must declare quota_window or NOTHING bounds its quota wall (the 4-day devin wall)"
+  ceil=$(SEAT_CAPS_JSON="$prod_caps" bash -c 'source "$0"; load_seat_caps; provider_wall_ceiling_s "$1"' "$lib" "$prov" 2>/dev/null)
+  (( ceil > 0 )) || fail "4640: provider_wall_ceiling_s $prov must be > 0, got $ceil"
+  (( ceil <= 604800 )) || fail "4640: provider_wall_ceiling_s $prov unexpectedly large: $ceil"
+done
+devin_ceil=$(SEAT_CAPS_JSON="$prod_caps" bash -c 'source "$0"; load_seat_caps; provider_wall_ceiling_s "$1"' "$lib" "devin" 2>/dev/null)
+[[ "$devin_ceil" == "86400" ]] || fail "4640: devin horizon expected 86400 (daily meter), got $devin_ceil"
+
+# The exact live wall must now be fenced to observed_at + 24h, not 4 days.
+obs_4640="2026-09-09T09:32:09Z"
+wall_4640="2026-09-13T09:32:09Z"   # what mark_seat_quota_bench actually wrote
+capped_4640=$(SEAT_CAPS_JSON="$prod_caps" bash -c 'source "$0"; load_seat_caps; _wall_capped_at_horizon "$1" "$2" "$3"' \
+  "$lib" "devin" "$obs_4640" "$wall_4640" 2>/dev/null)
+obs_s=$(date -u -d "$obs_4640" +%s); cap_s=$(date -u -d "$capped_4640" +%s 2>/dev/null || echo 0)
+(( cap_s > 0 )) || fail "4640: _wall_capped_at_horizon returned an unparseable wall: $capped_4640"
+(( cap_s <= obs_s + 86400 + 5 )) \
+  || fail "4640: the live 4-day devin wall must be fenced to observed_at+24h, got $capped_4640 (delta $((cap_s - obs_s))s)"
+(( cap_s < $(date -u -d "$wall_4640" +%s) )) \
+  || fail "4640: the wall was not shortened at all (still $capped_4640)"
+
+# A provider that declares no horizon keeps legacy behaviour (never widened).
+nohz=$(SEAT_CAPS_JSON="$prod_caps" bash -c 'source "$0"; load_seat_caps; _wall_capped_at_horizon "$1" "$2" "$3"' \
+  "$lib" "commandcode" "$obs_4640" "$wall_4640" 2>/dev/null)
+[[ "$nohz" == "$wall_4640" ]] \
+  || fail "4640: a provider with no quota_window must pass the wall through unchanged, got $nohz"
+ok "4640: devin/paretoinference declare a reset horizon; the live 4-day wall fences to 24h"
 
 # 9d: pick_seat skips a benched seat and falls through; with ALL allowlisted
 # seats benched or tried, it returns rc=1 (NO USABLE SEAT) without consuming
@@ -3193,6 +3258,9 @@ bash "$here/quality-routing.test.sh" || fail "quality-routing tests failed"
 # pre-existing red catalog (fleet-ops#1563) cannot skip the AIMD drill.
 # Workers cannot add a P14 line in .github/workflows/ci.yml.
 bash "$here/seat-lib-aimd.test.sh" || fail "AIMD learned-cap tests failed"
+# fleet-ops#4723: stale-ramp graduation. Hosted here (same CI constraint:
+# workers cannot add a P14 line in .github/workflows/ci.yml).
+bash "$here/seat-lib-ramp-staleness.test.sh" || fail "AIMD ramp-staleness tests failed"
 # fleet-ops#457: per-role gate audit. rule-enforcement.test.sh currently
 # fails validate-matrix on a pre-existing duplicate-source pair, so this
 # file is the listed CI host.

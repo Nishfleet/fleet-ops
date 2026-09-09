@@ -160,4 +160,23 @@ else
     echo "SKIP: promtool not installed (CI runner) — header-count assertion only"
 fi
 
-echo "PASS: pi-detached-deadman verdict matrix (8 cases)"
+
+# fleet-ops#4675: systemd sets SERVICE_RESULT only on ExecStopPost. A live
+# unit's child that runs this binary by hand inherits PI_DEADMAN_* with
+# SERVICE_RESULT unset; before the guard that counted as a death and
+# cascaded DetachedJobDied onto healthy repair units (live 2026-09-09).
+rm -f "$tf"
+env --unset=SERVICE_RESULT "${common[@]}" PI_DEADMAN_DISPATCH=dcli PI_DEADMAN_UNIT=u-cli \
+    PI_DEADMAN_CMDLINE="sleep 1" "$deadman" --help >/dev/null 2>&1 \
+    || fail "CLI --help must exit 0"
+[[ ! -s "$tf" ]] || fail "CLI --help must not write a death metric: $(cat "$tf")"
+ok "CLI --help with inherited PI_DEADMAN_* is not a death (fleet-ops#4675)"
+
+rm -f "$tf"
+env --unset=SERVICE_RESULT "${common[@]}" PI_DEADMAN_DISPATCH=dcli2 PI_DEADMAN_UNIT=u-cli2 \
+    PI_DEADMAN_CMDLINE="sleep 1" "$deadman" >/dev/null 2>&1 \
+    || fail "bare CLI call must exit 0"
+[[ ! -s "$tf" ]] || fail "bare CLI call (SERVICE_RESULT unset) must not write a death metric"
+ok "bare CLI call with SERVICE_RESULT unset is not a death (fleet-ops#4675)"
+
+echo "PASS: pi-detached-deadman verdict matrix (10 cases)"

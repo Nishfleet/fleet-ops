@@ -33,6 +33,8 @@
   "_comment_opencode-anthropic": "opencode-anthropic cap=0 (2026-08-26): Claude models on OpenCode Zen are metered — class=metered in seat-caps.json and models.json lists claude-fable-5 + claude-opus-5 with cost=null (not free-tier; credit-billed, unlike the free opencode models with cost=0). No prepaid-usage/opencode-anthropic.json meter file exists (seat never probes — money-only). sr-never-vibes marker: metered, cost=null, no meter file. fleet-ops#1432: intentional hard-conserve cap (money only), operator never re-audits. Not a free lane; cap stays 0.",
   "providers": {
     "devin": {
+      "quota_window": "daily",
+      "_quota_window_4640": "2026-09-09 fleet-ops#4640: devin declared NO quota_window, so provider_wall_ceiling_s (fleet-ops#2563) returned 0 and NOTHING bounded a quota wall. A bare 429 (retry_after=null) at consecutive_failure_count=23 took the failure-ceiling park wall to (23-20+1)*86400 = 345600s = 4 DAYS on the fleet's primary heavy-capable prepaid seat, while the Devin account still had 81% of its weekly / 84% of its daily quota unused. devin was the last heavy-capable provider: pick_seat returned NO USABLE SEAT for every packet, 0 live workers against 51 ready issues, and a 1-turn `pi --print` to both devin seats answered OK rc=0 the whole time. Devin meters daily, so the reset horizon is daily.",
       "cap": 4,
       "class": "prepaid-quota",
       "remote_agent": true,
@@ -432,6 +434,8 @@
       "_comment_entrim": "fleet-ops#4262 (Nish 2026-09-07): Entrim (https://api.entrim.ai/v1, model deepseek-ai/DeepSeek-V4-Flash, key resolved by '!cut -d= -f2 /home/nish/fleet2/etc/entrim.env') is a WORKER seat, cap 2, class prepaid, NOT audition. contextWindow 1M (capable=1). quota_bench_default_s 86400 (24h): a quota/cap 429 with no explicit reset window benches a day. 402-as-balance-wall: HTTP 402 = prepaid balance exhausted — MONEY wall (Nish-only top-up), never a transient fault; the seat-dead quota-age rule turns a 24h-old 402 into a billing-repair corpse. No max_probe_ceiling: cap stays pinned at 2 (no upward AIMD probe on a paid seat). cacheRead=input until measured (pi-models.json)."
     },
     "paretoinference": {
+      "quota_window": "daily",
+      "_quota_window_4640": "2026-09-09 fleet-ops#4640: same shape as devin \u2014 a prepaid $20/day seat with no declared reset horizon took a 7-day spawn bench from a no-status rc=1 while its own ledger read healthy 200. Pareto meters daily.",
       "cap": 4,
       "max_probe_ceiling": 8,
       "class": "prepaid-quota",
