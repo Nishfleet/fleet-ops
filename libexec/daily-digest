@@ -325,6 +325,36 @@ else:
 PY
 )"
 
+# --- Signups this week (fleet-ops#4603) --------------------------------------
+# The whole 0509 direction decision (signups/week, fleet-ops#4518) is judged on
+# this one number, so the morning briefing must actually surface it. Reads the
+# fleet_signups_7d gauge that libexec/fleet-metrics-export.py exports (PR #4601)
+# via the same localhost:9090 Prometheus the alert section uses — /api/v1/query
+# needs no new transport. Absent or unreachable gauge -> a graceful "unknown"
+# line, never an error (mirrors the spend section's absent-metric fallback).
+signup_json="$(curl -sS --max-time 5 --get "$prom_url/api/v1/query" \
+    --data-urlencode "query=fleet_signups_7d" \
+    2>/dev/null || echo '{}')"
+signup_line="$(SIGNUP_JSON="$signup_json" python3 <<'PY'
+import json, os
+raw = os.environ.get("SIGNUP_JSON") or "{}"
+try:
+    results = json.loads(raw).get("data", {}).get("result", [])
+except Exception:
+    results = []
+val = None
+if results:
+    try:
+        val = float(results[0].get("value", [0, "0"])[1])
+    except Exception:
+        val = None
+if val is None:
+    print("• Signups this week: unknown.")
+else:
+    print(f"• Signups this week: {val:g}.")
+PY
+)"
+
 # --- Compose ------------------------------------------------------------------
 # Plain language. No jargon. Short. Header names what it is and when.
 # (datestr is 09:00 IST of the trigger day, or NOW for an ad-hoc run.)
@@ -337,6 +367,7 @@ $pr_line
 
 $fail_line
 $prom_line
+$signup_line
 $repair_line
 $seat_line
 $quality_line

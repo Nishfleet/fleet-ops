@@ -48,14 +48,20 @@ exit 0
 SH
 cat >"$scratch/bin/curl" <<'SH'
 #!/usr/bin/env bash
-# stub: serve a canned Prometheus spend response for /api/v1/query, an empty
-# alert list for /api/v1/alerts. Records the query arg so the test can assert
-# the day-bucketed PromQL (fleet-ops#3285).
+# stub: serve canned Prometheus responses for /api/v1/query + /api/v1/alerts.
+# Dispatches /api/v1/query by query content so the signup gauge (fleet-ops#4603)
+# and the spend gauges (fleet-ops#3285) each get their own canned response and
+# query capture. Records the query arg per branch so tests can assert the PromQL.
 for a in "$@"; do
   case "$a" in
     *api/v1/query*)
-      printf '%s\n' "$*" > "$CURL_QUERY_CAPTURE"
-      cat "$SPEND_RESPONSE" 2>/dev/null || echo '{}'
+      if [[ "$*" == *fleet_signups_7d* ]]; then
+        printf '%s\n' "$*" > "${SIGNUP_QUERY_CAPTURE:-/dev/null}"
+        cat "${SIGNUP_RESPONSE:-/dev/null}" 2>/dev/null || echo '{}'
+      else
+        printf '%s\n' "$*" > "$CURL_QUERY_CAPTURE"
+        cat "$SPEND_RESPONSE" 2>/dev/null || echo '{}'
+      fi
       exit 0 ;;
     *api/v1/alerts*) echo '{"status":"success","data":{"alerts":[]}}'; exit 0 ;;
   esac
@@ -170,5 +176,43 @@ env SPEND_RESPONSE="$scratch/spend.json" \
 grep -qF "No live escalations" "$scratch/body5.txt" \
   || fail "case 5: missing-ledger fallback missing: $(grep -i escalation "$scratch/body5.txt" || echo none)"
 ok "case 5: missing ledger -> graceful fallback"
+
+# --- case 6: signups-this-week section (fleet-ops#4603) ----------------------
+# The direction metric (signups/week, fleet-ops#4518) must reach the morning
+# briefing. Case asserts the present-gauge path renders a plain-language number
+# line and that the PromQL references the fleet_signups_7d gauge.
+cat >"$scratch/signup.json" <<'JSON'
+{"status":"success","data":{"resultType":"vector","result":[
+  {"metric":{},"value":[1.0,"3"]}
+]}}
+JSON
+env SPEND_RESPONSE="$scratch/spend.json" \
+    SIGNUP_RESPONSE="$scratch/signup.json" \
+    CURL_QUERY_CAPTURE="$scratch/query6.txt" \
+    SIGNUP_QUERY_CAPTURE="$scratch/signupq6.txt" \
+    DAILY_DIGEST_CAPTURE="$scratch/body6.txt" \
+    HERMES_BIN="$scratch/bin/hermes" \
+    bash "$digest" >/dev/null 2>&1
+[[ -f "$scratch/body6.txt" ]] || fail "case 6: digest did not invoke the hermes stub"
+grep -qF "• Signups this week: 3." "$scratch/body6.txt" \
+  || fail "case 6: signup line missing/incorrect: $(grep 'Signups this week' "$scratch/body6.txt" || echo none)"
+[[ -f "$scratch/signupq6.txt" ]] || fail "case 6: curl stub never saw the signup /api/v1/query call"
+grep -q "fleet_signups_7d" "$scratch/signupq6.txt" \
+  || fail "case 6: signup query does not reference fleet_signups_7d: $(cat "$scratch/signupq6.txt")"
+ok "case 6: signups present -> '$(grep 'Signups this week' "$scratch/body6.txt")'"
+
+# --- case 7: signup gauge absent/unreachable -> graceful unknown -------------
+# No SIGNUP_RESPONSE supplied: the stub serves an empty result, so the digest
+# must degrade to the "unknown" fallback, never error the whole digest.
+env SPEND_RESPONSE="$scratch/spend.json" \
+    CURL_QUERY_CAPTURE="$scratch/query7.txt" \
+    SIGNUP_QUERY_CAPTURE="$scratch/signupq7.txt" \
+    DAILY_DIGEST_CAPTURE="$scratch/body7.txt" \
+    HERMES_BIN="$scratch/bin/hermes" \
+    bash "$digest" >/dev/null 2>&1
+[[ -f "$scratch/body7.txt" ]] || fail "case 7: digest did not invoke the hermes stub"
+grep -qF "• Signups this week: unknown." "$scratch/body7.txt" \
+  || fail "case 7: unknown fallback missing: $(grep 'Signups this week' "$scratch/body7.txt" || echo none)"
+ok "case 7: absent gauge -> unknown fallback: '$(grep 'Signups this week' "$scratch/body7.txt")'"
 
 echo "all daily-digest cases passed"
