@@ -110,6 +110,18 @@ def _merged_prs(start_ts, end_ts):
     return result
 
 
+def _ready_value(sample):
+    """Backlog count from one sample. Non-numeric/None (NO_DATA) scores 0.
+
+    fleet-ops#4956: the sampler writes `ready` from a freshness-guarded cache,
+    so a NO_DATA tick is a deliberate 0 for the conjunct, not a missing key.
+    """
+    value = sample.get("ready", 0)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0
+    return int(value)
+
+
 def _per_interval_cpu(samples):
     """Return list of {ts, cpu_by_class, cpu_total, load1, ready} per interval.
 
@@ -139,7 +151,7 @@ def _per_interval_cpu(samples):
             "cpu_by_class": dict(delta),
             "cpu_total": sum(delta.values()),
             "load1": s.get("load1"),
-            "ready": s.get("ready", 0),
+            "ready": _ready_value(s),
         })
         prev = s
     return intervals
@@ -172,6 +184,11 @@ def _analyse(samples, label):
     merged = _merged_prs(start_ts, end_ts)
     total_merged = sum(len(v) for v in merged.values())
     cpu_per_merge = round(total_cpu / total_merged, 2) if total_merged else None
+    # fleet-ops#4956: show the ready values the conjunct was scored from, so a
+    # 0-by-default bug (the #4804 failure) is visible in the report itself.
+    ready_values = [iv["ready"] for iv in intervals]
+    ready_sources = sorted({str(s.get("ready_source", "unknown")) for s in samples})
+    nodata = sum(1 for s in samples if s.get("ready_source") == "NO_DATA")
     return {
         "label": label,
         "window_s": end_ts - start_ts,
@@ -180,6 +197,10 @@ def _analyse(samples, label):
         "merged_prs": total_merged,
         "cpu_s_per_merge": cpu_per_merge,
         "saturated_with_backlog_hours": sat_hours,
+        "ready_min": min(ready_values),
+        "ready_max": max(ready_values),
+        "ready_sources": ready_sources,
+        "ready_nodata_samples": nodata,
         "samples": len(intervals),
     }
 

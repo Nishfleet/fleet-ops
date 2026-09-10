@@ -86,6 +86,24 @@ count from `agent-state/fleet-metrics/ready-work-cache.json` with
 stale (last written 2026-09-04, >2h old), so even with the right key the
 freshness guard would have returned 0.
 
+**Fixed 2026-09-10 (fleet-ops#4956).** The re-created
+`libexec/fleet-cpu-sampler.py` reads the backlog from
+`queue-composition-cache.json` `data["ready-work"]["total"]` (fallback
+`ready-work-cache.json` `data`), records `ready_source` and `ready_age_s`, and
+scores a missing/key-less/dead-producer cache as `0` with
+`ready_source=NO_DATA` — a deliberate zero, never a silent 0-by-default.
+`libexec/fleet-cpu-analysis.py` now also prints `ready_min`/`ready_max`,
+`ready_sources` and `ready_nodata_samples` so the values the conjunct was
+scored from are visible in the report.
+
+The freshness bound is 2400s, not 300s. The queue-composition cache is written
+by the 5-min `fleet-metrics-export` timer, but that write is gated by
+`PR_CACHE_TTL = 1800` plus "at most one gh fetch per exporter run", so its `ts`
+legitimately ages to ~35 min (proven live: cache written 19:05:07, the 19:10:00
+and 19:12:00 runs exited 0 and did not rewrite it; a 300s bound read NO_DATA on
+4 of 4 live samples). `NO_DATA` therefore means the producer is dead or gh is
+failing, which is the state that should score the conjunct 0.
+
 Without a real `ready` value the backlog half of the condition (ready > 20)
 can never be true, so saturated-with-backlog is structurally 0 regardless of
 load. load1 > 2x cores (16) did hold for ~2.22h of the 4.95h window (133/285
@@ -155,10 +173,10 @@ The sampler writes one JSONL line per 60s sample to
 own after 24h. `--deadline 1500` = 25h grace budget (1500 minutes).
 
 > The sampler script (`libexec/fleet-cpu-sampler.py`) was deleted after the
-> study per the issue's "delete the sampler" instruction. The analysis script
-> (`libexec/fleet-cpu-analysis.py`) is retained so the four numbers above are
-> reproducible from any sampler JSONL. A follow-up that re-runs the sampler
-> must first fix the `ready`-field bug documented in section 3.
+> study per the issue's "delete the sampler" instruction. It was re-created
+> with the `ready`-field fix on 2026-09-10 (fleet-ops#4956) and re-run; the
+> analysis script (`libexec/fleet-cpu-analysis.py`) is retained so the four
+> numbers above are reproducible from any sampler JSONL.
 
 ### Analyse the window
 
@@ -181,3 +199,6 @@ timestamps come from `gh pr list --state merged --search "merged:>=.. merged:<=.
 - [x] Decision rule evaluated: cannot be scored (5h not 24h; `ready`=0 bug)
 - [x] Next suspect named: seat rate limits / claim-loop empty-success churn
 - [x] Sampler deleted after the study
+- [x] `ready`-field bug fixed and sampler re-created (fleet-ops#4956,
+      2026-09-10): real backlog read, freshness guard, ready_source
+- [ ] Decision rule conjunct 2 scored from a fresh sampler window (fleet-ops#4956)

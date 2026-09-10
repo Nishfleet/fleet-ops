@@ -778,3 +778,11 @@ bash "$here/load-storm-brake-agent-orphan-watchdog-deleted.test.sh"
 # when shellcheck is absent. Hosted here so P14 runs it without a
 # workflow-file edit (the worker App cannot push .github/workflows/**).
 bash "$here/spec-judge.test.sh"
+
+# fleet-ops#4956: the #4804 CPU sampler scored `ready` from a cache that has
+# no such key, so the decision rule's backlog conjunct was unscoreable. This
+# drill locks the fixed read (queue-composition primary, ready-work fallback,
+# freshness -> NO_DATA) and the analysis's ready_min/ready_max report.
+# Hosted here so P14 runs it without a workflow-file edit (the worker App
+# cannot push .github/workflows/**). Hermetic (temp state, stubbed gh).
+bash "$here/fleet-cpu-sampler-ready.test.sh"
