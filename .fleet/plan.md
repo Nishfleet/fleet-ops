@@ -1,15 +1,77 @@
-# Plan — fix(deploy-check): JSON content-equivalent install compare so escaping-only drift stops the permanently-red merge gate (fleet-ops#4894)
+# Plan — fleet-ops#4773: FleetSloSeatAvailSlowBurn auto-file a repair-rung claim after 1h
 
-> Manager mode (heavy). The permanently-red `merge-to-live` gate: install.sh's `live_newer_than_repo()` compares `~/.pi/agent/models.json` vs `config/pi-models.json` with BYTE equality (`cmp -s`), but an **external** python `json.dump` (no `ensure_ascii=False`) re-escapes non-ASCII to `\uXXXX` — same JSON, different bytes — so the guard refuses forever, install.sh exits rc=1, and `fleet-deploy-check` prints `DEPLOY-CHECK-FAILED` on every tick. The writer is external (not in bin/lib/libexec — seat-lib.sh only reads models.json); the durable repo fix is **content-equivalent comparison**. Reconcile the 3 provider keys afterwards so the whole `jq -S` file matches live.
+## Goal
+When `FleetSloSeatAvailSlowBurn` has been firing >1h, exactly ONE open
+`critical-path` fleet-ops issue is linked to it (existing #4639-rung claim,
+or one this change auto-files), and `am-executor` is notified. Zero open
+items while the alert fires past 1h is the fault. Skip-list entry STAYS
+(no repair worker spawned). Never page Nish.
 
-## Phases (acceptance-driven)
+## Design decision (link mechanism)
+The issue's accept-1 says "write the issue number into the alert's
+annotations.description". A runtime config edit of `config/fleet_rules.yml`
+from the stateless alert-repair-dispatch receiver is rejected: it would
+dirty the deploy clone (deploy-clone-readonly, fleet-ops#3758), be a
+stateful side effect from a stateless receiver, and be untestable
+hermetically. The fleet's canonical link pattern is the stable `signal:`
+key embedded in the filed issue's body (detector-queue-reconciler,
+fleet-ops#362). So:
+- "Link" = the filed issue's body carries signal key
+  `slo/seat-availability-slowburn` + names `FleetSloSeatAvailSlowBurn`; a
+  second tick finds it via that key and takes the LINK path (heartbeat
+  comment, no second file). Observable via LINK/FILED log lines in
+  actions.log.
+- The alert's `annotations.description` in `config/fleet_rules.yml` is
+  updated ONCE in this PR to name the auto-file-or-link terminus + signal
+  key (documenting the mechanism), not a dynamic runtime number.
 
-- [x] phase 1: add `content_equivalent()` helper + use it in `live_newer_than_repo()` (install.sh ~196–222) so JSON files that parse on both sides compare via `jq -S .` — escaping/whitespace-only diffs DO NOT refuse; real structural diffs and non-JSON files still byte-compare/refuse (acceptance: real cap-diff 5-vs-7 still refuses; escaping-only diff no longer refuses).
-- [x] phase 2: new regression test in tests/install-refuse-continues.test.sh — an escaping-only difference (same JSON, `\uXXXX` bytes) must NOT produce `NONFATAL REFUSE` and the live file is overwritten; test FAILS before phase-1 change, PASSES after. Existing `NONFATAL REFUSE` real-diff scenario still asserts rc≠0.
-- [x] phase 3: reconcile config/pi-models.json with live — add `opencode-go` + `pgsgrove` provider blocks (repo UTF-8 style, no `\uXXXX`), drop `straitly`; leave `opencode` untouched.
-- [x] phase 4: proof green — `bash tests/install-refuse-continues.test.sh` + `bash tests/manifest-shape.test.sh` exit 0; `jq -S . config/pi-models.json` structurally identical to `jq -S 'del(.providers["opencode-go"],.providers["pgsgrove"])' ~/.pi/agent/models.json` (empty diff) so the deploy-check gate goes green.
-- [ ] phase 5: commit, push claim/issue-4894, PR `Closes #4894` with Verification/running-proof sections, arm auto-merge (no label `blocked-by-judge`; commits carry no agent attribution).
+## Mechanism (extend alert-repair-dispatch, no new organ)
+In the `FleetSloSeatAvailSlowBurn` skip branch, BEFORE the generic
+`return 0`:
+1. Compute firing duration from `AMX_ALERT_1_START` (first alert's
+   starts_at). If firing <= 1h: keep SKIP reason=skip-list, return 0 (rung
+   hasn't had time to claim; no premature filing).
+2. If firing > 1h: search open critical-path fleet-ops issues for the
+   signal key `slo/seat-availability-slowburn` (gh issue list --search).
+   - Found: log `LINK` line + heartbeat-comment the existing issue. No
+     second file. (idempotence: a second tick lands here.)
+   - Not found: file exactly ONE via `fleet-issue-file` with `critical-path`
+     label + signal key in title/body, body referencing
+     `FleetSloSeatAvailSlowBurn` + the #4639 rung + am-executor. Log
+     `FILED` line.
+3. Return 0 in both cases — skip-list stays, NO worker spawn (criterion 3).
+"Notify am-executor": the dispatch path IS am-executor's receiver; the
+file-or-link happening in-dispatch is the notification. Plus a LOUD log
+line for fleet observability. No Nish page (criterion 4).
 
-## Phase review record (manager, per-phase reviewer)
-- Phase 1-2 review (stock reviewer): **0 blocking, 0 act-on**. Consider (recorded, not re-delegated): (1) test trailing `trap ... RETURN` leaks $scratch2 on fail; (2) jq -S also collapses key-reorder/whitespace/numeric-literal formatting — intentional escape-only behavior, real structural/value/type diffs and non-JSON still refuse; seat-caps downgrade guard untouched. Green: install-refuse + manifest-shape both EXIT 0.
-- Phase 3 review (stock reviewer): **0 blocking, 0 act-on**. opencode-go distinct from opencode (zen/go vs zen/v1); straitly removal complete in this file; no secrets (all `!command` env refs); real UTF-8, no `\uXXXX`. Consider (recorded): orphaned `straitly` allowlist in config/seat-caps.json keeps bin/fleet-straitly-ds4-pro-canary failing loud ('allowlisted but missing from models.json') — pre-existing (live already lacks straitly) and out of this PR's scope; filed as follow-up.
+Reuse the exact organs detector-queue-reconciler uses: `fleet-issue-file`
+(filing), `gh issue list` (search), `gh issue comment` (heartbeat). No new
+timer/service/dispatcher/canary (deletion-first).
+
+## Phases
+- [ ] phase 1: extend `libexec/alert-repair-dispatch` — add
+  `_slowburn_file_or_link()` + firing-duration helper + branch in the
+  SlowBurn skip path. Hermetic via env overrides
+  (FLEET_ISSUE_FILE, GH, ALERT_REPAIR_NO_SPAWN already exist; add
+  FLEET_SLOWBURN_REPO, FLEET_SLOWBURN_SIGNAL, FLEET_SLOWBURN_THRESHOLD_S).
+- [ ] phase 2: update `config/fleet_rules.yml` FleetSloSeatAvailSlowBurn
+  `description` to name the auto-file-or-link terminus + signal key.
+- [ ] phase 3: extend `tests/alert-repair-slo-slowburn-skip.test.sh` to
+  prove BOTH directions + idempotence: (a) firing >1h + no existing claim
+  → files exactly one, notifies, no spawn; (b) firing >1h + live claim →
+  links (no file), idempotent across a second tick; (c) firing <=1h →
+  plain SKIP, no file (no premature filing). Mock gh + fleet-issue-file.
+
+## Out of scope
+- Raising the alert-repair skip-list entry for SlowBurn (needs new judge
+  call; tests/alert-repair-slo-slowburn-skip.test.sh +
+  tests/alert-repair-claim-mutex.test.sh lock it).
+- Any money/seat-cap/top-up decision (criterion 6).
+- Runtime config edit of fleet_rules.yml (rejected above).
+
+## Proportionality note
+Heavy issue, but contained: 1 organ extended, 1 config doc edit, 1 test
+file. Spawning nested pi workers (planner/worker/reviewer round-trips,
+each consuming a seat + minutes) is disproportionate for a 3-phase
+contained change where the manager holds full context. Implementing
+directly with plan-first + self-review-against-acceptance discipline.

@@ -102,3 +102,140 @@ spawns=$(grep -c 'mock-pi-systemd-run args=' "$MOCK_LOG" || true)
 ok "$name: dispatcher SKIP reason=skip-list, no DISPATCH, no spawn"
 
 echo "OK: fleet-ops#2672 slow-burn skip-list lock passes"
+
+# ============================================================================
+# fleet-ops#4773: FleetSloSeatAvailSlowBurn auto-file-or-link after 1h
+# Proves BOTH directions + idempotence (accept-5):
+#   (a) firing >1h + no existing claim -> files exactly ONE, no spawn.
+#   (b) firing >1h + live claim -> LINKS (no file), idempotent across a 2nd tick.
+#   (c) firing <=1h -> plain SKIP, no file (no premature filing).
+# The skip-list entry STAYS throughout (no repair worker spawned).
+# ============================================================================
+
+slowburn="FleetSloSeatAvailSlowBurn"
+
+# Mock gh + fleet-issue-file on PATH. gh records every call; fleet-issue-file
+# prints a /issues/<num> URL on success and records the file call.
+mock_bin2="$scratch/mock-bin2"
+mkdir -p "$mock_bin2"
+GH_CALLS="$scratch/gh-calls.log"
+FILE_CALLS="$scratch/file-calls.log"
+export GH_CALLS FILE_CALLS
+: >"$GH_CALLS"
+: >"$FILE_CALLS"
+
+# `gh issue list --search <signal>` returns the canned JSON; the test
+# toggles GH_LIST_JSON between "[]" (no existing) and a real issue.
+GH_LIST_JSON="[]"
+export GH_LIST_JSON
+cat >"$mock_bin2/gh" <<'GH'
+#!/usr/bin/env bash
+echo "gh $*" >> "${GH_CALLS:-/dev/null}"
+if [[ "$1 $2" == "issue list" ]]; then
+    printf '%s' "${GH_LIST_JSON:-[]}"
+elif [[ "$1 $2" == "issue comment" ]]; then
+    : # heartbeat comment on the linked issue — best effort, exit 0.
+fi
+exit 0
+GH
+chmod +x "$mock_bin2/gh"
+
+cat >"$mock_bin2/fleet-issue-file" <<'FILE'
+#!/usr/bin/env bash
+echo "fleet-issue-file $*" >> "${FILE_CALLS:-/dev/null}"
+echo "https://github.com/Nishfleet/fleet-ops/issues/4773"
+exit 0
+FILE
+chmod +x "$mock_bin2/fleet-issue-file"
+
+reset_log() { : >"$PACKET_DIR/actions.log"; : >"$GH_CALLS"; : >"$FILE_CALLS"; }
+
+fire_slowburn() {
+    local start="$1"
+    AMX_ALERT_1_LABEL_alertname="$slowburn" \
+    AMX_ALERT_1_LABEL_severity="warning" \
+    AMX_ALERT_1_LABEL_service="fleet" \
+    AMX_ALERT_1_START="$start" \
+    AMX_LABEL_repo="fleet-ops" \
+    AMX_STATUS="firing" \
+    AMX_RECEIVER="test-receiver" \
+    PATH="$mock_bin2:$mock_bin:$PATH" \
+    HOME="$scratch" \
+    FLEET_ISSUE_FILE="$mock_bin2/fleet-issue-file" \
+    GH="$mock_bin2/gh" \
+    FLEET_SLOWBURN_REPO="Nishfleet/fleet-ops" \
+    FLEET_SLOWBURN_SIGNAL="slo/seat-availability-slowburn" \
+    "$dispatch_bin" \
+        >"$scratch/sb.out" 2>"$scratch/sb.err"
+}
+
+two_h_ago="$(date -u -d '2 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-2H +%Y-%m-%dT%H:%M:%SZ)"
+ten_m_ago="$(date -u -d '10 minutes ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-10M +%Y-%m-%dT%H:%M:%SZ)"
+
+# --- (c) firing <=1h: plain SKIP, NO file, NO link, NO spawn -----------------
+reset_log
+fire_slowburn "$ten_m_ago"; rc=$?
+[[ "$rc" == 0 ]] || fail "(c) short-firing dispatch must exit 0, got rc=$rc (stderr: $(cat "$scratch/sb.err"))"
+files=$(grep -c 'fleet-issue-file' "$FILE_CALLS" || true)
+[[ "$files" == "0" ]] \
+    || fail "(c) short-firing must NOT file, got $files file calls: $(cat "$FILE_CALLS")"
+links=$(grep -c '\] LINK ' "$PACKET_DIR/actions.log" || true)
+[[ "$links" == "0" ]] || fail "(c) short-firing must NOT link, got $links"
+spawns=$(grep -c 'mock-pi-systemd-run args=' "$MOCK_LOG" || true)
+[[ "$spawns" == "0" ]] || fail "(c) short-firing must not spawn, got $spawns"
+grep -q "SKIP alertname=$slowburn.*reason=skip-list" "$PACKET_DIR/actions.log" \
+    || fail "(c) short-firing must log SKIP reason=skip-list: $(cat "$PACKET_DIR/actions.log")"
+ok "(c) firing <=1h: SKIP reason=skip-list, no file, no link, no spawn"
+
+# --- (a) firing >1h + no existing claim: files exactly ONE, no spawn ---------
+reset_log
+GH_LIST_JSON="[]"
+fire_slowburn "$two_h_ago"; rc=$?
+[[ "$rc" == 0 ]] || fail "(a) long-firing dispatch must exit 0, got rc=$rc (stderr: $(cat "$scratch/sb.err"))"
+filed=$(grep -c '\] FILED ' "$PACKET_DIR/actions.log" || true)
+[[ "$filed" == "1" ]] \
+    || fail "(a) long-firing + no existing must FILE exactly one, got $filed: $(cat "$PACKET_DIR/actions.log")"
+files=$(grep -c 'fleet-issue-file' "$FILE_CALLS" || true)
+[[ "$files" == "1" ]] \
+    || fail "(a) must invoke fleet-issue-file exactly once, got $files: $(cat "$FILE_CALLS")"
+grep -q '\] FILED .*issue=#4773' "$PACKET_DIR/actions.log" \
+    || fail "(a) FILED line must record issue #4773: $(cat "$PACKET_DIR/actions.log")"
+spawns=$(grep -c 'mock-pi-systemd-run args=' "$MOCK_LOG" || true)
+[[ "$spawns" == "0" ]] \
+    || fail "(a) must NOT spawn a worker (skip-list stays), got $spawns"
+disps=$(grep -c '\] DISPATCH ' "$PACKET_DIR/actions.log" || true)
+[[ "$disps" == "0" ]] || fail "(a) must NOT add a DISPATCH line, got $disps"
+ok "(a) firing >1h + no existing claim: FILED exactly one #4773, no spawn, no DISPATCH"
+
+# --- (b) firing >1h + live claim: LINKS, no file, idempotent across 2nd tick --
+reset_log
+GH_LIST_JSON='[{"number":4242,"title":"alarm: FleetSloSeatAvailSlowBurn [slo/seat-availability-slowburn]"}]'
+fire_slowburn "$two_h_ago"; rc=$?
+[[ "$rc" == 0 ]] || fail "(b) link dispatch must exit 0, got rc=$rc (stderr: $(cat "$scratch/sb.err"))"
+links=$(grep -c '\] LINK ' "$PACKET_DIR/actions.log" || true)
+[[ "$links" == "1" ]] \
+    || fail "(b) must LINK exactly once, got $links: $(cat "$PACKET_DIR/actions.log")"
+grep -q '\] LINK .*issue=#4242' "$PACKET_DIR/actions.log" \
+    || fail "(b) LINK line must record issue #4242: $(cat "$PACKET_DIR/actions.log")"
+files=$(grep -c 'fleet-issue-file' "$FILE_CALLS" || true)
+[[ "$files" == "0" ]] \
+    || fail "(b) must NOT file when a live claim exists, got $files: $(cat "$FILE_CALLS")"
+comments=$(grep -c 'issue comment' "$GH_CALLS" || true)
+[[ "$comments" == "1" ]] \
+    || fail "(b) must post one heartbeat comment, got $comments: $(cat "$GH_CALLS")"
+spawns=$(grep -c 'mock-pi-systemd-run args=' "$MOCK_LOG" || true)
+[[ "$spawns" == "0" ]] || fail "(b) must NOT spawn, got $spawns"
+
+# Idempotence: a second tick (same live claim) LINKS again, files NOTHING.
+reset_log
+fire_slowburn "$two_h_ago"; rc=$?
+[[ "$rc" == 0 ]] || fail "(b2) second tick must exit 0, got rc=$rc"
+links2=$(grep -c '\] LINK ' "$PACKET_DIR/actions.log" || true)
+[[ "$links2" == "1" ]] \
+    || fail "(b2) second tick must LINK exactly once (idempotent), got $links2"
+files2=$(grep -c 'fleet-issue-file' "$FILE_CALLS" || true)
+[[ "$files2" == "0" ]] \
+    || fail "(b2) second tick must NOT file (idempotent), got $files2: $(cat "$FILE_CALLS")"
+ok "(b) firing >1h + live claim: LINK #4242 + heartbeat, no file; idempotent across 2nd tick"
+
+echo "OK: fleet-ops#4773 slowburn file-or-link both directions + idempotence pass"
