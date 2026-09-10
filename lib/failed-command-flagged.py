@@ -28,7 +28,16 @@ command exits 1-125, and for grep/rg/diff exit 1 is no-match (live #942).
 ls no-match
 (exit 2, the canonical "ls: cannot access '<path>': No such file or
 directory" line) and which no-match (exit 1) are also treated as probes.
-ls exit 2 with any other error (Permission denied, I/O error, Is a
+A `ps` exit 1 with no `error:`/`ps:`/`Usage:` marker in the output is
+the same negative-result class: procps-ng ps on an empty selection
+(`ps --ppid <childless-pid>`, `ps -p <dead-pid>`, `ps -C <name>`) prints
+the bare header row or nothing (live fleet-ops#5042, session 01a088ec:
+a monitor chain ending in `ps --ppid 1822243` on a childless tsc build
+exited 1 on the bare header and the agent correctly read it as "no
+children"). Real ps invocation failures (bad option, bad -o keyword,
+bad PID/user list syntax) also exit 1 but always print `error: <reason>`
+plus a `Usage:` dump — those stay findings. ls exit 2 with any other
+error (Permission denied, I/O error, Is a
 directory, etc.) is a real failure. `git log|rev-parse|show|diff|cat-file
 <bad-ref>` exit 128 (the canonical "fatal: ambiguous argument '<ref>'"
 or "fatal: bad revision '<ref>'" line) is a deliberate existence probe
@@ -762,6 +771,27 @@ GIT_REAL_ERR_RE = re.compile(
     r"|error: pathspec)",
     re.I,
 )
+# procps-ng `ps` exits 1 when the selection is empty (live
+# fleet-ops#5042): `ps --ppid <pid>` on a childless process,
+# `ps -p <dead-pid>`, `ps -C <missing-name>` print the bare header row
+# (or nothing with --no-headers) and no error text — a negative result,
+# the same no-match class as grep/which exit 1. Real ps invocation
+# failures (bad option, bad -o keyword, bad PID/user list syntax) also
+# exit 1 but always print `error: <reason>` plus a `Usage:` dump on
+# stderr, so the presence of those markers keeps the toolResult a
+# finding.
+PS_BENIGN_RE = re.compile(
+    r"(?:^|[;&|\n]|&&|\|\|)\s*(?:sudo\s+)?ps\b",
+    re.I,
+)
+# Real ps(1) failure markers that must NOT be treated as an
+# empty-selection probe: procps-ng prints `error: <reason>` and a
+# `Usage:` dump for every invocation failure; busybox ps prefixes its
+# messages with `ps:`.
+PS_REAL_ERR_RE = re.compile(
+    r"(\berror:|\bps:|\bUsage:)",
+    re.I,
+)
 # `systemctl status <unit>` piped through `head`/`tail`/`grep` loses the
 # exit code: bash has no `pipefail`, so the pipeline exit is the last
 # command's (head, 0) and Pi sets isError=false. systemd still prints
@@ -984,6 +1014,26 @@ def _git_canonical_probe(text: str) -> bool:
     return True
 
 
+def _ps_empty_selection(text: str) -> bool:
+    """True iff a `ps` exit-1 toolResult text is an empty selection —
+    the bare header row or nothing — and not a swallowed failure
+    (live fleet-ops#5042).
+
+    procps-ng `ps` exits 1 in exactly two shapes:
+
+    1. Empty selection (`ps --ppid <childless-pid>`, `ps -p <dead-pid>`,
+       `ps -C <missing-name>`): header row only (or empty output under
+       --no-headers) and NO error text. The agent asked "does this
+       process have children / is this pid alive" and the empty list
+       IS the answer — the same negative-result class as grep exit 1.
+
+    2. Invocation failure (bad option, bad -o keyword, bad PID/user
+       list syntax): stderr always carries `error: <reason>` plus a
+       `Usage:` dump. Those markers keep the toolResult a finding.
+    """
+    return PS_REAL_ERR_RE.search(text) is None
+
+
 def _systemctl_status_failed(command: str, text: str) -> bool:
     """True if the command is `systemctl status <unit>` and the output
     shows a failed unit (`× unit ... Active: failed`).
@@ -1033,6 +1083,13 @@ def is_benign_no_match(command: str, text: str, code: int | None) -> bool:
         return True
     if code != 1:
         return False
+    # procps-ng `ps` exit 1 with no `error:`/`ps:`/`Usage:` marker is an
+    # empty selection — the bare header row or nothing (live
+    # fleet-ops#5042: a monitor chain ending in `ps --ppid <pid>` on a
+    # childless tsc build). Same negative-result class as grep exit 1;
+    # real ps invocation failures always print `error:` plus `Usage:`.
+    if PS_BENIGN_RE.search(command) and _ps_empty_selection(text):
+        return True
     return BENIGN_STAGE_RE.search(command) is not None
 
 

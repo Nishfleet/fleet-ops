@@ -3619,6 +3619,12 @@ bash "$here/fleet-failed-command-typo-est-sh.test.sh" || fail "fleet-failed-comm
 # FAILED-COMMAND-SWALLOWED lines name OTHER sessions (not a flag of THIS
 # command). Hosted here (CI cannot gain a P14 line).
 bash "$here/fleet-failed-command-detector-bin-exit.test.sh" || fail "fleet-failed-command-detector-bin-exit tests failed"
+# fleet-ops#5042: a `ps` exit-1 on an empty selection (`ps --ppid
+# <childless-pid>` printing the bare header row) is a negative result —
+# the same no-match class as grep exit 1 — not a swallowed failure. Real
+# ps invocation failures print `error:` + `Usage:` and stay findings.
+# Hosted here (CI cannot gain a P14 line).
+bash "$here/fleet-failed-command-ps-empty-selection.test.sh" || fail "fleet-failed-command-ps-empty-selection tests failed"
 # fleet-ops#486: heartbeat wrapper rc capture. Same CI constraint.
 bash "$here/fleet-heartbeat-rc-propagation.test.sh" || fail "fleet-heartbeat-rc-propagation tests failed"
 # fleet-ops#1116: heartbeat tier-1 alarm-vs-failure separation. The
