@@ -444,6 +444,23 @@ run_install() {
         rc=0
     else
         rc=$?
+        if [[ "$out" == *"NONFATAL REFUSE:"* ]]; then
+            # fleet-ops#4912: a NONFATAL REFUSE is install.sh RECORDING that it
+            # refused to clobber a newer / operator-edited live config
+            # (fleet-ops#4223: the live file stays protected, later MANIFEST
+            # entries still repair, and install.sh exits non-zero to record the
+            # refusal and so drift surfaces). That is not a deploy failure.
+            # Treating it as one made a single hand-patched file (e.g. a live
+            # models.json / spawn-guard extension newer than the repo copy)
+            # brick every merge-to-live deploy for hours (fleet-ops#4912
+            # DEPLOY-INSTALL). Continue the deploy and record the refusal; the
+            # drift canary still files the stale-overwrite class
+            # (fleet-ops#463 / fleet-ops#4894) so the divergence stays visible.
+            deploy_audit "fleet-ops" "install-refused" "$label rc=$rc: NONFATAL REFUSE"
+            log "install.sh recorded a NONFATAL REFUSE (rc=$rc) for $label — continuing deploy"
+            log "$label output: $out"
+            return 0
+        fi
         loud "DEPLOY-INSTALL" "$label failed (rc=$rc): $out"
         deploy_audit "fleet-ops" "install-failed" "$label rc=$rc"
         exit 1

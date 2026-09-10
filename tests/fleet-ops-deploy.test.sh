@@ -1818,6 +1818,56 @@ fi
     || fail "scenario18b: expected --system in the LOUD line (got: $out)"
 ok "scenario18b: install.sh --system failure fails deploy"
 
+# --- scenario 18c: NONFATAL REFUSE must not fail the deploy ---------------
+# fleet-ops#4912: install.sh exits non-zero when it refuses to clobber a
+# newer / operator-edited live config (fleet-ops#4223 — protect the file,
+# keep repairing later entries, record via rc). run_install used to treat ANY
+# non-zero as a hard deploy failure, so a single protected hot-patch (e.g. a
+# live models.json / spawn-guard extension newer than the repo copy) bricked
+# every merge-to-live deploy for hours. A recorded NONFATAL REFUSE must
+# continue the deploy (run --system), stay out of the DEPLOY-INSTALL LOUD
+# alarm, and be recorded in the audit; genuine failures still fail.
+behind18c=$(git -C "$checkout" rev-parse HEAD)
+git -C "$checkout" checkout -q -b refuse-4912
+cat >"$install" <<'STUB'
+#!/usr/bin/env bash
+if [ "${1:-}" = "--system" ]; then
+  exit 0
+fi
+echo "NONFATAL REFUSE: /home/nish/.pi/agent/models.json is newer than repo copy config/pi-models.json and the content differs (will not overwrite live config)"
+echo "devin config pinned: skip_workspace_trust=true (fleet-ops#4825)"
+exit 1
+STUB
+chmod +x "$install"
+git -C "$checkout" add install.sh
+git -C "$checkout" commit -q -m "stub install.sh NONFATAL REFUSE"
+git -C "$checkout" push -q origin HEAD:main
+git -C "$checkout" checkout -q "$behind18c"
+if ! out=$(run_deploy); then
+    fail "scenario18c: deploy must continue past a NONFATAL REFUSE, got: $out"
+fi
+[[ "$out" != *"DEPLOY-INSTALL"* ]] \
+    || fail "scenario18c: a NONFATAL REFUSE must not loud DEPLOY-INSTALL (got: $out)"
+[[ "$out" == *"NONFATAL REFUSE"* ]] \
+    || fail "scenario18c: refusal reason must be logged (got: $out)"
+[[ "$out" == *"ran install.sh --system (rc=0)"* ]] \
+    || fail "scenario18c: --system install must still run after a NONFATAL REFUSE (got: $out)"
+grep -q 'install-refused' "$scratch/deploy-audit.log" \
+    || fail "scenario18c: refusal must be recorded in deploy-audit as install-refused ($(cat "$scratch/deploy-audit.log"))"
+
+# Restore a clean install.sh to origin/main so later scenarios are stable.
+git -C "$checkout" checkout -q -B restore-4912 "$behind18c"
+cat >"$install" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+chmod +x "$install"
+git -C "$checkout" add install.sh
+git -C "$checkout" commit -q -m "restore clean install.sh"
+git -C "$checkout" push -q origin HEAD:main
+git -C "$checkout" checkout -q "$behind18c"
+ok "scenario18c: install.sh NONFATAL REFUSE continues the deploy (fleet-ops#4912)"
+
 # --- scenario 20: deploy-clone on main but dirty/diverged auto-files the
 # deploy-blocked-on-main class (fleet-ops#2725). The off-main auto-file does
 # NOT fire (the branch IS main), so without this auto-file the block sat
