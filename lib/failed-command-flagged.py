@@ -166,6 +166,25 @@ required top-level field, isError=true, details={}, no
 "Command exited with code" line; live session 01a043c8 working
 /tmp/fleet-ops/bin/{pi-issue-run,pi-packet-run,pi-scout-run,agent-cron-run}
 where the worker omitted the top-level `path` field four times in a row)
+— or the sibling schema-validation variant
+"Validation failed for tool "edit": - edits.0: must be object"
+(fleet-ops#4991, same class: the harness rejected
+the call BEFORE dispatch because the `edits` argument was passed as a
+JSON-encoded STRING instead of an array of objects, so `edits.0` is a
+string, not an object; isError=true, details={}, no "Command exited
+with code" line; live session
+2026-09-09T21-00-52-059z-fleet-ops-4819-1788987651753950355 working
+bin/fleet-seat-comeback-release in the issue-fleet-ops-4819 worktree,
+where the live recovery was cause-prose — "The edit tool needs the
+edits as an array of objects, not a JSON string. Let me retry with
+proper structure." — after three empty assistant turns, followed by a
+successful edit). That cause-prose names the CAUSE (the malformed
+`edits` argument shape) but NOT the FAILURE (the call returned
+isError=true with the schema-validation message), so it does not
+discharge the pending swallowed failure, exactly like the #1286
+"The edit tool requires the path field" recovery and the #1059
+"The file was archived" prose; a future detector refactor must not
+treat "argument shape" cause-prose as naming the failure.
 —
 is also a real swallowed
 failure: a silent `read` recovery, a later thinking-only note that the
@@ -194,7 +213,9 @@ multi-match, and no-op shapes; tests/fleet-failed-command-edit-array-
 unmatch.test.sh pins the multi-edit array `edits[0]` shape
 (fleet-ops#1173); tests/fleet-failed-command-edit-schema-validation
 .test.sh pins the schema-validation shape (fleet-ops#1286, live
-session 01a043c8). The #1286 schema-validation class is the FOURTH
+session 01a043c8) AND its #4991 sibling (the `edits.0: must be object`
+shape where `edits` was passed as a JSON-encoded string, live session
+2026-09-09T21-00-52-059z-fleet-ops-4819-1788987651753950355). The #1286 schema-validation class is the FOURTH
 sibling of the edit-failure family: the harness rejects the `edit`
 call before dispatch because the arguments omitted a required
 top-level field (`path` in the live case; `edits` is the other
@@ -790,7 +811,10 @@ HARNESS_BLOCK_RE = re.compile(
 # a later ENOENT. A never-executed command is NOT a member of the edit
 # schema-validation class (fleet-ops#1286, "Validation failed for tool \"edit\"
 # ... path"): there the worker's own arguments were malformed and the worker
-# believed the edit ran; here the args were simply not dispatched at all.
+# believed the edit ran; here the args were simply not dispatched at all. The
+# #4991 sibling ("- edits.0: must be object", `edits` passed as a
+# JSON-encoded string instead of an array of objects) is the same class: the
+# worker's own arguments were malformed and the worker believed the edit ran.
 NEVER_RAN_RE = re.compile(
     r"Tool call [A-Za-z\"]+ was not executed:"
     r"[^\n\r]*output token limit",
@@ -810,7 +834,9 @@ NEVER_RAN_RE = re.compile(
 # "Validation failed for tool \"edit\": - path: must have required properties path"
 # (fleet-ops#1286, same class: the harness rejected the
 # call before dispatch because the `edit` arguments omitted a required
-# top-level field). Those are real swallowed failures: the worker's
+# top-level field; the #4991 sibling, "- edits.0: must be object", is
+# the `edits` argument passed as a JSON-encoded string instead of an
+# array of objects — same class). Those are real swallowed failures: the worker's
 # oldText or newText was stale, or the worker's `edit` arguments were
 # malformed. A silent read/grep recovery, and cause-explaining prose
 # ("The text is already the same", "The edit tool requires the path
@@ -1040,7 +1066,10 @@ def result_failed(
     # "Validation failed for tool \"edit\": - path: must have required properties path"
     # (harness rejected the call before dispatch
     # because the arguments omitted a required top-level field,
-    # fleet-ops#1286, live 01a043c8). The no-op shape is the tempting
+    # fleet-ops#1286, live 01a043c8; the sibling fleet-ops#4991,
+    # "- edits.0: must be object", is the `edits` argument passed as
+    # a JSON-encoded string instead of an array of objects, live
+    # session 2026-09-09T21-00-52-059z-fleet-ops-4819). The no-op shape is the tempting
     # one — it reads as harmless — but the worker believed the file
     # changed and it did not. The schema-validation shape is tempting
     # on the same theory ("the call never ran, the file is fine") —
