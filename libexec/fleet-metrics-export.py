@@ -5454,6 +5454,15 @@ def _emit_deploy_quality(lines):
         lines.append("# HELP fleet_deployment_quality_up 1 when the deploy-quality computation succeeded, 0 when it failed (values are NaN).")
         lines.append("# TYPE fleet_deployment_quality_up gauge")
         lines.append(f"fleet_deployment_quality_up{{{label}}} 0")
+        # fleet-ops#4995: the product deploy-freshness family must survive a
+        # fleet-ops-family hard failure. The rule `fleet_product_deploy_up == 1
+        # and ...` would otherwise silently RESOLVE on the tick the series
+        # vanish, which is exactly the alert-continuity hole this hook exists
+        # to close. HELP/TYPE come from the module, never hand-written here.
+        try:
+            lines.extend(_deploy_quality_mod().product_lines())
+        except Exception as exc:  # noqa: BLE001 - never fail the exporter
+            print(f"deploy-quality product family: {exc}", file=sys.stderr)
 
 
 # --- Week-later revert check (fleet-ops#3124 part 4/4) ---------------------

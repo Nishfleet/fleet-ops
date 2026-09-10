@@ -72,10 +72,11 @@ log) are cached for 60s so an idle scrape is a cheap read.
 
 The product family (f) is a SEPARATE gh slot with its own per-repo TTL
 cache, because _GH_FETCHED_THIS_RUN is already burned by the fleet-ops
-family when prom_lines() reaches it (fleet-ops#4995). It fetches only the
-repo whose product cache is oldest — never-fetched first — so N repos cost
-one gh call per N ticks, and its cache stores the success EPOCH so the
-freshness age is recomputed every scrape and never freezes.
+family when prom_lines() reaches it (fleet-ops#4995). It spends at most
+ONE gh call per tick (per scrape); it fetches only the repo whose product
+cache is oldest — never-fetched first — so each repo is refreshed once per
+N ticks. Its cache stores the success EPOCH so the freshness age is
+recomputed every scrape and never freezes.
 
 Environment seams (tests):
   FLEET_DQ_NOW              ISO/epoch override for deterministic tests
@@ -219,6 +220,11 @@ PRODUCT_CACHE_PREFIX = "deploy-quality-product-"
 # is already burned by the fleet-ops family by the time prom_lines() gets
 # here (fleet-ops#4995), so routing this path through _cached() would leave
 # every product repo uncached forever.
+# PER-PROCESS guard, not per-call: set on the first product fetch and never
+# cleared. That is correct because the exporter is a oneshot — one process
+# serves exactly one scrape. A long-lived caller (a test harness loading
+# this module once and calling prom_lines() repeatedly) therefore gets only
+# the first call fetching, which is the intended one-call budget.
 _DQ_PRODUCT_GH_FETCHED_THIS_RUN = False
 _PRODUCT_SLO_MOD = None
 
@@ -805,7 +811,8 @@ def _esc(s):
     quote there would emit a malformed line and take the whole metrics
     scrape down with it.
     """
-    return str(s).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+    return (str(s).replace("\\", "\\\\").replace('"', '\\"')
+            .replace("\n", "\\n").replace("\r", "\\r"))
 
 
 def _fmt_seconds(v):
@@ -869,9 +876,13 @@ def _product_repo_list(env):
     """
     seam = (env or os.environ).get("FLEET_DQ_PRODUCT_REPOS")
     if seam is not None:
-        return [r.strip() for r in seam.split(",") if r.strip()]
+        # Order-preserving dedupe (fleet-ops#4995): a repo listed twice would
+        # emit the identical {repo,run_url} series twice, and Prometheus
+        # rejects an entire scrape that carries a duplicate sample — every
+        # fleet metric dies, not just this family.
+        return list(dict.fromkeys(r.strip() for r in seam.split(",") if r.strip()))
     try:
-        return [r for r in _product_slo_mod().load_product_repos() if r]
+        return list(dict.fromkeys(r for r in _product_slo_mod().load_product_repos() if r))
     except Exception as exc:  # noqa: BLE001 - a broken sibling must not kill the export
         print(f"deploy-quality product: repo list unavailable: {exc}", file=sys.stderr)
         return []
@@ -921,12 +932,32 @@ def _product_fetch(repo, env):
     return _product_from_rows(rows, branch)
 
 
-def _product_row(repo, data, age, now):
+def _product_fresh_ttl(n):
+    """Per-repo freshness TTL: N repos rotate in N * 300s, GH_TTL floor."""
+    return max(GH_TTL, n * 300)
+
+
+def _product_stale(n):
+    """Stale bound for a repo cache, derived from the rotation period.
+
+    INVARIANT: `stale` must exceed the worst-case rotation period
+    `len(repos) * 300` (fleet-ops#4995). Each repo is refreshed once per
+    N-tick rotation, so a healthy repo legitimately reaches age ~N*300s
+    between its own fetches; a fixed 2h bound broke at N=25 (7500s
+    rotation) and made healthy repos report a FALSE up 0 + NaN for part of
+    every cycle. Derived here (fresh_ttl * 2) so it stays valid as
+    enrollment grows.
+    """
+    return max(GH_STALE, _product_fresh_ttl(n) * 2)
+
+
+def _product_row(repo, data, age, now, stale):
     """Gauge values for one repo; a corrupt cache entry degrades HERE."""
     failed = {"repo": repo, "up": 0, "seconds": float("nan"), "url": ""}
-    if not isinstance(data, dict) or age is None or age > GH_STALE:
-        # No reading within the 2h stale window: a failed read, not a stale
-        # number presented as if it were current.
+    if not isinstance(data, dict) or age is None or age > stale:
+        # No reading within the stale window (>= the worst-case rotation
+        # period, see _product_stale): a failed read, not a stale number
+        # presented as if it were current.
         return failed
     epoch = data.get("epoch")
     if epoch is None:
@@ -946,9 +977,9 @@ def _product_scrape(repos, env):
 
     Only the repo whose cache is oldest is fetched (never-fetched first);
     every other repo is served from its cache, so N repos rotate fairly at
-    one gh call per N ticks. The cache holds the success EPOCH, so
-    now - epoch is recomputed on every scrape and a cached reading never
-    freezes the freshness age.
+    one gh call PER TICK (per scrape) — each repo is refreshed once per N
+    ticks. The cache holds the success EPOCH, so now - epoch is recomputed
+    on every scrape and a cached reading never freezes the freshness age.
     """
     global _DQ_PRODUCT_GH_FETCHED_THIS_RUN
     if not repos:
@@ -957,6 +988,13 @@ def _product_scrape(repos, env):
     now = _now(env)
     branch = e.get("FLEET_DQ_PRODUCT_BRANCH") or PRODUCT_BRANCH
     cache_dir = _product_cache_dir(env)
+    # Rotation-derived params (fleet-ops#4995): fresh_ttl decides whose turn
+    # it is to be fetched, stale is the point past which a cached reading is
+    # no longer trusted. `stale` must exceed the worst-case rotation period
+    # len(repos) * 300, so it is computed for every path (the fixture seam
+    # reports age 0 / None, and still needs the bound at the return below).
+    fresh_ttl = _product_fresh_ttl(len(repos))
+    stale = _product_stale(len(repos))
     entries = {}
     for repo in repos:
         path = cache_dir / f"{PRODUCT_CACHE_PREFIX}{repo}.json"
@@ -984,8 +1022,6 @@ def _product_scrape(repos, env):
         # Freshness TTL scales with the repo count so a repo is not
         # re-fetched out of turn while the others are still fresh: N repos
         # rotate in N * 300s, with GH_TTL as the floor (fleet-ops#4995).
-        fresh_ttl = max(GH_TTL, len(repos) * 300)
-
         def _age_rank(r):
             age = entries[r][2]
             return float("inf") if age is None else age
@@ -1006,20 +1042,28 @@ def _product_scrape(repos, env):
             if fresh is not None:
                 _write_cache(entries[target][0], fresh)
                 entries[target] = [entries[target][0], fresh, 0.0]
-            elif entries[target][2] is not None and entries[target][2] <= GH_STALE:
+            elif entries[target][2] is not None and entries[target][2] <= stale:
                 print(f"deploy-quality product {target}: gh failed, serving stale cache "
                       f"(age={int(entries[target][2])}s)", file=sys.stderr)
 
-    return [_product_row(repo, entries[repo][1], entries[repo][2], now) for repo in repos]
+    return [_product_row(repo, entries[repo][1], entries[repo][2], now, stale)
+            for repo in repos]
 
 
-def _product_lines(env):
+def product_lines(env=None):
     """The fleet_product_deploy_* family; never raises (fleet-ops#4995).
 
     A per-repo read failure degrades THAT repo to up 0 + NaN seconds while
     the others keep their values; a failed enrollment read degrades to ZERO
     product lines. The fleet-ops family's raising contract is untouched, so
     libexec/fleet-metrics-export.py::_emit_deploy_quality keeps its shape.
+
+    PUBLIC and never-raising on purpose: libexec/fleet-metrics-export.py
+    calls this from its failure path, where compute() has already raised.
+    That is what keeps fleet_product_deploy_up in fleet.prom across a
+    fleet-ops-family hard failure — without it the series vanishes, goes
+    stale, and ProductDeployStale silently RESOLVES on exactly the tick it
+    is most needed.
     """
     try:
         repos = _product_repo_list(env)
@@ -1027,6 +1071,12 @@ def _product_lines(env):
         print(f"deploy-quality product: repo list failed: {exc}", file=sys.stderr)
         return []
     if not repos:
+        # Logged because "the metric is absent everywhere" is otherwise a
+        # silent failure mode: every other degraded branch here says why it
+        # degraded. Deliberately do NOT fall back to the intake list — an
+        # unreadable enrollment must stay visible, not guess a repo set.
+        print("deploy-quality product: no repos enrolled — emitting no product lines",
+              file=sys.stderr)
         return []
     try:
         rows = _product_scrape(repos, env)
@@ -1079,7 +1129,7 @@ def prom_lines(env=None):
         out.append(f"# HELP {name} {help}")
         out.append(f"# TYPE {name} gauge")
         out.append(f"{name}{{{label}}} {_fmt(v)}")
-    out.extend(_product_lines(env))
+    out.extend(product_lines(env))
     return out
 
 
