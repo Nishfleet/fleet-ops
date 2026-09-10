@@ -66,6 +66,17 @@ const DANGEROUS_RULES: Array<{ id: string; pattern: RegExp }> = [
 		pattern:
 			/\brm\s+(-[^\s]*f[^\s]*\s+|-rf\s+)[^\n;|&]*(?:\/home\/nish\b|workspaces\/)/i,
 	},
+	// fleet-ops#4896: alert-repair workers ran `find /home/nish -name '*.prom'`
+	// and `grep -rln <metric> /home/nish/workspaces ...` to locate files the
+	// packet could have named — two sweeps of a 282 GB home dir pushed load to
+	// 20 on 8 vCPU while zero product workers were admitted. Block recursive
+	// searches rooted at /, ~, /home/nish, /home/nish/workspaces or
+	// /home/nish/.local; a search rooted at a repo checkout or a state dir
+	// below those stays allowed.
+	{
+		id: "home_wide_filesystem_sweep",
+		pattern: /\b(?:find|rg|grep\s+(?:-\S+\s+)*-[A-Za-z]*[rR]\S*)(?:\s+[^\n;|&]*?)?\s+(?:\/|~|\$HOME|\/home|\/home\/nish|\/home\/nish\/workspaces|\/home\/nish\/\.local)\/?(?=\s|$)/i,
+	},
 	// fleet-ops#3111: a worker session must never write root-owned files into
 	// the pi transport paths. The 2026-09-03 clobber was a worker running
 	// `sudo install -D -m 0755 /dev/null /home/nish/.local/bin/pi` while
