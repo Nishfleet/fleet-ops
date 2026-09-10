@@ -396,6 +396,42 @@ grep -q "issue close" "$tmp/gh.log" \
 ok "scenario 9g: stale CLAIM-REAP-STARTED issue observe-to-closes while STARTED lines continue"
 
 # ---------------------------------------------------------------------------
+# 9h. A filed loud/claim-reap-needed issue observe-to-closes once the reap
+#     resolves (fleet-ops#4917). pi-issue-failed-reap emits CLAIM-REAP-NEEDED
+#     when a claim branch still has an OPEN PR (it must not delete the branch
+#     or strip labels under a live PR). The instant that PR merges — branch
+#     gone, open_pr_count drops to 0 — the reaper stops emitting the signal,
+#     and the already-open alarm issue must observe-to-close on the next real
+#     tick, exactly like any green signal. Prove: the exact #4917 signal key
+#     is red on one tick (stays open, gets heartbeat comments) and closes on a
+#     later tick once the reaper no longer reports it. The CLAIM-REAP-STARTED
+#     entry line for the same instance stays (a real reap did run) — it is not
+#     a queued signal and must not keep the reap-needed issue red.
+# ---------------------------------------------------------------------------
+cat > "$tmp/open9h.json" <<'EOF'
+[{"number": 4917, "body": "The heartbeat detector reported this alarm on a real tick and no open issue carried its signal key, so the detector→queue reconciler filed one.\n\n- alarm tag: `CLAIM-REAP-NEEDED`\n- evidence: instance=0509-2298 branch=claim/issue-2298 open_pr_count=1 reason=open_pr_exists\n- observed tick: `2026-09-10T10:50:08Z`\n- detector→queue reconciler: fleet-ops#362\n\nDo NOT close this issue on PR merge alone. The reconciler closes it only when the detector reports green on a real heartbeat tick (observe-to-close).\n\n`loud/claim-reap-needed/instance-branch-claim-issue-open_pr_count-reason-open_pr_exists`\n", "labels": [{"name": "agent-ready"}], "createdAt": "2026-09-10T10:50:00Z", "comments": []}]
+EOF
+# Striped tick: the reaper still sees the OPEN PR -> signal still red -> no close.
+cat > "$tmp/triage9h_still.md" <<'EOF'
+[2026-08-28T13:30:00Z] [CLAIM-REAP-NEEDED] instance=0509-2298 branch=claim/issue-2298 open_pr_count=1 reason=open_pr_exists
+EOF
+run "$tmp/open9h.json" "$tmp/triage9h_still.md" > "$tmp/summary9h_still.json"
+jq -e '.closed == 0 and .filed == 0' "$tmp/summary9h_still.json" >/dev/null \
+    || fail "scenario 9h: still-red reap-needed must NOT close (got: $(cat "$tmp/summary9h_still.json"))"
+# Resolved tick: PR merged, reap ran (CLAIM-REAP-STARTED entry), no open PR -> green.
+cat > "$tmp/triage9h_resolved.md" <<'EOF'
+[2026-08-28T13:30:00Z] [CLAIM-REAP-STARTED] instance=0509-2298 repo=Nishfleet/0509 issue=2298 dry_run=0
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/open9h.json" "$tmp/triage9h_resolved.md" > "$tmp/summary9h.json"
+jq -e '.closed == 1 and .filed == 0' "$tmp/summary9h.json" >/dev/null \
+    || fail "scenario 9h: green reap-needed must observe-to-close (got: $(cat "$tmp/summary9h.json"))"
+grep -q "issue close" "$tmp/gh.log" \
+    || fail "scenario 9h: expected gh issue close"
+ok "scenario 9h: filed loud/claim-reap-needed issue observe-to-closes once the reap resolves (no open PR)"
+
+# ---------------------------------------------------------------------------
 # 10. Tier1 wiring contract.
 # ---------------------------------------------------------------------------
 grep -q 'detector-queue-reconciler' "$repo_root/bin/fleet-heartbeat-tier1" \
