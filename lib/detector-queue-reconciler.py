@@ -475,7 +475,22 @@ def routing_labels(tag: str) -> list[str]:
     # zero worker code, and #4965 alone burned 7 claims and 2 StartLimitBursts
     # on workers that re-verified the alarm and exited with no PR. The dedupe
     # path below retroactively re-labels an already-open agent-ready filing.
-    if tag in {"DEGRADED-LANES", "AUDITOR-PANEL-PENDING"}:
+    #
+    # fleet-ops#4990: same for FAILED-COMMAND-SWALLOWED. #4884 already re-keyed
+    # the tag to the detector's own `session=<slug>` field, so every filing is
+    # session-scoped and can only go green when THAT session ages out of the
+    # 24h detection window. There is no manual worker action: the swallow itself
+    # belongs to the originating session (over and gone by filing time), the
+    # class is pinned in tests/fleet-failed-command-edit-unmatch.test.sh, and
+    # every prior filing closed via observe-to-close with zero worker code
+    # (#4884/#4921/#4933). Routing them to agent-ready burned 33 claims across
+    # 10 filings in one day (2026-09-09/10), #4990 alone 8 claims over 5h with
+    # 2 StartLimitBursts, on workers that re-verified the alarm and exited with
+    # no PR. #4933/#4921 show the rule-level FILE_RE keys that used to exist are
+    # gone after #4884, so the whole tag is observe-to-close-only. File under
+    # observe-to-close (fleet-ops#1401) so the intake does not claim them; the
+    # detector's observe-to-close still closes them on the green tick.
+    if tag in {"DEGRADED-LANES", "AUDITOR-PANEL-PENDING", "FAILED-COMMAND-SWALLOWED"}:
         return ["observe-to-close"]
     senior = (
         tag.endswith(("-VIOLATION", "-FAIL", "-BROKEN", "-ESCALATE"))
@@ -857,21 +872,22 @@ def reconcile(
         if existing:
             summary["deduped"] += 1
             _hydrate_comments(existing, repo, gh, dry_run, comment_cache)
-            # fleet-ops#4987: #4981 routes DEGRADED-LANES to observe-to-close
-            # only for NEW filings. An already-open agent-ready DEGRADED-LANES
-            # issue (filed before that routing landed, e.g. #4987 itself) is
-            # deduped but never downgraded, so the intake keeps claiming it and
-            # burns an admission-priced worker seat on an observe-to-close-only
-            # alarm with zero manual action. Retroactively re-label it so the
-            # intake stops claiming it; observe-to-close still closes it on the
-            # green tick regardless of label (test 14b).
+            # fleet-ops#4987/#4990: a tag routed to observe-to-close is only
+            # routed for NEW filings. An already-open agent-ready (or
+            # agent-in-progress) filing of the SAME tag, filed before that
+            # routing landed (e.g. #4987, #4990), is deduped but never
+            # downgraded, so the intake keeps claiming it and burns an
+            # admission-priced worker seat on an observe-to-close-only alarm
+            # with zero manual action. Retroactively re-label it so the intake
+            # stops claiming it; observe-to-close still closes it on the green
+            # tick regardless of label (test 14b/16c/17c).
             if routing_labels(alarm["tag"]) == ["observe-to-close"]:
                 o_labels = [str(l.get("name")) for l in (existing.get("labels") or []) if l.get("name")]
                 if any(lb in o_labels for lb in ("agent-ready", "agent-in-progress")):
                     remove = [lb for lb in ("agent-ready", "agent-in-progress") if lb in o_labels]
                     if gh_edit_labels(repo, existing["number"], ["observe-to-close"], remove, gh, dry_run):
                         summary["rerouted"] += 1
-                        log(f"reroute #{existing['number']} (signal={sig}) {','.join(remove)} -> observe-to-close (retroactive DEGRADED-LANES downgrade)")
+                        log(f"reroute #{existing['number']} (signal={sig}) {','.join(remove)} -> observe-to-close (retroactive observe-to-close-only downgrade for {alarm['tag']})")
                     else:
                         log(f"WARN: failed to downgrade #{existing['number']} (signal={sig})")
             if not has_recent_heartbeat_comment(existing, now, comment_min_hours):

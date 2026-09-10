@@ -1335,4 +1335,79 @@ grep -q "issue close 4965" "$tmp/gh.log" \
     || fail "scenario 16c: expected gh issue close 4965 (got: $(cat "$tmp/gh.log"))"
 ok "scenario 16c: convened panel observe-to-closes the filing"
 
+# 17. FAILED-COMMAND-SWALLOWED alarms are observe-to-close-only (fleet-ops#4990).
+#     #4884 re-keyed the tag to the detector's own `session=<slug>` field, so
+#     every filing is session-scoped and can only go green when THAT session
+#     ages out of the 24h detection window. There is no manual worker action:
+#     the swallow belongs to the originating session (over by filing time) and
+#     the class is pinned in tests/fleet-failed-command-edit-unmatch.test.sh.
+#     Every prior filing closed via observe-to-close with zero worker code
+#     (#4884/#4921/#4933); routing them agent-ready burned 33 claims across 10
+#     filings in one day, #4990 alone 8 claims and 2 StartLimitBursts on
+#     workers that re-verified the alarm and exited with no PR.
+#
+#     17a. A fresh FAILED-COMMAND-SWALLOWED alarm files under
+#          `observe-to-close`, NOT `agent-ready`, so the intake will not claim
+#          it — keyed on the session, not the snippet's file token.
+#     17b. An already-open agent-ready filing is retroactively re-labeled to
+#          observe-to-close while the alarm still fires (dedupe path).
+#     17c. The detector's observe-to-close STILL closes it on the green tick.
+# ---------------------------------------------------------------------------
+swallowed_slug="2026-09-09t20-54-41-144z-0509-2136-1788987280885921928"
+cat > "$tmp/triage17-on.md" <<EOF
+[2026-08-28T13:30:00Z] [FAILED-COMMAND-SWALLOWED] session=$swallowed_slug path=/home/nish/.pi/agent/sessions/pi-issue-0509-2136/s.jsonl snippet=Could not find the exact text in /home/nish/workspaces/agent-worktrees/0509-2136-fresh/app/routes.ts. The old text must match exactly including all whitespace and newlines.
+EOF
+cat > "$tmp/open17.json" <<'EOF'
+[{"number": 4990, "body": "The heartbeat detector reported this alarm on a real tick and no open issue carried its signal key, so the detector\u2192queue reconciler filed one.\n\n- alarm tag: `FAILED-COMMAND-SWALLOWED`\n\nDo NOT close this issue on PR merge alone. The reconciler closes it only when the detector reports green on a real heartbeat tick (observe-to-close).\n\n`loud/failed-command-swallowed/2026-09-09t20-54-41-144z-0509-2136-1788987280885921928`\n", "labels": [{"name": "agent-in-progress"}], "createdAt": "2026-08-28T10:00:00Z", "comments": []}]
+EOF
+
+# 17a. Fresh FAILED-COMMAND-SWALLOWED files with observe-to-close, not
+# agent-ready.
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/empty14.json" "$tmp/triage17-on.md" > "$tmp/summary17a.json"
+jq -e '.filed == 1 and .closed == 0' "$tmp/summary17a.json" >/dev/null \
+    || fail "scenario 17a: FAILED-COMMAND-SWALLOWED must file one issue (got: $(cat "$tmp/summary17a.json"))"
+grep -q "loud/failed-command-swallowed/$swallowed_slug" "$tmp/filed.jsonl" \
+    || fail "scenario 17a: FAILED-COMMAND-SWALLOWED signal key missing (filed: $(cat "$tmp/filed.jsonl"))"
+printf '%s' "$(cat "$tmp/filed.jsonl")" | grep -q '"labels": \["observe-to-close"\]' \
+    || fail "scenario 17a: must file under observe-to-close, not agent-ready (filed: $(cat "$tmp/filed.jsonl"))"
+printf '%s' "$(cat "$tmp/filed.jsonl")" | grep -q '"agent-ready"' \
+    && fail "scenario 17a: must NOT carry agent-ready (filed: $(cat "$tmp/filed.jsonl"))"
+ok "scenario 17a: FAILED-COMMAND-SWALLOWED filed under observe-to-close, not agent-ready"
+
+# 17b. Alarm still firing + open agent-in-progress filing -> dedupe AND
+# retroactive re-label to observe-to-close so the intake stops claiming it
+# (#4990's live claim-burn loop). The issue must NOT close while the alarm is
+# live.
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/open17.json" "$tmp/triage17-on.md" > "$tmp/summary17b.json"
+jq -e '.deduped == 1 and .closed == 0 and .rerouted == 1' "$tmp/summary17b.json" >/dev/null \
+    || fail "scenario 17b: expected deduped+rerouted, not closed (got: $(cat "$tmp/summary17b.json"))"
+grep -q "issue edit 4990" "$tmp/gh.log" \
+    || fail "scenario 17b: expected gh issue edit 4990 (got: $(cat "$tmp/gh.log"))"
+grep -q -- "--add-label observe-to-close" "$tmp/gh.log" \
+    || fail "scenario 17b: must add observe-to-close (got: $(cat "$tmp/gh.log"))"
+grep -q -- "--remove-label agent-in-progress" "$tmp/gh.log" \
+    || fail "scenario 17b: must remove agent-in-progress (got: $(cat "$tmp/gh.log"))"
+! grep -q "issue close" "$tmp/gh.log" \
+    || fail "scenario 17b: still-alarmed issue must NOT close (gh.log: $(cat "$tmp/gh.log"))"
+ok "scenario 17b: open agent-in-progress filing retroactively re-labeled observe-to-close while alarmed"
+
+# 17c. The session ages out of the detector window (no
+# FAILED-COMMAND-SWALLOWED line in the tick) -> the observe-to-close closeout
+# fires regardless of the label.
+cat > "$tmp/triage17-off.md" <<'EOF'
+[2026-08-28T13:30:00Z] [FAILED-COMMAND-OK] no swallowed failures in window (scanned=1626)
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/open17.json" "$tmp/triage17-off.md" > "$tmp/summary17c.json"
+jq -e '.closed == 1 and .filed == 0' "$tmp/summary17c.json" >/dev/null \
+    || fail "scenario 17c: aged-out session must observe-to-close (got: $(cat "$tmp/summary17c.json"))"
+grep -q "issue close 4990" "$tmp/gh.log" \
+    || fail "scenario 17c: expected gh issue close 4990 (got: $(cat "$tmp/gh.log"))"
+ok "scenario 17c: aged-out FAILED-COMMAND-SWALLOWED observe-to-closes the filing"
+
 ok "all signal-reconcile scenarios passed"
