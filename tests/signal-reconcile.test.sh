@@ -484,6 +484,53 @@ grep -q "issue close" "$tmp/gh.log" \
 ok "scenario 9i-close: stale CLAIM-RELEASED issue observe-to-closes while RELEASED lines continue"
 
 # ---------------------------------------------------------------------------
+# 9j. CLAIM-REAP-NEEDED is not queued by the reconciler (fleet-ops#4945).
+#     pi-issue-failed-reap writes it when the reaper finds a live or in-flight
+#     PR on the claim branch and correctly leaves the branch and labels
+#     intact (reason=open_pr_exists). That is a healthy state, not a fault.
+#     Its derived signal key collapses across ALL 0509 instances — the
+#     numeric harvester strips the instance digits, so every reap-needed
+#     alarm derives the same `loud/claim-reap-needed/instance-branch-claim-issue-
+#     open_pr_count-reason-open_pr_exists` key. Any future reap of any worker
+#     leaving a PR open re-emits the identical key, so observe-to-close can
+#     never go green — the never-green loop #4918 fixed for STARTED and
+#     #4930 for RELEASED. The actionable reaper outcomes (BRANCH-FAIL /
+#     LABEL-FAIL / PARSE-FAIL / NO-GH) still queue.
+# ---------------------------------------------------------------------------
+cat > "$tmp/empty9j.json" <<'EOF'
+[]
+EOF
+cat > "$tmp/triage9j.md" <<'EOF'
+[2026-08-28T13:30:00Z] [CLAIM-REAP-NEEDED] instance=0509-2339 branch=claim/issue-2339 open_pr_count=1 reason=open_pr_exists
+EOF
+true > "$tmp/filed.jsonl"
+run "$tmp/empty9j.json" "$tmp/triage9j.md" > "$tmp/summary9j.json"
+jq -e '.filed == 0 and .alarm_count == 0' "$tmp/summary9j.json" >/dev/null \
+    || fail "scenario 9j: CLAIM-REAP-NEEDED must not be queued, got: $(cat "$tmp/summary9j.json")"
+[[ $(wc -l < "$tmp/filed.jsonl") -eq 0 ]] \
+    || fail "scenario 9j: CLAIM-REAP-NEEDED must not file, got: $(cat "$tmp/filed.jsonl")"
+ok "scenario 9j: CLAIM-REAP-NEEDED is not queued (open-PR hold is expected recovery, not a fault)"
+
+# ---------------------------------------------------------------------------
+# 9j-close. An already-open loud/claim-reap-needed issue observe-to-closes
+#     even while fresh CLAIM-REAP-NEEDED LOUD lines keep firing
+#     (fleet-ops#4945). Those lines are no longer a queued signal, so they
+#     cannot keep the issue red — the mechanism that clears #4945 on the next
+#     real tick.
+# ---------------------------------------------------------------------------
+cat > "$tmp/open9jclose.json" <<'EOF'
+[{"number": 4945, "body": "The heartbeat detector reported this alarm on a real tick.\n\n- alarm tag: `CLAIM-REAP-NEEDED`\n\nDo NOT close this issue on PR merge alone.\n\n`loud/claim-reap-needed/instance-branch-claim-issue-open_pr_count-reason-open_pr_exists`\n", "labels": [{"name": "agent-ready"}], "createdAt": "2026-09-10T12:00:00Z", "comments": []}]
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/open9jclose.json" "$tmp/triage9j.md" > "$tmp/summary9jclose.json"
+jq -e '.closed == 1 and .filed == 0' "$tmp/summary9jclose.json" >/dev/null \
+    || fail "scenario 9j-close: stale loud/claim-reap-needed must close even while NEEDED LOUD lines fire, got: $(cat "$tmp/summary9jclose.json")"
+grep -q "issue close" "$tmp/gh.log" \
+    || fail "scenario 9j-close: expected gh issue close"
+ok "scenario 9j-close: stale CLAIM-REAP-NEEDED issue observe-to-closes while NEEDED lines continue"
+
+# ---------------------------------------------------------------------------
 # 10. Tier1 wiring contract.
 # ---------------------------------------------------------------------------
 grep -q 'detector-queue-reconciler' "$repo_root/bin/fleet-heartbeat-tier1" \

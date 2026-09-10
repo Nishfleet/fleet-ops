@@ -85,10 +85,26 @@ SKIP_MSG_PREFIXES = ("rule-enforcement:",)
 # issue is tracked by RECLAIM-COUNT-INCREMENTED + the reclaim cooldown, not
 # by a per-repo loud signal. Queuing RELEASED refiles a noisy per-repo issue
 # on every reap, exactly the never-green loop #4918 fixed for STARTED.
+#
+# CLAIM-REAP-NEEDED with reason=open_pr_exists is the same class: the reaper
+# finds a live (or in-flight) PR on the claim branch and correctly leaves the
+# branch and labels intact — a healthy state, not a fault (fleet-ops#4945).
+# Its derived signal key collapses across ALL instances: the numeric token
+# harvester strips the instance digits, so `instance=<n>-<m>` becomes the
+# literal `instance=` and every reap-needed alarm derives the same
+# `loud/claim-reap-needed/instance-branch-claim-issue-open_pr_count-reason-open_pr_exists`.
+# Any future reap of any worker leaving a PR open re-emits the identical key,
+# so observe-to-close can never go green — exactly the never-green loop #4918
+# fixed for STARTED and #4930 for RELEASED. A reap finding an open PR is the
+# expected recovery step, not a fault; the actionable reaper failures still
+# carry their own loud tags (CLAIM-REAP-BRANCH-FAIL, CLAIM-REAP-LABEL-FAIL,
+# CLAIM-REAP-PARSE-FAIL, CLAIM-REAP-NO-GH). Queuing NEEDED refiles a noisy
+# per-instance-collapsed issue on every hold, never green.
 SKIP_TAGS = {
     "DEBUG-PLAYBOOK-MISSING",
     "CLAIM-REAP-STARTED",
     "CLAIM-RELEASED",
+    "CLAIM-REAP-NEEDED",
 }
 STOPWORDS = frozenset(
     """
