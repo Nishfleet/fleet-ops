@@ -174,6 +174,22 @@ def _extract_signal_key(tag: str, msg: str) -> list[str]:
     if tag == "DEBUG-PLAYBOOK-GATE-BLOCK":
         return ["unspecified"]
 
+    # fleet-ops#4884: FAILED-COMMAND-SWALLOWED is session-scoped — the LOUD
+    # line carries session=<slug> — but the generic token harvester below
+    # keys on a FILE_RE match pulled from the failure snippet. A python
+    # traceback (json.load on empty gh output) puts /usr/lib/python3.12/
+    # json/__init__.py in the snippet, so every such session keyed to
+    # `__init__.py`. Two unrelated sessions (0509-2108, 0509-2144) shared
+    # one signal and observe-to-close could not close until BOTH aged out;
+    # any new python json.load swallowed failure re-opened the same issue.
+    # Key on the session slug the detector already emits, same principle
+    # as the #4512 fix for DEBUG-PLAYBOOK-GATE-BLOCK.
+    if tag == "FAILED-COMMAND-SWALLOWED":
+        m = re.search(r"(?:^|\s)session=([A-Za-z0-9_.-]+)", msg)
+        if m and m.group(1):
+            return [m.group(1)]
+        return ["unspecified"]
+
     tokens: list[str] = []
     for m in UNIT_EQ_RE.finditer(msg):
         tokens.append(m.group(1))

@@ -396,6 +396,50 @@ grep -q "issue close" "$tmp/gh.log" \
 ok "scenario 9g: stale CLAIM-REAP-STARTED issue observe-to-closes while STARTED lines continue"
 
 # ---------------------------------------------------------------------------
+# 9h. FAILED-COMMAND-SWALLOWED keys on the session slug, not on a file token
+#     harvested from the failure snippet (fleet-ops#4884). A python json.load
+#     traceback puts /usr/lib/python3.12/json/__init__.py in the snippet; the
+#     generic FILE_RE harvester keyed every such session to `__init__.py`, so
+#     two unrelated sessions shared one signal and observe-to-close could not
+#     close until both aged out. The LOUD line carries session=<slug>; key on
+#     that so each session gets its own issue and closes independently.
+# ---------------------------------------------------------------------------
+cat > "$tmp/empty9h.json" <<'EOF'
+[]
+EOF
+cat > "$tmp/triage9h.md" <<'EOF'
+[2026-08-28T13:30:00Z] [FAILED-COMMAND-SWALLOWED] session=2026-09-09t22-17-38-210z-0509-2108-1788992257806109680 path=/home/nish/.pi/agent/sessions/pi-issue-0509-2108/s.jsonl snippet=Traceback (most recent call last): File "<string>", line 1, in <module> File "/usr/lib/python3.12/json/__init__.py", line 293, in load
+[2026-08-28T13:30:00Z] [FAILED-COMMAND-SWALLOWED] session=2026-09-09t21-12-22-081z-0509-2144-1788988341792251501 path=/home/nish/.pi/agent/sessions/pi-issue-0509-2144/s.jsonl snippet=Traceback (most recent call last): File "<string>", line 1, in <module> File "/usr/lib/python3.12/json/__init__.py", line 293, in load
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/empty9h.json" "$tmp/triage9h.md" > "$tmp/summary9h.json"
+jq -e '.filed == 2' "$tmp/summary9h.json" >/dev/null \
+    || fail "scenario 9h: two sessions must file two issues, got: $(cat "$tmp/summary9h.json")"
+grep -q "loud/failed-command-swallowed/2026-09-09t22-17-38-210z-0509-2108-1788992257806109680" "$tmp/filed.jsonl" \
+    || fail "scenario 9h: signal must key on session 0509-2108, got: $(cat "$tmp/filed.jsonl")"
+grep -q "loud/failed-command-swallowed/2026-09-09t21-12-22-081z-0509-2144-1788988341792251501" "$tmp/filed.jsonl" \
+    || fail "scenario 9h: signal must key on session 0509-2144, got: $(cat "$tmp/filed.jsonl")"
+grep -q "loud/failed-command-swallowed/__init__.py" "$tmp/filed.jsonl" \
+    && fail "scenario 9h: signal must NOT key on the __init__.py file token, got: $(cat "$tmp/filed.jsonl")"
+ok "scenario 9h: FAILED-COMMAND-SWALLOWED keys on the session, not the file token"
+
+# 9h-close. A stale __init__.py-keyed issue observe-to-closes once the
+# detector re-keys on the session (fleet-ops#4884): the old signal is no
+# longer produced, so it falls out of current_signals and closes.
+cat > "$tmp/open9hclose.json" <<'EOF'
+[{"number": 4884, "body": "The heartbeat detector reported this alarm.\n\n`loud/failed-command-swallowed/__init__.py`\n", "labels": [{"name": "agent-ready"}], "createdAt": "2026-09-10T06:52:00Z", "comments": []}]
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/open9hclose.json" "$tmp/triage9h.md" > "$tmp/summary9hclose.json"
+jq -e '.closed == 1' "$tmp/summary9hclose.json" >/dev/null \
+    || fail "scenario 9h-close: stale __init__.py issue must observe-to-close, got: $(cat "$tmp/summary9hclose.json")"
+grep -q "issue close" "$tmp/gh.log" \
+    || fail "scenario 9h-close: expected gh issue close for stale __init__.py signal"
+ok "scenario 9h-close: stale __init__.py-keyed issue observe-to-closes after re-key"
+
+# ---------------------------------------------------------------------------
 # 10. Tier1 wiring contract.
 # ---------------------------------------------------------------------------
 grep -q 'detector-queue-reconciler' "$repo_root/bin/fleet-heartbeat-tier1" \
