@@ -807,10 +807,13 @@ def _gh_questions():
     for issue in (q or []):
         repo = (issue.get("repository") or {}).get("nameWithOwner") or ORG
         number = issue.get("number")
+        # `gh issue view` takes exactly one positional (the issue number);
+        # the repo is named only via -R. Passing both exits rc=1.
         comments = _gh_json([
-            "issue", "view", f"{ORG}/{repo.split('/')[-1]}" if repo.startswith(ORG) else repo,
-            str(number), "--json", "comments",
-            "--jq", ".comments || []",
+            "issue", "view", str(number),
+            "-R", f"{ORG}/{repo.split('/')[-1]}" if repo.startswith(ORG) else repo,
+            "--json", "comments",
+            "--jq", ".comments // []",
         ]) if number is not None else []
         if not isinstance(comments, list):
             comments = []
