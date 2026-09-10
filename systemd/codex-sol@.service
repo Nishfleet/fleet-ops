@@ -1,6 +1,6 @@
 # fleet-ops#4148: per-role Codex launch template — Sol identity by construction.
 #
-# Paper only. Nish 2026-09-07 retired Sol (do not top up straitly). This
+# Paper only. Nish 2026-09-07 retired Sol (do not top up). This
 # template is unused; keep it so identity stays pinned if the lane ever
 # returns, and so the machinery-allowlist / role-quality-gates rows from
 # #4317 stay matched to a repo unit. Do not launch it. Proof (c) is a
