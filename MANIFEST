@@ -1153,7 +1153,17 @@ systemd/fleet-litellm-proxy.service /home/nish/.config/systemd/user/fleet-litell
 # Environment=LITELLM_LOG=INFO override that keeps the journal small (DEBUG
 # flooded 161k lines in 2h), not new machinery.
 systemd/fleet-litellm-proxy.service.d/debug.conf /home/nish/.config/systemd/user/fleet-litellm-proxy.service.d/debug.conf
+# fleet-ops#4864: proxy OOM drop-in. LiteLLM proxy + postgres are the only
+# critical fleet organs without ManagedOOMPreference=avoid protection; 3 OOM
+# kills in 1h (fleet-ops#4861) took down seat routing. Same pure ManagedOOM*
+# override absorbed for fleet-metrics-export (fleet-ops#4521), fable-fleet-check,
+# codex-remote-control. Not new machinery.
+systemd/fleet-litellm-proxy.service.d/20-oom-avoid.conf /home/nish/.config/systemd/user/fleet-litellm-proxy.service.d/20-oom-avoid.conf
 systemd/fleet-litellm-postgres.service /home/nish/.config/systemd/user/fleet-litellm-postgres.service
+# fleet-ops#4864: postgres OOM drop-in. Postgres death -> proxy loses DB ->
+# all seat routing via LiteLLM fails. Same pure ManagedOOM* override as the
+# proxy and fleet-metrics-export. Not new machinery.
+systemd/fleet-litellm-postgres.service.d/20-oom-avoid.conf /home/nish/.config/systemd/user/fleet-litellm-postgres.service.d/20-oom-avoid.conf
 systemd/fleet-litellm-redis.service /home/nish/.config/systemd/user/fleet-litellm-redis.service
 libexec/fleet-litellm-health-canary.py /home/nish/.local/libexec/fleet-litellm-health-canary.py
 # fleet-ops#4628: sitecustomize that retargets LiteLLM 1.98's PrismaWrapper
