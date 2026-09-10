@@ -396,6 +396,66 @@ grep -q "issue close" "$tmp/gh.log" \
 ok "scenario 9g: stale CLAIM-REAP-STARTED issue observe-to-closes while STARTED lines continue"
 
 # ---------------------------------------------------------------------------
+# 9h. CLAIM-RELEASED is not queued by the reconciler (fleet-ops#4929).
+#     pi-issue-failed-reap writes this as its COMPLETION log line when it
+#     finishes the release of a dead worker's claim. It fires on EVERY real
+#     reap that runs to completion — the same instance RELEASED five times in
+#     an hour, and for a healthy release the fields are all yes:
+#     branch_deleted=yes label_flipped=yes comment_posted=yes. A release
+#     completing is the expected outcome, not a fault; the actionable reaper
+#     outcomes (BRANCH-FAIL / LABEL-FAIL / PARSE-FAIL / NO-GH) still queue.
+#     Queuing RELEASED produced a noisy per-repo signal
+#     (`loud/claim-released/nishfleet-0509`) that could rarely go green.
+# ---------------------------------------------------------------------------
+cat > "$tmp/triage9h.md" <<'EOF'
+[2026-08-28T13:30:00Z] [CLAIM-RELEASED] instance=0509-2320 repo=Nishfleet/0509 branch=claim/issue-2320 branch_deleted=yes label_flipped=yes comment_posted=yes
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/empty9f.json" "$tmp/triage9h.md" > "$tmp/summary9h.json"
+jq -e '.filed == 0 and .alarm_count == 0' "$tmp/summary9h.json" >/dev/null \
+    || fail "scenario 9h: CLAIM-RELEASED must not be queued, got: $(cat "$tmp/summary9h.json")"
+[[ $(wc -l < "$tmp/filed.jsonl") -eq 0 ]] \
+    || fail "scenario 9h: CLAIM-RELEASED must not file, got: $(cat "$tmp/filed.jsonl")"
+ok "scenario 9h: CLAIM-RELEASED is not queued (release completion is expected, not a fault)"
+
+# ---------------------------------------------------------------------------
+# 9i. PACKETS-ARCHIVED is not queued (fleet-ops#4929). Same informational class
+#     as CLAIM-RELEASED: the reaper's packet-archive completion line fires on
+#     every real reap that archived packet files. Archiving is the expected
+#     cleanup, not a fault.
+# ---------------------------------------------------------------------------
+cat > "$tmp/triage9i.md" <<'EOF'
+[2026-08-28T13:30:00Z] [PACKETS-ARCHIVED] instance=0509-2320 repo=Nishfleet/0509 state=OPEN branch_deleted=yes count=3 stamp=x
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/empty9f.json" "$tmp/triage9i.md" > "$tmp/summary9i.json"
+jq -e '.filed == 0 and .alarm_count == 0' "$tmp/summary9i.json" >/dev/null \
+    || fail "scenario 9i: PACKETS-ARCHIVED must not be queued, got: $(cat "$tmp/summary9i.json")"
+[[ $(wc -l < "$tmp/filed.jsonl") -eq 0 ]] \
+    || fail "scenario 9i: PACKETS-ARCHIVED must not file, got: $(cat "$tmp/filed.jsonl")"
+ok "scenario 9i: PACKETS-ARCHIVED is not queued (packet-archive completion is expected, not a fault)"
+
+# ---------------------------------------------------------------------------
+# 9j. An already-open loud/claim-released issue observe-to-closes while fresh
+#     CLAIM-RELEASED LOUD lines keep firing (fleet-ops#4929). Those lines are
+#     no longer a queued signal, so they cannot keep the issue red — the
+#     mechanism that clears #4929 on the next real tick.
+# ---------------------------------------------------------------------------
+cat > "$tmp/open9j.json" <<'EOF'
+[{"number": 4929, "body": "The heartbeat detector reported this alarm on a real tick.\n\n- alarm tag: `CLAIM-RELEASED`\n\nDo NOT close this issue on PR merge alone.\n\n`loud/claim-released/nishfleet-0509`\n", "labels": [{"name": "agent-ready"}], "createdAt": "2026-08-28T10:00:00Z", "comments": []}]
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/open9j.json" "$tmp/triage9h.md" > "$tmp/summary9j.json"
+jq -e '.closed == 1 and .filed == 0' "$tmp/summary9j.json" >/dev/null \
+    || fail "scenario 9j: stale loud/claim-released must close even while RELEASED LOUD lines fire, got: $(cat "$tmp/summary9j.json")"
+grep -q "issue close" "$tmp/gh.log" \
+    || fail "scenario 9j: expected gh issue close"
+ok "scenario 9j: stale CLAIM-RELEASED issue observe-to-closes while RELEASED lines continue"
+
+# ---------------------------------------------------------------------------
 # 10. Tier1 wiring contract.
 # ---------------------------------------------------------------------------
 grep -q 'detector-queue-reconciler' "$repo_root/bin/fleet-heartbeat-tier1" \

@@ -69,7 +69,23 @@ SKIP_MSG_PREFIXES = ("rule-enforcement:",)
 # CLAIM-REAP-PARSE-FAIL, CLAIM-REAP-NO-GH). Queuing STARTED produced a
 # noisy per-repo signal (`loud/claim-reap-started/nishfleet-0509`) that
 # refiled on every reap and could rarely go green.
-SKIP_TAGS = {"DEBUG-PLAYBOOK-MISSING", "CLAIM-REAP-STARTED"}
+#
+# CLAIM-RELEASED and PACKETS-ARCHIVED are the pi-issue-failed-reap completion
+# log lines written when the reaper finishes its cleanup (fleet-ops#4929). They
+# fire on EVERY real reap that runs to completion. The reaper already emits a
+# loud FAIL tag for each actionable sub-step that actually fails
+# (CLAIM-REAP-BRANCH-FAIL, CLAIM-REAP-LABEL-FAIL); the completion line is the
+# summary of the whole run and the individual fields (branch_deleted=
+# label_flipped= comment_posted=) are all yes for a healthy release, which has
+# nothing to escalate. Queuing them produced a noisy per-repo signal
+# (`loud/claim-released/nishfleet-0509` — fleet-ops#4929) that refiled on
+# every successful reap and could rarely go green.
+SKIP_TAGS = {
+    "DEBUG-PLAYBOOK-MISSING",
+    "CLAIM-REAP-STARTED",
+    "CLAIM-RELEASED",
+    "PACKETS-ARCHIVED",
+}
 STOPWORDS = frozenset(
     """
     a an the to of and or in on for with this that is are be as at by from
