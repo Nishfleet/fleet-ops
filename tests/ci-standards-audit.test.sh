@@ -174,6 +174,14 @@ bash "$here/pi-transport-self-heal.test.sh"
 # .github/workflows/**, so the listing gate rides on this listed test.
 bash "$here/p14-test-listing-gate.test.sh"
 
+# fleet-ops#4845: red-main-suspicion grouped by FAIL cause, not check name.
+# The detector lives in bin/fleet-red-main-suspicion; this test proves the
+# false-positive drill (4 PRs, 3 causes -> pr-checks-red) and the positive
+# control (3 branches, 1 cause -> red-main-suspicion). Hosted here so P14
+# runs it without a workflow-file edit (the worker App cannot push
+# .github/workflows/**).
+bash "$here/fleet-red-main-suspicion.test.sh"
+
 # fleet-ops#1457: stop-the-line detector drill. The detector + watch
 # workflows landed in #1465, but the test was never registered in ci.yml
 # (workers cannot push .github/workflows/**), so the p14-test-listing-gate

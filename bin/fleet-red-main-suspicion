@@ -1,0 +1,189 @@
+#!/usr/bin/env bash
+
+# Use the nishfleet-worker App token for any GitHub write. Fail closed if
+# the App cannot mint and no token was inherited from a parent organ, so a
+# dead App never falls through to the human gh identity (fleet-ops#3445).
+# Human gh is read-only for organs; GH Actions (tests) has no App creds and
+# stubs gh as read-only, so skip minting there.
+if [[ -z "${GH_TOKEN:-}" && "${GITHUB_ACTIONS:-}" != "true" && "${GH:-gh}" == "gh" ]]; then
+    export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
+    _wt="${NISHFLEET_WORKER_TOKEN_BIN:-${HOME:-/home/nish}/.local/bin/worker-token}"
+    _minted="$("$_wt" --print)" || { echo "fleet-ops#3445: $_wt --print failed - refusing human-gh writes" >&2; exit 1; }
+    eval "$_minted"
+    unset _wt _minted
+fi
+# fleet-red-main-suspicion — the red-main guardrail, grouped by FAIL CAUSE
+# not by check name (fleet-ops#4845).
+#
+# The old detector (in the landing-watch measure.sh) counted open PRs whose
+# `P14 tests / PR checks` check had conclusion=FAILURE and cried
+# `red-main-suspicion` at >=3. That groups by CHECK NAME only, so a busy PR
+# queue where 4 PRs fail the same-named check for DIFFERENT reasons (a
+# lint failure on the file that PR edits, an unwired test file, a
+# scenario regression) reads as "main is red" when main is in fact green. Crying wolf
+# is the failure mode: a judge spends a run hunting a main-red fix that does
+# not exist, and a detector that fires on every busy queue is one a judge
+# learns to ignore — so a GENUINE red main arrives pre-discredited.
+#
+# This detector groups by (check name + normalised FAIL line), not by check
+# name alone. For each open PR failing a required check it extracts the
+# first real `FAIL:` line from the failed job log, normalises it (strips
+# absolute paths and PR-specific file names), and groups branches that share
+# the SAME normalised cause. Only >=3 distinct branches sharing one cause
+# is `red-main-suspicion`; branches that share a check name but not a cause
+# are a throughput line `pr-checks-red`, never a guardrail line.
+#
+# Output (machine-readable, one line):
+#   red-main-suspicion: <n> branches share <normalised cause>
+#   pr-checks-red: <n> PRs, <m> distinct causes
+#   red-main-suspicion: UNAVAILABLE:<why>   (gh/jq infra failure, fail-closed)
+#
+# Exit codes: 0 clean (no red-main suspicion), 1 when red-main-suspicion is
+# proven, 2 on any gh/jq infra failure (fail-closed — never a false green).
+#
+# Environment seams (tests override all of these):
+#   GH                     gh binary (mockable)
+#   FLEET_RED_MAIN_REPO    owner/repo to scan (default Nishfleet/fleet-ops)
+#   FLEET_RED_MAIN_INPUT   JSON array of {number, check, fail_line} — skip
+#                          live gh and use this as the failing-PR set
+#   FLEET_RED_MAIN_CHECK   the required check name (default "P14 tests / PR checks")
+#   FLEET_RED_MAIN_MIN     min branches sharing a cause to cry wolf (default 3)
+
+set -euo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="${PATH:-/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+GH="${GH:-gh}"
+REPO="${FLEET_RED_MAIN_REPO:-Nishfleet/fleet-ops}"
+CHECK="${FLEET_RED_MAIN_CHECK:-P14 tests / PR checks}"
+MIN="${FLEET_RED_MAIN_MIN:-3}"
+
+log() {
+    printf '[fleet-red-main-suspicion] %s\n' "$*" >&2
+}
+
+loud() {
+    local tag="$1"; shift
+    log "LOUD [$tag] $*"
+}
+
+command -v "$GH" >/dev/null 2>&1 || { loud "RED-MAIN-BROKEN" "gh missing at $GH"; exit 2; }
+command -v jq >/dev/null 2>&1 || { loud "RED-MAIN-BROKEN" "jq missing"; exit 2; }
+
+# normalise_fail LINE — strip the leading job-log timestamp, then strip
+# absolute paths and PR-specific file names (any token containing a `/`),
+# then collapse whitespace. Two PRs failing the same check for the same
+# REASON (e.g. both have a shellcheck issue on the file they edit) collapse
+# to the same normalised cause; two PRs failing for different reasons stay
+# distinct.
+normalise_fail() {
+    printf '%s\n' "$1" \
+        | sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.Z-]+//' \
+        | sed -E 's#[^ ]*/[^ ]*##g' \
+        | tr -s ' ' \
+        | sed -E 's/^ //; s/ $//'
+}
+
+# fetch_fail_line JOBID — the first real `FAIL:` line from a job log. The
+# `Failure signature` fixture lines are excluded (they are test fixtures,
+# not real failures). Empty when no real FAIL line is found.
+fetch_fail_line() {
+    local jobid="$1" line
+    line="$("$GH" api "repos/$REPO/actions/jobs/$jobid/logs" 2>/dev/null \
+        | grep -m1 'FAIL:' || true)"
+    [ -n "$line" ] || return 0
+    # Skip `Failure signature` fixture lines — they are test fixtures that
+    # print a FAIL-shaped line but are not a real failure.
+    if printf '%s' "$line" | grep -q 'Failure signature'; then
+        return 0
+    fi
+    printf '%s' "$line"
+}
+
+# live_failures — query the open PR set and emit a JSON array of
+# {"number":N,"check":C,"fail_line":L} for each PR failing the required
+# check. Empty array when none.
+live_failures() {
+    local prs
+    prs="$("$GH" pr list -R "$REPO" --state open --limit 60 \
+        --json number,statusCheckRollup \
+        -q "[.[] | select(any(.statusCheckRollup[]?; (.name==\"$CHECK\") and (.conclusion==\"FAILURE\")))]" 2>/dev/null)" \
+        || { loud "RED-MAIN-BROKEN" "gh pr list failed"; return 1; }
+    local out=""
+    while IFS= read -r pr; do
+        [ -n "$pr" ] || continue
+        local num jobid line
+        num="$(printf '%s' "$pr" | jq -r '.number')"
+        jobid="$(printf '%s' "$pr" | jq -r '[.statusCheckRollup[] | select(.name=="'"$CHECK"'") | .detailsUrl][0]' \
+            | sed 's#.*/job/##')"
+        [ -n "$jobid" ] && [ "$jobid" != "null" ] || continue
+        line="$(fetch_fail_line "$jobid")"
+        [ -n "$line" ] || continue
+        out="$out$(jq -nc --argjson n "$num" --arg c "$CHECK" --arg l "$line" \
+            '{number:$n, check:$c, fail_line:$l}')"$'\n'
+    done < <(printf '%s' "$prs" | jq -c '.[]')
+    if [ -z "$out" ]; then
+        printf '[]\n'
+    else
+        printf '%s' "$out" | jq -s '.'
+    fi
+}
+
+# classify — read a JSON array of {number, check, fail_line} on stdin,
+# normalise each fail line, group by (check + normalised cause), and emit
+# the verdict line. Returns 1 when red-main-suspicion is proven.
+classify() {
+    local tmp norm
+    tmp="$(mktemp)"
+    norm="$(mktemp)"
+    trap 'rm -f "$tmp" "$norm"' RETURN
+    # Normalise each fail_line in bash, then group by (check + normalised
+    # cause).
+    jq -c '.[]' | while IFS= read -r row; do
+        local num check line nline
+        num="$(printf '%s' "$row" | jq -r '.number')"
+        check="$(printf '%s' "$row" | jq -r '.check')"
+        line="$(printf '%s' "$row" | jq -r '.fail_line')"
+        nline="$(normalise_fail "$line")"
+        jq -nc --argjson n "$num" --arg c "$check" --arg l "$nline" \
+            '{number:$n, check:$c, nline:$l}'
+    done | jq -s '.' > "$norm" 2>/dev/null \
+        || { loud "RED-MAIN-BROKEN" "jq normalise failed"; return 2; }
+
+    jq -r '[.[] | {key: (.check + "|" + (.nline | gsub("\\|"; " "))), number}] | group_by(.key) | map({key: .[0].key, n: length, nums: [.[].number]})' \
+        < "$norm" > "$tmp" 2>/dev/null \
+        || { loud "RED-MAIN-BROKEN" "jq classify failed"; return 2; }
+
+    local total=0 distinct=0 maxn=0 maxcause=""
+    while IFS= read -r grp; do
+        local n cause
+        n="$(printf '%s' "$grp" | jq -r '.n')"
+        cause="$(printf '%s' "$grp" | jq -r '.key' | cut -d'|' -f2-)"
+        total=$(( total + n ))
+        distinct=$(( distinct + 1 ))
+        if [ "$n" -gt "$maxn" ]; then
+            maxn="$n"
+            maxcause="$cause"
+        fi
+    done < <(jq -c '.[]' "$tmp")
+
+    if [ "$maxn" -ge "$MIN" ]; then
+        printf 'red-main-suspicion: %s branches share %s\n' "$maxn" "$maxcause"
+        return 1
+    fi
+    printf 'pr-checks-red: %s PRs, %s distinct causes\n' "$total" "$distinct"
+    return 0
+}
+
+# main
+if [ -n "${FLEET_RED_MAIN_INPUT:-}" ]; then
+    # Test seam: the failing-PR set is supplied directly.
+    printf '%s' "$FLEET_RED_MAIN_INPUT" | classify
+    exit $?
+fi
+
+failures="$(live_failures)" || { echo "red-main-suspicion: UNAVAILABLE:gh-failed"; exit 2; }
+printf '%s' "$failures" | classify
+exit $?
