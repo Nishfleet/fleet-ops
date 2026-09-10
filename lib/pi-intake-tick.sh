@@ -637,6 +637,17 @@ blocked_filter() {
 # filter resolves each named dependency and skips the issue (stays
 # agent-ready, no de-label) until every dependency is DONE.
 #
+# fleet-ops#5107: inside an appended `## *edits (binding…)` section the
+# depends-on: token also counts MID-LINE — a judge bullet like
+# "add `depends-on: #2359`" never matched `^depends-on:`, so the gate let
+# those tickets be claimed anyway. Outside binding sections only the
+# line-start form counts: issue prose discusses the gate itself
+# ("`depends-on:` is still `none`: #2352, #2383…"), and a bare mid-line
+# match would misread those trailing issue numbers as live deps and park
+# the ticket on its own evidence list. For a matched mid-line token, refs
+# are read only from the text AFTER it, so a `#<n>` before the token is
+# not misread either.
+#
 # A dependency is DONE when the referenced issue is:
 #   - closed (state=closed), OR
 #   - has a merged PR whose branch is claim/issue-<n> or fable/issue-<n>, OR
@@ -660,9 +671,7 @@ depends_on_filter() {
 
     # Parse the depends-on: line(s). Extract every #<n> (same repo) and
     # owner/repo#<n>; prose like "none" or "any of" yields no refs.
-    mapfile -t deps < <(printf '%s\n' "$body" \
-        | grep -E '^depends-on:' \
-        | grep -oE '#[0-9]+|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+' || true)
+    mapfile -t deps < <(printf '%s\n' "$body" | _depends_on_refs)
     (( ${#deps[@]} == 0 )) && return 0
 
     for ref in "${deps[@]}"; do
@@ -685,14 +694,15 @@ depends_on_filter() {
         if [[ "$dep_state" != "DONE" ]]; then
             # Cycle detection: does the dependency itself depend on THIS
             # issue? (A depends on B depends on A.) Fetch the dependency's
-            # body (memoised) and check its depends-on: line.
+            # body (memoised) and check its depends-on: token (unanchored,
+            # same as the dep parse above — fleet-ops#5107).
             if [[ -n "${_dep_body_cache[$dep_key]:-}" ]]; then
                 dep_body="${_dep_body_cache[$dep_key]}"
             else
                 dep_body="$(gh issue view "$target_num" -R "${owner}/${rname}" --json body --jq '.body // ""' 2>/dev/null || true)"
                 _dep_body_cache[$dep_key]="$dep_body"
             fi
-            if printf '%s\n' "$dep_body" | grep -E '^depends-on:' \
+            if printf '%s\n' "$dep_body" | grep -oE 'depends-on:.*' \
                 | grep -qE "#${num}\b|${repo}#${num}\b"; then
                 echo "depends-on-cycle"
                 return 1

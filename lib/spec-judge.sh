@@ -438,6 +438,8 @@ spec_judge_apply() {
 # The marker comment is added last.
 spec_judge_apply_edit_issue() {
     local full_repo="$1" n="$2" sha="$3" bullets="$4" order="$5"
+    local -a dep_nums=()
+    local needs_orch=0 none_re='^[[:space:][:punct:]]*none([^[:alnum:]_]|$)'
 
     # Fetch the current body.
     local body
@@ -459,6 +461,49 @@ spec_judge_apply_edit_issue() {
             binding+="$bullet"$'\n'
         fi
     done <<<"$bullets"
+
+    # fleet-ops#5107: a judge-added dependency left in a binding bullet must
+    # reach the structured depends-on: line — intake keys on the depends-on:
+    # token, and a bullet like "add `depends-on: #2359`" left the structured
+    # line at `none` so the ticket was claimed anyway. Per bullet, extract
+    # every #<n> that appears after a depends-on: token (unanchored — the
+    # token usually sits mid-bullet in backticks):
+    #   - refs found -> rewrite `depends-on: none` to carry them (same
+    #     conservative rule as the landing-order rewrite below: replace
+    #     `none` only, never overwrite a real value). Runs BEFORE the
+    #     landing-order rewrite so an explicit judge dep wins over the
+    #     inferred predecessor.
+    #   - a depends-on: fragment naming no #<n> (a lens ref like "the R1
+    #     ticket", judged on the last token's value so a quoted
+    #     `depends-on: none` mention earlier in the bullet does not mask
+    #     it) -> no number exists to write; the issue parks on
+    #     `blocked-on: orchestrator` below instead of being claimed.
+    if [[ -n "$binding" ]]; then
+        local bline tail_frag last_frag
+        while IFS= read -r bline; do
+            [[ "$bline" == *depends-on:* ]] || continue
+            tail_frag="${bline#*depends-on:}"
+            last_frag="${bline##*depends-on:}"
+            local had_ref=0 dref
+            while IFS= read -r dref; do
+                [[ -n "$dref" ]] || continue
+                dep_nums+=("${dref#\#}")
+                had_ref=1
+            done < <(printf '%s\n' "$tail_frag" | grep -oE '#[0-9]+' || true)
+            if (( had_ref == 0 )) && [[ ! "$last_frag" =~ $none_re ]]; then
+                needs_orch=1
+            fi
+        done <<<"$binding"
+    fi
+    if (( ${#dep_nums[@]} > 0 )) \
+        && [[ "$body" =~ (^|$'\n')depends-on:[[:space:]]*none[[:space:]]*($|$'\n') ]]; then
+        local dep_list="" dn
+        for dn in $(printf '%s\n' "${dep_nums[@]}" | sort -un); do
+            dep_list+="${dep_list:+, }#${dn}"
+        done
+        body="$(printf '%s\n' "$body" | sed -E "s/^depends-on:[[:space:]]*none[[:space:]]*\$/depends-on: ${dep_list}/")"
+        applied=1
+    fi
 
     # Rewrite depends-on: none -> depends-on: #<predecessor> from the
     # landing order (conservative: never overwrite a real depends-on, which
@@ -483,6 +528,23 @@ spec_judge_apply_edit_issue() {
     if [[ -n "$binding" ]]; then
         body+="$(printf '\n\n## Judge edits (binding)\n\n%s' "$binding")"
         applied=1
+    fi
+
+    # fleet-ops#5107: a binding dependency naming no #<n> cannot be written
+    # into the structured line, so park the issue on the orchestrator sweep
+    # instead of leaving it claimable: `blocked-on: orchestrator` is a
+    # permanent live blocker for the intake blocked_filter, and the
+    # needs-orchestrator label routes the issue into the decision drain
+    # (fleet-ops#4260) which resolves the ref. Cheaper than resolving lens
+    # refs to issue numbers at apply time — the verdict carries no
+    # ref -> issue-number map.
+    if (( needs_orch == 1 )); then
+        body+=$'\n\nblocked-on: orchestrator'
+        applied=1
+        "$GH" issue edit "$n" -R "$full_repo" \
+            --remove-label agent-ready \
+            --add-label agent-blocked --add-label needs-orchestrator \
+            >/dev/null 2>&1 || true
     fi
 
     # Push the body back if anything changed.
