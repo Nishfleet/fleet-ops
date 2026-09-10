@@ -318,6 +318,46 @@
         }
       ]
     },
+    "opencode-go": {
+      "baseUrl": "https://opencode.ai/zen/go/v1",
+      "api": "openai-completions",
+      "apiKey": "!cut -d= -f2 /home/nish/fleet2/etc/opencode-go.env",
+      "headers": {
+        "x-opencode-session": "!cat /proc/sys/kernel/random/uuid"
+      },
+      "compat": {
+        "thinkingTokenBudgetField": "thinking_token_budget"
+      },
+      "models": [
+        {
+          "id": "deepseek-flash",
+          "name": "DeepSeek V4.1 Flash via OpenCode Go (subscription; Nish 2026-09-10: go ham for 4 days)",
+          "contextWindow": 1000000,
+          "maxTokens": 65536,
+          "reasoning": true
+        },
+        {
+          "id": "deepseek-v4-flash",
+          "name": "DeepSeek V4 Flash via OpenCode Go",
+          "contextWindow": 1000000,
+          "maxTokens": 65536,
+          "reasoning": true
+        },
+        {
+          "id": "deepseek-v4-pro",
+          "name": "DeepSeek V4 Pro via OpenCode Go",
+          "contextWindow": 1000000,
+          "maxTokens": 65536,
+          "reasoning": true
+        },
+        {
+          "id": "glm-5.3",
+          "name": "GLM 5.3 via OpenCode Go",
+          "contextWindow": 200000,
+          "maxTokens": 65536
+        }
+      ]
+    },
     "ollama": {
       "baseUrl": "https://ollama.com/v1",
       "api": "openai-completions",
@@ -500,78 +540,6 @@
           "maxTokens": 128000
         }
       ]
-    },
-    "straitly": {
-      "name": "Straitly (alpha, $50 gift credit)",
-      "baseUrl": "https://api.straitly.ai/v1",
-      "api": "openai-completions",
-      "apiKey": "!sed -n 's/^STRAITLY_API_KEY=//p' /home/nish/.config/straitly/straitly.env",
-      "models": [
-        {
-          "id": "deepseek/deepseek-v4-pro",
-          "name": "DeepSeek V4 Pro (Straitly escalation)",
-          "reasoning": true,
-          "input": [
-            "text",
-            "image"
-          ],
-          "contextWindow": 350000,
-          "maxTokens": 32768,
-          "cost": {
-            "input": 0.4225,
-            "output": 0.845,
-            "cacheRead": 0.0356,
-            "cacheWrite": 0.4225
-          },
-          "thinkingLevelMap": {
-            "minimal": "low",
-            "low": "low",
-            "medium": "medium",
-            "high": "high",
-            "xhigh": "xhigh",
-            "max": "max"
-          }
-        },
-        {
-          "id": "gpt-5.6-sol",
-          "name": "GPT-5.6 Sol (Straitly)",
-          "reasoning": true,
-          "input": [
-            "text",
-            "image"
-          ],
-          "contextWindow": 1050000,
-          "maxTokens": 32000,
-          "cost": {
-            "input": 2.5,
-            "output": 15.0,
-            "cacheRead": 0.25,
-            "cacheWrite": 3.125
-          }
-        },
-        {
-          "id": "qwen/qwen3.8-max",
-          "name": "Qwen3.8 Max (Straitly)",
-          "reasoning": true,
-          "input": [
-            "text",
-            "image"
-          ],
-          "contextWindow": 350000,
-          "maxTokens": 32768,
-          "cost": {
-            "input": 2.0,
-            "output": 6.0,
-            "cacheRead": 0.25,
-            "cacheWrite": 2.5
-          }
-        }
-      ],
-      "compat": {
-        "thinkingFormat": "openrouter",
-        "supportsReasoningEffort": true,
-        "thinkingTokenBudgetField": "thinking_token_budget"
-      }
     },
     "xai-oauth": {
       "name": "xAI (SuperGrok Subscription)",
@@ -909,6 +877,38 @@
         "supportsReasoningEffort": true
       },
       "_comment_4453": "fleet-ops#4453: Pareto Inference Pareto Pass (https://docs.paretoinference.com/, https://docs.paretoinference.com/api-reference.md, base https://api.paretoinference.com/v1, OpenAI chat-completions, Authorization: Bearer). $3/week, up to $20 of model usage each day. Rate card (https://docs.paretoinference.com/pareto-pass.md) per 1M tokens: deepseek-v4-flash $0.081 in / $0.162 out / $0.016 cached; glm-5.3-flash $0.075 / $0.25 / $0.015; glm-5.3 $2.80 / $8.80 / $0.52. Live probe 2026-09-08T04:04Z: both flash models HTTP 200; usage carries cost, cost_details, cached_tokens, reasoning_tokens. compat.maxTokensField=max_tokens because the API 400s if both max_tokens and max_completion_tokens are sent (api-reference.md). reasoning_effort:low for workers (output is 2x input price; reasoning tokens bill as output), max_tokens 8192. glm-5.3 is registered (so enumerate_seats emits it) but capped at 0 in seat-caps.json — 35x the flash price, never a worker. pi-issue-run passes --no-context-files --thinking low on this provider (context is the cost; no AGENTS.md dump). Session call ceiling 40: pi has no --max-turns (mechanism-impossible as a hard kill without a new watcher); hang-watchdog + first-20-sessions prompt_tokens/call measurement is the observe path."
+    },
+    "pgsgrove": {
+      "name": "PGSGrove",
+      "baseUrl": "https://api.pgsgrove.com/v1",
+      "api": "openai-completions",
+      "apiKey": "!cut -d= -f2 /home/nish/fleet2/etc/pgsgrove.env",
+      "models": [
+        {
+          "id": "glm-5.3-flash",
+          "name": "GLM 5.3 Flash via PGSGrove",
+          "contextWindow": 1048576,
+          "maxTokens": 8192,
+          "reasoning": false,
+          "input": [
+            "text"
+          ],
+          "cost": {
+            "input": 0.1,
+            "output": 0.33,
+            "cacheRead": 0.02,
+            "cacheWrite": 0
+          },
+          "samplingParams": {
+            "reasoning_effort": "low"
+          }
+        }
+      ],
+      "compat": {
+        "maxTokensField": "max_tokens",
+        "supportsReasoningEffort": true
+      },
+      "_comment_20260910": "Nish handed key+base 2026-09-10 for glm-5.3-flash. Live probe 2026-09-10T08:20Z: /v1/models 200 (34 ids incl glm-5.3-flash, deepseek-v4-flash, kimi-k3); every chat/completions and /v1/responses call = HTTP 402 insufficient_quota on all models. NOT in litellm-proxy.yaml until one real 200 completion is proven (dead deployment in the router = 2026-09-09 zero-healthy incident). cost 0 placeholders until rate card known; contextWindow unverified. Rate card from /v1/models pricing 2026-09-10: glm-5.3-flash $0.10 in / $0.33 out / $0.02 cached per 1M, context 1048576, max_output 32768 (capped 8192 here). METERED credits (site: 'per-token access starts at $5'); pricier than Pareto Pass glm-5.3-flash ($0.075/$0.25)."
     },
     "litellm": {
       "name": "LiteLLM proxy (fleet seat routing, fleet-ops#4130 P2+P3a)",

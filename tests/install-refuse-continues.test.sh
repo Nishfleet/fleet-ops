@@ -116,3 +116,82 @@ target=$(readlink -f "$scratch/home/nish/.config/systemd/user/example.service")
 [[ "$out" == *"REFUSE:"* ]] || fail "expected a REFUSE line, got:\n$out"
 
 ok "install.sh continues after non-fatal config REFUSE and a later unit is retargeted (fleet-ops#4223)"
+
+# ---------------------------------------------------------------------------
+# Scenario 2 — escaping-only JSON difference (fleet-ops#4894).
+# The live models.json is rewritten by an EXTERNAL python json.dump without
+# ensure_ascii=False, which re-escapes non-ASCII to \uXXXX. Same JSON content,
+# different bytes. A byte-only comparator refuses forever; the content-
+# equivalent comparator must treat them as equal, overwrite live with the repo
+# copy, and NOT emit a NONFATAL REFUSE.
+#
+# Self-contained: its own scratch dir + trap, reusing the fake canonical dir,
+# workspaces root, stub systemctl, and HOME pattern above.
+test_json_escaping() {
+    local scratch2 ws_root2 canon2 stub2 rc out
+    scratch2="$(mktemp -d -t install-json-escape.XXXXXX)"
+    trap 'rm -rf "$scratch2"' RETURN
+
+    local install="$scratch2/install.sh"
+    cp -a "$install_src" "$install"
+    chmod +x "$install"
+
+    ws_root2="$scratch2/workspaces"
+    canon2="$ws_root2/tooling/fleet-ops-deploy-clone"
+    mkdir -p "$canon2" "$scratch2/config" "$scratch2/systemd" \
+             "$scratch2/home/nish/.pi/agent" \
+             "$scratch2/home/nish/.config/systemd/user"
+
+    # Repo copy: valid UTF-8 JSON containing a non-ASCII char.
+    printf '{"providers":{"devin":{"name":"Rosé","cap":3}}}' \
+        >"$scratch2/config/pi-models.json"
+
+    # Live copy: SAME JSON but the non-ASCII char is \u-escaped. Written
+    # AFTER a sleep so it is newer than the repo copy (mtime guard fires).
+    sleep 1
+    printf '{"providers":{"devin":{"name":"Ros\\u00e9","cap":3}}}' \
+        >"$scratch2/home/nish/.pi/agent/models.json"
+
+    cat >"$scratch2/MANIFEST" <<MANIFEST
+config/pi-models.json $scratch2/home/nish/.pi/agent/models.json
+MANIFEST
+
+    stub_systemctl="$scratch2/stub-systemctl.sh"
+    cat >"$stub_systemctl" <<'STUB'
+#!/usr/bin/env bash
+case "$*" in
+  *"is-enabled"*) echo "disabled"; exit 0 ;;
+  *"is-active --quiet"*) exit 1 ;;
+  *"enable"*) exit 0 ;;
+  *) exit 0 ;;
+esac
+STUB
+    chmod +x "$stub_systemctl"
+
+    set +e
+    out=$(
+      HOME="$scratch2/home" \
+      FLEET_OPS_WORKSPACES_ROOT="$ws_root2" \
+      FLEET_OPS_CANONICAL_CHECKOUT="$canon2" \
+      SYSTEMCTL="$stub_systemctl" \
+        "$install" 2>&1
+    )
+    rc=$?
+    set -e
+
+    # Escaping-only diff is NOT a refusal: installer exits 0.
+    [[ "$rc" -eq 0 ]] \
+      || fail "escaping-only diff must NOT refuse; install rc=$rc\n$out"
+
+    # No NONFATAL REFUSE marker at all.
+    [[ "$out" != *"NONFATAL REFUSE"* ]] \
+      || fail "escaping-only diff must not emit NONFATAL REFUSE:\n$out"
+
+    # The live models.json got overwritten with the repo copy's content.
+    [[ "$(cat "$scratch2/home/nish/.pi/agent/models.json")" \
+        == '{"providers":{"devin":{"name":"Rosé","cap":3}}}' ]] \
+      || fail "live models.json not overwritten with repo content; got:\n$(cat "$scratch2/home/nish/.pi/agent/models.json")"
+
+    ok "escaping-only JSON diff treated as equivalent and overwritten without REFUSE (fleet-ops#4894)"
+}
+test_json_escaping

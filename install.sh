@@ -184,6 +184,22 @@ live_target_is_noncanonical() {
   return 1
 }
 
+# Returns 0 if two files are content-equivalent. Byte-equal passes; otherwise
+# fall back to semantically equal JSON (fleet-ops#4894). The live file is
+# rewritten by an EXTERNAL python json.dump without ensure_ascii=False that
+# re-escapes non-ASCII to \uXXXX — same JSON content, different bytes — so a
+# byte-only compare refuses forever. jq -S normalises key order and JSON
+# escaping. Non-JSON files and missing jq degrade to byte-compare (safe); real
+# structural diffs still reflect and refuse.
+content_equivalent() {
+    local a=$1 b=$2 norm_a norm_b
+    if cmp -s "$a" "$b" 2>/dev/null; then return 0; fi
+    command -v jq >/dev/null 2>&1 || return 1
+    norm_a=$(jq -S . "$a" 2>/dev/null) || return 1
+    norm_b=$(jq -S . "$b" 2>/dev/null) || return 1
+    [ "$norm_a" = "$norm_b" ]
+}
+
 # Returns 0 if dest exists and its live target is a different file whose
 # mtime is newer than the repo copy AND whose content differs from the repo
 # copy. A newer, byte-identical file is not a hot-patch; it is only newer
@@ -205,8 +221,9 @@ live_newer_than_repo() {
     live_m=$(stat -c %Y "$live" 2>/dev/null || echo 0)
     repo_m=$(stat -c %Y "$repo" 2>/dev/null || echo 0)
     [ "$live_m" -gt "$repo_m" ] || return 1
-    if cmp -s "$live" "$repo" 2>/dev/null; then
-        # Byte-identical: re-sync mtime to the repo copy and do not refuse.
+    if content_equivalent "$live" "$repo"; then
+        # Content-equivalent (byte-identical or semantically equal JSON):
+        # re-sync mtime to the repo copy and do not refuse.
         # For a regular file at $dest this makes the guard cheap next time;
         # for a symlink the install below will replace it with the repo link.
         if [ -f "$dest" ] && [ ! -L "$dest" ]; then
