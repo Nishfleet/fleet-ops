@@ -1189,6 +1189,13 @@ bash "$here/fleet-failed-command-fresh-debug-script.test.sh" || fail "fleet-fail
 # repository` and exit 128. The next assistant turn is a recovery
 # toolCall with no user-facing flag. Same CI constraint.
 bash "$here/fleet-failed-command-cd-non-git-repo.test.sh" || fail "fleet-failed-command-cd-non-git-repo tests failed"
+# fleet-ops#849: `cd <worktree> && git branch -f <branch> origin/main` on
+# the very branch that worktree has checked out exits 128 with
+# `fatal: cannot force update the branch '<branch>' used by worktree at
+# '<path>'`. The next assistant turn is a recovery toolCall with no
+# user-facing flag. Same CI constraint (worker token cannot add a P14
+# line); this file is the listed CI host.
+bash "$here/fleet-failed-command-git-branch-cannot-force-update.test.sh" || fail "fleet-failed-command-git-branch-cannot-force-update tests failed"
 # fleet-ops#486: heartbeat wrapper rc capture. Same CI constraint.
 bash "$here/fleet-heartbeat-rc-propagation.test.sh" || fail "fleet-heartbeat-rc-propagation tests failed"
 # fleet-ops#653: same `if ! cmd; then rc=$?` class in siterep-deploy-rollback.

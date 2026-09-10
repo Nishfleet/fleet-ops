@@ -459,3 +459,9 @@ fi
 # fails if this P14 test (or any other) re-introduces a live verify call.
 
 ok "agent-cron seat rotation: gate replaced by pick_seat, transient 429 routes to alt, fully-walled fails loud"
+
+# auditor-finding-B (2026-08-26): agent-cron-run defaulted WORKDIR to
+# $HOME when the unit env was absent, silently running the product cron
+# against $HOME. This locks the fail-closed guard. Workers cannot add a
+# P14 line in .github/workflows/ci.yml; this file is the listed CI host.
+bash "$here/agent-cron-workdir-guard.test.sh" || fail "agent-cron-workdir-guard tests failed"
