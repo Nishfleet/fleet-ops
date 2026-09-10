@@ -295,4 +295,29 @@ files=$(grep -c 'fleet-issue-file' "$FILE_CALLS" || true)
     || fail "(e) ISO-start must invoke fleet-issue-file once, got $files: $(cat "$FILE_CALLS")"
 ok "(e) ISO 8601 start also works (backward-compat): FILED exactly one"
 
+# --- (f) ISO 8601 start WITH fractional milliseconds + Z (live AMX shape) -------
+# Live Alertmanager (http://127.0.0.1:9093/api/v2/alerts?active=true) sends
+# startsAt like "2026-09-08T09:51:03.742Z" — ISO 8601 with .fff fraction and
+# trailing Z. The parser's _slowburn_firing_seconds handles this via its
+# s[:19] fallback, but no test locked the exact live shape. Two bugs (#4998,
+# #5012) were timestamp-shape mismatches — lock it so a future ms regression
+# is caught. Fixed past literal is fine: >1h elapsed is a lower-bound check.
+reset_log
+GH_LIST_JSON="[]"
+live_amx_start="2026-09-08T09:51:03.742Z"
+fire_slowburn "$live_amx_start"; rc=$?
+[[ "$rc" == 0 ]] || fail "(f) live-AMX-ms-start dispatch must exit 0, got rc=$rc (stderr: $(cat "$scratch/sb.err"))"
+filed=$(grep -c '\] FILED ' "$PACKET_DIR/actions.log" || true)
+[[ "$filed" == "1" ]] \
+    || fail "(f) live-AMX-ms-start long-firing must FILE exactly one, got $filed: $(cat "$PACKET_DIR/actions.log")"
+files=$(grep -c 'fleet-issue-file' "$FILE_CALLS" || true)
+[[ "$files" == "1" ]] \
+    || fail "(f) live-AMX-ms-start must invoke fleet-issue-file once, got $files: $(cat "$FILE_CALLS")"
+spawns=$(grep -c 'mock-pi-systemd-run args=' "$MOCK_LOG" || true)
+[[ "$spawns" == "0" ]] \
+    || fail "(f) live-AMX-ms-start must NOT spawn a worker (skip-list stays), got $spawns"
+disps=$(grep -c '\] DISPATCH ' "$PACKET_DIR/actions.log" || true)
+[[ "$disps" == "0" ]] || fail "(f) live-AMX-ms-start must NOT add a DISPATCH line, got $disps"
+ok "(f) ISO 8601 start with fractional ms + Z (live AMX shape): FILED exactly one"
+
 echo "OK: fleet-ops#4773 slowburn file-or-link both directions + idempotence pass"
