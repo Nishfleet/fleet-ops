@@ -648,9 +648,18 @@ def reconcile(
             # to an unrelated issue and return its URL. Verify the returned
             # issue's title carries the signal key; on mismatch emit a LOUD
             # FILED-LINK-MISMATCH so the wrong pointer can never satisfy
-            # observe-to-close next tick.
+            # observe-to-close next tick. On mismatch, REFUND the cap slot
+            # (a wrong pointer must not consume the auto-file cap and starve
+            # legitimate signals -> capped -> reconcile rc=1) and STOP filing
+            # for the rest of this tick: the dedupe gate is misrouting, so
+            # continuing would only pile comments onto the same wrong issue.
+            # The mismatched signals retry next tick (fleet-ops#4857 class).
             if verify_filed_signal(repo, out, sig, gh, dry_run, triage):
                 summary["filed_mismatches"] = summary.get("filed_mismatches", 0) + 1
+                filed_count -= 1
+                summary["filed"] -= 1
+                log(f"FILED-LINK-MISMATCH on {sig} -> {out}; refunding cap slot and stopping filing for this tick (dedupe misrouting)")
+                break
         else:
             log(f"WARN: failed to file {sig} (rc={rc}): {out}")
 

@@ -415,13 +415,18 @@ env "${common_env[@]}" FAKE_GH_VIEW_TITLE="claude OAuth quota meter silently dea
     python3 "$lib" --triage "$tmp/triage12.md" --tick-start "2026-08-28T13:30:00Z" \
     --ok-to-close 1 --json --now "2026-08-28T13:45:00Z" 2>"$tmp/stderr12a.json" \
     > "$tmp/summary12a.json" || true
-jq -e '.filed == 1' "$tmp/summary12a.json" >/dev/null \
-    || fail "scenario 12a: expected one filed (got: $(cat "$tmp/summary12a.json"))"
+# A wrong-pointer filing is REFUNDED (not counted as a successful file) so it
+# cannot consume the auto-file cap and starve legitimate signals (fleet-ops#4857
+# class). filed==0, filed_mismatches==1, capped==0.
+jq -e '.filed == 0' "$tmp/summary12a.json" >/dev/null \
+    || fail "scenario 12a: expected filed==0 (refunded mismatch) (got: $(cat "$tmp/summary12a.json"))"
 jq -e '.filed_mismatches == 1' "$tmp/summary12a.json" >/dev/null \
     || fail "scenario 12a: expected filed_mismatches==1 (got: $(cat "$tmp/summary12a.json"))"
+jq -e '.capped == 0' "$tmp/summary12a.json" >/dev/null \
+    || fail "scenario 12a: expected capped==0 (mismatch refunded, cap not consumed) (got: $(cat "$tmp/summary12a.json"))"
 grep -q 'FILED-LINK-MISMATCH' "$tmp/stderr12a.json" \
     || fail "scenario 12a: expected LOUD FILED-LINK-MISMATCH on stderr"
-ok "scenario 12a: wrong-title filed pointer -> LOUD FILED-LINK-MISMATCH + counter"
+ok "scenario 12a: wrong-title filed pointer -> LOUD FILED-LINK-MISMATCH + refunded cap slot"
 
 # 12b. matching title -> no LOUD, no mismatch counter.
 true > "$tmp/filed.jsonl"
