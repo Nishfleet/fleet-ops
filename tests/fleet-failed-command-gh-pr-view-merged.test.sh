@@ -199,4 +199,19 @@ grep -Fq 'bash "$here/fleet-failed-command-gh-pr-view-merged.test.sh"' \
   || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
 ok "seat-lib.test.sh hosts this file"
 
+# --- 9. prompts/worker.md cites mergeQueueEntry + correct alternative -------
+# fleet-ops#4884: 35 worker sessions tried `gh pr view --json mergeQueueEntry`
+# (not a field) and swallowed the resulting Unknown JSON field failure. The
+# prompt-side lock ensures worker.md names the invalid field and the valid
+# alternatives (autoMergeRequest / mergeStateStatus) so workers stop guessing.
+grep -q 'mergeQueueEntry' "$worker" \
+  || fail "prompts/worker.md must name mergeQueueEntry as an invalid field (fleet-ops#4884)"
+grep -q 'autoMergeRequest' "$worker" \
+  || fail "prompts/worker.md must name autoMergeRequest as the valid alternative (fleet-ops#4884)"
+grep -q 'mergeStateStatus' "$worker" \
+  || fail "prompts/worker.md must name mergeStateStatus as the valid alternative (fleet-ops#4884)"
+grep -q 'fleet-ops#4884' "$worker" \
+  || fail "prompts/worker.md must cite fleet-ops#4884 (prompt-side lock)"
+ok "worker.md cites mergeQueueEntry + autoMergeRequest/mergeStateStatus (fleet-ops#4884)"
+
 echo "OK: fleet-failed-command-gh-pr-view-merged: live #1244 unpiped --json merged drills"
