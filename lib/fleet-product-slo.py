@@ -20,6 +20,8 @@ Metric family:
   fleet_product_activated_24h                     signups with first brief ≤5min
   fleet_product_paying_customers_total            users on a non-free plan
   fleet_product_briefs_delivered_24h              sent deliveries / 24h
+  fleet_product_table_rows{table="..."}          business-table row census
+                                                 (0509 D1, fleet-ops#5000)
   fleet_product_slo_last_run_seconds             organ heartbeat (always)
 
 The last four (fleet-ops#4456) are the product OUTCOME half — merges are
