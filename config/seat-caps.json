@@ -37,14 +37,14 @@
     "devin": {
       "quota_window": "daily",
       "_quota_window_4640": "2026-09-09 fleet-ops#4640: devin declared NO quota_window, so provider_wall_ceiling_s (fleet-ops#2563) returned 0 and NOTHING bounded a quota wall. A bare 429 (retry_after=null) at consecutive_failure_count=23 took the failure-ceiling park wall to (23-20+1)*86400 = 345600s = 4 DAYS on the fleet's primary heavy-capable prepaid seat, while the Devin account still had 81% of its weekly / 84% of its daily quota unused. devin was the last heavy-capable provider: pick_seat returned NO USABLE SEAT for every packet, 0 live workers against 51 ready issues, and a 1-turn `pi --print` to both devin seats answered OK rc=0 the whole time. Devin meters daily, so the reset horizon is daily.",
-      "cap": 4,
+      "cap": 2,
       "class": "prepaid-quota",
       "remote_agent": true,
       "max_probe_ceiling": 4,
       "quota_bench_default_s": 900,
       "models": {
         "glm-5-2": {
-          "cap": 3,
+          "cap": 2,
           "max_probe_ceiling": 3
         },
         "swe-1-7": {
@@ -61,7 +61,9 @@
       "_devin_remote_2026_09_05": "2026-09-05 fleet-ops#3531: devin is a remote agent (remote_agent: true). Its sessions complete without local tool calls, so empty-run detection judges by session outcome (exit 0, stdout under OUT_MIN, no pull/<n> URL) rather than local tool count. A false empty run on this prepaid seat is capped at 1800 s.",
       "_swe17_20260905": "2026-09-05 CORRECTION (orchestrator): the fable-check retirement read n=20 pr_count=0 from seat-yield.json, but every one of those sessions was an INFRASTRUCTURE death: rc=143/1801s from the devin-provider 30-min spawnSync timeout (raised to 40 min 09:20 IST) and resource_exhausted concurrency errors the detectors could not see until #3443/#3475. Working yield measured before the poisoning: 80% sessions-to-PR. Infra deaths never count as seat yield (#3250/#3310). cap 4 / probe 4 (ceiling==cap while pinned, #3443).",
       "tick_spawn_cap": 2,
-      "_tick_spawn_cap_3690": "fleet-ops#3690: at most 2 new devin sessions per intake tick (5 spawns at once after a learned-caps reset all died rc=143 in <30s). pick_seat skips devin seats once the per-tick counter hits this; the intake tick resets the counter at the start of each tick."
+      "_tick_spawn_cap_3690": "fleet-ops#3690: at most 2 new devin sessions per intake tick (5 spawns at once after a learned-caps reset all died rc=143 in <30s). pick_seat skips devin seats once the per-tick counter hits this; the intake tick resets the counter at the start of each tick.",
+      "_note_cap2": "Nish 2026-09-10 15:05 IST: \"cap devin glm 5.2 at 2\" (was higher).",
+      "hard_ceiling": true
     },
     "cursor": {
       "cap": 2,
@@ -546,18 +548,18 @@
       "_litellm_p3b_20260908": "2026-09-08 (fleet-ops#4425): all five LiteLLM model groups (judge, worker-cheap, worker-capable, senior, worker-private) registered at cap 0 with intentional_cap_zero=p3b_pending, pending the P3b PI_SEAT_SOURCE=litellm switchover in #4422. Proxy /health/readiness probe healthy; live seat map had zero litellm seats (grep -c litellm = 0) at the decision run. group names mirror config/pi-models.json providers.litellm.models. worker group caps become operational when the #4422 deletion enables LiteLLM routing (see rule-enforcement row led-2026-09-08-litellm-p3b)."
     },
     "opencode-go": {
-      "cap": 8,
+      "cap": 10,
       "class": "prepaid-quota",
       "quota_window": "monthly",
       "max_probe_ceiling": 12,
       "quota_bench_default_s": 900,
       "models": {
-        "deepseek-flash": 8,
+        "deepseek-flash": 10,
         "deepseek-v4-flash": 0,
         "deepseek-v4-pro": 0,
         "glm-5.3": 0
       },
-      "_note": "Nish 2026-09-10 14:30 IST: 'go ham on opencode ds4.1 flash - virtually unlimited for the next 4 days'. OpenCode Go subscription endpoint https://opencode.ai/zen/go/v1 (x-opencode-session header per request; Pi provider opencode-go, key at fleet2/etc/opencode-go.env). deepseek-flash = DeepSeek V4.1 Flash (models.dev release 2026-09-10). Live Pi test 2026-09-10 09:15Z tools=1 class=worked. FIRST in every order until 2026-09-14, then restore the 2026-08-27 volume order (ollama -> devin -> commandcode -> cline). Straitly wiped the same day (fleet-ops#4887)."
+      "_note": "Nish 2026-09-10 14:30 IST: 'go ham on opencode ds4.1 flash - virtually unlimited for the next 4 days'. OpenCode Go subscription endpoint https://opencode.ai/zen/go/v1 (x-opencode-session header per request; Pi provider opencode-go, key at fleet2/etc/opencode-go.env). deepseek-flash = DeepSeek V4.1 Flash (models.dev release 2026-09-10). Live Pi test 2026-09-10 09:15Z tools=1 class=worked. FIRST in every order until 2026-09-14, then restore the 2026-08-27 volume order (ollama -> devin -> commandcode -> cline). Straitly wiped the same day (fleet-ops#4887). Nish 2026-09-10 15:05 IST: \"can go upto 10 ds4.1 flash\" -> cap 10."
     }
   },
   "product_order": "value",
