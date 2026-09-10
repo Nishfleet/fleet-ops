@@ -119,8 +119,8 @@ ok "product_order=value, volume order retired, devin AIMD not hard_ceiling with 
 prepaid_order=$(jq -r '.prepaid_providers_in_order | join(" ")' "$caps")
 # 2026-09-08 (fleet-ops#4453): paretoinference lands first among prepaid - Pareto Inference seat with $20/day spend meter.
 # 2026-09-08 (fleet-ops#4558): Nish 2026-09-07 standing order — '4 devin seats always working' — moves devin to the FRONT of the ladder; paretoinference takes overflow after devin's cap.
-[[ "$prepaid_order" == "devin paretoinference ollama cline cursor alibaba-coding xai-oauth crof runinfra entrim" ]] \
-  || fail "prepaid order must be 'devin paretoinference ollama cline cursor alibaba-coding xai-oauth crof runinfra entrim', got: $prepaid_order"
+[[ "$prepaid_order" == "opencode-go devin paretoinference ollama cline cursor alibaba-coding xai-oauth crof runinfra entrim" ]] \
+  || fail "prepaid order must be 'opencode-go devin paretoinference ollama cline cursor alibaba-coding xai-oauth crof runinfra entrim', got: $prepaid_order"
 
 devin_cap=$(jq -r '.providers.devin.cap // empty' "$caps")
 [[ -n "$devin_cap" ]] || fail "devin cap must be present, got: empty"
@@ -131,7 +131,7 @@ entry_has_dated_reason '.providers.devin' \
 devin_class=$(jq -r '.providers.devin.class // empty' "$caps")
 [[ "$devin_class" == "prepaid-quota" ]] || fail "devin class must be prepaid-quota, got: $devin_class"
 
-ok "prepaid order ollama devin cline cursor alibaba-coding xai-oauth runinfra crof entrim; devin cap carries a dated reason, class prepaid-quota"
+ok "prepaid order opencode-go devin paretoinference ollama cline cursor alibaba-coding xai-oauth crof runinfra entrim (opencode-go first, Nish 2026-09-10 fleet-ops#4889); devin cap carries a dated reason, class prepaid-quota"
 
 # --- alibaba-coding: no worker use of ANY alibaba model (fleet-ops#4445 re-scope) ---
 # Nish 2026-09-08: qwen3.8-max is a judge on the roster ONLY; no worker use of
@@ -229,8 +229,8 @@ ok "walled_comeback table is present with positive-integer clocks and a dated co
 # --- free lanes: bai/commandcode/hetzner/opencode + xkiro (free-tier audition, 2026-09-05) ---
 # leftover free after the volume prefix (b.ai wired 2026-08-27, fleet-ops#1272)
 free_order=$(jq -r '.free_providers_in_order | join(" ")' "$caps")
-[[ "$free_order" == "bai commandcode hetzner opencode xkiro" ]] \
-  || fail "free order must be 'bai commandcode hetzner opencode xkiro', got: $free_order"
+[[ "$free_order" == "opencode-go bai commandcode hetzner opencode xkiro" ]] \
+  || fail "free order must be 'opencode-go bai commandcode hetzner opencode xkiro', got: $free_order"
 
 # prepaid and metered providers must not appear as free lanes
 for p in devin cursor cline ollama xai-oauth grok minimax straitly zenmux openrouter; do

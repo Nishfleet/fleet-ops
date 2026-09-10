@@ -62,8 +62,7 @@
       "_swe17_20260905": "2026-09-05 CORRECTION (orchestrator): the fable-check retirement read n=20 pr_count=0 from seat-yield.json, but every one of those sessions was an INFRASTRUCTURE death: rc=143/1801s from the devin-provider 30-min spawnSync timeout (raised to 40 min 09:20 IST) and resource_exhausted concurrency errors the detectors could not see until #3443/#3475. Working yield measured before the poisoning: 80% sessions-to-PR. Infra deaths never count as seat yield (#3250/#3310). cap 4 / probe 4 (ceiling==cap while pinned, #3443).",
       "tick_spawn_cap": 2,
       "_tick_spawn_cap_3690": "fleet-ops#3690: at most 2 new devin sessions per intake tick (5 spawns at once after a learned-caps reset all died rc=143 in <30s). pick_seat skips devin seats once the per-tick counter hits this; the intake tick resets the counter at the start of each tick.",
-      "_note_cap2": "Nish 2026-09-10 15:05 IST: \"cap devin glm 5.2 at 2\" (was higher).",
-      "hard_ceiling": true
+      "_note_cap2": "Nish 2026-09-10 15:05 IST: \"cap devin glm 5.2 at 2\" (was higher). Enforced as max_probe_ceiling == cap per fleet-ops#3125 (devin is never hard_ceiling; the P14 invariant in tests/seat-lib-aimd.test.sh pins AIMD on, backed off on error)"
     },
     "cursor": {
       "cap": 2,
@@ -352,7 +351,11 @@
       "flat_usd_per_month": null,
       "_rate_card": "fleet-ops#4459 2026-09-08: straitly deepseek/deepseek-v4-pro per-token rate card, measured from config/pi-models.json straitly/models[0] cost: $0.4225/M in / $0.845/M out / $0.0356/M cached (per-1M USD, dated 2026-09-08). class=metered so usd_24h counts marginal spend.",
       "models": {
-        "deepseek/deepseek-v4-pro": 0
+        "deepseek/deepseek-v4-pro": {
+          "cap": 0,
+          "intentional_cap_zero": "wiped",
+          "reason": "2026-09-10 (fleet-ops#4889): Nish decision 'wipe straitly and go ham on opencode ds4.1 flash'. Straitly provider wiped to cap 0 the same day; full provider removal is owned by fleet-ops#4887 (this PR keeps the straitly provider entry intact, only the cap is zero)."
+        }
       },
       "_note": "Nish 2026-08-27 00:30 IST: 'ds4 pro from straitly is fire' \u2014 approved beyond senior-auditor duty into worker rotation. Metered (~$0.42/M in, real card below the quoted 30%-off). Start cap 2 per metered discipline; AIMD raises only with evidence. gpt-5.6-sol RETIRED 2026-09-07 (Nish: retire Sol, do not top up; never a worker; not in this models map). qwen3.8-max not approved. Check the straitly meter within minutes of first draws (never-double-wire rule).",
       "intentional_cap_zero": "wiped"
@@ -555,9 +558,21 @@
       "quota_bench_default_s": 900,
       "models": {
         "deepseek-flash": 10,
-        "deepseek-v4-flash": 0,
-        "deepseek-v4-pro": 0,
-        "glm-5.3": 0
+        "deepseek-v4-flash": {
+          "cap": 0,
+          "intentional_cap_zero": "stale",
+          "reason": "2026-09-10 (fleet-ops#4889): OpenCode Go subscription serves DeepSeek V4.1 Flash as slug deepseek-flash only; the legacy deepseek-v4-flash/deepseek-v4-pro/glm-5.3 slugs are not offered on https://opencode.ai/zen/go/v1 and stay cap 0. Re-audition only if a live spawn on the slug returns content."
+        },
+        "deepseek-v4-pro": {
+          "cap": 0,
+          "intentional_cap_zero": "stale",
+          "reason": "2026-09-10 (fleet-ops#4889): OpenCode Go subscription serves DeepSeek V4.1 Flash as slug deepseek-flash only; the legacy deepseek-v4-flash/deepseek-v4-pro/glm-5.3 slugs are not offered on https://opencode.ai/zen/go/v1 and stay cap 0. Re-audition only if a live spawn on the slug returns content."
+        },
+        "glm-5.3": {
+          "cap": 0,
+          "intentional_cap_zero": "stale",
+          "reason": "2026-09-10 (fleet-ops#4889): OpenCode Go subscription serves DeepSeek V4.1 Flash as slug deepseek-flash only; the legacy deepseek-v4-flash/deepseek-v4-pro/glm-5.3 slugs are not offered on https://opencode.ai/zen/go/v1 and stay cap 0. Re-audition only if a live spawn on the slug returns content."
+        }
       },
       "_note": "Nish 2026-09-10 14:30 IST: 'go ham on opencode ds4.1 flash - virtually unlimited for the next 4 days'. OpenCode Go subscription endpoint https://opencode.ai/zen/go/v1 (x-opencode-session header per request; Pi provider opencode-go, key at fleet2/etc/opencode-go.env). deepseek-flash = DeepSeek V4.1 Flash (models.dev release 2026-09-10). Live Pi test 2026-09-10 09:15Z tools=1 class=worked. FIRST in every order until 2026-09-14, then restore the 2026-08-27 volume order (ollama -> devin -> commandcode -> cline). Straitly wiped the same day (fleet-ops#4887). Nish 2026-09-10 15:05 IST: \"can go upto 10 ds4.1 flash\" -> cap 10."
     }
