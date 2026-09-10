@@ -1049,6 +1049,11 @@ def main():
         "",
         "EXIT CONTRACT: after your fix, re-check `curl -s 127.0.0.1:9090/api/v1/alerts`. If the alert you were dispatched for is no longer firing, exit 0. If it still fires, or you could not repair it, append your full diagnosis to your packet file under '## FAILED-REPAIR CONTEXT' and EXIT NON-ZERO — your unit's failure mechanically escalates to the senior-auditor pipeline, which needs that context. Never exit 0 on an unresolved alert.",
         "",
+        "TRAILING-WINDOW RULE (senior auditor 2026-09-10T15:55Z; alert-repair-FleetOomdKillsHigh-20260910T144950Z timed out waiting for its window to drain): a trailing-window metric — `increase(<counter>[Nh])` or any long-window ratio — CANNOT clear on your fix alone; the pre-fix events must age out. Do NOT wait, sleep or poll for the drain. This unit is killed at RuntimeMaxSec 60 min, and a killed unit trips the dead-man with NO context for the senior auditor, which is strictly worse than an honest non-zero exit.",
+        "Do this instead: append your one-line result to actions.log, append '## FAILED-REPAIR CONTEXT' naming the root cause, the fix, and the PREDICTED CLEAR TIME (oldest in-window event + window length), then finish the turn. Any bounded re-check must be under 5 minutes total.",
+        "",
+        "HOT-PATCH RULE: `~/.local/state/pi-packet/seat-caps.json` and `pi-models.json` are MANIFEST copy-installed files — deploy `install.sh` overwrites them from the repo copy on the next merge, so a live edit there is reverted and shows up as MANIFEST install drift (and resets learned caps). If a fix belongs in one of those files, make it in `config/<file>` in the fleet-ops repo via PR and say so in FAILED-REPAIR CONTEXT; never present a live edit to them as a durable repair.",
+        "",
     ]
     packet.write_text("\n".join(lines))
 
