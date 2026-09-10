@@ -22,17 +22,28 @@
 #                                 (unset = SKIP + LOUD, not a silent pass;
 #                                 a URL shared with another keystone or the
 #                                 heartbeat dead-man is FAIL + LOUD)
-#   7. queue_freeze             — fleet-ops#1453 narrow direct-dispatch lever:
-#                                 replay the live #1453 frozen-queue snapshot
-#                                 (dispatches_last_2h<=1 AND ready_work>50) and
-#                                 assert the launcher ALLOWs the
-#                                 `pi-systemd-run --unit repair-*` line that
-#                                 was SKIPped live. The companion cusp
-#                                 (dispatches=2) MUST SKIP — that is the gate's
-#                                 exclusivity proof, the lever stays bounded
-#                                 to genuine queue death, not a slow drain.
-#                                 Sandbox: scratch OPUS_HB_STATE; the live
-#                                 snapshot is never mutated.
+#   7. queue_freeze             — fleet-ops#1453 narrow direct-dispatch lever.
+#                                 The retired opus-heartbeat launcher (fleet-ops
+#                                 #4141) folded its frozen-queue gate into the
+#                                 hourly fable-fleet-check judge (packet §1d):
+#                                 the gate is `fleet_repair_dispatch_24h <= 1`
+#                                 AND claims silent AND `fleet_ready_work > 50`;
+#                                 anything else is SKIP-NOT-ALLOWLISTED (the
+#                                 only unfrozen lever is `gh issue create`).
+#                                 This plane proves the gate is WITNESSED:
+#                                 (a) the three gate series exist in Prometheus
+#                                 (absent = the judge cannot decide = unwitnessed
+#                                 again — the 2026-09-10 missed-regression class);
+#                                 (b) the gate doc still carries the exclusivity
+#                                 thresholds (drift = gate silently widened);
+#                                 (c) sandbox replay: frozen scratch snapshot
+#                                 (dispatches_last_2h=1 AND ready_work=224) →
+#                                 the narrow `pi-systemd-run --unit repair-*`
+#                                 lever; cusp (dispatches=2) → NOT frozen → the
+#                                 lever MUST SKIP. When the LIVE series says the
+#                                 queue IS frozen, the live verdict must agree
+#                                 with the replay verdict. Sandbox: scratch
+#                                 OPUS_HB_STATE; live state is never mutated.
 #   8. pipeline_red             — fleet-ops#1457 stop-the-line: replay the
 #                                 red-consecutive scenario on a scratch repo
 #                                 and assert the auto-revert layer's HALT
