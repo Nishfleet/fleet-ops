@@ -10,7 +10,7 @@
   "retired_providers": {
     "straitly": {
       "retired": "2026-09-10",
-      "reason": "402 credit exhausted, seat retired (Nish). PR #4950 deleted the providers.straitly row; the live copy kept a hand-wired straitly row (cap 2, class metered) and seat_caps_merge_unknown_providers copied it back on every deploy, so the seat stayed pickable (fleet-ops#4960). A repo-declared providers.straitly row always wins: delete this entry in the same PR that re-adds the row."
+      "reason": "2026-09-10 retired (Nish): 402 credit exhausted. Repo-declared providers.straitly rows win; delete this entry when re-adding the row."
     }
   },
   "ram_gb_per_worker": 1.5,

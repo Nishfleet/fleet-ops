@@ -288,11 +288,18 @@ def load(path):
     providers = data.get("providers")
     if not isinstance(providers, dict):
         sys.exit(1)
-    return providers
+    return data
 
-live, repo = load(sys.argv[1]), load(sys.argv[2])
+live_doc, repo_doc = load(sys.argv[1]), load(sys.argv[2])
+live, repo = live_doc["providers"], repo_doc["providers"]
+retired = repo_doc.get("retired_providers")
+retired = set(retired) if isinstance(retired, dict) else set()
 hits = []
 for name, lprov in live.items():
+    # An explicitly tombstoned provider is an intentional removal
+    # (fleet-ops#4960), not the silent cap lowering #371 guards.
+    if name in retired:
+        continue
     if not isinstance(lprov, dict):
         continue
     rprov = repo.get(name)
@@ -335,6 +342,13 @@ PY
 # lacks — it never lowers a cap — so it is compatible with the #371
 # cap-downgrade guard above. Writes the merged JSON to stdout; on any
 # unparseable input it falls back to the repo copy unchanged.
+# fleet-ops#4960: a repo-level `retired_providers` tombstone suppresses a
+# LIVE-ONLY row, so deleting a provider from config/seat-caps.json actually
+# retires the seat instead of the merge copying it back on every deploy. The
+# tombstone only suppresses a live-only row: a name present in BOTH
+# `.providers` and `retired_providers` keeps the REPO row (the repo is the
+# source of truth — a stale tombstone must never silently delete a repo
+# declaration, or `--check`'s effective table stops describing the repo).
 seat_caps_merge_unknown_providers() {
     local dest=$1 repo=$2
     local live
@@ -362,8 +376,10 @@ if not isinstance(lp, dict) or not isinstance(rp, dict):
     sys.stdout.write(open(sys.argv[2], encoding="utf-8").read())
     sys.exit(0)
 merged = json.loads(json.dumps(repo))
+retired = repo.get("retired_providers")
+retired = set(retired) if isinstance(retired, dict) else set()
 for name, prov in lp.items():
-    if name not in rp:
+    if name not in rp and name not in retired:
         merged["providers"][name] = prov
 json.dump(merged, sys.stdout, indent=2, ensure_ascii=False)
 sys.stdout.write("\n")
