@@ -100,6 +100,12 @@
       "id": "orcarouter",
       "class": "free",
       "note": "OrcaRouter rotating free."
+    },
+    {
+      "id": "opencode-go",
+      "class": "prepaid-quota",
+      "quota_window": "monthly",
+      "note": "OpenCode Go subscription (Nish 2026-09-10): DeepSeek V4.1 Flash as deepseek-flash, first in order until 2026-09-14."
     }
   ]
 }

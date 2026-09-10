@@ -341,7 +341,7 @@
       "_comment_xai_oauth": "fleet-ops#1163 (2026-08-27): SuperGrok prepaid weekly sub, revived via stnly/pi-grok (pi-grok@0.10.1) OAuth provider — different from the api.x.ai 'grok' entry above (which has no live credential). Provider cap=2 (raised from 1 in fleet-ops#3125, expiry-first: the weekly sub drains or it is wasted) with grok-4.6 at model cap 2 (the 86%-yield product lane) and grok-4.5 at 0 (unchanged; the provider cap is occupied by grok-4.6). Subscription-backed $0 marginal — fits the 'prepaid subs run at max utilization' rule (the live weekly meter must move within minutes of any draw, never-double-wire). Pick a $0 marginal prepaid lane over a $1.20/M minimax metered one. The provider must also be present in ~/.pi/agent/models.json (xai-oauth entry with models grok-4.6 + grok-4.5) for enumerate_seats to emit it; the cap map here is the allowlist, models.json is the inventory. If the OAuth token dies the seat-health extension writes a credentials_bad ledger entry and pick_seat skips the seat — no silent 'ready' lie. The pi-grok extension also self-heals the token (auto-refresh on 401), so a transient 403 should be rare; a persistent one is the dead-credential case this row is wired to catch."
     },
     "straitly": {
-      "cap": 2,
+      "cap": 0,
       "class": "metered",
       "usd_per_1m_input": 0.4225,
       "usd_per_1m_output": 0.845,
@@ -349,9 +349,23 @@
       "flat_usd_per_month": null,
       "_rate_card": "fleet-ops#4459 2026-09-08: straitly deepseek/deepseek-v4-pro per-token rate card, measured from config/pi-models.json straitly/models[0] cost: $0.4225/M in / $0.845/M out / $0.0356/M cached (per-1M USD, dated 2026-09-08). class=metered so usd_24h counts marginal spend.",
       "models": {
-        "deepseek/deepseek-v4-pro": 2
+        "deepseek/deepseek-v4-pro": 0
       },
       "_note": "Nish 2026-08-27 00:30 IST: 'ds4 pro from straitly is fire' — approved beyond senior-auditor duty into worker rotation. Metered (~$0.42/M in, real card below the quoted 30%-off). Start cap 2 per metered discipline; AIMD raises only with evidence. gpt-5.6-sol RETIRED 2026-09-07 (Nish: retire Sol, do not top up; never a worker; not in this models map). qwen3.8-max not approved. Check the straitly meter within minutes of first draws (never-double-wire rule)."
+    },
+    "opencode-go": {
+      "cap": 10,
+      "class": "prepaid-quota",
+      "quota_window": "monthly",
+      "max_probe_ceiling": 12,
+      "quota_bench_default_s": 900,
+      "models": {
+        "deepseek-flash": 10,
+        "deepseek-v4-flash": 0,
+        "deepseek-v4-pro": 0,
+        "glm-5.3": 0
+      },
+      "_note": "Nish 2026-09-10 14:30 IST: 'go ham on opencode ds4.1 flash - virtually unlimited for the next 4 days'. OpenCode Go subscription endpoint https://opencode.ai/zen/go/v1 (x-opencode-session header per request; Pi provider opencode-go, key at fleet2/etc/opencode-go.env). deepseek-flash = DeepSeek V4.1 Flash (models.dev release 2026-09-10). Live Pi test 2026-09-10 09:15Z tools=1 class=worked. FIRST in every order until 2026-09-14, then restore the 2026-08-27 volume order (ollama -> devin -> commandcode -> cline). Straitly wiped the same day (fleet-ops#4887). Nish 2026-09-10 15:05 IST: \"can go upto 10 ds4.1 flash\" -> cap 10."
     },
     "mergegateway": {
       "cap": 2,
@@ -545,6 +559,7 @@
   ],
   "_comment_prepaid_order": "2026-09-07 Nish (switch the zenmux workload to crof): crof moved ahead of runinfra because it is the cheapest measured DeepSeek V4 Flash seat - the 166M-token 2026-09-07 day that billed $5.00 on the paid ZenMux lane at DeepSeek list price ($0.22/$0.007/$0.66) costs ~$1.95 on crof ($0.08/$0.003/$0.10) and ~$4.10 on runinfra ($0.13/$0.01/$0.27), so the cheapest seat is drawn first; the paid zenmux slug is parked at cap 0 in the same change. 2026-09-08 (fleet-ops#4453): paretoinference added FIRST ahead of ollama by the expiry-first standing rule — its Pareto Pass daily allowance ($20/day) EXPIRES at 23:59 and unused $ is lost, so it is drawn before non-expiring balances (ollama/devin/crof/runinfra/entrim). 2026-09-08 (fleet-ops#4558): Nish 2026-09-07 standing order — 'make sure 4 devin seats are always working, if constantly bounce, go down to 3' — supersedes expiry-first for FIRST pick: devin moved to the front of the ladder (prepaid, cap 4, 0 bounces in the trailing 3h, weekly meter 94% unused) and paretoinference takes OVERFLOW after devin's cap is reached. pick_seat's light value-order now also drains prepaid-quota in THIS ladder order before any metered seat, so paid-for capacity drains before metered spend (measured 2026-09-08T17:50Z: pareto took 4/4 workers, devin 0/4, metered burn $31.74/24h). Devin caps and the bounce step-down are untouched — this is pick ordering only.",
   "prepaid_providers_in_order": [
+    "opencode-go",
     "devin",
     "paretoinference",
     "ollama",
