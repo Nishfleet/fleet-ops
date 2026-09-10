@@ -771,3 +771,10 @@ bash "$here/fleet-duty-officer-recording.test.sh"
 # drop of this host line fails by name. Hermetic (repo-only checks, no
 # gh/prometheus/systemd).
 bash "$here/load-storm-brake-agent-orphan-watchdog-deleted.test.sh"
+
+# fleet-ops#4801: spec-judge gate (Kimi K3 Max over batches of agent-ready
+# tickets that share files, BEFORE a worker may claim them). Hermetic
+# (scratch state, fake gh, no network/systemd); shellcheck section skips
+# when shellcheck is absent. Hosted here so P14 runs it without a
+# workflow-file edit (the worker App cannot push .github/workflows/**).
+bash "$here/spec-judge.test.sh"

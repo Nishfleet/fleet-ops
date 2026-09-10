@@ -78,6 +78,7 @@ bin/siterep-deploy-verify /home/nish/.local/bin/siterep-deploy-verify
 bin/siterep-deploy-rollback /home/nish/.local/bin/siterep-deploy-rollback
 bin/siterep-uptime /home/nish/.local/bin/siterep-uptime
 prompts/intake.md /home/nish/.pi/agent/prompts/intake.md
+prompts/spec-judge.md /home/nish/.pi/agent/prompts/spec-judge.md
 prompts/worker.md /home/nish/.pi/agent/prompts/worker.md
 prompts/worker-blocks/d1-gate-integrity.md /home/nish/.pi/agent/prompts/worker-blocks/d1-gate-integrity.md
 prompts/worker-blocks/geo-aeo.md /home/nish/.pi/agent/prompts/worker-blocks/geo-aeo.md
@@ -1004,6 +1005,10 @@ systemd/fleet-seat-recovery.path /home/nish/.config/systemd/user/fleet-seat-reco
 bin/fleet-unjustified-wait /home/nish/.local/bin/fleet-unjustified-wait
 bin/fleet-escalation-completion /home/nish/.local/bin/fleet-escalation-completion
 lib/pi-intake-tick.sh /home/nish/.local/lib/pi-packet/pi-intake-tick.sh
+# fleet-ops#4801: spec-judge lib (Kimi K3 Max over shared-file batches
+# before claim). Sourced by pi-intake-tick.sh; the fallback path in the
+# tick resolves this live install copy.
+lib/spec-judge.sh /home/nish/.local/lib/pi-packet/spec-judge.sh
 # fleet-ops#1204 salvage pre-push secret-scan helper (p1204-scan)
 bin/salvage-secret-scan /home/nish/.local/bin/salvage-secret-scan
 # fleet-ops#796 sgscan wrapper — semgrep diff-scan review gate

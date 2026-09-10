@@ -286,6 +286,34 @@ fi
 # shellcheck source=/home/nish/.local/lib/pi-packet/precedence-band.sh
 # shellcheck disable=SC1091  # external lib, absent in hosted CI
 . "$PRECEDENCE_BAND_LIB"
+# fleet-ops#4801: spec-judge lib (Kimi K3 Max over shared-file batches
+# before claim). Sourced like precedence-band; not executed. The judge
+# prompt path resolves from the repo checkout first (worktree run), then
+# the live install path, mirroring the WORKER_BLOCKS_DIR fallback above.
+SPEC_JUDGE_LIB="${SPEC_JUDGE_LIB:-}"
+if [[ -z "$SPEC_JUDGE_LIB" ]]; then
+    if [[ -f "$_tick_dir/spec-judge.sh" ]]; then
+        SPEC_JUDGE_LIB="$_tick_dir/spec-judge.sh"
+    elif [[ -f "$_tick_dir/../lib/spec-judge.sh" ]]; then
+        SPEC_JUDGE_LIB="$_tick_dir/../lib/spec-judge.sh"
+    else
+        SPEC_JUDGE_LIB="$HOME/.local/lib/pi-packet/spec-judge.sh"
+    fi
+fi
+if [[ -f "$SPEC_JUDGE_LIB" ]]; then
+    # shellcheck source=/dev/null
+    . "$SPEC_JUDGE_LIB"
+fi
+# The judge prompt (prompts/spec-judge.md). Resolve from the repo checkout
+# first (worktree run), then the live install path.
+SPEC_JUDGE_PROMPT="${SPEC_JUDGE_PROMPT:-}"
+if [[ -z "$SPEC_JUDGE_PROMPT" ]]; then
+    if [[ -f "$_tick_dir/../prompts/spec-judge.md" ]]; then
+        SPEC_JUDGE_PROMPT="$_tick_dir/../prompts/spec-judge.md"
+    else
+        SPEC_JUDGE_PROMPT="$HOME/.pi/agent/prompts/spec-judge.md"
+    fi
+fi
 # Each tick starts with a clean floor latch. The file is keyed on $$ so a
 # leftover from a recycled PID cannot freeze the floor for this tick
 # (fleet-ops#1452). The flock above already serializes fleet-ops ticks.
@@ -930,6 +958,25 @@ scout_low_water() {
         || echo "low-water: start $unit failed rc=$? (non-fatal)"
     return 0
 }
+
+# fleet-ops#4801: spec-judge apply + failure fallback. These run EVERY
+# tick (even when there are no ready issues) so a landed verdict is applied
+# and a dead judge unit is handled regardless of the ready pool. The apply
+# step reads any verdict file for this repo and applies it mechanically;
+# the failure fallback relaunches a dead judge once and, on a second
+# failure, lets intake claim the batch unjudged after the window.
+if [[ -f "$SPEC_JUDGE_LIB" ]]; then
+    spec_judge_failure_fallback "$REPO" "$FULL"
+    # Apply any landed verdict for this repo. Iterate verdict files.
+    _sj_state="$(spec_judge_state_dir)"
+    _sj_glob="$_sj_state/verdict-${REPO}-*.md"
+    for _sj_verdict in $_sj_glob; do
+        [[ -e "$_sj_verdict" ]] || continue
+        _sj_sha="${_sj_verdict##*-}"
+        _sj_sha="${_sj_sha%.md}"
+        spec_judge_apply "$REPO" "$FULL" "$_sj_sha" "$_sj_verdict"
+    done
+fi
 
 if [[ -z "$issues_json" ]] || [[ "$issues_json" == "[]" ]]; then
     echo "no ready issues"
@@ -1760,6 +1807,54 @@ fi
 declare -A _dep_state_cache=()
 declare -A _dep_body_cache=()
 
+# fleet-ops#4801: spec-judge batch detection + gate. Among agent-ready
+# issues, group those whose `files:` lines share a path (exact or same
+# directory). A group of >= 2 without a `spec-judged: <sha>` marker is a
+# batch needing judging. For such a batch, do NOT claim any member; launch
+# ONE judge run via pi-systemd-run (cursor/kimi-k3-max, judge-only). At
+# most one judge in flight per repo, never more than 3/hour fleet-wide.
+# Members of a batch being judged are skipped in the claim loop below via
+# the in-flight marker (spec_judge_skip_member).
+if [[ -f "$SPEC_JUDGE_LIB" && -f "$SPEC_JUDGE_PROMPT" ]]; then
+    _sj_issues=$(spec_judge_fetch_bodies "$FULL")
+    if [[ -n "$_sj_issues" && "$_sj_issues" != "[]" ]]; then
+        _sj_batches=$(spec_judge_group_batches "$_sj_issues")
+        if [[ -n "$_sj_batches" && "$_sj_batches" != "[]" ]]; then
+            printf '%s' "$_sj_batches" | jq -c '.[]' | while IFS= read -r _sj_batch; do
+                _sj_count=$(printf '%s' "$_sj_batch" | jq '.numbers | length' 2>/dev/null || echo 0)
+                (( _sj_count < 2 )) && continue
+                _sj_nums=$(printf '%s' "$_sj_batch" | jq -c '.numbers')
+                # Compute the batch sha over the member bodies.
+                _sj_bodies=$(printf '%s' "$_sj_batch" | jq -r '.numbers[]' | while IFS= read -r _sj_n; do
+                    printf '%s\n' "$_sj_issues" | jq -r --arg n "$_sj_n" '.[] | select(.number == ($n|tonumber)) | .body'
+                done)
+                _sj_sha=$(spec_judge_batch_sha "$_sj_bodies")
+                _sj_newest=$(printf '%s' "$_sj_batch" | jq -r '.numbers | max' 2>/dev/null || echo "")
+                # Marker present and matching -> already judged, no re-judge.
+                if [[ -n "$_sj_newest" ]] && spec_judge_has_marker "$FULL" "$_sj_newest" "$_sj_sha"; then
+                    continue
+                fi
+                # A judge already in flight for this repo -> members stay skipped.
+                if spec_judge_inflight "$REPO"; then
+                    echo "spec-judge: batch ${_sj_nums} skipped (judge in flight for $REPO)"
+                    continue
+                fi
+                # Fleet-wide hourly rate cap.
+                if ! spec_judge_rate_ok; then
+                    echo "spec-judge: batch ${_sj_nums} skipped (fleet-wide rate cap reached)"
+                    continue
+                fi
+                # Launch the judge.
+                if spec_judge_launch "$REPO" "$FULL" "$_sj_batch" "$_sj_sha" "$SPEC_JUDGE_PROMPT"; then
+                    echo "spec-judge: launched judge for batch ${_sj_nums} (sha=$_sj_sha)"
+                else
+                    echo "spec-judge: launch failed for batch ${_sj_nums}" >&2
+                fi
+            done
+        fi
+    fi
+fi
+
 for i in "${!numbers[@]}"; do
     N="${numbers[$i]}"
     title="${titles[$i]}"
@@ -2105,6 +2200,14 @@ blocked-on: orchestrator" 2>/dev/null || true
     # looped exactly this way.
     if blocked_filter "$body" "$FULL" "$N" "$last_comment"; then
         echo "issue $N ($title): skipped-blocked-on"
+        continue
+    fi
+
+    # fleet-ops#4801: skip members of a batch being judged (not de-labelled).
+    # The in-flight marker lists the batch; while the judge runs, intake does
+    # not claim any member so the verdict lands before a worker touches them.
+    if [[ -f "$SPEC_JUDGE_LIB" ]] && spec_judge_skip_member "$REPO" "$N"; then
+        echo "issue $N ($title): skipped-spec-judge (member of a batch being judged)"
         continue
     fi
 

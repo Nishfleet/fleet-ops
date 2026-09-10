@@ -380,6 +380,52 @@ dependency lands. A dependency cycle (A depends on B depends on A) skips both
 with `depends-on-cycle` instead of a misleading `skipped-depends-on:#n`.
 Resolution is memoised per tick (one gh call per referenced issue per tick).
 
+## Spec judge (fleet-ops#4801)
+
+Before a worker may claim an `agent-ready` ticket, the intake tick runs a
+**spec judge** over any batch of tickets that share files. The judge is
+Kimi K3 Max (`cursor`/`kimi-k3-max`), judge-only — it never implements.
+It reviews the batch for literal-worker ambiguity, cross-ticket
+ordering/ownership conflicts, budget math, false public claims / soft-404
+/ secret leaks, missing termination/accept, and scope to cut, and returns a
+verdict per ticket (`READY | EDIT | BLOCK`) plus a `## Cross-ticket`
+section with the landing order and shared-helper owners.
+
+**Flow (all inside the existing intake tick — no new timer/dispatcher):**
+
+1. **Detect.** Among open `agent-ready` issues, group those whose `files:`
+   lines share a path (exact path or same directory). A group of `>= 2`
+   without a `spec-judged: <sha-of-bodies>` marker comment is a batch that
+   needs judging; single tickets are exempt.
+2. **Gate.** For such a batch, intake does NOT claim any member. It
+   launches ONE judge run via `pi-systemd-run` (`--provider cursor
+   --model kimi-k3-max`, prompt on stdin = `prompts/spec-judge.md` + the
+   batch bodies/comments, `--deadline 30`, `--deliverable <verdict>`). At
+   most one judge run in flight per repo, never more than 3 per hour
+   fleet-wide (Cursor seat cap). While a batch is being judged the members
+   are skipped, not de-labelled.
+3. **Apply.** When the verdict file lands, the next intake tick applies it
+   mechanically: `READY` -> add the `spec-judged: <hash>` comment; `EDIT`
+   -> apply each quoted replacement with `gh issue edit` (exact-anchor
+   replace; if an anchor is not found verbatim, append a `## Judge edits
+   (binding)` section), add the marker comment, and rewrite `depends-on:`
+   lines from the Cross-ticket landing order; `BLOCK` -> remove
+   `agent-ready`, comment the reason, and file it to the nish-questions
+   pipeline ONLY if the reason is money/legal/product direction, otherwise
+   leave it for the next judge pass after a human or Fable fixes the spec.
+   Re-judge only when a member's body hash changes.
+4. **Failure.** A judge unit dead with an empty verdict is relaunched once;
+   a second failure comments `spec-judge unavailable: <reason>` on the
+   newest batch member and lets intake claim the batch unjudged after 2
+   hours (never block the fleet on the judge).
+
+**How to force a re-judge:** delete the `spec-judged: <sha>` marker comment
+on the batch's newest member (or edit a member body, which changes the sha).
+
+The judge prompt lives at `prompts/spec-judge.md`; the mechanical logic
+lives in `lib/spec-judge.sh` (sourced by `lib/pi-intake-tick.sh`); tests
+in `tests/spec-judge.test.sh`.
+
 ## Excluded pending manual review
 
 - `backlog-console-refresh.service.retired-20260819`
