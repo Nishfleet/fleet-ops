@@ -8,6 +8,7 @@ Ports the intent of fleet1's console-truth suite (which encoded real incidents):
 - the generator path makes zero GitHub API calls
 """
 import json
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -378,6 +379,180 @@ def test_shell_renders_emdash_not_unknown():
     src = Path(__file__).resolve().parent.joinpath("shell.html").read_text()
     assert ">unknown</div>" not in src
     assert ">—</" in src or ">—</div>" in src or ">—</div>" in src
+
+
+# --- fleet-ops#4996: gh argv/arity and fail-closed regressions -----------
+#
+# The console's "Questions for Nish" tile was dark since it landed because
+# `_gh_questions()` passed the repo AND the issue number to `gh issue view`,
+# which accepts one positional. The tests above monkeypatch `_gh_json`, so
+# they never saw the argv — which is exactly how the bug shipped dark. These
+# tests monkeypatch the subprocess RUNNER instead and assert on the recorded
+# argv.
+
+# Flags whose NEXT token is their value — used to tell flags from positionals.
+_VALUE_TAKING_FLAGS = {"-R", "--repo", "--json", "--jq", "--template",
+                       "--owner", "--state", "--label", "--limit",
+                       "--sort", "--order"}
+_SUBCOMMAND_HEADS = (["issue", "view"], ["search", "issues"])
+
+
+def _positionals(tokens):
+    """Tokens that are neither a flag nor the value of a flag."""
+    pos, i = [], 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok.startswith("-"):
+            i += 2 if tok in _VALUE_TAKING_FLAGS else 1
+            continue
+        pos.append(tok)
+        i += 1
+    return pos
+
+
+def _after_subcommand(argv):
+    """One argv minus its `gh <subcommand> <subcommand>` head."""
+    return argv[3:] if argv[1:3] in _SUBCOMMAND_HEADS else argv[1:]
+
+
+def _assert_issue_view_argv(calls, rows):
+    """Assert the fleet-ops#4996 argv contract over recorded invocations.
+
+    Fails on the form that shipped — `gh issue view Nishfleet/0509 2585
+    --json comments`, which gh 2.93.0 rejects with rc=1 `accepts 1 arg(s),
+    received 2` — because that invocation has two positionals and passes a
+    repo as a positional.
+    """
+    assert calls, "the questions collector made no gh call"
+    repos = {r["repository"]["nameWithOwner"] for r in rows}
+    for argv in calls:
+        assert argv[0] == "gh", f"not a gh invocation: {argv}"
+        pos = _positionals(_after_subcommand(argv))
+        assert len(pos) <= 1, f"more than one positional in {argv}: {pos}"
+        assert not repos.intersection(pos), \
+            f"repo passed as a positional: {argv}"
+    search = [a for a in calls if a[1:3] == ["search", "issues"]]
+    assert len(search) == 1, f"expected one search call, got {len(search)}"
+    views = [a for a in calls if a[1:3] == ["issue", "view"]]
+    assert len(views) == len(rows), \
+        f"expected one issue view per search row ({len(rows)}), got {len(views)}"
+    for view, row in zip(views, rows):
+        rest = _after_subcommand(view)
+        assert "-R" in rest, f"issue view named no repo via -R: {view}"
+        i = rest.index("-R")
+        assert i + 1 < len(rest), f"-R carries no value: {view}"
+        assert rest[i + 1] == row["repository"]["nameWithOwner"], \
+            f"-R value is not the search row's repo: {view}"
+        assert _positionals(rest) == [str(row["number"])], \
+            f"issue view positionals must be exactly the issue number: {view}"
+
+
+class _FakeGh:
+    """Stand-in for `generate`'s subprocess module.
+
+    Records every argv it is asked to run and answers from fixtures. It never
+    shells out, so these tests hold with `gh` absent from PATH, make no
+    network calls, and do not depend on today's date or the live org.
+    """
+
+    def __init__(self, rows, comments=None, view_rc=0, view_stderr="",
+                 view_stdout=None):
+        self.rows = rows
+        self.comments = comments or {}
+        self.view_rc = view_rc
+        self.view_stderr = view_stderr
+        self.view_stdout = view_stdout
+        self.calls = []
+
+    def run(self, argv, **kwargs):
+        argv = list(argv)
+        self.calls.append(argv)
+        if argv[1:3] == ["search", "issues"]:
+            return subprocess.CompletedProcess(argv, 0, json.dumps(self.rows), "")
+        number = next((int(t) for t in argv[3:] if t.isdigit()), None)
+        if self.view_rc != 0:                      # a real gh argv error
+            stdout = ""
+        elif self.view_stdout is not None:
+            stdout = self.view_stdout
+        else:
+            stdout = json.dumps(self.comments.get(number, []))
+        return subprocess.CompletedProcess(argv, self.view_rc, stdout,
+                                           self.view_stderr)
+
+
+def _question_rows():
+    """Two-or-three issue dicts shaped like `gh search issues --json ...`."""
+    return [
+        {"number": 2585, "title": "Money question",
+         "url": "https://x/2585", "createdAt": "2026-01-01T00:00:00Z",
+         "repository": {"nameWithOwner": "Nishfleet/0509"},
+         "labels": [{"name": "question"}],
+         "body": "question: raise prices?\noptions: a | b"},
+        {"number": 2284, "title": "Router choice",
+         "url": "https://x/2284", "createdAt": "2026-01-02T00:00:00Z",
+         "repository": {"nameWithOwner": "Nishfleet/fleet-ops"},
+         "labels": [{"name": "question"}, {"name": "nish-reserved"}],
+         "body": "question: router X or Y?\noptions: x | y"},
+        {"number": 101, "title": "Color",
+         "url": "https://x/101", "createdAt": "2026-01-03T00:00:00Z",
+         "repository": {"nameWithOwner": "Nishfleet/siterep"},
+         "labels": [{"name": "question"}],
+         "body": "question: pick a color?\noptions: red | blue"},
+    ]
+
+
+def test_questions_issue_view_argv_takes_one_positional(monkeypatch):
+    """fleet-ops#4996 regression — argv and arity of the per-issue fetch.
+
+    The per-issue `gh issue view` call must carry exactly ONE positional (the
+    issue number) and must name its repo only as the value of `-R`. The form
+    that shipped passed the repo and the number as two positionals
+    (`gh issue view Nishfleet/0509 2585 --json comments`), which exited rc=1
+    `accepts 1 arg(s), received 2`, so the tile was dark from the day it
+    landed. The runner is patched here — not `_gh_json` — because the
+    `_gh_json`-level tests above never see the argv, which is how the bug
+    shipped dark.
+    """
+    rows = _question_rows()
+    fake = _FakeGh(rows)
+    monkeypatch.setattr(G, "subprocess", fake)
+    tile = G.collect_questions()
+    assert tile["ok"] is True and tile["count"] == len(rows)
+    _assert_issue_view_argv(fake.calls, rows)
+
+
+def test_questions_nonzero_exit_still_fails_closed(monkeypatch):
+    """fleet-ops#4996 acceptance bullet 4 — fail-closed survives the runner
+    patch. A non-zero `gh` exit (here the pre-fix argv error itself) must
+    leave the tile ok=false with observed_at null and the non-zero exit named
+    in the reason — never ok=true with an empty list and count=0."""
+    rows = _question_rows()
+    fake = _FakeGh(rows, view_rc=1,
+                   view_stderr="accepts 1 arg(s), received 2")
+    monkeypatch.setattr(G, "subprocess", fake)
+    tile = G.collect_questions()
+    assert tile["ok"] is False
+    assert tile["observed_at"] is None
+    assert "github" in tile["reason"]
+    assert "rc=1" in tile["reason"]
+    assert "accepts 1 arg(s), received 2" in tile["reason"]
+    assert not tile.get("count")
+    assert "items" not in tile
+
+
+def test_questions_nonjson_stdout_still_fails_closed(monkeypatch):
+    """fleet-ops#4996 acceptance bullet 4, second half: a gh exit of 0 whose
+    stdout is not JSON must also leave ok=false with the reason, never
+    ok=true with an empty list."""
+    rows = _question_rows()
+    fake = _FakeGh(rows, view_stdout="not json at all")
+    monkeypatch.setattr(G, "subprocess", fake)
+    tile = G.collect_questions()
+    assert tile["ok"] is False
+    assert tile["observed_at"] is None
+    assert "github" in tile["reason"]
+    assert "JSON" in tile["reason"]
+    assert not tile.get("count")
 
 
 if __name__ == "__main__":
