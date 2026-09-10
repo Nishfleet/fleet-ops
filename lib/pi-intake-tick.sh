@@ -1595,6 +1595,9 @@ fi
 # _light_only_claims latch for the per-issue filter below; a dead proxy already
 # exited above, so claims are not light-only when we reach here.
 _light_only_claims=0
+_repair_rung_armed=0
+_repair_rung_product_reserve=0
+_product_skip_reason=""
 heavy_seat=$(litellm_pick_seat "worker-capable" 2>/dev/null || true)
 _rung_clear_seat=$(litellm_pick_seat "worker-cheap" 2>/dev/null || true)
 
