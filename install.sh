@@ -296,9 +296,11 @@ retired = repo_doc.get("retired_providers")
 retired = set(retired) if isinstance(retired, dict) else set()
 hits = []
 for name, lprov in live.items():
-    # An explicitly tombstoned provider is an intentional removal
-    # (fleet-ops#4960), not the silent cap lowering #371 guards.
-    if name in retired:
+    # An explicitly tombstoned LIVE-ONLY provider is an intentional removal
+    # (fleet-ops#4960), not the silent cap lowering #371 guards. The tombstone
+    # only ever suppresses a live-only row (the merge's own rule): when the
+    # repo still declares the provider, the drop is real and must be reported.
+    if name in retired and name not in repo:
         continue
     if not isinstance(lprov, dict):
         continue
@@ -915,7 +917,26 @@ process_entry() {
 
   if [ "$mode" = "--" ]; then
     # Drift detection: symlink to repo OR byte-identical regular file = OK.
-    if [ -L "$dest" ]; then
+    # fleet-ops#4960: config/seat-caps.json is MERGE-installed (fleet-ops#4205)
+    # — the live copy legitimately keeps provider rows the repo does not
+    # declare, and a repo `retired_providers` tombstone removes a live-only
+    # row — so a raw byte compare reds forever on a hand-wired row. Compare
+    # the EFFECTIVE table (repo copy normalised through the same merge) with
+    # the live copy instead. The symlink rule stays first and unchanged: a
+    # dest symlinked anywhere but the repo copy is drift, never something to
+    # normalise away. An unparseable live file still DIFFs: the merge's
+    # fallback emits the repo copy, which cannot equal an unparseable file.
+    if [[ "$src" == config/seat-caps.json && ! -L "$dest" && -f "$dest" ]]; then
+      local eff live_caps
+      eff=$(mktemp)
+      seat_caps_merge_unknown_providers "$dest" "$repo" >"$eff"
+      live_caps=$(live_target_file "$dest")
+      if [ -n "$live_caps" ] && content_equivalent "$live_caps" "$eff"; then
+        rm -f "$eff"
+        return 0
+      fi
+      rm -f "$eff"
+    elif [ -L "$dest" ]; then
       if [ "$(readlink -f "$dest" 2>/dev/null)" = "$repo" ]; then return 0; fi
     elif [ -f "$dest" ] && content_equivalent "$dest" "$repo" 2>/dev/null; then
       # fleet-ops#4948: accept byte-equal OR semantically-equal JSON for a
