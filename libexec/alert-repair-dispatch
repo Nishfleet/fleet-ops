@@ -153,6 +153,28 @@ ALERT_REPAIR_CLAIM_BIN = os.environ.get(
     str(Path(__file__).resolve().parent / "alert-repair-claim"),
 )
 
+# FleetSloSeatAvailSlowBurn auto-file-or-link (fleet-ops#4773). The alert is
+# in SKIP_SET (no repair worker can raise seats; the #4639 intake REPAIR-RUNG
+# owns the claim path), but a slow burn firing >1h with zero open
+# critical-path fleet-ops items linked to it is invisible to every
+# autonomous path. When the alert has been firing past the threshold, the
+# dispatcher files exactly ONE critical-path issue (or links an existing
+# one) via the same organs the detector->queue reconciler uses
+# (fleet-issue-file + gh). The skip-list entry STAYS — no worker is
+# spawned. Never pages Nish (the alert's own description forbids it).
+SLOWBURN_NAME = "FleetSloSeatAvailSlowBurn"
+SLOWBURN_REPO = os.environ.get("FLEET_SLOWBURN_REPO", "Nishfleet/fleet-ops")
+SLOWBURN_SIGNAL = os.environ.get(
+    "FLEET_SLOWBURN_SIGNAL", "slo/seat-availability-slowburn")
+SLOWBURN_THRESHOLD_S = int(os.environ.get("FLEET_SLOWBURN_THRESHOLD_S", "3600"))
+SLOWBURN_LABEL = os.environ.get("FLEET_SLOWBURN_LABEL", "critical-path")
+# fleet-issue-file wrapper + gh binary; overridable for hermetic tests.
+FLEET_ISSUE_FILE_BIN = os.environ.get(
+    "FLEET_ISSUE_FILE",
+    str(Path(__file__).resolve().parent.parent / "bin" / "fleet-issue-file"),
+)
+GH_BIN = os.environ.get("GH", "gh")
+
 
 def _target_repo(alertnames, common_labels, alerts):
     """Return the repo this dispatch targets, or "" for fleet-internal alerts.
@@ -582,6 +604,166 @@ def utcstamp():
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
+def _slowburn_firing_seconds(starts_at):
+    """Return seconds since the alert started firing, or None if unknown.
+
+    `starts_at` is the AMX_ALERT_<i>_START env var (ISO 8601, Z suffix).
+    A missing/unparseable timestamp means the duration is unknown; the
+    caller treats unknown as "not past threshold" so a flaky timestamp
+    never files prematurely.
+    """
+    if not starts_at:
+        return None
+    try:
+        t = calendar.timegm(time.strptime(starts_at[:19], "%Y-%m-%dT%H:%M:%S"))
+    except ValueError:
+        return None
+    return max(0, int(time.time() - t))
+
+
+def _slowburn_find_existing(repo, signal, gh):
+    """Return the open critical-path issue number carrying the signal key,
+    or "" if none / the search failed. Mirrors the detector->queue
+    reconciler's find_existing_signal: the signal key lives in the issue
+    body, so a `gh issue list --search` for the key finds it. A failed
+    search (rc!=0 / unparseable) returns "" (fail-open: a flaky gh must
+    not block the file path, and a duplicate file is caught by
+    fleet-issue-file's own dedupe).
+    """
+    proc = subprocess.run(
+        [gh, "issue", "list", "-R", repo, "--state", "open",
+         "--limit", "50", "--search", signal,
+         "--json", "number,title"],
+        capture_output=True, text=True, check=False, timeout=30,
+    )
+    if proc.returncode != 0 or not (proc.stdout or "").strip():
+        return ""
+    try:
+        items = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return ""
+    for it in items:
+        n = it.get("number")
+        if isinstance(n, int) and n > 0:
+            return str(n)
+    return ""
+
+
+def _slowburn_file(repo, signal, gh, issue_file):
+    """File exactly one critical-path issue via fleet-issue-file. Returns
+    the new issue number (str) or "" on failure. The title embeds the
+    signal key (fleet-ops#4622) so a filed-issue title check can
+    distinguish a genuine filing from a dedupe-comment pointer."""
+    title = (f"alarm: FleetSloSeatAvailSlowBurn — seat-availability SLO "
+             f"slow burn past 1h, no linked repair-rung claim "
+             f"[{signal}]")
+    body = (
+        "The FleetSloSeatAvailSlowBurn alert has been firing for more than "
+        "1h with no open critical-path fleet-ops item linked to it. The "
+        "alert-repair dispatcher (am-executor receiver) auto-filed this "
+        "issue so the degradation is visible to the autonomous repair "
+        "path.\n\n"
+        f"- alert: `FleetSloSeatAvailSlowBurn` (seat_availability SLO, "
+        f"fleet-ops#1291)\n"
+        f"- repair rung: the intake REPAIR-RUNG (fleet-ops#4639) claims "
+        f"critical-path fleet-ops on reserved seats after two ticks with "
+        f"usable slots < 2; this issue is the terminus the alert names.\n"
+        f"- am-executor: notified via the alert-repair dispatch path.\n"
+        f"- do NOT page Nish for a seat-availability warning (the alert's "
+        f"own description forbids it); seat supply is operator-owned.\n\n"
+        f"`{signal}`\n"
+    )
+    cmd = [issue_file, "file", "-R", repo, "--title", title, "--body", body,
+           "--label", SLOWBURN_LABEL]
+    proc = subprocess.run(
+        cmd, capture_output=True, text=True, check=False, timeout=60)
+    out = (proc.stdout or proc.stderr or "").strip()
+    if proc.returncode != 0:
+        return ""
+    m = re.search(r"/issues/(\d+)", out)
+    if m:
+        return m.group(1)
+    m = re.search(r"#(\d+)", out)
+    if m:
+        return m.group(1)
+    return ""
+
+
+def _slowburn_heartbeat(repo, number, gh):
+    """Post a heartbeat comment on the existing linked issue so it stays
+    warm (and a future observe-to-close pass has fresh evidence). Best
+    effort: a failed comment is logged but never blocks the dispatch."""
+    body = (f"alert-repair heartbeat: FleetSloSeatAvailSlowBurn still "
+            f"firing past 1h; linked claim #{number} owns the repair rung "
+            f"(fleet-ops#4773).")
+    subprocess.run(
+        [gh, "issue", "comment", number, "-R", repo,
+         "--body", body],
+        capture_output=True, text=True, check=False, timeout=30)
+
+
+def _slowburn_file_or_link(starts_at, log):
+    """fleet-ops#4773: when FleetSloSeatAvailSlowBurn has been firing past
+    the threshold, file exactly one critical-path issue or link an
+    existing one. The skip-list entry STAYS — this never spawns a worker.
+    Returns the action taken: "filed", "linked", "skip-short", or
+    "skip-error". Idempotent: a second tick finds the existing issue and
+    links instead of filing a second. `starts_at` is the first alert's
+    AMX_ALERT_<i>_START (ISO 8601); the skip loop calls this before the
+    full per-alert list is built, so it takes the timestamp directly.
+    """
+    secs = _slowburn_firing_seconds(starts_at)
+    if secs is None or secs < SLOWBURN_THRESHOLD_S:
+        log(f"SKIP {SLOWBURN_NAME} reason=skip-list "
+            f"(firing {secs}s < {SLOWBURN_THRESHOLD_S}s; rung not yet "
+            f"past threshold, no file-or-link)")
+        return "skip-short"
+    repo = SLOWBURN_REPO
+    signal = SLOWBURN_SIGNAL
+    gh = GH_BIN
+    issue_file = FLEET_ISSUE_FILE_BIN
+    existing = _slowburn_find_existing(repo, signal, gh)
+    if existing:
+        with LOG.open("a") as f:
+            f.write(
+                f"[{utcnow()}] LINK alertname={SLOWBURN_NAME} "
+                f"repo={repo} issue=#{existing} signal={signal} "
+                f"firing={secs}s receiver=repair-dispatch\n"
+            )
+        log(f"LINK {SLOWBURN_NAME} -> #{existing} (existing claim, "
+            f"no second file; firing {secs}s)")
+        _slowburn_heartbeat(repo, existing, gh)
+        return "linked"
+    if not Path(issue_file).exists():
+        with LOG.open("a") as f:
+            f.write(
+                f"[{utcnow()}] WARN {SLOWBURN_NAME} fleet-issue-file "
+                f"missing at {issue_file}; cannot auto-file (firing "
+                f"{secs}s)\n"
+            )
+        log(f"WARN {SLOWBURN_NAME} fleet-issue-file missing; cannot "
+            f"auto-file (firing {secs}s)")
+        return "skip-error"
+    number = _slowburn_file(repo, signal, gh, issue_file)
+    if not number:
+        with LOG.open("a") as f:
+            f.write(
+                f"[{utcnow()}] WARN {SLOWBURN_NAME} auto-file failed "
+                f"(firing {secs}s)\n"
+            )
+        log(f"WARN {SLOWBURN_NAME} auto-file failed (firing {secs}s)")
+        return "skip-error"
+    with LOG.open("a") as f:
+        f.write(
+            f"[{utcnow()}] FILED alertname={SLOWBURN_NAME} "
+            f"repo={repo} issue=#{number} signal={signal} firing={secs}s "
+            f"receiver=repair-dispatch\n"
+        )
+    log(f"FILED {SLOWBURN_NAME} -> #{number} (auto-filed critical-path; "
+        f"firing {secs}s)")
+    return "filed"
+
+
 def main():
     # --print-seat (no AMX env): emit a single "<provider>\t<model>\t<reason>"
     # line on stdout and exit 0. Used by fleet-completion-canary when it
@@ -628,9 +810,42 @@ def main():
               file=sys.stderr)
         return 2
 
+    # fleet-ops#1199 / #4773: stderr logger used by the skip loop's
+    # slowburn file-or-link and the alert-repair mutex below.
+    def _log(msg):
+        print(f"[{utcnow()}] {msg}", file=sys.stderr)
+
     # Skip synthetic/heartbeat alerts.
     for name in alertnames:
         if name in SKIP_SET:
+            # fleet-ops#4773: FleetSloSeatAvailSlowBurn stays in SKIP_SET (no
+            # repair worker can raise seats), but a slow burn firing >1h
+            # with zero linked critical-path items is invisible to every
+            # autonomous path. Defer the return so the file-or-link step
+            # can file/link exactly one issue before the skip return. The
+            # skip-list entry STAYS — this never spawns a worker.
+            if name == SLOWBURN_NAME:
+                # Find the AMX_ALERT_<i>_START for THIS alert, not a
+                # hardcoded index: alertnames is deduped, so SlowBurn
+                # may sit at any 1-indexed slot. A wrong index would feed
+                # another alert's start time and file prematurely/late.
+                sb_start = ""
+                for _i in range(1, 65):
+                    if os.environ.get(
+                            f"AMX_ALERT_{_i}_LABEL_alertname") == name:
+                        sb_start = os.environ.get(
+                            f"AMX_ALERT_{_i}_START", "")
+                        break
+                _slowburn_file_or_link(sb_start, _log)
+                with LOG.open("a") as f:
+                    f.write(
+                        f"[{utcnow()}] SKIP alertname={name} "
+                        f"receiver={receiver} reason=skip-list "
+                        f"(slowburn file-or-link attempted)\n"
+                    )
+                print(f"[{utcnow()}] SKIP alertname={name} (in skip-list)",
+                      file=sys.stderr)
+                return 0
             with LOG.open("a") as f:
                 f.write(
                     f"[{utcnow()}] SKIP alertname={name} receiver={receiver} "
@@ -841,9 +1056,6 @@ def main():
     # claimed-by-other result means another dispatch already owns this
     # (alert, repo) pair — heartbeat re-dispatch, prior alert, or a
     # parallel webhook 10s apart. Log `skipped-claimed` and spawn NOTHING.
-    def _log(msg):
-        print(f"[{utcnow()}] {msg}", file=sys.stderr)
-
     target_repo = _target_repo(alertnames, common_labels, alerts)
     if not _acquire_alert_repair_claim(alertnames, target_repo, _log):
         with LOG.open("a") as f:
