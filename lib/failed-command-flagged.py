@@ -32,7 +32,9 @@ ls exit 2 with any other error (Permission denied, I/O error, Is a
 directory, etc.) is a real failure. `git log|rev-parse|show|diff|cat-file
 <bad-ref>` exit 128 (the canonical "fatal: ambiguous argument '<ref>'"
 or "fatal: bad revision '<ref>'" line) is a deliberate existence probe
-and is also treated as a probe. Other `fatal:` lines (not a git
+and is also treated as a probe, including when git's global options
+precede the subcommand (`git -C <dir> rev-parse --is-inside-work-tree`,
+fleet-ops#5033). Other `fatal:` lines (not a git
 repository, unable to access, repository not found, bad object, etc.)
 remain real failures. Exit >= 2 (other than the canonical ls / git
 probes), timeouts, and non-probe exit 1 (the 404 origin case) are. A
@@ -725,9 +727,33 @@ LS_REAL_ERR_RE = re.compile(
 # failure. Other `fatal:` lines (not a git repository, unable to access,
 # repository not found, bad object, etc.) are real failures and must NOT
 # be exempted.
+#
+# fleet-ops#5033: the subcommand can be preceded by git's GLOBAL options.
+# The live session ran
+#   git -C /home/nish/workspaces/agent-state rev-parse --is-inside-work-tree 2>/dev/null
+# (a yes/no "is this a git work tree" probe; exit 128, stderr silenced,
+# no `fatal:` line in the toolResult) and the detector filed it as a
+# swallowed failure purely because `-C <path>` sat between `git` and
+# `rev-parse`. The `-C <dir>` form is the standard idiom in this fleet's
+# prompts (`git -C <clone> ...`), so every such probe was a false
+# positive. `-c name=value`, `--git-dir[=]`, `--work-tree[=]`,
+# `--namespace[=]`, `--exec-path[=]` and the pager/pathspec switches are
+# the rest of git's pre-subcommand option set. Only the subcommand
+# position moves: the exit-128 + no-real-fatal-line guards in
+# _git_canonical_probe still decide, so a `fatal: not a git repository`
+# (live #765) or `Permission denied` (live #1185) stays a finding.
+GIT_GLOBAL_OPT_RE = (
+    r"(?:"
+    r"-[cC]\s+\S+"
+    r"|--(?:git-dir|work-tree|namespace|exec-path)(?:=\S+)?"
+    r"|--(?:no-pager|paginate|bare|no-replace-objects|literal-pathspecs"
+    r"|glob-pathspecs|noglob-pathspecs|icase-pathspecs)"
+    r")\s+"
+)
 GIT_BENIGN_RE = re.compile(
     r"(?:^|[;&|\n]|&&|\|\|)\s*(?:sudo\s+)?"
-    r"git\s+(?:log(?:\s+-?\d+)?|rev-parse|show|diff|cat-file|shortlog)\b",
+    r"git\s+(?:" + GIT_GLOBAL_OPT_RE + r")*"
+    r"(?:log(?:\s+-?\d+)?|rev-parse|show|diff|cat-file|shortlog)\b",
     re.I,
 )
 # Canonical "this ref does not exist" probe line emitted by git on stderr.

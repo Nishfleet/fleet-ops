@@ -3391,6 +3391,19 @@ bash "$here/fleet-failed-command-fresh-debug-script.test.sh" || fail "fleet-fail
 # repository` and exit 128. The next assistant turn is a recovery
 # toolCall with no user-facing flag. Same CI constraint.
 bash "$here/fleet-failed-command-cd-non-git-repo.test.sh" || fail "fleet-failed-command-cd-non-git-repo tests failed"
+# fleet-ops#5033: `git -C <dir> rev-parse ...` exit 128 with stderr
+# silenced is the same existence probe as the #822 git-ref shape, but
+# GIT_BENIGN_RE required the subcommand immediately after `git`, so the
+# `-C` form fell through to the generic exit-128 path and was filed as a
+# swallowed failure. The live session
+# 2026-09-09T21-36-15-377Z_01a08819-9e11-7570-ba6b-594c776c3fe2 ran
+# `git -C /home/nish/workspaces/agent-state rev-parse
+# --is-inside-work-tree 2>/dev/null`; the exemption now covers git's
+# global options, and the real-error guards (`fatal: not a git
+# repository`, Permission denied, non-probe subcommands like status) are
+# pinned in the same file. Same CI constraint (worker token cannot add a
+# P14 line in ci.yml).
+bash "$here/fleet-failed-command-git-C-rev-parse-probe.test.sh" || fail "fleet-failed-command-git-C-rev-parse-probe tests failed"
 # fleet-ops#1217: a same-turn sibling of a `git clone` into
 # `/tmp/<fresh-clone>` that races with
 # `cd /tmp/<fresh-clone> 2>/dev/null && ls ...` and returns
