@@ -25,6 +25,16 @@ a boilerplate attributive; neither carries decision-content signal, so
 both join STOP. Distinctive tokens (fleet, product, issue, step) stay
 live — a real re-ask still overlaps on them.
 
+It refilled again on `any`/`fails`/`fix`/`never` (live fleet-ops#4890): a
+worker reasoning about email-delivery retry in the 0509 onboarding nudge
+("If a send fails, should we retry? ... a failed send means the user
+never got the nudge") overlapped the escalation-matrix line on exactly
+{any, fails, fix, never} — all generic English words with no
+decision-content signal. A real escalation-matrix re-ask still overlaps
+on its distinctive vocabulary (escalation, matrix, autonomously, chain,
+conference, senior, detector-green, ticket, claim, unrepaired-fail,
+ladder), so these four join STOP too.
+
 Usage:
   python3 lib/decisions-ledger.py scan --root DIR --ledger FILE [--now ISO]
       [--window-hours 24] [--grace-minutes 20]
@@ -75,7 +85,7 @@ STOP = set(
     "the a an is are was were be been to of in on for with from and or not no yes "
     "do does how what which should would could can may we our your my his her "
     "their it this that these those you i nish about via when where who whom "
-    "whose why only says".split()
+    "whose why only says any fails fix never".split()
 )
 
 SLUG_RE = re.compile(r"[^a-z0-9]+")

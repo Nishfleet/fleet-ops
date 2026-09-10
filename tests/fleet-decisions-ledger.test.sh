@@ -21,6 +21,12 @@
 #  13. Observe-to-close (fleet-ops#650 shape, #1138 drain): green tick
 #      comments resolved-at; later tick closes; still-dirty slug is
 #      neither commented nor closed.
+#  14. Live #4890: worker email-delivery-retry reasoning ("If a send
+#      fails, should we retry? ... a failed send means the user never got
+#      the nudge") overlapping the escalation-matrix line on generic
+#      {any, fails, fix, never} is NOT an escalation-matrix re-ask.
+#  15. Positive control for #4890: a real escalation-matrix re-ask still
+#      flags on its distinctive vocabulary.
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -52,6 +58,7 @@ cat >"$scratch/ledger.md" <<'EOF'
 - 2026-08-27 | GEO/AEO: fleet executes measurement + owned-content tactics; community/PR parked for Nish | Fleet-ops #1236 (AEO probe baseline), #1237 (0509 original-data stats pages), #1238 (fact-density + comparison pages) queued for the 08-28 product share. Brand gate: first template/voice of each public content surface previews to Nish for one-time approval; autonomous within approved templates after. PARKED as Nish-reserved (brand/authenticity): Reddit/community participation as the brand, and digital-PR outreach - the research says these are the biggest levers (4x citation likelihood, 239% lift) but they impersonate/represent Nish publicly; fleet may DRAFT for them only when Nish grants it. llms.txt: skip except developer docs (evidence-based). | source: interactive Claude session 2026-08-27
 - 2026-08-28 | 25 concurrent workers is the standing floor (Nish: "I want 25 workers on all the time... quality is the bar, it has to keep climbing") | Whenever >=25 legit gated ready items exist, 25 workers run; fewer with supply available is an UNDERSATURATION fault that auto-dispatches repair. Quality is the bar; it has to keep climbing. | source: interactive Claude session 2026-08-28
 - 2026-08-28 | Optimization target: MAX QUALITY THROUGHPUT (Nish: "max quality throughput because quality above all else") | The fleet optimizes verified, live-proven merged product work per day — not raw merge counts (null-diff era numbers dont count) and not quality-at-a-trickle. Both dials up: more workers AND higher quality per merge. | source: interactive Claude session 2026-08-28
+- 2026-08-27 | escalation matrix FIXES, not just routes | Nish: "the escalation matrix fixes all fails autonomously and automatically." Completion invariant on top of coverage: every failure's chain (alarm → ticket → claim → fix → detector-green) must TERMINATE in a verified fix with no human, each hop carrying its clock; a chain that stalls at any hop past its clock — unclaimed ticket, dead worker, timed-out senior dispatch, fix never observed green — is an UNREPAIRED-FAIL that automatically climbs the ladder (re-seat, re-tier, senior conference) until fixed. The ONLY legal terminal states: detector-green, or a genuinely Nish-reserved wall reached fail-loud. | fleet-ops #468 comment
 EOF
 
 gh_store="$scratch/gh-issues"
@@ -449,6 +456,32 @@ grep -q "DECISIONS-LEDGER-REASK" "$scratch/err.log" || fail "missing REASK for r
 ok "live #4841 positive: same-sentence geo-aeo re-ask is still flagged"
 rm -f "$sessions/geo-aeo-reask.jsonl"
 
+# --- 12d. live #4890: email-delivery-retry reasoning is not an escalation re-ask
+# Live session pi-issue-0509-2114: a worker reasoning about the 0509
+# onboarding-nudge feature ("If a send fails, should we retry? ... a
+# failed send means the user never got the nudge") matched ASK_RE and
+# overlapped the escalation-matrix ledger line on exactly {any, fails,
+# fix, never} — all generic English words with no decision-content
+# signal. This is the same generic-word class as #1138/#4841, refilled on
+# different function words. Fix: `any`/`fails`/`fix`/`never` join STOP.
+write_session "email-retry" '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"me fix this. Wait, but the issue says for selection. And If a send fails, should we retry? The issue says but a failed send means the user never got the nudge. Hmm. Let me reconsider. The has reclaim logic for failed/stale attempts. But the selection query filters out users with ANY attempt row. So a failed atte"}]}}'
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "live #4890 email-retry reasoning should exit 0 (got $rc) $(cat "$scratch/err.log")"
+ok "live #4890: worker email-delivery-retry should-we reasoning is ignored (generic-word collision)"
+rm -f "$sessions/email-retry.jsonl"
+
+# --- 12e. positive control: a real escalation-matrix re-ask still flags ------
+# Distinctive tokens (escalation, matrix, autonomously, chain, conference,
+# senior) overlap the escalation-matrix line at 6 — well above threshold 4
+# even after `fix` joins STOP. Proves the stop-word additions did not
+# weaken real re-ask detection for this decision.
+write_session "escalation-reask" '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Nish, should the escalation matrix fix this fail autonomously, or should a senior conference decide the chain first?"}]}}'
+rc=$(run_bin 0)
+[[ "$rc" == "1" ]] || fail "real escalation-matrix re-ask should exit 1 (got $rc) $(cat "$scratch/err.log")"
+grep -q "DECISIONS-LEDGER-REASK" "$scratch/err.log" || fail "missing REASK for real escalation-matrix question"
+ok "live #4890 positive: same-sentence escalation-matrix re-ask is still flagged"
+rm -f "$sessions/escalation-reask.jsonl"
+
 # --- 13. observe-to-close (fleet-ops#650 shape; #1138 drain) ----------------
 # Isolate the mock store from the auto-file test's leftover issue.
 rm -f "$gh_store"/issue-* "$gh_store"/commented "$gh_store"/closed
@@ -567,4 +600,9 @@ grep -q 'fleet-ops#4841' "$lib" \
   || fail "lib/decisions-ledger.py must cite fleet-ops#4841"
 ok "citation lock: #4841 in helper"
 
-echo "OK: fleet-decisions-ledger: re-ask lint, ledger-checked escape, auto-file dedupe, #1138 + #4841 false-positive class, observe-to-close"
+# Citation lock for #4890 (generic-word false positive on email-retry prose).
+grep -q 'fleet-ops#4890' "$lib" \
+  || fail "lib/decisions-ledger.py must cite fleet-ops#4890"
+ok "citation lock: #4890 in helper"
+
+echo "OK: fleet-decisions-ledger: re-ask lint, ledger-checked escape, auto-file dedupe, #1138 + #4841 + #4890 false-positive class, observe-to-close"
