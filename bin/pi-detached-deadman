@@ -63,6 +63,19 @@ log() { printf '[%s] [pi-detached-deadman] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)
 _textfile_set() {
     local want="$1"
     [[ -n "${PI_DEADMAN_TEXTFILE_SKIP:-}" ]] && return 0
+    # Test-pollution guard (fleet-ops#4777): a DEATH write (want=1) must only
+    # land for a real pi-systemd-run dispatch, which is always a UUID. A
+    # non-UUID dispatch (placeholder like "x", "test", or a bare unit name)
+    # is a phantom that can never be relapsed or cleared by a real unit, so it
+    # would fire DetachedJobDied forever and pollute every repair packet. The
+    # --clear path (dispatch="") and the success-clear path (want=0) are
+    # unaffected: they only ever remove series, never create one.
+    if [[ "$want" == "1" && -n "${PI_DEADMAN_DISPATCH:-}" ]]; then
+        if ! [[ "${PI_DEADMAN_DISPATCH}" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+            log "refusing death write: dispatch=${PI_DEADMAN_DISPATCH} is not UUID-shaped (unit=${PI_DEADMAN_UNIT:-}) — phantom series would fire DetachedJobDied forever"
+            return 0
+        fi
+    fi
     local label_cmdline="${PI_DEADMAN_CMDLINE:-}"
     label_cmdline="${label_cmdline:0:400}"
     PI_DEADMAN_TEXTFILE="$textfile" PI_DEADMAN_UNIT="$unit" \

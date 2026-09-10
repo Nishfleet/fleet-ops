@@ -12,6 +12,9 @@
 #   4. success with deliverable present -> no died series, stale series for
 #      the same unit cleared
 #   5. success without deliverable -> STILL a death (exit 0 is not consent)
+#   5b. non-UUID dispatch (placeholder like "x") -> NO died series written,
+#      rejection logged (fleet-ops#4777 test-pollution guard); success-clear
+#      path unaffected
 #   6. --clear <unit> clears the unit's died series by unit NAME (empty
 #      dispatch) and does not touch other units
 #   7. dry-run prints the verdict and writes nothing
@@ -67,11 +70,11 @@ out="$("$deadman" 2>&1)"
 ok "not armed (no dispatch id) is a no-op"
 
 # --- 2. clean stop without deliverable ---------------------------------------
-env "${common[@]}" PI_DEADMAN_DISPATCH=d1 PI_DEADMAN_UNIT=u-clean \
+env "${common[@]}" PI_DEADMAN_DISPATCH=11111111-1111-1111-1111-111111111111 PI_DEADMAN_UNIT=u-clean \
     PI_DEADMAN_CMDLINE="sleep 1" PI_DEADMAN_DEADLINE=90 \
     PI_DEADMAN_DELIVERABLE="$scratch/missing.md" SERVICE_RESULT=success \
     "$deadman" 2>/dev/null || fail "dead-man must exit 0 on a death verdict"
-grep -q 'fleet_detached_job_died{unit="u-clean",dispatch="d1"' "$tf" \
+grep -q 'fleet_detached_job_died{unit="u-clean",dispatch="11111111-1111-1111-1111-111111111111"' "$tf" \
     || fail "clean-stop-without-deliverable must write the died series: $(cat "$tf")"
 grep -q 'reason=unit-stopped-without-deliverable source=pi-detached-deadman' "$esc_log" \
     || fail "clean-stop death must call STOP-REASON writer with the #4266 reason: $(cat "$esc_log")"
@@ -79,7 +82,7 @@ ok "clean stop without deliverable: died series + STOP-REASON writer called"
 
 # --- 3. non-clean failure: died series, no STOP-REASON writer ----------------
 : >"$esc_log"
-env "${common[@]}" PI_DEADMAN_DISPATCH=d2 PI_DEADMAN_UNIT=u-failed \
+env "${common[@]}" PI_DEADMAN_DISPATCH=22222222-2222-2222-2222-222222222222 PI_DEADMAN_UNIT=u-failed \
     PI_DEADMAN_CMDLINE="pi --print foo" SERVICE_RESULT=exit-code \
     "$deadman" 2>/dev/null || fail "exit-code death must exit 0"
 grep -q 'unit="u-failed"' "$tf" || fail "exit-code death must write the died series"
@@ -88,7 +91,7 @@ ok "non-clean failure: died series only, OnFailure rail owns STOP-REASON"
 
 # --- 4. success with deliverable present: no series, stale cleared -----------
 touch "$scratch/real.md"
-out="$(env "${common[@]}" PI_DEADMAN_DISPATCH=d3 PI_DEADMAN_UNIT=u-clean \
+out="$(env "${common[@]}" PI_DEADMAN_DISPATCH=33333333-3333-3333-3333-333333333333 PI_DEADMAN_UNIT=u-clean \
     PI_DEADMAN_CMDLINE="sleep 1" PI_DEADMAN_DEADLINE=90 \
     PI_DEADMAN_DELIVERABLE="$scratch/real.md" SERVICE_RESULT=success \
     "$deadman" 2>/dev/null)" || fail "success verdict must exit 0"
@@ -97,12 +100,41 @@ grep -q 'unit="u-failed"' "$tf" || fail "success of one unit must not clear anot
 ok "success with deliverable: stale series for THAT unit cleared, others kept"
 
 # --- 5. success WITHOUT deliverable is still a death --------------------------
-env "${common[@]}" PI_DEADMAN_DISPATCH=d4 PI_DEADMAN_UNIT=u-exit0 \
+env "${common[@]}" PI_DEADMAN_DISPATCH=44444444-4444-4444-4444-444444444444 PI_DEADMAN_UNIT=u-exit0 \
     PI_DEADMAN_CMDLINE="pi --print" PI_DEADMAN_DEADLINE=90 \
     PI_DEADMAN_DELIVERABLE="$scratch/never.md" SERVICE_RESULT=success \
     "$deadman" 2>/dev/null || fail "exit-0-without-deliverable must exit 0"
 grep -q 'unit="u-exit0"' "$tf" || fail "exit 0 without deliverable must be a death (the #4266 gap)"
 ok "exit 0 without deliverable == death (the exact #4266 gap)"
+
+# --- 5b. test-pollution guard: non-UUID dispatch writes NO died series --------
+# Live regression (fleet-ops#4777): a phantom `test-unit` / dispatch="x" series
+# fired DetachedJobDied for 8h and polluted every repair packet. A DEATH write
+# must refuse a non-UUID dispatch (placeholder, not a real pi-systemd-run run
+# id) so a future test or manual run that forgets PI_DEADMAN_TEXTFILE cannot
+# pollute the production alert. The refusal is logged to stderr and the
+# success-clear / --clear paths (dispatch="") are unaffected.
+log_out="$(env "${common[@]}" PI_DEADMAN_DISPATCH=x PI_DEADMAN_UNIT=u-testpollution \
+    PI_DEADMAN_CMDLINE="pi --print" SERVICE_RESULT=exit-code \
+    "$deadman" 2>&1)" || fail "non-UUID dispatch death must exit 0"
+grep -q 'unit="u-testpollution"' "$tf" \
+    && fail "non-UUID dispatch must NOT write a died series: $(cat "$tf")"
+printf '%s\n' "$log_out" | grep -q 'refusing death write: dispatch=x' \
+    || fail "non-UUID dispatch must log the rejected dispatch: $log_out"
+ok "non-UUID dispatch (x) writes no died series and logs the rejection (fleet-ops#4777)"
+
+# The guard must not break the success-clear path: a real UUID death written
+# earlier is still clearable by a success verdict for the same unit.
+env "${common[@]}" PI_DEADMAN_DISPATCH=66666666-6666-6666-6666-666666666666 PI_DEADMAN_UNIT=u-clearok \
+    PI_DEADMAN_CMDLINE="sleep 1" SERVICE_RESULT=exit-code \
+    "$deadman" 2>/dev/null || fail "UUID death must still write"
+grep -q 'unit="u-clearok"' "$tf" || fail "UUID death must still write the died series"
+touch "$scratch/ok.md"
+env "${common[@]}" PI_DEADMAN_DISPATCH=66666666-6666-6666-6666-666666666666 PI_DEADMAN_UNIT=u-clearok \
+    PI_DEADMAN_CMDLINE="sleep 1" PI_DEADMAN_DELIVERABLE="$scratch/ok.md" SERVICE_RESULT=success \
+    "$deadman" 2>/dev/null || fail "success-clear must exit 0"
+grep -q 'unit="u-clearok"' "$tf" && fail "success-clear must still remove the unit's died series"
+ok "success-clear path unaffected by the dispatch-shape guard"
 
 # --- 6. --clear by unit name --------------------------------------------------
 env "${common[@]}" "$deadman" --clear u-failed 2>/dev/null \
@@ -113,7 +145,7 @@ ok "--clear removes exactly the named unit's series (empty dispatch)"
 
 # --- 7. dry-run: verdict printed, nothing written -----------------------------
 : >"$tf"; : >"$esc_log"
-out="$(env "${common[@]}" PI_DEADMAN_DRYRUN=1 PI_DEADMAN_DISPATCH=d5 \
+out="$(env "${common[@]}" PI_DEADMAN_DRYRUN=1 PI_DEADMAN_DISPATCH=55555555-5555-5555-5555-555555555555 \
     PI_DEADMAN_UNIT=u-dry PI_DEADMAN_CMDLINE="pi --print" SERVICE_RESULT=success \
     PI_DEADMAN_DELIVERABLE="$scratch/x.md" "$deadman" 2>&1)"
 printf '%s\n' "$out" | grep -q 'verdict=died' \
@@ -130,7 +162,7 @@ ok "dry-run prints verdict, writes nothing"
 # never fire. Five write+clear cycles must leave exactly one pair.
 : >"$tf"
 for i in 1 2 3 4 5; do
-    env "${common[@]}" PI_DEADMAN_DISPATCH="h$i" PI_DEADMAN_UNIT="u-hdr$i" \
+    env "${common[@]}" PI_DEADMAN_DISPATCH="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa$i" PI_DEADMAN_UNIT="u-hdr$i" \
         PI_DEADMAN_CMDLINE="sleep 1" SERVICE_RESULT=exit-code \
         "$deadman" 2>/dev/null || fail "header-cycle write $i must exit 0"
     env "${common[@]}" "$deadman" --clear "u-hdr$i" 2>/dev/null \
@@ -179,4 +211,4 @@ env --unset=SERVICE_RESULT "${common[@]}" PI_DEADMAN_DISPATCH=dcli2 PI_DEADMAN_U
 [[ ! -s "$tf" ]] || fail "bare CLI call (SERVICE_RESULT unset) must not write a death metric"
 ok "bare CLI call with SERVICE_RESULT unset is not a death (fleet-ops#4675)"
 
-echo "PASS: pi-detached-deadman verdict matrix (10 cases)"
+echo "PASS: pi-detached-deadman verdict matrix (12 cases)"
