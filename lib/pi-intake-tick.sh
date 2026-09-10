@@ -2203,6 +2203,63 @@ blocked-on: orchestrator" 2>/dev/null || true
                 continue
             fi
         fi
+
+        # fleet-ops#5048: delegated-range park — the cell BOTH branches above
+        # miss. A PROTECTED open issue past PARK_MAX_CLAIMS with NO merged
+        # claim/issue-<N> PR and NO `termination:` clause, whose remaining work
+        # is delegated to a named runtime event: an explicit `awaiting: <name>`
+        # / `blocked-on: timer <name>` marker, or a per-issue unit (its name
+        # carries this issue number) that is LIVE under `systemctl --user`.
+        # live: #4891 — delivered by fable/* PRs #4893/#4897 and delegated to
+        # `remeasure-4891-timer`, which fires 2026-09-11T14:05Z; it carries
+        # neither a `termination:` clause nor a merged claim-branch PR, so the
+        # #4540 park (needs both) missed it and it re-entered the claimable
+        # pool on every release: 12 claims in one day, each burning a seat pick
+        # plus a worker run re-verifying a date-gate that could not be met yet.
+        #
+        # PROTECTED-ONLY by design: on a claimable non-protected issue a bare
+        # mention is not a fix (fleet-ops#3231), so a weak signal must never
+        # park one. Nothing here is inferred from prose — the evidence is a
+        # declared marker or a real live unit — and the probes run only past
+        # the cumulative claim cap, and only when neither park above tripped
+        # (both `continue`).
+        if (( _park_protected == 1 )); then
+            _p48_merged=$(gh pr list -R "$FULL" --head "claim/issue-$N" --state merged --json number 2>/dev/null || echo "[]")
+            if ! printf '%s' "$_p48_merged" | jq -e 'length > 0' >/dev/null 2>&1; then
+                # The delegation record lives in worker run-report comments, so
+                # this comments fetch is paid only by a protected over-cap
+                # issue with no merged claim-branch delivery PR.
+                _p48_cjson=$(gh issue view "$N" -R "$FULL" --json comments 2>/dev/null) || _p48_cjson=""
+                _p48_text=$(printf '%s\n%s' "$body" "$(printf '%s' "$_p48_cjson" | jq -r '[.comments[]?.body // empty] | join("\n")' 2>/dev/null)")
+                _p48_evidence=""
+                if printf '%s' "$_p48_text" | grep -qE '^(awaiting:[[:space:]]*[^[:space:]]+|blocked-on:[[:space:]]*timer[[:space:]]+[^[:space:]])'; then
+                    _p48_evidence="delegated by an explicit \`awaiting:\`/\`blocked-on: timer\` marker"
+                else
+                    while IFS= read -r _p48_unit; do
+                        [ -z "$_p48_unit" ] && continue
+                        # Skip the claim unit: pi-issue@<repo>-<N> is THIS
+                        # issue's in-flight worker, not a delegation.
+                        case "$_p48_unit" in pi-issue@*) continue ;; esac
+                        # Per-issue unit only — the issue number must appear
+                        # with non-digit boundaries, so #489 never matches a
+                        # unit named for #4891 (nor #4891x for #4891).
+                        printf '%s' "$_p48_unit" | grep -qE "(^|[^0-9])${N}([^0-9]|\$)" || continue
+                        if "$SYSTEMCTL" --user is-active --quiet "$_p48_unit" 2>/dev/null; then
+                            _p48_evidence="delegated to live runtime unit $_p48_unit"
+                            break
+                        fi
+                    done < <(printf '%s' "$_p48_text" | grep -oE '[A-Za-z0-9_.-]+\.(timer|service)' | sort -u)
+                fi
+                if [[ -n "$_p48_evidence" ]]; then
+                    echo "issue $N ($title): skipped-parked-delivered ($_park_claims cumulative claims > cap $PARK_MAX_CLAIMS; $_p48_evidence; awaiting runtime gate)" >&2
+                    gh label create awaiting-runtime-gate -R "$FULL" --color D4C5F9 \
+                        --description "Parked: issue delegated to a named runtime event; do not claim (fleet-ops#5048)" --force >/dev/null 2>&1 || true
+                    gh issue edit "$N" -R "$FULL" --add-label awaiting-runtime-gate --remove-label agent-ready 2>/dev/null || true
+                    gh issue comment "$N" -R "$FULL" --body "fleet-ops#5048: issue $N has been re-claimed ${_park_claims} times (cap $PARK_MAX_CLAIMS), but its remaining work cannot start yet — $_p48_evidence. It has no merged claim-branch PR and no \`termination:\` clause, so the #4540 park detector (protected + \`termination:\` + merged claim-branch PR) misses it, and the reset (#2462) / window (#2772) gates miss the slow-spaced spin. Parking it: labelled \`awaiting-runtime-gate\`, removed from agent-ready, so no seat pick and no worker run is spent re-verifying a gate that cannot be met yet. Un-park: clear the label once the named event has fired and claimable work remains, or close the issue." 2>/dev/null || true
+                    continue
+                fi
+            fi
+        fi
     fi
 
     # fleet-ops#3575: fetch comments up-front so a comment-level `blocked-on:`
