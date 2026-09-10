@@ -40,6 +40,24 @@ scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT INT TERM
 mkdir -p "$scratch/seats"
 
+# fleet-ops#5075: stub the seat-caps allowlist. The dispatcher LOUD-rejects
+# any provider/model pair absent from SEAT_CAPS_JSON (fleet-ops#3661 phantom
+# seat keys), and the default is the LIVE file — live caps drift (seats
+# retired/renamed) then false-fails this test on clean main. A scratch caps
+# file keeps the fixture seats valid regardless of live roster churn, matching
+# tests/repair-rotation.test.sh and tests/keystone-routing.test.sh.
+cat >"$scratch/seat-caps.json" <<'JSON'
+{
+  "providers": {
+    "bai":        { "cap": 4, "models": { "deepseek-v4-flash": 2, "bai-2": 1 } },
+    "devin":      { "cap": 4, "models": { "glm-5-2": 3 } },
+    "minimax":    { "cap": 2, "models": { "MiniMax-M3": 2, "mmx-2": 1 } },
+    "openrouter": { "cap": 2, "models": { "deepseek/deepseek-v4-flash-0731": 2 } }
+  }
+}
+JSON
+export SEAT_CAPS_JSON="$scratch/seat-caps.json"
+
 NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 FUTURE=$(date -u -d "+1 hour" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)
 
