@@ -19,7 +19,7 @@
  *   * `--provider devin --model glm-5-2`: `git stash push -m probe2c` RAN,
  *     created a real stash entry, produced no SPAWN_BLOCKED line and no
  *     block-log row. `echo "HOOK=[$PI_SPAWN_HOOK]"` printed `HOOK=[]`.
- *   * `--provider ollama --model deepseek-v4-flash:0731`: the same command was
+ *   * `--provider ollama --model <retired-V4-flash>`: the same command was
  *     BLOCKED, no stash created, SPAWN_BLOCKED logged with full argv.
  *
  * Closing that gap is not possible from inside a Pi extension; it needs a

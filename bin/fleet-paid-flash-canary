@@ -14,7 +14,7 @@ if [[ -z "${GH_TOKEN:-}" && "${GITHUB_ACTIONS:-}" != "true" && "${GH:-gh}" == "g
 fi
 # fleet-paid-flash-canary — parked-flash model watcher (fleet-ops#436).
 #
-# #384 wired OpenRouter deepseek/deepseek-v4-flash-0731 as the paid flash
+# #384 wired the OpenRouter DeepSeek flash seat (now deepseek/deepseek-v4.1-flash) as the paid flash
 # lane (cheapest+best: $0.045/$0.09 per M, proven workhorse on 4 free lanes).
 # GLM 5.3 flash was a parked follow-up under #436 but is now RESOLVED: it is
 # wired FREE on cline (z-ai/glm-5.3-flash, fleet-ops#1739) and as a PAID
@@ -93,7 +93,7 @@ loud() {
 # question (wired free on cline #1739; paid lane loses to DeepSeek V4 flash on
 # price). Re-adding it would re-file the resolved #1749.
 watched=(
-  'qwen-3.8-flash|qwen3\.8.*flash|Revisit: Qwen 3.8 flash now in Pi catalog — run quality bench and wire|fleet-paid-flash-canary (fleet-ops#436) detected that a Qwen 3.8 flash slug is now in Pi'"'"'s catalog (was parked: no Qwen 3.8 flash slug on any provider — only 27B / Max / 2.4T). Per #384: run the scout/admission quality bench on real fleet packets, check live price per M in/out on BOTH OpenRouter and Zenmux (pricing moves — query the provider model APIs, do not trust a cached number), and wire it on the cheapest+best provider if it beats the current OpenRouter deepseek/deepseek-v4-flash-0731 lane ($0.045/$0.09 per M as of 2026-08-29). Quality > speed > efficiency; if cheapest != best, quality wins and the price delta is stated so Nish can override. Confirm the exact slug is a Pi provider transport. Add the slug to config/seat-caps.json with a dated reason (capacity-is-measured). Closes the parked condition from #436.'
+  'qwen-3.8-flash|qwen3\.8.*flash|Revisit: Qwen 3.8 flash now in Pi catalog — run quality bench and wire|fleet-paid-flash-canary (fleet-ops#436) detected that a Qwen 3.8 flash slug is now in Pi'"'"'s catalog (was parked: no Qwen 3.8 flash slug on any provider — only 27B / Max / 2.4T). Per #384: run the scout/admission quality bench on real fleet packets, check live price per M in/out on BOTH OpenRouter and Zenmux (pricing moves — query the provider model APIs, do not trust a cached number), and wire it on the cheapest+best provider if it beats the current OpenRouter deepseek/deepseek-v4.1-flash lane ($0.045/$0.09 per M class as of 2026-08-29). Quality > speed > efficiency; if cheapest != best, quality wins and the price delta is stated so Nish can override. Confirm the exact slug is a Pi provider transport. Add the slug to config/seat-caps.json with a dated reason (capacity-is-measured). Closes the parked condition from #436.'
 )
 
 # File one issue for a transition. Dedup: an open issue whose body contains

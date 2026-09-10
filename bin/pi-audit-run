@@ -279,7 +279,7 @@ resolve_senior_seat() {
         fi
         return 1
     fi
-    local order="${AUDIT_SENIOR_ORDER:-cursor/cursor-grok-4.6-high xai-oauth/grok-4.6 openrouter/deepseek/deepseek-v4-flash-0731}"
+    local order="${AUDIT_SENIOR_ORDER:-cursor/cursor-grok-4.6-high xai-oauth/grok-4.6 openrouter/deepseek/deepseek-v4.1-flash}"
     local seat p m
     for seat in $order; do
         [ -n "$seat" ] || continue

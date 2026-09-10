@@ -38,7 +38,7 @@
 #      fleet-ops#1873 determination (window 2026-08-29T02:30-04:30Z: 14
 #      empty runs vs 3 dispatches, ready_work=119, samples fleet-ops-1360/
 #      -628/-1350/-1390 on straitly/deepseek-v4-pro, openrouter/deepseek-
-#      v4-flash-0731, commandcode/poolside/laguna-s-2.1-free): same
+#      v4.1-flash, commandcode/poolside/laguna-s-2.1-free): same
 #      provider-empty-run class as devin-empty-run-known-fault (vault
 #      2026-08-27). Packet-render RULED OUT — all four sample issues have
 #      well-formed bodies (331-885 B). Context-limit RULED OUT — the fault
@@ -543,7 +543,7 @@ fi
 # Also written to the err file so the seat-health spawn-fail detector can
 # distinguish a hang (this marker) from a spawn ETIMEDOUT.
 # fleet-ops#3873: per-seat hang-watchdog override. A slow seat (e.g.
-# ollama/deepseek-v4-flash:0731) needs a longer watchdog than the global
+# ollama/<retired-V4-flash>) needs a longer watchdog than the global
 # 42 min default — its sessions do 14-149 tool calls then get rc=124
 # killed before writing final text. seat-caps.json declares a per-provider
 # hang_timeout_s; seat_hang_timeout_s reads it and falls back to 2520.
@@ -912,7 +912,7 @@ is_empty_run() {
 }
 
 # fleet-ops#3714: a session that made tool calls did real work. When the model
-# ends its turn ON a tool call (deepseek-v4-flash:0731 via ollama closes with
+# ends its turn ON a tool call (<retired-V4-flash> via ollama closes with
 # structured_output and no trailing text), pi --print emits no final text, so
 # stdout is 0B while the verdict on stderr already says tools=N class=worked.
 # Live 2026-09-05: fleet-ops-3268 22:14Z (14 tool calls, 44k tokens, stderr
@@ -982,7 +982,7 @@ if (( out_bytes < OUT_MIN )); then
         # fleet-ops#3810: but a worked-no-text session that did NOT ship a
         # PR is a BURNED CLAIM, not a success. Exit 0 left the issue
         # unresolved with no re-queue (16 empty runs in 2h on
-        # ollama/deepseek-v4-flash:0731, each burning a claim silently).
+        # ollama/<retired-V4-flash>, each burning a claim silently).
         # Fail the claim loudly (exit 1, death_class=work) so systemd
         # Restart re-queues the issue on a different seat. The seat is NOT
         # benched (not a seat fault — the seat functioned, tools>0);
@@ -990,7 +990,7 @@ if (( out_bytes < OUT_MIN )); then
         # rest of the burst. A session that DID ship (PR open or issue
         # closed) falls through to the success path as a real success.
         # fleet-ops#3847: a SINGLE 0B-stdout run is not proof of a broken seat,
-        # but N consecutive ones is (live: deepseek-v4-flash:0731, 5/5 runs in
+        # but N consecutive ones is (live: <retired-V4-flash>, 5/5 runs in
         # 2h, 197 tool calls, zero deliverables, each classified worked-no-text
         # and never benched). Count consecutive worked-no-text runs per seat;
         # once the count reaches WORKED_NO_TEXT_THRESHOLD, bench the seat via

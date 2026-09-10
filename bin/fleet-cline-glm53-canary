@@ -19,7 +19,7 @@ fi
 # night: pi --provider cline auth OK, guessed slugs cline-pass/glm-5.3-flash
 # and cline-pass/glm-5-3-flash both 404. Official ClinePass docs still list
 # cline-pass/glm-5.3 (non-flash, quota) and no flash id. Pi's catalog on
-# 2026-08-27 still has only cline-pass/deepseek-v4-flash and
+# 2026-08-27 still has only cline-pass/deepseek-v4.1-flash and
 # cline-pass/minimax-m3. Custom-provider models also need a models.json
 # entry (orcarouter lesson).
 #

@@ -1,5 +1,5 @@
 {
-  "_comment": "fleet2 / PI TUNING PACKET (2026-08-18) §5: register endpoints properly. MiniMax is a custom provider not in the built-in catalog — register it explicitly so the cache prefix metadata is right. Groq and OpenRouter are built into pi, but we model-override the gpt-oss-20b entry Groq runs so the cacheRead price and 131k context are correct. 2026-09-06 fleet-ops#3722: this file is now MANIFEST-managed (config/pi-models.json -> ~/.pi/agent/models.json, installed as a copy by install.sh). Edit the repo copy, never this live file by hand. The four openrouter :free seats (minimax-m3, glm-5.2, nemotron-3-ultra-550b, gemma-4-31b-it) are registered in modelOverrides with cost 0 so enumerate_seats emits them; caps live in config/seat-caps.json. openrouter/xkiro apiKeys were literal secrets in this file — they are now !command refs like every other provider (no secret in the repo).",
+  "_comment": "fleet2 / PI TUNING PACKET (2026-08-18) \u00a75: register endpoints properly. MiniMax is a custom provider not in the built-in catalog \u2014 register it explicitly so the cache prefix metadata is right. Groq and OpenRouter are built into pi, but we model-override the gpt-oss-20b entry Groq runs so the cacheRead price and 131k context are correct. 2026-09-06 fleet-ops#3722: this file is now MANIFEST-managed (config/pi-models.json -> ~/.pi/agent/models.json, installed as a copy by install.sh). Edit the repo copy, never this live file by hand. The four openrouter :free seats (minimax-m3, glm-5.2, nemotron-3-ultra-550b, gemma-4-31b-it) are registered in modelOverrides with cost 0 so enumerate_seats emits them; caps live in config/seat-caps.json. openrouter/xkiro apiKeys were literal secrets in this file \u2014 they are now !command refs like every other provider (no secret in the repo).",
   "providers": {
     "minimax": {
       "name": "MiniMax (fleet2)",
@@ -47,11 +47,6 @@
     },
     "openrouter": {
       "modelOverrides": {
-        "deepseek/deepseek-v4-flash-0731": {
-          "contextWindow": 1310720,
-          "maxTokens": 32768,
-          "reasoning": false
-        },
         "deepseek/deepseek-v4-pro-0813": {
           "contextWindow": 128000,
           "maxTokens": 32768,
@@ -112,7 +107,7 @@
             "cacheWrite": 0
           }
         },
-        "deepseek/deepseek-v4-flash": {
+        "deepseek/deepseek-v4.1-flash": {
           "contextWindow": 1310720,
           "maxTokens": 32768,
           "reasoning": false,
@@ -148,8 +143,8 @@
           }
         },
         {
-          "id": "deepseek/deepseek-v4-flash",
-          "name": "DeepSeek V4 Flash via CommandCode",
+          "id": "deepseek/deepseek-v4.1-flash",
+          "name": "DeepSeek V4.1 Flash via CommandCode",
           "contextWindow": 131072,
           "maxTokens": 16384
         },
@@ -174,28 +169,12 @@
       "apiKey": "!cut -d= -f2 /home/nish/fleet2/etc/bai.env",
       "models": [
         {
-          "id": "deepseek-v4-flash",
-          "name": "DeepSeek V4 Flash FREE via b.ai (free tier)",
+          "id": "deepseek-v4.1-flash",
+          "name": "DeepSeek V4.1 Flash FREE via b.ai (free tier)",
           "contextWindow": 131072,
           "maxTokens": 16384,
           "input": [
             "text"
-          ],
-          "cost": {
-            "input": 0,
-            "output": 0,
-            "cacheRead": 0,
-            "cacheWrite": 0
-          }
-        },
-        {
-          "id": "deepseek-v4-flash-vision-exp",
-          "name": "DeepSeek V4 Flash Vision EXP FREE via b.ai (free tier, vision)",
-          "contextWindow": 131072,
-          "maxTokens": 16384,
-          "input": [
-            "text",
-            "image"
           ],
           "cost": {
             "input": 0,
@@ -214,12 +193,6 @@
         "thinkingTokenBudgetField": "thinking_token_budget"
       },
       "models": [
-        {
-          "id": "deepseek-v4-flash-free",
-          "name": "DeepSeek V4 Flash FREE via OpenCode Zen",
-          "contextWindow": 131072,
-          "maxTokens": 16384
-        },
         {
           "id": "hy3-free",
           "name": "Hunyuan 3 FREE via OpenCode Zen",
@@ -273,12 +246,6 @@
       "api": "openai-completions",
       "apiKey": "!cut -d= -f2 /home/nish/fleet2/etc/mergegateway.env",
       "models": [
-        {
-          "id": "deepseek/deepseek-v4-flash",
-          "name": "DeepSeek V4 Flash via Merge Gateway",
-          "contextWindow": 131072,
-          "maxTokens": 16384
-        },
         {
           "id": "anthropic/claude-sonnet-5",
           "name": "Claude Sonnet 5 via Merge Gateway",
@@ -334,13 +301,6 @@
           "reasoning": true
         },
         {
-          "id": "deepseek-v4-flash",
-          "name": "DeepSeek V4 Flash via OpenCode Go",
-          "contextWindow": 1000000,
-          "maxTokens": 65536,
-          "reasoning": true
-        },
-        {
           "id": "deepseek-v4-pro",
           "name": "DeepSeek V4 Pro via OpenCode Go",
           "contextWindow": 1000000,
@@ -360,16 +320,6 @@
       "api": "openai-completions",
       "apiKey": "!cut -d= -f2 /home/nish/fleet2/etc/ollama.env",
       "models": [
-        {
-          "id": "deepseek-v4-flash:0731",
-          "name": "DS4 Flash via Ollama Pro",
-          "contextWindow": 1000000,
-          "maxTokens": 16384,
-          "samplingParams": {
-            "reasoning_effort": "none"
-          },
-          "_comment_reasoning": "fleet-ops#4234: the endpoint reasons by default and charges reasoning to the output budget. reasoning_effort:none is the only value that turns it off (low/medium/high, think:false and chat_template_kwargs{thinking:false} all still return reasoning and zero content). Pi already clamps this seat's thinkingLevel to off because reasoning is not declared here, so this makes the wire match Pi's own view."
-        },
         {
           "id": "deepseek-v4-pro:0813",
           "name": "DS4 Pro via Ollama Pro",
@@ -413,8 +363,8 @@
       "apiKey": "!cut -d= -f2 /home/nish/fleet2/etc/cline.env",
       "models": [
         {
-          "id": "cline-pass/deepseek-v4-flash",
-          "name": "DS4 Flash via ClinePass (subscription)",
+          "id": "cline-pass/deepseek-v4.1-flash",
+          "name": "DeepSeek V4.1 Flash via ClinePass (subscription)",
           "contextWindow": 131072,
           "maxTokens": 16384
         },
@@ -466,8 +416,8 @@
           "maxTokens": 16384
         },
         {
-          "id": "deepseek/deepseek-v4-flash",
-          "name": "DeepSeek V4 Flash via ZenMux (paid $5)",
+          "id": "deepseek/deepseek-v4.1-flash",
+          "name": "DeepSeek V4.1 Flash via ZenMux (paid $5)",
           "contextWindow": 131072,
           "maxTokens": 16384
         }
@@ -477,14 +427,7 @@
       "baseUrl": "https://model.inferx.net/endpoints/v1",
       "api": "openai-completions",
       "apiKey": "!cut -d= -f2 /home/nish/fleet2/etc/inferx.env",
-      "models": [
-        {
-          "id": "deepseek-v4-flash",
-          "name": "DS4 Flash via InferX (100% off promo)",
-          "contextWindow": 131072,
-          "maxTokens": 16384
-        }
-      ]
+      "models": []
     },
     "devin": {
       "name": "Devin",
@@ -601,19 +544,6 @@
       },
       "models": [
         {
-          "id": "deepseek/deepseek-v4-flash",
-          "name": "xKiro DeepSeek V4 Flash (free tier)",
-          "reasoning": true,
-          "contextWindow": 1048576,
-          "cost": {
-            "input": 0,
-            "output": 0,
-            "cacheRead": 0,
-            "cacheWrite": 0
-          },
-          "maxTokens": 65536
-        },
-        {
           "id": "deepseek/deepseek-v4-pro",
           "name": "xKiro DeepSeek V4 Pro (free tier)",
           "reasoning": true,
@@ -645,67 +575,19 @@
       "baseUrl": "https://api.runinfra.ai/v1",
       "api": "openai-completions",
       "apiKey": "!cut -d= -f2 /home/nish/fleet2/etc/runinfra.env",
-      "models": [
-        {
-          "id": "deepseek-v4-flash",
-          "name": "DeepSeek V4 Flash via RunInfra",
-          "contextWindow": 1000000,
-          "maxTokens": 32768,
-          "reasoning": false,
-          "cost": {
-            "input": 0.13,
-            "output": 0.27,
-            "cacheRead": 0.01,
-            "cacheWrite": 0
-          },
-          "_comment_4262": "fleet-ops#4262: runinfra's models registration is durable here. #4207 landed the seat-caps/entitled rows only; install.sh copy-installs pi-models.json verbatim (the unknown-provider merge exists only for seat-caps.json), so the 2026-09-07 14:10Z deploy silently dropped runinfra+crof+entrim from the live models.json. Landed verbatim from the pre-#4234 live file (models.json.pre-4234-20260907T133107Z)."
-        }
-      ]
+      "models": []
     },
     "crof": {
       "baseUrl": "https://crof.ai/v1",
       "api": "openai-completions",
       "apiKey": "!cut -d= -f2 /home/nish/fleet2/etc/crof.env",
-      "models": [
-        {
-          "id": "deepseek-v4-flash-0731",
-          "name": "DeepSeek V4 Flash 0731 (Q8_0) via CrofAI",
-          "contextWindow": 1000000,
-          "maxTokens": 32768,
-          "reasoning": false,
-          "cost": {
-            "input": 0.08,
-            "output": 0.1,
-            "cacheRead": 0.003,
-            "cacheWrite": 0
-          },
-          "samplingParams": {
-            "reasoning_effort": "none"
-          },
-          "_comment_reasoning": "fleet-ops#4234/#4262: same treatment as the merged #4234 fix for ollama.com — CrofAI serves DeepSeek V4 Flash 0731 and reasons by default, charging reasoning to the output budget; reasoning_effort:none is the only value that turns it off (landed verbatim from the pre-#4234 live file). Pi already clamps this seat's thinkingLevel to off because reasoning is not declared here, so this makes the wire match Pi's own view."
-        }
-      ]
+      "models": []
     },
     "entrim": {
       "baseUrl": "https://api.entrim.ai/v1",
       "api": "openai-completions",
       "apiKey": "!cut -d= -f2 /home/nish/fleet2/etc/entrim.env",
-      "models": [
-        {
-          "id": "deepseek-ai/DeepSeek-V4-Flash",
-          "name": "DeepSeek V4 Flash via Entrim",
-          "contextWindow": 1000000,
-          "maxTokens": 32768,
-          "reasoning": false,
-          "cost": {
-            "input": 0.09,
-            "output": 0.17,
-            "cacheRead": 0.09,
-            "cacheWrite": 0
-          },
-          "_comment_4262": "fleet-ops#4262: landed verbatim from the live file (pre-#4234 backup). cacheRead=input (0.09) until measured — Entrim's cache-read pricing is not known yet."
-        }
-      ]
+      "models": []
     },
     "alibaba-coding": {
       "baseUrl": "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
@@ -792,22 +674,6 @@
             "cacheRead": 0,
             "cacheWrite": 0
           }
-        },
-        {
-          "id": "deepseek-v4-flash-0731",
-          "name": "deepseek-v4-flash-0731 via Alibaba Token Plan (SG)",
-          "contextWindow": 1000000,
-          "maxTokens": 32768,
-          "reasoning": false,
-          "cost": {
-            "input": 0,
-            "output": 0,
-            "cacheRead": 0,
-            "cacheWrite": 0
-          },
-          "samplingParams": {
-            "enable_thinking": false
-          }
         }
       ],
       "compat": {
@@ -815,7 +681,7 @@
         "supportsReasoningEffort": false,
         "thinkingTokenBudgetField": "thinking_budget"
       },
-      "_comment_4329": "fleet-ops#4329: alibaba-coding's models registration is durable here. install.sh copy-installs pi-models.json verbatim (the unknown-provider merge exists only for seat-caps.json), so without this row a deploy would silently drop the provider from the live models.json — the same trap #4262 caught for runinfra/crof/entrim. Landed verbatim from the live ~/.pi/agent/models.json (smoke-tested SEAT-OK 2026-09-07). compat.supportsDeveloperRole=false (the endpoint 400s on Pi's developer role); thinking on for the reasoning models, enable_thinking=false for qwen3.8-flash + deepseek-v4-flash-0731."
+      "_comment_4329": "fleet-ops#4329: alibaba-coding's models registration is durable here. install.sh copy-installs pi-models.json verbatim (the unknown-provider merge exists only for seat-caps.json), so without this row a deploy would silently drop the provider from the live models.json \u2014 the same trap #4262 caught for runinfra/crof/entrim. Landed verbatim from the live ~/.pi/agent/models.json (smoke-tested SEAT-OK 2026-09-07). compat.supportsDeveloperRole=false (the endpoint 400s on Pi's developer role); thinking on for the reasoning models, enable_thinking=false for qwen3.8-flash + the V4 flash seat (retired 2026-09-10)."
     },
     "paretoinference": {
       "name": "Pareto Inference (Pareto Pass)",
@@ -823,25 +689,6 @@
       "api": "openai-completions",
       "apiKey": "!cut -d= -f2 /home/nish/fleet2/etc/paretoinference.env",
       "models": [
-        {
-          "id": "deepseek/deepseek-v4-flash",
-          "name": "DeepSeek V4 Flash via ParetoInference",
-          "contextWindow": 1000000,
-          "maxTokens": 8192,
-          "reasoning": false,
-          "input": [
-            "text"
-          ],
-          "cost": {
-            "input": 0.081,
-            "output": 0.162,
-            "cacheRead": 0.016,
-            "cacheWrite": 0
-          },
-          "samplingParams": {
-            "reasoning_effort": "low"
-          }
-        },
         {
           "id": "z-ai/glm-5.3-flash",
           "name": "GLM 5.3 Flash via ParetoInference",
@@ -885,7 +732,7 @@
         "maxTokensField": "max_tokens",
         "supportsReasoningEffort": true
       },
-      "_comment_4453": "fleet-ops#4453: Pareto Inference Pareto Pass (https://docs.paretoinference.com/, https://docs.paretoinference.com/api-reference.md, base https://api.paretoinference.com/v1, OpenAI chat-completions, Authorization: Bearer). $3/week, up to $20 of model usage each day. Rate card (https://docs.paretoinference.com/pareto-pass.md) per 1M tokens: deepseek-v4-flash $0.081 in / $0.162 out / $0.016 cached; glm-5.3-flash $0.075 / $0.25 / $0.015; glm-5.3 $2.80 / $8.80 / $0.52. Live probe 2026-09-08T04:04Z: both flash models HTTP 200; usage carries cost, cost_details, cached_tokens, reasoning_tokens. compat.maxTokensField=max_tokens because the API 400s if both max_tokens and max_completion_tokens are sent (api-reference.md). reasoning_effort:low for workers (output is 2x input price; reasoning tokens bill as output), max_tokens 8192. glm-5.3 is registered (so enumerate_seats emits it) but capped at 0 in seat-caps.json — 35x the flash price, never a worker. pi-issue-run passes --no-context-files --thinking low on this provider (context is the cost; no AGENTS.md dump). Session call ceiling 40: pi has no --max-turns (mechanism-impossible as a hard kill without a new watcher); hang-watchdog + first-20-sessions prompt_tokens/call measurement is the observe path."
+      "_comment_4453": "fleet-ops#4453: Pareto Inference Pareto Pass (https://docs.paretoinference.com/, https://docs.paretoinference.com/api-reference.md, base https://api.paretoinference.com/v1, OpenAI chat-completions, Authorization: Bearer). $3/week, up to $20 of model usage each day. Rate card (https://docs.paretoinference.com/pareto-pass.md) per 1M tokens: DeepSeek V4 Flash (retired 2026-09-10) $0.081 in / $0.162 out / $0.016 cached; glm-5.3-flash $0.075 / $0.25 / $0.015; glm-5.3 $2.80 / $8.80 / $0.52. Live probe 2026-09-08T04:04Z: the then-listed flash models HTTP 200; usage carries cost, cost_details, cached_tokens, reasoning_tokens. compat.maxTokensField=max_tokens because the API 400s if both max_tokens and max_completion_tokens are sent (api-reference.md). reasoning_effort:low for workers (output is 2x input price; reasoning tokens bill as output), max_tokens 8192. glm-5.3 is registered (so enumerate_seats emits it) but capped at 0 in seat-caps.json \u2014 35x the flash price, never a worker. pi-issue-run passes --no-context-files --thinking low on this provider (context is the cost; no AGENTS.md dump). Session call ceiling 40: pi has no --max-turns (mechanism-impossible as a hard kill without a new watcher); hang-watchdog + first-20-sessions prompt_tokens/call measurement is the observe path."
     },
     "pgsgrove": {
       "name": "PGSGrove",
@@ -917,7 +764,7 @@
         "maxTokensField": "max_tokens",
         "supportsReasoningEffort": true
       },
-      "_comment_20260910": "Nish handed key+base 2026-09-10 for glm-5.3-flash. Live probe 2026-09-10T08:20Z: /v1/models 200 (34 ids incl glm-5.3-flash, deepseek-v4-flash, kimi-k3); every chat/completions and /v1/responses call = HTTP 402 insufficient_quota on all models. NOT in litellm-proxy.yaml until one real 200 completion is proven (dead deployment in the router = 2026-09-09 zero-healthy incident). cost 0 placeholders until rate card known; contextWindow unverified. Rate card from /v1/models pricing 2026-09-10: glm-5.3-flash $0.10 in / $0.33 out / $0.02 cached per 1M, context 1048576, max_output 32768 (capped 8192 here). METERED credits (site: 'per-token access starts at $5'); pricier than Pareto Pass glm-5.3-flash ($0.075/$0.25)."
+      "_comment_20260910": "Nish handed key+base 2026-09-10 for glm-5.3-flash. Live probe 2026-09-10T08:20Z: /v1/models 200 (34 ids incl glm-5.3-flash, kimi-k3, and a since-retired V4 flash id); every chat/completions and /v1/responses call = HTTP 402 insufficient_quota on all models. NOT in litellm-proxy.yaml until one real 200 completion is proven (dead deployment in the router = 2026-09-09 zero-healthy incident). cost 0 placeholders until rate card known; contextWindow unverified. Rate card from /v1/models pricing 2026-09-10: glm-5.3-flash $0.10 in / $0.33 out / $0.02 cached per 1M, context 1048576, max_output 32768 (capped 8192 here). METERED credits (site: 'per-token access starts at $5'); pricier than Pareto Pass glm-5.3-flash ($0.075/$0.25)."
     },
     "litellm": {
       "name": "LiteLLM proxy (fleet seat routing, fleet-ops#4130 P2+P3a)",
@@ -973,8 +820,8 @@
       "apiKey": "!sed -n 's/^DEEPSEEK_API_KEY=//p' /home/nish/.config/deepseek/deepseek.env",
       "models": [
         {
-          "id": "deepseek-v4-flash",
-          "name": "DeepSeek V4 Flash (direct, last-resort)",
+          "id": "deepseek-flash",
+          "name": "DeepSeek V4.1 Flash (direct, last-resort)",
           "contextWindow": 1000000,
           "maxTokens": 32768,
           "reasoning": false,
@@ -987,7 +834,7 @@
           "samplingParams": {
             "reasoning_effort": "none"
           },
-          "_comment_reasoning": "fleet-ops#4234/#4625: same treatment as the merged #4234 fix for crof/ollama — DeepSeek V4 Flash reasons by default and bills reasoning to the output budget; reasoning_effort:none is the only value that turns it off. Pi clamps this seat's thinkingLevel to off because reasoning is not declared here. This is a LAST-RESORT metered worker seat (fleet-ops#4625) — never waste reasoning tokens on volume work."
+          "_comment_reasoning": "fleet-ops#4234/#4625: same treatment as the merged #4234 fix for crof/ollama \u2014 DeepSeek V4 Flash reasons by default and bills reasoning to the output budget; reasoning_effort:none is the only value that turns it off. Pi clamps this seat's thinkingLevel to off because reasoning is not declared here. This is a LAST-RESORT metered worker seat (fleet-ops#4625) \u2014 never waste reasoning tokens on volume work."
         },
         {
           "id": "deepseek-v4-pro",
@@ -1005,7 +852,7 @@
             "cacheRead": 0.044,
             "cacheWrite": 1.32
           },
-          "_comment_4625": "fleet-ops#4625: pro is keystone-class packets only (cap 1), never volume. Reasoning on — pro is the reasoning model. Last-resort metered seat; the 3-pass exhaustion gate (pick_seat) must clear before this is ever admitted."
+          "_comment_4625": "fleet-ops#4625: pro is keystone-class packets only (cap 1), never volume. Reasoning on \u2014 pro is the reasoning model. Last-resort metered seat; the 3-pass exhaustion gate (pick_seat) must clear before this is ever admitted."
         }
       ],
       "compat": {

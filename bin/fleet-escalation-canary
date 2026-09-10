@@ -975,10 +975,10 @@ else
         # privacy is the 6th arg.
         _drill="$(mktemp -d -t privacy-guard-drill.XXXXXX)"
         cat >"$_drill/models.json" <<'JSON'
-{"providers":{"ollama":{"models":[{"id":"deepseek-v4-flash:0731","cost":{"input":0}}]},"devin":{"models":[{"id":"glm-5-2","cost":{"input":0}}]}}}
+{"providers":{"ollama":{"models":[{"id":"kimi-k3","cost":{"input":0}}]},"devin":{"models":[{"id":"glm-5-2","cost":{"input":0}}]}}}
 JSON
         cat >"$_drill/seat-caps.json" <<'JSON'
-{"ram_gb_per_worker":1.5,"free_providers_in_order":["ollama"],"providers":{"ollama":{"cap":2,"class":"free","models":{"deepseek-v4-flash:0731":2}},"devin":{"cap":4,"class":"prepaid-quota","models":{"glm-5-2":4}}}}
+{"ram_gb_per_worker":1.5,"free_providers_in_order":["ollama"],"providers":{"ollama":{"cap":2,"class":"free","models":{"kimi-k3":2}},"devin":{"cap":4,"class":"prepaid-quota","models":{"glm-5-2":4}}}}
 JSON
         cat >"$_drill/repo-privacy.json" <<'JSON'
 {"default_policy":"private","public":["0509"],"private":["0509-telemetry"]}
