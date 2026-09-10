@@ -110,6 +110,14 @@ case "$*" in
     echo "https://github.com/Nishfleet/fleet-ops/issues/999"
     exit 0
     ;;
+  *"issue close"*)
+    printf 'CLOSE %s\n' "$*" >>"${GH_LOG:-/dev/null}"
+    exit 0
+    ;;
+  *"issue comment"*)
+    printf 'COMMENT %s\n' "$*" >>"${GH_LOG:-/dev/null}"
+    exit 0
+    ;;
 esac
 exit 0
 FAKE
@@ -323,4 +331,118 @@ help_out=$("$bin" --help)
 grep -q 'gate <repo>' <<<"$help_out" || fail "--help must name gate"
 ok "scenario12: --help names gate and hours"
 
-ok "fleet-work-supply-canary: math, gate, clean, ExecCondition, prompt, workers, auditor, go-ham idle, dedup, production, wiring, help"
+# --- 13. service-start signal (fleet-ops#996) -------------------------------
+# The canary used to read pi-scout@<repo>.timer's LastTriggerUSec, which
+# lied about manual dispatches (low-water-mark starts the service
+# without going through the timer). Live: 2026-08-27 05:25-06:16Z the
+# canary filed five go-ham-idle tickets while low-water-mark was
+# dispatching the scout the whole time. The fix: read the service's
+# InactiveExitTimestamp. When the service was started within
+# MAX_IDLE_S, the canary must be quiet even if the timer is ancient.
+write_wired_checkout
+: >"$gh_log"; : >"$triage"
+export FLEET_WORK_SUPPLY_HOURS=5
+export FLEET_WORK_SUPPLY_SCOUT_STATE=inactive
+# Timer would say idle 20000s, but the new service-start signal is 100s.
+export FLEET_WORK_SUPPLY_LAST_START_AGE_S=100
+export FLEET_WORK_SUPPLY_LAST_TRIGGER_AGE_S=20000
+run_canary
+[[ "$env_rc" == "0" ]] || fail "scenario13: service-start within MAX_IDLE_S must be OK, got rc=$env_rc ($env_out)"
+grep -q 'WORK-SUPPLY-OK' <<<"$env_out" || fail "scenario13: must log OK ($env_out)"
+if grep -q 'issue create' "$gh_log"; then
+  fail "scenario13: must not file when service was just started (gh=$(cat "$gh_log"))"
+fi
+ok "scenario13: service-start signal (fleet-ops#996) is the honest liveness read"
+
+# --- 14. observe-to-close posts resolved-at on first resolved tick ---------
+# Live ticket #996 was filed while the scout was actually being
+# dispatched. observe-to-close must (a) detect the open go-ham-idle
+# issue, (b) confirm the situation is now resolved (hours >= 12 or
+# service-start within MAX_IDLE_S), and (c) post a resolved-at comment
+# for the next tick to close. Two-tick shape (fleet-ops#650): comment
+# first, close on the next tick.
+write_wired_checkout
+: >"$gh_log"; : >"$triage"
+export FLEET_WORK_SUPPLY_HOURS=8
+export FLEET_WORK_SUPPLY_SCOUT_STATE=inactive
+export FLEET_WORK_SUPPLY_LAST_START_AGE_S=200
+unset FLEET_WORK_SUPPLY_LAST_TRIGGER_AGE_S
+# Simulate the live #996 ticket already on the open list.
+cat >"$scratch/open.json" <<'JSON'
+[{"number":996,"title":"scouts idle while ready work is under 12 hours (go-ham-idle 0509)","body":"live filed\n\nwork-supply-canary: go-ham-idle 0509\n","comments":[]}]
+JSON
+run_canary
+[[ "$env_rc" == "0" ]] || fail "scenario14: resolved situation must exit 0, got rc=$env_rc ($env_out)"
+# No issue create (dedup), but a comment with resolved-at must be posted.
+if grep -q 'issue create' "$gh_log"; then
+  fail "scenario14: must not file a duplicate (gh=$(cat "$gh_log"))"
+fi
+grep -q 'issue comment' "$gh_log" || fail "scenario14: must post resolved-at comment (gh=$(cat "$gh_log"))"
+grep -q 'resolved-at: work-supply-canary: go-ham-idle 0509' "$gh_log" \
+  || fail "scenario14: comment must carry resolved-at marker (gh=$(cat "$gh_log"))"
+# And the canary must NOT close on this tick (two-tick shape).
+if grep -q 'issue close' "$gh_log"; then
+  fail "scenario14: must NOT close on the same tick as the comment (gh=$(cat "$gh_log"))"
+fi
+ok "scenario14: observe-to-close posts resolved-at on the first resolved tick"
+
+# --- 15. observe-to-close closes on the second resolved tick ----------------
+# A subsequent tick that finds the issue already carries the
+# resolved-at marker AND the situation is still resolved must close.
+write_wired_checkout
+: >"$gh_log"; : >"$triage"
+export FLEET_WORK_SUPPLY_HOURS=8
+export FLEET_WORK_SUPPLY_SCOUT_STATE=inactive
+export FLEET_WORK_SUPPLY_LAST_START_AGE_S=200
+unset FLEET_WORK_SUPPLY_LAST_TRIGGER_AGE_S
+# Live #996 already on the open list with the resolved-at comment from
+# the previous tick.
+cat >"$scratch/open.json" <<'JSON'
+[{"number":996,"title":"scouts idle while ready work is under 12 hours (go-ham-idle 0509)","body":"live filed\n\nwork-supply-canary: go-ham-idle 0509\n","comments":[{"body":"resolved-at: work-supply-canary: go-ham-idle 0509\n\nresolved; closing."}]}]
+JSON
+run_canary
+[[ "$env_rc" == "0" ]] || fail "scenario15: closed situation must exit 0, got rc=$env_rc ($env_out)"
+grep -q 'issue close' "$gh_log" || fail "scenario15: must close on the second tick (gh=$(cat "$gh_log"))"
+grep -q 'CLOSE.*996' "$gh_log" || fail "scenario15: must close #996 specifically (gh=$(cat "$gh_log"))"
+# No new file, no new comment.
+if grep -q 'issue create' "$gh_log"; then
+  fail "scenario15: must not file a new issue (gh=$(cat "$gh_log"))"
+fi
+if grep -q 'issue comment' "$gh_log"; then
+  fail "scenario15: must not comment again on the close tick (gh=$(cat "$gh_log"))"
+fi
+ok "scenario15: observe-to-close closes on the second resolved tick"
+
+# --- 16. observe-to-close leaves the issue open when still go-ham-idle -----
+# If the situation is NOT resolved (hours < 12 AND service is still
+# ancient), observe-to-close must NOT post resolved-at and NOT close.
+# The loud below will keep filing deduped, which is the correct
+# behavior: the finding is still real.
+write_wired_checkout
+: >"$gh_log"; : >"$triage"
+export FLEET_WORK_SUPPLY_HOURS=5
+export FLEET_WORK_SUPPLY_SCOUT_STATE=inactive
+export FLEET_WORK_SUPPLY_LAST_START_AGE_S=20000
+unset FLEET_WORK_SUPPLY_LAST_TRIGGER_AGE_S
+cat >"$scratch/open.json" <<'JSON'
+[{"number":996,"title":"scouts idle while ready work is under 12 hours (go-ham-idle 0509)","body":"live filed\n\nwork-supply-canary: go-ham-idle 0509\n","comments":[]}]
+JSON
+run_canary
+[[ "$env_rc" == "1" ]] || fail "scenario16: still-idle must exit 1, got rc=$env_rc"
+if grep -q 'issue comment' "$gh_log"; then
+  fail "scenario16: must NOT post resolved-at when still idle (gh=$(cat "$gh_log"))"
+fi
+if grep -q 'issue close' "$gh_log"; then
+  fail "scenario16: must NOT close when still idle (gh=$(cat "$gh_log"))"
+fi
+ok "scenario16: observe-to-close leaves still-idle issues open"
+
+# --- 17. issue body text was updated to reference service start -------------
+grep -q 'last service start' "$bin" \
+  || fail "canary must mention 'last service start' in the filed body, not 'last timer trigger'"
+if grep -q 'last timer trigger' "$bin"; then
+  fail "canary must NOT mention 'last timer trigger' in the filed body"
+fi
+ok "scenario17: issue body text now references service start, not timer trigger"
+
+ok "fleet-work-supply-canary: math, gate, clean, ExecCondition, prompt, workers, auditor, go-ham idle, dedup, production, wiring, help, service-start-signal, observe-to-close"

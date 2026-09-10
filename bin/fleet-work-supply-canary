@@ -41,11 +41,21 @@
 #   FLEET_WORK_SUPPLY_REST_H        default 24
 #   FLEET_WORK_SUPPLY_MAX_IDLE_S    default 9000
 #   FLEET_WORK_SUPPLY_SCOUT_STATE   active|activating|inactive fixture
-#   FLEET_WORK_SUPPLY_LAST_TRIGGER_AGE_S  idle age fixture
+#   FLEET_WORK_SUPPLY_LAST_START_AGE_S   service-start age fixture (preferred)
+#   FLEET_WORK_SUPPLY_LAST_TRIGGER_AGE_S  DEPRECATED alias for
+#                                         FLEET_WORK_SUPPLY_LAST_START_AGE_S;
+#                                         kept so older test fixtures still
+#                                         work, but the canary now reads the
+#                                         service's InactiveExitTimestamp
+#                                         (not the timer's LastTriggerUSec).
+#   FLEET_WORK_SUPPLY_OBSERVE_CLOSE 1 (default) close resolved go-ham-idle
+#                                        issues; 0 skip observe-to-close
 #   FLEET_INTAKE_REPOS_JSON
 #   FLEET_HEARTBEAT_TRIAGE
 #   FLEET_WORK_SUPPLY_REPO          default Nishfleet/fleet-ops
 #   FLEET_WORK_SUPPLY_FILE          1 (default) file issues; 0 skip
+#   GH SYSTEMCTL
+#   FLEET_OPS_REPO
 #   GH SYSTEMCTL
 #   FLEET_OPS_REPO
 
@@ -133,6 +143,143 @@ ${marker}
     else
         log "WARN: gh issue create failed for $marker"
     fi
+}
+
+# observe_close_go_ham_idle
+#
+# Observe-to-close for the go-ham-idle kind: a previously filed
+# `scouts idle while ready work is under 12 hours` ticket auto-closes
+# when the situation is now resolved. The two-tick shape (fleet-ops#650)
+# comments `resolved-at: <signal>` first and only closes on the NEXT
+# tick that still finds the issue resolved; a same-tick close is
+# rejected because a single scan miss would close a still-failing
+# finding. We follow the same shape:
+#
+#   tick 1 (situation now resolved): comment with resolved-at: marker
+#   tick 2 (still resolved):         gh issue close --reason completed
+#
+# Resolved means EITHER:
+#   - the ready queue is no longer in go-ham (hours >= 12) for this
+#     repo, OR
+#   - the scout service has been started within MAX_IDLE_S for this
+#     repo (the new last_start_age_s signal, which catches both timer
+#     triggers and low-water-mark manual starts).
+#
+# This complements the live fix in last_start_age_s: the measurement
+# stops filing false-positive tickets once the service-start signal is
+# honest, and observe-to-close drains the historical pile of stale
+# tickets that the 2026-08-27 #996 incident left open while the
+# low-water-mark was correctly dispatching scouts.
+observe_close_go_ham_idle() {
+    [[ "${FLEET_WORK_SUPPLY_OBSERVE_CLOSE:-1}" == "1" ]] || return 0
+    [[ -f "$INTAKE_JSON" ]] || return 0
+    command -v "$GH" >/dev/null 2>&1 || return 0
+    command -v jq >/dev/null 2>&1 || return 0
+    local closed=0
+
+    while IFS= read -r row; do
+        [[ -n "$row" ]] || continue
+        local num marker_short blob state hours action age resolved=0
+        num=$(jq -r '.number' <<<"$row")
+        blob=$(jq -r '"\(.body // "")\n\((.comments // []) | map(.body // "") | join("\n"))"' <<<"$row")
+        # The marker in the body is the dedup token file_finding writes;
+        # the title alone ("scouts idle while ready work is under 12
+        # hours") is the human-readable shape and does not name the
+        # short repo. Pull the short from the body's marker.
+        marker_short=$(grep -oE 'work-supply-canary: go-ham-idle [a-zA-Z0-9._-]+' <<<"$blob" \
+            | head -n1 | awk '{print $NF}')
+        [[ -n "$marker_short" ]] || continue
+        if grep -Fq "resolved-at: work-supply-canary: go-ham-idle $marker_short" <<<"$blob"; then
+            # Already has the marker. Re-check resolution: if still
+            # resolved, close; if not, drop the marker (re-open the
+            # finding) so the next tick re-files fresh.
+            state=$(scout_state "$marker_short")
+            case "$state" in
+                active|activating) resolved=1 ;;
+            esac
+            if [[ "$resolved" -eq 0 ]]; then
+                age=$(last_start_age_s "$marker_short")
+                is_uint "$age" || age=999999
+                if [[ "$age" -le "$MAX_IDLE_S" ]]; then
+                    resolved=1
+                fi
+            fi
+            if [[ "$resolved" -eq 0 ]] && [[ -n "${FLEET_WORK_SUPPLY_HOURS:-}" ]]; then
+                local hh
+                hh="$FLEET_WORK_SUPPLY_HOURS"
+                is_uint "$hh" || hh=0
+                if [[ "$hh" -ge "${WORK_SUPPLY_GOHAM_H:-12}" ]]; then
+                    resolved=1
+                fi
+            fi
+            if [[ "$resolved" -eq 0 ]]; then
+                local snap
+                snap=$(snapshot "$marker_short" 2>/dev/null || true)
+                if [[ -n "$snap" ]] && jq -e . >/dev/null 2>&1 <<<"$snap"; then
+                    hours=$(jq -r '.hours_of_work' <<<"$snap")
+                    action=$(jq -r '.action' <<<"$snap")
+                    case "$action" in
+                        rest|generate) resolved=1 ;;
+                    esac
+                fi
+            fi
+            if [[ "$resolved" -eq 1 ]]; then
+                if "$GH" issue close "$num" -R "$REPO" --reason completed >/dev/null 2>&1; then
+                    log "OBSERVE-CLOSED go-ham-idle $marker_short -> #$num (resolved: scout not idle)"
+                    closed=$((closed + 1))
+                else
+                    log "WARN: gh issue close failed for #$num"
+                fi
+            else
+                log "observe: #$num still go-ham-idle (action=$action age=${age:-n/a}) — leaving open"
+            fi
+            continue
+        fi
+        # No marker yet: check if the situation has resolved, and if so
+        # post the resolved-at comment for the NEXT tick to close.
+        local hh=""
+        if [[ -n "${FLEET_WORK_SUPPLY_HOURS:-}" ]]; then
+            hh="$FLEET_WORK_SUPPLY_HOURS"
+            is_uint "$hh" || hh=0
+        else
+            local snap
+            snap=$(snapshot "$marker_short" 2>/dev/null || true)
+            if [[ -n "$snap" ]] && jq -e . >/dev/null 2>&1 <<<"$snap"; then
+                hh=$(jq -r '.hours_of_work' <<<"$snap")
+            fi
+        fi
+        is_uint "$hh" || hh=0
+        local state age
+        state=$(scout_state "$marker_short")
+        case "$state" in
+            active|activating) resolved=1 ;;
+        esac
+        if [[ "$resolved" -eq 0 ]]; then
+            age=$(last_start_age_s "$marker_short")
+            is_uint "$age" || age=999999
+            if [[ "$age" -le "$MAX_IDLE_S" ]]; then
+                resolved=1
+            fi
+        fi
+        if [[ "$resolved" -eq 0 ]] && [[ "$hh" -ge "${WORK_SUPPLY_GOHAM_H:-12}" ]]; then
+            resolved=1
+        fi
+        if [[ "$resolved" -eq 1 ]]; then
+            local comment="resolved-at: work-supply-canary: go-ham-idle $marker_short
+
+scout is no longer idle (hours=${hh}, service last started within ${MAX_IDLE_S}s, or scout is currently running). Auto-closing; a future go-ham-idle will re-file fresh. fleet-ops#996."
+            if "$GH" issue comment "$num" -R "$REPO" --body "$comment" >/dev/null 2>&1; then
+                log "observe: posted resolved-at on #$num (hours=$hh) — next tick closes"
+            else
+                log "WARN: gh issue comment failed for #$num"
+            fi
+        else
+            log "observe: #$num still go-ham-idle (hours=$hh, state=$state) — no resolved marker"
+        fi
+    done < <("$GH" issue list -R "$REPO" --state open --limit 500 \
+        --json number,title,body,comments 2>/dev/null \
+        | jq -c '[.[] | select((.body // "") | contains("work-supply-canary: go-ham-idle "))] | .[]' 2>/dev/null || true)
+    return 0
 }
 
 is_uint() {
@@ -236,14 +383,43 @@ scout_state() {
     printf '%s\n' "$state"
 }
 
-last_trigger_age_s() {
+# last_start_age_s <short>
+#
+# Returns the number of seconds since the pi-scout@<short>.service was
+# last started. The truthful signal for "has the scout been running" is
+# the service's InactiveExitTimestamp (when the unit transitioned out
+# of inactive). The earlier implementation read the timer's
+# LastTriggerUSec, which lied about manual dispatches: the
+# fleet-heartbeat-low-water-mark pass starts the service directly
+# (systemctl --user start --no-block) without going through the timer,
+# so the timer trigger time stayed stale while the service was
+# actually running. The 2026-08-27 #996 incident filed five redundant
+# `go-ham-idle` tickets between 05:25Z and 06:16Z even though
+# low-water-mark was dispatching the scout the whole time.
+#
+# The service's InactiveExitTimestamp is updated every time the unit
+# leaves the inactive state (manual start, timer start, or repair
+# OnFailure chain), so it correctly tracks "scout has been running
+# recently" for every dispatch path. The env-var overrides below keep
+# the old test fixtures working.
+last_start_age_s() {
     local short="$1" raw s now
+    if [[ -n "${FLEET_WORK_SUPPLY_LAST_START_AGE_S:-}" ]]; then
+        printf '%s\n' "$FLEET_WORK_SUPPLY_LAST_START_AGE_S"
+        return 0
+    fi
     if [[ -n "${FLEET_WORK_SUPPLY_LAST_TRIGGER_AGE_S:-}" ]]; then
         printf '%s\n' "$FLEET_WORK_SUPPLY_LAST_TRIGGER_AGE_S"
         return 0
     fi
-    raw=$("$SYSTEMCTL" --user show "pi-scout@${short}.timer" -p LastTriggerUSec --value 2>/dev/null || true)
+    # InactiveExitTimestamp: when the unit last transitioned out of
+    # inactive. Set by every dispatch path (timer, manual start, or
+    # OnFailure chain). Empty string when the service has never been
+    # started.
+    raw=$("$SYSTEMCTL" --user show "pi-scout@${short}.service" \
+        -p InactiveExitTimestamp --value 2>/dev/null || true)
     if [[ -z "$raw" || "$raw" == "0" || "$raw" == "n/a" ]]; then
+        # Never started: treat as ancient so the canary fails loud.
         printf '999999\n'
         return 0
     fi
@@ -252,6 +428,9 @@ last_trigger_age_s() {
     now=$(date -u +%s)
     printf '%s\n' $(( now - s ))
 }
+
+# Kept as a thin alias for any external caller that used the old name.
+last_trigger_age_s() { last_start_age_s "$@"; }
 
 pick_existing() {
     local f
@@ -337,6 +516,14 @@ cmd_canary() {
         exit 1
     fi
 
+    # Observe-to-close (fleet-ops#996): drain the historical pile of
+    # `go-ham-idle` tickets that the 2026-08-27 incident left open while
+    # low-water-mark was correctly dispatching scouts. The two-tick
+    # shape (comment-then-close) lives in observe_close_go_ham_idle.
+    # Must run BEFORE the per-repo loud below so a resolved situation
+    # does not re-file the same ticket.
+    observe_close_go_ham_idle || true
+
     local repo short snap hours action state age
     while IFS= read -r repo; do
         [ -z "$repo" ] && continue
@@ -356,13 +543,13 @@ cmd_canary() {
         case "$state" in
             active|activating) log "$repo scout $state — go-ham already running"; continue ;;
         esac
-        age=$(last_trigger_age_s "$short")
+        age=$(last_start_age_s "$short")
         is_uint "$age" || age=999999
         if [ "$age" -gt "$MAX_IDLE_S" ]; then
             loud "WORK-SUPPLY-GO-HAM" "repo=$repo hours=$hours action=go-ham scout idle ${age}s > ${MAX_IDLE_S}s"
             file_finding "go-ham-idle" "$short" \
                 "scouts idle while ready work is under 12 hours" \
-                "Nishfleet/${short} has ${hours} hours of agent-ready work at the measured drain rate (<12h go-ham). pi-scout@${short} is ${state} and last timer trigger was ${age}s ago (max idle ${MAX_IDLE_S}s). Start the scout. fleet-ops#540."
+                "Nishfleet/${short} has ${hours} hours of agent-ready work at the measured drain rate (<12h go-ham). pi-scout@${short} is ${state} and last service start was ${age}s ago (max idle ${MAX_IDLE_S}s). Start the scout. fleet-ops#540."
             violations=$((violations + 1))
         fi
     done < <(jq -r '.repos[].name | "Nishfleet/" + .' "$INTAKE_JSON")
