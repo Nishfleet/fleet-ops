@@ -14,6 +14,12 @@
       "cadence": "daily",
       "source": "repo"
     },
+    "0509-sneaker-resale-recall-canary.timer": {
+      "reason": "Every 3h (03:00/3:00 IST) 0509 sneaker-resale seed-list recall guard (Nishfleet/0509#1945) \u2014 fails when any sneaker-resale seed-list brand with genuine Meta ad coverage returns 0 verified/likely rows on production /search; deliberately a hand-placed user unit (like 0509-demo-brand-timeline-canary, #1899) because the worker GitHub App token cannot write .github/workflows and the check needs no secrets, only outbound HTTPS to 0509.io; runs from a read-only checkout that self-syncs to main (fleet-ops#4647)",
+      "classification": "scheduled",
+      "cadence": "every-3h",
+      "source": "user-config"
+    },
     "agent-cron-0509-daily-market-signal.timer": {
       "reason": "Daily 0509 market signal cron \u2014 true calendar job at 08:15 IST",
       "classification": "scheduled",

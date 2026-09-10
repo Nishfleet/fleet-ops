@@ -129,19 +129,28 @@ trap cleanup EXIT INT TERM
 # append to the live watch.log — pin the audit line to the harness scratch
 # instead of the production ~/.local/state/pi-packet/watch.log.
 export SEAT_LOG_FILE="$TMPD/watch.log"
+# fleet-ops#4819: pin the actions.log to the harness scratch so a test release
+# never appends to the live alert-repair actions.log.
+export FLEET_SEAT_COMEBACK_ACTIONS_LOG="$TMPD/actions.log"
 
 # --- stub pi: SUCCESS stub exits 0 with "OK", FAILURE stub exits 1 -------
 cat > "$TMPD/pi-tool-ok" <<'EOF'
 #!/usr/bin/env bash
-# A healthy tool-using probe: prints the computed token of `echo $((6*7))`.
+# A healthy tool-using probe: prints the computed token of `echo $((6*7))`
+# and emits a PACKET-VERDICT tools=1 line on stderr (the authoritative
+# tool-count signal the comeback-release probe parses, fleet-ops#4819).
+printf 'PACKET-VERDICT tools=1 class=worked\n' >&2
 printf '42\n'
 exit 0
 EOF
 cat > "$TMPD/pi-pong-ok" <<'EOF'
 #!/usr/bin/env bash
 # A partial-storm seat: answers inline "OK" but no tool result (no token).
+# Emits PACKET-VERDICT tools=0 class=no-tools on stderr — the standing-smoke
+# shape that must NEVER release an empty-run bench (fleet-ops#4819).
+printf 'PACKET-VERDICT tools=0 class=no-tools\n' >&2
 printf 'OK\n'
-exit  0
+exit 0
 EOF
 cat > "$TMPD/pi-fail" <<'EOF'
 #!/usr/bin/env bash
@@ -494,9 +503,9 @@ jq -e '.source == "comeback_release_rebench" and .consecutive_failure_count == 2
 # healthy ledger entry is left as-is (the marker is the routing authority).
 grep -q "re-benched wrapper marker ollama/deepseek-v4-flash:0731" "$TMPD/live-fail.err" \
   || fail "marker re-bench: must log re-benched for the marker-held seat: $(cat "$TMPD/live-fail.err")"
-jq -e '.failure_mode == "empty_run" and .consecutive_failure_count == 4 and .writer == "comeback_release_rebench"' \
+jq -e '.failure_mode == "empty_run" and .consecutive_failure_count == 4 and .writer == "comeback_release_rebench" and .release_requires == "real-work-probe" and .citation == "fleet-ops#3737"' \
   "$SEATDIR/ollama__deepseek-v4-flash_0731.spawn-bench.json" >/dev/null \
-  || fail "marker re-bench: count must increment, mode preserved, writer tagged: $(cat "$SEATDIR/ollama__deepseek-v4-flash_0731.spawn-bench.json")"
+  || fail "marker re-bench: count must increment, mode preserved, writer tagged, release_requires+citation injected (fleet-ops#4819): $(cat "$SEATDIR/ollama__deepseek-v4-flash_0731.spawn-bench.json")"
 mk_usable=$(jq -r '.usable_at' "$SEATDIR/ollama__deepseek-v4-flash_0731.spawn-bench.json")
 mk_usable_epoch=$(date -u -d "$mk_usable" +%s 2>/dev/null || echo 0)
 (( mk_usable_epoch > NOW_EPOCH )) \

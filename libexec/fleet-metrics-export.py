@@ -148,6 +148,21 @@ HELP_HCAP0 = "# HELP fleet_seat_healthy_cap0_total Number of seats whose ledger 
 TYPE_HCAP0 = "# TYPE fleet_seat_healthy_cap0_total gauge"
 HELP_HCAP0P = "# HELP fleet_seat_healthy_cap0 1 for each healthy-but-parked seat (health_class=healthy, seat_dead=false, model cap=0) so the repair worker knows which cap to restore (fleet-ops#2738)."
 TYPE_HCAP0P = "# TYPE fleet_seat_healthy_cap0 gauge"
+# fleet-ops#4627: per-class healthy seat count. The money-boundary starvation
+# gate pages Nish ONLY when the fleet is starved — no healthy prepaid/free
+# seat. This gauge exposes the per-class healthy-enrolled count so the alert
+# rule and the success metric can key on it. A dry metered provider is a lane
+# fault while fleet_seat_healthy{class=~"prepaid|free"} > 0.
+HELP_SHC = "# HELP fleet_seat_healthy Number of healthy enrolled providers by seat class (prepaid / free). A dry metered provider is a lane fault while this is > 0 for prepaid/free; the money-boundary page fires only when the fleet is starved (fleet-ops#4627)."
+TYPE_SHC = "# TYPE fleet_seat_healthy gauge"
+# fleet-ops#4627: money-boundary page counter. The writer
+# (bin/money-boundary-raise) appends one line per page to
+# money-boundary-pages.log; this counter rolls them up by reason over the
+# trailing 7d. The success metric is
+# nish_boundary_money_pages_total{reason="provider_credits_dry"} == 0 while
+# fleet_seat_healthy{class=~"prepaid|free"} > 0.
+HELP_MBPT = "# HELP nish_boundary_money_pages_total Number of MONEY-BOUNDARY pages delivered to Nish by reason over the trailing 7 days (fleet-ops#4627). Suppressed pages (fleet not starved) do not count."
+TYPE_MBPT = "# TYPE nish_boundary_money_pages_total counter"
 # fleet-ops#3111: stale cap=0 seats (intentional_cap_zero="stale") that have
 # not been re-auditioned. The 2026-09-03 incident showed groq/inferx/orcarouter
 # lingering at cap=0 for weeks while the fleet starved. The age is parsed from
@@ -4921,6 +4936,151 @@ def _healthy_enrolled_seat_count():
     return len(healthy)
 
 
+def _provider_class_map():
+    """Return {provider: class} from seat-caps.json, or None when unavailable.
+
+    Mirrors lib/seat-lib.sh load_seat_caps: a provider value may be a bare
+    number (shorthand cap=N, class defaults to "free") or an object with
+    .class (subscription is the pre-#387 name for prepaid-quota). Returns
+    None when the config is missing/unparseable so callers fail safe.
+    """
+    for path in (SEAT_CAPS_DEFAULT, SEAT_CAPS_FALLBACK):
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        providers = data.get("providers") or {}
+        if not isinstance(providers, dict):
+            continue
+        out = {}
+        for prov, cfg in providers.items():
+            if isinstance(cfg, bool):
+                continue
+            if isinstance(cfg, (int, float)):
+                out[prov] = "free"
+                continue
+            if isinstance(cfg, dict):
+                cls = cfg.get("class") or "free"
+                if cls == "subscription":
+                    cls = "prepaid-quota"
+                out[prov] = cls
+        return out
+    return None
+
+
+def _healthy_enrolled_seat_count_by_class():
+    """Count healthy enrolled providers grouped by seat class.
+
+    fleet-ops#4627: the money-boundary starvation gate needs to know whether
+    ANY healthy prepaid/free seat exists. Returns a dict {class: count} over
+    the same healthy-enrolled rollup as _healthy_enrolled_seat_count (a
+    provider counts healthy when any of its model ledgers reports
+    health_class=healthy and seat_dead != true, or its wall clock has
+    released it; a held spawn-bench outranks a later healthy observation).
+    Only prepaid / free classes are populated; metered is omitted
+    (the issue is about dry metered providers with healthy prepaid/free
+    capacity). prepaid-quota is emitted as the label "prepaid" to match
+    the issue's class=~"prepaid|free" regex. Returns {} when the config or
+    ledger is unavailable.
+    """
+    enrolled = _enrolled_seat_providers()
+    if not enrolled:
+        return {}
+    if not SEAT_LEDGER.is_dir():
+        return {}
+    classes = _provider_class_map() or {}
+    healthy = set()
+    try:
+        for f in SEAT_LEDGER.iterdir():
+            if not f.is_file() or "__" not in f.name or not f.name.endswith(".json"):
+                continue
+            if ".empty-success" in f.name:
+                continue
+            try:
+                data = json.loads(f.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            if data.get("seat_dead") is True:
+                continue
+            if _spawn_bench_active(f):
+                continue
+            if data.get("health_class") != "healthy" and not _seat_is_released(data):
+                continue
+            prov = data.get("provider")
+            if isinstance(prov, str) and prov in enrolled:
+                healthy.add(prov)
+    except OSError:
+        return {}
+    # Map the canonical seat-caps class to the metric label. The issue's
+    # success metric keys on class=~"prepaid|free" (PromQL =~ is fully
+    # anchored), so prepaid-quota -> "prepaid" to match the regex.
+    counts = {"prepaid": 0, "free": 0}
+    for prov in healthy:
+        cls = classes.get(prov, "free")
+        if cls == "prepaid-quota":
+            cls = "prepaid"
+        if cls in counts:
+            counts[cls] += 1
+    return counts
+
+
+def _money_boundary_pages_log():
+    """Path to the money-boundary pages log (writer's page counter)."""
+    return Path(os.environ.get(
+        "MONEY_BOUNDARY_PAGES_LOG",
+        "/home/nish/workspaces/agent-state/lanes/money-boundary-pages.log",
+    ))
+
+
+def _read_money_boundary_pages():
+    """Count money-boundary page log lines by reason over the trailing 7d.
+
+    fleet-ops#4627: the success metric is
+    `nish_boundary_money_pages_total{reason="provider_credits_dry"} == 0
+    while fleet_seat_healthy{class=~"prepaid|free"} > 0` over seven days.
+    The writer (bin/money-boundary-raise) appends one line per page (or
+    suppressed page) to money-boundary-pages.log:
+        <ts> reason=<reason> provider=<p>            (a real page)
+        <ts> suppressed reason=<reason> provider=<p>  (a suppressed page)
+    Returns a dict {reason: count} of REAL (non-suppressed) pages in the
+    trailing 7 days. Suppressed lines do not count toward the total — the
+    metric tracks pages that actually reached Nish. Returns {} when the
+    log is missing/unreadable.
+    """
+    log = _money_boundary_pages_log()
+    if not log.is_file():
+        return {}
+    cutoff = time.time() - 7 * 86400
+    counts = {}
+    try:
+        for line in log.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            # Skip suppressed lines — they did not reach Nish. The writer
+            # emits `<ts> suppressed reason=...` (the remainder after the
+            # first space starts with "suppressed").
+            if line.split(" ", 1)[1].startswith("suppressed"):
+                continue
+            ts = line.split(" ", 1)[0]
+            try:
+                epoch = calendar.timegm(time.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S"))
+            except ValueError:
+                continue
+            if epoch < cutoff:
+                continue
+            m = re.search(r"reason=([A-Za-z0-9_-]+)", line)
+            if not m:
+                continue
+            reason = m.group(1)
+            counts[reason] = counts.get(reason, 0) + 1
+    except OSError:
+        return {}
+    return counts
+
+
 def _slo_compliance(slo, main_ci, healthy, rate_limit, waste_ratio, seat_total):
     """Compute live compliance (0..1 ratio or value/target gauge) for one SLO.
 
@@ -5822,6 +5982,23 @@ def main():
         lines.append(
             f'fleet_seat_healthy_cap0{{seat="{_seat_label}"}} 1'
         )
+    # fleet-ops#4627: per-class healthy seat count + money-boundary page
+    # counter. The starvation gate pages Nish ONLY when the fleet is starved
+    # (no healthy prepaid/free seat). This gauge exposes the per-class count
+    # so the alert rule and the success metric can key on it. The page
+    # counter rolls up real (non-suppressed) pages by reason over 7d.
+    _shc = _healthy_enrolled_seat_count_by_class()
+    lines.append("")
+    lines.append(HELP_SHC)
+    lines.append(TYPE_SHC)
+    for _cls, _n in sorted(_shc.items()):
+        lines.append(f'fleet_seat_healthy{{class="{_cls}"}} {_n}')
+    _mbp = _read_money_boundary_pages()
+    lines.append("")
+    lines.append(HELP_MBPT)
+    lines.append(TYPE_MBPT)
+    for _reason, _n in sorted(_mbp.items()):
+        lines.append(f'nish_boundary_money_pages_total{{reason="{_reason}"}} {_n}')
     # fleet-ops#3111: stale cap=0 seats. A stale cap=0 seat
     # (intentional_cap_zero=stale) has a dated reason and should be
     # re-auditioned; seat-lib auto-expires it to cap=1 after 14d. This metric

@@ -186,4 +186,34 @@ assert "MONEY-BOUNDARY" in desc and "ledger" in desc, \
 print("OK: FleetProviderSpendBoundary routes the repair worker to bin/money-boundary-raise")
 PY
 
+# --- 5. bare-int model cap gets benched (fleet-ops#4658) -------------------
+# A provider whose only model cap is the bare integer 2 (the live straitly
+# shape) must be benched. The old roster select `select(.value.cap > 0)` made
+# `.value.cap` null on a number, dropping the row and benching 0 seats.
+# Also assert a bare-int cap:0 is still skipped (not benched).
+bare_as="$scratch/bare-as"
+mkdir -p "$bare_as/lanes/seats" "$bare_as/alert-repair"
+cat > "$scratch/caps/seat-caps-bare-int.json" <<'JSON'
+{
+  "providers": {
+    "straitly": {
+      "models": {
+        "deepseek/deepseek-v4-pro": 2,
+        "zero-bare-int": 0
+      }
+    }
+  }
+}
+JSON
+bare_out="$(MONEY_BOUNDARY_AS="$bare_as" \
+  MONEY_BOUNDARY_CAPS="$scratch/caps/seat-caps-bare-int.json" \
+  "$script" straitly 5.0 N/A 2>&1)"
+echo "$bare_out" | grep -q "1 seat(s) benched" \
+  || fail "bare-int cap must bench exactly 1 seat (got: $bare_out)"
+[[ -f "$bare_as/lanes/seats/straitly__deepseek_deepseek-v4-pro.json" ]] \
+  || fail "bare-int cap:2 model was not benched (seat file missing)"
+[[ -f "$bare_as/lanes/seats/straitly__zero-bare-int.json" ]] \
+  && fail "bare-int cap:0 must NOT be benched"
+ok "bare-int model cap is benched (cap:2 yes, cap:0 no) — fleet-ops#4658"
+
 ok "money-boundary guard drill: deterministic raise, dedupe, FAIL-LOUD, --check, backup scan, and rule routing"
