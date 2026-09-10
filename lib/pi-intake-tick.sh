@@ -1590,6 +1590,14 @@ else
     echo "litellm_ready unavailable; seat-slot gate fails open, keeping slots=$slots (fleet-ops#4263)"
 fi
 
+# P3b: proxy health is the only usable-seat gate. A healthy proxy means all
+# LiteLLM groups are reachable (fallbacks, cooldown, budgets). Keep the
+# _light_only_claims latch for the per-issue filter below; a dead proxy already
+# exited above, so claims are not light-only when we reach here.
+_light_only_claims=0
+heavy_seat=$(litellm_pick_seat "worker-capable" 2>/dev/null || true)
+_rung_clear_seat=$(litellm_pick_seat "worker-cheap" 2>/dev/null || true)
+
 # Usable seat-slot gate (fleet-ops#3732 / #4263): capacity slots (RAM) are
 # not proxy slots. Headroom comes from the proxy; a non-numeric reply
 # fails OPEN so a broken counter never freezes intake.
