@@ -804,8 +804,17 @@ def _gh_json(args, timeout=25):
         ["gh"] + args, capture_output=True, text=True, timeout=timeout,
     )
     if out.returncode != 0:
+        # Name the repo too when the call carries one. The per-issue fetch is
+        # ["issue", "view", <number>, "-R", <repo>, ...] (fleet-ops#4996), so
+        # the positional prefix alone dropped the repo and a dark questions
+        # tile could not say WHICH repo's fetch failed (fleet-ops#5069).
+        named = list(args[:3])
+        if "-R" in args:
+            i = args.index("-R")
+            if i + 1 < len(args):
+                named += ["-R", args[i + 1]]
         raise RuntimeError(
-            f"gh {' '.join(args[:3])} rc={out.returncode}: "
+            f"gh {' '.join(named)} rc={out.returncode}: "
             f"{(out.stderr or '').strip()[:160]}"
         )
     try:
