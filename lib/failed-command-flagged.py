@@ -759,6 +759,26 @@ HARNESS_BLOCK_RE = re.compile(
     r"|SPAWN_BLOCKED reason=",
     re.I,
 )
+# Command never ran: Pi emitted `Tool call ... was not executed: ... output
+# token limit, ...` when a response hit the output-token budget, so the tool
+# was never dispatched. There is no command output and no exit code to walk
+# past — the call never executed. This is the same never-ran principle as
+# HARNESS_BLOCK_RE / SPAWN_BLOCKED (fleet-ops#755): a live burst in a single
+# assistant turn produced a dozen isError=true `Tool call \"bash\" was not
+# executed` toolResults in one session (fleet-ops#4944, 0509-2133), each
+# mis-counted as a swallowed failed command and inflating the
+# FAILED-COMMAND-FAIL aggregate. Do NOT fold this into HARNESS_BLOCK_RE:
+# HARNESS_BLOCK_RE also seeds `had_prior_block` for the #677 127-ENOENT
+# cascade exemption, and a never-executed batch is not a block that explains
+# a later ENOENT. A never-executed command is NOT a member of the edit
+# schema-validation class (fleet-ops#1286, "Validation failed for tool \"edit\"
+# ... path"): there the worker's own arguments were malformed and the worker
+# believed the edit ran; here the args were simply not dispatched at all.
+NEVER_RAN_RE = re.compile(
+    r"Tool call [A-Za-z\"]+ was not executed:"
+    r"[^\n\r]*output token limit",
+    re.I,
+)
 # Read tool with an offset past the end of the file: a negative result,
 # like grep/rg/diff no-match, not a swallowed command failure.
 # Do NOT add a similar exemption for `read` "EISDIR: illegal operation
@@ -978,6 +998,11 @@ def result_failed(
 ) -> tuple[bool, str]:
     text = _text_chunks(msg.get("content"))
     if HARNESS_BLOCK_RE.search(text):
+        return False, text
+    if NEVER_RAN_RE.search(text):
+        # Call never executed: pi declined to dispatch it because the
+        # response hit the output-token budget. Not a ran-and-failed
+        # command, so no swallowed failure (fleet-ops#4944).
         return False, text
     if msg.get("toolName") == "read" and READ_OFFSET_RE.search(text):
         return False, text

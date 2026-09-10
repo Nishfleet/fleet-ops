@@ -3350,6 +3350,13 @@ bash "$here/fleet-failed-command-read-enoent-stale-rg.test.sh" || fail "fleet-fa
 # fleet-ops#677: 127 ENOENT downstream of a harness block is a cascade, not
 # a swallowed failure. Same CI constraint (worker token cannot add a P14 line).
 bash "$here/fleet-failed-command-enoent-block.test.sh" || fail "fleet-failed-command-enoent-block tests failed"
+# fleet-ops#4944: a tool call that was never executed because pi's response hit
+# the output token budget (`Tool call \"bash\" was not executed: ... output
+# token limit ...`) is a never-ran command, not a swallowed failed command:
+# no command output, no exit code, nothing ran. Exempting it must not leak
+# into HARNESS_BLOCK_RE (a never-executed batch does not seed the #677
+# 127-ENOENT cascade). Same CI constraint (worker token cannot add a P14 line).
+bash "$here/fleet-failed-command-output-token-limit-never-ran.test.sh" || fail "fleet-failed-command-output-token-limit-never-ran tests failed"
 # fleet-ops#698: `gh api` 4xx/5xx walked past is a real swallowed failure.
 # Same CI constraint (worker token cannot add a P14 line).
 bash "$here/fleet-failed-command-gh-api-404.test.sh" || fail "fleet-failed-command-gh-api-404 tests failed"
