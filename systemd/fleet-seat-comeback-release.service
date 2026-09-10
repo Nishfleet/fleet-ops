@@ -1,7 +1,7 @@
 # fleet-seat-comeback-release.service — the ACTIVE release path for a seat
 # whose wall clock has passed (fleet-ops#2421).
 #
-# The 2026-08-30 census: straitly/gpt-5.6-sol quota_exhausted with usable_at
+# The 2026-08-30 census: a metered seat quota_exhausted with usable_at
 # an hour in the past still walled, released_n=0 across the whole roster.
 # fleet-ops#2407 only reclassified the census; nothing re-probed. This organ
 # probes expired-wall seats through the real router and unwalls a
