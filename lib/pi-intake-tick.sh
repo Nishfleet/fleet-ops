@@ -629,6 +629,41 @@ blocked_filter() {
     return 0
 }
 
+# _depends_on_refs — read an issue body on stdin, print dependency refs
+# (one per line: `#<n>` or `owner/repo#<n>`) for the depends-on gate.
+# Two forms count (fleet-ops#5107):
+#   1. a line-start `depends-on:` line (the structured line) — refs from
+#      the whole line, the original gate behaviour, unchanged;
+#   2. a mid-line `depends-on:` token, but ONLY inside an appended
+#      `## ...edits (binding…)` section: a judge bullet like
+#      "add `depends-on: #2359`" never matched the line-start form, so the
+#      gate claimed those tickets anyway. Outside a binding section a
+#      mid-line token is prose ABOUT the gate (evidence lists like
+#      "`depends-on:` is still `none`: #2352, #2383"), and a bare mid-line
+#      match would misread those trailing issue numbers as live deps and
+#      park the ticket on its own evidence list. For a mid-line token,
+#      refs are read only from the text AFTER it, so a `#<n>` before the
+#      token is not misread.
+_depends_on_refs() {
+    local in_binding=0 line frag
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^##[[:space:]]+.*edits[[:space:]]+\(binding ]]; then
+            in_binding=1
+        elif [[ "$line" =~ ^##[[:space:]]+ ]]; then
+            in_binding=0
+        fi
+        if [[ "$line" =~ ^depends-on: ]]; then
+            frag="$line"
+        elif (( in_binding == 1 )) && [[ "$line" == *depends-on:* ]]; then
+            frag="${line#*depends-on:}"
+        else
+            continue
+        fi
+        printf '%s\n' "$frag" \
+            | grep -oE '#[0-9]+|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+' || true
+    done
+}
+
 # fleet-ops#4808: depends-on gate. An agent-ready issue can carry a body
 # `depends-on:` line naming issues/PRs that must be DONE before it is
 # claimable (e.g. a seam batch where #2218 must land before the six sources
@@ -694,15 +729,15 @@ depends_on_filter() {
         if [[ "$dep_state" != "DONE" ]]; then
             # Cycle detection: does the dependency itself depend on THIS
             # issue? (A depends on B depends on A.) Fetch the dependency's
-            # body (memoised) and check its depends-on: token (unanchored,
-            # same as the dep parse above — fleet-ops#5107).
+            # body (memoised) and check its depends-on: refs (same parse
+            # as the dep side above — fleet-ops#5107).
             if [[ -n "${_dep_body_cache[$dep_key]:-}" ]]; then
                 dep_body="${_dep_body_cache[$dep_key]}"
             else
                 dep_body="$(gh issue view "$target_num" -R "${owner}/${rname}" --json body --jq '.body // ""' 2>/dev/null || true)"
                 _dep_body_cache[$dep_key]="$dep_body"
             fi
-            if printf '%s\n' "$dep_body" | grep -oE 'depends-on:.*' \
+            if printf '%s\n' "$dep_body" | _depends_on_refs \
                 | grep -qE "#${num}\b|${repo}#${num}\b"; then
                 echo "depends-on-cycle"
                 return 1
