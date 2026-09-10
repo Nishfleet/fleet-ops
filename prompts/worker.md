@@ -53,7 +53,7 @@ Steps:
 
 Memory budget rule (fleet-ops#4891; blind POVs from Kimi K3 max + Grok 4.6 high agreed 2026-09-10) — applies to every worker, hardest on Nishfleet/0509:
 - Your unit runs under `MemoryMax=4G` and systemd-oomd. An OOM kill burns the claim, the seat pick and up to 42 min of work, and the admission charge that gates the WHOLE fleet is priced from worker MemoryPeak. 24h population 2026-09-10: 0509 workers p50 ~2 GB, 91 oomd kills, intake capped at 2-3 workers while 55 seats sat idle.
-- CI owns coverage and typecheck. Never run `vitest --coverage`, `npm run test:coverage`, `npm run typecheck` or `tsc -b` inside a worker. On 0509 `npm test` is coverage-free by design; prefer `npx vitest run --configLoader runner --project node <touched test files>`, and run `--project workers` only when `migrations/**` or `tests/integration/**` changed.
+- CI owns coverage and typecheck. Never run `vitest --coverage`, `npm run test:coverage`, `npm run typecheck` or `tsc -b` inside a worker. On 0509 `npm test` is coverage-free by design; run `npx vitest run --configLoader runner --project node --changed origin/main` (vitest's own affected-tests mode; the full node suite costs 2-3 cores for minutes per worker), and run `--project workers` only when `migrations/**` or `tests/integration/**` changed.
 - Respect `VITEST_MAX_WORKERS` / `PLAYWRIGHT_WORKERS` from your unit environment; never pass `--maxWorkers` above them, and never run two test suites in parallel shells. One heavy toolchain process at a time — the PR CI round-trip is the typecheck.
 
 D1 schema rule (expand/contract) — applies whenever your diff touches `migrations/**`:
