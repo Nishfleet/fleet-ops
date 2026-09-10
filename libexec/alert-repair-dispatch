@@ -640,6 +640,22 @@ def _slowburn_firing_seconds(starts_at):
     return max(0, int(time.time() - t))
 
 
+def _slowburn_run(cmd, timeout=30):
+    """Run one slowburn helper command and never raise.
+
+    fleet-ops#4773: a hung `gh` (TimeoutExpired) or a missing/unusable
+    binary (OSError) must be a FAILED LOOKUP — the caller sees rc!=0 with
+    empty stdout — not an uncaught traceback that takes the whole
+    dispatch down while the skip-list entry is supposed to stay intact.
+    """
+    try:
+        return subprocess.run(
+            cmd, capture_output=True, text=True, check=False,
+            timeout=timeout)
+    except (subprocess.TimeoutExpired, OSError):
+        return subprocess.CompletedProcess(cmd, 1, "", "")
+
+
 def _slowburn_find_existing(repo, signal, gh):
     """Return the open critical-path issue number carrying the signal key,
     or "" if none / the search failed. Mirrors the detector->queue
@@ -654,18 +670,20 @@ def _slowburn_find_existing(repo, signal, gh):
     must not block the file path, and a duplicate file is caught by
     fleet-issue-file's own dedupe).
     """
-    proc = subprocess.run(
+    proc = _slowburn_run(
         [gh, "issue", "list", "-R", repo, "--state", "open",
          "--limit", "50", "--search", signal,
          "--label", SLOWBURN_LABEL,
-         "--json", "number,title,labels"],
-        capture_output=True, text=True, check=False, timeout=30,
-    )
+         "--json", "number,title,labels"])
     if proc.returncode != 0 or not (proc.stdout or "").strip():
         return ""
     try:
         items = json.loads(proc.stdout)
     except json.JSONDecodeError:
+        return ""
+    # A malformed response (a JSON object, a bare string) is a failed
+    # lookup, not something to iterate (fleet-ops#4773).
+    if not isinstance(items, list):
         return ""
     marker = f"[{signal}]"
     for it in items:
@@ -707,12 +725,27 @@ def _slowburn_file(repo, signal, gh, issue_file):
         f"- am-executor: notified via the alert-repair dispatch path.\n"
         f"- do NOT page Nish for a seat-availability warning (the alert's "
         f"own description forbids it); seat supply is operator-owned.\n\n"
+        # fleet-ops#4773: the machine-checkable spec below is what makes
+        # the terminus CLAIMABLE. Without it the admission gate refuses
+        # the body (`agent-ready-spec-gate.py check-body`: "body has no
+        # termination:/accept:/required:/metric:"), so the item would be
+        # filed and no repair rung could ever claim it. Repo fleet-ops
+        # additionally needs a `moves:` line naming a product metric;
+        # this path moves no_usable_seat_events (seat supply is what the
+        # alert is about). The bare `{signal}` trailer below stays on its
+        # own line and last: it is the shipped signal-key file form (same
+        # trailer as `issue_body` in lib/detector-queue-reconciler.py), so
+        # do not reformat it.
+        f"- metric: the auto-filed terminus is claimable and runs its "
+        f"repair rung within one dispatch tick of the 1h threshold\n"
+        f"- accept: `python3 lib/agent-ready-spec-gate.py check-body "
+        f"--repo fleet-ops` on this body prints `SPEC-GATE: ok`\n"
+        f"- moves: no_usable_seat_events\n\n"
         f"`{signal}`\n"
     )
     cmd = [issue_file, "file", "-R", repo, "--title", title, "--body", body,
            "--label", SLOWBURN_LABEL]
-    proc = subprocess.run(
-        cmd, capture_output=True, text=True, check=False, timeout=60)
+    proc = _slowburn_run(cmd, timeout=60)
     out = (proc.stdout or proc.stderr or "").strip()
     if proc.returncode != 0:
         return ""
@@ -731,11 +764,9 @@ def _slowburn_file(repo, signal, gh, issue_file):
     # detector->queue reconciler's verify_filed_signal uses
     # (fleet-ops#4622/#4841) — and refuse to report a filing on mismatch.
     # A failed/unreadable view also returns "": never guess.
-    view = subprocess.run(
+    view = _slowburn_run(
         [gh, "issue", "view", number, "-R", repo,
-         "--json", "title", "--jq", ".title"],
-        capture_output=True, text=True, check=False, timeout=30,
-    )
+         "--json", "title", "--jq", ".title"])
     title = (view.stdout or "").strip()
     if view.returncode != 0 or not title or f"[{signal}]" not in title:
         _loud(
@@ -754,10 +785,8 @@ def _slowburn_heartbeat(repo, number, gh):
     body = (f"alert-repair heartbeat: FleetSloSeatAvailSlowBurn still "
             f"firing past 1h; linked claim #{number} owns the repair rung "
             f"(fleet-ops#4773).")
-    subprocess.run(
-        [gh, "issue", "comment", number, "-R", repo,
-         "--body", body],
-        capture_output=True, text=True, check=False, timeout=30)
+    _slowburn_run(
+        [gh, "issue", "comment", number, "-R", repo, "--body", body])
 
 
 def _slowburn_file_or_link(starts_at, log):

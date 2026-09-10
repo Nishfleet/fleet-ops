@@ -39,6 +39,15 @@
 #      (fleet-issue-file dedupes onto that decoy and prints its URL) logs
 #      `FILED-LINK-MISMATCH`, writes no `] FILED ` terminus line, and is
 #      reported as the skip-error it is.
+#   5. (fleet-ops#4773) the auto-filed terminus is CLAIMABLE: the body the
+#      dispatcher really passed (`--body`, captured verbatim by the mock)
+#      passes `lib/agent-ready-spec-gate.py check-body --repo fleet-ops`
+#      with `SPEC-GATE: ok`. The create's `--title` and `--label critical-path`
+#      are asserted individually, from the REAL argv (not a fixture).
+#   6. (fleet-ops#4773) fail-closed/robustness: an unreadable `gh issue view`
+#      (rc=1, no stdout) is FILED-LINK-MISMATCH with `title='<unavailable>'`,
+#      no FILED, skip-error; a non-list `gh issue list` payload and a missing
+#      `gh` binary (OSError) never traceback.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
@@ -130,6 +139,9 @@ echo "OK: fleet-ops#2672 slow-burn skip-list lock passes"
 #   (g) the LIVE DECOY (#4773) is never linked/commented and never suppresses
 #       the file path; (h) the DEDUPE COLLAPSE logs FILED-LINK-MISMATCH, not
 #       FILED. Both are the reason fleet-ops#4773 exists.
+#   (i) an unreadable read-back (gh issue view rc=1) is never FILED; (j) the
+#       body really filed passes the admission spec gate; (k) a non-list gh
+#       search response and (l) a missing gh binary stay traceback-free.
 # The skip-list entry STAYS throughout (no repair worker spawned).
 # ============================================================================
 
@@ -154,10 +166,19 @@ mkdir -p "$mock_bin2"
 GH_CALLS="$scratch/gh-calls.log"
 FILE_CALLS="$scratch/file-calls.log"
 GH_TITLES="$scratch/gh-titles.tsv"
-export GH_CALLS FILE_CALLS GH_TITLES
+# What the fleet-issue-file mock really received on the create call
+# (fleet-ops#4773): the test binds its title/label/body assertions and the
+# spec-gate run to these, never to a hand-written fixture.
+FILE_TITLE="$scratch/filed-title.txt"
+FILE_BODY="$scratch/filed-body.txt"
+FILE_LABEL="$scratch/filed-label.txt"
+export GH_CALLS FILE_CALLS GH_TITLES FILE_TITLE FILE_BODY FILE_LABEL
 : >"$GH_CALLS"
 : >"$FILE_CALLS"
 : >"$GH_TITLES"
+: >"$FILE_TITLE"
+: >"$FILE_BODY"
+: >"$FILE_LABEL"
 
 # `gh issue list --search <signal>` returns the canned JSON; the test
 # toggles GH_LIST_JSON between "[]" (no existing) and a real issue.
@@ -183,11 +204,11 @@ set_gh_issues() {
     done
 }
 
-# The genuine filing's title — exactly the shape `_slowburn_file` writes,
-# with the signal key in `[<signal>]` form.
-filed_title="$(printf '%s' \
-    "alarm: FleetSloSeatAvailSlowBurn — seat-availability SLO slow burn" \
-    " past 1h, no linked repair-rung claim [slo/seat-availability-slowburn]")"
+# NOTE (fleet-ops#4773): there is deliberately NO `filed_title` fixture. The
+# fleet-issue-file mock parses the title it hands back out of the ACTUAL
+# `--title` argument `_slowburn_file` passed, so the mock cannot agree with
+# itself while the real create drifts.
+#
 # A live claim the link path must pick: same signal marker, and the
 # `critical-path` label that says "this really is a repair-rung claim".
 claim_num="4242"
@@ -235,23 +256,48 @@ chmod +x "$mock_bin2/gh"
 cat >"$mock_bin2/fleet-issue-file" <<'FILE'
 #!/usr/bin/env bash
 # Mock fleet-issue-file. Records the call, then prints the URL of the issue
-# it claims to have filed (FILE_NUM) followed by that issue's title from the
-# SAME GH_TITLES registry `gh issue view` reads — so the test's "filed" title
-# and the dispatcher's read-back title cannot disagree. FILE_NUM defaults to
-# 5555, never the #4773 decoy.
+# it claims to have filed (FILE_NUM; defaults to 5555, never the #4773 decoy).
+#
+# fleet-ops#4773: the title, label and body the mock reports/captures are
+# parsed out of the ACTUAL argv the dispatcher passed — not a hand-written
+# fixture — so every FILED assertion binds to what `_slowburn_file` really
+# sent. A dispatcher that drops the `[{signal}]` marker from the title or the
+# `critical-path` label fails, instead of the mock agreeing with itself.
 echo "fleet-issue-file $*" >> "${FILE_CALLS:-/dev/null}"
+title=""; body=""; label=""; prev=""
+for a in "$@"; do
+    case "$prev" in
+        --title) title="$a" ;;
+        --body)  body="$a" ;;
+        --label) label="$a" ;;
+    esac
+    prev="$a"
+done
+printf '%s' "$title" > "${FILE_TITLE:-/dev/null}"
+printf '%s' "$body"  > "${FILE_BODY:-/dev/null}"
+printf '%s' "$label" > "${FILE_LABEL:-/dev/null}"
 num="${FILE_NUM:-5555}"
 echo "https://github.com/Nishfleet/fleet-ops/issues/${num}"
-if [[ -s "${GH_TITLES:-/dev/null}" ]]; then
-    awk -F'\t' -v n="$num" \
-        '$1 == n { print substr($0, index($0, "\t") + 1); exit }' \
-        "${GH_TITLES}"
+# Register the passed title as that number's title, so the read-back
+# (`gh issue view`) returns exactly what the create call really sent.
+# FILE_REGISTER_TITLE=0 means "the create did NOT produce a readable new
+# issue": fleet-issue-file deduped onto an existing issue and printed that
+# issue's URL (case (h)), or the pointer cannot be read back (case (i)).
+if [[ -z "${FILE_REGISTER_TITLE:-}" && -n "$title" ]]; then
+    printf '%s\t%s\n' "$num" "$title" >> "${GH_TITLES:-/dev/null}"
 fi
 exit 0
 FILE
 chmod +x "$mock_bin2/fleet-issue-file"
 
-reset_log() { : >"$PACKET_DIR/actions.log"; : >"$GH_CALLS"; : >"$FILE_CALLS"; }
+# The gh binary the dispatcher is told to use; case (l) points it at a path
+# that does not exist to prove a failed exec is a failed lookup, not a crash.
+sb_gh="$mock_bin2/gh"
+
+reset_log() {
+    : >"$PACKET_DIR/actions.log"; : >"$GH_CALLS"; : >"$FILE_CALLS"
+    : >"$FILE_TITLE"; : >"$FILE_BODY"; : >"$FILE_LABEL"
+}
 
 fire_slowburn() {
     local start="$1"
@@ -265,7 +311,7 @@ fire_slowburn() {
     PATH="$mock_bin2:$mock_bin:$PATH" \
     HOME="$scratch" \
     FLEET_ISSUE_FILE="$mock_bin2/fleet-issue-file" \
-    GH="$mock_bin2/gh" \
+    GH="$sb_gh" \
     FLEET_SLOWBURN_REPO="Nishfleet/fleet-ops" \
     FLEET_SLOWBURN_SIGNAL="slo/seat-availability-slowburn" \
     "$dispatch_bin" \
@@ -307,7 +353,7 @@ ok "(c) firing <=1h: SKIP reason=skip-list, no file, no link, no spawn"
 # dispatcher must read the RETURNED issue's title back through `gh issue view`
 # before it may log FILED. The mock files 5555 (not the #4773 decoy).
 reset_log
-set_gh_issues "[]" "5555|$filed_title"
+set_gh_issues "[]"
 FILE_NUM=5555; export FILE_NUM
 fire_slowburn "$two_h_ago"; rc=$?
 [[ "$rc" == 0 ]] || fail "(a) long-firing dispatch must exit 0, got rc=$rc (stderr: $(cat "$scratch/sb.err"))"
@@ -322,6 +368,20 @@ files=$(grep -c 'fleet-issue-file' "$FILE_CALLS" || true)
     || fail "(a) must invoke fleet-issue-file exactly once, got $files: $(cat "$FILE_CALLS")"
 grep -q -- '--label critical-path' "$FILE_CALLS" \
     || fail "(a) the create must carry --label critical-path: $(cat "$FILE_CALLS")"
+# fleet-ops#4773 (finding C): assert the label and the `[{signal}]` title
+# marker INDIVIDUALLY, from the argv the dispatcher really passed (the mock
+# parsed `--label`/`--title` out of "$@"), so a mutant dropping EITHER one
+# fails on its own assertion instead of hiding behind a fixture.
+[[ "$(cat "$FILE_LABEL")" == "critical-path" ]] \
+    || fail "(a) the create's --label must be exactly critical-path, got '$(cat "$FILE_LABEL")'"
+case "$(cat "$FILE_TITLE")" in
+    *"[slo/seat-availability-slowburn]") ;;
+    *) fail "(a) the create title must carry the [signal] marker: $(cat "$FILE_TITLE")" ;;
+esac
+case "$(cat "$FILE_TITLE")" in
+    "alarm: "*) ;;
+    *) fail "(a) the create title must keep the alarm: prefix: $(cat "$FILE_TITLE")" ;;
+esac
 grep -q 'issue list .*--label critical-path' "$GH_CALLS" \
     || fail "(a) the signal search must be narrowed server-side with --label critical-path: $(cat "$GH_CALLS")"
 grep -q 'issue view 5555' "$GH_CALLS" \
@@ -373,7 +433,7 @@ ok "(b) firing >1h + live claim: LINK #${claim_num} + heartbeat, no file; idempo
 # SlowBurn, and must use SlowBurn's start (2h -> past threshold -> FILE), NOT
 # the decoy's (10m -> skip-short). Proves the index lookup fix.
 reset_log
-set_gh_issues "[]" "5555|$filed_title"
+set_gh_issues "[]"
 FILE_NUM=5555; export FILE_NUM
 AMX_ALERT_1_LABEL_alertname="FleetMainRed" \
 AMX_ALERT_1_LABEL_severity="warning" \
@@ -409,7 +469,7 @@ ok "(d) multi-alert: SlowBurn at idx2 (>1h) FILED using its own start, not idx1'
 # AMX sends epoch in production, but the parser still accepts ISO 8601 so a
 # future/legacy sender is not broken. Same long-firing shape as (a), ISO form.
 reset_log
-set_gh_issues "[]" "5555|$filed_title"
+set_gh_issues "[]"
 FILE_NUM=5555; export FILE_NUM
 fire_slowburn "$two_h_ago_iso"; rc=$?
 [[ "$rc" == 0 ]] || fail "(e) ISO-start dispatch must exit 0, got rc=$rc (stderr: $(cat "$scratch/sb.err"))"
@@ -429,7 +489,7 @@ ok "(e) ISO 8601 start also works (backward-compat): FILED exactly one"
 # #5012) were timestamp-shape mismatches — lock it so a future ms regression
 # is caught. Fixed past literal is fine: >1h elapsed is a lower-bound check.
 reset_log
-set_gh_issues "[]" "5555|$filed_title"
+set_gh_issues "[]"
 FILE_NUM=5555; export FILE_NUM
 live_amx_start="2026-09-08T09:51:03.742Z"
 fire_slowburn "$live_amx_start"; rc=$?
@@ -457,7 +517,7 @@ ok "(f) ISO 8601 start with fractional ms + Z (live AMX shape): FILED exactly on
 # still run and land on the genuine #5555. The search must also be narrowed
 # server-side with `--label critical-path`.
 reset_log
-set_gh_issues "$decoy_json" "5555|$filed_title"
+set_gh_issues "$decoy_json"
 FILE_NUM=5555; export FILE_NUM
 fire_slowburn "$two_h_ago"; rc=$?
 [[ "$rc" == 0 ]] || fail "(g) decoy dispatch must exit 0, got rc=$rc (stderr: $(cat "$scratch/sb.err"))"
@@ -498,7 +558,11 @@ ok "(g) LIVE DECOY #4773 (agent-in-progress, no [signal] marker) rejected: no li
 reset_log
 set_gh_issues "$decoy_json" "${decoy_num}|${decoy_title}"
 FILE_NUM="$decoy_num"; export FILE_NUM
+# The create deduped onto an existing issue and printed ITS url: nothing new
+# was created, so nothing new is registered for that number.
+FILE_REGISTER_TITLE=0; export FILE_REGISTER_TITLE
 fire_slowburn "$two_h_ago"; rc=$?
+unset FILE_REGISTER_TITLE
 [[ "$rc" == 0 ]] || fail "(h) dedupe-collapse dispatch must exit 0, got rc=$rc (stderr: $(cat "$scratch/sb.err"))"
 mismatch=$(grep -c 'FILED-LINK-MISMATCH' "$PACKET_DIR/actions.log" || true)
 [[ "$mismatch" == "1" ]] \
@@ -528,4 +592,111 @@ disps=$(grep -c '\] DISPATCH ' "$PACKET_DIR/actions.log" || true)
 [[ "$disps" == "0" ]] || fail "(h) must NOT add a DISPATCH line, got $disps"
 ok "(h) DEDUPE COLLAPSE onto decoy #4773: FILED-LINK-MISMATCH logged, no '] FILED ' terminus, reported as skip-error"
 
-echo "OK: fleet-ops#4773 slowburn file-or-link both directions + idempotence + live-decoy/dedupe-collapse refusal pass"
+# --- (i) UNREADABLE READ-BACK: gh issue view fails -> never FILED -----------
+# fleet-ops#4773 finding B. The create returns a number the mock cannot
+# resolve, so `gh issue view` exits 1 with NO stdout — exactly like real gh on
+# an unknown number. The dispatcher must log FILED-LINK-MISMATCH with
+# `title='<unavailable>'`, write NO `] FILED ` terminus line, and report
+# skip-error. A mutant that accepts the returned number whenever the view
+# failed must fail this case (the `] FILED ` count is the assertion that bites).
+reset_log
+set_gh_issues "[]"
+FILE_NUM=9999; export FILE_NUM      # resolvable by nobody: no registry entry
+FILE_REGISTER_TITLE=0; export FILE_REGISTER_TITLE
+rc=0; fire_slowburn "$two_h_ago" || rc=$?
+unset FILE_REGISTER_TITLE
+[[ "$rc" == 0 ]] || fail "(i) unreadable-view dispatch must exit 0, got rc=$rc (stderr: $(cat "$scratch/sb.err"))"
+grep -q "FILED-LINK-MISMATCH.*issue=#9999 title='<unavailable>'" "$PACKET_DIR/actions.log" \
+    || fail "(i) an unreadable view must log FILED-LINK-MISMATCH with title='<unavailable>': $(cat "$PACKET_DIR/actions.log")"
+filed_lines=$(grep -c '\] FILED ' "$PACKET_DIR/actions.log" || true)
+[[ "$filed_lines" == "0" ]] \
+    || fail "(i) an unreadable view must NOT be reported as FILED, got $filed_lines: $(cat "$PACKET_DIR/actions.log")"
+warns=$(grep -c '\] WARN .*auto-file failed' "$PACKET_DIR/actions.log" || true)
+[[ "$warns" == "1" ]] \
+    || fail "(i) a refused terminus must be reported as skip-error/WARN, got $warns: $(cat "$PACKET_DIR/actions.log")"
+grep -q 'issue view 9999' "$GH_CALLS" \
+    || fail "(i) the read-back of the returned pointer must be attempted: $(cat "$GH_CALLS")"
+spawns=$(grep -c 'mock-pi-systemd-run args=' "$MOCK_LOG" || true)
+[[ "$spawns" == "0" ]] || fail "(i) must NOT spawn, got $spawns"
+ok "(i) unreadable gh issue view (rc=1, no stdout): FILED-LINK-MISMATCH title='<unavailable>', no FILED, skip-error"
+
+# --- (j) THE FILED BODY IS CLAIMABLE (the admission spec gate accepts it) ---
+# fleet-ops#4773 finding A. A terminus is only a terminus if a rung can claim
+# it: the auto-filed item carried `--label critical-path` alone, and the real
+# admission gate refused its body (`body has no
+# termination:/accept:/required:/metric:`), so nothing could ever claim it.
+# The gate is run here against the body the dispatcher REALLY passed (the mock
+# captured `--body` verbatim), not against a copy or a fixture, and with
+# `--repo fleet-ops` so the `moves:` product-metric requirement is enforced.
+reset_log
+set_gh_issues "[]"
+FILE_NUM=5555; export FILE_NUM
+rc=0; fire_slowburn "$two_h_ago" || rc=$?
+[[ "$rc" == 0 ]] || fail "(j) dispatch must exit 0, got rc=$rc (stderr: $(cat "$scratch/sb.err"))"
+filed=$(grep -c '\] FILED ' "$PACKET_DIR/actions.log" || true)
+[[ "$filed" == "1" ]] \
+    || fail "(j) expected a filing to gate-check, got $filed FILED lines: $(cat "$PACKET_DIR/actions.log")"
+spec_gate="$repo_root/lib/agent-ready-spec-gate.py"
+[[ -f "$spec_gate" ]] || fail "(j) admission spec gate missing at $spec_gate"
+gate_out="$(python3 "$spec_gate" check-body --repo fleet-ops --body "$FILE_BODY" 2>&1)" \
+    || fail "(j) the auto-filed body is NOT claimable; admission gate refused it: $gate_out"
+[[ "$gate_out" == *"SPEC-GATE: ok"* ]] \
+    || fail "(j) admission gate must print SPEC-GATE: ok, got: $gate_out"
+grep -q 'moves: no_usable_seat_events' "$FILE_BODY" \
+    || fail "(j) the filed body must name the product metric it moves: $(cat "$FILE_BODY")"
+# The bare `{signal}` trailer must survive the added spec lines byte for byte:
+# it is the shipped signal-key file form (same trailer as `issue_body` in
+# lib/detector-queue-reconciler.py), not ours to reformat.
+grep -qx '`slo/seat-availability-slowburn`' "$FILE_BODY" \
+    || fail "(j) the filed body must end with the bare signal trailer: $(cat "$FILE_BODY")"
+ok "(j) the body the dispatcher really filed is claimable: SPEC-GATE: ok (repo fleet-ops)"
+
+# --- (k) MALFORMED SEARCH RESPONSE: no traceback, file path survives --------
+# fleet-ops#4773 finding D(1). A gh that answers with a JSON OBJECT (not a
+# list) must be a failed lookup, never `for it in items` over a dict's keys
+# (the old code raised AttributeError and took the whole dispatch down).
+# Fail-open, as _slowburn_find_existing's docstring documents: a broken search
+# must not block the file path.
+reset_log
+set_gh_issues '{"message":"Bad credentials"}'
+FILE_NUM=5555; export FILE_NUM
+rc=0; fire_slowburn "$two_h_ago" || rc=$?
+[[ "$rc" == 0 ]] \
+    || fail "(k) a non-list gh search response must not take the dispatch down, got rc=$rc (stderr: $(cat "$scratch/sb.err"))"
+tracebacks=$(grep -c 'Traceback' "$scratch/sb.err" || true)
+[[ "$tracebacks" == "0" ]] \
+    || fail "(k) a non-list gh search response raised a traceback: $(cat "$scratch/sb.err")"
+filed=$(grep -c '\] FILED ' "$PACKET_DIR/actions.log" || true)
+[[ "$filed" == "1" ]] \
+    || fail "(k) a malformed search must fail-open and still file, got $filed"
+ok "(k) non-list gh search response: no traceback, fail-open file path still ran"
+
+# --- (l) FAILED EXEC: a missing gh is skip-error, not a traceback -----------
+# fleet-ops#4773 finding D(2). subprocess.run on a missing binary raises
+# OSError (a hung one raises TimeoutExpired); both must behave as a failed
+# lookup. GH here points at a path that does not exist, so BOTH the search
+# and the read-back exec fail: no traceback, and the unreadable terminus is
+# refused (skip-error) rather than guessed at.
+reset_log
+set_gh_issues "[]"
+FILE_NUM=5555; export FILE_NUM
+sb_gh="/nonexistent/gh-binary"
+rc=0; fire_slowburn "$two_h_ago" || rc=$?
+sb_gh="$mock_bin2/gh"
+[[ "$rc" == 0 ]] \
+    || fail "(l) a missing gh binary must not take the dispatch down, got rc=$rc (stderr: $(cat "$scratch/sb.err"))"
+tracebacks=$(grep -c 'Traceback' "$scratch/sb.err" || true)
+[[ "$tracebacks" == "0" ]] \
+    || fail "(l) a missing gh binary raised a traceback: $(cat "$scratch/sb.err")"
+mismatch=$(grep -c 'FILED-LINK-MISMATCH' "$PACKET_DIR/actions.log" || true)
+[[ "$mismatch" == "1" ]] \
+    || fail "(l) a failed exec must refuse the terminus (FILED-LINK-MISMATCH), got $mismatch: $(cat "$PACKET_DIR/actions.log")"
+filed_lines=$(grep -c '\] FILED ' "$PACKET_DIR/actions.log" || true)
+[[ "$filed_lines" == "0" ]] \
+    || fail "(l) a failed exec must NOT be reported as FILED, got $filed_lines: $(cat "$PACKET_DIR/actions.log")"
+warns=$(grep -c '\] WARN .*auto-file failed' "$PACKET_DIR/actions.log" || true)
+[[ "$warns" == "1" ]] \
+    || fail "(l) a failed exec must report skip-error, got $warns: $(cat "$PACKET_DIR/actions.log")"
+ok "(l) missing gh binary (OSError): no traceback, refused terminus, skip-error"
+
+echo "OK: fleet-ops#4773 slowburn file-or-link both directions + idempotence + live-decoy/dedupe-collapse refusal + claimable-body/unreadable-view robustness pass"

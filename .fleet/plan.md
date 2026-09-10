@@ -39,7 +39,7 @@
 
 ## Phases
 
-- [ ] phase 1: accept-1 + accept-2 — in `libexec/alert-repair-dispatch`, make the
+- [x] phase 1: accept-1 + accept-2 — in `libexec/alert-repair-dispatch`, make the
       link path unable to accept a non-claim and make the file path unable to
       report a false terminus. (i) `_slowburn_find_existing`: narrow server-side
       with `--label critical-path`, request `--json number,title,labels`, and
@@ -52,7 +52,7 @@
       `FILED-LINK-MISMATCH` and return "" — a dedupe collapse onto #4773 must
       never be reported as `FILED`. (iii) `_slowburn_file_or_link`: a failed
       verify becomes `skip-error`, never `filed`. No new organ, no config change.
-- [ ] phase 2: accept-5 — extend `tests/alert-repair-slo-slowburn-skip.test.sh`
+- [x] phase 2: accept-5 — extend `tests/alert-repair-slo-slowburn-skip.test.sh`
       so the mock `gh` is label-aware, and add/lock: case (a) >1h + no claim
       FILES exactly one and the create carries `--label critical-path`; case (b)
       >1h + a live `critical-path` claim carrying the signal LINKS + heartbeats
@@ -63,7 +63,7 @@
       collapse — the create returns the decoy's `/issues/4773` URL, so the
       dispatcher must log `FILED-LINK-MISMATCH` and must NOT log `FILED`. Keep
       the existing SKIP_SET-lock assertions and all existing cases green.
-- [ ] phase 3: accept-2 + accept-3 + accept-4 + accept-6 — prove the blast
+- [x] phase 3: accept-2 + accept-3 + accept-4 + accept-6 — prove the blast
       radius is one organ plus its test: diff touches only
       `libexec/alert-repair-dispatch` and `tests/alert-repair-slo-slowburn-skip.test.sh`
       (no new timer/service/dispatcher/canary, no `config/` change), SKIP_SET
@@ -88,3 +88,16 @@ bash tests/alert-repair-slo-slowburn-skip.test.sh \
 A PR on `claim/issue-4773` touching only `libexec/alert-repair-dispatch` and
 `tests/alert-repair-slo-slowburn-skip.test.sh`, body carrying `Closes #4773`,
 Verification with raw output, and `run-proof:`.
+
+## Phase log (manager)
+
+- phase 1 done (commit 30d04e099): finder narrowed to `--label critical-path` + `[{signal}]`
+  title marker; create now title-verified with LOUD `FILED-LINK-MISMATCH` on mismatch.
+- phase 2 done (commit d47cc0d17): test proves (a)-(h) incl. the live #4773 decoy and the
+  dedupe collapse; mutation controls confirm both new cases bite.
+- phase 2b done (reviewer round): filed body made claimable (`metric:`/`accept:`/
+  `moves: no_usable_seat_events` -> `SPEC-GATE: ok`); cases (i)-(l) lock the unreadable-view
+  fail-closed branch, the real create argv, the non-list search payload and a missing `gh`.
+- phase 3 done: blast radius = 2 files, no new organ/timer/canary, SKIP_SET unchanged.
+  Live: finder `''` (was `'4773'`); real tick refuses the false terminus; real scorer files
+  clean (0.28, kind=new) once #4773 closes.
