@@ -40,6 +40,20 @@ measures the deployment pipeline from the sources that actually record it:
       between), 0 when the pipeline is not blocked. Catches the #2725
       pattern: 2026-09-02 the VPS sat DEPLOY-BLOCKED on dirty tracked
       files for 30+ minutes with no mechanized alert.
+  (f) product deploy freshness = seconds since the newest SUCCESSFUL
+      push-triggered "Deploy production" run on the default branch, per
+      product repo (intake-repos.json minus self-maintenance). The family
+      above answers "did OUR pipeline work"; this one answers "are merges
+      reaching users" — product repos deploy through GitHub Actions, not
+      through the VPS deploy clone. The run_url label is the LAST
+      SUCCESSFUL run on purpose, never the newest ATTEMPTED run: it stays
+      fixed for the whole outage, so ProductDeployStale's for: 15m timer
+      can actually complete. A label that tracked each failing attempt
+      would reset the timer on every failing run and the alert could never
+      fire (fleet-ops#4995). A read failure is up 0 + NaN seconds; a read
+      that succeeds with no successful run ever is up 1 + +Inf seconds
+      (truthfully infinitely stale — a fake 0 would read as freshly
+      deployed).
 
 Wiring: loaded lazily by libexec/fleet-metrics-export.py on the existing
 5-min fleet-metrics-export tick (no new timer, no service change — the
@@ -56,6 +70,13 @@ Cached to the same 30min/2h TTL/stale envelope; a failing call serves the
 stale cache and only goes NaN after 2h. Local sources (journal, actions
 log) are cached for 60s so an idle scrape is a cheap read.
 
+The product family (f) is a SEPARATE gh slot with its own per-repo TTL
+cache, because _GH_FETCHED_THIS_RUN is already burned by the fleet-ops
+family when prom_lines() reaches it (fleet-ops#4995). It fetches only the
+repo whose product cache is oldest — never-fetched first — so N repos cost
+one gh call per N ticks, and its cache stores the success EPOCH so the
+freshness age is recomputed every scrape and never freezes.
+
 Environment seams (tests):
   FLEET_DQ_NOW              ISO/epoch override for deterministic tests
   FLEET_DQ_MERGED           path to a JSON list of {mergedAt} (skip gh)
@@ -65,11 +86,18 @@ Environment seams (tests):
   FLEET_DQ_CRITICAL_ALERTS  comma-separated critical alert names (tests)
   FLEET_DQ_CACHE_DIR        cache dir (default: $AGENT_STATE/fleet-metrics)
   FLEET_DQ_GH               gh binary (default: gh)
+  FLEET_DQ_PRODUCT_REPOS    comma-separated product repos (skips the intake read)
+  FLEET_DQ_PRODUCT_RUNS     JSON {repo: gh run list --json array} (skips gh + cache)
+  FLEET_DQ_PRODUCT_CACHE_DIR  product cache dir (default: FLEET_DQ_CACHE_DIR)
+  FLEET_DQ_PRODUCT_WORKFLOW default: deploy-production.yml
+  FLEET_DQ_PRODUCT_BRANCH   default: main
   AGENT_STATE               default: ~/workspaces/agent-state
 """
 from __future__ import annotations
 
+import importlib.util
 import json
+import math
 import os
 import re
 import subprocess
@@ -168,6 +196,31 @@ METRIC_DEFS = (
     ("fleet_deployment_revert_total",
      "auto-revert events (revert: auto-restore green main PRs) in the trailing window (numerator)."),
 )
+
+# Product deploy-freshness family (fleet-ops#4995). Kept apart from
+# METRIC_DEFS because these carry a per-repo label set and their own +Inf
+# renderer, not the repo="fleet-ops" one-liner the loop above emits.
+PRODUCT_METRIC_DEFS = (
+    ("fleet_product_deploy_last_success_seconds",
+     "seconds since the newest SUCCESSFUL push-triggered Deploy production run on the default branch "
+     "(fleet-ops#4995); +Inf means the read succeeded but no successful run exists yet, NaN means the "
+     "GitHub read failed. run_url labels the LAST SUCCESSFUL run, not the newest attempt: it is stable "
+     "for the whole outage so ProductDeployStale's for: 15m timer can complete."),
+    ("fleet_product_deploy_up",
+     "1 when the product deploy-freshness read succeeded this scrape (including 'no successful run "
+     "ever', which reports +Inf seconds), 0 when the read failed (seconds are NaN); the labels match "
+     "fleet_product_deploy_last_success_seconds so ProductDeployStale's `and` vector-matches "
+     "(fleet-ops#4995)."),
+)
+PRODUCT_WORKFLOW = "deploy-production.yml"
+PRODUCT_BRANCH = "main"
+PRODUCT_CACHE_PREFIX = "deploy-quality-product-"
+# The product family's own one-fetch-per-scrape slot: _GH_FETCHED_THIS_RUN
+# is already burned by the fleet-ops family by the time prom_lines() gets
+# here (fleet-ops#4995), so routing this path through _cached() would leave
+# every product repo uncached forever.
+_DQ_PRODUCT_GH_FETCHED_THIS_RUN = False
+_PRODUCT_SLO_MOD = None
 
 
 def _now(env):
@@ -745,11 +798,263 @@ def _fmt(v):
     return str(v)
 
 
+def _esc(s):
+    """Escape a Prometheus label value (backslash, quote, newline).
+
+    The product labels carry a URL from gh or from a cache file; a bare
+    quote there would emit a malformed line and take the whole metrics
+    scrape down with it.
+    """
+    return str(s).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
+def _fmt_seconds(v):
+    """Prometheus text for a product freshness age.
+
+    _fmt() routes floats through repr(round(v, 3)), which prints `inf` —
+    not the Prometheus literal `+Inf`, and `inf` parses as a metric name
+    (fleet-ops#4995). NaN / +Inf are rendered explicitly; everything else
+    keeps the existing rounding.
+    """
+    if v is None:
+        return "NaN"
+    if isinstance(v, float):
+        if math.isnan(v):
+            return "NaN"
+        if math.isinf(v):
+            return "+Inf" if v > 0 else "-Inf"
+    return _fmt(v)
+
+
+def _product_cache_dir(env):
+    """Product per-repo cache dir: FLEET_DQ_PRODUCT_CACHE_DIR, else the
+    shared $FLEET_DQ_CACHE_DIR / $AGENT_STATE/fleet-metrics root the
+    fleet-ops caches already use — one cache root, no new one."""
+    seam = (env or os.environ).get("FLEET_DQ_PRODUCT_CACHE_DIR")
+    if seam:
+        return Path(seam)
+    return _cache_paths(env)[0].parent
+
+
+def _product_slo_mod():
+    """Lazily load lib/fleet-product-slo.py for load_product_repos().
+
+    Reused rather than re-implemented (fleet-ops#4995): the
+    intake-minus-self-maintenance rule already lives there, and that
+    module's own path candidates cover the deploy clone and the checkout
+    this file is installed from.
+    """
+    global _PRODUCT_SLO_MOD
+    if _PRODUCT_SLO_MOD is not None:
+        return _PRODUCT_SLO_MOD
+    name = "fleet_product_slo_for_deploy_quality"
+    mod = sys.modules.get(name)
+    if mod is None:
+        path = Path(__file__).resolve().parent / "fleet-product-slo.py"
+        spec = importlib.util.spec_from_file_location(name, path)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod
+        spec.loader.exec_module(mod)
+    _PRODUCT_SLO_MOD = mod
+    return mod
+
+
+def _product_repo_list(env):
+    """Product repo short names, or [] when enrollment cannot be read.
+
+    FLEET_DQ_PRODUCT_REPOS (comma-separated, possibly empty) bypasses the
+    config read so offline fixtures never touch intake-repos.json. Any
+    failure to load or resolve the list yields ZERO product lines and is
+    logged — never an exception (fleet-ops#4995).
+    """
+    seam = (env or os.environ).get("FLEET_DQ_PRODUCT_REPOS")
+    if seam is not None:
+        return [r.strip() for r in seam.split(",") if r.strip()]
+    try:
+        return [r for r in _product_slo_mod().load_product_repos() if r]
+    except Exception as exc:  # noqa: BLE001 - a broken sibling must not kill the export
+        print(f"deploy-quality product: repo list unavailable: {exc}", file=sys.stderr)
+        return []
+
+
+def _product_from_rows(rows, branch):
+    """Return {"epoch": float|None, "url": str} for a gh run-list array.
+
+    None means the READ failed. {"epoch": None, "url": ""} means the read
+    succeeded and no qualifying run exists — truthfully +Inf seconds, never
+    a fake 0 (a 0 would read as "deployed just now", fleet-ops#4995).
+    gh is asked for --status success, but every row is re-validated here:
+    only conclusion=success on a push event on the default branch counts,
+    so a PR-head success or a cancelled run can never be counted even if
+    the server-side filter ever widens.
+    """
+    if not isinstance(rows, list):
+        return None
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if row.get("conclusion") != "success":
+            continue
+        if row.get("event") != "push" or row.get("headBranch") != branch:
+            continue
+        epoch = _parse_iso_utc(str(row.get("createdAt") or ""))
+        if epoch is None:
+            continue
+        return {"epoch": epoch, "url": str(row.get("url") or "")}
+    return {"epoch": None, "url": ""}
+
+
+def _product_fetch(repo, env):
+    """ONE gh call: newest successful push-triggered deploy run for a repo."""
+    e = env or os.environ
+    branch = e.get("FLEET_DQ_PRODUCT_BRANCH") or PRODUCT_BRANCH
+    rows = _gh_json([
+        e.get("FLEET_DQ_GH") or "gh",
+        "run", "list", "-R", f"Nishfleet/{repo}",
+        "--workflow", e.get("FLEET_DQ_PRODUCT_WORKFLOW") or PRODUCT_WORKFLOW,
+        "--event", "push",
+        "--branch", branch,
+        "--status", "success",
+        "--limit", "1",
+        "--json", "conclusion,createdAt,event,headBranch,url",
+    ], e)
+    return _product_from_rows(rows, branch)
+
+
+def _product_row(repo, data, age, now):
+    """Gauge values for one repo; a corrupt cache entry degrades HERE."""
+    failed = {"repo": repo, "up": 0, "seconds": float("nan"), "url": ""}
+    if not isinstance(data, dict) or age is None or age > GH_STALE:
+        # No reading within the 2h stale window: a failed read, not a stale
+        # number presented as if it were current.
+        return failed
+    epoch = data.get("epoch")
+    if epoch is None:
+        # Read succeeded, no successful deploy ever: +Inf is the honest
+        # age, and up stays 1 because the read itself worked.
+        return {"repo": repo, "up": 1, "seconds": float("inf"), "url": ""}
+    try:
+        epoch = float(epoch)
+    except (TypeError, ValueError):
+        return failed
+    return {"repo": repo, "up": 1, "seconds": max(0.0, now - epoch),
+            "url": str(data.get("url") or "")}
+
+
+def _product_scrape(repos, env):
+    """Resolve every repo's last successful deploy, spending <= ONE gh call.
+
+    Only the repo whose cache is oldest is fetched (never-fetched first);
+    every other repo is served from its cache, so N repos rotate fairly at
+    one gh call per N ticks. The cache holds the success EPOCH, so
+    now - epoch is recomputed on every scrape and a cached reading never
+    freezes the freshness age.
+    """
+    global _DQ_PRODUCT_GH_FETCHED_THIS_RUN
+    if not repos:
+        return []
+    e = env or os.environ
+    now = _now(env)
+    branch = e.get("FLEET_DQ_PRODUCT_BRANCH") or PRODUCT_BRANCH
+    cache_dir = _product_cache_dir(env)
+    entries = {}
+    for repo in repos:
+        path = cache_dir / f"{PRODUCT_CACHE_PREFIX}{repo}.json"
+        data, age = _read_cache(path)
+        entries[repo] = [path, data, age]
+
+    seam = e.get("FLEET_DQ_PRODUCT_RUNS")
+    if seam is not None:
+        # Fixture seam: no gh and no cache read, so a test may mutate the
+        # fixture between calls and see the change (fleet-ops#4995).
+        table = None
+        if seam:
+            try:
+                table = json.loads(Path(seam).read_text())
+            except (OSError, json.JSONDecodeError) as exc:
+                print(f"deploy-quality product: runs fixture unreadable: {exc}",
+                      file=sys.stderr)
+        for repo in repos:
+            rows = table.get(repo) if isinstance(table, dict) else None
+            data = _product_from_rows(rows, branch)
+            # A repo absent from the fixture is a MISSING READ, not "no
+            # successful run": those two outcomes must not be conflated.
+            entries[repo] = [entries[repo][0], data, 0.0 if data is not None else None]
+    elif not _DQ_PRODUCT_GH_FETCHED_THIS_RUN:
+        # Freshness TTL scales with the repo count so a repo is not
+        # re-fetched out of turn while the others are still fresh: N repos
+        # rotate in N * 300s, with GH_TTL as the floor (fleet-ops#4995).
+        fresh_ttl = max(GH_TTL, len(repos) * 300)
+
+        def _age_rank(r):
+            age = entries[r][2]
+            return float("inf") if age is None else age
+
+        target = max(repos, key=_age_rank)
+        if _age_rank(target) < fresh_ttl:
+            target = None  # every cache is fresh — spend no gh call
+        if target is not None:
+            _DQ_PRODUCT_GH_FETCHED_THIS_RUN = True
+            fresh = None
+            try:
+                fresh = _product_fetch(target, env)
+            except (OSError, subprocess.SubprocessError) as exc:
+                # e.g. FLEET_DQ_GH=/nonexistent/gh: a dead binary or a
+                # timeout must degrade, never raise out of prom_lines().
+                print(f"deploy-quality product {target}: gh failed: {exc}",
+                      file=sys.stderr)
+            if fresh is not None:
+                _write_cache(entries[target][0], fresh)
+                entries[target] = [entries[target][0], fresh, 0.0]
+            elif entries[target][2] is not None and entries[target][2] <= GH_STALE:
+                print(f"deploy-quality product {target}: gh failed, serving stale cache "
+                      f"(age={int(entries[target][2])}s)", file=sys.stderr)
+
+    return [_product_row(repo, entries[repo][1], entries[repo][2], now) for repo in repos]
+
+
+def _product_lines(env):
+    """The fleet_product_deploy_* family; never raises (fleet-ops#4995).
+
+    A per-repo read failure degrades THAT repo to up 0 + NaN seconds while
+    the others keep their values; a failed enrollment read degrades to ZERO
+    product lines. The fleet-ops family's raising contract is untouched, so
+    libexec/fleet-metrics-export.py::_emit_deploy_quality keeps its shape.
+    """
+    try:
+        repos = _product_repo_list(env)
+    except Exception as exc:  # noqa: BLE001 - defensive: prom_lines must not raise
+        print(f"deploy-quality product: repo list failed: {exc}", file=sys.stderr)
+        return []
+    if not repos:
+        return []
+    try:
+        rows = _product_scrape(repos, env)
+    except Exception as exc:  # noqa: BLE001 - one bad scrape must not kill the export
+        print(f"deploy-quality product: scrape failed: {exc}", file=sys.stderr)
+        rows = [{"repo": r, "up": 0, "seconds": float("nan"), "url": ""} for r in repos]
+    out = [""]
+    for name, help in PRODUCT_METRIC_DEFS:
+        out.append(f"# HELP {name} {help}")
+        out.append(f"# TYPE {name} gauge")
+        for row in rows:
+            repo_label = _esc(row["repo"])
+            url_label = _esc(row["url"])
+            label = f'repo="{repo_label}", run_url="{url_label}"'
+            value = (row["up"] if name == "fleet_product_deploy_up"
+                     else _fmt_seconds(row["seconds"]))
+            out.append(f"{name}{{{label}}} {value}")
+    return out
+
+
 def prom_lines(env=None):
     """Return the Prometheus text lines for the deploy-quality family.
 
-    Raises ValueError on hard failure (caller emits NaN + up 0); the
-    per-gauge values carry their own NaN when a sub-metric had no samples.
+    The fleet-ops family raises ValueError on hard failure (caller emits
+    NaN + up 0) and its per-gauge values carry their own NaN when a
+    sub-metric had no samples. The appended product family never raises:
+    it degrades per repo to up 0 + NaN seconds, or to no lines at all when
+    the enrollment itself cannot be read.
     """
     p = compute(env)
     label = f'repo="{REPO}"'
@@ -774,6 +1079,7 @@ def prom_lines(env=None):
         out.append(f"# HELP {name} {help}")
         out.append(f"# TYPE {name} gauge")
         out.append(f"{name}{{{label}}} {_fmt(v)}")
+    out.extend(_product_lines(env))
     return out
 
 
