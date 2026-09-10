@@ -85,10 +85,21 @@ SKIP_MSG_PREFIXES = ("rule-enforcement:",)
 # issue is tracked by RECLAIM-COUNT-INCREMENTED + the reclaim cooldown, not
 # by a per-repo loud signal. Queuing RELEASED refiles a noisy per-repo issue
 # on every reap, exactly the never-green loop #4918 fixed for STARTED.
+#
+# PACKETS-ARCHIVED is the same class: pi-issue-failed-reap writes it once the
+# reaper's packet-archive sweep has moved the dead worker's packet files out of
+# the way (fleet-ops#4930 / reaper archive_packets()). It fires on EVERY real
+# reap that archived packet files during cleanup — a successful cleanup, not a
+# fault. It carries a `repo=` key (repo_slug), so derive_signals() forms
+# `loud/packets-archived/<repo>` the same per-repo way the CLAIM-* completion
+# lines do, and any later reap re-emits the same key to keep that issue
+# never-green. Archiving is the expected recovery step; the actionable reaper
+# failures already carry their own loud tags, and there is nothing to escalate.
 SKIP_TAGS = {
     "DEBUG-PLAYBOOK-MISSING",
     "CLAIM-REAP-STARTED",
     "CLAIM-RELEASED",
+    "PACKETS-ARCHIVED",
 }
 STOPWORDS = frozenset(
     """

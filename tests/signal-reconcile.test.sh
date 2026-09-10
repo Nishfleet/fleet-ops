@@ -484,6 +484,54 @@ grep -q "issue close" "$tmp/gh.log" \
 ok "scenario 9i-close: stale CLAIM-RELEASED issue observe-to-closes while RELEASED lines continue"
 
 # ---------------------------------------------------------------------------
+# 9j. PACKETS-ARCHIVED is not queued by the reconciler (fleet-ops#4955).
+#     pi-issue-failed-reap writes it ONCE the reaper's packet-archive sweep
+#     moved a dead worker's packet files out of the way during cleanup (the
+#     instance=... repo=... state=... branch_deleted=... count=... summary
+#     line, bin/pi-issue-failed-reap archive_packets()). It fires on EVERY
+#     real reap that archived packet files — a successful cleanup step, not a
+#     fault. It carries a `repo=` key, so the derived signal is per-repo
+#     (`loud/packets-archived/<repo>`), and any later reap re-emits the same
+#     key so observe-to-close can never go green — the same never-green loop
+#     #4918/#4930 fixed for CLAIM-REAP-STARTED / CLAIM-RELEASED. The
+#     actionable reaper outcomes (BRANCH-FAIL / LABEL-FAIL / PARSE-FAIL /
+#     NO-GH) still queue.
+# ---------------------------------------------------------------------------
+cat > "$tmp/empty9j.json" <<'EOF'
+[]
+EOF
+cat > "$tmp/triage9j.md" <<'EOF'
+[2026-08-28T13:30:00Z] [PACKETS-ARCHIVED] instance=0509-2320 repo=Nishfleet/0509 state=OPEN branch_deleted=yes count=3 stamp=x
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/empty9j.json" "$tmp/triage9j.md" > "$tmp/summary9j.json"
+jq -e '.filed == 0 and .alarm_count == 0' "$tmp/summary9j.json" >/dev/null \
+    || fail "scenario 9j: PACKETS-ARCHIVED must not be queued, got: $(cat "$tmp/summary9j.json")"
+[[ $(wc -l < "$tmp/filed.jsonl") -eq 0 ]] \
+    || fail "scenario 9j: PACKETS-ARCHIVED must not file, got: $(cat "$tmp/filed.jsonl")"
+ok "scenario 9j: PACKETS-ARCHIVED is not queued (packet-archive completion is expected, not a fault)"
+
+# ---------------------------------------------------------------------------
+# 9j-close. An already-open loud/packets-archived issue observe-to-closes
+#     once PACKETS-ARCHIVED is skipped (fleet-ops#4955): the archive-completion
+#     line is no longer a queued signal, so it cannot keep the issue red — the
+#     durable regression proving the informational archive-completion line
+#     does not re-file.
+# ---------------------------------------------------------------------------
+cat > "$tmp/open9jclose.json" <<'EOF'
+[{"number": 4955, "body": "The heartbeat detector reported this alarm on a real tick.\n\n- alarm tag: `PACKETS-ARCHIVED`\n\n`loud/packets-archived/nishfleet-0509`\n", "labels": [{"name": "agent-ready"}], "createdAt": "2026-09-10T11:00:00Z", "comments": []}]
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/open9jclose.json" "$tmp/triage9j.md" > "$tmp/summary9jclose.json"
+jq -e '.closed == 1 and .filed == 0' "$tmp/summary9jclose.json" >/dev/null \
+    || fail "scenario 9j-close: stale loud/packets-archived must close even while ARCHIVED LOUD lines fire, got: $(cat "$tmp/summary9jclose.json")"
+grep -q "issue close" "$tmp/gh.log" \
+    || fail "scenario 9j-close: expected gh issue close"
+ok "scenario 9j-close: stale PACKETS-ARCHIVED issue observe-to-closes while ARCHIVED lines continue"
+
+# ---------------------------------------------------------------------------
 # 10. Tier1 wiring contract.
 # ---------------------------------------------------------------------------
 grep -q 'detector-queue-reconciler' "$repo_root/bin/fleet-heartbeat-tier1" \
