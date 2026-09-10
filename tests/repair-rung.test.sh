@@ -59,6 +59,9 @@ cat >"$stubs" <<'SH'
 #!/usr/bin/env bash
 total_seat_cap() { echo 8; }
 issue_seat_cap() { echo 5; }
+load_seat_caps() { return 0; }
+worker_memory_for_difficulty() { return 1; }
+worker_env_for_repo() { return 1; }
 pick_seat() {
     if [[ "${PICK_SEAT_COUNT_SLOTS:-0}" == "1" ]]; then
         echo "${STUB_LIGHT_SLOTS:-0}"
@@ -120,8 +123,10 @@ git() {
 systemctl() { echo "inactive"; return 0; }
 export -f gh git systemctl
 
+printf 'test-worker-prompt\n' >"$scratch/worker.md"
+
 run_tick() {
-    mkdir -p "$scratch/secondary" "$scratch/run" "$scratch/pi-issues"
+    mkdir -p "$scratch/secondary" "$scratch/run" "$scratch/pi-issues" "$scratch/umbrella"
     env \
         GITHUB_ACTIONS=true \
         HOME="$scratch" \
@@ -129,6 +134,9 @@ run_tick() {
         PI_INTAKE_LOCKDIR="$scratch" \
         PI_INTAKE_DEBOUNCE_SEC=0 \
         PI_INTAKE_RECONCILER_PROM="$scratch/reconciler" \
+        PI_INTAKE_UMBRELLA_PROM="$scratch/umbrella/fleet-umbrella-dispatch" \
+        PI_INTAKE_CLAIMS_LOG="$scratch/claims.log" \
+        PI_INTAKE_WORKER_PROMPT="$scratch/worker.md" \
         PI_INTAKE_GH_RATE_LIMIT_STATE="$scratch/gh-rate-limit.json" \
         PI_INTAKE_GH_RATE_LIMIT_MAX_AGE=120 \
         PI_INTAKE_GH_SECONDARY_STATE_DIR="$scratch/secondary" \

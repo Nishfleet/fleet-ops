@@ -194,7 +194,11 @@ PARK_MAX_CLAIMS="${PI_INTAKE_PARK_MAX_CLAIMS:-3}"
 # reaches that read with a defined value; seat-lib.sh re-sets the identical
 # path when it is sourced live, so behavior is unchanged.
 ATTEMPTS_DIR="${ATTEMPTS_DIR:-${PI_PACKET_STATE:-$HOME/.local/state/pi-packet}/attempts}"
-WORKER_PROMPT="/home/nish/.pi/agent/prompts/worker.md"
+# Overridable for tests. A hardcoded /home/nish path crashes `set -e` on a
+# GitHub-hosted runner (fleet-ops#1407 / #4820): the armed-rung claim loop
+# `cat`s this file, and a missing path aborts the tick before ordinary-work
+# can be skipped-repair-rung.
+WORKER_PROMPT="${PI_INTAKE_WORKER_PROMPT:-/home/nish/.pi/agent/prompts/worker.md}"
 # fleet-ops#3247: repo-conditional worker prompt blocks. The D1 schema +
 # gate-integrity block ships only for 0509 (ideally only when the issue body
 # names migrations/ or .github/); the GEO/AEO block ships only when the issue
@@ -241,6 +245,14 @@ if [[ ! -d "$WORKER_BLOCKS_DIR" ]]; then
     _blocks_fallback="$_tick_dir/../prompts/worker-blocks"
     if [[ -d "$_blocks_fallback" ]]; then
         WORKER_BLOCKS_DIR="$(cd "$_blocks_fallback" && pwd)"
+    fi
+fi
+# Checkout fallback for worker.md (same pattern): CI and a worktree run
+# resolve the prompt from the repo before install.sh copies it into ~/.pi.
+if [[ ! -f "$WORKER_PROMPT" ]]; then
+    _prompt_fallback="$_tick_dir/../prompts/worker.md"
+    if [[ -f "$_prompt_fallback" ]]; then
+        WORKER_PROMPT="$(cd "$(dirname "$_prompt_fallback")" && pwd)/worker.md"
     fi
 fi
 # fleet-ops#3309: claim-step size bounce. Tests override the path.
@@ -519,7 +531,7 @@ blocked_filter() {
                 if [[ "$_dg_rest" =~ ^([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(:[0-9]{2})?Z) ]]; then
                     _dg_iso="${BASH_REMATCH[1]}"
                     any_machine=1
-                    _dg_epoch=$(date -u -d "$_dg_iso" +%s 2>/dev/null || echo "")
+                    _dg_epoch=$(date -u -d "$_dg_iso" +%s 2>/dev/null) || _dg_epoch=""
                     _now_epoch=$(date -u +%s)
                     if [ -z "$_dg_epoch" ] || [ "$_now_epoch" -lt "$_dg_epoch" ]; then
                         any_open=1
@@ -2191,7 +2203,11 @@ blocked-on: orchestrator" 2>/dev/null || true
     # difficulty was computed at the light-only filter above (fleet-ops#4639:
     # one issue_difficulty pass per issue; the filter and the header share it).
     {
-        cat "$WORKER_PROMPT"
+        if [[ -f "$WORKER_PROMPT" ]]; then
+            cat "$WORKER_PROMPT"
+        else
+            echo "pi-intake-tick: worker prompt missing at $WORKER_PROMPT; writing TARGET-only packet (fail-open, fleet-ops#1407)" >&2
+        fi
         if d1_gate_integrity_needed "$body" \
             && [[ -f "$WORKER_BLOCKS_DIR/$D1_GATE_INTEGRITY_BLOCK" ]]; then
             echo
