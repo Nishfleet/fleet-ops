@@ -696,6 +696,76 @@ def main():
             "annotations": annotations,
         })
 
+    # DetachedJobDied repair-artifact recursion guard (auditor 2026-09-09):
+    # a failed alert-repair-DetachedJobDied-<ts> unit itself writes a
+    # fleet_detached_job_died metric, which Alertmanager groups and dispatches
+    # a fresh repair unit for. Each failed repair has a unique unit name (new
+    # fingerprint), so Alertmanager's 6h repeat does not throttle it and the
+    # chain self-amplifies. Break the loop by clearing the dead-man for
+    # unlaunchable / repair-artifact deaths and not dispatching a worker for
+    # them. Real detached jobs (pi-issue-*, pi-fleetops-*, etc.) still dispatch.
+    filtered = []
+    deadman_bin = Path(
+        os.environ.get(
+            "PI_DEADMAN_BIN",
+            str(Path.home() / ".local" / "bin" / "pi-detached-deadman"),
+        )
+    )
+    for a in alerts:
+        if a["labels"].get("alertname") == "DetachedJobDied":
+            unit_name = a["labels"].get("unit", "")
+            cmdline = a["labels"].get("cmdline", "")
+            if (unit_name.startswith("alert-repair-") or
+                    unit_name == "test-unit" or not cmdline):
+                if unit_name:
+                    with LOG.open("a") as f:
+                        f.write(
+                            f"[{utcnow()}] SKIP alertname=DetachedJobDied "
+                            f"unit={unit_name} reason=repair-artifact-cleared "
+                            f"(recursion-guard)\n"
+                        )
+                    print(
+                        f"[{utcnow()}] SKIP alertname=DetachedJobDied "
+                        f"unit={unit_name} reason=repair-artifact-cleared",
+                        file=sys.stderr,
+                    )
+                    # Best-effort clear of the dead-man textfile entry so the
+                    # alert resolves at the next Prometheus scrape.
+                    try:
+                        subprocess.run(
+                            [str(deadman_bin), "--clear", unit_name],
+                            check=False,
+                            timeout=30,
+                        )
+                    except Exception:
+                        pass
+                    continue
+        filtered.append(a)
+    alerts = filtered
+
+    # Recompute alertnames from the surviving alerts so the packet, unit name
+    # and claim scope match the actual dispatch.
+    alertnames = []
+    seen = set()
+    for a in alerts:
+        n = a["labels"].get("alertname", "")
+        if n and n not in seen:
+            alertnames.append(n)
+            seen.add(n)
+
+    if not alerts:
+        with LOG.open("a") as f:
+            f.write(
+                f"[{utcnow()}] SKIP all alerts were repair artifacts / "
+                f"unlaunchable (recursion-guard) receiver={receiver}\n"
+            )
+        print(
+            f"[{utcnow()}] SKIP all alerts were repair artifacts / unlaunchable "
+            f"(recursion-guard)",
+            file=sys.stderr,
+        )
+        return 0
+
     stamp = utcstamp()
     joined = "+".join(alertnames)
     safe = re.sub(r"[^A-Za-z0-9._-]", "_", joined)
