@@ -35,6 +35,16 @@
 #      bytes, so a hand-wired live-only row is not a false red; and a repo
 #      `retired_providers` tombstone retires a live-only provider for good
 #      (fleet-ops#4960).
+#  12i. --check compares the EFFECTIVE seat-caps table: a hand-wired
+#      live-only provider row is not a false DIFF, while a repo-declared
+#      provider's cap difference still reds.
+#  12j. a repo `retired_providers` tombstone retires a live-only provider
+#      from the live state file, leaves untombstoned live-only rows alone,
+#      and never lets a live row outrank the repo's own row.
+#  12k. --check reds on an unparseable live seat-caps file and on a dest
+#      symlinked elsewhere, and stays green for a symlink at the repo copy.
+#  12m. a tombstoned LIVE-ONLY row is not read as a #371 cap downgrade, but
+#      a repo-declared row carrying a stale tombstone is still refused.
 #  13. A leftover .service whose ExecStart binary is missing fails
 #      DRIFT-MISSING-EXEC and auto-files (fleet-ops#285).
 #  14. The paper-over heartbeat drop-in fails DRIFT-PAPER-OVER and auto-files
@@ -1135,7 +1145,7 @@ cat >"$retire_repo/config/seat-caps.json" <<'JSON'
 JSON
 caps_dest_retire="$scratch/live-caps-retire.json"
 cat >"$caps_dest_retire" <<'JSON'
-{"providers":{"devin":{"cap":4},"straitly":{"cap":2,"class":"metered"},"runinfra":{"cap":4}}}
+{"providers":{"devin":{"cap":1},"straitly":{"cap":2,"class":"metered"},"runinfra":{"cap":4}}}
 JSON
 cat >"$retire_repo/MANIFEST" <<MANIFEST
 config/seat-caps.json $caps_dest_retire
@@ -1146,8 +1156,8 @@ git -C "$retire_repo" config user.name "Test"
 git -C "$retire_repo" add config/seat-caps.json MANIFEST install.sh
 git -C "$retire_repo" commit -q -m "seat-caps with a straitly tombstone"
 git -C "$retire_repo" update-ref refs/remotes/origin/main HEAD
-# HOME is the scratch home set at the top of this file, so the learned-caps
-# reset below can never touch the real ~/.local/state/pi-packet/learned-caps.json.
+# HOME is exported to the scratch home set at the top of this file, so
+# install.sh can never touch the real ~/.local/state/pi-packet/ state.
 set +e
 retire_out=$(HOME="$scratch/home" PATH="$scratch:$PATH" "$retire_repo/install.sh" 2>&1)
 retire_rc=$?
@@ -1160,8 +1170,10 @@ if jq -e '.providers.straitly' "$caps_dest_retire" >/dev/null 2>&1; then
 fi
 [[ "$(jq -r '.providers.runinfra.cap' "$caps_dest_retire")" = "4" ]] \
     || fail "scenario12j: an UNtombstoned live-only provider must still survive the merge (fleet-ops#4205) — the drop must be targeted"
+# The live row says 1, the repo row says 4: the assertion only means
+# anything if the repo row is the one that wins.
 [[ "$(jq -r '.providers.devin.cap' "$caps_dest_retire")" = "4" ]] \
-    || fail "scenario12j: repo-declared provider devin must keep the repo version"
+    || fail "scenario12j: repo-declared provider devin (live 1) must keep the repo version 4, got $(jq -r '.providers.devin.cap' "$caps_dest_retire")"
 ok "scenario12j: the retired_providers tombstone retires the live-only row and leaves other live-only rows alone"
 
 # --- scenario 12k: the remaining DIFF classes for seat-caps --check ----------
@@ -1277,6 +1289,54 @@ if jq -e '.providers.straitly' "$caps_dest_guard" >/dev/null 2>&1; then
     fail "scenario12m: the tombstoned row survived the install"
 fi
 ok "scenario12m: a tombstoned live-only row is not reported as a seat-caps downgrade and is retired"
+
+# --- scenario 12m (sub-case): a stale tombstone does not silence a real drop -
+# fleet-ops#4960: the guard's skip is `name in retired AND name not in repo`.
+# A tombstone only ever suppresses a LIVE-ONLY row (the merge's own rule).
+# When the repo ALSO declares the provider at a lower cap, the drop is real
+# and #371 must still refuse. Without the `and name not in repo` half the name
+# is skipped, the guard reports no drop, and install.sh falls through to the
+# unrelated mtime branch or overwrites live caps outright.
+# Same no-origin/main fixture shape as 12m (issue-worktree / hot-patch
+# retarget), and the live copy is OLDER than the repo copy so the mtime
+# refusal cannot mask a missing cap-drop refusal.
+guard2_repo="$scratch/guard-seat-caps-m2"
+mkdir -p "$guard2_repo/config"
+cp "$repo_root/install.sh" "$guard2_repo/install.sh"
+chmod +x "$guard2_repo/install.sh"
+cat >"$guard2_repo/config/seat-caps.json" <<'JSON'
+{"providers":{"devin":{"cap":4},"straitly":{"cap":2}},"retired_providers":{"straitly":{"retired":"2026-09-10","reason":"test"}}}
+JSON
+caps_dest_guard2="$scratch/live-caps-guard-m2.json"
+cat >"$caps_dest_guard2" <<'JSON'
+{"providers":{"devin":{"cap":4},"straitly":{"cap":9,"class":"metered"}}}
+JSON
+cat >"$guard2_repo/MANIFEST" <<MANIFEST
+config/seat-caps.json $caps_dest_guard2
+MANIFEST
+git -C "$guard2_repo" init -q -b main
+git -C "$guard2_repo" config user.email "test@example.com"
+git -C "$guard2_repo" config user.name "Test"
+git -C "$guard2_repo" add config/seat-caps.json MANIFEST install.sh
+git -C "$guard2_repo" commit -q -m "seat-caps with a declared straitly and a stale tombstone"
+if git -C "$guard2_repo" rev-parse --verify -q refs/remotes/origin/main >/dev/null; then
+    fail "scenario12m2: fixture must have no origin/main ref, or seat_caps_is_origin_main_blob hides the guard"
+fi
+touch -d '2026-08-26T20:35:00' "$guard2_repo/config/seat-caps.json"
+touch -d '2020-01-01T00:00:00' "$caps_dest_guard2"
+set +e
+guard2_out=$(HOME="$scratch/home" PATH="$scratch:$PATH" "$guard2_repo/install.sh" 2>&1)
+guard2_rc=$?
+set -e
+[[ "$guard2_rc" -eq 1 ]] \
+    || fail "scenario12m2: a stale tombstone must not silence a REPO-DECLARED provider's cap drop, got rc=$guard2_rc out=$guard2_out"
+[[ "$guard2_out" == *"NONFATAL REFUSE"* ]] \
+    || fail "scenario12m2: the cap-drop REFUSE line is missing, got: $guard2_out"
+[[ "$guard2_out" == *"straitly:9->2"* ]] \
+    || fail "scenario12m2: the reported drop must name straitly:9->2, got: $guard2_out"
+[[ "$(jq -r '.providers.straitly.cap' "$caps_dest_guard2")" = "9" ]] \
+    || fail "scenario12m2: the refused install overwrote live straitly.cap, got $(jq -r '.providers.straitly.cap' "$caps_dest_guard2")"
+ok "scenario12m2: a stale tombstone does not silence a repo-declared provider's #371 cap drop"
 
 # --- scenario 12f: git reset --hard must NOT wipe the live seat-caps copy ----
 # fleet-ops#2910: the live seat-caps.json used to be a symlink into the
