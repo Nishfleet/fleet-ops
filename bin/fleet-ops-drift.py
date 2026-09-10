@@ -846,6 +846,25 @@ def live_file_bytes(dest: Path) -> bytes | None:
     return None
 
 
+def canonical_json(blob: bytes) -> str | None:
+    """Canonical (sorted-key, fixed-separator) text for a JSON document.
+
+    Returns None when the bytes are not a decodable JSON document. Used to
+    compare a copy-install JSON config dest to its origin/main blob: those
+    files are deliberately re-serialized on the live box (install.sh's
+    seat_caps_merge_unknown_providers merge, fleet-ops#4205; an external
+    writer per fleet-ops#4894), so byte equality is unachievable by design
+    and a byte-only compare reports drift forever on a semantically
+    identical config. install.sh --check already accepts that class
+    (fleet-ops#4948); this mirrors the same rule for the drift canary.
+    """
+    try:
+        value = json.loads(blob.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
 def is_volatile_outside_checkout(resolved: Path, checkout: Path) -> bool:
     """True if resolved lives under /tmp, /run, or agent-worktrees, and is not the checkout.
 
@@ -989,6 +1008,22 @@ def check_live_matches_origin_main(checkout: Path) -> None:
             findings.append(f"{dest}: missing (want origin/main:{src})")
             continue
         if actual != expected:
+            # fleet-ops#4948 parity: a copy-install JSON config (seat-caps.json,
+            # pi-models.json, model-candidates.json) is legitimately
+            # re-serialized live, so compare it semantically. A real
+            # structural change, unparseable JSON, or any non-copy-install
+            # dest still fails byte-strict. Duplicate object keys collapse the
+            # same way every JSON parser collapses them (last wins), and a
+            # duplicate key produces exactly this class (fleet-ops#5161).
+            if Path(src).name in COPY_INSTALLED_SRC_NAMES:
+                want_json = canonical_json(expected)
+                got_json = canonical_json(actual)
+                if want_json is not None and want_json == got_json:
+                    log(
+                        f"{dest}: bytes differ from origin/main:{src} but the "
+                        "JSON is equivalent (copy-install re-serialization)"
+                    )
+                    continue
             findings.append(f"{dest} does not match origin/main:{src}")
 
     if findings:
