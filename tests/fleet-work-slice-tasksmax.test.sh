@@ -19,9 +19,8 @@
 #      FLEET_SPAWN_SOFT_CEILING=7500; bash-spawn-hook interpolates those
 #      constants (no hardcoded 2800/3000).
 #   4. MANIFEST installs drop-in + both extension files.
-#   5. seat-caps.json ram_gb_per_worker is the measured admission charge (1.0;
-#      fleet-ops#4164: per-worker anon ~140MB steady, 12 oom-kills/24h all at the
-#      per-unit MemoryMax=4G cap while 12GB sat free; 2.0 over-charged admission).
+#   5. seat-caps.json ram_gb_per_worker is the measured admission charge (2.0;
+#      fleet-ops#4838 restored the #3679 brake after 1.0 under-counted MemoryPeak).
 #
 # Lock-and-leave. Offline. Hosted from tests/system-dropins-shape.test.sh
 # so P14 runs it without a workflow-file edit.
@@ -97,16 +96,10 @@ ok "MANIFEST installs drop-in + spawn-guard-core + bash-spawn-hook"
 
 # --- 5. RAM governor unchanged ----------------------------------------------
 ram=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["ram_gb_per_worker"])' "$caps")
-# 1.0 = the measured charge (fleet-ops#4164, 2026-09-07): per-worker anon ~140MB
-# steady, 24h systemd-oomd kills = 12 total, every unit kill at the per-unit
-# MemoryMax=4G cap while host MemAvailable stayed ~12GB of 16GB. The 2.0 charge
-# admitted only 4 workers at total_cap=4 while 12GB sat free — the governor
-# measured free RAM but the kills come from per-unit caps, which concurrency
-# does not change. 1.0 lets the governor admit ~9-10 workers at 12GB free.
-# Do NOT drop to 0.5 (starves admission) or re-raise to 2.0 (over-charges after
-# #3930 dropped the MemoryHigh band). Moving this pin needs a new measurement
-# in the same PR.
-[[ "$ram" == "1.0" ]] || fail "ram_gb_per_worker must be the measured 1.0 (admission authority, fleet-ops#4164); got '$ram'"
-ok "seat-caps.json ram_gb_per_worker is the measured 1.0"
+# 2.0 = the restored #3679 brake (fleet-ops#4838, 2026-09-10): MemoryPeak over
+# 14 live pi-issue@ units showed p50 ~1.9G against a 1.0 admission charge.
+# Moving this pin needs a new measurement in the same PR.
+[[ "$ram" == "2.0" ]] || fail "ram_gb_per_worker must be the measured 2.0 (admission authority, fleet-ops#4838); got '$ram'"
+ok "seat-caps.json ram_gb_per_worker is the measured 2.0"
 
 echo "OK: fleet-work.slice TasksMax=8000; spawn-guard 7500/8000; RAM admission unchanged"
