@@ -164,8 +164,92 @@ sweep=$(python3 "$lib" sweep --from-json "$scratch/seat-corpse.json")
 count=$(jq '.cluster_count' <<<"$sweep")
 size=$(jq '[.clusters[].size] | max' <<<"$sweep")
 [[ "$count" -ge 1 ]] || fail "sweep must find the seat-corpse cluster, got $sweep"
-[[ "$size" -ge 3 ]] || fail "seat-corpse cluster must have size >= 3, got $sweep"
-ok "sweep clusters the 3-issue seat-corpse group (clusters=$count max_size=$size)"
+# fleet-ops#5152: relaxed 3 -> 2. #21 (a specific seat's credentials_bad
+# corpse) shares no content with #22/#23 (pool-level SloSeatAvailSlowBurn
+# SLO alerts) — they were welded only by the bare derived signal. Under the
+# corroborated-floor contract only the SLO pair still clusters; the
+# same-signature trio case is covered in 6c.
+[[ "$size" -ge 2 ]] || fail "seat-corpse cluster must have size >= 2, got $sweep"
+ok "sweep clusters the seat-corpse SLO pair (clusters=$count max_size=$size)"
+
+# --- 6c. derived fleet/seat-crisis floor needs corroboration (fleet-ops#5152)
+# Two DIFFERENT problems that both carry seat-flavoured prose (the
+# fleet-ops#4626 blocked-on-gate shape vs the fleet-ops#4641
+# credits-exhausted shape) must score below DUP_THRESHOLD — the bare derived
+# signal may not weld them. And the fleet-ops#2899 seat-corpse trio — same
+# incident, shared FleetSloSeatAvailSlowBurn signature — still clusters by
+# content.
+python3 - "$lib" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("if", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+
+gate = ("blocked-on date gates are prose: 're-open-<ISO>' on fleet-ops#4447 has "
+        "no parser, so parked items never come back on their own",
+        "fleet-ops#4447 was parked by the orchestrator sweep with blocked-on: "
+        "re-open-2026-09-14-alibaba-smoke-ok. No script in bin/ parses a "
+        "re-open-<ISO8601> blocked-on value, so the gate is prose: on the date "
+        "nothing flips the issue back to agent-ready and it sits until a human "
+        "notices. On fail the reconciler re-parks with a new timestamp = the "
+        "seat usable_at, and the seat stays walled until then.")
+crof = ("question (Nish): Crof credits exhausted (0.009 left) — top up or park; "
+        "the 401 'Invalid Token' is an empty balance, not a dead key",
+        "the Crof API key in ~/.pi/agent/models.json returns 200 on /models but "
+        "401 'Invalid Token' on /chat/completions. Crof is the designated "
+        "DeepSeek V4 Flash seat. Only Nish can rotate the key at crof.ai; "
+        "until then the seat stays a corpse. blocked-on: nish-decision")
+d = m.score_pair(*gate, *crof)
+assert m._has_seat_crisis(gate[0] + "\n" + gate[1]), "gate shape must carry the derived signal"
+assert m._has_seat_crisis(crof[0] + "\n" + crof[1]), "crof shape must carry the derived signal"
+assert d["shared_signals"] == ["fleet/seat-crisis"], d["shared_signals"]
+assert d["score"] < m.DUP_THRESHOLD, (
+    "two different seat-flavoured problems must not dedupe on the bare "
+    "derived signal", d["score"])
+print(f"OK: different seat-flavoured problems score {d['score']} < {m.DUP_THRESHOLD}")
+
+# fleet-ops#2899-shaped trio (modeled on real #2798 / #3057 / #3738): same
+# incident, shared FleetSloSeatAvailSlowBurn signature — must still cluster.
+trio = [
+    ("Two corpse seats + 6 walled: seat-avail SLO burning 2 days",
+     "Snapshot: 10/19 seats healthy. Corpses: cline/cline-pass_minimax-m3 "
+     "(cfc=19, manual_repair_corpse) and opencode/mimo-v2.5-free (cfc=15, "
+     "429). Walled 6, incl straitly x3 quota_exhausted until 2026-09-03. "
+     "FleetSloSeatAvailSlowBurn firing since 2026-08-31 and its repair chain "
+     "terminal=escalated. Triage each corpse: re-bench or retire the seat "
+     "entry so healthy_n reflects reality."),
+    ("Two seat corpses never released: minimax/MiniMax-M3 and "
+     "opencode/nemotron-3-ultra-free, fail_count=25",
+     "Both seats health_class=corpse, seat_dead=true, "
+     "failure_mode=comeback_never_released, consecutive_failure_count=25. "
+     "FleetSloSeatAvailSlowBurn has been firing since 2026-08-31 with 10/23 "
+     "seats walled. Either re-bench and release these two, or mark them "
+     "permanently excluded so the seat-availability SLO stops burning on "
+     "corpses."),
+    ("seat pool at 6 healthy / 29 — SloSeatAvailSlowBurn escalated 6 days, "
+     "SeatFloorFailopen pending",
+     "seats_healthy=6, seats_walled=20, seats_dead=3, seats_excluded=17. "
+     "FleetSloSeatAvailSlowBurn firing since 2026-08-31 with "
+     "terminal=escalated and a 28800s cycle — six days unresolved. Dead: "
+     "commandcode/minimax/minimax-m3-free (403 credentials_bad, corpse). "
+     "Money-walled seats are Nish-reserved and out of scope."),
+]
+for i in range(3):
+    for j in range(i + 1, 3):
+        p = m.score_pair(*trio[i], *trio[j])
+        # by content: a shared concrete signature (not the bare derived
+        # signal) or real token overlap did the corroboration.
+        assert len(p["shared_signals"]) > 1 \
+            or p["token_overlap_max"] >= m.SEAT_CRISIS_CONTENT_FLOOR, p
+        assert p["score"] >= m.DUP_THRESHOLD, p
+issues = [{"number": 2798 + i, "repository": "Nishfleet/fleet-ops",
+           "title": t, "body": b, "labels": [], "url": ""}
+          for i, (t, b) in enumerate(trio)]
+clusters = m.cluster_issues(issues)
+assert clusters and clusters[0]["size"] >= 3, clusters
+print("OK: #2899 seat-corpse trio still clusters by content "
+      f"(size={clusters[0]['size']} max={clusters[0]['max_score']})")
+PY
+ok "derived-signal floor corroboration guard (fleet-ops#5152)"
 
 # --- 7. fake gh: comment vs create -----------------------------------------
 mkdir -p "$scratch/fakebin"

@@ -101,6 +101,15 @@ INSTANCE_RE = re.compile(
 SIGNAL_BONUS = 0.15
 SIGNAL_BONUS_MAX = 0.30
 PRIMARY_SIGNAL_FLOOR = 0.70
+# fleet-ops#5152: the DERIVED fleet/seat-crisis signal may reach
+# PRIMARY_SIGNAL_FLOOR only when content corroborates it — pairwise token
+# overlap max(t,b) at or above this floor, or a shared concrete secondary
+# signal (same alert/failure/health signature). The token floor is chosen
+# from the live corpus: the seat-crisis-welded blob measured 0.03-0.24
+# pairwise, while the real fleet-ops#2899 semantic cluster the floor was
+# built for measured 0.37-0.57; 0.30 sits in the gap. Uncorroborated, the
+# derived signal is worth one ordinary shared-signal bonus, nothing more.
+SEAT_CRISIS_CONTENT_FLOOR = 0.30
 
 SIGNAL_RE = re.compile(r"^signal:\s*(\S+)", re.MULTILINE | re.IGNORECASE)
 # fleet-ops#4622/#4841: the detector->queue reconciler (lib/detector-queue-
@@ -285,11 +294,27 @@ def score_pair(
     signals_b = signal_keys(combined_b)
     shared_signals = signals_a & signals_b
     primary_shared = {s for s in shared_signals if _is_primary_signal(s)}
-    secondary_shared = shared_signals - primary_shared - COMMON_SIGNALS
+    # Explicit `signal:` markers are deliberate keys and floor
+    # unconditionally. Derived signals (fleet/seat-crisis) fire on loose
+    # seat + failure prose that nearly every fleet issue carries — alone
+    # they welded 21 unrelated open issues into one 0.70 cluster
+    # (fleet-ops#5152). They floor only when content corroborates: token
+    # overlap >= SEAT_CRISIS_CONTENT_FLOOR, or a shared concrete secondary
+    # signal (same alert/failure/health signature). Otherwise they count as
+    # one ordinary secondary signal.
+    secondary_pool = shared_signals - primary_shared - COMMON_SIGNALS
+    corroborated = (
+        max(t, b) >= SEAT_CRISIS_CONTENT_FLOOR or bool(secondary_pool)
+    )
+    floored_primary = {
+        s for s in primary_shared
+        if s.startswith("signal/") or corroborated
+    }
+    secondary_shared = shared_signals - floored_primary - COMMON_SIGNALS
     secondary_bonus = min(SIGNAL_BONUS * len(secondary_shared), SIGNAL_BONUS_MAX)
 
     score = min(1.0, max(t, b) + key_bonus + secondary_bonus)
-    if primary_shared:
+    if floored_primary:
         score = max(score, PRIMARY_SIGNAL_FLOOR)
     if _same_item_signal_divergence(signals_a, signals_b):
         # Distinct concrete signals in the same per-item family: the token
@@ -309,7 +334,10 @@ def score_pair(
         "shared_keys": sorted(shared),
         "specific_shared_keys": sorted(specific_shared),
         "shared_signals": sorted(shared_signals),
-        "primary_shared_signals": sorted(primary_shared),
+        # Signals that actually applied the floor: explicit `signal:` markers
+        # always; a derived signal only when content corroborated it
+        # (fleet-ops#5152). A demoted derived signal stays in shared_signals.
+        "primary_shared_signals": sorted(floored_primary),
     }
 
 
