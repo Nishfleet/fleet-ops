@@ -544,11 +544,21 @@ def issue_body(signal: str, tag: str, msg: str, ts: str) -> str:
 
 
 def find_existing_signal(issues: list[dict[str, Any]], signal: str) -> dict[str, Any] | None:
+    # fleet-ops#5076: issue_body() writes the trailer as `` `{signal}` `` on
+    # its own line, which the old substring check (`f"{signal}\n" in body` /
+    # `body.endswith(signal)`) could never match — a backtick sits between the
+    # key and the newline. Match the signal only when it IS the whole line —
+    # bare, backticked, or behind a `signal:` key — so a prose mention of the
+    # key cannot satisfy the lookup.
+    marker = re.compile(
+        rf"^[ \t]*(?:signal:[ \t]*)?`?{re.escape(signal)}`?[ \t]*$",
+        re.MULTILINE,
+    )
     for issue in issues:
         body = (issue.get("body") or "") + "\n" + "\n".join(
             str(c.get("body") or "") for c in (issue.get("comments") or [])
         )
-        if f"{signal}\n" in body or body.endswith(signal):
+        if marker.search(body):
             return issue
     return None
 
