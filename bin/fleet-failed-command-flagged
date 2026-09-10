@@ -375,5 +375,12 @@ fi
 # fleet-ops#2726 (gap-audit): the loud-fail line sizes the debt. filed =
 # new issues created this tick; deferred = findings paced by the per-tick
 # cap that remain findings (never dropped — the next tick files them).
+# fleet-ops#4944: bin/fleet-failed-command-flagged's per-session filings
+# (`signal: failed-command-flagged/<session>`) are the queue carrier for
+# this debt. This rollup line is a MEASUREMENT only — the
+# detector->queue reconciler skips tag FAILED-COMMAND-FAIL, because its
+# derived key is constant across ticks (the counts are stripped as
+# dynamic tokens) and so can never go green into observe-to-close. Keep
+# the exit 1: the tick must still fail loud while the debt is non-zero.
 loud "FAILED-COMMAND-FAIL" "swallowed failures=$finding_count (filed=$filed deferred=$deferred) — a failed command was walked past; heartbeat tick will fail"
 exit 1

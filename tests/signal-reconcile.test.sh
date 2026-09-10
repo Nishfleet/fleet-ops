@@ -532,6 +532,92 @@ grep -q "issue close" "$tmp/gh.log" \
 ok "scenario 9j-close: stale PACKETS-ARCHIVED issue observe-to-closes while ARCHIVED lines continue"
 
 # ---------------------------------------------------------------------------
+# 9k. FAILED-COMMAND-FAIL is not queued by the reconciler (fleet-ops#4944).
+#     It is the detector's own ROLLUP of swallowed-failure debt, and its key
+#     is constant: _extract_signal_key() strips the counts as DYNAMIC_RE
+#     tokens, so every tick derives the same
+#     `loud/failed-command-fail/swallowed-failures` no matter how the counts
+#     move. It can only go green on a tick whose 24h window holds zero
+#     findings across ALL sessions, and the per-session exemption list is
+#     deliberately narrow (edit-unmatch / schema-validation / "No changes
+#     made" are real swallowed failures). Live loop 2026-09-10: #4920 was
+#     filed, admitted by the senior panel, closed as completed with #4944
+#     filed as the fix issue — and the next tick re-derived the identical
+#     key. Same never-green shape as DEBUG-PLAYBOOK-MISSING (#4620). The
+#     per-session carriers stay: the bin's own
+#     `signal: failed-command-flagged/<session>` filings and the reconciler's
+#     session-keyed FAILED-COMMAND-SWALLOWED alarms (#4884).
+# ---------------------------------------------------------------------------
+cat > "$tmp/empty9k.json" <<'EOF'
+[]
+EOF
+cat > "$tmp/triage9k.md" <<'EOF'
+[2026-09-10T13:53:28Z] [FAILED-COMMAND-FAIL] swallowed failures=38 (filed=5 deferred=33) — a failed command was walked past; heartbeat tick will fail
+EOF
+true > "$tmp/filed.jsonl"
+run "$tmp/empty9k.json" "$tmp/triage9k.md" > "$tmp/summary9k.json"
+jq -e '.filed == 0 and .alarm_count == 0' "$tmp/summary9k.json" >/dev/null \
+    || fail "scenario 9k: FAILED-COMMAND-FAIL must not be queued, got: $(cat "$tmp/summary9k.json")"
+[[ $(wc -l < "$tmp/filed.jsonl") -eq 0 ]] \
+    || fail "scenario 9k: FAILED-COMMAND-FAIL must not file, got: $(cat "$tmp/filed.jsonl")"
+ok "scenario 9k: FAILED-COMMAND-FAIL rollup is not queued"
+
+# 9k-key. The skip is only correct because the key cannot move: prove the
+#     signal key is identical across a rising and a falling count. If a
+#     future refactor stops stripping the counts, the key churns per tick and
+#     the skip must be re-argued.
+python3 - "$repo_root" <<'PY' || fail "scenario 9k-key: FAILED-COMMAND-FAIL key must not move with the counts"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location(
+    "dqr", sys.argv[1] + "/lib/detector-queue-reconciler.py")
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+keys = set()
+for n, f, d in [(1, 1, 0), (5, 5, 0), (23, 5, 18), (38, 5, 33), (100, 0, 0)]:
+    msg = (f"swallowed failures={n} (filed={f} deferred={d}) "
+           "\u2014 a failed command was walked past; heartbeat tick will fail")
+    keys.add(tuple(m._extract_signal_key("FAILED-COMMAND-FAIL", msg)))
+assert keys == {("swallowed-failures",)}, keys
+PY
+ok "scenario 9k-key: FAILED-COMMAND-FAIL key is constant across counts"
+
+# ---------------------------------------------------------------------------
+# 9k-close. An already-open loud/failed-command-fail/swallowed-failures issue
+#     observe-to-closes even while the rollup line keeps firing every tick
+#     (fleet-ops#4944). This is the terminus: without the skip the key is
+#     re-derived on every tick, so observe-to-close can never fire and the
+#     alarm refiles forever (live #4920 -> #4944).
+# ---------------------------------------------------------------------------
+cat > "$tmp/open9kclose.json" <<'EOF'
+[{"number": 4944, "body": "The heartbeat detector reported this alarm on a real tick and no open issue carried its signal key, so the detector\u2192queue reconciler filed one.\n\nDo NOT close this issue on PR merge alone.\n\n`loud/failed-command-fail/swallowed-failures`\n", "labels": [{"name": "agent-ready"}], "createdAt": "2026-09-10T12:55:00Z", "comments": []}]
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/open9kclose.json" "$tmp/triage9k.md" > "$tmp/summary9kclose.json"
+jq -e '.closed == 1 and .filed == 0' "$tmp/summary9kclose.json" >/dev/null \
+    || fail "scenario 9k-close: stale FAILED-COMMAND-FAIL issue must observe-to-close while the rollup keeps firing, got: $(cat "$tmp/summary9kclose.json")"
+grep -q "issue close" "$tmp/gh.log" \
+    || fail "scenario 9k-close: expected gh issue close"
+ok "scenario 9k-close: stale FAILED-COMMAND-FAIL issue observe-to-closes while the rollup continues"
+
+# 9k-keep. The per-session carrier must still queue: the skip is scoped to the
+#     rollup, not to the swallowed-failure class. A session-keyed
+#     FAILED-COMMAND-SWALLOWED alarm still files (fleet-ops#4884).
+cat > "$tmp/triage9kkeep.md" <<'EOF'
+[2026-09-10T13:53:28Z] [FAILED-COMMAND-FAIL] swallowed failures=38 (filed=5 deferred=33) — a failed command was walked past; heartbeat tick will fail
+[2026-09-10T13:53:28Z] [FAILED-COMMAND-SWALLOWED] session=2026-09-10t12-52-48-925z-0509-2331-1789044768598769758 path=/home/nish/.pi/agent/sessions/pi-issue-0509-2331/s.jsonl snippet=fatal: a branch named 'claim/issue-2331' already exists
+EOF
+true > "$tmp/filed.jsonl"
+run "$tmp/empty9k.json" "$tmp/triage9kkeep.md" > "$tmp/summary9kkeep.json"
+jq -e '.filed == 1 and .alarm_count == 1' "$tmp/summary9kkeep.json" >/dev/null \
+    || fail "scenario 9k-keep: only the session-keyed swallowed alarm may file, got: $(cat "$tmp/summary9kkeep.json")"
+grep -q "loud/failed-command-swallowed/2026-09-10t12-52-48-925z-0509-2331-1789044768598769758" "$tmp/filed.jsonl" \
+    || fail "scenario 9k-keep: session-keyed signal must be filed, got: $(cat "$tmp/filed.jsonl")"
+grep -q "loud/failed-command-fail" "$tmp/filed.jsonl" \
+    && fail "scenario 9k-keep: rollup must not be filed, got: $(cat "$tmp/filed.jsonl")"
+ok "scenario 9k-keep: FAILED-COMMAND-SWALLOWED still queues per session"
+
+# ---------------------------------------------------------------------------
 # 10. Tier1 wiring contract.
 # ---------------------------------------------------------------------------
 grep -q 'detector-queue-reconciler' "$repo_root/bin/fleet-heartbeat-tier1" \

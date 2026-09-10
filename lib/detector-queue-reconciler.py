@@ -95,11 +95,37 @@ SKIP_MSG_PREFIXES = ("rule-enforcement:",)
 # lines do, and any later reap re-emits the same key to keep that issue
 # never-green. Archiving is the expected recovery step; the actionable reaper
 # failures already carry their own loud tags, and there is nothing to escalate.
+#
+# FAILED-COMMAND-FAIL is the detector's own ROLLUP of the swallowed-failure
+# debt, the same never-green shape #4620 fixed for DEBUG-PLAYBOOK-MISSING.
+# bin/fleet-failed-command-flagged emits it with a constant message shape
+# (`swallowed failures=<n> (filed=<f> deferred=<d>) — ...`), and
+# _extract_signal_key() strips the counts as DYNAMIC_RE tokens, so every tick
+# derives the SAME key `loud/failed-command-fail/swallowed-failures` no matter
+# which sessions are in the window or how the counts move. The key can only
+# go green on a tick where the 24h window holds zero findings across ALL
+# sessions — and because the per-session exemption list is deliberately
+# narrow (see lib/failed-command-flagged.py: edit-unmatch, schema-validation
+# and "No changes made" are real swallowed failures, not no-match probes),
+# the rolling window almost never empties. Live loop on 2026-09-10: the
+# reconciler filed #4920, the senior panel admitted it, a fix issue (#4944)
+# was filed for it, #4920 was closed as completed — and the very next tick
+# re-derived the same key and filed #4944's successor under the identical
+# signal. The debt is real, but this rollup is the wrong carrier for it: the
+# actionable work is already tracked per session by the bin's own
+# `signal: failed-command-flagged/<session>` filings, by the reconciler's
+# session-keyed FAILED-COMMAND-SWALLOWED alarms (#4884), and by the
+# find-stage lint that refuses to ship a run with an unnamed failure. The
+# rollup line stays LOUD, stays in the triage file, and still fails the
+# heartbeat tick (exit 1) — it is a measurement, not a queue item. Exactly
+# like DEBUG-PLAYBOOK-MISSING, the detector's own aggregate (#2726 sized the
+# debt deliberately) no longer needs the reconciler to file it.
 SKIP_TAGS = {
     "DEBUG-PLAYBOOK-MISSING",
     "CLAIM-REAP-STARTED",
     "CLAIM-RELEASED",
     "PACKETS-ARCHIVED",
+    "FAILED-COMMAND-FAIL",
 }
 STOPWORDS = frozenset(
     """
