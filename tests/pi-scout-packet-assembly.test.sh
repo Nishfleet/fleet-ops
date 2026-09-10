@@ -144,6 +144,28 @@ grep -q 'transformation-bet ID (BET n)' "$repo_root/prompts/scout.md" \
   || fail "A.6 must name bet IDs as a valid research-floor citation"
 ok "research floor: all-green usage + 3 bets => packet instructs filing research-cited candidates (fleet-ops#4560)"
 
+# 1c-b2. Hard minimum + no-reconsider loop (fleet-ops#4850): the live scout
+# on a weak seat (ollama/deepseek-v4-flash) read "up to 5" as "deliberate how
+# many" and looped ~25x between deciding to file and reconsidering, filing 0
+# and never printing the supply verdict line. The floor must be a hard
+# MINIMUM ("at least 1"), and the prompt must forbid the reconsider loop and
+# mandate the supply: line even when filed=0.
+grep -q 'at least 1 and at most' "$packet" \
+  || fail "packet NOTE must state the hard minimum 'at least 1 and at most', not 'up to' (fleet-ops#4850)"
+grep -q 'at least 1 and at most' "$repo_root/prompts/scout.md" \
+  || fail "A.6 research floor must state the hard minimum 'at least 1 and at most' (fleet-ops#4850)"
+grep -q 'hard MINIMUM' "$repo_root/prompts/scout.md" \
+  || fail "A.6 must call the floor a hard MINIMUM so a weak model can't read it as optional (fleet-ops#4850)"
+grep -q 'No-reconsider loop' "$repo_root/prompts/scout.md" \
+  || fail "A.6 must carry the No-reconsider loop directive (fleet-ops#4850)"
+grep -q 'file it in the NEXT action' "$repo_root/prompts/scout.md" \
+  || fail "A.6 must instruct filing in the next action, not looping (fleet-ops#4850)"
+grep -q 'MANDATORY on every run' "$repo_root/prompts/scout.md" \
+  || fail "Step 5 must mark the supply: line MANDATORY on every run including filed=0 (fleet-ops#4850)"
+grep -q 'do not loop between deciding and filing' "$packet" \
+  || fail "packet NOTE must carry the no-loop directive (fleet-ops#4850)"
+ok "research floor: hard minimum + no-reconsider loop + mandatory supply line (fleet-ops#4850)"
+
 # 1c-c. Acquisition-first intake weighting (fleet-ops#4657): 0509 scout
 # candidates must name a funnel stage, else usage-uncited; while
 # signups-30d == 0, acquisition-class ranks above fix/polish-class inside
