@@ -52,12 +52,10 @@ issue_seat_cap() { echo 5; }
 load_seat_caps() { return 0; }
 worker_memory_for_difficulty() { return 1; }
 worker_env_for_repo() { return 1; }
-pick_seat() {
-    if [[ "${PICK_SEAT_COUNT_SLOTS:-0}" == "1" ]]; then
-        echo "${STUB_LIGHT_SLOTS:-0}"
-        return 0
-    fi
-    if [[ "${STUB_HEAVY:-0}" == "1" ]]; then
+litellm_ready() { return 0; }
+litellm_headroom() { echo "${STUB_LIGHT_SLOTS:-0}"; }
+litellm_pick_seat() {
+    if [[ "${STUB_HEAVY:-0}" == "1" ]] || (( ${STUB_LIGHT_SLOTS:-0} > 0 )); then
         printf 'cursor\tcursor-grok-4.6-high\n'
         return 0
     fi
