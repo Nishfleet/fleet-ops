@@ -674,9 +674,24 @@ XARGS_BENIGN_RE = re.compile(
     re.I,
 )
 # Real errors that must not hide behind a grep in the same script.
+# The HTTP alternative is envelope-anchored, unlike the others. Tool
+# output routinely QUOTES a status code as data: a Prometheus alerts
+# payload whose annotation names the provider quota wall (`... reporting
+# HTTP 402/health_class=quota_exhausted ...`), a seat-caps reason string,
+# docs, source code. Live #5032: a compound probe whose terminal `grep`
+# matched nothing (POSIX no-match, exit 1 — a probe by the standing
+# rules) was filed because the JSON payload it had just fetched quoted
+# `HTTP 402`, and the bare token vetoed the no-match exemption. A bare
+# token anywhere in the blob is content; only the tool's own error line
+# (`gh: Not Found (HTTP 404)`, `gh: HTTP 502 (curl exit code 22)`) is a
+# real error. Same doctrine as the isError=false guard: successful
+# output quoting error strings is content. Locked by
+# tests/fleet-failed-command-http-status-quoted-content.test.sh, which
+# pins both the #5032 shape (0 findings) and the `gh:` envelope
+# contrasts (1 finding).
 REAL_ERR_RE = re.compile(
-    r"(Not Found|Permission denied|HTTP\s*[45]\d\d|"
-    r"error TS\d+|API rate limit)",
+    r"(Not Found|Permission denied|error TS\d+|API rate limit|"
+    r"(?:gh|curl|wget):[^\n]{0,200}?HTTP\s*[45]\d\d)",
     re.I,
 )
 # ls(1) exits 2 when a path or glob does not match. Agents use this as a probe,
