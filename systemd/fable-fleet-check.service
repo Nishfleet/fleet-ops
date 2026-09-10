@@ -25,4 +25,5 @@ TimeoutStartSec=19min
 MemoryMax=2500M
 # fleet-ops#4906 handoff: a judge killed at the cap could not run pause-safely; systemd
 # appends the marker so the next judge inherits ~/.claude/resume-notes/fleet-judge.md.
-ExecStopPost=/bin/sh -c '[ "$SERVICE_RESULT" = success ] || printf "\\n- %s %%N ended %s (exit %s/%s) before finishing its pause-safely handoff: pick up from the last checked item above.\\n" "$(date -u +%%FT%%TZ)" "$SERVICE_RESULT" "$EXIT_CODE" "$EXIT_STATUS" >> /home/nish/.claude/resume-notes/fleet-judge.md'
+# No "%" in this line on purpose: %s/%N are systemd specifiers (drill 2026-09-10 proved it).
+ExecStopPost=/bin/sh -c '[ "$SERVICE_RESULT" = success ] || echo "- $(date -u --iso-8601=seconds) fable-fleet-check ended $SERVICE_RESULT (exit $EXIT_CODE/$EXIT_STATUS) before finishing its pause-safely handoff: pick up from the last checked item above." >> /home/nish/.claude/resume-notes/fleet-judge.md'
