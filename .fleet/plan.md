@@ -1,15 +1,66 @@
-# Plan — fix(deploy-check): JSON content-equivalent install compare so escaping-only drift stops the permanently-red merge gate (fleet-ops#4894)
+# Plan — fleet-ops#4773 (re-entrancy: fix the merged #4998 mechanism)
 
-> Manager mode (heavy). The permanently-red `merge-to-live` gate: install.sh's `live_newer_than_repo()` compares `~/.pi/agent/models.json` vs `config/pi-models.json` with BYTE equality (`cmp -s`), but an **external** python `json.dump` (no `ensure_ascii=False`) re-escapes non-ASCII to `\uXXXX` — same JSON, different bytes — so the guard refuses forever, install.sh exits rc=1, and `fleet-deploy-check` prints `DEPLOY-CHECK-FAILED` on every tick. The writer is external (not in bin/lib/libexec — seat-lib.sh only reads models.json); the durable repo fix is **content-equivalent comparison**. Reconcile the 3 provider keys afterwards so the whole `jq -S` file matches live.
+## Context (manager investigation, 2026-09-10)
 
-## Phases (acceptance-driven)
+PR #4998 merged at 15:33Z for this issue but used "Relates to #4773" (not
+"Closes"), so the issue stayed open and got re-claimed. The merged code is
+the right shape (extends `libexec/alert-repair-dispatch`, no new organ), and
+the termination tests pass — BUT the mechanism does NOT fire in production.
 
-- [x] phase 1: add `content_equivalent()` helper + use it in `live_newer_than_repo()` (install.sh ~196–222) so JSON files that parse on both sides compare via `jq -S .` — escaping/whitespace-only diffs DO NOT refuse; real structural diffs and non-JSON files still byte-compare/refuse (acceptance: real cap-diff 5-vs-7 still refuses; escaping-only diff no longer refuses).
-- [x] phase 2: new regression test in tests/install-refuse-continues.test.sh — an escaping-only difference (same JSON, `\uXXXX` bytes) must NOT produce `NONFATAL REFUSE` and the live file is overwritten; test FAILS before phase-1 change, PASSES after. Existing `NONFATAL REFUSE` real-diff scenario still asserts rc≠0.
-- [x] phase 3: reconcile config/pi-models.json with live — add `opencode-go` + `pgsgrove` provider blocks (repo UTF-8 style, no `\uXXXX`), drop `straitly`; leave `opencode` untouched.
-- [x] phase 4: proof green — `bash tests/install-refuse-continues.test.sh` + `bash tests/manifest-shape.test.sh` exit 0; `jq -S . config/pi-models.json` structurally identical to `jq -S 'del(.providers["opencode-go"],.providers["pgsgrove"])' ~/.pi/agent/models.json` (empty diff) so the deploy-check gate goes green.
-- [ ] phase 5: commit, push claim/issue-4894, PR `Closes #4894` with Verification/running-proof sections, arm auto-merge (no label `blocked-by-judge`; commits carry no agent attribution).
+Root cause (proven): `prometheus-am-executor` provides `AMX_ALERT_<i>_START`
+as a **Unix epoch integer** (e.g. `1789051780`), confirmed by every recent
+packet file (`starts_at: 1789051780`). The merged `_slowburn_firing_seconds`
+parses it as ISO 8601 (`%Y-%m-%dT%H:%M:%S`) → `ValueError` → returns `None` →
+the caller treats unknown as "not past threshold" → `skip-short` every tick.
 
-## Phase review record (manager, per-phase reviewer)
-- Phase 1-2 review (stock reviewer): **0 blocking, 0 act-on**. Consider (recorded, not re-delegated): (1) test trailing `trap ... RETURN` leaks $scratch2 on fail; (2) jq -S also collapses key-reorder/whitespace/numeric-literal formatting — intentional escape-only behavior, real structural/value/type diffs and non-JSON still refuse; seat-caps downgrade guard untouched. Green: install-refuse + manifest-shape both EXIT 0.
-- Phase 3 review (stock reviewer): **0 blocking, 0 act-on**. opencode-go distinct from opencode (zen/go vs zen/v1); straitly removal complete in this file; no secrets (all `!command` env refs); real UTF-8, no `\uXXXX`. Consider (recorded): orphaned `straitly` allowlist in config/seat-caps.json keeps bin/fleet-straitly-ds4-pro-canary failing loud ('allowlisted but missing from models.json') — pre-existing (live already lacks straitly) and out of this PR's scope; filed as follow-up.
+Live proof: the alert-repair actions.log shows the 15:52:27Z tick ran
+"(slowburn file-or-link attempted)" but emitted NO `FILED`/`LINK` line. The
+live `FleetSloSeatAvailSlowBurn` alert has been firing since
+2026-09-08T09:51:03Z (2+ days) with zero linked critical-path claims — the
+exact fault the issue's `metric:` names.
+
+The termination tests passed only because they mock `AMX_ALERT_1_START` as
+ISO 8601 (`date -u -d '2 hours ago' +%Y-%m-%dT%H:%M:%SZ`), which does NOT
+match what AMX sends in production. The test masks the bug.
+
+## Phase 1: fix the timestamp parser + match the test to production
+
+- [x] `libexec/alert-repair-dispatch` `_slowburn_firing_seconds`: accept a
+      Unix epoch integer (digits only) as well as ISO 8601. AMX sends epoch
+      in production; keep ISO support for robustness. A purely-numeric
+      string (optionally with trailing `.fff` or `Z`) is epoch seconds; else
+      try ISO 8601. Unknown/unparseable still returns None (fail-safe: never
+      file prematurely). Add a clear comment naming the AMX epoch format and
+      the packet-file evidence.
+- [x] `tests/alert-repair-slo-slowburn-skip.test.sh`: change the `fire_slowburn`
+      start values to **epoch integers** (what AMX actually sends), so the
+      test reflects production reality and would have caught this bug. Keep
+      the (a)/(b)/(c)/(d) cases and their assertions intact. Optionally add
+      one extra assertion/case proving an ISO 8601 start ALSO works (backward
+      compat), but the primary path must be epoch. The `two_h_ago` /
+      `ten_m_ago` helpers should produce epoch seconds (e.g.
+      `$(date -u -d '2 hours ago' +%s)`).
+- [x] Run the termination commands from the issue body and prove green:
+      `bash tests/alert-repair-slo-slowburn-skip.test.sh` and
+      `bash tests/alert-repair-claim-mutex.test.sh` (both exit 0).
+- [x] Run adjacent organ tests to prove no regression:
+      `bash tests/signal-reconcile.test.sh`,
+      `python3 -c "import py_compile; py_compile.compile('libexec/alert-repair-dispatch', doraise=True)"`,
+      `python3 -c "import yaml; yaml.safe_load(open('config/fleet_rules.yml'))"`.
+
+Do NOT touch the alert-repair skip-list, the mutex, class-park, or any seat
+cap. Do NOT add a new organ/timer/service/canary. Do NOT file a live issue
+yourself — the manager verifies the mechanism against the live alert after
+the fix lands on main.
+
+## Acceptance mapping (from issue body)
+
+1. First checks for existing claim before filing → already in merged code. ✓
+2. Routes through existing organs → already in merged code. ✓
+3. Does NOT raise the skip-list → unchanged. ✓
+4. Notifies am-executor, never pages Nish → already in merged code. ✓
+5. Prevention mechanism test proves both directions + idempotence → test
+   exists but masked the bug; this phase makes it match production. ✓
+6. No money decision → unchanged. ✓
+
+The bug fix is what makes accept-5's prevention mechanism actually prevent.

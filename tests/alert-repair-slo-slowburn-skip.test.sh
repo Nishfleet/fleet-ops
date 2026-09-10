@@ -169,8 +169,13 @@ fire_slowburn() {
         >"$scratch/sb.out" 2>"$scratch/sb.err"
 }
 
-two_h_ago="$(date -u -d '2 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-2H +%Y-%m-%dT%H:%M:%SZ)"
-ten_m_ago="$(date -u -d '10 minutes ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-10M +%Y-%m-%dT%H:%M:%SZ)"
+# AMX sends AMX_ALERT_<i>_START as a Unix epoch integer in production (see
+# packet-file evidence: `starts_at: 1789051780`), so the test must carry an
+# epoch integer here too — an ISO 8601 start masked the original bug.
+two_h_ago="$(date -u -d '2 hours ago' +%s 2>/dev/null || date -u -v-2H +%s)"
+ten_m_ago="$(date -u -d '10 minutes ago' +%s 2>/dev/null || date -u -v-10M +%s)"
+# ISO 8601 backward-compat form (still accepted by the parser).
+two_h_ago_iso="$(date -u -d '2 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-2H +%Y-%m-%dT%H:%M:%SZ)"
 
 # --- (c) firing <=1h: plain SKIP, NO file, NO link, NO spawn -----------------
 reset_log
@@ -274,5 +279,20 @@ files=$(grep -c 'fleet-issue-file' "$FILE_CALLS" || true)
 spawns=$(grep -c 'mock-pi-systemd-run args=' "$MOCK_LOG" || true)
 [[ "$spawns" == "0" ]] || fail "(d) must NOT spawn, got $spawns"
 ok "(d) multi-alert: SlowBurn at idx2 (>1h) FILED using its own start, not idx1's short decoy"
+
+# --- (e) ISO 8601 start ALSO works (backward-compat) -------------------------
+# AMX sends epoch in production, but the parser still accepts ISO 8601 so a
+# future/legacy sender is not broken. Same long-firing shape as (a), ISO form.
+reset_log
+GH_LIST_JSON="[]"
+fire_slowburn "$two_h_ago_iso"; rc=$?
+[[ "$rc" == 0 ]] || fail "(e) ISO-start dispatch must exit 0, got rc=$rc (stderr: $(cat "$scratch/sb.err"))"
+filed=$(grep -c '\] FILED ' "$PACKET_DIR/actions.log" || true)
+[[ "$filed" == "1" ]] \
+    || fail "(e) ISO-start long-firing must FILE exactly one, got $filed: $(cat "$PACKET_DIR/actions.log")"
+files=$(grep -c 'fleet-issue-file' "$FILE_CALLS" || true)
+[[ "$files" == "1" ]] \
+    || fail "(e) ISO-start must invoke fleet-issue-file once, got $files: $(cat "$FILE_CALLS")"
+ok "(e) ISO 8601 start also works (backward-compat): FILED exactly one"
 
 echo "OK: fleet-ops#4773 slowburn file-or-link both directions + idempotence pass"

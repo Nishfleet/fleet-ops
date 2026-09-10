@@ -607,17 +607,36 @@ def utcstamp():
 def _slowburn_firing_seconds(starts_at):
     """Return seconds since the alert started firing, or None if unknown.
 
-    `starts_at` is the AMX_ALERT_<i>_START env var (ISO 8601, Z suffix).
-    A missing/unparseable timestamp means the duration is unknown; the
-    caller treats unknown as "not past threshold" so a flaky timestamp
-    never files prematurely.
+    `starts_at` is the AMX_ALERT_<i>_START env var. In production
+    prometheus-am-executor sends a Unix epoch integer (e.g. `1789051780`),
+    as seen in every recent packet file (`starts_at: 1789051780`); ISO 8601
+    (`%Y-%m-%dT%H:%M:%S`, optionally with a trailing `Z`) is also accepted
+    for robustness/backward-compat. A missing/unparseable timestamp means
+    the duration is unknown; the caller treats unknown as "not past
+    threshold" so a flaky timestamp never files prematurely.
     """
     if not starts_at:
         return None
-    try:
-        t = calendar.timegm(time.strptime(starts_at[:19], "%Y-%m-%dT%H:%M:%S"))
-    except ValueError:
-        return None
+    s = starts_at.strip()
+    # AMX epoch format: digits only, optionally with a trailing `Z` or a
+    # `.fff` fractional-seconds component (e.g. `1789051780`, `1789051780Z`,
+    # `1789051780.123`). Strip those and treat the remaining digits as
+    # epoch seconds.
+    epoch = s
+    if epoch.endswith("Z"):
+        epoch = epoch[:-1]
+    if "." in epoch:
+        epoch = epoch.split(".", 1)[0]
+    if epoch.isdigit():
+        try:
+            t = int(epoch)
+        except ValueError:
+            return None
+    else:
+        try:
+            t = calendar.timegm(time.strptime(s[:19], "%Y-%m-%dT%H:%M:%S"))
+        except ValueError:
+            return None
     return max(0, int(time.time() - t))
 
 
