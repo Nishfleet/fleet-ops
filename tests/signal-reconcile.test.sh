@@ -560,6 +560,58 @@ grep -q "issue close" "$tmp/gh.log" \
 ok "scenario 9j-close: stale PACKETS-ARCHIVED issue observe-to-closes while ARCHIVED lines continue"
 
 # ---------------------------------------------------------------------------
+# 9m. CLAIM-CLOSED-CLEANUP is not queued by the reconciler (fleet-ops#5007).
+#     pi-issue-failed-reap writes it once it has cleaned up a CLOSED issue's
+#     claim — it removes the stale agent-in-progress label and resets the
+#     reclaim/ladder markers (the instance=... repo=... branch=...
+#     branch_deleted=no label_removed=yes summary line). It fires on EVERY
+#     reaped CLOSED issue, keyed per-repo (`loud/claim-closed-cleanup/<repo>`)
+#     from the repo_slug token, so any later closed reap re-emits the same
+#     key and observe-to-close can never go green — the same never-green loop
+#     #4918/#4930/#4955 fixed for CLAIM-REAP-STARTED / CLAIM-RELEASED /
+#     PACKETS-ARCHIVED. A closed-issue cleanup is expected completion, not a
+#     fault: branch_deleted=no here means the branch was already gone (merged
+#     PR auto-delete or claim-reconcile's orphan sweep); a real delete that
+#     failed raises its own actionable CLAIM-REAP-BRANCH-FAIL that still
+#     queues. The actionable reaper outcomes (BRANCH-FAIL / LABEL-FAIL /
+#     PARSE-FAIL / NO-GH) still queue.
+# ---------------------------------------------------------------------------
+cat > "$tmp/empty9m.json" <<'EOF'
+[]
+EOF
+cat > "$tmp/triage9m.md" <<'EOF'
+[2026-08-28T13:30:00Z] [CLAIM-CLOSED-CLEANUP] instance=0509-2347 repo=Nishfleet/0509 branch=claim/issue-2347 branch_deleted=no label_removed=yes
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/empty9m.json" "$tmp/triage9m.md" > "$tmp/summary9m.json"
+jq -e '.filed == 0 and .alarm_count == 0' "$tmp/summary9m.json" >/dev/null \
+    || fail "scenario 9m: CLAIM-CLOSED-CLEANUP must not be queued, got: $(cat "$tmp/summary9m.json")"
+[[ $(wc -l < "$tmp/filed.jsonl") -eq 0 ]] \
+    || fail "scenario 9m: CLAIM-CLOSED-CLEANUP must not file, got: $(cat "$tmp/filed.jsonl")"
+ok "scenario 9m: CLAIM-CLOSED-CLEANUP is not queued (closed-issue cleanup is expected completion, not a fault)"
+
+# ---------------------------------------------------------------------------
+# 9m-close. An already-open loud/claim-closed-cleanup issue observe-to-closes
+#     once CLAIM-CLOSED-CLEANUP is skipped (fleet-ops#5007): the closed-issue
+#     completion line is no longer a queued signal, so it cannot keep the
+#     issue red — the durable regression proving the informational
+#     closed-reap-completion line does not re-file and the stale issue closes
+#     on the next real tick.
+# ---------------------------------------------------------------------------
+cat > "$tmp/open9mclose.json" <<'EOF'
+[{"number": 5007, "body": "The heartbeat detector reported this alarm on a real tick.\n\n- alarm tag: `CLAIM-CLOSED-CLEANUP`\n\n`loud/claim-closed-cleanup/nishfleet-0509`\n", "labels": [{"name": "agent-ready"}], "createdAt": "2026-09-10T12:00:00Z", "comments": []}]
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/open9mclose.json" "$tmp/triage9m.md" > "$tmp/summary9mclose.json"
+jq -e '.closed == 1 and .filed == 0' "$tmp/summary9mclose.json" >/dev/null \
+    || fail "scenario 9m-close: stale loud/claim-closed-cleanup must close even while CLEANUP LOUD lines fire, got: $(cat "$tmp/summary9mclose.json")"
+grep -q "issue close" "$tmp/gh.log" \
+    || fail "scenario 9m-close: expected gh issue close"
+ok "scenario 9m-close: stale CLAIM-CLOSED-CLEANUP issue observe-to-closes while CLEANUP LOUD lines continue"
+
+# ---------------------------------------------------------------------------
 # 9k. FAILED-COMMAND-FAIL is not queued by the reconciler (fleet-ops#4944).
 #     It is the detector's own ROLLUP of swallowed-failure debt, and its key
 #     is constant: _extract_signal_key() strips the counts as DYNAMIC_RE

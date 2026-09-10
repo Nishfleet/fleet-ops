@@ -149,11 +149,25 @@ SKIP_MSG_PREFIXES = ("rule-enforcement:",)
 # finding is disarmed-only (fleet-ops#4117: the disarm + LOUD line is the
 # signal, not an issue). The disarm already stopped the unverified merge; the
 # LOUD line is the measurement. Queuing it just produced a per-repo never-green
-# alarm (live: #4969) that observe-to-close could never green. Same class as
-# CLAIM-RELEASED / PACKETS-ARCHIVED / FAILED-COMMAND-FAIL above.
+# CLAIM-CLOSED-CLEANUP is the same class: pi-issue-failed-reap writes it
+# once it has cleaned up a CLOSED issue's claim — it removes the stale
+# agent-in-progress label and resets the reclaim/ladder markers (fleet-ops#5007:
+# the instance=... repo=... branch=... branch_deleted=no label_removed=yes
+# summary line). It fires on EVERY reaped CLOSED issue, keyed per-repo
+# (`loud/claim-closed-cleanup/<repo>` from the repo_slug token), so any later
+# closed reap re-emits the same key and observe-to-close can never go green —
+# the same never-green loop #4918/#4930/#4955 fixed for CLAIM-REAP-STARTED /
+# CLAIM-RELEASED / PACKETS-ARCHIVED. A closed-issue cleanup is the expected
+# completion step, not a fault: branch_deleted=no there means the branch was
+# already gone (a merged PR auto-deleted it or claim-reconcile's orphan sweep
+# got it), and if a branch really existed and a real delete FAILED the reaper
+# writes its own actionable CLAIM-REAP-BRANCH-FAIL tag that still queues. The
+# actionable reaper outcomes (BRANCH-FAIL / LABEL-FAIL / PARSE-FAIL / NO-GH)
+# still queue; only this completion-summary line is informational.
 SKIP_TAGS = {
     "DEBUG-PLAYBOOK-MISSING",
     "DEBUG-PLAYBOOK-GATE-BLOCK",
+    "CLAIM-CLOSED-CLEANUP",
     "CLAIM-REAP-STARTED",
     "CLAIM-RELEASED",
     "PACKETS-ARCHIVED",
