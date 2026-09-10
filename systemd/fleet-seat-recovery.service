@@ -3,8 +3,8 @@ Description=Fleet seat-recovery trigger (fire intake on NO-USABLE-SEAT -> usable
 # systemd.path: a StartLimit hit on THIS oneshot is propagated to
 # fleet-seat-recovery.path and takes the watcher down (fleet-ops#617).
 # The bin always exits 0; ledger writes are the expected trigger rate.
-# Disable the default 5/10s burst so a chatty seats/ dir cannot wedge TOP GEAR.
-StartLimitIntervalSec=0
+# Start rate limiting is DISABLED (see the reasoned block below) so a chatty
+# seats/ dir can never wedge TOP GEAR's seat-recovery fast path.
 
 # Event-driven: any write to the per-seat health ledger (a seat-health
 # extension update) wakes this service. It compares the current "any seat
@@ -15,24 +15,45 @@ StartLimitIntervalSec=0
 
 # fleet-ops#622: the seats ledger is written every few seconds (every
 # seat-health extension update), so fleet-seat-recovery.path fires this
-# service ~30x/min. The DEFAULT StartLimitBurst=5 / StartLimitIntervalSec=10s
-# is blown through in well under a minute of normal fleet traffic, which
-# wedges BOTH this service AND the .path unit with unit-start-limit-hit
-# (proven live: the path unit went inactive/failed 12min after start on
-# 2026-08-27). The bin's own FLEET_SEAT_RECOVERY_COOLDOWN (default 120s) is
-# the real rate-limiter for the side effect (the intake fire); the systemd
-# start limit here only needs to tolerate the no-op trigger storm, not gate
-# the fire. Raise it well above the worst-case sustained write rate so a
-# healthy fleet cannot wedge its own seat-recovery fast path. StartLimit*
-# must live in [Unit], not [Service] (same convention as pi-intake@.service).
+# service ~30x/min. The bin's own FLEET_SEAT_RECOVERY_COOLDOWN (default
+# 120s) is the real rate-limiter for the side effect (the intake fire);
+# systemd start limiting only ever wedged the fast path, never protected it.
 #
-# fleet-ops#5024: the bin now debounces last=usable (skip the ~1.1s ledger
-# scan). That cuts CPU; it does not reduce systemd activations — PathChanged
-# still starts this oneshot on every seats/ write. StartLimitBurst must
-# therefore stay above the write storm (~1800/h). Lowering it to 200
-# would re-wedge the path unit without making the hot loop quieter.
-StartLimitIntervalSec=1h
-StartLimitBurst=2000
+# WHY THERE IS NO BOUNDED StartLimitBurst HERE (2026-09-11, fleet-ops#5024):
+# #622 tried to accommodate the storm with a burst ceiling (StartLimitBurst=
+# 2000 / 1h) sized from a ~1800/h ESTIMATE of ledger writes; #5024 then cut
+# the per-run CPU with an in-bin debounce and asked for the ceiling to come
+# down to 200 so a future regression trips loudly.
+#
+# Both numbers are unusable, because the quantity being bounded is not
+# bounded by anything the unit controls. Measured live 2026-09-11:
+# 2471-2536 activations/h sustained (23 ledger writes/30s, ~20 of them on
+# opencode-go__deepseek-flash.json, one write per provider round-trip across
+# ~32 workers). That is ABOVE 2000/h, so the "accommodation" burst was blown:
+# fleet-seat-recovery.service went start-limit-hit AND the .path watcher went
+# unit-start-limit-hit, taking the entire seat-recovery FAST PATH down
+# silently until the heartbeat auto-reset it. Lowering the burst to 200 (as
+# #5024 proposed) re-wedges it within ~5 minutes instead of ~50 — the wedge
+# is the failure mode either way, and the wedge is worse than the churn,
+# because it disables instant recovery and is invisible.
+#
+# So: disable start rate limiting (StartLimitIntervalSec=0 — systemd.unit(5):
+# "may be set to 0 to disable any kind of rate limiting"). This unit is a
+# cheap idempotent oneshot (Type=oneshot, ~30ms, always exits 0); a healthy
+# storm costs ~76 CPU-s/h and the bin debounces the work. Guarding a cheap
+# no-op against a storm by wedging the fast path is a bad trade.
+#
+# Churn is NOT hidden by this: bin/measure.sh reports any unit above 200
+# starts/h in its unit-churn line on every judge run. The doctrine-satisfying
+# trigger fix (stop rewriting an unchanged seat-health record — the ledger
+# only needs rewriting inside seat-lib's STALE_SECS=21600 window, not every
+# round-trip) is tracked separately; once the unit is back under 200 starts/h
+# a small burst can be restored, and then it will trip LOUDLY instead of
+# wedging.
+#
+# Regression lock: tests/fleet-seat-recovery-units.test.sh asserts interval 0
+# AND the absence of StartLimitBurst (phase 4 proves the storm cannot wedge).
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot

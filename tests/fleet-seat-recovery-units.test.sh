@@ -19,15 +19,17 @@
 # invoked from a listed test).
 #
 # What we prove:
-#   1. fleet-seat-recovery.service carries a storm-tolerant StartLimit guard
-#      in [Unit] (StartLimitIntervalSec=1h, StartLimitBurst>1800) so a healthy
-#      fleet cannot wedge its own seat-recovery fast path. fleet-ops#5024
-#      in-bin debounce cuts CPU on last=usable; PathChanged still starts the
-#      oneshot on every seats/ write, so the burst floor stays >1800.
+#   1. fleet-seat-recovery.service disables systemd start rate limiting
+#      (StartLimitIntervalSec=0 in [Unit]) and carries NO bounded
+#      StartLimitBurst, so a trigger storm cannot wedge the fast path.
+#      fleet-ops#5024 in-bin debounce cuts CPU on last=usable; PathChanged
+#      still starts the oneshot on every seats/ write, so the activation rate
+#      tracks an unbounded write rate and no fixed burst can be sized above it.
 #   2. StartLimit* does NOT leak into [Service] (systemd rejects it there).
 #   3. systemd-analyze verify accepts both unit files (syntax + directives).
-#   4. Live wedge-recovery drill: 60 .path triggers in ~3s (far past the old
-#      5/10s default) leaves the .path unit active(waiting), not failed.
+#   4. Live wedge-recovery drill: 120 .path triggers leaves the .path unit
+#      active(waiting), not failed — and a bounded-burst control unit driven
+#      by the SAME storm DOES wedge, so the drill cannot pass vacuously.
 #      Skipped outside a user-systemd session (CI hosted runners).
 #
 # Runs read-only against the repo except for the live drill, which installs
@@ -45,25 +47,32 @@ path_unit="$repo_root/systemd/fleet-seat-recovery.path"
 [[ -f "$svc_unit" ]] || fail "missing: $svc_unit"
 [[ -f "$path_unit" ]] || fail "missing: $path_unit"
 
-# --- 1. StartLimit guard in [Unit] -------------------------------------------
+# --- 1. start rate limiting disabled in [Unit] -------------------------------
 # StartLimit* must live in [Unit] (systemd rejects them in [Service]).
-# Extract the [Unit] section and assert both directives are present and high
-# enough to survive a sustained ledger-write storm.
+#
+# fleet-ops#622 sized a burst ceiling (StartLimitBurst=2000/1h) from a ~1800/h
+# estimate; fleet-ops#5024 asked for it to come down to 200. Both are
+# unusable: measured live 2026-09-11 the unit runs 2471-2536 activations/h
+# (one per seat-ledger write, i.e. one per provider round-trip), which is over
+# the 2000 ceiling — the ceiling was blown and wedged BOTH the service and its
+# .path watcher (unit-start-limit-hit), silently killing the seat-recovery
+# fast path. Any fixed burst under an unbounded write rate is a wedge waiting
+# to happen, and the wedge is worse than the churn it guards against (the unit
+# is a ~30ms idempotent oneshot that always exits 0). Start limiting is
+# therefore DISABLED, not tuned. Churn stays visible via the unit-churn line
+# in bin/measure.sh (any unit >200 starts/h is reported every judge run).
 unit_section=$(awk '/^\[Unit\]/{f=1} /^\[/{if(f&&$0!~/^\[Unit\]/)f=0} f' "$svc_unit")
 [[ -n "$unit_section" ]] || fail "no [Unit] section in $svc_unit"
-echo "$unit_section" | grep -qE '^StartLimitIntervalSec=1h$' \
-  || fail "StartLimitIntervalSec=1h missing from [Unit] in $svc_unit"
-echo "$unit_section" | grep -qE '^StartLimitBurst=[0-9]+$' \
-  || fail "StartLimitBurst missing from [Unit] in $svc_unit"
-burst=$(echo "$unit_section" | sed -nE 's/^StartLimitBurst=([0-9]+)$/\1/p')
-[[ -n "$burst" ]] || fail "could not parse StartLimitBurst"
-# 30 triggers/min * 60min = 1800/hr worst case; the guard must clear that
-# with headroom so a healthy fleet cannot wedge its own fast path.
-# fleet-ops#5024: in-bin debounce does not reduce systemd starts, so this
-# floor still holds. Burst=200 would re-wedge the path unit (#617).
-(( burst > 1800 )) \
-  || fail "StartLimitBurst=$burst too low for ~1800/hr trigger storm (need >1800)"
-ok "fleet-seat-recovery.service carries a storm-tolerant StartLimit guard in [Unit] (burst=$burst)"
+echo "$unit_section" | grep -qx 'StartLimitIntervalSec=0' \
+  || fail "StartLimitIntervalSec=0 missing from [Unit] in $svc_unit (start rate limiting must be disabled)"
+if echo "$unit_section" | grep -qE '^StartLimitBurst='; then
+  fail "StartLimitBurst must not be set in $svc_unit: a fixed burst under an unbounded ledger-write rate is the fleet-ops#622 wedge (re-wedged live 2026-09-11 at 2536 starts/h vs a 2000/h ceiling)"
+fi
+# A duplicate/second StartLimitIntervalSec is how the previous contradiction got
+# in (interval 0 near the top, interval 1h further down, last-wins). Assert one.
+[[ $(echo "$unit_section" | grep -cE '^StartLimitIntervalSec=') -eq 1 ]] \
+  || fail "expected exactly one StartLimitIntervalSec in [Unit] of $svc_unit (duplicate directives are last-wins and hid the contradiction)"
+ok "fleet-seat-recovery.service disables start rate limiting in [Unit] (interval=0, no bounded burst)"
 
 # --- 2. StartLimit* must not leak into [Service] -----------------------------
 svc_section=$(awk '/^\[Service\]/{f=1} /^\[/{if(f&&$0!~/^\[Service\]/)f=0} f' "$svc_unit")
@@ -147,15 +156,48 @@ if [[ -n "${XDG_RUNTIME_DIR:-}" ]] && [[ -S "${XDG_RUNTIME_DIR}/systemd/private"
   systemctl --user reset-failed "${drill_unit}.service" "${drill_unit}.path" 2>/dev/null || true
   systemctl --user stop "${drill_unit}.service" "${drill_unit}.path" 2>/dev/null || true
   systemctl --user start "${drill_unit}.path" 2>/dev/null || fail "could not start drill .path"
-  # Hammer the trigger ~60x in ~3s — far past the old 5/10s default limit.
-  for _ in $(seq 1 60); do : > "$trigger"; sleep 0.05; done
-  sleep 0.5
+  # Drive the trigger past the OLD default limit (5/10s) AND past the
+  # fleet-ops#622 ceiling class. Paced to stay under the .path unit's own
+  # TriggerLimit (default 200/2s) so this drill exercises the SERVICE start
+  # limit only — hitting TriggerLimit would fail the watcher for a different
+  # reason and mask the result.
+  for _ in $(seq 1 120); do : > "$trigger"; sleep 0.02; done
+  sleep 1
   st=$(systemctl --user show -p ActiveState -p Result "${drill_unit}.path" 2>/dev/null)
   echo "$st" | grep -q 'ActiveState=active' \
-    || fail "drill .path wedged under trigger storm: $st (StartLimit guard not effective)"
+    || fail "drill .path wedged under trigger storm: $st (start rate limiting not effective)"
   echo "$st" | grep -q 'Result=success' \
     || fail "drill .path Result not success: $st"
-  ok "live drill: 60 triggers in 3s does not wedge fleet-seat-recovery.path ($st)"
+  ok "live drill: 120 triggers does not wedge fleet-seat-recovery.path ($st)"
+  # --- control: the SAME storm MUST wedge a bounded-burst unit --------------
+  # Without this the drill can pass vacuously (e.g. if the trigger never fired
+  # at all). Inject a small burst into the copy and require the wedge the live
+  # fleet actually suffered on 2026-09-11.
+  ctl_unit="fleet-seat-recovery-drill-ctl"
+  ctl_svc="$HOME/.config/systemd/user/${ctl_unit}.service"
+  ctl_path="$HOME/.config/systemd/user/${ctl_unit}.path"
+  ctl_trigger="$(mktemp -t sr-drill-ctl.XXXXXX)"
+  sed "s/fleet-seat-recovery/${ctl_unit}/g; s/^StartLimitIntervalSec=0$/StartLimitIntervalSec=1h\nStartLimitBurst=20/" \
+    "$svc_unit" > "$ctl_svc"
+  sed "s|/home/nish/workspaces/agent-state/lanes/seats|${ctl_trigger}|g; s/fleet-seat-recovery/${ctl_unit}/g" \
+    "$path_unit" > "$ctl_path"
+  sed -i 's|^ExecStart=.*|ExecStart=/bin/true|' "$ctl_svc"
+  cleanup_ctl() {
+    systemctl --user stop "${ctl_unit}.service" "${ctl_unit}.path" 2>/dev/null || true
+    systemctl --user reset-failed "${ctl_unit}.service" "${ctl_unit}.path" 2>/dev/null || true
+    rm -f "$ctl_svc" "$ctl_path" "$ctl_trigger"
+    systemctl --user daemon-reload 2>/dev/null || true
+  }
+  trap 'cleanup_drill; cleanup_ctl' EXIT INT TERM
+  systemctl --user daemon-reload
+  systemctl --user start "${ctl_unit}.path" 2>/dev/null || fail "could not start control .path"
+  for _ in $(seq 1 120); do : > "$ctl_trigger"; sleep 0.02; done
+  sleep 1
+  ctl_st=$(systemctl --user show -p ActiveState -p Result "${ctl_unit}.path" 2>/dev/null)
+  echo "$ctl_st" | grep -q 'Result=unit-start-limit-hit' \
+    || fail "control unit with StartLimitBurst=20 did NOT wedge under the same storm: $ctl_st (drill is vacuous — the trigger never fired)"
+  ok "live drill control: a bounded-burst unit DOES wedge under the same storm ($ctl_st)"
+  cleanup_ctl
   cleanup_drill
   trap - EXIT INT TERM
 else
