@@ -1155,6 +1155,13 @@ systemd/fleet-litellm-proxy.service /home/nish/.config/systemd/user/fleet-litell
 systemd/fleet-litellm-proxy.service.d/debug.conf /home/nish/.config/systemd/user/fleet-litellm-proxy.service.d/debug.conf
 systemd/fleet-litellm-postgres.service /home/nish/.config/systemd/user/fleet-litellm-postgres.service
 systemd/fleet-litellm-redis.service /home/nish/.config/systemd/user/fleet-litellm-redis.service
+# fleet-ops#4861: oom-avoid drop-ins mark the three LiteLLM organs avoid so
+# systemd-oomd deprioritizes them under user-slice pressure instead of
+# killing the DB organ first (3 OOM-kills in 1h, 3rd auditor summon). Pure
+# ManagedOOM* override; postgres also gets MemoryMin=256M, no MemoryMax.
+systemd/fleet-litellm-postgres.service.d/20-oom-avoid.conf /home/nish/.config/systemd/user/fleet-litellm-postgres.service.d/20-oom-avoid.conf
+systemd/fleet-litellm-proxy.service.d/20-oom-avoid.conf /home/nish/.config/systemd/user/fleet-litellm-proxy.service.d/20-oom-avoid.conf
+systemd/fleet-litellm-redis.service.d/20-oom-avoid.conf /home/nish/.config/systemd/user/fleet-litellm-redis.service.d/20-oom-avoid.conf
 libexec/fleet-litellm-health-canary.py /home/nish/.local/libexec/fleet-litellm-health-canary.py
 # fleet-ops#4628: sitecustomize that retargets LiteLLM 1.98's PrismaWrapper
 # _write_engine onto prisma-client-py 0.15's _engine setter. PYTHONPATH is

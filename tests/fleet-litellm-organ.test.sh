@@ -121,6 +121,32 @@ grep -q 'FLEET_LITELLM_PG_HOST=/home/nish/.local/share/fleet-litellm-postgres/ru
     || fail "4c: pg-socket drop-in must set the fleet-owned user-level socket dir"
 ok "4c: health-canary pg-socket drop-in is repo-sourced + in MANIFEST"
 
+# --- 4d: all three litellm organs resolve ManagedOOMPreference=avoid
+# (fleet-ops#4861). systemd-oomd was free to pick the DB organ first because
+# the litellm units carried ManagedOOMPreference=none; the fleet already
+# protects other units with an avoid drop-in. Each organ must carry a
+# repo-sourced 20-oom-avoid.conf drop-in that sets ManagedOOMPreference=avoid
+# (postgres also MemoryMin=256M, no MemoryMax on any of the three).
+for unit in fleet-litellm-postgres fleet-litellm-proxy fleet-litellm-redis; do
+    dropin="$repo_root/systemd/$unit.service.d/20-oom-avoid.conf"
+    [[ -f "$dropin" ]] || fail "4d: repo drop-in missing for $unit: $dropin"
+    grep -q '^ManagedOOMPreference=avoid$' "$dropin" \
+        || fail "4d: $unit drop-in must set ManagedOOMPreference=avoid"
+    grep -q "^systemd/$unit.service.d/20-oom-avoid.conf " "$manifest" \
+        || fail "4d: MANIFEST missing install line for $unit 20-oom-avoid.conf"
+    if grep -q '^MemoryMax=' "$dropin"; then
+        fail "4d: $unit drop-in must NOT set MemoryMax (fleet-ops#4861)"
+    fi
+done
+# postgres alone carries MemoryMin=256M to protect its working set.
+grep -q '^MemoryMin=256M$' "$repo_root/systemd/fleet-litellm-postgres.service.d/20-oom-avoid.conf" \
+    || fail "4d: postgres drop-in must set MemoryMin=256M"
+if grep -q '^MemoryMin=' "$repo_root/systemd/fleet-litellm-proxy.service.d/20-oom-avoid.conf" \
+    || grep -q '^MemoryMin=' "$repo_root/systemd/fleet-litellm-redis.service.d/20-oom-avoid.conf"; then
+    fail "4d: only the postgres drop-in may set MemoryMin (fleet-ops#4861)"
+fi
+ok "4d: all three litellm organs resolve ManagedOOMPreference=avoid (postgres MemoryMin=256M)"
+
 # --- 4b: the repo router config is a SHAPE, never an install target
 # (fleet-ops#4174 reopen). The live ~/.config/fleet-ops/litellm-proxy.yaml
 # holds the operator's real baseUrls and seat set; installing the repo copy
