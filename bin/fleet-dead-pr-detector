@@ -45,6 +45,21 @@ fi
 # A CONFLICTING PR with no resolvable parent is NOT dead-classified — we
 # cannot prove a resolved parent, so it is skipped, never guessed.
 #
+# GitHub computes mergeability asynchronously: while undecided gh returns
+# `mergeable: "UNKNOWN"` or null, and a future gh may return new values.
+# Any value that is not exactly MERGEABLE or CONFLICTING is counted in the
+# `unknown-mergeable` figure and kept in the scan — never silently dropped
+# (fleet-ops#5079: a dead PR whose mergeable was still UNKNOWN read clean
+# on a live tick). An undecided PR is re-queried with `gh pr view` — up to
+# DEAD_PR_UNKNOWN_ATTEMPTS tries, DEAD_PR_UNKNOWN_SLEEP seconds between —
+# and only a MERGEABLE/CONFLICTING answer ends the question. Still
+# undecided after the retries, the parent decides: MERGED/CLOSED parent ->
+# DEAD-PR-UNRESOLVED, exit 2, so the sweep can never read clean over a
+# possible dead PR; OPEN parent -> logged and skipped (a live parent is
+# never dead); no resolvable parent -> logged and skipped, consistent with
+# the never-guess rule. Any other unrecognized value is counted and
+# logged, then skipped — visible, never silent.
+#
 # Runs as ExecStartPre of the fleet-merged-pr-close unit (same rail, no new
 # timer). A found dead PR exits 1 so the unit fails and the existing
 # OnFailure escalation pages instead of the branch lingering until a manual
@@ -55,12 +70,16 @@ fi
 # Logging is stderr only; stdout is machine-readable.
 #
 # Exit codes: 0 clean (no dead conflicting PRs), 1 when at least one dead
-# conflicting PR is proven, 2 on any gh/jq infra failure (fail-closed —
-# never a false green).
+# conflicting PR is proven, 2 on any gh/jq infra failure or on a PR whose
+# mergeable stays undecided while its parent is MERGED/CLOSED (fail-closed
+# — never a false green).
 #
 # Environment seams (tests override all of these):
 #   GH             gh binary (mockable)
 #   DEAD_PR_REPO   owner/repo to scan (default Nishfleet/fleet-ops)
+#   DEAD_PR_UNKNOWN_ATTEMPTS  `gh pr view` re-query tries for an undecided
+#                  mergeable value (default 3)
+#   DEAD_PR_UNKNOWN_SLEEP     seconds between re-query tries (default 5)
 
 set -euo pipefail
 
@@ -70,6 +89,8 @@ export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
 GH="${GH:-gh}"
 REPO="${DEAD_PR_REPO:-Nishfleet/fleet-ops}"
+UNKNOWN_ATTEMPTS="${DEAD_PR_UNKNOWN_ATTEMPTS:-3}"
+UNKNOWN_SLEEP="${DEAD_PR_UNKNOWN_SLEEP:-5}"
 
 log() {
     printf '[fleet-dead-pr-detector] %s\n' "$*" >&2
