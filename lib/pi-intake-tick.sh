@@ -601,6 +601,111 @@ blocked_filter() {
     return 0
 }
 
+# fleet-ops#4808: depends-on gate. An agent-ready issue can carry a body
+# `depends-on:` line naming issues/PRs that must be DONE before it is
+# claimable (e.g. a seam batch where #2218 must land before the six sources
+# that depend on it). Claiming such an issue spawns a worker that cannot
+# make progress — it would have to hand-gate by removing agent-ready. This
+# filter resolves each named dependency and skips the issue (stays
+# agent-ready, no de-label) until every dependency is DONE.
+#
+# A dependency is DONE when the referenced issue is:
+#   - closed (state=closed), OR
+#   - has a merged PR whose branch is claim/issue-<n> or fable/issue-<n>, OR
+#   - has any merged PR linked via "closes #n" (a cross-referenced PR).
+#
+# Cycle: if A depends on B and B depends on A, neither can ever be DONE
+# while the other is open, so both are skipped with `depends-on-cycle`
+# instead of a misleading `skipped-depends-on:#n`.
+#
+# Caching: resolution is memoised per tick in the _dep_state_cache and
+# _dep_body_cache associative arrays (one gh call per referenced issue per
+# tick), so a dependency named by many issues costs one lookup.
+#
+# Args: $1=body  $2=repo (Nishfleet/<repo>)  $3=issue number
+# Returns: 0 = claimable (no deps, or all deps DONE); 1 = skip. On skip,
+# prints the reason (skipped-depends-on:#n or depends-on-cycle) to stdout.
+depends_on_filter() {
+    local body="$1" repo="$2" num="$3"
+    local ref owner rname target_num dep_key dep_state dep_body
+    local -a deps=()
+
+    # Parse the depends-on: line(s). Extract every #<n> (same repo) and
+    # owner/repo#<n>; prose like "none" or "any of" yields no refs.
+    mapfile -t deps < <(printf '%s\n' "$body" \
+        | grep -E '^depends-on:' \
+        | grep -oE '#[0-9]+|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+' || true)
+    (( ${#deps[@]} == 0 )) && return 0
+
+    for ref in "${deps[@]}"; do
+        if [[ "$ref" =~ ^#([0-9]+)$ ]]; then
+            owner="${repo%%/*}"; rname="${repo#*/}"; target_num="${BASH_REMATCH[1]}"
+        elif [[ "$ref" =~ ^([^/]+)/([^/]+)#([0-9]+)$ ]]; then
+            owner="${BASH_REMATCH[1]}"; rname="${BASH_REMATCH[2]}"; target_num="${BASH_REMATCH[3]}"
+        else
+            continue  # unparseable ref — ignore
+        fi
+        dep_key="${owner}/${rname}#${target_num}"
+
+        # Resolve the dependency's DONE state (memoised per tick).
+        if [[ -n "${_dep_state_cache[$dep_key]:-}" ]]; then
+            dep_state="${_dep_state_cache[$dep_key]}"
+        else
+            dep_state="$(resolve_dep "$owner" "$rname" "$target_num")"
+            _dep_state_cache[$dep_key]="$dep_state"
+        fi
+        if [[ "$dep_state" != "DONE" ]]; then
+            # Cycle detection: does the dependency itself depend on THIS
+            # issue? (A depends on B depends on A.) Fetch the dependency's
+            # body (memoised) and check its depends-on: line.
+            if [[ -n "${_dep_body_cache[$dep_key]:-}" ]]; then
+                dep_body="${_dep_body_cache[$dep_key]}"
+            else
+                dep_body="$(gh issue view "$target_num" -R "${owner}/${rname}" --json body --jq '.body // ""' 2>/dev/null || true)"
+                _dep_body_cache[$dep_key]="$dep_body"
+            fi
+            if printf '%s\n' "$dep_body" | grep -E '^depends-on:' \
+                | grep -qE "#${num}\b|${repo}#${num}\b"; then
+                echo "depends-on-cycle"
+                return 1
+            fi
+            echo "skipped-depends-on:$ref"
+            return 1
+        fi
+    done
+    return 0
+}
+
+# resolve_dep — is a referenced issue DONE? Prints DONE when the issue is
+# closed OR has a merged PR (claim/issue-<n>, fable/issue-<n>, or any PR
+# linked via "closes #n"); prints NOT_DONE otherwise. Fail-safe: a gh error
+# resolves to NOT_DONE (never claim on a lookup failure).
+# Args: $1=owner  $2=rname  $3=issue number
+resolve_dep() {
+    local owner="$1" rname="$2" num="$3"
+    local state_json state
+    state_json=$(gh api "repos/${owner}/${rname}/issues/${num}" 2>/dev/null) || { echo "NOT_DONE"; return; }
+    state=$(printf '%s' "$state_json" | jq -r '.state // "open"' 2>/dev/null || echo open)
+    if [[ "$state" == "closed" ]]; then
+        echo "DONE"; return
+    fi
+    # Merged PR with claim/issue-<n> or fable/issue-<n> branch.
+    if gh pr list -R "${owner}/${rname}" --head "claim/issue-${num}" --state merged --json number 2>/dev/null \
+        | jq -e 'length > 0' >/dev/null 2>&1; then
+        echo "DONE"; return
+    fi
+    if gh pr list -R "${owner}/${rname}" --head "fable/issue-${num}" --state merged --json number 2>/dev/null \
+        | jq -e 'length > 0' >/dev/null 2>&1; then
+        echo "DONE"; return
+    fi
+    # Any PR linked via "closes #n" that is merged (cross-referenced PR).
+    if gh api "repos/${owner}/${rname}/issues/${num}/timeline" 2>/dev/null \
+        | jq -e '[.[]? | select(.event == "cross-referenced") | .source.issue | select(.pull_request != null and .pull_request.merged_at != null)] | length > 0' >/dev/null 2>&1; then
+        echo "DONE"; return
+    fi
+    echo "NOT_DONE"
+}
+
 # Vacation park (fleet-ops#1165, vacation-audit-20260827 finding 12):
 # 0509's required-verifier-integrity gate blocks any PR that touches a
 # protected verifier/deploy file unless a repo admin posts an exact
@@ -1648,6 +1753,13 @@ if product_first_is_self_maintenance "$REPO" || [[ "$REPO" == "fleet-ops" ]]; th
     (( _self_maint_cap < 1 )) && _self_maint_cap=1
 fi
 
+# fleet-ops#4808: depends-on resolution caches, shared across every issue
+# in this tick so a dependency named by many issues costs one gh call.
+# _dep_state_cache: owner/repo#num -> DONE|NOT_DONE
+# _dep_body_cache:  owner/repo#num -> body (for cycle detection)
+declare -A _dep_state_cache=()
+declare -A _dep_body_cache=()
+
 for i in "${!numbers[@]}"; do
     N="${numbers[$i]}"
     title="${titles[$i]}"
@@ -1995,6 +2107,25 @@ blocked-on: orchestrator" 2>/dev/null || true
         echo "issue $N ($title): skipped-blocked-on"
         continue
     fi
+
+    # fleet-ops#4808: depends-on gate. Never claim an issue whose body
+    # carries a `depends-on:` line naming an issue/PR that is not yet DONE
+    # (closed or merged). The issue stays agent-ready (no de-label); the
+    # next tick re-checks once the dependency lands. The filter prints the
+    # skip reason (skipped-depends-on:#n or depends-on-cycle) and returns 1.
+    #
+    # The filter is called in the CURRENT shell (stdout redirected to a
+    # temp file, not a $(...) subshell) so the per-tick memo caches
+    # (_dep_state_cache / _dep_body_cache) persist across every issue in
+    # this tick — a dependency named by many issues costs one gh call.
+    _dep_reason_file="$(mktemp)"
+    if ! depends_on_filter "$body" "$FULL" "$N" >"$_dep_reason_file"; then
+        _dep_reason="$(cat "$_dep_reason_file")"
+        rm -f "$_dep_reason_file"
+        echo "issue $N ($title): $_dep_reason"
+        continue
+    fi
+    rm -f "$_dep_reason_file"
 
     # fleet-ops#3309: more than 2 live required: lines bounce (agent-blocked)
     # and must not push a claim branch. Struck-through lines do not count.

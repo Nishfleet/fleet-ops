@@ -348,6 +348,38 @@ mask-detect or precondition-fail writes one line to
 `<iso8601> <unit> <action> actor=reconciler why=<reason>` so the four
 silent reversions that prompted this issue have no recurrence path.
 
+### `depends-on:` in ticket bodies (fleet-ops#4808)
+
+An `agent-ready` issue can carry a `depends-on:` line naming issues or PRs
+that must be **DONE** before it is claimable. This is how a seam batch is
+sequenced — e.g. `0509#2218` must land before the six sources that depend on
+it, so those sources are not claimed (and their workers spawned) until the
+seam is merged. Without the gate, intake claims regardless and a human has to
+hand-gate by removing `agent-ready`.
+
+The line format is one `depends-on:` line in the body, naming each dependency
+as a same-repo `#<n>` or a cross-repo `owner/repo#<n>`:
+
+```
+depends-on: #2218, Nishfleet/0509#2181
+```
+
+Prose like `depends-on: none` or `depends-on: any of the above` yields no
+references and does not gate the claim.
+
+A dependency is **DONE** when the referenced issue is:
+
+- closed (any close reason), OR
+- has a merged PR whose branch is `claim/issue-<n>` or `fable/issue-<n>`, OR
+- has any merged PR linked via "closes #n" (a cross-referenced PR).
+
+If any named dependency is not DONE, intake skips the issue for that tick
+with the log line `skipped-depends-on:#<n>` (same shape as the other skip
+reasons) and leaves it `agent-ready` — it is re-checked next tick once the
+dependency lands. A dependency cycle (A depends on B depends on A) skips both
+with `depends-on-cycle` instead of a misleading `skipped-depends-on:#n`.
+Resolution is memoised per tick (one gh call per referenced issue per tick).
+
 ## Excluded pending manual review
 
 - `backlog-console-refresh.service.retired-20260819`
