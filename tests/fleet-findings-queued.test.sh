@@ -185,14 +185,82 @@ ok "say the word with explicit file action is still flagged"
 rm -f "$sessions/say-word-file.jsonl"
 
 # --- 5d. fleet-ops#721 origin session: colloquial hard-line "say the word"
-# is not a finding (irreversible delete, token scope, product-direction flip).
+# is not a finding when the offer is a single irreversible / token-scope
+# action on the current task AND no separately-named finding exists in
+# the same session.
 write_session "say-word-721" '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"I did archive it to a single tarball. Say the word and that goes too; I kept it only so a deletion is not irreversible, not to keep it alive."}]}}
-{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Either you delete it in Settings, or say the word and I will refresh the token scope."}]}}
-{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Some runs sat 1,200+ minutes as cancelled-while-queued. Separate work item. Say the word on aiconverter-app and I will flip it."}]}}'
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Either you delete it in Settings, or say the word and I will refresh the token scope."}]}}'
 rc=$(run_bin 0)
-[[ "$rc" == "0" ]] || fail "721 origin say-the-word should exit 0 (got $rc) $(cat "$scratch/err.log")"
-ok "721 origin colloquial say-the-word is not flagged"
+[[ "$rc" == "0" ]] || fail "721 origin say-the-word (no named finding) should exit 0 (got $rc) $(cat "$scratch/err.log")"
+ok "721 origin colloquial say-the-word is not flagged (irreversible + token-scope only)"
 rm -f "$sessions/say-word-721.jsonl"
+
+# --- 5d-live. exact #845 auto-filed shape: catch-all "say the word" with
+# a non-filing follow-up AND a named follow-up work item ("ready work",
+# "phase 2") in the same session. The assistant named phase 2 as a
+# separate future work item and ended with "say the word" and a
+# non-filing follow-up ("I'll take it from the dashboard through to the
+# live deploy proof"). The standing rule (fleet-ops#515) says the named
+# item must be queued; the catch-all exemption is for offers about the
+# current task with no separately-named finding.
+write_session "issue-845-shape" '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Monitor armed. Waiting on the Chrome side panel — once you open it and say the word, I will take it from the dashboard through to the live deploy proof. Ready work does exist — phase 2 can be prepared in parallel and landed after the token proof."}]}}'
+rc=$(run_bin 0)
+[[ "$rc" == "1" ]] || fail "#845 shape (named phase 2 + say the word + non-filing) should exit 1 (got $rc) $(cat "$scratch/err.log")"
+grep -q "FINDINGS-UNQUEUED" "$scratch/err.log" || fail "#845 shape offer missing FINDINGS-UNQUEUED"
+ok "exact #845 shape (phase 2 named + say the word + non-filing) is flagged"
+rm -f "$sessions/issue-845-shape.jsonl"
+
+# --- 5d-named. fleet-ops#721 origin session also contained a "separate
+# work item" line. That line IS a finding under the standing rule (the
+# assistant named a future work item and never queued it). The catch-all
+# exemption is for a single specific action on the current task; once
+# the assistant names another work item, the exemption retracts and
+# the named item must be queued (fleet-ops#845). This is the same
+# shape as the #845 auto-filed issue ("Once you open it and say the
+# word, I'll take it from the dashboard through to the live deploy
+# proof. Ready work does exist — phase 2 can be prepared in parallel").
+write_session "say-word-721-named" '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Some runs sat 1,200+ minutes as cancelled-while-queued. Separate work item. Say the word on aiconverter-app and I will flip it."}]}}'
+rc=$(run_bin 0)
+[[ "$rc" == "1" ]] || fail "721 'separate work item' + say-the-word + non-filing should exit 1 (got $rc) $(cat "$scratch/err.log")"
+grep -q "FINDINGS-UNQUEUED" "$scratch/err.log" || fail "721 'separate work item' offer missing FINDINGS-UNQUEUED"
+ok "named finding (separate work item) retracts the catch-all exemption (fleet-ops#845)"
+rm -f "$sessions/say-word-721-named.jsonl"
+
+# --- 5d-named-tight. a "follow-up" used as a generic adjective (NOT a
+# work-item noun) must NOT retract the catch-all exemption. The
+# exemption is for "single specific action on the current task with no
+# separately-named finding"; a bare "follow-up questions" or "follow-up
+# CRM" is descriptive prose, not a named work item. Live shape from
+# d6d6505e: a "hermetic prompt" explainer with 4 menu options, no
+# follow-up work item.
+write_session "say-word-fp-followup" '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"A hermetic prompt is a self-contained prompt that does not need outside context to make sense — it is sealed so the model can answer it on its own without follow-up questions. Pick one: I write one, I evaluate one, I go deeper on the definition. Say the word on which one."}]}}'
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "bare 'follow-up questions' must NOT retract the catch-all exemption (got $rc) $(cat "$scratch/err.log")"
+grep -q "FINDINGS-QUEUED-OK" "$scratch/err.log" || fail "bare 'follow-up' missing OK line"
+ok "bare 'follow-up questions' (descriptive, not a work item) does not retract the exemption"
+rm -f "$sessions/say-word-fp-followup.jsonl"
+
+# --- 5d-named-tight-2. "the logical next step" is generic prose (often
+# in quoted research excerpts) and must NOT retract the catch-all
+# exemption. The 25f953e8 session DID have a real finding (Phase 4
+# deploy), so the session is still flagged; but a "next step" alone in
+# a session with no other named finding is NOT a finding. We test the
+# pure case here so the regex boundary is locked.
+write_session "say-word-fp-nextstep" '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Per the research paper, running them in parallel is the logical next step once the backlog is groomed. Say the word and I will start the parallel work."}]}}'
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "'the logical next step' (generic prose) must NOT retract the catch-all exemption (got $rc) $(cat "$scratch/err.log")"
+grep -q "FINDINGS-QUEUED-OK" "$scratch/err.log" || fail "'next step' (prose) missing OK line"
+ok "'the logical next step' (generic prose) does not retract the exemption"
+rm -f "$sessions/say-word-fp-nextstep.jsonl"
+
+# --- 5d-named-tight-3. a "follow-up packet" / "follow-up audit" /
+# "follow-up work" IS a named work item and must retract the exemption.
+write_session "say-word-fup-packet" '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"This packet closes the canary gap. The follow-up packet is the post-mortem and the regression suite, but I will only dispatch it once you sign off. Say the word once you have."}]}}'
+rc=$(run_bin 0)
+[[ "$rc" == "1" ]] || fail "'follow-up packet' + say-the-word + non-filing should exit 1 (got $rc) $(cat "$scratch/err.log")"
+grep -q "FINDINGS-UNQUEUED" "$scratch/err.log" || fail "'follow-up packet' offer missing FINDINGS-UNQUEUED"
+ok "'follow-up packet' (named work item) retracts the catch-all exemption"
+rm -f "$sessions/say-word-fup-packet.jsonl"
 
 # Named failure mode still flags: "Say the word and I'll dig in".
 write_session "say-word-digin" '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"The canary is silent. Say the word and I will dig in."}]}}'

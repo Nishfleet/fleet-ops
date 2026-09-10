@@ -51,6 +51,59 @@ ACTION_RE = re.compile(
     re.I,
 )
 
+# A "named finding" is a discrete, named future work item the assistant
+# surfaces in chat (but never queues as a tracker). The catch-all
+# exemption below ONLY applies to offers about the current task with no
+# separately-named finding in the same session. Once the assistant names
+# a follow-up, the standing rule (fleet-ops#515) requires a tracker for
+# it — the user cannot see "ready work" / "phase 2" / "follow-up" unless
+# it is queued. Live shape from fleet-ops#845 ("Once you open it and say
+# the word, I'll take it from the dashboard through to the live deploy
+# proof. Ready work does exist — phase 2 can be prepared in parallel and
+# landed after the token proof") — the assistant named "phase 2" as a
+# separate work item, then ended with "say the word" and a non-filing
+# follow-up. The current 5b/5d/6d exemptions let it through; the named
+# finding must retract them. Tight on purpose: we only want phrases that
+# name a *separate, trackable* future task, not generic "and the other
+# thing" prose.
+# A "named finding" is a discrete, named future work item the assistant
+# surfaces in chat (but never queues as a tracker). The catch-all
+# exemption below ONLY applies to offers about the current task with no
+# separately-named finding in the same session. Once the assistant names
+# a follow-up, the standing rule (fleet-ops#515) requires a tracker for
+# it — the user cannot see "ready work" / "phase 2" / "follow-up packet"
+# unless it is queued. Live shape from fleet-ops#845 ("Once you open it
+# and say the word, I'll take it from the dashboard through to the
+# live deploy proof. Ready work does exist — phase 2 can be prepared in
+# parallel and landed after the token proof") — the assistant named
+# "phase 2" as a separate work item, then ended with "say the word" and
+# a non-filing follow-up. The 5b/5d/6d exemptions let it through; the
+# named finding must retract them. Tight on purpose: we only want
+# phrases that name a *separate, trackable* future task, not generic
+# "and the other thing" prose. "follow-up" is tightened to a work-item
+# noun (packet/pass/audit/...) or an article-introduced form ("as a
+# follow-up", "a follow-up is") so generic "without follow-up
+# questions" / "follow-up, CRM" do not match. "next step" is
+# intentionally NOT included — it over-matches in quoted research
+# ("the logical next step") and generic prose.
+NAMED_FINDING_RE = re.compile(
+    r"\bready work\b"
+    r"|\bphase\s+(?:[2-9]|two|three|four)\b"  # phase 2+, never phase 1 (the current task)
+    # 'follow-up' + concrete work-item noun, OR article-introduced form
+    r"|\bfollow[\s-]?up\s+(?:work|packet|pass(?:es)?|sweep|step|audit|PR|item|ticket|issue|finding|plan|review|wave|track|sequence|series|action|task|fix)\b"
+    r"|\b(?:as|is|are|were|will be|for|via|with|in)\s+(?:a\s+|an\s+|the\s+)?follow[\s-]?up\b"
+    r"|\b(?:a|an|the)\s+follow[\s-]?up\s+(?:is|was|will be|has been|here|now|named|called)\b"
+    r"|\bseparate work item\b"
+    r"|\bseparate item\b"
+    r"|\banother (?:issue|ticket|finding)\b"
+    r"|\bqueue a follow\b"
+    r"|\bopen a follow\b"
+    r"|\bfile a follow\b"
+    r"|\btrack (?:this|that|it) (?:as|with|via)\b"
+    r"|\b(?:separate|parallel) (?:packet|track|workstream)\b",
+    re.I,
+)
+
 # Unquoted asks. Tight on purpose: the standing rule names these.
 OFFER_RE = re.compile(
     r"\b(?:want me to (file|open|queue)"
@@ -188,12 +241,24 @@ CATCH_ALL_PHRASES = ("say the word", "let me know if you want me to")
 
 def has_offer(assistant_text: str) -> re.Match[str] | None:
     text = strip_quoted(assistant_text)
+    named_finding = bool(NAMED_FINDING_RE.search(text))
     for match in OFFER_RE.finditer(text):
         # Catch-all phrases only count if a filing/queueing action follows
         # within a short window; otherwise they are generic "go ahead" offers.
         if match.group(0).lower().startswith(CATCH_ALL_PHRASES):
             window = text[match.end() : match.end() + 120]
             if not ACTION_RE.search(window):
+                # A non-filing follow-up only stays exempt when the session
+                # names no separately-trackable finding. The 5b / 5d / 6d
+                # exemption (single specific action on the current task)
+                # is the only case where "say the word, I'll do X" is a
+                # pure permission offer. Once the assistant names another
+                # work item anywhere in the same session (phase 2,
+                # ready work, follow-up, separate item, parallel packet),
+                # the standing rule says the named item must be queued
+                # (fleet-ops#515, fleet-ops#845).
+                if named_finding:
+                    return match
                 continue
         return match
     return None
