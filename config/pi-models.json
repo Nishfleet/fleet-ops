@@ -322,9 +322,7 @@
       "baseUrl": "https://opencode.ai/zen/go/v1",
       "api": "openai-completions",
       "apiKey": "!cut -d= -f2 /home/nish/fleet2/etc/opencode-go.env",
-      "headers": {
-        "x-opencode-session": "!cat /proc/sys/kernel/random/uuid"
-      },
+      "_comment_session_header": "Do NOT set x-opencode-session here (removed 2026-09-10, alert-repair FleetPromptCacheHitLow). The OpenCode Go gateway does require the header (400 without it), but the provider entry used to set it to '!cat /proc/sys/kernel/random/uuid', and models.json header commands are resolved PER REQUEST. A fresh UUID per request gave every request a cold cache namespace: measured 2026-09-10 with a stable vs random session id against /zen/go/v1, identical 4.8k-token prefix - stable id 2nd call prompt_cache_hit_tokens=4608, random id 2nd call 0. Live effect was opencode-go cacheRead=0 on all 65M prompt tokens/24h. Pi already sends x-opencode-session = its own per-session id for provider opencode-go (dist/core/provider-attribution.js getSessionHeaders), so the header must be left to Pi.",
       "compat": {
         "thinkingTokenBudgetField": "thinking_token_budget"
       },
