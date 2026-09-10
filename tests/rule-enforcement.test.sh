@@ -192,6 +192,12 @@ ok "rule-enforcement: d1-prod-migration-grant drill"
 bash "$here/fleet-d1-prod-migration-process.test.sh" || fail "d1-prod-migration-process drill failed"
 ok "rule-enforcement: d1-prod-migration-process drill" 
 
+# fleet-ops#4921: DetachedJobDied alert repair commands must be referenced by
+# on-PATH name + the canonical source checkout, never a cwd-relative bin/
+# path (a swallowed bin/pi-detached-deadman ENOENT in a repair session).
+bash "$here/fleet-alert-detached-deadman-command-path.test.sh" || fail "alert detached-deadman command-path drill failed"
+ok "rule-enforcement: alert detached-deadman command-path drill"
+
 # Live vault join when the files are on this box.
 if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
   set +e

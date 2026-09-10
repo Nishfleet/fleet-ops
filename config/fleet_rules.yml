@@ -53,7 +53,7 @@ groups:
           service: fleet
         annotations:
           summary: "Detached job {{ $labels.unit }} ended without its deliverable"
-          description: "unit={{ $labels.unit }} dispatch={{ $labels.dispatch }} deliverable={{ $labels.deliverable }} deadline={{ $labels.deadline }} (fleet-ops#4266). Relaunch the recorded command line via pi-systemd-run with the same --stdin packet and --deliverable, then run: bin/fleet-who-stopped {{ $labels.unit }} and post the audit line to the auditor. Clear the dead-man once relaunched: bin/pi-detached-deadman --clear {{ $labels.unit }}"
+          description: "unit={{ $labels.unit }} dispatch={{ $labels.dispatch }} deliverable={{ $labels.deliverable }} deadline={{ $labels.deadline }} (fleet-ops#4266). Relaunch the recorded command line via pi-systemd-run with the same --stdin packet and --deliverable, then run: fleet-who-stopped {{ $labels.unit }} and post the audit line to the auditor. Clear the dead-man once relaunched: pi-detached-deadman --clear {{ $labels.unit }} (fleet-ops#4921: both commands are on PATH, symlinked from the canonical checkout /home/nish/workspaces/tooling/fleet-ops-deploy-clone/ — never a cwd-relative `bin/...` path, which made repair workers guess the wrong checkout and swallow a pi-detached-deadman ENOENT)"
 
       - alert: FleetUndersatGuardAbsent
         expr: absent(fleet_pi_workers_active)
