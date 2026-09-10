@@ -354,6 +354,48 @@ grep -q "loud/debug-playbook-missing" "$tmp/filed.jsonl"     && fail "scenario 9
 ok "scenario 9e: DEBUG-PLAYBOOK-FAIL still queues; MISSING does not"
 
 # ---------------------------------------------------------------------------
+# 9f. CLAIM-REAP-STARTED is not queued by the reconciler (fleet-ops#4918).
+#     pi-issue-failed-reap writes this as its ENTRY log when it begins its
+#     automatic post-failure cleanup (OnFailure). It fires on every real reap
+#     — the same instance STARTED five times in an hour, each followed by a
+#     successful CLAIM-RELEASED / PACKETS-ARCHIVED. A reap starting is the
+#     expected recovery step, not a fault; the actionable reaper outcomes
+#     (BRANCH-FAIL / LABEL-FAIL / PARSE-FAIL / NO-GH) still queue. Queuing
+#     STARTED produced a noisy per-repo signal that could rarely go green.
+# ---------------------------------------------------------------------------
+cat > "$tmp/empty9f.json" <<'EOF'
+[]
+EOF
+cat > "$tmp/triage9f.md" <<'EOF'
+[2026-08-28T13:30:00Z] [CLAIM-REAP-STARTED] instance=0509-2298 repo=Nishfleet/0509 issue=2298 dry_run=0
+EOF
+true > "$tmp/filed.jsonl"
+run "$tmp/empty9f.json" "$tmp/triage9f.md" > "$tmp/summary9f.json"
+jq -e '.filed == 0 and .alarm_count == 0' "$tmp/summary9f.json" >/dev/null \
+    || fail "scenario 9f: CLAIM-REAP-STARTED must not be queued, got: $(cat "$tmp/summary9f.json")"
+[[ $(wc -l < "$tmp/filed.jsonl") -eq 0 ]] \
+    || fail "scenario 9f: CLAIM-REAP-STARTED must not file, got: $(cat "$tmp/filed.jsonl")"
+ok "scenario 9f: CLAIM-REAP-STARTED is not queued (reap-start is expected recovery, not a fault)"
+
+# ---------------------------------------------------------------------------
+# 9g. An already-open loud/claim-reap-started issue observe-to-closes even
+#     while fresh CLAIM-REAP-STARTED LOUD lines keep firing (fleet-ops#4918).
+#     Those lines are no longer a queued signal, so they cannot keep the
+#     issue red — the mechanism that clears #4918 on the next real tick.
+# ---------------------------------------------------------------------------
+cat > "$tmp/open9g.json" <<'EOF'
+[{"number": 4918, "body": "The heartbeat detector reported this alarm on a real tick.\n\n- alarm tag: `CLAIM-REAP-STARTED`\n\nDo NOT close this issue on PR merge alone.\n\n`loud/claim-reap-started/nishfleet-0509`\n", "labels": [{"name": "agent-ready"}], "createdAt": "2026-08-28T10:00:00Z", "comments": []}]
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/open9g.json" "$tmp/triage9f.md" > "$tmp/summary9g.json"
+jq -e '.closed == 1 and .filed == 0' "$tmp/summary9g.json" >/dev/null \
+    || fail "scenario 9g: stale loud/claim-reap-started must close even while STARTED LOUD lines fire, got: $(cat "$tmp/summary9g.json")"
+grep -q "issue close" "$tmp/gh.log" \
+    || fail "scenario 9g: expected gh issue close"
+ok "scenario 9g: stale CLAIM-REAP-STARTED issue observe-to-closes while STARTED lines continue"
+
+# ---------------------------------------------------------------------------
 # 10. Tier1 wiring contract.
 # ---------------------------------------------------------------------------
 grep -q 'detector-queue-reconciler' "$repo_root/bin/fleet-heartbeat-tier1" \

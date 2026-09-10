@@ -58,7 +58,18 @@ SKIP_MSG_PREFIXES = ("rule-enforcement:",)
 # rule-level signal every tick, so observe-to-close never fires
 # (fleet-ops#4620). GATE-BLOCK still queues (a real session-close gate
 # failure). FAIL still queues (the daily rollup).
-SKIP_TAGS = {"DEBUG-PLAYBOOK-MISSING"}
+#
+# CLAIM-REAP-STARTED is the pi-issue-failed-reap entry log line written when
+# the reaper begins its automatic cleanup after a worker failure
+# (OnFailure). It fires on EVERY real reap (fleet-ops#4918: the same instance
+# STARTED five times in an hour, each followed by a successful
+# CLAIM-RELEASED / PACKETS-ARCHIVED). A reap starting is the expected
+# recovery step, not a fault — the actionable reaper outcomes already carry
+# their own loud tags (CLAIM-REAP-BRANCH-FAIL, CLAIM-REAP-LABEL-FAIL,
+# CLAIM-REAP-PARSE-FAIL, CLAIM-REAP-NO-GH). Queuing STARTED produced a
+# noisy per-repo signal (`loud/claim-reap-started/nishfleet-0509`) that
+# refiled on every reap and could rarely go green.
+SKIP_TAGS = {"DEBUG-PLAYBOOK-MISSING", "CLAIM-REAP-STARTED"}
 STOPWORDS = frozenset(
     """
     a an the to of and or in on for with this that is are be as at by from
