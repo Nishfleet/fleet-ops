@@ -16,6 +16,7 @@ shows "—"), never a frozen last value and never a coerced zero.
 """
 import http.client
 import json
+import math
 import os
 import re
 import subprocess
@@ -284,6 +285,91 @@ def collect_shipped():
         org_total = None
     return _tile(src, PROM_STALE_S, True, mtime, count=total, items=items,
                  org_total=org_total, explain=explain)
+
+
+def collect_outcome():
+    src = "prometheus:fleet_product_signups_24h+fleet_signups_7d+fleet_product_activated_24h+fleet_product_paying_customers_total"
+    explain = (
+        "Product outcome from the 0509 D1 gauges (users created, first "
+        "brief delivered, non-free plan): signups 24h/7d, activated 24h, "
+        "paying customers. fleet.prom carries signups_7d; "
+        "fleet-product-slo.prom carries the other three. Any absent gauge "
+        "renders unknown (a dash), never 0. Top of funnel is UNMEASURED. "
+    )
+    # fleet.prom gate: fleet_signups_7d lives there, so its freshness is a
+    # precondition for the whole funnel reading.
+    mtime, err = _prom_or_stale(src, explain)
+    if err:
+        return err
+    try:
+        pmtime = _product_slo_mtime()
+    except PromError as e:
+        return _unknown(src, PROM_STALE_S, f"Prometheus unreachable: {e}",
+                        explain=explain)
+    if pmtime is None:
+        return _unknown(src, PROM_STALE_S,
+                        "product-slo metrics absent from Prometheus",
+                        explain=explain)
+    age = time.time() - pmtime
+    if age > PROM_STALE_S:
+        return _unknown(
+            src, PROM_STALE_S,
+            f"product-slo.prom stale ({int(age)}s old; exporter likely frozen)",
+            explain=explain,
+        )
+    # Each gauge is queried on its own: an unreadable source OMITS its family
+    # (a healthy empty table exports an explicit 0), so no rows means the
+    # number is unmeasured, never 0. "0 signups" and "signups not measured"
+    # must never look the same (fleet-ops#5003 accept bullet 2).
+    values = {}
+    for field, gauge in (
+        ("signups_24h", "fleet_product_signups_24h"),
+        ("signups_7d", "fleet_signups_7d"),
+        ("activated_24h", "fleet_product_activated_24h"),
+        ("paying_customers", "fleet_product_paying_customers_total"),
+    ):
+        try:
+            rows = _prom_query(f"sum({gauge})")
+        except PromError as e:
+            return _unknown(src, PROM_STALE_S, f"query failed: {e}",
+                            explain=explain)
+        if not rows:
+            return _unknown(
+                src, PROM_STALE_S,
+                f"{gauge} gauge absent (source unreadable) — not a zero",
+                explain=explain,
+            )
+        # Rows present, but the sample itself may be nan/inf (a broken
+        # exporter write). int(nan) raises ValueError, int(inf) raises
+        # OverflowError; either escaping here would kill the whole
+        # generate run. Fail this tile closed to unknown instead —
+        # "unreadable" must never render as 0 (fleet-ops#5003).
+        try:
+            total = sum(r["value"] for r in rows)
+            if not math.isfinite(total):
+                raise ValueError(f"non-finite sample {total}")
+            values[field] = int(total)
+        except (ValueError, OverflowError) as exc:
+            return _unknown(
+                src, PROM_STALE_S,
+                f"{gauge} gauge unreadable: {exc}",
+                explain=explain,
+            )
+    # Anchor on the product-slo mtime, NOT min(mtime, pmtime). The tile stays
+    # gated on BOTH sources — the `_prom_or_stale` call above already returns
+    # an unknown tile when fleet.prom is stale, so `mtime` is still
+    # load-bearing — but the freshness ANCHOR must be the product-slo mtime,
+    # because that is the value verify.py:_race_against_tile compares against.
+    # With min(...), an older fleet.prom makes the verifier SKIP on that tick
+    # and a lying tile escapes instead of DISPUTING.
+    return _tile(
+        src, PROM_STALE_S, True, pmtime,
+        count=values["signups_24h"],
+        funnel=("top of funnel UNMEASURED (no visit/page-view gauge "
+                "exists; Nishfleet/0509#2120)"),
+        explain=explain,
+        **values,
+    )
 
 
 def collect_open_prs():
@@ -900,6 +986,7 @@ def generate():
            "cadence_min": CADENCE_MIN, "org": ORG, "tiles": {}}
     doc["tiles"]["open_prs"] = collect_open_prs()
     doc["tiles"]["shipped_24h"] = collect_shipped()
+    doc["tiles"]["outcome"] = collect_outcome()
     doc["tiles"]["main_ci"] = collect_main_ci()
     doc["tiles"]["firing_alerts"] = collect_firing_alerts()
     doc["tiles"]["repairs_inflight"] = collect_repairs_inflight()
@@ -942,8 +1029,10 @@ def main():
     al = tiles.get("firing_alerts", {})
     rp = tiles.get("repairs_inflight", {})
     q = tiles.get("questions", {})
+    oc = tiles.get("outcome", {})
     print(f"generated {doc['generated_at']} "
           f"open_prs={op.get('count','—')} shipped={sh.get('count','—')} "
+          f"outcome={oc.get('count','—')} "
           f"main_red={ci.get('red_count','—')} "
           f"alerts={al.get('count','—')} repairs={rp.get('count','—')} "
           f"questions={q.get('count','—')} "

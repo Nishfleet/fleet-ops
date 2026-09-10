@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import math
 import os
 import subprocess
 import sys
@@ -51,6 +52,9 @@ SKIP_GH = os.environ.get("CONSOLE_SKIP_GH", "") == "1"
 VERIFY_TIMEOUT = int(os.environ.get("CONSOLE_VERIFY_TIMEOUT", "20"))
 ORG = os.environ.get("CONSOLE_ORG", "Nishfleet")
 SPOT_REPO_DEFAULT = os.environ.get("CONSOLE_SPOT_REPO", "Nishfleet/fleet-ops")
+# Same 15-minute freshness window generate.py uses for Prometheus tiles
+# (exporter fires every 5 min; 2+ misses = stale).
+PROM_STALE_S = 15 * 60
 
 HELP_MISMATCH = (
     "# HELP fleet_console_tile_mismatch 1 if this console tile failed its "
@@ -165,6 +169,18 @@ SPECS = {
         "tolerance": {"mode": "exact"},
         "runner": "questions_gh",
     },
+    "outcome": {
+        "cmd": (
+            "PromQL sum(fleet_product_signups_24h), sum(fleet_signups_7d), "
+            "sum(fleet_product_activated_24h), "
+            "sum(fleet_product_paying_customers_total) @ 127.0.0.1:9090 "
+            "(exact, all four vs the tile's four fields; same "
+            "product-slo/fleet.prom freshness gate as the tile writer)"
+        ),
+        "field": "signups_24h",
+        "tolerance": {"mode": "exact"},
+        "runner": "outcome_prom",
+    },
 }
 
 
@@ -246,6 +262,52 @@ def _promql_sum(expr):
         except (KeyError, IndexError, TypeError, ValueError) as exc:
             raise VerifyError(f"bad sample: {exc}") from exc
     return total
+
+
+def _promql_sum_present(expr):
+    """Sum a PromQL expression, but an empty result vector is an ERROR.
+
+    fleet-ops#5003: `_promql_sum` collapses "absent family" and "real zero"
+    to the same 0.0 — correct for the `count(...)` runners, where an empty
+    vector genuinely means zero matching series. The outcome funnel must not
+    invert the tile-side rule (generate.py renders an absent gauge as
+    `_unknown`, never 0), or a fake "0 signups" tile would verify as
+    truthful. So: same HTTP query and parse, but no samples raises a
+    non-race VerifyError, which verify_tile renders as a DISPUTE naming the
+    gauge instead of comparing against zero.
+    """
+    url = PROM + "/api/v1/query?" + urllib.parse.urlencode({"query": expr})
+    payload = _http_json(url)
+    if payload.get("status") != "success":
+        raise VerifyError(f"prom status={payload.get('status')}")
+    rows = (payload.get("data") or {}).get("result") or []
+    if not rows:
+        raise VerifyError(f"{expr}: no samples (gauge absent)")
+    total = 0.0
+    for item in rows:
+        try:
+            total += float(item["value"][1])
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
+            raise VerifyError(f"bad sample: {exc}") from exc
+    return total
+
+
+def _int_sample(name, value):
+    """Convert one gauge sample to int, or raise VerifyError (a DISPUTE).
+
+    fleet-ops#5003: int(nan) raises ValueError and int(inf) raises
+    OverflowError. verify_tile only catches VerifyError, so an unguarded
+    conversion would abort run() for EVERY tile — data.json would keep no
+    verify results and fleet_console_tile_verify_timestamp_seconds would go
+    stale (a false ConsoleTileVerifyAbsent alarm). A non-finite sample is
+    not a race, so it must surface as this tile's DISPUTE.
+    """
+    try:
+        if not math.isfinite(value):
+            raise VerifyError(f"{name}: non-finite sample {value}")
+        return int(value)
+    except (ValueError, OverflowError) as exc:
+        raise VerifyError(f"{name}: non-finite sample {value}") from exc
 
 
 def _prom_textfile_mtime():
@@ -434,6 +496,55 @@ def run_shipped_prom(tile):
     return int(_promql_sum("sum(fleet_product_merged_24h)"))
 
 
+def run_outcome_prom(tile):
+    """Recompute the outcome tile's four numbers and compare all four.
+
+    The tile is a funnel (signups 24h/7d, activations 24h, paying
+    customers) drawn from two textfiles: `fleet_signups_7d` from
+    fleet.prom, the other three from fleet-product-slo.prom. The SPEC's
+    `field`/`tolerance` only covers the headline (signups_24h), so this
+    runner checks ALL FOUR here and raises with every difference named —
+    a partly-lying funnel must DISPUTE, not slip through on one field.
+
+    Same gates as run_shipped_prom: a textfile race is a SKIP (the word
+    "race" in the message is what verify_tile keys on), and the
+    product-slo textfile must be fresh, because a stale snapshot means
+    the tile and this re-query are not looking at the same moment.
+    """
+    if _race_against_tile(tile):
+        raise VerifyError(
+            "textfile mtime advanced past tile.observed_at — race, defer"
+        )
+    mtime = _prom_textfile_mtime()
+    if mtime is None:
+        raise VerifyError("product-slo textfile mtime absent")
+    age = time.time() - mtime
+    if age > PROM_STALE_S:
+        raise VerifyError(f"product-slo.prom stale ({int(age)}s old)")
+
+    sources = (
+        ("signups_24h", "sum(fleet_product_signups_24h)"),
+        ("signups_7d", "sum(fleet_signups_7d)"),
+        ("activated_24h", "sum(fleet_product_activated_24h)"),
+        ("paying_customers", "sum(fleet_product_paying_customers_total)"),
+    )
+    observed = {}
+    diffs = []
+    for name, expr in sources:
+        value = _int_sample(name, _promql_sum_present(expr))
+        observed[name] = value
+        displayed = tile.get(name)
+        try:
+            same = int(displayed) == value
+        except (TypeError, ValueError):
+            same = False  # missing/None/garbage counts as a mismatch
+        if not same:
+            diffs.append(f"{name} displayed {displayed} vs verify {value}")
+    if diffs:
+        raise VerifyError("; ".join(diffs))
+    return observed["signups_24h"]
+
+
 def run_main_ci_prom(tile):
     return int(_promql_sum("count(fleet_main_ci_green == 0)"))
 
@@ -581,6 +692,7 @@ def run_shipped_gh_spot(tile):
 RUNNERS = {
     "open_prs_prom": run_open_prs_prom,
     "shipped_prom": run_shipped_prom,
+    "outcome_prom": run_outcome_prom,
     "main_ci_prom": run_main_ci_prom,
     "alerts_prom": run_alerts_prom,
     "repairs_units": run_repairs_units,

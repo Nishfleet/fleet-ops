@@ -158,6 +158,7 @@ def test_generated_doc_has_freshness_contract_on_every_tile():
     expected = {
         "open_prs", "shipped_24h", "main_ci", "firing_alerts",
         "repairs_inflight", "running_pi", "fleet_state", "questions",
+        "outcome",
     }
     assert expected <= set(doc["tiles"])
     for name, tile in doc["tiles"].items():
@@ -229,7 +230,8 @@ def test_metric_tiles_make_zero_github_calls():
     # The metric-tile collectors must not reach for the gh bridge.
     metric_collectors = {"collect_shipped", "collect_open_prs", "collect_main_ci",
                          "collect_firing_alerts", "collect_repairs_inflight",
-                         "collect_running_pi", "collect_fleet_state"}
+                         "collect_running_pi", "collect_fleet_state",
+                         "collect_outcome"}
     for name in metric_collectors:
         fsrc = ast.get_source_segment(src, next(n for n in ast.walk(tree)
             if isinstance(n, ast.FunctionDef) and n.name == name)) or ""
@@ -243,6 +245,43 @@ def test_metric_tiles_make_zero_github_calls():
     # PI WORK never counts by unit-name prefix (fleet-ops#1155).
     assert "pgrep -c" not in src and "pgrep -f" not in src
     assert "_invokes_pi_print" in src
+
+
+def test_absent_outcome_gauge_renders_dash_not_zero(monkeypatch):
+    """fleet-ops#5003 accept bullet 2: an absent outcome gauge is UNKNOWN (the
+    shell draws a dash), never a coerced 0. The four gauges are OMITTED by the
+    exporter when the 0509 D1 source is unreadable, while a healthy empty table
+    exports an explicit 0 — so "0 signups" and "signups not measured" must
+    never look the same on the console."""
+    now = time.time()
+    monkeypatch.setattr(G, "_prom_or_stale",
+                        lambda src, explain: (now, None))
+    monkeypatch.setattr(G, "_product_slo_mtime", lambda: now)
+
+    def absent(expr, timeout=5):
+        return []
+
+    monkeypatch.setattr(G, "_prom_query", absent)
+    t = G.collect_outcome()
+    assert t["ok"] is False
+    assert t["observed_at"] is None
+    assert "fleet_product_signups_24h" in t["reason"], t["reason"]
+    assert "absent" in t["reason"], t["reason"]
+    assert "count" not in t and "signups_24h" not in t
+
+    # The inverse leg: an explicit 0 IS a measurement. Without this the test
+    # would also pass if the collector returned unknown unconditionally.
+    def explicit_zero(expr, timeout=5):
+        return [{"metric": {}, "value": 0}]
+
+    monkeypatch.setattr(G, "_prom_query", explicit_zero)
+    z = G.collect_outcome()
+    assert z["ok"] is True
+    assert z["count"] == 0
+    assert z["signups_24h"] == 0 and z["signups_7d"] == 0
+    assert z["activated_24h"] == 0 and z["paying_customers"] == 0
+    assert z["observed_at"] == now
+    assert "UNMEASURED" in z["funnel"]
 
 
 def test_questions_fixture_classifies_three_states(monkeypatch):

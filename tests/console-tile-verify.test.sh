@@ -19,6 +19,10 @@
 #  10. fleet_rules.yml: ConsoleLying (warning, 30m) + absent() heartbeat.
 #  11. promtool check rules (if present).
 #  12. The tile-truth drill --check is green.
+#  13. Product outcome tile (fleet-ops#5003): the REAL run_outcome_prom
+#      verifies all four numbers against their own PromQL re-query, an
+#      injected lie on any one of them DISPUTES, and shell.html carries
+#      the section with its four labels + the UNMEASURED funnel line.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
@@ -249,6 +253,156 @@ out = json.loads(data4.read_text())
 assert out["tiles"]["running_pi"]["count"] == 999
 assert out["tiles"]["running_pi"]["disputed"] is True
 print("OK: --inject lie -> DISPUTED")
+
+# --- fleet-ops#5003: the outcome tile is a FOUR-number funnel -----------
+# The SPEC's own `field` covers only the headline (signups_24h), so this
+# exercises the REAL run_outcome_prom (never a stub): all four numbers are
+# re-queried and compared, and a lie on any one of them must DISPUTE. The
+# two Prom-facing helpers are stubbed instead, which is where the numbers
+# come from.
+_orig_promql_sum_present = m._promql_sum_present
+_orig_prom_mtime = m._prom_textfile_mtime
+
+OC_VALUES = {
+    "sum(fleet_product_signups_24h)": 3.0,
+    "sum(fleet_signups_7d)": 11.0,
+    "sum(fleet_product_activated_24h)": 2.0,
+    "sum(fleet_product_paying_customers_total)": 6.0,
+}
+OC_FUNNEL = ("top of funnel UNMEASURED (no visit/page-view gauge exists; "
+             "Nishfleet/0509#2120)")
+
+
+def outcome_doc():
+    """A fresh doc: the outcome tile under test, every other SPEC name an
+    unknown (skipped) tile so nothing else can pollute the result."""
+    d = {"tiles": {name: tile(ok=False, reason="not under test")
+                   for name in m.SPECS}}
+    d["tiles"]["outcome"] = tile(
+        source="test", stale_after_s=900, ok=True, observed_at=now,
+        signups_24h=3, signups_7d=11, activated_24h=2, paying_customers=6,
+        funnel=OC_FUNNEL)
+    return d
+
+
+m._promql_sum_present = lambda expr: OC_VALUES[expr]
+# Older than the tile anchor (so _race_against_tile does NOT fire) but well
+# inside the 15-minute freshness window.
+m._prom_textfile_mtime = lambda: now - 60
+
+# (a) tile present with all four numbers -> exact match, mismatch=0.
+docA = outcome_doc()
+dataA = scratch / "outcome-match.json"
+promA = scratch / "outcome-match.prom"
+dataA.write_text(json.dumps(docA))
+m.PROM_OUT = promA
+results = m.run(data_path=dataA)
+assert results["outcome"] == 0, results
+out = json.loads(dataA.read_text())
+oc = out["tiles"]["outcome"]
+assert oc["disputed"] is False, oc
+assert oc["verify"]["match"] is True, oc["verify"]
+for field, want in (("signups_24h", 3), ("signups_7d", 11),
+                    ("activated_24h", 2), ("paying_customers", 6)):
+    assert oc[field] == want and isinstance(oc[field], int), (field, oc)
+assert oc["funnel"] == OC_FUNNEL, oc
+assert 'fleet_console_tile_mismatch{tile="outcome"} 0' in promA.read_text()
+oc_cmd = m.SPECS["outcome"]["cmd"]
+for gauge in ("fleet_product_signups_24h", "fleet_signups_7d",
+              "fleet_product_activated_24h",
+              "fleet_product_paying_customers_total"):
+    assert gauge in oc_cmd, (gauge, oc_cmd)
+print("OK: outcome tile -- four numbers verified by the real runner, mismatch=0")
+
+# (b) one injected lie (signups_7d) -> DISPUTE, even though the SPEC field
+#     (signups_24h) still matches the tile's own headline.
+docB = outcome_doc()
+dataB = scratch / "outcome-lie.json"
+promB = scratch / "outcome-lie.prom"
+dataB.write_text(json.dumps(docB))
+m.PROM_OUT = promB
+results = m.run(data_path=dataB, inject=["outcome.signups_7d=999"])
+assert results["outcome"] == 1, results
+out = json.loads(dataB.read_text())
+oc = out["tiles"]["outcome"]
+assert oc["disputed"] is True, oc
+assert "signups_7d" in oc["verify"].get("reason", ""), oc["verify"]
+assert 'fleet_console_tile_mismatch{tile="outcome"} 1' in promB.read_text()
+print("OK: outcome tile -- injected signups_7d lie -> DISPUTED")
+
+# (c) an ABSENT gauge is not a zero. _promql_sum_present must reject the
+#     empty result vector that _promql_sum silently sums to 0.0 — otherwise
+#     a tile displaying "0 signups" would verify as truthful against a
+#     family that is not even exported. Uses the SAVED real helper (a/b
+#     replaced the module attribute with their value table).
+_orig_http = m._http_json
+m._http_json = lambda url, timeout=m.VERIFY_TIMEOUT: {
+    "status": "success", "data": {"result": []}}
+try:
+    _orig_promql_sum_present("sum(fleet_signups_7d)")
+    raise AssertionError("absent gauge must NOT verify as 0")
+except m.VerifyError as e:
+    assert "no samples" in str(e) and "fleet_signups_7d" in str(e), str(e)
+# ...while the count(...) runners keep empty->0 (unchanged).
+assert m._promql_sum("count(fleet_main_ci_green == 0)") == 0.0
+m._http_json = _orig_http
+print("OK: outcome verifier rejects an absent gauge (no silent 0)")
+
+# (d) a fabricated ZERO cannot pass: the tile displays signups_7d=0 while the
+#     real gauge reads 11 -> DISPUTE. Stubs _promql_sum_present (the real
+#     runner's query path), never m.RUNNERS["outcome_prom"] (fleet-ops#5003).
+m._promql_sum_present = lambda expr: OC_VALUES[expr]
+docD = outcome_doc()
+dataD = scratch / "outcome-fake-zero.json"
+promD = scratch / "outcome-fake-zero.prom"
+dataD.write_text(json.dumps(docD))
+m.PROM_OUT = promD
+results = m.run(data_path=dataD, inject=["outcome.signups_7d=0"])
+assert results["outcome"] == 1, results
+out = json.loads(dataD.read_text())
+oc = out["tiles"]["outcome"]
+assert oc["signups_7d"] == 0 and isinstance(oc["signups_7d"], int), oc
+assert oc["disputed"] is True, oc
+assert "signups_7d" in oc["verify"].get("reason", ""), oc["verify"]
+assert "displayed 0" in oc["verify"]["reason"], oc["verify"]
+assert "verify 11" in oc["verify"]["reason"], oc["verify"]
+print("OK: outcome tile -- fabricated signups_7d=0 vs real 11 -> DISPUTED")
+
+# (e) one non-finite sample must DISPUTE this tile, not abort the pass.
+#     int(nan) is a ValueError that verify_tile does not catch, so before
+#     the fix it escaped run(), data.json kept no verify results and
+#     fleet_console_tile_verify_timestamp_seconds went stale (a false
+#     ConsoleTileVerifyAbsent alarm).
+def _nan_sum(expr):
+    if expr == "sum(fleet_product_activated_24h)":
+        return float("nan")
+    return OC_VALUES[expr]
+
+m._promql_sum_present = _nan_sum
+docE = outcome_doc()
+dataE = scratch / "outcome-nan.json"
+promE = scratch / "outcome-nan.prom"
+dataE.write_text(json.dumps(docE))
+m.PROM_OUT = promE
+results = m.run(data_path=dataE)
+assert results["outcome"] == 1, results
+# The pass COMPLETED: every other tile still has a result, data.json kept a
+# full mismatch map, and the heartbeat gauge was rewritten (not stale).
+assert set(results) == set(m.SPECS), sorted(results)
+assert results["main_ci"] == 0 and results["repairs_inflight"] == 0, results
+out = json.loads(dataE.read_text())
+assert out["tile_mismatches"]["main_ci"] == 0, out.get("tile_mismatches")
+oc = out["tiles"]["outcome"]
+assert oc["disputed"] is True, oc
+assert "non-finite sample" in oc["verify"].get("reason", ""), oc["verify"]
+assert "activated_24h" in oc["verify"]["reason"], oc["verify"]
+assert 'fleet_console_tile_mismatch{tile="outcome"} 1' in promE.read_text()
+assert "fleet_console_tile_verify_timestamp_seconds" in promE.read_text()
+print("OK: outcome tile -- nan sample -> DISPUTED, pass not aborted")
+
+# Scope the stubs to these scenarios: restore the originals.
+m._promql_sum_present = _orig_promql_sum_present
+m._prom_textfile_mtime = _orig_prom_mtime
 PY
 ok "verify.py match/mismatch/unknown/percent/inject"
 
@@ -260,6 +414,16 @@ grep -q 'disputed-mark' "$shell" || fail "shell.html missing .disputed-mark"
 grep -q 'v.cmd' "$shell" || fail "shell.html what-is-this must cite tile.verify.cmd"
 grep -q 'cellCls' "$shell" || fail "shell.html must mark disputed cells"
 ok "shell.html renders DISPUTED and cites verify.cmd"
+# fleet-ops#5003: the Product outcome section exists, labels all four
+# numbers, and states plainly that the top of funnel is UNMEASURED.
+grep -q 'id="section-outcome"' "$shell" \
+  || fail "shell.html missing the Product outcome section"
+for lbl in 'signups · 24h' 'signups · 7d' 'activated · 24h' 'paying customers'; do
+  grep -qF "$lbl" "$shell" || fail "shell.html outcome section missing label: $lbl"
+done
+grep -qF 'top of funnel UNMEASURED' "$shell" \
+  || fail "shell.html must name the top of funnel UNMEASURED"
+ok "shell.html shows the Product outcome section (four labels + UNMEASURED funnel)"
 
 # =========================================================================
 # 7. push.sh piggybacks verify; no new timer
@@ -365,6 +529,25 @@ for name in ("open_prs", "shipped_24h", "main_ci", "firing_alerts",
     assert "verify" in tile, name
     assert tile["verify"].get("cmd"), name
 print("OK: generate() stamps verify.cmd on every tile")
+
+# fleet-ops#5003: the outcome tile's freshness anchor is the product-slo
+# textfile mtime — the value verify.py:_race_against_tile compares against —
+# NOT min(fleet.prom, product-slo). With min(), whenever fleet.prom is the
+# older of the two the verifier SKIPs on that tick and a lying tile escapes
+# instead of DISPUTING. Both sources stay gated: a stale fleet.prom still
+# returns an unknown tile.
+now = time.time()
+g._textfile_mtime = lambda: now - 60          # fleet.prom: fresh but older
+g._product_slo_mtime = lambda: now            # the anchor verify.py reads
+g._prom_query = lambda expr, timeout=5: [{"metric": {}, "value": 3}]
+oc_tile = g.collect_outcome()
+assert oc_tile["ok"] is True, oc_tile
+assert oc_tile["observed_at"] == now, oc_tile
+assert oc_tile["observed_at"] != now - 60, oc_tile
+# ...and the stale fleet.prom leg still fails closed.
+g._textfile_mtime = lambda: now - 99999
+assert g.collect_outcome()["ok"] is False
+print("OK: outcome tile anchors on the product-slo mtime, not min(sources)")
 PY
 ok "generate stamps verify.cmd"
 
