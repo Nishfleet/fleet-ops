@@ -1094,6 +1094,157 @@ PY
 ok "fleet-ops#5070: questions verifier counts the tile's population (aged answered excluded)"
 
 # =========================================================================
+# 12f. fleet-ops#5133: both sides ask for the FULL open-question window.
+#
+# `gh search issues` takes `--limit` defaulting to 30 and reports NOTHING
+# when it truncates. Both the tile's search and the verifier's search left
+# the flag off, so past 30 open `question` issues the tile's count/items
+# were a silent 30-row window and the verifier fetched its OWN 30 rows
+# seconds later from GitHub's relevance ordering — a boundary population
+# then false-DISPUTEs a faithful tile, the #5070 class one qualifier over.
+#
+# The fixture reproduces gh's truncation: a fake gh that returns the first
+# 30 rows unless the caller passes `--limit`. 31 unfiltered-of-answers
+# questions must reach the tile AND the verifier.
+# =========================================================================
+python3 - "$gen" "$ver" <<'PY' || fail "5133: questions window failed"
+import importlib.util, json, subprocess, sys
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+gen_path, ver_path = sys.argv[1], sys.argv[2]
+
+def load(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+G = load("console_generate_5133", gen_path)
+V = load("console_verify_5133", ver_path)
+
+GH_DEFAULT_LIMIT = 30          # `gh search issues --help`, gh 2.93.0
+
+def iso(seconds_ago):
+    return (datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)).strftime(
+        "%Y-%m-%dT%H:%M:%S+00:00")
+
+# --- the two sides must declare the SAME window (drift guard) -----------
+assert V.QUESTION_SEARCH_LIMIT == G.QUESTION_SEARCH_LIMIT, (
+    f"tile window {G.QUESTION_SEARCH_LIMIT} != verifier window "
+    f"{V.QUESTION_SEARCH_LIMIT}")
+assert G.QUESTION_SEARCH_LIMIT > GH_DEFAULT_LIMIT, (
+    "the window must clear gh's silent default, not restate it")
+
+# 31 open, unanswered questions — one row past gh's silent default cap.
+N = 31
+rows = [
+    {"number": 6000 + i, "title": f"q{i}", "url": f"u/{i}",
+     "createdAt": iso(3600 * (i + 1)),
+     "repository": {"nameWithOwner": "Nishfleet/fleet-ops"},
+     "labels": [{"name": "question"}], "body": f"question: pick {i}?"}
+    for i in range(N)
+]
+
+
+class WindowGh:
+    """Fake gh that honours gh's OWN truncation rule.
+
+    A search with no --limit returns the first 30 rows (the real default),
+    so a collector that forgets the flag loses row 31 here exactly as it
+    does against GitHub.
+    """
+
+    def __init__(self, rows):
+        self.rows = rows
+        self.calls = []
+
+    @staticmethod
+    def asked_limit(argv):
+        if "--limit" in argv:
+            i = argv.index("--limit")
+            if i + 1 < len(argv):
+                return int(argv[i + 1])
+        return GH_DEFAULT_LIMIT
+
+    def run(self, argv, **kwargs):
+        argv = list(argv)
+        self.calls.append(argv)
+        if argv[1:3] == ["search", "issues"]:
+            out = json.dumps(self.rows[:self.asked_limit(argv)])
+            return subprocess.CompletedProcess(argv, 0, out, "")
+        return subprocess.CompletedProcess(argv, 0, "[]", "")
+
+
+def searches(calls):
+    return [a for a in calls if a[1:3] == ["search", "issues"]]
+
+
+def assert_limit_carried(calls, want, side):
+    found = searches(calls)
+    assert len(found) == 1, f"{side}: expected one search, got {len(found)}"
+    argv = found[0]
+    assert "--limit" in argv, f"{side} search carries no --limit: {argv}"
+    i = argv.index("--limit")
+    assert i + 1 < len(argv) and argv[i + 1] == str(want), \
+        f"{side} --limit drifted: {argv}"
+
+
+# --- the fixture really does reproduce the 30-row truncation ------------
+# The argv the two sides shipped before this fix (no --limit). If this
+# returns 31, the fixture is not a regression test and the test is void.
+old_argv = ["gh", "search", "issues", "--owner", "Nishfleet",
+            "--state", "open", "--label", "question"]
+window = WindowGh(rows).run(old_argv)
+assert len(json.loads(window.stdout)) == GH_DEFAULT_LIMIT == 30, (
+    "fixture must truncate at gh's default for the regression to mean anything")
+
+# --- the tile renders all 31 --------------------------------------------
+tile_gh = WindowGh(rows)
+G.subprocess = tile_gh
+items, capped = G._gh_questions()
+assert len(items) == N, f"tile rendered {len(items)} of {N} open questions"
+assert capped is False, "31 rows cannot fill a 1000-row window"
+assert_limit_carried(tile_gh.calls, G.QUESTION_SEARCH_LIMIT, "tile")
+tile = G.collect_questions()
+assert tile["ok"] is True and tile["count"] == N, tile
+assert tile["capped"] is False, tile
+assert tile["search_limit"] == G.QUESTION_SEARCH_LIMIT, tile
+
+# --- the verifier counts the same 31 ------------------------------------
+ver_gh = WindowGh(rows)
+V.subprocess = ver_gh
+V.SKIP_GH = False
+counted = V.run_questions_gh({"count": N})
+assert counted == N, f"verifier counted {counted} of {N} open questions"
+assert_limit_carried(ver_gh.calls, V.QUESTION_SEARCH_LIMIT, "verifier")
+print(f"OK: 5133 — tile renders {N} and verifier counts {counted} on one fixture")
+
+# --- a window that FILLS is loud, never silent --------------------------
+# Shrink the ceiling to gh's default: 31 rows now saturate the window, the
+# tile must say so, and the shell must render that flag where Nish reads
+# the list. A capped population that renders as "no more questions" is the
+# hidden-decision failure the issue names.
+saved = G.QUESTION_SEARCH_LIMIT
+try:
+    G.QUESTION_SEARCH_LIMIT = GH_DEFAULT_LIMIT
+    G.subprocess = WindowGh(rows)
+    filled_items, filled_capped = G._gh_questions()
+    filled_tile = G.collect_questions()
+finally:
+    G.QUESTION_SEARCH_LIMIT = saved
+assert len(filled_items) == GH_DEFAULT_LIMIT and filled_capped is True, (
+    len(filled_items), filled_capped)
+assert filled_tile["capped"] is True, filled_tile
+assert filled_tile["search_limit"] == GH_DEFAULT_LIMIT, filled_tile
+shell = (Path(gen_path).parent / "shell.html").read_text()
+for needle in ("q-cap", "q.capped", "capped at"):
+    assert needle in shell, f"shell.html does not disclose a capped window: {needle}"
+print("OK: 5133 — a saturated window is disclosed (tile capped=true, shell says so)")
+PY
+ok "fleet-ops#5133: all 31 open questions reach the tile and its verifier"
+
+# =========================================================================
 # 13. drill --check
 # =========================================================================
 bash -n "$drill" || fail "drill: bash syntax error"
