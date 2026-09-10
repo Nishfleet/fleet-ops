@@ -27,6 +27,7 @@ Environment (all have --flag equivalents):
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -348,6 +349,186 @@ def oldest_unfiled_age(capped_sigs: list[str], now: datetime) -> int:
         return max(0, int(max(ages)))
     except Exception:  # noqa: BLE001 — telemetry must never crash the tick
         return 0
+
+
+# Starved-signal detector (fleet-ops#4957 accept item 3). A key that stays
+# unfiled for more than STARVE_TICKS consecutive ticks means the cap is being
+# spent on other classes, so the alarm itself never becomes an issue. That is
+# a control-plane fault and must produce its own ONE deduped issue rather than
+# a log line, because a log line is exactly what a single flapping green tick
+# erases — which is how fleet-ops#4623 was closed with no fix landed.
+STARVE_TICKS = 3
+# `-FAIL`-shaped on purpose: the existing routing_labels() helper sends any
+# `*-FAIL` tag to `escalate-senior` + `critical-path`, which is where a
+# pile-up of unfiled alarms belongs (the cap being hit is a control-plane
+# fault, not ordinary queue work).
+STARVE_TAG = "SIGNAL-STARVE-FAIL"
+# Short, stable tag for the tick-log line so the fact is greppable next to
+# the SIGNAL-RECONCILE-CAP line it explains.
+STARVE_LOUD_TAG = "SIGNAL-STARVE"
+
+
+def _load_starve_state() -> dict[str, Any]:
+    """Tolerant reader of the whole starve-state payload (fleet-ops#4957).
+
+    Same tolerance as oldest_unfiled_age(): a missing, unreadable, malformed
+    or wrongly-typed file yields {} so a bad state file can never crash the
+    tick or change what gets filed. A missing file is normal on the first
+    tick and silent; anything else logs a WARN so the fault is visible.
+    """
+    path = signal_starve_state_path()
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    except OSError as e:
+        log(f"WARN: could not read starve state {path}: {e}")
+        return {}
+    try:
+        payload = json.loads(raw)
+    except ValueError as e:
+        log(f"WARN: could not parse starve state {path}: {e}; treating as empty")
+        return {}
+    if not isinstance(payload, dict):
+        log(f"WARN: starve state {path} is {type(payload).__name__}, not an object; treating as empty")
+        return {}
+    return payload
+
+
+def _starve_entries(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Per-key entries, from either {"signals": {...}} or a flat file."""
+    entries = payload.get("signals")
+    if not isinstance(entries, dict):
+        entries = payload
+    return {
+        sig: entry
+        for sig, entry in entries.items()
+        if isinstance(sig, str) and isinstance(entry, dict)
+    }
+
+
+def starve_state_writable_here() -> bool:
+    """True when this run may write the starve-state file (fleet-ops#4957).
+
+    The offline seam `FLEET_SIGNAL_RECONCILE_OPEN_ISSUES_JSON` replaces the
+    live issue list with a fixture, and `bin/chain-e2e-drill` drives the real
+    reconciler that way with no state dir of its own. An unguarded writer
+    would therefore let every drill (and every test) run prune the LIVE state
+    file and reset the counters of a genuinely starved key, so the detector
+    would never reach its threshold on a real fleet. A run may write only
+    when it is the authoritative live tick, or when it has been given its own
+    `FLEET_SIGNAL_RECONCILE_STATE_DIR` (the test seam).
+    """
+    if os.environ.get("FLEET_SIGNAL_RECONCILE_STATE_DIR"):
+        return True
+    return not os.environ.get("FLEET_SIGNAL_RECONCILE_OPEN_ISSUES_JSON")
+
+
+def write_starve_state(entries: dict[str, Any], reported_token: str = "") -> None:
+    """Persist the per-tick starve state; WARN, never raise (fleet-ops#4957).
+
+    `entries` carries EXACTLY the keys capped on this tick, so a key that was
+    filed this tick, that already had an open issue (deduped/heartbeat) or
+    that went green has nothing carried forward and is dropped here — this
+    file cannot leak dead keys the way the red-pr-repair state dir does in the
+    same issue. No capped keys at all prunes the file outright, so it cannot
+    grow without bound either.
+
+    `reported_token` is the ONE top-level dedupe key (the current starvation
+    set's `loud/signal-starve/<slug>-<hash>` token), not a per-key marker:
+    suppression belongs to the set, so a CHANGED set is a new token and files
+    its own issue instead of being muted by one key's stale marker.
+
+    The temp name is unique per process (pid + random suffix) because two
+    concurrent runs sharing one fixed `<file>.tmp` made one of them lose its
+    write (FileNotFoundError on the rename) and re-file duplicates. No flock:
+    the live tick is serial, so this only has to survive tests and an
+    accidental overlap, not to provide mutual exclusion.
+    """
+    path = signal_starve_state_path()
+    try:
+        if not entries:
+            path.unlink(missing_ok=True)
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.{os.urandom(4).hex()}.tmp")
+        tmp.write_text(
+            json.dumps(
+                {"signals": entries, "reported_token": reported_token},
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        tmp.replace(path)
+    except Exception as e:  # noqa: BLE001 — an unwritable state file must never fail the tick
+        log(f"WARN: could not write starve state {path}: {e}")
+
+
+def starve_signal_for(starved: list[str]) -> str:
+    """Stable, collision-free dedupe token for a starved key set (fleet-ops#4957).
+
+    The dedupe key IS the sorted key list, so the same starved set files once
+    and does not re-file on tick 5, 6, 7. Deliberately not shaped like the
+    `loud/<class>/<key>` signals the canaries emit, so it cannot collide with
+    or shadow a real detector signal.
+
+    A readable slug is not enough on its own: two DISTINCT sets sharing a long
+    common prefix slugged to the SAME token past the truncation, so the second
+    set's alarm was silently muted. Hence the readable 48-char prefix PLUS the
+    first 12 hex of a sha1 over the exact newline-joined sorted keys —
+    deterministic for one set (same set, same token) and different for
+    different sets. Single backticked token, no whitespace, so
+    BACKTICK_SIGNAL_RE still reads it back next tick.
+    """
+    keys = sorted(starved)
+    prefix = _safe_slug("-".join(keys), 48) or "unknown"
+    digest = hashlib.sha1("\n".join(keys).encode("utf-8")).hexdigest()[:12]
+    return f"loud/signal-starve/{prefix}-{digest}"
+
+
+def _starve_age_seconds(entry: dict[str, Any], now: datetime) -> Any:
+    """Whole seconds since the entry's first_unfiled_at, "?" if uncomparable.
+
+    The subtraction is INSIDE the try on purpose: `now` may be a naive
+    `--now`/`FLEET_SIGNAL_RECONCILE_NOW` override while the state file holds a
+    `Z`-suffixed (aware) timestamp, and `aware - naive` raises TypeError.
+    Raised out of `reconcile()` that TypeError aborts the whole tick —
+    observe-to-close, the state write, the summary and the exit code all lost
+    — which is the exact silent abort this detector exists to remove. A `now`
+    with no usable offset can never yield an age either, so it reports "?"
+    rather than guessing.
+    """
+    if now.tzinfo is None or now.utcoffset() is None:
+        return "?"
+    first = entry.get("first_unfiled_at")
+    if not isinstance(first, str) or not first:
+        return 0
+    try:
+        first_dt = _parse_iso(first)
+        if first_dt.tzinfo is None or first_dt.utcoffset() is None:
+            return "?"
+        return max(0, int((now - first_dt).total_seconds()))
+    except (TypeError, ValueError, OverflowError):
+        return "?"
+
+
+def _starve_first_unfiled_at_usable(value: Any) -> bool:
+    """True only if `value` is a parsable, timezone-aware ISO timestamp.
+
+    A garbage or naive `first_unfiled_at` used to be carried forward verbatim
+    forever: the entry's age stayed "?" and `oldest_unfiled_age()` stayed 0
+    for good. Treating it as absent lets the tick reset it to `now_str`, so
+    the counter self-heals instead of rotting.
+    """
+    if not isinstance(value, str) or not value:
+        return False
+    try:
+        dt = _parse_iso(value)
+    except (TypeError, ValueError):
+        return False
+    return dt.tzinfo is not None and dt.utcoffset() is not None
 
 
 def derive_signals(tag: str, msg: str) -> list[str]:
@@ -834,6 +1015,168 @@ def reconcile(
             f"unfiled signals: {', '.join(capped_sigs)}",
         )
 
+    # Starved-signal detector (fleet-ops#4957 accept item 3): a key that stays
+    # unfiled for more than STARVE_TICKS consecutive ticks must itself produce
+    # ONE deduped issue naming the starved keys, so a stealth starve cannot be
+    # cleared by a flapping single green tick. Runs once per tick, right after
+    # the cap check, and is as tolerant as the reader: a malformed or
+    # unwritable state file logs a WARN and never crashes the tick or changes
+    # what is filed.
+    #
+    # The state is rebuilt from THIS tick's capped keys only. A key filed this
+    # tick, a key that already had an open issue (deduped/heartbeat) and a key
+    # that left current_signals (went green) all lose their entry — only capped
+    # keys may retain state, which is exactly the leak the red-pr-repair state
+    # dir shows in this issue.
+    prev_payload = _load_starve_state()
+    prev_starve = _starve_entries(prev_payload)
+    starve_entries: dict[str, Any] = {}
+    for sig in capped_sigs:
+        prev_entry = prev_starve.get(sig) or {}
+        first_unfiled_at = prev_entry.get("first_unfiled_at")
+        if not _starve_first_unfiled_at_usable(first_unfiled_at):
+            # Same ISO8601-with-timezone shape (now_str) that _parse_iso and
+            # oldest_unfiled_age() read, so the phase-1 telemetry and this
+            # writer always agree about a key's age. A garbage or naive value
+            # is reset, not carried forward forever.
+            first_unfiled_at = now_str
+        try:
+            unfiled_ticks = int(prev_entry.get("consecutive_unfiled") or 0)
+        except (TypeError, ValueError):
+            unfiled_ticks = 0
+        starve_entries[sig] = {
+            "first_unfiled_at": first_unfiled_at,
+            "consecutive_unfiled": unfiled_ticks + 1,
+        }
+
+    starved = sorted(
+        sig
+        for sig, entry in starve_entries.items()
+        if entry["consecutive_unfiled"] > STARVE_TICKS
+    )
+    summary["starved"] = len(starved)
+    summary["starve_filed"] = 0
+    reported_token = ""
+    if starved:
+        starve_signal = starve_signal_for(starved)
+        detail = "; ".join(
+            f"{sig} unfiled {starve_entries[sig]['consecutive_unfiled']} ticks "
+            f"(age {_starve_age_seconds(starve_entries[sig], now)}s)"
+            for sig in starved
+        )
+        # Two cheap dedupe mechanisms, both used: (a) the backticked
+        # `loud/signal-starve/<slug>-<hash>` token in the body is seen next
+        # tick by open_by_signal()'s BACKTICK_SIGNAL_RE; (b) the single
+        # top-level `reported_token` in the state file covers the case where
+        # that token path misses (issue-list hiccup, issue closed out of
+        # band), so tick 5 cannot re-file. The suppression key is the TOKEN
+        # — i.e. the exact sorted key list — not a per-key marker: a CHANGED
+        # starved set has a new token and therefore files its own issue,
+        # which is what "dedupe key = the sorted key list" means. A set that
+        # reverts to an already-reported exact list is caught by
+        # `already_open` as long as its issue is open.
+        already_open = starve_signal in open_by_signal
+        already_reported = prev_payload.get("reported_token") == starve_signal
+        # Preserve the previous token only while the set is unchanged. It is
+        # (re)set on a SUCCESSFUL filing below, never just because a filing
+        # was attempted: a failed filing must not mute the next tick, since no
+        # issue exists to suppress against.
+        reported_token = starve_signal if already_reported else ""
+        if file_issues and not already_open and not already_reported:
+            # This is a detector alarm ABOUT the cap, not a signal being
+            # auto-filed: filed_count is deliberately left untouched here, so
+            # the cap stays exactly what it was (5 by default) and in force.
+            # At most one starve issue per starved key set per tick.
+            title = issue_title(
+                STARVE_TAG,
+                f"{len(starved)} signal(s) unfiled > {STARVE_TICKS} ticks: "
+                f"{', '.join(starved)}",
+                signal=starve_signal,
+            )
+            body = (
+                f"{len(starved)} detector signal(s) stayed unfiled on more than "
+                f"{STARVE_TICKS} consecutive heartbeat ticks (fleet-ops#4957).\n\n"
+                f"The auto-file cap is saturated on every one of those ticks, "
+                f"so these are the keys that lost: the lowest-priority keys "
+                f"were never filed. This is the cap alarm, not a report that "
+                f"some other class of work took their place.\n\n"
+                f"- starved signals: {', '.join(starved)}\n"
+                f"- unfiled: {detail}\n"
+                f"- observed tick: `{now_str}`\n"
+                f"- detector→queue reconciler: fleet-ops#362\n"
+                f"- dedupe key: the sorted key list above — filed once per "
+                f"starved set, never once per tick\n\n"
+                "This is the cap alarm, not a signal being auto-filed: it does "
+                "NOT consume the auto-file cap.\n\n"
+                "Do NOT close this issue on PR merge alone. The reconciler "
+                "closes it only when the starve clears — when every key above "
+                "is filed or goes green on a real heartbeat tick.\n\n"
+                f"`{starve_signal}`\n"
+            )
+            # No verify_filed_signal() here on purpose: unlike a signal issue,
+            # this alarm does not depend on the returned pointer to stay
+            # deduped — the `reported_token` in the state file below covers it.
+            rc, out = file_issue(
+                repo,
+                title,
+                body,
+                routing_labels(STARVE_TAG),
+                issue_file,
+                dry_run,
+            )
+            if rc == 0:
+                summary["starve_filed"] = 1
+                reported_token = starve_signal
+                log(f"starve-filed {starve_signal} -> {out}")
+            else:
+                log(
+                    f"WARN: failed to file starve issue {starve_signal} "
+                    f"(rc={rc}): {out}"
+                )
+        loud(
+            triage,
+            STARVE_LOUD_TAG,
+            f"{len(starved)} signal(s) unfiled > {STARVE_TICKS} consecutive "
+            f"ticks — {detail}; dedupe token {starve_signal}; cap={cap} still "
+            f"in force (n_unfiled={len(capped_sigs)})",
+        )
+        # Keep the starve token live while the starve persists so the next
+        # tick's observe-to-close pass cannot retire the issue it just filed —
+        # the flapping-single-green-tick failure this detector exists to stop.
+        # It leaves current_signals, and the issue is retired, when the starve
+        # clears. Only the CURRENT set's token is kept alive: a superseded
+        # set's issue closes as its token leaves, and the next distinct set
+        # files a fresh one. Trade-off, accepted deliberately: ONE open starve
+        # issue at a time, superseded by the next distinct set — two open
+        # starve issues would be a flood, and the superseded one is stale by
+        # definition.
+        current_signals.add(starve_signal)
+
+    if dry_run:
+        log("starve-state: not written (dry-run)")
+    elif not starve_state_writable_here():
+        # Only reachable on the offline `FLEET_SIGNAL_RECONCILE_OPEN_ISSUES_JSON`
+        # seam without its own `FLEET_SIGNAL_RECONCILE_STATE_DIR` (tests, and
+        # `bin/chain-e2e-drill`). A log() would leave a REAL caller that sets
+        # that seam green forever while starvation detection silently died,
+        # so a non-dry run says it LOUD and appends it to the triage file.
+        loud(
+            triage,
+            "SIGNAL-STARVE-STATE-SKIP",
+            "starve-state NOT written: offline open-issues seam set without "
+            "FLEET_SIGNAL_RECONCILE_STATE_DIR — starvation detection is "
+            "inert for this run (fleet-ops#4957)",
+        )
+        log(
+            "starve-state: not written (dry-run, or offline open-issues seam "
+            "without FLEET_SIGNAL_RECONCILE_STATE_DIR)"
+        )
+    else:
+        # `reported_token` is the CURRENT set's token on a starvation tick and
+        # "" on any tick with no starved keys, so a later re-starve of the
+        # same set can file again.
+        write_starve_state(starve_entries, reported_token)
+
     # Observe-to-close: close open signal-keyed issues not in current tick.
     current_open_signals = set(open_by_signal.keys())
     for sig in sorted(current_open_signals - current_signals):
@@ -978,7 +1321,8 @@ def main(argv: list[str] | None = None) -> int:
     log(
         f"complete: alarms={summary['alarm_count']} filed={summary['filed']} "
         f"deduped={summary['deduped']} heartbeat={summary['heartbeat_comments']} "
-        f"closed={summary['closed']} rerouted={summary['rerouted']} capped={summary['capped']}"
+        f"closed={summary['closed']} rerouted={summary['rerouted']} capped={summary['capped']} "
+        f"starved={summary['starved']} starve_filed={summary['starve_filed']}"
     )
     if args.json:
         print(json.dumps(summary, sort_keys=True))
