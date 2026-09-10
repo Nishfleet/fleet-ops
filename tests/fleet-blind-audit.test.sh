@@ -47,6 +47,14 @@ grep -q 'Do not file "test is not in the CI P14 list"' "$repo_root/prompts/blind
 # that only stamps gap-audit is a failed run.
 grep -E '"\$ISSUE_FILE" file .*--label agent-ready' "$bin" \
     || fail "fleet-blind-audit must file panel-PASS findings with --label agent-ready (fleet-ops#402)"
+# fleet-ops#5037: a drill files a synthetic fixture, so it may file only
+# through a declared stub gh. The mint block must also not put the canonical
+# bin dir ahead of an inherited stub: that reorder is how a drill run with no
+# GH_TOKEN resolved the real gh and filed the fixture as live issue #5037.
+grep -q 'command -v gh >/dev/null 2>&1 || export PATH="/home/nish/.local/bin' "$bin" \
+    || fail "fleet-blind-audit must extend PATH only when gh is already missing (fleet-ops#5037)"
+grep -q 'AUDIT_DRILL_GH_STUB_DIR' "$bin" \
+    || fail "fleet-blind-audit must gate drill filing on a declared stub gh dir (fleet-ops#5037)"
 
 scratch=$(mktemp -d -t fleet-blind-audit.XXXXXX)
 trap 'rm -rf "$scratch"' EXIT INT TERM
@@ -278,6 +286,7 @@ PATH="$scratch/fakebin:$PATH" \
   AUDIT_PLAN_FILE="$drill_plan" \
   AUDIT_FAKE_NOW="2026-08-26T06:21:00Z" \
   AUDIT_DRILL=1 \
+  AUDIT_DRILL_GH_STUB_DIR="$scratch/fakebin" \
   AUDIT_DRILL_FINDINGS="$repo_root/tests/fixtures/blind-audit-drill-finding.json" \
   AUDIT_MAX_FINDINGS="5" \
   "$bin" >"$scratch/drill.log" 2>&1 || drill_rc=$?
@@ -296,6 +305,113 @@ grep -E 'CREATE .*--body-file ' "$drill_log" >/dev/null \
 grep -E 'CREATE .*--label agent-ready' "$drill_log" >/dev/null \
   || fail "drill gh create missing --label agent-ready (fleet-ops#402): $(cat "$drill_log")"
 ok "drill: fixture finding filed as gap-audit + agent-ready issue with report linked"
+
+# ============================================================================
+# fleet-ops#5037: a drill files a SYNTHETIC fixture, so it must never reach the
+# live tracker. It may file only through a declared stub gh. No stub declared,
+# or a declared stub that is not the gh that resolves, refuses and exits 1.
+# ============================================================================
+refuse_state="$scratch/refuse-state"
+refuse_plan="$scratch/refuse-plan.md"
+refuse_log="$scratch/refuse-create.log"
+mkdir -p "$refuse_state" "$scratch/emptybin"
+: > "$refuse_log"
+printf 'last-heartbeat: 2026-08-26T05:43:00Z\n' > "$refuse_plan"
+
+refuse_rc=0
+PATH="$scratch/fakebin:$PATH" \
+  GH_CREATE_LOG="$refuse_log" \
+  AUDIT_REPO="Nishfleet/fleet-ops" \
+  AUDIT_REPO_ROOT="$repo_root" \
+  AUDIT_STATE_DIR="$refuse_state" \
+  AUDIT_DELIBERATE_STATES="$scratch/deliberate-states.md" \
+  AUDIT_PANEL_BIN="$repo_root/bin/fleet-blind-audit-panel" \
+  AUDIT_PLAN_FILE="$refuse_plan" \
+  AUDIT_FAKE_NOW="2026-08-26T06:27:00Z" \
+  AUDIT_DRILL=1 \
+  AUDIT_DRILL_FINDINGS="$repo_root/tests/fixtures/blind-audit-drill-finding.json" \
+  AUDIT_MAX_FINDINGS="5" \
+  "$bin" >"$scratch/refuse.log" 2>&1 || refuse_rc=$?
+[[ $refuse_rc == 1 ]] || { cat "$scratch/refuse.log"; fail "drill with no stub gh declared must exit 1, got $refuse_rc"; }
+grep -F 'REFUSED' "$scratch/refuse.log" >/dev/null \
+  || fail "drill without a declared stub gh did not log REFUSED: $(cat "$scratch/refuse.log")"
+[[ ! -s "$refuse_log" ]] \
+  || fail "drill filed without a declared stub gh: $(cat "$refuse_log")"
+ok "drill refuses to file when no stub gh is declared (fleet-ops#5037)"
+
+# The #5037 mechanism itself: the declared stub dir is NOT where gh resolves
+# from, because something reordered PATH (the mint block used to put
+# /home/nish/.local/bin ahead of the stub). Refuse rather than file.
+shadow_state="$scratch/shadow-state"
+shadow_plan="$scratch/shadow-plan.md"
+shadow_log="$scratch/shadow-create.log"
+mkdir -p "$shadow_state"
+: > "$shadow_log"
+printf 'last-heartbeat: 2026-08-26T05:43:00Z\n' > "$shadow_plan"
+
+shadow_rc=0
+PATH="$scratch/fakebin:$PATH" \
+  GH_CREATE_LOG="$shadow_log" \
+  AUDIT_REPO="Nishfleet/fleet-ops" \
+  AUDIT_REPO_ROOT="$repo_root" \
+  AUDIT_STATE_DIR="$shadow_state" \
+  AUDIT_DELIBERATE_STATES="$scratch/deliberate-states.md" \
+  AUDIT_PANEL_BIN="$repo_root/bin/fleet-blind-audit-panel" \
+  AUDIT_PLAN_FILE="$shadow_plan" \
+  AUDIT_FAKE_NOW="2026-08-26T06:28:00Z" \
+  AUDIT_DRILL=1 \
+  AUDIT_DRILL_GH_STUB_DIR="$scratch/emptybin" \
+  AUDIT_DRILL_FINDINGS="$repo_root/tests/fixtures/blind-audit-drill-finding.json" \
+  AUDIT_MAX_FINDINGS="5" \
+  "$bin" >"$scratch/shadow.log" 2>&1 || shadow_rc=$?
+[[ $shadow_rc == 1 ]] || { cat "$scratch/shadow.log"; fail "drill whose declared stub is not the resolved gh must exit 1, got $shadow_rc"; }
+grep -F 'REFUSED' "$scratch/shadow.log" >/dev/null \
+  || fail "shadowed-stub drill did not log REFUSED: $(cat "$scratch/shadow.log")"
+[[ ! -s "$shadow_log" ]] \
+  || fail "drill filed while its stub gh was shadowed: $(cat "$shadow_log")"
+ok "drill refuses to file when its declared stub gh is not the resolved gh (fleet-ops#5037)"
+
+# ============================================================================
+# The #5037 scenario end to end: a drill run from a shell with NO GH_TOKEN
+# mints a token, and the mint block must not reorder PATH ahead of the stub gh.
+# If it did, gh resolves to the real binary; the stub-dir guard is then the
+# backstop that refuses the write. This run is hermetic: PATH keeps the stub
+# first, so even a mutated guard cannot reach the live tracker.
+# ============================================================================
+cat > "$scratch/fakebin/worker-token" <<'FAKE_WT'
+#!/usr/bin/env bash
+printf 'export GH_TOKEN=stub-token\n'
+FAKE_WT
+chmod +x "$scratch/fakebin/worker-token"
+
+mint_state="$scratch/mint-state"
+mint_plan="$scratch/mint-plan.md"
+mint_log="$scratch/mint-create.log"
+mkdir -p "$mint_state"
+: > "$mint_log"
+printf 'last-heartbeat: 2026-08-26T05:43:00Z\n' > "$mint_plan"
+
+mint_rc=0
+env -u GH_TOKEN \
+  PATH="$scratch/fakebin:$PATH" \
+  NISHFLEET_WORKER_TOKEN_BIN="$scratch/fakebin/worker-token" \
+  GH_CREATE_LOG="$mint_log" \
+  AUDIT_REPO="Nishfleet/fleet-ops" \
+  AUDIT_REPO_ROOT="$repo_root" \
+  AUDIT_STATE_DIR="$mint_state" \
+  AUDIT_DELIBERATE_STATES="$scratch/deliberate-states.md" \
+  AUDIT_PANEL_BIN="$repo_root/bin/fleet-blind-audit-panel" \
+  AUDIT_PLAN_FILE="$mint_plan" \
+  AUDIT_FAKE_NOW="2026-08-26T06:29:00Z" \
+  AUDIT_DRILL=1 \
+  AUDIT_DRILL_GH_STUB_DIR="$scratch/fakebin" \
+  AUDIT_DRILL_FINDINGS="$repo_root/tests/fixtures/blind-audit-drill-finding.json" \
+  AUDIT_MAX_FINDINGS="5" \
+  "$bin" >"$scratch/mint.log" 2>&1 || mint_rc=$?
+[[ $mint_rc == 0 ]] || { cat "$scratch/mint.log"; fail "token-less drill must still file through the stub gh, got rc=$mint_rc"; }
+grep -E 'CREATE .*--label agent-ready' "$mint_log" >/dev/null \
+  || fail "token-less drill did not file through the stub gh (mint block reordered PATH ahead of the stub): $(cat "$scratch/mint.log")"
+ok "token-less drill keeps the stub gh first and files through it (fleet-ops#5037)"
 
 # ============================================================================
 # Fail-loud: PASS finding + gh create failure must exit 1 (not silent success).
@@ -337,6 +453,7 @@ PATH="$fail_gh:$scratch/fakebin:$PATH" \
   AUDIT_PLAN_FILE="$fail_plan" \
   AUDIT_FAKE_NOW="2026-08-26T06:22:00Z" \
   AUDIT_DRILL=1 \
+  AUDIT_DRILL_GH_STUB_DIR="$fail_gh" \
   AUDIT_DRILL_FINDINGS="$repo_root/tests/fixtures/blind-audit-drill-finding.json" \
   AUDIT_MAX_FINDINGS="5" \
   "$bin" >"$scratch/fail.log" 2>&1 || fail_rc=$?
@@ -382,6 +499,7 @@ PATH="$scratch/fakebin:$PATH" \
   AUDIT_PLAN_FILE="$noncanon_plan" \
   AUDIT_FAKE_NOW="2026-08-26T06:23:00Z" \
   AUDIT_DRILL=1 \
+  AUDIT_DRILL_GH_STUB_DIR="$scratch/fakebin" \
   AUDIT_DRILL_FINDINGS="$repo_root/tests/fixtures/blind-audit-drill-finding.json" \
   AUDIT_MAX_FINDINGS="5" \
   "$bin" >"$scratch/noncanon.log" 2>&1 || noncanon_rc=$?
@@ -425,6 +543,7 @@ PATH="$scratch/fakebin:$PATH" \
   AUDIT_PLAN_FILE="$parent_plan" \
   AUDIT_FAKE_NOW="2026-08-26T06:24:00Z" \
   AUDIT_DRILL=1 \
+  AUDIT_DRILL_GH_STUB_DIR="$scratch/fakebin" \
   AUDIT_DRILL_FINDINGS="$repo_root/tests/fixtures/blind-audit-drill-finding.json" \
   AUDIT_MAX_FINDINGS="5" \
   "$bin" >"$scratch/parent.log" 2>&1 || parent_rc=$?
@@ -457,6 +576,7 @@ PATH="$scratch/fakebin:$PATH" \
   AUDIT_PLAN_FILE="$allow_plan" \
   AUDIT_FAKE_NOW="2026-08-26T06:25:00Z" \
   AUDIT_DRILL=1 \
+  AUDIT_DRILL_GH_STUB_DIR="$scratch/fakebin" \
   AUDIT_DRILL_FINDINGS="$repo_root/tests/fixtures/blind-audit-drill-finding.json" \
   AUDIT_MAX_FINDINGS="5" \
   "$bin" >"$scratch/allow.log" 2>&1 || allow_rc=$?
@@ -512,6 +632,7 @@ PATH="$dedup_gh:$scratch/fakebin:$PATH" \
   AUDIT_PLAN_FILE="$dedup_plan" \
   AUDIT_FAKE_NOW="2026-08-26T06:26:00Z" \
   AUDIT_DRILL=1 \
+  AUDIT_DRILL_GH_STUB_DIR="$dedup_gh" \
   AUDIT_DRILL_FINDINGS="$repo_root/tests/fixtures/blind-audit-drill-finding.json" \
   AUDIT_MAX_FINDINGS="5" \
   "$bin" >"$scratch/dedup.log" 2>&1 || dedup_rc=$?
