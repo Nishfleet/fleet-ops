@@ -889,4 +889,20 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/signal-reconcile\.test\.sh"?' \
   || fail "signal-reconcile.test.sh must not be a known orphan (fleet-ops#362)"
 ok "signal-reconcile.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#362)"
 
+# fleet-ops#5072: hard-pin the host line for console-truth-pytest in
+# console-tile-verify.test.sh (itself hosted by ci-standards-audit.test.sh,
+# which is listed in ci.yml). The console-truth pytest suite guards the
+# fleet-ops#4996 argv regression class; the worker App cannot push
+# .github/workflows/**, so the host line is the only gate path. Parking it
+# on known_orphans to silence the generic $bad[] message must also fail by
+# name here first, same shape as every other hosted test above.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/console-truth-pytest\.test\.sh"?' \
+  "$here/console-tile-verify.test.sh" \
+  || fail "console-tile-verify.test.sh must bash-invoke console-truth-pytest.test.sh (fleet-ops#5072)"
+[[ -n "${reachable[console-truth-pytest.test.sh]:-}" ]] \
+  || fail "console-truth-pytest.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#5072)"
+[[ -z "${known_orphan_set[console-truth-pytest.test.sh]:-}" ]] \
+  || fail "console-truth-pytest.test.sh must not be a known orphan (fleet-ops#5072)"
+ok "console-truth-pytest.test.sh host line in console-tile-verify.test.sh is pinned (fleet-ops#5072)"
+
 echo "OK: p14-test-listing-gate.test.sh: P14 test list is closed"

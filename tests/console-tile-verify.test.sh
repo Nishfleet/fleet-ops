@@ -23,6 +23,9 @@
 #      verifies all four numbers against their own PromQL re-query, an
 #      injected lie on any one of them DISPUTES, and shell.html carries
 #      the section with its four labels + the UNMEASURED funnel line.
+#  14. The tile-truth drill inject path turns an injected lie DISPUTED.
+#  15. The console-truth pytest suite runs on this gate (fleet-ops#5072):
+#      test_console_truth.py ran on nothing automatic before this host.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
@@ -914,5 +917,13 @@ ok "drill --check"
 FLEET_OPS_REPO="$repo_root" "$drill" >/dev/null \
   || fail "tile-truth drill failed"
 ok "tile-truth drill: inject lie -> DISPUTED"
+
+# =========================================================================
+# 15. console-truth pytest suite (fleet-ops#5072)
+# =========================================================================
+# test_console_truth.py ran on no gate — a console-truth regression could
+# land green because nothing invoked it. Host the pytest wrapper here so a
+# red suite fails a PR (worker App cannot push .github/workflows/**).
+bash "$here/console-truth-pytest.test.sh"
 
 echo "OK: console-tile-verify.test.sh"
