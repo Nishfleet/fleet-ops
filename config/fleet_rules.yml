@@ -430,6 +430,16 @@ groups:
           summary: "memory available below 8% for 10m"
           description: "node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.08"
 
+      # fleet-ops#4872: FleetOomdKillsHigh alerts on sum(fleet_oomd_kills_6h) > 3
+      # but the textfile exporter only writes samples when journalctl finds
+      # systemd-oomd kills of pi-issue@* units, so the name is often absent
+      # and the alert can never fire. node_exporter already exports
+      # node_vmstat_oom_kill (live counter). Record increase over 6h as the
+      # producer. HOST-WIDE: this series carries NO unit= label (kernel OOM
+      # counter, not per-cgroup oomd). Do not claim fleet_oomd_kills_6h{unit=...}.
+      - record: fleet_oomd_kills_6h
+        expr: sum(increase(node_vmstat_oom_kill[6h]))
+
       - alert: FleetOomdKillsHigh
         expr: sum(fleet_oomd_kills_6h) > 3
         for: 5m
@@ -437,8 +447,8 @@ groups:
           severity: critical
           service: fleet
         annotations:
-          summary: "systemd-oomd killed > 3 app-pi-issue.slice workers in 6h — raise ram_gb_per_worker back to 2.0"
-          description: "sum(fleet_oomd_kills_6h) > 3 for 5m (fleet-ops#4164). systemd-oomd is pressure-killing fleet workers. The repair packet must raise the live ram_gb_per_worker charge in ~/.local/state/pi-packet/seat-caps.json back to 2.0 (the #3679 brake) and verify via a pi-intake tick that total_cap drops to ~4. Per-unit kills by unit are in fleet_oomd_kills_6h{unit=...}. Do NOT raise the slice MemoryHigh above 12G."
+          summary: "host-wide OOM kills > 3 in 6h — raise ram_gb_per_worker back to 2.0"
+          description: "sum(fleet_oomd_kills_6h) > 3 for 5m (fleet-ops#4164, #4872). fleet_oomd_kills_6h is the 6h increase of node_vmstat_oom_kill: host-wide kernel OOM, no unit= label. The repair packet must raise the live ram_gb_per_worker charge in ~/.local/state/pi-packet/seat-caps.json back to 2.0 (the #3679 brake) and verify via a pi-intake tick that total_cap drops to ~4. Do NOT raise the slice MemoryHigh above 12G."
 
   - name: fleet_self_observation
     rules:
