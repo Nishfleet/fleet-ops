@@ -1649,7 +1649,7 @@ _S7_CF_TOKEN_CANDIDATES = [
 # query — the issue's “FROM User” is the conceptual table, not the schema.
 _S7_SQL = (
     "SELECT COUNT(*) AS n FROM user "
-    "WHERE createdAt >= datetime('now','-7 days');"
+    "WHERE julianday(createdAt) >= julianday('now','-7 days');"
 )
 # Hex alphabet for validating the Cloudflare D1 account/database IDs before
 # they are interpolated into the fixed api.cloudflare.com URL (fleet-ops#4456).
