@@ -35,6 +35,27 @@
 # auto-restart as live also prevents burning an attempt on a pi-issue-start
 # no-op (pi-issue-start no-ops on activating).
 #
+# Terminus (fleet-ops#4957 item 4): "escalated, then held forever" was the
+# bug. A red + dead PR is fingerprinted into its state file (head SHA +
+# sorted failing-check names):
+#   - fingerprint CHANGED (someone pushed, or CI's failing set changed) ->
+#     re-arm the budget (attempts=0, escalated=false, handed_off="") with a
+#     LOUD RED-PR-REARM, so `escalated` means "escalated against THIS state
+#     of the PR", never "escalated forever".
+#   - fingerprint UNCHANGED and budget exhausted -> hand the PR off ONCE per
+#     (pr, fingerprint) to a durable queue item naming repo/pr/issue/failing
+#     checks, and record `handed_off` so it never re-files for that
+#     fingerprint. The RED-PR-ESCALATE page + exit 1 stay: the handoff is
+#     ADDITIVE (page AND queue item), and a handoff that did not land is
+#     retried on the next tick instead of being recorded as done.
+#
+# State key + reap (fleet-ops#4957 item 5): the key carries the PR number
+# (<short>-<issue>-<pr>), so an `escalated` marker cannot survive a PR swap
+# (issue 1140: PR #1405 CLOSED while PR #1509 is open for the same issue).
+# At the end of each repo's pass, state recorded for that repo whose `pr` is
+# not in the open claim/issue-* list is reaped (json + flag) — the
+# clear-on-green / clear-on-no-checks paths only fire for PRs still listed.
+#
 # Environment seams (tests):
 #   GH                        default gh
 #   SYSTEMCTL                 default systemctl
@@ -42,6 +63,12 @@
 #   FLEET_REDPR_REPOS_JSON    claim_repos source (default fleet-repos.json)
 #   FLEET_HEARTBEAT_LOG_DIR   state + flag dir
 #   FLEET_HEARTBEAT_TRIAGE    triage file
+#   FLEET_REDPR_ISSUE_FILE    fleet-issue-file wrapper used for the durable
+#                             handoff (default: this bin dir, then ~/.local/bin)
+#   FLEET_REDPR_ISSUE_REPO    repo the handoff issue is filed in (default
+#                             Nishfleet/fleet-ops — the control-plane queue,
+#                             same as every other heartbeat alarm)
+#   RED_PR_FILE_ISSUES        1 (default) files the handoff; 0 disables it
 #   RED_PR_MAX_ATTEMPTS       default 2
 #
 # Exit: 0 = no escalation (nothing to do, or dispatches attempted within
@@ -62,6 +89,22 @@ TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTB
 LOG_DIR="${FLEET_HEARTBEAT_LOG_DIR:-/home/nish/.local/state/fleet-heartbeat}"
 RED_PR_MAX_ATTEMPTS="${RED_PR_MAX_ATTEMPTS:-2}"
 
+# Durable handoff (fleet-ops#4957 item 4). Missing wrapper = WARN, never a
+# failure: the page (RED-PR-ESCALATE + exit 1) is the load-bearing alarm.
+RED_PR_FILE_ISSUES="${RED_PR_FILE_ISSUES:-1}"
+REDPR_ISSUE_REPO="${FLEET_REDPR_ISSUE_REPO:-Nishfleet/fleet-ops}"
+REDPR_ISSUE_FILE="${FLEET_REDPR_ISSUE_FILE:-}"
+if [[ -z "$REDPR_ISSUE_FILE" ]]; then
+    # Same lookup the detector→queue reconciler uses: repo bin/, then ~/.local/bin.
+    BIN_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+    for candidate in "$BIN_DIR/fleet-issue-file" "$HOME/.local/bin/fleet-issue-file"; do
+        if [[ -x "$candidate" ]]; then
+            REDPR_ISSUE_FILE="$candidate"
+            break
+        fi
+    done
+fi
+
 STATE_DIR="$LOG_DIR/red-pr-repair"
 mkdir -p "$STATE_DIR"
 
@@ -81,15 +124,17 @@ loud() {
     } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
 }
 
-# Safe on-disk filename for a "<short>-<issue>" key.
+# Safe on-disk filename for a "<short>-<issue>-<pr>" key (fleet-ops#4957
+# item 5: the PR number is part of the key, so an `escalated` marker cannot
+# survive a PR swap on the same issue).
 state_key() {
-    local short="$1" issue="$2" safe
-    safe=$(printf '%s-%s' "$short" "$issue" | tr -c 'A-Za-z0-9._-' '_')
+    local short="$1" issue="$2" pr="$3" safe
+    safe=$(printf '%s-%s-%s' "$short" "$issue" "$pr" | tr -c 'A-Za-z0-9._-' '_')
     printf '%s' "$safe"
 }
 
-state_file() { printf '%s/%s.json' "$STATE_DIR" "$(state_key "$1" "$2")"; }
-flag_file()  { printf '%s/%s.flag'  "$STATE_DIR" "$(state_key "$1" "$2")"; }
+state_file() { printf '%s/%s.json' "$STATE_DIR" "$(state_key "$1" "$2" "$3")"; }
+flag_file()  { printf '%s/%s.flag'  "$STATE_DIR" "$(state_key "$1" "$2" "$3")"; }
 
 # Read one key from a PR's JSON state file.
 state_get() {
@@ -102,10 +147,12 @@ state_get() {
     fi
 }
 
-# Write a PR's JSON state file atomically. Empty attempts means "leave it".
+# Write a PR's JSON state file atomically. Empty attempts/escalated means
+# "leave it". Any remaining `key=value` arguments are always set; an empty
+# value clears the key (how a re-arm resets handed_off).
 state_write() {
     local f="$1" short="$2" issue="$3" pr="$4" attempts="${5:-}" escalated="${6:-}"
-    python3 - "$f" "$short" "$issue" "$pr" "$attempts" "$escalated" <<'PY'
+    python3 - "$f" "$short" "$issue" "$pr" "$attempts" "$escalated" "${@:7}" <<'PY'
 import sys, os, json, datetime
 f, short, issue, pr = sys.argv[1:5]
 attempts = sys.argv[5] if len(sys.argv) > 5 else ''
@@ -131,6 +178,10 @@ if attempts != '':
         state['attempts'] = state.get('attempts', 0)
 if escalated != '':
     state['escalated'] = (escalated == 'true')
+for pair in sys.argv[7:]:
+    key, sep, val = pair.partition('=')
+    if sep and key:
+        state[key] = val
 tmp = f + '.tmp.' + str(os.getpid())
 with open(tmp, 'w', encoding='utf-8') as fh:
     json.dump(state, fh)
@@ -139,6 +190,78 @@ PY
 }
 
 state_remove() { rm -f "$1"; }
+
+# Fingerprint the STATE of a red + dead PR: head SHA + sorted failing-check
+# names (fleet-ops#4957 item 4). A change means someone pushed or CI's
+# failing set changed, which re-arms the budget. `gh pr view --json merged`
+# and `--json mergeQueueEntry` do not exist — the head-SHA field is
+# headRefOid. A failed `gh pr view` degrades to the literal `unknown` (never
+# fatal): the fingerprint still differs on a failing-check change, and a gh
+# hiccup cannot crash the tick.
+pr_state_fingerprint() {
+    local repo="$1" pr_num="$2" fail_names="$3" head_sha=""
+    head_sha=$("$GH" pr view "$pr_num" -R "$repo" --json headRefOid --jq .headRefOid 2>/dev/null) || head_sha=""
+    printf '%s|%s' "${head_sha:-unknown}" "${fail_names}"
+}
+
+# Hand a budget-exhausted PR to a durable queue item ONCE per
+# (pr, fingerprint). Returns 0 only when the wrapper actually filed (or
+# deduped) an item, so the caller records `handed_off` only for a handoff
+# that landed — recording one that did not would re-create "escalated, then
+# held forever" with no durable item at all. Every other path is a WARN and
+# a non-zero return, never a hard exit: the page is the load-bearing alarm.
+handoff_issue() {
+    local repo="$1" short="$2" pr_num="$3" issue="$4" pr_head="$5" fp="$6" fail_names="$7"
+    local title body out rc help_out
+
+    if [[ "$RED_PR_FILE_ISSUES" != "1" ]]; then
+        log "  - $repo#$pr_num: durable handoff disabled (RED_PR_FILE_ISSUES=$RED_PR_FILE_ISSUES) — nothing filed this tick"
+        return 1
+    fi
+    if [[ -z "$REDPR_ISSUE_FILE" || ! -x "$REDPR_ISSUE_FILE" ]]; then
+        log "WARN: fleet-issue-file wrapper not found for the red-PR handoff (FLEET_REDPR_ISSUE_FILE='${REDPR_ISSUE_FILE:-}') — no durable queue item for $repo#$pr_num; the RED-PR-ESCALATE page still fires"
+        return 1
+    fi
+    # Ask the wrapper what it accepts before calling it — filing into the
+    # control-plane queue must not assume flags this build does not carry.
+    help_out=$("$REDPR_ISSUE_FILE" file --help 2>&1) || help_out=""
+    if [[ "$help_out" != *"--title"* || "$help_out" != *"--body"* \
+          || ( "$help_out" != *"--repo"* && "$help_out" != *"-R"* ) ]]; then
+        log "WARN: $REDPR_ISSUE_FILE file --help does not advertise -R/--repo/--title/--body — durable handoff skipped for $repo#$pr_num"
+        return 1
+    fi
+
+    title="red-PR handoff: $repo#$pr_num (issue #$issue) exhausted its repair budget — $RED_PR_MAX_ATTEMPTS attempts, still red"
+    body="The red-PR repair pass spent its whole budget on this PR and left it \
+red + worker-dead. This is the durable queue item for that state — the pass \
+keeps paging (RED-PR-ESCALATE) until the PR's fingerprint changes.
+
+- repo: $repo
+- PR: #$pr_num (branch \`$pr_head\`, issue #$issue)
+- failing checks: ${fail_names:-unknown}
+- repair attempts: $RED_PR_MAX_ATTEMPTS of $RED_PR_MAX_ATTEMPTS (budget exhausted)
+- state fingerprint: \`$fp\`
+
+If someone pushes, or CI's failing set changes, the pass re-arms the budget \
+by itself (RED-PR-REARM) and re-dispatches. Otherwise this needs a worker or \
+a human on the existing claim branch, re-dispatched with \
+\`pi-issue-start $short-$issue\`.
+
+\`red-pr-repair-handoff/$short/$pr_num\`
+"
+
+    set +e
+    out=$("$REDPR_ISSUE_FILE" file -R "$REDPR_ISSUE_REPO" --title "$title" --body "$body" \
+        --label escalate-senior --label critical-path 2>&1)
+    rc=$?
+    set -e
+    if [[ "$rc" -eq 0 ]]; then
+        log "handoff: filed durable queue item in $REDPR_ISSUE_REPO for $repo#$pr_num (issue #$issue, fingerprint=$fp) -> $out"
+        return 0
+    fi
+    log "WARN: durable handoff filing failed for $repo#$pr_num (rc=$rc): $out"
+    return 1
+}
 
 # --- repos config -----------------------------------------------------------
 [[ -f "$REPOS_JSON" ]] || {
@@ -184,6 +307,9 @@ escalated_any=0
 dispatched=0
 observed=0
 cleared=0
+reaped=0
+rearmed=0
+handoffs=0
 
 while IFS= read -r repo; do
     [[ -n "$repo" ]] || continue
@@ -200,7 +326,6 @@ while IFS= read -r repo; do
     pr_count=$(printf '%s' "$prs_json" | jq 'length')
     if [[ "$pr_count" == "0" ]]; then
         log "  - $repo: no claim/issue-* PRs open"
-        continue
     fi
 
     while IFS= read -r row; do
@@ -231,45 +356,77 @@ while IFS= read -r repo; do
         if [[ "$n_total" == "0" ]]; then
             log "  - $repo#$pr_num ($pr_head): NO CHECKS — not red, skip"
             # No longer a candidate: clear any stale state.
-            state_remove "$(state_file "$short" "$issue")"
-            state_remove "$(flag_file "$short" "$issue")"
+            state_remove "$(state_file "$short" "$issue" "$pr_num")"
+            state_remove "$(flag_file "$short" "$issue" "$pr_num")"
             cleared=$((cleared+1))
             continue
         fi
         n_fail=$(printf '%s' "$checks_json" | jq '[.[] | select(.bucket == "fail" or .state == "FAILURE" or .state == "ERROR")] | length')
         if [[ "$n_fail" == "0" ]]; then
             log "  - $repo#$pr_num ($pr_head): not red (no failing checks) — clear state"
-            state_remove "$(state_file "$short" "$issue")"
-            state_remove "$(flag_file "$short" "$issue")"
+            state_remove "$(state_file "$short" "$issue" "$pr_num")"
+            state_remove "$(flag_file "$short" "$issue" "$pr_num")"
             cleared=$((cleared+1))
             continue
         fi
+        # Sorted failing-check names: half the (fingerprint and re-arm) key,
+        # and what the durable handoff names so it is actionable.
+        fail_names=$(printf '%s' "$checks_json" \
+            | jq -r '[.[] | select(.bucket == "fail" or .state == "FAILURE" or .state == "ERROR") | .name] | sort | join(", ")' \
+            2>/dev/null) || fail_names=""
 
         # Red PR. Is the worker still live? If so, work is in flight — clear
         # the debounce flag and skip (the worker or a prior repair dispatch
         # is still running).
         if worker_live "$short" "$issue"; then
             log "  - $repo#$pr_num ($pr_head): RED but worker live — in flight, clear flag"
-            state_remove "$(flag_file "$short" "$issue")"
+            state_remove "$(flag_file "$short" "$issue" "$pr_num")"
             continue
         fi
 
         # Red PR + dead worker. Apply the >1-tick debounce + bounded dispatch.
-        sf=$(state_file "$short" "$issue")
-        ff=$(flag_file "$short" "$issue")
+        sf=$(state_file "$short" "$issue" "$pr_num")
+        ff=$(flag_file "$short" "$issue" "$pr_num")
         attempts=$(state_get "$sf" "attempts" "0")
         escalated=$(state_get "$sf" "escalated" "false")
+        handed_off=$(state_get "$sf" "handed_off" "")
+        fp=$(pr_state_fingerprint "$repo" "$pr_num" "$fail_names")
+        prev_fp=$(state_get "$sf" "fingerprint" "")
 
-        # Budget exhausted: fail loud ONCE per PR, then keep the escalated
-        # marker so we do not spam the triage file every tick. The non-zero
-        # exit at the end propagates to the pager.
+        # Terminus half 1: a CHANGED fingerprint (a new head SHA, or a
+        # different failing-check set) means someone pushed or CI moved, so
+        # the PR earns a fresh budget. This is what makes `escalated` mean
+        # "escalated against THIS state of the PR", not "escalated forever".
+        if [[ -n "$prev_fp" && "$prev_fp" != "$fp" ]]; then
+            loud "RED-PR-REARM" "repo=$repo pr=#$pr_num issue=$issue branch=$pr_head old_fingerprint=$prev_fp new_fingerprint=$fp — PR state changed, repair budget re-armed (attempts 0/$RED_PR_MAX_ATTEMPTS, escalation and handoff cleared)"
+            attempts=0
+            escalated=false
+            handed_off=""
+            rearmed=$((rearmed+1))
+        fi
+
+        # Terminus half 2: budget exhausted. Page ONCE per PR state (keep the
+        # escalated marker so we do not spam the triage file every tick) and
+        # hand the PR to a durable queue item ONCE per (pr, fingerprint).
+        # The non-zero exit at the end still propagates to the pager — the
+        # handoff is additive, never a replacement for the page.
         if [[ "$attempts" -ge "$RED_PR_MAX_ATTEMPTS" ]]; then
             if [[ "$escalated" != "true" ]]; then
                 loud "RED-PR-ESCALATE" "repo=$repo pr=#$pr_num issue=$issue branch=$pr_head red_checks=$n_fail attempts=$attempts — repair budget exhausted, worker dead. Manual fix needed (page per #76/#86)."
-                state_write "$sf" "$short" "$issue" "$pr_num" "$attempts" true
             else
                 log "  - $repo#$pr_num ($pr_head): still red+dead, already escalated — holding"
             fi
+            # The durable handoff is filed on the FIRST exhausted tick for
+            # this fingerprint, not a tick later: that is the window in which
+            # the PR would otherwise sit red with no queue item at all.
+            if [[ "$handed_off" == "$fp" ]]; then
+                log "  - $repo#$pr_num ($pr_head): durable handoff already filed for this fingerprint"
+            elif handoff_issue "$repo" "$short" "$pr_num" "$issue" "$pr_head" "$fp" "$fail_names"; then
+                handed_off="$fp"
+                handoffs=$((handoffs+1))
+            fi
+            state_write "$sf" "$short" "$issue" "$pr_num" "$attempts" true \
+                "fingerprint=$fp" "handed_off=$handed_off"
             state_remove "$ff"
             escalated_any=1
             continue
@@ -278,7 +435,8 @@ while IFS= read -r repo; do
         # Debounce: first observing tick sets the flag and waits a tick.
         if [[ ! -f "$ff" ]]; then
             printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$ff"
-            state_write "$sf" "$short" "$issue" "$pr_num" "$attempts" "$escalated"
+            state_write "$sf" "$short" "$issue" "$pr_num" "$attempts" "$escalated" \
+                "fingerprint=$fp" "handed_off=$handed_off"
             log "  - $repo#$pr_num ($pr_head): RED + dead worker — observed, will dispatch next tick if still red (attempts=$attempts)"
             observed=$((observed+1))
             continue
@@ -289,20 +447,50 @@ while IFS= read -r repo; do
         loud "RED-PR-REPAIR" "repo=$repo pr=#$pr_num issue=$issue branch=$pr_head red_checks=$n_fail attempt=$((attempts+1))/$RED_PR_MAX_ATTEMPTS — re-dispatching worker onto existing claim branch (loop-to-green per #80)"
         dispatch_repair "$short" "$issue"
         new_attempts=$((attempts+1))
-        state_write "$sf" "$short" "$issue" "$pr_num" "$new_attempts" false
+        state_write "$sf" "$short" "$issue" "$pr_num" "$new_attempts" false \
+            "fingerprint=$fp" "handed_off=$handed_off"
         state_remove "$ff"
         dispatched=$((dispatched+1))
     done < <(printf '%s' "$prs_json" | jq -c '.[]')
+
+    # --- reap: state for PRs that left the open claim/issue-* list ----------
+    # (fleet-ops#4957 item 5) state_key carries the PR number, so a file whose
+    # recorded `pr` is not in the open set listed above is stale by
+    # construction — the clear-on-green / clear-on-no-checks paths above only
+    # fire for PRs still listed, and nothing else reaps a closed or merged
+    # PR's marker. Files with a missing or non-numeric `pr` are left alone:
+    # never guess. One jq pass over the whole dir, not one fork per file.
+    open_prs=$(printf '%s' "$prs_json" | jq -r '.[].number | tostring' 2>/dev/null) || open_prs=""
+    repo_reaped=0
+    shopt -s nullglob
+    _state_files=("$STATE_DIR"/*.json)
+    shopt -u nullglob
+    if (( ${#_state_files[@]} > 0 )); then
+        while IFS=$'\t' read -r _f_short _f_pr _f_path; do
+            [[ -n "$_f_path" ]] || continue
+            [[ "$_f_short" == "$short" ]] || continue
+            [[ "$_f_pr" =~ ^[0-9]+$ ]] || continue
+            if printf '%s\n' "$open_prs" | grep -qxF "$_f_pr"; then
+                continue
+            fi
+            state_remove "$_f_path"
+            state_remove "${_f_path%.json}.flag"
+            repo_reaped=$((repo_reaped+1))
+        done < <(jq -r '[(.short // ""), (.pr // "" | tostring), input_filename] | @tsv' \
+            "${_state_files[@]}" 2>/dev/null || true)
+    fi
+    if [[ "$repo_reaped" -gt 0 ]]; then
+        log "  - $repo: reaped $repo_reaped state file(s) for PRs no longer open (closed/merged)"
+    fi
+    reaped=$((reaped+repo_reaped))
 done <<< "$claim_repos"
 
-# --- GC: drop state for PRs that are no longer open/red ----------------------
-# Best-effort — a state file whose PR closed/merged or went green is stale.
-# We cannot cheaply re-query every prior PR here, so we rely on the per-PR
-# clear-on-green/clear-on-no-checks paths above. Files for PRs that vanished
-# (closed/merged) are reaped when their issue's claim is released by the
-# orphan sweep or pi-issue-failed-reap; this block does not own that.
+# --- GC: state for PRs that are no longer open/red -------------------------
+# Per-PR clear-on-green / clear-on-no-checks runs inline above; the per-repo
+# reap deletes json + flag for any PR that left the open claim/issue-* list
+# (closed or merged). A state file for a vanished PR can no longer survive.
 
-log "red-pr-repair pass complete: observed=$observed dispatched=$dispatched cleared=$cleared escalated_any=$escalated_any"
+log "red-pr-repair pass complete: observed=$observed dispatched=$dispatched cleared=$cleared escalated_any=$escalated_any rearmed=$rearmed handed_off=$handoffs reaped=$reaped"
 
 if [[ "$escalated_any" -ne 0 ]]; then
     log "red-pr-repair: FAIL LOUD — at least one PR exhausted its repair budget"

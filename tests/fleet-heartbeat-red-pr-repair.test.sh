@@ -98,6 +98,20 @@ case "$*" in
     esac
     exit 0
     ;;
+  *"pr view"*)
+    # `pr view <n> -R <repo> --json headRefOid --jq .headRefOid` — the head
+    # SHA half of the repair fingerprint (fleet-ops#4957). Stable per PR
+    # unless the fixture declares .headsha, which is how a push is modelled.
+    num=""
+    prev=""
+    for a in "$@"; do
+      [[ "$prev" == "view" ]] && num="$a"
+      prev="$a"
+    done
+    sha=$(jq -r --argjson n "$num" '.[] | select(.number == $n) | (.headsha // "deadbeef")' "${PRS_JSON:-/dev/null}" 2>/dev/null || echo deadbeef)
+    printf '%s\n' "${sha:-deadbeef}"
+    exit 0
+    ;;
   *)
     printf 'unexpected gh call: %s\n' "$*" >&2
     exit 1
@@ -154,10 +168,29 @@ exit 0
 FAKE
 chmod +x "$pi_issue_start_fake"
 
+# --- fake fleet-issue-file --------------------------------------------------
+# The red-pr-repair terminus (fleet-ops#4957 item 4) hands a budget-exhausted
+# PR to a durable queue item through FLEET_REDPR_ISSUE_FILE. Stub it so the
+# offline suite can NEVER reach the real wrapper (which mints an App token and
+# files on GitHub) and can count handoffs.
+issue_file_fake="$scratch/fleet-issue-file"
+cat >"$issue_file_fake" <<'FAKE'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "file" && "$*" == *"--help"* ]]; then
+  printf 'usage: fleet-issue-file file --repo REPO --title TITLE [--body BODY] [--label LABEL]\n'
+  exit 0
+fi
+printf 'fleet-issue-file %s\n' "$*" >>"${CALLS:-/dev/null}"
+printf 'https://github.com/Nishfleet/fleet-ops/issues/9999\n'
+exit 0
+FAKE
+chmod +x "$issue_file_fake"
+
 # Common env for every invocation.
 export FLEET_REDPR_REPOS_JSON="$repos_json"
 export FLEET_HEARTBEAT_LOG_DIR="$log_dir"
 export FLEET_HEARTBEAT_TRIAGE="$triage"
+export FLEET_REDPR_ISSUE_FILE="$issue_file_fake"
 export CALLS="$calls"
 LIVE_UNITS="$scratch/live_units"
 export LIVE_UNITS
@@ -204,10 +237,10 @@ run_helper
 [[ "$(count_dispatches)" == "0" ]] \
     || fail "scenarioA: first tick must NOT dispatch, got $(count_dispatches) ($(cat "$calls"))"
 # One-tick marker set.
-[[ -f "$log_dir/red-pr-repair/demo-55.flag" ]] \
+[[ -f "$log_dir/red-pr-repair/demo-55-55.flag" ]] \
     || fail "scenarioA: debounce flag not set after first observation"
-# State file records attempts=0.
-sf="$log_dir/red-pr-repair/demo-55.json"
+# State file records attempts=0 (key carries short-issue-pr, fleet-ops#4957).
+sf="$log_dir/red-pr-repair/demo-55-55.json"
 [[ -f "$sf" ]] || fail "scenarioA: state file not created"
 [[ "$(jq -r '.attempts' "$sf")" == "0" ]] || fail "scenarioA: attempts must be 0 after observe"
 ok "scenarioA: red+dead first tick -> observe only, no dispatch, flag set"
@@ -228,7 +261,7 @@ grep -qx 'pi-issue-start demo-55' "$calls" \
 grep -qx 'reset-failed pi-issue@demo-55.service' "$calls" \
     || fail "scenarioB: reset-failed must precede start, got $(cat "$calls")"
 # Flag cleared after dispatch (debounce restarts for the next attempt).
-[[ ! -f "$log_dir/red-pr-repair/demo-55.flag" ]] \
+[[ ! -f "$log_dir/red-pr-repair/demo-55-55.flag" ]] \
     || fail "scenarioB: flag must be cleared after dispatch"
 # attempts incremented to 1.
 [[ "$(jq -r '.attempts' "$sf")" == "1" ]] || fail "scenarioB: attempts must be 1 after dispatch"
@@ -289,7 +322,7 @@ run_helper
 [[ "$(count_dispatches)" == "0" ]] \
     || fail "scenarioD: must NOT dispatch while worker live, got $(count_dispatches) ($(cat "$calls"))"
 # No flag set (live worker clears the debounce).
-[[ ! -f "$log_dir/red-pr-repair/demo-55.flag" ]] \
+[[ ! -f "$log_dir/red-pr-repair/demo-55-55.flag" ]] \
     || fail "scenarioD: flag must be cleared when worker is live"
 ok "scenarioD: red PR + live worker -> no dispatch (no race onto the same claim)"
 
@@ -305,16 +338,16 @@ JSON
   # Pre-seed stale state so we can prove it is cleared.
   mkdir -p "$log_dir/red-pr-repair"
   printf '{"short":"demo","issue":"55","pr":"55","attempts":1,"escalated":false,"first_seen":"x","last_seen":"x"}' \
-      >"$log_dir/red-pr-repair/demo-55.json"
-  touch "$log_dir/red-pr-repair/demo-55.flag"
+      >"$log_dir/red-pr-repair/demo-55-55.json"
+  touch "$log_dir/red-pr-repair/demo-55-55.flag"
 
   run_helper
   [[ "$env_rc" == 0 ]] || fail "scenarioE($st): must exit 0, got $env_rc ($env_out)"
   [[ "$(count_dispatches)" == "0" ]] \
       || fail "scenarioE($st): must NOT dispatch for $st PR, got $(count_dispatches)"
-  [[ ! -f "$log_dir/red-pr-repair/demo-55.json" ]] \
+  [[ ! -f "$log_dir/red-pr-repair/demo-55-55.json" ]] \
       || fail "scenarioE($st): stale state must be cleared for $st PR"
-  [[ ! -f "$log_dir/red-pr-repair/demo-55.flag" ]] \
+  [[ ! -f "$log_dir/red-pr-repair/demo-55-55.flag" ]] \
       || fail "scenarioE($st): stale flag must be cleared for $st PR"
 done
 ok "scenarioE: green/pending/no-checks PR -> no dispatch, stale state cleared"
