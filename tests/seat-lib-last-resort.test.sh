@@ -60,8 +60,8 @@ cat >"$scratch/models.json" <<'JSON'
     },
     "deepseek": {
       "models": [
-        { "id": "deepseek-v4-flash", "cost": { "input": 0.14 } },
-        { "id": "deepseek-v4-pro", "cost": { "input": 0.435 } }
+        { "id": "deepseek-v4-flash", "cost": { "input": 0.44 } },
+        { "id": "deepseek-v4-pro", "cost": { "input": 1.32 } }
       ]
     }
   }

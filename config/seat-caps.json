@@ -545,10 +545,10 @@
       "cap": 4,
       "class": "metered",
       "last_resort": true,
-      "usd_per_1m_input": 0.14,
-      "usd_per_1m_output": 0.28,
-      "usd_per_1m_cached": 0.0028,
-      "_rate_card": "fleet-ops#4625 2026-09-10: deepseek direct (api.deepseek.com) per-token rate card, from official pricing page https://api-docs.deepseek.com/quick_start/pricing (verified 2026-09-10, rates current since 2026-07-25): V4-Flash $0.14/M in / $0.28/M out / $0.0028/M cached. class=metered + last_resort=true so pick_seat admits it ONLY after the 3-pass exhaustion gate clears (fleet-ops#4625). Pro is cap 1, keystone-class packets only, never volume.",
+      "usd_per_1m_input": 0.44,
+      "usd_per_1m_output": 1.32,
+      "usd_per_1m_cached": 0.014,
+      "_rate_card": "fleet-ops#4625 2026-09-10: deepseek direct (api.deepseek.com) per-token rate card, from official pricing page https://api-docs.deepseek.com/quick_start/pricing (fetched 2026-09-10; PEAK rates per 1M tokens USD, conservative for a 24/7 metered seat — off-peak is half): V4-Flash cache-miss input $0.44/M / cache-hit input $0.014/M / output $1.32/M. class=metered + last_resort=true so pick_seat admits it ONLY after the 3-pass exhaustion gate clears (fleet-ops#4625). Pro is cap 1, keystone-class packets only, never volume.",
       "models": {
         "deepseek-v4-flash": 4,
         "deepseek-v4-pro": 1
