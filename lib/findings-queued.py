@@ -40,14 +40,91 @@ FENCE_RE = re.compile(r"```[\s\S]*?```")
 INLINE_RE = re.compile(r"`[^`]*`")
 DQUOTE_RE = re.compile(r'"[^"\n]{0,240}"')
 
-# After a catch-all offer, the next few words must name the filing/queueing
-# action (file/queue it, open an issue, dig in). Otherwise "say the word and
-# I'll wire it" is an implementation offer, not an unqueued finding.
-# "dig in" is the standing-rule named phrase (fleet-ops#721).
-ACTION_RE = re.compile(
+# After a catch-all offer ("say the word", "let me know if you want me to"),
+# the next few words must name a concrete action — otherwise the phrase is a
+# generic "go ahead" offer, not an unqueued finding. The standing-rule
+# queueable actions (file/queue it, open an issue, "dig in") are the
+# original always-count patterns. The operational verbs ("comes back as a
+# timer", "set it up", "wire it", "land it", "fix it", ...) only count
+# when the assistant has also NAMED a finding in the same turn — a
+# colloquial "say the word and I'll land it" without a finding named is
+# not a queue-able offer (fleet-ops#723, fleet-ops#724, fleet-ops#815,
+# fleet-ops#842).
+QUEUE_ACTION_RE = re.compile(
     r"\b(?:file|queue)\s+(?:it|one|this|that|an?\s+(?:new\s+)?(?:issue|finding|ticket))\b"
     r"|\bopen\s+(?:an?|the)\s+(?:new\s+)?(?:issue|ticket|finding)\b"
-    r"|\bdig in\b",
+    r"|\bdig\s+in\b",
+    re.I,
+)
+ACTION_RE = re.compile(
+    # file/queue it, open an issue — explicit queue actions
+    r"\b(?:file|queue)\s+(?:it|one|this|that|an?\s+(?:new\s+)?(?:issue|finding|ticket))\b"
+    r"|\bopen\s+(?:an?|the)\s+(?:new\s+)?(?:issue|ticket|finding)\b"
+    # "comes back as a timer" / "becomes X" / "turns into Y" — concrete
+    # implementation the assistant is offering (the #842 origin shape).
+    r"|\b(?:comes|gets|turns|goes|brings)\s+back\s+as\b"
+    # "dig in" (standing-rule named queueable action, fleet-ops#721)
+    r"|\bdig\s+in\b"
+    # Operational verbs — "I'll set it up", "wire it", "land it", "ship it",
+    # "fix it", "configure it", "deploy it", "build it", "create it", ...
+    r"|\b(?:set(?:\s+it)?(?:\s+up)?|wire(?:\s+it)?(?:\s+up)?|land(?:\s+it)?|ship(?:\s+it)?"
+    r"|build(?:\s+it)?|make(?:\s+it)?|create(?:\s+it)?|fix(?:\s+it)?|configure(?:\s+it)?"
+    r"|deploy(?:\s+it)?|install(?:\s+it)?|add(?:\s+it)?|remove(?:\s+it)?"
+    r"|restart(?:\s+it)?|reset(?:\s+it)?|enable(?:\s+it)?|disable(?:\s+it)?"
+    r"|start(?:\s+it)?|stop(?:\s+it)?|send(?:\s+it)?|write(?:\s+it)?"
+    r"|run(?:\s+it)?|execute(?:\s+it)?|trigger(?:\s+it)?|fire(?:\s+it)?"
+    r"|wipe(?:\s+it)?|clean(?:\s+it)?|delete(?:\s+it)?|drop(?:\s+it)?"
+    r"|put(?:\s+it)?(?:\s+back)?(?:\s+to)?|set(?:\s+it)?(?:\s+to)?|kick(?:\s+it)?(?:\s+off)?"
+    r"|spin(?:\s+it)?(?:\s+up)?|flip(?:\s+it)?|toggle(?:\s+it)?|change(?:\s+it)?"
+    r"|update(?:\s+it)?|rewrite(?:\s+it)?|reconnect(?:\s+it)?|revert(?:\s+it)?"
+    r"|revoke(?:\s+it)?|refresh(?:\s+it)?|recreate(?:\s+it)?|redo(?:\s+it)?"
+    r"|replay(?:\s+it)?|reseed(?:\s+it)?|redraft(?:\s+it)?"
+    r"|reopen(?:\s+it)?|reclose(?:\s+it)?|retry(?:\s+it)?|revalidate(?:\s+it)?"
+    r"|retest(?:\s+it)?|rebuild(?:\s+it)?|publish(?:\s+it)?|emit(?:\s+it)?"
+    r"|expose(?:\s+it)?|render(?:\s+it)?|generate(?:\s+it)?|produce(?:\s+it)?"
+    r"|spawn(?:\s+it)?|launch(?:\s+it)?|mount(?:\s+it)?|attach(?:\s+it)?"
+    r"|detach(?:\s+it)?|rejoin(?:\s+it)?|join(?:\s+it)?|leave(?:\s+it)?"
+    r"|forward(?:\s+it)?|relay(?:\s+it)?|broadcast(?:\s+it)?|post(?:\s+it)?"
+    r"|stream(?:\s+it)?|clear(?:\s+it)?|copy(?:\s+it)?|move(?:\s+it)?"
+    r"|rename(?:\s+it)?|tag(?:\s+it)?|label(?:\s+it)?|mark(?:\s+it)?"
+    r"|note(?:\s+it)?|log(?:\s+it)?|record(?:\s+it)?|annotate(?:\s+it)?"
+    r"|flag(?:\s+it)?|register(?:\s+it)?|enroll(?:\s+it)?|provision(?:\s+it)?"
+    r"|scaffold(?:\s+it)?|bootstrap(?:\s+it)?|stand(?:\s+it)?(?:\s+up)?"
+    r"|rebuild(?:\s+it)?|reconnect(?:\s+it)?|redo(?:\s+it)?|retry(?:\s+it)?"
+    r")\b",
+    re.I,
+)
+
+# A catch-all offer only counts as an unqueued finding when the assistant
+# has actually NAMED a finding in the same breath. The colloquial
+# "say the word and I'll land it" without a finding named is a generic
+# implementation offer and stays clean (fleet-ops#723, fleet-ops#815).
+# A "named finding" is one of: an explicit "I noticed/sees/observed" call
+# out, a fact-form observation ("X is broken/dead/off/..."), an explicit
+# non-action ("I'm not [doing X]"/"I won't [do X]"/"I stopped [doing X]"),
+# or a present-tense negative fact ("X is not running" / "X has been off").
+# This bounds the "find a finding in the same session" check to a 500-char
+# window before the offer so the offering assistant must own the finding
+# it is offering to act on; a far-past "I noticed X ten messages ago" does
+# not count.
+NAMED_FINDING_RE = re.compile(
+    # "I'm not [doing X]" / "I won't [do X]" / "I didn't [do X]" /
+    # "I haven't [done X]" — explicit non-action acknowledgement.
+    r"\b(?:i\s+am\s+not|i(?:'| a)?m\s+not|i\s+won(?:'| a)?t"
+    r"|i\s+did\s+not|i\s+didn(?:'| a)?t|i\s+haven(?:'| a)?t|i\s+stopped)\b"
+    # "I noticed X" / "I see X" / "I observed X" / "I found X" / "I spotted X"
+    r"|\bi\s+(?:noticed|see|spotted|observed|found|saw)\b"
+    # Fact-form: "X is broken/dead/silent/off/missing/..." / "X was broken"
+    r"|\b(?:is|are|was|were)\s+"
+    r"(?:broken|dead|off|disabled|missing|not\s+running|out|silent|failing|down|gone|empty|wrong)\b"
+    # "X has not been running" / "X hasn't been working"
+    r"|\bhas\s+(?:been|not\s+been)\b"
+    r"|\bhasn(?:'| a)?t\s+been\b"
+    r"|\bnot\s+running\b"
+    r"|\bnot\s+(?:been\s+)?(?:working|running|active)\b"
+    # "I stopped there" / "I kept it only to" — explicit non-action.
+    r"|\bstopped\s+there\b"
+    r"|\b(?:kept|left)\s+(?:it|this|that)\s+(?:only|just)\b",
     re.I,
 )
 
@@ -184,17 +261,42 @@ def session_blobs(path: str) -> tuple[str, str]:
 
 
 CATCH_ALL_PHRASES = ("say the word", "let me know if you want me to")
+# A catch-all offer is only an unqueued finding when (a) a concrete action
+# verb follows within a short window AND (b) the assistant has named a
+# finding in the preceding context. The combination is what separates
+# "I noticed X is broken. Say the word and I'll fix it" (queued work
+# offered without filing — fleet-ops#842) from "Wiring is a two-line job.
+# Say the word and I'll land it" (colloquial implementation offer, no
+# finding named — fleet-ops#723, fleet-ops#815).
+NAMED_FINDING_WINDOW = 500
 
 
 def has_offer(assistant_text: str) -> re.Match[str] | None:
     text = strip_quoted(assistant_text)
     for match in OFFER_RE.finditer(text):
-        # Catch-all phrases only count if a filing/queueing action follows
-        # within a short window; otherwise they are generic "go ahead" offers.
+        # Catch-all phrases only count if a concrete action follows within
+        # a short window. The existing queue actions (file/queue/open and
+        # "dig in") always count — they are the standing-rule named
+        # queueable actions (fleet-ops#721). Operational actions
+        # ("comes back as a timer", "set it up", "wire it", "fix it",
+        # ...) only count when the assistant has also named a finding in
+        # the SAME message/turn — otherwise the offer is a colloquial
+        # implementation offer, not an unqueued finding (fleet-ops#723,
+        # fleet-ops#815, fleet-ops#842).
         if match.group(0).lower().startswith(CATCH_ALL_PHRASES):
             window = text[match.end() : match.end() + 120]
-            if not ACTION_RE.search(window):
+            queue_match = QUEUE_ACTION_RE.search(window)
+            if not queue_match and not ACTION_RE.search(window):
                 continue
+            if not queue_match:
+                # Operational action only — must be backed by a named
+                # finding in the same turn.
+                turn_start = text.rfind("\n", 0, match.start()) + 1
+                ctx = text[
+                    max(turn_start, match.start() - NAMED_FINDING_WINDOW) : match.start()
+                ]
+                if not NAMED_FINDING_RE.search(ctx):
+                    continue
         return match
     return None
 

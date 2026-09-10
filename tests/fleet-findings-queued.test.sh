@@ -202,6 +202,48 @@ grep -q "FINDINGS-UNQUEUED" "$scratch/err.log" || fail "dig-in offer missing FIN
 ok "say the word and I will dig in is still flagged"
 rm -f "$sessions/say-word-digin.jsonl"
 
+# --- 5e. fleet-ops#842 origin: "say the word + operational action" is a
+# finding WHEN the assistant has also named a finding in the same turn.
+# This is the "I'm not rebuilding it uninvited. Say the word and it comes
+# back as a timer" class — the assistant identified a finding, did not
+# act on it without permission, and offered a concrete implementation
+# instead of filing a queue item. The original narrow ACTION_RE (file/
+# queue/open/dig in) missed this. The named-finding guard keeps
+# colloquial "say the word and I'll wire it" clean (no finding named).
+write_session "say-word-842" '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Your daily digest is not running. I am not rebuilding it uninvited. Say the word and it comes back as a timer."}]}}'
+rc=$(run_bin 0)
+[[ "$rc" == "1" ]] || fail "842 origin say-the-word + named finding should exit 1 (got $rc) $(cat "$scratch/err.log")"
+grep -q "FINDINGS-UNQUEUED" "$scratch/err.log" || fail "842 origin missing FINDINGS-UNQUEUED"
+ok "say the word + named finding + operational action is flagged (fleet-ops#842)"
+rm -f "$sessions/say-word-842.jsonl"
+
+# --- 5e-b. colloquial "say the word + operational action" without a named
+# finding stays clean — the guard exists exactly to keep "Wiring is a
+# two-line job. Say the word and I will land it" out (fleet-ops#723,
+# fleet-ops#815). Cover the negative case here so a future refactor
+# cannot silently drop the named-finding guard.
+write_session "say-word-colloquial" '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Wiring is a two-line job. Say the word and I will land it and prove it with a live call."}]}}'
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "colloquial say-the-word + operational action should exit 0 (got $rc) $(cat "$scratch/err.log")"
+grep -q "FINDINGS-QUEUED-OK" "$scratch/err.log" || fail "colloquial offer missing OK line"
+ok "colloquial say-the-word + operational action (no named finding) stays clean"
+rm -f "$sessions/say-word-colloquial.jsonl"
+
+# --- 5e-c. the named-finding guard is per-turn: a "I kept it only" in a
+# prior turn must NOT leak into the context of a later turn's offer. The
+# 5d / 721 origin session has three offers across three turns; the
+# "I kept it only" in turn 1 must not promote turn 2 or 3 to findings
+# (they are still colloquial hard-line offers). Multi-message shape
+# is the same as test 5d; covered here as a regression on the turn
+# boundary fix so a future edit cannot silently widen the lookback.
+write_session "say-word-turn-boundary" '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"I did archive it. I kept it only so the deletion is reversible."}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Some runs sat 1,200+ minutes. Say the word and I will fix it."}]}}'
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "turn-boundary say-the-word should exit 0 (got $rc) $(cat "$scratch/err.log")"
+grep -q "FINDINGS-QUEUED-OK" "$scratch/err.log" || fail "turn-boundary offer missing OK line"
+ok "named-finding lookback is per-turn (prior turn does not promote a later colloquial offer)"
+rm -f "$sessions/say-word-turn-boundary.jsonl"
+
 # --- 6. auto-file + dedupe --------------------------------------------------
 write_session "ask-nofile" '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Should I file a new issue about the silent canary?"}]}}'
 set +e
