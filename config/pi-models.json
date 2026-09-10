@@ -322,9 +322,6 @@
       "baseUrl": "https://opencode.ai/zen/go/v1",
       "api": "openai-completions",
       "apiKey": "!cut -d= -f2 /home/nish/fleet2/etc/opencode-go.env",
-      "headers": {
-        "x-opencode-session": "!cat /proc/sys/kernel/random/uuid"
-      },
       "compat": {
         "thinkingTokenBudgetField": "thinking_token_budget"
       },
