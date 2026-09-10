@@ -4140,8 +4140,28 @@ _record_prepaid_pick() {
     # allowance reset and the seat is back — learning the undocumented reset
     # hour, rule 2).
     local usd flags429="false" flags200="false" f9date="" f2date=""
+    local cur_src="" cur_cycle="" cur_lane=""
     usd=$(_provider_daily_spend_usd_tokens "$p")
     [[ "$usd" =~ ^[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?$ ]] || usd=0
+    # fleet-ops#4621: cursor-cli sessions record 0 usage tokens and there is
+    # no cursor cost card, so the token meter is structurally $0. The real
+    # spend is Cursor GetCurrentPeriodUsage included-API-bucket 24h delta,
+    # written into this same usd_today field by fleet-prepaid-util-canary.
+    # A pick must not clobber a vendor figure with the token 0; keep the
+    # existing usd_today when it is already a vendor number or UNAVAILABLE
+    # label, and carry the provenance fields (source, cycle figure, billing
+    # lane) so the judge can tell a vendor number from a token 0. Pareto
+    # Pass and every other provider keep the token path.
+    if [[ "$p" == "cursor" && -f "$f" ]]; then
+        local _kept
+        _kept=$(jq -r '.usd_today // empty' "$f" 2>/dev/null || true)
+        if [[ -n "$_kept" && "$_kept" != "0" && "$_kept" != "0.000000" ]]; then
+            usd="$_kept"
+            cur_src=$(jq -r '.usd_today_source // empty' "$f" 2>/dev/null || true)
+            cur_cycle=$(jq -r '.cursor_api_cycle_usd // empty' "$f" 2>/dev/null || true)
+            cur_lane=$(jq -r '.billing_lane // empty' "$f" 2>/dev/null || true)
+        fi
+    fi
     # fleet-ops#4453 accept: usd_today never exceeds the declared daily budget.
     if [[ -n "${SEAT_PROVIDER_DAILY_BUDGET_USD[$p]:-}" ]]; then
         local cap_usd="${SEAT_PROVIDER_DAILY_BUDGET_USD[$p]}"
@@ -4166,7 +4186,9 @@ _record_prepaid_pick() {
         --argjson f9 "$([[ "$flags429" == "true" ]] && echo true || echo false)" \
         --argjson f2 "$([[ "$flags200" == "true" ]] && echo true || echo false)" \
         --arg d9 "${f9date:-}" --arg d2 "${f2date:-}" \
-        '{week:$w,count:$c,usd_today:$ud,provider_daily_logged_429:$f9,provider_daily_logged_429_date:$d9,provider_daily_logged_200:$f2,provider_daily_logged_200_date:$d2}' >"$tmp" 2>/dev/null || {
+        --arg src "${cur_src:-}" --arg cy "${cur_cycle:-}" --arg lane "${cur_lane:-}" \
+        '{week:$w,count:$c,usd_today:$ud,provider_daily_logged_429:$f9,provider_daily_logged_429_date:$d9,provider_daily_logged_200:$f2,provider_daily_logged_200_date:$d2,
+          usd_today_source:$src,cursor_api_cycle_usd:$cy,billing_lane:$lane}' >"$tmp" 2>/dev/null || {
         rm -f "$tmp"
         return 0
     }
