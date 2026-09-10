@@ -643,16 +643,22 @@ def _slowburn_firing_seconds(starts_at):
 def _slowburn_find_existing(repo, signal, gh):
     """Return the open critical-path issue number carrying the signal key,
     or "" if none / the search failed. Mirrors the detector->queue
-    reconciler's find_existing_signal: the signal key lives in the issue
-    body, so a `gh issue list --search` for the key finds it. A failed
-    search (rc!=0 / unparseable) returns "" (fail-open: a flaky gh must
-    not block the file path, and a duplicate file is caught by
+    reconciler's find_existing_signal, but a `<signal>`-only search is NOT
+    enough (fleet-ops#4773): the search tokenizes the hyphenated key, so an
+    unrelated issue whose text merely contains the words matches — live,
+    the #4773 meta-issue itself was returned and accepted as the repair
+    terminus. Accept an item ONLY when it carries the `critical-path` label
+    (filtered server-side, re-checked here) AND its title carries the
+    signal key in the `[{signal}]` form _slowburn_file writes. A failed
+    search (rc!=0 / empty / unparseable) returns "" (fail-open: a flaky gh
+    must not block the file path, and a duplicate file is caught by
     fleet-issue-file's own dedupe).
     """
     proc = subprocess.run(
         [gh, "issue", "list", "-R", repo, "--state", "open",
          "--limit", "50", "--search", signal,
-         "--json", "number,title"],
+         "--label", SLOWBURN_LABEL,
+         "--json", "number,title,labels"],
         capture_output=True, text=True, check=False, timeout=30,
     )
     if proc.returncode != 0 or not (proc.stdout or "").strip():
@@ -661,10 +667,21 @@ def _slowburn_find_existing(repo, signal, gh):
         items = json.loads(proc.stdout)
     except json.JSONDecodeError:
         return ""
+    marker = f"[{signal}]"
     for it in items:
         n = it.get("number")
-        if isinstance(n, int) and n > 0:
-            return str(n)
+        if not (isinstance(n, int) and n > 0):
+            continue
+        labels = []
+        for lab in it.get("labels") or []:
+            name = lab.get("name") if isinstance(lab, dict) else lab
+            if isinstance(name, str):
+                labels.append(name)
+        if SLOWBURN_LABEL not in labels:
+            continue
+        if marker not in (it.get("title") or ""):
+            continue
+        return str(n)
     return ""
 
 
@@ -700,12 +717,34 @@ def _slowburn_file(repo, signal, gh, issue_file):
     if proc.returncode != 0:
         return ""
     m = re.search(r"/issues/(\d+)", out)
-    if m:
-        return m.group(1)
-    m = re.search(r"#(\d+)", out)
-    if m:
-        return m.group(1)
-    return ""
+    if not m:
+        m = re.search(r"#(\d+)", out)
+    if not m:
+        return ""
+    number = m.group(1)
+    # fleet-ops#4773: the URL the create call prints is NOT proof a new
+    # issue exists. fleet-issue-file dedupes by token overlap and may
+    # COMMENT on an unrelated issue, printing ITS url (live: the #4773
+    # meta-issue, dup score 1.00), so logging FILED for that pointer would
+    # report a terminus that nothing filed. Verify the returned issue's
+    # title carries the [{signal}] key — the same discriminator the
+    # detector->queue reconciler's verify_filed_signal uses
+    # (fleet-ops#4622/#4841) — and refuse to report a filing on mismatch.
+    # A failed/unreadable view also returns "": never guess.
+    view = subprocess.run(
+        [gh, "issue", "view", number, "-R", repo,
+         "--json", "title", "--jq", ".title"],
+        capture_output=True, text=True, check=False, timeout=30,
+    )
+    title = (view.stdout or "").strip()
+    if view.returncode != 0 or not title or f"[{signal}]" not in title:
+        _loud(
+            f"FILED-LINK-MISMATCH {SLOWBURN_NAME} fleet-issue-file "
+            f"returned issue=#{number} title='{title or '<unavailable>'}' "
+            f"which does not carry signal key [{signal}]; refusing to "
+            f"report it as FILED (fleet-ops#4773)")
+        return ""
+    return number
 
 
 def _slowburn_heartbeat(repo, number, gh):
@@ -764,6 +803,10 @@ def _slowburn_file_or_link(starts_at, log):
             f"auto-file (firing {secs}s)")
         return "skip-error"
     number = _slowburn_file(repo, signal, gh, issue_file)
+    # "" from _slowburn_file covers two causes: the fleet-issue-file call
+    # itself failed, or it succeeded but the returned issue failed the
+    # [{signal}] title verify (a FILED-LINK-MISMATCH, fleet-ops#4773).
+    # Either way there is no terminus, so this is skip-error, never filed.
     if not number:
         with LOG.open("a") as f:
             f.write(
