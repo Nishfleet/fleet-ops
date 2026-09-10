@@ -2203,6 +2203,66 @@ blocked-on: orchestrator" 2>/dev/null || true
                 continue
             fi
         fi
+
+        # fleet-ops#5048 (+ the #5045 middle cell): delivered-or-delegated
+        # park — the remaining cells of the over-cap matrix. Reached only
+        # when the #4540/#4553 branches above did not park (both continue on
+        # trip). A merged claim/issue-<N> PR is delivery evidence at EITHER
+        # protection level: a still-OPEN issue with a merged claim PR is
+        # delivered-but-stranded by definition — protected issues cannot be
+        # observe-closed (fleet-ops#1435), and a `Relates to` trailer is a
+        # mention that never closes (the #5045 cell: non-protected + merged
+        # claim-branch mention PR, live #4980). Weaker evidence —
+        # a merged PR on another branch referencing the issue (delivered
+        # off-claim; live: fable/* PRs #4893/#4897 on #4891), a delegation
+        # marker (`awaiting: <name>` or `blocked-on: timer <name>`) in the
+        # body or comments, or a named runtime unit (foo.timer/foo.service)
+        # that is still ACTIVE under systemctl --user — applies to
+        # PROTECTED issues only: on a claimable non-protected issue a bare
+        # mention is not a fix (#3231), so those signals alone must never
+        # park one. The probes run only past the cumulative claim cap, so
+        # an ordinary issue costs nothing extra; no evidence -> no park,
+        # and a genuinely unfinished issue falls through to the claim-loop
+        # gate exactly as before.
+        _park_evidence=""
+        _park_merged=$(gh pr list -R "$FULL" --head "claim/issue-$N" --state merged --json number,url,mergedAt 2>/dev/null || echo "[]")
+        if printf '%s' "$_park_merged" | jq -e 'length > 0' >/dev/null 2>&1; then
+            _park_evidence="merged claim/issue-$N PR #$(printf '%s' "$_park_merged" | jq -r '.[0].number') delivered it, but the issue stayed open"
+        elif (( _park_protected == 1 )); then
+            _park_refs=$(gh pr list -R "$FULL" --state merged --search "#$N in:body" --json number,title,body --limit 20 2>/dev/null || echo "[]")
+            # The search is a coarse pre-filter; keep only PRs whose
+            # title/body carries an exact `#<N>` reference so `#5048` does
+            # not substring-match `#50480`.
+            _park_ref_hits=$(printf '%s' "$_park_refs" | jq -r --arg n "$N" '[.[] | select(((.title // "") + "\n" + (.body // "")) | test("#" + $n + "\\b")) | .number] | join(",")' 2>/dev/null || echo "")
+            if [[ -n "$_park_ref_hits" ]]; then
+                _park_evidence="delivered off the claim branch — merged PR(s) #${_park_ref_hits//,/,#} reference this issue"
+            else
+                # Delegation evidence lives in run-report comments, so it
+                # needs one comments fetch — paid only by a protected
+                # over-cap issue with no merged evidence.
+                _park_cjson=$(gh issue view "$N" -R "$FULL" --json comments 2>/dev/null || echo '{}')
+                _park_ctext=$(printf '%s\n%s' "$body" "$(printf '%s' "$_park_cjson" | jq -r '[.comments[]?.body // empty] | join("\n")' 2>/dev/null)")
+                if printf '%s' "$_park_ctext" | grep -qE '^(awaiting:[[:space:]]*[^[:space:]]|blocked-on:[[:space:]]*timer[[:space:]]+[^[:space:]])'; then
+                    _park_evidence="delegated to a named runtime event (awaiting: / blocked-on: timer marker)"
+                else
+                    while IFS= read -r _park_unit; do
+                        [ -z "$_park_unit" ] && continue
+                        if "$SYSTEMCTL" --user is-active --quiet "$_park_unit" 2>/dev/null; then
+                            _park_evidence="delegated to live runtime unit $_park_unit"
+                            break
+                        fi
+                    done < <(printf '%s' "$_park_ctext" | grep -oE '[A-Za-z0-9_.-]+\.(timer|service)' | sort -u)
+                fi
+            fi
+        fi
+        if [[ -n "$_park_evidence" ]]; then
+            echo "issue $N ($title): skipped-parked-delivered ($_park_claims cumulative claims > cap $PARK_MAX_CLAIMS; $_park_evidence; awaiting runtime gate)" >&2
+            gh label create awaiting-runtime-gate -R "$FULL" --color D4C5F9 \
+                --description "Parked: over-cap issue delivered or delegated to a named runtime event; do not claim (fleet-ops#5048)" --force >/dev/null 2>&1 || true
+            gh issue edit "$N" -R "$FULL" --add-label awaiting-runtime-gate --remove-label agent-ready 2>/dev/null || true
+            gh issue comment "$N" -R "$FULL" --body "fleet-ops#5048: issue $N has been re-claimed ${_park_claims} times (cap $PARK_MAX_CLAIMS) and its remaining work is observably delivered or delegated — $_park_evidence. The #4540 park needs a \`termination:\` clause AND a merged claim-branch PR; the #4553 land-or-close park needs a NON-protected issue — so this shape (live: #4891, delivered on fable/* branches and delegated to remeasure-4891-timer) re-entered the claimable pool on every release, each claim burning a seat pick and a worker run to re-verify a gate that could not be met yet. Parking it: labelled \`awaiting-runtime-gate\`, removed from agent-ready; intake will not re-claim it. Un-park trigger: clear the label when the named event has fired and claimable work remains, or Nish closes the issue." 2>/dev/null || true
+            continue
+        fi
     fi
 
     # fleet-ops#3575: fetch comments up-front so a comment-level `blocked-on:`
