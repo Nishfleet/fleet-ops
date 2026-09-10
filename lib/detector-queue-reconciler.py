@@ -191,6 +191,76 @@ SKIP_TAGS = {
     "FAILED-COMMAND-FAIL",
     "EXEC-REVIEW-DISARM",
 }
+
+# Never-green class guard (fleet-ops#4983).
+#
+# Every SKIP_TAGS entry above was discovered only AFTER it paged: the
+# reconciler filed a phantom alarm, a worker was dispatched, and the tag was
+# added post-mortem — six times in one week (DEBUG-PLAYBOOK-MISSING #4620,
+# CLAIM-REAP-STARTED #4918, CLAIM-RELEASED #4930, PACKETS-ARCHIVED #4955,
+# FAILED-COMMAND-FAIL #4944, CLAIM-REAP-NEEDED #4945). The guard below ends
+# the fire-first pattern: an UNKNOWN tag whose derived key is stable across
+# varying message content is never-green by construction — every re-emission
+# re-derives the identical signal, so the filed issue can only close when
+# the line stops appearing, which for a routine telemetry line is never —
+# and must not be queued. The class guard, not the tag, decides.
+#
+# Two never-green shapes are detected in derive_signals():
+#
+#   1. The bare `loud/<tag>` fallback (subkey "unspecified") carries no
+#      occurrence discriminator at all, so the key is constant for the tag.
+#      That fallback is reserved for the genuinely instance-keyed tags in
+#      NEVER_GREEN_EXEMPT (and for deliberately routed classes below).
+#   2. Structured telemetry: the message carries field=value pairs whose
+#      occurrence-varying values never reach the derived key.
+#      `instance=0509-2365 count=2 death_class=work` keys on field names and
+#      constants only, so the next occurrence re-derives the identical
+#      signal. A repo= value does not count as a discriminator —
+#      `loud/<tag>/<repo>` partitions by repo, not by occurrence
+#      (CLAIM-RELEASED / PACKETS-ARCHIVED were exactly this shape).
+#
+# Exempt: the hand-keyed extraction paths (their keying is already a
+# decision) and any tag whose routing_labels() is not the agent-ready
+# default — a senior/observe-to-close route is a declared fault or hold
+# class, not an accidental rollup. If a suppressed signal turns out to be a
+# real fault, fix its keying so the occurrence discriminator reaches the
+# signal (e.g. carry the unit/session/PR into the emitted line) — never
+# whitelist it back into queuing.
+NEVER_GREEN_EXEMPT = {
+    "UNIT-FAILED",                # per-unit keys
+    "DEBUG-PLAYBOOK-GATE-BLOCK",  # deliberate rule key (also in SKIP_TAGS)
+    "FAILED-COMMAND-SWALLOWED",   # per-session keys (fleet-ops#4884)
+}
+# field=value telemetry fields; a value is occurrence-varying when it holds
+# an identifier-ish character (digits, path/unit/PR punctuation).
+KV_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=([^\s,;:()]+)")
+DYNAMIC_VALUE_RE = re.compile(r"[0-9/@#.]")
+
+
+def _never_green_shaped(tag: str, msg: str, subkeys: list[str]) -> bool:
+    """True when the derived signal is stable across varying message content.
+
+    A stable key re-derives on every re-emission, so a filed issue can never
+    observe green while the (routine, informational) line keeps firing.
+    """
+    if tag in NEVER_GREEN_EXEMPT or routing_labels(tag) != ["agent-ready"]:
+        return False
+    if subkeys == ["unspecified"]:
+        return True
+    varying = [
+        v.rstrip(".")
+        for v in KV_RE.findall(msg)
+        if DYNAMIC_VALUE_RE.search(v)
+    ]
+    if not varying:
+        return False
+    for v in varying:
+        if REPO_RE.fullmatch(v):
+            continue
+        slug = _safe_slug(v)
+        if len(slug) >= 3 and any(slug in k for k in subkeys):
+            return False
+    return True
 STOPWORDS = frozenset(
     """
     a an the to of and or in on for with this that is are be as at by from
@@ -358,6 +428,11 @@ def derive_signals(tag: str, msg: str) -> list[str]:
         if sig:
             return [sig]
     subkeys = _extract_signal_key(tag, msg)
+    # fleet-ops#4983: fail closed on never-green-shaped signals — a derived
+    # key that cannot move with the message's occurrence-varying content
+    # refiles the same issue forever and observe-to-close can never fire.
+    if _never_green_shaped(tag, msg, subkeys):
+        return []
     tag_slug = tag.lower()
     if subkeys == ["unspecified"]:
         return [f"loud/{tag_slug}"]

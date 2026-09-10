@@ -1152,4 +1152,117 @@ grep -q 'issue edit 4987' "$tmp/gh.log" \
     || fail "scenario 14c: expected gh issue edit 4987 (got: $(cat "$tmp/gh.log"))"
 ok "scenario 14c: live agent-in-progress DEGRADED-LANES is retroactively downgraded to observe-to-close"
 
+# ---------------------------------------------------------------------------
+# 15. Informational class guard (fleet-ops#4983): an UNKNOWN tag — not in
+#     SKIP_TAGS — whose derived key is stable across varying message content
+#     is never-green by construction and must not be queued. Every SKIP_TAGS
+#     entry above was added one-at-a-time AFTER a live page (#4620/#4918/
+#     #4930/#4955/#4944/#4945); this guard ends the fire-first pattern by
+#     failing closed on the two never-green shapes: (a) the bare
+#     `loud/<tag>` fallback (subkey "unspecified" = no occurrence
+#     discriminator possible) and (b) field=value telemetry whose varying
+#     values never reach the derived key.
+# ---------------------------------------------------------------------------
+
+# 15a. Synthetic informational signals NOT in SKIP_TAGS are not queued:
+#      CLAIM-RELEASED-CONFIRM is a count-shaped completion rollup under a tag
+#      the reconciler has never seen, and X-ARCHIVED is a count-shaped
+#      archive line. Both carry field=value telemetry whose varying values
+#      (instance slug, count) are dropped from the derived key, so any
+#      re-emission re-derives the identical signal — never-green.
+cat > "$tmp/empty15.json" <<'EOF'
+[]
+EOF
+cat > "$tmp/triage15a.md" <<'EOF'
+[2026-08-28T13:30:00Z] [CLAIM-RELEASED-CONFIRM] instance=0509-9999 repo=Nishfleet/0509 count=3
+[2026-08-28T13:30:00Z] [X-ARCHIVED] instance=fleet-ops-5555 repo=Nishfleet/fleet-ops count=7
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/empty15.json" "$tmp/triage15a.md" > "$tmp/summary15a.json"
+jq -e '.filed == 0 and .alarm_count == 0' "$tmp/summary15a.json" >/dev/null \
+    || fail "scenario 15a: unlisted informational signals must not be queued, got: $(cat "$tmp/summary15a.json")"
+[[ $(wc -l < "$tmp/filed.jsonl") -eq 0 ]] \
+    || fail "scenario 15a: must not file, got: $(cat "$tmp/filed.jsonl")"
+ok "scenario 15a: informational class guard blocks unlisted telemetry signals"
+
+# 15b. The guard decision rests on the key being stable across varying
+#      message content: dump two differing CLAIM-RELEASED-CONFIRM messages,
+#      assert the extracted keys are equal (constant per repo), and assert
+#      derive_signals suppresses both. An exempt hand-keyed tag
+#      (FAILED-COMMAND-SWALLOWED, session-keyed per fleet-ops#4884) is
+#      unaffected.
+python3 - "$repo_root" <<'PY' || fail "scenario 15b: guard must fail closed on stable keys"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location(
+    "dqr", sys.argv[1] + "/lib/detector-queue-reconciler.py")
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+keys = set()
+for inst, n in [("0509-9999", 3), ("0509-1111", 9), ("0509-42", 1)]:
+    msg = f"instance={inst} repo=Nishfleet/0509 count={n}"
+    keys.add(tuple(m._extract_signal_key("CLAIM-RELEASED-CONFIRM", msg)))
+    assert m.derive_signals("CLAIM-RELEASED-CONFIRM", msg) == [], \
+        ("unlisted telemetry signal must not queue", msg)
+# differing messages, identical key -> stable across varying content.
+assert keys == {("nishfleet-0509",)}, keys
+# exempt tag keeps its hand-keyed path (per-session discriminator).
+sig = m.derive_signals(
+    "FAILED-COMMAND-SWALLOWED",
+    "session=abc-123 path=/tmp/x snippet=boom")
+assert sig == ["loud/failed-command-swallowed/abc-123"], sig
+PY
+ok "scenario 15b: key is stable across varying content; exempt tag unaffected"
+
+# 15c. The `unspecified` -> `loud/<tag>` fallback is reserved for genuinely
+#      instance-keyed tags: an unknown tag whose message yields no
+#      discriminating token at all (`n=42` leaves no surviving key word) is
+#      constant-keyed by construction and must not be queued.
+cat > "$tmp/triage15c.md" <<'EOF'
+[2026-08-28T13:30:00Z] [SWEEP-NOTE] n=42
+EOF
+true > "$tmp/filed.jsonl"
+run "$tmp/empty15.json" "$tmp/triage15c.md" > "$tmp/summary15c.json"
+jq -e '.filed == 0 and .alarm_count == 0' "$tmp/summary15c.json" >/dev/null \
+    || fail "scenario 15c: bare loud/<tag> fallback must not queue for unknown tags, got: $(cat "$tmp/summary15c.json")"
+ok "scenario 15c: unspecified bare-key fallback is suppressed for unknown tags"
+
+# 15d. The guard must not swallow declared classes or discriminated keys:
+#      WIDGET-FAIL routes senior (-FAIL) so it is exempt and still queues;
+#      WIDGET-WATCHER keys on a unit= value that DOES reach the derived key,
+#      so occurrences are discriminated and it still queues agent-ready.
+cat > "$tmp/triage15d.md" <<'EOF'
+[2026-08-28T13:30:00Z] [WIDGET-FAIL] widget=9 broken attempts=4 — real fault
+[2026-08-28T13:30:00Z] [WIDGET-WATCHER] unit=alpha.service state=dead
+EOF
+true > "$tmp/filed.jsonl"
+run "$tmp/empty15.json" "$tmp/triage15d.md" > "$tmp/summary15d.json"
+jq -e '.filed == 2' "$tmp/summary15d.json" >/dev/null \
+    || fail "scenario 15d: senior-routed and discriminated-key signals must still queue, got: $(cat "$tmp/summary15d.json")"
+grep -q 'loud/widget-fail/' "$tmp/filed.jsonl" \
+    || fail "scenario 15d: WIDGET-FAIL must file, got: $(cat "$tmp/filed.jsonl")"
+grep -q '"escalate-senior"' "$tmp/filed.jsonl" \
+    || fail "scenario 15d: WIDGET-FAIL must route senior, got: $(cat "$tmp/filed.jsonl")"
+grep -q 'loud/widget-watcher/alpha.service' "$tmp/filed.jsonl" \
+    || fail "scenario 15d: discriminated unit key must file, got: $(cat "$tmp/filed.jsonl")"
+ok "scenario 15d: declared fault classes and discriminated keys still queue"
+
+# 15e. Terminus: an already-open issue filed under a now-suppressed
+#      never-green signal observe-to-closes while the informational line
+#      keeps firing — the same terminus as the per-tag 9*-close scenarios.
+cat > "$tmp/open15e.json" <<'EOF'
+[{"number": 5983, "body": "The heartbeat detector reported this alarm on a real tick.\n\n- alarm tag: `CLAIM-RELEASED-CONFIRM`\n\n`loud/claim-released-confirm/nishfleet-0509`\n", "labels": [{"name": "agent-ready"}], "createdAt": "2026-08-28T10:00:00Z", "comments": []}]
+EOF
+cat > "$tmp/triage15e.md" <<'EOF'
+[2026-08-28T13:30:00Z] [CLAIM-RELEASED-CONFIRM] instance=0509-9999 repo=Nishfleet/0509 count=3
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/open15e.json" "$tmp/triage15e.md" > "$tmp/summary15e.json"
+jq -e '.closed == 1 and .filed == 0' "$tmp/summary15e.json" >/dev/null \
+    || fail "scenario 15e: stale suppressed-signal issue must observe-to-close while the line fires, got: $(cat "$tmp/summary15e.json")"
+grep -q "issue close 5983" "$tmp/gh.log" \
+    || fail "scenario 15e: expected gh issue close 5983"
+ok "scenario 15e: stale suppressed-signal issue observe-to-closes while the line fires"
+
 ok "all signal-reconcile scenarios passed"
