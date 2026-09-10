@@ -1,0 +1,7 @@
+[Unit]
+Description=One-shot re-measure of fleet-ops#4891 after 24h of merged worker prompt (date-gated by the sampling window)
+
+[Timer]
+OnCalendar=2026-09-11 14:05:00 UTC
+AccuracySec=1min
+RemainAfterElapse=no

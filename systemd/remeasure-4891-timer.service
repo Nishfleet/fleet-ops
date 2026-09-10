@@ -1,0 +1,6 @@
+[Unit]
+Description=One-shot re-measure of fleet-ops#4891 after 24h of merged worker prompt (date-gated by the sampling window)
+
+[Service]
+Environment="PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart="/home/nish/.local/bin/pi-systemd-run" "--unit" "remeasure-4891" "--stdin" "/home/nish/workspaces/agent-state/pi-packets/remeasure-4891.md" "--deadline" "60" "--deliverable" "/home/nish/workspaces/agent-state/pi-packets/remeasure-4891.result.md" "--provider" "opencode-go" "--model" "deepseek-flash" "--unmanaged" "2026-09-11 one-shot re-measure #4891 after 24h of merged prompt" "--" "pi" "--print" "--provider" "opencode-go" "--model" "deepseek-flash"

@@ -2,6 +2,12 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "Fleet timer manifest \u2014 every user timer must have an entry with a named reason. CI validates live timers against this manifest.",
   "timers": {
+    "remeasure-4891-timer.timer": {
+      "reason": "One-shot memory-budget re-measure for fleet-ops#4891, scheduled 2026-09-11 14:05 UTC (24h after the #4893 worker-prompt restriction and 0509#2534 coverage-free npm test merged). Reads the remeasure-4891 packet and either tightens config/seat-caps.json ram_gb_per_worker to the measured p95 or reports the limiter is no longer RAM. Date-gated by the sampling window; RemainAfterElapse=no so it elapses once and is gone. Repo-sourced so a box rebuild restarts the re-measure instead of losing it (fleet-ops#4952).",
+      "classification": "scheduled",
+      "cadence": "one-shot",
+      "source": "repo"
+    },
     "0509-demo-brand-timeline-canary.timer": {
       "reason": "Daily 06:10 IST 0509 demo-brand offer timeline public-surface canary (Nishfleet/0509#1899) \u2014 probes each demo brand's public /timeline page for a rendered dated ledger; deliberately a hand-placed user unit (like 0509-search-tier-canary, #1452) because the worker GitHub App token cannot write .github/workflows and the check needs no secrets, only outbound HTTPS to 0509.io; runs from a dedicated read-only checkout that self-syncs to main (machinery-allowlist class a, fleet-ops#4400)",
       "classification": "scheduled",
