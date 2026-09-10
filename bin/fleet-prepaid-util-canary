@@ -418,6 +418,7 @@ write_cursor_usd_today() {
         --arg d9 "${f9date:-}" --arg d2 "${f2date:-}" \
         '{week:$w,count:$c,usd_today:$ud,cursor_api_cycle_usd:$cy,
           usd_today_source:"cursor-dashboard-getcurrentperiodusage",
+          billing_lane:"ultra-included-api-bucket",
           provider_daily_logged_429:$f9,provider_daily_logged_429_date:$d9,
           provider_daily_logged_200:$f2,provider_daily_logged_200_date:$d2}' >"$tmp" 2>/dev/null || {
         rm -f "$tmp"
