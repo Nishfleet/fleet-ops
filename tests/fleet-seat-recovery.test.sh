@@ -15,6 +15,9 @@
 #   5. Repos come from FLEET_SEAT_RECOVERY_REPOS when set.
 #   6. Fires for every enrolled repo from intake-repos.json when no override.
 #   7. systemctl mock records real invocations (not DRY).
+#   8. fleet-ops#5024 debounce:
+#      (a) state file fresh + verdict=usable -> exit 0, no ledger scan.
+#      (b) state file fresh + verdict=no-usable -> scan runs and can fire.
 #
 # fleet-ops#622: the unit-shape + live wedge-recovery assertions live in the
 # split file tests/fleet-seat-recovery-units.test.sh, invoked first below so
@@ -130,7 +133,7 @@ run_bin() {
   PI_SEAT_HEALTH_LEDGER_DIR="$ledger" \
   FLEET_SEAT_LEDGER_DIR="$ledger" \
   FLEET_SEAT_RECOVERY_STATE="$state" \
-  FLEET_SEAT_RECOVERY_COOLDOWN="120" \
+  FLEET_SEAT_RECOVERY_COOLDOWN="${FLEET_SEAT_RECOVERY_COOLDOWN:-120}" \
   FLEET_SEAT_RECOVERY_REPOS="$repos" \
   FLEET_SEAT_RECOVERY_DRY_RUN="$dry" \
   FLEET_SEAT_RECOVERY_SYSTEMCTL="$sysctl_spy" \
@@ -217,4 +220,34 @@ grep -q "SYSTEMCTL --user start pi-intake@real-repo.service" "$SYSTEMCTL_LOG" \
   || { cat "$SYSTEMCTL_LOG"; fail "systemctl spy not invoked with the right argv"; }
 ok "live fire invokes systemctl start pi-intake@<repo>.service"
 
-echo "OK: fleet-seat-recovery: transition fire, cooldown, repo list, live systemctl"
+# --- 8a. debounce: fresh usable state skips the ledger scan (fleet-ops#5024)
+# Ledger is DEAD so a scan would flip to no-usable. Debounce must exit
+# without scanning (no "ledger verdict" line) and must not fire.
+dead_seat
+printf 'usable %s\n' "$(date -u -d '2026-08-27T05:00:00Z' +%s)" > "$state"
+rc=$(run_bin 1 "repo-a" "2026-08-27T05:00:10Z")
+[[ "$rc" == "0" ]] || fail "debounce usable should exit 0 (got $rc)"
+grep -q "debounce:" "$scratch/err.log" || fail "missing debounce log"
+if grep -q "ledger verdict:" "$scratch/err.log"; then
+  fail "debounce must not scan (saw ledger verdict)"
+fi
+if grep -q "SEAT-RECOVERY" "$scratch/err.log"; then
+  fail "debounce must not fire intake"
+fi
+ok "debounce: fresh usable state skips scan"
+
+# --- 8b. debounce does NOT apply to no-usable (the case this unit exists for)
+live_seat
+printf 'no-usable %s\n' "$(date -u -d '2026-08-27T05:10:00Z' +%s)" > "$state"
+rc=$(FLEET_SEAT_RECOVERY_COOLDOWN=0 run_bin 1 "fire-repo" "2026-08-27T05:10:10Z")
+[[ "$rc" == "0" ]] || fail "fresh no-usable should exit 0 (got $rc)"
+if grep -q "debounce:" "$scratch/err.log"; then
+  fail "no-usable must not debounce"
+fi
+grep -q "ledger verdict:" "$scratch/err.log" || fail "no-usable must still scan"
+grep -q "SEAT-RECOVERY" "$scratch/err.log" || fail "no-usable -> usable must fire"
+grep -q "would start pi-intake@fire-repo.service" "$scratch/err.log" \
+  || fail "missing fire-repo DRY line"
+ok "debounce: fresh no-usable still scans and can fire intake"
+
+echo "OK: fleet-seat-recovery: transition fire, cooldown, repo list, live systemctl, debounce"

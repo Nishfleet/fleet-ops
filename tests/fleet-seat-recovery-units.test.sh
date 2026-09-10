@@ -21,7 +21,9 @@
 # What we prove:
 #   1. fleet-seat-recovery.service carries a storm-tolerant StartLimit guard
 #      in [Unit] (StartLimitIntervalSec=1h, StartLimitBurst>1800) so a healthy
-#      fleet cannot wedge its own seat-recovery fast path.
+#      fleet cannot wedge its own seat-recovery fast path. fleet-ops#5024
+#      in-bin debounce cuts CPU on last=usable; PathChanged still starts the
+#      oneshot on every seats/ write, so the burst floor stays >1800.
 #   2. StartLimit* does NOT leak into [Service] (systemd rejects it there).
 #   3. systemd-analyze verify accepts both unit files (syntax + directives).
 #   4. Live wedge-recovery drill: 60 .path triggers in ~3s (far past the old
@@ -57,6 +59,8 @@ burst=$(echo "$unit_section" | sed -nE 's/^StartLimitBurst=([0-9]+)$/\1/p')
 [[ -n "$burst" ]] || fail "could not parse StartLimitBurst"
 # 30 triggers/min * 60min = 1800/hr worst case; the guard must clear that
 # with headroom so a healthy fleet cannot wedge its own fast path.
+# fleet-ops#5024: in-bin debounce does not reduce systemd starts, so this
+# floor still holds. Burst=200 would re-wedge the path unit (#617).
 (( burst > 1800 )) \
   || fail "StartLimitBurst=$burst too low for ~1800/hr trigger storm (need >1800)"
 ok "fleet-seat-recovery.service carries a storm-tolerant StartLimit guard in [Unit] (burst=$burst)"
