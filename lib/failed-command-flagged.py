@@ -343,6 +343,23 @@ shape (1 finding), the piped contrast (0 findings), the valid
 `gh pr view 392 -R Nishfleet/fleet-ops --json mergedAt,merged 2>&1`,
 which prints `Unknown JSON field: "merged"` and the Available fields
 listing `mergedAt`/`mergedBy` but not `merged`.
+The PIPED-to-python variant of the same invalid-field class (fleet-ops#5010,
+session
+2026-09-09T21-12-22-081Z_0509-2144-1788988341792251501) runs
+`gh pr view <N> -R ... --json mergeStateStatus,isInMergeQueue,mergeQueueEntry
+2>&1 | python3 -c "import sys,json; d=json.load(sys.stdin); ..." 2>&1`.
+The bogus merge-queue fields make gh print its field error to stderr and
+leave stdout empty; python reads empty stdin and fails `json.load` with
+`JSONDecodeError: Expecting value: line 1 column 1 (char 0)`. Unlike the
+`| head` sibling (#1193) the `| python3` tail does NOT mask the failure:
+python exits 1, so `isError=true` and `Command exited with code 1`, and
+the generic isError path flags it. Cause-prose naming the bogus field
+("the `isInMergeQueue` field doesn't exist") is a cause, not a flag
+(fleet-ops#1052), and the silent `--json autoMergeRequest,
+mergeStateStatus` retry does not discharge it. A regression test locks
+this under tests/fleet-failed-command-gh-pr-json-piped-python-load.test.sh,
+with the `| head` pipe-mask (#1193) and the unpiped `Unknown JSON field`
+(#1244) as the contrast pair.
 A `python3 -c "from <hyphenated_name>
 import ..."` / `python3 << 'PYEOF'` probe against a sibling file whose
 actual filename has hyphens (e.g. `failed-command-flagged.py` while
