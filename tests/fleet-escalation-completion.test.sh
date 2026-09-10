@@ -187,6 +187,32 @@ grep -qE "actively dispatching|closeout in flight" "$scratch/err.log" || fail "m
 echo "inactive" > "$sysctl_store/stop-escalation.service.active"
 ok "pipeline-active guard prevents false stall (exit 0)"
 
+# --- 8b. observe-to-close: a STALE-TRIP chain that was loud (exit 1) must
+# recover to clean (exit 0) once the auditor advances STOP-REASON to a
+# terminal reason, so the detector->queue reconciler observe-to-closes the
+# filed alarm issue. This is the exact closeout trajectory fleet-ops#4919
+# (chain fbe128) rides: the warning fired on a green+idle non-terminal
+# STOP-REASON, the senior auditor then wrote auditor-resolved, and the next
+# heartbeat tick must exit 0 clean (no STALE-TRIP) for the alarm to resolve.
+rm -rf "$scratch/state"; mkdir -p "$scratch/state"
+echo "success" > "$sysctl_store/pi-issue@0509-1.service.result"
+echo "active"  > "$sysctl_store/pi-issue@0509-1.service.active"
+echo "inactive" > "$sysctl_store/stop-escalation.service.active"
+# Trip open (non-terminal), detector green, pipeline idle -> STALE-TRIP (exit 1).
+write_trip "unit-failure"
+rc=$(run_bin "2026-08-27T00:00:00Z")
+[[ "$rc" == "1" ]] || fail "observe-to-close: open trip on green+idle should STALE-TRIP (got $rc)"
+grep -q "STALE-TRIP" "$scratch/err.log" || fail "observe-to-close: missing STALE-TRIP loud line"
+# Senior auditor closes the STOP-REASON (advance to terminal). Detector stays green.
+write_trip "auditor-resolved"
+rc=$(run_bin "2026-08-27T00:01:00Z")
+[[ "$rc" == "0" ]] || fail "observe-to-close: terminal STOP-REASON must exit 0 clean (got $rc)"
+grep -q "no open escalation chain" "$scratch/err.log" \
+  || fail "observe-to-close: missing clean close log"
+! grep -q "STALE-TRIP" "$scratch/err.log" \
+  || fail "observe-to-close: STALE-TRIP must not re-fire after closeout"
+ok "observe-to-close: STALE-TRIP chain closes clean once STOP-REASON is advanced to terminal (exit 0)"
+
 # --- 9. wiring pins (fleet-ops#480) ----------------------------------------
 # The bin is only "enforced" if heartbeat actually runs it, MANIFEST
 # installs it once, the matrix says enforced, and the CI-listed canary
