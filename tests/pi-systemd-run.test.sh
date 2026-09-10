@@ -57,6 +57,22 @@ printf '%s\n' "$out" | grep -q 'PI_DEADMAN_DELIVERABLE=/tmp/issue26-dl.md' \
   || fail "--deliverable must surface in PI_DEADMAN_DELIVERABLE (fleet-ops#4266): $out"
 ok "dry-run --deliverable wires PI_DEADMAN_DELIVERABLE"
 
+# 2026-09-10: a bare boolean is the dead-man's own label, never a path.
+# The DetachedJobDied annotation prints deliverable_promised=0/1; a repair
+# worker passed `--deliverable 0`, it resolved to $workdir/0, and the unit
+# false-tripped at exit 0 (ds41-repair-175321: migration merged, auditor
+# summoned anyway). Refuse it at dispatch.
+for bad in 0 1 unset none; do
+    set +e
+    err="$("$bin" --dry-run --unit issue26-baddl --deliverable "$bad" -- sleep 1 2>&1)"
+    rc=$?
+    set -e
+    [[ "$rc" == "2" ]] || fail "--deliverable $bad must exit 2, got $rc ($err)"
+    printf '%s\n' "$err" | grep -qi 'boolean label' \
+      || fail "refuse message must name the boolean label: $err"
+done
+ok "--deliverable <boolean label> is refused (fleet-ops#4266 false-trip class)"
+
 # Naked (no flag) call: the dead-man must STILL be armed (dispatch id
 # generated unconditionally) with no deliverable — the healthchecks rail
 # still watches the run.

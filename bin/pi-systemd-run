@@ -288,6 +288,25 @@ if [[ -n "$stdin_file" ]]; then
 fi
 
 if [[ -n "$deliverable" ]]; then
+    # Refuse the dead-man's own boolean label as a path (2026-09-10).
+    # The DetachedJobDied annotation prints `deliverable={{ $labels.
+    # deliverable }}`, a 0/1 label from the fleet_detached_job_died series
+    # (0 = the run promised nothing). A repair worker told to relaunch
+    # "with the same --deliverable" read that `deliverable=0` as a path and
+    # passed `--deliverable 0`, which resolved to $workdir/0 — a path that
+    # can never exist — so ExecStopPost declared `died` on EVERY such unit
+    # even at exit 0 and summoned an auditor for work that had succeeded
+    # (live: ds41-repair-175321 shipped the DeepSeek V4.1 migration, PR
+    # #5047 MERGED, report written, then false-tripped on /home/nish/0).
+    # A run with no promised artifact simply omits the flag; a boolean is
+    # never a path, so fail loudly at dispatch instead of arming a check
+    # that can never pass.
+    case "$deliverable" in
+        0|1|unset|none|n/a)
+            echo "pi-systemd-run: --deliverable '$deliverable' is the dead-man's boolean label, not a path (fleet-ops#4266). A run that promises no artifact must OMIT --deliverable; pass the real artifact path otherwise." >&2
+            exit 2
+            ;;
+    esac
     # Absolute path for the ExecStopPost check: the unit's WorkingDirectory
     # is $workdir, so relative = under it. The file usually does NOT exist
     # at launch (the run creates it), so no -f test here.
