@@ -185,5 +185,39 @@ for f in "$tick" "$run"; do
 done
 ok "Test 8: shellcheck clean on all touched files"
 
+# === Test 9: fleet-ops#4848 — decided issues are NOT re-parked to
+#             needs-orchestrator; the seat fault is escalated instead.
+# The claim-loop gate must check the issue's comments for a live
+# `decision-resolved:` marker (the orchestrator sweep's verdict). When one
+# exists, the gate keeps agent-blocked but does NOT add needs-orchestrator
+# and posts blocked-on: infra (seat-fault escalator) instead of
+# blocked-on: orchestrator — so the sweep and the claim-loop stop fighting
+# (FleetNeedsOrchestratorStale).
+grep -qF 'decision-resolved:' "$tick" \
+    || fail "claim-loop gate must check for a decision-resolved: marker"
+grep -qF '_cl_decided=1' "$tick" \
+    || fail "claim-loop gate must set _cl_decided=1 when a decision-resolved: marker exists"
+# The decided branch must NOT add needs-orchestrator (only agent-blocked).
+grep -qF -- '--add-label agent-blocked --remove-label agent-ready' "$tick" \
+    || fail "decided branch must keep agent-blocked and remove agent-ready without adding needs-orchestrator"
+# The decided branch must escalate the seat fault (blocked-on: infra), not
+# re-ask the orchestrator.
+grep -qF 'blocked-on: infra' "$tick" \
+    || fail "decided branch must post blocked-on: infra (seat-fault escalator)"
+# The undecided branch must still re-park to needs-orchestrator.
+grep -qF -e '--add-label agent-blocked --add-label needs-orchestrator --remove-label agent-ready' "$tick" \
+    || fail "undecided branch must still add needs-orchestrator"
+grep -qF 'blocked-on: orchestrator' "$tick" \
+    || fail "undecided branch must still post blocked-on: orchestrator"
+# The comment fetch must sit INSIDE the gate (only when the gate is about to
+# fire), so an ordinary issue costs nothing extra.
+_gate_line2=$(grep -n '_cl_window_claims >= MAX_CLAIMS_IN_WINDOW' "$tick" | head -1 | cut -d: -f1)
+_decided_line=$(grep -n '_cl_decided=1' "$tick" | head -1 | cut -d: -f1)
+[[ -n "$_gate_line2" && -n "$_decided_line" ]] \
+    || fail "gate / decided anchors missing in tick"
+(( _decided_line > _gate_line2 )) \
+    || fail "decision-resolved check (line $_decided_line) must come after the gate fires (line $_gate_line2)"
+ok "Test 9: decided issues escalate the seat fault, not re-park to orchestrator"
+
 echo
 echo "ALL OK: fleet-ops#2772 claim-loop gate + PR-gated reclaim reset"

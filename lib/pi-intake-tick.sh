@@ -2004,6 +2004,37 @@ blocked-on: infra" 2>/dev/null || true
             END { print c+0 }
         ' <<<"$_claims_log_snapshot" 2>/dev/null || echo 0)
         if (( _cl_window_claims >= MAX_CLAIMS_IN_WINDOW )); then
+            # fleet-ops#4848: the orchestrator sweep may have ALREADY decided this
+            # issue (posted a `decision-resolved:` line and released it
+            # agent-ready). Re-parking a decided issue to needs-orchestrator
+            # re-asks a settled question and loops the sweep against the
+            # claim-loop (FleetNeedsOrchestratorStale). When a live
+            # `decision-resolved:` marker exists, keep agent-blocked but do
+            # NOT add needs-orchestrator; post blocked-on: infra so the
+            # seat-fault escalator (blocked-reconcile, auto-release after 2h
+            # on a healthy seat, senior-review on second release) owns it —
+            # matching the alert's "escalate the seat fault, do not re-park"
+            # guidance. The comment fetch is only done when the gate is about
+            # to fire, so an ordinary issue costs nothing extra.
+            _cl_decided=0
+            _cl_cjson=$(gh issue view "$N" -R "$FULL" --json comments 2>/dev/null) || _cl_cjson=""
+            # The sweep posts `decision-resolved:` either on its own line at
+            # the end of the DECISION comment (canonical, per the sweep
+            # prompt) or inline at the end of the same line (observed
+            # 2026-09-10). Match a `decision-resolved:` token anywhere in
+            # the joined comments — the only source of that token in
+            # practice is the sweep's own DECISION verdict.
+            if [[ -n "$_cl_cjson" ]] && printf '%s' "$_cl_cjson" | jq -r '[.comments[]?.body // empty] | join("\n")' 2>/dev/null | grep -q 'decision-resolved:'; then
+                _cl_decided=1
+            fi
+            if (( _cl_decided == 1 )); then
+                echo "issue $N ($title): skipped-claim-loop (claimed ${_cl_window_claims}x in ${RECLAIM_WINDOW_S}s window, cap=$MAX_CLAIMS_IN_WINDOW) - already decided (decision-resolved:), escalating seat fault, not re-parking to orchestrator" >&2
+                gh issue edit "$N" -R "$FULL" --add-label agent-blocked --remove-label agent-ready 2>/dev/null || true
+                gh issue comment "$N" -R "$FULL" --body "fleet-ops#4848: issue $N has been claimed ${_cl_window_claims} times in the last ${RECLAIM_WINDOW_S}s (cap=$MAX_CLAIMS_IN_WINDOW) with no open PR, but the orchestrator sweep already posted a \`decision-resolved:\` verdict — the decision is settled, so re-parking to needs-orchestrator would only re-ask it. Keeping agent-blocked and escalating the seat fault instead (fleet-ops#3310/#3527): the claim path is spinning dead workers into the seat pool. The seat-fault escalator owns this until a healthy seat can run it.
+
+blocked-on: infra" 2>/dev/null || true
+                continue
+            fi
             echo "issue $N ($title): skipped-claim-loop (claimed ${_cl_window_claims}x in ${RECLAIM_WINDOW_S}s window, cap=$MAX_CLAIMS_IN_WINDOW) - escalating to agent-blocked" >&2
             gh issue edit "$N" -R "$FULL" --add-label agent-blocked --add-label needs-orchestrator --remove-label agent-ready 2>/dev/null || true
             gh issue comment "$N" -R "$FULL" --body "fleet-ops#2772: issue $N has been claimed ${_cl_window_claims} times in the last ${RECLAIM_WINDOW_S}s (cap=$MAX_CLAIMS_IN_WINDOW) with no open PR — the claim path is spinning dead workers into the seat pool instead of completing. Routing to the orchestrator decision sweep (fleet-ops#4260), not Nish: a claim-loop break is not a money/legal/product-direction/customer-data question.
