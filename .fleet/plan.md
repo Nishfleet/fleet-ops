@@ -1,15 +1,64 @@
-# Plan — fix(deploy-check): JSON content-equivalent install compare so escaping-only drift stops the permanently-red merge gate (fleet-ops#4894)
+# Plan — seat-caps: deploy the EFFECTIVE table, and make retirement expressible (fleet-ops#4960)
 
-> Manager mode (heavy). The permanently-red `merge-to-live` gate: install.sh's `live_newer_than_repo()` compares `~/.pi/agent/models.json` vs `config/pi-models.json` with BYTE equality (`cmp -s`), but an **external** python `json.dump` (no `ensure_ascii=False`) re-escapes non-ASCII to `\uXXXX` — same JSON, different bytes — so the guard refuses forever, install.sh exits rc=1, and `fleet-deploy-check` prints `DEPLOY-CHECK-FAILED` on every tick. The writer is external (not in bin/lib/libexec — seat-lib.sh only reads models.json); the durable repo fix is **content-equivalent comparison**. Reconcile the 3 provider keys afterwards so the whole `jq -S` file matches live.
+> Manager mode (heavy). One mechanism, two faults. `install.sh --check` reds forever because
+> `seat-caps.json` is MERGE-installed (`seat_caps_merge_unknown_providers`, install.sh:338,
+> fleet-ops#4205) but checked with a raw `cmp -s` (install.sh:889-893). And the same merge
+> copies a live-only provider row back, so deleting a row from `config/seat-caps.json` (PR #4950,
+> straitly, "402 credit exhausted, seat retired") is indistinguishable from "the repo never
+> declared it" — the retired seat is resurrected at cap 2 on every deploy and stays pickable.
+> Fix = compare the effective table in `--check`, and give the repo a dated tombstone the merge
+> honors. No new organ: `install.sh` + `config/seat-caps.json` + `tests/fleet-ops-deploy.test.sh`.
 
 ## Phases (acceptance-driven)
 
-- [x] phase 1: add `content_equivalent()` helper + use it in `live_newer_than_repo()` (install.sh ~196–222) so JSON files that parse on both sides compare via `jq -S .` — escaping/whitespace-only diffs DO NOT refuse; real structural diffs and non-JSON files still byte-compare/refuse (acceptance: real cap-diff 5-vs-7 still refuses; escaping-only diff no longer refuses).
-- [x] phase 2: new regression test in tests/install-refuse-continues.test.sh — an escaping-only difference (same JSON, `\uXXXX` bytes) must NOT produce `NONFATAL REFUSE` and the live file is overwritten; test FAILS before phase-1 change, PASSES after. Existing `NONFATAL REFUSE` real-diff scenario still asserts rc≠0.
-- [x] phase 3: reconcile config/pi-models.json with live — add `opencode-go` + `pgsgrove` provider blocks (repo UTF-8 style, no `\uXXXX`), drop `straitly`; leave `opencode` untouched.
-- [x] phase 4: proof green — `bash tests/install-refuse-continues.test.sh` + `bash tests/manifest-shape.test.sh` exit 0; `jq -S . config/pi-models.json` structurally identical to `jq -S 'del(.providers["opencode-go"],.providers["pgsgrove"])' ~/.pi/agent/models.json` (empty diff) so the deploy-check gate goes green.
-- [ ] phase 5: commit, push claim/issue-4894, PR `Closes #4894` with Verification/running-proof sections, arm auto-merge (no label `blocked-by-judge`; commits carry no agent attribution).
+- [x] phase 1 (acceptance 5 + 2 data half): prior-art check before inventing a field —
+  `git log --oneline -20 -- install.sh` and `grep -rn 'intentional_cap_zero\|max_probe_ceiling' install.sh lib/seat-lib.sh`.
+  Record the verdict in the PR body. Then add the tombstone to `config/seat-caps.json` itself
+  (one top-level `retired_providers` map, `{ "<provider>": { "retired": "<ISO date>", "reason": "<why>" } }`),
+  seeded with `straitly`, and drop the now-redundant `_comment_straitly_wipe` prose key (net ~0 lines).
+  In-file, not a second list: install.sh already copies this one file atomically, so a separate
+  tombstone file could land out of order (live keeps the row, repo loses the marker = resurrection again).
+  DONE `b4c8beda`: `retired_providers.straitly{retired:2026-09-10, reason}`; `_comment_straitly_wipe` removed; `jq -S` whole-file diff vs origin/main shows those two changes and nothing else. Prior-art verdict: `intentional_cap_zero` classifies a PRESENT row and `reason` is that row's dated field, so neither can express "the row is gone"; install.sh has 0 references to either. Tombstone reuses the sanctioned `retired: <ISO date> + reason` shape, one new top-level key, no second convention.
+- [ ] phase 2 (acceptance 2): `install.sh` honors the tombstone — in `seat_caps_merge_unknown_providers`
+  (install.sh:338) skip a live-only row whose provider name is in the repo's `retired_providers`
+  (repo-declared rows still always win, so a stale tombstone can never delete a repo declaration);
+  and in `seat_caps_would_downgrade` (install.sh:265) skip tombstoned names so an intentional
+  retirement is not reported as the fleet-ops#371 cap downgrade the guard exists to stop.
+  Also trim the phase-1 `reason` string to the shape-met one-liner (deletion-first: the extra history
+  belongs in the PR body, not the data file) — reviewer Consider.
+- [ ] phase 3 (acceptance 1): `install.sh --check` compares the EFFECTIVE table for
+  `config/seat-caps.json` — build the effective file with the same `seat_caps_merge_unknown_providers`
+  normalization and compare it against the live copy with `content_equivalent` (install.sh:194,
+  fleet-ops#4894), instead of `cmp -s`. Must still DIFF when (a) a repo-declared provider's live cap
+  differs, (b) the live file is unparseable, (c) the live file is a symlink pointing anywhere other
+  than the repo copy. No extra helper and no second serializer: the merge already emits the
+  `json.dump(indent=2, ensure_ascii=False)` shape `content_equivalent` compares.
+- [ ] phase 4 (acceptance 4 + 3): regression tests in `tests/fleet-ops-deploy.test.sh`, appended
+  after scenario 12h — (a) a hand-wired provider row present only in the live copy, repo otherwise
+  identical -> `--check` exits 0; (b) a provider tombstoned in the repo -> after install the live
+  copy has no such row AND an untombstoned live-only row still survives; (c) a repo-declared
+  provider whose live cap differs -> `--check` still exits 1 and prints the DIFF. Plus the
+  unparseable-live and symlink-elsewhere DIFF probes, and a fourth assertion the reviewer asked for:
+  a tombstoned live-only row must NOT trip `seat_caps_would_downgrade` (`NONFATAL REFUSE ... would
+  lower live seat caps` must be absent from install output, and install must exit 0 on a repo whose
+  seat-caps.json is NOT origin/main's blob — the guard-skip path). Then run the suite green.
+- [ ] phase 5 (ship): commit, push `claim/issue-4960`, PR `Closes #4960` with
+  Verification / run-proof / research / help-first / loose-ends sections, arm auto-merge.
 
 ## Phase review record (manager, per-phase reviewer)
-- Phase 1-2 review (stock reviewer): **0 blocking, 0 act-on**. Consider (recorded, not re-delegated): (1) test trailing `trap ... RETURN` leaks $scratch2 on fail; (2) jq -S also collapses key-reorder/whitespace/numeric-literal formatting — intentional escape-only behavior, real structural/value/type diffs and non-JSON still refuse; seat-caps downgrade guard untouched. Green: install-refuse + manifest-shape both EXIT 0.
-- Phase 3 review (stock reviewer): **0 blocking, 0 act-on**. opencode-go distinct from opencode (zen/go vs zen/v1); straitly removal complete in this file; no secrets (all `!command` env refs); real UTF-8, no `\uXXXX`. Consider (recorded): orphaned `straitly` allowlist in config/seat-caps.json keeps bin/fleet-straitly-ds4-pro-canary failing loud ('allowlisted but missing from models.json') — pre-existing (live already lacks straitly) and out of this PR's scope; filed as follow-up.
+- Phase 1 review (stock reviewer): **0 Act-on, NOT BLOCKING.** Verified live: `jq -e` valid, 2-space style, trailing newline, `jq -S` whole-file diff vs origin/main shows only the tombstone + the removed comment key; no seat-caps reader breaks (every reader is key-scoped; `bin/fleet-vibes-canary`'s only top-level iterator filters to `_comment*`/`_note`/`_hard_cap`); `tests/fleet-vibes-canary.test.sh` and `tests/seat-caps-citation.test.sh` both exit 0. CONSIDER (recorded, folded into phase 2/4 as above): tombstone is inert until phase 2; trim the over-long `reason`; assert the tombstone does not trip the #371 downgrade guard; place the data key after the prose block; record the acceptance-5 verdict in the PR body at phase 5. NOTED: the shape is the one acceptance 2 authorizes; a repo-declared `providers.straitly` row must keep winning or the config text becomes a lie.
+
+## Files to Modify
+- `config/seat-caps.json` — add top-level `retired_providers` (straitly, dated + reason); delete the redundant `_comment_straitly_wipe` key.
+- `install.sh` — `seat_caps_merge_unknown_providers` (~:338) honors the tombstone; `seat_caps_would_downgrade` (~:265) skips tombstoned names; `process_entry`'s `--check` branch (~:889) compares the effective table for seat-caps.
+- `tests/fleet-ops-deploy.test.sh` — the three regression scenarios + header greps.
+
+## New Files (none)
+- None. No new timer, unit, checker, exporter, canary or workflow. `bin/fleet-ops-drift.py` untouched.
+
+## Risks
+- Symlink check must stay FIRST in the `--check` seat-caps branch: normalizing/merging before it would make a hijacked symlink compare clean (acceptance 1(c)).
+- Unparseable live must stay red: the merge's unparseable fallback emits the repo copy, which cannot byte-equal an unparseable live file, so `content_equivalent` still returns false. Assert it.
+- Tombstone must never outrank the repo: a name in BOTH `.providers` and `retired_providers` keeps the repo row. If inverted, a stale tombstone silently deletes a live declaration and scenario (c) loses its teeth.
+- While the tombstone is in the repo but not yet deployed, `--check` is legitimately red (pending retirement) — one tick of expected red, not a second mechanism.
+- Deliberate trade-off: `--check` now goes green for live-only hand-wired rows. That is the false red being removed; do NOT add a canary for it (acceptance 3).
