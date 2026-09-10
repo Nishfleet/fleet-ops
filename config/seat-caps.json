@@ -37,19 +37,31 @@
     "devin": {
       "quota_window": "daily",
       "_quota_window_4640": "2026-09-09 fleet-ops#4640: devin declared NO quota_window, so provider_wall_ceiling_s (fleet-ops#2563) returned 0 and NOTHING bounded a quota wall. A bare 429 (retry_after=null) at consecutive_failure_count=23 took the failure-ceiling park wall to (23-20+1)*86400 = 345600s = 4 DAYS on the fleet's primary heavy-capable prepaid seat, while the Devin account still had 81% of its weekly / 84% of its daily quota unused. devin was the last heavy-capable provider: pick_seat returned NO USABLE SEAT for every packet, 0 live workers against 51 ready issues, and a 1-turn `pi --print` to both devin seats answered OK rc=0 the whole time. Devin meters daily, so the reset horizon is daily.",
-      "cap": 4,
+      "cap": 6,
       "class": "prepaid-quota",
       "remote_agent": true,
-      "max_probe_ceiling": 4,
+      "max_probe_ceiling": 6,
       "quota_bench_default_s": 900,
       "models": {
         "glm-5-2": {
-          "cap": 3,
-          "max_probe_ceiling": 3
+          "cap": 0,
+          "max_probe_ceiling": 0,
+          "intentional_cap_zero": "retired",
+          "reason": "2026-09-10 (Nish): retired — replaced by swe-2-max (free, newer). Yield to date: 207 PRs / 754 sessions (docs/reports/provider-audit-2026-09.md). Do not re-raise without a Nish decision."
         },
         "swe-1-7": {
           "cap": 4,
           "max_probe_ceiling": 4
+        },
+        "swe-2-max": {
+          "cap": 6,
+          "max_probe_ceiling": 6,
+          "reason": "2026-09-10 (Nish, 21:40 IST): Devin shipped SWE-2 (trained on Kimi K3) — swe-2-high/medium/max all listed Free on our sub for at least 30 days; \"use it to the max\". glm-5-2 retired from the worker roster the same day. Smoke: `echo \"Reply with exactly: OK swe-2\" | pi --print --provider devin --model swe-2-max` -> \"OK swe-2\" (PACKET-VERDICT tools=0). Provider cap 4->6, tick_spawn_cap 2->3; the 429/15-min bench (quota_bench_default_s 900) is the brake if Devin rate-limits."
+        },
+        "swe-2-high": {
+          "cap": 2,
+          "max_probe_ceiling": 2,
+          "reason": "2026-09-10: lighter SWE-2 effort for scouts/short packets; same free window as swe-2-max."
         }
       },
       "_devin_cap_note": "Nish 2026-08-27 00:20 IST: glm-5-2 max 3 concurrent - burst rate-limit collisions at 4 starved intake ticks (watch.log 18:48Z); provider cap stays 4 (swe-1-7 fills the 4th slot)",
@@ -60,7 +72,7 @@
       "_ceiling_2026_09_05": "2026-09-05: probe ceilings 6/8 put 8 devin sessions in flight and Devin answered resource_exhausted on every new one (133 deaths in 12h at ~40s, 85% daily quota unused). Ceilings pinned to caps until the resource_exhausted bench proves AIMD backs off; then raise via fleet-ops#3258.",
       "_devin_remote_2026_09_05": "2026-09-05 fleet-ops#3531: devin is a remote agent (remote_agent: true). Its sessions complete without local tool calls, so empty-run detection judges by session outcome (exit 0, stdout under OUT_MIN, no pull/<n> URL) rather than local tool count. A false empty run on this prepaid seat is capped at 1800 s.",
       "_swe17_20260905": "2026-09-05 CORRECTION (orchestrator): the fable-check retirement read n=20 pr_count=0 from seat-yield.json, but every one of those sessions was an INFRASTRUCTURE death: rc=143/1801s from the devin-provider 30-min spawnSync timeout (raised to 40 min 09:20 IST) and resource_exhausted concurrency errors the detectors could not see until #3443/#3475. Working yield measured before the poisoning: 80% sessions-to-PR. Infra deaths never count as seat yield (#3250/#3310). cap 4 / probe 4 (ceiling==cap while pinned, #3443).",
-      "tick_spawn_cap": 2,
+      "tick_spawn_cap": 3,
       "_tick_spawn_cap_3690": "fleet-ops#3690: at most 2 new devin sessions per intake tick (5 spawns at once after a learned-caps reset all died rc=143 in <30s). pick_seat skips devin seats once the per-tick counter hits this; the intake tick resets the counter at the start of each tick."
     },
     "cursor": {
@@ -347,9 +359,18 @@
       "quota_bench_default_s": 604800,
       "models": {
         "deepseek/deepseek-v4-flash": 2,
-        "anthropic/claude-sonnet-5": { "cap": 1, "audition": true },
-        "minimax/minimax-m3": { "cap": 1, "audition": true },
-        "google/gemini-3.7-flash": { "cap": 1, "audition": true }
+        "anthropic/claude-sonnet-5": {
+          "cap": 1,
+          "audition": true
+        },
+        "minimax/minimax-m3": {
+          "cap": 1,
+          "audition": true
+        },
+        "google/gemini-3.7-flash": {
+          "cap": 1,
+          "audition": true
+        }
       },
       "_comment_promote_20260907": "fleet-ops#4055 (2026-09-07): promote mergegateway/deepseek/deepseek-v4-flash out of audition. Audition verdict (fleet-ops#3322): sessions=10 yield=0.5 cost_usd=0.0 fleet_median=0.0 — positive yield at/above fleet median, so the tick filed a promote verdict. Cap 2 per metered discipline (matches straitly/deepseek-v4-pro 'Start cap 2 per metered discipline; AIMD raises only with evidence'). Provider cap raised 1->2 so the model cap binds (pick_seat admits only min(provider_cap, model_cap) concurrent). Provider-level audition:true dropped so the promoted model is no longer gated to light-only via seat_is_audition; the three remaining models keep model-level audition:true so they stay light-only and still retire at 10 sessions / 7d / $1.",
       "_comment_audition_20260906": "fleet-ops#3973 (2026-09-06): mergegateway is a live audition provider (class metered, $10 free credits, probed 2026-09-06 PONG) that carries prepaid quota the audition lane refills by hand. A provider 402 'Credit balance depleted' (type/code budget_exceeded, tail watched 2026-09-06T12:09-12:10Z on all three seats at 1s on 0509-1752) is a prepaid-balance WALL, not error_class=unknown — the same class as the straitly/xai 402s, so quota_bench_default_s=604800 (7 days, same period class as xai-oauth). With the default the seat is benched once instead of re-dying daily; without it mark_seat_quota_bench fails open and the reactive quota_exhausted ledger benches for 24h. No cap change, no seat retirement (infra/money class, rc=1 at 1s 0 tools).",
@@ -426,7 +447,7 @@
     },
     "paretoinference": {
       "quota_window": "daily",
-      "_quota_window_4640": "2026-09-09 fleet-ops#4640: same shape as devin \u2014 a prepaid $20/day seat with no declared reset horizon took a 7-day spawn bench from a no-status rc=1 while its own ledger read healthy 200. Pareto meters daily.",
+      "_quota_window_4640": "2026-09-09 fleet-ops#4640: same shape as devin — a prepaid $20/day seat with no declared reset horizon took a 7-day spawn bench from a no-status rc=1 while its own ledger read healthy 200. Pareto meters daily.",
       "cap": 4,
       "max_probe_ceiling": 8,
       "class": "prepaid-quota",
@@ -576,7 +597,7 @@
     "seat_dead_quota_age_s": 86400
   },
   "_comment_cursor": "cursor provider cap=2 and keystone/senior-review only (fleet-ops#1167, cap raised 1->2 by fleet-ops#4206). Non-keystone work must not land here — the hardcoded _provider_is_keystone_only gate in lib/seat-lib.sh keeps it out of product (yield-ordered) and scout picks; xai-oauth is the non-cursor prepaid lane. The $400 'API Usage' on-demand pool (spendLimitUsage) is read by bin/fleet-prepaid-util-canary from POST api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage and emitted as fleet_prepaid_spend_usd{provider=cursor}; FleetCursorPrepaidBurnPacingLow files a repair packet (adds difficulty: senior-review to waiting heavy issues) when projected burn < pool/remaining-days. The ETIMEDOUT watch in the same canary auto-files 'lower cursor cap to 1' when a cli_timeout lands at cap 2. included_exhausted is flipped by that meter check (never guessed). Short probes are fine; long jobs have historically ETIMEDOUT.",
-  "_comment_devin": "devin provider cap=4 (2026-08-25): originally 0 after a spawn-phase outage invisible to seat-health (e927da2). Raised later; kept at 4. 2026-08-27 empty-run fault (tools=0, exit 0) is retryable with the 15min quota_bench_default_s cooldown — fleet-ops#902 — not a cap-0 incident. Meter that day: 84% daily / 73% weekly remaining; glm-5-2 completed real packets the same day. Do not drop to 0 for #902.",
+  "_comment_devin": "devin provider cap=4 (2026-08-25): originally 0 after a spawn-phase outage invisible to seat-health (e927da2). Raised later; kept at 4. 2026-08-27 empty-run fault (tools=0, exit 0) is retryable with the 15min quota_bench_default_s cooldown — fleet-ops#902 — not a cap-0 incident. Meter that day: 84% daily / 73% weekly remaining; glm-5-2 completed real packets the same day. Do not drop to 0 for #902. 2026-09-10 (Nish, 21:40 IST): Devin shipped SWE-2 (trained on Kimi K3) — swe-2-high/medium/max all listed Free on our sub for at least 30 days; \"use it to the max\". glm-5-2 retired from the worker roster the same day. Smoke: `echo \"Reply with exactly: OK swe-2\" | pi --print --provider devin --model swe-2-max` -> \"OK swe-2\" (PACKET-VERDICT tools=0). Provider cap 4->6, tick_spawn_cap 2->3; the 429/15-min bench (quota_bench_default_s 900) is the brake if Devin rate-limits.",
   "_comment_seat_roster": "Nish 2026-08-25: ALL seats available everywhere so work never stops. Eleven seats probed live and answering: devin, cursor, cline, ollama (Ollama Cloud), minimax, commandcode, openrouter, grok (SuperGrok via grok-cli), xai-oauth (SuperGrok via stnly/pi-grok OAuth, fleet-ops#1163 2026-08-27), zenmux, hetzner. zenmux and hetzner carry FREE lanes as well as credits, and openrouter has free lanes alongside credits - none of them are metered-only, so none is capped 0. Only providers with no working credential stay at 0. The 'grok' provider entry above (api.x.ai direct, empty auth.json) stays at 0 — it is the legacy 2026-08-26 SuperGrok story; the new xai-oauth entry is the live weekly-sub seat via the stnly OAuth proxy.",
   "_comment_credits": "zenmux and openrouter both carry FREE lanes AND paid credits (Nish, 2026-08-25). class=metered records that, but seat-lib.sh computes class_of() and then ignores it - pick_seat buckets by literal provider name, so both currently sit in the FREE bucket and their credits can be spent as if free. free_providers_in_order is the only working control until that is fixed (fleet-ops#42): free lanes first, credit-bearing seats last.",
   "_comment_grok": "grok cap=0 (2026-08-26): SuperGrok's subscription covers the grok.com app and the grok CLI, NOT the x.ai API. pi reaching api.x.ai/v1 with the CLI's own OAuth token returns 403 'You have run out of credits or need a Grok subscription'. pi also has NO registered grok-cli adapter ('No API provider registered for api: grok-cli'), so the CLI route is not reachable from pi either. Raising this cap requires either x.ai API credits (money - Nish only) or a pi custom-provider extension wrapping the grok CLI. The credential half of fleet-ops#41 is the prevent side for the LIVE seat: bin/grok-token-refresh + grok-token-refresh.timer (4h) keep ~/.pi/agent/auth.json[xai-oauth] alive headlessly (no pty, no TTY) so the prepaid SuperGrok seat (fleet-ops#1163) does not age into a 401. Tracked in fleet-ops#41.",

@@ -8,7 +8,7 @@
 # once via Restart=on-failure, then the inherited OnFailure ladder takes over).
 #
 # Roles (fleet-ops#3121 three-role blind panel; Nish 2026-09-04):
-#   devin            -> devin/glm-5-2 (judge)
+#   devin            -> devin/swe-2-max (judge)
 #   free-glm         -> first usable of zenmux/z-ai/glm-5.3-free,
 #                      cline/z-ai/glm-5.3-flash; then any free-class seat;
 #                      then any usable capable seat. 'free' class prior to a
@@ -26,7 +26,7 @@
 #
 # Environment seams:
 #   AUDIT_STATE_DIR              vote file tree (default ~/.local/state/fleet-audit)
-#   AUDIT_DEVIN_SEAT             override provider:model, e.g. "devin:glm-5-2"
+#   AUDIT_DEVIN_SEAT             override provider:model, e.g. "devin:swe-2-max"
 #   AUDIT_FREE_GLM_SEAT          override provider:model (alias: AUDIT_FREE_GLM53_SEAT)
 #   AUDIT_SENIOR_SEAT            override provider:model (alias: AUDIT_STRAITLY_SEAT)
 #   AUDIT_PROMPT                 path to auditor prompt
@@ -306,7 +306,7 @@ resolve_seat() {
             if [ -n "${AUDIT_DEVIN_SEAT:-}" ]; then
                 printf '%s\t%s\n' "${AUDIT_DEVIN_SEAT%%:*}" "${AUDIT_DEVIN_SEAT#*:}"
             else
-                printf 'devin\tglm-5-2\n'
+                printf 'devin\tswe-2-max\n'
             fi
             ;;
         free-glm-5-3|free|free-glm)

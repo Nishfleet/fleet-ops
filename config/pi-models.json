@@ -503,6 +503,18 @@
           "name": "SWE-1.7 Max",
           "contextWindow": 262144,
           "maxTokens": 131072
+        },
+        {
+          "id": "swe-2-max",
+          "name": "SWE-2 Max",
+          "contextWindow": 262144,
+          "maxTokens": 131072
+        },
+        {
+          "id": "swe-2-high",
+          "name": "SWE-2 High",
+          "contextWindow": 262144,
+          "maxTokens": 131072
         }
       ]
     },

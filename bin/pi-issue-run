@@ -8,7 +8,7 @@
 #   1. Pick a DIFFERENT seat on each restart. systemd restarts the same
 #      ExecStart, so seat rotation is real added value — see seat-lib.sh.
 #      This is the gap the legacy intake path had (hardcoded
-#      --provider devin --model glm-5-2 in the systemd-run ExecStart);
+#      --provider devin --model swe-2-max in the systemd-run ExecStart);
 #      wiring this through is what point 4 of the P4-A packet required.
 #   2. No-op detection: if pi exits 0 but produced no real output (< 20 B
 #      to stdout), re-seat in-process via continue (fleet-ops#1378) AND

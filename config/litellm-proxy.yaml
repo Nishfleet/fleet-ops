@@ -67,7 +67,7 @@ model_list:
       max_parallel_requests: 1
   - model_name: worker-cheap
     litellm_params:
-      model: openai/glm-5-2
+      model: openai/swe-2-max
       api_base: https://devin.example/v1
       api_key: os.environ/DEVIN_API_KEY
       tags: ["prepaid"]

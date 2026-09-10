@@ -176,7 +176,7 @@ resolve_devin_conf_seat() {
     # 1) Devin ladder (Nish 2026-09-04 three-role panel). A slug is only
     #    resolvable when wired (model_cap > 0), has health data the auditor
     #    preflight will accept, and is usable right now.
-    for slug in devin/glm-5-2 devin/swe-1-7; do
+    for slug in devin/swe-2-max devin/swe-2-high; do
         p="${slug%%/*}"
         m="${slug#*/}"
         [ -n "$p" ] && [ -n "$m" ] || continue
