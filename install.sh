@@ -858,6 +858,65 @@ check_bak_sprawl() {
   done < "$manifest"
 }
 
+# fleet-ops#5059: helper symlinks under ~/.local/bin and
+# ~/.local/lib/pi-packet whose target no longer exists are dead entries on
+# PATH. Live 2026-09-10T21:46-23:50Z: the deploy clone was reset to another
+# repo's tree (fleet-ops#5016), every helper symlink into it dangled, and
+# ~/.local/bin/unit-escalation-write stayed 127 for ~7.5h — every OnFailure
+# escalation (unit-escalation@*.service) died silently because the escalation
+# helper itself was the dangling link, so nothing paged the fleet's own
+# fail-loud path. The MANIFEST loop above cannot see this class: a retired
+# helper is gone from MANIFEST, so no entry names it. --check flags it (so
+# fleet-ops-drift's DRIFT-INSTALL louds and auto-files every heartbeat tick)
+# and an install removes it, so a retired helper cannot leave a live link
+# behind. Same detect->repair loop as the retired-unit sweeps above.
+helper_symlink_dirs() {
+  if [[ -n "${FLEET_HELPER_SYMLINK_DIRS:-}" ]]; then
+    printf '%s\n' "${FLEET_HELPER_SYMLINK_DIRS//:/$'\n'}"
+  else
+    printf '%s\n' "$HOME/.local/bin" "$HOME/.local/lib/pi-packet"
+  fi
+}
+
+# A dangling helper symlink: the link does not resolve AND its target path
+# names a fleet-ops checkout. Links pointing outside the fleet tree (a vendor
+# CLI version link, for example) are out of scope — this class is the link a
+# checkout that no longer carries the helper left behind.
+dangling_helper_symlinks() {
+  local d f link
+  while read -r d; do
+    case "$d" in '') continue ;; esac
+    [ -d "$d" ] || continue
+    for f in "$d"/*; do
+      [ -L "$f" ] || continue
+      [ -e "$f" ] && continue
+      link=$(readlink "$f" 2>/dev/null) || continue
+      case "$link" in
+        *fleet-ops*) printf '%s\n' "$f" ;;
+      esac
+    done
+  done < <(helper_symlink_dirs)
+}
+
+check_helper_symlinks() {
+  local f link
+  while read -r f; do
+    case "$f" in '') continue ;; esac
+    link=$(readlink "$f" 2>/dev/null || printf '<missing>')
+    echo "DIFF: $f -> $link (dangling helper symlink; the checkout that held it is gone, fleet-ops#5059)"
+    rc=1
+  done < <(dangling_helper_symlinks)
+}
+
+remove_dangling_helper_symlinks() {
+  local f
+  while read -r f; do
+    case "$f" in '') continue ;; esac
+    rm -f "$f"
+    echo "removed dangling helper symlink: $f (fleet-ops#5059)"
+  done < <(dangling_helper_symlinks)
+}
+
 # fleet-ops#3263: Pi provider extensions (template/extensions/**) are
 # installed as file COPIES, not symlinks. A symlink into the deploy-clone
 # working tree resolves their relative import `../seat-health.ts` against the
@@ -1078,6 +1137,7 @@ done < "$manifest"
 if [ "$mode" = "--" ]; then
   check_comment_junk
   check_bak_sprawl
+  check_helper_symlinks
   exit "$rc"
 fi
 
@@ -1096,6 +1156,7 @@ if [ "$do_user_install" = 1 ]; then
   remove_retired_canaries
   remove_retired_staleness_timer
   remove_retired_provider_spawn_guard
+  remove_dangling_helper_symlinks
   ensure_devin_config_trust
   # Only daemon-reload when a user-scope systemd unit/drop-in actually
   # changed. First install on a fresh box still reloads because every unit

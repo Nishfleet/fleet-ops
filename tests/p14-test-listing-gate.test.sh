@@ -889,4 +889,19 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/signal-reconcile\.test\.sh"?' \
   || fail "signal-reconcile.test.sh must not be a known orphan (fleet-ops#362)"
 ok "signal-reconcile.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#362)"
 
+
+# fleet-ops#5059: hard-pin the host line for helper-symlink-resolution in
+# ci-standards-audit so a future refactor that drops it is caught by name.
+# Hosted from tests/ci-standards-audit.test.sh (already listed in ci.yml)
+# because the worker App cannot push .github/workflows/**. Parking it on
+# known_orphans to silence the generic message must also fail by name below.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/helper-symlink-resolution\.test\.sh"?' \
+  "$here/ci-standards-audit.test.sh" \
+  || fail "ci-standards-audit.test.sh must bash-invoke helper-symlink-resolution.test.sh (fleet-ops#5059)"
+[[ -n "${reachable[helper-symlink-resolution.test.sh]:-}" ]] \
+  || fail "helper-symlink-resolution.test.sh must be hosted by a listed test (fleet-ops#5059)"
+[[ -z "${known_orphan_set[helper-symlink-resolution.test.sh]:-}" ]] \
+  || fail "helper-symlink-resolution.test.sh must not be a known orphan (fleet-ops#5059)"
+ok "helper-symlink-resolution.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#5059)"
+
 echo "OK: p14-test-listing-gate.test.sh: P14 test list is closed"

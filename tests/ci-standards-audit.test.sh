@@ -795,3 +795,15 @@ bash "$here/spec-judge.test.sh"
 # Hosted here so P14 runs it without a workflow-file edit (the worker App
 # cannot push .github/workflows/**). Hermetic (temp state, stubbed gh).
 bash "$here/fleet-cpu-sampler-ready.test.sh"
+
+# fleet-ops#5059: install.sh --check must flag a helper symlink under
+# ~/.local/bin or ~/.local/lib/pi-packet whose target (a fleet-ops checkout
+# path) no longer resolves, and an install must remove it. Live 2026-09-10:
+# ~/.local/bin/unit-escalation-write dangled ~7.5h, so every OnFailure
+# escalation exited 127 and the fail-loud path went silent. Hosted here (a
+# listed test) so P14 runs it without a workflow-file edit; the worker App
+# cannot push .github/workflows/**. The named pin in
+# tests/p14-test-listing-gate.test.sh is the class-prevention so a future
+# drop of this host line fails by name. Hermetic (scratch MANIFEST + scratch
+# HOME + fake checkout, stubbed systemctl, no live install).
+bash "$here/helper-symlink-resolution.test.sh"
