@@ -220,6 +220,60 @@ assert "created:>=" in seen_queries[1] and "closed:>=" in seen_queries[2], \
     seen_queries
 print("OK: open_prs spot windowed on the tile's own cache timestamp")
 
+# --- fleet-ops#5148: the filing's own N+3 case, end-to-end through verify_tile ---
+# The filing: per-repo displayed 8 (the exporter's cached org snapshot) vs
+# live gh 11 — 3 PRs opened inside the 30-min cache window, a 37% miss
+# against the old fixed band. A faithful tile must stay green through the
+# REAL verify_tile path (primary Prom re-query agrees; the spot window
+# explains the +3), and a Prom gauge disagreeing with its OWN re-query
+# must still DISPUTE — the window must not have weakened the exact
+# primary check.
+op_tile = {"source": "test", "stale_after_s": 900, "ok": True,
+           "observed_at": now,
+           "count": 8, "items": [{"repo": "Nishfleet/fleet-ops", "count": 8}]}
+m.RUNNERS["open_prs_prom"] = lambda t: t["count"]  # primary re-query agrees
+_orig_run_5148, _orig_skip_5148 = m.subprocess.run, m.SKIP_GH
+
+def _gh_n3(argv, **kw):
+    q = next(a for a in argv if a.startswith("q="))
+    if "created:>=" in q:
+        return _FakeGhResult("3\n")   # 3 PRs opened since observed_at
+    if "closed:>=" in q:
+        return _FakeGhResult("0\n")
+    return _FakeGhResult("11\n")      # live count is N+3
+
+m.subprocess.run = _gh_n3
+m.SKIP_GH = False
+try:
+    op_mismatch = m.verify_tile("open_prs", op_tile)
+finally:
+    m.subprocess.run, m.SKIP_GH = _orig_run_5148, _orig_skip_5148
+assert op_mismatch == 0, op_mismatch
+assert op_tile["disputed"] is False, op_tile["verify"]
+assert op_tile["verify"]["match"] is True, op_tile["verify"]
+assert op_tile["verify"]["spot_match"] is True, op_tile["verify"]
+assert op_tile["verify"]["spot_observed"] == 11, op_tile["verify"]
+print("OK: #5148 — 8 vs 11 (+3 inside the window) is a lag, not a DISPUTE")
+
+# --- fleet-ops#5148: a Prom gauge disagreeing with its OWN re-query ---
+# The window tolerance repairs the gh spot only. The primary check (tile
+# count vs sum(fleet_open_prs) re-queried, exact) must still DISPUTE when
+# the gauge disagrees with its own re-query — a wrong family is still a
+# wrong family even with the spot green.
+bad_tile = {"source": "test", "stale_after_s": 900, "ok": True,
+            "observed_at": now,
+            "count": 8, "items": [{"repo": "Nishfleet/fleet-ops", "count": 8}]}
+m.RUNNERS["open_prs_prom"] = lambda t: 91  # own re-query disagrees
+m.SKIP_GH = True  # isolate: the DISPUTE must come from the primary check
+try:
+    bad_mismatch = m.verify_tile("open_prs", bad_tile)
+finally:
+    m.SKIP_GH = True
+assert bad_mismatch == 1, bad_mismatch
+assert bad_tile["disputed"] is True, bad_tile["verify"]
+assert bad_tile["verify"]["match"] is False, bad_tile["verify"]
+print("OK: #5148 — gauge vs own re-query disagreement still DISPUTEs")
+
 # --- attach_specs covers every tile ---
 empty = {"tiles": {k: {} for k in m.SPECS}}
 m.attach_specs(empty)
