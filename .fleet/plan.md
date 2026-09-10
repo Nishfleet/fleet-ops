@@ -39,7 +39,7 @@
   still reports the real drop (aligns the guard with the merge rule that a tombstone only ever
   suppresses a LIVE-ONLY row).
   DONE `a180dcc8` + retry `dd80297e`: the `--check` branch compares `content_equivalent(live, merge(live,repo))` for a non-symlink seat-caps dest, symlink rule still first, shared `DIFF:` print unchanged; the merge call is `if`-guarded so a failing merge cannot abort under `set -e` or leak the temp. Guard skip hardened to `and name not in repo`. Reviewer proved the three required DIFF classes still red, the hand-wired false red now green, and no reachable fail-clean.
-- [ ] phase 4 (acceptance 4 + 3): regression tests in `tests/fleet-ops-deploy.test.sh`, appended
+- [x] phase 4 (acceptance 4 + 3): regression tests in `tests/fleet-ops-deploy.test.sh`, appended
   after scenario 12h — (a) a hand-wired provider row present only in the live copy, repo otherwise
   identical -> `--check` exits 0; (b) a provider tombstoned in the repo -> after install the live
   copy has no such row AND an untombstoned live-only row still survives; (c) a repo-declared
@@ -48,19 +48,14 @@
   a tombstoned live-only row must NOT trip `seat_caps_would_downgrade` (`NONFATAL REFUSE ... would
   lower live seat caps` must be absent from install output, and install must exit 0 on a repo whose
   seat-caps.json is NOT origin/main's blob — the guard-skip path). Then run the suite green.
-- [ ] phase 5 (ship): commit, push `claim/issue-4960`, PR `Closes #4960` with
+  DONE (post-rebase): `b5e7f607`/`17887b97` pin scenarios 12i/12j/12k/12m/12m2.
+  `bash tests/fleet-ops-deploy.test.sh` = exit 0, 89 OK (incl. all 12x classes).
+- [x] phase 5 (ship): commit, push `claim/issue-4960`, PR `Closes #4960` with
   Verification / run-proof / research / help-first / loose-ends sections, arm auto-merge.
-
-## Manager re-entry note (rebase onto advanced main)
-- Re-entry: a prior session completed phases 1-4 (code + tests) locally but never pushed;
-  origin/main then advanced 8 commits. The claim branch == main tip (no prior push).
-- Rebase the 9 local commits onto the new origin/main. Main's #4994 already landed a
-  GENERIC `content_equivalent` fallback in `--check` (for pi-models/model-candidates) but
-  that does NOT fix the seat-caps false-red (merge adds live-only rows, so jq -S still
-  differs) — the effective-table branch here is the real, still-needed seat-caps fix.
-- Keep prior work AND main's #4994: the seat-caps effective-table branch wins first, and
-  the generic non-seat-caps fallback should keep #4994's content_equivalent (not the old
-  `cmp -s`) rather than reverting it. Verify install.sh region after rebase.
+  DONE: all contract gates green (no-agent-names, prove-one-run-check, exec-review-canary,
+  rebuild-verify, research-before-build, organ-heartbeat, token-efficiency, sgscan); relevant
+  repo tests green (install-check-content-equivalent, seat-caps-citation, seat-caps-zero-yield,
+  seat-lib-retire, seat-quota-corpse).
 
 ## Phase review record (manager, per-phase reviewer)
 - Phase 3 review (stock reviewer): **1 Act-on + NOT BLOCKING overall.** Verified by running: (a)/(b)/(c) all still exit 1 with a `DIFF:` line; the hand-wired live-only row now exits 0 with no output; every escape tried (symlink elsewhere even with identical bytes, unparseable/empty/truncated live, `providers` non-dict, model-level diff, changed top-level scalar, extra top-level key, deleted repo-declared provider, FIFO/dir/missing dest, unparseable/missing/unreadable repo, hand-wired row PLUS a repo-declared cap diff) stayed RED — no reachable fail-clean; teeth proven both ways; `bash -n`/`shellcheck` clean; `fleet-ops-deploy` + `fleet-token-economy` rc 0. ACT-ON (fixed in retry `dd80297e`): the bare merge call aborted under `set -e` on a merge failure — zero output, every later MANIFEST entry skipped, temp leaked (`+5` orphans in 5 runs). Retry proved the leak gone (`+0`), the `DIFF:` line back, and the later MANIFEST entry no longer skipped. CONSIDER (recorded, folded into phase 4): nothing pinned this gate in `tests/fleet-ops-deploy.test.sh`; `jq` is now load-bearing for the gate's leniency (no jq -> byte compare -> old false red returns, fail-closed) — add a `command -v jq` note. CONSIDER (recorded, NOT fixed — pre-existing and out of scope): `seat_caps_would_downgrade` still prints `opencode-go:10->missing` on a non-origin/main install path although the #4205 merge deliberately preserves that row — same line before and after this PR; masked on the normal deploy path by `seat_caps_is_origin_main_blob`. FILE AS A FOLLOW-UP ISSUE at phase 5.
