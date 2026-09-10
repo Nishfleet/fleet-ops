@@ -25,6 +25,12 @@ StartLimitIntervalSec=0
 # the fire. Raise it well above the worst-case sustained write rate so a
 # healthy fleet cannot wedge its own seat-recovery fast path. StartLimit*
 # must live in [Unit], not [Service] (same convention as pi-intake@.service).
+#
+# fleet-ops#5024: the bin now debounces last=usable (skip the ~1.1s ledger
+# scan). That cuts CPU; it does not reduce systemd activations — PathChanged
+# still starts this oneshot on every seats/ write. StartLimitBurst must
+# therefore stay above the write storm (~1800/h). Lowering it to 200
+# would re-wedge the path unit without making the hot loop quieter.
 StartLimitIntervalSec=1h
 StartLimitBurst=2000
 

@@ -4,7 +4,7 @@
 # Runs ONLY when tier 1 reported work (triage non-empty OR held queue has
 # dispatchable items). Walks a seat ladder:
 #   1. claude -p --model claude-opus-5   (preferred; bounded 25 min)
-#   2. pi --print --provider devin --model glm-5-2   (only after a 30s
+#   2. pi --print --provider devin --model swe-2-max   (only after a 30s
 #      probe succeeds; only if <4 devin workers active; singly; bounded 25 min)
 #   3. pi --print --provider minimax --model MiniMax-M3   (mechanical only;
 #      bounded 25 min)
@@ -75,7 +75,7 @@ try_claude() {
     return 0
 }
 
-# --- seat 2: pi --print --provider devin --model glm-5-2 (after 30s probe) ---
+# --- seat 2: pi --print --provider devin --model swe-2-max (after 30s probe) ---
 try_devin() {
     if ! command -v pi >/dev/null 2>&1; then
         log "seat[2/3] devin: pi NOT INSTALLED"
@@ -101,7 +101,7 @@ try_devin() {
     # 30-second probe. If this fails or hangs, skip devin for this tick.
     log "seat[2/3] devin: probing (30s budget)"
     local probe_rc
-    timeout 30s pi --print --provider devin --model glm-5-2 \
+    timeout 30s pi --print --provider devin --model swe-2-max \
         < <(printf 'echo probe-ok-%s\n' "$(date +%s)") >/dev/null 2>&1 || probe_rc=$?
     if [ "${probe_rc:-0}" -ne 0 ]; then
         log "seat[2/3] devin: probe FAILED (rc=${probe_rc:-?}) — skipping"
@@ -110,7 +110,7 @@ try_devin() {
     log "seat[2/3] devin: probe OK — running real prompt"
 
     local out
-    out=$(timeout "$SEAT_TIMEOUT" pi --print --provider devin --model glm-5-2 \
+    out=$(timeout "$SEAT_TIMEOUT" pi --print --provider devin --model swe-2-max \
         < "$PROMPT" 2>&1) || { log "seat[2/3] devin: real run exit=$?"; return 1; }
     [ -z "$out" ] && { log "seat[2/3] devin: empty output"; return 1; }
     log "seat[2/3] devin: OK ($(printf '%s' "$out" | wc -c)B output)"

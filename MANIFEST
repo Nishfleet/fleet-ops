@@ -759,7 +759,7 @@ lib/attest-identity-gate.py /home/nish/.local/lib/pi-packet/attest-identity-gate
 # appears. Fails loud only when the watcher itself is broken (pi missing).
 bin/fleet-paid-flash-canary /home/nish/.local/bin/fleet-paid-flash-canary
 # fleet-ops#518: free-model roster freshness canary (sr-free-model-roster).
-# Two fail-loud gates (Ollama carve-out: ollama.models deepseek-v4-flash only,
+# Two fail-loud gates (Ollama carve-out: ollama.models <retired-V4-flash> only,
 # never polling the ollama catalog; penny-for-speed: cap>0 free providers with
 # models must be in free_providers_in_order) plus observe-to-open detectors
 # that auto-file audition+wire / bench tickets from `pi --list-models`.

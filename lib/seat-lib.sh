@@ -807,7 +807,7 @@ load_seat_caps() {
 }
 
 # fleet-ops#3873: per-seat hang-watchdog timeout. A slow seat (e.g.
-# ollama/deepseek-v4-flash:0731) does 14-149 tool calls then gets rc=124
+# ollama/<retired-V4-flash>) does 14-149 tool calls then gets rc=124
 # killed at the global 2520s (42 min) watchdog before writing final text —
 # every run scored as worked-no-text / empty. The seat answers 200 and does
 # real work; the timeout is too short for that seat. seat-caps.json declares
@@ -2300,7 +2300,7 @@ _seat_key_guard() {
 }
 
 # Mirror of seat-health.ts seatLedgerPath: sanitise provider/model so model
-# ids containing '/' (e.g. deepseek/deepseek-v4-flash) survive on disk.
+# ids containing '/' (e.g. deepseek/deepseek-v4.1-flash) survive on disk.
 seat_ledger_path() {
     local p="$1" m="$2" ps ms
     ps="${p//[^A-Za-z0-9._-]/_}"
@@ -2784,7 +2784,7 @@ _provider_daily_set_log() {
 # clobberable ledger. Merging count INTO the marker on every writer call
 # lets the count survive the clobber and the #1362 park actually engage for
 # a CHRONIC no-op'ing seat (the live 18 empty runs in 2h on healthy-reporting
-# seats: opencode/nemotron-3-ultra-free, openrouter/deepseek/deepseek-v4-flash-0731).
+# seats: opencode/nemotron-3-ultra-free, openrouter/deepseek/deepseek-v4.1-flash).
 seat_spawn_bench_path() {
     local p="$1" m="$2" ps ms
     ps="${p//[^A-Za-z0-9._-]/_}"
@@ -2808,7 +2808,7 @@ seat_spawn_bench_path() {
 # spawn_fail writer project a durable corpse (seat_dead=true) onto the
 # clobber-proof marker. seat-health.ts resets the LEDGER's seat_dead to false
 # on every transport 200 (the false-healthy clobber the live
-# xkiro/deepseek-v4-flash at 47 spawn_fail showed) — the marker is the only
+# xkiro/<retired-V4-flash> at 47 spawn_fail showed) — the marker is the only
 # record seat-health.ts never touches, so a spawn_fail corpse must live there
 # to survive the clobber.
 # fleet-ops#4640: a wall length is a claim about the PROVIDER; a wrapper
@@ -3140,7 +3140,7 @@ seat_usable() {
         # a healthy response — and that healthy write clobbers the ledger's
         # copy of the bench. Before this change an expired marker fell
         # through to the clobbered ledger and the next work item became the
-        # de-facto probe (live: ollama/deepseek-v4-flash:0731, 12 empty
+        # de-facto probe (live: ollama/<retired-V4-flash>, 12 empty
         # runs in 2h — every bench expiry re-admitted a still-dead seat).
         #
         # Hold while ALL of these are true:
@@ -3181,7 +3181,7 @@ seat_usable() {
             # fence the seat is re-offered to a work item every park-wall
             # expiry (24h), spawn-fails again (no_block:rc=1), and the count
             # climbs forever while the ledger stays health_class=healthy /
-            # http 200 (live: xkiro/deepseek-v4-flash at 47 consecutive
+            # http 200 (live: xkiro/<retired-V4-flash> at 47 consecutive
             # spawn_fail). Only a comeback-release tool-using probe
             # (source="comeback_release") is real recovery for a
             # ceiling-parked seat; hold until then. The marker age gate
@@ -3313,7 +3313,7 @@ seat_usable() {
     # quota_exhausted BEFORE stale-observed_at: usable_at (fallback:
     # bench_until) is the advertised reset, which outlives STALE_SECS
     # the same way quota_bench's bench_until does. Live 2026-09-02:
-    # cline-pass/deepseek-v4-flash + cline-pass/minimax-m3 both 402 with
+    # cline-pass/deepseek-v4.1-flash + cline-pass/minimax-m3 both 402 with
     # usable_at 16d out (retry_after ~1.4e6s from parseCliRetryAfter
     # "resets in Nd Nh"). After 6h the stale fail-open re-offered them,
     # they 402'd again, consecutive_failure_count climbed, and the
@@ -3360,7 +3360,7 @@ seat_usable() {
     # fleet-ops#3586: rate_limited is the SAME flat/re-walled class as
     # transient_fault — a seat that keeps answering http 429 with a short
     # usable_at (~15min) gets re-walled every cycle and its count climbs
-    # (live: xkiro/deepseek-v4-flash c=63, deepseek-v4-pro c=52,
+    # (live: xkiro/<retired-V4-flash> c=63, deepseek-v4-pro c=52,
     # minimax-m3:free c=48 all 429 rate_limited). A seat that has failed
     # N>=SEAT_FAILURE_CEILING times consecutively is not rate-limited (a
     # 1-15min wall would have cleared long ago), it is unusable. So the
@@ -4473,7 +4473,7 @@ _build_excluded_set() {
     # cap map entirely (e.g. mergegateway in models.json but not in
     # seat-caps.json), or when the provider IS in the cap map but the
     # specific model is not listed in its models map (e.g. ollama has
-    # only deepseek-v4-flash:0731, so kimi-k2.7-code is not allowlisted).
+    # only <retired-V4-flash>, so kimi-k2.7-code is not allowlisted).
     # Both sub-cases were per-seat logged on every pick_seat pass
     # ("skipped (not in cap-map allowlist)") — the dominant remaining
     # flood after #1449's cap=0 fix (fleet-ops#1456: 1584 lines/16min).
@@ -4763,7 +4763,7 @@ _seat_floor_shortest_bench() {
         _seat_floor_is_money_wall "$hc" "$dead" "$fm" "$fail_count" && continue
         # fleet-ops#3675: a no-op bench (empty_run / spawn_fail) is meant to
         # HOLD the seat out of rotation. The floor must NOT lift it — running
-        # on a no-op seat burns issues (live: ollama/deepseek-v4-flash:0731
+        # on a no-op seat burns issues (live: ollama/<retired-V4-flash>
         # no-op'ed 30x/2h, floor-lifted every bench, count climbed to 13).
         # Let the bench hold so the count reaches the failure ceiling and
         # parks the seat.
@@ -6033,7 +6033,7 @@ SEAT_FAILURE_CEILING="${SEAT_FAILURE_CEILING:-20}"
 SEAT_PARK_WALL_S="${SEAT_PARK_WALL_S:-86400}"  # 24 h — probe once per day, not per 15min
 # fleet-ops#3941: the failure-ceiling park wall ESCALATES with the count
 # instead of resetting to a flat SEAT_PARK_WALL_S every cycle. A seat that
-# has failed 47 times straight (live: xkiro/deepseek-v4-flash) was re-offered
+# has failed 47 times straight (live: xkiro/<retired-V4-flash>) was re-offered
 # every 24h park-wall expiry and re-walled at the SAME 24h — the wall never
 # grew, so a chronically-dead seat was probed once per day forever. Now the
 # wall grows one SEAT_PARK_WALL_S per failure past the ceiling, capped at
@@ -6298,7 +6298,7 @@ mark_seat_spawn_fail() {
     # marker, a spawn-fail >30 min after an empty-run would treat the
     # marker as stale, reset the count to 1, and overwrite the file —
     # destroying the empty-run count the #2786 cross-class contract is
-    # meant to preserve. Live: ollama/deepseek-v4-flash:0731 reached
+    # meant to preserve. Live: ollama/<retired-V4-flash> reached
     # count=5/backoff=14400s at 22:49Z, a spawn-fail ~37 min later reset
     # the count to 1, and the next empty-run merged from the clobbered
     # marker + ledger to count=4 — the count went BACKWARDS. Use the
@@ -6353,7 +6353,7 @@ mark_seat_spawn_fail() {
     # then exits 0 with 0-byte stdout (after_provider_response carries status+
     # headers only, never the body), so the LEDGER stays health_class=healthy /
     # http 200 / seat_dead=false while the wrapper's benchmark climbs forever —
-    # live xkiro/deepseek-v4-flash reached 47 consecutive spawn_fail with the
+    # live xkiro/<retired-V4-flash> reached 47 consecutive spawn_fail with the
     # ledger healthy, re-offered every flat 24h park-wall expiry. Mirror the
     # quota writer (fleet-ops#2594): once merged_count crosses
     # SEAT_DEAD_CONSECUTIVE_THRESHOLD (default 25, matching seat-health.ts) the
@@ -6441,7 +6441,7 @@ mark_seat_spawn_fail() {
 # usable_at check and fail-opens after.
 # fleet-ops#2343: an empty run is a provider NO-OP, not a quota wall, and
 # must NOT escalate by count. The fleet-ops#1408 ladder (900 -> 1800 -> 3600
-# -> 7200s) churned HEALTHY seats: openrouter/deepseek/deepseek-v4-flash-0731
+# -> 7200s) churned HEALTHY seats: openrouter/deepseek/deepseek-v4.1-flash
 # produced 3 empty runs in 2h (fleet-ops-1384, stdout=0B), got benched 900s
 # and re-seated in-process each time, and the count ladder kept extending a
 # working seat's bench to hours after a handful of no-ops. The no-op cooldown
@@ -6456,7 +6456,7 @@ mark_seat_spawn_fail() {
 # seat-health.ts writes health_class=healthy/count=0 to the ledger on a later
 # 200 observation, so reading only the ledger lets a chronic no-op'er reset
 # its count to 0 between every wrapper write (live: openrouter/deepseek/
-# deepseek-v4-flash-0731 no-op'ed 5+ times in 2h with every ledger write
+# <retired-V4-flash>-0731 no-op'ed 5+ times in 2h with every ledger write
 # showing count=1, the #1362 park never fired, 18 empty runs/2h). The
 # wrapper-side spawn-bench marker (fleet-ops#1512) is clobber-proof — read
 # the count from the marker FIRST (any failure_mode, written recently),
@@ -6493,7 +6493,7 @@ mark_seat_spawn_fail() {
 # fleet-ops#2934: the count-merge window for EMPTY RUNS is LONGER than the
 # spawn-fail window. EMPTY_RUN_MARKER_FRESH_S (30 min) was the merge bound
 # for BOTH classes, but an intermittent no-op'er gaps its empty runs by
-# more than 30 min (live 2026-09-02: openrouter/deepseek/deepseek-v4-flash-
+# more than 30 min (live 2026-09-02: openrouter/deepseek/deepseek-v4.1-flash-
 # 0731 no-op'ed at 18:40:08Z count=2, then 20:22:31Z count=1 — the 1h42m
 # gap aged the marker past 30 min, the count reset, the ceiling never
 # fired, the seat re-entered rotation every 900 s and no-op'ed again). A
@@ -6511,7 +6511,7 @@ mark_seat_spawn_fail() {
 # count-merge fell through to the clobbered ledger, the count reset to 1, and
 # the next no-op at the 24 h boundary dropped the bench back to the 900 s base
 # — the 24 h park was overwritten by a 30 min flat cooldown and the dead seat
-# re-entered the no-op loop (live: ollama/deepseek-v4-flash:0731, 24 no-op
+# re-entered the no-op loop (live: ollama/<retired-V4-flash>, 24 no-op
 # runs/2h, 86400 s bench written then lost). The window now defaults to the
 # PARK WALL (SEAT_PARK_WALL_S, 24 h) so the marker-carried count survives the
 # full park: a no-op at the 24 h boundary merges the marker count (not the
@@ -6530,7 +6530,7 @@ EMPTY_RUN_MARKER_FRESH_S="${EMPTY_RUN_MARKER_FRESH_S:-1800}"  # 30 min — spawn
 EMPTY_RUN_COUNT_WINDOW_S="${EMPTY_RUN_COUNT_WINDOW_S:-$SEAT_PARK_WALL_S}"
 # fleet-ops#3727: a SEPARATE, lower failure ceiling for empty runs. The generic
 # SEAT_FAILURE_CEILING (default 20) was unified in fleet-ops#3531, but a chronic
-# no-op'er (ollama/deepseek-v4-flash:0731, 12 empty runs in 2h) churned for 20
+# no-op'er (ollama/<retired-V4-flash>, 12 empty runs in 2h) churned for 20
 # cycles before the 24h park engaged — the geometric cap (6h) re-offered the
 # seat every 6h and the count climbed too slowly. A provider no-op is a LANE
 # FAULT, not a quota wall: a few no-ops in the same 24h count-merge window is a
@@ -6570,7 +6570,7 @@ mark_seat_empty_run() {
     # clobbered to count=0) and start fresh. The window is LONGER than
     # mark_seat_spawn_fail's (EMPTY_RUN_MARKER_FRESH_S, 30 min) because a
     # provider no-op is intermittent, not clustered: a 30 min window let a
-    # ~1h42m gap reset the count on the live deepseek-v4-flash-0731 seat
+    # ~1h42m gap reset the count on the live <retired-V4-flash>-0731 seat
     # so the failure-ceiling park never fired. The marker is a SINGLE file
     # per seat shared by mark_seat_empty_run and mark_seat_spawn_fail, so
     # the count must accumulate across failure_mode classes (fleet-ops#2786:
@@ -6631,7 +6631,7 @@ mark_seat_empty_run() {
     # still applies on top. fleet-ops#3727: empty runs use a SEPARATE, lower
     # failure ceiling (EMPTY_RUN_FAILURE_CEILING, default 3 per fleet-ops#3760)
     # so a chronic no-op'er parks on the 3rd no-op, not the 20th — the generic
-    # 20 let ollama/deepseek-v4-flash:0731 churn 12 empty runs in 2h without
+    # 20 let ollama/<retired-V4-flash> churn 12 empty runs in 2h without
     # parking.
     local cap
     cap="$SEAT_BENCH_GEOMETRIC_CAP_S"
@@ -6695,7 +6695,7 @@ mark_seat_empty_run() {
         # write failed silently (the old `2>/dev/null || true`), the bench
         # lived ONLY in the clobberable ledger, the next 200 probe cleared it,
         # and pick_seat re-offered the no-op'ing seat — live
-        # ollama/deepseek-v4-flash:0731 was re-benched 8x in 2h (count=6,7,8)
+        # ollama/<retired-V4-flash> was re-benched 8x in 2h (count=6,7,8)
         # yet still offered healthy. The marker is the survival mechanism, so
         # a marker write failure fails LOUD (return 1): the bench either has a
         # clobber-proof marker that survives until wall_end, or the caller
@@ -6715,13 +6715,13 @@ mark_seat_empty_run() {
 
 # --- worked-no-text bench (fleet-ops#3847) --------------------------------
 # fleet-ops#3714 taught pi-issue-run that a session which made tool calls did
-# real work: when a model ends its turn ON a tool call (deepseek-v4-flash:0731
+# real work: when a model ends its turn ON a tool call (<retired-V4-flash>
 # via ollama closes with structured_output and no trailing text), pi --print
 # emits no final text, so stdout is 0B while the verdict on stderr already says
 # tools=N class=worked. Those runs are NOT provider no-ops and must not be
 # benched as empty runs. But a single 0B-stdout run is not proof of a broken
 # seat either — it is the live 2026-09-06 case (fleet-ops#3847):
-# ollama/deepseek-v4-flash:0731 produced 0B final text on 5/5 runs in 2h
+# ollama/<retired-V4-flash> produced 0B final text on 5/5 runs in 2h
 # (fleet-ops-3714, 0509-1731, fleet-ops-3727, fleet-ops-3322, fleet-ops-3730;
 # 197 tool calls, zero deliverables) and each was classified worked-no-text and
 # deliberately NOT benched. Whatever the classification, N consecutive
@@ -7434,7 +7434,7 @@ is_quota_cap_error() {
     # credit wall wearing a 429, not a rate limit: classify it so the money wall
     # is never counted as seat yield.
     # "insufficient_user_quota" (b.ai HTTP 400, fleet-ops#4831, 2026-09-09:
-    # bai/deepseek-v4-flash returned 400 {"message":"credit insufficient
+    # bai/deepseek-v4.1-flash returned 400 {"message":"credit insufficient
     # balance: balance=0 required=7716","code":"insufficient_user_quota"} —
     # pi-scout@0509, pi-scout-repair@0509 and pi-issue@0509-2085 all died on the
     # seat inside 3 min, each booked error_class=unknown -> transient_fault ->

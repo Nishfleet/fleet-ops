@@ -264,7 +264,7 @@ Dispatch rules (the seat-guard rules):
   Claude if you are Claude — just run it; if you are devin/minimax,
   escalate by spawning a Claude invocation via the same `claude` binary —
   do not route quality-critical work through a non-Claude seat).
-- Devin for general heavy: `pi --print --provider devin --model glm-5-2`
+- Devin for general heavy: `pi --print --provider devin --model swe-2-max`
   — but ONLY if (a) a 30-second probe succeeds (run a one-liner: `echo
   probe-$(date +%s)` through the same provider/model and confirm exit 0
   + non-empty output within 30s) AND (b) fewer than 4 devin workers are

@@ -768,6 +768,114 @@ grep -q "issue close" "$tmp/gh.log" \
 ok "scenario 9l-close: stale EXEC-REVIEW-DISARM issue observe-to-closes while disarm lines continue"
 
 # ---------------------------------------------------------------------------
+# 9m. CLAIM-CLOSED-CLEANUP is not queued by the reconciler (fleet-ops#5007).
+#     pi-issue-failed-reap writes it when it reaps a CLOSED issue: the
+#     successful cleanup that removes agent-in-progress and archives the dead
+#     worker's per-issue state (the instance=... repo=... branch=...
+#     branch_deleted=... label_removed=... summary line). It fires on EVERY
+#     real reap of a CLOSED issue and carries a `repo=` key, so the derived
+#     signal is per-repo (`loud/claim-closed-cleanup/<repo>`) and observe-
+#     to-close can never go green — the same never-green loop #4918/#4930/
+#     #4955 fixed for CLAIM-REAP-STARTED / CLAIM-RELEASED / PACKETS-ARCHIVED.
+#     The actionable reaper outcomes (BRANCH-FAIL / LABEL-FAIL / PARSE-FAIL /
+#     NO-GH) still queue.
+# ---------------------------------------------------------------------------
+cat > "$tmp/empty9m.json" <<'EOF'
+[]
+EOF
+cat > "$tmp/triage9m.md" <<'EOF'
+[2026-08-28T13:30:00Z] [CLAIM-CLOSED-CLEANUP] instance=0509-2317 repo=Nishfleet/0509 branch=claim/issue-2317 branch_deleted=yes label_removed=yes
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/empty9m.json" "$tmp/triage9m.md" > "$tmp/summary9m.json"
+jq -e '.filed == 0 and .alarm_count == 0' "$tmp/summary9m.json" >/dev/null \
+    || fail "scenario 9m: CLAIM-CLOSED-CLEANUP must not be queued, got: $(cat "$tmp/summary9m.json")"
+[[ $(wc -l < "$tmp/filed.jsonl") -eq 0 ]] \
+    || fail "scenario 9m: CLAIM-CLOSED-CLEANUP must not file, got: $(cat "$tmp/filed.jsonl")"
+ok "scenario 9m: CLAIM-CLOSED-CLEANUP is not queued (closed-issue cleanup completion is expected, not a fault)"
+
+# 9m-close. An already-open loud/claim-closed-cleanup issue observe-to-closes
+#     once CLAIM-CLOSED-CLEANUP is skipped (fleet-ops#5007).
+# ---------------------------------------------------------------------------
+cat > "$tmp/open9mclose.json" <<'EOF'
+[{"number": 5007, "body": "The heartbeat detector reported this alarm on a real tick.\n\n- alarm tag: `CLAIM-CLOSED-CLEANUP`\n\n`loud/claim-closed-cleanup/nishfleet-0509`\n", "labels": [{"name": "agent-ready"}], "createdAt": "2026-09-10T16:15:00Z", "comments": []}]
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/open9mclose.json" "$tmp/triage9m.md" > "$tmp/summary9mclose.json"
+jq -e '.closed == 1 and .filed == 0' "$tmp/summary9mclose.json" >/dev/null \
+    || fail "scenario 9m-close: stale loud/claim-closed-cleanup must close even while CLEANUP LOUD lines fire, got: $(cat "$tmp/summary9mclose.json")"
+grep -q "issue close" "$tmp/gh.log" \
+    || fail "scenario 9m-close: expected gh issue close"
+ok "scenario 9m-close: stale CLAIM-CLOSED-CLEANUP issue observe-to-closes while CLEANUP lines continue"
+
+# ---------------------------------------------------------------------------
+# 9n. CLAIM-CLOSED-RESET is not queued by the reconciler (fleet-ops#5008).
+#     pi-issue-failed-reap writes it in the SAME CLOSED branch, immediately
+#     after CLAIM-CLOSED-CLEANUP, as the per-issue state-file reset that lets
+#     a re-opened issue start fresh (rm reclaim-count/systemic/infra-death/
+#     prefer-class/last-death-class; the instance=... repo=... summary line).
+#     Like its CLEANUP sibling it fires on EVERY real reap of a CLOSED issue
+#     with a `repo=` key, so the derived signal is per-repo
+#     (`loud/claim-closed-reset/<repo>`) and observe-to-close can never go
+#     green. Confirmed live: #5008 was auto-filed by this never-green key on
+#     2026-09-10T15:48:43Z from instance=0509-2347 repo=Nishfleet/0509. The
+#     reset is the expected post-merge cleanup, not a fault.
+# ---------------------------------------------------------------------------
+cat > "$tmp/empty9n.json" <<'EOF'
+[]
+EOF
+cat > "$tmp/triage9n.md" <<'EOF'
+[2026-08-28T13:30:00Z] [CLAIM-CLOSED-RESET] instance=0509-2347 repo=Nishfleet/0509
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/empty9n.json" "$tmp/triage9n.md" > "$tmp/summary9n.json"
+jq -e '.filed == 0 and .alarm_count == 0' "$tmp/summary9n.json" >/dev/null \
+    || fail "scenario 9n: CLAIM-CLOSED-RESET must not be queued, got: $(cat "$tmp/summary9n.json")"
+[[ $(wc -l < "$tmp/filed.jsonl") -eq 0 ]] \
+    || fail "scenario 9n: CLAIM-CLOSED-RESET must not file, got: $(cat "$tmp/filed.jsonl")"
+ok "scenario 9n: CLAIM-CLOSED-RESET is not queued (post-merge claim-state reset is expected, not a fault)"
+
+# 9n-key. The skip is only correct because the key is repo-scoped and cannot
+#     move per instance: prove that any closed-issue reap in the same repo
+#     derives the SAME `loud/claim-closed-reset/<repo>` key. If a future
+#     refactor keys on the instance or removes the reset's claims, the key
+#     churns per reap and the skip must be re-argued.
+python3 - "$repo_root" <<'PY' || fail "scenario 9n-key: CLAIM-CLOSED-RESET key must be repo-scoped and constant"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location(
+    "dqr", sys.argv[1] + "/lib/detector-queue-reconciler.py")
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+keys = set()
+for inst in ["0509-2347", "0509-2388", "0509-2401"]:
+    msg = f"instance={inst} repo=Nishfleet/0509"
+    keys.add(tuple(m._extract_signal_key("CLAIM-CLOSED-RESET", msg)))
+assert keys == {("nishfleet-0509",)}, keys
+PY
+ok "scenario 9n-key: CLAIM-CLOSED-RESET key is repo-scoped (same repo, any instance -> same key)"
+
+# 9n-close. An already-open loud/claim-closed-reset/<repo> issue observe-
+#     to-closes once CLAIM-CLOSED-RESET is skipped even while RESET LOUD lines
+#     keep firing (fleet-ops#5008). Without the skip the per-repo key is
+#     re-derived on every closed-issue reap, observe-to-close can never fire,
+#     and the alarm refiles forever.
+# ---------------------------------------------------------------------------
+cat > "$tmp/open9nclose.json" <<'EOF'
+[{"number": 5008, "body": "The heartbeat detector reported this alarm on a real tick and no open issue carried its signal key, so the detector\u2192queue reconciler filed one.\n\n- alarm tag: `CLAIM-CLOSED-RESET`\n- evidence: instance=0509-2347 repo=Nishfleet/0509\n- observed tick: `2026-09-10T15:48:43Z`\n\nDo NOT close this issue on PR merge alone.\n\n`loud/claim-closed-reset/nishfleet-0509`\n", "labels": [{"name": "agent-ready"}], "createdAt": "2026-09-10T16:19:00Z", "comments": []}]
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/open9nclose.json" "$tmp/triage9n.md" > "$tmp/summary9nclose.json"
+jq -e '.closed == 1 and .filed == 0' "$tmp/summary9nclose.json" >/dev/null \
+    || fail "scenario 9n-close: stale loud/claim-closed-reset must close even while RESET LOUD lines fire, got: $(cat "$tmp/summary9nclose.json")"
+grep -q "issue close" "$tmp/gh.log" \
+    || fail "scenario 9n-close: expected gh issue close"
+ok "scenario 9n-close: stale CLAIM-CLOSED-RESET issue observe-to-closes while RESET lines continue"
+
+# ---------------------------------------------------------------------------
 # 10. Tier1 wiring contract.
 # ---------------------------------------------------------------------------
 grep -q 'detector-queue-reconciler' "$repo_root/bin/fleet-heartbeat-tier1" \
@@ -1043,5 +1151,188 @@ jq -e '.rerouted == 1 and .filed == 0' "$tmp/summary14c.json" >/dev/null \
 grep -q 'issue edit 4987' "$tmp/gh.log" \
     || fail "scenario 14c: expected gh issue edit 4987 (got: $(cat "$tmp/gh.log"))"
 ok "scenario 14c: live agent-in-progress DEGRADED-LANES is retroactively downgraded to observe-to-close"
+
+# ---------------------------------------------------------------------------
+# 15. Informational class guard (fleet-ops#4983): an UNKNOWN tag — not in
+#     SKIP_TAGS — whose derived key is stable across varying message content
+#     is never-green by construction and must not be queued. Every SKIP_TAGS
+#     entry above was added one-at-a-time AFTER a live page (#4620/#4918/
+#     #4930/#4955/#4944/#4945); this guard ends the fire-first pattern by
+#     failing closed on the two never-green shapes: (a) the bare
+#     `loud/<tag>` fallback (subkey "unspecified" = no occurrence
+#     discriminator possible) and (b) field=value telemetry whose varying
+#     values never reach the derived key.
+# ---------------------------------------------------------------------------
+
+# 15a. Synthetic informational signals NOT in SKIP_TAGS are not queued:
+#      CLAIM-RELEASED-CONFIRM is a count-shaped completion rollup under a tag
+#      the reconciler has never seen, and X-ARCHIVED is a count-shaped
+#      archive line. Both carry field=value telemetry whose varying values
+#      (instance slug, count) are dropped from the derived key, so any
+#      re-emission re-derives the identical signal — never-green.
+cat > "$tmp/empty15.json" <<'EOF'
+[]
+EOF
+cat > "$tmp/triage15a.md" <<'EOF'
+[2026-08-28T13:30:00Z] [CLAIM-RELEASED-CONFIRM] instance=0509-9999 repo=Nishfleet/0509 count=3
+[2026-08-28T13:30:00Z] [X-ARCHIVED] instance=fleet-ops-5555 repo=Nishfleet/fleet-ops count=7
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/empty15.json" "$tmp/triage15a.md" > "$tmp/summary15a.json"
+jq -e '.filed == 0 and .alarm_count == 0' "$tmp/summary15a.json" >/dev/null \
+    || fail "scenario 15a: unlisted informational signals must not be queued, got: $(cat "$tmp/summary15a.json")"
+[[ $(wc -l < "$tmp/filed.jsonl") -eq 0 ]] \
+    || fail "scenario 15a: must not file, got: $(cat "$tmp/filed.jsonl")"
+ok "scenario 15a: informational class guard blocks unlisted telemetry signals"
+
+# 15b. The guard decision rests on the key being stable across varying
+#      message content: dump two differing CLAIM-RELEASED-CONFIRM messages,
+#      assert the extracted keys are equal (constant per repo), and assert
+#      derive_signals suppresses both. An exempt hand-keyed tag
+#      (FAILED-COMMAND-SWALLOWED, session-keyed per fleet-ops#4884) is
+#      unaffected.
+python3 - "$repo_root" <<'PY' || fail "scenario 15b: guard must fail closed on stable keys"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location(
+    "dqr", sys.argv[1] + "/lib/detector-queue-reconciler.py")
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+keys = set()
+for inst, n in [("0509-9999", 3), ("0509-1111", 9), ("0509-42", 1)]:
+    msg = f"instance={inst} repo=Nishfleet/0509 count={n}"
+    keys.add(tuple(m._extract_signal_key("CLAIM-RELEASED-CONFIRM", msg)))
+    assert m.derive_signals("CLAIM-RELEASED-CONFIRM", msg) == [], \
+        ("unlisted telemetry signal must not queue", msg)
+# differing messages, identical key -> stable across varying content.
+assert keys == {("nishfleet-0509",)}, keys
+# exempt tag keeps its hand-keyed path (per-session discriminator).
+sig = m.derive_signals(
+    "FAILED-COMMAND-SWALLOWED",
+    "session=abc-123 path=/tmp/x snippet=boom")
+assert sig == ["loud/failed-command-swallowed/abc-123"], sig
+PY
+ok "scenario 15b: key is stable across varying content; exempt tag unaffected"
+
+# 15c. The `unspecified` -> `loud/<tag>` fallback is reserved for genuinely
+#      instance-keyed tags: an unknown tag whose message yields no
+#      discriminating token at all (`n=42` leaves no surviving key word) is
+#      constant-keyed by construction and must not be queued.
+cat > "$tmp/triage15c.md" <<'EOF'
+[2026-08-28T13:30:00Z] [SWEEP-NOTE] n=42
+EOF
+true > "$tmp/filed.jsonl"
+run "$tmp/empty15.json" "$tmp/triage15c.md" > "$tmp/summary15c.json"
+jq -e '.filed == 0 and .alarm_count == 0' "$tmp/summary15c.json" >/dev/null \
+    || fail "scenario 15c: bare loud/<tag> fallback must not queue for unknown tags, got: $(cat "$tmp/summary15c.json")"
+ok "scenario 15c: unspecified bare-key fallback is suppressed for unknown tags"
+
+# 15d. The guard must not swallow declared classes or discriminated keys:
+#      WIDGET-FAIL routes senior (-FAIL) so it is exempt and still queues;
+#      WIDGET-WATCHER keys on a unit= value that DOES reach the derived key,
+#      so occurrences are discriminated and it still queues agent-ready.
+cat > "$tmp/triage15d.md" <<'EOF'
+[2026-08-28T13:30:00Z] [WIDGET-FAIL] widget=9 broken attempts=4 — real fault
+[2026-08-28T13:30:00Z] [WIDGET-WATCHER] unit=alpha.service state=dead
+EOF
+true > "$tmp/filed.jsonl"
+run "$tmp/empty15.json" "$tmp/triage15d.md" > "$tmp/summary15d.json"
+jq -e '.filed == 2' "$tmp/summary15d.json" >/dev/null \
+    || fail "scenario 15d: senior-routed and discriminated-key signals must still queue, got: $(cat "$tmp/summary15d.json")"
+grep -q 'loud/widget-fail/' "$tmp/filed.jsonl" \
+    || fail "scenario 15d: WIDGET-FAIL must file, got: $(cat "$tmp/filed.jsonl")"
+grep -q '"escalate-senior"' "$tmp/filed.jsonl" \
+    || fail "scenario 15d: WIDGET-FAIL must route senior, got: $(cat "$tmp/filed.jsonl")"
+grep -q 'loud/widget-watcher/alpha.service' "$tmp/filed.jsonl" \
+    || fail "scenario 15d: discriminated unit key must file, got: $(cat "$tmp/filed.jsonl")"
+ok "scenario 15d: declared fault classes and discriminated keys still queue"
+
+# 15e. Terminus: an already-open issue filed under a now-suppressed
+#      never-green signal observe-to-closes while the informational line
+#      keeps firing — the same terminus as the per-tag 9*-close scenarios.
+cat > "$tmp/open15e.json" <<'EOF'
+[{"number": 5983, "body": "The heartbeat detector reported this alarm on a real tick.\n\n- alarm tag: `CLAIM-RELEASED-CONFIRM`\n\n`loud/claim-released-confirm/nishfleet-0509`\n", "labels": [{"name": "agent-ready"}], "createdAt": "2026-08-28T10:00:00Z", "comments": []}]
+EOF
+cat > "$tmp/triage15e.md" <<'EOF'
+[2026-08-28T13:30:00Z] [CLAIM-RELEASED-CONFIRM] instance=0509-9999 repo=Nishfleet/0509 count=3
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/open15e.json" "$tmp/triage15e.md" > "$tmp/summary15e.json"
+jq -e '.closed == 1 and .filed == 0' "$tmp/summary15e.json" >/dev/null \
+    || fail "scenario 15e: stale suppressed-signal issue must observe-to-close while the line fires, got: $(cat "$tmp/summary15e.json")"
+grep -q "issue close 5983" "$tmp/gh.log" \
+    || fail "scenario 15e: expected gh issue close 5983"
+ok "scenario 15e: stale suppressed-signal issue observe-to-closes while the line fires"
+
+# ---------------------------------------------------------------------------
+# 16. AUDITOR-PANEL-PENDING alarms are observe-to-close-only (fleet-ops#4965).
+#     A pending senior panel is load-borne — the per-tick start cap defers
+#     seat starts under backlog and the panel self-heals via stale-SKIP
+#     recast (#3962) and SKIP-EXHAUSTED abstention (#4503). There is no
+#     manual worker action: identical filings #4812/#4877 closed via
+#     observe-to-close with zero worker code, and #4965 alone burned 7 claims
+#     and 2 StartLimitBursts on workers that re-verified and exited with no
+#     PR.
+#
+#     16a. A fresh AUDITOR-PANEL-PENDING alarm files under `observe-to-close`,
+#          NOT `agent-ready`, so the intake will not claim it.
+#     16b. An already-open agent-ready filing is retroactively re-labeled to
+#          observe-to-close while the alarm still fires (dedupe path).
+#     16c. The detector's observe-to-close STILL closes it on the green tick.
+# ---------------------------------------------------------------------------
+panel_msg="repo=0509 candidate=2581 age_s=3615 active=0 missing=1 failed=0 — senior auditor panel has not convened"
+cat > "$tmp/triage16-on.md" <<EOF
+[2026-08-28T13:30:00Z] [AUDITOR-PANEL-PENDING] $panel_msg
+EOF
+cat > "$tmp/open16.json" <<'EOF'
+[{"number": 4965, "body": "The heartbeat detector reported this alarm on a real tick and no open issue carried its signal key, so the detector→queue reconciler filed one.\n\n- alarm tag: `AUDITOR-PANEL-PENDING`\n\nDo NOT close this issue on PR merge alone. The reconciler closes it only when the detector reports green on a real heartbeat tick (observe-to-close).\n\n`loud/auditor-panel-pending/candidate-age_s-active-missing-failed`\n", "labels": [{"name": "agent-ready"}, {"name": "agent-in-progress"}], "createdAt": "2026-08-28T10:00:00Z", "comments": []}]
+EOF
+
+# 16a. Fresh AUDITOR-PANEL-PENDING files with observe-to-close, not agent-ready.
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/empty14.json" "$tmp/triage16-on.md" > "$tmp/summary16a.json"
+jq -e '.filed == 1 and .closed == 0' "$tmp/summary16a.json" >/dev/null \
+    || fail "scenario 16a: AUDITOR-PANEL-PENDING must file one issue (got: $(cat "$tmp/summary16a.json"))"
+grep -q 'loud/auditor-panel-pending/candidate-age_s-active-missing-failed' "$tmp/filed.jsonl" \
+    || fail "scenario 16a: AUDITOR-PANEL-PENDING signal key missing (filed: $(cat "$tmp/filed.jsonl"))"
+printf '%s' "$(cat "$tmp/filed.jsonl")" | grep -q '"labels": \["observe-to-close"\]' \
+    || fail "scenario 16a: must file under observe-to-close, not agent-ready (filed: $(cat "$tmp/filed.jsonl"))"
+printf '%s' "$(cat "$tmp/filed.jsonl")" | grep -q '"agent-ready"' \
+    && fail "scenario 16a: must NOT carry agent-ready (filed: $(cat "$tmp/filed.jsonl"))"
+ok "scenario 16a: AUDITOR-PANEL-PENDING filed under observe-to-close, not agent-ready"
+
+# 16b. Alarm still firing + open agent-ready filing -> dedupe AND retroactive
+# re-label to observe-to-close so the intake stops claiming it (#4965's live
+# claim-burn loop). The issue must NOT close while the alarm is live.
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/open16.json" "$tmp/triage16-on.md" > "$tmp/summary16b.json"
+jq -e '.deduped == 1 and .closed == 0 and .rerouted == 1' "$tmp/summary16b.json" >/dev/null \
+    || fail "scenario 16b: expected deduped+rerouted, not closed (got: $(cat "$tmp/summary16b.json"))"
+grep -q "issue edit 4965" "$tmp/gh.log" \
+    || fail "scenario 16b: expected gh issue edit 4965 (got: $(cat "$tmp/gh.log"))"
+grep -q -- "--add-label observe-to-close" "$tmp/gh.log" \
+    || fail "scenario 16b: must add observe-to-close (got: $(cat "$tmp/gh.log"))"
+grep -q -- "--remove-label agent-ready" "$tmp/gh.log" \
+    || fail "scenario 16b: must remove agent-ready (got: $(cat "$tmp/gh.log"))"
+! grep -q "issue close" "$tmp/gh.log" \
+    || fail "scenario 16b: still-alarmed issue must NOT close (gh.log: $(cat "$tmp/gh.log"))"
+ok "scenario 16b: open agent-ready filing retroactively re-labeled observe-to-close while alarmed"
+
+# 16c. Panel convenes (no AUDITOR-PANEL-PENDING line in the tick) -> the
+# observe-to-close closeout fires regardless of the label.
+cat > "$tmp/triage16-off.md" <<'EOF'
+[2026-08-28T13:30:00Z] [AUDITOR-PANEL-GREEN] every senior auditor panel convened
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/open16.json" "$tmp/triage16-off.md" > "$tmp/summary16c.json"
+jq -e '.closed == 1 and .filed == 0' "$tmp/summary16c.json" >/dev/null \
+    || fail "scenario 16c: convened panel must observe-to-close (got: $(cat "$tmp/summary16c.json"))"
+grep -q "issue close 4965" "$tmp/gh.log" \
+    || fail "scenario 16c: expected gh issue close 4965 (got: $(cat "$tmp/gh.log"))"
+ok "scenario 16c: convened panel observe-to-closes the filing"
 
 ok "all signal-reconcile scenarios passed"

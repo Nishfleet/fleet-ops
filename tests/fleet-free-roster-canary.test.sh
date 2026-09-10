@@ -3,9 +3,10 @@
 #
 # Proves the free-model roster canary (fleet-ops#518) offline:
 #   1. Clean: free provider wired, free slug in catalog + allowlist -> OK, no file.
-#   2. Ollama carve-out: non-deepseek-v4-flash model in ollama.models -> exit 1,
-#      LOUD, auto-files. ollama catalog is never polled.
-#   3. Ollama carve-out: deepseek-v4-flash:0731 allowlisted -> clean (gate passes).
+#   2. Ollama carve-out: any model in ollama.models -> exit 1, LOUD, auto-files
+#      (no sanctioned ollama seat exists since 2026-09-10; ollama catalog is
+#      never polled).
+#   3. Ollama carve-out: a retired V4 flash slug allowlisted -> still screams.
 #   4. Penny-for-speed: free provider cap>0 with models, missing from
 #      free_providers_in_order -> exit 1, LOUD, auto-files.
 #   5. New free slug in catalog, not wired -> exit 0, files audition+wire
@@ -16,7 +17,7 @@
 #   8. Per-tick file cap throttles filings.
 #   9. Dedup: open issue already carrying the marker -> no second create.
 #  10. pi missing -> exit 1 (watcher broken, fail loud).
-#  11. Production seat-caps: ollama allowlist is deepseek-v4-flash only; every
+#  11. Production seat-caps: no DeepSeek flash id on the ollama allowlist;
 #      cap>0 free provider with models is in free_providers_in_order.
 #  12. Heartbeat-tier1 wires the canary and propagates a gate fail-loud.
 
@@ -171,7 +172,7 @@ grep -q 'FREE-ROSTER-OK' "$triage" || fail "scenario1: missing OK line"
 ! grep -q 'issue create' "$gh_log" || fail "scenario1: must not file on the clean state"
 ok "scenario1: wired free slug in catalog is quiet"
 
-# --- 2. Ollama carve-out: non-ds-v4-flash allowlisted -> scream + file -----
+# --- 2. Ollama carve-out: non-flash model allowlisted -> scream + file ----
 : >"$gh_log"; : >"$triage"
 base_entitled
 write_caps <<'JSON'
@@ -180,7 +181,7 @@ write_caps <<'JSON'
 JSON
 write_catalog <<'TSV'
 ollama	kimi-k2.7-code
-ollama	deepseek-v4-flash:0731
+ollama	kimi-k3
 TSV
 run_canary
 [[ "$env_rc" == "1" ]] || fail "scenario2: expected rc=1, got $env_rc ($env_out)"
@@ -189,22 +190,24 @@ grep -q 'Ollama carve-out' "$triage" || fail "scenario2: must name the carve-out
 grep -q 'kimi-k2.7-code' "$triage" || fail "scenario2: must name the banned slug"
 grep -q 'issue create' "$gh_log" || fail "scenario2: must auto-file"
 grep -q 'kimi-k2.7-code' "$gh_log" || fail "scenario2: filed title must name the slug"
-ok "scenario2: non-ds-v4-flash on ollama screams and auto-files"
+ok "scenario2: non-flash model on ollama screams and auto-files"
 
-# --- 3. Ollama carve-out: deepseek-v4-flash:0731 allowlisted -> clean -----
+# --- 3. Ollama carve-out: retired V4 flash slug allowlisted -> screams ----
+# 2026-09-10: the whole V4 flash family is banned fleet-wide and ollama has no
+# V4.1 slug, so a flash id on ollama is a violation like any other model.
 : >"$gh_log"; : >"$triage"
 base_entitled
 write_caps <<'JSON'
 { "free_providers_in_order": [],
-  "providers": { "ollama": { "cap": 4, "class": "prepaid-quota", "models": { "deepseek-v4-flash:0731": 4 } } } }
+  "providers": { "ollama": { "cap": 4, "class": "prepaid-quota", "models": { "deepseek-v4.1-flash:0731": 4 } } } }
 JSON
 write_catalog <<'TSV'
-ollama	deepseek-v4-flash:0731
+ollama	deepseek-v4.1-flash:0731
 TSV
 run_canary
-[[ "$env_rc" == "0" ]] || fail "scenario3: expected rc=0, got $env_rc ($env_out)"
-grep -q 'FREE-ROSTER-OK' "$triage" || fail "scenario3: ds-v4-flash allowlist must be clean"
-ok "scenario3: deepseek-v4-flash on ollama passes the carve-out gate"
+[[ "$env_rc" == "1" ]] || fail "scenario3: expected rc=1, got $env_rc ($env_out)"
+grep -q 'FREE-ROSTER-VIOLATION' "$triage" || fail "scenario3: retired flash id on ollama must violate"
+ok "scenario3: retired flash slug on ollama screams (no sanctioned seat)"
 
 # --- 4. penny-for-speed: free provider missing from order -> scream -------
 : >"$gh_log"; : >"$triage"
@@ -281,7 +284,7 @@ ok "scenario7: stale wired free slug auto-files a bench ticket"
 # A free-form slug that is ALREADY benched at cap=0 (the {"cap":0,
 # "intentional_cap_zero":...} row) is the bench itself, not a live wired lane
 # that went stale. The production-lock rows (fleet-ops#811 x-preview-f-free,
-# #744 deepseek-v4-flash-free, #1224 muse-spark) sit at cap=0 by design and
+# #1224 muse-spark) sit at cap=0 by design and
 # their signal can never clear, so filing them yields a permanent duplicate
 # on every tick. The canary must skip them. A live cap>0 lane that went
 # stale must STILL be filed (proves we do not skip the whole stale check).
@@ -396,7 +399,7 @@ set -e
 grep -q 'FREE-ROSTER-WATCHER-BROKEN' "$triage" || fail "scenario10: missing WATCHER-BROKEN"
 ok "scenario10: pi missing fails loud"
 
-# --- 11. production seat-caps: ollama deepseek-v4-flash only; free order --
+# --- 11. production seat-caps: no DeepSeek flash on ollama; free order --
 : >"$gh_log"; : >"$triage"
 # Catalog fixture derived from the PRODUCTION seat-caps free allowlists
 # (commandcode/hetzner/opencode/orcarouter). The canary's roster watch calls
@@ -419,11 +422,12 @@ prod_out=$(
 prod_rc=$?
 set -e
 [[ "$prod_rc" == "0" ]] || fail "scenario11: production gates must be clean, got rc=$prod_rc ($prod_out)"
-# ollama allowlist is deepseek-v4-flash only
+# ollama has no sanctioned seat since 2026-09-10 — no DeepSeek flash id may
+# be allowlisted (the family is banned fleet-wide; ollama offers no V4.1 slug)
 while IFS= read -r k; do
     lk="${k,,}"
-    if [[ ! "$lk" =~ deepseek.*v4.*flash ]]; then
-        fail "scenario11: production ollama allowlists non-ds-v4-flash: $k"
+    if [[ "$lk" =~ deepseek.*v4.*flash ]]; then
+        fail "scenario11: production ollama allowlists a banned DeepSeek flash id: $k"
     fi
 done < <(jq -r '.providers.ollama.models // {} | keys[]' "$repo_root/config/seat-caps.json")
 # every cap>0 free provider with models is in free_providers_in_order
@@ -643,49 +647,22 @@ while IFS= read -r k; do
 done < <(jq -r '.providers.opencode.models // {} | keys[]' "$repo_root/config/seat-caps.json")
 ok "scenario17: production seat-caps keep muse-spark-1.2-contributor-free benched at cap=0 with dated reason and no billing sibling"
 
-# --- 19. production lock: deepseek-v4-flash-free stay-benched (fleet-ops#744) --
-# The class prevention for "free slug silently unwired after a failed live
-# spawn" specific to #744: the canary's freshness detector 2a
-# (free-slug-available) only stops re-filing the ticket while the slug
-# remains in the seat-caps allowlist. A later PR that drops the cap=0 row
-# (because the API returns HTTP 400) would re-arm the canary to file a
-# duplicate on every tick. The cap=0 row + dated reason is the
-# production-lock answer. fleet-ops#1432: cap values can be a plain
-# number (legacy) or an object {"cap": N, "intentional_cap_zero": "..."}.
-dvf_cap=$(jq -r '(.providers.opencode.models["deepseek-v4-flash-free"] // "missing") | if type == "object" then .cap else . end' \
-    "$repo_root/config/seat-caps.json")
-if [[ "$dvf_cap" == "missing" ]]; then
-  fail "scenario19: production seat-caps must keep a deepseek-v4-flash-free row (cap=0 bench, fleet-ops#744)"
-fi
-if [[ "$dvf_cap" != "0" ]]; then
-  fail "scenario19: production deepseek-v4-flash-free must be capped 0 while the API returns HTTP 400 (got $dvf_cap, fleet-ops#744)"
-fi
-# Dated reason field required: the cap=0 row is the bench, the dated reason
-# is the audit trail. The reason must cite fleet-ops#744 and a date.
-reason=$(jq -r '.providers.opencode._deepseek_v4_flash_free // ""' \
-    "$repo_root/config/seat-caps.json")
-if [[ -z "$reason" ]]; then
-  fail "scenario19: production seat-caps must carry _deepseek_v4_flash_free dated reason (fleet-ops#744)"
-fi
-if ! grep -qE 'fleet-ops#744' <<<"$reason"; then
-  fail "scenario19: _deepseek_v4_flash_free must cite fleet-ops#744 (got: $reason)"
-fi
-if ! grep -qE '^20[0-9]{2}-[0-9]{2}-[0-9]{2}' <<<"$reason"; then
-  fail "scenario19: _deepseek_v4_flash_free must start with an ISO date (got: $reason)"
-fi
-# No billing sibling (deepseek-v4-flash, without the -free suffix) on the
-# opencode allowlist: free-form is the only path; a billing row would be a
-# money lane on a free-class provider. Exclude the free-form slug itself
-# and any other free-form variant.
+# --- 19. production lock: retired V4 flash free slug stays OFF opencode ----
+# 2026-09-10: the fleet-wide V4 flash ban retired the cap=0 bench row that
+# fleet-ops#744 pinned — the slug is gone from pi-models.json too, so the
+# production-lock question inverts: no V4 flash id (free-form or billing)
+# may reappear on the opencode allowlist, and no billing sibling may exist.
+# fleet-ops#1432: cap values can be a plain number (legacy) or an object
+# {"cap": N, "intentional_cap_zero": "..."}.
 while IFS= read -r k; do
   lk="${k,,}"
   case "$lk" in
-    deepseek-v4-flash-free|deepseek-*-free|deepseek-*/*) : ;;  # free-form variants allowed
-    deepseek-v4-flash|deepseek-*|*/deepseek|*/deepseek-*)
+    *v4*flash*) fail "scenario19: production opencode allowlists a banned V4 flash slug: $k" ;;
+    deepseek-*|*/deepseek|*/deepseek-*)
       fail "scenario19: production opencode allowlists a non-free deepseek slug: $k" ;;
   esac
 done < <(jq -r '.providers.opencode.models // {} | keys[]' "$repo_root/config/seat-caps.json")
-ok "scenario19: production seat-caps keep deepseek-v4-flash-free benched at cap=0 with dated reason and no billing sibling"
+ok "scenario19: production seat-caps keep every V4 flash id off the opencode allowlist"
 
 # --- 19b. production lock: commandcode minimax/minimax-m3-free retired (fleet-ops#2700) --
 # The provider retired the free MiniMax M3 line (403 FORBIDDEN "The free
@@ -1053,10 +1030,10 @@ jq -n --arg b $'body\nfree-roster-canary: ollama carve-out-violation\n' \
 base_entitled
 write_caps <<'JSON'
 { "free_providers_in_order": [],
-  "providers": { "ollama": { "cap": 4, "class": "prepaid-quota", "models": { "deepseek-v4-flash:0731": 4 } } } }
+  "providers": { "ollama": { "cap": 4, "class": "prepaid-quota", "models": {} } } }
 JSON
 write_catalog <<'TSV'
-ollama	deepseek-v4-flash:0731
+ollama	kimi-k3
 TSV
 touch_sentinel
 FLEET_FREE_ROSTER_OBSERVE_TO_CLOSE=1 run_canary
@@ -1085,4 +1062,4 @@ ok "scenario30: heartbeat-tier1 wires opt-in env + sentinel refresh for observe-
 
 unset GH_OPEN_ISSUES GH_CLOSED_ISSUES FLEET_FREE_ROSTER_OBSERVE_TO_CLOSE FLEET_FREE_ROSTER_OBSERVE_SENTINEL
 
-ok "fleet-free-roster-canary: ollama carve-out, penny-for-speed, freshness, stale, cap, dedup, prod clean, deepseek-v4-flash-free bench lock, observe-to-close"
+ok "fleet-free-roster-canary: ollama carve-out, penny-for-speed, freshness, stale, cap, dedup, prod clean, V4-flash-free retirement lock, observe-to-close"

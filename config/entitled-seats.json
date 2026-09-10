@@ -6,7 +6,7 @@
       "id": "ollama",
       "class": "prepaid-quota",
       "quota_window": "weekly",
-      "note": "Ollama Cloud. Prepaid weekly quota, not free (Nish 2026-08-26)."
+      "note": "Ollama Cloud. Prepaid weekly quota, not free (Nish 2026-08-26). 2026-09-10: the DeepSeek flash seat was retired (V4 flash banned fleet-wide; ollama offers no V4.1 slug)."
     },
     {
       "id": "cline",
@@ -38,17 +38,17 @@
     {
       "id": "runinfra",
       "class": "prepaid-quota",
-      "note": "RunInfra deepseek-v4-flash worker seat (fleet-ops#4205, Nish 2026-09-07). Prepaid balance, cap 4, never a judge/senior seat. HTTP 402 = balance wall (Nish-only top-up), not a transient fault."
+      "note": "RunInfra DeepSeek V4 Flash worker seat (fleet-ops#4205, Nish 2026-09-07); seat RETIRED 2026-09-10 — V4 flash banned fleet-wide (Nish, unanimous) and RunInfra offers no V4.1 slug. Prepaid balance, was cap 4, never a judge/senior seat. HTTP 402 = balance wall (Nish-only top-up), not a transient fault."
     },
     {
       "id": "crof",
       "class": "prepaid-quota",
-      "note": "CrofAI deepseek-v4-flash-0731 worker seat (fleet-ops#4262, Nish 2026-09-07). Prepaid balance, cap 2, NOT audition. Never a judge/senior seat. HTTP 402 = balance wall (Nish-only top-up), not a transient fault."
+      "note": "CrofAI DeepSeek V4 Flash 0731 worker seat (fleet-ops#4262, Nish 2026-09-07); seat RETIRED 2026-09-10 — V4 flash banned fleet-wide, no V4.1 slug offered. Prepaid balance, was cap 2, NOT audition. Never a judge/senior seat. HTTP 402 = balance wall (Nish-only top-up), not a transient fault."
     },
     {
       "id": "entrim",
       "class": "prepaid-quota",
-      "note": "Entrim deepseek-ai/DeepSeek-V4-Flash worker seat (fleet-ops#4262, Nish 2026-09-07). Prepaid balance, cap 2, NOT audition. Never a judge/senior seat. HTTP 402 = balance wall (Nish-only top-up), not a transient fault."
+      "note": "Entrim DeepSeek V4 Flash worker seat (fleet-ops#4262, Nish 2026-09-07); seat RETIRED 2026-09-10 — V4 flash banned fleet-wide, no V4.1 slug offered. Prepaid balance, was cap 2, NOT audition. Never a judge/senior seat. HTTP 402 = balance wall (Nish-only top-up), not a transient fault."
     },
     {
       "id": "alibaba-coding",
@@ -59,7 +59,7 @@
       "id": "paretoinference",
       "class": "prepaid-quota",
       "quota_window": "daily",
-      "note": "Pareto Inference Pareto Pass (fleet-ops#4453, Nish 2026-09-08). $3/week -> up to $20 of model usage each day; daily allowance expires at 23:59, unused $ is lost (https://docs.paretoinference.com/pareto-pass.md). Workers deepseek/deepseek-v4-flash + z-ai/glm-5.3-flash only, cap 4, glm-5.3 cap 0 (money_only). Spend-metered to $19.50/day on the existing prepaid-usage counter (token-derived; usage.cost reports 0.0 on the Pass). Drawn FIRST among prepaid worker seats (expiry-first rule). Never a judge/senior seat. 401 = bad key (fail loud); 429 = quota/concurrency wall (bench 15 min, not seat-dead)."
+      "note": "Pareto Inference Pareto Pass (fleet-ops#4453, Nish 2026-09-08). $3/week -> up to $20 of model usage each day; daily allowance expires at 23:59, unused $ is lost (https://docs.paretoinference.com/pareto-pass.md). Worker z-ai/glm-5.3-flash only now, cap 4 (the DeepSeek flash seat was retired 2026-09-10 — V4 flash banned fleet-wide, no V4.1 slug on this provider), glm-5.3 cap 0 (money_only). Spend-metered to $19.50/day on the existing prepaid-usage counter (token-derived; usage.cost reports 0.0 on the Pass). Drawn FIRST among prepaid worker seats (expiry-first rule). Never a judge/senior seat. 401 = bad key (fail loud); 429 = quota/concurrency wall (bench 15 min, not seat-dead)."
     },
     {
       "id": "minimax",
@@ -84,12 +84,12 @@
     {
       "id": "commandcode",
       "class": "free",
-      "note": "Command Code free lane. Allowlist is deepseek/deepseek-v4-flash, minimax/minimax-m3-free (fleet-ops#637; RETIRED corpse 2026-09-01 fleet-ops#2700, re-verified 2026-09-02 fleet-ops#2742), and poolside/laguna-s-2.1-free (fleet-ops#638)."
+      "note": "Command Code free lane. Allowlist is deepseek/deepseek-v4.1-flash, minimax/minimax-m3-free (fleet-ops#637; RETIRED corpse 2026-09-01 fleet-ops#2700, re-verified 2026-09-02 fleet-ops#2742), and poolside/laguna-s-2.1-free (fleet-ops#638)."
     },
     {
       "id": "opencode",
       "class": "free",
-      "note": "OpenCode Zen (ledger name opencode-go). mimo-v2.5-free (fleet-ops#640), nemotron-3.5-lightning-free (fleet-ops#911), and nemotron-3-ultra-free (fleet-ops#910) are live. hy3-free RETIRED 2026-09-02 (fleet-ops#2667): live spawn n=3 returned HTTP 401 ModelError 'Model hy3-free is not supported' while the control nemotron-3-ultra-free returned PONG on the same key, so the provider dropped the slug \u2014 benched at cap=0 intentional_cap_zero=corpse; the slug is still advertised in `pi --list-models`, so the catalog is not the authority, the live spawn is. deepseek-v4-flash-free benched at cap=0 after pi spawn returned 'Model is unavailable' (2026-08-27, fleet-ops#639); x-preview-f-free benched at cap=0 after pi spawn returned 'Model x-preview-f-free is not supported' (HTTP 401, 2026-08-27, fleet-ops#811). 2026-08-27 06:51Z re-audition (fleet-ops#912): Pi `--list-models` now advertises the slug with cost 0/0/0/0, but direct live spawn (n=3 with `PONG` and a tool-packet probe) still returns HTTP 401 and `PACKET-VERDICT tools=0 class=no-tools`; incumbent `hy3-free` returns 200 with `PACKET-VERDICT tools=1 class=worked`, so the failure is the model, not the provider/key. Cap stays 0 pending a passing re-audition. muse-spark-1.2-contributor-free benched at cap=0 after live spawn returned HTTP 500 Internal server error (n=3, PACKET-VERDICT tools=0 class=no-tools, 2026-08-28, fleet-ops#1224; re-audition 2026-08-29 still HTTP 500 n=3, fleet-ops#759); billing sibling muse-spark-1.2 not wired. MiniMax M3 is not wired (no free slug; fleet-ops#435 watches the catalog)."
+      "note": "OpenCode Zen (ledger name opencode-go). mimo-v2.5-free (fleet-ops#640), nemotron-3.5-lightning-free (fleet-ops#911), and nemotron-3-ultra-free (fleet-ops#910) are live. hy3-free RETIRED 2026-09-02 (fleet-ops#2667): live spawn n=3 returned HTTP 401 ModelError 'Model hy3-free is not supported' while the control nemotron-3-ultra-free returned PONG on the same key, so the provider dropped the slug — benched at cap=0 intentional_cap_zero=corpse; the slug is still advertised in `pi --list-models`, so the catalog is not the authority, the live spawn is. the V4 flash free slug benched at cap=0 after pi spawn returned 'Model is unavailable' (2026-08-27, fleet-ops#639; fully retired 2026-09-10 with the fleet-wide V4 flash ban); x-preview-f-free benched at cap=0 after pi spawn returned 'Model x-preview-f-free is not supported' (HTTP 401, 2026-08-27, fleet-ops#811). 2026-08-27 06:51Z re-audition (fleet-ops#912): Pi `--list-models` now advertises the slug with cost 0/0/0/0, but direct live spawn (n=3 with `PONG` and a tool-packet probe) still returns HTTP 401 and `PACKET-VERDICT tools=0 class=no-tools`; incumbent `hy3-free` returns 200 with `PACKET-VERDICT tools=1 class=worked`, so the failure is the model, not the provider/key. Cap stays 0 pending a passing re-audition. muse-spark-1.2-contributor-free benched at cap=0 after live spawn returned HTTP 500 Internal server error (n=3, PACKET-VERDICT tools=0 class=no-tools, 2026-08-28, fleet-ops#1224; re-audition 2026-08-29 still HTTP 500 n=3, fleet-ops#759); billing sibling muse-spark-1.2 not wired. MiniMax M3 is not wired (no free slug; fleet-ops#435 watches the catalog)."
     },
     {
       "id": "orcarouter",

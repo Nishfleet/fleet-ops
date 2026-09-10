@@ -73,7 +73,9 @@ assert [i.number for i in caught] == [1], caught
 assert sorted(i.number for i in missed) == [2, 3], missed
 
 # Cross-organ: failures for organ A must not catch incidents when the
-# caller pre-filters — stats_for_organ enforces that.
+# caller pre-filters — stats_for_organ enforces that. The resilience
+# drill has product_repos=() (fleet-ops#3030): fleet-ops incidents are
+# attributed to NO organ, never to the drill.
 events = [
     m.Event(organ="siterep-live-canary", ts=1000.0, kind="run"),
     m.Event(organ="siterep-live-canary", ts=1000.0, kind="failure"),
@@ -88,7 +90,7 @@ by = {s.organ: s for s in m.compute_all(events, incidents)}
 assert by["siterep-live-canary"].caught == 1
 assert by["siterep-live-canary"].missed == 0
 assert by["fleet-resilience-drill"].caught == 0
-assert by["fleet-resilience-drill"].missed == 1
+assert by["fleet-resilience-drill"].missed == 0
 assert abs(by["siterep-live-canary"].effectiveness_ratio - 1.0) < 1e-9
 assert by["fleet-resilience-drill"].effectiveness_ratio == 0.0
 print("OK: correlate")
@@ -151,7 +153,8 @@ ok "empty window emits heartbeat + per-organ zeros"
 # =========================================================================
 # Window ends 2026-09-02T12:00:00Z. Place events inside 30d.
 # siterep-live-canary: failure at T-2h, bug issue 1h later → caught
-# fleet-resilience-drill: run only, bug with no prior failure → missed
+# fleet-resilience-drill: run only; the fleet-ops incident is NOT counted
+# (product_repos=(), fleet-ops#3030) → missed stays 0.
 python3 - <<'PY' >"$scratch/fixture.json"
 import json
 end = 1788350400  # 2026-09-02T12:00:00Z
@@ -186,8 +189,8 @@ grep -q 'fleet_canary_effectiveness_ratio{organ="siterep-live-canary"} 1.000000'
 grep -q 'fleet_canary_failures_total{organ="siterep-live-canary"} 1' "$FLEET_CANARY_EFF_OUT" \
   || fail "siterep failures=1"
 
-grep -q 'fleet_canary_missed_regressions_total{organ="fleet-resilience-drill"} 1' "$FLEET_CANARY_EFF_OUT" \
-  || fail "resilience should miss 1"
+grep -q 'fleet_canary_missed_regressions_total{organ="fleet-resilience-drill"} 0' "$FLEET_CANARY_EFF_OUT" \
+  || fail "resilience must not count fleet-ops incidents it does not watch (fleet-ops#3030)"
 grep -q 'fleet_canary_caught_regressions_total{organ="fleet-resilience-drill"} 0' "$FLEET_CANARY_EFF_OUT" \
   || fail "resilience caught should be 0"
 grep -q 'fleet_canary_effectiveness_ratio{organ="fleet-resilience-drill"} 0.000000' "$FLEET_CANARY_EFF_OUT" \

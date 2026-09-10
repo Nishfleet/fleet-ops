@@ -326,7 +326,7 @@ PY
 # fleet-ops#4205: the live seat-caps.json state file is a regular file COPY
 # (fleet-ops#2910) that install.sh overwrites from config/seat-caps.json on
 # every deploy. A hand-added provider row in the live file (e.g. a newly
-# wired seat like runinfra/deepseek-v4-flash) was silently dropped by that
+# wired seat like runinfra/<retired-V4-flash>) was silently dropped by that
 # overwrite. Merge unknown provider rows from the live file into the repo
 # copy before installing: every provider the repo does NOT declare is
 # preserved, so a hand-wired seat survives a deploy. The repo remains the

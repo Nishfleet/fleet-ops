@@ -3,12 +3,6 @@
   "candidates": [
     {
       "provider": "mergegateway",
-      "model": "deepseek/deepseek-v4-flash",
-      "class": "metered",
-      "source": "Last30Days best-value doc: DeepSeek V4 Flash is the top best-value coding model for autonomous tool-using workers; mergegateway is a non-prepaid gateway with $10 free credits and a live endpoint (probed 2026-09-06, PONG)."
-    },
-    {
-      "provider": "mergegateway",
       "model": "minimax/minimax-m3",
       "class": "metered",
       "source": "Last30Days best-value doc: MiniMax M3 (428B MoE, 1M context) is a top best-value open-weight coding model; mergegateway is non-prepaid with a live endpoint (probed 2026-09-06, PONG)."

@@ -331,7 +331,7 @@ _seat_key_valid() {
 _seat_is_probe_artifact() {
     # A probe-output fragment ends in .out/.err/.log (the unit output file
     # the prober captured the model id from, the #3661/#4018 shape). Real
-    # fleet model ids (glm-5-2, gpt-5.6-sol, deepseek-v4-flash-0731,
+    # fleet model ids (glm-5-2, gpt-5.6-sol, <retired-V4-flash>-0731,
     # z-ai/glm-5.3-flash, orcarouter/free, ...) never end in a dot-file ext.
     [[ "${1:-}" =~ \.(out|err|log)$ ]]
 }
@@ -1460,7 +1460,7 @@ main() {
             # observation (observed_at > written_at lifts the router hold).
             # Probe failure -> re-bench the marker so the seat stays out
             # WITHOUT a work item paying for the discovery (live: ollama/
-            # deepseek-v4-flash:0731, 12 empty runs in 2h — each bench
+            # <retired-V4-flash>, 12 empty runs in 2h — each bench
             # expiry silently re-admitted the still-dead seat).
             local _mk="${f%.json}.spawn-bench.json"
             local _mk_usable _mk_written _mk_usable_e _mk_written_e _mk_obs_e

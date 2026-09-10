@@ -296,7 +296,7 @@ Two-tier design (so the heartbeat still works if every LLM is dead):
 - **Tier 2 (judgment, only when the triage file is non-empty or the held
   queue has dispatchable items)**: walk a seat ladder
   `claude -p --model claude-opus-5` → `pi --print --provider devin
-  --model glm-5-2` (after a 30 s probe) → `pi --print --provider minimax
+  --model swe-2-max` (after a 30 s probe) → `pi --print --provider minimax
   --model MiniMax-M3`. First healthy seat wins; all dead → loud triage
   line + unit FAILS (systemd's `state=failed` is the page).
 

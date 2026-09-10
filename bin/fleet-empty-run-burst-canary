@@ -15,7 +15,7 @@ fi
 # fleet-empty-run-burst-canary — 0B-stdout burst on healthy seats (fleet-ops#2666).
 #
 # Incident 2026-09-01 12:48Z-14:11Z: empty_runs_last_2h jumped 0 -> 6 with samples
-# naming minimax/MiniMax-M3 and openrouter/deepseek-v4-flash-0731 (both
+# naming minimax/MiniMax-M3 and openrouter/deepseek-v4.1-flash-0731 (both
 # health_class=healthy / http 200 in pi-seat-health.json). The #902
 # empty-run class is a 24h+ counter that fires on the waste_ratio SLO; the
 # 2h burst on healthy seats is a sharper signal the 24h detector masks.
@@ -473,7 +473,7 @@ observe_to_close() {
 # healthy in the ledger while the marker still walls it. seat_usable()
 # and the canary's read helpers (above) honour the marker FIRST, so
 # routing and classification are correct — but the STORES still
-# disagree, and no check flagged it (live: ollama/deepseek-v4-flash:0731
+# disagree, and no check flagged it (live: ollama/<retired-V4-flash>
 # benched 3x in 2h, count 6/7/8, ledger healthy the whole time). This
 # scan walks the per-seat ledger dir for the raw disagreement — a
 # ledger file reporting health_class=healthy WHILE a spawn-bench marker
@@ -499,7 +499,7 @@ scan_bench_health_disagree() {
         # (the _sanitise convention; the separator is "__"). Prefer the
         # ledger's own provider/model fields when present (production
         # ledgers carry them, unsanitised) so the finding names the real
-        # seat id (e.g. deepseek-v4-flash:0731, not the _-sanitised form).
+        # seat id (e.g. <retired-V4-flash>, not the _-sanitised form).
         local stem="${base%.json}"
         np="${stem%%__*}"
         nm="${stem#*__}"

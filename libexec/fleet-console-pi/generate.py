@@ -513,7 +513,7 @@ def _seat_bench_held(provider, model):
           re-admission and the tile must agree the seat is not healthy
           while it is probe-gated. Without case (b) a clobbered-healthy
           sidecar renders an unprobed dead-weight seat as healthy (the
-          ollama/deepseek-v4-flash:0731 empty-run churn this issue names:
+          ollama/<retired-V4-flash> empty-run churn this issue names:
           25 no-ops in 2h while the census said healthy). Mirrors
           _spawn_bench_marker_held in libexec/fleet-metrics-export.py.
 

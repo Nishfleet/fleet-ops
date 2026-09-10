@@ -27,7 +27,7 @@ fi
 #      a. Ollama carve-out (binding, Nish 2026-08-20): the Ollama Pro account
 #         is DeepSeek V4 flash EXCLUSIVE. The roster scout must NEVER poll the
 #         Ollama catalog (fetch exclusion — this canary does not read ollama
-#         models from `pi --list-models`), and any non-deepseek-v4-flash model
+#         models from `pi --list-models`), and any non-<retired-V4-flash> model
 #         allowlisted in seat-caps providers.ollama.models is LOUD + auto-filed
 #         + exit 1. This restores the deleted hard diff-guard (commit a2ff1a3).
 #      b. Penny-for-speed ordering: every free-class provider with cap>0 and a
@@ -134,7 +134,7 @@ loud() {
 
 # Fleet free-form convention (opencode-m3-canary / cline-pass precedent):
 # `-free` suffix (hy3-free, minimax-m3-free, laguna-s-2.1-free) or a
-# `*-pass/` prefix (cline-pass/deepseek-v4-flash).
+# `*-pass/` prefix (cline-pass/deepseek-v4.1-flash).
 is_free_form() {
     local id="${1,,}"
     [[ "$id" == *-free ]] && return 0
@@ -143,11 +143,8 @@ is_free_form() {
 }
 
 # Ollama carve-out: only DeepSeek V4 flash variants may be allowlisted.
-# Matches deepseek-v4-flash, deepseek-v4-flash:0731, deepseek/deepseek-v4-flash.
-is_ds_v4_flash() {
-    local id="${1,,}"
-    [[ "$id" =~ deepseek.*v4.*flash ]]
-}
+# (the ollama carve-out no longer needs a per-slug predicate: ANY allowlisted
+# ollama model is a violation since 2026-09-10 — no sanctioned seat exists)
 
 # Bounded servability pre-check for a new free-form slug. Uses `pi --print`
 # with a tiny no-tools prompt; any non-zero exit (provider/transport failure,
@@ -229,24 +226,26 @@ fi
 violations=0
 
 # ---- GATE 1a: Ollama carve-out (hard diff-guard, no catalog poll) ----------
-# The carve-out is binding (Nish 2026-08-20). The scout must NEVER poll the
-# Ollama catalog, so this gate reads seat-caps only — never `pi --list-models`
-# for ollama. Any non-deepseek-v4-flash model in providers.ollama.models is a
-# violation that drains the shared weekly quota.
+# The carve-out is binding. The scout must NEVER poll the Ollama catalog, so
+# this gate reads seat-caps only — never `pi --list-models` for ollama.
+# 2026-09-10: ollama has NO sanctioned seat — the whole V4 flash family was
+# banned fleet-wide (Nish, unanimous) and ollama offers no V4.1 slug, so the
+# flash workhorse it used to protect is retired. Every request on ANY model
+# still bills the same shared prepaid weekly quota (the reason the exclusive
+# rule landed, Nish 2026-08-20), so ANY model allowlisted on ollama is a
+# violation until a new ollama seat is explicitly sanctioned.
 ollama_models=()
 while IFS= read -r k; do
     [[ -n "$k" ]] && ollama_models+=("$k")
 done < <(jq -r '.providers.ollama.models // {} | keys[]' "$SEAT_CAPS_JSON" 2>/dev/null || true)
 
 for slug in "${ollama_models[@]}"; do
-    if ! is_ds_v4_flash "$slug"; then
-        loud "FREE-ROSTER-VIOLATION" \
-            "Ollama carve-out: non-deepseek-v4-flash model allowlisted on ollama: $slug"
-        file_finding "ollama" "carve-out-violation" \
-            "Ollama carve-out violation: $slug allowlisted on ollama" \
-            "config/seat-caps.json providers.ollama.models includes \`${slug}\`. The Ollama Pro account is DeepSeek V4 flash EXCLUSIVE (Nish 2026-08-20, binding): every request on any model bills the same shared weekly quota the deepseek-v4-flash workhorse lane needs, and auditions burned ~65% of a week across 14 models before the rule landed. Remove \`${slug}\` from the ollama allowlist; keep only deepseek-v4-flash variants. The roster canary must never poll the Ollama catalog — this gate reads seat-caps only. Restores the deleted fleet2 hard diff-guard (commit a2ff1a3)."
-        violations=$((violations + 1))
-    fi
+    loud "FREE-ROSTER-VIOLATION" \
+        "Ollama carve-out: model allowlisted on ollama with no sanctioned seat: $slug"
+    file_finding "ollama" "carve-out-violation" \
+        "Ollama carve-out violation: $slug allowlisted on ollama" \
+        "config/seat-caps.json providers.ollama.models includes \`${slug}\`. Ollama has had no sanctioned seat since 2026-09-10 (the V4 flash family was banned fleet-wide and ollama offers no V4.1 slug; Nish, unanimous), and every request on any model still bills the same shared prepaid weekly quota the retired workhorse lane needed — auditions burned ~65% of a week across 14 models before the exclusive rule landed (Nish 2026-08-20, binding). Remove \`${slug}\` from the ollama allowlist; wiring any ollama seat back needs an explicit sanction. The roster canary must never poll the Ollama catalog — this gate reads seat-caps only. Restores the deleted fleet2 hard diff-guard (commit a2ff1a3)."
+    violations=$((violations + 1))
 done
 
 # ---- GATE 1b: penny-for-speed ordering -------------------------------------
@@ -377,7 +376,7 @@ for pid in "${free_providers[@]}"; do
         # wired lane that went stale — so it must never be re-filed as
         # newly-stale (fleet-ops#3864). Several production-lock rows sit at
         # cap=0 by design (fleet-ops#811 x-preview-f-free, #744
-        # deepseek-v4-flash-free, #1224 muse-spark-1.2-contributor-free) and
+        # <retired-V4-flash-free>, #1224 muse-spark-1.2-contributor-free) and
         # their signal can never clear (the row stays allowlisted and the
         # slug never reappears), so filing them yields a permanent, never-
         # closing duplicate on every tick. Read the cap from the allowlist

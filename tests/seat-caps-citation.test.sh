@@ -231,18 +231,18 @@ ok "seat-caps-citation: orcarouter citation pinned, order clean, JSON parses, ca
 echo "--- scenario 8: OpenRouter paid flash lane wired with dated measured citation ---"
 or_models=$(jq -r '.providers.openrouter.models | length' "$caps")
 [[ "$or_models" -ge 1 ]] || fail "openrouter must have a non-empty models map (the #384 paid flash lane). Got: $or_models"
-or_dsv4f=$(jq -r '.providers.openrouter.models["deepseek/deepseek-v4-flash-0731"] | if type=="object" then (.cap // "none") else . end' "$caps")
+or_dsv4f=$(jq -r '.providers.openrouter.models["deepseek/deepseek-v4.1-flash"] | if type=="object" then (.cap // "none") else . end' "$caps")
 [[ -n "$or_dsv4f" && "$or_dsv4f" != "null" ]] \
-  || fail "openrouter must allowlist deepseek/deepseek-v4-flash-0731 (the #384 cheapest+best paid flash lane)"
+  || fail "openrouter must allowlist deepseek/deepseek-v4.1-flash (the #384 cheapest+best paid flash lane)"
 # Rule 1 (fleet-ops#3504): the cap value is justified by a dated reason, not
 # pinned by the test. The lane is wired (entry present); the cap may be 0
 # (balance exhausted) with a dated reason citing the error class.
-or_dsv4f_reason=$(jq -r '.providers.openrouter.models["deepseek/deepseek-v4-flash-0731"] | if type=="object" then (.reason // "") else "" end' "$caps")
+or_dsv4f_reason=$(jq -r '.providers.openrouter.models["deepseek/deepseek-v4.1-flash"] | if type=="object" then (.reason // "") else "" end' "$caps")
 if [[ -n "$or_dsv4f_reason" ]]; then
     grep -qE "$date_pat" <<<"$or_dsv4f_reason" \
-      || fail "openrouter deepseek/deepseek-v4-flash-0731 reason must name a YYYY-MM-DD date (rule 1)"
+      || fail "openrouter deepseek/deepseek-v4.1-flash reason must name a YYYY-MM-DD date (rule 1)"
     grep -qiE "$meas_pat" <<<"$or_dsv4f_reason" \
-      || fail "openrouter deepseek/deepseek-v4-flash-0731 reason must name a measurement (rule 1)"
+      || fail "openrouter deepseek/deepseek-v4.1-flash reason must name a measurement (rule 1)"
 fi
 or_class=$(jq -r '.providers.openrouter.class // empty' "$caps")
 [[ "$or_class" == "metered" ]] || fail "openrouter class must be metered (paid lane — spend after free+prepaid). Got: $or_class"
@@ -254,7 +254,7 @@ grep -qE '\$0\.[0-9]' <<<"$or_cite" || fail "openrouter _comment_384 must name a
 grep -qiE 'pi --list-models|/models|catalog' <<<"$or_cite" || fail "openrouter _comment_384 must name the probe source (pi --list-models or /models catalog)"
 # cheapest+best evidence: the citation must name DeepSeek V4 flash as cheapest vs the two alternatives
 grep -qiE 'cheapest' <<<"$or_cite" || fail "openrouter _comment_384 must state cheapest+best verdict"
-ok "openrouter: deepseek/deepseek-v4-flash-0731 wired (metered) with dated measured _comment_384 citation (rule 1, fleet-ops#3504)"
+ok "openrouter: deepseek/deepseek-v4.1-flash wired (metered) with dated measured _comment_384 citation (rule 1, fleet-ops#3504)"
 
 # 9. Rule 4 (fleet-ops#3504): infrastructure death classes are NOT accepted
 #    as yield reasons for cap=0. If a cap=0 reason cites "yield" as a
@@ -343,7 +343,7 @@ ok "all provider classes are free, prepaid-quota, or metered (rule 5, fleet-ops#
 #     death class like rc=124, rc=143, 429, 503, resource_exhausted,
 #     no-seat-available), a session count of at least 20, and a PR rate under
 #     10% (or pr_count 0). A worker cannot land what #3848 landed
-#     (ollama/deepseek-v4-flash:0731 retired at measured yield 0.30 with only
+#     (the retired ollama V4 flash seat retired at measured yield 0.30 with only
 #     rc=124 hang-watchdog infra deaths; reverted by orchestrator PR #3863).
 #     The three config-pinning suites all passed on #3848 because the citation
 #     rules checked for a dated reason, not the retirement rule's evidence —

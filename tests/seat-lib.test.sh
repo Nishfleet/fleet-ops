@@ -3591,6 +3591,14 @@ bash "$here/fleet-failed-command-no-agent-names-reject.test.sh" || fail "fleet-f
 # The piped `2>&1 | head` sibling is #1193 (isError=false, stays clean).
 # Hosted here (CI cannot gain a P14 line).
 bash "$here/fleet-failed-command-gh-pr-view-merged.test.sh" || fail "fleet-failed-command-gh-pr-view-merged tests failed"
+# fleet-ops#5010: the `gh pr view --json <merge-queue-field> | python3 -c
+# "...json.load(sys.stdin)"` variant of the same invalid-field class. The
+# python tail does NOT mask the failure (unlike the `| head` sibling
+# #1193): python exits 1, isError=true, `JSONDecodeError: Expecting value:
+# line 1 column 1 (char 0)` on empty stdin, walked past with cause-prose
+# only. Distinct from the unpiped --json merged shape (#1244). Hosted here
+# (CI cannot gain a P14 line).
+bash "$here/fleet-failed-command-gh-pr-json-piped-python-load.test.sh" || fail "fleet-failed-command-gh-pr-json-piped-python-load tests failed"
 # fleet-ops#1142: a `gh issue view --comments --json author,body,createdAt |
 # python3 -c "...d['comments']..."` pipe crashing with `KeyError: 'comments'`,
 # recovered by a successful `gh api graphql` comments query with only a

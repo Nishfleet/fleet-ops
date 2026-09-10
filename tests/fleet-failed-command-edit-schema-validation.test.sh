@@ -69,6 +69,42 @@
 #      (detector-side lock, forbids a "schema validation is benign"
 #      exemption).
 #   7. seat-lib.test.sh hosts this file (CI cannot gain a P14 line).
+#
+# fleet-ops#4991 is the SIBLING schema-validation shape on the SAME
+# edit tool: the `edits` argument was passed as a JSON-encoded STRING
+# instead of an array of objects, so the harness rejects `edits.0: must
+# be object`
+#
+#     Validation failed for tool "edit":
+#       - edits.0: must be object
+#
+#     Received arguments:
+#     {
+#       "edits": "[{...}]",
+#       "path": "..."
+#     }
+#
+# isError=true, details={}, no "Command exited with code" line — the
+# call never ran. The live session
+# (2026-09-09T21-00-52-059Z_fleet-ops-4819-1788987651753950355.jsonl,
+# a fleet-ops#4819 worker editing bin/fleet-seat-comeback-release) had
+# three EMPTY assistant turns after the rejection, then the cause-prose
+# "The edit tool needs the edits as an array of objects, not a JSON
+# string. Let me retry with proper structure." followed by a successful
+# edit. That prose names the CAUSE (the malformed `edits` argument
+# shape) but NOT the FAILURE (the edit call returned isError=true with
+# the schema-validation message), so it does not discharge the pending
+# swallowed failure — exactly the #1286 recovery class. The successful
+# retry is content, not a flag. A future refactor must not treat
+# "argument shape" cause-prose as naming the failure.
+#
+# Scenarios (continued):
+#   8. live #4991 shape: edit with `edits` as a JSON string -> "edits.0:
+#      must be object" schema validation + cause-prose recovery -> finding.
+#   9. same shape plus a later user-facing flag -> clean.
+#   10. lib/failed-command-flagged.py cites fleet-ops#4991 and the
+#       "edits.0: must be object" wording (detector-side lock).
+#   11. lib/failed-command-flagged.py docstring cites fleet-ops#4991.
 
 set -euo pipefail
 
@@ -214,4 +250,63 @@ grep -Fq 'bash "$here/fleet-failed-command-edit-schema-validation.test.sh"' \
   || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
 ok "seat-lib.test.sh hosts this file"
 
-echo "OK: fleet-failed-command-edit-schema-validation: live #1286 edit schema-validation drills"
+# --- 8. live #4991 shape: edits passed as a JSON-encoded string -----------
+# fleet-ops#4991: the worker called `edit` with the whole `edits` array
+# serialized as a JSON STRING instead of a real array of objects. The
+# harness rejected the call before dispatch with "edits.0: must be
+# object", isError=true, details={}. The next turns were three empty
+# assistant messages (provider/apitimeout), then cause-prose "The edit
+# tool needs the edits as an array of objects, not a JSON string. Let
+# me retry with proper structure." followed by a successful edit. The
+# cause-prose names the argument shape (CAUSE), not the isError failure
+# (the edit call was rejected), so the finding must persist. The
+# successful retry is recovery, not a user-facing flag.
+write_session "edit-schema-edits-string-caused-prose" <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_e5","name":"edit","arguments":{"edits":"[{\"newText\": \"AS=\\\"${AGENT_STATE:-/home/nish/workspaces/agent-state}\\\"\\nLEDGER=\\\"${PI_SEAT_HEALTH_LEDGER_DIR:-$AS/lanes/seats}\\\"\",\"oldText\": \"AS=\\\"${AGENT_STATE:-/home/nish/workspaces/agent-state}\\\"\\nLEDGER=\\\"${PI_SEAT_HEALTH_LEDGER_DIR:-$AS/lanes/seats}\\\"\"}]","path":"/home/nish/workspaces/agent-worktrees/issue-fleet-ops-4819/bin/fleet-seat-comeback-release"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_e5","toolName":"edit","content":[{"type":"text","text":"Validation failed for tool \"edit\":\n  - edits.0: must be object\n\nReceived arguments:\n{\n  \"edits\": \"[{\\\"newText\\\": \\\"AS=\\\\\\\"${AGENT_STATE:-/home/nish/workspaces/agent-state}\\\\\\\"\\\\nLEDGER=\\\\\\\"${PI_SEAT_HEALTH_LEDGER_DIR:-$AS/lanes/seats}\\\\\\\"\\\"\"]\",\n  \"path\": \"/home/nish/workspaces/agent-worktrees/issue-fleet-ops-4819/bin/fleet-seat-comeback-release\"\n}"}],"details":{},"isError":true}}
+{"type":"message","message":{"role":"assistant","content":[]}}
+{"type":"message","message":{"role":"assistant","content":[]}}
+{"type":"message","message":{"role":"assistant","content":[]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"The edit tool needs the edits as an array of objects, not a JSON string. Let me retry with proper structure."},{"type":"toolCall","id":"call_e5b","name":"edit","arguments":{"edits":[{"newText":"AS=\"${AGENT_STATE:-/home/nish/workspaces/agent-state}\"\nLEDGER=\"${PI_SEAT_HEALTH_LEDGER_DIR:-$AS/lanes/seats}\"\nPI_BIN=\"${PI_BIN:-/home/nish/.local/bin/pi}\"","oldText":"AS=\"${AGENT_STATE:-/home/nish/workspaces/agent-state}\"\nLEDGER=\"${PI_SEAT_HEALTH_LEDGER_DIR:-$AS/lanes/seats}\"\nPI_BIN=\"${PI_BIN:-/home/nish/.local/bin/pi}\""}]}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_e5b","toolName":"edit","isError":false,"content":[{"type":"text","text":"Successfully replaced 1 block(s)"}]}}
+JSONL
+
+report=$(run_scan)
+count=$(jq '.findings | length' <<<"$report")
+[[ "$count" == "1" ]] || fail "live #4991 edits-as-string schema validation should be a finding (got $count) $report"
+snippet=$(jq -r '.findings[0].snippet' <<<"$report")
+grep -q 'Validation failed for tool "edit"' <<<"$snippet" \
+  || fail "finding snippet should mention the schema-validation heading (got $snippet)"
+grep -q 'edits.0: must be object' <<<"$snippet" \
+  || fail "finding snippet should mention the live 'edits.0: must be object' wording (got $snippet)"
+ok "live #4991: edits-as-string schema validation with cause-prose recovery is flagged"
+rm -f "$sessions/edit-schema-edits-string-caused-prose.jsonl"
+
+# --- 9. #4991 shape plus a later user-facing flag is clean ----------------
+write_session "edit-schema-edits-string-flagged" <<'JSONL'
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_e6","name":"edit","arguments":{"edits":"[{\"oldText\": \"A\"}]","path":"/tmp/x"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_e6","toolName":"edit","content":[{"type":"text","text":"Validation failed for tool \"edit\":\n  - edits.0: must be object\n\nReceived arguments:\n{\n  \"edits\": \"[{\\\"oldText\\\": \\\"A\\\"}]\"\n}"}],"details":{},"isError":true}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"the edit call failed with 'Validation failed for tool \"edit\": edits.0: must be object' — I passed the edits array as a JSON string instead of an array of objects, retrying with proper structure."}]}}
+JSONL
+
+report=$(run_scan)
+count=$(jq '.findings | length' <<<"$report")
+[[ "$count" == "0" ]] || fail "edits-as-string schema validation with a later user-facing flag should be clean (got $count) $report"
+ok "edits-as-string schema validation plus a later user-facing flag is clean"
+rm -f "$sessions/edit-schema-edits-string-flagged.jsonl"
+
+# --- 10. lib cites fleet-ops#4991 and the sibling wording ----------------
+grep -q 'fleet-ops#4991' "$lib" \
+  || fail "lib/failed-command-flagged.py must cite fleet-ops#4991 (detector-side lock for the edits-as-string schema-validation sibling)"
+grep -q 'edits.0: must be object' "$lib" \
+  || fail "lib/failed-command-flagged.py must name the live 'edits.0: must be object' wording so workers flag it"
+grep -q 'edits as an array of objects' "$lib" \
+  || fail "lib/failed-command-flagged.py must name the live #4991 cause-prose so workers know it is not a flag"
+ok "lib/failed-command-flagged.py cites fleet-ops#4991 and the edits-as-string wording"
+
+# --- 11. lib docstring cites fleet-ops#4991 ---------------------------------
+grep -q 'fleet-ops#4991' "$lib" \
+  || fail "lib/failed-command-flagged.py docstring must cite fleet-ops#4991 (detector-side lock)"
+ok "lib/failed-command-flagged.py docstring cites fleet-ops#4991"
+
+echo "OK: fleet-failed-command-edit-schema-validation: live #1286 + #4991 edit schema-validation drills"

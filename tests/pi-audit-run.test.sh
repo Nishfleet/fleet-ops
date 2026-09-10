@@ -275,8 +275,8 @@ ok "scenario4b: empty reason exits 1 and logs a distinguishing line"
 reset_state
 seat_health_dir="$scratch/seat-health"
 mkdir -p "$seat_health_dir"
-# devin/glm-5-2 is in transient_fault.
-cat >"$seat_health_dir/devin__glm-5-2.json" <<'LEDGER'
+# devin/swe-2-max (the default devin seat since 2026-09-10) is in transient_fault.
+cat >"$seat_health_dir/devin__swe-2-max.json" <<'LEDGER'
 {
   "health_class":"transient_fault",
   "seat_dead":false,

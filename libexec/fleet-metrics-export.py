@@ -4760,7 +4760,7 @@ def _spawn_bench_marker_held(spawn_bench: Path) -> bool:
           re-admission and the census must agree the seat is not healthy
           while it is probe-gated. Without case (b) a clobbered-healthy
           ledger reports an unprobed dead-weight seat as available
-          (the ollama/deepseek-v4-flash:0731 empty-run churn this issue
+          (the ollama/<retired-V4-flash> empty-run churn this issue
           names).
 
     Beyond the two clock cases (and the reason this function is the
@@ -4779,7 +4779,7 @@ def _spawn_bench_marker_held(spawn_bench: Path) -> bool:
     (source="comeback_release" on the ledger) re-proves the seat. Without
     this, the census/availability read the clobbered health_class=healthy
     ledger, counted the seat available, and "re-offered" a seat the router
-    held — the live xkiro/deepseek-v4-flash at 47 consecutive spawn_fail
+    held — the live xkiro/<retired-V4-flash> at 47 consecutive spawn_fail
     with ledger_health_class=healthy.
 
     fleet-ops#3826 — ceiling fence: even a FRESH marker whose usable_at has

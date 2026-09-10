@@ -299,6 +299,41 @@ process_candidate() {
                     s_dir=$(dirname "$v")
                     if mv "$v" "$s_dir/$role.vote.skip-$s_epoch" 2>/dev/null; then
                         log "$repo/#$candidate: stale SKIP for $role (age=${s_age}s) recast $((s_n+1))/$SKIP_RECAST_MAX — vote renamed, re-starting unit (fleet-ops#3962)"
+                        # fleet-ops#4965: a recast is a single unit re-run, not
+                        # fan-out — bypass the per-tick start cap (same carve-
+                        # out rationale as recover_failed_audit below). Without
+                        # this, a recast whose re-start loses the tick-cap race
+                        # is deferred, the renamed-aside vote stays MISSING, and
+                        # the next tick sees no SKIP to recast (only a missing
+                        # vote that keeps losing the cap race) — so the recast
+                        # counter never advances, the SKIP-EXHAUSTED abstention
+                        # (fleet-ops#4503) can never fire, and the panel wedges
+                        # at 2 real votes + 1 missing forever while
+                        # AUDITOR-PANEL-PENDING fires every tick. The
+                        # pi-audit.slice TasksMax/CPUQuota ceiling still bounds
+                        # actual concurrency. Route a failed unit through
+                        # recover_failed_audit (reset-failed + start); a dead
+                        # unit is started directly.
+                        unit=$(unit_name "$repo" "$candidate" "$role")
+                        state=$(unit_state "$unit")
+                        case "$state" in
+                            failed)
+                                if recover_failed_audit "$repo" "$candidate" "$role"; then
+                                    active=$((active + 1))
+                                else
+                                    failed=$((failed + 1))
+                                fi
+                                ;;
+                            *)
+                                if "$SYSTEMCTL" --user start --no-block "$unit" >/dev/null 2>&1; then
+                                    active=$((active + 1))
+                                else
+                                    log "$repo/#$candidate: recast start $unit FAILED — vote left missing, retry next tick"
+                                    missing=$((missing + 1))
+                                fi
+                                ;;
+                        esac
+                        continue
                     else
                         # Rename failed — leave the SKIP and treat as present
                         # so we do not spin the unit every tick.

@@ -17,7 +17,9 @@
 #   2. Every such cap=0 row carries intentional_cap_zero=yield and a dated
 #      reason (the re-audition path, yield gate #3251, is the only way back
 #      in — never an auto-expire).
-#   3. The eight seats named in the issue are all capped to 0.
+#   3. The eight seats named in the issue are all capped to 0 (seven
+#      surviving rows — the eighth, xkiro/deepseek/deepseek-v4-flash, was
+#      retired 2026-09-10 when every DeepSeek V4 flash id was banned).
 #
 # When the next zero-yield seat appears (>= 20 picks, 0 PRs), the fixture
 # must be updated to include it AND the config must cap it to 0, or this test
@@ -55,11 +57,10 @@ cat >"$yield" <<'JSON'
   "opencode/nemotron-3-ultra-free": { "yield": 0.25, "sessions": 20, "pr_count": 5, "provisional": false },
   "opencode/mimo-v2.5-free": { "yield": 0.0, "sessions": 20, "pr_count": 0, "provisional": false },
   "xkiro/deepseek/deepseek-v4-pro": { "yield": 0.0, "sessions": 20, "pr_count": 0, "provisional": false },
-  "xkiro/deepseek/deepseek-v4-flash": { "yield": 0.05, "sessions": 20, "pr_count": 1, "provisional": false },
   "xkiro/minimax/minimax-m3:free": { "yield": 0.0, "sessions": 20, "pr_count": 0, "provisional": false },
   "zenmux/z-ai/glm-4.7-flash-free": { "yield": 0.0, "sessions": 20, "pr_count": 0, "provisional": false },
-  "ollama/deepseek-v4-flash:0731": { "yield": 0.25, "sessions": 20, "pr_count": 5, "provisional": false },
-  "openrouter/deepseek/deepseek-v4-flash-0731": { "yield": 0.35, "sessions": 20, "pr_count": 7, "provisional": false }
+  "deepseek/deepseek-flash": { "yield": 0.25, "sessions": 20, "pr_count": 5, "provisional": false },
+  "openrouter/deepseek/deepseek-v4.1-flash": { "yield": 0.35, "sessions": 20, "pr_count": 7, "provisional": false }
 }
 JSON
 fi
@@ -124,6 +125,9 @@ done < <(jq -r 'to_entries[] | [.key, (.value.sessions // 0), (.value.pr_count /
 ok "scenario2: every zero-yield cap=0 row is intentional (yield) with a dated reason"
 
 # --- 3. the eight seats named in the issue are all capped 0 -----------------
+# (seven surviving rows: the eighth, xkiro/deepseek/deepseek-v4-flash, was
+# deleted with the fleet-wide DeepSeek V4 flash ban on 2026-09-10 — a retired
+# seat cannot be "capped 0", it is absent.)
 echo "--- scenario 3: the eight issue seats are capped 0 ---"
 declare -A issue_seats=(
   ["commandcode/poolside/laguna-s-2.1-free"]=1
@@ -131,7 +135,6 @@ declare -A issue_seats=(
   ["opencode/nemotron-3-ultra-free"]=1
   ["opencode/mimo-v2.5-free"]=1
   ["xkiro/deepseek/deepseek-v4-pro"]=1
-  ["xkiro/deepseek/deepseek-v4-flash"]=1
   ["xkiro/minimax/minimax-m3:free"]=1
   ["zenmux/z-ai/glm-4.7-flash-free"]=1
 )
@@ -148,7 +151,7 @@ for seat in "${!issue_seats[@]}"; do
   fi
   ok "$seat: capped 0"
 done
-[[ "$bad3" == "0" ]] || fail "scenario3: $bad3 of the eight issue seats not capped 0 (fleet-ops#4271)"
-ok "scenario3: all eight issue seats capped 0"
+[[ "$bad3" == "0" ]] || fail "scenario3: $bad3 of the seven surviving issue seats not capped 0 (fleet-ops#4271)"
+ok "scenario3: all seven surviving issue seats capped 0"
 
-ok "seat-caps-zero-yield: no cap>0 seat holds 0 PRs over >=20 picks; the eight issue seats are capped 0 with intentional_cap_zero=yield (fleet-ops#4271)"
+ok "seat-caps-zero-yield: no cap>0 seat holds 0 PRs over >=20 picks; the seven surviving issue seats are capped 0 with intentional_cap_zero=yield (fleet-ops#4271)"

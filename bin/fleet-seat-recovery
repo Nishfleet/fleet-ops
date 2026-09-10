@@ -33,7 +33,12 @@
 # Environment seams (tests):
 #   FLEET_SEAT_LEDGER_DIR        ledger dir (default agent-state/lanes/seats)
 #   FLEET_SEAT_RECOVERY_STATE    state file for last verdict (default
-#                                /run/user/$UID/fleet-seat-recovery.state)
+#                                $XDG_RUNTIME_DIR/fleet-seat-recovery.state)
+#   FLEET_SEAT_RECOVERY_DEBOUNCE_SEC skip the ledger scan when last verdict is
+#                                usable and the state file is younger than
+#                                this many seconds (default 60). Does not
+#                                apply when last verdict is no-usable
+#                                (fleet-ops#5024).
 #   FLEET_SEAT_RECOVERY_COOLDOWN fire cooldown seconds (default 120)
 #   FLEET_SEAT_RECOVERY_REPOS    space-separated repo list override (tests)
 #   FLEET_SEAT_RECOVERY_DRY_RUN  1 = print the systemctl argv, don't run
@@ -52,8 +57,9 @@ export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
 
 AS="${AGENT_STATE:-/home/nish/workspaces/agent-state}"
 LEDGER_DIR="${FLEET_SEAT_LEDGER_DIR:-$AS/lanes/seats}"
-DEFAULT_STATE="/run/user/$(id -u)/fleet-seat-recovery.state"
+DEFAULT_STATE="${XDG_RUNTIME_DIR}/fleet-seat-recovery.state"
 STATE="${FLEET_SEAT_RECOVERY_STATE:-$DEFAULT_STATE}"
+DEBOUNCE_SEC="${FLEET_SEAT_RECOVERY_DEBOUNCE_SEC:-60}"
 COOLDOWN="${FLEET_SEAT_RECOVERY_COOLDOWN:-120}"
 REPOS="${FLEET_SEAT_RECOVERY_REPOS:-}"
 DRY="${FLEET_SEAT_RECOVERY_DRY_RUN:-0}"
@@ -146,6 +152,18 @@ main() {
         read -r last_verdict last_ts < "$STATE" 2>/dev/null || true
         [[ -n "$last_verdict" ]] || last_verdict="unknown"
         [[ "$last_ts" =~ ^[0-9]+$ ]] || last_ts=0
+    fi
+
+    # fleet-ops#5024: PathChanged on the seats/ directory re-fires this
+    # oneshot on every seat-json write (~30x/min). A full ledger scan is
+    # ~1.1s CPU. When the last verdict is already usable there is no
+    # NO-USABLE-SEAT -> usable transition to catch, so skip the scan
+    # inside the debounce window. Do NOT debounce last=no-usable — that
+    # is the case this unit exists for and it must stay instant.
+    if [[ "$last_verdict" == "usable" ]] && (( last_ts > 0 )) \
+       && (( now - last_ts < DEBOUNCE_SEC )); then
+        log "debounce: last=usable age=$((now - last_ts))s < ${DEBOUNCE_SEC}s — skip scan"
+        return 0
     fi
 
     # Current verdict.

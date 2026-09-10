@@ -2041,7 +2041,7 @@ fi
 # sr-free-model-roster (Nish 2026-08-18): the free-model roster stays fresh
 # and quality-gated. The fleet2 roster scout was deleted in the 08-23 wipe;
 # this is the Pi-native replacement. Two fail-loud gates (Ollama carve-out:
-# ollama.models must be deepseek-v4-flash only, never polling the ollama
+# ollama.models must be <retired-V4-flash> only, never polling the ollama
 # catalog; penny-for-speed: every cap>0 free provider with models must be in
 # free_providers_in_order) plus observe-to-open detectors that auto-file an
 # audition+wire ticket when a free-form slug appears unwired, and a bench
@@ -2666,7 +2666,7 @@ loose_ends_canary_rc=0
 # 44. EMPTY-RUN BURST CANARY (fleet-ops#2666)
 # ============================================================================
 # incident 2026-09-01 12:48Z-14:11Z: waste.empty_runs_last_2h jumped 0 -> 6 on
-# minimax/MiniMax-M3 + openrouter/deepseek-v4-flash-0731 (both healthy seats
+# minimax/MiniMax-M3 + openrouter/deepseek-v4.1-flash-0731 (both healthy seats
 # per pi-seat-health.json). The #902 empty-run class is a 24h detector and
 # misses a 2h burst on healthy seats — sharp signal the 24h gauge masks.
 # This canary is the class prevention: file `fix(empty-run-burst):` on a

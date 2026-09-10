@@ -389,7 +389,7 @@ def _spawn_bench_held(provider, model):
     health_class=healthy + null usable_at. A ledger showing healthy while the
     sibling bench is held is exactly the "healthy on paper, benched in
     reality" split that re-seated the verify hop onto
-    openrouter/deepseek/deepseek-v4-flash-0731 (empty-run bench, 0B stdout,
+    openrouter/deepseek/deepseek-v4.1-flash (empty-run bench, 0B stdout,
     provider no-op) at 15:22:13Z on 2026-09-01 (fleet-ops#2672): the seat
     returned nothing, and the chain stayed stuck at hop=verify. Mirrors
     lib/seat-lib.sh seat_usable() (checks the marker FIRST, before the
