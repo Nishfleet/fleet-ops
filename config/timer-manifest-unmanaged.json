@@ -1,4 +1,10 @@
 {
   "_doc": "Unmanaged-unit allowlist for tests/timer-manifest.test.sh (fleet-ops#4400). Lists user timers that are DELIBERATELY unmanaged: hand-placed units with no repo .timer source, one-shot investigation timers, or transient units created by a hand-run systemd-run. A live timer in this list no longer reddens the fleet check. Every entry requires a DATED reason: the reason field must start with YYYY-MM-DD, the date it was added or last reviewed. A unit may NOT be allowlisted if it has a repo-sourced .timer file (systemd/*.timer): repo-owned timers must have a MANIFEST entry and still hard-fail when missing. Adding or removing an entry goes through a normal PR with review (this file is config, not machinery). Deletion pinned (fleet-ops#4400): the fleet-ops-4219-dualrun-collect.timer/.service were transient leftovers from the #4219 P3a dual-run (PR #4371 merged) and were deleted on 2026-09-08; do not re-create, the phase is closed.",
-  "unmanaged": []
+  "unmanaged": [
+    {
+      "unit": "remeasure-4891-timer.timer",
+      "reason": "2026-09-10 transient one-shot (pi-systemd-run --unmanaged) that fires once at 2026-09-11 14:05Z to run the fleet-ops#4891 memory-budget re-measure (replaces the interim ram_gb_per_worker 1.5 in config/seat-caps.json with the measured p95); Transient=yes, so the live drift canary (fleet-timer-manifest-drift-canary, fleet-ops#4647 acceptance 3) already skips it — this entry aligns tests/timer-manifest.test.sh's live check with that exemption (fleet-ops#4400). Not repo-sourced: a repo .timer file would both conflict with the live transient of the same name and gain an install.sh --check DIFF (destination ~/.config/systemd/user/ is empty for a /run/user/.../transient unit). On retry the packet rearms as remeasure-4891-timer-retry (a new transient name); 4893 merged 2026-09-10 08:30Z, so the 14:05Z Sep 11 fire is >18h after merge and the precondition is met — no retry is expected.",
+      "source": "transient"
+    }
+  ]
 }
