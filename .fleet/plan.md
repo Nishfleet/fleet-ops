@@ -1,66 +1,16 @@
-# Plan — fleet-ops#4773 (re-entrancy: fix the merged #4998 mechanism)
+# Plan — fleet-ops#4996: "Questions for Nish" tile argv fix (one positional to `gh issue view`)
 
-## Context (manager investigation, 2026-09-10)
+- [x] phase 1: Fix the argv: call `["issue", "view", str(number), "-R", <owner/repo>, "--json", "comments", "--jq", ".comments || []"]`. One positional (the number), repo named by `-R`. Do not drop the `-R` and do not switch to `-R` with the number embedded.
+- [x] phase 2: Keep the fail-closed behaviour exactly as it is: a non-zero `gh` exit or non-JSON output must still leave `tiles.questions.ok=false` with the reason string. The fix makes the happy path work; it must not turn a real GitHub failure into an empty list.
+- [x] phase 3: Add a regression test in `libexec/fleet-console-pi/test_console_truth.py` that records the argv passed to `gh` (monkeypatch the subprocess runner, not `_gh_json`) and asserts: exactly one positional argument (the issue number), the repo appears only after `-R`, and no invocation has two positionals. Keep the existing classification test.
+- [x] phase 3: Add a second assertion in the same file that the failure path is still fail-closed (a `gh` rc=1 leaves `ok=false` and the reason, not `ok=true` with an empty list).
+- [x] phase 4: Do not add a timer, service, exporter, or new check — this is the existing console unit on the existing 12-min tick.
+- [x] phase 4: Do not touch `tests/console-tile-verify.test.sh`'s "a dash is not a lie" contract for genuinely unknown tiles; the fix is the broken argv, not the dash policy.
 
-PR #4998 merged at 15:33Z for this issue but used "Relates to #4773" (not
-"Closes"), so the issue stayed open and got re-claimed. The merged code is
-the right shape (extends `libexec/alert-repair-dispatch`, no new organ), and
-the termination tests pass — BUT the mechanism does NOT fire in production.
+## Manager amendments
+- phase 1: issue bullet 1 quotes `--jq ".comments || []"`, which is not a jq operator. Live (gh 2.93.0): `gh issue view 2585 -R Nishfleet/0509 --json comments --jq '.comments || []'` -> rc=1 `failed to parse jq expression ... unexpected token "|"`; `'//'` -> rc=0, list. Keeping `||` leaves the tile dark and fails the issue's own termination check, so phase 1 ships `//`. Also: even if it parsed, `||` is boolean-or, so a non-empty array would return `true`, `json.loads` -> `True`, and `generate.py` would coerce it to `[]` — every `decision-resolved:` answer would silently vanish.
 
-Root cause (proven): `prometheus-am-executor` provides `AMX_ALERT_<i>_START`
-as a **Unix epoch integer** (e.g. `1789051780`), confirmed by every recent
-packet file (`starts_at: 1789051780`). The merged `_slowburn_firing_seconds`
-parses it as ISO 8601 (`%Y-%m-%dT%H:%M:%S`) → `ValueError` → returns `None` →
-the caller treats unknown as "not past threshold" → `skip-short` every tick.
-
-Live proof: the alert-repair actions.log shows the 15:52:27Z tick ran
-"(slowburn file-or-link attempted)" but emitted NO `FILED`/`LINK` line. The
-live `FleetSloSeatAvailSlowBurn` alert has been firing since
-2026-09-08T09:51:03Z (2+ days) with zero linked critical-path claims — the
-exact fault the issue's `metric:` names.
-
-The termination tests passed only because they mock `AMX_ALERT_1_START` as
-ISO 8601 (`date -u -d '2 hours ago' +%Y-%m-%dT%H:%M:%SZ`), which does NOT
-match what AMX sends in production. The test masks the bug.
-
-## Phase 1: fix the timestamp parser + match the test to production
-
-- [x] `libexec/alert-repair-dispatch` `_slowburn_firing_seconds`: accept a
-      Unix epoch integer (digits only) as well as ISO 8601. AMX sends epoch
-      in production; keep ISO support for robustness. A purely-numeric
-      string (optionally with trailing `.fff` or `Z`) is epoch seconds; else
-      try ISO 8601. Unknown/unparseable still returns None (fail-safe: never
-      file prematurely). Add a clear comment naming the AMX epoch format and
-      the packet-file evidence.
-- [x] `tests/alert-repair-slo-slowburn-skip.test.sh`: change the `fire_slowburn`
-      start values to **epoch integers** (what AMX actually sends), so the
-      test reflects production reality and would have caught this bug. Keep
-      the (a)/(b)/(c)/(d) cases and their assertions intact. Optionally add
-      one extra assertion/case proving an ISO 8601 start ALSO works (backward
-      compat), but the primary path must be epoch. The `two_h_ago` /
-      `ten_m_ago` helpers should produce epoch seconds (e.g.
-      `$(date -u -d '2 hours ago' +%s)`).
-- [x] Run the termination commands from the issue body and prove green:
-      `bash tests/alert-repair-slo-slowburn-skip.test.sh` and
-      `bash tests/alert-repair-claim-mutex.test.sh` (both exit 0).
-- [x] Run adjacent organ tests to prove no regression:
-      `bash tests/signal-reconcile.test.sh`,
-      `python3 -c "import py_compile; py_compile.compile('libexec/alert-repair-dispatch', doraise=True)"`,
-      `python3 -c "import yaml; yaml.safe_load(open('config/fleet_rules.yml'))"`.
-
-Do NOT touch the alert-repair skip-list, the mutex, class-park, or any seat
-cap. Do NOT add a new organ/timer/service/canary. Do NOT file a live issue
-yourself — the manager verifies the mechanism against the live alert after
-the fix lands on main.
-
-## Acceptance mapping (from issue body)
-
-1. First checks for existing claim before filing → already in merged code. ✓
-2. Routes through existing organs → already in merged code. ✓
-3. Does NOT raise the skip-list → unchanged. ✓
-4. Notifies am-executor, never pages Nish → already in merged code. ✓
-5. Prevention mechanism test proves both directions + idempotence → test
-   exists but masked the bug; this phase makes it match production. ✓
-6. No money decision → unchanged. ✓
-
-The bug fix is what makes accept-5's prevention mechanism actually prevent.
+## Phase review record (manager, per-phase reviewer)
+- Phase 1 review (stock reviewer): **0 blocking, 0 act-on remaining**. Act-on (as written): record the `||` -> `//` deviation against the issue's literal argv (done above), and land the phase-3 argv regression test before merge (phase 3). Consider (recorded, not re-delegated): (1) `_gh_json` builds its reason from `args[:3]`, so the failure string now reads `gh issue view 2284 rc=1` and no longer names the repo — real diagnosability loss, but changing it widens this diff past acceptance bullet 2; filed as a follow-up issue. (2) `verify.py` `run_questions_gh` counts ALL open `question` issues exactly while the tile drops `answered` >24h — latent DISPUTED once the tile is live; filed as a follow-up issue. (3) `json.loads(out.stdout or "null")` treats rc=0 + empty stdout as `ok=true,count=0` — pre-existing, out of scope. (4) `repo = ... or ORG` can yield `Nishfleet/Nishfleet` for a numberless record and darken the whole section — pre-existing, fails closed. Noted: new argv matches the house pattern in `lib/detector-queue-reconciler.py` and `libexec/staleness-checker.py`; keeping `-R` is load-bearing.
+- Phase 2-4 review (stock reviewer): **0 blocking, 2 act-on**. Act-on: (1) `--jq`/``--json`` payload flags were unpinned — a `//`->`||` revert (the exact second half of this incident) would pass green; fixed by asserting `--json comments` and `--jq ".comments // []"` in `_assert_issue_view_argv`. (2) `test_console_truth.py` is run by nothing automatic (not in ci.yml, no `tests/*.test.sh` invokes it) — pre-existing for the file; wiring it in would add a check, which bullet 5 forbids in this PR; filed as a follow-up issue. Consider (recorded): unlisted value-taking flag in `_VALUE_TAKING_FLAGS` fails loud (safe direction); `-R` pinned literally per the bullet's wording; `_FakeGh` `isdigit()` unicode nit (ASCII argv, theoretical); argv test couples to `count==len(rows)` (harmless end-to-end check). Noted: verified against pre-fix deploy-clone code that the argv test fails on the shipped form (2 positionals, repo-as-positional, no `-R`); fail-closed tests exercise the real `_gh_json` raise path.
+- Follow-ups filed: #5069 (reason string lost the repo name), #5070 (verify.py counts all open questions, tile drops answered>24h — latent DISPUTED), #5072 (no automatic runner for test_console_truth.py).
