@@ -466,7 +466,16 @@ def routing_labels(tag: str) -> list[str]:
     # admission-priced worker seat per occurrence for nothing. File them under
     # observe-to-close (fleet-ops#1401) so the intake does not claim them; the
     # detector's observe-to-close still closes them on the green tick.
-    if tag == "DEGRADED-LANES":
+    #
+    # fleet-ops#4965: same for AUDITOR-PANEL-PENDING. A pending senior panel is
+    # load-borne — the per-tick start cap defers seat starts under backlog and
+    # the panel self-heals via stale-SKIP recast (fleet-ops#3962) and
+    # SKIP-EXHAUSTED abstention (fleet-ops#4503). There is no manual worker
+    # action: identical filings #4812/#4877 closed via observe-to-close with
+    # zero worker code, and #4965 alone burned 7 claims and 2 StartLimitBursts
+    # on workers that re-verified the alarm and exited with no PR. The dedupe
+    # path below retroactively re-labels an already-open agent-ready filing.
+    if tag in {"DEGRADED-LANES", "AUDITOR-PANEL-PENDING"}:
         return ["observe-to-close"]
     senior = (
         tag.endswith(("-VIOLATION", "-FAIL", "-BROKEN", "-ESCALATE"))

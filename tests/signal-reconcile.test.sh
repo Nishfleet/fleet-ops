@@ -1265,4 +1265,74 @@ grep -q "issue close 5983" "$tmp/gh.log" \
     || fail "scenario 15e: expected gh issue close 5983"
 ok "scenario 15e: stale suppressed-signal issue observe-to-closes while the line fires"
 
+# ---------------------------------------------------------------------------
+# 16. AUDITOR-PANEL-PENDING alarms are observe-to-close-only (fleet-ops#4965).
+#     A pending senior panel is load-borne — the per-tick start cap defers
+#     seat starts under backlog and the panel self-heals via stale-SKIP
+#     recast (#3962) and SKIP-EXHAUSTED abstention (#4503). There is no
+#     manual worker action: identical filings #4812/#4877 closed via
+#     observe-to-close with zero worker code, and #4965 alone burned 7 claims
+#     and 2 StartLimitBursts on workers that re-verified and exited with no
+#     PR.
+#
+#     16a. A fresh AUDITOR-PANEL-PENDING alarm files under `observe-to-close`,
+#          NOT `agent-ready`, so the intake will not claim it.
+#     16b. An already-open agent-ready filing is retroactively re-labeled to
+#          observe-to-close while the alarm still fires (dedupe path).
+#     16c. The detector's observe-to-close STILL closes it on the green tick.
+# ---------------------------------------------------------------------------
+panel_msg="repo=0509 candidate=2581 age_s=3615 active=0 missing=1 failed=0 — senior auditor panel has not convened"
+cat > "$tmp/triage16-on.md" <<EOF
+[2026-08-28T13:30:00Z] [AUDITOR-PANEL-PENDING] $panel_msg
+EOF
+cat > "$tmp/open16.json" <<'EOF'
+[{"number": 4965, "body": "The heartbeat detector reported this alarm on a real tick and no open issue carried its signal key, so the detector→queue reconciler filed one.\n\n- alarm tag: `AUDITOR-PANEL-PENDING`\n\nDo NOT close this issue on PR merge alone. The reconciler closes it only when the detector reports green on a real heartbeat tick (observe-to-close).\n\n`loud/auditor-panel-pending/candidate-age_s-active-missing-failed`\n", "labels": [{"name": "agent-ready"}, {"name": "agent-in-progress"}], "createdAt": "2026-08-28T10:00:00Z", "comments": []}]
+EOF
+
+# 16a. Fresh AUDITOR-PANEL-PENDING files with observe-to-close, not agent-ready.
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/empty14.json" "$tmp/triage16-on.md" > "$tmp/summary16a.json"
+jq -e '.filed == 1 and .closed == 0' "$tmp/summary16a.json" >/dev/null \
+    || fail "scenario 16a: AUDITOR-PANEL-PENDING must file one issue (got: $(cat "$tmp/summary16a.json"))"
+grep -q 'loud/auditor-panel-pending/candidate-age_s-active-missing-failed' "$tmp/filed.jsonl" \
+    || fail "scenario 16a: AUDITOR-PANEL-PENDING signal key missing (filed: $(cat "$tmp/filed.jsonl"))"
+printf '%s' "$(cat "$tmp/filed.jsonl")" | grep -q '"labels": \["observe-to-close"\]' \
+    || fail "scenario 16a: must file under observe-to-close, not agent-ready (filed: $(cat "$tmp/filed.jsonl"))"
+printf '%s' "$(cat "$tmp/filed.jsonl")" | grep -q '"agent-ready"' \
+    && fail "scenario 16a: must NOT carry agent-ready (filed: $(cat "$tmp/filed.jsonl"))"
+ok "scenario 16a: AUDITOR-PANEL-PENDING filed under observe-to-close, not agent-ready"
+
+# 16b. Alarm still firing + open agent-ready filing -> dedupe AND retroactive
+# re-label to observe-to-close so the intake stops claiming it (#4965's live
+# claim-burn loop). The issue must NOT close while the alarm is live.
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/open16.json" "$tmp/triage16-on.md" > "$tmp/summary16b.json"
+jq -e '.deduped == 1 and .closed == 0 and .rerouted == 1' "$tmp/summary16b.json" >/dev/null \
+    || fail "scenario 16b: expected deduped+rerouted, not closed (got: $(cat "$tmp/summary16b.json"))"
+grep -q "issue edit 4965" "$tmp/gh.log" \
+    || fail "scenario 16b: expected gh issue edit 4965 (got: $(cat "$tmp/gh.log"))"
+grep -q -- "--add-label observe-to-close" "$tmp/gh.log" \
+    || fail "scenario 16b: must add observe-to-close (got: $(cat "$tmp/gh.log"))"
+grep -q -- "--remove-label agent-ready" "$tmp/gh.log" \
+    || fail "scenario 16b: must remove agent-ready (got: $(cat "$tmp/gh.log"))"
+! grep -q "issue close" "$tmp/gh.log" \
+    || fail "scenario 16b: still-alarmed issue must NOT close (gh.log: $(cat "$tmp/gh.log"))"
+ok "scenario 16b: open agent-ready filing retroactively re-labeled observe-to-close while alarmed"
+
+# 16c. Panel convenes (no AUDITOR-PANEL-PENDING line in the tick) -> the
+# observe-to-close closeout fires regardless of the label.
+cat > "$tmp/triage16-off.md" <<'EOF'
+[2026-08-28T13:30:00Z] [AUDITOR-PANEL-GREEN] every senior auditor panel convened
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/open16.json" "$tmp/triage16-off.md" > "$tmp/summary16c.json"
+jq -e '.closed == 1 and .filed == 0' "$tmp/summary16c.json" >/dev/null \
+    || fail "scenario 16c: convened panel must observe-to-close (got: $(cat "$tmp/summary16c.json"))"
+grep -q "issue close 4965" "$tmp/gh.log" \
+    || fail "scenario 16c: expected gh issue close 4965 (got: $(cat "$tmp/gh.log"))"
+ok "scenario 16c: convened panel observe-to-closes the filing"
+
 ok "all signal-reconcile scenarios passed"
