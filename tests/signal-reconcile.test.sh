@@ -818,4 +818,85 @@ grep -q "issue close 4949" "$tmp/gh.log" || fail "scenario 13b: expected gh issu
 grep -q "issue comment" "$tmp/gh.log" && fail "scenario 13b: green chain must only close, not heartbeat-comment"
 ok "scenario 13b: green STALE-TRIP chain observe-to-closes the filed issue"
 
+# ---------------------------------------------------------------------------
+# 14. ESCALATION-PANEL-PENDING alarm lifecycle (fleet-ops#362). The senior
+# escalation panel writes this LOUD line (bin/pi-escalation-audit) while a
+# candidate `escalate-senior` issue has NO completed panel — it stays loud
+# until the three audit roles all vote and the tally dismisses/admits the
+# candidate. The signal key derives from the phrase, NOT a literal
+# `signal:`/`unit=` token: the repo slug survives, the candidate number and
+# every age_s/active/missing/failed value are stripped as DYNAMIC_RE tokens,
+# and the `repo` stopword drops out, so the key is the stable
+# `loud/escalation-panel-pending/fleet-ops-candidate-age_s-active-missing`
+# no matter which candidate or how long the panel waits. This locks the
+# #4968 closeout: a filed PANEL-PENDING issue auto-files agent-ready, stays
+# open (dedupe) while the panel is still pending, and observe-to-closes once
+# the panel convenes and the loud line goes green. A regression that breaks
+# the key stability would churn the key per tick and strand a never-green
+# issue exactly like FAILED-COMMAND-FAIL (#4944).
+# ---------------------------------------------------------------------------
+panel_msg="repo=fleet-ops candidate=4939 age_s=3211 active=1 missing=1 failed=0 — senior escalation panel has not convened"
+
+# 14a. Fresh PANEL-PENDING line, no open issue -> auto-file agent-ready with
+# the correct stable backticked signal key and routing.
+cat > "$tmp/empty14.json" <<'EOF'
+[]
+EOF
+cat > "$tmp/triage14-on.md" <<EOF
+[2026-08-28T13:30:00Z] [ESCALATION-PANEL-PENDING] $panel_msg
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/empty14.json" "$tmp/triage14-on.md" > "$tmp/summary14a.json"
+jq -e '.filed == 1 and .deduped == 0 and .closed == 0' "$tmp/summary14a.json" >/dev/null \
+    || fail "scenario 14a: expected one filed (got: $(cat "$tmp/summary14a.json"))"
+grep -q "loud/escalation-panel-pending/fleet-ops-candidate-age_s-active-missing" "$tmp/filed.jsonl" \
+    || fail "scenario 14a: filed body must carry the stable PANEL-PENDING signal key (got: $(cat "$tmp/filed.jsonl"))"
+grep -q '"agent-ready"' "$tmp/filed.jsonl" \
+    || fail "scenario 14a: PANEL-PENDING must route agent-ready (got: $(cat "$tmp/filed.jsonl"))"
+ok "scenario 14a: fresh ESCALATION-PANEL-PENDING auto-files agent-ready with the stable signal key"
+
+# 14a-key. The key must NOT move with the candidate number or the audit
+# counters — if a future refactor stops stripping them, the key churns per
+# tick and observe-to-close never fires (the #4944 never-green shape).
+python3 - "$repo_root" <<'PY' || fail "scenario 14a-key: PANEL-PENDING key must not move with candidate/counters"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("dqr", sys.argv[1] + "/lib/detector-queue-reconciler.py")
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+keys = set()
+for cand, age, a, miss, f in [(4939,3211,1,1,0),(4703,25193,1,1,0),(4878,3351,1,1,0),(4938,3211,3,3,0)]:
+    msg = (f"repo=fleet-ops candidate={cand} age_s={age} active={a} missing={miss} failed={f} "
+           "\u2014 senior escalation panel has not convened")
+    keys.add(tuple(m._extract_signal_key("ESCALATION-PANEL-PENDING", msg)))
+assert keys == {("fleet-ops-candidate-age_s-active-missing",)}, keys
+PY
+ok "scenario 14a-key: ESCALATION-PANEL-PENDING key is constant across candidates and counters"
+
+# 14b. Still alarmed -> dedupe (heartbeat comment), stays open. The panel has
+# not convened yet, so the same stable signal is re-derived and the open
+# issue must not be re-filed or closed.
+cat > "$tmp/open14b.json" <<'EOF'
+[{"number": 4968, "body": "The heartbeat detector reported this alarm on a real tick.\n\n- alarm tag: `ESCALATION-PANEL-PENDING`\n\n`loud/escalation-panel-pending/fleet-ops-candidate-age_s-active-missing`\n", "labels": [{"name": "agent-ready"}], "createdAt": "2026-08-28T10:00:00Z", "comments": []}]
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/open14b.json" "$tmp/triage14-on.md" > "$tmp/summary14b.json"
+jq -e '.deduped == 1 and .closed == 0 and .filed == 0' "$tmp/summary14b.json" >/dev/null \
+    || fail "scenario 14b: alarmed PANEL-PENDING must dedupe and stay open (got: $(cat "$tmp/summary14b.json"))"
+! grep -q "issue close" "$tmp/gh.log" || fail "scenario 14b: alarmed PANEL-PENDING must not close (gh.log: $(cat "$tmp/gh.log"))"
+ok "scenario 14b: PANEL-PENDING still alarmed -> deduped, stays open"
+
+# 14c. Panel convened (loud line gone -> detector green) -> observe-to-close
+# the filed issue. This is the #4968 closeout on the next real heartbeat tick.
+cat > "$tmp/triage14-green.md" <<'EOF'
+[2026-08-28T13:30:00Z] [ESCALATION-PANEL-GREEN] repo=fleet-ops candidate=4939 — panel convened; votes complete
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/open14b.json" "$tmp/triage14-green.md" > "$tmp/summary14c.json"
+jq -e '.closed == 1 and .deduped == 0' "$tmp/summary14c.json" >/dev/null \
+    || fail "scenario 14c: green PANEL-PENDING must observe-to-close (got: $(cat "$tmp/summary14c.json"))"
+grep -q "issue close" "$tmp/gh.log" || fail "scenario 14c: expected gh issue close (got: $(cat "$tmp/gh.log"))"
+ok "scenario 14c: green ESCALATION-PANEL-PENDING observe-to-closes the filed issue"
+
 ok "all signal-reconcile scenarios passed"
