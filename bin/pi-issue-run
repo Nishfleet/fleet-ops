@@ -250,6 +250,7 @@ inst="$1"
 # before each intentional exit so the EXIT trap can attribute the death.
 # Default "unknown" catches any path that forgets to set it.
 _exit_reason="unknown"
+# shellcheck disable=SC2329  # invoked indirectly by the EXIT trap below
 _journal_exit() {
     local rc=$?
     journal_mark exit "$rc" "$_exit_reason"
