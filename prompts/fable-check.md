@@ -43,3 +43,28 @@ The weekly fleet review's FIRST section is "Caught by hand this week"
 Nish Telegram/chat correction no metric surfaced first — the review lists
 them and, for each, names the measure.sh line that now covers them (citing
 the commit) or files the measure line in its ≤5 actions.
+
+## DECISION lifecycle — a decided nish-reserved class must close (fleet-ops#4892)
+
+A DECISION that takes an item "off Nish's tab" (the standing rules, the
+decisions ledger, the #4130/#4140 programme comments, or a closed sibling
+settle it, so it is NOT actually Nish-reserved) MUST, in the same run:
+
+1. `gh issue edit <repo>#<n> --remove-label nish-reserved`, AND
+2. either close the issue (`gh issue close <repo>#<n>`), or relabel it
+   `agent-ready` with the follow-through work item linked in the DECISION
+   comment (e.g. the OOM-capacity class links to the 0509 worker-footprint
+   issue; the RAM admission-charge class links to the charge/concurrency
+   repair issue).
+
+A DECISION that leaves `nish-reserved` on the issue is a page: the
+`nish-boundary-notify` unit re-pages Nish every run while the label stays,
+and the senior auditor appends a fresh `NISH ACTION` row each time (live
+#4838: 6 pages in 14h after the judge's DECISION). The lifecycle-label-sweep
+canary backstops a forgotten removal, but the judge owns the removal in
+the same run as the DECISION — the backstop is a detector, not a license
+to forget.
+
+The DECISION comment body must include the `Q:<repo>#<n>` handle of the
+question it answers so `nish-boundary-notify` can mark that handle seen and
+suppress legacy `NISH-ESCALATIONS.md` rows for the same question.

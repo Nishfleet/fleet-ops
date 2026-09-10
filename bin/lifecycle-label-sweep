@@ -322,6 +322,7 @@ reclassified=0
 healed=0
 admitted=0
 bounced=0
+decided_healed=0
 drill_repo=""
 drill_num=""
 
@@ -427,6 +428,38 @@ bounce_in_cooldown() {
         (( diff < SCOUT_BOUNCE_COOLDOWN_SECONDS )) && return 0
     done < <(printf '%s' "$comments_json" | jq -c '.[] // empty' 2>/dev/null)
     return 1
+}
+
+# fleet-ops#4892: true (0) if the issue has a comment starting with
+# `DECISION (judge` — the judge's verdict that takes an item off Nish's tab.
+# The judge only posts a DECISION when the standing rules / decisions ledger
+# settle it (i.e. it is NOT actually Nish-reserved); a genuinely Nish-reserved
+# ask goes to NISH-DECISIONS instead. So a DECISION comment on a nish-reserved
+# issue means the label is stale (the judge forgot to remove it).
+has_decision_comment() {
+    local comments_json="$1"
+    printf '%s' "$comments_json" | jq -e '[.[]?.body // empty] | any(startswith("DECISION (judge"))' >/dev/null 2>&1
+}
+
+# fleet-ops#4892: backstop heal — remove the stale nish-reserved label the
+# judge forgot to drop. The issue is left open (the judge's DECISION names the
+# follow-through work item); the next tick classifies it once nish-reserved is
+# gone. Does NOT add a new lifecycle label: a judge-decided tracker (live
+# #4838 "stays open until the OOM kills stop") must not become agent-ready.
+heal_decided_nish_reserved() {
+    local repo="$1" num="$2"
+    local body
+    body="lifecycle-label: nish-reserved removed by fleet-heartbeat at ${NOW_ISO} (judge DECISION took this off Nish's tab but left nish-reserved; fleet-ops#4892). The next tick classifies this issue."
+    if [ "$DRY" = "1" ]; then
+        log "DRY $repo#$num: remove-label nish-reserved (decided)"
+        return 0
+    fi
+    if ! gh issue edit "$num" -R "$repo" --remove-label nish-reserved >/dev/null 2>&1; then
+        log "  $repo#$num: remove-label nish-reserved FAILED — retry next tick"
+        return 1
+    fi
+    gh issue comment "$num" -R "$repo" --body "$body" >/dev/null 2>&1 || true
+    return 0
 }
 
 # fleet-ops#4022: admit a scout-candidate issue whose body passes the spec
@@ -741,11 +774,36 @@ while IFS= read -r repo; do
             fi
         fi
     done < <(printf '%s' "$list_json" | jq -c '.[]')
+
+    # fleet-ops#4892: decided-nish-reserved heal pass. A DECISION comment from
+    # the judge takes an item "off Nish's tab" — the judge prompt requires
+    # removing nish-reserved in the same run (item 1). When the judge forgets,
+    # the issue stays open + nish-reserved and nish-boundary-notify re-pages
+    # Nish every run (live #4838: 6 pages in 14h after the judge's DECISION).
+    # This pass is the backstop detector: an open nish-reserved issue with a
+    # DECISION comment has a stale label — remove nish-reserved so the question
+    # stops paging. Comments are fetched lazily (fleet-ops#4091) only for
+    # nish-reserved issues. Fail-open: a gh blip leaves the label untouched.
+    while IFS= read -r row; do
+        [ -z "$row" ] && continue
+        num=$(printf '%s' "$row" | jq -r '.number')
+        title=$(printf '%s' "$row" | jq -r '.title // ""')
+        labels_json=$(printf '%s' "$row" | jq -c '.labels // []')
+        printf '%s' "$labels_json" | jq -e '.[] | select(.name=="nish-reserved")' >/dev/null 2>&1 || continue
+        if has_decision_comment "$(fetch_issue_comments "$repo" "$num")"; then
+            log "  $repo#$num: nish-reserved + DECISION comment → remove stale nish-reserved (fleet-ops#4892) ($title)"
+            if heal_decided_nish_reserved "$repo" "$num"; then
+                decided_healed=$((decided_healed + 1))
+            else
+                failed=$((failed + 1))
+            fi
+        fi
+    done < <(printf '%s' "$list_json" | jq -c '.[]')
 done <<< "$repos"
 
-log "sweep done: relabeled=$relabeled skipped=$skipped failed=$failed reclassified=$reclassified healed=$healed admitted=$admitted bounced=$bounced"
-printf 'lifecycle-label-sweep relabeled=%s skipped=%s failed=%s reclassified=%s healed=%s admitted=%s bounced=%s\n' \
-    "$relabeled" "$skipped" "$failed" "$reclassified" "$healed" "$admitted" "$bounced"
+log "sweep done: relabeled=$relabeled skipped=$skipped failed=$failed reclassified=$reclassified healed=$healed admitted=$admitted bounced=$bounced decided_healed=$decided_healed"
+printf 'lifecycle-label-sweep relabeled=%s skipped=%s failed=%s reclassified=%s healed=%s admitted=%s bounced=%s decided_healed=%s\n' \
+    "$relabeled" "$skipped" "$failed" "$reclassified" "$healed" "$admitted" "$bounced" "$decided_healed"
 
 if [ "$DRILL" = "1" ]; then
     if [ "$DRY" = "1" ]; then

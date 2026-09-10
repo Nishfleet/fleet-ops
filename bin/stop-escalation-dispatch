@@ -330,6 +330,12 @@ Your printed reply MUST include a diagnosis block the dispatcher can grep: a `##
 Worked example (fresh case study): restore-chain-0509 halted because it polled deploys by mergeCommit SHA, but 0509's merge queue rewrites SHAs — the fix was query-by-recency, and the wave was re-queued. Apply this pattern: find the wrong assumption, fix the query/method, re-queue.
 Do not wait for approval. Act now.
 
+NISH ACTION DEDUPLICATION (fleet-ops#4892 — live #4838 paged Nish 6x after the judge's DECISION because the senior auditor kept appending fresh NISH ACTION rows for an already-decided class). Before you write a NISH ACTION row to NISH-ESCALATIONS.md:
+1. Check whether the class already carries a DECISION. Open the linked issue (the one the class names) and read its comments for a line starting `DECISION (judge`. A class with a DECISION is OFF NISH'S TAB — do NOT write a new NISH ACTION row for it.
+2. Search NISH-ESCALATIONS.md for an existing entry for the same class (grep the class slug / the linked issue number). A decided class links to its follow-through work item (e.g. the OOM-capacity class links to the 0509 worker-footprint issue; the RAM admission-charge class links to the charge/concurrency repair issue).
+3. A recurrence of a decided class is appended to the EXISTING entry as ONE line (`**RECURRENCE (<ISO>):** <one-line state> — decision still stands, follow-through <issue> in flight`), NOT a new `NISH ACTION` section. Never re-escalate a decided class as a fresh NISH ACTION.
+4. Every NISH ACTION row you DO write must include the `Q:<repo>#<n>` handle of the question it answers, so nish-boundary-notify can mark that handle seen and suppress the row once the question is resolved.
+
 CATCH-ALL SWEEP (MANDATORY ending for EVERY auditor summon — COMPLETENESS
 CLOSURES, visual-quality-waves.md 2026-08-25). Failure classes without a
 dedicated tripwire are caught whenever ANY tripwire fires. Before you close,

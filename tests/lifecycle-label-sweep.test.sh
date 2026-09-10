@@ -603,4 +603,61 @@ view_calls=$(grep -c -- 'issue view 7000' "$scratch/gh.log" || true)
   || fail "fleet-ops#4091: expected exactly 1 gh issue view for the bounce check, got $view_calls: $(grep 'issue view' "$scratch/gh.log")"
 ok "fleet-ops#4091: comments fetched lazily once per scout-candidate bounce check (not on bulk list)"
 
+# Case 17 (fleet-ops#4892): an open nish-reserved issue with a DECISION
+# comment has a stale label — the judge forgot to remove nish-reserved. The
+# sweep's decided-nish-reserved heal pass removes nish-reserved so the
+# question stops paging Nish (live #4838: 6 pages in 14h after the judge's
+# DECISION). Comments are fetched lazily only for nish-reserved issues.
+: >"$scratch/gh.log"
+: >"$scratch/edits.log"
+: >"$scratch/comments.log"
+cat >"$scratch/list.json" <<'JSON'
+[{"number":4838,"title":"RAM capacity — buy more or reduce concurrency?","labels":[{"name":"nish-reserved"}]}]
+JSON
+# view-4838.json returns a DECISION comment (the judge took it off Nish's tab)
+cat >"$scratch/view-4838.json" <<'JSON'
+{"comments":[{"body":"DECISION (judge glm-5.2 2026-09-10T03:51Z): not a RAM purchase — a mis-set admission charge. Taking this off Nish's tab. Follow-through: fleet-ops#4871.","createdAt":"2026-09-10T03:51:00Z"}]}
+JSON
+out=$("$bin" 2>"$scratch/err17.txt")
+grep -q 'decided_healed=1' <<<"$out" || fail "decided-nish-reserved healed: $out"
+grep -q -- '--remove-label nish-reserved' "$scratch/edits.log" \
+  || fail "decided-nish-reserved must remove nish-reserved: $(cat "$scratch/edits.log")"
+if grep -q -- '--add-label' "$scratch/edits.log"; then
+  fail "decided-nish-reserved must NOT add a lifecycle label (judge-decided tracker stays open): $(cat "$scratch/edits.log")"
+fi
+grep -q 'judge DECISION took this off Nish'"'"'s tab' "$scratch/comments.log" \
+  || fail "decided-nish-reserved must comment the heal reason: $(cat "$scratch/comments.log")"
+# the lazy fetch ran exactly once for the nish-reserved issue
+view_calls=$(grep -c -- 'issue view 4838' "$scratch/gh.log" || true)
+[[ "$view_calls" -eq 1 ]] \
+  || fail "decided-nish-reserved: expected exactly 1 gh issue view for the DECISION check, got $view_calls"
+ok "open nish-reserved + DECISION comment → remove stale nish-reserved (fleet-ops#4892)"
+
+# Case 17b: an open nish-reserved issue with NO DECISION comment is left
+# alone (genuinely pending Nish — do not strip the label).
+cat >"$scratch/list.json" <<'JSON'
+[{"number":4839,"title":"genuinely reserved — pick the pricing copy","labels":[{"name":"nish-reserved"}]}]
+JSON
+cat >"$scratch/view-4839.json" <<'JSON'
+{"comments":[]}
+JSON
+: >"$scratch/edits.log"
+out=$("$bin" 2>"$scratch/err17b.txt")
+grep -q 'decided_healed=0' <<<"$out" || fail "no-DECISION nish-reserved healed: $out"
+[[ -s "$scratch/edits.log" ]] && fail "no-DECISION nish-reserved must not edit: $(cat "$scratch/edits.log")"
+ok "open nish-reserved with NO DECISION comment is left alone (genuinely pending Nish)"
+
+# Case 17c: a non-nish-reserved issue with a DECISION comment is not probed
+# (the heal pass only runs on nish-reserved issues).
+cat >"$scratch/list.json" <<'JSON'
+[{"number":4840,"title":"already agent-ready with a stale DECISION","labels":[{"name":"agent-ready"}]}]
+JSON
+: >"$scratch/gh.log"
+out=$("$bin" 2>"$scratch/err17c.txt")
+grep -q 'decided_healed=0' <<<"$out" || fail "non-nish-reserved healed: $out"
+if grep -q 'issue view 4840' "$scratch/gh.log"; then
+  fail "non-nish-reserved must not be probed for a DECISION: $(grep 'issue view 4840' "$scratch/gh.log")"
+fi
+ok "non-nish-reserved issue with a DECISION is not probed (heal pass is nish-reserved-only)"
+
 echo "all lifecycle-label-sweep cases passed"

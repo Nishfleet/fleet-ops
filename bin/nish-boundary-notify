@@ -148,6 +148,45 @@ q_age_h() {
     printf '%s' "$age"
 }
 
+# fleet-ops#4892: true (0) if issue <repo>#<num> has a comment starting with
+# `decision-resolved:` — the canonical "this question is answered" marker
+# (the judge's DECISION, or Nish's close-out). A confirmed question that is
+# resolved must not be (re-)delivered, even if it is still open + nish-reserved
+# (the judge forgot to remove the label — the lifecycle-label-sweep backstop
+# removes it next tick). Fail-open: an unreadable view returns 1 (not
+# resolved) so a gh blip never silently drops a live question.
+question_is_resolved() {
+    local repo="$1" num="$2" out
+    out=$("$GH" issue view "$num" -R "Nishfleet/$repo" --json comments 2>/dev/null || true)
+    [ -n "$out" ] || return 1
+    printf '%s' "$out" | jq -e '[.comments[]?.body // empty] | any(startswith("decision-resolved:"))' >/dev/null 2>&1
+}
+
+# fleet-ops#4892: mark a Q:<repo>#<num> handle as seen so a legacy
+# NISH-ESCALATIONS.md row that references the same handle is not re-delivered.
+# The senior auditor includes the Q: handle in NISH ACTION rows (item 2);
+# the entry-loop and prose-scan delivery check handle_seen before paging.
+mark_handle_seen() {
+    local handle="$1"
+    [ -n "$handle" ] || return 0
+    grep -qxF "$handle" "$SEEN" 2>/dev/null && return 0
+    printf '%s\n' "$handle" >> "$SEEN"
+}
+
+# fleet-ops#4892: true (0) if $body references a Q:<repo>#<num> handle that is
+# already in $SEEN (the question was delivered and has since been resolved).
+# Used by the entry-loop and prose-scan delivery to suppress a legacy
+# NISH-ESCALATIONS.md row for a handle that is no longer pending Nish.
+handle_seen() {
+    local body="$1" h
+    [ -n "$body" ] || return 1
+    while IFS= read -r h; do
+        [ -n "$h" ] || continue
+        grep -qxF "$h" "$SEEN" 2>/dev/null && return 0
+    done < <(printf '%s' "$body" | grep -oE 'Q:[A-Za-z0-9_.-]+#[0-9]+' | sort -u || true)
+    return 1
+}
+
 deliver_confirmed_questions() {
     local failq=0 key num
     while IFS=$'\t' read -r repo num url title q options created; do
@@ -155,8 +194,19 @@ deliver_confirmed_questions() {
         [ -n "$q" ] || continue
         key=$(printf '%s' "$url" | sha256sum | cut -c1-32)
         grep -qxF "$key" "$SEEN" 2>/dev/null && continue
-        local body handle
+        local handle
         handle=$(q_handle "$repo" "$num")
+        # fleet-ops#4892: a confirmed question that already carries a
+        # decision-resolved comment is answered — mark its URL hash AND its
+        # Q: handle seen and skip delivery, so it never re-pages (and a
+        # legacy NISH-ESCALATIONS.md row for the same handle is suppressed).
+        if question_is_resolved "$repo" "$num"; then
+            printf '%s\n' "$key" >> "$SEEN"
+            mark_handle_seen "$handle"
+            echo "suppressed (decision-resolved, fleet-ops#4892): $handle $title"
+            continue
+        fi
+        local body
         body="$handle $q"
         [ -n "$options" ] && body="$body\nOptions: $options"
         body="$body\nAge: $(q_age_h "$created")h"
@@ -357,6 +407,14 @@ while IFS= read -r line; do
   # (`<ts> <CLASS> ...`). Pass it to deliver so hermes gets --class <CLASS>
   # and the outbound gate's urgent class-gate honours the bypass.
   class=$(printf '%s' "$line" | awk '{print $2}')
+  # fleet-ops#4892: a legacy entry-format row that references a Q:<repo>#<num>
+  # handle already marked seen (the question was delivered and has since been
+  # resolved) is suppressed so a stale NISH-ESCALATIONS.md row never re-pages.
+  if handle_seen "$body"; then
+    printf '%s\n' "$key" >> "$SEEN"
+    echo "suppressed (handle already resolved, fleet-ops#4892): $line"
+    continue
+  fi
   deliver "$key" "$line" "$body" "$class" || fail=1
 done < <(grep -E "^[0-9-]{10}T[0-9:]{8}Z ($CLASSES) " "$FILE" 2>/dev/null || true)
 
@@ -425,6 +483,15 @@ for rec in "${prose[@]:-}"; do
       *money*|*credit*|*pay*|*bill*|*card*|*charge*|*paid*) class="MONEY-BOUNDARY";;
       *) class="LEGAL-BOUNDARY";;
     esac
+  fi
+  # fleet-ops#4892: a prose section that references a Q:<repo>#<num> handle
+  # already marked seen (the question was delivered and has since been
+  # resolved) is suppressed so a stale NISH ACTION row never re-pages.
+  if handle_seen "$hdr
+$marker"; then
+    printf '%s\n' "$key" >> "$SEEN"
+    echo "suppressed (handle already resolved, fleet-ops#4892): $marker"
+    continue
   fi
   deliver "$key" "$marker" "$hdr
 $marker" "$class" || prose_fail=1

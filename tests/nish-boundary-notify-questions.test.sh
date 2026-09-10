@@ -24,12 +24,24 @@ trap 'rm -rf "$tmp"' EXIT
 state="$tmp/state"; mkdir -p "$state/lanes"
 seen="$state/lanes/nish-boundary-notify.seen"; : >"$seen"
 
-# Fake gh: returns a fixture question-list JSON from $Q_FIXTURE; logs every call.
+# Fake gh: returns a fixture question-list JSON from $Q_FIXTURE for list calls,
+# and a fixture comments JSON from $VIEW_FIXTURE (if set, else empty) for view
+# calls. Logs every call.
 qlog="$tmp/gh.log"
 fake_gh="$tmp/gh"
 cat >"$fake_gh" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$QLOG"
+case "$1 $2" in
+  "issue view")
+    if [ -n "${VIEW_FIXTURE:-}" ] && [ -f "$VIEW_FIXTURE" ]; then
+      cat "$VIEW_FIXTURE"
+    else
+      printf '{"comments":[]}\n'
+    fi
+    exit 0
+    ;;
+esac
 cat "$Q_FIXTURE"
 exit 0
 EOF
@@ -195,5 +207,54 @@ UNIT_ESCALATION_AGENT_STATE="$state" \
 grep -q 'throttled' "$tmp/o7b" || fail "--digest second call within 6h must be throttled; got: $(cat "$tmp/o7b")"
 [[ -s "$hermes_log" ]] && fail "throttled --digest must not send again"
 ok "--digest throttles to 1 per 6h"
+
+# =============================================================================
+# 8. fleet-ops#4892: a confirmed question that already carries a
+#    decision-resolved comment is NOT delivered — it is answered. Its URL hash
+#    AND its Q: handle are marked seen so a legacy NISH-ESCALATIONS.md row for
+#    the same handle is also suppressed.
+# =============================================================================
+: >"$seen"; : >"$hermes_log"; : >"$qlog"
+export Q_FIXTURE="$tmp/q8.json"
+cat >"$Q_FIXTURE" <<'J'
+[{"number":908,"title":"resolved q","body":"question: already answered?\noptions: a | b\nblocked-on: nish-decision (money)","createdAt":"2026-09-08T00:00:00Z"}]
+J
+# view-908 returns a decision-resolved comment
+export VIEW_FIXTURE="$tmp/view-908.json"
+cat >"$VIEW_FIXTURE" <<'J'
+{"comments":[{"body":"decision-resolved: not a RAM purchase — mis-set admission charge (judge 2026-09-10). Taking this off Nish's tab.","createdAt":"2026-09-10T03:51:00Z"}]}
+J
+UNIT_ESCALATION_AGENT_STATE="$state" \
+  BOUNDARY_NOTIFY_HERMES="$fake_hermes" BOUNDARY_NOTIFY_BACKOFF="0 0" \
+  BOUNDARY_NOTIFY_GH="$fake_gh" FLEET_INTAKE_REPOS_JSON="$intake" \
+  bash "$script" >"$tmp/o8" 2>"$tmp/e8"
+grep -q 'suppressed (decision-resolved, fleet-ops#4892)' "$tmp/o8" \
+  || { cat "$tmp/o8"; cat "$tmp/e8"; fail "resolved question must be suppressed, got: $(cat "$tmp/o8")"; }
+[[ -s "$hermes_log" ]] && fail "resolved question must NOT be delivered to hermes"
+# the URL hash AND the Q: handle must be marked seen
+grep -q 'Q:demo#908' "$seen" \
+  || { echo "--- seen ---"; cat "$seen"; fail "resolved question handle must be marked seen for .md row suppression"; }
+ok "confirmed question with decision-resolved comment is suppressed + handle marked seen (fleet-ops#4892)"
+
+# =============================================================================
+# 9. fleet-ops#4892: a legacy NISH-ESCALATIONS.md entry-format row that
+#    references a Q: handle already in $SEEN (the question was resolved) is
+#    suppressed — never re-delivered.
+# =============================================================================
+: >"$hermes_log"
+# build a NISH-ESCALATIONS.md with a MONEY-BOUNDARY row naming Q:demo#908.
+# The script reads $AS/NISH-ESCALATIONS.md, so write it into the test state dir.
+cat >"$state/NISH-ESCALATIONS.md" <<'MD'
+2026-09-10T03:51:00Z MONEY-BOUNDARY ram-capacity — Q:demo#908 buy more RAM or reduce concurrency?
+  NISH ACTION (money): the box is at RAM capacity. Q:demo#908
+MD
+UNIT_ESCALATION_AGENT_STATE="$state" \
+  BOUNDARY_NOTIFY_HERMES="$fake_hermes" BOUNDARY_NOTIFY_BACKOFF="0 0" \
+  BOUNDARY_NOTIFY_GH="$fake_gh" FLEET_INTAKE_REPOS_JSON="$intake" \
+  bash "$script" >"$tmp/o9" 2>"$tmp/e9"
+grep -q 'suppressed (handle already resolved, fleet-ops#4892)' "$tmp/o9" \
+  || { cat "$tmp/o9"; cat "$tmp/e9"; fail "legacy .md row with resolved handle must be suppressed, got: $(cat "$tmp/o9")"; }
+[[ -s "$hermes_log" ]] && fail "legacy .md row with resolved handle must NOT be delivered"
+ok "legacy NISH-ESCALATIONS.md row with a resolved Q: handle is suppressed (fleet-ops#4892)"
 
 echo "PASS: tests/nish-boundary-notify-questions.test.sh"
