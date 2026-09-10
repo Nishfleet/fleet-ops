@@ -1054,10 +1054,30 @@ provider_quota_bench_default() {
 # window, or the reset has already passed). Callers fall back to the static
 # default — this helper must never brick a bench decision.
 SEAT_LIVE_QUOTA_PROM="${SEAT_LIVE_QUOTA_PROM:-/var/lib/prometheus/node-exporter/fleet.prom}"
+# fleet-ops#5022: a prepaid subscription's SHORT window (OpenCode Go's 5-hour
+# rolling window, written by bin/fleet-prepaid-util-canary) is walled well
+# before it is fully exhausted, so it uses a USED-percent threshold where the
+# fleet_seat_quota_* source uses a remaining-percent one. Same purpose: when a
+# quota wall's error text carries no reset window, bench the seat to the
+# window's real reset instead of the static quota_bench_default_s.
+SEAT_LIVE_PREPAID_PROM="${SEAT_LIVE_PREPAID_PROM:-/var/lib/prometheus/node-exporter/prepaid-usage.prom}"
+SEAT_LIVE_PREPAID_WALL_PCT="${SEAT_LIVE_PREPAID_WALL_PCT:-95}"
 SEAT_LIVE_QUOTA_STALE_S="${SEAT_LIVE_QUOTA_STALE_S:-900}"
 SEAT_LIVE_QUOTA_EXHAUSTED_PCT="${SEAT_LIVE_QUOTA_EXHAUSTED_PCT:-1}"
 
 provider_live_reset_s() {
+    local p="$1" out
+    out=$(_provider_seat_quota_reset_s "$p")
+    if [[ "$out" =~ ^[0-9]+$ ]] && (( out > 0 )); then
+        echo "$out"
+        return 0
+    fi
+    _provider_prepaid_reset_s "$p"
+}
+
+# fleet_seat_quota_* source (fleet-metrics-export.py): only an EXHAUSTED window
+# (remaining_pct <= SEAT_LIVE_QUOTA_EXHAUSTED_PCT) counts.
+_provider_seat_quota_reset_s() {
     local p="$1"
     [[ -r "$SEAT_LIVE_QUOTA_PROM" ]] || { echo 0; return 0; }
     awk -v prov="$p" -v stale="$SEAT_LIVE_QUOTA_STALE_S" -v thresh="$SEAT_LIVE_QUOTA_EXHAUSTED_PCT" '
@@ -1092,6 +1112,50 @@ provider_live_reset_s() {
             print best
         }
     ' "$SEAT_LIVE_QUOTA_PROM" 2>/dev/null || echo 0
+}
+
+# fleet_prepaid_usage_pct / fleet_prepaid_window_reset_seconds source
+# (bin/fleet-prepaid-util-canary, fleet-ops#5022): the provider's own usage
+# endpoint says what percent of the SHORT (5h) window is used and when it
+# resets. A window at/above SEAT_LIVE_PREPAID_WALL_PCT used is this wall's
+# recovery time. Honours the same freshness bound as the fleet_seat_quota
+# source; the emitted observed timestamp is absolute, so "now" comes from the
+# caller (awk's systime() is a gawk extension this box does not have).
+_provider_prepaid_reset_s() {
+    local p="$1" now
+    [[ -r "$SEAT_LIVE_PREPAID_PROM" ]] || { echo 0; return 0; }
+    now=$(date -u +%s)
+    awk -v prov="$p" -v wall="$SEAT_LIVE_PREPAID_WALL_PCT" -v stale="$SEAT_LIVE_QUOTA_STALE_S" -v now="$now" '
+        function label(line, key,    re, s) {
+            re = key "=\"[^\"]*\""
+            if (match(line, re)) {
+                s = substr(line, RSTART, RLENGTH)
+                sub("^" key "=\"", "", s)
+                sub("\"$", "", s)
+                return s
+            }
+            return ""
+        }
+        /^fleet_prepaid_usage_pct\{/ && label($1, "provider") == prov && label($1, "window") == "5h" {
+            used = $2 + 0; have_used = 1
+        }
+        /^fleet_prepaid_window_reset_seconds\{/ && label($1, "provider") == prov && label($1, "window") == "5h" {
+            rst = $2 + 0; have_rst = 1
+        }
+        /^fleet_prepaid_usage_observed_timestamp\{/ && label($1, "provider") == prov {
+            obs = $2 + 0; have_obs = 1
+        }
+        END {
+            if (!have_used || !have_rst || !have_obs) { print 0; exit }
+            if (used + 0 < wall + 0) { print 0; exit }
+            age = now - obs
+            if (age < 0) age = 0
+            if (age > stale + 0) { print 0; exit }
+            live = int(rst - age)
+            if (live <= 0) { print 0; exit }
+            print live
+        }
+    ' "$SEAT_LIVE_PREPAID_PROM" 2>/dev/null || echo 0
 }
 
 # --- wall ceiling: the provider's real reset horizon (fleet-ops#2563) -------
