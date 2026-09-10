@@ -351,6 +351,9 @@ cmd=(
     --setenv=PATH
     --setenv=XDG_RUNTIME_DIR
 )
+
+cmd+=(--property="CPUAccounting=yes")
+cmd+=(--property="CPUQuota=${PI_CPU_QUOTA:-25%}")
 if [[ -n "${GH_TOKEN:-}" ]]; then
     cmd+=(--setenv=GH_TOKEN)
 fi
