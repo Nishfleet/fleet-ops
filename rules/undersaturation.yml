@@ -1,0 +1,40 @@
+# UNDERSATURATED guard (fleet-ops UNDERSATURATED, 2026-08-27).
+#
+# The deleted fleet1 UNDERSATURATED watchdog's Pi-era reincarnation on stock
+# machinery: three exporter gauges + one Prometheus rule + the existing
+# alertmanager → repair-dispatch → pi-systemd-run rail. No new daemons, no
+# new poll loops.
+#
+# Maintenance-window escape: the weekly window (Sun 03:15 IST) stops timers
+# but leaves in-flight workers running, so workers drain below 2 for well
+# over 30 min — `for: 30m` alone does NOT absorb it (the window's flag
+# expiry is +75 min). Instead the rule is gated by `fleet_maintenance_quiescing`
+# (read from agent-state/maintenance.json, the SAME flag
+# vps-maintenance-quiesce sets). That is the authoritative window signal,
+# not a hardcoded schedule: it tracks the real window including dead-man
+# extensions or manual quiesces. Missing flag → 0 → alert CAN fire (fail-safe
+# toward alerting; never silently suppress). The 30m `for` absorbs the
+# exporter's 5-min tick lag at window open.
+#
+# Source of truth: this file lives in the fleet-ops repo. The live rules file
+# /etc/prometheus/fleet_rules.yml is a flat concatenation; the install step
+# appends this block. The exporter extension lives in the control-plane repo
+# (libexec/fleet-metrics-export.py) and installs to
+# /home/nish/.local/libexec/fleet-metrics-export.py.
+#
+# Why a separate group: keeps the rule isolated for `promtool check rules`
+# and review, and the group name documents the lineage in the alert's source
+# label.
+groups:
+  - name: fleet_undersaturation_guard
+    rules:
+      - alert: FleetUndersaturated
+        expr: fleet_pi_workers_active{kind="sum"} < 2 and on (instance, job) fleet_ready_work > 0 and on (instance, job) fleet_maintenance_quiescing == 0
+        for: 30m
+        labels:
+          severity: warning
+          service: fleet
+          guard: undersaturation
+        annotations:
+          summary: "workers idle while agent-ready work waits"
+          description: "fleet_pi_workers_active{kind=\"sum\"} < 2 with fleet_ready_work > 0 for 30m, and not in the maintenance window. The fleet has ready work and fewer than 2 live workers — concurrency silently dropped. The repair worker should: (1) check Pi seat health (`cat /home/nish/workspaces/agent-state/lanes/pi-seat-health.json`); (2) start the intake loop for every enrolled repo (`for s in 0509 fleet-ops; do systemctl --user start pi-intake@${s}.service || true; done`); (3) verify workers climb (re-check the exporter output and `systemctl --user list-units 'pi-*.service' --state=active,activating`). If workers do not climb within 10 min, fail loud (exit non-zero) so the senior-auditor pipeline picks it up. The weekly maintenance window is excluded by fleet_maintenance_quiescing (read from agent-state/maintenance.json), NOT by the 30m `for` — the window drains workers for >30m."

@@ -1,0 +1,88 @@
+rule_files:
+  - /home/nish/workspaces/agent-worktrees/fleet-ops-undersaturation-rule-20260827/rules/undersaturation.yml
+evaluation_interval: 1m
+tests:
+  # 1. FIRES: workers<2, ready>0, NOT maintenance, sustained 30m → alert
+  #    fires at 30m and is firing at every later evaluation. The LHS series
+  #    label kind="sum" is carried forward by the `and on (instance, job)`.
+  - interval: 1m
+    name: "fires when workers<2 and ready>0 and not maintenance for 30m"
+    input_series:
+      - series: 'fleet_pi_workers_active{kind="sum"}'
+        values: '0+0x60'
+      - series: 'fleet_ready_work'
+        values: '5+0x60'
+      - series: 'fleet_maintenance_quiescing'
+        values: '0+0x60'
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: FleetUndersaturated
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: fleet
+              guard: undersaturation
+              kind: "sum"
+            exp_annotations:
+              summary: "workers idle while agent-ready work waits"
+              description: "fleet_pi_workers_active{kind=\"sum\"} < 2 with fleet_ready_work > 0 for 30m, and not in the maintenance window. The fleet has ready work and fewer than 2 live workers — concurrency silently dropped. The repair worker should: (1) check Pi seat health (`cat /home/nish/workspaces/agent-state/lanes/pi-seat-health.json`); (2) start the intake loop for every enrolled repo (`for s in 0509 fleet-ops; do systemctl --user start pi-intake@${s}.service || true; done`); (3) verify workers climb (re-check the exporter output and `systemctl --user list-units 'pi-*.service' --state=active,activating`). If workers do not climb within 10 min, fail loud (exit non-zero) so the senior-auditor pipeline picks it up. The weekly maintenance window is excluded by fleet_maintenance_quiescing (read from agent-state/maintenance.json), NOT by the 30m `for` — the window drains workers for >30m."
+  # 2. NO FIRE: 3 workers, 5 ready, not maintenance — fleet is healthy.
+  - interval: 1m
+    name: "no fire when workers>=2"
+    input_series:
+      - series: 'fleet_pi_workers_active{kind="sum"}'
+        values: '3+0x60'
+      - series: 'fleet_ready_work'
+        values: '5+0x60'
+      - series: 'fleet_maintenance_quiescing'
+        values: '0+0x60'
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: FleetUndersaturated
+        exp_alerts: []
+  # 3. NO FIRE: 0 workers, 0 ready, not maintenance — no work concept, no wedge.
+  - interval: 1m
+    name: "no fire when ready=0"
+    input_series:
+      - series: 'fleet_pi_workers_active{kind="sum"}'
+        values: '0+0x60'
+      - series: 'fleet_ready_work'
+        values: '0+0x60'
+      - series: 'fleet_maintenance_quiescing'
+        values: '0+0x60'
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: FleetUndersaturated
+        exp_alerts: []
+  # 4. NO FIRE: 0 workers, 5 ready, BUT maintenance quiescing=1 — the gate
+  #    suppresses the page during the weekly window even though workers
+  #    drained below 2 for >30m. This is the key case the `for: 30m` alone
+  #    could NOT handle (the window drains workers for 45-75 min).
+  - interval: 1m
+    name: "no fire during maintenance window (quiescing=1)"
+    input_series:
+      - series: 'fleet_pi_workers_active{kind="sum"}'
+        values: '0+0x60'
+      - series: 'fleet_ready_work'
+        values: '5+0x60'
+      - series: 'fleet_maintenance_quiescing'
+        values: '1+0x60'
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: FleetUndersaturated
+        exp_alerts: []
+  # 5. NO FIRE at 20m: workers<2, ready>0, not maintenance — the 30m `for`
+  #    is not yet satisfied. (Confirms the `for` still gates transient dips.)
+  - interval: 1m
+    name: "no fire at 20m (for:30m not satisfied)"
+    input_series:
+      - series: 'fleet_pi_workers_active{kind="sum"}'
+        values: '0+0x60'
+      - series: 'fleet_ready_work'
+        values: '5+0x60'
+      - series: 'fleet_maintenance_quiescing'
+        values: '0+0x60'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: FleetUndersaturated
+        exp_alerts: []
