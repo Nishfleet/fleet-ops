@@ -152,6 +152,19 @@ if sys.argv[1:3] == ["issue", "list"]:
     sys.exit(0)
 if sys.argv[1] == "issue" and sys.argv[2] in ("comment", "close", "edit"):
     sys.exit(0)
+# verify_filed_signal (fleet-ops#4622) runs `gh issue view <n> --json title`
+# after filing. Answer it with the title the fake fleet-issue-file recorded,
+# so the filed pointer verifies just as it would against the real API.
+if sys.argv[1] == "issue" and sys.argv[2] == "view":
+    try:
+        with open(os.environ.get("FAKE_FLEET_ISSUE_FILE_LOG", "/dev/null"), encoding="utf-8") as f:
+            entries = [json.loads(line) for line in f if line.strip()]
+        title = entries[-1]["title"] if entries else ""
+        jq = sys.argv[sys.argv.index("--jq")+1] if "--jq" in sys.argv else ".title"
+        print(title if jq.strip() == ".title" else "")
+        sys.exit(0)
+    except Exception:
+        sys.exit(1)
 sys.exit(1)
 PY
     chmod +x "$tmp/gh"
