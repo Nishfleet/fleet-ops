@@ -356,36 +356,6 @@ ok "6: config resolves keys via os.environ/ placeholders, no real key in repo"
 }
 ok "7: organ-heartbeat verify passes on the live repo"
 
-# --- 8: straitly 402 credit-exhaustion must bench the deployment (fleet-ops#4404)
-# straitly returns 402 on credit exhaustion, which LiteLLM surfaces as
-# litellm.BadRequestError. The cooldown decision reads the per-deployment
-# model_info.allowed_fails_policy (litellm/router_utils/cooldown_handlers.py
-# _get_deployment_cooldown_policy), NOT the router-level key — so the pin must
-# live in the straitly deployment's model_info, not router_settings.
-cfg="$repo_root/config/litellm-proxy.yaml"
-if ! grep -q 'BadRequestErrorAllowedFails: 1' "$cfg"; then
-    fail "8: straitly 402 credit-exhaustion must pin BadRequestErrorAllowedFails: 1 to bench on first fail (fleet-ops#4404)"
-fi
-# The pin must be inside the straitly deployment's model_info, not a stray
-# router-level or unrelated block. Parse the YAML and assert a deployment
-# whose api_base is straitly carries the policy under its model_info.
-python3 - "$cfg" <<'PY' || fail "8: BadRequestErrorAllowedFails: 1 must sit in the straitly deployment model_info, not router_settings"
-import sys, yaml
-cfg = yaml.safe_load(open(sys.argv[1]))
-straitly = [
-    d for d in cfg["model_list"]
-    if "straitly" in d["litellm_params"].get("api_base", "")
-]
-assert straitly, "no straitly deployment found in model_list"
-for d in straitly:
-    mi = d.get("model_info") or {}
-    pol = mi.get("allowed_fails_policy") or {}
-    assert pol.get("BadRequestErrorAllowedFails") == 1, \
-        f"straitly deployment missing model_info.allowed_fails_policy.BadRequestErrorAllowedFails: 1: {d['model_name']}"
-print("straitly bench policy OK")
-PY
-ok "8: straitly deployment benches on first BadRequestError (402 credit-exhaustion)"
-
 # --- 9: worker-capable must not dead-end the fallback chain (fleet-ops#4404)
 # worker-cheap -> worker-capable used to dead-end at worker-capable (no
 # fallback of its own -> "No fallback model group found"). Give worker-capable

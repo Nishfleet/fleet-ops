@@ -223,8 +223,6 @@ if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
     || fail "live join must report sr-debug-playbook as enforced covered_rows (fleet-ops#522): $(jq -c '.covered_rows' <<<"$live")"
   jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-25 | repo visibility" and .status == "enforced")' <<<"$live" >/dev/null \
     || fail "live join must report repo visibility as enforced covered_rows (fleet-ops#542): $(jq -c '.covered_rows' <<<"$live")"
-  jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-27 | straitly ds4-pro approved for workers" and .status == "enforced")' <<<"$live" >/dev/null \
-    || fail "live join must report straitly ds4-pro as enforced covered_rows (fleet-ops#546): $(jq -c '.covered_rows' <<<"$live")"
   jq -e '.covered_rows[] | select(.source == "global-standing-rules.md: Execution IS the review — run it, log the bugs, fix, run again (Nish, 2026-08-25 — non-negotiable)" and .status == "enforced")' <<<"$live" >/dev/null \
     || fail "live join must report sr-execution-is-review as enforced covered_rows (fleet-ops#537): $(jq -c '.covered_rows' <<<"$live")"
   jq -e '.covered_rows[] | select(.source == "decisions-ledger.md: 2026-08-26 | work supply (rev: 24h, same day)" and .status == "enforced")' <<<"$live" >/dev/null \
@@ -266,7 +264,6 @@ if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
   ok "live join: GLM 5.3 flash ClinePass source is enforced (observe-to-close for #462)"
   ok "live join: debug-playbook source is enforced (observe-to-close for #522)"
   ok "live join: repo visibility source is enforced (observe-to-close for #542)"
-  ok "live join: straitly ds4-pro source is enforced (observe-to-close for #546)"
   ok "live join: execution-is-review source is enforced (observe-to-close for #537)"
   ok "live join: work supply 24h source is enforced (observe-to-close for #540)"
   ok "live join: worker-lane refresh source is enforced (observe-to-close for #545)"
@@ -1004,10 +1001,6 @@ ok "rule-enforcement: ClinePass GLM 5.3 flash canary drill"
 bash "$here/fleet-repo-visibility-canary.test.sh" || fail "repo-visibility canary drill failed"
 ok "rule-enforcement: repo-visibility canary drill"
 
-# fleet-ops#546: straitly ds4-pro worker-rotation canary. Same nested-CI host.
-bash "$here/fleet-straitly-ds4-pro-canary.test.sh" || fail "straitly ds4-pro canary drill failed"
-ok "rule-enforcement: straitly ds4-pro canary drill"
-
 # fleet-ops#537: execution-is-review receipt canary. Same nested-CI host.
 bash "$here/fleet-exec-review-canary.test.sh" || fail "exec-review receipt canary drill failed"
 ok "rule-enforcement: exec-review receipt canary drill"
@@ -1122,7 +1115,7 @@ ok "rule-enforcement: worker-memory drop-in drill"
 bash "$here/siterep-live-canary-pin.test.sh" || fail "siterep live canary pin drill failed"
 ok "rule-enforcement: siterep live canary pin drill"
 
-ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, vault-lint, wipe-lessons, dirty-worktree-audit, spawn-guard, north-star-quality, cline-glm53, repo-visibility, straitly-ds4-pro, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, tailscale-acl, verify-harness, paid-flash, token-economy, geo-aeo, quality-ratchet, standing-rules-drift, aeo-probe, organ-heartbeat, asset-census, timer-manifest, agent-ready-spec-gate, gh-webhook-prom-quotes, worker-memory-dropin, and siterep-live-canary-pin drills (volume-lane-order retired in fleet-ops#3125)"
+ok "rule-enforcement: matrix, join, stale queued, advisory, auto-file, observe-to-close, no-agent-names, vault-conflict, vault-lint, wipe-lessons, dirty-worktree-audit, spawn-guard, north-star-quality, cline-glm53, repo-visibility, exec-review, vault-knowledge-format, shared-file-collision, work-supply-24h, opencode-m3 catalog, quality-research-weekly, tailscale-acl, verify-harness, paid-flash, token-economy, geo-aeo, quality-ratchet, standing-rules-drift, aeo-probe, organ-heartbeat, asset-census, timer-manifest, agent-ready-spec-gate, gh-webhook-prom-quotes, worker-memory-dropin, and siterep-live-canary-pin drills (volume-lane-order retired in fleet-ops#3125)"
 
 # fleet-ops#2089: install.sh must self-heal enabled-but-inactive timers
 # (the staleness canary sat dead: enabled, NextElapse=infinity, never

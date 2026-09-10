@@ -637,9 +637,9 @@
     {
       "id": "led-straitly-ds4-pro-workers",
       "source": "decisions-ledger.md: 2026-08-27 | straitly ds4-pro approved for workers",
-      "mechanism": "Heartbeat straitly ds4-pro canary: providers.straitly must be class=metered with cap<=2; only deepseek/deepseek-v4-pro may be allowlisted on straitly with cap<=2; gpt-5.6-sol and qwen/qwen3.8-max are not approved; the ds4-pro slug must not be double-wired on any other provider; the slug must be present in models.json and `pi --list-models` (fleet-ops#1338: meter-check observe-to-open removed; public Straitly API does not expose remaining credits for a normal key)",
-      "proof": "bin/fleet-straitly-ds4-pro-canary; tests/fleet-straitly-ds4-pro-canary.test.sh; fleet-heartbeat-tier1 block 25; fleet-ops#546",
-      "status": "enforced"
+      "mechanism": "RETIRED 2026-09-10 by fleet-ops#4887 (Nish: 'wipe straitly' — 402 credit exhausted, seat retired). The straitly provider block was deleted from seat-caps, entitled-seats, models.json, the LiteLLM proxy, and the two systemd units; the fleet-straitly-ds4-pro-canary and its test were deleted in the same change. Keep retired: the seat no longer exists.",
+      "proof": "fleet-ops#4887; config/seat-caps.json (no providers.straitly); config/entitled-seats.json; config/pi-models.json; config/litellm-proxy.yaml; systemd/codex-sol@.service; systemd/fleet-seat-comeback-release.service",
+      "status": "advisory(senior: RETIRED by fleet-ops#4887 2026-09-10 — Nish ordered the straitly wipe; the seat and its canary were deleted)"
     },
     {
       "id": "led-top-gear-everywhere",
@@ -707,7 +707,7 @@
     {
       "id": "led-2026-08-27-token-economy-rebalance-nish-from-live-meters",
       "source": "decisions-ledger.md: 2026-08-27 | Token economy rebalance (Nish, from live meters)",
-      "mechanism": "CI drill tests/fleet-token-economy.test.sh plus config/seat-caps.json and lib/seat-lib.sh pick_seat enforce the 2026-08-27 rebalance: devin cap 4 provider floor (AIMD probes to 8, model floors glm-5-2 3 / swe-1-7 4 with model ceilings 6/8, per fleet-ops#3125); cursor cap 1 and excluded from free lanes; xai-oauth (SuperGrok) provider cap 2 with grok-4.6 at 2 and grok-4.5 at 0 (fleet-ops#3125 expiry-first); free lanes (commandcode/hetzner/opencode) before prepaid and metered (minimax/straitly) last for scout/canary/audit picks; product picks route by product_order:yield with class tie-break prepaid -> metered -> free; the legacy grok.com/CLI slug and opencode-anthropic (Claude) cap 0 with dated reasons. Cursor $400 overage pacing is tracked in Nishfleet/fleet-ops#1167.",
+      "mechanism": "CI drill tests/fleet-token-economy.test.sh plus config/seat-caps.json and lib/seat-lib.sh pick_seat enforce the 2026-08-27 rebalance: devin cap 4 provider floor (AIMD probes to 8, model floors glm-5-2 3 / swe-1-7 4 with model ceilings 6/8, per fleet-ops#3125); cursor cap 1 and excluded from free lanes; xai-oauth (SuperGrok) provider cap 2 with grok-4.6 at 2 and grok-4.5 at 0 (fleet-ops#3125 expiry-first); free lanes (commandcode/hetzner/opencode) before prepaid and metered (minimax) last for scout/canary/audit picks; product picks route by product_order:yield with class tie-break prepaid -> metered -> free; the legacy grok.com/CLI slug and opencode-anthropic (Claude) cap 0 with dated reasons. Cursor $400 overage pacing is tracked in Nishfleet/fleet-ops#1167.",
       "proof": "config/seat-caps.json; lib/seat-lib.sh; tests/fleet-token-economy.test.sh; tests/seat-lib.test.sh; Nishfleet/fleet-ops#1163; Nishfleet/fleet-ops#1167",
       "status": "enforced"
     },
@@ -770,7 +770,7 @@
     {
       "id": "led-2026-08-27-heartbeat-made-exhaustive",
       "source": "decisions-ledger.md: 2026-08-27 | Heartbeat made exhaustive (Nish)",
-      "mechanism": "fleet-heartbeat-tier1 runs ~48 canaries/checks per tick spanning the whole estate (deploys, red-PR, escalations+completion, decisions-ledger, failed-command, unjustified, free roster, credentials expiry, CF token, volume lane order, GEO/AEO, quality ratchet, seat live-validate, repo visibility, straitly, cline/glm, work-supply, tailscale, verify-harness, ...).",
+      "mechanism": "fleet-heartbeat-tier1 runs ~48 canaries/checks per tick spanning the whole estate (deploys, red-PR, escalations+completion, decisions-ledger, failed-command, unjustified, free roster, credentials expiry, CF token, volume lane order, GEO/AEO, quality ratchet, seat live-validate, repo visibility, cline/glm, work-supply, tailscale, verify-harness, ...).",
       "proof": "bin/fleet-heartbeat-tier1 (48 checks); bin/fleet-heartbeat",
       "status": "enforced"
     },

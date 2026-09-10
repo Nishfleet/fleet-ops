@@ -261,12 +261,12 @@ cap_zero_is_intentional '.providers["opencode-anthropic"]' \
 ok "opencode-anthropic (Claude) is cap=0 intentional with a dated reason"
 
 # --- metered providers are the last bucket --------------------------------
-for p in minimax straitly; do
+for p in minimax; do
   class=$(jq -r --arg p "$p" '.providers[$p].class // empty' "$caps")
   [[ "$class" == "metered" ]] || fail "$p class must be metered, got: $class"
 done
 
-ok "minimax and straitly are metered (last bucket)"
+ok "minimax is metered (last bucket)"
 
 # --- lib/seat-lib.sh enforces product value-order + class ladder ---------
 grep -q 'yield-order (product)' "$lib" \

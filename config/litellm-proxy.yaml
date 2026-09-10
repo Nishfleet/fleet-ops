@@ -73,25 +73,6 @@ model_list:
       tags: ["prepaid"]
       order: 2
       max_parallel_requests: 4
-  - model_name: worker-cheap
-    litellm_params:
-      model: openai/deepseek-v4-pro
-      api_base: https://straitly.example/v1
-      api_key: os.environ/STRAITLY_API_KEY
-      tags: ["metered"]
-      order: 3
-      max_parallel_requests: 2
-    model_info:
-      # straitly returns 402 on credit exhaustion, which LiteLLM surfaces
-      # as litellm.BadRequestError. Pin the deployment to cool down on the
-      # FIRST such error (fleet-ops#4404) so simple-shuffle stops re-picking
-      # it every ~5 min until the provider resets. This key lives in the
-      # per-deployment model_info on purpose: LiteLLM's cooldown decision
-      # reads deployment model_info.allowed_fails_policy (see
-      # litellm/router_utils/cooldown_handlers.py), NOT the router-level
-      # key, which only governs retries and the health-filter toggle.
-      allowed_fails_policy:
-        BadRequestErrorAllowedFails: 1
 
   # --- worker-capable: prepaid strong models ---
   - model_name: worker-capable
@@ -184,7 +165,6 @@ router_settings:
   # the approximation for prepaid expiry-week pacing.
   provider_budget_config:
     cursor:    { budget_limit: 16, time_period: 1d }
-    straitly:  { budget_limit: 5,  time_period: 1d }
 
 litellm_settings:
   # The prometheus callback mounts the /metrics ASGI endpoint that the

@@ -222,7 +222,6 @@ Plus two conventions (not constraints — process rules for the file itself):
 | led-researchers-join | enforced | binding-constraint | demote-to-pointer | — | researchers join the fleet |
 | led-glm-5-3-free-clinepass | enforced | advisory | archive | — | GLM 5.3 flash free on ClinePass (point-in-time wiring) |
 | led-cursor-grok-re-admitted | queued(#437) | advisory | archive | — | cursor grok-4.6 heavy re-admitted (point-in-time) |
-| led-straitly-ds4-pro-workers | enforced | advisory | archive | — | straitly ds4-pro approved for workers (point-in-time) |
 | led-top-gear-everywhere | enforced | binding-constraint | collapse-into | BC2 | TOP GEAR everywhere, non-negotiable |
 | led-escalation-matrix-fixes | enforced | binding-constraint | collapse-into | BC3 | escalation matrix FIXES, not just routes |
 | led-2026-08-27-d1-prod-migrations | queued(#905) | superseded-history | archive | — | D1 prod migrations (VOIDED by correction) |

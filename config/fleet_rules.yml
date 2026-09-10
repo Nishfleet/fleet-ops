@@ -208,7 +208,7 @@ groups:
       # (HTTP 402 + health_class=quota_exhausted) is a billing-wall pattern,
       # not three independent seat faults. The per-seat
       # health_class=quota_exhausted signal alone collapsed three failures
-      # into one root cause (e.g. straitly/deepseek-v4-pro + gpt-5.6-sol +
+      # into one root cause (e.g. a provider's deepseek-v4-pro + gpt-5.6-sol +
       # qwen3.8-max all 402 at once) and depressed the seat_availability
       # SLO without distinguishing them. Pages so the operator can triage
       # ONE billing wall, not three seat threads. 30m-for matches the
