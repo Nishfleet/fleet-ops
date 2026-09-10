@@ -328,6 +328,12 @@ git -C "$checkout" push -q origin HEAD:main
 git -C "$checkout" fetch -q origin
 git -C "$checkout" branch -q --set-upstream-to=origin/main main
 
+# fleet-ops#5016: this fixture's origin is a local bare path, so point the
+# origin-fetch-URL guard's expectation at it. Production sets no seam and so
+# demands the fleet-ops GitHub URL. Exported: every inline invocation below
+# inherits it.
+export FLEET_OPS_EXPECTED_ORIGIN_URL="$origin_bare"
+
 # --- fake systemctl ----------------------------------------------------------
 systemctl_fake="$scratch/systemctl"
 cat >"$systemctl_fake" <<'FAKE'
@@ -1996,6 +2002,91 @@ grep -q 'issue close' "$dbm_gh_log" \
 ok "scenario20e: green canary observes-to-close on open deploy-blocked-on-main issue (fleet-ops#620)"
 
 ok "fleet-ops deploy step: install, drift detection, merge, and canary pass offline"
+
+# --- scenario 21: foreign origin fetch URL refuses before fetch/reset/install -
+# fleet-ops#5016, live 2026-09-10T16:16Z: the deploy clone's origin FETCH URL
+# was https://github.com/Nishfleet/0509.git (pushurl correctly fleet-ops), so
+# `origin/main` tracked 0509's main. The tick reset the live install source to
+# 0509's tree, deleting bin/, lib/ and install.sh and dangling every helper
+# symlink into the clone. An unowned origin/main must never be reset to.
+: >"$enabled_units"
+git -C "$checkout" reset --hard -q origin/main
+git -C "$checkout" checkout -q main
+foreign_head="$(git -C "$checkout" rev-parse HEAD)"
+# A dirty working tree would otherwise route into the rescue-and-reset branch.
+echo "worker wip" >"$checkout/demo-wip.txt"
+
+run_foreign_deploy() {
+  local url="$1"
+  git -C "$checkout" remote set-url origin "$url"
+  set +e
+  out=$(
+    env -u FLEET_OPS_EXPECTED_ORIGIN_URL \
+    GH="${GH:-$gh_fake}" \
+    PATH="$scratch:$PATH" \
+    FLEET_OPS_CHECKOUT="$checkout" \
+    FLEET_OPS_DRIFT_BIN="$canary" \
+    FLEET_OPS_SYSTEMCTL="$systemctl_fake" \
+    FLEET_OPS_DEPLOY_AUDIT_LOG="$scratch/deploy-audit.log" \
+    FLEET_OPS_TRIAGE="$scratch/triage.md" \
+      "$deploy" 2>&1
+  )
+  rc=$?
+  set -e
+}
+
+run_foreign_deploy "https://github.com/Nishfleet/0509.git"
+[[ "$rc" -ne 0 ]] || fail "scenario21: foreign origin must refuse non-zero (got $rc: $out)"
+[[ "$out" == *"DEPLOY-ORIGIN-REMOTE"* ]] \
+    || fail "scenario21: expected DEPLOY-ORIGIN-REMOTE (got: $out)"
+[[ "$out" == *"https://github.com/Nishfleet/0509.git"* ]] \
+    || fail "scenario21: refusal must name the offending URL (got: $out)"
+[[ "$out" == *"fleet-ops#5016"* ]] \
+    || fail "scenario21: refusal must name fleet-ops#5016 (got: $out)"
+[[ "$(git -C "$checkout" rev-parse HEAD)" == "$foreign_head" ]] \
+    || fail "scenario21: deploy reset the checkout to the foreign origin/main"
+[[ -f "$checkout/demo-wip.txt" ]] \
+    || fail "scenario21: deploy touched the working tree (WIP file gone)"
+[[ -z "$(git -C "$checkout" for-each-ref --format='%(refname)' refs/heads/rescue 2>/dev/null)" ]] \
+    || fail "scenario21: deploy created a rescue branch for a foreign origin"
+[[ ! -s "$enabled_units" ]] \
+    || fail "scenario21: deploy installed/enabled units before refusing"
+grep -q 'origin-remote-refused' "$scratch/deploy-audit.log" \
+    || fail "scenario21: refusal must land in the deploy audit log"
+ok "scenario21: foreign origin fetch URL (0509) refuses loudly, no fetch/reset/install"
+
+# A near-miss owner/repo must refuse too (exact path match, not a substring).
+run_foreign_deploy "https://github.com/Nishfleet/fleet-ops-extra.git"
+[[ "$rc" -ne 0 ]] || fail "scenario21b: fleet-ops-extra must refuse (got $rc: $out)"
+[[ "$out" == *"DEPLOY-ORIGIN-REMOTE"* ]] \
+    || fail "scenario21b: expected DEPLOY-ORIGIN-REMOTE (got: $out)"
+ok "scenario21b: a near-miss repo name is refused (exact match, no substring pass)"
+
+# Correct URL + the seam pointing at it: unchanged behaviour. Scenario 18b
+# left a failing `install.sh --system` stub on origin/main; restore a passing
+# stub first so this case proves the guard passes (it fires strictly before
+# any install) instead of re-proving 18b.
+git -C "$checkout" remote set-url origin "$origin_bare"
+git -C "$checkout" checkout -q -B main origin/main
+git -C "$checkout" reset --hard -q origin/main
+git -C "$checkout" clean -fdq
+: >"$enabled_units"
+printf '%s\n' "${expected_units[@]}" merged.timer > "$enabled_units"
+cat >"$install" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+chmod +x "$install"
+git -C "$checkout" add install.sh
+git -C "$checkout" commit -q -m "restore passing install.sh stub after scenario18b"
+git -C "$checkout" push -q origin HEAD:main
+git -C "$checkout" fetch -q origin
+if ! out=$(run_deploy); then
+    fail "scenario21c: correct origin fetch URL must behave as before (got: $out)"
+fi
+[[ "$out" != *"DEPLOY-ORIGIN-REMOTE"* ]] \
+    || fail "scenario21c: correct URL must not trip the origin guard (got: $out)"
+ok "scenario21c: correct origin fetch URL -> unchanged behaviour"
 
 # fleet-ops#176: CI lists THIS file explicitly; the worker GitHub App cannot
 # add a workflow step, so the canonical-checkout drill rides along.

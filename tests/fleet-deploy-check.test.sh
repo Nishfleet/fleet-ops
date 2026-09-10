@@ -54,6 +54,12 @@ git -C "$checkout" remote add origin "$origin"
 git -C "$checkout" push -q origin main
 git -C "$origin" symbolic-ref HEAD refs/heads/main
 
+# fleet-ops#5016: this fixture's origin is a local bare path, so point the
+# origin-fetch-URL guard's expectation at it. Production sets no seam and so
+# demands the fleet-ops GitHub URL. Exported: the inline invocations below
+# inherit it.
+export FLEET_OPS_EXPECTED_ORIGIN_URL="$origin"
+
 # Deploy spy: logs invocations, returns configurable rc.
 deploy_spy="$scratch/deploy-spy.sh"
 cat >"$deploy_spy" <<'FAKE'
@@ -558,6 +564,50 @@ if [[ "$gate_line" == git* && "$gate_line" == *--bare* && "$gate_line" =~ [[:spa
 fi
 [[ "$gate_hit" -eq 1 ]] || fail "class gate must reject unpinned git init --bare"
 ok "class gate rejects unpinned git init --bare"
+
+# --- 11. foreign origin fetch URL refuses before fetch/deploy ----------------
+# fleet-ops#5016, live 2026-09-10T16:16Z: this clone's origin FETCH URL was
+# https://github.com/Nishfleet/0509.git (pushurl correctly fleet-ops), so
+# `origin/main` tracked 0509's main, this check saw a "move" and invoked the
+# sanctioned deploy, and the deploy reset the live install source to 0509's
+# tree. A foreign fetch URL must refuse before the fetch, with the checkout
+# untouched and the deploy NOT invoked.
+advance_origin "remote-foreign"
+ref_before=$(git -C "$checkout" rev-parse refs/remotes/origin/main)
+head_before_foreign=$(git -C "$checkout" rev-parse HEAD)
+remote_before=$(git -C "$checkout" remote get-url origin)
+git -C "$checkout" remote set-url origin "https://github.com/Nishfleet/0509.git"
+n_before=$(grep -c "DEPLOY-INVOKED" "$DEPLOY_SPY_LOG" || true)
+set +e
+rc=$(env -u FLEET_OPS_EXPECTED_ORIGIN_URL \
+  FLEET_OPS_CHECKOUT="$checkout" \
+  FLEET_OPS_DEPLOY_BIN="$deploy_spy" \
+  FLEET_DEPLOY_CHECK_LOCK="$lock" \
+  FLEET_DEPLOY_CHECK_NO_DEPLOY=0 \
+  FLEET_HEARTBEAT_TRIAGE="$triage" \
+    "$bin" >/dev/null 2>"$scratch/err-foreign.log"; echo $?)
+set -e
+[[ "$rc" != "0" ]] || fail "foreign origin must exit non-zero (got $rc)"
+grep -q "DEPLOY-CHECK-ORIGIN-REMOTE" "$scratch/err-foreign.log" \
+  || fail "missing DEPLOY-CHECK-ORIGIN-REMOTE loud line"
+grep -q "https://github.com/Nishfleet/0509.git" "$scratch/err-foreign.log" \
+  || fail "refusal must name the offending origin URL"
+grep -q "fleet-ops#5016" "$scratch/err-foreign.log" \
+  || fail "refusal must name fleet-ops#5016"
+n_after=$(grep -c "DEPLOY-INVOKED" "$DEPLOY_SPY_LOG" || true)
+[[ "$n_after" == "$n_before" ]] || fail "deploy must not be invoked on a foreign origin"
+[[ "$(git -C "$checkout" rev-parse refs/remotes/origin/main)" == "$ref_before" ]] \
+  || fail "foreign origin must not be fetched (origin/main ref moved)"
+[[ "$(git -C "$checkout" rev-parse HEAD)" == "$head_before_foreign" ]] \
+  || fail "foreign origin must not move HEAD"
+ok "foreign origin fetch URL -> LOUD DEPLOY-CHECK-ORIGIN-REMOTE, exit non-zero, no fetch, no deploy"
+
+# Correct fetch URL: unchanged behaviour resumes.
+git -C "$checkout" remote set-url origin "$remote_before"
+rc=$(run_bin 1)
+[[ "$rc" == "0" ]] || fail "correct origin URL must behave as before (got $rc)"
+grep -q "compare-only" "$scratch/err.log" || fail "correct origin URL must reach the compare-only path"
+ok "correct origin fetch URL -> unchanged behaviour"
 
 echo "OK: fleet-deploy-check: unchanged/moved/compare-only/deploy-fail/yield/lock/defaultBranch"
 

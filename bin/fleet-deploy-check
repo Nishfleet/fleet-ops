@@ -11,6 +11,8 @@
 # event-driven gate on the merge event.
 #
 # Guards (all inherited from fleet-ops-deploy):
+#   - origin fetch URL must be the fleet-ops repo, else refuse before any
+#     fetch/repair/deploy (fleet-ops#5016)
 #   - deploy refuses dirty tracked files / non-fast-forward with a LOUD line
 #   - deploy only mutates when invoked from the canonical checkout or when
 #     FLEET_OPS_CHECKOUT is explicitly set
@@ -35,11 +37,14 @@
 #   FLEET_OPS_DEPLOY_BIN          deploy binary (default: $checkout/bin/fleet-ops-deploy)
 #   FLEET_DEPLOY_CHECK_LOCK       flock path (default: /tmp/fleet-deploy-check.lock)
 #   FLEET_DEPLOY_CHECK_NO_DEPLOY  1 = compare only, never invoke deploy
+#   FLEET_OPS_EXPECTED_ORIGIN_URL  expected origin fetch URL (default: fleet-ops;
+#                                  tests point it at a local bare remote)
 #   FLEET_OPS_DEPLOY_AUDIT_LOG / FLEET_OPS_TRIAGE passed through to deploy
 #
 # Exit: 0 always (a check that found nothing to do is not a failure).
 #       Non-zero only on a hard internal error (fetch failure is logged,
-#       not fatal — the next tick retries; the heartbeat still deploys).
+#       not fatal — the next tick retries; the heartbeat still deploys), or
+#       on the fleet-ops#5016 origin-remote refusal below.
 
 set -Eeuo pipefail
 
@@ -53,6 +58,8 @@ DEPLOY_BIN="${FLEET_OPS_DEPLOY_BIN:-$CHECKOUT/bin/fleet-ops-deploy}"
 LOCK="${FLEET_DEPLOY_CHECK_LOCK:-/tmp/fleet-deploy-check.lock}"
 NO_DEPLOY="${FLEET_DEPLOY_CHECK_NO_DEPLOY:-0}"
 SYSTEMCTL="${SYSTEMCTL:-systemctl}"
+# fleet-ops#5016: the watched clone's origin fetch URL must name fleet-ops.
+EXPECTED_ORIGIN_URL="${FLEET_OPS_EXPECTED_ORIGIN_URL:-https://github.com/Nishfleet/fleet-ops.git}"
 export FLEET_OPS_TRIAGE="${FLEET_OPS_TRIAGE:-$TRIAGE}"
 _wipe_here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 WIPE_LIB="${FLEET_WIPE_LESSONS_LIB:-$_wipe_here/../lib/fleet-wipe-lessons.py}"
@@ -189,7 +196,62 @@ clip_paths() {
     fi
 }
 
+# fleet-ops#5016: the origin fetch URL must name the fleet-ops repo. On
+# 2026-09-10T16:16Z this clone's origin fetch URL was
+# https://github.com/Nishfleet/0509.git (pushurl correctly fleet-ops), so
+# `origin/main` tracked 0509's main; this check saw a "move" and invoked the
+# sanctioned deploy, which reset the live install source to 0509's tree and
+# dangled every helper symlink into it. Nothing asserted the remote URL, and
+# this check compares origin/main to the checkout — the two moved together, so
+# the drift looked like a normal fast-forward. Refuse BEFORE the fetch (and
+# before the unit-symlink repair, which runs install.sh), so no ref is
+# updated, nothing is installed, and the checkout is untouched.
+#
+# Normalize a git remote URL to host/owner/repo for comparison, so
+# https://github.com/Nishfleet/fleet-ops.git, git@github.com:Nishfleet/fleet-ops
+# and ssh://git@github.com/Nishfleet/fleet-ops.git all compare equal.
+normalize_origin_url() {
+    local u="${1:-}"
+    u="${u#ssh://}"
+    u="${u#https://}"
+    u="${u#http://}"
+    u="${u#git://}"
+    u="${u#git@}"
+    u="${u/:/\/}"
+    u="${u%.git}"
+    u="${u%/}"
+    printf '%s\n' "${u,,}"
+}
+
+# Empty output = the origin fetch URL is the expected one. Anything else is a
+# human-readable reason to refuse.
+origin_remote_problem() {
+    local url got want
+    if ! url=$(git -C "$CHECKOUT" remote get-url origin 2>/dev/null); then
+        printf 'origin remote is missing'
+        return 0
+    fi
+    got=$(normalize_origin_url "$url")
+    want=$(normalize_origin_url "$EXPECTED_ORIGIN_URL")
+    if [[ "$got" != "$want" ]]; then
+        printf 'origin fetch URL is %s (expected %s)' "$url" "$EXPECTED_ORIGIN_URL"
+    fi
+    return 0
+}
+
 main() {
+    # Origin-remote gate (fleet-ops#5016) first: a foreign origin URL means
+    # origin/main is another repo's main, so every later step in this tick
+    # (fetch, unit repair, deploy) would act on the wrong tree.
+    if [[ -d "$CHECKOUT/.git" ]] || [[ -f "$CHECKOUT/.git" ]]; then
+        local remote_problem
+        remote_problem=$(origin_remote_problem)
+        if [[ -n "$remote_problem" ]]; then
+            loud "DEPLOY-CHECK-ORIGIN-REMOTE" \
+                "refusing at $CHECKOUT: $remote_problem — origin/main is not this repo's main; fetch, repair and deploy skipped, checkout untouched (fleet-ops#5016)"
+            return 1
+        fi
+    fi
     # Per-tick non-canonical unit symlink gate (fleet-ops#4166): a worker's
     # non-canonical install.sh retargets every live fleet unit symlink at a
     # GC-able worktree; removing it blinds the fleet (Unit to trigger

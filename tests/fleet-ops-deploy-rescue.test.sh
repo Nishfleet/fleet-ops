@@ -162,6 +162,11 @@ git -C "$checkout" push -q origin HEAD:main
 git -C "$checkout" fetch -q origin
 git -C "$checkout" branch -q --set-upstream-to=origin/main main
 
+# fleet-ops#5016: this fixture's origin is a local bare path, so point the
+# origin-fetch-URL guard's expectation at it. Production sets no seam and so
+# demands the fleet-ops GitHub URL. Exported: every invocation inherits it.
+export FLEET_OPS_EXPECTED_ORIGIN_URL="$origin_bare"
+
 # --- fake systemctl ----------------------------------------------------------
 systemctl_fake="$scratch/systemctl"
 cat >"$systemctl_fake" <<'FAKE'
