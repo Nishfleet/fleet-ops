@@ -99,6 +99,10 @@ jobs:
         bash tests/pi-intake-tick-reclaim-cooldown.test.sh
         bash tests/claim-pr-head-owner.test.sh
         bash tests/pi-intake-tick-difficulty-from-issue.test.sh
+        # fleet-ops#4801: spec-judge gate (Kimi K3 Max over shared-file
+        # batches before claim) — batch grouping, marker detection,
+        # verdict parsing, rate cap, failure fallback, intake wiring.
+        bash tests/spec-judge.test.sh
         bash tests/pi-intake-topup.test.sh
         bash tests/pi-intake-tick-scout-on-empty.test.sh
         bash tests/blocked-reconcile-large-issue-json.test.sh

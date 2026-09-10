@@ -881,7 +881,8 @@ if [[ -f "$SPEC_JUDGE_LIB" ]]; then
     spec_judge_failure_fallback "$REPO" "$FULL"
     # Apply any landed verdict for this repo. Iterate verdict files.
     _sj_state="$(spec_judge_state_dir)"
-    for _sj_verdict in "$_sj_state"/verdict-${REPO}-*.md; do
+    _sj_glob="$_sj_state/verdict-${REPO}-*.md"
+    for _sj_verdict in $_sj_glob; do
         [[ -e "$_sj_verdict" ]] || continue
         _sj_sha="${_sj_verdict##*-}"
         _sj_sha="${_sj_sha%.md}"

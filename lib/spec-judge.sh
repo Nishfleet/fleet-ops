@@ -291,7 +291,7 @@ spec_judge_launch() {
         cat "$prompt_file"
         printf '%s\n' "$batch_json" | jq -r '.numbers[]' | while IFS= read -r n; do
             printf '\n=============== TICKET #%s\n' "$n"
-            "$GH" issue view "$n" -R "$full_repo" --json body,comments 2>/dev/null \
+            "$GH" issue view "$n" -R "$full_repo" --json title,body,comments 2>/dev/null \
                 | jq -r '"TITLE: " + (.title // "") + "\n\n" + (.body // "") + "\n\n--- comments ---\n" + ([.comments[]?.body // empty] | join("\n---\n"))'
         done
     } > "$state_dir/prompt-$repo-$sha.md"
