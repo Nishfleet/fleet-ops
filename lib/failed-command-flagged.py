@@ -597,7 +597,30 @@ FLEET_FAILED_COMMAND_SESSIONS=/tmp ... FLEET_FAILED_COMMAND_FILE_ISSUES=0
 bin/fleet-failed-command-flagged 2>&1`. A spawn-guard or harness block
 (SPAWN_BLOCKED / "Dangerous command blocked") is not a ran-and-failed
 command: the call never executed.
-
+A verification test run that cannot execute because the product
+worktree has no installed dependencies is a real swallowed failure
+(fleet-ops#4933): a 0509 reviewer ran
+`npm test -- tests/pricing.test.ts` (which drives
+scripts/ci-vitest-run.sh) and got
+`./scripts/ci-vitest-run.sh: line 57: vitest: command not found` +
+`Command exited with code 127`, then `npx vitest run ...
+--project node tests/pricing.test.ts` and got
+`Error: Cannot find module '@react-router/dev/vite'`. Both isError=true;
+the reviewer walked past BOTH without a user-facing flag and the
+session ended with no verdict. `vitest: command not found` (exit 127)
+is NOT a grep/rg/diff/which no-match probe (`BENIGN_STAGE_RE`) and NOT
+an ls no-match probe, and `Cannot find module` is likewise real. A
+future refactor that treats "dependency not installed" verify-run
+failures as a probe, treats `Cannot find module` as benign, treats a
+thinking-only "let me try npx instead" as a flag, lets a later
+successful `npx vitest` sibling discharge the earlier 127, or exempts
+reviewer sessions from the flag contract would silently suppress this
+real signal. The dedicated regression test
+tests/fleet-failed-command-ci-vitest-run.test.sh pins the shape. The
+auto-filed issue closes via observe-to-close when the session mtime
+ages out of the 24h window. Live session
+2026-09-10T10-44-02-253Z_01a08aea-da4d-789b-af53-fed178b63056.jsonl:
+0509 issue-2309 review worktree (no node_modules installed).
 Usage:
   python3 lib/failed-command-flagged.py scan --root DIR [--now ISO]
       [--window-hours 24] [--grace-minutes 20]

@@ -3597,6 +3597,14 @@ bash "$here/fleet-failed-command-gh-json-graphql-recovery.test.sh" || fail "flee
 # swallowed failure (the #677 127-ENOENT cascade exemption needs a prior
 # block; a typo is not a probe). Hosted here (CI cannot gain a P14 line).
 bash "$here/fleet-failed-command-typo-est-sh.test.sh" || fail "fleet-failed-command-typo-est-sh tests failed"
+# fleet-ops#4933: verification test commands that fail because the product
+# worktree has no installed dependencies are real swallowed failures — a
+# 0509 reviewer ran `npm test` (driving scripts/ci-vitest-run.sh, `vitest:
+# command not found` exit 127) then `npx vitest` (`Cannot find module`),
+# walked past BOTH with no user-facing flag, and ended with no verdict.
+# Not a grep/ls probe and not an #677 cascade. Hosted here (CI cannot gain
+# a P14 line).
+bash "$here/fleet-failed-command-ci-vitest-run.test.sh" || fail "fleet-failed-command-ci-vitest-run tests failed"
 # fleet-ops#1220: a `bin/fleet-failed-command-flagged` invocation returning
 # `findings=N` + `LOUD [FAILED-COMMAND-SWALLOWED]` + `Command exited with
 # code 1` (isError=true) is a real swallowed failure — the detector's
