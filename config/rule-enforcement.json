@@ -635,6 +635,13 @@
       "status": "enforced"
     },
     {
+      "id": "led-straitly-ds4-pro-workers",
+      "source": "decisions-ledger.md: 2026-08-27 | straitly ds4-pro approved for workers",
+      "mechanism": "RETIRED 2026-09-10 by fleet-ops#4887 (Nish: 'wipe straitly'; straitly 402 credit exhausted, seat retired everywhere). The straitly ds4-pro worker-rotation canary, its test, the seat-caps/pi-models/litellm provider blocks and the entitled/rule rows were deleted in the same change. Keep retired: the seat it guarded no longer exists and no fleet path can select or bill Straitly.",
+      "proof": "config/seat-caps.json providers (no straitly); config/pi-models.json (no straitly); config/entitled-seats.json (no straitly); config/litellm-proxy.yaml (no straitly); tests/fleet-token-economy.test.sh; fleet-ops#4887 (2026-09-10 wipe)",
+      "status": "advisory(senior: RETIRED by fleet-ops#4887 2026-09-10 \u2014 straitly wiped by Nish (402 credit exhausted, seat retired); the ds4-pro worker-rotation canary and its test were deleted with the seat)"
+    },
+    {
       "id": "led-top-gear-everywhere",
       "source": "decisions-ledger.md: 2026-08-27 | TOP GEAR everywhere, non-negotiable",
       "mechanism": "TOP GEAR invariant: deferral requires a named clock; merge-to-live <=5min event-driven; seat-recovery fires intake instantly",
