@@ -883,7 +883,15 @@ process_entry() {
     # Drift detection: symlink to repo OR byte-identical regular file = OK.
     if [ -L "$dest" ]; then
       if [ "$(readlink -f "$dest" 2>/dev/null)" = "$repo" ]; then return 0; fi
-    elif [ -f "$dest" ] && cmp -s "$dest" "$repo" 2>/dev/null; then
+    elif [ -f "$dest" ] && content_equivalent "$dest" "$repo" 2>/dev/null; then
+      # fleet-ops#4948: byte-equal OR semantically-equal JSON passes. The JSON
+      # copy-install config files (seat-caps.json, pi-models.json,
+      # model-candidates.json) are legitimately re-serialized on the live box
+      # (jq merge in seat_caps_merge_unknown_providers / an external writer),
+      # so a byte-only compare reports false DRIFT-INSTALL forever. content_
+      # equivalent is byte-equal OR jq -S equal; a real structural diff, a
+      # non-JSON file, or missing jq still reflect and refuse. Same pattern
+      # as the live_newer_than_repo guard (fleet-ops#4894).
       return 0
     fi
     local link

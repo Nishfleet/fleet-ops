@@ -293,6 +293,32 @@
       "intentional_cap_zero": "money_only",
       "reason": "2026-08-26 Claude via OpenCode Zen is money-adjacent; Nish only. Not a free lane. fleet-ops#1432: intentional hard-conserve cap (money only), so the operator never re-audits it — unlike the stale cap=0 seats (groq TPM, inferx 404 endpoint, orcarouter quota) that warrant re-audition when the external condition clears. models.json lists claude-fable-5 + claude-opus-5 with cost=null (not free-tier; credit-billed) and seat-caps class=metered — observed signal: the Claude slugs carry no free tier, so the seat is money-only by construction (sr-never-vibes marker: metered, cost=null)."
     },
+    "opencode-go": {
+      "cap": 10,
+      "class": "prepaid-quota",
+      "quota_window": "monthly",
+      "max_probe_ceiling": 12,
+      "quota_bench_default_s": 900,
+      "models": {
+        "deepseek-flash": 10,
+        "deepseek-v4-flash": {
+          "cap": 0,
+          "intentional_cap_zero": "dormant",
+          "reason": "opencode-go lane (2026-09-10, fleet-ops#4948): only deepseek-flash (DeepSeek V4.1 Flash) is activatable; this legacy V4 slug is a dormant slot, measured idle (no meter spend observed), cap 0."
+        },
+        "deepseek-v4-pro": {
+          "cap": 0,
+          "intentional_cap_zero": "dormant",
+          "reason": "opencode-go lane (2026-09-10, fleet-ops#4948): only deepseek-flash is served; deepseek-v4-pro is a dormant slot, measured idle (no meter spend observed), cap 0."
+        },
+        "glm-5.3": {
+          "cap": 0,
+          "intentional_cap_zero": "dormant",
+          "reason": "opencode-go lane (2026-09-10, fleet-ops#4948): only deepseek-flash is served; glm-5.3 is a dormant slot, measured idle (no meter spend observed), cap 0."
+        }
+      },
+      "_note": "Nish 2026-09-10 14:30 IST: 'go ham on opencode ds4.1 flash - virtually unlimited for the next 4 days'. OpenCode Go subscription endpoint https://opencode.ai/zen/go/v1 (needs x-opencode-session header; Pi provider opencode-go sends one per request). deepseek-flash = DeepSeek V4.1 Flash (models.dev, released 2026-09-10). Live Pi test 2026-09-10 09:15Z: tools=1 class=worked. FIRST in every order until 2026-09-14, then revert to the 2026-08-27 volume order. Nish 2026-09-10 15:05 IST: \"can go upto 10 ds4.1 flash\" -> cap 10."
+    },
     "bai": {
       "cap": 4,
       "class": "free",
