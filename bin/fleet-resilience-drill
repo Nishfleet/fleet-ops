@@ -58,6 +58,14 @@
 #                                 assert vault-conflict-resolver classifies
 #                                 it (identical -> resolved; never leaves
 #                                 the fixture behind).
+#  12. seat_recovery_coalesce   — fleet-ops#5106: install the shipped
+#                                 fleet-seat-recovery units name-swapped to
+#                                 the escalation-excluded
+#                                 resilience-drill-stub- prefix, storm a
+#                                 scratch trigger, and assert activations
+#                                 coalesce via the ExecStartPost hold while
+#                                 the .path stays active(waiting). Only the
+#                                 daily timer may fire these stubs.
 #
 # Result JSON: $AGENT_STATE/fleet-resilience-drill/last-run.json
 # Metrics:     /var/lib/prometheus/node-exporter/fleet-resilience-drill.prom
@@ -965,6 +973,105 @@ MD
   return 0
 }
 
+# --- seat_recovery_coalesce (fleet-ops#5106) ---------------------------------
+# The seats ledger is written every ~1.3s (~2500 activations/h measured
+# 2026-09-11), and fleet-seat-recovery.path's PathChanged on the DIRECTORY
+# used to spawn one fleet-seat-recovery.service per write — the top
+# unit-churn line. The shipped fix is the service's ExecStartPost
+# activation hold: PathChanged events inside the window enqueue start jobs
+# that merge into the in-flight job instead of spawning activations.
+#
+# This plane is the ONLY thing that may fire the throwaway drill units
+# (fleet-ops#5106 do#3): they run here, under the daily timer, never from
+# a .path watcher on the real seat ledger. The stub keeps the
+# escalation-excluded `resilience-drill-stub` prefix (bin/unit-escalation-
+# write skips it), drives a SCRATCH trigger file, and asserts the storm
+# coalesces while the .path stays active(waiting).
+plane_seat_recovery_coalesce() {
+  local name="seat_recovery_coalesce"
+  if [[ "$OFFLINE" == "1" ]]; then
+    record "$name" "skip" "offline: activation-hold job merging needs a real user-systemd manager; fakes cannot exercise it"
+    return 0
+  fi
+  if [[ -z "${XDG_RUNTIME_DIR:-}" || ! -S "${XDG_RUNTIME_DIR}/systemd/private" \
+        || ! -d "$HOME/.config/systemd/user" ]]; then
+    record "$name" "skip" "no user-systemd session (private socket or user unit dir missing)"
+    return 0
+  fi
+  local drill_unit="resilience-drill-stub-seat-recovery"
+  local src_svc="$FLEET_OPS_REPO/systemd/fleet-seat-recovery.service"
+  local src_path="$FLEET_OPS_REPO/systemd/fleet-seat-recovery.path"
+  if [[ ! -f "$src_svc" || ! -f "$src_path" ]]; then
+    loud "SEAT-RECOVERY-FAIL" "shipped fleet-seat-recovery units missing under $FLEET_OPS_REPO/systemd"
+    record "$name" "fail" "shipped units missing under $FLEET_OPS_REPO/systemd"
+    return 1
+  fi
+  local scratch trigger count drill_svc drill_path
+  scratch="$(mktemp -d -t sr-coalesce-drill.XXXXXX)"
+  trigger="$scratch/trigger"
+  count="$scratch/starts"
+  drill_svc="$HOME/.config/systemd/user/${drill_unit}.service"
+  drill_path="$HOME/.config/systemd/user/${drill_unit}.path"
+  : >"$trigger"
+  : >"$count"
+  src_cleanup() {
+    "$SYSTEMCTL" --user stop "${drill_unit}.path" "${drill_unit}.service" >/dev/null 2>&1 || true
+    "$SYSTEMCTL" --user reset-failed "${drill_unit}.path" "${drill_unit}.service" >/dev/null 2>&1 || true
+    rm -f "$drill_svc" "$drill_path"
+    rm -rf "$scratch"
+    "$SYSTEMCTL" --user daemon-reload >/dev/null 2>&1 || true
+  }
+  # The stub service IS the shipped service, name-swapped, with two
+  # drill-only rewrites: ExecStart appends one line per activation to the
+  # count file (the measurement — no journal dependency), and the
+  # activation hold is shrunk to 3s so the drill finishes in seconds. If a
+  # regression drops ExecStartPost from the shipped unit, the third sed
+  # matches nothing, the stub runs with NO hold, and the storm produces
+  # ~1 activation per write -> plane FAIL -> auto-file.
+  sed -e "s/fleet-seat-recovery/${drill_unit}/g" \
+      -e "s|^ExecStart=.*|ExecStart=/bin/sh -c 'echo x >> ${count}'|" \
+      -e "s|^ExecStartPost=/bin/sleep [0-9][0-9]*|ExecStartPost=/bin/sleep 3|" \
+      "$src_svc" > "$drill_svc"
+  sed -e "s/fleet-seat-recovery/${drill_unit}/g" \
+      -e "s|/home/nish/workspaces/agent-state/lanes/seats|${trigger}|g" \
+      "$src_path" > "$drill_path"
+  "$SYSTEMCTL" --user daemon-reload >/dev/null 2>&1 || true
+  if ! "$SYSTEMCTL" --user start "${drill_unit}.path" >/dev/null 2>&1; then
+    src_cleanup
+    loud "SEAT-RECOVERY-FAIL" "could not start ${drill_unit}.path"
+    record "$name" "fail" "could not start ${drill_unit}.path"
+    return 1
+  fi
+  # Storm: 16 writes over ~8s. With the 3s hold the ceiling is ~3-4
+  # activations; an unheld unit would start once per write (~16).
+  local i
+  for i in $(seq 1 16); do : >"$trigger"; sleep 0.5; done
+  sleep 4
+  local starts path_state
+  starts="$(wc -l <"$count" 2>/dev/null || echo 0)"
+  path_state="$("$SYSTEMCTL" --user show "${drill_unit}.path" \
+    --property=ActiveState --property=Result 2>/dev/null || true)"
+  src_cleanup
+  if (( starts < 1 )); then
+    loud "SEAT-RECOVERY-FAIL" "stub .path never fired the service (vacuous drill)"
+    record "$name" "fail" "0 activations for 16 trigger writes — trigger path broken (vacuous)"
+    return 1
+  fi
+  if (( starts > 6 )); then
+    loud "SEAT-RECOVERY-FAIL" "storm not coalesced: $starts activations for 16 writes"
+    record "$name" "fail" "$starts activations for 16 trigger writes — activation hold missing or broken"
+    return 1
+  fi
+  if ! grep -q 'ActiveState=active' <<<"$path_state" \
+     || ! grep -q 'Result=success' <<<"$path_state"; then
+    loud "SEAT-RECOVERY-FAIL" "stub .path wedged under the storm: $path_state"
+    record "$name" "fail" "stub .path not active/success after storm: $path_state"
+    return 1
+  fi
+  record "$name" "pass" "16 trigger writes -> $starts activations, ${drill_unit}.path active/success (hold=3s drill scale)"
+  return 0
+}
+
 write_results() {
   local all_pass
   all_pass="$(jq -s -c 'all(.[]; .status == "pass" or .status == "skip")' "$RESULTS_LOG")"
@@ -1090,6 +1197,7 @@ run_drill() {
   plane_boundary_delivery || rc=1
   plane_band_floor || rc=1
   plane_event_trigger_spot || rc=1
+  plane_seat_recovery_coalesce || rc=1
   write_results
   # Read all_pass from the JSON we just wrote so write_metrics + auto_file
   # share the same verdict.
@@ -1100,8 +1208,8 @@ run_drill() {
   write_metrics "$all_pass"
   auto_file_failures
   if [[ "$all_pass" == "true" ]]; then
-    log "OK: fleet-ops#455+#1463 eleven-plane drill pass (see $RESULTS)"
-    printf 'OK: fleet-ops#455+#1463 eleven-plane drill pass\n'
+    log "OK: fleet-ops#455+#1463 twelve-plane drill pass (see $RESULTS)"
+    printf 'OK: fleet-ops#455+#1463 twelve-plane drill pass\n'
     exit 0
   fi
   log "FAIL: one or more planes failed (see LOUD lines and $RESULTS)"

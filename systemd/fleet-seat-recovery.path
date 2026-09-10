@@ -1,10 +1,20 @@
 [Unit]
 Description=Fleet seat-recovery path watcher (fleet-ops#468)
 # OnFailure comes from path.d/10-escalate.conf (#618). StartLimit on the
-# triggered oneshot is the wedge that used to take this watcher down; that
-# limit is disabled there (fleet-ops#617).
+# triggered oneshot is the wedge that used to take this watcher down; the
+# accommodation history is #617 (limit disabled) -> #622 (1h/2000 burst)
+# -> #5106 (removed entirely once the service's activation hold made the
+# stock 5-per-10s structurally unreachable).
 
 [Path]
+# fleet-ops#5106: do NOT add TriggerLimitIntervalSec=/TriggerLimitBurst=
+# here. On systemd 255 a trigger-limit hit places THIS unit into a
+# "trigger-limit-hit" failure and it stops watching until restarted —
+# the same watcher-dead wedge #617 exists to prevent (proven live: the
+# second seats/ write inside a 30s window fails the unit and fires the
+# OnFailure escalation). The write-storm coalescing lives in
+# fleet-seat-recovery.service's ExecStartPost activation hold instead:
+# events merge into the in-flight activation (max ~1 run per 25s).
 PathChanged=/home/nish/workspaces/agent-state/lanes/seats
 Unit=fleet-seat-recovery.service
 

@@ -134,11 +134,20 @@ ok "service.d/path.d/timer.d 10-escalate.conf shape"
 # 7b. fleet-seat-recovery.service must not StartLimit-wedge the path unit.
 # systemd.path: a StartLimit hit on the triggered oneshot is propagated to
 # the path unit and takes the watcher down (fleet-ops#617).
+# fleet-ops#5106: the #617 disable (StartLimitIntervalSec=0) and the #622
+# 1h/2000 storm accommodation are REMOVED — the ExecStartPost activation
+# hold keeps every activation >=20s so the stock 5-per-10s default is
+# structurally unreachable. The lock is now: no StartLimit* lines at all
+# (the accommodation is undone, not raised — a hold regression wedges loud
+# through OnFailure instead of storming silently) AND the hold present.
 seat_svc="$repo_root/systemd/fleet-seat-recovery.service"
 [[ -f "$seat_svc" ]] || fail "missing: $seat_svc"
-grep -q '^StartLimitIntervalSec=0$' "$seat_svc" \
-  || fail "fleet-seat-recovery.service: StartLimitIntervalSec=0 (default 5/10s wedges the path unit)"
-ok "fleet-seat-recovery.service StartLimitIntervalSec=0"
+if grep -qE '^StartLimit' "$seat_svc"; then
+  fail "fleet-seat-recovery.service: StartLimit* present — #5106 removed the accommodation (activation hold makes the stock 5/10s unreachable)"
+fi
+grep -qE '^ExecStartPost=/bin/sleep [0-9]+$' "$seat_svc" \
+  || fail "fleet-seat-recovery.service: missing ExecStartPost=/bin/sleep <N> activation hold (the #5106 storm coalescing; without it the #622 write storm returns)"
+ok "fleet-seat-recovery.service: no StartLimit accommodation + activation hold present"
 
 # 8. unit-escalation@.service.d/no-self-escalate.conf shape (recursion guard).
 grep -q '^\[Unit\]$' "$tmpl_dropin" || fail "no-self-escalate.conf: missing [Unit]"

@@ -981,8 +981,8 @@ groups:
           severity: critical
           service: fleet
         annotations:
-          summary: "fleet resilience drill organ absent — the eleven-plane drill is missing, dead, or stuck red"
-          description: "Repair worker: bin/fleet-resilience-drill must write fleet_resilience_drill_last_green_seconds on every all-pass run. fleet_resilience_drill_plane_fail{plane=...} and fleet_resilience_drill_plane_skip{plane=...} name the failing planes. Check fleet-resilience-drill.timer is running and journalctl --user -u fleet-resilience-drill.service. The five #1463 failure-class planes (queue_freeze, pipeline_red, boundary_delivery, band_floor, event_trigger_spot) sandbox against live state, so a red plane is safe to reproduce."
+          summary: "fleet resilience drill organ absent — the twelve-plane drill is missing, dead, or stuck red"
+          description: "Repair worker: bin/fleet-resilience-drill must write fleet_resilience_drill_last_green_seconds on every all-pass run. fleet_resilience_drill_plane_fail{plane=...} and fleet_resilience_drill_plane_skip{plane=...} name the failing planes. Check fleet-resilience-drill.timer is running and journalctl --user -u fleet-resilience-drill.service. The five #1463 failure-class planes (queue_freeze, pipeline_red, boundary_delivery, band_floor, event_trigger_spot) plus the #5106 seat_recovery_coalesce plane sandbox against live state, so a red plane is safe to reproduce."
 
       # fleet-ops#1232: 17 min of honest-dark gh tiles because caches aged
       # out and scheduled refreshes did not recover. Honesty rendering

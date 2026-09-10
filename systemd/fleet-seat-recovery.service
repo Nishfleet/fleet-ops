@@ -3,8 +3,13 @@ Description=Fleet seat-recovery trigger (fire intake on NO-USABLE-SEAT -> usable
 # systemd.path: a StartLimit hit on THIS oneshot is propagated to
 # fleet-seat-recovery.path and takes the watcher down (fleet-ops#617).
 # The bin always exits 0; ledger writes are the expected trigger rate.
-# Disable the default 5/10s burst so a chatty seats/ dir cannot wedge TOP GEAR.
-StartLimitIntervalSec=0
+# fleet-ops#5106: the ExecStartPost activation hold below keeps every
+# activation occupied for >=25s, so no trigger path can start this unit
+# faster than ~2/min and the stock 5-per-10s StartLimit is structurally
+# unreachable. The #617/#622-era accommodations (StartLimitIntervalSec=0,
+# then 1h/2000) are removed, not raised: if the hold is ever deleted the
+# write storm wedges this unit and the .path with it -> OnFailure ->
+# senior auditor. That loud wedge is the intended regression tripwire.
 
 # Event-driven: any write to the per-seat health ledger (a seat-health
 # extension update) wakes this service. It compares the current "any seat
@@ -13,30 +18,28 @@ StartLimitIntervalSec=0
 # Time-based bench expiry is the heartbeat's slow-path floor; this is the
 # fast path for the common case (a health write marks a seat usable).
 
-# fleet-ops#622: the seats ledger is written every few seconds (every
-# seat-health extension update), so fleet-seat-recovery.path fires this
-# service ~30x/min. The DEFAULT StartLimitBurst=5 / StartLimitIntervalSec=10s
-# is blown through in well under a minute of normal fleet traffic, which
-# wedges BOTH this service AND the .path unit with unit-start-limit-hit
-# (proven live: the path unit went inactive/failed 12min after start on
-# 2026-08-27). The bin's own FLEET_SEAT_RECOVERY_COOLDOWN (default 120s) is
-# the real rate-limiter for the side effect (the intake fire); the systemd
-# start limit here only needs to tolerate the no-op trigger storm, not gate
-# the fire. Raise it well above the worst-case sustained write rate so a
-# healthy fleet cannot wedge its own seat-recovery fast path. StartLimit*
-# must live in [Unit], not [Service] (same convention as pi-intake@.service).
-#
-# fleet-ops#5024: the bin now debounces last=usable (skip the ~1.1s ledger
-# scan). That cuts CPU; it does not reduce systemd activations — PathChanged
-# still starts this oneshot on every seats/ write. StartLimitBurst must
-# therefore stay above the write storm (~1800/h). Lowering it to 200
-# would re-wedge the path unit without making the hot loop quieter.
-StartLimitIntervalSec=1h
-StartLimitBurst=2000
-
 [Service]
 Type=oneshot
 ExecStart=/home/nish/.local/bin/fleet-seat-recovery
+# fleet-ops#5106: activation hold. After the bin exits, the unit lingers
+# in start-post for 25s; PathChanged events landing in the window enqueue
+# start jobs that MERGE into the in-flight job instead of spawning new
+# activations (proven live 2026-09-11: 16 trigger writes over 8s -> 2
+# service starts, path unit stays active/success). The seats ledger is
+# written every ~2s, so the hold coalesces the storm to <= ~144
+# starts/h (acceptance: <200/h, from a measured 2419/h).
+# Latency: the triggering write's own transition is processed immediately
+# (the bin runs BEFORE the hold). A transition landing mid-hold merges
+# into the in-flight job and is caught by the next activation ~25s + one
+# ledger-write interval later — the bin re-reads the whole ledger each
+# run — inside the issue's 30s bound. NO-USABLE-SEAT recovery is not
+# debounced past this: the bin's own cooldown still gates the intake fire.
+# TriggerLimit* on the .path unit is deliberately NOT the mechanism: on
+# systemd 255 a hit places the .path unit into "trigger-limit-hit"
+# failure and it stops watching until restarted (proven live: second
+# write inside the window -> failed, OnFailure fired). That is the #617
+# wedge class, not a debounce.
+ExecStartPost=/bin/sleep 25
 TimeoutStartSec=60
 
 [Install]

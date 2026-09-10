@@ -25,7 +25,8 @@
 #      are FAIL + LOUD.
 #  11. --check reports ready/missing without system calls.
 #  12. fleet-ops#1463 failure-class planes (queue_freeze, pipeline_red,
-#      boundary_delivery, band_floor, event_trigger_spot) extend the
+#      boundary_delivery, band_floor, event_trigger_spot) plus the
+#      fleet-ops#5106 seat_recovery_coalesce plane extend the
 #      existing roster; each is sandboxed and FAILs loud, the green run
 #      records all_pass=true and writes a fleet_resilience_drill_*
 #      prom file, and the auto-file path is wired but disabled under test.
@@ -474,11 +475,11 @@ names = {r["name"] for r in data["results"]}
 required = {"supervision_resurrection", "access_policy", "access_runbook",
             "state_restore", "compute_breakglass", "keystone_deadman",
             "queue_freeze", "pipeline_red", "boundary_delivery",
-            "band_floor", "event_trigger_spot"}
+            "band_floor", "event_trigger_spot", "seat_recovery_coalesce"}
 missing = required - names
 assert not missing, f"missing planes: {missing}"
 PY
-ok "green offline run exits 0 and writes all_pass=true (11 planes)"
+ok "green offline run exits 0 and writes all_pass=true (12 planes)"
 
 # --- #1463: per-plane green + metric + auto-file-disabled --------------------
 reset_all
@@ -489,7 +490,7 @@ import json, sys
 data = json.load(open(sys.argv[1], encoding="utf-8"))
 statuses = {r["name"]: r["status"] for r in data["results"]}
 for plane in ("queue_freeze", "pipeline_red", "boundary_delivery",
-              "band_floor", "event_trigger_spot"):
+              "band_floor", "event_trigger_spot", "seat_recovery_coalesce"):
     assert statuses.get(plane) in ("pass", "skip"), f"{plane} -> {statuses.get(plane)}"
 PY
 ok "#1463 green: every failure-class plane passed (or SKIP+LOUD)"

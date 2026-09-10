@@ -1,37 +1,46 @@
 #!/usr/bin/env bash
 # tests/fleet-seat-recovery-units.test.sh
 #
-# fleet-ops#622: fleet-seat-recovery.path fails to start (unit-start-limit-hit).
-# The seats ledger is written every few seconds (every seat-health extension
-# update), so fleet-seat-recovery.path fires fleet-seat-recovery.service
-# ~30x/min. The DEFAULT StartLimitBurst=5 / StartLimitIntervalSec=10s is blown
-# through in well under a minute of normal fleet traffic, which wedges BOTH
-# the service AND the .path unit with unit-start-limit-hit (proven live
-# 2026-08-27: the path unit went inactive/failed 12min after start). The bin's
-# own FLEET_SEAT_RECOVERY_COOLDOWN (default 120s) is the real rate-limiter for
-# the side effect (the intake fire); the systemd start limit only needs to
-# tolerate the no-op trigger storm, not gate the fire.
+# fleet-ops#5106: the seats ledger is written every ~2s (every seat-health
+# extension update), and fleet-seat-recovery.path's PathChanged on the
+# DIRECTORY fired fleet-seat-recovery.service on every write — measured
+# 2419 service starts in one hour (2026-09-10 judge run), which was the
+# top line of the unit-churn report while the box idled at sy=16%.
 #
-# This test is split from tests/fleet-seat-recovery.test.sh (which exercises
-# the bin's transition/cooldown logic) so the unit-shape + live wedge-recovery
-# assertions run independently of the bin test. It is invoked from the listed
-# tests/fleet-seat-recovery.test.sh (p14-test-listing-gate: transitively
-# invoked from a listed test).
+# The fix is an ACTIVATION HOLD, not a trigger limit. fleet-seat-recovery
+# .service carries ExecStartPost=/bin/sleep <hold>: after the bin exits the
+# unit lingers in start-post, so PathChanged events inside the window
+# enqueue start jobs that merge into the in-flight job instead of spawning
+# new activations (proven live 2026-09-11: 16 trigger writes over 8s ->
+# 2 starts, .path stays active/success). Max rate ~3600/hold per hour; the
+# triggering write's own transition is still processed immediately because
+# the bin runs BEFORE the hold.
 #
-# What we prove:
-#   1. fleet-seat-recovery.service carries a storm-tolerant StartLimit guard
-#      in [Unit] (StartLimitIntervalSec=1h, StartLimitBurst>1800) so a healthy
-#      fleet cannot wedge its own seat-recovery fast path. fleet-ops#5024
-#      in-bin debounce cuts CPU on last=usable; PathChanged still starts the
-#      oneshot on every seats/ write, so the burst floor stays >1800.
-#   2. StartLimit* does NOT leak into [Service] (systemd rejects it there).
-#   3. systemd-analyze verify accepts both unit files (syntax + directives).
-#   4. Live wedge-recovery drill: 60 .path triggers in ~3s (far past the old
-#      5/10s default) leaves the .path unit active(waiting), not failed.
-#      Skipped outside a user-systemd session (CI hosted runners).
+# What this test proves:
+#   1. fleet-seat-recovery.service carries the activation hold
+#      (ExecStartPost=/bin/sleep N, 20<=N<=30 — N>=20 keeps the storm under
+#      the 200/h acceptance; N<=30 keeps a mid-hold transition inside the
+#      issue's 30s recovery bound given the ~2s ledger cadence).
+#   2. fleet-seat-recovery.path carries NO TriggerLimit*: on systemd 255 a
+#      hit places the .path unit into "trigger-limit-hit" failure and it
+#      stops watching until restarted — the #617 watcher-dead wedge, not a
+#      debounce (proven live: second write inside the window -> failed).
+#   3. No StartLimit* anywhere in the service: the hold makes the stock
+#      5-per-10s structurally unreachable, so the #617 (disabled) and #622
+#      (1h/2000) accommodations are undone. If the hold regresses, the
+#      default limit wedges the oneshot -> propagates to the .path ->
+#      OnFailure -> senior auditor. Loud, by design.
+#   4. systemd-analyze verify accepts both unit files (syntax+directives).
 #
-# Runs read-only against the repo except for the live drill, which installs
-# throwaway *-drill unit files into the user systemd scope and removes them.
+# The LIVE wedge/coalescing drill moved to bin/fleet-resilience-drill
+# (plane seat_recovery_coalesce) so the throwaway units fire at the daily
+# fleet-resilience-drill.timer cadence only — a repo test run no longer
+# installs user-systemd units (fleet-ops#5106 do#3; the 451/h
+# fleet-seat-recovery-drill churn was test runs). This file is read-only
+# against the repo and the box.
+#
+# Invoked from tests/fleet-seat-recovery.test.sh (p14-test-listing-gate:
+# transitively invoked from a listed test).
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -45,34 +54,48 @@ path_unit="$repo_root/systemd/fleet-seat-recovery.path"
 [[ -f "$svc_unit" ]] || fail "missing: $svc_unit"
 [[ -f "$path_unit" ]] || fail "missing: $path_unit"
 
-# --- 1. StartLimit guard in [Unit] -------------------------------------------
-# StartLimit* must live in [Unit] (systemd rejects them in [Service]).
-# Extract the [Unit] section and assert both directives are present and high
-# enough to survive a sustained ledger-write storm.
-unit_section=$(awk '/^\[Unit\]/{f=1} /^\[/{if(f&&$0!~/^\[Unit\]/)f=0} f' "$svc_unit")
-[[ -n "$unit_section" ]] || fail "no [Unit] section in $svc_unit"
-echo "$unit_section" | grep -qE '^StartLimitIntervalSec=1h$' \
-  || fail "StartLimitIntervalSec=1h missing from [Unit] in $svc_unit"
-echo "$unit_section" | grep -qE '^StartLimitBurst=[0-9]+$' \
-  || fail "StartLimitBurst missing from [Unit] in $svc_unit"
-burst=$(echo "$unit_section" | sed -nE 's/^StartLimitBurst=([0-9]+)$/\1/p')
-[[ -n "$burst" ]] || fail "could not parse StartLimitBurst"
-# 30 triggers/min * 60min = 1800/hr worst case; the guard must clear that
-# with headroom so a healthy fleet cannot wedge its own fast path.
-# fleet-ops#5024: in-bin debounce does not reduce systemd starts, so this
-# floor still holds. Burst=200 would re-wedge the path unit (#617).
-(( burst > 1800 )) \
-  || fail "StartLimitBurst=$burst too low for ~1800/hr trigger storm (need >1800)"
-ok "fleet-seat-recovery.service carries a storm-tolerant StartLimit guard in [Unit] (burst=$burst)"
-
-# --- 2. StartLimit* must not leak into [Service] -----------------------------
+# --- 1. activation hold in [Service] -----------------------------------------
+# The hold is the whole fix: without an ExecStartPost sleep the oneshot is
+# dead ~29ms after each trigger and every seats/ write spawns a real
+# activation. With it, writes inside the window merge into the in-flight job.
 svc_section=$(awk '/^\[Service\]/{f=1} /^\[/{if(f&&$0!~/^\[Service\]/)f=0} f' "$svc_unit")
-if echo "$svc_section" | grep -qE '^StartLimit'; then
-  fail "StartLimit* must not appear in [Service] (systemd rejects it there)"
-fi
-ok "StartLimit* confined to [Unit] (not in [Service])"
+[[ -n "$svc_section" ]] || fail "no [Service] section in $svc_unit"
+hold=$(echo "$svc_section" | sed -nE 's/^ExecStartPost=\/bin\/sleep ([0-9]+)$/\1/p')
+[[ -n "$hold" ]] \
+  || fail "ExecStartPost=/bin/sleep <N> missing from [Service] in $svc_unit (activation hold is the #5106 coalescing mechanism)"
+(( hold >= 20 && hold <= 30 )) \
+  || fail "ExecStartPost hold=${hold}s out of range: >=20 keeps storm <200/h, <=30 keeps mid-hold transitions inside the 30s recovery bound"
+ok "fleet-seat-recovery.service carries ExecStartPost=/bin/sleep ${hold} activation hold (<= ~$((3600 / hold)) starts/h under a write storm)"
 
-# --- 3. systemd-analyze verify accepts both unit files -----------------------
+# --- 2. no TriggerLimit* in the .path (the wedge trap) ------------------------
+# systemd.path(5) on 255: "If the limit is hit, the unit is placed into a
+# failure mode, and will not watch the paths anymore until restarted."
+# TriggerLimitBurst=1/30s on a dir written every ~2s wedges the watcher in
+# seconds (proven live 2026-09-11: Result=trigger-limit-hit, OnFailure
+# fired). This is a failure-mode lock, not a style preference.
+path_section=$(awk '/^\[Path\]/{f=1} /^\[/{if(f&&$0!~/^\[Path\]/)f=0} f' "$path_unit")
+[[ -n "$path_section" ]] || fail "no [Path] section in $path_unit"
+if echo "$path_section" | grep -qE '^TriggerLimit'; then
+  fail "TriggerLimit* in [Path] of $path_unit wedges the watcher on systemd 255 (trigger-limit-hit) — coalescing belongs in the service's activation hold"
+fi
+echo "$path_section" | grep -qE '^PathChanged=/home/nish/workspaces/agent-state/lanes/seats$' \
+  || fail "PathChanged= seats dir missing from [Path] in $path_unit (must stay event-driven, fleet-ops#5106 must-not)"
+echo "$path_section" | grep -qE '^Unit=fleet-seat-recovery.service$' \
+  || fail "Unit=fleet-seat-recovery.service missing from [Path] in $path_unit"
+ok "fleet-seat-recovery.path: no TriggerLimit* (wedge trap locked out), still event-driven on seats/"
+
+# --- 3. no StartLimit* accommodation left in the service ----------------------
+# With the hold, every activation occupies >=20s, so even the stock 5-per-10s
+# default can never be reached by the seats/ write storm — or by anything
+# else; the path unit is the only activator. The #617 (StartLimitIntervalSec=0)
+# and #622 (1h/2000) accommodations are therefore REMOVED: a hold regression
+# must trip the default and page an auditor, not storm silently.
+if grep -qE '^StartLimit' "$svc_unit"; then
+  fail "StartLimit* present in $svc_unit — the #5106 hold makes it unreachable; the accommodation is undone, not raised"
+fi
+ok "no StartLimit* accommodation in fleet-seat-recovery.service (stock 5/10s is structurally unreachable at >=20s activation spacing)"
+
+# --- 4. systemd-analyze verify accepts both unit files -----------------------
 # Same convention as tests/escalation-units-shape.test.sh. The CI unit-verify
 # job already verifies systemd/*.service, but it does NOT verify .path files
 # directly — this does. The service ExecStart points at a VPS-only bin
@@ -107,59 +130,4 @@ else
   echo "SKIP: systemd-analyze not on PATH (unit verify)"
 fi
 
-# --- 4. live wedge-recovery drill --------------------------------------------
-# Prove the fix end-to-end: install the SHIPPED unit files (name-swapped) into
-# a throwaway user systemd scope, drive the .path trigger well past the OLD
-# default limit (5/10s), and assert the path unit stays active (waiting) —
-# i.e. the storm no longer wedges it. Skipped outside the VPS (no user systemd
-# session) so CI hosted runners don't false-positive.
-#
-# fleet-ops#622: the original gate only checked for an XDG_RUNTIME_DIR socket
-# and a systemctl binary. GitHub-hosted runners (Ubuntu 24.04 image) provide
-# BOTH, and HOME has no `~/.config/systemd/user/` directory by default — so
-# the test's `sed > "$drill_svc"` opened a non-existent path and red'd P14 on
-# a runner that has no user-systemd-managed services to actually wedge.
-# Gate on the existence of the per-user unit dir (the VPS has it; CI does
-# not) so the drill only runs where it can actually exercise the real
-# path-watcher storm.
-if [[ -n "${XDG_RUNTIME_DIR:-}" ]] && [[ -S "${XDG_RUNTIME_DIR}/systemd/private" ]] \
-   && [[ -d "$HOME/.config/systemd/user" ]] \
-   && command -v systemctl >/dev/null 2>&1; then
-  drill_unit="fleet-seat-recovery-drill"
-  drill_svc="$HOME/.config/systemd/user/${drill_unit}.service"
-  drill_path="$HOME/.config/systemd/user/${drill_unit}.path"
-  trigger="$(mktemp -t sr-drill-trigger.XXXXXX)"
-  # Copy the SHIPPED unit files with the unit name swapped in, so the drill
-  # exercises the real StartLimit guard, not a hand-written stand-in.
-  sed "s/fleet-seat-recovery/${drill_unit}/g" "$svc_unit" > "$drill_svc"
-  sed "s|/home/nish/workspaces/agent-state/lanes/seats|${trigger}|g; s/fleet-seat-recovery/${drill_unit}/g" "$path_unit" > "$drill_path"
-  # The shipped ExecStart points at a VPS bin; point it at /bin/true so the
-  # drill only exercises the trigger/rate-limit path, not the real bin.
-  sed -i 's|^ExecStart=.*|ExecStart=/bin/true|' "$drill_svc"
-  cleanup_drill() {
-    systemctl --user stop "${drill_unit}.service" "${drill_unit}.path" 2>/dev/null || true
-    systemctl --user reset-failed "${drill_unit}.service" "${drill_unit}.path" 2>/dev/null || true
-    rm -f "$drill_svc" "$drill_path" "$trigger"
-    systemctl --user daemon-reload 2>/dev/null || true
-  }
-  trap cleanup_drill EXIT INT TERM
-  systemctl --user daemon-reload
-  systemctl --user reset-failed "${drill_unit}.service" "${drill_unit}.path" 2>/dev/null || true
-  systemctl --user stop "${drill_unit}.service" "${drill_unit}.path" 2>/dev/null || true
-  systemctl --user start "${drill_unit}.path" 2>/dev/null || fail "could not start drill .path"
-  # Hammer the trigger ~60x in ~3s — far past the old 5/10s default limit.
-  for _ in $(seq 1 60); do : > "$trigger"; sleep 0.05; done
-  sleep 0.5
-  st=$(systemctl --user show -p ActiveState -p Result "${drill_unit}.path" 2>/dev/null)
-  echo "$st" | grep -q 'ActiveState=active' \
-    || fail "drill .path wedged under trigger storm: $st (StartLimit guard not effective)"
-  echo "$st" | grep -q 'Result=success' \
-    || fail "drill .path Result not success: $st"
-  ok "live drill: 60 triggers in 3s does not wedge fleet-seat-recovery.path ($st)"
-  cleanup_drill
-  trap - EXIT INT TERM
-else
-  echo "SKIP: live wedge-recovery drill (no user systemd session)"
-fi
-
-echo "OK: fleet-seat-recovery-units: StartLimit guard + verify + wedge drill"
+echo "OK: fleet-seat-recovery-units: activation hold + no trigger-limit + no start-limit accommodation + verify"
