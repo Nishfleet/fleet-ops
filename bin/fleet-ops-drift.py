@@ -846,6 +846,34 @@ def live_file_bytes(dest: Path) -> bytes | None:
     return None
 
 
+def copy_installed_json_equivalent(src: str, actual: bytes, expected: bytes) -> bool:
+    """True when a copy-installed JSON config matches despite re-serialization.
+
+    fleet-ops#5087: the MANIFEST entries in COPY_INSTALLED_SRC_NAMES are
+    COPY-installed, and the live box legitimately re-serializes them
+    (install.sh's jq merge in seat_caps_merge_unknown_providers, and other
+    external writers that re-escape non-ASCII). install.sh --check already
+    tolerates exactly that via its content_equivalent guard (fleet-ops#4894,
+    fleet-ops#4948), but this check still byte-compared, so
+    check_live_matches_origin_main reported DRIFT-ORIGIN forever on a config
+    whose content matched origin/main exactly. That false red was invisible
+    only because check_manifest_install runs first and fail_loud exits —
+    clearing the .bak sprawl (fleet-ops#5087) would have traded one red tag
+    for another instead of reaching green.
+
+    Scope is deliberately narrow: only the named copy-install sources, and
+    only when BOTH bodies are JSON that compares equal. A symlinked dest can
+    never be re-serialized, so it keeps the byte compare (that is where a
+    stale-checkout drift signal lives). A real content change still differs.
+    """
+    if Path(src).name not in COPY_INSTALLED_SRC_NAMES:
+        return False
+    try:
+        return json.loads(actual) == json.loads(expected)
+    except (ValueError, UnicodeDecodeError):
+        return False
+
+
 def is_volatile_outside_checkout(resolved: Path, checkout: Path) -> bool:
     """True if resolved lives under /tmp, /run, or agent-worktrees, and is not the checkout.
 
@@ -988,7 +1016,9 @@ def check_live_matches_origin_main(checkout: Path) -> None:
         if actual is None:
             findings.append(f"{dest}: missing (want origin/main:{src})")
             continue
-        if actual != expected:
+        if actual != expected and not copy_installed_json_equivalent(
+            src, actual, expected
+        ):
             findings.append(f"{dest} does not match origin/main:{src}")
 
     if findings:

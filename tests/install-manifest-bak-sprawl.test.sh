@@ -79,7 +79,46 @@ if ! "$install" --check >/dev/null 2>&1; then
 fi
 ok "install.sh --check is green after .bak removal"
 
-# --- 7. Live repo MANIFEST must have no existing .bak sprawl ---------------
+# --- 7. An install tick PRUNES the sprawl (fleet-ops#5087) -----------------
+# The gate above only reports; nothing removed the leftovers, so one backup
+# parked next to a managed dest kept the DRIFT-INSTALL alarm loud until a
+# worker deleted it by hand. A real install run must clear it.
+ln -s "$scratch/foo" "$bak_foo"
+ln -s "$scratch/bar" "$bak_ts"
+mkdir -p "$scratch/home/nish/.config/systemd/user"
+stub_systemctl="$scratch/stub-systemctl.sh"
+cat >"$stub_systemctl" <<'STUB'
+#!/usr/bin/env bash
+case "$*" in
+  *"is-enabled"*) echo "disabled"; exit 0 ;;
+  *"is-active --quiet"*) exit 1 ;;
+  *) exit 0 ;;
+esac
+STUB
+chmod +x "$stub_systemctl"
+
+set +e
+out=$(HOME="$scratch/home" SYSTEMCTL="$stub_systemctl" "$install" 2>&1)
+rc=$?
+set -e
+[[ "$rc" -eq 0 ]] || fail "install.sh must succeed when pruning .bak sprawl, got rc=$rc:\n$out"
+[[ "$out" == *"removed .bak sprawl: $bak_foo"* ]] \
+  || fail "install.sh did not report pruning $bak_foo:\n$out"
+[[ "$out" == *"removed .bak sprawl: $bak_ts"* ]] \
+  || fail "install.sh did not report pruning $bak_ts:\n$out"
+[[ ! -e "$bak_foo" && ! -L "$bak_foo" ]] || fail "install.sh left $bak_foo behind"
+[[ ! -e "$bak_ts" && ! -L "$bak_ts" ]] || fail "install.sh left $bak_ts behind"
+# The managed dests themselves must survive the prune.
+[[ -L "$scratch/home/nish/.local/bin/foo" ]] || fail "prune removed the managed dest foo"
+[[ -L "$scratch/home/nish/.pi/agent/extensions/bar/index.ts" ]] \
+  || fail "prune removed the managed dest bar/index.ts"
+# And the gate is green again on the same tree, with no hand cleanup.
+if ! "$install" --check >/dev/null 2>&1; then
+  fail "install.sh --check must be green after the install-tick prune"
+fi
+ok "install.sh prunes .bak sprawl next to managed MANIFEST dests (fleet-ops#5087)"
+
+# --- 8. Live repo MANIFEST must have no existing .bak sprawl ---------------
 cd "$repo_root"
 out=$("$install" --check 2>&1 || true)
 if grep -q '.bak next to managed MANIFEST file' <<< "$out"; then
@@ -87,4 +126,4 @@ if grep -q '.bak next to managed MANIFEST file' <<< "$out"; then
 fi
 ok "live repo MANIFEST has no .bak sprawl"
 
-echo "OK: install.sh --check detects .bak files next to managed MANIFEST destinations (fleet-ops#3273)"
+echo "OK: install.sh --check detects and install.sh prunes .bak files next to managed MANIFEST destinations (fleet-ops#3273, fleet-ops#5087)"

@@ -858,6 +858,47 @@ check_bak_sprawl() {
   done < "$manifest"
 }
 
+# fleet-ops#5087: check_bak_sprawl above is only a gate — nothing removed the
+# leftovers, so one hand-made backup parked next to a managed MANIFEST dest
+# keeps the DRIFT-INSTALL alarm loud until a worker deletes it by hand, and
+# the next backup re-fires the alarm (that is the filed issue, and the ~25
+# [SIGNAL-RECONCILE-CAP] ticks that carried `loud/drift-install/...`). This
+# installer is already the organ that wipes backup cruft from a managed dir
+# (the systemd user dir wipe, fleet-ops#4149: "backups are rm'd, not
+# parked"), so the same wipe runs here. A .bak next to a managed dest is
+# never loaded and is never a valid state — check_bak_sprawl fails on it — so
+# the install tick heals the drift on its own.
+prune_bak_sprawl() {
+  local src dest dir base entry
+  while read -r src dest || [ -n "$src" ]; do
+    [ -z "$src" ] && continue
+    # Skip whole-line comments and entries with no destination.
+    case "$src" in '#'*) continue ;; esac
+    [ -n "$dest" ] || continue
+
+    # Same /etc/ skip as check_bak_sprawl: those need sudo to clean.
+    case "$dest" in /etc/*) continue ;; esac
+
+    if [[ "$dest" == /* ]]; then
+      dir=$(dirname "$dest")
+    else
+      dir=$(dirname "$PWD/$dest")
+    fi
+    base=$(basename "$dest")
+    # A malformed MANIFEST line must never widen the glob into a dir-wide rm.
+    case "$base" in ''|'/'|'.'|'..') continue ;; esac
+
+    # Same glob as check_bak_sprawl: the literal pattern survives when nothing
+    # matches, and the existence test filters it out.
+    for entry in "$dir/$base.bak"*; do
+      if [ -e "$entry" ] || [ -L "$entry" ]; then
+        rm -rf -- "$entry"
+        echo "removed .bak sprawl: $entry (fleet-ops#5087)"
+      fi
+    done
+  done < "$manifest"
+}
+
 # fleet-ops#3263: Pi provider extensions (template/extensions/**) are
 # installed as file COPIES, not symlinks. A symlink into the deploy-clone
 # working tree resolves their relative import `../seat-health.ts` against the
@@ -1096,6 +1137,7 @@ if [ "$do_user_install" = 1 ]; then
   remove_retired_canaries
   remove_retired_staleness_timer
   remove_retired_provider_spawn_guard
+  prune_bak_sprawl
   ensure_devin_config_trust
   # Only daemon-reload when a user-scope systemd unit/drop-in actually
   # changed. First install on a fresh box still reloads because every unit
