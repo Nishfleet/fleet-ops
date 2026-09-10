@@ -439,6 +439,28 @@ grep -q 'requeued=0' <<<"$out" || fail "closed-unmerged PR must not requeue: $ou
 grep -q 'count=1' <<<"$out" || fail "closed-unmerged stays: $out"
 ok "closed-unmerged PR does not requeue"
 
+# Case 4b: fleet-ops#5131 — an absorbed ticket parked by the spec-judge must
+# never requeue when the absorbing issue closes. Live shape: 0509#2385 carries
+# a worker's `blocked-on: Nishfleet/0509#2381` comment (the absorption is the
+# reason), and the judge park adds a `blocked-on: orchestrator` line. That line
+# forces all_cleared=0 on every pass, so the resolved ref cannot flip the label
+# back to agent-ready (the fleet-ops#1083 requeue class).
+cat >"$scratch/list.json" <<'JSON'
+[{"number":2385,"title":"reccos: delete the two sneaker-resale canary tests","createdAt":"2026-08-25T06:00:00Z","labels":[{"name":"agent-blocked"},{"name":"needs-orchestrator"}]}]
+JSON
+cat >"$scratch/view-2385.json" <<'JSON'
+{"title":"reccos: delete the two sneaker-resale canary tests","body":"files: tests/a.test.ts","createdAt":"2026-08-25T06:00:00Z","comments":[{"body":"blocked: absorbed by Nishfleet/0509#2381 (binding judge edit: Absorbs #2385).\n\nblocked-on: Nishfleet/0509#2381"},{"body":"spec-judge: absorbed by #2381 - the binding judge edit on #2381 declares this ticket subsumed.\n\nblocked-on: orchestrator"}]}
+JSON
+echo '{"state":"closed"}' >"$scratch/api/Nishfleet/0509/issues/2381.json"
+: >"$scratch/edits.log"
+: >"$scratch/comments.log"
+
+out=$("$bin" 2>"$scratch/err4b.txt")
+grep -q 'requeued=0' <<<"$out" || fail "absorbed park must not requeue when the absorbing issue closes: $out"
+[[ -s "$scratch/edits.log" ]] && fail "absorbed park must not flip labels back: $(cat "$scratch/edits.log")"
+grep -q 'kind=orchestrator' "$scratch/comments.log" || fail "absorbed park should publish kind=orchestrator: $(cat "$scratch/comments.log")"
+ok "fleet-ops#5131: absorbed park stays parked when the absorbing issue closes (ref resolved, label untouched)"
+
 # Case 5: agent-in-progress skip
 cat >"$scratch/list.json" <<'JSON'
 [{"number":80,"title":"claimed","createdAt":"2026-08-25T06:00:00Z","labels":[{"name":"agent-blocked"},{"name":"agent-in-progress"}]}]

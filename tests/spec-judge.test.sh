@@ -298,5 +298,154 @@ rm -f "$vf"
 # cleanup fake gh
 rm -f "$GH"
 
+# ---------------------------------------------------------------------------
+# fleet-ops#5131: `Absorbs #N` in a binding judge edit parks the absorbed
+# ticket (0509#2387 was claimed 4m24s after the absorbing PR merged).
+# ---------------------------------------------------------------------------
+_sj_state18=$(mktemp -d); export SPEC_JUDGE_STATE_DIR="$_sj_state18"
+cat >"$here/fake-gh-absorb.sh" <<'FAKE'
+#!/usr/bin/env bash
+case "$1" in
+  issue)
+    case "$2" in
+      view)
+        if [[ "$*" == *"--json state,labels"* ]]; then
+          case "$3" in
+            2387) printf '%s' '{"state":"OPEN","labels":[{"name":"agent-ready"},{"name":"machinery"}]}' ;;
+            7)    printf '%s' '{"state":"CLOSED","labels":[{"name":"agent-blocked"}]}' ;;
+            2388) printf '%s' '{"state":"OPEN","labels":[{"name":"agent-in-progress"}]}' ;;
+            *)    printf '%s' '{"state":"OPEN","labels":[]}' ;;
+          esac
+        else
+          printf '%s' '{"body":"files: a.ts"}'
+        fi ;;
+      edit)
+        _line="$*"
+        while [[ $# -gt 0 ]]; do
+          [[ "$1" == "--body-file" ]] && cp "$2" "$SPEC_JUDGE_STATE_DIR/edit-body.txt" 2>/dev/null
+          shift
+        done
+        printf '%s\n' "$_line" >>"$SPEC_JUDGE_STATE_DIR/edit-calls.txt" ;;
+      comment)
+        _n="$3"
+        while [[ $# -gt 0 ]]; do
+          [[ "$1" == "--body" ]] && { printf '%s\n' "$2" >>"$SPEC_JUDGE_STATE_DIR/comment-${_n}.txt"; break; }
+          shift
+        done ;;
+    esac ;;
+esac
+FAKE
+chmod +x "$here/fake-gh-absorb.sh"
+export GH="$here/fake-gh-absorb.sh"
+
+# --- Test 18: binding `Absorbs #N` parks the absorbed ticket --------------
+vf=$(mktemp)
+cat >"$vf" <<'EOF'
+## #2379 - VERDICT: EDIT
+
+- Absorbs #2387.
+EOF
+spec_judge_apply "fleet-ops" "Nishfleet/fleet-ops" "shaAbs" "$vf"
+abody=$(cat "$SPEC_JUDGE_STATE_DIR/edit-body.txt" 2>/dev/null || true)
+[[ "$abody" == *"## Judge edits (binding)"* ]] \
+    || fail "Test 18: absorbing issue must carry the binding section"
+[[ "$abody" == *"Absorbs #2387"* ]] || fail "Test 18: binding bullet must be preserved"
+calls=$(cat "$SPEC_JUDGE_STATE_DIR/edit-calls.txt" 2>/dev/null || true)
+park_line=$(printf '%s\n' "$calls" | grep -F 'issue edit 2387 ' | head -1 || true)
+[[ -n "$park_line" ]] || fail "Test 18: absorbed ticket must be edited: [$calls]"
+[[ "$park_line" == *"--remove-label agent-ready"* ]] || fail "Test 18: agent-ready must be removed"
+[[ "$park_line" == *"--add-label agent-blocked"* ]] || fail "Test 18: agent-blocked must be added"
+[[ "$park_line" == *"--add-label needs-orchestrator"* ]] \
+    || fail "Test 18: needs-orchestrator must be added so the existing sweep closes it as subsumed"
+absorbed_comment=$(cat "$SPEC_JUDGE_STATE_DIR/comment-2387.txt" 2>/dev/null || true)
+[[ -n "$absorbed_comment" ]] || fail "Test 18: absorbed ticket must get an explanatory comment"
+[[ "$absorbed_comment" == *"blocked-on: orchestrator"* ]] \
+    || fail "Test 18: park must carry blocked-on: orchestrator (the only line that makes the park hold)"
+[[ "$absorbed_comment" != *"blocked-on: Nishfleet"* && "$absorbed_comment" != *"blocked-on: #"* ]] \
+    || fail "Test 18: park must NOT carry a ref to the absorbing issue (that ref requeues on close)"
+ok "Test 18: binding 'Absorbs #N' parks the absorbed ticket (agent-ready -> agent-blocked + needs-orchestrator)"
+rm -f "$vf"
+
+# --- Test 19: same-tick claim skip for the parked ticket ------------------
+# The intake tick fetches its agent-ready list BEFORE the verdict is applied,
+# so the label flip alone would let this tick claim the absorbed ticket.
+spec_judge_skip_member "fleet-ops" "2387" \
+    || fail "Test 19: parked absorbed ticket must be skipped by the claim loop"
+spec_judge_skip_member "fleet-ops" "2390" \
+    && fail "Test 19: an unrelated ticket must NOT be skipped"
+ok "Test 19: parked absorbed ticket is skipped in the same tick (stale ready list)"
+
+# --- Test 20: not-claimable and cross-repo refs touch nothing -------------
+vf=$(mktemp)
+cat >"$vf" <<'EOF'
+## #2379 - VERDICT: EDIT
+
+- Absorbs #7.
+- Absorbs #2388.
+- Absorbs Nishfleet/0509#99.
+EOF
+spec_judge_apply "fleet-ops" "Nishfleet/fleet-ops" "shaAbs2" "$vf"
+calls2=$(cat "$SPEC_JUDGE_STATE_DIR/edit-calls.txt" 2>/dev/null || true)
+for _n in 7 2388 99; do
+    [[ "$calls2" != *"issue edit $_n "* ]] \
+        || fail "Test 20: ref to $_n must not be parked (closed/in-progress/cross-repo)"
+    spec_judge_skip_member "fleet-ops" "$_n" \
+        && fail "Test 20: ref to $_n must not be in the park ledger"
+done
+ok "Test 20: closed, already-claimed and cross-repo refs are left untouched"
+rm -f "$vf"
+
+# --- Test 21: a parked ticket can never be requeued by blocked-reconcile --
+# blocked-reconcile forces all_cleared=0 whenever `.orchestrator` is true, so
+# the park's `blocked-on: orchestrator` line outranks a resolved ref to the
+# absorbing issue: even with the ref present and CLOSED+MERGED, the sweep can
+# never flip the ticket back to agent-ready. Proved end-to-end (with the real
+# sweep) by Case 4b in tests/blocked-reconcile.test.sh.
+_extract() {
+    printf '%s' "$1" | "$repo_root/bin/blocked-reconcile" --extract
+}
+# Live shape: the absorbing issue's ref is present in an older comment.
+parked_payload='{"repo":"Nishfleet/fleet-ops","number":2387,"title":"move the specs","body":"files: a.ts\n\n## Judge edits (binding)\n\n- Absorbs #2387.","comments":[{"body":"blocked: absorbed by Nishfleet/fleet-ops#2379.\n\nblocked-on: Nishfleet/fleet-ops#2379"},{"body":"spec-judge: absorbed by #2379.\n\nblocked-on: orchestrator"}]}'
+out21=$(_extract "$parked_payload")
+[[ "$(printf '%s' "$out21" | jq -r '.orchestrator')" == "true" ]] \
+    || fail "Test 21: parked ticket must carry the orchestrator block (forces all_cleared=0): $out21"
+[[ "$(printf '%s' "$out21" | jq -r '.nish')" == "false" ]] || fail "Test 21: parked ticket must not be nish-blocked"
+[[ "$(printf '%s' "$out21" | jq -r '.unknown_forms | length')" == "0" ]] \
+    || fail "Test 21: park must not read as an unknown-form block: $out21"
+# Contrast: the SAME body with no orchestrator line is a plain work-item whose
+# ref resolves the moment the absorbing issue closes — exactly the requeue the
+# park has to prevent.
+ref_payload='{"repo":"Nishfleet/fleet-ops","number":2387,"title":"x","body":"blocked-on: Nishfleet/fleet-ops#2379","comments":[]}'
+out21b=$(_extract "$ref_payload")
+[[ "$(printf '%s' "$out21b" | jq '.deps | length')" == "1" ]] \
+    || fail "Test 21: contrast payload must parse one dep: $out21b"
+[[ "$(printf '%s' "$out21b" | jq -r '.orchestrator')" == "false" ]] \
+    || fail "Test 21: contrast payload must not carry the orchestrator block"
+ok "Test 21: parked ticket parses to an orchestrator block, so a closed absorbing ref can never requeue it"
+
+# --- Test 22: absorbed-ref extraction is exact ----------------------------
+[[ "$(spec_judge_absorbed_refs '- Absorbs #2387.' 'Nishfleet/fleet-ops')" == "2387" ]] \
+    || fail "Test 22: bare Absorbs #N must extract"
+[[ "$(spec_judge_absorbed_refs '- Absorbed by #12.' 'Nishfleet/fleet-ops')" == "12" ]] \
+    || fail "Test 22: Absorbed by #N must extract"
+[[ "$(spec_judge_absorbed_refs '- absorbs Nishfleet/fleet-ops#4242' 'Nishfleet/fleet-ops')" == "4242" ]] \
+    || fail "Test 22: same-repo owner/repo#N must extract"
+[[ -z "$(spec_judge_absorbed_refs '- Absorbs Nishfleet/0509#99.' 'Nishfleet/fleet-ops')" ]] \
+    || fail "Test 22: cross-repo ref must NOT extract"
+[[ -z "$(spec_judge_absorbed_refs '- Absorbs the retry logic from #123.' 'Nishfleet/fleet-ops')" ]] \
+    || fail "Test 22: prose mentioning a #N must NOT extract"
+# The judge writes ref LISTS on 0509 (live: #2419 'Absorbs #2428 and #2429',
+# #2416 'Absorbs #2424, #2426, #2427'). Every ref must extract.
+[[ "$(spec_judge_absorbed_refs '- Absorbs #2428 and #2429 (empty-do subsets).' 'Nishfleet/fleet-ops' | tr '\n' ' ')" == "2428 2429 " ]] \
+    || fail "Test 22: 'and'-joined ref list must extract both"
+[[ "$(spec_judge_absorbed_refs '- Absorbs #2424, #2426, #2427 (their third file).' 'Nishfleet/fleet-ops' | tr '\n' ' ')" == "2424 2426 2427 " ]] \
+    || fail "Test 22: comma-joined ref list must extract all three"
+[[ "$(spec_judge_absorbed_refs '- Absorbs #2428 and #2429.' 'Nishfleet/fleet-ops' | wc -l)" == "2" ]] \
+    || fail "Test 22: a ref list must not become one ref"
+ok "Test 22: absorbed-ref extraction matches only Absorbs/Absorbed-by bullets to same-repo issues"
+
+# cleanup fake gh
+rm -f "$GH" "$here/fake-gh-absorb.sh"
+
 echo ""
-echo "ALL OK: spec-judge gate (fleet-ops#4801)"
+echo "ALL OK: spec-judge gate (fleet-ops#4801 / #5131)"

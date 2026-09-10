@@ -485,6 +485,20 @@ spec_judge_apply_edit_issue() {
         applied=1
     fi
 
+    # fleet-ops#5131: a binding `Absorbs #N` bullet declares a same-repo
+    # ticket subsumed by THIS one. Park it in the same run so no second
+    # worker is spawned for work that already landed.
+    if [[ -n "$binding" ]]; then
+        local _abs
+        while IFS= read -r _abs; do
+            [[ "$_abs" =~ ^[0-9]+$ ]] || continue
+            [[ "$_abs" == "$n" ]] && continue
+            if spec_judge_park_absorbed "$full_repo" "${full_repo#*/}" "$_abs" "$n"; then
+                echo "spec-judge: parked absorbed issue #${_abs} (absorbed by #${n})" >&2
+            fi
+        done < <(spec_judge_absorbed_refs "$binding" "$full_repo" || true)
+    fi
+
     # Push the body back if anything changed.
     if (( applied == 1 )); then
         local tmp
@@ -568,14 +582,139 @@ spec_judge_failure_fallback() {
     return 0
 }
 
+# --- absorbed tickets (fleet-ops#5131) --------------------------------------
+#
+# A binding judge edit can declare a same-repo ticket subsumed by the one it
+# edits (`- Absorbs #2387.`). Nothing used to consume that word: the absorbed
+# ticket kept agent-ready, got claimed, and the worker burned its slot proving
+# work that already landed (live: 0509#2379 absorbed #2387, PR #2681 merged,
+# #2387 was claimed 4m24s later).
+#
+# Parked the cheap way — option (a) in the issue: agent-blocked +
+# `needs-orchestrator` added, agent-ready removed, and a live
+# `blocked-on: orchestrator` line. That line is load-bearing twice over —
+# (1) blocked-reconcile forces all_cleared=0 for any issue carrying an
+# orchestrator block, so the ticket can never be requeued when the absorbing
+# issue closes (a `blocked-on: Nishfleet/<repo>#2379` ref WOULD resolve
+# CLOSED and flip it straight back to agent-ready — the fleet-ops#1083
+# re-queue class); (2) it makes blocked-reconcile START the existing
+# orchestrator decision sweep once the ticket ages past an hour, which closes
+# it as subsumed. The judge never closes it.
+
+# Seconds a park entry is honoured by the same-tick claim skip. The label
+# flip is the durable guard across ticks; this only has to outlive the tick
+# whose ready list was fetched before the verdict landed.
+SPEC_JUDGE_ABSORB_TTL_S="${SPEC_JUDGE_ABSORB_TTL_S:-86400}"
+
+# Per-repo park ledger: `number<TAB>absorbing-number<TAB>epoch`, one per line.
+spec_judge_absorbed_file() {
+    printf '%s\n' "$(spec_judge_state_dir)/absorbed-$1.tsv"
+}
+
+# Print the same-repo issue numbers a binding section declares absorbed.
+# Handles `Absorbs #N` and `Absorbed by #N`, bare or as `<owner>/<repo>#N`,
+# and the ref LIST the judge actually writes on 0509 (`Absorbs #2428 and
+# #2429`, `Absorbs #2424, #2426, #2427`). A cross-repo ref is deliberately
+# ignored — one repo's judge run never parks another repo's ticket.
+spec_judge_absorbed_refs() {
+    local text="$1" full_repo="$2" wanted
+    wanted="$(printf '%s' "$full_repo" | tr '[:upper:]' '[:lower:]')"
+    printf '%s\n' "$text" | tr '[:upper:]' '[:lower:]' \
+        | awk -v repo="$wanted" '
+            function emit(tok,   i, rp, num) {
+                i = index(tok, "#")
+                num = substr(tok, i + 1)
+                rp = (i > 1) ? substr(tok, 1, i - 1) : ""
+                if (rp != "" && rp != repo) return
+                print num
+            }
+            {
+                rest = $0
+                while (match(rest, /(absorbed by|absorbs)[ \t]+/)) {
+                    rest = substr(rest, RSTART + RLENGTH)
+                    while (match(rest, /^([a-z0-9._-]+\/[a-z0-9._-]+)?#[0-9]+/)) {
+                        emit(substr(rest, RSTART, RLENGTH))
+                        rest = substr(rest, RLENGTH + 1)
+                        sub(/^[ \t]*(,|;|&|and)[ \t]*/, "", rest)
+                    }
+                }
+            }
+        ' | sort -n -u
+}
+
+# Drop park entries older than the TTL so the ledger cannot grow forever.
+spec_judge_absorbed_prune() {
+    local repo="$1" f tmp now
+    f="$(spec_judge_absorbed_file "$repo")"
+    [[ -f "$f" ]] || return 0
+    now="$(date +%s)"
+    tmp="$(mktemp)" || return 0
+    awk -F'\t' -v now="$now" -v ttl="$SPEC_JUDGE_ABSORB_TTL_S" \
+        'NF >= 3 && (now - $3) <= ttl' "$f" >"$tmp" 2>/dev/null || true
+    mv -f "$tmp" "$f" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
+}
+
+# Record a parked ticket so this tick's claim loop still skips it.
+spec_judge_absorbed_record() {
+    local repo="$1" n="$2" by="$3"
+    spec_judge_absorbed_prune "$repo" || true
+    printf '%s\t%s\t%s\n' "$n" "$by" "$(date +%s)" \
+        >>"$(spec_judge_absorbed_file "$repo")" 2>/dev/null || true
+}
+
+# Exit 0 if issue N is parked as absorbed for this repo.
+spec_judge_absorbed_has() {
+    local repo="$1" n="$2" f
+    f="$(spec_judge_absorbed_file "$repo")"
+    [[ -f "$f" ]] || return 1
+    awk -F'\t' -v n="$n" '$1 == n { found = 1 } END { exit !found }' "$f" 2>/dev/null
+}
+
+# Park one absorbed ticket. Returns non-zero (and touches nothing) when the
+# ref names an issue that is not an OPEN agent-ready ticket: a closed ticket,
+# a PR number, or an already-claimed ticket is left exactly as it is.
+spec_judge_park_absorbed() {
+    local full_repo="$1" repo="$2" absorbed="$3" absorbing="$4" state
+    [[ "$absorbed" =~ ^[0-9]+$ ]] || return 1
+    state=$("$GH" issue view "$absorbed" -R "$full_repo" --json state,labels 2>/dev/null || true)
+    [[ -n "$state" ]] || return 1
+    [[ "$(printf '%s' "$state" | jq -r '.state // ""' 2>/dev/null || echo "")" == "OPEN" ]] || return 1
+    printf '%s' "$state" \
+        | jq -e '[.labels[]? | if type == "object" then (.name // empty) else . end] | index("agent-ready") != null' >/dev/null 2>&1 \
+        || return 1
+    "$GH" issue edit "$absorbed" -R "$full_repo" \
+        --remove-label agent-ready --add-label agent-blocked \
+        --add-label needs-orchestrator >/dev/null 2>&1 || true
+    # The `blocked-on: orchestrator` line is what makes the park hold: an
+    # orchestrator block forces blocked-reconcile's all_cleared to 0 on every
+    # pass, so a ref to the absorbing issue (already on the ticket, or added
+    # later) can never flip it back to agent-ready when that issue closes.
+    # It also makes blocked-reconcile START the existing orchestrator decision
+    # sweep once the ticket ages past an hour (fleet-ops#4260 belt), which is
+    # the "until an orchestrator closes it as subsumed" half of option (a).
+    local body
+    body="spec-judge: absorbed by #${absorbing} — the binding judge edit on #${absorbing} declares this ticket subsumed."
+    body+=$'\n\nParked: agent-ready removed, agent-blocked + needs-orchestrator added. Do not claim it; that work is already in the absorbing issue.'
+    body+=$'\n\nNo ref to the absorbing issue on purpose: when that issue closes, a ref would requeue this ticket and a worker would burn a slot proving work that already landed (fleet-ops#1083/#5131). The judge does not close it.'
+    body+=$'\n\nblocked-on: orchestrator'
+    "$GH" issue comment "$absorbed" -R "$full_repo" --body "$body" >/dev/null 2>&1 || true
+    spec_judge_absorbed_record "$repo" "$absorbed" "$absorbing"
+    return 0
+}
+
 # --- claim-loop skip -------------------------------------------------------
 
 # Exit 0 if issue N is a member of a batch being judged for this repo
-# (i.e. the in-flight marker lists it). The claim loop skips such issues.
+# (i.e. the in-flight marker lists it), or was parked as absorbed by a
+# verdict that landed earlier in THIS tick (the ready list was fetched
+# before the verdict was applied, so the label flip alone is too late).
 spec_judge_skip_member() {
     local repo="$1" n="$2"
     local inflight
     inflight="$(spec_judge_inflight_file "$repo")"
-    [[ -f "$inflight" ]] || return 1
-    jq -e --arg n "$n" '.batch | index(($n | tonumber)) != null' "$inflight" >/dev/null 2>&1
+    if [[ -f "$inflight" ]] \
+        && jq -e --arg n "$n" '.batch | index(($n | tonumber)) != null' "$inflight" >/dev/null 2>&1; then
+        return 0
+    fi
+    spec_judge_absorbed_has "$repo" "$n"
 }
