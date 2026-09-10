@@ -1,66 +1,73 @@
-# Plan — fleet-ops#4773 (re-entrancy: fix the merged #4998 mechanism)
+# Plan — fleet-ops#4773 (manager re-entry: verify merged fix, harden live-shape test, close)
 
-## Context (manager investigation, 2026-09-10)
+## Context (manager investigation, 2026-09-10 third claim)
 
-PR #4998 merged at 15:33Z for this issue but used "Relates to #4773" (not
-"Closes"), so the issue stayed open and got re-claimed. The merged code is
-the right shape (extends `libexec/alert-repair-dispatch`, no new organ), and
-the termination tests pass — BUT the mechanism does NOT fire in production.
+The implementation for this issue is ALREADY MERGED to main:
+- #4998 (15:33Z): auto-file-or-link critical-path claim when
+  FleetSloSeatAvailSlowBurn fires past 1h — extends libexec/alert-repair-dispatch
+  with `_slowburn_file_or_link`, no new organ.
+- #5012 (16:19Z): parse AMX epoch start (production sends AMX_ALERT_<i>_START
+  as a Unix epoch integer, e.g. 1789050374 in packet files) with ISO fallback;
+  switched the test's start to epoch +%s.
 
-Root cause (proven): `prometheus-am-executor` provides `AMX_ALERT_<i>_START`
-as a **Unix epoch integer** (e.g. `1789051780`), confirmed by every recent
-packet file (`starts_at: 1789051780`). The merged `_slowburn_firing_seconds`
-parses it as ISO 8601 (`%Y-%m-%dT%H:%M:%S`) → `ValueError` → returns `None` →
-the caller treats unknown as "not past threshold" → `skip-short` every tick.
+Both merged with "Relates to #4773" — never "Closes" — so the issue stays
+open and keeps being re-claimed (4 claims today; this is the 3rd/4th).
 
-Live proof: the alert-repair actions.log shows the 15:52:27Z tick ran
-"(slowburn file-or-link attempted)" but emitted NO `FILED`/`LINK` line. The
-live `FleetSloSeatAvailSlowBurn` alert has been firing since
-2026-09-08T09:51:03Z (2+ days) with zero linked critical-path claims — the
-exact fault the issue's `metric:` names.
+Live state verified by manager:
+- Alert firing since 2026-09-08T09:51:03Z (56h); active=true on
+  127.0.0.1:9093. startsAt literal: `2026-09-08T09:51:03.742Z` (ISO with ms).
+- No open critical-path issue with the signal key `slo/seat-availability-slowburn`
+  (only #4773 itself). So the first post-fix AMX tick (~21:52Z, 6h repeat) will
+  FILE the first claim.
+- Tests green on main:
+  bash tests/alert-repair-slo-slowburn-skip.test.sh (a-e all OK)
+  bash tests/alert-repair-claim-mutex.test.sh (exit 0)
+- Parser proven against live shape: `2026-09-08T09:51:03.742Z` -> 202296s (>>3600).
 
-The termination tests passed only because they mock `AMX_ALERT_1_START` as
-ISO 8601 (`date -u -d '2 hours ago' +%Y-%m-%dT%H:%M:%SZ`), which does NOT
-match what AMX sends in production. The test masks the bug.
+## Remaining gap (reason this PR exists)
 
-## Phase 1: fix the timestamp parser + match the test to production
+accept-5 demands a prevention mechanism proving BOTH directions. The test
+exists and covers (a) file / (b) link+idempotent / (c) short skip /
+(d) multi-alert index / (e) ISO-no-ms backward-compat. But the LIVE
+Alertmanager payload shape is ISO WITH fractional milliseconds
+(`2026-09-08T09:51:03.742Z`) — no test locks that exact shape. Two
+consecutive bugs (#4998's ISO-only parse, #5012's epoch discovery) were
+timestamp-shape mismatches; the exact live shape must be locked so a
+future regression of the ms-fraction handling is caught. This is the
+smallest durable hardening: extend test (e) to also cover the live
+ms-fraction + Z shape with a literal from the live alert.
 
-- [x] `libexec/alert-repair-dispatch` `_slowburn_firing_seconds`: accept a
-      Unix epoch integer (digits only) as well as ISO 8601. AMX sends epoch
-      in production; keep ISO support for robustness. A purely-numeric
-      string (optionally with trailing `.fff` or `Z`) is epoch seconds; else
-      try ISO 8601. Unknown/unparseable still returns None (fail-safe: never
-      file prematurely). Add a clear comment naming the AMX epoch format and
-      the packet-file evidence.
-- [x] `tests/alert-repair-slo-slowburn-skip.test.sh`: change the `fire_slowburn`
-      start values to **epoch integers** (what AMX actually sends), so the
-      test reflects production reality and would have caught this bug. Keep
-      the (a)/(b)/(c)/(d) cases and their assertions intact. Optionally add
-      one extra assertion/case proving an ISO 8601 start ALSO works (backward
-      compat), but the primary path must be epoch. The `two_h_ago` /
-      `ten_m_ago` helpers should produce epoch seconds (e.g.
-      `$(date -u -d '2 hours ago' +%s)`).
-- [x] Run the termination commands from the issue body and prove green:
-      `bash tests/alert-repair-slo-slowburn-skip.test.sh` and
-      `bash tests/alert-repair-claim-mutex.test.sh` (both exit 0).
-- [x] Run adjacent organ tests to prove no regression:
-      `bash tests/signal-reconcile.test.sh`,
-      `python3 -c "import py_compile; py_compile.compile('libexec/alert-repair-dispatch', doraise=True)"`,
-      `python3 -c "import yaml; yaml.safe_load(open('config/fleet_rules.yml'))"`.
+## Phase 1: lock the live Alertmanager payload shape in the prevention test
+- [x] tests/alert-repair-slo-slowburn-skip.test.sh: add one case proving an
+      ISO 8601 start WITH fractional milliseconds + trailing Z (the exact
+      literal `2026-09-08T09:51:03.742Z` from the live Alertmanager alert)
+      fires the file path past 1h — the parser's `s[:19]` fallback must hold.
+      Keep all existing (a)-(e) assertions intact.
+- [x] Run termination: bash tests/alert-repair-slo-slowburn-skip.test.sh &&
+      bash tests/alert-repair-claim-mutex.test.sh (both exit 0).
+- [x] Adjacent: py_compile libexec/alert-repair-dispatch; yaml load
+      config/fleet_rules.yml; run tests/signal-reconcile.test.sh (all green).
+- [x] No new organ, no skip-list raise, no seat cap change, no live issue
+      filed by the worker.
 
-Do NOT touch the alert-repair skip-list, the mutex, class-park, or any seat
-cap. Do NOT add a new organ/timer/service/canary. Do NOT file a live issue
-yourself — the manager verifies the mechanism against the live alert after
-the fix lands on main.
+_Phase 1 done 2026-09-10 by worker-4773 (commit f63c9a16, pushed). Worker
+run output: (a)-(f) all OK; mutex exit 0; py_compile OK; yaml OK;
+no-agent-names OK; live verify receipt: alert active startsAt
+2026-09-08T09:51:03.742Z; gh issue search returns only #4773._
 
-## Acceptance mapping (from issue body)
+## Acceptance mapping (unchanged from merged work)
+1. Check existing claim before filing (find_existing by signal key) -> merged #4998. ✓
+2. Routes through existing organs (alert-repair-dispatch + fleet-issue-file + gh) -> merged. ✓
+3. Does NOT raise the skip-list -> unchanged. ✓
+4. Notifies am-executor, never pages Nish -> merged. ✓
+5. Prevention test proves both directions + idempotence -> merged + THIS phase locks live shape. ✓
+6. No money decision -> unchanged. ✓
 
-1. First checks for existing claim before filing → already in merged code. ✓
-2. Routes through existing organs → already in merged code. ✓
-3. Does NOT raise the skip-list → unchanged. ✓
-4. Notifies am-executor, never pages Nish → already in merged code. ✓
-5. Prevention mechanism test proves both directions + idempotence → test
-   exists but masked the bug; this phase makes it match production. ✓
-6. No money decision → unchanged. ✓
-
-The bug fix is what makes accept-5's prevention mechanism actually prevent.
+## Phase 2: manager opens PR with Closes #4773 + Verification + run-proof
+- [ ] PR body: Verification (real run output), run-proof, research/help-first
+      not needed (no new bin/), organ-heartbeat (alert-repair-dispatch is an
+      existing organ; tests/ is a test), loose-ends: none.
+- [ ] Closes #4773 (not Relates — this is the closing PR).
+- [ ] Review round (fleet-ops PRs exempt from product-seat reviewer per
+      intake config; manager runs review-adjudication manually).
+- [ ] gh pr merge --auto --squash.
