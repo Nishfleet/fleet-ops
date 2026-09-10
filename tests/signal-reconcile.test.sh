@@ -732,4 +732,58 @@ grep -q "issue close 4949" "$tmp/gh.log" || fail "scenario 13b: expected gh issu
 grep -q "issue comment" "$tmp/gh.log" && fail "scenario 13b: green chain must only close, not heartbeat-comment"
 ok "scenario 13b: green STALE-TRIP chain observe-to-closes the filed issue"
 
+# ---------------------------------------------------------------------------
+# 14. DEGRADED-LANES alarms are observe-to-close-only and must NOT be routed
+#     to the worker pool (fleet-ops#4966). The heartbeat Tier 1 \u00a77 sees
+#     auto-restart lanes as "held, no work \u2014 StartLimitBurst / OnFailure
+#     are the right release path", so there is no manual action a fleet
+#     worker can take, and every prior filing closed via the reconciler's own
+#     observe-to-close with zero worker code (4668/4701/4931/4947/4966).
+#     Routing them to agent-ready burned an admission-priced worker seat per
+#     occurrence for nothing.
+#
+#     14a. A fresh DEGRADED-LANES alarm is filed under `observe-to-close`, NOT
+#          `agent-ready`, so the intake will not claim it.
+#     14b. The detector's observe-to-close STILL closes it once the lanes go
+#          green (the label must not change the closeout path).
+# ---------------------------------------------------------------------------
+degraded_msg="degraded=4 :: pi-issue@0509-2189.service sub=auto-restart :: ... | pi-issue@0509-2324.service sub=auto-restart :: ..."
+cat > "$tmp/empty14.json" <<'EOF'
+[]
+EOF
+cat > "$tmp/triage14-on.md" <<EOF
+[2026-08-28T13:30:00Z] [DEGRADED-LANES] $degraded_msg
+EOF
+
+# 14a. Fresh DEGRADED-LANES files with observe-to-close, not agent-ready.
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/empty14.json" "$tmp/triage14-on.md" > "$tmp/summary14a.json"
+jq -e '.filed == 1 and .closed == 0' "$tmp/summary14a.json" >/dev/null \
+    || fail "scenario 14a: DEGRADED-LANES must file one issue (got: $(cat "$tmp/summary14a.json"))"
+grep -q 'loud/degraded-lanes/0509-2189.service' "$tmp/filed.jsonl" \
+    || fail "scenario 14a: DEGRADED-LANES signal key missing (filed: $(cat "$tmp/filed.jsonl"))"
+printf '%s' "$(cat "$tmp/filed.jsonl")" | grep -q '"labels": \["observe-to-close"\]' \
+    || fail "scenario 14a: DEGRADED-LANES must file under observe-to-close, not agent-ready (filed: $(cat "$tmp/filed.jsonl"))"
+printf '%s' "$(cat "$tmp/filed.jsonl")" | grep -q '"agent-ready"' \
+    && fail "scenario 14a: DEGRADED-LANES must NOT carry agent-ready (filed: $(cat "$tmp/filed.jsonl"))"
+ok "scenario 14a: DEGRADED-LANES filed under observe-to-close, not agent-ready"
+
+# 14b. Lanes go green (no DEGRADED-LANES line in the tick at all) -> the
+# observe-to-close closeout still fires regardless of the label.
+cat > "$tmp/triage14-off.md" <<'EOF'
+[2026-08-28T13:30:00Z] [HEARTBEAT-OK] lanes green
+EOF
+cat > "$tmp/open14b.json" <<'EOF'
+[{"number": 4966, "body": "The heartbeat detector reported this alarm on a real tick and no open issue carried its signal key, so the detector\u2192queue reconciler filed one.\n\n- alarm tag: `DEGRADED-LANES`\n\nDo NOT close this issue on PR merge alone. The reconciler closes it only when the detector reports green on a real heartbeat tick (observe-to-close).\n\n`loud/degraded-lanes/0509-2189.service`\n", "labels": [{"name": "observe-to-close"}], "createdAt": "2026-08-28T10:00:00Z", "comments": []}]
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/open14b.json" "$tmp/triage14-off.md" > "$tmp/summary14b.json"
+jq -e '.closed == 1 and .filed == 0' "$tmp/summary14b.json" >/dev/null \
+    || fail "scenario 14b: green DEGRADED-LANES must observe-to-close (got: $(cat "$tmp/summary14b.json"))"
+grep -q "issue close 4966" "$tmp/gh.log" \
+    || fail "scenario 14b: expected gh issue close 4966 (got: $(cat "$tmp/gh.log"))"
+ok "scenario 14b: green DEGRADED-LANES observe-to-closes under the label"
+
 ok "all signal-reconcile scenarios passed"

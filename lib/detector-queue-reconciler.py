@@ -292,6 +292,17 @@ def parse_triage(path: Path, tick_start: str | None) -> list[dict[str, str]]:
 
 
 def routing_labels(tag: str) -> list[str]:
+    # fleet-ops#4966: DEGRADED-LANES alarms are observe-to-close-only. The
+    # heartbeat Tier 1 \u00a77 sees auto-restart lanes as "held, no work \u2014
+    # StartLimitBurst / OnFailure are the right release path", so there is no
+    # manual action a fleet worker can take, and every prior filing closed via
+    # the reconciler's own observe-to-close with zero worker code
+    # (4668/4701/4931/4947/4966). Routing them to agent-ready burned an
+    # admission-priced worker seat per occurrence for nothing. File them under
+    # observe-to-close (fleet-ops#1401) so the intake does not claim them; the
+    # detector's observe-to-close still closes them on the green tick.
+    if tag == "DEGRADED-LANES":
+        return ["observe-to-close"]
     senior = (
         tag.endswith(("-VIOLATION", "-FAIL", "-BROKEN", "-ESCALATE"))
         or tag.startswith((
