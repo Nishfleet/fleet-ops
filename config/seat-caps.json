@@ -297,10 +297,12 @@
       "cap": 4,
       "class": "free",
       "max_probe_ceiling": 6,
+      "quota_bench_default_s": 3600,
       "models": {
         "deepseek-v4-flash": 2,
         "deepseek-v4-flash-vision-exp": 2
       },
+      "_comment_bai_quota_bench": "2026-09-09 fleet-ops#4831: bai/deepseek-v4-flash returned HTTP 400 {\"message\":\"credit insufficient balance: balance=0 required=7716\",\"code\":\"insufficient_user_quota\"} (request id 20260909223645112163328c955d568QJTZNddN, verbatim from the seat ledger bench_reason). is_quota_cap_error had no insufficient_user_quota literal, so pi-scout@0509, pi-scout-repair@0509 and pi-issue@0509-2085 all died on the seat inside 3 min (rc=1), each booked error_class=unknown -> transient_fault -> 300s spawn bench, and the dead free seat was re-offered every ~5 min (~12 claims/hour). The body carries no reset window, so it must pass the hard-cap list; 3600s mirrors the xkiro free-tier default (fleet-ops#4640) — one bounded re-probe per hour detects the reset without the claim burn.",
       "_comment_bai": "2026-08-27 fleet-ops#1272: b.ai (https://b.ai) — OpenAI-compatible provider, base https://api.b.ai/v1, auth via BAI_API_KEY env (path: /home/nish/fleet2/etc/bai.env). Live /models returned 44 ids, HTTP 200 in 0.7s. Wired the two V4 Flash class slugs in models.json: deepseek-v4-flash (text) and deepseek-v4-flash-vision-exp (text+image — relevant to 0509 visual-audit chain). Both probed free-tier no-billing (HTTP 200 on chat/completions, no balance errors). Live pi --print spawn through deepseek-v4-flash (PACKET-VERDICT tools=1 class=worked, 6.9s wall for a JSON-only probe; pong and epoch and has_eight_primes=true all correct — 2,3,5,7,11,13,17,19 are exactly 8 primes ≤ 20). Catalog has many non-free ids (claude-opus-5, gpt-5.6, gemini-3.1-pro, etc.) — only the two -flash slugs above are wired in models.json, so the cap map here is the only allowlist. No billing sibling to keep warm.",
       "_comment_1350": "2026-08-29 fleet-ops#1350 concurrency-tolerance probe (load 2.95, 0 active workers): 5 simultaneous pi --print --provider bai --model deepseek-v4-flash 'reply PONG' probes, all rc=0 + PONG, zero 429, p95 ~5.1s (n=5: 3.0/5.1/2.8/2.8/2.8s). Measured tolerance >=5; cap raised 2->4 (headroom below the 5-clean floor) split 2+2, max_probe_ceiling 4->6 so AIMD can probe toward 5-6 if 4 stays clean in production. Cursor stays 1 (known single-flight, out of scope)."
     },

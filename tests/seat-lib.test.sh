@@ -1027,6 +1027,23 @@ rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "is_quota: Alibaba token-plan 'quota has been exhausted' wall must match (rc=$rc)"
 ok "9b: Alibaba token-plan 'quota has been exhausted' -> quota/cap wall (fleet-ops#4444)"
+# fleet-ops#4831 (2026-09-09): b.ai HTTP 400 'insufficient_user_quota' —
+# bai/deepseek-v4-flash returned 400 {"message":"credit insufficient balance:
+# balance=0 required=7716","code":"insufficient_user_quota"} (request id
+# 20260909223645112163328c955d568QJTZNddN, verbatim from the seat ledger
+# bench_reason). is_quota_cap_error had no insufficient_user_quota literal, so
+# pi-scout@0509, pi-scout-repair@0509 and pi-issue@0509-2085 all died on the
+# seat inside 3 min (rc=1), each booked error_class=unknown -> transient_fault
+# -> 300s spawn bench, and the dead free seat was re-offered every ~5 min
+# (~12 claims/hour). The body carries no reset window, so it must pass the
+# hard-cap list like `credit balance depleted` does; the 3600s
+# quota_bench_default_s in seat-caps.json bounds the re-probe.
+bai_400='400: {"message":"credit insufficient balance: balance=0 required=7716","code":"insufficient_user_quota"}'
+bash -c 'source "$0"; is_quota_cap_error "$1" "$2"' "$lib" "$bai_400" "" >/dev/null 2>&1 \
+  || fail "9c: b.ai 400 'insufficient_user_quota' must be a quota/cap wall, not error_class=unknown (fleet-ops#4831)"
+bash -c 'source "$0"; is_quota_cap_error "$1" "$2"' "$lib" "" 'session-error: 400 insufficient_user_quota' >/dev/null 2>&1 \
+  || fail "9c: bare 400 insufficient_user_quota code must be a quota/cap wall (fleet-ops#4831)"
+ok "9c: b.ai 400 'insufficient_user_quota' -> quota/cap wall (fleet-ops#4831)"
 set +e
 bash -c 'source "$0"; is_quota_cap_error "$1" "$2"' "$lib" "429 Too Many Requests retry-after: 30" "" >/dev/null 2>&1
 rc=$?
