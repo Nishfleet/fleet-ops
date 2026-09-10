@@ -898,6 +898,42 @@ geo_aeo_needed() {
         'any(.[]?; (.name // "") | test("geo|aeo"; "i"))' >/dev/null 2>&1
 }
 
+# fleet-ops#5082: duplicate-of-merged-work probe for the park detector. A
+# PROTECTED issue past PARK_MAX_CLAIMS whose own claim/issue-$N branch never
+# merged a delivery PR can still have its `do:` already delivered — by
+# ANOTHER issue's merged claim PR (live case: 0509#2369, delivered by
+# claim/issue-2363's merged PR #2641 while #2369's own PR #2643 closed
+# unmerged on a content conflict; #2641's body never named #2369). The #4540
+# head-branch probe can never see that delivery. Deterministic, no LLM:
+# scan the last PARK_DUP_LOOKBACK merged PRs for one whose changed-file set
+# overlaps the issue's `files:` line AND that either came from a different
+# claim/issue-<M> branch or names `#N` in its title/body. No `files:` line,
+# no file overlap, or a prose mention alone -> no match (fleet-ops#3231).
+# $1 = repo (Nishfleet/<name>), $2 = issue number, $3 = issue body.
+# Echoes the duplicate PR number on match; empty output = no duplicate.
+# Always returns 0 — a probe failure must never abort the tick.
+park_duplicate_delivery() {
+    local full="$1" n="$2" body="$3"
+    local files_line recent
+    files_line=$(printf '%s\n' "$body" | sed -n 's/^files:[[:space:]]*//p' | head -1 || true)
+    [[ -n "$files_line" ]] || return 0
+    recent=$(gh pr list -R "$full" --state merged \
+        --json number,title,body,headRefName,files \
+        --limit "${PARK_DUP_LOOKBACK:-30}" 2>/dev/null || echo "[]")
+    printf '%s' "$recent" | jq -r --arg n "$n" --arg files "$files_line" '
+        ($files | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))) as $paths
+        | [ .[] | . as $pr
+            | ([$pr.files[]?.path // empty]) as $have
+            | select(($paths | length) > 0)
+            | select([$paths[] | select(. as $p | ($have | index($p)) != null)] | length > 0)
+            | select(
+                (($pr.headRefName // "") | test("^claim/issue-[0-9]+$") and $pr.headRefName != ("claim/issue-" + $n))
+                or ((($pr.title // "") + "\n" + ($pr.body // "")) | test("#" + $n + "\\b"))
+              )
+          ] | .[0].number // empty' 2>/dev/null || true
+    return 0
+}
+
 # fleet-ops#4016: event-driven work supply. An empty ready pool is the one
 # signal that this repo ran out of work; do not sit on it until the
 # 4-hourly pi-scout@<repo>.timer fires (2026-09-06T16:47Z: 0509 ready=0 for
@@ -2211,45 +2247,19 @@ blocked-on: orchestrator" 2>/dev/null || true
                 continue
             fi
         fi
-        # fleet-ops#5082: duplicate-of-merged-work branch. A PROTECTED issue
-        # past PARK_MAX_CLAIMS whose own claim/issue-$N branch never merged
-        # a delivery PR can still have its `do:` already delivered — by
-        # ANOTHER issue's merged claim PR (live case: 0509#2369, delivered
-        # by claim/issue-2363's merged PR #2641 while #2369's own PR #2643
-        # closed unmerged on a content conflict). The #4540 head-branch
-        # probe can never see that delivery, so the same slow-spaced spin
-        # continues. Deterministic probe, no LLM: scan the last
-        # PARK_DUP_LOOKBACK merged PRs for one whose changed-file set
-        # overlaps the issue's `files:` line AND that either came from a
-        # different claim/issue-<M> branch or names `#N` in its title/body.
-        # No `files:` line, no file overlap, or a prose mention alone ->
-        # no park (fleet-ops#3231). Runs for every protected past-cap issue
-        # whose claim-branch merged probe is empty — termination: clause or
-        # not (the #4540 branch above already continue'd on a merged
-        # claim-branch delivery).
+        # fleet-ops#5082: duplicate-of-merged-work branch — the probe itself
+        # is park_duplicate_delivery() above. Runs for every protected
+        # past-cap issue whose own claim-branch merged probe is empty —
+        # termination: clause or not (the #4540 branch above already
+        # continue'd on a merged claim-branch delivery). Deterministic only:
+        # a `files:` overlap plus a different claim/issue-<M> head or a `#N`
+        # reference; a bare prose mention never parks (fleet-ops#3231).
         if (( _park_protected == 1 )); then
             if [[ -z "$_park_merged" ]]; then
                 _park_merged=$(gh pr list -R "$FULL" --head "claim/issue-$N" --state merged --json number,url,mergedAt 2>/dev/null || echo "[]")
             fi
             if ! printf '%s' "$_park_merged" | jq -e 'length > 0' >/dev/null 2>&1; then
-                _park_files_line=$(printf '%s\n' "$body" | sed -n 's/^files:[[:space:]]*//p' | head -1)
-                _park_dup=""
-                if [[ -n "$_park_files_line" ]]; then
-                    _park_recent=$(gh pr list -R "$FULL" --state merged \
-                        --json number,title,body,headRefName,files \
-                        --limit "$PARK_DUP_LOOKBACK" 2>/dev/null || echo "[]")
-                    _park_dup=$(printf '%s' "$_park_recent" | jq -r --arg n "$N" --arg files "$_park_files_line" '
-                        ($files | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))) as $paths
-                        | [ .[] | . as $pr
-                            | ([$pr.files[]?.path // empty]) as $have
-                            | select(($paths | length) > 0)
-                            | select([$paths[] | select(. as $p | ($have | index($p)) != null)] | length > 0)
-                            | select(
-                                (($pr.headRefName // "") | test("^claim/issue-[0-9]+$") and $pr.headRefName != ("claim/issue-" + $n))
-                                or ((($pr.title // "") + "\n" + ($pr.body // "")) | test("#" + $n + "\\b"))
-                              )
-                          ] | .[0].number // empty' 2>/dev/null || true)
-                fi
+                _park_dup=$(park_duplicate_delivery "$FULL" "$N" "$body")
                 if [[ -n "$_park_dup" ]]; then
                     echo "issue $N ($title): skipped-parked-protected-duplicate ($_park_claims cumulative claims > cap $PARK_MAX_CLAIMS; no merged claim/issue-$N PR; merged PR #$_park_dup delivered the files: work; awaiting runtime gate)" >&2
                     gh label create awaiting-runtime-gate -R "$FULL" --color D4C5F9 \
