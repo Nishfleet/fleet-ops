@@ -184,6 +184,10 @@ MAX_CLAIMS_IN_WINDOW="${PI_INTAKE_RECLAIM_MAX_CLAIMS:-4}"
 # Nish closes the issue. No new timer — the label is the state. Overridable
 # for tests.
 PARK_MAX_CLAIMS="${PI_INTAKE_PARK_MAX_CLAIMS:-3}"
+# fleet-ops#5082: lookback bound for the duplicate-of-merged-work probe —
+# the number of most recent merged PRs scanned for a files:-set overlap
+# when a protected issue's own claim branch never merged a delivery PR.
+PARK_DUP_LOOKBACK="${PI_INTAKE_PARK_DUP_LOOKBACK:-30}"
 # The reclaim-cooldown reader below reads $ATTEMPTS_DIR/pi-issue-*.cooldown
 # — the same dir pi-issue-failed-reap writes (both use
 # ${PI_PACKET_STATE:-$HOME/.local/state/pi-packet}/attempts). seat-lib.sh
@@ -2164,6 +2168,10 @@ blocked-on: orchestrator" 2>/dev/null || true
     fi
     if (( _park_claims > PARK_MAX_CLAIMS )); then
         _park_protected=0
+        # fleet-ops#5082: _park_merged is bound per-issue so the duplicate
+        # branch below can reuse the head-branch probe when the #4540 or
+        # #4553 branch already ran it, or fill it lazily when they did not.
+        _park_merged=""
         if printf '%s' "${labels[$i]:-}" | jq -e '[.[]?.name // empty] | index("critical-path") != null' >/dev/null 2>&1; then
             _park_protected=1
         fi
@@ -2201,6 +2209,55 @@ blocked-on: orchestrator" 2>/dev/null || true
                 gh issue edit "$N" -R "$FULL" --add-label awaiting-runtime-gate --remove-label agent-ready 2>/dev/null || true
                 gh issue comment "$N" -R "$FULL" --body "fleet-ops#4553: issue $N is a land-or-close ticket — its \`termination:\` clause names OTHER PRs (\`gh pr view\`) and it has no merged claim-branch delivery PR, so acceptance is met without opening its own PR. Land-or-close issues stay OPEN by design (the worker cannot \`gh issue close\`), and the reset (#2462) and window (#2772) gates miss the slow-spaced spin, so this issue has been re-claimed ${_park_claims} times since its PRs landed. Parking it: labelled \`awaiting-runtime-gate\`, removed from agent-ready; the intake will not re-claim it until Nish closes the issue or the label is cleared." 2>/dev/null || true
                 continue
+            fi
+        fi
+        # fleet-ops#5082: duplicate-of-merged-work branch. A PROTECTED issue
+        # past PARK_MAX_CLAIMS whose own claim/issue-$N branch never merged
+        # a delivery PR can still have its `do:` already delivered — by
+        # ANOTHER issue's merged claim PR (live case: 0509#2369, delivered
+        # by claim/issue-2363's merged PR #2641 while #2369's own PR #2643
+        # closed unmerged on a content conflict). The #4540 head-branch
+        # probe can never see that delivery, so the same slow-spaced spin
+        # continues. Deterministic probe, no LLM: scan the last
+        # PARK_DUP_LOOKBACK merged PRs for one whose changed-file set
+        # overlaps the issue's `files:` line AND that either came from a
+        # different claim/issue-<M> branch or names `#N` in its title/body.
+        # No `files:` line, no file overlap, or a prose mention alone ->
+        # no park (fleet-ops#3231). Runs for every protected past-cap issue
+        # whose claim-branch merged probe is empty — termination: clause or
+        # not (the #4540 branch above already continue'd on a merged
+        # claim-branch delivery).
+        if (( _park_protected == 1 )); then
+            if [[ -z "$_park_merged" ]]; then
+                _park_merged=$(gh pr list -R "$FULL" --head "claim/issue-$N" --state merged --json number,url,mergedAt 2>/dev/null || echo "[]")
+            fi
+            if ! printf '%s' "$_park_merged" | jq -e 'length > 0' >/dev/null 2>&1; then
+                _park_files_line=$(printf '%s\n' "$body" | sed -n 's/^files:[[:space:]]*//p' | head -1)
+                _park_dup=""
+                if [[ -n "$_park_files_line" ]]; then
+                    _park_recent=$(gh pr list -R "$FULL" --state merged \
+                        --json number,title,body,headRefName,files \
+                        --limit "$PARK_DUP_LOOKBACK" 2>/dev/null || echo "[]")
+                    _park_dup=$(printf '%s' "$_park_recent" | jq -r --arg n "$N" --arg files "$_park_files_line" '
+                        ($files | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))) as $paths
+                        | [ .[] | . as $pr
+                            | ([$pr.files[]?.path // empty]) as $have
+                            | select(($paths | length) > 0)
+                            | select([$paths[] | select(. as $p | ($have | index($p)) != null)] | length > 0)
+                            | select(
+                                (($pr.headRefName // "") | test("^claim/issue-[0-9]+$") and $pr.headRefName != ("claim/issue-" + $n))
+                                or ((($pr.title // "") + "\n" + ($pr.body // "")) | test("#" + $n + "\\b"))
+                              )
+                          ] | .[0].number // empty' 2>/dev/null || true)
+                fi
+                if [[ -n "$_park_dup" ]]; then
+                    echo "issue $N ($title): skipped-parked-protected-duplicate ($_park_claims cumulative claims > cap $PARK_MAX_CLAIMS; no merged claim/issue-$N PR; merged PR #$_park_dup delivered the files: work; awaiting runtime gate)" >&2
+                    gh label create awaiting-runtime-gate -R "$FULL" --color D4C5F9 \
+                        --description "Parked: protected issue already delivered by another issue's merged PR; do not claim (fleet-ops#5082)" --force >/dev/null 2>&1 || true
+                    gh issue edit "$N" -R "$FULL" --add-label awaiting-runtime-gate --remove-label agent-ready 2>/dev/null || true
+                    gh issue comment "$N" -R "$FULL" --body "fleet-ops#5082: issue $N is protected (owner-authored or critical-path) and has been claimed ${_park_claims} times, but no PR on its own claim branch (\`claim/issue-$N\`) ever merged — its \`do:\` was already delivered by merged PR #$_park_dup, whose diff overlaps the issue's \`files:\` set. observe-to-close stays comment-only on protected issues (fleet-ops#1435), so the issue stays OPEN by design while every anti-loop gate misses the slow-spaced spin (the #4540 head-branch probe can only see delivery on the issue's OWN claim branch). Parking it: labelled \`awaiting-runtime-gate\`, removed from agent-ready; the intake will not re-claim it until Nish closes the issue or the label is cleared." 2>/dev/null || true
+                    continue
+                fi
             fi
         fi
     fi
