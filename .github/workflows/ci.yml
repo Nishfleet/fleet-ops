@@ -118,6 +118,7 @@ jobs:
         bash tests/seat-lib.test.sh
         bash tests/seat-lib-degraded.test.sh
         bash tests/seat-lib-org-reserve.test.sh
+        bash tests/seat-lib-product-only-spend-cap.test.sh
         # fleet-ops#2563: cap quota_bench walls at the provider's declared
         # reset horizon (quota_window) so a vendor-claimed 19-day Retry-After
         # cannot freeze a weekly-resetting seat for three cycles.
