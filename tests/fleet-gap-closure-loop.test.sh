@@ -265,6 +265,16 @@ export GAP_LOOP_DISABLE=0
 export GAP_LOOP_REPO="Nishfleet/fleet-ops"
 export GAP_LOOP_CONF_CLEAN_FLOOR=2
 
+# fleet-ops#5021: bin/fleet-gap-closure-slo also folds the chain-e2e drill
+# results in (CHAIN_E2E_STATE_DIR, default: LIVE /home/nish/workspaces/
+# agent-state/chain-e2e). Pin it to a scratch dir holding no results file,
+# exactly like GAP_LOOP_QUALITY_JSON above. Otherwise a red live drill leaks
+# green=false into these stubbed green-path cycles, the clean-below-floor cycle
+# takes the NOT-clean branch, and consecutive_clean stays 0 (reds
+# ci-standards-audit on a machine whose last chain-e2e drill failed).
+export CHAIN_E2E_STATE_DIR="$scratch/chain-e2e"
+mkdir -p "$CHAIN_E2E_STATE_DIR"
+
 tick() { "$loop"; }
 
 phase() { jq -r '.phase' "$state_dir/state.json"; }
@@ -366,6 +376,10 @@ tick
   || fail "below-floor clean must keep consecutive_clean=1, got $(jq -c .consecutive_clean "$state_dir/state.json")"
 [[ "$(jq -r '.last_verdict' "$state_dir/state.json")" == "FAIL" ]] \
   || fail "clean below floor must NOT rewrite last_verdict to FAIL, got $(jq -c .last_verdict "$state_dir/state.json")"
+# fleet-ops#5021: the green verdict for this cycle must come from the pinned
+# stub state only. A non-null rate here means live chain-e2e state leaked in.
+[[ "$(jq -r '.slo_snapshot.snapshot.chain_e2e_drill_pass_rate' "$state_dir/state.json")" == "null" ]] \
+  || fail "live chain-e2e drill leaked into the stub (pin CHAIN_E2E_STATE_DIR), got $(jq -c '.slo_snapshot.snapshot.chain_e2e_drill_pass_rate' "$state_dir/state.json")"
 ok "clean below floor -> re-audit, consecutive_clean kept, last_verdict untouched"
 
 # A second consecutive clean cycle reaches the floor and convenes conference.
