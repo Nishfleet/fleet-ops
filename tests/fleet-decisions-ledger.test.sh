@@ -49,6 +49,9 @@ cat >"$scratch/ledger.md" <<'EOF'
 - 2026-08-25 | 0509 deploys | auto deploy on green | test
 - 2026-08-26 | bikeshed colour | never ask about zebras painted purple | test
 - 2026-08-26 | worker-lane refresh | use whichever flash model is cheapest; caps land via seat-caps.json; file a wiring issue for the change | test
+- 2026-08-27 | GEO/AEO: fleet executes measurement + owned-content tactics; community/PR parked for Nish | Fleet-ops #1236 (AEO probe baseline), #1237 (0509 original-data stats pages), #1238 (fact-density + comparison pages) queued for the 08-28 product share. Brand gate: first template/voice of each public content surface previews to Nish for one-time approval; autonomous within approved templates after. PARKED as Nish-reserved (brand/authenticity): Reddit/community participation as the brand, and digital-PR outreach - the research says these are the biggest levers (4x citation likelihood, 239% lift) but they impersonate/represent Nish publicly; fleet may DRAFT for them only when Nish grants it. llms.txt: skip except developer docs (evidence-based). | source: interactive Claude session 2026-08-27
+- 2026-08-28 | 25 concurrent workers is the standing floor (Nish: "I want 25 workers on all the time... quality is the bar, it has to keep climbing") | Whenever >=25 legit gated ready items exist, 25 workers run; fewer with supply available is an UNDERSATURATION fault that auto-dispatches repair. Quality is the bar; it has to keep climbing. | source: interactive Claude session 2026-08-28
+- 2026-08-28 | Optimization target: MAX QUALITY THROUGHPUT (Nish: "max quality throughput because quality above all else") | The fleet optimizes verified, live-proven merged product work per day — not raw merge counts (null-diff era numbers dont count) and not quality-at-a-trickle. Both dials up: more workers AND higher quality per merge. | source: interactive Claude session 2026-08-28
 EOF
 
 gh_store="$scratch/gh-issues"
@@ -417,6 +420,35 @@ grep -q "DECISIONS-LEDGER-REASK" "$scratch/err.log" || fail "missing REASK for r
 ok "live #1138 positive: same-sentence vacation-window re-ask is flagged"
 rm -f "$sessions/vacation-reask.jsonl"
 
+# --- 12b. live #4841: worker data-blocker reasoning is not a geo-aeo re-ask --
+# Live session pi-issue-0509-2151: a worker reasoning about a 0509
+# data-availability blocker ("should we ship only the versions part ...
+# block the whole issue? The issue step 1 says ...") matched ASK_RE
+# (`should we` + same-sentence `?`) and overlapped the GEO/AEO ledger line
+# on 4 generic tokens {fleet, only, product, says}, the 25-workers line on
+# {exist, implementation, issue}, and the optimization line on {fleet,
+# product, rules}. None carry decision-content signal. Fix: `only`/`says`
+# join STOP (drops the 4-token geo-aeo collision) and the overlap threshold
+# rises 3 -> 4 (kills the 3-token collisions; all positive controls stay
+# green at >= 4 distinctive tokens). This is the same generic-word class
+# as #1138, refilled on different function words as the ledger grew.
+write_session "data-blocker" '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"The dependency #2148 proved the data source is absent. This is a product/data decision: should we ship only the versions part (using variantCount) and drop the impressions-bucket parts, or block the whole issue? The issue step 1 says EITHER form is acceptable. Let me look at whether there is a partial implementation possible."}]}}'
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "live #4841 worker data-blocker reasoning should exit 0 (got $rc) $(cat "$scratch/err.log")"
+ok "live #4841: worker data-blocker should-we reasoning is ignored (generic-word collision)"
+rm -f "$sessions/data-blocker.jsonl"
+
+# --- 12c. positive control: a real geo-aeo re-ask still flags ----------------
+# Distinctive tokens (reddit, community, participation, digital-pr, outreach)
+# overlap the GEO/AEO line at 5 — well above the new threshold 4. Proves the
+# threshold raise + stop words did not weaken real re-ask detection.
+write_session "geo-aeo-reask" '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Nish, should we do Reddit/community participation and digital-PR outreach ourselves instead of parking it?"}]}}'
+rc=$(run_bin 0)
+[[ "$rc" == "1" ]] || fail "real geo-aeo re-ask should exit 1 (got $rc) $(cat "$scratch/err.log")"
+grep -q "DECISIONS-LEDGER-REASK" "$scratch/err.log" || fail "missing REASK for real geo-aeo question"
+ok "live #4841 positive: same-sentence geo-aeo re-ask is still flagged"
+rm -f "$sessions/geo-aeo-reask.jsonl"
+
 # --- 13. observe-to-close (fleet-ops#650 shape; #1138 drain) ----------------
 # Isolate the mock store from the auto-file test's leftover issue.
 rm -f "$gh_store"/issue-* "$gh_store"/commented "$gh_store"/closed
@@ -530,4 +562,9 @@ grep -q '#1138' "$here/seat-lib.test.sh" \
   || fail "seat-lib.test.sh must cite #1138 next to the nested host"
 ok "citation lock: #1138 in helper, bin, worker prompt, and nested CI host"
 
-echo "OK: fleet-decisions-ledger: re-ask lint, ledger-checked escape, auto-file dedupe, #1138 false-positive class, observe-to-close"
+# Citation lock for #4841 (generic-word false positive on a grown ledger).
+grep -q 'fleet-ops#4841' "$lib" \
+  || fail "lib/decisions-ledger.py must cite fleet-ops#4841"
+ok "citation lock: #4841 in helper"
+
+echo "OK: fleet-decisions-ledger: re-ask lint, ledger-checked escape, auto-file dedupe, #1138 + #4841 false-positive class, observe-to-close"
