@@ -303,6 +303,24 @@ rc=$(run_bin 0)
 ok "SPAWN_BLOCKED-only isError pair is skipped (fleet-ops#4620)"
 rm -f "$sessions/spawnblock.jsonl"
 
+# --- 7g. two edit no-op-only isError toolResults (fleet-ops#4946) -----------
+# An `edit` tool no-op "No changes made to <path>. The replacement produced
+# identical content" is the edit-tool analog of a grep/rg/diff/ls no-match:
+# the tool completed and the file is already in the requested state. Counting
+# it as a real failed attempt could push a normal implementation session over
+# the two-attempt threshold into a false DEBUG-PLAYBOOK-GATE-BLOCK alarm
+# (the live fleet-ops#4946 alarm surfaced exactly this: a pricing test edit
+# no-op plus a gh field typo). The gate exists for multi-attempt DEBUGGING
+# sessions without a playbook note (fleet-ops#522); a no-op edit is not one.
+write_session "editnoop" '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"en1","name":"edit","arguments":{"path":"/tmp/x.ts","edits":[{"oldText":"a","newText":"b"}]}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"en1","toolName":"edit","isError":true,"content":[{"type":"text","text":"No changes made to /tmp/x.ts. The replacement produced identical content. This might indicate an issue with special characters or the text not existing as expected."}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"en2","name":"edit","arguments":{"path":"/tmp/x.ts","edits":[{"oldText":"c","newText":"d"}]}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"en2","toolName":"edit","isError":true,"content":[{"type":"text","text":"No changes made to /tmp/x.ts. The replacement produced identical content. This might indicate an issue with special characters or the text not existing as expected."}]}}'
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "edit no-op-only pair should exit 0 (got $rc) $(cat "$scratch/err.log")"
+ok "edit no-op-only isError pair is skipped (fleet-ops#4946)"
+rm -f "$sessions/editnoop.jsonl"
+
 # --- 8. auto-file + dedupe --------------------------------------------------
 write_session "swallowed" "$FAIL_TWO
 {\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Fixed it.\"}]}}"

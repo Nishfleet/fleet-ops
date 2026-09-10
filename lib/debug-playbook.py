@@ -71,6 +71,22 @@ SCHEMA_BLOCK_RE = re.compile(
     r"Validation failed for tool",
     re.I,
 )
+# An `edit` no-op is the edit-tool analog of a grep/rg/diff/ls no-match
+# (fleet-ops#4946): "No changes made to <path>. The replacement produced
+# identical content" means the tool did its job — the file is already in the
+# requested state — it did not fail to run. Counting it as a real failed
+# attempt could push a normal implementation session (a couple of edit
+# no-ops plus a stray gh field typo, for instance) over the two-attempt
+# threshold into a false DEBUG-PLAYBOOK-GATE-BLOCK alarm. The gate exists
+# to catch multi-attempt DEBUGGING sessions that ended without a playbook
+# note (fleet-ops#522); a no-op edit is not a debugging attempt. This only
+# changes the debug-playbook gate — it does NOT touch
+# lib/failed-command-flagged.py, where the same string is still a real
+# swallowed failure the worker must flag in user-facing text (fleet-ops#1139).
+EDIT_NOOP_RE = re.compile(
+    r"No changes made to \S+ \s*The replacement produced identical content",
+    re.I | re.S,
+)
 HEADING_RES = (
     re.compile(r"\bSIGNATURE\b", re.I),
     re.compile(r"ROOT CAUSE", re.I),
@@ -181,6 +197,8 @@ def result_failed(msg: dict[str, Any], command: str) -> tuple[bool, str]:
     if HARNESS_BLOCK_RE.search(text):
         return False, text
     if SCHEMA_BLOCK_RE.search(text):
+        return False, text
+    if EDIT_NOOP_RE.search(text):
         return False, text
     is_error = bool(msg.get("isError"))
     timed_out = TIMEOUT_RE.search(text) is not None
