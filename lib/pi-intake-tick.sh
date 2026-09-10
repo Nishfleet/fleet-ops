@@ -1598,6 +1598,10 @@ _light_only_claims=0
 _repair_rung_armed=0
 _repair_rung_product_reserve=0
 _product_skip_reason=""
+_repo_is_product=0
+if declare -F repo_is_product >/dev/null 2>&1 && repo_is_product "$REPO"; then
+    _repo_is_product=1
+fi
 heavy_seat=$(litellm_pick_seat "worker-capable" 2>/dev/null || true)
 _rung_clear_seat=$(litellm_pick_seat "worker-cheap" 2>/dev/null || true)
 

@@ -162,6 +162,52 @@ packet_repo() {
     printf '%s' "$repo"
 }
 
+# --- repo product flag (intake-repos.json product flag, fleet-ops#3724) -----
+# Resolves next to the running code so a stale sibling checkout cannot shadow
+# the deployed config (fleet-ops#4450). repo_is_product is still called by
+# lib/work-supply.sh; pick_seat is gone but this utility survived the P3b cut.
+INTAKE_REPOS_JSON="${FLEET_INTAKE_REPOS_JSON:-}"
+declare -A REPO_PRODUCT_MAP=()
+_intake_repos_loaded=0
+_intake_repos_path() {
+    if [[ -n "${INTAKE_REPOS_JSON:-}" && -f "${INTAKE_REPOS_JSON:-}" ]]; then
+        printf '%s' "$INTAKE_REPOS_JSON"
+        return 0
+    fi
+    local lib_dir c
+    local -a candidates=()
+    lib_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P) || lib_dir=""
+    [[ -n "$lib_dir" ]] && candidates+=("$lib_dir/../config/intake-repos.json")
+    candidates+=("${FLEET_OPS_CHECKOUT:-$HOME/workspaces/tooling/fleet-ops-deploy-clone}/config/intake-repos.json")
+    candidates+=("$HOME/workspaces/products/fleet-ops/config/intake-repos.json")
+    candidates+=("$HOME/workspaces/tooling/fleet-ops/config/intake-repos.json")
+    for c in "${candidates[@]}"; do
+        [[ -f "$c" ]] && { printf '%s' "$c"; return 0; }
+    done
+    return 1
+}
+
+load_repo_product() {
+    REPO_PRODUCT_MAP=()
+    _intake_repos_loaded=1
+    local f
+    f=$(_intake_repos_path) || return 1
+    local repo prod
+    while IFS=$'\t' read -r repo prod; do
+        [[ -n "$repo" ]] || continue
+        [[ "$prod" == "true" ]] && REPO_PRODUCT_MAP["$repo"]=1
+    done < <(jq -r '.repos[]? | [.name, (.product // false | tostring)] | @tsv' "$f" 2>/dev/null || true)
+}
+
+# repo_is_product <repo> -> 0 when <repo> is a declared product repo
+# (intake-repos.json product flag), 1 otherwise. Fail-closed on empty repo,
+# unlisted repo, or missing/unparseable config.
+repo_is_product() {
+    local repo="$1"
+    if (( ! _intake_repos_loaded )); then load_repo_product || true; fi
+    [[ -n "$repo" && "${REPO_PRODUCT_MAP[$repo]:-0}" == "1" ]]
+}
+
 # --- RAM / spawn helpers from seat-caps.json (not routing) -------------------
 _seat_caps_loaded=0
 SEAT_RAM_GB_PER_WORKER=1.5

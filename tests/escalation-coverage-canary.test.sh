@@ -352,6 +352,7 @@ WF
   # Block 12 (fleet-ops#520): free-tier privacy guard fixtures.
   mkdir -p "$repo/lib" "$repo/config"
   cp "$repo_root/lib/seat-lib.sh" "$repo/lib/seat-lib.sh"
+  cp "$repo_root/lib/litellm-seat.sh" "$repo/lib/litellm-seat.sh"
   cp "$repo_root/config/repo-privacy.json" "$repo/config/repo-privacy.json"
 }
 
