@@ -970,4 +970,26 @@ grep -q "issue close 4966" "$tmp/gh.log" \
     || fail "scenario 14b: expected gh issue close 4966 (got: $(cat "$tmp/gh.log"))"
 ok "scenario 14b: green DEGRADED-LANES observe-to-closes under the label"
 
+# 14c. Retroactive downgrade (fleet-ops#4987): #4981 re-routes DEGRADED-LANES
+# to observe-to-close only for NEW filings. An ALREADY-OPEN agent-ready
+# DEGRADED-LANES issue (filed before that routing landed, e.g. #4987 itself)
+# is deduped but never downgraded, so the intake keeps claiming it and burns
+# a worker seat on an observe-to-close-only alarm. The reconcile must
+# retroactively re-label an open agent-ready (#4987) / agent-in-progress
+# DEGRADED-LANES issue to observe-to-close while the alarm is still live.
+cat > "$tmp/triage14c.md" <<'EOF'
+[2026-08-28T13:30:00Z] [DEGRADED-LANES] degraded=1 :: pi-issue@0509-2507.service sub=auto-restart :: ...
+EOF
+cat > "$tmp/open14c.json" <<'EOF'
+[{"number": 4987, "body": "The heartbeat detector reported this alarm on a real tick and no open issue carried its signal key, so the detector\u2192queue reconciler filed one.\n\n- alarm tag: `DEGRADED-LANES`\n\nDo NOT close this issue on PR merge alone. The reconciler closes it only when the detector reports green on a real heartbeat tick (observe-to-close).\n\n`loud/degraded-lanes/0509-2507.service`\n", "labels": [{"name": "agent-in-progress"}], "createdAt": "2026-08-28T10:00:00Z", "comments": []}]
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/open14c.json" "$tmp/triage14c.md" > "$tmp/summary14c.json"
+jq -e '.rerouted == 1 and .filed == 0' "$tmp/summary14c.json" >/dev/null \
+    || fail "scenario 14c: live agent-in-progress DEGRADED-LANES must be retroactively rerouted to observe-to-close (got: $(cat "$tmp/summary14c.json"))"
+grep -q 'issue edit 4987' "$tmp/gh.log" \
+    || fail "scenario 14c: expected gh issue edit 4987 (got: $(cat "$tmp/gh.log"))"
+ok "scenario 14c: live agent-in-progress DEGRADED-LANES is retroactively downgraded to observe-to-close"
+
 ok "all signal-reconcile scenarios passed"

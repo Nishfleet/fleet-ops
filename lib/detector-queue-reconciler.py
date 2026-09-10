@@ -742,6 +742,23 @@ def reconcile(
         if existing:
             summary["deduped"] += 1
             _hydrate_comments(existing, repo, gh, dry_run, comment_cache)
+            # fleet-ops#4987: #4981 routes DEGRADED-LANES to observe-to-close
+            # only for NEW filings. An already-open agent-ready DEGRADED-LANES
+            # issue (filed before that routing landed, e.g. #4987 itself) is
+            # deduped but never downgraded, so the intake keeps claiming it and
+            # burns an admission-priced worker seat on an observe-to-close-only
+            # alarm with zero manual action. Retroactively re-label it so the
+            # intake stops claiming it; observe-to-close still closes it on the
+            # green tick regardless of label (test 14b).
+            if routing_labels(alarm["tag"]) == ["observe-to-close"]:
+                o_labels = [str(l.get("name")) for l in (existing.get("labels") or []) if l.get("name")]
+                if any(lb in o_labels for lb in ("agent-ready", "agent-in-progress")):
+                    remove = [lb for lb in ("agent-ready", "agent-in-progress") if lb in o_labels]
+                    if gh_edit_labels(repo, existing["number"], ["observe-to-close"], remove, gh, dry_run):
+                        summary["rerouted"] += 1
+                        log(f"reroute #{existing['number']} (signal={sig}) {','.join(remove)} -> observe-to-close (retroactive DEGRADED-LANES downgrade)")
+                    else:
+                        log(f"WARN: failed to downgrade #{existing['number']} (signal={sig})")
             if not has_recent_heartbeat_comment(existing, now, comment_min_hours):
                 comment_body = (
                     f"detector heartbeat: still alarmed for `{sig}` "
