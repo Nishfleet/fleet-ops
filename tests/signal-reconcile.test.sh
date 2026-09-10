@@ -410,18 +410,21 @@ true > "$tmp/filed.jsonl"
 true > "$tmp/gh.log"
 
 # 12a. wrong title -> LOUD FILED-LINK-MISMATCH + filed_mismatches counter.
+#     A wrong pointer must NOT consume the auto-file cap (fleet-ops#4622):
+#     the cap is wasted on wrong pointers, so a mismatch leaves filed==0 and
+#     the signal is retried next tick.
 env "${common_env[@]}" FAKE_GH_VIEW_TITLE="claude OAuth quota meter silently dead" \
     FLEET_SIGNAL_RECONCILE_OPEN_ISSUES_JSON="$tmp/empty.json" \
     python3 "$lib" --triage "$tmp/triage12.md" --tick-start "2026-08-28T13:30:00Z" \
     --ok-to-close 1 --json --now "2026-08-28T13:45:00Z" 2>"$tmp/stderr12a.json" \
     > "$tmp/summary12a.json" || true
-jq -e '.filed == 1' "$tmp/summary12a.json" >/dev/null \
-    || fail "scenario 12a: expected one filed (got: $(cat "$tmp/summary12a.json"))"
+jq -e '.filed == 0' "$tmp/summary12a.json" >/dev/null \
+    || fail "scenario 12a: expected filed==0 (wrong pointer must not consume the cap; got: $(cat "$tmp/summary12a.json"))"
 jq -e '.filed_mismatches == 1' "$tmp/summary12a.json" >/dev/null \
     || fail "scenario 12a: expected filed_mismatches==1 (got: $(cat "$tmp/summary12a.json"))"
 grep -q 'FILED-LINK-MISMATCH' "$tmp/stderr12a.json" \
     || fail "scenario 12a: expected LOUD FILED-LINK-MISMATCH on stderr"
-ok "scenario 12a: wrong-title filed pointer -> LOUD FILED-LINK-MISMATCH + counter"
+ok "scenario 12a: wrong-title filed pointer -> LOUD FILED-LINK-MISMATCH + counter, cap not consumed"
 
 # 12b. matching title -> no LOUD, no mismatch counter.
 true > "$tmp/filed.jsonl"
