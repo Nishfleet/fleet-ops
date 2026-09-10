@@ -69,7 +69,27 @@ SKIP_MSG_PREFIXES = ("rule-enforcement:",)
 # CLAIM-REAP-PARSE-FAIL, CLAIM-REAP-NO-GH). Queuing STARTED produced a
 # noisy per-repo signal (`loud/claim-reap-started/nishfleet-0509`) that
 # refiled on every reap and could rarely go green.
-SKIP_TAGS = {"DEBUG-PLAYBOOK-MISSING", "CLAIM-REAP-STARTED"}
+#
+# CLAIM-RELEASED is the same class: pi-issue-failed-reap writes it to
+# confirm a SUCCESSFUL claim release back to agent-ready after a worker
+# failure (the instance=... branch=... branch_deleted=yes label_flipped=yes
+# comment_posted=yes summary line). It fires on EVERY real reap of an OPEN
+# issue (fleet-ops#4930: the same CLAIM-RELEASED line appears once per failed
+# fleet-ops or 0509 worker). The keys extend per-repo, not per-instance
+# either way — derive_signals() harvests one distinct `repo` token to form
+# `loud/claim-released/<repo>`, so any future reap re-emits the same key and
+# observe-to-close can never go green. The reaper outcome is a healthy
+# recovery step, not a fault: the actionable reaper failures already carry
+# their own loud tags (CLAIM-REAP-BRANCH-FAIL, CLAIM-REAP-LABEL-FAIL,
+# CLAIM-REAP-PARSE-FAIL, CLAIM-REAP-NO-GH), and repeated failure of one
+# issue is tracked by RECLAIM-COUNT-INCREMENTED + the reclaim cooldown, not
+# by a per-repo loud signal. Queuing RELEASED refiles a noisy per-repo issue
+# on every reap, exactly the never-green loop #4918 fixed for STARTED.
+SKIP_TAGS = {
+    "DEBUG-PLAYBOOK-MISSING",
+    "CLAIM-REAP-STARTED",
+    "CLAIM-RELEASED",
+}
 STOPWORDS = frozenset(
     """
     a an the to of and or in on for with this that is are be as at by from
