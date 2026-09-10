@@ -64,17 +64,46 @@ case "$cmd" in
         echo "https://github.com/Nishfleet/fleet-ops/issues/9999"
         ;;
       list)
+        # Default to open for backwards compatibility with callers that
+        # omit --state. fleet-ops#841 added --state closed to the dedup
+        # check; --state all returns both.
+        list_state="open"
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            --state) list_state="$2"; shift 2 ;;
+            --repo|-R) shift 2 ;;
+            --limit) shift 2 ;;
+            --json) shift 2 ;;
+            *) shift ;;
+          esac
+        done
         printf '[\n'
         first=1
         n=0
         for f in "$store"/*.body; do
           [ -f "$f" ] || continue
           n=$((n+1))
-          # Skip closed issues (issue-N.closed marker exists)
-          [ -f "$store/issue-$n.closed" ] && continue
+          is_closed=0
+          [ -f "$store/issue-$n.closed" ] && is_closed=1
+          # Filter by state.
+          case "$list_state" in
+            open)   [ "$is_closed" = "1" ] && continue ;;
+            closed) [ "$is_closed" = "0" ] && continue ;;
+            all)    ;;
+          esac
           body=$(tail -n +2 "$f")
           if [ "$first" = 1 ]; then first=0; else printf ',\n'; fi
-          printf '{"number":%s,"title":"","body":%s}' "$n" "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$body")"
+          # closedAt is recorded by the close handler at the moment of
+          # close, so the dedup test can plant "closed within window"
+          # fixtures deterministically.
+          if [ "$is_closed" = "1" ] && [ -f "$store/issue-$n.closedAt" ]; then
+            cat=$(cat "$store/issue-$n.closedAt")
+            printf '{"number":%s,"title":"","body":%s,"closedAt":"%s"}' \
+              "$n" "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$body")" "$cat"
+          else
+            printf '{"number":%s,"title":"","body":%s}' \
+              "$n" "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$body")"
+          fi
         done
         printf '\n]\n'
         ;;
@@ -91,6 +120,11 @@ case "$cmd" in
         done
         [ -n "$num" ] || exit 1
         : > "$store/issue-$num.closed"
+        # Stamp close time so the dedup test can verify the
+        # recently-closed window check. The detector runs with a frozen
+        # NOW so a freshly-stamped closeAt falls inside the window by
+        # construction.
+        printf '%s\n' "2026-08-27T00:09:30Z" > "$store/issue-$num.closedAt"
         [ -n "$comment" ] && printf '%s\n' "$comment" > "$store/issue-$num.close-comment"
         echo "Closed issue #$num"
         ;;
@@ -339,6 +373,113 @@ new_issue=$(find "$gh_store" -maxdepth 1 -name 'issue-*.body' | wc -l)
   && fail "active slug issue #$new_issue was closed (should stay open)" || true
 ok "observe-to-close leaves an active slug open"
 rm -f "$sessions/ask-nofile.jsonl"
+
+# --- 6c-bis. dedup against recently-closed auto-file (fleet-ops#841) ---------
+# The auto-file path used to dedup only against OPEN issues. Once
+# observe-to-close closed the prior auto-file, a re-mtime'd session
+# would re-file the same slug in the same window — producing duplicate
+# issues for one canonical finding (#721 was closed at 02:43, #841 was
+# auto-filed at 03:26 for the same 1b0c4709 session). The fix widens
+# the dedup to also hit recently-closed issues with the signal key,
+# window-bounded so a session that genuinely ages out and comes back
+# later still gets a fresh file. Plant a slug, auto-file, simulate the
+# observe-to-close (mark closed + stamp closedAt inside the frozen
+# window), and prove a second run does NOT re-file.
+rm -f "$gh_store"/*.body "$gh_store"/*.closed "$gh_store"/*.closedAt "$gh_store"/*.close-comment
+write_session "flap-841" '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Should I file a new issue about the silent canary?"}]}}'
+# Run 1: file. With FILE_ISSUES=1 and the new closed-issue dedup inactive
+# (the store is empty), this lands the same way as the original test 6.
+set +e
+FLEET_FINDINGS_QUEUED_SESSIONS="$scratch/sessions" \
+FLEET_FINDINGS_QUEUED_CURSOR_ROOTS="" \
+FLEET_FINDINGS_QUEUED_CLAUDE_ROOTS="" \
+FLEET_FINDINGS_QUEUED_LIB="$lib" \
+FLEET_FINDINGS_QUEUED_WINDOW_HOURS="24" \
+FLEET_FINDINGS_QUEUED_GRACE_MINUTES="0" \
+FLEET_FINDINGS_QUEUED_NOW="2026-08-27T00:10:00Z" \
+FLEET_FINDINGS_QUEUED_FILE_ISSUES=1 \
+FLEET_FINDINGS_QUEUED_ISSUE_REPO="Nishfleet/fleet-ops" \
+GH="$scratch/gh" \
+GH_MOCK_STORE="$gh_store" \
+FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
+  "$bin" >/dev/null 2>"$scratch/err-flap1.log"
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "first run should exit 1 (got $rc) $(cat "$scratch/err-flap1.log")"
+[ -f "$gh_store/issue-1.body" ] || fail "first run did not file an issue"
+grep -q "signal: findings-queued/" "$gh_store/issue-1.body" \
+  || fail "first run filed body missing signal key"
+ok "first run files the auto-issue"
+# Simulate observe-to-close (the close path under OK_TO_CLOSE=1). The
+# mock stamps a closedAt inside the frozen window (00:09:30Z < NOW).
+GH="$scratch/gh" GH_MOCK_STORE="$gh_store" "$scratch/gh" issue close 1 -R Nishfleet/fleet-ops --comment "observe-to-close" >/dev/null
+[ -f "$gh_store/issue-1.closed" ] || fail "simulated close did not mark issue-1 closed"
+# Run 2: same slug, same window, the auto-file must dedup against the
+# recently-closed issue instead of producing a second body file. This
+# is the regression for #841.
+set +e
+FLEET_FINDINGS_QUEUED_SESSIONS="$scratch/sessions" \
+FLEET_FINDINGS_QUEUED_CURSOR_ROOTS="" \
+FLEET_FINDINGS_QUEUED_CLAUDE_ROOTS="" \
+FLEET_FINDINGS_QUEUED_LIB="$lib" \
+FLEET_FINDINGS_QUEUED_WINDOW_HOURS="24" \
+FLEET_FINDINGS_QUEUED_GRACE_MINUTES="0" \
+FLEET_FINDINGS_QUEUED_NOW="2026-08-27T00:10:00Z" \
+FLEET_FINDINGS_QUEUED_FILE_ISSUES=1 \
+FLEET_FINDINGS_QUEUED_ISSUE_REPO="Nishfleet/fleet-ops" \
+GH="$scratch/gh" \
+GH_MOCK_STORE="$gh_store" \
+FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
+  "$bin" >/dev/null 2>"$scratch/err-flap2.log"
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "second run should still exit 1 (got $rc) $(cat "$scratch/err-flap2.log")"
+# Exactly one body file in the store — no duplicate auto-file.
+n=$(find "$gh_store" -maxdepth 1 -name 'issue-*.body' | wc -l)
+[[ "$n" == "1" ]] || fail "second run produced a duplicate auto-file (n=$n)"
+grep -q "FINDINGS-DEDUP-AGAINST-CLOSED" "$scratch/err-flap2.log" \
+  || fail "second run missing FINDINGS-DEDUP-AGAINST-CLOSED log $(cat "$scratch/err-flap2.log")"
+ok "re-mtime'd slug does not re-file within the window (fleet-ops#841)"
+rm -f "$sessions/flap-841.jsonl"
+rm -f "$gh_store"/*.body "$gh_store"/*.closed "$gh_store"/*.closedAt "$gh_store"/*.close-comment
+
+# --- 6c-ter. closed-issues dedup is window-bounded (not a permanent veto) ---
+# A slug that was auto-filed and closed OUTSIDE the window must not block
+# a fresh file. Stamps a closedAt 25h before the frozen NOW, plants the
+# session, and proves a new file is produced (the previous closure has
+# aged out of the dedup window). Without the window-bounding, the dedup
+# would silently drop a genuine finding that re-appears after a long gap.
+rm -f "$gh_store"/*.body "$gh_store"/*.closed "$gh_store"/*.closedAt "$gh_store"/*.close-comment
+write_session "stale-841" '{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Should I file a new issue about the silent canary?"}]}}'
+# Plant a "stale" auto-file: body present, marked closed, closedAt
+# 25h before NOW so the window filter excludes it.
+printf 'Title of a stale auto-filed issue\n\nsignal: findings-queued/stale-841\n' >"$gh_store/issue-1.body"
+: > "$gh_store/issue-1.closed"
+printf '%s\n' "2026-08-25T23:00:00Z" > "$gh_store/issue-1.closedAt"
+set +e
+FLEET_FINDINGS_QUEUED_SESSIONS="$scratch/sessions" \
+FLEET_FINDINGS_QUEUED_CURSOR_ROOTS="" \
+FLEET_FINDINGS_QUEUED_CLAUDE_ROOTS="" \
+FLEET_FINDINGS_QUEUED_LIB="$lib" \
+FLEET_FINDINGS_QUEUED_WINDOW_HOURS="24" \
+FLEET_FINDINGS_QUEUED_GRACE_MINUTES="0" \
+FLEET_FINDINGS_QUEUED_NOW="2026-08-27T00:10:00Z" \
+FLEET_FINDINGS_QUEUED_FILE_ISSUES=1 \
+FLEET_FINDINGS_QUEUED_ISSUE_REPO="Nishfleet/fleet-ops" \
+GH="$scratch/gh" \
+GH_MOCK_STORE="$gh_store" \
+FLEET_HEARTBEAT_TRIAGE="$scratch/triage.md" \
+  "$bin" >/dev/null 2>"$scratch/err-stale.log"
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "stale-close run should exit 1 (got $rc) $(cat "$scratch/err-stale.log")"
+# A fresh file was produced (issue-2), and the original is still there.
+[ -f "$gh_store/issue-2.body" ] || fail "stale-close run did not produce a fresh file (issue-2 missing)"
+grep -q "signal: findings-queued/stale-841" "$gh_store/issue-2.body" \
+  || fail "fresh file missing the slug signal"
+ok "stale (out-of-window) close does not block a fresh file"
+rm -f "$sessions/stale-841.jsonl"
+rm -f "$gh_store"/*.body "$gh_store"/*.closed "$gh_store"/*.closedAt "$gh_store"/*.close-comment
 
 # --- 6d. incident #724 snippet is clean (non-filing "say the word") ---------
 # Exact offer from the auto-filed session: putting a line back as a deck

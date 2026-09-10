@@ -143,11 +143,47 @@ log "scanned=$scanned old=$(jq -r .skipped_old <<<"$report") grace=$(jq -r .skip
 current_slugs=$(jq -r '.findings[].slug' <<<"$report" | sort -u)
 
 open_json="[]"
+recent_closed_json="[]"
 if [[ "$FILE_ISSUES" == "1" ]] && command -v "$GH" >/dev/null 2>&1; then
     set +e
     open_json=$("$GH" issue list -R "$ISSUE_REPO" --state open --limit 200 --json number,body 2>/dev/null)
     set -e
     open_json="${open_json:-[]}"
+
+    # Recently-closed auto-files (fleet-ops#841): if a slug was auto-filed
+    # and then closed by observe-to-close in the same window, a later tick
+    # that finds the same slug (the session re-mtime'd) must not re-file.
+    # Without this, a session that flaps dirty -> clean -> dirty produces
+    # one auto-file per flap, with the same canonical finding tracked as
+    # N open/closed issues. The closure comment is the authoritative
+    # record; refiling would be a duplicate. Window-bounded so a session
+    # that genuinely ages out and comes back later still gets a fresh file.
+    set +e
+    closed_json=$("$GH" issue list -R "$ISSUE_REPO" --state closed --limit 200 --json number,body,closedAt 2>/dev/null)
+    set -e
+    closed_json="${closed_json:-[]}"
+    if [[ -n "$NOW_ISO" ]]; then
+        # Filter to (a) auto-file signal key, (b) closedAt present and
+        # parseable, (c) closedAt within the last WINDOW_HOURS. The
+        # try/catch on fromdateiso8601 swallows malformed timestamps
+        # rather than 500-ing the detector: a closed issue with a
+        # bad date is treated as "not in window" and a fresh file
+        # lands if the slug is still a finding.
+        recent_closed_json=$(printf '%s' "$closed_json" | jq --arg now "$NOW_ISO" --argjson wh "$WINDOW_HOURS" '
+            [ .[]
+              | select((.body // "") | contains("signal: findings-queued/"))
+              | select((.closedAt // "") != "")
+              | (try (.closedAt | fromdateiso8601) catch null) as $ts
+              | select($ts != null)
+              | select($ts >= (($now | fromdateiso8601) - ($wh * 3600)))
+            ]
+        ' 2>/dev/null)
+    else
+        recent_closed_json=$(printf '%s' "$closed_json" | jq '
+            [ .[] | select((.body // "") | contains("signal: findings-queued/")) ]
+        ' 2>/dev/null)
+    fi
+    recent_closed_json="${recent_closed_json:-[]}"
 fi
 
 # Observe-to-close (fleet-ops#724, fleet-ops#725): close auto-filed issues
@@ -234,6 +270,17 @@ while IFS= read -r row; do
         '[.[] | select((.body // "") | contains($s))] | length > 0' \
         >/dev/null 2>&1; then
         log "auto-file: $slug already open (deduped)"
+        continue
+    fi
+    if printf '%s' "$recent_closed_json" | jq -e --arg s "$signal" \
+        '[.[] | select((.body // "") | contains($s))] | length > 0' \
+        >/dev/null 2>&1; then
+        # The previous auto-file for this slug is now closed. Refiling
+        # within the window would create a duplicate issue for the same
+        # canonical finding; the closure comment is the authoritative
+        # record. Log loud so an operator can see the re-flapping in the
+        # triage file.
+        loud "FINDINGS-DEDUP-AGAINST-CLOSED" "session=$slug already auto-filed and closed in the last ${WINDOW_HOURS}h — not re-filing within the same window"
         continue
     fi
 
