@@ -322,12 +322,14 @@ audit_stop_reason() {
 # stalled claim — an UNJUSTIFIED-WAIT unless it carries an after: gate.
 #
 # Repair (fleet-ops#852): when REPAIR=1, strip the stale CLAIMED:<ts>
-# marker so the item returns to ready-now. ready-work-dispatch skips any
-# line that still carries CLAIMED:, so an after: gate alone would silence
-# the detector without ever re-dispatching the work. Unclaiming restores
-# the TOP GEAR contract: the wait ends, the item is free for the next
-# ready-work.path / recheck tick. The repair is the prevention mechanism
-# for this failure class (mechanical-fix rule, fleet-ops#366).
+# marker so the item returns to ready-now. CLAIMED: marks a row as taken;
+# stripping it re-opens the row for whoever reads READY-WORK.md next (the
+# file is a PAPER ledger — the hand-placed ready-work dispatcher trio was
+# deleted, fleet-ops#1493 — so an after: gate alone would leave the item
+# looking claimed forever with no reader). Unclaiming restores the TOP GEAR
+# contract: the wait ends and the row is visibly free again. The repair is
+# the prevention mechanism for this failure class (mechanical-fix rule,
+# fleet-ops#366).
 #
 # Returns the count of unrepaired findings. A successful repair of every
 # stalled claim yields 0 so the tick can go green.
