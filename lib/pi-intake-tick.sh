@@ -629,39 +629,49 @@ blocked_filter() {
     return 0
 }
 
-# fleet-ops#4808: depends-on gate. An agent-ready issue can carry a body
-# `depends-on:` line naming issues/PRs that must be DONE before it is
-# claimable (e.g. a seam batch where #2218 must land before the six sources
-# that depend on it). Claiming such an issue spawns a worker that cannot
-# make progress — it would have to hand-gate by removing agent-ready. This
-# filter resolves each named dependency and skips the issue (stays
-# agent-ready, no de-label) until every dependency is DONE.
+# Ticket-body gates (fleet-ops#4808 depends-on, fleet-ops#5167
+# collision-gate). An agent-ready issue can carry a body line naming
+# issues/PRs that must be DONE before it is claimable:
 #
-# A dependency is DONE when the referenced issue is:
+#   depends-on: #2218, Nishfleet/0509#2181
+#   collision-gate (Fable 2026-09-10): shares <path> with #2407.
+#     agent-ready returns when those are merged/closed
+#
+# Claiming such an issue spawns a worker that cannot make progress — it
+# would have to hand-gate by removing agent-ready. _gate_filter resolves
+# each named ref and skips the issue (stays agent-ready, no de-label)
+# until every ref is DONE.
+#
+# A ref is DONE when the referenced issue is:
 #   - closed (state=closed), OR
 #   - has a merged PR whose branch is claim/issue-<n> or fable/issue-<n>, OR
 #   - has any merged PR linked via "closes #n" (a cross-referenced PR).
 #
-# Cycle: if A depends on B and B depends on A, neither can ever be DONE
-# while the other is open, so both are skipped with `depends-on-cycle`
-# instead of a misleading `skipped-depends-on:#n`.
+# Cycle: if A gates B and B gates A on the same gate keyword, neither can
+# ever be DONE while the other is open, so both are skipped with the gate's
+# cycle reason instead of a misleading skip-#n.
 #
 # Caching: resolution is memoised per tick in the _dep_state_cache and
 # _dep_body_cache associative arrays (one gh call per referenced issue per
-# tick), so a dependency named by many issues costs one lookup.
+# tick), so a ref named by many issues costs one lookup. Both gates share
+# those arrays and the one resolver (resolve_dep) — there is no second
+# resolver and no second body fetch.
 #
-# Args: $1=body  $2=repo (Nishfleet/<repo>)  $3=issue number
-# Returns: 0 = claimable (no deps, or all deps DONE); 1 = skip. On skip,
-# prints the reason (skipped-depends-on:#n or depends-on-cycle) to stdout.
-depends_on_filter() {
-    local body="$1" repo="$2" num="$3"
+# Args: $1=gate line ERE (anchored)  $2=skip reason prefix
+#       $3=cycle reason  $4=body  $5=repo (Nishfleet/<repo>)  $6=issue number
+# Returns: 0 = claimable (no refs, or all refs DONE); 1 = skip. On skip,
+# prints the reason (<skip prefix>#n or the cycle reason) to stdout.
+_gate_filter() {
+    local gate_re="$1" skip_reason="$2" cycle_reason="$3"
+    local body="$4" repo="$5" num="$6"
     local ref owner rname target_num dep_key dep_state dep_body
     local -a deps=()
 
-    # Parse the depends-on: line(s). Extract every #<n> (same repo) and
-    # owner/repo#<n>; prose like "none" or "any of" yields no refs.
+    # Parse the gate line(s). Extract every #<n> (same repo) and
+    # owner/repo#<n>; prose that names none (e.g. "depends-on: none", or a
+    # collision-gate line whose path carries no ref) yields no refs.
     mapfile -t deps < <(printf '%s\n' "$body" \
-        | grep -E '^depends-on:' \
+        | grep -E "$gate_re" \
         | grep -oE '#[0-9]+|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+' || true)
     (( ${#deps[@]} == 0 )) && return 0
 
@@ -675,7 +685,7 @@ depends_on_filter() {
         fi
         dep_key="${owner}/${rname}#${target_num}"
 
-        # Resolve the dependency's DONE state (memoised per tick).
+        # Resolve the ref's DONE state (memoised per tick).
         if [[ -n "${_dep_state_cache[$dep_key]:-}" ]]; then
             dep_state="${_dep_state_cache[$dep_key]}"
         else
@@ -683,25 +693,40 @@ depends_on_filter() {
             _dep_state_cache[$dep_key]="$dep_state"
         fi
         if [[ "$dep_state" != "DONE" ]]; then
-            # Cycle detection: does the dependency itself depend on THIS
-            # issue? (A depends on B depends on A.) Fetch the dependency's
-            # body (memoised) and check its depends-on: line.
+            # Cycle detection: does the ref itself gate on THIS issue with
+            # the same keyword? (A gates B gates A.) Fetch the other body
+            # (memoised, shared with the other gate) and check its line.
             if [[ -n "${_dep_body_cache[$dep_key]:-}" ]]; then
                 dep_body="${_dep_body_cache[$dep_key]}"
             else
                 dep_body="$(gh issue view "$target_num" -R "${owner}/${rname}" --json body --jq '.body // ""' 2>/dev/null || true)"
                 _dep_body_cache[$dep_key]="$dep_body"
             fi
-            if printf '%s\n' "$dep_body" | grep -E '^depends-on:' \
+            if printf '%s\n' "$dep_body" | grep -E "$gate_re" \
                 | grep -qE "#${num}\b|${repo}#${num}\b"; then
-                echo "depends-on-cycle"
+                echo "$cycle_reason"
                 return 1
             fi
-            echo "skipped-depends-on:$ref"
+            echo "${skip_reason}${ref}"
             return 1
         fi
     done
     return 0
+}
+
+# fleet-ops#4808: the `depends-on:` gate.
+depends_on_filter() {
+    _gate_filter '^depends-on:' 'skipped-depends-on:' 'depends-on-cycle' "$@"
+}
+
+# fleet-ops#5167: the `collision-gate:` gate. The house ticket format carries
+# a prose line of the form `collision-gate (<who> <date>): shares <path> with
+# #<n>` — until #5167 it was issue-body prose with no machinery behind it, so
+# intake claimed a ticket whose colliding sibling was still open and the
+# worker had to hand-verify the overlap was disjoint. Same DONE rule, same
+# resolver, same per-tick memo as depends-on; only the skip reason differs.
+collision_gate_filter() {
+    _gate_filter '^collision-gate[ :(]' 'skipped-collision-gate:' 'collision-gate-cycle' "$@"
 }
 
 # resolve_dep — is a referenced issue DONE? Prints DONE when the issue is
@@ -2260,6 +2285,21 @@ blocked-on: orchestrator" 2>/dev/null || true
         continue
     fi
     rm -f "$_dep_reason_file"
+
+    # fleet-ops#5167: collision-gate gate. Same rule, same resolver, same
+    # per-tick memo, for the house ticket format's `collision-gate:` line
+    # (`collision-gate (Fable 2026-09-10): shares <path> with #2407`).
+    # Before this, that line was prose with nothing behind it: intake claimed
+    # 0509#2411 while its colliding sibling #2407 was open, and the worker
+    # hand-verified the overlap. Skip reason: skipped-collision-gate:#n.
+    _collision_reason_file="$(mktemp)"
+    if ! collision_gate_filter "$body" "$FULL" "$N" >"$_collision_reason_file"; then
+        _collision_reason="$(cat "$_collision_reason_file")"
+        rm -f "$_collision_reason_file"
+        echo "issue $N ($title): $_collision_reason"
+        continue
+    fi
+    rm -f "$_collision_reason_file"
 
     # fleet-ops#3309: more than 2 live required: lines bounce (agent-blocked)
     # and must not push a claim branch. Struck-through lines do not count.

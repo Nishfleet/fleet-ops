@@ -380,6 +380,27 @@ dependency lands. A dependency cycle (A depends on B depends on A) skips both
 with `depends-on-cycle` instead of a misleading `skipped-depends-on:#n`.
 Resolution is memoised per tick (one gh call per referenced issue per tick).
 
+### `collision-gate:` in ticket bodies (fleet-ops#5167)
+
+The house ticket format also carries a collision gate, written as prose:
+
+```
+collision-gate (Fable 2026-09-10): shares app/components/x.tsx with #2407.
+agent-ready returns automatically when those are merged/closed
+(gate file: agent-state/fleet-landing-watch/ticket-gates.json)
+```
+
+Until #5167 that line was prose with nothing behind it: intake claimed
+`0509#2411` while its colliding sibling `#2407` was still open, and the
+worker had to hand-verify the overlap was disjoint. Intake now treats the
+`collision-gate:` line exactly like `depends-on:` — same DONE rule (closed,
+merged `claim/issue-<n>` / `fable/issue-<n>` PR, or merged "closes #n" PR),
+same resolver, same per-tick memo, no second resolver. Refs parse as a
+same-repo `#<n>` or a cross-repo `owner/repo#<n>`; a line naming no ref does
+not gate. A gated ticket is skipped with `skipped-collision-gate:#<n>` and
+stays `agent-ready`, so it is claimed on the tick after the named ticket
+lands. Mutual gates (A gates B gates A) skip with `collision-gate-cycle`.
+
 ## Spec judge (fleet-ops#4801)
 
 Before a worker may claim an `agent-ready` ticket, the intake tick runs a

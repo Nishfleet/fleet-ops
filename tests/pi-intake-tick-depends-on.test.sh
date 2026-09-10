@@ -6,15 +6,24 @@
 # 0509 seam batch had to be hand-gated by removing agent-ready because intake
 # claimed regardless; this locks the gate so a machine does that job.
 #
+# fleet-ops#5167: the same gate must honour the house format's
+# `collision-gate:` line ("shares <path> with #<n>"), which until then was
+# prose with no machinery behind it. Same DONE rule, same resolver, same
+# per-tick memo; only the skip reason differs (skipped-collision-gate:#n).
+#
 # Proves, offline:
-#   1. lib/pi-intake-tick.sh defines depends_on_filter() and resolve_dep()
-#      and calls the filter in the claim loop with the skip summary line.
+#   1. lib/pi-intake-tick.sh defines depends_on_filter() / collision_gate_
+#      filter() and resolve_dep(), and calls both filters in the claim loop
+#      with the skip summary line.
 #   2. Parse cases: none / one / many / cross-repo / prose ("none", "any of").
 #   3. DONE via closed issue.
 #   4. DONE via merged PR (claim/issue-<n> branch).
 #   5. not DONE -> skip line `skipped-depends-on:#n`.
 #   6. Cycle (A depends on B depends on A) -> `depends-on-cycle`.
 #   7. Caching: one gh call per referenced issue per tick (memoised).
+#   8. collision-gate: house format parses; open ref -> skipped-collision-
+#      gate:#n; closed / merged-PR ref -> claimable; memo shared with the
+#      depends-on gate (no second resolver).
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -45,6 +54,33 @@ grep -qF 'skipped-depends-on:' "$tick" \
 grep -qF 'depends-on-cycle' "$tick" \
     || fail "tick must print depends-on-cycle for a dependency cycle"
 ok "Test 2: filter applied in claim loop with skip summary line"
+
+# === Test 2b: the collision-gate label reuses the same machinery ===
+grep -qF 'collision_gate_filter()' "$tick" \
+    || fail "collision_gate_filter() not defined in tick"
+grep -qF 'collision_gate_filter "$body" "$FULL" "$N"' "$tick" \
+    || fail "tick must call collision_gate_filter on the issue body in the claim loop"
+grep -qF 'skipped-collision-gate:' "$tick" \
+    || fail "tick must print skipped-collision-gate: when the filter fires"
+grep -qF "'^collision-gate[ :(]'" "$tick" \
+    || fail "tick must match both 'collision-gate:' and the house 'collision-gate (who date):' form"
+ok "Test 2b: collision_gate_filter applied in claim loop with skip summary line"
+
+# === Test 2c: one resolver, one memo (the issue's must-not) ===
+# Both gates must route through the single _gate_filter + resolve_dep and the
+# shared caches. A second resolver or a second set of caches is the failure
+# this asserts against.
+resolver_defs=$(grep -cE '^resolve_dep\(\) \{' "$tick" || true)
+[[ "$resolver_defs" == "1" ]] \
+    || fail "exactly one resolve_dep() definition expected, found $resolver_defs"
+cache_decls=$(grep -cF 'declare -A _dep_state_cache=()' "$tick" || true)
+[[ "$cache_decls" == "1" ]] \
+    || fail "exactly one _dep_state_cache declaration expected, found $cache_decls"
+grep -qF '_gate_filter() {' "$tick" \
+    || fail "_gate_filter() must hold the shared gate loop"
+[[ "$(grep -cF '_gate_filter ' "$tick" || true)" -ge 2 ]] \
+    || fail "both gates must call the shared _gate_filter"
+ok "Test 2c: one resolver and one memo set, shared by both gates"
 
 # === Tests 3-9: bash drill reproducing the exact filter logic ===
 # The tick is a top-level script (cannot be sourced), so the drill below
@@ -131,7 +167,8 @@ gh() {
 }
 export -f gh
 
-# The drill's depends_on_filter + resolve_dep, mirroring the tick verbatim.
+# The drill's _gate_filter + both gate wrappers + resolve_dep, mirroring the
+# tick verbatim.
 declare -A _dep_state_cache=()
 declare -A _dep_body_cache=()
 
@@ -158,13 +195,14 @@ resolve_dep() {
     echo "NOT_DONE"
 }
 
-depends_on_filter() {
-    local body="$1" repo="$2" num="$3"
+_gate_filter() {
+    local gate_re="$1" skip_reason="$2" cycle_reason="$3"
+    local body="$4" repo="$5" num="$6"
     local ref owner rname target_num dep_key dep_state dep_body
     local -a deps=()
 
     mapfile -t deps < <(printf '%s\n' "$body" \
-        | grep -E '^depends-on:' \
+        | grep -E "$gate_re" \
         | grep -oE '#[0-9]+|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+' || true)
     (( ${#deps[@]} == 0 )) && return 0
 
@@ -191,16 +229,24 @@ depends_on_filter() {
                 dep_body="$(gh issue view "$target_num" -R "${owner}/${rname}" --json body --jq '.body // ""' 2>/dev/null || true)"
                 _dep_body_cache[$dep_key]="$dep_body"
             fi
-            if printf '%s\n' "$dep_body" | grep -E '^depends-on:' \
+            if printf '%s\n' "$dep_body" | grep -E "$gate_re" \
                 | grep -qE "#${num}\b|${repo}#${num}\b"; then
-                echo "depends-on-cycle"
+                echo "$cycle_reason"
                 return 1
             fi
-            echo "skipped-depends-on:$ref"
+            echo "${skip_reason}${ref}"
             return 1
         fi
     done
     return 0
+}
+
+depends_on_filter() {
+    _gate_filter '^depends-on:' 'skipped-depends-on:' 'depends-on-cycle' "$@"
+}
+
+collision_gate_filter() {
+    _gate_filter '^collision-gate[ :(]' 'skipped-collision-gate:' 'collision-gate-cycle' "$@"
 }
 
 # --- Test 3: parse cases ---
@@ -352,5 +398,98 @@ set -e
 state_calls=$(grep -cE 'repos/Nishfleet/fleet-ops/issues/2218$' "$GH_CALL_LOG" || true)
 [[ "$state_calls" == "1" ]] || fail "Test 7: #2218 state must be resolved once (cached), got $state_calls calls: $(cat "$GH_CALL_LOG")"
 ok "Test 7: dependency resolution is memoised (one gh call per issue per tick)"
+
+# --- Tests 8a-8g: the collision-gate gate (fleet-ops#5167) ---
+# The house ticket format carries:
+#   collision-gate (Fable 2026-09-10): shares <path> with #<n>. agent-ready
+#   returns automatically when those are merged/closed
+# Live case: 0509#2411 gated on #2407, claimed anyway.
+COLLISION_OPEN=$'title\n\ncollision-gate (Fable 2026-09-10): shares app/components/signup-first-brief-view.tsx with #2407. agent-ready returns\nautomatically when those are merged/closed (gate file: agent-state/fleet-landing-watch/ticket-gates.json)\n'
+
+# 8a: open gated ticket -> skipped-collision-gate:#2407 (not claimed).
+ISSUE_STATE[Nishfleet/fleet-ops#2407]=open
+PR_MERGED[Nishfleet/fleet-ops#2407]=0
+set +e
+out="$(collision_gate_filter "$COLLISION_OPEN" Nishfleet/fleet-ops 2411)"
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "Test 8a: open collision-gate ref must skip, got rc=$rc out=$out"
+[[ "$out" == "skipped-collision-gate:#2407" ]] \
+    || fail "Test 8a: skip reason must be skipped-collision-gate:#2407, got: $out"
+ok "Test 8a: open collision-gate ref -> skipped-collision-gate:#2407"
+
+# 8b: the tick after the gated ticket closes -> claimable.
+ISSUE_STATE[Nishfleet/fleet-ops#2407]=closed
+set +e
+out="$(collision_gate_filter "$COLLISION_OPEN" Nishfleet/fleet-ops 2411)"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "Test 8b: closed gated ticket must be claimable, got rc=$rc out=$out"
+ok "Test 8b: collision-gate ref closed -> claimable"
+
+# 8c: DONE via a merged claim/issue-<n> PR counts too (same DONE rule).
+ISSUE_STATE[Nishfleet/fleet-ops#2407]=open
+PR_MERGED[Nishfleet/fleet-ops#2407]=1
+set +e
+out="$(collision_gate_filter "$COLLISION_OPEN" Nishfleet/fleet-ops 2411)"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "Test 8c: merged PR must clear the collision gate, got rc=$rc out=$out"
+ok "Test 8c: collision-gate ref with merged PR -> claimable"
+PR_MERGED[Nishfleet/fleet-ops#2407]=0
+
+# 8d: prose with no ref -> claimable (no false gate).
+set +e
+out="$(collision_gate_filter $'title\n\ncollision-gate: nothing overlaps\n' Nishfleet/fleet-ops 2411)"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "Test 8d: ref-less collision-gate prose must be claimable, got rc=$rc out=$out"
+ok "Test 8d: collision-gate prose with no ref -> claimable"
+
+# 8e: cross-repo ref parses.
+ISSUE_STATE[Nishfleet/0509#2181]=open
+set +e
+out="$(collision_gate_filter $'title\n\ncollision-gate: shares lib/x.ts with Nishfleet/0509#2181\n' Nishfleet/fleet-ops 2411)"
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "Test 8e: open cross-repo ref must skip, got rc=$rc out=$out"
+[[ "$out" == "skipped-collision-gate:Nishfleet/0509#2181" ]] \
+    || fail "Test 8e: cross-repo skip reason wrong, got: $out"
+ok "Test 8e: cross-repo collision-gate ref -> skipped-collision-gate:Nishfleet/0509#2181"
+
+# 8f: mutual gates (A collision-gates B, B collision-gates A) -> cycle reason.
+ISSUE_STATE[Nishfleet/fleet-ops#2407]=open
+DEP_BODY[Nishfleet/fleet-ops#2407]=$'title\n\ncollision-gate: shares lib/x.ts with #2411\n'
+set +e
+out="$(collision_gate_filter "$COLLISION_OPEN" Nishfleet/fleet-ops 2411)"
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "Test 8f: mutual gate must skip, got rc=$rc out=$out"
+[[ "$out" == "collision-gate-cycle" ]] || fail "Test 8f: cycle reason must be collision-gate-cycle, got: $out"
+ok "Test 8f: mutual collision gate -> collision-gate-cycle"
+
+# 8g: the memo is SHARED with depends-on (one resolver, one lookup).
+# Resolve #2218 once through the depends-on gate, then gate on it through the
+# collision gate: no second gh API state call may happen.
+_dep_state_cache=()
+_dep_body_cache=()
+ISSUE_STATE[Nishfleet/fleet-ops#2218]=open
+PR_MERGED[Nishfleet/fleet-ops#2218]=0
+: > "$GH_CALL_LOG"
+set +e
+depends_on_filter $'title\n\ndepends-on: #2218\n' Nishfleet/fleet-ops 100 >/dev/null
+rc1=$?
+set -e
+: > "$GH_CALL_LOG"
+set +e
+out="$(collision_gate_filter $'title\n\ncollision-gate: shares lib/y.ts with #2218\n' Nishfleet/fleet-ops 2411)"
+rc2=$?
+set -e
+[[ "$rc1" == "1" && "$rc2" == "1" ]] || fail "Test 8g: both gates must skip, got rc1=$rc1 rc2=$rc2"
+[[ "$out" == "skipped-collision-gate:#2218" ]] || fail "Test 8g: skip reason wrong, got: $out"
+calls_after=$(grep -cE 'repos/Nishfleet/fleet-ops/issues/2218$' "$GH_CALL_LOG" || true)
+[[ "$calls_after" == "0" ]] \
+    || fail "Test 8g: collision gate must reuse the depends-on memo (0 state calls), got $calls_after: $(cat "$GH_CALL_LOG")"
+ok "Test 8g: collision gate reuses the depends-on memo (one resolver, one lookup)"
 
 echo "ALL DEPENDS-ON TESTS PASSED"
