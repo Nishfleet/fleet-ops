@@ -23,6 +23,22 @@
 #   2. Dispatcher stub: firing the alert through the real dispatcher with a
 #      mocked environment logs `SKIP reason=skip-list`, adds no DISPATCH
 #      line, and spawns no worker (no pi-systemd-run).
+#   3. (fleet-ops#4773) FleetSloSeatAvailSlowBurn firing >1h auto-files
+#      exactly one `critical-path` issue when no claim exists (the create
+#      carries `--label critical-path`); LINKS + posts exactly one heartbeat
+#      (and files nothing) when a labelled claim carrying the `[signal]`
+#      key exists; is idempotent across a second tick; and plain-SKIPs under
+#      1h. Index lookup, epoch, ISO and live ms-fraction+Z start shapes are
+#      all locked.
+#   4. (fleet-ops#4773) the two shapes that made the shipped terminus dead:
+#      the LIVE DECOY (the open #4773 meta-issue the signal search really
+#      returns — an `agent-in-progress` label, no `critical-path` label, no
+#      `[signal]` marker in its title) is never linked, never heartbeated
+#      and never suppresses the file path (and the search is narrowed
+#      server-side with `--label critical-path`); and the DEDUPE COLLAPSE
+#      (fleet-issue-file dedupes onto that decoy and prints its URL) logs
+#      `FILED-LINK-MISMATCH`, writes no `] FILED ` terminus line, and is
+#      reported as the skip-error it is.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
@@ -105,45 +121,132 @@ echo "OK: fleet-ops#2672 slow-burn skip-list lock passes"
 
 # ============================================================================
 # fleet-ops#4773: FleetSloSeatAvailSlowBurn auto-file-or-link after 1h
-# Proves BOTH directions + idempotence (accept-5):
+# Proves BOTH directions + idempotence + the two terminus-collapsing shapes:
 #   (a) firing >1h + no existing claim -> files exactly ONE, no spawn.
-#   (b) firing >1h + live claim -> LINKS (no file), idempotent across a 2nd tick.
+#   (b) firing >1h + live claim -> LINKS (no file), heartbeat, idempotent
+#       across a 2nd tick.
 #   (c) firing <=1h -> plain SKIP, no file (no premature filing).
+#   (d) multi-alert index lookup, (e) ISO start, (f) live ms+Z ISO start.
+#   (g) the LIVE DECOY (#4773) is never linked/commented and never suppresses
+#       the file path; (h) the DEDUPE COLLAPSE logs FILED-LINK-MISMATCH, not
+#       FILED. Both are the reason fleet-ops#4773 exists.
 # The skip-list entry STAYS throughout (no repair worker spawned).
 # ============================================================================
 
 slowburn="FleetSloSeatAvailSlowBurn"
 
-# Mock gh + fleet-issue-file on PATH. gh records every call; fleet-issue-file
+# Mock gh + fleet-issue-file on PATH. gh records EVERY call; fleet-issue-file
 # prints a /issues/<num> URL on success and records the file call.
+#
+# fleet-ops#4773: the mock gh is label-aware and answers BOTH verbs the
+# dispatcher really uses:
+#   `gh issue list ... --json number,title,labels` -> the canned GH_LIST_JSON
+#   `gh issue view <n> ... --json title --jq .title` -> the canned title for
+#      <n> from the GH_TITLES registry (rc=1 when unknown, like real gh).
+# It deliberately returns the canned list verbatim even when the caller asked
+# for `--label critical-path`: a real `gh issue list --search <hyphenated
+# signal>` fuzzy-matches on tokenized text and returns non-matching issues
+# (live, the #4773 meta-issue), so the dispatcher's OWN re-check is what the
+# tests must exercise. The `--label critical-path` flag is asserted from the
+# recorded call instead.
 mock_bin2="$scratch/mock-bin2"
 mkdir -p "$mock_bin2"
 GH_CALLS="$scratch/gh-calls.log"
 FILE_CALLS="$scratch/file-calls.log"
-export GH_CALLS FILE_CALLS
+GH_TITLES="$scratch/gh-titles.tsv"
+export GH_CALLS FILE_CALLS GH_TITLES
 : >"$GH_CALLS"
 : >"$FILE_CALLS"
+: >"$GH_TITLES"
 
 # `gh issue list --search <signal>` returns the canned JSON; the test
 # toggles GH_LIST_JSON between "[]" (no existing) and a real issue.
 GH_LIST_JSON="[]"
 export GH_LIST_JSON
+# The number the fleet-issue-file mock claims to have filed. 5555 is
+# DELIBERATELY distinct from the #4773 decoy so a real filing can never be
+# confused with a link to the meta-issue.
+FILE_NUM=5555
+export FILE_NUM
+
+# set_gh_issues <list-json> [<number>|<title> ...]
+# Writes the canned `gh issue list` result AND the NUMBER<TAB>TITLE registry
+# that `gh issue view` and the fleet-issue-file mock read back, so the list
+# entry and its viewable title can never drift apart.
+set_gh_issues() {
+    GH_LIST_JSON="$1"; shift
+    export GH_LIST_JSON
+    : >"$GH_TITLES"
+    local pair
+    for pair in "$@"; do
+        printf '%s\t%s\n' "${pair%%|*}" "${pair#*|}" >>"$GH_TITLES"
+    done
+}
+
+# The genuine filing's title — exactly the shape `_slowburn_file` writes,
+# with the signal key in `[<signal>]` form.
+filed_title="$(printf '%s' \
+    "alarm: FleetSloSeatAvailSlowBurn — seat-availability SLO slow burn" \
+    " past 1h, no linked repair-rung claim [slo/seat-availability-slowburn]")"
+# A live claim the link path must pick: same signal marker, and the
+# `critical-path` label that says "this really is a repair-rung claim".
+claim_num="4242"
+claim_title="alarm: FleetSloSeatAvailSlowBurn [slo/seat-availability-slowburn]"
+claim_json="[{\"number\":${claim_num},\"title\":\"${claim_title}\",\"labels\":[{\"name\":\"critical-path\"}]}]"
+# The LIVE DECOY: the real #4773 meta-issue, read live with
+# `gh issue view 4773 -R Nishfleet/fleet-ops --json title,labels`. Its title
+# names the alert but carries NO `[signal]` marker, and its only label is
+# `agent-in-progress` — not `critical-path`. A signal search still returns
+# it (tokenized fuzzy match), which is what broke the shipped terminus.
+decoy_num="4773"
+decoy_title="FleetSloSeatAvailSlowBurn should auto-file a repair-rung claim after 1h (follow-up to #4639)"
+decoy_json="[{\"number\":${decoy_num},\"title\":\"${decoy_title}\",\"labels\":[{\"name\":\"agent-in-progress\"}]}]"
+
 cat >"$mock_bin2/gh" <<'GH'
 #!/usr/bin/env bash
+# Mock gh. Records every call, then answers the dispatcher's two verbs.
 echo "gh $*" >> "${GH_CALLS:-/dev/null}"
-if [[ "$1 $2" == "issue list" ]]; then
-    printf '%s' "${GH_LIST_JSON:-[]}"
-elif [[ "$1 $2" == "issue comment" ]]; then
-    : # heartbeat comment on the linked issue — best effort, exit 0.
-fi
+case "${1:-} ${2:-}" in
+    "issue list")
+        printf '%s' "${GH_LIST_JSON:-[]}"
+        ;;
+    "issue comment")
+        : # heartbeat comment on the linked issue — best effort, exit 0.
+        ;;
+    "issue view")
+        # `gh issue view <n> -R <repo> --json title --jq .title`
+        n="${3:-}"
+        title=""
+        if [[ "$n" =~ ^[0-9]+$ && -s "${GH_TITLES:-/dev/null}" ]]; then
+            title="$(awk -F'\t' -v n="$n" \
+                '$1 == n { print substr($0, index($0, "\t") + 1); exit }' \
+                "${GH_TITLES}")"
+        fi
+        # An unknown number is a real failure, exactly like real gh: the
+        # dispatcher must never treat an unreadable title as a filing.
+        [[ -n "$title" ]] || exit 1
+        printf '%s\n' "$title"
+        ;;
+esac
 exit 0
 GH
 chmod +x "$mock_bin2/gh"
 
 cat >"$mock_bin2/fleet-issue-file" <<'FILE'
 #!/usr/bin/env bash
+# Mock fleet-issue-file. Records the call, then prints the URL of the issue
+# it claims to have filed (FILE_NUM) followed by that issue's title from the
+# SAME GH_TITLES registry `gh issue view` reads — so the test's "filed" title
+# and the dispatcher's read-back title cannot disagree. FILE_NUM defaults to
+# 5555, never the #4773 decoy.
 echo "fleet-issue-file $*" >> "${FILE_CALLS:-/dev/null}"
-echo "https://github.com/Nishfleet/fleet-ops/issues/4773"
+num="${FILE_NUM:-5555}"
+echo "https://github.com/Nishfleet/fleet-ops/issues/${num}"
+if [[ -s "${GH_TITLES:-/dev/null}" ]]; then
+    awk -F'\t' -v n="$num" \
+        '$1 == n { print substr($0, index($0, "\t") + 1); exit }' \
+        "${GH_TITLES}"
+fi
 exit 0
 FILE
 chmod +x "$mock_bin2/fleet-issue-file"
@@ -178,7 +281,10 @@ ten_m_ago="$(date -u -d '10 minutes ago' +%s 2>/dev/null || date -u -v-10M +%s)"
 two_h_ago_iso="$(date -u -d '2 hours ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-2H +%Y-%m-%dT%H:%M:%SZ)"
 
 # --- (c) firing <=1h: plain SKIP, NO file, NO link, NO spawn -----------------
+# Explicitly reset the canned signal search (rather than relying on the
+# file's ordering) so this case cannot be perturbed by a later one.
 reset_log
+set_gh_issues "[]"
 fire_slowburn "$ten_m_ago"; rc=$?
 [[ "$rc" == 0 ]] || fail "(c) short-firing dispatch must exit 0, got rc=$rc (stderr: $(cat "$scratch/sb.err"))"
 files=$(grep -c 'fleet-issue-file' "$FILE_CALLS" || true)
@@ -190,38 +296,56 @@ spawns=$(grep -c 'mock-pi-systemd-run args=' "$MOCK_LOG" || true)
 [[ "$spawns" == "0" ]] || fail "(c) short-firing must not spawn, got $spawns"
 grep -q "SKIP alertname=$slowburn.*reason=skip-list" "$PACKET_DIR/actions.log" \
     || fail "(c) short-firing must log SKIP reason=skip-list: $(cat "$PACKET_DIR/actions.log")"
+# Under the threshold the claim lookup must not even be consulted.
+lists=$(grep -c 'gh issue list' "$GH_CALLS" || true)
+[[ "$lists" == "0" ]] \
+    || fail "(c) short-firing must not run the claim search, got $lists: $(cat "$GH_CALLS")"
 ok "(c) firing <=1h: SKIP reason=skip-list, no file, no link, no spawn"
 
 # --- (a) firing >1h + no existing claim: files exactly ONE, no spawn ---------
+# fleet-ops#4773: the create must carry `--label critical-path`, and the
+# dispatcher must read the RETURNED issue's title back through `gh issue view`
+# before it may log FILED. The mock files 5555 (not the #4773 decoy).
 reset_log
-GH_LIST_JSON="[]"
+set_gh_issues "[]" "5555|$filed_title"
+FILE_NUM=5555; export FILE_NUM
 fire_slowburn "$two_h_ago"; rc=$?
 [[ "$rc" == 0 ]] || fail "(a) long-firing dispatch must exit 0, got rc=$rc (stderr: $(cat "$scratch/sb.err"))"
 filed=$(grep -c '\] FILED ' "$PACKET_DIR/actions.log" || true)
 [[ "$filed" == "1" ]] \
     || fail "(a) long-firing + no existing must FILE exactly one, got $filed: $(cat "$PACKET_DIR/actions.log")"
+filed5555=$(grep -c '\] FILED .*issue=#5555' "$PACKET_DIR/actions.log" || true)
+[[ "$filed5555" == "1" ]] \
+    || fail "(a) FILED line must record the genuinely filed issue #5555: $(cat "$PACKET_DIR/actions.log")"
 files=$(grep -c 'fleet-issue-file' "$FILE_CALLS" || true)
 [[ "$files" == "1" ]] \
     || fail "(a) must invoke fleet-issue-file exactly once, got $files: $(cat "$FILE_CALLS")"
-grep -q '\] FILED .*issue=#4773' "$PACKET_DIR/actions.log" \
-    || fail "(a) FILED line must record issue #4773: $(cat "$PACKET_DIR/actions.log")"
+grep -q -- '--label critical-path' "$FILE_CALLS" \
+    || fail "(a) the create must carry --label critical-path: $(cat "$FILE_CALLS")"
+grep -q 'issue list .*--label critical-path' "$GH_CALLS" \
+    || fail "(a) the signal search must be narrowed server-side with --label critical-path: $(cat "$GH_CALLS")"
+grep -q 'issue view 5555' "$GH_CALLS" \
+    || fail "(a) the returned issue's title must be verified via gh issue view: $(cat "$GH_CALLS")"
 spawns=$(grep -c 'mock-pi-systemd-run args=' "$MOCK_LOG" || true)
 [[ "$spawns" == "0" ]] \
     || fail "(a) must NOT spawn a worker (skip-list stays), got $spawns"
 disps=$(grep -c '\] DISPATCH ' "$PACKET_DIR/actions.log" || true)
 [[ "$disps" == "0" ]] || fail "(a) must NOT add a DISPATCH line, got $disps"
-ok "(a) firing >1h + no existing claim: FILED exactly one #4773, no spawn, no DISPATCH"
+ok "(a) firing >1h + no existing claim: FILED exactly one #5555 with --label critical-path, verified by issue view, no spawn, no DISPATCH"
 
 # --- (b) firing >1h + live claim: LINKS, no file, idempotent across 2nd tick --
+# The claim is the REAL shape: the `critical-path` label AND the `[signal]`
+# marker in the title. Anything less must not be treated as a claim (cases
+# (g)/(h) prove the negative).
 reset_log
-GH_LIST_JSON='[{"number":4242,"title":"alarm: FleetSloSeatAvailSlowBurn [slo/seat-availability-slowburn]"}]'
+set_gh_issues "$claim_json"
 fire_slowburn "$two_h_ago"; rc=$?
 [[ "$rc" == 0 ]] || fail "(b) link dispatch must exit 0, got rc=$rc (stderr: $(cat "$scratch/sb.err"))"
 links=$(grep -c '\] LINK ' "$PACKET_DIR/actions.log" || true)
 [[ "$links" == "1" ]] \
     || fail "(b) must LINK exactly once, got $links: $(cat "$PACKET_DIR/actions.log")"
-grep -q '\] LINK .*issue=#4242' "$PACKET_DIR/actions.log" \
-    || fail "(b) LINK line must record issue #4242: $(cat "$PACKET_DIR/actions.log")"
+grep -q "\] LINK .*issue=#${claim_num}" "$PACKET_DIR/actions.log" \
+    || fail "(b) LINK line must record issue #${claim_num}: $(cat "$PACKET_DIR/actions.log")"
 files=$(grep -c 'fleet-issue-file' "$FILE_CALLS" || true)
 [[ "$files" == "0" ]] \
     || fail "(b) must NOT file when a live claim exists, got $files: $(cat "$FILE_CALLS")"
@@ -241,7 +365,7 @@ links2=$(grep -c '\] LINK ' "$PACKET_DIR/actions.log" || true)
 files2=$(grep -c 'fleet-issue-file' "$FILE_CALLS" || true)
 [[ "$files2" == "0" ]] \
     || fail "(b2) second tick must NOT file (idempotent), got $files2: $(cat "$FILE_CALLS")"
-ok "(b) firing >1h + live claim: LINK #4242 + heartbeat, no file; idempotent across 2nd tick"
+ok "(b) firing >1h + live claim: LINK #${claim_num} + heartbeat, no file; idempotent across 2nd tick"
 
 # --- (d) multi-alert: SlowBurn at index 2 uses ITS start, not index 1's ------
 # A non-skip-listed decoy at index 1 fires 10m ago; SlowBurn at index 2 fires
@@ -249,7 +373,8 @@ ok "(b) firing >1h + live claim: LINK #4242 + heartbeat, no file; idempotent acr
 # SlowBurn, and must use SlowBurn's start (2h -> past threshold -> FILE), NOT
 # the decoy's (10m -> skip-short). Proves the index lookup fix.
 reset_log
-GH_LIST_JSON="[]"
+set_gh_issues "[]" "5555|$filed_title"
+FILE_NUM=5555; export FILE_NUM
 AMX_ALERT_1_LABEL_alertname="FleetMainRed" \
 AMX_ALERT_1_LABEL_severity="warning" \
 AMX_ALERT_1_LABEL_service="fleet" \
@@ -284,7 +409,8 @@ ok "(d) multi-alert: SlowBurn at idx2 (>1h) FILED using its own start, not idx1'
 # AMX sends epoch in production, but the parser still accepts ISO 8601 so a
 # future/legacy sender is not broken. Same long-firing shape as (a), ISO form.
 reset_log
-GH_LIST_JSON="[]"
+set_gh_issues "[]" "5555|$filed_title"
+FILE_NUM=5555; export FILE_NUM
 fire_slowburn "$two_h_ago_iso"; rc=$?
 [[ "$rc" == 0 ]] || fail "(e) ISO-start dispatch must exit 0, got rc=$rc (stderr: $(cat "$scratch/sb.err"))"
 filed=$(grep -c '\] FILED ' "$PACKET_DIR/actions.log" || true)
@@ -303,7 +429,8 @@ ok "(e) ISO 8601 start also works (backward-compat): FILED exactly one"
 # #5012) were timestamp-shape mismatches — lock it so a future ms regression
 # is caught. Fixed past literal is fine: >1h elapsed is a lower-bound check.
 reset_log
-GH_LIST_JSON="[]"
+set_gh_issues "[]" "5555|$filed_title"
+FILE_NUM=5555; export FILE_NUM
 live_amx_start="2026-09-08T09:51:03.742Z"
 fire_slowburn "$live_amx_start"; rc=$?
 [[ "$rc" == 0 ]] || fail "(f) live-AMX-ms-start dispatch must exit 0, got rc=$rc (stderr: $(cat "$scratch/sb.err"))"
@@ -320,4 +447,85 @@ disps=$(grep -c '\] DISPATCH ' "$PACKET_DIR/actions.log" || true)
 [[ "$disps" == "0" ]] || fail "(f) live-AMX-ms-start must NOT add a DISPATCH line, got $disps"
 ok "(f) ISO 8601 start with fractional ms + Z (live AMX shape): FILED exactly one"
 
-echo "OK: fleet-ops#4773 slowburn file-or-link both directions + idempotence pass"
+# --- (g) THE LIVE DECOY: the real #4773 meta-issue is never the terminus ------
+# THE PRODUCTION SHAPE this issue exists for. `gh issue list --search
+# slo/seat-availability-slowburn` really returns #4773 — an open issue whose
+# title names the alert but carries no `[signal]` marker and whose only label
+# is `agent-in-progress`, not `critical-path`. The old dispatcher accepted it
+# as the repair terminus, so it logged LINK instead of ever filing. It must
+# now be REJECTED: no LINK, no heartbeat comment on it, and the FILE path must
+# still run and land on the genuine #5555. The search must also be narrowed
+# server-side with `--label critical-path`.
+reset_log
+set_gh_issues "$decoy_json" "5555|$filed_title"
+FILE_NUM=5555; export FILE_NUM
+fire_slowburn "$two_h_ago"; rc=$?
+[[ "$rc" == 0 ]] || fail "(g) decoy dispatch must exit 0, got rc=$rc (stderr: $(cat "$scratch/sb.err"))"
+links=$(grep -c '\] LINK ' "$PACKET_DIR/actions.log" || true)
+[[ "$links" == "0" ]] \
+    || fail "(g) the #4773 decoy must NOT be linked, got $links LINK lines: $(cat "$PACKET_DIR/actions.log")"
+comments=$(grep -c 'issue comment' "$GH_CALLS" || true)
+[[ "$comments" == "0" ]] \
+    || fail "(g) must NOT post a heartbeat comment on the decoy, got $comments: $(cat "$GH_CALLS")"
+grep -q 'issue list .*--label critical-path' "$GH_CALLS" \
+    || fail "(g) the signal search must carry --label critical-path: $(cat "$GH_CALLS")"
+files=$(grep -c 'fleet-issue-file' "$FILE_CALLS" || true)
+[[ "$files" == "1" ]] \
+    || fail "(g) the decoy must NOT suppress the file path, expected 1 fleet-issue-file call, got $files: $(cat "$FILE_CALLS")"
+filed=$(grep -c '\] FILED ' "$PACKET_DIR/actions.log" || true)
+[[ "$filed" == "1" ]] \
+    || fail "(g) must still FILE exactly one past the decoy, got $filed: $(cat "$PACKET_DIR/actions.log")"
+filed5555=$(grep -c '\] FILED .*issue=#5555' "$PACKET_DIR/actions.log" || true)
+[[ "$filed5555" == "1" ]] \
+    || fail "(g) the FILED terminus must be #5555, not the decoy: $(cat "$PACKET_DIR/actions.log")"
+decoy_termini=$(grep -c 'issue=#4773' "$PACKET_DIR/actions.log" || true)
+[[ "$decoy_termini" == "0" ]] \
+    || fail "(g) the live decoy #4773 must appear in no LINK/FILED/WARN line, got $decoy_termini: $(cat "$PACKET_DIR/actions.log")"
+spawns=$(grep -c 'mock-pi-systemd-run args=' "$MOCK_LOG" || true)
+[[ "$spawns" == "0" ]] || fail "(g) must NOT spawn, got $spawns"
+disps=$(grep -c '\] DISPATCH ' "$PACKET_DIR/actions.log" || true)
+[[ "$disps" == "0" ]] || fail "(g) must NOT add a DISPATCH line, got $disps"
+ok "(g) LIVE DECOY #4773 (agent-in-progress, no [signal] marker) rejected: no link, no comment, file path still ran -> #5555"
+
+# --- (h) THE DEDUPE COLLAPSE: a decoy pointer is never reported as FILED -----
+# The other half of the live bug. fleet-issue-file dedupes by token overlap and
+# may COMMENT on the decoy instead of creating an issue, printing the DECOY's
+# URL (`/issues/4773`, live dup score 1.00) — a pointer, not a filing. The
+# dispatcher must read that issue's title back, see no `[signal]` marker, log a
+# loud FILED-LINK-MISMATCH, write NO `] FILED ` terminus line, and report
+# skip-error. The FILED assertion matches `] FILED ` (trailing space), never a
+# bare `FILED`, so the LOUD FILED-LINK-MISMATCH text cannot satisfy it.
+reset_log
+set_gh_issues "$decoy_json" "${decoy_num}|${decoy_title}"
+FILE_NUM="$decoy_num"; export FILE_NUM
+fire_slowburn "$two_h_ago"; rc=$?
+[[ "$rc" == 0 ]] || fail "(h) dedupe-collapse dispatch must exit 0, got rc=$rc (stderr: $(cat "$scratch/sb.err"))"
+mismatch=$(grep -c 'FILED-LINK-MISMATCH' "$PACKET_DIR/actions.log" || true)
+[[ "$mismatch" == "1" ]] \
+    || fail "(h) must log FILED-LINK-MISMATCH exactly once, got $mismatch: $(cat "$PACKET_DIR/actions.log")"
+grep -q "FILED-LINK-MISMATCH.*issue=#${decoy_num}" "$PACKET_DIR/actions.log" \
+    || fail "(h) the mismatch line must name the refused issue #${decoy_num}: $(cat "$PACKET_DIR/actions.log")"
+filed_lines=$(grep -c '\] FILED ' "$PACKET_DIR/actions.log" || true)
+[[ "$filed_lines" == "0" ]] \
+    || fail "(h) a decoy pointer must NOT be reported as a FILED terminus, got $filed_lines: $(cat "$PACKET_DIR/actions.log")"
+links=$(grep -c '\] LINK ' "$PACKET_DIR/actions.log" || true)
+[[ "$links" == "0" ]] \
+    || fail "(h) a decoy pointer must NOT become a LINK either, got $links: $(cat "$PACKET_DIR/actions.log")"
+warns=$(grep -c '\] WARN .*auto-file failed' "$PACKET_DIR/actions.log" || true)
+[[ "$warns" == "1" ]] \
+    || fail "(h) a refused terminus must be reported as skip-error/WARN, got $warns: $(cat "$PACKET_DIR/actions.log")"
+comments=$(grep -c 'issue comment' "$GH_CALLS" || true)
+[[ "$comments" == "0" ]] \
+    || fail "(h) must NOT heartbeat the decoy, got $comments: $(cat "$GH_CALLS")"
+grep -q "issue view ${decoy_num}" "$GH_CALLS" \
+    || fail "(h) must verify the returned pointer's title via gh issue view: $(cat "$GH_CALLS")"
+files=$(grep -c 'fleet-issue-file' "$FILE_CALLS" || true)
+[[ "$files" == "1" ]] \
+    || fail "(h) the create WAS attempted once, got $files: $(cat "$FILE_CALLS")"
+spawns=$(grep -c 'mock-pi-systemd-run args=' "$MOCK_LOG" || true)
+[[ "$spawns" == "0" ]] || fail "(h) must NOT spawn, got $spawns"
+disps=$(grep -c '\] DISPATCH ' "$PACKET_DIR/actions.log" || true)
+[[ "$disps" == "0" ]] || fail "(h) must NOT add a DISPATCH line, got $disps"
+ok "(h) DEDUPE COLLAPSE onto decoy #4773: FILED-LINK-MISMATCH logged, no '] FILED ' terminus, reported as skip-error"
+
+echo "OK: fleet-ops#4773 slowburn file-or-link both directions + idempotence + live-decoy/dedupe-collapse refusal pass"
