@@ -993,6 +993,23 @@ is_workspace_trust_error() {
     grep -qiF 'Refusing to run in an untrusted workspace' <<<"$combined"
 }
 
+# fleet-ops#4780: the Devin CLI under `--sandbox` forces its "autonomous"
+# permission mode, which since 2026-09-08 rejects every file write
+# non-interactively with the literal "rejected a tool call that requires
+# confirmation". Every run then ends empty at the first edit (100% empty
+# runs, 30+ on 2026-09-09). This is a CLI/flag CONFIG fault, not a seat
+# yield: the fix is dropping `--sandbox` (the provider now runs
+# `--permission-mode dangerous` unsandboxed, standing VPS write autonomy
+# Nish 2026-08-05). The detector must still classify the literal so a
+# future vendor change that re-breaks the flag cannot silently retire the
+# seat as an ordinary failure.
+is_devin_writes_rejected() {
+    local out="$1" err="$2"
+    local combined="$out"$'\n'"$err"
+    [[ -n "$combined" ]] || return 1
+    grep -qiF 'rejected a tool call that requires confirmation' <<<"$combined"
+}
+
 # Default bench window (seconds) for a provider's quota/cap 429 when the
 # error text carries no explicit reset window (fleet-ops#90). 0 = no default
 # configured; the writer then fails open (no marker) and relies on the
@@ -6955,6 +6972,8 @@ classify_death_error() {
         cls="overload_503"
     elif is_workspace_trust_error "$out_text" "$err_text"; then
         cls="config_fault_trust"
+    elif is_devin_writes_rejected "$out_text" "$err_text"; then
+        cls="devin-writes-rejected"
     elif is_sandbox_localhost_error "$out_text" "$err_text"; then
         cls="sandbox-localhost-unresolvable"
     elif is_spawn_etimeout "$out_text" "$err_text"; then
@@ -7286,6 +7305,86 @@ mark_seat_config_fault_bench() {
         return 0
     fi
     seat_log "config-fault-bench: rename FAILED for $p/$m at $path"
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+}
+
+# fleet-ops#4780: the Devin CLI under `--sandbox` rejects every file write
+# non-interactively ("rejected a tool call that requires confirmation"), so
+# every run ends empty at the first edit. This is a CLI/flag CONFIG fault,
+# not a seat yield: the fix is dropping `--sandbox` (the provider now runs
+# `--permission-mode dangerous` unsandboxed). Bench via a short window so
+# pick_seat dodges the seat this cycle, but NEVER retire it (seat_dead stays
+# false, no corpse escalation) — a future vendor change that re-breaks the
+# flag must not wall devin out of the fleet. Same shape as
+# mark_seat_config_fault_bench (fleet-ops#4825). Args: provider model
+# [error_text]. Writes LEDGER_DIR/<sanitised-provider>__<sanitised-model>.json
+# atomically with health_class="config_fault" and
+# failure_mode="devin-writes-rejected". Best-effort: any failure is logged
+# but does NOT fail the worker's own exit. Returns 0 if the marker was
+# written, 1 if it was not.
+mark_seat_devin_writes_rejected_bench() {
+    local p="$1" m="$2" text="${3:-}"
+    # fleet-ops#3661: never write a ledger for a phantom seat key.
+    if ! _seat_key_guard "$p" "$m" "mark_seat_devin_writes_rejected_bench"; then return 1; fi
+    if _transport_is_down; then _mark_transport_down "$p" "$m"; return 1; fi
+    local path
+    path=$(seat_ledger_path "$p" "$m")
+    mkdir -p "$LEDGER_DIR" 2>/dev/null || true
+
+    # Short bench: the flag is the real fix. A longer bench would wall the
+    # seat past the moment the extension re-converges to a writable mode.
+    local window_s="${SEAT_DEVIN_WRITES_REJECTED_BENCH_S:-60}"
+    [[ "$window_s" =~ ^[0-9]+$ ]] || window_s=60
+
+    local now_utc now_s bench_until
+    now_s=$(date -u +%s)
+    now_utc=$(date -u -d "@$now_s" +%Y-%m-%dT%H:%M:%SZ)
+    bench_until=$(date -u -d "@$((now_s + window_s))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
+
+    # Merge consecutive_failure_count from any existing entry, but NEVER
+    # escalate to a corpse — a CLI/flag config fault is infrastructure, not
+    # seat yield.
+    local prev_count=0
+    if [[ -f "$path" ]]; then
+        prev_count=$(jq -r '.consecutive_failure_count // 0' "$path" 2>/dev/null || echo 0)
+        [[ "$prev_count" =~ ^[0-9]+$ ]] || prev_count=0
+    fi
+    local merged_count=$((prev_count + 1))
+
+    local tmp="$path.devinwr.$$.$RANDOM.tmp"
+    if ! jq -nc \
+        --arg provider "$p" --arg model "$m" \
+        --arg observed "$now_utc" --arg bench "$bench_until" --arg usable "$bench_until" \
+        --argjson window "$window_s" --argjson merged "$merged_count" \
+        --argjson http_status 0 --argjson retry_after null \
+        --argjson retryable true --argjson seat_dead false --argjson poison_ladder false \
+        --arg writer "mark_seat_devin_writes_rejected_bench" \
+        '{
+          provider:$provider, model:$model,
+          http_status:$http_status, retry_after:$retry_after,
+          health_class:"config_fault",
+          retryable:$retryable, seat_dead:$seat_dead, poison_ladder:$poison_ladder,
+          observed_at:$observed,
+          source:"devin-writes-rejected",
+          failure_mode:"devin-writes-rejected",
+          bench_until:$bench,
+          usable_at:$usable,
+          bench_window_s:$window,
+          consecutive_failure_count:$merged,
+          last_error_class:"devin-writes-rejected",
+          writer:$writer
+        }' > "$tmp" 2>/dev/null; then
+        seat_log "devin-writes-rejected-bench: jq compose FAILED for $p/$m — marker NOT written"
+        rm -f "$tmp" 2>/dev/null || true
+        return 1
+    fi
+    chmod 0644 "$tmp" 2>/dev/null || true
+    if mv "$tmp" "$path" 2>/dev/null; then
+        seat_log "devin-writes-rejected-bench: benched $p/$m until $bench_until (window=${window_s}s, count=$merged_count) — CLI/flag config fault, NOT retired (fleet-ops#4780)"
+        return 0
+    fi
+    seat_log "devin-writes-rejected-bench: rename FAILED for $p/$m at $path"
     rm -f "$tmp" 2>/dev/null || true
     return 1
 }

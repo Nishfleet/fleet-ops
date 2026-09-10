@@ -601,6 +601,22 @@ if (( rc != 0 )) && (( ! spawn_fail_triggered )); then
         else
             seat_log "pi-issue-run: $inst WARN: config-fault-bench marker NOT written for $np/$nm — relying on reactive ledger + systemd Restart"
         fi
+    elif is_devin_writes_rejected "$out_for_scan" "$err_for_scan"; then
+        # fleet-ops#4780: the Devin CLI under `--sandbox` rejects every file
+        # write non-interactively ("rejected a tool call that requires
+        # confirmation"), so every run ends empty at the first edit. This is a
+        # CLI/flag CONFIG fault, not a seat yield. Bench via
+        # mark_seat_devin_writes_rejected_bench (short window, NEVER retired)
+        # so pick_seat dodges the seat this cycle without walling it out of
+        # the fleet. The real fix is dropping `--sandbox` (the provider now
+        # runs `--permission-mode dangerous` unsandboxed); this detector is
+        # the safety net for a future vendor change that re-breaks the flag.
+        seat_log "pi-issue-run: $inst DEVIN WRITES REJECTED on $np/$nm (rc=$rc) — benching seat ${SEAT_DEVIN_WRITES_REJECTED_BENCH_S:-60}s (fleet-ops#4780)"
+        if mark_seat_devin_writes_rejected_bench "$np" "$nm" "$out_for_scan"$'\n'"$err_for_scan"; then
+            seat_log "pi-issue-run: $inst seat $np/$nm benched (devin-writes-rejected); next systemd Restart will skip it via pick_seat"
+        else
+            seat_log "pi-issue-run: $inst WARN: devin-writes-rejected-bench marker NOT written for $np/$nm — relying on reactive ledger + systemd Restart"
+        fi
     elif is_credentials_error "$out_for_scan" "$err_for_scan"; then
         seat_log "pi-issue-run: $inst CREDENTIALS 401 on $np/$nm (rc=$rc) — 1h credentials_bad bench, corpse only after 24 strikes (fleet-ops#4640)"
         if mark_seat_credentials_bad "$np" "$nm" "$out_for_scan"$'\n'"$err_for_scan"; then
