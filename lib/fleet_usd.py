@@ -200,6 +200,160 @@ def compute_usd_24h(sessions_dir, rate_card, now_epoch=None, day_seconds=86400.0
     return agg, seen_missing, flat
 
 
+def packet_type_from_path(path):
+    """Classify a session jsonl path into a packet_type label (fleet-ops#4643)."""
+    name = str(path).replace("\\", "/").lower()
+    base = name.rsplit("/", 1)[-1]
+    parent = name.rsplit("/", 2)[-2] if "/" in name else ""
+    blob = parent + "/" + base
+    if "pi-issue-" in blob:
+        return "worker"
+    if "scout" in blob:
+        return "scout"
+    if "audit" in blob:
+        return "auditor"
+    if "heartbeat" in blob:
+        return "heartbeat"
+    if "conference" in blob or "gap-closure" in blob:
+        return "conference"
+    return "other"
+
+
+def _provider_metric_class(rate_card, provider):
+    """Map seat-caps class onto the issue's metered/free vocabulary.
+
+    prepaid-quota seats (crof, pareto, runinfra) bill uncached input the same
+    way metered seats do, so they count as class=metered for the cache-hit
+    ratio and FleetPromptCacheHitLow (fleet-ops#4643).
+    """
+    row = (rate_card or {}).get(provider) or {}
+    raw = (row.get("class") or "").strip().lower()
+    if raw in ("metered", "prepaid-quota", "prepaid", "subscription"):
+        return "metered"
+    if raw in ("free",):
+        return "free"
+    return raw or "unknown"
+
+
+def session_cache_tokens(path, today_epoch=None, day_seconds=86400.0):
+    """Return {provider: {"input": n, "cacheRead": n}} for one session jsonl.
+
+    Same windowing as session_marginal_usd: trailing day_seconds when
+    today_epoch is set. input is uncached prompt tokens; cacheRead is the
+    prefix-cache hit (Pi session jsonl, fleet-ops#3283 / #4643).
+    """
+    counts = {}
+    provider = None
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or not line.startswith("{"):
+                    continue
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(data, dict):
+                    continue
+                t = data.get("type")
+                if t == "model_change":
+                    provider = data.get("provider")
+                    continue
+                if t != "message":
+                    continue
+                msg = data.get("message") or {}
+                if not isinstance(msg, dict):
+                    continue
+                if provider is None:
+                    provider = msg.get("provider")
+                if provider is None:
+                    continue
+                if today_epoch is not None:
+                    ts = data.get("timestamp") or ""
+                    ep = _parse_iso_utc(ts)
+                    if ep is not None and (today_epoch - ep) > day_seconds:
+                        continue
+                usage = msg.get("usage") or {}
+                if not isinstance(usage, dict):
+                    continue
+                in_tok = int(usage.get("input") or 0)
+                cache_tok = int(usage.get("cacheRead") or 0)
+                if in_tok == 0 and cache_tok == 0:
+                    continue
+                slot = counts.setdefault(provider, {"input": 0, "cacheRead": 0})
+                slot["input"] += in_tok
+                slot["cacheRead"] += cache_tok
+    except OSError:
+        return None
+    return counts
+
+
+_CACHE_HIT_FILE_CACHE = {}
+_CACHE_HIT_CACHE_MAX = 4096
+
+
+def _cached_session_cache_tokens(path, today_epoch, day_seconds):
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        return None
+    hit = _CACHE_HIT_FILE_CACHE.get(path)
+    if hit and hit.get("mtime") == mtime and hit.get("day") == day_seconds:
+        return hit.get("counts")
+    counts = session_cache_tokens(path, today_epoch=today_epoch, day_seconds=day_seconds)
+    if counts is None:
+        return None
+    if len(_CACHE_HIT_FILE_CACHE) >= _CACHE_HIT_CACHE_MAX:
+        _CACHE_HIT_FILE_CACHE.clear()
+    _CACHE_HIT_FILE_CACHE[path] = {"counts": counts, "mtime": mtime, "day": day_seconds}
+    return counts
+
+
+def compute_cache_hit_24h(sessions_dir, rate_card, now_epoch=None, day_seconds=86400.0):
+    """Aggregate cache-hit ratio over session jsonl for the trailing 24h.
+
+    Returns a list of dicts:
+      {provider, packet_type, class, input, cacheRead, ratio}
+    ratio = cacheRead / (input + cacheRead). Rows with zero denominator are
+    omitted (a lane that recorded no prompt tokens has no hit rate).
+    """
+    import time as _time
+    sessions = Path(sessions_dir)
+    if not sessions.is_dir():
+        return []
+    today = now_epoch if now_epoch is not None else _time.time()
+    agg = {}
+    for path in sessions.rglob("*.jsonl"):
+        if not path.is_file():
+            continue
+        counts = _cached_session_cache_tokens(str(path), today, day_seconds)
+        if not counts:
+            continue
+        ptype = packet_type_from_path(path)
+        for prov, slot in counts.items():
+            key = (prov, ptype)
+            cur = agg.setdefault(key, {"input": 0, "cacheRead": 0})
+            cur["input"] += int(slot.get("input") or 0)
+            cur["cacheRead"] += int(slot.get("cacheRead") or 0)
+    rows = []
+    for (prov, ptype), slot in sorted(agg.items()):
+        ins = int(slot["input"])
+        crs = int(slot["cacheRead"])
+        denom = ins + crs
+        if denom <= 0:
+            continue
+        rows.append({
+            "provider": prov,
+            "packet_type": ptype,
+            "class": _provider_metric_class(rate_card, prov),
+            "input": ins,
+            "cacheRead": crs,
+            "ratio": crs / denom,
+        })
+    return rows
+
+
 def merged_pr_count_24h(pr_sources):
     """Sum the per-repo merged-PR counts from whatever the caller passes.
 

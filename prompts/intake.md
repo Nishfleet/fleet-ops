@@ -67,6 +67,15 @@ Steps:
       agent-ready → agent-blocked and comment `split me: N requirements;
       one requirement per issue` with `blocked-on: split`; skip issue N
       and do NOT push `claim/issue-N`. Any other exit is fail-loud.
+   a0c. Spec-judge gate (fleet-ops#4801) BEFORE any claim push. The
+      deterministic tick (`lib/pi-intake-tick.sh` + `lib/spec-judge.sh`)
+      already groups agent-ready issues whose `files:` lines share a path
+      and launches ONE Kimi K3 Max judge run per batch (judge-only, never
+      the implementer). If issue N is a member of a batch being judged,
+      intake skips it (not de-labelled) until the verdict lands. Do not
+      claim a member of a batch that has not been judged. The judge prompt
+      is `prompts/spec-judge.md`; the verdict is applied mechanically
+      (READY/EDIT/BLOCK) by the tick.
    b. Hard claim — atomic create-only push; the claim branch IS the work branch:
       `git -C /home/nish/workspaces/products/<repo> ls-remote origin refs/heads/claim/issue-N`
       If that output contains a hash, another agent already holds the claim — skip issue N.
@@ -78,8 +87,8 @@ Steps:
       `gh issue comment N -R Nishfleet/<repo> --body "claimed by pi-issue-<repo>-N at $(date -u +%FT%TZ)"`
    d. Write the worker prompt to a packet file so pi-issue-run (the seat-rotating wrapper) can pick its own seat at run time:
       `mkdir -p /home/nish/.local/state/pi-issues`
-      If the issue title, body, or any label contains "keystone" (case-insensitive), write the packet with `difficulty: keystone` as line 1 so `packet_difficulty` uses reliability-first routing (fleet-ops#1133). Capable seat first, two-strike escalation to senior conference. Always overwrite (`>`), never append:
-      `{ printf 'difficulty: keystone\n'; cat /home/nish/.pi/agent/prompts/worker.md; echo; echo "TARGET: repo Nishfleet/<repo> issue N unit pi-issue-<repo>-N"; } > /home/nish/.local/state/pi-issues/<repo>-N.in`
+      Stable prefix first (worker.md), volatile tail last (`difficulty:` + TARGET). If the issue title, body, or any label contains "keystone" (case-insensitive), write `difficulty: keystone` AFTER worker.md so `packet_difficulty` still uses reliability-first routing (fleet-ops#1133) without breaking prefix cache (fleet-ops#4643). Capable seat first, two-strike escalation to senior conference. Always overwrite (`>`), never append:
+      `{ cat /home/nish/.pi/agent/prompts/worker.md; echo; printf 'difficulty: keystone\n'; echo "TARGET: repo Nishfleet/<repo> issue N unit pi-issue-<repo>-N"; } > /home/nish/.local/state/pi-issues/<repo>-N.in`
       Otherwise write as today (no marker):
       `{ cat /home/nish/.pi/agent/prompts/worker.md; echo; echo "TARGET: repo Nishfleet/<repo> issue N unit pi-issue-<repo>-N"; } > /home/nish/.local/state/pi-issues/<repo>-N.in`
    e. Activate the template unit via `pi-issue-start` (never a raw

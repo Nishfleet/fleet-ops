@@ -654,6 +654,67 @@ ok "scenario2h: fleet-unit-run rule not loaded -> PENDING, not false-clean (flee
 
 
 # ============================================================================
+# Scenario 2i (fleet-ops#4733): ausearch ships in /usr/sbin, which is NOT in
+# the heartbeat service PATH (/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin).
+# With no AUSEARCH env and PATH excluding /usr/sbin, the canary must fall back
+# to the /usr/sbin path (overridable via AUSEARCH_SBIN_PATHS for the test) and
+# proceed to the rule-loaded check — NOT fire the false "ausearch not
+# installed" PENDING that #4703 was filed from. auditctl stays stubbed
+# (rule loaded) so the verdict is clean.
+# ============================================================================
+reset_state
+cover "good-worker.service"
+exclude "unit-escalation@foo.service"
+sanctioned_wrapper "pi-issue-run"
+write_intake "0509"
+write_claim_repos "Nishfleet/0509"
+
+# Stub ausearch at a /usr/sbin-equivalent path (a scratch dir pointed at by
+# AUSEARCH_SBIN_PATHS). It cats the empty fixture -> clean audit trail.
+sbin_dir="$scratch/sbin-fleet-ops-4733"
+mkdir -p "$sbin_dir"
+cat >"$sbin_dir/ausearch" <<'SH'
+#!/usr/bin/env bash
+cat "$AUSEARCH_FIXTURE" 2>/dev/null || true
+SH
+chmod +x "$sbin_dir/ausearch"
+
+# PATH is the heartbeat service PATH (no /usr/sbin); AUSEARCH is unset so the
+# /usr/sbin fallback is the ONLY route to the binary. AUDITCTL stays stubbed.
+AUSEARCH= AUSEARCH_SBIN_PATHS="$sbin_dir/ausearch" \
+    PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin" run_canary
+
+[[ "$env_rc" == 0 ]] || fail "scenario2i: sbin fallback must exit 0, got $env_rc ($env_out)"
+! grep -q 'ausearch not installed' "$triage" || fail "scenario2i: must NOT fire 'ausearch not installed' when the /usr/sbin fallback finds the binary (fleet-ops#4733)"
+! grep -q 'fleet-unit-run rule not loaded' "$triage" || fail "scenario2i: auditctl stub (rule loaded) must pass the rule-loaded check, not PENDING ($env_out)"
+grep -q 'no systemd-run execve in the last 24h' <<<"$env_out" || fail "scenario2i: block 14 must proceed past the not-installed check to the clean audit-trail verdict ($env_out)"
+ok "scenario2i: ausearch found via /usr/sbin fallback, no false 'not installed' PENDING (fleet-ops#4733)"
+
+
+
+# ============================================================================
+# Scenario 2j (fleet-ops#4733): the genuinely-absent path still fires PENDING.
+# With no AUSEARCH env, ausearch not on PATH, and AUSEARCH_SBIN_PATHS pointing
+# at a nonexistent path, the canary must fire "ausearch not installed" PENDING
+# (loud, not fail). The fix finds the binary; it does NOT mute the check.
+# ============================================================================
+reset_state
+cover "good-worker.service"
+exclude "unit-escalation@foo.service"
+sanctioned_wrapper "pi-issue-run"
+write_intake "0509"
+write_claim_repos "Nishfleet/0509"
+
+AUSEARCH= AUSEARCH_SBIN_PATHS="/nonexistent/ausearch-4733:/sbin/ausearch-4733" \
+    PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin" run_canary
+
+[[ "$env_rc" == 0 ]] || fail "scenario2j: genuinely-absent ausearch must exit 0 (PENDING, not fail), got $env_rc ($env_out)"
+grep -q 'ausearch not installed' "$triage" || fail "scenario2j: triage must fire 'ausearch not installed' PENDING when the binary is genuinely absent (fleet-ops#4733)"
+ok "scenario2j: genuinely-absent ausearch still fires PENDING (fleet-ops#4733)"
+
+
+
+# ============================================================================
 # Scenario 3: VPS plane — a bin script runs pi --print --provider unwrapped
 # ============================================================================
 reset_state
@@ -1523,6 +1584,11 @@ bash "$here/fleet-free-roster-canary.test.sh"
 # file so hosted runners run it without a workflow edit (worker tokens cannot
 # push .github/workflows/**).
 bash "$here/fleet-prepaid-util-canary.test.sh"
+
+# fleet-ops#4621: cursor usd_today overlay must survive a pick (the canary
+# writes the vendor 24h API-bucket delta; _record_prepaid_pick must not
+# clobber it with the token 0). Same CI-listed pattern as the canary above.
+bash "$here/seat-lib-cursor-usd-today.test.sh"
 
 # fleet-ops#629: parked-flash watcher canary (fleet-ops#436). Invoked from
 # this CI-listed file so hosted runners run it without a workflow edit

@@ -208,8 +208,8 @@ park_count=$(count_of "$mf")
 [[ "$park_count" == "3" ]] \
     || fail "(b) marker count after 3rd intermittent no-op = $park_count, want 3 — the count must reach the ceiling across < 24h gaps"
 park_wall=$(wall_s_of_marker "$mf")
-(( park_wall >= SEAT_PARK_WALL_S - 120 && park_wall <= SEAT_PARK_WALL_S + 120 )) \
-    || fail "(b) park wall = ${park_wall}s, want ~${SEAT_PARK_WALL_S}s — the failure-ceiling park must fire from the accumulated intermittent count"
+(( park_wall >= ${SEAT_NON_MONEY_WALL_MAX_S:-21600} - 120 && park_wall <= ${SEAT_NON_MONEY_WALL_MAX_S:-21600} + 120 )) \
+    || fail "(b) park wall = ${park_wall}s, want ~${SEAT_NON_MONEY_WALL_MAX_S:-21600}s — the failure-ceiling park must fire from the accumulated intermittent count (#4640 6h clamp)"
 if seat_usable "$p" "$m"; then
     fail "(b) seat_usable returned usable on the parked intermittent no-op'er — the park wall must hold it out of rotation"
 fi

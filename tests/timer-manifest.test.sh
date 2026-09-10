@@ -265,4 +265,11 @@ ok "all $timer_count live user timers have manifest entries ($manifest_count man
 # the mechanical prevention on top of this after-the-fact live check.
 bash "$SCRIPT_DIR/timer-guard.test.sh" || fail "timer-guard drill failed (install-time timer-MANIFEST gate, fleet-ops#4472)"
 
+# fleet-ops#4647: host the live timer-manifest drift canary drill so it runs
+# in hosted CI without a workflow-file edit (same hosting convention as the
+# timer-guard drill above). The canary drill proves the scheduled drift
+# detector fires for a missing persistent timer (exit 1 + LOUD signal) and
+# does NOT fire for a Transient=yes timer (acceptance 3).
+bash "$SCRIPT_DIR/timer-manifest-drift-canary.test.sh" || fail "timer-manifest drift canary drill failed (fleet-ops#4647)"
+
 exit 0

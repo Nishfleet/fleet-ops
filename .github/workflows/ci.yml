@@ -99,6 +99,10 @@ jobs:
         bash tests/pi-intake-tick-reclaim-cooldown.test.sh
         bash tests/claim-pr-head-owner.test.sh
         bash tests/pi-intake-tick-difficulty-from-issue.test.sh
+        # fleet-ops#4808: intake honors a `depends-on:` line in a ticket body
+        # and never claims a ticket whose named dependencies are not
+        # merged/closed (the 0509 seam batch had to be hand-gated).
+        bash tests/pi-intake-tick-depends-on.test.sh
         bash tests/pi-intake-topup.test.sh
         bash tests/pi-intake-tick-scout-on-empty.test.sh
         bash tests/blocked-reconcile-large-issue-json.test.sh

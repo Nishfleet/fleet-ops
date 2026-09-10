@@ -16,6 +16,15 @@ systemd self-talk (`should we read from the service` / `main process
 started`) — live fleet-ops#1138. `from` is a STOP preposition (pair of
 `to`/`of`/`in`/`on`/`for`/`with`) so that class cannot refill.
 
+The same generic-word class refilled on `only`/`says` (live fleet-ops#4841):
+a worker reasoning about a 0509 data blocker ("should we ship only the
+versions part ... block the whole issue? The issue step 1 says ...")
+overlapped two unrelated ledger lines on {issue, only, step} and
+{fleet, only, product, says}. `only` is a focusing adverb and `says` is
+a boilerplate attributive; neither carries decision-content signal, so
+both join STOP. Distinctive tokens (fleet, product, issue, step) stay
+live — a real re-ask still overlaps on them.
+
 Usage:
   python3 lib/decisions-ledger.py scan --root DIR --ledger FILE [--now ISO]
       [--window-hours 24] [--grace-minutes 20]
@@ -66,7 +75,7 @@ STOP = set(
     "the a an is are was were be been to of in on for with from and or not no yes "
     "do does how what which should would could can may we our your my his her "
     "their it this that these those you i nish about via when where who whom "
-    "whose why".split()
+    "whose why only says".split()
 )
 
 SLUG_RE = re.compile(r"[^a-z0-9]+")
@@ -185,7 +194,16 @@ def best_overlap(blob: str, ledger_lines: list[str]) -> tuple[int, str]:
     hits: list[tuple[int, str]] = []
     for line in ledger_lines:
         overlap = qtok & toks(decision_text(line))
-        if len(overlap) >= 3:
+        # Threshold 4 (raised from 3, fleet-ops#4841): the ledger grew to 78+
+        # lines, so 3-token collisions on generic boilerplate (issue, fleet,
+        # product, exist, implementation, rules) became common on long worker
+        # reasoning text. All positive controls overlap at >= 4 distinctive
+        # tokens (auto/deploy/green/0509 = 4; vacation/window/grants/through
+        # = 5; cheapest/flash/model/worker-lane/refresh = 6), so 4 keeps real
+        # re-asks live while killing the generic-word class. The #1138 stop
+        # words (from/source) and #4841 stop words (only/says) handle the
+        # 4-token collisions that threshold 4 alone cannot reach.
+        if len(overlap) >= 4:
             hits.append((len(overlap), line))
     if not hits:
         return 0, ""

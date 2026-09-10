@@ -143,7 +143,15 @@ grep -q 'older than 7 days' "$prompt" \
   || fail "prompt must name the 7-day stale CONFLICTING cutoff (fleet-ops#4471)"
 grep -Fq 'gh pr list -R Nishfleet/fleet-ops --state open --json number,title,mergeable,updatedAt' "$prompt" \
   || fail "prompt must pin the gh pr list query for the CONFLICTING namecheck"
-ok "(f) prompt locks the 5-action cap, signal, blind 8-lens structure (incl. SECURITY), claimed-work-only, baseline-delta input, #4471 CONFLICTING namecheck"
+# fleet-ops#4640: weekly false-wall drill. A 24h injected wall must
+# PONG-release or the review is red.
+grep -q -- '--false-wall-drill' "$prompt" \
+  || fail "prompt must run fleet-seat-comeback-release --false-wall-drill (fleet-ops#4640)"
+grep -q 'SEAT-WALL-FALSE' "$prompt" \
+  || fail "prompt must require a SEAT-WALL-FALSE line from the false-wall drill"
+grep -q 'this review is RED' "$prompt" \
+  || fail "prompt must score the week red when the false-wall drill fails"
+ok "(f) prompt locks the 5-action cap, signal, blind 8-lens structure (incl. SECURITY), claimed-work-only, baseline-delta input, #4471 CONFLICTING namecheck, #4640 false-wall drill"
 
 # (g) role-quality-gates catalog + bypass check helper
 jq -e '.roles[] | select(.id == "weekly-fleet-review")' "$role_gates" >/dev/null \

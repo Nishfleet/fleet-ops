@@ -50,6 +50,13 @@ and proposes up to 5 changes that move the bar. Same seat, different lens.
 Fail loud if any `*.sync-conflict-*` exists under
 `/home/nish/workspaces/tooling/nish-vault`.
 
+## False-wall drill (fleet-ops#4640)
+
+Run `/home/nish/workspaces/tooling/fleet-ops/bin/fleet-seat-comeback-release --false-wall-drill`
+(or the worktree copy of that bin). Require a `SEAT-WALL-FALSE` line and a
+released seat. If the drill fails: this review is RED. File an
+`agent-ready` issue before any other action. Do not score the week green.
+
 ## Caught by hand this week (FIRST section the review opens with)
 
 Everything in this section comes from the week's `decisions-ledger.md`

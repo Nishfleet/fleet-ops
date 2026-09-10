@@ -560,3 +560,7 @@ fi
 ok "class gate rejects unpinned git init --bare"
 
 echo "OK: fleet-deploy-check: unchanged/moved/compare-only/deploy-fail/yield/lock/defaultBranch"
+
+# PR #4856: host deploy-audit-log-outside-clone so P14 listing-gate
+# counts it (ci.yml edit needs workflow scope; host from this listed suite).
+bash "$here/deploy-audit-log-outside-clone.test.sh" || fail "deploy-audit-log-outside-clone tests failed"

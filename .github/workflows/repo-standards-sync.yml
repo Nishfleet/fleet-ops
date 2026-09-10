@@ -193,13 +193,16 @@ jobs:
             exit 1
           fi
           # Group 1: auto-merge-arm.yml -> can-arm repos only. fleet-ops is
-          # EXCLUDED: it runs the nishfleet-worker App-token arm workflow
-          # (fleet-ops#1469) and must not be overwritten by the PAT-based
-          # siterep-public canonical. The canonical switches to the App token
-          # only once the NISHFLEET_WORKER_APP_ID / NISHFLEET_WORKER_PRIVATE_KEY
-          # secrets exist org-wide (or per-repo across Nishfleet); until then
-          # fleet-ops owns its App-token copy locally (same pattern as
-          # stop-the-line-watch).
+          # EXCLUDED: it runs the richer App-token arm workflow
+          # (fleet-ops#1469 — freeze/quality/trample gates via the reusable
+          # workflow) and must not be overwritten by the leaner siterep-public
+          # canonical. The siterep-public canonical is itself App-token
+          # (fleet-ops#4303): graceful where the App secrets are absent (exit
+          # 0 + notice) so it landed ahead of the org-wide secret rollout; a
+          # configured-but-broken App fails LOUD. The NISHFLEET_WORKER_APP_ID /
+          # NISHFLEET_WORKER_PRIVATE_KEY secrets still need to reach each
+          # can-arm repo (org-wide or per-repo) for the App path to actually
+          # arm there — the graceful skip keeps repos green until then.
           grep -vxE 'Nishfleet/fleet-ops' repos-eligible.txt > repos-arm.txt || true
           {
             echo "group:"

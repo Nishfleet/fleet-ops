@@ -94,6 +94,9 @@ bash "$here/intake-priority.test.sh"
 bash "$here/pi-intake-tick-seat-gate.test.sh"
 # fleet-ops#4639: reserved repair rung (CI hook; keep this call).
 bash "$here/repair-rung.test.sh"
+# fleet-ops#4820: repair-rung disarm + product-reserve + measure.sh line
+# (CI hook; keep this call). ci.yml lists this file.
+bash "$here/repair-rung-disarm.test.sh"
 # fleet-ops#1250: claim-step prior-art bounce (CI hook; keep this call).
 # ci.yml lists this file; workers cannot add a new verify-command line.
 bash "$here/prior-art-claim-check.test.sh"

@@ -79,6 +79,10 @@ THROUGHPUT_STATE="$LOG_DIR/throughput.last"
 # without ever naming the cause). Probe pi once at the repair path; a broken
 # binary is a named, instant fail-loud, not a 27h mystery.
 PI_BIN="${PI_BIN:-/home/nish/.local/bin/pi}"
+# fleet-ops#4640: probe long non-money walls through the existing
+# comeback-release organ (flag, not a new unit). Tests pin
+# FLEET_SEAT_COMEBACK_BIN at a stub so this never touches the live ledger.
+COMEBACK_BIN="${FLEET_SEAT_COMEBACK_BIN:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fleet-seat-comeback-release}"
 pi_binary_broken() {
     if "$PI_BIN" --version >/dev/null 2>&1; then
         return 1   # executable
@@ -496,6 +500,22 @@ if [ "$undersat" -eq 1 ]; then
         rm -f "$FLAG"
         exit 1
     fi
+    # fleet-ops#4640: ready>0 AND running==0 is never "not a wedge". Probe
+    # benched non-money seats; a PONG means the wall was a lane lie — release
+    # and fail loud. Do not take FILTER-LIMITED on a zero-running fleet.
+    if [ "$running" -eq 0 ] && [ "$ready" -gt 0 ] 2>/dev/null; then
+        _fw_out=""
+        if [ -x "$COMEBACK_BIN" ]; then
+            set +e
+            _fw_out=$("$COMEBACK_BIN" --false-wall-only 2>&1)
+            set -e
+        fi
+        if grep -q 'SEAT-WALL-FALSE' <<<"$_fw_out"; then
+            loud "UNDERSAT-FALSE-WALL" "work=$work ready=$ready running=$running admit=$admit — benched non-money seat PONGed; released a false wall (fleet-ops#4640)"
+            rm -f "$FLAG"
+            exit 1
+        fi
+    fi
     # fleet-ops#3218: count_ready() counts ALL agent-ready issues, but intake's
     # filter chain (blocked-on, verifier-vacation, precedence-band / product-
     # first hold, reclaim-cooldown) deliberately skips most. If intake IS
@@ -506,7 +526,9 @@ if [ "$undersat" -eq 1 ]; then
     # filter-limited fleet (the 2026-09-04 36th-trip class). A genuine wedge
     # (intake broken, all seats dead) produces a stale claims log -> this
     # check passes through to the normal repair / fail-loud ladder.
-    if intake_claimed_recently; then
+    # fleet-ops#4640: FILTER-LIMITED requires running>0. Zero running with
+    # ready work is a wedge (or a false wall, already probed above).
+    if intake_claimed_recently && [ "$running" -gt 0 ] 2>/dev/null; then
         loud "UNDERSAT-FILTER-LIMITED" "work=$work ready=$ready running=$running admit=$admit reason=$reason — intake claimed >=1 in last 30min; fleet dispatching at capacity of claimable supply (raw ready inflated by blocked-on / verifier-vacation / precedence-band skips); not a wedge"
         rm -f "$FLAG"
         exit 0

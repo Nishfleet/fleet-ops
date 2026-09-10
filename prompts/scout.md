@@ -146,17 +146,28 @@ the scout files what customers actually see, not work invented from code
 inspection alone. That "code inspection alone" prohibition STAYS even in
 the fallback below.
 
-**Research floor (fleet-ops#4560):** if the Usage block reports every source
-empty or green (no signal either way — the normal state for a site with ~0
-signups), do NOT drop the whole candidate set. File up to
+**Research floor (fleet-ops#4560, #4850):** if the Usage block reports every
+source empty or green (no signal either way — the normal state for a site
+with ~0 signups), do NOT drop the whole candidate set. File at least 1 and at most
 `SCOUT_RESEARCH_FLOOR` (default 5) research-grounded candidates per run whose
 `source:` cites a market-signal line, a transformation-bet ID (BET n), the
 north-star rule, or a recent merged-PR title — the same valid citation forms
-as the top-level rule. Tag each of them `scout-candidate` + `usage-uncited`
-so the conference can rank them below telemetry-cited work. A.8 still applies:
-without a `funnel_stage:` line the tag is `usage-uncited` only, not `scout-candidate`. A healthy site
-with no traffic must still produce a fed queue; a starved queue from a green
-Usage block is a supply bug, not a spec win.
+as the top-level rule. The floor is a hard MINIMUM, not a deliberation prompt:
+"at most 5" is a cap, never an excuse to file 0 by reconsidering. Tag each of
+them `scout-candidate` + `usage-uncited` so the conference can rank them below
+telemetry-cited work. A.8 still applies: without a `funnel_stage:` line the
+tag is `usage-uncited` only, not `scout-candidate`. A healthy site with no
+traffic must still produce a fed queue; a starved queue from a green Usage
+block is a supply bug, not a spec win.
+
+**No-reconsider loop (fleet-ops#4850):** once you name a candidate you will
+file, file it in the NEXT action (`gh issue create ...`) and move on. Do not
+reconsider an already-decided candidate. Do not loop between "I'll file X"
+and "let me reconsider whether to file more." If you have filed fewer than 1
+research-grounded candidate under an all-green Usage block, your run is
+INCOMPLETE — pick the single best BET/market-signal/merged-PR candidate, file
+it, then go to Step 5. A run that exits with filed=0 under an all-green Usage
+block is the supply bug this floor exists to prevent.
 
 ### B. Stale or conflicting PRs (SECOND)
 
@@ -260,6 +271,13 @@ Print one line per action:
 - `filed #N: <title> [scout-candidate|agent-ready|unlabeled]`
 - `skipped: <reason>` for rejected dupes or missing termination
 - `supply: ready_count=<before> filed=<k> labeled=<m>`
+
+The `supply:` line is MANDATORY on every run, including one that filed 0
+(fleet-ops#4850). The futility tracker reads `filed=<k>` from this line as its
+primary source; a run that never prints it forces the tracker onto an
+inflated repo-issue-count fallback and hides the starve. Print it LAST, after
+every `filed`/`skipped` line, with the real counts (filed=0 when nothing was
+filed), then exit 0.
 - Scout self-score (fleet-ops#3149): print exactly
   `scout-yield: filed=<n> merged_14d=<m>` — filed = issues filed this run;
   merged_14d = how many of them had a closing PR merged within 14 days, from

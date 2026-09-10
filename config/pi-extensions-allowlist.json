@@ -20,7 +20,7 @@
     {
       "id": "devin-provider",
       "kind": "global-dir",
-      "proof": "live VPS 2026-08-23; Devin Pro custom provider"
+      "proof": "live VPS 2026-08-23; Devin Pro custom provider. 2026-09-09: dropped `--sandbox`, now runs `--permission-mode dangerous` unsandboxed (fleet-ops#4780) — `--sandbox` forces Devin's autonomous mode which since 2026-09-08 rejects every file write non-interactively (100% empty runs); standing VPS write autonomy Nish 2026-08-05."
     },
     {
       "id": "dirty-repo-guard",

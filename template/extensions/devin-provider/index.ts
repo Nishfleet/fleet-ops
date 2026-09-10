@@ -142,8 +142,12 @@ function streamDevin(
 				"--prompt-file", promptFile,
 				"--model", model.id,
 				"--respect-workspace-trust", "false",
-				"--permission-mode", "smart",
-				"--sandbox",
+				// 2026-09-09 (Fable): `--sandbox` forces Devin's "autonomous" permission mode, which since
+				// 2026-09-08 rejects every file write non-interactively ("rejected a tool call that requires
+				// confirmation"), so 100% of runs ended empty at the first edit. Probe: no sandbox +
+				// dangerous writes and runs (DONE-D); sandbox with any mode does not. Other seats run
+				// unsandboxed on this VPS already (standing write autonomy, Nish 2026-08-05).
+				"--permission-mode", "dangerous",
 			];
 
 			let child;

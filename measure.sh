@@ -12,6 +12,7 @@
 #              GetCurrentPeriodUsage included-API-bucket spend (fleet-ops#4566);
 #              cursor_api_cycle_usd is the cycle-to-date cumulative.
 #   usd_per_merged_pr: <n>
+#   repair_rung=armed|off ticks=<n>   (fleet-ops#4820; latched rung visibility)
 #
 #   metered    = marginal USD from tracked-metered seats over the trailing 24h
 #                (rate card in config/seat-caps.json x session usage tokens)
@@ -38,6 +39,24 @@ python="${MEASURE_PYTHON:-python3}"
 [[ -f "$lib" ]] || { echo "measure.sh: fleet_usd.py not found: $lib" >&2; exit 1; }
 [[ -f "$seat_caps" ]] || { echo "measure.sh: seat-caps.json not found: $seat_caps" >&2; exit 1; }
 
+# fleet-ops#4820: repair-rung latch visibility (blind-spot rule #4460).
+# Printed first so a later gh/python failure cannot hide the line. The
+# state file is the same one lib/pi-intake-tick.sh writes; missing or
+# unreadable is off ticks=0, never a guess. Armed = strikes >= AFTER.
+_rung_file="${PI_INTAKE_REPAIR_RUNG_STATE:-$HOME/workspaces/agent-state/pi-intake/repair-rung-state}"
+_rung_after="${PI_INTAKE_REPAIR_RUNG_AFTER:-2}"
+_rung_s=0
+if [[ -f "$_rung_file" ]]; then
+    read -r _rung_s _ <"$_rung_file" 2>/dev/null || true
+fi
+_rung_s=$(printf '%s' "${_rung_s:-}" | tr -cd '0-9')
+[[ "$_rung_s" =~ ^[0-9]+$ ]] || _rung_s=0
+if (( _rung_s >= _rung_after )); then
+    echo "repair_rung=armed ticks=${_rung_s}"
+else
+    echo "repair_rung=off ticks=${_rung_s}"
+fi
+
 # Merged PRs across the fleet repos in the trailing 24h (gh is the live truth;
 # a gh failure makes the numerator unknown and is flagged, not silently zeroed).
 merged_24h=0
@@ -50,62 +69,16 @@ for repo in $repo_list; do
   fi
 done
 
-# --- cursor_today: real Cursor-side API-bucket burn (fleet-ops#4566) -------
-# The token-derived usd_today for cursor is structurally $0 (prepaid-quota
-# class, no rate card), which reported a false 0.000000 as fact. The real
-# number is Cursor's own GetCurrentPeriodUsage API bucket, written by
-# bin/fleet-prepaid-util-canary into prepaid-spend/cursor.json
-# (api_bucket_used_usd, cycle-to-date cumulative). cursor_today = the trailing
-# 24h DELTA of that cumulative figure, computed against a history of samples
-# this script appends on every run. Until >= CURSOR_TODAY_MIN_H hours of
-# history exists it reports UNAVAILABLE:cursor-history-warming — never a
-# fabricated $0. cursor_api_cycle_usd (cycle-to-date) is always real once the
-# canary has run. Reconciliation command for a human:
-#   token=$(jq -r .accessToken ~/.config/cursor/auth.json); curl -s -X POST \
-#     -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
-#     -d '{}' https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage \
-#     | jq '.planUsage | {apiPercentUsed, limit}'
-# apiPercentUsed x (limit/100) = api_bucket_used_usd = cursor_api_cycle_usd.
-cursor_today_figure() {
-    local state_dir hist now_s latest_usd latest_s line ts used base_ts base_usd last_ts
-    state_dir="${PI_PACKET_STATE:-$HOME/.local/state/pi-packet}"
-    hist="$state_dir/prepaid-spend/cursor-history.jsonl"
-    local state_json="$state_dir/prepaid-spend/cursor.json"
-    [[ -f "$state_json" ]] || { echo "UNAVAILABLE:no-cursor-state"; return; }
-    latest_usd=$(jq -r '.api_bucket_used_usd // empty' "$state_json" 2>/dev/null || true)
-    latest_s=$(jq -r '.updated_s // empty' "$state_json" 2>/dev/null || true)
-    [[ -n "$latest_usd" && -n "$latest_s" ]] || { echo "UNAVAILABLE:no-api-bucket-field"; return; }
-    now_s=$(date -u +%s)
-    mkdir -p "$(dirname "$hist")" 2>/dev/null || true
-    # Append (deduped: skip if the last sample is < 300s old).
-    last_ts=0
-    [[ -f "$hist" ]] && last_ts=$(tail -n 1 "$hist" 2>/dev/null | jq -r '.updated_s // 0' 2>/dev/null || echo 0)
-    if (( now_s - last_ts >= 300 )); then
-        printf '{"updated_s":%s,"api_bucket_used_usd":%s}\n' "$latest_s" "$latest_usd" >> "$hist" 2>/dev/null || true
-    fi
-    min_age_s=$(( ${CURSOR_TODAY_MIN_H:-24} * 3600 ))
-    base_ts=""; base_usd=""
-    while IFS= read -r line; do
-        [[ -n "$line" ]] || continue
-        ts=$(printf '%s' "$line" | jq -r '.updated_s // 0' 2>/dev/null || echo 0)
-        used=$(printf '%s' "$line" | jq -r '.api_bucket_used_usd // 0' 2>/dev/null || echo 0)
-        if (( now_s - ts >= min_age_s )); then base_ts=$ts; base_usd=$used; fi
-    done < "$hist"
-    if [[ -z "$base_ts" ]]; then
-        echo "UNAVAILABLE:cursor-history-warming"
-        return
-    fi
-    # Cycle reset between base and now makes the delta meaningless.
-    cycle_end_s=$(jq -r '.cycle_end_s // 0' "$state_json" 2>/dev/null || echo 0)
-    if (( cycle_end_s > 0 && base_ts < cycle_end_s && now_s >= cycle_end_s )); then
-        echo "UNAVAILABLE:cycle-reset-in-window"
-        return
-    fi
-    awk -v n="$latest_usd" -v b="$base_usd" 'BEGIN{d=n-b; printf "%.4f", (d<0)?0:d}'
-}
+# --- cursor_today: real Cursor-side API-bucket burn (fleet-ops#4566/#4621)
+# Shared helper: lib/cursor-api-bucket.sh (also sourced by the prepaid-util
+# canary so the judge-facing usd_today cannot be the token $0). Reconciliation:
+# GetCurrentPeriodUsage planUsage.apiPercentUsed x (limit/100) — see
+# `bash lib/cursor-api-bucket.sh --help`.
+# shellcheck disable=SC1091
+source "$repo_root/lib/cursor-api-bucket.sh"
 CURSOR_TODAY_FIGURE="$(cursor_today_figure)"
 export CURSOR_TODAY_FIGURE
-export CURSOR_API_CYCLE_USD="$(jq -r '.api_bucket_used_usd // "UNAVAILABLE:no-cursor-state"' "${PI_PACKET_STATE:-$HOME/.local/state/pi-packet}/prepaid-spend/cursor.json" 2>/dev/null || echo UNAVAILABLE:no-cursor-state)"
+export CURSOR_API_CYCLE_USD="$(cursor_api_cycle_usd)"
 
 # Compute the USD numbers via the shared helper (kept in lock-step with the
 # fleet_usd_24h prom exporter).

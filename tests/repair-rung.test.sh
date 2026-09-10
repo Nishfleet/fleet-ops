@@ -6,7 +6,8 @@
 # claim critical-path fleet-ops issues on a rung exempt from yield caps
 # and the light-only/audition filter. Worker pick_seat falls back to
 # litellm judge -> mergegateway audition -> cursor keystone at cap 1 and
-# never a money-walled seat. The rung releases when usable slots >= 2.
+# never a money-walled seat. The rung disarms when pick_seat returns a
+# usable seat for DISARM_AFTER (default 2) consecutive ticks (fleet-ops#4820).
 #
 # Hosted by tests/pi-intake-run.test.sh (CI already lists that file).
 set -euo pipefail
@@ -28,7 +29,10 @@ grep -qF 'PI_INTAKE_REPAIR_RUNG_AFTER="${PI_INTAKE_REPAIR_RUNG_AFTER:-2}"' "$tic
     || fail "PI_INTAKE_REPAIR_RUNG_AFTER default 2 missing"
 grep -qF 'PI_INTAKE_REPAIR_RUNG_MAX_CONCURRENT="${PI_INTAKE_REPAIR_RUNG_MAX_CONCURRENT:-2}"' "$tick" \
     || fail "PI_INTAKE_REPAIR_RUNG_MAX_CONCURRENT default 2 missing"
+grep -qF 'PI_INTAKE_REPAIR_RUNG_DISARM_AFTER="${PI_INTAKE_REPAIR_RUNG_DISARM_AFTER:-2}"' "$tick" \
+    || fail "PI_INTAKE_REPAIR_RUNG_DISARM_AFTER default 2 missing"
 grep -qF 'REPAIR-RUNG armed:' "$tick" || fail "REPAIR-RUNG armed log missing"
+grep -qF 'REPAIR-RUNG disarmed:' "$tick" || fail "REPAIR-RUNG disarmed log missing"
 grep -qF 'REPAIR-RUNG released:' "$tick" || fail "REPAIR-RUNG released log missing"
 grep -qF 'REPAIR-RUNG: claimed critical-path issue' "$tick" \
     || fail "REPAIR-RUNG claim log missing"
@@ -55,12 +59,15 @@ cat >"$stubs" <<'SH'
 #!/usr/bin/env bash
 total_seat_cap() { echo 8; }
 issue_seat_cap() { echo 5; }
+load_seat_caps() { return 0; }
+worker_memory_for_difficulty() { return 1; }
+worker_env_for_repo() { return 1; }
 pick_seat() {
     if [[ "${PICK_SEAT_COUNT_SLOTS:-0}" == "1" ]]; then
         echo "${STUB_LIGHT_SLOTS:-0}"
         return 0
     fi
-    if [[ "${3:-0}" == "1" && "${STUB_HEAVY:-0}" == "1" ]]; then
+    if [[ "${STUB_HEAVY:-0}" == "1" ]]; then
         printf 'cursor\tcursor-grok-4.6-high\n'
         return 0
     fi
@@ -101,7 +108,7 @@ write_rl
 
 gh() {
     if [[ "$1" == "issue" && "$2" == "list" ]]; then
-        printf '%s\n' '[{"number":4639,"title":"seat deadlock","labels":[{"name":"agent-ready"},{"name":"critical-path"}]}]'
+        printf '%s\n' '[{"number":4639,"title":"seat deadlock","labels":[{"name":"agent-ready"},{"name":"critical-path"}]},{"number":4820,"title":"ordinary-work","labels":[{"name":"agent-ready"}]}]'
         return 0
     fi
     return 0
@@ -116,8 +123,10 @@ git() {
 systemctl() { echo "inactive"; return 0; }
 export -f gh git systemctl
 
+printf 'test-worker-prompt\n' >"$scratch/worker.md"
+
 run_tick() {
-    mkdir -p "$scratch/secondary" "$scratch/run" "$scratch/pi-issues"
+    mkdir -p "$scratch/secondary" "$scratch/run" "$scratch/pi-issues" "$scratch/umbrella"
     env \
         GITHUB_ACTIONS=true \
         HOME="$scratch" \
@@ -125,6 +134,9 @@ run_tick() {
         PI_INTAKE_LOCKDIR="$scratch" \
         PI_INTAKE_DEBOUNCE_SEC=0 \
         PI_INTAKE_RECONCILER_PROM="$scratch/reconciler" \
+        PI_INTAKE_UMBRELLA_PROM="$scratch/umbrella/fleet-umbrella-dispatch" \
+        PI_INTAKE_CLAIMS_LOG="$scratch/claims.log" \
+        PI_INTAKE_WORKER_PROMPT="$scratch/worker.md" \
         PI_INTAKE_GH_RATE_LIMIT_STATE="$scratch/gh-rate-limit.json" \
         PI_INTAKE_GH_RATE_LIMIT_MAX_AGE=120 \
         PI_INTAKE_GH_SECONDARY_STATE_DIR="$scratch/secondary" \
@@ -154,11 +166,25 @@ echo "$out2" | grep -qF 'REPAIR-RUNG armed' \
 ok "tick 2: REPAIR-RUNG armed"
 
 out3="$(STUB_LIGHT_SLOTS=3 STUB_HEAVY=1 run_tick)" || true
-echo "$out3" | grep -qF 'REPAIR-RUNG released' \
-    || fail "tick 3 with usable slots 3 must release the rung, got: $out3"
-echo "$out3" | grep -qF 'REPAIR-RUNG armed' \
-    && fail "tick 3 must not stay armed, got: $out3"
-ok "tick 3: REPAIR-RUNG released when a seat returns"
+echo "$out3" | grep -qF 'REPAIR-RUNG recovery 1/2' \
+    || fail "tick 3 first recovered seat must be recovery 1/2, got: $out3"
+echo "$out3" | grep -qF 'REPAIR-RUNG disarmed' \
+    && fail "tick 3 must not disarm yet, got: $out3"
+ok "tick 3: recovery 1/2, still armed"
+
+out4="$(STUB_LIGHT_SLOTS=3 STUB_HEAVY=1 run_tick)" || true
+echo "$out4" | grep -qF 'REPAIR-RUNG disarmed' \
+    || fail "tick 4 second usable-seat tick must disarm, got: $out4"
+echo "$out4" | grep -qF 'cursor	cursor-grok-4.6-high' \
+    || fail "disarm log must name the seat that cleared it, got: $out4"
+ok "tick 4: REPAIR-RUNG disarmed with the clearing seat"
+
+out5="$(STUB_LIGHT_SLOTS=3 STUB_HEAVY=1 run_tick)" || true
+echo "$out5" | grep -qF 'skipped-repair-rung (rung claims critical-path fleet-ops only' \
+    && fail "tick 5 after disarm must not skip non-critical-path, got: $out5"
+echo "$out5" | grep -qF 'ordinary-work' \
+    || true
+ok "tick 5: non-critical-path is not skipped-repair-rung after disarm"
 
 # --- 4. pick_seat ladder: cursor when workers are walled; refuse money wall ---
 export PI_SEAT_LIB_CHECK_SYSTEMD=0

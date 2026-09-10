@@ -1027,6 +1027,23 @@ rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "is_quota: Alibaba token-plan 'quota has been exhausted' wall must match (rc=$rc)"
 ok "9b: Alibaba token-plan 'quota has been exhausted' -> quota/cap wall (fleet-ops#4444)"
+# fleet-ops#4831 (2026-09-09): b.ai HTTP 400 'insufficient_user_quota' —
+# bai/deepseek-v4-flash returned 400 {"message":"credit insufficient balance:
+# balance=0 required=7716","code":"insufficient_user_quota"} (request id
+# 20260909223645112163328c955d568QJTZNddN, verbatim from the seat ledger
+# bench_reason). is_quota_cap_error had no insufficient_user_quota literal, so
+# pi-scout@0509, pi-scout-repair@0509 and pi-issue@0509-2085 all died on the
+# seat inside 3 min (rc=1), each booked error_class=unknown -> transient_fault
+# -> 300s spawn bench, and the dead free seat was re-offered every ~5 min
+# (~12 claims/hour). The body carries no reset window, so it must pass the
+# hard-cap list like `credit balance depleted` does; the 3600s
+# quota_bench_default_s in seat-caps.json bounds the re-probe.
+bai_400='400: {"message":"credit insufficient balance: balance=0 required=7716","code":"insufficient_user_quota"}'
+bash -c 'source "$0"; is_quota_cap_error "$1" "$2"' "$lib" "$bai_400" "" >/dev/null 2>&1 \
+  || fail "9c: b.ai 400 'insufficient_user_quota' must be a quota/cap wall, not error_class=unknown (fleet-ops#4831)"
+bash -c 'source "$0"; is_quota_cap_error "$1" "$2"' "$lib" "" 'session-error: 400 insufficient_user_quota' >/dev/null 2>&1 \
+  || fail "9c: bare 400 insufficient_user_quota code must be a quota/cap wall (fleet-ops#4831)"
+ok "9c: b.ai 400 'insufficient_user_quota' -> quota/cap wall (fleet-ops#4831)"
 set +e
 bash -c 'source "$0"; is_quota_cap_error "$1" "$2"' "$lib" "429 Too Many Requests retry-after: 30" "" >/dev/null 2>&1
 rc=$?
@@ -3803,6 +3820,11 @@ bash "$here/scout-prompt-difficulty.test.sh" || fail "scout-prompt-difficulty te
 # P14 test-listing gate goes green without a workflow edit.
 bash "$here/seat-failure-ceiling.test.sh" || fail "seat-failure-ceiling tests failed"
 
+# fleet-ops#4640: writer invariant (no_block LANE-FAULT, 6h WALL-REFUSED,
+# 401 1h/24 corpse). Hosted here so the P14 listing gate stays green
+# without a workflow edit.
+bash "$here/seat-wall-cap.test.sh" || fail "seat-wall-cap tests failed"
+
 # fleet-ops#2594: tests/seat-quota-corpse.test.sh proves the
 # quota_cap -> seat_dead corpse reclassification in mark_seat_quota_bench
 # (the live opencode/mimo-v2.5-free snapshot at c>=25). Hosted here from
@@ -4235,3 +4257,24 @@ bash "$here/seat-caps-zero-yield.test.sh" || fail "seat-caps-zero-yield tests fa
 # to LiteLLM groups. Workers cannot add a P14 line in .github/workflows/ci.yml;
 # this file is the listed CI host for the new seat-source test.
 bash "$here/pi-seat-source-litellm.test.sh" || fail "pi-seat-source-litellm tests failed"
+
+# fleet-ops#4825: the Devin CLI "Refusing to run in an untrusted workspace" is
+# a CONFIG/TRUST fault, not a seat yield. The managed config key is
+# skip_workspace_trust (not the misleading respect_workspace_trust the vendor
+# error message names). Workers cannot add a P14 line in
+# .github/workflows/ci.yml; this file is the listed CI host for the new
+# devin-config-trust test (overlay key pin + install.sh merge + seat-lib
+# matcher/bench/classify + regression pin). The test sets its own scratch
+# SEAT_CAPS_JSON/PI_MODELS_JSON so the unset above does not affect it.
+bash "$here/devin-config-trust.test.sh" || fail "devin-config-trust tests failed"
+
+# fleet-ops#4780: the Devin CLI under `--sandbox` rejects every file write
+# non-interactively ("rejected a tool call that requires confirmation"), so
+# every run ends empty at the first edit. The fix is dropping `--sandbox`
+# (the provider now runs `--permission-mode dangerous` unsandboxed). Workers
+# cannot add a P14 line in .github/workflows/ci.yml; this file is the listed
+# CI host for the new devin-writes-rejected test (seat-lib matcher/bench/
+# classify + pi-issue-run detection block + regression pin). The test sets
+# its own scratch SEAT_CAPS_JSON/PI_MODELS_JSON so the unset above does not
+# affect it.
+bash "$here/devin-writes-rejected.test.sh" || fail "devin-writes-rejected tests failed"

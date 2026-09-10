@@ -860,6 +860,95 @@ assert 'fleet_pi_seat_dead_credential{seat="devin__glm-5-2"' not in body, "healt
 print("OK: main() emits self-maintenance + quality + verified-merges families")
 PY
 
+# 10b. fleet-ops#4643: main() emits fleet_prompt_cache_hit_ratio from session
+# jsonl usage (cacheRead vs uncached input), per provider x packet_type, with
+# the issue's metered/free class label. A synthetic sessions dir carries one
+# pi-issue worker session (cached) and one scout session (uncached) so the
+# emitter produces two rows with the right ratio and class.
+echo "=== 10b. fleet-ops#4643 cache-hit ratio emission ==="
+CACHE_SESSIONS="$scratch/cache-sessions"
+mkdir -p "$CACHE_SESSIONS/pi-issue-fleet-ops-1" "$CACHE_SESSIONS/pi-scout-foo"
+# Worker session: provider=paretoinference (metered in seat-caps), 100 uncached
+# input + 900 cacheRead -> ratio 0.9. Pi session jsonl shape: a model_change
+# line sets the provider, then message lines carry usage.
+cat >"$CACHE_SESSIONS/pi-issue-fleet-ops-1/sess.jsonl" <<'JSON'
+{"type":"model_change","provider":"paretoinference"}
+{"type":"message","message":{"provider":"paretoinference","usage":{"input":100,"cacheRead":900,"output":5}}}
+{"type":"message","message":{"provider":"paretoinference","usage":{"input":0,"cacheRead":0,"output":0}}}
+JSON
+# Scout session: provider=cline (metered), 1000 uncached + 0 cacheRead -> 0.0.
+cat >"$CACHE_SESSIONS/pi-scout-foo/sess.jsonl" <<'JSON'
+{"type":"model_change","provider":"cline"}
+{"type":"message","message":{"provider":"cline","usage":{"input":1000,"cacheRead":0,"output":10}}}
+JSON
+CACHE_OUT="$scratch/cache-out.prom"
+# Use the REAL repo seat-caps so the metered/free class resolves for
+# paretoinference and cline (the dead-credential fixture above does not
+# enroll them). The cache-hit emitter reads class from seat-caps.
+REAL_SEAT_CAPS="$repo_root/config/seat-caps.json"
+[[ -f "$REAL_SEAT_CAPS" ]] || fail "real seat-caps not found: $REAL_SEAT_CAPS"
+python3 - "$exporter" "$CACHE_OUT" "$CACHE_SESSIONS" "$REAL_SEAT_CAPS" <<'PY' || fail "cache-hit emission failed"
+import importlib.util, os, sys
+from pathlib import Path
+exporter, out_path, sessions, seat_caps = sys.argv[1:5]
+spec = importlib.util.spec_from_file_location("fme2", exporter)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+m.OUT = Path(out_path)
+m.SESSIONS_DIR = Path(sessions)
+m.SEAT_CAPS_DEFAULT = Path(seat_caps)
+m.SEAT_CAPS_FALLBACK = Path("/nonexistent/fb.json")
+m.SEAT_CAPS_LIVE = Path("/nonexistent/live.json")
+m.SELF_MAINT_JSON_DEFAULT = Path("/nonexistent/sm.json")
+m.SELF_MAINT_JSON_FALLBACK = Path("/nonexistent/sm2.json")
+m.SEAT_HEALTH = Path("/nonexistent/seat.json")
+m.SEAT_LEDGER = Path("/nonexistent/ledger")
+m.HC_URL_FILE = Path("/nonexistent/hc.url")
+m.ACTIONS_LOG = Path("/nonexistent/actions.log")
+m.MAINTENANCE_FLAG = Path("/nonexistent/maint.json")
+m.INTAKE_JSON_DEFAULT = Path("/nonexistent/intake.json")
+m.INTAKE_JSON_FALLBACK = Path("/nonexistent/intake2.json")
+m.KEYSTONE_LEDGER = Path("/nonexistent/keystone.jsonl")
+m.WORKTREE_REAPER_SUMMARY = Path("/nonexistent/reaper.json")
+m.STALENESS_CACHE = Path("/nonexistent/stale.json")
+m.PR_CACHE_DIR = Path(os.path.dirname(out_path))
+m.DETAIL_CACHE = Path(os.path.dirname(out_path)) / "detail.cache.json"
+m._list_timers = lambda: [{"unit": "fleet-metrics-export.timer", "last_usec": 0}]
+m._timer_active = lambda unit: 1
+m._read_seat = lambda: (1, 0)
+m._merged_prs_detail = lambda: []
+m._repo_snapshot = lambda: None
+m._queue_composition = lambda: {"ready-work": {"total": 0, "self": 0}, "agent-ready": {"total": 0, "self": 0}}
+m._escalations_24h = lambda: {}
+m._oomd_kills_6h = lambda: {}
+m._repair_log_counts_24h = lambda: (0, 0)
+m._worker_units = lambda: []
+m._standalone_pi_print_count = lambda u: 0
+m._maintenance_quiescing = lambda: 0
+m._keystone_routing_counts = lambda: (0, 0, None)
+m._ping_healthcheck = lambda: None
+m._fetch_openrouter_credits = lambda: None
+m._fetch_xkiro_usage = lambda: None
+m._fetch_openrouter_key = lambda: None
+m._fetch_claude_usage = lambda: None
+m._fetch_codex_usage = lambda: None
+m._fetch_cursor_usage = lambda: None
+m._fetch_devin_usage = lambda: None
+m._fetch_xkiro_quota = lambda: None
+m._fetch_signups_7d = lambda: None
+m._GH_FETCHED_THIS_RUN = False
+rc = m.main()
+assert rc == 0, f"main rc={rc}"
+body = Path(out_path).read_text()
+assert "# HELP fleet_prompt_cache_hit_ratio" in body, "missing HELP for cache-hit ratio:\n" + body
+assert "# TYPE fleet_prompt_cache_hit_ratio gauge" in body, "missing TYPE for cache-hit ratio:\n" + body
+# Worker row: 900/(100+900) = 0.9, class metered (paretoinference is metered).
+assert 'fleet_prompt_cache_hit_ratio{provider="paretoinference",packet_type="worker",class="metered"} 0.900000' in body, body
+# Scout row: 0/(1000+0) = 0.0, class metered (cline is metered).
+assert 'fleet_prompt_cache_hit_ratio{provider="cline",packet_type="scout",class="metered"} 0.000000' in body, body
+print("OK: main() emits fleet_prompt_cache_hit_ratio{provider,packet_type,class}")
+PY
+
 echo "ALL OK: fleet-metrics-export #1136 logic pinned"
 
 # =========================================================================
@@ -3439,6 +3528,231 @@ grep -q 'absent(fleet_seat_quota_remaining_pct{provider="claude"})' "$rules" \
 ok "fleet-ops#4611: claude quota emits on 200, fails loud on dead fetch; FleetClaudeQuotaStale rule present"
 
 # =========================================================================
+# fleet-ops#4670: the file OAuth token that /api/oauth/usage needs expires
+# ~8h and setup-token cannot replace it. claude setup-token / CLAUDE_CODE_OAUTH_TOKEN
+# is inference-only (user:inference); /api/oauth/usage 403s with
+# oauth_scope_insufficient. Official CLI: "Long-lived tokens (from `claude
+# setup-token` or CLAUDE_CODE_OAUTH_TOKEN) are limited to inference-only for
+# security reasons." OpenUsage's Claude plugin is the prior art: refresh the
+# FILE credential via POST platform.claude.com/v1/oauth/token (grant_type=
+# refresh_token, client_id 9d1c250a-..., scopes including user:profile) and
+# write the rotation back to ~/.claude/.credentials.json. This is an edit
+# inside the existing exporter, not a new grok-token-refresh-shaped unit
+# (issue accept #3 / Nish: no new organ). Mac/VPS historically share one
+# rotating pair; this VPS file is local (not syncthing'd) so a VPS write does
+# not fight the Mac.
+#
+# Hermetic regressions (no network, no live credentials):
+#   (a) CLAUDE_CODE_OAUTH_TOKEN is never used as the usage token.
+#   (b) Near-expiry (expiresAt within 5 min, OpenUsage needsRefresh) POSTs
+#       the OpenUsage refresh grant and persists access+refresh+expiresAt
+#       at mode 0600, preserving sibling oauth fields.
+#   (c) Fresh token (expiresAt > 5 min) does not POST.
+#   (d) CAS: if the file's refreshToken changed under us, do not overwrite.
+#   (e) Failed refresh (401) leaves the file untouched.
+# =========================================================================
+python3 - "$exporter" <<'PY' || fail "fleet-ops#4670 claude file-token refresh failed"
+import importlib.util, json, os, stat, sys, tempfile, time, urllib.error, urllib.request
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("m", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+
+for fn in ("_claude_access_token", "_ensure_claude_file_token",
+           "_claude_needs_refresh", "_claude_refresh_grant",
+           "_persist_claude_oauth"):
+    assert hasattr(m, fn), f"missing {fn}"
+
+scratch = Path(tempfile.mkdtemp(prefix="fme-4670-"))
+cred = scratch / ".credentials.json"
+m.CLAUDE_CREDENTIALS_JSON = cred
+
+SKEW_MS = 5 * 60 * 1000
+NOW_MS = 1_800_000_000_000  # pinned so tests do not depend on wall clock
+
+def _oauth(**over):
+    base = {
+        "accessToken": "sk-ant-file-OLD",
+        "refreshToken": "sk-ant-refresh-OLD",
+        "expiresAt": NOW_MS + 8 * 3600 * 1000,
+        "refreshTokenExpiresAt": NOW_MS + 30 * 86400 * 1000,
+        "scopes": ["user:file_upload", "user:inference", "user:mcp_servers",
+                    "user:profile", "user:sessions:claude_code"],
+        "subscriptionType": "max",
+        "rateLimitTier": "default_claude_max_5x",
+    }
+    base.update(over)
+    return base
+
+def _write_cred(oauth):
+    cred.write_text(json.dumps({"claudeAiOauth": oauth}, separators=(",", ":")))
+    os.chmod(cred, 0o600)
+
+class _FakeResp:
+    def __init__(self, data, status=200):
+        self._data = json.dumps(data).encode()
+        self.status = status
+    def __enter__(self): return self
+    def __exit__(self, *a): pass
+    def read(self): return self._data
+
+posted = []
+orig_urlopen = urllib.request.urlopen
+orig_time = m.time.time
+
+def _restore():
+    urllib.request.urlopen = orig_urlopen
+    m.time.time = orig_time
+    os.environ.pop("CLAUDE_CODE_OAUTH_TOKEN", None)
+
+# Pin wall clock so expiresAt math is deterministic.
+m.time.time = lambda: NOW_MS / 1000.0
+
+# (a) env setup-token is inference-only: never used for usage.
+_write_cred(_oauth())
+os.environ["CLAUDE_CODE_OAUTH_TOKEN"] = "sk-ant-env-SETUP-TOKEN"
+tok = m._claude_access_token()
+assert tok == "sk-ant-file-OLD", f"setup-token leaked into usage token: {tok!r}"
+print("OK: CLAUDE_CODE_OAUTH_TOKEN is ignored; file token is used")
+
+# (c) fresh token: no refresh POST.
+def _boom(req, timeout=15):
+    raise AssertionError(f"urlopen must not run on a fresh token: {getattr(req, 'full_url', req)}")
+urllib.request.urlopen = _boom
+tok = m._ensure_claude_file_token()
+assert tok == "sk-ant-file-OLD"
+print("OK: fresh file token (expiresAt > 5 min) does not POST refresh")
+
+# needsRefresh pin (OpenUsage: expiresAt - now <= 5 min).
+assert m._claude_needs_refresh(_oauth(expiresAt=NOW_MS + SKEW_MS), now_ms=NOW_MS) is True
+assert m._claude_needs_refresh(_oauth(expiresAt=NOW_MS + SKEW_MS + 1), now_ms=NOW_MS) is False
+assert m._claude_needs_refresh(_oauth(expiresAt=NOW_MS - 1), now_ms=NOW_MS) is True
+assert m._claude_needs_refresh({"accessToken": "x"}, now_ms=NOW_MS) is False  # no expiresAt
+print("OK: _claude_needs_refresh matches OpenUsage 5-min skew")
+
+# (b) near-expiry POSTs the OpenUsage grant and persists rotation at 0600.
+_write_cred(_oauth(expiresAt=NOW_MS + 60_000))  # 1 min left
+posted.clear()
+def _refresh_ok(req, timeout=15):
+    posted.append({
+        "url": req.full_url,
+        "method": req.get_method(),
+        "ctype": req.headers.get("Content-type") or req.headers.get("Content-Type"),
+        "body": json.loads(req.data.decode()) if req.data else None,
+    })
+    return _FakeResp({
+        "access_token": "sk-ant-file-NEW",
+        "refresh_token": "sk-ant-refresh-NEW",
+        "expires_in": 28800,
+        "refresh_token_expires_in": 2592000,
+        "scope": "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload",
+    })
+urllib.request.urlopen = _refresh_ok
+tok = m._ensure_claude_file_token()
+assert tok == "sk-ant-file-NEW", f"refreshed token not returned: {tok!r}"
+assert len(posted) == 1, posted
+assert posted[0]["url"] == "https://platform.claude.com/v1/oauth/token", posted[0]["url"]
+assert posted[0]["method"] == "POST", posted[0]["method"]
+body = posted[0]["body"]
+assert body["grant_type"] == "refresh_token", body
+assert body["refresh_token"] == "sk-ant-refresh-OLD", body
+assert body["client_id"] == "9d1c250a-e61b-44d9-88ed-5944d1962f5e", body
+assert "user:profile" in body["scope"], body
+assert posted[0]["ctype"].startswith("application/json"), posted[0]["ctype"]
+saved = json.loads(cred.read_text())["claudeAiOauth"]
+assert saved["accessToken"] == "sk-ant-file-NEW"
+assert saved["refreshToken"] == "sk-ant-refresh-NEW"
+assert saved["expiresAt"] == NOW_MS + 28800 * 1000
+assert saved["refreshTokenExpiresAt"] == NOW_MS + 2592000 * 1000
+assert saved["subscriptionType"] == "max", "sibling field dropped"
+assert saved["rateLimitTier"] == "default_claude_max_5x"
+assert "user:profile" in saved["scopes"]
+mode = stat.S_IMODE(cred.stat().st_mode)
+assert mode == 0o600, f"credentials mode {oct(mode)} (must stay 0600, not _atomic_write's 0644)"
+print("OK: near-expiry refresh POSTs OpenUsage grant and persists rotation at 0600")
+
+# (d) CAS: file refreshToken changed under us -> no overwrite.
+_write_cred(_oauth(expiresAt=NOW_MS + 60_000))
+def _refresh_then_race(req, timeout=15):
+    # Simulate another writer rotating the file between read and persist.
+    raced = _oauth(accessToken="sk-ant-file-MAC", refreshToken="sk-ant-refresh-MAC",
+                   expiresAt=NOW_MS + 8 * 3600 * 1000)
+    cred.write_text(json.dumps({"claudeAiOauth": raced}, separators=(",", ":")))
+    return _FakeResp({
+        "access_token": "sk-ant-file-NEW2",
+        "refresh_token": "sk-ant-refresh-NEW2",
+        "expires_in": 28800,
+    })
+urllib.request.urlopen = _refresh_then_race
+tok = m._ensure_claude_file_token()
+# Returned token is the grant's access (in-memory), but disk must keep the racer.
+saved = json.loads(cred.read_text())["claudeAiOauth"]
+assert saved["refreshToken"] == "sk-ant-refresh-MAC", saved
+assert saved["accessToken"] == "sk-ant-file-MAC", saved
+print("OK: CAS refuses to overwrite when file refreshToken changed under us")
+
+# (e) failed refresh leaves the file untouched.
+_write_cred(_oauth(expiresAt=NOW_MS + 60_000))
+before = cred.read_text()
+def _refresh_401(req, timeout=15):
+    raise urllib.error.HTTPError(req.full_url, 401, "Unauthorized", hdrs=None, fp=None)
+urllib.request.urlopen = _refresh_401
+tok = m._ensure_claude_file_token()
+assert tok == "sk-ant-file-OLD", f"failed refresh must keep current access: {tok!r}"
+assert cred.read_text() == before, "failed refresh must not clobber credentials"
+print("OK: 401 refresh leaves credentials untouched and keeps current access")
+
+# _fetch_claude_usage 401 -> one forced refresh then retry.
+_write_cred(_oauth(expiresAt=NOW_MS + 8 * 3600 * 1000))  # fresh, but usage 401s
+calls = []
+def _usage_401_then_ok(req, timeout=15):
+    calls.append(req.full_url)
+    if "oauth/usage" in req.full_url and calls.count(req.full_url) == 1:
+        raise urllib.error.HTTPError(req.full_url, 401, "Unauthorized", hdrs=None, fp=None)
+    if "oauth/token" in req.full_url:
+        return _FakeResp({
+            "access_token": "sk-ant-file-RETRY",
+            "refresh_token": "sk-ant-refresh-RETRY",
+            "expires_in": 28800,
+        })
+    if "oauth/usage" in req.full_url:
+        return _FakeResp({
+            "five_hour": {"utilization": 2.0, "resets_at": "2099-01-01T00:00:00+00:00"},
+            "seven_day": {"utilization": 23.0, "resets_at": "2099-01-01T00:00:00+00:00"},
+        })
+    raise AssertionError(req.full_url)
+urllib.request.urlopen = _usage_401_then_ok
+rows = m._fetch_claude_usage()
+assert rows is not None, "401 usage should recover via refresh+retry"
+assert any(r["window"] == "session" and abs(r["pct"] - 98.0) < 0.01 for r in rows), rows
+assert any("oauth/token" in u for u in calls), calls
+saved = json.loads(cred.read_text())["claudeAiOauth"]
+assert saved["accessToken"] == "sk-ant-file-RETRY"
+print("OK: usage 401 forces one refresh and retries the usage GET")
+
+# Missing expires_in: do not persist a 0-lifetime token.
+_write_cred(_oauth(expiresAt=NOW_MS + 60_000))
+before = cred.read_text()
+def _refresh_no_exp(req, timeout=15):
+    return _FakeResp({"access_token": "sk-ant-file-NOEXP", "refresh_token": "sk-ant-refresh-NOEXP"})
+urllib.request.urlopen = _refresh_no_exp
+tok = m._ensure_claude_file_token()
+assert tok == "sk-ant-file-OLD", f"missing expires_in must keep current access: {tok!r}"
+assert cred.read_text() == before, "missing expires_in must not persist"
+print("OK: refresh without expires_in leaves credentials untouched")
+
+_restore()
+print("OK: fleet-ops#4670 claude file-token refresh (OpenUsage grant, no setup-token, 0600, CAS)")
+PY
+grep -q 'platform.claude.com/v1/oauth/token' "$rules" \
+  || fail "FleetClaudeQuotaStale annotation must name the in-exporter refresh endpoint"
+if grep -q 'there is no fleet-side token refresh for claude' "$rules"; then
+  fail "FleetClaudeQuotaStale annotation still claims there is no fleet-side token refresh"
+fi
+ok "fleet-ops#4670: claude file OAuth refresh inside exporter; setup-token ignored"
+
+# =========================================================================
 # fleet-ops#3180: fleet_escalations_24h must not count template starts the
 # escalation pipeline refuses. The metric counts "Starting
 # unit-escalation@<failed-unit>.service" journal lines; unit-escalation-write
@@ -4143,3 +4457,13 @@ ok "fleet-ops#4481: mint failure writes fleet.prom, exits 0, skips the week-late
 # the P14 path.
 bash "$here/hardcoded-epoch-guard.test.sh"
 ok "fleet-ops#4508: hardcoded-epoch guard green on P14 path"
+
+# fleet-ops#4643: prompt prefix-cache layout — stable prefix first, volatile
+# tail last. Hosted here (not in .github/workflows/ci.yml) so worker tokens
+# can wire it without a workflow-file edit.
+bash "$here/packet-layout.test.sh" || fail "packet-layout tests failed"
+ok "fleet-ops#4643: packet-layout determinism green on P14 path"
+
+# fleet-ops#4643: FleetPromptCacheHitLow alert + seat-caps TTL comment.
+bash "$here/fleet-prompt-cache-hit-alert.test.sh" || fail "fleet-prompt-cache-hit-alert tests failed"
+ok "fleet-ops#4643: fleet-prompt-cache-hit-alert green on P14 path"

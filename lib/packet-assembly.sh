@@ -379,7 +379,7 @@ packet_usage_block() {
     packet_money_path_walk && any=1
     packet_inbound_email_usage 7 && any=1
     if [[ "$any" == "0" ]]; then
-        printf 'NOTE: every usage source is empty or green in this environment. Per scout prompt A.6 (fleet-ops#4560) the scout must still file up to SCOUT_RESEARCH_FLOOR (default 5) research-grounded candidates citing a market-signal line, a BET id, the north-star rule, or a merged-PR title, each tagged scout-candidate + usage-uncited. Code-inspection-only candidates stay DROPPED.\n\n'
+        printf 'NOTE: every usage source is empty or green in this environment. Per scout prompt A.6 (fleet-ops#4560, #4850) the scout must file at least 1 and at most SCOUT_RESEARCH_FLOOR (default 5) research-grounded candidates citing a market-signal line, a BET id, the north-star rule, or a merged-PR title, each tagged scout-candidate + usage-uncited. The floor is a hard minimum, not a deliberation prompt — do not loop between deciding and filing; file the next action, then print the supply: verdict line. Code-inspection-only candidates stay DROPPED.\n\n'
     fi
 }
 

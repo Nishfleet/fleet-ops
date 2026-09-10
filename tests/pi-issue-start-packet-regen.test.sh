@@ -92,7 +92,8 @@ GH_OUT='{"title":"[keystone] big one","body":"critical","labels":[{"name":"keyst
 out="$(GH_OUT="$GH_OUT" "$bin" "$inst")"
 printf '%s\n' "$out" | grep -q 'REGENERATED missing packet' || fail "keystone packet must be regenerated, got: $out"
 [[ -f "$pkt" ]] || fail "keystone packet file was not created"
-head -1 "$pkt" | grep -q '^difficulty: keystone' || fail "keystone issue must carry the difficulty: keystone marker as line 1, got: $(head -1 "$pkt")"
+head -1 "$pkt" | grep -q '^# Pi fleet issue worker' || fail "keystone packet must start with worker prompt, got: $(head -1 "$pkt")"
+grep -q '^difficulty: keystone$' "$pkt" || fail "keystone issue must carry the difficulty: keystone marker in the volatile tail, got: $(grep difficulty "$pkt" || echo '(none)')"
 grep -q '^TARGET: repo Nishfleet/fleet-ops issue 1149 unit pi-issue-fleet-ops-1149$' "$pkt" \
   || fail "keystone packet must still carry the TARGET line"
 ok "missing keystone .in regenerated with marker, then start fired"

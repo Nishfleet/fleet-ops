@@ -194,7 +194,11 @@ PARK_MAX_CLAIMS="${PI_INTAKE_PARK_MAX_CLAIMS:-3}"
 # reaches that read with a defined value; seat-lib.sh re-sets the identical
 # path when it is sourced live, so behavior is unchanged.
 ATTEMPTS_DIR="${ATTEMPTS_DIR:-${PI_PACKET_STATE:-$HOME/.local/state/pi-packet}/attempts}"
-WORKER_PROMPT="/home/nish/.pi/agent/prompts/worker.md"
+# Overridable for tests. A hardcoded /home/nish path crashes `set -e` on a
+# GitHub-hosted runner (fleet-ops#1407 / #4820): the armed-rung claim loop
+# `cat`s this file, and a missing path aborts the tick before ordinary-work
+# can be skipped-repair-rung.
+WORKER_PROMPT="${PI_INTAKE_WORKER_PROMPT:-/home/nish/.pi/agent/prompts/worker.md}"
 # fleet-ops#3247: repo-conditional worker prompt blocks. The D1 schema +
 # gate-integrity block ships only for 0509 (ideally only when the issue body
 # names migrations/ or .github/); the GEO/AEO block ships only when the issue
@@ -243,6 +247,14 @@ if [[ ! -d "$WORKER_BLOCKS_DIR" ]]; then
         WORKER_BLOCKS_DIR="$(cd "$_blocks_fallback" && pwd)"
     fi
 fi
+# Checkout fallback for worker.md (same pattern): CI and a worktree run
+# resolve the prompt from the repo before install.sh copies it into ~/.pi.
+if [[ ! -f "$WORKER_PROMPT" ]]; then
+    _prompt_fallback="$_tick_dir/../prompts/worker.md"
+    if [[ -f "$_prompt_fallback" ]]; then
+        WORKER_PROMPT="$(cd "$(dirname "$_prompt_fallback")" && pwd)/worker.md"
+    fi
+fi
 # fleet-ops#3309: claim-step size bounce. Tests override the path.
 SPEC_GATE_PY="${AGENT_READY_SPEC_GATE:-}"
 if [[ -z "$SPEC_GATE_PY" ]]; then
@@ -274,6 +286,34 @@ fi
 # shellcheck source=/home/nish/.local/lib/pi-packet/precedence-band.sh
 # shellcheck disable=SC1091  # external lib, absent in hosted CI
 . "$PRECEDENCE_BAND_LIB"
+# fleet-ops#4801: spec-judge lib (Kimi K3 Max over shared-file batches
+# before claim). Sourced like precedence-band; not executed. The judge
+# prompt path resolves from the repo checkout first (worktree run), then
+# the live install path, mirroring the WORKER_BLOCKS_DIR fallback above.
+SPEC_JUDGE_LIB="${SPEC_JUDGE_LIB:-}"
+if [[ -z "$SPEC_JUDGE_LIB" ]]; then
+    if [[ -f "$_tick_dir/spec-judge.sh" ]]; then
+        SPEC_JUDGE_LIB="$_tick_dir/spec-judge.sh"
+    elif [[ -f "$_tick_dir/../lib/spec-judge.sh" ]]; then
+        SPEC_JUDGE_LIB="$_tick_dir/../lib/spec-judge.sh"
+    else
+        SPEC_JUDGE_LIB="$HOME/.local/lib/pi-packet/spec-judge.sh"
+    fi
+fi
+if [[ -f "$SPEC_JUDGE_LIB" ]]; then
+    # shellcheck source=/dev/null
+    . "$SPEC_JUDGE_LIB"
+fi
+# The judge prompt (prompts/spec-judge.md). Resolve from the repo checkout
+# first (worktree run), then the live install path.
+SPEC_JUDGE_PROMPT="${SPEC_JUDGE_PROMPT:-}"
+if [[ -z "$SPEC_JUDGE_PROMPT" ]]; then
+    if [[ -f "$_tick_dir/../prompts/spec-judge.md" ]]; then
+        SPEC_JUDGE_PROMPT="$_tick_dir/../prompts/spec-judge.md"
+    else
+        SPEC_JUDGE_PROMPT="$HOME/.pi/agent/prompts/spec-judge.md"
+    fi
+fi
 # Each tick starts with a clean floor latch. The file is keyed on $$ so a
 # leftover from a recycled PID cannot freeze the floor for this tick
 # (fleet-ops#1452). The flock above already serializes fleet-ops ticks.
@@ -505,9 +545,28 @@ blocked_filter() {
         [ -z "$line" ] && continue
         ref=$(printf '%s' "$line" | sed -E 's/^blocked-on:[[:space:]]*//' | sed -E 's/[[:space:]]+$//')
         case "$ref" in
-            nish-decision|orchestrator|infra|senior-review)
+            nish-decision|orchestrator|infra|senior-review|senior-conference)
                 # Special marker — not an issue ref; always a live blocker.
                 any_open=1
+                continue
+                ;;
+            re-open-*)
+                # fleet-ops#4626: date-gate. A future timestamp is a live
+                # blocker; a past timestamp is stale (blocked-reconcile owns
+                # the smoke + label flip; intake must not re-wedge a flipped
+                # issue whose body still carries the spent gate).
+                _dg_rest="${ref#re-open-}"
+                if [[ "$_dg_rest" =~ ^([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(:[0-9]{2})?Z) ]]; then
+                    _dg_iso="${BASH_REMATCH[1]}"
+                    any_machine=1
+                    _dg_epoch=$(date -u -d "$_dg_iso" +%s 2>/dev/null) || _dg_epoch=""
+                    _now_epoch=$(date -u +%s)
+                    if [ -z "$_dg_epoch" ] || [ "$_now_epoch" -lt "$_dg_epoch" ]; then
+                        any_open=1
+                    fi
+                else
+                    any_open=1
+                fi
                 continue
                 ;;
             split)
@@ -568,6 +627,111 @@ blocked_filter() {
         return 1
     fi
     return 0
+}
+
+# fleet-ops#4808: depends-on gate. An agent-ready issue can carry a body
+# `depends-on:` line naming issues/PRs that must be DONE before it is
+# claimable (e.g. a seam batch where #2218 must land before the six sources
+# that depend on it). Claiming such an issue spawns a worker that cannot
+# make progress — it would have to hand-gate by removing agent-ready. This
+# filter resolves each named dependency and skips the issue (stays
+# agent-ready, no de-label) until every dependency is DONE.
+#
+# A dependency is DONE when the referenced issue is:
+#   - closed (state=closed), OR
+#   - has a merged PR whose branch is claim/issue-<n> or fable/issue-<n>, OR
+#   - has any merged PR linked via "closes #n" (a cross-referenced PR).
+#
+# Cycle: if A depends on B and B depends on A, neither can ever be DONE
+# while the other is open, so both are skipped with `depends-on-cycle`
+# instead of a misleading `skipped-depends-on:#n`.
+#
+# Caching: resolution is memoised per tick in the _dep_state_cache and
+# _dep_body_cache associative arrays (one gh call per referenced issue per
+# tick), so a dependency named by many issues costs one lookup.
+#
+# Args: $1=body  $2=repo (Nishfleet/<repo>)  $3=issue number
+# Returns: 0 = claimable (no deps, or all deps DONE); 1 = skip. On skip,
+# prints the reason (skipped-depends-on:#n or depends-on-cycle) to stdout.
+depends_on_filter() {
+    local body="$1" repo="$2" num="$3"
+    local ref owner rname target_num dep_key dep_state dep_body
+    local -a deps=()
+
+    # Parse the depends-on: line(s). Extract every #<n> (same repo) and
+    # owner/repo#<n>; prose like "none" or "any of" yields no refs.
+    mapfile -t deps < <(printf '%s\n' "$body" \
+        | grep -E '^depends-on:' \
+        | grep -oE '#[0-9]+|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+' || true)
+    (( ${#deps[@]} == 0 )) && return 0
+
+    for ref in "${deps[@]}"; do
+        if [[ "$ref" =~ ^#([0-9]+)$ ]]; then
+            owner="${repo%%/*}"; rname="${repo#*/}"; target_num="${BASH_REMATCH[1]}"
+        elif [[ "$ref" =~ ^([^/]+)/([^/]+)#([0-9]+)$ ]]; then
+            owner="${BASH_REMATCH[1]}"; rname="${BASH_REMATCH[2]}"; target_num="${BASH_REMATCH[3]}"
+        else
+            continue  # unparseable ref — ignore
+        fi
+        dep_key="${owner}/${rname}#${target_num}"
+
+        # Resolve the dependency's DONE state (memoised per tick).
+        if [[ -n "${_dep_state_cache[$dep_key]:-}" ]]; then
+            dep_state="${_dep_state_cache[$dep_key]}"
+        else
+            dep_state="$(resolve_dep "$owner" "$rname" "$target_num")"
+            _dep_state_cache[$dep_key]="$dep_state"
+        fi
+        if [[ "$dep_state" != "DONE" ]]; then
+            # Cycle detection: does the dependency itself depend on THIS
+            # issue? (A depends on B depends on A.) Fetch the dependency's
+            # body (memoised) and check its depends-on: line.
+            if [[ -n "${_dep_body_cache[$dep_key]:-}" ]]; then
+                dep_body="${_dep_body_cache[$dep_key]}"
+            else
+                dep_body="$(gh issue view "$target_num" -R "${owner}/${rname}" --json body --jq '.body // ""' 2>/dev/null || true)"
+                _dep_body_cache[$dep_key]="$dep_body"
+            fi
+            if printf '%s\n' "$dep_body" | grep -E '^depends-on:' \
+                | grep -qE "#${num}\b|${repo}#${num}\b"; then
+                echo "depends-on-cycle"
+                return 1
+            fi
+            echo "skipped-depends-on:$ref"
+            return 1
+        fi
+    done
+    return 0
+}
+
+# resolve_dep — is a referenced issue DONE? Prints DONE when the issue is
+# closed OR has a merged PR (claim/issue-<n>, fable/issue-<n>, or any PR
+# linked via "closes #n"); prints NOT_DONE otherwise. Fail-safe: a gh error
+# resolves to NOT_DONE (never claim on a lookup failure).
+# Args: $1=owner  $2=rname  $3=issue number
+resolve_dep() {
+    local owner="$1" rname="$2" num="$3"
+    local state_json state
+    state_json=$(gh api "repos/${owner}/${rname}/issues/${num}" 2>/dev/null) || { echo "NOT_DONE"; return; }
+    state=$(printf '%s' "$state_json" | jq -r '.state // "open"' 2>/dev/null || echo open)
+    if [[ "$state" == "closed" ]]; then
+        echo "DONE"; return
+    fi
+    # Merged PR with claim/issue-<n> or fable/issue-<n> branch.
+    if gh pr list -R "${owner}/${rname}" --head "claim/issue-${num}" --state merged --json number 2>/dev/null \
+        | jq -e 'length > 0' >/dev/null 2>&1; then
+        echo "DONE"; return
+    fi
+    if gh pr list -R "${owner}/${rname}" --head "fable/issue-${num}" --state merged --json number 2>/dev/null \
+        | jq -e 'length > 0' >/dev/null 2>&1; then
+        echo "DONE"; return
+    fi
+    # Any PR linked via "closes #n" that is merged (cross-referenced PR).
+    if gh api "repos/${owner}/${rname}/issues/${num}/timeline" 2>/dev/null \
+        | jq -e '[.[]? | select(.event == "cross-referenced") | .source.issue | select(.pull_request != null and .pull_request.merged_at != null)] | length > 0' >/dev/null 2>&1; then
+        echo "DONE"; return
+    fi
+    echo "NOT_DONE"
 }
 
 # Vacation park (fleet-ops#1165, vacation-audit-20260827 finding 12):
@@ -667,8 +831,10 @@ d1_gate_integrity_needed() {
 # heavy and routed all work to the small capable pool while ollama and the free
 # seats sat idle. Rules: keystone label/title -> keystone; label heavy, or body
 # > DIFFICULTY_HEAVY_BODY_BYTES, or more than DIFFICULTY_HEAVY_REQUIRED
-# `- required:` lines -> heavy; else light. Emitted as the packet's first line,
-# which packet_difficulty already honours.
+# `- required:` lines -> heavy; else light. Emitted AFTER the stable prompt
+# (fleet-ops#4643: prefix cache needs a byte-identical prefix; difficulty
+# is per-issue so it lives in the volatile tail). packet_difficulty scans
+# the whole packet for a standalone `difficulty:` line and still honours it.
 DIFFICULTY_HEAVY_BODY_BYTES="${PI_INTAKE_DIFFICULTY_HEAVY_BODY_BYTES:-6000}"
 DIFFICULTY_HEAVY_REQUIRED="${PI_INTAKE_DIFFICULTY_HEAVY_REQUIRED:-2}"
 issue_difficulty() {
@@ -684,8 +850,8 @@ issue_difficulty() {
     # spending the Cursor senior pool is "put `difficulty: senior-review` at the
     # top of the issue body so pick_seat routes it to the senior ladder", but
     # intake recomputed the header from title/labels/body-size and wrote its own
-    # value as the packet's FIRST line; packet_difficulty() (lib/seat-lib.sh)
-    # takes the first match, so the marker was silently dropped and
+    # value as the packet's difficulty line; packet_difficulty() (lib/seat-lib.sh)
+    # takes the first standalone match, so the marker was silently dropped and
     # senior-review work ran as weight=light on a worker seat. Deliberately
     # placed AFTER the label checks: the marker can only decide an unlabelled
     # packet, never downgrade a curated keystone/heavy label. Vocabulary is kept
@@ -792,6 +958,25 @@ scout_low_water() {
         || echo "low-water: start $unit failed rc=$? (non-fatal)"
     return 0
 }
+
+# fleet-ops#4801: spec-judge apply + failure fallback. These run EVERY
+# tick (even when there are no ready issues) so a landed verdict is applied
+# and a dead judge unit is handled regardless of the ready pool. The apply
+# step reads any verdict file for this repo and applies it mechanically;
+# the failure fallback relaunches a dead judge once and, on a second
+# failure, lets intake claim the batch unjudged after the window.
+if [[ -f "$SPEC_JUDGE_LIB" ]]; then
+    spec_judge_failure_fallback "$REPO" "$FULL"
+    # Apply any landed verdict for this repo. Iterate verdict files.
+    _sj_state="$(spec_judge_state_dir)"
+    _sj_glob="$_sj_state/verdict-${REPO}-*.md"
+    for _sj_verdict in $_sj_glob; do
+        [[ -e "$_sj_verdict" ]] || continue
+        _sj_sha="${_sj_verdict##*-}"
+        _sj_sha="${_sj_sha%.md}"
+        spec_judge_apply "$REPO" "$FULL" "$_sj_sha" "$_sj_verdict"
+    done
+fi
 
 if [[ -z "$issues_json" ]] || [[ "$issues_json" == "[]" ]]; then
     echo "no ready issues"
@@ -1287,41 +1472,79 @@ fi
 # returns NO USABLE SEAT, or usable slots < 2, for >= 2 consecutive ticks.
 # Then intake claims critical-path fleet-ops ONLY, exempt from yield caps
 # and the light-only/audition filter, capped at 2 concurrent rung workers,
-# every use logged REPAIR-RUNG. Release as soon as pick_seat reports >= 2
-# usable slots. The worker-side ladder (lib/seat-lib.sh) is litellm judge
-# -> mergegateway audition -> cursor keystone at cap 1; never a
-# money-walled seat (money stays Nish's, fleet-ops#3284).
+# every use logged REPAIR-RUNG. fleet-ops#4820: the rung stands down only
+# after pick_seat RETURNS a usable seat for DISARM_AFTER consecutive ticks
+# (mirrors the arm rule). Remaining-slot COUNT staying 0 while the ledger
+# is healthy is the latch this issue closes — COUNT is not the disarm
+# signal. While armed, a product-repo tick must still claim at least one
+# issue, or log why it cannot. The worker-side ladder (lib/seat-lib.sh)
+# is litellm judge -> mergegateway audition -> cursor keystone at cap 1;
+# never a money-walled seat (money stays Nish's, fleet-ops#3284).
 PI_INTAKE_REPAIR_RUNG_AFTER="${PI_INTAKE_REPAIR_RUNG_AFTER:-2}"
 PI_INTAKE_REPAIR_RUNG_MAX_CONCURRENT="${PI_INTAKE_REPAIR_RUNG_MAX_CONCURRENT:-2}"
+# fleet-ops#4820: the rung stands down only after this many CONSECUTIVE
+# ticks with a usable seat (mirrors the arm rule so a single recovered tick
+# cannot flap the rung off and back on).
+PI_INTAKE_REPAIR_RUNG_DISARM_AFTER="${PI_INTAKE_REPAIR_RUNG_DISARM_AFTER:-2}"
 repair_rung_state_file() {
     printf '%s' "${PI_INTAKE_REPAIR_RUNG_STATE:-/home/nish/workspaces/agent-state/pi-intake/repair-rung-state}"
 }
 
-repair_rung_strikes() {
-    local f _n=0
+# State file holds two space-separated integers: <strikes> <disarm_count>.
+# strikes = consecutive low-slot/outage ticks (arms the rung at AFTER).
+# disarm_count = consecutive ticks while armed where pick_seat returned a
+# usable seat (disarms at DISARM_AFTER). One line, two integers, so an
+# old single-number state file still reads as strikes=N disarm=0.
+repair_rung_read() {
+    local f _s=0 _d=0
     f=$(repair_rung_state_file)
-    _n=$(tr -cd '0-9' <"$f" 2>/dev/null || true)
-    [[ "$_n" =~ ^[0-9]+$ ]] || _n=0
-    printf '%s' "$_n"
+    if [[ -f "$f" ]]; then
+        read -r _s _d <"$f" 2>/dev/null || true
+    fi
+    _s=$(printf '%s' "$_s" | tr -cd '0-9')
+    _d=$(printf '%s' "$_d" | tr -cd '0-9')
+    [[ "$_s" =~ ^[0-9]+$ ]] || _s=0
+    [[ "$_d" =~ ^[0-9]+$ ]] || _d=0
+    printf '%s %s' "$_s" "$_d"
+}
+
+repair_rung_strikes() {
+    local _s _d
+    read -r _s _d < <(repair_rung_read)
+    printf '%s' "$_s"
+}
+
+repair_rung_write() {
+    local f
+    f=$(repair_rung_state_file)
+    mkdir -p "$(dirname "$f")" 2>/dev/null || true
+    printf '%s %s' "$1" "$2" >"$f" 2>/dev/null || true
 }
 
 # Count one low-slot/outage tick and return the consecutive strike count.
+# A low-slot tick also resets the disarm counter (recovery is not
+# consecutive across an outage).
 repair_rung_note_outage() {
-    local f _n=0
-    f=$(repair_rung_state_file)
-    _n=$(repair_rung_strikes)
-    _n=$(( _n + 1 ))
-    mkdir -p "$(dirname "$f")" 2>/dev/null || true
-    printf '%s' "$_n" >"$f" 2>/dev/null || true
-    printf '%s' "$_n"
+    local _s _d
+    read -r _s _d < <(repair_rung_read)
+    _s=$(( _s + 1 ))
+    repair_rung_write "$_s" 0
+    printf '%s' "$_s"
+}
+
+# Count one usable-slot tick while the rung is armed and return the
+# consecutive recovery count. Only meaningful when armed; a non-armed tick
+# never calls this.
+repair_rung_note_recovery() {
+    local _s _d
+    read -r _s _d < <(repair_rung_read)
+    _d=$(( _d + 1 ))
+    repair_rung_write "$_s" "$_d"
+    printf '%s' "$_d"
 }
 
 repair_rung_reset() {
-    local f
-    f=$(repair_rung_state_file)
-    if [[ -f "$f" ]]; then
-        printf '0' >"$f" 2>/dev/null || true
-    fi
+    repair_rung_write 0 0
     return 0
 }
 
@@ -1361,10 +1584,26 @@ repair_rung_concurrent() {
 # forever — the deadlock that kept the seat-repair issues skipped-capacity.
 _light_only_claims=0
 _repair_rung_armed=0
+_repair_rung_product_reserve=0
+_product_skip_reason=""
 heavy_seat=$(pick_seat "" "" 1 2>/dev/null) || heavy_seat=""
 if [[ -z "$heavy_seat" ]]; then
     echo "no usable heavy-capable seat (slots=$slots); light-only claims this tick — gate: pick_seat need_capable=1 (fleet-ops#4639)"
     _light_only_claims=1
+fi
+# fleet-ops#4820: disarm signal is a real pick_seat returning a seat, not
+# the remaining-slot COUNT (live latch: healthy seats, COUNT stayed 0).
+# A count-mode stub echoing a bare integer is not a seat.
+_rung_clear_seat="$heavy_seat"
+if [[ -z "$_rung_clear_seat" ]]; then
+    _rung_clear_seat=$(pick_seat "" "" 0 2>/dev/null || true)
+fi
+if [[ "$_rung_clear_seat" =~ ^[0-9]+$ ]]; then
+    _rung_clear_seat=""
+fi
+_repo_is_product=0
+if declare -F repo_is_product >/dev/null 2>&1 && repo_is_product "$REPO"; then
+    _repo_is_product=1
 fi
 
 # Usable seat-slot gate (fleet-ops#3732): capacity slots (RAM/config) are not
@@ -1382,38 +1621,72 @@ if [[ ! "$usable_light_slots" =~ ^[0-9]+$ ]]; then
     echo "usable seat-slot count unavailable (pick_seat count mode returned '${usable_light_slots:0:60}'); seat-slot gate fails open, keeping slots=$slots (fleet-ops#3732)"
     usable_light_slots=$slots
 fi
-if (( usable_light_slots < 2 )); then
+# fleet-ops#4820: pick_seat returning a seat (or COUNT >= 2) is recovery.
+# COUNT staying 0 while pick_seat still returns a seat was the live latch.
+_rung_has_seat=0
+if [[ -n "${_rung_clear_seat:-}" ]] || (( usable_light_slots >= 2 )); then
+    _rung_has_seat=1
+fi
+if (( _rung_has_seat == 1 )); then
+    _rung_strikes=$(repair_rung_strikes)
+    if (( _rung_strikes >= PI_INTAKE_REPAIR_RUNG_AFTER )); then
+        _rung_disarm=$(repair_rung_note_recovery)
+        if (( _rung_disarm >= PI_INTAKE_REPAIR_RUNG_DISARM_AFTER )); then
+            repair_rung_reset
+            echo "REPAIR-RUNG disarmed: pick_seat returned ${_rung_clear_seat:-unknown} for ${_rung_disarm} consecutive ticks (fleet-ops#4820)"
+            _repair_rung_armed=0
+        else
+            echo "REPAIR-RUNG recovery ${_rung_disarm}/${PI_INTAKE_REPAIR_RUNG_DISARM_AFTER}: pick_seat returned ${_rung_clear_seat:-slots $usable_light_slots}, standing down after ${PI_INTAKE_REPAIR_RUNG_DISARM_AFTER} consecutive ticks (fleet-ops#4820)"
+            if [[ "$REPO" == "fleet-ops" ]]; then
+                _repair_rung_armed=1
+            elif (( ${_repo_is_product:-0} == 1 )); then
+                _repair_rung_product_reserve=1
+            fi
+        fi
+    else
+        _rung_prev=$_rung_strikes
+        repair_rung_reset
+        if (( _rung_prev > 0 )); then
+            echo "REPAIR-RUNG released: pick_seat returned ${_rung_clear_seat:-slots $usable_light_slots} (was ${_rung_prev} consecutive low-slot ticks, fleet-ops#4639)"
+        fi
+    fi
+else
     # Judge spec (fleet-ops#4639): NO USABLE SEAT *or* usable slots < 2
-    # for >= 2 consecutive ticks opens the rung. A non-fleet-ops tick
-    # never arms it (rung admits critical-path fleet-ops only).
+    # for >= 2 consecutive ticks opens the rung. A non-fleet-ops,
+    # non-product tick never arms it (rung admits critical-path fleet-ops
+    # only). A product tick while the rung is armed globally must not
+    # hold — reserve one claim, or log why none is possible (fleet-ops#4820).
     _rung_strikes=$(repair_rung_note_outage)
     if (( _rung_strikes >= PI_INTAKE_REPAIR_RUNG_AFTER )); then
-        if [[ "$REPO" != "fleet-ops" ]]; then
-            if (( usable_light_slots <= 0 )) && [[ -z "$heavy_seat" ]]; then
-                echo "REPAIR-RUNG strike ${_rung_strikes} but repo $REPO is not fleet-ops; holding claims this tick — gate: repair-rung is fleet-ops-only (fleet-ops#4639)"
-                exit 0
-            fi
-        else
+        if [[ "$REPO" == "fleet-ops" ]]; then
             _repair_rung_armed=1
             echo "REPAIR-RUNG armed: ${_rung_strikes} consecutive ticks with usable slots ${usable_light_slots} < 2 — claiming critical-path fleet-ops issues only, cap ${PI_INTAKE_REPAIR_RUNG_MAX_CONCURRENT} concurrent rung workers (fleet-ops#4639)"
+        elif (( ${_repo_is_product:-0} == 1 )); then
+            echo "REPAIR-RUNG armed globally (${_rung_strikes} ticks) — product-reserve on $REPO (fleet-ops#4820)"
+            _repair_rung_product_reserve=1
+            _product_skip_reason="pick_seat returned empty"
+        else
+            echo "REPAIR-RUNG strike ${_rung_strikes} but repo $REPO is not fleet-ops; holding claims this tick — gate: repair-rung is fleet-ops-only (fleet-ops#4639)"
+            exit 0
         fi
     elif (( usable_light_slots <= 0 )) && [[ -z "$heavy_seat" ]]; then
         echo "no usable seat (heavy and light pools empty); holding claims this tick — gate: no usable seat slot (repair-rung strike ${_rung_strikes}/${PI_INTAKE_REPAIR_RUNG_AFTER}, fleet-ops#4639)"
         exit 0
     fi
-else
-    _rung_prev=$(repair_rung_strikes)
-    repair_rung_reset
-    if (( _rung_prev > 0 )); then
-        echo "REPAIR-RUNG released: usable slots $usable_light_slots >= 2 (was ${_rung_prev} consecutive low-slot ticks, fleet-ops#4639)"
-    fi
 fi
 # The rung claims do NOT come out of the light-slot pool (a critical-path
 # repair issue is usually heavy), so the light-slot clamp below is bypassed
 # while the rung is armed; the rung's own 2-concurrent cap applies instead.
+# fleet-ops#4820: a product-reserve tick with a usable seat gets one slot
+# even when COUNT is 0, so product intake is never zeroed by the latch.
 if (( _repair_rung_armed == 1 )); then
     slots=$PI_INTAKE_REPAIR_RUNG_MAX_CONCURRENT
-elif (( usable_light_slots <= 0 )) && [[ -n "$heavy_seat" ]]; then
+elif (( ${_repair_rung_product_reserve:-0} == 1 )) && [[ -n "${_rung_clear_seat:-}" || -n "$heavy_seat" ]]; then
+    if (( slots < 1 )); then
+        slots=1
+    fi
+    echo "REPAIR-RUNG product-reserve: granting 1 claim slot on $REPO (fleet-ops#4820)"
+elif (( usable_light_slots <= 0 )) && [[ -n "$heavy_seat" || -n "${_rung_clear_seat:-}" ]]; then
     slots=1
 elif (( usable_light_slots < slots )); then
     echo "usable seat slots $usable_light_slots < capacity slots $slots; claiming at most $usable_light_slots this tick (fleet-ops#3732)"
@@ -1525,6 +1798,61 @@ _self_maint_claims=0
 if product_first_is_self_maintenance "$REPO" || [[ "$REPO" == "fleet-ops" ]]; then
     _self_maint_cap=$(( slots * SELF_MAINT_CLAIM_PCT / 100 ))
     (( _self_maint_cap < 1 )) && _self_maint_cap=1
+fi
+
+# fleet-ops#4808: depends-on resolution caches, shared across every issue
+# in this tick so a dependency named by many issues costs one gh call.
+# _dep_state_cache: owner/repo#num -> DONE|NOT_DONE
+# _dep_body_cache:  owner/repo#num -> body (for cycle detection)
+declare -A _dep_state_cache=()
+declare -A _dep_body_cache=()
+
+# fleet-ops#4801: spec-judge batch detection + gate. Among agent-ready
+# issues, group those whose `files:` lines share a path (exact or same
+# directory). A group of >= 2 without a `spec-judged: <sha>` marker is a
+# batch needing judging. For such a batch, do NOT claim any member; launch
+# ONE judge run via pi-systemd-run (cursor/kimi-k3-max, judge-only). At
+# most one judge in flight per repo, never more than 3/hour fleet-wide.
+# Members of a batch being judged are skipped in the claim loop below via
+# the in-flight marker (spec_judge_skip_member).
+if [[ -f "$SPEC_JUDGE_LIB" && -f "$SPEC_JUDGE_PROMPT" ]]; then
+    _sj_issues=$(spec_judge_fetch_bodies "$FULL")
+    if [[ -n "$_sj_issues" && "$_sj_issues" != "[]" ]]; then
+        _sj_batches=$(spec_judge_group_batches "$_sj_issues")
+        if [[ -n "$_sj_batches" && "$_sj_batches" != "[]" ]]; then
+            printf '%s' "$_sj_batches" | jq -c '.[]' | while IFS= read -r _sj_batch; do
+                _sj_count=$(printf '%s' "$_sj_batch" | jq '.numbers | length' 2>/dev/null || echo 0)
+                (( _sj_count < 2 )) && continue
+                _sj_nums=$(printf '%s' "$_sj_batch" | jq -c '.numbers')
+                # Compute the batch sha over the member bodies.
+                _sj_bodies=$(printf '%s' "$_sj_batch" | jq -r '.numbers[]' | while IFS= read -r _sj_n; do
+                    printf '%s\n' "$_sj_issues" | jq -r --arg n "$_sj_n" '.[] | select(.number == ($n|tonumber)) | .body'
+                done)
+                _sj_sha=$(spec_judge_batch_sha "$_sj_bodies")
+                _sj_newest=$(printf '%s' "$_sj_batch" | jq -r '.numbers | max' 2>/dev/null || echo "")
+                # Marker present and matching -> already judged, no re-judge.
+                if [[ -n "$_sj_newest" ]] && spec_judge_has_marker "$FULL" "$_sj_newest" "$_sj_sha"; then
+                    continue
+                fi
+                # A judge already in flight for this repo -> members stay skipped.
+                if spec_judge_inflight "$REPO"; then
+                    echo "spec-judge: batch ${_sj_nums} skipped (judge in flight for $REPO)"
+                    continue
+                fi
+                # Fleet-wide hourly rate cap.
+                if ! spec_judge_rate_ok; then
+                    echo "spec-judge: batch ${_sj_nums} skipped (fleet-wide rate cap reached)"
+                    continue
+                fi
+                # Launch the judge.
+                if spec_judge_launch "$REPO" "$FULL" "$_sj_batch" "$_sj_sha" "$SPEC_JUDGE_PROMPT"; then
+                    echo "spec-judge: launched judge for batch ${_sj_nums} (sha=$_sj_sha)"
+                else
+                    echo "spec-judge: launch failed for batch ${_sj_nums}" >&2
+                fi
+            done
+        fi
+    fi
 fi
 
 for i in "${!numbers[@]}"; do
@@ -1771,6 +2099,37 @@ blocked-on: infra" 2>/dev/null || true
             END { print c+0 }
         ' <<<"$_claims_log_snapshot" 2>/dev/null || echo 0)
         if (( _cl_window_claims >= MAX_CLAIMS_IN_WINDOW )); then
+            # fleet-ops#4848: the orchestrator sweep may have ALREADY decided this
+            # issue (posted a `decision-resolved:` line and released it
+            # agent-ready). Re-parking a decided issue to needs-orchestrator
+            # re-asks a settled question and loops the sweep against the
+            # claim-loop (FleetNeedsOrchestratorStale). When a live
+            # `decision-resolved:` marker exists, keep agent-blocked but do
+            # NOT add needs-orchestrator; post blocked-on: infra so the
+            # seat-fault escalator (blocked-reconcile, auto-release after 2h
+            # on a healthy seat, senior-review on second release) owns it —
+            # matching the alert's "escalate the seat fault, do not re-park"
+            # guidance. The comment fetch is only done when the gate is about
+            # to fire, so an ordinary issue costs nothing extra.
+            _cl_decided=0
+            _cl_cjson=$(gh issue view "$N" -R "$FULL" --json comments 2>/dev/null) || _cl_cjson=""
+            # The sweep posts `decision-resolved:` either on its own line at
+            # the end of the DECISION comment (canonical, per the sweep
+            # prompt) or inline at the end of the same line (observed
+            # 2026-09-10). Match a `decision-resolved:` token anywhere in
+            # the joined comments — the only source of that token in
+            # practice is the sweep's own DECISION verdict.
+            if [[ -n "$_cl_cjson" ]] && printf '%s' "$_cl_cjson" | jq -r '[.comments[]?.body // empty] | join("\n")' 2>/dev/null | grep -q 'decision-resolved:'; then
+                _cl_decided=1
+            fi
+            if (( _cl_decided == 1 )); then
+                echo "issue $N ($title): skipped-claim-loop (claimed ${_cl_window_claims}x in ${RECLAIM_WINDOW_S}s window, cap=$MAX_CLAIMS_IN_WINDOW) - already decided (decision-resolved:), escalating seat fault, not re-parking to orchestrator" >&2
+                gh issue edit "$N" -R "$FULL" --add-label agent-blocked --remove-label agent-ready 2>/dev/null || true
+                gh issue comment "$N" -R "$FULL" --body "fleet-ops#4848: issue $N has been claimed ${_cl_window_claims} times in the last ${RECLAIM_WINDOW_S}s (cap=$MAX_CLAIMS_IN_WINDOW) with no open PR, but the orchestrator sweep already posted a \`decision-resolved:\` verdict — the decision is settled, so re-parking to needs-orchestrator would only re-ask it. Keeping agent-blocked and escalating the seat fault instead (fleet-ops#3310/#3527): the claim path is spinning dead workers into the seat pool. The seat-fault escalator owns this until a healthy seat can run it.
+
+blocked-on: infra" 2>/dev/null || true
+                continue
+            fi
             echo "issue $N ($title): skipped-claim-loop (claimed ${_cl_window_claims}x in ${RECLAIM_WINDOW_S}s window, cap=$MAX_CLAIMS_IN_WINDOW) - escalating to agent-blocked" >&2
             gh issue edit "$N" -R "$FULL" --add-label agent-blocked --add-label needs-orchestrator --remove-label agent-ready 2>/dev/null || true
             gh issue comment "$N" -R "$FULL" --body "fleet-ops#2772: issue $N has been claimed ${_cl_window_claims} times in the last ${RECLAIM_WINDOW_S}s (cap=$MAX_CLAIMS_IN_WINDOW) with no open PR — the claim path is spinning dead workers into the seat pool instead of completing. Routing to the orchestrator decision sweep (fleet-ops#4260), not Nish: a claim-loop break is not a money/legal/product-direction/customer-data question.
@@ -1874,6 +2233,33 @@ blocked-on: orchestrator" 2>/dev/null || true
         echo "issue $N ($title): skipped-blocked-on"
         continue
     fi
+
+    # fleet-ops#4801: skip members of a batch being judged (not de-labelled).
+    # The in-flight marker lists the batch; while the judge runs, intake does
+    # not claim any member so the verdict lands before a worker touches them.
+    if [[ -f "$SPEC_JUDGE_LIB" ]] && spec_judge_skip_member "$REPO" "$N"; then
+        echo "issue $N ($title): skipped-spec-judge (member of a batch being judged)"
+        continue
+    fi
+
+    # fleet-ops#4808: depends-on gate. Never claim an issue whose body
+    # carries a `depends-on:` line naming an issue/PR that is not yet DONE
+    # (closed or merged). The issue stays agent-ready (no de-label); the
+    # next tick re-checks once the dependency lands. The filter prints the
+    # skip reason (skipped-depends-on:#n or depends-on-cycle) and returns 1.
+    #
+    # The filter is called in the CURRENT shell (stdout redirected to a
+    # temp file, not a $(...) subshell) so the per-tick memo caches
+    # (_dep_state_cache / _dep_body_cache) persist across every issue in
+    # this tick — a dependency named by many issues costs one gh call.
+    _dep_reason_file="$(mktemp)"
+    if ! depends_on_filter "$body" "$FULL" "$N" >"$_dep_reason_file"; then
+        _dep_reason="$(cat "$_dep_reason_file")"
+        rm -f "$_dep_reason_file"
+        echo "issue $N ($title): $_dep_reason"
+        continue
+    fi
+    rm -f "$_dep_reason_file"
 
     # fleet-ops#3309: more than 2 live required: lines bounce (agent-blocked)
     # and must not push a claim branch. Struck-through lines do not count.
@@ -2063,26 +2449,24 @@ blocked-on: orchestrator" 2>/dev/null || true
     fi
 
     # Write the worker packet so pi-issue-run can pick its own seat at run time.
-    # fleet-ops#3247: append repo-conditional blocks AFTER the base prompt so
-    # D1 + gate-integrity ships only for 0509 (ideally only when the body names
-    # migrations/ or .github/) and GEO/AEO ships only for geo/aeo-labelled
-    # issues. Non-0509 / non-geo packets stay lean. A missing fragment file is
-    # non-fatal: the packet is still written with the base prompt + TARGET line
-    # so the worker runs rather than not at all (same fail-open posture as the
-    # keystone marker in pi-issue-start).
+    # fleet-ops#4643: [stable prefix][volatile tail]. Stable prefix is worker.md
+    # plus the repo-conditional fragments (D1 / GEO files are themselves stable).
+    # Difficulty and TARGET are per-issue so they come AFTER the last stable byte.
+    # fleet-ops#3247: D1 + gate-integrity ships only for 0509 (ideally only when
+    # the body names migrations/ or .github/) and GEO/AEO ships only for
+    # geo/aeo-labelled issues. Non-0509 / non-geo packets stay lean. A missing
+    # fragment file is non-fatal: the packet is still written with the base
+    # prompt + TARGET line so the worker runs rather than not at all (same
+    # fail-open posture as the keystone marker in pi-issue-start).
     packet_path="$ISSUE_STATE_DIR/${REPO}-${N}.in"
     # difficulty was computed at the light-only filter above (fleet-ops#4639:
     # one issue_difficulty pass per issue; the filter and the header share it).
     {
-        echo "difficulty: $difficulty"
-        # fleet-ops#4639: repair-rung claims carry the seat-rung marker so
-        # pi-issue-run arms PI_REPAIR_RUNG and pick_seat may fall back to the
-        # reserved rung ladder (litellm judge -> mergegateway audition ->
-        # cursor keystone cap 1) when every allowlisted seat is dead.
-        if [[ "$_repair_rung_armed" == "1" ]]; then
-            echo "seat-rung: repair"
+        if [[ -f "$WORKER_PROMPT" ]]; then
+            cat "$WORKER_PROMPT"
+        else
+            echo "pi-intake-tick: worker prompt missing at $WORKER_PROMPT; writing TARGET-only packet (fail-open, fleet-ops#1407)" >&2
         fi
-        cat "$WORKER_PROMPT"
         if d1_gate_integrity_needed "$body" \
             && [[ -f "$WORKER_BLOCKS_DIR/$D1_GATE_INTEGRITY_BLOCK" ]]; then
             echo
@@ -2094,6 +2478,16 @@ blocked-on: orchestrator" 2>/dev/null || true
             cat "$WORKER_BLOCKS_DIR/$GEO_AEO_BLOCK"
         fi
         echo
+        # Volatile tail (fleet-ops#4643): difficulty, seat-rung and TARGET are
+        # per-issue, so they come AFTER the last stable byte. fleet-ops#4639:
+        # repair-rung claims carry the seat-rung marker so pi-issue-run arms
+        # PI_REPAIR_RUNG and pick_seat may fall back to the reserved rung
+        # ladder (litellm judge -> mergegateway audition -> cursor keystone
+        # cap 1) when every allowlisted seat is dead.
+        echo "difficulty: $difficulty"
+        if [[ "$_repair_rung_armed" == "1" ]]; then
+            echo "seat-rung: repair"
+        fi
         echo "TARGET: repo $FULL issue $N unit pi-issue-${REPO}-${N}"
     } > "$packet_path"
 
@@ -2235,6 +2629,8 @@ blocked-on: orchestrator" 2>/dev/null || true
     # drill greps the intake journal for (accept 1/3).
     if [[ "$_repair_rung_armed" == "1" ]]; then
         echo "REPAIR-RUNG: claimed critical-path issue $N on the repair rung (concurrency cap $PI_INTAKE_REPAIR_RUNG_MAX_CONCURRENT, fleet-ops#4639)"
+    elif (( ${_repair_rung_product_reserve:-0} == 1 )); then
+        echo "REPAIR-RUNG product-reserve: claimed issue $N on $REPO while rung armed (fleet-ops#4820)"
     fi
     _claimed_this_tick=$(( _claimed_this_tick + 1 ))
     # fleet-ops#3784: stagger cohort spawns so clone/npm/pi startup peaks do
@@ -2292,5 +2688,16 @@ done
 _ready_after=$(( ready_count - _claimed_this_tick ))
 (( _ready_after < 0 )) && _ready_after=0
 scout_low_water "$_ready_after"
+
+# fleet-ops#4820: while the rung is armed a product tick must either claim
+# one issue or say why it could not. A silent 0-claim product tick is
+# the starvation this issue closes.
+if (( ${_repair_rung_product_reserve:-0} == 1 )); then
+    if (( _claimed_this_tick > 0 )); then
+        echo "REPAIR-RUNG product-reserve: claimed $_claimed_this_tick issue(s) on $REPO while rung armed (fleet-ops#4820)"
+    else
+        echo "REPAIR-RUNG product-reserve: no product claim this tick — ${_product_skip_reason:-no agent-ready issue claimed} (fleet-ops#4820)"
+    fi
+fi
 
 exit 0

@@ -231,6 +231,20 @@
       "bypass_checks": []
     },
     {
+      "id": "spec-judge",
+      "gate": "Kimi K3 Max (cursor/kimi-k3-max, judge-only) reviews every batch of >= 2 agent-ready tickets that share files BEFORE a worker may claim a member; verdict applied mechanically (READY/EDIT/BLOCK), never implemented by the judge (fleet-ops#4801)",
+      "proof": [
+        "prompts/spec-judge.md",
+        "lib/spec-judge.sh",
+        "lib/pi-intake-tick.sh"
+      ],
+      "units": [],
+      "prompts": [
+        "spec-judge.md"
+      ],
+      "bypass_checks": []
+    },
+    {
       "id": "rulebook-redteam",
       "gate": "sibling .bak-rulebook-redteam-YYYYMMDD backups are required before filing; monthly timer + heading-growth bonus; cadence-overdue screams",
       "proof": [
@@ -260,6 +274,7 @@
         "systemd/fleet-litellm-health-canary.service",
         "systemd/fleet-litellm-health-canary.timer",
         "libexec/fleet-litellm-health-canary.py",
+        "libexec/fleet-litellm-prisma-compat/sitecustomize.py",
         "config/litellm-proxy.yaml",
         "config/fleet-organs.json",
         "config/fleet_rules.yml",

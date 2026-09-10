@@ -286,7 +286,7 @@ main() {
     fi
 
     FLEET_OPS_CHECKOUT="$CHECKOUT" \
-    FLEET_OPS_DEPLOY_AUDIT_LOG="${FLEET_OPS_DEPLOY_AUDIT_LOG:-$AS/../tooling/fleet-ops-deploy/logs/deploy-audit.log}" \
+    FLEET_OPS_DEPLOY_AUDIT_LOG="${FLEET_OPS_DEPLOY_AUDIT_LOG:-$HOME/.local/state/fleet-heartbeat/deploy-audit.log}" \
     FLEET_OPS_TRIAGE="$TRIAGE" \
         "$DEPLOY_BIN" || rc=$?
 

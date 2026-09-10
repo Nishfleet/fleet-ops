@@ -60,8 +60,10 @@ fi
 # onto a surviving claim branch (open PR, or intake re-claim that lost the
 # race but the branch persisted) reaches here with no .in. systemd would
 # then fail 208/STDIN. Rebuild the packet exactly as intake does
-# (prompts/intake.md step 3d): worker prompt + TARGET line, with the
-# `difficulty: keystone` marker when the issue is a keystone (fleet-ops#1133).
+# (prompts/intake.md step 3d): worker prompt first (stable prefix),
+# then the `difficulty:` marker and TARGET line in the volatile tail
+# (fleet-ops#4643). The keystone marker still lands when the issue is a
+# keystone (fleet-ops#1133) so packet_difficulty still routes it.
 pkt="$PI_ISSUES_DIR/${instance}.in"
 if [[ ! -f "$pkt" ]]; then
     repo="${instance%-*}"
@@ -78,8 +80,9 @@ if [[ ! -f "$pkt" ]]; then
     full_repo="Nishfleet/${repo}"
     unit_name="pi-issue-${instance}"
     # Keystone routing (fleet-ops#1133): if the issue title/body/labels carry
-    # "keystone" (case-insensitive), prefix the marker so pick_seat uses
-    # reliability-first routing. This mirrors intake step 3d exactly. A gh
+    # "keystone" (case-insensitive), write the marker in the volatile tail so
+    # pick_seat uses reliability-first routing. This mirrors intake step 3d
+    # exactly (fleet-ops#4643: marker AFTER worker.md, never before). A gh
     # failure is non-fatal: the packet is still written without the marker,
     # and the worker runs with default routing rather than not at all.
     keystone=0
@@ -89,11 +92,14 @@ if [[ ! -f "$pkt" ]]; then
             keystone=1
         fi
     fi
-    if [[ "$keystone" == "1" ]]; then
-        { printf 'difficulty: keystone\n'; cat "$WORKER_PROMPT"; echo; echo "TARGET: repo $full_repo issue $issue unit $unit_name"; } > "$pkt"
-    else
-        { cat "$WORKER_PROMPT"; echo; echo "TARGET: repo $full_repo issue $issue unit $unit_name"; } > "$pkt"
-    fi
+    {
+        cat "$WORKER_PROMPT"
+        echo
+        if [[ "$keystone" == "1" ]]; then
+            printf 'difficulty: keystone\n'
+        fi
+        echo "TARGET: repo $full_repo issue $issue unit $unit_name"
+    } > "$pkt"
     echo "pi-issue-start: REGENERATED missing packet $pkt for $full_repo#$issue"
 fi
 

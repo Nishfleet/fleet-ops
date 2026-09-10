@@ -72,6 +72,30 @@ if sys.argv[1:3] == ["issue", "list"]:
 if sys.argv[1] == "issue" and sys.argv[2] in ("comment", "close", "edit"):
     sys.exit(0)
 
+# issue view --json title --jq .title: return the title that was actually
+# filed for this issue number (fleet-ops#4622 verify_filed_signal). The fake
+# fleet-issue-file logs each filing to FAKE_FLEET_ISSUE_FILE_LOG; read the
+# most recent entry's title so the verify matches the signal key.
+if sys.argv[1:3] == ["issue", "view"] and "--json" in sys.argv and "title" in sys.argv:
+    override = os.environ.get("FAKE_GH_VIEW_TITLE", "")
+    if override:
+        print(override)
+        sys.exit(0)
+    log_path = os.environ.get("FAKE_FLEET_ISSUE_FILE_LOG", "")
+    title = ""
+    if log_path:
+        try:
+            with open(log_path, encoding="utf-8") as f:
+                lines = [ln for ln in f.read().splitlines() if ln.strip()]
+            if lines:
+                import json as _json
+                entry = _json.loads(lines[-1])
+                title = entry.get("title", "")
+        except (OSError, ValueError):
+            pass
+    print(title or "alarm: ESCALATION-CANARY-PENDING — terminal delivery not wired [loud/escalation-canary-pending/terminal-delivery-wired]")
+    sys.exit(0)
+
 sys.exit(1)
 PY
 chmod +x "$tmp/gh"
@@ -370,5 +394,65 @@ if grep -Eq 'issue list.*(--json|--jq).*comments' "$tmp/gh.log"; then
     fail "scenario 11: bulk gh issue list must not request comments (504 cause)"
 fi
 ok "scenario 11: live loader omits comments from the bulk list and observe-to-close still works"
+
+# ---------------------------------------------------------------------------
+# 12. FILED-LINK-MISMATCH (fleet-ops#4622): fleet-issue-file may dedupe to
+#     an unrelated issue and return its URL. The reconciler must verify the
+#     returned issue's title carries the signal key; on mismatch it emits a
+#     LOUD FILED-LINK-MISMATCH so the wrong pointer can never satisfy
+#     observe-to-close. Prove: (a) a wrong title -> LOUD + summary counter;
+#     (b) a matching title -> no LOUD.
+# ---------------------------------------------------------------------------
+cat > "$tmp/triage12.md" <<'EOF'
+[2026-08-28T13:30:00Z] [ESCALATION-CANARY-PENDING] terminal delivery not wired (#76)
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+
+# 12a. wrong title -> LOUD FILED-LINK-MISMATCH + filed_mismatches counter.
+env "${common_env[@]}" FAKE_GH_VIEW_TITLE="claude OAuth quota meter silently dead" \
+    FLEET_SIGNAL_RECONCILE_OPEN_ISSUES_JSON="$tmp/empty.json" \
+    python3 "$lib" --triage "$tmp/triage12.md" --tick-start "2026-08-28T13:30:00Z" \
+    --ok-to-close 1 --json --now "2026-08-28T13:45:00Z" 2>"$tmp/stderr12a.json" \
+    > "$tmp/summary12a.json" || true
+jq -e '.filed == 1' "$tmp/summary12a.json" >/dev/null \
+    || fail "scenario 12a: expected one filed (got: $(cat "$tmp/summary12a.json"))"
+jq -e '.filed_mismatches == 1' "$tmp/summary12a.json" >/dev/null \
+    || fail "scenario 12a: expected filed_mismatches==1 (got: $(cat "$tmp/summary12a.json"))"
+grep -q 'FILED-LINK-MISMATCH' "$tmp/stderr12a.json" \
+    || fail "scenario 12a: expected LOUD FILED-LINK-MISMATCH on stderr"
+ok "scenario 12a: wrong-title filed pointer -> LOUD FILED-LINK-MISMATCH + counter"
+
+# 12b. matching title -> no LOUD, no mismatch counter.
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+# Recreate the triage file: 12a's LOUD FILED-LINK-MISMATCH was appended to it.
+cat > "$tmp/triage12.md" <<'EOF'
+[2026-08-28T13:30:00Z] [ESCALATION-CANARY-PENDING] terminal delivery not wired (#76)
+EOF
+env "${common_env[@]}" \
+    FLEET_SIGNAL_RECONCILE_OPEN_ISSUES_JSON="$tmp/empty.json" \
+    python3 "$lib" --triage "$tmp/triage12.md" --tick-start "2026-08-28T13:30:00Z" \
+    --ok-to-close 1 --json --now "2026-08-28T13:45:00Z" 2>"$tmp/stderr12b.json" \
+    > "$tmp/summary12b.json" || true
+jq -e '.filed == 1' "$tmp/summary12b.json" >/dev/null \
+    || fail "scenario 12b: expected one filed (got: $(cat "$tmp/summary12b.json"))"
+jq -e '(.filed_mismatches // 0) == 0' "$tmp/summary12b.json" >/dev/null \
+    || fail "scenario 12b: expected filed_mismatches==0 (got: $(cat "$tmp/summary12b.json"))"
+grep -q 'FILED-LINK-MISMATCH' "$tmp/stderr12b.json" \
+    && fail "scenario 12b: matching title must NOT emit FILED-LINK-MISMATCH"
+ok "scenario 12b: matching-title filed pointer -> no FILED-LINK-MISMATCH"
+
+# 12c. issue_title embeds the signal key (regression guard).
+python3 -c '
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("dqr", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+sig = "loud/escalation-canary-pending/terminal-delivery-wired"
+t = m.issue_title("ESCALATION-CANARY-PENDING", "terminal delivery not wired (#76)", signal=sig)
+assert sig in t, ("title must embed signal key", t)
+print("issue_title embeds signal:", t)
+' "$lib" || fail "scenario 12c: issue_title must embed the signal key"
+ok "scenario 12c: issue_title embeds the signal key in the title"
 
 ok "all signal-reconcile scenarios passed"

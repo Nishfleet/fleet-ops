@@ -188,8 +188,9 @@ run_park_case() {
     c=$(jq -r '.consecutive_failure_count' "$lf")
     [[ "$c" == "$case_ceil" ]] || fail "$label count = $c, want $case_ceil"
     w=$(wall_s_of "$lf" "$field")
-    (( w >= park - 120 && w <= park + 120 )) \
-        || fail "$label wall = ${w}s, want ~${park}s (parked)"
+    # fleet-ops#4640: writers clamp non-money parks at 6h.
+    (( w >= 21600 - 120 && w <= 21600 + 120 )) \
+        || fail "$label wall = ${w}s, want ~21600s (6h clamp, fleet-ops#4640)"
     _seat_parked_by_ceiling "$c" "$case_ceil" || fail "$label count $c should be parked"
     metric_has "$p" "$m" "$c" || fail "$label metric NOT emitted for $p/$m"
     # seat_usable must hold the parked seat.
@@ -218,10 +219,10 @@ mark_seat_quota_bench "$p" "$m" "test:live:72" >/dev/null 2>&1 \
 c=$(jq -r '.consecutive_failure_count' "$lf")
 [[ "$c" == "73" ]] || fail "live-72 count = $c, want 73"
 w=$(wall_s_of "$lf" bench_until)
-# fleet-ops#3941: the park wall ESCALATES with the count past the ceiling.
-# count=73, ceiling=60 -> extra=14 -> wall = 14 * 86400 = 1209600s.
-(( w >= 1209600 - 120 && w <= 1209600 + 120 )) \
-    || fail "live-72 wall = ${w}s, want ~1209600s (escalated park, count=73, ceiling=60)"
+# fleet-ops#4640: non-money quota park is clamped at 6h even when the
+# ceiling formula escalates past that.
+(( w >= 21600 - 120 && w <= 21600 + 120 )) \
+    || fail "live-72 wall = ${w}s, want ~21600s (6h clamp, fleet-ops#4640)"
 metric_has "$p" "$m" "$c" || fail "live-72 metric NOT emitted"
 ok "live state (72 -> 73): parked on next failure, wall=${w}s (escalated), metric emitted"
 

@@ -977,6 +977,39 @@ is_sandbox_localhost_error() {
     grep -qiF 'error connecting to localhost' <<<"$out"$'\n'"$err"
 }
 
+# fleet-ops#4825: the Devin CLI refuses an untrusted workspace with the literal
+# "Refusing to run in an untrusted workspace". This is a CONFIG/TRUST fault, not
+# a seat yield, not a quota wall, not a transient retry. The seat-retirement
+# standing rule classes config/trust faults as INFRASTRUCTURE: the seat is
+# skipped (benched) but NEVER retired on it, so devin is not walled out of the
+# fleet by a misconfigured trust key. The fix is the managed config key
+# `skip_workspace_trust: true` (pinned by install.sh), but the detector must
+# still classify the literal so a future vendor change that re-breaks the
+# config cannot silently retire the seat as an ordinary failure.
+is_workspace_trust_error() {
+    local out="$1" err="$2"
+    local combined="$out"$'\n'"$err"
+    [[ -n "$combined" ]] || return 1
+    grep -qiF 'Refusing to run in an untrusted workspace' <<<"$combined"
+}
+
+# fleet-ops#4780: the Devin CLI under `--sandbox` forces its "autonomous"
+# permission mode, which since 2026-09-08 rejects every file write
+# non-interactively with the literal "rejected a tool call that requires
+# confirmation". Every run then ends empty at the first edit (100% empty
+# runs, 30+ on 2026-09-09). This is a CLI/flag CONFIG fault, not a seat
+# yield: the fix is dropping `--sandbox` (the provider now runs
+# `--permission-mode dangerous` unsandboxed, standing VPS write autonomy
+# Nish 2026-08-05). The detector must still classify the literal so a
+# future vendor change that re-breaks the flag cannot silently retire the
+# seat as an ordinary failure.
+is_devin_writes_rejected() {
+    local out="$1" err="$2"
+    local combined="$out"$'\n'"$err"
+    [[ -n "$combined" ]] || return 1
+    grep -qiF 'rejected a tool call that requires confirmation' <<<"$combined"
+}
+
 # Default bench window (seconds) for a provider's quota/cap 429 when the
 # error text carries no explicit reset window (fleet-ops#90). 0 = no default
 # configured; the writer then fails open (no marker) and relies on the
@@ -2770,7 +2803,7 @@ seat_spawn_bench_path() {
 # marker on every writer call lets the count survive the clobber and the
 # failure-ceiling park actually engage for a CHRONIC no-op'ing seat (the live
 # 18 empty runs in 2h on healthy-reporting seats — fleet-ops#2627).
-# Args: provider model usable_at reason backoff_s count failure_mode [seat_dead]
+# Args: provider model usable_at reason backoff_s count failure_mode [seat_dead] [source]
 # fleet-ops#3889: the trailing [seat_dead] (optional, default false) lets the
 # spawn_fail writer project a durable corpse (seat_dead=true) onto the
 # clobber-proof marker. seat-health.ts resets the LEDGER's seat_dead to false
@@ -2778,26 +2811,97 @@ seat_spawn_bench_path() {
 # xkiro/deepseek-v4-flash at 47 spawn_fail showed) — the marker is the only
 # record seat-health.ts never touches, so a spawn_fail corpse must live there
 # to survive the clobber.
+# fleet-ops#4640: a wall length is a claim about the PROVIDER; a wrapper
+# exit code is evidence about the LANE. Never the former from the latter.
+_seat_wall_source_justified() {
+    case "${1:-}" in
+        money_boundary|provider_quota_window) return 0 ;;
+    esac
+    return 1
+}
+
+_seat_text_is_money_wall() {
+    local text="$1"
+    [[ -n "$text" ]] || return 1
+    grep -qiE '\b402\b|insufficient[[:space:]]+credits|credit_insufficient|budget_exceeded|budget_error|usage[[:space:]]+balance[[:space:]]+exhausted|credit[[:space:]]+balance[[:space:]]+depleted|out[[:space:]]+of[[:space:]]+credits|money_boundary' <<<"$text"
+}
+
+_seat_clamp_non_money_window_s() {
+    local window="${1:-0}" source="${2:-}" declared="${3:-}"
+    local max="${SEAT_NON_MONEY_WALL_MAX_S:-21600}"
+    [[ "$window" =~ ^[0-9]+$ ]] || window=0
+    [[ "$max" =~ ^[0-9]+$ ]] || max=21600
+    # fleet-ops#4640/#4800: quota_bench_default_s in seat-caps.json is the
+    # operator-declared provider reset window (cline = the 604800 s ClinePass
+    # weekly reset). Clamping THAT to 6 h would release a seat that is provably
+    # walled for a week, and the next tick would smoke it — re-anchoring
+    # observed_at and re-firing FleetProviderQuotaExhausted. Only the declared
+    # window is exempt: a geometric escalation or a 24 h failure-ceiling park
+    # built ON TOP of it is still clamped, and a wrapper rc=1 with no declared
+    # window keeps #4640's 6 h ceiling.
+    if [[ "$declared" =~ ^[0-9]+$ ]] && (( declared > max )); then
+        max="$declared"
+    fi
+    if _seat_wall_source_justified "$source"; then
+        printf '%s' "$window"
+        return 0
+    fi
+    if (( window > max )); then
+        printf '%s' "$max"
+        return 0
+    fi
+    printf '%s' "$window"
+}
+
 _seat_write_spawn_bench() {
     local p="$1" m="$2" usable="$3" reason="$4" backoff="$5"
     local count="${6:-0}" mode="${7:-unknown}" seat_dead="${8:-false}"
-    local path now_utc tmp
+    local source="${9:-}"
+    local path now_utc tmp usable_s now_s remain max_s
     # fleet-ops#3661: never write a spawn-bench marker for a phantom seat key.
     if ! _seat_key_guard "$p" "$m" "_seat_write_spawn_bench"; then return 1; fi
+    # fleet-ops#4640: a wrapper exit code is a LANE fault, never a provider wall.
+    if [[ "$reason" == no_block:rc=* ]]; then
+        seat_log "LANE-FAULT: $p/$m reason=$reason has no provider HTTP status — spawn-bench not written (fleet-ops#4640)"
+        return 1
+    fi
+    now_s=$(date -u +%s)
+    usable_s=$(date -u -d "$usable" +%s 2>/dev/null || echo 0)
+    max_s="${SEAT_NON_MONEY_WALL_MAX_S:-21600}"
+    [[ "$max_s" =~ ^[0-9]+$ ]] || max_s=21600
+    if [[ "$usable_s" =~ ^[0-9]+$ ]] && (( usable_s > now_s )); then
+        remain=$(( usable_s - now_s ))
+        if (( remain > max_s )) && ! _seat_wall_source_justified "$source"; then
+            seat_log "WALL-REFUSED: $p/$m usable_at=$usable remain=${remain}s > ${max_s}s without source in {money_boundary,provider_quota_window} writer=_seat_write_spawn_bench reason=$reason (fleet-ops#4640)"
+            return 1
+        fi
+    fi
     path=$(seat_spawn_bench_path "$p" "$m")
     [[ "$count" =~ ^[0-9]+$ ]] || count=0
     [[ "$seat_dead" == "true" || "$seat_dead" == "false" ]] || seat_dead=false
     now_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    # fleet-ops#4819: a wrapper bench (empty_run / spawn_fail) is a LANE fault
+    # that seat-health.ts clobbers back to healthy on the next transport 200
+    # (after_provider_response carries status+headers only, never the body).
+    # The marker is the durable disqualifying evidence, so it must carry the
+    # release contract inline: `release_requires: real-work-probe` tells the
+    # next judge (human or automated) that the standing smoke (a tools=0
+    # inline reply) can NEVER release this seat — only a real-work probe
+    # (tools > 0 AND non-empty stdout) may. The citation names the issue that
+    # documents the empty-run churn the bench guards against.
+    local release_requires="real-work-probe" citation="fleet-ops#3737"
     tmp="$path.$$.$RANDOM.tmp"
     if jq -nc \
         --arg provider "$p" --arg model "$m" --arg usable "$usable" \
         --arg reason "$reason" --arg written "$now_utc" --argjson backoff "$backoff" \
         --arg mode "$mode" --argjson count "$count" --argjson seat_dead "$seat_dead" \
-        --arg writer "_seat_write_spawn_bench" \
+        --arg writer "_seat_write_spawn_bench" --arg source "$source" \
+        --arg release_requires "$release_requires" --arg citation "$citation" \
         '{provider:$provider, model:$model, usable_at:$usable,
           reason:$reason, written_at:$written, backoff_s:$backoff,
           failure_mode:$mode, consecutive_failure_count:$count,
-          seat_dead:$seat_dead, writer:$writer}' \
+          seat_dead:$seat_dead, writer:$writer, source:$source,
+          release_requires:$release_requires, citation:$citation}' \
         > "$tmp" 2>/dev/null; then
         chmod 0644 "$tmp" 2>/dev/null || true
         mv "$tmp" "$path" 2>/dev/null || { rm -f "$tmp" 2>/dev/null || true; return 1; }
@@ -4053,8 +4157,28 @@ _record_prepaid_pick() {
     # allowance reset and the seat is back — learning the undocumented reset
     # hour, rule 2).
     local usd flags429="false" flags200="false" f9date="" f2date=""
+    local cur_src="" cur_cycle="" cur_lane=""
     usd=$(_provider_daily_spend_usd_tokens "$p")
     [[ "$usd" =~ ^[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?$ ]] || usd=0
+    # fleet-ops#4621: cursor-cli sessions record 0 usage tokens and there is
+    # no cursor cost card, so the token meter is structurally $0. The real
+    # spend is Cursor GetCurrentPeriodUsage included-API-bucket 24h delta,
+    # written into this same usd_today field by fleet-prepaid-util-canary.
+    # A pick must not clobber a vendor figure with the token 0; keep the
+    # existing usd_today when it is already a vendor number or UNAVAILABLE
+    # label, and carry the provenance fields (source, cycle figure, billing
+    # lane) so the judge can tell a vendor number from a token 0. Pareto
+    # Pass and every other provider keep the token path.
+    if [[ "$p" == "cursor" && -f "$f" ]]; then
+        local _kept
+        _kept=$(jq -r '.usd_today // empty' "$f" 2>/dev/null || true)
+        if [[ -n "$_kept" && "$_kept" != "0" && "$_kept" != "0.000000" ]]; then
+            usd="$_kept"
+            cur_src=$(jq -r '.usd_today_source // empty' "$f" 2>/dev/null || true)
+            cur_cycle=$(jq -r '.cursor_api_cycle_usd // empty' "$f" 2>/dev/null || true)
+            cur_lane=$(jq -r '.billing_lane // empty' "$f" 2>/dev/null || true)
+        fi
+    fi
     # fleet-ops#4453 accept: usd_today never exceeds the declared daily budget.
     if [[ -n "${SEAT_PROVIDER_DAILY_BUDGET_USD[$p]:-}" ]]; then
         local cap_usd="${SEAT_PROVIDER_DAILY_BUDGET_USD[$p]}"
@@ -4079,7 +4203,9 @@ _record_prepaid_pick() {
         --argjson f9 "$([[ "$flags429" == "true" ]] && echo true || echo false)" \
         --argjson f2 "$([[ "$flags200" == "true" ]] && echo true || echo false)" \
         --arg d9 "${f9date:-}" --arg d2 "${f2date:-}" \
-        '{week:$w,count:$c,usd_today:$ud,provider_daily_logged_429:$f9,provider_daily_logged_429_date:$d9,provider_daily_logged_200:$f2,provider_daily_logged_200_date:$d2}' >"$tmp" 2>/dev/null || {
+        --arg src "${cur_src:-}" --arg cy "${cur_cycle:-}" --arg lane "${cur_lane:-}" \
+        '{week:$w,count:$c,usd_today:$ud,provider_daily_logged_429:$f9,provider_daily_logged_429_date:$d9,provider_daily_logged_200:$f2,provider_daily_logged_200_date:$d2,
+          usd_today_source:$src,cursor_api_cycle_usd:$cy,billing_lane:$lane}' >"$tmp" 2>/dev/null || {
         rm -f "$tmp"
         return 0
     }
@@ -5842,6 +5968,13 @@ _escalated_backoff() {
 # to SEAT_PARK_WALL_S, default 24 h) is applied ON TOP of this cap.
 SEAT_BENCH_GEOMETRIC_CAP_S="${SEAT_BENCH_GEOMETRIC_CAP_S:-21600}"
 
+# fleet-ops#4640: a wall longer than 6h is a claim about the PROVIDER
+# (money_boundary or a parsed quota window). A wrapper exit code is
+# evidence about the LANE. Never the former from the latter.
+SEAT_NON_MONEY_WALL_MAX_S="${SEAT_NON_MONEY_WALL_MAX_S:-21600}"
+SEAT_CREDENTIALS_BAD_BENCH_S="${SEAT_CREDENTIALS_BAD_BENCH_S:-3600}"
+SEAT_CREDENTIALS_CORPSE_STRIKES="${SEAT_CREDENTIALS_CORPSE_STRIKES:-24}"
+
 # fleet-ops#3531: remote prepaid seats (e.g. devin) must not be benched for
 # more than 30 min on a false empty run. Their empty-run geometric backoff is
 # capped at 1800 s instead of the 6 h default.
@@ -6129,6 +6262,13 @@ mark_seat_spawn_fail() {
     local p="$1" m="$2" reason="${3:-spawn_etimeout}"
     # fleet-ops#3661: never write a ledger for a phantom seat key.
     if ! _seat_key_guard "$p" "$m" "mark_seat_spawn_fail"; then return 1; fi
+    # fleet-ops#4640: no_block:rc=N is a wrapper exit with no HTTP status.
+    # A wall length is a claim about the PROVIDER; a wrapper exit code is
+    # evidence about the LANE. Log LANE-FAULT and leave the ledger untouched.
+    if [[ "$reason" == no_block:rc=* ]]; then
+        seat_log "LANE-FAULT: $p/$m reason=$reason has no provider HTTP status — ledger untouched (fleet-ops#4640)"
+        return 1
+    fi
     if _transport_is_down; then _mark_transport_down "$p" "$m"; return 1; fi
     local path
     path=$(seat_ledger_path "$p" "$m")
@@ -6202,6 +6342,8 @@ mark_seat_spawn_fail() {
     # fleet-ops#1362: once count crosses the failure ceiling, park the seat
     # behind the long wall so the prober stops hammering it every base backoff.
     backoff=$(_failure_ceiling_wall "$merged_count" "$backoff")
+    # fleet-ops#4640: spawn_fail has no provider HTTP status. Cap at 6h.
+    backoff=$(_seat_clamp_non_money_window_s "$backoff" "")
     # Compute usable_at = now + backoff (ISO 8601, bash portable: -d @ + offsets).
     local usable_at
     usable_at=$(date -u -d "@$(($(date -u +%s) + backoff))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
@@ -6498,6 +6640,8 @@ mark_seat_empty_run() {
     fi
     local backoff
     backoff=$(_geometric_bench_window "$EMPTY_RUN_BACKOFF_S" "$merged_count" "$cap" "$EMPTY_RUN_FAILURE_CEILING")
+    # fleet-ops#4640: empty_run is a lane no-op, not a provider wall.
+    backoff=$(_seat_clamp_non_money_window_s "$backoff" "")
     # Compute usable_at = now + backoff (ISO 8601, bash portable).
     local usable_at
     usable_at=$(date -u -d "@$(($(date -u +%s) + backoff))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
@@ -6826,6 +6970,10 @@ classify_death_error() {
         cls="quota_cap"
     elif is_overload_error "$out_text" "$err_text"; then
         cls="overload_503"
+    elif is_workspace_trust_error "$out_text" "$err_text"; then
+        cls="config_fault_trust"
+    elif is_devin_writes_rejected "$out_text" "$err_text"; then
+        cls="devin-writes-rejected"
     elif is_sandbox_localhost_error "$out_text" "$err_text"; then
         cls="sandbox-localhost-unresolvable"
     elif is_spawn_etimeout "$out_text" "$err_text"; then
@@ -7007,6 +7155,240 @@ _parse_reset_window_s() {
     return 1
 }
 
+# True if the captured output is an HTTP 401 / dead-token credential failure
+# (fleet-ops#4640). One 401 is not a 10-year corpse: credentials rotate.
+is_credentials_error() {
+    local out="$1" err="$2"
+    local combined="$out"$'\n'"$err"
+    [[ -n "$combined" ]] || return 1
+    grep -qiE '\b401\b|invalid[[:space:]]+token|unauthorized|authentication[[:space:]]+failed|invalid[[:space:]]+api[[:space:]]+key' <<<"$combined"
+}
+
+# fleet-ops#4640: 401 -> credentials_bad bench of 1h. Corpse only after
+# SEAT_CREDENTIALS_CORPSE_STRIKES consecutive 401s. A single 401 is a
+# rotated key, not a decade of death.
+mark_seat_credentials_bad() {
+    local p="$1" m="$2" text="${3:-}"
+    if ! _seat_key_guard "$p" "$m" "mark_seat_credentials_bad"; then return 1; fi
+    if _transport_is_down; then _mark_transport_down "$p" "$m"; return 1; fi
+    local path now_utc now_s bench_until window_s tmp prev_count merged_count seat_dead
+    path=$(seat_ledger_path "$p" "$m")
+    mkdir -p "$LEDGER_DIR" 2>/dev/null || true
+    window_s="${SEAT_CREDENTIALS_BAD_BENCH_S:-3600}"
+    [[ "$window_s" =~ ^[0-9]+$ ]] || window_s=3600
+    now_s=$(date -u +%s)
+    now_utc=$(date -u -d "@$now_s" +%Y-%m-%dT%H:%M:%SZ)
+    prev_count=0
+    if [[ -f "$path" ]]; then
+        prev_count=$(jq -r '.consecutive_failure_count // 0' "$path" 2>/dev/null || echo 0)
+        [[ "$prev_count" =~ ^[0-9]+$ ]] || prev_count=0
+    fi
+    merged_count=$((prev_count + 1))
+    seat_dead=false
+    local strikes="${SEAT_CREDENTIALS_CORPSE_STRIKES:-24}"
+    [[ "$strikes" =~ ^[0-9]+$ ]] || strikes=24
+    if (( merged_count >= strikes )); then
+        seat_dead=true
+    fi
+    bench_until=$(date -u -d "@$((now_s + window_s))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
+    tmp="$path.cred.$$.$RANDOM.tmp"
+    if ! jq -nc \
+        --arg provider "$p" --arg model "$m" \
+        --arg observed "$now_utc" --arg bench "$bench_until" --arg usable "$bench_until" \
+        --argjson window "$window_s" --argjson merged "$merged_count" \
+        --argjson http_status 401 --argjson retry_after null \
+        --argjson retryable true --argjson seat_dead "$seat_dead" --argjson poison_ladder false \
+        --arg writer "mark_seat_credentials_bad" \
+        '{
+          provider:$provider, model:$model,
+          http_status:$http_status, retry_after:$retry_after,
+          health_class:"credentials_bad",
+          retryable:$retryable, seat_dead:$seat_dead, poison_ladder:$poison_ladder,
+          observed_at:$observed,
+          source:"after_provider_response",
+          failure_mode:"credentials_bad",
+          bench_until:$bench,
+          usable_at:$usable,
+          bench_window_s:$window,
+          consecutive_failure_count:$merged,
+          writer:$writer
+        }' > "$tmp" 2>/dev/null; then
+        seat_log "credentials-bad: jq compose FAILED for $p/$m — marker NOT written"
+        rm -f "$tmp" 2>/dev/null || true
+        return 1
+    fi
+    chmod 0644 "$tmp" 2>/dev/null || true
+    if mv "$tmp" "$path" 2>/dev/null; then
+        if [[ "$seat_dead" == "true" ]]; then
+            seat_log "credentials-bad: $p/$m CORPSE after ${merged_count} consecutive 401s (threshold=${strikes}) — Nish-reserved credential class (fleet-ops#4640)"
+        else
+            seat_log "credentials-bad: benched $p/$m until $bench_until (1h re-probe, count=$merged_count/${strikes}) (fleet-ops#4640)"
+        fi
+        return 0
+    fi
+    seat_log "credentials-bad: rename FAILED for $p/$m at $path"
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+}
+
+# fleet-ops#4825: bench a seat for a config/trust fault (the Devin CLI's
+# "Refusing to run in an untrusted workspace"). This is INFRASTRUCTURE, not
+# yield: the seat is skipped for a short window so pick_seat dodges it, but it
+# is NEVER retired (seat_dead stays false, no corpse escalation). The fix is
+# the managed config key `skip_workspace_trust: true` (pinned by install.sh);
+# this writer is the safety net for when the config is wrong again. A short
+# bench (default 60s) is enough — the config is the real fix, and a long bench
+# would wall the seat longer than the misconfiguration lasts once install.sh
+# re-converges. Args: provider model [error_text].
+# Writes LEDGER_DIR/<sanitised-provider>__<sanitised-model>.json atomically with
+# health_class="config_fault" and failure_mode="config_fault_trust". Best-effort:
+# any failure is logged but does NOT fail the worker's own exit. Returns 0 if
+# the marker was written, 1 if it was not.
+mark_seat_config_fault_bench() {
+    local p="$1" m="$2" text="${3:-}"
+    # fleet-ops#3661: never write a ledger for a phantom seat key.
+    if ! _seat_key_guard "$p" "$m" "mark_seat_config_fault_bench"; then return 1; fi
+    if _transport_is_down; then _mark_transport_down "$p" "$m"; return 1; fi
+    local path
+    path=$(seat_ledger_path "$p" "$m")
+    mkdir -p "$LEDGER_DIR" 2>/dev/null || true
+
+    # Short bench: the config is the real fix. A longer bench would wall the
+    # seat past the moment install.sh re-converges the trust key.
+    local window_s="${SEAT_CONFIG_FAULT_BENCH_S:-60}"
+    [[ "$window_s" =~ ^[0-9]+$ ]] || window_s=60
+
+    local now_utc now_s bench_until
+    now_s=$(date -u +%s)
+    now_utc=$(date -u -d "@$now_s" +%Y-%m-%dT%H:%M:%SZ)
+    bench_until=$(date -u -d "@$((now_s + window_s))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
+
+    # Merge consecutive_failure_count from any existing entry, but NEVER
+    # escalate to a corpse — a config fault is infrastructure, not yield.
+    local prev_count=0
+    if [[ -f "$path" ]]; then
+        prev_count=$(jq -r '.consecutive_failure_count // 0' "$path" 2>/dev/null || echo 0)
+        [[ "$prev_count" =~ ^[0-9]+$ ]] || prev_count=0
+    fi
+    local merged_count=$((prev_count + 1))
+
+    local tmp="$path.cfgfault.$$.$RANDOM.tmp"
+    if ! jq -nc \
+        --arg provider "$p" --arg model "$m" \
+        --arg observed "$now_utc" --arg bench "$bench_until" --arg usable "$bench_until" \
+        --argjson window "$window_s" --argjson merged "$merged_count" \
+        --argjson http_status 0 --argjson retry_after null \
+        --argjson retryable true --argjson seat_dead false --argjson poison_ladder false \
+        --arg writer "mark_seat_config_fault_bench" \
+        '{
+          provider:$provider, model:$model,
+          http_status:$http_status, retry_after:$retry_after,
+          health_class:"config_fault",
+          retryable:$retryable, seat_dead:$seat_dead, poison_ladder:$poison_ladder,
+          observed_at:$observed,
+          source:"config_fault_trust",
+          failure_mode:"config_fault_trust",
+          bench_until:$bench,
+          usable_at:$usable,
+          bench_window_s:$window,
+          consecutive_failure_count:$merged,
+          last_error_class:"config_fault_trust",
+          writer:$writer
+        }' > "$tmp" 2>/dev/null; then
+        seat_log "config-fault-bench: jq compose FAILED for $p/$m — marker NOT written"
+        rm -f "$tmp" 2>/dev/null || true
+        return 1
+    fi
+    chmod 0644 "$tmp" 2>/dev/null || true
+    if mv "$tmp" "$path" 2>/dev/null; then
+        seat_log "config-fault-bench: benched $p/$m until $bench_until (window=${window_s}s, count=$merged_count) — config/trust fault, NOT retired (fleet-ops#4825)"
+        return 0
+    fi
+    seat_log "config-fault-bench: rename FAILED for $p/$m at $path"
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+}
+
+# fleet-ops#4780: the Devin CLI under `--sandbox` rejects every file write
+# non-interactively ("rejected a tool call that requires confirmation"), so
+# every run ends empty at the first edit. This is a CLI/flag CONFIG fault,
+# not a seat yield: the fix is dropping `--sandbox` (the provider now runs
+# `--permission-mode dangerous` unsandboxed). Bench via a short window so
+# pick_seat dodges the seat this cycle, but NEVER retire it (seat_dead stays
+# false, no corpse escalation) — a future vendor change that re-breaks the
+# flag must not wall devin out of the fleet. Same shape as
+# mark_seat_config_fault_bench (fleet-ops#4825). Args: provider model
+# [error_text]. Writes LEDGER_DIR/<sanitised-provider>__<sanitised-model>.json
+# atomically with health_class="config_fault" and
+# failure_mode="devin-writes-rejected". Best-effort: any failure is logged
+# but does NOT fail the worker's own exit. Returns 0 if the marker was
+# written, 1 if it was not.
+mark_seat_devin_writes_rejected_bench() {
+    local p="$1" m="$2" text="${3:-}"
+    # fleet-ops#3661: never write a ledger for a phantom seat key.
+    if ! _seat_key_guard "$p" "$m" "mark_seat_devin_writes_rejected_bench"; then return 1; fi
+    if _transport_is_down; then _mark_transport_down "$p" "$m"; return 1; fi
+    local path
+    path=$(seat_ledger_path "$p" "$m")
+    mkdir -p "$LEDGER_DIR" 2>/dev/null || true
+
+    # Short bench: the flag is the real fix. A longer bench would wall the
+    # seat past the moment the extension re-converges to a writable mode.
+    local window_s="${SEAT_DEVIN_WRITES_REJECTED_BENCH_S:-60}"
+    [[ "$window_s" =~ ^[0-9]+$ ]] || window_s=60
+
+    local now_utc now_s bench_until
+    now_s=$(date -u +%s)
+    now_utc=$(date -u -d "@$now_s" +%Y-%m-%dT%H:%M:%SZ)
+    bench_until=$(date -u -d "@$((now_s + window_s))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
+
+    # Merge consecutive_failure_count from any existing entry, but NEVER
+    # escalate to a corpse — a CLI/flag config fault is infrastructure, not
+    # seat yield.
+    local prev_count=0
+    if [[ -f "$path" ]]; then
+        prev_count=$(jq -r '.consecutive_failure_count // 0' "$path" 2>/dev/null || echo 0)
+        [[ "$prev_count" =~ ^[0-9]+$ ]] || prev_count=0
+    fi
+    local merged_count=$((prev_count + 1))
+
+    local tmp="$path.devinwr.$$.$RANDOM.tmp"
+    if ! jq -nc \
+        --arg provider "$p" --arg model "$m" \
+        --arg observed "$now_utc" --arg bench "$bench_until" --arg usable "$bench_until" \
+        --argjson window "$window_s" --argjson merged "$merged_count" \
+        --argjson http_status 0 --argjson retry_after null \
+        --argjson retryable true --argjson seat_dead false --argjson poison_ladder false \
+        --arg writer "mark_seat_devin_writes_rejected_bench" \
+        '{
+          provider:$provider, model:$model,
+          http_status:$http_status, retry_after:$retry_after,
+          health_class:"config_fault",
+          retryable:$retryable, seat_dead:$seat_dead, poison_ladder:$poison_ladder,
+          observed_at:$observed,
+          source:"devin-writes-rejected",
+          failure_mode:"devin-writes-rejected",
+          bench_until:$bench,
+          usable_at:$usable,
+          bench_window_s:$window,
+          consecutive_failure_count:$merged,
+          last_error_class:"devin-writes-rejected",
+          writer:$writer
+        }' > "$tmp" 2>/dev/null; then
+        seat_log "devin-writes-rejected-bench: jq compose FAILED for $p/$m — marker NOT written"
+        rm -f "$tmp" 2>/dev/null || true
+        return 1
+    fi
+    chmod 0644 "$tmp" 2>/dev/null || true
+    if mv "$tmp" "$path" 2>/dev/null; then
+        seat_log "devin-writes-rejected-bench: benched $p/$m until $bench_until (window=${window_s}s, count=$merged_count) — CLI/flag config fault, NOT retired (fleet-ops#4780)"
+        return 0
+    fi
+    seat_log "devin-writes-rejected-bench: rename FAILED for $p/$m at $path"
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+}
+
 # True if the captured output looks like a quota/cap wall (NOT a transient
 # rate-limit retry). Strict enough to require a quota/cap keyword AND a reset
 # signal, so a plain 429-with-retry-after (transient) does NOT trigger a long
@@ -7025,7 +7407,7 @@ is_quota_cap_error() {
     # `quota (exhausted|...)` misses it and the death fell to
     # error_class=unknown, never benched, seat re-picked every cycle. Match
     # `token-plan` and `quota has been` as the hard-wall signal the same way.
-    if ! grep -qiE 'weekly[[:space:]]+(clinepass[[:space:]]+)?limit|daily[[:space:]]+limit|quota[[:space:]]+(exhausted|exceeded|reached)|quota[[:space:]]+has[[:space:]]+been|token-plan|usage[[:space:]]+balance[[:space:]]+exhausted|budget_exceeded|credit[[:space:]]+balance[[:space:]]+depleted|free-model[[:space:]]+token[[:space:]]+quota|resource_exhausted|Connection error, send a message to continue retrying|INFERENCE_CAP_ERROR|usage[[:space:]]+limit|plan[[:space:]]+limit|out[[:space:]]+of[[:space:]]+credits|insufficient[[:space:]]+credits|credit_insufficient|budget_error|message[[:space:]]+rate[[:space:]]+limit|rate[[:space:]]+limit[[:space:]]+(exceeded|reached)|cap[[:space:]]+(exceeded|reached)|exceeded[[:space:]]+your' <<<"$combined"; then
+    if ! grep -qiE 'weekly[[:space:]]+(clinepass[[:space:]]+)?limit|daily[[:space:]]+limit|quota[[:space:]]+(exhausted|exceeded|reached)|quota[[:space:]]+has[[:space:]]+been|token-plan|usage[[:space:]]+balance[[:space:]]+exhausted|budget_exceeded|credit[[:space:]]+balance[[:space:]]+depleted|free-model[[:space:]]+token[[:space:]]+quota|resource_exhausted|Connection error, send a message to continue retrying|INFERENCE_CAP_ERROR|usage[[:space:]]+limit|plan[[:space:]]+limit|out[[:space:]]+of[[:space:]]+credits|insufficient[[:space:]]+credits|credit_insufficient|budget_error|insufficient_user_quota|message[[:space:]]+rate[[:space:]]+limit|rate[[:space:]]+limit[[:space:]]+(exceeded|reached)|cap[[:space:]]+(exceeded|reached)|exceeded[[:space:]]+your' <<<"$combined"; then
         return 1
     fi
     # A reset signal: an explicit window OR a "resets" keyword. The provider
@@ -7051,7 +7433,16 @@ is_quota_cap_error() {
     # a generic "no_block:rc=1" bench with no error-class citation) is a prepaid
     # credit wall wearing a 429, not a rate limit: classify it so the money wall
     # is never counted as seat yield.
-    if grep -qiE 'weekly[[:space:]]+(clinepass[[:space:]]+)?limit|daily[[:space:]]+limit|INFERENCE_CAP_ERROR|FreeUsageLimitError|usage[[:space:]]+balance[[:space:]]+exhausted|budget_exceeded|budget_error|credit[[:space:]]+balance[[:space:]]+depleted|insufficient[[:space:]]+credits|credit_insufficient|usage[[:space:]]+limit[[:space:]]+for[[:space:]]+the[[:space:]]+current[[:space:]]+free[[:space:]]+model|free-model[[:space:]]+token[[:space:]]+quota|resource_exhausted' <<<"$combined"; then
+    # "insufficient_user_quota" (b.ai HTTP 400, fleet-ops#4831, 2026-09-09:
+    # bai/deepseek-v4-flash returned 400 {"message":"credit insufficient
+    # balance: balance=0 required=7716","code":"insufficient_user_quota"} —
+    # pi-scout@0509, pi-scout-repair@0509 and pi-issue@0509-2085 all died on the
+    # seat inside 3 min, each booked error_class=unknown -> transient_fault ->
+    # 300s spawn bench, and the dead free seat was re-offered every ~5 min
+    # (~12 claims/hour). The body carries no reset window, so it must pass the
+    # hard-cap list like `credit balance depleted` does; the 3600s
+    # quota_bench_default_s in seat-caps.json bounds the re-probe.
+    if grep -qiE 'weekly[[:space:]]+(clinepass[[:space:]]+)?limit|daily[[:space:]]+limit|INFERENCE_CAP_ERROR|FreeUsageLimitError|usage[[:space:]]+balance[[:space:]]+exhausted|budget_exceeded|budget_error|credit[[:space:]]+balance[[:space:]]+depleted|insufficient[[:space:]]+credits|credit_insufficient|insufficient_user_quota|usage[[:space:]]+limit[[:space:]]+for[[:space:]]+the[[:space:]]+current[[:space:]]+free[[:space:]]+model|free-model[[:space:]]+token[[:space:]]+quota|resource_exhausted' <<<"$combined"; then
         return 0
     fi
     return 1
@@ -7101,10 +7492,14 @@ mark_seat_quota_bench() {
             seat_log "quota-bench: $p/$m benching on live fleet_seat_quota reset ${live}s (exhausted window, fleet-ops#4217)"
         fi
     fi
+    local declared_window_s=""
     if (( window_s <= 0 )); then
         local def
         def=$(provider_quota_bench_default "$p")
-        [[ "$def" =~ ^[0-9]+$ ]] && window_s="$def"
+        if [[ "$def" =~ ^[0-9]+$ ]]; then
+            window_s="$def"
+            declared_window_s="$def"
+        fi
     fi
 
     if (( window_s <= 0 )); then
@@ -7130,6 +7525,21 @@ mark_seat_quota_bench() {
     # ~15min default). bench_until is computed from the escalated window so the
     # bench branch in seat_usable holds the effective wall.
     window_s=$(_geometric_bench_window "$window_s" "$merged_count")
+    # fleet-ops#4640: a bench > 6h needs a money wall or a real quota window.
+    local wall_source="quota_bench"
+    if _seat_text_is_money_wall "$text"; then
+        wall_source="money_boundary"
+    elif [[ -n "$parsed" && "$parsed" =~ ^[0-9]+$ ]] && (( parsed > 0 )); then
+        wall_source="provider_quota_window"
+    else
+        local ceil
+        ceil=$(provider_wall_ceiling_s "$p")
+        if [[ "$ceil" =~ ^[0-9]+$ ]] && (( ceil > 0 )); then
+            (( window_s > ceil )) && window_s="$ceil"
+            wall_source="provider_quota_window"
+        fi
+    fi
+    window_s=$(_seat_clamp_non_money_window_s "$window_s" "$wall_source" "$declared_window_s")
     bench_until=$(date -u -d "@$((now_s + window_s))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
 
     # fleet-ops#2594: corpse reclassification for quota_cap. seat-health.ts
@@ -7172,14 +7582,14 @@ mark_seat_quota_bench() {
         --argjson window "$window_s" --argjson merged "$merged_count" \
         --argjson http_status 429 --argjson retry_after null \
         --argjson retryable true --argjson seat_dead "$seat_dead" --argjson poison_ladder false \
-        --arg writer "mark_seat_quota_bench" \
+        --arg writer "mark_seat_quota_bench" --arg source "$wall_source" \
         '{
           provider:$provider, model:$model,
           http_status:$http_status, retry_after:$retry_after,
           health_class:"quota_bench",
           retryable:$retryable, seat_dead:$seat_dead, poison_ladder:$poison_ladder,
           observed_at:$observed,
-          source:"quota_bench",
+          source:$source,
           failure_mode:"quota_cap",
           bench_until:$bench,
           usable_at:$usable,
@@ -7389,6 +7799,7 @@ mark_seat_overload_bench() {
     # fleet-ops#3531: escalate the bench geometrically by count (base * 2^(n-1),
     # capped at 6 h), then park at the failure ceiling.
     window_s=$(_geometric_bench_window "$window_s" "$merged_count")
+    window_s=$(_seat_clamp_non_money_window_s "$window_s" "")
     bench_until=$(date -u -d "@$((now_s + window_s))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
     # fleet-ops#3531: a 503 on a corpse must not resurrect it. Keep the
     # existing seat_dead (same rule as mark_seat_quota_bench); a fresh
@@ -7499,6 +7910,8 @@ mark_seat_hang_bench() {
     local merged_count=$((prev_count + 1))
     # fleet-ops#1362: park past the failure ceiling (long wall override).
     window_s=$(_failure_ceiling_wall "$merged_count" "$window_s")
+    # fleet-ops#4640: a hang is a lane stall, not a provider quota window.
+    window_s=$(_seat_clamp_non_money_window_s "$window_s" "")
     bench_until=$(date -u -d "@$(($(date -u +%s) + window_s))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
 
     local tmp="$path.hang.$$.$RANDOM.tmp"

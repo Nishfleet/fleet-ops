@@ -236,10 +236,10 @@ bench_window_s=$(jq -r '.bench_window_s' "$lf")
 [[ "$dead" == "true" ]] || fail "Q8: seat_dead=$dead, want true (corpse at threshold)"
 # fleet-ops#3941: the park wall escalates with the count past the ceiling.
 # count=25, ceiling=20 -> extra=6 -> wall = 6 * 86400 = 518400s.
-[[ "$bench_window_s" == "518400" ]] || fail "Q8: bench_window_s=$bench_window_s, want 518400 (escalated park wall, count=25, ceiling=20 — fleet-ops#3941)"
+[[ "$bench_window_s" == "21600" ]] || fail "Q8: bench_window_s=$bench_window_s, want 21600 (#4640 6h clamp on a non-money quota park; corpse still fires)"
 if seat_usable "$p" "$m"; then
     fail "Q8: seat_usable returned usable for a parked+corpse ledger"
 fi
-ok "Q8: c=25 is BOTH parked (bench_window_s=518400, escalated from ceiling=20) AND a corpse (seat_dead=true) — both fences engage"
+ok "Q8: c=25 is BOTH parked (bench_window_s=21600, #4640 clamp) AND a corpse (seat_dead=true) — both fences engage"
 
 ok "seat quota corpse: mark_seat_quota_bench reclassifies a seat to seat_dead=true at >= SEAT_DEAD_CONSECUTIVE_THRESHOLD (default 25) but keeps a concrete comeback bench_until; the seat cools down and fail-opens once the clock passes (fleet-ops#3377), and a healthy observation clears the corpse (fleet-ops#2594)"

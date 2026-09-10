@@ -129,19 +129,28 @@ trap cleanup EXIT INT TERM
 # append to the live watch.log — pin the audit line to the harness scratch
 # instead of the production ~/.local/state/pi-packet/watch.log.
 export SEAT_LOG_FILE="$TMPD/watch.log"
+# fleet-ops#4819: pin the actions.log to the harness scratch so a test release
+# never appends to the live alert-repair actions.log.
+export FLEET_SEAT_COMEBACK_ACTIONS_LOG="$TMPD/actions.log"
 
 # --- stub pi: SUCCESS stub exits 0 with "OK", FAILURE stub exits 1 -------
 cat > "$TMPD/pi-tool-ok" <<'EOF'
 #!/usr/bin/env bash
-# A healthy tool-using probe: prints the computed token of `echo $((6*7))`.
+# A healthy tool-using probe: prints the computed token of `echo $((6*7))`
+# and emits a PACKET-VERDICT tools=1 line on stderr (the authoritative
+# tool-count signal the comeback-release probe parses, fleet-ops#4819).
+printf 'PACKET-VERDICT tools=1 class=worked\n' >&2
 printf '42\n'
 exit 0
 EOF
 cat > "$TMPD/pi-pong-ok" <<'EOF'
 #!/usr/bin/env bash
 # A partial-storm seat: answers inline "OK" but no tool result (no token).
+# Emits PACKET-VERDICT tools=0 class=no-tools on stderr — the standing-smoke
+# shape that must NEVER release an empty-run bench (fleet-ops#4819).
+printf 'PACKET-VERDICT tools=0 class=no-tools\n' >&2
 printf 'OK\n'
-exit  0
+exit 0
 EOF
 cat > "$TMPD/pi-fail" <<'EOF'
 #!/usr/bin/env bash
@@ -344,13 +353,11 @@ grep -q "would probe straitly/gpt-5.6-sol" <<<"$out" \
 grep -qi "test__test" <<<"$out" && fail "dry-run: test__ fixture must never be probed: $out"
 grep -qi "spawn-bench" <<<"$out" && fail "dry-run: spawn-bench pseudo-seat must never be probed: $out"
 grep -qi "would probe devin/glm-5-2" <<<"$out" && fail "dry-run: corpse must never be probed: $out"
-grep -qi "nemotron" <<<"$out" && fail "dry-run: future-wall seat must never be probed: $out"
 grep -qi "bai/deepseek" <<<"$out" && fail "dry-run: healthy seat must never be probed: $out"
-# fleet-ops#3737: a healthy ledger + fresh expired wrapper marker that is
-# still the latest evidence owes a comeback probe (probe-gated
-# re-admission); a newer ledger observation or a stale (>24h) marker does not.
 grep -q "would probe ollama/deepseek-v4-flash:0731" <<<"$out" \
   || fail "dry-run: expired fresh marker on a healthy ledger must be probed (fleet-ops#3737): $out"
+grep -q "would PONG-probe opencode/nemotron-3-ultra-free" <<<"$out" \
+  || fail "dry-run: long non-money future wall must get the hourly PONG (fleet-ops#4640): $out"
 grep -qi "would probe minimax/m3-free" <<<"$out" \
   && fail "dry-run: post-bench healthy observation releases the marker — must not be probed: $out"
 grep -qi "would probe opencode/mimo-v2.5-free" <<<"$out" \
@@ -368,7 +375,7 @@ grep -q "would retire devin/glm-5-2" <<<"$out" \
   || fail "dry-run must not move the corpse ledger"
 grep -q '"health_class":"overload_bench"' "$SEATDIR/commandcode__poolside_laguna-s-2.1-free.json" \
   || fail "dry-run must not modify the ledger"
-ok "dry-run selects only owed expired-wall seats; test__/spawn-bench/future/healthy never probed, aged corpse previewed for retirement"
+ok "dry-run selects owed expired-wall seats and PONG-probes long non-money future walls; test__/spawn-bench/healthy never probed, aged corpse previewed for retirement"
 
 # --- 2. live run, probes SUCCEED: both seats released --------------------
 set +e
@@ -496,9 +503,9 @@ jq -e '.source == "comeback_release_rebench" and .consecutive_failure_count == 2
 # healthy ledger entry is left as-is (the marker is the routing authority).
 grep -q "re-benched wrapper marker ollama/deepseek-v4-flash:0731" "$TMPD/live-fail.err" \
   || fail "marker re-bench: must log re-benched for the marker-held seat: $(cat "$TMPD/live-fail.err")"
-jq -e '.failure_mode == "empty_run" and .consecutive_failure_count == 4 and .writer == "comeback_release_rebench"' \
+jq -e '.failure_mode == "empty_run" and .consecutive_failure_count == 4 and .writer == "comeback_release_rebench" and .release_requires == "real-work-probe" and .citation == "fleet-ops#3737"' \
   "$SEATDIR/ollama__deepseek-v4-flash_0731.spawn-bench.json" >/dev/null \
-  || fail "marker re-bench: count must increment, mode preserved, writer tagged: $(cat "$SEATDIR/ollama__deepseek-v4-flash_0731.spawn-bench.json")"
+  || fail "marker re-bench: count must increment, mode preserved, writer tagged, release_requires+citation injected (fleet-ops#4819): $(cat "$SEATDIR/ollama__deepseek-v4-flash_0731.spawn-bench.json")"
 mk_usable=$(jq -r '.usable_at' "$SEATDIR/ollama__deepseek-v4-flash_0731.spawn-bench.json")
 mk_usable_epoch=$(date -u -d "$mk_usable" +%s 2>/dev/null || echo 0)
 (( mk_usable_epoch > NOW_EPOCH )) \
@@ -632,19 +639,16 @@ grep -q "^fleet_seat_comeback_release_stalled 0$" "$PROM" \
   || fail "override: prom stalled must be 0: $(cat "$PROM")"
 ok "override: wall-expired + recent probe -> probe anyway (unstick), release succeeds, exit 0"
 
-# --- 5. future-wall seat: skipped via the wall-in-future check, regardless
-#       of any last_probe history. This is the only remaining throttle; the
-#       wall-in-future check precedes the probe and the seat is never owed
-#       a comeback while its wall is still held.
+# --- 5. money future-wall seat: skipped (fleet-ops#4659 / #3284). A 402
+#       / quota_exhausted wall stays held until expiry. Non-money long
+#       walls are the #4640 PONG path (test 23).
 rm -rf "$SEATDIR"
 mkdir -p "$SEATDIR"
 cat > "$SEATDIR/opencode__nemotron-3-ultra-free.json" << 'EOF'
-{"provider":"opencode","model":"nemotron-3-ultra-free","http_status":429,"retry_after":null,"health_class":"rate_limited","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T08:00:00Z","source":"after_provider_response","failure_mode":"rate_limit","usable_at":"2026-08-30T23:00:00.094Z","consecutive_failure_count":3}
+{"provider":"opencode","model":"nemotron-3-ultra-free","http_status":402,"retry_after":null,"health_class":"quota_exhausted","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T08:00:00Z","source":"money_boundary","failure_mode":"quota_exhausted","usable_at":"2026-08-30T23:00:00.094Z","consecutive_failure_count":3}
 EOF
 STATE="$TMPD/state-future.json"
 PROM="$TMPD/release-future.prom"
-# Even with last_probe = 0 (never probed), a future-wall seat must not be
-# probed at all — the wall-in-future check is silent and absolute.
 jq -nc '{last_probe: {}, probed_total: 0, released_total: 0}' > "$STATE"
 out=$(PI_SEAT_HEALTH_LEDGER_DIR="$SEATDIR" \
     FLEET_SEAT_COMEBACK_STATE="$STATE" \
@@ -653,10 +657,10 @@ out=$(PI_SEAT_HEALTH_LEDGER_DIR="$SEATDIR" \
     PI_BIN="$TMPD/pi-tool-ok" \
     bash "$BIN" --dry-run 2>&1)
 grep -qi "nemotron" <<<"$out" \
-  && fail "future-wall seat must never be probed: $out"
+  && fail "money future-wall seat must never be probed: $out"
 released_total=$(jq -r '.released_total' "$STATE")
-[[ "$released_total" == "0" ]] || fail "future-wall seat must not increment released_total: $released_total"
-ok "future-wall seat: skipped via wall-in-future check, no probe, no release"
+[[ "$released_total" == "0" ]] || fail "money future-wall seat must not increment released_total: $released_total"
+ok "money future-wall seat: skipped, no probe, no release (fleet-ops#4640 money hold)"
 
 # --- 6. overdue metric clears (fleet-ops#2520) -----------------------------
 # The FleetSeatComebackOverdue alert keys on fleet_seat_comeback_overdue_total
@@ -2247,4 +2251,86 @@ grep -q "PROBED.*--provider straitly --model deepseek/deepseek-v4-pro" "$TMPD/pr
   || fail "22c: expired 402 with no spawn-bench must still probe after PQE ages out: log=$(cat "$TMPD/probe22c.log") err=$(cat "$TMPD/run22c.err")"
 ok "22c: expired 402 without spawn-bench still probes after PQE ages out (fleet-ops#4659)"
 
-echo "ALL OK: active come-back release path (fleet-ops#2421) + force-probe-on-overdue-usable_at + corpse-at-threshold + never-released metric (fleet-ops#2638) + own-streak corpse + interval-breach loud check (fleet-ops#2806) + no-wall corpse second-chance re-probe / explicit retire (fleet-ops#3156) + extension-reclassify race (fleet-ops#3179) + PQE 1h==1h deadlock fix (fleet-ops#3176) + skip-corpse-on-reanchored-wall (fleet-ops#3301) + phantom retirement + real-non-caps-seat re-probe (fleet-ops#3993) + spawn-bench-held 402 skip (fleet-ops#4659)"
+# ---------------------------------------------------------------------------
+# 23. fleet-ops#4640: a NON-money 24h wall on a cap>0 seat PONGs and
+#     releases even while usable_at is in the future. Money 402 hold
+#     (test 22) must keep skipping.
+# ---------------------------------------------------------------------------
+"$BIN" --help >"$TMPD/help.out" 2>/dev/null || fail "23: --help must exit 0"
+grep -q -- '--false-wall-drill' "$TMPD/help.out" \
+  || fail "23: --help must name --false-wall-drill: $(cat "$TMPD/help.out")"
+ok "23: --help names --false-wall-drill"
+
+SEATD23="$TMPD/seats23"
+mkdir -p "$SEATD23"
+cat > "$TMPD/seat-caps23.json" <<'CAPS'
+{
+  "providers": {
+    "devin": {"cap": 4, "models": {"glm-5-2": 4}}
+  }
+}
+CAPS
+# NOW_ISO=2026-08-30T12:00:00Z; wall +24h.
+cat > "$SEATD23/devin__glm-5-2.json" <<'EOF'
+{"provider":"devin","model":"glm-5-2","http_status":429,"retry_after":null,"health_class":"rate_limited","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T11:00:00Z","source":"after_provider_response","failure_mode":"rate_limit","usable_at":"2026-08-31T12:00:00Z","bench_until":"2026-08-31T12:00:00Z","consecutive_failure_count":2,"writer":"mark_seat_quota_bench"}
+EOF
+cat > "$SEATD23/devin__glm-5-2.spawn-bench.json" <<'EOF'
+{"provider":"devin","model":"glm-5-2","usable_at":"2026-08-31T12:00:00Z","reason":"test:false-wall","written_at":"2026-08-30T11:00:00Z","backoff_s":86400,"failure_mode":"rate_limit","consecutive_failure_count":2,"writer":"mark_seat_quota_bench"}
+EOF
+cat > "$TMPD/pi-pong" <<'EOF'
+#!/usr/bin/env bash
+echo "PONG"
+exit 0
+EOF
+chmod +x "$TMPD/pi-pong"
+ST23="$TMPD/state23.json"
+PROM23="$TMPD/release23.prom"
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$SEATD23" \
+    SEAT_CAPS_JSON="$TMPD/seat-caps23.json" \
+    FLEET_SEAT_COMEBACK_STATE="$ST23" \
+    FLEET_SEAT_COMEBACK_PROM="$PROM23" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" \
+    PI_BIN="$TMPD/pi-pong" \
+    bash "$BIN" >/dev/null 2>"$TMPD/run23.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "23: non-money 24h wall PONG must exit 0, got $rc ($(cat "$TMPD/run23.err"))"
+grep -q "SEAT-WALL-FALSE" "$TMPD/run23.err" \
+  || fail "23: must log SEAT-WALL-FALSE: $(cat "$TMPD/run23.err")"
+grep -q "writer=mark_seat_quota_bench" "$TMPD/run23.err" \
+  || fail "23: SEAT-WALL-FALSE must name the writer: $(cat "$TMPD/run23.err")"
+hc=$(jq -r '.health_class' "$SEATD23/devin__glm-5-2.json")
+[[ "$hc" == "healthy" ]] || fail "23: PONG must unwall the seat, got $hc"
+[[ ! -f "$SEATD23/devin__glm-5-2.spawn-bench.json" ]] \
+  || fail "23: spawn-bench marker must be deleted on false-wall release"
+ok "23: non-money 24h wall + PONG -> SEAT-WALL-FALSE + release (fleet-ops#4640)"
+
+# 23b. --false-wall-drill injects a 24h wall and requires SEAT-WALL-FALSE.
+SEATD23b="$TMPD/seats23b"
+mkdir -p "$SEATD23b"
+cat > "$SEATD23b/devin__glm-5-2.json" <<'EOF'
+{"provider":"devin","model":"glm-5-2","http_status":200,"retry_after":null,"health_class":"healthy","retryable":false,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T11:00:00Z","source":"after_provider_response","failure_mode":"none","usable_at":null,"consecutive_failure_count":0}
+EOF
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$SEATD23b" \
+    SEAT_CAPS_JSON="$TMPD/seat-caps23.json" \
+    FLEET_SEAT_COMEBACK_STATE="$TMPD/state23b.json" \
+    FLEET_SEAT_COMEBACK_PROM="$TMPD/release23b.prom" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" \
+    FLEET_SEAT_COMEBACK_DRILL_PROVIDER="devin" \
+    FLEET_SEAT_COMEBACK_DRILL_MODEL="glm-5-2" \
+    PI_BIN="$TMPD/pi-pong" \
+    bash "$BIN" --false-wall-drill >/dev/null 2>"$TMPD/run23b.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "23b: --false-wall-drill must exit 0, got $rc ($(cat "$TMPD/run23b.err"))"
+grep -q "SEAT-WALL-FALSE" "$TMPD/run23b.err" \
+  || fail "23b: drill must log SEAT-WALL-FALSE: $(cat "$TMPD/run23b.err")"
+grep -q "FALSE-WALL-DRILL pass" "$TMPD/run23b.err" \
+  || fail "23b: drill must log pass: $(cat "$TMPD/run23b.err")"
+hc=$(jq -r '.health_class' "$SEATD23b/devin__glm-5-2.json")
+[[ "$hc" == "healthy" ]] || fail "23b: drill must leave the seat healthy, got $hc"
+ok "23b: --false-wall-drill injects 24h wall, PONG-releases, logs SEAT-WALL-FALSE"
+
+echo "ALL OK: active come-back release path (fleet-ops#2421) + force-probe-on-overdue-usable_at + corpse-at-threshold + never-released metric (fleet-ops#2638) + own-streak corpse + interval-breach loud check (fleet-ops#2806) + no-wall corpse second-chance re-probe / explicit retire (fleet-ops#3156) + extension-reclassify race (fleet-ops#3179) + PQE 1h==1h deadlock fix (fleet-ops#3176) + skip-corpse-on-reanchored-wall (fleet-ops#3301) + phantom retirement + real-non-caps-seat re-probe (fleet-ops#3993) + spawn-bench-held 402 skip (fleet-ops#4659) + false-wall PONG release (fleet-ops#4640)"

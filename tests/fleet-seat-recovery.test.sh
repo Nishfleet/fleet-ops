@@ -40,6 +40,11 @@ bash "$here/fleet-seat-recovery-units.test.sh"
 # .github/workflows/**). Runs in its own process (scratch ledger + stub pi).
 bash "$here/fleet-seat-comeback-release.test.sh"
 
+# fleet-ops#4819: empty-run bench release is probe-gated: tools=0
+# standing-smoke must HOLD, tools>0 + non-empty stdout may release.
+# Hosted here so P14 reaches it without a ci.yml edit.
+bash "$here/seat-empty-run-comeback-probe.test.sh"
+
 # fleet-ops#3669: the corpse-retirement park drill (retired seat stays
 # UNPICKABLE — parked ledger + 7-day corpse-retired read fence) is the
 # retirement half of the same path. Hosted here so the P14 closure

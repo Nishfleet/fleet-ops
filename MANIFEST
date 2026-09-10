@@ -78,6 +78,7 @@ bin/siterep-deploy-verify /home/nish/.local/bin/siterep-deploy-verify
 bin/siterep-deploy-rollback /home/nish/.local/bin/siterep-deploy-rollback
 bin/siterep-uptime /home/nish/.local/bin/siterep-uptime
 prompts/intake.md /home/nish/.pi/agent/prompts/intake.md
+prompts/spec-judge.md /home/nish/.pi/agent/prompts/spec-judge.md
 prompts/worker.md /home/nish/.pi/agent/prompts/worker.md
 prompts/worker-blocks/d1-gate-integrity.md /home/nish/.pi/agent/prompts/worker-blocks/d1-gate-integrity.md
 prompts/worker-blocks/geo-aeo.md /home/nish/.pi/agent/prompts/worker-blocks/geo-aeo.md
@@ -200,6 +201,9 @@ lib/fleet-deploy-quality.py /home/nish/.local/lib/pi-packet/fleet-deploy-quality
 # fleet_usd_24h metric (like fleet-deploy-quality.py, lazy-loaded inside
 # libexec/fleet-metrics-export.py, no service change).
 lib/fleet_usd.py /home/nish/.local/lib/pi-packet/fleet_usd.py
+# fleet-ops#4621: Cursor included-API-bucket 24h figure shared by measure.sh,
+# fleet-prepaid-util-canary (writes usd_today), and seat-lib (does not clobber).
+lib/cursor-api-bucket.sh /home/nish/.local/lib/pi-packet/cursor-api-bucket.sh
 # fleet-ops#4459: the usd_24h / usd_per_merged_pr snapshot the judge header's
 # third line and the weekly seat table consume.
 measure.sh /home/nish/.local/bin/measure.sh
@@ -865,6 +869,12 @@ bin/fleet-scout-leak-canary /home/nish/.local/bin/fleet-scout-leak-canary
 # healthy. No new timer; heartbeat-tier1 block 46. Not an organ (exports
 # no heartbeat metric).
 bin/fleet-research-sweep-canary /home/nish/.local/bin/fleet-research-sweep-canary
+# fleet-ops#4647: live timer-manifest drift canary. Runs the live drift check
+# from heartbeat-tier1 block 47 (no new systemd unit), LOUDs one alarm per
+# missing non-transient timer (signal: timer-manifest/<unit>); the detector->
+# queue reconciler (block 38, fleet-ops#362) auto-files + observe-to-closes.
+# Not an organ (no heartbeat metric of its own).
+bin/fleet-timer-manifest-drift-canary /home/nish/.local/bin/fleet-timer-manifest-drift-canary
 # fleet-ops#524: per-repo verification harness canary (sr-verify-harness).
 # Fail-loud if an enrolled product repo HEAD is missing
 # .claude/skills/verify-<app>/SKILL.md with required sections + features/.
@@ -995,6 +1005,10 @@ systemd/fleet-seat-recovery.path /home/nish/.config/systemd/user/fleet-seat-reco
 bin/fleet-unjustified-wait /home/nish/.local/bin/fleet-unjustified-wait
 bin/fleet-escalation-completion /home/nish/.local/bin/fleet-escalation-completion
 lib/pi-intake-tick.sh /home/nish/.local/lib/pi-packet/pi-intake-tick.sh
+# fleet-ops#4801: spec-judge lib (Kimi K3 Max over shared-file batches
+# before claim). Sourced by pi-intake-tick.sh; the fallback path in the
+# tick resolves this live install copy.
+lib/spec-judge.sh /home/nish/.local/lib/pi-packet/spec-judge.sh
 # fleet-ops#1204 salvage pre-push secret-scan helper (p1204-scan)
 bin/salvage-secret-scan /home/nish/.local/bin/salvage-secret-scan
 # fleet-ops#796 sgscan wrapper — semgrep diff-scan review gate
@@ -1146,7 +1160,19 @@ systemd/fleet-litellm-proxy.service /home/nish/.config/systemd/user/fleet-litell
 systemd/fleet-litellm-proxy.service.d/debug.conf /home/nish/.config/systemd/user/fleet-litellm-proxy.service.d/debug.conf
 systemd/fleet-litellm-postgres.service /home/nish/.config/systemd/user/fleet-litellm-postgres.service
 systemd/fleet-litellm-redis.service /home/nish/.config/systemd/user/fleet-litellm-redis.service
+# fleet-ops#4861: oom-avoid drop-ins mark the three LiteLLM organs avoid so
+# systemd-oomd deprioritizes them under user-slice pressure instead of
+# killing the DB organ first (3 OOM-kills in 1h, 3rd auditor summon). Pure
+# ManagedOOM* override; postgres also gets MemoryMin=256M, no MemoryMax.
+systemd/fleet-litellm-postgres.service.d/20-oom-avoid.conf /home/nish/.config/systemd/user/fleet-litellm-postgres.service.d/20-oom-avoid.conf
+systemd/fleet-litellm-proxy.service.d/20-oom-avoid.conf /home/nish/.config/systemd/user/fleet-litellm-proxy.service.d/20-oom-avoid.conf
+systemd/fleet-litellm-redis.service.d/20-oom-avoid.conf /home/nish/.config/systemd/user/fleet-litellm-redis.service.d/20-oom-avoid.conf
 libexec/fleet-litellm-health-canary.py /home/nish/.local/libexec/fleet-litellm-health-canary.py
+# fleet-ops#4628: sitecustomize that retargets LiteLLM 1.98's PrismaWrapper
+# _write_engine onto prisma-client-py 0.15's _engine setter. PYTHONPATH is
+# set on the proxy unit; this is not a new organ, it is a one-file compat
+# hook for the existing proxy organ.
+libexec/fleet-litellm-prisma-compat/sitecustomize.py /home/nish/.local/libexec/fleet-litellm-prisma-compat/sitecustomize.py
 bin/fleet-litellm-key /home/nish/.local/bin/fleet-litellm-key
 systemd/fleet-litellm-health-canary.service /home/nish/.config/systemd/user/fleet-litellm-health-canary.service
 systemd/fleet-litellm-health-canary.timer /home/nish/.config/systemd/user/fleet-litellm-health-canary.timer
