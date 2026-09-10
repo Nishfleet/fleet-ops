@@ -1,77 +1,49 @@
-feat(seat-health): walled-seat comeback probe with weekly credentials_bad issue
+## What & why
 
-## Why
+Issue #4921 is an alarm (`FAILED-COMMAND-SWALLOWED`, signal `loud/failed-command-swallowed/bin-pi-detached-deadman`) filed by the detector→queue reconciler when a live session swallowed a `sed: can't read bin/pi-detached-deadman` ENOENT and no open issue carried its signal key.
 
-fleet-ops#1348: #1167 landed the `walled_comeback` table in `config/seat-caps.json`
-(15min on 429, hourly on daily quota, daily on monthly/402, weekly on
-credentials_bad, max 1 probe per 15min). `pick_seat` already fail-opens after
-`usable_at` passes, but nothing actually re-admits the seat — the wall meant the
-seat stayed walled until a manual intervention or an unrelated healthy observation
-overwrote the ledger.
+The root causes were already merged independently:
+- **#4924** — the DetachedJobDied alert description no longer seeds a cwd-relative `bin/...` path (the actual source of the swallowed ENOENT), with a gate test.
+- **#4934 (fleet-ops#4884)** — FAILED-COMMAND-SWALLOWED now keys on the session slug, not on a file token harvested from the snippet, with tests (9h/9h-close) proving the stale-file-token issue observe-to-closes.
 
-This PR adds a periodic probe (systemd timer every 15min) that:
-- Reads `usable_at` from the per-seat ledger
-- When `usable_at` has passed, sends a polite 1-token "reply OK" probe through pi
-- A successful probe produces a healthy observation (seat-health.ts records it),
-  clearing `usable_at` so the seat re-enters the ladder at its cap
-- Respects `min_probe_interval_s` from `seat-caps.json` (max 1 probe per seat per tick)
-- `credentials_bad`: probes weekly and files an `agent-ready` issue if still bad
-  (needs fixing, not waiting)
+This leaves the one durable gap scoped to #4921: no test names **this** signal. The issue itself is keyed on the legacy `bin-pi-detached-deadman` file token; under the re-keyed detector that signal is no longer produced, so #4921 must observe-to-close. Nothing locks that for this exact class.
 
-## Scope
+## Change
 
-- `bin/seat-walled-probe` — new script. Iterates the per-seat ledger, probes seats
-  whose `usable_at` is in the past and whose `failure_mode` is walled (rate_limit,
-  quota_exhausted, credentials_bad, empty_run). Uses `--dry-run` and `--probe-all`
-  flags. Exits 0 when there is nothing to probe (common case, not a failure).
-- `systemd/seat-walled-probe.service` + `systemd/seat-walled-probe.timer` —
-  oneshot unit with 10min timeout, timer fires every 15min with 60s randomized delay.
-- `systemd/timer-manifest.json` — entry for the new timer (source: repo, cadence: 15min).
-- `tests/seat-walled-probe.test.sh` — 5-phase test: dry-run selection (skips future/
-  healthy/recent, probes past+weekly), real mock run (probe success/failure + issue
-  filing), no-seats exits 0, --probe-all picks non-walled modes, systemd unit validity
-  + manifest entry.
-- `MANIFEST` — deploy mapping for bin + service + timer.
+Add scenarios **9i / 9i-close** to `tests/signal-reconcile.test.sh`:
+- **9i** — a FAILED-COMMAND-SWALLOWED session whose snippet says `bin/pi-detached-deadman` keys on the session slug, and `grep -v` asserts the legacy `bin-pi-detached-deadman` token is never produced.
+- **9i-close** — an open issue #4921 whose body carries `loud/failed-command-swallowed/bin-pi-detached-deadman` observe-to-closes on the same tick.
 
-**Out of scope**: the census sweep integration. #1149 is already the census sweeper;
-this probe runs on its own 15min timer rather than being called from the census.
-
-## Tradeoffs
-
-- **Own timer vs census hook.** Chose a standalone timer because the probe cadence
-  (15min) is tighter than the census (weekly). Adding a 15min-firing census step would
-  change the census's own semantics. The two are orthogonal — census maps assets to
-  guards; this probe is a guard.
-
-## Blast Radius
-
-- **Low risk.** New script + new systemd units only. No existing files modified.
-  The script reads (never writes) the per-seat ledger and `seat-caps.json`.
-  Systemd timer is non-mandatory — fleet runs fine without it.
-- **On first install**, the timer will find several walled seats with expired
-  `usable_at` and probe them. This is correct — those seats should have been
-  re-probed already.
+The test is already wired into the suite via `tests/ci-standards-audit.test.sh` (host line pinned by `p14-test-listing-gate.test.sh`).
 
 ## Verification
 
+Real runs (below) of the touched test and the wiring gates:
 ```
-bash tests/seat-walled-probe.test.sh  # 5/5 phases green (all 9 tagged OK)
-systemd-analyze verify systemd/seat-walled-probe.service systemd/seat-walled-probe.timer
-shellcheck -x bin/seat-walled-probe  # clean (exit 0)
-sgscan  # no new security findings
+bash tests/signal-reconcile.test.sh        # EXIT=0 — all scenarios pass
+  OK: scenario 9i: bin/pi-detached-deadman swallowed failure keys on the session, not the legacy file token
+  OK: scenario 9i-close: stale bin-pi-detached-deadman-keyed issue #4921 observe-to-closes after re-key
+  [detector-queue-reconciler] closed #4921 (signal=loud/failed-command-swallowed/bin-pi-detached-deadman no longer in tick)
+bash tests/p14-test-listing-gate.test.sh   # EXIT=0 — 45 OK, P14 list closed
 ```
 
-run-proof: tests/seat-walled-probe.test.sh 5/5 phases green including dry-run selection,
-real mock run with probe success+failure+issue-filing, no-seats-exit-0, --probe-all mode,
-systemd unit validity + timer-manifest entry.
+`bin/fleet-no-agent-names-check --commit-range origin/main..HEAD` → `OK: no agent attribution detected`.
 
-research: official docs (systemd.timer(5), systemd.service(5)) plus a last30days-scale pass for probe-style free-seat recovery patterns; compared polling to a systemd path-unit trigger on the ledger directory (rejected — path unit fires on every write, every few seconds; polling every 15min is simpler and lower CPU) and checked the existing bin/fleet-seat-recovery + census sweep (#1149) — adopted a standalone systemd timer + bash script because it runs on the existing fleet timer pattern with no new machinery, and the census sweep is weekly (too coarse for a 15min probe cadence).
+The failure in `tests/ci-standards-audit.test.sh` at scenario 4217 (minimax spawn-bench / console quota display) is **pre-existing** — it reproduces identically on clean `origin/main` in the deploy clone and is unrelated to this test-file-only change.
 
-help-first: ran `systemctl --help`, `systemd-analyze --help`, `pi --help`, and `bin/fleet-seat-recovery --help` — none can read per-seat ledger JSON, compare timestamps against seat-caps.json walled_comeback durations, or file agent-ready issues via fleet-issue-file; the existing tools do not already do this.
+## run-proof
 
-organ-heartbeat: systemd/seat-walled-probe.service systemd/seat-walled-probe.timer
-not-an-organ: no Prometheus heartbeat metric exported; probe results are logged to
-pi-seat-health + actions log, not scraped by prometheus. This is a scheduled probe,
-not an organ under fleet-ops#1010.
+- Test unit: `validate-signal-reconcile` = `bash tests/signal-reconcile.test.sh` → **PASS** (exit 0).
+- Gate unit: `validate-signal-p14-listing` = `bash tests/p14-test-listing-gate.test.sh` → **PASS**.
+- No CI workflow or timer changed in this PR. No new `bin/` file added. No rebuild/masking/org diff.
 
-Closes #1348
+## net-positive
+
+net-positive-because: this PR is test-only: 41 net-added lines add two regression scenarios (9i/9i-close) that lock the observe-to-close path for #4921's exact legacy signal. There is no shrinkable code here to offset — new test coverage is the whole, intended payload and is wired into the suite auto-run by CI.
+
+## Loose ends
+
+- `loose-ends: none` — observe-to-close is a separate reconcile step that already runs on the live heartbeat tick; this PR is a gate/lock, not the closer. No half-done work left unshipped.
+
+## References
+Relates to #4921 — observe-to-close: this is a gate/lock PR, not the closer. GitHub must NOT auto-close #4921 on merge; the detector→queue reconciler closes it only when it reports green on a real heartbeat tick (per the issue body). On the next reconcile tick after this lands, the `loud/failed-command-swallowed/bin-pi-detached-deadman` signal is no longer produced (session-scoped keying itself drives the close), and #4921 observe-to-closes then.
