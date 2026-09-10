@@ -20,6 +20,10 @@
 #   (j) console shipped_24h source is fleet_product_merged_24h
 #   (o) product OUTCOME gauges (signups/activated/paying/briefs, fleet-ops#4456)
 #       are emitted only when the D1 source is reachable — never a fabricated 0
+#   (p) business-table census emits all five fleet_product_table_rows lines
+#       with the D1 counts (fleet-ops#5000)
+#   (q) a failed census read omits the family, never a fabricated 0
+#   (r) ProductDataCensusDropped rule contract + promtool fire/silent pair
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -215,6 +219,90 @@ for metric in ("fleet_product_signups_24h", "fleet_product_activated_24h",
 print("OK: outcome gauges emitted from a reachable source")
 PY
 ok "(o) outcome gauges emitted with real values when the source is reachable"
+
+# =========================================================================
+# (p) fleet-ops#5000: the mocked-D1 business-table census emits one
+#     fleet_product_table_rows line per table, with the D1 counts, and the
+#     HELP/TYPE pair exactly once.
+# =========================================================================
+python3 - "$helper" <<'PY' || fail "census emit failed"
+import importlib.util, os, sys
+from datetime import datetime, timezone
+# Reachable source: monkeypatch _product_outcome (the real one hits D1) with
+# the four outcome scalars PLUS the census row, exactly as _product_outcome
+# parses it out of the one compound SELECT (fleet-ops#5000).
+os.environ["FLEET_PRODUCT_OUTCOME"] = "skip"  # keep import-side network off
+spec = importlib.util.spec_from_file_location("ps", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+sys.modules["ps"] = m
+spec.loader.exec_module(m)
+m._product_outcome = lambda: {
+    "signups_24h": 3,
+    "activated_24h": 2,
+    "paying_customers": 6,
+    "briefs_delivered_24h": 12,
+    "table_census": {
+        "user_plan": 6,
+        "watchlist": 12,
+        "delivery_attempt": 4,
+        "proof_capture": 4,
+        "session": 9,
+    },
+}
+
+now = datetime(2026, 9, 2, 12, 0, 0, tzinfo=timezone.utc)
+body = m.export_prom([m.RepoSLO(repo="0509")], now=now)
+want = {
+    "user_plan": 6,
+    "watchlist": 12,
+    "delivery_attempt": 4,
+    "proof_capture": 4,
+    "session": 9,
+}
+for table, rows in want.items():
+    line = f'fleet_product_table_rows{{table="{table}"}} {rows}'
+    assert line in body, (line, body)
+# Exactly the five tables — all present, nothing extra in the family.
+assert body.count("fleet_product_table_rows{") == len(want), body
+# HELP/TYPE each exactly once
+assert body.count("# HELP fleet_product_table_rows") == 1, body
+assert body.count("# TYPE fleet_product_table_rows") == 1, body
+print("OK: census gauges emitted for all five tables")
+PY
+ok "(p) census gauges emitted for all five tables with the mocked D1 counts"
+
+# =========================================================================
+# (q) fleet-ops#5000: a failed census read OMITS the family — never a
+#     fabricated 0, which would fire ProductDataCensusDropped on a D1 blip.
+# =========================================================================
+python3 - "$helper" <<'PY' || fail "census-absent failed"
+import importlib.util, os, sys
+from datetime import datetime, timezone
+os.environ["FLEET_PRODUCT_OUTCOME"] = "skip"  # keep import-side network off
+spec = importlib.util.spec_from_file_location("ps", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+sys.modules["ps"] = m
+spec.loader.exec_module(m)
+# The census-only failure shape: the four scalars read fine, the census
+# query raised, so _product_outcome returns no "table_census" key.
+m._product_outcome = lambda: {
+    "signups_24h": 3,
+    "activated_24h": 2,
+    "paying_customers": 6,
+    "briefs_delivered_24h": 12,
+}
+
+now = datetime(2026, 9, 2, 12, 0, 0, tzinfo=timezone.utc)
+body = m.export_prom([m.RepoSLO(repo="0509")], now=now)
+# The whole family is absent — not zero — so Prometheus absent() surfaces it
+# and the dropped-census rule cannot fire on an unreadable source.
+assert "fleet_product_table_rows" not in body, body
+# A census-only failure must not take the four outcome gauges down with it.
+assert "fleet_product_signups_24h 3" in body, body
+assert "fleet_product_briefs_delivered_24h 12" in body, body
+print("OK: failed census read omits the family (no fabricated 0)")
+PY
+ok "(q) failed census read omits fleet_product_table_rows instead of zeroing it"
 
 # =========================================================================
 # (f) main() end-to-end via fixture
@@ -695,12 +783,92 @@ PY
 ok "(n) LabelConnection rc!=0/stderr retry keeps merged_24h flowing (fleet-ops#4073)"
 
 # =========================================================================
+# (r) fleet-ops#5000: the ProductDataCensusDropped rule contract — severity
+#     critical, for: 5m, the exact expr, and an annotation set that names the
+#     table, carries the deletion-not-ageing phrase, links the issue, and
+#     never sends a repair worker to the exporter.
+# =========================================================================
+census_block="$(awk '/# fleet-ops#5000: a 0509 production business table/,/- alert: ProductThroughputStalled/' "$rules")"
+[[ -n "$census_block" ]] || fail "could not extract ProductDataCensusDropped block"
+grep -qF 'alert: ProductDataCensusDropped' <<<"$census_block" \
+  || fail "rules missing ProductDataCensusDropped (fleet-ops#5000)"
+grep -qF 'expr: fleet_product_table_rows == 0 and max_over_time(fleet_product_table_rows[24h] offset 5m) >= 1' <<<"$census_block" \
+  || fail "ProductDataCensusDropped expr must be the level check to zero with the offset 5m 24h history"
+grep -qF 'for: 5m' <<<"$census_block" \
+  || fail "ProductDataCensusDropped must use for: 5m"
+grep -qF 'severity: critical' <<<"$census_block" \
+  || fail "ProductDataCensusDropped must be severity=critical (data loss, not a trend)"
+grep -qF '{{ $labels.table }}' <<<"$census_block" \
+  || fail "ProductDataCensusDropped annotations must name the affected table via {{ \$labels.table }}"
+grep -qF 'production product data is empty — rows were deleted, not aged out' <<<"$census_block" \
+  || fail "ProductDataCensusDropped description must carry the deletion-not-ageing phrase"
+grep -qF 'Nishfleet/fleet-ops#5000' <<<"$census_block" \
+  || fail "ProductDataCensusDropped description must link Nishfleet/fleet-ops#5000"
+grep -qF 'migrations/0085_retention_sweep_state.sql' <<<"$census_block" \
+  || fail "ProductDataCensusDropped must say why gradual decay is expected (the retention-sweep migration)"
+! grep -qi 'repair the exporter' <<<"$census_block" \
+  || fail "ProductDataCensusDropped must not route the worker at the exporter — the data is empty, the read is fine"
+ok "(r) ProductDataCensusDropped rule contract (fleet-ops#5000)"
+
+# =========================================================================
 # promtool (optional)
 # =========================================================================
 if command -v promtool >/dev/null 2>&1; then
   promtool check rules "$rules" >/dev/null \
     || fail "promtool check rules failed"
   ok "promtool check rules"
+
+  # fleet-ops#5000: the ProductDataCensusDropped drill. Two cases:
+  #   (a) a table holding rows for the first 45m and reading 0 after FIRES
+  #       at 60m — one 5m step past its for: 5m — because the 24h history
+  #       proves rows were deleted rather than aged out;
+  #   (b) a healthy non-zero census (3 rows throughout) stays silent, so a
+  #       populated table can never trip the deletion rule.
+  # exp_annotations are compared strictly by promtool, so the expected text is
+  # the rule's own text with {{ $labels.table }} rendered to user_plan.
+  census_yml="$scratch/fleet-product-census-dropped.test.yml"
+  cat >"$census_yml" <<YOAML
+rule_files:
+  - $rules
+evaluation_interval: 5m
+tests:
+  - interval: 5m
+    name: census that emptied after holding rows fires
+    input_series:
+      - series: 'fleet_product_table_rows{table="user_plan"}'
+        # 6 rows for 10 samples (t=0..45m), then the table reads empty.
+        values: '6x10 0x20'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: ProductDataCensusDropped
+        exp_alerts:
+          - exp_labels:
+              alertname: ProductDataCensusDropped
+              severity: critical
+              service: fleet
+              table: user_plan
+            exp_annotations:
+              summary: '0509 production table user_plan is empty — the row census dropped to 0'
+              description: 'fleet_product_table_rows{table="user_plan"} == 0 while the same table held rows within the last 24h: production product data is empty — rows were deleted, not aged out (Nishfleet/fleet-ops#5000). migrations/0085_retention_sweep_state.sql decays rows gradually, so a cliff to zero is deletion, not ageing. Repair: inspect the user_plan table in the 0509 production D1 database and restore it from D1 Time Travel or the most recent export, then check recent migrations/sweeps for an accidental DELETE or TRUNCATE of user_plan.'
+  - interval: 5m
+    name: healthy non-zero census stays silent
+    input_series:
+      - series: 'fleet_product_table_rows{table="user_plan"}'
+        values: '3x20'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: ProductDataCensusDropped
+        exp_alerts: []
+YOAML
+  # promtool test rules exits 1 on a failed case AND prints FAILED to
+  # stdout, so gate on both: exit code (loud) and output text (catches
+  # the exit-0-print-FAILED quirk on other builds).
+  if ! out="$(promtool test rules "$census_yml" 2>&1)"; then
+    fail "promtool test rules exited non-zero on the product-census test: $out"
+  fi
+  grep -q "SUCCESS" <<<"$out" \
+    || fail "promtool test rules: ProductDataCensusDropped must fire on a table that emptied and stay silent on a healthy census ($out)"
+  ok "promtool test rules: ProductDataCensusDropped fires on deletion, silent on a healthy census (fleet-ops#5000)"
 else
   echo "SKIP: promtool not on PATH"
 fi

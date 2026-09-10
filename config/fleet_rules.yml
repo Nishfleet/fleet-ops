@@ -847,6 +847,21 @@ groups:
           summary: "product-slo metrics absent — the #2755 exporter path is missing or dead"
           description: "Repair: lib/fleet-product-slo.py must emit fleet_product_slo_last_run_seconds. It piggybacks fleet-metrics-export.service via systemd/fleet-metrics-export.service.d/product-slo.conf (no new timer). Check fleet-metrics-export.timer and journalctl --user -u fleet-metrics-export.service."
 
+      # fleet-ops#5000: a 0509 production business table read ZERO rows after
+      # holding rows within the last 24h. A level check against zero, NOT a
+      # percentage-decay rule: migrations/0085_retention_sweep_state.sql makes
+      # gradual decay expected, so only a cliff to empty is evidence of
+      # deletion (or a destructive write) rather than ageing.
+      - alert: ProductDataCensusDropped
+        expr: fleet_product_table_rows == 0 and max_over_time(fleet_product_table_rows[24h] offset 5m) >= 1
+        for: 5m
+        labels:
+          severity: critical
+          service: fleet
+        annotations:
+          summary: "0509 production table {{ $labels.table }} is empty — the row census dropped to 0"
+          description: "fleet_product_table_rows{table=\"{{ $labels.table }}\"} == 0 while the same table held rows within the last 24h: production product data is empty — rows were deleted, not aged out (Nishfleet/fleet-ops#5000). migrations/0085_retention_sweep_state.sql decays rows gradually, so a cliff to zero is deletion, not ageing. Repair: inspect the {{ $labels.table }} table in the 0509 production D1 database and restore it from D1 Time Travel or the most recent export, then check recent migrations/sweeps for an accidental DELETE or TRUNCATE of {{ $labels.table }}."
+
       # fleet-ops#2755 accept §4: throughput < 2/week for 2 weeks.
       # avg_over_time over 14d of the weekly gauge approximates "sustained
       # low throughput" without a separate 2-week counter.
