@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+# unit-escalation-write — universal failure escalation writer.
+# Triggered by unit-escalation@%i.service, which fires via the global
+# service.d/10-escalate.conf drop-in (OnFailure=unit-escalation@%n.service)
+# on ANY failed user service. Writes a structured STOP-REASON.json entry in
+# the exact format stop-escalation.path / stop-escalation-dispatch consumes,
+# so the existing SENIOR-AUDITOR pipeline fires for the failure.
+#
+# Schema (extends the base stop-judge format with a `source` field):
+#   {
+#     "reason": "unit-failure",
+#     "detail": {
+#       "unit": "<full name>",
+#       "journal": ["last 5 lines"],
+#       "result": "<Result from systemctl show>",
+#       "exit_status": "<ExecMainStatus if available>",
+#       "memory_peak": "<MemoryPeak bytes or empty>",
+#       "oom_signal": "<oom-kill / yes / no>"
+#     },
+#     "timestamp": "<UTC ISO8601>",
+#     "extension": "unit-escalation",
+#     "source": "unit-escalation"
+#   }
+# The dispatch dedupe-hash is sha256 of the whole file; the timestamp makes
+# each trip unique so a fresh failure always gets its 2-dispatch budget.
+#
+# fleet-ops#34, task 4: when a worker is OOM-killed (Result=oom-kill,
+# MemoryPeak near its cgroup cap, journal contains "Killed process"), the
+# auditor must be able to see that immediately.  This writer captures
+# Result, ExecMainStatus, and MemoryPeak from systemctl, and a best-effort
+# OOM flag, in the STOP-REASON detail.
+set -euo pipefail
+
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export HOME="${HOME:-/home/nish}"
+
+AS=${UNIT_ESCALATION_AGENT_STATE:-/home/nish/workspaces/agent-state}
+SR=${UNIT_ESCALATION_STOP_REASON:-$AS/STOP-REASON.json}
+UNIT="${1:-}"
+
+if [ -z "$UNIT" ]; then
+  echo "unit-escalation-write: missing unit name (expected %i)" >&2
+  exit 1
+fi
+
+# Self-trigger / feedback-loop guard (defense in depth alongside the
+# per-unit OnFailure= reset drop-ins). The escalation layer, the auditor
+# dispatcher, and the ready-work dispatcher must never summon an auditor
+# from their own failures.
+case "$UNIT" in
+  unit-escalation@*|stop-escalation.service|stop-escalation.path|ready-work.service|escalation-daily-sweep.service|escalation-daily-sweep.timer)
+    echo "unit-escalation-write: skipping excluded unit '$UNIT' (no self-trigger)" >&2
+    exit 0
+    ;;
+esac
+
+# Last 5 journal lines for the failed unit (user scope). Best-effort: empty
+# array if journalctl is unavailable or the unit left no logs.
+mapfile -t jl < <(journalctl --user -u "$UNIT" -n 5 --no-pager -o short-iso 2>/dev/null || true)
+
+# OOM / kill evidence (fleet-ops#34, task 4).  systemctl show is best-effort:
+# an old unit may already have dropped out of the loaded set.
+result=$(systemctl --user show -p Result --value "$UNIT" 2>/dev/null || echo "")
+exit_status=$(systemctl --user show -p ExecMainStatus --value "$UNIT" 2>/dev/null || echo "")
+mem_peak=$(systemctl --user show -p MemoryPeak --value "$UNIT" 2>/dev/null || echo "")
+
+oom_signal="no"
+case "$result" in
+  oom-kill) oom_signal="yes" ;;
+esac
+
+# Also look for oom-kill / MemoryPressure / "Killed process" in the journal.
+if [ "$oom_signal" = "no" ]; then
+  if journalctl --user -u "$UNIT" -n 20 --no-pager -q 2>/dev/null | \
+       grep -qiE 'oom-kill|killed process|out of memory|memory pressure|memory limit' ; then
+    oom_signal="yes"
+  fi
+fi
+
+# Atomic write under flock so concurrent failures serialize (each overwrites
+# with its own entry; the path unit fires per change; the auditor's catch-all
+# sweep then collects any other failed units via systemctl --state=failed).
+python3 - "$SR" "$UNIT" "$result" "$exit_status" "$mem_peak" "$oom_signal" "${jl[@]+"${jl[@]}"}" <<'PY'
+import sys, json, os, time, fcntl, tempfile
+path, unit = sys.argv[1], sys.argv[2]
+result, exit_status, mem_peak, oom_signal = sys.argv[3:7]
+lines = sys.argv[7:]
+entry = {
+    "reason": "unit-failure",
+    "detail": {
+        "unit": unit,
+        "journal": lines,
+        "result": result,
+        "exit_status": exit_status,
+        "memory_peak": mem_peak,
+        "oom_signal": oom_signal,
+    },
+    "timestamp": time.strftime('%Y-%m-%dT%H:%M:%S.000Z', time.gmtime()),
+    "extension": "unit-escalation",
+    "source": "unit-escalation",
+}
+lockpath = path + ".lock"
+os.makedirs(os.path.dirname(path), exist_ok=True)
+with open(lockpath, 'w') as lk:
+    fcntl.flock(lk, fcntl.LOCK_EX)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix='.sr-')
+    with os.fdopen(fd, 'w') as f:
+        json.dump(entry, f, indent=2)
+        f.write('\n')
+    os.replace(tmp, path)
+PY
+echo "unit-escalation-write: wrote STOP-REASON for $UNIT (result=$result oom=$oom_signal)"
+exit 0

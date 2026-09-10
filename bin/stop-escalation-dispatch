@@ -1,0 +1,244 @@
+#!/usr/bin/env bash
+# stop-escalation-dispatch — SENIOR AUDITOR escalation on a STOP-REASON trip.
+#
+# Thin runner: ONE dispatch attempt per firing, bounded by a 2-dispatch cap per
+# STOP-REASON hash.  It does NOT do its own retry loop: a fresh STOP-REASON or
+# the daily-sweep will re-trigger it.  What it does do is:
+#
+#   1. Pick a healthy, non-rate-limited seat from the ladder via pick_seat.
+#      A rate_limited / retryable=true / dead=false seat is a LANE FAULT,
+#      not an escalation.  Only a fully-walled ladder reaches NISH.
+#   2. Dispatch the SENIOR AUDITOR packet with a hard internal timeout shorter
+#      than the unit's TimeoutStartSec, so a timeout is recorded LOUD in
+#      AUDITOR-LOG.md before systemd can silently kill the service.
+#   3. Verify the dispatch actually wrote a diagnosis block.  A dispatch that
+#      produced no block (timeout, pi failure, or empty output) is recorded as
+#      a failed dispatch, does NOT consume the hash's 2-dispatch budget, and
+#      exits 1 so the next trip/sweep can try again.
+#
+# Layer: never-say-next SENIOR-AUDITOR (visual-quality-waves.md escalation scope).
+set -euo pipefail
+
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export HOME="${HOME:-/home/nish}"
+
+AS=${STOP_ESCALATION_AS:-/home/nish/workspaces/agent-state}
+SR=${STOP_ESCALATION_STOP_REASON:-$AS/STOP-REASON.json}
+SEEN=${STOP_ESCALATION_SEEN:-$AS/stop-escalation-seen.txt}
+NISH=${STOP_ESCALATION_NISH:-$AS/NISH-ESCALATIONS.md}
+LOG=${STOP_ESCALATION_AUDITOR_LOG:-$AS/AUDITOR-LOG.md}
+CD=${STOP_ESCALATION_COOLDOWN:-300}
+PI=${STOP_ESCALATION_PI_BIN:-/home/nish/.local/bin/pi}
+DRY=${STOP_ESCALATION_DRY_RUN:-0}
+
+# Default internal timeout is 23 minutes.  The unit file's TimeoutStartSec is
+# 25 minutes, so this script catches the overrun and writes a loud timeout
+# block before systemd has to kill it.  A full auditor run that does real work
+# should finish well inside this window; runs that hang are the failure mode.
+AUDITOR_TIMEOUT_SEC=${STOP_ESCALATION_AUDITOR_TIMEOUT:-1380}
+
+# Seat ladder.  pi-packet/seat-lib.sh is the fleet's canonical seat picker.
+SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
+# shellcheck source=../lib/seat-lib.sh source-path=SCRIPTDIR
+source "$SEAT_LIB"
+
+ts() { date -u +%FT%TZ; }
+
+[ -f "$SR" ] || exit 0
+
+reason=$(python3 -c 'import sys,json;print(json.load(sys.stdin).get("reason",""))' < "$SR" 2>/dev/null || echo "")
+
+# Skip non-fault stops: boundary:* = legitimate human-only stop (money/creds/legal),
+# cooldown_active = circuit already tripped, cooldown holding. Neither is a fresh
+# fault to escalate. Only circuit trips (max_auto_continues, same_error_circuit,
+# no_progress_circuit, continuation_inject_failed), unit-failure from the
+# escalation layer, and unknown reasons escalate.
+case "$reason" in
+  boundary:*|cooldown_active) exit 0 ;;
+esac
+
+hash=$(sha256sum "$SR" | awk '{print $1}')
+now=$(date +%s)
+count=0; last=0
+if [ -f "$SEEN" ]; then
+  e=$(grep -F "$hash " "$SEEN" | head -1 || true)
+  if [ -n "$e" ]; then
+    count=$(awk '{print $2}' <<<"$e")
+    last=$(awk '{print $3}' <<<"$e")
+  fi
+fi
+
+# Already hit the 2-dispatch cap for this hash.  The auditor had two real
+# attempts and could not clear the cause.  This is the genuine Nish escalation.
+if [ "$count" -ge 2 ]; then
+  printf '%s CAP-REACHED hash=%s count=%s\n' "$(ts)" "$hash" "$count" >> "$NISH"
+  exit 0
+fi
+
+# Same hash within the cooldown window.  No re-fire.
+if [ "$count" -ge 1 ] && [ $((now - last)) -lt "$CD" ]; then
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Seat selection.  Defect #2 from fleet-ops#34: a rate_limited / retryable=true
+# / dead=false seat is a lane fault, not a Nish escalation.  Use the same
+# pick_seat ladder the workers use.  Only when every usable seat is walled does
+# the ladder return empty -- that is the real "fully walled ladder" signal.
+# ---------------------------------------------------------------------------
+pick_seat_with_retry() {
+  local tried_file="$1"
+  local seat
+  seat=$(pick_seat "" "" 0 "$tried_file" 2>/dev/null || true)
+  printf '%s' "$seat"
+}
+
+TRIED_DIR="$AS/stop-escalation-tried"
+mkdir -p "$TRIED_DIR"
+TRIED_FILE="$TRIED_DIR/$hash"
+: > "$TRIED_FILE"  # fresh hash -> fresh tried set
+
+seat=$(pick_seat_with_retry "$TRIED_FILE")
+if [ -z "$seat" ]; then
+  printf '%s LADDER-WALLED hash=%s reason=%s\n' "$(ts)" "$hash" "$reason" >> "$NISH"
+  echo "STOP-ESCALATION-FAULT: every seat walled or dead, Nish escalation" >&2
+  exit 1
+fi
+
+PROVIDER=$(printf '%s' "$seat" | cut -f1)
+MODEL=$(printf '%s' "$seat" | cut -f2)
+
+# Remember this seat so a re-dispatch (next loop or next trip) does not reuse it.
+printf '%s/%s\n' "$PROVIDER" "$MODEL" >> "$TRIED_FILE"
+
+# SENIOR AUDITOR packet — heredoc pointing at LIVE files, not frozen content.
+packet=$(cat <<'PACKET'
+EXECUTE-DONT-NARRATE. You are the SENIOR AUDITOR. A never-say-next circuit breaker tripped. Confer across agents, diagnose the gap, fix it, re-queue the halted item. Read these LIVE files (do not assume content):
+1. /home/nish/workspaces/agent-state/STOP-REASON.json — the trip reason + detail.
+2. The tripped session's log if STOP-REASON.json references a session path under /home/nish/.pi/agent/sessions/.
+3. /home/nish/workspaces/agent-state/READY-WORK.md — the ready-work queue.
+4. /home/nish/workspaces/agent-state/visual-quality-waves.md — program status (read the Status log + the active never-say-next workstream).
+5. /home/nish/workspaces/agent-state/fleet-restoration-2026-08-25.md — the fleet-restoration ledger's DECISIONS LEDGER + Done + In flight.
+6. RECENT peer session transcripts under /home/nish/.pi/agent/sessions/ — confer amongst agents: list newest-first, read the last few bounded to the same workspace, to see what peer agents actually recorded doing.
+DIAGNOSE the gap: stuck loop cause, wrong assumption, missing dependency, or lane fault.
+FIX it via worker-lane discipline (dispatch a sealed packet to a cheap lane; or fix directly if the change is small and obvious).
+CLEAR the cooldown marker only when the cause is fixed (the stop-judge cooldown is internal state — clearing means the root cause is resolved, not disabling the extension).
+RE-QUEUE the halted item in /home/nish/workspaces/agent-state/READY-WORK.md (which auto-dispatches via ready-work.path).
+APPEND your diagnosis + action to /home/nish/workspaces/agent-state/AUDITOR-LOG.md.
+Worked example (fresh case study): restore-chain-0509 halted because it polled deploys by mergeCommit SHA, but 0509's merge queue rewrites SHAs — the fix was query-by-recency, and the wave was re-queued. Apply this pattern: find the wrong assumption, fix the query/method, re-queue.
+Do not wait for approval. Act now.
+
+CATCH-ALL SWEEP (MANDATORY ending for EVERY auditor summon — COMPLETENESS
+CLOSURES, visual-quality-waves.md 2026-08-25). Failure classes without a
+dedicated tripwire are caught whenever ANY tripwire fires. Before you close,
+run ALL of these and diagnose/fix/queue anything found, same discipline as
+the summoning failure:
+1. systemctl --user --state=failed --no-pager  — every failed USER unit.
+   Reset/repair each; a unit stuck failed is a fault you own this turn.
+2. systemctl --state=failed --no-pager  — SYSTEM scope, READ-ONLY (you lack
+   root; report unrepairable system faults to NISH-ESCALATIONS.md, do not
+   attempt sudo). Still diagnose what you can.
+3. hermes cron list  +  hermes cron history <id>  — recent cron run failures.
+   hermes is at /home/nish/.local/bin/hermes. Any failed run = a fault to fix.
+4. Unprocessed STOP-REASON entries: re-read
+   /home/nish/workspaces/agent-state/STOP-REASON.json — if its reason is NOT
+   the one you were summoned for (a different trip landed while you ran), or
+   if stop-escalation-seen.txt shows a hash at count<2 still unaddressed,
+   pick it up too.
+5. Open auto-revert-halt issues across Nishfleet repos:
+   gh search issues "AUTO-REVERT HALT" --owner Nishfleet --state open
+   Each is a deploy that halted revert on a suspected bad commit. Diagnose
+   whether the halt is still valid or stale; fix/queue/close accordingly.
+Anything found gets diagnosed/fixed/queued SAME as the summoning failure.
+If ALL five are clean, say so explicitly in your AUDITOR-LOG.md block
+("catch-all sweep: quiet on all 5 channels") — quiet IS a valid outcome.
+PACKET
+)
+
+if [ "$DRY" = 1 ]; then
+  {
+    printf '%s DRY-RUN auditor hash=%s provider=%s model=%s\n---PACKET---\n%s\n---END---\n' "$(ts)" "$hash" "$PROVIDER" "$MODEL" "$packet"
+  } >> "$LOG"
+  # DRY-RUN is a packet preview, not a real dispatch.  Do not consume budget.
+  exit 0
+fi
+
+# Prepend a dispatch header + the packet to the log.  The auditor's block
+# (if any) will follow this marker.
+{
+  printf '\n%s DISPATCH hash=%s count=%s provider=%s model=%s timeout=%ss\n' "$(ts)" "$hash" "$((count+1))" "$PROVIDER" "$MODEL" "$AUDITOR_TIMEOUT_SEC"
+  printf '%s\n' "$packet"
+} >> "$LOG"
+
+# Dispatch with a hard internal timeout so we can write a timeout block
+# ourselves instead of systemd silently killing the service.
+run_tmp=$(mktemp -d)
+trap 'rm -rf "$run_tmp"' EXIT INT TERM
+out="$run_tmp/auditor.out"
+err="$run_tmp/auditor.err"
+
+pi_rc=0
+# timeout returns 124 if the command had to be killed.  We capture pi_rc BEFORE
+# the `if !` test because inside `if !` $? is the test result (0), not the
+# command's exit code — so a timeout kill must be recorded as pi_rc=124, not 0.
+set +e
+timeout --foreground "$AUDITOR_TIMEOUT_SEC" \
+     "$PI" --print --provider "$PROVIDER" --model "$MODEL" \
+     < <(printf '%s' "$packet") > "$out" 2> "$err"
+pi_rc=$?
+set -e
+
+# Combine stdout and stderr for block detection.  pi errors may land in stderr.
+combined=""
+[ -f "$out" ] && combined=$(cat "$out" 2>/dev/null || true)
+if [ -f "$err" ] && [ -s "$err" ]; then
+  combined="${combined}${combined:+$'\n'}$(cat "$err" 2>/dev/null || true)"
+fi
+
+# A successful dispatch must have written a diagnosis block.  In practice that
+# is a block starting with "---" and a "## <ISO> — SENIOR AUDITOR" heading.
+has_block=0
+if [ -n "$combined" ] && grep -qE '^## |^---[[:space:]]*$|^\*\*Summoning trip:\*\*|^\*\*Root cause' <<<"$combined"; then
+  has_block=1
+fi
+
+if [ "$pi_rc" -ne 0 ] || [ "$has_block" -eq 0 ]; then
+  # Defect #3 from fleet-ops#34: a dispatch that produced no diagnosis block
+  # is a failed dispatch.  Record it in AUDITOR-LOG.md as a TIMEOUT / NO-BLOCK,
+  # do NOT consume the 2-dispatch budget, and exit 1.
+  if [ "$pi_rc" -eq 124 ]; then
+    printf '%s TIMEOUT-KILL hash=%s provider=%s model=%s timeout=%ss (auditor did not finish in time; log and retry)\n' "$(ts)" "$hash" "$PROVIDER" "$MODEL" "$AUDITOR_TIMEOUT_SEC" >> "$LOG"
+    # Also note the partial / empty output for debugging.
+    if [ -n "$combined" ]; then
+      {
+        printf '%s TIMEOUT-KILL-OUTPUT hash=%s provider=%s model=%s\n' "$(ts)" "$hash" "$PROVIDER" "$MODEL"
+        printf '%s\n' "$combined"
+      } >> "$LOG"
+    fi
+  else
+    printf '%s DISPATCH-NO-BLOCK hash=%s provider=%s model=%s pi_rc=%s (no diagnosis block; will retry on next trip)\n' "$(ts)" "$hash" "$PROVIDER" "$MODEL" "$pi_rc" >> "$LOG"
+    if [ -n "$combined" ]; then
+      {
+        printf '%s DISPATCH-OUTPUT hash=%s provider=%s model=%s pi_rc=%s\n' "$(ts)" "$hash" "$PROVIDER" "$MODEL" "$pi_rc"
+        printf '%s\n' "$combined"
+      } >> "$LOG"
+    fi
+  fi
+  echo "STOP-ESCALATION-FAULT: auditor dispatch failed (rc=$pi_rc, has_block=$has_block)" >&2
+  # Do NOT update stop-escalation-seen.txt.  The hash's dispatch budget is
+  # unchanged, so the next STOP-REASON change or daily sweep re-tries.
+  exit 1
+fi
+
+# Real dispatch produced a diagnosis block.  Append it and consume one dispatch.
+{
+  printf '%s\n' "$combined"
+  printf '%s dispatched auditor hash=%s count=%s provider=%s model=%s\n' "$(ts)" "$hash" "$((count+1))" "$PROVIDER" "$MODEL"
+} >> "$LOG"
+
+nc=$((count+1))
+grep -v -F "$hash " "$SEEN" 2>/dev/null > "$SEEN.tmp" || true
+printf '%s %s %s\n' "$hash" "$nc" "$now" >> "$SEEN.tmp"
+mv "$SEEN.tmp" "$SEEN"
+
+exit 0

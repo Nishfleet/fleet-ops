@@ -1,0 +1,15 @@
+[Unit]
+Description=Stop-escalation SENIOR AUDITOR dispatcher (one auditor per trip)
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/stop-escalation-dispatch'
+# fleet-ops#34: a SENIOR AUDITOR must read 5 channels, diagnose, fix and
+# re-queue.  25 minutes is the backstop; the script uses an internal timeout
+# 2 minutes shorter so it can write a loud TIMEOUT-KILL block to AUDITOR-LOG.md
+# before systemd has to kill it.  The old 3-minute value was cutting the
+# auditor off mid-diagnosis.
+TimeoutStartSec=25min
+Restart=no
+NoNewPrivileges=true
+PrivateTmp=true

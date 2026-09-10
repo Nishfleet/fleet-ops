@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  pull-requests: read
+
+# PR and ordinary push only. Never cancel deploy / release / migration.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pr-checks:
+    uses: Nishfleet/fleet-ops/.github/workflows/reusable-pr-checks.yml@main
+    permissions:
+      contents: read
+      pull-requests: read
+    with:
+      node-version: "24"
+      install-command: npm ci
+      verify-command: npm test && npm run build

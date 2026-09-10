@@ -1,0 +1,359 @@
+#!/usr/bin/env bash
+# fleet-heartbeat-undersaturation — tier1 block 7 (fleet-ops#75).
+#
+# The blind spot neither tier of fleet-heartbeat could see (proven 3x on the
+# 2026-08-25/26 night): ready/claimed work > 0 AND zero pi-issue workers with
+# a live MainPID for a full tick. tier2 probes seat auth (passes — keys were
+# fine), tier1 resets failed units (auto-restart units are not 'failed'), so a
+# fleet that is 100% wedged looks green to both. Every stall tonight was caught
+# by Nish nudging an interactive session, never by machinery.
+#
+# Counts:
+#   work    = open agent-ready + agent-in-progress issues across enrolled
+#             repos (config/intake-repos.json is the source of truth, same
+#             file blocked-reconcile reads).
+#   running = pi-issue@ units with a live MainPID (active/activating state —
+#             #72's liveness rule: a worker is live iff ActiveState is
+#             active/activating or MainPID is nonzero; for a Type=oneshot
+#             worker the live set is exactly active+activating).
+#
+# Decision:
+#   work > 0 AND running == 0  (wedge):
+#     - If the previous tick was NOT wedged: REPAIR. reset-failed all pi-issue
+#       units (so intake can redispatch past StartLimitBurst), clear stale
+#       active-seats/ registrations per #72's liveness rule, restart intake
+#       for every enrolled repo. Log the trace. Set a one-tick marker.
+#     - If the previous tick WAS wedged (marker present): FAIL LOUD. exit
+#       non-zero -> fleet-heartbeat.service lands in --state=failed ->
+#       OnFailure=fleet-heartbeat-failed-notify.service pages + Telegram.
+#       Never degrade silently. Clear the marker so the post-failure tick can
+#       attempt repair again (alternating repair / fail-loud keeps paging
+#       while still trying to recover).
+#   otherwise (work == 0 OR running > 0): clear any stale marker, no action.
+#
+# Also emits one THROUGHPUT line per tick (merged fleet-worker PRs since the
+# last tick) into the triage log so a slow bleed — workers running but landing
+# nothing — is visible in one grep, per the 'merged PRs/day is the success
+# metric' standing rule. THROUGHPUT is informational (not a tier2 trigger tag),
+# matching the wrapper's treatment of TIMER-DISABLED / UNIT-FAILED-LOG.
+#
+# Environment seams (tests):
+#   SYSTEMCTL                 default systemctl
+#   GH                        default gh
+#   FLEET_INTAKE_REPOS_JSON   default .../config/intake-repos.json
+#   FLEET_HEARTBEAT_LOG_DIR   marker + throughput state
+#   FLEET_HEARTBEAT_TRIAGE    triage file
+#   PI_PACKET_STATE           active-seats registry root
+#
+# Exit: 0 = healthy, OR first wedged tick (repair attempted). Non-zero =
+#       second consecutive wedged tick (fail loud).
+
+set -euo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+
+SYSTEMCTL="${SYSTEMCTL:-systemctl}"
+GH="${GH:-gh}"
+INTAKE_JSON="${FLEET_INTAKE_REPOS_JSON:-/home/nish/workspaces/products/fleet-ops/config/intake-repos.json}"
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+LOG_DIR="${FLEET_HEARTBEAT_LOG_DIR:-/home/nish/.local/state/fleet-heartbeat}"
+ACTIVE_SEATS_DIR="${PI_PACKET_STATE:-${HOME}/.local/state/pi-packet}/active-seats"
+
+FLAG="$LOG_DIR/undersaturation.flag"
+THROUGHPUT_STATE="$LOG_DIR/throughput.last"
+
+mkdir -p "$LOG_DIR"
+
+log() {
+    printf '[%s] [fleet-heartbeat-undersaturation] %s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+# Loud lines go to BOTH stderr and the triage file (single page for humans +
+# other agents). Format matches fleet-heartbeat-tier1's loud() helper.
+loud() {
+    local tag="$1"; shift
+    local msg="$*"
+    log "LOUD [$tag] $msg"
+    {
+        printf '\n[%s] [%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg"
+    } >> "$TRIAGE" 2>/dev/null || log "WARN: could not append to triage $TRIAGE"
+}
+
+# --- enrolled repos (source of truth: config/intake-repos.json) -------------
+[ -f "$INTAKE_JSON" ] || { log "FATAL: intake-repos.json missing: $INTAKE_JSON"; exit 2; }
+command -v jq >/dev/null 2>&1 || { log "FATAL: jq missing"; exit 2; }
+
+# Full "Nishfleet/<name>" slugs (for gh) and bare "<name>" shorts (for systemd
+# unit instances), one per line.
+enrolled_repos=$(jq -r '.repos[].name | "Nishfleet/" + .' "$INTAKE_JSON")
+enrolled_shorts=$(jq -r '.repos[].name' "$INTAKE_JSON")
+
+# --- count work: open agent-ready + agent-in-progress issues -----------------
+count_work() {
+    local repo ready prog total=0
+    while IFS= read -r repo; do
+        [ -z "$repo" ] && continue
+        ready=$("$GH" issue list -R "$repo" -l agent-ready \
+            --state open --json number --limit 200 --jq 'length' 2>/dev/null || echo 0)
+        prog=$("$GH" issue list -R "$repo" -l agent-in-progress \
+            --state open --json number --limit 200 --jq 'length' 2>/dev/null || echo 0)
+        total=$((total + ready + prog))
+    done <<< "$enrolled_repos"
+    echo "$total"
+}
+
+# --- count running: pi-issue@ units in active/activating state ---------------
+# #72's liveness rule: a worker is live iff ActiveState is active/activating
+# or MainPID is nonzero. For Type=oneshot the live set is exactly active+
+# activating (a unit with a nonzero MainPID is by definition in one of those
+# states), so the state filter is the live set.
+count_running() {
+    local unit n=0
+    while IFS= read -r unit; do
+        [ -n "$unit" ] || continue
+        case "$unit" in
+            pi-issue@*) n=$((n+1)) ;;
+        esac
+    done < <("$SYSTEMCTL" --user list-units 'pi-issue@*.service' \
+        --state=active,activating --no-legend --plain 2>/dev/null \
+        | awk '{print $1}' || true)
+    echo "$n"
+}
+
+# --- throughput line (always emitted, best-effort) ---------------------------
+# Merged fleet-worker PRs since the last tick, split into product work
+# (every enrolled repo except fleet-ops) and control-plane work (fleet-ops).
+# Fleet-worker head refs match tier1 block 2's filter: claim/issue-*, p<N>/,
+# lane<N>/, revert/*.
+emit_throughput() {
+    local last_ts="" repo prs n merged_total=0 product_total=0 control_total=0 details=""
+    if [ -f "$THROUGHPUT_STATE" ]; then
+        last_ts=$(cat "$THROUGHPUT_STATE" 2>/dev/null || echo "")
+    fi
+    # First-ever tick: report over the last interval so the line is never empty
+    # of a window. 30 min matches the heartbeat timer cadence.
+    [ -n "$last_ts" ] || last_ts=$(date -u -d '30 min ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+        || date -u +%Y-%m-%dT%H:%M:%SZ)
+
+    while IFS= read -r repo; do
+        [ -z "$repo" ] && continue
+        prs=$("$GH" pr list -R "$repo" --search "is:merged merged:>=$last_ts" \
+            --json number,headRefName --limit 100 2>/dev/null || echo '[]')
+        n=$(printf '%s' "$prs" | jq \
+            '[.[] | select((.headRefName | startswith("claim/issue-")) or (.headRefName | test("^(p[0-9]+|lane[0-9]+|revert)/")))] | length' \
+            2>/dev/null || echo 0)
+        [ "$n" -gt 0 ] 2>/dev/null && {
+            details="$details ${repo##*/}:$n"
+            merged_total=$((merged_total + n))
+            if [ "${repo##*/}" = "fleet-ops" ]; then
+                control_total=$((control_total + n))
+            else
+                product_total=$((product_total + n))
+            fi
+        }
+    done <<< "$enrolled_repos"
+
+    loud "THROUGHPUT" "merged_product_PRs=$product_total merged_control_plane_PRs=$control_total merged_fleet_worker_PRs=$merged_total since=$last_ts${details:+ per-repo:$details}"
+    date -u +%Y-%m-%dT%H:%M:%SZ > "$THROUGHPUT_STATE"
+}
+
+# --- repair actions (best-effort; logged) ------------------------------------
+reset_failed_pi_issue() {
+    local unit n=0
+    while IFS= read -r unit; do
+        [ -n "$unit" ] || continue
+        if "$SYSTEMCTL" --user reset-failed "$unit" 2>/dev/null; then
+            log "repair: reset-failed $unit"
+            n=$((n+1))
+        else
+            log "repair: reset-failed $unit FAILED (best-effort, continuing)"
+        fi
+    done < <("$SYSTEMCTL" --user --state=failed --no-legend 2>/dev/null \
+        | awk '{print $1}' | grep -E '^pi-issue@' || true)
+    echo "$n"
+}
+
+# Clear stale active-seats/ registrations per #72's liveness rule: a registry
+# file is stale when its unit is not active/activating. Mirrors seat-lib's
+# _seat_registry_unit_live + _seat_reap_stale_registry (inlined here so the
+# helper stays self-contained and testable without sourcing seat-lib).
+reap_stale_active_seats() {
+    local f unit sysunit state n=0
+    [ -d "$ACTIVE_SEATS_DIR" ] || { echo 0; return 0; }
+    for f in "$ACTIVE_SEATS_DIR"/pi-*.json; do
+        [ -f "$f" ] || continue
+        unit=$(jq -r '.unit // ""' "$f" 2>/dev/null || true)
+        if [ -z "$unit" ]; then
+            rm -f "$f"; n=$((n+1)); continue
+        fi
+        case "$unit" in
+            pi-issue-*)  sysunit="pi-issue@${unit#pi-issue-}.service" ;;
+            pi-packet-*) sysunit="pi-packet@${unit#pi-packet-}.service" ;;
+            *) rm -f "$f"; n=$((n+1)); continue ;;
+        esac
+        state=$("$SYSTEMCTL" --user is-active "$sysunit" 2>/dev/null || echo inactive)
+        case "$state" in
+            active) : ;;  # live, keep
+            activating)
+                # P15 wedge-age probe: `activating` is normally live (up to
+                # the unit's TimeoutStartSec=45min), but past
+                # PI_SEAT_ACTIVATING_MAX_S it is a wedged pi, not a worker.
+                # Mirrors seat-lib's _seat_registry_unit_live. A SIGKILLed
+                # wedged worker leaves `activating`; age is the honest signal.
+                active_since=$("$SYSTEMCTL" --user show "$sysunit" --property=ActiveEnterTimestampMonotonic --value 2>/dev/null || echo 0)
+                if [[ "$active_since" =~ ^[0-9]+$ ]]; then
+                    now_s=$(awk '{print int($1)}' /proc/uptime)
+                    age_s=$(( now_s - active_since / 1000000 ))
+                    if (( age_s > ${PI_SEAT_ACTIVATING_MAX_S:-3300} )); then
+                        rm -f "$f"; n=$((n+1))
+                        log "repair: reaped wedged active-seat $f ($sysunit activating ${age_s}s)"
+                    fi
+                fi
+                ;;
+            *) rm -f "$f"; n=$((n+1)); log "repair: reaped stale active-seat $f ($sysunit $state)" ;;
+        esac
+    done
+    echo "$n"
+}
+
+restart_intake() {
+    local short n=0
+    while IFS= read -r short; do
+        [ -z "$short" ] && continue
+        "$SYSTEMCTL" --user reset-failed "pi-intake@${short}.service" 2>/dev/null || true
+        if "$SYSTEMCTL" --user start "pi-intake@${short}.service" 2>/dev/null; then
+            log "repair: started pi-intake@${short}.service"
+            n=$((n+1))
+        else
+            log "repair: start pi-intake@${short}.service FAILED (best-effort, continuing)"
+        fi
+    done <<< "$enrolled_shorts"
+    echo "$n"
+}
+
+# --- stale agent-in-progress label hygiene (auditor-finding-C) ---------------
+# A stale agent-in-progress label: the issue is open, labelled agent-in-progress,
+# but no pi-issue@<short>-<N> worker is live (active/activating). The worked
+# example that broke the fleet (2026-08-26): a worker finished cleanly, opened a
+# PR, and never cleared the label. tier1 §3 holds on open PRs (work in flight),
+# so the stale label survives; this watchdog then counted it as work=1/running=0
+# -> wedge -> repair (restart intake, which skips — no agent-ready issues) ->
+# next tick fail-loud. Permanent false wedge; page budget burned; auditor
+# summoned. A stale label is a LABEL-HYGIENE fault, never a fail-loud wedge.
+#
+# Mirrors tier1 §3's contract so the two never disagree:
+#   - open claim/issue-<N> PR -> the work is done (awaiting merge); remove
+#     agent-in-progress ONLY. Do NOT add agent-ready (that would re-queue
+#     finished work and conflict with the open PR).
+#   - no open PR -> the issue was abandoned mid-work; flip agent-in-progress
+#     -> agent-ready so intake re-queues it (defense in depth for the case §3
+#       failed to flip on its own tick).
+# Branch deletion is NOT this helper's job (§3 owns the no-PR branch release;
+# claim-reconcile §3b owns direction B). We touch labels only. Best-effort:
+# a failed gh call leaves the label for the next tick and falls through to the
+# existing wedge path.
+reap_stale_inprogress_labels() {
+    local repo short issues n unit has_pr cleared=0
+    while IFS= read -r repo; do
+        [ -z "$repo" ] && continue
+        short="${repo#*/}"
+        issues=$("$GH" issue list -R "$repo" -l agent-in-progress \
+            --state open --json number --limit 200 --jq '.[].number' 2>/dev/null || true)
+        while IFS= read -r n; do
+            [ -z "$n" ] && continue
+            [[ "$n" =~ ^[1-9][0-9]*$ ]] || continue
+            unit="pi-issue@${short}-${n}.service"
+            # Live worker holds the lane — not stale, leave it (matches §3 / #63).
+            if "$SYSTEMCTL" --user list-units "$unit" --state=active,activating \
+                --no-legend 2>/dev/null | awk '{print $1}' | grep -qx "$unit"; then
+                continue
+            fi
+            # Stale label. Open PR -> work done, drop the tag only.
+            # No open PR -> re-queue (mirror §3).
+            if "$GH" pr list -R "$repo" --head "claim/issue-${n}" --state open \
+                --json number 2>/dev/null | jq -e 'length > 0' >/dev/null 2>&1; then
+                has_pr=1
+            else
+                has_pr=0
+            fi
+            if [ "$has_pr" = "1" ]; then
+                if "$GH" issue edit "$n" -R "$repo" --remove-label agent-in-progress 2>/dev/null; then
+                    "$GH" issue comment "$n" -R "$repo" \
+                        --body "stale agent-in-progress label cleared by fleet-heartbeat-undersaturation at $(date -u +%FT%TZ) (no live worker; open PR — work done, awaiting merge)" \
+                        >/dev/null 2>&1 || true
+                    loud "UNDERSAT-LABEL-HYGIENE" "$repo#$n: removed stale agent-in-progress (no live worker, open PR)"
+                    cleared=$((cleared + 1))
+                else
+                    log "label-hygiene: $repo#$n remove-label FAILED (will retry next tick)"
+                fi
+            else
+                if "$GH" issue edit "$n" -R "$repo" \
+                    --remove-label agent-in-progress --add-label agent-ready 2>/dev/null; then
+                    "$GH" issue comment "$n" -R "$repo" \
+                        --body "stale agent-in-progress label flipped to agent-ready by fleet-heartbeat-undersaturation at $(date -u +%FT%TZ) (no live worker, no open PR — re-queued)" \
+                        >/dev/null 2>&1 || true
+                    loud "UNDERSAT-LABEL-HYGIENE" "$repo#$n: flipped stale agent-in-progress -> agent-ready (no live worker, no open PR)"
+                    cleared=$((cleared + 1))
+                else
+                    log "label-hygiene: $repo#$n label flip FAILED (will retry next tick)"
+                fi
+            fi
+        done <<< "$issues"
+    done <<< "$enrolled_repos"
+    echo "$cleared"
+}
+
+# ============================================================================
+# main
+# ============================================================================
+log "throughput pass starting"
+emit_throughput
+log "throughput pass complete"
+
+prev_wedged=0
+[ -f "$FLAG" ] && prev_wedged=1
+
+work=$(count_work)
+running=$(count_running)
+log "undersaturation: work=$work running=$running prev_wedged=$prev_wedged"
+
+if [ "$work" -gt 0 ] 2>/dev/null && [ "$running" -eq 0 ] 2>/dev/null; then
+    # Label-hygiene pre-pass (auditor-finding-C): a stale agent-in-progress
+    # label with no live worker is NOT wedged work — it is a label artifact a
+    # finished worker left behind. Clear it BEFORE declaring a wedge so the
+    # watchdog cannot false-wedge (and burn the page budget) on a stale tag.
+    # If every unit of "work" was a stale label, work drops to 0 below and the
+    # tick exits healthy. If genuine ready work remains, the wedge path runs.
+    hygiene=$(reap_stale_inprogress_labels)
+    if [ "${hygiene:-0}" -gt 0 ] 2>/dev/null; then
+        log "label-hygiene: cleared $hygiene stale agent-in-progress label(s); re-evaluating wedge"
+        work=$(count_work)
+        running=$(count_running)
+        log "post-hygiene: work=$work running=$running"
+    fi
+fi
+
+if [ "$work" -gt 0 ] 2>/dev/null && [ "$running" -eq 0 ] 2>/dev/null; then
+    if [ "$prev_wedged" -eq 1 ]; then
+        # Second consecutive wedged tick — repair already ran last tick and the
+        # fleet is STILL 100% wedged. Fail loud; never degrade silently.
+        loud "UNDERSAT-FAIL-LOUD" "work=$work running=$running — second consecutive wedged tick; repair ran last tick and recovered nothing. Manual intervention needed."
+        rm -f "$FLAG"
+        exit 1
+    fi
+    # First wedged tick of this run — repair.
+    loud "UNDERSAT-REPAIR" "work=$work running=$running — resetting failed pi-issue units, reaping stale active-seats, restarting intake"
+    r1=$(reset_failed_pi_issue)
+    r2=$(reap_stale_active_seats)
+    r3=$(restart_intake)
+    log "repair complete: reset_failed=$r1 reaped_seats=$r2 intake_restarted=$r3"
+    printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$FLAG"
+    exit 0
+fi
+
+# Healthy (no work, or workers running). Clear any stale marker.
+rm -f "$FLAG"
+log "undersaturation: healthy (work=$work running=$running) — no action"
+exit 0

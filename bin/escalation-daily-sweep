@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# escalation-daily-sweep — dead-man floor for the SENIOR-AUDITOR escalation
+# layer. Appends a synthetic 'daily-sweep' STOP-REASON.json entry so the
+# existing stop-escalation.path summons one auditor whose only job may be
+# confirming quiet.
+# Named reason (compute rule): event tripwires cannot detect their own death;
+# this bounds max time-to-audit at 24h for any failure class with no
+# dedicated tripwire. (visual-quality-waves.md COMPLETENESS CLOSURES, 2026-08-25.)
+set -euo pipefail
+
+AS=${UNIT_ESCALATION_AGENT_STATE:-/home/nish/workspaces/agent-state}
+SR=${UNIT_ESCALATION_STOP_REASON:-$AS/STOP-REASON.json}
+
+python3 - "$SR" <<'PY'
+import sys, json, os, time, fcntl, tempfile
+path = sys.argv[1]
+entry = {
+    "reason": "daily-sweep",
+    "detail": {"synthetic": True, "trigger": "escalation-daily-sweep.timer"},
+    "timestamp": time.strftime('%Y-%m-%dT%H:%M:%S.000Z', time.gmtime()),
+    "extension": "unit-escalation",
+    "source": "escalation-daily-sweep",
+}
+lockpath = path + ".lock"
+os.makedirs(os.path.dirname(path), exist_ok=True)
+with open(lockpath, 'w') as lk:
+    fcntl.flock(lk, fcntl.LOCK_EX)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix='.sr-')
+    with os.fdopen(fd, 'w') as f:
+        json.dump(entry, f, indent=2)
+        f.write('\n')
+    os.replace(tmp, path)
+PY
+echo "escalation-daily-sweep: wrote synthetic daily-sweep STOP-REASON entry"
+exit 0

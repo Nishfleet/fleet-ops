@@ -1,0 +1,14 @@
+[Unit]
+Description=Periodic intake-reconcile sweep (fleet-ops#32)
+
+[Timer]
+# 30 minutes matches the heartbeat cadence. The path unit handles
+# synchronous file-change trips; this timer is the backstop for the cases
+# the path unit misses (editor mtime didn't bump, the path unit was
+# masked, the timer fires before install.sh wired the path unit up).
+OnCalendar=*:00/30
+RandomizedDelaySec=120
+Persistent=true
+
+[Install]
+WantedBy=timers.target

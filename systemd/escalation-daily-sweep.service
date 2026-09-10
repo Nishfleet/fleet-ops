@@ -1,0 +1,10 @@
+[Unit]
+Description=Dead-man floor for SENIOR-AUDITOR escalation layer
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/escalation-daily-sweep'
+TimeoutStartSec=1min
+Restart=no
+NoNewPrivileges=true
+PrivateTmp=true

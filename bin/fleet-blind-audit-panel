@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# fleet-blind-audit-panel — local dedupe/quality gate for blind-audit findings.
+#
+# This is the stub for the #146 senior-auditor panel. It reads a JSON object
+# from stdin and prints a JSON verdict.  Verdict is "PASS" if the finding may
+# be filed as a gap-audit issue, "FAIL" if it should be logged but not filed.
+#
+# The implementation lives in lib/blind-audit-panel.py; this wrapper just
+# routes stdin to the Python helper and resolves the script from the repo
+# when not installed.
+
+set -euo pipefail
+
+here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+lib="${BLIND_AUDIT_PANEL_LIB:-$here/../lib/pi-packet/blind-audit-panel.py}"
+[ -f "$lib" ] || lib="$here/../lib/blind-audit-panel.py"
+[ -f "$lib" ] || { echo "fleet-blind-audit-panel: library missing: $lib" >&2; exit 2; }
+
+exec python3 "$lib"

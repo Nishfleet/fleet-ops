@@ -1,0 +1,23 @@
+[Unit]
+Description=Reconcile pi-intake/pi-scout timers to the declared repo set (config/intake-repos.json)
+# Masking is never auto-corrected; failure here means the file is
+# unparseable or jq is missing — both worth surfacing. Standard escalation
+# picks it up, OnFailure=unit-escalation@<this>.service is inherited from
+# the global service.d drop-in.
+
+[Service]
+Type=oneshot
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+# audit log lives under $HOME/.local/state/intake-reconcile/audit.log.
+# systemd's journal captures the script's stderr (every log/loud line) by
+# default for Type=oneshot with no StandardOutput= override; together with
+# the file audit log that means every state change has TWO traces — the
+# file (durable) and the journal (grep-able by unit + timestamp).
+ExecStart=/home/nish/.local/bin/intake-reconcile
+# 2 minutes: the script does a small bounded number of systemctl probes
+# per declared repo. The timer is 30-minute periodic; this is the path
+# trip, so latency matters less than correctness.
+TimeoutStartSec=2min
+Restart=no
+NoNewPrivileges=true
+PrivateTmp=true

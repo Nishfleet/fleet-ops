@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# pi-issue-start — start pi-issue@$1 if it is not already live.
+#
+# A second `systemctl --user start` of a running Type=oneshot counts toward
+# StartLimitBurst and is what released a live worker's claim (issue #26).
+# This wrapper no-ops instead of queueing another start.
+#
+# Usage: pi-issue-start <repo>-<issue>
+# Environment: SYSTEMCTL (tests)
+#
+# Exit: 0 = started or already-live no-op. Non-zero = systemctl start failed.
+
+set -euo pipefail
+
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+[[ $# -ge 1 ]] || { echo "pi-issue-start: need instance (e.g. fleet-ops-20)" >&2; exit 1; }
+instance="$1"
+unit="pi-issue@${instance}.service"
+SYSTEMCTL="${SYSTEMCTL:-systemctl}"
+
+state="$("$SYSTEMCTL" --user is-active "$unit" 2>/dev/null || true)"
+case "$state" in
+    active|activating)
+        echo "pi-issue-start: $unit is $state (no-op)"
+        exit 0
+        ;;
+esac
+
+main="$("$SYSTEMCTL" --user show -p MainPID --value "$unit" 2>/dev/null || echo 0)"
+if [[ "$main" =~ ^[1-9][0-9]*$ ]]; then
+    echo "pi-issue-start: $unit still has MainPID=$main (no-op)"
+    exit 0
+fi
+
+exec "$SYSTEMCTL" --user start "$unit"

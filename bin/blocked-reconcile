@@ -1,0 +1,495 @@
+#!/usr/bin/env bash
+# blocked-reconcile — re-examine agent-blocked issues (fleet-ops#29).
+#
+# Named reason this is a sweep, not an event: the blocking condition
+# (dependency issue/PR closed or merged, or Nish answering) changes
+# outside this repo. The nishfleet-worker GitHub App has no webhooks
+# (credentials/app-manifest.json events=[]), so there is nothing to
+# subscribe to. Heartbeat's existing 30-minute timer is the observer.
+#
+# Two cases:
+#   work-item  — machine-checkable. Explicit `blocked-on:` lines (or a
+#                title/body `blocked by #N` / `owner/repo#N` / GitHub URL).
+#                If every listed dependency is a closed issue or a merged
+#                PR, flip agent-blocked → agent-ready.
+#   nish-decision — not machine-checkable. Leave the label, record last
+#                checked, publish into the heartbeat triage file (the
+#                existing desk-triage route). Never auto-requeue.
+#
+# Bare `#N` mentions in prose are ignored (e.g. "dropped in #937" is
+# history, not a blocker). Workers must write `blocked-on:` lines.
+#
+# Environment (tests override all of these):
+#   BLOCKED_RECONCILE_REPOS        newline-separated owner/name list
+#   BLOCKED_RECONCILE_INTAKE_JSON  default repo list (intake-repos.json)
+#   BLOCKED_RECONCILE_TRIAGE       heartbeat triage file
+#   BLOCKED_RECONCILE_STATE        published JSON snapshot
+#   BLOCKED_RECONCILE_LOCKDIR      flock directory
+#   BLOCKED_RECONCILE_NOW          ISO-8601 UTC clock
+#   BLOCKED_RECONCILE_STICKY_SECS  min age before editing last-checked
+#                                  comment (default 21600 = 6h)
+#   BLOCKED_RECONCILE_DRY_RUN      if 1, print actions and mutate nothing
+#
+# Modes:
+#   --extract   read one issue JSON on stdin, print {kind,deps} (no network)
+#   (default)   sweep enrolled repos
+#
+# Exit 0 on a clean sweep or overlapping no-op. Non-zero only on
+# unexpected failure (missing python/jq, unreadable intake file).
+
+set -euo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="${PATH:-/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+EXTRACT_PY='
+import json, re, sys
+
+NISH = "nish-decision"
+URL = re.compile(
+    r"^https://github\.com/([\w.-]+)/([\w.-]+)/(issues|pull)/(\d+)/?$"
+)
+OWNED = re.compile(r"^([\w.-]+)/([\w.-]+)#(\d+)$")
+HASH = re.compile(r"^#(\d+)$")
+BLOCKED_ON = re.compile(r"(?im)^blocked-on:\s*(.+?)\s*$")
+BLOCKED_BY = re.compile(
+    r"(?i)blocked by\s+"
+    r"(https://github\.com/[\w.-]+/[\w.-]+/(?:issues|pull)/\d+"
+    r"|[\w.-]+/[\w.-]+#\d+"
+    r"|#\d+)"
+)
+SKIP_COMMENT = re.compile(
+    r"(?i)^(claimed by |claim branch released|blocked-checked:)"
+)
+
+
+def parse_ref(raw, owner, repo):
+    raw = (raw or "").strip().rstrip(".,;")
+    if raw.lower() == NISH:
+        return {"kind": NISH}
+    m = URL.match(raw)
+    if m:
+        return {
+            "owner": m.group(1),
+            "repo": m.group(2),
+            "number": int(m.group(4)),
+            "hint": "pr" if m.group(3) == "pull" else "issue",
+        }
+    m = OWNED.match(raw)
+    if m:
+        return {
+            "owner": m.group(1),
+            "repo": m.group(2),
+            "number": int(m.group(3)),
+            "hint": "unknown",
+        }
+    m = HASH.match(raw)
+    if m:
+        return {
+            "owner": owner,
+            "repo": repo,
+            "number": int(m.group(1)),
+            "hint": "unknown",
+        }
+    return None
+
+
+def add_dep(deps, seen, parsed, owner, repo, self_n):
+    if parsed is None or parsed.get("kind") == NISH:
+        return parsed is not None and parsed.get("kind") == NISH
+    if (
+        parsed["owner"] == owner
+        and parsed["repo"] == repo
+        and parsed["number"] == self_n
+    ):
+        return False
+    key = (parsed["owner"], parsed["repo"], parsed["number"])
+    if key in seen:
+        return False
+    seen.add(key)
+    parsed["ref"] = "%s/%s#%s" % (parsed["owner"], parsed["repo"], parsed["number"])
+    deps.append(parsed)
+    return False
+
+
+def blocked_by_nodes(issue, owner, repo):
+    raw = issue.get("blockedBy") or []
+    if isinstance(raw, dict):
+        raw = raw.get("nodes") or []
+    out = []
+    for node in raw:
+        if not isinstance(node, dict):
+            continue
+        repo_field = node.get("repository")
+        if isinstance(repo_field, dict):
+            nwo = repo_field.get("nameWithOwner") or ""
+            o, r = (nwo.split("/", 1) if "/" in nwo else (owner, repo))
+        elif isinstance(repo_field, str) and "/" in repo_field:
+            o, r = repo_field.split("/", 1)
+        else:
+            o, r = owner, repo
+        item = {
+            "owner": o,
+            "repo": r,
+            "number": int(node["number"]),
+            "hint": "issue",
+        }
+        if node.get("state"):
+            item["state"] = str(node["state"]).lower()
+        out.append(item)
+    return out
+
+
+def extract(issue):
+    repo_full = issue["repo"]
+    owner, repo = repo_full.split("/", 1)
+    self_n = int(issue["number"])
+    title = issue.get("title") or ""
+    body = issue.get("body") or ""
+    comments = issue.get("comments") or []
+    texts = [title, body]
+    for c in comments:
+        b = (c.get("body") if isinstance(c, dict) else "") or ""
+        if SKIP_COMMENT.match(b.lstrip()):
+            continue
+        texts.append(b)
+    deps = []
+    seen = set()
+    nish = False
+    for node in blocked_by_nodes(issue, owner, repo):
+        add_dep(deps, seen, node, owner, repo, self_n)
+    for text in texts:
+        for m in BLOCKED_ON.finditer(text):
+            parsed = parse_ref(m.group(1), owner, repo)
+            if parsed is None:
+                nish = True
+                continue
+            if add_dep(deps, seen, parsed, owner, repo, self_n):
+                nish = True
+        for m in BLOCKED_BY.finditer(text):
+            parsed = parse_ref(m.group(1), owner, repo)
+            if parsed is None:
+                nish = True
+                continue
+            if add_dep(deps, seen, parsed, owner, repo, self_n):
+                nish = True
+    kind = NISH if (nish or not deps) else "work-item"
+    return {"kind": kind, "deps": deps}
+
+
+def main():
+    raw = sys.stdin.read()
+    if not raw.strip():
+        print(json.dumps({"kind": NISH, "deps": []}))
+        return
+    print(json.dumps(extract(json.loads(raw)), separators=(",", ":")))
+
+
+if __name__ == "__main__":
+    main()
+'
+
+if [ "${1:-}" = "--extract" ]; then
+    python3 -c "$EXTRACT_PY"
+    exit 0
+fi
+
+INTAKE_JSON="${BLOCKED_RECONCILE_INTAKE_JSON:-/home/nish/workspaces/products/fleet-ops/config/intake-repos.json}"
+TRIAGE="${BLOCKED_RECONCILE_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+STATE="${BLOCKED_RECONCILE_STATE:-/home/nish/.local/state/fleet-heartbeat/blocked-queue.json}"
+LOCKDIR="${BLOCKED_RECONCILE_LOCKDIR:-${XDG_RUNTIME_DIR}/blocked-reconcile}"
+STICKY_SECS="${BLOCKED_RECONCILE_STICKY_SECS:-21600}"
+DRY="${BLOCKED_RECONCILE_DRY_RUN:-0}"
+
+log() {
+    printf '[%s] [blocked-reconcile] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+now_iso() {
+    if [ -n "${BLOCKED_RECONCILE_NOW:-}" ]; then
+        printf '%s' "$BLOCKED_RECONCILE_NOW"
+    else
+        date -u +%Y-%m-%dT%H:%M:%SZ
+    fi
+}
+
+now_s() {
+    date -u -d "$(now_iso)" +%s
+}
+
+mkdir -p "$LOCKDIR" "$(dirname "$STATE")" "$(dirname "$TRIAGE")"
+exec 9>"$LOCKDIR/sweep.lock"
+if ! flock -n 9; then
+    log "sweep already running (no-op)"
+    echo "no-op: sweep already running"
+    exit 0
+fi
+
+command -v jq >/dev/null 2>&1 || { log "FATAL: jq missing"; exit 2; }
+command -v python3 >/dev/null 2>&1 || { log "FATAL: python3 missing"; exit 2; }
+
+repos=""
+if [ -n "${BLOCKED_RECONCILE_REPOS:-}" ]; then
+    repos="$BLOCKED_RECONCILE_REPOS"
+else
+    [ -f "$INTAKE_JSON" ] || { log "FATAL: intake file missing: $INTAKE_JSON"; exit 2; }
+    repos=$(jq -r '.repos[].name | "Nishfleet/" + .' "$INTAKE_JSON")
+    case "$repos" in
+        *Nishfleet/fleet-ops*) ;;
+        *) repos=$(printf '%s\nNishfleet/fleet-ops\n' "$repos") ;;
+    esac
+fi
+
+NOW_ISO=$(now_iso)
+NOW_S=$(now_s)
+requeued=0
+still=0
+skipped=0
+
+# remaining_line is accumulated as JSON objects, one per still-blocked issue.
+remaining_file=$(mktemp)
+trap 'rm -f "$remaining_file"' EXIT
+: >"$remaining_file"
+
+extract_issue() {
+    printf '%s' "$1" | python3 -c "$EXTRACT_PY"
+}
+
+dep_status() {
+    local owner="$1" rname="$2" num="$3"
+    local issue_json pr_json is_pr state merged pr_state
+    if ! issue_json=$(gh api "repos/${owner}/${rname}/issues/${num}" 2>/dev/null); then
+        printf '%s' "missing"
+        return 0
+    fi
+    is_pr=$(printf '%s' "$issue_json" | jq -r 'if .pull_request then "yes" else "no" end')
+    if [ "$is_pr" = "yes" ]; then
+        if ! pr_json=$(gh api "repos/${owner}/${rname}/pulls/${num}" 2>/dev/null); then
+            printf '%s' "missing"
+            return 0
+        fi
+        merged=$(printf '%s' "$pr_json" | jq -r '.merged')
+        if [ "$merged" = "true" ]; then
+            printf '%s' "merged"
+            return 0
+        fi
+        pr_state=$(printf '%s' "$pr_json" | jq -r '.state')
+        if [ "$pr_state" = "closed" ]; then
+            printf '%s' "closed-unmerged"
+            return 0
+        fi
+        printf '%s' "$pr_state"
+        return 0
+    fi
+    state=$(printf '%s' "$issue_json" | jq -r '.state')
+    printf '%s' "$state"
+}
+
+is_cleared() {
+    case "$1" in
+        closed|merged) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+upsert_sticky() {
+    local repo="$1" num="$2" body="$3"
+    local comments_json cid last_s age
+    comments_json=$(gh api "repos/${repo}/issues/${num}/comments" 2>/dev/null || echo '[]')
+    cid=$(printf '%s' "$comments_json" | jq -r '[.[] | select(.body | startswith("blocked-checked:"))] | .[0].id // empty')
+    if [ -n "$cid" ]; then
+        last_s=$(printf '%s' "$comments_json" | jq -r --argjson id "$cid" '.[] | select(.id == $id) | .updated_at // .created_at')
+        last_s=$(date -u -d "$last_s" +%s 2>/dev/null || echo 0)
+        age=$((NOW_S - last_s))
+        if [ "$age" -lt "$STICKY_SECS" ]; then
+            log "  $repo#$num: sticky comment fresh (${age}s < ${STICKY_SECS}s) — leave"
+            return 0
+        fi
+        if [ "$DRY" = "1" ]; then
+            log "DRY $repo#$num: PATCH comment $cid"
+            return 0
+        fi
+        gh api -X PATCH "repos/${repo}/issues/comments/${cid}" -f body="$body" >/dev/null
+        return 0
+    fi
+    if [ "$DRY" = "1" ]; then
+        log "DRY $repo#$num: create sticky comment"
+        return 0
+    fi
+    gh issue comment "$num" -R "$repo" --body "$body" >/dev/null
+}
+
+requeue_issue() {
+    local repo="$1" num="$2" reason="$3"
+    if [ "$DRY" = "1" ]; then
+        log "DRY $repo#$num: requeue ($reason)"
+        return 0
+    fi
+    gh issue comment "$num" -R "$repo" --body "$reason" >/dev/null
+    gh issue edit "$num" -R "$repo" --remove-label agent-blocked --add-label agent-ready >/dev/null
+}
+
+rewrite_triage() {
+    local snapshot="$1"
+    python3 - "$TRIAGE" "$snapshot" <<'PY'
+import json, os, re, sys
+path, snap_s = sys.argv[1], sys.argv[2]
+snap = json.loads(snap_s)
+start = "<!-- agent-blocked-queue -->"
+end = "<!-- /agent-blocked-queue -->"
+lines = [
+    f"updated: {snap['updated']}",
+    f"count: {snap['count']}",
+    f"oldest_age_h: {snap.get('oldest_age_h') if snap.get('oldest_age_h') is not None else 'none'}",
+    f"oldest: {snap.get('oldest') or 'none'}",
+]
+for it in snap.get("items", []):
+    extra = ""
+    if it.get("remaining"):
+        extra = " remaining=" + it["remaining"]
+    lines.append(f"- {it['ref']} kind={it['kind']} age={it['age_h']}h{extra}")
+block = start + "\n" + "\n".join(lines) + "\n" + end + "\n"
+existing = ""
+if os.path.exists(path):
+    with open(path, "r", encoding="utf-8") as f:
+        existing = f.read()
+pat = re.compile(re.escape(start) + r".*?" + re.escape(end) + r"\n?", re.S)
+if pat.search(existing):
+    new = pat.sub(block, existing, count=1)
+else:
+    if existing and not existing.endswith("\n"):
+        existing += "\n"
+    new = existing + ("\n" if existing else "") + block
+os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+with open(path, "w", encoding="utf-8") as f:
+    f.write(new)
+PY
+}
+
+log "sweep starting now=$NOW_ISO"
+
+while IFS= read -r repo; do
+    [ -z "$repo" ] && continue
+    log "repo $repo"
+    if ! list_json=$(gh issue list -R "$repo" -l agent-blocked --state open \
+        --json number,title,createdAt,labels --limit 100 2>/dev/null); then
+        log "  $repo: gh issue list FAILED — skip"
+        continue
+    fi
+
+    while IFS= read -r row; do
+        [ -z "$row" ] && continue
+        num=$(printf '%s' "$row" | jq -r '.number')
+        created=$(printf '%s' "$row" | jq -r '.createdAt')
+        in_progress=$(printf '%s' "$row" | jq -r '[.labels[].name] | if index("agent-in-progress") then "yes" else "no" end')
+        if [ "$in_progress" = "yes" ]; then
+            log "  $repo#$num: also agent-in-progress — skip"
+            skipped=$((skipped + 1))
+            continue
+        fi
+
+        if ! view_json=$(gh issue view "$num" -R "$repo" --json title,body,createdAt,comments 2>/dev/null); then
+            log "  $repo#$num: gh issue view FAILED — skip"
+            skipped=$((skipped + 1))
+            continue
+        fi
+
+        payload=$(printf '%s' "$view_json" | jq --arg repo "$repo" --argjson n "$num" \
+            '{repo:$repo, number:$n, title:.title, body:.body, comments:.comments}')
+        owner="${repo%%/*}"
+        rname="${repo#*/}"
+        if blocked_json=$(gh api graphql -f query='query($o:String!,$n:String!,$num:Int!){repository(owner:$o,name:$n){issue(number:$num){blockedBy(first:20){nodes{number state repository{nameWithOwner}}}}}}' \
+            -f o="$owner" -f n="$rname" -F num="$num" 2>/dev/null); then
+            payload=$(printf '%s' "$payload" | jq --argjson g "$blocked_json" \
+                '. + {blockedBy: (($g.data.repository.issue.blockedBy.nodes) // [])}')
+        fi
+        extracted=$(extract_issue "$payload")
+        kind=$(printf '%s' "$extracted" | jq -r '.kind')
+        created_s=$(date -u -d "$created" +%s 2>/dev/null || echo 0)
+        age_h=0
+        if [ "$created_s" -gt 0 ]; then
+            age_h=$(( (NOW_S - created_s) / 3600 ))
+        fi
+
+        action="still-blocked"
+        remaining=""
+        cleared=""
+        if [ "$kind" = "work-item" ]; then
+            all_cleared=1
+            while IFS= read -r dep; do
+                [ -z "$dep" ] && continue
+                d_owner=$(printf '%s' "$dep" | jq -r '.owner')
+                d_repo=$(printf '%s' "$dep" | jq -r '.repo')
+                d_num=$(printf '%s' "$dep" | jq -r '.number')
+                d_ref=$(printf '%s' "$dep" | jq -r '.ref')
+                st=$(printf '%s' "$dep" | jq -r '.state // empty')
+                if [ -z "$st" ]; then
+                    st=$(dep_status "$d_owner" "$d_repo" "$d_num")
+                fi
+                if is_cleared "$st"; then
+                    if [ -n "$cleared" ]; then
+                        cleared="$cleared, ${d_ref} (${st})"
+                    else
+                        cleared="${d_ref} (${st})"
+                    fi
+                else
+                    all_cleared=0
+                    if [ -n "$remaining" ]; then
+                        remaining="$remaining, ${d_ref} (${st})"
+                    else
+                        remaining="${d_ref} (${st})"
+                    fi
+                fi
+            done < <(printf '%s' "$extracted" | jq -c '.deps[]')
+            if [ "$all_cleared" -eq 1 ]; then
+                action="requeue"
+            fi
+        fi
+
+        if [ "$action" = "requeue" ]; then
+            reason="blocker cleared: ${cleared}. Re-queued as agent-ready."
+            requeue_issue "$repo" "$num" "$reason"
+            log "  $repo#$num: REQUEUED ($cleared)"
+            requeued=$((requeued + 1))
+            continue
+        fi
+
+        sticky="blocked-checked: ${NOW_ISO} still-blocked kind=${kind} age=${age_h}h"
+        if [ -n "$remaining" ]; then
+            sticky="${sticky} remaining=${remaining}"
+        fi
+        upsert_sticky "$repo" "$num" "$sticky"
+        log "  $repo#$num: still-blocked kind=$kind age=${age_h}h ${remaining}"
+        still=$((still + 1))
+        jq -nc --arg ref "${repo}#${num}" --arg kind "$kind" --argjson age "$age_h" \
+            --arg remaining "$remaining" \
+            '{ref:$ref, kind:$kind, age_h:$age, remaining:$remaining}' >>"$remaining_file"
+    done < <(printf '%s' "$list_json" | jq -c '.[]')
+done <<< "$repos"
+
+items_json=$(if [ -s "$remaining_file" ]; then jq -s '.' "$remaining_file"; else echo '[]'; fi)
+count=$(printf '%s' "$items_json" | jq 'length')
+oldest=$(printf '%s' "$items_json" | jq -r 'if length==0 then empty else max_by(.age_h) | .ref end')
+oldest_age=$(printf '%s' "$items_json" | jq -r 'if length==0 then empty else max_by(.age_h) | .age_h end')
+
+snapshot=$(jq -nc --arg updated "$NOW_ISO" --argjson count "$count" \
+    --arg oldest "${oldest:-}" --arg oldest_age "${oldest_age:-}" \
+    --argjson items "$items_json" \
+    '{
+      updated:$updated,
+      count:$count,
+      oldest: (if $oldest == "" then null else $oldest end),
+      oldest_age_h: (if $oldest_age == "" then null else ($oldest_age|tonumber) end),
+      items:$items
+    }')
+
+if [ "$DRY" != "1" ]; then
+    printf '%s\n' "$snapshot" >"$STATE"
+    rewrite_triage "$snapshot"
+fi
+
+log "sweep done: still=$still requeued=$requeued skipped=$skipped count=$count oldest=${oldest:-none} oldest_age_h=${oldest_age:-none}"
+printf 'blocked-queue count=%s oldest_age_h=%s oldest=%s requeued=%s\n' \
+    "$count" "${oldest_age:-none}" "${oldest:-none}" "$requeued"
+exit 0

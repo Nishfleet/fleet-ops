@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# tests/pi-intake-run.test.sh
+#
+# Proves:
+#   1. The pi-intake@.service unit uses a per-instance RuntimeDirectory and
+#      writes its packet to a per-instance path (fleet-ops#141).
+#   2. pi-intake-run picks the packet from its per-instance rundir.
+#   3. Overlapping intake ticks no-op instead of racing.
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "$here/.." && pwd)"
+bin="$repo_root/bin/pi-intake-run"
+
+fail() { echo "FAIL: $*" >&2; exit 1; }
+ok()   { echo "OK: $*"; }
+
+[[ -x "$bin" ]] || fail "not executable: $bin"
+
+# --- 1. unit shape (fleet-ops#141) -----------------------------------------
+unit="$repo_root/systemd/pi-intake@.service"
+[[ -f "$unit" ]] || fail "missing unit file: $unit"
+grep -q '^RuntimeDirectory=pi-intake-%i$' "$unit" \
+  || fail "unit must use per-instance RuntimeDirectory, got: $(grep '^RuntimeDirectory=' "$unit" || true)"
+grep -q '^ExecStart=/home/nish/.local/bin/pi-intake-run %i$' "$unit" \
+  || fail "unit ExecStart must stay /home/nish/.local/bin/pi-intake-run %i, got: $(grep '^ExecStart=' "$unit" || true)"
+grep -q '%t/pi-intake-%i/intake-%i.pkt' "$unit" \
+  || fail "unit ExecStartPre must write to per-instance %t/pi-intake-%i/intake-%i.pkt, got: $(grep '^ExecStartPre=' "$unit" || true)"
+ok "unit file: per-instance RuntimeDirectory and packet path (fleet-ops#141)"
+
+# --- scratch dirs ---------------------------------------------------------
+lockdir="$(mktemp -d)"
+marker="$(mktemp)"
+testrundir="$(mktemp -d)"
+cleanup() { rm -rf "$lockdir" "$testrundir"; rm -f "$marker"; }
+trap cleanup EXIT
+
+# --- 2. packet path uses per-instance rundir -------------------------------
+mkdir -p "$testrundir/pi-intake-demo"
+pkt="$testrundir/pi-intake-demo/intake-demo.pkt"
+printf 'demo packet\n' > "$pkt"
+cat > "$testrundir/runner" <<'FAKE'
+#!/usr/bin/env bash
+touch "${1}.ran"
+exit 0
+FAKE
+chmod +x "$testrundir/runner"
+XDG_RUNTIME_DIR="$testrundir" PI_PACKET_RUN="$testrundir/runner" "$bin" demo >/dev/null
+[[ -f "$pkt.ran" ]] || fail "runner was not invoked with packet path $pkt"
+ok "pi-intake-run uses per-instance packet path"
+
+# --- 3. overlapping intake ticks no-op instead of racing -------------------
+export XDG_RUNTIME_DIR="$lockdir"
+export PI_INTAKE_LOCKDIR="$lockdir"
+# First tick holds the lock for ~2s and writes a marker.
+export PI_INTAKE_CMD="echo first >>'$marker'; sleep 2"
+
+"$bin" tesrepo >/tmp/pi-intake-run-first.out 2>&1 &
+first_pid=$!
+sleep 0.3
+
+# Second tick must no-op while the first holds the lock.
+set +e
+export PI_INTAKE_CMD="echo second >>'$marker'"
+out="$("$bin" tesrepo 2>&1)"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "overlap must exit 0, got $rc ($out)"
+printf '%s\n' "$out" | grep -q 'no-op' || fail "overlap must print no-op, got: $out"
+
+wait "$first_pid" || fail "first tick failed"
+
+# Marker must contain only the first tick's write.
+got="$(cat "$marker")"
+[[ "$got" == "first" ]] || fail "second tick must not run the body, marker='$got'"
+ok "overlapping intake tick is a no-op"
+
+# After the lock is released, a later tick must run.
+export PI_INTAKE_CMD="echo third >>'$marker'"
+"$bin" tesrepo >/dev/null
+got="$(cat "$marker")"
+[[ "$got" == $'first\nthird' ]] || fail "later tick should run after lock release, marker='$got'"
+ok "later tick runs after lock release"

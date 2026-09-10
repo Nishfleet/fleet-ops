@@ -1,0 +1,48 @@
+{
+  "repository": "Nishfleet/0509",
+  "runs": [
+    {
+      "id": 32821760921,
+      "name": "CI",
+      "event": "pull_request",
+      "conclusion": "success",
+      "head_branch": "claim/issue-951",
+      "head_sha": "87974b70d0b46912001e27f669419f2b538cd66e",
+      "created_at": "2026-08-25T07:28:24Z",
+      "html_url": "https://github.com/Nishfleet/0509/actions/runs/32821760921",
+      "pull_request_numbers": [994]
+    },
+    {
+      "id": 32821760946,
+      "name": "Secret Scan",
+      "event": "pull_request",
+      "conclusion": "success",
+      "head_branch": "claim/issue-951",
+      "head_sha": "87974b70d0b46912001e27f669419f2b538cd66e",
+      "created_at": "2026-08-25T07:28:24Z",
+      "html_url": "https://github.com/Nishfleet/0509/actions/runs/32821760946",
+      "pull_request_numbers": [994]
+    },
+    {
+      "id": 32880029511,
+      "name": "CI",
+      "event": "merge_group",
+      "conclusion": "failure",
+      "head_branch": "gh-readonly-queue/main/pr-994-079269b362b8772c7b13a1b185f327a68360afd8",
+      "head_sha": "4df0d1ffe1fbe99da6b1a80055616e5e620f38fd",
+      "created_at": "2026-08-25T17:48:14Z",
+      "html_url": "https://github.com/Nishfleet/0509/actions/runs/32880029511",
+      "failed_jobs": ["codex-node-checks"]
+    },
+    {
+      "id": 32880029542,
+      "name": "Secret Scan",
+      "event": "merge_group",
+      "conclusion": "success",
+      "head_branch": "gh-readonly-queue/main/pr-994-079269b362b8772c7b13a1b185f327a68360afd8",
+      "head_sha": "4df0d1ffe1fbe99da6b1a80055616e5e620f38fd",
+      "created_at": "2026-08-25T17:48:14Z",
+      "html_url": "https://github.com/Nishfleet/0509/actions/runs/32880029542"
+    }
+  ]
+}

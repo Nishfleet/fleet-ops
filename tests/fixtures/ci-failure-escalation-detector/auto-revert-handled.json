@@ -1,0 +1,39 @@
+{
+  "repository": "Nishfleet/0509",
+  "failures": [
+    {
+      "repo": "Nishfleet/0509",
+      "workflow": "CI",
+      "job": "P14 tests",
+      "step": "assert",
+      "assertion": "AssertionError: main broke",
+      "run_id": 1101,
+      "run_url": "https://github.com/Nishfleet/0509/actions/runs/1101",
+      "job_id": 3001,
+      "job_url": "https://github.com/Nishfleet/0509/actions/runs/1101/job/3001",
+      "created_at": "2026-08-26T11:00:00Z",
+      "event": "push",
+      "head_branch": "main",
+      "head_sha": "def456",
+      "pr": null
+    },
+    {
+      "repo": "Nishfleet/0509",
+      "workflow": "CI",
+      "job": "P14 tests",
+      "step": "assert",
+      "assertion": "AssertionError: main broke",
+      "run_id": 1102,
+      "run_url": "https://github.com/Nishfleet/0509/actions/runs/1102",
+      "job_id": 3002,
+      "job_url": "https://github.com/Nishfleet/0509/actions/runs/1102/job/3002",
+      "created_at": "2026-08-26T11:30:00Z",
+      "event": "push",
+      "head_branch": "main",
+      "head_sha": "def456",
+      "pr": null
+    }
+  ],
+  "all_runs": [],
+  "open_issues": []
+}

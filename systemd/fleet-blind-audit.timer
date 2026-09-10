@@ -1,0 +1,14 @@
+[Unit]
+Description=Fleet mechanical blind audit (weekly floor)
+# Named reason: blind-spot discovery is periodic. Unknown unknowns have no
+# event to subscribe to, so a weekly floor is the minimum backstop.  The
+# primary trigger is the heartbeat detecting a drained gap-board.
+
+[Timer]
+OnCalendar=weekly
+RandomizedDelaySec=1h
+Persistent=true
+AccuracySec=1h
+
+[Install]
+WantedBy=timers.target

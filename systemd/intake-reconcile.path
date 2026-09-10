@@ -1,0 +1,9 @@
+[Unit]
+Description=Trigger intake reconciler when config/intake-repos.json changes (fleet-ops#32)
+
+[Path]
+PathChanged=/home/nish/workspaces/products/fleet-ops/config/intake-repos.json
+Unit=intake-reconcile.service
+
+[Install]
+WantedBy=default.target

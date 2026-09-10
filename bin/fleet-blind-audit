@@ -1,0 +1,402 @@
+#!/usr/bin/env bash
+# fleet-blind-audit — one mechanical no-context sweep of the repo + live state.
+#
+# This is the ExecStart of fleet-blind-audit.service. It:
+#   1. Takes a non-blocking flock (one audit at a time).
+#   2. Picks a capable seat via seat-lib.sh.
+#   3. Builds a sealed packet from prompts/blind-audit.md + live context.
+#   4. Dispatches a pi reviewer to produce findings.json and report.md.
+#   5. Runs each finding through the local panel (stub until #146).
+#   6. Files accepted findings as gap-audit issues linked to the report.
+#   7. Writes a verdict log and the full report to agent-state.
+#
+# The reviewer is the intelligence; this script is the mechanical harness.
+# No hand-built orchestration: one oneshot unit + one pi call + repo scripts.
+#
+# Environment (all have sane defaults; tests may override):
+#   AUDIT_REPO              repo to audit (default: Nishfleet/fleet-ops)
+#   AUDIT_REPO_ROOT         absolute path of the checked-out repo
+#   AUDIT_STATE_DIR         agent-state sink (default: .../agent-state/fleet-blind-audit)
+#   AUDIT_PROMPT            prompt template (default: ~/.pi/agent/prompts/blind-audit.md)
+#   AUDIT_DELIBERATE_STATES docs/deliberate-states.md path
+#   AUDIT_PLAN_FILE         fleet plan file for stamps (default: .../fleet-restoration-2026-08-25.md)
+#   AUDIT_SEAT_LIB          seat-lib.sh path
+#   AUDIT_PI_BIN            pi binary (default: ~/.local/bin/pi)
+#   AUDIT_PANEL_BIN         panel binary (default: ~/.local/bin/fleet-blind-audit-panel)
+#   AUDIT_MAX_FINDINGS      cap on filed issues per run (default: 5)
+#   AUDIT_DRY_RUN           if 1, do not run pi or file issues
+#   AUDIT_FAKE_NOW          ISO-8601 UTC override for tests
+
+set -euo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export PATH="${PATH:-/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+# --- locations -------------------------------------------------------------
+REPO="${AUDIT_REPO:-Nishfleet/fleet-ops}"
+REPO_ROOT="${AUDIT_REPO_ROOT:-/home/nish/workspaces/products/fleet-ops}"
+STATE_DIR="${AUDIT_STATE_DIR:-/home/nish/workspaces/agent-state/fleet-blind-audit}"
+PROMPT="${AUDIT_PROMPT:-$HOME/.pi/agent/prompts/blind-audit.md}"
+DELIBERATE_STATES="${AUDIT_DELIBERATE_STATES:-$REPO_ROOT/docs/deliberate-states.md}"
+PLAN_FILE="${AUDIT_PLAN_FILE:-/home/nish/workspaces/agent-state/fleet-restoration-2026-08-25.md}"
+PI_BIN="${AUDIT_PI_BIN:-$HOME/.local/bin/pi}"
+PANEL_BIN="${AUDIT_PANEL_BIN:-$HOME/.local/bin/fleet-blind-audit-panel}"
+MAX_FINDINGS="${AUDIT_MAX_FINDINGS:-5}"
+DRY_RUN="${AUDIT_DRY_RUN:-0}"
+
+# Resolve this script's repo root for fallbacks when not installed yet.
+here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+repo_fallback="$(cd "$here/.." && pwd)"
+[ -f "$PROMPT" ] || PROMPT="$repo_fallback/prompts/blind-audit.md"
+[ -f "$DELIBERATE_STATES" ] || DELIBERATE_STATES="$repo_fallback/docs/deliberate-states.md"
+
+SEAT_LIB="${AUDIT_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
+[ -f "$SEAT_LIB" ] || SEAT_LIB="$repo_fallback/lib/seat-lib.sh"
+
+mkdir -p "$STATE_DIR"
+
+# Per-run report directory (UTC timestamp).
+if [ -n "${AUDIT_FAKE_NOW:-}" ]; then
+    NOW_ISO="$AUDIT_FAKE_NOW"
+    NOW_DIR="${NOW_ISO//[^A-Za-z0-9]/_}"
+else
+    NOW_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    NOW_DIR="$(date -u +%Y%m%dT%H%M%SZ)"
+fi
+REPORT_DIR="$STATE_DIR/reports/$NOW_DIR"
+mkdir -p "$REPORT_DIR"
+
+FINDINGS_JSON="$REPORT_DIR/findings.json"
+REPORT_MD="$REPORT_DIR/report.md"
+PI_STDOUT="$REPORT_DIR/pi-stdout.txt"
+PI_STDERR="$REPORT_DIR/pi-stderr.txt"
+VERDICTS_LOG="$REPORT_DIR/verdicts.jsonl"
+: >"$VERDICTS_LOG"
+
+log() {
+    printf '[%s] [fleet-blind-audit] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+# --- stamp in plan file (in-place, only the matching line) -----------------
+update_plan_stamp() {
+    local key="$1" value="$2"
+    if [ -f "$PLAN_FILE" ]; then
+        python3 - "$PLAN_FILE" "$key" "$value" <<'PY'
+import sys, re
+path, key, value = sys.argv[1:]
+with open(path, 'r', encoding='utf-8') as f:
+    lines = f.readlines()
+new = []
+hit = False
+prefix = f'{key}:'
+for ln in lines:
+    if not hit and ln.startswith(prefix):
+        new.append(f'{prefix} {value}\n')
+        hit = True
+    else:
+        new.append(ln)
+if not hit:
+    if new and not new[-1].endswith('\n'):
+        new.append('\n')
+    new.append(f'\n{prefix} {value}\n')
+with open(path, 'w', encoding='utf-8') as f:
+    f.writelines(new)
+PY
+    fi
+}
+
+# --- one audit at a time ---------------------------------------------------
+exec 9>"$STATE_DIR/audit.lock"
+if ! flock -n 9; then
+    log "audit already running (no-op)"
+    exit 0
+fi
+
+update_plan_stamp "last-blind-audit-run" "$NOW_ISO (started)"
+
+# --- preflight -------------------------------------------------------------
+[ -x "$PI_BIN" ] || { log "FATAL: pi binary not executable: $PI_BIN"; exit 2; }
+[ -f "$PROMPT" ] || { log "FATAL: prompt missing: $PROMPT"; exit 2; }
+[ -f "$SEAT_LIB" ] || { log "FATAL: seat-lib missing: $SEAT_LIB"; exit 2; }
+[ -x "$PANEL_BIN" ] || { log "FATAL: panel missing: $PANEL_BIN"; exit 2; }
+[ -d "$REPO_ROOT" ] || { log "FATAL: repo root missing: $REPO_ROOT"; exit 2; }
+command -v jq >/dev/null 2>&1 || { log "FATAL: jq missing"; exit 2; }
+command -v gh >/dev/null 2>&1 || { log "FATAL: gh missing"; exit 2; }
+
+# Source the shared seat logic. This also sets XDG_RUNTIME_DIR, HOME, etc.
+# shellcheck source=/dev/null
+source "$SEAT_LIB"
+
+# Ensure the gap-audit label exists in the target repo. Swallow "already exists".
+if [ "$DRY_RUN" != "1" ]; then
+    if ! gh label view gap-audit -R "$REPO" >/dev/null 2>&1; then
+        gh label create gap-audit -R "$REPO" --color FBCA04 --description "Mechanical blind-audit finding" >/dev/null 2>&1 || {
+            log "WARN: could not create gap-audit label (it may already exist or token lacks admin)"
+        }
+    fi
+fi
+
+# --- pick a capable seat ---------------------------------------------------
+seat=$(pick_seat "" "" 1 "" || true)
+if [ -z "$seat" ]; then
+    log "FATAL: no capable seat available"
+    exit 1
+fi
+provider=$(printf '%s' "$seat" | cut -f1)
+model=$(printf '%s' "$seat" | cut -f2)
+log "seat selected: $provider/$model"
+
+# --- build context ---------------------------------------------------------
+# Include a concise snapshot so the reviewer does not have to re-discover paths.
+repo_files=$(find "$REPO_ROOT" -type f -not -path '*/\.git/*' 2>/dev/null | sort | head -200)
+systemctl_failed=$(systemctl --user --state=failed --no-legend 2>/dev/null | awk '{print $1}' | grep -E '^(pi-|fleet-|siterep-)' | head -50 || true)
+systemctl_timers=$(systemctl --user list-timers --no-legend 2>/dev/null | awk '{print $1, $3}' | head -50 || true)
+open_issues=$(gh issue list -R "$REPO" --state open --json number,title,labels -L 50 2>/dev/null || echo '[]')
+recent_merges=$(gh pr list -R "$REPO" --state merged --json number,title,mergedAt -L 20 2>/dev/null || echo '[]')
+
+# Parse deliberate-states into a JSON list for the packet.
+deliberate_json='[]'
+if [ -f "$DELIBERATE_STATES" ]; then
+    deliberate_json=$(python3 - "$DELIBERATE_STATES" <<'PY'
+import sys, re, json
+path = sys.argv[1]
+rows = []
+with open(path, 'r', encoding='utf-8') as f:
+    in_table = False
+    for ln in f:
+        if not in_table:
+            if re.match(r'^\|?\s*state\s*\|', ln, re.I):
+                in_table = True
+            continue
+        cells = [c.strip() for c in ln.split('|')]
+        # Drop empty cells caused by leading/trailing pipes.
+        while cells and cells[0] == '':
+            cells.pop(0)
+        while cells and cells[-1] == '':
+            cells.pop()
+        # Skip the separator line and blank lines.
+        if not cells or all(re.match(r'^[-:]+$', c) for c in cells):
+            continue
+        if len(cells) >= 4 and cells[0].lower() != 'state' and cells[0]:
+            rows.append({
+                'state': cells[0],
+                'reason': cells[1] if len(cells) > 1 else '',
+                'expiry': cells[2] if len(cells) > 2 else '',
+                'owner': cells[3] if len(cells) > 3 else ''
+            })
+print(json.dumps(rows))
+PY
+    )
+fi
+
+# --- build the packet ------------------------------------------------------
+# Substitute the template variables in prompts/blind-audit.md.
+pkt="$REPORT_DIR/packet.md"
+python3 - "$PROMPT" "$pkt" "$REPO" "$REPO_ROOT" "$DELIBERATE_STATES" "$FINDINGS_JSON" "$REPORT_MD" "$MAX_FINDINGS" "$NOW_ISO" "$deliberate_json" "$open_issues" "$recent_merges" "$repo_files" "$systemctl_failed" "$systemctl_timers" <<'PY'
+import sys
+prompt_path, out_path = sys.argv[1], sys.argv[2]
+repo = sys.argv[3]
+repo_root = sys.argv[4]
+deliberate_path = sys.argv[5]
+findings_json = sys.argv[6]
+report_md = sys.argv[7]
+max_findings = sys.argv[8]
+now_iso = sys.argv[9]
+deliberate_json = sys.argv[10]
+open_issues = sys.argv[11]
+recent_merges = sys.argv[12]
+repo_files = sys.argv[13]
+systemctl_failed = sys.argv[14]
+systemctl_timers = sys.argv[15]
+
+with open(prompt_path, 'r', encoding='utf-8') as f:
+    tpl = f.read()
+
+tpl = tpl.replace('{{REPO}}', repo)
+tpl = tpl.replace('{{REPO_ROOT}}', repo_root)
+tpl = tpl.replace('{{DELIBERATE_STATES_PATH}}', deliberate_path)
+tpl = tpl.replace('{{DELIBERATE_STATES_JSON}}', deliberate_json)
+tpl = tpl.replace('{{FINDINGS_JSON}}', findings_json)
+tpl = tpl.replace('{{REPORT_MD}}', report_md)
+tpl = tpl.replace('{{MAX_FINDINGS}}', max_findings)
+tpl = tpl.replace('{{NOW_ISO}}', now_iso)
+tpl = tpl.replace('{{OPEN_ISSUES_JSON}}', open_issues)
+tpl = tpl.replace('{{RECENT_MERGES_JSON}}', recent_merges)
+tpl = tpl.replace('{{REPO_FILES}}', repo_files)
+tpl = tpl.replace('{{SYSTEMCTL_FAILED}}', systemctl_failed)
+tpl = tpl.replace('{{SYSTEMCTL_TIMERS}}', systemctl_timers)
+
+with open(out_path, 'w', encoding='utf-8') as f:
+    f.write(tpl)
+PY
+
+log "packet built: $pkt (${#pkt}B)"
+
+# --- run pi reviewer -------------------------------------------------------
+if [ "$DRY_RUN" = "1" ]; then
+    log "DRY RUN: would dispatch $provider/$model with packet $pkt"
+    update_plan_stamp "last-blind-audit-run" "$NOW_ISO (dry-run)"
+    exit 0
+fi
+
+log "dispatching pi reviewer $provider/$model"
+set +e
+"$PI_BIN" --print --provider "$provider" --model "$model" < "$pkt" >"$PI_STDOUT" 2>"$PI_STDERR"
+rc=$?
+set -e
+
+log "pi reviewer exited rc=$rc"
+
+# --- extract findings from pi output or file -------------------------------
+findings='[]'
+if [ -f "$FINDINGS_JSON" ] && [ -s "$FINDINGS_JSON" ]; then
+    if jq -e . "$FINDINGS_JSON" >/dev/null 2>&1; then
+        findings=$(jq -c . "$FINDINGS_JSON")
+        log "findings read from $FINDINGS_JSON"
+    else
+        log "WARN: $FINDINGS_JSON exists but is not valid JSON; falling back to stdout"
+    fi
+fi
+
+if [ "$findings" = '[]' ] && [ -f "$PI_STDOUT" ]; then
+    # Try to extract a fenced JSON block from the last 2000 lines of stdout.
+    fallback=$(python3 - "$PI_STDOUT" <<'PY'
+import sys, re, json
+path = sys.argv[1]
+with open(path, 'r', encoding='utf-8', errors='replace') as f:
+    text = f.read()
+# Find the last fenced json block.
+for m in re.finditer(r'```(?:json)?\s*\n(.*?)```', text, re.S):
+    block = m.group(1)
+    try:
+        data = json.loads(block)
+        if isinstance(data, dict) and 'findings' in data:
+            print(json.dumps(data))
+    except Exception:
+        pass
+PY
+    )
+    if [ -n "$fallback" ]; then
+        findings="$fallback"
+        log "findings extracted from pi stdout"
+    fi
+fi
+
+# --- write or append report ------------------------------------------------
+if [ ! -f "$REPORT_MD" ]; then
+    {
+        printf '# Fleet blind audit report — %s\n\n' "$NOW_ISO"
+        printf 'Repo: `%s`\n\n' "$REPO"
+        printf 'Seat: `%s/%s`\n\n' "$provider" "$model"
+        printf '## pi reviewer stdout\n\n'
+        if [ -f "$PI_STDOUT" ]; then
+            printf '```\n%s\n```\n\n' "$(head -c 100000 "$PI_STDOUT" 2>/dev/null)"
+        else
+            printf '(no stdout)\n\n'
+        fi
+        if [ -f "$PI_STDERR" ] && [ -s "$PI_STDERR" ]; then
+            printf '## pi reviewer stderr\n\n'
+            printf '```\n%s\n```\n\n' "$(head -c 50000 "$PI_STDERR" 2>/dev/null)"
+        fi
+    } > "$REPORT_MD"
+fi
+
+# --- findings empty? -------------------------------------------------------
+findings_count=$(printf '%s' "$findings" | jq '(.findings // .) | length')
+if [ "$findings_count" -eq 0 ]; then
+    log "no findings produced by reviewer"
+    update_plan_stamp "last-blind-audit-run" "$NOW_ISO (completed, 0 findings)"
+    # Still success: an empty sweep is a valid outcome.
+    exit 0
+fi
+
+log "findings count: $findings_count"
+
+# --- run panel and file issues ---------------------------------------------
+filed=0
+panel_input=$(mktemp)
+trap 'rm -f "$panel_input"' EXIT
+
+# Pre-fetch open gap-audit issues and recent merges once for the panel.
+open_gap_issues=$(gh issue list -R "$REPO" -l gap-audit --state open --json number,title -L 100 2>/dev/null || echo '[]')
+recent_merged=$(gh pr list -R "$REPO" --state merged --json number,title -L 50 2>/dev/null || echo '[]')
+
+while IFS= read -r finding; do
+    [ -n "$finding" ] || continue
+    rank=$(printf '%s' "$finding" | jq -r '.rank // "?"')
+    title=$(printf '%s' "$finding" | jq -r '.title // ""')
+    body=$(printf '%s' "$finding" | jq -r '.body // ""')
+    evidence=$(printf '%s' "$finding" | jq -r '.evidence // ""')
+    severity=$(printf '%s' "$finding" | jq -r '.severity // ""')
+
+    if [ -z "$title" ]; then
+        log "finding $rank: SKIP (empty title)"
+        continue
+    fi
+
+    # Build panel input.
+    jq -n \
+        --arg repo "$REPO" \
+        --argjson finding "$finding" \
+        --argjson open_issues "$open_gap_issues" \
+        --argjson recent_merges "$recent_merged" \
+        --argjson deliberate_states "$deliberate_json" \
+        '{
+            repo: $repo,
+            finding: $finding,
+            open_issues: $open_issues,
+            recent_merges: $recent_merges,
+            deliberate_states: $deliberate_states
+        }' > "$panel_input"
+
+    set +e
+    verdict_json=$("$PANEL_BIN" < "$panel_input" 2>&1)
+    verdict_rc=$?
+    set -e
+
+    if [ "$verdict_rc" -ne 0 ] || [ -z "$verdict_json" ]; then
+        verdict_json=$(jq -n --arg reason "panel failed (rc=$verdict_rc)" '{verdict:"FAIL", reason:$reason}')
+    fi
+
+    verdict=$(printf '%s' "$verdict_json" | jq -r '.verdict')
+    reason=$(printf '%s' "$verdict_json" | jq -r '.reason // ""')
+    loud=$(printf '%s' "$verdict_json" | jq -r '.loud // false')
+
+    # Log verdict.
+    jq -n \
+        --arg rank "$rank" \
+        --arg title "$title" \
+        --arg verdict "$verdict" \
+        --arg reason "$reason" \
+        --argjson loud "$loud" \
+        -c '{timestamp: (now | todate), rank:$rank, title:$title, verdict:$verdict, reason:$reason, loud:$loud}' >> "$VERDICTS_LOG"
+
+    if [ "$verdict" != "PASS" ]; then
+        log "finding $rank: PANEL-FAIL ($reason)"
+        continue
+    fi
+
+    if [ "$filed" -ge "$MAX_FINDINGS" ]; then
+        log "finding $rank: SKIP (max findings $MAX_FINDINGS reached)"
+        continue
+    fi
+
+    issue_body=$(printf '%s\n\n**Evidence:** %s\n\n**Severity:** %s\n\n**Report:** %s\n\n*Filed by fleet-blind-audit at %s.*' \
+        "$body" "$evidence" "$severity" "$REPORT_MD" "$NOW_ISO")
+
+    set +e
+    new_issue=$(gh issue create -R "$REPO" --title "[gap-audit] $title" --body "$issue_body" --label gap-audit 2>&1)
+    new_rc=$?
+    set -e
+    if [ "$new_rc" -eq 0 ] && [ -n "$new_issue" ]; then
+        log "finding $rank: FILED $new_issue"
+        filed=$((filed + 1))
+    else
+        log "finding $rank: FAILED to file issue ($new_issue)"
+    fi
+done < <(printf '%s\n' "$findings" | jq -c '.findings[]' 2>/dev/null)
+
+log "audit complete: filed=$filed"
+update_plan_stamp "last-blind-audit-run" "$NOW_ISO (completed, filed=$filed)"
+exit 0

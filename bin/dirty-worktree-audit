@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# dirty-worktree-audit — wrapper for the Python implementation.
+#
+# See _dirty-worktree-audit.py for usage and implementation.
+# Keeps the public entry point under shellcheck and the fleet-ops
+# bin/ convention while the heavy lifting lives in Python.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+PYTHON_IMPL="$SCRIPT_DIR/_dirty-worktree-audit.py"
+
+command -v python3 >/dev/null 2>&1 || {
+    echo "ERROR: python3 is required" >&2
+    exit 1
+}
+
+[[ -f "$PYTHON_IMPL" ]] || {
+    echo "ERROR: missing $PYTHON_IMPL" >&2
+    exit 1
+}
+
+exec python3 "$PYTHON_IMPL" "$@"

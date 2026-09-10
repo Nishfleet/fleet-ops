@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# pi-packet-guard — run the canonical pi-packet guard on stdin.
+#
+# Reads a Claude Bash tool JSON payload and classifies a `pi --print` packet
+# log as launcher fault, lane fault, or clean.  Used by tests and by the
+# Claude PostToolUse hook.
+
+set -euo pipefail
+
+here=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+lib="${PI_PACKET_GUARD_LIB:-$here/lib/guard_pi_packet.py}"
+
+exec python3 "$lib"
