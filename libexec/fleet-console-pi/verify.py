@@ -55,6 +55,12 @@ SPOT_REPO_DEFAULT = os.environ.get("CONSOLE_SPOT_REPO", "Nishfleet/fleet-ops")
 # Same 15-minute freshness window generate.py uses for Prometheus tiles
 # (exporter fires every 5 min; 2+ misses = stale).
 PROM_STALE_S = 15 * 60
+# An `answered` question is displayed for this long after its
+# `decision-resolved:` comment, then dropped from the tile. Must equal
+# generate.py's ANSWERED_KEEP_S (the tile's own constant) — a verifier
+# that counts the raw open-question population false-DISPUTEs a faithful
+# tile the moment one answered question ages out (fleet-ops#5070).
+ANSWERED_KEEP_S = 24 * 60 * 60
 
 HELP_MISMATCH = (
     "# HELP fleet_console_tile_mismatch 1 if this console tile failed its "
@@ -162,8 +168,10 @@ SPECS = {
     },
     "questions": {
         "cmd": (
-            "gh search issues --owner Nishfleet --state open --label question "
-            "(count of open question issues org-wide == tile count)"
+            "gh search issues --owner Nishfleet --state open --label question, "
+            "each row's comments classified through the tile's own 24h "
+            "answered-exclusion (generate.py ANSWERED_KEEP_S) — the remaining "
+            "count == tile count (fleet-ops#5070)"
         ),
         "field": "count",
         "tolerance": {"mode": "exact"},
@@ -638,18 +646,41 @@ def run_fleet_paused(tile):
     return 1 if PAUSED_MARKER.exists() else 0
 
 
-def run_questions_gh(tile):
-    """Count open `question` issues org-wide (GitHub is the store).
+def _question_answer_epoch(comments):
+    """Epoch of the newest `decision-resolved:` comment, or None.
 
-    Exact mirror of collect_questions' population search, so a faithful
-    tile and its verifier count the SAME set (fleet-ops#1157 same-source
-    pattern). A gh transport blip is a SKIP, not a DISPUTE.
+    Mirror of generate.py `_answer_epoch` (fleet-ops#5070): same field,
+    same newest-wins rule, same tz parse. Keep the two in step or an
+    aged answer is classified differently on each side.
     """
-    if SKIP_GH:
-        raise VerifyError("gh skipped")
+    latest = None
+    for c in (comments or []):
+        body = (c or {}).get("body") or ""
+        if "decision-resolved:" not in body:
+            continue
+        created = (c or {}).get("createdAt")
+        if not created:
+            continue
+        try:
+            epoch = datetime.fromisoformat(
+                created.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            continue
+        if latest is None or epoch > latest:
+            latest = epoch
+    return latest
+
+
+def _questions_open_issues():
+    """The open `question` population org-wide, one gh search.
+
+    Same store, same qualifiers as generate.py's `_gh_questions` search
+    (fleet-ops#1157 same-source pattern). Labels ride along so a debugger
+    can see the row's shape; the 24h exclusion below is what matters.
+    """
     out = subprocess.run(
         [GH, "search", "issues", "--owner", ORG, "--state", "open",
-         "--label", "question", "--json", "number"],
+         "--label", "question", "--json", "number,repository,labels"],
         capture_output=True, text=True, timeout=VERIFY_TIMEOUT,
     )
     if out.returncode != 0:
@@ -657,9 +688,58 @@ def run_questions_gh(tile):
             f"gh search rc={out.returncode}: {(out.stderr or '')[:160]}"
         )
     try:
-        return len(json.loads(out.stdout or "[]"))
+        rows = json.loads(out.stdout or "[]")
     except (json.JSONDecodeError, TypeError) as e:
         raise VerifyError(f"gh search parse: {e}") from e
+    if not isinstance(rows, list):
+        raise VerifyError(f"gh search returned {type(rows).__name__}")
+    return rows
+
+
+def _questions_comments(issue):
+    """Comments of one issue. `gh issue view` takes ONE positional (the
+    number); the repo is named only via -R (fleet-ops#4996)."""
+    repo = (issue.get("repository") or {}).get("nameWithOwner") or ORG
+    out = subprocess.run(
+        [GH, "issue", "view", str(issue.get("number")), "-R", repo,
+         "--json", "comments", "--jq", ".comments // []"],
+        capture_output=True, text=True, timeout=VERIFY_TIMEOUT,
+    )
+    if out.returncode != 0:
+        raise VerifyError(
+            f"gh issue view rc={out.returncode}: {(out.stderr or '')[:160]}"
+        )
+    try:
+        comments = json.loads(out.stdout or "[]")
+    except (json.JSONDecodeError, TypeError) as e:
+        raise VerifyError(f"gh issue view parse: {e}") from e
+    if not isinstance(comments, list):
+        raise VerifyError(f"gh issue view returned {type(comments).__name__}")
+    return comments
+
+
+def run_questions_gh(tile):
+    """Count the questions the tile is contracted to display.
+
+    NOT "every open `question` issue": generate.py drops an `answered`
+    question once its `decision-resolved:` comment is older than
+    ANSWERED_KEEP_S (24h). Counting the raw search total false-DISPUTEs a
+    faithful tile as soon as one answered question ages out — latent while
+    the tile was dark, reachable once fleet-ops#4996 lit it. Classify every
+    row through the SAME 24h exclusion (the #4061 same-definition pattern)
+    so a faithful tile and its verifier count the SAME set (fleet-ops#1157
+    same-source pattern). A gh transport blip is a SKIP, not a DISPUTE.
+    """
+    if SKIP_GH:
+        raise VerifyError("gh skipped")
+    now = time.time()
+    shown = 0
+    for issue in _questions_open_issues():
+        answer_epoch = _question_answer_epoch(_questions_comments(issue))
+        if answer_epoch is not None and now - answer_epoch > ANSWERED_KEEP_S:
+            continue
+        shown += 1
+    return shown
 
 
 def run_open_prs_gh_spot(tile):

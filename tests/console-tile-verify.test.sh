@@ -900,6 +900,196 @@ PY
 ok "fleet-ops#4217: PI WORK tile shows quota remaining % for the current seat"
 
 # =========================================================================
+# 12e. fleet-ops#5070: the questions verifier counts the SAME population
+#      the tile displays (aged `answered` questions excluded), so a
+#      faithful tile never false-DISPUTEs.
+#
+# The tile (generate.py collect_questions) drops an `answered` question
+# once its `decision-resolved:` comment passes ANSWERED_KEEP_S (24h).
+# run_questions_gh used to count every open `question` issue org-wide, so
+# the moment an answered question aged out the tile (2) and the verifier
+# (3) disagreed and DISPUTE landed on a truthful tile — latent while the
+# tile was dark, reachable once fleet-ops#4996 lit it. Hermetic: the gh
+# runner is faked, no network, no live org.
+# =========================================================================
+python3 - "$gen" "$ver" "$scratch" <<'PY' || fail "5070: questions cross-check failed"
+import importlib.util, json, sys, time
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+gen_path, ver_path, scratch = sys.argv[1], sys.argv[2], Path(sys.argv[3])
+
+def load(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+G = load("console_generate_5070", gen_path)
+V = load("console_verify_5070", ver_path)
+
+now = time.time()
+def iso(seconds_ago):
+    return (datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)).strftime(
+        "%Y-%m-%dT%H:%M:%S+00:00")
+
+# --- the two sides must agree on the window (drift guard) ---------------
+assert V.ANSWERED_KEEP_S == G.ANSWERED_KEEP_S == 24 * 60 * 60, (
+    f"verifier window {V.ANSWERED_KEEP_S} != tile window {G.ANSWERED_KEEP_S}")
+
+# ...and on the answer-epoch rule itself, including junk comments.
+for comments in (
+    [],
+    [{"body": "just chatter", "createdAt": iso(60)}],
+    [{"body": "decision-resolved: a", "createdAt": iso(90000)},
+     {"body": "decision-resolved: b", "createdAt": iso(120)}],  # newest wins
+    [{"body": "decision-resolved: no date"}],                  # missing createdAt
+    [{"body": "decision-resolved: junk", "createdAt": "not-a-date"}],
+):
+    assert V._question_answer_epoch(comments) == G._answer_epoch(comments), comments
+print("OK: 5070 — verifier window + answer-epoch rule match generate.py")
+
+# --- fixture: one aged answer, one young answer, one unanswered ---------
+AGED, YOUNG = 48 * 3600, 2 * 3600
+rows = [
+    {"number": 11, "title": "aged", "url": "u/11", "createdAt": iso(AGED),
+     "repository": {"nameWithOwner": "Nishfleet/0509"},
+     "labels": [{"name": "question"}], "body": "question: aged?"},
+    {"number": 12, "title": "young", "url": "u/12", "createdAt": iso(YOUNG),
+     "repository": {"nameWithOwner": "Nishfleet/fleet-ops"},
+     "labels": [{"name": "question"}], "body": "question: young?"},
+    {"number": 13, "title": "open", "url": "u/13", "createdAt": iso(YOUNG),
+     "repository": {"nameWithOwner": "Nishfleet/0509"},
+     "labels": [{"name": "question"}], "body": "question: open?"},
+]
+comments = {
+    11: [{"body": "decision-resolved: yes", "createdAt": iso(AGED)}],
+    12: [{"body": "decision-resolved: yes", "createdAt": iso(YOUNG)}],
+    13: [],
+}
+
+VALUE_FLAGS = {"-R", "--repo", "--json", "--jq", "--owner", "--state",
+               "--label", "--limit"}
+
+def positionals(tokens):
+    pos, i = [], 0
+    while i < len(tokens):
+        if tokens[i].startswith("-"):
+            i += 2 if tokens[i] in VALUE_FLAGS else 1
+        else:
+            pos.append(tokens[i])
+            i += 1
+    return pos
+
+
+class FakeGh:
+    """Stand-in for subprocess: records argv, answers from the fixture."""
+
+    def __init__(self, rows, comments, search_rc=0, view_rc=0,
+                 search_stdout=None, view_stdout=None):
+        self.rows, self.comments = rows, comments
+        self.search_rc, self.view_rc = search_rc, view_rc
+        self.search_stdout, self.view_stdout = search_stdout, view_stdout
+        self.calls = []
+
+    def run(self, argv, **kwargs):
+        argv = list(argv)
+        self.calls.append(argv)
+        if argv[1:3] == ["search", "issues"]:
+            out = (json.dumps(self.rows) if self.search_stdout is None
+                   else self.search_stdout)
+            return subprocess.CompletedProcess(argv, self.search_rc,
+                                              out if self.search_rc == 0 else "",
+                                              "search boom")
+        number = next((int(t) for t in argv[3:] if t.isdigit()), None)
+        out = (json.dumps(self.comments.get(number, []))
+               if self.view_stdout is None else self.view_stdout)
+        return subprocess.CompletedProcess(argv, self.view_rc,
+                                          out if self.view_rc == 0 else "",
+                                          "view boom")
+
+
+import subprocess  # noqa: E402  (the fake builds CompletedProcess)
+
+fake_v = FakeGh(rows, comments)
+V.subprocess = fake_v
+V.SKIP_GH = False
+
+counted = V.run_questions_gh({"count": 2})
+assert counted == 2, f"aged answered question must be excluded, got {counted}"
+# The pre-fix metric: the raw search total. It differs by exactly the aged
+# answer, and that gap is what the DISPUTE was made of.
+raw = len(rows)
+assert raw == 3 and not V._within(2, raw, {"mode": "exact"})
+print("OK: 5070 — aged answered question excluded (2 counted, raw search 3)")
+
+# --- the tile's own collector agrees on the same fixture (drift lock) ---
+G.subprocess = FakeGh(rows, comments)
+G_ITEMS = G._gh_questions()
+assert len(G_ITEMS) == counted == 2, (
+    f"wheel drift: tile renders {len(G_ITEMS)}, verifier counts {counted}")
+print("OK: 5070 — tile collector and verifier count the same 2 on one fixture")
+
+# --- the verifier's own gh argv obeys the #4996 arity contract ----------
+views = [a for a in fake_v.calls if a[1:3] == ["issue", "view"]]
+searches = [a for a in fake_v.calls if a[1:3] == ["search", "issues"]]
+assert len(searches) == 1, f"expected one search, got {len(searches)}"
+assert len(views) == len(rows), (
+    f"one view per search row expected ({len(rows)}), got {len(views)}")
+for view, row in zip(views, rows):
+    rest = view[3:]
+    assert "-R" in rest and rest[rest.index("-R") + 1] == \
+        row["repository"]["nameWithOwner"], view
+    assert positionals(rest) == [str(row["number"])], view
+print("OK: 5070 — verifier gh argv: one positional (the number), repo via -R")
+
+# --- end to end: faithful tile DISPUTEs nothing, a raw-count tile does --
+base = {"tiles": {name: {"source": "test", "stale_after_s": 900,
+                         "ok": False, "observed_at": None,
+                         "reason": "not under test"}
+                   for name in V.SPECS}}
+
+
+def run_doc(path, count):
+    doc = json.loads(json.dumps(base))
+    doc["tiles"]["questions"] = {"source": "test", "stale_after_s": 900,
+                                 "ok": True, "observed_at": now,
+                                 "count": count, "items": []}
+    p = scratch / f"questions-{path}.json"
+    p.write_text(json.dumps(doc))
+    V.PROM_OUT = scratch / f"questions-{path}.prom"
+    results = V.run(data_path=p)
+    return results, json.loads(p.read_text())["tiles"]["questions"]
+
+
+results_faithful, tile = run_doc("faithful", 2)
+assert results_faithful["questions"] == 0, results_faithful
+assert tile["disputed"] is False, tile
+print("OK: 5070 — faithful tile (count=2) verifies clean, no DISPUTE")
+
+results_raw, tile = run_doc("raw", 3)
+assert results_raw["questions"] == 1, results_raw
+assert tile["disputed"] is True, tile
+print("OK: 5070 — tile showing the raw 3 still DISPUTEs (lie detection intact)")
+
+# The stamp names the method, so the shell's "what is this" tells the truth.
+cmd = V.SPECS["questions"]["cmd"]
+assert "ANSWERED_KEEP_S" in cmd and "24h" in cmd, cmd
+
+# --- fail closed: a gh blip is a SKIP, never a DISPUTE -----------------
+for kwargs in ({"search_rc": 1}, {"view_rc": 1},
+               {"search_stdout": "not json"}, {"view_stdout": "not json"}):
+    V.subprocess = FakeGh(rows, comments, **kwargs)
+    try:
+        V.run_questions_gh({"count": 2})
+        raise AssertionError(f"expected VerifyError for {kwargs}")
+    except V.VerifyError:
+        pass
+print("OK: 5070 — gh search/view failure and non-JSON still SKIP (VerifyError)")
+PY
+ok "fleet-ops#5070: questions verifier counts the tile's population (aged answered excluded)"
+
+# =========================================================================
 # 13. drill --check
 # =========================================================================
 bash -n "$drill" || fail "drill: bash syntax error"
