@@ -590,8 +590,19 @@ ok "fleet-ops#3828: console tile corpse + ceiling fences — N spawn_fail demote
 # =========================================================================
 # 12c. fleet-ops#4217: PI WORK tile shows quota remaining % for the seat
 # =========================================================================
+# fleet-ops#4980: block 12c must NOT read the live SEAT_LEDGER. The "no
+# quota data" sub-case below injects a healthy minimax/MiniMax-M3 sidecar,
+# and the live host carries a real minimax__MiniMax-M3.spawn-bench.json
+# marker, so _seat_bench_held() flips it to spawn_bench and the assertion
+# reds on main whenever any seed seat is benched. Scope the ledger to an
+# empty scratch dir (mirroring block 12b's _3563_LEDGER) so the 4217
+# sub-test cannot see live /agent-state/lanes/seats bench markers. The
+# live-read in _seat_bench_held is correct product behaviour; the fixture
+# is what had to be scoped.
 _4217_HEALTH="$scratch/seat-health-4217.json"
-_4217_HEALTH="$_4217_HEALTH" \
+_4217_LEDGER="$scratch/ledger-4217"
+mkdir -p "$_4217_LEDGER"
+_4217_HEALTH="$_4217_HEALTH" _4217_LEDGER="$_4217_LEDGER" \
 python3 - "$gen" <<'PY' || fail "4217: console quota display failed"
 import importlib.util, json, os, sys, time
 from pathlib import Path
@@ -600,6 +611,7 @@ spec = importlib.util.spec_from_file_location("g", sys.argv[1])
 g = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(g)
 
+g.SEAT_LEDGER = Path(os.environ["_4217_LEDGER"])
 g.SEAT_HEALTH = Path(os.environ["_4217_HEALTH"])
 g._running_units = lambda: []
 g._pi_argv_count = lambda: 0
@@ -667,6 +679,40 @@ tile = g.collect_running_pi()
 assert tile["health_class"] == "healthy", tile
 assert "quota" not in tile.get("note", ""), f"prom down: note should not have quota: {tile}"
 print("OK: PI WORK tile works when Prometheus is down (fleet-ops#4217)")
+
+# fleet-ops#4980 regression guard: the SEED seat, not the live host, must
+# decide the tile. The 4217 fixture must not read live
+# /agent-state/lanes/seats — a benched seed seat on the host must not flip
+# an injected-healthy sidecar in this hermetic block. Two cases, both
+# must pass: (1) the scratch ledger DOES carry a held
+# minimax__MiniMax-M3.spawn-bench.json marker -> the overlay fires and the
+# healthy sidecar renders spawn_bench (the overlay itself works); (2) the
+# scratch ledger is empty -> the same healthy sidecar renders healthy
+# (the fixture is hermetic, no live marker leaks in).
+g._prom_query = fake_prom_no_quota
+g.SEAT_HEALTH.write_text(json.dumps({
+    "provider": "minimax", "model": "MiniMax-M3",
+    "http_status": 200, "health_class": "healthy",
+    "observed_at": now,
+}), encoding="utf-8")
+future = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() + 3600)) + "Z"
+marker = g.SEAT_LEDGER / "minimax__MiniMax-M3.spawn-bench.json"
+marker.write_text(json.dumps({
+    "provider": "minimax", "model": "MiniMax-M3",
+    "usable_at": future, "failure_mode": "empty_run",
+    "consecutive_failure_count": 3,
+}), encoding="utf-8")
+tile = g.collect_running_pi()
+assert tile["health_class"] == "spawn_bench", (
+    f"seed marker present must render spawn_bench (overlay works), "
+    f"got {tile.get('health_class')}: {tile}")
+print("OK: 4217 hermetic — seed marker present renders spawn_bench (fleet-ops#4980)")
+marker.unlink()
+tile = g.collect_running_pi()
+assert tile["health_class"] == "healthy", (
+    f"empty seed ledger must render healthy (hermetic, no live leak), "
+    f"got {tile.get('health_class')}: {tile}")
+print("OK: 4217 hermetic — empty seed ledger renders healthy (fleet-ops#4980)")
 PY
 ok "fleet-ops#4217: PI WORK tile shows quota remaining % for the current seat"
 
