@@ -1029,9 +1029,10 @@ print("OK: 5070 — aged answered question excluded (2 counted, raw search 3)")
 
 # --- the tile's own collector agrees on the same fixture (drift lock) ---
 G.subprocess = FakeGh(rows, comments)
-G_ITEMS = G._gh_questions()
+G_ITEMS, G_CAPPED = G._gh_questions()
 assert len(G_ITEMS) == counted == 2, (
     f"wheel drift: tile renders {len(G_ITEMS)}, verifier counts {counted}")
+assert G_CAPPED is False, "3 rows cannot fill the search window"
 print("OK: 5070 — tile collector and verifier count the same 2 on one fixture")
 
 # --- the verifier's own gh argv obeys the #4996 arity contract ----------

@@ -410,8 +410,9 @@ def test_answered_young_kept_old_dropped(monkeypatch):
                      "body": "question: hi?\noptions: yes | no"}]
         return [{"body": "decision-resolved: hi", "createdAt": old}]
     monkeypatch.setattr(G, "_gh_json", gh)
-    items = G._gh_questions()
+    items, capped = G._gh_questions()
     assert items == [], "an answered question >24h old must not render"
+    assert capped is False, "one row cannot fill the search window"
 
 
 def test_shell_renders_emdash_not_unknown():

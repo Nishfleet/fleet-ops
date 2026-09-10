@@ -61,6 +61,13 @@ PROM_STALE_S = 15 * 60
 # that counts the raw open-question population false-DISPUTEs a faithful
 # tile the moment one answered question ages out (fleet-ops#5070).
 ANSWERED_KEEP_S = 24 * 60 * 60
+# Must equal generate.py's QUESTION_SEARCH_LIMIT (fleet-ops#5133): both sides
+# pass it as `gh search issues --limit`. Without it gh caps the search at its
+# default 30 and says nothing, so the verifier's window and the tile's window
+# are two independent 30-row slices of the same population — a boundary
+# population then false-DISPUTEs a faithful tile, and rows past 30 reach
+# neither side.
+QUESTION_SEARCH_LIMIT = 1000
 
 HELP_MISMATCH = (
     "# HELP fleet_console_tile_mismatch 1 if this console tile failed its "
@@ -168,10 +175,11 @@ SPECS = {
     },
     "questions": {
         "cmd": (
-            "gh search issues --owner Nishfleet --state open --label question, "
-            "each row's comments classified through the tile's own 24h "
-            "answered-exclusion (generate.py ANSWERED_KEEP_S) — the remaining "
-            "count == tile count (fleet-ops#5070)"
+            f"gh search issues --owner Nishfleet --state open --label question "
+            f"--limit {QUESTION_SEARCH_LIMIT} (the tile's own search window), "
+            f"each row's comments classified through the tile's own 24h "
+            f"answered-exclusion (generate.py ANSWERED_KEEP_S) — the remaining "
+            f"count == tile count (fleet-ops#5070, window pinned in #5133)"
         ),
         "field": "count",
         "tolerance": {"mode": "exact"},
@@ -674,13 +682,15 @@ def _question_answer_epoch(comments):
 def _questions_open_issues():
     """The open `question` population org-wide, one gh search.
 
-    Same store, same qualifiers as generate.py's `_gh_questions` search
-    (fleet-ops#1157 same-source pattern). Labels ride along so a debugger
-    can see the row's shape; the 24h exclusion below is what matters.
+    Same store, same qualifiers AND same explicit --limit as generate.py's
+    `_gh_questions` search (fleet-ops#1157 same-source pattern, #5133 same
+    window). Labels ride along so a debugger can see the row's shape; the
+    24h exclusion below is what matters.
     """
     out = subprocess.run(
         [GH, "search", "issues", "--owner", ORG, "--state", "open",
-         "--label", "question", "--json", "number,repository,labels"],
+         "--label", "question", "--limit", str(QUESTION_SEARCH_LIMIT),
+         "--json", "number,repository,labels"],
         capture_output=True, text=True, timeout=VERIFY_TIMEOUT,
     )
     if out.returncode != 0:

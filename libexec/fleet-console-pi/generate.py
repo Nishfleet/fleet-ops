@@ -49,6 +49,15 @@ QUESTION_STALE_S = 30 * 60
 # dropped (its decision-resolved: comment is the answer; it re-queues via
 # blocked-reconcile). Older than this it must not render.
 ANSWERED_KEEP_S = 24 * 60 * 60
+# `gh search issues` defaults to --limit 30 and reports nothing when it
+# truncates (fleet-ops#5133), so a 31-question backlog silently lost row 31
+# and the tile's count/items were a capped window. Ask for GitHub's own search
+# ceiling explicitly — gh pages internally up to whatever --limit says — and
+# flag the tile when the result fills that window. Mirrored in verify.py
+# (same constant, same --limit) so the tile and its verifier see the SAME
+# window; a boundary population fetched by two different windows is the
+# false-DISPUTE class #5070 fixed for the 24h exclusion.
+QUESTION_SEARCH_LIMIT = 1000
 # Labels a question must carry for its ask to have passed the senior
 # conference gate (fleet-ops#4474): conference-approved or the older
 # nish-reserved both mean "worth bothering Nish".
@@ -885,21 +894,29 @@ def _classify_question(issue, comments):
 
 
 def _gh_questions():
-    """Return the classified list of open `question` issues across the org.
+    """Return (items, capped) for the open `question` issues across the org.
 
     One search for the current population, then one comment fetch per issue
     (to detect decision-resolved: answers and the conference reason). Raises
     on any gh failure so collect_questions fails closed — never an empty
     list when the source is unreachable.
+
+    The search carries an explicit --limit (QUESTION_SEARCH_LIMIT); `capped`
+    is True when the result filled that window, i.e. the population may
+    continue past it and the tile must say so instead of under-reporting
+    (fleet-ops#5133).
     """
     q = _gh_json([
         "search", "issues", "--owner", ORG, "--state", "open",
         "--label", "question",
+        "--limit", str(QUESTION_SEARCH_LIMIT),
         "--json", "number,title,url,createdAt,updatedAt,repository,labels,body",
     ])
+    rows = q or []
+    capped = len(rows) >= QUESTION_SEARCH_LIMIT
     items = []
     now = time.time()
-    for issue in (q or []):
+    for issue in rows:
         repo = (issue.get("repository") or {}).get("nameWithOwner") or ORG
         number = issue.get("number")
         # `gh issue view` takes exactly one positional (the issue number);
@@ -939,7 +956,7 @@ def _gh_questions():
             "conference_reason": reason,
         })
     items.sort(key=lambda x: x["age_h"], reverse=True)  # oldest ask first
-    return items
+    return items, capped
 
 
 def collect_questions():
@@ -957,12 +974,13 @@ def collect_questions():
                "GitHub comments; blocked-reconcile re-queues the work. The tab has "
                "no write path.")
     try:
-        items = _gh_questions()
+        items, capped = _gh_questions()
     except Exception as e:
         return _unknown(src, QUESTION_STALE_S,
                         f"github query failed: {str(e)[:160]}", explain=explain)
     return _tile(src, QUESTION_STALE_S, True, time.time(),
-                 count=len(items), items=items, explain=explain)
+                 count=len(items), items=items, capped=capped,
+                 search_limit=QUESTION_SEARCH_LIMIT, explain=explain)
 
 
 def collect_fleet_state():
