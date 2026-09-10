@@ -440,6 +440,50 @@ grep -q "issue close" "$tmp/gh.log" \
 ok "scenario 9h-close: stale __init__.py-keyed issue observe-to-closes after re-key"
 
 # ---------------------------------------------------------------------------
+# 9i. CLAIM-RELEASED is not queued by the reconciler (fleet-ops#4930).
+#     pi-issue-failed-reap writes it to confirm a SUCCESSFUL claim release
+#     back to agent-ready after a worker failure (the instance=... branch=...
+#     branch_deleted=yes label_flipped=yes comment_posted=yes summary line).
+#     It fires on every real reap of an OPEN issue; the derived key is
+#     per-repo (`loud/claim-released/<repo>`), so any future reap re-emits the
+#     same key and observe-to-close can never go green — the never-green loop
+#     #4918 fixed for CLAIM-REAP-STARTED. A reclaim is the expected recovery
+#     step, not a fault; the actionable reaper outcomes (BRANCH-FAIL /
+#     LABEL-FAIL / PARSE-FAIL / NO-GH) still queue.
+# ---------------------------------------------------------------------------
+cat > "$tmp/empty9i.json" <<'EOF'
+[]
+EOF
+cat > "$tmp/triage9i.md" <<'EOF'
+[2026-08-28T13:30:00Z] [CLAIM-RELEASED] instance=fleet-ops-4907 repo=Nishfleet/fleet-ops branch=claim/issue-4907 branch_deleted=yes label_flipped=yes comment_posted=yes
+EOF
+true > "$tmp/filed.jsonl"
+run "$tmp/empty9i.json" "$tmp/triage9i.md" > "$tmp/summary9i.json"
+jq -e '.filed == 0 and .alarm_count == 0' "$tmp/summary9i.json" >/dev/null \
+    || fail "scenario 9i: CLAIM-RELEASED must not be queued, got: $(cat "$tmp/summary9i.json")"
+[[ $(wc -l < "$tmp/filed.jsonl") -eq 0 ]] \
+    || fail "scenario 9i: CLAIM-RELEASED must not file, got: $(cat "$tmp/filed.jsonl")"
+ok "scenario 9i: CLAIM-RELEASED is not queued (reap completion is expected recovery, not a fault)"
+
+# ---------------------------------------------------------------------------
+# 9i-close. An already-open loud/claim-released issue observe-to-closes even
+#     while fresh CLAIM-RELEASED LOUD lines keep firing (fleet-ops#4930).
+#     Those lines are no longer a queued signal, so they cannot keep the
+#     issue red — the mechanism that clears #4930 on the next real tick.
+# ---------------------------------------------------------------------------
+cat > "$tmp/open9iclose.json" <<'EOF'
+[{"number": 4930, "body": "The heartbeat detector reported this alarm on a real tick.\n\n- alarm tag: `CLAIM-RELEASED`\n\nDo NOT close this issue on PR merge alone.\n\n`loud/claim-released/nishfleet-fleet-ops`\n", "labels": [{"name": "agent-ready"}], "createdAt": "2026-09-10T11:00:00Z", "comments": []}]
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/open9iclose.json" "$tmp/triage9i.md" > "$tmp/summary9iclose.json"
+jq -e '.closed == 1 and .filed == 0' "$tmp/summary9iclose.json" >/dev/null \
+    || fail "scenario 9i-close: stale loud/claim-released must close even while RELEASED LOUD lines fire, got: $(cat "$tmp/summary9iclose.json")"
+grep -q "issue close" "$tmp/gh.log" \
+    || fail "scenario 9i-close: expected gh issue close"
+ok "scenario 9i-close: stale CLAIM-RELEASED issue observe-to-closes while RELEASED lines continue"
+
+# ---------------------------------------------------------------------------
 # 10. Tier1 wiring contract.
 # ---------------------------------------------------------------------------
 grep -q 'detector-queue-reconciler' "$repo_root/bin/fleet-heartbeat-tier1" \
