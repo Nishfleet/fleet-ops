@@ -501,13 +501,13 @@
       "source": "repo"
     },
     "fable-fleet-check.timer": {
-      "reason": "Hourly fleet judge (agent-cron-run senior ladder), offset :00 UTC \u2014 first of three non-overlapping POVs; unit adopted into the repo by fleet-ops#4904 (was hand-placed 2026-09-04)",
+      "reason": "Hourly fleet judge (agent-cron-run senior ladder), offset :00 UTC \u2014 first of three non-overlapping POVs; unit adopted into the repo by fleet-ops#4906 (was hand-placed 2026-09-04)",
       "classification": "scheduled",
       "cadence": "1h",
       "source": "repo"
     },
     "fable-fleet-check-opus.timer": {
-      "reason": "Hourly fleet judge on Opus 5, offset :40 UTC (second POV; Nish 2026-09-07) \u2014 unit adopted into the repo by fleet-ops#4904 (was hand-placed)",
+      "reason": "Hourly fleet judge on Opus 5, offset :40 UTC (second POV; Nish 2026-09-07) \u2014 unit adopted into the repo by fleet-ops#4906 (was hand-placed)",
       "classification": "scheduled",
       "cadence": "1h",
       "source": "repo"

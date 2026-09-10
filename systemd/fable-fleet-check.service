@@ -17,7 +17,7 @@ Environment=HERMES_OUTBOUND_CLASSES=MONEY-BOUNDARY|LEGAL-BOUNDARY|PRODUCT-DIRECT
 ExecStart=/home/nish/.local/bin/agent-cron-run fable-check
 Restart=on-failure
 RestartSec=900
-# fleet-ops#4904: three judges on 20-min offsets (:00 :20 :40 UTC) with a 19-min
+# fleet-ops#4906: three judges on 20-min offsets (:00 :20 :40 UTC) with a 19-min
 # cap can never overlap. Type=oneshot ignores RuntimeMaxSec (systemd-analyze
 # verify says so); TimeoutStartSec is the oneshot cap. MemoryMax keeps a judge
 # from competing with workers.
