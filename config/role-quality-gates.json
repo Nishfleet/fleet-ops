@@ -289,6 +289,26 @@
       ],
       "prompts": [],
       "bypass_checks": []
+    },
+    {
+      "id": "judge",
+      "gate": "hourly senior judges run under the packet contract with a machine-checked verdict line every run; unit guards (20-min offsets, oneshot caps, no overlap) pinned by fleet-ops#4906",
+      "proof": [
+        "systemd/fable-fleet-check.service",
+        "systemd/fable-fleet-check.timer",
+        "systemd/fable-fleet-check-opus.service",
+        "systemd/fable-fleet-check-opus.timer",
+        "systemd/fable-fleet-check-kimi.service",
+        "systemd/fable-fleet-check-kimi.timer",
+        "lib/guard_pi_packet.py"
+      ],
+      "units": [
+        "fable-fleet-check.service",
+        "fable-fleet-check-opus.service",
+        "fable-fleet-check-kimi.service"
+      ],
+      "prompts": [],
+      "bypass_checks": []
     }
   ]
 }
