@@ -403,7 +403,8 @@ seat_usable() {
     local p="$1" m="$2" f hc bench_until dead
     f=$(seat_ledger_path "$p" "$m")
     [[ -f "$f" ]] || return 0
-    bench_until=$(jq -r '.bench_until // empty' "$f" 2>/dev/null || true)
+    # bench_until // usable_at — matches pick_seat's wall filter (fleet-ops#4263).
+    bench_until=$(jq -r '.bench_until // .usable_at // empty' "$f" 2>/dev/null || true)
     if [[ -n "$bench_until" ]] && _seat_in_future "$bench_until"; then
         return 1
     fi
