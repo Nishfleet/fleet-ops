@@ -40,12 +40,12 @@
       "cap": 2,
       "class": "prepaid-quota",
       "remote_agent": true,
-      "max_probe_ceiling": 4,
+      "max_probe_ceiling": 2,
       "quota_bench_default_s": 900,
       "models": {
         "glm-5-2": {
           "cap": 2,
-          "max_probe_ceiling": 3
+          "max_probe_ceiling": 2
         },
         "swe-1-7": {
           "cap": 4,
