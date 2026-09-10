@@ -3294,6 +3294,12 @@ bash "$here/fleet-decisions-ledger.test.sh" || fail "fleet-decisions-ledger test
 # fleet-ops#535: session-close lint for swallowed non-zero. Same CI
 # constraint (worker token cannot add a P14 line in ci.yml).
 bash "$here/fleet-failed-command-flagged.test.sh" || fail "fleet-failed-command-flagged tests failed"
+# fleet-ops#5032: a `HTTP 4xx/5xx` token QUOTED as data (a Prometheus
+# alert annotation, a seat-caps reason string) must not veto the
+# grep/rg no-match exemption — only a `gh:`/`curl:`/`wget:` error
+# envelope is a real error. Same CI constraint (worker token cannot add
+# a P14 line in ci.yml).
+bash "$here/fleet-failed-command-http-status-quoted-content.test.sh" || fail "fleet-failed-command-http-status-quoted-content tests failed"
 # fleet-ops#522: session-close lint for debug playbook notes. Same CI
 # constraint (worker token cannot add a P14 line in ci.yml).
 bash "$here/fleet-debug-playbook.test.sh" || fail "fleet-debug-playbook tests failed"
