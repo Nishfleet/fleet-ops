@@ -418,7 +418,7 @@ groups:
           service: host
         annotations:
           summary: "sustained load15 above 12 for 30m"
-          description: "Box has 8 vCPUs (nproc=8); threshold = 1.5 * 8 = 12 (fleet-ops#4898, 2026-09-10). The old 0.75*8=6 fired whenever 6+ workers ran their test suites and dispatched a repair worker to 'root-cause the load' (4 packets in 24h on 2026-09-10) — each one added load. A batch box at load15 8-12 is healthy; LoadStorm (3x nproc) stays the real brake, oomd + CPUWeight keep the organs responsive."
+          description: "Box has 8 vCPUs (nproc=8); threshold = 1.5 * 8 = 12 (fleet-ops#4902, 2026-09-10). The old 0.75*8=6 fired whenever 6+ workers ran their test suites and dispatched a repair worker to 'root-cause the load' (4 packets in 24h on 2026-09-10) — each one added load. A batch box at load15 8-12 is healthy; LoadStorm (3x nproc) stays the real brake, oomd + CPUWeight keep the organs responsive."
 
       - alert: MemoryPressureHigh
         expr: (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) < 0.08
