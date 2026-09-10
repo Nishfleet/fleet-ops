@@ -139,6 +139,20 @@ SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
 # shellcheck source=../lib/seat-lib.sh source-path=SCRIPTDIR
 source "$SEAT_LIB"
 
+# fleet-ops#4903: journal instrumentation. The unit's stdout/stderr go to
+# files (.out/.err), not the journal, so a <60s death leaves no journal
+# trace and cannot be attributed from `journalctl -u`. systemd-cat writes a
+# structured phase= line to the journal at entry and every exit so every
+# death is attributable by reason. Uses identifier `pi-issue-run` so
+# `journalctl -t pi-issue-run` finds only these phase= lines.
+journal_mark() {
+    local phase="$1" rc="${2:-}" reason="${3:-}"
+    local line="pi-issue-run: ${inst:-<pre-init>} phase=$phase"
+    [[ -n "$rc" ]] && line+=" rc=$rc"
+    [[ -n "$reason" ]] && line+=" reason=$reason"
+    printf '%s\n' "$line" | systemd-cat -t pi-issue-run --priority=info 2>/dev/null || true
+}
+
 # fleet-ops#3125: issue work is PRODUCT work — pick_seat orders candidates
 # by the rolling PR-yield ledger when seat-caps product_order is "yield".
 export PI_PICK_ROLE=product
@@ -225,8 +239,25 @@ write_death_class() {
     seat_log "pi-issue-run: $inst last-death-class=$cls"
 }
 
-[[ $# -ge 1 ]] || { echo "pi-issue-run: need 1 arg: <unit-instance>" >&2; exit 1; }
+[[ $# -ge 1 ]] || {
+    echo "pi-issue-run: need 1 arg: <unit-instance>" >&2
+    printf 'pi-issue-run: <pre-init> phase=exit rc=1 reason=no-args\n' | systemd-cat -t pi-issue-run --priority=info 2>/dev/null || true
+    exit 1
+}
 inst="$1"
+
+# fleet-ops#4903: journal entry/exit instrumentation. _exit_reason is set
+# before each intentional exit so the EXIT trap can attribute the death.
+# Default "unknown" catches any path that forgets to set it.
+_exit_reason="unknown"
+_journal_exit() {
+    local rc=$?
+    journal_mark exit "$rc" "$_exit_reason"
+    clear_active_seat "pi-issue-${inst}" 2>/dev/null || true
+}
+trap '_journal_exit' EXIT
+trap 'clear_active_seat "pi-issue-${inst}" 2>/dev/null || true' INT TERM
+journal_mark start
 # PI_ISSUES_DIR lets tests redirect the packet/out/err triplet into a
 # scratch dir. Default is the live install path; production is unchanged.
 PI_ISSUES_DIR="${PI_ISSUES_DIR:-/home/nish/.local/state/pi-issues}"
@@ -237,7 +268,7 @@ tried_file="$ATTEMPTS_DIR/pi-issue-${inst}.tried-seats"
 
 mkdir -p "$ATTEMPTS_DIR" "$(dirname "$out_file")"
 
-[[ -f "$pkt" ]] || { echo "pi-issue-run: packet file not found: $pkt" >&2; exit 1; }
+[[ -f "$pkt" ]] || { echo "pi-issue-run: packet file not found: $pkt" >&2; _exit_reason="no-packet"; exit 1; }
 
 # fleet-ops#3277: pi-transport-check asserts EXTLOAD for subagent when a
 # worker starts. Capability-detect: a pre-deploy probe has no --subagent
@@ -259,7 +290,7 @@ assert_subagent_extload() {
     fi
     return 0
 }
-assert_subagent_extload || exit 1
+assert_subagent_extload || { _exit_reason="subagent-extload"; exit 1; }
 
 # --- pick a seat for THIS attempt ------------------------------------------
 weight=$(task_weight "$pkt")
@@ -300,7 +331,9 @@ export PI_PACKET_REPO="${pkt_repo:-}"
 # re-seat and re-run INSIDE this invocation instead of consuming a systemd
 # StartLimitBurst restart slot.
 # Set the active-seat cleanup trap once for the whole invocation.
-trap 'clear_active_seat "pi-issue-${inst}"' EXIT INT TERM
+# fleet-ops#4903: the EXIT trap is already set above (_journal_exit) which
+# calls clear_active_seat. INT/TERM are still set above too. This comment
+# documents the original placement; the trap is now at the top after inst.
 
 # fleet-ops#2005: isolate this unit's session files so the debug-playbook gate
 # can find the one written by the final successful pi run.
@@ -325,6 +358,28 @@ if [[ ! -f "$_rc_init_file" ]]; then
     printf '1' > "$_rc_init_file" 2>/dev/null || true
     seat_log "pi-issue-run: $inst initialized reclaim-count=1 (first claim)"
 fi
+
+# fleet-ops#3531 + #4903: remote agents (e.g. devin) may finish with zero
+# local tool calls and a PR URL as the only real output. Defined here before
+# the while loop so it is available in the rc!=0 block (fleet-ops#4903: a
+# run that shipped a PR but pi exited non-zero must exit 0, not 1).
+has_session_pr_url() {
+    local out="${1:-}" err="${2:-}" sdir="${3:-}"
+    local regex='https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[0-9]+'
+    if [[ -n "$out" && -f "$out" ]]; then
+        grep -qE "$regex" "$out" 2>/dev/null && return 0
+    fi
+    if [[ -n "$err" && -f "$err" ]]; then
+        grep -qE "$regex" "$err" 2>/dev/null && return 0
+    fi
+    if [[ -n "$sdir" && -d "$sdir" ]]; then
+        local f
+        while IFS= read -r -d '' f; do
+            grep -qE "$regex" "$f" 2>/dev/null && return 0
+        done < <(find "$sdir" -maxdepth 1 -name '*.jsonl' -type f -print0 2>/dev/null)
+    fi
+    return 1
+}
 
 while true; do
 
@@ -375,6 +430,7 @@ if [[ -z "$seat" ]]; then
     # 8+ restarts exited instantly with "no seat available").
     if ! mkdir -p "$ATTEMPTS_DIR" 2>/dev/null; then
         seat_log "pi-issue-run: $inst FAILED to recreate $ATTEMPTS_DIR (wiped and unrecoverable) — exiting 1"
+        _exit_reason="mkdir-failed-no-seat"
         exit 1
     fi
     # fleet-ops#1133: a keystone two-strike must NOT reset tried-seats.
@@ -384,10 +440,12 @@ if [[ -z "$seat" ]]; then
     if [[ "$difficulty" == "keystone" ]]; then
         seat_log "pi-issue-run: $inst KEYSTONE ESCALATION — keeping tried-seats so OnFailure summons senior conference"
         write_death_class infra
+        _exit_reason="keystone-escalation"
         exit 1
     fi
     : >"$tried_file"
     write_death_class infra
+    _exit_reason="no-seat"
     exit 1
 fi
 
@@ -403,6 +461,7 @@ nm=$(printf '%s' "$seat" | cut -f2)
 # wipe mid-run doesn't permanently strand the worker in crash-loop.
 mkdir -p "$ATTEMPTS_DIR" 2>/dev/null || {
     seat_log "pi-issue-run: $inst FAILED to recreate $ATTEMPTS_DIR (wiped and unrecoverable) — exiting 1"
+    _exit_reason="mkdir-failed"
     exit 1
 }
 
@@ -443,16 +502,19 @@ if [[ -f "$WORKER_CREDS_FILE" ]]; then
         seat_log "pi-issue-run: $inst DEAD APP IDENTITY — worker-token mint failed (exit $mint_rc); refusing human-gh-auth fallback"
         seat_log "pi-issue-run: $inst worker-token stderr: $(tr '\n' ' ' </tmp/pi-issue-run-worker-token.err 2>/dev/null)"
         rm -f /tmp/pi-issue-run-worker-token.err
+        _exit_reason="dead-app-mint-failed"
         exit 1
       fi
       rm -f /tmp/pi-issue-run-worker-token.err
     fi
   else
     seat_log "pi-issue-run: $inst DEAD APP IDENTITY — $WORKER_TOKEN_BIN not found; refusing human-gh-auth fallback"
+    _exit_reason="dead-app-no-bin"
     exit 1
   fi
 else
   seat_log "pi-issue-run: $inst DEAD APP IDENTITY — no nishfleet-worker creds file at $WORKER_CREDS_FILE; refusing human-gh-auth fallback"
+  _exit_reason="dead-app-no-creds"
   exit 1
 fi
 
@@ -798,9 +860,30 @@ if (( rc != 0 )); then
     # class and, at exhaustion, parks the issue.
     if is_infra_death "$rc"; then
         write_death_class infra
-    else
-        write_death_class work
+        # fleet-ops#4903: an infra death (seat died, hang kill, spawn timeout,
+        # hard session bound) is NOT a work failure. Exit 0 so systemd
+        # Restart=on-failure does NOT re-spawn the same unit — the re-spawn
+        # storm burned 174/322 <60s deaths in 12h, each triggering ~4 unit
+        # activations (OnFailure + unit-escalation + ExecStopPost intake).
+        # ExecStopPost already starts pi-intake@ which re-queues through
+        # intake with a fresh seat pick from the full pool. The dead seat is
+        # already benched above (mark_seat_spawn_fail / mark_seat_hang_bench /
+        # mark_seat_quota_bench / mark_seat_overload_bench).
+        seat_log "pi-issue-run: $inst infra death (rc=$rc) on $np/$nm — exit 0 to re-queue via intake, not Restart= (fleet-ops#4903)"
+        _exit_reason="infra-death-requeue"
+        exit 0
     fi
+    # fleet-ops#4903: a run that shipped a PR but pi exited non-zero (e.g.
+    # the provider was killed after the PR was created) is a SUCCESS, not a
+    # failure. Exit 1 triggers the OnFailure chain for nothing — the PR is
+    # already open and the issue will close on merge.
+    if has_session_pr_url "$out_file" "$err_file" "$session_dir"; then
+        seat_log "pi-issue-run: $inst pi exited $rc but session shipped a PR — treating as success (fleet-ops#4903)"
+        _exit_reason="success-pr-shipped"
+        exit 0
+    fi
+    write_death_class work
+    _exit_reason="pi-failed"
     exit 1
 fi
 
@@ -825,28 +908,6 @@ is_empty_run() {
     rest=$(grep -vE '^(EXTLOAD-OK|PACKET-VERDICT)' "$out" 2>/dev/null || true)
     rest=$(grep -vE '^[[:space:]]*$' <<<"$rest" 2>/dev/null || true)
     [[ -z "$rest" ]]
-}
-
-# fleet-ops#3531: remote agents (e.g. devin) may finish with zero local tool
-# calls and a PR URL as the only real output. An empty run is only empty when
-# the session has no https://github.com/<org>/<repo>/pull/<n> URL in the
-# captured stdout, stderr, or session jsonl.
-has_session_pr_url() {
-    local out="${1:-}" err="${2:-}" sdir="${3:-}"
-    local regex='https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[0-9]+'
-    if [[ -n "$out" && -f "$out" ]]; then
-        grep -qE "$regex" "$out" 2>/dev/null && return 0
-    fi
-    if [[ -n "$err" && -f "$err" ]]; then
-        grep -qE "$regex" "$err" 2>/dev/null && return 0
-    fi
-    if [[ -n "$sdir" && -d "$sdir" ]]; then
-        local f
-        while IFS= read -r -d '' f; do
-            grep -qE "$regex" "$f" 2>/dev/null && return 0
-        done < <(find "$sdir" -maxdepth 1 -name '*.jsonl' -type f -print0 2>/dev/null)
-    fi
-    return 1
 }
 
 # fleet-ops#3714: a session that made tool calls did real work. When the model
@@ -887,6 +948,7 @@ if is_sandbox_localhost_error "$(cat "$out_file" 2>/dev/null || true)" "$(cat "$
     else
         seat_log "pi-issue-run: $inst class=sandbox-localhost-unresolvable on $np/$nm (error connecting to localhost) — not empty-run 900s, not empty-success; /etc/hosts IPv4 localhost is the class"
         write_death_class infra
+        _exit_reason="sandbox-localhost"
         exit 1
     fi
 fi
@@ -939,6 +1001,7 @@ if (( out_bytes < OUT_MIN )); then
             if (( empty_run_attempt > EMPTY_RUN_RETRY_MAX )); then
                 seat_log "pi-issue-run: $inst in-process retries exhausted (${empty_run_attempt} attempts, limit=${EMPTY_RUN_RETRY_MAX}) — exiting 1 so systemd Restart fires"
                 write_death_class work
+                _exit_reason="worked-no-text-exhausted"
                 exit 1
             fi
             continue
@@ -960,6 +1023,7 @@ if (( out_bytes < OUT_MIN )); then
         else
             seat_log "pi-issue-run: $inst worked-no-text with no PR shipped — failing claim loudly (exit 1) so systemd re-queues (fleet-ops#3810)"
             write_death_class work
+            _exit_reason="worked-no-text-no-pr"
             exit 1
         fi
     else
@@ -974,6 +1038,7 @@ if (( out_bytes < OUT_MIN )); then
             seat_log "pi-issue-run: $inst in-process retries exhausted (${empty_run_attempt} attempts, limit=${EMPTY_RUN_RETRY_MAX}) — exiting 1 so systemd Restart fires"
             # fleet-ops#3310: retries exhausted after empty runs = the worker shipped nothing — a WORK death, not infrastructure.
             write_death_class work
+            _exit_reason="empty-run-exhausted"
             exit 1
         fi
         seat_log "pi-issue-run: $inst empty run #${empty_run_attempt}/${EMPTY_RUN_RETRY_MAX} (provider no-op, stdout=${out_bytes}B) — re-seating in-process on a different seat"
@@ -1004,6 +1069,7 @@ if is_empty_run "$out_file"; then
             seat_log "pi-issue-run: $inst in-process retries exhausted (${empty_run_attempt} attempts, limit=${EMPTY_RUN_RETRY_MAX}) — exiting 1 so systemd Restart fires"
             # fleet-ops#3310: retries exhausted after empty runs = the worker shipped nothing — a WORK death, not infrastructure.
             write_death_class work
+            _exit_reason="empty-run-exhausted"
             exit 1
         fi
         seat_log "pi-issue-run: $inst empty run #${empty_run_attempt}/${EMPTY_RUN_RETRY_MAX} (empty-run, ${noop_reason}) — re-seating in-process on a different seat"
@@ -1043,12 +1109,14 @@ if [[ "$DEBUG_PLAYBOOK_GATE" != "0" ]]; then
             set -e
             if [[ "$gate_rc" -ne 0 ]]; then
                 seat_log "pi-issue-run: $inst DEBUG-PLAYBOOK-GATE-BLOCK $session_file (rc=$gate_rc) — a multi-attempt debug closed without a vault playbook note"
+                _exit_reason="debug-playbook-gate-block"
                 exit 1
             fi
             seat_log "pi-issue-run: $inst DEBUG-PLAYBOOK-GATE-OK $session_file"
         else
             if [[ "$DEBUG_PLAYBOOK_GATE" == "1" ]]; then
                 seat_log "pi-issue-run: $inst DEBUG-PLAYBOOK-GATE-BROKEN no session file found in $session_dir (gate enforced)"
+                _exit_reason="debug-playbook-gate-broken"
                 exit 1
             fi
             seat_log "pi-issue-run: $inst DEBUG-PLAYBOOK-GATE-SKIP no session file found in $session_dir (gate=auto)"
@@ -1056,6 +1124,7 @@ if [[ "$DEBUG_PLAYBOOK_GATE" != "0" ]]; then
     else
         if [[ "$DEBUG_PLAYBOOK_GATE" == "1" ]]; then
             seat_log "pi-issue-run: $inst DEBUG-PLAYBOOK-GATE-BROKEN fleet-debug-playbook not found (gate enforced)"
+            _exit_reason="debug-playbook-gate-broken"
             exit 1
         fi
         seat_log "pi-issue-run: $inst DEBUG-PLAYBOOK-GATE-SKIP fleet-debug-playbook not on PATH (gate=auto)"
@@ -1131,4 +1200,5 @@ if [[ -n "$_sess_usd" ]]; then
     fi
 fi
 
+_exit_reason="success"
 exit 0

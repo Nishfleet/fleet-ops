@@ -10,6 +10,12 @@
 # re-selects the same killing seat (0509-974: cursor 143 x3, summoned the
 # auditor 2026-08-26T20:40Z).
 #
+# fleet-ops#4903: a mid-session death is an infra death, not a work failure.
+# pi-issue-run must exit 0 so systemd Restart= does NOT re-spawn the same
+# unit (the re-spawn storm: 174/322 <60s deaths in 12h). ExecStopPost
+# starts pi-intake@ which re-queues through intake. The seat is still
+# benched (asserted below).
+#
 # A mid-session death is NOT a spawn ETIMEDOUT (elapsed > SPAWN_FAIL_MAX_S)
 # and NOT a quota wall (no 429 in the output), so it previously fell through
 # UNBENCHED. This test pins the bench.
@@ -149,8 +155,12 @@ bash "$bin" "$inst" >"$scratch/run.out" 2>"$scratch/run.err"
 rc=$?
 set -e
 
-[[ "$rc" == "1" ]] \
-  || fail "dying pi must make pi-issue-run exit 1 (systemd re-seat), got rc=$rc err=$(cat "$scratch/run.err")"
+# fleet-ops#4903: a mid-session provider death is an infra death, not a work
+# failure. pi-issue-run must exit 0 so systemd Restart= does NOT re-spawn
+# the same unit (the re-spawn storm). ExecStopPost starts pi-intake@ which
+# re-queues through intake. The seat is still benched (asserted below).
+[[ "$rc" == "0" ]] \
+  || fail "mid-session death must exit 0 (infra-death re-queue via intake, not Restart=), got rc=$rc err=$(cat "$scratch/run.err")"
 
 tried="$STATE_DIR/attempts/pi-issue-${inst}.tried-seats"
 [[ -s "$tried" ]] || fail "tried-seats file missing after run"

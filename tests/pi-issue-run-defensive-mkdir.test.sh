@@ -198,11 +198,14 @@ inline=$(awk '/^# Defensive recreate/ { flag=1; next } flag && /^mkdir -p "\$ATT
 ok "inline defensive mkdir is wired between seat pick and tried-seats append"
 
 # --- Case 4 (P15): hang watchdog — a pi that never finalizes must be
-# killed by the wrapper's timeout, logged, and surfaced as rc!=0 so
-# systemd re-seats. This is the fleet-ops#83 wedge: pi does tool work
-# then hangs in ep_poll; previously the wrapper waited forever and the
-# unit sat in `activating` until TimeoutStartSec (45 min), holding its
-# seat and starving pick_seat. The wrapper must bound the run itself.
+# killed by the wrapper's timeout, logged, and surfaced so the seat is
+# freed. This is the fleet-ops#83 wedge: pi does tool work then hangs in
+# ep_poll; previously the wrapper waited forever and the unit sat in
+# `activating` until TimeoutStartSec (45 min), holding its seat and
+# starving pick_seat. The wrapper must bound the run itself.
+# fleet-ops#4903: rc=124 is an infra death — pi-issue-run exits 0 so
+# Restart= does NOT re-spawn the same unit; ExecStopPost re-queues via
+# intake. The watchdog marker is still written to the err file.
 stub_hang="$scratch/stub-hang"
 mkdir -p "$stub_hang"
 cat >"$stub_hang/pi" <<'STUB'
@@ -225,9 +228,9 @@ set +e
 timeout 30 "$bin" "$HANG_INST" 2>"$scratch/err3.log"
 rc=$?
 set -e
-[[ "$rc" != "0" ]] || fail "P15: hung pi should exit non-zero, got rc=$rc"
+[[ "$rc" == "0" ]] || fail "P15: hung pi infra death should exit 0 (re-queue via intake), got rc=$rc"
 # The marker lands in the unit err file (the wrapper appends it there for
 # seat-health/pick_seat to distinguish a hang from a spawn ETIMEDOUT).
 HANG_ERR="$ISSUES_DIR/$HANG_INST.err"
 grep -q "PI HANG WATCHDOG" "$HANG_ERR" || fail "P15: unit err file missing PI HANG WATCHDOG marker: $(cat "$HANG_ERR")"
-ok "P15: hung pi killed by wrapper watchdog (PI_HANG_TIMEOUT_S), marker written, rc!=0"
+ok "P15: hung pi killed by wrapper watchdog (PI_HANG_TIMEOUT_S), marker written, exit 0 (infra-death re-queue)"

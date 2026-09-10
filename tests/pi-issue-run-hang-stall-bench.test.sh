@@ -263,8 +263,11 @@ STUB
     PI_HANG_TIMEOUT_S=3 bash "$bin" "$inst" >"$scratch/run.out" 2>"$scratch/run.err"
     rc=$?
     set -e
-    [[ "$rc" == "1" ]] \
-      || fail "$label: pi-issue-run must exit 1 (systemd re-seat), got rc=$rc err=$(tail -n 5 "$scratch/run.err")"
+    # fleet-ops#4903: rc=124 is an infra death (hang watchdog kill). pi-issue-run
+    # must exit 0 so Restart= does NOT re-spawn the same unit. ExecStopPost
+    # starts pi-intake@ which re-queues through intake.
+    [[ "$rc" == "0" ]] \
+      || fail "$label: hang-watchdog infra death must exit 0 (re-queue via intake), got rc=$rc err=$(tail -n 5 "$scratch/run.err")"
 
     tried="$STATE_DIR/attempts/pi-issue-${inst}.tried-seats"
     [[ -s "$tried" ]] || fail "$label: tried-seats file missing after run"

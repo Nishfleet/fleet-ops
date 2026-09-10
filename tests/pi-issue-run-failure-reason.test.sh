@@ -136,3 +136,8 @@ ok "failure-reason lock is wired through tests/worker-token-fail-closed.test.sh"
 # here is the established pattern.
 bash "$here/pi-issue-run-per-seat-timeout.test.sh"
 ok "hosted pi-issue-run-per-seat-timeout.test.sh (P14 reachable, fleet-ops#3873)"
+
+# fleet-ops#4903: host the journal instrumentation + exit-0-on-infra-death
+# test here so it is in the P14 reachable set without a ci.yml edit.
+bash "$here/pi-issue-run-journal-instrumentation.test.sh"
+ok "hosted pi-issue-run-journal-instrumentation.test.sh (P14 reachable, fleet-ops#4903)"

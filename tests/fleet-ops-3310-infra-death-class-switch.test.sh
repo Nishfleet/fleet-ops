@@ -247,11 +247,13 @@ set +e
 bash "$run" "$inst" >"$scratch/hang.out" 2>"$scratch/hang.err"
 run_rc=$?
 set -e
-[[ "$run_rc" == "1" ]] || fail "hang-death run must exit 1 (re-seat), got rc=$run_rc err=$(cat "$scratch/hang.err")"
+# fleet-ops#4903: rc=124 is an infra death — exit 0 so Restart= does NOT
+# re-spawn. ExecStopPost re-queues via intake.
+[[ "$run_rc" == "0" ]] || fail "hang-death run must exit 0 (infra-death re-queue), got rc=$run_rc err=$(cat "$scratch/hang.err")"
 _lc="$ATT/pi-issue-${inst}.last-death-class"
 [[ -f "$_lc" ]] || fail "hang-death run did not write .last-death-class: $(cat "$scratch/hang.err")"
 [[ "$(cat "$_lc")" == "infra" ]] || fail "hang (rc=124) must be classified infra, got: $(cat "$_lc")"
-ok "Test 10 (replay): real pi-issue-run classifies a hang-watchdog death (rc=124) as infra"
+ok "Test 10 (replay): real pi-issue-run classifies a hang-watchdog death (rc=124) as infra, exits 0"
 
 # --- Test 11: replay — ordinary work failure writes death-class=work ---------
 inst="3310work"
