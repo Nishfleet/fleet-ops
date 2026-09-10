@@ -85,6 +85,26 @@ STOPWORDS = frozenset(
 PATH_RE = re.compile(
     r"(?:(?:\./)?[A-Za-z0-9_.-]+/){1,}[A-Za-z0-9_.-]+(?:\.[A-Za-z0-9]+)?"
 )
+# fleet-ops#5058: packet spec-schema field labels (metric:/observed:/
+# evidence:/accept:/verify:/rollback:/dedupe:/impact:/product_surface:/
+# termination:/source:) are shared boilerplate — every well-formed candidate
+# carries them, so two different-problem schema bodies start with label
+# overlap before any content is compared. Strip the labels before tokenising
+# so only field VALUES count as overlap evidence.
+SPEC_FIELD_LABEL_RE = re.compile(
+    r"(?im)^[ \t]*(?:metric|observed|evidence|accept|verify|rollback|dedupe"
+    r"|impact|product_surface|termination|source|signal)[ \t]*:"
+)
+# fleet-ops#5058: a seat-crisis state word only counts when it sits in the
+# same breath as the seat word (<=60 chars, same line). "burn a seat on an
+# empty deliverable" paragraphs away from "the unit is dead" is incidental,
+# not the #2899 seat-corpse/walled cluster — the loose any-where match let
+# the PRIMARY_SIGNAL_FLOOR collapse unrelated problems onto #4959 at 0.70.
+SEAT_STATE_NEAR_RE = re.compile(
+    r"(?:\bseats?\b[^\n]{0,60}?\b(?:dead|down|comeback)\b)"
+    r"|(?:\b(?:dead|down|comeback)\b[^\n]{0,60}?\bseats?\b)",
+    re.IGNORECASE,
+)
 UNIT_RE = re.compile(
     r"\b[A-Za-z0-9_@.:-]+\.(?:service|timer|socket|target|path|slice)\b"
 )
@@ -154,6 +174,7 @@ def norm(text: str) -> str:
 
 
 def tokens(text: str) -> set[str]:
+    text = SPEC_FIELD_LABEL_RE.sub(" ", text or "")
     out: set[str] = set()
     for raw in norm(text).split():
         if len(raw) < 2 or raw in STOPWORDS:
@@ -181,6 +202,13 @@ def _has_seat_crisis(text: str) -> bool:
 
     Requires both a seat context and a failure state/cause.  This is intentionally
     specific: a generic "seat cap" or "healthy seats" mention must not trigger.
+    fleet-ops#5058: a bare "dead"/"comeback" anywhere in the text counted as a
+    cause, so incidental mentions ("burn a seat", "the unit is dead",
+    "dead-man") fired the signal and PRIMARY_SIGNAL_FLOOR collapsed three
+    different-problem candidates onto #4959. Causes are now seat-health
+    markers (corpse/walled/credentials_bad/quota_exhausted/seat_dead/
+    health_class=corpse/manual_repair_corpse) or a seat state word adjacent
+    to the seat word (SEAT_STATE_NEAR_RE).
     """
     low = (text or "").lower()
     seat = bool(
@@ -190,18 +218,19 @@ def _has_seat_crisis(text: str) -> bool:
         or "manual_repair_corpse" in low
         or "seat_dead" in low
     )
-    cause = bool(
+    if not seat:
+        return False
+    return bool(
         "corpse" in low
-        or "dead" in low
         or "walled" in low
-        or "comeback" in low
+        or "quota_exhausted" in low
         or "credentials_bad" in low
         or "credentials bad" in low
         or "manual_repair_corpse" in low
         or "health_class=corpse" in low
         or "seat_dead" in low
+        or SEAT_STATE_NEAR_RE.search(text or "")
     )
-    return seat and cause
 
 
 def signal_keys(text: str) -> set[str]:
