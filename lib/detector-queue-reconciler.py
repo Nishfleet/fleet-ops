@@ -642,15 +642,23 @@ def reconcile(
         rc, out = file_issue(repo, title, body, labels, issue_file, dry_run)
         if rc == 0:
             log(f"filed {sig} -> {out}")
-            filed_count += 1
-            summary["filed"] += 1
             # FILED-LINK verify (fleet-ops#4622): fleet-issue-file may dedupe
             # to an unrelated issue and return its URL. Verify the returned
             # issue's title carries the signal key; on mismatch emit a LOUD
             # FILED-LINK-MISMATCH so the wrong pointer can never satisfy
             # observe-to-close next tick.
             if verify_filed_signal(repo, out, sig, gh, dry_run, triage):
+                # fleet-ops#4841: a wrong pointer must NOT count as a successful
+                # filing — it does not carry the signal key, so observe-to-close
+                # can never close it, and counting it would waste the auto-file
+                # cap on a pointer that can never go green. Do not consume the
+                # cap (filed_count stays put) so the signal is re-filed on the
+                # next tick once the dedupe no longer collapses it onto the
+                # wrong issue.
                 summary["filed_mismatches"] = summary.get("filed_mismatches", 0) + 1
+                continue
+            filed_count += 1
+            summary["filed"] += 1
         else:
             log(f"WARN: failed to file {sig} (rc={rc}): {out}")
 

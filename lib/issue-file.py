@@ -103,6 +103,18 @@ SIGNAL_BONUS_MAX = 0.30
 PRIMARY_SIGNAL_FLOOR = 0.70
 
 SIGNAL_RE = re.compile(r"^signal:\s*(\S+)", re.MULTILINE | re.IGNORECASE)
+# fleet-ops#4622/#4841: the detector->queue reconciler (lib/detector-queue-
+# reconciler.py) embeds its signal key as a backticked line
+# (`` `loud/<tag>/<key>` ``) in issue_body(), NOT as a literal `signal:`
+# prefix. Without this, issue-file's dedupe never saw the reconciler's signal
+# key and relied purely on token overlap, which collapsed unrelated alarms
+# (all sharing the same boilerplate body) onto one wrong issue — the
+# FILED-LINK-MISMATCH wrong-pointer that wasted the auto-file cap on
+# fleet-ops#4841. Recognize the same backticked form the reconciler emits so
+# two issues with different `loud/...` signals are never deduped together.
+BACKTICK_SIGNAL_RE = re.compile(
+    r"`((?:loud/[a-z0-9-]+/[^\s`]+)|(?:loud/[a-z0-9-]+))`"
+)
 ALERT_RE = re.compile(r"\b(Fleet[A-Z][A-Za-z]+)\b")
 FAILURE_MODE_RE = re.compile(r"\bfailure_mode\s*[:=]\s*([A-Za-z0-9_-]+)\b")
 HEALTH_CLASS_RE = re.compile(r"\bhealth_class\s*[:=]\s*([A-Za-z0-9_-]+)\b")
@@ -119,7 +131,7 @@ PRIMARY_SIGNAL_PREFIXES = ("signal/", "fleet/seat-crisis")
 # silently swallowed semgrep.yml / review-gate.yml / auto-enqueue.yml). This
 # family is "one item per concrete key": distinct keys mean distinct missing
 # files, so the shared template must not count as duplicate evidence.
-SAME_ITEM_SIGNAL_FAMILIES = ("standards-drift",)
+SAME_ITEM_SIGNAL_FAMILIES = ("standards-drift", "loud")
 # A divergent same-item pair is never a duplicate; keep it below the borderline
 # so it files clean instead of being collapsed or marked.
 DIVERGENT_SIGNAL_CAP = BORDERLINE_THRESHOLD - 0.01
@@ -199,6 +211,16 @@ def signal_keys(text: str) -> set[str]:
     # Explicit `signal:` markers (e.g. `signal: scout-futility/foo`) are the most
     # reliable primary signals.  Any two issues carrying the same marker group.
     for m in SIGNAL_RE.finditer(text or ""):
+        marker = m.group(1).strip().rstrip(".").lower()
+        if marker:
+            out.add(f"signal/{marker}")
+
+    # Backticked `loud/<tag>/<key>` signals emitted by the detector->queue
+    # reconciler (fleet-ops#4622/#4841). Same treatment as `signal:` markers:
+    # two issues carrying the same backticked signal are the same problem;
+    # two carrying DIFFERENT loud signals are divergent (see
+    # SAME_ITEM_SIGNAL_FAMILIES) and must never be deduped together.
+    for m in BACKTICK_SIGNAL_RE.finditer(text or ""):
         marker = m.group(1).strip().rstrip(".").lower()
         if marker:
             out.add(f"signal/{marker}")

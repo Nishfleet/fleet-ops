@@ -26,8 +26,16 @@ PRECEDENCE_BAND_NOW="${PRECEDENCE_BAND_NOW:-}"
 # claim. Bash $$ is the original shell even inside $(), so a file keyed on
 # $$ is visible to every claim in this tick. The tick starts workers
 # --no-block; without the latch the floor would dump the overnight queue.
+#
+# fleet-ops#4841: the latch is SHARED across ticks (not keyed on $$) so a
+# machinery claim made by one tick is visible to the next tick. The intake
+# tick clears it at start; precedence_band_allow_claim clears it once the
+# claimed worker is actually visible (BAND_MACHINERY > 0), so the latch
+# cannot freeze the floor across a worker that never appears. A shared latch
+# prevents the stale-count over-admission where each tick re-claims a
+# machinery worker before the previous one is visible to systemctl.
 precedence_band_pending_file() {
-    printf '%s\n' "${BAND_PENDING_FILE:-${XDG_RUNTIME_DIR:-/tmp}/precedence-band-pending.$$}"
+    printf '%s\n' "${BAND_PENDING_FILE:-${XDG_RUNTIME_DIR:-/tmp}/precedence-band-pending}"
 }
 precedence_band_pending_get() {
     if [[ -f "$(precedence_band_pending_file)" ]]; then
@@ -254,9 +262,17 @@ precedence_band_read_units() {
         grep -E '^pi-issue@' "$FLEET_PRECEDENCE_UNITS_FILE" || true
         return 0
     fi
+    # fleet-ops#4841: exclude `activating (auto-restart)` units from the live
+    # count. A unit in auto-restart is a FAILED worker retrying, not a
+    # productive lane — counting it inflates the machinery share and can push
+    # the canary over the cap (and the intake over-count into over-admission)
+    # with workers that are not actually doing work. Legitimate starting
+    # workers (`activating (start)`) are still counted. The substate is the
+    # 4th column of `list-units --plain`; a unit with no substate (e.g. a
+    # test fixture line) is kept.
     systemctl --user list-units 'pi-issue@*.service' \
         --state=active,activating --no-legend --plain 2>/dev/null \
-        | awk '{print $1}' || true
+        | awk '$4 != "auto-restart" {print $1}' || true
 }
 
 # Sets BAND_MACHINERY and BAND_PRODUCT from live units.
@@ -325,6 +341,15 @@ precedence_band_allow_claim() {
     pct="$(precedence_band_max_pct)"
     precedence_band_count_live
     BAND_PENDING_MACHINERY="$(precedence_band_pending_get)"
+    # fleet-ops#4841: once a machinery worker is actually visible to systemctl
+    # (BAND_MACHINERY > 0), the shared floor latch is spent — clear it so the
+    # over-cap check below applies from the real live count. Without this, a
+    # shared latch set by a prior tick would keep suppressing the floor even
+    # after the worker appeared, and the over-cap check would never run.
+    if (( BAND_MACHINERY > 0 )); then
+        precedence_band_pending_clear
+        BAND_PENDING_MACHINERY=0
+    fi
     # Bootstrap exception (auditor 2026-08-28, summon unit-failure
     # fleet-heartbeat): when nothing is live (BAND_MACHINERY + BAND_PRODUCT
     # == 0), the first claim cannot violate the machinery share — 30% of 0

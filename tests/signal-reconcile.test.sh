@@ -410,18 +410,23 @@ true > "$tmp/filed.jsonl"
 true > "$tmp/gh.log"
 
 # 12a. wrong title -> LOUD FILED-LINK-MISMATCH + filed_mismatches counter.
+#     fleet-ops#4841: a wrong pointer is NOT a successful filing — it does not
+#     carry the signal key, so observe-to-close can never close it, and counting
+#     it would waste the auto-file cap on a pointer that can never go green.
+#     So filed stays 0 (the cap is not consumed) and the signal is re-filed on
+#     the next tick once the dedupe no longer collapses it onto the wrong issue.
 env "${common_env[@]}" FAKE_GH_VIEW_TITLE="claude OAuth quota meter silently dead" \
     FLEET_SIGNAL_RECONCILE_OPEN_ISSUES_JSON="$tmp/empty.json" \
     python3 "$lib" --triage "$tmp/triage12.md" --tick-start "2026-08-28T13:30:00Z" \
     --ok-to-close 1 --json --now "2026-08-28T13:45:00Z" 2>"$tmp/stderr12a.json" \
     > "$tmp/summary12a.json" || true
-jq -e '.filed == 1' "$tmp/summary12a.json" >/dev/null \
-    || fail "scenario 12a: expected one filed (got: $(cat "$tmp/summary12a.json"))"
+jq -e '.filed == 0' "$tmp/summary12a.json" >/dev/null \
+    || fail "scenario 12a: wrong pointer must NOT count as filed (got: $(cat "$tmp/summary12a.json"))"
 jq -e '.filed_mismatches == 1' "$tmp/summary12a.json" >/dev/null \
     || fail "scenario 12a: expected filed_mismatches==1 (got: $(cat "$tmp/summary12a.json"))"
 grep -q 'FILED-LINK-MISMATCH' "$tmp/stderr12a.json" \
     || fail "scenario 12a: expected LOUD FILED-LINK-MISMATCH on stderr"
-ok "scenario 12a: wrong-title filed pointer -> LOUD FILED-LINK-MISMATCH + counter"
+ok "scenario 12a: wrong-title filed pointer -> LOUD FILED-LINK-MISMATCH, not counted as filed, cap not consumed"
 
 # 12b. matching title -> no LOUD, no mismatch counter.
 true > "$tmp/filed.jsonl"
@@ -454,5 +459,57 @@ assert sig in t, ("title must embed signal key", t)
 print("issue_title embeds signal:", t)
 ' "$lib" || fail "scenario 12c: issue_title must embed the signal key"
 ok "scenario 12c: issue_title embeds the signal key in the title"
+
+# ---------------------------------------------------------------------------
+# 12d. Wrong-pointer root cause (fleet-ops#4841): issue-file's dedupe must NOT
+#     collapse two reconciler alarms with DIFFERENT backticked `loud/...`
+#     signals onto one issue. Before the fix, issue-file only recognised the
+#     literal `signal:` prefix, so the reconciler's backticked signal key was
+#     invisible to the dedupe and pure token overlap (shared boilerplate body)
+#     scored unrelated alarms as duplicates — the first 5 filings all landed on
+#     the wrong #4841 and wasted the auto-file cap. Prove: two issues with
+#     different `loud/...` signals score below borderline (file clean), while
+#     two with the SAME signal still score as duplicates.
+# ---------------------------------------------------------------------------
+cat > "$tmp/issue_file_lib.py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("if", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+
+def body(tag, key):
+    return (
+        "The heartbeat detector reported this alarm on a real tick and no open "
+        "issue carried its signal key, so the detector→queue reconciler filed one.\n\n"
+        f"- alarm tag: `{tag}`\n"
+        f"- evidence: {key}\n"
+        "- observed tick: `2026-09-10T01:35:29Z`\n"
+        "- detector→queue reconciler: fleet-ops#362\n\n"
+        "Do NOT close this issue on PR merge alone. "
+        "The reconciler closes it only when the detector reports green on a real "
+        "heartbeat tick (observe-to-close).\n\n"
+        f"`loud/{tag.lower()}/{key}`\n"
+    )
+
+def title(tag, key):
+    return f"alarm: {tag} — {key} [loud/{tag.lower()}/{key}]"
+
+# Different signals -> must file clean (below borderline).
+cand_t = title("CLAIM-REAP-NEEDED", "instance-fleet-ops-branch-claim-issue-open_pr_count")
+cand_b = body("CLAIM-REAP-NEEDED", "instance-fleet-ops-branch-claim-issue-open_pr_count")
+exist_t = title("DECISIONS-LEDGER-REASK", "decision-geo-aeo-fleet-executes-measurement")
+exist_b = body("DECISIONS-LEDGER-REASK", "decision-geo-aeo-fleet-executes-measurement")
+d = m.score_pair(cand_t, cand_b, exist_t, exist_b)
+assert d["score"] < m.BORDERLINE_THRESHOLD, ("different loud signals must not dedupe", d["score"])
+assert m.classify(d["score"]) == "new", ("must file clean", d["score"])
+
+# Same signal -> still a duplicate.
+d2 = m.score_pair(cand_t, cand_b, cand_t, cand_b)
+assert d2["score"] >= m.DUP_THRESHOLD, ("same loud signal must dedupe", d2["score"])
+assert m.classify(d2["score"]) == "duplicate", ("must dedupe", d2["score"])
+print("different-signal score:", d["score"], "same-signal score:", d2["score"])
+PY
+python3 "$tmp/issue_file_lib.py" "$repo_root/lib/issue-file.py" \
+    || fail "scenario 12d: issue-file must not dedupe different loud signals"
+ok "scenario 12d: issue-file does not collapse different loud signals (wrong-pointer root cause fixed)"
 
 ok "all signal-reconcile scenarios passed"
