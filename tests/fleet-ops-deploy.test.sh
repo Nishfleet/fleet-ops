@@ -23,6 +23,10 @@
 #      collapses a duplicate object key) is not DRIFT-ORIGIN; a real
 #      structural change or unparseable JSON still is (fleet-ops#5161,
 #      mirroring install.sh --check content_equivalent, fleet-ops#4948).
+#  10c. Any MANIFEST .json dest compares parsed documents with document
+#      order preserved: a whitespace-only rewrite is reformatted-not-drifted;
+#      a changed value or reordered key still fails DRIFT-ORIGIN
+#      (fleet-ops#5201).
 #  11. Enable-link into a volatile path (/tmp outside the checkout) fails
 #      DRIFT-VOLATILE.
 #  11b. A MANIFEST unit's wants-link hijacked to /tmp (fragment symlink still
@@ -798,6 +802,77 @@ fi
 [[ "$pyout" == *"DRIFT-ORIGIN"* ]] \
     || fail "scenario10b: unparseable live JSON did not produce DRIFT-ORIGIN (got: $pyout)"
 ok "scenario10b: unparseable live JSON still fails DRIFT-ORIGIN"
+
+# --- scenario 10c: any .json dest compares parsed, document order kept ------
+# fleet-ops#5201: the copy-install exemption covers only seat-caps.json /
+# pi-models.json / model-candidates.json. Every other MANIFEST .json dest
+# (fleet-organs.json, quality-*.json, ...) still byte-compares, so a runtime
+# writer that re-serializes one at a different indent width re-creates the
+# permanent DRIFT-ORIGIN the judge caught on seat-caps.json. A .json dest now
+# compares the parsed documents with document order preserved: a
+# whitespace-only rewrite is reformatted-not-drifted; a changed value or a
+# reordered key still fails byte-strict.
+# Restore the seat-caps dest first — 10b-iii left it unparseable.
+printf '%s\n' '{"providers":{"opencode-go":{"cap":2,"class":"prepaid-quota","models":{"deepseek-flash":2}}}}' >"$json_live"
+organs_live="$HOME/.local/state/pi-packet/fleet-organs.json"
+mkdir -p "$(dirname "$organs_live")"
+cat >"$json_co/config/fleet-organs.json" <<'JSON'
+{"organs":{"alpha":{"beats":1},"beta":{"beats":2}}}
+JSON
+printf 'config/fleet-organs.json %s\n' "$organs_live" >>"$json_co/MANIFEST"
+git -C "$json_co" add -A
+git -C "$json_co" commit -q -m "add fleet-organs.json dest"
+git -C "$json_co" push -q origin HEAD:main
+git -C "$json_co" fetch -q origin
+
+# 10c-i: the same document at a different indent width -> byte-different but
+# reformatted-not-drifted. The raw byte compare fails; the JSON compare passes.
+cat >"$organs_live" <<'JSON'
+{
+  "organs": {
+    "alpha": { "beats": 1 },
+    "beta": { "beats": 2 }
+  }
+}
+JSON
+if ! pyout=$(run_origin_blob_check); then
+    fail "scenario10c: whitespace-only .json rewrite must not be DRIFT-ORIGIN, got: $pyout"
+fi
+[[ "$pyout" == *"reformatted, not drifted"* ]] \
+    || fail "scenario10c: expected a reformatted-not-drifted log line (got: $pyout)"
+ok "scenario10c: whitespace-only .json rewrite passes with a reformatted log line"
+
+# 10c-ii: one changed value -> both compares fail -> DRIFT-ORIGIN.
+cat >"$organs_live" <<'JSON'
+{
+  "organs": {
+    "alpha": { "beats": 1 },
+    "beta": { "beats": 3 }
+  }
+}
+JSON
+if pyout=$(run_origin_blob_check); then
+    fail "scenario10c: a changed .json value must fail DRIFT-ORIGIN: $pyout"
+fi
+[[ "$pyout" == *"DRIFT-ORIGIN"* ]] \
+    || fail "scenario10c: changed value did not produce DRIFT-ORIGIN (got: $pyout)"
+ok "scenario10c: a changed .json value still fails DRIFT-ORIGIN"
+
+# 10c-iii: reordered keys are drift — only whitespace is exempt.
+cat >"$organs_live" <<'JSON'
+{
+  "organs": {
+    "beta": { "beats": 2 },
+    "alpha": { "beats": 1 }
+  }
+}
+JSON
+if pyout=$(run_origin_blob_check); then
+    fail "scenario10c: a reordered .json must fail DRIFT-ORIGIN: $pyout"
+fi
+[[ "$pyout" == *"DRIFT-ORIGIN"* ]] \
+    || fail "scenario10c: reordered keys did not produce DRIFT-ORIGIN (got: $pyout)"
+ok "scenario10c: reordered .json keys still fail DRIFT-ORIGIN"
 
 # --- scenario 11: enable-link into a volatile path outside the checkout ------
 : >"$enabled_units"

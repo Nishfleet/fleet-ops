@@ -865,6 +865,22 @@ def canonical_json(blob: bytes) -> str | None:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
+def ordered_json(blob: bytes) -> str | None:
+    """Canonical (fixed-separator, document-order) text for a JSON document.
+
+    Returns None when the bytes are not a decodable JSON document. Unlike
+    canonical_json the keys are NOT sorted: for a plain .json dest a
+    reordered file is drift and only whitespace is exempt (fleet-ops#5201).
+    The copy-install names keep the sorted canonical because the live merge
+    can legitimately reorder or collapse keys (fleet-ops#5161).
+    """
+    try:
+        value = json.loads(blob.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return json.dumps(value, separators=(",", ":"), ensure_ascii=False)
+
+
 def is_volatile_outside_checkout(resolved: Path, checkout: Path) -> bool:
     """True if resolved lives under /tmp, /run, or agent-worktrees, and is not the checkout.
 
@@ -1022,6 +1038,21 @@ def check_live_matches_origin_main(checkout: Path) -> None:
                     log(
                         f"{dest}: bytes differ from origin/main:{src} but the "
                         "JSON is equivalent (copy-install re-serialization)"
+                    )
+                    continue
+            elif dest_path.suffix == ".json":
+                # fleet-ops#5201: any other .json dest can also be
+                # re-serialized live at a different indent width — the exact
+                # seat-caps.json shape that kept DEPLOY-CHECK red. Compare
+                # the parsed documents with document order preserved: a
+                # whitespace-only rewrite is reformatted-not-drifted; a
+                # reordered or changed file still fails.
+                want_json = ordered_json(expected)
+                got_json = ordered_json(actual)
+                if want_json is not None and want_json == got_json:
+                    log(
+                        f"{dest}: bytes differ from origin/main:{src} but the "
+                        "JSON is equivalent (reformatted, not drifted)"
                     )
                     continue
             findings.append(f"{dest} does not match origin/main:{src}")
