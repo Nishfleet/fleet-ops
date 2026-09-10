@@ -67,6 +67,15 @@ Steps:
       agent-ready → agent-blocked and comment `split me: N requirements;
       one requirement per issue` with `blocked-on: split`; skip issue N
       and do NOT push `claim/issue-N`. Any other exit is fail-loud.
+   a0c. Spec-judge gate (fleet-ops#4801) BEFORE any claim push. The
+      deterministic tick (`lib/pi-intake-tick.sh` + `lib/spec-judge.sh`)
+      already groups agent-ready issues whose `files:` lines share a path
+      and launches ONE Kimi K3 Max judge run per batch (judge-only, never
+      the implementer). If issue N is a member of a batch being judged,
+      intake skips it (not de-labelled) until the verdict lands. Do not
+      claim a member of a batch that has not been judged. The judge prompt
+      is `prompts/spec-judge.md`; the verdict is applied mechanically
+      (READY/EDIT/BLOCK) by the tick.
    b. Hard claim — atomic create-only push; the claim branch IS the work branch:
       `git -C /home/nish/workspaces/products/<repo> ls-remote origin refs/heads/claim/issue-N`
       If that output contains a hash, another agent already holds the claim — skip issue N.
