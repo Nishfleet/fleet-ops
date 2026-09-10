@@ -1,11 +1,36 @@
 [Unit]
-Description=Fleet seat-recovery path watcher (fleet-ops#468)
+Description=Fleet seat-recovery path watcher (fleet-ops#468, sentinel trigger fleet-ops#5093)
 # OnFailure comes from path.d/10-escalate.conf (#618). StartLimit on the
 # triggered oneshot is the wedge that used to take this watcher down; that
-# limit is disabled there (fleet-ops#617).
+# limit lives in the .service unit (fleet-ops#617).
 
 [Path]
-PathChanged=/home/nish/workspaces/agent-state/lanes/seats
+# fleet-ops#5093: watch ONE sentinel file, never the seats/ DIRECTORY.
+#
+# PathChanged on the directory started the oneshot on every seat-health
+# ledger write — measured live 2026-09-10: 2478 starts/h (next highest unit
+# 60), which blew StartLimitBurst=2000 and took DOWN both the oneshot
+# (start-limit-hit) and this watcher (unit-start-limit-hit). The fast path
+# then could not fire on a real NO-USABLE-SEAT -> usable transition at all.
+# The in-bin debounce (fleet-ops#5024) made each run cheap (~30ms); it cannot
+# make systemd stop counting activations.
+#
+# The sentinel is a wake-up, not the verdict authority: the oneshot still
+# re-reads the whole ledger and keeps its own state file, so its debounce and
+# cooldown are unchanged. The sentinel is written ONLY on a verdict EDGE by
+# bin/pi-issue-run (see FLEET_SEAT_EDGE_SENTINEL there) — the only in-repo
+# component that observes both "no seat for me" and "I got a seat again".
+# An unchanged verdict writes nothing, so a healthy fleet produces zero
+# activations here instead of ~2500/h.
+#
+# Do NOT write this file from fleet-seat-recovery itself: it is the watched
+# path, so that write would re-fire the unit it just ran from.
+#
+# Do NOT "fix" a future churn regression with TriggerLimitIntervalSec=/
+# TriggerLimitBurst= on the .path unit (fleet-ops#5106): systemd 255 puts the
+# watcher into trigger-limit-hit failure and it stops watching, which is the
+# same silent fast-path death with a different knob.
+PathChanged=/home/nish/workspaces/agent-state/lanes/seats/.no-usable-seat
 Unit=fleet-seat-recovery.service
 
 [Install]

@@ -153,6 +153,60 @@ journal_mark() {
     printf '%s\n' "$line" | systemd-cat -t pi-issue-run --priority=info 2>/dev/null || true
 }
 
+# --- fleet-ops#5093: seat verdict-edge sentinel ----------------------------
+# fleet-seat-recovery.path used to watch the seats/ DIRECTORY, so every
+# seat-health ledger write (~2500/h, ~23 per 30s) started
+# fleet-seat-recovery.service for nothing. The in-bin debounce (fleet-ops#5024)
+# made each run cheap but systemd still counted every activation, blew
+# StartLimitBurst and took down BOTH the oneshot and its .path watcher
+# (2026-09-10T20:19Z) — so a real NO-USABLE-SEAT -> usable transition could no
+# longer fire intake at all. The watcher now watches ONE sentinel file, and
+# this script writes it ONLY on a verdict EDGE it observed by picking (or
+# failing to pick) a seat:
+#   no-usable — pick_seat returned nothing: the fleet is walled.
+#   usable    — a pick succeeded while the sentinel said no-usable: recovery.
+# An unchanged verdict writes nothing, so a healthy fleet produces ZERO
+# sentinel writes and therefore zero activations of the fast path.
+#
+# Why the recovery edge is written HERE: the seats ledger is written by
+# ~/.pi/agent/extensions/seat-health.ts, which is out of repo, and pi-issue-run
+# is the only in-repo component that observes BOTH verdicts. A sentinel
+# written only on the no-usable edge could never wake the recovery check (the
+# ledger writes that used to do it are exactly what we stopped watching), so
+# the fast path would be dead — the fault fleet-ops#5093 exists to fix.
+#
+# The sentinel is a WAKE-UP, not the verdict authority: fleet-seat-recovery
+# still re-reads the ledger and keeps its own state file, and its debounce /
+# cooldown are untouched. Never write this file from fleet-seat-recovery
+# itself — it is the watched path, so the write would re-fire the unit that
+# just ran from it.
+SEAT_EDGE_SENTINEL="${FLEET_SEAT_EDGE_SENTINEL:-${LEDGER_DIR:-/home/nish/workspaces/agent-state/lanes/seats}/.no-usable-seat}"
+
+seat_edge_note() {
+    local verdict="$1" cur=""
+    if [[ -e "$SEAT_EDGE_SENTINEL" ]]; then
+        cur=$(cat "$SEAT_EDGE_SENTINEL" 2>/dev/null || true)
+    fi
+    if [[ -z "$cur" ]]; then
+        # Absent sentinel = the normal healthy state; only an outage needs the
+        # latch written.
+        [[ "$verdict" == "usable" ]] && return 0
+    elif [[ "$cur" == "$verdict" ]]; then
+        return 0
+    fi
+    local dir tmp
+    dir=$(dirname "$SEAT_EDGE_SENTINEL")
+    if ! mkdir -p "$dir" 2>/dev/null; then
+        return 0
+    fi
+    tmp="$SEAT_EDGE_SENTINEL.$$.tmp"
+    if printf '%s\n' "$verdict" > "$tmp" 2>/dev/null; then
+        mv -f "$tmp" "$SEAT_EDGE_SENTINEL" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
+    fi
+    seat_log "pi-issue-run: $inst seat verdict edge -> $verdict (sentinel $SEAT_EDGE_SENTINEL)"
+    return 0
+}
+
 # fleet-ops#3125: issue work is PRODUCT work — pick_seat orders candidates
 # by the rolling PR-yield ledger when seat-caps product_order is "yield".
 export PI_PICK_ROLE=product
@@ -418,6 +472,10 @@ if [[ -z "$seat" ]]; then
         tried_list=$(tr '\n' ' ' < "$tried_file" 2>/dev/null || true)
     fi
     seat_log "pi-issue-run: $inst no seat available (tried: ${tried_list}) — exiting 1 so OnFailure escalates"
+    # fleet-ops#5093: the fleet is walled — arm the seat-recovery sentinel so
+    # fleet-seat-recovery.path watches a single low-churn file instead of the
+    # whole seats/ directory. Edge-only: a second walled pick writes nothing.
+    seat_edge_note no-usable
     # Recreate the attempts dir in case it was wiped between the startup mkdir
     # and this no-seat path (fleet-ops#63), then reset the tried-seats file.
     # Every allowlisted seat has now been tried and failed, so the within-burst
@@ -452,6 +510,11 @@ fi
 
 np=$(printf '%s' "$seat" | cut -f1)
 nm=$(printf '%s' "$seat" | cut -f2)
+
+# fleet-ops#5093: we got a seat while the sentinel said no-usable — that is the
+# recovery edge the fast path exists to fire on (only writes on a real change;
+# a healthy fleet writes nothing).
+seat_edge_note usable
 
 # Defensive recreate: $ATTEMPTS_DIR was created at startup, but something
 # (a concurrent worker, a tmpfiles.d rule, an external cleanup) has been

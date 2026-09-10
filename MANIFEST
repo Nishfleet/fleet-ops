@@ -1000,6 +1000,13 @@ systemd/fleet-deploy-check.timer /home/nish/.config/systemd/user/fleet-deploy-ch
 # .path watcher on the seat ledger (event-driven, no polling) fires
 # fleet-seat-recovery.service, which starts pi-intake@<repo> on the
 # NO-USABLE-SEAT -> usable transition instead of waiting for the 15-min tick.
+# fleet-ops#5093: the .path watches ONE sentinel file,
+# agent-state/lanes/seats/.no-usable-seat, written ONLY on a seat verdict edge
+# by bin/pi-issue-run (no-usable when pick_seat returns nothing, usable when a
+# pick succeeds while it said no-usable) — never the seats/ directory, whose
+# ~2500 writes/h blew StartLimitBurst and took the watcher down. Never write
+# the sentinel from fleet-seat-recovery itself: it is the watched path and the
+# write would re-fire the unit that just ran.
 bin/fleet-seat-recovery /home/nish/.local/bin/fleet-seat-recovery
 systemd/fleet-seat-recovery.service /home/nish/.config/systemd/user/fleet-seat-recovery.service
 systemd/fleet-seat-recovery.path /home/nish/.config/systemd/user/fleet-seat-recovery.path
