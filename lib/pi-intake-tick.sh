@@ -181,7 +181,11 @@ MAX_CLAIMS_IN_WINDOW="${PI_INTAKE_RECLAIM_MAX_CLAIMS:-4}"
 # line from the claims log; past it, a protected issue with a
 # termination clause and a merged claim-branch delivery PR is parked under
 # the awaiting-runtime-gate label until the named runtime event fires or
-# Nish closes the issue. No new timer — the label is the state. Overridable
+# Nish closes the issue. The same cap gates the two non-protected parks:
+# land-or-close (fleet-ops#4553: no merged claim-branch PR, termination:
+# names other PRs) and mention-strand (fleet-ops#5045: every merged
+# claim-branch PR is a Relates-to mention, never a delivery).
+# No new timer — the label is the state. Overridable
 # for tests.
 PARK_MAX_CLAIMS="${PI_INTAKE_PARK_MAX_CLAIMS:-3}"
 # The reclaim-cooldown reader below reads $ATTEMPTS_DIR/pi-issue-*.cooldown
@@ -2277,8 +2281,10 @@ blocked-on: orchestrator" 2>/dev/null || true
         fi
         [[ "$_issue_author" == "nish3451" ]] && _park_protected=1
 
-        # Probe for a merged claim-branch PR once, reused by all three park branches.
-        _park_merged=$(gh pr list -R "$FULL" --head "claim/issue-$N" --state merged --json number,url,mergedAt 2>/dev/null || echo "[]")
+        # Probe for a merged claim-branch PR once, reused by all three park
+        # branches. The body rides along: the #5045 mention classification
+        # (the #3231/#1138 relates_to_issue Relates-to trailer) needs it.
+        _park_merged=$(gh pr list -R "$FULL" --head "claim/issue-$N" --state merged --json number,url,mergedAt,body 2>/dev/null || echo "[]")
         _park_merged_count=0
         if printf '%s' "$_park_merged" | jq -e 'length > 0' >/dev/null 2>&1; then
             _park_merged_count=$(printf '%s' "$_park_merged" | jq 'length' 2>/dev/null || echo 0)
@@ -2300,23 +2306,68 @@ blocked-on: orchestrator" 2>/dev/null || true
                 gh issue comment "$N" -R "$FULL" --body "fleet-ops#4540: issue $N is protected (owner-authored or critical-path) with a merged delivery PR (claim/issue-$N, PR #$_park_pr) and a \`termination:\` clause naming a future runtime event. observe-to-close stays comment-only on protected issues (fleet-ops#1435), so the issue stays OPEN by design — but it has been re-claimed ${_park_claims} times since the merge on a slow spin every anti-loop gate misses (#2462 counter resets on non-empty output; #2772 window sees only ~3 claims per 2h at the 15-min cooldown spacing). Parking it: labelled \`awaiting-runtime-gate\`, removed from agent-ready; the intake will not re-claim it until the named runtime event fires (clear the label then) or Nish closes the issue. No new timer." 2>/dev/null || true
                 continue
             fi
-        elif (( _park_protected == 0 )) && printf '%s' "$body" | grep -qi 'termination:' && printf '%s' "$body" | grep -qi 'gh pr view'; then
-            # fleet-ops#4553: land-or-close spin. A NON-protected (bot-authored,
-            # no critical-path) OPEN issue whose \`termination:\` clause NAMES
-            # OTHER PRs via \`gh pr view\` — the land-or-close shape. Acceptance
-            # is met by driving other PRs to merge (#1992, #4070), the worker
-            # cannot \`gh issue close\` (land-or-close issues are closed by Nish),
-            # and there is NO claim-branch delivery PR, so the #4540 detector
-            # (which requires protection + a merged claim-branch PR) and the
-            # reset (#2462) / window (#2772) gates all miss the same slow-spaced
-            # spin. Probe merged claim-branch PRs and park when absent.
-            if (( _park_merged_count == 0 )); then
+        elif (( _park_protected == 0 )); then
+            # fleet-ops#4553 + fleet-ops#5045: the two NON-protected park
+            # shapes share the hoisted merged claim-branch PR probe (body
+            # included — the #5045 mention classification needs the trailer).
+            if (( _park_merged_count == 0 )) \
+                && printf '%s' "$body" | grep -qi 'termination:' \
+                && printf '%s' "$body" | grep -qi 'gh pr view'; then
+                # fleet-ops#4553: land-or-close spin. A NON-protected
+                # (bot-authored, no critical-path) OPEN issue whose
+                # \`termination:\` clause NAMES OTHER PRs via \`gh pr view\` —
+                # the land-or-close shape. Acceptance is met by driving other
+                # PRs to merge (#1992, #4070), the worker cannot
+                # \`gh issue close\` (land-or-close issues are closed by Nish),
+                # and there is NO claim-branch delivery PR, so the #4540
+                # detector (which requires protection + a merged claim-branch
+                # PR) and the reset (#2462) / window (#2772) gates all miss the
+                # same slow-spaced spin. Park when no merged claim-branch PR.
                 echo "issue $N ($title): skipped-parked-land-or-close ($_park_claims cumulative claims > cap $PARK_MAX_CLAIMS; termination: names other PRs; no claim-branch delivery PR; awaiting Nish to close)" >&2
                 gh label create awaiting-runtime-gate -R "$FULL" --color D4C5F9 \
                     --description "Parked: land-or-close issue whose termination: met by other PRs; do not claim (fleet-ops#4553)" --force >/dev/null 2>&1 || true
                 gh issue edit "$N" -R "$FULL" --add-label awaiting-runtime-gate --remove-label agent-ready 2>/dev/null || true
                 gh issue comment "$N" -R "$FULL" --body "fleet-ops#4553: issue $N is a land-or-close ticket — its \`termination:\` clause names OTHER PRs (\`gh pr view\`) and it has no merged claim-branch delivery PR, so acceptance is met without opening its own PR. Land-or-close issues stay OPEN by design (the worker cannot \`gh issue close\`), and the reset (#2462) and window (#2772) gates miss the slow-spaced spin, so this issue has been re-claimed ${_park_claims} times since its PRs landed. Parking it: labelled \`awaiting-runtime-gate\`, removed from agent-ready; the intake will not re-claim it until Nish closes the issue or the label is cleared." 2>/dev/null || true
                 continue
+            elif printf '%s' "$_park_merged" | jq -e 'length > 0' >/dev/null 2>&1; then
+                # fleet-ops#5045: mention-strand spin — the middle shape both
+                # parks missed. A NON-protected OPEN issue whose merged
+                # claim-branch PRs are ALL mention-classified (\`Relates to
+                # #N\` trailer — the same relates_to_issue classification
+                # fleet-merged-pr-close applies, fleet-ops#3231/#1138) is
+                # delivered-but-stranded: observe-to-close posts comment-only
+                # and never closes (a mention is not a fix), the #4540 park
+                # needs protected, and the #4553 park needs NO merged
+                # claim-branch PR, so every gate misses the re-claim spin
+                # (live: #4980 re-claimed 4x in ~3h after PR #4993 merged with
+                # a Relates-to trailer; 2 of those died in StartLimitBurst
+                # crash loops). Park when every merged claim-branch PR is a
+                # mention; a real delivery PR (no Relates-to trailer) means
+                # observe-to-close owns the close and this issue is not the
+                # strand shape.
+                _park_all_mention=1
+                _park_pr=""
+                while IFS=$'\t' read -r _pn _pb64; do
+                    [ -z "$_pn" ] && continue
+                    [ -z "$_park_pr" ] && _park_pr="$_pn"
+                    # The body travels base64 so its real newlines survive —
+                    # relates_to_issue needs the `Relates` trailer preceded by
+                    # a line break (a @tsv-escaped \n would leave `n` before
+                    # it and the (non-alnum) bound would never match).
+                    _pb=$(printf '%s' "$_pb64" | base64 -d 2>/dev/null || printf '')
+                    if ! printf '%s' "$_pb" | grep -Eiq "(^|[^0-9A-Za-z])Relat(es|ed)[[:space:]]+to[[:space:]]+#${N}([^0-9A-Za-z]|$)"; then
+                        _park_all_mention=0
+                        break
+                    fi
+                done < <(printf '%s' "$_park_merged" | jq -r '.[] | [.number, ((.body // "") | @base64)] | @tsv' 2>/dev/null)
+                if (( _park_all_mention == 1 )); then
+                    echo "issue $N ($title): skipped-parked-mention-strand ($_park_claims cumulative claims > cap $PARK_MAX_CLAIMS; merged claim-branch PR #$_park_pr is mention-classified (Relates-to), not a delivery; awaiting Nish to close)" >&2
+                    gh label create awaiting-runtime-gate -R "$FULL" --color D4C5F9 \
+                        --description "Parked: non-protected issue whose merged claim-branch PR is a Relates-to mention, not a delivery; do not claim (fleet-ops#5045)" --force >/dev/null 2>&1 || true
+                    gh issue edit "$N" -R "$FULL" --add-label awaiting-runtime-gate --remove-label agent-ready 2>/dev/null || true
+                    gh issue comment "$N" -R "$FULL" --body "fleet-ops#5045: issue $N is non-protected with a merged claim-branch PR (claim/issue-$N, PR #$_park_pr) that carries a \`Relates to\` trailer — a MENTION under the fleet-ops#3231 delivery rules, so observe-to-close posts comment-only and never closes. The delivery already landed, but every anti-loop gate misses this middle shape (#4540 needs protected; #4553 needs no merged claim-branch PR), so the issue has been re-claimed ${_park_claims} times since the merge. Parking it: labelled \`awaiting-runtime-gate\`, removed from agent-ready; the intake will not re-claim it. Nish closes the issue (delivery landed) or clears the label to release it." 2>/dev/null || true
+                    continue
+                fi
             fi
         elif (( _park_protected == 1 )) && ! printf '%s' "$body" | grep -qi 'termination:'; then
             # fleet-ops#5048: protected issue with NO termination clause and NO

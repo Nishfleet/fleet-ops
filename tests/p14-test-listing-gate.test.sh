@@ -619,6 +619,21 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/pi-issue-run-per-seat-timeout\.t
   || fail "pi-issue-run-per-seat-timeout.test.sh must not be a known orphan (fleet-ops#3873)"
 ok "pi-issue-run-per-seat-timeout.test.sh is pinned in the P14 reachable set (fleet-ops#3873)"
 
+# fleet-ops#5045: hard-pin the host line for the mention-strand park test.
+# It is hosted from pi-intake-tick-reclaim-cooldown.test.sh (already listed
+# in ci.yml) because the worker App has no Workflows scope to add a ci.yml
+# line — same intake dispatch family as the #4540 host there. Named pin so
+# a future drop of the host line cannot park the test on known_orphans to
+# silence the generic $bad[] message — it fails by name here first.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/pi-intake-tick-mention-strand-park\.test\.sh"?' \
+  "$here/pi-intake-tick-reclaim-cooldown.test.sh" \
+  || fail "pi-intake-tick-reclaim-cooldown.test.sh must bash-invoke pi-intake-tick-mention-strand-park.test.sh (fleet-ops#5045)"
+[[ -n "${reachable[pi-intake-tick-mention-strand-park.test.sh]:-}" ]] \
+  || fail "pi-intake-tick-mention-strand-park.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#5045)"
+[[ -z "${known_orphan_set[pi-intake-tick-mention-strand-park.test.sh]:-}" ]] \
+  || fail "pi-intake-tick-mention-strand-park.test.sh must not be a known orphan (fleet-ops#5045)"
+ok "pi-intake-tick-mention-strand-park.test.sh is pinned in the P14 reachable set (fleet-ops#5045)"
+
 shopt -s nullglob
 all_tests=("$here"/*.test.sh)
 shopt -u nullglob
