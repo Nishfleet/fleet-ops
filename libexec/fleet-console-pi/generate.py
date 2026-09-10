@@ -39,6 +39,12 @@ OUT_JSON = Path(
 CADENCE_MIN = 12
 PROM = "http://127.0.0.1:9090"
 PROM_STALE_S = 15 * 60          # exporter fires every 5 min; 2+ misses = stale
+# The exporter serves fleet_open_prs / fleet_main_ci_green from a cached org
+# GraphQL snapshot (fleet-metrics-export.py PR_CACHE_TTL = 30 min). A tile
+# rendered from those families is as old as that CACHE, not as old as the
+# export, so it keeps the cache window as its freshness gate — and stamps
+# fleet_gh_cache_timestamp_seconds as its observed_at (fleet-ops#5155).
+GH_CACHE_WINDOW_S = 30 * 60
 SEAT_STALE_S = 30 * 60
 PROC_STALE_S = 5 * 60
 # Questions tile (part 2 of the 2026-09-08 decision). Cadence is 12 min;
@@ -194,6 +200,27 @@ def _cache_fresh(kind):
     """True when exporter emitted fleet_gh_cache_fresh{kind=...} = 1."""
     rows = _prom_query(f'fleet_gh_cache_fresh{{kind="{kind}"}}')
     return bool(rows) and any(r["value"] == 1 for r in rows)
+
+
+def _cache_data_time(kind, fallback):
+    """Epoch when the cached gh family's data was MEASURED, or `fallback`.
+
+    A tile fed by a cached family must stamp the measurement time, not the
+    export time: the exporter refreshes these caches at most every 30 min, so
+    stamping the export time shows a half-hour-old count as seconds-fresh
+    (fleet-ops#5155: ConsoleLying tile=open_prs, where the tile said 11
+    open PRs while 15 were open and the verify's live gh spot check read the
+    difference as a lie). Fail open to `fallback` when the gauge is absent.
+    """
+    try:
+        rows = _prom_query(
+            f'fleet_gh_cache_timestamp_seconds{{kind="{kind}"}}'
+        )
+    except PromError:
+        return fallback
+    if not rows:
+        return fallback
+    return float(rows[0]["value"])
 
 
 def _prom_or_stale(source, explain):
@@ -398,8 +425,9 @@ def collect_open_prs():
         if repo:
             items.append({"repo": repo, "count": n})
     items.sort(key=lambda x: (-x["count"], x["repo"]))
-    return _tile(src, PROM_STALE_S, True, mtime, count=total, items=items,
-                 explain=explain)
+    return _tile(src, GH_CACHE_WINDOW_S, True,
+                 _cache_data_time("repo_snapshot", mtime),
+                 count=total, items=items, explain=explain)
 
 
 def collect_main_ci():
@@ -431,8 +459,9 @@ def collect_main_ci():
         if green == 0:
             red += 1
     items.sort(key=lambda x: (x["green"], x["repo"]))
-    return _tile(src, PROM_STALE_S, True, mtime, red_count=red, items=items,
-                 explain=explain)
+    return _tile(src, GH_CACHE_WINDOW_S, True,
+                 _cache_data_time("repo_snapshot", mtime),
+                 red_count=red, items=items, explain=explain)
 
 
 def collect_firing_alerts():

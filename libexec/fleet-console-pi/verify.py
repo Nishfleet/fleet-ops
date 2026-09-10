@@ -90,15 +90,22 @@ SPECS = {
         "cmd": (
             "PromQL sum(fleet_open_prs) @ 127.0.0.1:9090 "
             "(exact vs tile count) AND gh search prs "
-            "'repo:<spot-repo> is:open type:pr' (percent vs that repo's "
-            "item; cached family, 15% or abs<=2)"
+            "'repo:<spot-repo> is:open type:pr' (vs that repo's item, "
+            "bounded by the tile's own window: live minus the PRs opened "
+            "since tile.observed_at <= displayed <= live plus the PRs "
+            "closed since then; cached family — a lag the cache explains "
+            "is not a lie, fleet-ops#5155)"
         ),
         "field": "count",
         "tolerance": {"mode": "exact"},
         "runner": "open_prs_prom",
         "spot": {
-            "cmd": "gh api search/issues -f q='repo:<spot-repo> is:open type:pr' --jq .total_count",
-            "tolerance": {"mode": "percent", "pct": 15},
+            "cmd": (
+                "gh api search/issues -f q='repo:<spot-repo> is:open "
+                "type:pr' --jq .total_count, plus the created/closed "
+                "window counts for the same repo"
+            ),
+            "tolerance": {"mode": "window"},
             "runner": "open_prs_gh_spot",
         },
     },
@@ -743,12 +750,38 @@ def run_questions_gh(tile):
 
 
 def run_open_prs_gh_spot(tile):
+    """Live open-PR cross-check that is sound against the cache, not just fresh.
+
+    The tile's number was measured at the tile's own `observed_at` (the
+    exporter publishes the cache's measurement time — fleet-ops#5155), so the
+    only honest way to judge it against GitHub NOW is a window: every PR
+    opened since that instant may be legitimately missing from the tile, and
+    every PR closed since may still be in it. A gap inside that window is a
+    cache lag; a gap outside it is a real error. A fixed ±2/15% band cannot
+    express that — a repo opening 4 PRs in 9 minutes drifts 4 past the floor,
+    which is how ConsoleLying tile=open_prs false-fired every cache window
+    (11 vs 15 on 2026-09-10T21:54Z, tile faithful to a 9-minute-old snapshot).
+    """
     repo = _spot_repo(tile)
     displayed = _item_count_for_repo(tile, repo)
     if displayed is None:
         raise VerifyError(f"no items entry for {repo}")
-    n = _gh_search_count(f"repo:{repo} is:open")
-    return n, displayed, repo
+    at = tile.get("observed_at")
+    if not isinstance(at, (int, float)):
+        raise VerifyError("tile has no observed_at; cannot bound the window")
+    since = datetime.fromtimestamp(float(at), timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%S+00:00"
+    )
+    live = _gh_search_count(f"repo:{repo} is:open")
+    opened = _gh_search_count(f"repo:{repo} is:open created:>={since}")
+    closed = _gh_search_count(
+        f"repo:{repo} is:closed created:<{since} closed:>={since}"
+    )
+    return live, displayed, repo, {
+        "mode": "window",
+        "down": opened + SEARCH_INDEX_FLOOR,
+        "up": closed + SEARCH_INDEX_FLOOR,
+    }
 
 
 def run_shipped_gh_spot(tile):
@@ -809,7 +842,23 @@ def _within(displayed, observed, tolerance):
             return True
         denom = max(abs(displayed), abs(observed), 1.0)
         return delta / denom * 100.0 <= pct
+    if mode == "window":
+        # fleet-ops#5155: a cached level has no single truth to compare
+        # against at verify time. `displayed` was measured earlier, so it may
+        # trail the live count by everything opened since then (`down`) and
+        # may exceed it by everything closed since then (`up`). Inside that
+        # window the tile is consistent with its own source; outside it, it
+        # is wrong by more than the cache can explain.
+        return (observed - float(tolerance.get("down", 0))
+                <= displayed
+                <= observed + float(tolerance.get("up", 0)))
     raise VerifyError(f"unknown tolerance mode {mode}")
+
+
+# The gh search index trails the live API by seconds-to-minutes, and the tile
+# and the verifier read the clock on either side of a push cycle. Both are
+# noise around a window bound, never evidence of a lie (fleet-ops#5155).
+SEARCH_INDEX_FLOOR = 2
 
 
 def _inject(doc, specs):
@@ -900,12 +949,14 @@ def verify_tile(name, tile):
     spot = spec.get("spot")
     if spot and not SKIP_GH:
         try:
-            observed, spot_displayed, repo = RUNNERS[spot["runner"]](tile)
+            result = RUNNERS[spot["runner"]](tile)
+            observed, spot_displayed, repo = result[:3]
+            tolerance = result[3] if len(result) > 3 else spot["tolerance"]
             verify["spot_repo"] = repo
             verify["spot_displayed"] = spot_displayed
             verify["spot_observed"] = float(observed)
             if not _within(float(spot_displayed), float(observed),
-                           spot["tolerance"]):
+                           tolerance):
                 mismatch = 1
                 reasons.append(
                     f"spot {repo} displayed {spot_displayed} vs gh {observed}"

@@ -158,6 +158,64 @@ assert m._within(47, 47, {"mode": "percent", "pct": 2}) is True   # exact
 assert m._within(47, 48, {"mode": "percent", "pct": 2}) is True   # abs<=2 floor
 print("OK: shipped_24h spot tolerance tightened to 2% or abs<=2")
 
+# --- open_prs spot is bounded by the tile's own cache window (fleet-ops#5155) ---
+# The tile's count is measured at tile.observed_at (the exporter's cache
+# timestamp), so a live gh recount can only be judged through a window: the
+# PRs opened since then may be legitimately absent, the PRs closed since may
+# still be present. The 2026-09-10 firing was exactly this: a faithful tile
+# (11) against a live count (15), 4 PRs opened in the 9 minutes since the
+# snapshot — outside the old ±2/15% band, inside the window.
+op_spec = m.SPECS["open_prs"]["spot"]
+assert op_spec["tolerance"]["mode"] == "window", op_spec["tolerance"]
+lag = {"mode": "window", "down": 4 + m.SEARCH_INDEX_FLOOR,
+       "up": 0 + m.SEARCH_INDEX_FLOOR}
+assert m._within(11, 15, lag) is True, "window's own churn is a lag, not a lie"
+# The old fixed band is what called it one (the false DISPUTE being repaired).
+assert m._within(11, 15, {"mode": "percent", "pct": 15}) is False
+# A gap the window cannot explain is still a DISPUTE.
+assert m._within(5, 15, lag) is False, "unexplained undercount must dispute"
+assert m._within(30, 15, lag) is False, "unexplained overcount must dispute"
+# A closed PR still in the tile is the mirror case and is also not a lie.
+assert m._within(11, 9, {"mode": "window", "down": 2, "up": 4}) is True
+# An exact live match stays green.
+assert m._within(15, 15, lag) is True
+
+# --- the runner builds that window from the TILE's observed_at ---
+class _FakeGhResult:
+    def __init__(self, out):
+        self.returncode, self.stdout, self.stderr = 0, out, ""
+
+seen_queries = []
+
+def _fake_gh_run(argv, **kw):
+    q = next(a for a in argv if a.startswith("q="))
+    seen_queries.append(q)
+    if "created:>=" in q:
+        return _FakeGhResult("4\n")
+    if "closed:>=" in q:
+        return _FakeGhResult("0\n")
+    return _FakeGhResult("15\n")
+
+_orig_run, _orig_skip = m.subprocess.run, m.SKIP_GH
+m.subprocess.run = _fake_gh_run
+m.SKIP_GH = False
+try:
+    live, displayed, repo, tol = m.run_open_prs_gh_spot(
+        {"observed_at": 1789076703.0,
+         "items": [{"repo": "Nishfleet/fleet-ops", "count": 11}]})
+finally:
+    m.subprocess.run, m.SKIP_GH = _orig_run, _orig_skip
+assert (live, displayed, repo) == (15, 11, "Nishfleet/fleet-ops"), (live, displayed)
+assert tol["mode"] == "window" and tol["down"] == 4 + m.SEARCH_INDEX_FLOOR
+assert tol["up"] == 0 + m.SEARCH_INDEX_FLOOR, tol
+assert m._within(displayed, live, tol) is True, "the 21:54Z firing must pass"
+assert all(
+    "2026-09-10T21:45:03+00:00" in q for q in seen_queries[1:]
+), seen_queries
+assert "created:>=" in seen_queries[1] and "closed:>=" in seen_queries[2], \
+    seen_queries
+print("OK: open_prs spot windowed on the tile's own cache timestamp")
+
 # --- attach_specs covers every tile ---
 empty = {"tiles": {k: {} for k in m.SPECS}}
 m.attach_specs(empty)
@@ -405,6 +463,94 @@ m._promql_sum_present = _orig_promql_sum_present
 m._prom_textfile_mtime = _orig_prom_mtime
 PY
 ok "verify.py match/mismatch/unknown/percent/inject"
+
+# =========================================================================
+# 5b. fleet-ops#5155: the console stamps a cached family with the CACHE's
+# measurement time, and the exporter publishes it.
+# =========================================================================
+# The tile's open_prs count is a cached org GraphQL snapshot (exporter
+# PR_CACHE_TTL = 30 min). Before this, generate.py stamped the EXPORT time,
+# so a 30-min-old count read as seconds-fresh on the page and the verify's
+# live gh spot check called the (faithful) tile a lie every cache window.
+# Lock both halves: the exporter's measurement-time gauge, and the tile's use
+# of it as observed_at (with the cache window as the freshness gate).
+_exporter="$repo_root/libexec/fleet-metrics-export.py"
+python3 - "$_exporter" "$gen" "$scratch" <<'PY' || fail "5155: cache measurement time not published/stamped"
+import importlib.util, json, sys, time
+from pathlib import Path
+
+exporter_path, gen_path, scratch = sys.argv[1], sys.argv[2], Path(sys.argv[3])
+spec = importlib.util.spec_from_file_location("fme5155", exporter_path)
+fme = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fme)
+
+# --- exporter: a served cache reports the CACHE's write time, not now ---
+cache = scratch / "repo-snapshot-cache.json"
+measured = time.time() - 600.0
+cache.write_text(json.dumps({"ts": measured, "data": {"open_prs": {"R": 11}}}))
+fme._CACHE_TS_SERVED.clear()
+spec_obj = importlib.util.spec_from_file_location("g5155", gen_path)
+g = importlib.util.module_from_spec(spec_obj)
+spec_obj.loader.exec_module(g)
+served = fme._cached_json(cache, lambda: {"open_prs": {"R": 99}},
+                          "repo_snapshot")
+assert served == {"open_prs": {"R": 11}}, served
+stamp = fme._CACHE_TS_SERVED["repo_snapshot"]
+assert abs(stamp - measured) <= 2, (stamp, measured)
+assert abs(stamp - time.time()) > 60, "must be the cache time, not the run time"
+# A fresh fetch reports NOW.
+fme._CACHE_TS_SERVED.clear()
+fme.PR_CACHE_TTL = -1  # force the fetch path
+fetched = fme._cached_json(cache, lambda: {"open_prs": {"R": 15}},
+                           "repo_snapshot")
+assert fetched == {"open_prs": {"R": 15}}, fetched
+assert abs(fme._CACHE_TS_SERVED["repo_snapshot"] - time.time()) <= 2
+# The family is emitted (constants + the emission site).
+assert "fleet_gh_cache_timestamp_seconds" in fme.HELP_CTS
+assert "fleet_gh_cache_timestamp_seconds" in fme.TYPE_CTS
+src = Path(exporter_path).read_text(encoding="utf-8")
+assert 'fleet_gh_cache_timestamp_seconds{{kind=' in src, "metric never emitted"
+assert "_CACHE_TS_SERVED" in src, "measurement time never recorded"
+
+# --- generate.py: observed_at is that stamp, gate is the cache window ---
+TS = 1789076703.0
+
+
+def fake_prom(expr, timeout=5):
+    if "fleet_gh_cache_timestamp_seconds" in expr:
+        return [{"metric": {"kind": "repo_snapshot"}, "value": TS}]
+    if "fleet_gh_cache_fresh" in expr:
+        return [{"metric": {"kind": "repo_snapshot"}, "value": 1.0}]
+    if "fleet_open_prs" in expr:
+        return [{"metric": {"repo": "Nishfleet/fleet-ops"}, "value": 11.0}]
+    return []
+
+
+g._prom_query = fake_prom
+NOW = time.time()
+g._textfile_mtime = lambda: NOW  # exporter run time (separate from the cache)
+
+tile = g.collect_open_prs()
+assert tile["ok"] is True, tile
+assert tile["observed_at"] == TS, tile["observed_at"]
+assert TS != NOW, "fixture must separate cache time from export time"
+assert tile["stale_after_s"] == g.GH_CACHE_WINDOW_S == 1800, tile["stale_after_s"]
+assert tile["count"] == 11, tile["count"]
+# Fail open: no gauge (older exporter) -> the export time, as before.
+def no_gauge(expr, timeout=5):
+    if "fleet_gh_cache_timestamp_seconds" in expr:
+        return []  # older exporter: gauge absent -> fall back to the export time
+    if "fleet_open_prs" in expr:
+        return [{"metric": {"repo": "R"}, "value": 3.0}]
+    return [{"metric": {"kind": "repo_snapshot"}, "value": 1.0}]
+
+
+g._prom_query = no_gauge
+tile = g.collect_open_prs()
+assert tile["observed_at"] == NOW, tile["observed_at"]
+print("OK: exporter publishes the gh cache measurement time + tile stamps it")
+PY
+ok "fleet-ops#5155: console stamps cached gh families with the cache's measurement time"
 
 # =========================================================================
 # 6. shell.html DISPUTED + verify.cmd citation
