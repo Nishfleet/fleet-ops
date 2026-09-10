@@ -64,11 +64,23 @@ REAL_ERR_RE = re.compile(
 # DEBUG-PLAYBOOK-MISSING alarm (fleet-ops#4620).
 HARNESS_BLOCK_RE = re.compile(
     r"Dangerous command blocked \(no UI for confirmation\)"
-    r"|SPAWN_BLOCKED reason=",
+    r"|SPAWN_BLOCKED reason="
+    r"|was not executed: the response hit the output token limit",
     re.I,
 )
 SCHEMA_BLOCK_RE = re.compile(
     r"Validation failed for tool",
+    re.I,
+)
+# A git worktree lock is an environmental constraint, not a code debug
+# (fleet-ops#4857). `git branch -f`/`git branch -d` on a branch checked out in
+# another worktree exits 128 with "fatal: cannot force update the branch ...
+# used by worktree". The command ran and failed, but it is an operational
+# gotcha the worker works around (fresh worktree / salvage), not a debug
+# whose root cause is worth a four-heading playbook note. Same spirit as the
+# ls/grep no-match and SPAWN_BLOCKED exemptions (#4512/#4620).
+GIT_WORKTREE_LOCK_RE = re.compile(
+    r"fatal: cannot (?:force update|delete) (?:the )?branch\b.*\bused by worktree\b",
     re.I,
 )
 HEADING_RES = (
