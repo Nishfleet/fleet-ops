@@ -1362,12 +1362,6 @@ repair_rung_strikes() {
     printf '%s' "$_s"
 }
 
-repair_rung_disarm_count() {
-    local _s _d
-    read -r _s _d < <(repair_rung_read)
-    printf '%s' "$_d"
-}
-
 repair_rung_write() {
     local f
     f=$(repair_rung_state_file)

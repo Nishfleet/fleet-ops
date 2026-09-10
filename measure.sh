@@ -46,9 +46,8 @@ python="${MEASURE_PYTHON:-python3}"
 _rung_file="${PI_INTAKE_REPAIR_RUNG_STATE:-$HOME/workspaces/agent-state/pi-intake/repair-rung-state}"
 _rung_after="${PI_INTAKE_REPAIR_RUNG_AFTER:-2}"
 _rung_s=0
-_rung_d=0
 if [[ -f "$_rung_file" ]]; then
-    read -r _rung_s _rung_d <"$_rung_file" 2>/dev/null || true
+    read -r _rung_s _ <"$_rung_file" 2>/dev/null || true
 fi
 _rung_s=$(printf '%s' "${_rung_s:-}" | tr -cd '0-9')
 [[ "$_rung_s" =~ ^[0-9]+$ ]] || _rung_s=0

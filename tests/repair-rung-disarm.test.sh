@@ -34,6 +34,11 @@ grep -qF 'WORKER_PROMPT="${PI_INTAKE_WORKER_PROMPT:-' "$tick" \
     || fail "WORKER_PROMPT must be overridable (CI has no /home/nish/.pi worker.md)"
 grep -qF 'repair_rung=armed' "$measure" || fail "measure.sh armed line missing"
 grep -qF 'repair_rung=off' "$measure" || fail "measure.sh off line missing"
+grep -qF 'repair_rung_disarm_count()' "$tick" \
+    && fail "repair_rung_disarm_count is unused and trips SC2317 on P14"
+if command -v shellcheck >/dev/null 2>&1; then
+    shellcheck -x "$tick" || fail "shellcheck not clean on $tick"
+fi
 ok "pins: disarm log, product-reserve, measure.sh repair_rung line, worker.md override"
 
 scratch="$(mktemp -d -t repair-rung-disarm.XXXXXX)"
