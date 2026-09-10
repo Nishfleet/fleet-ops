@@ -257,6 +257,13 @@ HELP_BD = (
     " Absent when unreachable."
 )
 TYPE_BD = "# TYPE fleet_product_briefs_delivered_24h gauge"
+HELP_TR = (
+    "# HELP fleet_product_table_rows Business-table row census from 0509 "
+    "D1 (fleet-ops#5000). One series per table: user_plan, watchlist, "
+    "delivery_attempt, proof_capture, session. Absent (never 0) when the "
+    "D1 read fails."
+)
+TYPE_TR = "# TYPE fleet_product_table_rows gauge"
 HELP_HB = (
     "# HELP fleet_product_slo_last_run_seconds Epoch of the last "
     "product-slo export tick (organ heartbeat, fleet-ops#2755)."
@@ -1097,14 +1104,40 @@ _D1_QUERIES = {
         "SELECT COUNT(*) AS n FROM delivery_attempt "
         "WHERE status='sent' AND sent_at >= datetime('now','-1 day');"
     ),
+    # fleet-ops#5000 business-table census. One compound select, one row, so
+    # the census costs ONE extra Cloudflare API call, not one per table; the
+    # five counts come back as named columns of a single result row.
+    # Absent-not-zero: if this query fails the census is omitted (see
+    # _product_outcome), never reported as 0 rows.
+    "table_census": (
+        "SELECT (SELECT COUNT(*) FROM user_plan) AS user_plan, "
+        "(SELECT COUNT(*) FROM watchlist) AS watchlist, "
+        "(SELECT COUNT(*) FROM delivery_attempt) AS delivery_attempt, "
+        "(SELECT COUNT(*) FROM proof_capture) AS proof_capture, "
+        "(SELECT COUNT(*) FROM session) AS session;"
+    ),
 }
 
+# fleet-ops#5000: key of the census entry in _D1_QUERIES / product outcome,
+# and the tables counted in one row by that entry (order = column order).
+CENSUS_KEY = "table_census"
+CENSUS_TABLES = (
+    "user_plan",
+    "watchlist",
+    "delivery_attempt",
+    "proof_capture",
+    "session",
+)
 
-def _product_outcome() -> dict[str, int] | None:
+
+def _product_outcome() -> dict[str, int | dict[str, int]] | None:
     """Return {signups_24h, activated_24h, paying_customers,
-    briefs_delivered_24h} from 0509's D1, or None when the source is
-    unavailable. fleet-ops#4456: never return a fabricated 0 — Unavailable
-    means the gauges are emitted ABSENT (callers must not write a 0).
+    briefs_delivered_24h, table_census} from 0509's D1, or None when the
+    source is unavailable. The four scalars are ints; table_census is a
+    {table: row count} dict over CENSUS_TABLES (fleet-ops#5000). fleet-ops#4456:
+    never return a fabricated 0 — Unavailable means the gauges are emitted
+    ABSENT (callers must not write a 0). A census-only failure drops just
+    table_census and leaves the four scalars intact.
     """
     if OUTCOME_SKIP:
         return None
@@ -1134,7 +1167,7 @@ def _product_outcome() -> dict[str, int] | None:
         "https://api.cloudflare.com/client/v4/accounts/"
         f"{account}/d1/database/{database}/query"
     )
-    out: dict[str, int] = {}
+    out: dict[str, int | dict[str, int]] = {}
     for key, sql in _D1_QUERIES.items():
         payload = json.dumps({"sql": sql}).encode("utf-8")
         req = Request(
@@ -1156,6 +1189,8 @@ def _product_outcome() -> dict[str, int] | None:
                 f"product-slo: product outcome {key} unavailable: {exc}",
                 file=sys.stderr,
             )
+            if key == CENSUS_KEY:
+                continue
             return None
         if not data.get("success"):
             print(
@@ -1163,16 +1198,24 @@ def _product_outcome() -> dict[str, int] | None:
                 f"cloudflare errors={data.get('errors')}",
                 file=sys.stderr,
             )
+            if key == CENSUS_KEY:
+                continue
             return None
         rows = (data.get("result") or [{}])[0].get("results") or []
         try:
-            out[key] = int(rows[0]["n"])
+            if key == CENSUS_KEY:
+                # One row of five named counts -> {table: count}.
+                out[CENSUS_KEY] = {t: int(rows[0][t]) for t in CENSUS_TABLES}
+            else:
+                out[key] = int(rows[0]["n"])
         except (IndexError, KeyError, TypeError, ValueError):
             print(
                 f"product-slo: product outcome {key} unavailable: "
                 f"unexpected shape {rows!r}",
                 file=sys.stderr,
             )
+            if key == CENSUS_KEY:
+                continue
             return None
     return out
 
@@ -1237,6 +1280,14 @@ def export_prom(slos: list[RepoSLO], *, now: datetime) -> str:
         lines += ["", HELP_AC, TYPE_AC, f"fleet_product_activated_24h {outcome['activated_24h']}"]
         lines += ["", HELP_PC, TYPE_PC, f"fleet_product_paying_customers_total {outcome['paying_customers']}"]
         lines += ["", HELP_BD, TYPE_BD, f"fleet_product_briefs_delivered_24h {outcome['briefs_delivered_24h']}"]
+    # fleet-ops#5000: business-table census family. Emitted only when the
+    # census dict is present; a failed/absent census omits the whole family
+    # (Prometheus absent() surfaces it) — never a fabricated 0.
+    if outcome is not None and CENSUS_KEY in outcome:
+        census = outcome[CENSUS_KEY]
+        lines += ["", HELP_TR, TYPE_TR]
+        for table in CENSUS_TABLES:
+            lines.append(f'fleet_product_table_rows{{table="{table}"}} {census[table]}')
     lines += [
         "",
         HELP_HB,
