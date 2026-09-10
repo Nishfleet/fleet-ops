@@ -1,0 +1,8 @@
+[Unit]
+Description=Hourly fleet judge on Opus 5, offset :40 UTC (second POV; Nish 2026-09-07)
+[Timer]
+OnCalendar=*-*-* *:40:00 UTC
+RandomizedDelaySec=0
+Persistent=true
+[Install]
+WantedBy=timers.target

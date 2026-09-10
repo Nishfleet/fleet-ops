@@ -229,13 +229,13 @@
     {
       "unit": "fable-fleet-check",
       "class": "a",
-      "source": "hand-placed",
+      "source": "repo",
       "endorsement": "unit desc: temporary \u2014 retire with fleet-landing-watch (vault agent-drop 2026-09-04T11-31-05Z); timer-manifest.json carries the cadence entry (fleet-ops#3338)"
     },
     {
       "unit": "fable-fleet-check-opus",
       "class": "a",
-      "source": "hand-placed",
+      "source": "repo",
       "endorsement": "unit desc: temporary \u2014 second POV of the two-judge fleet check (fable-check.md: Cursor Grok 4.6 high at :15, Opus 5 xhigh at :45, independent POVs, same packet; Nish 2026-09-07 both Opus 5 and Grok 4.6 high), retire with fleet-landing-watch like fable-fleet-check; timer-manifest.json carries the cadence entry (fleet-ops#4230)"
     },
     {

@@ -19,7 +19,12 @@ Environment=HERMES_OUTBOUND_CLASSES=MONEY-BOUNDARY|LEGAL-BOUNDARY|PRODUCT-DIRECT
 # landing-watch measure.sh digest parser counts it. seat= is stamped AFTER the
 # prompt body so prompt-cache hits survive across ticks. rc=124 is timeout's
 # own hang-watchdog exit (pi wedged) — it still records the report.
-ExecStart=/bin/bash -c 'ts=$(date -u +%Y-%m-%dT%H-%M-%SZ); d=/home/nish/workspaces/agent-state/cron-output; o="$d/fable-fleet-check-kimi-$(date -u +%Y-%m-%d).md"; out=$(mktemp); err=$(mktemp); { printf "\n---\nrun_ts=%s seat=cursor/kimi-k3-max provider=cursor model=kimi-k3-max\n" "$ts"; cat /home/nish/workspaces/agent-state/fleet-landing-watch/fable-check.md; } | timeout --kill-after=60s 2400 /home/nish/.local/bin/pi --print --provider cursor --model kimi-k3-max >"$out" 2>"$err" || { echo "fable-fleet-check-kimi: pi exit $? on cursor/kimi-k3-max (124=hang watchdog); report still recorded" >>"$err"; }; { printf "# fable-fleet-check-kimi %s\nseat=cursor/kimi-k3-max workdir=%s\n" "$ts" "$WORKDIR"; cat "$out"; printf "\n"; } >>"$o"; cat "$err" >&2; rm -f "$out" "$err"'
+ExecStart=/bin/bash -c 'ts=$(date -u +%Y-%m-%dT%H-%M-%SZ); d=/home/nish/workspaces/agent-state/cron-output; o="$d/fable-fleet-check-kimi-$(date -u +%Y-%m-%d).md"; out=$(mktemp); err=$(mktemp); { printf "\n---\nrun_ts=%s seat=cursor/kimi-k3-max provider=cursor model=kimi-k3-max\n" "$ts"; cat /home/nish/workspaces/agent-state/fleet-landing-watch/fable-check.md; } | /home/nish/.local/bin/pi --print --provider cursor --model kimi-k3-max >"$out" 2>"$err" || { echo "fable-fleet-check-kimi: pi exit $? on cursor/kimi-k3-max (124=hang watchdog); report still recorded" >>"$err"; }; { printf "# fable-fleet-check-kimi %s\nseat=cursor/kimi-k3-max workdir=%s\n" "$ts" "$WORKDIR"; cat "$out"; printf "\n"; } >>"$o"; cat "$err" >&2; rm -f "$out" "$err"'
 Restart=on-failure
 RestartSec=900
-TimeoutStartSec=45min
+# fleet-ops#4904: three judges on 20-min offsets (:00 :20 :40 UTC) with a 19-min
+# cap can never overlap. Type=oneshot ignores RuntimeMaxSec (systemd-analyze
+# verify says so); TimeoutStartSec is the oneshot cap. MemoryMax keeps a judge
+# from competing with workers.
+TimeoutStartSec=19min
+MemoryMax=2500M

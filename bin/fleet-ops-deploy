@@ -195,6 +195,19 @@ if [ -e "$dropin" ] || [ -L "$dropin" ]; then
         || log "WARN: daemon-reload after scout prom-mode drop-in removal failed"
 fi
 
+# fleet-ops#4904: bridge judge-budget drop-ins (hand-written 2026-09-10 while
+# deploy was blocked); the caps live in the unit files now. install.sh also
+# removes them on a successful install; remove here too on a dirty/non-ff deploy.
+for u in fable-fleet-check fable-fleet-check-kimi fable-fleet-check-opus; do
+    dropin="${HOME}/.config/systemd/user/${u}.service.d/20-judge-budget.conf"
+    if [ -e "$dropin" ] || [ -L "$dropin" ]; then
+        rm -f "$dropin"
+        log "removed bridge judge-budget drop-in: $dropin (fleet-ops#4904)"
+        systemctl --user daemon-reload >/dev/null 2>&1 \
+            || log "WARN: daemon-reload after judge-budget drop-in removal failed"
+    fi
+done
+
 # fleet-ops#4112: orphaned drop-in dir for the deleted fleet-auto-deploy unit
 # (WFR 2026-08-30). install.sh also removes it on a successful install; remove
 # here too so a dirty/non-ff deploy still clears the invisible leftover.

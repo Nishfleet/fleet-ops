@@ -1,7 +1,7 @@
 [Unit]
-Description=Hourly fleet judge on Kimi K3 (pi cursor/kimi-k3-max), offset :30 UTC (fleet-ops#4455 third POV) — cadence set from measured $/run; initial hourly per Nish 2026-09-08 'use generously to use up the $400 before sub expires'.
+Description=Hourly fleet judge on Kimi K3 (pi cursor/kimi-k3-max), offset :20 UTC (fleet-ops#4455 third POV) — cadence set from measured $/run; initial hourly per Nish 2026-09-08 'use generously to use up the $400 before sub expires'.
 [Timer]
-OnCalendar=*-*-* *:30:00 UTC
+OnCalendar=*-*-* *:20:00 UTC
 RandomizedDelaySec=0
 Persistent=true
 [Install]
