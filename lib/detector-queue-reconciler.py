@@ -245,6 +245,111 @@ def _extract_signal_key(tag: str, msg: str) -> list[str]:
     return [_safe_slug(key, 80) or "unspecified"]
 
 
+# Auto-file iteration order (fleet-ops#4957). The per-session
+# `loud/failed-command-swallowed/*` flood emits 40+ keys per tick, and plain
+# alphabetical order reaches `f` long before `r`/`s`/`t`, so the cap of 5 was
+# always spent on the flood and `loud/red-pr-repair/*` was starved
+# indefinitely. Order the loop by class severity instead. The class is the
+# segment right after `loud/`; matching is by prefix so `escalation-`
+# covers `escalation-foo`. Unmapped classes sort after every mapped one and
+# keep plain alphabetical order among themselves via the `sig` tiebreak.
+# The cap itself is unchanged — this only decides WHAT the cap is spent on.
+SIGNAL_CLASS_PRIORITY = (
+    "red-pr-repair",
+    "red-pr-escalate",
+    "timer-no-next",
+    "drift-install",
+    "exec-review-disarm",
+    "escalation-",
+    "straitly-",
+    "degraded-lanes",
+)
+# Tail priority for every class NOT named above. `failed-command-swallowed`
+# is deliberately NOT in the tuple: it is the bottom tier, one whole step
+# BELOW the tail (see SIGNAL_CLASS_PRIORITY_FLOOD). Keeping it out of the
+# tuple is what lets every unmapped class — `claim-reap-needed`,
+# `decisions-ledger-fail`, `deploy-blocked`, `deploy-install`, ... — sort
+# ABOVE the flood and keep today's plain alphabetical order among itself.
+SIGNAL_CLASS_PRIORITY_TAIL = len(SIGNAL_CLASS_PRIORITY)
+# The only class that sorts after the tail, so the 40+ keys/tick flood can
+# never outrank a class that is filed today.
+SIGNAL_CLASS_PRIORITY_FLOOD = SIGNAL_CLASS_PRIORITY_TAIL + 1
+SIGNAL_CLASS_FLOOD_PREFIX = "failed-command-swallowed"
+
+
+def signal_class_priority(sig: str) -> int:
+    # The class is the segment after `loud/` for canonical
+    # `loud/<class>/<key>` signals. The repo also carries real signals with
+    # no `loud/` prefix (`timer-manifest/<unit>`, `decisions-ledger/<slug>`,
+    # `cred-expiry/<provider>`, `exec-review-receipt/<slug>`,
+    # `chain-e2e-drill/fixture`); for those the class is the first segment.
+    # A keyless (`loud/<class>`) or prefixless (`loud`) string must not raise.
+    if sig.startswith("loud/"):
+        parts = sig.split("/", 2)
+        cls = parts[1] if len(parts) > 1 else sig
+    else:
+        cls = sig.split("/", 1)[0]
+    for idx, prefix in enumerate(SIGNAL_CLASS_PRIORITY):
+        if cls.startswith(prefix):
+            return idx
+    if cls.startswith(SIGNAL_CLASS_FLOOD_PREFIX):
+        return SIGNAL_CLASS_PRIORITY_FLOOD
+    return SIGNAL_CLASS_PRIORITY_TAIL
+
+
+def signal_sort_key(sig: str) -> tuple[int, str]:
+    return (signal_class_priority(sig), sig)
+
+
+def signal_starve_state_path() -> Path:
+    state_dir = os.environ.get("FLEET_SIGNAL_RECONCILE_STATE_DIR")
+    if state_dir:
+        return Path(state_dir) / "signal-starve.json"
+    return Path.home() / ".local" / "state" / "fleet-heartbeat" / "signal-starve.json"
+
+
+def oldest_unfiled_age(capped_sigs: list[str], now: datetime) -> int:
+    """Whole seconds since the oldest `first_unfiled_at` recorded for the
+    capped keys in the starve-state file (fleet-ops#4957).
+
+    A deliberately tolerant reader: a missing, unreadable, malformed or
+    key-less state file yields 0 so a bad state file can never crash or
+    change the tick. Phase 2 owns the writer; this only reads.
+    """
+    try:
+        payload = json.loads(signal_starve_state_path().read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            return 0
+        # Accept either {"signals": {sig: {...}}} or a flat {sig: {...}}.
+        entries = payload.get("signals")
+        if not isinstance(entries, dict):
+            entries = payload
+        ages: list[float] = []
+        for sig in capped_sigs:
+            entry = entries.get(sig)
+            if not isinstance(entry, dict):
+                continue
+            first = entry.get("first_unfiled_at")
+            if not isinstance(first, str) or not first:
+                continue
+            try:
+                first_dt = _parse_iso(first)
+            except (TypeError, ValueError):
+                # One unparsable entry must not zero the age of the others.
+                continue
+            if first_dt.tzinfo is None or first_dt.utcoffset() is None:
+                # A naive timestamp would make `now - first_dt` raise
+                # TypeError, which the outer backstop would swallow into a 0
+                # for EVERY entry. Skip just this entry instead.
+                continue
+            ages.append((now - first_dt).total_seconds())
+        if not ages:
+            return 0
+        return max(0, int(max(ages)))
+    except Exception:  # noqa: BLE001 — telemetry must never crash the tick
+        return 0
+
+
 def derive_signals(tag: str, msg: str) -> list[str]:
     if tag in GREEN_TAGS or tag in SKIP_TAGS or tag.endswith(GREEN_SUFFIXES):
         return []
@@ -655,7 +760,11 @@ def reconcile(
     filed_count = 0
     capped_sigs: list[str] = []
     comment_cache: dict[int, list[dict[str, Any]]] = {}
-    for sig in sorted(current_signals):
+    ordered_signals = sorted(
+        current_signals,
+        key=signal_sort_key,
+    )
+    for sig in ordered_signals:
         alarm = signal_to_alarm[sig]
         existing = open_by_signal.get(sig)
         if existing:
@@ -709,8 +818,21 @@ def reconcile(
         else:
             log(f"WARN: failed to file {sig} (rc={rc}): {out}")
 
+    # Starvation telemetry (fleet-ops#4957): make the shortfall a number, not
+    # an inference. Both summary keys are set unconditionally so the --json
+    # shape does not change, but the starve-state file is only read on the
+    # ticks that actually have capped keys — the majority have none.
+    summary["n_unfiled"] = len(capped_sigs)
+    summary["oldest_unfiled_age"] = 0
     if capped_sigs:
-        loud(triage, "SIGNAL-RECONCILE-CAP", f"auto-file cap reached ({cap}); unfiled signals: {', '.join(capped_sigs)}")
+        summary["oldest_unfiled_age"] = oldest_unfiled_age(capped_sigs, now)
+        loud(
+            triage,
+            "SIGNAL-RECONCILE-CAP",
+            f"auto-file cap reached ({cap}); n_unfiled={summary['n_unfiled']} "
+            f"oldest_unfiled_age={summary['oldest_unfiled_age']}; "
+            f"unfiled signals: {', '.join(capped_sigs)}",
+        )
 
     # Observe-to-close: close open signal-keyed issues not in current tick.
     current_open_signals = set(open_by_signal.keys())
