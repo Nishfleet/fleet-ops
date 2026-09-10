@@ -79,6 +79,7 @@ echo "inactive"  > "$sysctl_store/stop-escalation.service.active"
 # The STOP-REASON points at the failed unit.
 STOP_REASON="$scratch/STOP-REASON.json"
 SEEN="$scratch/seen.txt"
+WALLED="$scratch/stop-escalation-walled.txt"
 NISH="$scratch/NISH-ESCALATIONS.md"
 AUDLOG="$scratch/AUDITOR-LOG.md"
 
@@ -98,6 +99,7 @@ run_bin() {
   FLEET_ESCALATION_COMPLETION_BUDGET="3600" \
   FLEET_STOP_REASON="$STOP_REASON" \
   FLEET_STOP_ESCALATION_SEEN="$SEEN" \
+  FLEET_STOP_ESCALATION_WALLED="$WALLED" \
   FLEET_NISH_ESCALATIONS="$NISH" \
   FLEET_AUDITOR_LOG="$AUDLOG" \
   FLEET_ESCALATION_COMPLETION_SYSTEMCTL="$scratch/systemctl" \
@@ -172,6 +174,39 @@ rc=$(run_bin "2026-08-27T02:00:00Z")
 [[ "$rc" == "0" ]] || fail "Nish-reserved wall should exit 0 (got $rc)"
 grep -q "Nish-reserved wall" "$scratch/err.log" || fail "missing wall log"
 ok "Nish-reserved wall is a legal terminal (exit 0)"
+
+# --- 7b. LADDER-WALLED chain -> dispatcher-spent terminal (exit 0) -------
+# fleet-ops#623 / 2026-08-28 storm fix: a fully-walled seat ladder records the
+# hash in stop-escalation-walled.txt and deliberately does NOT write a
+# NISH-ESCALATIONS.md line for a non-payment reason. Without this case the
+# chain had no legal terminal and the enforcer re-fired STALE-TRIP every tick
+# (green detector + idle pipeline + non-terminal STOP-REASON), failing
+# fleet-heartbeat.service and summoning a fresh auditor for a spent chain.
+rm -rf "$scratch/state"; mkdir -p "$scratch/state"
+rm -f "$NISH"
+echo "success" > "$sysctl_store/pi-issue@0509-1.service.result"
+echo "active"  > "$sysctl_store/pi-issue@0509-1.service.active"
+echo "inactive" > "$sysctl_store/stop-escalation.service.active"
+write_trip "unit-failure"
+hash=$(sha256sum "$STOP_REASON" | awk '{print $1}')
+printf '%s 1789079695\n' "$hash" > "$WALLED"
+rc=$(run_bin "2026-08-27T00:00:00Z")
+[[ "$rc" == "0" ]] || fail "ladder-walled chain should exit 0 (got $rc)"
+grep -q "ladder-walled" "$scratch/err.log" || fail "missing ladder-walled log"
+! grep -q "STALE-TRIP" "$scratch/err.log" \
+  || fail "ladder-walled chain must not STALE-TRIP"
+terminal=$(jq -r '.terminal // ""' "$scratch/state/$hash.json" 2>/dev/null || true)
+[[ "$terminal" == "ladder-walled" ]] || fail "chain state must record terminal=ladder-walled (got '$terminal')"
+# A different hash in the ledger must NOT free this chain.
+printf 'deadbeef 1789079695\n' > "$WALLED"
+rm -rf "$scratch/state"; mkdir -p "$scratch/state"
+rc=$(run_bin "2026-08-27T00:00:00Z")
+[[ "$rc" == "1" ]] || fail "unwalled hash must still STALE-TRIP (got $rc)"
+rm -f "$WALLED"
+# Restore the RED detector case 8 expects (7b flipped it green).
+echo "exit-code" > "$sysctl_store/pi-issue@0509-1.service.result"
+echo "failed"    > "$sysctl_store/pi-issue@0509-1.service.active"
+ok "ladder-walled chain is a legal terminal (exit 0); unwalled hash still trips"
 
 # --- 8. pipeline-active guard on stalled chain ------------------------------
 rm -rf "$scratch/state"; mkdir -p "$scratch/state"

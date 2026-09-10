@@ -70,6 +70,7 @@
 #   FLEET_ESCALATION_COMPLETION_BUDGET cycle budget seconds (default 86400)
 #   FLEET_STOP_REASON                  STOP-REASON.json path
 #   FLEET_STOP_ESCALATION_SEEN         stop-escalation-seen.txt
+#   FLEET_STOP_ESCALATION_WALLED       stop-escalation-walled.txt
 #   FLEET_NISH_ESCALATIONS             NISH-ESCALATIONS.md
 #   FLEET_AUDITOR_LOG                  AUDITOR-LOG.md
 #   FLEET_ESCALATION_COMPLETION_SYSTEMCTL  systemctl (tests)
@@ -92,6 +93,7 @@ STATE_DIR="${FLEET_ESCALATION_COMPLETION_STATE:-$AS/fleet-escalation-completion}
 BUDGET="${FLEET_ESCALATION_COMPLETION_BUDGET:-86400}"  # 24h == daily-sweep floor
 STOP_REASON="${FLEET_STOP_REASON:-$AS/STOP-REASON.json}"
 SEEN="${FLEET_STOP_ESCALATION_SEEN:-$AS/stop-escalation-seen.txt}"
+WALLED="${FLEET_STOP_ESCALATION_WALLED:-$AS/stop-escalation-walled.txt}"
 NISH="${FLEET_NISH_ESCALATIONS:-$AS/NISH-ESCALATIONS.md}"
 AUDITOR_LOG="${FLEET_AUDITOR_LOG:-$AS/AUDITOR-LOG.md}"
 SYSTEMCTL="${FLEET_ESCALATION_COMPLETION_SYSTEMCTL:-systemctl}"
@@ -162,6 +164,25 @@ nish_wall_reached() {
     local hash="$1"
     [[ -f "$NISH" ]] || return 1
     grep -q "hash=$hash" "$NISH" 2>/dev/null && return 0
+    return 1
+}
+
+# Ladder-walled chains (fleet-ops#623). When stop-escalation-dispatch walks
+# the whole seat ladder and every usable seat is walled (bench/quota), it
+# records the hash in stop-escalation-walled.txt and deliberately does NOT
+# write a NISH-ESCALATIONS.md line for a non-payment reason (the 2026-08-28
+# storm fix: blanket MONEY tagging paged Nish 35x in 2 min). That removed the
+# ONLY hash= record nish_wall_reached() recognises, so a walled chain had no
+# legal terminal left: on the next tick the detector was green (the failed
+# unit had been reset), the pipeline was idle, and the enforcer re-classified
+# the chain as a STALE-TRIP -> exit 1 -> fleet-heartbeat.service failed ->
+# OnFailure -> a fresh STOP-REASON and a fresh auditor for a chain that had
+# already spent its ladder. The walled ledger IS the terminal the dispatcher
+# recorded; read it back here so the two organs agree.
+ladder_walled() {
+    local hash="$1"
+    [[ -f "$WALLED" ]] || return 1
+    grep -qE "^${hash} " "$WALLED" 2>/dev/null && return 0
     return 1
 }
 
@@ -309,6 +330,14 @@ age=$(( now - first_seen ))
 
 # The only legal terminals. If the chain already reached one, we are clean
 # and the marker is cleared.
+# A ladder-walled chain is terminal BEFORE the detector is consulted: the
+# dispatcher already spent every seat on it (see ladder_walled above).
+if ladder_walled "$hash"; then
+    log "chain ${hash:0:12} ladder-walled (hash in stop-escalation-walled.txt) — dispatcher-spent terminal, not a stale trip"
+    printf '{"hash":"%s","first_seen":%s,"stall_count":0,"terminal":"ladder-walled"}\n' "$hash" "$first_seen" > "$cf"
+    exit 0
+fi
+
 if detector_green "$unit"; then
     # FIX reached: the failed unit recovered. If the closeout (auditor-
     # resolved/boundary:*) is missing BUT the pipeline is actively working
