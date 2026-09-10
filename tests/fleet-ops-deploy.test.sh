@@ -30,6 +30,11 @@
 #      cap drop (fleet-ops-deploy path).
 #  12e. a green-exit install.sh from a checkout that does not ship
 #      intake-reconcile units must not fail enable (fleet-ops#559).
+#  12h. install.sh merges unknown provider rows from the live state file
+#      (fleet-ops#4205); --check compares the EFFECTIVE table rather than raw
+#      bytes, so a hand-wired live-only row is not a false red; and a repo
+#      `retired_providers` tombstone retires a live-only provider for good
+#      (fleet-ops#4960).
 #  13. A leftover .service whose ExecStart binary is missing fails
 #      DRIFT-MISSING-EXEC and auto-files (fleet-ops#285).
 #  14. The paper-over heartbeat drop-in fails DRIFT-PAPER-OVER and auto-files
@@ -97,6 +102,10 @@ grep -q 'seat_caps_would_downgrade' "$repo_root/install.sh" \
     || fail "install.sh must refuse a seat-caps cap drop even when mtime is newer (fleet-ops#371)"
 grep -q 'fleet-ops#371' "$repo_root/install.sh" \
     || fail "install.sh cap-drop refuse must name fleet-ops#371"
+grep -q 'retired_providers' "$repo_root/install.sh" \
+    || fail "install.sh must honour the repo retired_providers tombstone (fleet-ops#4960)"
+grep -q 'retired_providers' "$repo_root/config/seat-caps.json" \
+    || fail "config/seat-caps.json must carry the retired_providers tombstone (fleet-ops#4960)"
 grep -q 'remove_papered_heartbeat_dropin' "$repo_root/install.sh" \
     || fail "install.sh must remove the paper-over heartbeat drop-in"
 grep -q 'remove_stale_scout_prom_mode_dropin' "$repo_root/install.sh" \
@@ -1051,6 +1060,223 @@ set -e
 [[ "$(jq -r '.providers.devin.cap' "$caps_dest_merge")" = "4" ]] \
     || fail "scenario12h: repo-declared provider devin must keep the repo version"
 ok "scenario12h: install.sh merges unknown provider rows from the live state file (fleet-ops#4205)"
+
+# --- scenario 12i: --check compares the EFFECTIVE seat-caps table ------------
+# fleet-ops#4960: config/seat-caps.json is MERGE-installed (fleet-ops#4205), so
+# a live-only hand-wired provider row is legitimate and must not red
+# `install.sh --check`. The raw byte compare it used before DOES red on it,
+# every tick, forever.
+#   (a) live = the repo table plus a provider the repo does not declare ->
+#       --check exits 0 and prints no DIFF line. This FAILS on origin/main
+#       (raw `cmp -s`) and passes only with the effective-table compare.
+#   (b) a REPO-DECLARED provider whose live cap differs -> --check still
+#       exits 1 and prints DIFF. The anti-rot half: if anyone ever turns this
+#       branch into a blanket pass, or makes it print nothing, (b) reds.
+checki_repo="$scratch/check-seat-caps-i"
+mkdir -p "$checki_repo/config"
+cp "$repo_root/install.sh" "$checki_repo/install.sh"
+chmod +x "$checki_repo/install.sh"
+cat >"$checki_repo/config/seat-caps.json" <<'JSON'
+{"providers":{"devin":{"cap":4}}}
+JSON
+# The live copy is a plain regular file (fleet-ops#2910), NOT a symlink: the
+# symlink rule is its own acceptance probe (scenario 12k).
+caps_dest_check_i="$scratch/live-caps-check-i.json"
+cat >"$caps_dest_check_i" <<'JSON'
+{"providers":{"devin":{"cap":4},"opencode-go":{"cap":10,"class":"prepaid-quota"}}}
+JSON
+cat >"$checki_repo/MANIFEST" <<MANIFEST
+config/seat-caps.json $caps_dest_check_i
+MANIFEST
+git -C "$checki_repo" init -q -b main
+git -C "$checki_repo" config user.email "test@example.com"
+git -C "$checki_repo" config user.name "Test"
+git -C "$checki_repo" add config/seat-caps.json MANIFEST install.sh
+git -C "$checki_repo" commit -q -m "seat-caps without opencode-go"
+git -C "$checki_repo" update-ref refs/remotes/origin/main HEAD
+set +e
+checki_out=$(PATH="$scratch:$PATH" "$checki_repo/install.sh" --check 2>&1)
+checki_rc=$?
+set -e
+[[ "$checki_rc" -eq 0 ]] \
+    || fail "scenario12i: a live-only hand-wired provider row must not red --check (acceptance 4a; red on origin/main), got rc=$checki_rc out=$checki_out"
+[[ "$checki_out" != *"DIFF:"* ]] \
+    || fail "scenario12i: no DIFF line is expected for a live-only hand-wired row, got: $checki_out"
+ok "scenario12i: --check is green for a hand-wired live-only provider row (acceptance 4a; red on origin/main)"
+# Anti-rot: a repo-declared provider whose live cap differs must still DIFF.
+cat >"$caps_dest_check_i" <<'JSON'
+{"providers":{"devin":{"cap":9},"opencode-go":{"cap":10,"class":"prepaid-quota"}}}
+JSON
+set +e
+checki_out=$(PATH="$scratch:$PATH" "$checki_repo/install.sh" --check 2>&1)
+checki_rc=$?
+set -e
+[[ "$checki_rc" -eq 1 ]] \
+    || fail "scenario12i: a repo-declared provider's live cap difference must still red --check (acceptance 4c), got rc=$checki_rc out=$checki_out"
+[[ "$checki_out" == *"DIFF:"* ]] \
+    || fail "scenario12i: the seat-caps DIFF line is missing, got: $checki_out"
+ok "scenario12i: --check still reds with DIFF when a repo-declared provider's live cap differs (acceptance 4c)"
+
+# --- scenario 12j: the retired_providers tombstone is real and targeted ------
+# fleet-ops#4960: deleting a provider from config/seat-caps.json used to be
+# indistinguishable from "the repo never declared it", so the #4205 merge
+# copied the live-only row back at cap 2 on EVERY deploy and the retired seat
+# stayed pickable. A repo-level `retired_providers` tombstone now makes the
+# merge skip that row. The drop is targeted, not a blanket "delete every
+# unknown provider": an untombstoned live-only row must still survive (the
+# #4205 behaviour, untouched), and a repo-declared provider still keeps the
+# repo version.
+retire_repo="$scratch/retire-seat-caps"
+mkdir -p "$retire_repo/config"
+cp "$repo_root/install.sh" "$retire_repo/install.sh"
+chmod +x "$retire_repo/install.sh"
+cat >"$retire_repo/config/seat-caps.json" <<'JSON'
+{"providers":{"devin":{"cap":4}},"retired_providers":{"straitly":{"retired":"2026-09-10","reason":"test"}}}
+JSON
+caps_dest_retire="$scratch/live-caps-retire.json"
+cat >"$caps_dest_retire" <<'JSON'
+{"providers":{"devin":{"cap":4},"straitly":{"cap":2,"class":"metered"},"runinfra":{"cap":4}}}
+JSON
+cat >"$retire_repo/MANIFEST" <<MANIFEST
+config/seat-caps.json $caps_dest_retire
+MANIFEST
+git -C "$retire_repo" init -q -b main
+git -C "$retire_repo" config user.email "test@example.com"
+git -C "$retire_repo" config user.name "Test"
+git -C "$retire_repo" add config/seat-caps.json MANIFEST install.sh
+git -C "$retire_repo" commit -q -m "seat-caps with a straitly tombstone"
+git -C "$retire_repo" update-ref refs/remotes/origin/main HEAD
+# HOME is the scratch home set at the top of this file, so the learned-caps
+# reset below can never touch the real ~/.local/state/pi-packet/learned-caps.json.
+set +e
+retire_out=$(HOME="$scratch/home" PATH="$scratch:$PATH" "$retire_repo/install.sh" 2>&1)
+retire_rc=$?
+set -e
+[[ "$retire_rc" -eq 0 ]] || fail "scenario12j: install.sh should succeed, got rc=$retire_rc out=$retire_out"
+[[ -f "$caps_dest_retire" && ! -L "$caps_dest_retire" ]] \
+    || fail "scenario12j: dest must be a regular file copy after install"
+if jq -e '.providers.straitly' "$caps_dest_retire" >/dev/null 2>&1; then
+    fail "scenario12j: the tombstoned live-only provider straitly was resurrected by the deploy (fleet-ops#4960)"
+fi
+[[ "$(jq -r '.providers.runinfra.cap' "$caps_dest_retire")" = "4" ]] \
+    || fail "scenario12j: an UNtombstoned live-only provider must still survive the merge (fleet-ops#4205) — the drop must be targeted"
+[[ "$(jq -r '.providers.devin.cap' "$caps_dest_retire")" = "4" ]] \
+    || fail "scenario12j: repo-declared provider devin must keep the repo version"
+ok "scenario12j: the retired_providers tombstone retires the live-only row and leaves other live-only rows alone"
+
+# --- scenario 12k: the remaining DIFF classes for seat-caps --check ----------
+# fleet-ops#4960 acceptance 1(b)/(c): the effective-table compare must not
+# absorb an unparseable live file, and the symlink rule stays FIRST — a dest
+# symlinked anywhere but the repo copy is drift, never something to normalise
+# away. Only `--check` runs here, so a dirty working tree (the MANIFEST is
+# rewritten between the three probes) is irrelevant.
+checkk_repo="$scratch/check-seat-caps-k"
+mkdir -p "$checkk_repo/config"
+cp "$repo_root/install.sh" "$checkk_repo/install.sh"
+chmod +x "$checkk_repo/install.sh"
+cat >"$checkk_repo/config/seat-caps.json" <<'JSON'
+{"providers":{"devin":{"cap":4}}}
+JSON
+git -C "$checkk_repo" init -q -b main
+git -C "$checkk_repo" config user.email "test@example.com"
+git -C "$checkk_repo" config user.name "Test"
+git -C "$checkk_repo" add config/seat-caps.json install.sh
+git -C "$checkk_repo" commit -q -m "seat-caps"
+git -C "$checkk_repo" update-ref refs/remotes/origin/main HEAD
+# (a) unparseable live file: the merge's fallback emits the repo copy, which
+#     cannot be content-equivalent to a file jq cannot parse. Must stay red.
+caps_dest_check_k_bad="$scratch/live-caps-check-k-unparseable.json"
+printf '{"oops"' >"$caps_dest_check_k_bad"
+printf 'config/seat-caps.json %s\n' "$caps_dest_check_k_bad" >"$checkk_repo/MANIFEST"
+set +e
+checkk_out=$(PATH="$scratch:$PATH" "$checkk_repo/install.sh" --check 2>&1)
+checkk_rc=$?
+set -e
+[[ "$checkk_rc" -eq 1 ]] \
+    || fail "scenario12k: an unparseable live seat-caps file must red --check (acceptance 1b), got rc=$checkk_rc out=$checkk_out"
+[[ "$checkk_out" == *"DIFF:"* ]] \
+    || fail "scenario12k: the unparseable-live DIFF line is missing, got: $checkk_out"
+ok "scenario12k: --check reds (DIFF) when the live seat-caps file is unparseable (acceptance 1b)"
+# (b) dest is a symlink to something other than the repo copy: drift, even
+#     when the target holds the same JSON the merge would emit.
+elsewhere_json="$scratch/seat-caps-elsewhere.json"
+printf '{"providers":{"devin":{"cap":4}}}\n' >"$elsewhere_json"
+caps_dest_check_k_link="$scratch/caps-dest-check-k-elsewhere"
+ln -sfn "$elsewhere_json" "$caps_dest_check_k_link"
+printf 'config/seat-caps.json %s\n' "$caps_dest_check_k_link" >"$checkk_repo/MANIFEST"
+set +e
+checkk_out=$(PATH="$scratch:$PATH" "$checkk_repo/install.sh" --check 2>&1)
+checkk_rc=$?
+set -e
+[[ "$checkk_rc" -eq 1 ]] \
+    || fail "scenario12k: a dest symlinked elsewhere must red --check (acceptance 1c), got rc=$checkk_rc out=$checkk_out"
+[[ "$checkk_out" == *"DIFF:"* ]] \
+    || fail "scenario12k: the symlink-elsewhere DIFF line is missing, got: $checkk_out"
+ok "scenario12k: --check reds (DIFF) when dest is a symlink to something other than the repo copy (acceptance 1c)"
+# (c) the legitimate symlink case still passes: dest points AT the repo copy.
+caps_dest_check_k_repo="$scratch/caps-dest-check-k-repo"
+ln -sfn "$checkk_repo/config/seat-caps.json" "$caps_dest_check_k_repo"
+printf 'config/seat-caps.json %s\n' "$caps_dest_check_k_repo" >"$checkk_repo/MANIFEST"
+set +e
+checkk_out=$(PATH="$scratch:$PATH" "$checkk_repo/install.sh" --check 2>&1)
+checkk_rc=$?
+set -e
+[[ "$checkk_rc" -eq 0 ]] \
+    || fail "scenario12k: a dest symlinked at the repo copy must not red --check, got rc=$checkk_rc out=$checkk_out"
+[[ "$checkk_out" != *"DIFF:"* ]] \
+    || fail "scenario12k: no DIFF line expected for a symlink at the repo copy, got: $checkk_out"
+ok "scenario12k: --check stays green for a dest symlinked at the repo copy"
+
+# --- scenario 12m: a tombstone is not read as a cap downgrade ---------------
+# fleet-ops#4960 phase-2 reviewer assertion: the fleet-ops#371 guard flags ANY
+# live-only provider as a cap drop (`straitly:2->missing`), so a retired row
+# would REFUSE the deploy it was meant to enable. The guard now skips a
+# tombstoned name the repo does not declare. The origin/main shortcut that
+# normally masks this (`seat_caps_is_origin_main_blob`) is deliberately
+# absent: the fixture has NO origin/main ref, which is the issue-worktree /
+# hot-patch retarget shape. The live copy carries no OTHER live-only row — the
+# pre-existing guard false positive on those is a filed follow-up, not this
+# test's subject.
+guard_repo="$scratch/guard-seat-caps-m"
+mkdir -p "$guard_repo/config"
+cp "$repo_root/install.sh" "$guard_repo/install.sh"
+chmod +x "$guard_repo/install.sh"
+cat >"$guard_repo/config/seat-caps.json" <<'JSON'
+{"providers":{"devin":{"cap":4}},"retired_providers":{"straitly":{"retired":"2026-09-10","reason":"test"}}}
+JSON
+caps_dest_guard="$scratch/live-caps-guard-m.json"
+cat >"$caps_dest_guard" <<'JSON'
+{"providers":{"devin":{"cap":4},"straitly":{"cap":2,"class":"metered"}}}
+JSON
+cat >"$guard_repo/MANIFEST" <<MANIFEST
+config/seat-caps.json $caps_dest_guard
+MANIFEST
+git -C "$guard_repo" init -q -b main
+git -C "$guard_repo" config user.email "test@example.com"
+git -C "$guard_repo" config user.name "Test"
+git -C "$guard_repo" add config/seat-caps.json MANIFEST install.sh
+git -C "$guard_repo" commit -q -m "seat-caps with a straitly tombstone"
+# Premise check: without origin/main the #371 guard really is reachable.
+if git -C "$guard_repo" rev-parse --verify -q refs/remotes/origin/main >/dev/null; then
+    fail "scenario12m: fixture must have no origin/main ref, or seat_caps_is_origin_main_blob hides the guard"
+fi
+# The live copy must not look like a newer hot-patch (a different guard class).
+touch -d '2026-08-26T20:35:00' "$guard_repo/config/seat-caps.json"
+touch -d '2020-01-01T00:00:00' "$caps_dest_guard"
+set +e
+guard_out=$(HOME="$scratch/home" PATH="$scratch:$PATH" "$guard_repo/install.sh" 2>&1)
+guard_rc=$?
+set -e
+[[ "$guard_rc" -eq 0 ]] \
+    || fail "scenario12m: a tombstoned live-only row must not refuse the install, got rc=$guard_rc out=$guard_out"
+[[ "$guard_out" != *"NONFATAL REFUSE"* ]] \
+    || fail "scenario12m: a retirement was reported as a cap downgrade, got: $guard_out"
+[[ -f "$caps_dest_guard" && ! -L "$caps_dest_guard" ]] \
+    || fail "scenario12m: dest must be a regular file copy after install"
+if jq -e '.providers.straitly' "$caps_dest_guard" >/dev/null 2>&1; then
+    fail "scenario12m: the tombstoned row survived the install"
+fi
+ok "scenario12m: a tombstoned live-only row is not reported as a seat-caps downgrade and is retired"
 
 # --- scenario 12f: git reset --hard must NOT wipe the live seat-caps copy ----
 # fleet-ops#2910: the live seat-caps.json used to be a symlink into the
