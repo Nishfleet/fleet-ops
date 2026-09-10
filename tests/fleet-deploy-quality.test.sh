@@ -51,6 +51,15 @@ cat >"$scratch/merged.json" <<'JSON'
 ]
 JSON
 echo '[{"number": 700}]' > "$scratch/reverts.json"
+# fleet-ops#5140: prom_lines()/_emit_deploy_quality() now also measure every
+# `product: true` repo in intake-repos.json. Sections 1-4 only call compute()
+# with fixtures (no product path), but sections 5 and 6 walk prom_lines() and
+# must never reach for a LIVE product repo. This fixture pins the product set
+# to empty (fleet-ops is excluded by design) and FLEET_DQ_REPOS_JSON is set in
+# both env dicts.
+cat >"$scratch/intake-fleet-ops-only.json" <<'JSON'
+{"repos": [{"name": "fleet-ops", "product": false}]}
+JSON
 
 cat >"$scratch/journal.log" <<'JRNL'
 # Lead line so journal_start (17:47:00Z) precedes every mergedAt: a merge
@@ -268,6 +277,7 @@ env = {
     "FLEET_DQ_JOURNAL": f"{scratch}/journal.log",
     "FLEET_DQ_ACTIONS_LOG": f"{scratch}/actions.log",
     "FLEET_DQ_CACHE_DIR": f"{scratch}/cache",
+    "FLEET_DQ_REPOS_JSON": f"{scratch}/intake-fleet-ops-only.json",
 }
 spec = importlib.util.spec_from_file_location("fdq", path)
 m = importlib.util.module_from_spec(spec)
@@ -312,6 +322,7 @@ os.environ["FLEET_DQ_REVERTS"] = f"{scratch}/reverts.json"
 os.environ["FLEET_DQ_JOURNAL"] = f"{scratch}/journal.log"
 os.environ["FLEET_DQ_ACTIONS_LOG"] = f"{scratch}/actions.log"
 os.environ["FLEET_DQ_CACHE_DIR"] = f"{scratch}/cache"
+os.environ["FLEET_DQ_REPOS_JSON"] = f"{scratch}/intake-fleet-ops-only.json"
 os.environ["FLEET_DQ_TTD_MIN_SAMPLES"] = "1"
 
 spec = importlib.util.spec_from_file_location("fme", exporter)
