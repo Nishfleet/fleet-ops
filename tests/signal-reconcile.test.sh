@@ -618,6 +618,76 @@ grep -q "loud/failed-command-fail" "$tmp/filed.jsonl" \
 ok "scenario 9k-keep: FAILED-COMMAND-SWALLOWED still queues per session"
 
 # ---------------------------------------------------------------------------
+# 9l. EXEC-REVIEW-DISARM is not queued by the reconciler (fleet-ops#4969).
+#     It is the exec-review canary's disarm ACTION (fleet-ops#3731 hard gate):
+#     bin/fleet-exec-review-canary emits it when it disables auto-merge on an
+#     armed PR that carries no verify/receipt cue. The message is
+#     `auto-merge DISABLED on <repo>#NNN (no verify cue ...)`, so
+#     derive_signals() harvests only the repo token and forms the per-repo key
+#     `loud/exec-review-disarm/<repo>`. ANY later disarm in that repo re-emits
+#     the same key, so the issue is never-green no matter which PR or how long
+#     the gap between disarms. The actionable per-PR work is already tracked:
+#     a worker finding is filed by the canary itself under
+#     `signal: exec-review-receipt/<slug>`, and a human finding is
+#     disarmed-only (fleet-ops#4117). The disarm already stopped the unverified
+#     merge; the LOUD line is the measurement. Same never-green class as
+#     PACKETS-ARCHIVED (#4955) and FAILED-COMMAND-FAIL (#4944).
+# ---------------------------------------------------------------------------
+cat > "$tmp/empty9l.json" <<'EOF'
+[]
+EOF
+cat > "$tmp/triage9l.md" <<'EOF'
+[2026-09-10T13:56:12Z] [EXEC-REVIEW-DISARM] auto-merge DISABLED on Nishfleet/fleet-ops#4889 (no verify cue — fleet-ops#3731 hard gate)
+EOF
+true > "$tmp/filed.jsonl"
+run "$tmp/empty9l.json" "$tmp/triage9l.md" > "$tmp/summary9l.json"
+jq -e '.filed == 0 and .alarm_count == 0' "$tmp/summary9l.json" >/dev/null \
+    || fail "scenario 9l: EXEC-REVIEW-DISARM must not be queued, got: $(cat "$tmp/summary9l.json")"
+[[ $(wc -l < "$tmp/filed.jsonl") -eq 0 ]] \
+    || fail "scenario 9l: EXEC-REVIEW-DISARM must not file, got: $(cat "$tmp/filed.jsonl")"
+ok "scenario 9l: EXEC-REVIEW-DISARM disarm action is not queued"
+
+# 9l-key. The skip is only correct because the key is repo-scoped and cannot
+#     move per PR: prove that any disarm message in the same repo derives the
+#     SAME `loud/exec-review-disarm/<repo>` key. If a future refactor keys on
+#     the PR number instead, the key churns per process and the skip must be
+#     re-argued.
+python3 - "$repo_root" <<'PY' || fail "scenario 9l-key: EXEC-REVIEW-DISARM key must be repo-scoped and constant"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location(
+    "dqr", sys.argv[1] + "/lib/detector-queue-reconciler.py")
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+keys = set()
+for repo, pr in [("Nishfleet/fleet-ops", 4889), ("Nishfleet/fleet-ops", 4906),
+                 ("Nishfleet/fleet-ops", 4975), ("Nishfleet/0509", 2538)]:
+    msg = (f"auto-merge DISABLED on {repo}#{pr} "
+           "(no verify cue — fleet-ops#3731 hard gate)")
+    keys.add(tuple(m._extract_signal_key("EXEC-REVIEW-DISARM", msg)))
+assert keys == {("nishfleet-fleet-ops",), ("nishfleet-0509",)}, keys
+PY
+ok "scenario 9l-key: EXEC-REVIEW-DISARM key is repo-scoped (same repo, any PR -> same key)"
+
+# ---------------------------------------------------------------------------
+# 9l-close. An already-open loud/exec-review-disarm/<repo> issue observe-
+#     to-closes once EXEC-REVIEW-DISARM is skipped, even while disarm LOUD
+#     lines keep firing (fleet-ops#4969). This is the terminus: without the
+#     skip the repo-scoped key is re-derived on every disarm, observe-to-close
+#     can never fire, and the alarm refiles forever.
+# ---------------------------------------------------------------------------
+cat > "$tmp/open9lclose.json" <<'EOF'
+[{"number": 4969, "body": "The heartbeat detector reported this alarm on a real tick and no open issue carried its signal key, so the detector\u2192queue reconciler filed one.\n\n- alarm tag: `EXEC-REVIEW-DISARM`\n- evidence: auto-merge DISABLED on Nishfleet/fleet-ops#4889 (no verify cue \u2014 fleet-ops#3731 hard gate)\n- observed tick: `2026-09-10T13:56:12Z`\n\nDo NOT close this issue on PR merge alone.\n\n`loud/exec-review-disarm/nishfleet-fleet-ops`\n", "labels": [{"name": "agent-ready"}], "createdAt": "2026-09-10T13:30:00Z", "comments": []}]
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/open9lclose.json" "$tmp/triage9l.md" > "$tmp/summary9lclose.json"
+jq -e '.closed == 1 and .filed == 0' "$tmp/summary9lclose.json" >/dev/null \
+    || fail "scenario 9l-close: stale loud/exec-review-disarm issue must observe-to-close while disarm LOUD lines fire, got: $(cat "$tmp/summary9lclose.json")"
+grep -q "issue close" "$tmp/gh.log" \
+    || fail "scenario 9l-close: expected gh issue close"
+ok "scenario 9l-close: stale EXEC-REVIEW-DISARM issue observe-to-closes while disarm lines continue"
+
+# ---------------------------------------------------------------------------
 # 10. Tier1 wiring contract.
 # ---------------------------------------------------------------------------
 grep -q 'detector-queue-reconciler' "$repo_root/bin/fleet-heartbeat-tier1" \

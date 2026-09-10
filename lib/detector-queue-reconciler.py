@@ -120,12 +120,28 @@ SKIP_MSG_PREFIXES = ("rule-enforcement:",)
 # heartbeat tick (exit 1) — it is a measurement, not a queue item. Exactly
 # like DEBUG-PLAYBOOK-MISSING, the detector's own aggregate (#2726 sized the
 # debt deliberately) no longer needs the reconciler to file it.
+#
+# EXEC-REVIEW-DISARM is the exec-review canary's disarm ACTION (fleet-ops#3731
+# hard gate): bin/fleet-exec-review-canary emits it when it disables auto-merge
+# on an armed PR that carries no verify/receipt cue. The message is
+# `auto-merge DISABLED on <repo>#NNN (no verify cue ...)`, so derive_signals()
+# harvests only the repo token and forms the per-repo key
+# `loud/exec-review-disarm/<repo>` — ANY later disarm in that repo re-emits the
+# same key, so the issue is never-green no matter which PR or how long the gap.
+# The actionable per-PR work is already tracked: a worker finding is filed by
+# the canary itself under `signal: exec-review-receipt/<slug>`, and a human
+# finding is disarmed-only (fleet-ops#4117: the disarm + LOUD line is the
+# signal, not an issue). The disarm already stopped the unverified merge; the
+# LOUD line is the measurement. Queuing it just produced a per-repo never-green
+# alarm (live: #4969) that observe-to-close could never green. Same class as
+# CLAIM-RELEASED / PACKETS-ARCHIVED / FAILED-COMMAND-FAIL above.
 SKIP_TAGS = {
     "DEBUG-PLAYBOOK-MISSING",
     "CLAIM-REAP-STARTED",
     "CLAIM-RELEASED",
     "PACKETS-ARCHIVED",
     "FAILED-COMMAND-FAIL",
+    "EXEC-REVIEW-DISARM",
 }
 STOPWORDS = frozenset(
     """
