@@ -270,8 +270,9 @@ def parse_actions(path: Path) -> dict[str, dict]:
             rec["dispatch_unit"] = unit_m.group(1) if unit_m else rec["dispatch_unit"]
             rec["dispatch_seat"] = seat_m.group(1) if seat_m else rec["dispatch_seat"]
         elif kind == "RESOLVED":
-            if rec["resolved_ts"] is None:
-                rec["resolved_ts"] = ts
+            # Always update to latest RESOLVED; classify checks if it
+            # belongs to the current trip (resolved_ts >= disp_ts).
+            rec["resolved_ts"] = ts
         elif kind == "VERIFY":
             low = line.lower()
             if " resolved" in low and rec["resolved_ts"] is None:
