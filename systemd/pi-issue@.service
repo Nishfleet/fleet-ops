@@ -34,6 +34,26 @@ MemoryMax=6G
 # starving the whole host (systemd-oomd killed codex-remote-control,
 # fleet-deploy-check and an ephemeral Chromium scope on 2026-09-05).
 MemorySwapMax=0
+# fleet-ops#4902 follow-up (SustainedLoadHigh 2026-09-11): the policy tree
+# bounds MEMORY in six layers and CPU in none. Admission is RAM-only
+# (ram_governor_cap = MemAvailable / ram_gb_per_worker), so the fleet admits
+# until RAM runs out; nothing counts cores. The #4147 brake that the alert
+# descriptions and docs/design/hand-built-vs-off-the-shelf.md credit (`oomd +
+# CPUWeight/IOWeight`) is a real live CPUWeight=60 on user-1000.slice, but a
+# WEIGHT only decides who wins a fight for cores -- it cannot create them.
+# Observed 2026-09-11 02:00-02:15: 16 pi-issue@ workers on 8 vCPUs, each
+# running vitest forks, measured burn ~94% of a core per worker
+# (pi-issue@fleet-ops-5022: 9.36 CPU-s in 10s), so demand was ~2x the cores;
+# node_load15 sat at 16-17 against the 12 threshold with CPU 92% busy and
+# MemAvailable still a healthy 9-11 GiB. CPUQuota is the missing BOUND: it
+# caps one worker's aggregate CPU regardless of how many the RAM term admits.
+# Sizing from the declared ceiling in config/seat-caps.json (target_concurrent
+# 25): min(25, ram_governor) workers x quota <= nproc=8. 25% x 25 = 6.25 cores
+# (holds); 50% x 25 = 12.5 cores (still oversubscribed) so 50% was rejected.
+# This is a ceiling, not a serialiser: an idle box hands one worker a full
+# core, and only the sum past nproc is throttled.
+CPUAccounting=yes
+CPUQuota=25%
 Type=oneshot
 Environment=HOME=/home/nish
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
