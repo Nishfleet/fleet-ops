@@ -3517,6 +3517,12 @@ bash "$here/fleet-failed-command-edit-array-unmatch.test.sh" || fail "fleet-fail
 # before dispatch) walked past. Same edit-failure class as the
 # #956/#1053/#1139/#1173 siblings; same CI constraint.
 bash "$here/fleet-failed-command-edit-schema-validation.test.sh" || fail "fleet-failed-command-edit-schema-validation tests failed"
+# fleet-ops#5011: `todo` with a non-enum `action` (a free-text string)
+# returning 'Validation failed for tool "todo": - action: must be equal
+# to one of the allowed values' (the harness rejected the call before
+# dispatch) walked past. Same schema-validation class as the #1286 edit
+# missing-path sibling; same CI constraint.
+bash "$here/fleet-failed-command-todo-schema-validation.test.sh" || fail "fleet-failed-command-todo-schema-validation tests failed"
 # fleet-ops#965: leftover duplicates of the same 01a03dee session signal
 # (index-delay filings #956/#965/#970/#975/#980) must ALL drain via
 # observe-to-close, not just the first match. Same CI constraint.

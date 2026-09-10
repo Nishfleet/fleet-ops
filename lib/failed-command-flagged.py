@@ -247,6 +247,31 @@ same GitHub-search-index-delay that produced #951 / #965, so the
 citation chain must carry it. The leftover-duplicate observe-to-close
 drain for the 01a03dee pile (#956, #965, #970, #975, #980) is locked
 under tests/fleet-failed-command-observe-duplicate-open.test.sh.
+A `todo` tool call whose `action` argument is not one of the allowed
+enum values (add/update/list/etc.) is rejected by Pi's tool schema
+BEFORE the call is dispatched, with
+"Validation failed for tool "todo": - action: must be equal to one
+of the allowed values" (fleet-ops#5011, same schema-validation class
+as the #1286 `edit` missing-path sibling: the harness rejected the
+call before dispatch because the arguments were malformed, isError=true,
+details={}, no "Command exited with code" line). The live session
+(2026-09-09T21-18-20-872Z pi-issue-fleet-ops-4625-...) issued seven
+`todo` calls in one turn; the first six used `action: add` and
+succeeded, the seventh used a free-text acceptance bullet
+("Acceptance: tests green, jq checks, real end-to-end deepseek job
+prints OK") as the `action` enum. The assistant's next turn moved
+straight to a `bash` worktree-setup command with no user-facing text
+naming the failure. The call never ran, so no todo state changed —
+but the user-facing signal is still a failure that must be named: the
+worker believed the todo call ran and it did not, exactly the same
+swallowed-failure class as the #1286 edit schema-validation sibling.
+Do NOT add a READ_OFFSET_RE-style exemption for the todo
+schema-validation wording on the theory that "the call never ran, no
+state changed": the worker's arguments were malformed and the worker
+did not know. The dedicated regression test
+tests/fleet-failed-command-todo-schema-validation.test.sh pins the
+live #5011 shape. The auto-filed issue closes via observe-to-close
+when the session mtime ages out of the 24h window.
 A `python3 -c` / `python3 << 'EOF'` probe that crashes
 with a Python traceback (KeyError, NameError, etc.; e.g. KeyError: 'input_domain') and
 'Command exited with code 1' (fleet-ops#957, #966, #1003) is also a real
@@ -1080,7 +1105,16 @@ def result_failed(
     # tests/fleet-failed-command-edit-array-unmatch.test.sh and
     # tests/fleet-failed-command-edit-schema-validation.test.sh tests
     # pin the multi-edit and schema-validation siblings.
-    # exemption is added here.
+    # No sibling exemption belongs here for the `todo` tool either. The
+    # schema-validation shape "Validation failed for tool \"todo\": -
+    # action: must be equal to one of the allowed values" (fleet-ops#5011,
+    # the worker passed a free-text string as the `action` enum) is a
+    # real swallowed failure, the same class as the #1286 edit
+    # schema-validation sibling: the harness rejected the call before
+    # dispatch because the arguments were malformed, isError=true,
+    # details={}, no "Command exited with code" line. The worker believed
+    # the todo call ran and it did not. tests/fleet-failed-command-todo-
+    # schema-validation.test.sh goes red if an exemption is added here.
     # `systemctl status` of a failed unit can show `× unit` and
     # `Active: failed` even when the command is piped through `head`
     # and isError=false (fleet-ops#879).
