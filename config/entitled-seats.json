@@ -1,5 +1,5 @@
 {
-  "_comment": "Full entitled-seat inventory (capacity-is-measured ledger line, 2026-08-26). Every id MUST have a config/seat-caps.json row. cap=0 requires a dated reason field. Classes are free / prepaid-quota / metered — never label a prepaid seat free. New entitlements are added here by ledger line so the next heartbeat tick screams if they are not wired. opencode-go maps to provider id opencode; SuperGrok maps to grok; cline-pass maps to cline.",
+  "_comment": "Full entitled-seat inventory (capacity-is-measured ledger line, 2026-08-26). Every id MUST have a config/seat-caps.json row. cap=0 requires a dated reason field. Classes are free / prepaid-quota / metered \u2014 never label a prepaid seat free. New entitlements are added here by ledger line so the next heartbeat tick screams if they are not wired. opencode-go maps to provider id opencode; SuperGrok maps to grok; cline-pass maps to cline.",
   "source": "decisions-ledger 2026-08-26 capacity-is-measured + Nish 2026-08-26 Ollama Cloud is prepaid weekly",
   "seats": [
     {
@@ -22,12 +22,12 @@
     {
       "id": "cursor",
       "class": "prepaid-quota",
-      "note": "Cursor subscription. 2026-09-08 (fleet-ops#4455): kimi-k3-max / kimi-k3-high added as JUDGE/ORCHESTRATOR-ONLY models on this seat (never worker-tier), drawing the Ultra 'Other Models' $400/month bucket through the hourly fable-fleet-check-kimi judge unit + senior/planner/spec/adjudication/conference packets. Model cap 4, no fast/low variants, on-demand overage limit never spent. 2026-09-08 (fleet-ops#4466): the Ultra plan's included 'Grok Bot' agent meter (xAI's desktop/mobile app agent, separate from the Cursor-Models and SuperGrok buckets; resets weekly) is NOT-WIREABLE — xAI's Grok Bot is a GUI app agent that runs on Cursor/xAI's cloud with no CLI, no headless/`--print` mode, no API, and no GitHub-app integration; its auth is an interactive Cursor-account browser login sealed inside the app. Unlike the `cursor` CLI and `xai-oauth` seats it has no driveable surface, so it is not added as a seat (docs: docs.x.ai/grok-bot/faq, docs.x.ai/grok-bot/overview). Recorded in memory `grok-bot-not-wireable.md`; matches the Freebuff precedent. Re-check only if a Grok Bot CLI, headless mode, API, or GitHub-app integration appears."
+      "note": "Cursor subscription. 2026-09-08 (fleet-ops#4455): kimi-k3-max / kimi-k3-high added as JUDGE/ORCHESTRATOR-ONLY models on this seat (never worker-tier), drawing the Ultra 'Other Models' $400/month bucket through the hourly fable-fleet-check-kimi judge unit + senior/planner/spec/adjudication/conference packets. Model cap 4, no fast/low variants, on-demand overage limit never spent. 2026-09-08 (fleet-ops#4466): the Ultra plan's included 'Grok Bot' agent meter (xAI's desktop/mobile app agent, separate from the Cursor-Models and SuperGrok buckets; resets weekly) is NOT-WIREABLE \u2014 xAI's Grok Bot is a GUI app agent that runs on Cursor/xAI's cloud with no CLI, no headless/`--print` mode, no API, and no GitHub-app integration; its auth is an interactive Cursor-account browser login sealed inside the app. Unlike the `cursor` CLI and `xai-oauth` seats it has no driveable surface, so it is not added as a seat (docs: docs.x.ai/grok-bot/faq, docs.x.ai/grok-bot/overview). Recorded in memory `grok-bot-not-wireable.md`; matches the Freebuff precedent. Re-check only if a Grok Bot CLI, headless mode, API, or GitHub-app integration appears."
     },
     {
       "id": "grok",
       "class": "prepaid-quota",
-      "note": "SuperGrok. Entitled but unwired until fleet-ops#41 (pi has no grok-cli adapter). 2026-08-29 fleet-ops#1380: the grok dead-decoy provider is pruned from the live seat list in ~/.pi/agent/models.json and bin/fleet-seat-live-validate no longer re-paints the grok__grok-* phantom ledger — xai-oauth (below) is the sole live SuperGrok seat, so health counts stop reporting the decoy as walled capacity. Kept cap=0 dead_decoy for auditability."
+      "note": "SuperGrok. Entitled but unwired until fleet-ops#41 (pi has no grok-cli adapter). 2026-08-29 fleet-ops#1380: the grok dead-decoy provider is pruned from the live seat list in ~/.pi/agent/models.json and bin/fleet-seat-live-validate no longer re-paints the grok__grok-* phantom ledger \u2014 xai-oauth (below) is the sole live SuperGrok seat, so health counts stop reporting the decoy as walled capacity. Kept cap=0 dead_decoy for auditability."
     },
     {
       "id": "xai-oauth",
@@ -53,7 +53,7 @@
     {
       "id": "alibaba-coding",
       "class": "prepaid-quota",
-      "note": "Alibaba Model Studio Token Plan Personal Standard mid tier (fleet-ops#4329, Nish 2026-09-07; RE-SCOPED 2026-09-08 #4445). $18/mo, credits per 7-day window, 3-4 concurrent, service PAUSES at the window cap, no rollover, no credits API (console only). Provider cap 0 (2026-09-08): NO worker use of ANY alibaba model — every model is cap 0 (intentional_cap_zero=judge_hold, dated reasons). qwen3.8-max is on the senior/judge roster (senior_seats_in_order) as a JUDGE ONLY, inert until the config-driven judge_only worker gate lands (fleet-ops#4445 follow-up). The prior 2026-09-07 worker re-shape (7 models, cap 3) burned the full 7-day window in ~11h (#4445) and is withdrawn. HTTP 429/402 = quota wall, not a transient fault."
+      "note": "Alibaba Model Studio Token Plan Personal Standard mid tier (fleet-ops#4329, Nish 2026-09-07; RE-SCOPED 2026-09-08 #4445). $18/mo, credits per 7-day window, 3-4 concurrent, service PAUSES at the window cap, no rollover, no credits API (console only). Provider cap 0 (2026-09-08): NO worker use of ANY alibaba model \u2014 every model is cap 0 (intentional_cap_zero=judge_hold, dated reasons). qwen3.8-max is on the senior/judge roster (senior_seats_in_order) as a JUDGE ONLY, inert until the config-driven judge_only worker gate lands (fleet-ops#4445 follow-up). The prior 2026-09-07 worker re-shape (7 models, cap 3) burned the full 7-day window in ~11h (#4445) and is withdrawn. HTTP 429/402 = quota wall, not a transient fault."
     },
     {
       "id": "paretoinference",
@@ -100,6 +100,12 @@
       "id": "orcarouter",
       "class": "free",
       "note": "OrcaRouter rotating free."
+    },
+    {
+      "id": "opencode-go",
+      "class": "prepaid-quota",
+      "quota_window": "monthly",
+      "note": "OpenCode Go subscription (Nish 2026-09-10): DeepSeek V4.1 Flash as deepseek-flash, first in order until 2026-09-14."
     }
   ]
 }
