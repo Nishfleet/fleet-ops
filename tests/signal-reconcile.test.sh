@@ -440,6 +440,47 @@ grep -q "issue close" "$tmp/gh.log" \
 ok "scenario 9h-close: stale __init__.py-keyed issue observe-to-closes after re-key"
 
 # ---------------------------------------------------------------------------
+# 9i/9i-close. fleet-ops#4921: a FAILED-COMMAND-SWALLOWED session that names
+# `bin/pi-detached-deadman` in its snippet must key on the session slug — NOT
+# on the legacy file token `bin-pi-detached-deadman` that the old FILE_RE
+# harvester produced (the exact mis-key that named issue #4921). And a stale
+# `bin-pi-detached-deadman`-keyed open issue observe-to-closes once the
+# detector re-keys on the session, exactly like the __init__.py case above.
+# This is the observe-to-close proof for #4921's own loud signal.
+# ---------------------------------------------------------------------------
+cat > "$tmp/triage9i.md" <<'EOF'
+[2026-08-28T13:30:00Z] [FAILED-COMMAND-SWALLOWED] session=2026-09-10t08-18-22-698z-01a08a65-7f64-7ede-b72b-967020761c56 path=/home/nish/.pi/agent/sessions/--home-nish--/2026-09-10T08-18-22-698Z_01a08a65-7f64-7ede-b72b-967020761c56.jsonl snippet=sed: can't read bin/pi-detached-deadman: No such file or directory   Command exited with code 2
+EOF
+# 9i: fresh session files without the legacy bin/...-deadman token.
+cat > "$tmp/empty9i.json" <<'EOF'
+[]
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/empty9i.json" "$tmp/triage9i.md" > "$tmp/summary9i.json"
+jq -e '.filed == 1' "$tmp/summary9i.json" >/dev/null \
+    || fail "scenario 9i: the bin/pi-detached-deadman session must file, got: $(cat "$tmp/summary9i.json")"
+grep -q "loud/failed-command-swallowed/2026-09-10t08-18-22-698z-01a08a65-7f64-7ede-b72b-967020761c56" "$tmp/filed.jsonl" \
+    || fail "scenario 9i: signal must key on the session slug, got: $(cat "$tmp/filed.jsonl")"
+grep -q "loud/failed-command-swallowed/bin-pi-detached-deadman" "$tmp/filed.jsonl" \
+    && fail "scenario 9i: signal must NOT re-key on the legacy bin-pi-detached-deadman file token, got: $(cat "$tmp/filed.jsonl")"
+ok "scenario 9i: bin/pi-detached-deadman swallowed failure keys on the session, not the legacy file token"
+
+# 9i-close: issue #4921, left keyed on the legacy bin-pi-detached-deadman
+# token, observe-to-closes because that signal is no longer produced.
+cat > "$tmp/open9iclose.json" <<'EOF'
+[{"number": 4921, "body": "The heartbeat detector reported this alarm.\n\n`loud/failed-command-swallowed/bin-pi-detached-deadman`\n", "labels": [{"name": "agent-ready"}], "createdAt": "2026-09-10T10:51:00Z", "comments": []}]
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/open9iclose.json" "$tmp/triage9i.md" > "$tmp/summary9iclose.json"
+jq -e '.closed == 1' "$tmp/summary9iclose.json" >/dev/null \
+    || fail "scenario 9i-close: stale bin-pi-detached-deadman issue #4921 must observe-to-close, got: $(cat "$tmp/summary9iclose.json")"
+grep -q "issue close" "$tmp/gh.log" \
+    || fail "scenario 9i-close: expected gh issue close for stale bin-pi-detached-deadman signal"
+ok "scenario 9i-close: stale bin-pi-detached-deadman-keyed issue #4921 observe-to-closes after re-key"
+
+# ---------------------------------------------------------------------------
 # 10. Tier1 wiring contract.
 # ---------------------------------------------------------------------------
 grep -q 'detector-queue-reconciler' "$repo_root/bin/fleet-heartbeat-tier1" \
