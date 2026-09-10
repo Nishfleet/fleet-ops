@@ -164,6 +164,12 @@ git -C "$checkout" branch -M main
 git -C "$checkout" remote add origin "$checkout"
 git -C "$checkout" update-ref refs/remotes/origin/main HEAD
 
+# fleet-ops#5016: this fixture's origin is the scratch checkout path itself,
+# so point the origin-fetch-URL guard's expectation at it. Production sets no
+# seam and so demands the fleet-ops GitHub URL. Exported: run_deploy_prom
+# inherits it.
+export FLEET_OPS_EXPECTED_ORIGIN_URL="$checkout"
+
 # Fake systemctl: reports prometheus active; logs reload/restart to a file.
 systemctl_fake="$scratch/systemctl"
 prom_calls="$scratch/prom-calls"
