@@ -19,8 +19,9 @@
 #      FLEET_SPAWN_SOFT_CEILING=7500; bash-spawn-hook interpolates those
 #      constants (no hardcoded 2800/3000).
 #   4. MANIFEST installs drop-in + both extension files.
-#   5. seat-caps.json ram_gb_per_worker is the measured admission charge (2.0;
-#      fleet-ops#4838 restored the #3679 brake after 1.0 under-counted MemoryPeak).
+#   5. seat-caps.json ram_gb_per_worker is the admission charge (interim 1.5;
+#      fleet-ops#4896 set it once #4893 removed local coverage/tsc from workers;
+#      the remeasure-4891 timer re-prices to measured p95 on 2026-09-11).
 #
 # Lock-and-leave. Offline. Hosted from tests/system-dropins-shape.test.sh
 # so P14 runs it without a workflow-file edit.
@@ -96,10 +97,13 @@ ok "MANIFEST installs drop-in + spawn-guard-core + bash-spawn-hook"
 
 # --- 5. RAM governor unchanged ----------------------------------------------
 ram=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["ram_gb_per_worker"])' "$caps")
-# 2.0 = the restored #3679 brake (fleet-ops#4838, 2026-09-10): MemoryPeak over
-# 14 live pi-issue@ units showed p50 ~1.9G against a 1.0 admission charge.
-# Moving this pin needs a new measurement in the same PR.
-[[ "$ram" == "2.0" ]] || fail "ram_gb_per_worker must be the measured 2.0 (admission authority, fleet-ops#4838); got '$ram'"
-ok "seat-caps.json ram_gb_per_worker is the measured 2.0"
+# 1.5 = the interim charge (fleet-ops#4896, 2026-09-10): the 2.0 p50 was
+# measured on workers running vitest --coverage forks + tsc -b locally;
+# fleet-ops#4893 forbids both in-worker and 0509#2534 makes npm test
+# coverage-free, so the old p50 no longer describes new workers. The
+# remeasure-4891 timer (2026-09-11 14:05Z) replaces 1.5 with the measured
+# p95 either way. Moving this pin needs a new measurement in the same PR.
+[[ "$ram" == "1.5" ]] || fail "ram_gb_per_worker must be the interim 1.5 (admission authority, fleet-ops#4896); got '$ram'"
+ok "seat-caps.json ram_gb_per_worker is the interim 1.5"
 
 echo "OK: fleet-work.slice TasksMax=8000; spawn-guard 7500/8000; RAM admission unchanged"
