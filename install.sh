@@ -926,14 +926,18 @@ process_entry() {
     # dest symlinked anywhere but the repo copy is drift, never something to
     # normalise away. An unparseable live file still DIFFs: the merge's
     # fallback emits the repo copy, which cannot equal an unparseable file.
+    # A merge failure (missing or unreadable repo copy, python error) must
+    # not abort under `set -e` either — the old byte compare could not, and
+    # aborting would skip every later MANIFEST entry and drop the DIFF line.
     if [[ "$src" == config/seat-caps.json && ! -L "$dest" && -f "$dest" ]]; then
       local eff live_caps
       eff=$(mktemp)
-      seat_caps_merge_unknown_providers "$dest" "$repo" >"$eff"
-      live_caps=$(live_target_file "$dest")
-      if [ -n "$live_caps" ] && content_equivalent "$live_caps" "$eff"; then
-        rm -f "$eff"
-        return 0
+      if seat_caps_merge_unknown_providers "$dest" "$repo" >"$eff" 2>/dev/null; then
+        live_caps=$(live_target_file "$dest")
+        if [ -n "$live_caps" ] && content_equivalent "$live_caps" "$eff"; then
+          rm -f "$eff"
+          return 0
+        fi
       fi
       rm -f "$eff"
     elif [ -L "$dest" ]; then
