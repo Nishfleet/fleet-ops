@@ -982,6 +982,37 @@ rc=$(run_bin 0)
 ok "origin #650 snippet plus later flag is clean"
 rm -f "$sessions/install-cp-flagged.jsonl"
 
+# --- 7d. simple `cat` ENOENT walked past (issue #1054) -------------
+# The session for issue #1054 ran a simple `cat` command on a non-existent
+# file (not in a chain). The toolResult had isError=true with
+# `cat: <path>: No such file or directory` and `Command exited with code 1`.
+# The assistant's next turn had no user-facing text naming the failure.
+# `cat` is not in BENIGN_STAGE_RE, so this is a real swallowed failure.
+# This test locks the simple `cat` ENOENT shape so a future refactor cannot
+# reintroduce a false negative on a standalone `cat` command.
+write_session "cat-enoent" '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_cat","name":"bash","arguments":{"command":"cat /nonexistent/file.conf 2>&1"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_cat","toolName":"bash","isError":true,"content":[{"type":"text","text":"cat: /nonexistent/file.conf: No such file or directory\n\nCommand exited with code 1"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"Moving on to the next task."}]}}'
+rc=$(run_bin 0)
+[[ "$rc" == "1" ]] || fail "simple cat ENOENT walked past should exit 1 (got $rc) $(cat "$scratch/err.log")"
+grep -q "FAILED-COMMAND-SWALLOWED" "$scratch/err.log" || fail "simple cat ENOENT missing SWALLOWED loud line"
+ok "simple cat ENOENT walked past is flagged"
+rm -f "$sessions/cat-enoent.jsonl"
+
+# --- 7e. simple `cat` ENOENT with later failure-naming prose (positive) ---
+# Same simple cat ENOENT shape as 7d, but the later user-facing text names
+# the failure ("the cat call failed ... it is now the blocker"). FLAG_RE must
+# match and clear the pending failure -> exit 0. Proves 7d is not "always
+# flag": naming the failure in user-facing text is the standing rule's
+# required discharge and must clear.
+write_session "cat-enoent-flagged" '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_cat","name":"bash","arguments":{"command":"cat /nonexistent/file.conf 2>&1"}}]}}
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_cat","toolName":"bash","isError":true,"content":[{"type":"text","text":"cat: /nonexistent/file.conf: No such file or directory\n\nCommand exited with code 1"}]}}
+{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"the cat call failed with 1 — the file does not exist, it is now the blocker. Filing a separate issue."}]}}'
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "simple cat ENOENT with later failure-naming prose should exit 0 (got $rc) $(cat "$scratch/err.log")"
+ok "simple cat ENOENT with later failure-naming prose clears (exit 0)"
+rm -f "$sessions/cat-enoent-flagged.jsonl"
+
 # --- 7f. live #945: chained cmd, successful prefix masks a real `cat` ENOENT -
 # The session 2026-08-27T04-18-57-831Z ran two bash toolCalls in one turn. The
 # second was a chain `ls ... | wc -l; echo "---"; cat <missing-drop-in> 2>&1`
