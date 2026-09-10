@@ -735,6 +735,47 @@ n_exh2=$(printf '%s\n' "$env_out" | grep -c 'SKIP-EXHAUSTED' || true)
     || fail "scenario16b: SKIP-EXHAUSTED must be logged ONCE, not every tick (got $n_exh2 this tick: $env_out)"
 ok "scenario16: 3 prior recasts -> no start, single SKIP-EXHAUSTED line, not repeated (fleet-ops#3962)"
 
+# ============================================================================
+# Scenario 17 (fleet-ops#4965): a SKIP recast's re-start bypasses the per-tick
+# start cap. A recast is a single unit re-run, not fan-out — same carve-out
+# rationale as failed-unit recovery (scenario 12). Without the bypass, a
+# recast whose re-start loses the tick-cap race is deferred, the renamed-aside
+# vote stays MISSING, the recast counter never advances, the SKIP-EXHAUSTED
+# abstention (fleet-ops#4503) can never fire, and the panel wedges at 2 real
+# votes + 1 missing forever while AUDITOR-PANEL-PENDING fires every tick.
+# ============================================================================
+reset_state
+# 301 eats the whole cap first (3 missing roles, cap=1 -> 1 starts, 2 deferred).
+# 302 has 2 real votes + a stale SKIP for free-glm: the recast must re-start
+# free-glm EVEN THOUGH the cap is already exhausted.
+printf '301\n302\n' >"$CANDIDATES"
+: >"$ACTIVE_UNITS"
+old_at=$(date -u -d '2000 seconds ago' +%Y-%m-%dT%H:%M:%SZ)
+write_vote_at demo 302 devin PASS "north star; no duplicates; see bin/foo" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+write_vote_at demo 302 senior FAIL "vague termination" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+write_vote_at demo 302 free-glm SKIP "provider returned exit 1: transient failure" "$old_at"
+export AUDIT_TICK_MAX_START=1
+: >"$calls"
+
+run_auditor
+unset AUDIT_TICK_MAX_START
+
+[[ "$env_rc" == 0 ]] || fail "scenario17: must exit 0, got $env_rc ($env_out)"
+# The recast re-start for 302/free-glm must happen despite the cap being
+# exhausted by 301. This is the wedge fix: without the bypass this start
+# would be deferred and the vote left MISSING.
+grep -qx 'start pi-audit@demo--302--free-glm.service' "$calls" \
+    || fail "scenario17: recast re-start must bypass the tick cap ($(cat "$calls"))"
+# The stale SKIP vote must still be renamed aside.
+[[ -f "$state_dir/demo/302/free-glm.vote" ]] \
+    && fail "scenario17: stale SKIP vote must be renamed away from free-glm.vote"
+# Cap still binds NON-recast starts: 301 has 3 missing roles, cap=1 -> exactly
+# 1 of them starts. Total starts = 1 (301, capped) + 1 (302/free-glm, bypass).
+n_starts=$(grep -c '^start ' "$calls" || true)
+[[ "$n_starts" -eq 2 ]] \
+    || fail "scenario17: expected 2 starts (1 capped + 1 recast-bypass), got $n_starts ($(cat "$calls"))"
+ok "scenario17: SKIP recast re-start bypasses the per-tick cap (no wedge, fleet-ops#4965)"
+
 # Nested CI host (workers cannot add a ci.yml line).
 grep -Fq 'bash "$here/fleet-heartbeat-auditor.test.sh"' "$here/fleet-heartbeat-low-water-mark.test.sh" \
     || fail "fleet-heartbeat-low-water-mark.test.sh must host this file (CI cannot gain a new workflow line)"
