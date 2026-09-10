@@ -32,6 +32,10 @@
 #   6. Yesterday's spend does not count: a session file whose cost lines are
 #      timestamped yesterday leaves today's counter at 0 — the seat is
 #      offered for a product repo.
+#   7. last_resort ordering (Nish 2026-09-10 ds41 amendment): a second
+#      product_only seat flagged last_resort:true sits FIRST in models.json
+#      enumeration order yet must be offered only after the unflagged paid
+#      seat — it is picked only when every other seat is unusable.
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -55,10 +59,17 @@ export QUALITY_SCOREBOARD_JSON="$scratch/no-quality.json"
 export QUALITY_ROUTING_JSON="$scratch/no-quality.json"
 echo '{}' >"$scratch/no-quality.json"
 
-# The paid openrouter seat plus a free ollama fallback lane.
+# The paid openrouter seat, a last_resort-flagged deepseek seat (listed
+# FIRST so enumeration order alone would pick it before openrouter), plus a
+# free ollama fallback lane.
 cat >"$scratch/models.json" <<'JSON'
 {
   "providers": {
+    "deepseek": {
+      "models": [
+        { "id": "deepseek-flash", "cost": { "input": 0.44 } }
+      ]
+    },
     "openrouter": {
       "models": [
         { "id": "deepseek/deepseek-v4-flash-0731", "cost": { "input": 0.045 } }
@@ -83,6 +94,18 @@ cat >"$scratch/seat-caps.json" <<'JSON'
   "product_order": "value",
   "free_providers_in_order": ["ollama"],
   "providers": {
+    "deepseek": {
+      "cap": 1,
+      "class": "metered",
+      "models": {
+        "deepseek-flash": {
+          "cap": 1,
+          "product_only": true,
+          "last_resort": true,
+          "daily_spend_cap_usd": 2
+        }
+      }
+    },
     "openrouter": {
       "cap": 1,
       "class": "metered",
@@ -296,6 +319,49 @@ set -e
 printf '%s' "$out" | grep -q "openrouter" \
     && ok "yesterday-spend: paid seat offered (yesterday's spend not counted)" \
     || fail "yesterday-spend: paid seat NOT offered, got: $out"
+
+# --- scenario 7: last_resort seat sinks to the bucket tail --------------
+echo "--- scenario 7: last_resort seat picked only after every other last-resort seat ---"
+export FLEET_SESSIONS_DIR="$scratch/sessions-empty"
+# Free lane AND the unflagged paid seat both benched; the flagged seat
+# enumerates FIRST in models.json yet must still be picked last — it is
+# the only candidate left, so it is offered now.
+_ps="ollama"; _ms="deepseek-v4-flash:0731"
+_ps="${_ps//[^A-Za-z0-9._-]/_}"; _ms="${_ms//[^A-Za-z0-9._-]/_}"
+jq -nc --arg u "2999-01-01T00:00:00Z" \
+  '{provider:"ollama",model:"deepseek-v4-flash:0731",health_class:"quota_bench",http_status:429,retryable:true,seat_dead:false,poison_ladder:false,observed_at:"2026-09-06T00:00:00Z",source:"test",failure_mode:"quota_cap",bench_until:$u,usable_at:$u,consecutive_failure_count:0}' \
+  > "$ledger/${_ps}__${_ms}.json"
+_ps="openrouter"; _ms="deepseek/deepseek-v4-flash-0731"
+_ps="${_ps//[^A-Za-z0-9._-]/_}"; _ms="${_ms//[^A-Za-z0-9._-]/_}"
+jq -nc --arg u "2999-01-01T00:00:00Z" \
+  '{provider:"openrouter",model:"deepseek/deepseek-v4-flash-0731",health_class:"quota_bench",http_status:429,retryable:true,seat_dead:false,poison_ladder:false,observed_at:"2026-09-06T00:00:00Z",source:"test",failure_mode:"quota_cap",bench_until:$u,usable_at:$u,consecutive_failure_count:0}' \
+  > "$ledger/${_ps}__${_ms}.json"
+set +e
+out=$(run_pick "0509" product)
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "last_resort: expected the flagged seat as sole survivor, got rc=$rc"
+[[ "$out" == "deepseek"*$'\t'*"deepseek-flash" || "$out" == *"deepseek"* ]] \
+    || fail "last_resort: expected the flagged deepseek seat, got: $out"
+printf '%s' "$out" | grep -q "openrouter" \
+    && fail "last_resort: benched openrouter seat was picked over the flagged seat, got: $out" \
+    || true
+printf '%s' "$out" | grep -q "deepseek" \
+    && ok "last_resort: flagged seat offered only when every other seat is unusable" \
+    || fail "last_resort: flagged seat NOT offered, got: $out"
+# And the ordering half: unbench openrouter only — the unflagged seat must
+# win again even though the flagged seat enumerates first.
+_ps="openrouter"; _ms="deepseek/deepseek-v4-flash-0731"
+_ps="${_ps//[^A-Za-z0-9._-]/_}"; _ms="${_ms//[^A-Za-z0-9._-]/_}"
+rm -f "$ledger/${_ps}__${_ms}.json"
+set +e
+out=$(run_pick "0509" product)
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "last_resort-order: expected a pick, got rc=$rc"
+printf '%s' "$out" | grep -q "openrouter" \
+    && ok "last_resort-order: unflagged paid seat picked ahead of the flagged seat" \
+    || fail "last_resort-order: flagged seat outranked the unflagged seat, got: $out"
 
 echo
 echo "ALL OK: fleet-ops#3724 product_only + daily spend cap replay drill"

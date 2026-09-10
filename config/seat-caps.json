@@ -127,12 +127,14 @@
       "flat_usd_per_month": null,
       "models": {
         "deepseek-flash": {
-          "cap": 2,
+          "cap": 1,
           "product_only": true,
+          "last_resort": true,
           "daily_spend_cap_usd": 3
         }
       },
-      "_comment_ds41_20260910": "2026-09-10 (Nish: V4 flash banned fleet-wide, unanimous): the direct api.deepseek.com seat moved to deepseek-flash (DeepSeek V4.1 Flash; the old V4 id is retired provider-side). Same last-resort metered discipline as the openrouter paid seat (fleet-ops#3724): product_only + $3/day spend cap. reasoning_effort:none stays wired in pi-models.json; the 3-pass exhaustion gate still applies."
+      "_comment_deepseek_official": "PAYG last resort only (Nish 2026-09-10): picked only when every other seat is dead/capped/rate-limited. The seat stays configured — never delete it. Mechanism: product_only + daily_spend_cap_usd=3 (fleet-ops#3724, unchanged) already keeps it out of every class bucket; last_resort:true sinks it to the tail of the last-resort bucket itself. Needed because the bucket kept raw models.json enumeration order and 'deepseek' enumerates before 'openrouter' — without the flag a restored openrouter paid seat would wait BEHIND this PAYG seat. Smallest possible change in lib/seat-lib.sh (a flag that reorders the bucket tail), per the amendment packet. Model cap dropped 2->1 per the same packet: a PAYG money seat admits at most one concurrent worker.",
+      "_comment_ds41_20260910": "2026-09-10 (Nish: V4 flash banned fleet-wide, unanimous): the direct api.deepseek.com seat moved to deepseek-flash (DeepSeek V4.1 Flash; the old V4 id is retired provider-side). Same last-resort metered discipline as the openrouter paid seat (fleet-ops#3724): product_only + $3/day spend cap. reasoning_effort:none stays wired in pi-models.json. The fleet-ops#4625 3-pass exhaustion gate (PR #4830) never landed — it went stale on this migration; the last_resort flag above carries the last-resort semantics instead."
     },
     "ollama": {
       "cap": 0,

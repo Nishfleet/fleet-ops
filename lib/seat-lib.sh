@@ -408,6 +408,12 @@ declare -A SEAT_FREE_DAILY_REQUEST_BUDGET=()
 # last-resort bucket pick_seat appends after every other class, so it is
 # offered only when no free/prepaid seat is usable.
 declare -A SEAT_PRODUCT_ONLY=()
+# Nish 2026-09-10 (ds41 amendment): a product_only seat may also carry
+# last_resort:true — it sinks below every other seat in the last-resort
+# bucket, so the PAYG api.deepseek.com seat is offered only when no other
+# seat of any class (including other product_only seats) is usable.
+# Keyed on "provider/model". Absent = normal product_only bucket order.
+declare -A SEAT_LAST_RESORT=()
 # fleet-ops#3724: per-seat daily USD spend cap measured from Pi session
 # usage.cost (the same source the fleet-ops#3283 fleet_seat_spend_usd export
 # aggregates). When today's (UTC) spend on the seat reaches this, seat-lib
@@ -548,6 +554,7 @@ load_seat_caps() {
     SEAT_CAP_ZERO_CLASS_INTENTIONAL=()
     SEAT_CAP_ZERO_CLASS_STALE=()
     SEAT_PRODUCT_ONLY=()
+    SEAT_LAST_RESORT=()
     SEAT_DAILY_SPEND_CAP_USD=()
     SEAT_PROVIDER_DAILY_BUDGET_USD=()
     SEAT_PROVIDER_DAILY_STOP_USD=()
@@ -699,11 +706,15 @@ load_seat_caps() {
             # only after every free/prepaid seat is unusable (last-resort
             # bucket). daily_spend_cap_usd: when today's (UTC) Pi usage.cost
             # on the seat reaches it, the seat benches until 00:00 UTC.
-            local mpo mspend
+            local mpo mspend mlr
             mpo=$(jq -r '.product_only // false' <<<"$cap" 2>/dev/null || true)
             [[ "$mpo" == "true" ]] && SEAT_PRODUCT_ONLY["$p/$m"]=1
             mspend=$(jq -r '.daily_spend_cap_usd // ""' <<<"$cap" 2>/dev/null || true)
             [[ "$mspend" =~ ^[0-9]+(\.[0-9]+)?$ ]] && SEAT_DAILY_SPEND_CAP_USD["$p/$m"]="$mspend"
+            # last_resort (Nish 2026-09-10): product_only seats flagged
+            # last_resort sink to the tail of the last-resort bucket.
+            mlr=$(jq -r '.last_resort // false' <<<"$cap" 2>/dev/null || true)
+            [[ "$mlr" == "true" ]] && SEAT_LAST_RESORT["$p/$m"]=1
         fi
     # Unit separator (\x1f), not TSV, for the same reason the providers loop
     # uses it: bash `read` collapses consecutive tabs, so an empty per-model
@@ -5066,6 +5077,10 @@ pick_seat() {
     # no free/prepaid (or other) seat is usable — and only to a packet whose
     # repo carries the product flag in config/intake-repos.json.
     local -a product_only_seats=()
+    # last_resort-flagged product_only seats are collected apart and merged
+    # onto the bucket tail after enumeration, so they are the absolute last
+    # pick of every order (Nish 2026-09-10 ds41 amendment).
+    local -a product_only_last_seats=()
 
     # fleet-ops#1624: at-capacity (cap reached, seat busy not broken) skip
     # counter + sample. The per-seat "skipped (provider/model cap=N reached)"
@@ -5372,7 +5387,15 @@ pick_seat() {
                 _seat_unusable_sample+=("$p/$m")
                 continue
             fi
-            product_only_seats+=("$p"$'\t'"$m")
+            # last_resort (Nish 2026-09-10 ds41 amendment): the PAYG
+            # api.deepseek.com seat sinks to the tail of the last-resort
+            # bucket — offered only when every other seat of every class,
+            # including other product_only seats, is unusable.
+            if [[ -n "${SEAT_LAST_RESORT[$p/$m]:-}" ]]; then
+                product_only_last_seats+=("$p"$'\t'"$m")
+            else
+                product_only_seats+=("$p"$'\t'"$m")
+            fi
             continue
         fi
         case "$class" in
@@ -5392,6 +5415,13 @@ pick_seat() {
         done
         echo "$_ct"
         return 0
+    fi
+
+    # Merge last_resort-flagged product_only seats onto the bucket tail so
+    # every pick site (product value-order fall-through, keystone ladder,
+    # senior-review scan, normal ladder) sees them strictly last.
+    if (( ${#product_only_last_seats[@]} > 0 )); then
+        product_only_seats+=("${product_only_last_seats[@]}")
     fi
 
     # fleet-ops#1449: ONE summary line per pick_seat call for the seats
