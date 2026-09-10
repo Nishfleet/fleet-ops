@@ -1357,6 +1357,45 @@ live=$(SEAT_LIVE_QUOTA_PROM="$live_prom" bash -c 'source "$0"; provider_live_res
 live=$(SEAT_LIVE_QUOTA_PROM="$scratch/no-such-file.prom" bash -c 'source "$0"; provider_live_reset_s cursor' "$lib")
 [[ "$live" == "0" ]] || fail "live-reset: missing prom file expected 0, got '$live'"
 ok "9f-live: provider_live_reset_s honours exhaustion, staleness, passed resets, min-across-windows"
+
+# 9f-prepaid (fleet-ops#5022): a prepaid subscription's SHORT window comes from
+# its own usage endpoint via bin/fleet-prepaid-util-canary (prepaid-usage.prom),
+# not from fleet_seat_quota_*. OpenCode Go's 5h rolling window is walled at
+# >= 95% USED, so this source uses a used-percent threshold where the
+# fleet_seat_quota source uses a remaining-percent one; the same freshness gate
+# applies (the emitted observed timestamp is absolute, so now comes from bash).
+prepaid_prom="$scratch/prepaid-usage.prom"
+prepaid_now=$(date -u +%s)
+cat >"$prepaid_prom" <<PROM
+fleet_prepaid_usage_pct{provider="opencode-go",window="5h"} 97
+fleet_prepaid_window_reset_seconds{provider="opencode-go",window="5h"} 3000
+fleet_prepaid_usage_pct{provider="opencode-go",window="weekly"} 97
+fleet_prepaid_window_reset_seconds{provider="opencode-go",window="weekly"} 90000
+fleet_prepaid_usage_observed_timestamp{provider="opencode-go"} $prepaid_now
+fleet_prepaid_usage_pct{provider="below-wall",window="5h"} 94
+fleet_prepaid_window_reset_seconds{provider="below-wall",window="5h"} 3000
+fleet_prepaid_usage_observed_timestamp{provider="below-wall"} $prepaid_now
+fleet_prepaid_usage_pct{provider="stale-og",window="5h"} 97
+fleet_prepaid_window_reset_seconds{provider="stale-og",window="5h"} 3000
+fleet_prepaid_usage_observed_timestamp{provider="stale-og"} $((prepaid_now - 7200))
+PROM
+live=$(SEAT_LIVE_PREPAID_PROM="$prepaid_prom" bash -c 'source "$0"; provider_live_reset_s opencode-go' "$lib")
+[[ "$live" == "3000" ]] \
+  || fail "9f-prepaid: opencode-go (5h at 97% used) expected the 5h reset 3000, got '${live:-<none>}'"
+live=$(SEAT_LIVE_PREPAID_PROM="$prepaid_prom" bash -c 'source "$0"; provider_live_reset_s below-wall' "$lib")
+[[ "$live" == "0" ]] \
+  || fail "9f-prepaid: 94% used is below the 95% wall and must not bench, got '$live'"
+live=$(SEAT_LIVE_PREPAID_PROM="$prepaid_prom" bash -c 'source "$0"; provider_live_reset_s stale-og' "$lib")
+[[ "$live" == "0" ]] \
+  || fail "9f-prepaid: a 2h-old observation must not bench, got '$live'"
+live=$(SEAT_LIVE_PREPAID_PROM="$scratch/no-such-prepaid.prom" bash -c 'source "$0"; provider_live_reset_s opencode-go' "$lib")
+[[ "$live" == "0" ]] \
+  || fail "9f-prepaid: missing prepaid-usage.prom expected 0, got '$live'"
+# The fleet_seat_quota source still wins when it has an answer.
+live=$(SEAT_LIVE_QUOTA_PROM="$live_prom" SEAT_LIVE_PREPAID_PROM="$prepaid_prom" bash -c 'source "$0"; provider_live_reset_s cursor' "$lib")
+[[ "$live" == "5000" ]] \
+  || fail "9f-prepaid: the fleet_seat_quota source must still win for cursor, got '$live'"
+ok "9f-prepaid: provider_live_reset_s reads the 5h prepaid window at >= 95% used, honours freshness"
 # Writer wiring: cursor has NO static default (fails open in 9f above), but a
 # live exhausted row must bench it at the live window (count=1 -> no geometric
 # escalation, bench_window_s == live value).

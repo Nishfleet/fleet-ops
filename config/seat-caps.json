@@ -318,14 +318,6 @@
       "intentional_cap_zero": "money_only",
       "reason": "2026-08-26 Claude via OpenCode Zen is money-adjacent; Nish only. Not a free lane. fleet-ops#1432: intentional hard-conserve cap (money only), so the operator never re-audits it — unlike the stale cap=0 seats (groq TPM, inferx 404 endpoint, orcarouter quota) that warrant re-audition when the external condition clears. models.json lists claude-fable-5 + claude-opus-5 with cost=null (not free-tier; credit-billed) and seat-caps class=metered — observed signal: the Claude slugs carry no free tier, so the seat is money-only by construction (sr-never-vibes marker: metered, cost=null)."
     },
-    "opencode-go": {
-      "cap": 2,
-      "class": "prepaid-quota",
-      "models": {
-        "deepseek-flash": 2
-      },
-      "_comment_ds41_20260910": "2026-09-10: OpenCode Go subscription seat on deepseek-flash (Zen Go serves it as DeepSeek V4.1 Flash). Wired the day V4 flash was banned fleet-wide (Nish, unanimous); subscription-backed $0 marginal, prepaid-quota class. Other opencode-go models in pi-models.json (v4-pro, glm-5.3) stay un-allowlisted until separately measured."
-    },
     "bai": {
       "cap": 4,
       "class": "free",
@@ -572,7 +564,7 @@
         }
       },
       "_note": "Nish 2026-09-10 14:30 IST: 'go ham on opencode ds4.1 flash - virtually unlimited for the next 4 days'. OpenCode Go subscription endpoint https://opencode.ai/zen/go/v1 (needs x-opencode-session header; Pi's own per-session id is the correct value — do NOT set a fresh UUID per request in pi-models.json, that zeroed the prefix cache for 65M tokens on 2026-09-10, fleet-ops#4975). deepseek-flash = DeepSeek V4.1 Flash (models.dev, released 2026-09-10). Live Pi test 2026-09-10 09:15Z: tools=1 class=worked. FIRST in every order until 2026-09-14, then revert to the 2026-08-27 volume order. Nish 2026-09-10 15:05 IST: \"can go upto 10 ds4.1 flash\" -> cap 10.",
-      "_note_pacing": "2026-09-10 21:55 IST (Nish, console screenshot: 5-hour 100.2%, weekly 80.1% resets in 3d7h, monthly 40%): cap 10->2 so the remaining ~20% of the weekly pool lasts to the Monday reset; quota_window weekly so a 429 bench is capped to the reset horizon. Devin SWE-2 (free) is the volume seat now. No usage API is wired for OpenCode Go (prepaid-usage/opencode-go.json has counts only) — pacing by percent needs the console endpoint; queued."
+      "_note_pacing": "2026-09-10 21:55 IST (Nish, console screenshot: 5-hour 100.2%, weekly 80.1% resets in 3d7h, monthly 40%): cap 10->2 so the remaining ~20% of the weekly pool lasts to the Monday reset; quota_window weekly so a 429 bench is capped to the reset horizon. Devin SWE-2 (free) is the volume seat now. READER WIRED 2026-09-10 (fleet-ops#5022): the queued console-endpoint work landed as GET https://opencode.ai/zen/go/v1/usage with the same key Pi already sends to /zen/go/v1 (no console session token, no new credential) -> {\"usage\":{\"rolling|weekly|monthly\":{\"percent\":N,\"resetsAt\":ISO}}}. bin/fleet-prepaid-util-canary reads it on the existing heartbeat tick and writes fleet_prepaid_usage_pct{provider=\"opencode-go\",window=\"5h|weekly|monthly\"} + reset seconds/timestamp + fleet_prepaid_paced_cap to prepaid-usage.prom, and overlays the same numbers into prepaid-usage/opencode-go.json. Live read 2026-09-10T20:20Z: 5h 15% / weekly 86% / monthly 43%, weekly resets 2026-09-14T00:00:00Z -> paced cap floor(14 / 75.7h * 12.5) = 2, which is this declared cap. Pacing reuses the cursor loop (config/fleet_rules.yml group fleet_opencode_go_prepaid_pacing): FleetOpenCodeGoPaceExceeded files a repair packet when the declared cap outruns fleet_prepaid_paced_cap, and FleetOpenCodeGoUsageReaderAbsent fail-louds a dead reader. The 5h window at >= 95% used supplies the bench window through lib/seat-lib.sh provider_live_reset_s (prepaid-usage.prom source), so a quota 429 benches to the live 5h reset instead of the flat quota_bench_default_s."
     }
   },
   "product_order": "value",
