@@ -642,4 +642,46 @@ python3 "$tmp/issue_file_lib.py" "$repo_root/lib/issue-file.py" \
     || fail "scenario 12d: issue-file must not dedupe different loud signals"
 ok "scenario 12d: issue-file does not collapse different loud signals (wrong-pointer root cause fixed)"
 
+# ---------------------------------------------------------------------------
+# 13. ESCALATION-COMPLETION-STALE-TRIP chain-hash alarm -> observe-to-close
+# (fleet-ops#4949). A STALE-TRIP LOUD line for a specific chain (chain-hash
+# key, derived from the phrase, NOT a literal `signal:`/`unit=` token) is
+# filed as one issue carrying the backticked key. While the chain stays in
+# the current tick the issue is deduped (heartbeat comment, stays open); once
+# the chain stops emitting (detector green / STOP-REASON advanced), the
+# issue observe-to-closes. This locks the exact #4949/#4919 closeout so a
+# regression can never leave a never-green STALE-TRIP issue.
+# ---------------------------------------------------------------------------
+stale_msg="chain 0a52ad5971df detector-green but STOP-REASON reason=unit-failure is NOT terminal and stop-escalation is IDLE — fix was never closed (auditor-resolved/boundary:* required)"
+cat > "$tmp/open13.json" <<'EOF'
+[{"number": 4949, "body": "\n`loud/escalation-completion-stale-trip/chain-0a52ad5971df-detector-green-stop-reason`\n", "labels": [{"name": "agent-ready"}], "createdAt": "2026-08-28T10:00:00Z", "comments": []}]
+EOF
+
+# 13a. STALE-TRIP still in the current tick -> dedupe, stays open.
+cat > "$tmp/triage13-on.md" <<EOF
+[2026-08-28T13:30:00Z] [ESCALATION-COMPLETION-STALE-TRIP] $stale_msg
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/open13.json" "$tmp/triage13-on.md" > "$tmp/summary13a.json"
+jq -e '.deduped == 1 and .closed == 0 and .filed == 0' "$tmp/summary13a.json" >/dev/null \
+    || fail "scenario 13a: alarmed STALE-TRIP chain must dedupe (got: $(cat "$tmp/summary13a.json"))"
+! grep -q "issue close" "$tmp/gh.log" || fail "scenario 13a: alarmed STALE-TRIP must not close (gh.log: $(cat "$tmp/gh.log"))"
+ok "scenario 13a: STALE-TRIP chain still alarmed -> deduped, stays open"
+
+# 13b. STALE-TRIP gone from the current tick -> observe-to-close #4949.
+# The chain's detector reports green on this real heartbeat tick, so the
+# filed STALE-TRIP issue is the exact closeout the reconciler owns.
+cat > "$tmp/triage13-off.md" <<'EOF'
+[2026-08-28T13:30:00Z] [ESCALATION-COMPLETION-GREEN] chain 0a52ad5971df unit=fleet-heartbeat.service is detector-green and STOP-REASON terminal — FIX reached and closed
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/open13.json" "$tmp/triage13-off.md" > "$tmp/summary13b.json"
+jq -e '.closed == 1 and .deduped == 0' "$tmp/summary13b.json" >/dev/null \
+    || fail "scenario 13b: green STALE-TRIP chain must observe-to-close (got: $(cat "$tmp/summary13b.json"))"
+grep -q "issue close 4949" "$tmp/gh.log" || fail "scenario 13b: expected gh issue close 4949 (got: $(cat "$tmp/gh.log"))"
+grep -q "issue comment" "$tmp/gh.log" && fail "scenario 13b: green chain must only close, not heartbeat-comment"
+ok "scenario 13b: green STALE-TRIP chain observe-to-closes the filed issue"
+
 ok "all signal-reconcile scenarios passed"
