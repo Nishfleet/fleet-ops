@@ -34,6 +34,8 @@ MemoryMax=6G
 # starving the whole host (systemd-oomd killed codex-remote-control,
 # fleet-deploy-check and an ephemeral Chromium scope on 2026-09-05).
 MemorySwapMax=0
+CPUAccounting=yes
+CPUQuota=25%
 Type=oneshot
 Environment=HOME=/home/nish
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
