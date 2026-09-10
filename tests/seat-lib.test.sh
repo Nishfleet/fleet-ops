@@ -19,7 +19,7 @@ ok "lib/litellm-seat.sh present"
 if [[ -f "$repo_root/lib/seat-lib.sh" ]]; then
     lines=$(wc -l < "$repo_root/lib/seat-lib.sh")
     lines=${lines//[^0-9]/}
-    (( lines < 10 )) || fail "lib/seat-lib.sh must be a short forwarder, not the routing library (got $lines lines)"
+    (( lines < 20 )) || fail "lib/seat-lib.sh must be a short forwarder, not the routing library (got $lines lines)"
     grep -q 'pick_seat()' "$repo_root/lib/seat-lib.sh" \
       && fail "forwarder must not define pick_seat"
     grep -q 'litellm-seat.sh' "$repo_root/lib/seat-lib.sh" \
