@@ -101,9 +101,10 @@ spec_judge_files_line() {
 # OR a directory group together. Output: one key per line.
 spec_judge_files_keys() {
     local line="$1"
-    local IFS=','
+    local -a parts
+    IFS=',' read -ra parts <<< "$line"
     local p
-    for p in $line; do
+    for p in "${parts[@]}"; do
         p="$(printf '%s' "$p" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
         [[ -z "$p" ]] && continue
         printf '%s\n' "$p"
