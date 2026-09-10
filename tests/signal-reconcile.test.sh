@@ -282,9 +282,20 @@ jq -e '.filed == 0 and .alarm_count == 0' "$tmp/summary9b.json" >/dev/null     |
 ok "scenario 9b: DEBUG-PLAYBOOK-MISSING is not queued (detector files its own aggregate)"
 
 # ---------------------------------------------------------------------------
-# 9c. DEBUG-PLAYBOOK-GATE-BLOCK keys on the RULE too (fleet-ops#4516/4579).
-#     Same rule-level dedupe as 9b: no noisy `_dirty-worktree-audit.py` key and
-#     no per-session split.
+# 9c. DEBUG-PLAYBOOK-GATE-BLOCK is not queued by the reconciler now
+#     (fleet-ops#4946). Like DEBUG-PLAYBOOK-MISSING (#4620) and
+#     FAILED-COMMAND-FAIL (#4944), it keys on the RULE not the session
+#     (fleet-ops#4516/4579), so its derived signal
+#     `loud/debug-playbook-gate-block` is constant across every in-window
+#     session-close gate failure and can only go green on a tick whose 24h
+#     window holds ZERO gate-blocks fleet-wide. #4946 is the live loop:
+#     filed 2026-09-10T12:54:23Z, it stayed red even after #4953 fixed the
+#     root cause because other sessions' gate-blocks kept the rule key alive
+#     and re-claimed its unit into StartLimitBurst churn. The gate's
+#     enforcement is untouched (bin/pi-issue-run still exits 1 / WORK-death),
+#     and the same session is already carried per session by the detector's
+#     `signal: debug-playbook/<slug>` and aggregate filings. The reconcile
+#     issue is a redundant never-green carrier.
 # ---------------------------------------------------------------------------
 cat > "$tmp/empty9c.json" <<'EOF'
 []
@@ -293,12 +304,29 @@ cat > "$tmp/triage9c.md" <<'EOF'
 [2026-08-28T13:30:00Z] [DEBUG-PLAYBOOK-GATE-BLOCK] session=2026-09-08t07-35-48z-0509-1279-abc222 attempts=4 snippet=agent-cron-run agent-scheduler-drift-check _dirty-worktree-audit.py escalation-daily-sweep
 EOF
 true > "$tmp/filed.jsonl"
-true > "$tmp/gh.log"
 run "$tmp/empty9c.json" "$tmp/triage9c.md" > "$tmp/summary9c.json"
-jq -e '.filed == 1' "$tmp/summary9c.json" >/dev/null     || fail "scenario 9c: expected one filed"
-grep -q "loud/debug-playbook-gate-block" "$tmp/filed.jsonl"     || fail "scenario 9c: signal must key on the rule, got: $(cat "$tmp/filed.jsonl")"
-grep -q "loud/debug-playbook-gate-block/2026-09-08t07-35-47z-0509-1279-abc222" "$tmp/filed.jsonl"     && fail "scenario 9c: signal must NOT key on the session, got: $(cat "$tmp/filed.jsonl")"
-ok "scenario 9c: DEBUG-PLAYBOOK-GATE-BLOCK keys on the rule, not the session"
+jq -e '.filed == 0 and .alarm_count == 0' "$tmp/summary9c.json" >/dev/null     || fail "scenario 9c: DEBUG-PLAYBOOK-GATE-BLOCK must not be queued, got: $(cat "$tmp/summary9c.json")"
+[[ $(wc -l < "$tmp/filed.jsonl") -eq 0 ]]     || fail "scenario 9c: must not file, got: $(cat "$tmp/filed.jsonl")"
+ok "scenario 9c: DEBUG-PLAYBOOK-GATE-BLOCK is not queued (rule key is never-green)"
+
+# ---------------------------------------------------------------------------
+# 9c-close. An already-open loud/debug-playbook-gate-block issue
+#     observe-to-closes even while GATE-BLOCK loud lines keep firing
+#     (fleet-ops#4946). Once the tag is SKIPed the line is no longer a queued
+#     signal, so it cannot keep the stale alarm (live #4946) red — same
+#     terminus as 9d for MISSING and 9k-close for FAILED-COMMAND-FAIL.
+# ---------------------------------------------------------------------------
+cat > "$tmp/open9cclose.json" <<'EOF'
+[{"number": 4946, "body": "The heartbeat detector reported this alarm on a real tick and no open issue carried its signal key, so the detector→queue reconciler filed one.\n\n- alarm tag: `DEBUG-PLAYBOOK-GATE-BLOCK`\n\nDo NOT close this issue on PR merge alone.\n\n`loud/debug-playbook-gate-block`\n", "labels": [{"name": "agent-ready"}], "createdAt": "2026-09-10T12:54:23Z", "comments": []}]
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/open9cclose.json" "$tmp/triage9c.md" > "$tmp/summary9cclose.json"
+jq -e '.closed == 1 and .filed == 0' "$tmp/summary9cclose.json" >/dev/null \
+    || fail "scenario 9c-close: stale GATE-BLOCK issue must observe-to-close while GATE-BLOCK lines continue, got: $(cat "$tmp/summary9cclose.json")"
+grep -q "issue close" "$tmp/gh.log" \
+    || fail "scenario 9c-close: expected gh issue close"
+ok "scenario 9c-close: stale GATE-BLOCK issue observe-to-closes while lines continue"
 
 # ---------------------------------------------------------------------------
 # 9c-data. Two DEBUG-PLAYBOOK-MISSING sessions, one heartbeat tick, file ZERO
@@ -323,7 +351,7 @@ ok "scenario 9c-extra: two MISSING sessions file zero reconciler issues"
 # 9d. An already-open loud/debug-playbook-missing issue observe-to-closes even
 #     while per-session MISSING LOUD lines keep firing (fleet-ops#4620). Those
 #     lines are no longer a queued signal, so they cannot keep the issue red.
-#     GATE-BLOCK still queues (scenario 9c). The daily rollup is DEBUG-PLAYBOOK-FAIL.
+#     GATE-BLOCK is likewise skipped (scenario 9c). The daily rollup is DEBUG-PLAYBOOK-FAIL.
 # ---------------------------------------------------------------------------
 cat > "$tmp/open9d.json" <<'EOF'
 [{"number": 4620, "body": "The heartbeat detector reported this alarm on a real tick.\n\n- alarm tag: `DEBUG-PLAYBOOK-MISSING`\n\nDo NOT close this issue on PR merge alone.\n\n`loud/debug-playbook-missing`\n", "labels": [{"name": "agent-ready"}], "createdAt": "2026-08-28T10:00:00Z", "comments": []}]

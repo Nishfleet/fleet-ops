@@ -56,8 +56,24 @@ SKIP_MSG_PREFIXES = ("rule-enforcement:",)
 # (fleet-ops#4384). Queuing them as loud/debug-playbook-missing created a
 # never-green issue: any other in-window session re-emits the same
 # rule-level signal every tick, so observe-to-close never fires
-# (fleet-ops#4620). GATE-BLOCK still queues (a real session-close gate
-# failure). FAIL still queues (the daily rollup).
+# (fleet-ops#4620).
+#
+# DEBUG-PLAYBOOK-GATE-BLOCK is the same never-green shape: it keys on the
+# rule (fleet-ops#4516/4579), so every in-window session-close gate failure
+# re-derives the identical `loud/debug-playbook-gate-block`. #4946 is the
+# live proof — filed 2026-09-10T12:54:23Z for session 0509-2315's edit
+# no-op gate two-hit, it could not go green even after #4953 fixed the root
+# cause (an edit no-op is not a failed attempt, so that session re-gates
+# OK), because OTHER sessions' gate-blocks kept the same rule key alive and
+# re-claimed the working alarm unit into StartLimitBurst claim-release
+# churn. The gate's enforcement is untouched: bin/pi-issue-run still exits 1
+# (WORK death) and fails the heartbeat tick while the debt is non-zero, and
+# the selfsame session is already carried per session by the detector's own
+# `signal: debug-playbook/<slug>` and daily-aggregate filings (#4384). The
+# reconciler issue is the wrong carrier for it — a measurement/deterrent,
+# not a queue item.
+#
+# FAIL still queues (the daily rollup).
 #
 # CLAIM-REAP-STARTED is the pi-issue-failed-reap entry log line written when
 # the reaper begins its automatic cleanup after a worker failure
@@ -122,6 +138,7 @@ SKIP_MSG_PREFIXES = ("rule-enforcement:",)
 # debt deliberately) no longer needs the reconciler to file it.
 SKIP_TAGS = {
     "DEBUG-PLAYBOOK-MISSING",
+    "DEBUG-PLAYBOOK-GATE-BLOCK",
     "CLAIM-REAP-STARTED",
     "CLAIM-RELEASED",
     "PACKETS-ARCHIVED",
