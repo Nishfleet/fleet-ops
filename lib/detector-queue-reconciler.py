@@ -137,6 +137,21 @@ SKIP_MSG_PREFIXES = ("rule-enforcement:",)
 # like DEBUG-PLAYBOOK-MISSING, the detector's own aggregate (#2726 sized the
 # debt deliberately) no longer needs the reconciler to file it.
 #
+# CLAIM-CLOSED-CLEANUP and CLAIM-CLOSED-RESET are the same class as
+# CLAIM-RELEASED / PACKETS-ARCHIVED above: pi-issue-failed-reap writes both
+# on EVERY real reap of a CLOSED issue (live #5007 / #5008, instance=0509-2347
+# repo=Nishfleet/0509) as the successful cleanup that resets the dead worker's
+# per-issue state files (reclaim-count, systemic, infra-death, prefer-class,
+# last-death-class) after the work shipped and merged. A reap reaching this
+# branch is the expected recovery step — the claim branch is already deleted,
+# the agent-in-progress label already removed — not a fault, and the line's
+# `repo=` key makes the derived signals per-repo (`loud/claim-closed-cleanup/
+# <repo>`, `loud/claim-closed-reset/<repo>`), so any future reap of a CLOSED
+# issue re-emits the same keys and observe-to-close can never go green. The
+# actionable reaper failures already carry their own loud tags (BRANCH-FAIL /
+# LABEL-FAIL / PARSE-FAIL / NO-GH). Queuing either refiles a noisy per-repo
+# never-green issue on every closed-issue reap.
+#
 # EXEC-REVIEW-DISARM is the exec-review canary's disarm ACTION (fleet-ops#3731
 # hard gate): bin/fleet-exec-review-canary emits it when it disables auto-merge
 # on an armed PR that carries no verify/receipt cue. The message is
@@ -156,6 +171,8 @@ SKIP_TAGS = {
     "DEBUG-PLAYBOOK-GATE-BLOCK",
     "CLAIM-REAP-STARTED",
     "CLAIM-RELEASED",
+    "CLAIM-CLOSED-CLEANUP",
+    "CLAIM-CLOSED-RESET",
     "PACKETS-ARCHIVED",
     "FAILED-COMMAND-FAIL",
     "EXEC-REVIEW-DISARM",

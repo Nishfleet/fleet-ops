@@ -716,6 +716,114 @@ grep -q "issue close" "$tmp/gh.log" \
 ok "scenario 9l-close: stale EXEC-REVIEW-DISARM issue observe-to-closes while disarm lines continue"
 
 # ---------------------------------------------------------------------------
+# 9m. CLAIM-CLOSED-CLEANUP is not queued by the reconciler (fleet-ops#5007).
+#     pi-issue-failed-reap writes it when it reaps a CLOSED issue: the
+#     successful cleanup that removes agent-in-progress and archives the dead
+#     worker's per-issue state (the instance=... repo=... branch=...
+#     branch_deleted=... label_removed=... summary line). It fires on EVERY
+#     real reap of a CLOSED issue and carries a `repo=` key, so the derived
+#     signal is per-repo (`loud/claim-closed-cleanup/<repo>`) and observe-
+#     to-close can never go green — the same never-green loop #4918/#4930/
+#     #4955 fixed for CLAIM-REAP-STARTED / CLAIM-RELEASED / PACKETS-ARCHIVED.
+#     The actionable reaper outcomes (BRANCH-FAIL / LABEL-FAIL / PARSE-FAIL /
+#     NO-GH) still queue.
+# ---------------------------------------------------------------------------
+cat > "$tmp/empty9m.json" <<'EOF'
+[]
+EOF
+cat > "$tmp/triage9m.md" <<'EOF'
+[2026-08-28T13:30:00Z] [CLAIM-CLOSED-CLEANUP] instance=0509-2317 repo=Nishfleet/0509 branch=claim/issue-2317 branch_deleted=yes label_removed=yes
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/empty9m.json" "$tmp/triage9m.md" > "$tmp/summary9m.json"
+jq -e '.filed == 0 and .alarm_count == 0' "$tmp/summary9m.json" >/dev/null \
+    || fail "scenario 9m: CLAIM-CLOSED-CLEANUP must not be queued, got: $(cat "$tmp/summary9m.json")"
+[[ $(wc -l < "$tmp/filed.jsonl") -eq 0 ]] \
+    || fail "scenario 9m: CLAIM-CLOSED-CLEANUP must not file, got: $(cat "$tmp/filed.jsonl")"
+ok "scenario 9m: CLAIM-CLOSED-CLEANUP is not queued (closed-issue cleanup completion is expected, not a fault)"
+
+# 9m-close. An already-open loud/claim-closed-cleanup issue observe-to-closes
+#     once CLAIM-CLOSED-CLEANUP is skipped (fleet-ops#5007).
+# ---------------------------------------------------------------------------
+cat > "$tmp/open9mclose.json" <<'EOF'
+[{"number": 5007, "body": "The heartbeat detector reported this alarm on a real tick.\n\n- alarm tag: `CLAIM-CLOSED-CLEANUP`\n\n`loud/claim-closed-cleanup/nishfleet-0509`\n", "labels": [{"name": "agent-ready"}], "createdAt": "2026-09-10T16:15:00Z", "comments": []}]
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/open9mclose.json" "$tmp/triage9m.md" > "$tmp/summary9mclose.json"
+jq -e '.closed == 1 and .filed == 0' "$tmp/summary9mclose.json" >/dev/null \
+    || fail "scenario 9m-close: stale loud/claim-closed-cleanup must close even while CLEANUP LOUD lines fire, got: $(cat "$tmp/summary9mclose.json")"
+grep -q "issue close" "$tmp/gh.log" \
+    || fail "scenario 9m-close: expected gh issue close"
+ok "scenario 9m-close: stale CLAIM-CLOSED-CLEANUP issue observe-to-closes while CLEANUP lines continue"
+
+# ---------------------------------------------------------------------------
+# 9n. CLAIM-CLOSED-RESET is not queued by the reconciler (fleet-ops#5008).
+#     pi-issue-failed-reap writes it in the SAME CLOSED branch, immediately
+#     after CLAIM-CLOSED-CLEANUP, as the per-issue state-file reset that lets
+#     a re-opened issue start fresh (rm reclaim-count/systemic/infra-death/
+#     prefer-class/last-death-class; the instance=... repo=... summary line).
+#     Like its CLEANUP sibling it fires on EVERY real reap of a CLOSED issue
+#     with a `repo=` key, so the derived signal is per-repo
+#     (`loud/claim-closed-reset/<repo>`) and observe-to-close can never go
+#     green. Confirmed live: #5008 was auto-filed by this never-green key on
+#     2026-09-10T15:48:43Z from instance=0509-2347 repo=Nishfleet/0509. The
+#     reset is the expected post-merge cleanup, not a fault.
+# ---------------------------------------------------------------------------
+cat > "$tmp/empty9n.json" <<'EOF'
+[]
+EOF
+cat > "$tmp/triage9n.md" <<'EOF'
+[2026-08-28T13:30:00Z] [CLAIM-CLOSED-RESET] instance=0509-2347 repo=Nishfleet/0509
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/empty9n.json" "$tmp/triage9n.md" > "$tmp/summary9n.json"
+jq -e '.filed == 0 and .alarm_count == 0' "$tmp/summary9n.json" >/dev/null \
+    || fail "scenario 9n: CLAIM-CLOSED-RESET must not be queued, got: $(cat "$tmp/summary9n.json")"
+[[ $(wc -l < "$tmp/filed.jsonl") -eq 0 ]] \
+    || fail "scenario 9n: CLAIM-CLOSED-RESET must not file, got: $(cat "$tmp/filed.jsonl")"
+ok "scenario 9n: CLAIM-CLOSED-RESET is not queued (post-merge claim-state reset is expected, not a fault)"
+
+# 9n-key. The skip is only correct because the key is repo-scoped and cannot
+#     move per instance: prove that any closed-issue reap in the same repo
+#     derives the SAME `loud/claim-closed-reset/<repo>` key. If a future
+#     refactor keys on the instance or removes the reset's claims, the key
+#     churns per reap and the skip must be re-argued.
+python3 - "$repo_root" <<'PY' || fail "scenario 9n-key: CLAIM-CLOSED-RESET key must be repo-scoped and constant"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location(
+    "dqr", sys.argv[1] + "/lib/detector-queue-reconciler.py")
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+keys = set()
+for inst in ["0509-2347", "0509-2388", "0509-2401"]:
+    msg = f"instance={inst} repo=Nishfleet/0509"
+    keys.add(tuple(m._extract_signal_key("CLAIM-CLOSED-RESET", msg)))
+assert keys == {("nishfleet-0509",)}, keys
+PY
+ok "scenario 9n-key: CLAIM-CLOSED-RESET key is repo-scoped (same repo, any instance -> same key)"
+
+# 9n-close. An already-open loud/claim-closed-reset/<repo> issue observe-
+#     to-closes once CLAIM-CLOSED-RESET is skipped even while RESET LOUD lines
+#     keep firing (fleet-ops#5008). Without the skip the per-repo key is
+#     re-derived on every closed-issue reap, observe-to-close can never fire,
+#     and the alarm refiles forever.
+# ---------------------------------------------------------------------------
+cat > "$tmp/open9nclose.json" <<'EOF'
+[{"number": 5008, "body": "The heartbeat detector reported this alarm on a real tick and no open issue carried its signal key, so the detector\u2192queue reconciler filed one.\n\n- alarm tag: `CLAIM-CLOSED-RESET`\n- evidence: instance=0509-2347 repo=Nishfleet/0509\n- observed tick: `2026-09-10T15:48:43Z`\n\nDo NOT close this issue on PR merge alone.\n\n`loud/claim-closed-reset/nishfleet-0509`\n", "labels": [{"name": "agent-ready"}], "createdAt": "2026-09-10T16:19:00Z", "comments": []}]
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/open9nclose.json" "$tmp/triage9n.md" > "$tmp/summary9nclose.json"
+jq -e '.closed == 1 and .filed == 0' "$tmp/summary9nclose.json" >/dev/null \
+    || fail "scenario 9n-close: stale loud/claim-closed-reset must close even while RESET LOUD lines fire, got: $(cat "$tmp/summary9nclose.json")"
+grep -q "issue close" "$tmp/gh.log" \
+    || fail "scenario 9n-close: expected gh issue close"
+ok "scenario 9n-close: stale CLAIM-CLOSED-RESET issue observe-to-closes while RESET lines continue"
+
+# ---------------------------------------------------------------------------
 # 10. Tier1 wiring contract.
 # ---------------------------------------------------------------------------
 grep -q 'detector-queue-reconciler' "$repo_root/bin/fleet-heartbeat-tier1" \
