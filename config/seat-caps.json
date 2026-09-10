@@ -347,9 +347,18 @@
       "quota_bench_default_s": 604800,
       "models": {
         "deepseek/deepseek-v4-flash": 2,
-        "anthropic/claude-sonnet-5": { "cap": 1, "audition": true },
-        "minimax/minimax-m3": { "cap": 1, "audition": true },
-        "google/gemini-3.7-flash": { "cap": 1, "audition": true }
+        "anthropic/claude-sonnet-5": {
+          "cap": 1,
+          "audition": true
+        },
+        "minimax/minimax-m3": {
+          "cap": 1,
+          "audition": true
+        },
+        "google/gemini-3.7-flash": {
+          "cap": 1,
+          "audition": true
+        }
       },
       "_comment_promote_20260907": "fleet-ops#4055 (2026-09-07): promote mergegateway/deepseek/deepseek-v4-flash out of audition. Audition verdict (fleet-ops#3322): sessions=10 yield=0.5 cost_usd=0.0 fleet_median=0.0 — positive yield at/above fleet median, so the tick filed a promote verdict. Cap 2 per metered discipline (matches straitly/deepseek-v4-pro 'Start cap 2 per metered discipline; AIMD raises only with evidence'). Provider cap raised 1->2 so the model cap binds (pick_seat admits only min(provider_cap, model_cap) concurrent). Provider-level audition:true dropped so the promoted model is no longer gated to light-only via seat_is_audition; the three remaining models keep model-level audition:true so they stay light-only and still retire at 10 sessions / 7d / $1.",
       "_comment_audition_20260906": "fleet-ops#3973 (2026-09-06): mergegateway is a live audition provider (class metered, $10 free credits, probed 2026-09-06 PONG) that carries prepaid quota the audition lane refills by hand. A provider 402 'Credit balance depleted' (type/code budget_exceeded, tail watched 2026-09-06T12:09-12:10Z on all three seats at 1s on 0509-1752) is a prepaid-balance WALL, not error_class=unknown — the same class as the straitly/xai 402s, so quota_bench_default_s=604800 (7 days, same period class as xai-oauth). With the default the seat is benched once instead of re-dying daily; without it mark_seat_quota_bench fails open and the reactive quota_exhausted ledger benches for 24h. No cap change, no seat retirement (infra/money class, rc=1 at 1s 0 tools).",
@@ -426,7 +435,7 @@
     },
     "paretoinference": {
       "quota_window": "daily",
-      "_quota_window_4640": "2026-09-09 fleet-ops#4640: same shape as devin \u2014 a prepaid $20/day seat with no declared reset horizon took a 7-day spawn bench from a no-status rc=1 while its own ledger read healthy 200. Pareto meters daily.",
+      "_quota_window_4640": "2026-09-09 fleet-ops#4640: same shape as devin — a prepaid $20/day seat with no declared reset horizon took a 7-day spawn bench from a no-status rc=1 while its own ledger read healthy 200. Pareto meters daily.",
       "cap": 4,
       "max_probe_ceiling": 8,
       "class": "prepaid-quota",
@@ -521,6 +530,21 @@
         }
       },
       "_litellm_p3b_20260908": "2026-09-08 (fleet-ops#4425): all five LiteLLM model groups (judge, worker-cheap, worker-capable, senior, worker-private) registered at cap 0 with intentional_cap_zero=p3b_pending, pending the P3b PI_SEAT_SOURCE=litellm switchover in #4422. Proxy /health/readiness probe healthy; live seat map had zero litellm seats (grep -c litellm = 0) at the decision run. group names mirror config/pi-models.json providers.litellm.models. worker group caps become operational when the #4422 deletion enables LiteLLM routing (see rule-enforcement row led-2026-09-08-litellm-p3b)."
+    },
+    "opencode-go": {
+      "cap": 2,
+      "class": "prepaid-quota",
+      "quota_window": "weekly",
+      "max_probe_ceiling": 2,
+      "quota_bench_default_s": 900,
+      "models": {
+        "deepseek-flash": 2,
+        "deepseek-v4-flash": 0,
+        "deepseek-v4-pro": 0,
+        "glm-5.3": 0
+      },
+      "_note": "Nish 2026-09-10 14:30 IST: 'go ham on opencode ds4.1 flash - virtually unlimited for the next 4 days'. OpenCode Go subscription endpoint https://opencode.ai/zen/go/v1 (needs x-opencode-session header; Pi's own per-session id is the correct value — do NOT set a fresh UUID per request in pi-models.json, that zeroed the prefix cache for 65M tokens on 2026-09-10, fleet-ops#4975). deepseek-flash = DeepSeek V4.1 Flash (models.dev, released 2026-09-10). Live Pi test 2026-09-10 09:15Z: tools=1 class=worked. FIRST in every order until 2026-09-14, then revert to the 2026-08-27 volume order. Nish 2026-09-10 15:05 IST: \"can go upto 10 ds4.1 flash\" -> cap 10.",
+      "_note_pacing": "2026-09-10 21:55 IST (Nish, console screenshot: 5-hour 100.2%, weekly 80.1% resets in 3d7h, monthly 40%): cap 10->2 so the remaining ~20% of the weekly pool lasts to the Monday reset; quota_window weekly so a 429 bench is capped to the reset horizon. Devin SWE-2 (free) is the volume seat now. No usage API is wired for OpenCode Go (prepaid-usage/opencode-go.json has counts only) — pacing by percent needs the console endpoint; queued."
     }
   },
   "product_order": "value",
