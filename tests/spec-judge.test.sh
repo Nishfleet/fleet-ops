@@ -95,7 +95,7 @@ ok "Test 4: marker detection matches sha; re-judge on body change (sha mismatch)
 
 # --- Test 5: verdict parsing (READY / EDIT / BLOCK) -----------------------
 # The apply function must recognize all three verdict kinds.
-grep -qF 'VERDICT:[[:space:]](READY|EDIT|BLOCK)' "$lib" \
+grep -qE 'VERDICT:\[\[:space:\]\]\+\(READY\|EDIT\|BLOCK\)' "$lib" \
     || fail "Test 5: verdict parser must recognize READY/EDIT/BLOCK"
 ok "Test 5: verdict parser recognizes READY/EDIT/BLOCK"
 
@@ -154,6 +154,149 @@ if command -v shellcheck >/dev/null 2>&1; then
 else
     echo "SKIP: Test 10: shellcheck not installed"
 fi
+
+# --- Test 11: spec_judge_parse_replace (Replace "OLD" with "NEW") ---------
+pair=$(spec_judge_parse_replace 'Replace "one POST" with "two POST" — note.')
+expected=$'one POST\ttwo POST'
+[[ "$pair" == "$expected" ]] || fail "Test 11: parse_replace got [$pair] want [$expected]"
+# Non-Replace bullets return non-zero (go to binding section).
+spec_judge_parse_replace 'Append to step 1: "text"' \
+    && fail "Test 11: non-Replace bullet must return non-zero"
+ok "Test 11: parse_replace extracts OLD/NEW; non-Replace bullets fall through"
+
+# --- Test 12: spec_judge_landing_order ------------------------------------
+vf=$(mktemp)
+cat >"$vf" <<'EOF'
+## #2181 - VERDICT: EDIT
+
+- Replace "a" with "b".
+
+## Cross-ticket
+
+- **Landing order (strictly sequential):** #2181 -> #2189 -> #2193.
+- **Counter owner:** #2181.
+EOF
+order=$(spec_judge_landing_order "$vf")
+[[ "$order" == "2181 2189 2193 " ]] || fail "Test 12: landing order got [$order]"
+ok "Test 12: landing order parsed from Cross-ticket section"
+rm -f "$vf"
+
+# --- Test 13: EDIT apply — anchor found (exact replace) -------------------
+# Fake gh: view returns a body containing the anchor; edit/append captures
+# the new body. We assert the anchor was replaced in the body pushed back.
+_sj_state=$(mktemp -d); export SPEC_JUDGE_STATE_DIR="$_sj_state"
+export GH="$here/fake-gh-edit.sh"
+cat >"$GH" <<'FAKE'
+#!/usr/bin/env bash
+case "$1" in
+  issue)
+    case "$2" in
+      view) printf '%s' '{"body":"files: a.ts\ndepends-on: none\n\nStep 3 says one POST here."}' ;;
+      edit)
+        # capture --body-file payload
+        while [[ $# -gt 0 ]]; do
+          [[ "$1" == "--body-file" ]] && { cp "$2" "$SPEC_JUDGE_STATE_DIR/edit-body.txt"; break; }
+          shift
+        done ;;
+      comment) ;;
+    esac ;;
+esac
+FAKE
+chmod +x "$GH"
+vf=$(mktemp)
+cat >"$vf" <<'EOF'
+## #2181 - VERDICT: EDIT
+
+- Replace "one POST here." with "two POST here."
+EOF
+spec_judge_apply "fleet-ops" "Nishfleet/fleet-ops" "shaX" "$vf"
+newbody=$(cat "$SPEC_JUDGE_STATE_DIR/edit-body.txt" 2>/dev/null || true)
+[[ "$newbody" == *"two POST here."* ]] || fail "Test 13: anchor not replaced in pushed body"
+[[ "$newbody" != *"one POST here."* ]] || fail "Test 13: old anchor still present"
+[[ "$newbody" != *"Judge edits (binding)"* ]] || fail "Test 13: binding section added despite anchor found"
+ok "Test 13: EDIT anchor found -> exact replace, no binding section"
+rm -f "$vf"
+
+# --- Test 14: EDIT apply — anchor NOT found -> binding section -------------
+vf=$(mktemp)
+cat >"$vf" <<'EOF'
+## #2182 - VERDICT: EDIT
+
+- Replace "this anchor does not exist in body" with "new text"
+- Append to step 1: "extra"
+EOF
+spec_judge_apply "fleet-ops" "Nishfleet/fleet-ops" "shaY" "$vf"
+newbody=$(cat "$SPEC_JUDGE_STATE_DIR/edit-body.txt" 2>/dev/null || true)
+[[ "$newbody" == *"## Judge edits (binding)"* ]] || fail "Test 14: binding section missing"
+[[ "$newbody" == *"this anchor does not exist in body"* ]] || fail "Test 14: unanchored bullet missing from binding"
+[[ "$newbody" == *"Append to step 1"* ]] || fail "Test 14: non-Replace bullet missing from binding"
+ok "Test 14: EDIT anchor not found -> bullets land in binding section"
+rm -f "$vf"
+
+# --- Test 15: EDIT apply — depends-on: none rewritten from landing order ---
+vf=$(mktemp)
+cat >"$vf" <<'EOF'
+## #2189 - VERDICT: EDIT
+
+- Replace "a" with "b"
+
+## Cross-ticket
+
+- **Landing order (strictly sequential):** #2181 -> #2189.
+EOF
+# Body has "depends-on: none"; #2189's predecessor is #2181.
+spec_judge_apply "fleet-ops" "Nishfleet/fleet-ops" "shaZ" "$vf"
+newbody=$(cat "$SPEC_JUDGE_STATE_DIR/edit-body.txt" 2>/dev/null || true)
+[[ "$newbody" == *"depends-on: #2181"* ]] || fail "Test 15: depends-on: none not rewritten to predecessor"
+[[ "$newbody" != *"depends-on: none"* ]] || fail "Test 15: depends-on: none still present"
+ok "Test 15: depends-on: none rewritten to landing-order predecessor"
+rm -f "$vf"
+
+# --- Test 16: BLOCK apply — reason comment + nish-decision for money -------
+# Fake gh captures the comment body for the BLOCK issue.
+cat >"$GH" <<'FAKE'
+#!/usr/bin/env bash
+case "$1" in
+  issue)
+    case "$2" in
+      view) printf '%s' '{"body":"files: a.ts"}' ;;
+      edit) ;;  # label change, ignore
+      comment) while [[ $# -gt 0 ]]; do [[ "$1" == "--body" ]] && { printf '%s' "$2" > "$SPEC_JUDGE_STATE_DIR/block-comment.txt"; break; }; shift; done ;;
+    esac ;;
+esac
+FAKE
+chmod +x "$GH"
+vf=$(mktemp)
+cat >"$vf" <<'EOF'
+## #2199 - VERDICT: BLOCK
+
+- This ticket asks Nish to set the pricing tier; money decision required.
+EOF
+spec_judge_apply "fleet-ops" "Nishfleet/fleet-ops" "shaB" "$vf"
+bc=$(cat "$SPEC_JUDGE_STATE_DIR/block-comment.txt" 2>/dev/null || true)
+[[ "$bc" == *"spec-judged: shaB"* ]] || fail "Test 16: BLOCK marker missing from comment"
+[[ "$bc" == *"spec-judge BLOCK reason"* ]] || fail "Test 16: BLOCK reason missing"
+[[ "$bc" == *"money decision required"* ]] || fail "Test 16: BLOCK reason text missing"
+[[ "$bc" == *"blocked-on: nish-decision"* ]] || fail "Test 16: money reason must add blocked-on: nish-decision"
+ok "Test 16: BLOCK money reason -> reason comment + blocked-on: nish-decision"
+rm -f "$vf"
+
+# --- Test 17: BLOCK apply — non-Nish reason -> NO nish-decision ------------
+vf=$(mktemp)
+cat >"$vf" <<'EOF'
+## #2200 - VERDICT: BLOCK
+
+- Spec is ambiguous about the helper ownership; re-spec before claiming.
+EOF
+spec_judge_apply "fleet-ops" "Nishfleet/fleet-ops" "shaC" "$vf"
+bc=$(cat "$SPEC_JUDGE_STATE_DIR/block-comment.txt" 2>/dev/null || true)
+[[ "$bc" == *"spec-judge BLOCK reason"* ]] || fail "Test 17: BLOCK reason missing"
+[[ "$bc" != *"blocked-on: nish-decision"* ]] || fail "Test 17: non-Nish reason must NOT add nish-decision"
+ok "Test 17: BLOCK non-Nish reason -> reason comment, no nish-decision"
+rm -f "$vf"
+
+# cleanup fake gh
+rm -f "$GH"
 
 echo ""
 echo "ALL OK: spec-judge gate (fleet-ops#4801)"

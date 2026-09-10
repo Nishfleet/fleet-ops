@@ -316,39 +316,113 @@ spec_judge_launch() {
 
 # --- apply -----------------------------------------------------------------
 
+# --- verdict parsing helpers ----------------------------------------------
+
+# Match a `Replace "OLD" with "NEW"` clause in a bullet. Prints
+# `OLD<TAB>NEW` (tab-separated) on stdout when matched, else nothing. OLD
+# and NEW are the first two double-quoted spans after `Replace ` and
+# ` with ` respectively. The judge's quoted spans use straight double
+# quotes and contain no embedded double quotes (verified against the
+# 2026-09-09 verdict), so a first-quote / next-quote split is safe.
+spec_judge_parse_replace() {
+    local bullet="$1"
+    local rest="${bullet#*Replace }"
+    [[ "$rest" == "$bullet" ]] && return 1   # no "Replace " in bullet
+    [[ "$rest" == \"* ]] || return 1        # must start with a quote
+    local old="${rest#\"}"
+    old="${old%%\"*}"
+    rest="${rest#*\"}"                       # past closing quote of OLD
+    rest="${rest#* with }"                    # drop " with " prefix
+    [[ "$rest" == \"* ]] || return 1
+    local new="${rest#\"}"
+    new="${new%%\"*}"
+    [[ -n "$old" && -n "$new" ]] || return 1
+    printf '%s\t%s\n' "$old" "$new"
+}
+
+# Extract the `## Cross-ticket` landing order from a verdict file as a
+# space-separated list of issue numbers in order (e.g. "2181 2189 2193").
+# Empty if no landing-order line is found.
+spec_judge_landing_order() {
+    local verdict_file="$1"
+    local in_cross=0 line
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^##[[:space:]]+Cross-ticket ]]; then
+            in_cross=1; continue
+        fi
+        (( in_cross == 1 )) || continue
+        # Landing order line carries "->"-separated "#<n>" tokens.
+        if [[ "$line" =~ Landing[[:space:]]+order ]] \
+            || [[ "$line" =~ landing[[:space:]]+order ]]; then
+            printf '%s\n' "$line" \
+                | grep -oE '#[0-9]+' \
+                | tr -d '#' \
+                | tr '\n' ' '
+            return 0
+        fi
+    done < "$verdict_file"
+}
+
+# --- apply -----------------------------------------------------------------
+
 # Apply a landed verdict file mechanically. Reads the verdict, applies
 # READY/EDIT/BLOCK per issue, adds the spec-judged marker, rewrites
 # depends-on: from the Cross-ticket landing order. Clears the in-flight
-# marker on success.
+# marker on success. Best-effort: every gh call is `|| true` so one bad
+# issue does not abort the batch; the marker is added last so a partially
+# applied EDIT is still marked judged (the binding section preserves the
+# unapplied edits for the worker).
 spec_judge_apply() {
     local repo="$1" full_repo="$2" sha="$3" verdict_file="$4"
     local inflight
     inflight="$(spec_judge_inflight_file "$repo")"
 
-    # Parse each `## #<n> - VERDICT: <V>` block.
-    # For each issue, apply per verdict.
-    local current=""
-    local verdict=""
+    # Landing order (space-separated issue numbers, in order).
+    local order
+    order="$(spec_judge_landing_order "$verdict_file")"
+
+    # Walk the verdict once, collecting (number, verdict, bullets) blocks
+    # into parallel arrays, then dispatch each after the loop (a nested
+    # function is not valid bash, so we collect-then-process).
+    local -a b_num=() b_verdict=() b_bullets=()
+    local current="" verdict="" bullets=""
+    local line
     while IFS= read -r line; do
-        if [[ "$line" =~ ^##[[:space:]]+#([0-9]+)[[:space:]]+-[[:space:]]+VERDICT:[[:space:]](READY|EDIT|BLOCK) ]]; then
+        if [[ "$line" =~ ^##[[:space:]]+Cross-ticket ]]; then
+            break
+        fi
+        if [[ "$line" =~ ^##[[:space:]]+#([0-9]+)[[:space:]]+-[[:space:]]+VERDICT:[[:space:]]+(READY|EDIT|BLOCK) ]]; then
+            if [[ -n "$current" ]]; then
+                b_num+=("$current"); b_verdict+=("$verdict"); b_bullets+=("$bullets")
+            fi
             current="${BASH_REMATCH[1]}"
             verdict="${BASH_REMATCH[2]}"
-            case "$verdict" in
-                READY)
-                    "$GH" issue comment "$current" -R "$full_repo" --body "spec-judged: $sha" >/dev/null 2>&1 || true
-                    ;;
-                BLOCK)
-                    # Remove agent-ready, comment the reason. File to
-                    # nish-questions only if money/legal/product direction.
-                    "$GH" issue edit "$current" -R "$full_repo" --remove-label agent-ready --add-label agent-blocked >/dev/null 2>&1 || true
-                    ;;
-            esac
+            bullets=""
+            continue
         fi
+        [[ -n "$current" ]] && bullets+="$line"$'\n'
     done < "$verdict_file"
+    if [[ -n "$current" ]]; then
+        b_num+=("$current"); b_verdict+=("$verdict"); b_bullets+=("$bullets")
+    fi
 
-    # EDIT blocks: apply each quoted replacement via gh issue edit.
-    # (Handled in a second pass below so READY/BLOCK markers land first.)
-    spec_judge_apply_edits "$full_repo" "$verdict_file" "$sha"
+    local i
+    for (( i=0; i<${#b_num[@]}; i++ )); do
+        case "${b_verdict[$i]}" in
+            READY)
+                "$GH" issue comment "${b_num[$i]}" -R "$full_repo" \
+                    --body "spec-judged: $sha" >/dev/null 2>&1 || true
+                ;;
+            EDIT)
+                spec_judge_apply_edit_issue \
+                    "$full_repo" "${b_num[$i]}" "$sha" "${b_bullets[$i]}" "$order"
+                ;;
+            BLOCK)
+                spec_judge_apply_block_issue \
+                    "$full_repo" "${b_num[$i]}" "$sha" "${b_bullets[$i]}"
+                ;;
+        esac
+    done
 
     # Clear the in-flight marker and the verdict file (applied).
     rm -f "$inflight" 2>/dev/null || true
@@ -356,32 +430,87 @@ spec_judge_apply() {
     return 0
 }
 
-# Apply EDIT replacements. Each EDIT bullet is a quoted replacement; we
-# attempt an exact-anchor replace on the issue body; if the anchor is not
-# found verbatim, append a "## Judge edits (binding)" section.
-spec_judge_apply_edits() {
-    local full_repo="$1" verdict_file="$2" sha="$3"
-    # This is a best-effort mechanical apply. The full exact-anchor replace
-    # is complex; for the initial build we append the binding section when
-    # an anchor is not found, and add the marker comment.
-    # (See spec_judge_apply for the marker; EDIT issues get the marker here.)
-    local current=""
-    while IFS= read -r line; do
-        if [[ "$line" =~ ^##[[:space:]]+#([0-9]+)[[:space:]]+-[[:space:]]+VERDICT:[[:space:]](READY|EDIT|BLOCK) ]]; then
-            current="${BASH_REMATCH[1]}"
+# Apply one EDIT issue: exact-anchor replace each `Replace "OLD" with
+# "NEW"` bullet; bullets whose anchor is not found (and any non-Replace
+# bullets) go into an appended `## Judge edits (binding)` section. Then
+# rewrite a `depends-on: none` line to the landing-order predecessor.
+# The marker comment is added last.
+spec_judge_apply_edit_issue() {
+    local full_repo="$1" n="$2" sha="$3" bullets="$4" order="$5"
+
+    # Fetch the current body.
+    local body
+    body=$("$GH" issue view "$n" -R "$full_repo" --json body 2>/dev/null \
+        | jq -r '.body // ""' 2>/dev/null) || body=""
+    [[ -n "$body" ]] || { "$GH" issue comment "$n" -R "$full_repo" --body "spec-judged: $sha" >/dev/null 2>&1 || true; return 0; }
+
+    local binding="" applied=0
+    local bullet
+    while IFS= read -r bullet; do
+        [[ -z "$bullet" ]] && continue
+        local pair
+        pair="$(spec_judge_parse_replace "$bullet")" || { binding+="$bullet"$'\n'; continue; }
+        local old="${pair%%$'\t'*}" new="${pair#*$'\t'}"
+        if [[ "$body" == *"$old"* ]]; then
+            body="${body/"$old"/"$new"}"
+            applied=1
+        else
+            binding+="$bullet"$'\n'
         fi
-    done < "$verdict_file"
-    # Add the marker to every EDIT issue (READY already got it above).
-    # For the initial build, EDIT issues get the marker + the binding
-    # section appended by the worker that claims them (the judge edits are
-    # preserved in the verdict file for the worker to apply).
-    # We add the marker comment so the batch is not re-judged.
-    while IFS= read -r line; do
-        if [[ "$line" =~ ^##[[:space:]]+#([0-9]+)[[:space:]]+-[[:space:]]+VERDICT:[[:space:]]EDIT ]]; then
-            local n="${BASH_REMATCH[1]}"
-            "$GH" issue comment "$n" -R "$full_repo" --body "spec-judged: $sha" >/dev/null 2>&1 || true
+    done <<<"$bullets"
+
+    # Rewrite depends-on: none -> depends-on: #<predecessor> from the
+    # landing order (conservative: never overwrite a real depends-on, which
+    # may carry a proof-gate the landing order does not capture).
+    if [[ -n "$order" ]]; then
+        local -a oarr
+        read -r -a oarr <<<"$order"
+        local idx pred=""
+        for (( idx=0; idx<${#oarr[@]}; idx++ )); do
+            if [[ "${oarr[$idx]}" == "$n" ]] && (( idx > 0 )); then
+                pred="${oarr[$((idx-1))]}"; break
+            fi
+        done
+        if [[ -n "$pred" ]] \
+            && [[ "$body" =~ (^|$'\n')depends-on:[[:space:]]*none[[:space:]]*($|$'\n') ]]; then
+            body="$(printf '%s\n' "$body" | sed -E "s/^depends-on:[[:space:]]*none[[:space:]]*\$/depends-on: #${pred}/")"
+            applied=1
         fi
-    done < "$verdict_file"
+    fi
+
+    # Append the binding section if any edits could not be anchored.
+    if [[ -n "$binding" ]]; then
+        body+="$(printf '\n\n## Judge edits (binding)\n\n%s' "$binding")"
+        applied=1
+    fi
+
+    # Push the body back if anything changed.
+    if (( applied == 1 )); then
+        local tmp
+        tmp=$(mktemp)
+        printf '%s' "$body" > "$tmp"
+        "$GH" issue edit "$n" -R "$full_repo" --body-file "$tmp" >/dev/null 2>&1 || true
+        rm -f "$tmp" 2>/dev/null || true
+    fi
+
+    "$GH" issue comment "$n" -R "$full_repo" --body "spec-judged: $sha" >/dev/null 2>&1 || true
+}
+
+# Apply one BLOCK issue: remove agent-ready, comment the reason (the
+# bullets). If the reason names money/legal/product-direction (the
+# blocked-reconcile NISH_REASON set), add `blocked-on: nish-decision` so
+# the existing blocked-reconcile sweep routes it to Nish; otherwise leave
+# it for the next judge pass. The marker comment is added so the batch is
+# not re-judged while blocked.
+spec_judge_apply_block_issue() {
+    local full_repo="$1" n="$2" sha="$3" bullets="$4"
+    "$GH" issue edit "$n" -R "$full_repo" \
+        --remove-label agent-ready --add-label agent-blocked >/dev/null 2>&1 || true
+    local body="spec-judged: $sha"$'\n\n'"spec-judge BLOCK reason:"$'\n\n'"$bullets"
+    if printf '%s' "$bullets" | grep -qiE '\b(money|pay|price|pricing|billing|legal|brand|deletion|credentials?|secret|token|account[\s/-]*login|product[\s/-]*direction|customer[\s/-]*data|reserved)\b'; then
+        body+=$'\n\nblocked-on: nish-decision'
+    fi
+    "$GH" issue comment "$n" -R "$full_repo" --body "$body" >/dev/null 2>&1 || true
 }
 
 # --- failure fallback ------------------------------------------------------
