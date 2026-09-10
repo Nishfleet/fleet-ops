@@ -5258,7 +5258,7 @@ _BLOCKED_KINDS = (
 )
 HELP_FBI = "# HELP fleet_blocked_issues Open blocked issues by kind from the last blocked-reconcile sweep (fleet-ops#4260). kind=needs-orchestrator counts the label sweep across all open issues; the other kinds count the agent-blocked queue."
 TYPE_FBI = "# TYPE fleet_blocked_issues gauge"
-HELP_FBIA = "# HELP fleet_blocked_issue_age_seconds Age stats for blocked issues by kind, seconds since issue creation, from the last blocked-reconcile sweep (fleet-ops#4260)."
+HELP_FBIA = "# HELP fleet_blocked_issue_age_seconds Age stats for blocked issues by kind, seconds, from the last blocked-reconcile sweep (fleet-ops#4260). kind=needs-orchestrator reports time since the issue entered that class (last label add), not issue age: FleetNeedsOrchestratorStale measures a parked drain, not old tickets."
 TYPE_FBIA = "# TYPE fleet_blocked_issue_age_seconds gauge"
 
 

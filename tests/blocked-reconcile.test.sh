@@ -255,6 +255,7 @@ case "$1" in
       exit 0
     fi
     rel="${path#repos/}"
+    rel="${rel%%\?*}"
     f="$FAKE_DIR/api/${rel}.json"
     if [[ -f "$f" ]]; then
       cat "$f"
@@ -706,7 +707,45 @@ grep -q 'needs_orchestrator=0' <<<"$out" || fail "in-progress item must not coun
 [[ ! -s "$scratch/systemctl.log" ]] || fail "in-progress item must not trigger: $(cat "$scratch/systemctl.log")"
 ok "agent-in-progress needs-orchestrator item is skipped"
 
+# Case 11d: the p50 is time IN the needs-orchestrator class, not issue age.
+# A ticket created three weeks ago but parked 5 minutes ago is a fresh ask,
+# not a stalled drain: it must not trip FleetNeedsOrchestratorStale — and it
+# must not be a false-clear either (the age still reports the 5 minutes).
+mkdir -p "$scratch/api/Nishfleet/0509/issues/203"
+cat >"$scratch/api/Nishfleet/0509/issues/203/timeline.json" <<'JSON'
+[{"event":"labeled","label":{"name":"agent-ready"},"created_at":"2026-08-01T00:00:00Z"},
+ {"event":"unlabeled","label":{"name":"agent-ready"},"created_at":"2026-08-25T23:50:00Z"},
+ {"event":"labeled","label":{"name":"needs-orchestrator"},"created_at":"2026-08-25T23:55:00Z"}]
+JSON
+cat >"$scratch/list-orch.json" <<'JSON'
+[{"number":203,"createdAt":"2026-08-01T00:00:00Z","labels":[{"name":"needs-orchestrator"}]}]
+JSON
+: >"$scratch/systemctl.log"
+
+out=$("$bin" 2>"$scratch/err-orch-old-parks-new.txt")
+grep -q 'needs_orchestrator=1' <<<"$out" || fail "old-but-newly-parked item must count: $out"
+[[ "$(jq -r '.needs_orchestrator.p50_age_s' "$scratch/state.json")" == "300" ]] \
+    || fail "p50 must be time in class (300s), not issue age: $(cat "$scratch/state.json")"
+if grep -q 'start ' "$scratch/systemctl.log"; then
+    fail "a ticket parked 5 minutes ago must not start the sweep: $(cat "$scratch/systemctl.log")"
+fi
+ok "needs-orchestrator age is time in the class, not issue age"
+
+# Case 11e: the same ticket, parked for over 2h, still trips the detector.
+cat >"$scratch/api/Nishfleet/0509/issues/203/timeline.json" <<'JSON'
+[{"event":"labeled","label":{"name":"needs-orchestrator"},"created_at":"2026-08-25T21:00:00Z"}]
+JSON
+: >"$scratch/systemctl.log"
+
+out=$("$bin" 2>"$scratch/err-orch-genuine.txt")
+[[ "$(jq -r '.needs_orchestrator.p50_age_s' "$scratch/state.json")" == "10800" ]] \
+    || fail "a 3h-parked item must still report 3h: $(cat "$scratch/state.json")"
+grep -q 'start agent-cron-orchestrator-decision-sweep.service' "$scratch/systemctl.log" \
+    || fail "a 3h-parked item must start the sweep: $(cat "$scratch/systemctl.log")"
+ok "a genuinely parked needs-orchestrator item still starts the decision sweep"
+
 rm -f "$scratch/list-orch.json"
+rm -rf "$scratch/api/Nishfleet/0509/issues/203"
 
 # fleet-ops#4626 Case 12a: past date-gate + stub smoke rc=0 -> requeue (label flip).
 # NOW is 2026-08-26 (already past 2026-08-25T00:00:00Z). Smoke is a stub that
