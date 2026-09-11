@@ -1410,4 +1410,52 @@ grep -q "issue close 4990" "$tmp/gh.log" \
     || fail "scenario 17c: expected gh issue close 4990 (got: $(cat "$tmp/gh.log"))"
 ok "scenario 17c: aged-out FAILED-COMMAND-SWALLOWED observe-to-closes the filing"
 
+# ---------------------------------------------------------------------------
+# 18. find_existing_signal matches the backticked trailer issue_body() writes
+#     (fleet-ops#5076). The old substring check (`f"{signal}\n" in body` /
+#     endswith) could never see a `` `signal` `` trailer, so every issue the
+#     reconciler filed looked new to the helper. The matcher must accept the
+#     real filed form — and must NOT be satisfied by an unrelated issue that
+#     merely mentions the signal key in prose.
+# ---------------------------------------------------------------------------
+python3 - "$lib" <<'PY' || fail "scenario 18: find_existing_signal trailer matching failed"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("dqr", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+sys.modules["dqr"] = m
+spec.loader.exec_module(m)
+
+sig = "slo/seat-availability-slowburn"
+
+# The exact body issue_body() writes — signal trailer is a backticked line.
+filed = m.issue_body(
+    sig, "SLO-SEAT-SLOWBURN", "signal: slo/seat-availability-slowburn burn-rate high",
+    "2026-09-10T21:00:00Z",
+)
+issue = {"number": 5076, "body": filed, "comments": []}
+assert m.find_existing_signal([issue], sig) is issue, \
+    "issue_body() backticked trailer must be found"
+
+# Older carrier forms still count as carrying the key.
+legacy = {"number": 5077, "body": f"preamble\n{sig}\n", "comments": []}
+assert m.find_existing_signal([legacy], sig) is legacy, \
+    "bare trailer line must still match"
+keyed = {"number": 5078, "body": f"signal: {sig}\n", "comments": []}
+assert m.find_existing_signal([keyed], sig) is keyed, \
+    "signal: <key> marker line must still match"
+
+# An unrelated issue that only mentions the key in prose must not match.
+prose = {
+    "number": 5079,
+    "body": f"Investigating — the detector mentions {sig} in passing, see also `loud/other`.\n",
+    "comments": [{"body": f"more prose about {sig} here"}],
+}
+assert m.find_existing_signal([prose], sig) is None, \
+    "prose mention of the signal must not match"
+assert m.find_existing_signal([prose, issue], sig) is issue, \
+    "real filing must win over a prose-mention issue"
+print("scenario 18 assertions passed")
+PY
+ok "scenario 18: find_existing_signal matches the issue_body() backticked trailer, not prose mentions"
+
 ok "all signal-reconcile scenarios passed"

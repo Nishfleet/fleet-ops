@@ -23,8 +23,13 @@
 #     dup-cluster review line.
 #
 # This test replays the 18-close shape from the journal: with the fix, 0 of
-# them close, all get possible-duplicate comments; the #3140/#3146 pair with
-# 0509#1220 scores < 0.3 on token overlap. Hermetic (fake gh, no network).
+# them close; pre-fleet-ops#5152 all 16 non-canonical members got
+# possible-duplicate comments. After fleet-ops#5152 the derived
+# fleet/seat-crisis floor requires content corroboration, so #3140, #3146
+# and 0509#1220 no longer join the cluster at all — only the 15
+# content-identical alert copies cluster (14 comments, canonical kept).
+# The #3140/#3146 pair with 0509#1220 scores < DUP_THRESHOLD outright.
+# Hermetic (fake gh, no network).
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -74,7 +79,9 @@ export GH_OPEN_JSON="$scratch/gh-open.json"
 # mentions "seat" + "dead-man ping" (triggers _has_seat_crisis), and 15
 # fleet-ops alert issues that each share the seat-crisis primary signal.
 # Pre-fix: all 18 non-canonical members closed as score=1.00 dups of the
-# oldest (0509#1220, cross-repo canonical). Post-fix: 0 close, all comment.
+# oldest (0509#1220, cross-repo canonical). Post-fix: 0 close; the 15 alert
+# copies still cluster and comment, the three welded-in members no longer
+# join (fleet-ops#5152).
 python3 - "$scratch/gh-open.json" <<'PY'
 import json, sys
 path = sys.argv[1]
@@ -118,6 +125,8 @@ add("Nishfleet/fleet-ops", 3146,
 # 15 fleet-ops alert issues — each shares the seat-crisis primary signal
 # (mentions "seat" + "dead"/"corpse") so pre-fix they joined the cluster and
 # closed as dups of 0509#1220. None has real token overlap with 0509#1220.
+# They DO share near-identical boilerplate with each other, so they still
+# cluster together under the fleet-ops#5152 corroborated floor.
 for i in range(15):
     n = 4000 + i
     add("Nishfleet/fleet-ops", n,
@@ -131,7 +140,7 @@ with open(path, "w") as fh:
 print(f"wrote {len(issues)} issues")
 PY
 
-# --- 1. With the fix, 0 issues close (all 18 get possible-duplicate comments)
+# --- 1. With the fix, 0 issues close; the 15 alert copies still cluster ---
 export FLEET_CLOSE_DUPLICATES_REVIEW_LOG="$scratch/review.log"
 : >"$scratch/review.log"
 FLEET_CLOSE_DUPLICATES_OK=1 python3 "$lib" close-duplicates \
@@ -140,10 +149,11 @@ FLEET_CLOSE_DUPLICATES_OK=1 python3 "$lib" close-duplicates \
 closed=$(jq '.closed' "$scratch/run.json")
 commented=$(jq '.commented' "$scratch/run.json")
 [[ "$closed" -eq 0 ]] || fail "regression: must close 0, got closed=$closed (the 18-close bug)"
-# 18 issues across 2 repos -> 2 per-repo canonicals -> 16 non-canonical
-# members get possible-duplicate comments. Pre-fix all 16 non-canonical
-# members closed as score=1.00 dups of the single cross-repo canonical.
-[[ "$commented" -eq 16 ]] || fail "regression: must comment 16 (all non-canonical members), got commented=$commented"
+# fleet-ops#5152: 16 -> 14. Only the 15 content-identical alert copies still
+# cluster (canonical 4000 -> 14 comments); #3140/#3146 and 0509#1220 share
+# no corroborating content with the alerts, so the demoted derived signal
+# no longer welds them in and they get no marker at all.
+[[ "$commented" -eq 14 ]] || fail "regression: must comment 14 (alert-cluster non-canonical members), got commented=$commented"
 ok "fix: 0 closes, $commented possible-duplicate comments (was 16 wrong closes)"
 
 # No close comment may cite a cross-repo canonical. With the fix there are 0
@@ -168,13 +178,15 @@ PY
 ok "no close comment cites a cross-repo canonical"
 
 # --- 2. The Nish-endorsed critical-path packets are not closed ------------
-# #3140 is the fleet-ops canonical (oldest, lowest number) so it is kept;
-# #3146 is non-canonical and owner-authored + critical-path -> comment only.
-# Neither is closed. (Pre-fix both closed as dups of cross-repo 0509#1220.)
-grep -q "3140" "$scratch/closed" && fail "#3140 must NOT be closed (owner + critical-path canonical)"
+# fleet-ops#5152: #3140/#3146 are no longer even cluster members — the
+# demoted derived signal cannot weld them to the alert copies. Neither is
+# closed and neither gets a possible-duplicate marker. (Pre-fix both closed
+# as dups of cross-repo 0509#1220.)
+grep -q "3140" "$scratch/closed" && fail "#3140 must NOT be closed (owner + critical-path)"
 grep -q "3146" "$scratch/closed" && fail "#3146 must NOT be closed (owner + critical-path)"
-grep -q "3146" "$scratch/commented" || fail "#3146 must get a comment (owner + critical-path, non-canonical)"
-ok "Nish-endorsed critical-path #3140/#3146: not closed (#3146 commented, #3140 kept as canonical)"
+grep -q "3140" "$scratch/commented" && fail "#3140 must NOT be commented (not a cluster member, fleet-ops#5152)"
+grep -q "3146" "$scratch/commented" && fail "#3146 must NOT be commented (not a cluster member, fleet-ops#5152)"
+ok "Nish-endorsed critical-path #3140/#3146: not closed, not even marked (uncorroborated derived signal)"
 
 # --- 3. Pairwise token overlap #3140/#3146 vs 0509#1220 is < 0.3 -----------
 python3 - "$lib" "$scratch/gh-open.json" <<'PY'
@@ -191,16 +203,16 @@ for (ra, na), (rb, nb) in [
 ]:
     tok, score = pair(issues[(ra, na)], issues[(rb, nb)])
     assert tok < 0.3, f"{ra}#{na} vs {rb}#{nb} token overlap {tok} must be < 0.3"
-    # The signal floor still raises the cluster score to >= 0.7 — that is the
-    # bug's mechanism, and the fix is that the floor can no longer authorise
-    # a close, only a comment.
-    assert score >= 0.7, f"{ra}#{na} vs {rb}#{nb} cluster score {score} still floored (the bug mechanism)"
-    print(f"OK: {ra}#{na} vs {rb}#{nb} token_overlap={tok} < 0.3, cluster score={score} (floor only)")
+    # fleet-ops#5152: the bare derived signal no longer floors the pair at
+    # all — with no corroborating content it contributes one ordinary
+    # secondary bonus, so the score must sit below DUP_THRESHOLD.
+    assert score < I.DUP_THRESHOLD, f"{ra}#{na} vs {rb}#{nb} score {score} must be < DUP_THRESHOLD (demoted floor)"
+    print(f"OK: {ra}#{na} vs {rb}#{nb} token_overlap={tok} < 0.3, score={score} < DUP_THRESHOLD")
 PY
-ok "pairwise token overlap #3140/#3146 vs 0509#1220 < 0.3"
+ok "pairwise #3140/#3146 vs 0509#1220 below DUP_THRESHOLD (derived signal demoted)"
 
 # --- 4. Cluster > 4 is comment-only and files a dup-cluster review line ----
-# The 18-member cluster is > CLUSTER_CLOSE_MAX (4), so every member is
+# The 15-member alert cluster is > CLUSTER_CLOSE_MAX (4), so every member is
 # comment-only AND one review line is filed in the review log.
 review_lines=$(wc -l < "$scratch/review.log")
 [[ "$review_lines" -ge 1 ]] || fail "cluster > 4 must file >=1 dup-cluster review line, got $review_lines"

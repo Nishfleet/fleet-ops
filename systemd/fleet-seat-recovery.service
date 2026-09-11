@@ -51,9 +51,11 @@ StartLimitBurst=200
 # The bin's own FLEET_SEAT_RECOVERY_COOLDOWN (120s) remains the rate-limiter
 # for the side effect (the intake fire).
 #
-# tests/fleet-seat-recovery-units.test.sh pins this ceiling, proves a sentinel
-# storm inside it cannot wedge the watcher, and proves a ceiling BELOW the
-# storm does wedge — i.e. that the guard is armed, not decorative.
+# tests/fleet-seat-recovery-units.test.sh pins this ceiling and gates that the
+# live proof still exists in bin/fleet-resilience-drill's seat_sentinel plane —
+# which proves on the daily drill timer that a sentinel storm fires the
+# watcher AND that a ceiling BELOW the storm wedges it — i.e. that the guard
+# is armed, not decorative.
 #
 # BRIDGE DROP-IN (retired 2026-09-11): the live-only
 # ~/.config/systemd/user/fleet-seat-recovery.service.d/20-no-start-limit.conf,

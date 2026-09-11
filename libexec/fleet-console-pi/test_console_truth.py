@@ -410,8 +410,9 @@ def test_answered_young_kept_old_dropped(monkeypatch):
                      "body": "question: hi?\noptions: yes | no"}]
         return [{"body": "decision-resolved: hi", "createdAt": old}]
     monkeypatch.setattr(G, "_gh_json", gh)
-    items = G._gh_questions()
+    items, capped = G._gh_questions()
     assert items == [], "an answered question >24h old must not render"
+    assert capped is False, "one row cannot fill the search window"
 
 
 def test_shell_renders_emdash_not_unknown():
@@ -601,6 +602,40 @@ def test_questions_nonjson_stdout_still_fails_closed(monkeypatch):
     assert "github" in tile["reason"]
     assert "JSON" in tile["reason"]
     assert not tile.get("count")
+
+
+def test_questions_failure_reason_names_the_repo(monkeypatch):
+    """fleet-ops#5069 — a failing per-issue fetch must name the repo.
+
+    `_gh_json` built its reason from `args[:3]`. That was fine only while the
+    (broken) argv had the repo in position 3; after fleet-ops#4996 the fetch
+    is `["issue","view",<number>,"-R",<repo>,...]`, so a dark questions tile
+    reported `gh issue view 2585 rc=1: ...` with no repo and the diagnosis
+    required reading data.json. The reason must carry the failing repo.
+    """
+    rows = _question_rows()
+    fake = _FakeGh(rows, view_rc=1,
+                   view_stderr="accepts 1 arg(s), received 2")
+    monkeypatch.setattr(G, "subprocess", fake)
+    tile = G.collect_questions()
+    assert tile["ok"] is False
+    first = rows[0]                 # 2585 in Nishfleet/0509 — fetched first
+    assert first["repository"]["nameWithOwner"] == "Nishfleet/0509"
+    assert "-R Nishfleet/0509" in tile["reason"], tile["reason"]
+    assert f"gh issue view {first['number']} -R Nishfleet/0509 rc=1" \
+        in tile["reason"], tile["reason"]
+    # The inverse leg: a call with no -R must not grow a phantom repo.
+    class _AlwaysRc1:
+        def run(self, argv, **kwargs):
+            return subprocess.CompletedProcess(list(argv), 1, "", "boom")
+
+    monkeypatch.setattr(G, "subprocess", _AlwaysRc1())
+    try:
+        G._gh_json(["search", "issues", "--owner", "Nishfleet"])
+    except RuntimeError as e:
+        assert str(e).startswith("gh search issues --owner rc=1: "), str(e)
+    else:
+        raise AssertionError("a rc=1 search must raise")
 
 
 if __name__ == "__main__":

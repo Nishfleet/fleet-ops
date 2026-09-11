@@ -17,6 +17,12 @@
 #  10. Live dest matching the checkout working tree is not enough: origin/main
 #      blob compare fails if dest bytes differ from origin/main (self-compare
 #      of checkout-vs-itself is impossible).
+#  10b. A copy-install JSON config (seat-caps.json / pi-models.json /
+#      model-candidates.json) that is byte-different but JSON-equivalent to
+#      its origin/main blob (the install.sh merge re-serializes it, and
+#      collapses a duplicate object key) is not DRIFT-ORIGIN; a real
+#      structural change or unparseable JSON still is (fleet-ops#5161,
+#      mirroring install.sh --check content_equivalent, fleet-ops#4948).
 #  11. Enable-link into a volatile path (/tmp outside the checkout) fails
 #      DRIFT-VOLATILE.
 #  11b. A MANIFEST unit's wants-link hijacked to /tmp (fragment symlink still
@@ -143,6 +149,8 @@ grep -q 'DEPLOY-NONCANONICAL' "$repo_root/bin/fleet-ops-deploy" \
     || fail "fleet-ops-deploy must refuse a non-canonical FLEET_OPS_CHECKOUT"
 grep -q 'DRIFT-SOURCE' "$repo_root/bin/fleet-ops-drift.py" \
     || fail "drift canary must flag live dests that point outside the canonical checkout"
+grep -q 'canonical_json' "$repo_root/bin/fleet-ops-drift.py" \
+    || fail "drift canary must compare copy-install JSON configs semantically (fleet-ops#5161)"
 grep -q 'issue-file.py' "$repo_root/bin/fleet-ops-drift.py" \
     || fail "drift canary must auto-file a canonical-checkout drift issue"
 grep -q 'DRIFT-MISSING-EXEC' "$repo_root/bin/fleet-ops-drift.py" \
@@ -701,6 +709,95 @@ else
     fail "scenario10: origin/main blob compare passed (self-comparison is possible): $pyout"
 fi
 git -C "$checkout" checkout -q -- systemd/demo.timer
+
+# --- scenario 10b: copy-install JSON config compares semantically ------------
+# fleet-ops#5161: the live seat-caps.json (and pi-models.json /
+# model-candidates.json) is re-serialized by install.sh's
+# seat_caps_merge_unknown_providers merge, so its bytes diverge from the
+# origin/main blob on the next deploy even when the config is identical
+# (fleet-ops#4205/#4894). A duplicate object key in config/seat-caps.json
+# (fleet-ops#5025 landed one) made that divergence permanent: the merge
+# collapses the duplicate, so the live file could never be byte-equal again
+# and the heartbeat went LOUD DRIFT-ORIGIN on every tick. The origin/main
+# blob compare must accept a byte-different but JSON-equivalent copy-install
+# config (install.sh --check already does, fleet-ops#4948) and must still
+# fail a real structural change and unparseable JSON.
+json_co="$scratch/json-checkout"
+json_live="$HOME/.local/state/pi-packet/seat-caps.json"
+mkdir -p "$json_co/bin" "$json_co/config" "$(dirname "$json_live")"
+cp "$repo_root/bin/fleet-ops-drift.py" "$json_co/bin/fleet-ops-drift.py"
+cat >"$json_co/MANIFEST" <<MANIFEST
+config/seat-caps.json $json_live
+MANIFEST
+# The repo copy carries a duplicate opencode-go key: the first is the stale
+# row, the last is the live one (every JSON parser keeps the last).
+cat >"$json_co/config/seat-caps.json" <<'JSON'
+{
+  "providers": {
+    "opencode-go": { "cap": 0, "class": "prepaid-quota" },
+    "opencode-go": { "cap": 2, "class": "prepaid-quota", "models": { "deepseek-flash": 2 } }
+  }
+}
+JSON
+json_origin="$scratch/json-origin.git"
+git -c init.defaultBranch=main init --bare -q "$json_origin"
+git -C "$json_co" init -q -b main
+git -C "$json_co" config user.email "test@example.com"
+git -C "$json_co" config user.name "Test"
+git -C "$json_co" add -A
+git -C "$json_co" commit -q -m "initial"
+git -C "$json_co" remote add origin "$json_origin"
+git -C "$json_co" push -q origin HEAD:main
+git -C "$json_co" fetch -q origin
+
+run_origin_blob_check() {
+  FLEET_OPS_AUDIT_LOG="$HOME/.local/state/fleet-ops/drift-audit.log" \
+  FLEET_OPS_TRIAGE="$scratch/triage.md" \
+  HOME="$HOME" \
+  python3 - "$json_co" <<'PY' 2>&1
+import importlib.util
+import sys
+from pathlib import Path
+
+checkout = Path(sys.argv[1])
+spec = importlib.util.spec_from_file_location(
+    "fleet_ops_drift", checkout / "bin" / "fleet-ops-drift.py"
+)
+mod = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(mod)
+try:
+    mod.check_live_matches_origin_main(checkout)
+except SystemExit as e:
+    sys.exit(e.code if e.code is not None else 1)
+sys.exit(0)
+PY
+}
+
+# 10b-i: duplicate key collapsed by the merge -> byte-different, JSON-equal.
+printf '%s\n' '{"providers":{"opencode-go":{"cap":2,"class":"prepaid-quota","models":{"deepseek-flash":2}}}}' >"$json_live"
+if ! pyout=$(run_origin_blob_check); then
+    fail "scenario10b: JSON-equivalent copy-install config must not be DRIFT-ORIGIN, got: $pyout"
+fi
+ok "scenario10b: byte-different but JSON-equivalent copy-install config passes"
+
+# 10b-ii: a real structural change still fails byte-strict.
+printf '%s\n' '{"providers":{"opencode-go":{"cap":5,"class":"prepaid-quota","models":{"deepseek-flash":2}}}}' >"$json_live"
+if pyout=$(run_origin_blob_check); then
+    fail "scenario10b: a real seat-caps cap change must fail DRIFT-ORIGIN: $pyout"
+fi
+[[ "$pyout" == *"DRIFT-ORIGIN"* ]] \
+    || fail "scenario10b: structural cap change did not produce DRIFT-ORIGIN (got: $pyout)"
+ok "scenario10b: a real structural cap change still fails DRIFT-ORIGIN"
+
+# 10b-iii: unparseable live JSON is not JSON-equivalent — it is drift.
+printf '{ not json\n' >"$json_live"
+if pyout=$(run_origin_blob_check); then
+    fail "scenario10b: unparseable live JSON must fail DRIFT-ORIGIN: $pyout"
+fi
+[[ "$pyout" == *"DRIFT-ORIGIN"* ]] \
+    || fail "scenario10b: unparseable live JSON did not produce DRIFT-ORIGIN (got: $pyout)"
+ok "scenario10b: unparseable live JSON still fails DRIFT-ORIGIN"
 
 # --- scenario 11: enable-link into a volatile path outside the checkout ------
 : >"$enabled_units"

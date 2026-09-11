@@ -45,6 +45,29 @@ fi
 # A CONFLICTING PR with no resolvable parent is NOT dead-classified — we
 # cannot prove a resolved parent, so it is skipped, never guessed.
 #
+# GitHub computes mergeability asynchronously: while undecided gh returns
+# `mergeable: "UNKNOWN"` or null, and a future gh may return new values.
+# Any value that is not exactly MERGEABLE or CONFLICTING is counted in the
+# `unknown-mergeable` figure and kept in the scan — never silently dropped
+# (fleet-ops#5079: a dead PR whose mergeable was still UNKNOWN read clean
+# on a live tick). The `unknown-mergeable` figure is list-time: it counts
+# VALUES seen at list time, not PRs still undecided — a PR the re-query
+# then decides is still counted there, so the same PR can appear in both
+# `conflicting` and `unknown-mergeable`. An undecided PR is re-queried with
+# `gh pr view` — up to DEAD_PR_UNKNOWN_ATTEMPTS tries, DEAD_PR_UNKNOWN_SLEEP
+# seconds between — and only a MERGEABLE/CONFLICTING answer ends the
+# question. Still undecided after the retries, the parent decides:
+# MERGED/CLOSED parent -> DEAD-PR-UNRESOLVED, exit 2, so the sweep can never
+# read clean over a possible dead PR; OPEN parent -> logged and skipped (a
+# live parent is never dead); no resolvable parent -> logged and skipped,
+# consistent with the never-guess rule. A `gh pr view` that errors is
+# fail-closed (exit 2), never a silent pass.
+#
+# Retry budget: bounded per PR at DEAD_PR_UNKNOWN_ATTEMPTS - 1 waits of
+# DEAD_PR_UNKNOWN_SLEEP seconds (2 waits x 2s by default), and the sweep
+# over PRs is serial — so the invoking unit's start timeout stays the outer
+# bound on a tick and the sweep is never silently truncated.
+#
 # Runs as ExecStartPre of the fleet-merged-pr-close unit (same rail, no new
 # timer). A found dead PR exits 1 so the unit fails and the existing
 # OnFailure escalation pages instead of the branch lingering until a manual
@@ -55,12 +78,16 @@ fi
 # Logging is stderr only; stdout is machine-readable.
 #
 # Exit codes: 0 clean (no dead conflicting PRs), 1 when at least one dead
-# conflicting PR is proven, 2 on any gh/jq infra failure (fail-closed —
-# never a false green).
+# conflicting PR is proven, 2 on any gh/jq infra failure or on a PR whose
+# mergeable stays undecided while its parent is MERGED/CLOSED (fail-closed
+# — never a false green).
 #
 # Environment seams (tests override all of these):
 #   GH             gh binary (mockable)
 #   DEAD_PR_REPO   owner/repo to scan (default Nishfleet/fleet-ops)
+#   DEAD_PR_UNKNOWN_ATTEMPTS  `gh pr view` re-query tries for an undecided
+#                  mergeable value (default 3)
+#   DEAD_PR_UNKNOWN_SLEEP     seconds between re-query tries (default 2)
 
 set -euo pipefail
 
@@ -70,6 +97,8 @@ export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
 GH="${GH:-gh}"
 REPO="${DEAD_PR_REPO:-Nishfleet/fleet-ops}"
+UNKNOWN_ATTEMPTS="${DEAD_PR_UNKNOWN_ATTEMPTS:-3}"
+UNKNOWN_SLEEP="${DEAD_PR_UNKNOWN_SLEEP:-2}"
 
 log() {
     printf '[fleet-dead-pr-detector] %s\n' "$*" >&2
@@ -155,6 +184,59 @@ resolve_parent() {
     printf '%s' "$n"
 }
 
+# issue_state PARENT PRNUM — read the state of PARENT with `gh issue view`
+# and print it. Any gh/jq failure or a missing state is fail-closed (loud +
+# exit 2), so a broken call can never read as a clean sweep.
+issue_state() {
+    local parent="$1" prnum="$2" issue_json state
+    if ! issue_json=$("$GH" issue view "$parent" -R "$REPO" --json state,title 2>/dev/null); then
+        loud "DEAD-PR-GH" "$REPO: gh issue view #$parent failed for PR #$prnum"
+        exit 2
+    fi
+    if ! state="$(printf '%s' "$issue_json" | jq -r '.state // ""' 2>/dev/null)"; then
+        loud "DEAD-PR-BROKEN" "$REPO: could not read state of issue #$parent (PR #$prnum)"
+        exit 2
+    fi
+    if [ -z "$state" ]; then
+        loud "DEAD-PR-BROKEN" "$REPO: no state for issue #$parent (PR #$prnum)"
+        exit 2
+    fi
+    printf '%s' "$state"
+}
+
+# requery_mergeable NUM — force a mergeability computation for one PR with
+# `gh pr view NUM --json mergeable`, up to UNKNOWN_ATTEMPTS tries with
+# UNKNOWN_SLEEP seconds between. Only MERGEABLE/CONFLICTING ends the
+# question: any other answer ("UNKNOWN", null, a value gh has not taught us
+# yet) is retried. Prints the decided value, or the last undecided one once
+# the tries are spent. A gh/jq error is fail-closed (exit 2), never a silent
+# pass.
+requery_mergeable() {
+    local num="$1" attempt=1 view_json value=""
+    while [ "$attempt" -le "$UNKNOWN_ATTEMPTS" ]; do
+        if ! view_json=$("$GH" pr view "$num" -R "$REPO" --json mergeable 2>/dev/null); then
+            loud "DEAD-PR-GH" "$REPO: gh pr view #$num failed for mergeable re-query"
+            exit 2
+        fi
+        if ! value="$(printf '%s' "$view_json" | jq -r '.mergeable // ""' 2>/dev/null)"; then
+            loud "DEAD-PR-BROKEN" "$REPO: could not read mergeable of PR #$num"
+            exit 2
+        fi
+        case "$value" in
+            MERGEABLE | CONFLICTING)
+                printf '%s' "$value"
+                return 0
+                ;;
+        esac
+        if [ "$attempt" -lt "$UNKNOWN_ATTEMPTS" ]; then
+            log "PR #$num: mergeable still '$value' after try $attempt/$UNKNOWN_ATTEMPTS — re-querying in ${UNKNOWN_SLEEP}s"
+            sleep "$UNKNOWN_SLEEP"
+        fi
+        attempt=$((attempt + 1))
+    done
+    printf '%s' "${value:-UNKNOWN}"
+}
+
 log "dead-conflicting-PR scan starting (repo=$REPO, gh=$GH)"
 
 # Open PRs, one fetch. A non-zero rc or empty output is an infra failure —
@@ -173,11 +255,9 @@ if ! printf '%s' "$prs_json" | jq -e 'type == "array"' >/dev/null 2>&1; then
     exit 2
 fi
 
-scanned=0
+conflicting=0
 dead=0
-# mergeable is null while GitHub computes it asynchronously — count it,
-# never classify it (a null-mergeable PR is not CONFLICTING). Log-only.
-unknown_mergeable="$(printf '%s' "$prs_json" | jq '[.[] | select(.mergeable == null)] | length')"
+unknown_mergeable=0
 
 while IFS= read -r pr; do
     [ -z "$pr" ] && continue
@@ -185,26 +265,56 @@ while IFS= read -r pr; do
     title="$(printf '%s' "$pr" | jq -r '.title')"
     head="$(printf '%s' "$pr" | jq -r '.headRefName // ""')"
     body="$(printf '%s' "$pr" | jq -r '.body // ""')"
-    scanned=$((scanned + 1))
+    mergeable="$(printf '%s' "$pr" | jq -r '.mergeable // ""')"
+
+    # Anything that is not exactly MERGEABLE or CONFLICTING (the string
+    # "UNKNOWN", null, or a value gh has not taught us yet) is undecided:
+    # counted in the honesty figure and kept in the scan, never dropped.
+    undecided=0
+    if [ "$mergeable" != "MERGEABLE" ] && [ "$mergeable" != "CONFLICTING" ]; then
+        undecided=1
+        unknown_mergeable=$((unknown_mergeable + 1))
+        log "PR #$num: mergeable '$mergeable' is not MERGEABLE/CONFLICTING — undecided, re-querying"
+        mergeable="$(requery_mergeable "$num")"
+        case "$mergeable" in
+            MERGEABLE | CONFLICTING)
+                undecided=0
+                log "PR #$num: re-query answered mergeable=$mergeable"
+                ;;
+        esac
+    fi
+
+    if [ "$mergeable" = "MERGEABLE" ]; then
+        continue
+    fi
 
     parent="$(resolve_parent "$body" "$head")"
+
+    if [ "$undecided" = "1" ]; then
+        # Still undecided after the retries: resolve the parent FIRST and
+        # let it decide, so the sweep can never read clean over a possible
+        # dead PR. Anything the parent reports that is not OPEN cannot be
+        # proven live, so it fails closed with the CLOSED/MERGED case.
+        if [ -z "$parent" ]; then
+            log "PR #$num: mergeable '$mergeable' still undecided after $UNKNOWN_ATTEMPTS tries and no resolvable parent issue — not dead-classified, skipped"
+            continue
+        fi
+        state="$(issue_state "$parent" "$num")"
+        if [ "$state" = "OPEN" ]; then
+            log "PR #$num: mergeable '$mergeable' still undecided after $UNKNOWN_ATTEMPTS tries, parent #$parent state=OPEN — live parent, not dead, skipped"
+            continue
+        fi
+        loud "DEAD-PR-UNRESOLVED" "$REPO: PR #$num mergeable '$mergeable' still undecided after $UNKNOWN_ATTEMPTS tries and parent issue #$parent is $state — possible dead conflicting branch, sweep cannot be proven clean"
+        exit 2
+    fi
+
+    conflicting=$((conflicting + 1))
     if [ -z "$parent" ]; then
         log "PR #$num: CONFLICTING but no resolvable parent issue — not dead-classified, skipped"
         continue
     fi
 
-    if ! issue_json=$("$GH" issue view "$parent" -R "$REPO" --json state,title 2>/dev/null); then
-        loud "DEAD-PR-GH" "$REPO: gh issue view #$parent failed for PR #$num"
-        exit 2
-    fi
-    if ! state="$(printf '%s' "$issue_json" | jq -r '.state // ""' 2>/dev/null)"; then
-        loud "DEAD-PR-BROKEN" "$REPO: could not read state of issue #$parent (PR #$num)"
-        exit 2
-    fi
-    if [ -z "$state" ]; then
-        loud "DEAD-PR-BROKEN" "$REPO: no state for issue #$parent (PR #$num)"
-        exit 2
-    fi
+    state="$(issue_state "$parent" "$num")"
 
     if [ "$state" = "MERGED" ] || [ "$state" = "CLOSED" ]; then
         dead=$((dead + 1))
@@ -216,10 +326,10 @@ while IFS= read -r pr; do
     else
         log "PR #$num: parent #$parent state=$state — still live, not dead"
     fi
-done < <(printf '%s' "$prs_json" | jq -c '.[] | select(.mergeable == "CONFLICTING")')
+done < <(printf '%s' "$prs_json" | jq -c '.[]')
 
 printf 'dead_conflicting_prs=%s\n' "$dead"
-log "scan done: conflicting=$scanned unknown-mergeable=$unknown_mergeable dead=$dead"
+log "scan done: conflicting=$conflicting unknown-mergeable=$unknown_mergeable dead=$dead"
 if [ "$dead" -gt 0 ]; then
     exit 1
 fi
