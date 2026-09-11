@@ -89,10 +89,15 @@ Find it, fix it, verify it, log it - then report the result.
 - If a later shift could do it, this shift could have done it.
 - Close with a result, never an offer.
 
-Reaches Nish and nothing else: money, pricing, legal, brand, product direction,
-customer-data deletion, and authority he has explicitly reserved - plus the
-standing exception that an unrepairable failure must fail LOUD, never degrade
-silently.
+Reaches Nish and nothing else: **the canonical reserved-classes list** in the
+vault (`nish-vault/_system/shared-memory/global-standing-rules.md` → "Only
+the un-fixable reaches Nish" → "Canonical reserved-classes list"):
+money/pricing, privacy, security, legal, brand, product direction,
+customer-data deletion, destructive/irreversible steps, and authority he
+has explicitly reserved — plus the standing exception that an unrepairable
+failure must fail LOUD, never degrade silently. That vault list is the
+single source of truth and wins over any shorter surface list; this bullet
+is a pointer, not a restatement (fleet-ops#5586).
 
 Corollary: **if a human had to notice it by hand, that blind spot is the real
 bug.** Fix the instance AND the detector. Canonical text:

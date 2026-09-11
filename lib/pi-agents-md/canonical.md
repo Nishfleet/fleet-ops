@@ -86,8 +86,13 @@ Simple language is never baby talk and never condescending.
 - **Switched on and proven, or it is not done.** Never report "armed" or "ready"
   as if it were "running". One proven end-to-end run.
 - **Act, don't ask.** Do reversible work autonomously. "Say the word and I'll dig
-  in" is the failure mode. Bring Nish in only for money, privacy, security,
-  legal, product direction, or destructive/irreversible steps.
+  in" is the failure mode. Bring Nish in only for the canonical reserved
+  classes: money/pricing, privacy, security, legal, brand, product direction,
+  customer-data deletion, destructive/irreversible steps, and authority he has
+  explicitly reserved. That is the single source of truth — it lives in the
+  vault (`global-standing-rules.md` → "Only the un-fixable reaches Nish" →
+  "Canonical reserved-classes list"), older or shorter surface lists fold into
+  it, and a surface is a pointer, not a second source (fleet-ops#5586).
 - **Verify live truth.** Nothing assumed. Official docs over local folklore. Say
   when something is an inference.
 - **Queue every finding.** A fix only mentioned in chat is lost. Queue it.
