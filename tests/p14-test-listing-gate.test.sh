@@ -569,6 +569,21 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-issue-file-dedupe-repo-sco
   || fail "fleet-issue-file-dedupe-repo-scope.test.sh must not be a known orphan (fleet-ops#5620)"
 ok "fleet-issue-file-dedupe-repo-scope.test.sh is pinned in the P14 reachable set (fleet-ops#5620)"
 
+# fleet-ops#5496: hard-pin the host line for the dedupe-comment idempotence
+# test (the live #5464 spam: 848+ identical comments). Same shape as the
+# #5620 pin above — the test is hosted from ci-standards-audit.test.sh
+# (already listed in ci.yml) because the worker App cannot push
+# .github/workflows/**. This named pin is class-prevention so a future
+# drop of the host line cannot park the test on known_orphans.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-issue-file-dedupe-comment-idempotent\.test\.sh"?' \
+  "$here/ci-standards-audit.test.sh" \
+  || fail "ci-standards-audit.test.sh must bash-invoke fleet-issue-file-dedupe-comment-idempotent.test.sh (fleet-ops#5496)"
+[[ -n "${reachable[fleet-issue-file-dedupe-comment-idempotent.test.sh]:-}" ]] \
+  || fail "fleet-issue-file-dedupe-comment-idempotent.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#5496)"
+[[ -z "${known_orphan_set[fleet-issue-file-dedupe-comment-idempotent.test.sh]:-}" ]] \
+  || fail "fleet-issue-file-dedupe-comment-idempotent.test.sh must not be a known orphan (fleet-ops#5496)"
+ok "fleet-issue-file-dedupe-comment-idempotent.test.sh is pinned in the P14 reachable set (fleet-ops#5496)"
+
 # fleet-ops#2902 (PR #2905 follow-up): hard-pin the host line for
 # worktree-leaky-test-containment. The test landed on main in PR #2905
 # (the #2769 containment detector fix) without a ci.yml listing or a host.
