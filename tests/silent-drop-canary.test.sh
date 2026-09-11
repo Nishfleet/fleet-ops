@@ -33,7 +33,6 @@ DROP_ALLOWLIST=(
   "bin/lifecycle-label-sweep"      # 4 comment-only `|| true` notices (queued issue)
   "lib/pi-intake-tick.sh"          # observe-to-close park comments; park re-derived next tick (by-design)
   "lib/spec-judge.sh"              # judge failure-fallback + apply-step comments (queued issue)
-  "scripts/rewrite-0509-author.sh" # stage8/stageR one-shot notices; LOG file fallback (queued issue)
 )
 # Fix assertions (introduced by the 2026-09-11 sweep PR). New `|| true` drops
 # in these files must never come back.
