@@ -241,11 +241,12 @@ jobs:
           PR_NUM: ${{ github.event.pull_request.number }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
-          # Deliberately no `set -e`: the only payload is a clean
-          # `verdict=="refuse"` from the guard. Every helper fault —
-          # fetch, decode, eval, malformed output — warns and leaves
-          # gated=false so the arm proceeds (fail-open); a helper death
-          # must never fail the required `arm` check and freeze merges.
+          # GitHub wraps this in `bash -e`. A refuse is exit 1, which
+          # would fail the required `arm` check and freeze the PR
+          # (live: run 34557585569 on #5264). Turn -e off first.
+          # The only payload is a clean `verdict=="refuse"`. Every
+          # helper fault warns and leaves gated=false (fail-open).
+          set +e
           echo "gated=false" >> "$GITHUB_OUTPUT"
           set -uo pipefail
           tmp="$(mktemp -d)"
@@ -277,9 +278,9 @@ jobs:
             "$tmp/fleet-gate-arm-guard" evaluate \
               --repo "${{ github.repository }}" --pr "$PR_NUM" \
               --globs-json "$globs" --wait-seconds 90 \
-              > "$tmp/verdict.json" 2> "$tmp/verdict.err"
-          cat "$tmp/verdict.json"
-          cat "$tmp/verdict.err" >&2
+              > "$tmp/verdict.json" 2> "$tmp/verdict.err" || true
+          cat "$tmp/verdict.json" 2>/dev/null || true
+          cat "$tmp/verdict.err" >&2 || true
           if jq -e '.verdict == "refuse"' "$tmp/verdict.json" >/dev/null 2>&1; then
             echo "gated=true" >> "$GITHUB_OUTPUT"
             echo "gate-integrity is not green on a gate-path PR; auto-merge arming skipped (fleet-ops#5238) — a green verdict re-arms on the next pull_request event or the hourly queue pass"

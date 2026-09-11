@@ -106,6 +106,8 @@ grep -Fq 'wait-seconds' "$arm_wf" \
   || fail "guard call must carry a pending-check wait budget"
 grep -Fq -- '--disable-auto' "$arm_wf" \
   || fail "refuse path must disarm already-armed auto-merge (the #5207 escape)"
+grep -Fq 'set +e' "$arm_wf" \
+  || fail "gateint step must set +e so a refuse (exit 1) cannot fail the required arm check"
 ok "reusable arm workflow wires the guard and gates the arm on it"
 
 # --- wiring: the hourly queue pass refuses AND disarms -------------------
