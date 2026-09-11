@@ -111,7 +111,7 @@ ok "3. zero units exit 0 and write state"
 #    interim 1.5 once #4893 removed local coverage/tsc from workers (the
 #    remeasure-4891 timer re-prices to measured p95 on 2026-09-11).
 #    Coupling rule (fleet-ops#1190, the #1168
-#    drift that broke this test): the "1.5" below is a deliberate lock.
+#    drift that broke this test): the "1.0" below is a deliberate lock.
 #    When you change ram_gb_per_worker in config/seat-caps.json, update this
 #    assertion and the ok line below in the SAME commit/PR. The config value
 #    is the source of truth; this test exists to catch a config change that
@@ -136,9 +136,9 @@ grep -q 'ram_charge_gb_for()' "$lib" \
     || fail "seat-lib.sh must define ram_charge_gb_for (per-repo charge, fleet-ops#3679)"
 # fleet-ops light has NO MemoryHigh after #3930 -> fallback 1.5; unknown repo -> fallback 1.5.
 fo_charge=$(SEAT_CAPS_JSON="$caps" bash -c 'source "$0"; _seat_caps_loaded=0; load_seat_caps; ram_charge_gb_for fleet-ops light' "$lib")
-[[ "$fo_charge" == "1.5" ]] || fail "ram_charge_gb_for fleet-ops light want fallback 1.5 got '$fo_charge'"
+[[ "$fo_charge" == "1.0" ]] || fail "ram_charge_gb_for fleet-ops light want fallback 1.0 got '$fo_charge'"
 unk_charge=$(SEAT_CAPS_JSON="$caps" bash -c 'source "$0"; _seat_caps_loaded=0; load_seat_caps; ram_charge_gb_for unknown-repo light' "$lib")
-[[ "$unk_charge" == "1.5" ]] || fail "ram_charge_gb_for unknown-repo light want fallback 1.5 got '$unk_charge'"
+[[ "$unk_charge" == "1.0" ]] || fail "ram_charge_gb_for unknown-repo light want fallback 1.0 got '$unk_charge'"
 ok "4. admission charges per-repo MemoryHigh (fallback 1.0), no self-calibrate"
 
 # =========================================================================
