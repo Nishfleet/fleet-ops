@@ -1,9 +1,31 @@
 # Plan — fleet-ops#5142: DetachedJobDied repair relaunches packets whose deliverable already merged
 
-Dispatcher `libexec/alert-repair-dispatch` (Python, 1182 lines) spawns a repair
+Dispatcher `libexec/alert-repair-dispatch` (Python, 1254 lines) spawns a repair
 worker for every `DetachedJobDied` alert. Add a bounded, fail-open pre-flight in
-the existing per-alert filter loop (~L933-978) that drops alerts whose packet
+the existing per-alert filter loop (L1013-1050) that drops alerts whose packet
 already delivered.
+
+Manager re-verified 2026-09-11T04:2xZ (this run, after rebase onto e47faec5b):
+- The recursion-guard loop sits at L1013-1050; the spawn argv is bare
+  `pi-systemd-run` at L1217-1232 (PATH-resolved — a `PI_SYSTEMD_RUN_BIN` env
+  seam is required for a stubbed spawn in tests).
+- `GH` env seam already exists (`GH_BIN` L176); `PI_DEADMAN_BIN` exists (L1014).
+- The dispatch ledger (`${FLEET_DISPATCH_LEDGER:-$AGENT_STATE/dispatch-ledger.jsonl}`)
+  carries `id` (= the alert's `dispatch` label uuid), `unit`, `packet_path` —
+  it does NOT carry the deliverable path. The deliverable path lives only in
+  the dead unit's journal: `pi-detached-deadman` logs
+  `died: unit=X result=Y deliverable=/abs/path|unset — dead-man tripped`
+  (confirmed live in `journalctl --user`). So: journal first via a new
+  `JOURNALCTL_BIN` seam; ledger+packet only as the PR-evidence fallback.
+- Real packets name their deliverable as a branch (`branch fable/gate-c-billing-failed`,
+  `claim/issue-<N>`) or `Nishfleet/<repo>#N` / `PR #N`. PR-evidence order:
+  branch ref -> `gh pr list -R <repo> --head <branch> --state all --json
+  number,state,autoMergeRequest,mergeable`; else `Nishfleet/<repo>#N` or
+  `PR #N` (+repo) -> `gh pr view <N> -R <repo> --json
+  state,autoMergeRequest,mergeable`. Satisfied iff any named PR is MERGED, or
+  OPEN with autoMergeRequest != null and mergeable == MERGEABLE. Exactly one
+  `gh` call per dispatch run — the first candidate spends the budget; a spent
+  budget or a non-proving result means fail-open.
 
 ## Phases (acceptance-driven)
 
