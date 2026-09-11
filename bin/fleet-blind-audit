@@ -341,7 +341,7 @@ run_backfill() {
     local bf_stats
     bf_stats=$(python3 - "$STATE_DIR/reports" "$since" \
         "$bf_dir/open-$NOW_DIR.json" "$bf_dir/closed-$NOW_DIR.json" "$queue" \
-        "$REPO_ROOT/lib/manual-seam-lens.py" <<'BF'
+        "$SEAM_LIB" <<'BF'
 import hashlib, json, os, re, sys
 reports_root, since, open_path, closed_path, out, lens_path = sys.argv[1:7]
 SEV = {"blocker": 0, "critical": 0, "high": 1, "medium": 2}

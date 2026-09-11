@@ -66,6 +66,7 @@ PATH="$scratch/fakebin:$PATH" \
   AUDIT_STATE_DIR="$scratch/state" \
   AUDIT_ALLOW_NONCANONICAL=1 \
   AUDIT_TRIAGE="$scratch/triage.md" \
+  AUDIT_SEAM_LIB="$repo_root/lib/manual-seam-lens.py" \
   "$bin" --backfill 2026-08-20 >"$scratch/bf.log" 2>&1 || rc=$?
 [[ $rc == 0 ]] || { cat "$scratch/bf.log"; fail "backfill exited $rc"; }
 
