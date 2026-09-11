@@ -677,6 +677,71 @@ PI_AUDIT_INSTANCE=healthy-token GAP_LOOP_STATE_DIR="$state_dir" \
   || fail "healthy seat must run and return DONE, got $(cat "$scratch/pkt/healthy.json")"
 ok "fleet-gap-closure-auditor runs healthy seat"
 
+# ---------------------------------------------------------------------------
+# fleet-ops#5399: pi --print prepends narration to the verdict object, so a
+# whole-file jq parse fails and the auditor's real vote was filed as the
+# mechanical "pi output was not valid JSON" dissent (cycle-15). The wrapper
+# must recover the embedded verdict before falling back.
+# ---------------------------------------------------------------------------
+
+# 4a. narration + embedded termination verdict -> recovered with its reason.
+cat >"$scratch/bin/fake-pi-prose" <<'FAKE'
+#!/usr/bin/env bash
+printf 'Verifying live state on the load-bearing issues before casting my vote.{"vote":"NOT-DONE","reason":"real auditor reason"}\n'
+FAKE
+chmod +x "$scratch/bin/fake-pi-prose"
+jobdir="$state_dir/pi-audit-jobs/prose-token"
+mkdir -p "$jobdir"
+jq -n -c --arg packet "$scratch/pkt/packet.md" --arg stdout "$scratch/pkt/prose.json" \
+  '{token:"prose-token",provider:"devin",model:"glm-5-2",packet:$packet,stdout:$stdout,mode:"termination",round:"2",auditor:"glm-5-3"}' \
+  >"$jobdir/job.json"
+PI_AUDIT_INSTANCE=prose-token GAP_LOOP_STATE_DIR="$state_dir" \
+  PI_SEAT_HEALTH_LEDGER_DIR="$state_dir/seats" PI_SEAT_HEALTH_FILE="$scratch/pi-seat-health.json" \
+  PI_AUDIT_PI_BIN="$scratch/bin/fake-pi-prose" "$audit_run" prose-token
+[[ "$(jq -r '.vote' "$scratch/pkt/prose.json")" == "NOT-DONE" ]] \
+  || fail "embedded verdict must be recovered, got $(cat "$scratch/pkt/prose.json")"
+[[ "$(jq -r '.reason' "$scratch/pkt/prose.json")" == "real auditor reason" ]] \
+  || fail "recovered verdict must keep the auditor's real reason, got $(cat "$scratch/pkt/prose.json")"
+[[ "$(jq -r '._extracted' "$scratch/pkt/prose.json")" == "true" ]] \
+  || fail "recovered verdict must be marked _extracted"
+ok "fleet-gap-closure-auditor recovers a verdict embedded in narration"
+
+# 4b. prose only, no JSON anywhere -> generic refusal still applies.
+cat >"$scratch/bin/fake-pi-nojson" <<'FAKE'
+#!/usr/bin/env bash
+printf 'I could not reach a verdict.\n'
+FAKE
+chmod +x "$scratch/bin/fake-pi-nojson"
+jobdir="$state_dir/pi-audit-jobs/nojson-token"
+mkdir -p "$jobdir"
+jq -n -c --arg packet "$scratch/pkt/packet.md" --arg stdout "$scratch/pkt/nojson.json" \
+  '{token:"nojson-token",provider:"devin",model:"glm-5-2",packet:$packet,stdout:$stdout,mode:"termination",round:"1",auditor:"glm-5-2"}' \
+  >"$jobdir/job.json"
+PI_AUDIT_INSTANCE=nojson-token GAP_LOOP_STATE_DIR="$state_dir" \
+  PI_SEAT_HEALTH_LEDGER_DIR="$state_dir/seats" PI_SEAT_HEALTH_FILE="$scratch/pi-seat-health.json" \
+  PI_AUDIT_PI_BIN="$scratch/bin/fake-pi-nojson" "$audit_run" nojson-token
+[[ "$(jq -r '.reason' "$scratch/pkt/nojson.json")" == "pi output was not valid JSON" ]] \
+  || fail "prose-only output must still file the generic refusal, got $(cat "$scratch/pkt/nojson.json")"
+ok "fleet-gap-closure-auditor keeps the generic refusal for prose-only output"
+
+# 4c. research-mode jobs recover the adopted/deltas shape, not a vote object.
+cat >"$scratch/bin/fake-pi-research" <<'FAKE'
+#!/usr/bin/env bash
+printf 'Converging.{"adopted":[{"title":"t","body":"b"}],"rejected":[]}\n'
+FAKE
+chmod +x "$scratch/bin/fake-pi-research"
+jobdir="$state_dir/pi-audit-jobs/research-token"
+mkdir -p "$jobdir"
+jq -n -c --arg packet "$scratch/pkt/packet.md" --arg stdout "$scratch/pkt/research.json" \
+  '{token:"research-token",provider:"devin",model:"glm-5-2",packet:$packet,stdout:$stdout,mode:"research",round:"2",auditor:"glm-5-2"}' \
+  >"$jobdir/job.json"
+PI_AUDIT_INSTANCE=research-token GAP_LOOP_STATE_DIR="$state_dir" \
+  PI_SEAT_HEALTH_LEDGER_DIR="$state_dir/seats" PI_SEAT_HEALTH_FILE="$scratch/pi-seat-health.json" \
+  PI_AUDIT_PI_BIN="$scratch/bin/fake-pi-research" "$audit_run" research-token
+[[ "$(jq -r '.adopted[0].title' "$scratch/pkt/research.json")" == "t" ]] \
+  || fail "research verdict must be recovered, got $(cat "$scratch/pkt/research.json")"
+ok "fleet-gap-closure-auditor recovers a research verdict embedded in narration"
+
 # Drill dry-run writes all_pass results (the deliverable).
 GAP_LOOP_DRY_RUN=1 GAP_LOOP_STATE_DIR="$state_dir" "$drill"
 [[ "$(jq -r '.all_pass' "$state_dir/drill-results.json")" == "true" ]] \
