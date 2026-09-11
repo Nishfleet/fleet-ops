@@ -33,6 +33,14 @@ follow-up issue, not fixed here.
 - Dropped the planner's `tests/seat-lib-org-reserve.test.sh` run from phase 1's
   list: it never reaches the activating branch.
 
+## Review adjudication (manager, post-salvage)
+
+- Act on #1 (fixed, in-flight): liveness test's `now_s > 3600` uptime guard would fail a fresh GitHub runner (minutes of uptime) — the #94/#98 auto-revert class. Fix: keep `unset -f systemctl awk`, add a test-local awk floor shim (3700s) so lib clock and `mono_ago` share one fakeable clock; drop the dead guard.
+- Act on #2 (fixed, in-flight): auto-restart comment overclaimed ("a normal restart keeps its seat") — age runs from process start, so a >300s-at-crash unit is reaped mid-wait. Behaviour kept (spec fail-closed; pi-issue-run re-picks the seat on restart), comment corrected.
+- Consider #3 (no change): with ExecMainStart=0 the ts fallback is ActiveEnterTimestampMonotonic=0 → `return 0` live; on real systemd the 300s no-process bound can never fire (identical to main — parity, not a regression). `StateChangeTimestampMonotonic` would make it real; out of scope, noted for #5263's author.
+- Consider #4 (fixed, in-flight): `for tok in $v` glob-expands against cwd; anchored regex already fails closed, but `read -ra` removes the expansion entirely. Cheap, taken.
+- Noted #5-8: ms floor-division, int64 wrap, /proc/uptime-vs-CLOCK_MONOTONIC skew, stub `--type=` non-parsing — all fail-safe or unexercised; recorded, no change.
+
 ## Stall log
 
-(none)
+- Prior unit run died at StartLimitBurst mid-phase-2; salvage banked lib + test commits. This run transplanted the net diff (git apply --3way) onto the recreated claim branch (= current main b963c45) after `.fleet/plan.md` collided with #5140's scratch file — resolved by restoring this issue's plan from the pre-rebase tip.

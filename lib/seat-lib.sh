@@ -3859,8 +3859,11 @@ PI_SEAT_ACTIVATING_NO_PROCESS_MAX_S="${PI_SEAT_ACTIVATING_NO_PROCESS_MAX_S:-300}
 _seat_duration_to_s() {
     local v="${1:-}" total=0 tok n unit
     [[ -n "$v" && "$v" != "infinity" ]] || return 1
-    # shellcheck disable=SC2086  # systemd prints space-separated components
-    for tok in $v; do
+    # systemd prints space-separated components; read -ra splits on
+    # whitespace without glob-expanding against the caller's cwd.
+    local -a toks=()
+    read -ra toks <<< "$v"
+    for tok in "${toks[@]}"; do
         [[ "$tok" =~ ^([0-9]+)(ms|s|min|h|d|w)$ ]] || return 1
         n="${BASH_REMATCH[1]}"; unit="${BASH_REMATCH[2]}"
         case "$unit" in
@@ -3946,10 +3949,11 @@ _seat_registry_unit_live() {
     exec_main=$(systemctl --user show "$sysunit" --property=ExecMainStartTimestampMonotonic --value 2>/dev/null || true)
 
     if [[ "$sub_state" == "auto-restart" ]]; then
-        # Waiting between Restart= attempts: not running, so the unit's own
-        # TimeoutStartSec does not bound it. Fail closed at the short bound
-        # (fleet-ops#1361). RestartSec=240 < 300, so a normal restart keeps
-        # its seat (fleet-ops#63).
+        # Waiting between Restart= attempts: no process is running, so the
+        # unit's own TimeoutStartSec does not bound it and the seat
+        # registration is stale anyway — pi-issue-run re-picks the seat on
+        # the next ExecStart. Fail closed at the 300s no-process bound
+        # (fleet-ops#1361, #63).
         bound=${PI_SEAT_ACTIVATING_NO_PROCESS_MAX_S:-300}
     elif [[ "$exec_main" =~ ^[0-9]+$ ]] && (( exec_main > 0 )); then
         # SubState=start is the NORMAL state for the whole run of a

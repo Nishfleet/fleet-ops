@@ -47,6 +47,21 @@ repo_root="$(cd "$here/.." && pwd)"
 # own fake systemctl.
 unset -f systemctl awk 2>/dev/null || true
 
+# Fresh-runner floor (fleet-ops#94/#98 shape, same idiom as
+# seat-lib.test.sh): the liveness cases need monotonic ages up to 3360s,
+# so every /proc/uptime read sees >= 3700s. The lib's clock and mono_ago
+# share this one shimmed clock.
+awk() {
+  if [[ "$*" == *'/proc/uptime'* ]] && [[ "$*" == *'print int($1)'* ]]; then
+    local real_s
+    real_s=$(command awk '{print int($1)}' /proc/uptime)
+    if (( real_s < 3700 )); then real_s=3700; fi
+    echo "$real_s"
+  else
+    command awk "$@"
+  fi
+}
+
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
@@ -204,10 +219,6 @@ mono_ago() {
     local n="$1"
     echo $(( ( $(now_s) - n ) * 1000000 ))
 }
-
-# Simulating a 56-minute-old process needs uptime > 56min.
-(( $(now_s) > 3600 )) \
-  || fail "host uptime $(now_s)s too small to fake 56-minute-old monotonic timestamps"
 
 seed_unit() {
     local unit="$1" active="$2" sub="$3"
