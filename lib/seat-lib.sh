@@ -7878,6 +7878,30 @@ mark_seat_quota_bench() {
         fi
     fi
     window_s=$(_seat_clamp_non_money_window_s "$window_s" "$wall_source" "$declared_window_s")
+    # fleet-ops#5285: a bench longer than 15 min owes the seat a bench-truth
+    # probe at min(advertised reset, 15 min). A window built ONLY from the
+    # provider's static quota_bench_default_s is not an advertised reset —
+    # no provider reset was parsed or observed live — so cap it at 15 min
+    # before the first truth probe (DECISION 2026-09-11). Parsed windows and
+    # live fleet_seat_quota resets ARE advertised and keep their window (the
+    # probe corrects a lying advertisement within one 15-min cycle); money
+    # walls (wall_source=money_boundary) are policy, never probed, and keep
+    # their full declared window. The #3531 geometric escalation on top of a
+    # default is also capped here: escalating a guessed window multiplies a
+    # guess (the lived Devin "reset in 2…" -> 15360s misparse class), and the
+    # bench-truth probe at 15-min cadence is the correct brake now.
+    # A failure-ceiling PARK (merged_count >= SEAT_FAILURE_CEILING) is not a
+    # guess: it is N consecutive real failures, and #4640's 6h clamp on it
+    # stands — the expired-wall tool probe owns parked seats, not the
+    # 15-min PONG.
+    if [[ -n "$declared_window_s" && "$wall_source" == "quota_bench" ]] \
+        && (( merged_count < ${SEAT_FAILURE_CEILING:-20} )); then
+        local truth_max="${SEAT_QUOTA_BENCH_DEFAULT_MAX_S:-900}"
+        if [[ "$truth_max" =~ ^[0-9]+$ ]] && (( truth_max > 0 )) && (( window_s > truth_max )); then
+            seat_log "quota-bench: $p/$m default-driven window ${window_s}s capped at ${truth_max}s — no advertised reset; bench-truth probe owes the seat a PONG at 15 min (fleet-ops#5285)"
+            window_s="$truth_max"
+        fi
+    fi
     bench_until=$(date -u -d "@$((now_s + window_s))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
 
     # fleet-ops#2594: corpse reclassification for quota_cap. seat-health.ts

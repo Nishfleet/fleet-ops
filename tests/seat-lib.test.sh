@@ -1306,7 +1306,12 @@ rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "default: cline (has default) expected rc=0, got $rc"
 bw=$(jq -r '.bench_window_s' "$ledger/cline__cline-pass_minimax-m3.json")
-[[ "$bw" == "604800" ]] || fail "default: cline bench_window_s expected 604800, got $bw"
+# fleet-ops#5285 (2026-09-11): the 604800s (7-day) ClinePass default is a static
+# guess, not an advertised reset. A guessed window is capped at 900s so the
+# bench-truth probe re-checks the seat at 15 min; a real weekly wall fails its
+# probe (a 402 costs nothing) and stays benched. A 6-day bench on a minutes-scale
+# limit (the lived devin/swe-1-7 case) is the class this makes impossible.
+[[ "$bw" == "900" ]] || fail "default: cline bench_window_s expected 900 (static default capped by the bench-truth contract, fleet-ops#5285), got $bw"
 # cursor has NO quota_bench_default_s -> fail open, no marker.
 rm -f "$ledger/cursor__composer-2.5.json"
 set +e
@@ -1426,7 +1431,8 @@ rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "live-reset writer: cline expected rc=0, got $rc"
 bw=$(jq -r '.bench_window_s' "$live_ledger/cline__cline-pass_minimax-m3.json")
-[[ "$bw" == "604800" ]] || fail "live-reset writer: cline (95% live) must use the static default 604800, got $bw"
+# fleet-ops#5285 (2026-09-11): see the 9f pin above — a static weekly default is a guess, capped at 900s.
+[[ "$bw" == "900" ]] || fail "live-reset writer: cline (95% live) static default 604800 is capped at 900 by the bench-truth contract (fleet-ops#5285: a live meter at 95% is not an advertised reset; the 15-min PONG re-checks it), got $bw"
 # A wall whose error text DOES carry a window still wins over the live figure
 # (parsed text is ground truth for that wall).
 set +e

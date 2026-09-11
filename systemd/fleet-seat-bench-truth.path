@@ -1,0 +1,29 @@
+# fleet-seat-bench-truth.path — event-driven bench-truth probe (fleet-ops#5285)
+#
+# A freshly written bench is probed at min(advertised reset, 15 min),
+# whichever is sooner — the DECISION on #5285 (Nish + Fable, 2026-09-11).
+# This watcher fires the cheap --false-wall-only sweep on any write to the
+# seats ledger dir; the sweep itself decides which benches are due (a bench
+# written seconds ago is not yet due, so most triggers are no-op scans).
+#
+# fleet-ops#5093 hard data: PathChanged on the seats DIRECTORY measured
+# 2478 starts/h and wedged fleet-seat-recovery via StartLimitBurst. Two
+# deliberate differences here:
+#   - fleet-seat-bench-truth.service sets StartLimitIntervalSec=0 (same
+#     convention as fleet-seat-recovery.service, fleet-ops#622): the burst
+#     limit must tolerate the no-op trigger storm, not gate it.
+#   - the bin debounces: FLEET_SEAT_COMEBACK_SWEEP_GAP_S (default 60s)
+#     turns a write storm into one jq-read-and-exit per trigger.
+# The 15-min sweep timer remains fleet-seat-comeback-release.timer
+# (OnCalendar=*:0/15, already in timer-manifest.json) — this path unit is
+# the "whichever is sooner" half of the cadence, not a second timer.
+# Do NOT write to the seats dir from the bin's sweep hot loop: it is the
+# watched path (the unwall write after a successful PONG re-fires this
+# unit once, which the debounce absorbs).
+
+[Path]
+PathChanged=/home/nish/workspaces/agent-state/lanes/seats
+Unit=fleet-seat-bench-truth.service
+
+[Install]
+WantedBy=default.target

@@ -2333,4 +2333,116 @@ hc=$(jq -r '.health_class' "$SEATD23b/devin__glm-5-2.json")
 [[ "$hc" == "healthy" ]] || fail "23b: drill must leave the seat healthy, got $hc"
 ok "23b: --false-wall-drill injects 24h wall, PONG-releases, logs SEAT-WALL-FALSE"
 
+# --- 24. fleet-ops#5285 bench-truth: live seat benched = lie -> cleared, counted --
+# A cap>0 non-money seat benched 6 DAYS (the lived devin/swe-1-7 record) whose
+# bench was written an hour ago and which answers PONG: the probe clears it
+# with source=bench_truth_probe, logs SEAT-WALL-FALSE, and the prom carries
+# fleet_seat_bench_lied_total{provider,model} 1 (the FleetSeatBenchLied input).
+SEATD24="$TMPD/seats24"
+mkdir -p "$SEATD24"
+cat > "$TMPD/seat-caps24.json" <<'CAPS'
+{
+  "providers": {
+    "devin": {"cap": 4, "models": {"swe-2-max": 4}}
+  }
+}
+CAPS
+cat > "$SEATD24/devin__swe-2-max.json" <<'SEAT'
+{"provider":"devin","model":"swe-2-max","http_status":429,"retry_after":null,"health_class":"quota_bench","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T11:00:00Z","source":"provider_quota_window","failure_mode":"quota_cap","bench_until":"2026-09-05T11:00:00Z","usable_at":"2026-09-05T11:00:00Z","bench_window_s":518400,"consecutive_failure_count":25,"writer":"mark_seat_quota_bench"}
+SEAT
+cat > "$TMPD/pi-pong-true" <<'STUB'
+#!/usr/bin/env bash
+printf 'PACKET-VERDICT tools=0 class=no-tools\n' >&2
+printf 'PONG\n'
+exit 0
+STUB
+chmod +x "$TMPD/pi-pong-true"
+ST24="$TMPD/state24.json"; PROM24="$TMPD/release24.prom"
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$SEATD24" SEAT_CAPS_JSON="$TMPD/seat-caps24.json" \
+    FLEET_SEAT_COMEBACK_STATE="$ST24" FLEET_SEAT_COMEBACK_PROM="$PROM24" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" PI_BIN="$TMPD/pi-pong-true" \
+    bash "$BIN" --false-wall-only >/dev/null 2>"$TMPD/run24.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "24: bench-truth sweep must exit 0, got $rc ($(cat "$TMPD/run24.err"))"
+grep -q "SEAT-WALL-FALSE devin/swe-2-max writer=mark_seat_quota_bench" "$TMPD/run24.err" \
+  || fail "24: must log SEAT-WALL-FALSE naming the writer: $(cat "$TMPD/run24.err")"
+jq -e '.health_class == "healthy" and .source == "bench_truth_probe" and .bench_until == null' "$SEATD24/devin__swe-2-max.json" >/dev/null \
+  || fail "24: PONG must clear the bench with source=bench_truth_probe: $(cat "$SEATD24/devin__swe-2-max.json")"
+grep -q '^fleet_seat_bench_lied_total{provider="devin",model="swe-2-max"} 1$' "$PROM24" \
+  || fail "24: prom must count the bench lie: $(cat "$PROM24")"
+[[ "$(jq -r '.bench_lied["devin/swe-2-max"]' "$ST24")" == "1" ]] \
+  || fail "24: state must persist the bench-lie counter: $(cat "$ST24")"
+ok "24: a benched seat that answers PONG is a bench lie -> cleared (source=bench_truth_probe), SEAT-WALL-FALSE, fleet_seat_bench_lied_total=1 (fleet-ops#5285)"
+
+# --- 25. fleet-ops#5285: dead seat stays benched, no lie counted -----------
+SEATD25="$TMPD/seats25"
+mkdir -p "$SEATD25"
+cat > "$SEATD25/devin__swe-2-max.json" <<'SEAT'
+{"provider":"devin","model":"swe-2-max","http_status":429,"retry_after":null,"health_class":"quota_bench","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T11:00:00Z","source":"provider_quota_window","failure_mode":"quota_cap","bench_until":"2026-09-05T11:00:00Z","usable_at":"2026-09-05T11:00:00Z","bench_window_s":518400,"consecutive_failure_count":25,"writer":"mark_seat_quota_bench"}
+SEAT
+ST25="$TMPD/state25.json"; PROM25="$TMPD/release25.prom"
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$SEATD25" SEAT_CAPS_JSON="$TMPD/seat-caps24.json" \
+    FLEET_SEAT_COMEBACK_STATE="$ST25" FLEET_SEAT_COMEBACK_PROM="$PROM25" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" PI_BIN="$TMPD/pi-fail" \
+    bash "$BIN" --false-wall-only >/dev/null 2>"$TMPD/run25.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "25: failed truth probe must exit 0 (the system working), got $rc ($(cat "$TMPD/run25.err"))"
+jq -e '.health_class == "quota_bench" and .bench_until != null' "$SEATD25/devin__swe-2-max.json" >/dev/null \
+  || fail "25: a seat that fails its probe must stay benched: $(cat "$SEATD25/devin__swe-2-max.json")"
+grep -q 'fleet_seat_bench_lied_total{' "$PROM25" && fail "25: no lie may be counted for a truthful bench: $(cat "$PROM25")"
+grep -q "SEAT-WALL-FALSE" "$TMPD/run25.err" && fail "25: no SEAT-WALL-FALSE on a failed probe: $(cat "$TMPD/run25.err")"
+ok "25: a benched seat that fails its PONG stays benched; nothing counted (fleet-ops#5285)"
+
+# --- 26. fleet-ops#5285: a bench written < 15 min ago is not yet a suspect ---
+# The truth probe is owed at min(advertised reset, 15 min) AFTER the write.
+# Same 6-day bench, observed_at = now: skipped with the bench-age reason even
+# though the stub would answer PONG. (This is also what keeps the path unit
+# from re-probing a seat on the ledger write its own unwall just made.)
+SEATD26="$TMPD/seats26"
+mkdir -p "$SEATD26"
+cat > "$SEATD26/devin__swe-2-max.json" <<'SEAT'
+{"provider":"devin","model":"swe-2-max","http_status":429,"retry_after":null,"health_class":"quota_bench","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T12:00:00Z","source":"provider_quota_window","failure_mode":"quota_cap","bench_until":"2026-09-05T11:00:00Z","usable_at":"2026-09-05T11:00:00Z","bench_window_s":518400,"consecutive_failure_count":25,"writer":"mark_seat_quota_bench"}
+SEAT
+ST26="$TMPD/state26.json"; PROM26="$TMPD/release26.prom"
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$SEATD26" SEAT_CAPS_JSON="$TMPD/seat-caps24.json" \
+    FLEET_SEAT_COMEBACK_STATE="$ST26" FLEET_SEAT_COMEBACK_PROM="$PROM26" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" PI_BIN="$TMPD/pi-pong-true" \
+    bash "$BIN" --false-wall-only >/dev/null 2>"$TMPD/run26.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "26: fresh-bench sweep must exit 0, got $rc ($(cat "$TMPD/run26.err"))"
+grep -qE "PONG probe devin/swe-2-max|SEAT-WALL-FALSE" "$TMPD/run26.err" \
+  && fail "26: a bench younger than 15 min must not be probed at all: $(cat "$TMPD/run26.err")"
+jq -e '.health_class == "quota_bench"' "$SEATD26/devin__swe-2-max.json" >/dev/null \
+  || fail "26: a bench written just now must not be probed/cleared: $(cat "$SEATD26/devin__swe-2-max.json")"
+ok "26: a bench younger than 15 min is not probed — the truth probe is owed at min(reset, 15 min) after the write (fleet-ops#5285)"
+
+# --- 27. fleet-ops#5285: a policy bench (daily spend cap) is money — never probed --
+# Same live stub as 24; the seat answers PONG, but its bench is a
+# daily_spend_cap decision. It must stay benched, no lie counted.
+SEATD27="$TMPD/seats27"
+mkdir -p "$SEATD27"
+cat > "$SEATD27/devin__swe-2-max.json" <<'SEAT'
+{"provider":"devin","model":"swe-2-max","http_status":429,"retry_after":null,"health_class":"quota_bench","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T11:00:00Z","source":"daily_spend_cap","failure_mode":"quota_cap","bench_until":"2026-08-31T00:00:00Z","usable_at":"2026-08-31T00:00:00Z","bench_window_s":43200,"consecutive_failure_count":1,"writer":"provider_daily_budget"}
+SEAT
+ST27="$TMPD/state27.json"; PROM27="$TMPD/release27.prom"
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$SEATD27" SEAT_CAPS_JSON="$TMPD/seat-caps24.json" \
+    FLEET_SEAT_COMEBACK_STATE="$ST27" FLEET_SEAT_COMEBACK_PROM="$PROM27" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" PI_BIN="$TMPD/pi-pong-true" \
+    bash "$BIN" --false-wall-only >/dev/null 2>"$TMPD/run27.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "27: policy-bench sweep must exit 0, got $rc ($(cat "$TMPD/run27.err"))"
+jq -e '.health_class == "quota_bench" and .source == "daily_spend_cap" and .bench_until != null' "$SEATD27/devin__swe-2-max.json" >/dev/null \
+  || fail "27: a daily_spend_cap bench must never be probed or cleared: $(cat "$SEATD27/devin__swe-2-max.json")"
+grep -qE "PONG probe devin/swe-2-max|SEAT-WALL-FALSE" "$TMPD/run27.err" \
+  && fail "27: a policy bench must not be PONG-probed at all: $(cat "$TMPD/run27.err")"
+ok "27: a policy bench (daily_spend_cap) is money — not probed, not cleared, not counted (fleet-ops#5285)"
+
 echo "ALL OK: active come-back release path (fleet-ops#2421) + force-probe-on-overdue-usable_at + corpse-at-threshold + never-released metric (fleet-ops#2638) + own-streak corpse + interval-breach loud check (fleet-ops#2806) + no-wall corpse second-chance re-probe / explicit retire (fleet-ops#3156) + extension-reclassify race (fleet-ops#3179) + PQE 1h==1h deadlock fix (fleet-ops#3176) + skip-corpse-on-reanchored-wall (fleet-ops#3301) + phantom retirement + real-non-caps-seat re-probe (fleet-ops#3993) + spawn-bench-held 402 skip (fleet-ops#4659) + false-wall PONG release (fleet-ops#4640)"

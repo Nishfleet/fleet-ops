@@ -203,6 +203,25 @@ groups:
           summary: "seat never released — comeback-release prober keeps failing on the same seat"
           description: "One or more seats have been probed >=10 times by the comeback-release organ without recovery (fleet-ops#2638). The bin's corpse path (SEAT_DEAD_CONSECUTIVE_THRESHOLD, default 25) should terminate these on the next sweep; sustained > 0 here for 1h+ means the corpse write is not landing. The per-seat fleet_seat_comeback_never_released series names the stuck seat. Repair worker: inspect /home/nish/workspaces/agent-state/lanes/seats/<seat>.json (consecutive_failure_count must be climbing), journalctl --user -u fleet-seat-comeback-release.service, and the provider's reachability."
 
+      # fleet-ops#5285: benches lie. fleet_seat_bench_lied_total{provider,model}
+      # increments every time the bench-truth PONG probe clears a bench — the
+      # ledger benched a seat the provider would actually serve (the lived
+      # Devin phantom benches: swe-1-7 benched 6 DAYS on a minutes-scale 429
+      # while a live probe answered PONG first try; the highest-yield lane
+      # idled up to 45 min per phantom bench). >3 cleared benches in 6h for
+      # one provider means the bench WRITER for that provider is lying
+      # systematically — repair, never page Nish: the alert-repair
+      # dispatcher owns the repair packet.
+      - alert: FleetSeatBenchLied
+        expr: increase(fleet_seat_bench_lied_total[6h]) > 3
+        for: 5m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "bench lie — {{ $labels.provider }} benches cleared by live probe >3x in 6h"
+          description: "fleet-ops#5285: the bench-truth PONG probe (fleet-seat-comeback-release --false-wall-only, 15-min cadence) has cleared more than 3 benches on provider {{ $labels.provider }} in 6h — benches on this provider are systematically phantom (the ledger benches seats the provider would serve; the lived Devin swe-2 class). Repair worker: identify the writer (journalctl --user -u fleet-seat-comeback-release.service SEAT-WALL-FALSE lines name the writer field), check the provider's parsed reset windows against its real 429 text, and inspect /home/nish/workspaces/agent-state/lanes/seats/<seat>.json source=bench_truth_probe records. Do NOT silence the probe; the probe IS the un-bench primitive."
+
       # fleet-ops#2712: provider-level (account-level) quota exhaustion.
       # A provider with >=2 quota_exhausted seats observed within 1h
       # (HTTP 402 + health_class=quota_exhausted) is a billing-wall pattern,
