@@ -336,6 +336,8 @@ def _cache_paths(env):
 def _read_cache(path):
     try:
         c = json.loads(path.read_text())
+        if not isinstance(c, dict):
+            return None, None
         data, ts = c.get("data"), c.get("ts")
         if isinstance(ts, (int, float)):
             return data, time_now() - ts
@@ -360,12 +362,15 @@ def _run(cmd, env, timeout=GH_TIMEOUT):
     A missing binary (bad FLEET_DQ_GH, no gh on PATH) is an OSError, not a
     crash: prom_lines() must never raise, and a FileNotFoundError escaping
     here would take the whole family down instead of degrading one repo
-    (fleet-ops#5140).
+    (fleet-ops#5140). A timeout raises subprocess.TimeoutExpired — a
+    SubprocessError, not an OSError; catching it here keeps a slow fetch on
+    the ordinary stale-cache path instead of failing the whole repo
+    (fleet-ops#5140 phase-1 review).
     """
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
                            env={**os.environ, **env})
-    except OSError as exc:
+    except (OSError, subprocess.SubprocessError) as exc:
         print(f"deploy-quality: cannot run {cmd[0]}: {exc}", file=sys.stderr)
         return None
     if r.returncode != 0:

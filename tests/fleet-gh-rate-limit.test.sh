@@ -26,6 +26,13 @@ command -v python3 >/dev/null 2>&1 || fail "python3 required"
 scratch="$(mktemp -d -t fme-gh-rl.XXXXXX)"
 trap 'rm -rf "$scratch"' EXIT INT TERM
 
+# fleet-ops#5140: keep m.main() below off the live intake set — without this,
+# prom_lines() resolves real product repos and can spend real gh calls.
+cat >"$scratch/intake-fleet-ops-only.json" <<'JSON'
+{ "repos": [{ "name": "fleet-ops" }] }
+JSON
+export FLEET_DQ_REPOS_JSON="$scratch/intake-fleet-ops-only.json"
+
 SM_CONFIG="$scratch/sm.json"
 cat >"$SM_CONFIG" <<'JSON'
 { "repos": ["fleet-ops"] }

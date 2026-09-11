@@ -60,6 +60,15 @@ command -v jq >/dev/null 2>&1 || fail "jq required"
 scratch="$(mktemp -d -t fme-test.XXXXXX)"
 trap 'rm -rf "$scratch"' EXIT INT TERM
 
+# fleet-ops#5140: prom_lines() resolves product repos from intake-repos.json,
+# which would let the m.main() heredocs below spend real gh calls and write
+# deploy-quality-*-<product>.json into the production cache dir. Pin the
+# fleet-ops-only set for the whole file.
+cat >"$scratch/intake-fleet-ops-only.json" <<'JSON'
+{ "repos": [{ "name": "fleet-ops" }] }
+JSON
+export FLEET_DQ_REPOS_JSON="$scratch/intake-fleet-ops-only.json"
+
 # =========================================================================
 # 1-5. Classifier + self-maintenance/quality derivation (pure python)
 # =========================================================================

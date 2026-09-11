@@ -17,6 +17,17 @@ every dashboard says the opposite. One PR, four phases, manager opens and arms i
   before the gauge/rule it asserts exists. Phase 1 landed as 6ba1c5001 before a
   worker restart; this run picks up from it (session-pickup: prior plan and
   commit are authoritative).
+- 2026-09-11 (run 3, StartLimitBurst resume): the phase-2/3 worker's output was
+  banked by fleet-salvage (ceb404af6) but the phase-1 retry worker's three
+  act-on fixes were LOST with the killed run. Applied directly by the manager
+  (three one-line, reviewer-specified edits — a fourth worker round-trip for
+  them is the stall the 10-minute rule exists to prevent):
+  `_run` catches (OSError, subprocess.SubprocessError); `_read_cache` guards
+  isinstance(c, dict); FLEET_DQ_REPOS_JSON fleet-ops-only pin exported in
+  tests/fleet-metrics-export.test.sh AND tests/fleet-gh-rate-limit.test.sh
+  (the only two files that invoke main()). Manager review of the banked
+  phase-2/3 diff: PASS (rule shape, info-series URL carrier, ordering,
+  per-repo degradation all match the plan).
 
 ## Review adjudication — phase 1 (reviewer pass, verdict BLOCK)
 
@@ -55,31 +66,31 @@ Consider / Noted (recorded, not re-delegated):
 
 ## Phases
 
-- [ ] phase 1: `lib/fleet-deploy-quality.py` becomes multi-repo: `fleet-ops` exactly
+- [x] phase 1: `lib/fleet-deploy-quality.py` becomes multi-repo: `fleet-ops` exactly
       as today, plus every repo in `config/intake-repos.json` with `product: true`.
       A declared product repo that cannot be measured emits NaN for its gauges and
       `fleet_deployment_quality_up{repo="<r>"} 0` — never a silent absence.
-- [ ] phase 1: for a GitHub-deployed product repo, measure the workflow that gates
+- [x] phase 1: for a GitHub-deployed product repo, measure the workflow that gates
       production (0509: workflow name `Deploy production`).
       `fleet_deployment_latency_seconds{repo="0509"}` = merge -> first green deploy;
       `fleet_deploy_blocked_duration_seconds{repo="0509",workflow=...}` = age of the
       current run of consecutive non-green `Deploy production` runs, 0 when the newest
       run is green. A 28h stall must be visible within 15 minutes of the stall starting.
-- [ ] phase 1: no new timer, no new unit, no new service — ride the existing 5-minute
+- [x] phase 1: no new timer, no new unit, no new service — ride the existing 5-minute
       `fleet-metrics-export` tick; the extra lookup uses the existing cache/TTL envelope
       and a hard-capped product gh budget that leaves `_GH_FETCHED_THIS_RUN` untouched.
-- [ ] phase 2: new rule `ProductDeployStalled` (severity warning, NOT critical, must not
+- [x] phase 2: new rule `ProductDeployStalled` (severity warning, NOT critical, must not
       page Nish): `fleet_deploy_blocked_duration_seconds{repo!="fleet-ops"} > 3600 for:
       15m`, annotation naming the repo, the workflow, the age and the newest red run URL.
-- [ ] phase 2: emit a separate `fleet_product_deploy_green{repo}` gauge; do NOT change
+- [x] phase 2: emit a separate `fleet_product_deploy_green{repo}` gauge; do NOT change
       `fleet_main_ci_green` semantics — document in its HELP text that it tracks the
       workflow literally named `CI` only, and that deploy greenness is
       `fleet_product_deploy_green`.
-- [ ] phase 3: regression test under `tests/` using the existing `FLEET_DQ_*` seams:
+- [x] phase 3: regression test under `tests/` using the existing `FLEET_DQ_*` seams:
       a fixture of the last three `Deploy production` runs failed-failed-failed for 0509
       asserts `fleet_deploy_blocked_duration_seconds{repo="0509"} > 0` and a 0509 series
       in `prom_lines()`. No live gh call, no network.
-- [ ] phase 3: do not raise, lower or silence any existing alert threshold — prove all
+- [x] phase 3: do not raise, lower or silence any existing alert threshold — prove all
       five existing `fleet_deploy_quality` rules are byte-identical, and run the full
       existing `tests/fleet-deploy-quality.test.sh` green.
 
