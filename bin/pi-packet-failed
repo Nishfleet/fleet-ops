@@ -125,6 +125,11 @@ esac
 journal_tail="$("$JOURNALCTL" --user -u "$failed_unit" -n 5 --no-pager -o cat 2>/dev/null | tail -5 || true)"
 unit_env="$("$SYSTEMCTL" --user show "$failed_unit" -p Environment --value 2>/dev/null || true)"
 deliverable="$(printf '%s' "$unit_env" | tr ' ' '\n' | sed -n 's/^PI_DEADMAN_DELIVERABLE=//p' | head -1)"
+# Drill seam: a runner's user manager may not surface a dead transient's
+# --setenv unit Environment (or may have no user manager worth the name);
+# the drill passes the promise explicitly so the drill still proves the
+# whole re-queue chain regardless.
+[[ -n "${PI_PACKET_FAILED_DELIVERABLE:-}" ]] && deliverable="$PI_PACKET_FAILED_DELIVERABLE"
 
 # packet_path + cmdline + deliverable from the dispatch ledger
 # (pi-systemd-run writes one row per dispatch; last wins). The ledger copy

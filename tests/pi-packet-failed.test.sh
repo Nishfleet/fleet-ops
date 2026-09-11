@@ -239,6 +239,7 @@ Environment=FLEET_FINDINGS_LEDGER_HELPER=$std6/no-such-helper
 Environment=FLEET_ISSUE_FILE=$fd6/fleet-issue-file
 Environment=AGENT_STATE=$std6
 Environment=PI_PACKET_STATE=$std6/pi-packets
+Environment=PI_PACKET_FAILED_DELIVERABLE=$std6/expected-deliverable.md
 ExecStart=$bin %i
 EOF
     systemctl --user daemon-reload
