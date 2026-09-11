@@ -2087,6 +2087,12 @@ main() {
     # the unit exits 1 once (OnFailure escalates, last-green stays stale).
     if (( FALSE_WALL_ONLY )); then
         log "false-wall-only sweep complete: probed=$probed released=$released_this_run"
+        # fleet-ops#5285: the --false-wall-only path (15-min timer + the
+        # bench-truth path unit) is the ONLY writer of
+        # fleet_seat_bench_lied_total — it must render the textfile on
+        # every sweep (bench lie or not) so the FleetSeatBenchLied alert
+        # and the hourly heartbeat check read live counters.
+        write_prom "" 0 "$probed_total" "$released_total" 0 "$CORPSE_TOTAL" "$RETIRED_TOTAL" 0 ""
         return 0
     fi
 
