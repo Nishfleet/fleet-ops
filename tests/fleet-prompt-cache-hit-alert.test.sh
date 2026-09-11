@@ -155,7 +155,12 @@ cases = [
     (S + "pi-issue-fleet-ops-5010/x.jsonl", "worker", "a real dispatched packet"),
     (S + "--tmp-seat-probe--/x.jsonl", "probe", "a seat liveness probe"),
     (S + "--home-nish-workspaces-agent-worktrees-issue-fleet-ops-4263-rebase--/x.jsonl",
-     "other", "a packet run from a plain worktree (must stay in scope)"),
+     "interactive",
+     "an unnamed encoded-cwd session in a worktree — dispatched packets run through lane-named dirs, this is ad-hoc work"),
+    (S + "--tmp-seat-proof-dev--/x.jsonl", "interactive",
+     "a /tmp/seat-proof-* audition one-shot (fired llmgateway-devpass/other 2026-09-11T20:57Z)"),
+    (S + "--home-nish-workspaces-agent-state--/x.jsonl", "interactive",
+     "a one-off ops run in a state dir (fired llmgateway-devpass/other 2026-09-11T20:57Z)"),
 ]
 for path, want, why in cases:
     got = fu.packet_type_from_path(path)
