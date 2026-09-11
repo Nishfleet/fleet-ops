@@ -127,7 +127,7 @@ set -Eeuo pipefail
 
 export HOME="${HOME:-/home/nish}"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
-export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin"
+command -v gh >/dev/null 2>&1 || export PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 
 AS="${AGENT_STATE:-/home/nish/workspaces/agent-state}"
 LEDGER="${PI_SEAT_HEALTH_LEDGER_DIR:-$AS/lanes/seats}"

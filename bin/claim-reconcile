@@ -10,7 +10,7 @@ if [[ -z "${GH_TOKEN:-}" && "${GITHUB_ACTIONS:-}" != "true" && "${GH:-gh}" == "g
     # unconditionally put /home/nish/.local/bin AHEAD of an inherited stub
     # gh, so a drill run from a shell with no GH_TOKEN resolved the real gh
     # and filed its synthetic fixture into the live tracker.
-    command -v gh >/dev/null 2>&1 || export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
+    command -v gh >/dev/null 2>&1 || export PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}
     _wt="${NISHFLEET_WORKER_TOKEN_BIN:-${HOME:-/home/nish}/.local/bin/worker-token}"
     _minted="$("$_wt" --print)" || { echo "fleet-ops#3445: $_wt --print failed - refusing human-gh writes" >&2; exit 1; }
     eval "$_minted"
