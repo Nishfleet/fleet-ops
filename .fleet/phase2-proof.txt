@@ -1,0 +1,5 @@
+main sha: 3447976a3347bb32ff55a4e1844ae5ebb00494ab
+
+RED on main (exit 1):
+[2026-09-11T20:06:54Z] seat registry: unit pi-issue@5141-a1.service stuck activating 400s (SubState=start, threshold=300s) — wedged pi, reaping seat
+FAIL: (a) activating/start 400s into a 45min TimeoutStartUSec: _seat_registry_unit_live rc=1, expected 0 (live)
