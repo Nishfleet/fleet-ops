@@ -2333,4 +2333,96 @@ hc=$(jq -r '.health_class' "$SEATD23b/devin__glm-5-2.json")
 [[ "$hc" == "healthy" ]] || fail "23b: drill must leave the seat healthy, got $hc"
 ok "23b: --false-wall-drill injects 24h wall, PONG-releases, logs SEAT-WALL-FALSE"
 
+# 23c. fleet-ops#5285 bench-truth contract: a PONG-cleared bench writes
+#      source=bench_truth_probe (auditable provenance) and increments the
+#      per-seat fleet_seat_bench_lied_total counter in state AND prom.
+src=$(jq -r '.source' "$SEATD23/devin__glm-5-2.json")
+[[ "$src" == "bench_truth_probe" ]] \
+  || fail "23c: PONG release must write source=bench_truth_probe, got $src"
+lied=$(jq -r '.bench_lied["devin/glm-5-2"] // 0' "$ST23")
+[[ "$lied" == "1" ]] \
+  || fail "23c: bench_lied state counter must be 1, got $lied: $(cat "$ST23")"
+grep -qE '^fleet_seat_bench_lied_total\{provider="devin",model="glm-5-2"\} 1$' "$PROM23" \
+  || fail "23c: prom must carry fleet_seat_bench_lied_total 1: $(cat "$PROM23")"
+ok "23c: PONG-cleared bench writes source=bench_truth_probe + fleet_seat_bench_lied_total increment (fleet-ops#5285)"
+
+# 23d. fleet-ops#5285: a bench on a DEAD seat stays benched — the probe
+#      FAILS (stub exits 1), usable_at/bench_until unchanged, and the
+#      bench_lied counter must NOT increment (no bench lie observed).
+SEATD23d="$TMPD/seats23d"
+mkdir -p "$SEATD23d"
+cat > "$SEATD23d/devin__glm-5-2.json" <<'EOF'
+{"provider":"devin","model":"glm-5-2","http_status":429,"retry_after":null,"health_class":"rate_limited","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T11:00:00Z","source":"after_provider_response","failure_mode":"rate_limit","usable_at":"2026-08-31T12:00:00Z","bench_until":"2026-08-31T12:00:00Z","consecutive_failure_count":3,"writer":"mark_seat_quota_bench"}
+EOF
+cat > "$TMPD/pi-dead" <<'EOF'
+#!/usr/bin/env bash
+echo "provider unreachable" >&2
+exit 1
+EOF
+chmod +x "$TMPD/pi-dead"
+ST23d="$TMPD/state23d.json"
+PROM23d="$TMPD/release23d.prom"
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$SEATD23d" \
+    SEAT_CAPS_JSON="$TMPD/seat-caps23.json" \
+    FLEET_SEAT_COMEBACK_STATE="$ST23d" \
+    FLEET_SEAT_COMEBACK_PROM="$PROM23d" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" \
+    PI_BIN="$TMPD/pi-dead" \
+    bash "$BIN" >/dev/null 2>"$TMPD/run23d.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "23d: dead-stub sweep must exit 0 (seat stays benched), got $rc ($(cat "$TMPD/run23d.err"))"
+hc=$(jq -r '.health_class' "$SEATD23d/devin__glm-5-2.json")
+[[ "$hc" == "rate_limited" ]] || fail "23d: dead stub must leave the seat benched, got $hc"
+bu=$(jq -r '.bench_until' "$SEATD23d/devin__glm-5-2.json")
+[[ "$bu" == "2026-08-31T12:00:00Z" ]] || fail "23d: dead stub must not touch bench_until, got $bu"
+lied=$(jq -r '.bench_lied["devin/glm-5-2"] // 0' "$ST23d" 2>/dev/null || echo 0)
+[[ "$lied" == "0" ]] || fail "23d: bench_lied must NOT increment on a failed probe, got $lied"
+ok "23d: dead stub stays benched, bench_until untouched, no bench-lie increment (fleet-ops#5285)"
+
+# 23e. fleet-ops#5285: the prober's OWN re-bench hold (source=
+#      comeback_release_rebench) is not a provider-claimed bench — the
+#      false-wall PONG path must skip it (the 15-min cadence would
+#      otherwise defeat the backoff entirely).
+SEATD23e="$TMPD/seats23e"
+mkdir -p "$SEATD23e"
+cat > "$SEATD23e/devin__glm-5-2.json" <<'EOF'
+{"provider":"devin","model":"glm-5-2","http_status":503,"retry_after":null,"health_class":"transient_fault","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T12:00:00Z","source":"comeback_release_rebench","failure_mode":"comeback_rebench","usable_at":"2026-08-31T12:00:00Z","bench_until":"2026-08-31T12:00:00Z","bench_window_s":900,"consecutive_failure_count":6,"writer":"comeback_release_rebench"}
+EOF
+ST23e="$TMPD/state23e.json"
+PROM23e="$TMPD/release23e.prom"
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$SEATD23e" \
+    SEAT_CAPS_JSON="$TMPD/seat-caps23.json" \
+    FLEET_SEAT_COMEBACK_STATE="$ST23e" \
+    FLEET_SEAT_COMEBACK_PROM="$PROM23e" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" \
+    PI_BIN="$TMPD/pi-pong" \
+    bash "$BIN" --dry-run >/dev/null 2>"$TMPD/run23e.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "23e: re-bench-hold skip must exit 0, got $rc ($(cat "$TMPD/run23e.err"))"
+grep -qi "SEAT-WALL-FALSE\|PONG-probe" "$TMPD/run23e.err" \
+  && fail "23e: re-bench hold (comeback_release_rebench) must not be PONG-probed: $(cat "$TMPD/run23e.err")"
+ok "23e: prober's own re-bench hold is skipped by the bench-truth path (fleet-ops#5285)"
+
+# 23f. fleet-ops#5285 path-unit storm guard: a second --false-wall-only
+#      sweep within the sweep gap (60s default; the mocked now makes the
+#      previous sweep 0s ago) must no-op with the debounce log line.
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$SEATD23" \
+    SEAT_CAPS_JSON="$TMPD/seat-caps23.json" \
+    FLEET_SEAT_COMEBACK_STATE="$ST23" \
+    FLEET_SEAT_COMEBACK_PROM="$PROM23" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" \
+    PI_BIN="$TMPD/pi-pong" \
+    bash "$BIN" --false-wall-only >/dev/null 2>"$TMPD/run23f.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "23f: debounced sweep must exit 0, got $rc ($(cat "$TMPD/run23f.err"))"
+grep -q "debounce" "$TMPD/run23f.err" \
+  || fail "23f: second sweep within the gap must log the debounce skip: $(cat "$TMPD/run23f.err")"
+ok "23f: --false-wall-only sweeps are debounced (60s gap) against the path-unit write storm (fleet-ops#5093 class)"
+
 echo "ALL OK: active come-back release path (fleet-ops#2421) + force-probe-on-overdue-usable_at + corpse-at-threshold + never-released metric (fleet-ops#2638) + own-streak corpse + interval-breach loud check (fleet-ops#2806) + no-wall corpse second-chance re-probe / explicit retire (fleet-ops#3156) + extension-reclassify race (fleet-ops#3179) + PQE 1h==1h deadlock fix (fleet-ops#3176) + skip-corpse-on-reanchored-wall (fleet-ops#3301) + phantom retirement + real-non-caps-seat re-probe (fleet-ops#3993) + spawn-bench-held 402 skip (fleet-ops#4659) + false-wall PONG release (fleet-ops#4640)"

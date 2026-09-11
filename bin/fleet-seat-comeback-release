@@ -711,6 +711,17 @@ try_false_wall_release() {
     local usable_e remain lastp now_e ue
     ledger_is_money_wall "$f" && return 1
     seat_cap_positive "$p" "$m" || return 1
+    # fleet-ops#5285: bench-truth probes verify PROVIDER-claimed benches —
+    # walls the ledger asserts about the provider. The prober's own re-bench
+    # holds (source=comeback_release_rebench, written by this bin after a
+    # FAILED probe) are rate-limiter backoff, not a provider claim: probing
+    # them on the 15-min cadence defeats the backoff (a failing provider
+    # would be re-probed continuously) and they never "lie". Skip them.
+    local rsrc
+    rsrc=$(jq -r '.source // ""' "$f" 2>/dev/null || true)
+    if [[ "$rsrc" == "comeback_release_rebench" || "$rsrc" == "comeback_release_corpse" ]]; then
+        return 1
+    fi
     ue=$(jq -r '.usable_at // ""' "$f" 2>/dev/null || true)
     usable_e=$(ts_epoch "$ue")
     [[ -n "$usable_e" ]] || return 1
@@ -804,12 +815,12 @@ unwall_seat() {
     fi
     local tmp="$f.$$.tmp"
     jq -n \
-        --arg p "$p" --arg m "$m" --arg now "$(now_iso)" \
+        --arg p "$p" --arg m "$m" --arg now "$(now_iso)" --arg src "$source_kind" \
         '{provider:$p, model:$m, http_status:200, retry_after:null,
           health_class:"healthy", retryable:false, seat_dead:false,
           poison_ladder:false, failure_mode:"none", observed_at:$now,
           usable_at:null, bench_until:null, consecutive_failure_count:0,
-          source:"$source_kind", writer:"unwall_seat"}' > "$tmp"
+          source:$src, writer:"unwall_seat"}' > "$tmp"
     chmod 600 "$tmp" 2>/dev/null || true
     mv "$tmp" "$f"
     log "UNWALLED $p/$m (healthy observation written)"
