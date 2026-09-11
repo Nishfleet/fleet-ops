@@ -93,10 +93,14 @@ Simple language is never baby talk and never condescending.
 - **Queue every finding.** A fix only mentioned in chat is lost. Queue it.
 - **Session-outliving work uses `pi-systemd-run`, never `nohup`.** A
   `nohup pi ... &` dies when the launching shell ends and leaves dead-seat
-  EXTLOAD lines. `pi-systemd-run --unit <name> --stdin <packet.md> -- pi
+  EXTLOAD lines. `pi-systemd-run --unit <name> --stdin <packet.md>
+  --deadline <min> --deliverable <path> -- pi
   --print --provider <provider> --model <model>` (a thin
   `systemd-run --user --collect --no-block` wrapper; not a dispatcher).
-  Canonical wording: fleet-ops README and `prompts/heartbeat.md`.
+  `--deadline` is the grace budget and `--deliverable` the artifact the run MUST
+  produce; the wrapper adds the healthchecks dead-man and OnFailure escalation
+  (fleet-ops#4266). Canonical wording: fleet-ops README and
+  `prompts/heartbeat.md`.
 
 ## Hard lines
 
