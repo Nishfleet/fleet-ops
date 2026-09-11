@@ -144,7 +144,10 @@ if [ "$TOMATCH" = "--backfill" ]; then
     BACKFILL_SINCE="${2:-}"
     shift 2 2>/dev/null || shift $# 2>/dev/null || true
 fi
-case "${TOMATCH}" in
+# fleet-ops#1549 class guard (tests/fleet-help-flag-runs-live.test.sh) greps
+# for the literal `case "${1:-}" in` — dispatch on argv[1] directly, not a
+# shadowing copy.
+case "${1:-}" in
     --help|-h)
         cat <<'HELP'
 fleet-blind-audit — one mechanical no-context sweep of the repo + live state.
@@ -443,8 +446,6 @@ BF
     : >"$bv_log"
     local bf_finding bf_verdict b_title b_body b_evidence b_severity b_first
     local b_action b_url b_rc bf_v bf_reason bf_sig
-    panel_input=$(mktemp)
-    bf_body=$(mktemp)
     # Panel context: the open-issue list just fetched doubles as the panel's
     # duplicate view; recent merges and deliberate states bound the rest.
     bf_open=$(cat "$bf_dir/open-$NOW_DIR.json" 2>/dev/null || printf '[]')
@@ -460,9 +461,12 @@ BF
     issue_nums=""
     while IFS= read -r bf_finding; do
         [ -n "$bf_finding" ] || continue
+        panel_input=$(mktemp)
+        bf_body=$(mktemp)
         b_title=$(printf '%s' "$bf_finding" | jq -r '.title // ""')
         if [ -z "$b_title" ]; then
             panel_fail=$((panel_fail+1))
+            rm -f "$panel_input" "$bf_body"
             continue
         fi
         b_body=$(printf '%s' "$bf_finding" | jq -r '.body // ""')
@@ -494,10 +498,15 @@ BF
             printf '**First audit report:** %s\n\n' "$b_first"
             printf '*Backfilled by fleet-blind-audit --backfill at %s.*\n' "$NOW_ISO"
         } > "$bf_body"
+        # Under `set -e` a bare var=$(cmd) kills the whole run silently when
+        # the #1212 gate hiccups (stderr discarded by 2>/dev/null) — the
+        # 2026-09-11T16:50Z backfill died at 101/814 exactly this way. Capture
+        # the rc instead so one gate failure becomes the designed
+        # carry-over, not a silent mid-queue death.
+        b_rc=0
         bf_new=$("$ISSUE_FILE" file --json -R "$REPO" \
             --title "[gap-audit] $b_title" --body-file "$bf_body" \
-            --label gap-audit --label agent-ready 2>/dev/null)
-        b_rc=$?
+            --label gap-audit --label agent-ready 2>"$bf_dir/filegate-err-$NOW_DIR.log") || b_rc=$?
         if [ "$b_rc" -eq 0 ] && [ -n "$bf_new" ]; then
             b_action=$(printf '%s' "$bf_new" | jq -r '.action // "filed"')
             b_url=$(printf '%s' "$bf_new" | jq -r '.url // ""')
