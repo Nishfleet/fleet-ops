@@ -94,7 +94,7 @@ ok "3. zero units exit 0 and write state"
 
 # =========================================================================
 # 4. admission uses cap-map ram_gb_per_worker (0.5), no self-calibrate
-#    The current measured ceiling is 0.5 GB (fleet-ops#1558; prior 0.6 via #1168 / #489).
+#    The current measured ceiling is 0.4 GB (fleet-ops#4891; prior 0.5 via #1558).
 #    Drift history: #1246 flagged the 1.5 lock stale after #1168 set 0.6; #1270
 #    locked the assertion at 0.6 and #1284 fixed the docstrings; #1558 later
 #    re-measured down to 0.5. Coupling rule (fleet-ops#1190, the #1168 drift
@@ -104,8 +104,8 @@ ok "3. zero units exit 0 and write state"
 #    SAME commit/PR. The config value is the source of truth; this test exists
 #    to catch a config change that forgets its measurement doc.
 # =========================================================================
-[[ "$(jq -r '.ram_gb_per_worker' "$caps")" == "0.5" ]] \
-    || fail "ram_gb_per_worker must be 0.5 (got $(jq -r '.ram_gb_per_worker' "$caps")) — update this assertion and the scenario-4 comment in the same PR (fleet-ops#1190)"
+[[ "$(jq -r '.ram_gb_per_worker' "$caps")" == "0.4" ]] \
+    || fail "ram_gb_per_worker must be 0.4 (got $(jq -r '.ram_gb_per_worker' "$caps")) — update this assertion and the scenario-4 comment in the same PR (fleet-ops#1190)"
 if grep -q 'ram_governor_recalibrate\|ram_governor_effective_gb' "$lib"; then
     fail "seat-lib.sh must not self-calibrate per_worker from live RSS (#489 keeps the config as the source of truth)"
 fi

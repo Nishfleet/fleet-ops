@@ -7,18 +7,18 @@
   "_comment_cursor_grok": "cursor/cursor-grok-4.6-high: probe-and-exclude. One strike already (spawnSync ETIMEDOUT at 2026-08-25 00:47 IST). Probed twice after the strike and it responds healthy; cap held at 1 to limit blast radius. Raise to 2 if it stays clean for a week.",
   "_comment_minimax": "minimax direct (MiniMax-M3) classified as 'metered' per models.json cost field (input $0.30/M, output $1.20/M) even though the model name says 'Yearly Plus' \u2014 the cost field is the source of truth and 'Yearly Plus' is just a tier label. Selection order puts it LAST so subscription seats burn down first.",
   "_comment_ollama_rule": "ollama cap only covers deepseek-v4-flash:0731 \u2014 the DeepSeek-flash-only standing rule bans ollama/kimi-k2.7-code, ollama/deepseek-v4-pro:0813, and ollama/gpt-oss:20b. seat-lib.sh enumerate_seats() emits every model in models.json; the cap map here is the allowlist by being the only entries listed. (Code-level enforcement is a follow-up if the rule is ever loosened.)",
-  "ram_gb_per_worker": 0.5,
+  "ram_gb_per_worker": 0.4,
   "_comment_target_concurrent": "fleet-ops#1558 (Nish standing order 2026-08-28): light-workload ceiling is 25. Undersaturation floor = min(target_concurrent, ram_governor_cap). Below that floor with ready supply is a FAULT. Browser-heavy mix self-throttles via MemAvailable; 25 is not guaranteed when 0509 E2E is in flight.",
   "target_concurrent": 25,
   "_comment_worker_memory": "fleet-ops#1558 Q1=A: per-repo MemoryMax/MemoryHigh written by intake as a per-instance drop-in (pi-issue@<repo>-<N>.service.d/memory.conf) before systemctl start. Template pi-issue@.service keeps MemoryMax=6G/MemoryHigh=3G as the no-table fallback. fleet-ops light: MemoryMax=1536M (bounds the light tail; live peaks 0.11-0.63G). 0509 browser: MemoryMax=2G/MemoryHigh=1536M (lowered from 3G/2G in fleet-ops#1587 after per-repo Environment drop-in limits vitest forks to 2 and playwright workers to 1). Values are systemd quantity strings.",
   "worker_memory": {
     "fleet-ops": {
+      "MemoryMax": "1G",
+      "MemoryHigh": "768M"
+    }, 
+    "0509": {
       "MemoryMax": "1536M",
       "MemoryHigh": "1G"
-    },
-    "0509": {
-      "MemoryMax": "2G",
-      "MemoryHigh": "1536M"
     }
   },
   "org_reserve": 2,
