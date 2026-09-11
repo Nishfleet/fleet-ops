@@ -254,8 +254,13 @@ EOF
         -- /bin/false >/dev/null 2>&1 || true
     # Wait (bounded) for the handler instance to run to completion.
     handler_unit="pi-packet-failed-drill@${dstub}.service.service"
-    for _ in $(seq 1 30); do
-        [[ -f "$std6/triage.md" ]] && break
+    # Wait for ALL drill sinks: the handler appends the triage line BEFORE
+    # the ledger/issue writes finish, so polling only triage breaks the
+    # loop early on a slow runner (green on the VPS, red on runners).
+    for _ in $(seq 1 60); do
+        if [[ -f "$std6/triage.md" && -f "$std6/findings-ledger.jsonl" && -f "$fd6/issuefile.calls" ]]; then
+            break
+        fi
         sleep 1
     done
     grep -q '\[PI-PACKET-FAILED\]' "$std6/triage.md" \
