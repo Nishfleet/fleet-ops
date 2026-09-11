@@ -2262,32 +2262,51 @@ ok "scenario20e: green canary observes-to-close on open deploy-blocked-on-main i
 
 ok "fleet-ops deploy step: install, drift detection, merge, and canary pass offline"
 
-# --- scenario 21: foreign origin fetch URL refuses before fetch/reset/install -
-# fleet-ops#5016, live 2026-09-10T16:16Z: the deploy clone's origin FETCH URL
-# was https://github.com/Nishfleet/0509.git (pushurl correctly fleet-ops), so
-# `origin/main` tracked 0509's main. The tick reset the live install source to
-# 0509's tree, deleting bin/, lib/ and install.sh and dangling every helper
-# symlink into the clone. An unowned origin/main must never be reset to.
+# --- scenario 21: foreign origin fetch URL repaired before fetch/reset/install
+# fleet-ops#5016 -> fleet-ops#5301: live 2026-09-11T10:21Z the deploy clone's
+# origin FETCH URL was https://github.com/Nishfleet/0509.git plus a second
+# remote `real` carrying the fleet-ops URL, and the old #5016 gate refused on
+# every tick for 10 minutes (nothing reached live). The URL is a constant and
+# the clone is disposable, so the tick now repairs (set-url back, drop the
+# duplicate remote) and proceeds in the SAME tick.
 : >"$enabled_units"
 git -C "$checkout" reset --hard -q origin/main
 git -C "$checkout" checkout -q main
 foreign_head="$(git -C "$checkout" rev-parse HEAD)"
+# Scenario 18b left a failing install.sh stub on origin/main; the old #5016
+# gate refused before any install, but the repaired tick now proceeds, so
+# restore a passing stub first (same as scenario21c below).
+cat >"$install" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+chmod +x "$install"
+git -C "$checkout" add install.sh
+git -C "$checkout" commit -q -m "restore passing install.sh stub before scenario21 repair tick"
+git -C "$checkout" push -q origin HEAD:main
+git -C "$checkout" fetch -q origin
+git -C "$checkout" reset -q --hard origin/main
 # A dirty working tree would otherwise route into the rescue-and-reset branch.
 echo "worker wip" >"$checkout/demo-wip.txt"
+# The repaired tick runs the full deploy; repopulate the enabled units so the
+# drift canary (which checks live unit state) passes as in scenario21c.
+printf '%s\n' "${expected_units[@]}" merged.timer > "$enabled_units"
 
 run_foreign_deploy() {
   local url="$1"
   git -C "$checkout" remote set-url origin "$url"
   set +e
   out=$(
-    env -u FLEET_OPS_EXPECTED_ORIGIN_URL \
-    GH="${GH:-$gh_fake}" \
+    env GH="${GH:-$gh_fake}" \
     PATH="$scratch:$PATH" \
     FLEET_OPS_CHECKOUT="$checkout" \
+    FLEET_OPS_EXPECTED_ORIGIN_URL="$origin_bare" \
     FLEET_OPS_DRIFT_BIN="$canary" \
     FLEET_OPS_SYSTEMCTL="$systemctl_fake" \
     FLEET_OPS_DEPLOY_AUDIT_LOG="$scratch/deploy-audit.log" \
     FLEET_OPS_TRIAGE="$scratch/triage.md" \
+    FLEET_DEPLOY_ORIGIN_REPAIR_PROM="$scratch/repair-prom" \
+    FLEET_DEPLOY_ORIGIN_REPAIR_LOG="$scratch/repair.hist" \
       "$deploy" 2>&1
   )
   rc=$?
@@ -2295,31 +2314,50 @@ run_foreign_deploy() {
 }
 
 run_foreign_deploy "https://github.com/Nishfleet/0509.git"
-[[ "$rc" -ne 0 ]] || fail "scenario21: foreign origin must refuse non-zero (got $rc: $out)"
+[[ "$rc" -eq 0 ]] || fail "scenario21: foreign origin must be repaired and the deploy must proceed (got $rc: $out)"
 [[ "$out" == *"DEPLOY-ORIGIN-REMOTE"* ]] \
     || fail "scenario21: expected DEPLOY-ORIGIN-REMOTE (got: $out)"
+[[ "$out" == *"repaired"* ]] \
+    || fail "scenario21: the loud line must say repaired, not refusing (got: $out)"
 [[ "$out" == *"https://github.com/Nishfleet/0509.git"* ]] \
-    || fail "scenario21: refusal must name the offending URL (got: $out)"
-[[ "$out" == *"fleet-ops#5016"* ]] \
-    || fail "scenario21: refusal must name fleet-ops#5016 (got: $out)"
-[[ "$(git -C "$checkout" rev-parse HEAD)" == "$foreign_head" ]] \
-    || fail "scenario21: deploy reset the checkout to the foreign origin/main"
-[[ -f "$checkout/demo-wip.txt" ]] \
-    || fail "scenario21: deploy touched the working tree (WIP file gone)"
-[[ -z "$(git -C "$checkout" for-each-ref --format='%(refname)' refs/heads/rescue 2>/dev/null)" ]] \
-    || fail "scenario21: deploy created a rescue branch for a foreign origin"
-[[ ! -s "$enabled_units" ]] \
-    || fail "scenario21: deploy installed/enabled units before refusing"
-grep -q 'origin-remote-refused' "$scratch/deploy-audit.log" \
-    || fail "scenario21: refusal must land in the deploy audit log"
-ok "scenario21: foreign origin fetch URL (0509) refuses loudly, no fetch/reset/install"
+    || fail "scenario21: repair must name the offending URL (got: $out)"
+[[ "$out" == *"fleet-ops#5301"* ]] \
+    || fail "scenario21: repair must name fleet-ops#5301 (got: $out)"
+[[ "$(git -C "$checkout" remote get-url origin)" == "$origin_bare" ]] \
+    || fail "scenario21: origin fetch URL must be set back to the expected URL"
+grep -q 'origin-remote-repaired' "$scratch/deploy-audit.log" \
+    || fail "scenario21: repair must land in the deploy audit log"
+grep -q 'fleet_deploy_origin_remote_repaired_total 1' "$scratch/repair-prom" \
+    || fail "scenario21: repair counter must be written to the .prom"
+ok "scenario21: foreign origin fetch URL (0509) repaired in the same tick, deploy proceeds (fleet-ops#5301)"
 
-# A near-miss owner/repo must refuse too (exact path match, not a substring).
+# A near-miss owner/repo is repaired too (exact path match, not a substring):
+# anything that is not the expected URL is rewritten back to the constant.
 run_foreign_deploy "https://github.com/Nishfleet/fleet-ops-extra.git"
-[[ "$rc" -ne 0 ]] || fail "scenario21b: fleet-ops-extra must refuse (got $rc: $out)"
+[[ "$rc" -eq 0 ]] || fail "scenario21b: fleet-ops-extra must be repaired and proceed (got $rc: $out)"
 [[ "$out" == *"DEPLOY-ORIGIN-REMOTE"* ]] \
     || fail "scenario21b: expected DEPLOY-ORIGIN-REMOTE (got: $out)"
-ok "scenario21b: a near-miss repo name is refused (exact match, no substring pass)"
+[[ "$(git -C "$checkout" remote get-url origin)" == "$origin_bare" ]] \
+    || fail "scenario21b: origin must be repaired back to the expected URL"
+ok "scenario21b: a near-miss repo name is repaired (exact match, no substring pass)"
+
+# The repair also drops an extra remote carrying the expected URL under
+# another name (the observed 2026-09-11 rewrite: origin=0509 + real=fleet-ops).
+git -C "$checkout" remote add real "$origin_bare"
+run_foreign_deploy "https://github.com/Nishfleet/0509.git"
+[[ "$rc" -eq 0 ]] || fail "scenario21d: repair tick must proceed (got $rc: $out)"
+[[ -z "$(git -C "$checkout" remote | grep -x real)" ]] \
+    || fail "scenario21d: the extra remote carrying the expected URL must be removed"
+ok "scenario21d: repair drops the duplicate fleet-ops remote (fleet-ops#5301)"
+
+# A >2-repairs-in-24h history trips the alert while the tick proceeds.
+now_s=$(date -u +%s)
+printf '%s\n%s\n%s\n%s\n' "$((now_s - 3600))" "$((now_s - 7200))" "$((now_s - 10800))" "$now_s" >"$scratch/repair.hist"
+run_foreign_deploy "https://github.com/Nishfleet/0509.git"
+[[ "$rc" -eq 0 ]] || fail "scenario21e: alert tick must proceed (got $rc: $out)"
+[[ "$out" == *"repaired 5x in 24h"* ]] \
+    || fail "scenario21e: >2 repairs in 24h must trip the alert (got: $out)"
+ok "scenario21e: >2 origin repairs in 24h trips the alert (fleet-ops#5301)"
 
 # Correct URL + the seam pointing at it: unchanged behaviour. Scenario 18b
 # left a failing `install.sh --system` stub on origin/main; restore a passing
@@ -2337,7 +2375,9 @@ exit 0
 STUB
 chmod +x "$install"
 git -C "$checkout" add install.sh
-git -C "$checkout" commit -q -m "restore passing install.sh stub after scenario18b"
+# --allow-empty: scenario21 setup already restored an identical passing stub,
+# so this commit may be a no-op (a plain commit exits 1 under set -e).
+git -C "$checkout" commit -q --allow-empty -m "restore passing install.sh stub after scenario18b"
 git -C "$checkout" push -q origin HEAD:main
 git -C "$checkout" fetch -q origin
 if ! out=$(run_deploy); then
