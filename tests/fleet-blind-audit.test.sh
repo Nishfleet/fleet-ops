@@ -204,6 +204,9 @@ PATH="$scratch/fakebin:$PATH" \
   AUDIT_PLAN_FILE="$plan" \
   AUDIT_FAKE_NOW="2026-08-26T06:20:00Z" \
   AUDIT_PI_BIN="$scratch/fakebin/pi" \
+  # fleet-ops#5437: this test owns the fleet-mode mechanics; the product
+  # chain and its two-seat rule have their own test file.
+  AUDIT_PRODUCT_DISABLE=1 \
   AUDIT_MAX_FINDINGS="5" \
   AUDIT_SEAM_EVIDENCE="$scratch/empty-seams.json" \
   AUDIT_MECHANISM_GATE="$scratch/noop-gate.py" \

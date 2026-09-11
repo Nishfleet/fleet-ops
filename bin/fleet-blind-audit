@@ -740,6 +740,445 @@ PY
     fi
 }
 
+# --- fleet-ops#5437: product-target mode -----------------------------------
+# Outside-in product audit: run the outside-in packet (prompts/
+# blind-audit-product.md) against a registered live product + its public
+# repo on TWO different seats in ONE run, merge the union (marking
+# agreements with both_seats:true), and file panel-PASS findings on the
+# product repo through the same panel + #1212 dedupe gate + a per-target
+# carry-over ledger. Every finding must land in an issue, the ledger, or a
+# panel-FAIL verdict line — a run that leaves a finding in none of the
+# three exits 1 (acceptance bullet 4).
+
+# Sequential same-tick chain (fleet-ops#5437 bullet 2): a default (no
+# --target) fleet run runs every registered product target after the fleet
+# audit on the SAME daily timer — no new timer, no alternation.
+if [ -z "$PRODUCT_TARGET" ] && [ "$DRILL" != "1" ] && [ "$DRY_RUN" != "1" ] \
+   && [ "${AUDIT_PRODUCT_DISABLE:-0}" != "1" ]; then
+    PRODUCT_CHAIN=1
+else
+    PRODUCT_CHAIN=0
+fi
+PRODUCT_HOOK_USED=0
+
+# Chained hook, called at each terminal exit of the fleet run. Owns the
+# worst-of exit code: a failed product run must fail the tick so the
+# heartbeat cadence canary sees it.
+hook_product_targets() { # $1 = fleet-mode exit code
+    local rc="$1" slug s_rc max_rc="$1"
+    if [ "$PRODUCT_CHAIN" != "1" ] || [ "$PRODUCT_HOOK_USED" = "1" ] \
+       || [ "${PRODUCT_LOCK_HELD:-0}" = "1" ]; then
+        exit "$rc"
+    fi
+    PRODUCT_HOOK_USED=1
+    PRODUCT_LOCK_HELD=1   # the fleet run above already holds the audit flock
+    local targets="${AUDIT_PRODUCT_TARGETS:-$repo_fallback/config/blind-audit-product-targets.json}"
+    local slugs
+    slugs=$(jq -r '.targets // {} | keys[]' "$targets" 2>/dev/null || true)
+    [ -n "$slugs" ] || exit "$rc"
+    while IFS= read -r slug; do
+        [ -n "$slug" ] || continue
+        log "product: chained run for target $slug (fleet-ops#5437, sequential same tick)"
+        s_rc=0
+        ( run_product_mode "$slug" ) || s_rc=$?
+        [ "$s_rc" -gt "$max_rc" ] && max_rc="$s_rc"
+    done <<<"$slugs"
+    exit "$max_rc"
+}
+
+run_product_mode() { # $1 = slug (e.g. 0509); runs in a subshell and exits it
+    (
+        local slug="$1"
+        local targets="${AUDIT_PRODUCT_TARGETS:-$repo_fallback/config/blind-audit-product-targets.json}"
+        local product_prompt="${AUDIT_PRODUCT_PROMPT:-$repo_fallback/prompts/blind-audit-product.md}"
+        [ -f "$product_prompt" ] || product_prompt="$HOME/.pi/agent/prompts/blind-audit-product.md"
+        [ -f "$targets" ] || { log "product/$slug: FATAL target register missing: $targets"; exit 2; }
+        [ -f "$product_prompt" ] || { log "product/$slug: FATAL prompt missing: $product_prompt"; exit 2; }
+        local target_json
+        target_json=$(jq -c --arg slug "$slug" '.targets[$slug] // empty' "$targets" 2>/dev/null || true)
+        [ -n "$target_json" ] || { log "product/$slug: FATAL unregistered product slug"; exit 2; }
+        local p_repo p_site
+        p_repo=$(printf '%s' "$target_json" | jq -r '.repo // empty')
+        p_site=$(printf '%s' "$target_json" | jq -r '.site // empty')
+        [ -n "$p_repo" ] && [ -n "$p_site" ] \
+            || { log "product/$slug: FATAL target entry lacks repo+site"; exit 2; }
+
+        if [ "${PRODUCT_LOCK_HELD:-0}" != "1" ]; then
+            # Direct --target invocation: take the same audit lock the
+            # fleet run uses (fd 8; when chained, the parent fleet run
+            # already holds the lock on fd 9 in this process tree).
+            exec 8>"$STATE_DIR/audit.lock"
+            flock -n 8 \
+                || { log "product/$slug: audit already running (no-op)"; exit 0; }
+        fi
+
+        # fleet-ops#5037 class guard, product-shaped: a synthetic drill or a
+        # run without a declared stub gh must not file into the live tracker.
+        drill_may_file_prod() {
+            local resolved
+            [ -n "$DRILL_GH_STUB_DIR" ] || return 1
+            resolved="$(command -v gh 2>/dev/null || true)"
+            [ -n "$resolved" ] || return 1
+            case "$resolved" in
+                "$DRILL_GH_STUB_DIR"/*) return 0 ;;
+                *) return 1 ;;
+            esac
+        }
+
+        local prod_dir="$STATE_DIR/reports/$NOW_DIR/product-$slug"
+        mkdir -p "$prod_dir/seatA" "$prod_dir/seatB"
+        local p_deadline="${AUDIT_PRODUCT_DEADLINE_MINS:-50}"
+        # Per-target ledger: a fleet backlog entry must never be re-panelled
+        # into a product repo.
+        CARRYOVER_FILE="${AUDIT_PRODUCT_CARRYOVER_FILE:-$STATE_DIR/carryover-product-$slug.jsonl}"
+        RESOLVED_SIGS="$prod_dir/carryover-resolved.txt"
+        : >"$RESOLVED_SIGS"
+        REPO="$p_repo"
+
+        # Two-seat rule: two DIFFERENT seats in one run. Seat A follows the
+        # fleet senior ladder; seat B excludes seat A via pick_seat's
+        # fail_p/fail_m args.
+        if ! command -v pick_seat >/dev/null 2>&1; then
+            [ -f "$SEAT_LIB" ] || { log "product/$slug: FATAL seat-lib missing: $SEAT_LIB"; exit 2; }
+            # shellcheck source=/dev/null
+            source "$SEAT_LIB"
+        fi
+        local seatA seatB
+        seatA=$( (find_senior_seat 2>/dev/null || true) )
+        [ -n "$seatA" ] || seatA=$(pick_seat "" "" 1 "" || true)
+        [ -n "$seatA" ] || { log "product/$slug: FATAL no capable seat"; exit 1; }
+        local a_p a_m
+        a_p=$(printf '%s' "$seatA" | cut -f1)
+        a_m=$(printf '%s' "$seatA" | cut -f2)
+        seatB=$(pick_seat "$a_p" "$a_m" 1 "" || true)
+        [ -n "$seatB" ] || seatB=$(pick_seat "$a_p" "$a_m" 0 "" || true)
+        if [ -z "$seatB" ] || [ "$seatB" = "$seatA" ]; then
+            log "product/$slug: LOUD two-seat rule unmet — only one usable seat; product audit skipped"
+            loud_backlog 0 0 "product=$slug two-seat-rule-unmet"
+            update_plan_stamp "last-blind-audit-product-$slug" "$NOW_ISO (failed, no second seat)"
+            exit 1
+        fi
+
+        # Panel/packet context from the product repo (read-only gh only).
+        local p_open_issues p_delib
+        p_open_issues=$(gh issue list -R "$p_repo" --state open --json number,title -L 100 2>/dev/null || true)
+        [ -n "$p_open_issues" ] || p_open_issues='[]'
+        p_delib=$(load_deliberate_json "${AUDIT_DELIBERATE_STATES:-$repo_fallback/docs/deliberate-states.md}")
+
+        run_one_product_seat() { # $1 seat, $2 outdir, $3 seat-letter
+            local seat="$1" out="$2" letter="$3" prov mod rc_p
+            prov=$(printf '%s' "$seat" | cut -f1)
+            mod=$(printf '%s' "$seat" | cut -f2)
+            local pkt="$out/packet.md" fj="$out/findings.json" rep="$out/report.md"
+            {
+                cat "$product_prompt"
+                printf '\n---\n\n## Volatile values (resolved at assembly time)\n\n'
+                printf -- '- Product slug: `%s`\n' "$slug"
+                printf -- '- Target repo: `%s`\n' "$p_repo"
+                printf -- '- Live site: `%s`\n' "$p_site"
+                printf -- '- This run is seat %s of a two-seat parallel-POV audit: the harness files the union.\n' "$letter"
+                printf -- '- OUT directory: `%s`\n' "$out"
+                printf -- '- Where to save findings JSON: `%s`\n' "$out/findings.json"
+                printf -- '- Where to save the full report: `%s`\n' "$out/report.md"
+                printf -- '- Audit run timestamp: `%s`\n' "$NOW_ISO"
+                printf -- '- Deadline hint (minutes): `%s`\n' "$p_deadline"
+                printf -- '- Open issues in this repo: `%s`\n' "$p_open_issues"
+                printf -- '- Deliberate-states JSON: `%s`\n' "${p_delib:-[]}"
+            } > "$pkt"
+            log "product/$slug: dispatching seat $letter $prov/$mod"
+            "$PI_BIN" --print --provider "$prov" --model "$mod" \
+                < "$pkt" >"$out/pi-stdout.txt" 2>"$out/pi-stderr.txt" && return 0
+            rc_p=$?
+            log "product/$slug: seat $letter pi exited rc=$rc_p"
+            return "$rc_p"
+        }
+
+        extract_one_seat() { # $1 outdir -> echoes a findings JSON array (or [])
+            local out="$1" src
+            src=$(printf '%s' "$out" | sed -n 's/^- Where to save findings JSON: `\(.*\)`$/\1/p' | tail -1)
+            if [ -f "$out/findings.json" ] && [ -s "$out/findings.json" ] \
+               && jq -e . "$out/findings.json" >/dev/null 2>&1; then
+                jq -c '.findings // .' "$out/findings.json"
+                return 0
+            fi
+            python3 - "$out/pi-stdout.txt" <<'PY'
+import re, sys, json
+try:
+    text = open(sys.argv[1], errors='replace').read()
+except OSError:
+    text = ''
+out = '[]'
+for m in re.finditer(r'```(?:json)?\s*\n(.*?)```', text, re.S):
+    try:
+        data = json.loads(m.group(1))
+    except Exception:
+        continue
+    if isinstance(data, dict) and 'findings' in data:
+        out = data['findings']; break
+    if isinstance(data, list):
+        out = data; break
+print(json.dumps(out))
+PY
+        }
+
+        run_one_product_seat "$seatA" "$prod_dir/seatA" "A" || true
+        run_one_product_seat "$seatB" "$prod_dir/seatB" "B" || true
+
+        local merged="$prod_dir/merged-findings.json"
+        fj_a_arr=$(extract_one_seat "$prod_dir/seatA")
+        fj_b_arr=$(extract_one_seat "$prod_dir/seatB")
+        python3 - "$fj_a_arr" "$fj_b_arr" "$seatA" "$seatB" "$merged" <<'PY'
+import hashlib, json, re, sys
+arrA = json.loads(sys.argv[1] or "[]")
+arrB = json.loads(sys.argv[2] or "[]")
+seatA, seatB, out = sys.argv[3], sys.argv[4], sys.argv[5]
+
+def key(f):
+    seed = re.sub(r"[^a-z0-9]+", " ", (f.get("title") or "").lower()).strip()
+    ev = f.get("evidence")
+    if isinstance(ev, str) and ev.strip():
+        seed += "\x00" + hashlib.sha256(ev.strip().encode()).hexdigest()
+    return hashlib.sha256(seed.encode()).hexdigest()
+
+union, order = {}, []
+for seat, arr in (("A", arrA), ("B", arrB)):
+    if not isinstance(arr, list):
+        continue
+    for f in arr:
+        if not isinstance(f, dict):
+            continue
+        k = key(f)
+        if k not in union:
+            g = dict(f)
+            g["found_by"] = seat
+            union[k] = g
+            order.append(k)
+        else:
+            union[k]["both_seats"] = True
+
+merged = [union[k] for k in order]
+agree = sum(1 for f in merged if f.get("both_seats"))
+json.dump({"seats": {"A": seatA, "B": seatB}, "findings": merged}, open(out, "w"), indent=2)
+print(f"seats A={seatA} B={seatB}: union={len(merged)} agreed={agree}")
+PY
+        if [ ! -s "$merged" ] || ! jq -e . "$merged" >/dev/null 2>&1; then
+            log "product/$slug: FATAL could not merge the two seats"
+            exit 1
+        fi
+        log "product/$slug: union merged ($(jq '.findings | length' "$merged") findings)"
+
+        # --- panel + file (mirror of the fleet loop, product repo) ---------
+        local p_panel_input p_body
+        p_panel_input=$(mktemp)
+        p_body=$(mktemp)
+        local p_open_gap p_recent
+        p_open_gap=$(gh issue list -R "$REPO" -l gap-audit --state open --json number,title -L 100 2>/dev/null || true)
+        [ -n "$p_open_gap" ] || p_open_gap='[]'
+        p_recent=$(gh pr list -R "$REPO" --state merged --json number,title -L 20 2>/dev/null || true)
+        [ -n "$p_recent" ] || p_recent='[]'
+
+        local p_verdicts="$prod_dir/verdicts.jsonl"
+        : >"$p_verdicts"
+        local p_filed=0 p_panel_fail=0 p_deduped=0 p_unfiled=0
+        # Titles (open + recently-closed gap-audit) for the carry-over drop.
+        local p_titles
+        p_titles=$(
+            {
+                printf '%s' "$p_open_gap" | jq -r '.[].title // empty' 2>/dev/null
+                gh issue list -R "$REPO" -l gap-audit --state closed --json title -L 200 2>/dev/null \
+                    | jq -r '.[].title // empty' 2>/dev/null
+            } | norm_titles_stdin
+        )
+
+        # Panel one finding and land it durably. $1 finding JSON,
+        # $2 is_carryover, $3 entry_sig (carry-over entries only).
+        process_product_finding() {
+            local merged_finding="$1" is_carryover="${2:-0}" entry_sig="${3:-}"
+            [ -n "$merged_finding" ] || return 0
+        local p_filed=0 p_panel_fail=0 p_deduped=0 p_unfiled=0
+        local t b_e b_sev merged_finding vj
+            local v r u
+            v="FAIL"; r=""; u=""
+            t=$(printf '%s' "$merged_finding" | jq -r '.title // ""')
+            if [ -z "$t" ]; then
+                r="skipped: empty title"
+                log "product/$slug: finding SKIP (empty title)"
+            else
+                jq -n --arg repo "$REPO" --argjson finding "$merged_finding" \
+                    --argjson open_issues "$p_open_gap" --argjson recent_merges "$p_recent" \
+                    --argjson deliberate_states "${p_delib:-[]}" \
+                    '{repo: $repo, finding: $finding, open_issues: $open_issues, recent_merges: $recent_merges, deliberate_states: $deliberate_states}' \
+                    > "$p_panel_input"
+                local prc=0
+                vj=$("$PANEL_BIN" < "$p_panel_input" 2>&1) || prc=$?
+                if [ "$prc" -ne 0 ] || [ -z "$vj" ]; then
+                    v="FAIL"; r="panel failed (rc=$prc)"
+                else
+                    v=$(printf '%s' "$vj" | jq -r '.verdict // "FAIL"')
+                    r=$(printf '%s' "$vj" | jq -r '.reason // ""')
+                fi
+                if [ "$v" != "PASS" ]; then
+                    p_panel_fail=$((p_panel_fail+1))
+                    [ "$is_carryover" = "1" ] && carryover_resolve "$entry_sig" "panel-FAIL on re-panel"
+                    log "product/$slug: PANEL-FAIL ($r) ($t)"
+                elif [ "$p_filed" -ge "$MAX_FINDINGS" ]; then
+                    r="skipped: max findings $MAX_FINDINGS reached (carried over)"
+                    log "product/$slug: SKIP ($r)"
+                    # Durable: ledger entry. A failed ledger write lands the
+                    # finding NOWHERE — the bullet-4 FAIL condition.
+                    local lrc=0
+                    carryover_append "$merged_finding" "$(finding_signature "$merged_finding")" || lrc=$?
+                    [ "$lrc" -ne 0 ] && p_unfiled=$((p_unfiled+1)) && \
+                        log "product/$slug: finding ($t) landed NOWHERE — cap skip + ledger write failed"
+                elif [ "$DRILL" = "1" ] || ! drill_may_file_prod; then
+                    r="refused: synthetic/refused filing into the live tracker"
+                    log "product/$slug: REFUSED ($r)"
+                    p_unfiled=$((p_unfiled+1))
+                else
+                    # Durable landing is the contract: filed issue, carry-over
+                    # ledger entry, or this panel-FAIL verdict line. A PASS
+                    # finding that fails to file AND fails to ledger lands
+                    # NOWHERE — that is the bullet-4 FAIL condition.
+                    local file_rc=0 ledger_rc=0
+                    {
+                        printf '%s\n\n' "$(printf '%s' "$merged_finding" | jq -r '.body // ""')"
+                        printf '**Evidence:** %s\n\n' "$(printf '%s' "$merged_finding" | jq -r '.evidence // ""')"
+                        printf '**Severity:** %s\n\n' "$(printf '%s' "$merged_finding" | jq -r '.severity // ""')"
+                        printf '**Found by:** %s\n\n' "$(printf '%s' "$merged_finding" | jq -r '.found_by // "A"')$(printf '%s' "$merged_finding" | jq -r 'if .both_seats then " + B (both seats agree)" else "" end')"
+                        printf '**Report:** %s\n\n' "$prod_dir/seatA/report.md"
+                        printf '*Filed by fleet-blind-audit product mode at %s.*\n' "$NOW_ISO"
+                    } > "$p_body"
+                    "$ISSUE_FILE" file --json -R "$REPO" \
+                        --title "[gap-audit] $t" --body-file "$p_body" \
+                        --label gap-audit --label agent-ready \
+                        > "$prod_dir/last-file-attempt.json" 2>"$prod_dir/last-file-attempt.err" \
+                        || file_rc=$?
+                    if [ "$file_rc" -eq 0 ] && jq -e . "$prod_dir/last-file-attempt.json" >/dev/null 2>&1; then
+                        local act
+                        act=$(jq -r '.action // "filed"' "$prod_dir/last-file-attempt.json")
+                        u=$(jq -r '.url // .existing // empty' "$prod_dir/last-file-attempt.json")
+                        case "$u" in ""|http*) ;; *) u="https://github.com/${u#*github.com/}" ;; esac
+                        if [ "$act" = "commented" ]; then
+                            p_deduped=$((p_deduped+1))
+                            [ "$is_carryover" = "1" ] && carryover_resolve "$entry_sig" "already carried by an open issue (#1212 gate)"
+                            log "product/$slug: DEDUPED existing issue carries this problem ($u) ($t)"
+                        else
+                            p_filed=$((p_filed+1))
+                            [ "$is_carryover" = "1" ] && carryover_resolve "$entry_sig" "filed"
+                            log "product/$slug: FILED $u ($t)"
+                        fi
+                    else
+                        ledger_rc=0
+                        carryover_append "$merged_finding" "$(finding_signature "$merged_finding")" || ledger_rc=$?
+                        if [ "$ledger_rc" -ne 0 ]; then
+                            p_unfiled=$((p_unfiled+1))
+                            log "product/$slug: finding ($t) landed NOWHERE — file + carry-over ledger both failed"
+                        else
+                            log "product/$slug: FAILED to file ($t) -> carried over"
+                        fi
+                        r="fleet-issue-file failed"
+                    fi
+                fi
+            fi
+            jq -cn --arg t "${t:-}" --arg v "${v:-FAIL}" --arg r "${r:-}" --arg u "${u:-}" \
+                -c '{timestamp: (now | todate), title:$t, verdict:$v, reason:$r, issue:$u}' \
+                >> "$p_verdicts"
+            # Canonical findings ledger row — one per verdict, idempotent by
+            # finding_id (fleet-ops#5443). Same writer as the fleet loop.
+            case "${v}:${r}:${u}" in
+                FAIL:*)
+                    [ -f "$FINDINGS_LEDGER_BIN" ] && python3 "$FINDINGS_LEDGER_BIN" 2>/dev/null \
+                        append --source-organ fleet-blind-audit --run-id "$NOW_DIR" \
+                        --title "${t:-}" --severity "$(printf '%s' "$merged_finding" | jq -r '.severity // "info"')" \
+                        --evidence-ref "$p_verdicts" --disposition panel_fail \
+                        --ref "$p_verdicts" --reason "${r:-no reason}" || true ;;
+                PASS:*skipped:*)
+                    [ -f "$FINDINGS_LEDGER_BIN" ] && python3 "$FINDINGS_LEDGER_BIN" 2>/dev/null \
+                        append --source-organ fleet-blind-audit --run-id "$NOW_DIR" \
+                        --title "${t:-}" --severity "$(printf '%s' "$merged_finding" | jq -r '.severity // "info"')" \
+                        --evidence-ref "$p_verdicts" --disposition carried_over \
+                        --ref "carryover:$CARRYOVER_FILE" --reason "${r:-cap skip}" || true ;;
+                PASS:*)
+                    [ -f "$FINDINGS_LEDGER_BIN" ] && python3 "$FINDINGS_LEDGER_BIN" 2>/dev/null \
+                        append --source-organ fleet-blind-audit --run-id "$NOW_DIR" \
+                        --title "${t:-}" --severity "$(printf '%s' "$merged_finding" | jq -r '.severity // "info"')" \
+                        --evidence-ref "$p_verdicts" --disposition filed \
+                        --ref "${u:-Nishfleet/unresolved-$REPO}" --reason "${r:-dispositioned}" || true ;;
+            esac
+        }
+
+        # Carry-over entries FIRST (oldest first), before new findings
+        # (Nish 2026-09-11 ordering contract, carried into product mode).
+        local co_entry co_sig co_finding co_tnorm
+        while IFS= read -r co_entry; do
+            [ -n "$co_entry" ] || continue
+            co_sig=$(printf '%s' "$co_entry" | jq -r '.signature // ""')
+            co_finding=$(printf '%s' "$co_entry" | jq -c '.finding')
+            [ -n "$co_finding" ] || continue
+            co_tnorm=$(norm_title "$(printf '%s' "$co_finding" | jq -r '.title // ""')")
+            if [ -n "$co_tnorm" ] && printf '%s\n' "$p_titles" | grep -qxF "$co_tnorm"; then
+                carryover_resolve "$co_sig" "carried by an open/closed issue (title signature match)"
+                continue
+            fi
+            log "product/$slug carry-over: re-panelling entry ($co_sig)"
+            process_product_finding "$co_finding" "1" "$co_sig"
+        done < <(jq -c . "$CARRYOVER_FILE" 2>/dev/null)
+
+        # New findings this run (the two-seat union), ranked order preserved.
+        while IFS= read -r co_finding; do
+            [ -n "$co_finding" ] || continue
+            process_product_finding "$co_finding" "0" ""
+        done < <(jq -c '.findings[]' "$merged")
+        rm -f "$p_panel_input" "$p_body"
+
+        # Rewrite the ledger: drop resolved signatures, keep the backlog
+        # (oldest first) — identical to the fleet-mode rewrite.
+        if [ -s "$RESOLVED_SIGS" ] && [ -s "$CARRYOVER_FILE" ]; then
+            jq -c . "$CARRYOVER_FILE" \
+                | grep -vF -f "$RESOLVED_SIGS" \
+                > "$CARRYOVER_FILE.tmp" || true
+            mv "$CARRYOVER_FILE.tmp" "$CARRYOVER_FILE"
+        fi
+
+        local co_total=0
+        if [ -s "$CARRYOVER_FILE" ]; then co_total=$(grep -c . "$CARRYOVER_FILE" || true); fi
+        if [ "$p_unfiled" -gt 0 ] || [ "$co_total" -gt 0 ]; then
+            loud_backlog "$p_unfiled" "$co_total" "product=$slug"
+        fi
+        {
+            printf '\n## Product filing results (%s -> %s)\n\n' "$slug" "$p_repo"
+            printf 'Filed: %s (cap %s). Panel-FAIL: %s. Deduped: %s. Unfiled PASS findings: %s. Carry-over backlog: %s.\n' \
+                "$p_filed" "$MAX_FINDINGS" "$p_panel_fail" "$p_deduped" "$p_unfiled" "$co_total"
+        } >> "$prod_dir/seatA/report.md" 2>/dev/null || true
+        log "product/$slug: audit complete: filed=$p_filed panel_fail=$p_panel_fail deduped=$p_deduped unfiled=$p_unfiled"
+        if [ "$p_unfiled" -gt 0 ]; then
+            update_plan_stamp "last-blind-audit-product-$slug" "$NOW_ISO (failed, unfiled=$p_unfiled)"
+            log "FATAL: $p_unfiled product finding(s) landed nowhere"
+            exit 1
+        fi
+        update_plan_stamp "last-blind-audit-product-$slug" \
+            "$NOW_ISO (completed, filed=$p_filed $(jq -c '.seats' "$merged") agreed=$(jq '[.findings[] | select(.both_seats)] | length' "$merged"))"
+        exit 0
+    )
+}
+
+# --- fleet-ops#5437: direct product-target invocation ----------------------
+if [ -n "$PRODUCT_TARGET" ]; then
+    case "$PRODUCT_TARGET" in
+        product:*)
+            run_product_mode "${PRODUCT_TARGET#product:}"
+            exit $?
+            ;;
+        *)
+            log "FATAL: --target expects product:<slug> (got: $PRODUCT_TARGET)"
+            exit 2
+            ;;
+    esac
+fi
+
+# --- one audit at a time ---------------------------------------------------
+exec 9>"$STATE_DIR/audit.lock"
+
 # --- one audit at a time ---------------------------------------------------
 exec 9>"$STATE_DIR/audit.lock"
 if ! flock -n 9; then
@@ -1122,6 +1561,7 @@ if [ "$findings_count" -eq 0 ]; then
         log "no findings produced by reviewer"
         update_plan_stamp "last-blind-audit-run" "$NOW_ISO (completed, 0 findings)"
         # Still success: an empty sweep is a valid outcome.
+        hook_product_targets 0
         exit 0
     fi
     # Carry-over entries are processed even when this run produced no new
@@ -1435,7 +1875,8 @@ log "audit complete: filed=$filed unfiled_pass=$unfiled_pass carryover_total=${c
 if [ "${unfiled_pass:-0}" -gt 0 ]; then
     update_plan_stamp "last-blind-audit-run" "$NOW_ISO (failed, filed=$filed unfiled_pass=$unfiled_pass)"
     log "FATAL: $unfiled_pass PASS finding(s) were not filed"
-    exit 1
+    hook_product_targets 1
 fi
 update_plan_stamp "last-blind-audit-run" "$NOW_ISO (completed, filed=$filed)"
+hook_product_targets 0
 exit 0
