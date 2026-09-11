@@ -441,6 +441,21 @@ bash "$here/seat-health-quarantine.test.sh"
 # edit (the worker App cannot push .github/workflows/**).
 bash "$here/seat-health-seat-dead.test.sh"
 
+# fleet-ops#5096: closure condition for the seat-recovery hot loop's TRIGGER
+# fix. fleet-seat-recovery.path watches the ledger DIRECTORY, so every ledger
+# write forked the fleet-seat-recovery oneshot (~2500 starts/h live 2026-09-11)
+# while seat-lib only distrusts a record older than STALE_SECS=21600. The
+# test imports the live extension at $HOME/.pi/agent/extensions/seat-health.ts
+# (or FLEET_SEAT_HEALTH_TS) and asserts that an unchanged routing record is not
+# rewritten inside a documented refresh interval (>10x fewer writes), that no
+# routing-relevant change or near-STALE_SECS record is ever skipped, and that
+# seat_usable verdicts for healthy/rate_limited/quota_exhausted/corpse are
+# identical with the skip ON vs OFF. CI skips when the extension is missing;
+# on the VPS the test fails against the pre-fix extension and passes once
+# writeSeatLedgerEntry skips. Hosted here so P14 runs it without a
+# workflow-file edit (the worker App cannot push .github/workflows/**).
+bash "$here/seat-health-ledger-noop-write.test.sh"
+
 # fleet-ops#1464: GitHub push channel (webhook → Worker → tunnel → VPS).
 # The four tests are offline (DRY=1, ephemeral localhost ports, temp dirs):
 #   - gh-webhook-receiver-hmac: HMAC verify + dispatch table + /healthz
