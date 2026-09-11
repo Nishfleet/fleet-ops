@@ -146,7 +146,6 @@ gaps. An entry whose expiry has passed IS a loud gap — file it as a finding.
 - Deliberate-states file: `{{DELIBERATE_STATES_PATH}}`
 - Where to save findings JSON: `{{FINDINGS_JSON}}`
 - Where to save the full report: `{{REPORT_MD}}`
-- Max findings to return: `{{MAX_FINDINGS}}`
 - Audit run timestamp: `{{NOW_ISO}}`
 - Deliberate-states JSON:
 ```json
