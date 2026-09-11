@@ -1699,6 +1699,12 @@ bash "$here/measure-cursor-today.test.sh" || fail "measure-cursor-today tests fa
 # Hosted here so P14 runs it without a workflow-file edit. Hermetic (fake gh).
 bash "$here/fleet-questions-stale.test.sh" || fail "fleet-questions-stale tests failed"
 
+# fleet-ops#5417: the outside-in `visitor:` probe (https redirect, edge
+# cache, manifest, duplicate routes, public-repo leaks) the judges read
+# right after product:. Hosted here for the same P14 reason as
+# fleet-usd-spend above (no workflow-scope edit; stubbed curl/gh).
+bash "$here/fleet-visitor-probe.test.sh" || fail "fleet-visitor-probe tests failed"
+
 # =========================================================================
 # 15. fleet-ops#2493: held wrapper spawn-bench outranks a later healthy
 #     observation. The seat-health extension's after_provider_response
