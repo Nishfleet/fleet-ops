@@ -704,8 +704,9 @@ release_false_wall() {
     return 1
 }
 
-# Hourly PONG of a LONG non-money future wall. Short walls (re-bench,
-# 15-min 429) wait for the expired-wall tool probe. Money walls stay held.
+# Bench-truth PONG of a non-money future wall longer than 15 min, owed at
+# min(advertised reset, 15 min) after the bench was written (fleet-ops#5285;
+# was hourly under #4640). Money walls stay held.
 try_false_wall_release() {
     local p="$1" m="$2" f="$3" base="$4"
     local usable_e remain lastp now_e ue
@@ -717,6 +718,20 @@ try_false_wall_release() {
     now_e=$(now_epoch)
     remain=$(( usable_e - now_e ))
     (( remain > FALSE_WALL_PROBE_S )) || return 1
+    # fleet-ops#5285: a bench is owed its truth probe at min(advertised reset,
+    # 15 min) AFTER it was written, never before. A freshly written bench
+    # (re-bench, a real 429 seconds ago) is not yet a suspect; probing it on
+    # the next ledger write would just hit the same wall and burn the
+    # per-seat probe slot. observed_at is the bench write time in every
+    # writer (seat-health.ts, mark_seat_*, comeback_release_rebench).
+    local obs_s obs_e
+    obs_s=$(jq -r '.observed_at // ""' "$f" 2>/dev/null || true)
+    obs_e=$(ts_epoch "$obs_s")
+    # Silent like the remain check above: the path unit fires on every
+    # ledger write, and a log line per fresh bench per trigger is the noise.
+    if (( ! FALSE_WALL_DRILL )) && [[ -n "$obs_e" ]] && (( now_e - obs_e < FALSE_WALL_PROBE_S )); then
+        return 1
+    fi
     lastp="${last_probe["$base"]:-0}"
     if (( ! FALSE_WALL_DRILL )) && (( lastp > 0 )) && (( now_e - lastp < FALSE_WALL_PROBE_S )); then
         log "skip false-wall PONG $p/$m: last probe $((now_e - lastp))s ago (< ${FALSE_WALL_PROBE_S}s)"
