@@ -219,7 +219,7 @@ repo="$scratch/repo"
 mkdir -p "$repo"
 (
   cd "$repo"
-  git init -q
+  git init -q -b main
   git config user.name "Test"
   git config user.email "test@example.com"
   : > a.txt
