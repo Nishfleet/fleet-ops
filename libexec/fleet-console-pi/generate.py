@@ -84,9 +84,12 @@ XDG = f"/run/user/{os.getuid()}"
 # cadence like every other local tile; the ledger's OWN health (ageing
 # carry-overs, a silent file) is the tile's `alert` field, surfaced as the
 # page's red banner — not tile staleness.
-FINDINGS_LEDGER = Path(
+# Mirrored in verify.py (same CONSOLE_FINDINGS_LEDGER env override) so the
+# tile and its verifier count the SAME file.
+FINDINGS_LEDGER = Path(os.environ.get(
+    "CONSOLE_FINDINGS_LEDGER",
     "/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/"
-    "findings-ledger.jsonl")
+    "findings-ledger.jsonl"))
 FINDINGS_STALE_S = 30 * 60        # 2.5 push cycles, same as the questions tile
 FINDINGS_CARRY_ALERT_S = 24 * 60 * 60   # carried_over older than this -> banner
 FINDINGS_SILENT_S = 48 * 60 * 60        # no append this long -> banner
