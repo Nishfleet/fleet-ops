@@ -312,6 +312,7 @@ fi
 
 filed=0
 unfiled=0
+capped=0
 body_file=$(mktemp)
 trap 'rm -f "$body_file"' EXIT
 
@@ -327,13 +328,20 @@ while IFS= read -r finding; do
     severity=$(printf '%s' "$finding" | jq -r '.severity // ""')
     rank=$(printf '%s' "$finding" | jq -r '.rank // "?"')
     [ -n "$title" ] || continue
-    [ "$filed" -lt "$MAX_FINDINGS" ] || break
     slug=$(slug_of "$title")
     signal="signal: rulebook-redteam/${slug}"
     if printf '%s' "$open_json" | jq -e --arg s "$signal" \
         '[.[] | select((.body // "") | contains($s))] | length > 0' \
         >/dev/null 2>&1; then
         log "finding $rank: deduped ($signal)"
+        continue
+    fi
+    # fleet-ops#5441: the cap is a rate limit, not a shredder. Findings
+    # beyond it are counted and logged per-finding, then surfaced LOUD at
+    # the end; next run re-derives them and dedup drains the backlog.
+    if [ "$filed" -ge "$MAX_FINDINGS" ]; then
+        capped=$((capped + 1))
+        log "finding $rank: SKIP (cap $MAX_FINDINGS reached) — unfiled"
         continue
     fi
     {
@@ -364,6 +372,12 @@ while IFS= read -r finding; do
     fi
 done < <(jq -c '.findings[]' "$FINDINGS_JSON")
 
+if [ "$capped" -gt 0 ]; then
+    log "LOUD: $capped finding(s) unfiled (cap $MAX_FINDINGS) — see $REPORT_MD; re-derived next run"
+    printf -- '- LOUD: %s finding(s) unfiled (cap %s) — listed in this report; re-derived next run\n' \
+        "$capped" "$MAX_FINDINGS" >>"$REPORT_MD"
+fi
+
 update_heading_count
 if [ "$unfiled" -gt 0 ]; then
     update_plan_stamp "last-rulebook-redteam-run" \
@@ -371,6 +385,7 @@ if [ "$unfiled" -gt 0 ]; then
     log "FAILED: unfiled=$unfiled filed=$filed"
     exit 1
 fi
-update_plan_stamp "last-rulebook-redteam-run" "$NOW_ISO (completed, filed=$filed)"
-log "completed filed=$filed"
+update_plan_stamp "last-rulebook-redteam-run" \
+    "$NOW_ISO (completed, filed=$filed capped=$capped)"
+log "completed filed=$filed capped=$capped"
 exit 0
