@@ -1297,7 +1297,9 @@ grep -q "bench expired" "$PI_PACKET_STATE/watch.log" \
 
 # 9f: mark_seat_quota_bench falls back to the provider default when the error
 # text carries no numeric window; and fails open (no marker) for a provider
-# with no default configured.
+# with no default configured. fleet-ops#5285 then caps a default-driven
+# window (no parsed/live advertised reset) at SEAT_QUOTA_BENCH_DEFAULT_MAX_S
+# (900s) so a 7-day ClinePass guess is not a 7-day unprobed wall.
 export PI_PACKET_STATE="$scratch/state-bench-default"
 rm -f "$ledger/cline__cline-pass_minimax-m3.json"
 set +e
@@ -1306,7 +1308,7 @@ rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "default: cline (has default) expected rc=0, got $rc"
 bw=$(jq -r '.bench_window_s' "$ledger/cline__cline-pass_minimax-m3.json")
-[[ "$bw" == "604800" ]] || fail "default: cline bench_window_s expected 604800, got $bw"
+[[ "$bw" == "900" ]] || fail "default: cline bench_window_s expected 900 (fleet-ops#5285 caps default-driven windows at SEAT_QUOTA_BENCH_DEFAULT_MAX_S), got $bw"
 # cursor has NO quota_bench_default_s -> fail open, no marker.
 rm -f "$ledger/cursor__composer-2.5.json"
 set +e
