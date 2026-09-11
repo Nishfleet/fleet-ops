@@ -422,6 +422,10 @@ bin/escalation-daily-sweep /home/nish/.local/bin/escalation-daily-sweep
 # here (plus tests/nish-boundary-notify-classes.test.sh) stops a later
 # overwrite from silently dropping a reserved token.
 bin/nish-boundary-notify /home/nish/.local/bin/nish-boundary-notify
+# fleet-ops#5204: the money-wall --check guard. Called from heartbeat-tier1
+# (no new timer). A missing dest would silent-skip the only rail that
+# sees unpaged year-walls.
+bin/money-boundary-raise /home/nish/.local/bin/money-boundary-raise
 # fleet-ops#1534: repo-ize the outbound gate shim so the "only Nish-reserved
 # classes + the digests reach the phone" policy is PR-reviewed and cannot
 # drift back. Hand-placed wrapper was class (b) (machinery audit

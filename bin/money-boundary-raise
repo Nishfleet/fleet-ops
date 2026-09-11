@@ -28,10 +28,12 @@
 # steps, which is what makes the write deterministic.
 #
 # --check mode powers the guard drill (tests/money-boundary-guard.test.sh):
-# it reads money_boundary benches and asserts a matching MONEY-BOUNDARY
-# ledger line exists for each provider; a missing line exits 1 LOUD. This is
-# the fleet-ops#366 mechanical-fix prevention (acceptance 3). --check never
-# writes anything.
+# it reads far-future money walls (canonical source=money_boundary AND the
+# legacy spawn-bench shape: writer/reason/backoff, fleet-ops#5204) and
+# asserts a matching MONEY-BOUNDARY ledger line exists for each provider; a
+# missing line exits 1 LOUD. Historical spend-boundary-prebench-* dirs older
+# than --since-hours are ignored so the guard can return 0 (fleet-ops#1116).
+# --check never writes anything.
 #
 # usage:
 #   money-boundary-raise <provider> [spend_today_usd] [credits_remaining_usd]
@@ -63,6 +65,10 @@ BENCH_DAYS="${MONEY_BOUNDARY_BENCH_DAYS:-365}"
 DRY_RUN="${MONEY_BOUNDARY_DRY_RUN:-0}"
 CHECK_MODE="${MONEY_BOUNDARY_CHECK_MODE:-0}"
 SINCE_HOURS="${MONEY_BOUNDARY_SINCE_HOURS:-24}"
+# fleet-ops#5204: only a wall still more than this many seconds out is a
+# money-wall (the issue metric: more than 30 days). 6h quota_bench rows
+# with source=money_boundary are not Nish-year walls.
+CHECK_MIN_REMAIN_S="${MONEY_BOUNDARY_CHECK_MIN_REMAIN_S:-2592000}"
 # fleet-ops#4627: the per-seat health ledger (the router's cooldown state)
 # and the page-counter log. The ledger is the same dir SEAT_DIR benches into.
 SEAT_LEDGER_DIR="${MONEY_BOUNDARY_SEAT_LEDGER:-$AS/lanes/seats}"
@@ -165,12 +171,68 @@ fleet_starved() {
 }
 
 # --- mode: guard / --check ------------------------------------------------
-# Read money_boundary benches (seat files written under SEAT_DIR) and assert
-# every provider benched source=money_boundary has a matching MONEY-BOUNDARY
-# ledger line dated today. Missing -> FAIL-LOUD (exit 1). Read-only.
+# A live money wall is a far-future hold (> CHECK_MIN_REMAIN_S, default 30d)
+# whose shape is either the writer's canonical keys (source=money_boundary)
+# or the legacy spawn-bench shape (reason/writer from the 2026-09-08
+# alert-repair that never set those keys — fleet-ops#5204). Missing
+# MONEY-BOUNDARY provider=<p> line -> FAIL-LOUD (exit 1). Read-only.
+#
+# Prebench backups are only in scope while the dir timestamp is inside
+# SINCE_HOURS. A guard that fails forever on historical snapshots is the
+# fleet-ops#1116 alarm-blindness class.
+
+# money_wall_row <file> — 0 if this JSON is a far-future money wall.
+money_wall_row() {
+    local f="$1" src reason writer usable bench wall_iso usable_s remain
+    [ -f "$f" ] || return 1
+    case "$(basename "$f")" in
+        *.empty-success*|*.pre-*|*.disabled*) return 1 ;;
+    esac
+    command -v jq >/dev/null 2>&1 || return 1
+    src="$(jq -r '.source // empty' "$f" 2>/dev/null || true)"
+    reason="$(jq -r '.reason // empty' "$f" 2>/dev/null || true)"
+    writer="$(jq -r '.writer // empty' "$f" 2>/dev/null || true)"
+    usable="$(jq -r '.usable_at // empty' "$f" 2>/dev/null || true)"
+    bench="$(jq -r '.bench_until // empty' "$f" 2>/dev/null || true)"
+    wall_iso="${usable:-$bench}"
+    [ -n "$wall_iso" ] || return 1
+    usable_s="$(date -u -d "$wall_iso" +%s 2>/dev/null || echo 0)"
+    [ "$usable_s" -gt 0 ] || return 1
+    remain=$(( usable_s - now_epoch ))
+    [ "$remain" -gt "$CHECK_MIN_REMAIN_S" ] || return 1
+    if [ "$src" = "money_boundary" ]; then
+        return 0
+    fi
+    case "$reason" in
+        *'money boundary'*|*'Nish-only clear'*) return 0 ;;
+    esac
+    case "$writer" in
+        *FleetProviderSpendBoundary*|money-boundary-raise) return 0 ;;
+    esac
+    return 1
+}
+
+# prebench_dir_in_window <dir> — 0 if the dir timestamp is inside SINCE_HOURS
+# (or unparseable — fail-loud, do not hide a gap). Accepts both
+# YYYYMMDDTHHMMSSZ and the live YYYYMMDDTHHMMZ stamp.
+prebench_dir_in_window() {
+    local d="$1" base ts epoch
+    base="$(basename "$d")"
+    ts="${base#spend-boundary-prebench-}"
+    if [[ "$ts" =~ ^([0-9]{4})([0-9]{2})([0-9]{2})T([0-9]{2})([0-9]{2})([0-9]{2})Z$ ]]; then
+        epoch="$(date -u -d "${BASH_REMATCH[1]}-${BASH_REMATCH[2]}-${BASH_REMATCH[3]} ${BASH_REMATCH[4]}:${BASH_REMATCH[5]}:${BASH_REMATCH[6]}" +%s 2>/dev/null || echo 0)"
+    elif [[ "$ts" =~ ^([0-9]{4})([0-9]{2})([0-9]{2})T([0-9]{2})([0-9]{2})Z$ ]]; then
+        epoch="$(date -u -d "${BASH_REMATCH[1]}-${BASH_REMATCH[2]}-${BASH_REMATCH[3]} ${BASH_REMATCH[4]}:${BASH_REMATCH[5]}:00" +%s 2>/dev/null || echo 0)"
+    else
+        # Unparseable stamp: do not hide a gap.
+        return 0
+    fi
+    [ "$epoch" -ge "$cutoff_epoch" ] || return 1
+    return 0
+}
+
 if [ "$CHECK_MODE" -eq 1 ]; then
     if [ ! -d "$SEAT_DIR" ]; then
-        # No bench state exists at all -> vacuously clean (nothing to guard).
         echo "money-boundary-raise --check: no seat dir ($SEAT_DIR), vacuous clean"
         exit 0
     fi
@@ -181,30 +243,18 @@ if [ "$CHECK_MODE" -eq 1 ]; then
     now_epoch="$(date -u +%s)"
     cutoff_epoch=$(( now_epoch - SINCE_HOURS * 3600 ))
     fail=0
-    # Scan the live benched-seat ledger first.
     if [ -d "$SEAT_DIR" ]; then
         while IFS= read -r f; do
             [ -n "$f" ] || continue
-            hc="$(jq -r '.health_class // empty' "$f" 2>/dev/null || true)"
-            src="$(jq -r '.source // empty' "$f" 2>/dev/null || true)"
-            [ "$hc" = "quota_bench" ] || continue
-            [ "$src" = "money_boundary" ] || continue
-            ob="$(jq -r '.observed_at // ""' "$f" 2>/dev/null || true)"
-            # Only freshly benched seats (last SINCE_HOURS) are in scope.
-            if [ -n "$ob" ]; then
-                ob_epoch="$(date -u -d "$ob" +%s 2>/dev/null || echo 0)"
-                [ "$ob_epoch" -ge "$cutoff_epoch" ] || continue
-            fi
+            money_wall_row "$f" || continue
             p="$(jq -r '.provider // empty' "$f" 2>/dev/null || true)"
             [ -n "$p" ] || p="$(basename "$f" | cut -d_ -f1)"
-            # Matching MONEY-BOUNDARY provider=<p> line dated today?
             if ! grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T.* MONEY-BOUNDARY provider='"$p"'([[:space:]]|$)' "$NISH"; then
-                echo "FAIL-LOUD: seat $f is benched source=money_boundary for provider=<$p> but NISH-ESCALATIONS.md has no MONEY-BOUNDARY provider=<$p> line" >&2
+                echo "FAIL-LOUD: seat $f is a far-future money wall for provider=<$p> but NISH-ESCALATIONS.md has no MONEY-BOUNDARY provider=<$p> line" >&2
                 fail=1
             fi
         done < <(find "$SEAT_DIR" -type f -name '*.json' 2>/dev/null)
     fi
-    # Also scan the prebench backup dirs (they carry copies of the benched writes).
     if [ -d "$BACKUP_PARENT" ]; then
         while IFS= read -r d; do
             [ -n "$d" ] || continue
@@ -212,21 +262,21 @@ if [ "$CHECK_MODE" -eq 1 ]; then
                 *spend-boundary-prebench-*) ;;
                 *) continue ;;
             esac
+            prebench_dir_in_window "$d" || continue
             while IFS= read -r f; do
                 [ -n "$f" ] || continue
-                src="$(jq -r '.source // empty' "$f" 2>/dev/null || true)"
-                [ "$src" = "money_boundary" ] || continue
+                money_wall_row "$f" || continue
                 p="$(jq -r '.provider // empty' "$f" 2>/dev/null || true)"
                 [ -n "$p" ] || continue
                 if ! grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T.* MONEY-BOUNDARY provider='"$p"'([[:space:]]|$)' "$NISH"; then
-                    echo "FAIL-LOUD: prebench $f is money_boundary for provider=<$p> but no MONEY-BOUNDARY provider=<$p> ledger line exists" >&2
+                    echo "FAIL-LOUD: prebench $f is a money wall for provider=<$p> but no MONEY-BOUNDARY provider=<$p> ledger line exists" >&2
                     fail=1
                 fi
             done < <(find "$d" -maxdepth 1 -type f -name '*.json' 2>/dev/null)
         done < <(find "$BACKUP_PARENT" -maxdepth 1 -type d -name 'spend-boundary-prebench-*' 2>/dev/null)
     fi
     [ "$fail" -eq 0 ] || { echo "money-boundary-raise --check: FAIL-LOUD (missing MONEY-BOUNDARY ledger lines above)" >&2; exit 1; }
-    echo "money-boundary-raise --check: clean (every money_boundary seat has a matching ledger line)"
+    echo "money-boundary-raise --check: clean (every far-future money wall has a matching ledger line)"
     exit 0
 fi
 
@@ -360,11 +410,31 @@ if [ -f "$CAPS" ] && command -v jq >/dev/null 2>&1; then
               consecutive_failure_count:0, observed_at:$observed,
               bench_until:$bench, usable_at:$bench,
               writer:"money-boundary-raise"}')
+        # fleet-ops#5204: seat-health.ts clobbers the .json sidecar to healthy
+        # on the next transport 200. The year-wall must also live in the
+        # spawn-bench marker (source=money_boundary so #4640 allows >6h).
+        # Never cite "Nish-only clear" — the ledger line above IS the ask.
+        backoff_s=$(( BENCH_DAYS * 86400 ))
+        marker_payload=$(jq -n \
+            --arg provider "$PROVIDER" \
+            --arg model "$m" \
+            --arg usable "$bench_until" \
+            --arg written "$ts" \
+            --argjson backoff "$backoff_s" \
+            '{provider:$provider, model:$model, usable_at:$usable,
+              reason:"money boundary fleet-ops#4477 (ledger written first)",
+              written_at:$written, backoff_s:$backoff,
+              failure_mode:"quota_cap", consecutive_failure_count:0,
+              seat_dead:false, writer:"money-boundary-raise",
+              source:"money_boundary", health_class:"quota_bench"}')
+        marker="$SEAT_DIR/${fname%.json}.spawn-bench.json"
         if [ "$DRY_RUN" -eq 1 ]; then
             echo "money-boundary-raise [dry-run]: would bench $seat"
             printf '%s\n' "$payload" >/dev/null
+            printf '%s\n' "$marker_payload" >/dev/null
         else
             printf '%s\n' "$payload" > "$seat"
+            printf '%s\n' "$marker_payload" > "$marker"
             # Backup copy — the deterministic prebench that the ledger append
             # was coupled to, so the two can never drift.
             cp "$seat" "$backup"
