@@ -54,9 +54,18 @@
 # Stale-trip detection (the "detector-green or wall are the ONLY terminals"
 # teeth): a non-terminal STOP-REASON sitting on a GREEN detector (failed
 # unit already recovered) AND a pipeline that is IDLE means the chain was
-# fixed but never closed and nothing is coming to close it — FAIL LOUD
-# (the auditor is needed to close it; a green detector with an open
-# STOP-REASON would otherwise re-summon an auditor forever).
+# fixed but never closed and nothing is coming to close it. The auditor is
+# needed to close it (it writes auditor-resolved), but the closeout write
+# only ever happens when the pipeline RUNS — and on a green tick nothing
+# rewrites STOP-REASON.json, so the path unit never fires and the trip
+# recurs forever (fleet-ops#5366: chain 57b9147792a2 tripped on every green
+# tick with the pipeline idle, alarm issue filed, nobody summoned). Same
+# alternating ladder as the stall branch:
+#   first stale trip -> LOUD + re-fire the auditor (restart
+#                       stop-escalation.service), persist stall marker.
+#   consecutive trip -> FAIL LOUD (exit 1). fleet-heartbeat.service lands
+#                       failed -> OnFailure -> unit-escalation -> a fresh
+#                       STOP-REASON and a fresh auditor. That IS the ladder.
 #
 # Anti-recursion: this bin runs inside fleet-heartbeat.service (already
 # escalation-covered). Its own failure lands in unit-escalation — the same
@@ -350,6 +359,24 @@ if detector_green "$unit"; then
             exit 0
         fi
         loud "ESCALATION-COMPLETION-STALE-TRIP" "chain ${hash:0:12} detector-green but STOP-REASON reason=$reason is NOT terminal and stop-escalation is IDLE — fix was never closed (auditor-resolved/boundary:* required)"
+        if (( stall_count == 0 )); then
+            # First stale trip: repair — re-fire the escalation pipeline so the
+            # auditor (the ONLY auditor-resolved closeout writer) is summoned
+            # for this chain (fleet-ops#5366). stop-escalation.service keeps
+            # its own 2-dispatch cap per hash, so the re-fire cannot storm.
+            if [[ "$DRY" == "1" ]]; then
+                log "DRY: would restart stop-escalation.service (stale-trip repair)"
+            else
+                if "$SYSTEMCTL" --user restart stop-escalation.service 2>/dev/null; then
+                    log "repair: restarted stop-escalation.service (stale-trip re-fire — auditor is the closeout)"
+                else
+                    log "repair: restart stop-escalation.service FAILED (best-effort; will fail loud next tick)"
+                fi
+            fi
+            printf '{"hash":"%s","first_seen":%s,"stall_count":1,"terminal":"stale-trip"}\n' "$hash" "$first_seen" > "$cf"
+            loud "ESCALATION-COMPLETION-REPAIR" "chain ${hash:0:12} stale-trip repair — re-fired escalation pipeline; will fail loud next tick if still stale"
+            exit 0
+        fi
         violations=$((violations + 1))
     else
         loud "ESCALATION-COMPLETION-GREEN" "chain ${hash:0:12} unit=$unit is detector-green and STOP-REASON terminal — FIX reached and closed"

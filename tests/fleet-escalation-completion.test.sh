@@ -146,14 +146,24 @@ rc=$(run_bin "2026-08-27T04:00:00Z")
 grep -q "FAIL-LOUD" "$scratch/err.log" || fail "missing FAIL-LOUD loud line"
 ok "consecutive stale tick fails loud (exit 1)"
 
-# --- 5. detector green + non-terminal + pipeline idle -> stale trip ---------
+# --- 5. green detector + non-terminal + idle pipeline: stale-trip ladder ----
+# First stale trip = repair (re-fire the escalation pipeline; fleet-ops#5366:
+# the trip had no repair and re-fired every green tick with nobody summoned
+# to write the auditor-resolved closeout). Consecutive trip = fail loud.
 rm -rf "$scratch/state"; mkdir -p "$scratch/state"
 echo "success" > "$sysctl_store/pi-issue@0509-1.service.result"
 echo "active"  > "$sysctl_store/pi-issue@0509-1.service.active"
 rc=$(run_bin "2026-08-27T00:00:00Z")
-[[ "$rc" == "1" ]] || fail "green detector + non-terminal + idle pipeline should fail (got $rc)"
+[[ "$rc" == "0" ]] || fail "first stale trip should repair (exit 0, got $rc)"
 grep -q "STALE-TRIP" "$scratch/err.log" || fail "missing STALE-TRIP loud line"
-ok "green detector + non-terminal + idle pipeline = stale trip (exit 1)"
+grep -q "REPAIR" "$scratch/err.log" || fail "missing stale-trip REPAIR loud line"
+ok "green detector + non-terminal + idle pipeline: first stale trip re-fires the pipeline (repair, exit 0)"
+
+# --- 5b. consecutive stale trip (pipeline still idle) -> FAIL LOUD -----------
+rc=$(run_bin "2026-08-27T00:10:00Z")
+[[ "$rc" == "1" ]] || fail "consecutive stale trip should fail loud (got $rc)"
+grep -q "STALE-TRIP" "$scratch/err.log" || fail "missing consecutive STALE-TRIP loud line"
+ok "consecutive stale trip fails loud (exit 1) — the heartbeat OnFailure ladder climbs"
 
 # --- 6. green detector + non-terminal + pipeline ACTIVE -> closeout in flight
 echo "activating" > "$sysctl_store/stop-escalation.service.active"
@@ -201,7 +211,10 @@ terminal=$(jq -r '.terminal // ""' "$scratch/state/$hash.json" 2>/dev/null || tr
 printf 'deadbeef 1789079695\n' > "$WALLED"
 rm -rf "$scratch/state"; mkdir -p "$scratch/state"
 rc=$(run_bin "2026-08-27T00:00:00Z")
-[[ "$rc" == "1" ]] || fail "unwalled hash must still STALE-TRIP (got $rc)"
+[[ "$rc" == "0" ]] || fail "unwalled hash first stale trip should repair (got $rc)"
+grep -q "STALE-TRIP" "$scratch/err.log" || fail "unwalled hash must still STALE-TRIP"
+rc=$(run_bin "2026-08-27T00:10:00Z")
+[[ "$rc" == "1" ]] || fail "unwalled hash consecutive stale trip must fail loud (got $rc)"
 rm -f "$WALLED"
 # Restore the RED detector case 8 expects (7b flipped it green).
 echo "exit-code" > "$sysctl_store/pi-issue@0509-1.service.result"
@@ -233,10 +246,11 @@ rm -rf "$scratch/state"; mkdir -p "$scratch/state"
 echo "success" > "$sysctl_store/pi-issue@0509-1.service.result"
 echo "active"  > "$sysctl_store/pi-issue@0509-1.service.active"
 echo "inactive" > "$sysctl_store/stop-escalation.service.active"
-# Trip open (non-terminal), detector green, pipeline idle -> STALE-TRIP (exit 1).
+# Trip open (non-terminal), detector green, pipeline idle -> first STALE-TRIP
+# repairs (exit 0, fleet-ops#5366).
 write_trip "unit-failure"
 rc=$(run_bin "2026-08-27T00:00:00Z")
-[[ "$rc" == "1" ]] || fail "observe-to-close: open trip on green+idle should STALE-TRIP (got $rc)"
+[[ "$rc" == "0" ]] || fail "observe-to-close: first trip on green+idle should repair (got $rc)"
 grep -q "STALE-TRIP" "$scratch/err.log" || fail "observe-to-close: missing STALE-TRIP loud line"
 # Senior auditor closes the STOP-REASON (advance to terminal). Detector stays green.
 write_trip "auditor-resolved"
