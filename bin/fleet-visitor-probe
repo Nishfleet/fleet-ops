@@ -1,0 +1,182 @@
+#!/usr/bin/env bash
+# fleet-visitor-probe — the visitor-facing health line for 0509.io
+# (fleet-ops#5417). The judges' landing-watch measure.sh runs this once per
+# run and the `visitor:` line is read right after `product:`.
+#
+# Why: the hourly judges measured merges, signups, seats and CI — all from
+# inside. An external review (GLM 5.3, 2026-09-11) found in minutes what no
+# organ saw: http:// serves 200 with no redirect while HSTS preload is
+# declared, the homepage never edge-caches (no cf-cache-status header),
+# /site.webmanifest 404s, /Pricing + /pricing/ serve full duplicates of
+# /pricing, and the PUBLIC repo tracks agent memory/state files and
+# personal emails. Merges are delivery, not outcome — this line is the
+# visitor-facing half of that rule.
+#
+# Output (one machine-readable line on stdout):
+#   visitor: https_redirect=<301|NONE|ERR> home_ttfb_ms=<n|ERR>
+#            home_edge=<HIT|MISS|NONE|ERR> search_ttfb_ms=<n|ERR>
+#            manifest=<code|ERR> dup_routes=<n|ERR>
+#            public_repo_leaks=<n|ERR|UNAVAILABLE:no-gh>
+#
+# Field semantics:
+#   https_redirect    the status code when http://<host>/ redirects to an
+#                     https:// URL; NONE when it serves content or redirects
+#                     anywhere else.
+#   home_ttfb_ms      GET / time-to-first-byte, integer milliseconds.
+#   home_edge         the cf-cache-status response header, uppercased;
+#                     NONE when the header is absent (never edge-cached).
+#   search_ttfb_ms    GET /search?q=<VISITOR_SEARCH_QUERY> TTFB, integer ms.
+#   manifest          GET /site.webmanifest status code.
+#   dup_routes        count of sampled non-canonical variants
+#                     (VISITOR_DUP_VARIANTS) serving 200 instead of a
+#                     redirect to the canonical route.
+#   public_repo_leaks unique tracked paths in VISITOR_REPO matching the
+#                     internal-file patterns (MEMORY.md, agent-state/*,
+#                     design-qa*, docs/*audit*) or containing a known
+#                     personal email (VISITOR_PERSONAL_EMAILS).
+#
+# ERR marks a probe-side failure (DNS, timeout, refused) — a fleet fault,
+# never a site regression. UNAVAILABLE:no-gh marks the leak count as
+# unreadable. No field is ever fabricated.
+#
+# Second vantage: the issue allows "if cheap, a second vantage". Not done —
+# a single VPS vantage catches this regression class; a second vantage adds
+# an ssh/tailscale seam for marginal gain.
+#
+# Env seams (tests point CURL/GH at stubs; defaults are the real tools):
+#   VISITOR_BASE_URL         default https://0509.io
+#   VISITOR_REPO             default Nishfleet/0509
+#   VISITOR_PROBE_TIMEOUT_S  per-request curl --max-time, default 15
+#   VISITOR_SEARCH_QUERY     default calendly.com
+#   VISITOR_DUP_VARIANTS     default "/Pricing /pricing/ /Search /search/"
+#   VISITOR_PERSONAL_EMAILS  default "me@inish.in nishant345@gmail.com"
+#   VISITOR_CURL_BIN         default curl
+#   VISITOR_GH_BIN           default gh
+
+set -uo pipefail
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    awk 'NR==1{next} /^#/{sub(/^# ?/,""); print; next} {exit}' "$0"
+    exit 0
+fi
+
+BASE="${VISITOR_BASE_URL:-https://0509.io}"
+BASE="${BASE%/}"
+REPO="${VISITOR_REPO:-Nishfleet/0509}"
+TIMEOUT="${VISITOR_PROBE_TIMEOUT_S:-15}"
+QUERY="${VISITOR_SEARCH_QUERY:-calendly.com}"
+DUP_VARIANTS="${VISITOR_DUP_VARIANTS:-/Pricing /pricing/ /Search /search/}"
+EMAILS="${VISITOR_PERSONAL_EMAILS:-me@inish.in nishant345@gmail.com}"
+CURL="${VISITOR_CURL_BIN:-curl}"
+GH="${VISITOR_GH_BIN:-gh}"
+
+if ! command -v "$CURL" >/dev/null 2>&1; then
+    echo "visitor: UNAVAILABLE:no-curl"
+    exit 0
+fi
+
+# --- https_redirect -------------------------------------------------------
+# HEAD http://<host>/ — a 3xx whose Location is https:// is a pass; a served
+# page or a non-https redirect is NONE (the HSTS-preload violation class).
+https_redirect="ERR"
+HTTP_BASE="http://${BASE#http*://}"
+_redir="$("$CURL" -s --max-time "$TIMEOUT" -o /dev/null \
+    -w '%{http_code} %{redirect_url}' -I "$HTTP_BASE/" 2>/dev/null)"
+if [[ $? -eq 0 && -n "$_redir" ]]; then
+    _code="${_redir%% *}"
+    _url="${_redir#* }"
+    if [[ "$_code" =~ ^3[0-9][0-9]$ && "$_url" == https://* ]]; then
+        https_redirect="$_code"
+    else
+        https_redirect="NONE"
+    fi
+fi
+
+# --- home_ttfb_ms + home_edge (one GET, headers dumped for cf-cache-status)
+home_ttfb="ERR"
+home_edge="ERR"
+_hdr="$(mktemp -t fleet-visitor-hdr.XXXXXX 2>/dev/null)" || _hdr=""
+if [[ -n "$_hdr" ]]; then
+    _ttfb="$("$CURL" -s --max-time "$TIMEOUT" -o /dev/null -D "$_hdr" \
+        -w '%{time_starttransfer}' "$BASE/" 2>/dev/null)"
+    if [[ $? -eq 0 && "$_ttfb" =~ ^[0-9.]+$ ]]; then
+        home_ttfb="$(awk -v t="$_ttfb" 'BEGIN{printf "%d", t*1000+0.5}')"
+        _edge="$(grep -i '^cf-cache-status:' "$_hdr" | tail -1 \
+            | tr -d '\r' | awk '{print $2}')"
+        if [[ -n "$_edge" ]]; then
+            home_edge="$(printf '%s' "$_edge" | tr '[:lower:]' '[:upper:]')"
+        else
+            home_edge="NONE"
+        fi
+    fi
+    rm -f "$_hdr"
+fi
+
+# --- search_ttfb_ms -------------------------------------------------------
+search_ttfb="ERR"
+_ttfb="$("$CURL" -s --max-time "$TIMEOUT" -o /dev/null \
+    -w '%{time_starttransfer}' "$BASE/search?q=$QUERY" 2>/dev/null)"
+if [[ $? -eq 0 && "$_ttfb" =~ ^[0-9.]+$ ]]; then
+    search_ttfb="$(awk -v t="$_ttfb" 'BEGIN{printf "%d", t*1000+0.5}')"
+fi
+
+# --- manifest -------------------------------------------------------------
+manifest="ERR"
+_code="$("$CURL" -s --max-time "$TIMEOUT" -o /dev/null \
+    -w '%{http_code}' "$BASE/site.webmanifest" 2>/dev/null)"
+if [[ $? -eq 0 && "$_code" =~ ^[0-9]+$ ]]; then
+    manifest="$_code"
+fi
+
+# --- dup_routes -----------------------------------------------------------
+# A sampled variant that answers 200 is a served duplicate; a redirect to
+# the canonical route is the fixed shape. Reported count is over the
+# variants that answered; ERR only when none did.
+dup_routes="ERR"
+_dupn=0
+_dupanswered=0
+for _v in $DUP_VARIANTS; do
+    _code="$("$CURL" -s --max-time "$TIMEOUT" -o /dev/null \
+        -w '%{http_code}' "$BASE$_v" 2>/dev/null)"
+    if [[ $? -eq 0 && "$_code" =~ ^[0-9]+$ ]]; then
+        _dupanswered=1
+        [[ "$_code" == "200" ]] && _dupn=$((_dupn + 1))
+    fi
+done
+[[ "$_dupanswered" -eq 1 ]] && dup_routes="$_dupn"
+
+# --- public_repo_leaks ----------------------------------------------------
+# Two halves, counted as unique paths: (a) tracked files matching the
+# internal-file patterns, (b) files containing a known personal email.
+leaks="ERR"
+if ! command -v "$GH" >/dev/null 2>&1; then
+    leaks="UNAVAILABLE:no-gh"
+else
+    _leak_fail=0
+    _tree="$("$GH" api "repos/$REPO/git/trees/HEAD?recursive=1" \
+        --jq '.tree[] | select(.type=="blob") | .path' 2>/dev/null)" \
+        || _leak_fail=1
+    _hits=""
+    if [[ "$_leak_fail" -eq 0 ]]; then
+        _hits="$(printf '%s\n' "$_tree" \
+            | grep -E '(^|/)MEMORY\.md$|^agent-state/|(^|/)design-qa|^docs/[^/]*audit' \
+            || true)"
+        for _e in $EMAILS; do
+            _em="$("$GH" api -X GET search/code \
+                -f q="repo:$REPO \"$_e\"" -f per_page=100 \
+                --jq '.items[].path' 2>/dev/null)" || { _leak_fail=1; break; }
+            [[ -n "$_em" ]] && _hits="$(printf '%s\n%s' "$_hits" "$_em")"
+        done
+    fi
+    if [[ "$_leak_fail" -eq 0 ]]; then
+        # Unique paths: a file matching a pattern AND an email (or two
+        # emails) is one leaky path, not two.
+        leaks="$(printf '%s\n' "$_hits" | grep . | sort -u | grep -c . || true)"
+        [[ "$leaks" =~ ^[0-9]+$ ]] || leaks=0
+    fi
+fi
+
+printf 'visitor: https_redirect=%s home_ttfb_ms=%s home_edge=%s search_ttfb_ms=%s manifest=%s dup_routes=%s public_repo_leaks=%s\n' \
+    "$https_redirect" "$home_ttfb" "$home_edge" "$search_ttfb" \
+    "$manifest" "$dup_routes" "$leaks"
+exit 0
