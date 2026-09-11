@@ -609,6 +609,7 @@ BF
 }
 
 
+
 # fleet-ops#786: timestamp split out so the printf line stays free of
 # $(date). The variable name avoids the volatile alternatives (TS/...)
 # so the regex does not flag this helper either.
@@ -642,7 +643,20 @@ FINDINGS_JSON="$REPORT_DIR/findings.json"
 REPORT_MD="$REPORT_DIR/report.md"
 PI_STDOUT="$REPORT_DIR/pi-stdout.txt"
 PI_STDERR="$REPORT_DIR/pi-stderr.txt"
-VERDICTS_LOG="$REPORT_DIR/verdicts.jsonl"
+VERDICTS_LOG="${AUDIT_VERDICTS:-$REPORT_DIR/verdicts.jsonl}"
+
+# Canonical findings ledger (fleet-ops#5443): every finding QUEUED, never
+# dropped silently. lib/findings_ledger.py is the ONLY writer; each verdict
+# line in this loop mirrors one idempotent ledger row with disposition+ref.
+FINDINGS_LEDGER_BIN="${FINDINGS_LEDGER_BIN:-$here/lib/findings_ledger.py}"
+findings_ledger_row() { # $1 disposition  $2 ref  $3 reason  (uses the loop vars)
+    [ -f "$FINDINGS_LEDGER_BIN" ] || return 0
+    python3 "$FINDINGS_LEDGER_BIN" 2>/dev/null \
+        append --source-organ fleet-blind-audit --run-id "$NOW_DIR" \
+        --title "$title" --severity "${severity:-info}" \
+        --evidence-ref "$VERDICTS_LOG" --disposition "$1" --ref "$2" \
+        --reason "$3" || true
+}
 : >"$VERDICTS_LOG"
 resolve_path() {
     readlink -f "$1" 2>/dev/null || printf '%s' "$1"
@@ -1322,6 +1336,20 @@ process_one_finding() {
         --arg issue "$issue_url" \
         --argjson loud "$loud" \
         -c '{timestamp: (now | todate), rank:$rank, title:$title, verdict:$verdict, reason:$reason, issue:$issue, loud:$loud}' >> "$VERDICTS_LOG"
+    # Canonical findings ledger row — one per verdict, idempotent by
+    # finding_id (fleet-ops#5443).
+    case "$verdict:$reason:$issue_url" in
+        PASS:*fleet-issue-file*fail*)
+            findings_ledger_row "carried_over" "audit_fix_pending:blind-audit-cap" "$reason" ;;
+        PASS:*" skipped: max findings"*)
+            findings_ledger_row "carried_over" "audit_fix_pending:blind-audit-cap" "$reason" ;;
+        PASS:*refused:*)
+            findings_ledger_row "carried_over" "audit_fix_pending:blind-audit-drill" "$reason" ;;
+        PASS:*:*)
+            findings_ledger_row "filed" "${issue_url:-Nishfleet/unresolved-$REPO}" "filed with verdict=$reason" ;;
+        FAIL:*)
+            findings_ledger_row "panel_fail" "$VERDICTS_LOG" "$reason" ;;
+    esac
 }
 
 # --- carry-over entries FIRST (oldest first), before new findings ---------
@@ -1368,6 +1396,23 @@ fi
 while IFS= read -r finding; do
     [ -n "$finding" ] || continue
     process_one_finding "$finding" "0"
+||||||| dfe8c8f31
+=======
+    # Canonical findings ledger row — one per verdict, idempotent by
+    # finding_id (fleet-ops#5443).
+    case "$verdict:$reason:$issue_url" in
+        PASS:*fleet-issue-file*fail*)
+            findings_ledger_row "carried_over" "audit_fix_pending:blind-audit-cap" "$reason" ;;
+        PASS:*" skipped: max findings"*)
+            findings_ledger_row "carried_over" "audit_fix_pending:blind-audit-cap" "$reason" ;;
+        PASS:*refused:*)
+            findings_ledger_row "carried_over" "audit_fix_pending:blind-audit-drill" "$reason" ;;
+        PASS:*:*)
+            findings_ledger_row "filed" "${issue_url:-Nishfleet/unresolved-$REPO}" "filed with verdict=$reason" ;;
+        FAIL:*)
+            findings_ledger_row "panel_fail" "$VERDICTS_LOG" "$reason" ;;
+    esac
+>>>>>>> origin/main
 done < <(printf '%s\n' "$findings" | jq -c '.findings[]' 2>/dev/null)
 
 # Rewrite the ledger: drop resolved signatures, keep the backlog (oldest

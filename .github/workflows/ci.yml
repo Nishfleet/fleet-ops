@@ -165,6 +165,9 @@ jobs:
         bash tests/orphan-workflow-detector.test.sh
         bash tests/open-question-sweep-deleted.test.sh
         bash tests/escalation-coverage-canary.test.sh
+        # fleet-ops#5443: canonical findings ledger — strict writer + judge line.
+        bash tests/findings-ledger.test.sh
+        bash tests/findings-measure-line.test.sh
         bash tests/fleet-unjustified-wait.test.sh
         bash tests/fleet-deploy-check.test.sh
         bash tests/fleet-seat-recovery.test.sh
