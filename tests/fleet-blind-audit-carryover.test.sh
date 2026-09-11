@@ -75,6 +75,26 @@ esac
 FAKE_GH
 chmod +x "$scratch/fakebin/gh"
 
+# Fake pi + fake seat-lib so run 0 can take the real reviewer path and build
+# an actual packet: a drill run never writes packet.md, so (d) must NOT use
+# AUDIT_DRILL. pi is never dispatched (AUDIT_DRY_RUN=1) but preflight needs
+# it executable.
+cat > "$scratch/fakebin/pi" <<'FAKE_PI'
+#!/usr/bin/env bash
+cat >/dev/null
+FAKE_PI
+chmod +x "$scratch/fakebin/pi"
+cat > "$scratch/seat-lib-fake.sh" <<'FAKE_SEAT_LIB'
+# shellcheck shell=bash
+pick_seat() {
+    # Args: fail_p fail_m need_capable tried_file — all ignored for the stub.
+    printf 'fakeprovider\tfakemodel'
+}
+FAKE_SEAT_LIB
+
+# Empty seam-evidence fixture (created before run 0, which needs it).
+printf '%s\n' '{"candidates":[]}' > "$scratch/empty-seams.json"
+
 # 12 distinct fixture findings, all expected panel-PASS.
 findings_file="$scratch/findings-12.json"
 {
@@ -117,20 +137,31 @@ common_env=(
 )
 
 # (d) the reviewer packet no longer says "Max findings to return" —
-# proved with a dry run, which builds the packet without dispatching pi.
+# proved with a REAL reviewer-path dry run (AUDIT_DRILL=0, fake pi + fake
+# seat-lib), which builds packet.md without dispatching pi.
 rc=0
 env "${common_env[@]}" \
   GH_CREATE_LOG="$scratch/create-0.log" \
+  AUDIT_DRILL=0 \
+  AUDIT_PI_BIN="$scratch/fakebin/pi" \
+  AUDIT_SEAT_LIB="$scratch/seat-lib-fake.sh" \
+  AUDIT_PROMPT="$repo_root/prompts/blind-audit.md" \
+  AUDIT_SEAM_EVIDENCE="$scratch/empty-seams.json" \
   AUDIT_DELIBERATE_STATES="$repo_root/docs/deliberate-states.md" \
   AUDIT_FAKE_NOW="2026-08-26T06:15:00Z" \
   AUDIT_MAX_FINDINGS="8" \
-  AUDIT_DRILL_FINDINGS="$empty_findings" \
   AUDIT_DRY_RUN=1 \
   "$repo_root/bin/fleet-blind-audit" >"$scratch/run0.log" 2>&1 || rc=$?
 [[ $rc == 0 ]] || { cat "$scratch/run0.log"; fail "dry run exited $rc"; }
 
-if grep -q 'Max findings to return' "$scratch/state/reports"/*/packet.md; then
+pkt0=$(find "$scratch/state/reports" -mindepth 2 -maxdepth 2 -name packet.md | head -1)
+[[ -n "$pkt0" ]] || { cat "$scratch/run0.log"; fail "reviewer dry run produced no packet.md"; }
+if grep -q 'Max findings to return' "$pkt0"; then
   fail "packet still contains 'Max findings to return'"
+fi
+# The packet must not carry any max-findings instruction at all.
+if grep -qiE 'max[- ]findings' "$pkt0"; then
+  fail "packet still tells the reviewer a max-findings count"
 fi
 
 # ---------------------------------------------------------------- run 1 -----
@@ -142,7 +173,6 @@ env "${common_env[@]}" \
   AUDIT_DRILL_FINDINGS="$findings_file" \
   AUDIT_SEAM_EVIDENCE="$scratch/empty-seams.json" \
   "$repo_root/bin/fleet-blind-audit" >"$scratch/run1.log" 2>&1 || rc=$?
-printf '%s\n' '{"candidates":[]}' > "$scratch/empty-seams.json"
 [[ $rc == 0 ]] || { cat "$scratch/run1.log"; fail "run 1 exited $rc"; }
 
 [[ -s "$scratch/create-1.log" ]] || fail "run 1 filed nothing"
