@@ -132,15 +132,24 @@ remain=$(( be - now_s ))
     || fail "b: 429 default wall ${remain}s must be >0 and <=6h"
 ok "b: 429 without window benches the provider default, <=6h (remain=${remain}s)"
 
-# --- b2) a pin longer than 6h still wins (ClinePass weekly, no quota_window)
+# --- b2) fleet-ops#5285: a default pin longer than 15 min no longer wins ---
+# (ClinePass weekly, no quota_window). A quota_bench_default_s fallback is
+# NOT an advertised reset — no provider reset was parsed or observed live —
+# so mark_seat_quota_bench caps it at SEAT_QUOTA_BENCH_DEFAULT_MAX_S (900s)
+# before the first bench-truth PONG probe. The lived bug: devin/swe-1-7
+# benched bench_window_s=518400 (6 DAYS) on a minutes-scale 429.
 p="cline"; m="cline-pass/minimax-m3"
 lf=$(ledger_file "$p" "$m")
 rm -f "$lf"
 mark_seat_quota_bench "$p" "$m" "INFERENCE_CAP_ERROR: weekly Clinepass limit." >/dev/null 2>&1 \
     || fail "b2: cline quota_bench_default_s write failed"
 bw=$(jq -r '.bench_window_s' "$lf")
-[[ "$bw" == "604800" ]] || fail "b2: cline bench_window_s expected 604800, got $bw"
-ok "b2: cline weekly pin 604800 survives the 6h clamp"
+[[ "$bw" == "900" ]] \
+    || fail "b2: default-driven cline bench_window_s must be capped at 900s (fleet-ops#5285), got $bw"
+remain=$(( $(date -u -d "$(jq -r '.bench_until' "$lf")" +%s) - $(date -u +%s) ))
+(( remain > 0 && remain <= 960 )) \
+    || fail "b2: capped default wall remain=${remain}s must be >0 and <=~900s"
+ok "b2: default pin capped at 15 min before the first truth probe (fleet-ops#5285, bench_window_s=$bw)"
 
 # --- c) 401 -> 1h credentials_bad; corpse only after 24 --------------------
 p="devin"; m="glm-5-2"

@@ -303,7 +303,12 @@ ok "_dispatch: overload bench escalates 600->1200->2400...21600 (geometric, capp
 rm -f "$LEDGER"/*.json 2>/dev/null || true
 p_d="devin"; m_d="swe-1-7"
 quota_no_window2='INFERENCE_CAP_ERROR: weekly Clinepass limit'
-expected_q=(900 1800 3600 7200 14400 21600 21600 21600)
+# fleet-ops#5285: a default-driven quota window is NOT an advertised reset —
+# the #3531 geometric escalation multiplies a GUESS (the lived Devin
+# "reset in 2…" -> 15360s misparse class), so mark_seat_quota_bench caps it
+# at SEAT_QUOTA_BENCH_DEFAULT_MAX_S (900s) before the first bench-truth
+# PONG probe. Escalation still applies to parsed/live windows (test 7).
+expected_q=(900 900 900 900 900 900 900 900)
 for i in 1 2 3 4 5 6 7 8; do
     idx=$((i-1))
     want=${expected_q[$idx]}
@@ -317,6 +322,6 @@ for i in 1 2 3 4 5 6 7 8; do
     bw=$(jq -r '.bench_window_s' "$ledger_file")
     [[ "$bw" == "$want" ]] || fail "_dispatch: quota #${i} bench_window_s = $bw, want $want (geometric, fleet-ops#3531)"
 done
-ok "_dispatch: quota bench escalates 900->1800->3600...21600 (geometric, capped, fleet-ops#3531)"
+ok "_dispatch: default-driven quota bench capped at 900s every cycle (fleet-ops#5285 bench-truth cap; geometric escalation stays for parsed windows)"
 
 ok "seat-lib-dispatch: registry sorted, trigger-order wins, no-double-bench, backward-compat, graceful no-registry"

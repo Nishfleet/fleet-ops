@@ -54,6 +54,13 @@ NON_ROLE_UNIT_PREFIXES = (
     "fleet-heartbeat-failed-notify",
     "fleet-deploy-check",
     "fleet-seat-recovery",
+    # fleet-ops#5285: fleet-seat-bench-truth.path/.service is the event-driven
+    # trigger for the EXISTING fleet-seat-comeback-release --false-wall-only
+    # sweep (bench-truth PONG probe). It runs no model itself, owns no
+    # prompt, produces no work items — plumbing, not a role; its gate is the
+    # machinery-allowlist row (class (a), repo) + the comeback-release test
+    # suite (23c-23f) + seat-lib-bench-truth-cap.
+    "fleet-seat-bench-truth",
     "interactive-session-reap",
     "agent-cron-",
     "app-pi",

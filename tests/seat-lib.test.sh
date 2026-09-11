@@ -1306,7 +1306,10 @@ rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "default: cline (has default) expected rc=0, got $rc"
 bw=$(jq -r '.bench_window_s' "$ledger/cline__cline-pass_minimax-m3.json")
-[[ "$bw" == "604800" ]] || fail "default: cline bench_window_s expected 604800, got $bw"
+# fleet-ops#5285: a default-driven window is NOT an advertised reset —
+# capped at SEAT_QUOTA_BENCH_DEFAULT_MAX_S (900s) before the first
+# bench-truth PONG probe (the 6-day phantom-bench class).
+[[ "$bw" == "900" ]] || fail "default: cline bench_window_s expected 900 (capped at 15 min, fleet-ops#5285), got $bw"
 # cursor has NO quota_bench_default_s -> fail open, no marker.
 rm -f "$ledger/cursor__composer-2.5.json"
 set +e
@@ -1414,14 +1417,16 @@ bw=$(jq -r '.bench_window_s' "$live_ledger/cursor__composer-2.5.json")
 grep -q "benching on live fleet_seat_quota reset 5000s" "$PI_PACKET_STATE/watch.log" \
   || fail "live-reset writer: must log the live-reset bench line"
 # cline's live window is NOT exhausted (95% left) -> the static default still
-# applies even though a live row exists.
+# applies even though a live row exists. fleet-ops#5285: a default-driven
+# window is not an advertised reset — capped at 900s before the first
+# bench-truth PONG probe.
 set +e
 SEAT_LIVE_QUOTA_PROM="$live_prom" bash -c 'source "$0"; load_seat_caps; mark_seat_quota_bench "$1" "$2" "$3"' "$lib" "cline" "cline-pass/minimax-m3" "INFERENCE_CAP_ERROR: weekly Clinepass limit." >/dev/null 2>&1
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "live-reset writer: cline expected rc=0, got $rc"
 bw=$(jq -r '.bench_window_s' "$live_ledger/cline__cline-pass_minimax-m3.json")
-[[ "$bw" == "604800" ]] || fail "live-reset writer: cline (95% live) must use the static default 604800, got $bw"
+[[ "$bw" == "900" ]] || fail "live-reset writer: cline (95% live) must use the static default capped at 900s (fleet-ops#5285), got $bw"
 # A wall whose error text DOES carry a window still wins over the live figure
 # (parsed text is ground truth for that wall).
 set +e
