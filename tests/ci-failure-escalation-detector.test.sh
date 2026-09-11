@@ -37,6 +37,7 @@ cd "$repo_root"
 
 # --- pure-function unit tests ------------------------------------------------
 node --input-type=module -e '
+import { readFileSync as _readFileSync } from "node:fs";
 import {
   normalizeAssertion,
   extractPrNumber,
@@ -161,16 +162,8 @@ if (!body.includes("auto-revert")) throw new Error("body must name auto-revert a
 if (!body.includes("#124")) throw new Error("body must name #124 as an excluded owner");
 if (!body.includes("Last green")) throw new Error("body must surface last green");
 
-// parseEnrolledRepos: reads an intake-repos.json document, excludes permanent
-// exclusions. Inline fixture, NOT the live config: enrolment is a scheduling
-// decision (0509 can be TEMPORARY-deferred, fleet-ops#5385) and this test is
-// about the parser, not about what the fleet is doing today.
-const enrolledFixture = JSON.stringify({
-  repos: [{ name: "0509" }, { name: "fleet-ops" }],
-  excluded: [{ name: "fleet2", permanent: true }],
-  deferred: [{ name: "siterep-public" }],
-});
-const enrolled = parseEnrolledRepos(enrolledFixture);
+// parseEnrolledRepos: reads intake-repos.json, excludes permanent exclusions.
+const enrolled = parseEnrolledRepos(_readFileSync("config/intake-repos.json", "utf8"));
 if (!enrolled.includes("Nishfleet/0509")) throw new Error("0509 must be enrolled");
 if (!enrolled.includes("Nishfleet/fleet-ops")) throw new Error("fleet-ops must be enrolled");
 if (enrolled.includes("Nishfleet/fleet2")) throw new Error("fleet2 is permanently excluded and must NOT be enrolled");
