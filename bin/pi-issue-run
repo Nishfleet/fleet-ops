@@ -381,6 +381,28 @@ seat_log "pi-issue-run: $inst target repo=${pkt_repo:-<none>} privacy=$pkt_priva
 # repo carries the product flag in config/intake-repos.json.
 export PI_PACKET_REPO="${pkt_repo:-}"
 
+# --- fleet-ops#5092: parked-issue no-op exit ---------------------------------
+# A unit claimed BEFORE its issue is parked with awaiting-runtime-gate keeps
+# restarting on the Restart=on-failure ladder after the park lands: the park
+# (fleet-ops#4540) only stops NEW claims at the intake label check, so the
+# already-claimed unit's next restart exits 1 through a session-close gate
+# (e.g. debug-playbook) and burns StartLimitBurst — three of those re-queue
+# the issue via reaper, silently un-parking it. The park is visible from
+# here in the live label set: exit 0 (success) so systemd never schedules a
+# restart on a parked issue. Fail-open on a transient gh error — a gh
+# outage must not stop every claimed unit from running.
+if [[ -n "$pkt_repo" ]]; then
+    pkt_issue="${inst##*-}"
+    if [[ "$pkt_issue" =~ ^[0-9]+$ ]]; then
+        pkt_parked=$(gh api "repos/Nishfleet/$pkt_repo/issues/$pkt_issue" 2>/dev/null | jq 'any(.labels[]?.name; . == "awaiting-runtime-gate")' 2>/dev/null || echo "")
+        if [[ "$pkt_parked" == "true" ]]; then
+            seat_log "pi-issue-run: $inst issue Nishfleet/$pkt_repo#$pkt_issue is parked with awaiting-runtime-gate — exiting 0 so Restart=on-failure does not resurrect a claimed pre-park unit (fleet-ops#5092)"
+            _exit_reason="parked-awaiting-runtime-gate"
+            exit 0
+        fi
+    fi
+fi
+
 # fleet-ops#1378: empty-run in-process retry loop. The no-op guard below
 # wraps the entire seat→run→check cycle in a while loop so empty runs
 # re-seat and re-run INSIDE this invocation instead of consuming a systemd
