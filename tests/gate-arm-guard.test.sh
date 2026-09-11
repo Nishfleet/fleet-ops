@@ -33,6 +33,8 @@ lib="$repo_root/lib/gate-arm-guard.py"
 fixtures="$here/fixtures/gate-arm-guard"
 arm_wf="$repo_root/.github/workflows/reusable-auto-merge-arm.yml"
 ci_yml="$repo_root/.github/workflows/ci.yml"
+tier1="$repo_root/bin/fleet-heartbeat-tier1"
+manifest="$repo_root/MANIFEST"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
@@ -102,7 +104,56 @@ grep -Fq 'github.workflow_sha' "$arm_wf" \
   || fail "guard must be fetched at github.workflow_sha (no drift)"
 grep -Fq 'wait-seconds' "$arm_wf" \
   || fail "guard call must carry a pending-check wait budget"
+grep -Fq -- '--disable-auto' "$arm_wf" \
+  || fail "refuse path must disarm already-armed auto-merge (the #5207 escape)"
 ok "reusable arm workflow wires the guard and gates the arm on it"
+
+# --- wiring: the hourly queue pass refuses AND disarms -------------------
+grep -Fq 'fleet-gate-arm-guard' "$tier1" \
+  || fail "tier1 queue pass must call fleet-gate-arm-guard"
+grep -Fq 'GATE-INTEGRITY not green' "$tier1" \
+  || fail "tier1 must skip+disarm gate-path PRs whose gate is not green"
+python3 - "$tier1" <<'PY' || fail "heartbeat must call the guard before gh pr merge --auto"
+import pathlib, sys
+text = pathlib.Path(sys.argv[1]).read_text()
+queue = text.find("2. queue pass starting")
+if queue < 0:
+    raise SystemExit("queue pass marker missing")
+gate = text.find("fleet-gate-arm-guard", queue)
+disarm = text.find("--disable-auto", queue)
+arm = text.find("--auto --squash", queue)
+if gate < 0:
+    raise SystemExit("queue pass must call fleet-gate-arm-guard")
+if arm < 0:
+    raise SystemExit("queue pass must still call gh pr merge --auto")
+if gate > arm:
+    raise SystemExit("gate-arm-guard must run BEFORE gh pr merge --auto in the queue pass")
+if disarm < 0 or not (gate < disarm < arm):
+    raise SystemExit("queue-pass refuse path must --disable-auto before the arm")
+PY
+ok "heartbeat queue pass runs the guard before arming and disarms on refuse"
+
+# --- wiring: MANIFEST installs the evaluator for the live heartbeat -------
+grep -Fq 'bin/fleet-gate-arm-guard' "$manifest" \
+  || fail "MANIFEST must install bin/fleet-gate-arm-guard"
+grep -Fq 'lib/gate-arm-guard.py' "$manifest" \
+  || fail "MANIFEST must install lib/gate-arm-guard.py"
+grep -Fq 'lib/gate-integrity-config.sh' "$manifest" \
+  || fail "MANIFEST must install lib/gate-integrity-config.sh (live glob loader)"
+ok "MANIFEST installs the guard"
+
+# --- DEFAULT_GLOBS stay locked to the shared loader ------------------------
+python3 - "$lib" "$repo_root/lib/gate-integrity-config.sh" <<'PY' \
+  || fail "DEFAULT_GLOBS drifted from lib/gate-integrity-config.sh"
+import importlib.util, json, subprocess, sys
+spec = importlib.util.spec_from_file_location("gag", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+got = json.loads(subprocess.check_output(["bash", sys.argv[2]], text=True))["gate_globs"]
+if list(mod.DEFAULT_GLOBS) != got:
+    raise SystemExit(f"{list(mod.DEFAULT_GLOBS)!r} != {got!r}")
+PY
+ok "DEFAULT_GLOBS match the shared loader defaults"
 
 # --- wiring: P14 runs this test -------------------------------------------
 grep -Fq 'bash tests/gate-arm-guard.test.sh' "$ci_yml" \

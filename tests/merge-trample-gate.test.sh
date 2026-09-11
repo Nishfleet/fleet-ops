@@ -212,24 +212,21 @@ python3 - "$tier1" <<'PY' || fail "heartbeat must call the gate before gh pr mer
 import pathlib, sys
 text = pathlib.Path(sys.argv[1]).read_text()
 gate = text.find("fleet-merge-trample-gate")
-arm = text.find("gh pr merge")
 auto = text.find("--auto --squash")
 if gate < 0:
     raise SystemExit("fleet-merge-trample-gate missing from tier1")
-# The arm we care about is the queue-pass auto-squash, which sits after
-# the trample gate. An earlier gh pr merge in another block is allowed
-# only if the gate still precedes the queue-pass marker+arm pair.
+# The arm we care about is the queue-pass auto-squash. An earlier
+# `gh pr merge --disable-auto` (fleet-ops#5238 gate-integrity refuse)
+# is a disarm, not the arm, so pin on `--auto --squash`.
 queue = text.find("2. queue pass starting")
 if queue < 0:
     raise SystemExit("queue pass marker missing")
 gate_in_queue = text.find("fleet-merge-trample-gate", queue)
-arm_in_queue = text.find("gh pr merge", queue)
+arm_in_queue = text.find("--auto --squash", queue)
 if gate_in_queue < 0 or arm_in_queue < 0:
-    raise SystemExit("queue pass must call the gate and gh pr merge")
+    raise SystemExit("queue pass must call the gate and gh pr merge --auto")
 if gate_in_queue > arm_in_queue:
-    raise SystemExit("trample gate must run BEFORE gh pr merge in the queue pass")
-if "--auto --squash" not in text[arm_in_queue:arm_in_queue + 200]:
-    raise SystemExit("queue-pass gh pr merge must still be --auto --squash")
+    raise SystemExit("trample gate must run BEFORE gh pr merge --auto in the queue pass")
 PY
 ok "heartbeat queue pass runs the gate before arming auto-merge"
 

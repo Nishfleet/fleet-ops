@@ -47,15 +47,33 @@ Pure-eval bundle (fixture or emitted verdict context):
 from __future__ import annotations
 
 import argparse
+import base64
 import fnmatch
 import json
+import os
 import subprocess
 import sys
+import tempfile
 import time
 from typing import Any
 
 PROG = "fleet-gate-arm-guard"
 GATE_CHECK_NAME = "gate-integrity"
+
+# Same defaults as lib/gate-integrity-config.sh DEFAULTS["gate_globs"].
+# Live evaluate may omit --globs-json (tier1 queue pass); the reusable
+# arm workflow always passes the repo's resolved set.
+DEFAULT_GLOBS = [
+    ".github/workflows/**",
+    ".github/scripts/**",
+    ".github/CODEOWNERS",
+    ".gitleaksignore",
+    ".gitleaks.toml",
+    ".semgrepignore",
+    ".semgrep.yml",
+    ".semgrep.yaml",
+    ".fleet/**",
+]
 
 # Lazy probe target: presence of this file on the PR's base ref means the
 # repo runs the gate and a missing check is a fault, not an absent feature.
@@ -267,10 +285,68 @@ def probe_gate_workflow(repo: str, base_ref: str) -> bool:
     return True
 
 
+def _config_loader() -> str:
+    env = os.environ.get("FLEET_GATE_INTEGRITY_CONFIG", "")
+    if env and os.path.isfile(env):
+        return env
+    here = os.path.dirname(os.path.abspath(__file__))
+    cand = os.path.join(here, "gate-integrity-config.sh")
+    return cand if os.path.isfile(cand) else ""
+
+
+def fetch_repo_globs(repo: str, base_ref: str) -> list[str]:
+    """Load the PR base's .fleet/gate-integrity.yml through the shared loader.
+
+    Missing file or loader -> the same defaults the loader itself uses.
+    """
+    proc = gh(
+        [
+            "api",
+            f"repos/{repo}/contents/.fleet/gate-integrity.yml?ref={base_ref}",
+            "--jq",
+            ".content",
+        ],
+        tolerate_failure=True,
+    )
+    yml = ""
+    if proc.returncode == 0 and proc.stdout.strip():
+        try:
+            yml = base64.b64decode(proc.stdout.strip()).decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            yml = ""
+    loader = _config_loader()
+    if not loader:
+        return list(DEFAULT_GLOBS)
+    path = ""
+    try:
+        with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False) as fh:
+            fh.write(yml)
+            path = fh.name
+        out = subprocess.run(
+            ["bash", loader, path], capture_output=True, text=True
+        )
+        if out.returncode == 0:
+            data = json.loads(out.stdout)
+            globs = data.get("gate_globs")
+            if isinstance(globs, list) and all(
+                isinstance(g, str) and g for g in globs
+            ):
+                return list(globs)
+    except (OSError, json.JSONDecodeError):
+        pass
+    finally:
+        if path:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+    return list(DEFAULT_GLOBS)
+
+
 def evaluate_live(args: argparse.Namespace) -> dict[str, Any]:
     repo, pr = args.repo, args.pr
-    globs = parse_globs(args)
     refs = fetch_pr(repo, pr)
+    globs = parse_globs(args) or fetch_repo_globs(repo, refs["base"])
     matched = gate_paths(fetch_files(repo, pr), globs)
     if not matched:
         return decide(matched, None, False)
@@ -302,10 +378,7 @@ def parse_globs(args: argparse.Namespace) -> list[str]:
         except OSError as exc:
             _die(f"cannot read --globs-file {args.globs_file}: {exc}")
     if raw is None:
-        _die(
-            "live evaluate needs --globs-json (or --globs-file) — resolve the "
-            "repo's gate set with lib/gate-integrity-config.sh first"
-        )
+        return []
     try:
         globs = json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -334,7 +407,14 @@ def evaluate_input(path: str) -> dict[str, Any]:
 
 
 def main(argv: list[str]) -> int:
-    ap = argparse.ArgumentParser(prog=PROG)
+    ap = argparse.ArgumentParser(
+        prog=PROG,
+        description=(
+            "Auto-merge arm criterion (fleet-ops#5238). Refuse to arm a PR "
+            "whose diff touches gate-owned paths while gate-integrity is not "
+            "green. Pure evaluator: no GitHub writes."
+        ),
+    )
     sub = ap.add_subparsers(dest="cmd")
     ev = sub.add_parser("evaluate", help="evaluate one PR / fixture")
     ev.add_argument("--input", help="fixture JSON (pure eval, no gh)")

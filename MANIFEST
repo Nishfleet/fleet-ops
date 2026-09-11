@@ -538,6 +538,12 @@ lib/same-repo-closes-gate.py /home/nish/.local/lib/pi-packet/same-repo-closes-ga
 # cannot push .github/workflows/**.
 bin/fleet-merge-trample-gate /home/nish/.local/bin/fleet-merge-trample-gate
 lib/merge-trample-gate.py /home/nish/.local/lib/pi-packet/merge-trample-gate.py
+# fleet-ops#5238: auto-merge arm refuses gate-path PRs whose advisory
+# gate-integrity check is not green. Pure evaluator — the reusable arm
+# workflow and the tier1 queue pass call it; no new unit.
+bin/fleet-gate-arm-guard /home/nish/.local/bin/fleet-gate-arm-guard
+lib/gate-arm-guard.py /home/nish/.local/lib/pi-packet/gate-arm-guard.py
+lib/gate-integrity-config.sh /home/nish/.local/lib/pi-packet/gate-integrity-config.sh
 prompts/senior-conference.md /home/nish/.pi/agent/prompts/senior-conference.md
 systemd/fleet-blind-audit.service /home/nish/.config/systemd/user/fleet-blind-audit.service
 systemd/fleet-blind-audit.timer /home/nish/.config/systemd/user/fleet-blind-audit.timer

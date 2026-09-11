@@ -642,6 +642,39 @@ while IFS= read -r repo; do
             continue
         fi
 
+        # fleet-ops#5238: gate-integrity is advisory, not a required
+        # context, so `gh pr merge --auto` will merge a gate-path PR the
+        # moment P14 + arm pass even if the gate row is FAILURE (#5207).
+        # Refuse (and disarm) here even when other checks are still
+        # pending, otherwise a worker arm in the first seconds of the PR
+        # survives until GitHub merges. Fail-open on a missing/broken
+        # helper — same posture as merge-trample / verify-cue. The
+        # evaluator is pure; disarm is this caller's write.
+        gate_arm="${FLEET_GATE_ARM_GUARD:-/home/nish/.local/bin/fleet-gate-arm-guard}"
+        if [ ! -x "$gate_arm" ]; then
+            repo_copy="$(cd "$(dirname "$0")" && pwd)/fleet-gate-arm-guard"
+            if [ -x "$repo_copy" ]; then
+                gate_arm="$repo_copy"
+            else
+                gate_arm=""
+            fi
+        fi
+        if [ -x "$gate_arm" ]; then
+            gate_rc=0
+            "$gate_arm" evaluate --repo "$repo" --pr "$pr_num" --wait-seconds 0 \
+                >/dev/null 2>&1 || gate_rc=$?
+            if [ "$gate_rc" -eq 1 ]; then
+                log "2.  - $repo#$pr_num ($pr_head): GATE-INTEGRITY not green on gate-path — disarm + skip arm (fleet-ops#5238)"
+                gh pr merge "$pr_num" -R "$repo" --disable-auto >/dev/null 2>&1 || true
+                skipped=$((skipped+1))
+                continue
+            elif [ "$gate_rc" -ne 0 ]; then
+                log "2.  - $repo#$pr_num ($pr_head): gate-arm-guard rc=$gate_rc — fail-open arm"
+            fi
+        else
+            log "2.  - $repo#$pr_num ($pr_head): gate-arm-guard missing — fail-open arm"
+        fi
+
         # Check the status: count checks; all must be SUCCESS (no FAILURE,
         # no PENDING). If there are no required checks at all, treat as not
         # mergeable (defensive).

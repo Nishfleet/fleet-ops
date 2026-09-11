@@ -283,6 +283,11 @@ jobs:
           if jq -e '.verdict == "refuse"' "$tmp/verdict.json" >/dev/null 2>&1; then
             echo "gated=true" >> "$GITHUB_OUTPUT"
             echo "gate-integrity is not green on a gate-path PR; auto-merge arming skipped (fleet-ops#5238) — a green verdict re-arms on the next pull_request event or the hourly queue pass"
+            # A worker may already have armed via `gh pr merge --auto`.
+            # GitHub auto-merge waits only on required checks, so leaving
+            # that arm in place is the #5207 escape. Disarm is the teeth;
+            # --disable-auto on a PR that was never armed is a no-op.
+            gh pr merge "$PR_NUM" --disable-auto --repo "${{ github.repository }}" >/dev/null 2>&1 || true
             exit 0
           fi
           jq -e '.verdict == "arm"' "$tmp/verdict.json" >/dev/null 2>&1 \
