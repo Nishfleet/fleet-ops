@@ -819,12 +819,12 @@ unwall_seat() {
     fi
     local tmp="$f.$$.tmp"
     jq -n \
-        --arg p "$p" --arg m "$m" --arg now "$(now_iso)" \
+        --arg p "$p" --arg m "$m" --arg now "$(now_iso)" --arg sk "$source_kind" \
         '{provider:$p, model:$m, http_status:200, retry_after:null,
           health_class:"healthy", retryable:false, seat_dead:false,
           poison_ladder:false, failure_mode:"none", observed_at:$now,
           usable_at:null, bench_until:null, consecutive_failure_count:0,
-          source:"$source_kind", writer:"unwall_seat"}' > "$tmp"
+          source:$sk, writer:"unwall_seat"}' > "$tmp"
     chmod 600 "$tmp" 2>/dev/null || true
     mv "$tmp" "$f"
     log "UNWALLED $p/$m (healthy observation written)"
@@ -2090,6 +2090,13 @@ main() {
     # read-only-ledger shape BOTH fire; each renders its own LOUD line and
     # the unit exits 1 once (OnFailure escalates, last-green stays stale).
     if (( FALSE_WALL_ONLY )); then
+        # fleet-ops#5285: the event-driven sweep must publish the bench-lie
+        # counters it just incremented (FleetSeatBenchLied reads the prom),
+        # without touching the main sweep's last-green clock — carry the
+        # existing last-green value through unchanged.
+        local _lg=""
+        [[ -f "$PROM_FILE" ]] && _lg=$(grep -oE '^fleet_seat_comeback_release_last_green_seconds [0-9]+' "$PROM_FILE" 2>/dev/null | awk '{print $2}' | head -n1 || true)
+        write_prom "${_lg:-}" 0 "$probed_total" "$released_total" "$expired" "$CORPSE_TOTAL" "$RETIRED_TOTAL" "$breached" "$breached_lines"
         log "false-wall-only sweep complete: probed=$probed released=$released_this_run"
         return 0
     fi
