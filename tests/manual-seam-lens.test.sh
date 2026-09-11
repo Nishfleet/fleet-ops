@@ -187,6 +187,46 @@ jq -e '[.candidates[].seam | select(test("Confer-with-peers|AUTO-REVERT HALT|Liv
   || fail "auditor bullet slipped through: $(jq -r '[.candidates[].seam] | join("|")' "$scratch/auditor/collected.json")"
 ok "auditor report bullets filtered from actions-log (fleet-ops#2706)"
 
+# fleet-ops#5472: the scheduled fable-fleet-check / fleet-judge timers write
+# a memoryctl outcome after every run. Those outcome titles are machinery
+# output, not hand-performed operations, and must not surface as manual-seam
+# candidates. Outcomes that are NOT scheduled-run records must still surface.
+mkdir -p "$scratch/memctl"
+mkoutcome() {
+  local name="$1" title="$2"
+  cat >"$scratch/memctl/$name" <<EOF
+---
+memory_kind: "outcome"
+created_at: "2026-09-11T08:29:23Z"
+---
+# $title
+
+## Result
+
+did things
+EOF
+}
+mkoutcome a.md "Fable 2h fleet check 06:29: judge landing set, repair within allowed list"
+mkoutcome b.md "fleet judge :40 slot 2026-09-11T08:40Z-08:58Z"
+mkoutcome c.md "hourly fable-check: guardrails, land #3505, repair seat-pool thrash"
+mkoutcome d.md "fable-fleet-check run 23: guardrails, top-up proof, critical-first intake fix"
+mkoutcome e.md "fleet judge fable-check 2026-09-10T16:50Z"
+mkoutcome keep1.md "Repair fleet2-morning-check.service which was in systemd state failed"
+mkoutcome keep2.md "hand-refined the intake prompt after three dead runs"
+
+python3 "$lens" collect \
+  --since "2026-09-11T07:00:00Z" \
+  --now "2026-09-11T09:00:00Z" \
+  --memoryctl-dir "$scratch/memctl" >"$scratch/memctl-collected.json"
+
+jq -e '.candidates | length == 2' "$scratch/memctl-collected.json" >/dev/null \
+  || fail "scheduled-run outcomes must be filtered, only the two hand seams stay; got $(jq '.candidates | length' "$scratch/memctl-collected.json"): $(cat "$scratch/memctl-collected.json")"
+jq -e '[.candidates[].seam] | index("Repair fleet2-morning-check.service which was in systemd state failed")' "$scratch/memctl-collected.json" >/dev/null \
+  || fail "non-scheduled outcome dropped while filtering scheduled runs"
+jq -e '[.candidates[].seam] | index("hand-refined the intake prompt after three dead runs")' "$scratch/memctl-collected.json" >/dev/null \
+  || fail "hand-work outcome dropped while filtering scheduled runs"
+ok "scheduled fable-check/fleet-judge outcomes filtered from memoryctl (fleet-ops#5472)"
+
 # --- 4+5. Harness writes the table when the reviewer omits it --------------
 mkdir -p "$scratch/fakebin" "$scratch/state"
 cat >"$scratch/deliberate-states.md" <<'EOF'

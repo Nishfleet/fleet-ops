@@ -99,6 +99,26 @@ ESCALATION_LOG_RE = re.compile(
     r"|AUDITOR-LOG\.md"
     r"|auditor_claimed\(\)"
 )
+# Scheduled-run outcome titles (fleet-ops#5472): the fable-fleet-check /
+# fleet-judge timers (agent-cron-run senior ladder, three non-overlapping
+# POV slots per fleet-ops#4906) write a memoryctl outcome file after every
+# run. Those outcomes are the mechanism's own log, not a hand-performed
+# operation — without this filter every scheduled check surfaces as a
+# "manual seam" and files a fresh gap-audit issue each cycle.
+SCHEDULED_RUN_TITLE_RE = re.compile(
+    r"(?i)^(?:"
+    # "fleet judge :40 slot <ts>", "fleet judge fable-check <ts>",
+    # "fleet judge 0125Z", "fleet judge 18:15 IST slot <ts>"
+    r"fleet\s+judge\s+(?:fable|:?\d)"
+    # "hourly fable-check ...", "hourly fleet judge ...", "Hourly fable
+    # fleet check ..."
+    r"|hourly\s+(?:fable|fleet)"
+    # "fable-fleet-check ...", "fable-check <ts> ...", "Fable fleet check ..."
+    r"|fable[-\s](?:fleet[-\s]check|check)\b"
+    # "Fable 2h fleet check ..."
+    r"|fable\s+\d+h\s+fleet\s+check\b"
+    r")"
+)
 ISO_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
 HEADING_RE = re.compile(r"^## Manual-seam lens\b", re.M)
 
@@ -249,6 +269,8 @@ def collect_memoryctl(dir_path, since_dt, now):
                 break
         if not title:
             title = path.stem
+        if SCHEDULED_RUN_TITLE_RE.search(title):
+            continue
         when = created.strftime("%Y-%m-%dT%H:%M:%SZ") if created else now.strftime("%Y-%m-%dT%H:%M:%SZ")
         out.append(candidate(title, "memoryctl", when, str(path)))
         if len(out) >= 50:
