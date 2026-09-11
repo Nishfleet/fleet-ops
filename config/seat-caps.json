@@ -128,16 +128,29 @@
       "usd_per_1m_output": 1.32,
       "usd_per_1m_cached": 0.014,
       "flat_usd_per_month": null,
+      "balance_probe": {
+        "url": "https://api.deepseek.com/user/balance",
+        "key_env_file": "/home/nish/.config/deepseek/deepseek.env",
+        "key_var": "DEEPSEEK_API_KEY",
+        "min_balance_usd": 0.50
+      },
       "models": {
         "deepseek-flash": {
           "cap": 1,
           "product_only": true,
           "last_resort": true,
           "daily_spend_cap_usd": 3
+        },
+        "deepseek-v4-pro": {
+          "cap": 1,
+          "product_only": true,
+          "last_resort": true,
+          "keystone_only": true,
+          "daily_spend_cap_usd": 3
         }
       },
       "_comment_deepseek_official": "PAYG last resort only (Nish 2026-09-10): picked only when every other seat is dead/capped/rate-limited. The seat stays configured — never delete it. Mechanism: product_only + daily_spend_cap_usd=3 (fleet-ops#3724, unchanged) already keeps it out of every class bucket; last_resort:true sinks it to the tail of the last-resort bucket itself. Needed because the bucket kept raw models.json enumeration order and 'deepseek' enumerates before 'openrouter' — without the flag a restored openrouter paid seat would wait BEHIND this PAYG seat. Smallest possible change in lib/seat-lib.sh (a flag that reorders the bucket tail), per the amendment packet. Model cap dropped 2->1 per the same packet: a PAYG money seat admits at most one concurrent worker.",
-      "_comment_ds41_20260910": "2026-09-10 (Nish: V4 flash banned fleet-wide, unanimous): the direct api.deepseek.com seat moved to deepseek-flash (DeepSeek V4.1 Flash; the old V4 id is retired provider-side). Same last-resort metered discipline as the openrouter paid seat (fleet-ops#3724): product_only + $3/day spend cap. reasoning_effort:none stays wired in pi-models.json. The fleet-ops#4625 3-pass exhaustion gate (PR #4830) never landed — it went stale on this migration; the last_resort flag above carries the last-resort semantics instead. 2026-09-12 (fleet-ops#4625): last_resort:true is also mirrored at the PROVIDER level (this key) so the issue's acceptance jq (.providers.deepseek.last_resort==true) reads true directly — it is declarative only; pick_seat still reads the flag from the model cap object, so behaviour is unchanged."
+      "_comment_ds41_20260910": "2026-09-10 (Nish: V4 flash banned fleet-wide, unanimous): the direct api.deepseek.com seat moved to deepseek-flash (DeepSeek V4.1 Flash; the old V4 id is retired provider-side — the API still aliases it to deepseek-flash, verified live 2026-09-12). Same last-resort metered discipline as the openrouter paid seat (fleet-ops#3724): product_only + $3/day spend cap. reasoning_effort:none stays wired in pi-models.json. The fleet-ops#4625 3-pass exhaustion gate (PR #4830) never landed — it went stale on this migration; the last_resort flag above carries the last-resort semantics instead. 2026-09-12 (fleet-ops#4625): last_resort:true is also mirrored at the PROVIDER level (this key) so the issue's acceptance jq (.providers.deepseek.last_resort==true) reads true directly — it is declarative only; pick_seat still reads the flag from the model cap object. The #4625 3-pass exhaustion gate itself landed on this branch: pick_seat now holds a last_resort seat until the all-others-unusable condition is observed on 3 consecutive picks >=60s apart, with a live re-probe of the rejected seats each pass (bin/fleet-seat-live-validate via FLEET_SEAT_LIVE_VALIDATE) and a live balance meter (balance_probe block above) that benches the seat + raises MONEY-BOUNDARY (bin/money-boundary-raise) when is_available is false or total_balance <= min_balance_usd. deepseek-v4-pro added per #4625 (cap 1, keystone_only — keystone-class packets only, never volume). Model cap stays 1 per the ds41 packet: a PAYG money seat admits at most one concurrent worker."
     },
     "ollama": {
       "cap": 0,
