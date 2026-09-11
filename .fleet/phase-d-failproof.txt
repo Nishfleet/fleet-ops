@@ -1,0 +1,52 @@
+# phase 4 failproof — tests/detached-deliverable-preflight.test.sh (from refs/pull/5383/head = 5b97284d)
+#   vs UNMODIFIED-by-phase-4 libexec/alert-repair-dispatch (current HEAD dispatcher)
+# run: bash tests/detached-deliverable-preflight.test.sh
+#
+# *** PROBE ANOMALY — DESIGNED RESULT NOT REPRODUCED; phase 4 STOPPED before cherry-pick ***
+#
+# Designed expectation (plan phase 4 / task step 2): cases (d) and (e) MUST FAIL here,
+# because the current dispatcher's `pr view` argv lacks `number` (libexec/alert-repair-dispatch
+# L1160-1162 sends: gh pr view <N> -R <repo> --json state,autoMergeRequest,mergeable), so the
+# RESOLVED-DELIVERED repo#N label grep should fail (label degrading to deliverable=5299).
+#
+# ACTUAL RESULT: all cases OK, rc=0 — (d)/(e) PASS against the pre-change dispatcher.
+#
+# Root cause (diagnosed live, unit pi-issue-fleet-ops-5142): the mock `gh` inside
+# 5b97284d's test file is not field-faithful — it prints the full canned PR object
+# ({"number":5299,...}) regardless of the --json fields the dispatcher requests.
+# The dispatcher's label logic in _gh_pr_satisfied is:
+#     num = d.get("number"); return f"{repo}#{num}" if num else str(ref)
+# so with the number-less argv it still receives number=5299 from the mock and logs
+# deliverable=Nishfleet/fleet-ops#5299 — the (d)/(e) grep passes. With REAL gh (which
+# returns only requested fields) the label WOULD degrade to deliverable=5299 and
+# (d)/(e) would fail pre-change, as designed.
+#
+# Live reproduction of case (d) against the current dispatcher (same env wiring as
+# the harness; stub gh identical to the test's mock):
+#   dispatch rc=0
+#   gh argv seen by the dispatcher:
+#     gh pr view 5299 -R Nishfleet/fleet-ops --json state,autoMergeRequest,mergeable
+#   actions.log line:
+#     RESOLVED-DELIVERED unit=pi-fleetops-pr5299-check deliverable=Nishfleet/fleet-ops#5299
+#
+# Consequence: with 5b97284d's test file as authored, the phase-4 acceptance criterion
+# "prove (d)/(e) FAIL with the pre-change argv, PASS with it" is UNSATISFIABLE — the
+# (d)/(e) cases pass with or without the `number` argv change, so they do not pin
+# accept #2 on the view path. A field-faithful mock (filter the canned object by the
+# requested --json fields) would restore the designed failproof, but that is a content
+# change to the re-land commit, which is the manager's call (mandate: cherry-pick
+# 5b97284d exactly; no amend, no extra commits).
+#
+# State at stop: NO cherry-pick performed; NO push. Branch claim/issue-5142 remains at
+# fbce44b45; tests/detached-deliverable-preflight.test.sh restored to HEAD; FETCH_HEAD
+# = 5b97284d is local. This file is untracked (new evidence artifact).
+#
+# ===================== RAW PROBE OUTPUT (verbatim) =====================
+# command: bash tests/detached-deliverable-preflight.test.sh   (after: git checkout FETCH_HEAD -- tests/detached-deliverable-preflight.test.sh)
+OK: (a) deliverable file present: 0 spawns, RESOLVED-DELIVERED, dead-man cleared
+OK: (b) deliverable unset + OPEN unarmed PR: exactly 1 spawn
+OK: (c) gh timeout: fail-open, exactly 1 spawn
+OK: (d) view-path packet + MERGED PR: 0 spawns, RESOLVED-DELIVERED repo#N, dead-man cleared
+OK: (e) view-path packet + armed PR: 0 spawns, RESOLVED-DELIVERED repo#N, dead-man cleared
+OK: fleet-ops#5142 deliverable pre-flight passes
+# exit code: 0  (designed probe result was non-zero via cases (d)/(e) failing — NOT observed)
