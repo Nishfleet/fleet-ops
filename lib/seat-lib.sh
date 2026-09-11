@@ -6031,6 +6031,15 @@ pick_seat() {
     fi
     fi
     if [[ -n "$chosen" ]]; then
+        # fleet-ops#4625: LAST-RESORT admission line. Seats flagged
+        # last_resort (the direct api.deepseek.com PAYG money seat, ds41
+        # amendment) sit at the very tail of the product_only bucket, so
+        # reaching one means every free/prepaid/metered seat was unusable
+        # this pick. Nish pays per token there — say so, loudly, once.
+        local _lr_p="${chosen%%$'\t'*}" _lr_m="${chosen#*$'\t'}"
+        if [[ -n "${SEAT_LAST_RESORT[$_lr_p/$_lr_m]:-}" ]]; then
+            seat_log "pick_seat: LAST-RESORT ${_lr_p}/${_lr_m} admitted (fleet-ops#4625: no other free/prepaid/metered seat usable this pick)"
+        fi
         record_seat_selection "${chosen%%$'\t'*}" "${chosen#*$'\t'}" "$difficulty"
         if _is_keystone_class "$difficulty"; then
             keystone_record_event routed "${chosen%%$'\t'*}" "${chosen#*$'\t'}"

@@ -256,6 +256,26 @@ grep -qiE 'pi --list-models|/models|catalog' <<<"$or_cite" || fail "openrouter _
 grep -qiE 'cheapest' <<<"$or_cite" || fail "openrouter _comment_384 must state cheapest+best verdict"
 ok "openrouter: deepseek/deepseek-v4.1-flash wired (metered) with dated measured _comment_384 citation (rule 1, fleet-ops#3504)"
 
+# 8b. fleet-ops#4625 (Nish 2026-09-09): the DIRECT api.deepseek.com PAYG seat is
+#     the LAST-RESORT rung — a `last_resort: true` metered provider, below every
+#     other class. Nish: the prepaid deepseek balance is to be used only after
+#     every other prepaid sub quota is exhausted, verified and re-verified. The
+#     semantics live on the model cap object (seat-lib reads it there, ds41
+#     amendment); the provider-level flag is the acceptance contract this test
+#     pins, so a revert that drops it is caught before push.
+echo "--- scenario 8b: direct deepseek LAST-RESORT rung declared at provider level ---"
+ds_class=$(jq -r '.providers.deepseek.class // ""' "$caps")
+[[ "$ds_class" == "metered" ]] || fail "deepseek (direct api.deepseek.com) class must be metered (the #4625 LAST-RESORT rung). Got: $ds_class"
+ds_lr=$(jq -r '.providers.deepseek.last_resort // ""' "$caps")
+[[ "$ds_lr" == "true" ]] || fail "deepseek must declare provider-level last_resort:true — the #4625 acceptance jq reads .providers.deepseek.last_resort (the ladder's final rung). Got: $ds_lr"
+ds_model_lr=$(jq -r '.providers.deepseek.models["deepseek-flash"].last_resort // ""' "$caps")
+[[ "$ds_model_lr" == "true" ]] || fail "deepseek model deepseek-flash must carry last_resort:true (the operational flag seat-lib reads; provider key mirrors it). Got: $ds_model_lr"
+ds_model_po=$(jq -r '.providers.deepseek.models["deepseek-flash"].product_only // ""' "$caps")
+[[ "$ds_model_po" == "true" ]] || fail "deepseek model deepseek-flash must carry product_only:true (fleet-ops#3724: PAYG money seat, product packets only). Got: $ds_model_po"
+jq -e '._comment_order | test("LAST-RESORT rung")' "$caps" >/dev/null 2>&1 \
+  || fail "seat-caps _comment_order must document the ladder ending '... -> metered -> LAST-RESORT (deepseek direct)' (fleet-ops#4625)"
+ok "deepseek (direct): metered + provider-level last_resort:true, model flag on deepseek-flash, _comment_order ladder ends at LAST-RESORT (fleet-ops#4625)"
+
 # 9. Rule 4 (fleet-ops#3504): infrastructure death classes are NOT accepted
 #    as yield reasons for cap=0. If a cap=0 reason cites "yield" as a
 #    measurement, the reason must NOT cite infra death classes (rc=124,
