@@ -160,18 +160,24 @@ ok "non-deliverable packet: records written, no issue filed"
 # --- Phase C: installed helper is the ledger writer ---------------------------
 fc="$scratch/fc"; stc="$scratch/stc"
 mk_fakes "$fc" 'HOME=/home/nish'
-cat >"$fc/findings-ledger-helper" <<EOF
+cat >"$fc/findings_ledger.py" <<EOF
 #!/usr/bin/env bash
-cat > "$fc/helper.row"   # the row JSON on stdin
+printf '%s\n' "\$*" >> "$fc/helper.calls"   # the append CLI argv
 exit 0
 EOF
-chmod +x "$fc/findings-ledger-helper"
+chmod +x "$fc/findings_ledger.py"
 run_handler "$fc" "$stc" drillpkt \
-    FLEET_FINDINGS_LEDGER_HELPER="$fc/findings-ledger-helper" \
+    FLEET_FINDINGS_LEDGER_HELPER="$fc/findings_ledger.py" \
     || fail "handler must exit 0 when the helper accepts the row"
-[[ -f "$fc/helper.row" ]] || fail "helper must receive the row JSON on stdin"
-python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert r["disposition"]=="carried_over"' \
-    "$fc/helper.row" || fail "helper-received row must be the ledger schema"
+[[ -f "$fc/helper.calls" ]] || fail "helper must be invoked with the append CLI"
+grep -qF 'append --ledger' "$fc/helper.calls" \
+    || fail "helper must be called with its append CLI: \$(cat "$fc/helper.calls")"
+grep -qF -- '--disposition carried_over' "$fc/helper.calls" \
+    || fail "helper must receive disposition=carried_over"
+grep -qF -- '--source-organ pi-packet' "$fc/helper.calls" \
+    || fail "helper must receive source_organ=pi-packet"
+grep -qF -- '--ref pi-packet@drillpkt.service' "$fc/helper.calls" \
+    || fail "helper must receive ref=<failed unit>"
 [[ -f "$stc/findings-ledger.jsonl" ]] \
     && fail "helper accepted the row — direct append must not double-write"
 ok "findings-ledger helper path (single writer when installed)"

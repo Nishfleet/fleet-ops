@@ -188,7 +188,13 @@ import hashlib, json, sys
 from datetime import datetime, timezone
 unit, tail, deliv = sys.argv[1], sys.argv[2], sys.argv[3]
 title = f"packet {unit} exhausted retries (StartLimitBurst) — terminal failure"
-fid = hashlib.sha1(f"pi-packet|{unit}|{title}".encode()).hexdigest()
+# fid MUST match the shared helper's finding_id (sha1 of
+# "source_organ|run_id|normalised title" first 16 hex) so a row written by
+# the direct-append fallback later dedupes against a helper-written row
+# (findings_ledger.finding_id).
+import re
+norm = re.sub(r"\W+", " ", title.strip().lower()).strip()
+fid = hashlib.sha1(f"pi-packet|{unit}|{norm}".encode()).hexdigest()[:16]
 print(json.dumps({
     "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     "source_organ": "pi-packet",
@@ -206,15 +212,19 @@ print(json.dumps({
 PY
 )"
 
-# Helper contract (fleet-ops#5385 follow-up): the shared findings-ledger
-# helper is the ONLY writer once installed — invoked as
-#   <helper> --ledger <path>     with the row JSON on stdin.
+# Helper contract (fleet-ops#5385 follow-up, shipped as lib/findings_ledger.py
+# in the fleet-ops#5443 line): the shared findings-ledger helper is the ONLY
+# writer once installed — invoked with its own append CLI, exactly the schema
+# appended by the direct fallback below:
+#   findings_ledger.py append --ledger <path> --source-organ S --run-id R
+#     --title T --severity H --evidence-ref E --disposition D --ref F --reason R
 # If the shipped helper's CLI differs, update this call site; the direct
-# append fallback below keeps the row durable either way.
+# append fallback below keeps the row durable either way (same finding_id
+# computation, so the two paths dedupe against each other).
 helper="${FLEET_FINDINGS_LEDGER_HELPER:-}"
 if [[ -z "$helper" ]]; then
-    for cand in "$_here/../lib/findings-ledger.py" "$_here/../lib/findings-ledger.sh" \
-                "$HOME/.local/lib/pi-packet/findings-ledger.py" "$HOME/.local/lib/pi-packet/findings-ledger.sh"; do
+    for cand in "$_here/../lib/findings_ledger.py" \
+                "$HOME/.local/lib/pi-packet/findings_ledger.py"; do
         if [[ -f "$cand" ]]; then helper="$cand"; break; fi
     done
 fi
@@ -225,10 +235,42 @@ if [[ "$dry_run" == "1" ]]; then
 elif [[ "$self_trigger" == "1" ]]; then
     log "self-trigger unit $failed_unit — skipping ledger row (triage line still written)"
 elif [[ -n "$helper" && -f "$helper" ]]; then
-    if printf '%s\n' "$row" | "$helper" --ledger "$LEDGER" >/dev/null 2>&1; then
-        ledger_rc=0
+    # The shared helper's append CLI takes the row fields as flags; map the
+    # JSON row onto its argparse contract without eval-ing raw values.
+    # NUL-separated: an evidence_ref carries embedded newlines, so a
+    # line-split mapfile would shred it (caught live in Phase C).
+    mapfile -d '' -t hargs < <(printf '%s' "$row" | python3 -c '
+import json, sys
+r = json.load(sys.stdin)
+for k in ("source_organ", "run_id", "title", "severity", "evidence_ref",
+          "disposition", "ref", "reason"):
+    sys.stdout.write(str(r.get(k) or "") + "\0")
+')
+    # findings_ledger.py ships non-executable; shell-based test/driver
+    # helpers may be executable. Run whichever fits.
+    call_helper=(); do_call() {
+        if [[ -x "$helper" ]]; then
+            "$helper" append --ledger "$LEDGER" \
+                --source-organ "${hargs[0]}" --run-id "${hargs[1]}" \
+                --title "${hargs[2]}" --severity "${hargs[3]}" \
+                --evidence-ref "${hargs[4]}" --disposition "${hargs[5]}" \
+                --ref "${hargs[6]}" --reason "${hargs[7]}"
+        else
+            python3 "$helper" append --ledger "$LEDGER" \
+                --source-organ "${hargs[0]}" --run-id "${hargs[1]}" \
+                --title "${hargs[2]}" --severity "${hargs[3]}" \
+                --evidence-ref "${hargs[4]}" --disposition "${hargs[5]}" \
+                --ref "${hargs[6]}" --reason "${hargs[7]}"
+        fi
+    }
+    if [[ "${#hargs[@]}" -eq 8 ]]; then
+        if do_call >/dev/null 2>&1; then
+            ledger_rc=0
+        else
+            log "WARN: findings-ledger helper $helper rejected the row — direct-append fallback"
+        fi
     else
-        log "WARN: findings-ledger helper $helper rejected the row — direct-append fallback"
+        log "WARN: could not map row to the helper CLI — direct-append fallback"
     fi
 fi
 if [[ "$dry_run" != "1" && "$self_trigger" != "1" && "$ledger_rc" != "0" ]]; then
