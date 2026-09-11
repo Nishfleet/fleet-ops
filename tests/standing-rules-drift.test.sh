@@ -27,6 +27,22 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 [[ -f "$canonical" ]] || fail "canonical not found: $canonical"
 command -v python3 >/dev/null 2>&1 || fail "python3 required"
 
+# Stage 0a: fleet-ops#5536 — the generator's default targets must carry
+# ONE identical sol_identity_block. A per-surface split fed Claude
+# "Sol still orchestrates" while Codex got "Sol is retired"; the drift
+# fixtures pass per-surface Sol text on purpose and therefore cannot
+# catch it, so the gate on the defaults themselves is the detector.
+RSR_PATH="$repo_root/bin/render-standing-rules.py" python3 - <<'PY' || fail "contradictory default sol_identity_block values"
+import importlib.util, os
+spec = importlib.util.spec_from_file_location(
+    "rsr", os.environ["RSR_PATH"]
+)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+blocks = {t["sol_identity_block"] for t in m.DEFAULT_TARGETS}
+assert len(blocks) == 1, f"DEFAULT_TARGETS carry {len(blocks)} distinct sol_identity_block values"
+PY
+
 work="$(mktemp -d -t standing-rules-drift-XXXXXX)"
 trap 'rm -rf "$work"' EXIT
 

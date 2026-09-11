@@ -66,7 +66,7 @@ DEFAULT_TARGETS = [
         "preimplement_phrase": "Claude and every Claude subagent",
         "seat_check_phrase": "carries the\nlast observed provider/model, HTTP status and `health_class`.",
         "old_launcher_block": "",
-        "sol_identity_block": "\nSol still orchestrates only and never implements. Exact model identity stays\nfail-closed: no silent substitution.",
+        "sol_identity_block": "\nSol is retired (Nish 2026-09-07, fleet-ops#4148): do not launch `gpt-5.6-sol`, do not top up straitly for it. The remaining Codex identity is Luna via `codex-luna@` after the ChatGPT usage reset; until the gated wipe the live PATH `codex` wrapper still exists. Exact model/effort identity is fail-closed: prove host, provider, model, role and effort from runtime evidence before launch. Missing proof means no launch. No silent substitution.",
         "failure_response_block": "- **Failure response is #1 (Nish, 2026-08-08):** any detected fleet-infrastructure failure gets automatic, autonomous, INSTANT repair dispatch - trace line in the console actions.log, then the VPS repair ladder (DeepSeek for deeply-scoped fixes, Grok/Sol/Opus flagships for broad or high-stakes; one live flagship, throttled, fail-loud when repair is impossible). Never a quiet degraded mode, never 'flag for Nish'. Mac agents dispatch to the VPS, never repair locally. Canonical text: vault memory `failure-response-standing-order`.\n\n",
     },
     {
@@ -277,6 +277,7 @@ def main(argv: list[str]) -> int:
 
     if args.targets:
         targets: list[dict] = []
+        using_defaults = False
         for spec in args.targets.split(","):
             parts = spec.split("|")
             if len(parts) < 4:
@@ -300,9 +301,25 @@ def main(argv: list[str]) -> int:
             targets.append(target)
     else:
         targets = DEFAULT_TARGETS
+        using_defaults = True
 
     failed: list[str] = []
     used_total: set[str] = set()
+
+    # Gate (fleet-ops#5536): every default target must carry the SAME
+    # sol_identity_block. A per-surface split here once fed Claude one
+    # "Sol still orchestrates" text while Codex got "Sol is retired"
+    # — and ~/.claude/CLAUDE.md loads both via ~/.codex/AGENTS.md, so
+    # every session saw the contradiction with no resolution rule.
+    # Detecting it here (inside the generator, not per-surface) is the
+    # only place the drift test could not reach.
+    sol_blocks = {t.get("sol_identity_block", "") for t in DEFAULT_TARGETS}
+    if using_defaults and len(sol_blocks) > 1:
+        failed.append(
+            "targets carry contradictory sol_identity_block values — "
+            "Sol's status must be identical on every surface: "
+            + " | ".join(sorted(sol_blocks))
+        )
     for target in targets:
         rendered, used = render_target(target, sections)
         used_total.update(used)
