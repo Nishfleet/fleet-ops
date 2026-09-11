@@ -193,6 +193,11 @@ jobs:
         # behavior so a reverted merge can no longer leave its issues closed.
         bash tests/auto-revert-required-check-gate.test.sh
         bash tests/reopen-reverted-issues.test.sh
+        # fleet-ops#5597: consecutive-red main recovers itself — the drill
+        # pins BOTH halves: a >=2-red streak opens the armed range-revert PR
+        # and files it LOUD, while a refusal (non-green, no revert PR) ends 0
+        # with the `refused: checks non-green on <sha>` summary, not failure.
+        bash tests/auto-revert-recovery.test.sh
         # fleet-ops#4396 (closes #3647 #3648 #3649 #3654): four suites that
         # already existed and passed on main but were never in the P14
         # verify-command list, so a regression in any of them could land
