@@ -67,28 +67,40 @@ UNSORTED_FIND_HEAD_RE = re.compile(
 CAT_PROMPT_RE = re.compile(r"\bcat\s+[\"']?\$\{?[^\s\"']*(?:prompt|PROMPT|prompt_file)")
 
 
+# Markers strong enough to classify a file as a prompt assembler on their own.
+# fleet-ops#5603: the bare words "prompt", "packet" and "messages" appear in
+# ordinary prose (e.g. lib/standing-rules/canonical.md) and misclassified such
+# documents as prompt templates, producing pre-existing REJECTs on every PR
+# that touched them. Weak word markers now only apply to non-markdown
+# assembler sources; markdown examples are treated as prompt templates only
+# when they live under prompts/ or carry a strong invocation marker.
+STRONG_ASSEMBLER_MARKERS = (
+    "pi --print",
+    "pi -- ",
+    "tpl.replace",
+    ".replace('{{",
+    '.replace("{{',
+    "cache_control",
+    "anthropic",
+    "claude-",
+)
+
+
 def _looks_like_assembler(path: Path, text: str) -> bool:
     """True if the file looks like a prompt assembler or prompt template."""
     low = text.lower()
+    if any(m in low for m in STRONG_ASSEMBLER_MARKERS):
+        return True
+    # Markdown prompt templates live under prompts/. Elsewhere in the tree,
+    # markdown is prose — the weak word markers below must not classify it.
+    if path.suffix == ".md":
+        return "prompts" in path.parts
     assembler_markers = (
         "packet",
         "prompt",
-        "pi --print",
-        "pi -- ",
-        "tpl.replace",
-        ".replace('{{",
-        '.replace("{{',
-        "cache_control",
         "messages",
-        "anthropic",
-        "claude-",
     )
-    if any(m in low for m in assembler_markers):
-        return True
-    # Markdown prompt templates live under prompts/.
-    if path.suffix == ".md" and "prompts" in path.parts:
-        return True
-    return False
+    return any(m in low for m in assembler_markers)
 
 
 def _strip_shell_comment(line: str) -> str:
