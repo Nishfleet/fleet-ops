@@ -234,6 +234,13 @@ case "${1:-} ${2:-}" in
     "issue comment")
         : # heartbeat comment on the linked issue — best effort, exit 0.
         ;;
+    "issue close")
+        # fleet-ops#5272 observe-to-close: record the close; GH_CLOSE_RC=1
+        # simulates a failed close (best-effort, terminus left open).
+        if [[ -n "${GH_CLOSE_RC:-}" ]]; then
+            exit "$GH_CLOSE_RC"
+        fi
+        ;;
     "issue view")
         # `gh issue view <n> -R <repo> --json title --jq .title`
         n="${3:-}"
@@ -700,3 +707,119 @@ warns=$(grep -c '\] WARN .*auto-file failed' "$PACKET_DIR/actions.log" || true)
 ok "(l) missing gh binary (OSError): no traceback, refused terminus, skip-error"
 
 echo "OK: fleet-ops#4773 slowburn file-or-link both directions + idempotence + live-decoy/dedupe-collapse refusal + claimable-body/unreadable-view robustness pass"
+
+# ============================================================================
+# fleet-ops#5272: observe-to-close — the resolved slowburn closes its terminus
+# The dispatcher's resolved branch used to return before reading the alert
+# group, so the auto-filed terminus lingered OPEN after the burn cleared: an
+# open critical-path claim is reclaim-bait, and `_slowburn_find_existing`
+# only matches OPEN items, so the stale terminus would LINK the NEXT burn
+# forever (no fresh claim) exactly like the #4773 decoy did.
+# Proves:
+#   (m) resolved slowburn + open terminus -> title read-back, observe-to-close
+#       comment, `gh issue close --reason completed`, CLOSED log line.
+#   (n) resolved notification for a DIFFERENT alert -> no close, no comment.
+#   (o) resolved slowburn + no open terminus -> clean skip, no close.
+#   (p) unreadable read-back (view rc=1) -> no close (title verify refused).
+#   (q) failed `gh issue close` (rc=1) -> WARN, no CLOSED line, dispatch rc=0.
+# The skip-list entry STAYS throughout (no repair worker spawned).
+# ============================================================================
+
+fire_resolved() {
+    AMX_ALERT_1_LABEL_alertname="${1:-$slowburn}" \
+    AMX_ALERT_1_LABEL_severity="warning" \
+    AMX_ALERT_1_LABEL_service="fleet" \
+    AMX_STATUS="resolved" \
+    AMX_RECEIVER="test-receiver" \
+    PATH="$mock_bin2:$mock_bin:$PATH" \
+    HOME="$scratch" \
+    FLEET_ISSUE_FILE="$mock_bin2/fleet-issue-file" \
+    GH="$sb_gh" \
+    FLEET_SLOWBURN_REPO="Nishfleet/fleet-ops" \
+    FLEET_SLOWBURN_SIGNAL="slo/seat-availability-slowburn" \
+    "$dispatch_bin" \
+        >"$scratch/sb.out" 2>"$scratch/sb.err"
+}
+
+# --- (m) resolved slowburn closes the open terminus -------------------------
+reset_log
+set_gh_issues "$claim_json" "${claim_num}|${claim_title}"
+unset GH_CLOSE_RC
+rc=0; fire_resolved || rc=$?
+[[ "$rc" == 0 ]] \
+    || fail "(m) resolved slowburn must exit 0, got rc=$rc (stderr: $(cat "$scratch/sb.err"))"
+grep -Eq "^gh issue close ${claim_num} -R Nishfleet/fleet-ops" "$GH_CALLS" \
+    || fail "(m) resolved slowburn must close the terminus, gh calls: $(cat "$GH_CALLS")"
+grep -q -- '--reason completed' "$GH_CALLS" \
+    || fail "(m) the close must carry --reason completed: $(cat "$GH_CALLS")"
+grep -Eq "^gh issue comment ${claim_num} -R Nishfleet/fleet-ops --body observe-to-close: " "$GH_CALLS" \
+    || fail "(m) the close must be preceded by an observe-to-close comment: $(cat "$GH_CALLS")"
+grep -q "CLOSED alertname=$slowburn.*reason=observe-to-close" "$PACKET_DIR/actions.log" \
+    || fail "(m) CLOSED line missing from actions.log: $(cat "$PACKET_DIR/actions.log")"
+disps=$(grep -c '\] DISPATCH ' "$PACKET_DIR/actions.log" || true)
+[[ "$disps" == "0" ]] \
+    || fail "(m) resolved path must never DISPATCH, got $disps"
+spawns=$(grep -c 'mock-pi-systemd-run args=' "$MOCK_LOG" || true)
+[[ "$spawns" == "0" ]] \
+    || fail "(m) resolved path must not spawn a worker, got $spawns"
+ok "(m) resolved slowburn closes its terminus (comment + close --reason completed)"
+
+# --- (n) resolved OTHER alert never closes ----------------------------------
+reset_log
+set_gh_issues "$claim_json" "${claim_num}|${claim_title}"
+rc=0; fire_resolved "FleetSloMainGreenSlowBurn" || rc=$?
+[[ "$rc" == 0 ]] \
+    || fail "(n) resolved other-alert must exit 0, got rc=$rc (stderr: $(cat "$scratch/sb.err"))"
+closes=$(grep -c '^gh issue close' "$GH_CALLS" || true)
+[[ "$closes" == "0" ]] \
+    || fail "(n) resolved non-slowburn alert must NOT close anything: $(cat "$GH_CALLS")"
+comments=$(grep -c '^gh issue comment' "$GH_CALLS" || true)
+[[ "$comments" == "0" ]] \
+    || fail "(n) resolved non-slowburn alert must not comment: $(cat "$GH_CALLS")"
+ok "(n) resolved non-slowburn alert: no close, no comment"
+
+# --- (o) resolved slowburn with no open terminus is a clean skip ------------
+reset_log
+set_gh_issues "[]"
+rc=0; fire_resolved || rc=$?
+[[ "$rc" == 0 ]] \
+    || fail "(o) resolved with no terminus must exit 0, got rc=$rc (stderr: $(cat "$scratch/sb.err"))"
+closes=$(grep -c '^gh issue close' "$GH_CALLS" || true)
+[[ "$closes" == "0" ]] \
+    || fail "(o) nothing to close must not call close: $(cat "$GH_CALLS")"
+grep -q "observe-to-close: no open terminus" "$PACKET_DIR/actions.log" \
+    || fail "(o) actions.log must record the nothing-to-close skip: $(cat "$PACKET_DIR/actions.log")"
+ok "(o) resolved slowburn with no open terminus: clean no-op skip"
+
+# --- (p) unreadable read-back refuses the close -----------------------------
+reset_log
+# List returns the claim, but the view registry is EMPTY: the title read-back
+# fails rc=1 (real-gh shape), so the candidate is unverified — never closed.
+set_gh_issues "$claim_json"
+rc=0; fire_resolved || rc=$?
+[[ "$rc" == 0 ]] \
+    || fail "(p) unreadable read-back must exit 0, got rc=$rc (stderr: $(cat "$scratch/sb.err"))"
+closes=$(grep -c '^gh issue close' "$GH_CALLS" || true)
+[[ "$closes" == "0" ]] \
+    || fail "(p) unverified title must never close: $(cat "$GH_CALLS")"
+ok "(p) unreadable title read-back: no close (fleet-ops#4773 discriminator holds)"
+
+# --- (q) failed close is a WARN, dispatch still exits 0 ---------------------
+reset_log
+set_gh_issues "$claim_json" "${claim_num}|${claim_title}"
+GH_CLOSE_RC=1; export GH_CLOSE_RC
+rc=0; fire_resolved || rc=$?
+GH_CLOSE_RC=""; unset GH_CLOSE_RC
+[[ "$rc" == 0 ]] \
+    || fail "(q) a failed close must not take the dispatch down, got rc=$rc (stderr: $(cat "$scratch/sb.err"))"
+tracebacks=$(grep -c 'Traceback' "$scratch/sb.err" || true)
+[[ "$tracebacks" == "0" ]] \
+    || fail "(q) a failed close raised a traceback: $(cat "$scratch/sb.err")"
+grep -q "close of #${claim_num} failed" "$PACKET_DIR/actions.log" \
+    || fail "(q) actions.log must WARN on the failed close: $(cat "$PACKET_DIR/actions.log")"
+closed_lines=$(grep -c '\] CLOSED alertname=' "$PACKET_DIR/actions.log" || true)
+[[ "$closed_lines" == "0" ]] \
+    || fail "(q) a failed close must not log CLOSED, got $closed_lines"
+ok "(q) failed gh issue close: WARN, no CLOSED line, dispatch exit 0"
+
+echo "OK: fleet-ops#5272 slowburn observe-to-close pass"

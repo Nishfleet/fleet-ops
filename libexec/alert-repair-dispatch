@@ -780,13 +780,90 @@ def _slowburn_file(repo, signal, gh, issue_file):
 
 def _slowburn_heartbeat(repo, number, gh):
     """Post a heartbeat comment on the existing linked issue so it stays
-    warm (and a future observe-to-close pass has fresh evidence). Best
-    effort: a failed comment is logged but never blocks the dispatch."""
+    warm (and the observe-to-close pass has fresh evidence). Best effort:
+    a failed comment is logged but never blocks the dispatch."""
     body = (f"alert-repair heartbeat: FleetSloSeatAvailSlowBurn still "
             f"firing past 1h; linked claim #{number} owns the repair rung "
             f"(fleet-ops#4773).")
     _slowburn_run(
         [gh, "issue", "comment", number, "-R", repo, "--body", body])
+
+
+def _slowburn_observe_to_close(receiver, log):
+    """fleet-ops#5272: when the FleetSloSeatAvailSlowBurn alert RESOLVES,
+    the auto-filed terminus must not linger open. An open critical-path
+    terminus is reclaim-bait for workers with nothing to repair, and
+    `_slowburn_find_existing` only matches OPEN items — a stale terminus
+    would swallow the next burn's file-or-link (LINK forever, no fresh
+    claim) exactly the way the #4773 decoy swallowed the first one.
+
+    Find the open terminus carrying the signal key, verify its title by
+    the same read-back discriminator `_slowburn_file` uses, then close it
+    with an observe-to-close comment. Every step is best-effort: a failed
+    gh call skips the close (fail-open, terminus stays open — never
+    worse than today) and never blocks the dispatch."""
+    repo = SLOWBURN_REPO
+    signal = SLOWBURN_SIGNAL
+    gh = GH_BIN
+    number = _slowburn_find_existing(repo, signal, gh)
+    if not number:
+        with LOG.open("a") as f:
+            f.write(
+                f"[{utcnow()}] SKIP {SLOWBURN_NAME} observe-to-close: "
+                f"no open terminus carrying [{signal}] (nothing to close; "
+                f"receiver={receiver})\n"
+            )
+        log(f"SKIP {SLOWBURN_NAME} observe-to-close: no open terminus "
+            f"(nothing to close)")
+        return "no-terminus"
+    # Read-back title verify (fleet-ops#4773 discriminator): never close an
+    # issue the search fuzzy-matched but whose title does not carry the key.
+    view = _slowburn_run(
+        [gh, "issue", "view", number, "-R", repo,
+         "--json", "title", "--jq", ".title"])
+    title = (view.stdout or "").strip()
+    if view.returncode != 0 or not title or f"[{signal}]" not in title:
+        with LOG.open("a") as f:
+            f.write(
+                f"[{utcnow()}] WARN {SLOWBURN_NAME} observe-to-close "
+                f"skipped: candidate #{number} title='{title or '<unavailable>'}' "
+                f"does not carry signal key [{signal}]\n"
+            )
+        log(f"WARN {SLOWBURN_NAME} observe-to-close skipped on #{number} "
+            f"(title verify failed)")
+        return "skip-mismatch"
+    body = (
+        f"observe-to-close: FleetSloSeatAvailSlowBurn resolved "
+        f"(AMX status=resolved, receiver={receiver}) at {utcnow()}. "
+        f"The auto-filed terminus #{number} is no longer a live burn "
+        f"claim — closing so a future burn files a FRESH terminus "
+        f"instead of linking this one forever (fleet-ops#4773/#5272). "
+        f"Seat-supply root causes continue on their own repair issues."
+    )
+    _slowburn_run(
+        [gh, "issue", "comment", number, "-R", repo, "--body", body])
+    close = _slowburn_run(
+        [gh, "issue", "close", number, "-R", repo,
+         "--reason", "completed"])
+    if close.returncode != 0:
+        with LOG.open("a") as f:
+            f.write(
+                f"[{utcnow()}] WARN {SLOWBURN_NAME} observe-to-close: "
+                f"close of #{number} failed rc={close.returncode}; "
+                f"terminus left open\n"
+            )
+        log(f"WARN {SLOWBURN_NAME} observe-to-close: close of #{number} "
+            f"failed (rc={close.returncode}); terminus left open")
+        return "close-failed"
+    with LOG.open("a") as f:
+        f.write(
+            f"[{utcnow()}] CLOSED alertname={SLOWBURN_NAME} "
+            f"repo={repo} issue=#{number} signal={signal} "
+            f"receiver={receiver} reason=observe-to-close\n"
+        )
+    log(f"CLOSED {SLOWBURN_NAME} -> #{number} (observe-to-close: the "
+        f"slow burn resolved; terminus no longer a live claim)")
+    return "closed"
 
 
 def _slowburn_file_or_link(starts_at, log):
@@ -884,11 +961,11 @@ def main():
     status = os.environ.get("AMX_STATUS", "")
     receiver = os.environ.get("AMX_RECEIVER", "?")
 
-    if status == "resolved":
-        with LOG.open("a") as f:
-            f.write(f"[{utcnow()}] SKIP resolved notification receiver={receiver}\n")
-        print(f"[{utcnow()}] SKIP resolved (receiver={receiver})", file=sys.stderr)
-        return 0
+    # fleet-ops#5272: the resolved branch needs the alert group's alertnames
+    # (collected below) to attribute the resolution to the slow burn, so the
+    # handling moved AFTER the collection and BEFORE the empty guard — a
+    # resolved notification with no per-alert labels still skips cleanly
+    # (fail-open, exactly the old behaviour).
 
     # AMX_ALERT_<i>_LABEL_alertname — find unique alertnames (1-indexed).
     alertnames = []
@@ -896,6 +973,25 @@ def main():
         v = os.environ.get(f"AMX_ALERT_{i}_LABEL_alertname")
         if v and v not in alertnames:
             alertnames.append(v)
+
+    # fleet-ops#1199 / #4773: stderr logger used by the skip loop's
+    # slowburn file-or-link and the alert-repair mutex below.
+    def _log(msg):
+        print(f"[{utcnow()}] {msg}", file=sys.stderr)
+
+    if status == "resolved":
+        with LOG.open("a") as f:
+            f.write(f"[{utcnow()}] SKIP resolved notification receiver={receiver}\n")
+        # fleet-ops#5272 observe-to-close: when the resolved group includes
+        # the slow burn, close the auto-filed terminus — an open critical-path
+        # terminus after the burn cleared is reclaim-bait and would swallow
+        # the NEXT burn's file-or-link (`_slowburn_find_existing` only
+        # matches open items). Everything inside is best-effort fail-open.
+        if SLOWBURN_NAME in alertnames:
+            _slowburn_observe_to_close(receiver, _log)
+        print(f"[{utcnow()}] SKIP resolved (receiver={receiver})", file=sys.stderr)
+        return 0
+
     if not alertnames:
         print(f"[{utcnow()}] ERROR: no AMX_ALERT_<n>_LABEL_alertname env vars",
               file=sys.stderr)
