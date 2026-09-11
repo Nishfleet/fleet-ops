@@ -651,6 +651,12 @@ gate_out="$(python3 "$spec_gate" check-body --repo fleet-ops --body "$FILE_BODY"
     || fail "(j) admission gate must print SPEC-GATE: ok, got: $gate_out"
 grep -q 'moves: no_usable_seat_events' "$FILE_BODY" \
     || fail "(j) the filed body must name the product metric it moves: $(cat "$FILE_BODY")"
+# fleet-ops#5272: the filed body must carry a `termination:` clause naming the
+# runtime gate — without it the fleet-ops#4540 awaiting-runtime-gate park
+# detector can never engage, and a multi-day burn re-claims the open
+# critical-path terminus forever (every claim a worker with nothing to fix).
+grep -q '^- termination: ' "$FILE_BODY" \
+    || fail "(j) the filed body must carry a termination: clause naming the runtime gate: $(cat "$FILE_BODY")"
 # The bare `{signal}` trailer must survive the added spec lines byte for byte:
 # it is the shipped signal-key file form (same trailer as `issue_body` in
 # lib/detector-queue-reconciler.py), not ours to reformat.

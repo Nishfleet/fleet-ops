@@ -740,6 +740,17 @@ def _slowburn_file(repo, signal, gh, issue_file):
         f"repair rung within one dispatch tick of the 1h threshold\n"
         f"- accept: `python3 lib/agent-ready-spec-gate.py check-body "
         f"--repo fleet-ops` on this body prints `SPEC-GATE: ok`\n"
+        # fleet-ops#5272: the terminus must also carry a `termination:`
+        # clause naming its runtime gate (AMX_STATUS=resolved ->
+        # observe-to-close). Without it the fleet-ops#4540 park detector
+        # can never engage, so a multi-day burn re-claims the open
+        # critical-path terminus forever — every claim a reserved-seat
+        # worker session with nothing left to repair.
+        f"- termination: AMX_STATUS=resolved — the dispatcher's "
+        f"observe-to-close pass closes this terminus when the burn "
+        f"clears (fleet-ops#5299); while firing it stays OPEN as the "
+        f"live-burn claim, parked by the fleet-ops#4540 gate once a "
+        f"claim-branch PR merges and re-claims pass the cap\n"
         f"- moves: no_usable_seat_events\n\n"
         f"`{signal}`\n"
     )
