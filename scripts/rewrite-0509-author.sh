@@ -72,7 +72,7 @@ ruleset_put(){ # $1 = active|disabled; PUT = fetched body's writable fields, enf
     |from_entries|.enforcement=$e' "$RULES_JSON" \
     | gh api -X PUT "repos/$REPO/rulesets/$RULESET" --input - >/dev/null
 }
-protect_off(){ prot_put true; ruleset_put disabled; DISABLED=1
+protect_off(){ DISABLED=1; prot_put true; ruleset_put disabled
   log "protection relaxed: allow_force_pushes=true, ruleset $RULESET disabled"; }
 protect_on(){ prot_put false; ruleset_put active; DISABLED=0
   local afp enf
@@ -197,15 +197,24 @@ stage4(){ # relax protection, force-push, restore
   local rs=() line prheads
   prheads=$(open_pr_heads) || die "gh pr list failed"
   while read -r line; do rs+=("$line"); done < <(collect_refspecs "$MIRROR" <<<"$prheads")
+  local leases=() r old
+  for line in "${rs[@]}"; do
+    r=${line%%:*}; old=$(awk -v k="$r" '$1==k{print $2}' "$LOGROOT/refs-before.txt")
+    [[ -n $old ]] || die "no stage2 snapshot SHA for $r — cannot lease it"
+    leases+=("--force-with-lease=$r:$old")
+  done
   if ((DRY)); then
-    log "stage4 dry-run: would relax protection, push --force ${#rs[@]} refspecs, restore:"
+    log "stage4 dry-run: would relax protection, push --atomic with ${#leases[@]} leases over ${#rs[@]} refspecs, restore:"
     printf '  %s\n' "${rs[@]}" >>"$LOG"; printf '  %s\n' "${rs[@]}" >&2
     return; fi
   gh api "repos/$REPO/branches/main/protection" >"$PROT_JSON" || die "cannot fetch protection"
   gh api "repos/$REPO/rulesets/$RULESET" >"$RULES_JSON" || die "cannot fetch ruleset $RULESET"
   protect_off
   printf '%s\n' "${rs[@]}" >"$LOGROOT/pushed-refs.txt"
-  if ! git -C "$MIRROR" push --force "https://github.com/$REPO.git" "${rs[@]}" >>"$LOG" 2>&1; then
+  # Atomic + leased: no bare --force. Each ref is overwritten only if the remote
+  # still holds the SHA we snapshotted in stage2; anything that moved (e.g. an
+  # auto-merge landing inside the protection window) aborts the WHOLE push.
+  if ! git -C "$MIRROR" push --atomic "${leases[@]}" "https://github.com/$REPO.git" "${rs[@]}" >>"$LOG" 2>&1; then
     if ((DISABLED)); then protect_on || log "LOUD: restore failed"; fi
     die "force-push failed"; fi
   protect_on || die "protection restore failed"
@@ -318,7 +327,7 @@ stageR(){ # rollback: force-push pre-rewrite refs back (needs $BEFORE + refs-bef
      && gh api "repos/$REPO/rulesets/$RULESET" >"$RULES_JSON" 2>/dev/null; then
     protect_off; dance=1
   else log "WARN: protection state unfetchable — attempting raw push"; fi
-  if ! git -C "$BEFORE" push --force "https://github.com/$REPO.git" "${rs[@]}" >>"$LOG" 2>&1; then
+  if ! git -C "$BEFORE" push --atomic --force "https://github.com/$REPO.git" "${rs[@]}" >>"$LOG" 2>&1; then
     if ((dance)); then protect_on || log "LOUD: restore failed"; fi
     die "rollback push failed"; fi
   if ((dance)); then protect_on || die "protection restore failed"; fi
