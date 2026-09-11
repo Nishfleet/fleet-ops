@@ -333,7 +333,9 @@ for path in (open_path, closed_path):
     except Exception:
         issues = []
     for i in issues if isinstance(issues, list) else []:
-        t = re.sub("\\[gap-audit\\]\\s*", "", tkey(i.get("title")))
+        # Issues we file are titled "[gap-audit] <title>"; strip the prefix
+        # on the raw title BEFORE normalising, or it can never match.
+        t = tkey(re.sub(r"^\[gap-audit\]\s*", "", (i.get("title") or "").strip(), flags=re.I))
         if t:
             issued.add(t)
 
@@ -465,11 +467,8 @@ log() {
 }
 
 # --- backfill dispatch: backfill exits before the normal run --------------
-if [ "$BACKFILL_MODE" = "1" ]; then
-    run_backfill "${BACKFILL_SINCE:-}"
-fi
-
-# Per-run report directory (UTC timestamp).
+# Per-run clock (UTC) is set BEFORE the dispatch: backfill file names and
+# stamps use the same run stamp as a normal run.
 if [ -n "${AUDIT_FAKE_NOW:-}" ]; then
     NOW_ISO="$AUDIT_FAKE_NOW"
     NOW_DIR="${NOW_ISO//[^A-Za-z0-9]/_}"
@@ -477,6 +476,11 @@ else
     NOW_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     NOW_DIR="$(date -u +%Y%m%dT%H%M%SZ)"
 fi
+if [ "$BACKFILL_MODE" = "1" ]; then
+    run_backfill "${BACKFILL_SINCE:-}"
+fi
+
+# Per-run report directory (UTC timestamp).
 REPORT_DIR="$STATE_DIR/reports/$NOW_DIR"
 mkdir -p "$REPORT_DIR"
 
