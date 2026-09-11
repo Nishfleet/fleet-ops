@@ -5,19 +5,24 @@
 # latency. Seat-cap PRs and other fixes waited for the 30-min heartbeat
 # before reaching the live box. TOP GEAR says merge->live <= 5 minutes,
 # event-driven. This check runs on a tight cadence (fleet-deploy-check.timer,
-# 2 minutes), does a cheap git fetch + rev compare, and ONLY when origin/main
-# moved does it invoke the existing sanctioned deploy step
-# (bin/fleet-ops-deploy). No new dispatcher, no polling for work — a pure
-# event-driven gate on the merge event.
+# 2 minutes), does a cheap git fetch + rev compare, and invokes the existing
+# sanctioned deploy step (bin/fleet-ops-deploy) when origin/main moved OR
+# the clone is on a named non-main branch (fleet-ops#5222). No new dispatcher,
+# no polling for work — a pure event-driven gate on the merge event and on
+# off-main checkout.
 #
 # Guards (all inherited from fleet-ops-deploy):
-#   - origin fetch URL must be the fleet-ops repo, else refuse before any
-#     fetch/repair/deploy (fleet-ops#5016)
+#   - origin fetch URL must be the fleet-ops repo; a foreign URL is repaired
+#     in the same tick (set-url back to the expected constant), not refused
+#     (fleet-ops#5301, replacing the fleet-ops#5016 refuse-and-wait)
 #   - deploy refuses dirty tracked files / non-fast-forward with a LOUD line
 #   - deploy only mutates when invoked from the canonical checkout or when
 #     FLEET_OPS_CHECKOUT is explicitly set
 #   - flock: one deploy at a time (a deploy already running or a heartbeat
 #     block 0 deploy in flight means this check yields — never concurrent)
+#   - off-main checkout invokes deploy even when HEAD SHA == origin/main
+#     (fleet-ops#5222) so a fully-pushed named branch self-recovers on the
+#     2-min cadence instead of waiting for a merge
 #
 # Deploy-clone read-only gate (fleet-ops#3758): the deploy clone is the live
 # install source and must stay a clean origin/main. Workers that need to edit
@@ -43,8 +48,16 @@
 #
 # Exit: 0 always (a check that found nothing to do is not a failure).
 #       Non-zero only on a hard internal error (fetch failure is logged,
-#       not fatal — the next tick retries; the heartbeat still deploys), or
-#       on the fleet-ops#5016 origin-remote refusal below.
+#       not fatal — the next tick retries; the heartbeat still deploys).
+#
+# fleet-ops#5301: an origin-remote rewrite is repaired and the tick proceeds
+# — no deploy tick is ever refused for a wrong origin fetch URL. A counter
+# (fleet_deploy_origin_remote_repaired_total in the node-exporter .prom) and
+# a 24h-repair-rate alert track how often the repair fires; >2 repairs in
+# 24h means something is actively rewriting the URL. A remote-config
+# tripwire (agent-state/deploy-clone-remotes.txt) diffs each tick and names
+# any process with cwd inside the clone, so the next rewrite names its
+# author.
 
 set -Eeuo pipefail
 
@@ -223,9 +236,14 @@ normalize_origin_url() {
     printf '%s\n' "${u,,}"
 }
 
-# Empty output = the origin fetch URL is the expected one. Anything else is a
-# human-readable reason to refuse.
-origin_remote_problem() {
+# fleet-ops#5301: repair the origin remote instead of refusing. The clone is
+# disposable and the correct URL is a constant, so an automatic set-url is
+# safe. Repairs: set origin back to the expected URL (or `remote add` when
+# origin is missing entirely) and drop any extra remote that carries the
+# expected URL under another name (the observed 2026-09-11 rewrite left
+# `origin=0509` + `real=fleet-ops`). Returns the URL it repaired from
+# (empty = nothing to do).
+origin_remote_to_repair() {
     local url got want
     if ! url=$(git -C "$CHECKOUT" remote get-url origin 2>/dev/null); then
         printf 'origin remote is missing'
@@ -234,23 +252,105 @@ origin_remote_problem() {
     got=$(normalize_origin_url "$url")
     want=$(normalize_origin_url "$EXPECTED_ORIGIN_URL")
     if [[ "$got" != "$want" ]]; then
-        printf 'origin fetch URL is %s (expected %s)' "$url" "$EXPECTED_ORIGIN_URL"
+        printf '%s' "$url"
     fi
     return 0
 }
 
+repair_origin_remote() {
+    local was="$1"
+    if [[ "$was" == "origin remote is missing" ]]; then
+        git -C "$CHECKOUT" remote add origin "$EXPECTED_ORIGIN_URL" 2>/dev/null || true
+    else
+        git -C "$CHECKOUT" remote set-url origin "$EXPECTED_ORIGIN_URL"
+    fi
+    loud "DEPLOY-CHECK-ORIGIN-REMOTE" \
+        "repaired at $CHECKOUT (was $was) — origin set back to $EXPECTED_ORIGIN_URL and the tick proceeds (fleet-ops#5301)"
+    record_origin_repair_count
+}
+
+# Drop any remote that carries the expected URL under another name (the
+# observed 2026-09-11 rewrite left `origin=0509` + `real=fleet-ops`). Runs
+# every tick, not just on repair, so a duplicate never lingers (fleet-ops#5301).
+sweep_duplicate_origin_remotes() {
+    local name rurl
+    while IFS=$'\t' read -r name rurl; do
+        [[ "$name" == "origin" ]] && continue
+        [[ -z "$name" ]] && continue
+        if [[ "$(normalize_origin_url "$rurl")" == "$(normalize_origin_url "$EXPECTED_ORIGIN_URL")" ]]; then
+            git -C "$CHECKOUT" remote remove "$name" 2>/dev/null || true
+        fi
+    done < <(git -C "$CHECKOUT" remote -v 2>/dev/null | awk -F'\t' '$2 ~ / \(fetch\)$/ { sub(/ \(fetch\)$/, "", $2); print $1 "\t" $2 }')
+}
+
+# Counter fleet_deploy_origin_remote_repaired_total in the node-exporter
+# .prom + a >2-repairs-in-24h alert (fleet-ops#5301).
+record_origin_repair_count() {
+    local prom="${FLEET_DEPLOY_ORIGIN_REPAIR_PROM:-/var/lib/prometheus/node-exporter/fleet-deploy-check.prom}"
+    local hist="${FLEET_DEPLOY_ORIGIN_REPAIR_LOG:-$AS/deploy-clone-origin-repairs.log}"
+    local now prev n
+    now=$(date -u +%s)
+    mkdir -p "$(dirname "$prom")" "$(dirname "$hist")" 2>/dev/null || true
+    printf '%s\n' "$now" >>"$hist" 2>/dev/null || true
+    n=$(awk -v cutoff=$((now - 86400)) '$1 >= cutoff' "$hist" 2>/dev/null | wc -l)
+    if (( n > 2 )); then
+        loud "DEPLOY-CHECK-ORIGIN-REMOTE" \
+            "origin repaired ${n}x in 24h (>2) — something is rewriting the deploy clone's origin URL; find the writer (fleet-ops#5301)"
+    fi
+    prev=0
+    if [[ -f "$prom" ]]; then
+        prev=$(awk '$1 ~ /^fleet_deploy_origin_remote_repaired_total$/ { print $2; exit }' "$prom" 2>/dev/null) || prev=0
+        prev="${prev:-0}"
+    fi
+    if {
+        printf '# HELP fleet_deploy_origin_remote_repaired_total Deploy-clone origin fetch URL repairs (fleet-ops#5301).\n'
+        printf '# TYPE fleet_deploy_origin_remote_repaired_total counter\n'
+        printf 'fleet_deploy_origin_remote_repaired_total %d\n' "$((prev + 1))"
+    } >"$prom.tmp" 2>/dev/null; then
+        mv "$prom.tmp" "$prom" 2>/dev/null || true
+    fi
+}
+
+# fleet-ops#5301 tripwire: diff the clone's remote config against the last
+# tick's snapshot; on a diff, log it plus any process whose cwd sits inside
+# the clone, so the next rewrite names its author. The duplicate-remote
+# sweep runs after the diff and the snapshot stores the post-sweep state,
+# so a foreign mutation is logged exactly once.
+origin_remote_tripwire() {
+    local snap="$AS/deploy-clone-remotes.txt" now prev pid target culprits="" line
+    mkdir -p "$(dirname "$snap")" 2>/dev/null || true
+    now=$(git -C "$CHECKOUT" config --get-regexp '^remote\.' 2>/dev/null | sort) || true
+    if [[ -s "$snap" ]]; then
+        prev=$(cat "$snap")
+        if [[ "$now" != "$prev" ]]; then
+            for d in /proc/[0-9]*/cwd; do
+                pid=${d#/proc/}; pid=${pid%/cwd}
+                target=$(readlink "$d" 2>/dev/null) || continue
+                [[ "$target" == "$CHECKOUT" || "$target" == "$CHECKOUT"/* ]] || continue
+                line=$(ps -o pid=,etimes=,cmd= -p "$pid" 2>/dev/null) || true
+                culprits+="${line}; "
+            done
+            loud "DEPLOY-CHECK-ORIGIN-TRIPWIRE" \
+                "deploy-clone remote config changed since last tick (fleet-ops#5301): $(diff <(printf '%s\n' "$prev") <(printf '%s\n' "$now") 2>/dev/null || true) processes in clone: ${culprits:-none}"
+        fi
+    fi
+    sweep_duplicate_origin_remotes
+    now=$(git -C "$CHECKOUT" config --get-regexp '^remote\.' 2>/dev/null | sort) || true
+    printf '%s\n' "$now" >"$snap.tmp" 2>/dev/null && mv "$snap.tmp" "$snap" 2>/dev/null || true
+}
+
 main() {
-    # Origin-remote gate (fleet-ops#5016) first: a foreign origin URL means
-    # origin/main is another repo's main, so every later step in this tick
-    # (fetch, unit repair, deploy) would act on the wrong tree.
+    # Origin-remote repair (fleet-ops#5301, replacing the #5016 refuse): a
+    # foreign origin URL means origin/main is another repo's main, so repair
+    # it (set-url back to the expected constant) and proceed in the SAME
+    # tick — a wrong URL never blocks a deploy tick.
     if [[ -d "$CHECKOUT/.git" ]] || [[ -f "$CHECKOUT/.git" ]]; then
         local remote_problem
-        remote_problem=$(origin_remote_problem)
+        remote_problem=$(origin_remote_to_repair)
         if [[ -n "$remote_problem" ]]; then
-            loud "DEPLOY-CHECK-ORIGIN-REMOTE" \
-                "refusing at $CHECKOUT: $remote_problem — origin/main is not this repo's main; fetch, repair and deploy skipped, checkout untouched (fleet-ops#5016)"
-            return 1
+            repair_origin_remote "$remote_problem"
         fi
+        origin_remote_tripwire
     fi
     # Per-tick non-canonical unit symlink gate (fleet-ops#4166): a worker's
     # non-canonical install.sh retargets every live fleet unit symlink at a
@@ -308,12 +408,23 @@ main() {
         return 0
     fi
 
-    if [[ "$before" == "$after" ]]; then
+    local branch=""
+    branch=$(git -C "$CHECKOUT" symbolic-ref --short HEAD 2>/dev/null || true)
+    local off_main=0
+    if [[ -n "$branch" && "$branch" != "main" ]]; then
+        off_main=1
+    fi
+
+    if [[ "$before" == "$after" && "$off_main" != 1 ]]; then
         log "origin/main unchanged (HEAD=$before) — nothing to do"
         return 0
     fi
 
-    log "origin/main moved $before -> $after — invoking sanctioned deploy"
+    if [[ "$off_main" == 1 ]]; then
+        log "checkout on '$branch' not main (HEAD=$before origin/main=$after) — invoking sanctioned deploy (fleet-ops#5222)"
+    else
+        log "origin/main moved $before -> $after — invoking sanctioned deploy"
+    fi
     if [[ "$NO_DEPLOY" == "1" ]]; then
         log "compare-only mode (FLEET_DEPLOY_CHECK_NO_DEPLOY=1): deploy not invoked"
         return 0
@@ -340,9 +451,10 @@ main() {
         return 0
     fi
 
-    local now
+    local now now_branch
     now=$(git -C "$CHECKOUT" rev-parse HEAD 2>/dev/null || echo "unknown")
-    if [[ "$now" == "$after" ]]; then
+    now_branch=$(git -C "$CHECKOUT" symbolic-ref --short HEAD 2>/dev/null || true)
+    if [[ "$now" == "$after" && ( -z "$now_branch" || "$now_branch" == "main" ) ]]; then
         log "already deployed between fetch and lock (HEAD=$now) — nothing to do"
         return 0
     fi

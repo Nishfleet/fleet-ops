@@ -303,7 +303,13 @@ ok "_dispatch: overload bench escalates 600->1200->2400...21600 (geometric, capp
 rm -f "$LEDGER"/*.json 2>/dev/null || true
 p_d="devin"; m_d="swe-1-7"
 quota_no_window2='INFERENCE_CAP_ERROR: weekly Clinepass limit'
-expected_q=(900 1800 3600 7200 14400 21600 21600 21600)
+# fleet-ops#5285 (2026-09-11): a quota window built from the provider's static
+# quota_bench_default_s is a GUESS, not an advertised reset, so the writer caps
+# it at 900s (SEAT_QUOTA_BENCH_DEFAULT_MAX_S) — including the #3531 geometric
+# escalation on top of it (escalating a guess multiplied a guess: the lived
+# Devin 15360s bench on a 9-minute limit). The bench-truth probe at 15-min
+# cadence is the brake now; a real wall simply fails its probe and stays.
+expected_q=(900 900 900 900 900 900 900 900)
 for i in 1 2 3 4 5 6 7 8; do
     idx=$((i-1))
     want=${expected_q[$idx]}
@@ -317,6 +323,13 @@ for i in 1 2 3 4 5 6 7 8; do
     bw=$(jq -r '.bench_window_s' "$ledger_file")
     [[ "$bw" == "$want" ]] || fail "_dispatch: quota #${i} bench_window_s = $bw, want $want (geometric, fleet-ops#3531)"
 done
-ok "_dispatch: quota bench escalates 900->1800->3600...21600 (geometric, capped, fleet-ops#3531)"
+ok "_dispatch: quota bench from a static default stays at 900 on every repeat — no geometric escalation of a guessed window (fleet-ops#5285 caps #3531 for default-driven quota walls)"
 
 ok "seat-lib-dispatch: registry sorted, trigger-order wins, no-double-bench, backward-compat, graceful no-registry"
+
+# fleet-ops#5274: the free_retired_corpse class (OpenRouter 404 unavailable-
+# for-free -> permanent corpse) is pinned in its own test, hosted here so it
+# stays in the P14 reachable set (no workflow scope needed to add it).
+bash "$here/openrouter-free-retired-corpse.test.sh" \
+  || fail "openrouter-free-retired-corpse.test.sh failed"
+ok "openrouter-free-retired-corpse.test.sh hosted from this listed test"

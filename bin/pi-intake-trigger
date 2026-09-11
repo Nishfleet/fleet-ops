@@ -9,6 +9,11 @@ set -euo pipefail
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
 TRIGGER_DIR="${PI_INTAKE_TRIGGER_DIR:-/home/nish/workspaces/agent-state/pi-intake-triggers}"
+# fleet-ops#5385: the trigger must honour the declared enrolment set — a deferred
+# repo's trigger file must not restart its intake. Same live source of truth the
+# reconciler unit converges on (the merge-to-live deploy clone, fleet-ops#149;
+# NOT products/fleet-ops, which is a dev checkout and can sit on any branch).
+INTAKE_JSON="${PI_INTAKE_TRIGGER_INTAKE_JSON:-/home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/intake-repos.json}"
 mkdir -p "$TRIGGER_DIR"
 
 log() { printf '[%s] [pi-intake-trigger] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; }
@@ -18,6 +23,14 @@ for trigger_file in "$TRIGGER_DIR"/*; do
     [[ -f "$trigger_file" ]] || continue
     repo=$(basename "$trigger_file")
     [[ -n "$repo" ]] || continue
+
+    # Fail closed: missing/unparseable intake config or a repo absent from
+    # .repos[].name means skip — the 15-min timers remain as backstop.
+    if ! jq -e --arg r "$repo" '[.repos[]?.name] | index($r)' "$INTAKE_JSON" >/dev/null 2>&1; then
+        log "Skipping pi-intake@$repo — not in .repos[].name of $INTAKE_JSON (deferred/excluded or config unreadable)"
+        rm -f "$trigger_file"
+        continue
+    fi
 
     log "Triggering pi-intake@$repo"
     # --no-block: the intake unit owns its own runtime; a blocking start made

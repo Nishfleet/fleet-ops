@@ -123,7 +123,28 @@ relaunched=$(jq -r '.relaunched' "$SPEC_JUDGE_STATE_DIR/inflight-fleet-ops.json"
 spec_judge_failure_fallback "fleet-ops" "Nishfleet/fleet-ops"
 [[ -f "$SPEC_JUDGE_STATE_DIR/inflight-fleet-ops.json" ]] \
     && fail "Test 7: second failure must clear the in-flight marker"
+[[ -s "$SPEC_JUDGE_STATE_DIR/unavailable-fleet-ops-abc123.json" ]] \
+    || fail "Test 7: second failure must leave a durable unavailable-<repo>-<sha>.json record"
+jq -e '.batch == [1,2] and .newest_issue == 2 and .unit == "spec-judge-fleet-ops-abc123"' \
+    "$SPEC_JUDGE_STATE_DIR/unavailable-fleet-ops-abc123.json" >/dev/null 2>&1 \
+    || fail "Test 7: unavailable record must carry repo/sha/unit/batch/newest_issue"
 ok "Test 7: failure fallback relaunches once, then clears on second failure"
+
+# --- Test 7b: a dropped fallback comment is LOUD, and the durable record ---
+# still lands (fleet-ops#5438 — no silent drop).
+sj_fail_gh() { return 1; }
+GH=sj_fail_gh
+rm -f "$SPEC_JUDGE_STATE_DIR"/unavailable-*.json
+echo '{"repo":"fleet-ops","batch":[5,9],"sha":"feedface","unit":"spec-judge-fleet-ops-feedface","launched_at":"x","relaunched":true}' \
+    > "$SPEC_JUDGE_STATE_DIR/inflight-fleet-ops.json"
+t7b_err=$(spec_judge_failure_fallback "fleet-ops" "Nishfleet/fleet-ops" 2>&1)
+printf '%s' "$t7b_err" | grep -q 'ALERT spec-judge: gh issue comment' \
+    || fail "Test 7b: dropped fallback comment must emit an ALERT line, got: $t7b_err"
+[[ -s "$SPEC_JUDGE_STATE_DIR/unavailable-fleet-ops-feedface.json" ]] \
+    || fail "Test 7b: durable record must exist even when the comment fails"
+unset -f sj_fail_gh
+GH=/bin/echo
+ok "Test 7b: dropped failure-fallback comment is ALERT-loud + durable record survives"
 
 # --- Test 8: in-flight marker + member skip --------------------------------
 echo '{"repo":"fleet-ops","batch":[1,2],"sha":"abc123","unit":"spec-judge-fleet-ops-abc123","launched_at":"x","relaunched":false}' \
@@ -251,6 +272,178 @@ newbody=$(cat "$SPEC_JUDGE_STATE_DIR/edit-body.txt" 2>/dev/null || true)
 [[ "$newbody" != *"depends-on: none"* ]] || fail "Test 15: depends-on: none still present"
 ok "Test 15: depends-on: none rewritten to landing-order predecessor"
 rm -f "$vf"
+
+# --- Test 15b (fleet-ops#5107): binding bullet `depends-on: #N` -> structured
+# line updated. The #2352 shape: the judge expresses a NEW dependency in a
+# non-Replace bullet, which lands in the binding section; the structured
+# `depends-on: none` line must carry the number afterwards. Never overwrite
+# a real value (the conservative rule). Judge-explicit dep wins over the
+# landing-order predecessor (specific beats inferred).
+cat >"$GH" <<'FAKE'
+#!/usr/bin/env bash
+case "$1" in
+  issue)
+    case "$2" in
+      view) printf '%s' '{"body":"files: a.ts\ndepends-on: none\n\nStep 3 says one POST here."}' ;;
+      edit)
+        while [[ $# -gt 0 ]]; do
+          [[ "$1" == "--body-file" ]] && { cp "$2" "$SPEC_JUDGE_STATE_DIR/edit-body.txt"; }
+          shift
+        done ;;
+      comment) ;;
+    esac ;;
+esac
+FAKE
+chmod +x "$GH"
+vf=$(mktemp)
+cat >"$vf" <<'EOF'
+## #2352 - VERDICT: EDIT
+
+- If #2359 lands first, use its shared helper; add `depends-on: #2359`.
+EOF
+spec_judge_apply "fleet-ops" "Nishfleet/fleet-ops" "shaD1" "$vf"
+newbody=$(cat "$SPEC_JUDGE_STATE_DIR/edit-body.txt" 2>/dev/null || true)
+[[ "$newbody" == *"depends-on: #2359"* ]] || fail "Test 15b: structured line not updated from binding bullet, got: $newbody"
+[[ "$newbody" != *"depends-on: none"* ]] || fail "Test 15b: depends-on: none still present"
+[[ "$newbody" == *"## Judge edits (binding)"* ]] || fail "Test 15b: binding section missing"
+ok "Test 15b: binding bullet depends-on: #N -> structured line updated"
+rm -f "$vf"
+
+# --- Test 15c (fleet-ops#5107): never overwrite a real depends-on value ---
+cat >"$GH" <<'FAKE'
+#!/usr/bin/env bash
+case "$1" in
+  issue)
+    case "$2" in
+      view) printf '%s' '{"body":"files: a.ts\ndepends-on: #2373\n"}' ;;
+      edit)
+        while [[ $# -gt 0 ]]; do
+          [[ "$1" == "--body-file" ]] && { cp "$2" "$SPEC_JUDGE_STATE_DIR/edit-body.txt"; }
+          shift
+        done ;;
+      comment) ;;
+    esac ;;
+esac
+FAKE
+chmod +x "$GH"
+vf=$(mktemp)
+cat >"$vf" <<'EOF'
+## #2352 - VERDICT: EDIT
+
+- If #2359 lands first, use its shared helper; add `depends-on: #2359`.
+EOF
+spec_judge_apply "fleet-ops" "Nishfleet/fleet-ops" "shaD2" "$vf"
+newbody=$(cat "$SPEC_JUDGE_STATE_DIR/edit-body.txt" 2>/dev/null || true)
+structured=$(printf '%s\n' "$newbody" | grep -E '^depends-on:' || true)
+[[ "$structured" == "depends-on: #2373" ]] || fail "Test 15c: real depends-on value must survive, got: $structured"
+ok "Test 15c: real depends-on value never overwritten by the binding-bullet scan"
+rm -f "$vf"
+
+# --- Test 15d (fleet-ops#5107): binding dep with NO #<n> parks the ticket -
+# The #2394 shape: `depends-on: the R1 ticket...` names no issue number.
+# The ticket parks on blocked-on: orchestrator + agent-blocked +
+# needs-orchestrator labels instead of being claimed.
+cat >"$GH" <<'FAKE'
+#!/usr/bin/env bash
+STATE="$SPEC_JUDGE_STATE_DIR"
+case "$1" in
+  issue)
+    case "$2" in
+      view) printf '%s' '{"body":"files: a.ts\ndepends-on: none\n"}' ;;
+      edit)
+        while [[ $# -gt 0 ]]; do
+          [[ "$1" == "--body-file" ]] && { cp "$2" "$STATE/edit-body.txt"; }
+          [[ "$1" == "--remove-label" || "$1" == "--add-label" ]] && { printf '%s %s\n' "$1" "$2" >> "$STATE/edit-labels.txt"; }
+          shift
+        done ;;
+      comment) ;;
+    esac ;;
+esac
+FAKE
+chmod +x "$GH"
+vf=$(mktemp)
+cat >"$vf" <<'EOF'
+## #2394 - VERDICT: EDIT
+
+- Replace `depends-on: none` with `depends-on: the R1 ticket for the cache-HIT claim; this ticket's only deliverable is the doc`.
+EOF
+spec_judge_apply "fleet-ops" "Nishfleet/fleet-ops" "shaD3" "$vf"
+newbody=$(cat "$SPEC_JUDGE_STATE_DIR/edit-body.txt" 2>/dev/null || true)
+[[ "$newbody" == *"blocked-on: orchestrator"* ]] || fail "Test 15d: blocked-on: orchestrator missing from body, got: $newbody"
+labels=$(cat "$SPEC_JUDGE_STATE_DIR/edit-labels.txt" 2>/dev/null || true)
+[[ "$labels" == *"--remove-label agent-ready"* ]] || fail "Test 15d: agent-ready not removed, got: $labels"
+[[ "$labels" == *"--add-label agent-blocked"* ]] || fail "Test 15d: agent-blocked not added, got: $labels"
+[[ "$labels" == *"--add-label needs-orchestrator"* ]] || fail "Test 15d: needs-orchestrator not added, got: $labels"
+ok "Test 15d: no-number binding dep parks the ticket (blocked-on: orchestrator + labels)"
+rm -f "$vf"
+rm -f "$SPEC_JUDGE_STATE_DIR/edit-labels.txt"
+
+# --- Test 15e (fleet-ops#5107): judge-explicit dep wins over the predecessor
+cat >"$GH" <<'FAKE'
+#!/usr/bin/env bash
+case "$1" in
+  issue)
+    case "$2" in
+      view) printf '%s' '{"body":"files: a.ts\ndepends-on: none\n"}' ;;
+      edit)
+        while [[ $# -gt 0 ]]; do
+          [[ "$1" == "--body-file" ]] && { cp "$2" "$SPEC_JUDGE_STATE_DIR/edit-body.txt"; }
+          shift
+        done ;;
+      comment) ;;
+    esac ;;
+esac
+FAKE
+chmod +x "$GH"
+vf=$(mktemp)
+cat >"$vf" <<'EOF'
+## #2352 - VERDICT: EDIT
+
+- If #2359 lands first, use its shared helper; add `depends-on: #2359`.
+
+## Cross-ticket
+
+- **Landing order (strictly sequential):** #2181 -> #2352.
+EOF
+spec_judge_apply "fleet-ops" "Nishfleet/fleet-ops" "shaD4" "$vf"
+newbody=$(cat "$SPEC_JUDGE_STATE_DIR/edit-body.txt" 2>/dev/null || true)
+structured=$(printf '%s\n' "$newbody" | grep -E '^depends-on:' || true)
+[[ "$structured" == "depends-on: #2359" ]] || fail "Test 15e: judge-explicit dep must win over the inferred predecessor, got: $structured"
+ok "Test 15e: judge-explicit dep wins over landing-order predecessor"
+rm -f "$vf"
+
+# --- Test 15f (fleet-ops#5107): binding bullet with `depends-on: none` mention
+# only (no live dep) must NOT park the ticket: the last token's value governs.
+cat >"$GH" <<'FAKE'
+#!/usr/bin/env bash
+case "$1" in
+  issue)
+    case "$2" in
+      view) printf '%s' '{"body":"files: a.ts\ndepends-on: none\n"}' ;;
+      edit)
+        while [[ $# -gt 0 ]]; do
+          [[ "$1" == "--body-file" ]] && { cp "$2" "$SPEC_JUDGE_STATE_DIR/edit-body.txt"; }
+          [[ "$1" == "--remove-label" || "$1" == "--add-label" ]] && { printf '%s %s\n' "$1" "$2" >> "$SPEC_JUDGE_STATE_DIR/edit-labels.txt"; }
+          shift
+        done ;;
+      comment) ;;
+    esac ;;
+esac
+FAKE
+chmod +x "$GH"
+vf=$(mktemp)
+cat >"$vf" <<'EOF'
+## #2401 - VERDICT: EDIT
+
+- Landing is clear now; keep `depends-on: none` until the batch closes.
+EOF
+spec_judge_apply "fleet-ops" "Nishfleet/fleet-ops" "shaD5" "$vf"
+newbody=$(cat "$SPEC_JUDGE_STATE_DIR/edit-body.txt" 2>/dev/null || true)
+[[ "$newbody" != *"blocked-on: orchestrator"* ]] || fail "Test 15f: keep-none bullet must not park, got: $newbody"
+[[ ! -s "$SPEC_JUDGE_STATE_DIR/edit-labels.txt" ]] || fail "Test 15f: labels must not change, got: $(cat "$SPEC_JUDGE_STATE_DIR/edit-labels.txt")"
+ok "Test 15f: a depends-on: none mention in a binding bullet does not park"
+rm -f "$vf"
+rm -f "$SPEC_JUDGE_STATE_DIR/edit-labels.txt"
 
 # --- Test 16: BLOCK apply — reason comment + nish-decision for money -------
 # Fake gh captures the comment body for the BLOCK issue.

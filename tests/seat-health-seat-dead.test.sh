@@ -49,6 +49,33 @@
 #   D14 a further failure write on the corpse (c=26) keeps seat_dead=true,
 #       class corpse, and usable_at null — the cleared clock sticks.
 #
+# fleet-ops#5269 — shared_pool convergence (upstream BYOK-only 429):
+#   A 429 whose body names an upstream shared free pool with a BYOK-only
+#   remedy ("temporarily rate-limited upstream ... add your own key" /
+#   metadata.is_byok) is failure_mode "shared_pool": same rate_limited
+#   health_class, but it converges to seat_dead at
+#   shared_pool_dead_threshold (5), not the generic 25 — the advertised
+#   fix is money, not time. A plain 429 keeps the transient rate_limit
+#   path. Live evidence: openrouter/google/gemma-4-31b-it:free — every
+#   pick since registration 2026-09-06 returned the shared-pool 429
+#   (c=20, retryable forever), each re-draw burning a worker spawn and
+#   tripping StartLimitBurst on pi-issue@0509-2724.
+#   P1  isSharedPoolRateLimit flags the live OpenRouter BYOK body
+#   P2  isSharedPoolRateLimit rejects a plain 429 body (no upstream/BYOK)
+#   P3  isSharedPoolRateLimit(undefined) -> false (status-only 429 path)
+#   P4  failureModeForStatus(429, body=byok) -> "shared_pool"
+#   P5  failureModeForStatus(429) (no body) -> "rate_limit" (unchanged)
+#   P6  failureModeForStatus(429, body=plain) -> "rate_limit" (unchanged)
+#   P7  shouldMarkSeatDead(shared_pool, c=4) -> false (below threshold)
+#   P8  shouldMarkSeatDead(shared_pool, c=5) -> true (at threshold)
+#   P9  shouldMarkSeatDead(shared_pool, c=20) -> true (the issue's pin:
+#       20 consecutive shared-pool 429s -> escalated state)
+#   P10 shouldMarkSeatDead(rate_limit, c=5) -> false (generic path intact)
+#   P11 writeSeatLedgerEntry: 5 shared_pool failures -> seat_dead=true,
+#       class corpse, usable_at null; a rate_limit seat at c=5 stays a
+#       live rate_limited wall (transient path intact); the shared_pool
+#       seat at c=20 is still a corpse (escalated, terminal).
+#
 # Environment seams:
 #   FLEET_SEAT_HEALTH_TS    absolute path to seat-health.ts. Default:
 #                           $HOME/.pi/agent/extensions/seat-health.ts
@@ -102,7 +129,8 @@ cat >"$caps" <<'JSON'
     "quarantine_floor_s": 3600,
     "quarantine_cap_s": 86400,
     "seat_dead_consecutive_threshold": 25,
-    "seat_dead_quota_age_s": 86400
+    "seat_dead_quota_age_s": 86400,
+    "shared_pool_dead_threshold": 5
   }
 }
 JSON
@@ -247,3 +275,105 @@ expect "true" "4,3" "D13: quota-dead (402 not cleared in 24h -> corpse)"
 expect "corpse" "4,5" "D13: quota-class (terminal reclassification, billing wall)"
 
 ok "fleet-ops#2145/#2327/#2415 closure: corpses (transient c>=25, quota age>=24h) are seat_dead=true, reclassify to the terminal corpse class, and carry NO usable_at retry clock (the cleared clock sticks on further failures); below-threshold and healthy behaviour unchanged; a successful probe recovers"
+
+# --- fleet-ops#5269: shared_pool (upstream BYOK-only 429) convergence ------
+# The observed OpenRouter body (lanes/seats/openrouter__google_gemma-4-31b-
+# it_free.json, bench_reason). Detection requires BOTH an upstream-pool
+# phrase AND a BYOK remedy hint so a plain provider 429 keeps the transient
+# rate_limit path.
+byok_body='{"message":"Provider returned error","code":429,"metadata":{"raw":"google/gemma-4-31b-it:free is temporarily rate-limited upstream. Please retry shortly, or add your own key to accumulate your rate limits: https://openrouter.ai/settings/integrations","provider_name":"Google AI Studio","is_byok":true}}'
+plain_429_body='{"error":{"message":"Rate limit exceeded, retry after 30s","code":429}}'
+
+# Generic single-value invariant: $1=name $2=node snippet ending in an
+# expression statement `r` (printed raw) $3=expected value.
+fn_invariant() {
+    local name="$1" snippet="$2" want="$3"
+    local last
+    last=$(run_node "$snippet" || true)
+    if [[ "$last" != RESULT_JSON:* ]]; then
+        fail "${name}: node output did not contain a RESULT_JSON line (got: $last)"
+    fi
+    local got="${last#RESULT_JSON:}"
+    if [[ "$got" != "$want" ]]; then
+        fail "${name}: got ${got}, expected ${want}"
+    fi
+    ok "${name} (${want})"
+}
+
+fn_invariant "P1: isSharedPoolRateLimit flags the live BYOK upstream body" "
+import { isSharedPoolRateLimit } from ${EXT_PATH@Q};
+const r = isSharedPoolRateLimit(${byok_body@Q});
+console.log('RESULT_JSON:' + r);
+" "true"
+fn_invariant "P2: isSharedPoolRateLimit rejects a plain 429 body" "
+import { isSharedPoolRateLimit } from ${EXT_PATH@Q};
+const r = isSharedPoolRateLimit(${plain_429_body@Q});
+console.log('RESULT_JSON:' + r);
+" "false"
+fn_invariant "P3: isSharedPoolRateLimit(undefined) -> false" "
+import { isSharedPoolRateLimit } from ${EXT_PATH@Q};
+const r = isSharedPoolRateLimit(undefined);
+console.log('RESULT_JSON:' + r);
+" "false"
+fn_invariant "P4: failureModeForStatus(429, body=byok) -> shared_pool" "
+import { failureModeForStatus } from ${EXT_PATH@Q};
+const r = failureModeForStatus(429, false, ${byok_body@Q});
+console.log('RESULT_JSON:' + r);
+" "shared_pool"
+fn_invariant "P5: failureModeForStatus(429) no body -> rate_limit (unchanged)" "
+import { failureModeForStatus } from ${EXT_PATH@Q};
+const r = failureModeForStatus(429);
+console.log('RESULT_JSON:' + r);
+" "rate_limit"
+fn_invariant "P6: failureModeForStatus(429, body=plain) -> rate_limit" "
+import { failureModeForStatus } from ${EXT_PATH@Q};
+const r = failureModeForStatus(429, false, ${plain_429_body@Q});
+console.log('RESULT_JSON:' + r);
+" "rate_limit"
+
+smd_invariant "P7: shared_pool c=4 below threshold -> not dead" "shared_pool" "4" "" "false"
+smd_invariant "P8: shared_pool c=5 at threshold -> dead" "shared_pool" "5" "" "true"
+smd_invariant "P9: shared_pool c=20 (issue pin) -> dead" "shared_pool" "20" "" "true"
+smd_invariant "P10: rate_limit c=5 -> not dead (generic path intact)" "rate_limit" "5" "" "false"
+
+# --- P11: writeSeatLedgerEntry converges a shared_pool seat to corpse -----
+ledger_sp="$scratch/ledger-sp"
+mkdir -p "$ledger_sp"
+last=$(PI_SEAT_HEALTH_LEDGER_DIR="$ledger_sp" PI_SEAT_CAPS_JSON="$caps" "$NODE_BIN" \
+    --experimental-strip-types --no-warnings=ExperimentalWarning \
+    --input-type=module -e "
+import { readFileSync } from 'node:fs';
+const { writeSeatLedgerEntry, seatLedgerPath } = await import(${EXT_PATH@Q});
+const now = Date.now();
+const sp = { provider: 'openrouter', model: 'google/gemma-4-31b-it:free', http_status: 429, retry_after: null, health_class: 'rate_limited', retryable: true, seat_dead: false, poison_ladder: false, source: 'provider_fetch', failure_mode: 'shared_pool' };
+const rl = { ...sp, model: 'google/plain-429-model', failure_mode: 'rate_limit' };
+const obs = (base) => ({ ...base, observed_at: new Date(now).toISOString(), usable_at: new Date(now + 900 * 1000).toISOString(), consecutive_failure_count: 0 });
+const psp = seatLedgerPath('openrouter', 'google/gemma-4-31b-it:free');
+const prl = seatLedgerPath('openrouter', 'google/plain-429-model');
+const read = (p) => JSON.parse(readFileSync(p, 'utf8'));
+const out = [];
+// 20 consecutive shared_pool failures (the issue's live case): corpse at
+// the shared_pool threshold (5) — never reaches the generic 25.
+for (let i = 0; i < 20; i++) writeSeatLedgerEntry(obs(sp));
+let e = read(psp);
+out.push(['sp-count', e.consecutive_failure_count, 'sp-dead', String(e.seat_dead), 'sp-class', e.health_class, 'sp-usable', String(e.usable_at)]);
+// 5 generic rate_limit failures: still a live rate_limited wall — the
+// transient path is intact below the generic threshold (25).
+for (let i = 0; i < 5; i++) writeSeatLedgerEntry(obs(rl));
+e = read(prl);
+out.push(['rl-count', e.consecutive_failure_count, 'rl-dead', String(e.seat_dead), 'rl-class', e.health_class]);
+console.log('RESULT_JSON:' + JSON.stringify(out));
+" 2>&1 | tail -n1)
+if [[ "$last" != RESULT_JSON:* ]]; then
+    fail "P11: node write-path output did not contain a RESULT_JSON line (got: $last)"
+fi
+payload="${last#RESULT_JSON:}"
+expect "20" "0,1" "P11: sp-count (20 consecutive shared-pool 429s — the live gemma case)"
+expect "true" "0,3" "P11: sp-dead (corpsed at the shared_pool threshold, long before 25)"
+expect "corpse" "0,5" "P11: sp-class (terminal reclassification)"
+expect "null" "0,7" "P11: sp-usable (corpse carries no retry clock — fleet-ops#2415)"
+expect "5" "1,1" "P11: rl-count (plain 429 seat)"
+expect "false" "1,3" "P11: rl-dead (plain 429 below the generic threshold stays alive)"
+expect "rate_limited" "1,5" "P11: rl-class (transient rate_limited path intact)"
+
+ok "fleet-ops#5269 closure: upstream shared-pool 429s (BYOK-only remedy) classify as shared_pool and converge to a corpse at shared_pool_dead_threshold (5); plain 429s keep the transient rate_limit path"

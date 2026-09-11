@@ -216,8 +216,86 @@ jobs:
           app-id: ${{ secrets.NISHFLEET_WORKER_APP_ID }}
           private-key: ${{ secrets.NISHFLEET_WORKER_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
+      # ---- gate-integrity arm guard (fleet-ops#5238) ----------------------
+      # gate-integrity is advisory — not a required context — so
+      # `--auto --squash` merges past a red verdict the moment required
+      # checks pass (#5207 landed a ci.yml edit with gate-integrity
+      # FAILURE). This step refuses to arm when the PR's diff touches
+      # gate-owned paths and the head's `gate-integrity` check is not
+      # green. The refusal is non-sticky: a green verdict re-arms on the
+      # next pull_request event or the hourly tier1 queue pass.
+      # Guard, lib and the shared gate-glob config loader are fetched at
+      # the exact fleet-ops ref this workflow file came from
+      # (github.workflow_sha) so gate and definition cannot drift apart;
+      # the repo's own .fleet/gate-integrity.yml at the PR base ref
+      # supplies the glob set (base-owned rules judge the PR), defaulting
+      # to the loader's built-ins when absent. Reads run under the
+      # nishfleet-worker App token so callers need no extra permissions.
+      # A fetch/eval fault warns and arms — fail-open, the same posture
+      # as the freeze/quality gates; only an actual refuse verdict gates.
+      - name: Check gate-integrity verdict on gate-path PRs
+        id: gateint
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          FLEET_OPS_REF: ${{ github.workflow_sha }}
+          PR_NUM: ${{ github.event.pull_request.number }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          # GitHub wraps this in `bash -e`. A refuse is exit 1, which
+          # would fail the required `arm` check and freeze the PR
+          # (live: run 34557585569 on #5264). Turn -e off first.
+          # The only payload is a clean `verdict=="refuse"`. Every
+          # helper fault warns and leaves gated=false (fail-open).
+          set +e
+          echo "gated=false" >> "$GITHUB_OUTPUT"
+          set -uo pipefail
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::warning::gate-arm guard has no App token — arming proceeds (fail-open; the mint step already fails loud when secrets are absent)"
+            exit 0
+          fi
+          base="https://raw.githubusercontent.com/Nishfleet/fleet-ops/${FLEET_OPS_REF}"
+          ok=1
+          curl -fsSL --retry 2 -o "$tmp/fleet-gate-arm-guard" "$base/bin/fleet-gate-arm-guard" || ok=0
+          curl -fsSL --retry 2 -o "$tmp/gate-arm-guard.py" "$base/lib/gate-arm-guard.py" || ok=0
+          curl -fsSL --retry 2 -o "$tmp/gate-integrity-config.sh" "$base/lib/gate-integrity-config.sh" || ok=0
+          if [ "$ok" -eq 0 ]; then
+            echo "::warning::gate-arm guard fetch failed — arming proceeds (fail-open, mirrors the freeze/quality gates)"
+            exit 0
+          fi
+          chmod +x "$tmp/fleet-gate-arm-guard"
+          if ! gh api "repos/${{ github.repository }}/contents/.fleet/gate-integrity.yml?ref=$BASE_REF" \
+                --jq '.content' 2>/dev/null | base64 -d > "$tmp/repo-gate.yml" 2>/dev/null; then
+            : > "$tmp/repo-gate.yml"
+          fi
+          globs="$(bash "$tmp/gate-integrity-config.sh" "$tmp/repo-gate.yml" 2>/dev/null | jq -c '.gate_globs' 2>/dev/null)"
+          if [ -z "$globs" ]; then
+            echo "::warning::gate-glob resolution failed — arming proceeds (fail-open)"
+            exit 0
+          fi
+          GATE_ARM_GUARD_LIB="$tmp/gate-arm-guard.py" \
+            "$tmp/fleet-gate-arm-guard" evaluate \
+              --repo "${{ github.repository }}" --pr "$PR_NUM" \
+              --globs-json "$globs" --wait-seconds 90 \
+              > "$tmp/verdict.json" 2> "$tmp/verdict.err" || true
+          cat "$tmp/verdict.json" 2>/dev/null || true
+          cat "$tmp/verdict.err" >&2 || true
+          if jq -e '.verdict == "refuse"' "$tmp/verdict.json" >/dev/null 2>&1; then
+            echo "gated=true" >> "$GITHUB_OUTPUT"
+            echo "gate-integrity is not green on a gate-path PR; auto-merge arming skipped (fleet-ops#5238) — a green verdict re-arms on the next pull_request event or the hourly queue pass"
+            # A worker may already have armed via `gh pr merge --auto`.
+            # GitHub auto-merge waits only on required checks, so leaving
+            # that arm in place is the #5207 escape. Disarm is the teeth;
+            # --disable-auto on a PR that was never armed is a no-op.
+            gh pr merge "$PR_NUM" --disable-auto --repo "${{ github.repository }}" >/dev/null 2>&1 || true
+            exit 0
+          fi
+          jq -e '.verdict == "arm"' "$tmp/verdict.json" >/dev/null 2>&1 \
+            || echo "::warning::gate-arm guard produced no verdict — arming proceeds (fail-open)"
+
       - name: Arm auto-merge
-        if: steps.freeze.outputs.frozen == 'false' && steps.quality.outputs.breached == 'false' && steps.trample.outputs.trampled == 'false'
+        if: steps.freeze.outputs.frozen == 'false' && steps.quality.outputs.breached == 'false' && steps.trample.outputs.trampled == 'false' && steps.gateint.outputs.gated == 'false'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR: ${{ github.event.pull_request.number }}

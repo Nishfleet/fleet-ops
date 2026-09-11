@@ -1,0 +1,23 @@
+{
+  "name": "absent-no-gate-repo",
+  "comment": "A repo with no gate-integrity workflow (siterep-public, inish-site today) reports no check row. Arming stays fail-open — identical posture to the freeze/quality gates — so those repos' gate-path PRs are not frozen.",
+  "files": [
+    {"filename": ".github/workflows/ci.yml", "previous_filename": null}
+  ],
+  "gate_globs": [
+    ".github/workflows/**",
+    ".github/scripts/**",
+    ".github/CODEOWNERS",
+    ".gitleaksignore",
+    ".gitleaks.toml",
+    ".semgrepignore",
+    ".semgrep.yml",
+    ".semgrep.yaml",
+    ".fleet/**"
+  ],
+  "checks": [
+    {"name": "P14 tests / PR checks", "bucket": "pass", "state": "SUCCESS"}
+  ],
+  "repo_has_gate": false,
+  "expect": "arm"
+}

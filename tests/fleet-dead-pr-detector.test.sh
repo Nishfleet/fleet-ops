@@ -43,8 +43,21 @@
 # LOUD DEAD-PR-UNRESOLVED + rc 2 (fail closed), OPEN parent -> logged and
 # skipped, no resolvable parent -> logged and skipped.
 #
-# Measure line `dead_conflicting_prs=<n>` is the LAST stdout line.
-# Exit codes: 0 clean, 1 when at least one dead conflicting PR is
+# STALE-CONFLICTING CLASS (fleet-ops#5205): a decided-CONFLICTING PR whose
+# parent is OPEN is not dead, but a conflict standing past
+# DEAD_PR_STALE_HOURS (default 24) is stale — the branch rots, the parent
+# holds its claim, and red-PR repair burns seats on a shape no worker can
+# fix. GitHub has no conflict-since field (createdAt is branch age), so the
+# detector writes a first-seen marker per PR under DEAD_PR_STATE_DIR and
+# prunes it the same way red-pr-repair state is pruned — the instant the PR
+# leaves the class (MERGEABLE, dead-classified, unresolved parent, or gone
+# from the open list) the GC pass drops the marker. Flagged members are
+# written to stale-conflicting.list (`<repo> <pr> <parent>` lines) for
+# fleet-heartbeat-red-pr-repair to consume. Cases 20-25 pin the class.
+#
+# Measure lines: `stale_conflicting_prs=<n>` second-to-last, then
+# `dead_conflicting_prs=<n>` is the LAST stdout line.
+# Exit codes: 0 clean, 1 when at least one dead or stale-conflicting PR is
 # proven, 2 on gh/jq infra failure or on a PR whose mergeable stays
 # undecided while its parent is MERGED/CLOSED (fail-closed, never a
 # false green).
@@ -116,10 +129,12 @@ export FAKE_DIR="$scratch"
 run() {
     # $@ -> env overrides, merged AFTER the defaults so a GH= override
     # wins. Detector stdout lands in $scratch/stdout.log, stderr in
-    # $scratch/stderr.log; prints rc=<n> on stdout.
+    # $scratch/stderr.log; prints rc=<n> on stdout. First-seen markers and
+    # the flagged list live in $scratch/state (DEAD_PR_STATE_DIR).
     local rc
     set +e
-    env GH="$scratch/bin/gh" DEAD_PR_REPO="Nishfleet/fleet-ops" "$@" \
+    env GH="$scratch/bin/gh" DEAD_PR_REPO="Nishfleet/fleet-ops" \
+        DEAD_PR_STATE_DIR="$scratch/state" "$@" \
         "$bin" >"$scratch/stdout.log" 2>"$scratch/stderr.log"
     rc=$?
     set -e
@@ -141,6 +156,10 @@ set_fixtures() {
     : >"$scratch/gh.log"
     : >"$scratch/stdout.log"
     : >"$scratch/stderr.log"
+    # Stale-conflicting state starts clean each case; a case seeds marker
+    # files under $scratch/state itself when it needs an aged first-seen.
+    rm -rf "$scratch/state"
+    mkdir -p "$scratch/state"
 }
 
 set_pr_view() {
@@ -280,6 +299,7 @@ ok "case11: MERGEABLE PRs only -> dead_conflicting_prs=0, exit 0, no issue views
 # on stderr, no false green ---
 set_fixtures '[]'
 out=$(env GH="$scratch/bin/gh" DEAD_PR_REPO="Nishfleet/fleet-ops" \
+  DEAD_PR_STATE_DIR="$scratch/state" \
   FAKE_PR_LIST_RC=2 "$bin" >"$scratch/stdout.log" 2>"$scratch/stderr.log"; echo "rc=$?")
 grep -q 'rc=2' <<<"$out" || fail "gh pr list failure must exit rc 2: $out"
 grep -q 'LOUD \[DEAD-PR-GH\]' "$scratch/stderr.log" || fail "gh failure must LOUD on stderr: $(cat "$scratch/stderr.log")"
@@ -399,6 +419,129 @@ grep -q 'unknown-mergeable=1' "$scratch/stderr.log" || fail "honesty line must c
 grep -q 'parent=4945 parent-state=CLOSED' "$scratch/stdout.log" || fail "evidence line must name parent 4945 CLOSED: $(cat "$scratch/stdout.log")"
 [ "$(last_measure)" = "dead_conflicting_prs=1" ] || fail "measure must be = 1: $(last_measure)"
 ok "case19: list mergeable null -> view CONFLICTING + CLOSED parent -> rc 1, parent-state=CLOSED, never clean"
+
+# --- Case 20 (fleet-ops#5205a): CONFLICTING + OPEN parent with the
+# first-seen marker older than the bound -> stale-conflicting: rc 1, a
+# `stale-conflicting-pr:` evidence line, the `stale_conflicting_prs=1`
+# measure line, `dead_conflicting_prs=0` still LAST, the PR on the flagged
+# list for red-pr-repair, and the marker kept (the PR is still in class). ---
+set_fixtures \
+  '[{"number":4830,"title":"seat: deepseek last-resort","headRefName":"claim/issue-4625","mergeable":"CONFLICTING","body":"Closes #4625"}]' \
+  4625:OPEN
+printf '%s\n' "$(date -u -d '25 hours ago' +%Y-%m-%dT%H:%M:%SZ)" \
+  >"$scratch/state/fleet-ops-4830.first-seen"
+rc=$(run)
+grep -q '^rc=1$' <<<"$rc" || fail "case20: stale-conflicting must exit 1 like the dead class: $rc"
+grep -q '^stale-conflicting-pr: 4830 ' "$scratch/stdout.log" \
+  || fail "case20: must emit a stale-conflicting-pr evidence line: $(cat "$scratch/stdout.log")"
+grep -q 'parent=4625' "$scratch/stdout.log" || fail "case20: evidence line must name parent=4625: $(cat "$scratch/stdout.log")"
+grep -q 'first-seen=' "$scratch/stdout.log" || fail "case20: evidence line must carry first-seen: $(cat "$scratch/stdout.log")"
+grep -q '^stale_conflicting_prs=1$' "$scratch/stdout.log" \
+  || fail "case20: measure must be stale_conflicting_prs=1: $(cat "$scratch/stdout.log")"
+[ "$(last_measure)" = "dead_conflicting_prs=0" ] \
+  || fail "case20: dead_conflicting_prs=0 must still be the LAST stdout line: $(last_measure)"
+grep -qx 'Nishfleet/fleet-ops 4830 4625' "$scratch/state/stale-conflicting.list" \
+  || fail "case20: flagged list must carry the PR for red-pr-repair: $(cat "$scratch/state/stale-conflicting.list")"
+[ -f "$scratch/state/fleet-ops-4830.first-seen" ] \
+  || fail "case20: marker must be kept while the PR stays in class"
+grep -q 'stale-conflicting=1' "$scratch/stderr.log" \
+  || fail "case20: scan-done line must count stale-conflicting=1: $(cat "$scratch/stderr.log")"
+ok "case20: CONFLICTING + OPEN parent, first-seen 25h > 24h bound -> flagged, rc 1, on the repair-suppression list"
+
+# --- Case 21 (fleet-ops#5205b): same shape but inside the bound -> NOT
+# flagged. Marker kept (the clock keeps running), flagged list written
+# empty, rc 0. ---
+set_fixtures \
+  '[{"number":4830,"title":"seat: deepseek last-resort","headRefName":"claim/issue-4625","mergeable":"CONFLICTING","body":"Closes #4625"}]' \
+  4625:OPEN
+printf '%s\n' "$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ)" \
+  >"$scratch/state/fleet-ops-4830.first-seen"
+rc=$(run)
+grep -q '^rc=0$' <<<"$rc" || fail "case21: inside-bound conflict must exit 0: $rc"
+grep -q '^stale_conflicting_prs=0$' "$scratch/stdout.log" \
+  || fail "case21: measure must be stale_conflicting_prs=0: $(cat "$scratch/stdout.log")"
+[ "$(last_measure)" = "dead_conflicting_prs=0" ] || fail "case21: last measure must be dead_conflicting_prs=0: $(last_measure)"
+[ -f "$scratch/state/fleet-ops-4830.first-seen" ] \
+  || fail "case21: marker must survive while the PR stays in class"
+[ -f "$scratch/state/stale-conflicting.list" ] \
+  || fail "case21: flagged list must be written even when empty"
+[ -s "$scratch/state/stale-conflicting.list" ] \
+  && fail "case21: flagged list must be empty inside the bound: $(cat "$scratch/state/stale-conflicting.list")"
+grep -q 'inside 24h bound' "$scratch/stderr.log" \
+  || fail "case21: inside-bound conflict must be logged: $(cat "$scratch/stderr.log")"
+ok "case21: CONFLICTING + OPEN parent, first-seen 1h < 24h bound -> not flagged, rc 0, marker kept"
+
+# --- Case 22: no marker yet -> the first observation writes first-seen
+# and does NOT flag (the bound cannot be crossed on the same tick the
+# conflict is first seen). A second run inside the bound stays clean and
+# keeps the SAME first-seen (the clock does not reset per tick). ---
+set_fixtures \
+  '[{"number":5074,"title":"fix: slowburn terminus","headRefName":"claim/issue-4773","mergeable":"CONFLICTING","body":"Closes #4773"}]' \
+  4773:OPEN
+rc=$(run)
+grep -q '^rc=0$' <<<"$rc" || fail "case22: first observation must exit 0: $rc"
+grep -q 'conflict first seen' "$scratch/stderr.log" \
+  || fail "case22: first-seen write must be logged: $(cat "$scratch/stderr.log")"
+fs1="$(cat "$scratch/state/fleet-ops-5074.first-seen" 2>/dev/null)"
+[ -n "$fs1" ] || fail "case22: first-seen marker must be written"
+rc=$(run)
+grep -q '^rc=0$' <<<"$rc" || fail "case22: second tick inside bound must exit 0: $rc"
+fs2="$(cat "$scratch/state/fleet-ops-5074.first-seen" 2>/dev/null)"
+[ "$fs1" = "$fs2" ] || fail "case22: first-seen must not reset between ticks ($fs1 -> $fs2)"
+grep -q '^stale_conflicting_prs=0$' "$scratch/stdout.log" || fail "case22: still inside bound: $(cat "$scratch/stdout.log")"
+ok "case22: first observation writes the marker without flagging; the clock persists across ticks"
+
+# --- Case 23 (GC): markers for PRs that left the class are pruned by the
+# same scan — a dead-classified PR, a MERGEABLE PR, and a vanished PR all
+# lose their markers; the flagged list rewrites empty. The dead class
+# itself is untouched (parent CLOSED still dead-flags, rc 1). ---
+set_fixtures \
+  '[{"number":9,"title":"feat: cloud upload v2","headRefName":"fix/cloud-upload","mergeable":"CONFLICTING","body":"Fixes #595"},{"number":66,"title":"feat: b","headRefName":"fix/b","mergeable":"MERGEABLE","body":"Fixes #1941"}]' \
+  595:CLOSED
+for gone in fleet-ops-9 fleet-ops-66 fleet-ops-999; do
+  printf '%s\n' "$(date -u -d '30 hours ago' +%Y-%m-%dT%H:%M:%SZ)" >"$scratch/state/$gone.first-seen"
+done
+printf 'Nishfleet/fleet-ops 999 888\n' >"$scratch/state/stale-conflicting.list"
+rc=$(run)
+grep -q '^rc=1$' <<<"$rc" || fail "case23: dead class must still exit 1: $rc"
+[ "$(last_measure)" = "dead_conflicting_prs=1" ] || fail "case23: dead measure must be 1: $(last_measure)"
+for gone in fleet-ops-9 fleet-ops-66 fleet-ops-999; do
+  [ ! -f "$scratch/state/$gone.first-seen" ] \
+    || fail "case23: marker $gone must be pruned (PR left the class or vanished)"
+done
+[ -s "$scratch/state/stale-conflicting.list" ] \
+  && fail "case23: flagged list must rewrite to this scan's set (empty): $(cat "$scratch/state/stale-conflicting.list")"
+grep -q '^stale_conflicting_prs=0$' "$scratch/stdout.log" || fail "case23: stale measure must be 0"
+ok "case23: GC prunes markers for dead/mergeable/vanished PRs; dead class unchanged"
+
+# --- Case 24 (bound edge): a first-seen exactly DEAD_PR_STALE_HOURS old
+# crosses the bound (age >= bound) -> flagged. ---
+set_fixtures \
+  '[{"number":4830,"title":"seat: deepseek last-resort","headRefName":"claim/issue-4625","mergeable":"CONFLICTING","body":"Closes #4625"}]' \
+  4625:OPEN
+printf '%s\n' "$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)" \
+  >"$scratch/state/fleet-ops-4830.first-seen"
+rc=$(run)
+grep -q '^rc=1$' <<<"$rc" || fail "case24: conflict exactly at the bound must flag: $rc"
+grep -q '^stale_conflicting_prs=1$' "$scratch/stdout.log" || fail "case24: stale measure must be 1: $(cat "$scratch/stdout.log")"
+ok "case24: first-seen exactly 24h old -> flagged (age >= bound)"
+
+# --- Case 25 (unreadable marker): a corrupt first-seen file must never
+# flag on a guess and must never hide the conflict forever — the detector
+# LOUDs DEAD-PR-STATE, resets the clock to now, and the PR stays inside
+# the bound this tick. ---
+set_fixtures \
+  '[{"number":4830,"title":"seat: deepseek last-resort","headRefName":"claim/issue-4625","mergeable":"CONFLICTING","body":"Closes #4625"}]' \
+  4625:OPEN
+printf 'not-a-timestamp\n' >"$scratch/state/fleet-ops-4830.first-seen"
+rc=$(run)
+grep -q '^rc=0$' <<<"$rc" || fail "case25: corrupt marker must not flag: $rc"
+grep -q 'DEAD-PR-STATE' "$scratch/stderr.log" \
+  || fail "case25: corrupt marker must LOUD DEAD-PR-STATE: $(cat "$scratch/stderr.log")"
+date -u -d "$(cat "$scratch/state/fleet-ops-4830.first-seen")" +%s >/dev/null 2>&1 \
+  || fail "case25: corrupt marker must be reset to a parseable timestamp"
+grep -q '^stale_conflicting_prs=0$' "$scratch/stdout.log" || fail "case25: corrupt marker resets inside bound: $(cat "$scratch/stdout.log")"
+ok "case25: corrupt marker -> LOUD + self-heal reset, never a guessed flag"
 
 # --- No agent names anywhere in detector output ---
 grep -qiE '(^|[[:space:]])(by|with|via|from|using|through|used)[[:space:]]+(the[[:space:]]+)?(claude|codex|devin|cursor|grok|openai|anthropic|deepseek|minimax|copilot|gemini|opus|chatgpt|fable|luna|sol)([^a-z]|$)' \

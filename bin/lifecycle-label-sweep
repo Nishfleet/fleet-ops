@@ -214,6 +214,21 @@ now_iso() {
     fi
 }
 
+# fleet-ops#5439 (silent-drop sweep 2026-09-11): a notification comment
+# must never vanish into `|| true`. Capture the gh rc; on failure log an
+# ALERT naming the dropped notice so the failure is durable in the sweep
+# log, not silent. The label move itself already succeeded, so a dropped
+# notice does not fail the caller — the ALERT is the record.
+comment_issue() {
+    local repo="$1" num="$2" body="$3" context="$4"
+    local rc=0
+    gh issue comment "$num" -R "$repo" --body "$body" >/dev/null 2>&1 || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        log "ALERT $repo#$num: issue comment FAILED (rc=$rc) — $context notice dropped (fleet-ops silent-drop 2026-09-11)"
+    fi
+    return 0
+}
+
 label_color() {
     case "$1" in
         nish-reserved)   printf '%s' "5319E7" ;;
@@ -458,7 +473,7 @@ heal_decided_nish_reserved() {
         log "  $repo#$num: remove-label nish-reserved FAILED — retry next tick"
         return 1
     fi
-    gh issue comment "$num" -R "$repo" --body "$body" >/dev/null 2>&1 || true
+    comment_issue "$repo" "$num" "$body" "nish-reserved heal"
     return 0
 }
 
@@ -477,7 +492,7 @@ admit_scout_candidate() {
         log "  $repo#$num: admit scout-candidate FAILED — retry next tick"
         return 1
     fi
-    gh issue comment "$num" -R "$repo" --body "$body" >/dev/null 2>&1 || true
+    comment_issue "$repo" "$num" "$body" "scout-candidate admit"
     return 0
 }
 
@@ -513,7 +528,7 @@ apply_label() {
         log "  $repo#$num: add-label $label FAILED — retry next tick"
         return 1
     fi
-    gh issue comment "$num" -R "$repo" --body "$body" >/dev/null 2>&1 || true
+    comment_issue "$repo" "$num" "$body" "lifecycle-label $label"
     return 0
 }
 
@@ -544,7 +559,7 @@ reclassify_to_observe_close() {
         log "  $repo#$num: reclassify to observe-to-close FAILED — retry next tick"
         return 1
     fi
-    gh issue comment "$num" -R "$repo" --body "$body" >/dev/null 2>&1 || true
+    comment_issue "$repo" "$num" "$body" "observe-to-close reclassify"
     return 0
 }
 
@@ -634,9 +649,9 @@ while IFS= read -r repo; do
             if ! issue_passes_spec_gate "$issue_body" "$repo"; then
                 log "  $repo#$num: SPEC-GATE-REFUSED agent-ready ($title)"
                 if [ "$DRY" != "1" ]; then
-                    gh issue comment "$num" -R "$repo" \
-                        --body "spec-gate: refused agent-ready (fleet-ops#543). Body needs termination: / accept: / required: / metric:." \
-                        >/dev/null 2>&1 || true
+                    comment_issue "$repo" "$num" \
+                        "spec-gate: refused agent-ready (fleet-ops#543). Body needs termination: / accept: / required: / metric:." \
+                        "spec-gate refusal"
                 fi
                 skipped=$((skipped + 1))
                 continue

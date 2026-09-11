@@ -31,6 +31,8 @@ grep -qF 'depends_on_filter()' "$tick" \
     || fail "depends_on_filter() not defined in tick"
 grep -qF 'resolve_dep()' "$tick" \
     || fail "resolve_dep() not defined in tick"
+grep -qF '_depends_on_refs()' "$tick" \
+    || fail "_depends_on_refs() not defined in tick (fleet-ops#5107)"
 grep -qF 'declare -A _dep_state_cache=()' "$tick" \
     || fail "_dep_state_cache associative array not declared in tick"
 grep -qF 'declare -A _dep_body_cache=()' "$tick" \
@@ -158,6 +160,12 @@ resolve_dep() {
     echo "NOT_DONE"
 }
 
+# The REAL _depends_on_refs parser, extracted verbatim from the tick —
+# hand-mirroring a parser is how drift happens (fleet-ops#5107).
+_dor_def="$(sed -n "/^_depends_on_refs()/,/^}/p" "$tick")"
+[[ -n "$_dor_def" ]] || fail "_depends_on_refs() not found in tick lib"
+eval "$_dor_def"
+
 depends_on_filter() {
     local body="$1" repo="$2" num="$3"
     local ref owner rname target_num dep_key dep_state dep_body
@@ -174,9 +182,13 @@ depends_on_filter() {
         gate_re="${_gate_res[$gi]}"
         skip_reason="${_gate_reasons[$gi]}"
 
-        mapfile -t deps < <(printf '%s\n' "$body" \
-            | grep -E "$gate_re" \
-            | grep -oE '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+|[A-Za-z0-9_.-]+#[0-9]+|#[0-9]+' || true)
+        if [[ "$skip_reason" == "skipped-depends-on" ]]; then
+            mapfile -t deps < <(printf '%s\n' "$body" | _depends_on_refs)
+        else
+            mapfile -t deps < <(printf '%s\n' "$body" \
+                | grep -E "$gate_re" \
+                | grep -oE '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+|[A-Za-z0-9_.-]+#[0-9]+|#[0-9]+' || true)
+        fi
         (( ${#deps[@]} == 0 )) && continue
 
         for ref in "${deps[@]}"; do
@@ -203,7 +215,7 @@ depends_on_filter() {
                         dep_body="$(gh issue view "$target_num" -R "${owner}/${rname}" --json body --jq '.body // ""' 2>/dev/null || true)"
                         _dep_body_cache[$dep_key]="$dep_body"
                     fi
-                    if printf '%s\n' "$dep_body" | grep -E '^depends-on:' \
+                    if printf '%s\n' "$dep_body" | _depends_on_refs \
                         | grep -qE "#${num}\b|${repo}#${num}\b"; then
                         echo "depends-on-cycle"
                         return 1
@@ -366,5 +378,69 @@ set -e
 state_calls=$(grep -cE 'repos/Nishfleet/fleet-ops/issues/2218$' "$GH_CALL_LOG" || true)
 [[ "$state_calls" == "1" ]] || fail "Test 7: #2218 state must be resolved once (cached), got $state_calls calls: $(cat "$GH_CALL_LOG")"
 ok "Test 7: dependency resolution is memoised (one gh call per issue per tick)"
+
+# --- Test 8 (fleet-ops#5107): dep only in a binding bullet -> skip line ---
+# The #2352 shape: structured line stays `none`; the judge's binding bullet
+# carries `depends-on: #2359` mid-line. #2359 open -> must skip with the
+# standard skip line, not claim.
+ISSUE_STATE[Nishfleet/fleet-ops#2359]=open
+PR_MERGED[Nishfleet/fleet-ops#2359]=0
+body2352=$'Filed automatically from the 11-lens pass.\ndepends-on: none\nowner-decision: no\n\n## Judge edits (binding)\n- If #2359 lands first, use its shared helper; add `depends-on: #2359`.\n'
+set +e
+out="$(depends_on_filter "$body2352" Nishfleet/fleet-ops 2352)"
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "Test 8: binding-only dep must skip, got rc=$rc out=$out"
+[[ "$out" == "skipped-depends-on:#2359" ]] || fail "Test 8: skip reason must be skipped-depends-on:#2359, got: $out"
+ok "Test 8: dep only in binding bullet -> skipped-depends-on:#2359"
+
+# --- Test 9 (fleet-ops#5107): gate prose outside binding is NOT a dep -----
+# Issue prose ABOUT the gate quotes issue numbers (evidence lists). A bare
+# mid-line match would park the ticket on its own evidence list.
+body_prose=$'why: the gate reads the structured line; `depends-on:` is still `none`: #2352, #2383 were claimed anyway\ndepends-on: none\n'
+ISSUE_STATE[Nishfleet/fleet-ops#2352]=open
+ISSUE_STATE[Nishfleet/fleet-ops#2383]=open
+set +e
+out="$(depends_on_filter "$body_prose" Nishfleet/fleet-ops 100)"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "Test 9: gate prose outside binding must not parse as deps, got rc=$rc out=$out"
+ok "Test 9: gate prose outside binding sections is claimable (no false park)"
+
+# --- Test 10 (fleet-ops#5107): lens-ref binding bullet, no #<n> -----------
+# "depends-on: the R1 ticket" names no issue number: no refs parse at the
+# intake layer, so the filter stays out of the way. The park happens in
+# spec-judge (blocked-on: orchestrator + labels), tested in spec-judge.test.sh.
+body_lens=$'depends-on: none\n\n## Judge edits (binding)\n- Replace `depends-on: none` with `depends-on: the R1 ticket for the cache-HIT claim`.\n'
+set +e
+out="$(depends_on_filter "$body_lens" Nishfleet/fleet-ops 100)"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "Test 10: no-number binding dep must not parse refs at intake, got rc=$rc out=$out"
+ok "Test 10: lens-ref binding bullet parses no refs (park is spec-judge's job)"
+
+# --- Test 11 (fleet-ops#5107): ref BEFORE the mid-line token not counted --
+body_before=$'depends-on: none\n\n## Judge edits (binding)\n- If #2373 lands first, keep `depends-on: none` until then.\n'
+ISSUE_STATE[Nishfleet/fleet-ops#2373]=open
+set +e
+out="$(depends_on_filter "$body_before" Nishfleet/fleet-ops 100)"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "Test 11: ref before the token / trailing none must not parse, got rc=$rc out=$out"
+ok "Test 11: refs are read only after the mid-line token"
+
+# --- Test 12 (fleet-ops#5107): cycle detected through a binding bullet ----
+# A (#100) depends on B (#2218) via the structured line; B's binding bullet
+# names A mid-line. Same parser on both sides -> cycle.
+ISSUE_STATE[Nishfleet/fleet-ops#2218]=open
+PR_MERGED[Nishfleet/fleet-ops#2218]=0
+DEP_BODY[Nishfleet/fleet-ops#2218]=$'title\n\n## Judge edits (binding)\n- Blocked on the R1 follow-up; add `depends-on: #100`.\n'
+set +e
+out="$(depends_on_filter $'depends-on: #2218\n' Nishfleet/fleet-ops 100)"
+rc=$?
+set -e
+[[ "$rc" == "1" ]] || fail "Test 12: binding-bullet back-reference must be a cycle, got rc=$rc out=$out"
+[[ "$out" == "depends-on-cycle" ]] || fail "Test 12: reason must be depends-on-cycle, got: $out"
+ok "Test 12: cycle detection uses the same parse (binding bullet counts)"
 
 echo "ALL DEPENDS-ON TESTS PASSED"

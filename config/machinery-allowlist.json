@@ -63,6 +63,12 @@
       "source": "repo"
     },
     {
+      "unit": "fleet-seat-bench-truth",
+      "class": "a",
+      "source": "repo",
+      "note": "fleet-ops#5285: bench-truth PONG path+service (DECISION 2026-09-11 Nish+Fable: 15-min sweep timer + path unit on the seats dir). Runs the existing fleet-seat-comeback-release --false-wall-only; in-bin 60s sweep debounce + StartLimitIntervalSec=0 guard the #5093 dir-watcher storm class."
+    },
+    {
       "unit": "fleet-researcher",
       "class": "b",
       "source": "repo"

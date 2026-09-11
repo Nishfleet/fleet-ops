@@ -51,6 +51,15 @@ cat >"$scratch/merged.json" <<'JSON'
 ]
 JSON
 echo '[{"number": 700}]' > "$scratch/reverts.json"
+# fleet-ops#5140: prom_lines()/_emit_deploy_quality() now also measure every
+# `product: true` repo in intake-repos.json. Sections 1-4 only call compute()
+# with fixtures (no product path), but sections 5 and 6 walk prom_lines() and
+# must never reach for a LIVE product repo. This fixture pins the product set
+# to empty (fleet-ops is excluded by design) and FLEET_DQ_REPOS_JSON is set in
+# both env dicts.
+cat >"$scratch/intake-fleet-ops-only.json" <<'JSON'
+{"repos": [{"name": "fleet-ops", "product": false}]}
+JSON
 
 cat >"$scratch/journal.log" <<'JRNL'
 # Lead line so journal_start (17:47:00Z) precedes every mergedAt: a merge
@@ -268,6 +277,7 @@ env = {
     "FLEET_DQ_JOURNAL": f"{scratch}/journal.log",
     "FLEET_DQ_ACTIONS_LOG": f"{scratch}/actions.log",
     "FLEET_DQ_CACHE_DIR": f"{scratch}/cache",
+    "FLEET_DQ_REPOS_JSON": f"{scratch}/intake-fleet-ops-only.json",
 }
 spec = importlib.util.spec_from_file_location("fdq", path)
 m = importlib.util.module_from_spec(spec)
@@ -312,6 +322,7 @@ os.environ["FLEET_DQ_REVERTS"] = f"{scratch}/reverts.json"
 os.environ["FLEET_DQ_JOURNAL"] = f"{scratch}/journal.log"
 os.environ["FLEET_DQ_ACTIONS_LOG"] = f"{scratch}/actions.log"
 os.environ["FLEET_DQ_CACHE_DIR"] = f"{scratch}/cache"
+os.environ["FLEET_DQ_REPOS_JSON"] = f"{scratch}/intake-fleet-ops-only.json"
 os.environ["FLEET_DQ_TTD_MIN_SAMPLES"] = "1"
 
 spec = importlib.util.spec_from_file_location("fme", exporter)
@@ -434,6 +445,85 @@ tests:
             exp_annotations:
               summary: "deployment-quality metrics computation failed or vanished"
               description: "fleet_deployment_quality_up is absent or 0 for 15+ minutes — lib/fleet-deploy-quality.py failed (the gauges are NaN so threshold rules are silent; THIS alert is the only loud signal). The exporter logs 'deploy-quality: ...' to stderr; check journalctl --user -u fleet-metrics-export.service and /home/nish/.local/lib/pi-packet/fleet-deploy-quality.py. fleet-ops#2758."
+  - interval: 1m
+    name: ProductDeployStalled fires when a product repo deploy is non-green > 3600s for 15m (fleet-ops#5140)
+    input_series:
+      - series: 'fleet_deploy_blocked_duration_seconds{repo="0509",workflow="Deploy production"}'
+        values: '7200x40'
+      - series: 'fleet_product_deploy_last_red_run_info{repo="0509",workflow="Deploy production",url="https://github.com/Nishfleet/0509/actions/runs/424242"}'
+        values: '1x40'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: ProductDeployStalled
+        exp_alerts: []
+      - eval_time: 16m
+        alertname: ProductDeployStalled
+        exp_alerts:
+          - exp_labels:
+              alertname: ProductDeployStalled
+              repo: "0509"
+              workflow: Deploy production
+              severity: warning
+              service: fleet
+            exp_annotations:
+              summary: "0509 production deploy stalled: Deploy production non-green for 2h 0m 0s"
+              description: "fleet_deploy_blocked_duration_seconds{repo=\"0509\",workflow=\"Deploy production\"} exceeded 3600s for 15+ minutes: 0509's production deploy has been non-green for 2h 0m 0s (an in-flight run counts as non-green). Newest red run: https://github.com/Nishfleet/0509/actions/runs/424242. fleet-ops#5140: 2026-09-10, 131 merged product PRs sat undelivered for 28h while every dashboard read green. Repair: open the newest red run, read its failure, then fix or re-run the Deploy production workflow on Nishfleet/0509."
+  - interval: 1m
+    name: ProductDeployStalled silent when the newest run is green (blocked = 0)
+    input_series:
+      - series: 'fleet_deploy_blocked_duration_seconds{repo="0509",workflow="Deploy production"}'
+        values: '0x40'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: ProductDeployStalled
+        exp_alerts: []
+  - interval: 1m
+    name: ProductDeployStalled never fires for the fleet-ops repo itself (DeployBlockedStuck owns that)
+    input_series:
+      - series: 'fleet_deploy_blocked_duration_seconds{repo="fleet-ops"}'
+        values: '7200x40'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: ProductDeployStalled
+        exp_alerts: []
+  - interval: 1m
+    name: ProductDeployUnmeasurable fires when a product repo emits up=0 for 30m+ (fleet-ops#5250)
+    input_series:
+      - series: 'fleet_deployment_quality_up{repo="0509"}'
+        values: '0x40'
+    alert_rule_test:
+      - eval_time: 29m
+        alertname: ProductDeployUnmeasurable
+        exp_alerts: []
+      - eval_time: 31m
+        alertname: ProductDeployUnmeasurable
+        exp_alerts:
+          - exp_labels:
+              alertname: ProductDeployUnmeasurable
+              repo: "0509"
+              severity: warning
+              service: fleet
+            exp_annotations:
+              summary: "0509 deployment-quality unmeasurable: fleet_deployment_quality_up 0 for 30m+"
+              description: "fleet_deployment_quality_up{repo=\"0509\"} has been 0 for 30+ minutes — lib/fleet-deploy-quality.py could not measure 0509 (missing PRODUCT_DEPLOY_WORKFLOWS entry, unreadable runs source, or gh outage) and its deploy-quality gauges are NaN, so ProductDeployStalled is blind for it. The exporter logs 'deploy-quality: ...' to stderr; check journalctl --user -u fleet-metrics-export.service and /home/nish/.local/lib/pi-packet/fleet-deploy-quality.py. fleet-ops#5250."
+  - interval: 1m
+    name: ProductDeployUnmeasurable silent while the product repo measures fine (up=1)
+    input_series:
+      - series: 'fleet_deployment_quality_up{repo="0509"}'
+        values: '1x40'
+    alert_rule_test:
+      - eval_time: 31m
+        alertname: ProductDeployUnmeasurable
+        exp_alerts: []
+  - interval: 1m
+    name: ProductDeployUnmeasurable never fires for the fleet-ops repo itself (DeploymentQualityStale owns that)
+    input_series:
+      - series: 'fleet_deployment_quality_up{repo="fleet-ops"}'
+        values: '0x40'
+    alert_rule_test:
+      - eval_time: 31m
+        alertname: ProductDeployUnmeasurable
+        exp_alerts: []
 YOAML
   if ! out="$(promtool test rules "$scratch/fdq.test.yml" 2>&1)"; then
     fail "promtool test rules exited non-zero: $out"

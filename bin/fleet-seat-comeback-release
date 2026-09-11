@@ -256,10 +256,29 @@ OVERLOAD_WALL_BASE_S="${FLEET_SEAT_COMEBACK_OVERLOAD_WALL_BASE_S:-1800}"
 OVERLOAD_WALL_MAX_S="${FLEET_SEAT_COMEBACK_OVERLOAD_WALL_MAX_S:-21600}"
 PROBE_TOKEN="${FLEET_SEAT_COMEBACK_PROBE_TOKEN:-42}"
 PONG_TOKEN="${FLEET_SEAT_COMEBACK_PONG_TOKEN:-PONG}"
-FALSE_WALL_PROBE_S="${FLEET_SEAT_COMEBACK_FALSE_WALL_PROBE_S:-3600}"
+# fleet-ops#5285 bench-truth contract: a non-money future wall is verified
+# against ground truth at min(advertised reset, 15 min) — a bench longer than
+# 15 min owes the seat a live PONG at most one 15-min cycle after the bench
+# was written. The DECISION on #5285 (Nish + Fable, 2026-09-11): Devin's real
+# limit is a 15-minute window, so an hourly idle of the best lane per phantom
+# bench is exactly the cost this threshold exists to kill. The per-seat
+# min-interval check below uses the same constant, so the cadence is one
+# PONG per benched seat per 15 min ("one PONG per benched seat per 15 min
+# costs pennies and is the price of not idling the best lane").
+FALSE_WALL_PROBE_S="${FLEET_SEAT_COMEBACK_FALSE_WALL_PROBE_S:-900}"
+# fleet-ops#5285: the bench-truth .path unit (fleet-seat-bench-truth.path)
+# triggers --false-wall-only on EVERY write to the seats ledger dir. The
+# lived #5093 lesson: a dir watcher can see ~2500 starts/h and wedge its
+# oneshot. StartLimitIntervalSec=0 on the unit plus THIS in-bin debounce
+# (skip the sweep unless the last one is >=60s old) keeps the fast path
+# cheap: a storm of ledger writes costs one jq read per trigger.
+SWEEP_GAP_S="${FLEET_SEAT_COMEBACK_SWEEP_GAP_S:-60}"
 DRY_RUN=0
 FALSE_WALL_DRILL=0
 FALSE_WALL_ONLY=0
+# fleet-ops#5285: cumulative bench-lie counters (provider/model -> count),
+# persisted in the state file, rendered as fleet_seat_bench_lied_total.
+declare -A BENCH_LIED=()
 case "${1:-}" in
     --dry-run) DRY_RUN=1 ;;
     --false-wall-drill) FALSE_WALL_DRILL=1 ;;
@@ -269,9 +288,10 @@ case "${1:-}" in
 Usage: fleet-seat-comeback-release [--dry-run|--false-wall-drill|--false-wall-only|--help]
 
 Sweep walled seats. Expired walls get a tool-using probe. Non-money
-future walls longer than 1h with cap>0 get a 1-turn PONG at most once
-per hour (fleet-ops#4640); PONG releases the seat and logs
-SEAT-WALL-FALSE.
+future walls longer than 15 min with cap>0 get a 1-turn PONG at most
+once per 15 min (fleet-ops#5285 bench-truth; min(advertised reset,
+15 min)); PONG releases the seat, writes source=bench_truth_probe and
+logs SEAT-WALL-FALSE + a fleet_seat_bench_lied_total increment.
 
   --dry-run            log probes, write nothing
   --false-wall-drill   inject a 24h wall on one cap>0 non-money seat,
@@ -438,7 +458,14 @@ ledger_is_money_wall() {
     st=$(jq -r '.http_status // 0' "$f" 2>/dev/null || true)
     fm=$(jq -r '.failure_mode // ""' "$f" 2>/dev/null || true)
     [[ "$src" == "money_boundary" ]] && return 0
-    [[ "$hc" == "quota_exhausted" ]] && return 0
+    # fleet-ops#5285: policy benches are decisions, not observations — a
+    # daily spend cap, a free-tier daily budget or a spend boundary is money
+    # and is never PONG-probed or cleared (DECISION 2026-09-11). The first
+    # pre-merge proof run cleared deepseek/deepseek-flash's daily_spend_cap
+    # bench; this is the lock against that.
+    case "$src" in
+        daily_spend_cap|free_daily_budget|spend_boundary|provider_daily_budget|product_only_spend_cap) return 0 ;;
+    esac
     [[ "$fm" == "quota_exhausted" ]] && return 0
     [[ "$st" == "402" ]] && return 0
     return 1
@@ -486,9 +513,9 @@ comeback_intentionally_held() {
 # --- state (per-seat last probe time + cumulative counters) ---------------
 load_state() {
     if [[ -f "$STATE_FILE" ]]; then
-        jq -c '.' "$STATE_FILE" 2>/dev/null || printf '%s\n' '{"last_probe":{},"probed_total":0,"released_total":0,"walls_total":0,"corpse_total":0,"retired_total":0,"overload_strikes":{},"own_failures":{}}'
+        jq -c '.' "$STATE_FILE" 2>/dev/null || printf '%s\n' '{"last_probe":{},"probed_total":0,"released_total":0,"walls_total":0,"corpse_total":0,"retired_total":0,"overload_strikes":{},"own_failures":{},"bench_lied":{},"last_sweep":0}'
     else
-        printf '%s\n' '{"last_probe":{},"probed_total":0,"released_total":0,"walls_total":0,"corpse_total":0,"retired_total":0,"overload_strikes":{},"own_failures":{}}'
+        printf '%s\n' '{"last_probe":{},"probed_total":0,"released_total":0,"walls_total":0,"corpse_total":0,"retired_total":0,"overload_strikes":{},"own_failures":{},"bench_lied":{},"last_sweep":0}'
     fi
 }
 
@@ -557,6 +584,18 @@ write_prom() {
         printf '# HELP fleet_seat_comeback_release_interval_breached 1 for each seat past usable_at by more than one probe interval after a completed sweep (fleet-ops#2806).\n'
         printf '# TYPE fleet_seat_comeback_release_interval_breached gauge\n'
         [[ -z "$breached_lines" ]] || printf '%s\n' "$breached_lines"
+        # fleet-ops#5285: per-seat bench-lie counters. Every PONG-cleared
+        # bench increments fleet_seat_bench_lied_total{provider,model} — the
+        # ledger benched a seat the provider would actually serve. The
+        # FleetSeatBenchLied alert fires when one provider's counter grows
+        # >3 in 6h and routes to the alert-repair dispatcher, never Nish.
+        printf '# HELP fleet_seat_bench_lied_total Benches cleared by the bench-truth PONG probe — the ledger benched a seat the provider would serve (fleet-ops#5285).\n'
+        printf '# TYPE fleet_seat_bench_lied_total counter\n'
+        local lk pm bm
+        for lk in "${!BENCH_LIED[@]}"; do
+            pm="${lk%%/*}" bm="${lk#*/}"
+            printf 'fleet_seat_bench_lied_total{provider="%s",model="%s"} %s\n' "$pm" "$bm" "${BENCH_LIED[$lk]}"
+        done
     } > "$PROM_FILE.tmp"
     mv "$PROM_FILE.tmp" "$PROM_FILE"
 }
@@ -658,16 +697,23 @@ release_false_wall() {
         mw=$(jq -r '.writer // empty' "$mk" 2>/dev/null || true)
         [[ -n "$mw" ]] && writer="$mw"
     fi
-    if unwall_seat "$p" "$m" "$f" 1; then
+    # fleet-ops#5285: a PONG-cleared bench is a bench LIE — the ledger benched
+    # a seat the provider would actually serve. The unwall carries
+    # source=bench_truth_probe so the provenance is auditable, and the
+    # per-seat counter fleet_seat_bench_lied_total{provider,model} is
+    # incremented (FleetSeatBenchLied watches the 6h increase).
+    if unwall_seat "$p" "$m" "$f" 1 "" "bench_truth_probe"; then
         rm -f "$mk" 2>/dev/null || true
-        log "SEAT-WALL-FALSE $p/$m writer=$writer PONG — released despite future wall (fleet-ops#4640)"
+        BENCH_LIED["$p/$m"]=$(( ${BENCH_LIED["$p/$m"]:-0} + 1 ))
+        log "SEAT-WALL-FALSE $p/$m writer=$writer PONG — released despite future wall (fleet-ops#4640); bench lie counted (fleet-ops#5285)"
         return 0
     fi
     return 1
 }
 
-# Hourly PONG of a LONG non-money future wall. Short walls (re-bench,
-# 15-min 429) wait for the expired-wall tool probe. Money walls stay held.
+# Bench-truth PONG of a non-money future wall longer than 15 min, owed at
+# min(advertised reset, 15 min) after the bench was written (fleet-ops#5285;
+# was hourly under #4640). Money walls stay held.
 try_false_wall_release() {
     local p="$1" m="$2" f="$3" base="$4"
     local usable_e remain lastp now_e ue
@@ -679,6 +725,20 @@ try_false_wall_release() {
     now_e=$(now_epoch)
     remain=$(( usable_e - now_e ))
     (( remain > FALSE_WALL_PROBE_S )) || return 1
+    # fleet-ops#5285: a bench is owed its truth probe at min(advertised reset,
+    # 15 min) AFTER it was written, never before. A freshly written bench
+    # (re-bench, a real 429 seconds ago) is not yet a suspect; probing it on
+    # the next ledger write would just hit the same wall and burn the
+    # per-seat probe slot. observed_at is the bench write time in every
+    # writer (seat-health.ts, mark_seat_*, comeback_release_rebench).
+    local obs_s obs_e
+    obs_s=$(jq -r '.observed_at // ""' "$f" 2>/dev/null || true)
+    obs_e=$(ts_epoch "$obs_s")
+    # Silent like the remain check above: the path unit fires on every
+    # ledger write, and a log line per fresh bench per trigger is the noise.
+    if (( ! FALSE_WALL_DRILL )) && [[ -n "$obs_e" ]] && (( now_e - obs_e < FALSE_WALL_PROBE_S )); then
+        return 1
+    fi
     lastp="${last_probe["$base"]:-0}"
     if (( ! FALSE_WALL_DRILL )) && (( lastp > 0 )) && (( now_e - lastp < FALSE_WALL_PROBE_S )); then
         log "skip false-wall PONG $p/$m: last probe $((now_e - lastp))s ago (< ${FALSE_WALL_PROBE_S}s)"
@@ -752,7 +812,7 @@ run_false_wall_drill() {
 # via wall_end_of and silently refused to unwall force-probed seats, the
 # exact never-probed-comeback failure the issue names.
 unwall_seat() {
-    local p="$1" m="$2" f="$3" force="${4:-0}" release_kind="${5:-}" usable we now_e
+    local p="$1" m="$2" f="$3" force="${4:-0}" release_kind="${5:-}" source_kind="${6:-comeback_release}" usable we now_e
     now_e=$(now_epoch)
     usable=$(jq -r '.usable_at // ""' "$f" 2>/dev/null || true)
     we=$(ts_epoch "$usable")
@@ -766,12 +826,12 @@ unwall_seat() {
     fi
     local tmp="$f.$$.tmp"
     jq -n \
-        --arg p "$p" --arg m "$m" --arg now "$(now_iso)" \
+        --arg p "$p" --arg m "$m" --arg now "$(now_iso)" --arg sk "$source_kind" \
         '{provider:$p, model:$m, http_status:200, retry_after:null,
           health_class:"healthy", retryable:false, seat_dead:false,
           poison_ladder:false, failure_mode:"none", observed_at:$now,
           usable_at:null, bench_until:null, consecutive_failure_count:0,
-          source:"comeback_release", writer:"unwall_seat"}' > "$tmp"
+          source:$sk, writer:"unwall_seat"}' > "$tmp"
     chmod 600 "$tmp" 2>/dev/null || true
     mv "$tmp" "$f"
     log "UNWALLED $p/$m (healthy observation written)"
@@ -1332,6 +1392,15 @@ main() {
     state=$(load_state)
     probed_total=$(jq -r '(.probed_total // 0)' <<<"$state")
     released_total=$(jq -r '(.released_total // 0)' <<<"$state")
+    # fleet-ops#5285: cumulative per-seat bench-lie counters + the sweep-gap
+    # debounce clock for the --false-wall-only path unit.
+    local last_sweep
+    last_sweep=$(jq -r '(.last_sweep // 0)' <<<"$state")
+    [[ "$last_sweep" =~ ^[0-9]+$ ]] || last_sweep=0
+    if (( FALSE_WALL_ONLY )) && (( last_sweep > 0 )) && (( now - last_sweep < SWEEP_GAP_S )); then
+        log "bench-truth sweep debounce: last sweep $(( now - last_sweep ))s ago (< ${SWEEP_GAP_S}s) — skip (fleet-ops#5285 path-unit storm guard)"
+        return 0
+    fi
     CORPSE_TOTAL=$(jq -r '(.corpse_total // 0)' <<<"$state")
     [[ "$CORPSE_TOTAL" =~ ^[0-9]+$ ]] || CORPSE_TOTAL=0
     RETIRED_TOTAL=$(jq -r '(.retired_total // 0)' <<<"$state")
@@ -1388,6 +1457,15 @@ main() {
     done < <(jq -r '(.overload_strikes // {}) | to_entries[] | [.key, (.value.count // 0 |tostring), (.value.first_at // ""), (.value.last_at // "")] | @tsv' <<<"$state" 2>/dev/null || true)
     WALLS_TOTAL=$(jq -r '(.walls_total // 0)' <<<"$state")
     [[ "$WALLS_TOTAL" =~ ^[0-9]+$ ]] || WALLS_TOTAL=0
+
+    # fleet-ops#5285: cumulative bench-lie counters (per seat), rendered as
+    # fleet_seat_bench_lied_total{provider,model} in the textfile.
+    declare -A BENCH_LIED=()
+    local blk bv
+    while IFS=$'\t' read -r blk bv; do
+        [[ -n "$blk" ]] || continue
+        BENCH_LIED["$blk"]="$bv"
+    done < <(jq -r '(.bench_lied // {}) | to_entries[] | [.key, (.value|tostring)] | @tsv' <<<"$state" 2>/dev/null || true)
 
 
     local f base wall_end we
@@ -1991,16 +2069,23 @@ main() {
         own_json+="$(jq -nc --arg k "$of" --argjson v "${OWN_FAIL[$of]}" '{key:$k,value:$v}'),"
     done
     own_json="${own_json%,}"
+    local lied_json="" lk
+    for lk in "${!BENCH_LIED[@]}"; do
+        lied_json+="$(jq -nc --arg k "$lk" --argjson v "${BENCH_LIED[$lk]}" '{key:$k,value:$v}'),"
+    done
+    lied_json="${lied_json%,}"
     save_state "$(jq -nc --argjson lp "[$last_probe_json]" \
         --argjson pt "$probed_total" --argjson rt "$released_total" \
         --argjson wt "$WALLS_TOTAL" --argjson ct "$CORPSE_TOTAL" \
         --argjson rr "$RETIRED_TOTAL" \
         --argjson os "[$strikes_json]" \
         --argjson own "[$own_json]" \
+        --argjson bl "[$lied_json]" --argjson ls "$now" \
         '{last_probe: ($lp | from_entries), probed_total: $pt, released_total: $rt,
           walls_total: $wt, corpse_total: $ct, retired_total: $rr,
           overload_strikes: ($os | map({key:.provider, value: {count:.count, first_at:.first_at, last_at:.last_at}}) |from_entries),
-          own_failures: ($own | from_entries)}')"
+          own_failures: ($own | from_entries),
+          bench_lied: ($bl | from_entries), last_sweep: $ls}')"
 
     # The fleet-ops#2421 loud check: walled seats still hold expired wall
     # clocks AND nothing was released this run -> the release path did not
@@ -2012,6 +2097,13 @@ main() {
     # read-only-ledger shape BOTH fire; each renders its own LOUD line and
     # the unit exits 1 once (OnFailure escalates, last-green stays stale).
     if (( FALSE_WALL_ONLY )); then
+        # fleet-ops#5285: the event-driven sweep must publish the bench-lie
+        # counters it just incremented (FleetSeatBenchLied reads the prom),
+        # without touching the main sweep's last-green clock — carry the
+        # existing last-green value through unchanged.
+        local _lg=""
+        [[ -f "$PROM_FILE" ]] && _lg=$(grep -oE '^fleet_seat_comeback_release_last_green_seconds [0-9]+' "$PROM_FILE" 2>/dev/null | awk '{print $2}' | head -n1 || true)
+        write_prom "${_lg:-}" 0 "$probed_total" "$released_total" "$expired" "$CORPSE_TOTAL" "$RETIRED_TOTAL" "$breached" "$breached_lines"
         log "false-wall-only sweep complete: probed=$probed released=$released_this_run"
         return 0
     fi

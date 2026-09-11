@@ -45,6 +45,24 @@ fi
 # A CONFLICTING PR with no resolvable parent is NOT dead-classified — we
 # cannot prove a resolved parent, so it is skipped, never guessed.
 #
+# Third class (fleet-ops#5205) — STALE-CONFLICTING: a decided-CONFLICTING PR
+# whose parent is still OPEN is not dead, but a conflict left standing rots
+# the branch, holds the parent's claim, and feeds the red-PR repair rail a
+# failure shape no worker can fix (a conflict is not a red check). A PR
+# joins the class when its conflict has stood longer than
+# DEAD_PR_STALE_HOURS (default 24). Conflict age CANNOT come from GitHub —
+# createdAt/updatedAt are branch age, and a PR can be created MERGEABLE and
+# conflict later — so the detector keeps a first-seen marker per PR under
+# its state dir (DEAD_PR_STATE_DIR, beside the red-pr-repair state) and
+# prunes it the same way that state is pruned: the instant the PR leaves
+# the class (goes MERGEABLE, dead-classifies, loses its resolvable parent,
+# or leaves the open list) the marker is dropped by the same GC pass, and
+# the flagged list is rewritten to exactly the currently-flagged set.
+# Flagged members are also written to $STATE_DIR/stale-conflicting.list
+# (one `<repo> <pr>` line each) which fleet-heartbeat-red-pr-repair
+# consumes to suppress repair dispatches the flag has already proven
+# futile.
+#
 # GitHub computes mergeability asynchronously: while undecided gh returns
 # `mergeable: "UNKNOWN"` or null, and a future gh may return new values.
 # Any value that is not exactly MERGEABLE or CONFLICTING is counted in the
@@ -73,14 +91,16 @@ fi
 # OnFailure escalation pages instead of the branch lingering until a manual
 # sweep.
 #
-# Output: one `dead-pr:` evidence line + one human line per dead PR, then
-# the measure line `dead_conflicting_prs=<n>` as the LAST stdout line.
+# Output: one `dead-pr:` evidence line + one human line per dead PR, one
+# `stale-conflicting-pr:` evidence line + one human line per
+# stale-conflicting PR, then the `stale_conflicting_prs=<n>` measure line,
+# then the measure line `dead_conflicting_prs=<n>` as the LAST stdout line.
 # Logging is stderr only; stdout is machine-readable.
 #
-# Exit codes: 0 clean (no dead conflicting PRs), 1 when at least one dead
-# conflicting PR is proven, 2 on any gh/jq infra failure or on a PR whose
-# mergeable stays undecided while its parent is MERGED/CLOSED (fail-closed
-# — never a false green).
+# Exit codes: 0 clean, 1 when at least one dead or stale-conflicting PR is
+# proven (same rail, same OnFailure page), 2 on any gh/jq infra failure or
+# on a PR whose mergeable stays undecided while its parent is MERGED/CLOSED
+# (fail-closed — never a false green).
 #
 # Environment seams (tests override all of these):
 #   GH             gh binary (mockable)
@@ -88,6 +108,11 @@ fi
 #   DEAD_PR_UNKNOWN_ATTEMPTS  `gh pr view` re-query tries for an undecided
 #                  mergeable value (default 3)
 #   DEAD_PR_UNKNOWN_SLEEP     seconds between re-query tries (default 2)
+#   DEAD_PR_STATE_DIR         first-seen markers + stale-conflicting.list
+#                  (default $FLEET_HEARTBEAT_LOG_DIR/dead-pr-detector, which
+#                  itself defaults to ~/.local/state/fleet-heartbeat)
+#   DEAD_PR_STALE_HOURS       conflict-age bound for the stale class in
+#                  whole hours (default 24)
 
 set -euo pipefail
 
@@ -99,6 +124,8 @@ GH="${GH:-gh}"
 REPO="${DEAD_PR_REPO:-Nishfleet/fleet-ops}"
 UNKNOWN_ATTEMPTS="${DEAD_PR_UNKNOWN_ATTEMPTS:-3}"
 UNKNOWN_SLEEP="${DEAD_PR_UNKNOWN_SLEEP:-2}"
+STATE_DIR="${DEAD_PR_STATE_DIR:-${FLEET_HEARTBEAT_LOG_DIR:-$HOME/.local/state/fleet-heartbeat}/dead-pr-detector}"
+STALE_HOURS="${DEAD_PR_STALE_HOURS:-24}"
 
 log() {
     printf '[fleet-dead-pr-detector] %s\n' "$*" >&2
@@ -111,6 +138,15 @@ loud() {
 
 command -v "$GH" >/dev/null 2>&1 || { loud "DEAD-PR-BROKEN" "gh missing at $GH"; exit 2; }
 command -v jq >/dev/null 2>&1 || { loud "DEAD-PR-BROKEN" "jq missing"; exit 2; }
+[[ "$STALE_HOURS" =~ ^[0-9]+$ ]] || { loud "DEAD-PR-BROKEN" "invalid DEAD_PR_STALE_HOURS=$STALE_HOURS"; exit 2; }
+mkdir -p "$STATE_DIR" 2>/dev/null \
+    || { loud "DEAD-PR-BROKEN" "could not create state dir $STATE_DIR"; exit 2; }
+
+# first-seen marker filename for a PR: <repo-short>-<num>.first-seen under
+# STATE_DIR. Conflict age lives here because GitHub exposes no
+# conflict-since field (createdAt is branch age).
+repo_short="$(printf '%s' "${REPO##*/}" | tr -c 'A-Za-z0-9._-' '_')"
+marker_file() { printf '%s/%s-%s.first-seen' "$STATE_DIR" "$repo_short" "$1"; }
 
 # Delivery/related/reference patterns, exact-number bounded with an optional
 # repo prefix — mirrors fleet-merged-pr-close (#1135 must never match
@@ -257,7 +293,10 @@ fi
 
 conflicting=0
 dead=0
+stale=0
 unknown_mergeable=0
+in_class=()
+flagged=()
 
 while IFS= read -r pr; do
     [ -z "$pr" ] && continue
@@ -323,14 +362,81 @@ while IFS= read -r pr; do
             "$num" "$title" "$parent" "$state" "$url"
         printf 'dead-pr-human: PR #%s is a dead conflicting branch — parent issue #%s is %s (%s); the fix already shipped, the branch cannot merge.\n' \
             "$num" "$parent" "$state" "$url"
+    elif [ "$state" = "OPEN" ]; then
+        # Stale-conflicting class (fleet-ops#5205): the parent is alive so
+        # the PR is not dead, but a conflict that has stood past
+        # STALE_HOURS is its own fault. Age comes from the first-seen
+        # marker, never from createdAt (branch age, not conflict age).
+        mf="$(marker_file "$num")"
+        in_class+=("${mf##*/}")
+        now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        first_seen=""
+        first_epoch=""
+        if [ -f "$mf" ]; then
+            first_seen="$(head -n 1 "$mf" 2>/dev/null | tr -d '[:space:]' || true)"
+            [ -n "$first_seen" ] \
+                && first_epoch="$(date -u -d "$first_seen" +%s 2>/dev/null || true)"
+            if [ -z "$first_seen" ] || [ -z "$first_epoch" ]; then
+                # Unreadable marker: never flag on a guess, never let a
+                # corrupt file hide a conflict forever — reset the clock
+                # loudly and self-heal.
+                loud "DEAD-PR-STATE" "$REPO: PR #$num first-seen marker unreadable ('$first_seen') — resetting to $now_iso"
+                first_seen=""
+            fi
+        fi
+        if [ -z "$first_seen" ]; then
+            printf '%s\n' "$now_iso" >"$mf"
+            log "PR #$num: parent #$parent state=OPEN — conflict first seen $now_iso (inside ${STALE_HOURS}h bound) — still live, not stale"
+        else
+            age_s=$(( $(date -u +%s) - first_epoch ))
+            if [ "$age_s" -ge "$((STALE_HOURS * 3600))" ]; then
+                stale=$((stale + 1))
+                flagged+=("$REPO $num $parent")
+                url="https://github.com/${REPO}/pull/${num}"
+                printf 'stale-conflicting-pr: %s %s parent=%s first-seen=%s age-hours=%s %s\n' \
+                    "$num" "$title" "$parent" "$first_seen" "$((age_s / 3600))" "$url"
+                printf 'stale-conflicting-pr-human: PR #%s is a stale conflicting branch — parent issue #%s is still OPEN but the conflict has stood %sh (bound %sh); land/rebase it or close it with evidence.\n' \
+                    "$num" "$parent" "$((age_s / 3600))" "$STALE_HOURS"
+            else
+                log "PR #$num: parent #$parent state=OPEN — still live, not dead; conflicting since $first_seen (inside ${STALE_HOURS}h bound) — not stale"
+            fi
+        fi
     else
         log "PR #$num: parent #$parent state=$state — still live, not dead"
     fi
 done < <(printf '%s' "$prs_json" | jq -c '.[]')
 
+# GC: a first-seen marker whose PR left the class this scan (went
+# MERGEABLE, stayed undecided, dead-classified, lost its resolvable parent,
+# or vanished from the open list) is stale state — drop it. Same
+# prune-on-class-exit path the red-pr-repair state uses beside it; the
+# flagged-list rewrite below bounds the flagged set to this scan.
+shopt -s nullglob
+for marker in "$STATE_DIR"/*.first-seen; do
+    base="${marker##*/}"
+    keep=0
+    for k in ${in_class[@]+"${in_class[@]}"}; do
+        [ "$k" = "$base" ] && { keep=1; break; }
+    done
+    [ "$keep" = 0 ] && { rm -f "$marker"; log "GC: dropped first-seen marker $base (PR left the stale-conflicting class)"; }
+done
+shopt -u nullglob
+
+# Rewrite the flagged list atomically to exactly this scan's flagged set —
+# fleet-heartbeat-red-pr-repair consumes it to not spend dispatches on a
+# conflict shape no worker can repair. A fail-closed exit above leaves the
+# last good list in place rather than emptying it mid-fault.
+_tmp_list="$STATE_DIR/.stale-conflicting.list.$$"
+: >"$_tmp_list"
+for entry in ${flagged[@]+"${flagged[@]}"}; do
+    [ -n "$entry" ] && printf '%s\n' "$entry" >>"$_tmp_list"
+done
+mv "$_tmp_list" "$STATE_DIR/stale-conflicting.list"
+
+printf 'stale_conflicting_prs=%s\n' "$stale"
 printf 'dead_conflicting_prs=%s\n' "$dead"
-log "scan done: conflicting=$conflicting unknown-mergeable=$unknown_mergeable dead=$dead"
-if [ "$dead" -gt 0 ]; then
+log "scan done: conflicting=$conflicting unknown-mergeable=$unknown_mergeable dead=$dead stale-conflicting=$stale"
+if [ "$dead" -gt 0 ] || [ "$stale" -gt 0 ]; then
     exit 1
 fi
 exit 0

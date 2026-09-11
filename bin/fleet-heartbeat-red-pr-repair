@@ -26,6 +26,18 @@
 #     fleet-heartbeat.service lands in --state=failed -> page + Telegram
 #     per #76/#86). Never degrades silently.
 #
+# Stale-conflicting suppression (fleet-ops#5205): a PR the
+# fleet-dead-pr-detector flagged stale-conflicting is on
+# $LOG_DIR/dead-pr-detector/stale-conflicting.list (one `<repo> <pr>`
+# line each, rewritten by the detector every scan). A merge conflict is
+# not a red check a worker can repair — four dispatches burned on PR #4830
+# proved it — so a flagged PR is skipped before any debounce/dispatch work.
+# The flag is re-confirmed against the live `mergeable` field fetched with
+# the PR list: a MERGEABLE answer means the branch was rebased and the flag
+# is stale, so normal repair handling resumes; CONFLICTING or any undecided
+# value keeps the suppression (a flag the detector wrote means it proved
+# CONFLICTING on its own scan).
+#
 # Liveness rule (matches the orphan sweep, fleet-heartbeat-tier1 block 3,
 # and the lane-holding doctrine in fleet-ops#63): a unit in active or
 # activating state holds the lane — work is in flight (a freshly dispatched
@@ -42,6 +54,8 @@
 #   FLEET_REDPR_REPOS_JSON    claim_repos source (default fleet-repos.json)
 #   FLEET_HEARTBEAT_LOG_DIR   state + flag dir
 #   FLEET_HEARTBEAT_TRIAGE    triage file
+#   FLEET_STALE_CONFLICTING_LIST  dead-pr-detector's flagged list
+#                             (default $LOG_DIR/dead-pr-detector/stale-conflicting.list)
 #   RED_PR_MAX_ATTEMPTS       default 2
 #
 # Exit: 0 = no escalation (nothing to do, or dispatches attempted within
@@ -63,6 +77,7 @@ LOG_DIR="${FLEET_HEARTBEAT_LOG_DIR:-/home/nish/.local/state/fleet-heartbeat}"
 RED_PR_MAX_ATTEMPTS="${RED_PR_MAX_ATTEMPTS:-2}"
 
 STATE_DIR="$LOG_DIR/red-pr-repair"
+FLAGGED_LIST="${FLEET_STALE_CONFLICTING_LIST:-$LOG_DIR/dead-pr-detector/stale-conflicting.list}"
 mkdir -p "$STATE_DIR"
 
 log() {
@@ -140,6 +155,16 @@ PY
 
 state_remove() { rm -f "$1"; }
 
+# flagged_stale_conflict REPO PR — is (REPO, PR) on the dead-pr-detector's
+# stale-conflicting list? An absent list means the detector never ran (or
+# ran before the class existed) — nothing flagged, nothing suppressed.
+flagged_stale_conflict() {
+    local repo="$1" num="$2"
+    [[ -f "$FLAGGED_LIST" ]] || return 1
+    awk -v r="$repo" -v n="$num" '$1 == r && $2 == n { found = 1 } END { exit !found }' \
+        "$FLAGGED_LIST"
+}
+
 # --- repos config -----------------------------------------------------------
 [[ -f "$REPOS_JSON" ]] || {
     log "WARN: repos json missing at $REPOS_JSON — no claim_repos to scan"
@@ -189,9 +214,10 @@ while IFS= read -r repo; do
     [[ -n "$repo" ]] || continue
     short=${repo##*/}
 
-    # Open claim/issue-* PRs on this repo.
+    # Open claim/issue-* PRs on this repo. mergeable comes along so a
+    # stale-conflicting flag can be re-confirmed against the live value.
     prs_json=$("$GH" pr list -R "$repo" --state open \
-        --json number,headRefName,isDraft \
+        --json number,headRefName,isDraft,mergeable \
         --jq '[.[] | select(.headRefName | startswith("claim/issue-"))]' \
         2>/dev/null) || {
             log "  - $repo: gh pr list FAILED — skipping (auth/network?)"
@@ -208,6 +234,7 @@ while IFS= read -r repo; do
         pr_num=$(printf '%s' "$row" | jq -r '.number')
         pr_head=$(printf '%s' "$row" | jq -r '.headRefName')
         pr_draft=$(printf '%s' "$row" | jq -r '.isDraft')
+        pr_mergeable=$(printf '%s' "$row" | jq -r '.mergeable // ""')
         if [[ "$pr_draft" == "true" ]]; then
             log "  - $repo#$pr_num ($pr_head): DRAFT — skip"
             continue
@@ -217,6 +244,16 @@ while IFS= read -r repo; do
         issue=${pr_head#claim/issue-}
         if [[ ! "$issue" =~ ^[0-9]+$ ]]; then
             log "  - $repo#$pr_num ($pr_head): head ref not claim/issue-<N> — skip"
+            continue
+        fi
+
+        # Stale-conflicting suppression (fleet-ops#5205): flagged by the
+        # dead-pr-detector and still not MERGEABLE -> a conflict, not a red
+        # check. No dispatch, no debounce, no attempt spend. A MERGEABLE
+        # answer means the flag is stale (rebased since the last detector
+        # scan) and normal repair handling resumes.
+        if [[ "$pr_mergeable" != "MERGEABLE" ]] && flagged_stale_conflict "$repo" "$pr_num"; then
+            log "  - $repo#$pr_num ($pr_head): stale-conflicting per dead-pr-detector (mergeable=$pr_mergeable) — not a repairable CI failure, dispatch suppressed"
             continue
         fi
 

@@ -201,7 +201,27 @@ def compute_usd_24h(sessions_dir, rate_card, now_epoch=None, day_seconds=86400.0
 
 
 def packet_type_from_path(path):
-    """Classify a session jsonl path into a packet_type label (fleet-ops#4643)."""
+    """Classify a session jsonl path into a packet_type label (fleet-ops#4643).
+
+    The metric is a PACKET metric: it asks whether same-type packets keep a
+    byte-identical stable prefix and land inside the provider's cache TTL
+    window. Two kinds of session are not packets and must never be measured
+    against that target, because their ratio is structurally near-zero no
+    matter what the packet layout does:
+
+      * interactive — a human typing a different prompt each turn;
+      * probe — a seat liveness check whose whole prompt is a one-word
+        sentinel ('Reply OK', 'PONG', 'Reply with exactly: OK'), which has no
+        prefix to reuse by construction.
+
+    Before 2026-09-11 both kinds fell through to "other" and were blended with
+    real packets, so FleetPromptCacheHitLow fired for 6h+ on lanes whose every
+    driving session was a probe or interactive typing (litellm/other 0.27,
+    paretoinference/other 0.81 — all cwd=/home/nish, every litellm prompt
+    literally 'Reply OK') while the real packet lanes were above target
+    (paretoinference/worker 0.906). "other" stays for genuine packets that
+    match no named lane.
+    """
     name = str(path).replace("\\", "/").lower()
     base = name.rsplit("/", 1)[-1]
     parent = name.rsplit("/", 2)[-2] if "/" in name else ""
@@ -216,17 +236,40 @@ def packet_type_from_path(path):
         return "heartbeat"
     if "conference" in blob or "gap-closure" in blob:
         return "conference"
+    if "probe" in blob:
+        return "probe"
+    # Interactive / ad-hoc `pi` sessions: Pi encodes the cwd as a `--a-b-c--`
+    # directory name. A bare home or /tmp cwd is interactive typing, not a
+    # dispatched packet.
+    if parent.startswith("--") and parent.endswith("--"):
+        if parent.startswith("--home-nish--") or parent == "--tmp--":
+            return "interactive"
     return "other"
 
 
-def _provider_metric_class(rate_card, provider):
+def _provider_metric_class(rate_card, provider, model=None):
     """Map seat-caps class onto the issue's metered/free vocabulary.
 
     prepaid-quota seats (crof, pareto, runinfra) bill uncached input the same
     way metered seats do, so they count as class=metered for the cache-hit
     ratio and FleetPromptCacheHitLow (fleet-ops#4643).
+
+    When the seat-caps row declares a PER-MODEL class (free-class models wired
+    on a metered provider — e.g. openrouter/nvidia/nemotron-3-ultra-550b:free,
+    whose input/cacheRead price is 0), the model class wins: a $0 lane has no
+    metered spend to protect, so its cache-hit ratio must not be scored
+    against the metered money target (fleet-ops#4643, 2026-09-11).
     """
     row = (rate_card or {}).get(provider) or {}
+    raw_row = row.get("raw") or {}
+    if model:
+        mrow = (raw_row.get("models") or {}).get(model)
+        mrow = mrow if isinstance(mrow, dict) else {}
+        mclass = (mrow.get("class") or "").strip().lower()
+        if mclass in ("metered", "prepaid-quota", "prepaid", "subscription"):
+            return "metered"
+        if mclass in ("free",):
+            return "free"
     raw = (row.get("class") or "").strip().lower()
     if raw in ("metered", "prepaid-quota", "prepaid", "subscription"):
         return "metered"
@@ -235,15 +278,48 @@ def _provider_metric_class(rate_card, provider):
     return raw or "unknown"
 
 
+_PROBE_PROMPTS = (
+    "reply ok",
+    "pong",
+    "reply with exactly: ok",
+)
+
+
+def _is_probe_prompt(text):
+    """True when a first user prompt is a seat liveness sentinel.
+
+    A probe prompt is a one-word/two-word sentinel with no prefix to reuse, so
+    its cache-hit ratio is structurally 0 regardless of packet layout. Reading
+    the prompt is the only reliable test: probes are launched from ordinary
+    checkouts (e.g. a rebase worktree), so the PATH alone cannot tell a probe
+    from a real packet (fleet-ops#4643, 2026-09-11).
+    """
+    norm = " ".join(str(text or "").split()).strip().lower()
+    if not norm:
+        return False
+    if norm in _PROBE_PROMPTS:
+        return True
+    # 'Reply OK' / 'Reply with exactly OK'-style one-liners under ~40 chars
+    # that contain no packet structure (packets always start with a header
+    # like '# Pi fleet ...' or 'difficulty: ...').
+    return len(norm) <= 40 and norm.startswith("reply")
+
+
 def session_cache_tokens(path, today_epoch=None, day_seconds=86400.0):
     """Return {provider: {"input": n, "cacheRead": n}} for one session jsonl.
 
     Same windowing as session_marginal_usd: trailing day_seconds when
     today_epoch is set. input is uncached prompt tokens; cacheRead is the
     prefix-cache hit (Pi session jsonl, fleet-ops#3283 / #4643).
+
+    A session whose FIRST user prompt is a liveness sentinel returns {} — it is
+    a seat probe, not a packet, and must not be counted against the packet
+    cache-hit target (fleet-ops#4643, 2026-09-11).
     """
     counts = {}
     provider = None
+    model = None
+    first_user_text = None
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             for raw in f:
@@ -259,12 +335,23 @@ def session_cache_tokens(path, today_epoch=None, day_seconds=86400.0):
                 t = data.get("type")
                 if t == "model_change":
                     provider = data.get("provider")
+                    if data.get("modelId"):
+                        model = data.get("modelId")
                     continue
                 if t != "message":
                     continue
                 msg = data.get("message") or {}
                 if not isinstance(msg, dict):
                     continue
+                if first_user_text is None and msg.get("role") == "user":
+                    content = msg.get("content")
+                    if isinstance(content, list):
+                        content = " ".join(
+                            str(p.get("text", ""))
+                            for p in content
+                            if isinstance(p, dict)
+                        )
+                    first_user_text = str(content or "")
                 if provider is None:
                     provider = msg.get("provider")
                 if provider is None:
@@ -281,11 +368,16 @@ def session_cache_tokens(path, today_epoch=None, day_seconds=86400.0):
                 cache_tok = int(usage.get("cacheRead") or 0)
                 if in_tok == 0 and cache_tok == 0:
                     continue
-                slot = counts.setdefault(provider, {"input": 0, "cacheRead": 0})
+                slot = counts.setdefault(
+                    provider, {"input": 0, "cacheRead": 0, "model": model}
+                )
                 slot["input"] += in_tok
                 slot["cacheRead"] += cache_tok
+                slot["model"] = model
     except OSError:
         return None
+    if _is_probe_prompt(first_user_text):
+        return {}
     return counts
 
 
@@ -333,9 +425,11 @@ def compute_cache_hit_24h(sessions_dir, rate_card, now_epoch=None, day_seconds=8
         ptype = packet_type_from_path(path)
         for prov, slot in counts.items():
             key = (prov, ptype)
-            cur = agg.setdefault(key, {"input": 0, "cacheRead": 0})
+            cur = agg.setdefault(key, {"input": 0, "cacheRead": 0, "model": None})
             cur["input"] += int(slot.get("input") or 0)
             cur["cacheRead"] += int(slot.get("cacheRead") or 0)
+            if slot.get("model"):
+                cur["model"] = slot.get("model")
     rows = []
     for (prov, ptype), slot in sorted(agg.items()):
         ins = int(slot["input"])
@@ -346,7 +440,7 @@ def compute_cache_hit_24h(sessions_dir, rate_card, now_epoch=None, day_seconds=8
         rows.append({
             "provider": prov,
             "packet_type": ptype,
-            "class": _provider_metric_class(rate_card, prov),
+            "class": _provider_metric_class(rate_card, prov, slot.get("model")),
             "input": ins,
             "cacheRead": crs,
             "ratio": crs / denom,

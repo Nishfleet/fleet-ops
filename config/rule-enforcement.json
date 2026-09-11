@@ -196,8 +196,8 @@
     {
       "id": "sr-prepaid-max-util",
       "source": "global-standing-rules.md: Prepaid subs run at max utilization (Nish, 2026-08-20)",
-      "mechanism": "Heartbeat prepaid-util canary: fail-loud ladder gate (every cap>0 prepaid-quota provider with models must be in prepaid_providers_in_order) plus an observe-to-open expiry-waste detector that auto-files when a wired prepaid seat has 0 picks this ISO week in the last 24h of the week while ready work exists and the seat is not quota-benched. One PREPAID-UTIL heartbeat line per prepaid seat per tick.",
-      "proof": "bin/fleet-prepaid-util-canary; tests/fleet-prepaid-util-canary.test.sh; fleet-heartbeat-tier1 block 38; fleet-ops#531",
+      "mechanism": "Heartbeat prepaid-util canary: fail-loud ladder gate (every cap>0 prepaid-quota provider with models must be in prepaid_providers_in_order) plus an observe-to-open expiry-waste detector that auto-files when a wired prepaid seat has 0 picks this ISO week in the last 24h of the week while ready work exists and the seat is not quota-benched. One PREPAID-UTIL heartbeat line per prepaid seat per tick. fleet-ops#5022 (2026-09-10): the same canary reads OpenCode Go's own usage endpoint (GET opencode.ai/zen/go/v1/usage) and emits fleet_prepaid_usage_pct{provider=\"opencode-go\",window=\"5h|weekly|monthly\"} + reset timestamps + fleet_prepaid_paced_cap into prepaid-usage.prom; config/fleet_rules.yml group fleet_opencode_go_prepaid_pacing (FleetOpenCodeGoPaceExceeded / FleetOpenCodeGoUsageReaderAbsent) paces the declared cap to the remaining weekly pool and fail-louds a dead reader, and lib/seat-lib.sh provider_live_reset_s benches a quota 429 to the live 5h reset when that window is >= 95% used.",
+      "proof": "bin/fleet-prepaid-util-canary; tests/fleet-prepaid-util-canary.test.sh; tests/seat-lib.test.sh 9f-prepaid; fleet-heartbeat-tier1 block 38; config/fleet_rules.yml fleet_opencode_go_prepaid_pacing; fleet-ops#531; fleet-ops#5022",
       "status": "enforced"
     },
     {
@@ -644,8 +644,8 @@
     {
       "id": "led-escalation-matrix-fixes",
       "source": "decisions-ledger.md: 2026-08-27 | escalation matrix FIXES, not just routes",
-      "mechanism": "Escalation completion invariant: every failure chain terminates in a verified fix; stalled chains climb the ladder; only detector-green or Nish-reserved wall are terminal",
-      "proof": "fleet-ops #468 / #480; enforced by bin/fleet-escalation-completion (per-chain stall budget + fail-loud ladder, wired into fleet-heartbeat-tier1); tests/fleet-escalation-completion.test.sh nested from tests/escalation-coverage-canary.test.sh",
+      "mechanism": "Escalation completion invariant: every failure chain terminates in a verified fix; stalled chains climb the ladder; only detector-green or Nish-reserved wall are terminal. Stale trips climb the same ladder: LOUD + re-fire stop-escalation.service on a bounded cadence (fleet-ops#5190 — re-fail-per-tick could not summon an auditor; unit-escalation same-unit dedupe swallowed it), and the reconciler's close-grace keeps the filed alarm open across hold ticks so it cannot flap-close while the chain is still open",
+      "proof": "fleet-ops #468 / #480 / #5187 / #5190; enforced by bin/fleet-escalation-completion (per-chain stall budget + stale-trip re-fire ladder + fail-loud bound, wired into fleet-heartbeat-tier1) and lib/detector-queue-reconciler.py close-grace; tests/fleet-escalation-completion.test.sh nested from tests/escalation-coverage-canary.test.sh",
       "status": "enforced"
     },
     {

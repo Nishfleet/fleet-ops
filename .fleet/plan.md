@@ -1,69 +1,39 @@
-# Plan — fleet-ops#5001: trailing-window SQL compares ISO TEXT against datetime('now')
+# Plan — fleet-ops#5142: DetachedJobDied repair relaunches packets whose deliverable already merged
 
-Manager mode (heavy), fleet-ops#3274. Plan lineage: the stock planner wrote 6
-phases; the manager amended that to 4 (phases 1-3 of the planner's list are one
-atomic edit set over the same two files, so they run as one phase — the manager
-may amend the plan with a one-line reason).
+Dispatcher `libexec/alert-repair-dispatch` (Python, 1254 lines) spawns a repair
+worker for every `DetachedJobDied` alert. Add a bounded, fail-open pre-flight in
+the existing per-alert filter loop (L1013-1050) that drops alerts whose packet
+already delivered.
 
-Resume note (session-pickup, 2026-09-10): this unit's prior run crashed
-(StartLimitBurst x3) after banking phase 1 via `bin/pi-salvage-worktree`. The
-claim branch `claim/issue-5001` held a salvage commit with phase 1's edit. The
-claim names this unit, so the branch was reused: it was re-based onto current
-`origin/main` and only the two hunk-sets of phase 1 were re-applied (the
-salvage commit also carried an unrelated `deepseek-v4-flash` -> `<retired-V4-flash>`
-model-name revert from a stale base; that was dropped, not shipped).
-
-Defect (reproduced): the four predicates compare an ISO-8601 TEXT column
-(`user.createdAt`, `delivery_attempt.sent_at`) against SQLite's
-`datetime('now','-N days')` (space-separated, no `Z`). SQLite compares TEXT, so
-every row on the cutoff CALENDAR DAY counts as inside the window — a 29-hour-old
-row reads as "last 24h".
+Manager re-verified 2026-09-11T04:2xZ (this run, after rebase onto e47faec5b):
+- The recursion-guard loop sits at L1013-1050; the spawn argv is bare
+  `pi-systemd-run` at L1217-1232 (PATH-resolved — a `PI_SYSTEMD_RUN_BIN` env
+  seam is required for a stubbed spawn in tests).
+- `GH` env seam already exists (`GH_BIN` L176); `PI_DEADMAN_BIN` exists (L1014).
+- The dispatch ledger (`${FLEET_DISPATCH_LEDGER:-$AGENT_STATE/dispatch-ledger.jsonl}`)
+  carries `id` (= the alert's `dispatch` label uuid), `unit`, `packet_path` —
+  it does NOT carry the deliverable path. The deliverable path lives only in
+  the dead unit's journal: `pi-detached-deadman` logs
+  `died: unit=X result=Y deliverable=/abs/path|unset — dead-man tripped`
+  (confirmed live in `journalctl --user`). So: journal first via a new
+  `JOURNALCTL_BIN` seam; ledger+packet only as the PR-evidence fallback.
+- Real packets name their deliverable as a branch (`branch fable/gate-c-billing-failed`,
+  `claim/issue-<N>`) or `Nishfleet/<repo>#N` / `PR #N`. PR-evidence order:
+  branch ref -> `gh pr list -R <repo> --head <branch> --state all --json
+  number,state,autoMergeRequest,mergeable`; else `Nishfleet/<repo>#N` or
+  `PR #N` (+repo) -> `gh pr view <N> -R <repo> --json
+  state,autoMergeRequest,mergeable`. Satisfied iff any named PR is MERGED, or
+  OPEN with autoMergeRequest != null and mergeable == MERGEABLE. Exactly one
+  `gh` call per dispatch run — the first candidate spends the budget; a spent
+  budget or a non-proving result means fail-open.
 
 ## Phases (acceptance-driven)
 
-- [x] phase 1: every window comparison parses both sides — `julianday(<col>) >= julianday('now','-1 day')` / `'-7 days'` for all four predicates, changing no other predicate, token handling, ID validation or the absent-not-zero contract (accept #1 + #2)
-- [x] phase 2: `tests/fleet-product-slo.test.sh` boundary scenario through the existing mocked D1 seam — fixture rows 25h / 23h / 8d / 6d23h old, `fleet_product_signups_24h` counts only the 23h row, every existing scenario kept (accept #3 + #5)
-- [x] phase 3: `tests/fleet-metrics-export.test.sh` mirror boundary scenario for `_S7_SQL` — 8d excluded, 6d23h included (accept #4 + #5)
-- [x] phase 4: no new timer/unit/service/MANIFEST/token, no threshold change; both suites + `promtool` green; `git diff` touches only the two lib files and the two test files (accept #6)
-
-## Phase detail
-
-- p1 files: `lib/fleet-product-slo.py` (`_D1_QUERIES`: `signups_24h` :1079,
-  `activated_24h` :1087, `briefs_delivered_24h` :1098),
-  `libexec/fleet-metrics-export.py` (`_S7_SQL` :1650).
-- p2 file: `tests/fleet-product-slo.test.sh` — new scenario after (o).
-  Seam: the real literals go out over `urllib.request.urlopen` (module-level
-  `urlopen` in `lib/fleet-product-slo.py`); the existing mock replaces
-  `m.urlopen`. The boundary runs the CAPTURED real SQL against an in-memory
-  `sqlite3` DB seeded with fixture rows, so no network and no fabricated 0.
-- p3 file: `tests/fleet-metrics-export.test.sh` — the `fleet_signups_7d` block
-  (16d, ~4290-4360). Same shape: `_S7_SQL` run against an in-memory `sqlite3`
-  DB with rows 8d and 6d23h old.
-- p4: `bash tests/fleet-product-slo.test.sh && bash tests/fleet-metrics-export.test.sh`,
-  `promtool check rules config/fleet_rules.yml`.
-
-## Reviewer rounds
-
-- Phases 1-3 were implemented by this unit's prior crashed runs and banked via
-  `bin/pi-salvage-worktree`; this run (manager) rebased the claim branch onto
-  origin/main b581df4ca — which had meanwhile landed fleet-ops#5000 (a fifth
-  `_D1_QUERIES` entry, `table_census`, plus census scenarios (p)/(q)/(r) in the
-  same test file) — resolved the collision by keeping both and relabelling the
-  boundary scenario to (s), updated its fake-D1 seam to return real column
-  names (the census query needs named columns, not `{"n": ...}`), seeded the
-  three census-only fixture tables, and made the capture-count assert read
-  `len(m._D1_QUERIES)` instead of a hard-coded 4.
-- Manager whole-diff review after rebase: all four predicates parse both
-  sides via `julianday()`; no other predicate, token handling, ID validation
-  or absent-not-zero contract touched; `grep -rn "datetime('now'" lib
-  libexec` returns nothing outside the julianday form. Boundary tests pin the
-  shipped SQL literals against an in-memory sqlite3 fixture (25h excluded /
-  23h included for the 24h gauges; 8d excluded / 6d23h + an older
-  cutoff-calendar-day row handled for `_S7_SQL`), with a guard asserting the
-  pre-fix TEXT predicate really would miscount on the same fixture.
-- Verification (this worktree, post-rebase):
-  `bash tests/fleet-product-slo.test.sh` — green incl. "(s) 24h boundary";
-  `bash tests/fleet-metrics-export.test.sh` — exit 0, 230 OK lines incl.
-  "fleet-ops#5001: signups_7d trailing-7d SQL parses both sides";
-  `promtool check rules config/fleet_rules.yml` — SUCCESS, 107 rules;
-  issue's sqlite3 probe prints `1|0` (TEXT compare wrong, julianday right).
+- [x] phase 1: write `tests/detached-deliverable-preflight.test.sh` on the `tests/alert-repair-detached-recursion-skip.test.sh` harness — scratch dir, mock `pi-detached-deadman` + `alert-repair-claim`, per-alert `AMX_ALERT_<i>_LABEL_*` envs — with a stubbed spawn binary and a stub `gh` covering: (a) deliverable file present/non-empty → 0 spawns, `RESOLVED-DELIVERED` in actions.log, dead-man `--clear` called; (b) deliverable absent and PR open → exactly 1 spawn; (c) `gh` times out → 1 spawn (accept #5)
+- [x] phase 1: prove case (a) FAILS against the unmodified dispatcher (commit/record the failing run before implementing) (accept #5)
+- [x] phase 2: implement the pre-flight for `DetachedJobDied` alerts that survive the existing recursion-guard skip — resolve the declared deliverable path from dead-man state (journal `died: unit=X ... deliverable=/abs/path` via new `JOURNALCTL_BIN` seam; fallback: alert label `dispatch` → last `${AGENT_STATE:-/home/nish/workspaces/agent-state}/dispatch-ledger.jsonl` entry with `id == dispatch` → `packet_path` → packet `## accept` naming `Nishfleet/<repo>#N` | `<repo>#N` | `PR #N` | branch) and treat as satisfied iff (a) deliverable file exists and is non-empty, or (b) named PR is `MERGED` or `OPEN`+autoMergeRequest+`MERGEABLE` as of check time (accept #1)
+- [x] phase 2: on satisfied, append `RESOLVED-DELIVERED unit=<unit> deliverable=<path|PR>` to `$PACKET_DIR/actions.log`, run `pi-detached-deadman --clear <unit>` (existing best-effort pattern), drop the alert so the run exits 0 without spawning (accept #2)
+- [x] phase 2: on not-satisfied OR any ambiguity/unreadable state/missing file/journal error, fall through to the unchanged relaunch path — fail-open, never strand a dead packet (accept #3)
+- [x] phase 2: bound the pre-flight — at most one `gh` call per dispatch run (first candidate spends the budget; later candidates fail-open), `subprocess` timeout=5, all exceptions swallowed; add `PI_SYSTEMD_RUN_BIN` and `JOURNALCTL_BIN` env seams per the file's `PI_DEADMAN_BIN`/`GH` convention (accept #4)
+- [x] phase 2: no changes to `RuntimeMaxSec`/`--deadline 60`, `bin/pi-detached-deadman` detection logic, or `config/fleet_rules.yml` alert thresholds (accept #6)
+- [ ] phase 3: verify — issue's verify block plus `bash tests/detached-deliverable-preflight.test.sh`, `bash tests/alert-repair-detached-recursion-skip.test.sh`, `bash tests/alert-repair-seat-walled.test.sh`, `bash tests/pi-detached-deadman.test.sh`, `python3 -m py_compile libexec/alert-repair-dispatch`, `bash -n` on the new test (accept #5 proof of green)

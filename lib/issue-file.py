@@ -85,6 +85,42 @@ STOPWORDS = frozenset(
 PATH_RE = re.compile(
     r"(?:(?:\./)?[A-Za-z0-9_.-]+/){1,}[A-Za-z0-9_.-]+(?:\.[A-Za-z0-9]+)?"
 )
+
+# fleet-ops#5198: PATH_RE is a shape matcher — it cannot tell a real file
+# key from a repo ref (`nishfleet/fleet-ops` inside a `Nishfleet/<repo>#N`
+# mention, or `origin/main` inside a git command), a bare CI directory
+# (`.github/scripts`, `fleet/ci`), the machine worktree root
+# (`home/nish/workspaces/tooling/fleet-ops`), a fraction (`3/3`), or a rate
+# (`activations/h`). None of those is a file identity, and the repo ref in
+# particular appears in nearly every fleet-ops issue — they welded a +0.10
+# key bonus onto unrelated pairs and corrupted shared_keys diagnostics.
+# Filtered out of key_paths so only real file/unit identity remains.
+REPO_REF_KEY_RE = re.compile(r"^(?:nishfleet|origin|upstream)/[a-z0-9._-]+$")
+FRACTION_KEY_RE = re.compile(r"^\d+(?:\.\d+)?/\d+(?:\.\d+)?$")
+WORKTREE_ROOT_KEY_RE = re.compile(
+    r"^home/nish/workspaces(?:/[a-z0-9._-]+){0,2}$"
+)
+RATE_LEAF_RE = re.compile(
+    r"^(?:ms|s|sec|secs|m|min|mins|h|hr|hrs|d|day|days|w|wk|wks|mo|mos|"
+    r"y|yr|yrs|cycle|cycles|tick|ticks|run|runs|op|ops|req|reqs)$"
+)
+GENERIC_DIR_LEAFS = frozenset(
+    "ci script scripts workflow workflows action actions .github".split()
+)
+
+
+def _generic_key(key: str) -> bool:
+    """True for path-shaped keys carrying no file identity (fleet-ops#5198)."""
+    if (
+        REPO_REF_KEY_RE.match(key)
+        or FRACTION_KEY_RE.match(key)
+        or WORKTREE_ROOT_KEY_RE.match(key)
+    ):
+        return True
+    leaf = key.rsplit("/", 1)[-1]
+    return bool(RATE_LEAF_RE.match(leaf)) or leaf in GENERIC_DIR_LEAFS
+
+
 UNIT_RE = re.compile(
     r"\b[A-Za-z0-9_@.:-]+\.(?:service|timer|socket|target|path|slice)\b"
 )
@@ -182,7 +218,8 @@ def key_paths(text: str) -> set[str]:
     found = set(PATH_RE.findall(text or ""))
     found |= set(UNIT_RE.findall(text or ""))
     found |= set(INSTANCE_RE.findall(text or ""))
-    return {p.lower() for p in found}
+    out = {p.lower() for p in found}
+    return {p for p in out if not _generic_key(p)}
 
 
 def _has_seat_crisis(text: str) -> bool:

@@ -23,6 +23,10 @@
 #      collapses a duplicate object key) is not DRIFT-ORIGIN; a real
 #      structural change or unparseable JSON still is (fleet-ops#5161,
 #      mirroring install.sh --check content_equivalent, fleet-ops#4948).
+#  10c. Any MANIFEST .json dest compares parsed documents with document
+#      order preserved: a whitespace-only rewrite is reformatted-not-drifted;
+#      a changed value or reordered key still fails DRIFT-ORIGIN
+#      (fleet-ops#5201).
 #  11. Enable-link into a volatile path (/tmp outside the checkout) fails
 #      DRIFT-VOLATILE.
 #  11b. A MANIFEST unit's wants-link hijacked to /tmp (fragment symlink still
@@ -42,11 +46,13 @@
 #      (fleet-ops#370). A second tick with the marker open does not re-file.
 #  15. FLEET_OPS_DRIFT_BIN under agent-worktrees fails DEPLOY-DRIFT-BIN-VOLATILE.
 #  16. fleet-ops-deploy removes the paper-over drop-in even when merge is blocked.
-#  17. A named non-main branch on the deploy checkout (HEAD == origin/main)
-#      DEPLOY-BLOCKs, does not rewind the auditor branch, auto-files
-#      deploy-clone-off-main: fleet-ops#477. The canary emits DRIFT-OFF-MAIN
-#      and dedups. An auditor branch that is an ancestor of origin/main is
-#      not fast-forwarded (that would move the auditor pointer).
+#  17. A named non-main branch whose HEAD is already on a remote (ancestor
+#      of an origin ref) is recovered onto main even if a process holds the
+#      clone (fleet-ops#5222). --dry-run recovers throwaway-guard-test and
+#      exits 0; an unpushed commit is refused and left in place. The canary
+#      still emits DRIFT-OFF-MAIN and dedups. An auditor branch that is an
+#      ancestor of origin/main is recovered by checking out main, not by
+#      fast-forwarding the auditor pointer.
 #  17f. The off-main observe-to-close (fleet-ops#620) fires as soon as
 #      check_checkout passes, even when a later check (e.g. DRIFT-MISSING-EXEC
 #      from a leftover service) is still red (fleet-ops#774). The class is
@@ -121,6 +127,8 @@ grep -q 'remove_orphaned_fleet_idea_intake_dropin' "$repo_root/install.sh" \
     || fail "install.sh must remove the orphaned fleet-idea-intake.service.d drop-in (fleet-ops#4435)"
 grep -q 'remove_orphaned_fleet_loop_dropin' "$repo_root/install.sh" \
     || fail "install.sh must remove the orphaned fleet-loop@.service.d drop-in (fleet-ops#4502)"
+grep -q 'remove_canary_start_timeout_dropins' "$repo_root/install.sh" \
+    || fail "install.sh must remove the bridge start-timeout drop-ins (fleet-ops#5203)"
 grep -q 'pi-scout@.service.d/20-prom-mode.conf' "$repo_root/bin/fleet-ops-deploy" \
     || fail "fleet-ops-deploy must remove the stale scout 20-prom-mode drop-in (fleet-ops#2924)"
 grep -q 'fleet-auto-deploy.timer.d' "$repo_root/bin/fleet-ops-deploy" \
@@ -137,6 +145,8 @@ grep -q 'fleet-idea-intake.service.d' "$repo_root/bin/fleet-ops-deploy" \
     || fail "fleet-ops-deploy must remove the orphaned fleet-idea-intake.service.d drop-in (fleet-ops#4435)"
 grep -q 'fleet-loop@.service.d' "$repo_root/bin/fleet-ops-deploy" \
     || fail "fleet-ops-deploy must remove the orphaned fleet-loop@.service.d drop-in (fleet-ops#4502)"
+grep -q '20-start-timeout.conf' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "fleet-ops-deploy must remove the bridge start-timeout drop-ins (fleet-ops#5203)"
 grep -q 'systemd/pi-intake@.service.d/10-use-tick.conf' "$repo_root/MANIFEST" \
     || fail "MANIFEST must list 10-use-tick.conf (fleet-ops#2924 absorb)"
 [[ -f "$repo_root/systemd/pi-intake@.service.d/10-use-tick.conf" ]] \
@@ -179,9 +189,17 @@ grep -q 'DRIFT-OFF-MAIN' "$repo_root/bin/fleet-ops-drift.py" \
 grep -q 'deploy-clone-off-main: fleet-ops#477' "$repo_root/bin/fleet-ops-drift.py" \
     || fail "drift canary must auto-file off-main checkout with the #477 marker"
 grep -q 'not main (fleet-ops#477)' "$repo_root/bin/fleet-ops-deploy" \
-    || fail "fleet-ops-deploy must block a named non-main branch (fleet-ops#477)"
+    || fail "fleet-ops-deploy must name a named non-main branch (fleet-ops#477)"
 grep -q -- '--file-off-main' "$repo_root/bin/fleet-ops-deploy" \
     || fail "fleet-ops-deploy must auto-file off-main via the canary --file-off-main flag"
+grep -q 'fleet-ops#5222' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "fleet-ops-deploy must recover a fully-pushed off-main clone (fleet-ops#5222)"
+grep -q -- '--dry-run' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "fleet-ops-deploy must accept --dry-run (fleet-ops#5222 termination)"
+grep -q 'head_is_on_remote' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "fleet-ops-deploy must test whether HEAD is an ancestor of an origin ref"
+grep -q 'pid=$CLONE_HOLDER_PID' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "DEPLOY-BLOCKED must name the holder pid (fleet-ops#5222)"
 grep -q 'deploy-blocked-on-main: fleet-ops#2725' "$repo_root/bin/fleet-ops-drift.py" \
     || fail "drift canary must auto-file deploy-blocked-on-main with the #2725 marker"
 grep -q -- '--file-deploy-blocked-main' "$repo_root/bin/fleet-ops-deploy" \
@@ -437,7 +455,7 @@ run_deploy() {
   FLEET_OPS_SYSTEMCTL="$systemctl_fake" \
   FLEET_OPS_DEPLOY_AUDIT_LOG="$scratch/deploy-audit.log" \
   FLEET_OPS_TRIAGE="$scratch/triage.md" \
-    "$deploy" 2>&1
+    "$deploy" "$@" 2>&1
 }
 
 # fleet-ops#3634: a live process holding the clone as its cwd keeps the LOUD
@@ -799,6 +817,77 @@ fi
     || fail "scenario10b: unparseable live JSON did not produce DRIFT-ORIGIN (got: $pyout)"
 ok "scenario10b: unparseable live JSON still fails DRIFT-ORIGIN"
 
+# --- scenario 10c: any .json dest compares parsed, document order kept ------
+# fleet-ops#5201: the copy-install exemption covers only seat-caps.json /
+# pi-models.json / model-candidates.json. Every other MANIFEST .json dest
+# (fleet-organs.json, quality-*.json, ...) still byte-compares, so a runtime
+# writer that re-serializes one at a different indent width re-creates the
+# permanent DRIFT-ORIGIN the judge caught on seat-caps.json. A .json dest now
+# compares the parsed documents with document order preserved: a
+# whitespace-only rewrite is reformatted-not-drifted; a changed value or a
+# reordered key still fails byte-strict.
+# Restore the seat-caps dest first — 10b-iii left it unparseable.
+printf '%s\n' '{"providers":{"opencode-go":{"cap":2,"class":"prepaid-quota","models":{"deepseek-flash":2}}}}' >"$json_live"
+organs_live="$HOME/.local/state/pi-packet/fleet-organs.json"
+mkdir -p "$(dirname "$organs_live")"
+cat >"$json_co/config/fleet-organs.json" <<'JSON'
+{"organs":{"alpha":{"beats":1},"beta":{"beats":2}}}
+JSON
+printf 'config/fleet-organs.json %s\n' "$organs_live" >>"$json_co/MANIFEST"
+git -C "$json_co" add -A
+git -C "$json_co" commit -q -m "add fleet-organs.json dest"
+git -C "$json_co" push -q origin HEAD:main
+git -C "$json_co" fetch -q origin
+
+# 10c-i: the same document at a different indent width -> byte-different but
+# reformatted-not-drifted. The raw byte compare fails; the JSON compare passes.
+cat >"$organs_live" <<'JSON'
+{
+  "organs": {
+    "alpha": { "beats": 1 },
+    "beta": { "beats": 2 }
+  }
+}
+JSON
+if ! pyout=$(run_origin_blob_check); then
+    fail "scenario10c: whitespace-only .json rewrite must not be DRIFT-ORIGIN, got: $pyout"
+fi
+[[ "$pyout" == *"reformatted, not drifted"* ]] \
+    || fail "scenario10c: expected a reformatted-not-drifted log line (got: $pyout)"
+ok "scenario10c: whitespace-only .json rewrite passes with a reformatted log line"
+
+# 10c-ii: one changed value -> both compares fail -> DRIFT-ORIGIN.
+cat >"$organs_live" <<'JSON'
+{
+  "organs": {
+    "alpha": { "beats": 1 },
+    "beta": { "beats": 3 }
+  }
+}
+JSON
+if pyout=$(run_origin_blob_check); then
+    fail "scenario10c: a changed .json value must fail DRIFT-ORIGIN: $pyout"
+fi
+[[ "$pyout" == *"DRIFT-ORIGIN"* ]] \
+    || fail "scenario10c: changed value did not produce DRIFT-ORIGIN (got: $pyout)"
+ok "scenario10c: a changed .json value still fails DRIFT-ORIGIN"
+
+# 10c-iii: reordered keys are drift — only whitespace is exempt.
+cat >"$organs_live" <<'JSON'
+{
+  "organs": {
+    "beta": { "beats": 2 },
+    "alpha": { "beats": 1 }
+  }
+}
+JSON
+if pyout=$(run_origin_blob_check); then
+    fail "scenario10c: a reordered .json must fail DRIFT-ORIGIN: $pyout"
+fi
+[[ "$pyout" == *"DRIFT-ORIGIN"* ]] \
+    || fail "scenario10c: reordered keys did not produce DRIFT-ORIGIN (got: $pyout)"
+ok "scenario10c: reordered .json keys still fail DRIFT-ORIGIN"
+
 # --- scenario 11: enable-link into a volatile path outside the checkout ------
 : >"$enabled_units"
 printf '%s\n' "${expected_units[@]}" merged.timer > "$enabled_units"
@@ -1026,6 +1115,30 @@ printf 'bak\n' > "$orphan_loop_dir/zz-gate-retry.conf.bak-time-audit-20260812"
 PATH="$scratch:$PATH" "$install" >/dev/null 2>&1 || true
 [[ ! -d "$orphan_loop_dir" ]] || fail "scenario12b-orphan-loop: orphaned fleet-loop@.service.d drop-in dir was not removed"
 ok "scenario12b-orphan-loop: install.sh removes the orphaned fleet-loop@.service.d drop-in dir (fleet-ops#4502)"
+
+# fleet-ops#5203: bridge start-timeout drop-ins for the two network canaries
+# (hand-placed 2026-09-11 while #5200 was in flight; the units still exist and
+# now carry TimeoutStartSec=120 themselves). install.sh must remove only the
+# 20-start-timeout.conf file — the repo-sourced 10-pg-socket.conf symlink in
+# fleet-litellm-health-canary.service.d must survive.
+mkdir -p "$checkout/systemd/fleet-litellm-health-canary.service.d"
+printf '[Service]\nEnvironment=PGSOCKET=/tmp\n' \
+    > "$checkout/systemd/fleet-litellm-health-canary.service.d/10-pg-socket.conf"
+pg_socket="$HOME/.config/systemd/user/fleet-litellm-health-canary.service.d/10-pg-socket.conf"
+for u in fleet-litellm-health-canary gh-webhook-canary; do
+    bridge_dir="$HOME/.config/systemd/user/${u}.service.d"
+    mkdir -p "$bridge_dir"
+    printf '[Service]\nTimeoutStartSec=120\n' > "$bridge_dir/20-start-timeout.conf"
+done
+ln -sfn "$checkout/systemd/fleet-litellm-health-canary.service.d/10-pg-socket.conf" "$pg_socket"
+PATH="$scratch:$PATH" "$install" >/dev/null 2>&1 || true
+for u in fleet-litellm-health-canary gh-webhook-canary; do
+    [[ ! -e "$HOME/.config/systemd/user/${u}.service.d/20-start-timeout.conf" ]] \
+        || fail "scenario12b-canary-timeout: bridge start-timeout drop-in for $u was not removed"
+done
+[[ -L "$pg_socket" ]] \
+    || fail "scenario12b-canary-timeout: repo-sourced 10-pg-socket.conf symlink was removed"
+ok "scenario12b-canary-timeout: install.sh removes the bridge 20-start-timeout.conf drop-ins, keeps 10-pg-socket.conf (fleet-ops#5203)"
 
 # --- scenario 12c: cap drop with NEWER repo mtime (fleet-ops#371) ------------
 # git checkout of a stale commit stamps the working tree now, so the #372
@@ -1528,6 +1641,7 @@ git -C "$checkout" checkout -q -- bin/demo-script
 
 # --- scenario 17: named non-main branch on the deploy checkout (fleet-ops#477)
 git -C "$checkout" reset --hard -q origin/main
+git -C "$checkout" clean -fdq
 git -C "$checkout" checkout -q -B main origin/main
 git -C "$checkout" checkout -q -b auditor/off-main-477
 [ "$(git -C "$checkout" symbolic-ref --short HEAD)" = "auditor/off-main-477" ] \
@@ -1569,7 +1683,7 @@ exit 0
 FAKE
 chmod +x "$off_gh"
 hold_clone
-if out=$(
+if ! out=$(
   GH="$off_gh" \
   GH_LOG="$off_gh_log" \
   GH_OPEN_ISSUES="$scratch/open-off-main.json" \
@@ -1579,23 +1693,27 @@ if out=$(
     run_deploy
 ); then
     release_clone
-    fail "scenario17: deploy should block on a named non-main branch, got: $out"
+    fail "scenario17: deploy should recover a fully-pushed off-main clone even when held, got: $out"
 fi
 release_clone
-[[ "$out" == *"DEPLOY-BLOCKED"* ]] \
-    || fail "scenario17: expected DEPLOY-BLOCKED (got: $out)"
-[[ "$out" == *"not main"* ]] \
-    || fail "scenario17: expected not-main reason (got: $out)"
-[[ "$out" == *"fleet-ops#477"* ]] \
-    || fail "scenario17: expected fleet-ops#477 (got: $out)"
+[[ "$out" == *"recovered deploy clone"* ]] \
+    || fail "scenario17: expected recovered deploy clone (got: $out)"
+[[ "$out" == *"fleet-ops#5222"* ]] \
+    || fail "scenario17: expected fleet-ops#5222 (got: $out)"
+[[ "$out" != *"DEPLOY-BLOCKED"* ]] \
+    || fail "scenario17: fully-pushed off-main must not DEPLOY-BLOCK (got: $out)"
 grep -q 'issue create' "$off_gh_log" \
-    || fail "scenario17: must auto-file (log=$(cat "$off_gh_log"))"
-[ "$(git -C "$checkout" symbolic-ref --short HEAD)" = "auditor/off-main-477" ] \
-    || fail "scenario17: deploy discarded the auditor branch"
+    && fail "scenario17: recovered clone must not auto-file (log=$(cat "$off_gh_log"))"
+[ "$(git -C "$checkout" symbolic-ref --short HEAD)" = "main" ] \
+    || fail "scenario17: deploy must be on main after recovery"
 [ "$(git -C "$checkout" rev-parse HEAD)" = "$(git -C "$checkout" rev-parse origin/main)" ] \
-    || fail "scenario17: deploy moved HEAD"
-ok "scenario17: named non-main branch DEPLOY-BLOCKs, keeps the auditor branch, auto-files"
+    || fail "scenario17: deploy HEAD must match origin/main"
+git -C "$checkout" rev-parse -q --verify auditor/off-main-477 >/dev/null \
+    || fail "scenario17: recovery must leave the auditor branch ref in place"
+ok "scenario17: fully-pushed off-main recovers to main even when held (fleet-ops#5222)"
 
+# Canary still fails loud on off-main (drift check is not weakened).
+git -C "$checkout" checkout -q auditor/off-main-477
 : >"$off_gh_log"
 if out=$(
   GH="$off_gh" \
@@ -1646,7 +1764,7 @@ git -C "$checkout" merge-base --is-ancestor HEAD origin/main \
 : >"$off_gh_log"
 echo '[]' >"$scratch/open-off-main.json"
 hold_clone
-if out=$(
+if ! out=$(
   GH="$off_gh" \
   GH_LOG="$off_gh_log" \
   GH_OPEN_ISSUES="$scratch/open-off-main.json" \
@@ -1655,16 +1773,60 @@ if out=$(
     run_deploy
 ); then
     release_clone
-    fail "scenario17d: deploy must not fast-forward a named non-main branch, got: $out"
+    fail "scenario17d: ancestor off-main should recover onto main, got: $out"
 fi
 release_clone
+[[ "$out" == *"recovered deploy clone"* ]] \
+    || fail "scenario17d: expected recovered deploy clone (got: $out)"
+[ "$(git -C "$checkout" symbolic-ref --short HEAD)" = "main" ] \
+    || fail "scenario17d: clone must be on main after recovery"
+[ "$(git -C "$checkout" rev-parse HEAD)" = "$(git -C "$checkout" rev-parse origin/main)" ] \
+    || fail "scenario17d: clone HEAD must equal origin/main after recovery"
+[ "$(git -C "$checkout" rev-parse auditor/off-main-477)" = "$behind_on_auditor" ] \
+    || fail "scenario17d: recovery must not fast-forward the auditor branch pointer"
+ok "scenario17d: ancestor auditor branch is recovered by checking out main, not by moving the auditor pointer"
+git -C "$checkout" checkout -q -B main origin/main
+
+# --- scenario 17g: throwaway-guard-test + --dry-run recovers (fleet-ops#5222)
+git -C "$checkout" checkout -q -B main origin/main
+git -C "$checkout" clean -fdq
+git -C "$checkout" checkout -q -b throwaway-guard-test
+pre_throwaway=$(git -C "$checkout" rev-parse HEAD)
+if ! out=$(run_deploy --dry-run); then
+    fail "scenario17g: --dry-run must recover throwaway-guard-test and exit 0, got: $out"
+fi
+[ "$(git -C "$checkout" symbolic-ref --short HEAD)" = "main" ] \
+    || fail "scenario17g: --dry-run must leave the clone on main"
+[ "$(git -C "$checkout" rev-parse HEAD)" = "$pre_throwaway" ] \
+    || fail "scenario17g: --dry-run must not move HEAD off the already-pushed commit"
+[[ "$out" == *"recovered deploy clone"* ]] \
+    || fail "scenario17g: expected recovered deploy clone (got: $out)"
+[[ "$out" == *"dry-run"* ]] \
+    || fail "scenario17g: expected dry-run skip-install (got: $out)"
+[[ "$out" != *"reset --hard"* ]] \
+    || fail "scenario17g: recovery must not reset --hard (got: $out)"
+ok "scenario17g: throwaway-guard-test --dry-run recovers to main and exits 0"
+
+# --- scenario 17h: unpushed commit is refused and not discarded
+git -C "$checkout" checkout -q -B main origin/main
+git -C "$checkout" clean -fdq
+git -C "$checkout" checkout -q -b throwaway-unpushed-5222
+printf '\n# unpushed-5222\n' >> "$checkout/systemd/demo.timer"
+git -C "$checkout" add -A
+git -C "$checkout" commit -q -m "unpushed commit for 5222"
+unpushed=$(git -C "$checkout" rev-parse HEAD)
+if out=$(run_deploy --dry-run); then
+    fail "scenario17h: --dry-run must refuse an unpushed commit, got: $out"
+fi
 [[ "$out" == *"DEPLOY-BLOCKED"* ]] \
-    || fail "scenario17d: expected DEPLOY-BLOCKED (got: $out)"
-[ "$(git -C "$checkout" symbolic-ref --short HEAD)" = "auditor/off-main-477" ] \
-    || fail "scenario17d: deploy left the auditor branch"
-[ "$(git -C "$checkout" rev-parse HEAD)" = "$behind_on_auditor" ] \
-    || fail "scenario17d: deploy fast-forwarded the auditor branch onto origin/main"
-ok "scenario17d: ancestor auditor branch is not fast-forwarded onto origin/main"
+    || fail "scenario17h: expected DEPLOY-BLOCKED (got: $out)"
+[[ "$out" == *"unpushed"* ]] \
+    || fail "scenario17h: expected unpushed reason (got: $out)"
+[ "$(git -C "$checkout" symbolic-ref --short HEAD)" = "throwaway-unpushed-5222" ] \
+    || fail "scenario17h: must stay on the unpushed branch"
+[ "$(git -C "$checkout" rev-parse HEAD)" = "$unpushed" ] \
+    || fail "scenario17h: must not discard the unpushed commit"
+ok "scenario17h: unpushed commit is refused and left in place"
 git -C "$checkout" checkout -q -B main origin/main
 
 # --- scenario 17e: green canary observes-to-close an open off-main issue (#620)
@@ -2100,32 +2262,51 @@ ok "scenario20e: green canary observes-to-close on open deploy-blocked-on-main i
 
 ok "fleet-ops deploy step: install, drift detection, merge, and canary pass offline"
 
-# --- scenario 21: foreign origin fetch URL refuses before fetch/reset/install -
-# fleet-ops#5016, live 2026-09-10T16:16Z: the deploy clone's origin FETCH URL
-# was https://github.com/Nishfleet/0509.git (pushurl correctly fleet-ops), so
-# `origin/main` tracked 0509's main. The tick reset the live install source to
-# 0509's tree, deleting bin/, lib/ and install.sh and dangling every helper
-# symlink into the clone. An unowned origin/main must never be reset to.
+# --- scenario 21: foreign origin fetch URL repaired before fetch/reset/install
+# fleet-ops#5016 -> fleet-ops#5301: live 2026-09-11T10:21Z the deploy clone's
+# origin FETCH URL was https://github.com/Nishfleet/0509.git plus a second
+# remote `real` carrying the fleet-ops URL, and the old #5016 gate refused on
+# every tick for 10 minutes (nothing reached live). The URL is a constant and
+# the clone is disposable, so the tick now repairs (set-url back, drop the
+# duplicate remote) and proceeds in the SAME tick.
 : >"$enabled_units"
 git -C "$checkout" reset --hard -q origin/main
 git -C "$checkout" checkout -q main
 foreign_head="$(git -C "$checkout" rev-parse HEAD)"
+# Scenario 18b left a failing install.sh stub on origin/main; the old #5016
+# gate refused before any install, but the repaired tick now proceeds, so
+# restore a passing stub first (same as scenario21c below).
+cat >"$install" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+chmod +x "$install"
+git -C "$checkout" add install.sh
+git -C "$checkout" commit -q -m "restore passing install.sh stub before scenario21 repair tick"
+git -C "$checkout" push -q origin HEAD:main
+git -C "$checkout" fetch -q origin
+git -C "$checkout" reset -q --hard origin/main
 # A dirty working tree would otherwise route into the rescue-and-reset branch.
 echo "worker wip" >"$checkout/demo-wip.txt"
+# The repaired tick runs the full deploy; repopulate the enabled units so the
+# drift canary (which checks live unit state) passes as in scenario21c.
+printf '%s\n' "${expected_units[@]}" merged.timer > "$enabled_units"
 
 run_foreign_deploy() {
   local url="$1"
   git -C "$checkout" remote set-url origin "$url"
   set +e
   out=$(
-    env -u FLEET_OPS_EXPECTED_ORIGIN_URL \
-    GH="${GH:-$gh_fake}" \
+    env GH="${GH:-$gh_fake}" \
     PATH="$scratch:$PATH" \
     FLEET_OPS_CHECKOUT="$checkout" \
+    FLEET_OPS_EXPECTED_ORIGIN_URL="$origin_bare" \
     FLEET_OPS_DRIFT_BIN="$canary" \
     FLEET_OPS_SYSTEMCTL="$systemctl_fake" \
     FLEET_OPS_DEPLOY_AUDIT_LOG="$scratch/deploy-audit.log" \
     FLEET_OPS_TRIAGE="$scratch/triage.md" \
+    FLEET_DEPLOY_ORIGIN_REPAIR_PROM="$scratch/repair-prom" \
+    FLEET_DEPLOY_ORIGIN_REPAIR_LOG="$scratch/repair.hist" \
       "$deploy" 2>&1
   )
   rc=$?
@@ -2133,31 +2314,50 @@ run_foreign_deploy() {
 }
 
 run_foreign_deploy "https://github.com/Nishfleet/0509.git"
-[[ "$rc" -ne 0 ]] || fail "scenario21: foreign origin must refuse non-zero (got $rc: $out)"
+[[ "$rc" -eq 0 ]] || fail "scenario21: foreign origin must be repaired and the deploy must proceed (got $rc: $out)"
 [[ "$out" == *"DEPLOY-ORIGIN-REMOTE"* ]] \
     || fail "scenario21: expected DEPLOY-ORIGIN-REMOTE (got: $out)"
+[[ "$out" == *"repaired"* ]] \
+    || fail "scenario21: the loud line must say repaired, not refusing (got: $out)"
 [[ "$out" == *"https://github.com/Nishfleet/0509.git"* ]] \
-    || fail "scenario21: refusal must name the offending URL (got: $out)"
-[[ "$out" == *"fleet-ops#5016"* ]] \
-    || fail "scenario21: refusal must name fleet-ops#5016 (got: $out)"
-[[ "$(git -C "$checkout" rev-parse HEAD)" == "$foreign_head" ]] \
-    || fail "scenario21: deploy reset the checkout to the foreign origin/main"
-[[ -f "$checkout/demo-wip.txt" ]] \
-    || fail "scenario21: deploy touched the working tree (WIP file gone)"
-[[ -z "$(git -C "$checkout" for-each-ref --format='%(refname)' refs/heads/rescue 2>/dev/null)" ]] \
-    || fail "scenario21: deploy created a rescue branch for a foreign origin"
-[[ ! -s "$enabled_units" ]] \
-    || fail "scenario21: deploy installed/enabled units before refusing"
-grep -q 'origin-remote-refused' "$scratch/deploy-audit.log" \
-    || fail "scenario21: refusal must land in the deploy audit log"
-ok "scenario21: foreign origin fetch URL (0509) refuses loudly, no fetch/reset/install"
+    || fail "scenario21: repair must name the offending URL (got: $out)"
+[[ "$out" == *"fleet-ops#5301"* ]] \
+    || fail "scenario21: repair must name fleet-ops#5301 (got: $out)"
+[[ "$(git -C "$checkout" remote get-url origin)" == "$origin_bare" ]] \
+    || fail "scenario21: origin fetch URL must be set back to the expected URL"
+grep -q 'origin-remote-repaired' "$scratch/deploy-audit.log" \
+    || fail "scenario21: repair must land in the deploy audit log"
+grep -q 'fleet_deploy_origin_remote_repaired_total 1' "$scratch/repair-prom" \
+    || fail "scenario21: repair counter must be written to the .prom"
+ok "scenario21: foreign origin fetch URL (0509) repaired in the same tick, deploy proceeds (fleet-ops#5301)"
 
-# A near-miss owner/repo must refuse too (exact path match, not a substring).
+# A near-miss owner/repo is repaired too (exact path match, not a substring):
+# anything that is not the expected URL is rewritten back to the constant.
 run_foreign_deploy "https://github.com/Nishfleet/fleet-ops-extra.git"
-[[ "$rc" -ne 0 ]] || fail "scenario21b: fleet-ops-extra must refuse (got $rc: $out)"
+[[ "$rc" -eq 0 ]] || fail "scenario21b: fleet-ops-extra must be repaired and proceed (got $rc: $out)"
 [[ "$out" == *"DEPLOY-ORIGIN-REMOTE"* ]] \
     || fail "scenario21b: expected DEPLOY-ORIGIN-REMOTE (got: $out)"
-ok "scenario21b: a near-miss repo name is refused (exact match, no substring pass)"
+[[ "$(git -C "$checkout" remote get-url origin)" == "$origin_bare" ]] \
+    || fail "scenario21b: origin must be repaired back to the expected URL"
+ok "scenario21b: a near-miss repo name is repaired (exact match, no substring pass)"
+
+# The repair also drops an extra remote carrying the expected URL under
+# another name (the observed 2026-09-11 rewrite: origin=0509 + real=fleet-ops).
+git -C "$checkout" remote add real "$origin_bare"
+run_foreign_deploy "https://github.com/Nishfleet/0509.git"
+[[ "$rc" -eq 0 ]] || fail "scenario21d: repair tick must proceed (got $rc: $out)"
+[[ -z "$(git -C "$checkout" remote | grep -x real)" ]] \
+    || fail "scenario21d: the extra remote carrying the expected URL must be removed"
+ok "scenario21d: repair drops the duplicate fleet-ops remote (fleet-ops#5301)"
+
+# A >2-repairs-in-24h history trips the alert while the tick proceeds.
+now_s=$(date -u +%s)
+printf '%s\n%s\n%s\n%s\n' "$((now_s - 3600))" "$((now_s - 7200))" "$((now_s - 10800))" "$now_s" >"$scratch/repair.hist"
+run_foreign_deploy "https://github.com/Nishfleet/0509.git"
+[[ "$rc" -eq 0 ]] || fail "scenario21e: alert tick must proceed (got $rc: $out)"
+[[ "$out" == *"repaired 5x in 24h"* ]] \
+    || fail "scenario21e: >2 repairs in 24h must trip the alert (got: $out)"
+ok "scenario21e: >2 origin repairs in 24h trips the alert (fleet-ops#5301)"
 
 # Correct URL + the seam pointing at it: unchanged behaviour. Scenario 18b
 # left a failing `install.sh --system` stub on origin/main; restore a passing
@@ -2175,7 +2375,9 @@ exit 0
 STUB
 chmod +x "$install"
 git -C "$checkout" add install.sh
-git -C "$checkout" commit -q -m "restore passing install.sh stub after scenario18b"
+# --allow-empty: scenario21 setup already restored an identical passing stub,
+# so this commit may be a no-op (a plain commit exits 1 under set -e).
+git -C "$checkout" commit -q --allow-empty -m "restore passing install.sh stub after scenario18b"
 git -C "$checkout" push -q origin HEAD:main
 git -C "$checkout" fetch -q origin
 if ! out=$(run_deploy); then

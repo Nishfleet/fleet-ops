@@ -68,14 +68,6 @@ model_list:
   # --- worker-capable: prepaid strong models ---
   - model_name: worker-capable
     litellm_params:
-      model: openai/swe-1-7
-      api_base: https://devin.example/v1
-      api_key: os.environ/DEVIN_API_KEY
-      tags: ["prepaid"]
-      order: 1
-      max_parallel_requests: 4
-  - model_name: worker-capable
-    litellm_params:
       model: openai/minimax-m3
       api_base: https://minimax.example/v1
       api_key: os.environ/MINIMAX_API_KEY

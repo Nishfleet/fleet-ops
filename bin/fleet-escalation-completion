@@ -51,12 +51,26 @@
 #                            trip fresh. That IS the ladder climbing.
 #   - healthy (terminal reached / no open chain): clear markers, exit 0.
 #
-# Stale-trip detection (the "detector-green or wall are the ONLY terminals"
-# teeth): a non-terminal STOP-REASON sitting on a GREEN detector (failed
-# unit already recovered) AND a pipeline that is IDLE means the chain was
-# fixed but never closed and nothing is coming to close it — FAIL LOUD
-# (the auditor is needed to close it; a green detector with an open
-# STOP-REASON would otherwise re-summon an auditor forever).
+# Stale-trip ladder (fleet-ops#5190 — same shape as the stall ladder):
+# a non-terminal STOP-REASON sitting on a GREEN detector (failed unit
+# already recovered) AND a pipeline that is IDLE means the chain was fixed
+# but never closed and nothing is coming to close it. The response is the
+# re-fire that actually summons an auditor, NOT a heartbeat failure:
+#   - stale trip, action cadence reached (>= STALE_HOLD since last action),
+#     re-fire budget not spent:
+#         LOUD STALE-TRIP (tag/key unchanged for the reconciler's alarm) +
+#         `systemctl --user restart stop-escalation.service` + hold (exit 0).
+#         The dispatcher's own per-hash cooldown (300s) + 2-dispatch cap +
+#         walled cooldown bound the re-fire, so this cannot storm.
+#   - stale trip between actions (< STALE_HOLD): quiet hold, exit 0, no
+#     triage line. STALE-TRIP lines per open chain per day are bounded by
+#     the action cadence, not one per tick; the reconciler's close-grace
+#     keeps the filed alarm open across the quiet ticks.
+#   - still stale after STALE_REFIRES re-fires: FAIL LOUD (exit 1) once —
+#     fleet-heartbeat.service lands in --state=failed -> unit-escalation —
+#     then the count resets so the ladder cycles instead of failing every
+#     tick. A ladder-walled chain never reaches this branch: it is a
+#     dispatcher-spent terminal (fleet-ops#5187).
 #
 # Anti-recursion: this bin runs inside fleet-heartbeat.service (already
 # escalation-covered). Its own failure lands in unit-escalation — the same
@@ -76,10 +90,17 @@
 #   FLEET_ESCALATION_COMPLETION_SYSTEMCTL  systemctl (tests)
 #   FLEET_ESCALATION_COMPLETION_NOW    ISO timestamp override (tests)
 #   FLEET_ESCALATION_COMPLETION_DRY_RUN 1 = never restart stop-escalation (tests)
+#   FLEET_ESCALATION_COMPLETION_STALE_HOLD  seconds between stale-trip
+#                                      actions (re-fire / fail-loud) on one
+#                                      open chain (default 10800 = 3h)
+#   FLEET_ESCALATION_COMPLETION_STALE_REFIRES  re-fires before fail-loud
+#                                      (default 2)
 #
-# Exit: 0 = no open chain, or open chain within budget / already climbing.
-#       Non-zero = stale chain needing fail-loud (heartbeat unit fails ->
-#       unit-escalation ladder), or stale-trip on green detector.
+# Exit: 0 = no open chain, or open chain within budget / already climbing,
+#       or stale trip held / re-fired (ladder in motion, heartbeat stays up).
+#       Non-zero = stalled chain's fail-loud tick, or a stale trip that is
+#       still open after the re-fire bound is spent (heartbeat unit fails ->
+#       unit-escalation ladder).
 
 set -Eeuo pipefail
 
@@ -99,6 +120,12 @@ AUDITOR_LOG="${FLEET_AUDITOR_LOG:-$AS/AUDITOR-LOG.md}"
 SYSTEMCTL="${FLEET_ESCALATION_COMPLETION_SYSTEMCTL:-systemctl}"
 NOW_ISO="${FLEET_ESCALATION_COMPLETION_NOW:-}"
 DRY="${FLEET_ESCALATION_COMPLETION_DRY_RUN:-0}"
+# fleet-ops#5190: stale-trip action cadence + re-fire bound. 3h keeps a
+# lodged chain to <=8 action lines/day while staying well inside the
+# reconciler's 6h close-grace (lib/detector-queue-reconciler.py); 2 re-fires
+# matches the dispatcher's own 2-dispatch cap per hash.
+STALE_HOLD="${FLEET_ESCALATION_COMPLETION_STALE_HOLD:-10800}"
+STALE_REFIRES="${FLEET_ESCALATION_COMPLETION_STALE_REFIRES:-2}"
 
 mkdir -p "$STATE_DIR"
 
@@ -277,7 +304,6 @@ sweep_orphan_chains() {
 # main
 # ---------------------------------------------------------------------------
 now=$(now_epoch)
-violations=0
 
 # If there is no STOP-REASON, or it is terminal, every open chain is done.
 # Prune the state dir of chains older than 2x budget; nothing to enforce.
@@ -320,11 +346,17 @@ escalation_pipeline_active() {
 cf=$(chain_state_file "$hash")
 first_seen="$now"
 stall_count=0
+stale_fires=0
+stale_last=0
 if [[ -f "$cf" ]]; then
     first_seen=$(jq -r '.first_seen // ""' "$cf" 2>/dev/null || true)
     stall_count=$(jq -r '.stall_count // 0' "$cf" 2>/dev/null || echo 0)
+    stale_fires=$(jq -r '.stale_fires // 0' "$cf" 2>/dev/null || echo 0)
+    stale_last=$(jq -r '.stale_last // 0' "$cf" 2>/dev/null || echo 0)
     [[ "$first_seen" =~ ^[0-9]+$ ]] || first_seen="$now"
     [[ "$stall_count" =~ ^[0-9]+$ ]] || stall_count=0
+    [[ "$stale_fires" =~ ^[0-9]+$ ]] || stale_fires=0
+    [[ "$stale_last" =~ ^[0-9]+$ ]] || stale_last=0
 fi
 age=$(( now - first_seen ))
 
@@ -341,21 +373,50 @@ fi
 if detector_green "$unit"; then
     # FIX reached: the failed unit recovered. If the closeout (auditor-
     # resolved/boundary:*) is missing BUT the pipeline is actively working
-    # the trip, the closeout is in flight — progress, not stale. Only when
-    # the pipeline is idle is an open non-terminal STOP-REASON a stale trip.
+    # the trip, the closeout is in flight — progress, not stale. A live
+    # dispatch defers the next stale-trip action (stale_last = now).
     if ! reason_is_terminal "$reason"; then
         if escalation_pipeline_active; then
             log "chain ${hash:0:12} detector-green; STOP-REASON non-terminal but stop-escalation is actively dispatching — closeout in flight"
-            printf '{"hash":"%s","first_seen":%s,"stall_count":0,"terminal":"pending-closeout"}\n' "$hash" "$now" > "$cf"
+            printf '{"hash":"%s","first_seen":%s,"stall_count":0,"stale_fires":%s,"stale_last":%s,"terminal":"pending-closeout"}\n' "$hash" "$now" "$stale_fires" "$now" > "$cf"
             exit 0
         fi
-        loud "ESCALATION-COMPLETION-STALE-TRIP" "chain ${hash:0:12} detector-green but STOP-REASON reason=$reason is NOT terminal and stop-escalation is IDLE — fix was never closed (auditor-resolved/boundary:* required)"
-        violations=$((violations + 1))
-    else
-        loud "ESCALATION-COMPLETION-GREEN" "chain ${hash:0:12} unit=$unit is detector-green and STOP-REASON terminal — FIX reached and closed"
+        # fleet-ops#5190 stale-trip ladder. Between actions the tick is a
+        # quiet hold: the reconciler's close-grace (last-fired history in
+        # the triage file) keeps the filed alarm open, and the heartbeat
+        # is not failed for a chain whose ladder is in motion.
+        if (( now - stale_last >= STALE_HOLD )); then
+            if (( stale_fires < STALE_REFIRES )); then
+                loud "ESCALATION-COMPLETION-STALE-TRIP" "chain ${hash:0:12} detector-green but STOP-REASON reason=$reason is NOT terminal and stop-escalation is IDLE — fix was never closed (auditor-resolved/boundary:* required)"
+                stale_fires=$((stale_fires + 1))
+                stale_last="$now"
+                if [[ "$DRY" == "1" ]]; then
+                    log "DRY: would restart stop-escalation.service (stale-trip re-fire ${stale_fires}/${STALE_REFIRES})"
+                else
+                    if "$SYSTEMCTL" --user restart stop-escalation.service 2>/dev/null; then
+                        log "repair: restarted stop-escalation.service (stale-trip re-fire ${stale_fires}/${STALE_REFIRES})"
+                    else
+                        log "repair: restart stop-escalation.service FAILED (best-effort; re-fire still counted)"
+                    fi
+                fi
+                printf '{"hash":"%s","first_seen":%s,"stall_count":0,"stale_fires":%s,"stale_last":%s}\n' "$hash" "$first_seen" "$stale_fires" "$stale_last" > "$cf"
+                exit 0
+            fi
+            # Still stale after the re-fire bound: fail loud ONCE, then the
+            # count resets so the ladder cycles instead of failing every
+            # tick. fleet-heartbeat.service -> --state=failed -> unit-
+            # escalation is the climb; the next action tick re-fires again.
+            loud "ESCALATION-COMPLETION-STALE-TRIP" "chain ${hash:0:12} detector-green but STOP-REASON reason=$reason is NOT terminal and stop-escalation is IDLE — fix was never closed (auditor-resolved/boundary:* required) — ${STALE_REFIRES} re-fires spent"
+            log "FAIL-LOUD: chain ${hash:0:12} still stale after ${STALE_REFIRES} auditor re-fires — failing heartbeat once, ladder cycles"
+            printf '{"hash":"%s","first_seen":%s,"stall_count":0,"stale_fires":0,"stale_last":%s}\n' "$hash" "$first_seen" "$now" > "$cf"
+            exit 1
+        fi
+        log "chain ${hash:0:12} stale trip held (last action $(( now - stale_last ))s ago < ${STALE_HOLD}s hold; re-fires ${stale_fires}/${STALE_REFIRES}) — quiet tick"
+        exit 0
     fi
+    loud "ESCALATION-COMPLETION-GREEN" "chain ${hash:0:12} unit=$unit is detector-green and STOP-REASON terminal — FIX reached and closed"
     printf '{"hash":"%s","first_seen":%s,"stall_count":0,"terminal":"green"}\n' "$hash" "$now" > "$cf"
-    exit "$violations"
+    exit 0
 fi
 
 if nish_wall_reached "$hash"; then

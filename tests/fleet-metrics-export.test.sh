@@ -60,6 +60,15 @@ command -v jq >/dev/null 2>&1 || fail "jq required"
 scratch="$(mktemp -d -t fme-test.XXXXXX)"
 trap 'rm -rf "$scratch"' EXIT INT TERM
 
+# fleet-ops#5140: prom_lines() resolves product repos from intake-repos.json,
+# which would let the m.main() heredocs below spend real gh calls and write
+# deploy-quality-*-<product>.json into the production cache dir. Pin the
+# fleet-ops-only set for the whole file.
+cat >"$scratch/intake-fleet-ops-only.json" <<'JSON'
+{ "repos": [{ "name": "fleet-ops" }] }
+JSON
+export FLEET_DQ_REPOS_JSON="$scratch/intake-fleet-ops-only.json"
+
 # =========================================================================
 # 1-5. Classifier + self-maintenance/quality derivation (pure python)
 # =========================================================================
@@ -1689,6 +1698,12 @@ bash "$here/measure-cursor-today.test.sh" || fail "measure-cursor-today tests fa
 # decision-resolved after 24h fails loud and auto-files once, deduped).
 # Hosted here so P14 runs it without a workflow-file edit. Hermetic (fake gh).
 bash "$here/fleet-questions-stale.test.sh" || fail "fleet-questions-stale tests failed"
+
+# fleet-ops#5417: the outside-in `visitor:` probe (https redirect, edge
+# cache, manifest, duplicate routes, public-repo leaks) the judges read
+# right after product:. Hosted here for the same P14 reason as
+# fleet-usd-spend above (no workflow-scope edit; stubbed curl/gh).
+bash "$here/fleet-visitor-probe.test.sh" || fail "fleet-visitor-probe tests failed"
 
 # =========================================================================
 # 15. fleet-ops#2493: held wrapper spawn-bench outranks a later healthy

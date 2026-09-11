@@ -16,6 +16,11 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
 bin="$repo_root/bin/fleet-blind-audit"
 
+# Pin the seam lens to the repo copy under test; otherwise the harness picks
+# up the installed ~/.local/lib/pi-packet copy, which lags the repo's CLI
+# (fleet-ops#5477 added --closed-issues).
+export AUDIT_SEAM_LIB="$repo_root/lib/manual-seam-lens.py"
+
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
@@ -322,6 +327,7 @@ refuse_rc=0
 PATH="$scratch/fakebin:$PATH" \
   GH_CREATE_LOG="$refuse_log" \
   AUDIT_REPO="Nishfleet/fleet-ops" \
+  AUDIT_ALLOW_NONCANONICAL=1 \
   AUDIT_REPO_ROOT="$repo_root" \
   AUDIT_STATE_DIR="$refuse_state" \
   AUDIT_DELIBERATE_STATES="$scratch/deliberate-states.md" \
@@ -353,6 +359,7 @@ shadow_rc=0
 PATH="$scratch/fakebin:$PATH" \
   GH_CREATE_LOG="$shadow_log" \
   AUDIT_REPO="Nishfleet/fleet-ops" \
+  AUDIT_ALLOW_NONCANONICAL=1 \
   AUDIT_REPO_ROOT="$repo_root" \
   AUDIT_STATE_DIR="$shadow_state" \
   AUDIT_DELIBERATE_STATES="$scratch/deliberate-states.md" \

@@ -9,11 +9,12 @@ StartLimitIntervalSec=1h
 StartLimitBurst=100
 
 # Named reason (decisions-ledger 2026-08-27 TOP GEAR): merged-but-not-live
-# latency. Every 2 minutes: git fetch + rev compare (seconds). Only when
-# origin/main moved does it invoke the sanctioned bin/fleet-ops-deploy —
-# the same deploy step the heartbeat block 0 uses, so live converges to a
-# merge within ~2 minutes instead of waiting for the 30-min beat.
-# No new dispatcher, no polling for work — event-driven on the merge event.
+# latency. Every 2 minutes: git fetch + rev compare (seconds). Invokes the
+# sanctioned bin/fleet-ops-deploy when origin/main moved, OR when the clone
+# is on a named non-main branch (fleet-ops#5222: recover if that commit is
+# already on a remote; refuse if it is not). Cadence stays 2 min.
+# No new dispatcher, no polling for work — event-driven on the merge event
+# and on off-main checkout.
 
 [Service]
 Type=oneshot

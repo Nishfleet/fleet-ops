@@ -315,7 +315,11 @@ phase_measure() {
         due="$(research_due_for "$next")"
         state_jq --argjson n "$next" --argjson d "$due" \
             '.consecutive_clean = 0 | .cycle = $n | .research_due = $d | .last_verdict = "FAIL" | .dispatched = {} | .phase = "audit"'
-        log "cycle $cycle: NOT clean (findings=$findings drills=$drills slos=$green) -> re-audit cycle $next"
+        # fleet-ops#5400: name the unmeasured inputs so a red snapshot is
+        # self-explaining in the journal, not just a bare slos=false.
+        local unmeas
+        unmeas="$(printf '%s' "$snap" | jq -r '[(.unmeasured // [])[]] | join(",")' 2>/dev/null || true)"
+        log "cycle $cycle: NOT clean (findings=$findings drills=$drills slos=$green unmeasured=${unmeas:-none}) -> re-audit cycle $next"
     fi
 }
 

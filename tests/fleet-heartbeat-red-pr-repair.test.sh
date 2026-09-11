@@ -69,8 +69,9 @@ cat >"$gh_fake" <<'FAKE'
 #!/usr/bin/env bash
 case "$*" in
   *"pr list"*)
-    # Emit the PR rows whose head starts with claim/issue-.
-    jq -c '[.[] | select(.head | startswith("claim/issue-")) | {number,headRefName:.head,isDraft:.draft}]' "${PRS_JSON:-/dev/null}" 2>/dev/null || printf '[]'
+    # Emit the PR rows whose head starts with claim/issue-. mergeable
+    # defaults to MERGEABLE; a fixture overrides it to model a conflict.
+    jq -c '[.[] | select(.head | startswith("claim/issue-")) | {number,headRefName:.head,isDraft:.draft,mergeable:(.mergeable // "MERGEABLE")}]' "${PRS_JSON:-/dev/null}" 2>/dev/null || printf '[]'
     exit 0
     ;;
   *"pr checks"*)
@@ -318,6 +319,69 @@ JSON
       || fail "scenarioE($st): stale flag must be cleared for $st PR"
 done
 ok "scenarioE: green/pending/no-checks PR -> no dispatch, stale state cleared"
+
+# ============================================================================
+# Scenario H (fleet-ops#5205): a stale-conflicting PR flagged by the
+# dead-pr-detector must never spend a dispatch — a merge conflict is not a
+# red check a worker can repair. Two ticks: no observe flag, no dispatch,
+# no attempt state. Then the flag gone stale (rebased -> MERGEABLE) resumes
+# normal repair handling.
+# ============================================================================
+reset_state
+cat >"$PRS_JSON" <<'JSON'
+[{"number":55,"head":"claim/issue-55","draft":false,"checks":"red","mergeable":"CONFLICTING"}]
+JSON
+: >"$LIVE_UNITS"   # worker dead — without suppression this is the dispatch shape
+mkdir -p "$log_dir/dead-pr-detector"
+printf 'Nishfleet/demo 55 55\n' >"$log_dir/dead-pr-detector/stale-conflicting.list"
+
+run_helper   # tick 1: suppressed before the debounce flag is even set
+[[ "$env_rc" == 0 ]] || fail "scenarioH: suppressed tick must exit 0, got $env_rc ($env_out)"
+[[ "$(count_dispatches)" == "0" ]] \
+    || fail "scenarioH: flagged stale-conflicting PR must NOT dispatch, got $(count_dispatches) ($(cat "$calls"))"
+[[ ! -f "$log_dir/red-pr-repair/demo-55.flag" ]] \
+    || fail "scenarioH: suppression must not even set the observe flag"
+grep -q 'stale-conflicting per dead-pr-detector' <<<"$env_out" \
+    || fail "scenarioH: suppression must be logged: $env_out"
+
+run_helper   # tick 2: still no dispatch, no attempt state written
+[[ "$(count_dispatches)" == "0" ]] \
+    || fail "scenarioH: second tick must still NOT dispatch, got $(count_dispatches)"
+[[ ! -f "$log_dir/red-pr-repair/demo-55.json" ]] \
+    || fail "scenarioH: no attempt state may be written for a suppressed PR"
+[[ "$(count_reset_failed)" == "0" ]] \
+    || fail "scenarioH: no reset-failed for a suppressed PR ($(cat "$calls"))"
+ok "scenarioH: flagged stale-conflicting PR -> suppressed on both ticks, zero dispatch spend"
+
+# Flag gone stale: the branch was rebased and mergeable healed to
+# MERGEABLE — normal repair handling resumes despite the list entry.
+cat >"$PRS_JSON" <<'JSON'
+[{"number":55,"head":"claim/issue-55","draft":false,"checks":"red","mergeable":"MERGEABLE"}]
+JSON
+run_helper   # tick 3: stale flag ignored -> observe (debounce set)
+[[ -f "$log_dir/red-pr-repair/demo-55.flag" ]] \
+    || fail "scenarioH: a healed (MERGEABLE) flagged PR must resume normal repair handling"
+run_helper   # tick 4: dispatch
+[[ "$(count_dispatches)" == "1" ]] \
+    || fail "scenarioH: healed flagged PR must dispatch normally, got $(count_dispatches)"
+grep -qx 'pi-issue-start demo-55' "$calls" \
+    || fail "scenarioH: dispatch must target demo-55, got $(cat "$calls")"
+ok "scenarioH: flag stale after rebase (MERGEABLE) -> suppression released, repair resumes"
+
+# An unflagged conflicting PR still flows through normal handling — the
+# suppression is list-driven, not a blanket conflict skip.
+reset_state
+cat >"$PRS_JSON" <<'JSON'
+[{"number":55,"head":"claim/issue-55","draft":false,"checks":"red","mergeable":"CONFLICTING"}]
+JSON
+: >"$LIVE_UNITS"
+run_helper   # tick 1: no flag -> observe as usual
+[[ -f "$log_dir/red-pr-repair/demo-55.flag" ]] \
+    || fail "scenarioH: unflagged conflicting PR must observe normally"
+run_helper   # tick 2: dispatch as usual
+[[ "$(count_dispatches)" == "1" ]] \
+    || fail "scenarioH: unflagged conflicting PR must dispatch, got $(count_dispatches)"
+ok "scenarioH: unflagged conflicting PR -> normal observe-then-dispatch (no blanket skip)"
 
 # ============================================================================
 # Scenario F: tier1 wires the helper and propagates its non-zero exit

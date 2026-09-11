@@ -183,6 +183,14 @@ grep -qF 'CLAIM-STEP-REACHED slots=1' <<<"$_out1" \
 _out3=$( eval "$_rung_stubs"; pick_seat() { echo 3; }; slots=2; eval "$_gate_block"; echo "CLAIM-STEP-REACHED slots=$slots" ) || true
 grep -qF 'CLAIM-STEP-REACHED slots=2' <<<"$_out3" \
     || fail "Test 10: 3 usable slots with capacity 2 must keep slots=2, got: $_out3"
+_out25=$( eval "$_rung_stubs"; pick_seat() { echo 2; }; slots=5; eval "$_gate_block"; echo "CLAIM-STEP-REACHED slots=$slots" ) || true
+grep -qF 'CLAIM-STEP-REACHED slots=2' <<<"$_out25" \
+    || fail "Test 10: usable=2 capacity=5 must claim 2 (fleet-ops#4723), got: $_out25"
+grep -qF 'claiming at most 2 this tick' <<<"$_out25" \
+    || fail "Test 10: usable=2 capacity=5 must log the #3732 clamp, got: $_out25"
+_outw=$( eval "$_rung_stubs"; pick_seat() { echo 2; }; seat_walled_breakdown() { echo 'devin/glm-5-2 until=2026-09-14T00:00:00Z'; }; slots=5; eval "$_gate_block"; echo "CLAIM-STEP-REACHED slots=$slots" ) || true
+grep -qF 'walled: devin/glm-5-2 until=2026-09-14T00:00:00Z' <<<"$_outw" \
+    || fail "Test 10: usable < capacity must log walled-until on the same line (fleet-ops#4723), got: $_outw"
 _outx=$( eval "$_rung_stubs"; pick_seat() { echo "garbage"; }; slots=2; eval "$_gate_block"; echo "CLAIM-STEP-REACHED slots=$slots" ) || true
 grep -qF 'seat-slot gate fails open' <<<"$_outx" \
     || fail "Test 10: a non-numeric count must fail OPEN (log + proceed), got: $_outx"

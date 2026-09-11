@@ -38,3 +38,14 @@ two commands in the issue before restoring `--sandbox`; until then it stays
 off. The classifier benches the seat with a named reason instead of a day of
 empty runs, and never retires it (a CLI/flag config fault is infrastructure,
 not seat yield).
+
+## Rate-limit resume (2026-09-11)
+
+A Devin "Reached overall message rate limit ... reset in N minutes" no longer ends the
+pi session. `rate-limit.ts` parses the advertised reset, the provider waits it out
+(min 30s, max 20 min, +15s slack) and re-runs the same packet with a RESUME NOTE, up to
+3 attempts, only while enough of pi-issue-run's watchdog budget (`PI_HANG_TIMEOUT_S`,
+now exported) remains for a real run. The seat ledger still records the wall (other
+workers skip the seat); a successful resume rewrites it healthy. Knobs:
+`PI_DEVIN_RATE_LIMIT_{MAX_ATTEMPTS,MIN_WAIT_S,MAX_WAIT_S,MIN_RUN_S}`.
+Test: `tests/devin-provider-rate-limit-retry.test.sh`.

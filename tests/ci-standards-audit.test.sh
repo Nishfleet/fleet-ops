@@ -332,6 +332,11 @@ bash "$here/alert-repair-fleet-escalation-storm-skip.test.sh"
 # .github/workflows/**).
 bash "$here/alert-repair-outcome-metric.test.sh"
 
+# fleet-ops#5142: detached-deliverable preflight alert. Hosted here so P14
+# runs it without a workflow-file edit (the worker App cannot push
+# .github/workflows/**).
+bash "$here/detached-deliverable-preflight.test.sh"
+
 # fleet-ops#2768: one-shot dispatch-ledger fixture-row sweep. PR #2873
 # landed the test without a ci.yml listing or a host, so P14 ran red on
 # "1 test file(s) are neither in ci.yml, hosted by a listed test,
@@ -354,6 +359,14 @@ bash "$here/dispatch-ledger-fixture-sweep.test.sh"
 # drop of this host line fails by name.
 # Hermetic (pin fixtures, no gh/prometheus/systemd).
 bash "$here/fleet-deploy-quality.test.sh"
+
+# fleet-ops#5140: the 0509 product-repo deploy-quality test (red streak,
+# green-newest, unreadable-runs degradation, HELP/TYPE dedup). Hosted here
+# so P14 runs it without a workflow-file edit (the worker App cannot push
+# .github/workflows/**). The named pin in tests/p14-test-listing-gate.test.sh
+# is the class-prevention so a future drop of this host line fails by name.
+# Hermetic (file seams only, FLEET_DQ_GH=/nonexistent/gh, no network).
+bash "$here/fleet-product-deploy-0509.test.sh"
 
 # fleet-ops#2902 (PR #2900 follow-up): the close-duplicates drain test
 # landed on main without a ci.yml listing or a host (same 2-orphan FAIL as

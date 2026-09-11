@@ -155,6 +155,12 @@ resolve_dep() {
     echo "NOT_DONE"
 }
 
+# The REAL _depends_on_refs parser, extracted verbatim from the tick —
+# hand-mirroring a parser is how drift happens (fleet-ops#5107).
+_dor_def="$(sed -n "/^_depends_on_refs()/,/^}/p" "$tick")"
+[[ -n "$_dor_def" ]] || fail "_depends_on_refs() not found in tick lib"
+eval "$_dor_def"
+
 depends_on_filter() {
     local body="$1" repo="$2" num="$3"
     local ref owner rname target_num dep_key dep_state dep_body
@@ -171,9 +177,13 @@ depends_on_filter() {
         gate_re="${_gate_res[$gi]}"
         skip_reason="${_gate_reasons[$gi]}"
 
-        mapfile -t deps < <(printf '%s\n' "$body" \
-            | grep -E "$gate_re" \
-            | grep -oE '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+|[A-Za-z0-9_.-]+#[0-9]+|#[0-9]+' || true)
+        if [[ "$skip_reason" == "skipped-depends-on" ]]; then
+            mapfile -t deps < <(printf '%s\n' "$body" | _depends_on_refs)
+        else
+            mapfile -t deps < <(printf '%s\n' "$body" \
+                | grep -E "$gate_re" \
+                | grep -oE '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+|[A-Za-z0-9_.-]+#[0-9]+|#[0-9]+' || true)
+        fi
         (( ${#deps[@]} == 0 )) && continue
 
         for ref in "${deps[@]}"; do
@@ -200,7 +210,7 @@ depends_on_filter() {
                         dep_body="$(gh issue view "$target_num" -R "${owner}/${rname}" --json body --jq '.body // ""' 2>/dev/null || true)"
                         _dep_body_cache[$dep_key]="$dep_body"
                     fi
-                    if printf '%s\n' "$dep_body" | grep -E '^depends-on:' \
+                    if printf '%s\n' "$dep_body" | _depends_on_refs \
                         | grep -qE "#${num}\b|${repo}#${num}\b"; then
                         echo "depends-on-cycle"
                         return 1

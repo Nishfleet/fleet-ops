@@ -175,6 +175,18 @@ FLEET_ISSUE_FILE_BIN = os.environ.get(
 )
 GH_BIN = os.environ.get("GH", "gh")
 
+# fleet-ops#5142 env seams (same convention as GH_BIN / PI_DEADMAN_BIN) for
+# the DetachedJobDied deliverable pre-flight. JOURNALCTL_BIN reads the dead
+# unit's journal for the dead-man `died:` line — the only place the declared
+# deliverable path is recorded. PI_SYSTEMD_RUN_BIN is argv[0] of the
+# repair-worker spawn so tests can stub it. The dispatch ledger maps the
+# alert's `dispatch` label to packet_path for the PR-evidence fallback.
+JOURNALCTL_BIN = os.environ.get("JOURNALCTL_BIN", "journalctl")
+PI_SYSTEMD_RUN_BIN = os.environ.get("PI_SYSTEMD_RUN_BIN", "pi-systemd-run")
+DISPATCH_LEDGER = os.environ.get("FLEET_DISPATCH_LEDGER") or str(
+    Path(os.environ.get("AGENT_STATE", "/home/nish/workspaces/agent-state"))
+    / "dispatch-ledger.jsonl")
+
 
 def _target_repo(alertnames, common_labels, alerts):
     """Return the repo this dispatch targets, or "" for fleet-internal alerts.
@@ -640,31 +652,66 @@ def _slowburn_firing_seconds(starts_at):
     return max(0, int(time.time() - t))
 
 
+def _slowburn_run(cmd, timeout=30):
+    """Run one slowburn helper command and never raise.
+
+    fleet-ops#4773: a hung `gh` (TimeoutExpired) or a missing/unusable
+    binary (OSError) must be a FAILED LOOKUP — the caller sees rc!=0 with
+    empty stdout — not an uncaught traceback that takes the whole
+    dispatch down while the skip-list entry is supposed to stay intact.
+    """
+    try:
+        return subprocess.run(
+            cmd, capture_output=True, text=True, check=False,
+            timeout=timeout)
+    except (subprocess.TimeoutExpired, OSError):
+        return subprocess.CompletedProcess(cmd, 1, "", "")
+
+
 def _slowburn_find_existing(repo, signal, gh):
     """Return the open critical-path issue number carrying the signal key,
     or "" if none / the search failed. Mirrors the detector->queue
-    reconciler's find_existing_signal: the signal key lives in the issue
-    body, so a `gh issue list --search` for the key finds it. A failed
-    search (rc!=0 / unparseable) returns "" (fail-open: a flaky gh must
-    not block the file path, and a duplicate file is caught by
+    reconciler's find_existing_signal, but a `<signal>`-only search is NOT
+    enough (fleet-ops#4773): the search tokenizes the hyphenated key, so an
+    unrelated issue whose text merely contains the words matches — live,
+    the #4773 meta-issue itself was returned and accepted as the repair
+    terminus. Accept an item ONLY when it carries the `critical-path` label
+    (filtered server-side, re-checked here) AND its title carries the
+    signal key in the `[{signal}]` form _slowburn_file writes. A failed
+    search (rc!=0 / empty / unparseable) returns "" (fail-open: a flaky gh
+    must not block the file path, and a duplicate file is caught by
     fleet-issue-file's own dedupe).
     """
-    proc = subprocess.run(
+    proc = _slowburn_run(
         [gh, "issue", "list", "-R", repo, "--state", "open",
          "--limit", "50", "--search", signal,
-         "--json", "number,title"],
-        capture_output=True, text=True, check=False, timeout=30,
-    )
+         "--label", SLOWBURN_LABEL,
+         "--json", "number,title,labels"])
     if proc.returncode != 0 or not (proc.stdout or "").strip():
         return ""
     try:
         items = json.loads(proc.stdout)
     except json.JSONDecodeError:
         return ""
+    # A malformed response (a JSON object, a bare string) is a failed
+    # lookup, not something to iterate (fleet-ops#4773).
+    if not isinstance(items, list):
+        return ""
+    marker = f"[{signal}]"
     for it in items:
         n = it.get("number")
-        if isinstance(n, int) and n > 0:
-            return str(n)
+        if not (isinstance(n, int) and n > 0):
+            continue
+        labels = []
+        for lab in it.get("labels") or []:
+            name = lab.get("name") if isinstance(lab, dict) else lab
+            if isinstance(name, str):
+                labels.append(name)
+        if SLOWBURN_LABEL not in labels:
+            continue
+        if marker not in (it.get("title") or ""):
+            continue
+        return str(n)
     return ""
 
 
@@ -690,35 +737,156 @@ def _slowburn_file(repo, signal, gh, issue_file):
         f"- am-executor: notified via the alert-repair dispatch path.\n"
         f"- do NOT page Nish for a seat-availability warning (the alert's "
         f"own description forbids it); seat supply is operator-owned.\n\n"
+        # fleet-ops#4773: the machine-checkable spec below is what makes
+        # the terminus CLAIMABLE. Without it the admission gate refuses
+        # the body (`agent-ready-spec-gate.py check-body`: "body has no
+        # termination:/accept:/required:/metric:"), so the item would be
+        # filed and no repair rung could ever claim it. Repo fleet-ops
+        # additionally needs a `moves:` line naming a product metric;
+        # this path moves no_usable_seat_events (seat supply is what the
+        # alert is about). The bare `{signal}` trailer below stays on its
+        # own line and last: it is the shipped signal-key file form (same
+        # trailer as `issue_body` in lib/detector-queue-reconciler.py), so
+        # do not reformat it.
+        f"- metric: the auto-filed terminus is claimable and runs its "
+        f"repair rung within one dispatch tick of the 1h threshold\n"
+        f"- accept: `python3 lib/agent-ready-spec-gate.py check-body "
+        f"--repo fleet-ops` on this body prints `SPEC-GATE: ok`\n"
+        # fleet-ops#5272: the terminus must also carry a `termination:`
+        # clause naming its runtime gate (AMX_STATUS=resolved ->
+        # observe-to-close). Without it the fleet-ops#4540 park detector
+        # can never engage, so a multi-day burn re-claims the open
+        # critical-path terminus forever — every claim a reserved-seat
+        # worker session with nothing left to repair.
+        f"- termination: AMX_STATUS=resolved — the dispatcher's "
+        f"observe-to-close pass closes this terminus when the burn "
+        f"clears (fleet-ops#5299); while firing it stays OPEN as the "
+        f"live-burn claim, parked by the fleet-ops#4540 gate once a "
+        f"claim-branch PR merges and re-claims pass the cap\n"
+        f"- moves: no_usable_seat_events\n\n"
         f"`{signal}`\n"
     )
     cmd = [issue_file, "file", "-R", repo, "--title", title, "--body", body,
            "--label", SLOWBURN_LABEL]
-    proc = subprocess.run(
-        cmd, capture_output=True, text=True, check=False, timeout=60)
+    proc = _slowburn_run(cmd, timeout=60)
     out = (proc.stdout or proc.stderr or "").strip()
     if proc.returncode != 0:
         return ""
     m = re.search(r"/issues/(\d+)", out)
-    if m:
-        return m.group(1)
-    m = re.search(r"#(\d+)", out)
-    if m:
-        return m.group(1)
-    return ""
+    if not m:
+        m = re.search(r"#(\d+)", out)
+    if not m:
+        return ""
+    number = m.group(1)
+    # fleet-ops#4773: the URL the create call prints is NOT proof a new
+    # issue exists. fleet-issue-file dedupes by token overlap and may
+    # COMMENT on an unrelated issue, printing ITS url (live: the #4773
+    # meta-issue, dup score 1.00), so logging FILED for that pointer would
+    # report a terminus that nothing filed. Verify the returned issue's
+    # title carries the [{signal}] key — the same discriminator the
+    # detector->queue reconciler's verify_filed_signal uses
+    # (fleet-ops#4622/#4841) — and refuse to report a filing on mismatch.
+    # A failed/unreadable view also returns "": never guess.
+    view = _slowburn_run(
+        [gh, "issue", "view", number, "-R", repo,
+         "--json", "title", "--jq", ".title"])
+    title = (view.stdout or "").strip()
+    if view.returncode != 0 or not title or f"[{signal}]" not in title:
+        _loud(
+            f"FILED-LINK-MISMATCH {SLOWBURN_NAME} fleet-issue-file "
+            f"returned issue=#{number} title='{title or '<unavailable>'}' "
+            f"which does not carry signal key [{signal}]; refusing to "
+            f"report it as FILED (fleet-ops#4773)")
+        return ""
+    return number
 
 
 def _slowburn_heartbeat(repo, number, gh):
     """Post a heartbeat comment on the existing linked issue so it stays
-    warm (and a future observe-to-close pass has fresh evidence). Best
-    effort: a failed comment is logged but never blocks the dispatch."""
+    warm (and the observe-to-close pass has fresh evidence). Best effort:
+    a failed comment is logged but never blocks the dispatch."""
     body = (f"alert-repair heartbeat: FleetSloSeatAvailSlowBurn still "
             f"firing past 1h; linked claim #{number} owns the repair rung "
             f"(fleet-ops#4773).")
-    subprocess.run(
-        [gh, "issue", "comment", number, "-R", repo,
-         "--body", body],
-        capture_output=True, text=True, check=False, timeout=30)
+    _slowburn_run(
+        [gh, "issue", "comment", number, "-R", repo, "--body", body])
+
+
+def _slowburn_observe_to_close(receiver, log):
+    """fleet-ops#5272: when the FleetSloSeatAvailSlowBurn alert RESOLVES,
+    the auto-filed terminus must not linger open. An open critical-path
+    terminus is reclaim-bait for workers with nothing to repair, and
+    `_slowburn_find_existing` only matches OPEN items — a stale terminus
+    would swallow the next burn's file-or-link (LINK forever, no fresh
+    claim) exactly the way the #4773 decoy swallowed the first one.
+
+    Find the open terminus carrying the signal key, verify its title by
+    the same read-back discriminator `_slowburn_file` uses, then close it
+    with an observe-to-close comment. Every step is best-effort: a failed
+    gh call skips the close (fail-open, terminus stays open — never
+    worse than today) and never blocks the dispatch."""
+    repo = SLOWBURN_REPO
+    signal = SLOWBURN_SIGNAL
+    gh = GH_BIN
+    number = _slowburn_find_existing(repo, signal, gh)
+    if not number:
+        with LOG.open("a") as f:
+            f.write(
+                f"[{utcnow()}] SKIP {SLOWBURN_NAME} observe-to-close: "
+                f"no open terminus carrying [{signal}] (nothing to close; "
+                f"receiver={receiver})\n"
+            )
+        log(f"SKIP {SLOWBURN_NAME} observe-to-close: no open terminus "
+            f"(nothing to close)")
+        return "no-terminus"
+    # Read-back title verify (fleet-ops#4773 discriminator): never close an
+    # issue the search fuzzy-matched but whose title does not carry the key.
+    view = _slowburn_run(
+        [gh, "issue", "view", number, "-R", repo,
+         "--json", "title", "--jq", ".title"])
+    title = (view.stdout or "").strip()
+    if view.returncode != 0 or not title or f"[{signal}]" not in title:
+        with LOG.open("a") as f:
+            f.write(
+                f"[{utcnow()}] WARN {SLOWBURN_NAME} observe-to-close "
+                f"skipped: candidate #{number} title='{title or '<unavailable>'}' "
+                f"does not carry signal key [{signal}]\n"
+            )
+        log(f"WARN {SLOWBURN_NAME} observe-to-close skipped on #{number} "
+            f"(title verify failed)")
+        return "skip-mismatch"
+    body = (
+        f"observe-to-close: FleetSloSeatAvailSlowBurn resolved "
+        f"(AMX status=resolved, receiver={receiver}) at {utcnow()}. "
+        f"The auto-filed terminus #{number} is no longer a live burn "
+        f"claim — closing so a future burn files a FRESH terminus "
+        f"instead of linking this one forever (fleet-ops#4773/#5272). "
+        f"Seat-supply root causes continue on their own repair issues."
+    )
+    _slowburn_run(
+        [gh, "issue", "comment", number, "-R", repo, "--body", body])
+    close = _slowburn_run(
+        [gh, "issue", "close", number, "-R", repo,
+         "--reason", "completed"])
+    if close.returncode != 0:
+        with LOG.open("a") as f:
+            f.write(
+                f"[{utcnow()}] WARN {SLOWBURN_NAME} observe-to-close: "
+                f"close of #{number} failed rc={close.returncode}; "
+                f"terminus left open\n"
+            )
+        log(f"WARN {SLOWBURN_NAME} observe-to-close: close of #{number} "
+            f"failed (rc={close.returncode}); terminus left open")
+        return "close-failed"
+    with LOG.open("a") as f:
+        f.write(
+            f"[{utcnow()}] CLOSED alertname={SLOWBURN_NAME} "
+            f"repo={repo} issue=#{number} signal={signal} "
+            f"receiver={receiver} reason=observe-to-close\n"
+        )
+    log(f"CLOSED {SLOWBURN_NAME} -> #{number} (observe-to-close: the "
+        f"slow burn resolved; terminus no longer a live claim)")
+    return "closed"
 
 
 def _slowburn_file_or_link(starts_at, log):
@@ -764,6 +932,10 @@ def _slowburn_file_or_link(starts_at, log):
             f"auto-file (firing {secs}s)")
         return "skip-error"
     number = _slowburn_file(repo, signal, gh, issue_file)
+    # "" from _slowburn_file covers two causes: the fleet-issue-file call
+    # itself failed, or it succeeded but the returned issue failed the
+    # [{signal}] title verify (a FILED-LINK-MISMATCH, fleet-ops#4773).
+    # Either way there is no terminus, so this is skip-error, never filed.
     if not number:
         with LOG.open("a") as f:
             f.write(
@@ -781,6 +953,239 @@ def _slowburn_file_or_link(starts_at, log):
     log(f"FILED {SLOWBURN_NAME} -> #{number} (auto-filed critical-path; "
         f"firing {secs}s)")
     return "filed"
+
+
+# ---------------------------------------------------------------------------
+# fleet-ops#5142: bounded, fail-open deliverable pre-flight for surviving
+# DetachedJobDied alerts. A dead detached unit whose packet already landed
+# its deliverable (the declared file exists non-empty, or the PR the packet
+# named merged / is armed + mergeable) must NOT be relaunched — the repair
+# worker would re-do finished work and burn a seat. The check is journal
+# first (the dead-man `died:` line is the only record of the declared
+# deliverable path), then dispatch-ledger -> packet -> exactly one gh call.
+# Every helper below swallows all errors: any ambiguity falls through to
+# the unchanged relaunch path — a genuinely dead packet is never stranded.
+
+
+def _read_tail(path, max_bytes):
+    """Return the last `max_bytes` of `path` as text, or None on any error."""
+    try:
+        p = Path(path)
+        with p.open("rb") as f:
+            if p.stat().st_size > max_bytes:
+                f.seek(-max_bytes, os.SEEK_END)
+            return f.read().decode("utf-8", "replace")
+    except (OSError, ValueError):
+        return None
+
+
+def _journal_deliverable(unit):
+    """Declared deliverable path for `unit` from the dead-man `died:` line.
+
+    pi-detached-deadman logs `died: unit=<u> result=<r>
+    deliverable=<path|unset>` into the dead unit's journal; the dispatch
+    ledger does NOT carry the path. One bounded journalctl call (10s); the
+    last `died:` line for THIS unit wins. Returns the path only when it is
+    absolute and the file exists non-empty, else '' (fail-open).
+    """
+    try:
+        r = subprocess.run(
+            [JOURNALCTL_BIN, "--user", "-u", unit, "-u", unit + ".service",
+             "--no-pager", "-n", "500"],
+            capture_output=True, text=True, check=False, timeout=10)
+    except Exception:
+        return ""
+    found = ""
+    for line in (r.stdout or "").splitlines():
+        if "died:" not in line:
+            continue
+        mu = re.search(r"\bunit=(\S+)", line)
+        md = re.search(r"\bdeliverable=(\S+)", line)
+        if mu and md and mu.group(1) == unit:
+            found = md.group(1)
+    if not found or found == "unset" or not os.path.isabs(found):
+        return ""
+    try:
+        p = Path(found)
+        if not p.is_file() or p.stat().st_size <= 0:
+            return ""
+    except OSError:
+        return ""
+    return found
+
+
+def _ledger_packet_path(dispatch_id, unit):
+    """packet_path of the LAST ledger entry whose `id` == `dispatch_id`
+    (fallback: `unit` == `unit`), or ''. Bounded 256KB tail read; a
+    mid-line cut or corrupt entry is skipped, never fatal."""
+    text = _read_tail(DISPATCH_LEDGER, 256 * 1024)
+    if not text:
+        return ""
+    entries = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            d = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(d, dict):
+            entries.append(d)
+    last = None
+    if dispatch_id:
+        for d in entries:
+            if d.get("id") == dispatch_id:
+                last = d
+    if last is None and unit:
+        for d in entries:
+            if d.get("unit") == unit:
+                last = d
+    if not last:
+        return ""
+    pp = last.get("packet_path")
+    return pp if isinstance(pp, str) else ""
+
+
+# Branch prefixes a packet's deliverable ref is allowed to carry.
+_BRANCH_PREFIXES = ("claim", "fable", "chore", "fix", "feat", "hotfix",
+                    "repair")
+
+
+def _packet_branch(text):
+    """First branch ref named in the packet, in priority order:
+    `claim/issue-<N>`, `branch[: ]+<token>`, or a backticked
+    `prefix/rest` token with a known prefix. '' when none."""
+    m = re.search(r"\bclaim/issue-\d+\b", text)
+    if m:
+        return m.group(0)
+    m = re.search(r"(?i)\bbranch\b[:\s]+([A-Za-z0-9_.\-/]+)", text)
+    if m:
+        return m.group(1).rstrip(".,:;")
+    m = re.search(
+        r"`((?:" + "|".join(_BRANCH_PREFIXES) + r")/[^`\s]+)`", text)
+    if m:
+        return m.group(1).rstrip(".,:;")
+    return ""
+
+
+def _packet_repo(text, exclude=()):
+    """First `<org>/<repo>` token naming a repo. Prefers `Nishfleet/<repo>`
+    and explicit `repo: X/Y` / `TARGET: repo X/Y` forms; generic X/Y tokens
+    are skipped when they are path fragments (preceded by `/` or part of a
+    longer path segment), branch-shaped (prefix in _BRANCH_PREFIXES), or in
+    `exclude` (the branch token itself must not be mistaken for a repo)."""
+    m = re.search(r"\bNishfleet/([A-Za-z0-9_.-]+)", text)
+    if m:
+        return "Nishfleet/" + m.group(1)
+    m = re.search(r"(?i)\brepo[:=\s]+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)", text)
+    if m:
+        return m.group(1)
+    for m in re.finditer(
+            r"(?<![/\w.-])([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)", text):
+        tok = m.group(1)
+        if tok in exclude or tok.split("/", 1)[0] in _BRANCH_PREFIXES:
+            continue
+        return tok
+    return ""
+
+
+def _packet_pr_candidate(text):
+    """Extract ONE PR candidate from the packet, in priority order:
+    ('list', repo, branch) when a branch ref plus a repo token are both
+    present; else ('view', repo, N) for `<org>/<repo>#<N>`; else ('view',
+    repo, N) for `PR #<N>` plus a repo token. None -> the caller makes no
+    gh call at all."""
+    branch = _packet_branch(text)
+    if branch:
+        repo = _packet_repo(text, exclude={branch})
+        if repo:
+            return ("list", repo, branch)
+    m = re.search(
+        r"(?<![/\w.-])([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(\d+)", text)
+    if m:
+        return ("view", m.group(1), m.group(2))
+    m = re.search(r"(?i)\bPR\s*#(\d+)", text)
+    if m:
+        repo = _packet_repo(text)
+        if repo:
+            return ("view", repo, m.group(1))
+    return None
+
+
+def _gh_pr_satisfied(candidate, gh_budget):
+    """Spend the single gh budget on `candidate`; return the deliverable
+    label (`<repo>#<N>`, or the branch when no number is known) when the
+    named PR proves delivered, else ''. Delivered iff state==MERGED, or
+    state==OPEN with autoMergeRequest truthy and mergeable==MERGEABLE.
+    HARD BUDGET: at most one gh invocation per dispatch run — a spent
+    budget, a timeout, a non-zero exit or non-JSON output all fail open."""
+    if gh_budget["spent"]:
+        return ""
+    gh_budget["spent"] = True
+    kind, repo, ref = candidate
+    if kind == "list":
+        argv = [GH_BIN, "pr", "list", "-R", repo, "--head", ref,
+                "--state", "all",
+                "--json", "number,state,autoMergeRequest,mergeable"]
+    else:
+        argv = [GH_BIN, "pr", "view", str(ref), "-R", repo,
+                "--json", "state,autoMergeRequest,mergeable"]
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True,
+                           check=False, timeout=5)
+    except Exception:
+        return ""
+    if r.returncode != 0:
+        return ""
+    try:
+        data = json.loads(r.stdout or "")
+    except (json.JSONDecodeError, ValueError):
+        return ""
+    if isinstance(data, dict):
+        items = [data]
+    elif isinstance(data, list):
+        items = [d for d in data if isinstance(d, dict)]
+    else:
+        return ""
+    for d in items:
+        state = d.get("state")
+        if state != "MERGED" and not (
+                state == "OPEN" and d.get("autoMergeRequest")
+                and d.get("mergeable") == "MERGEABLE"):
+            continue
+        num = d.get("number")
+        return f"{repo}#{num}" if num else str(ref)
+    return ""
+
+
+def _deliverable_satisfied(labels, gh_budget):
+    """Return the deliverable evidence for a surviving DetachedJobDied
+    alert — the journal-declared file path or `repo#<N>`/branch — or ''.
+    Journal first (the `died:` line carries the declared path), then
+    ledger -> packet -> the single gh PR check. NEVER raises: every
+    ambiguity (journal error, no died line, missing/unreadable ledger or
+    packet, no candidate, gh failure/timeout/parse error) returns '' so
+    the caller falls through to the unchanged relaunch path."""
+    unit = labels.get("unit", "")
+    if not unit:
+        return ""
+    try:
+        path = _journal_deliverable(unit)
+        if path:
+            return path
+        packet_path = _ledger_packet_path(labels.get("dispatch", ""), unit)
+        if not packet_path:
+            return ""
+        text = _read_tail(packet_path, 256 * 1024)
+        if not text:
+            return ""
+        candidate = _packet_pr_candidate(text)
+        if not candidate:
+            return ""
+        return _gh_pr_satisfied(candidate, gh_budget)
+    except Exception:
+        return ""
 
 
 def main():
@@ -812,11 +1217,11 @@ def main():
     status = os.environ.get("AMX_STATUS", "")
     receiver = os.environ.get("AMX_RECEIVER", "?")
 
-    if status == "resolved":
-        with LOG.open("a") as f:
-            f.write(f"[{utcnow()}] SKIP resolved notification receiver={receiver}\n")
-        print(f"[{utcnow()}] SKIP resolved (receiver={receiver})", file=sys.stderr)
-        return 0
+    # fleet-ops#5272: the resolved branch needs the alert group's alertnames
+    # (collected below) to attribute the resolution to the slow burn, so the
+    # handling moved AFTER the collection and BEFORE the empty guard — a
+    # resolved notification with no per-alert labels still skips cleanly
+    # (fail-open, exactly the old behaviour).
 
     # AMX_ALERT_<i>_LABEL_alertname — find unique alertnames (1-indexed).
     alertnames = []
@@ -824,6 +1229,25 @@ def main():
         v = os.environ.get(f"AMX_ALERT_{i}_LABEL_alertname")
         if v and v not in alertnames:
             alertnames.append(v)
+
+    # fleet-ops#1199 / #4773: stderr logger used by the skip loop's
+    # slowburn file-or-link and the alert-repair mutex below.
+    def _log(msg):
+        print(f"[{utcnow()}] {msg}", file=sys.stderr)
+
+    if status == "resolved":
+        with LOG.open("a") as f:
+            f.write(f"[{utcnow()}] SKIP resolved notification receiver={receiver}\n")
+        # fleet-ops#5272 observe-to-close: when the resolved group includes
+        # the slow burn, close the auto-filed terminus — an open critical-path
+        # terminus after the burn cleared is reclaim-bait and would swallow
+        # the NEXT burn's file-or-link (`_slowburn_find_existing` only
+        # matches open items). Everything inside is best-effort fail-open.
+        if SLOWBURN_NAME in alertnames:
+            _slowburn_observe_to_close(receiver, _log)
+        print(f"[{utcnow()}] SKIP resolved (receiver={receiver})", file=sys.stderr)
+        return 0
+
     if not alertnames:
         print(f"[{utcnow()}] ERROR: no AMX_ALERT_<n>_LABEL_alertname env vars",
               file=sys.stderr)
@@ -945,6 +1369,10 @@ def main():
             str(Path.home() / ".local" / "bin" / "pi-detached-deadman"),
         )
     )
+    # fleet-ops#5142: the deliverable pre-flight below may make AT MOST ONE
+    # gh call for the whole dispatch run — the first extracted candidate
+    # spends the budget; every later candidate fails open.
+    gh_budget = {"spent": False}
     for a in alerts:
         if a["labels"].get("alertname") == "DetachedJobDied":
             unit_name = a["labels"].get("unit", "")
@@ -974,6 +1402,38 @@ def main():
                     except Exception:
                         pass
                     continue
+            # fleet-ops#5142: bounded, fail-open deliverable pre-flight. A
+            # dead detached unit whose packet already delivered (declared
+            # file present+non-empty, or the named PR merged / armed +
+            # mergeable) must NOT be relaunched. Any ambiguity leaves the
+            # alert untouched so it falls through to the relaunch path —
+            # a genuinely dead packet is never stranded.
+            try:
+                delivered = _deliverable_satisfied(a["labels"], gh_budget)
+                if delivered:
+                    with LOG.open("a") as f:
+                        f.write(
+                            f"[{utcnow()}] RESOLVED-DELIVERED "
+                            f"unit={unit_name} deliverable={delivered}\n"
+                        )
+                    # Same best-effort dead-man clear as the recursion
+                    # guard so the alert resolves at the next scrape.
+                    try:
+                        subprocess.run(
+                            [str(deadman_bin), "--clear", unit_name],
+                            check=False,
+                            timeout=30,
+                        )
+                    except Exception:
+                        pass
+                    print(
+                        f"[{utcnow()}] SKIP alertname=DetachedJobDied "
+                        f"unit={unit_name} reason=deliverable-satisfied",
+                        file=sys.stderr,
+                    )
+                    continue
+            except Exception:
+                pass
         filtered.append(a)
     alerts = filtered
 
@@ -1143,7 +1603,7 @@ def main():
     env["PATH"] = f"{os.environ.get('HOME', '/home/nish')}/.local/bin:" + env.get("PATH", "")
     env["XDG_RUNTIME_DIR"] = "/run/user/1000"
     argv = [
-        "pi-systemd-run",
+        PI_SYSTEMD_RUN_BIN,
         "--unit", unit,
         "--stdin", str(packet),
         # CLOCK_RUN is 3600s (packet 11). --deadline drives RuntimeMaxSec so

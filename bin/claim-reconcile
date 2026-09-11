@@ -6,7 +6,11 @@
 # Human gh is read-only for organs; GH Actions (tests) has no App creds and
 # stubs gh as read-only, so skip minting there.
 if [[ -z "${GH_TOKEN:-}" && "${GITHUB_ACTIONS:-}" != "true" && "${GH:-gh}" == "gh" ]]; then
-    export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
+    # fleet-ops#5037: only extend PATH when gh is missing. Prepending
+    # unconditionally put /home/nish/.local/bin AHEAD of an inherited stub
+    # gh, so a drill run from a shell with no GH_TOKEN resolved the real gh
+    # and filed its synthetic fixture into the live tracker.
+    command -v gh >/dev/null 2>&1 || export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
     _wt="${NISHFLEET_WORKER_TOKEN_BIN:-${HOME:-/home/nish}/.local/bin/worker-token}"
     _minted="$("$_wt" --print)" || { echo "fleet-ops#3445: $_wt --print failed - refusing human-gh writes" >&2; exit 1; }
     eval "$_minted"
@@ -218,7 +222,13 @@ comment_release() {
         log "DRY comment $repo#$issue_n: $body"
         return 0
     fi
-    gh issue comment "$issue_n" -R "$repo" --body "$body" >/dev/null 2>&1 || true
+    # Silent-drop sweep 2026-09-11: a failed comment used to vanish into
+    # `|| true`. Now it fails LOUD so the release note is never dropped
+    # silently.
+    if ! gh issue comment "$issue_n" -R "$repo" --body "$body" >/dev/null 2>&1; then
+        log "  ALERT $repo#$issue_n: release comment FAILED to post (release note not recorded; Nish 2026-09-11: no silent drops)"
+        return 1
+    fi
 }
 
 log "sweep starting now=$NOW_ISO"

@@ -236,6 +236,12 @@ case "$cmd" in
     elif [[ -f "${FRESH_ACTIVATING_UNITS:-/dev/nonexistent}" ]] \
        && grep -qxF "$unit" "${FRESH_ACTIVATING_UNITS:-/dev/nonexistent}" 2>/dev/null; then
       echo activating
+    elif [[ -f "${ACTIVATING_UNITS:-/dev/nonexistent}" ]] \
+       && grep -qxF "$unit" "${ACTIVATING_UNITS:-/dev/nonexistent}" 2>/dev/null; then
+      echo activating
+    elif [[ -f "${ZERO_ACTIVE_ENTER_UNITS:-/dev/nonexistent}" ]] \
+       && grep -qxF "$unit" "${ZERO_ACTIVE_ENTER_UNITS:-/dev/nonexistent}" 2>/dev/null; then
+      echo activating
     else
       echo inactive
     fi
@@ -256,6 +262,8 @@ case "$cmd" in
         *) shift ;;
       esac
     done
+    now_s=$(awk '{print int($1)}' /proc/uptime)
+    if (( now_s < 3700 )); then now_s=3700; fi
     case "$prop" in
       ExecStart)
         if [[ -f "${RUNNING_EXEC:-/dev/nonexistent}" ]]; then
@@ -264,7 +272,8 @@ case "$cmd" in
           # Default: any unit declared as live for this tick is a pi worker.
           if grep -qxF "$unit" "${RUNNING_UNITS:-/dev/nonexistent}" 2>/dev/null \
              || grep -qxF "$unit" "${FRESH_ACTIVATING_UNITS:-/dev/nonexistent}" 2>/dev/null \
-             || grep -qxF "$unit" "${WEDGED_UNITS:-/dev/nonexistent}" 2>/dev/null; then
+             || grep -qxF "$unit" "${WEDGED_UNITS:-/dev/nonexistent}" 2>/dev/null \
+             || grep -qxF "$unit" "${ZERO_ACTIVE_ENTER_UNITS:-/dev/nonexistent}" 2>/dev/null; then
             inst=""
             case "$unit" in
               pi-issue@*) inst="${unit#pi-issue@}"; inst="${inst%.service}"; printf '/home/nish/.local/bin/pi-issue-run %s\n' "$inst" ;;
@@ -274,9 +283,41 @@ case "$cmd" in
           fi
         fi
         ;;
+      ExecMainStartTimestampMonotonic)
+        if [[ -f "${WEDGED_UNITS:-/dev/nonexistent}" ]] \
+           && grep -qxF "$unit" "${WEDGED_UNITS:-/dev/nonexistent}" 2>/dev/null; then
+          echo "$(( (now_s - 3600) * 1000000 ))"
+        elif [[ -f "${FRESH_ACTIVATING_UNITS:-/dev/nonexistent}" ]] \
+           && grep -qxF "$unit" "${FRESH_ACTIVATING_UNITS:-/dev/nonexistent}" 2>/dev/null; then
+          echo "$(( (now_s - 60) * 1000000 ))"
+        elif [[ -f "${ZERO_ACTIVE_ENTER_UNITS:-/dev/nonexistent}" ]] \
+           && grep -qxF "$unit" "${ZERO_ACTIVE_ENTER_UNITS:-/dev/nonexistent}" 2>/dev/null; then
+          echo "$(( (now_s - 2400) * 1000000 ))"
+        else
+          echo 0
+        fi
+        ;;
+      SubState)
+        if grep -qxF "$unit" "${WEDGED_UNITS:-/dev/nonexistent}" 2>/dev/null \
+           || grep -qxF "$unit" "${FRESH_ACTIVATING_UNITS:-/dev/nonexistent}" 2>/dev/null \
+           || grep -qxF "$unit" "${ACTIVATING_UNITS:-/dev/nonexistent}" 2>/dev/null \
+           || grep -qxF "$unit" "${ZERO_ACTIVE_ENTER_UNITS:-/dev/nonexistent}" 2>/dev/null; then
+          echo start
+        else
+          echo ""
+        fi
+        ;;
+      TimeoutStartUSec)
+        if grep -qxF "$unit" "${WEDGED_UNITS:-/dev/nonexistent}" 2>/dev/null \
+           || grep -qxF "$unit" "${FRESH_ACTIVATING_UNITS:-/dev/nonexistent}" 2>/dev/null \
+           || grep -qxF "$unit" "${ACTIVATING_UNITS:-/dev/nonexistent}" 2>/dev/null \
+           || grep -qxF "$unit" "${ZERO_ACTIVE_ENTER_UNITS:-/dev/nonexistent}" 2>/dev/null; then
+          echo 45min
+        else
+          echo ""
+        fi
+        ;;
       ActiveEnterTimestampMonotonic|*)
-        now_s=$(awk '{print int($1)}' /proc/uptime)
-        if (( now_s < 3700 )); then now_s=3700; fi
         if [[ -f "${WEDGED_UNITS:-/dev/nonexistent}" ]] \
            && grep -qxF "$unit" "${WEDGED_UNITS:-/dev/nonexistent}" 2>/dev/null; then
           echo "$(( (now_s - 3600) * 1000000 ))"
@@ -375,8 +416,9 @@ LIVE_SEAT_UNITS="$scratch/live_seat_units"
 WEDGED_UNITS="$scratch/wedged_units"
 FRESH_ACTIVATING_UNITS="$scratch/fresh_activating_units"
 ACTIVATING_UNITS="$scratch/activating_units"
-export RUNNING_UNITS FAILED_UNITS LIVE_SEAT_UNITS WEDGED_UNITS FRESH_ACTIVATING_UNITS ACTIVATING_UNITS
-: >"$RUNNING_UNITS"; : >"$FAILED_UNITS"; : >"$LIVE_SEAT_UNITS"; : >"$WEDGED_UNITS"; : >"$FRESH_ACTIVATING_UNITS"; : >"$ACTIVATING_UNITS"
+ZERO_ACTIVE_ENTER_UNITS="$scratch/zero_active_enter_units"
+export RUNNING_UNITS FAILED_UNITS LIVE_SEAT_UNITS WEDGED_UNITS FRESH_ACTIVATING_UNITS ACTIVATING_UNITS ZERO_ACTIVE_ENTER_UNITS
+: >"$RUNNING_UNITS"; : >"$FAILED_UNITS"; : >"$LIVE_SEAT_UNITS"; : >"$WEDGED_UNITS"; : >"$FRESH_ACTIVATING_UNITS"; : >"$ACTIVATING_UNITS"; : >"$ZERO_ACTIVE_ENTER_UNITS"
 
 run_helper() {
   set +e
@@ -389,7 +431,7 @@ reset_state() {
   rm -f "$log_dir"/* "$triage" "$calls" "$seat_state"/active-seats/*
   : >"$calls"
   : >"$RUNNING_UNITS"; : >"$FAILED_UNITS"; : >"$LIVE_SEAT_UNITS"
-  : >"$WEDGED_UNITS"; : >"$FRESH_ACTIVATING_UNITS"; : >"$ACTIVATING_UNITS"
+  : >"$WEDGED_UNITS"; : >"$FRESH_ACTIVATING_UNITS"; : >"$ACTIVATING_UNITS"; : >"$ZERO_ACTIVE_ENTER_UNITS"
   : >"$WORK_INPROGRESS_NUMBERS"; : >"$WORK_READY_NUMBERS"; : >"$OPEN_PR_ISSUES"
   : >"$WORK_INPROGRESS_BLOCKED_NUMBERS"
   : >"$claims_log"
@@ -983,3 +1025,46 @@ chmod +x "$comeback_fake"
 export FLEET_UNDERSAT_ADMIT_CEILING=25
 
 ok "undersaturation: filter-limited supply (intake dispatching) is not a wedge (fleet-ops#3218)"
+
+# ============================================================================
+# Scenario 15 (fleet-ops#5263): an activating worker with ActiveEnterTimestamp
+# Monotonic=0 (systemd stamps it only when the start completes) but a started
+# process (ExecMainStartTimestampMonotonic>0) inside its own TimeoutStartUSec
+# must NOT be reaped or stopped. The old code treated ActiveEnter=0 as age=0,
+# reaping live workers; this is the regression that drove the 2026-09-11 trip.
+# ============================================================================
+reset_state
+export FLEET_UNDERSAT_ADMIT_CEILING=5
+printf '8\n' >"$scratch/work_ready"          # ready >= admit (below-admit-floor path)
+printf '0\n' >"$scratch/work_inprogress"
+# Live worker: counted by count_running (activating -> running=1 < admit=5).
+printf 'pi-issue@demo-40.service\n' >"$scratch/running_units"
+: >"$scratch/failed_units"
+# ActiveEnter=0, ExecMain started 40min ago, TimeoutStartUSec=45min.
+printf 'pi-issue@demo-40.service\n' >"$scratch/activating_units"
+printf 'pi-issue@demo-40.service\n' >"$scratch/zero_active_enter_units"
+# The worker has a live seat file.
+printf '{"unit":"pi-issue-demo-40","provider":"devin","model":"glm-5-2"}' \
+    >"$seat_state/active-seats/pi-issue-demo-40.json"
+
+run_helper
+[[ "$env_rc" == 0 ]] \
+    || fail "scenario15: below-admit repair tick with ActiveEnter=0 live worker must exit 0, got $env_rc ($env_out)"
+
+# The live worker must NOT be stopped or reset-failed.
+if grep -qx 'stop pi-issue@demo-40.service' "$calls"; then
+    fail "scenario15: ActiveEnter=0 live worker must NOT be stopped ($(cat "$calls"))"
+fi
+if grep -qx 'reset-failed pi-issue@demo-40.service' "$calls"; then
+    fail "scenario15: ActiveEnter=0 live worker must NOT be reset-failed ($(cat "$calls"))"
+fi
+# Seat file preserved (not reaped solely because ActiveEnter=0).
+[[ -f "$seat_state/active-seats/pi-issue-demo-40.json" ]] \
+    || fail "scenario15: ActiveEnter=0 live worker seat file was wrongly reaped"
+# The live worker is still counted (not stopped) and repair still fires.
+grep -q 'UNDERSAT-REPAIR' "$triage" \
+    || fail "scenario15: triage missing UNDERSAT-REPAIR"
+ok "scenario15: ActiveEnter=0 + ExecMain>0 + inside TimeoutStartUSec -> NOT reaped (fleet-ops#5263)"
+
+# Restore the default admit pin.
+export FLEET_UNDERSAT_ADMIT_CEILING=25

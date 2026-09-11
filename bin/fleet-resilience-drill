@@ -580,17 +580,14 @@ plane_seat_sentinel() {
 
   trap cleanup_seat_sentinel_drill EXIT INT TERM
 
-  if ! "$SYSTEMCTL" --user daemon-reload 2>/dev/null; then
-    seat_sentinel_bail "systemctl --user daemon-reload failed" \
-      "daemon-reload failed" || return 1
-    return 1
-  fi
-  # reset-failed/stop are clean-slate niceties, not gates: on a stub that
-  # was never loaded reset-failed exits 1 ("not loaded"), which must not
-  # fail the plane (the pre-#5106 in-test version carried || true on these).
+  # reset-failed on a fresh (never-loaded) stub exits non-zero on systemd
+  # 255 ("Unit ... not loaded") even though there is nothing to clear —
+  # it is only here to un-wedge a stale failed stub from a crashed run, so
+  # it must be non-fatal like the cleanup copy, not part of the && gate
+  # (fleet-ops#5096 merge resolution).
   "$SYSTEMCTL" --user reset-failed "${drill_unit}.service" "${drill_unit}.path" 2>/dev/null || true
-  "$SYSTEMCTL" --user stop "${drill_unit}.service" "${drill_unit}.path" 2>/dev/null || true
-  if ! "$SYSTEMCTL" --user start "${drill_unit}.path" 2>/dev/null; then
+  if ! "$SYSTEMCTL" --user daemon-reload 2>/dev/null \
+     || ! "$SYSTEMCTL" --user start "${drill_unit}.path" 2>/dev/null; then
     seat_sentinel_bail "could not install/start the drill .path" \
       "could not start ${drill_unit}.path" || return 1
     return 1
@@ -1272,7 +1269,7 @@ auto_file_failures() {
     title="[drill:${name}] resilience-drill plane failed — $(date -u +%Y-%m-%d)"
     body=$(printf 'fleet-ops#1463 resilience drill plane `%s` FAILED.\n\nProof (jq .name=%s.status):\n\n```\n%s\n```\n\nRun `bin/fleet-resilience-drill` against the live repo to reproduce. Each plane is sandboxed; live state was not mutated.\n\n<!-- %s -->\n' "$name" "$name" "$row" "$signal")
     set +e
-    created=$(GH="$GH" "$ISSUE_FILE_BIN" file -R "$issue_repo" \
+    created=$(GH="${GH:-gh}" "$ISSUE_FILE_BIN" file -R "$issue_repo" \
       --title "$title" --body "$body" \
       --label agent-ready --label "drill:${name}" 2>/tmp/.res-drill-file.err)
     file_rc=$?

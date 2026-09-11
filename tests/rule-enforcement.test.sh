@@ -1179,6 +1179,12 @@ ok "rule-enforcement: skills-symlink canary drill"
 bash "$here/fleet-bin-exclude-canary.test.sh" || fail "bin-exclude canary drill failed"
 ok "rule-enforcement: bin-exclude canary drill"
 
+# silent-drop sweep 2026-09-11: no findings-cap token or 'gh issue ... || true'
+# drop in bin/lib without allowlist + ledger row. Nested host so the worker
+# token does not need a workflow edit (fleet-ops#566).
+bash "$here/silent-drop-canary.test.sh" || fail "silent-drop canary drill failed"
+ok "rule-enforcement: silent-drop canary drill"
+
 # fleet-ops#1291: SLO error-budget system contract (lib/slo_budget.py,
 # config/slo-definitions.json, exporter _emit_slo_metrics, fleet_rules.yml
 # burn alerts, WFR L7/L8 lenses). Hosted from this already-listed test so

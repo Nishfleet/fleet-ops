@@ -78,5 +78,16 @@ else
     echo "SKIP: Test 7: shellcheck not installed"
 fi
 
+# === Test 8: refill seam stays (fleet-ops#4723 / #3695) ===
+# A freed slot must refill from ExecStopPost, not a new timer. Debounce 60s
+# is the "inside 60s" bound in the issue termination line.
+unit="$repo_root/systemd/pi-issue@.service"
+[[ -f "$unit" ]] || fail "systemd/pi-issue@.service missing"
+grep -qF 'systemctl --user start --no-block "pi-intake@' "$unit" \
+    || fail "Test 8: ExecStopPost must start pi-intake@ (continuous top-up, fleet-ops#3695/#4723)"
+grep -qF 'PI_INTAKE_DEBOUNCE_SEC:-60' "$tick" \
+    || fail "Test 8: intake debounce default must stay 60s so a freed slot refills inside 60s"
+ok "Test 8: ExecStopPost refill seam + 60s debounce still in place (fleet-ops#4723)"
+
 echo ""
 echo "ALL OK: intake-tick seat gate protects against no-heavy-seat spawn churn"

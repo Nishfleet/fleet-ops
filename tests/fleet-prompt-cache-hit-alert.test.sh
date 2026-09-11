@@ -77,6 +77,23 @@ assert not re.search(r"\b(min|max)\s*\(", expr), \
     fail(f"expr must be per-lane, not an aggregate (min/max), got: {expr}")
 ok(f"expr keys on fleet_prompt_cache_hit_ratio{{class=\"metered\"}} < 0.85 per-lane: {expr}")
 
+# fleet-ops#4643 follow-up (2026-09-11): the expr MUST exclude the two
+# packet_types that can never have a prefix-cache hit by construction.
+#   interactive — a human typing a different prompt each turn;
+#   probe       — a one-word liveness sentinel ('Reply OK' / 'PONG').
+# Both drove a false FleetPromptCacheHitLow on 2026-09-11 (litellm/other
+# 0.27 was 100% 'Reply OK' seat probes; paretoinference/other 0.81 was all
+# cwd=/home/nish) while the real packet lanes were above target. If this
+# scoping is dropped, the alert fires on lanes the packet layout cannot move.
+assert 'packet_type!="interactive"' in expr.replace(" ", "") \
+    or 'packet_type!~"interactive|probe"' in expr.replace(" ", ""), \
+    fail(f"expr must exclude interactive sessions (they have no stable prefix by construction), got: {expr}")
+assert 'probe' in expr, \
+    fail(f"expr must also exclude packet_type=probe (one-word liveness sentinels), got: {expr}")
+assert 'packet_type="other"' not in expr.replace(" ", ""), \
+    fail(f"expr must NOT exclude packet_type=\"other\" — genuine packets with no named lane live there, got: {expr}")
+ok("expr excludes interactive+probe lanes, keeps 'other' (real packets) in scope")
+
 assert alert.get("for") == "6h", \
     fail(f"for must be 6h, got: {alert.get('for')}")
 ok("for: 6h (the issue's 6h window)")
@@ -115,6 +132,89 @@ assert "fleet_prompt_cache_hit_ratio" in ttl, \
 assert "FleetPromptCacheHitLow" in ttl, \
     fail("_comment_4643_cache_ttl must name the alert")
 ok("seat-caps.json _comment_4643_cache_ttl documents TTL windows + metric + alert")
+PY
+
+# 8. Classifier contract: the packet_type labels the alert scopes on must
+#    actually be produced, and genuine packets must NOT be swallowed into the
+#    excluded buckets. fleet-ops#4643 follow-up (2026-09-11).
+python3 - "$repo_root" <<'PY'
+import sys, importlib.util
+repo = sys.argv[1]
+spec = importlib.util.spec_from_file_location("fleet_usd", f"{repo}/lib/fleet_usd.py")
+fu = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fu)
+
+def fail(msg): print(f"FAIL: {msg}", file=sys.stderr); sys.exit(1)
+def ok(msg): print(f"OK: {msg}")
+
+S = "/home/nish/.pi/agent/sessions/"
+cases = [
+    (S + "--home-nish--/x.jsonl", "interactive",
+     "ad-hoc interactive session in /home/nish"),
+    (S + "--tmp--/x.jsonl", "interactive", "ad-hoc interactive session in /tmp"),
+    (S + "pi-issue-fleet-ops-5010/x.jsonl", "worker", "a real dispatched packet"),
+    (S + "--tmp-seat-probe--/x.jsonl", "probe", "a seat liveness probe"),
+    (S + "--home-nish-workspaces-agent-worktrees-issue-fleet-ops-4263-rebase--/x.jsonl",
+     "other", "a packet run from a plain worktree (must stay in scope)"),
+]
+for path, want, why in cases:
+    got = fu.packet_type_from_path(path)
+    assert got == want, fail(f"{why}: want packet_type={want!r}, got {got!r} for {path}")
+ok("packet_type_from_path labels interactive/probe/worker/other as the alert expects")
+
+# The excluded buckets must never be produced for a real packet header, and a
+# probe prompt must be recognised by content (path alone cannot tell them apart).
+probes = ["Reply OK", "PONG", "Reply with exactly: OK"]
+packets = [
+    "# Pi fleet issue worker\nYou implement exactly ONE GitHub issue",
+    "difficulty: light # Pi fleet issue worker\nYou implement",
+    "# Pi fleet product scout\nYou are the product-work scout",
+]
+for t in probes:
+    assert fu._is_probe_prompt(t), fail(f"liveness sentinel not detected as a probe: {t!r}")
+for t in packets:
+    assert not fu._is_probe_prompt(t), fail(f"a real packet was misread as a probe: {t!r}")
+assert not fu._is_probe_prompt(""), fail("empty prompt must not be a probe")
+ok("probe prompt sentinels detected by content; real packet headers never misread")
+
+# A free-class MODEL wired on a metered PROVIDER (e.g. openrouter/
+# nvidia/nemotron-3-ultra-550b:free, input/cacheRead price 0) must be scored
+# class=free: a $0 lane has no metered spend to protect (fleet-ops#4643,
+# 2026-09-11). Pins _provider_metric_class + the model captured from
+# model_change lines.
+import importlib.util, json, os, tempfile
+spec = importlib.util.spec_from_file_location("fu", f"{repo}/lib/fleet_usd.py")
+fu = importlib.util.module_from_spec(spec); spec.loader.exec_module(fu)
+fail2 = lambda m: (print(f"FAIL: {m}", file=sys.stderr), sys.exit(1))
+caps = {"providers": {"openrouter": {
+    "class": "metered",
+    "models": {"nvidia/nemotron-3-ultra-550b-a55b:free": {"cap": 2, "class": "free"}},
+}}}
+with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+    json.dump(caps, f); path = f.name
+rc = fu.load_rate_card(path)
+if fu._provider_metric_class(rc, "openrouter") != "metered":
+    fail2("provider-level class must stay metered when no model is given")
+if fu._provider_metric_class(rc, "openrouter", "nvidia/nemotron-3-ultra-550b-a55b:free") != "free":
+    fail2("free-class model on a metered provider must score class=free")
+if fu._provider_metric_class(rc, "openrouter", "some/unknown-slug") != "metered":
+    fail2("unknown model on a metered provider must fall back to provider class")
+# End-to-end: a session on the free model must emit class=free.
+sess = tempfile.mkdtemp()
+jsonl = os.path.join(sess, "pi-issue-5010", "s.jsonl")
+os.makedirs(os.path.dirname(jsonl))
+with open(jsonl, "w") as f:
+    f.write(json.dumps({"type": "model_change", "provider": "openrouter",
+                        "modelId": "nvidia/nemotron-3-ultra-550b-a55b:free"}) + "\n")
+    f.write(json.dumps({"type": "message", "timestamp": "2026-09-11T09:00:00Z",
+                        "message": {"role": "user", "content": [{"type": "text", "text": "# Pi fleet issue worker\nreal packet"}]}}) + "\n")
+    f.write(json.dumps({"type": "message", "timestamp": "2026-09-11T09:01:00Z",
+                        "message": {"role": "assistant", "usage": {"input": 900, "cacheRead": 100}}}) + "\n")
+rows = fu.compute_cache_hit_24h(sess, rc, now_epoch=1789119600)
+if len(rows) != 1 or rows[0]["class"] != "free" or rows[0]["packet_type"] != "worker":
+    fail2(f"free-model session must emit class=free packet_type=worker, got {rows}")
+os.unlink(path)
+print("OK: free-class model on a metered provider scores class=free (no metered target for a $0 lane)")
 PY
 
 echo "fleet-prompt-cache-hit-alert: PASS"

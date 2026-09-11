@@ -394,6 +394,7 @@ template/cursor-rules/fleet-packet-verdict.mdc /home/nish/.cursor/rules/fleet-pa
 # the 2026-09-04 30-min packet kill). Timeouts live in the repo and are
 # pinned by tests/provider-timeout.test.sh to stay >= 0.9 x PI_HANG_TIMEOUT_S.
 template/extensions/devin-provider/index.ts /home/nish/.pi/agent/extensions/devin-provider/index.ts
+template/extensions/devin-provider/rate-limit.ts /home/nish/.pi/agent/extensions/devin-provider/rate-limit.ts
 template/extensions/cursor-provider/index.ts /home/nish/.pi/agent/extensions/cursor-provider/index.ts
 # fleet-ops#3280: fleet-work.slice TasksMax=8000 (soft 7500 in spawn-guard-core).
 # Process-count fence; RAM governor remains admission authority. install.sh
@@ -422,6 +423,10 @@ bin/escalation-daily-sweep /home/nish/.local/bin/escalation-daily-sweep
 # here (plus tests/nish-boundary-notify-classes.test.sh) stops a later
 # overwrite from silently dropping a reserved token.
 bin/nish-boundary-notify /home/nish/.local/bin/nish-boundary-notify
+# fleet-ops#5204: the money-wall --check guard. Called from heartbeat-tier1
+# (no new timer). A missing dest would silent-skip the only rail that
+# sees unpaged year-walls.
+bin/money-boundary-raise /home/nish/.local/bin/money-boundary-raise
 # fleet-ops#1534: repo-ize the outbound gate shim so the "only Nish-reserved
 # classes + the digests reach the phone" policy is PR-reviewed and cannot
 # drift back. Hand-placed wrapper was class (b) (machinery audit
@@ -538,6 +543,12 @@ lib/same-repo-closes-gate.py /home/nish/.local/lib/pi-packet/same-repo-closes-ga
 # cannot push .github/workflows/**.
 bin/fleet-merge-trample-gate /home/nish/.local/bin/fleet-merge-trample-gate
 lib/merge-trample-gate.py /home/nish/.local/lib/pi-packet/merge-trample-gate.py
+# fleet-ops#5238: auto-merge arm refuses gate-path PRs whose advisory
+# gate-integrity check is not green. Pure evaluator — the reusable arm
+# workflow and the tier1 queue pass call it; no new unit.
+bin/fleet-gate-arm-guard /home/nish/.local/bin/fleet-gate-arm-guard
+lib/gate-arm-guard.py /home/nish/.local/lib/pi-packet/gate-arm-guard.py
+lib/gate-integrity-config.sh /home/nish/.local/lib/pi-packet/gate-integrity-config.sh
 prompts/senior-conference.md /home/nish/.pi/agent/prompts/senior-conference.md
 systemd/fleet-blind-audit.service /home/nish/.config/systemd/user/fleet-blind-audit.service
 systemd/fleet-blind-audit.timer /home/nish/.config/systemd/user/fleet-blind-audit.timer
@@ -1133,6 +1144,15 @@ bin/fleet-max-speed /home/nish/.local/bin/fleet-max-speed
 bin/fleet-seat-comeback-release /home/nish/.local/bin/fleet-seat-comeback-release
 systemd/fleet-seat-comeback-release.service /home/nish/.config/systemd/user/fleet-seat-comeback-release.service
 systemd/fleet-seat-comeback-release.timer /home/nish/.config/systemd/user/fleet-seat-comeback-release.timer
+
+# fleet-ops#5285: bench-truth probe — event-driven half of the 15-min
+# bench-verification cadence (DECISION 2026-09-11: 15-min sweep timer + a
+# path unit on the seats dir so a fresh bench is probed at min(advertised
+# reset, 15 min)). Runs the same bin's --false-wall-only mode; the bin's
+# per-seat 15-min probe interval and 60s sweep debounce are the rate
+# limiters (the #5093 dir-watcher storm class, StartLimitIntervalSec=0).
+systemd/fleet-seat-bench-truth.path /home/nish/.config/systemd/user/fleet-seat-bench-truth.path
+systemd/fleet-seat-bench-truth.service /home/nish/.config/systemd/user/fleet-seat-bench-truth.service
 
 # fleet-ops#1151: week-over-week MAD strangeness pre-pass for the Weekly
 # Fleet Review. Deterministic stdlib Python; writes the WFR input dir

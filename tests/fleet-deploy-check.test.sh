@@ -3,12 +3,15 @@
 #
 # Merge-to-live gate (fleet-ops#468, decisions-ledger 2026-08-27 TOP GEAR):
 # merged-but-not-live latency must be <= 5 minutes. fleet-deploy-check runs
-# on a 2-min timer, fetches, compares origin/main vs HEAD, and ONLY invokes
-# the sanctioned deploy step when origin/main moved.
+# on a 2-min timer, fetches, compares origin/main vs HEAD, and invokes the
+# sanctioned deploy step when origin/main moved OR the clone is on a named
+# non-main branch (fleet-ops#5222).
 #
 # What we prove:
 #   1. Checkout missing -> loud DEPLOY-CHECK-CHECKOUT-MISSING, exit 0.
 #   2. origin/main unchanged -> "nothing to do", deploy NOT invoked, exit 0.
+#   2b. origin/main SHA unchanged but checkout is off-main -> deploy IS
+#       invoked (fleet-ops#5222).
 #   3. origin/main moved + NO_DEPLOY=1 -> "compare-only", deploy NOT invoked.
 #   4. origin/main moved, deploy invoked once, deploy bin logs rc=0 -> exit 0.
 #   5. origin/main moved, deploy invoked, deploy bin exits 1 -> LOUD
@@ -27,6 +30,8 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
 [[ -f "$bin" ]] || fail "fleet-deploy-check not found: $bin"
+grep -q 'fleet-ops#5222' "$bin" \
+    || fail "fleet-deploy-check must invoke deploy on off-main (fleet-ops#5222)"
 command -v git >/dev/null || fail "git required"
 
 scratch="$(mktemp -d -t deploycheck.XXXXXX)"
@@ -105,6 +110,19 @@ rc=$(run_bin 0)
 grep -q "nothing to do" "$scratch/err.log" || fail "missing nothing-to-do log"
 [[ ! -s "$DEPLOY_SPY_LOG" ]] || fail "deploy must not be invoked when unchanged"
 ok "unchanged origin/main -> nothing to do, no deploy"
+
+# --- 2b. origin/main SHA unchanged but checkout is off-main (fleet-ops#5222)
+git -C "$checkout" checkout -q -b throwaway-guard-test
+: > "$DEPLOY_SPY_LOG"
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "off-main same-SHA should exit 0 (got $rc)"
+grep -q "DEPLOY-INVOKED" "$DEPLOY_SPY_LOG" \
+    || fail "off-main must invoke deploy even when HEAD SHA == origin/main"
+grep -q "not main" "$scratch/err.log" \
+    || fail "off-main must log the not-main reason: $(cat "$scratch/err.log")"
+git -C "$checkout" checkout -q main
+: > "$DEPLOY_SPY_LOG"
+ok "off-main same SHA -> invoke deploy (fleet-ops#5222)"
 
 # --- 3. origin/main moved + compare-only -------------------------------------
 # Advance origin/main WITHOUT moving local HEAD (a remote merge).
@@ -577,33 +595,88 @@ ref_before=$(git -C "$checkout" rev-parse refs/remotes/origin/main)
 head_before_foreign=$(git -C "$checkout" rev-parse HEAD)
 remote_before=$(git -C "$checkout" remote get-url origin)
 git -C "$checkout" remote set-url origin "https://github.com/Nishfleet/0509.git"
+git -C "$checkout" remote add real "$origin"
 n_before=$(grep -c "DEPLOY-INVOKED" "$DEPLOY_SPY_LOG" || true)
+repair_prom="$scratch/repair.prom"
+repair_hist="$scratch/repair.hist"
+: >"$repair_hist"
 set +e
-rc=$(env -u FLEET_OPS_EXPECTED_ORIGIN_URL \
-  FLEET_OPS_CHECKOUT="$checkout" \
+rc=$(FLEET_OPS_CHECKOUT="$checkout" \
   FLEET_OPS_DEPLOY_BIN="$deploy_spy" \
   FLEET_DEPLOY_CHECK_LOCK="$lock" \
   FLEET_DEPLOY_CHECK_NO_DEPLOY=0 \
   FLEET_HEARTBEAT_TRIAGE="$triage" \
+  AGENT_STATE="$scratch/as" \
+  FLEET_DEPLOY_ORIGIN_REPAIR_PROM="$repair_prom" \
+  FLEET_DEPLOY_ORIGIN_REPAIR_LOG="$repair_hist" \
     "$bin" >/dev/null 2>"$scratch/err-foreign.log"; echo $?)
 set -e
-[[ "$rc" != "0" ]] || fail "foreign origin must exit non-zero (got $rc)"
+[[ "$rc" == "0" ]] || fail "foreign origin must be repaired and the tick must proceed (got $rc)"
 grep -q "DEPLOY-CHECK-ORIGIN-REMOTE" "$scratch/err-foreign.log" \
   || fail "missing DEPLOY-CHECK-ORIGIN-REMOTE loud line"
+grep -q "repaired" "$scratch/err-foreign.log" \
+  || fail "the loud line must say repaired, not refusing"
 grep -q "https://github.com/Nishfleet/0509.git" "$scratch/err-foreign.log" \
-  || fail "refusal must name the offending origin URL"
-grep -q "fleet-ops#5016" "$scratch/err-foreign.log" \
-  || fail "refusal must name fleet-ops#5016"
+  || fail "repair must name the offending origin URL (was ...)"
+grep -q "fleet-ops#5301" "$scratch/err-foreign.log" \
+  || fail "repair must name fleet-ops#5301"
+[[ "$(git -C "$checkout" remote get-url origin)" == "$origin" ]] \
+  || fail "origin fetch URL must be set back to the expected URL"
+[[ -z "$(git -C "$checkout" remote | grep -x real)" ]] \
+  || fail "the extra remote carrying the expected URL under another name must be removed"
+grep -q 'fleet_deploy_origin_remote_repaired_total 1' "$repair_prom" \
+  || fail "repair counter must be written to the .prom"
 n_after=$(grep -c "DEPLOY-INVOKED" "$DEPLOY_SPY_LOG" || true)
-[[ "$n_after" == "$n_before" ]] || fail "deploy must not be invoked on a foreign origin"
-[[ "$(git -C "$checkout" rev-parse refs/remotes/origin/main)" == "$ref_before" ]] \
-  || fail "foreign origin must not be fetched (origin/main ref moved)"
-[[ "$(git -C "$checkout" rev-parse HEAD)" == "$head_before_foreign" ]] \
-  || fail "foreign origin must not move HEAD"
-ok "foreign origin fetch URL -> LOUD DEPLOY-CHECK-ORIGIN-REMOTE, exit non-zero, no fetch, no deploy"
+[[ "$n_after" -ge "$n_before" ]] || fail "tick must proceed after the repair"
+ok "foreign origin fetch URL -> repaired in the same tick, extra remote dropped, counter incremented, tick proceeds (fleet-ops#5301)"
 
-# Correct fetch URL: unchanged behaviour resumes.
+# A third repair within 24h trips the alert (fleet-ops#5301).
+now_s=$(date -u +%s)
+printf '%s\n%s\n%s\n' "$((now_s - 3600))" "$((now_s - 7200))" "$((now_s - 10800))" >"$repair_hist"
+repairs_in_24h=$(awk -v cutoff=$((now_s - 86400)) '$1 >= cutoff' "$repair_hist" | wc -l)
+[[ "$repairs_in_24h" -eq 3 ]] || fail "test fixture should hold 3 repairs in 24h (got $repairs_in_24h)"
+git -C "$checkout" remote set-url origin "https://github.com/Nishfleet/0509.git"
+rc=$(FLEET_OPS_CHECKOUT="$checkout" \
+  FLEET_OPS_DEPLOY_BIN="$deploy_spy" \
+  FLEET_DEPLOY_CHECK_LOCK="$lock" \
+  FLEET_DEPLOY_CHECK_NO_DEPLOY=1 \
+  FLEET_HEARTBEAT_TRIAGE="$triage" \
+  AGENT_STATE="$scratch/as" \
+  FLEET_DEPLOY_ORIGIN_REPAIR_PROM="$repair_prom" \
+  FLEET_DEPLOY_ORIGIN_REPAIR_LOG="$repair_hist" \
+    "$bin" >/dev/null 2>"$scratch/err-alert.log"; echo $?)
+[[ "$rc" == "0" ]] || fail "alert tick must still proceed (got $rc)"
+grep -q "repaired 4x in 24h" "$scratch/err-alert.log" \
+  || fail "a >2-repairs-in-24h rate must trip the alert (got: $(cat "$scratch/err-alert.log"))"
+ok ">2 origin repairs in 24h trips the alert while the tick still proceeds (fleet-ops#5301)"
+
+# The tripwire snapshots remote config and diffs on change (fleet-ops#5301).
+tripwire_snap="$scratch/as/deploy-clone-remotes.txt"
+[[ -s "$tripwire_snap" ]] || fail "tripwire must snapshot the clone's remote config"
+git -C "$checkout" remote add sneaky "$origin"
+rc=$(FLEET_OPS_CHECKOUT="$checkout" \
+  FLEET_OPS_DEPLOY_BIN="$deploy_spy" \
+  FLEET_DEPLOY_CHECK_LOCK="$lock" \
+  FLEET_DEPLOY_CHECK_NO_DEPLOY=1 \
+  FLEET_HEARTBEAT_TRIAGE="$triage" \
+  AGENT_STATE="$scratch/as" \
+  FLEET_DEPLOY_ORIGIN_REPAIR_PROM="$repair_prom" \
+  FLEET_DEPLOY_ORIGIN_REPAIR_LOG="$repair_hist" \
+    "$bin" >/dev/null 2>"$scratch/err-tripwire.log"; echo $?)
+[[ "$rc" == "0" ]] || fail "tripwire tick must exit 0 (got $rc)"
+grep -q "DEPLOY-CHECK-ORIGIN-TRIPWIRE" "$scratch/err-tripwire.log" \
+  || fail "a remote-config diff must trip the tripwire loud line"
+[[ -z "$(git -C "$checkout" remote | grep -x sneaky)" ]] \
+  || fail "an extra remote carrying the expected URL must be removed even on a non-foreign origin tick"
+[[ "$(git -C "$checkout" remote get-url origin)" == "$origin" ]] \
+  || fail "a same-URL extra remote must not rewrite origin"
+ok "tripwire diffs remote config across ticks and the repair drops the duplicate remote (fleet-ops#5301)"
 git -C "$checkout" remote set-url origin "$remote_before"
+
+# Correct fetch URL: unchanged behaviour resumes (covered by the tripwire
+# tick above: correct URL -> no ORIGIN-REMOTE line at all).
+[[ -z "$(grep 'ORIGIN-REMOTE' "$scratch/err-tripwire.log" | grep -v TRIPWIRE)" ]] \
+  || fail "correct origin URL must not trip the repair"
 rc=$(run_bin 1)
 [[ "$rc" == "0" ]] || fail "correct origin URL must behave as before (got $rc)"
 grep -q "compare-only" "$scratch/err.log" || fail "correct origin URL must reach the compare-only path"

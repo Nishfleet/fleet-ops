@@ -44,6 +44,13 @@ STUB
 chmod +x "$scratch/bin/systemctl"
 export PATH="$scratch/bin:$PATH"
 
+# fleet-ops#5385: the trigger now gates on .repos[].name of the live intake
+# config. Point it at a fixture so this drill stays hermetic on hosted CI.
+cat > "$scratch/intake.json" <<'JSON'
+{"repos":[{"name":"fleet-ops"}],"deferred":[],"excluded":[]}
+JSON
+export PI_INTAKE_TRIGGER_INTAKE_JSON="$scratch/intake.json"
+
 # --- 1. trigger passes --no-block -------------------------------------------
 echo fleet-ops > "$trigger_dir/fleet-ops"
 
