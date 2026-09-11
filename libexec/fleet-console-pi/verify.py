@@ -68,6 +68,17 @@ ANSWERED_KEEP_S = 24 * 60 * 60
 # population then false-DISPUTEs a faithful tile, and rows past 30 reach
 # neither side.
 QUESTION_SEARCH_LIMIT = 1000
+# Same ledger file generate.py's findings tile reads (fleet-ops#5469). The
+# verifier recounts its rows — the file is append-only via
+# lib/findings_ledger.py, so a faithful tile can only trail the live count,
+# never exceed it.
+FINDINGS_LEDGER = Path(
+    os.environ.get(
+        "CONSOLE_FINDINGS_LEDGER",
+        "/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/"
+        "findings-ledger.jsonl",
+    )
+)
 
 HELP_MISMATCH = (
     "# HELP fleet_console_tile_mismatch 1 if this console tile failed its "
@@ -203,6 +214,18 @@ SPECS = {
         "field": "signups_24h",
         "tolerance": {"mode": "exact"},
         "runner": "outcome_prom",
+    },
+    "findings": {
+        "cmd": (
+            "row count of ~/workspaces/tooling/nish-vault/_system/"
+            "shared-memory/findings-ledger.jsonl (append-only via "
+            "lib/findings_ledger.py, so the tile's total may trail the live "
+            "count by rows appended mid-run but never exceed it — window "
+            "tolerance down=25 up=0)"
+        ),
+        "field": "total",
+        "tolerance": {"mode": "window", "down": 25, "up": 0},
+        "runner": "findings_ledger_rows",
     },
 }
 
@@ -661,6 +684,15 @@ def run_fleet_paused(tile):
     return 1 if PAUSED_MARKER.exists() else 0
 
 
+def run_findings_ledger_rows(tile):
+    """Live row count of the append-only findings ledger (fleet-ops#5469)."""
+    try:
+        return sum(1 for ln in FINDINGS_LEDGER.read_text().splitlines()
+                   if ln.strip())
+    except OSError as e:
+        raise VerifyError(f"findings ledger unreadable: {e}")
+
+
 def _question_answer_epoch(comments):
     """Epoch of the newest `decision-resolved:` comment, or None.
 
@@ -821,6 +853,7 @@ RUNNERS = {
     "repairs_units": run_repairs_units,
     "running_pi_execstart": run_running_pi_execstart,
     "fleet_paused": run_fleet_paused,
+    "findings_ledger_rows": run_findings_ledger_rows,
     "questions_gh": run_questions_gh,
     "open_prs_gh_spot": run_open_prs_gh_spot,
     "shipped_gh_spot": run_shipped_gh_spot,

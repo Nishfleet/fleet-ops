@@ -9,6 +9,8 @@ and repairs-in-flight. Every metric tile makes zero GitHub API calls.
 The one exception is the `questions` tile (fleet-ops#4475): the questions
 store IS an open GitHub issue with the `question` label, so it reads GitHub
 directly (via `gh`) and fails closed to source-unavailable on any error.
+The `findings` tile (fleet-ops#5469) reads the vault findings-ledger jsonl
+straight off disk — no GitHub calls either.
 
 Every tile carries a freshness contract (observed_at + stale_after_s +
 source + explain). A missing or stale metric renders unknown (the shell
@@ -77,6 +79,18 @@ SEAT_HEALTH = Path("/home/nish/workspaces/agent-state/lanes/pi-seat-health.json"
 # (lib/seat-lib.sh seat_spawn_bench_path).
 SEAT_LEDGER = Path("/home/nish/workspaces/agent-state/lanes/seats")
 XDG = f"/run/user/{os.getuid()}"
+# Findings ledger tile (fleet-ops#5469): the vault jsonl IS the truth — the
+# tile reads it directly, no second copy. Its freshness window is the push
+# cadence like every other local tile; the ledger's OWN health (ageing
+# carry-overs, a silent file) is the tile's `alert` field, surfaced as the
+# page's red banner — not tile staleness.
+FINDINGS_LEDGER = Path(
+    "/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/"
+    "findings-ledger.jsonl")
+FINDINGS_STALE_S = 30 * 60        # 2.5 push cycles, same as the questions tile
+FINDINGS_CARRY_ALERT_S = 24 * 60 * 60   # carried_over older than this -> banner
+FINDINGS_SILENT_S = 48 * 60 * 60        # no append this long -> banner
+FINDINGS_LAST_N = 50
 
 
 class PromError(Exception):
@@ -1036,6 +1050,71 @@ def collect_fleet_state():
                  note=note, explain=explain)
 
 
+def collect_findings():
+    """Canonical findings ledger, rendered live on nish.sh/fleet
+    (fleet-ops#5469; the ledger itself is fleet-ops#5443's single writer,
+    lib/findings_ledger.py). Totals per disposition plus the last
+    FINDINGS_LAST_N rows. `alert` is non-empty when a carried_over row is
+    older than 24h or the ledger has gone 48h without an append — a silent
+    ledger is itself a finding."""
+    src = "vault _system/shared-memory/findings-ledger.jsonl"
+    explain = ("Totals per disposition and the last 50 findings read "
+               "straight from the append-only vault ledger "
+               "(lib/findings_ledger.py is the only writer). The red banner "
+               "fires when a carried-over finding is older than 24h or the "
+               "ledger has had no append for 48h.")
+    try:
+        rows = [json.loads(ln) for ln in
+                FINDINGS_LEDGER.read_text().splitlines() if ln.strip()]
+    except FileNotFoundError:
+        return _unknown(src, FINDINGS_STALE_S, "no findings ledger file",
+                        explain=explain)
+    except (json.JSONDecodeError, OSError) as e:
+        return _unknown(src, FINDINGS_STALE_S,
+                        f"ledger unreadable: {str(e)[:120]}", explain=explain)
+
+    def _age_s(ts):
+        try:
+            return max(0.0, time.time() - datetime.fromisoformat(
+                str(ts).replace("Z", "+00:00")).timestamp())
+        except (ValueError, AttributeError, TypeError):
+            return 0.0
+
+    dispositions = {}
+    for r in rows:
+        d = str(r.get("disposition") or "unknown")
+        dispositions[d] = dispositions.get(d, 0) + 1
+    oldest_carry = max(
+        (_age_s(r.get("ts")) for r in rows
+         if r.get("disposition") == "carried_over"), default=0.0)
+    last_append = max((_age_s(r.get("ts")) for r in rows), default=0.0)
+    alerts = []
+    if oldest_carry > FINDINGS_CARRY_ALERT_S:
+        alerts.append("carried-over finding untouched for over 24h")
+    if not rows or last_append > FINDINGS_SILENT_S:
+        alerts.append("ledger silent for over 48h — a silent ledger is "
+                      "itself a finding")
+    last = sorted(rows, key=lambda r: str(r.get("ts") or "")
+                  )[-FINDINGS_LAST_N:][::-1]
+    return _tile(
+        src, FINDINGS_STALE_S, True, time.time(),
+        total=len(rows),
+        dispositions=dispositions,
+        oldest_carry_h=round(oldest_carry / 3600, 1),
+        last_append_h=round(last_append / 3600, 1),
+        alert="; ".join(alerts),
+        items=[{
+            "finding_id": r.get("finding_id"),
+            "source_organ": r.get("source_organ"),
+            "severity": r.get("severity"),
+            "title": r.get("title"),
+            "disposition": r.get("disposition"),
+            "ref": r.get("ref"),
+            "ts": r.get("ts"),
+        } for r in last],
+        explain=explain)
+
+
 def generate():
     t0 = time.time()
     doc = {"generated_at": now_iso(), "generated_epoch": time.time(),
@@ -1048,6 +1127,7 @@ def generate():
     doc["tiles"]["repairs_inflight"] = collect_repairs_inflight()
     doc["tiles"]["running_pi"] = collect_running_pi()
     doc["tiles"]["fleet_state"] = collect_fleet_state()
+    doc["tiles"]["findings"] = collect_findings()
     # fleet-ops#4475: the questions tile is a full section, not a band cell.
     # It lives under tiles (freshness contract + independent verify) and is
     # ALSO surfaced top-level as `questions` for the shell to render first.
@@ -1086,12 +1166,13 @@ def main():
     rp = tiles.get("repairs_inflight", {})
     q = tiles.get("questions", {})
     oc = tiles.get("outcome", {})
+    fg = tiles.get("findings", {})
     print(f"generated {doc['generated_at']} "
           f"open_prs={op.get('count','—')} shipped={sh.get('count','—')} "
           f"outcome={oc.get('count','—')} "
           f"main_red={ci.get('red_count','—')} "
           f"alerts={al.get('count','—')} repairs={rp.get('count','—')} "
-          f"questions={q.get('count','—')} "
+          f"questions={q.get('count','—')} findings={fg.get('total','—')} "
           f"in {doc['gen_seconds']}s -> {OUT_JSON}")
 
 

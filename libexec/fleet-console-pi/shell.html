@@ -137,6 +137,12 @@ header.top{position:sticky;top:0;z-index:9;background:color-mix(in srgb,var(--in
   color:var(--teal);flex:none;white-space:nowrap}
 .empty{padding:18px;color:var(--mut);font-size:17px;margin:0}
 
+/* Findings ledger (fleet-ops#5469) */
+.f-banner{background:var(--risk);color:#fff;font:600 14px/1.5 ui-sans-serif,-apple-system,sans-serif;
+  padding:11px 16px;text-align:center}
+.f-meta{font:600 12.5px/1.6 ui-monospace,"SF Mono",Menlo,monospace;color:var(--mut);margin:3px 0 0}
+.f-meta a{color:var(--teal)}
+
 .tick{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:14px 16px}
 .tick ul{list-style:none;margin:9px 0 0;padding:0}
 .tick li{display:flex;gap:12px;font-size:16px;color:var(--mut);padding:8px 0;
@@ -180,6 +186,7 @@ a:focus-visible,summary:focus-visible,button:focus-visible{outline:2px solid var
   <section class="prod" id="section-outcome"><div class="ph"><h2>Product outcome</h2><span class="tag" id="outcome-src"></span><div class="state"><span class="led" id="outcome-led"></span></div></div><div id="outcome-body"></div></section>
   <section class="prod" id="section-ci"><div class="ph"><h2>MAIN RED</h2><span class="tag" id="ci-src"></span><div class="state"><span class="led" id="ci-led"></span></div></div><div id="ci-body"></div></section>
   <section class="prod" id="section-alerts"><div class="ph"><h2>Firing alerts</h2><span class="tag" id="alerts-src"></span><div class="state"><span class="led" id="alerts-led"></span></div></div><div id="alerts-body"></div></section>
+  <section class="prod" id="section-findings"><div class="ph"><h2>Findings ledger</h2><span class="tag" id="findings-src"></span><div class="state"><span class="led" id="findings-led"></span></div></div><div id="findings-banner" class="f-banner" hidden></div><div id="findings-summary"></div><div id="findings-body"></div></section>
   <section class="prod" id="section-repairs"><div class="ph"><h2>Repairs in flight</h2><span class="tag" id="repairs-src"></span><div class="state"><span class="led" id="repairs-led"></span></div></div><div id="repairs-body"></div></section>
   <section class="prod" id="section-pi"><div class="ph"><h2>Running Pi work</h2><span class="tag" id="pi-src"></span><div class="state"><span class="led" id="pi-led"></span></div></div><div id="pi-body"></div></section>
   <footer id="foot"></footer>
@@ -358,6 +365,7 @@ function render(d){
   const al = t.firing_alerts || {};
   const rp = t.repairs_inflight || {};
   const oc = t.outcome || {};
+  const fg = t.findings || {};
 
   // ---- Header
   document.getElementById("scope").textContent = (d.org || "org") + " · " + (d.repos ? d.repos.length : 0) + " repos";
@@ -495,6 +503,47 @@ function render(d){
         <p class="t">${esc(a.alertname)}</p>
         <span class="pill">${esc(a.severity || "")}</span></div></div>`
     ).join("");
+  }
+
+  // Findings ledger (fleet-ops#5469): totals per disposition, last 50 rows,
+  // red banner on a >24h carry-over or a 48h-silent ledger. A missing/stale
+  // tile fails closed to the reason, never a frozen last list.
+  const [fgLive, fgFr] = freshState(fg);
+  document.getElementById("findings-src").textContent = fg.source || "";
+  document.getElementById("findings-led").className = "led" + (fgLive ? " on" : "");
+  const fgBanner = document.getElementById("findings-banner");
+  const fgSum = document.getElementById("findings-summary");
+  const fgBody = document.getElementById("findings-body");
+  if (fgLive && fg.alert){
+    fgBanner.hidden = false;
+    fgBanner.textContent = "⚠ FINDINGS — " + fg.alert
+      + " (oldest carried_over " + fg.oldest_carry_h + "h; last append "
+      + fg.last_append_h + "h ago)";
+  } else {
+    fgBanner.hidden = true;
+  }
+  if (!fgLive){
+    fgSum.innerHTML = "";
+    fgBody.innerHTML = `<p class="empty">${esc(fgFr.reason || "source unavailable")}</p>`;
+  } else {
+    const dn = fg.dispositions || {};
+    fgSum.innerHTML = `<p class="empty">total <b>${fg.total}</b>`
+      + Object.keys(dn).sort().map(k => ` · ${esc(k)} <b>${dn[k]}</b>`).join("")
+      + ` · oldest carry <b>${fg.oldest_carry_h}h</b> · last append <b>${fg.last_append_h}h</b> ago</p>`;
+    const rows = fg.items || [];
+    fgBody.innerHTML = rows.length ? rows.map(r => {
+      // ref links to its GitHub issue when it names one (repo#1234); refs
+      // like audit_fix_pending:<organ> have no URL and stay text.
+      const refHtml = esc(String(r.ref || "")).replace(
+        /([A-Za-z0-9_.-]+)#(\d+)/g,
+        '<a href="https://github.com/Nishfleet/$1/issues/$2" target="_blank" rel="noopener">$&</a>');
+      const carry = r.disposition === "carried_over";
+      return `<div class="d"><div class="body">
+        <p class="t">${esc((r.title || "").slice(0, 160))}</p>
+        <p class="f-meta">${esc(r.source_organ || "?")} · ${esc(r.severity || "?")} · ${esc(since(r.ts))}</p>
+        ${r.ref ? `<p class="f-meta">${refHtml}</p>` : ""}</div>
+        <span class="pill${carry ? "" : " up"}"${carry ? ' style="border-color:var(--risk);color:var(--risk)"' : ""}>${esc(r.disposition || "")}</span></div>`;
+    }).join("") : `<p class="empty">no rows</p>`;
   }
 
   const [rpLive, rpFr] = freshState(rp);
