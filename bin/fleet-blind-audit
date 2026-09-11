@@ -340,9 +340,10 @@ run_backfill() {
     local queue="$bf_dir/queue-$NOW_DIR.jsonl"
     local bf_stats
     bf_stats=$(python3 - "$STATE_DIR/reports" "$since" \
-        "$bf_dir/open-$NOW_DIR.json" "$bf_dir/closed-$NOW_DIR.json" "$queue" <<'BF'
+        "$bf_dir/open-$NOW_DIR.json" "$bf_dir/closed-$NOW_DIR.json" "$queue" \
+        "$SEAM_LIB" <<'BF'
 import hashlib, json, os, re, sys
-reports_root, since, open_path, closed_path, out = sys.argv[1:6]
+reports_root, since, open_path, closed_path, out, lens_path = sys.argv[1:7]
 SEV = {"blocker": 0, "critical": 0, "high": 1, "medium": 2}
 
 def sig(seed):
@@ -419,6 +420,30 @@ for path in (open_path, closed_path):
         if t:
             issued.add(t)
 
+# fleet-ops#5464: stale pre-filter findings must not be resurrected. The
+# manual-seam lens's automated-escalation filter (lib/manual-seam-lens.py,
+# fleet-ops#2115) has evolved over time; persisted findings.json rows written
+# by an older lens can carry seams the CURRENT lens would never file
+# (LADDER-WALLED, DISPATCH, TIMEKILL-OUTPUT, ...). Re-apply the live filter at
+# reconstruction time so backfill files only seams still standing.
+import importlib.util as _ilu
+auto_dropped = 0
+_escal_re = None
+try:
+    _spec = _ilu.spec_from_file_location("manual_seam_lens", lens_path)
+    _msl = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_msl)
+    _escal_re = getattr(_msl, "ESCALATION_LOG_RE", None)
+except Exception as _e:
+    print("backfill filter: manual-seam-lens import failed (%s); no escalation re-filter" % _e, file=sys.stderr)
+if _escal_re is not None:
+    for s, f in list(seen.items()):
+        title = f.get("title") or ""
+        seam_text = re.sub(r"^manual seam:\s*", "", title)
+        if _escal_re.search(seam_text) or _escal_re.search(title):
+            del seen[s]
+            auto_dropped += 1
+
 kept, pre_dropped = [], 0
 for s, f in seen.items():
     if tkey(f.get("title")) in issued:
@@ -431,8 +456,8 @@ kept.sort(key=lambda f: (f["sev_rank"], f.get("first_run") or ""))
 with open(out, "w", encoding="utf-8") as fh:
     for f in kept:
         fh.write(json.dumps(f) + "\n")
-print("reconstructed=%d unique=%d dupes_across_runs=%d dropped_vs_issue=%d queue=%d lost=%s no_verdicts=%s"
-      % (len(rows), len(seen), dups, pre_dropped, len(kept), json.dumps(lost), json.dumps(no_verdicts)))
+print("reconstructed=%d unique=%d dupes_across_runs=%d auto_escalation_dropped=%d dropped_vs_issue=%d queue=%d lost=%s no_verdicts=%s"
+      % (len(rows), len(seen) + dups, dups, auto_dropped, pre_dropped, len(kept), json.dumps(lost), json.dumps(no_verdicts)))
 BF
 )
     log "backfill reconstruct: $bf_stats"
