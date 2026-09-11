@@ -176,7 +176,7 @@ ok "below ceiling (count=$c): base backoff ${w}s holds, no park, no metric"
 # Use a fresh seat per marker so each starts from count = ceiling-1.
 run_park_case() {
     local label="$1" p="$2" m="$3" marker_fn="$4" field="${5:-usable_at}"
-    local case_ceil="${6:-$ceil}"
+    local case_ceil="${6:-$ceil}" want_wall="${7:-21600}"
     local lf mf
     lf=$(ledger_file "$p" "$m")
     mf=$(marker_file "$p" "$m")
@@ -188,9 +188,12 @@ run_park_case() {
     c=$(jq -r '.consecutive_failure_count' "$lf")
     [[ "$c" == "$case_ceil" ]] || fail "$label count = $c, want $case_ceil"
     w=$(wall_s_of "$lf" "$field")
-    # fleet-ops#4640: writers clamp non-money parks at 6h.
-    (( w >= 21600 - 120 && w <= 21600 + 120 )) \
-        || fail "$label wall = ${w}s, want ~21600s (6h clamp, fleet-ops#4640)"
+    # fleet-ops#4640: writers clamp non-money parks at 6h — except a
+    # default-driven quota bench (no parsed/observed provider reset), which
+    # fleet-ops#5285 caps at 15 min (SEAT_QUOTA_BENCH_DEFAULT_MAX_S) until a
+    # bench-truth probe proves the advertised reset.
+    (( w >= want_wall - 120 && w <= want_wall + 120 )) \
+        || fail "$label wall = ${w}s, want ~${want_wall}s (6h clamp, fleet-ops#4640)"
     _seat_parked_by_ceiling "$c" "$case_ceil" || fail "$label count $c should be parked"
     metric_has "$p" "$m" "$c" || fail "$label metric NOT emitted for $p/$m"
     # seat_usable must hold the parked seat.
@@ -202,7 +205,7 @@ run_park_case() {
 
 run_park_case "spawn-fail"   "devin"    "glm-5-2"                       mark_seat_spawn_fail
 run_park_case "empty-run"    "devin"    "glm-5-2"                       mark_seat_empty_run "" "${EMPTY_RUN_FAILURE_CEILING:-3}"
-run_park_case "quota-bench"  "opencode" "mimo-v2.5-free"                mark_seat_quota_bench  bench_until
+run_park_case "quota-bench"  "opencode" "mimo-v2.5-free"                mark_seat_quota_bench  bench_until "" 900
 run_park_case "overload-bench" "opencode" "muse-spark-1.2-contributor-free" mark_seat_overload_bench bench_until
 run_park_case "hang-bench"   "devin"    "glm-5-2"                       mark_seat_hang_bench   bench_until
 
@@ -220,9 +223,11 @@ c=$(jq -r '.consecutive_failure_count' "$lf")
 [[ "$c" == "73" ]] || fail "live-72 count = $c, want 73"
 w=$(wall_s_of "$lf" bench_until)
 # fleet-ops#4640: non-money quota park is clamped at 6h even when the
-# ceiling formula escalates past that.
-(( w >= 21600 - 120 && w <= 21600 + 120 )) \
-    || fail "live-72 wall = ${w}s, want ~21600s (6h clamp, fleet-ops#4640)"
+# ceiling formula escalates past that — but a default-driven window (test
+# marker text, no parsed/observed provider reset) is further capped at
+# 15 min by fleet-ops#5285 until the bench-truth probe proves the reset.
+(( w >= 900 - 120 && w <= 900 + 120 )) \
+    || fail "live-72 wall = ${w}s, want ~900s (default-driven cap, fleet-ops#5285)"
 metric_has "$p" "$m" "$c" || fail "live-72 metric NOT emitted"
 ok "live state (72 -> 73): parked on next failure, wall=${w}s (escalated), metric emitted"
 
