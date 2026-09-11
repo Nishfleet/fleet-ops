@@ -11,8 +11,13 @@ name: Auto revert
 # One level of automatic undo only. If the revert commit itself is red on
 # main, the loop guard files a loud halt issue and stops: a red revert is a
 # structural problem, not a loop. If something else landed between the failing
-# commit and now, the freshness guard files a halt issue naming both SHAs and
-# stops: that is a human-order problem.
+# commit and now, a single red defers to the next run — but >=2 consecutive
+# red runs of the watched workflow on main open ONE range-revert PR from a
+# repair/red-main-* branch covering every commit since the last green main
+# run (fleet-ops#5597: landings outpaced the freshness guard and the #5572
+# freeze had no path back to green). Every refusal ends the run NEUTRAL with
+# a `refused:` step summary — the filed issue is the loud surface; a red
+# Auto revert run is a false red signal in exactly that window.
 #
 # The PR is opened with an installation token minted from the nishfleet-worker
 # GitHub App (org-wide install, contents/issues/pull-requests:write). A PR
@@ -29,7 +34,10 @@ name: Auto revert
 
 on:
   workflow_run:
-    workflows: ["CI"]
+    # "Deploy production" joins "CI" (fleet-ops#5597): a refused deploy on a
+    # red main must feed the same recovery so the stop-the-line freeze can
+    # clear itself. Same shape 0509 already runs (Nish, 2026-08-25).
+    workflows: ["CI", "Deploy production"]
     types: [completed]
     branches: [main]
 
@@ -50,7 +58,7 @@ jobs:
     name: auto-revert
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    if: github.event.workflow_run.conclusion == 'failure'
+    if: github.event.workflow_run.conclusion == 'failure' || github.event.workflow_run.conclusion == 'timed_out'
     steps:
       - name: Checkout main (full history for the revert)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -81,4 +89,5 @@ jobs:
           RUN_URL: ${{ github.event.workflow_run.html_url }}
           RUN_NAME: ${{ github.event.workflow_run.name }}
           REPO: ${{ github.repository }}
+          WORKFLOW_ID: ${{ github.event.workflow_run.workflow_id }}
         run: bash .github/scripts/auto-revert.sh
