@@ -131,8 +131,15 @@ fi
 # units are ephemeral (--collect) and named live-dummy* by convention; a
 # REAL detached job never carries that name, so this carve-out cannot mask
 # a genuine dead-man failure.
+# resume-drill-* (fleet-ops#5456 E/H): the kill-three-ways drill's throwaway
+# dummies. Their deaths ARE the drill working (the unit-failed + dead-man
+# verdict proofs are asserted by the drill itself, which invokes the repo
+# dispatcher directly with seams). Excluded here so a drill death never
+# summons the live SENIOR AUDITOR or fires the real stop-escalation path
+# pre-merge — same carve-out argument as live-dummy*: a real unit never
+# carries a resume-drill- name.
 case "$UNIT" in
-  unit-escalation@*|stop-escalation.service|stop-escalation.path|ready-work.service|escalation-daily-sweep.service|escalation-daily-sweep.timer|resilience-drill-stub*|gap-closure-drill-stub*.service|gap-closure-drill-mask-probe.service|notify-probe.service|notify-probe.onfail.service|probe-*.service|fleet-orphan-reset-probe@*.service|multi-*-sink.service|pi-issue@*.service|init.scope|app-*.scope|live-dummy*)
+  unit-escalation@*|stop-escalation.service|stop-escalation.path|ready-work.service|escalation-daily-sweep.service|escalation-daily-sweep.timer|resilience-drill-stub*|gap-closure-drill-stub*.service|gap-closure-drill-mask-probe.service|notify-probe.service|notify-probe.onfail.service|probe-*.service|fleet-orphan-reset-probe@*.service|multi-*-sink.service|pi-issue@*.service|init.scope|app-*.scope|live-dummy*|resume-drill-*)
     echo "unit-escalation-write: skipping excluded unit '$UNIT' (no self-trigger / own failure handling)" >&2
     exit 0
     ;;
