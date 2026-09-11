@@ -240,6 +240,19 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/standing-rules-drift\.test\.sh"?
   || fail "standing-rules-drift.test.sh must not be a known orphan (fleet-ops#1152)"
 ok "standing-rules-drift.test.sh is pinned in the P14 reachable set (fleet-ops#1152)"
 
+# fleet-ops#5586: hard-pin the host line for reserved-classes-precedence.
+# Nested host from rule-enforcement.test.sh (already in ci.yml). Named pin
+# so a future drop of the host line cannot park the #5586 detector on
+# known_orphans to silence the containment gate.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/reserved-classes-precedence\.test\.sh"?' \
+  "$here/rule-enforcement.test.sh" \
+  || fail "rule-enforcement.test.sh must bash-invoke reserved-classes-precedence.test.sh (fleet-ops#5586)"
+[[ -n "${reachable[reserved-classes-precedence.test.sh]:-}" ]] \
+  || fail "reserved-classes-precedence.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#5586)"
+[[ -z "${known_orphan_set[reserved-classes-precedence.test.sh]:-}" ]] \
+  || fail "reserved-classes-precedence.test.sh must not be a known orphan (fleet-ops#5586)"
+ok "reserved-classes-precedence.test.sh is pinned in the P14 reachable set (fleet-ops#5586)"
+
 # fleet-ops#1211: hard-pin the host line for fleet-waste-ledger. Nested
 # host from ci-standards-audit.test.sh (already in P14). Named pin so a
 # future drop of the host line cannot park the test on known_orphans.
