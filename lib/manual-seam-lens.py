@@ -188,6 +188,39 @@ def ref_match(seam, candidates):
     return None
 
 
+def issue_numbers(candidate_row):
+    """Issue numbers this github-sourced seam IS — the event's own `number`,
+    plus any `#N` refs in its evidence field (`github issue #2042`)."""
+    nums = []
+    n = candidate_row.get("number")
+    try:
+        if n is not None:
+            nums.append(int(n))
+    except (TypeError, ValueError):
+        pass
+    for m in ISSUE_REF_RE.finditer(str(candidate_row.get("evidence") or "")):
+        try:
+            nums.append(int(m.group(1)))
+        except (TypeError, ValueError):
+            continue
+    return nums
+
+
+def github_self_match(candidate_row, open_by_number, delivered):
+    """Match a github-source seam to the issue it names. The event IS a
+    queued mechanism when its issue is still open, or a delivered mechanism
+    when a merged PR closed it. Returns (mechanism, reason) or None."""
+    if (candidate_row.get("source") or "") != "github":
+        return None
+    for num in issue_numbers(candidate_row):
+        if num in open_by_number:
+            return f"#{num}", f"queued mechanism #{num} (open issue)"
+        prs = delivered.get(num) or []
+        if prs:
+            return f"#{num}", f"mechanism #{num} delivered by merged PR"
+    return None
+
+
 def load_json(path, default):
     if not path:
         return default
@@ -318,7 +351,12 @@ def collect_github(events, since_dt, now):
             continue
         stamp = (when or now).strftime("%Y-%m-%dT%H:%M:%SZ")
         evidence = ev.get("evidence") or f"github {kind} #{ev.get('number', '?')}"
-        out.append(candidate(str(title)[:200], "github", stamp, evidence, {"kind": kind}))
+        out.append(
+            candidate(
+                str(title)[:200], "github", stamp, evidence,
+                {"kind": kind, "number": ev.get("number")},
+            )
+        )
         if len(out) >= 50:
             break
     return out
@@ -400,12 +438,30 @@ def dated_reason(reason, now_iso):
     return f"{now_iso}: {reason}"
 
 
-def classify(candidates, findings_doc, open_issues, now_iso):
+def classify(candidates, findings_doc, open_issues, now_iso, closed_issues=None):
     findings = list((findings_doc or {}).get("findings") or [])
     reviewer_seams = list((findings_doc or {}).get("seams") or [])
     rows = []
     added = 0
     next_rank = 1
+    open_by_number = {}
+    for c in open_issues or []:
+        try:
+            open_by_number[int(c.get("number"))] = c
+        except (TypeError, ValueError):
+            continue
+    # fleet-ops#5477: an issue closed by a merged PR is a delivered mechanism.
+    # An issue closed by hand with no PR stays unmatched on purpose — the
+    # closed-but-undelivered hunt owns that class.
+    delivered = {}
+    for c in closed_issues or []:
+        try:
+            num = int(c.get("number"))
+        except (TypeError, ValueError):
+            continue
+        prs = c.get("closedByPullRequestsReferences") or []
+        if prs:
+            delivered[num] = prs
     for f in findings:
         try:
             r = int(f.get("rank") or 0)
@@ -427,6 +483,20 @@ def classify(candidates, findings_doc, open_issues, now_iso):
                     "mechanism": "—",
                     "disposition": "accepted-as-manual",
                     "reason": dated_reason(rev.get("reason") or "", now_iso),
+                    "evidence": evidence,
+                }
+            )
+            continue
+        self_match = github_self_match(cand, open_by_number, delivered)
+        if self_match:
+            mech, reason = self_match
+            rows.append(
+                {
+                    "seam": seam,
+                    "source": source,
+                    "mechanism": mech,
+                    "disposition": "matched",
+                    "reason": reason,
                     "evidence": evidence,
                 }
             )
@@ -552,8 +622,13 @@ def close(args):
     open_issues = load_json(args.open_issues, [])
     if not isinstance(open_issues, list):
         open_issues = []
+    closed_issues = load_json(getattr(args, "closed_issues", "") or "", [])
+    if not isinstance(closed_issues, list):
+        closed_issues = []
 
-    findings, rows, added = classify(candidates, findings_doc, open_issues, now_iso)
+    findings, rows, added = classify(
+        candidates, findings_doc, open_issues, now_iso, closed_issues=closed_issues
+    )
     findings_doc["findings"] = findings
     findings_doc["seams"] = [
         {
@@ -603,6 +678,7 @@ def build_parser():
     k.add_argument("--candidates", required=True)
     k.add_argument("--findings", required=True)
     k.add_argument("--open-issues", required=True)
+    k.add_argument("--closed-issues", default="")
     k.add_argument("--report", required=True)
     k.add_argument("--seams-out", default="")
     k.add_argument("--since", default="")
