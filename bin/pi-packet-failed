@@ -254,7 +254,12 @@ for k in ("source_organ", "run_id", "title", "severity", "evidence_ref",
     sys.stdout.write(str(r.get(k) or "") + "\0")
 ')
     # findings_ledger.py ships non-executable; shell-based test/driver
-    # helpers may be executable. Run whichever fits.
+    # helpers may be executable. Run whichever fits. Helper stderr is
+    # captured, not discarded: exit 3 means "skip: duplicate" — the row is
+    # already durably recorded (same finding_id + disposition + ref), which
+    # is SUCCESS for this recorder, not a rejection. Only a genuine failure
+    # (any other rc) falls back to the direct append; the helper's own
+    # message is logged either way so the rejection is never silent.
     call_helper=(); do_call() {
         if [[ -x "$helper" ]]; then
             "$helper" append --ledger "$LEDGER" \
@@ -271,11 +276,18 @@ for k in ("source_organ", "run_id", "title", "severity", "evidence_ref",
         fi
     }
     if [[ "${#hargs[@]}" -eq 8 ]]; then
-        if do_call >/dev/null 2>&1; then
+        helper_err="$(mktemp "${TMPDIR:-/tmp}/pi-packet-failed-helper.XXXXXX")"
+        do_call >/dev/null 2>"$helper_err"
+        helper_rc=$?
+        if [[ "$helper_rc" -eq 0 ]]; then
+            ledger_rc=0
+        elif grep -q '^skip: duplicate' "$helper_err" 2>/dev/null; then
+            log "findings-ledger helper: row already recorded (skip: duplicate, rc=$helper_rc) — ledger durable, no re-append"
             ledger_rc=0
         else
-            log "WARN: findings-ledger helper $helper rejected the row — direct-append fallback"
+            log "WARN: findings-ledger helper $helper rejected the row (rc=$helper_rc: $(tail -1 "$helper_err" 2>/dev/null || true)) — direct-append fallback"
         fi
+        rm -f "$helper_err"
     else
         log "WARN: could not map row to the helper CLI — direct-append fallback"
     fi

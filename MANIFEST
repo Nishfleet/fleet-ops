@@ -241,6 +241,11 @@ bin/pi-systemd-run /home/nish/.local/bin/pi-systemd-run
 # fleet-ops#5444: OnFailure handler for retry-exhausted packets — triage +
 # findings-ledger + agent-ready re-queue for --deliverable runs.
 bin/pi-packet-failed /home/nish/.local/bin/pi-packet-failed
+# fleet-ops#5444: the handler's findings-ledger write must go through the
+# shared single-writer helper (fleet-ops#5443), auto-detected at
+# ~/.local/lib/pi-packet/findings_ledger.py — without this install line the
+# runtime handler silently falls back to direct append.
+lib/findings_ledger.py /home/nish/.local/lib/pi-packet/findings_ledger.py
 # fleet-ops#4266: ExecStopPost dead-man — the verdict hook that turns "the
 # unit ended" into success ping / STOP-REASON + /fail ping + died gauge.
 bin/pi-detached-deadman /home/nish/.local/bin/pi-detached-deadman

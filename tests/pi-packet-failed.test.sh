@@ -190,6 +190,56 @@ grep -qF -- '--ref pi-packet@drillpkt.service' "$fc/helper.calls" \
     && fail "helper accepted the row — direct append must not double-write"
 ok "findings-ledger helper path (single writer when installed)"
 
+# --- Phase C2: helper exit 3 ("skip: duplicate") is SUCCESS, not a rejection -
+# the shipped helper exits 3 when the row is already recorded (same
+# finding_id + disposition + ref). The recorder must treat that as the
+# ledger being durable and must NOT direct-append a second identical row
+# (caught live 2026-09-11: two runs -> two rows). It must say so, loudly.
+fc2="$scratch/fc2"; stc2="$scratch/stc2"
+mk_fakes "$fc2" 'HOME=/home/nish'
+cat >"$fc2/findings_ledger.py" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$fc2/helper.calls"
+echo 'skip: duplicate' >&2
+exit 3
+EOF
+chmod +x "$fc2/findings_ledger.py"
+set +e
+run_handler "$fc2" "$stc2" drillpkt \
+    FLEET_FINDINGS_LEDGER_HELPER="$fc2/findings_ledger.py" 2>"$fc2/stderr"
+rc=$?
+set -e
+[[ "$rc" -eq 0 ]] || fail "helper duplicate (rc 3) must be success, got exit $rc"
+[[ -f "$stc2/findings-ledger.jsonl" ]] \
+    && fail "duplicate must not direct-append a second row"
+grep -q 'skip: duplicate' "$fc2/stderr" \
+    || fail "duplicate must be logged: $(cat "$fc2/stderr" 2>/dev/null | tail -4)"
+ok "findings-ledger helper duplicate (rc 3) treated as durable, no re-append"
+
+# --- Phase C3: a genuine helper failure falls back to direct append, loud --
+fc3="$scratch/fc3"; stc3="$scratch/stc3"
+mk_fakes "$fc3" 'HOME=/home/nish'
+cat >"$fc3/findings_ledger.py" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$fc3/helper.calls"
+echo 'findings_ledger: refusing row missing ref' >&2
+exit 1
+EOF
+chmod +x "$fc3/findings_ledger.py"
+set +e
+run_handler "$fc3" "$stc3" drillpkt \
+    FLEET_FINDINGS_LEDGER_HELPER="$fc3/findings_ledger.py" 2>"$fc3/stderr"
+rc=$?
+set -e
+[[ "$rc" -eq 0 ]] || fail "fallback after genuine helper failure must still succeed, got exit $rc"
+[[ -f "$stc3/findings-ledger.jsonl" ]] \
+    || fail "a lost row is a silent drop — direct-append fallback must land the row"
+grep -q 'WARN: findings-ledger helper' "$fc3/stderr" \
+    || fail "helper rejection must be logged as WARN: $(cat "$fc3/stderr" 2>/dev/null | tail -4)"
+grep -q 'rc=1' "$fc3/stderr" \
+    || fail "WARN must carry the helper's rc + message"
+ok "genuine helper failure -> loud WARN + direct-append fallback"
+
 # --- Phase D: required issue-file failure is LOUD (non-zero) ------------------
 fd="$scratch/fd"; std="$scratch/std"
 mk_fakes "$fd" 'HOME=/home/nish PI_DEADMAN_DELIVERABLE=/scratch/expected.md'
