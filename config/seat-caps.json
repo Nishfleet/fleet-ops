@@ -51,7 +51,7 @@
         },
         "swe-1-7": {
           "cap": 0,
-          "max_probe_ceiling": 4,
+          "max_probe_ceiling": 0,
           "intentional_cap_zero": "retired",
           "reason": "2026-09-11 Nish: \"switched exclusively to swe 2, swe 1.7 is retired - same as ds4 flash\". Devin lane is SWE-2 only (swe-2-max, swe-2-high). Never re-wire swe-1-7; a probe answering PONG does not un-retire it."
         },
