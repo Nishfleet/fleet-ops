@@ -55,7 +55,7 @@ o5_high=$(jq -r '.worker_memory["0509"].MemoryHigh // empty' "$caps")
 tgt=$(jq -r '.target_concurrent // empty' "$caps")
 [[ "$tgt" == "25" ]] || fail "target_concurrent want 25 got '$tgt'"
 ram=$(jq -r '.ram_gb_per_worker // empty' "$caps")
-[[ "$ram" == "1.5" ]] || fail "ram_gb_per_worker want 1.5 got '$ram'"
+[[ "$ram" == "1.0" ]] || fail "ram_gb_per_worker want 1.0 got '$ram'"
 ok "1: seat-caps worker_memory + target_concurrent + ram_gb_per_worker"
 
 # --- 2. worker_memory_for_repo ---------------------------------------------
@@ -113,9 +113,9 @@ trap 'rm -rf "$scratch"' EXIT
     charge=$(active_ram_charge)
     # 2 issue workers (1 heavy + 1 light fleet-ops): heavy is hardcoded 1.0 GB
     # (ram_charge_gb_for), fleet-ops light has no MemoryHigh so fallback
-    # ram_gb_per_worker=1.5. Units = GB / ram_gb_per_worker:
-    # heavy 1.0/1.5=0.667, fleet-ops 1.5/1.5=1.0, total 1.667 units.
-    [[ "$charge" == "1.667" ]] || fail "active_ram_charge want 1.667 (0.667 heavy + 1.0 fleet-ops) got '$charge'"
+    # ram_gb_per_worker=1.0. Units = GB / ram_gb_per_worker:
+    # heavy 1.0/1.0=1.0, fleet-ops 1.0/1.0=1.0, total 2.000 units.
+    [[ "$charge" == "2.000" ]] || fail "active_ram_charge want 2.000 (1.0 heavy + 1.0 fleet-ops) got '$charge'"
     ok "2c: active_ram_charge charges per-repo MemoryHigh / fallback"
 )
 
