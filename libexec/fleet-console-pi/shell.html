@@ -62,9 +62,6 @@ header.top{position:sticky;top:0;z-index:9;background:color-mix(in srgb,var(--in
 .band .s{font-size:13px;line-height:1.35;color:var(--mut);margin-top:3px}
 .band .cell.hot .v{color:var(--gold)}
 .band .cell.cool .v{color:var(--teal)}
-.band .cell.disputed{outline:2px solid var(--risk);outline-offset:-2px}
-.band .cell .disputed-mark{margin-top:6px;font:700 11px/1.3 ui-monospace,"SF Mono",Menlo,monospace;
-  letter-spacing:.14em;text-transform:uppercase;color:var(--risk)}
 @media (max-width:620px){.band{grid-template-columns:repeat(2,1fr)}}
 
 .band button.cell{font:inherit;color:inherit;text-align:left;border:0;width:100%;cursor:pointer;
@@ -109,28 +106,6 @@ header.top{position:sticky;top:0;z-index:9;background:color-mix(in srgb,var(--in
 
 .pill{font-size:13.5px;border-radius:3px;padding:5px 11px;border:1px solid var(--line);color:var(--mut);white-space:nowrap}
 .pill.up{border-color:var(--teal);color:var(--teal)}
-
-/* Questions for Nish (fleet-ops#4475) */
-.q-chip{font:700 13px/1 ui-monospace,"SF Mono",Menlo,monospace;border-radius:10px;
-  padding:4px 10px;border:1px solid var(--line);color:var(--mut);cursor:pointer;transition:color .15s,border-color .15s}
-.q-chip.q-conf{border-color:var(--gold);color:var(--gold)}
-.q-chip.q-conf.on{background:var(--gold);color:#12100a}
-.q-chip.q-answer{border-color:var(--ok);color:var(--ok)}
-.q-chip.q-answer.on{background:var(--ok);color:#12100a}
-.q-72h{background:var(--risk);color:#fff;font:600 14px/1.5 ui-sans-serif,-apple-system,sans-serif;
-  padding:11px 16px;text-align:center}
-.q-card{background:var(--panel);border-top:1px solid var(--line);padding:14px 16px}
-.q-card.old{border-left:3px solid var(--risk)}
-.q-card .q-line{font-size:16.5px;line-height:1.5;margin:0 0 4px}
-.q-card .q-opt{margin:0 0 8px;color:var(--mut);font-size:14.5px;white-space:pre-wrap}
-.q-card .q-meta{display:flex;align-items:center;gap:10px;font:700 13px/1.7 ui-monospace,"SF Mono",Menlo,monospace;color:var(--teal);flex-wrap:wrap}
-.q-card .q-reason{color:var(--mut);font:14px/1.5 ui-sans-serif;font-weight:400}
-.q-card .q-handle{color:var(--gold);font-weight:700}
-.q-card.old .q-age{color:var(--risk);font-weight:700}
-.q-state{font-size:11px;border:1px solid var(--line);border-radius:3px;padding:1px 7px;font-weight:600;color:var(--dim)}
-.q-card.old .q-state{color:var(--risk);border-color:var(--risk)}
-.q-card .q-answer-by{margin:7px 0 0;color:var(--dim);font-size:13px}
-.q-card.old .q-answer-by{color:var(--risk)}
 .draft{color:var(--warn);font-size:11px;border:1px solid var(--warn);
   border-radius:3px;padding:1px 7px;font-weight:600}
 .ref{font:700 13px/1.7 ui-monospace,"SF Mono",Menlo,monospace;
@@ -174,12 +149,11 @@ a:focus-visible,summary:focus-visible,button:focus-visible{outline:2px solid var
   <div id="frozen" class="frozen" hidden></div>
   <div id="paused"></div>
   <div id="band" class="band"></div>
-  <section class="prod" id="section-questions"><div class="ph"><h2>Questions for Nish</h2><span class="tag" id="questions-src"></span><div class="state"><span class="led" id="questions-led"></span><span class="q-chip" id="q-chip-inconf" hidden title="questions in conference"></span><span class="q-chip" id="q-chip-answered" hidden title="recently answered"></span></div></div><div id="q-72h" class="q-72h" hidden></div><div id="q-cap" class="q-72h" hidden></div><div id="questions-body"></div></section>
   <section class="prod" id="section-prs"><div class="ph"><h2>Open PRs</h2><span class="tag" id="prs-src"></span><div class="state"><span class="led" id="prs-led"></span></div></div><div id="prs-body"></div></section>
   <section class="prod" id="section-shipped"><div class="ph"><h2>Shipped in the last 24h</h2><span class="tag" id="shipped-src"></span><div class="state"><span class="led" id="shipped-led"></span></div></div><div id="shipped-body"></div></section>
-  <section class="prod" id="section-outcome"><div class="ph"><h2>Product outcome</h2><span class="tag" id="outcome-src"></span><div class="state"><span class="led" id="outcome-led"></span></div></div><div id="outcome-body"></div></section>
   <section class="prod" id="section-ci"><div class="ph"><h2>MAIN RED</h2><span class="tag" id="ci-src"></span><div class="state"><span class="led" id="ci-led"></span></div></div><div id="ci-body"></div></section>
   <section class="prod" id="section-alerts"><div class="ph"><h2>Firing alerts</h2><span class="tag" id="alerts-src"></span><div class="state"><span class="led" id="alerts-led"></span></div></div><div id="alerts-body"></div></section>
+  <section class="prod" id="section-findings"><div class="ph"><h2>Findings ledger</h2><span class="tag" id="findings-src"></span><div class="state"><span class="led" id="findings-led"></span></div></div><div id="findings-banner" class="frozen" style="border-color:var(--risk);color:var(--risk)" hidden></div><div id="findings-summary"></div><div id="findings-body"></div></section>
   <section class="prod" id="section-repairs"><div class="ph"><h2>Repairs in flight</h2><span class="tag" id="repairs-src"></span><div class="state"><span class="led" id="repairs-led"></span></div></div><div id="repairs-body"></div></section>
   <section class="prod" id="section-pi"><div class="ph"><h2>Running Pi work</h2><span class="tag" id="pi-src"></span><div class="state"><span class="led" id="pi-led"></span></div></div><div id="pi-body"></div></section>
   <footer id="foot"></footer>
@@ -226,9 +200,7 @@ function bigValCell(t, val, cls){
     else rateCls = " v-risk";
   }
   const colorClass = cls === "rate" ? rateCls : (cls ? " " + cls : "");
-  const disputed = t && t.disputed;
-  const mark = disputed ? `<div class="disputed-mark">DISPUTED</div>` : "";
-  return `<div class="v${colorClass}">${val == null ? "?" : esc(String(val))}</div>${mark}`;
+  return `<div class="v${colorClass}">${val == null ? "?" : esc(String(val))}</div>`;
 }
 
 function explainToggleHTML(tile, label){
@@ -237,10 +209,7 @@ function explainToggleHTML(tile, label){
   const src = tile.source ? "source: " + tile.source : "source unknown";
   const honesty = tile.explain || label;
   const okTxt = f.state === "ok" ? "This tile is reading fresh data." : (f.state === "stale" ? "This tile's source data is stale — last seen " + agoMs((Date.now()/1000 - tile.observed_at)*1000) + " ago. Showing —, not the last number." : "This tile could not read its source. Showing —, not a frozen value.");
-  const v = tile.verify || {};
-  const verifyTxt = v.cmd ? "Verify: " + v.cmd + "." : "Verify: none.";
-  const disputeTxt = tile.disputed ? " DISPUTED: displayed value failed that check (" + (v.reason || "mismatch") + ")." : "";
-  const txt = honesty + " " + okTxt + " " + src + ". " + ageTxt + ". " + verifyTxt + disputeTxt;
+  const txt = honesty + " " + okTxt + " " + src + ". " + ageTxt + ".";
   return `<span class="explain-t">what is this?</span>
     <div class="explain-x" data-panel="${esc(tile.source || label)}">${esc(txt)}</div>`;
 }
@@ -255,91 +224,6 @@ function repoCountRows(items, cap, moreLabel){
   }).join("");
   if (items.length > cap) html += `<p class="empty">+ ${items.length - cap} more ${esc(moreLabel || "repos")}</p>`;
   return html;
-}
-
-function questionCard(question){
-  // A question card. `old` marks a question older than 24h (red state).
-  const age = (q) => { const h = Number(q.age_h); return isFinite(h) ? Math.round(h) : 0; };
-  const isOld = Number(question.age_h) >= 24;
-  const opts = (question.options || "").trim();
-  const refLink = question.url ? `<a href="${esc(question.url)}" target="_blank" rel="noopener">${esc(question.ref)}</a>` : esc(question.ref || "");
-  const qtext = esc(question.question || "");
-  // The short handle Q:<repo>#<n> (fleet-ops#4476): Nish answers in chat or
-  // on Telegram, never on GitHub — the handle is how he refers to it. The
-  // console is read-only: no copy button, no write path.
-  const handle = question.handle ? esc(question.handle) : (question.ref ? "Q:" + esc(question.ref) : "");
-  return `<div class="q-card${isOld ? " old" : ""}" data-state="${esc(question.state || "in-conference")}">
-    <p class="q-line">${qtext}</p>
-    ${opts ? `<pre class="q-opt">options: ${esc(opts)}</pre>` : ""}
-    <div class="q-meta">
-      <span class="q-age" title="asked ${esc(question.asked_at || "")}">asked ${age(question)}h ago</span>
-      <span class="ref">${refLink}</span>
-      ${handle ? `<span class="q-handle">${handle}</span>` : ""}
-      ${question.conference_reason ? `<span class="q-reason">${esc(question.conference_reason)}</span>` : ""}
-      <span class="q-state">${esc(question.state || "in-conference")}</span>
-    </div>
-    <p class="q-answer-by">answer by telling Claude or Hermes</p>
-  </div>`;
-}
-
-function renderQuestions(d, q){
-  const srcEl = document.getElementById("questions-src");
-  const led = document.getElementById("questions-led");
-  const body = document.getElementById("questions-body");
-  const bar = document.getElementById("q-72h");
-  const cap = document.getElementById("q-cap");
-  const chipConf = document.getElementById("q-chip-inconf");
-  const chipAns = document.getElementById("q-chip-answered");
-  const items = (Array.isArray(d.questions)) ? d.questions : [];
-
-  const fr = freshness(q);
-  const live = fr.state === "ok";
-  srcEl.textContent = q.source || "";
-  led.className = "led" + (live ? " on" : "");
-  bar.hidden = true; cap.hidden = true; chipConf.hidden = true; chipAns.hidden = true;
-
-  if (!live){
-    body.innerHTML = `<p class="empty">${esc(fr.reason || "source unavailable")}</p>`;
-    return;
-  }
-
-  // The search window is finite (fleet-ops#5133): gh's search API stops at
-  // 1000 rows. When the fetch fills the window the population may continue
-  // past it, and the tab says so instead of quietly under-reporting.
-  if (q.capped){
-    cap.hidden = false;
-    cap.textContent = "⚠ this list is capped at " + (q.search_limit || "the")
-      + " questions — more open questions exist than are shown here.";
-  }
-
-  const forNish = items.filter(x => x.state === "for-nish");
-  const inConf = items.filter(x => x.state === "in-conference");
-  const answered = items.filter(x => x.state === "answered");
-
-  // Counter chips, hidden when the group is empty. Default view is
-  // for-nish only; a chip toggles its group in on the next render.
-  chipConf.hidden = inConf.length === 0;
-  chipConf.className = "q-chip q-conf" + (window.__qShowConf ? " on" : "");
-  chipConf.textContent = "in conference " + inConf.length;
-  chipAns.hidden = answered.length === 0;
-  chipAns.className = "q-chip q-answer" + (window.__qShowAns ? " on" : "");
-  chipAns.textContent = "answered " + answered.length;
-
-  // 72h red bar at the top when the OLDEST for-nish question is past 72h.
-  const oldest = forNish.reduce((m, x) => Math.max(m, Number(x.age_h) || 0), 0);
-  if (oldest >= 72){
-    bar.hidden = false;
-    bar.textContent = "⚠ A question is over 72 hours old — it needs an answer. Oldest for-nish: " + oldest + "h.";
-  }
-
-  const shown = window.__qShowConf ? [...forNish, ...inConf]
-    : (window.__qShowAns ? [...forNish, ...answered]
-       : forNish);
-  if (!shown.length){
-    body.innerHTML = `<p class="empty">no unanswered questions for you right now</p>`;
-    return;
-  }
-  body.innerHTML = shown.map(x => questionCard(x)).join("");
 }
 
 function render(d){
@@ -357,7 +241,7 @@ function render(d){
   const fl = t.fleet_state || {};
   const al = t.firing_alerts || {};
   const rp = t.repairs_inflight || {};
-  const oc = t.outcome || {};
+  const fg = t.findings || {};
 
   // ---- Header
   document.getElementById("scope").textContent = (d.org || "org") + " · " + (d.repos ? d.repos.length : 0) + " repos";
@@ -402,26 +286,32 @@ function render(d){
   const rpVal = bigValCell(rp, rpOk ? rp.count : null);
 
   const prSub = prOk ? "open across the org" : "";
-  const shSub = shOk ? "product merges (0509), trailing 24h" : "";
-  const shOrg = shOk && s.org_total != null ? `org total: ${s.org_total}` : "";
+  const shSub = shOk ? "merged PRs, trailing 24h" : "";
   const ciSub = ciOk ? ((c.items || []).length + " repos with known CI") : "";
   const piSub = piOk ? (String(p.proc_count) + " procs + " + String(p.unit_count) + " units · " + (p.note || "")) : "";
   const alSub = alOk ? "Watchdog excluded" : "";
   const rpSub = rpOk && rp.dispatch_24h != null ? (rp.dispatch_24h + " dispatched / 24h") : (rpOk ? "running transients" : "");
 
-  const cellCls = (base, tile) => (base + (tile && tile.disputed ? " disputed" : "")).trim();
   band.innerHTML = `
-    <button class="${cellCls("cell cool", o)}" aria-expanded="false"><div class="k">OPEN PRS</div>${prVal}${prSub ? `<div class="s">${esc(prSub)}</div>` : ""}${explainToggleHTML(o, "Prometheus fleet_open_prs, current open-PR count per repo.")}</button>
-    <button class="${cellCls("cell hot", s)}" aria-expanded="false"><div class="k">SHIPPED 24H</div>${shVal}${shSub ? `<div class="s">${esc(shSub)}</div>` : ""}${shOrg ? `<div class="s">${esc(shOrg)}</div>` : ""}${explainToggleHTML(s, "Prometheus fleet_product_merged_24h, trailing 24h non-revert merges for product repos (fleet-ops#2755).")}</button>
-    <button class="${cellCls("cell", c)}" aria-expanded="false"><div class="k">MAIN RED</div>${ciVal}${ciSub ? `<div class="s">${esc(ciSub)}</div>` : ""}${explainToggleHTML(c, "Prometheus fleet_main_ci_green: count of repos whose default-branch CI is red.")}</button>
-    <button class="${cellCls("cell", p)}" aria-expanded="false"><div class="k">PI WORK</div>${piVal}${piSub ? `<div class="s">${esc(piSub)}</div>` : ""}${explainToggleHTML(p, "Running user units whose ExecStart contains pi --print (never a unit-name pattern).")}</button>
-    <button class="${cellCls("cell", al)}" aria-expanded="false"><div class="k">ALERTS</div>${alVal}${alSub ? `<div class="s">${esc(alSub)}</div>` : ""}${explainToggleHTML(al, "Prometheus /api/v1/alerts, currently firing, Watchdog excluded.")}</button>
-    <button class="${cellCls("cell", rp)}" aria-expanded="false"><div class="k">REPAIRS</div>${rpVal}${rpSub ? `<div class="s">${esc(rpSub)}</div>` : ""}${explainToggleHTML(rp, "Running alert-repair-* transient units; subtitle is fleet_repair_dispatch_24h.")}</button>`;
+    <button class="cell cool" aria-expanded="false"><div class="k">OPEN PRS</div>${prVal}${prSub ? `<div class="s">${esc(prSub)}</div>` : ""}${explainToggleHTML(o, "Prometheus fleet_open_prs, current open-PR count per repo.")}</button>
+    <button class="cell hot" aria-expanded="false"><div class="k">SHIPPED 24H</div>${shVal}${shSub ? `<div class="s">${esc(shSub)}</div>` : ""}${explainToggleHTML(s, "Prometheus fleet_merged_prs_24h, trailing 24h, skipped/cancelled runs excluded.")}</button>
+    <button class="cell" aria-expanded="false"><div class="k">MAIN RED</div>${ciVal}${ciSub ? `<div class="s">${esc(ciSub)}</div>` : ""}${explainToggleHTML(c, "Prometheus fleet_main_ci_green: count of repos whose default-branch CI is red.")}</button>
+    <button class="cell" aria-expanded="false"><div class="k">PI WORK</div>${piVal}${piSub ? `<div class="s">${esc(piSub)}</div>` : ""}${explainToggleHTML(p, "pgrep -c -f 'pi --print' plus running transient pi-*/alert-repair-* systemd units; subtitle is pi-seat-health.json.")}</button>
+    <button class="cell" aria-expanded="false"><div class="k">ALERTS</div>${alVal}${alSub ? `<div class="s">${esc(alSub)}</div>` : ""}${explainToggleHTML(al, "Prometheus /api/v1/alerts, currently firing, Watchdog excluded.")}</button>
+    <button class="cell" aria-expanded="false"><div class="k">REPAIRS</div>${rpVal}${rpSub ? `<div class="s">${esc(rpSub)}</div>` : ""}${explainToggleHTML(rp, "Running alert-repair-* transient units; subtitle is fleet_repair_dispatch_24h.")}</button>`;
+
+
+  // ---- Findings red banner (a silent ledger is itself a finding)
+  const fgBannerEl = document.getElementById("findings-banner");
+  const fgLive0 = freshness(fg);
+  if (fgLive0.state === "ok" && fg.alert){
+    fgBannerEl.hidden = false;
+    fgBannerEl.textContent = "FINDINGS BACKLOG — " + fg.alert + " (carried_over oldest " + fg.oldest_carry_h + "h; ledger last appended " + fg.last_append_h + "h ago)";
+  } else {
+    fgBannerEl.hidden = true;
+  }
 
   // ---- Sections
-
-  // Questions for Nish (fleet-ops#4475) — must render FIRST.
-  renderQuestions(d, t.questions || {});
 
   const [prLive, prFr] = freshState(o);
   document.getElementById("prs-src").textContent = o.source || "";
@@ -439,26 +329,6 @@ function render(d){
     document.getElementById("shipped-body").innerHTML = `<p class="empty">${esc(shFr.reason || "source unavailable")}</p>`;
   } else {
     document.getElementById("shipped-body").innerHTML = repoCountRows(s.items, 30, "repos");
-  }
-
-  // Product outcome (fleet-ops#5003). Not-live writes the reason only —
-  // never the four numbers, so "not measured" cannot be misread as "0
-  // signups".
-  const [ocLive, ocFr] = freshState(oc);
-  document.getElementById("outcome-src").textContent = oc.source || "";
-  document.getElementById("outcome-led").className = "led" + (ocLive ? " on" : "");
-  const ocBody = document.getElementById("outcome-body");
-  if (!ocLive){
-    ocBody.innerHTML = `<p class="empty">${esc(ocFr.reason || "source unavailable")}</p>`;
-  } else {
-    const ocNum = v => (v == null ? "—" : esc(String(v)));
-    const ocRow = (label, v) => `<div class="d"><div class="body"><p class="t">${esc(label)}</p><span class="ref">${ocNum(v)}</span></div></div>`;
-    ocBody.innerHTML =
-      ocRow("signups · 24h", oc.signups_24h) +
-      ocRow("signups · 7d", oc.signups_7d) +
-      ocRow("activated · 24h", oc.activated_24h) +
-      ocRow("paying customers", oc.paying_customers) +
-      `<p class="empty">${esc(oc.funnel || "top of funnel UNMEASURED (no visit/page-view gauge exists; Nishfleet/0509#2120)")}</p>`;
   }
 
   const [ciLive, ciFr] = freshState(c);
@@ -527,36 +397,42 @@ function render(d){
     piBody.innerHTML = html;
   }
 
+  const [fgLive, fgFr] = freshState(fg);
+  document.getElementById("findings-src").textContent = fg.source || "";
+  document.getElementById("findings-led").className = "led" + (fgLive ? " on" : "");
+  const fgBody = document.getElementById("findings-body");
+  const fgSum = document.getElementById("findings-summary");
+  if (!fgLive){
+    fgBody.innerHTML = `<p class="empty">${esc(fgFr.reason || "source unavailable")}</p>`;
+    fgSum.innerHTML = "";
+  } else {
+    const dn = fg.dispositions || {};
+    fgSum.innerHTML = `<p class="empty">total <b>${fg.total}</b> · filed <b>${dn.filed ?? 0}</b> · carried_over <b>${dn.carried_over ?? 0}</b> · panel_fail <b>${dn.panel_fail ?? 0}</b> · by_design <b>${dn.by_design ?? 0}</b> · duplicate_of <b>${dn.duplicate_of ?? 0}</b> · oldest carry <b>${fg.oldest_carry_h}h</b> · last append <b>${fg.last_append_h}h</b> ago</p>`;
+    const rows = (fg.items || []);
+    fgBody.innerHTML = rows.length ? rows.map(r =>
+      `<div class="d"><div class="body">
+        <p class="t">${esc((r.title || "").slice(0, 140))}</p>
+        <span class="pill ${r.disposition === "filed" ? "up" : ""}">${esc(r.disposition || "")}</span>
+        ${r.ref ? `<p class="s">${esc(r.ref)}</p>` : ""}</div></div>`
+    ).join("") : `<p class="empty">no rows</p>`;
+  }
+
   // ---- Footer
   const srcs = Object.entries(t).map(([k, v]) =>
     k + ": " + (v && v.ok ? "ok" : "DOWN") + " (" + (v && v.source ? v.source : "?") + ")"
   ).join(" · ");
-  const disputedNames = Object.entries(t).filter(([, v]) => v && v.disputed).map(([k]) => k);
-  const disputedLine = disputedNames.length
-    ? "<br><b>DISPUTED</b>: " + esc(disputedNames.join(", ")) + " failed the independent truth-check."
-    : "";
   document.getElementById("foot").innerHTML =
-    `Generated ${esc(d.generated_at)} · ${d.gen_seconds}s · org ${esc(d.org)} · ${d.repos ? d.repos.length : 0} repos<br>${esc(srcs)}${disputedLine}<br>Auto-refresh 60s. Every tile fails closed to <b>—</b> when its source is stale, missing, or unreadable. Never a frozen last value.`;
+    `Generated ${esc(d.generated_at)} · ${d.gen_seconds}s · org ${esc(d.org)} · ${d.repos ? d.repos.length : 0} repos<br>${esc(srcs)}<br>Auto-refresh 60s. Every tile fails closed to <b>—</b> when its source is stale, missing, or unreadable. Never a frozen last value.`;
 }
 
 // ---- Explain toggles (event delegation)
 document.addEventListener("click", function(e){
   const cell = e.target.closest(".band .cell");
-  if (cell){
-    const panel = cell.querySelector(".explain-x");
-    if (panel){
-      const open = panel.classList.toggle("open");
-      cell.setAttribute("aria-expanded", open);
-    }
-    return;
-  }
-  const chip = e.target.closest(".q-chip");
-  if (chip){
-    if (chip.classList.contains("q-conf")) window.__qShowConf = !window.__qShowConf;
-    else if (chip.classList.contains("q-answer")) window.__qShowAns = !window.__qShowAns;
-    load();  // re-render with the toggled view
-    return;
-  }
+  if (!cell) return;
+  const panel = cell.querySelector(".explain-x");
+  if (!panel) return;
+  const open = panel.classList.toggle("open");
+  cell.setAttribute("aria-expanded", open);
 });
 
 // ---- Load
