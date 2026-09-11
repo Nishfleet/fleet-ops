@@ -994,14 +994,14 @@ carryover_resolve() { # $1 = signature, $2 = why
 # $2 = "1" when this is a carry-over ledger entry (so unfiled outcome keeps
 # the existing ledger entry instead of appending a duplicate).
 process_one_finding() {
-    local finding="$1" is_carryover="$2"
+    local finding="$1" is_carryover="$2" entry_sig="${3:-}"
     local rank title body evidence severity sig
     rank=$(printf '%s' "$finding" | jq -r '.rank // "CO"')
     title=$(printf '%s' "$finding" | jq -r '.title // ""')
     body=$(printf '%s' "$finding" | jq -r '.body // ""')
     evidence=$(printf '%s' "$finding" | jq -r '.evidence // ""')
     severity=$(printf '%s' "$finding" | jq -r '.severity // ""')
-    sig=$(finding_signature "$finding")
+    sig=${entry_sig:-$(finding_signature "$finding")}
 
     if [ -z "$title" ]; then
         log "finding $rank: SKIP (empty title)"
@@ -1134,7 +1134,7 @@ while IFS= read -r entry; do
     co_finding=$(printf '%s' "$entry" | jq -c '.finding')
     [ -n "$co_finding" ] || continue
     log "carry-over: re-panelling entry ($co_sig)"
-    process_one_finding "$co_finding" "1"
+    process_one_finding "$co_finding" "1" "$co_sig"
     # A kept entry (cap reached again) stays in the ledger.
 done < <(carryover_load)
 

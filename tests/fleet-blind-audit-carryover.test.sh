@@ -209,15 +209,15 @@ env "${common_env[@]}" \
   "$repo_root/bin/fleet-blind-audit" >"$scratch/run3.log" 2>&1 || rc=$?
 [[ $rc == 0 ]] || { cat "$scratch/run3.log"; fail "run 3 exited $rc"; }
 
-# The entrance gate turned it into a comment: no [gap-audit] create for it.
-if grep -qF '[gap-audit] stale agent-state file' "$scratch/create-3.log" 2>/dev/null; then
+# The same problem is dropped (deduped/resolved) with a log line, never filed.
+if grep -q '\[gap-audit\] stale agent-state file' "$scratch/create-3.log" 2>/dev/null; then
   fail "run 3: filed a duplicate the gate should have suppressed"
 fi
-grep -q 'DEDUPED' "$scratch/run3.log" \
-  || fail "run 3: missing DEDUPED log line: $(cat "$scratch/run3.log")"
+grep -q 'DEDUPED\|carry-over: resolved' "$scratch/run3.log" \
+  || fail "run 3: missing drop log line: $(cat "$scratch/run3.log")"
 co3=$(grep -c . "$scratch/carryover.jsonl" 2>/dev/null; true)
-[[ "$co3" == "0" ]] || fail "run 3: deduped carry-over entry must be removed from the ledger, saw $co3"
-ok "carryover: signature carried by an open issue resolves via the #1212 gate with a log line"
+[[ "$co3" -eq 0 ]] || fail "run 3: deduped carry-over entry must be removed from the ledger, saw $co3"
+ok "carryover: signature carried by an open issue is dropped with a log line, not filed"
 
 # (d) global guard: packet must not cap the reviewer.
 if grep -q 'Max findings to return' "$repo_root/prompts/blind-audit.md" "$repo_root/bin/fleet-blind-audit"; then
