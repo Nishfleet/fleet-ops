@@ -43,11 +43,12 @@ on_exit(){ local rc=$?
 trap on_exit EXIT
 
 # --- protection dance -------------------------------------------------------
-prot_put(){ # $1 = allow_force_pushes bool; maps the GET shape onto the PUT shape
-  jq --argjson afp "$1" '{
+prot_put(){ # $1 = allow_force_pushes bool, $2 = enforce_admins override (optional); GET shape -> PUT shape
+  local ea="${2:-}"; [[ -n $ea ]] || ea=$(jq '.enforce_admins.enabled' "$PROT_JSON")
+  jq --argjson afp "$1" --argjson ea "$ea" '{
     required_status_checks:(.required_status_checks|if .==null then null
       else {strict,checks:(.checks//(.contexts|map({context:.})))} end),
-    enforce_admins:.enforce_admins.enabled,
+    enforce_admins:$ea,
     required_pull_request_reviews:(.required_pull_request_reviews|if .==null then null else {
       dismiss_stale_reviews,require_code_owner_reviews,required_approving_review_count,
       require_last_push_approval:(.require_last_push_approval//false),
@@ -72,15 +73,17 @@ ruleset_put(){ # $1 = active|disabled; PUT = fetched body's writable fields, enf
     |from_entries|.enforcement=$e' "$RULES_JSON" \
     | gh api -X PUT "repos/$REPO/rulesets/$RULESET" --input - >/dev/null
 }
-protect_off(){ DISABLED=1; prot_put true; ruleset_put disabled
-  log "protection relaxed: allow_force_pushes=true, ruleset $RULESET disabled"; }
+protect_off(){ DISABLED=1; prot_put true false; ruleset_put disabled
+  log "protection relaxed: allow_force_pushes=true, enforce_admins=false (required checks would decline a direct admin push), ruleset $RULESET disabled"; }
 protect_on(){ prot_put false; ruleset_put active; DISABLED=0
   local afp enf
   afp=$(gh api "repos/$REPO/branches/main/protection" --jq .allow_force_pushes.enabled)
   enf=$(gh api "repos/$REPO/rulesets/$RULESET" --jq .enforcement)
-  if [[ "$afp" != "false" || "$enf" != "active" ]]; then
-    log "LOUD: restore verify failed afp=$afp enf=$enf"; return 1; fi
-  log "protection restored: allow_force_pushes=false, ruleset active (GET-verified)"; }
+  local ea_want ea_now; ea_want=$(jq -r '.enforce_admins.enabled' "$PROT_JSON")
+  ea_now=$(gh api "repos/$REPO/branches/main/protection" --jq .enforce_admins.enabled)
+  if [[ "$afp" != "false" || "$enf" != "active" || "$ea_now" != "$ea_want" ]]; then
+    log "LOUD: restore verify failed afp=$afp enf=$enf enforce_admins=$ea_now(want $ea_want)"; return 1; fi
+  log "protection restored: allow_force_pushes=false, enforce_admins=$ea_now, ruleset active (GET-verified)"; }
 
 # --- refspec collection -----------------------------------------------------
 collect_refspecs(){ # $1 = git dir, stdin = open-PR head branch names
@@ -131,8 +134,10 @@ stage2(){ # fresh mirror + snapshots + known-SHA check
   rm -rf "$MIRROR"
   git clone --mirror "https://github.com/$REPO.git" "$MIRROR" >>"$LOG" 2>&1 || die "mirror clone failed"
   git -C "$MIRROR" for-each-ref --format='%(refname) %(objectname)' | sort >"$LOGROOT/refs-before.txt"
-  if [[ ! -d $BEFORE ]]; then cp -a "$MIRROR" "$BEFORE"; log "rollback snapshot -> $BEFORE"
-  else log "keeping existing rollback snapshot $BEFORE"; fi
+  if git -C "$MIRROR" log refs/heads/main --format='%ae%n%ce' | grep -Fqx "$BAD"; then
+    rm -rf "$BEFORE"; cp -a "$MIRROR" "$BEFORE"; log "rollback snapshot refreshed -> $BEFORE (main not yet rewritten)"
+  elif [[ -d $BEFORE ]]; then log "keeping rollback snapshot $BEFORE (main already rewritten)"
+  else cp -a "$MIRROR" "$BEFORE"; log "rollback snapshot -> $BEFORE"; fi
   TREE_BEFORE=$(git -C "$MIRROR" rev-parse 'refs/heads/main^{tree}')
   COUNT_BEFORE=$(git -C "$MIRROR" rev-list --count refs/heads/main)
   git -C "$MIRROR" log refs/heads/main --format='%H%x09%ae%x09%ce' \
@@ -152,9 +157,12 @@ stage2(){ # fresh mirror + snapshots + known-SHA check
       die "bad-email commits on main are not the 4 known SHAs: $(tr '\n' ' ' <"$LOGROOT/bad-main.txt")"; fi
     log "stage2 ok — tree=$TREE_BEFORE commits=$COUNT_BEFORE bad-main=4(known) bad-all-refs=$(wc -l <"$LOGROOT/bad-all.txt")"
   else
+    # Old SHAs stay reachable via refs/pull/* and untouched stale branches; the
+    # invariant is "not an ancestor of main", not "does not resolve".
     for s in $KNOWN_SHORT; do
-      if git -C "$MIRROR" rev-parse --verify --quiet "$s^{commit}" >/dev/null; then
-        die "main clean of $BAD yet $s still resolves"; fi
+      if git -C "$MIRROR" rev-parse --verify --quiet "$s^{commit}" >/dev/null \
+         && git -C "$MIRROR" merge-base --is-ancestor "$s" refs/heads/main 2>/dev/null; then
+        die "main clean of $BAD yet $s is still an ancestor of main"; fi
     done
     ALREADY=1; log "stage2 — main already clean of $BAD (idempotent re-run)"
   fi; }
@@ -220,6 +228,26 @@ stage4(){ # relax protection, force-push, restore
   protect_on || die "protection restore failed"
   log "stage4 ok — pushed ${#rs[@]} refs, protection restored"; }
 
+# --- eventual-consistency polls (fleet-ops#5385 live run) -------------------
+# GitHub lags cross-ref effects: after the rename-back, .default_branch and the
+# re-attached classic protection on main can be stale for seconds. Poll before
+# declaring failure so one healthy run is not failed by a lag.
+poll_default_branch(){ # poll default_branch until it is "main" (12 tries, 5s apart)
+  local i db
+  for ((i=1; i<=12; i++)); do
+    db=$(gh api "repos/$REPO" --jq .default_branch)
+    if [[ $db == "main" ]]; then return 0; fi
+    ((i<12)) && { log "poll: .default_branch=$db (want main), retry $i/11"; sleep 5; }
+  done; return 1
+}
+poll_protection_present(){ # poll the classic protection GET on main (12 tries, 5s apart)
+  local i
+  for ((i=1; i<=12; i++)); do
+    if gh api "repos/$REPO/branches/main/protection" --jq .url >/dev/null 2>&1; then return 0; fi
+    ((i<12)) && { log "poll: main protection not visible yet, retry $i/11"; sleep 5; }
+  done; return 1
+}
+
 stage5(){ # cache bust: rename main away and back
   if ((CACHEBUST==0)); then log "stage5 skipped (--no-cachebust)"; return; fi
   if ((DRY)); then log "stage5 dry-run: would rename main->main-rewrite-cachebust, wait 60s, rename back"; return; fi
@@ -228,10 +256,8 @@ stage5(){ # cache bust: rename main away and back
   sleep 60
   gh api -X POST "repos/$REPO/branches/main-rewrite-cachebust/rename" -f new_name=main >/dev/null \
     || die "rename back failed"
-  if [[ $(gh api "repos/$REPO" --jq .default_branch) != "main" ]]; then
-    die "default branch not main after rename-back"; fi
-  gh api "repos/$REPO/branches/main/protection" --jq .url >/dev/null 2>&1 \
-    || die "protection missing on main after rename-back"
+  poll_default_branch || die "default branch not main after rename-back (12 polls)"
+  poll_protection_present || die "protection missing on main after rename-back (12 polls)"
   log "stage5 ok — default branch main, protection present"; }
 
 stage6(){ # reseed the worker checkout
