@@ -478,6 +478,22 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-deploy-quality\.test\.sh"?
   || fail "fleet-deploy-quality.test.sh must not be a known orphan (fleet-ops#2902)"
 ok "fleet-deploy-quality.test.sh is pinned in the P14 reachable set (fleet-ops#2902)"
 
+# fleet-ops#5140: hard-pin the host line for fleet-product-deploy-0509.
+# The test is hosted from tests/ci-standards-audit.test.sh (already listed
+# in ci.yml) — the worker App cannot push .github/workflows/** so the host
+# is the only path. This named pin is class-prevention so a future drop of
+# the host line cannot park the test on known_orphans to silence the
+# generic $bad[] message — it fails by name here first, same shape as
+# every other hosted test above.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-product-deploy-0509\.test\.sh"?' \
+  "$here/ci-standards-audit.test.sh" \
+  || fail "ci-standards-audit.test.sh must bash-invoke fleet-product-deploy-0509.test.sh (fleet-ops#5140)"
+[[ -n "${reachable[fleet-product-deploy-0509.test.sh]:-}" ]] \
+  || fail "fleet-product-deploy-0509.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#5140)"
+[[ -z "${known_orphan_set[fleet-product-deploy-0509.test.sh]:-}" ]] \
+  || fail "fleet-product-deploy-0509.test.sh must not be a known orphan (fleet-ops#5140)"
+ok "fleet-product-deploy-0509.test.sh is pinned in the P14 reachable set (fleet-ops#5140)"
+
 # fleet-ops#2902 (PR #2900 follow-up): hard-pin the host line for
 # fleet-issue-file-close-duplicates. The test landed on main in PR #2900
 # (the #2762 close-duplicates drain fix) without a ci.yml listing or a
