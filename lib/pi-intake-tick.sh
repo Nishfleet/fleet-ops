@@ -1730,7 +1730,15 @@ elif (( ${_repair_rung_product_reserve:-0} == 1 )) && [[ -n "${_rung_clear_seat:
 elif (( usable_light_slots <= 0 )) && [[ -n "$heavy_seat" || -n "${_rung_clear_seat:-}" ]]; then
     slots=1
 elif (( usable_light_slots < slots )); then
-    echo "usable seat slots $usable_light_slots < capacity slots $slots; claiming at most $usable_light_slots this tick (fleet-ops#3732)"
+    # fleet-ops#4723: same line as the #3732 clamp, plus which seats are
+    # walled and until when, so the next run does not re-derive a census.
+    # seat_walled_breakdown is fail-open (empty) when the helper is absent.
+    _walled=$(seat_walled_breakdown 2>/dev/null || true)
+    if [[ -n "$_walled" ]]; then
+        echo "usable seat slots $usable_light_slots < capacity slots $slots; claiming at most $usable_light_slots this tick (fleet-ops#3732); walled: $_walled"
+    else
+        echo "usable seat slots $usable_light_slots < capacity slots $slots; claiming at most $usable_light_slots this tick (fleet-ops#3732)"
+    fi
     slots=$usable_light_slots
 fi
 

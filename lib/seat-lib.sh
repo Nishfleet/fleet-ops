@@ -1590,13 +1590,142 @@ _tick_spawn_count() {
     echo "$n"
 }
 
-# Return 0 (exceeded) if the provider has hit its per-tick spawn cap, 1
-# (not exceeded) otherwise. A provider without SEAT_TICK_SPAWN_CAP or with
-# cap=0 is unlimited. Args: provider
-tick_spawn_cap_exceeded() {
+# fleet-ops#4723: true (return 0) if another provider still has a usable
+# seat this pick could fall through to. The #3690 burst guard stays in
+# force whenever a fallback exists; the AIMD ride below is only for the
+# sole-usable-provider starve. Does not call pick_seat (re-entrancy).
+_tick_spawn_has_other_usable() {
+    local skip="$1" p m pcap
+    local _SEAT_USABLE_SILENT=1
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    while IFS=$'\t' read -r p m _; do
+        [[ -n "$p" && -n "$m" && "$p" != "$skip" ]] || continue
+        pcap="${SEAT_PROVIDER_CAP[$p]:-0}"
+        [[ "$pcap" =~ ^[0-9]+$ ]] || pcap=0
+        (( pcap > 0 )) || continue
+        [[ -z "${SEAT_CAP_ZERO_CLASS_INTENTIONAL[$p]:-}" ]] || continue
+        if seat_usable "$p" "$m"; then
+            return 0
+        fi
+    done < <(enumerate_seats)
+    return 1
+}
+
+# fleet-ops#4723: true if watch.log shows this provider dying rc=143 or
+# rc=124 in the last 60s. The #3690 burst (5 simultaneous SIGTERM/timeout
+# deaths) is the veto: ride AIMD only when those deaths are absent.
+_provider_recent_fast_death() {
+    local p="$1"
+    local f="$LOG_FILE"
+    [[ -n "$p" && -f "$f" ]] || return 1
+    local now
+    now=$(date -u +%s)
+    awk -v p="$p" -v now="$now" '
+        index($0, p "/") && ($0 ~ /rc=143/ || $0 ~ /rc=124/) {
+            ts = $0
+            sub(/^\[/, "", ts)
+            sub(/\].*/, "", ts)
+            cmd = "date -u -d \"" ts "\" +%s"
+            cmd | getline s
+            close(cmd)
+            if (s + 0 > 0 && (now - s) <= 60 && (now - s) >= 0) { found = 1; exit }
+        }
+        END { exit found ? 0 : 1 }
+    ' "$f"
+}
+
+# fleet-ops#4723: true if AIMD has actually admitted a raise (last_result
+# probe, or learned_cap above the floor/2 ramp seed). A fresh ramp seed at
+# floor/2 is NOT a raise — that is the #3690 slow-start and must keep the
+# fixed tick_spawn_cap.
+_aimd_has_admitted_raise() {
+    local p="$1" lr lc declared floor
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    if (( ! _seat_learned_loaded )); then load_learned_caps || true; fi
+    lr=""
+    if [[ -f "$LEARNED_CAPS_JSON" ]]; then
+        lr=$(jq -r --arg p "$p" '.providers[$p].last_result // empty' "$LEARNED_CAPS_JSON" 2>/dev/null || true)
+    fi
+    [[ "$lr" == "probe" ]] && return 0
+    lc="${LEARNED_CAP[$p]:-}"
+    declared=$(provider_cap "$p")
+    [[ "$declared" =~ ^[0-9]+$ ]] || return 1
+    floor=$(( declared / 2 ))
+    (( floor < 1 )) && floor=1
+    [[ "$lc" =~ ^[0-9]+$ ]] && (( lc > floor )) && return 0
+    return 1
+}
+
+# fleet-ops#4723: ride the live AIMD ceiling instead of the fixed
+# tick_spawn_cap when this is the only usable provider, AIMD has admitted
+# a raise, and there is no recent fast death. Must not raise an
+# intentional_cap_zero seat and must not drop the burst guard when a
+# fallback provider exists (#3690).
+_tick_spawn_ride_aimd() {
+    local p="$1"
+    local cap="${SEAT_TICK_SPAWN_CAP[$p]:-0}"
+    [[ "$cap" =~ ^[0-9]+$ ]] || cap=0
+    (( cap > 0 )) || return 1
+    [[ -z "${SEAT_CAP_ZERO_CLASS_INTENTIONAL[$p]:-}" ]] || return 1
+    if _tick_spawn_has_other_usable "$p"; then return 1; fi
+    if _provider_recent_fast_death "$p"; then return 1; fi
+    if provider_has_recent_error "$p"; then return 1; fi
+    _aimd_has_admitted_raise "$p"
+}
+
+# Echo the per-tick cap pick_seat honours for this provider. Default is
+# tick_spawn_cap from seat-caps.json. When _tick_spawn_ride_aimd holds,
+# the live AIMD ceiling (effective_provider_cap) is used if it is higher.
+_tick_spawn_effective_cap() {
     local p="$1"
     if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
     local cap="${SEAT_TICK_SPAWN_CAP[$p]:-0}"
+    [[ "$cap" =~ ^[0-9]+$ ]] || cap=0
+    if _tick_spawn_ride_aimd "$p"; then
+        local aimd
+        aimd=$(effective_provider_cap "$p")
+        [[ "$aimd" =~ ^[0-9]+$ ]] || aimd=0
+        (( aimd > cap )) && cap=$aimd
+    fi
+    echo "$cap"
+}
+
+# Compact "p/m until=ISO" list of seats whose usable_at or bench_until is
+# still in the future. Intake prints this on the #3732 line so the next
+# run can judge supply without a 66-file census (fleet-ops#4723).
+seat_walled_breakdown() {
+    local p m f ua bu wall
+    local -a parts=()
+    while IFS=$'\t' read -r p m _; do
+        [[ -n "$p" && -n "$m" ]] || continue
+        f=$(seat_ledger_path "$p" "$m")
+        [[ -f "$f" ]] || continue
+        IFS=$'\x1f'$'\n' read -r ua bu < <(
+            jq -r '[(.usable_at//""),(.bench_until//"")] | join("\u001f")' "$f" 2>/dev/null || true
+        )
+        wall="$ua"
+        [[ -z "$wall" ]] && wall="$bu"
+        [[ -n "$wall" ]] && _seat_in_future "$wall" || continue
+        parts+=("$p/$m until=$wall")
+    done < <(enumerate_seats)
+    (( ${#parts[@]} > 0 )) || return 0
+    local -a shown=("${parts[@]:0:6}")
+    local i
+    printf '%s' "${shown[0]}"
+    for (( i = 1; i < ${#shown[@]}; i++ )); do
+        printf '; %s' "${shown[i]}"
+    done
+}
+
+# Return 0 (exceeded) if the provider has hit its per-tick spawn cap, 1
+# (not exceeded) otherwise. A provider without SEAT_TICK_SPAWN_CAP or with
+# cap=0 is unlimited. fleet-ops#4723: the cap is the AIMD ceiling when this
+# is the sole usable provider and it is demonstrably healthy. Args: provider
+tick_spawn_cap_exceeded() {
+    local p="$1"
+    if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
+    local cap
+    cap=$(_tick_spawn_effective_cap "$p")
     [[ "$cap" =~ ^[0-9]+$ ]] || cap=0
     (( cap > 0 )) || return 1
     local n
