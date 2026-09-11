@@ -922,10 +922,16 @@ fi
 # --- findings empty? -------------------------------------------------------
 findings_count=$(printf '%s' "$findings" | jq '(.findings // .) | length')
 if [ "$findings_count" -eq 0 ]; then
-    log "no findings produced by reviewer"
-    update_plan_stamp "last-blind-audit-run" "$NOW_ISO (completed, 0 findings)"
-    # Still success: an empty sweep is a valid outcome.
-    exit 0
+    if [ ! -s "$CARRYOVER_FILE" ]; then
+        log "no findings produced by reviewer"
+        update_plan_stamp "last-blind-audit-run" "$NOW_ISO (completed, 0 findings)"
+        # Still success: an empty sweep is a valid outcome.
+        exit 0
+    fi
+    # Carry-over entries are processed even when this run produced no new
+    # findings (Nish 2026-09-11: backlog never waits for a finding).
+    log "no new findings from reviewer; processing carry-over ledger"
+    findings='{"findings":[]}'
 fi
 
 log "findings count: $findings_count"
@@ -956,16 +962,11 @@ body_file=$(mktemp)
 trap 'rm -f "$panel_input" "$body_file"' EXIT
 
 # Pre-fetch open gap-audit issues and recent merges once for the panel.
-open_gap_issues=$(gh issue list -R "$REPO" -l gap-audit --state open --json number,title -L 100 2>/dev/null || echo '[]')
-recent_merged=$(gh pr list -R "$REPO" --state merged --json number,title -L 50 2>/dev/null || echo '[]')
-
-panel_input=$(mktemp)
-body_file=$(mktemp)
-trap 'rm -f "$panel_input" "$body_file"' EXIT
-
-# Pre-fetch open gap-audit issues and recent merges once for the panel.
-open_gap_issues=$(gh issue list -R "$REPO" -l gap-audit --state open --json number,title -L 100 2>/dev/null || echo '[]')
-recent_merged=$(gh pr list -R "$REPO" --state merged --json number,title -L 50 2>/dev/null || echo '[]')
+# A gh failure that prints nothing still yields a valid '[]' for jq.
+open_gap_issues=$(gh issue list -R "$REPO" -l gap-audit --state open --json number,title -L 100 2>/dev/null || true)
+[ -n "$open_gap_issues" ] || open_gap_issues='[]'
+recent_merged=$(gh pr list -R "$REPO" --state merged --json number,title -L 50 2>/dev/null || true)
+[ -n "$recent_merged" ] || recent_merged='[]'
 
 # Carry-over bookkeeping. Resolved signatures are collected here and the
 # ledger is rewritten after the loop: a resolved entry (filed, dedupe-hit,
@@ -1138,7 +1139,10 @@ while IFS= read -r entry; do
 done < <(carryover_load)
 
 # New findings this run, ranked blocker>critical>high>medium>low then rank.
-findings=$(printf '%s\n' "${findings:-{\"findings\":[]}}" | jq -c '
+# The sorting is best-effort: an invalid findings payload keeps its original
+# order and still goes through the same cap/carry-over path.
+if [ -n "${findings:-}" ]; then
+    sorted=$(printf '%s\n' "$findings" | jq -c '
     def sevrank($s):
         if $s == "blocker" or $s == "critical" then 0
         elif $s == "high" then 1
@@ -1149,7 +1153,11 @@ findings=$(printf '%s\n' "${findings:-{\"findings\":[]}}" | jq -c '
         .findings | sort_by(
           [sevrank(.severity), ((.rank // 9999) | if type == "number" then . else (tonumber? // 9999) end)])
       )
-    }' 2>/dev/null || printf '%s' "$findings")
+    }' 2>/dev/null || true)
+    if printf '%s' "$sorted" | jq -e . >/dev/null 2>&1; then
+        findings=$sorted
+    fi
+fi
 
 while IFS= read -r finding; do
     [ -n "$finding" ] || continue
@@ -1174,7 +1182,7 @@ carryover_total=0
     if [ -s "$VERDICTS_LOG" ]; then
         printf '| Rank | Verdict | Issue or reason |\n'
         printf '|---|---|---|\n'
-        jq -r '"| \\(.rank) | \\(.verdict) | \\(if (.issue // "") != "" then .issue else (.reason // "—") end) |"' "$VERDICTS_LOG"
+        jq -r '"| \(.rank) | \(.verdict) | \(if (.issue // "") != "" then .issue else (.reason // "—") end) |"' "$VERDICTS_LOG"
         printf '\n'
     fi
     printf 'Filed: %s (cap %s). Unfiled PASS findings: %s. Carry-over backlog: %s.\n' \
