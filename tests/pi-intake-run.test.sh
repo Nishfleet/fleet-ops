@@ -194,3 +194,13 @@ bash "$here/pi-intake-tick-blocked-filter-stale.test.sh"
 # intakes. ci.yml lists this file, so the drill runs here instead of a
 # new workflow line (workers cannot edit .github/workflows/ci.yml).
 bash "$here/pi-intake-trigger-no-block.test.sh"
+
+# --- 19. fleet-ops#5385 trigger honours enrolment (CI hook) ------------
+# tests/pi-intake-trigger-enrolment.test.sh locks the intake-config gate
+# in bin/pi-intake-trigger: a trigger file for a repo absent from
+# .repos[].name of the live intake-repos.json must be skipped (fail-closed
+# when the config is unreadable), so a queued trigger cannot restart a
+# deferred repo during the 0509 rewrite window. ci.yml lists this file, so
+# the drill runs here instead of a new workflow line (workers cannot edit
+# .github/workflows/ci.yml).
+bash "$here/pi-intake-trigger-enrolment.test.sh"
