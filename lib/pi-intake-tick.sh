@@ -341,14 +341,29 @@ fi
 # gate (fleet-ops#1350) below. When the core budget is nearly exhausted, those
 # calls fail or burn seats on retries, stalling dispatch. This pre-check runs
 # BEFORE the first gh call and skips the whole tick (exit 0) when headroom is
-# low. It reads the SAME side-car state file the exporter writes every 60s
-# (agent-state/pi-intake/gh-rate-limit.json) — a cached result, never a fresh
-# gh api call that would itself consume quota. The tick runs every 5 min, so
-# skipping one tick is safe; the next tick re-checks. Thresholds: skip when
-# remaining < 500 OR headroom < 10% (remaining/limit). A missing or stale
-# state file fails OPEN (the throttle is a soft gate, not a blocker).
+# low. It reads the SAME side-car state file the exporter's 5-min tick
+# writes (agent-state/pi-intake/gh-rate-limit.json) — a cached result, never a
+# fresh gh api call that would itself consume quota. The tick runs every
+# 5 min, so skipping one tick is safe; the next tick re-checks. Thresholds:
+# skip when remaining < 500 OR headroom < 10% (remaining/limit). A missing or
+# stale state file fails OPEN (the throttle is a soft gate, not a blocker).
+# fleet-ops#5489: a fail-open is never SILENT. A stale or missing state file
+# here is exactly what happened on 2026-09-11 17:00-17:20Z: the exporter's
+# fresh-write cadence is its 5-min tick, so the old 120s max age left the
+# state stale between exporter runs (observed age=137s); the tick failed
+# open, the first gh call burned an already-exhausted budget, and the
+# starvation was logged only to the unit journal. Two changes: (a) max-age
+# defaults 120 -> 420 (two exporter periods + slack, overridable), so the
+# pre-check reads its OWN shared cache instead of failing open on exporter
+# cadence; (b) every fail-open and every skip writes ONE deduped LOUD line
+# to the judges' triage and carries the `gh_app: remaining=<n> reset_in=<m>`
+# field on its stdout line (lib/gh-budget-guard.sh, shared with the tier-1
+# reserve gate).
+# shellcheck disable=SC1091
+GUARD_LIB="${PI_INTAKE_GH_BUDGET_GUARD:-$(dirname "${BASH_SOURCE[0]}")/gh-budget-guard.sh}"
+[[ -r "$GUARD_LIB" ]] && source "$GUARD_LIB"
 gh_rl_pre_path="${PI_INTAKE_GH_RATE_LIMIT_STATE:-/home/nish/workspaces/agent-state/pi-intake/gh-rate-limit.json}"
-gh_rl_pre_max_age="${PI_INTAKE_GH_RATE_LIMIT_MAX_AGE:-120}"
+gh_rl_pre_max_age="${PI_INTAKE_GH_RATE_LIMIT_MAX_AGE:-420}"
 gh_rl_pre_skip_min="${PI_INTAKE_GH_RATE_LIMIT_SKIP_MIN:-500}"
 gh_rl_pre_skip_pct="${PI_INTAKE_GH_RATE_LIMIT_SKIP_PCT:-10}"
 if [[ -r "$gh_rl_pre_path" ]]; then
@@ -360,11 +375,14 @@ if [[ -r "$gh_rl_pre_path" ]]; then
         # skipped every tick. Fall back to top-level for old sidecars.
         _gh_rl_pre_remaining=$(printf '%s' "$_gh_rl_pre_json" | jq -r '.resources.core.remaining // .remaining // 0' 2>/dev/null) || _gh_rl_pre_remaining=0
         _gh_rl_pre_limit=$(printf '%s' "$_gh_rl_pre_json" | jq -r '.resources.core.limit // .limit // 0' 2>/dev/null) || _gh_rl_pre_limit=0
+        _gh_rl_pre_reset=$(printf '%s' "$_gh_rl_pre_json" | jq -r '.resources.core.reset // .reset // 0' 2>/dev/null) || _gh_rl_pre_reset=0
         _gh_rl_pre_fetched=$(printf '%s' "$_gh_rl_pre_json" | jq -r '.fetched_at // 0' 2>/dev/null) || _gh_rl_pre_fetched=0
         _gh_rl_pre_now=$(date +%s)
         _gh_rl_pre_age=$(( _gh_rl_pre_now - ${_gh_rl_pre_fetched%.*} ))
         if (( _gh_rl_pre_age > gh_rl_pre_max_age )); then
-            echo "gh rate-limit pre-check state stale (age=${_gh_rl_pre_age}s > max=${gh_rl_pre_max_age}s); failing open — gate: gh_rate_limit pre-check stale"
+            _gh_rl_pre_app=$(gh_budget_line "${_gh_rl_pre_remaining:-unknown}" "${_gh_rl_pre_reset:-}" 2>/dev/null || printf 'gh_app: remaining=unknown reset_in=unknown')
+            gh_budget_loud "GH rate-limit pre-check state stale (age=${_gh_rl_pre_age}s > max=${gh_rl_pre_max_age}s); failing open — the tick proceeds with no budget visibility and risks burning an already-exhausted App budget (fleet-ops#5489). ${_gh_rl_pre_app}"
+            echo "gh rate-limit pre-check state stale (age=${_gh_rl_pre_age}s > max=${gh_rl_pre_max_age}s); failing open — gate: gh_rate_limit pre-check stale; ${_gh_rl_pre_app}"
         else
             _gh_rl_pre_headroom=0
             if (( _gh_rl_pre_limit > 0 )); then
@@ -387,6 +405,7 @@ if [[ -r "$gh_rl_pre_path" ]]; then
                     _rl_skip_prev="${_rl_skip_prev:-0}"
                 fi
                 _rl_skip_new=$(( _rl_skip_prev + 1 ))
+                _gh_rl_skip_reset_in=$(printf '%s' "${_gh_rl_pre_reset:-0}" | awk -v n="$(date +%s)" '{d=$1-n; if (d<0) d=0; print d}')
                 mkdir -p "$(dirname "$_rl_skip_prom")" 2>/dev/null || true
                 if {
                     printf '# HELP fleet_intake_tick_skipped_rate_limit_total Cumulative number of intake ticks skipped because GitHub API rate-limit headroom was low (fleet-ops#2523).
@@ -397,15 +416,18 @@ if [[ -r "$gh_rl_pre_path" ]]; then
                 } > "$_rl_skip_prom.tmp" 2>/dev/null; then
                     mv "$_rl_skip_prom.tmp" "$_rl_skip_prom" 2>/dev/null || true
                 fi
-                echo "rate-limit headroom low, skipping intake tick (remaining=${_gh_rl_pre_remaining}/${_gh_rl_pre_limit}, headroom=${_gh_rl_pre_headroom}% < ${gh_rl_pre_skip_pct}% or < ${gh_rl_pre_skip_min}); skipped_total=$_rl_skip_new"
+                echo "rate-limit headroom low, skipping intake tick (remaining=${_gh_rl_pre_remaining}/${_gh_rl_pre_limit}, headroom=${_gh_rl_pre_headroom}% < ${gh_rl_pre_skip_pct}% or < ${gh_rl_pre_skip_min}); skipped_total=$_rl_skip_new; $(gh_budget_line "${_gh_rl_pre_remaining}" "${_gh_rl_pre_reset:-}")"
+                gh_budget_loud "intake tick skipped on rate-limit headroom — the App budget cannot dispatch more claims this window (remaining=${_gh_rl_pre_remaining}/${_gh_rl_pre_limit}, reset_in=${_gh_rl_skip_reset_in}s, skipped_total=${_rl_skip_new}). An idle fleet with a full agent-ready queue is a NAMED budget fault, not a mystery (fleet-ops#5489)."
                 exit 0
             fi
         fi
     else
-        echo "gh rate-limit pre-check state file unreadable or empty; failing open — gate: gh_rate_limit pre-check missing"
+        echo "gh rate-limit pre-check state file unreadable or empty; failing open — gate: gh_rate_limit pre-check missing; gh_app: remaining=unknown reset_in=unknown"
+        gh_budget_loud "GH rate-limit pre-check state file unreadable or empty; failing open — the tick proceeds with no budget visibility and risks burning an exhausted App budget (fleet-ops#5489); gh_app: remaining=unknown reset_in=unknown"
     fi
 else
-    echo "gh rate-limit pre-check state file missing; failing open — gate: gh_rate_limit pre-check missing"
+    gh_budget_loud "GH rate-limit pre-check state file missing; failing open — the tick proceeds with no budget visibility and risks burning an exhausted App budget (fleet-ops#5489); gh_app: remaining=unknown reset_in=unknown"
+    echo "gh rate-limit pre-check state file missing; failing open — gate: gh_rate_limit pre-check missing; gh_app: remaining=unknown reset_in=unknown"
 fi
 
 # Step 1: list ready work
@@ -1523,7 +1545,7 @@ load_seat_caps || true
 # fetched_at age check (120s = 2x the 60s TTL) catches a stale file
 # without preventing the first run after a fresh start.
 gh_rl_path="${PI_INTAKE_GH_RATE_LIMIT_STATE:-/home/nish/workspaces/agent-state/pi-intake/gh-rate-limit.json}"
-gh_rl_max_age="${PI_INTAKE_GH_RATE_LIMIT_MAX_AGE:-120}"
+gh_rl_max_age="${PI_INTAKE_GH_RATE_LIMIT_MAX_AGE:-420}"
 if [[ -r "$gh_rl_path" ]]; then
     _gh_rl_json=$(cat "$gh_rl_path" 2>/dev/null) || _gh_rl_json=
     if [[ -n "$_gh_rl_json" ]]; then
@@ -1532,21 +1554,28 @@ if [[ -r "$gh_rl_path" ]]; then
         _gh_rl_now=$(date +%s)
         _gh_rl_age=$(( _gh_rl_now - ${_gh_rl_fetched%.*} ))
         if (( _gh_rl_age > gh_rl_max_age )); then
-            echo "gh rate-limit state stale (age=${_gh_rl_age}s > max=${gh_rl_max_age}s); ignoring — gate: gh_rate_limit stale"
+            _gh_rl_stale_remaining=$(printf '%s' "$_gh_rl_json" | jq -r '.resources.core.remaining // .remaining // "unknown"' 2>/dev/null) || _gh_rl_stale_remaining="unknown"
+            _gh_rl_stale_reset=$(printf '%s' "$_gh_rl_json" | jq -r '.resources.core.reset // .reset // 0' 2>/dev/null) || _gh_rl_stale_reset=0
+            _gh_rl_app=$(gh_budget_line "${_gh_rl_stale_remaining:-unknown}" "${_gh_rl_stale_reset:-}" 2>/dev/null || printf 'gh_app: remaining=unknown reset_in=unknown')
+            gh_budget_loud "GH rate-limit mid-tick gate state stale (age=${_gh_rl_age}s > max=${gh_rl_max_age}s); ignoring the gate — the tick proceeds with no budget visibility (fleet-ops#5489). ${_gh_rl_app}"
+            echo "gh rate-limit state stale (age=${_gh_rl_age}s > max=${gh_rl_max_age}s); ignoring — gate: gh_rate_limit stale; ${_gh_rl_app}"
         elif (( _gh_rl_low == 1 )); then
             _gh_rl_remaining=$(printf '%s' "$_gh_rl_json" | jq -r '.remaining // 0' 2>/dev/null) || _gh_rl_remaining=0
             _gh_rl_limit=$(printf '%s' "$_gh_rl_json" | jq -r '.limit // 0' 2>/dev/null) || _gh_rl_limit=0
             _gh_rl_reset=$(printf '%s' "$_gh_rl_json" | jq -r '.reset // 0' 2>/dev/null) || _gh_rl_reset=0
             _gh_rl_wait=$(( _gh_rl_reset - _gh_rl_now ))
             (( _gh_rl_wait < 0 )) && _gh_rl_wait=0
-            echo "gh rate-limit low (remaining=${_gh_rl_remaining}/${_gh_rl_limit}, resets in ${_gh_rl_wait}s); holding claims this tick — gate: gh_rate_limit low"
+            gh_budget_loud "GH rate-limit low mid-tick (remaining=${_gh_rl_remaining}/${_gh_rl_limit}, resets in ${_gh_rl_wait}s) — holding claims this window so claims do not race the reset (fleet-ops#5489)."
+            echo "gh rate-limit low (remaining=${_gh_rl_remaining}/${_gh_rl_limit}, resets in ${_gh_rl_wait}s); holding claims this tick — gate: gh_rate_limit low; $(gh_budget_line "${_gh_rl_remaining}" "${_gh_rl_reset:-}")"
             exit 0
         fi
     else
-        echo "gh rate-limit state file unreadable or empty; failing open — gate: gh_rate_limit missing"
+        echo "gh rate-limit state file unreadable or empty; failing open — gate: gh_rate_limit missing; gh_app: remaining=unknown reset_in=unknown"
+        gh_budget_loud "GH rate-limit mid-tick gate state file unreadable or empty; failing open — the tick claims with no budget visibility (fleet-ops#5489); gh_app: remaining=unknown reset_in=unknown" 2>/dev/null || true
     fi
 else
-    echo "gh rate-limit state file missing; failing open — gate: gh_rate_limit missing"
+    echo "gh rate-limit state file missing; failing open — gate: gh_rate_limit missing; gh_app: remaining=unknown reset_in=unknown"
+    gh_budget_loud "GH rate-limit mid-tick gate state file missing; failing open — the tick claims with no budget visibility (fleet-ops#5489); gh_app: remaining=unknown reset_in=unknown" 2>/dev/null || true
 fi
 
 # GitHub secondary rate-limit gate (fleet-ops#3445): the write loops below
