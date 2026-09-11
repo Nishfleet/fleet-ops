@@ -115,6 +115,10 @@ jobs:
         bash tests/pi-intake-tick-scout-on-empty.test.sh
         bash tests/blocked-reconcile-large-issue-json.test.sh
         bash tests/pi-intake-tick-land-or-close-park.test.sh
+        # fleet-ops#5048: park the protected + no-termination + no-claim-PR
+        # cell when a named user timer/service is active or a merged
+        # non-claim-branch PR delivered the work (live case #4891).
+        bash tests/pi-intake-tick-protected-delivered-park.test.sh
         bash tests/fleet-console-pi-utc.test.sh
         bash tests/pi-issue-run-session-error-feed.test.sh
         # Devin message rate limit = pause + in-session resume, never a worker
