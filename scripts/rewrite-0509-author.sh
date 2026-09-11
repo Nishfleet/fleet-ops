@@ -19,7 +19,7 @@ BAD=nishant345@users.noreply.github.com
 KNOWN_SHORT="bfa176df6 45be71f49 3a930dd53 df0cf8a47"
 LOGROOT="${REWRITE_0509_LOGROOT:-/home/nish/workspaces/agent-state/0509-history-rewrite}"
 WORK="$LOGROOT/work" MIRROR="$WORK/0509.git" BEFORE="$LOGROOT/0509.before.git"
-INTAKE_JSON="${REWRITE_0509_INTAKE_JSON:-/home/nish/workspaces/products/fleet-ops/config/intake-repos.json}"
+INTAKE_JSON="${REWRITE_0509_INTAKE_JSON:-/home/nish/workspaces/tooling/fleet-ops-deploy-clone/config/intake-repos.json}"
 SEED="${REWRITE_0509_SEED:-/home/nish/workspaces/products/0509}"
 PROT_JSON="$LOGROOT/protection-before.json" RULES_JSON="$LOGROOT/ruleset-$RULESET.json"
 DRY=0 ROLLBACK=0 SKIP_DRAIN=0 CACHEBUST=1 MAX_DRAIN=360
