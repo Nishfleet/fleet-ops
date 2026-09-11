@@ -251,6 +251,58 @@ print("OK: #2899 seat-corpse trio still clusters by content "
 PY
 ok "derived-signal floor corroboration guard (fleet-ops#5152)"
 
+# --- 6d. generic path keys earn no key bonus (fleet-ops#5198) --------------
+# Repo refs (`nishfleet/<repo>` inside `Nishfleet/<repo>#N`), bare CI dirs,
+# the worktree root, fractions (`3/3`) and rates (`activations/h`) all match
+# PATH_RE but carry no file identity — they must not reach shared_keys or
+# earn the +0.10 key bonus.
+python3 - "$lib" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("if", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+
+for noisy in (
+    "nishfleet/fleet-ops", "nishfleet/0509", "3/3", "10/19",
+    "activations/h", "requests/s",
+    "home/nish/workspaces/tooling/fleet-ops",
+    "home/nish/workspaces/agent-worktrees/issue-fleet-ops-5198",
+    ".github/scripts", "fleet/ci", "origin/main",
+):
+    got = m.key_paths(f"see {noisy} here")
+    assert got == set(), (noisy, got)
+
+# real file/unit identity still counts
+kept = m.key_paths(
+    "bin/fleet-issue-file, lib/issue-file.py, pi-issue@x-1.service, "
+    "home/nish/workspaces/tooling/fleet-ops/lib/issue-file.py"
+)
+for want in (
+    "bin/fleet-issue-file", "lib/issue-file.py", "pi-issue@x-1.service",
+    "home/nish/workspaces/tooling/fleet-ops/lib/issue-file.py",
+):
+    assert want in kept, (want, kept)
+
+# the issue's verify pair: bodies sharing only the repo ref and a fraction
+# get key_bonus = 0 (shared_keys empty, score is token overlap only)
+d = m.score_pair(
+    "alpha", "see nishfleet/fleet-ops#1, ratio 3/3",
+    "omega", "see nishfleet/fleet-ops#2, ratio 3/3",
+)
+assert d["shared_keys"] == [], d["shared_keys"]
+assert d["specific_shared_keys"] == [], d["specific_shared_keys"]
+assert d["score"] == d["token_overlap_max"], d
+
+# positive control: a shared real path still earns the bonus
+e = m.score_pair(
+    "alpha", "touches bin/fleet-heartbeat-tier1",
+    "omega", "bin/fleet-heartbeat-tier1 drifts",
+)
+assert e["specific_shared_keys"] == ["bin/fleet-heartbeat-tier1"], e
+assert e["score"] > e["token_overlap_max"], e
+print("OK: generic path keys filtered, real keys still earn the bonus")
+PY
+ok "generic-path key filter (fleet-ops#5198)"
+
 # --- 7. fake gh: comment vs create -----------------------------------------
 mkdir -p "$scratch/fakebin"
 cat >"$scratch/fakebin/gh" <<'GH'
