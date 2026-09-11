@@ -154,6 +154,10 @@ jobs:
         bash tests/pi-scout-packet-assembly.test.sh
         bash tests/fleet-heartbeat-low-water-mark.test.sh
         bash tests/fleet-blind-audit.test.sh
+        # fleet-ops#5475: new blind-audit test files must run in P14 (orphan
+        # tests fail the workflow check otherwise).
+        bash tests/fleet-blind-audit-carryover.test.sh
+        bash tests/fleet-blind-audit-backfill.test.sh
         bash tests/fleet-heartbeat-blind-audit-trigger.test.sh
         bash tests/mass-close-guard.test.sh
         bash tests/codex-orphan-reap.test.sh
