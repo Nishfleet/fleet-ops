@@ -4055,15 +4055,26 @@ def _read_waste_ratio():
 
 
 def _enrolled_seat_providers():
-    """Return the set of enrolled provider names (cap > 0 in seat-caps.json).
+    """Return the set of enrolled provider names.
 
     Enrollment is per-provider: a provider whose cap is 0 (dead decoys,
     deliberately-capped, money-only rows) is not a seat the fleet routes
     to, so it must not count in the seat_availability SLO numerator or
     denominator family. Returns None when the config is missing/unparseable
     (callers then report source-unavailable rather than guessing).
+
+    The live caps file is checked first so the seat_availability SLO
+    denominator matches pick_seat (same order as _resolve_seat_caps_path).
+    Repo checkouts stay as fallbacks for CI and other hosts without the
+    live file.
+
+    A provider with a positive provider cap whose models map is non-empty
+    and every model cap is zero is not enrolled: pick_seat skips every
+    row. Counting those providers as the SLO denominator is a phantom
+    unenrolled burn. An empty models map with a positive provider cap
+    still enrolls. A bare integer provider value is shorthand for that cap.
     """
-    for path in (SEAT_CAPS_DEFAULT, SEAT_CAPS_FALLBACK):
+    for path in (SEAT_CAPS_LIVE, SEAT_CAPS_DEFAULT, SEAT_CAPS_FALLBACK):
         try:
             data = json.loads(path.read_text())
         except (OSError, json.JSONDecodeError):
@@ -4073,11 +4084,38 @@ def _enrolled_seat_providers():
             continue
         enrolled = set()
         for prov, cfg in providers.items():
+            if isinstance(cfg, bool):
+                continue
+            if isinstance(cfg, (int, float)):
+                if cfg > 0:
+                    enrolled.add(prov)
+                continue
             if not isinstance(cfg, dict):
                 continue
             cap = cfg.get("cap", 0)
-            if isinstance(cap, (int, float)) and cap > 0:
-                enrolled.add(prov)
+            if isinstance(cap, bool) or not isinstance(cap, (int, float)) or cap <= 0:
+                continue
+            models = cfg.get("models")
+            if isinstance(models, dict) and models:
+                has_positive = False
+                for val in models.values():
+                    if isinstance(val, bool):
+                        continue
+                    if isinstance(val, (int, float)) and val > 0:
+                        has_positive = True
+                        break
+                    if isinstance(val, dict):
+                        raw = val.get("cap", 0)
+                        if (
+                            not isinstance(raw, bool)
+                            and isinstance(raw, (int, float))
+                            and raw > 0
+                        ):
+                            has_positive = True
+                            break
+                if not has_positive:
+                    continue
+            enrolled.add(prov)
         return enrolled if enrolled else None
     return None
 

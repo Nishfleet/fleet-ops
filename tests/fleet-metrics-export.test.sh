@@ -997,6 +997,10 @@ m.KEYSTONE_LEDGER = Path("/nonexistent/keystone.jsonl")
 m.WORKTREE_REAPER_SUMMARY = Path("/nonexistent/reaper.json")
 m.STALENESS_CACHE = Path("/nonexistent/stale.json")
 m.DETAIL_CACHE = Path(out_path).parent / "detail.cache.json"
+# fleet-ops#5272: without this the USD-24h rollup rglobs the LIVE
+# ~/.pi/agent/sessions tree; on a host with months of worker sessions the
+# block burns minutes-to-timeout before queue-family assertions ever run.
+m.SESSIONS_DIR = Path("/nonexistent/sessions")
 
 # gh-derived families are stubbed absent except queue composition, which is
 # the family that used to duplicate its HELP/TYPE and must prove single-emit.
@@ -1371,23 +1375,20 @@ assert not any("phantom-gone-free" in i for i in nr_ids), \
 print("OK: _read_never_released excludes phantom seat keys, keeps real engaged seats (SEAT-KEY-INVALID consistency)")
 
 # --- availability rollup: released seats count healthy ---
-# Seed every enrolled provider (cap>0) with a healthy fixture ledger, then
+# Seed every enrolled provider with a healthy fixture ledger, then
 # overwrite commandcode's two ledgers with the past-wall overload_bench pair
 # (RELEASED -> commandcode still counts) and minimax's with quota_exhausted
 # past-wall (NOT released -> minimax drops out).
-caps = json.loads(Path(seat_caps).read_text())
-enrolled = [p for p, cfg in caps.get("providers", {}).items()
-            if isinstance(cfg, dict) and isinstance(cfg.get("cap"), (int, float))
-            and cfg.get("cap") > 0]
+m.SEAT_CAPS_DEFAULT = Path(seat_caps)
+m.SEAT_CAPS_FALLBACK = Path(seat_caps)
+m.SEAT_CAPS_LIVE = Path("/nonexistent/live-caps.json")  # hermetic: repo-checkouts path list only
+enrolled = sorted(m._enrolled_seat_providers() or [])
 assert "commandcode" in enrolled and "minimax" in enrolled, "fixture providers must be enrolled"
 for prov in enrolled:
     (Path(seat_dir) / f"{prov}__fixture.json").write_text(json.dumps({
         "provider": prov, "model": "fixture", "health_class": "healthy",
         "seat_dead": False, "usable_at": None, "bench_until": None,
     }))
-m.SEAT_CAPS_DEFAULT = Path(seat_caps)
-m.SEAT_CAPS_FALLBACK = Path(seat_caps)
-m.SEAT_CAPS_LIVE = Path("/nonexistent/live-caps.json")  # hermetic: repo-checkouts path list only
 base = m._healthy_enrolled_seat_count()
 assert base == len(enrolled), f"all-enrolled healthy base must be {len(enrolled)}, got {base}"
 # Replace the commandcode healthy fixture with the two overload_bench ledgers
@@ -1407,6 +1408,73 @@ quota = m._healthy_enrolled_seat_count()
 assert quota == len(enrolled) - 1, \
     f"quota_exhausted past-wall must NOT count healthy ({len(enrolled)-1}), got {quota}"
 print("OK: quota_exhausted never release-counts (availability honest)")
+PY
+
+
+# =========================================================================
+# 14e. fleet-ops#5272: seat_availability enrollment matches pick_seat.
+# The SLO denominator used to read SEAT_CAPS_DEFAULT (a stale repo checkout
+# at /home/nish/workspaces/tooling/fleet-ops) and counted every provider
+# cap>0, including rows whose models map is all cap=0. pick_seat reads
+# the LIVE file first (fleet-ops#3811) and skips cap=0 models, so the
+# rollup burned (5/13) against a roster the router does not use, while
+# hetzner/zenmux/xkiro (provider cap>0, every model parked) inflated the
+# denominator as phantom unenrolled seats. Pin: LIVE wins; all-models-zero
+# is not enrolled; empty models map with provider cap>0 still is.
+# =========================================================================
+ENROLL_LIVE="$scratch/enroll-live.json"
+ENROLL_DEFAULT="$scratch/enroll-default.json"
+python3 - "$exporter" "$ENROLL_LIVE" "$ENROLL_DEFAULT" <<'PY' || fail "enrolled-seat-providers LIVE-first + phantom skip (fleet-ops#5272)"
+import importlib.util, json, sys
+from pathlib import Path
+
+exporter, live_path, default_path = sys.argv[1:4]
+spec = importlib.util.spec_from_file_location("fme", exporter)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+
+# LIVE roster: two real seats + one all-models-zero phantom.
+Path(live_path).write_text(json.dumps({"providers": {
+    "cursor": {"cap": 2, "class": "prepaid-quota", "models": {"composer-2.5": 2}},
+    "hetzner": {"cap": 1, "class": "free", "models": {
+        "Qwen/Qwen3.6-35B-A3B-FP8": {"cap": 0, "intentional_cap_zero": "yield"}}},
+    "opencode": {"cap": 3, "class": "free", "models": {"ling-3.0-flash-fin-free": 1}},
+    "bare-int": 2,
+}}), encoding="utf-8")
+# Stale DEFAULT: a different 13-shaped roster the live exporter used to
+# read (ollama/straitly present, cursor missing, hetzner still enrolled).
+Path(default_path).write_text(json.dumps({"providers": {
+    "ollama": {"cap": 4, "class": "prepaid-quota", "models": {"deepseek-v4-flash:0731": 4}},
+    "straitly": {"cap": 2, "class": "metered", "models": {"deepseek/deepseek-v4-pro": 2}},
+    "hetzner": {"cap": 2, "class": "free", "models": {"Qwen/Qwen3.6-35B-A3B-FP8": 2}},
+    "cursor": {"cap": 1, "class": "prepaid-quota", "models": {"composer-2.5": 1}},
+}}), encoding="utf-8")
+
+m.SEAT_CAPS_LIVE = Path(live_path)
+m.SEAT_CAPS_DEFAULT = Path(default_path)
+m.SEAT_CAPS_FALLBACK = Path("/nonexistent/enroll-fallback.json")
+
+got = m._enrolled_seat_providers()
+assert got == {"cursor", "opencode", "bare-int"}, (
+    f"LIVE must win and drop all-models-zero hetzner, got {got}"
+)
+assert m._enrolled_seat_total() == 3, m._enrolled_seat_total()
+print("OK: LIVE-first enrollment (cursor+opencode+bare-int), hetzner phantom skipped")
+
+# Empty models map + provider cap>0 is still enrolled (legacy allow-all).
+Path(live_path).write_text(json.dumps({"providers": {
+    "legacy": {"cap": 2, "class": "free", "models": {}},
+    "parked": {"cap": 1, "class": "free", "models": {"dead-slug": 0}},
+}}), encoding="utf-8")
+got2 = m._enrolled_seat_providers()
+assert got2 == {"legacy"}, f"empty models map stays enrolled, parked does not: {got2}"
+print("OK: empty models map with cap>0 still enrolled; all-models-zero is not")
+
+# When LIVE is unreadable, DEFAULT is the fallback (CI/dev hermetic path).
+m.SEAT_CAPS_LIVE = Path("/nonexistent/enroll-live.json")
+got3 = m._enrolled_seat_providers()
+assert got3 == {"ollama", "straitly", "hetzner", "cursor"}, got3
+print("OK: unreadable LIVE falls through to DEFAULT")
 PY
 
 
@@ -1727,10 +1795,11 @@ def iso(offset_s):
 FUT = iso(3600)   # bench 1h in the future
 PAST = iso(-3600) # bench 1h in the past (expired)
 
-caps = json.loads(Path(seat_caps).read_text())
-enrolled = [p for p, cfg in caps.get("providers", {}).items()
-            if isinstance(cfg, dict) and isinstance(cfg.get("cap"), (int, float))
-            and cfg.get("cap") > 0]
+m.SEAT_LEDGER = Path(seat_dir)
+m.SEAT_CAPS_DEFAULT = Path(seat_caps)
+m.SEAT_CAPS_FALLBACK = Path(seat_caps)
+m.SEAT_CAPS_LIVE = Path("/nonexistent/live-caps.json")  # hermetic: repo-checkouts path list only
+enrolled = sorted(m._enrolled_seat_providers() or [])
 assert "opencode" in enrolled, "fixture provider opencode must be enrolled"
 
 # Seed every enrolled provider with a healthy fixture -> baseline = len(enrolled).
@@ -1739,10 +1808,6 @@ for prov in enrolled:
         "provider": prov, "model": "fixture", "health_class": "healthy",
         "seat_dead": False, "usable_at": None, "bench_until": None,
     }))
-m.SEAT_LEDGER = Path(seat_dir)
-m.SEAT_CAPS_DEFAULT = Path(seat_caps)
-m.SEAT_CAPS_FALLBACK = Path(seat_caps)
-m.SEAT_CAPS_LIVE = Path("/nonexistent/live-caps.json")  # hermetic: repo-checkouts path list only
 base = m._healthy_enrolled_seat_count()
 assert base == len(enrolled), f"baseline must be {len(enrolled)}, got {base}"
 
