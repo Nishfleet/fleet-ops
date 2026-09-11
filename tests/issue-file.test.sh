@@ -12,6 +12,8 @@
 #   6. Sweep clusters a 3-issue redo group from a fixture.
 #   7. Fake-gh file: duplicate comments, new issue creates with --body-file.
 #   8. Auto-filers in bin/ route through fleet-issue-file, not raw gh create.
+#  10. Spec-schema bodies for two DIFFERENT problems never reach DUP_THRESHOLD,
+#      while a genuinely same-problem pair still does (fleet-ops#5058).
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -404,6 +406,105 @@ do
     || fail "$f must route filings through fleet-issue-file / lib/issue-file.py"
 done
 ok "wired auto-filers route through the helper"
+
+# --- 10. spec-schema bodies for different problems are not duplicates -------
+# fleet-ops#5058: three different-problem candidates were suppressed onto
+# #4959 (a cpu-sampler scoring step) at exactly PRIMARY_SIGNAL_FLOOR, 0.70,
+# while their token overlap was 0.05-0.24. Two causes, both regression-locked:
+#   (a) the derived #2899 `fleet/seat-crisis` PRIMARY signal fired on ANY body
+#       that mentioned a seat next to a failure word. #4959 carries "seat
+#       rate-limit walls" and, in an unrelated sentence, "the unit is dead
+#       with no deliverable" / "dead-man" — so the cpu-sampler packet, a
+#       dangling-symlink packet and a seat packet all looked like one problem.
+#       The failure cause is now a seat-health marker, or a seat state word in
+#       the same breath as the seat word.
+#   (b) the packet field skeleton (metric:/observed:/evidence:/...) is in
+#       every well-formed candidate, so it counted as overlap evidence; it is
+#       stripped before tokenising.
+# Asserted both ways: the real different-problem pairs stay below
+# DUP_THRESHOLD, and a genuinely same-problem pair still clears it.
+cat >"$scratch/against-4959.json" <<'JSON'
+[
+  {
+    "number": 4959,
+    "repository": "Nishfleet/fleet-ops",
+    "title": "score the throughput Decision rule conjunct 2 from the completed 24h cpu-sampler run (fleet-ops#4956)",
+    "body": "metric: the #4804 throughput Decision rule conjunct 2 (`saturated_with_backlog_hours` >= 6 of 24h) is scored from a completed 24h sampler window with a real `ready` value.\n\nobserved: 2026-09-10. #4956 landed the fixed sampler (`libexec/fleet-cpu-sampler.py`): `ready` is read from `queue-composition-cache.json` with a freshness bound.\n\naccept:\n- Read the completed window: `agent-state/fleet-metrics/cpu-sampler-4956-24h.jsonl`.\n- If the run is incomplete (unit still active, no deliverable, or JSONL < 6h): post `blocked-on: re-open-2026-09-11T16:00Z` plus `agent-blocked` on this issue and stop. Do not re-run the sampler yourself unless the unit is dead with no deliverable (then relaunch it exactly as #4956 documented, with a `--deliverable` and dead-man).\n- Otherwise name the next route to throughput from the study's two named candidates (seat rate-limit walls / claim-loop empty-success churn #4457).\n\nimpact: answers the fleet's central throughput question with a real 24h window.\n\nproduct_surface: fleet CPU/throughput measurement (worker-worktree CPU limiter Q)\n\nsource: Nishfleet/fleet-ops#4956 + docs/throughput-limiter-study.md"
+  }
+]
+JSON
+
+cand_supergrok_title="SuperGrok seat dead: grok CLI unauthenticated; xai-oauth is healthy"
+cat >"$scratch/cand-supergrok.md" <<'MD'
+fleet-seat-live-validate (fleet-ops#917) found the grok CLI dead but the
+xai-oauth extension token in ~/.pi/agent/auth.json is still valid (the
+subscription proxy cli-chat-proxy.grok.com returned 200).
+
+This is the #1450 case: the previous canary blindly mirrored the grok
+dead-class onto xai-oauth, marking xai-oauth seats credentials_bad even
+though the xai-oauth token was healthy.
+
+Nish must sign in TODAY on netcup-rs2000:
+
+    grok login --device-auth
+MD
+
+cand_symlink_title="No detector for dangling helper symlinks: unit-escalation-write was 127 for ~7.5h (every OnFailure escalation died silently); straitly canary link still dangling"
+cat >"$scratch/cand-symlink.md" <<'MD'
+metric: every helper symlink under ~/.local/bin and ~/.local/lib/pi-packet
+resolves to an existing file, and a check fails loud the moment one dangles
+
+observed: 2026-09-10T21:46Z-23:50Z - during the deploy-clone wrong-remote
+reset (fleet-ops#5016), ~/.local/bin/unit-escalation-write dangled ~7.5h;
+every OnFailure escalation (unit-escalation@*.service) exited 127, so failed
+units recorded no STOP-REASON and nothing paged on the escalation path
+itself being dead. fleet-seat-recovery alone 203/EXEC'd 44x and its
+escalation 127'd 40x in the window.
+
+evidence:
+- journalctl --user -u 'unit-escalation@fleet-seat-recovery.service.service'
+  --since '24 hours ago' -> status=127, repeated 40x on 2026-09-10
+MD
+
+for pair in "supergrok:$cand_supergrok_title" "symlink:$cand_symlink_title"; do
+  name="${pair%%:*}"
+  title="${pair#*:}"
+  out=$(score "$title" "$(cat "$scratch/cand-$name.md")" "$scratch/against-4959.json")
+  kind=$(jq -r .kind <<<"$out")
+  sc=$(jq -r .score <<<"$out")
+  below=$(jq -r '.score < 0.65' <<<"$out")
+  prim=$(jq -r '.primary_shared_signals | length' <<<"$out")
+  [[ "$kind" != "duplicate" ]] \
+    || fail "different-problem spec-schema pair ($name vs #4959) must not be a duplicate, got $out"
+  [[ "$below" == "true" ]] \
+    || fail "different-problem spec-schema pair ($name vs #4959) must score below DUP_THRESHOLD, got $out"
+  [[ "$prim" == "0" ]] \
+    || fail "incidental seat/dead wording must not raise the seat-crisis floor ($name), got $out"
+  ok "different-problem spec-schema pair stays unfiled ($name vs #4959, score=$sc)"
+done
+
+# And the other direction: a real same-problem pair must still be suppressed.
+cat >"$scratch/against-symlink-dup.json" <<'JSON'
+[
+  {
+    "number": 5059,
+    "repository": "Nishfleet/fleet-ops",
+    "title": "unit-escalation-write symlink dangles: OnFailure escalations exit 127 with no STOP-REASON",
+    "body": "metric: every OnFailure escalation writes a STOP-REASON\n\nobserved: ~/.local/bin/unit-escalation-write dangles, so unit-escalation@*.service exits 127 and no STOP-REASON is written.\n"
+  }
+]
+JSON
+out=$(score \
+  "Dangling unit-escalation-write helper: OnFailure escalations exit 127 and write no STOP-REASON" \
+  "metric: every OnFailure escalation writes a STOP-REASON
+
+observed: ~/.local/bin/unit-escalation-write is a dangling symlink; unit-escalation@*.service exits 127 and writes no STOP-REASON." \
+  "$scratch/against-symlink-dup.json")
+kind=$(jq -r .kind <<<"$out")
+sc=$(jq -r .score <<<"$out")
+[[ "$kind" == "duplicate" ]] \
+  || fail "genuinely same-problem spec-schema pair must stay duplicate, got $out"
+ok "same-problem spec-schema pair is still duplicate (score=$sc)"
 
 # --- 9. standards-drift dedupe keys on the missing file (fleet-ops#4591) ---
 bash "$here/standards-drift-dedupe.test.sh"
