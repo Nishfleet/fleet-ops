@@ -1,5 +1,7 @@
+#!/usr/bin/env bash
 # lib/gh-budget-guard.sh — shared GitHub App budget visibility + reserve helpers
-# (fleet-ops#5489).
+# (fleet-ops#5489). Sourced, never executed — the shebang exists so
+# the SC2148 hint is satisfied and `bash -n` is meaningful.
 #
 # The nishfleet-worker App token has a hard 5000/hr core budget shared by the
 # whole fleet. When it exhausts, intake starves silently. The three helpers
