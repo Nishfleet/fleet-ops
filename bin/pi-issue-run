@@ -612,6 +612,10 @@ fi
 # hang_timeout_s; seat_hang_timeout_s reads it and falls back to 2520.
 # An env-set PI_HANG_TIMEOUT_S (tests) wins over the config override.
 PI_HANG_TIMEOUT_S="${PI_HANG_TIMEOUT_S:-$(seat_hang_timeout_s "$np" "$nm")}"
+# Exported so the devin-provider extension can bound its in-session
+# rate-limit resume (template/extensions/devin-provider/rate-limit.ts) by the
+# same watchdog that will kill this pi process.
+export PI_HANG_TIMEOUT_S
 # fleet-ops#2133: minimum elapsed seconds before the long-hang-then-ETIMEDOUT
 # and Ready-for-input stall detectors fire. A genuine long hang is >> 5 min;
 # lowering it (e.g. PI_HANG_BENCH_MIN_S=1 in tests) does NOT change production
