@@ -176,6 +176,45 @@ for t in packets:
     assert not fu._is_probe_prompt(t), fail(f"a real packet was misread as a probe: {t!r}")
 assert not fu._is_probe_prompt(""), fail("empty prompt must not be a probe")
 ok("probe prompt sentinels detected by content; real packet headers never misread")
+
+# A free-class MODEL wired on a metered PROVIDER (e.g. openrouter/
+# nvidia/nemotron-3-ultra-550b:free, input/cacheRead price 0) must be scored
+# class=free: a $0 lane has no metered spend to protect (fleet-ops#4643,
+# 2026-09-11). Pins _provider_metric_class + the model captured from
+# model_change lines.
+import importlib.util, json, os, tempfile
+spec = importlib.util.spec_from_file_location("fu", f"{repo}/lib/fleet_usd.py")
+fu = importlib.util.module_from_spec(spec); spec.loader.exec_module(fu)
+fail2 = lambda m: (print(f"FAIL: {m}", file=sys.stderr), sys.exit(1))
+caps = {"providers": {"openrouter": {
+    "class": "metered",
+    "models": {"nvidia/nemotron-3-ultra-550b-a55b:free": {"cap": 2, "class": "free"}},
+}}}
+with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+    json.dump(caps, f); path = f.name
+rc = fu.load_rate_card(path)
+if fu._provider_metric_class(rc, "openrouter") != "metered":
+    fail2("provider-level class must stay metered when no model is given")
+if fu._provider_metric_class(rc, "openrouter", "nvidia/nemotron-3-ultra-550b-a55b:free") != "free":
+    fail2("free-class model on a metered provider must score class=free")
+if fu._provider_metric_class(rc, "openrouter", "some/unknown-slug") != "metered":
+    fail2("unknown model on a metered provider must fall back to provider class")
+# End-to-end: a session on the free model must emit class=free.
+sess = tempfile.mkdtemp()
+jsonl = os.path.join(sess, "pi-issue-5010", "s.jsonl")
+os.makedirs(os.path.dirname(jsonl))
+with open(jsonl, "w") as f:
+    f.write(json.dumps({"type": "model_change", "provider": "openrouter",
+                        "modelId": "nvidia/nemotron-3-ultra-550b-a55b:free"}) + "\n")
+    f.write(json.dumps({"type": "message", "timestamp": "2026-09-11T09:00:00Z",
+                        "message": {"role": "user", "content": [{"type": "text", "text": "# Pi fleet issue worker\nreal packet"}]}}) + "\n")
+    f.write(json.dumps({"type": "message", "timestamp": "2026-09-11T09:01:00Z",
+                        "message": {"role": "assistant", "usage": {"input": 900, "cacheRead": 100}}}) + "\n")
+rows = fu.compute_cache_hit_24h(sess, rc, now_epoch=1789119600)
+if len(rows) != 1 or rows[0]["class"] != "free" or rows[0]["packet_type"] != "worker":
+    fail2(f"free-model session must emit class=free packet_type=worker, got {rows}")
+os.unlink(path)
+print("OK: free-class model on a metered provider scores class=free (no metered target for a $0 lane)")
 PY
 
 echo "fleet-prompt-cache-hit-alert: PASS"
