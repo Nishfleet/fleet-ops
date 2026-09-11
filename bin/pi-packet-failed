@@ -1,0 +1,281 @@
+#!/usr/bin/env bash
+# pi-packet-failed — terminal record for a pi packet whose retries are
+# exhausted. Triggered by pi-packet-failed@.service, the OnFailure= target of
+# pi-packet@.service (StartLimitBurst) and of pi-systemd-run transient
+# packets (listed alongside unit-escalation@). %i is either the pi-packet
+# instance name (packet <inst> -> pi-packet@<inst>.service) or the FULL
+# failed unit name when it carries a unit suffix — the same convention as
+# unit-escalation@ (%i = full unit name incl. .service).
+#
+# Until fleet-ops#5444 this unit ran a single `logger` line: the terminal
+# state of an exhausted packet landed in a syslog nobody reads — a silent
+# drop (Nish, 2026-09-11: "NO SILENT FAILURES AND AUTO RESUME ALWAYS").
+# Now every exhausted packet leaves four durable records, in order:
+#
+#   1. syslog — the original line, kept (journal readers still see it).
+#   2. LOUD [PI-PACKET-FAILED] line in the heartbeat triage file — the
+#      single page the heartbeat/judges read every tick.
+#   3. findings-ledger row {source_organ=pi-packet, disposition=carried_over,
+#      ref=<unit>, evidence=last 5 journal lines} via the shared helper
+#      (fleet-ops#5385 follow-up packet: lib/findings-ledger.*) when
+#      installed; a direct append of the same schema to the canonical
+#      JSONL otherwise. A missing helper never means a lost row.
+#   4. When the failed unit was launched with a deliverable promise
+#      (PI_DEADMAN_DELIVERABLE in its unit Environment — what
+#      pi-systemd-run --deliverable sets): file-or-update a fleet-ops
+#      issue titled after the packet via fleet-issue-file (filing-time
+#      dedupe), labelled agent-ready so the packet re-enters the queue
+#      instead of dying.
+#
+# Complement, not overlap: pi-detached-deadman's ExecStopPost owns the
+# clean-stop-no-deliverable verdict; this handler owns the FAILED path
+# (OnFailure does not fire on a clean stop).
+#
+# Environment seams (tests override all of these):
+#   PI_PACKET_FAILED_SOURCE_UNIT  explicit failed-unit override (drills)
+#   SYSTEMCTL / JOURNALCTL / LOGGER   binary seams
+#   FLEET_HEARTBEAT_TRIAGE        triage file (default agent-state)
+#   FLEET_FINDINGS_LEDGER         ledger JSONL (default vault
+#                                 _system/shared-memory/findings-ledger.jsonl;
+#                                 falls back to $AGENT_STATE/findings-ledger.jsonl
+#                                 when the vault is not checked out)
+#   FLEET_FINDINGS_LEDGER_HELPER  findings-ledger helper path; auto-detects
+#                                 repo lib/findings-ledger.* then
+#                                 ~/.local/lib/pi-packet/findings-ledger.*
+#   FLEET_ISSUE_FILE              fleet-issue-file (filing-time dedupe)
+#   ISSUE_REPO                    default Nishfleet/fleet-ops
+#   PI_PACKET_STATE               ~/.local/state/pi-packets (.in packets)
+#   AGENT_STATE                   ~/workspaces/agent-state
+#   GH                            gh CLI
+#
+# Flags:
+#   --dry-run   Resolve the unit + gather evidence, print the intended
+#               writes; touch nothing.
+#
+# Exit: 0 when every required write landed. Non-zero when a required write
+# failed (triage, ledger, or the deliverable-issue when one was owed) — the
+# global service.d/10-escalate.conf drop-in then summons the SENIOR
+# AUDITOR on pi-packet-failed@ itself, so even a broken recorder is loud.
+
+set -uo pipefail
+
+export HOME="${HOME:-/home/nish}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    cat <<'EOF'
+usage: pi-packet-failed [--dry-run] <instance-or-unit>
+Record a retry-exhausted pi packet: syslog + triage LOUD line +
+findings-ledger row + (when the unit carried --deliverable) an
+agent-ready fleet-ops issue so the packet re-enters the queue.
+EOF
+    exit 0
+fi
+
+dry_run=0
+if [[ "${1:-}" == "--dry-run" ]]; then
+    dry_run=1
+    shift
+fi
+
+inst="${1:-}"
+if [[ -z "$inst" ]]; then
+    echo "pi-packet-failed: missing unit instance (expected %i)" >&2
+    exit 1
+fi
+
+SYSTEMCTL="${SYSTEMCTL:-systemctl}"
+JOURNALCTL="${JOURNALCTL:-journalctl}"
+LOGGER="${LOGGER:-logger}"
+GH="${GH:-gh}"
+AS="${AGENT_STATE:-/home/nish/workspaces/agent-state}"
+TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-$AS/FLEET-HEARTBEAT-TRIAGE.md}"
+LEDGER="${FLEET_FINDINGS_LEDGER:-$HOME/workspaces/tooling/nish-vault/_system/shared-memory/findings-ledger.jsonl}"
+ISSUE_REPO="${ISSUE_REPO:-Nishfleet/fleet-ops}"
+PKT_DIR="${PI_PACKET_STATE:-$HOME/.local/state/pi-packets}"
+_canon=$(readlink -f "$0" 2>/dev/null || echo "$0")
+_here="$(cd "$(dirname "$_canon")" && pwd)"
+ISSUE_FILE="${FLEET_ISSUE_FILE:-$_here/fleet-issue-file}"
+
+log() {
+    printf '[%s] pi-packet-failed: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2
+}
+
+# --- resolve the failed unit ------------------------------------------------
+# Template path: %i is the packet instance -> pi-packet@<inst>.service.
+# Transient path (pi-systemd-run): %i is the full unit name incl. suffix.
+failed_unit="${PI_PACKET_FAILED_SOURCE_UNIT:-}"
+if [[ -z "$failed_unit" ]]; then
+    case "$inst" in
+        *.service|*.timer|*.path|*.scope|*.socket) failed_unit="$inst" ;;
+        *) failed_unit="pi-packet@${inst}.service" ;;
+    esac
+fi
+
+# Self-trigger guard: never file/ledger-loop on the recorder layer's own
+# instances. A failed pi-packet-failed@ already escalates through the global
+# drop-in; recording it again here only doubles the noise. Still write the
+# triage line so the event is visible.
+self_trigger=0
+case "$failed_unit" in
+    pi-packet-failed@*|unit-escalation@*|stop-escalation.*) self_trigger=1 ;;
+esac
+
+# --- evidence: last 5 journal lines + unit Environment -----------------------
+journal_tail="$("$JOURNALCTL" --user -u "$failed_unit" -n 5 --no-pager -o cat 2>/dev/null | tail -5 || true)"
+unit_env="$("$SYSTEMCTL" --user show "$failed_unit" -p Environment --value 2>/dev/null || true)"
+deliverable="$(printf '%s' "$unit_env" | tr ' ' '\n' | sed -n 's/^PI_DEADMAN_DELIVERABLE=//p' | head -1)"
+
+# packet_path + cmdline + deliverable from the dispatch ledger
+# (pi-systemd-run writes one row per dispatch; last wins). The ledger copy
+# of `deliverable` is the fallback for the --collect case: a GC'd transient
+# has no Environment to show, so the unit's promise must come from the
+# durable ledger (fleet-ops#5444).
+packet_path=""
+deadman_cmd=""
+ledger_deliverable=""
+if [[ -f "$AS/dispatch-ledger.jsonl" ]]; then
+    ledger_hit="$(python3 - "$AS/dispatch-ledger.jsonl" "$failed_unit" <<'PY' 2>/dev/null || true
+import json, sys
+path = cmd = deliv = ""
+try:
+    for line in open(sys.argv[1]):
+        try:
+            e = json.loads(line)
+        except Exception:
+            continue
+        if e.get("unit") == sys.argv[2]:
+            path = e.get("packet_path") or path
+            cmd = e.get("cmdline") or cmd
+            deliv = e.get("deliverable") or deliv
+except OSError:
+    pass
+print("\t".join([path, cmd, deliv]))
+PY
+)"
+    IFS=$'\t' read -r packet_path deadman_cmd ledger_deliverable <<<"$ledger_hit" || true
+fi
+[[ -z "$deliverable" ]] && deliverable="$ledger_deliverable"
+if [[ -z "$packet_path" && "$inst" != *.* ]]; then
+    cand="$PKT_DIR/${inst}.in"
+    [[ -f "$cand" ]] && packet_path="$cand"
+fi
+
+hard_fail=0
+
+# --- 1. syslog (original behaviour, kept) -----------------------------------
+if [[ "$dry_run" == "1" ]]; then
+    log "dry-run: logger -t pi-packet-failed -p user.err 'packet $inst exhausted StartLimitBurst'"
+else
+    "$LOGGER" -t pi-packet-failed -p user.err \
+        "packet $inst exhausted StartLimitBurst - needs a human or a council, not another retry" \
+        || { log "WARN: logger write failed"; }
+fi
+
+# --- 2. LOUD triage line ------------------------------------------------------
+triage_msg="packet $failed_unit exhausted retries (StartLimitBurst) — terminal failure recorded; deliverable=${deliverable:-none}; evidence: $(printf '%s' "$journal_tail" | tr '\n' ' ' | head -c 300)"
+if [[ "$dry_run" == "1" ]]; then
+    log "dry-run: triage append -> $TRIAGE"
+else
+    {
+        printf '\n[%s] [PI-PACKET-FAILED] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$triage_msg"
+    } >> "$TRIAGE" 2>/dev/null || { log "ALERT: could not append to triage $TRIAGE"; hard_fail=1; }
+fi
+
+# --- 3. findings-ledger row ---------------------------------------------------
+row="$(python3 - "$failed_unit" "$journal_tail" "$deliverable" <<'PY'
+import hashlib, json, sys
+from datetime import datetime, timezone
+unit, tail, deliv = sys.argv[1], sys.argv[2], sys.argv[3]
+title = f"packet {unit} exhausted retries (StartLimitBurst) — terminal failure"
+fid = hashlib.sha1(f"pi-packet|{unit}|{title}".encode()).hexdigest()
+print(json.dumps({
+    "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "source_organ": "pi-packet",
+    "run_id": unit,
+    "finding_id": fid,
+    "severity": "high",
+    "title": title,
+    "evidence_ref": ("journal tail: " + tail.strip())[:600] if tail.strip()
+                    else f"journalctl --user -u {unit} (unavailable)",
+    "disposition": "carried_over",
+    "ref": unit,
+    "reason": "exhausted StartLimitBurst retry policy"
+              + (f"; promised deliverable never landed: {deliv}" if deliv else ""),
+}, separators=(",", ":")))
+PY
+)"
+
+# Helper contract (fleet-ops#5385 follow-up): the shared findings-ledger
+# helper is the ONLY writer once installed — invoked as
+#   <helper> --ledger <path>     with the row JSON on stdin.
+# If the shipped helper's CLI differs, update this call site; the direct
+# append fallback below keeps the row durable either way.
+helper="${FLEET_FINDINGS_LEDGER_HELPER:-}"
+if [[ -z "$helper" ]]; then
+    for cand in "$_here/../lib/findings-ledger.py" "$_here/../lib/findings-ledger.sh" \
+                "$HOME/.local/lib/pi-packet/findings-ledger.py" "$HOME/.local/lib/pi-packet/findings-ledger.sh"; do
+        if [[ -f "$cand" ]]; then helper="$cand"; break; fi
+    done
+fi
+
+ledger_rc=""
+if [[ "$dry_run" == "1" ]]; then
+    log "dry-run: ledger row -> ${helper:-$LEDGER} : $row"
+elif [[ "$self_trigger" == "1" ]]; then
+    log "self-trigger unit $failed_unit — skipping ledger row (triage line still written)"
+elif [[ -n "$helper" && -f "$helper" ]]; then
+    if printf '%s\n' "$row" | "$helper" --ledger "$LEDGER" >/dev/null 2>&1; then
+        ledger_rc=0
+    else
+        log "WARN: findings-ledger helper $helper rejected the row — direct-append fallback"
+    fi
+fi
+if [[ "$dry_run" != "1" && "$self_trigger" != "1" && "$ledger_rc" != "0" ]]; then
+    ledger_path="$LEDGER"
+    if [[ "$ledger_path" == "$HOME/workspaces/tooling/nish-vault/"* && ! -d "$HOME/workspaces/tooling/nish-vault/_system/shared-memory" ]]; then
+        ledger_path="$AS/findings-ledger.jsonl"
+    fi
+    if ! mkdir -p "$(dirname "$ledger_path")" 2>/dev/null || ! printf '%s\n' "$row" >> "$ledger_path" 2>/dev/null; then
+        log "ALERT: findings-ledger write failed ($ledger_path)"
+        hard_fail=1
+    fi
+fi
+
+# --- 4. deliverable packet -> re-queue as an agent-ready issue ---------------
+if [[ -n "$deliverable" && "$self_trigger" != "1" ]]; then
+    title="packet $failed_unit exhausted retries — deliverable never landed"
+    body="$(printf 'A pi packet died for good and its promised deliverable never appeared (fleet-ops#5444).\n\n- unit: `%s`\n- deliverable: `%s`\n- packet: `%s`\n- cmdline: `%s`\n\nLast journal lines:\n```\n%s\n```\n\nRe-queued by pi-packet-failed@ so the packet returns as agent-ready work instead of dying.\n\nsignal: pi-packet-exhausted/%s\n' \
+        "$failed_unit" "$deliverable" "${packet_path:-unknown}" "${deadman_cmd:-unknown}" "$journal_tail" "$failed_unit")"
+    if [[ "$dry_run" == "1" ]]; then
+        log "dry-run: issue-file --label agent-ready '$title'"
+    else
+        # Lazy mint: the App token is needed only for the gh write here, so a
+        # mint failure must not take down the triage/ledger writes above.
+        if [[ -z "${GH_TOKEN:-}" && "${GITHUB_ACTIONS:-}" != "true" && "$GH" == "gh" ]]; then
+            _wt="${NISHFLEET_WORKER_TOKEN_BIN:-$HOME/.local/bin/worker-token}"
+            if _minted="$("$_wt" --print 2>/dev/null)"; then eval "$_minted"; else
+                log "ALERT: worker-token mint failed — cannot file the re-queue issue"; hard_fail=1
+                deliverable=""  # skip the filing block below
+            fi
+            unset _wt _minted 2>/dev/null || true
+        fi
+        if [[ -n "$deliverable" ]]; then
+            if [[ ! -x "$ISSUE_FILE" ]]; then
+                log "ALERT: fleet-issue-file missing at $ISSUE_FILE — re-queue issue NOT filed"; hard_fail=1
+            elif ! "$ISSUE_FILE" file -R "$ISSUE_REPO" --title "$title" --body "$body" \
+                    --label agent-ready >/dev/null 2>&1; then
+                log "ALERT: fleet-issue-file failed for $failed_unit — re-queue issue NOT filed"
+                hard_fail=1
+            else
+                log "re-queued $failed_unit as agent-ready issue (deliverable: $deliverable)"
+            fi
+        fi
+    fi
+fi
+
+if [[ "$hard_fail" == "1" ]]; then
+    log "FAILED: $failed_unit recorded partially — see ALERT lines above"
+    exit 1
+fi
+exit 0
