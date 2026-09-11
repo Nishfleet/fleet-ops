@@ -1838,7 +1838,10 @@ fi
 # or a Nish-reserved wall, within a cycle budget. Stalled chains climb the
 # ladder (re-fire -> fail-loud -> unit-escalation). A green detector with an
 # IDLE pipeline and a non-terminal STOP-REASON is a stale trip (closeout
-# skipped) — fail loud.
+# skipped) — the enforcer re-fires the auditor pipeline and holds (exit 0)
+# on a bounded cadence, and fails loud only once the re-fire bound is spent
+# (fleet-ops#5190 — re-fail-per-tick was deduped by unit-escalation and
+# could not summon an auditor).
 ESCALATION_COMPLETION_BIN="${FLEET_ESCALATION_COMPLETION:-/home/nish/.local/bin/fleet-escalation-completion}"
 escalation_completion_rc=0
 if [ -x "$ESCALATION_COMPLETION_BIN" ]; then
