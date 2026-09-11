@@ -205,6 +205,9 @@ ok "effectiveness_ratio = 0 when no runs"
 # =========================================================================
 # 3. Empty window end-to-end: heartbeat + per-repo zeros
 # =========================================================================
+# fleet-ops#5385: pin the repo set — this test is about metric emission, not
+# about which repos are enrolled today (0509 can be TEMPORARY-deferred).
+export FLEET_SCOUT_EFF_REPOS="0509,fleet-ops"
 export FLEET_SCOUT_EFF_NOW="2026-09-02T12:00:00Z"
 export FLEET_SCOUT_EFF_FIXTURE="$scratch/empty.json"
 export FLEET_SCOUT_EFF_OUT="$scratch/empty.prom"
