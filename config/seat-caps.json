@@ -573,6 +573,31 @@
         }
       },
       "_litellm_p3b_20260908": "2026-09-08 (fleet-ops#4425): all five LiteLLM model groups (judge, worker-cheap, worker-capable, senior, worker-private) registered at cap 0 with intentional_cap_zero=p3b_pending, pending the P3b PI_SEAT_SOURCE=litellm switchover in #4422. Proxy /health/readiness probe healthy; live seat map had zero litellm seats (grep -c litellm = 0) at the decision run. group names mirror config/pi-models.json providers.litellm.models. worker group caps become operational when the #4422 deletion enables LiteLLM routing (see rule-enforcement row led-2026-09-08-litellm-p3b)."
+    },
+    "synthetic": {
+      "cap": 1,
+      "class": "prepaid-quota",
+      "quota_bench_default_s": 18000,
+      "flat_usd_per_month": 30,
+      "models": {
+        "hf:zai-org/GLM-5.3-Flash": 1
+      },
+      "_comment_synthetic": "2026-09-11 seat wire-up (Nish packet): Synthetic (https://api.synthetic.new/openai/v1, key via '!cut -d= -f2 /home/nish/.config/fleet-ops/seats/synthetic.env') — flat $30/mo prepaid subscription, WORKER seat. Exactly one model wired per the packet: hf:zai-org/GLM-5.3-Flash (Nish 2026-09-11: 'glm 5.3 flash or ds4.1 flash whichever's cheaper' — Synthetic has no DeepSeek, so GLM-5.3-Flash; Kimi K3, GLM-5.2, Qwen, gpt-oss deliberately not wired). cap 1 everywhere: the sub allows 1 concurrent request per model, quota 500 req/5h account-wide — quota_bench_default_s 18000 matches the real 5h window when a 429 carries no reset. No max_probe_ceiling: paid seat, no upward AIMD probe (crof precedent). flat_usd_per_month 30 = amortized sub cost for the prepaid meter; zero marginal per-token price (no cost field in pi-models.json). Live probes 2026-09-11: GET /models 200, pi --print smoke OK."
+    },
+    "llmgateway-devpass": {
+      "cap": 1,
+      "class": "prepaid-quota",
+      "quota_window": "monthly",
+      "quota_bench_default_s": 86400,
+      "usd_per_1m_input": 0.088,
+      "usd_per_1m_output": 0.25,
+      "usd_per_1m_cached": 0.025,
+      "flat_usd_per_month": 29,
+      "models": {
+        "glm-5.3-flash": 1
+      },
+      "_rate_card": "2026-09-11 seat wire-up: glm-5.3-flash per-token rate card from the live DevPass /v1/models headline pricing (cheapest upstream scx-ai-gp): $0.088/M in / $0.25/M out / $0.025/M cache-read (modal upstream zai/novita $0.15/$0.50/$0.03). class=prepaid-quota so usd_24h counts marginal credit burn, same shape as crof/entrim.",
+      "_comment_devpass": "2026-09-11 seat wire-up (Nish packet): LLM Gateway DevPass (https://api.llmgateway.io/v1, key via '!cut -d= -f2 /home/nish/.config/fleet-ops/seats/llmgateway-devpass.env') — $29/mo subscription minting $87/mo of METERED credits. A fixed prepaid credit pool that runs out (NOT open-ended PAYG like openrouter/deepseek), so class=prepaid-quota and it sits last in prepaid_providers_in_order: after every free/prepaid seat, before openrouter and deepseek-direct (deepseek official stays LAST via last_resort, standing order). Exactly one model wired per the packet: glm-5.3-flash, the cheapest compliant flash on DevPass ($0.088/$0.25; 1M ctx, reasoning). DevPass offers no deepseek-v4.1-flash slug — only the BANNED deepseek-v4-flash (Nish 2026-09-10, fleet-wide ban), deliberately not wired; kimi-k3, glm-5.2, minimax-m3 also not wired. cap 1 total: paid credit pool, overflow-trap rule — paid lanes trickle, never flood. quota_window monthly (the credit pool renews monthly, bounds a vendor-claimed wall at 31d); quota_bench_default_s 86400 = daily re-probe on an unmarked balance wall (crof/runinfra 402 precedent). No max_probe_ceiling: pinned at 1, no upward AIMD on a paid seat. Live probes 2026-09-11: GET /models 200, pi --print smoke OK."
     }
   },
   "product_order": "value",
@@ -595,7 +620,9 @@
     "xai-oauth",
     "crof",
     "runinfra",
-    "entrim"
+    "entrim",
+    "synthetic",
+    "llmgateway-devpass"
   ],
   "_comment_senior_order": "fleet-ops#3121: the senior (judge/orchestrator/reviewer) role's seat ladder. Replaces the dead straitly role and the old keystone_only_providers dual mechanism — ONE mechanism now. First usable seat in the list wins; a walled seat is skipped, not a unit failure; if the whole list is walled the resolver falls through to any usable capable seat. cursor cap 2 concurrent (fleet-ops#4206, raised 1->2 to spend the $400 API pool); senior draws count against the existing prepaid-usage/cursor.json weekly meter (ceiling 300/week), after which the list falls through to xai grok and then openrouter deepseek. Nish 2026-09-04: devin (devin/glm-5-2), free-glm (zenmux/z-ai/glm-5.3-free, cline/z-ai/glm-5.3-flash), senior (this list) are the three judge roles; senior replaces straitly everywhere. 2026-09-08 (Nish re-scope, #4445): alibaba-coding/qwen3.8-max is added as a judge on the roster. It is currently inert (model cap 0 — no worker use of any alibaba model) so find_senior_seat / senior_seat_available skip it silently until a config-driven judge_only gate lands (fleet-ops#4445 follow-up); it is listed LAST so it never displaces an already-usable senior seat.",
   "senior_seats_in_order": [
