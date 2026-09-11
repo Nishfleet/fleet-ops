@@ -46,6 +46,14 @@ PAUSED_MARKER = Path(
         "/home/nish/workspaces/agent-state/FLEET-PAUSED",
     )
 )
+# Must equal generate.py's FINDINGS_LEDGER (fleet-ops#5476): the tile and
+# its verifier count the SAME canonical vault file.
+FINDINGS_LEDGER = Path(
+    os.environ.get(
+        "FINDINGS_LEDGER",
+        "/home/nish/workspaces/tooling/nish-vault/_system/shared-memory/findings-ledger.jsonl",
+    )
+)
 GH = os.environ.get("GH", "gh")
 SYSTEMCTL = os.environ.get("SYSTEMCTL", "systemctl")
 SKIP_GH = os.environ.get("CONSOLE_SKIP_GH", "") == "1"
@@ -203,6 +211,17 @@ SPECS = {
         "field": "signups_24h",
         "tolerance": {"mode": "exact"},
         "runner": "outcome_prom",
+    },
+    "findings": {
+        "cmd": (
+            "count of non-empty rows in the canonical vault "
+            "findings-ledger.jsonl (exact vs tile total; every "
+            "disposition tally compared too). A ledger append between "
+            "generate and verify is a race SKIP, not a lie."
+        ),
+        "field": "total",
+        "tolerance": {"mode": "exact"},
+        "runner": "findings_ledger",
     },
 }
 
@@ -661,6 +680,54 @@ def run_fleet_paused(tile):
     return 1 if PAUSED_MARKER.exists() else 0
 
 
+def run_findings_ledger(tile):
+    """Recount the canonical findings ledger, all tallies compared.
+
+    Same-source check (fleet-ops#5476): the tile counts rows of the vault
+    findings-ledger.jsonl at generate time; this re-reads the SAME file
+    ~2s later. An append in that window makes the counts legitimately
+    differ — the mtime-past-observed_at gate is the #2690 race pattern:
+    SKIP, not DISPUTED. When the file is unchanged the total AND every
+    disposition tally must match, or the tile is lying (the run_outcome_prom
+    all-fields pattern — a partly-lying ledger view must not slip through
+    on the headline count).
+    """
+    try:
+        mtime = FINDINGS_LEDGER.stat().st_mtime
+    except OSError as e:
+        raise VerifyError(f"findings ledger stat: {e}") from e
+    if mtime > (tile.get("observed_at") or 0):
+        raise VerifyError(
+            "findings ledger mtime advanced past tile.observed_at — race, "
+            "an append landed between generate and verify"
+        )
+    try:
+        counts = {}
+        n = 0
+        for ln in FINDINGS_LEDGER.read_text().splitlines():
+            if not ln.strip():
+                continue
+            n += 1
+            try:
+                d = json.loads(ln).get("disposition")
+            except (json.JSONDecodeError, AttributeError):
+                d = None
+            counts[d] = counts.get(d, 0) + 1
+    except OSError as e:
+        raise VerifyError(f"findings ledger read: {e}") from e
+    displayed = tile.get("dispositions") or {}
+    diffs = []
+    for k in set(counts) | set(displayed):
+        if counts.get(k, 0) != displayed.get(k, 0):
+            diffs.append(
+                f"dispositions[{k}] displayed {displayed.get(k, 0)} "
+                f"vs verify {counts.get(k, 0)}"
+            )
+    if diffs:
+        raise VerifyError("; ".join(diffs))
+    return n
+
+
 def _question_answer_epoch(comments):
     """Epoch of the newest `decision-resolved:` comment, or None.
 
@@ -821,6 +888,7 @@ RUNNERS = {
     "repairs_units": run_repairs_units,
     "running_pi_execstart": run_running_pi_execstart,
     "fleet_paused": run_fleet_paused,
+    "findings_ledger": run_findings_ledger,
     "questions_gh": run_questions_gh,
     "open_prs_gh_spot": run_open_prs_gh_spot,
     "shipped_gh_spot": run_shipped_gh_spot,

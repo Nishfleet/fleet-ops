@@ -1,0 +1,20 @@
+{
+  "closed_issues": [
+    {
+      "number": 4630,
+      "title": "fix(findings-queued): 583c41ee-f88b-4b2a-84c5-4f691f9de076 — finding named in chat, never filed",
+      "labels": [{"name": "bug"}],
+      "closedAt": "2026-09-09T03:53:51Z",
+      "body": "The session-close lint found an ask to file with no queue action.\n\nsignal: findings-queued/583c41ee-f88b-4b2a-84c5-4f691f9de076"
+    }
+  ],
+  "failed_units": [],
+  "open_issues": [
+    {
+      "number": 4674,
+      "title": "fix(findings-queued): 583c41ee-f88b-4b2a-84c5-4f691f9de076 — finding named in chat, never filed",
+      "labels": [{"name": "detector"}],
+      "body": "Do not close until the detector reports this clean.\n\nsignal: findings-queued/583c41ee-f88b-4b2a-84c5-4f691f9de076"
+    }
+  ]
+}
