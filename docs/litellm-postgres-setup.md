@@ -189,20 +189,31 @@ set -euo pipefail
 set -a
 
 # --- env-file providers (KEY=value format, safe to source) ---
-# Source exactly the seats the live router config declares. Only
-# OpenAI-compatible providers belong here; Cursor/Devin speak proprietary
-# protocols and are reached through their own harnesses, not the proxy.
 source /home/nish/fleet2/etc/opencode.env
 source /home/nish/fleet2/etc/commandcode.env
 source /home/nish/fleet2/etc/hetzner.env
 source /home/nish/fleet2/etc/devin.env
 source /home/nish/fleet2/etc/cursor.env
 source /home/nish/fleet2/etc/openrouter.env
+# fleet-ops#4219: P3a dual-run found the original pool walled/dead in seat-lib
+# (opencode-zen balance, commandcode model unsupported, hetzner corpse, straitly
+# credits exhausted, grok cli-chat-proxy 426). Source the credential env files of
+# the seats that are actually usable and OpenAI-compatible.
 source /home/nish/fleet2/etc/alibaba-coding.env
 source /home/nish/fleet2/etc/groq.env
 source /home/nish/fleet2/etc/ollama.env
+source /home/nish/fleet2/etc/cline.env
+source /home/nish/fleet2/etc/paretoinference.env
+source /home/nish/.config/xkiro/.env
+source /home/nish/fleet2/etc/runinfra.env
 source /home/nish/fleet2/etc/entrim.env
 source /home/nish/fleet2/etc/crof.env
+# 2026-09-11 seat wire-up: synthetic + llmgateway-devpass prepaid worker seats
+# (fleet-ops packet; env files mode 600 under ~/.config/fleet-ops/seats/).
+source /home/nish/.config/fleet-ops/seats/synthetic.env
+source /home/nish/.config/fleet-ops/seats/llmgateway-devpass.env
+
+# --- straitly (lives in ~/.config/straitly/) ---
 source /home/nish/.config/straitly/straitly.env
 
 # --- xai-oauth: OAuth access token from auth.json (refreshed every 4h by
