@@ -77,6 +77,11 @@
       "note": "Free lanes AND credits. class=metered. Model allowlist owned by fleet-ops#384."
     },
     {
+      "id": "deepseek",
+      "class": "metered",
+      "note": "DeepSeek direct PAYG (api.deepseek.com), key at ~/.config/deepseek/deepseek.env (never printed). Nish 2026-09-09 (fleet-ops#4625): last-resort spend only, after every prepaid quota is verified exhausted. Wired as deepseek-flash cap 1 with product_only + last_resort + daily_spend_cap_usd=3 in seat-caps.json (ds41 amendment 2026-09-10, PR #5081) — picked only when every other seat is dead/capped/rate-limited; balance verified live USD 10.00 topped_up on 2026-09-09."
+    },
+    {
       "id": "hetzner",
       "class": "free",
       "note": "Hetzner inference free experimental. Allowlist is Qwen/Qwen3.6-35B-A3B-FP8 (fleet-ops#437)."

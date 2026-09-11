@@ -13,6 +13,19 @@ script, or prompt lands unseen.
 - `config/` — fleet configuration. `seat-caps.json` is the per-seat ceiling
   map; `intake-repos.json` is the declared set of repos enrolled in
   pi-intake/pi-scout (see [Intake enrolment](#intake-enrolment)).
+  `entitled-seats.json` is the capacity-is-measured inventory: every seat the
+  fleet is entitled to, diffed against `seat-caps.json` each heartbeat tick by
+  `bin/fleet-entitled-wired-canary`.
+
+  Seat pick order (implemented in `lib/seat-lib.sh` `pick_seat`, documented in
+  `seat-caps.json` `_comment_order`): free lanes first
+  (`free_providers_in_order`), then prepaid-quota (`prepaid_providers_in_order`,
+  round-robin), then metered. Seats flagged `product_only` are held out of
+  every class bucket and appended as a last-resort tail, and inside that tail
+  models flagged `last_resort: true` sit last — today that is the PAYG
+  `deepseek/deepseek-flash` seat (api.deepseek.com, `daily_spend_cap_usd=3`,
+  fleet-ops#4625), admitted only when every other seat is
+  dead/capped/rate-limited.
 - `MANIFEST` — one line per file: `<repo-relative-path> <absolute-install-path>`.
 - `install.sh` — symlinks each manifest entry into its live path, then
   `systemctl --user daemon-reload`. `--check` reports drift without changing
