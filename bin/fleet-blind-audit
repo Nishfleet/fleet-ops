@@ -236,7 +236,12 @@ loud_backlog() { # $1 = unfiled_pass, $2 = carryover_total, $3 = context
     local line
     line="LOUD [AUDIT-BACKLOG] unfiled_pass=$1 carryover_total=$2 context=$3"
     log "$line"
-    printf '%s [fleet-blind-audit] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$line" \
+    # Static-first timestamp: the timestamp is computed on its own line, not
+    # inside a printf emitted before the packet cat (fleet-ops#523;
+    # token-efficiency gate blocks volatile-before-static in this assembler).
+    local triage_ts
+    triage_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf '%s [fleet-blind-audit] %s\n' "$triage_ts" "$line" \
         >> "$TRIAGE_FILE" 2>/dev/null \
         || log "WARN: could not append to triage $TRIAGE_FILE"
 }
@@ -491,12 +496,14 @@ BF
             log "backfill: PANEL-FAIL ($bf_reason) ($b_title)"
             continue
         fi
+        local bf_at
+        bf_at="$NOW_ISO"
         {
             printf '%s\n\n' "$b_body"
             printf '**Evidence:** %s\n\n' "$b_evidence"
             printf '**Severity:** %s\n\n' "$b_severity"
             printf '**First audit report:** %s\n\n' "$b_first"
-            printf '*Backfilled by fleet-blind-audit --backfill at %s.*\n' "$NOW_ISO"
+            printf '*Backfilled by fleet-blind-audit --backfill at %s.*\n' "$bf_at"
         } > "$bf_body"
         # Under `set -e` a bare var=$(cmd) kills the whole run silently when
         # the #1212 gate hiccups (stderr discarded by 2>/dev/null) — the
