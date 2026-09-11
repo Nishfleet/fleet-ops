@@ -1076,6 +1076,47 @@ grep -q "issue close 4949" "$tmp/gh.log" || fail "scenario 13b: expected gh issu
 grep -q "issue comment" "$tmp/gh.log" && fail "scenario 13b: green chain must only close, not heartbeat-comment"
 ok "scenario 13b: green STALE-TRIP chain observe-to-closes the filed issue"
 
+# 13c. fleet-ops#5190 flap guard: the SAME signal fired recently (a
+# STALE-TRIP line in triage history, before this tick's TICK_START — the
+# enforcer's hold tick) -> observe-to-close is DEFERRED, not fired, on a
+# single quiet tick. This is the #4989 flap: the alarm closed while the
+# chain still fired hours later.
+cat > "$tmp/triage13-hist.md" <<EOF
+[2026-08-28T12:50:00Z] [ESCALATION-COMPLETION-STALE-TRIP] $stale_msg
+[2026-08-28T13:30:00Z] [HEARTBEAT-OK] tick quiet for this chain
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/open13.json" "$tmp/triage13-hist.md" > "$tmp/summary13c.json"
+jq -e '.closed == 0 and .close_deferred == 1' "$tmp/summary13c.json" >/dev/null \
+    || fail "scenario 13c: recently-fired STALE-TRIP signal must be deferred, not closed (got: $(cat "$tmp/summary13c.json"))"
+! grep -q "issue close" "$tmp/gh.log" || fail "scenario 13c: no gh issue close inside the grace window"
+ok "scenario 13c: STALE-TRIP fired 55min ago -> close deferred (flap guard)"
+
+# 13d. Once the last fire ages past the grace window (6h default), the same
+# absent tick closes the alarm — the chain really is done.
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+env "${common_env[@]}" FLEET_SIGNAL_RECONCILE_OPEN_ISSUES_JSON="$tmp/open13.json" \
+    python3 "$lib" --triage "$tmp/triage13-hist.md" --tick-start "2026-08-28T13:30:00Z" \
+    --ok-to-close 1 --json --now "2026-08-28T19:40:00Z" > "$tmp/summary13d.json" || true
+jq -e '.closed == 1 and .close_deferred == 0' "$tmp/summary13d.json" >/dev/null \
+    || fail "scenario 13d: STALE-TRIP silent past grace must observe-to-close (got: $(cat "$tmp/summary13d.json"))"
+grep -q "issue close 4949" "$tmp/gh.log" || fail "scenario 13d: expected gh issue close 4949 past grace"
+ok "scenario 13d: STALE-TRIP silent >6h -> observe-to-close fires"
+
+# 13e. A close-grace miss is tag-scoped: an unrelated signal with NO history
+# still closes immediately on a single absent tick (no global close delay).
+cat > "$tmp/open13e.json" <<'EOF'
+[{"number": 4990, "body": "signal: loud/escalation-canary-pending/old-alarm-wired", "labels": [{"name": "agent-ready"}], "createdAt": "2026-08-28T10:00:00Z", "comments": []}]
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/open13e.json" "$tmp/triage13-hist.md" > "$tmp/summary13e.json"
+jq -e '.closed == 1' "$tmp/summary13e.json" >/dev/null \
+    || fail "scenario 13e: non-grace signal must still close immediately (got: $(cat "$tmp/summary13e.json"))"
+ok "scenario 13e: close-grace is scoped to stale-trip signals only"
+
 # ---------------------------------------------------------------------------
 # 14. DEGRADED-LANES alarms are observe-to-close-only and must NOT be routed
 #     to the worker pool (fleet-ops#4966). The heartbeat Tier 1 \u00a77 sees
