@@ -748,11 +748,20 @@ def cmd_file(args: argparse.Namespace) -> int:
     else:
         body = args.body or ""
     labels = list(args.label or [])
+    # fleet-ops#5620: the `file` dedupe corpus is scoped to the repo passed
+    # via --repo. A same-problem open issue in a DIFFERENT Nishfleet repo
+    # must never suppress or redirect a filing — the auto-revert halt
+    # channel previously delivered fleet-ops filings as comments on
+    # noise-class issues in other repos (0509#2923). Cross-repo hits may
+    # be noted as "related" in the body, never used as the dedupe target.
+    # (--no-cross-repo / --search-repo remain accepted for compatibility
+    # but no longer widen the `file` corpus.) The `sweep` subcommand keeps
+    # its own cross-repo clustering behaviour.
     issues = collect_open(
         args.repo,
         args.from_json,
-        cross_repo=not args.no_cross_repo,
-        extra_repos=args.search_repo or [],
+        cross_repo=False,
+        extra_repos=[],
     )
     match = best_match(title, body, issues) if issues else None
     score = match["score"] if match else 0.0

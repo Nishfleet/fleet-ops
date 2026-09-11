@@ -396,6 +396,14 @@ bash "$here/fleet-issue-file-close-duplicates-regression-3161.test.sh"
 # Hermetic (fake gh, no network).
 bash "$here/fleet-issue-file-close-duplicates-idempotent.test.sh"
 
+# fleet-ops#5620: repo-scope of the filing-time dedupe corpus (a
+# same-titled open issue in another Nishfleet repo must never suppress a
+# filing). Hosted here so P14 runs it without a workflow edit (the worker
+# App cannot push .github/workflows/**). The named pin in
+# tests/p14-test-listing-gate.test.sh is the class-prevention so a future
+# drop of this host line fails by name. Hermetic (fake gh, no network).
+bash "$here/fleet-issue-file-dedupe-repo-scope.test.sh"
+
 # fleet-ops#2902 (PR #2905 follow-up): the leaky-worktree containment
 # detector landed on main without a ci.yml listing or a host — and P14 was
 # already red on the two orphans above, so this leftover slipped in
