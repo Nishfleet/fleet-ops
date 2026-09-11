@@ -523,8 +523,8 @@ EOF
         STOP_ESCALATION_RESUME_GH="$RESUME_DIR/fake-gh" \
         STOP_ESCALATION_RESUME_HERMES="$RESUME_DIR/fake-hermes" \
         STOP_ESCALATION_RESUME_TRIAGE="$RESUME_DIR/triage.md" \
-        STOP_ESCALATION_RESUME_FINDINGS="$ROOT/lib/findings-ledger.py" \
-        FLEET_FINDINGS_LEDGER="$RESUME_DIR/findings.jsonl" \
+        STOP_ESCALATION_RESUME_FINDINGS="$ROOT/lib/findings_ledger.py" \
+        STOP_ESCALATION_RESUME_FINDINGS_LEDGER="$RESUME_DIR/findings.jsonl" \
         PI_PACKET_SEAT_LIB="$RESUME_DIR/stub-seat-lib.sh" \
         PI_SALVAGE_DISABLE=1 \
         PI_DEADMAN_TEXTFILE="$RESUME_DIR/fleet-detached.prom" \

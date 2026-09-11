@@ -230,7 +230,12 @@ RESUME_GH=${STOP_ESCALATION_RESUME_GH:-gh}
 RESUME_HERMES=${STOP_ESCALATION_RESUME_HERMES:-$HOME/.local/bin/hermes}
 RESUME_REPO=${STOP_ESCALATION_RESUME_REPO:-Nishfleet/fleet-ops}
 RESUME_TRIAGE=${STOP_ESCALATION_RESUME_TRIAGE:-$RESUME_AS/FLEET-HEARTBEAT-TRIAGE.md}
-RESUME_FINDINGS_BIN=${STOP_ESCALATION_RESUME_FINDINGS:-$(dirname "$(readlink -f "$0")")/../lib/findings-ledger.py}
+# fleet-ops#5443's canonical writer owns the findings-ledger schema; this
+# dispatcher appends through it, never writes rows itself. Not executable —
+# invoked via python3. RESUME_FINDINGS_LEDGER is the ledger-path seam so the
+# drill/tests never touch the vault file (empty = the writer's default).
+RESUME_FINDINGS_BIN=${STOP_ESCALATION_RESUME_FINDINGS:-$(dirname "$(readlink -f "$0")")/../lib/findings_ledger.py}
+RESUME_FINDINGS_LEDGER=${STOP_ESCALATION_RESUME_FINDINGS_LEDGER:-}
 RESUME_SEAT_LIB=${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}
 RESUME_DRYRUN=${STOP_ESCALATION_RESUME_DRYRUN:-0}
 RESUME_HOP_CAP=2   # hop 0 -> relaunch 1 -> relaunch 2 -> dispatch (E: second death dispatches)
@@ -280,48 +285,51 @@ resume_dispatch_unit() {
   local body
   body=$(printf 'Agent-ready unit-death dispatch (fleet-ops#5456 A(ii)).\n\n- unit: `%s`\n- reason: resume exhausted (hop=%s) or non-packet unit\n- STOP-REASON: `%s`\n- detected: %s\n\n<details><summary>last 20 journal lines</summary>\n\n```\n%s\n```\n</details>\n\nTake the unit''s job over: diagnose from the journal, redo the work, and land it. Close this issue when the underlying failure is fixed (observe-to-close greps the triage line).\n' "$unit_sf" "$hop_note" "$SR" "$ts_now" "$journal_lines")
 
+  # files/UPDATES: one open issue per unit (dedupe by exact title search).
+  local issue_rc=1 issue_url=""
   if [[ "$unit_no_sf" == resume-drill-* || "$unit_sf" == resume-drill-* ]]; then
     # Drill sink: no GitHub, no hermes — the payload IS the assertion (E).
+    # The findings row + LOUD triage line below still run (into the drill's
+    # seam files): a dispatch is issue + ledger row + triage line, and the
+    # drill asserts all three.
     local sink="$RESUME_AS/resume-drill/issues.jsonl"
     mkdir -p "$(dirname "$sink")"
     python3 -c 'import json,sys;print(json.dumps({"ts":sys.argv[1],"unit":sys.argv[2],"title":sys.argv[3],"body":sys.argv[4]},separators=(",",":")))' \
       "$ts_now" "$unit_sf" "$title" "$body" >> "$sink"
+    issue_rc=0; issue_url="drill-sink:$sink"
     resume_log "drill unit $unit_sf dispatched to sink $sink"
-    return 0
-  fi
-
-  if [ "$RESUME_DRYRUN" = "1" ]; then
+  elif [ "$RESUME_DRYRUN" = "1" ]; then
     resume_log "DRYRUN dispatch unit=$unit_sf title=$title"
     return 0
-  fi
-
-  # files/UPDATES: one open issue per unit (dedupe by exact title search).
-  local issue_rc=1 issue_url=""
-  local existing
-  existing=$($RESUME_GH issue list -R "$RESUME_REPO" --state open --limit 100 \
-      --search "[unit-death] ${unit_sf}" --json number,url \
-      --jq '.[0].url' 2>/dev/null || true)
-  if [ -n "$existing" ]; then
-    if $RESUME_GH issue comment "$existing" -R "$RESUME_REPO" \
-        --body "recurrence ${ts_now}: unit died again (hop=${hop_note}); latest STOP-REASON in \`$SR\`" >/dev/null 2>&1; then
-      issue_rc=0; issue_url="$existing"
-    fi
   else
-    issue_url=$($RESUME_GH issue create -R "$RESUME_REPO" --title "$title" --body "$body" 2>/dev/null | tail -n1 || true)
-    if [ -n "$issue_url" ]; then issue_rc=0; fi
+    local existing
+    existing=$($RESUME_GH issue list -R "$RESUME_REPO" --state open --limit 100 \
+        --search "[unit-death] ${unit_sf}" --json number,url \
+        --jq '.[0].url' 2>/dev/null || true)
+    if [ -n "$existing" ]; then
+      if $RESUME_GH issue comment "$existing" -R "$RESUME_REPO" \
+          --body "recurrence ${ts_now}: unit died again (hop=${hop_note}); latest STOP-REASON in \`$SR\`" >/dev/null 2>&1; then
+        issue_rc=0; issue_url="$existing"
+      fi
+    else
+      issue_url=$($RESUME_GH issue create -R "$RESUME_REPO" --title "$title" --body "$body" 2>/dev/null | tail -n1 || true)
+      if [ -n "$issue_url" ]; then issue_rc=0; fi
+    fi
   fi
 
   # findings-ledger row (A(ii): disposition carried_over, ref=issue).
-  if [ -x "$RESUME_FINDINGS_BIN" ]; then
-    "$RESUME_FINDINGS_BIN" append \
-      --source-organ stop-escalation-dispatch \
-      --run-id "${unit_no_sf}-${ts_now}" \
-      --severity error \
-      --title "unit death dispatched: $unit_sf (hop=$hop_note)" \
-      --evidence-ref "${issue_url:-$SR}" \
-      --disposition carried_over \
-      --ref "${issue_url:-issue-create-failed}" \
-      --reason "resume exhausted; agent-ready dispatch per fleet-ops#5456 A(ii)" \
+  if [ -f "$RESUME_FINDINGS_BIN" ]; then
+    local -a _fl_args=(append
+      --source-organ stop-escalation-dispatch
+      --run-id "${unit_no_sf}-${ts_now}"
+      --severity error
+      --title "unit death dispatched: $unit_sf (hop=$hop_note)"
+      --evidence-ref "${issue_url:-$SR}"
+      --disposition carried_over
+      --ref "${issue_url:-issue-create-failed}"
+      --reason "resume exhausted; agent-ready dispatch per fleet-ops#5456 A(ii)")
+    [ -n "$RESUME_FINDINGS_LEDGER" ] && _fl_args+=(--ledger "$RESUME_FINDINGS_LEDGER")
+    python3 "$RESUME_FINDINGS_BIN" "${_fl_args[@]}" \
       >/dev/null 2>&1 || resume_log "WARN: findings-ledger append failed (non-fatal)"
   fi
 
@@ -389,7 +397,12 @@ resume_or_dispatch() {
   # shellcheck source=../lib/seat-lib.sh source-path=SCRIPTDIR
   source "$RESUME_SEAT_LIB"
   local seat PROVIDER MODEL
-  seat=$(pick_seat "" "" "" "" "light" 2>/dev/null || true)
+  # need_capable=1: a pi-systemd-run packet drives tools, so a tools=0 /
+  # flash seat is functionally dead for the relaunch (fleet-ops#1354).
+  # privacy=private: the ledger row does not record the packet's privacy
+  # class, so the resume rail fails closed — never reseat a packet onto a
+  # free-class lane its original dispatch would have excluded (#520).
+  seat=$(pick_seat "" "" 1 "" "light" "private" 2>/dev/null || true)
   if [ -z "$seat" ]; then
     resume_log "no healthy seat for relaunch (walled/benched) — dispatching"
     resume_dispatch_unit "$unit_sf" "$unit_no_sf" "$hop" || return $?

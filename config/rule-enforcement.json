@@ -222,6 +222,13 @@
       "status": "enforced"
     },
     {
+      "id": "sr-nothing-on-the-vps-fails-silently-everything-resumes-nothing",
+      "source": "global-standing-rules.md: Nothing on the VPS fails silently, everything resumes, nothing is duct tape (Nish, 2026-09-11 — NON-NEGOTIABLE, forever)",
+      "mechanism": "Escalation chain terminates in ACTION, never a log: global service.d/10-escalate.conf OnFailure=unit-escalation@%n -> STOP-REASON -> stop-escalation.path -> stop-escalation-dispatch resume-or-dispatch (hop<2 pi-systemd-run packet relaunches --hop+1 on the next healthy seat; hop>=2/non-packet files an agent-ready issue + findings-ledger carried_over row + LOUD triage line). Deliverable contract: pi-systemd-run's ExecStopPost dead-man exits nonzero when --deliverable is missing/empty at stop, so a clean exit-0-without-deliverable still lands the unit failed and fires OnFailure. Resume policy is an allowlist (20-resume.conf declaration + per-unit drop-ins), not a global Restart= — the 2026-09-11 incident proved a global restart restart-loops oneshot canaries into start-limit-hit. Coverage is mechanical: fleet-escalation-canary fails on any loaded unit without the OnFailure hook and hash-asserts both global drop-ins (block 1b); the kill-three-ways drill runs hourly from fleet-heartbeat-tier1 block 5b.",
+      "proof": "bin/stop-escalation-dispatch resume_or_dispatch; bin/pi-detached-deadman verdict exit contract; bin/pi-systemd-run per-unit 90-no-resume.conf + dispatch-ledger launch row; systemd/service.d/20-resume.conf; systemd/pi-packet-failed@.service (fleet-ops#5444 fold-in); bin/fleet-escalation-canary blocks 1+1b; bin/chain-e2e-drill hop 7; bin/fleet-heartbeat-tier1 block 5b; tests/escalation-coverage-canary.test.sh scenario 3b; tests/stop-escalation-dispatch.test.sh; tests/pi-detached-deadman.test.sh",
+      "status": "enforced"
+    },
+    {
       "id": "led-2026-08-28-25-concurrent-workers",
       "source": "decisions-ledger.md: 2026-08-28 | 25 concurrent workers is the standing floor (Nish: \"I want 25 workers on all the time... quality is the bar, it has to keep climbing\")",
       "mechanism": "Amended by Capacity: ceiling accepted — the standing floor is now THE MEASURED SAFE MAXIMUM of netcup-rs2000. Undersaturation below the measured ceiling with ready supply stays a fault (existing undersaturation canary).",

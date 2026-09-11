@@ -438,7 +438,7 @@ write_green_system() {
 LISTEN 0 128 100.108.184.97:22 0.0.0.0:*
 LISTEN 0 128 [fd7a:115c:a1e0::1]:22 [::]:*
 OUT
-  printf 'HC_URL_INTAKE=https://example.invalid/i\nHC_URL_SCOUT=https://example.invalid/s\nHC_URL_RECONCILE=https://example.invalid/r\nHC_URL_RESTORE=https://example.invalid/b\n' \
+  printf 'HC_URL_INTAKE=https://example.invalid/i\nHC_URL_SCOUT=https://example.invalid/s\nHC_URL_RECONCILE=https://example.invalid/r\nHC_URL_RESTORE=https://example.invalid/b\nHC_URL_DETACHED=https://example.invalid/d\n' \
     >"$KEYSTONE_HC_ENV"
 }
 
@@ -709,7 +709,7 @@ ok "unconfigured keystone HC URLs are SKIP + LOUD, not a silent pass"
 
 # Shared keystone URLs (two keystones, same check) are FAIL + LOUD.
 reset_all
-printf 'HC_URL_INTAKE=https://example.invalid/shared\nHC_URL_SCOUT=https://example.invalid/shared\nHC_URL_RECONCILE=https://example.invalid/r\nHC_URL_RESTORE=https://example.invalid/b\n' \
+printf 'HC_URL_INTAKE=https://example.invalid/shared\nHC_URL_SCOUT=https://example.invalid/shared\nHC_URL_RECONCILE=https://example.invalid/r\nHC_URL_RESTORE=https://example.invalid/b\nHC_URL_DETACHED=https://example.invalid/d\n' \
   >"$KEYSTONE_HC_ENV"
 run_drill
 [[ "$drill_rc" -eq 1 ]] || fail "shared keystone URL should fail, rc=$drill_rc out=$drill_out"
@@ -725,7 +725,7 @@ ok "shared keystone HC URLs are FAIL + LOUD"
 
 # Reusing the heartbeat dead-man URL is FAIL + LOUD.
 reset_all
-printf 'HC_URL_INTAKE=https://example.invalid/ping/heartbeat-uuid\nHC_URL_SCOUT=https://example.invalid/s\nHC_URL_RECONCILE=https://example.invalid/r\nHC_URL_RESTORE=https://example.invalid/b\n' \
+printf 'HC_URL_INTAKE=https://example.invalid/ping/heartbeat-uuid\nHC_URL_SCOUT=https://example.invalid/s\nHC_URL_RECONCILE=https://example.invalid/r\nHC_URL_RESTORE=https://example.invalid/b\nHC_URL_DETACHED=https://example.invalid/d\n' \
   >"$KEYSTONE_HC_ENV"
 run_drill
 [[ "$drill_rc" -eq 1 ]] || fail "heartbeat reuse should fail, rc=$drill_rc out=$drill_out"
