@@ -760,12 +760,13 @@ printf '%s\n' "$*" >> "${STOP_ESCALATION_TEST_PIRUN_LOG}"
 exit 0
 EOF
 chmod +x "$scratch/fake-pirun"
+# The dispatcher invokes the findings writer as `python3 <script>` (the
+# canonical lib/findings_ledger.py is not executable), so the fake is python.
 cat >"$scratch/fake-findings" <<'EOF'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >> "${STOP_ESCALATION_TEST_FINDINGS_LOG}"
-exit 0
+import os, sys
+with open(os.environ["STOP_ESCALATION_TEST_FINDINGS_LOG"], "a") as fh:
+    fh.write(" ".join(sys.argv[1:]) + "\n")
 EOF
-chmod +x "$scratch/fake-findings"
 export STOP_ESCALATION_TEST_GH_LOG="$AS/resume-gh.log"
 export STOP_ESCALATION_TEST_HERMES_LOG="$AS/resume-hermes.log"
 export STOP_ESCALATION_TEST_PIRUN_LOG="$AS/resume-pirun.log"
