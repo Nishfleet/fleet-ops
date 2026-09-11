@@ -2422,4 +2422,27 @@ jq -e '.health_class == "quota_bench"' "$SEATD26/devin__swe-2-max.json" >/dev/nu
   || fail "26: a bench written just now must not be probed/cleared: $(cat "$SEATD26/devin__swe-2-max.json")"
 ok "26: a bench younger than 15 min is not probed — the truth probe is owed at min(reset, 15 min) after the write (fleet-ops#5285)"
 
+# --- 27. fleet-ops#5285: a policy bench (daily spend cap) is money — never probed --
+# Same live stub as 24; the seat answers PONG, but its bench is a
+# daily_spend_cap decision. It must stay benched, no lie counted.
+SEATD27="$TMPD/seats27"
+mkdir -p "$SEATD27"
+cat > "$SEATD27/devin__swe-2-max.json" <<'SEAT'
+{"provider":"devin","model":"swe-2-max","http_status":429,"retry_after":null,"health_class":"quota_bench","retryable":true,"seat_dead":false,"poison_ladder":false,"observed_at":"2026-08-30T11:00:00Z","source":"daily_spend_cap","failure_mode":"quota_cap","bench_until":"2026-08-31T00:00:00Z","usable_at":"2026-08-31T00:00:00Z","bench_window_s":43200,"consecutive_failure_count":1,"writer":"provider_daily_budget"}
+SEAT
+ST27="$TMPD/state27.json"; PROM27="$TMPD/release27.prom"
+set +e
+PI_SEAT_HEALTH_LEDGER_DIR="$SEATD27" SEAT_CAPS_JSON="$TMPD/seat-caps24.json" \
+    FLEET_SEAT_COMEBACK_STATE="$ST27" FLEET_SEAT_COMEBACK_PROM="$PROM27" \
+    FLEET_SEAT_COMEBACK_NOW="$NOW_ISO" PI_BIN="$TMPD/pi-pong-true" \
+    bash "$BIN" --false-wall-only >/dev/null 2>"$TMPD/run27.err"
+rc=$?
+set -e
+[[ "$rc" == "0" ]] || fail "27: policy-bench sweep must exit 0, got $rc ($(cat "$TMPD/run27.err"))"
+jq -e '.health_class == "quota_bench" and .source == "daily_spend_cap" and .bench_until != null' "$SEATD27/devin__swe-2-max.json" >/dev/null \
+  || fail "27: a daily_spend_cap bench must never be probed or cleared: $(cat "$SEATD27/devin__swe-2-max.json")"
+grep -qE "PONG probe devin/swe-2-max|SEAT-WALL-FALSE" "$TMPD/run27.err" \
+  && fail "27: a policy bench must not be PONG-probed at all: $(cat "$TMPD/run27.err")"
+ok "27: a policy bench (daily_spend_cap) is money — not probed, not cleared, not counted (fleet-ops#5285)"
+
 echo "ALL OK: active come-back release path (fleet-ops#2421) + force-probe-on-overdue-usable_at + corpse-at-threshold + never-released metric (fleet-ops#2638) + own-streak corpse + interval-breach loud check (fleet-ops#2806) + no-wall corpse second-chance re-probe / explicit retire (fleet-ops#3156) + extension-reclassify race (fleet-ops#3179) + PQE 1h==1h deadlock fix (fleet-ops#3176) + skip-corpse-on-reanchored-wall (fleet-ops#3301) + phantom retirement + real-non-caps-seat re-probe (fleet-ops#3993) + spawn-bench-held 402 skip (fleet-ops#4659) + false-wall PONG release (fleet-ops#4640)"

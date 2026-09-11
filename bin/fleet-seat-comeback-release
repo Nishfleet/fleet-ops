@@ -458,7 +458,14 @@ ledger_is_money_wall() {
     st=$(jq -r '.http_status // 0' "$f" 2>/dev/null || true)
     fm=$(jq -r '.failure_mode // ""' "$f" 2>/dev/null || true)
     [[ "$src" == "money_boundary" ]] && return 0
-    [[ "$hc" == "quota_exhausted" ]] && return 0
+    # fleet-ops#5285: policy benches are decisions, not observations — a
+    # daily spend cap, a free-tier daily budget or a spend boundary is money
+    # and is never PONG-probed or cleared (DECISION 2026-09-11). The first
+    # pre-merge proof run cleared deepseek/deepseek-flash's daily_spend_cap
+    # bench; this is the lock against that.
+    case "$src" in
+        daily_spend_cap|free_daily_budget|spend_boundary|provider_daily_budget|product_only_spend_cap) return 0 ;;
+    esac
     [[ "$fm" == "quota_exhausted" ]] && return 0
     [[ "$st" == "402" ]] && return 0
     return 1
