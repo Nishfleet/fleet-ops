@@ -3044,6 +3044,12 @@ seat_spawn_bench_path() {
 _seat_wall_source_justified() {
     case "${1:-}" in
         money_boundary|provider_quota_window) return 0 ;;
+        # fleet-ops#5274: a permanent corpse from an OpenRouter 404
+        # "unavailable for free" is a provider retirement, not a lane fault —
+        # the provider's own 404 body is the evidence, and the seat-caps.json
+        # intentional_cap_zero=corpse entry is the standing declaration. The
+        # corpse marker's usable_at is far-future by design (terminal wall).
+        free_retired_corpse) return 0 ;;
     esac
     return 1
 }
@@ -7130,6 +7136,7 @@ mark_seat_empty_success() {
 _matcher_dispatch() {
     local matcher="$1" out="$2" err="$3"
     case "$matcher" in
+        is_openrouter_free_retired_error) is_openrouter_free_retired_error "$out" "$err" ;;
         is_quota_cap_error) is_quota_cap_error "$out" "$err" ;;
         is_overload_error)  is_overload_error "$out" "$err" ;;
         *)                  return 1 ;;
@@ -7143,6 +7150,7 @@ _matcher_dispatch() {
 _writer_dispatch() {
     local writer="$1" p="$2" m="$3" text="$4"
     case "$writer" in
+        mark_seat_free_retired_corpse) mark_seat_free_retired_corpse "$p" "$m" "$text" ;;
         mark_seat_quota_bench)    mark_seat_quota_bench "$p" "$m" "$text" ;;
         mark_seat_overload_bench) mark_seat_overload_bench "$p" "$m" "$text" ;;
         *)                        return 1 ;;
@@ -7229,7 +7237,9 @@ classify_death_error() {
     [[ -n "$out" && -f "$out" ]] && out_text=$(cat "$out" 2>/dev/null || true)
     [[ -n "$err" && -f "$err" ]] && err_text=$(cat "$err" 2>/dev/null || true)
     local cls="unknown"
-    if is_quota_cap_error "$out_text" "$err_text"; then
+    if is_openrouter_free_retired_error "$out_text" "$err_text"; then
+        cls="openrouter_free_retired"
+    elif is_quota_cap_error "$out_text" "$err_text"; then
         cls="quota_cap"
     elif is_overload_error "$out_text" "$err_text"; then
         cls="overload_503"
@@ -7784,6 +7794,55 @@ is_quota_cap_error() {
         return 0
     fi
     return 1
+}
+
+# fleet-ops#5274: OpenRouter retired the free tier of a model. The upstream
+# body is HTTP 404 {"message":"This model is unavailable for free. The paid
+# version is available now - use this slug instead: <paid-slug>"}. Neither
+# is_quota_cap_error (quota words) nor is_overload_error (503) matches it, so
+# pi-issue-run booked error_class=unknown, benched 300s, and the corpse seat
+# was re-offered every restart (pi-issue@0509-2724, 8 reclaims). The 404 is
+# PERMANENT: OpenRouter's /api/v1/models no longer lists the slug. Match it
+# explicitly so it classifies as a corpse, not a transient bench.
+is_openrouter_free_retired_error() {
+    local out="$1" err="$2"
+    local combined="$out"$'\n'"$err"
+    [[ -n "${combined//$'\n'/}" ]] || return 1
+    # fleet-ops#5274: require BOTH a 404 status token and OpenRouter's exact
+    # 'unavailable for free' phrase — a bare 404, a 503 overload, or a quota
+    # body alone must never corpse a seat.
+    grep -qiE '404' <<<"$combined" \
+        && grep -qiE 'unavailable[[:space:]_-]+for[[:space:]]+free' <<<"$combined"
+}
+
+# mark_seat_free_retired_corpse <provider> <model> [error_text]
+# Permanent-corpse writer for the free_retired_corpse error class (fleet-ops#5274
+# row in seat-caps.json's error_classes registry). Composes the existing corpse
+# pieces instead of adding an organ: write_parked_ledger writes the terminal
+# seat_dead=true ledger, _seat_merge_error_class stamps the classifiable class
+# + literal on top, and _seat_write_spawn_bench (seat_dead=true, far-future,
+# source=free_retired_corpse) carries the corpse onto the clobber-proof marker
+# so the false-healthy transport-200 clobber (fleet-ops#3889) cannot resurrect
+# it. Best-effort: a marker failure does not undo the ledger.
+mark_seat_free_retired_corpse() {
+    local p="$1" m="$2" text="${3:-}"
+    # fleet-ops#3661: never write a ledger for a phantom seat key.
+    if ! _seat_key_guard "$p" "$m" "mark_seat_free_retired_corpse"; then return 1; fi
+    if _transport_is_down; then _mark_transport_down "$p" "$m"; return 1; fi
+    local lit="${text:0:300}"
+    if ! write_parked_ledger "$p" "$m" \
+        "free-retired corpse: OpenRouter 404 unavailable-for-free is PERMANENT (provider retired the free tier; cap=0 intentional_cap_zero=corpse, fleet-ops#5274): $lit"; then
+        return 1
+    fi
+    _seat_merge_error_class "$p" "$m" "openrouter_free_retired" \
+        "OpenRouter 404 unavailable-for-free — permanent corpse (fleet-ops#5274): $lit" 2>/dev/null || true
+    local now_s far_future
+    now_s=$(date -u +%s)
+    far_future=$(date -u -d "@$((now_s + 315360000))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
+    _seat_write_spawn_bench "$p" "$m" "$far_future" \
+        "openrouter 404 unavailable-for-free — permanent corpse (fleet-ops#5274)" \
+        0 1 "free_retired_404" "true" "free_retired_corpse" 2>/dev/null || true
+    return 0
 }
 
 # Bench a seat for a quota/cap wall. Args: provider model [error_text]
