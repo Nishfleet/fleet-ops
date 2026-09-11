@@ -161,44 +161,58 @@ resolve_dep() {
 depends_on_filter() {
     local body="$1" repo="$2" num="$3"
     local ref owner rname target_num dep_key dep_state dep_body
+    local gate_re skip_reason gi
     local -a deps=()
 
-    mapfile -t deps < <(printf '%s\n' "$body" \
-        | grep -E '^depends-on:' \
-        | grep -oE '#[0-9]+|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+' || true)
-    (( ${#deps[@]} == 0 )) && return 0
+    local -a _gate_res=(
+        '^depends-on:'
+        '^collision-gate([[:space:]]*\([^)]*\))?[[:space:]]*:'
+    )
+    local -a _gate_reasons=('skipped-depends-on' 'skipped-collision-gate')
 
-    for ref in "${deps[@]}"; do
-        if [[ "$ref" =~ ^#([0-9]+)$ ]]; then
-            owner="${repo%%/*}"; rname="${repo#*/}"; target_num="${BASH_REMATCH[1]}"
-        elif [[ "$ref" =~ ^([^/]+)/([^/]+)#([0-9]+)$ ]]; then
-            owner="${BASH_REMATCH[1]}"; rname="${BASH_REMATCH[2]}"; target_num="${BASH_REMATCH[3]}"
-        else
-            continue
-        fi
-        dep_key="${owner}/${rname}#${target_num}"
+    for gi in 0 1; do
+        gate_re="${_gate_res[$gi]}"
+        skip_reason="${_gate_reasons[$gi]}"
 
-        if [[ -n "${_dep_state_cache[$dep_key]:-}" ]]; then
-            dep_state="${_dep_state_cache[$dep_key]}"
-        else
-            dep_state="$(resolve_dep "$owner" "$rname" "$target_num")"
-            _dep_state_cache[$dep_key]="$dep_state"
-        fi
-        if [[ "$dep_state" != "DONE" ]]; then
-            if [[ -n "${_dep_body_cache[$dep_key]:-}" ]]; then
-                dep_body="${_dep_body_cache[$dep_key]}"
+        mapfile -t deps < <(printf '%s\n' "$body" \
+            | grep -E "$gate_re" \
+            | grep -oE '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+|[A-Za-z0-9_.-]+#[0-9]+|#[0-9]+' || true)
+        (( ${#deps[@]} == 0 )) && continue
+
+        for ref in "${deps[@]}"; do
+            if [[ "$ref" =~ ^#([0-9]+)$ ]]; then
+                owner="${repo%%/*}"; rname="${repo#*/}"; target_num="${BASH_REMATCH[1]}"
+            elif [[ "$ref" =~ ^([^/]+)/([^/]+)#([0-9]+)$ ]]; then
+                owner="${BASH_REMATCH[1]}"; rname="${BASH_REMATCH[2]}"; target_num="${BASH_REMATCH[3]}"
             else
-                dep_body="$(gh issue view "$target_num" -R "${owner}/${rname}" --json body --jq '.body // ""' 2>/dev/null || true)"
-                _dep_body_cache[$dep_key]="$dep_body"
+                continue
             fi
-            if printf '%s\n' "$dep_body" | grep -E '^depends-on:' \
-                | grep -qE "#${num}\b|${repo}#${num}\b"; then
-                echo "depends-on-cycle"
+            dep_key="${owner}/${rname}#${target_num}"
+
+            if [[ -n "${_dep_state_cache[$dep_key]:-}" ]]; then
+                dep_state="${_dep_state_cache[$dep_key]}"
+            else
+                dep_state="$(resolve_dep "$owner" "$rname" "$target_num")"
+                _dep_state_cache[$dep_key]="$dep_state"
+            fi
+            if [[ "$dep_state" != "DONE" ]]; then
+                if [[ "$skip_reason" == "skipped-depends-on" ]]; then
+                    if [[ -n "${_dep_body_cache[$dep_key]:-}" ]]; then
+                        dep_body="${_dep_body_cache[$dep_key]}"
+                    else
+                        dep_body="$(gh issue view "$target_num" -R "${owner}/${rname}" --json body --jq '.body // ""' 2>/dev/null || true)"
+                        _dep_body_cache[$dep_key]="$dep_body"
+                    fi
+                    if printf '%s\n' "$dep_body" | grep -E '^depends-on:' \
+                        | grep -qE "#${num}\b|${repo}#${num}\b"; then
+                        echo "depends-on-cycle"
+                        return 1
+                    fi
+                fi
+                echo "${skip_reason}:${ref}"
                 return 1
             fi
-            echo "skipped-depends-on:$ref"
-            return 1
-        fi
+        done
     done
     return 0
 }

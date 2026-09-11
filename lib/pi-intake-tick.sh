@@ -629,77 +629,118 @@ blocked_filter() {
     return 0
 }
 
-# fleet-ops#4808: depends-on gate. An agent-ready issue can carry a body
-# `depends-on:` line naming issues/PRs that must be DONE before it is
-# claimable (e.g. a seam batch where #2218 must land before the six sources
-# that depend on it). Claiming such an issue spawns a worker that cannot
-# make progress — it would have to hand-gate by removing agent-ready. This
-# filter resolves each named dependency and skips the issue (stays
-# agent-ready, no de-label) until every dependency is DONE.
+# fleet-ops#4808 + fleet-ops#5165: ticket-gate filter. An agent-ready issue
+# can carry body gate lines naming issues/PRs that must be DONE before it is
+# claimable:
+#   - `depends-on:` — ordering dependencies (e.g. a seam batch where #2218
+#     must land before the six sources that depend on it), and
+#   - `collision-gate:` — the 0509 ticket format's same-file blockers
+#     ("collision-gate (Fable <ts>): shares <file> with #a, #b"). The gate
+#     also lives in Fable's judge packet and ticket-gates.json, but the body
+#     line is the ticket's own declaration and is honoured even when the
+#     gate file is stale or absent. 0509#2408 was claimed past an open
+#     blocker because nothing parsed the line — one wasted worker slot, and
+#     a same-file PR racing the blocker on a worse day.
+# Claiming such an issue spawns a worker that cannot make progress — it
+# would have to hand-gate by removing agent-ready. This filter resolves
+# each named ticket and skips the issue (stays agent-ready, no de-label)
+# until every named ticket is DONE.
 #
-# A dependency is DONE when the referenced issue is:
+# A named ticket is DONE when the referenced issue is:
 #   - closed (state=closed), OR
 #   - has a merged PR whose branch is claim/issue-<n> or fable/issue-<n>, OR
 #   - has any merged PR linked via "closes #n" (a cross-referenced PR).
 #
 # Cycle: if A depends on B and B depends on A, neither can ever be DONE
 # while the other is open, so both are skipped with `depends-on-cycle`
-# instead of a misleading `skipped-depends-on:#n`.
+# instead of a misleading `skipped-depends-on:#n`. (depends-on only —
+# collision gates are one-directional: the later ticket names the earlier
+# blockers it must not race.)
+#
+# Ref shapes: `#<n>` (same repo) and `owner/repo#<n>` (cross-repo). An
+# org-less `repo#<n>` token — e.g. the "permanent fix fleet-ops#4808"
+# trailer every 0509 collision-gate line carries — is NOT a ref and is
+# ignored; sliced to `#<n>` it would resolve in the wrong repo and wedge
+# the gate on a nonexistent same-repo issue.
 #
 # Caching: resolution is memoised per tick in the _dep_state_cache and
 # _dep_body_cache associative arrays (one gh call per referenced issue per
-# tick), so a dependency named by many issues costs one lookup.
+# tick), so a ticket named by many issues costs one lookup.
 #
 # Args: $1=body  $2=repo (Nishfleet/<repo>)  $3=issue number
-# Returns: 0 = claimable (no deps, or all deps DONE); 1 = skip. On skip,
-# prints the reason (skipped-depends-on:#n or depends-on-cycle) to stdout.
+# Returns: 0 = claimable (no gate refs, or all DONE); 1 = skip. On skip,
+# prints the reason (skipped-depends-on:#n, skipped-collision-gate:#n, or
+# depends-on-cycle) to stdout.
 depends_on_filter() {
     local body="$1" repo="$2" num="$3"
     local ref owner rname target_num dep_key dep_state dep_body
+    local gate_re skip_reason gi
     local -a deps=()
 
-    # Parse the depends-on: line(s). Extract every #<n> (same repo) and
-    # owner/repo#<n>; prose like "none" or "any of" yields no refs.
-    mapfile -t deps < <(printf '%s\n' "$body" \
-        | grep -E '^depends-on:' \
-        | grep -oE '#[0-9]+|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+' || true)
-    (( ${#deps[@]} == 0 )) && return 0
+    # Gate line regex -> skip reason. depends-on is checked first: when both
+    # lines name unmet tickets the ordering gate's reason is the more
+    # actionable one. The collision-gate line may carry a parenthetical
+    # annotation before the colon ("collision-gate (Fable <ts>):").
+    local -a _gate_res=(
+        '^depends-on:'
+        '^collision-gate([[:space:]]*\([^)]*\))?[[:space:]]*:'
+    )
+    local -a _gate_reasons=('skipped-depends-on' 'skipped-collision-gate')
 
-    for ref in "${deps[@]}"; do
-        if [[ "$ref" =~ ^#([0-9]+)$ ]]; then
-            owner="${repo%%/*}"; rname="${repo#*/}"; target_num="${BASH_REMATCH[1]}"
-        elif [[ "$ref" =~ ^([^/]+)/([^/]+)#([0-9]+)$ ]]; then
-            owner="${BASH_REMATCH[1]}"; rname="${BASH_REMATCH[2]}"; target_num="${BASH_REMATCH[3]}"
-        else
-            continue  # unparseable ref — ignore
-        fi
-        dep_key="${owner}/${rname}#${target_num}"
+    for gi in 0 1; do
+        gate_re="${_gate_res[$gi]}"
+        skip_reason="${_gate_reasons[$gi]}"
 
-        # Resolve the dependency's DONE state (memoised per tick).
-        if [[ -n "${_dep_state_cache[$dep_key]:-}" ]]; then
-            dep_state="${_dep_state_cache[$dep_key]}"
-        else
-            dep_state="$(resolve_dep "$owner" "$rname" "$target_num")"
-            _dep_state_cache[$dep_key]="$dep_state"
-        fi
-        if [[ "$dep_state" != "DONE" ]]; then
-            # Cycle detection: does the dependency itself depend on THIS
-            # issue? (A depends on B depends on A.) Fetch the dependency's
-            # body (memoised) and check its depends-on: line.
-            if [[ -n "${_dep_body_cache[$dep_key]:-}" ]]; then
-                dep_body="${_dep_body_cache[$dep_key]}"
+        # Parse the gate line(s). Candidate refs are emitted in
+        # leftmost-longest order so an org-less `repo#<n>` token survives
+        # intact for the shape check below to drop — the bare-`#<n>`
+        # alternative alone would slice `#4808` out of `fleet-ops#4808` and
+        # resolve it in the wrong repo. Prose like "none" or "any of" yields
+        # no refs.
+        mapfile -t deps < <(printf '%s\n' "$body" \
+            | grep -E "$gate_re" \
+            | grep -oE '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+|[A-Za-z0-9_.-]+#[0-9]+|#[0-9]+' || true)
+        (( ${#deps[@]} == 0 )) && continue
+
+        for ref in "${deps[@]}"; do
+            if [[ "$ref" =~ ^#([0-9]+)$ ]]; then
+                owner="${repo%%/*}"; rname="${repo#*/}"; target_num="${BASH_REMATCH[1]}"
+            elif [[ "$ref" =~ ^([^/]+)/([^/]+)#([0-9]+)$ ]]; then
+                owner="${BASH_REMATCH[1]}"; rname="${BASH_REMATCH[2]}"; target_num="${BASH_REMATCH[3]}"
             else
-                dep_body="$(gh issue view "$target_num" -R "${owner}/${rname}" --json body --jq '.body // ""' 2>/dev/null || true)"
-                _dep_body_cache[$dep_key]="$dep_body"
+                continue  # not a ref shape (org-less repo#n etc.) — ignore
             fi
-            if printf '%s\n' "$dep_body" | grep -E '^depends-on:' \
-                | grep -qE "#${num}\b|${repo}#${num}\b"; then
-                echo "depends-on-cycle"
+            dep_key="${owner}/${rname}#${target_num}"
+
+            # Resolve the named ticket's DONE state (memoised per tick).
+            if [[ -n "${_dep_state_cache[$dep_key]:-}" ]]; then
+                dep_state="${_dep_state_cache[$dep_key]}"
+            else
+                dep_state="$(resolve_dep "$owner" "$rname" "$target_num")"
+                _dep_state_cache[$dep_key]="$dep_state"
+            fi
+            if [[ "$dep_state" != "DONE" ]]; then
+                if [[ "$skip_reason" == "skipped-depends-on" ]]; then
+                    # Cycle detection: does the dependency itself depend on
+                    # THIS issue? (A depends on B depends on A.) Fetch the
+                    # dependency's body (memoised) and check its depends-on:
+                    # line.
+                    if [[ -n "${_dep_body_cache[$dep_key]:-}" ]]; then
+                        dep_body="${_dep_body_cache[$dep_key]}"
+                    else
+                        dep_body="$(gh issue view "$target_num" -R "${owner}/${rname}" --json body --jq '.body // ""' 2>/dev/null || true)"
+                        _dep_body_cache[$dep_key]="$dep_body"
+                    fi
+                    if printf '%s\n' "$dep_body" | grep -E '^depends-on:' \
+                        | grep -qE "#${num}\b|${repo}#${num}\b"; then
+                        echo "depends-on-cycle"
+                        return 1
+                    fi
+                fi
+                echo "${skip_reason}:${ref}"
                 return 1
             fi
-            echo "skipped-depends-on:$ref"
-            return 1
-        fi
+        done
     done
     return 0
 }
