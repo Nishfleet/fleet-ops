@@ -353,10 +353,15 @@ run_backfill() {
     mkdir -p "$bf_dir"
 
     # Open + closed issue titles (read-only) for the signature pre-filter.
+    # Closed issues also carry labels + closedByPullRequestsReferences, and a
+    # wide merged-PR set is fetched, so the closed-but-undelivered gate can
+    # re-verify reconstructed findings against live state (fleet-ops#5479).
     gh issue list -R "$REPO" --state open --json number,title -L 500 \
         >"$bf_dir/open-$NOW_DIR.json" 2>/dev/null || printf '[]\n' >"$bf_dir/open-$NOW_DIR.json"
-    gh issue list -R "$REPO" --state closed --json number,title,closedAt -L 500 \
+    gh issue list -R "$REPO" --state closed --json number,title,labels,closedAt,closedByPullRequestsReferences -L 500 \
         >"$bf_dir/closed-$NOW_DIR.json" 2>/dev/null || printf '[]\n' >"$bf_dir/closed-$NOW_DIR.json"
+    gh pr list -R "$REPO" --state merged --json number -L 500 \
+        >"$bf_dir/merged-$NOW_DIR.json" 2>/dev/null || printf '[]\n' >"$bf_dir/merged-$NOW_DIR.json"
 
     # One python stage: reconstruct unfiled PASS verdicts (matched into the
     # persisted findings.json of each report dir), dedupe by signature across
@@ -367,9 +372,11 @@ run_backfill() {
     local bf_stats
     bf_stats=$(python3 - "$STATE_DIR/reports" "$since" \
         "$bf_dir/open-$NOW_DIR.json" "$bf_dir/closed-$NOW_DIR.json" "$queue" \
-        "$SEAM_LIB" <<'BF'
+        "$SEAM_LIB" \
+        "${AUDIT_CLOSED_UNDELIVERED_LIB:-$repo_fallback/lib/closed-undelivered-gate.py}" \
+        "$bf_dir/merged-$NOW_DIR.json" <<'BF'
 import hashlib, json, os, re, sys
-reports_root, since, open_path, closed_path, out, lens_path = sys.argv[1:7]
+reports_root, since, open_path, closed_path, out, lens_path, cud_path, merged_path = sys.argv[1:9]
 SEV = {"blocker": 0, "critical": 0, "high": 1, "medium": 2}
 
 def sig(seed):
@@ -470,6 +477,37 @@ if _escal_re is not None:
             del seen[s]
             auto_dropped += 1
 
+# fleet-ops#5479: a reconstructed closed-but-undelivered finding can be stale
+# by file time — the referencing PR may have merged between the source run
+# and the backfill (#4896 flagged 08:50Z, its PR #4897 merged 10:42Z, the
+# finding filed next day). Re-run the live gate over the just-fetched closed
+# issues + merged set and drop findings it no longer flags. Fail-soft: an
+# import/fetch error skips the re-check and leaves the panel to judge.
+cud_dropped = 0
+_cud_live = None
+try:
+    _spec = _ilu.spec_from_file_location("closed_undelivered_gate", cud_path)
+    _cug = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_cug)
+    _closed_now = json.load(open(closed_path, encoding="utf-8"))
+    _merged_now = json.load(open(merged_path, encoding="utf-8"))
+    if isinstance(_closed_now, list) and isinstance(_merged_now, list):
+        _cud_live = set()
+        for _lf in (_cug.hunt({"closed_issues": _closed_now,
+                              "merged_prs": _merged_now}).get("findings") or []):
+            _lm = re.search(r"issue #(\d+)", _lf.get("title") or "")
+            if _lm:
+                _cud_live.add(_lm.group(1))
+except Exception as _e:
+    print("backfill filter: closed-undelivered re-check failed (%s); no stale-drop" % _e, file=sys.stderr)
+if _cud_live is not None:
+    for s, f in list(seen.items()):
+        _t = f.get("title") or ""
+        _m = re.search(r"issue #(\d+)", _t) if _t.startswith("closed-but-undelivered:") else None
+        if _m and _m.group(1) not in _cud_live:
+            del seen[s]
+            cud_dropped += 1
+
 kept, pre_dropped = [], 0
 for s, f in seen.items():
     if tkey(f.get("title")) in issued:
@@ -482,8 +520,8 @@ kept.sort(key=lambda f: (f["sev_rank"], f.get("first_run") or ""))
 with open(out, "w", encoding="utf-8") as fh:
     for f in kept:
         fh.write(json.dumps(f) + "\n")
-print("reconstructed=%d unique=%d dupes_across_runs=%d auto_escalation_dropped=%d dropped_vs_issue=%d queue=%d lost=%s no_verdicts=%s"
-      % (len(rows), len(seen) + dups, dups, auto_dropped, pre_dropped, len(kept), json.dumps(lost), json.dumps(no_verdicts)))
+print("reconstructed=%d unique=%d dupes_across_runs=%d auto_escalation_dropped=%d cud_resolved_dropped=%d dropped_vs_issue=%d queue=%d lost=%s no_verdicts=%s"
+      % (len(rows), len(seen) + dups, dups, auto_dropped, cud_dropped, pre_dropped, len(kept), json.dumps(lost), json.dumps(no_verdicts)))
 BF
 )
     log "backfill reconstruct: $bf_stats"
