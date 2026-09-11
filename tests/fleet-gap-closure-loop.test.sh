@@ -785,7 +785,58 @@ PI_AUDIT_INSTANCE=nojson-token GAP_LOOP_STATE_DIR="$state_dir" \
   PI_AUDIT_PI_BIN="$scratch/bin/fake-pi-nojson" "$audit_run" nojson-token
 [[ "$(jq -r '.reason' "$scratch/pkt/nojson.json")" == "pi output was not valid JSON" ]] \
   || fail "prose-only output must still file the generic refusal, got $(cat "$scratch/pkt/nojson.json")"
+[[ "$(jq -r '.vote' "$scratch/pkt/nojson.json")" == "NOT-DONE" ]] \
+  || fail "generic refusal must vote NOT-DONE, got $(cat "$scratch/pkt/nojson.json")"
+[[ -n "$(jq -r '.raw // ""' "$scratch/pkt/nojson.json")" ]] \
+  || fail "generic refusal must carry a non-empty raw excerpt for diagnostics, got $(cat "$scratch/pkt/nojson.json")"
 ok "fleet-gap-closure-auditor keeps the generic refusal for prose-only output"
+
+# 4b2. large prose output -> the refusal still files, and the diagnostic raw
+# excerpt stays bounded (<= 2000 bytes) so a multi-KB narration dump never
+# reaches the conference tally (fleet-ops#5398). Pins the bound so refactors
+# of the excerpt capture cannot silently drop or unbound it.
+cat >"$scratch/bin/fake-pi-bigprose" <<'FAKE'
+#!/usr/bin/env bash
+python3 -c "import sys; sys.stdout.write('Still deliberating, no verdict JSON in sight. ' * 1200)"
+FAKE
+chmod +x "$scratch/bin/fake-pi-bigprose"
+jobdir="$state_dir/pi-audit-jobs/bigprose-token"
+mkdir -p "$jobdir"
+jq -n -c --arg packet "$scratch/pkt/packet.md" --arg stdout "$scratch/pkt/bigprose.json" \
+  '{token:"bigprose-token",provider:"devin",model:"glm-5-2",packet:$packet,stdout:$stdout,mode:"termination",round:"1",auditor:"glm-5-2"}' \
+  >"$jobdir/job.json"
+PI_AUDIT_INSTANCE=bigprose-token GAP_LOOP_STATE_DIR="$state_dir" \
+  PI_SEAT_HEALTH_LEDGER_DIR="$state_dir/seats" PI_SEAT_HEALTH_FILE="$scratch/pi-seat-health.json" \
+  PI_AUDIT_PI_BIN="$scratch/bin/fake-pi-bigprose" "$audit_run" bigprose-token
+[[ "$(jq -r '.vote' "$scratch/pkt/bigprose.json")" == "NOT-DONE" ]] \
+  || fail "large prose output must still file a NOT-DONE refusal, got $(cat "$scratch/pkt/bigprose.json")"
+[[ "$(jq -r '.reason' "$scratch/pkt/bigprose.json")" == "pi output was not valid JSON" ]] \
+  || fail "large prose refusal must keep the cycle-15 reason, got $(cat "$scratch/pkt/bigprose.json")"
+[[ "$(jq -r '.raw // "" | utf8bytelength' "$scratch/pkt/bigprose.json")" -le 2000 ]] \
+  || fail "raw excerpt must stay bounded at 2000 bytes, got $(jq -r '.raw | utf8bytelength' "$scratch/pkt/bigprose.json")"
+[[ -n "$(jq -r '.raw // ""' "$scratch/pkt/bigprose.json")" ]] \
+  || fail "large prose refusal must carry a non-empty raw excerpt, got $(cat "$scratch/pkt/bigprose.json")"
+ok "fleet-gap-closure-auditor bounds the refusal raw excerpt (<= 2000 bytes)"
+
+# 4b3. pi exits 0 with empty output -> the refusal still files (the tally
+# must keep moving) and raw may legitimately be empty (fleet-ops#5398).
+cat >"$scratch/bin/fake-pi-empty" <<'FAKE'
+#!/usr/bin/env bash
+FAKE
+chmod +x "$scratch/bin/fake-pi-empty"
+jobdir="$state_dir/pi-audit-jobs/empty-token"
+mkdir -p "$jobdir"
+jq -n -c --arg packet "$scratch/pkt/packet.md" --arg stdout "$scratch/pkt/empty.json" \
+  '{token:"empty-token",provider:"devin",model:"glm-5-2",packet:$packet,stdout:$stdout,mode:"termination",round:"1",auditor:"glm-5-2"}' \
+  >"$jobdir/job.json"
+PI_AUDIT_INSTANCE=empty-token GAP_LOOP_STATE_DIR="$state_dir" \
+  PI_SEAT_HEALTH_LEDGER_DIR="$state_dir/seats" PI_SEAT_HEALTH_FILE="$scratch/pi-seat-health.json" \
+  PI_AUDIT_PI_BIN="$scratch/bin/fake-pi-empty" "$audit_run" empty-token
+[[ "$(jq -r '.vote' "$scratch/pkt/empty.json")" == "NOT-DONE" ]] \
+  || fail "empty output must still file a NOT-DONE refusal, got $(cat "$scratch/pkt/empty.json")"
+[[ "$(jq -r '.reason' "$scratch/pkt/empty.json")" == "pi output was not valid JSON" ]] \
+  || fail "empty output refusal must keep the cycle-15 reason, got $(cat "$scratch/pkt/empty.json")"
+ok "fleet-gap-closure-auditor files the refusal even for empty pi output"
 
 # 4c. research-mode jobs recover the adopted/deltas shape, not a vote object.
 cat >"$scratch/bin/fake-pi-research" <<'FAKE'
