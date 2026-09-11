@@ -44,12 +44,6 @@ trap 'rm -rf "$scratch"' EXIT INT TERM
 # =========================================================================
 # 1. resolve_repos: FLEET_SCOUT_EFF_REPOS wins; default = enrolled repos
 # =========================================================================
-# fleet-ops#5385: the "default" path reads an intake-repos.json; pin it to a
-# fixture so the test proves the resolver, not today's enrolment (0509 can be
-# TEMPORARY-deferred during a declared window).
-_intake_fx="$(mktemp -t scout-eff-intake.XXXXXX)"
-printf '%s\n' '{"repos":[{"name":"0509","product":true},{"name":"fleet-ops"}],"deferred":[],"excluded":[]}' >"$_intake_fx"
-export FLEET_SCOUT_EFF_INTAKE="$_intake_fx"
 python3 - "$helper" <<'PY' || fail "resolve_repos failed"
 import importlib.util, os, sys
 spec = importlib.util.spec_from_file_location("se", sys.argv[1])

@@ -57,14 +57,6 @@ command -v jq >/dev/null 2>&1 || fail "jq required"
 scratch="$(mktemp -d -t product-slo-test.XXXXXX)"
 trap 'rm -rf "$scratch"' EXIT INT TERM
 
-# fleet-ops#5385: pin enrolment in a fixture derived from the live file. This
-# test is about the product/self-maintenance split, not about whether 0509 is
-# enrolled today (it can be TEMPORARY-deferred during a declared window).
-jq '.repos = ([{name:"0509",product:true}] + [.repos[]|select(.name!="0509")])
-    | .deferred = [(.deferred // [])[]|select(.name!="0509")]' "$intake" \
-  > "$scratch/intake-repos.json" || fail "intake fixture build failed"
-intake="$scratch/intake-repos.json"
-
 # Fixed "now": 2026-09-02T12:00:00Z
 NOW_ISO="2026-09-02T12:00:00Z"
 NOW_TS=1788350400

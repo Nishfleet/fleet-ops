@@ -68,19 +68,10 @@ sorted="$(printf '%s\n' "$names" | LC_ALL=C sort)"
 # 6b. 0509 is the only product repo in active supply and fleet-ops is the only
 #     control-plane repo (decisions ledger 2026-08-27: fleet-ops precedence
 #     over 0509, for now). Any other product must stay in deferred[].
-#     Exception (Nish, 2026-09-11, fleet-ops#5385): 0509 may sit in deferred[]
-#     during a declared TEMPORARY window (reason starts with "TEMPORARY"), e.g.
-#     the main history-rewrite pause; then repos must be exactly fleet-ops.
 expected_repos='["0509","fleet-ops"]'
 got_repos="$(jq -c '.repos | map(.name)' "$file")"
-temp_0509="$(jq -r '.deferred[]? | select(.name=="0509") | .reason // "" | startswith("TEMPORARY")' "$file")"
-if [[ "$temp_0509" == "true" ]]; then
-  [[ "$got_repos" == '["fleet-ops"]' ]] \
-    || fail "0509 is TEMPORARY-deferred, so repos must be exactly fleet-ops, got $got_repos"
-else
-  [[ "$got_repos" == "$expected_repos" ]] \
-    || fail "repos must be exactly 0509 + fleet-ops (2026-08-27 fleet-ops precedence), got $got_repos"
-fi
+[[ "$got_repos" == "$expected_repos" ]] \
+  || fail "repos must be exactly 0509 + fleet-ops (2026-08-27 fleet-ops precedence), got $got_repos"
 
 # 7. no repo in both repos and excluded.
 excluded_names="$(jq -r '.excluded[].name' "$file")"
