@@ -299,11 +299,14 @@ for i in 1 2 3 4 5 6 7 8; do
 done
 ok "_dispatch: overload bench escalates 600->1200->2400...21600 (geometric, capped, fleet-ops#3531)"
 
-# --- 8. quota bench escalates geometrically, capped at 6h, parks at 20 -----
+# --- 8. default-driven quota windows stay at the #5285 probe cap (900s) ---
+# #3531 geometric doubling (900->1800->...) is clamped by
+# SEAT_QUOTA_BENCH_DEFAULT_MAX_S so a ClinePass-class guess is re-probed
+# every 15 min instead of becoming a multi-hour unprobed wall.
 rm -f "$LEDGER"/*.json 2>/dev/null || true
 p_d="devin"; m_d="swe-1-7"
 quota_no_window2='INFERENCE_CAP_ERROR: weekly Clinepass limit'
-expected_q=(900 1800 3600 7200 14400 21600 21600 21600)
+expected_q=(900 900 900 900 900 900 900 900)
 for i in 1 2 3 4 5 6 7 8; do
     idx=$((i-1))
     want=${expected_q[$idx]}
@@ -315,8 +318,8 @@ for i in 1 2 3 4 5 6 7 8; do
     [[ "$rc" == "0" ]] || fail "_dispatch: quota geometric #${i} must fire (got $rc)"
     ledger_file="$LEDGER/devin__swe-1-7.json"
     bw=$(jq -r '.bench_window_s' "$ledger_file")
-    [[ "$bw" == "$want" ]] || fail "_dispatch: quota #${i} bench_window_s = $bw, want $want (geometric, fleet-ops#3531)"
+    [[ "$bw" == "$want" ]] || fail "_dispatch: quota #${i} bench_window_s = $bw, want $want (capped at SEAT_QUOTA_BENCH_DEFAULT_MAX_S, fleet-ops#5285)"
 done
-ok "_dispatch: quota bench escalates 900->1800->3600...21600 (geometric, capped, fleet-ops#3531)"
+ok "_dispatch: default-driven quota windows stay at 900s (#5285 probe cap; #3531 geometric cannot exceed it)"
 
 ok "seat-lib-dispatch: registry sorted, trigger-order wins, no-double-bench, backward-compat, graceful no-registry"
