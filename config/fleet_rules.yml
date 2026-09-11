@@ -1424,6 +1424,25 @@ groups:
         annotations:
           summary: "fleet-ops deploy blocked for 15+ minutes (fleet-ops#2725 pattern)"
           description: "fleet_deploy_blocked_duration_seconds{repo=\"fleet-ops\"} exceeded 900s (15 min): the fleet-ops deploy clone is stuck DEPLOY-BLOCKED. 2026-09-02 live case: >1h blocked on dirty tracked files with zero mechanized alert (fleet-ops#2725). Merge-to-live is halted; clear the dirty state on /home/nish/workspaces/tooling/fleet-ops-deploy-clone or root-cause the block. Check journalctl --user -u fleet-deploy-check.service."
+      # fleet-ops#5140: a product repo's production deploy has been non-green
+      # for over an hour — the 2026-09-10 stall class where 131 merged product
+      # PRs sat undelivered for 28h while every dashboard read green.
+      # Deliberately severity=warning, NOT critical: a stalled product deploy
+      # stalls customer-facing work, it does not page Nish. fleet-ops keeps
+      # its own DeployBlockedStuck (>900s, critical) above. The newest red
+      # run's URL is pulled from the fleet_product_deploy_last_red_run_info
+      # info series via the query template function — a url label on the
+      # duration series itself would mint a new series per run and restart
+      # this rule's for: timer forever.
+      - alert: ProductDeployStalled
+        expr: fleet_deploy_blocked_duration_seconds{repo!="fleet-ops"} > 3600
+        for: 15m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "{{ $labels.repo }} production deploy stalled: {{ $labels.workflow }} non-green for {{ $value | humanizeDuration }}"
+          description: "fleet_deploy_blocked_duration_seconds{repo=\"{{ $labels.repo }}\",workflow=\"{{ $labels.workflow }}\"} exceeded 3600s for 15+ minutes: {{ $labels.repo }}'s production deploy has been non-green for {{ $value | humanizeDuration }} (an in-flight run counts as non-green). Newest red run: {{ with query (printf \"fleet_product_deploy_last_red_run_info{repo='%s',workflow='%s'}\" $labels.repo $labels.workflow) }}{{ . | first | label \"url\" }}{{ else }}unknown — fleet_product_deploy_last_red_run_info absent{{ end }}. fleet-ops#5140: 2026-09-10, 131 merged product PRs sat undelivered for 28h while every dashboard read green. Repair: open the newest red run, read its failure, then fix or re-run the {{ $labels.workflow }} workflow on Nishfleet/{{ $labels.repo }}."
       - alert: DeploymentQualityStale
         expr: absent(fleet_deployment_quality_up{repo="fleet-ops"}) or fleet_deployment_quality_up{repo="fleet-ops"} == 0
         for: 15m

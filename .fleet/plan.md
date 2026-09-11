@@ -11,6 +11,47 @@ every dashboard says the opposite. One PR, four phases, manager opens and arms i
   ~200 lines of `lib/fleet-deploy-quality.py`; a split would leave phase 1 shipping a
   deliberately fake `up=0` for 0509 and phase 2 immediately replacing it, which is
   churn, not an independently reviewable slice.
+- 2026-09-11: phases 2 (rule + exporter HELP) and 3 (fixture test + host line +
+  rule-unit test) are merged into ONE worker phase — a rule without its firing
+  test is not independently reviewable, and the new fixture test cannot pass
+  before the gauge/rule it asserts exists. Phase 1 landed as 6ba1c5001 before a
+  worker restart; this run picks up from it (session-pickup: prior plan and
+  commit are authoritative).
+
+## Review adjudication — phase 1 (reviewer pass, verdict BLOCK)
+
+Act on (went to the retry worker):
+- `subprocess.TimeoutExpired` escapes `_run` (`SubprocessError`, not `OSError`):
+  a timed-out fetch skips `_PRODUCT_FETCHES_THIS_RUN += 1` and turns the designed
+  narrow merges-outage into whole-repo `up=0`. Fix: catch
+  `(OSError, subprocess.SubprocessError)` in `_run`.
+- `tests/fleet-metrics-export.test.sh` `m.main()` heredocs resolve the real
+  `config/intake-repos.json` -> 0509 and can spend real `gh` calls and write
+  `deploy-quality-*-0509.json` into the production cache dir — exposure added by
+  this diff. Fix: pin `FLEET_DQ_REPOS_JSON` to a fleet-ops-only fixture at those
+  call sites.
+- `_read_cache` raises `AttributeError` on valid-JSON non-dict cache files
+  (list/str hit `c.get`), bricking the family permanently incl. the two new
+  product cache files. Fix: `isinstance(c, dict)` guard.
+
+Consider / Noted (recorded, not re-delegated):
+- Product latency pairs a merge to a run by completion time only; a green run
+  created before the merge but completing after it counts (biases latency low).
+  Matches this issue's literal spec — follow-up material, not this PR.
+- `fleet_deployment_quality_up{repo=<product>} 0` has no alert consumer —
+  `DeploymentQualityStale` is `repo="fleet-ops"` scoped. Filed as a follow-up
+  issue by the manager (unmeasurable-product-repo tripwire needs a warning rule).
+- `_product_blocked` prints the LOWER-BOUND stderr line even on the
+  all-createdAt-missing NaN path; `product_workflows` coerces a `null` override
+  to the string "None"; `product_repos` is silent when `repos` is not a list.
+  Cosmetic; noted for a future cleanup.
+- `compute_product` trusts upstream repo-name sanitisation for cache paths;
+  only `prom_lines` calls it today — defense-in-depth re-check deferred.
+- Verified by reviewer and NOT issues: streak logic (trailing non-green only,
+  in-flight fails closed, list-end = lower bound never clamped), one HELP/TYPE
+  per name, fleet-ops rows first and byte-identical labels, prom_lines has no
+  reachable raise, product gh budget separate from `_GH_FETCHED_THIS_RUN`,
+  RUNS_TTL=120 < 5-min tick satisfies the 15-min visibility floor.
 
 ## Phases
 
