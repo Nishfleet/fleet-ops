@@ -118,7 +118,7 @@ Read these rather than guessing. They are canonical and they change.
 | Standing rules, all machines | `~/workspaces/tooling/nish-vault/_system/shared-memory/global-standing-rules.md` |
 | Vault contract — read before writing | `~/workspaces/tooling/nish-vault/_system/shared-memory/agent-contract.md` |
 | Vault governance | `~/workspaces/tooling/nish-vault/_system/governance.md` |
-| Model/lane routing policy | `~/workspaces/tooling/nish-vault/_system/shared-memory/codex-model-routing.md` |
+| Model/lane routing — `pi --print --provider <provider> --model <model>` direct; old `codex-model-routing.md` ladder is history only | `~/workspaces/agent-state/lanes/pi-seat-health.json` |
 | Pre-implementation contract | `~/workspaces/tooling/nish-vault/_system/shared-memory/pre-implementation-contract.md` |
 | House method skills | `~/workspaces/tooling/nish-vault/_system/shared-memory/skills-library/` |
 | Durable memories (index first) | `~/.claude/projects/-home-nish/memory/MEMORY.md` |
