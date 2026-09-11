@@ -12,6 +12,29 @@ if [[ -z "${GH_TOKEN:-}" && "${GITHUB_ACTIONS:-}" != "true" && "${GH:-gh}" == "g
     eval "$_minted"
     unset _wt _minted
 fi
+# fleet-ops#5489 required item 4 — GH APP BUDGET RESERVE (the seat org_reserve
+# analogue, for the shared 5000/hr App core budget). Every tier-1 section
+# that reads/pushes GitHub state spends the SAME budget intake claims need
+# to mint a worker. When fresh side-car state shows remaining below the
+# reserve floor, this tick is HELD (exit 0 — a hold, not a failure; the next
+# tick re-checks) so sweeps cannot starve the workers. Reads the SAME
+# side-car the exporter writes; never a fresh `gh api rate_limit` — the
+# guard must not consume the budget it guards. Local-only sections lost this
+# tick (merge-to-live deploy, failed-unit recovery) resume on the next tick's
+# guard pass; the reserve is a soft throttle, and the #5489 visibility
+# family lives on the intake side. Floor is env-overridable
+# (GH_APP_RESERVE_FLOOR, default 1200 ≈ 24% of the 5000/hr budget). A stale
+# or missing side-car FAILS OPEN (proceeds) — the reserve never blocks on
+# someone else's broken exporter. Guard state paths derive from $HOME, so a
+# test that stubs HOME to a scratch dir sees no side-car and fails open —
+# local test runs of this tick are hermetic by construction.
+if [[ "${GITHUB_ACTIONS:-}" != "true" ]]; then
+    # shellcheck disable=SC1091
+    source "$(dirname "${BASH_SOURCE[0]}")/../lib/gh-budget-guard.sh"
+    if gh_budget_reserve_hold "${GH_APP_RESERVE_FLOOR:-1200}"; then
+        exit 0
+    fi
+fi
 # fleet-heartbeat-tier1 — deterministic, no-LLM ops (P13, 2026-08-25).
 #
 # Runs every tick. Zero quota. Keeps the pipeline flowing even when every

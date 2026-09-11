@@ -371,6 +371,13 @@ fi
 # flag and holds claims; _gh_read is used ONLY for reads, so a write can
 # never ride the human identity. A stale or exhausted state is never silent
 # either: ONE LOUD line per tick goes to the heartbeat triage file.
+# fleet-ops#5489 (reserve PR): the stale max-age default is 420s, not 120s.
+# The exporter writes this side-car every ~60s, but during an exhaustion
+# window the exporter itself is the organ most likely to miss runs — the
+# incident evidence is exactly a age=137s > max=120s fail-open that burned
+# App calls the budget did not have. 420s tolerates ~7 missed exporter
+# minutes; a genuinely dead exporter still trips the LOUD stale line every
+# tick, so visibility does not depend on the wider window.
 _gh_app_loud() {
     local triage="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
     printf '[%s] LOUD [GH-APP-BUDGET] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" \
@@ -388,7 +395,7 @@ _gh_rl_pre_reset_in() {
 gh_rl_pre_path="${PI_INTAKE_GH_RATE_LIMIT_STATE:-/home/nish/workspaces/agent-state/pi-intake/gh-rate-limit.json}"
 _gh_rl_pre_exhausted=0
 _gh_rl_pre_reads=app
-gh_rl_pre_max_age="${PI_INTAKE_GH_RATE_LIMIT_MAX_AGE:-120}"
+gh_rl_pre_max_age="${PI_INTAKE_GH_RATE_LIMIT_MAX_AGE:-420}"
 gh_rl_pre_skip_min="${PI_INTAKE_GH_RATE_LIMIT_SKIP_MIN:-500}"
 gh_rl_pre_skip_pct="${PI_INTAKE_GH_RATE_LIMIT_SKIP_PCT:-10}"
 if [[ -r "$gh_rl_pre_path" ]]; then
@@ -1568,10 +1575,12 @@ load_seat_caps || true
 # resources (core/search/graphql) is below the 20% threshold. A missing
 # or unparseable file fails OPEN: the throttle is a soft gate, not a
 # blocker, and a dead exporter must not silently freeze the fleet. The
-# fetched_at age check (120s = 2x the 60s TTL) catches a stale file
+# fetched_at age check (420s, fleet-ops#5489: tolerant of missed exporter
+# runs during an exhaustion window — see the pre-check comment; a dead
+# exporter still trips the stale gate lines) catches a stale file
 # without preventing the first run after a fresh start.
 gh_rl_path="${PI_INTAKE_GH_RATE_LIMIT_STATE:-/home/nish/workspaces/agent-state/pi-intake/gh-rate-limit.json}"
-gh_rl_max_age="${PI_INTAKE_GH_RATE_LIMIT_MAX_AGE:-120}"
+gh_rl_max_age="${PI_INTAKE_GH_RATE_LIMIT_MAX_AGE:-420}"
 # fleet-ops#5489: the pre-check already classified the App budget as
 # exhausted this tick (and the issue list happened before this gate). WRITES (claims, labels, comments, PR creation) back off until the
 # App x-ratelimit-reset instead of failing open or burning App calls. This
