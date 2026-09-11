@@ -233,24 +233,24 @@ run_tick_precheck() {
 out="$(run_tick_precheck 100 5000)"
 rc=$?
 [[ "$rc" == "0" ]] || fail "pre-check low-remaining tick must exit 0, got rc=$rc"
-echo "$out" | grep -qF 'rate-limit headroom low, skipping intake tick' || fail "pre-check must log 'rate-limit headroom low, skipping intake tick': $out"
-# The pre-check must skip BEFORE any gh call (fleet-ops#2523 acceptance).
-if [[ -s "$scratch/gh-calls.log" ]]; then
-    fail "pre-check low-remaining tick must NOT call gh, but gh was called: $(cat "$scratch/gh-calls.log")"
-fi
+# fleet-ops#5489: exhausted budget no longer skips the tick — it glides the
+# reads onto the human gh identity and holds the writes.
+echo "$out" | grep -qF 'gliding intake tick onto human-gh reads' || fail "must log gliding line: $out"
+echo "$out" | grep -qF 'gh_app budget exhausted' || fail "exhausted hold line missing: $out"
+
 # The metric must be exported when skipped.
 [[ -f "$scratch/rl-skip/fleet-intake-tick-skipped-rate-limit-fleet-ops.prom" ]] || fail "pre-check must export fleet_intake_tick_skipped_rate_limit_total prom file"
 grep -qF 'fleet_intake_tick_skipped_rate_limit_total{repo="fleet-ops"} 1' "$scratch/rl-skip/fleet-intake-tick-skipped-rate-limit-fleet-ops.prom" || fail "pre-check prom file must record skipped_total=1"
 ok "pre-check low remaining (<500) skips tick, exports metric, no gh call"
 
 # Test 3c: low headroom (< 10%) with remaining >= 500 -> pre-check skips
+# fleet-ops#5489: stale-state exhaust path pins (LOUD + glide, not fail-open
+# silence) live in tests/pi-intake-app-budget.test.sh; this pin keeps the
+# glide, prom counter and no-skip behavior for low headroom too.
 out="$(run_tick_precheck 400 5000)"
 rc=$?
 [[ "$rc" == "0" ]] || fail "pre-check low-headroom tick must exit 0, got rc=$rc"
-echo "$out" | grep -qF 'rate-limit headroom low, skipping intake tick' || fail "pre-check must log 'rate-limit headroom low, skipping intake tick': $out"
-if [[ -s "$scratch/gh-calls.log" ]]; then
-    fail "pre-check low-headroom tick must NOT call gh, but gh was called: $(cat "$scratch/gh-calls.log")"
-fi
+echo "$out" | grep -qF 'gliding intake tick onto human-gh reads' || fail "must log gliding line: $out"
 ok "pre-check low headroom (<10%) skips tick, no gh call"
 
 # Test 3d: healthy headroom (remaining >= 500 and >= 10%) -> pre-check does NOT
@@ -325,11 +325,14 @@ ok "pre-check uses resources.core; search-min top-level 30/30 does not skip"
 out="$(run_tick_core_nested 100 5000 30 30)"
 rc=$?
 [[ "$rc" == "0" ]] || fail "nested-core-low tick must exit 0, got rc=$rc"
-echo "$out" | grep -qF 'rate-limit headroom low, skipping intake tick' || fail "nested core 100/5000 must skip: $out"
-if [[ -s "$scratch/gh-calls.log" ]]; then
-    fail "nested-core-low tick must NOT call gh, but gh was called: $(cat "$scratch/gh-calls.log")"
+# fleet-ops#5489: a genuinely-exhausted nested core no longer skips the tick —
+# it glides the reads onto the human identity and holds the writes.
+echo "$out" | grep -qF 'gliding intake tick onto human-gh reads' || fail "nested core 100/5000 must glide onto human-gh reads: $out"
+if ! grep -q 'issue list' "$scratch/gh-calls.log" 2>/dev/null; then
+    fail "nested core 100/5000 tick must still reach gh issue list (human reads): $(cat "$scratch/gh-calls.log" 2>/dev/null)"
 fi
-ok "pre-check still skips when resources.core remaining is actually low"
+echo "$out" | grep -qF 'holding claims this tick' || fail "nested core 100/5000 must hold claims: $out"
+ok "pre-check glides to human reads when resources.core remaining is actually low"
 
 # --- fleet-ops#3445 secondary rate-limit gate -----------------------------
 
