@@ -320,3 +320,10 @@ done
 ok "_dispatch: quota bench escalates 900->1800->3600...21600 (geometric, capped, fleet-ops#3531)"
 
 ok "seat-lib-dispatch: registry sorted, trigger-order wins, no-double-bench, backward-compat, graceful no-registry"
+
+# fleet-ops#5274: the free_retired_corpse class (OpenRouter 404 unavailable-
+# for-free -> permanent corpse) is pinned in its own test, hosted here so it
+# stays in the P14 reachable set (no workflow scope needed to add it).
+bash "$here/openrouter-free-retired-corpse.test.sh" \
+  || fail "openrouter-free-retired-corpse.test.sh failed"
+ok "openrouter-free-retired-corpse.test.sh hosted from this listed test"
