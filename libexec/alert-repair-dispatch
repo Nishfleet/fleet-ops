@@ -1130,7 +1130,7 @@ def _gh_pr_satisfied(candidate, gh_budget):
                 "--json", "number,state,autoMergeRequest,mergeable"]
     else:
         argv = [GH_BIN, "pr", "view", str(ref), "-R", repo,
-                "--json", "state,autoMergeRequest,mergeable"]
+                "--json", "number,state,autoMergeRequest,mergeable"]
     try:
         r = subprocess.run(argv, capture_output=True, text=True,
                            check=False, timeout=5)

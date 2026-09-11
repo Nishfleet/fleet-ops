@@ -15,6 +15,12 @@
 #       unchanged relaunch behaviour).
 #   (c) the gh PR lookup times out -> exactly 1 spawn (fail-open: a flaky
 #       gh must never strand a dead packet).
+#   (d) packet names only a bare Nishfleet/<repo>#<N> ref (no branch ->
+#       `pr view` path) and gh says MERGED -> 0 spawns,
+#       RESOLVED-DELIVERED ... deliverable=Nishfleet/fleet-ops#5299,
+#       dead-man cleared, <=1 gh call.
+#   (e) same view-path packet, gh says OPEN + autoMergeRequest +
+#       MERGEABLE (armed) -> identical satisfied behaviour.
 #
 # Hermetic: HOME is redirected so the dispatcher's child PATH
 # ($HOME/.local/bin:$PATH, ~L1215) resolves bare `pi-systemd-run` to a stub
@@ -25,6 +31,9 @@
 #
 # Cases (b) and (c) pass on the unmodified dispatcher; case (a) MUST fail
 # pre-change (the dispatcher spawns a relaunch it should have suppressed).
+# Cases (d)/(e) additionally pin the `repo#N` deliverable label on the
+# `pr view` path: without `number` in the view --json fields the label
+# degrades to a bare `deliverable=5299` and the grep fails.
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -70,21 +79,34 @@ echo "journalctl $*" >> "${MOCK_JOURNAL_LOG:?}"
 cat "${MOCK_JOURNAL_FIXTURE:?}"
 exit 0
 MOCK
-# Mock gh (GH seam): MOCK_GH_MODE=open prints one OPEN, UNARMED PR;
-# =sleep hangs past the 5s pre-flight budget so the subprocess timeout
-# fires. `pr list` gets a JSON array, `pr view` an object.
+# Mock gh (GH seam): MOCK_GH_MODE selects the canned PR payload —
+# =open (default) prints one OPEN, UNARMED PR; =merged a MERGED one;
+# =armed an OPEN one with autoMergeRequest + MERGEABLE; =sleep hangs
+# past the 5s pre-flight budget so the subprocess timeout fires.
+# `pr list` gets a JSON array, `pr view` an object.
 MOCK_GH="$scratch/mock-bin/gh"
 cat >"$MOCK_GH" <<'MOCK'
 #!/usr/bin/env bash
 echo "gh $*" >> "${MOCK_GH_LOG:?}"
-if [[ "${MOCK_GH_MODE:-open}" == "sleep" ]]; then
+case "${MOCK_GH_MODE:-open}" in
+sleep)
     sleep 30
     exit 0
-fi
+    ;;
+merged)
+    pr='{"number":5299,"state":"MERGED","autoMergeRequest":null,"mergeable":"MERGEABLE"}'
+    ;;
+armed)
+    pr='{"number":5299,"state":"OPEN","autoMergeRequest":{"mergeMethod":"SQUASH"},"mergeable":"MERGEABLE"}'
+    ;;
+*)
+    pr='{"number":5299,"state":"OPEN","autoMergeRequest":null,"mergeable":"MERGEABLE"}'
+    ;;
+esac
 if [[ " $* " == *" list "* ]]; then
-    printf '[{"number":5299,"state":"OPEN","autoMergeRequest":null,"mergeable":"MERGEABLE"}]\n'
+    printf '[%s]\n' "$pr"
 else
-    printf '{"number":5299,"state":"OPEN","autoMergeRequest":null,"mergeable":"MERGEABLE"}\n'
+    printf '%s\n' "$pr"
 fi
 exit 0
 MOCK
@@ -109,6 +131,18 @@ cat >"$scratch/packet-pr-candidate.md" <<'EOF'
 ## accept
 
 - deliverable lands on branch fable/gate-c-billing-failed (PR for Nishfleet/fleet-ops#5142)
+EOF
+# Packet for (d)/(e): names ONLY a Nishfleet/<repo>#<N> ref — no branch
+# token at all — so _packet_pr_candidate takes the `pr view` path.
+cat >"$scratch/packet-pr-view.md" <<'EOF'
+# Detached job packet
+
+- unit: pi-fleetops-pr5299-check
+- repo: Nishfleet/fleet-ops
+
+## accept
+
+- deliverable already shipped as Nishfleet/fleet-ops#5299
 EOF
 cat >"$scratch/packet-a.md" <<'EOF'
 # Detached job packet
@@ -177,6 +211,8 @@ alert_env() {  # $1=unit $2=dispatch-uuid $3=deliverable-flag $4=journal-fixture
 UUID_A="11111111-5142-4514-8514-211111111111"
 UUID_B="22222222-5142-4514-8514-222222222222"
 UUID_C="33333333-5142-4514-8514-333333333333"
+UUID_D="44444444-5142-4514-8514-244444444444"
+UUID_E="55555555-5142-4514-8514-255555555555"
 journal_died() {  # $1=unit $2=deliverable-path-or-unset $3=out-file
     printf '[2026-09-11T01:00:00Z] [pi-detached-deadman] died: unit=%s result=exit-code deliverable=%s — dead-man tripped\n' \
         "$1" "$2" >"$3"
@@ -232,5 +268,43 @@ rc=$?
 ! grep -q "deadman --clear $UNIT_C" "$scratch/mock-deadman.log" \
     || fail "(c) relaunched packet must not clear the dead-man; log=$(cat "$scratch/mock-deadman.log")"
 ok '(c) gh timeout: fail-open, exactly 1 spawn'
+
+# --- (d) view-path packet + MERGED PR -> suppressed relaunch -----------
+UNIT_D="pi-fleetops-pr5299-check"
+journal_died "$UNIT_D" unset "$scratch/journal-d.txt"
+write_ledger "$UUID_D" "$UNIT_D" "$scratch/packet-pr-view.md"
+reset_logs
+alert_env "$UNIT_D" "$UUID_D" 0 "$scratch/journal-d.txt" merged
+rc=$?
+[[ "$rc" == 0 ]] || fail "(d) dispatch must exit 0, got rc=$rc; err=$(cat "$scratch/err")"
+! grep -q . "$scratch/mock-spawn.log" \
+    || fail "(d) delivered packet must NOT spawn a relaunch; spawn argv: $(cat "$scratch/mock-spawn.log")"
+grep -q "RESOLVED-DELIVERED unit=$UNIT_D deliverable=Nishfleet/fleet-ops#5299" \
+    "$scratch/packets/actions.log" \
+    || fail "(d) must log RESOLVED-DELIVERED with the repo#N label; actions.log=$(cat "$scratch/packets/actions.log" 2>/dev/null)"
+grep -q "deadman --clear $UNIT_D" "$scratch/mock-deadman.log" \
+    || fail "(d) deadman --clear must be called; log=$(cat "$scratch/mock-deadman.log" 2>/dev/null)"
+[[ "$(grep -c . "$scratch/mock-gh.log")" -le 1 ]] \
+    || fail "(d) pre-flight must spend at most one gh call; log=$(cat "$scratch/mock-gh.log")"
+ok '(d) view-path packet + MERGED PR: 0 spawns, RESOLVED-DELIVERED repo#N, dead-man cleared'
+
+# --- (e) view-path packet + armed PR -> suppressed relaunch ------------
+UNIT_E="pi-fleetops-pr5299-armed"
+journal_died "$UNIT_E" unset "$scratch/journal-e.txt"
+write_ledger "$UUID_E" "$UNIT_E" "$scratch/packet-pr-view.md"
+reset_logs
+alert_env "$UNIT_E" "$UUID_E" 0 "$scratch/journal-e.txt" armed
+rc=$?
+[[ "$rc" == 0 ]] || fail "(e) dispatch must exit 0, got rc=$rc; err=$(cat "$scratch/err")"
+! grep -q . "$scratch/mock-spawn.log" \
+    || fail "(e) delivered packet must NOT spawn a relaunch; spawn argv: $(cat "$scratch/mock-spawn.log")"
+grep -q "RESOLVED-DELIVERED unit=$UNIT_E deliverable=Nishfleet/fleet-ops#5299" \
+    "$scratch/packets/actions.log" \
+    || fail "(e) must log RESOLVED-DELIVERED with the repo#N label; actions.log=$(cat "$scratch/packets/actions.log" 2>/dev/null)"
+grep -q "deadman --clear $UNIT_E" "$scratch/mock-deadman.log" \
+    || fail "(e) deadman --clear must be called; log=$(cat "$scratch/mock-deadman.log" 2>/dev/null)"
+[[ "$(grep -c . "$scratch/mock-gh.log")" -le 1 ]] \
+    || fail "(e) pre-flight must spend at most one gh call; log=$(cat "$scratch/mock-gh.log")"
+ok '(e) view-path packet + armed PR: 0 spawns, RESOLVED-DELIVERED repo#N, dead-man cleared'
 
 ok 'fleet-ops#5142 deliverable pre-flight passes'
