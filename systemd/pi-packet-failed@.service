@@ -3,7 +3,15 @@ Description=Record that pi packet %i exhausted its retry policy
 
 [Service]
 Type=oneshot
-# Deliberately does nothing but record. Retry, backoff and give-up already happened
-# in pi-packet@.service's own policy. Anything more would be re-growing the thing
-# Nish forbade on 2026-08-24 ("No hand-built orchestration. Ever.").
-ExecStart=/usr/bin/logger -t pi-packet-failed -p user.err "packet %i exhausted StartLimitBurst - needs a human or a council, not another retry"
+# fleet-ops#5444 -> folded into the escalation dispatcher path (fleet-ops#5456):
+# a packet that exhausted StartLimitBurst no longer stops at a logger line.
+# unit-escalation-write records a structured STOP-REASON (reason=
+# packet-exhausted, source=pi-packet-failed) so stop-escalation.path fires and
+# stop-escalation-dispatch TERMINATES in an action: the agent-ready issue +
+# findings-ledger row + LOUD triage line (pi-packet@ has no dispatch-ledger
+# launch row, so the dispatcher takes the dispatch branch, not a relaunch).
+# Retry, backoff and give-up already happened in pi-packet@.service's own
+# policy — this only makes the give-up LOUD and actionable instead of silent.
+# The logger line stays: it is the human-readable journal breadcrumb.
+ExecStart=/bin/bash -c 'UNIT_ESCALATION_REASON=packet-exhausted UNIT_ESCALATION_SOURCE=pi-packet-failed exec /home/nish/.local/bin/unit-escalation-write "pi-packet@%i"'
+ExecStartPost=/usr/bin/logger -t pi-packet-failed -p user.err "packet %i exhausted StartLimitBurst - escalated to the dispatcher (issue + triage), not just a log"

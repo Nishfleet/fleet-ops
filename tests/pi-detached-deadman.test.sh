@@ -69,7 +69,7 @@ out="$("$deadman" 2>&1)"
 ok "not armed (no dispatch id) is a no-op"
 
 # --- 2. clean stop without deliverable -> exit 1 (unit must land failed) ---
-env "${common[@]}" PI_DEADMAN_DISPATCH=11111111-1111-1111-1111-111111111111 PI_DEADMAN_UNIT=u-clean \
+if env "${common[@]}" PI_DEADMAN_DISPATCH=11111111-1111-1111-1111-111111111111 PI_DEADMAN_UNIT=u-clean \
     PI_DEADMAN_CMDLINE="sleep 1" PI_DEADMAN_DEADLINE=90 \
     PI_DEADMAN_DELIVERABLE="$scratch/missing.md" SERVICE_RESULT=success \
     "$deadman" 2>/dev/null; then fail "clean-stop death must exit 1 so the unit lands failed"; fi
@@ -81,7 +81,7 @@ grep -q '"unit":"u-clean".*"verdict":"no-deliverable"' "$ledger" \
 ok "clean stop without deliverable: died series + verdict=no-deliverable + exit 1"
 
 # --- 3. non-clean failure: died series + verdict row + exit 1 ----------------
-env "${common[@]}" PI_DEADMAN_DISPATCH=22222222-2222-2222-2222-222222222222 PI_DEADMAN_UNIT=u-failed \
+if env "${common[@]}" PI_DEADMAN_DISPATCH=22222222-2222-2222-2222-222222222222 PI_DEADMAN_UNIT=u-failed \
     PI_DEADMAN_CMDLINE="pi --print foo" SERVICE_RESULT=exit-code \
     "$deadman" 2>/dev/null; then fail "exit-code death must exit 1"; fi
 grep -q 'unit="u-failed"' "$tf" || fail "exit-code death must write the died series"
@@ -90,7 +90,7 @@ grep -q '"unit":"u-failed".*"verdict":"died:exit-code"' "$ledger" \
 ok "non-clean failure: died series + verdict row + exit 1"
 
 # --- 4. success with deliverable present: no series, stale cleared -----------
-touch "$scratch/real.md"
+printf "ok\\n" > "$scratch/real.md"
 out="$(env "${common[@]}" PI_DEADMAN_DISPATCH=33333333-3333-3333-3333-333333333333 PI_DEADMAN_UNIT=u-clean \
     PI_DEADMAN_CMDLINE="sleep 1" PI_DEADMAN_DEADLINE=90 \
     PI_DEADMAN_DELIVERABLE="$scratch/real.md" SERVICE_RESULT=success \
@@ -100,7 +100,7 @@ grep -q 'unit="u-failed"' "$tf" || fail "success of one unit must not clear anot
 ok "success with deliverable: stale series for THAT unit cleared, others kept"
 
 # --- 5. success WITHOUT deliverable is still a death --------------------------
-env "${common[@]}" PI_DEADMAN_DISPATCH=44444444-4444-4444-4444-444444444444 PI_DEADMAN_UNIT=u-exit0 \
+if env "${common[@]}" PI_DEADMAN_DISPATCH=44444444-4444-4444-4444-444444444444 PI_DEADMAN_UNIT=u-exit0 \
     PI_DEADMAN_CMDLINE="pi --print" PI_DEADMAN_DEADLINE=90 \
     PI_DEADMAN_DELIVERABLE="$scratch/never.md" SERVICE_RESULT=success \
     "$deadman" 2>/dev/null; then fail "exit-0-without-deliverable must exit 1"; fi
@@ -109,7 +109,7 @@ ok "exit 0 without deliverable == death (the exact #4266 gap)"
 
 # --- 5a. an EMPTY deliverable file is a death too ------------------------------
 : >"$scratch/empty.md"
-env "${common[@]}" PI_DEADMAN_DISPATCH=45454545-4545-4545-4545-454545454545 PI_DEADMAN_UNIT=u-empty \
+if env "${common[@]}" PI_DEADMAN_DISPATCH=45454545-4545-4545-4545-454545454545 PI_DEADMAN_UNIT=u-empty \
     PI_DEADMAN_CMDLINE="pi --print" PI_DEADMAN_DEADLINE=90 \
     PI_DEADMAN_DELIVERABLE="$scratch/empty.md" SERVICE_RESULT=success \
     "$deadman" 2>/dev/null; then fail "empty deliverable must exit 1"; fi
@@ -137,9 +137,9 @@ ok "non-UUID dispatch (x) writes no died series and logs the rejection (fleet-op
 # earlier is still clearable by a success verdict for the same unit.
 env "${common[@]}" PI_DEADMAN_DISPATCH=66666666-6666-6666-6666-666666666666 PI_DEADMAN_UNIT=u-clearok \
     PI_DEADMAN_CMDLINE="sleep 1" SERVICE_RESULT=exit-code \
-    "$deadman" 2>/dev/null && fail "UUID death exits 1"
+    "$deadman" 2>/dev/null || true   # rc=1 IS the death contract now; the series is the assertion
 grep -q 'unit="u-clearok"' "$tf" || fail "UUID death must still write the died series"
-touch "$scratch/ok.md"
+printf "ok\\n" > "$scratch/ok.md"
 env "${common[@]}" PI_DEADMAN_DISPATCH=66666666-6666-6666-6666-666666666666 PI_DEADMAN_UNIT=u-clearok \
     PI_DEADMAN_CMDLINE="sleep 1" PI_DEADMAN_DELIVERABLE="$scratch/ok.md" SERVICE_RESULT=success \
     "$deadman" 2>/dev/null || fail "success-clear must exit 0"

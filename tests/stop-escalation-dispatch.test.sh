@@ -37,7 +37,7 @@ AS="$scratch/agent-state"
 mkdir -p "$AS"
 
 cat >"$AS/STOP-REASON.json" <<'JSON'
-{"reason":"unit-failure","detail":{"unit":"pi-issue@fleet-ops-34.service"}}
+{"reason":"max_auto_continues","detail":{"unit":"pi-issue@fleet-ops-34.service"}}
 JSON
 
 SEAT_LIB_STUB="$scratch/seat-lib-stub.sh"
@@ -253,7 +253,7 @@ ok "auditor-resolved closeout -> skip (no dispatch, no budget)"
 
 # Restore a real fault for the remaining invariants.
 cat >"$STOP_ESCALATION_STOP_REASON" <<'JSON'
-{"reason":"unit-failure","detail":{"unit":"pi-issue@fleet-ops-34.service"}}
+{"reason":"max_auto_continues","detail":{"unit":"pi-issue@fleet-ops-34.service"}}
 JSON
 
 # ---------------------------------------------------------------------------
@@ -277,7 +277,7 @@ ok "healthy seat + block -> dispatch consumed 1 budget"
 # ---------------------------------------------------------------------------
 # Use a fresh STOP-REASON so the hash differs and the cooldown doesn't apply.
 cat >"$STOP_ESCALATION_STOP_REASON" <<'JSON'
-{"reason":"unit-failure","detail":{"unit":"pi-issue@fleet-ops-35.service"}}
+{"reason":"max_auto_continues","detail":{"unit":"pi-issue@fleet-ops-35.service"}}
 JSON
 
 export STOP_ESCALATION_TEST_SEAT_MODE=healthy
@@ -297,7 +297,7 @@ ok "pi timeout -> TIMEOUT-KILL, budget not consumed"
 # Invariant 4: pi exit 0 with no block -> DISPATCH-NO-BLOCK, budget unchanged
 # ---------------------------------------------------------------------------
 cat >"$STOP_ESCALATION_STOP_REASON" <<'JSON'
-{"reason":"unit-failure","detail":{"unit":"pi-issue@fleet-ops-36.service"}}
+{"reason":"max_auto_continues","detail":{"unit":"pi-issue@fleet-ops-36.service"}}
 JSON
 
 export STOP_ESCALATION_TEST_PI_MODE=empty
@@ -320,7 +320,7 @@ ok "empty pi output -> DISPATCH-NO-BLOCK, budget not consumed"
 : > "$STOP_ESCALATION_NISH"
 : > "$STOP_ESCALATION_TEST_BENCH_FILE"
 cat >"$STOP_ESCALATION_STOP_REASON" <<'JSON'
-{"reason":"unit-failure","detail":{"unit":"pi-issue@fleet-ops-37.service"}}
+{"reason":"max_auto_continues","detail":{"unit":"pi-issue@fleet-ops-37.service"}}
 JSON
 
 for i in 1 2; do
@@ -353,7 +353,7 @@ ok "2-dispatch cap -> CAP-REACHED in AUDITOR-LOG only (not NISH)"
 : > "$STOP_ESCALATION_NISH"
 : > "$STOP_ESCALATION_TEST_BENCH_FILE"
 cat >"$STOP_ESCALATION_STOP_REASON" <<'JSON'
-{"reason":"unit-failure","detail":{"unit":"pi-issue@fleet-ops-444.service"}}
+{"reason":"max_auto_continues","detail":{"unit":"pi-issue@fleet-ops-444.service"}}
 JSON
 hash444=$(sha256sum "$STOP_ESCALATION_STOP_REASON" | awk '{print $1}')
 export STOP_ESCALATION_TEST_SEAT_MODE=healthy
@@ -410,7 +410,7 @@ ok "2x pi_rc=143 -> KILL-ESCALATION, no 3rd dispatch"
 : > "$STOP_ESCALATION_NISH"
 : > "$STOP_ESCALATION_TEST_BENCH_FILE"
 cat >"$STOP_ESCALATION_STOP_REASON" <<'JSON'
-{"reason":"unit-failure","detail":{"unit":"pi-issue@fleet-ops-444-sigkill.service"}}
+{"reason":"max_auto_continues","detail":{"unit":"pi-issue@fleet-ops-444-sigkill.service"}}
 JSON
 hash137=$(sha256sum "$STOP_ESCALATION_STOP_REASON" | awk '{print $1}')
 export STOP_ESCALATION_TEST_SEAT_MODE=healthy
@@ -439,7 +439,7 @@ ok "pi_rc=137 -> KILL-RETRY, not DISPATCH-NO-BLOCK"
 : > "$STOP_ESCALATION_NISH"
 : > "$STOP_ESCALATION_TEST_BENCH_FILE"
 cat >"$STOP_ESCALATION_STOP_REASON" <<'JSON'
-{"reason":"unit-failure","detail":{"unit":"pi-issue@fleet-ops-444-timeout.service"}}
+{"reason":"max_auto_continues","detail":{"unit":"pi-issue@fleet-ops-444-timeout.service"}}
 JSON
 hash124=$(sha256sum "$STOP_ESCALATION_STOP_REASON" | awk '{print $1}')
 export STOP_ESCALATION_TEST_SEAT_MODE=healthy
@@ -479,7 +479,7 @@ ok "2x pi_rc=124 -> KILL-ESCALATION, no 3rd dispatch"
 : > "$STOP_ESCALATION_NISH"
 : > "$STOP_ESCALATION_TEST_BENCH_FILE"
 cat >"$STOP_ESCALATION_STOP_REASON" <<'JSON'
-{"reason":"unit-failure","detail":{"unit":"pi-issue@fleet-ops-1354.service"}}
+{"reason":"max_auto_continues","detail":{"unit":"pi-issue@fleet-ops-1354.service"}}
 JSON
 hash1354=$(sha256sum "$STOP_ESCALATION_STOP_REASON" | awk '{print $1}')
 export STOP_ESCALATION_TEST_SEAT_MODE=rotate
@@ -541,7 +541,7 @@ ok "fleet-ops#1354: rc=0/empty seat benches + rotates, never unbounded loop"
 : > "$STOP_ESCALATION_NISH"
 : > "$STOP_ESCALATION_TEST_BENCH_FILE"
 cat >"$STOP_ESCALATION_STOP_REASON" <<'JSON'
-{"reason":"unit-failure","detail":{"unit":"pi-issue@fleet-ops-1354-flash.service"}}
+{"reason":"max_auto_continues","detail":{"unit":"pi-issue@fleet-ops-1354-flash.service"}}
 JSON
 hashflash=$(sha256sum "$STOP_ESCALATION_STOP_REASON" | awk '{print $1}')
 export STOP_ESCALATION_TEST_SEAT_MODE=flash
@@ -573,7 +573,7 @@ ok "fleet-ops#1354: need_capable=1 excludes tools=0 flash seat at pick time"
 : > "$STOP_ESCALATION_NISH"
 : > "$STOP_ESCALATION_TEST_BENCH_FILE"
 cat >"$STOP_ESCALATION_STOP_REASON" <<'JSON'
-{"reason":"unit-failure","detail":{"unit":"pi-issue@fleet-ops-623.service"}}
+{"reason":"max_auto_continues","detail":{"unit":"pi-issue@fleet-ops-623.service"}}
 JSON
 hash623=$(sha256sum "$STOP_ESCALATION_STOP_REASON" | awk '{print $1}')
 export STOP_ESCALATION_TEST_SEAT_MODE=rotate
@@ -631,7 +631,7 @@ ok "fleet-ops#623: rc=1 HTTP 402 seat benches + rotates, never unbounded loop"
 : > "$STOP_ESCALATION_NISH"
 : > "$STOP_ESCALATION_TEST_BENCH_FILE"
 cat >"$STOP_ESCALATION_STOP_REASON" <<'JSON'
-{"reason":"unit-failure","detail":{"unit":"pi-issue@fleet-ops-623-quota.service"}}
+{"reason":"max_auto_continues","detail":{"unit":"pi-issue@fleet-ops-623-quota.service"}}
 JSON
 hashq=$(sha256sum "$STOP_ESCALATION_STOP_REASON" | awk '{print $1}')
 export STOP_ESCALATION_TEST_SEAT_MODE=healthy
@@ -664,7 +664,7 @@ ok "fleet-ops#623: rc=1 quota wall -> quota bench path (long bench)"
 : > "$STOP_ESCALATION_NISH"
 : > "$STOP_ESCALATION_TEST_BENCH_FILE"
 cat >"$STOP_ESCALATION_STOP_REASON" <<'JSON'
-{"reason":"unit-failure","detail":{"unit":"pi-issue@fleet-ops-3780-xkiro.service"}}
+{"reason":"max_auto_continues","detail":{"unit":"pi-issue@fleet-ops-3780-xkiro.service"}}
 JSON
 hashx=$(sha256sum "$STOP_ESCALATION_STOP_REASON" | awk '{print $1}')
 export STOP_ESCALATION_TEST_SEAT_MODE=healthy
@@ -698,7 +698,7 @@ ok "fleet-ops#3780: xkiro free-model daily-token-quota 429 -> quota_cap bench, n
 : > "$STOP_ESCALATION_NISH"
 : > "$STOP_ESCALATION_TEST_BENCH_FILE"
 cat >"$STOP_ESCALATION_STOP_REASON" <<'JSON'
-{"reason":"unit-failure","detail":{"unit":"pi-issue@fleet-ops-2661-wedge.service"}}
+{"reason":"max_auto_continues","detail":{"unit":"pi-issue@fleet-ops-2661-wedge.service"}}
 JSON
 hashw=$(sha256sum "$STOP_ESCALATION_STOP_REASON" | awk '{print $1}')
 export STOP_ESCALATION_TEST_SEAT_MODE=rotate
@@ -729,3 +729,138 @@ unset FLEET_ESCALATION_WEDGE_CHECK
 ok "fleet-ops#2661: escalate lanes refuse overload-wedged providers (rotation skips; all-wedged ladder walls quietly"
 
 ok "stop-escalation-dispatch: lane faults rotate, timeout/no-block quiet, cap enforced, kill-retry capped, dead-seat rotation (#1354), rc=1 benching + quiet walled ladder (#623)"
+
+# ===========================================================================
+# fleet-ops#5456: the resume-or-dispatch path (unit deaths terminate in an
+# ACTION). reason=unit-failure / unit-stopped-without-deliverable /
+# packet-exhausted never reaches the auditor seat ladder: hop<2 packet ->
+# relaunch on the next healthy seat; hop>=2 or non-packet -> agent-ready
+# issue + findings-ledger row + LOUD triage line; Nish only when BOTH rails
+# fail; resume-drill-* units dispatch to the drill sink, never GitHub.
+# ===========================================================================
+cat >"$scratch/fake-gh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "gh $*" >> "${STOP_ESCALATION_TEST_GH_LOG}"
+if [ "$1" = "issue" ] && [ "$2" = "list" ]; then :; exit 0; fi  # --jq '.[0].url' over no matches prints nothing
+if [ "$1" = "issue" ] && [ "$2" = "create" ]; then
+  printf 'https://github.com/Nishfleet/fleet-ops/issues/5456\n'; exit 0
+fi
+exit 0
+EOF
+chmod +x "$scratch/fake-gh"
+cat >"$scratch/fake-hermes" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "hermes $*" >> "${STOP_ESCALATION_TEST_HERMES_LOG}"
+exit 0
+EOF
+chmod +x "$scratch/fake-hermes"
+cat >"$scratch/fake-pirun" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${STOP_ESCALATION_TEST_PIRUN_LOG}"
+exit 0
+EOF
+chmod +x "$scratch/fake-pirun"
+cat >"$scratch/fake-findings" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${STOP_ESCALATION_TEST_FINDINGS_LOG}"
+exit 0
+EOF
+chmod +x "$scratch/fake-findings"
+export STOP_ESCALATION_TEST_GH_LOG="$AS/resume-gh.log"
+export STOP_ESCALATION_TEST_HERMES_LOG="$AS/resume-hermes.log"
+export STOP_ESCALATION_TEST_PIRUN_LOG="$AS/resume-pirun.log"
+export STOP_ESCALATION_TEST_FINDINGS_LOG="$AS/resume-findings.log"
+export STOP_ESCALATION_RESUME_GH="$scratch/fake-gh"
+export STOP_ESCALATION_RESUME_HERMES="$scratch/fake-hermes"
+export STOP_ESCALATION_RESUME_PI_RUN="$scratch/fake-pirun"
+export STOP_ESCALATION_RESUME_FINDINGS="$scratch/fake-findings"
+export STOP_ESCALATION_RESUME_AS="$AS"
+export STOP_ESCALATION_RESUME_LEDGER="$AS/resume-ledger.jsonl"
+export STOP_ESCALATION_RESUME_TRIAGE="$AS/resume-triage.md"
+export STOP_ESCALATION_RESUME_SYSTEMCTL="/bin/true"
+export STOP_ESCALATION_RESUME_DRYRUN=0
+
+resume_sr() {  # resume_sr <unit> <reason>
+  python3 -c 'import json,sys;json.dump({"reason":sys.argv[2],"detail":{"unit":sys.argv[1],"journal":[],"journal_errors":[],"result":"exit-code","exit_status":"1","memory_peak":"","oom_signal":"no"},"timestamp":"2026-09-11T18:00:00Z","extension":"unit-escalation","source":"unit-escalation"},sys.stdout)' "$1" "$2" > "$STOP_ESCALATION_STOP_REASON"
+}
+
+# --- resume: hop<2 packet -> relaunch on the next healthy seat --------------
+: > "$STOP_ESCALATION_RESUME_LEDGER"; : > "$STOP_ESCALATION_TEST_PIRUN_LOG"
+printf 'packet body\n' > "$AS/resume-packet.md"
+python3 -c 'import json,sys;print(json.dumps({"id":"rid-1","chain_id":"chain-1","hop":0,"ts":"2026-09-11T17:00:00Z","unit":"resume-test-pkt","packet_path":"'"$AS"'/resume-packet.md","provider":"oldp","model":"oldm","deadline_min":30,"deadline_ts":"","cmdline":"pi --print --provider oldp --model oldm","workdir":"'"$scratch"'","deliverable":"'"$AS"'/resume-deliv.md","status":"open","retries":0}))' >> "$STOP_ESCALATION_RESUME_LEDGER"
+resume_sr "resume-test-pkt.service" "unit-failure"
+set +e; "$dispatch"; rc=$?; set -e
+[[ $rc -eq 0 ]] || fail "resume relaunch: expected exit 0, got $rc"
+grep -q -- '--hop 1' "$STOP_ESCALATION_TEST_PIRUN_LOG" || fail "resume relaunch: pi-systemd-run not invoked with --hop 1: $(cat "$STOP_ESCALATION_TEST_PIRUN_LOG")"
+grep -q -- '--chain-id chain-1' "$STOP_ESCALATION_TEST_PIRUN_LOG" || fail "resume relaunch: chain-id not carried: $(cat "$STOP_ESCALATION_TEST_PIRUN_LOG")"
+grep -q -- '--provider devin' "$STOP_ESCALATION_TEST_PIRUN_LOG" && grep -q -- '--model glm-5-2' "$STOP_ESCALATION_TEST_PIRUN_LOG" \
+  || fail "resume relaunch: seat not rotated to the picked seat: $(cat "$STOP_ESCALATION_TEST_PIRUN_LOG")"
+[[ -s "$STOP_ESCALATION_NISH" ]] && fail "resume relaunch: must never page Nish"
+ok "resume: dead packet at hop 0 relaunched at hop 1 on the next healthy seat (chain-id carried)"
+
+# --- resume: hop>=2 -> dispatch (issue + triage + findings), no relaunch ----
+: > "$STOP_ESCALATION_RESUME_LEDGER"; : > "$STOP_ESCALATION_TEST_GH_LOG"
+: > "$STOP_ESCALATION_RESUME_TRIAGE"; : > "$STOP_ESCALATION_TEST_FINDINGS_LOG"; : > "$STOP_ESCALATION_TEST_PIRUN_LOG"
+python3 -c 'import json,sys;print(json.dumps({"id":"rid-2","chain_id":"chain-2","hop":2,"ts":"2026-09-11T17:00:00Z","unit":"resume-test-pkt","packet_path":"'"$AS"'/resume-packet.md","provider":"oldp","model":"oldm","deadline_min":30,"deadline_ts":"","cmdline":"pi --print --provider oldp --model oldm","workdir":"'"$scratch"'","deliverable":"","status":"open","retries":2}))' >> "$STOP_ESCALATION_RESUME_LEDGER"
+resume_sr "resume-test-pkt.service" "unit-failure"
+set +e; "$dispatch"; rc=$?; set -e
+[[ $rc -eq 0 ]] || fail "resume dispatch: expected exit 0, got $rc"
+[[ -s "$STOP_ESCALATION_TEST_PIRUN_LOG" ]] && fail "resume dispatch: hop>=2 must NOT relaunch"
+grep -q 'issue create' "$STOP_ESCALATION_TEST_GH_LOG" || fail "resume dispatch: no agent-ready issue created: $(cat "$STOP_ESCALATION_TEST_GH_LOG")"
+grep -q '\[unit-death\] resume-test-pkt.service' "$STOP_ESCALATION_TEST_GH_LOG" || fail "resume dispatch: issue title must name the unit"
+grep -q 'UNIT-DEATH-DISPATCH' "$STOP_ESCALATION_RESUME_TRIAGE" || fail "resume dispatch: LOUD triage line missing"
+grep -q 'carried_over' "$STOP_ESCALATION_TEST_FINDINGS_LOG" || fail "resume dispatch: findings-ledger row (carried_over) missing"
+[[ -s "$STOP_ESCALATION_NISH" ]] && fail "resume dispatch: healthy rails must not page Nish"
+ok "resume: hop>=2 dispatches agent-ready issue + findings row + LOUD triage line"
+
+# --- resume: non-packet unit -> dispatch (no ledger row) ---------------------
+: > "$STOP_ESCALATION_TEST_GH_LOG"; : > "$STOP_ESCALATION_RESUME_TRIAGE"; : > "$STOP_ESCALATION_TEST_PIRUN_LOG"
+resume_sr "fleet-some-canary.service" "unit-failure"
+set +e; "$dispatch"; rc=$?; set -e
+[[ $rc -eq 0 ]] || fail "non-packet dispatch: expected exit 0, got $rc"
+[[ -s "$STOP_ESCALATION_TEST_PIRUN_LOG" ]] && fail "non-packet dispatch: must not relaunch"
+grep -q 'issue create' "$STOP_ESCALATION_TEST_GH_LOG" || fail "non-packet dispatch: no issue created"
+ok "resume: non-packet unit dispatches (never relaunches, never auditor-summons)"
+
+# --- resume: both rails down -> the Nish last-resort + exit 1 ---------------
+cat >"$scratch/failing-gh" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+chmod +x "$scratch/failing-gh"
+cat >"$scratch/failing-hermes" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+chmod +x "$scratch/failing-hermes"
+set +e
+STOP_ESCALATION_RESUME_GH="$scratch/failing-gh" STOP_ESCALATION_RESUME_HERMES="$scratch/failing-hermes" \
+  STOP_ESCALATION_RESUME_LEDGER="/nonexistent-ledger" "$dispatch"; rc=$?
+set -e
+[[ $rc -eq 1 ]] || fail "both rails down: expected exit 1, got $rc"
+grep -q 'UNIT-DEATH-PAGE' "$AS/nish-escalations-archive/$(date -u +%Y-%m-%d).md" 2>/dev/null \
+  || fail "both rails down: LOUD archive line missing"
+ok "resume: issue-create AND hermes both failing -> LOUD archive line + exit 1 (the only Nish page)"
+
+# --- resume: drill unit -> drill sink, never GitHub --------------------------
+: > "$STOP_ESCALATION_TEST_GH_LOG"; : > "$STOP_ESCALATION_RESUME_TRIAGE"
+resume_sr "resume-drill-crash-test.service" "unit-failure"
+set +e; "$dispatch"; rc=$?; set -e
+[[ $rc -eq 0 ]] || fail "drill sink: expected exit 0, got $rc"
+[[ -s "$STOP_ESCALATION_TEST_GH_LOG" ]] && fail "drill sink: must never touch GitHub"
+grep -q '\[unit-death\]' "$AS/resume-drill/issues.jsonl" || fail "drill sink: issue payload not recorded"
+ok "resume: resume-drill-* dispatches to the drill sink (hourly drill stays hermetic)"
+
+# --- resume: circuit-trip reasons never take the resume path -----------------
+: > "$STOP_ESCALATION_TEST_PIRUN_LOG"; : > "$STOP_ESCALATION_TEST_GH_LOG"
+resume_sr "resume-test-pkt.service" "max_auto_continues"
+export STOP_ESCALATION_TEST_SEAT_MODE=empty
+set +e
+"$dispatch"; rc=$?
+set -e
+[[ $rc -eq 0 ]] || fail "circuit trip: expected exit 0 (walled ladder quiet), got $rc"
+[[ -s "$STOP_ESCALATION_TEST_PIRUN_LOG" ]] && fail "circuit trip: must not resume"
+[[ -s "$STOP_ESCALATION_TEST_GH_LOG" ]] && fail "circuit trip: must not dispatch"
+ok "resume: circuit-breaker trips keep the auditor path (never resume/dispatch)"
+
+ok "stop-escalation-dispatch: #5456 resume-or-dispatch (relaunch hop+1, dispatch on exhaustion, Nish only when both rails fail, drill sink)"
