@@ -108,13 +108,14 @@ printf 'last-heartbeat: 2026-08-27T00:00:00Z\n' >"$plan"
 
 run_drill() {
   RULEBOOK_DRILL=1 \
-  RULEBOOK_DRILL_FINDINGS="$fixture" \
-  RULEBOOK_STATE_DIR="$scratch/state" \
+  RULEBOOK_DRILL_FINDINGS="${RULEBOOK_DRILL_FINDINGS:-$fixture}" \
+  RULEBOOK_STATE_DIR="${RULEBOOK_STATE_DIR:-$scratch/state}" \
   RULEBOOK_PLAN_FILE="$plan" \
   RULEBOOK_STANDING_RULES="$scratch/rules/standing.md" \
   RULEBOOK_RULE_FILES="$scratch/rules/standing.md
 $scratch/rules/AGENTS.md" \
   RULEBOOK_FAKE_NOW="2026-08-27T04:15:00Z" \
+  RULEBOOK_MAX_FINDINGS="${RULEBOOK_MAX_FINDINGS:-5}" \
   RULEBOOK_SKIP_BACKUP="${RULEBOOK_SKIP_BACKUP:-0}" \
     "$bin"
 }
@@ -160,6 +161,34 @@ grep -qE '^last-rulebook-redteam-run:' "$plan" \
 [[ -f "$scratch/state/last-heading-count" ]] \
   || fail "runner must store last-heading-count"
 ok "drill: sibling backups, gap-audit+agent-ready file, stamp"
+
+# --- 2b. cap overflow: LOUD + durable, not a silent drop (fleet-ops#5441) --
+fixture_cap="$repo_root/tests/fixtures/rulebook-redteam-drill-findings-cap.json"
+[[ -f "$fixture_cap" ]] || fail "missing $fixture_cap"
+: >"$GH_CREATED"
+: >"$GH_CREATE_LOG"
+rm -rf "$scratch/state-cap"
+printf 'last-heartbeat: 2026-08-27T00:00:00Z\n' >"$plan"
+set +e
+cap_out=$(RULEBOOK_DRILL_FINDINGS="$fixture_cap" \
+  RULEBOOK_STATE_DIR="$scratch/state-cap" \
+  RULEBOOK_MAX_FINDINGS=2 run_drill 2>&1)
+cap_rc=$?
+set -e
+[[ "$cap_rc" == "0" ]] || fail "cap overflow is LOUD, not fatal — rc must be 0, got $cap_rc ($cap_out)"
+[[ "$(grep -c . "$GH_CREATED")" == "2" ]] \
+  || fail "cap 2 over 3 findings must file exactly 2: $(cat "$GH_CREATED")"
+grep -q 'SKIP (cap 2 reached)' <<<"$cap_out" \
+  || fail "capped finding must log a per-finding SKIP: $cap_out"
+grep -q 'LOUD: 1 finding(s) unfiled (cap 2)' <<<"$cap_out" \
+  || fail "cap overflow must print the LOUD unfiled count: $cap_out"
+cap_report=$(find "$scratch/state-cap" -name report.md -print | sort | head -1)
+[[ -n "$cap_report" ]] || fail "cap drill wrote no report.md under $scratch/state-cap"
+grep -q 'unfiled (cap 2)' "$cap_report" \
+  || fail "report.md must carry the unfiled-overflow row: $cap_report"
+grep -qE '^last-rulebook-redteam-run: .*capped=1' "$plan" \
+  || fail "plan stamp must carry capped=1: $(grep last-rulebook-redteam-run "$plan")"
+ok "cap overflow: 2 filed, 1 capped — per-finding SKIP, LOUD count, report row, stamp"
 
 # --- 3. timer shape --------------------------------------------------------
 grep -qE '^OnCalendar=\*-\*-\*01 04:15:00$' "$timer" \
