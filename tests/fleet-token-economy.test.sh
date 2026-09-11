@@ -121,8 +121,9 @@ prepaid_order=$(jq -r '.prepaid_providers_in_order | join(" ")' "$caps")
 # 2026-09-08 (fleet-ops#4453): paretoinference lands first among prepaid - Pareto Inference seat with $20/day spend meter.
 # 2026-09-08 (fleet-ops#4558): Nish 2026-09-07 standing order — '4 devin seats always working' — moves devin to the FRONT of the ladder; paretoinference takes overflow after devin's cap.
 # 2026-09-10: opencode-go joins after paretoinference — its Go subscription window is ~4 days (expiry-first ahead of non-expiring prepaid balances).
-[[ "$prepaid_order" == "devin paretoinference opencode-go ollama cline cursor alibaba-coding xai-oauth crof runinfra entrim" ]] \
-  || fail "prepaid order must be 'devin paretoinference opencode-go ollama cline cursor alibaba-coding xai-oauth crof runinfra entrim', got: $prepaid_order"
+# 2026-09-11 (Nish: two seats bought): synthetic (flat prepaid, GLM-5.3-Flash) then llmgateway-devpass ($87/mo metered credit pool) append at the END — devpass is last prepaid, before metered openrouter/deepseek.
+[[ "$prepaid_order" == "devin paretoinference opencode-go ollama cline cursor alibaba-coding xai-oauth crof runinfra entrim synthetic llmgateway-devpass" ]] \
+  || fail "prepaid order must be 'devin paretoinference opencode-go ollama cline cursor alibaba-coding xai-oauth crof runinfra entrim synthetic llmgateway-devpass', got: $prepaid_order"
 
 devin_cap=$(jq -r '.providers.devin.cap // empty' "$caps")
 [[ -n "$devin_cap" ]] || fail "devin cap must be present, got: empty"
