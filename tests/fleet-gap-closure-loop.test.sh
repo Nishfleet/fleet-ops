@@ -190,7 +190,13 @@ case "$*" in
     jq 'length' "${GAPS_JSON}" 2>/dev/null || echo 0
     ;;
   *"issue list"*gap-audit*"--state closed"*)
-    echo 0
+    # fleet-ops#5400: fleet-gap-closure-slo counts auto-repair client-side from
+    # issue labels now; emit the seeded [{labels:[...]}] array.
+    if [ -n "${CLOSED_GAPS_JSON:-}" ] && [ -f "$CLOSED_GAPS_JSON" ]; then
+      cat "$CLOSED_GAPS_JSON"
+    else
+      echo '[]'
+    fi
     ;;
   *"issue list"*stop-the-line*)
     # fleet-ops#4522: frozen-line gate. STL_FROZEN=1 simulates an open
@@ -274,6 +280,18 @@ export GAP_LOOP_CONF_CLEAN_FLOOR=2
 # ci-standards-audit on a machine whose last chain-e2e drill failed).
 export CHAIN_E2E_STATE_DIR="$scratch/chain-e2e"
 mkdir -p "$CHAIN_E2E_STATE_DIR"
+# fleet-ops#5400: the SLO snapshot fails closed — every required input must be
+# measured AND passing. Pin each required input to a measured stub value so
+# the green-path cycles stay green deterministically; without these pins the
+# live box's missing starvation/time-to-repair producers leak red into them.
+printf '{"all_pass":true,"results":[{"name":"chain","pass":true}]}\n' \
+  >"$CHAIN_E2E_STATE_DIR/chain-e2e-drill-results.json"
+export GAP_LOOP_STARVATION_JSON="$scratch/starvation.json"
+printf '{"starvation_minutes_24h":0}\n' >"$GAP_LOOP_STARVATION_JSON"
+export GAP_LOOP_TTR_JSON="$scratch/time-to-repair.json"
+printf '{"detector-rot":37}\n' >"$GAP_LOOP_TTR_JSON"
+export CLOSED_GAPS_JSON="$scratch/closed-gaps.json"
+printf '[{"labels":[]},{"labels":[]}]\n' >"$CLOSED_GAPS_JSON"
 
 tick() { "$loop"; }
 
@@ -377,9 +395,11 @@ tick
 [[ "$(jq -r '.last_verdict' "$state_dir/state.json")" == "FAIL" ]] \
   || fail "clean below floor must NOT rewrite last_verdict to FAIL, got $(jq -c .last_verdict "$state_dir/state.json")"
 # fleet-ops#5021: the green verdict for this cycle must come from the pinned
-# stub state only. A non-null rate here means live chain-e2e state leaked in.
-[[ "$(jq -r '.slo_snapshot.snapshot.chain_e2e_drill_pass_rate' "$state_dir/state.json")" == "null" ]] \
-  || fail "live chain-e2e drill leaked into the stub (pin CHAIN_E2E_STATE_DIR), got $(jq -c '.slo_snapshot.snapshot.chain_e2e_drill_pass_rate' "$state_dir/state.json")"
+# stub state only. fleet-ops#5400 pins a passing chain-e2e fixture in
+# CHAIN_E2E_STATE_DIR (fail-closed SLO: a null rate is unmeasured, hence red),
+# so the stored rate must read exactly 1 — our fixture, never a live leak.
+[[ "$(jq -r '.slo_snapshot.snapshot.chain_e2e_drill_pass_rate' "$state_dir/state.json")" == "1" ]] \
+  || fail "chain-e2e rate must be the pinned stub's 1, got $(jq -c '.slo_snapshot.snapshot.chain_e2e_drill_pass_rate' "$state_dir/state.json")"
 ok "clean below floor -> re-audit, consecutive_clean kept, last_verdict untouched"
 
 # A second consecutive clean cycle reaches the floor and convenes conference.
@@ -562,6 +582,49 @@ printf '{"cycle":{"verdict":"FAIL","regressions":["auto_revert_rate"]}}\n' >"$sc
 snap="$(GAP_LOOP_DISABLE=0 GAP_LOOP_QUALITY_JSON="$scratch/quality-fail.json" "$slo")"
 [[ "$(printf '%s' "$snap" | jq -r '.green')" == "false" ]] || fail "quality FAIL must make SLO not green, got: $snap"
 ok "SLO snapshot: #153 placeholder, fills from THROUGHPUT, drill and quality gate green"
+
+# ---------------------------------------------------------------------------
+# fleet-ops#5400: the SLO snapshot fails closed — an unmeasured required input
+# is budget-exhausted, never a pass, and unmeasured[] names it.
+# ---------------------------------------------------------------------------
+rm -f "$GAP_LOOP_STARVATION_JSON"
+snap="$(GAP_LOOP_DISABLE=0 "$slo")"
+[[ "$(printf '%s' "$snap" | jq -r '.green')" == "false" ]] \
+  || fail "unmeasured queue_starvation_minutes must force green=false, got: $snap"
+printf '%s' "$snap" | jq -e '.unmeasured | index("queue_starvation_minutes")' >/dev/null \
+  || fail "unmeasured must name queue_starvation_minutes, got: $snap"
+printf '{"starvation_minutes_24h":0}\n' >"$GAP_LOOP_STARVATION_JSON"
+
+rm -f "$GAP_LOOP_TTR_JSON"
+snap="$(GAP_LOOP_DISABLE=0 "$slo")"
+[[ "$(printf '%s' "$snap" | jq -r '.green')" == "false" ]] \
+  || fail "empty time_to_repair_per_class must force green=false, got: $snap"
+printf '%s' "$snap" | jq -e '.unmeasured | index("time_to_repair_per_class")' >/dev/null \
+  || fail "unmeasured must name time_to_repair_per_class, got: $snap"
+printf '{"detector-rot":37}\n' >"$GAP_LOOP_TTR_JSON"
+
+printf '[]\n' >"$CLOSED_GAPS_JSON"
+snap="$(GAP_LOOP_DISABLE=0 "$slo")"
+[[ "$(printf '%s' "$snap" | jq -r '.green')" == "false" ]] \
+  || fail "no closed gap-audit issues -> pct_auto_repaired unmeasured -> red, got: $snap"
+printf '%s' "$snap" | jq -e '.unmeasured | index("pct_auto_repaired")' >/dev/null \
+  || fail "unmeasured must name pct_auto_repaired, got: $snap"
+printf '[{"labels":[{"name":"agent-blocked"}]}]\n' >"$CLOSED_GAPS_JSON"
+snap="$(GAP_LOOP_DISABLE=0 "$slo")"
+[[ "$(printf '%s' "$snap" | jq -r '.green')" == "false" ]] \
+  || fail "measured 0% auto-repair must not read green, got: $snap"
+[[ "$(printf '%s' "$snap" | jq -r '.snapshot.pct_auto_repaired')" == "0" ]] \
+  || fail "all-blocked closed board must compute pct_auto_repaired=0, got: $snap"
+
+printf '[{"labels":[]},{"labels":[]}]\n' >"$CLOSED_GAPS_JSON"
+snap="$(GAP_LOOP_DISABLE=0 "$slo")"
+[[ "$(printf '%s' "$snap" | jq -r '.green')" == "true" ]] \
+  || fail "fully measured passing inputs must yield green, got: $snap"
+[[ "$(printf '%s' "$snap" | jq -r '.unmeasured | length')" == "0" ]] \
+  || fail "measured inputs must leave unmeasured empty, got: $snap"
+[[ "$(printf '%s' "$snap" | jq -r '.snapshot.pct_auto_repaired')" == "100" ]] \
+  || fail "label-counted pct_auto_repaired must be 100, got: $snap"
+ok "SLO fails closed: unmeasured required inputs and 0% auto-repair read red"
 
 # ---------------------------------------------------------------------------
 # Intake yield + order
