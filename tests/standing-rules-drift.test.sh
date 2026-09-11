@@ -267,5 +267,36 @@ else
   echo "OK 9b: no Pi install present (skipping reality check; structural pin only, CI)"
 fi
 
+# --- Assertion 10 (fleet-ops#5537): governed-run status is reality-anchored.
+# The rulebook-redteam audit found the canonical claiming "`governed-run` and
+# `~/.local/share/implementation-worker-routing/` are gone with them" while
+# /home/nish/.local/bin/governed-run still exists and ~/.codex/AGENTS.md still
+# sanctions it for non-Pi ad-hoc commands. The canonical must never claim a
+# deletion that reality contradicts: file-existence claims are pinned to a
+# dated, runnable check command, and the surviving non-Pi sanction is stated.
+
+canonical_routing="$(sed -n '/SECTION: shared-fleet-routing/,/END SECTION: shared-fleet-routing/p' "$canonical")"
+[[ -n "$canonical_routing" ]] || fail "canonical has no shared-fleet-routing section (gate cannot run)"
+
+if grep -Fq "are gone with them" <<<"$canonical_routing"; then
+  fail "canonical claims governed-run is 'gone with them' (fleet-ops#5537) - verify reality first: test -x ~/.local/bin/governed-run; ls ~/.local/share/implementation-worker-routing/; if retired-but-alive, say 'retired for Pi dispatch' with a dated check command instead of claiming deletion"
+fi
+
+grep -Fq "retired for Pi dispatch" <<<"$canonical_routing" \
+  || fail "canonical shared-fleet-routing must state how governed-run was retired ('retired for Pi dispatch') rather than silently omitting it (fleet-ops#5537)"
+
+grep -Fq "sanctioned for non-Pi ad-hoc commands" <<<"$canonical_routing" \
+  || fail "canonical must state the surviving non-Pi sanction for governed-run (fleet-ops#5537)"
+
+# Reality check: if the wrapper is present on this host, the canonical must NOT
+# claim its deletion and must name the surviving sanction.
+if [[ -x "$HOME/.local/bin/governed-run" ]] && ! grep -Fq "NOT deleted" <<<"$canonical_routing"; then
+  fail "~/.local/bin/governed-run exists but canonical does not pin 'NOT deleted' for it (fleet-ops#5537)"
+fi
+
+grep -Fq "test -x ~/.local/bin/governed-run" <<<"$canonical_routing" \
+  || fail "canonical governed-run status must carry the dated test -x check command (fleet-ops#5537)"
+echo "OK 10: governed-run status is reality-anchored (fleet-ops#5537)"
+
 echo ""
-echo "ALL OK: 9/9 assertions passed (drift, render, templating, markers, orphans, pi-count pin)"
+echo "ALL OK: 10/10 assertions passed (drift, render, templating, markers, orphans, pi-count pin, governed-run pin)"

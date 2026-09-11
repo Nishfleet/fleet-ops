@@ -49,7 +49,7 @@ Before implementation work, automatically read and follow `/home/nish/workspaces
 <!-- END SECTION: nish-preimplementation-contract -->
 
 <!-- SECTION: shared-fleet-routing -->
-**Everything runs through Pi, directly. No launchers.** (Nish, 2026-08-23 — vault `_system/shared-memory/global-standing-rules.md`.) The fleet control plane AND the `implementation-worker-*` launcher layer are both DELETED. There is no dispatch wrapper. `governed-run` and `~/.local/share/implementation-worker-routing/` are gone with them; the old `codex-model-routing.md` ladder is superseded.
+**Everything runs through Pi, directly. No launchers.** (Nish, 2026-08-23 — vault `_system/shared-memory/global-standing-rules.md`.) The fleet control plane AND the `implementation-worker-*` launcher layer are both DELETED. There is no dispatch wrapper for Pi work. `governed-run` and `~/.local/share/implementation-worker-routing/` are retired for Pi dispatch, NOT deleted (verified 2026-09-11: `test -x ~/.local/bin/governed-run && echo still-present`); `governed-run` remains sanctioned for non-Pi ad-hoc commands (sanction lives in `~/.codex/AGENTS.md`). The old `codex-model-routing.md` ladder is superseded.
 
 Call `pi` directly, prompt on **stdin** (Pi rejects a `--` end-of-options flag):
 
