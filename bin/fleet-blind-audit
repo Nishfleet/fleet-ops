@@ -12,7 +12,16 @@ if [[ -z "${GH_TOKEN:-}" && "${GITHUB_ACTIONS:-}" != "true" && "${GH:-gh}" == "g
     # and filed its synthetic fixture into the live tracker.
     command -v gh >/dev/null 2>&1 || export PATH="/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
     _wt="${NISHFLEET_WORKER_TOKEN_BIN:-${HOME:-/home/nish}/.local/bin/worker-token}"
-    _minted="$("$_wt" --print)" || { echo "fleet-ops#3445: $_wt --print failed - refusing human-gh writes" >&2; exit 1; }
+    if ! _minted="$("$_wt" --print)"; then
+        echo "fleet-ops#3445: $_wt --print failed - refusing human-gh writes" >&2
+        # Nish 2026-09-11: a dead App in the blind audit is a LOUD fault —
+        # one line into the triage file the heartbeat reads.
+        _ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        printf '%s [fleet-blind-audit] LOUD [AUDIT-BACKLOG] worker-token mint failed; run aborted\n' "$_ts" \
+            >> "${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}" 2>/dev/null || true
+        unset _wt _ts
+        exit 1
+    fi
     eval "$_minted"
     unset _wt _minted
 fi
@@ -77,12 +86,6 @@ fi
 #                           optional live/fixture sources for the seam enumerator
 #   FLEET_OPS_WORKSPACES_ROOT overlay for tests (default /home/nish/workspaces)
 #   FLEET_OPS_CANONICAL_CHECKOUT overlay for tests (default <workspaces>/tooling/fleet-ops-deploy-clone)
-
-#   AUDIT_MAX_FINDINGS      cap on filed issues per run (default: 8)
-#   AUDIT_CARRYOVER_FILE    carry-over ledger (default $STATE_DIR/carryover.jsonl)
-#   AUDIT_TRIAGE            triage file the heartbeat reads (default:
-#                           FLEET_HEARTBEAT_TRIAGE or
-#                           /home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md)
 
 set -euo pipefail
 
@@ -232,6 +235,14 @@ run_backfill() {
         log "FATAL: --backfill requires a since-date (e.g. --backfill 2026-08-20)"
         exit 2
     fi
+    # Backfill runs before the normal report-dir setup; stamp its own run id.
+    if [ -n "${AUDIT_FAKE_NOW:-}" ]; then
+        NOW_ISO="$AUDIT_FAKE_NOW"
+        NOW_DIR="${NOW_ISO//[^A-Za-z0-9]/_}"
+    else
+        NOW_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        NOW_DIR="$(date -u +%Y%m%dT%H%M%SZ)"
+    fi
     log "backfill: reconstructing unfiled PASS findings since $since"
     local bf_dir="$STATE_DIR/backfill"
     mkdir -p "$bf_dir"
@@ -271,7 +282,9 @@ def sigof(f):
 rows, lost = [], []
 if os.path.isdir(reports_root):
     for name in sorted(os.listdir(reports_root)):
-        if not (len(name) == 15 and name.startswith("2026")) or name[:10] < since[:10].replace("-", ""):
+        # dir names are YYYYMMDDTHHMMSSZ (16 chars); date-compare +  since.
+        if not (len(name) == 16 and name.startswith("2026") and name.endswith("Z")) \
+            or name[:10] < since[:10].replace("-", ""):
             continue
         d = os.path.join(reports_root, name)
         vpath = os.path.join(d, "verdicts.jsonl")
@@ -305,7 +318,7 @@ if os.path.isdir(reports_root):
         if got < len(pass_titles):
             lost.append({"run": name, "pass_but_lost": len(pass_titles) - got})
 
-seen, dup = {}, 0
+seen, dups = {}, 0
 for f in rows:
     s = sigof(f)
     if s in seen:
@@ -320,7 +333,7 @@ for path in (open_path, closed_path):
     except Exception:
         issues = []
     for i in issues if isinstance(issues, list) else []:
-        t = re.sub(r"^\\[gap-audit\\]\\s*", "", tkey(i.get("title")))
+        t = re.sub("\\[gap-audit\\]\\s*", "", tkey(i.get("title")))
         if t:
             issued.add(t)
 
@@ -349,22 +362,80 @@ BF
         exit 0
     fi
 
-    # Reuse the normal process_one_finding pipeline: no cap, panel verdicts
-    # to the backfill verdicts log, bodies point at the backfill report.
-    local bf_dir_report="$bf_dir/report-$NOW_DIR.md"
-    VERDICTS_LOG="$bf_dir/verdicts-$NOW_DIR.jsonl"
-    REPORT_MD="$bf_dir_report"
-    MAX_FINDINGS=999999        # no cap in backfill
-    RESOLVED_SIGS="$bf_dir/resolved-$NOW_DIR.txt"
-    : >"$VERDICTS_LOG"
-    : >"$RESOLVED_SIGS"
-    # Panel context normally built in the reviewer branch; defaults here.
-    open_gap_issues="[]"; recent_merged="[]"; deliberate_json="[]"
-    unfiled_pass=0; filed=0; dedupe_dropped=0
-    while IFS= read -r finding; do
-        [ -n "$finding" ] || continue
-        process_one_finding "$finding" "1"
+    # Filing loop: re-panel each survivor, file via the #1212 gate, no cap.
+    # (Backfill runs before the reviewer branch, so the panel context is
+    # bounded here instead of reusing the reviewer's build.)
+    local bv_log="$bf_dir/verdicts.jsonl"
+    : >"$bv_log"
+    local bf_finding bf_verdict b_title b_body b_evidence b_severity b_first
+    local b_action b_url b_rc bf_v bf_reason
+    panel_input=$(mktemp)
+    bf_body=$(mktemp)
+    bf_open='[]'; bf_recent='[]'; bf_delib='[]'
+    duplicates=0
+    panel_fail=0
+    filed=0
+    issue_nums=""
+    while IFS= read -r bf_finding; do
+        [ -n "$bf_finding" ] || continue
+        b_title=$(printf '%s' "$bf_finding" | jq -r '.title // ""')
+        if [ -z "$b_title" ]; then
+            panel_fail=$((panel_fail+1))
+            continue
+        fi
+        b_body=$(printf '%s' "$bf_finding" | jq -r '.body // ""')
+        b_evidence=$(printf '%s' "$bf_finding" | jq -r '.evidence // ""')
+        b_severity=$(printf '%s' "$bf_finding" | jq -r '.severity // ""')
+        b_first=$(printf '%s' "$bf_finding" | jq -r '.first_run // ""')
+        jq -n --arg repo "$REPO" --argjson finding "$bf_finding" \
+            --argjson open_issues "$bf_open" --argjson recent_merges "$bf_recent" \
+            --argjson deliberate_states "$bf_delib" \
+            '{repo: $repo, finding: $finding, open_issues: $open_issues, recent_merges: $recent_merges, deliberate_states: $deliberate_states}' \
+            > "$panel_input"
+        bf_verdict=$("$PANEL_BIN" < "$panel_input" 2>&1)
+        if [ -z "$bf_verdict" ] || ! printf '%s' "$bf_verdict" | jq -e . >/dev/null 2>&1; then
+            panel_fail=$((panel_fail+1))
+            log "backfill: PANEL-FAIL panel error ($b_title)"
+            continue
+        fi
+        bf_v=$(printf '%s' "$bf_verdict" | jq -r '.verdict // ""')
+        bf_reason=$(printf '%s' "$bf_verdict" | jq -r '.reason // ""')
+        if [ "$bf_v" != "PASS" ]; then
+            panel_fail=$((panel_fail+1))
+            log "backfill: PANEL-FAIL ($bf_reason) ($b_title)"
+            continue
+        fi
+        {
+            printf '%s\n\n' "$b_body"
+            printf '**Evidence:** %s\n\n' "$b_evidence"
+            printf '**Severity:** %s\n\n' "$b_severity"
+            printf '**First audit report:** %s\n\n' "$b_first"
+            printf '*Backfilled by fleet-blind-audit --backfill at %s.*\n' "$NOW_ISO"
+        } > "$bf_body"
+        bf_new=$("$ISSUE_FILE" file --json -R "$REPO" \
+            --title "[gap-audit] $b_title" --body-file "$bf_body" \
+            --label gap-audit --label agent-ready 2>/dev/null)
+        b_rc=$?
+        if [ "$b_rc" -eq 0 ] && [ -n "$bf_new" ]; then
+            b_action=$(printf '%s' "$bf_new" | jq -r '.action // "filed"')
+            b_url=$(printf '%s' "$bf_new" | jq -r '.url // ""')
+            if [ "$b_action" = "commented" ]; then
+                duplicates=$((duplicates+1))
+                log "backfill: DEDUPED existing issue carries this problem ($b_title)"
+            else
+                filed=$((filed+1))
+                issue_nums="$issue_nums ${b_url#*issues/}"
+                log "backfill: FILED $b_url ($b_title)"
+            fi
+        else
+            log "backfill: file failed for ($b_title)"
+        fi
+        # panel journal (audit trail for the summary table)
+        jq -cn --arg t "$b_title" --arg v "$bf_v" --arg r "$bf_reason" \
+            '{timestamp: (now | todate), title:$t, verdict:$verdict, reason:$reason, issue:"", loud:false}' \
+            >> "$bv_log" 2>/dev/null || true
     done < "$queue"
+    rm -f "$panel_input" "$bf_body"
 
     # Summary table (deliverable B proof): reconstructed / duplicates /
     # panel-FAIL / filed, with the filed issue URLs.
@@ -373,14 +444,27 @@ BF
         printf '## Backfill summary (--backfill %s)\n\n' "$since"
         printf '| reconstructed(candidates) | duplicates | panel-FAIL | filed |\n|---|---|---|---|\n'
         printf '| %d | %d | %d | %d |\n\n' \
-            "$(jq -s length "$VERDICTS_LOG" 2>/dev/null || echo 0)" "$dedupe_dropped" \
-            "$(grep -c '"verdict":"FAIL"' "$VERDICTS_LOG" 2>/dev/null || echo 0)" "$filed"
+            "$(grep -c . "$queue" 2>/dev/null || echo 0)" "$duplicates" "$panel_fail" "$filed"
     } | tee "$summary"
-    if [ "${unfiled_pass:-0}" -gt 0 ]; then
-        loud_backlog "${unfiled_pass:-0}" "$dedupe_dropped" "backfill=$since"
+    if [ "${panel_fail:-0}" -gt 0 ]; then
+        loud_backlog "${panel_fail:-0}" "$duplicates" "backfill=$since"
     fi
+    # Nothing else in the normal run must happen for a backfill invocation.
+    log "backfill complete: reconstructed=$(grep -c . "$queue" 2>/dev/null || echo 0) duplicates=$duplicates panel_fail=$panel_fail filed=$filed"
+    exit 0
 }
 
+
+# fleet-ops#786: timestamp split out so the printf line stays free of
+# $(date). The variable name avoids the volatile alternatives (TS/...)
+# so the regex does not flag this helper either.
+log() {
+    local _stamp
+    _stamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    printf '[%s] [fleet-blind-audit] %s\n' "$_stamp" "$*" >&2
+}
+
+# --- backfill dispatch: backfill exits before the normal run --------------
 if [ "$BACKFILL_MODE" = "1" ]; then
     run_backfill "${BACKFILL_SINCE:-}"
 fi
@@ -402,16 +486,6 @@ PI_STDOUT="$REPORT_DIR/pi-stdout.txt"
 PI_STDERR="$REPORT_DIR/pi-stderr.txt"
 VERDICTS_LOG="$REPORT_DIR/verdicts.jsonl"
 : >"$VERDICTS_LOG"
-
-# fleet-ops#786: timestamp split out so the printf line stays free of
-# $(date). The variable name avoids the volatile alternatives (TS/...)
-# so the regex does not flag this helper either.
-log() {
-    local _stamp
-    _stamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-    printf '[%s] [fleet-blind-audit] %s\n' "$_stamp" "$*" >&2
-}
-
 resolve_path() {
     readlink -f "$1" 2>/dev/null || printf '%s' "$1"
 }

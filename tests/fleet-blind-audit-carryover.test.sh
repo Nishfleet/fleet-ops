@@ -11,7 +11,6 @@ set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-bin="$repo_root/bin/fleet-blind-audit"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
@@ -90,7 +89,6 @@ findings_file="$scratch/findings-12.json"
 empty_findings="$scratch/findings-empty.json"
 printf '{"findings":[]}\n' > "$empty_findings"
 
-state="$scratch/state"
 plan="$scratch/plan.md"
 triage="$scratch/triage.md"
 issues_json="$scratch/issues.json"
@@ -130,7 +128,6 @@ env "${common_env[@]}" \
   AUDIT_DRY_RUN=1 \
   "$repo_root/bin/fleet-blind-audit" >"$scratch/run0.log" 2>&1 || rc=$?
 [[ $rc == 0 ]] || { cat "$scratch/run0.log"; fail "dry run exited $rc"; }
-d0=$(find "$scratch/state/reports" -name packet.md | head -1)
 
 if grep -q 'Max findings to return' "$scratch/state/reports"/*/packet.md; then
   fail "packet still contains 'Max findings to return'"
