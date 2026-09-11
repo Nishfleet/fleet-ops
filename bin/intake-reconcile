@@ -195,6 +195,14 @@ transient_fail_path() {
     printf '%s/transient-fail/%s' "$(dirname "$AUDIT_LOG")" "$(safe_repo_token "$1")"
 }
 
+# fleet-ops#5623: marker recording which perm-excluded condition was last
+# announced (masked|unmasked). A declared-permanent state cannot resolve
+# itself, so the LOUD fires only on the transition into a condition, not
+# every tick.
+perm_excluded_seen_path() {
+    printf '%s/perm-excluded-seen/%s' "$(dirname "$AUDIT_LOG")" "$(safe_repo_token "$1")"
+}
+
 read_transient_count() {
     local f n=0
     f="$(transient_fail_path "$1")"
@@ -481,15 +489,35 @@ converge_repo() {
                 if [ "$(is_masked "$u")" = "yes" ]; then masked+=("$u"); fi
                 disable_unit "$u" "declared-excluded-permanent:$reason"
             done < <(units_for "$repo")
-            if [ "${#masked[@]}" -gt 0 ]; then
-                local m
-                m="$(printf '%s\n' "${masked[@]}" | paste -sd, -)"
-                loud "INTAKE-MASKED" \
-                    "$repo: permanent-excluded and already masked ($m) — leaving masked"
+            # fleet-ops#5623: announce the transition into the current
+            # perm-excluded condition only. masked/unmasked is part of the
+            # condition — an operator masking (or unmasking) the units is a
+            # new condition worth one announcement, then quiet again. The
+            # marker is cleared by the re-arm sweep when the repo leaves
+            # the declaration, so re-declaring LOUDs as a fresh transition.
+            local seen_file cond
+            seen_file="$(perm_excluded_seen_path "$repo")"
+            if [ "${#masked[@]}" -gt 0 ]; then cond=masked; else cond=unmasked; fi
+            if [ -f "$seen_file" ] \
+                && [ "$(cat "$seen_file" 2>/dev/null || true)" = "$cond" ]; then
+                log "  $repo: permanent-excluded ($reason) — announced already ($cond), quiet"
             else
-                loud "INTAKE-PERM-EXCLUDED" \
-                    "$repo: permanent-excluded ($reason) — units disabled, not masked (operator must mask manually if so desired)"
-                audit "$repo" "perm-excluded" "$reason"
+                if [ "$cond" = "masked" ]; then
+                    local m
+                    m="$(printf '%s\n' "${masked[@]}" | paste -sd, -)"
+                    loud "INTAKE-MASKED" \
+                        "$repo: permanent-excluded and already masked ($m) — leaving masked"
+                else
+                    loud "INTAKE-PERM-EXCLUDED" \
+                        "$repo: permanent-excluded ($reason) — units disabled, not masked (operator must mask manually if so desired)"
+                    audit "$repo" "perm-excluded" "$reason"
+                fi
+                # DRY_RUN mutates nothing — including announcement state —
+                # so the next real run still announces the first-seen.
+                if [ "$DRY" != "1" ]; then
+                    mkdir -p "$(dirname "$seen_file")"
+                    printf '%s\n' "$cond" >"$seen_file"
+                fi
             fi
             ;;
         exclude-nonperm)
@@ -565,6 +593,19 @@ while IFS= read -r repo; do
         declared_reason[$repo]="not-in-declared-set"
     fi
 done <<<"$live_repos"
+
+# Re-arm perm-excluded alerts (fleet-ops#5623): a repo no longer declared
+# excluded-permanent loses its announced marker, so a future declaration
+# LOUDs as a fresh transition.
+perm_seen_dir="$(dirname "$AUDIT_LOG")/perm-excluded-seen"
+if [ -d "$perm_seen_dir" ]; then
+    for f in "$perm_seen_dir"/*; do
+        [ -e "$f" ] || continue
+        if [ "${declared_mode[$(basename "$f")]:-}" != "exclude-perm" ]; then
+            rm -f "$f"
+        fi
+    done
+fi
 
 # Iterate in LC_ALL=C sorted order so the audit log is stable across runs
 # (the diff between two consecutive ticks is human-readable).
