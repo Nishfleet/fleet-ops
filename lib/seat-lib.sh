@@ -7802,7 +7802,10 @@ is_openrouter_free_retired_error() {
     local out="$1" err="$2"
     local combined="$out"$'\n'"$err"
     [[ -n "${combined//$'\n'/}" ]] || return 1
-    grep -qiE '\b404\b|HTTP[[:space:]]*/?[[:space:]]*404|status["':=[[:space:]]*404' <<<"$combined" \
+    # fleet-ops#5274: require BOTH a 404 status token and OpenRouter's exact
+    # 'unavailable for free' phrase — a bare 404, a 503 overload, or a quota
+    # body alone must never corpse a seat.
+    grep -qiE '404' <<<"$combined" \
         && grep -qiE 'unavailable[[:space:]_-]+for[[:space:]]+free' <<<"$combined"
 }
 
