@@ -42,11 +42,12 @@ for r in 20260826T100000Z 20260826T110000Z; do
 {"findings":[
   {"rank":1,"title":"alpha breaker crash","body":"Body alpha.","severity":"critical","evidence":"ev-a"},
   {"rank":2,"title":"beta medium miss","body":"Body b.","severity":"medium","evidence":"ev-b"},
-  {"rank":3,"title":"gamma carried","body":"Body g.","severity":"low","evidence":"ev-g"}
+  {"rank":3,"title":"gamma carried","body":"Body g.","severity":"low","evidence":"ev-g"},
+  {"rank":4,"title":"manual seam: LADDER-WALLED hash=staleprefilter reason=unit-failure","body":"Hand-performed operation.","severity":"high","evidence":"ev-l"}
 ]}
 JSON
   : > "$scratch/state/reports/$r/verdicts.jsonl"
-  for t in "alpha breaker crash" "beta medium miss" "gamma carried"; do
+  for t in "alpha breaker crash" "beta medium miss" "gamma carried" "manual seam: LADDER-WALLED hash=staleprefilter reason=unit-failure"; do
     printf '%s\n' "$(jq -cn --arg t "$t" '{timestamp:"2026-08-26T10:00:00Z", rank:"1", title:$t, verdict:"PASS", reason:"skipped: max findings 1 reached", issue:"", loud:false}')" >> "$scratch/state/reports/$r/verdicts.jsonl"
   done
 done
@@ -73,5 +74,9 @@ s=$(grep -Rl "Backfill summary" "$scratch/state/backfill" 2>/dev/null | head -1;
 
 filed=$(grep -c CREATE "$create_log" 2>/dev/null; true)
 [[ "$filed" -eq 2 ]] || { cat "$scratch/bf.log" "$create_log"; fail "expected 2 backfilled issues (alpha + beta), saw $filed"; }
+# fleet-ops#5464: a stale (pre-filter) LADDER-WALLED seam in the persisted
+# findings must be re-filtered at reconstruction, not re-filed.
+grep -q "LADDER-WALLED" "$create_log" && fail "backfill re-filed an automated-escalation seam (LADDER-WALLED)"
+grep -q "auto_escalation_dropped=1" "$scratch/bf.log" || { tail -20 "$scratch/bf.log"; fail "stats must report the auto_escalation drop"; }
 
 ok "backfill: reconstruct + dedupe + predrop + file (hermetic)"
