@@ -94,15 +94,17 @@ the full five-layer policy tree and what each layer does.
 ## Dispatch a packet that outlives this session
 
 `nohup pi ... &` dies when the launching shell ends. The four `EXTLOAD-OK`
-lines it leaves behind look like a dead seat. Use the thin systemd wrapper:
+lines it leaves behind look like a dead seat. Use the systemd wrapper:
 
 ```
-pi-systemd-run --unit mypacket --stdin /path/to/packet.md -- \
+pi-systemd-run --unit mypacket --stdin /path/to/packet.md \
+  --deadline 90 --deliverable /path/to/deliverable -- \
   pi --print --provider minimax --model MiniMax-M3
 ```
 
-That is `systemd-run --user --collect --no-block`. Not a dispatcher: no
-retry ladder, no seat rotation, no queue. Watch with
+It wires OnFailure escalation, a healthchecks dead-man (start/complete
+ping) and a deliverable verdict — a stop without the deliverable is a
+FAILURE, not a success (fleet-ops#4266). Watch with
 `systemctl --user status mypacket.service`.
 
 If the packet clones a repo, use a reference clone against the local

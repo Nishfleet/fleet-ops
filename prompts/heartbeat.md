@@ -309,13 +309,15 @@ For the picked item:
 1. Write the packet file at `/home/nish/.local/state/pi-packets/<packet>.md`
    with the spec content.
 2. Spawn the worker with `pi-systemd-run` (never `nohup` or trailing `&` —
-   those die with the launching session and look like a dead seat):
+   those die with the launching session and look like a dead seat). Every
+   spawn carries `--deadline <min>` and `--deliverable <path>` — a stop
+   without the deliverable is a FAILURE, not a success (fleet-ops#4266):
    - Quality/security/twice-failed:
-     `pi-systemd-run --unit <packet> --stdin /home/nish/.local/state/pi-packets/<packet>.md -- claude -p --model claude-opus-5`
+     `pi-systemd-run --unit <packet> --stdin /home/nish/.local/state/pi-packets/<packet>.md --deadline <min> --deliverable <path> -- claude -p --model claude-opus-5`
    - Devin heavy:
-     `pi-systemd-run --unit <packet> --stdin /home/nish/.local/state/pi-packets/<packet>.md -- pi --print --provider devin --model glm-5-2`
+     `pi-systemd-run --unit <packet> --stdin /home/nish/.local/state/pi-packets/<packet>.md --deadline <min> --deliverable <path> -- pi --print --provider devin --model glm-5-2`
    - Mechanical:
-     `pi-systemd-run --unit <packet> --stdin /home/nish/.local/state/pi-packets/<packet>.md -- pi --print --provider minimax --model MiniMax-M3`
+     `pi-systemd-run --unit <packet> --stdin /home/nish/.local/state/pi-packets/<packet>.md --deadline <min> --deliverable <path> -- pi --print --provider minimax --model MiniMax-M3`
    Watch: `systemctl --user status <packet>.service`
    Logs:  `journalctl --user -u <packet>.service -f`
 3. Log to playbook under a fresh "Heartbeat HH:MM UTC" line: which item
