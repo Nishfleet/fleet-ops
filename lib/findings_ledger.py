@@ -54,7 +54,7 @@ FIELDS = ("ts", "source_organ", "run_id", "finding_id", "severity", "title",
 
 def finding_id(source_organ, run_id, title):
     norm = re.sub(r"\W+", " ", (title or "").strip().lower()).strip()
-    return hashlib.sha1(f"{source_organ}|{run_id or ''}|{norm}".encode(), usedforsecurity=False).hexdigest()[:16]
+    return hashlib.sha256(f"{source_organ}|{run_id or ''}|{norm}".encode()).hexdigest()[:16]
 
 
 def utcnow():
