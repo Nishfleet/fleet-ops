@@ -567,10 +567,14 @@ BF
         b_evidence=$(printf '%s' "$bf_finding" | jq -r '.evidence // ""')
         b_severity=$(printf '%s' "$bf_finding" | jq -r '.severity // ""')
         b_first=$(printf '%s' "$bf_finding" | jq -r '.first_run // ""')
-        jq -n --arg repo "$REPO" --argjson finding "$bf_finding" \
-            --argjson open_issues "$bf_open" --argjson recent_merges "$bf_recent" \
-            --argjson deliberate_states "$bf_delib" \
-            '{repo: $repo, finding: $finding, open_issues: $open_issues, recent_merges: $recent_merges, deliberate_states: $deliberate_states}' \
+        # fleet-ops#5608 class: payload via files (--slurpfile), not argv —
+        # bf_open (50 issue bodies) crosses the 128KB single-argv cap.
+        jq -n --arg repo "$REPO" \
+            --slurpfile finding <(printf '%s' "$bf_finding") \
+            --slurpfile open_issues <(printf '%s' "$bf_open") \
+            --slurpfile recent_merges <(printf '%s' "$bf_recent") \
+            --slurpfile deliberate_states <(printf '%s' "$bf_delib") \
+            '{repo: $repo, finding: $finding[0], open_issues: $open_issues[0], recent_merges: $recent_merges[0], deliberate_states: $deliberate_states[0]}' \
             > "$panel_input"
         bf_verdict=$("$PANEL_BIN" < "$panel_input" 2>&1 || true)
         if [ -z "$bf_verdict" ] || ! printf '%s' "$bf_verdict" | jq -e . >/dev/null 2>&1; then
@@ -1084,11 +1088,17 @@ fi
 # findings. Merged here so filing does not depend on the reviewer noticing.
 if [ -f "$GATE_LIB" ]; then
     failed_json=$(printf '%s\n' "$systemctl_failed" | jq -R -s -c 'split("\n") | map(select(length>0))')
+    # 2026-09-12 (fleet-ops#5608 class): these payloads ride FILES, not argv —
+    # a single argv string is kernel-capped at MAX_ARG_STRLEN (128KB) and the
+    # closed-issues JSON reached 404KB (2026-09-12T22:00Z run: `jq: Argument
+    # list too long`, unit exit 126). --slurpfile + process substitution is
+    # semantically identical to --argjson for these already-validated JSON
+    # arrays (each guards to '[]'), with no argv size ceiling.
     hunt_in=$(jq -n \
-        --argjson closed "${closed_issues:-[]}" \
-        --argjson failed "$failed_json" \
-        --argjson open "${open_issues:-[]}" \
-        '{closed_issues:$closed, failed_units:$failed, open_issues:$open}')
+        --slurpfile closed <(printf '%s' "${closed_issues:-[]}") \
+        --slurpfile failed <(printf '%s' "$failed_json") \
+        --slurpfile open <(printf '%s' "${open_issues:-[]}") \
+        '{closed_issues:$closed[0], failed_units:$failed[0], open_issues:$open[0]}')
     hunt_out=$(printf '%s' "$hunt_in" | python3 "$GATE_LIB" hunt)
     if ! printf '%s' "$findings" | jq -e 'type=="object" and has("findings")' >/dev/null 2>&1; then
         if printf '%s' "$findings" | jq -e 'type=="array"' >/dev/null 2>&1; then
@@ -1135,9 +1145,9 @@ fi
 # for a human to notice them.
 if [ -f "$CLOSED_UNDELIVERED_LIB" ]; then
     cud_in=$(jq -n \
-        --argjson closed "${closed_issues:-[]}" \
-        --argjson merged "${merged_prs:-[]}" \
-        '{closed_issues:$closed, merged_prs:$merged}')
+        --slurpfile closed <(printf '%s' "${closed_issues:-[]}") \
+        --slurpfile merged <(printf '%s' "${merged_prs:-[]}") \
+        '{closed_issues:$closed[0], merged_prs:$merged[0]}')
     cud_out=$(printf '%s' "$cud_in" | python3 "$CLOSED_UNDELIVERED_LIB" hunt 2>/dev/null || echo '{"findings":[]}')
     if ! printf '%s' "$cud_out" | jq -e 'type=="object" and has("findings")' >/dev/null 2>&1; then
         cud_out='{"findings":[]}'
