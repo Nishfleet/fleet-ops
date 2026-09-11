@@ -256,6 +256,28 @@ if (( rc != 0 )); then
     exit 1
 fi
 
+# --- fleet-ops#5515: rc=0 with EMPTY stdout is a silent stall ---------------
+# pi can exit 0 having produced NO stdout (late-stream/empty-message class:
+# the model finalized without emitting anything, no PACKET-VERDICT, no
+# assistant text). The success path below would then log SUCCESS, reset
+# tried-seats, and exit 0 — no Restart, no escalation. That is how
+# quality-research-weekly silently skipped TWO weekly cycles (2026-08-30 and
+# 2026-09-06: dated logs of 286/125 bytes = header+seat line only, no
+# rotation-log append; timer fired, unit Result=success). An output-less run
+# is a FAILED run: record the evidence (header + stderr tail), keep
+# tried-seats, and exit 1 — loud through the normal failure path
+# (Restart= -> OnFailure escalation). No bench marker: the retry must walk
+# the seat ladder, and tried-seats already excludes this attempt's seat.
+if [[ ! -s "$out" ]] || ! grep -q '[^[:space:]]' "$out"; then
+    err_tail=$(tail -c 300 "$err" 2>/dev/null | tr '\n' ' ' | tail -c 280)
+    seat_log "agent-cron-run: $slug EMPTY STDOUT on $np/$nm (rc=0, ${spawn_elapsed_s}s) — pi produced no output; failing loud so Restart re-seats (fleet-ops#5515)"
+    {
+        printf '# %s %s EMPTY-STDOUT\nseat=%s/%s workdir=%s\nstderr: %s\n' "$slug" "$TS" "$np" "$nm" "$WORKDIR" "$err_tail"
+    } >>"$OUT"
+    rm -f "$out" "$err"
+    exit 1
+fi
+
 # --- success: record the run, deliver the digest ----------------------------
 # `grep` returns 1 when no DIGEST line exists; under `set -o pipefail` that
 # would abort the script BEFORE the output file is written. The `|| true`
