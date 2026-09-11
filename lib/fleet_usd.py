@@ -291,7 +291,13 @@ def _is_probe_prompt(text):
 
 
 def session_cache_tokens(path, today_epoch=None, day_seconds=86400.0):
-    """Return {provider: {"input": n, "cacheRead": n}} for one session jsonl.
+    """Return {(provider, is_free_slug): {"input": n, "cacheRead": n}}.
+
+    Keyed by provider AND whether the model slug is a ``:free`` slug: free
+    slugs bill $0 for uncached input, so they must not count against the
+    metered cache-hit target (FleetPromptCacheHitLow, 2026-09-11). Only the
+    cache-hit path consumes this; the USD path has its own aggregation.
+    
 
     Same windowing as session_marginal_usd: trailing day_seconds when
     today_epoch is set. input is uncached prompt tokens; cacheRead is the
@@ -350,7 +356,10 @@ def session_cache_tokens(path, today_epoch=None, day_seconds=86400.0):
                 cache_tok = int(usage.get("cacheRead") or 0)
                 if in_tok == 0 and cache_tok == 0:
                     continue
-                slot = counts.setdefault(provider, {"input": 0, "cacheRead": 0})
+                slug_free = str(msg.get("model") or "").endswith(":free")
+                slot = counts.setdefault(
+                    (provider, slug_free), {"input": 0, "cacheRead": 0}
+                )
                 slot["input"] += in_tok
                 slot["cacheRead"] += cache_tok
     except OSError:
@@ -402,22 +411,26 @@ def compute_cache_hit_24h(sessions_dir, rate_card, now_epoch=None, day_seconds=8
         if not counts:
             continue
         ptype = packet_type_from_path(path)
-        for prov, slot in counts.items():
-            key = (prov, ptype)
+        for (prov, slug_free), slot in counts.items():
+            key = (prov, ptype, slug_free)
             cur = agg.setdefault(key, {"input": 0, "cacheRead": 0})
             cur["input"] += int(slot.get("input") or 0)
             cur["cacheRead"] += int(slot.get("cacheRead") or 0)
     rows = []
-    for (prov, ptype), slot in sorted(agg.items()):
+    for (prov, ptype, slug_free), slot in sorted(agg.items()):
         ins = int(slot["input"])
         crs = int(slot["cacheRead"])
         denom = ins + crs
         if denom <= 0:
             continue
+        if slug_free:
+            cls = "free"
+        else:
+            cls = _provider_metric_class(rate_card, prov)
         rows.append({
             "provider": prov,
             "packet_type": ptype,
-            "class": _provider_metric_class(rate_card, prov),
+            "class": cls,
             "input": ins,
             "cacheRead": crs,
             "ratio": crs / denom,
