@@ -239,11 +239,20 @@ def packet_type_from_path(path):
     if "probe" in blob:
         return "probe"
     # Interactive / ad-hoc `pi` sessions: Pi encodes the cwd as a `--a-b-c--`
-    # directory name. A bare home or /tmp cwd is interactive typing, not a
-    # dispatched packet.
+    # directory name. Dispatched packets run through lane-named dirs
+    # (pi-issue-*, scout, audit, ... — all matched above), so any encoded-cwd
+    # session that reached this line is ad-hoc work, not a dispatched packet:
+    # a bare home cwd, /tmp scratch (incl. the /tmp/seat-proof-* audition
+    # one-shots), or a one-off ops run in a state directory. Exactly one
+    # unnamed fallthrough — before 2026-09-11 only --home-nish--/--tmp-- were
+    # folded here, so every other encoded-cwd stray (seat-proof proofs, ops
+    # runs in agent-state) polluted the "other" packet lane and drove a false
+    # FleetPromptCacheHitLow on lanes whose ratio is structurally uncapped
+    # (fleet-ops#4643, 2026-09-11 20:57Z repair: llmgateway-devpass/other
+    # 0.72 was 45% proof one-shots + one ops run, synthetic/other 0.55 was
+    # 100% proof one-shots).
     if parent.startswith("--") and parent.endswith("--"):
-        if parent.startswith("--home-nish--") or parent == "--tmp--":
-            return "interactive"
+        return "interactive"
     return "other"
 
 
