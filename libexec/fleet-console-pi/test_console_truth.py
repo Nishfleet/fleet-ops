@@ -231,7 +231,7 @@ def test_metric_tiles_make_zero_github_calls():
     metric_collectors = {"collect_shipped", "collect_open_prs", "collect_main_ci",
                          "collect_firing_alerts", "collect_repairs_inflight",
                          "collect_running_pi", "collect_fleet_state",
-                         "collect_outcome"}
+                         "collect_outcome", "collect_findings"}
     for name in metric_collectors:
         fsrc = ast.get_source_segment(src, next(n for n in ast.walk(tree)
             if isinstance(n, ast.FunctionDef) and n.name == name)) or ""
@@ -636,6 +636,104 @@ def test_questions_failure_reason_names_the_repo(monkeypatch):
         assert str(e).startswith("gh search issues --owner rc=1: "), str(e)
     else:
         raise AssertionError("a rc=1 search must raise")
+
+
+# --- fleet-ops#5476: findings ledger tile (ported from worktile 616b576) ---
+
+def _write_ledger(tmp_path, rows, name="findings-ledger.jsonl"):
+    p = tmp_path / name
+    p.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    return p
+
+
+def _iso_hours_ago(h):
+    import datetime as _dt
+    return (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=h)
+            ).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def test_findings_tile_reads_canonical_ledger(monkeypatch, tmp_path):
+    """The findings tile counts the canonical vault ledger per disposition,
+    newest rows first, and raises the red-banner inputs when a carry-over
+    is older than 24h. The ledger jsonl is the truth — no second copy."""
+    rows = [
+        {"ts": _iso_hours_ago(30), "finding_id": "b", "severity": "high",
+         "title": "old carry", "disposition": "carried_over",
+         "ref": "r2", "reason": "y"},
+        {"ts": _iso_hours_ago(2), "finding_id": "a", "severity": "info",
+         "title": "fresh carry", "disposition": "carried_over",
+         "ref": "r1", "reason": "x"},
+        {"ts": _iso_hours_ago(1), "finding_id": "c", "severity": "info",
+         "title": "filed one", "disposition": "filed"},
+    ]
+    monkeypatch.setattr(G, "FINDINGS_LEDGER", _write_ledger(tmp_path, rows))
+    t = G.collect_findings()
+    assert t["ok"] is True
+    assert t["observed_at"] is not None
+    assert t["stale_after_s"] > 0
+    assert t["source"] == "vault _system/shared-memory/findings-ledger.jsonl"
+    assert t["total"] == 3
+    assert t["dispositions"]["carried_over"] == 2
+    assert t["dispositions"]["filed"] == 1
+    assert t["oldest_carry_h"] > 24
+    assert "24h" in t["alert"]          # carried-over > 24h -> red banner
+    assert "48h" not in t["alert"]      # appended 1h ago: not silent
+    assert len(t["items"]) == 3
+    assert t["items"][0]["finding_id"] == "c"   # newest first
+    assert t["explain"]
+
+    # A disposition the summary does not name is still counted — never a
+    # KeyError that would freeze the whole generated doc.
+    rows2 = rows + [{"ts": _iso_hours_ago(0),
+                     "disposition": "brand_new_kind"}]
+    monkeypatch.setattr(G, "FINDINGS_LEDGER",
+                        _write_ledger(tmp_path, rows2, name="l2.jsonl"))
+    t2 = G.collect_findings()
+    assert t2["ok"] is True and t2["total"] == 4
+    assert t2["dispositions"]["brand_new_kind"] == 1
+
+
+def test_findings_tile_fails_closed(monkeypatch, tmp_path):
+    """Missing or unreadable ledger -> ok=false, observed_at null, a named
+    reason — never a frozen last value."""
+    monkeypatch.setattr(G, "FINDINGS_LEDGER", tmp_path / "absent.jsonl")
+    t = G.collect_findings()
+    assert t["ok"] is False
+    assert t["observed_at"] is None
+    assert "ledger" in t["reason"]
+    assert t["explain"]
+
+    bad = tmp_path / "bad.jsonl"
+    bad.write_text("{not json\n")
+    monkeypatch.setattr(G, "FINDINGS_LEDGER", bad)
+    t2 = G.collect_findings()
+    assert t2["ok"] is False and t2["observed_at"] is None
+    assert "unreadable" in t2["reason"]
+
+
+def test_findings_silent_ledger_is_itself_a_finding(monkeypatch, tmp_path):
+    """A ledger with no append for 48h raises the red-banner input even
+    when no carried-over row is old."""
+    rows = [{"ts": _iso_hours_ago(72), "finding_id": "z",
+             "disposition": "filed", "title": "old filed"}]
+    monkeypatch.setattr(G, "FINDINGS_LEDGER", _write_ledger(tmp_path, rows))
+    t = G.collect_findings()
+    assert t["ok"] is True
+    assert "48h" in t["alert"]
+    assert "silent ledger" in t["alert"]
+
+
+def test_shell_renders_findings_section():
+    """The shell carries the Findings ledger section, its red banner
+    element, and reads tiles.findings — ported from worktile 616b576."""
+    src = Path(__file__).resolve().parent.joinpath("shell.html").read_text()
+    assert "section-findings" in src
+    assert "Findings ledger" in src
+    assert "findings-banner" in src
+    assert "findings-body" in src
+    assert "findings-summary" in src
+    assert "t.findings" in src
+    assert "FINDINGS BACKLOG" in src
 
 
 if __name__ == "__main__":
