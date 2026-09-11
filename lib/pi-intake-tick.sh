@@ -629,6 +629,44 @@ blocked_filter() {
     return 0
 }
 
+# _depends_on_refs — read an issue body on stdin, print candidate
+# dependency refs (one per line) for the depends-on gate. Two forms count
+# (fleet-ops#5107):
+#   1. a line-start `depends-on:` line (the structured line) — refs from
+#      the whole line, the original gate behaviour, unchanged;
+#   2. a mid-line `depends-on:` token, but ONLY inside an appended
+#      `## ...edits (binding…)` section: a judge bullet like
+#      "add `depends-on: #2359`" never matched the line-start form, so the
+#      gate claimed those tickets anyway. Outside a binding section a
+#      mid-line token is prose ABOUT the gate (evidence lists like
+#      "`depends-on:` is still `none`: #2352, #2383"), and a bare mid-line
+#      match would misread those trailing issue numbers as live deps and
+#      park the ticket on its own evidence list. For a mid-line token,
+#      refs are read only from the text AFTER it, so a `#<n>` before the
+#      token is not misread.
+# Candidate refs are emitted in leftmost-longest order (owner/repo#n,
+# repo#n, #n) so an org-less `repo#<n>` token survives intact for the
+# caller's shape check to drop.
+_depends_on_refs() {
+    local in_binding=0 line frag
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^##[[:space:]]+.*edits[[:space:]]+\(binding ]]; then
+            in_binding=1
+        elif [[ "$line" =~ ^##[[:space:]]+ ]]; then
+            in_binding=0
+        fi
+        if [[ "$line" =~ ^depends-on: ]]; then
+            frag="$line"
+        elif (( in_binding == 1 )) && [[ "$line" == *depends-on:* ]]; then
+            frag="${line#*depends-on:}"
+        else
+            continue
+        fi
+        printf '%s\n' "$frag" \
+            | grep -oE '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+|[A-Za-z0-9_.-]+#[0-9]+|#[0-9]+' || true
+    done
+}
+
 # fleet-ops#4808 + fleet-ops#5165: ticket-gate filter. An agent-ready issue
 # can carry body gate lines naming issues/PRs that must be DONE before it is
 # claimable:
@@ -656,6 +694,15 @@ blocked_filter() {
 # instead of a misleading `skipped-depends-on:#n`. (depends-on only —
 # collision gates are one-directional: the later ticket names the earlier
 # blockers it must not race.)
+#
+# fleet-ops#5107: inside an appended `## *edits (binding…)` section the
+# depends-on: token also counts MID-LINE — a judge bullet like
+# "add `depends-on: #2359`" never matched `^depends-on:`, so the gate let
+# those tickets be claimed anyway. Outside binding sections only the
+# line-start form counts: issue prose discusses the gate itself
+# ("`depends-on:` is still `none`: #2352, #2383…"), and a bare mid-line
+# match would misread those trailing issue numbers as live deps and park
+# the ticket on its own evidence list. See _depends_on_refs above.
 #
 # Ref shapes: `#<n>` (same repo) and `owner/repo#<n>` (cross-repo). An
 # org-less `repo#<n>` token — e.g. the "permanent fix fleet-ops#4808"
@@ -697,9 +744,17 @@ depends_on_filter() {
         # alternative alone would slice `#4808` out of `fleet-ops#4808` and
         # resolve it in the wrong repo. Prose like "none" or "any of" yields
         # no refs.
-        mapfile -t deps < <(printf '%s\n' "$body" \
-            | grep -E "$gate_re" \
-            | grep -oE '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+|[A-Za-z0-9_.-]+#[0-9]+|#[0-9]+' || true)
+        # fleet-ops#5107: for depends-on the parse is _depends_on_refs —
+        # line-start anywhere plus the mid-line token inside an appended
+        # `## ...edits (binding…)` section (a judge bullet like
+        # "add `depends-on: #2359`"). collision-gate stays line-start only.
+        if [[ "$skip_reason" == "skipped-depends-on" ]]; then
+            mapfile -t deps < <(printf '%s\n' "$body" | _depends_on_refs)
+        else
+            mapfile -t deps < <(printf '%s\n' "$body" \
+                | grep -E "$gate_re" \
+                | grep -oE '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+|[A-Za-z0-9_.-]+#[0-9]+|#[0-9]+' || true)
+        fi
         (( ${#deps[@]} == 0 )) && continue
 
         for ref in "${deps[@]}"; do
@@ -724,14 +779,15 @@ depends_on_filter() {
                     # Cycle detection: does the dependency itself depend on
                     # THIS issue? (A depends on B depends on A.) Fetch the
                     # dependency's body (memoised) and check its depends-on:
-                    # line.
+                    # refs — the same parse as the dep side above, so a
+                    # binding-bullet back-reference counts (fleet-ops#5107).
                     if [[ -n "${_dep_body_cache[$dep_key]:-}" ]]; then
                         dep_body="${_dep_body_cache[$dep_key]}"
                     else
                         dep_body="$(gh issue view "$target_num" -R "${owner}/${rname}" --json body --jq '.body // ""' 2>/dev/null || true)"
                         _dep_body_cache[$dep_key]="$dep_body"
                     fi
-                    if printf '%s\n' "$dep_body" | grep -E '^depends-on:' \
+                    if printf '%s\n' "$dep_body" | _depends_on_refs \
                         | grep -qE "#${num}\b|${repo}#${num}\b"; then
                         echo "depends-on-cycle"
                         return 1
