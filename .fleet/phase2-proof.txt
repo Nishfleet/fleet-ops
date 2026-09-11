@@ -1,5 +1,20 @@
-main sha: 3447976a3347bb32ff55a4e1844ae5ebb00494ab
+main sha: 12eb05c7e42b46b66b85839d2d1845b36c6fca4d
 
-RED on main (exit 1):
-[2026-09-11T20:06:54Z] seat registry: unit pi-issue@5141-a1.service stuck activating 400s (SubState=start, threshold=300s) — wedged pi, reaping seat
+RED on main (exit 1, extracted tree via git archive — branch claim/issue-5141 untouched):
+[2026-09-11T21:40:52Z] seat registry: unit pi-issue@5141-a1.service stuck activating 400s (SubState=start, threshold=300s) — wedged pi, reaping seat
 FAIL: (a) activating/start 400s into a 45min TimeoutStartUSec: _seat_registry_unit_live rc=1, expected 0 (live)
+
+GREEN post-fix (exit 0, worktree @ e25e519f1):
+OK: activating/start 400s into unit bound 45min stays live
+OK: activating/start 40min into unit bound 45min stays live (old 300s bound would have reaped it)
+OK: activating/start past its own 45min bound (50min) is reaped
+OK: activating with no started process reaps at the 300s no-process bound
+OK: activating/auto-restart reaps at the 300s bound (not the unit's TimeoutStartUSec)
+OK: per-unit 10min bound reaps at 20min even though 20min < 55min fallback
+OK: TimeoutStartUSec=infinity falls back to 3300s: 50min stays live
+OK: TimeoutStartUSec=infinity falls back to 3300s: 56min is reaped
+OK: unparseable TimeoutStartUSec falls back to 3300s: 50min stays live
+OK: unparseable TimeoutStartUSec falls back to 3300s: 56min is reaped
+OK: drift block: Type=oneshot and fallback 3300s >= unit TimeoutStartSec 2700s
+ALL OK: seat-registry liveness bound — per-unit TimeoutStartUSec, no-process/auto-restart 300s, infinity/unparseable 3300s fallback
+P5141-GREEN
