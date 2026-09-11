@@ -1082,13 +1082,22 @@ fi
 # --- mechanical recurrence hunt (fleet-ops#366) ----------------------------
 # Closed failure-fixes whose signal key is firing again are automatic
 # findings. Merged here so filing does not depend on the reviewer noticing.
+# fleet-ops#5611: the issue blobs are written to $REPORT_DIR *before* the
+# hunts and fed to jq through --slurpfile, not --argjson: the 2026-09-11T22:00:57Z
+# run died rc=126 because 100 closed issue bodies pushed the --argjson value
+# past the ~128KB MAX_ARG_STRLEN per-arg exec limit ("Argument list too long").
+# fleet-ops#5477: the lens matches a github-issue seam to its own issue when
+# it is open or was delivered by a merged PR; the closed_issues fetch already
+# carries closedByPullRequestsReferences for the undelivered hunt.
+printf '%s\n' "${open_issues:-[]}" >"$REPORT_DIR/open-issues.json"
+printf '%s\n' "${closed_issues:-[]}" >"$REPORT_DIR/closed-issues.json"
 if [ -f "$GATE_LIB" ]; then
     failed_json=$(printf '%s\n' "$systemctl_failed" | jq -R -s -c 'split("\n") | map(select(length>0))')
     hunt_in=$(jq -n \
-        --argjson closed "${closed_issues:-[]}" \
-        --argjson failed "$failed_json" \
-        --argjson open "${open_issues:-[]}" \
-        '{closed_issues:$closed, failed_units:$failed, open_issues:$open}')
+        --slurpfile closed "$REPORT_DIR/closed-issues.json" \
+        --slurpfile failed <(printf '%s' "$failed_json") \
+        --slurpfile open "$REPORT_DIR/open-issues.json" \
+        '{closed_issues:$closed[0], failed_units:$failed[0], open_issues:$open[0]}')
     hunt_out=$(printf '%s' "$hunt_in" | python3 "$GATE_LIB" hunt)
     if ! printf '%s' "$findings" | jq -e 'type=="object" and has("findings")' >/dev/null 2>&1; then
         if printf '%s' "$findings" | jq -e 'type=="array"' >/dev/null 2>&1; then
@@ -1135,9 +1144,9 @@ fi
 # for a human to notice them.
 if [ -f "$CLOSED_UNDELIVERED_LIB" ]; then
     cud_in=$(jq -n \
-        --argjson closed "${closed_issues:-[]}" \
+        --slurpfile closed "$REPORT_DIR/closed-issues.json" \
         --argjson merged "${merged_prs:-[]}" \
-        '{closed_issues:$closed, merged_prs:$merged}')
+        '{closed_issues:$closed[0], merged_prs:$merged}')
     cud_out=$(printf '%s' "$cud_in" | python3 "$CLOSED_UNDELIVERED_LIB" hunt 2>/dev/null || echo '{"findings":[]}')
     if ! printf '%s' "$cud_out" | jq -e 'type=="object" and has("findings")' >/dev/null 2>&1; then
         cud_out='{"findings":[]}'
@@ -1168,11 +1177,6 @@ if ! printf '%s' "$findings" | jq -e 'type=="object" and has("findings")' >/dev/
     fi
 fi
 printf '%s\n' "$findings" >"$FINDINGS_JSON"
-printf '%s\n' "${open_issues:-[]}" >"$REPORT_DIR/open-issues.json"
-# fleet-ops#5477: the lens matches a github-issue seam to its own issue when
-# it is open or was delivered by a merged PR; the closed_issues fetch already
-# carries closedByPullRequestsReferences for the undelivered hunt.
-printf '%s\n' "${closed_issues:-[]}" >"$REPORT_DIR/closed-issues.json"
 set +e
 close_json=$(python3 "$SEAM_LIB" close \
     --candidates "$SEAM_CANDIDATES" \
