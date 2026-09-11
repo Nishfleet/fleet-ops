@@ -24,13 +24,16 @@
 #      entries (NOT in the seen set) stay so a not-yet-delivered page is
 #      never lost.
 #
-#   1b. alert-repair stuck-packet burst closure (fleet-ops#5647): after the
-#      LOUD STUCK-PACKET line is emitted, the same run ARCHIVES every stuck
-#      packet under $PACKET_DIR/archived/stuck/ (never silently deleted —
-#      the file moves and a DISPOSITION decision line lands in actions.log)
-#      so the hourly LOUD line cannot repeat forever for a settled burst.
-#      The absent()/filing pipeline files a fresh [stuck-packet] issue from
-#      the LOUD line; a NEW stuck packet after that starts a fresh filing.
+#   1b. alert-repair stuck-packet burst closure (fleet-ops#5647, converged
+#      by fleet-ops#5622): the same run a stuck burst is detected, the
+#      drain FILES one aggregate [stuck-packet] escalation issue, then
+#      ARCHIVES every stuck packet under $PACKET_DIR/archived/stuck/
+#      (never silently deleted — the file moves and a DISPOSITION decision
+#      line naming the filed issue lands in actions.log) so the hourly
+#      LOUD line cannot repeat forever for a settled burst. A NEW stuck
+#      packet newer than the filed burst's watermark starts a fresh
+#      filing; when filing is unavailable the run fails open (packets
+#      stay, LOUD line remains).
 #
 #   2. alert-repair packets: delete packet-*.md files whose dispatch cycle
 #      TERMINATED. The termination proof is chains.terminated.jsonl — the
@@ -95,6 +98,13 @@
 #                                          (default 86400 = 24h)
 #   FLEET_ESCALATION_DRAIN_DIGEST_DIR     digest output dir (default $ARCHIVE_DIR)
 #   FLEET_ESCALATION_DRAIN_BOUND_DIGEST   0 = alert only, never digest
+#   FLEET_ESCALATION_DRAIN_GH             gh binary (default gh; test stub seam)
+#   FLEET_ESCALATION_DRAIN_ISSUE_FILE     fleet-issue-file binary used to file
+#                                         the stuck-packet escalation (default:
+#                                         sibling bin/fleet-issue-file of this
+#                                         script; test stub seam)
+#   FLEET_ESCALATION_DRAIN_ESCALATION_REPO  repo the escalation issue is filed
+#                                         to (default Nishfleet/fleet-ops)
 #
 # Exit:
 #   0  drain complete (idempotent: re-runs do nothing once the file is bounded)
@@ -133,6 +143,19 @@ OVER_BOUND_STAMP="${FLEET_ESCALATION_DRAIN_OVER_BOUND_STAMP:-$AGENT_STATE/lanes/
 OVER_BOUND_AGE_S="${FLEET_ESCALATION_DRAIN_OVER_BOUND_AGE_S:-86400}"
 DIGEST_DIR="${FLEET_ESCALATION_DRAIN_DIGEST_DIR:-$ARCHIVE_DIR}"
 BOUND_DIGEST="${FLEET_ESCALATION_DRAIN_BOUND_DIGEST:-1}"
+# fleet-ops#5622: stuck-packet escalation wiring — one aggregate filing per
+# stuck burst; every disposed packet is archived + decision-logged. Env
+# seams keep the whole path hermetic for tests.
+GH_BIN="${FLEET_ESCALATION_DRAIN_GH:-gh}"
+ESCALATION_REPO="${FLEET_ESCALATION_DRAIN_ESCALATION_REPO:-Nishfleet/fleet-ops}"
+ISSUE_FILE_BIN="${FLEET_ESCALATION_DRAIN_ISSUE_FILE:-}"
+if [[ -z "$ISSUE_FILE_BIN" ]]; then
+    _here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+    ISSUE_FILE_BIN="$_here/fleet-issue-file"
+fi
+STUCK_ARCH_DIR="${FLEET_ESCALATION_DRAIN_STUCK_ARCH_DIR:-$PACKET_DIR/archived/stuck}"
+STATE_FILE="${FLEET_ESCALATION_DRAIN_STUCK_STATE:-$PACKET_DIR/stuck-escalation-state.json}"
+ACTIONS_LOG="${FLEET_ESCALATION_DRAIN_ACTIONS_LOG:-$PACKET_DIR/actions.log}"
 
 log() {
     printf '[%s] [fleet-escalation-drain] %s\n' \
@@ -1098,12 +1121,16 @@ drain_packets() {
         # Skip non-webhook scaffolding (packet-11-completion-canary.md,
         # packet-13-undersaturation-guard.md, packet-red-main-2.md, etc.).
         # Webhook packets carry `-<8-digit-date>T<6-digit-time>Z.md`.
-        if ! [[ "$name" =~ ^packet-([A-Za-z0-9_]+)-([0-9]{8}T[0-9]{6}Z)\.md$ ]]; then
+        if ! [[ "$name" =~ ^packet-([A-Za-z0-9_]+)-([0-9]{8}T([0-9]{6}|[0-9]{4}))Z\.md$ ]]; then
             packet_skipped=$((packet_skipped + 1))
             continue
         fi
         local alert="${BASH_REMATCH[1]}"
         local ts="${BASH_REMATCH[2]}"
+        # 4-digit-time packet names (senior-auditor re-dispatch naming,
+        # e.g. packet-X-20260905T0401Z.md) have minute precision; seconds
+        # unknown — compare at minute granularity by pinning :00.
+        if [ ${#ts} -eq 13 ]; then ts="${ts}00"; fi
 
         # Packet dispatch instant as ISO (lexical compare vs ledger end_ts).
         local iso="${ts:0:4}-${ts:4:2}-${ts:6:2}T${ts:9:2}:${ts:11:2}:${ts:13:2}Z"
@@ -1135,39 +1162,173 @@ drain_packets() {
         fi
     done
     if [ "${#stuck[@]}" -gt 0 ]; then
-        local n_stuck=${#stuck[@]}
+        escalate_stuck_packets "${stuck[@]}"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# fleet-ops#5622: stuck-packet escalation + terminal disposition.
+#
+# A packet older than STUCK_AGE_S with NO terminated chain is a repair
+# claim nobody picked up; re-listing it hourly is not convergence. Every
+# stuck packet passed in gets a terminal disposition in the SAME run:
+#
+#   disposed -> the burst escalation issue was filed (or the state file's
+#               newest-packet watermark shows an existing filing already
+#               covers this packet); the packet is archived under
+#               archived/stuck/ and a DISPOSITION decision line with
+#               terminal=escalated-filed (or terminal=reasoned-drop when
+#               the existing filing covers it) + the issue number is
+#               appended to actions.log.
+#   kept     -> the filing path failed (no fleet-issue-file, a non-zero
+#               exit, or no issue number came back). Fail open exactly as
+#               today: the packet stays in place and the LOUD line keeps
+#               naming it — degraded but loud, identical to pre-#5622.
+#
+# The state file records the newest stuck packet instant covered by the
+# last filing, so a fresh re-fire AFTER a filing starts a NEW burst
+# instead of vanishing under the old one.
+# ---------------------------------------------------------------------------
+escalate_stuck_packets() {
+    local -a stuck=("$@")
+    local n_stuck=${#stuck[@]}
+
+    # Stuck packets arrive in glob (oldest-first) order; the LAST entry
+    # carries the newest dispatch instant.
+    local newest_iso=""
+    newest_iso="${stuck[$((n_stuck - 1))]##*packet=}"
+    newest_iso="${newest_iso%\)}"
+
+    local filed_issue=""
+    if [ -f "$STATE_FILE" ] && command -v jq >/dev/null 2>&1; then
+        local state_max state_issue
+        state_max="$(jq -r '.newest_packet_iso // ""' "$STATE_FILE" 2>/dev/null || true)"
+        state_issue="$(jq -r '.issue // ""' "$STATE_FILE" 2>/dev/null || true)"
+        if [ -n "$state_max" ] && [ -n "$state_issue" ] \
+            && [[ "$newest_iso" < "$state_max" || "$newest_iso" == "$state_max" ]]; then
+            filed_issue="$state_issue"
+        fi
+    fi
+
+    local issue_no=""
+    if [ "$DRY_RUN" = "1" ]; then
+        issue_no=""
+    elif [ -n "$filed_issue" ]; then
+        issue_no="$filed_issue"
+    else
+        issue_no="$(file_stuck_escalation_issue "$n_stuck" "$newest_iso")" || issue_no=""
+        if [ -n "$issue_no" ]; then
+            printf '{"filed_ts": "%s", "newest_packet_iso": "%s", "issue": "%s", "n_packets": %d}\n' \
+                "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$newest_iso" "$issue_no" "$n_stuck" > "$STATE_FILE"
+        fi
+    fi
+
+    local pkt leftover=0
+    for pkt in "${stuck[@]}"; do
+        local name="${pkt%% (*}"
+        if [ "$DRY_RUN" = "1" ]; then
+            log "DRY: would archive stuck packet $name (escalated + decision-logged)"
+            leftover=$((leftover + 1))
+            continue
+        fi
+        if [ -z "$issue_no" ]; then
+            leftover=$((leftover + 1))
+            continue
+        fi
+        [ -f "$PACKET_DIR/$name" ] || continue
+        mkdir -p "$STUCK_ARCH_DIR"
+        if mv "$PACKET_DIR/$name" "$STUCK_ARCH_DIR/$name" 2>/dev/null; then
+            local terminal="escalated-filed"
+            [ -n "$filed_issue" ] && terminal="reasoned-drop"
+            log_disposition "$name" "$terminal" "$issue_no"
+            # fleet-ops#5647 contract kept through the #5622 rebase: the
+            # summary reports same-run archives and the journal names each
+            # archived packet, so the drain stays observable per packet.
+            packet_archived=$((packet_archived + 1))
+            log "archived $name terminal=$terminal issue=$issue_no (actions.log)"
+            # The dispatch instant lives in the FILENAME, not the mtime; bump
+            # the archived copy's mtime to the disposition instant so the
+            # live-unclaimed metric (find packet-*.md -mmin +360) cannot
+            # count a disposed packet as unclaimed forever.
+            touch "$STUCK_ARCH_DIR/$name" 2>/dev/null || true
+        else
+            log "WARN: failed to archive $name — leaving in place (loud line will re-flag it)"
+            leftover=$((leftover + 1))
+        fi
+    done
+
+    # LOUD only names what a disposition run could NOT settle — when every
+    # stuck packet was disposed the line goes silent and the signal has
+    # converged instead of repeating hourly forever.
+    if [ "$leftover" -gt 0 ]; then
         local s
         local head_line=""
         for s in "${stuck[@]:0:10}"; do
             head_line="$head_line $s"
         done
-        log "LOUD [STUCK-PACKET] $n_stuck webhook packet(s) older than ${STUCK_AGE_S}s have NO terminated chain in $TERMINATED — left for the Prometheus/Alertmanager absent() pipeline to escalate (fresh filing per burst):$head_line"
-        # fleet-ops#366 / #5647: same-run disposition. The packets were
-        # already escalated loud in this run; leaving them live makes the
-        # hourly LOUD line repeat forever for a settled burst. Archive
-        # them (never silently delete: the file MOVES and a DISPOSITION
-        # decision line is written to actions.log) so the backlog trends
-        # to 0, not up.
-        local archive_dir="$PACKET_DIR/archived/stuck"
-        local alog="$PACKET_DIR/actions.log"
-        local stamp
-        stamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-        if [ "$DRY_RUN" = "1" ]; then
-            log "DRY: would archive ${n_stuck} stuck packet(s) to $archive_dir with DISPOSITION terminal=escalated-filed"
-        else
-            mkdir -p "$archive_dir"
-            for s in "${stuck[@]}"; do
-                s_name="${s%% (*}"
-                if mv -- "$PACKET_DIR/$s_name" "$archive_dir/$s_name" 2>/dev/null; then
-                    echo "[$stamp] DISPOSITION stuck-packet packet=$s_name terminal=escalated-filed issue=absent-pipeline-filer" >> "$alog"
-                    packet_archived=$((packet_archived + 1))
-                    log "archived $s_name terminal=escalated-filed issue=absent-pipeline-filer (actions.log)"
-                else
-                    log "WARN: failed to archive $s_name — leaving in place (loud line will re-flag it)"
-                fi
-            done
-        fi
+        log "LOUD [STUCK-PACKET] $n_stuck webhook packet(s) older than ${STUCK_AGE_S}s have NO terminated chain in $TERMINATED — escalation filing unavailable, packets kept (never silently delete); left for the Prometheus/Alertmanager absent() pipeline to escalate:$head_line"
+    elif [ -n "$issue_no" ]; then
+        log "stuck-packet escalation: $n_stuck packet(s) disposed -> issue #$issue_no (archived under $STUCK_ARCH_DIR)"
+    elif [ "$DRY_RUN" = "1" ]; then
+        log "DRY: $n_stuck stuck packet(s) would be escalated + archived"
     fi
+}
+
+log_disposition() {
+    # One reasoned-decision line per disposed packet in actions.log (the
+    # same append surface every other alert-repair actor uses).
+    printf '[%s] DISPOSITION stuck-packet packet=%s terminal=%s issue=%s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" "$3" \
+        >> "$ACTIONS_LOG" 2>/dev/null || true
+}
+
+file_stuck_escalation_issue() {
+    local n_packets="$1"
+    local newest_iso="$2"
+    local issue_file="$ISSUE_FILE_BIN"
+    if [ ! -x "$issue_file" ]; then
+        log "WARN fleet-issue-file missing/not executable at $issue_file — cannot file stuck-packet escalation"
+        return 1
+    fi
+    local cutoff_iso
+    cutoff_iso="$(date -u -d "$STUCK_AGE_S seconds ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)"
+    local title="[stuck-packet] $n_packets alert-repair packet(s) older than ${STUCK_AGE_S}s with no terminated chain"
+    local body
+    body=$(cat <<EOF
+metric: every firing alert packet in agent-state/alert-repair/ older than ${STUCK_AGE_S}s reaches a terminal disposition (terminated chain, filed repair claim, or reasoned drop with a logged decision); the unclaimed-packet count trends to 0, not up.
+
+observed: the hourly escalation-drain found $n_packets webhook packet(s) with dispatch instants older than $cutoff_iso that have NO terminated chain in chains.terminated.jsonl — the terminal ledger (chains.terminated.jsonl, written by the retired fleet-completion-canary mirror) stopped recording terminals, so the drain's absent() fallback re-listed the same packets hourly and the backlog only grew. This issue is the drain's own bounded escalation for the current burst (fleet-ops#5622).
+
+evidence:
+- drain run at $(date -u +%Y-%m-%dT%H:%M:%SZ): $n_packets stuck packet(s), newest dispatch instant $newest_iso
+- terminal ledger: agent-state/alert-repair/chains.terminated.jsonl
+- the packets are archived under agent-state/alert-repair/archived/stuck/ with a per-packet DISPOSITION decision line in actions.log (terminal=escalated-filed) — never silently deleted
+
+accept:
+- every packet in the dispositioned burst has a terminal disposition (chain, issue, or reasoned drop with a logged DISPOSITION line in actions.log).
+- the underlying firing alerts are picked up by the normal alert-repair dispatch / intake repair-rung path; this issue is the escalation surface, not the repair worker itself.
+- prevention mechanism (fleet-ops#366): the drain now files this escalation and archives + decision-logs the packets IN THE SAME RUN that detects them, so the hourly LOUD line cannot repeat forever for a settled burst; a NEW stuck packet after the filing starts a fresh filing.
+
+termination: the burst is closed when every archived/stuck packet named by its DISPOSITION line has terminal=escalated-filed (or reasoned-drop) in actions.log and new dispatches resume producing terminal records in chains.terminated.jsonl; the drain's stuck set returns to 0 on the next hourly run.
+
+Relates to #5622
+EOF
+)
+    local out
+    if ! out="$("$issue_file" file -R "$ESCALATION_REPO" --title "$title" --body "$body" 2>&1)"; then
+        log "WARN stuck-packet filing failed (rc non-zero): $out"
+        return 1
+    fi
+    local num
+    num="$(printf '%s\n' "$out" | grep -oE 'issues/[0-9]+' | grep -oE '[0-9]+$' | tail -1)"
+    if [ -z "$num" ]; then
+        num="$(printf '%s\n' "$out" | grep -oE '#[0-9]+' | tail -1 | tr -d '#')"
+    fi
+    if [ -z "$num" ]; then
+        log "WARN fleet-issue-file returned no issue number"
+        return 1
+    fi
+    printf '%s' "$num"
 }
 
 drain_nish
