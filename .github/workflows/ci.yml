@@ -247,6 +247,11 @@ jobs:
         # SERVICE_RESULT "success") and the wall-streak masking, plus both
         # control paths. Offline (stubbed gh, real helper).
         bash tests/pi-scout-seat-skip.test.sh
+        # fleet-ops#5385 live-run fixes: enforce_admins=false in the relax window
+        # (+ restore verify), snapshot refresh, refs/pull-aware ancestor check,
+        # and stage5 rename-back eventual-consistency polling. Offline drills
+        # (stubbed gh/sleep, local mirror fixture).
+        bash tests/rewrite-0509-author-live-fixes.test.sh
         # fleet-ops#70: former required jobs, now inside the batched caller.
         # TODO(fleet-ops): add the fleet's orchestration rules config from
         # Nishfleet/siterep-public .semgrep/no-hand-built-orchestration.yml at an
