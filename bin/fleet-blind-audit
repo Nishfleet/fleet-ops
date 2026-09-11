@@ -136,6 +136,15 @@ CYCLE_CRITERIA="${AUDIT_CYCLE_CRITERIA:-$repo_fallback/config/gap-closure-cycle-
 # --- help ---------------------------------------------------------------
 # fleet-ops#1549: --help/-h must print usage and exit 0 without taking the
 # flock, calling pi, starting a unit, or writing a report directory.
+# fleet-ops#5437: product target mode (--target product:0509, or
+# AUDIT_TARGET env). Set before the --backfill/--help dispatches so either
+# flag can be parsed after it too.
+PRODUCT_TARGET="${AUDIT_TARGET:-}"
+if [ "${1:-}" = "--target" ]; then
+    [ -n "${2:-}" ] || { printf 'FATAL: --target requires a value\n' >&2; exit 2; }
+    PRODUCT_TARGET="$2"
+    shift 2 2>/dev/null || shift $# 2>/dev/null || true
+fi
 BACKFILL_MODE=0
 BACKFILL_SINCE=""
 TOMATCH="${1:-}"
@@ -152,7 +161,17 @@ case "${1:-}" in
         cat <<'HELP'
 fleet-blind-audit — one mechanical no-context sweep of the repo + live state.
 
-Usage: fleet-blind-audit [--help|-h] [--backfill <since-date>]
+Usage: fleet-blind-audit [--help|-h] [--backfill <since-date>] [--target product:<slug>]
+
+  --target product:<slug>  Outside-in product mode (fleet-ops#5437): instead
+                           of auditing the fleet, run the outside-in packet
+                           against a live product site and its public repo
+                           (register in config/blind-audit-product-targets
+                           .json), on TWO different seats in one run, and
+                           file the union of panel-PASS findings on the
+                           product repo through the same panel + #1212
+                           dedupe + carry-over ledger. AUDIT_TARGET env is
+                           the equivalent.
 
   --backfill <since-date>  Reconstruct every panel-PASS-but-cap-skipped
                            finding since <since-date> from the persisted
@@ -187,6 +206,14 @@ Environment:
                         drill to file; unset = the drill refuses to file
   AUDIT_FAKE_NOW        ISO-8601 UTC override for tests
   AUDIT_ALLOW_NONCANONICAL  if 1, do not retarget products/fleet-ops
+  AUDIT_TARGET         product target mode: same as --target product:<slug>
+  AUDIT_PRODUCT_PROMPT product prompt template (prompts/blind-audit-product.md)
+  AUDIT_PRODUCT_TARGETS product target register (config/blind-audit-product-targets.json)
+  AUDIT_PRODUCT_CARRYOVER_FILE carry-over ledger override (default
+                       $STATE_DIR/carryover-product.jsonl — per-target, so a
+                       fleet backlog entry is never re-panelled into a
+                       product repo)
+  AUDIT_PRODUCT_DEADLINE_MINS  reviewer packet deadline hint (default 50)
 HELP
         exit 0
         ;;
