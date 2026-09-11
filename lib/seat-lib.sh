@@ -3844,19 +3844,91 @@ org_reserve() {
 # installed wrapper defaults to 1.
 PI_SEAT_LIB_CHECK_SYSTEMD="${PI_SEAT_LIB_CHECK_SYSTEMD:-1}"
 
-# P15: a unit in `activating` for longer than this is a wedge, not a
-# worker. Type=oneshot workers legitimately sit in `activating` for up to
-# TimeoutStartSec=45min (the unit's own hang bound); anything beyond that
-# bound + margin is a hung pi that the wrapper watchdog (PI_HANG_TIMEOUT_S,
-# default 42 min) should have killed but didn't (older wrapper, SIGKILL
-# path, unit timeout race). The unit table's ActiveEnterTimestamp is the
-# ground truth for how long it has been trying to start.
-PI_SEAT_ACTIVATING_MAX_S="${PI_SEAT_ACTIVATING_MAX_S:-3300}"  # 55 min > unit 45 min
+# P15: a unit in `activating` for longer than its own bound is a wedge, not
+# a worker. A Type=oneshot worker sits in `activating` for its ENTIRE run
+# (systemd reports activating/start from ExecStart to exit — fleet-ops#5141),
+# so the honest bound is the unit's own TimeoutStartUSec: exactly the time
+# systemd itself allows the start to take. This constant is only the
+# FALLBACK, used when systemd reports `infinity`, `0`, or an unparseable
+# time span for that unit (_seat_liveness_bound_s). The wrapper watchdog
+# (PI_HANG_TIMEOUT_S, default 42 min) normally kills a hung pi long before
+# either bound (older wrapper, SIGKILL path, unit timeout race).
+PI_SEAT_ACTIVATING_MAX_S="${PI_SEAT_ACTIVATING_MAX_S:-3300}"  # fallback: 55 min > unit 45 min
 
 # fleet-ops#1361: shorter threshold for units stuck in activating without ever
 # launching their process (ExecMainStartTimestampMonotonic=0). 5 min is enough
 # to detect a unit that will never start its process.
 PI_SEAT_ACTIVATING_NO_PROCESS_MAX_S="${PI_SEAT_ACTIVATING_NO_PROCESS_MAX_S:-300}"  # 5 min
+
+# systemd timespan ("45min", "1h 30min", "500ms") -> integer seconds.
+# Echoes nothing and returns 1 for "infinity", "", 0, or anything unparseable.
+_seat_duration_to_s() {
+    local v="${1:-}" total=0 tok n unit
+    [[ -n "$v" && "$v" != "infinity" ]] || return 1
+    # systemd prints space-separated components; read -ra splits on
+    # whitespace without glob-expanding against the caller's cwd.
+    local -a toks=()
+    read -ra toks <<< "$v"
+    for tok in "${toks[@]}"; do
+        [[ "$tok" =~ ^([0-9]+)(ms|s|min|h|d|w)$ ]] || return 1
+        n="${BASH_REMATCH[1]}"; unit="${BASH_REMATCH[2]}"
+        case "$unit" in
+            ms)  total=$(( total + n / 1000 )) ;;
+            s)   total=$(( total + n )) ;;
+            min) total=$(( total + n * 60 )) ;;
+            h)   total=$(( total + n * 3600 )) ;;
+            d)   total=$(( total + n * 86400 )) ;;
+            w)   total=$(( total + n * 604800 )) ;;
+        esac
+    done
+    (( total > 0 )) || return 1
+    echo "$total"
+}
+
+# Liveness bound for an `activating` worker unit, in seconds: the unit's OWN
+# TimeoutStartSec when systemd reports a finite one, else the
+# PI_SEAT_ACTIVATING_MAX_S fallback (fleet-ops#5141; infinity/0/unparseable).
+_seat_liveness_bound_s() {
+    local sysunit="$1" raw parsed
+    raw=$(systemctl --user show "$sysunit" --property=TimeoutStartUSec --value 2>/dev/null || true)
+    parsed=$(_seat_duration_to_s "$raw" 2>/dev/null || true)
+    if [[ "$parsed" =~ ^[0-9]+$ ]] && (( parsed > 0 )); then
+        echo "$parsed"; return 0
+    fi
+    echo "${PI_SEAT_ACTIVATING_MAX_S:-3300}"
+}
+
+# --- why `activating` is normally LIVE (fleet-ops#83, #993, #1361, #5141) --
+# P15 wedge probe: a unit stuck activating past its own bound is a wedged pi
+# whose seat registration must be reaped so caps free up. A SIGKILLed wedged
+# worker leaves `activating` (systemd -9 leaves the unit start state) — age is
+# the only honest signal. This is the fleet-ops#83 blind spot: the probe
+# treated every `activating` as live, so a wedged unit held its seat for the
+# full 45-minute TimeoutStartSec and starved pick_seat.
+#
+# fleet-ops#993 (2026-08-27 outage): ActiveEnterTimestampMonotonic is 0 for
+# EVERY Type=oneshot unit that is still `activating` (systemd only stamps it
+# when the start completes). With a live worker that had run 30+ min that read
+# 0 -> age_s = uptime - 0 = 1.4M s > max -> every live seat got reaped, cap
+# accounting went blind, and pick_seat piled unbounded workers onto the first
+# free seat (the 8-vCPU box saturating at load 87, SustainedLoadHigh alert,
+# zero-tools repair failure). Measure age from ExecMainStartTimestampMonotonic
+# instead — systemd stamps it when the worker's ExecStart pi process actually
+# started, so it is nonzero for every activating oneshot with a live process —
+# and treat an unparseable/0 timestamp as live (a young unit that systemd has
+# not yet stamped is not wedged).
+#
+# fleet-ops#1361 (2026-08-29): when ExecMainStartTimestampMonotonic=0 (process
+# never started), or when the unit waits between Restart= attempts in
+# `activating/auto-restart`, there is no running process to bound, so both
+# fail closed at the short PI_SEAT_ACTIVATING_NO_PROCESS_MAX_S threshold.
+#
+# fleet-ops#5141 (2026-09-10): for Type=oneshot, `activating/start` IS the
+# normal running state from ExecStart to exit, so a hardcoded short bound on
+# SubState=start reaped every live worker older than 300s (63 reaps in
+# watch.log, all `(SubState=start, threshold=300s)`). The bound for a started
+# process is the unit's own TimeoutStartSec. See _seat_liveness_bound_s.
+#
 # True if the registry file's unit is still a live pi worker unit.
 # Non-zero (stale) when the unit is dead, missing, or not a pi unit name.
 #
@@ -3866,7 +3938,7 @@ PI_SEAT_ACTIVATING_NO_PROCESS_MAX_S="${PI_SEAT_ACTIVATING_NO_PROCESS_MAX_S:-300}
 # unit) for issue workers and "pi-packet@<instance>.service" for packet
 # workers. Translate here so systemctl queries the real unit.
 _seat_registry_unit_live() {
-    local f="$1" unit="" sysunit=""
+    local f="$1" unit="" sysunit="" state=""
     unit=$(jq -r '.unit // ""' "$f" 2>/dev/null || true)
     [[ -n "$unit" ]] || return 1
     case "$unit" in
@@ -3874,82 +3946,48 @@ _seat_registry_unit_live() {
         pi-packet-*) sysunit="pi-packet@${unit#pi-packet-}.service" ;;
         *) return 1 ;;
     esac
-    local state active_since now age_s
     state=$(systemctl --user is-active "$sysunit" 2>/dev/null || true)
-    # A running Type=oneshot worker reports "activating" while its process
-    # runs; "active" also means live. Anything else (inactive/failed/
-    # auto-restart with MainPID=0) is not consuming a seat.
-    if [[ "$state" == "active" ]]; then
-        return 0
-    fi
-    if [[ "$state" != "activating" ]]; then
-        return 1
-    fi
-    # P15 wedge probe: `activating` is normally live (up to the unit's own
-    # TimeoutStartSec), but a unit stuck activating past the wrapper's hang
-    # bound + margin is a wedged pi whose seat registration must be reaped
-    # so caps free up. A SIGKILLed wedged worker leaves `activating`
-    # (systemd -9 leaves the unit start state) — age is the only honest
-    # signal. This is the fleet-ops#83 blind spot: the probe treated every
-    # `activating` as live, so a wedged unit held its seat for the full
-    # 45-minute TimeoutStartSec and starved pick_seat.
-    #
-    # fleet-ops#993 (2026-08-27 outage): ActiveEnterTimestampMonotonic is 0
-    # for EVERY Type=oneshot unit that is still `activating` (systemd only
-    # stamps it when the start completes). With a live worker that has run
-    # 30+ min that read 0 -> age_s = uptime - 0 = 1.4M s > max -> every live
-    # seat got reaped, cap accounting went blind, and pick_seat piled
-    # unbounded workers onto the first free seat (the 8-vCPU box saturating
-    # at load 87, SustainedLoadHigh alert, zero-tools repair failure).
-    # Measure age from ExecMainStartTimestampMonotonic instead — systemd
-    # stamps it when the worker's ExecStart pi process actually started,
-    # so it is nonzero for every activating oneshot with a live process —
-    # and treat an unparseable/0 timestamp as live (a young unit that
-    # systemd has not yet stamped is not wedged).
-    #
-    # fleet-ops#1361 (2026-08-29): When ExecMainStartTimestampMonotonic=0
-    # (process never started), the unit is stuck in activating without ever
-    # launching pi. Use ActiveEnterTimestampMonotonic (when the unit entered
-    # activating state) with a shorter threshold (5 min) since a unit that
-    # hasn't started its process after 5 min in activating is clearly broken.
-    # Also: when ExecMainStartTimestampMonotonic>0 but SubState="start"
-    # (process started but unit stuck in startup phase), use a shorter
-    # threshold (5 min) since a real worker transitions to active/running
-    # within seconds.
-    active_since=$(systemctl --user show "$sysunit" --property=ExecMainStartTimestampMonotonic --value 2>/dev/null || echo 0)
-    # Both timestamps are in MICROSECONDS since boot; /proc/uptime is in
-    # SECONDS. Compare in seconds to avoid ms/us mixing.
-    if [[ "$active_since" =~ ^[0-9]+$ ]] && (( active_since > 0 )); then
-        now_s=$(awk '{print int($1)}' /proc/uptime)
-        age_s=$(( now_s - active_since / 1000000 ))
-        # Check SubState: if stuck in "start" phase, use shorter threshold.
-        local sub_state
-        sub_state=$(systemctl --user show "$sysunit" --property=SubState --value 2>/dev/null || echo "")
-        local max_s=${PI_SEAT_ACTIVATING_MAX_S}
-        if [[ "$sub_state" == "start" ]]; then
-            # Process started but unit stuck in startup phase — use 5 min threshold.
-            max_s=${PI_SEAT_ACTIVATING_NO_PROCESS_MAX_S:-300}
-        fi
-        if (( age_s > max_s )); then
-            seat_log "seat registry: unit $sysunit stuck activating ${age_s}s (SubState=$sub_state, threshold=${max_s}s) — wedged pi, reaping seat"
-            return 1
-        fi
+    [[ "$state" == "active" ]] && return 0
+    [[ "$state" == "activating" ]] || return 1
+
+    local sub_state exec_main ts bound now_s age_s
+    sub_state=$(systemctl --user show "$sysunit" --property=SubState --value 2>/dev/null || true)
+    exec_main=$(systemctl --user show "$sysunit" --property=ExecMainStartTimestampMonotonic --value 2>/dev/null || true)
+
+    if [[ "$sub_state" == "auto-restart" ]]; then
+        # Waiting between Restart= attempts: no process is running, so the
+        # unit's own TimeoutStartSec does not bound it and the seat
+        # registration is stale anyway — pi-issue-run re-picks the seat on
+        # the next ExecStart. Fail closed at the 300s no-process bound
+        # (fleet-ops#1361, #63).
+        bound=${PI_SEAT_ACTIVATING_NO_PROCESS_MAX_S:-300}
+    elif [[ "$exec_main" =~ ^[0-9]+$ ]] && (( exec_main > 0 )); then
+        # SubState=start is the NORMAL state for the whole run of a
+        # Type=oneshot worker (systemd reports activating/start from ExecStart
+        # to exit), so `start` must never pick a shorter bound. A worker may
+        # legitimately run up to the unit's own TimeoutStartSec
+        # (fleet-ops#993, #1361, #5141).
+        bound=$(_seat_liveness_bound_s "$sysunit")
     else
-        # Process never started (ExecMainStartTimestampMonotonic=0). Check how
-        # long the unit has been in activating state using ActiveEnterTimestampMonotonic.
-        # A unit stuck in activating without launching its process for >5 min is wedged.
-        local active_enter
-        active_enter=$(systemctl --user show "$sysunit" --property=ActiveEnterTimestampMonotonic --value 2>/dev/null || echo 0)
-        if [[ "$active_enter" =~ ^[0-9]+$ ]] && (( active_enter > 0 )); then
-            now_s=$(awk '{print int($1)}' /proc/uptime)
-            age_s=$(( now_s - active_enter / 1000000 ))
-            # Shorter threshold for units that never started their process: 5 min.
-            local no_process_max_s=${PI_SEAT_ACTIVATING_NO_PROCESS_MAX_S:-300}
-            if (( age_s > no_process_max_s )); then
-                seat_log "seat registry: unit $sysunit stuck activating ${age_s}s without process launch (> ${no_process_max_s}s) — wedged pi, reaping seat"
-                return 1
-            fi
-        fi
+        # ExecMainStartTimestampMonotonic=0: the process never started.
+        # Bound how long the unit has sat in activating (fleet-ops#1361).
+        bound=${PI_SEAT_ACTIVATING_NO_PROCESS_MAX_S:-300}
+    fi
+
+    if [[ "$exec_main" =~ ^[0-9]+$ ]] && (( exec_main > 0 )); then
+        ts=$exec_main
+    else
+        ts=$(systemctl --user show "$sysunit" --property=ActiveEnterTimestampMonotonic --value 2>/dev/null || true)
+    fi
+    # No usable timestamp (test stub, older systemd, young unit): fail live,
+    # as before.
+    [[ "$ts" =~ ^[0-9]+$ ]] && (( ts > 0 )) || return 0
+
+    now_s=$(awk '{print int($1)}' /proc/uptime)
+    age_s=$(( now_s - ts / 1000000 ))
+    if (( age_s > bound )); then
+        seat_log "seat registry: unit $sysunit stuck activating ${age_s}s (SubState=${sub_state:-unknown}, threshold=${bound}s) — wedged pi, reaping seat"
+        return 1
     fi
     return 0
 }
