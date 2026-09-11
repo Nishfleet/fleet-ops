@@ -233,3 +233,12 @@ if [ -f "$repo_root/lib/fleet-questions.sh" ]; then
     fleet_questions_line
 fi
 
+# --- findings ledger: every finding queued, never dropped silently ----------
+# fleet-ops#5443: the judges own carry-over ageing. One line, right after
+# visitor:, from the canonical findings ledger. Missing/unreadable ledger is
+# a real zero situation — but carried_over>0 is NEVER zeroed silently; the
+# green check below flags a ledger that has gone silent (no append in 48h).
+if [ -f "$repo_root/lib/findings_ledger.py" ]; then
+    python3 "$repo_root/lib/findings_ledger.py" measure \
+        || echo "findings: total=0 filed=0 carried_over=0 oldest_carry_h=0 panel_fail=0 UNAVAILABLE:measure-failed"
+fi
