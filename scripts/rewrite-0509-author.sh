@@ -308,7 +308,10 @@ stage8(){ # resume intake: revert the fleet-ops#5384 squash
     --body "Reverts the fleet-ops#5384 squash ($msha). Ordered by fleet-ops#5385 step 7." \
     --head resume/0509-intake-post-rewrite)
   gh pr merge --auto --squash -R Nishfleet/fleet-ops "$url" >>"$LOG" 2>&1 || log "WARN: auto-merge arm failed"
-  gh issue comment "$ISSUE" -R Nishfleet/fleet-ops --body "intake resume PR (auto-merge armed): $url" >/dev/null || true
+  local crc=0
+  gh issue comment "$ISSUE" -R Nishfleet/fleet-ops \
+    --body "intake resume PR (auto-merge armed): $url" >>"$LOG" 2>&1 || crc=$?
+  ((crc==0)) || log "ALERT rewrite0509: gh issue comment FAILED (rc=$crc) at stage8 — resume-PR notice lost ($url); check $LOG and post it manually (fleet-ops silent-drop)"
   log "stage8 ok — $url"; }
 
 stageR(){ # rollback: force-push pre-rewrite refs back (needs $BEFORE + refs-before.txt)
@@ -331,7 +334,11 @@ stageR(){ # rollback: force-push pre-rewrite refs back (needs $BEFORE + refs-bef
     if ((dance)); then protect_on || log "LOUD: restore failed"; fi
     die "rollback push failed"; fi
   if ((dance)); then protect_on || die "protection restore failed"; fi
-  gh issue comment "$ISSUE" -R Nishfleet/fleet-ops --body "rollback done: pre-rewrite refs force-pushed (main=$(git -C "$BEFORE" rev-parse refs/heads/main))." >/dev/null || true
+  local rrc=0 rmain
+  rmain=$(git -C "$BEFORE" rev-parse refs/heads/main)
+  gh issue comment "$ISSUE" -R Nishfleet/fleet-ops \
+    --body "rollback done: pre-rewrite refs force-pushed (main=$rmain)." >>"$LOG" 2>&1 || rrc=$?
+  ((rrc==0)) || log "ALERT rewrite0509: gh issue comment FAILED (rc=$rrc) at stageR — rollback-done notice lost (main=$rmain); check $LOG and post it manually (fleet-ops silent-drop)"
   log "stageR ok — rolled back ${#rs[@]} refs"; }
 
 # --- dispatch ---------------------------------------------------------------
