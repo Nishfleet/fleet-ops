@@ -148,8 +148,8 @@
       "hang_timeout_s": 2640,
       "_cap8_20260905": "2026-09-05 (Nish: sub expiring unused): Ollama Cloud Pro weekly 4.4% used, hourly session budget 13.7%, 1339 requests all week, resets in 1 day; the seat ran 2 sessions in 12h only because every issue was classified heavy (#3444) and the seat was not capable (contextWindow 131072 -> 1,000,000 in models.json). Cap 4 at ~15 min/session cannot drain the quota; 8 stays under the hourly session budget. hard_ceiling stays true: never probe above 8.",
       "_hang_timeout_3873": "fleet-ops#3873: ollama sessions on the retired V4 flash seat did 14-149 tool calls then get rc=124 killed at the global 2520s (42 min) watchdog before writing final text — 8/8 empty runs in 2h, every one a worked-no-text. The seat answers 200 and does real work; the timeout is too short for this seat. Per-seat override 2640s (44 min) gives 2 more minutes under the unit's 45 min TimeoutStartSec; the global default 2520 stays for every other seat.",
-      "intentional_cap_zero": "stale",
-      "reason": "2026-09-10 (Nish, unanimous): the provider's only allowlisted seat was the DeepSeek V4 flash lane — banned fleet-wide and retired; the provider offers no V4.1 flash slug. hard_ceiling/max_probe_ceiling/hang_timeout_s stay for any future re-wiring."
+      "intentional_cap_zero": "retired",
+      "reason": "2026-09-10 (Nish, unanimous): the provider's only allowlisted seat was the DeepSeek V4 flash lane — banned fleet-wide and retired; the provider offers no V4.1 flash slug. hard_ceiling/max_probe_ceiling/hang_timeout_s stay for any future re-wiring (2026-09-11 FleetSeatCap0Stale re-audition re-verified: pi --list-models ollama shows only deepseek-v4-pro:0813 / gpt-oss:20b / kimi-k2.7-code; retired by policy, never auto-expire — class stale -> retired)."
     },
     "commandcode": {
       "cap": 4,
@@ -221,8 +221,8 @@
       "models": {
         "deepseek/deepseek-v4.1-flash": {
           "cap": 0,
-          "intentional_cap_zero": "stale",
-          "reason": "2026-09-05 balance USD 0.00 of 90.06 (402); Nish decides any top-up; restore cap 2 when credits > 5 (fleet-ops#3283/#3284)",
+          "intentional_cap_zero": "money_only",
+          "reason": "2026-09-11 re-audition (FleetSeatCap0Stale repair): still HTTP 402 Insufficient credits (balance USD 0.00 of 90.06). Nish decides any top-up; restore cap 2 when credits > 5 (fleet-ops#3283/#3284). Class stale -> money_only: money-decision park, never auto-expire.",
           "product_only": true,
           "daily_spend_cap_usd": 3
         },
@@ -264,14 +264,13 @@
     "groq": {
       "cap": 0,
       "class": "free",
-      "intentional_cap_zero": "stale",
+      "intentional_cap_zero": "corpse",
       "reason": "2026-09-02 re-audition (fleet-ops#2667): credential still WORKS — this is NOT credentials_bad. `pi --print --provider groq --model openai/gpt-oss-20b 'reply PONG'` returned HTTP 413 rate_limit_exceeded (code=rate_limit_exceeded, type=tokens): 'Request too large for model openai/gpt-oss-20b ... on tokens per minute (TPM): Limit 8000, Requested 44616'. Same wall as the 2026-08-28 probe (fleet-ops#1456), which observed it as a 429; the status code moved 429 -> 413 but the cause is identical (free-tier TPM 8000 < fleet system prompt ~45k tokens). A 413/429 TPM wall is a SIZE fault, not an auth fault, so no re-auth exists to perform and no credential is dead. cap=0 is correct. Re-audition if Groq raises the free TPM limit or a smaller-prompt adapter lands."
     },
     "inferx": {
-      "cap": 0,
+      "cap": 1,
       "class": "free",
-      "intentional_cap_zero": "stale",
-      "reason": "2026-08-28 re-audition (fleet-ops#1456): a `pi --print --provider inferx` probe of the since-retired V4 flash slug returned HTTP 404 'endpoint not found'. The endpoint does not resolve; cap=0 is correct. Re-audition if the provider advertises a live endpoint."
+      "reason": "2026-09-11 re-audition (FleetSeatCap0Stale repair): the 2026-08-28 404 (fleet-ops#1456) has cleared — `pi --print --no-session --provider inferx 'Reply with exactly: PONG'` returned PONG rc=0 PACKET-VERDICT tools=0 class=no-tools; the endpoint resolves again. cap 0 -> 1 (concurrency-tolerance probe pending; do not raise without the #1350-style 5-clean measurement)."
     },
     "opencode": {
       "cap": 3,
@@ -301,8 +300,8 @@
         },
         "x-preview-f-free": {
           "cap": 0,
-          "intentional_cap_zero": "stale",
-          "reason": "2026-08-28 re-audition (fleet-ops#1456, see _x_preview_f_free): pi probe returned HTTP 401 'Model x-preview-f-free is not supported' (same as 2026-08-27). Cap 0 correct. Re-audition if OpenCode restores the slug."
+          "intentional_cap_zero": "corpse",
+          "reason": "2026-09-11 re-audition (FleetSeatCap0Stale repair): pi probe returned HTTP 401 'Model x-preview-f-free is not supported' for the 3rd consecutive re-audition (2026-08-27/08-28 per fleet-ops#1456, 2026-09-11). Recovery is provider-side only (OpenCode dropped the slug); cap stays 0 corpse."
         },
         "muse-spark-1.2-contributor-free": {
           "cap": 0,
@@ -336,18 +335,18 @@
         "deepseek-flash": 1,
         "deepseek-v4-flash": {
           "cap": 0,
-          "intentional_cap_zero": "stale",
-          "reason": "2026-09-10: unused sibling slug. Weekly pool is on deepseek-flash (V4.1 Flash); console weekly 80.1% used. Cap 0 so these cannot drain the paced remainder (fleet-ops#5025)."
+          "intentional_cap_zero": "money_only",
+          "reason": "2026-09-10: unused sibling slug. Weekly pool is on deepseek-flash (V4.1 Flash); console weekly 80.1% used. Cap 0 so these cannot drain the paced remainder (fleet-ops#5025). 2026-09-11 FleetSeatCap0Stale re-audition: policy re-confirmed, class stale -> money_only (by-design money-guard park, never auto-expire)."
         },
         "deepseek-v4-pro": {
           "cap": 0,
-          "intentional_cap_zero": "stale",
-          "reason": "2026-09-10: unused sibling slug. Weekly pool is on deepseek-flash (V4.1 Flash); console weekly 80.1% used. Cap 0 so these cannot drain the paced remainder (fleet-ops#5025)."
+          "intentional_cap_zero": "money_only",
+          "reason": "2026-09-10: unused sibling slug. Weekly pool is on deepseek-flash (V4.1 Flash); console weekly 80.1% used. Cap 0 so these cannot drain the paced remainder (fleet-ops#5025). 2026-09-11 FleetSeatCap0Stale re-audition: policy re-confirmed, class stale -> money_only (by-design money-guard park, never auto-expire)."
         },
         "glm-5.3": {
           "cap": 0,
-          "intentional_cap_zero": "stale",
-          "reason": "2026-09-10: unused sibling slug. Weekly pool is on deepseek-flash (V4.1 Flash); console weekly 80.1% used. Cap 0 so these cannot drain the paced remainder (fleet-ops#5025)."
+          "intentional_cap_zero": "money_only",
+          "reason": "2026-09-10: unused sibling slug. Weekly pool is on deepseek-flash (V4.1 Flash); console weekly 80.1% used. Cap 0 so these cannot drain the paced remainder (fleet-ops#5025). 2026-09-11 FleetSeatCap0Stale re-audition: policy re-confirmed, class stale -> money_only (by-design money-guard park, never auto-expire)."
         }
       },
       "_note": "Nish 2026-09-10 14:30 IST: 'go ham on opencode ds4.1 flash - virtually unlimited for the next 4 days'. OpenCode Go subscription endpoint https://opencode.ai/zen/go/v1 (needs x-opencode-session header; Pi's own per-session id is the correct value — do NOT set a fresh UUID per request in pi-models.json, that zeroed the prefix cache for 65M tokens on 2026-09-10, fleet-ops#4975). deepseek-flash = DeepSeek V4.1 Flash (models.dev, released 2026-09-10). Live Pi test 2026-09-10 09:15Z: tools=1 class=worked. FIRST in every order until 2026-09-14, then revert to the 2026-08-27 volume order. Nish 2026-09-10 15:05 IST: \"can go upto 10 ds4.1 flash\" -> cap 10.",
@@ -368,8 +367,8 @@
     "orcarouter": {
       "cap": 0,
       "class": "free",
-      "intentional_cap_zero": "stale",
-      "reason": "2026-08-28 re-audition (fleet-ops#1456): `pi --print --provider orcarouter --model orcarouter/free PONG` still returned HTTP 402 free_quota_exhausted (err_free_used, request id 202608280614208934655298268d9d6YMJWAZ3Y). The free allowance has NOT reset since the 2026-08-27 exhaustion. Seat-health ledger seats/orcarouter__orcarouter_free.json: health_class=quota_exhausted, http_status=402. Cap stays 0. Prior: 2026-08-27 03:37Z initial probe n=3/3 quota_exhausted (request ids 202608270337137174342448268d9d6NtxJZ3Nx, 202608270337145520025038268d9d6EV3OKGsF, 202608270337154337369828268d9d6MN1cjTJY). Re-audition after a billing-cycle reset; if a spawn returns content (not 402), wire cap=1 with a fresh dated citation and re-add orcarouter to free_providers_in_order."
+      "intentional_cap_zero": "corpse",
+      "reason": "2026-09-11 re-audition (FleetSeatCap0Stale repair): `pi --print --no-session --provider orcarouter --model orcarouter/free 'Reply with exactly: PONG'` returned HTTP 402 free_quota_exhausted (err_free_used, request id 202609111513095906296478268d9d6XAR4G2G6) — unchanged from the 2026-08-28 re-audition (fleet-ops#1456). Recovery is provider-side only (free allowance reset or top-up); re-audition after a billing-cycle reset; if a spawn returns content (not 402), wire cap=1 with a fresh dated citation and re-add orcarouter to free_providers_in_order. Prior n=3 probe (fleet-ops#1456, 2026-08-27 03:37Z, request ids 202608270337137174342448268d9d6NtxJZ3Nx / 202608270337145520025038268d9d6EV3OKGsF / 202608270337154337369828268d9d6MN1cjTJY); today n=1, HTTP 402 (same free-used signal, request id 202609111513095906296478268d9d6XAR4G2G6); ledger seats/orcarouter__orcarouter_free.json health_class=quota_exhausted."
     },
     "grok": {
       "cap": 0,
@@ -392,8 +391,8 @@
         "grok-4.6": 2,
         "grok-4.5": {
           "cap": 0,
-          "intentional_cap_zero": "stale",
-          "reason": "2026-09-04 fleet-ops#3125: grok-4.5 stays cap 0 (accepted assumption); HTTP 402 Grok Build usage balance exhausted observed 2026-08-30, self-healed 2026-09-02 but grok-4.6 occupies the provider cap. Re-audition if grok-4.6 yield drops and grok-4.5 is needed."
+          "intentional_cap_zero": "money_only",
+          "reason": "2026-09-04 fleet-ops#3125: grok-4.5 stays cap 0 (accepted assumption); HTTP 402 Grok Build usage balance exhausted observed 2026-08-30, self-healed 2026-09-02 but grok-4.6 occupies the provider cap. Re-audition if grok-4.6 yield drops and grok-4.5 is needed. 2026-09-11 re-audition (FleetSeatCap0Stale repair): live probe returned 402 'Grok Build usage balance exhausted' again — money wall; class stale -> money_only so the 402 lane never auto-expires into paid spend."
         }
       },
       "_grok_402_note": "HISTORY: 2026-08-30 auditor (STOP-REASON pi-scout@0509 trip 08:15Z) observed SuperGrok weekly sub drained - xai-oauth/grok-4.5 returned HTTP 402 'Grok Build usage balance exhausted' at 2026-08-30T08:15:06Z; both grok models share the same Grok Build balance so both were capped to 0. 2026-09-02 fleet-ops#2785 re-verification: SELF-HEALED — grok-token-refresh rotated access+refresh at 13:15:20Z and live probes on BOTH grok-4.5 and grok-4.6 returned PONG rc=0, ledgers healthy http_status=200. 2026-09-04 fleet-ops#3125 (Nish, decisions 2026-09-04, OpenUsage SuperGrok 61% left): provider cap restored 1 -> 2, grok-4.6 0 -> 2 (product lane); grok-4.5 stays 0 per the accepted 'grok-4.5 stays 0' assumption. This note stays for audit.",
@@ -453,8 +452,8 @@
       "flat_usd_per_month": null,
       "_rate_card": "fleet-ops#4459 2026-09-08: runinfra DeepSeek V4 Flash seat (retired 2026-09-10) per-token rate card, measured from config/pi-models.json runinfra/models[0] cost: $0.13/M in / $0.27/M out / $0.01/M cached (per-1M USD, dated 2026-09-08).",
       "_comment_runinfra": "fleet-ops#4205 (Nish 2026-09-07): RunInfra (https://api.runinfra.ai/v1, the V4 flash model (seat retired 2026-09-10), key resolved by '!cut -d= -f2 /home/nish/fleet2/etc/runinfra.env' already in ~/.pi/agent/models.json) is a WORKER seat, cap 4, class prepaid. It is never a judge/senior seat. contextWindow 1M (capable=1). quota_bench_default_s 86400 (24h): a quota/cap 429 whose error text carries no explicit reset window benches the seat for a day, not the 900s devin default. 402-as-balance-wall: RunInfra returns HTTP 402 when the prepaid balance is exhausted — that is a MONEY wall (Nish-only top-up), never a transient fault to retry; the quota_bench path benches it and the seat-dead quota-age rule (seat_dead_quota_age_s 86400) turns a 24h-old 402 into a corpse needing billing repair. Do not flip this row to free or metered without a ledger line.",
-      "intentional_cap_zero": "stale",
-      "reason": "2026-09-10 (Nish, unanimous): the provider's only allowlisted seat was the DeepSeek V4 flash lane — banned fleet-wide and retired; a live catalog probe on 2026-09-10 returned no V4.1 flash slug for this provider (v4.1 requests 404/not-available). Provider row stays parked for a future allowlisted slug."
+      "intentional_cap_zero": "retired",
+      "reason": "2026-09-10 (Nish, unanimous): the provider's only allowlisted seat was the DeepSeek V4 flash lane — banned fleet-wide and retired; a live catalog probe on 2026-09-10 returned no V4.1 flash slug for this provider (v4.1 requests 404/not-available). Provider row stays parked for a future allowlisted slug (retired by policy, never auto-expire — 2026-09-11 FleetSeatCap0Stale re-audition re-verified the no-V4.1-flash catalog state; class stale -> retired)."
     },
     "crof": {
       "cap": 0,
@@ -466,8 +465,8 @@
       "flat_usd_per_month": null,
       "_rate_card": "fleet-ops#4459 2026-09-08: DeepSeek V4 Flash 0731 (Q8_0 via CrofAI) per-token rate card, measured from config/pi-models.json crof/models[0] cost: $0.08/M in / $0.10/M out / $0.003/M cached (per-1M USD, dated 2026-09-08). class=prepaid-quota so the metered marginal spend is usage x rate. the zenmux paid DeepSeek flash lane carries the same DeepSeek list price (fleet-ops#4205: $0.22/$0.66/$0.007 on zenmux at ~4x this). Used by measure.sh usd_24h and the fleet_usd_24h prom metric.",
       "_comment_crof": "fleet-ops#4262 (Nish 2026-09-07): CrofAI (https://crof.ai/v1, the V4 flash 0731 model (seat retired 2026-09-10), key resolved by '!cut -d= -f2 /home/nish/fleet2/etc/crof.env') is a WORKER seat, cap 2, class prepaid, NOT audition. contextWindow 1M (capable=1). quota_bench_default_s 86400 (24h): a quota/cap 429 with no explicit reset window benches a day. 402-as-balance-wall: HTTP 402 = prepaid balance exhausted — MONEY wall (Nish-only top-up), never a transient fault; the seat-dead quota-age rule turns a 24h-old 402 into a billing-repair corpse. No max_probe_ceiling: cap stays pinned at 2 (no upward AIMD probe on a paid seat). reasoning_effort:none wired in pi-models.json (fleet-ops#4234 — the endpoint reasons by default).",
-      "intentional_cap_zero": "stale",
-      "reason": "2026-09-10 (Nish, unanimous): the provider's only allowlisted seat was the DeepSeek V4 flash lane — banned fleet-wide and retired; a live catalog probe on 2026-09-10 returned no V4.1 flash slug for this provider (v4.1 requests 404/not-available). Provider row stays parked for a future allowlisted slug."
+      "intentional_cap_zero": "retired",
+      "reason": "2026-09-10 (Nish, unanimous): the provider's only allowlisted seat was the DeepSeek V4 flash lane — banned fleet-wide and retired; a live catalog probe on 2026-09-10 returned no V4.1 flash slug for this provider (v4.1 requests 404/not-available). Provider row stays parked for a future allowlisted slug (retired by policy, never auto-expire — 2026-09-11 FleetSeatCap0Stale re-audition re-verified the no-V4.1-flash catalog state; class stale -> retired)."
     },
     "entrim": {
       "cap": 0,
@@ -479,8 +478,8 @@
       "flat_usd_per_month": null,
       "_rate_card": "fleet-ops#4459 2026-09-08: entrim DeepSeek V4 Flash seat (retired 2026-09-10) per-token rate card, measured from config/pi-models.json entrim/models[0] cost: $0.09/M in / $0.17/M out / $0.09/M cached (per-1M USD, dated 2026-09-08).",
       "_comment_entrim": "fleet-ops#4262 (Nish 2026-09-07): Entrim (https://api.entrim.ai/v1, the V4 flash model (seat retired 2026-09-10), key resolved by '!cut -d= -f2 /home/nish/fleet2/etc/entrim.env') is a WORKER seat, cap 2, class prepaid, NOT audition. contextWindow 1M (capable=1). quota_bench_default_s 86400 (24h): a quota/cap 429 with no explicit reset window benches a day. 402-as-balance-wall: HTTP 402 = prepaid balance exhausted — MONEY wall (Nish-only top-up), never a transient fault; the seat-dead quota-age rule turns a 24h-old 402 into a billing-repair corpse. No max_probe_ceiling: cap stays pinned at 2 (no upward AIMD probe on a paid seat). cacheRead=input until measured (pi-models.json).",
-      "intentional_cap_zero": "stale",
-      "reason": "2026-09-10 (Nish, unanimous): the provider's only allowlisted seat was the DeepSeek V4 flash lane — banned fleet-wide and retired; a live catalog probe on 2026-09-10 returned no V4.1 flash slug for this provider (v4.1 requests 404/not-available). Provider row stays parked for a future allowlisted slug."
+      "intentional_cap_zero": "retired",
+      "reason": "2026-09-10 (Nish, unanimous): the provider's only allowlisted seat was the DeepSeek V4 flash lane — banned fleet-wide and retired; a live catalog probe on 2026-09-10 returned no V4.1 flash slug for this provider (v4.1 requests 404/not-available). Provider row stays parked for a future allowlisted slug (retired by policy, never auto-expire — 2026-09-11 FleetSeatCap0Stale re-audition re-verified the no-V4.1-flash catalog state; class stale -> retired)."
     },
     "paretoinference": {
       "quota_window": "daily",
