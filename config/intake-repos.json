@@ -30,6 +30,7 @@
   "deferred": [
     {
       "name": "0509",
+      "product": true,
       "reason": "TEMPORARY intake pause for the main history rewrite (Nish, 2026-09-11: 'I want it done, but safely. Pause new intake, wait until everything else is done, then do it'). Four commits (bfa176df6, 45be71f49, 3a930dd53, df0cf8a47) carry nishant345@users.noreply.github.com, which GitHub links to an unrelated user; the only fix is a filter-repo rewrite + force-push of main. Re-enrol via PR the moment the rewrite job reports done."
     },
     {
