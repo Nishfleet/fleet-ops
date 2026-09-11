@@ -535,6 +535,15 @@ plane_seat_sentinel() {
   local drill_unit="resilience-drill-stub-seat-sentinel"
   local drill_svc="$HOME/.config/systemd/user/${drill_unit}.service"
   local drill_path="$HOME/.config/systemd/user/${drill_unit}.path"
+  # fleet-ops#5096 negative control: a second stub pair identical to the
+  # shipped units except StartLimitBurst=5, driven by the same sentinel
+  # storm. It MUST wedge — that is the proof the shipped guard is armed,
+  # not decorative. The name stays under the resilience-drill-stub*
+  # exclusion in bin/unit-escalation-write so the deliberate wedge cannot
+  # summon an auditor.
+  local tiny_unit="resilience-drill-stub-seat-sentinel-tiny"
+  local tiny_svc="$HOME/.config/systemd/user/${tiny_unit}.service"
+  local tiny_path="$HOME/.config/systemd/user/${tiny_unit}.path"
   local drill_root drill_log drill_start
   drill_root="$(mktemp -d -t sr-sentinel-drill.XXXXXX)"
   drill_log="$drill_root/starts.log"
@@ -551,9 +560,9 @@ plane_seat_sentinel() {
   sed -i "s|^ExecStart=.*|ExecStart=${drill_start}|" "$drill_svc"
 
   cleanup_seat_sentinel_drill() {
-    "$SYSTEMCTL" --user stop "${drill_unit}.service" "${drill_unit}.path" 2>/dev/null || true
-    "$SYSTEMCTL" --user reset-failed "${drill_unit}.service" "${drill_unit}.path" 2>/dev/null || true
-    rm -f "$drill_svc" "$drill_path"
+    "$SYSTEMCTL" --user stop "${drill_unit}.service" "${drill_unit}.path" "${tiny_unit}.service" "${tiny_unit}.path" 2>/dev/null || true
+    "$SYSTEMCTL" --user reset-failed "${drill_unit}.service" "${drill_unit}.path" "${tiny_unit}.service" "${tiny_unit}.path" 2>/dev/null || true
+    rm -f "$drill_svc" "$drill_path" "$tiny_svc" "$tiny_path"
     rm -rf "$drill_root"
     "$SYSTEMCTL" --user daemon-reload 2>/dev/null || true
   }
@@ -574,7 +583,8 @@ plane_seat_sentinel() {
   # reset-failed on a fresh (never-loaded) stub exits non-zero on systemd
   # 255 ("Unit ... not loaded") even though there is nothing to clear —
   # it is only here to un-wedge a stale failed stub from a crashed run, so
-  # it must be non-fatal like the cleanup copy, not part of the && gate.
+  # it must be non-fatal like the cleanup copy, not part of the && gate
+  # (fleet-ops#5096 merge resolution).
   "$SYSTEMCTL" --user reset-failed "${drill_unit}.service" "${drill_unit}.path" 2>/dev/null || true
   if ! "$SYSTEMCTL" --user daemon-reload 2>/dev/null \
      || ! "$SYSTEMCTL" --user start "${drill_unit}.path" 2>/dev/null; then
@@ -631,9 +641,54 @@ plane_seat_sentinel() {
     return 1
   fi
 
+  # fleet-ops#5096 negative control: same sentinel storm, deliberately tiny
+  # ceiling (burst=5). If this does NOT wedge the watcher then the pass
+  # above proves nothing — a StartLimit directive that never fires would
+  # pass just the same. Reproduces the fleet-ops#622 wedge on demand, once
+  # a day on the drill timer.
+  sed "s/fleet-seat-recovery/${tiny_unit}/g; s/^StartLimitBurst=.*/StartLimitBurst=5/" \
+    "$svc_src" > "$tiny_svc"
+  sed "s|/home/nish/workspaces/agent-state/lanes/seats|${drill_root}|g; s/fleet-seat-recovery/${tiny_unit}/g" \
+    "$path_src" > "$tiny_path"
+  sed -i "s|^ExecStart=.*|ExecStart=${drill_start}|" "$tiny_svc"
+  if ! grep -qE '^StartLimitBurst=5$' "$tiny_svc"; then
+    seat_sentinel_bail "negative-control stub did not get StartLimitBurst=5" \
+      "negative-control stub missing StartLimitBurst=5" || return 1
+    return 1
+  fi
+  "$SYSTEMCTL" --user daemon-reload 2>/dev/null || true
+  "$SYSTEMCTL" --user reset-failed "${tiny_unit}.service" "${tiny_unit}.path" 2>/dev/null || true
+  "$SYSTEMCTL" --user stop "${tiny_unit}.service" "${tiny_unit}.path" 2>/dev/null || true
+  if ! "$SYSTEMCTL" --user start "${tiny_unit}.path" 2>/dev/null; then
+    seat_sentinel_bail "could not start the negative-control .path" \
+      "could not start ${tiny_unit}.path" || return 1
+    return 1
+  fi
+  for _ in $(seq 1 60); do : > "$drill_root/.no-usable-seat"; sleep 0.05; done
+  sleep 1.5
+  local tiny_st
+  tiny_st="$("$SYSTEMCTL" --user show -p ActiveState -p Result "${tiny_unit}.path" 2>/dev/null || true)"
+  if grep -q 'ActiveState=active' <<<"$tiny_st"; then
+    seat_sentinel_bail \
+      "negative control did NOT wedge: a 60-trigger storm cleared burst=5 — the shipped StartLimit guard is decorative (${tiny_st})" \
+      "negative control did not wedge (${tiny_st})" || return 1
+    return 1
+  fi
+  # Positive half of the same storm: the shipped-ceiling stub (burst=200)
+  # must still be standing — a ceiling below real traffic would have wedged
+  # right alongside the control.
+  local main_st
+  main_st="$("$SYSTEMCTL" --user show -p ActiveState -p Result "${drill_unit}.path" 2>/dev/null || true)"
+  if ! grep -q 'ActiveState=active' <<<"$main_st"; then
+    seat_sentinel_bail \
+      "the 60-trigger storm that wedged burst=5 also wedged the shipped burst=200 stub — the ceiling sits below traffic (${main_st})" \
+      "shipped-ceiling stub wedged by the control storm (${main_st})" || return 1
+    return 1
+  fi
+
   cleanup_seat_sentinel_drill
   trap - EXIT INT TERM
-  record "$name" "pass" "100 seat-json writes -> 0 starts; sentinel touch -> 1 start; second write -> 1 more; watcher active/success"
+  record "$name" "pass" "100 seat-json writes -> 0 starts; sentinel touch -> 1 start; second write -> 1 more; watcher active/success; negative control (burst=5) wedged while shipped burst=200 held the same storm"
   return 0
 }
 
