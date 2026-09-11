@@ -100,8 +100,31 @@ refuse_noncanonical_install() {
   esac
 }
 
+# fleet-ops#5459: --check never refuses (auditors need the DIFFs), but a
+# --check run from a non-canonical workspaces checkout must SAY its DIFFs are
+# measured against this tree — a stale clone's DIFF count reads exactly like
+# live drift and has been filed as a critical gap-audit finding.
+warn_noncanonical_check() {
+  [ "${FLEET_OPS_ALLOW_NONCANONICAL:-}" = 1 ] && return 0
+  local ws_root canon got want root
+  ws_root="${FLEET_OPS_WORKSPACES_ROOT:-/home/nish/workspaces}"
+  canon="${FLEET_OPS_CANONICAL_CHECKOUT:-$ws_root/tooling/fleet-ops-deploy-clone}"
+  got=$(readlink -f "$here")
+  want=$(readlink -f "$canon" 2>/dev/null || printf '%s\n' "$canon")
+  root=$(readlink -f "$ws_root" 2>/dev/null || printf '%s\n' "$ws_root")
+  [ "$got" = "$want" ] && return 0
+  case "$got" in
+    "$root"|"$root"/*)
+      echo "install.sh: NONCANONICAL-CHECKOUT: $got is not the live install source; DIFF lines compare installed files against THIS checkout, not live drift" >&2
+      echo "install.sh: canonical checkout is $want (fleet-ops#5459)" >&2
+      ;;
+  esac
+}
+
 if [ "$mode" != "--" ]; then
   refuse_noncanonical_install
+else
+  warn_noncanonical_check
 fi
 
 # Returns 0 if the destination is under /etc/, 1 otherwise. Used to route
