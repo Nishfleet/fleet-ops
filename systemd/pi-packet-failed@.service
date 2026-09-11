@@ -15,5 +15,10 @@ WorkingDirectory=/home/nish
 # packets. %i is the pi-packet instance, or the full failed unit name when it
 # carries a unit suffix (pi-systemd-run transient path — same convention as
 # unit-escalation@).
-ExecStart=/home/nish/.local/bin/pi-packet-failed %i
+# /bin/bash -c 'exec …' is the repo's runner-safe ExecStart shape for a VPS
+# path (stop-escalation.service precedent; fleet-ops#154 class lock): hosted
+# CI can syntax-verify the unit without stubbing the VPS bin, `exec` replaces
+# the shell so signals/timeout hit the handler itself, and %i expands before
+# bash parses the line.
+ExecStart=/bin/bash -c 'exec /home/nish/.local/bin/pi-packet-failed %i'
 TimeoutStartSec=120

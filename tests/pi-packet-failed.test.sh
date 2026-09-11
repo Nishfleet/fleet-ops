@@ -42,8 +42,8 @@ grep -q 'usage: pi-packet-failed' <<<"$help_out" || fail "--help must print usag
 ok "--help prints usage"
 
 # --- wiring pins ------------------------------------------------------------
-grep -qF 'ExecStart=/home/nish/.local/bin/pi-packet-failed %i' "$unit_file" \
-    || fail "pi-packet-failed@.service must ExecStart the handler"
+grep -qF 'ExecStart=/bin/bash -c '\''exec /home/nish/.local/bin/pi-packet-failed %i'\''' "$unit_file" \
+    || fail "pi-packet-failed@.service must ExecStart the handler (runner-safe /bin/bash -c exec shape, fleet-ops#154)"
 grep -qF 'pi-packet-failed@${unit}.service.service' "$runner" \
     || fail "pi-systemd-run OnFailure must include pi-packet-failed@<unit> (transient path)"
 grep -qF 'unit-escalation@${unit}.service.service' "$runner" \
