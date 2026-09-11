@@ -12,7 +12,10 @@ Type=oneshot
 Environment=HOME=/home/nish
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_RUNTIME_DIR=/run/user/1000
-Environment=WORKDIR=/home/nish
+# WORKDIR must differ from $HOME: agent-cron-run's fleet-ops#366/#983
+# fail-closed guard FATALs on WORKDIR==$HOME (auditor 2026-09-12 — the
+# #4656 import set WORKDIR=$HOME and every weekly fire start-limit'd).
+Environment=WORKDIR=/home/nish/workspaces/agent-state
 Environment=LOG_DIR=/home/nish/workspaces/agent-state/cron-output
 Environment=PROMPTS_DIR=/home/nish/.pi/agent/prompts
 Environment=PI_BIN=/home/nish/.local/bin/pi
