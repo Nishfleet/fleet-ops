@@ -37,7 +37,6 @@ cd "$repo_root"
 
 # --- pure-function unit tests ------------------------------------------------
 node --input-type=module -e '
-import { readFileSync as _readFileSync } from "node:fs";
 import {
   normalizeAssertion,
   extractPrNumber,
