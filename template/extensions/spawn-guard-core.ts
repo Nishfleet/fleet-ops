@@ -47,14 +47,37 @@ const DANGEROUS_RULES: Array<{ id: string; pattern: RegExp }> = [
 	// drop, clear, branch, create, store). The standing rule is about not
 	// popping another agent's stash; listing/showing does not touch it.
 	{ id: "git_stash_forbidden", pattern: /\bgit\s+stash\b(?!\s+(?:list|show)\b)/i },
+	// fleet-ops#5589 (rulebook redteam 2026-09-11): the AGENTS.md hard line
+	// "Never `systemctl restart` a slice — it bounces every unit inside it"
+	// had no mechanical guard that actually fired. The pre-#5589 rule
+	// (systemctl_restart_slice) required `restart` to sit directly after
+	// `systemctl`, so `systemctl --user restart user-1000.slice` — the exact
+	// shape the finding names; user-1000.slice carries ~54 live timers/units —
+	// slipped through, and `stop` was not covered at all.
+	//
+	// Blocks `systemctl [flags] restart|stop ... <target>.slice` for any
+	// target EXCEPT the dated allowlist documented below. Mixed targets are
+	// blocked conservatively: one non-allowlisted slice anywhere in the
+	// argument span blocks the whole command. (try-restart / kill / freeze
+	// remain out of scope — the issue's contract is restart|stop.)
+	//
+	// Dated allowlist escape (drasl et al): single-purpose slices whose
+	// restart/stop cannot bounce unrelated units. Every entry is an
+	// exception to the hard line and needs a date + reason. Entries for
+	// slices that do not exist on a machine are inert.
+	//   - drasl.slice — 2026-09-11, fleet-ops#5589 (drasl et al.)
 	{
-		id: "systemctl_restart_slice",
-		pattern: /\bsystemctl\s+restart\s+[^\n;|&]*\.slice\b/i,
+		id: "systemctl_slice_lifecycle",
+		pattern:
+			/\bsystemctl\s+(?:[^\s;|&]+\s+)*?\b(?:restart|stop)\s+(?=[^\n;|&]*(?<![\w.\/-])(?!drasl\.slice\b)[^\s;|&]*\.slice\b)/i,
 	},
+	// Same flags-gap fix: `systemctl --user restart fleet-heartbeat.service`
+	// defeated the pre-#5589 shape the same way. Verb set unchanged (restart
+	// only) — extending it to stop for fleet units is filed separately.
 	{
 		id: "systemctl_restart_fleet_unit",
 		pattern:
-			/\bsystemctl\s+restart\s+[^\n;|&]*(?:fleet-|implementation-worker-)/i,
+			/\bsystemctl\s+(?:[^\s;|&]+\s+)*?\b(?:restart)\s+[^\n;|&]*(?:fleet-|implementation-worker-)/i,
 	},
 	{
 		id: "credential_path_write",
@@ -288,8 +311,8 @@ function blockReasonText(reason: string): string {
 			"Recursive delete under /home/nish or workspaces/ is forbidden. Delete the exact paths you created, by name.",
 		credential_path_write:
 			"Writing to a credential path is forbidden. Never write secrets into repos, notes, or env files from a worker session.",
-		systemctl_restart_slice:
-			"Restarting a systemd slice is forbidden: it kills every unrelated agent sharing it.",
+		systemctl_slice_lifecycle:
+			"Restarting or stopping a systemd slice bounces every unit inside it (user-1000.slice alone carries ~54 live timers/units). Only the dated allowlist in spawn-guard-core.ts (drasl et al) is exempt. Restart or stop the individual unit instead: `systemctl --user restart <unit>.service`.",
 		systemctl_restart_fleet_unit:
 			"Restarting fleet units from inside a worker session is forbidden.",
 		sudo_write_protected_path:
