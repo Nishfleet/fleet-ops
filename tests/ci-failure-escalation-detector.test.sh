@@ -75,10 +75,12 @@ const h = signatureHash(signature({ ...base, event: "pull_request" }));
 if (!/^[0-9a-f]{64}$/.test(h)) throw new Error("hash must be sha256 hex");
 if (signatureHash(signature({ ...base, event: "pull_request" })) !== h) throw new Error("hash must be deterministic");
 
-// auto-revert owns CI-on-main push failures only.
+// auto-revert owns CI- and Deploy-production-on-main push failures
+// (fleet-ops#5597 added Deploy production to the watched list).
 if (!isAutoRevertHandled({ workflow: "CI", event: "push", head_branch: "main" })) throw new Error("CI push main must be auto-revert-handled");
 if (isAutoRevertHandled({ workflow: "CI", event: "pull_request", head_branch: "main" })) throw new Error("pull_request on main is NOT auto-revert (it is a PR check)");
-if (isAutoRevertHandled({ workflow: "Deploy production", event: "push", head_branch: "main" })) throw new Error("non-CI workflow on main is NOT auto-revert-owned by default");
+if (!isAutoRevertHandled({ workflow: "Deploy production", event: "push", head_branch: "main" })) throw new Error("Deploy production push main IS auto-revert-owned (fleet-ops#5597)");
+if (isAutoRevertHandled({ workflow: "Secret Scan", event: "push", head_branch: "main" })) throw new Error("an unwatched workflow on main is NOT auto-revert-owned by default");
 if (isAutoRevertHandled({ workflow: "CI", event: "push", head_branch: "release" })) throw new Error("CI push to non-main is NOT auto-revert (auto-revert watches main only)");
 
 // #124 owns claim/issue-* branch failures.

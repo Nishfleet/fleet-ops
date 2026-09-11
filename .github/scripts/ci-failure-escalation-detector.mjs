@@ -15,7 +15,8 @@
 //      event) per failing job — the same shape as the repeat-deterministic
 //      detector (fleet-ops#21), so a signature is stable across re-runs.
 //   3. EXCLUDES failures another detector already owns mechanically:
-//        - auto-revert: a CI-workflow failure on main (push to main).
+//        - auto-revert: a CI or Deploy-production failure on main (push to
+//          main).
 //          auto-revert opens the revert PR; its own loop guard halts loud
 //          on a red revert. Re-escalating here would duplicate.
 //        - #124 redispatch: a failure on a claim/issue-* branch (an open
@@ -74,9 +75,11 @@ const DEFAULT_LABEL = "escalate-senior";
 const DEFAULT_ESCALATION_REPO = "Nishfleet/fleet-ops";
 const SIG_MARKER_PREFIX = "<!-- escalate-sig:";
 
-// Workflows auto-revert owns (it watches workflow_run on "CI", branches=main).
-// A failure of one of these on main is auto-revert's domain.
-const DEFAULT_AUTO_REVERT_WORKFLOWS = ["CI"];
+// Workflows auto-revert owns (it watches workflow_run on these,
+// branches=main — fleet-ops#5597 added "Deploy production" so a refused
+// deploy on a red main feeds the same recovery). A failure of one of these
+// on main is auto-revert's domain.
+const DEFAULT_AUTO_REVERT_WORKFLOWS = ["CI", "Deploy production"];
 const DEFAULT_MAIN_BRANCH = "main";
 // #124's heartbeat re-dispatches repair onto open fleet-worker PRs whose
 // heads are claim/issue-* branches.
