@@ -388,7 +388,14 @@ _gh_rl_pre_reset_in() {
 gh_rl_pre_path="${PI_INTAKE_GH_RATE_LIMIT_STATE:-/home/nish/workspaces/agent-state/pi-intake/gh-rate-limit.json}"
 _gh_rl_pre_exhausted=0
 _gh_rl_pre_reads=app
-gh_rl_pre_max_age="${PI_INTAKE_GH_RATE_LIMIT_MAX_AGE:-120}"
+# Writer cadence: fleet-metrics-export.timer runs OnCalendar=*:0/5 (every
+# 300s) and refreshes the side-car state each run (fleet-ops#5616). The
+# max-age default must exceed ONE writer period + slack, or a healthy
+# writer looks stale on every routine tick and the #5489 throttle sits
+# permanently failing open. 360s = 300s period + 60s slack. The stale
+# branch stays reserved for a genuinely dead writer (~2 writer periods).
+gh_rl_pre_writer_period=300
+gh_rl_pre_max_age="${PI_INTAKE_GH_RATE_LIMIT_MAX_AGE:-360}"
 gh_rl_pre_skip_min="${PI_INTAKE_GH_RATE_LIMIT_SKIP_MIN:-500}"
 gh_rl_pre_skip_pct="${PI_INTAKE_GH_RATE_LIMIT_SKIP_PCT:-10}"
 if [[ -r "$gh_rl_pre_path" ]]; then
@@ -1568,10 +1575,14 @@ load_seat_caps || true
 # resources (core/search/graphql) is below the 20% threshold. A missing
 # or unparseable file fails OPEN: the throttle is a soft gate, not a
 # blocker, and a dead exporter must not silently freeze the fleet. The
-# fetched_at age check (120s = 2x the 60s TTL) catches a stale file
-# without preventing the first run after a fresh start.
+# fetched_at age check (fleet-ops#5616: 360s > the 300s exporter write
+# period) catches a stale file without preventing the first run after a
+# fresh start.
+# 300s (5-min timer), not ~60s as earlier assumed — the max age must exceed
+# one writer period or the throttle ignores state on every routine tick;
+# same 360s default as the pre-check above. writer cadence = 300s + 60s slack.
 gh_rl_path="${PI_INTAKE_GH_RATE_LIMIT_STATE:-/home/nish/workspaces/agent-state/pi-intake/gh-rate-limit.json}"
-gh_rl_max_age="${PI_INTAKE_GH_RATE_LIMIT_MAX_AGE:-120}"
+gh_rl_max_age="${PI_INTAKE_GH_RATE_LIMIT_MAX_AGE:-360}"
 # fleet-ops#5489: the pre-check already classified the App budget as
 # exhausted this tick (and the issue list happened before this gate). WRITES (claims, labels, comments, PR creation) back off until the
 # App x-ratelimit-reset instead of failing open or burning App calls. This
