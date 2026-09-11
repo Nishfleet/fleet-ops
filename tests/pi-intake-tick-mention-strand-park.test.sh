@@ -61,8 +61,8 @@ grep -qF -- '--head "claim/issue-$N" --state merged --json number,url,mergedAt,b
 ok "Test 2: single non-protected elif; probe carries the PR body"
 
 # === Test 3: mention regex matches fleet-merged-pr-close relates_to_issue ===
-relates_tick=$(grep -oF 'Relat(es|ed)[[:space:]]+to[[:space:]]+#${N}' "$tick" | head -1)
-relates_close=$(grep -oF 'Relat(es|ed)[[:space:]]+to[[:space:]]+#${n}' "$close_bin" | head -1)
+relates_tick=$(grep -m1 -oF 'Relat(es|ed)[[:space:]]+to[[:space:]]+#${N}' "$tick")
+relates_close=$(grep -m1 -oF 'Relat(es|ed)[[:space:]]+to[[:space:]]+#${n}' "$close_bin")
 [[ -n "$relates_tick" ]] || fail "Relates-to classifier regex not found in tick"
 [[ -n "$relates_close" ]] || fail "relates_to_issue regex not found in bin/fleet-merged-pr-close"
 ok "Test 3: tick reuses the relates_to_issue Relates-to classification"
@@ -246,10 +246,12 @@ ok "Test 4g: claims under the cap -> not parked"
 # === Test 5: on trip the real tick flips the label + posts the #5045 comment ===
 grep -qF 'fleet-ops#5045' "$tick" \
     || fail "mention-strand park comment (fleet-ops#5045) not found"
-park_line=$(grep -n 'skipped-parked-mention-strand' "$tick" | head -1 | cut -d: -f1)
+park_line=$(grep -m1 -n 'skipped-parked-mention-strand' "$tick" | cut -d: -f1)
 [[ -n "$park_line" ]] || fail "mention-strand skip line not found"
 # the label flip must follow the skip echo inside the same block
-tail_block=$(tail -n +"$park_line" "$tick" | head -20)
+# No-pipe 20-line read from the park line: piping tail into head SIGPIPEs
+# under set -o pipefail when CI load makes head exit first (fleet-ops#5592).
+tail_block=$(sed -n "${park_line},$((park_line + 19))p" "$tick")
 printf '%s' "$tail_block" | grep -qF -- '--add-label awaiting-runtime-gate --remove-label agent-ready' \
     || fail "mention-strand park must flip the label right after the skip echo"
 printf '%s' "$tail_block" | grep -q 'continue' \
