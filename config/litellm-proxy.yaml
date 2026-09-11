@@ -179,3 +179,16 @@ general_settings:
   # in its postgresql.conf); there is no network listener off-box.
   database_url: postgresql://litellm@localhost:5432/litellm
   redis_url: redis://127.0.0.1:6379
+  # fleet-ops#4832: keep startup `prisma migrate deploy` OFF. Migration
+  # 20250416115320_add_tag_table_to_db creates the redundant single-column
+  # unique index LiteLLM_DailyTagSpend_tag_key, which cannot build while
+  # the table holds multiple rows per tag (they differ on the composite
+  # key tag,date,api_key,model,custom_llm_provider — legitimate rows, not
+  # duplicates). The retry loop stalls every restart ~10min on P3018.
+  # Upstream already resolves it: 20250416151339_drop_tag_uniqueness_requirement
+  # drops that index (verified absent on the live DB 2026-09-12; the
+  # composite unique index is the real constraint). With the migration
+  # ledger fully applied this flag only skips a no-op — but a rebuild or
+  # ledger reset without it re-enters the P3018 loop. Re-enable only to
+  # apply migrations a future LiteLLM bump ships, then turn it back off.
+  disable_prisma_schema_update: true
