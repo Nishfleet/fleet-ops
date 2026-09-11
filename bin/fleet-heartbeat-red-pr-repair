@@ -38,6 +38,21 @@
 # value keeps the suppression (a flag the detector wrote means it proved
 # CONFLICTING on its own scan).
 #
+# Budget persistence (fleet-ops#5206): the per-PR attempts counter is
+# MONOTONIC for the life of one PR. A momentary green/pending/no-checks
+# tick — exactly what a repair worker's push produces — must NOT reset it
+# (PR #4830 re-burned attempt=1/2 twice in 5h, 4 paid dispatches, before
+# escalating). Only two named terminal events clear the counter:
+#   1. The recorded PR is gone — a different PR number now carries this
+#      issue's claim branch (merged/closed/superseded). The old budget
+#      dies with the old PR; the new PR starts at 0.
+#   2. Checks all-green for RED_PR_GREEN_CLEAR_TICKS consecutive ticks
+#      (default 2; heartbeat ticks are hourly — OnCalendar=*:17:00 — so
+#      two green observations means ~1h of sustained green, real healing
+#      rather than mid-push flap).
+# Pending checks and "no checks reported" are NEUTRAL: they neither spend
+# nor clear budget, but they do break the consecutive-green streak.
+#
 # Liveness rule (matches the orphan sweep, fleet-heartbeat-tier1 block 3,
 # and the lane-holding doctrine in fleet-ops#63): a unit in active or
 # activating state holds the lane — work is in flight (a freshly dispatched
@@ -57,6 +72,8 @@
 #   FLEET_STALE_CONFLICTING_LIST  dead-pr-detector's flagged list
 #                             (default $LOG_DIR/dead-pr-detector/stale-conflicting.list)
 #   RED_PR_MAX_ATTEMPTS       default 2
+#   RED_PR_GREEN_CLEAR_TICKS  consecutive all-green ticks that clear the
+#                             per-PR budget (default 2; ticks are hourly)
 #
 # Exit: 0 = no escalation (nothing to do, or dispatches attempted within
 #       budget). Non-zero = at least one PR exhausted its repair budget and
@@ -75,6 +92,7 @@ REPOS_JSON="${FLEET_REDPR_REPOS_JSON:-/home/nish/.local/state/fleet-heartbeat/fl
 TRIAGE="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
 LOG_DIR="${FLEET_HEARTBEAT_LOG_DIR:-/home/nish/.local/state/fleet-heartbeat}"
 RED_PR_MAX_ATTEMPTS="${RED_PR_MAX_ATTEMPTS:-2}"
+RED_PR_GREEN_CLEAR_TICKS="${RED_PR_GREEN_CLEAR_TICKS:-2}"
 
 STATE_DIR="$LOG_DIR/red-pr-repair"
 FLAGGED_LIST="${FLEET_STALE_CONFLICTING_LIST:-$LOG_DIR/dead-pr-detector/stale-conflicting.list}"
@@ -117,14 +135,16 @@ state_get() {
     fi
 }
 
-# Write a PR's JSON state file atomically. Empty attempts means "leave it".
+# Write a PR's JSON state file atomically. Empty attempts/escalated/
+# green_ticks means "leave it".
 state_write() {
-    local f="$1" short="$2" issue="$3" pr="$4" attempts="${5:-}" escalated="${6:-}"
-    python3 - "$f" "$short" "$issue" "$pr" "$attempts" "$escalated" <<'PY'
+    local f="$1" short="$2" issue="$3" pr="$4" attempts="${5:-}" escalated="${6:-}" green_ticks="${7:-}"
+    python3 - "$f" "$short" "$issue" "$pr" "$attempts" "$escalated" "$green_ticks" <<'PY'
 import sys, os, json, datetime
 f, short, issue, pr = sys.argv[1:5]
 attempts = sys.argv[5] if len(sys.argv) > 5 else ''
 escalated = sys.argv[6] if len(sys.argv) > 6 else ''
+green_ticks = sys.argv[7] if len(sys.argv) > 7 else ''
 state = {}
 if os.path.exists(f):
     try:
@@ -146,6 +166,11 @@ if attempts != '':
         state['attempts'] = state.get('attempts', 0)
 if escalated != '':
     state['escalated'] = (escalated == 'true')
+if green_ticks != '':
+    try:
+        state['green_ticks'] = int(green_ticks)
+    except ValueError:
+        state['green_ticks'] = state.get('green_ticks', 0)
 tmp = f + '.tmp.' + str(os.getpid())
 with open(tmp, 'w', encoding='utf-8') as fh:
     json.dump(state, fh)
@@ -247,6 +272,9 @@ while IFS= read -r repo; do
             continue
         fi
 
+        sf=$(state_file "$short" "$issue")
+        ff=$(flag_file "$short" "$issue")
+
         # Stale-conflicting suppression (fleet-ops#5205): flagged by the
         # dead-pr-detector and still not MERGEABLE -> a conflict, not a red
         # check. No dispatch, no debounce, no attempt spend. A MERGEABLE
@@ -257,43 +285,75 @@ while IFS= read -r repo; do
             continue
         fi
 
-        # Check status: red = any check in fail/error bucket. No checks at all
-        # is not red (leave to the queue pass). Pending is not red yet — give
-        # CI time to finish before dispatching a repair.
+        # Terminal event 1 (fleet-ops#5206): the PR recorded in state is
+        # gone — merged/closed/superseded — and a DIFFERENT PR number now
+        # carries this issue's claim branch. The old budget dies with the
+        # old PR; the new one starts at 0. One open PR per head ref makes
+        # a number mismatch proof that the recorded PR is terminal.
+        if [[ -f "$sf" ]]; then
+            recorded_pr=$(state_get "$sf" "pr" "")
+            if [[ -n "$recorded_pr" && "$recorded_pr" != "$pr_num" ]]; then
+                log "  - $repo#$pr_num ($pr_head): prior PR #$recorded_pr terminal (merged/closed) — reset repair budget for new PR"
+                state_remove "$sf"
+                state_remove "$ff"
+            fi
+        fi
+
+        # Check status: red = any check in fail/error bucket. All-green =
+        # every check terminal-pass. Pending checks — or no checks reported
+        # at all, which a fresh push can produce — are NEUTRAL: neither red
+        # nor green, they neither spend nor clear the repair budget
+        # (fleet-ops#5206) but they do break a consecutive-green streak.
         checks_json=$("$GH" pr checks "$pr_num" -R "$repo" --json name,bucket,state 2>/dev/null) || {
             log "  - $repo#$pr_num ($pr_head): gh pr checks FAILED — skip"
             continue
         }
         n_total=$(printf '%s' "$checks_json" | jq 'length')
-        if [[ "$n_total" == "0" ]]; then
-            log "  - $repo#$pr_num ($pr_head): NO CHECKS — not red, skip"
-            # No longer a candidate: clear any stale state.
-            state_remove "$(state_file "$short" "$issue")"
-            state_remove "$(flag_file "$short" "$issue")"
-            cleared=$((cleared+1))
-            continue
-        fi
         n_fail=$(printf '%s' "$checks_json" | jq '[.[] | select(.bucket == "fail" or .state == "FAILURE" or .state == "ERROR")] | length')
+        n_pending=$(printf '%s' "$checks_json" | jq '[.[] | select(.bucket == "pending" or .state == "PENDING" or .state == "QUEUED" or .state == "IN_PROGRESS" or .state == "WAITING" or .state == "EXPECTED" or .state == "REQUESTED")] | length')
+
         if [[ "$n_fail" == "0" ]]; then
-            log "  - $repo#$pr_num ($pr_head): not red (no failing checks) — clear state"
-            state_remove "$(state_file "$short" "$issue")"
-            state_remove "$(flag_file "$short" "$issue")"
-            cleared=$((cleared+1))
+            # Non-red tick. The debounce flag only means something on the
+            # red path — drop it. The attempts counter survives: only the
+            # two named terminal events may clear it (fleet-ops#5206).
+            state_remove "$ff"
+            if [[ -f "$sf" ]]; then
+                if [[ "$n_total" -gt 0 && "$n_pending" == "0" ]]; then
+                    # Terminal event 2: all-green for N consecutive ticks.
+                    green_ticks=$(( $(state_get "$sf" "green_ticks" "0") + 1 ))
+                    if [[ "$green_ticks" -ge "$RED_PR_GREEN_CLEAR_TICKS" ]]; then
+                        log "  - $repo#$pr_num ($pr_head): all-green for $green_ticks consecutive ticks — terminal, clear repair budget"
+                        state_remove "$sf"
+                        cleared=$((cleared+1))
+                    else
+                        state_write "$sf" "$short" "$issue" "$pr_num" "" "" "$green_ticks"
+                        log "  - $repo#$pr_num ($pr_head): all-green tick $green_ticks/$RED_PR_GREEN_CLEAR_TICKS — budget preserved (attempts=$(state_get "$sf" "attempts" "0"))"
+                    fi
+                else
+                    # Neutral: pending checks or none reported. Budget kept;
+                    # the consecutive-green streak is broken.
+                    state_write "$sf" "$short" "$issue" "$pr_num" "" "" 0
+                    log "  - $repo#$pr_num ($pr_head): not red (pending/no checks) — neutral, budget preserved (attempts=$(state_get "$sf" "attempts" "0"))"
+                fi
+            else
+                log "  - $repo#$pr_num ($pr_head): not red — no state held"
+            fi
             continue
         fi
+
+        # Red tick: any consecutive-green streak is broken.
+        [[ -f "$sf" ]] && state_write "$sf" "$short" "$issue" "$pr_num" "" "" 0
 
         # Red PR. Is the worker still live? If so, work is in flight — clear
         # the debounce flag and skip (the worker or a prior repair dispatch
         # is still running).
         if worker_live "$short" "$issue"; then
             log "  - $repo#$pr_num ($pr_head): RED but worker live — in flight, clear flag"
-            state_remove "$(flag_file "$short" "$issue")"
+            state_remove "$ff"
             continue
         fi
 
         # Red PR + dead worker. Apply the >1-tick debounce + bounded dispatch.
-        sf=$(state_file "$short" "$issue")
-        ff=$(flag_file "$short" "$issue")
         attempts=$(state_get "$sf" "attempts" "0")
         escalated=$(state_get "$sf" "escalated" "false")
 
@@ -333,11 +393,12 @@ while IFS= read -r repo; do
 done <<< "$claim_repos"
 
 # --- GC: drop state for PRs that are no longer open/red ----------------------
-# Best-effort — a state file whose PR closed/merged or went green is stale.
-# We cannot cheaply re-query every prior PR here, so we rely on the per-PR
-# clear-on-green/clear-on-no-checks paths above. Files for PRs that vanished
-# (closed/merged) are reaped when their issue's claim is released by the
-# orphan sweep or pi-issue-failed-reap; this block does not own that.
+# Best-effort — a state file whose PR went sustained-green is cleared by the
+# terminal-event paths above; one whose PR closed/merged is reset the first
+# time a different PR number carries the same issue's claim. Files for PRs
+# that vanished with no successor are reaped when their issue's claim is
+# released by the orphan sweep or pi-issue-failed-reap; this block does not
+# own that.
 
 log "red-pr-repair pass complete: observed=$observed dispatched=$dispatched cleared=$cleared escalated_any=$escalated_any"
 

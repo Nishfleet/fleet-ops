@@ -18,7 +18,14 @@
 #      -> fleet-heartbeat.service --state=failed -> page per #76/#86).
 #   D. Red PR but worker LIVE -> no dispatch (work in flight; a repair
 #      would race a second worker onto the same claim).
-#   E. Green / pending / no-checks PR -> no dispatch, stale state cleared.
+#   E. Non-red ticks NEVER clear the budget (fleet-ops#5206): pending /
+#      no-checks are neutral (attempts kept, green streak broken, flag
+#      dropped); only RED_PR_GREEN_CLEAR_TICKS consecutive all-green ticks
+#      clear it.
+#   H. red -> green -> red re-burns nothing: the counter survives a
+#      momentary green (the PR #4830 regression).
+#   I. A merged/closed PR's budget dies with it: a different PR number
+#      under the same issue starts at attempts=0.
 #
 # Entirely offline with mocked gh + systemctl + pi-issue-start, mirroring
 # tests/fleet-heartbeat-undersaturation.test.sh.
@@ -295,17 +302,22 @@ run_helper
 ok "scenarioD: red PR + live worker -> no dispatch (no race onto the same claim)"
 
 # ============================================================================
-# Scenario E: green / pending / no-checks PR -> no dispatch, state cleared
+# Scenario E: non-red ticks NEVER clear the budget (fleet-ops#5206).
+#   pending / no-checks = NEUTRAL: attempts kept, green streak broken,
+#     debounce flag dropped.
+#   all-green = counts toward RED_PR_GREEN_CLEAR_TICKS (default 2)
+#     consecutive ticks; only the Nth clears the state file.
 # ============================================================================
-for st in green pending none; do
+for st in pending none; do
   reset_state
   cat >"$PRS_JSON" <<JSON
 [{"number":55,"head":"claim/issue-55","draft":false,"checks":"$st"}]
 JSON
   : >"$LIVE_UNITS"
-  # Pre-seed stale state so we can prove it is cleared.
+  # Pre-seed a spent-attempt budget + a green streak + a debounce flag so
+  # we can prove exactly what a neutral tick does to each piece.
   mkdir -p "$log_dir/red-pr-repair"
-  printf '{"short":"demo","issue":"55","pr":"55","attempts":1,"escalated":false,"first_seen":"x","last_seen":"x"}' \
+  printf '{"short":"demo","issue":"55","pr":"55","attempts":1,"escalated":false,"green_ticks":1,"first_seen":"x","last_seen":"x"}' \
       >"$log_dir/red-pr-repair/demo-55.json"
   touch "$log_dir/red-pr-repair/demo-55.flag"
 
@@ -313,12 +325,72 @@ JSON
   [[ "$env_rc" == 0 ]] || fail "scenarioE($st): must exit 0, got $env_rc ($env_out)"
   [[ "$(count_dispatches)" == "0" ]] \
       || fail "scenarioE($st): must NOT dispatch for $st PR, got $(count_dispatches)"
-  [[ ! -f "$log_dir/red-pr-repair/demo-55.json" ]] \
-      || fail "scenarioE($st): stale state must be cleared for $st PR"
+  # Budget survives the neutral tick — the #5206 regression pin.
+  [[ -f "$log_dir/red-pr-repair/demo-55.json" ]] \
+      || fail "scenarioE($st): neutral tick must NOT clear budget state"
+  [[ "$(jq -r '.attempts' "$log_dir/red-pr-repair/demo-55.json")" == "1" ]] \
+      || fail "scenarioE($st): attempts must stay 1 through $st, got $(cat "$log_dir/red-pr-repair/demo-55.json")"
+  [[ "$(jq -r '.green_ticks' "$log_dir/red-pr-repair/demo-55.json")" == "0" ]] \
+      || fail "scenarioE($st): $st must break the green streak, got $(cat "$log_dir/red-pr-repair/demo-55.json")"
   [[ ! -f "$log_dir/red-pr-repair/demo-55.flag" ]] \
       || fail "scenarioE($st): stale flag must be cleared for $st PR"
 done
-ok "scenarioE: green/pending/no-checks PR -> no dispatch, stale state cleared"
+ok "scenarioE: pending/no-checks are neutral — budget kept, green streak broken, flag dropped"
+
+# Green ticks: only the Nth CONSECUTIVE all-green tick clears the budget.
+reset_state
+cat >"$PRS_JSON" <<'JSON'
+[{"number":55,"head":"claim/issue-55","draft":false,"checks":"green"}]
+JSON
+mkdir -p "$log_dir/red-pr-repair"
+printf '{"short":"demo","issue":"55","pr":"55","attempts":1,"escalated":false,"first_seen":"x","last_seen":"x"}' \
+    >"$log_dir/red-pr-repair/demo-55.json"
+touch "$log_dir/red-pr-repair/demo-55.flag"
+
+run_helper   # green tick 1
+[[ "$env_rc" == 0 ]] || fail "scenarioE-green1: must exit 0, got $env_rc"
+[[ -f "$log_dir/red-pr-repair/demo-55.json" ]] \
+    || fail "scenarioE-green1: one green tick must NOT clear the budget"
+[[ "$(jq -r '.attempts' "$log_dir/red-pr-repair/demo-55.json")" == "1" ]] \
+    || fail "scenarioE-green1: attempts must stay 1"
+[[ "$(jq -r '.green_ticks' "$log_dir/red-pr-repair/demo-55.json")" == "1" ]] \
+    || fail "scenarioE-green1: green_ticks must be 1"
+[[ ! -f "$log_dir/red-pr-repair/demo-55.flag" ]] \
+    || fail "scenarioE-green1: flag must be dropped on a green tick"
+
+# A neutral tick between green observations breaks the streak.
+cat >"$PRS_JSON" <<'JSON'
+[{"number":55,"head":"claim/issue-55","draft":false,"checks":"pending"}]
+JSON
+run_helper
+[[ "$(jq -r '.green_ticks' "$log_dir/red-pr-repair/demo-55.json")" == "0" ]] \
+    || fail "scenarioE-pending: pending must reset green_ticks to 0"
+[[ "$(jq -r '.attempts' "$log_dir/red-pr-repair/demo-55.json")" == "1" ]] \
+    || fail "scenarioE-pending: attempts must stay 1"
+
+cat >"$PRS_JSON" <<'JSON'
+[{"number":55,"head":"claim/issue-55","draft":false,"checks":"green"}]
+JSON
+run_helper   # green tick 1 again (streak restarted)
+[[ -f "$log_dir/red-pr-repair/demo-55.json" ]] \
+    || fail "scenarioE-green2: streak restarted — budget must still be held"
+[[ "$(jq -r '.green_ticks' "$log_dir/red-pr-repair/demo-55.json")" == "1" ]] \
+    || fail "scenarioE-green2: green_ticks must be 1 after restart"
+run_helper   # green tick 2 consecutive -> terminal, clear
+[[ ! -f "$log_dir/red-pr-repair/demo-55.json" ]] \
+    || fail "scenarioE-green3: 2 consecutive green ticks must clear the budget"
+ok "scenarioE-green: only 2 consecutive all-green ticks clear the budget"
+
+# Green PR with no state held: nothing to create or clear.
+reset_state
+cat >"$PRS_JSON" <<'JSON'
+[{"number":55,"head":"claim/issue-55","draft":false,"checks":"green"}]
+JSON
+run_helper
+[[ "$env_rc" == 0 ]] || fail "scenarioE-nostate: must exit 0, got $env_rc"
+[[ ! -f "$log_dir/red-pr-repair/demo-55.json" ]] \
+    || fail "scenarioE-nostate: green PR with no state must not create one"
+ok "scenarioE-nostate: green PR without state stays untouched"
 
 # ============================================================================
 # Scenario H (fleet-ops#5205): a stale-conflicting PR flagged by the
@@ -382,6 +454,97 @@ run_helper   # tick 2: dispatch as usual
 [[ "$(count_dispatches)" == "1" ]] \
     || fail "scenarioH: unflagged conflicting PR must dispatch, got $(count_dispatches)"
 ok "scenarioH: unflagged conflicting PR -> normal observe-then-dispatch (no blanket skip)"
+
+# ============================================================================
+# Scenario H: red -> green -> red re-burns NOTHING (fleet-ops#5206 a+c)
+# PR #4830 got attempt=1/2 twice in 5h because a momentary green wiped the
+# budget. The counter must now survive the flap: observe, dispatch 1/2,
+# green tick (kept), re-observe, dispatch 2/2, escalate — exactly once.
+# ============================================================================
+reset_state
+make_red_pr
+: >"$LIVE_UNITS"
+
+run_helper   # tick1: red+dead -> observe
+run_helper   # tick2: red+dead -> dispatch attempt=1/2
+[[ "$(count_dispatches)" == "1" ]] \
+    || fail "scenarioH: tick2 must dispatch attempt=1/2, got $(count_dispatches)"
+
+# Momentary green (repair worker pushed; checks pass at this observation).
+cat >"$PRS_JSON" <<'JSON'
+[{"number":55,"head":"claim/issue-55","draft":false,"checks":"green"}]
+JSON
+run_helper   # tick3: green — budget kept, green_ticks=1
+[[ "$env_rc" == 0 ]] || fail "scenarioH-green: must exit 0, got $env_rc"
+[[ "$(jq -r '.attempts' "$log_dir/red-pr-repair/demo-55.json")" == "1" ]] \
+    || fail "scenarioH-green: green tick must preserve attempts=1, got $(cat "$log_dir/red-pr-repair/demo-55.json" 2>/dev/null)"
+
+# Back to red + dead.
+make_red_pr
+run_helper   # tick4: red+dead -> re-observe (flag was dropped on green)
+[[ "$(count_dispatches)" == "1" ]] \
+    || fail "scenarioH: re-observe tick must not dispatch, got $(count_dispatches)"
+run_helper   # tick5: red+dead -> dispatch attempt=2/2 — never a second 1/2
+[[ "$(count_dispatches)" == "2" ]] \
+    || fail "scenarioH: must dispatch attempt=2/2, got $(count_dispatches) ($(cat "$calls"))"
+[[ "$(jq -r '.attempts' "$log_dir/red-pr-repair/demo-55.json")" == "2" ]] \
+    || fail "scenarioH: attempts must be 2"
+grep -q 'RED-PR-REPAIR.*attempt=2/2' "$triage" \
+    || fail "scenarioH: triage must show attempt=2/2"
+[[ "$(grep -c 'RED-PR-REPAIR.*attempt=1/2' "$triage")" == "1" ]] \
+    || fail "scenarioH: attempt=1/2 must appear exactly once, got $(grep -c 'RED-PR-REPAIR.*attempt=1/2' "$triage")"
+[[ "$(grep -c 'RED-PR-REPAIR' "$triage")" == "2" ]] \
+    || fail "scenarioH: exactly 2 RED-PR-REPAIR lines total, got $(grep -c 'RED-PR-REPAIR' "$triage")"
+
+# Budget truly spent -> escalate exactly once, no 3rd dispatch.
+run_helper   # tick6: attempts=2 >= max -> escalate
+[[ "$env_rc" == 1 ]] || fail "scenarioH: spent budget must exit 1, got $env_rc ($env_out)"
+[[ "$(count_dispatches)" == "2" ]] \
+    || fail "scenarioH: no 3rd dispatch, got $(count_dispatches)"
+run_helper   # tick7: still escalated -> loud, not re-escalated
+[[ "$env_rc" == 1 ]] || fail "scenarioH: post-escalation tick must still exit 1, got $env_rc"
+[[ "$(count_dispatches)" == "2" ]] \
+    || fail "scenarioH: no dispatch after escalation, got $(count_dispatches)"
+[[ "$(grep -c 'RED-PR-ESCALATE' "$triage")" == "1" ]] \
+    || fail "scenarioH: RED-PR-ESCALATE must fire exactly once, got $(grep -c 'RED-PR-ESCALATE' "$triage")"
+ok "scenarioH: red->green->red keeps the budget — 1/2 then 2/2 then one escalation, never a second 1/2"
+
+# ============================================================================
+# Scenario I: merged/closed PR's budget dies with it — a NEW PR number
+# under the same issue starts at 0 (fleet-ops#5206 accept b)
+# ============================================================================
+reset_state
+# Seed state as if PR 55 under issue 55 already burned out + escalated.
+mkdir -p "$log_dir/red-pr-repair"
+printf '{"short":"demo","issue":"55","pr":"55","attempts":2,"escalated":true,"green_ticks":0,"first_seen":"x","last_seen":"x"}' \
+    >"$log_dir/red-pr-repair/demo-55.json"
+
+# PR 55 is gone (merged/closed); a new PR 77 now carries claim/issue-55.
+cat >"$PRS_JSON" <<'JSON'
+[{"number":77,"head":"claim/issue-55","draft":false,"checks":"red"}]
+JSON
+: >"$LIVE_UNITS"
+
+run_helper   # tick1: pr mismatch resets budget, then red+dead -> observe
+[[ "$env_rc" == 0 ]] || fail "scenarioI: first tick must exit 0, got $env_rc ($env_out)"
+[[ "$(count_dispatches)" == "0" ]] \
+    || fail "scenarioI: first tick must not dispatch, got $(count_dispatches)"
+sf="$log_dir/red-pr-repair/demo-55.json"
+[[ "$(jq -r '.pr' "$sf")" == "77" ]] \
+    || fail "scenarioI: state must record the new pr=77, got $(cat "$sf")"
+[[ "$(jq -r '.attempts' "$sf")" == "0" ]] \
+    || fail "scenarioI: new PR must start at attempts=0, got $(cat "$sf")"
+[[ "$(jq -r '.escalated' "$sf")" == "false" ]] \
+    || fail "scenarioI: escalated marker must reset for the new PR, got $(cat "$sf")"
+
+run_helper   # tick2: dispatch attempt=1/2 on the new PR's own budget
+[[ "$(count_dispatches)" == "1" ]] \
+    || fail "scenarioI: new PR must dispatch attempt=1/2, got $(count_dispatches)"
+grep -q 'RED-PR-REPAIR.*pr=#77.*attempt=1/2' "$triage" \
+    || fail "scenarioI: triage must show pr=#77 attempt=1/2, got $(cat "$triage")"
+[[ "$(grep -c 'RED-PR-ESCALATE' "$triage")" == "0" ]] \
+    || fail "scenarioI: new PR must not inherit the old escalation"
+ok "scenarioI: closed PR's budget dies with it — new PR under same issue starts at 1"
 
 # ============================================================================
 # Scenario F: tier1 wires the helper and propagates its non-zero exit
@@ -472,6 +635,6 @@ grep -qx 'start --no-block pi-issue@demo-55.service' "$start_log" \
     || fail "scenarioG: start must carry --no-block, got $(cat "$start_log")"
 ok "scenarioG: pi-issue-start dispatch is non-blocking (returned in ${g_elapsed}s, --no-block wired through)"
 
-ok "red-pr-repair: observe-then-dispatch debounce, bounded 2 attempts, fail loud on exhaustion, live-worker skip, non-red clear, non-blocking dispatch"
+ok "red-pr-repair: observe-then-dispatch debounce, bounded 2 attempts, fail loud on exhaustion, live-worker skip, monotonic budget across flaps, terminal-event clear, non-blocking dispatch"
 
 echo "all phases passed"
