@@ -30,7 +30,7 @@ workers into wrong defaults (fleet-ops#180's claimant, blind-audit finding #8).
 **Authoritative check, in order:** (1) if `~/workspaces/agent-state/FLEET-PAUSED`
 exists, the fleet is deliberately down — respect it; (2) otherwise
 `XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user list-timers` is the truth.
-As of 2026-08-26 the fleet is RESTORED and running (~26 user timers); enrolment
+As of 2026-08-26 the fleet is RESTORED and running; enrolment
 is declared in fleet-ops `config/intake-repos.json`, converged by the
 reconciler (fleet-ops#32). Worktrees, recent commits,
 packet files and memories are artefacts of past work and prove nothing about now.
