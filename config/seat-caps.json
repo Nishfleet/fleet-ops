@@ -620,7 +620,9 @@
     "xai-oauth",
     "crof",
     "runinfra",
-    "entrim"
+    "entrim",
+    "synthetic",
+    "llmgateway-devpass"
   ],
   "_comment_senior_order": "fleet-ops#3121: the senior (judge/orchestrator/reviewer) role's seat ladder. Replaces the dead straitly role and the old keystone_only_providers dual mechanism — ONE mechanism now. First usable seat in the list wins; a walled seat is skipped, not a unit failure; if the whole list is walled the resolver falls through to any usable capable seat. cursor cap 2 concurrent (fleet-ops#4206, raised 1->2 to spend the $400 API pool); senior draws count against the existing prepaid-usage/cursor.json weekly meter (ceiling 300/week), after which the list falls through to xai grok and then openrouter deepseek. Nish 2026-09-04: devin (devin/glm-5-2), free-glm (zenmux/z-ai/glm-5.3-free, cline/z-ai/glm-5.3-flash), senior (this list) are the three judge roles; senior replaces straitly everywhere. 2026-09-08 (Nish re-scope, #4445): alibaba-coding/qwen3.8-max is added as a judge on the roster. It is currently inert (model cap 0 — no worker use of any alibaba model) so find_senior_seat / senior_seat_available skip it silently until a config-driven judge_only gate lands (fleet-ops#4445 follow-up); it is listed LAST so it never displaces an already-usable senior seat.",
   "senior_seats_in_order": [
