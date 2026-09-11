@@ -11,7 +11,7 @@ Row schema (every key required, refused otherwise):
   source_organ  org|host id that produced the finding (e.g. fleet-blind-audit,
                 outside-in-audit, silent-drop-sweep)
   run_id        run / report id the finding came from
-  finding_id    sha1(source_organ|run_id|normalised_title)[:16] — stable so a
+  finding_id    sha256(source_organ|run_id|normalised_title)[:16] — stable so a
                 later filing/backfill worker can UPDATE the disposition
   severity      high|medium|low|info (free-form, preserved verbatim)
   title         the finding title
