@@ -244,9 +244,8 @@ PY
 )" && [ -n "$extracted" ]; then
         printf '%s\n' "$extracted" >"$stdout"
     else
-        raw_excerpt="$(head -c 2000 "$stdout")"
-        jq -c -n --arg raw "$raw_excerpt" \
-            '{vote:"NOT-DONE", reason:"pi output was not valid JSON", raw:$raw}' >"$stdout"
+        jq -c -n --rawfile raw "$stdout" \
+            '{vote:"NOT-DONE", reason:"pi output was not valid JSON", raw:($raw[0:2000])}' >"$stdout"
     fi
 fi
 exit 0
