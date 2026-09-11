@@ -53,7 +53,7 @@ check_pattern(){
   local re=$1
   local datasrc=(bin lib)
   local seen
-  seen=$(grep -rlE "$re" "${datasrc[@]}" 2>/dev/null | grep -v 'lib/pi-packet/' | sort || true)
+  seen=$(grep -rlE "$re" "${datasrc[@]}" 2>/dev/null | grep -v 'lib/pi-packet/' | grep -v '__pycache__/' | sort || true)
   local f ok
   while IFS= read -r f; do
     [ -n "$f" ] || continue
