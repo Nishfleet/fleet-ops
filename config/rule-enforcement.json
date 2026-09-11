@@ -644,8 +644,8 @@
     {
       "id": "led-escalation-matrix-fixes",
       "source": "decisions-ledger.md: 2026-08-27 | escalation matrix FIXES, not just routes",
-      "mechanism": "Escalation completion invariant: every failure chain terminates in a verified fix; stalled chains climb the ladder; only detector-green or Nish-reserved wall are terminal",
-      "proof": "fleet-ops #468 / #480; enforced by bin/fleet-escalation-completion (per-chain stall budget + fail-loud ladder, wired into fleet-heartbeat-tier1); tests/fleet-escalation-completion.test.sh nested from tests/escalation-coverage-canary.test.sh",
+      "mechanism": "Escalation completion invariant: every failure chain terminates in a verified fix; stalled chains climb the ladder; only detector-green or Nish-reserved wall are terminal. Stale trips climb the same ladder: LOUD + re-fire stop-escalation.service on a bounded cadence (fleet-ops#5190 — re-fail-per-tick could not summon an auditor; unit-escalation same-unit dedupe swallowed it), and the reconciler's close-grace keeps the filed alarm open across hold ticks so it cannot flap-close while the chain is still open",
+      "proof": "fleet-ops #468 / #480 / #5187 / #5190; enforced by bin/fleet-escalation-completion (per-chain stall budget + stale-trip re-fire ladder + fail-loud bound, wired into fleet-heartbeat-tier1) and lib/detector-queue-reconciler.py close-grace; tests/fleet-escalation-completion.test.sh nested from tests/escalation-coverage-canary.test.sh",
       "status": "enforced"
     },
     {
