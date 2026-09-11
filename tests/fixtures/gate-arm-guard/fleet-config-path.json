@@ -1,0 +1,26 @@
+{
+  "name": "fleet-config-path",
+  "comment": ".fleet/** is gate-owned in fleet-ops's own .fleet/gate-integrity.yml set; a check-runs-API-shaped row (status/conclusion, no bucket) must normalize identically.",
+  "files": [
+    {"filename": ".fleet/plan.md", "previous_filename": null}
+  ],
+  "gate_globs": [
+    ".github/workflows/**",
+    ".github/scripts/**",
+    ".github/CODEOWNERS",
+    ".gitleaksignore",
+    ".gitleaks.toml",
+    ".semgrepignore",
+    ".semgrep.yml",
+    ".semgrep.yaml",
+    ".fleet/**",
+    "lib/gate-integrity-config.sh",
+    "tests/gate-integrity.test.sh",
+    "tests/gate-integrity-config.test.sh"
+  ],
+  "checks": [
+    {"name": "gate-integrity / gate-integrity", "status": "completed", "conclusion": "failure"}
+  ],
+  "repo_has_gate": true,
+  "expect": "refuse"
+}

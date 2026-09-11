@@ -1,0 +1,23 @@
+{
+  "name": "standalone-job-name",
+  "comment": "Repos calling the gate as a plain job (Nishfleet/0509) report the check as bare `gate-integrity`, not `gate-integrity / gate-integrity`. Last-segment matching resolves both.",
+  "files": [
+    {"filename": ".github/workflows/ci.yml", "previous_filename": null}
+  ],
+  "gate_globs": [
+    ".github/workflows/**",
+    ".github/scripts/**",
+    ".github/CODEOWNERS",
+    ".gitleaksignore",
+    ".gitleaks.toml",
+    ".semgrepignore",
+    ".semgrep.yml",
+    ".semgrep.yaml",
+    ".fleet/**"
+  ],
+  "checks": [
+    {"name": "gate-integrity", "bucket": "pass", "state": "SUCCESS"}
+  ],
+  "repo_has_gate": true,
+  "expect": "arm"
+}

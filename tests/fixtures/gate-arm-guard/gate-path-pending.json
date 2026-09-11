@@ -1,0 +1,24 @@
+{
+  "name": "gate-path-pending",
+  "comment": "Still-running gate check on a gate-path PR is not SUCCESS — refuse (the live --wait-seconds loop resolves real pendings before deciding).",
+  "files": [
+    {"filename": ".github/workflows/ci.yml", "previous_filename": null}
+  ],
+  "gate_globs": [
+    ".github/workflows/**",
+    ".github/scripts/**",
+    ".github/CODEOWNERS",
+    ".gitleaksignore",
+    ".gitleaks.toml",
+    ".semgrepignore",
+    ".semgrep.yml",
+    ".semgrep.yaml",
+    ".fleet/**"
+  ],
+  "checks": [
+    {"name": "P14 tests / PR checks", "bucket": "pending", "state": "PENDING"},
+    {"name": "gate-integrity / gate-integrity", "bucket": "pending", "state": "PENDING"}
+  ],
+  "repo_has_gate": true,
+  "expect": "refuse"
+}

@@ -1,0 +1,25 @@
+{
+  "name": "non-gate-path",
+  "comment": "A PR that only touches non-gate paths is unaffected even while gate-integrity is red (issue: 'a non-gate-path PR is unaffected').",
+  "files": [
+    {"filename": "lib/pi-intake-tick.sh", "previous_filename": null},
+    {"filename": "tests/pi-intake-tick-seat-gate.test.sh", "previous_filename": null}
+  ],
+  "gate_globs": [
+    ".github/workflows/**",
+    ".github/scripts/**",
+    ".github/CODEOWNERS",
+    ".gitleaksignore",
+    ".gitleaks.toml",
+    ".semgrepignore",
+    ".semgrep.yml",
+    ".semgrep.yaml",
+    ".fleet/**"
+  ],
+  "checks": [
+    {"name": "P14 tests / PR checks", "bucket": "pass", "state": "SUCCESS"},
+    {"name": "gate-integrity / gate-integrity", "bucket": "fail", "state": "FAILURE"}
+  ],
+  "repo_has_gate": true,
+  "expect": "arm"
+}

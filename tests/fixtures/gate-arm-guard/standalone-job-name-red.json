@@ -1,0 +1,23 @@
+{
+  "name": "standalone-job-name-red",
+  "comment": "Bare `gate-integrity` job name with a red conclusion refuses the same way the reusable `gate-integrity / gate-integrity` name does.",
+  "files": [
+    {"filename": ".github/workflows/ci.yml", "previous_filename": null}
+  ],
+  "gate_globs": [
+    ".github/workflows/**",
+    ".github/scripts/**",
+    ".github/CODEOWNERS",
+    ".gitleaksignore",
+    ".gitleaks.toml",
+    ".semgrepignore",
+    ".semgrep.yml",
+    ".semgrep.yaml",
+    ".fleet/**"
+  ],
+  "checks": [
+    {"name": "gate-integrity", "bucket": "fail", "state": "FAILURE"}
+  ],
+  "repo_has_gate": true,
+  "expect": "refuse"
+}

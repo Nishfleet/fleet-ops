@@ -1,0 +1,23 @@
+{
+  "name": "rename-out-of-gate",
+  "comment": "A file renamed OUT of a gate-owned dir is still a gate-path edit: the decision script matches previous_filename, so the arm guard does too.",
+  "files": [
+    {"filename": "docs/ci-notes.md", "previous_filename": ".github/workflows/ci-notes.md"}
+  ],
+  "gate_globs": [
+    ".github/workflows/**",
+    ".github/scripts/**",
+    ".github/CODEOWNERS",
+    ".gitleaksignore",
+    ".gitleaks.toml",
+    ".semgrepignore",
+    ".semgrep.yml",
+    ".semgrep.yaml",
+    ".fleet/**"
+  ],
+  "checks": [
+    {"name": "gate-integrity / gate-integrity", "bucket": "fail", "state": "FAILURE"}
+  ],
+  "repo_has_gate": true,
+  "expect": "refuse"
+}

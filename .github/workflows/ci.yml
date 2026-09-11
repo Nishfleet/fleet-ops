@@ -107,6 +107,10 @@ jobs:
         # `collision-gate:` line — never claim a ticket whose named
         # same-file blockers are still open.
         bash tests/pi-intake-tick-collision-gate.test.sh
+        # fleet-ops#5238: the auto-merge arm refuses gate-path PRs whose
+        # advisory gate-integrity check is not green (#5207 escaped this
+        # way).
+        bash tests/gate-arm-guard.test.sh
         bash tests/pi-intake-topup.test.sh
         bash tests/pi-intake-tick-scout-on-empty.test.sh
         bash tests/blocked-reconcile-large-issue-json.test.sh

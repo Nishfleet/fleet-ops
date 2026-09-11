@@ -1,0 +1,26 @@
+{
+  "name": "gate-path-failure",
+  "comment": "fleet-ops#5238 origin shape: PR #5207 edited ci.yml and merged with gate-integrity FAILURE. Must refuse the arm.",
+  "files": [
+    {"filename": ".github/workflows/ci.yml", "previous_filename": null},
+    {"filename": "tests/pi-intake-tick-collision-gate.test.sh", "previous_filename": null}
+  ],
+  "gate_globs": [
+    ".github/workflows/**",
+    ".github/scripts/**",
+    ".github/CODEOWNERS",
+    ".gitleaksignore",
+    ".gitleaks.toml",
+    ".semgrepignore",
+    ".semgrep.yml",
+    ".semgrep.yaml",
+    ".fleet/**"
+  ],
+  "checks": [
+    {"name": "P14 tests / PR checks", "bucket": "pass", "state": "SUCCESS"},
+    {"name": "arm / arm", "bucket": "pass", "state": "SUCCESS"},
+    {"name": "gate-integrity / gate-integrity", "bucket": "fail", "state": "FAILURE"}
+  ],
+  "repo_has_gate": true,
+  "expect": "refuse"
+}
