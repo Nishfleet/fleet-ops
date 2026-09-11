@@ -110,6 +110,12 @@ bash "$here/pi-intake-tick-spawn-postcondition.test.sh"
 # tests/pi-intake-gh-rate-limit.test.sh locks the side-car throttle in
 # lib/pi-intake-tick.sh. ci.yml lists this file, so the drill runs here.
 bash "$here/pi-intake-gh-rate-limit.test.sh"
+# --- 7b. fleet-ops#5489 gh App-budget glide gate (CI hook) -----------------
+# tests/pi-intake-app-budget.test.sh locks the App-budget-exhausted glide
+# (reads to human identity, writes held until reset) and the LOUD triage
+# line. Workers cannot edit ci.yml, so it runs from this listed file
+# (fleet-ops#566: new tests must be hosted by an already-listed test).
+bash "$here/pi-intake-app-budget.test.sh"
 # --- 8. fleet-ops#1455 claims-index write (CI hook) -----------------------
 # tests/pi-intake-tick-claims-log.test.sh locks the append to
 # ready-work-claims.log on each successful claim+spawn. Without it the
