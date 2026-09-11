@@ -609,6 +609,23 @@ rc=$(run_bin 1)
 grep -q "compare-only" "$scratch/err.log" || fail "correct origin URL must reach the compare-only path"
 ok "correct origin fetch URL -> unchanged behaviour"
 
+# --- 14. named non-main branch at the origin/main tip still invokes the
+# deploy (fleet-ops#5222). The clone is someone's workspace even when there is
+# nothing to merge — a plain "nothing to do" would leave it on the branch
+# until the 30-min heartbeat. The deploy's off-main gate self-recovers a
+# fully-pushed branch to main or refuses loud when it is unpushed.
+git -C "$checkout" merge --ff-only -q origin/main
+git -C "$checkout" checkout -q -b worker/at-tip-5222
+n_before=$(grep -c "DEPLOY-INVOKED" "$DEPLOY_SPY_LOG" || true)
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "off-main tick should exit 0 (got $rc)"
+grep -q "off-main guard" "$scratch/err.log" \
+  || fail "missing the off-main guard log (got: $(cat "$scratch/err.log"))"
+n_after=$(grep -c "DEPLOY-INVOKED" "$DEPLOY_SPY_LOG" || true)
+[[ "$n_after" -gt "$n_before" ]] || fail "off-main tick must invoke the deploy guard"
+git -C "$checkout" checkout -q main
+ok "named branch at origin/main tip invokes the deploy off-main guard (fleet-ops#5222)"
+
 echo "OK: fleet-deploy-check: unchanged/moved/compare-only/deploy-fail/yield/lock/defaultBranch"
 
 # PR #4856: host deploy-audit-log-outside-clone so P14 listing-gate

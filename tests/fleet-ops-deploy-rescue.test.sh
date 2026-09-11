@@ -27,7 +27,7 @@ command -v jq >/dev/null 2>&1 || fail "jq missing"
 [[ -f "$repo_root/bin/fleet-ops-drift.py" ]] || fail "missing bin/fleet-ops-drift.py"
 grep -q 'rescue_deploy_clone' "$repo_root/bin/fleet-ops-deploy" \
     || fail "fleet-ops-deploy must implement the self-rescue path (fleet-ops#3634)"
-grep -q 'clone_held_as_cwd' "$repo_root/bin/fleet-ops-deploy" \
+grep -q 'clone_cwd_holders' "$repo_root/bin/fleet-ops-deploy" \
     || fail "fleet-ops-deploy must detect a live process holding the clone as cwd (fleet-ops#3634)"
 grep -q 'deploy-clone-rescue-' "$repo_root/bin/fleet-ops-deploy" \
     || fail "fleet-ops-deploy must write the rescue patch under agent-state/deploy-clone-rescue-<ts>/ (fleet-ops#3634)"
@@ -63,6 +63,13 @@ cat >"$checkout/config/intake-repos.json" <<'JSON'
   "deferred": []
 }
 JSON
+
+# Mirror the real repo's .gitignore: python auto-file runs inside the clone
+# leave bin/__pycache__/ behind; without this line the fixture reads them as
+# "untracked files" where the real clone does not (fleet-ops#5222).
+cat >"$checkout/.gitignore" <<'GI'
+__pycache__/
+GI
 
 cat >"$checkout/MANIFEST" <<MANIFEST
 systemd/demo.timer $HOME/.config/systemd/user/demo.timer
@@ -262,6 +269,13 @@ kill "$holder" 2>/dev/null || true
     || fail "scenario2: expected DEPLOY-BLOCKED (got: $out)"
 [[ "$out" == *"live process holds the clone as cwd"* ]] \
     || fail "scenario2: expected live-process reason (got: $out)"
+# fleet-ops#5222: the block must name the offender — the holding process's
+# pid and cmdline go in the DEPLOY-BLOCKED line so the next run fixes the
+# source, not the symptom.
+[[ "$out" == *"pid=$holder"* ]] \
+    || fail "scenario2: DEPLOY-BLOCKED must name the holder pid (got: $out)"
+[[ "$out" == *"sleep 30"* ]] \
+    || fail "scenario2: DEPLOY-BLOCKED must name the holder cmdline (got: $out)"
 [ "$(git -C "$checkout" symbolic-ref --short HEAD)" = "auditor/live-hold" ] \
     || fail "scenario2: clone must stay on the named branch when a live process holds it"
 ok "scenario2: a live process holding the clone as cwd keeps the LOUD block"

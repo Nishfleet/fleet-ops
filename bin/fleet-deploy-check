@@ -308,12 +308,21 @@ main() {
         return 0
     fi
 
+    off_main_branch=""
     if [[ "$before" == "$after" ]]; then
-        log "origin/main unchanged (HEAD=$before) — nothing to do"
-        return 0
+        # fleet-ops#5222: a named non-main branch sitting AT the origin/main
+        # tip is still the clone being used as a workspace — the deploy's
+        # off-main gate self-recovers it to main (fully pushed) or refuses
+        # loud (unpushed). Do not no-op the tick; deploy is idempotent.
+        off_main_branch=$(git -C "$CHECKOUT" symbolic-ref --short HEAD 2>/dev/null || true)
+        if [[ -z "$off_main_branch" || "$off_main_branch" == "main" ]]; then
+            log "origin/main unchanged (HEAD=$before) — nothing to do"
+            return 0
+        fi
+        log "clone on non-main branch '$off_main_branch' at origin/main tip — invoking deploy off-main guard (fleet-ops#5222)"
+    else
+        log "origin/main moved $before -> $after — invoking sanctioned deploy"
     fi
-
-    log "origin/main moved $before -> $after — invoking sanctioned deploy"
     if [[ "$NO_DEPLOY" == "1" ]]; then
         log "compare-only mode (FLEET_DEPLOY_CHECK_NO_DEPLOY=1): deploy not invoked"
         return 0
@@ -342,7 +351,7 @@ main() {
 
     local now
     now=$(git -C "$CHECKOUT" rev-parse HEAD 2>/dev/null || echo "unknown")
-    if [[ "$now" == "$after" ]]; then
+    if [[ -z "$off_main_branch" && "$now" == "$after" ]]; then
         log "already deployed between fetch and lock (HEAD=$now) — nothing to do"
         return 0
     fi

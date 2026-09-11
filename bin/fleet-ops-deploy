@@ -8,6 +8,11 @@
 # Dirty tracked files or a non-fast-forward checkout block the update (no reset, no
 # stash). A named non-main branch also blocks (fleet-ops#477): merge
 # --ff-only would rewind that auditor/hotfix branch onto origin/main.
+# fleet-ops#5222: the clone must refuse to be a workspace — when the only
+# defect is a named non-main branch whose tip already sits on a remote ref,
+# the deploy checks main back out itself (plain checkout, never a reset);
+# a branch with commits on no remote is never touched and keeps the LOUD
+# block. --dry-run runs the guards and that off-main gate only.
 # Any remaining divergence fails loud (exit 1).
 #
 # Environment:
@@ -18,6 +23,18 @@
 #   FLEET_OPS_EXPECTED_ORIGIN_URL  expected origin fetch URL (default: fleet-ops;
 #                                  tests point it at a local bare remote)
 set -euo pipefail
+
+# fleet-ops#5222: --dry-run runs every guard plus the off-main gate (fetch,
+# reason computation, self-recovery or the loud refuse) and exits before the
+# merge/install/reconcile/canary steps — the guard-check entrypoint used by
+# the termination drill and by anyone rehearsing a blocked tick.
+DRY_RUN=0
+for arg in "$@"; do
+    case "$arg" in
+        --dry-run) DRY_RUN=1 ;;
+        *) printf 'fleet-ops-deploy: unknown argument %s\n' "$arg" >&2; exit 2 ;;
+    esac
+done
 
 export HOME="${HOME:-/home/nish}"
 
@@ -58,7 +75,7 @@ auto_file_off_main() {
         log "WARN: off-main auto-file skipped (missing $py)"
         return 0
     fi
-    python3 "$py" --file-off-main "$why" \
+    python3 -B "$py" --file-off-main "$why" \
         || log "WARN: off-main auto-file failed"
 }
 
@@ -74,7 +91,7 @@ auto_file_deploy_blocked_main() {
         log "WARN: deploy-blocked-on-main auto-file skipped (missing $py)"
         return 0
     fi
-    python3 "$py" --file-deploy-blocked-main "$why" \
+    python3 -B "$py" --file-deploy-blocked-main "$why" \
         || log "WARN: deploy-blocked-on-main auto-file failed"
 }
 
@@ -82,12 +99,15 @@ auto_file_deploy_blocked_main() {
 # has its cwd inside the deploy checkout. If one does, the clone is actively
 # in use and must not be reset out from under it — keep the LOUD block.
 # Otherwise the clone is abandoned and we can self-rescue.
-clone_held_as_cwd() {
+# fleet-ops#5222: the block must NAME the offender — print one
+# "pid=<pid> cmd=<cmdline>" line per holder so the DEPLOY-BLOCKED line lets
+# the next run fix the source process, not the symptom.
+clone_cwd_holders() {
     local clone="$1"
     local canon
     canon=$(readlink -f "$clone" 2>/dev/null || printf '%s' "$clone")
     local self=$$
-    local p pid tgt
+    local p pid tgt cmd
     for p in /proc/[0-9]*/cwd; do
         [ -e "$p" ] || continue
         tgt=$(readlink "$p" 2>/dev/null) || continue
@@ -95,11 +115,11 @@ clone_held_as_cwd() {
             "$canon"|"$canon"/*)
                 pid=${p#/proc/}; pid=${pid%/cwd}
                 [ "$pid" = "$self" ] && continue
-                return 0
+                cmd=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)
+                printf 'pid=%s cmd=%s\n' "$pid" "${cmd:-<unknown>}"
                 ;;
         esac
     done
-    return 1
 }
 
 # fleet-ops#3634: self-rescue an abandoned deploy clone. The merge-to-live
@@ -223,6 +243,9 @@ log "starting: checkout=$DEPLOY_CHECKOUT"
 
 # fleet-ops#370: the paper-over drop-in must die even when merge is later
 # blocked (dirty/non-ff). install.sh also removes it on a successful install.
+# Dry-run skips this housekeeping: it mutates $HOME, not the clone, and the
+# guard gate being rehearsed does not depend on it (fleet-ops#5222).
+if [ "$DRY_RUN" = 0 ]; then
 dropin="${HOME}/.config/systemd/user/fleet-heartbeat.service.d/10-deploy-checkout.conf"
 if [ -e "$dropin" ] || [ -L "$dropin" ]; then
     rm -f "$dropin"
@@ -339,6 +362,7 @@ if [ -d "$dropin_dir" ]; then
     systemctl --user daemon-reload >/dev/null 2>&1 \
         || log "WARN: daemon-reload after fleet-loop drop-in removal failed"
 fi
+fi
 
 # The same drop-in pointed FLEET_OPS_DRIFT_BIN at a GC-able worktree. Env
 # for this tick is already set; refusing the path stops the self-compare.
@@ -453,13 +477,61 @@ branch=$(git -C "$DEPLOY_CHECKOUT" symbolic-ref --short HEAD 2>/dev/null || true
 if [ -n "$branch" ] && [ "$branch" != "main" ]; then
     reasons+=("checkout on '$branch' not main (fleet-ops#477)")
 fi
+
+# fleet-ops#5222: the live clone must refuse to be a workspace. When the
+# checkout sits on a named non-main branch whose tip is already reachable
+# from a remote-tracking ref, returning to main loses nothing — every commit
+# is on origin — so the deploy checks main back out itself and moves on,
+# even while a stray process still holds the clone as its cwd (2026-09-11:
+# a fully-pushed PR branch held by `sleep; gh pr checks` DEPLOY-BLOCKed every
+# tick until a judge hand-rescued it). A branch tip on NO remote is never
+# touched: keep the LOUD block and the auto-file, held or not — rescue would
+# publish someone's unpushed commits to origin, and refusing is the safer
+# loud failure. Only the clean single-defect case takes the light recovery;
+# dirty/untracked/diverged states still route to the holder check and the
+# WIP-preserving rescue below.
+if [ "${#reasons[@]}" -gt 0 ] && [ -n "$branch" ] && [ "$branch" != "main" ]; then
+    pushed_refs=$(git -C "$DEPLOY_CHECKOUT" for-each-ref \
+        --format='%(refname)' --contains HEAD refs/remotes 2>/dev/null || true)
+    if [ -z "$pushed_refs" ]; then
+        why=$(printf '%s; ' "${reasons[@]}")
+        why=${why%; }
+        holders=$(clone_cwd_holders "$DEPLOY_CHECKOUT")
+        holders_fmt=""
+        [ -n "$holders" ] && holders_fmt="; held by: ${holders//$'\n'/; }"
+        auto_file_off_main "$why"
+        loud "DEPLOY-BLOCKED" \
+            "merge-to-live blocked at $DEPLOY_CHECKOUT: $why — '$branch' has commits on no remote; refusing to touch unpushed work (fleet-ops#5222)$holders_fmt"
+        deploy_audit "fleet-ops" "deploy-blocked" "$why (unpushed $branch)"
+        exit 1
+    fi
+    if [ -z "$dirty" ] && [ -z "$untracked" ] && [ "$nonff" = 0 ]; then
+        if git -C "$DEPLOY_CHECKOUT" checkout -q main 2>/dev/null \
+            || git -C "$DEPLOY_CHECKOUT" checkout -q -b main origin/main 2>/dev/null; then
+            log "self-recovered: deploy clone was on fully-pushed branch '$branch'; checked out main — every commit is on origin, nothing discarded (fleet-ops#5222)"
+            deploy_audit "fleet-ops" "off-main-recover" "$branch -> main"
+            branch="main"
+            ahead=$(git -C "$DEPLOY_CHECKOUT" rev-list --count HEAD..origin/main 2>/dev/null || echo 0)
+            nonff=0
+            if ! git -C "$DEPLOY_CHECKOUT" merge-base --is-ancestor HEAD origin/main >/dev/null 2>&1; then
+                nonff=1
+            fi
+            reasons=()
+            [ "$nonff" = 1 ] && reasons+=("checkout not an ancestor of origin/main (hot-patch/diverged)")
+        fi
+        # A refused checkout keeps the original reasons; the held/rescue
+        # path below still applies.
+    fi
+fi
+
 if [ "${#reasons[@]}" -gt 0 ]; then
     why=$(printf '%s; ' "${reasons[@]}")
     why=${why%; }
     # fleet-ops#3634: if no live process holds the clone as its cwd, the
     # clone is abandoned — self-rescue instead of blocking. Keep the LOUD
     # block only when a live process is actively working inside the clone.
-    if clone_held_as_cwd "$DEPLOY_CHECKOUT"; then
+    holders=$(clone_cwd_holders "$DEPLOY_CHECKOUT")
+    if [ -n "$holders" ]; then
         if [ -n "$branch" ] && [ "$branch" != "main" ]; then
             auto_file_off_main "$why"
         else
@@ -468,7 +540,7 @@ if [ "${#reasons[@]}" -gt 0 ]; then
             # blind-audit catches it 30+ min later.
             auto_file_deploy_blocked_main "$why"
         fi
-        loud "DEPLOY-BLOCKED" "merge-to-live blocked at $DEPLOY_CHECKOUT: $why (live process holds the clone as cwd)"
+        loud "DEPLOY-BLOCKED" "merge-to-live blocked at $DEPLOY_CHECKOUT: $why (live process holds the clone as cwd: ${holders//$'\n'/; })"
         deploy_audit "fleet-ops" "deploy-blocked" "$why"
         exit 1
     fi
@@ -490,6 +562,14 @@ if [ "${#reasons[@]}" -gt 0 ]; then
     untracked=""
     nonff=0
     branch="main"
+fi
+
+# fleet-ops#5222: --dry-run stops after the guards and the off-main gate —
+# a blocked state already exited above, a healthy or self-recovered clone
+# reaches here. Nothing past this line mutates the clone or live state.
+if [ "$DRY_RUN" = 1 ]; then
+    log "dry-run: guards and off-main gate complete (checkout on ${branch:-detached} HEAD); skipping merge/install/reconcile/canary"
+    exit 0
 fi
 
 if [ "${ahead:-0}" -gt 0 ]; then

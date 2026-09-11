@@ -250,7 +250,7 @@ file_install_refuse() {
     if [ -f "$py" ]; then
         GH="${GH:-gh}" \
         FLEET_OPS_DRIFT_REPO="${FLEET_OPS_DRIFT_REPO:-Nishfleet/fleet-ops}" \
-          python3 "$py" --file-install-refuse "$dest" "$repo" "$diff_file" || true
+          python3 -B "$py" --file-install-refuse "$dest" "$repo" "$diff_file" || true
     fi
     rm -f "$diff_file"
 }
