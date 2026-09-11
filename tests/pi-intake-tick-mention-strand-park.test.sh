@@ -116,7 +116,7 @@ export -f gh
 # parked/skipped, 1 when the claim proceeds.
 park_block() {
     local N="$1" body="$2" _park_claims="$3" _park_protected="$4"
-    local FULL="Nishfleet/fleet-ops" title="drill"
+    local FULL="Nishfleet/fleet-ops" # no title var: SC2034, the drill never greps it
     local PARK_MAX_CLAIMS=3
     if (( _park_claims > PARK_MAX_CLAIMS )); then
         if (( _park_protected == 1 )) && printf '%s' "$body" | grep -qi 'termination:'; then
@@ -249,7 +249,13 @@ grep -qF 'fleet-ops#5045' "$tick" \
 park_line=$(grep -n 'skipped-parked-mention-strand' "$tick" | head -1 | cut -d: -f1)
 [[ -n "$park_line" ]] || fail "mention-strand skip line not found"
 # the label flip must follow the skip echo inside the same block
-tail_block=$(tail -n +"$park_line" "$tick" | head -20)
+# sed, not `tail | head -20`: under `set -euo pipefail` the tail|head pipe
+# SIGPIPEs whenever head exits before tail drains the rest of the tick
+# (~576 lines here), and the non-zero substitution rc then kills the whole
+# suite via set -e with no fail() message — flake observed as rc=141 ~1 in
+# 10 locally and in PR-checks run 34639158705. A bounded sed range reads
+# the same N..N+19 window with no pipe to close early.
+tail_block=$(sed -n "${park_line},$((park_line + 19))p" "$tick")
 printf '%s' "$tail_block" | grep -qF -- '--add-label awaiting-runtime-gate --remove-label agent-ready' \
     || fail "mention-strand park must flip the label right after the skip echo"
 printf '%s' "$tail_block" | grep -q 'continue' \
