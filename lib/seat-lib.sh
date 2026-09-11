@@ -4569,7 +4569,7 @@ _expiring_seat_behind_pace() {
 _pick_expiring_floor_seat() {
     local -a behind=()
     local fm p m
-    for fm in "${prepaid_seats[@]:-}"; do
+    for fm in ${prepaid_seats[@]+"${prepaid_seats[@]}"}; do
         [[ -n "$fm" ]] || continue
         p="${fm%%$'\t'*}"
         m="${fm#*$'\t'}"
@@ -4601,7 +4601,7 @@ _order_seats_by() {
     done
     for fm in "${src[@]}"; do
         in_ordered=0
-        for x in "${ordered[@]:-}"; do
+        for x in ${ordered[@]+"${ordered[@]}"}; do
             [[ "$x" == "$fm" ]] && in_ordered=1 && break
         done
         (( in_ordered )) || ordered+=("$fm")
@@ -5806,7 +5806,7 @@ pick_seat() {
         local -a _vranked=()
         mapfile -t _vranked < <(
             _i=0
-            for _fm in "${prepaid_seats[@]:-}" "${metered_seats[@]:-}" "${free_seats[@]:-}"; do
+            for _fm in ${prepaid_seats[@]+"${prepaid_seats[@]}"} ${metered_seats[@]+"${metered_seats[@]}"} ${free_seats[@]+"${free_seats[@]}"}; do
                 [[ -n "$_fm" ]] || continue
                 _p="${_fm%%$'\t'*}"
                 _m="${_fm#*$'\t'}"
@@ -5832,7 +5832,7 @@ pick_seat() {
             }' | sort -t$'\t' ${_vsort:--k1,1nr -k2,2nr -k3,3n}
         )
         local _vline _vlog="" _vn=0
-        for _vline in "${_vranked[@]:-}"; do
+        for _vline in ${_vranked[@]+"${_vranked[@]}"}; do
             [[ -n "$_vline" ]] || continue
             local _k1 _k2 _vi _vp _vm _vy _vv
             if (( _qfirst )); then
@@ -5858,7 +5858,7 @@ pick_seat() {
         local -a _yranked=()
         mapfile -t _yranked < <(
             _i=0
-            for _fm in "${prepaid_seats[@]:-}" "${metered_seats[@]:-}" "${free_seats[@]:-}"; do
+            for _fm in ${prepaid_seats[@]+"${prepaid_seats[@]}"} ${metered_seats[@]+"${metered_seats[@]}"} ${free_seats[@]+"${free_seats[@]}"}; do
                 [[ -n "$_fm" ]] || continue
                 _p="${_fm%%$'\t'*}"
                 _m="${_fm#*$'\t'}"
@@ -5873,7 +5873,7 @@ pick_seat() {
             done | sort -t$'\t' -k1,1nr -k2,2n -k3,3n
         )
         local _yline _ylog="" _yn=0
-        for _yline in "${_yranked[@]:-}"; do
+        for _yline in ${_yranked[@]+"${_yranked[@]}"}; do
             [[ -n "$_yline" ]] || continue
             local _ys _yr _yi _yp _ym
             IFS=$'\t' read -r _ys _yr _yi _yp _ym <<<"$_yline"
@@ -5912,9 +5912,9 @@ pick_seat() {
             prepaid|metered|free)
                 local -a _pref_bucket=()
                 case "$PI_PICK_PREFER_CLASS" in
-                    prepaid) _pref_bucket=("${prepaid_seats[@]:-}") ;;
-                    metered) _pref_bucket=("${metered_seats[@]:-}") ;;
-                    free)    _pref_bucket=("${free_seats[@]:-}") ;;
+                    prepaid) _pref_bucket=(${prepaid_seats[@]+"${prepaid_seats[@]}"}) ;;
+                    metered) _pref_bucket=(${metered_seats[@]+"${metered_seats[@]}"}) ;;
+                    free)    _pref_bucket=(${free_seats[@]+"${free_seats[@]}"}) ;;
                 esac
                 if (( ${#_pref_bucket[@]} > 0 )); then
                     chosen="${_pref_bucket[0]}"
@@ -5943,12 +5943,12 @@ pick_seat() {
     # role resolves to its fallback, not a stall).
     if [[ -z "${chosen:-}" && "$difficulty" == "senior-review" ]]; then
         local _sn _sp _sm _bucket_seat
-        for _sn in "${SEAT_SENIOR_ORDER[@]:-}"; do
+        for _sn in ${SEAT_SENIOR_ORDER[@]+"${SEAT_SENIOR_ORDER[@]}"}; do
             [[ -n "$_sn" ]] || continue
             _sp="${_sn%%/*}"
             _sm="${_sn#*/}"
             [[ -n "$_sp" && -n "$_sm" ]] || continue
-            for _bucket_seat in "${prepaid_seats[@]:-}" "${metered_seats[@]:-}" "${free_seats[@]:-}" "${product_only_seats[@]:-}"; do
+            for _bucket_seat in ${prepaid_seats[@]+"${prepaid_seats[@]}"} ${metered_seats[@]+"${metered_seats[@]}"} ${free_seats[@]+"${free_seats[@]}"} ${product_only_seats[@]+"${product_only_seats[@]}"}; do
                 [[ "$_bucket_seat" == "$_sp"$'\t'"$_sm" ]] || continue
                 chosen="$_bucket_seat"
                 chosen_p="$_sp"
