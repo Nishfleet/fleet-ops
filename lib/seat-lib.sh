@@ -7884,7 +7884,12 @@ mark_seat_quota_bench() {
     # default is also capped here: escalating a guessed window multiplies a
     # guess (the lived Devin "reset in 2…" -> 15360s misparse class), and the
     # bench-truth probe at 15-min cadence is the correct brake now.
-    if [[ -n "$declared_window_s" && "$wall_source" == "quota_bench" ]]; then
+    # A failure-ceiling PARK (merged_count >= SEAT_FAILURE_CEILING) is not a
+    # guess: it is N consecutive real failures, and #4640's 6h clamp on it
+    # stands — the expired-wall tool probe owns parked seats, not the
+    # 15-min PONG.
+    if [[ -n "$declared_window_s" && "$wall_source" == "quota_bench" ]] \
+        && (( merged_count < ${SEAT_FAILURE_CEILING:-20} )); then
         local truth_max="${SEAT_QUOTA_BENCH_DEFAULT_MAX_S:-900}"
         if [[ "$truth_max" =~ ^[0-9]+$ ]] && (( truth_max > 0 )) && (( window_s > truth_max )); then
             seat_log "quota-bench: $p/$m default-driven window ${window_s}s capped at ${truth_max}s — no advertised reset; bench-truth probe owes the seat a PONG at 15 min (fleet-ops#5285)"
