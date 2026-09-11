@@ -1416,14 +1416,15 @@ bw=$(jq -r '.bench_window_s' "$live_ledger/cursor__composer-2.5.json")
 grep -q "benching on live fleet_seat_quota reset 5000s" "$PI_PACKET_STATE/watch.log" \
   || fail "live-reset writer: must log the live-reset bench line"
 # cline's live window is NOT exhausted (95% left) -> the static default still
-# applies even though a live row exists.
+# applies even though a live row exists, but fleet-ops#5285 caps that
+# default-driven window at SEAT_QUOTA_BENCH_DEFAULT_MAX_S (900s).
 set +e
 SEAT_LIVE_QUOTA_PROM="$live_prom" bash -c 'source "$0"; load_seat_caps; mark_seat_quota_bench "$1" "$2" "$3"' "$lib" "cline" "cline-pass/minimax-m3" "INFERENCE_CAP_ERROR: weekly Clinepass limit." >/dev/null 2>&1
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "live-reset writer: cline expected rc=0, got $rc"
 bw=$(jq -r '.bench_window_s' "$live_ledger/cline__cline-pass_minimax-m3.json")
-[[ "$bw" == "604800" ]] || fail "live-reset writer: cline (95% live) must use the static default 604800, got $bw"
+[[ "$bw" == "900" ]] || fail "live-reset writer: cline (95% live) default-driven window is capped at 900 (fleet-ops#5285), got $bw"
 # A wall whose error text DOES carry a window still wins over the live figure
 # (parsed text is ground truth for that wall).
 set +e

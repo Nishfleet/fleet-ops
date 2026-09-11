@@ -99,6 +99,13 @@ NON_ROLE_UNIT_PREFIXES = (
     # tests/fleet-seat-comeback-release.test.sh plus the absent()/stalled
     # rules on its heartbeat metric.
     "fleet-seat-comeback-release",
+    # fleet-ops#5285: fleet-seat-bench-truth is the 15-min sweep + path unit
+    # that runs the existing fleet-seat-comeback-release --false-wall-only
+    # probe. It runs no model, owns no prompt and produces no work items —
+    # same plumbing class as fleet-seat-comeback-release above. Its gate is
+    # the machinery-allowlist row plus tests/seat-lib-bench-truth-cap.test.sh
+    # and tests/fleet-seat-comeback-release.test.sh.
+    "fleet-seat-bench-truth",
     # fleet-ops#1152: standing-rules-render is a file-render maintenance
     # unit (canonical -> marked regions of CLAUDE.md/AGENTS.md). It runs
     # no model, owns no prompt and produces no work items, so it has no
