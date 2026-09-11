@@ -3802,6 +3802,12 @@ bash "$here/token-economy-routing.test.sh" || fail "token-economy-routing tests 
 # Hosted here (no workflow edit).
 bash "$here/seat-lib-yield-order.test.sh" || fail "seat-lib-yield-order tests failed"
 
+# fleet-ops#5281: PI_PICK_PREFER_CLASS with a depleted class bucket must log
+# nothing (no 'bad array subscript', no 'routing to <empty>' phantom seat)
+# and fall through to the normal class ladder.
+# Hosted here (no workflow edit).
+bash "$here/seat-lib-prefer-class-empty.test.sh" || fail "seat-lib-prefer-class-empty tests failed"
+
 # fleet-ops#520: free-tier privacy guard drill. CI lists this file, not the
 # privacy guard test, because workers cannot edit .github/workflows.
 bash "$here/repo-privacy-guard.test.sh" || fail "repo-privacy-guard tests failed"
