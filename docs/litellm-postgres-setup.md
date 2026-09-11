@@ -150,6 +150,16 @@ cp config/litellm-proxy.yaml ~/.config/fleet-ops/litellm-proxy.yaml
 #   4. mint the sk-fleet-worker / sk-fleet-senior / sk-fleet-private
 #      virtual keys via the proxy's /key/generate admin API (LiteLLM
 #      virtual_keys docs), pinning each key's model allowlist to a group.
+#   5. keep `disable_prisma_schema_update: true` under general_settings
+#      (fleet-ops#4832): without it, startup `prisma migrate deploy`
+#      retries 20250416115320_add_tag_table_to_db, whose redundant
+#      single-column unique index LiteLLM_DailyTagSpend_tag_key cannot
+#      build on a table that holds several rows per tag (they differ on
+#      the composite key — legitimate rows, not duplicates). The retry
+#      loop stalls every restart ~10min on P3018. Upstream's own
+#      20250416151339_drop_tag_uniqueness_requirement drops that index;
+#      the composite unique index is the real constraint. Re-enable the
+#      flag only to apply migrations from a LiteLLM bump, then re-disable.
 # If a live config already exists, edit it in place instead of copying.
 ```
 
