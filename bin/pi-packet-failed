@@ -193,13 +193,15 @@ import hashlib, json, sys
 from datetime import datetime, timezone
 unit, tail, deliv = sys.argv[1], sys.argv[2], sys.argv[3]
 title = f"packet {unit} exhausted retries (StartLimitBurst) — terminal failure"
-# fid MUST match the shared helper's finding_id (sha1 of
-# "source_organ|run_id|normalised title" first 16 hex) so a row written by
-# the direct-append fallback later dedupes against a helper-written row
+# fid MUST match the shared helper's finding_id — the shipped
+# lib/findings_ledger.py computes sha256 of
+# "source_organ|run_id|normalised title" first 16 hex (its docstring still
+# says sha1; the code is the truth) — so a row written by the direct-append
+# fallback later dedupes against a helper-written row
 # (findings_ledger.finding_id).
 import re
 norm = re.sub(r"\W+", " ", title.strip().lower()).strip()
-fid = hashlib.sha1(f"pi-packet|{unit}|{norm}".encode()).hexdigest()[:16]
+fid = hashlib.sha256(f"pi-packet|{unit}|{norm}".encode()).hexdigest()[:16]
 print(json.dumps({
     "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     "source_organ": "pi-packet",

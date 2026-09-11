@@ -128,6 +128,14 @@ assert r["source_organ"] == "pi-packet", r
 assert r["disposition"] == "carried_over", r
 assert r["ref"] == "pi-packet@drillpkt.service", r
 assert r["finding_id"], r
+# The direct-append fid MUST equal lib/findings_ledger.py's finding_id
+# (sha256, not sha1 as that file's docstring claims) so fallback- and
+# helper-written rows dedupe against each other.
+import hashlib, re
+title = f"packet {r['ref']} exhausted retries (StartLimitBurst) — terminal failure"
+norm = re.sub(r"\W+", " ", title.strip().lower()).strip()
+want = hashlib.sha256(f"pi-packet|{r['ref']}|{norm}".encode()).hexdigest()[:16]
+assert r["finding_id"] == want, (r["finding_id"], want)
 assert "line five (last)" in r["evidence_ref"], r
 assert "/scratch/expected.md" in r["reason"], r
 PY
