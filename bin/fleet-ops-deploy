@@ -20,6 +20,9 @@
 #   FLEET_OPS_DRIFT_BIN         drift canary (default: $HOME/.local/bin/fleet-ops-drift)
 #   FLEET_OPS_EXPECTED_ORIGIN_URL  expected origin fetch URL (default: fleet-ops;
 #                                  tests point it at a local bare remote)
+#   FLEET_DEPLOY_ORIGIN_REPAIR_PROM / FLEET_DEPLOY_ORIGIN_REPAIR_LOG
+#                                  origin-remote repair counter + 24h history
+#                                  (fleet-ops#5301)
 set -euo pipefail
 
 export HOME="${HOME:-/home/nish}"
@@ -256,9 +259,9 @@ normalize_origin_url() {
     printf '%s\n' "${u,,}"
 }
 
-# Empty output = the origin fetch URL is the expected one. Anything else is a
-# human-readable reason to refuse.
-origin_remote_problem() {
+# Empty output = the origin fetch URL is the expected one. Anything else is
+# the URL (or 'origin remote is missing') to repair (fleet-ops#5301).
+origin_remote_to_repair() {
     local url got want
     if ! url=$(git -C "$DEPLOY_CHECKOUT" remote get-url origin 2>/dev/null); then
         printf 'origin remote is missing'
@@ -267,9 +270,56 @@ origin_remote_problem() {
     got=$(normalize_origin_url "$url")
     want=$(normalize_origin_url "$EXPECTED_ORIGIN_URL")
     if [ "$got" != "$want" ]; then
-        printf 'origin fetch URL is %s (expected %s)' "$url" "$EXPECTED_ORIGIN_URL"
+        printf '%s' "$url"
     fi
     return 0
+}
+
+# fleet-ops#5301: repair-and-continue. The clone is disposable and the
+# correct URL is a constant, so an automatic set-url is safe: set origin
+# back to the expected URL (or `remote add` when missing), drop any extra
+# remote carrying the expected URL under another name, then proceed with
+# the deploy in the SAME tick. Counter + 24h-rate alert via the shared
+# .prom (same metric name as fleet-deploy-check).
+repair_origin_remote() {
+    local was="$1" name rurl prom hist now prev n
+    if [ "$was" = "origin remote is missing" ]; then
+        git -C "$DEPLOY_CHECKOUT" remote add origin "$EXPECTED_ORIGIN_URL" 2>/dev/null || true
+    else
+        git -C "$DEPLOY_CHECKOUT" remote set-url origin "$EXPECTED_ORIGIN_URL"
+    fi
+    while IFS=$'\t' read -r name rurl; do
+        [ "$name" = "origin" ] && continue
+        [ -z "$name" ] && continue
+        if [ "$(normalize_origin_url "$rurl")" = "$(normalize_origin_url "$EXPECTED_ORIGIN_URL")" ]; then
+            git -C "$DEPLOY_CHECKOUT" remote remove "$name" 2>/dev/null || true
+        fi
+    done < <(git -C "$DEPLOY_CHECKOUT" remote -v 2>/dev/null | awk -F'\t' '$2 ~ / \(fetch\)$/ { sub(/ \(fetch\)$/, "", $2); print $1 "\t" $2 }')
+    loud "DEPLOY-ORIGIN-REMOTE" \
+        "repaired at $DEPLOY_CHECKOUT (was $was) — origin set back to $EXPECTED_ORIGIN_URL, deploy proceeds (fleet-ops#5301)"
+    deploy_audit "fleet-ops" "origin-remote-repaired" "$was"
+    prom="${FLEET_DEPLOY_ORIGIN_REPAIR_PROM:-/var/lib/prometheus/node-exporter/fleet-deploy-check.prom}"
+    hist="${FLEET_DEPLOY_ORIGIN_REPAIR_LOG:-${AGENT_STATE}/deploy-clone-origin-repairs.log}"
+    now=$(date -u +%s)
+    mkdir -p "$(dirname "$prom")" "$(dirname "$hist")" 2>/dev/null || true
+    printf '%s\n' "$now" >>"$hist" 2>/dev/null || true
+    n=$(awk -v cutoff=$((now - 86400)) '$1 >= cutoff' "$hist" 2>/dev/null | wc -l)
+    if [ "$n" -gt 2 ]; then
+        loud "DEPLOY-ORIGIN-REMOTE" \
+            "origin repaired ${n}x in 24h (>2) — something is rewriting the deploy clone's origin URL; find the writer (fleet-ops#5301)"
+    fi
+    prev=0
+    if [ -f "$prom" ]; then
+        prev=$(awk '$1 ~ /^fleet_deploy_origin_remote_repaired_total$/ { print $2; exit }' "$prom" 2>/dev/null) || prev=0
+        prev="${prev:-0}"
+    fi
+    if {
+        printf '# HELP fleet_deploy_origin_remote_repaired_total Deploy-clone origin fetch URL repairs (fleet-ops#5301).\n'
+        printf '# TYPE fleet_deploy_origin_remote_repaired_total counter\n'
+        printf 'fleet_deploy_origin_remote_repaired_total %d\n' "$((prev + 1))"
+    } >"$prom.tmp" 2>/dev/null; then
+        mv "$prom.tmp" "$prom" 2>/dev/null || true
+    fi
 }
 
 log "starting: checkout=$DEPLOY_CHECKOUT"
@@ -476,15 +526,13 @@ if [ "${FLEET_OPS_ALLOW_NONCANONICAL:-}" != 1 ]; then
     fi
 fi
 
-# fleet-ops#5016: assert the origin fetch URL before anything is fetched,
-# rescued, reset or installed (see origin_remote_problem above). A foreign URL
-# means origin/main is another repo's main; the checkout must stay untouched.
-remote_problem=$(origin_remote_problem)
+# fleet-ops#5301: repair the origin fetch URL before anything is fetched,
+# rescued, reset or installed (replacing the fleet-ops#5016 refuse). A
+# foreign URL means origin/main is another repo's main; the URL is a
+# constant, so set it back and proceed in the same tick.
+remote_problem=$(origin_remote_to_repair)
 if [ -n "$remote_problem" ]; then
-    loud "DEPLOY-ORIGIN-REMOTE" \
-        "refusing deploy at $DEPLOY_CHECKOUT: $remote_problem — never reset a checkout to an origin/main the remote URL does not own (fleet-ops#5016)"
-    deploy_audit "fleet-ops" "origin-remote-refused" "$remote_problem"
-    exit 1
+    repair_origin_remote "$remote_problem"
 fi
 
 if ! git -C "$DEPLOY_CHECKOUT" fetch origin >/dev/null 2>&1; then

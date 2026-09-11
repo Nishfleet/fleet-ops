@@ -117,6 +117,9 @@ jobs:
         bash tests/pi-intake-tick-land-or-close-park.test.sh
         bash tests/fleet-console-pi-utc.test.sh
         bash tests/pi-issue-run-session-error-feed.test.sh
+        # Devin message rate limit = pause + in-session resume, never a worker
+        # death (114 deaths/24h on that one message, 2026-09-11).
+        bash tests/devin-provider-rate-limit-retry.test.sh
         bash tests/repair-rotation.test.sh
         bash tests/alert-repair-seat-walled.test.sh
         bash tests/alert-repair-class-park-skip.test.sh

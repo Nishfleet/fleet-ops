@@ -260,12 +260,91 @@ reset_failed_pi_issue() {
     echo "$n"
 }
 
+# systemd timespan ("45min", "1h 30min", "500ms") -> integer seconds.
+# Returns 1 for "infinity", "", 0, or anything unparseable.
+_undersat_duration_to_s() {
+    local v="${1:-}" total=0 tok n unit
+    [[ -n "$v" && "$v" != "infinity" ]] || return 1
+    local -a toks=()
+    read -ra toks <<< "$v"
+    for tok in "${toks[@]}"; do
+        [[ "$tok" =~ ^([0-9]+)(ms|s|min|h|d|w)$ ]] || return 1
+        n="${BASH_REMATCH[1]}"; unit="${BASH_REMATCH[2]}"
+        case "$unit" in
+            ms)  total=$(( total + n / 1000 )) ;;
+            s)   total=$(( total + n )) ;;
+            min) total=$(( total + n * 60 )) ;;
+            h)   total=$(( total + n * 3600 )) ;;
+            d)   total=$(( total + n * 86400 )) ;;
+            w)   total=$(( total + n * 604800 )) ;;
+        esac
+    done
+    (( total > 0 )) || return 1
+    echo "$total"
+}
+
+# Liveness bound for an activating oneshot unit: the unit's own TimeoutStartSec
+# when systemd reports a finite one, else the PI_SEAT_ACTIVATING_MAX_S fallback.
+# Delegates to _seat_liveness_bound_s once the lib helper is available.
+_undersat_liveness_bound_s() {
+    if declare -f _seat_liveness_bound_s >/dev/null 2>&1; then
+        _seat_liveness_bound_s "$1"
+        return
+    fi
+    local sysunit="$1" raw parsed
+    raw=$("$SYSTEMCTL" --user show "$sysunit" --property=TimeoutStartUSec --value 2>/dev/null || true)
+    parsed=$(_undersat_duration_to_s "$raw" 2>/dev/null || true)
+    if [[ "$parsed" =~ ^[0-9]+$ ]] && (( parsed > 0 )); then
+        echo "$parsed"; return
+    fi
+    echo "${PI_SEAT_ACTIVATING_MAX_S:-3300}"
+}
+
+# Decide whether an activating unit is wedged. Echoes age_s and returns 0 if it
+# should be reaped; returns 1 if it is live or has no usable timestamp.
+# Mirrors the fleet-ops#5141 seat-lib liveness probe: age from
+# ExecMainStartTimestampMonotonic when the process has started, otherwise
+# ActiveEnterTimestampMonotonic, with auto-restart and no-process cases
+# fail-closed at PI_SEAT_ACTIVATING_NO_PROCESS_MAX_S.
+_undersat_activating_wedged() {
+    local sysunit="$1"
+    local sub_state exec_main active_enter ts bound now_s age_s
+    sub_state=$("$SYSTEMCTL" --user show "$sysunit" --property=SubState --value 2>/dev/null || true)
+    exec_main=$("$SYSTEMCTL" --user show "$sysunit" --property=ExecMainStartTimestampMonotonic --value 2>/dev/null || true)
+
+    if [[ "$sub_state" == "auto-restart" ]]; then
+        bound=${PI_SEAT_ACTIVATING_NO_PROCESS_MAX_S:-300}
+    elif [[ "$exec_main" =~ ^[0-9]+$ ]] && (( exec_main > 0 )); then
+        bound=$(_undersat_liveness_bound_s "$sysunit")
+    else
+        bound=${PI_SEAT_ACTIVATING_NO_PROCESS_MAX_S:-300}
+    fi
+
+    if [[ "$exec_main" =~ ^[0-9]+$ ]] && (( exec_main > 0 )); then
+        ts=$exec_main
+    else
+        active_enter=$("$SYSTEMCTL" --user show "$sysunit" --property=ActiveEnterTimestampMonotonic --value 2>/dev/null || true)
+        if [[ "$active_enter" =~ ^[0-9]+$ ]] && (( active_enter > 0 )); then
+            ts=$active_enter
+        fi
+    fi
+
+    [[ -n "$ts" ]] || return 1
+
+    now_s=$(awk '{print int($1)}' /proc/uptime)
+    age_s=$(( now_s - ts / 1000000 ))
+    if (( age_s > bound )); then
+        echo "$age_s"
+        return 0
+    fi
+    return 1
+}
+
 # Clear stale active-seats/ registrations per #72's liveness rule: a registry
-# file is stale when its unit is not active/activating. Mirrors seat-lib's
-# _seat_registry_unit_live + _seat_reap_stale_registry (inlined here so the
-# helper stays self-contained and testable without sourcing seat-lib).
+# file is stale when its unit is not active/activating. Inlines the liveness
+# probe so the script stays runnable without the deployed seat-lib.
 reap_stale_active_seats() {
-    local f unit sysunit state n=0 base seat active_since now_s age_s
+    local f unit sysunit state n=0 base seat age_s
     # Phase 1: reap stale seat files. When a seat is reaped because its unit
     # is `activating` past the wedge-age bound, ALSO cancel the stuck systemd
     # start job (fleet-ops#3213) — otherwise the unit stays activating with a
@@ -287,21 +366,16 @@ reap_stale_active_seats() {
             case "$state" in
                 active) : ;;  # live, keep
                 activating)
-                    # P15 wedge-age probe: `activating` is normally live (up to
-                    # the unit's TimeoutStartSec=45min), but past
-                    # PI_SEAT_ACTIVATING_MAX_S it is a wedged pi, not a worker.
-                    # Mirrors seat-lib's _seat_registry_unit_live. A SIGKILLed
-                    # wedged worker leaves `activating`; age is the honest signal.
-                    active_since=$("$SYSTEMCTL" --user show "$sysunit" --property=ActiveEnterTimestampMonotonic --value 2>/dev/null || echo 0)
-                    if [[ "$active_since" =~ ^[0-9]+$ ]]; then
-                        now_s=$(awk '{print int($1)}' /proc/uptime)
-                        age_s=$(( now_s - active_since / 1000000 ))
-                        if (( age_s > ${PI_SEAT_ACTIVATING_MAX_S:-3300} )); then
-                            rm -f "$f"; n=$((n+1))
-                            "$SYSTEMCTL" --user stop "$sysunit" 2>/dev/null || true
-                            "$SYSTEMCTL" --user reset-failed "$sysunit" 2>/dev/null || true
-                            log "repair: reaped wedged active-seat $f ($sysunit activating ${age_s}s) + cancelled stuck unit"
-                        fi
+                    # fleet-ops#5263: a live activating oneshot has a started
+                    # process (ExecMainStartTimestampMonotonic>0) inside its own
+                    # TimeoutStartSec; otherwise fail closed at the short
+                    # no-process bound. A zero timestamp means "not yet known",
+                    # not "age = uptime".
+                    if age_s=$(_undersat_activating_wedged "$sysunit"); then
+                        rm -f "$f"; n=$((n+1))
+                        "$SYSTEMCTL" --user stop "$sysunit" 2>/dev/null || true
+                        "$SYSTEMCTL" --user reset-failed "$sysunit" 2>/dev/null || true
+                        log "repair: reaped wedged active-seat $f ($sysunit activating ${age_s}s) + cancelled stuck unit"
                     fi
                     ;;
                 *) rm -f "$f"; n=$((n+1)); log "repair: reaped stale active-seat $f ($sysunit $state)" ;;
@@ -324,11 +398,7 @@ reap_stale_active_seats() {
         esac
         # Has a seat file -> phase 1 owns it; skip here.
         [ -d "$ACTIVE_SEATS_DIR" ] && [ -f "$seat" ] && continue
-        active_since=$("$SYSTEMCTL" --user show "$sysunit" --property=ActiveEnterTimestampMonotonic --value 2>/dev/null || echo 0)
-        [[ "$active_since" =~ ^[0-9]+$ ]] || continue
-        now_s=$(awk '{print int($1)}' /proc/uptime)
-        age_s=$(( now_s - active_since / 1000000 ))
-        if (( age_s > ${PI_SEAT_ACTIVATING_MAX_S:-3300} )); then
+        if age_s=$(_undersat_activating_wedged "$sysunit"); then
             "$SYSTEMCTL" --user stop "$sysunit" 2>/dev/null || true
             "$SYSTEMCTL" --user reset-failed "$sysunit" 2>/dev/null || true
             n=$((n+1))

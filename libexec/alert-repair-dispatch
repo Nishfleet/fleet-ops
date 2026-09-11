@@ -175,6 +175,18 @@ FLEET_ISSUE_FILE_BIN = os.environ.get(
 )
 GH_BIN = os.environ.get("GH", "gh")
 
+# fleet-ops#5142 env seams (same convention as GH_BIN / PI_DEADMAN_BIN) for
+# the DetachedJobDied deliverable pre-flight. JOURNALCTL_BIN reads the dead
+# unit's journal for the dead-man `died:` line — the only place the declared
+# deliverable path is recorded. PI_SYSTEMD_RUN_BIN is argv[0] of the
+# repair-worker spawn so tests can stub it. The dispatch ledger maps the
+# alert's `dispatch` label to packet_path for the PR-evidence fallback.
+JOURNALCTL_BIN = os.environ.get("JOURNALCTL_BIN", "journalctl")
+PI_SYSTEMD_RUN_BIN = os.environ.get("PI_SYSTEMD_RUN_BIN", "pi-systemd-run")
+DISPATCH_LEDGER = os.environ.get("FLEET_DISPATCH_LEDGER") or str(
+    Path(os.environ.get("AGENT_STATE", "/home/nish/workspaces/agent-state"))
+    / "dispatch-ledger.jsonl")
+
 
 def _target_repo(alertnames, common_labels, alerts):
     """Return the repo this dispatch targets, or "" for fleet-internal alerts.
@@ -740,6 +752,17 @@ def _slowburn_file(repo, signal, gh, issue_file):
         f"repair rung within one dispatch tick of the 1h threshold\n"
         f"- accept: `python3 lib/agent-ready-spec-gate.py check-body "
         f"--repo fleet-ops` on this body prints `SPEC-GATE: ok`\n"
+        # fleet-ops#5272: the terminus must also carry a `termination:`
+        # clause naming its runtime gate (AMX_STATUS=resolved ->
+        # observe-to-close). Without it the fleet-ops#4540 park detector
+        # can never engage, so a multi-day burn re-claims the open
+        # critical-path terminus forever — every claim a reserved-seat
+        # worker session with nothing left to repair.
+        f"- termination: AMX_STATUS=resolved — the dispatcher's "
+        f"observe-to-close pass closes this terminus when the burn "
+        f"clears (fleet-ops#5299); while firing it stays OPEN as the "
+        f"live-burn claim, parked by the fleet-ops#4540 gate once a "
+        f"claim-branch PR merges and re-claims pass the cap\n"
         f"- moves: no_usable_seat_events\n\n"
         f"`{signal}`\n"
     )
@@ -932,6 +955,239 @@ def _slowburn_file_or_link(starts_at, log):
     return "filed"
 
 
+# ---------------------------------------------------------------------------
+# fleet-ops#5142: bounded, fail-open deliverable pre-flight for surviving
+# DetachedJobDied alerts. A dead detached unit whose packet already landed
+# its deliverable (the declared file exists non-empty, or the PR the packet
+# named merged / is armed + mergeable) must NOT be relaunched — the repair
+# worker would re-do finished work and burn a seat. The check is journal
+# first (the dead-man `died:` line is the only record of the declared
+# deliverable path), then dispatch-ledger -> packet -> exactly one gh call.
+# Every helper below swallows all errors: any ambiguity falls through to
+# the unchanged relaunch path — a genuinely dead packet is never stranded.
+
+
+def _read_tail(path, max_bytes):
+    """Return the last `max_bytes` of `path` as text, or None on any error."""
+    try:
+        p = Path(path)
+        with p.open("rb") as f:
+            if p.stat().st_size > max_bytes:
+                f.seek(-max_bytes, os.SEEK_END)
+            return f.read().decode("utf-8", "replace")
+    except (OSError, ValueError):
+        return None
+
+
+def _journal_deliverable(unit):
+    """Declared deliverable path for `unit` from the dead-man `died:` line.
+
+    pi-detached-deadman logs `died: unit=<u> result=<r>
+    deliverable=<path|unset>` into the dead unit's journal; the dispatch
+    ledger does NOT carry the path. One bounded journalctl call (10s); the
+    last `died:` line for THIS unit wins. Returns the path only when it is
+    absolute and the file exists non-empty, else '' (fail-open).
+    """
+    try:
+        r = subprocess.run(
+            [JOURNALCTL_BIN, "--user", "-u", unit, "-u", unit + ".service",
+             "--no-pager", "-n", "500"],
+            capture_output=True, text=True, check=False, timeout=10)
+    except Exception:
+        return ""
+    found = ""
+    for line in (r.stdout or "").splitlines():
+        if "died:" not in line:
+            continue
+        mu = re.search(r"\bunit=(\S+)", line)
+        md = re.search(r"\bdeliverable=(\S+)", line)
+        if mu and md and mu.group(1) == unit:
+            found = md.group(1)
+    if not found or found == "unset" or not os.path.isabs(found):
+        return ""
+    try:
+        p = Path(found)
+        if not p.is_file() or p.stat().st_size <= 0:
+            return ""
+    except OSError:
+        return ""
+    return found
+
+
+def _ledger_packet_path(dispatch_id, unit):
+    """packet_path of the LAST ledger entry whose `id` == `dispatch_id`
+    (fallback: `unit` == `unit`), or ''. Bounded 256KB tail read; a
+    mid-line cut or corrupt entry is skipped, never fatal."""
+    text = _read_tail(DISPATCH_LEDGER, 256 * 1024)
+    if not text:
+        return ""
+    entries = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            d = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(d, dict):
+            entries.append(d)
+    last = None
+    if dispatch_id:
+        for d in entries:
+            if d.get("id") == dispatch_id:
+                last = d
+    if last is None and unit:
+        for d in entries:
+            if d.get("unit") == unit:
+                last = d
+    if not last:
+        return ""
+    pp = last.get("packet_path")
+    return pp if isinstance(pp, str) else ""
+
+
+# Branch prefixes a packet's deliverable ref is allowed to carry.
+_BRANCH_PREFIXES = ("claim", "fable", "chore", "fix", "feat", "hotfix",
+                    "repair")
+
+
+def _packet_branch(text):
+    """First branch ref named in the packet, in priority order:
+    `claim/issue-<N>`, `branch[: ]+<token>`, or a backticked
+    `prefix/rest` token with a known prefix. '' when none."""
+    m = re.search(r"\bclaim/issue-\d+\b", text)
+    if m:
+        return m.group(0)
+    m = re.search(r"(?i)\bbranch\b[:\s]+([A-Za-z0-9_.\-/]+)", text)
+    if m:
+        return m.group(1).rstrip(".,:;")
+    m = re.search(
+        r"`((?:" + "|".join(_BRANCH_PREFIXES) + r")/[^`\s]+)`", text)
+    if m:
+        return m.group(1).rstrip(".,:;")
+    return ""
+
+
+def _packet_repo(text, exclude=()):
+    """First `<org>/<repo>` token naming a repo. Prefers `Nishfleet/<repo>`
+    and explicit `repo: X/Y` / `TARGET: repo X/Y` forms; generic X/Y tokens
+    are skipped when they are path fragments (preceded by `/` or part of a
+    longer path segment), branch-shaped (prefix in _BRANCH_PREFIXES), or in
+    `exclude` (the branch token itself must not be mistaken for a repo)."""
+    m = re.search(r"\bNishfleet/([A-Za-z0-9_.-]+)", text)
+    if m:
+        return "Nishfleet/" + m.group(1)
+    m = re.search(r"(?i)\brepo[:=\s]+([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)", text)
+    if m:
+        return m.group(1)
+    for m in re.finditer(
+            r"(?<![/\w.-])([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)", text):
+        tok = m.group(1)
+        if tok in exclude or tok.split("/", 1)[0] in _BRANCH_PREFIXES:
+            continue
+        return tok
+    return ""
+
+
+def _packet_pr_candidate(text):
+    """Extract ONE PR candidate from the packet, in priority order:
+    ('list', repo, branch) when a branch ref plus a repo token are both
+    present; else ('view', repo, N) for `<org>/<repo>#<N>`; else ('view',
+    repo, N) for `PR #<N>` plus a repo token. None -> the caller makes no
+    gh call at all."""
+    branch = _packet_branch(text)
+    if branch:
+        repo = _packet_repo(text, exclude={branch})
+        if repo:
+            return ("list", repo, branch)
+    m = re.search(
+        r"(?<![/\w.-])([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(\d+)", text)
+    if m:
+        return ("view", m.group(1), m.group(2))
+    m = re.search(r"(?i)\bPR\s*#(\d+)", text)
+    if m:
+        repo = _packet_repo(text)
+        if repo:
+            return ("view", repo, m.group(1))
+    return None
+
+
+def _gh_pr_satisfied(candidate, gh_budget):
+    """Spend the single gh budget on `candidate`; return the deliverable
+    label (`<repo>#<N>`, or the branch when no number is known) when the
+    named PR proves delivered, else ''. Delivered iff state==MERGED, or
+    state==OPEN with autoMergeRequest truthy and mergeable==MERGEABLE.
+    HARD BUDGET: at most one gh invocation per dispatch run — a spent
+    budget, a timeout, a non-zero exit or non-JSON output all fail open."""
+    if gh_budget["spent"]:
+        return ""
+    gh_budget["spent"] = True
+    kind, repo, ref = candidate
+    if kind == "list":
+        argv = [GH_BIN, "pr", "list", "-R", repo, "--head", ref,
+                "--state", "all",
+                "--json", "number,state,autoMergeRequest,mergeable"]
+    else:
+        argv = [GH_BIN, "pr", "view", str(ref), "-R", repo,
+                "--json", "state,autoMergeRequest,mergeable"]
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True,
+                           check=False, timeout=5)
+    except Exception:
+        return ""
+    if r.returncode != 0:
+        return ""
+    try:
+        data = json.loads(r.stdout or "")
+    except (json.JSONDecodeError, ValueError):
+        return ""
+    if isinstance(data, dict):
+        items = [data]
+    elif isinstance(data, list):
+        items = [d for d in data if isinstance(d, dict)]
+    else:
+        return ""
+    for d in items:
+        state = d.get("state")
+        if state != "MERGED" and not (
+                state == "OPEN" and d.get("autoMergeRequest")
+                and d.get("mergeable") == "MERGEABLE"):
+            continue
+        num = d.get("number")
+        return f"{repo}#{num}" if num else str(ref)
+    return ""
+
+
+def _deliverable_satisfied(labels, gh_budget):
+    """Return the deliverable evidence for a surviving DetachedJobDied
+    alert — the journal-declared file path or `repo#<N>`/branch — or ''.
+    Journal first (the `died:` line carries the declared path), then
+    ledger -> packet -> the single gh PR check. NEVER raises: every
+    ambiguity (journal error, no died line, missing/unreadable ledger or
+    packet, no candidate, gh failure/timeout/parse error) returns '' so
+    the caller falls through to the unchanged relaunch path."""
+    unit = labels.get("unit", "")
+    if not unit:
+        return ""
+    try:
+        path = _journal_deliverable(unit)
+        if path:
+            return path
+        packet_path = _ledger_packet_path(labels.get("dispatch", ""), unit)
+        if not packet_path:
+            return ""
+        text = _read_tail(packet_path, 256 * 1024)
+        if not text:
+            return ""
+        candidate = _packet_pr_candidate(text)
+        if not candidate:
+            return ""
+        return _gh_pr_satisfied(candidate, gh_budget)
+    except Exception:
+        return ""
+
+
 def main():
     # --print-seat (no AMX env): emit a single "<provider>\t<model>\t<reason>"
     # line on stdout and exit 0. Used by fleet-completion-canary when it
@@ -1113,6 +1369,10 @@ def main():
             str(Path.home() / ".local" / "bin" / "pi-detached-deadman"),
         )
     )
+    # fleet-ops#5142: the deliverable pre-flight below may make AT MOST ONE
+    # gh call for the whole dispatch run — the first extracted candidate
+    # spends the budget; every later candidate fails open.
+    gh_budget = {"spent": False}
     for a in alerts:
         if a["labels"].get("alertname") == "DetachedJobDied":
             unit_name = a["labels"].get("unit", "")
@@ -1142,6 +1402,38 @@ def main():
                     except Exception:
                         pass
                     continue
+            # fleet-ops#5142: bounded, fail-open deliverable pre-flight. A
+            # dead detached unit whose packet already delivered (declared
+            # file present+non-empty, or the named PR merged / armed +
+            # mergeable) must NOT be relaunched. Any ambiguity leaves the
+            # alert untouched so it falls through to the relaunch path —
+            # a genuinely dead packet is never stranded.
+            try:
+                delivered = _deliverable_satisfied(a["labels"], gh_budget)
+                if delivered:
+                    with LOG.open("a") as f:
+                        f.write(
+                            f"[{utcnow()}] RESOLVED-DELIVERED "
+                            f"unit={unit_name} deliverable={delivered}\n"
+                        )
+                    # Same best-effort dead-man clear as the recursion
+                    # guard so the alert resolves at the next scrape.
+                    try:
+                        subprocess.run(
+                            [str(deadman_bin), "--clear", unit_name],
+                            check=False,
+                            timeout=30,
+                        )
+                    except Exception:
+                        pass
+                    print(
+                        f"[{utcnow()}] SKIP alertname=DetachedJobDied "
+                        f"unit={unit_name} reason=deliverable-satisfied",
+                        file=sys.stderr,
+                    )
+                    continue
+            except Exception:
+                pass
         filtered.append(a)
     alerts = filtered
 
@@ -1311,7 +1603,7 @@ def main():
     env["PATH"] = f"{os.environ.get('HOME', '/home/nish')}/.local/bin:" + env.get("PATH", "")
     env["XDG_RUNTIME_DIR"] = "/run/user/1000"
     argv = [
-        "pi-systemd-run",
+        PI_SYSTEMD_RUN_BIN,
         "--unit", unit,
         "--stdin", str(packet),
         # CLOCK_RUN is 3600s (packet 11). --deadline drives RuntimeMaxSec so
