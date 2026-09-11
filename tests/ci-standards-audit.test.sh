@@ -456,6 +456,16 @@ bash "$here/seat-health-seat-dead.test.sh"
 # workflow-file edit (the worker App cannot push .github/workflows/**).
 bash "$here/seat-health-ledger-noop-write.test.sh"
 
+# fleet-ops#5430: closure condition for the sustained-503 Retry-After bench
+# floor. Imports the live extension and asserts that 3+ consecutive
+# overload failures with Retry-After: 30 get a bench >=
+# overload_bench_default_s (300s), single-shot 503s still honor
+# Retry-After, longer Retry-Afters are kept, and overload converges to a
+# corpse at the seat_dead threshold. Hosted here so P14 runs it without a
+# workflow-file edit (the worker App cannot push
+# .github/workflows/**).
+bash "$here/seat-health-overload-bench.test.sh"
+
 # fleet-ops#1464: GitHub push channel (webhook → Worker → tunnel → VPS).
 # The four tests are offline (DRY=1, ephemeral localhost ports, temp dirs):
 #   - gh-webhook-receiver-hmac: HMAC verify + dispatch table + /healthz
