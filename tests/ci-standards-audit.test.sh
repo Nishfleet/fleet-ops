@@ -332,6 +332,11 @@ bash "$here/alert-repair-fleet-escalation-storm-skip.test.sh"
 # .github/workflows/**).
 bash "$here/alert-repair-outcome-metric.test.sh"
 
+# fleet-ops#5142: detached-deliverable preflight alert. Hosted here so P14
+# runs it without a workflow-file edit (the worker App cannot push
+# .github/workflows/**).
+bash "$here/detached-deliverable-preflight.test.sh"
+
 # fleet-ops#2768: one-shot dispatch-ledger fixture-row sweep. PR #2873
 # landed the test without a ci.yml listing or a host, so P14 ran red on
 # "1 test file(s) are neither in ci.yml, hosted by a listed test,
