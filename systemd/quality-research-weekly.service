@@ -13,6 +13,11 @@ Environment=HOME=/home/nish
 Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=WORKDIR=/home/nish
+# This research sweep is NOT a product cron on a codebase — agent-cron-run
+# runs it against $HOME by design (fleet-ops#541). #366 fail-closed guard
+# treats WORKDIR==$HOME as misconfiguration; this allow flag is the guard
+# own operator explicit-allowance mechanism. 2026-09-12 senior-auditor.
+Environment=AGENT_CRON_ALLOW_HOME_WORKDIR=1
 Environment=LOG_DIR=/home/nish/workspaces/agent-state/cron-output
 Environment=PROMPTS_DIR=/home/nish/.pi/agent/prompts
 Environment=PI_BIN=/home/nish/.local/bin/pi
