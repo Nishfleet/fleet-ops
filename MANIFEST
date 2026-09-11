@@ -1144,6 +1144,15 @@ bin/fleet-seat-comeback-release /home/nish/.local/bin/fleet-seat-comeback-releas
 systemd/fleet-seat-comeback-release.service /home/nish/.config/systemd/user/fleet-seat-comeback-release.service
 systemd/fleet-seat-comeback-release.timer /home/nish/.config/systemd/user/fleet-seat-comeback-release.timer
 
+# fleet-ops#5285: bench-truth probe — event-driven half of the 15-min
+# bench-verification cadence (DECISION 2026-09-11: 15-min sweep timer + a
+# path unit on the seats dir so a fresh bench is probed at min(advertised
+# reset, 15 min)). Runs the same bin's --false-wall-only mode; the bin's
+# per-seat 15-min probe interval and 60s sweep debounce are the rate
+# limiters (the #5093 dir-watcher storm class, StartLimitIntervalSec=0).
+systemd/fleet-seat-bench-truth.path /home/nish/.config/systemd/user/fleet-seat-bench-truth.path
+systemd/fleet-seat-bench-truth.service /home/nish/.config/systemd/user/fleet-seat-bench-truth.service
+
 # fleet-ops#1151: week-over-week MAD strangeness pre-pass for the Weekly
 # Fleet Review. Deterministic stdlib Python; writes the WFR input dir
 # (/home/nish/workspaces/agent-state/WFR) + its own .prom textfile;
