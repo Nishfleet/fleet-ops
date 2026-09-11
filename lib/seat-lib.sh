@@ -3724,7 +3724,7 @@ _seat_registry_unit_live() {
     [[ "$state" == "active" ]] && return 0
     [[ "$state" == "activating" ]] || return 1
 
-    local sub_state exec_main ts bound now_s age_s
+    local state sub_state exec_main ts bound now_s age_s
     sub_state=$(systemctl --user show "$sysunit" --property=SubState --value 2>/dev/null || true)
     exec_main=$(systemctl --user show "$sysunit" --property=ExecMainStartTimestampMonotonic --value 2>/dev/null || true)
 
