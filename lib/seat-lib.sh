@@ -1021,6 +1021,30 @@ is_devin_writes_rejected() {
     grep -qiF 'rejected a tool call that requires confirmation' <<<"$combined"
 }
 
+# fleet-ops#5189: a seat behind a tool-approval gate can end a run rc=0 while
+# every write the agent attempted was refused — the run "succeeds", the
+# report says the verdicts "did not post", and nothing escalates (the
+# orchestrator-decision-sweep drafted 10+ verdicts across five 2026-09-10
+# sweeps on cursor/cursor-grok-4.6-high under --auto-review and landed none;
+# the unit exited 0 each time). Two signals, either is a match:
+#   1. the WRITES-REFUSED contract sentinel — a write-doing prompt declares a
+#      refused required write with that marker (prompts declare it; the
+#      runner greps it);
+#   2. the refusal phrases the gated seats already produce in stdout:
+#      "approval card(s) rejected" (cursor's auto-review card), "blocked by
+#      auto-review" / "auto-review blocked", and devin's "rejected a tool
+#      call" literal (same class, different seat).
+# Args are TEXT (not paths), matching is_quota_cap_error / is_overload_error.
+is_writes_refused() {
+    local out="$1" err="$2"
+    local combined="$out"$'\n'"$err"
+    [[ -n "$combined" ]] || return 1
+    if grep -q 'WRITES-REFUSED' <<<"$combined"; then
+        return 0
+    fi
+    grep -qiE 'approval[[:space:]-]?cards?[[:space:]]+(were|was[[:space:]]+)?(rejected|refused|denied)|blocked[[:space:]]+by[[:space:]]+(cursor[[:space:]]+)?auto-review|auto-review[[:space:]]+blocked|rejected[[:space:]]+a[[:space:]]+tool[[:space:]]+call' <<<"$combined"
+}
+
 # Default bench window (seconds) for a provider's quota/cap 429 when the
 # error text carries no explicit reset window (fleet-ops#90). 0 = no default
 # configured; the writer then fails open (no marker) and relies on the
@@ -6161,6 +6185,16 @@ SPAWN_FAIL_MAX_S="${SPAWN_FAIL_MAX_S:-120}"
 # NOT a wall and must NOT take this ladder — see mark_seat_empty_run.
 SPAWN_FAIL_BACKOFF_CAP_S="${SPAWN_FAIL_BACKOFF_CAP_S:-3600}"  # 1 h
 
+# fleet-ops#5189: bench window for mark_seat_writes_refused_bench (a seat
+# whose tool-approval gate refused the run's writes). The window must OUTLAST
+# the caller unit's RestartSec: agent-cron-orchestrator-decision-sweep
+# re-runs 900s after a failure, and senior-review tried-seats are dropped
+# once the seat reads usable again (fleet-ops#4220), so a sub-900s bench
+# would re-pick the same gated seat and refuse again. 3600s bounds the gate
+# to one refused attempt per seat per hour — the classifier is intermittent,
+# so each expiry re-probes the seat before the next refusal re-benches it.
+SEAT_WRITES_REFUSED_BENCH_S="${SEAT_WRITES_REFUSED_BENCH_S:-3600}"
+
 # _escalated_backoff base count [cap]
 # Compute a backoff that doubles per consecutive failure, capped at <cap>.
 #   count=1 -> base (one-off flake: short bench, quick retry)
@@ -7608,6 +7642,81 @@ mark_seat_devin_writes_rejected_bench() {
         return 0
     fi
     seat_log "devin-writes-rejected-bench: rename FAILED for $p/$m at $path"
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+}
+
+# Bench a seat whose tool-approval gate refused the run's writes
+# (fleet-ops#5189). Args: provider model [reason]. Same infrastructure class
+# as mark_seat_devin_writes_rejected_bench (fleet-ops#4780): health_class
+# config_fault, seat_dead=false, NEVER retired — a seat-side permission gate
+# is a lane fault, not seat yield. The difference is the window: this bench
+# must outlast the caller unit's RestartSec so the systemd retry walks the
+# seat ladder instead of re-picking the same gated seat (senior-review
+# tried-seats drop once the seat reads usable, fleet-ops#4220).
+# Writes LEDGER_DIR/<sanitised-provider>__<sanitised-model>.json atomically.
+# Best-effort: any failure is logged but does NOT fail the caller's exit.
+mark_seat_writes_refused_bench() {
+    local p="$1" m="$2" reason="${3:-writes-refused}"
+    # fleet-ops#3661: never write a ledger for a phantom seat key.
+    if ! _seat_key_guard "$p" "$m" "mark_seat_writes_refused_bench"; then return 1; fi
+    if _transport_is_down; then _mark_transport_down "$p" "$m"; return 1; fi
+    local path
+    path=$(seat_ledger_path "$p" "$m")
+    mkdir -p "$LEDGER_DIR" 2>/dev/null || true
+
+    local window_s="${SEAT_WRITES_REFUSED_BENCH_S:-3600}"
+    [[ "$window_s" =~ ^[0-9]+$ ]] || window_s=3600
+
+    local now_utc now_s bench_until
+    now_s=$(date -u +%s)
+    now_utc=$(date -u -d "@$now_s" +%Y-%m-%dT%H:%M:%SZ)
+    bench_until=$(date -u -d "@$((now_s + window_s))" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$now_utc")
+
+    # Merge consecutive_failure_count from any existing entry, but NEVER
+    # escalate to a corpse — a tool-approval gate is infrastructure, not
+    # seat yield.
+    local prev_count=0
+    if [[ -f "$path" ]]; then
+        prev_count=$(jq -r '.consecutive_failure_count // 0' "$path" 2>/dev/null || echo 0)
+        [[ "$prev_count" =~ ^[0-9]+$ ]] || prev_count=0
+    fi
+    local merged_count=$((prev_count + 1))
+
+    local tmp="$path.wr.$$.$RANDOM.tmp"
+    if ! jq -nc \
+        --arg provider "$p" --arg model "$m" --arg reason "$reason" \
+        --arg observed "$now_utc" --arg bench "$bench_until" --arg usable "$bench_until" \
+        --argjson window "$window_s" --argjson merged "$merged_count" \
+        --argjson http_status 0 --argjson retry_after null \
+        --argjson retryable true --argjson seat_dead false --argjson poison_ladder false \
+        --arg writer "mark_seat_writes_refused_bench" \
+        '{
+          provider:$provider, model:$model,
+          http_status:$http_status, retry_after:$retry_after,
+          health_class:"config_fault",
+          retryable:$retryable, seat_dead:$seat_dead, poison_ladder:$poison_ladder,
+          observed_at:$observed,
+          source:"writes-refused",
+          failure_mode:"writes-refused",
+          bench_until:$bench,
+          usable_at:$usable,
+          bench_window_s:$window,
+          consecutive_failure_count:$merged,
+          last_error_class:"writes-refused",
+          bench_reason:$reason,
+          writer:$writer
+        }' > "$tmp" 2>/dev/null; then
+        seat_log "writes-refused-bench: jq compose FAILED for $p/$m — marker NOT written"
+        rm -f "$tmp" 2>/dev/null || true
+        return 1
+    fi
+    chmod 0644 "$tmp" 2>/dev/null || true
+    if mv "$tmp" "$path" 2>/dev/null; then
+        seat_log "writes-refused-bench: benched $p/$m until $bench_until (window=${window_s}s, count=$merged_count, reason=$reason) — approval-gate fault, NOT retired (fleet-ops#5189)"
+        return 0
+    fi
+    seat_log "writes-refused-bench: rename FAILED for $p/$m at $path"
     rm -f "$tmp" 2>/dev/null || true
     return 1
 }

@@ -3781,6 +3781,11 @@ bash "$here/keystone-routing.test.sh" || fail "keystone-routing tests failed"
 # before the keystone class ladder. Hosted here (no workflow edit).
 bash "$here/senior-review-routing.test.sh" || fail "senior-review-routing tests failed"
 
+# fleet-ops#5189: a seat whose tool-approval gate refuses the run's writes
+# must fail loud (agent-cron-run exit 1 + config_fault bench) instead of
+# exiting 0 with a report. Hosted here (no workflow edit).
+bash "$here/agent-cron-writes-refused.test.sh" || fail "agent-cron-writes-refused tests failed"
+
 # fleet-ops#1167: cursor keystone-only + leftover prepaid is xai-oauth +
 # selection ledger. Hosted here (no workflow edit).
 bash "$here/token-economy-routing.test.sh" || fail "token-economy-routing tests failed"

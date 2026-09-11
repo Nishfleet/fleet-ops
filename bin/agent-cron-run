@@ -198,6 +198,41 @@ if (( rc != 0 )) && (( ! spawn_fail_triggered )); then
     fi
 fi
 
+# --- fleet-ops#5189: writes refused (the rc=0 silent stall) -----------------
+# A seat behind a tool-approval gate (cursor's --auto-review classifier,
+# devin's --sandbox permission mode) can end rc=0 while every write the
+# agent attempted was refused — the run "succeeds", the report says the
+# verdicts did not post, and nothing escalates. On the 2026-09-10
+# orchestrator-decision-sweep that meant 10+ drafted verdicts and a parked
+# needs-orchestrator queue that never drained across five exit-0 sweeps.
+# A refused run is a FAILED run: record the output (the drafted work is the
+# evidence the retry and the senior auditor need), bench the seat past this
+# unit's RestartSec so the systemd retry walks the seat ladder to a seat
+# whose writes land, and exit 1 — loud through the normal failure path
+# (Restart= -> OnFailure escalation). Detection is the prompt contract
+# sentinel (WRITES-REFUSED) plus the observed refusal phrases; runs on both
+# rc=0 and otherwise-unclassified rc!=0 exits.
+if declare -F is_writes_refused >/dev/null 2>&1; then
+    out_for_scan=""; err_for_scan=""
+    [[ -f "$out" ]] && out_for_scan=$(cat "$out" 2>/dev/null || true)
+    [[ -f "$err" ]] && err_for_scan=$(cat "$err" 2>/dev/null || true)
+    if is_writes_refused "$out_for_scan" "$err_for_scan"; then
+        seat_log "agent-cron-run: $slug WRITES REFUSED on $np/$nm (rc=$rc) — the seat's approval gate blocked the run's writes; benching ${SEAT_WRITES_REFUSED_BENCH_S:-3600}s and failing loud (fleet-ops#5189)"
+        {
+            printf '# %s %s WRITES-REFUSED\nseat=%s/%s workdir=%s\n' "$slug" "$TS" "$np" "$nm" "$WORKDIR"
+            cat "$out"
+        } >>"$OUT"
+        if declare -F mark_seat_writes_refused_bench >/dev/null 2>&1; then
+            mark_seat_writes_refused_bench "$np" "$nm" "agent-cron:$slug" \
+                || seat_log "agent-cron-run: $slug WARN: writes-refused bench marker NOT written for $np/$nm"
+        else
+            seat_log "agent-cron-run: $slug WARN: mark_seat_writes_refused_bench absent in seat-lib — relying on tried-seats exclusion"
+        fi
+        rm -f "$out" "$err"
+        exit 1
+    fi
+fi
+
 if (( rc != 0 )); then
     seat_log "agent-cron-run: $slug pi exited $rc on $np/$nm (${spawn_elapsed_s}s, spawn_fail=$spawn_fail_triggered) — systemd will restart with a new seat"
     rm -f "$out" "$err"

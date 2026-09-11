@@ -57,6 +57,21 @@ Rules:
 - Plain words, no offers. Every comment is a verdict, not a status update.
 - Batch gh calls; do not hammer the API (sleep and back off on 403).
 - Never merge a PR, never deploy, never touch money — those stay Nish's.
+- VERIFY every write lands. After each `gh` comment/close/edit and each
+  file write, confirm it took effect (re-read the issue, re-list the
+  labels, re-read the file — the same check your report's "after this
+  sweep" count already does). Some seats run behind a tool-approval gate
+  that refuses writes while the run still exits cleanly — a verdict that
+  does not land is not a decision.
+- If any write you attempted was refused by the seat's approval gate (an
+  approval card rejected, an auto-review block) and you could NOT complete
+  that action another way, add one FINAL line after the summary line:
+
+      WRITES-REFUSED: <what was refused>
+
+  The runner turns that line into a loud failure, benches the seat, and
+  re-runs the sweep on another seat. A refused run that ends clean is a
+  silent no-decision — never end one clean.
 - Do NOT emit a `DIGEST::` line: this sweep is quiet by design; only the
   NISH-ESCALATIONS.md entries page Nish, and only when they should.
 
@@ -66,3 +81,4 @@ $LOG_DIR/orchestrator-decision-sweep.report.md (LOG_DIR defaults to
 action (DECIDED / DEP / NISH / CLOSED), one-line decision. Counts at the top.
 End your run output with one line:
 `orchestrator-decision-sweep: decided=<n> dep=<n> nish=<n> closed=<n> skipped=<n>`
+—and, only when writes were refused, the `WRITES-REFUSED:` line after it.
