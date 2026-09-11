@@ -123,7 +123,28 @@ relaunched=$(jq -r '.relaunched' "$SPEC_JUDGE_STATE_DIR/inflight-fleet-ops.json"
 spec_judge_failure_fallback "fleet-ops" "Nishfleet/fleet-ops"
 [[ -f "$SPEC_JUDGE_STATE_DIR/inflight-fleet-ops.json" ]] \
     && fail "Test 7: second failure must clear the in-flight marker"
+[[ -s "$SPEC_JUDGE_STATE_DIR/unavailable-fleet-ops-abc123.json" ]] \
+    || fail "Test 7: second failure must leave a durable unavailable-<repo>-<sha>.json record"
+jq -e '.batch == [1,2] and .newest_issue == 2 and .unit == "spec-judge-fleet-ops-abc123"' \
+    "$SPEC_JUDGE_STATE_DIR/unavailable-fleet-ops-abc123.json" >/dev/null 2>&1 \
+    || fail "Test 7: unavailable record must carry repo/sha/unit/batch/newest_issue"
 ok "Test 7: failure fallback relaunches once, then clears on second failure"
+
+# --- Test 7b: a dropped fallback comment is LOUD, and the durable record ---
+# still lands (fleet-ops#5438 — no silent drop).
+sj_fail_gh() { return 1; }
+GH=sj_fail_gh
+rm -f "$SPEC_JUDGE_STATE_DIR"/unavailable-*.json
+echo '{"repo":"fleet-ops","batch":[5,9],"sha":"feedface","unit":"spec-judge-fleet-ops-feedface","launched_at":"x","relaunched":true}' \
+    > "$SPEC_JUDGE_STATE_DIR/inflight-fleet-ops.json"
+t7b_err=$(spec_judge_failure_fallback "fleet-ops" "Nishfleet/fleet-ops" 2>&1)
+printf '%s' "$t7b_err" | grep -q 'ALERT spec-judge: gh issue comment' \
+    || fail "Test 7b: dropped fallback comment must emit an ALERT line, got: $t7b_err"
+[[ -s "$SPEC_JUDGE_STATE_DIR/unavailable-fleet-ops-feedface.json" ]] \
+    || fail "Test 7b: durable record must exist even when the comment fails"
+unset -f sj_fail_gh
+GH=/bin/echo
+ok "Test 7b: dropped failure-fallback comment is ALERT-loud + durable record survives"
 
 # --- Test 8: in-flight marker + member skip --------------------------------
 echo '{"repo":"fleet-ops","batch":[1,2],"sha":"abc123","unit":"spec-judge-fleet-ops-abc123","launched_at":"x","relaunched":false}' \
