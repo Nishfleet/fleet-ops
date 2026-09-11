@@ -113,6 +113,15 @@ run_seated_pi() {
             seat_log "pi-scout-run: WARN hang-bench marker NOT written for $np/$nm — relying on reactive ledger"
         fi
     fi
+    if (( rc != 0 )) && [[ -s "$err_tmp" ]]; then
+        # Emit the crash signature into the unit journal. scout-futility-check
+        # classifies provider walls by grepping the JOURNAL (jlines) — pi's
+        # stderr previously went to a mktemp file that was rm'd here, so wall
+        # evidence (e.g. Devin 429 "Reached overall message rate limit")
+        # never reached the classifier and such crashes were misread as
+        # "not green, not provider-wall" -> fresh auditor summon per crash.
+        tail -n 5 "$err_tmp" | sed 's/^/[pi-seated-err] /'
+    fi
     rm -f "$err_tmp"
     return "$rc"
 }
