@@ -56,6 +56,17 @@ printf '[{"number":4242,"title":"[gap-audit] gamma carried","labels":[]}]\n' > "
 
 create_log="$scratch/create.log"
 : > "$create_log"
+
+# fleet-ops#5475: the canonical-ledger mirror is pointed at a scratch ledger,
+# seeded the way the #5466 backfill seeding did — "beta medium miss" already
+# sits there as carried_over from an OLD run. The backfill must upsert THAT
+# finding_id when it files beta (title-matched, run-independent).
+ledger="$scratch/ledger.jsonl"
+seed_id=$(python3 -c 'import hashlib; print(hashlib.sha256("fleet-blind-audit|20260820T000000Z|beta medium miss".encode()).hexdigest()[:16])')
+printf '%s\n' "$(jq -cn --arg id "$seed_id" \
+  '{ts:"2026-08-20T00:00:00Z", source_organ:"fleet-blind-audit", run_id:"20260820T000000Z", finding_id:$id, severity:"medium", title:"beta medium miss", evidence_ref:"file:///seeded", disposition:"carried_over", ref:"audit_fix_pending:blind-audit-cap", reason:"#5466 seeding"}')" \
+  > "$ledger"
+
 rc=0
 GH_FAKE_ISSUES_JSON="$scratch/issues.json" \
 PATH="$scratch/fakebin:$PATH" \
@@ -67,6 +78,7 @@ PATH="$scratch/fakebin:$PATH" \
   AUDIT_ALLOW_NONCANONICAL=1 \
   AUDIT_TRIAGE="$scratch/triage.md" \
   AUDIT_SEAM_LIB="$repo_root/lib/manual-seam-lens.py" \
+  FINDINGS_LEDGER_FILE="$ledger" \
   "$bin" --backfill 2026-08-20 >"$scratch/bf.log" 2>&1 || rc=$?
 [[ $rc == 0 ]] || { cat "$scratch/bf.log"; fail "backfill exited $rc"; }
 
@@ -79,5 +91,19 @@ filed=$(grep -c CREATE "$create_log" 2>/dev/null; true)
 # findings must be re-filtered at reconstruction, not re-filed.
 grep -q "LADDER-WALLED" "$create_log" && fail "backfill re-filed an automated-escalation seam (LADDER-WALLED)"
 grep -q "auto_escalation_dropped=1" "$scratch/bf.log" || { tail -20 "$scratch/bf.log"; fail "stats must report the auto_escalation drop"; }
+
+# (fleet-ops#5475) beta was seeded carried_over from 2026-08-20; the backfill
+# filed row must reuse the seeded finding_id (upsert), not fork a new one.
+jq -r --arg id "$seed_id" \
+  'select(.disposition=="filed" and .finding_id==$id) | .ref' "$ledger" \
+  | grep -q '^https://github.com/' \
+  || { cat "$scratch/bf.log"; cat "$ledger"; fail "seeded carried_over row (beta) was not upserted to filed by stable finding_id"; }
+# alpha had no earlier row: its filed row keeps the FIRST-SIGHTING run.
+got_run=$(jq -r 'select(.disposition=="filed" and .title=="alpha breaker crash") | .run_id' "$ledger" | head -1)
+[[ "$got_run" == "20260826T100000Z" ]] \
+  || fail "alpha filed row should carry first-sighting run 20260826T100000Z (got $got_run)"
+# gamma was pre-dropped (open issue #4242 carries it): no filed row for gamma.
+[[ -z "$(jq -r 'select(.title=="gamma carried" and .disposition=="filed") | .finding_id' "$ledger")" ]] \
+  || fail "gamma was deduped against open issue #4242 but got a filed ledger row"
 
 ok "backfill: reconstruct + dedupe + predrop + file (hermetic)"

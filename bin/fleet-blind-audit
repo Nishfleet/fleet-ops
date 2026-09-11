@@ -276,6 +276,32 @@ carryover_resolve() { # $1 = signature, $2 = why
     log "carry-over: resolved ($2) ($1)"
 }
 
+# Canonical findings-ledger mirror (fleet-ops#5443): every verdict becomes one
+# idempotent ledger row. lib/findings_ledger.py is the ONLY writer. The row's
+# run-id is the finding's FIRST-SIGHTING run (a carry-over entry's origin run,
+# else this run), and --match-title reuses an earlier row's finding_id when
+# this organ already carries the same normalised title — so filing a finding
+# that the #5466 seeding marked carried_over UPSERTS that row by stable
+# finding_id instead of forking a second one (fleet-ops#5475, do not
+# double-file). FINDINGS_LEDGER_FILE overrides the ledger path (tests).
+# Defined BEFORE the --backfill dispatch: backfill mirrors its filings too.
+FINDINGS_LEDGER_BIN="${FINDINGS_LEDGER_BIN:-$here/lib/findings_ledger.py}"
+# $here is the script's own dir (bin/); the lib lives in the repo's lib/.
+# The fallback keeps the mirror alive for installed copies too (~/.local/bin
+# -> ~/.local/lib, the MANIFEST layout).
+[ -f "$FINDINGS_LEDGER_BIN" ] || FINDINGS_LEDGER_BIN="$(dirname "$here")/lib/findings_ledger.py"
+findings_ledger_row() { # $1 disposition  $2 ref  $3 reason  [$4 origin-run]
+    [ -f "$FINDINGS_LEDGER_BIN" ] || return 0
+    local -a ledger_args=()
+    [ -n "${FINDINGS_LEDGER_FILE:-}" ] && ledger_args+=(--ledger "$FINDINGS_LEDGER_FILE")
+    python3 "$FINDINGS_LEDGER_BIN" "${ledger_args[@]}" 2>/dev/null \
+        append --match-title --source-organ fleet-blind-audit \
+        --run-id "${4:-$NOW_DIR}" \
+        --title "$title" --severity "${severity:-info}" \
+        --evidence-ref "$VERDICTS_LOG" --disposition "$1" --ref "$2" \
+        --reason "$3" || true
+}
+
 # Parse a deliberate-states markdown table into a JSON list (packet + panel).
 load_deliberate_json() { # $1 = deliberate-states path -> JSON list on stdout
     local ds="$1"
@@ -474,6 +500,9 @@ BF
     # bounded here instead of reusing the reviewer's build.)
     local bv_log="$bf_dir/verdicts.jsonl"
     : >"$bv_log"
+    # findings_ledger_row cites the verdict log as its evidence-ref; backfill
+    # runs before the normal report-dir setup, so point it at the backfill log.
+    VERDICTS_LOG="$bv_log"
     local bf_finding bf_verdict b_title b_body b_evidence b_severity b_first
     local b_action b_url b_rc bf_v bf_reason bf_sig
     # Panel context: the open-issue list just fetched doubles as the panel's
@@ -512,6 +541,8 @@ BF
         if [ -z "$bf_verdict" ] || ! printf '%s' "$bf_verdict" | jq -e . >/dev/null 2>&1; then
             panel_fail=$((panel_fail+1))
             log "backfill: PANEL-FAIL panel error ($b_title)"
+            title="$b_title"; severity="${b_severity:-info}"
+            findings_ledger_row "panel_fail" "$bv_log" "panel error" "$b_first"
             continue
         fi
         bf_v=$(printf '%s' "$bf_verdict" | jq -r '.verdict // ""')
@@ -519,6 +550,8 @@ BF
         if [ "$bf_v" != "PASS" ]; then
             panel_fail=$((panel_fail+1))
             log "backfill: PANEL-FAIL ($bf_reason) ($b_title)"
+            title="$b_title"; severity="${b_severity:-info}"
+            findings_ledger_row "panel_fail" "$bv_log" "${bf_reason:-panel error}" "$b_first"
             continue
         fi
         local bf_at
@@ -545,16 +578,22 @@ BF
             if [ "$b_action" = "commented" ]; then
                 duplicates=$((duplicates+1))
                 log "backfill: DEDUPED existing issue carries this problem ($b_title)"
+                title="$b_title"; severity="${b_severity:-info}"
+                findings_ledger_row "duplicate_of" "${b_url:-}" "deduped: existing issue carries this problem" "$b_first"
             else
                 filed=$((filed+1))
                 issue_nums="$issue_nums ${b_url#*issues/}"
                 log "backfill: FILED $b_url ($b_title)"
+                title="$b_title"; severity="${b_severity:-info}"
+                findings_ledger_row "filed" "$b_url" "backfilled from cap-skip (fleet-ops#5475)" "$b_first"
             fi
         else
             log "backfill: file failed for ($b_title) -> carry-over"
             bf_unfiled=$((bf_unfiled+1))
             bf_sig=$(finding_signature "$bf_finding")
             carryover_append "$bf_finding" "$bf_sig" || true
+            title="$b_title"; severity="${b_severity:-info}"
+            findings_ledger_row "carried_over" "audit_fix_pending:blind-audit-cap" "backfill file failed; carried over" "$b_first"
         fi
         # panel journal (audit trail for the summary table)
         jq -cn --arg t "$b_title" --arg v "${bf_v:-ERR}" --arg r "${bf_reason:-file-failed}" \
@@ -621,18 +660,6 @@ PI_STDOUT="$REPORT_DIR/pi-stdout.txt"
 PI_STDERR="$REPORT_DIR/pi-stderr.txt"
 VERDICTS_LOG="$REPORT_DIR/verdicts.jsonl"
 : >"$VERDICTS_LOG"
-# Canonical findings ledger (fleet-ops#5443): every finding QUEUED, never
-# dropped silently. lib/findings_ledger.py is the ONLY writer; each verdict
-# line in process_one_finding mirrors one idempotent ledger row.
-FINDINGS_LEDGER_BIN="${FINDINGS_LEDGER_BIN:-$here/lib/findings_ledger.py}"
-findings_ledger_row() { # $1 disposition  $2 ref  $3 reason  (uses the loop vars)
-    [ -f "$FINDINGS_LEDGER_BIN" ] || return 0
-    python3 "$FINDINGS_LEDGER_BIN" 2>/dev/null \
-        append --source-organ fleet-blind-audit --run-id "$NOW_DIR" \
-        --title "$title" --severity "${severity:-info}" \
-        --evidence-ref "$VERDICTS_LOG" --disposition "$1" --ref "$2" \
-        --reason "$3" || true
-}
 resolve_path() {
     readlink -f "$1" 2>/dev/null || printf '%s' "$1"
 }
@@ -1184,12 +1211,15 @@ RESOLVED_SIGS="$REPORT_DIR/carryover-resolved.txt"
 # the existing ledger entry instead of appending a duplicate).
 process_one_finding() {
     local finding="$1" is_carryover="$2" entry_sig="${3:-}"
-    local rank title body evidence severity sig
+    local rank title body evidence severity sig origin_run filed_action
     rank=$(printf '%s' "$finding" | jq -r '.rank // "CO"')
     title=$(printf '%s' "$finding" | jq -r '.title // ""')
     body=$(printf '%s' "$finding" | jq -r '.body // ""')
     evidence=$(printf '%s' "$finding" | jq -r '.evidence // ""')
     severity=$(printf '%s' "$finding" | jq -r '.severity // ""')
+    # First-sighting run for the canonical ledger row's stable finding_id
+    # (carry-over entries carry .origin_run; new findings use NOW_DIR).
+    origin_run=$(printf '%s' "$finding" | jq -r '.origin_run // ""')
     sig=${entry_sig:-$(finding_signature "$finding")}
 
     if [ -z "$title" ]; then
@@ -1317,18 +1347,23 @@ process_one_finding() {
         --argjson loud "$loud" \
         -c '{timestamp: (now | todate), rank:$rank, title:$title, verdict:$verdict, reason:$reason, issue:$issue, loud:$loud}' >> "$VERDICTS_LOG"
     # Canonical findings ledger row — one per verdict, idempotent by
-    # finding_id (fleet-ops#5443).
-    case "$verdict:$reason:$issue_url" in
-        PASS:*fleet-issue-file*fail*)
-            findings_ledger_row "carried_over" "audit_fix_pending:blind-audit-cap" "$reason" ;;
-        PASS:*" skipped: max findings"*)
-            findings_ledger_row "carried_over" "audit_fix_pending:blind-audit-cap" "$reason" ;;
-        PASS:*refused:*)
-            findings_ledger_row "carried_over" "audit_fix_pending:blind-audit-drill" "$reason" ;;
-        PASS:*:*)
-            findings_ledger_row "filed" "${issue_url:-Nishfleet/unresolved-$REPO}" "filed with verdict=$reason" ;;
-        FAIL:*)
-            findings_ledger_row "panel_fail" "$VERDICTS_LOG" "$reason" ;;
+    # finding_id (fleet-ops#5443). The origin-run run-id + --match-title
+    # upsert a previously carried_over row instead of double-filing it
+    # (fleet-ops#5475). A #1212-gate dedupe (commented on the existing
+    # issue) is duplicate_of, never a second "filed".
+    case "$verdict:$reason:$issue_url:${filed_action:-filed}" in
+        PASS:*fleet-issue-file*fail*:*)
+            findings_ledger_row "carried_over" "audit_fix_pending:blind-audit-cap" "$reason" "$origin_run" ;;
+        PASS:*"skipped: max findings"*:*)
+            findings_ledger_row "carried_over" "audit_fix_pending:blind-audit-cap" "$reason" "$origin_run" ;;
+        PASS:*refused:*:*)
+            findings_ledger_row "carried_over" "audit_fix_pending:blind-audit-drill" "$reason" "$origin_run" ;;
+        PASS:*:*:commented)
+            findings_ledger_row "duplicate_of" "${issue_url:-}" "deduped: existing issue carries this problem" "$origin_run" ;;
+        PASS:*:*:filed)
+            findings_ledger_row "filed" "${issue_url:-Nishfleet/unresolved-$REPO}" "filed with verdict=$reason" "$origin_run" ;;
+        FAIL:*:*:*)
+            findings_ledger_row "panel_fail" "$VERDICTS_LOG" "$reason" "$origin_run" ;;
     esac
 }
 
@@ -1337,13 +1372,29 @@ carryover_total=0
 while IFS= read -r entry; do
     [ -n "$entry" ] || continue
     co_sig=$(printf '%s' "$entry" | jq -r '.signature // ""')
-    co_finding=$(printf '%s' "$entry" | jq -c '.finding')
+    co_finding=$(printf '%s' "$entry" | jq -c '.finding + {origin_run: (.run // "")}')
     [ -n "$co_finding" ] || continue
     # Drop an entry whose signature an open or recently-closed issue
     # already carries; the panel dup-check and the #1212 gate remain the
     # fuzzy backstops for anything past this exact-title match.
     co_tnorm=$(norm_title "$(printf '%s' "$co_finding" | jq -r '.title // ""')")
     if [ -n "$co_tnorm" ] && printf '%s\n' "$issue_titles_norm" | grep -qxF "$co_tnorm"; then
+        # Mirror the drop as duplicate_of in the canonical ledger — a
+        # carry-over whose problem an open issue already carries is a
+        # dedupe, never a filed finding (fleet-ops#5475). Cite the matching
+        # open issue; a closed-only match falls back to the signature ref.
+        co_dup_ref="carryover:$co_sig"
+        while IFS= read -r co_issue; do
+            if [ "$(norm_title "$(printf '%s' "$co_issue" | jq -r '.title // ""')")" = "$co_tnorm" ]; then
+                co_dup_ref="https://github.com/$REPO/issues/$(printf '%s' "$co_issue" | jq -r '.number')"
+                break
+            fi
+        done < <(printf '%s' "$open_gap_issues" | jq -c '.[]' 2>/dev/null)
+        title=$(printf '%s' "$co_finding" | jq -r '.title // ""')
+        severity=$(printf '%s' "$co_finding" | jq -r '.severity // "info"')
+        findings_ledger_row "duplicate_of" "$co_dup_ref" \
+            "carried by an open/closed issue (title signature match)" \
+            "$(printf '%s' "$entry" | jq -r '.run // ""')"
         carryover_resolve "$co_sig" "carried by an open/closed issue (title signature match)"
         continue
     fi

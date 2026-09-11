@@ -23,8 +23,11 @@ Row schema (every key required, refused otherwise):
 
 CLI:
   append --source-organ S --run-id R --title T --severity S --evidence-ref E
-         --disposition D --ref F [--reason R]        (idempotent: skips when
-         finding_id already exists with the same disposition+ref)
+         --disposition D --ref F [--reason R] [--match-title]
+         (idempotent: skips when finding_id already exists with the same
+         disposition+ref; --match-title upserts by normalised title — an
+         earlier same-organ row's finding_id is reused so a later filing
+         updates that row instead of forking a second id)
   backfill --reports-dir DIR [--since TS] [--issues/--no-issues]
          walk blind-audit report dirs; every verdict PASS row whose reason
          contains "skipped: max findings" becomes carried_over (or filed /
@@ -52,9 +55,14 @@ FIELDS = ("ts", "source_organ", "run_id", "finding_id", "severity", "title",
           "evidence_ref", "disposition", "ref", "reason")
 
 
+def norm_title_text(title):
+    """Normalised title key shared by finding_id and --match-title upsert."""
+    return re.sub(r"\W+", " ", (title or "").strip().lower()).strip()
+
+
 def finding_id(source_organ, run_id, title):
-    norm = re.sub(r"\W+", " ", (title or "").strip().lower()).strip()
-    return hashlib.sha256(f"{source_organ}|{run_id or ''}|{norm}".encode()).hexdigest()[:16]
+    return hashlib.sha256(
+        f"{source_organ}|{run_id or ''}|{norm_title_text(title)}".encode()).hexdigest()[:16]
 
 
 def utcnow():
@@ -202,11 +210,27 @@ def main(argv=None):
     ap.add_argument("--since", default="")
     ap.add_argument("--file", default="")
     ap.add_argument("--ref-col-header", default="disposition-ref")
+    ap.add_argument("--match-title", dest="match_title", action="store_true",
+                    default=False,
+                    help="append: reuse an earlier same-organ row's "
+                         "finding_id when the normalised title matches "
+                         "(upsert by stable finding_id, fleet-ops#5475)")
     a = ap.parse_args(argv)
 
     if a.cmd == "append":
         row = make_row(a.source_organ, a.run_id, a.title, a.severity,
                        a.evidence_ref, a.disposition, a.ref, a.reason)
+        if a.match_title:
+            # Upsert by stable finding_id (fleet-ops#5475): when an earlier
+            # row from the same organ already carries this normalised title,
+            # reuse ITS finding_id so the new disposition (filed /
+            # duplicate_of / panel_fail) updates that row instead of forking
+            # a second id. The ledger is append-only: the older row stays.
+            for prev in read_rows(a.ledger):
+                if prev.get("source_organ") == row["source_organ"] \
+                        and norm_title_text(prev.get("title")) == norm_title_text(row["title"]):
+                    row["finding_id"] = prev["finding_id"]
+                    break
         new, dup = append_rows(a.ledger, [row])
         print(json.dumps(row) if new else "skip: duplicate", file=sys.stderr)
         sys.exit(0 if new else 3)
