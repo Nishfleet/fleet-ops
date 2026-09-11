@@ -3,12 +3,15 @@
 #
 # Merge-to-live gate (fleet-ops#468, decisions-ledger 2026-08-27 TOP GEAR):
 # merged-but-not-live latency must be <= 5 minutes. fleet-deploy-check runs
-# on a 2-min timer, fetches, compares origin/main vs HEAD, and ONLY invokes
-# the sanctioned deploy step when origin/main moved.
+# on a 2-min timer, fetches, compares origin/main vs HEAD, and invokes the
+# sanctioned deploy step when origin/main moved OR the clone is on a named
+# non-main branch (fleet-ops#5222).
 #
 # What we prove:
 #   1. Checkout missing -> loud DEPLOY-CHECK-CHECKOUT-MISSING, exit 0.
 #   2. origin/main unchanged -> "nothing to do", deploy NOT invoked, exit 0.
+#   2b. origin/main SHA unchanged but checkout is off-main -> deploy IS
+#       invoked (fleet-ops#5222).
 #   3. origin/main moved + NO_DEPLOY=1 -> "compare-only", deploy NOT invoked.
 #   4. origin/main moved, deploy invoked once, deploy bin logs rc=0 -> exit 0.
 #   5. origin/main moved, deploy invoked, deploy bin exits 1 -> LOUD
@@ -27,6 +30,8 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
 [[ -f "$bin" ]] || fail "fleet-deploy-check not found: $bin"
+grep -q 'fleet-ops#5222' "$bin" \
+    || fail "fleet-deploy-check must invoke deploy on off-main (fleet-ops#5222)"
 command -v git >/dev/null || fail "git required"
 
 scratch="$(mktemp -d -t deploycheck.XXXXXX)"
@@ -105,6 +110,19 @@ rc=$(run_bin 0)
 grep -q "nothing to do" "$scratch/err.log" || fail "missing nothing-to-do log"
 [[ ! -s "$DEPLOY_SPY_LOG" ]] || fail "deploy must not be invoked when unchanged"
 ok "unchanged origin/main -> nothing to do, no deploy"
+
+# --- 2b. origin/main SHA unchanged but checkout is off-main (fleet-ops#5222)
+git -C "$checkout" checkout -q -b throwaway-guard-test
+: > "$DEPLOY_SPY_LOG"
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "off-main same-SHA should exit 0 (got $rc)"
+grep -q "DEPLOY-INVOKED" "$DEPLOY_SPY_LOG" \
+    || fail "off-main must invoke deploy even when HEAD SHA == origin/main"
+grep -q "not main" "$scratch/err.log" \
+    || fail "off-main must log the not-main reason: $(cat "$scratch/err.log")"
+git -C "$checkout" checkout -q main
+: > "$DEPLOY_SPY_LOG"
+ok "off-main same SHA -> invoke deploy (fleet-ops#5222)"
 
 # --- 3. origin/main moved + compare-only -------------------------------------
 # Advance origin/main WITHOUT moving local HEAD (a remote merge).

@@ -46,11 +46,13 @@
 #      (fleet-ops#370). A second tick with the marker open does not re-file.
 #  15. FLEET_OPS_DRIFT_BIN under agent-worktrees fails DEPLOY-DRIFT-BIN-VOLATILE.
 #  16. fleet-ops-deploy removes the paper-over drop-in even when merge is blocked.
-#  17. A named non-main branch on the deploy checkout (HEAD == origin/main)
-#      DEPLOY-BLOCKs, does not rewind the auditor branch, auto-files
-#      deploy-clone-off-main: fleet-ops#477. The canary emits DRIFT-OFF-MAIN
-#      and dedups. An auditor branch that is an ancestor of origin/main is
-#      not fast-forwarded (that would move the auditor pointer).
+#  17. A named non-main branch whose HEAD is already on a remote (ancestor
+#      of an origin ref) is recovered onto main even if a process holds the
+#      clone (fleet-ops#5222). --dry-run recovers throwaway-guard-test and
+#      exits 0; an unpushed commit is refused and left in place. The canary
+#      still emits DRIFT-OFF-MAIN and dedups. An auditor branch that is an
+#      ancestor of origin/main is recovered by checking out main, not by
+#      fast-forwarding the auditor pointer.
 #  17f. The off-main observe-to-close (fleet-ops#620) fires as soon as
 #      check_checkout passes, even when a later check (e.g. DRIFT-MISSING-EXEC
 #      from a leftover service) is still red (fleet-ops#774). The class is
@@ -183,9 +185,17 @@ grep -q 'DRIFT-OFF-MAIN' "$repo_root/bin/fleet-ops-drift.py" \
 grep -q 'deploy-clone-off-main: fleet-ops#477' "$repo_root/bin/fleet-ops-drift.py" \
     || fail "drift canary must auto-file off-main checkout with the #477 marker"
 grep -q 'not main (fleet-ops#477)' "$repo_root/bin/fleet-ops-deploy" \
-    || fail "fleet-ops-deploy must block a named non-main branch (fleet-ops#477)"
+    || fail "fleet-ops-deploy must name a named non-main branch (fleet-ops#477)"
 grep -q -- '--file-off-main' "$repo_root/bin/fleet-ops-deploy" \
     || fail "fleet-ops-deploy must auto-file off-main via the canary --file-off-main flag"
+grep -q 'fleet-ops#5222' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "fleet-ops-deploy must recover a fully-pushed off-main clone (fleet-ops#5222)"
+grep -q -- '--dry-run' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "fleet-ops-deploy must accept --dry-run (fleet-ops#5222 termination)"
+grep -q 'head_is_on_remote' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "fleet-ops-deploy must test whether HEAD is an ancestor of an origin ref"
+grep -q 'pid=$CLONE_HOLDER_PID' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "DEPLOY-BLOCKED must name the holder pid (fleet-ops#5222)"
 grep -q 'deploy-blocked-on-main: fleet-ops#2725' "$repo_root/bin/fleet-ops-drift.py" \
     || fail "drift canary must auto-file deploy-blocked-on-main with the #2725 marker"
 grep -q -- '--file-deploy-blocked-main' "$repo_root/bin/fleet-ops-deploy" \
@@ -441,7 +451,7 @@ run_deploy() {
   FLEET_OPS_SYSTEMCTL="$systemctl_fake" \
   FLEET_OPS_DEPLOY_AUDIT_LOG="$scratch/deploy-audit.log" \
   FLEET_OPS_TRIAGE="$scratch/triage.md" \
-    "$deploy" 2>&1
+    "$deploy" "$@" 2>&1
 }
 
 # fleet-ops#3634: a live process holding the clone as its cwd keeps the LOUD
@@ -1603,6 +1613,7 @@ git -C "$checkout" checkout -q -- bin/demo-script
 
 # --- scenario 17: named non-main branch on the deploy checkout (fleet-ops#477)
 git -C "$checkout" reset --hard -q origin/main
+git -C "$checkout" clean -fdq
 git -C "$checkout" checkout -q -B main origin/main
 git -C "$checkout" checkout -q -b auditor/off-main-477
 [ "$(git -C "$checkout" symbolic-ref --short HEAD)" = "auditor/off-main-477" ] \
@@ -1644,7 +1655,7 @@ exit 0
 FAKE
 chmod +x "$off_gh"
 hold_clone
-if out=$(
+if ! out=$(
   GH="$off_gh" \
   GH_LOG="$off_gh_log" \
   GH_OPEN_ISSUES="$scratch/open-off-main.json" \
@@ -1654,23 +1665,27 @@ if out=$(
     run_deploy
 ); then
     release_clone
-    fail "scenario17: deploy should block on a named non-main branch, got: $out"
+    fail "scenario17: deploy should recover a fully-pushed off-main clone even when held, got: $out"
 fi
 release_clone
-[[ "$out" == *"DEPLOY-BLOCKED"* ]] \
-    || fail "scenario17: expected DEPLOY-BLOCKED (got: $out)"
-[[ "$out" == *"not main"* ]] \
-    || fail "scenario17: expected not-main reason (got: $out)"
-[[ "$out" == *"fleet-ops#477"* ]] \
-    || fail "scenario17: expected fleet-ops#477 (got: $out)"
+[[ "$out" == *"recovered deploy clone"* ]] \
+    || fail "scenario17: expected recovered deploy clone (got: $out)"
+[[ "$out" == *"fleet-ops#5222"* ]] \
+    || fail "scenario17: expected fleet-ops#5222 (got: $out)"
+[[ "$out" != *"DEPLOY-BLOCKED"* ]] \
+    || fail "scenario17: fully-pushed off-main must not DEPLOY-BLOCK (got: $out)"
 grep -q 'issue create' "$off_gh_log" \
-    || fail "scenario17: must auto-file (log=$(cat "$off_gh_log"))"
-[ "$(git -C "$checkout" symbolic-ref --short HEAD)" = "auditor/off-main-477" ] \
-    || fail "scenario17: deploy discarded the auditor branch"
+    && fail "scenario17: recovered clone must not auto-file (log=$(cat "$off_gh_log"))"
+[ "$(git -C "$checkout" symbolic-ref --short HEAD)" = "main" ] \
+    || fail "scenario17: deploy must be on main after recovery"
 [ "$(git -C "$checkout" rev-parse HEAD)" = "$(git -C "$checkout" rev-parse origin/main)" ] \
-    || fail "scenario17: deploy moved HEAD"
-ok "scenario17: named non-main branch DEPLOY-BLOCKs, keeps the auditor branch, auto-files"
+    || fail "scenario17: deploy HEAD must match origin/main"
+git -C "$checkout" rev-parse -q --verify auditor/off-main-477 >/dev/null \
+    || fail "scenario17: recovery must leave the auditor branch ref in place"
+ok "scenario17: fully-pushed off-main recovers to main even when held (fleet-ops#5222)"
 
+# Canary still fails loud on off-main (drift check is not weakened).
+git -C "$checkout" checkout -q auditor/off-main-477
 : >"$off_gh_log"
 if out=$(
   GH="$off_gh" \
@@ -1721,7 +1736,7 @@ git -C "$checkout" merge-base --is-ancestor HEAD origin/main \
 : >"$off_gh_log"
 echo '[]' >"$scratch/open-off-main.json"
 hold_clone
-if out=$(
+if ! out=$(
   GH="$off_gh" \
   GH_LOG="$off_gh_log" \
   GH_OPEN_ISSUES="$scratch/open-off-main.json" \
@@ -1730,16 +1745,60 @@ if out=$(
     run_deploy
 ); then
     release_clone
-    fail "scenario17d: deploy must not fast-forward a named non-main branch, got: $out"
+    fail "scenario17d: ancestor off-main should recover onto main, got: $out"
 fi
 release_clone
+[[ "$out" == *"recovered deploy clone"* ]] \
+    || fail "scenario17d: expected recovered deploy clone (got: $out)"
+[ "$(git -C "$checkout" symbolic-ref --short HEAD)" = "main" ] \
+    || fail "scenario17d: clone must be on main after recovery"
+[ "$(git -C "$checkout" rev-parse HEAD)" = "$(git -C "$checkout" rev-parse origin/main)" ] \
+    || fail "scenario17d: clone HEAD must equal origin/main after recovery"
+[ "$(git -C "$checkout" rev-parse auditor/off-main-477)" = "$behind_on_auditor" ] \
+    || fail "scenario17d: recovery must not fast-forward the auditor branch pointer"
+ok "scenario17d: ancestor auditor branch is recovered by checking out main, not by moving the auditor pointer"
+git -C "$checkout" checkout -q -B main origin/main
+
+# --- scenario 17g: throwaway-guard-test + --dry-run recovers (fleet-ops#5222)
+git -C "$checkout" checkout -q -B main origin/main
+git -C "$checkout" clean -fdq
+git -C "$checkout" checkout -q -b throwaway-guard-test
+pre_throwaway=$(git -C "$checkout" rev-parse HEAD)
+if ! out=$(run_deploy --dry-run); then
+    fail "scenario17g: --dry-run must recover throwaway-guard-test and exit 0, got: $out"
+fi
+[ "$(git -C "$checkout" symbolic-ref --short HEAD)" = "main" ] \
+    || fail "scenario17g: --dry-run must leave the clone on main"
+[ "$(git -C "$checkout" rev-parse HEAD)" = "$pre_throwaway" ] \
+    || fail "scenario17g: --dry-run must not move HEAD off the already-pushed commit"
+[[ "$out" == *"recovered deploy clone"* ]] \
+    || fail "scenario17g: expected recovered deploy clone (got: $out)"
+[[ "$out" == *"dry-run"* ]] \
+    || fail "scenario17g: expected dry-run skip-install (got: $out)"
+[[ "$out" != *"reset --hard"* ]] \
+    || fail "scenario17g: recovery must not reset --hard (got: $out)"
+ok "scenario17g: throwaway-guard-test --dry-run recovers to main and exits 0"
+
+# --- scenario 17h: unpushed commit is refused and not discarded
+git -C "$checkout" checkout -q -B main origin/main
+git -C "$checkout" clean -fdq
+git -C "$checkout" checkout -q -b throwaway-unpushed-5222
+printf '\n# unpushed-5222\n' >> "$checkout/systemd/demo.timer"
+git -C "$checkout" add -A
+git -C "$checkout" commit -q -m "unpushed commit for 5222"
+unpushed=$(git -C "$checkout" rev-parse HEAD)
+if out=$(run_deploy --dry-run); then
+    fail "scenario17h: --dry-run must refuse an unpushed commit, got: $out"
+fi
 [[ "$out" == *"DEPLOY-BLOCKED"* ]] \
-    || fail "scenario17d: expected DEPLOY-BLOCKED (got: $out)"
-[ "$(git -C "$checkout" symbolic-ref --short HEAD)" = "auditor/off-main-477" ] \
-    || fail "scenario17d: deploy left the auditor branch"
-[ "$(git -C "$checkout" rev-parse HEAD)" = "$behind_on_auditor" ] \
-    || fail "scenario17d: deploy fast-forwarded the auditor branch onto origin/main"
-ok "scenario17d: ancestor auditor branch is not fast-forwarded onto origin/main"
+    || fail "scenario17h: expected DEPLOY-BLOCKED (got: $out)"
+[[ "$out" == *"unpushed"* ]] \
+    || fail "scenario17h: expected unpushed reason (got: $out)"
+[ "$(git -C "$checkout" symbolic-ref --short HEAD)" = "throwaway-unpushed-5222" ] \
+    || fail "scenario17h: must stay on the unpushed branch"
+[ "$(git -C "$checkout" rev-parse HEAD)" = "$unpushed" ] \
+    || fail "scenario17h: must not discard the unpushed commit"
+ok "scenario17h: unpushed commit is refused and left in place"
 git -C "$checkout" checkout -q -B main origin/main
 
 # --- scenario 17e: green canary observes-to-close an open off-main issue (#620)

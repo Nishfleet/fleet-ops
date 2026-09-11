@@ -4,8 +4,9 @@ Description=Fleet merge-to-live deploy check timer (every 2 min, fleet-ops#468)
 # TOP GEAR: merge->live <= 5 minutes. A 2-minute check cadence gives a
 # merged commit a worst-case ~2-3 min to reach the live box, comfortably
 # inside the 5-minute budget even with a deploy taking ~1 min. The check
-# itself is seconds (fetch + rev compare); deploy only runs on a moved
-# origin/main, so this is event-driven, not a busy poller.
+# itself is seconds (fetch + rev compare); deploy runs on a moved
+# origin/main or an off-main checkout (fleet-ops#5222), so this is
+# event-driven, not a busy poller. Cadence stays 2 min.
 # OnCalendar=*:00/2 fires on even minutes. Avoids colliding with the
 # heartbeat (:17/:47) and the intake reconcile (:00/:30) cluster.
 
