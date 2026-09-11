@@ -54,7 +54,9 @@ jobs:
       node-version: ""
       install-command: ""
       scan-secrets: true
-      timeout-minutes: 20
+      # fleet-ops#5385: verify alone runs 16-19.6 min on main (last 6 green runs);
+      # a 20-min job cap cancelled two runs at 19m53s under normal load.
+      timeout-minutes: 30
       verify-command: |
         set -euo pipefail
         # fleet-ops#3235 part six (the follow-up its own commit message planned:
