@@ -109,6 +109,15 @@ findings_file="$scratch/findings-12.json"
 empty_findings="$scratch/findings-empty.json"
 printf '{"findings":[]}\n' > "$empty_findings"
 
+# Seed the canonical ledger the way the #5466 backfill seeding did: probe 5
+# already sits there as carried_over from an OLD run (2026-08-20 era). When
+# run 1 files probe 5, the filed row must reuse THIS finding_id (--match-title
+# upsert), not fork a new one from run 1 (fleet-ops#5475).
+seed_id=$(python3 -c 'import hashlib; print(hashlib.sha256("fleet-blind-audit|20260101T000000Z|carryover probe finding number 5".encode()).hexdigest()[:16])')
+printf '%s\n' "$(jq -cn --arg id "$seed_id" \
+  '{ts:"2026-08-20T00:00:00Z", source_organ:"fleet-blind-audit", run_id:"20260101T000000Z", finding_id:$id, severity:"high", title:"carryover probe finding number 5", evidence_ref:"file:///seeded", disposition:"carried_over", ref:"audit_fix_pending:blind-audit-cap", reason:"#5466 seeding"}')" \
+  > "$scratch/ledger.jsonl"
+
 plan="$scratch/plan.md"
 triage="$scratch/triage.md"
 issues_json="$scratch/issues.json"
@@ -134,6 +143,9 @@ common_env=(
   AUDIT_DRILL_GH_STUB_DIR="$scratch/fakebin"
   AUDIT_CARRYOVER_FILE="$scratch/carryover.jsonl"
   AUDIT_ALLOW_NONCANONICAL=1
+  # Canonical findings-ledger mirror lands in a scratch ledger so the upsert
+  # assertions below are hermetic (fleet-ops#5475).
+  FINDINGS_LEDGER_FILE="$scratch/ledger.jsonl"
 )
 
 # (d) the reviewer packet no longer says "Max findings to return" —
@@ -187,6 +199,17 @@ co1=$(grep -c . "$scratch/carryover.jsonl"; true)
 grep -q 'LOUD \[AUDIT-BACKLOG\] unfiled_pass=0 carryover_total=4' "$triage" \
   || fail "run 1 triage missing LOUD AUDIT-BACKLOG line: $(cat "$triage")"
 
+# (fleet-ops#5475) canonical-ledger upsert: probe 5 was seeded carried_over
+# from an old run; run 1 FILED it, so the ledger must hold a filed row with
+# the SEEDED finding_id and an issue URL — never a second id forked from run 1.
+jq -r --arg id "$seed_id" \
+  'select(.disposition=="filed" and .finding_id==$id) | .ref' "$scratch/ledger.jsonl" \
+  | grep -q '^https://github.com/' \
+  || fail "run 1: seeded carried_over row (probe 5) was not upserted to filed by stable finding_id"
+# The 4 cap-skips were mirrored as carried_over rows of run 1.
+[[ "$(jq -r 'select(.disposition=="carried_over" and .ref=="audit_fix_pending:blind-audit-cap") | .title' "$scratch/ledger.jsonl" | wc -l)" == "4" ]] \
+  || fail "run 1: expected 4 mirrored carried_over ledger rows"
+
 # (d) the reviewer packet no longer says "Max findings to return".
 d1="$scratch/state/reports/2026_08_26T06_20_00Z"
 [ -d "$d1" ] || d1=$(find "$scratch/state/reports" -mindepth 1 -maxdepth 1 -type d | head -1)
@@ -211,6 +234,25 @@ filed2=$(grep -c . "$scratch/create-2.log" 2>/dev/null; true)
 [[ "$filed2" == "4" ]] || { cat "$scratch/run2.log"; fail "run 2: expected the 4 carried-over findings filed, saw $filed2"; }
 co2=$(grep -c . "$scratch/carryover.jsonl" 2>/dev/null; true)
 [[ "$co2" == "0" ]] || fail "run 2: carry-over ledger should be empty, saw $co2"
+
+# (fleet-ops#5475) each of the 4 carried_over rows must have gained a filed
+# row with the SAME finding_id and the ORIGIN run (run 1), i.e. the backlog
+# filing upserts the seeded row instead of double-filing a second identity.
+run1_dir=$(jq -r 'select(.disposition=="carried_over" and (.title|contains("number 9"))) | .run_id' "$scratch/ledger.jsonl" | head -1)
+[[ -n "$run1_dir" ]] || fail "run 2: no carried_over ledger row for probe 9"
+for n in 9 10 11 12; do
+  cid=$(jq -r --arg t "carryover probe finding number $n" \
+    'select(.disposition=="carried_over") | select(.title==$t) | .finding_id' "$scratch/ledger.jsonl" | head -1)
+  [[ -n "$cid" ]] || fail "run 2: no carried_over ledger row for probe $n"
+  got_run=$(jq -r --arg id "$cid" \
+    'select(.disposition=="filed" and .finding_id==$id) | .run_id' "$scratch/ledger.jsonl" | head -1)
+  [[ "$got_run" == "$run1_dir" ]] \
+    || fail "run 2: probe $n filed row did not upsert carried_over finding_id $cid at origin run $run1_dir (got run_id=$got_run)"
+done
+# No forked identities: carried_over rows still come from exactly the seeded
+# old run and run 1 — run 2 must not have added carried_over rows.
+[[ "$(jq -r 'select(.disposition=="carried_over") | .run_id' "$scratch/ledger.jsonl" | sort -u | wc -l)" == "2" ]] \
+  || fail "run 2: carried_over ledger rows forked new run identities"
 ok "carryover: 12 PASS findings cap 8 -> 8 filed 4 carried, next run 0 new -> 4 carried filed first"
 
 # ---------------------------------------------------------------- run 3 -----
@@ -244,6 +286,10 @@ grep -q 'DEDUPED\|carry-over: resolved' "$scratch/run3.log" \
   || fail "run 3: missing drop log line: $(cat "$scratch/run3.log")"
 co3=$(grep -c . "$scratch/carryover.jsonl" 2>/dev/null; true)
 [[ "$co3" -eq 0 ]] || fail "run 3: deduped carry-over entry must be removed from the ledger, saw $co3"
+# (fleet-ops#5475) the dedupe is mirrored as duplicate_of, never a filed row.
+jq -r 'select(.disposition=="duplicate_of") | .title' "$scratch/ledger.jsonl" \
+  | grep -qx "stale agent-state file" \
+  || fail "run 3: dedupe not mirrored as duplicate_of in the canonical ledger"
 ok "carryover: signature carried by an open issue is dropped with a log line, not filed"
 
 # (d) global guard: packet must not cap the reviewer.
