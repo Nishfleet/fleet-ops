@@ -50,8 +50,10 @@
           "reason": "2026-09-10 (Nish): retired — replaced by swe-2-max (free, newer). Yield to date: 207 PRs / 754 sessions (docs/reports/provider-audit-2026-09.md). Do not re-raise without a Nish decision."
         },
         "swe-1-7": {
-          "cap": 4,
-          "max_probe_ceiling": 4
+          "cap": 0,
+          "max_probe_ceiling": 0,
+          "intentional_cap_zero": "retired",
+          "reason": "2026-09-11 Nish: \"switched exclusively to swe 2, swe 1.7 is retired - same as ds4 flash\". Devin lane is SWE-2 only (swe-2-max, swe-2-high). Never re-wire swe-1-7; a probe answering PONG does not un-retire it."
         },
         "swe-2-max": {
           "cap": 4,
