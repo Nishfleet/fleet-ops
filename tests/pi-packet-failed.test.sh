@@ -248,6 +248,12 @@ Environment=FLEET_ISSUE_FILE=$fd6/fleet-issue-file
 Environment=AGENT_STATE=$std6
 Environment=PI_PACKET_STATE=$std6/pi-packets
 Environment=PI_PACKET_FAILED_DELIVERABLE=$std6/expected-deliverable.md
+# systemd units get a clean env: GITHUB_ACTIONS never reaches the handler
+# unless passed explicitly. On a hosted runner the worker-token mint cannot
+# exist, so the handler must see the CI marker to skip minting (the fake
+# fleet-issue-file still proves the re-queue path). On the VPS the var is
+# empty and the real mint path is what gets drilled.
+Environment=GITHUB_ACTIONS=${GITHUB_ACTIONS:-}
 ExecStart=$bin %i
 StandardOutput=file:$std6/handler.stdout
 StandardError=file:$std6/handler.stderr
