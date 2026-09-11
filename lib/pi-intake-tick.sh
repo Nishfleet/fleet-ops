@@ -54,6 +54,21 @@ fi
 GH_SECONDARY_STATE_DIR="${PI_INTAKE_GH_SECONDARY_STATE_DIR:-/home/nish/workspaces/agent-state/pi-intake}"
 GH_SECONDARY_STATE="$GH_SECONDARY_STATE_DIR/gh-secondary-rate.json"
 
+# fleet-ops#5489: read-only gh seam. When the pre-check found the App
+# installation budget exhausted, READ-ONLY calls (issue list, issue view,
+# pr list, run list, gh api GET) take this wrapper and run WITHOUT the App
+# token — gh then uses the human identity, which the fleet contract allows
+# for organ READS only (fleet-ops#3445 "Human gh is read-only for organs").
+# A WRITE call must never use _gh_read: writes go through plain gh with the
+# App GH_TOKEN and are held by the mid-tick exhausted gate below.
+_gh_read() {
+    if [[ "${_gh_rl_pre_exhausted:-0}" == "1" ]]; then
+        ( unset GH_TOKEN GITHUB_TOKEN; gh "$@" )
+    else
+        gh "$@"
+    fi
+}
+
 _gh_secondary_read() {
     if [[ -f "$GH_SECONDARY_STATE" ]]; then
         cat "$GH_SECONDARY_STATE" 2>/dev/null || echo '{}'
@@ -347,7 +362,32 @@ fi
 # skipping one tick is safe; the next tick re-checks. Thresholds: skip when
 # remaining < 500 OR headroom < 10% (remaining/limit). A missing or stale
 # state file fails OPEN (the throttle is a soft gate, not a blocker).
+# fleet-ops#5489: when the App installation budget is EXHAUSTED, the tick no
+# longer skips the whole intake. READ-ONLY gh calls (issue/pr/run list,
+# gh api GET) fall back to the human _gh_read wrapper — "Human gh is read-only
+# for organs" is the fleet contract (fleet-ops#3445). WRITES (claims, labels,
+# comments, PR creation) stay on the App token and back off until the
+# x-ratelimit-reset time: the mid-tick gate reads the _gh_rl_pre_exhausted
+# flag and holds claims; _gh_read is used ONLY for reads, so a write can
+# never ride the human identity. A stale or exhausted state is never silent
+# either: ONE LOUD line per tick goes to the heartbeat triage file.
+_gh_app_loud() {
+    local triage="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
+    printf '[%s] LOUD [GH-APP-BUDGET] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" \
+        >>"$triage" 2>/dev/null || true
+}
+
+_gh_rl_pre_reset_in() {
+    local reset now wait
+    reset=$(printf '%s' "${_gh_rl_pre_json:-}" | jq -r '.reset // 0' 2>/dev/null) || reset=0
+    now=$(date +%s)
+    wait=$(( reset - now )); (( wait < 0 )) && wait=0
+    echo "$wait"
+}
+
 gh_rl_pre_path="${PI_INTAKE_GH_RATE_LIMIT_STATE:-/home/nish/workspaces/agent-state/pi-intake/gh-rate-limit.json}"
+_gh_rl_pre_exhausted=0
+_gh_rl_pre_reads=app
 gh_rl_pre_max_age="${PI_INTAKE_GH_RATE_LIMIT_MAX_AGE:-120}"
 gh_rl_pre_skip_min="${PI_INTAKE_GH_RATE_LIMIT_SKIP_MIN:-500}"
 gh_rl_pre_skip_pct="${PI_INTAKE_GH_RATE_LIMIT_SKIP_PCT:-10}"
@@ -363,8 +403,11 @@ if [[ -r "$gh_rl_pre_path" ]]; then
         _gh_rl_pre_fetched=$(printf '%s' "$_gh_rl_pre_json" | jq -r '.fetched_at // 0' 2>/dev/null) || _gh_rl_pre_fetched=0
         _gh_rl_pre_now=$(date +%s)
         _gh_rl_pre_age=$(( _gh_rl_pre_now - ${_gh_rl_pre_fetched%.*} ))
+        _gh_rl_pre_reset_in=$(_gh_rl_pre_reset_in)
         if (( _gh_rl_pre_age > gh_rl_pre_max_age )); then
             echo "gh rate-limit pre-check state stale (age=${_gh_rl_pre_age}s > max=${gh_rl_pre_max_age}s); failing open — gate: gh_rate_limit pre-check stale"
+            # fleet-ops#5489: stale is fail-open, never silent.
+            _gh_app_loud "remaining=${_gh_rl_pre_remaining} reset_in=- reads=app state_stale_age=${_gh_rl_pre_age}s (fleet-ops#5489: stale fail-open not silent)"
         else
             _gh_rl_pre_headroom=0
             if (( _gh_rl_pre_limit > 0 )); then
@@ -397,8 +440,13 @@ if [[ -r "$gh_rl_pre_path" ]]; then
                 } > "$_rl_skip_prom.tmp" 2>/dev/null; then
                     mv "$_rl_skip_prom.tmp" "$_rl_skip_prom" 2>/dev/null || true
                 fi
-                echo "rate-limit headroom low, skipping intake tick (remaining=${_gh_rl_pre_remaining}/${_gh_rl_pre_limit}, headroom=${_gh_rl_pre_headroom}% < ${gh_rl_pre_skip_pct}% or < ${gh_rl_pre_skip_min}); skipped_total=$_rl_skip_new"
-                exit 0
+                # fleet-ops#5489: budget exhausted -> do NOT skip the tick.
+                # Reads fall back to the human identity; writes back off at the
+                # mid-tick gate until the x-ratelimit-reset time.
+                _gh_rl_pre_exhausted=1
+                _gh_rl_pre_reads=human
+                _gh_app_loud "remaining=${_gh_rl_pre_remaining} reset_in=${_gh_rl_pre_reset_in}s reads=human (fleet-ops#5489)"
+                echo "rate-limit headroom low, gliding intake tick onto human-gh reads, holding writes until reset (remaining=${_gh_rl_pre_remaining}/${_gh_rl_pre_limit}, headroom=${_gh_rl_pre_headroom}% < ${gh_rl_pre_skip_pct}% or < ${gh_rl_pre_skip_min}); skipped_total=$_rl_skip_new"
             fi
         fi
     else
@@ -417,7 +465,7 @@ fi
 # (all visible issues were non-leverage → skip-surge-leverage), causing
 # fleet starvation (222 ready, 0 running). 250 covers the observed ceiling
 # with headroom; the early surge skip below keeps the tick fast.
-issues_json=$(gh issue list -R "$FULL" -l agent-ready --state open --json number,title,labels --limit 250 2>&1) || {
+issues_json=$(_gh_read issue list -R "$FULL" -l agent-ready --state open --json number,title,labels --limit 250 2>&1) || {
     echo "gh issue list failed: $issues_json" >&2
     exit 1
 }
@@ -602,13 +650,13 @@ blocked_filter() {
         # Resolve the target's live state. A PR is checked via the pulls
         # endpoint so a merged PR counts as cleared.
         local state_json is_pr state merged
-        if ! state_json=$(gh api "repos/${owner}/${rname}/issues/${target_num}" 2>/dev/null); then
+        if ! state_json=$(_gh_read api "repos/${owner}/${rname}/issues/${target_num}" 2>/dev/null); then
             any_open=1
             continue
         fi
         is_pr=$(printf '%s' "$state_json" | jq -r 'if .pull_request then "yes" else "no" end' 2>/dev/null || echo no)
         if [ "$is_pr" = "yes" ]; then
-            if ! state_json=$(gh api "repos/${owner}/${rname}/pulls/${target_num}" 2>/dev/null); then
+            if ! state_json=$(_gh_read api "repos/${owner}/${rname}/pulls/${target_num}" 2>/dev/null); then
                 any_open=1
                 continue
             fi
@@ -788,7 +836,7 @@ depends_on_filter() {
                     if [[ -n "${_dep_body_cache[$dep_key]:-}" ]]; then
                         dep_body="${_dep_body_cache[$dep_key]}"
                     else
-                        dep_body="$(gh issue view "$target_num" -R "${owner}/${rname}" --json body --jq '.body // ""' 2>/dev/null || true)"
+                        dep_body="$(_gh_read issue view "$target_num" -R "${owner}/${rname}" --json body --jq '.body // ""' 2>/dev/null || true)"
                         _dep_body_cache[$dep_key]="$dep_body"
                     fi
                     if printf '%s\n' "$dep_body" | _depends_on_refs \
@@ -813,22 +861,22 @@ depends_on_filter() {
 resolve_dep() {
     local owner="$1" rname="$2" num="$3"
     local state_json state
-    state_json=$(gh api "repos/${owner}/${rname}/issues/${num}" 2>/dev/null) || { echo "NOT_DONE"; return; }
+    state_json=$(_gh_read api "repos/${owner}/${rname}/issues/${num}" 2>/dev/null) || { echo "NOT_DONE"; return; }
     state=$(printf '%s' "$state_json" | jq -r '.state // "open"' 2>/dev/null || echo open)
     if [[ "$state" == "closed" ]]; then
         echo "DONE"; return
     fi
     # Merged PR with claim/issue-<n> or fable/issue-<n> branch.
-    if gh pr list -R "${owner}/${rname}" --head "claim/issue-${num}" --state merged --json number 2>/dev/null \
+    if _gh_read pr list -R "${owner}/${rname}" --head "claim/issue-${num}" --state merged --json number 2>/dev/null \
         | jq -e 'length > 0' >/dev/null 2>&1; then
         echo "DONE"; return
     fi
-    if gh pr list -R "${owner}/${rname}" --head "fable/issue-${num}" --state merged --json number 2>/dev/null \
+    if _gh_read pr list -R "${owner}/${rname}" --head "fable/issue-${num}" --state merged --json number 2>/dev/null \
         | jq -e 'length > 0' >/dev/null 2>&1; then
         echo "DONE"; return
     fi
     # Any PR linked via "closes #n" that is merged (cross-referenced PR).
-    if gh api "repos/${owner}/${rname}/issues/${num}/timeline" 2>/dev/null \
+    if _gh_read api "repos/${owner}/${rname}/issues/${num}/timeline" 2>/dev/null \
         | jq -e '[.[]? | select(.event == "cross-referenced") | .source.issue | select(.pull_request != null and .pull_request.merged_at != null)] | length > 0' >/dev/null 2>&1; then
         echo "DONE"; return
     fi
@@ -1524,6 +1572,15 @@ load_seat_caps || true
 # without preventing the first run after a fresh start.
 gh_rl_path="${PI_INTAKE_GH_RATE_LIMIT_STATE:-/home/nish/workspaces/agent-state/pi-intake/gh-rate-limit.json}"
 gh_rl_max_age="${PI_INTAKE_GH_RATE_LIMIT_MAX_AGE:-120}"
+# fleet-ops#5489: the pre-check already classified the App budget as
+# exhausted this tick (and the issue list happened before this gate). WRITES (claims, labels, comments, PR creation) back off until the
+# App x-ratelimit-reset instead of failing open or burning App calls. This
+# hold runs BEFORE the exporter-based gate so the exhausted hold applies
+# even if the side-car exporter flags disagree.
+if (( ${_gh_rl_pre_exhausted:-0} == 1 )); then
+    echo "gh_app budget exhausted (remaining=${_gh_rl_pre_remaining:-unknown}, resets in ${_gh_rl_pre_reset_in:-0}s); reads ran on human gh, holding claims this tick until reset — gate: gh_app_budget exhausted (fleet-ops#5489)"
+    exit 0
+fi
 if [[ -r "$gh_rl_path" ]]; then
     _gh_rl_json=$(cat "$gh_rl_path" 2>/dev/null) || _gh_rl_json=
     if [[ -n "$_gh_rl_json" ]]; then
@@ -2171,7 +2228,7 @@ blocked-on: infra" 2>/dev/null || true
         fi
         # No live worker. Is there an open PR from this branch? If so, the
         # work is done and in review — skip (do not re-claim finished work).
-        _claim_prs=$(gh api "repos/$FULL/pulls?state=open&head=${FULL%%/*}:claim/issue-$N&per_page=1" 2>/dev/null || true)
+        _claim_prs=$(_gh_read api "repos/$FULL/pulls?state=open&head=${FULL%%/*}:claim/issue-$N&per_page=1" 2>/dev/null || true)
         _claim_pr_count=$(printf '%s' "$_claim_prs" | jq 'length // 0' 2>/dev/null || echo 0)
         if (( _claim_pr_count > 0 )); then
             echo "issue $N ($title): skipped-claim-pr-open (open PR from claim/issue-$N)"
@@ -2253,7 +2310,7 @@ blocked-on: orchestrator" 2>/dev/null || true
     # from the initial issue list. A failed view is fail-closed: skip
     # this issue this tick rather than claim a possibly-blocked or
     # out-of-band issue. The next tick retries.
-    _body_json=$(gh issue view "$N" -R "$FULL" --json body,author 2>/dev/null) || {
+    _body_json=$(_gh_read issue view "$N" -R "$FULL" --json body,author 2>/dev/null) || {
         echo "issue $N ($title): skipped-body-unreadable"
         continue
     }
@@ -2284,7 +2341,7 @@ blocked-on: orchestrator" 2>/dev/null || true
         # Probe for a merged claim-branch PR once, reused by all three park
         # branches. The body rides along: the #5045 mention classification
         # (the #3231/#1138 relates_to_issue Relates-to trailer) needs it.
-        _park_merged=$(gh pr list -R "$FULL" --head "claim/issue-$N" --state merged --json number,url,mergedAt,body 2>/dev/null || echo "[]")
+        _park_merged=$(_gh_read pr list -R "$FULL" --head "claim/issue-$N" --state merged --json number,url,mergedAt,body 2>/dev/null || echo "[]")
         _park_merged_count=0
         if printf '%s' "$_park_merged" | jq -e 'length > 0' >/dev/null 2>&1; then
             _park_merged_count=$(printf '%s' "$_park_merged" | jq 'length' 2>/dev/null || echo 0)
@@ -2414,7 +2471,7 @@ blocked-on: orchestrator" 2>/dev/null || true
                                 _park_ref_full="Nishfleet/${_park_ref_repo}"
                             fi
                             _park_ref_num="${_park_ref##*#}"
-                            _park_pr_info=$(gh pr view "$_park_ref_num" -R "$_park_ref_full" --json state,headRefName 2>/dev/null || true)
+                            _park_pr_info=$(_gh_read pr view "$_park_ref_num" -R "$_park_ref_full" --json state,headRefName 2>/dev/null || true)
                             if [[ -n "$_park_pr_info" ]] && printf '%s' "$_park_pr_info" | jq -e '.state == "MERGED" and .headRefName != "claim/issue-'"$N"'"' >/dev/null 2>&1; then
                                 _park_nonclaim_merged=1
                                 _park_delivered_pr="$_park_ref_num"
@@ -2647,7 +2704,7 @@ blocked-on: orchestrator" 2>/dev/null || true
                 exit 0
                 ;;
         esac
-        labels_json=$(gh issue view "$N" -R "$FULL" --json labels --jq '.labels | map(.name)' 2>/dev/null || true)
+        labels_json=$(_gh_read issue view "$N" -R "$FULL" --json labels --jq '.labels | map(.name)' 2>/dev/null || true)
         if echo "$labels_json" | grep -q '"agent-in-progress"' && ! echo "$labels_json" | grep -q '"agent-ready"'; then
             echo "issue $N: labels already in target state (agent-in-progress set, agent-ready removed) — idempotent skip"
         else

@@ -57,6 +57,21 @@ else
     echo "repair_rung=off ticks=${_rung_s}"
 fi
 
+# --- gh_app: nishfleet-worker App installation token budget ----------------
+# fleet-ops#5489: an idle fleet with a full queue because the App token's
+# 5000/hr core budget is exhausted is a NAMED fault, never a mystery. Reads
+# the same side-car state the exporter writes every 60s (the intake tick's
+# rate-limit state); missing/unreadable is UNAVAILABLE, never a fabricated 0.
+_gh_app_state="${GH_APP_RATE_LIMIT_STATE:-$HOME/workspaces/agent-state/pi-intake/gh-rate-limit.json}"
+_gh_app_remaining=$(jq -r '.resources.core.remaining // .remaining // 0' "$_gh_app_state" 2>/dev/null || true)
+if [[ "${_gh_app_remaining:-}" =~ ^[0-9]+$ ]]; then
+    _gh_app_reset=$(jq -r '.resources.core.reset // .reset // 0' "$_gh_app_state" 2>/dev/null || echo 0)
+    _gh_app_wait=$(( _gh_app_reset - $(date +%s) )); (( _gh_app_wait < 0 )) && _gh_app_wait=0
+    echo "gh_app: remaining=${_gh_app_remaining} reset_in=${_gh_app_wait}s"
+else
+    echo "gh_app: UNAVAILABLE:state-missing-or-unparseable"
+fi
+
 # Merged PRs across the fleet repos in the trailing 24h (gh is the live truth;
 # a gh failure makes the numerator unknown and is flagged, not silently zeroed).
 merged_24h=0
