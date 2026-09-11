@@ -303,6 +303,64 @@ rc=$(run_bin 0)
 ok "SPAWN_BLOCKED-only isError pair is skipped (fleet-ops#4620)"
 rm -f "$sessions/spawnblock.jsonl"
 
+# --- 7h. printed text containing the exit phrase must not count (#4979) -----
+# A sed/cat/deep-read of a file that CONTAINS the literal string
+# `Command exited with code 1` (e.g. a session fixture or a cited log) is
+# text the command merely PRINTED; the command itself exited 0. Before the
+# fix, `_exit_code` searched the whole result text and counted each printed
+# occurrence as a real failed attempt — a false two-attempt block on a
+# session whose every command succeeded (fleet-ops#4949 live session).
+python3 - "$sessions" <<'PYEOF'
+import json, sys
+sessions = sys.argv[1]
+text = "Command exited with code 1\nCommand exited with code 1\nsome fixture body"
+lines = [
+  {"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"s1","name":"bash","arguments":{"command":"sed -n '120,200p' tests/pi-issue-run-debug-playbook-gate.test.sh"}}]}},
+  {"type":"message","message":{"role":"toolResult","toolCallId":"s1","toolName":"bash","isError":False,"content":[{"type":"text","text":text + "\nCommand exited with code 0"}]}},
+  {"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"s2","name":"bash","arguments":{"command":"cat tests/fleet-debug-playbook.test.sh | head"}}]}},
+  {"type":"message","message":{"role":"toolResult","toolCallId":"s2","toolName":"bash","isError":False,"content":[{"type":"text","text":text + "\nCommand exited with code 0"}]}}
+]
+with open(sessions + "/printexit.jsonl","w") as f:
+    f.write("\n".join(json.dumps(o) for o in lines) + "\n")
+PYEOF
+touch -d "2026-08-27T00:00:00Z" "$sessions/printexit.jsonl"
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "printed-exit-text session should exit 0 (got $rc) $(cat "$scratch/err.log")"
+ok "mid-body printed 'Command exited with code' text is not a failed attempt (#4979)"
+rm -f "$sessions/printexit.jsonl"
+
+# --- 7i. the gate's own probe must not ratchet the count (#4979) ------------
+# `fleet-debug-playbook gate <session>` exits 1 BY DESIGN when the session is
+# blocked; that rc=1 is a check exit code, not a work failure. Counting it
+# raises the very count under inspection (attempts went 2 -> 4 in the live
+# #4949 session).
+python3 - "$sessions" <<'PYEOF'
+import json, sys
+sessions = sys.argv[1]
+lines = [
+  {"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"p1","name":"bash","arguments":{"command":"fleet-debug-playbook gate ~/.pi/agent/sessions/foo.jsonl"}}]}},
+  {"type":"message","message":{"role":"toolResult","toolCallId":"p1","toolName":"bash","isError":True,"content":[{"type":"text","text":"{\"attempts\":\"2\"}\nCommand exited with code 1"}]}},
+  {"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"p2","name":"bash","arguments":{"command":"python3 lib/debug-playbook.py gate --path foo.jsonl"}}]}},
+  {"type":"message","message":{"role":"toolResult","toolCallId":"p2","toolName":"bash","isError":True,"content":[{"type":"text","text":"{\"attempts\":\"4\"}\nCommand exited with code 1"}]}}
+]
+with open(sessions + "/gateprobe.jsonl","w") as f:
+    f.write("\n".join(json.dumps(o) for o in lines) + "\n")
+PYEOF
+touch -d "2026-08-27T00:00:00Z" "$sessions/gateprobe.jsonl"
+rc=$(run_bin 0)
+[[ "$rc" == "0" ]] || fail "gate self-probe pair should exit 0 (got $rc) $(cat "$scratch/err.log")"
+ok "gate self-probe exit-1 does not ratchet the count (fleet-ops#4979)"
+rm -f "$sessions/gateprobe.jsonl"
+
+# --- 7j. a real rc!=0 command still counts (fail-closed guard) --------------
+# The trailing-status discriminator must not weaken the real signal: a real
+# isError=true harness status line is still the final non-empty line.
+write_session "stillreal" "$FAIL_TWO"
+rc=$(run_bin 0)
+[[ "$rc" == "1" ]] || fail "real failing pair should still exit 1 (got $rc) $(cat "$scratch/err.log")"
+ok "trailing-status real failures still count after the #4979 fix"
+rm -f "$sessions/stillreal.jsonl"
+
 # --- 7g. two edit no-op-only isError toolResults (fleet-ops#4946) -----------
 # An `edit` tool no-op "No changes made to <path>. The replacement produced
 # identical content" is the edit-tool analog of a grep/rg/diff/ls no-match:
