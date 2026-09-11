@@ -246,7 +246,13 @@ while IFS= read -r row; do
     slug=$(jq -r '.slug' <<<"$row")
     snippet=$(jq -r '.snippet' <<<"$row")
     path=$(jq -r '.path' <<<"$row")
-    loud "FINDINGS-UNQUEUED" "session=$slug path=$path snippet=$snippet"
+    # fleet-ops#5478: carry the filed signal key in the LOUD line itself.
+    # Without it the detector->queue reconciler derives a different key
+    # (or none — the session=/path= shape is never-green-suppressed), so the
+    # filed `signal: findings-queued/<slug>` issue is never in the tick's
+    # current_signals and observe-to-close phantom-closes it while the
+    # detector still fires — the close->refile loop #5478 flags.
+    loud "FINDINGS-UNQUEUED" "signal: findings-queued/${slug} session=$slug path=$path snippet=$snippet"
 
     [[ "$FILE_ISSUES" == "1" ]] || continue
     [[ "$filed" -lt "$CAP" ]] || continue

@@ -156,6 +156,13 @@ write_session "ask-nofile" '{"type":"message","message":{"role":"assistant","con
 rc=$(run_bin 0)
 [[ "$rc" == "1" ]] || fail "unqueued offer should exit 1 (got $rc) $(cat "$scratch/err.log")"
 grep -q "FINDINGS-UNQUEUED" "$scratch/err.log" || fail "missing FINDINGS-UNQUEUED loud line"
+# fleet-ops#5478: the LOUD line must carry the filed signal key so the
+# detector->queue reconciler derives the same signal the auto-filed issue
+# carries — otherwise the issue is never in current_signals and the
+# reconciler's observe-to-close phantom-closes it while still alarmed
+# (the close->refile loop that refired ~16x on 583c41ee).
+grep -q "FINDINGS-UNQUEUED.*signal: findings-queued/ask-nofile" "$scratch/err.log" \
+  || fail "FINDINGS-UNQUEUED loud line missing the filed signal key $(cat "$scratch/err.log")"
 ok "unquoted offer without queue is flagged"
 rm -f "$sessions/ask-nofile.jsonl"
 

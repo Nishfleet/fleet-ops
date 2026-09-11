@@ -1499,4 +1499,71 @@ print("scenario 18 assertions passed")
 PY
 ok "scenario 18: find_existing_signal matches the issue_body() backticked trailer, not prose mentions"
 
+# ---------------------------------------------------------------------------
+# 19. fleet-ops#5478: bin/fleet-findings-queued files `signal: findings-queued/
+#     <slug>` issues, and its FINDINGS-UNQUEUED LOUD line now carries the same
+#     signal key. Before the fix the line carried only session=/path=/snippet=
+#     — derive_signals() suppressed it as never-green-shaped ([]), so the
+#     bin-filed issue was never in current_signals and observe-to-close
+#     phantom-closed it on the SAME tick while the detector still fired. The
+#     bin re-filed next tick (its dedupe is open-only): the close->refile
+#     loop the blind-audit flagged (~16 cycles on 583c41ee, 2026-09-09).
+# ---------------------------------------------------------------------------
+fqslug="583c41ee-f88b-4b2a-84c5-4f691f9de076"
+cat > "$tmp/triage19.md" <<EOF
+[2026-08-28T13:30:00Z] [FINDINGS-UNQUEUED] signal: findings-queued/${fqslug} session=${fqslug} path=/home/nish/.cursor/projects/x/agent-transcripts/${fqslug}/${fqslug}.jsonl snippet=Should I file it?
+EOF
+
+# 19a. Bin-filed issue (bare `signal:` body marker) + signal still firing ->
+#     dedupe + heartbeat comment, NEVER a phantom close.
+cat > "$tmp/open19a.json" <<EOF
+[{"number": 4645, "body": "The session-close lint found an assistant ask to file/queue with no queue action.\n\nDo not close until the detector reports this clean on a real heartbeat tick (observe-to-close).\n\nsignal: findings-queued/${fqslug}\n", "labels": [{"name": "agent-ready"}], "createdAt": "2026-08-28T10:00:00Z", "comments": []}]
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/open19a.json" "$tmp/triage19.md" > "$tmp/summary19a.json"
+jq -e '.deduped == 1 and .closed == 0 and .filed == 0' "$tmp/summary19a.json" >/dev/null \
+    || fail "scenario 19a: still-firing findings-queued signal must dedupe, not close (got: $(cat "$tmp/summary19a.json"))"
+! grep -q "issue close" "$tmp/gh.log" \
+    || fail "scenario 19a: phantom close on a live findings-queued signal (gh.log: $(cat "$tmp/gh.log"))"
+ok "scenario 19a: live findings-queued/<slug> signal dedupes its bin-filed issue, no phantom close"
+
+# 19b. Signal firing with NO open issue -> the reconciler's fallback files one
+#     carrying the same signal key (covers a failed/capped bin auto-file).
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/empty.json" "$tmp/triage19.md" > "$tmp/summary19b.json"
+jq -e '.filed == 1' "$tmp/summary19b.json" >/dev/null \
+    || fail "scenario 19b: unfiled findings-queued signal must be filed (got: $(cat "$tmp/summary19b.json"))"
+grep -q "findings-queued/${fqslug}" "$tmp/filed.jsonl" \
+    || fail "scenario 19b: filed issue missing the findings-queued signal key (filed: $(cat "$tmp/filed.jsonl"))"
+ok "scenario 19b: unfiled findings-queued signal gets a reconciler fallback issue"
+
+# 19c. A reconciler-filed fallback (backticked `findings-queued/<slug>` body
+#     trailer) is tracked too — deduped while the signal fires, not refiled.
+cat > "$tmp/open19c.json" <<EOF
+[{"number": 5479, "body": "The heartbeat detector reported this alarm on a real tick and no open issue carried its signal key.\n\n\`findings-queued/${fqslug}\`\n", "labels": [{"name": "agent-ready"}], "createdAt": "2026-08-28T10:00:00Z", "comments": []}]
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/open19c.json" "$tmp/triage19.md" > "$tmp/summary19c.json"
+jq -e '.deduped == 1 and .closed == 0 and .filed == 0' "$tmp/summary19c.json" >/dev/null \
+    || fail "scenario 19c: backticked findings-queued filing must be tracked (got: $(cat "$tmp/summary19c.json"))"
+! grep -q "issue close" "$tmp/gh.log" \
+    || fail "scenario 19c: backticked findings-queued filing must not close while alarmed"
+ok "scenario 19c: reconciler-filed findings-queued issue is tracked via the backticked key"
+
+# 19d. Signal gone (detector green) -> observe-to-close fires for real.
+cat > "$tmp/triage19-off.md" <<'EOF'
+[2026-08-28T13:30:00Z] [FINDINGS-QUEUED-OK] no unqueued offers in window (scanned=3 closed=0)
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/open19a.json" "$tmp/triage19-off.md" > "$tmp/summary19d.json"
+jq -e '.closed == 1 and .deduped == 0' "$tmp/summary19d.json" >/dev/null \
+    || fail "scenario 19d: green findings-queued signal must observe-to-close (got: $(cat "$tmp/summary19d.json"))"
+grep -q "issue close 4645" "$tmp/gh.log" \
+    || fail "scenario 19d: expected gh issue close 4645 (got: $(cat "$tmp/gh.log"))"
+ok "scenario 19d: green findings-queued signal observe-to-closes the filing"
+
 ok "all signal-reconcile scenarios passed"

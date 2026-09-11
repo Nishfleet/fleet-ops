@@ -299,7 +299,14 @@ SIGNAL_RE = re.compile(r"signal:\s*([^\s`]+)")
 # suffix) must be recognized too — GATE-BLOCK files exactly such a bare rule
 # signal, and leftover loud/debug-playbook-missing issues still need
 # observe-to-close to see them.
-BACKTICK_SIGNAL_RE = re.compile(r"`((?:loud/[a-z0-9-]+/[^\s`]+)|(?:loud/[a-z0-9-]+))`")
+# fleet-ops#5478: `` `findings-queued/<slug>` `` is the second filed
+# vocabulary — bin/fleet-findings-queued files `signal: findings-queued/<slug>`
+# and (as the reconciler's fallback path) a reconciler-filed body carries the
+# same key backticked. Without the clause a reconciler-filed fallback is
+# invisible to open_by_signal and re-files every tick.
+BACKTICK_SIGNAL_RE = re.compile(
+    r"`((?:loud/[a-z0-9-]+/[^\s`]+)|(?:loud/[a-z0-9-]+)|(?:findings-queued/[^\s`]+))`"
+)
 UNIT_EQ_RE = re.compile(r"(?:^|[\s,])unit=([A-Za-z0-9_@.:-]+\.(?:service|timer|path|socket|target|slice))")
 UNIT_BARE_RE = re.compile(
     r"\b([A-Za-z0-9_@.:-]+\.(?:service|timer|path|socket|target|slice))\b"
