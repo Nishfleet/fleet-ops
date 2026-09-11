@@ -472,7 +472,7 @@ EOF
 # wins over its benign prefix (the notify+503 combo), so wall is checked
 # first; a line is only demoted when it carries neither wall evidence nor
 # benign machinery text.
-PROVIDER_WALL_PATTERNS='overloaded_error|FreeUsageLimitError|quota_cap|INFERENCE_CAP_ERROR|out-of-credits|insufficient_user_quota|insufficient credits|purchase more credits|credit insufficient balance|insufficient_credits|out of credits|balance exhausted|quota_exhausted|Provider returned error|Upstream model provider is temporarily unavailable|resource_exhausted|Devin exited|[Nn][Oo] [Uu]sable seat|NO USABLE SEAT|no healthy seat available|spawnSync.*ETIMEDOUT'
+PROVIDER_WALL_PATTERNS='overloaded_error|FreeUsageLimitError|quota_cap|INFERENCE_CAP_ERROR|out-of-credits|insufficient_user_quota|insufficient credits|purchase more credits|credit insufficient balance|insufficient_credits|out of credits|balance exhausted|quota_exhausted|Provider returned error|Upstream model provider is temporarily unavailable|resource_exhausted|Quota exceeded|Devin exited|overall message rate limit|will reset in [0-9]+ minute|[Nn][Oo] [Uu]sable seat|NO USABLE SEAT|no healthy seat available|spawnSync.*ETIMEDOUT'
 # Benign pi-machinery / systemd lifecycle lines that always accompany a scout
 # run in the unit journal. Not fault evidence; must not demote a wall crash.
 BENIGN_JOURNAL_PATTERNS='^\[[0-9]{4}-[0-9]{2}-[0-9]{2}T|EXTLOAD-OK|PACKET-VERDICT|Ready for input|Main process exited|Failed with result|Failed to start|Triggering OnFailure|Consumed .*CPU time|Starting pi-'
