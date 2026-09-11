@@ -410,6 +410,28 @@ remove_judge_budget_dropins() {
     done
 }
 
+# fleet-ops#5203: bridge drop-ins written by hand on 2026-09-11
+# (TimeoutStartSec=120 on the two network canaries) while #5200 was in
+# flight. The value now lives in the unit files; remove the bridge so the
+# repo unit is the only source (two sources for one value is the #5095
+# silent-contradiction bug). Remove only the 20-start-timeout.conf file,
+# never the whole dir: the repo-sourced 10-pg-socket.conf symlink in
+# fleet-litellm-health-canary.service.d must stay. Only touch it when this
+# MANIFEST installs into the live user unit dir.
+remove_canary_start_timeout_dropins() {
+    local user_systemd="${HOME}/.config/systemd/user"
+    local u dropin
+    grep -q " ${user_systemd}/" "$manifest" 2>/dev/null || return 0
+    for u in fleet-litellm-health-canary gh-webhook-canary; do
+        dropin="${user_systemd}/${u}.service.d/20-start-timeout.conf"
+        if [ -e "$dropin" ] || [ -L "$dropin" ]; then
+            rm -f "$dropin"
+            echo "removed bridge start-timeout drop-in: $dropin (fleet-ops#5203)"
+            user_unit_changed=1
+        fi
+    done
+}
+
 remove_stale_scout_prom_mode_dropin() {
     local user_systemd="${HOME}/.config/systemd/user"
     local dropin="${user_systemd}/pi-scout@.service.d/20-prom-mode.conf"
@@ -1145,6 +1167,7 @@ if [ "$do_user_install" = 1 ]; then
   remove_papered_heartbeat_dropin
   remove_stale_scout_prom_mode_dropin
   remove_judge_budget_dropins
+  remove_canary_start_timeout_dropins
   remove_orphaned_fleet_auto_deploy_dropin
   remove_orphaned_fleet_auto_ship_dropin
   remove_orphaned_fleet_cheap_triage_dropin

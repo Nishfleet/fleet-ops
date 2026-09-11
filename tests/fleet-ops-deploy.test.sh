@@ -127,6 +127,8 @@ grep -q 'remove_orphaned_fleet_idea_intake_dropin' "$repo_root/install.sh" \
     || fail "install.sh must remove the orphaned fleet-idea-intake.service.d drop-in (fleet-ops#4435)"
 grep -q 'remove_orphaned_fleet_loop_dropin' "$repo_root/install.sh" \
     || fail "install.sh must remove the orphaned fleet-loop@.service.d drop-in (fleet-ops#4502)"
+grep -q 'remove_canary_start_timeout_dropins' "$repo_root/install.sh" \
+    || fail "install.sh must remove the bridge start-timeout drop-ins (fleet-ops#5203)"
 grep -q 'pi-scout@.service.d/20-prom-mode.conf' "$repo_root/bin/fleet-ops-deploy" \
     || fail "fleet-ops-deploy must remove the stale scout 20-prom-mode drop-in (fleet-ops#2924)"
 grep -q 'fleet-auto-deploy.timer.d' "$repo_root/bin/fleet-ops-deploy" \
@@ -143,6 +145,8 @@ grep -q 'fleet-idea-intake.service.d' "$repo_root/bin/fleet-ops-deploy" \
     || fail "fleet-ops-deploy must remove the orphaned fleet-idea-intake.service.d drop-in (fleet-ops#4435)"
 grep -q 'fleet-loop@.service.d' "$repo_root/bin/fleet-ops-deploy" \
     || fail "fleet-ops-deploy must remove the orphaned fleet-loop@.service.d drop-in (fleet-ops#4502)"
+grep -q '20-start-timeout.conf' "$repo_root/bin/fleet-ops-deploy" \
+    || fail "fleet-ops-deploy must remove the bridge start-timeout drop-ins (fleet-ops#5203)"
 grep -q 'systemd/pi-intake@.service.d/10-use-tick.conf' "$repo_root/MANIFEST" \
     || fail "MANIFEST must list 10-use-tick.conf (fleet-ops#2924 absorb)"
 [[ -f "$repo_root/systemd/pi-intake@.service.d/10-use-tick.conf" ]] \
@@ -1111,6 +1115,30 @@ printf 'bak\n' > "$orphan_loop_dir/zz-gate-retry.conf.bak-time-audit-20260812"
 PATH="$scratch:$PATH" "$install" >/dev/null 2>&1 || true
 [[ ! -d "$orphan_loop_dir" ]] || fail "scenario12b-orphan-loop: orphaned fleet-loop@.service.d drop-in dir was not removed"
 ok "scenario12b-orphan-loop: install.sh removes the orphaned fleet-loop@.service.d drop-in dir (fleet-ops#4502)"
+
+# fleet-ops#5203: bridge start-timeout drop-ins for the two network canaries
+# (hand-placed 2026-09-11 while #5200 was in flight; the units still exist and
+# now carry TimeoutStartSec=120 themselves). install.sh must remove only the
+# 20-start-timeout.conf file — the repo-sourced 10-pg-socket.conf symlink in
+# fleet-litellm-health-canary.service.d must survive.
+mkdir -p "$checkout/systemd/fleet-litellm-health-canary.service.d"
+printf '[Service]\nEnvironment=PGSOCKET=/tmp\n' \
+    > "$checkout/systemd/fleet-litellm-health-canary.service.d/10-pg-socket.conf"
+pg_socket="$HOME/.config/systemd/user/fleet-litellm-health-canary.service.d/10-pg-socket.conf"
+for u in fleet-litellm-health-canary gh-webhook-canary; do
+    bridge_dir="$HOME/.config/systemd/user/${u}.service.d"
+    mkdir -p "$bridge_dir"
+    printf '[Service]\nTimeoutStartSec=120\n' > "$bridge_dir/20-start-timeout.conf"
+done
+ln -sfn "$checkout/systemd/fleet-litellm-health-canary.service.d/10-pg-socket.conf" "$pg_socket"
+PATH="$scratch:$PATH" "$install" >/dev/null 2>&1 || true
+for u in fleet-litellm-health-canary gh-webhook-canary; do
+    [[ ! -e "$HOME/.config/systemd/user/${u}.service.d/20-start-timeout.conf" ]] \
+        || fail "scenario12b-canary-timeout: bridge start-timeout drop-in for $u was not removed"
+done
+[[ -L "$pg_socket" ]] \
+    || fail "scenario12b-canary-timeout: repo-sourced 10-pg-socket.conf symlink was removed"
+ok "scenario12b-canary-timeout: install.sh removes the bridge 20-start-timeout.conf drop-ins, keeps 10-pg-socket.conf (fleet-ops#5203)"
 
 # --- scenario 12c: cap drop with NEWER repo mtime (fleet-ops#371) ------------
 # git checkout of a stale commit stamps the working tree now, so the #372

@@ -308,6 +308,21 @@ for u in fable-fleet-check fable-fleet-check-kimi fable-fleet-check-opus; do
     fi
 done
 
+# fleet-ops#5203: bridge start-timeout drop-ins (hand-written 2026-09-11
+# while #5200 was in flight); the value lives in the unit files now.
+# install.sh also removes them on a successful install; remove here too on a
+# dirty/non-ff deploy. File-only removal — the repo-sourced
+# 10-pg-socket.conf symlink in fleet-litellm-health-canary.service.d stays.
+for u in fleet-litellm-health-canary gh-webhook-canary; do
+    dropin="${HOME}/.config/systemd/user/${u}.service.d/20-start-timeout.conf"
+    if [ -e "$dropin" ] || [ -L "$dropin" ]; then
+        rm -f "$dropin"
+        log "removed bridge start-timeout drop-in: $dropin (fleet-ops#5203)"
+        systemctl --user daemon-reload >/dev/null 2>&1 \
+            || log "WARN: daemon-reload after start-timeout drop-in removal failed"
+    fi
+done
+
 # fleet-ops#4112: orphaned drop-in dir for the deleted fleet-auto-deploy unit
 # (WFR 2026-08-30). install.sh also removes it on a successful install; remove
 # here too so a dirty/non-ff deploy still clears the invisible leftover.
