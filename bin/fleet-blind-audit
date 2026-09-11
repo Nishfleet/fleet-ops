@@ -670,11 +670,16 @@ if ! printf '%s' "$findings" | jq -e 'type=="object" and has("findings")' >/dev/
 fi
 printf '%s\n' "$findings" >"$FINDINGS_JSON"
 printf '%s\n' "${open_issues:-[]}" >"$REPORT_DIR/open-issues.json"
+# fleet-ops#5477: the lens matches a github-issue seam to its own issue when
+# it is open or was delivered by a merged PR; the closed_issues fetch already
+# carries closedByPullRequestsReferences for the undelivered hunt.
+printf '%s\n' "${closed_issues:-[]}" >"$REPORT_DIR/closed-issues.json"
 set +e
 close_json=$(python3 "$SEAM_LIB" close \
     --candidates "$SEAM_CANDIDATES" \
     --findings "$FINDINGS_JSON" \
     --open-issues "$REPORT_DIR/open-issues.json" \
+    --closed-issues "$REPORT_DIR/closed-issues.json" \
     --report "$REPORT_MD" \
     --seams-out "$REPORT_DIR/seams.json" \
     --since "$SEAM_SINCE" \

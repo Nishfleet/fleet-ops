@@ -16,6 +16,11 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
 bin="$repo_root/bin/fleet-blind-audit"
 
+# Pin the seam lens to the repo copy under test; otherwise the harness picks
+# up the installed ~/.local/lib/pi-packet copy, which lags the repo's CLI
+# (fleet-ops#5477 added --closed-issues).
+export AUDIT_SEAM_LIB="$repo_root/lib/manual-seam-lens.py"
+
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
