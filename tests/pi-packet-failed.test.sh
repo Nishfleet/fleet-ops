@@ -241,6 +241,8 @@ Environment=AGENT_STATE=$std6
 Environment=PI_PACKET_STATE=$std6/pi-packets
 Environment=PI_PACKET_FAILED_DELIVERABLE=$std6/expected-deliverable.md
 ExecStart=$bin %i
+StandardOutput=file:$std6/handler.stdout
+StandardError=file:$std6/handler.stderr
 EOF
     systemctl --user daemon-reload
     # The stub fails once (Restart=no via transient default) and carries the
@@ -273,7 +275,7 @@ assert any(r["ref"] == "$dstub.service" and r["disposition"] == "carried_over"
            and r["source_organ"] == "pi-packet" for r in rows), rows
 PY
     grep -q -- '--label agent-ready' "$fd6/issuefile.calls" \
-        || fail "drill: deliverable stub must trigger the agent-ready re-queue"
+        || fail "drill: deliverable stub must trigger the agent-ready re-queue (handler stderr: $(cat "$std6/handler.stderr" 2>/dev/null | tail -6); unit env visible: $(systemctl --user show "$dstub.service" -p Environment --value 2>&1 | head -2); drill template: $(systemctl --user show "pi-packet-failed-drill@$dstub.service.service" -p Environment --value 2>&1 | head -3))"
     grep -q "$dstub" "$fd6/issuefile.calls" || fail "drill: issue must name the stub unit"
     # Cleanup: stub + handler instance and the runtime template.
     systemctl --user reset-failed "$dstub.service" "$handler_unit" >/dev/null 2>&1 || true
