@@ -2347,7 +2347,7 @@ blocked-on: orchestrator" 2>/dev/null || true
                 if [[ -z "$_park_runtime_unit" ]]; then
                     _park_refs=""
                     if [[ -n "$_park_text" ]]; then
-                        _park_refs=$(printf '%s' "$_park_text" | grep -oE '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+|[A-Za-z0-9_.-]+#[0-9]+|#[0-9]+' | sed 's/^#//' | sort -u | head -15) || true
+                        _park_refs=$(printf '%s' "$_park_text" | grep -oE '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+|[A-Za-z0-9_.-]+#[0-9]+|#[0-9]+' | sed 's/^#//' | sort -u) || true
                     fi
                     if [[ -n "$_park_refs" ]]; then
                         while IFS= read -r _park_ref; do
