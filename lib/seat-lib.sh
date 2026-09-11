@@ -6436,7 +6436,7 @@ is_spawn_etimeout() {
     local out="$1" err="$2"
     local combined="$out"$'\n'"$err"
     [[ -n "$combined" ]] || return 1
-    if ! grep -qiE 'ETIMEDOUT|connection timed out|connect ETIMEDOUT|timed out waiting' <<<"$combined"; then
+    if ! grep -qiE 'ETIMEDOUT|E2BIG|connection timed out|connect ETIMEDOUT|timed out waiting' <<<"$combined"; then
         return 1
     fi
     # Co-occurrence guard: a worker that took down stdout verbosely could
@@ -6445,10 +6445,16 @@ is_spawn_etimeout() {
     # is the cheap regex-version of "did this happen before pi had a real
     # response" — a real timeout mid-session is paired with an HTTP status,
     # never with spawn/socket/connect/child.
-    if grep -qiE '.{0,120}(ETIMEDOUT|timed out).{0,120}(spawn|socket|connect|child|fetch|handshake)' <<<"$combined"; then
+    # fleet-ops#5309: E2BIG joins the signature set — `spawnSync <bin> E2BIG`
+    # is pi's cursor provider passing a prompt past the kernel's per-arg
+    # limit. Benching the seat is not the true fix (the prompt is the fault;
+    # agent-cron-run's pre-flight cap refuses oversize prompts before spawn),
+    # but a missed case must bench with a spawn-bench marker instead of
+    # crash-looping the same seat to StartLimitBurst.
+    if grep -qiE '.{0,120}(ETIMEDOUT|E2BIG|timed out).{0,120}(spawn|socket|connect|child|fetch|handshake)' <<<"$combined"; then
         return 0
     fi
-    if grep -qiE '(spawn|socket|connect|child|fetch|handshake).{0,120}(ETIMEDOUT|timed out)' <<<"$combined"; then
+    if grep -qiE '(spawn|socket|connect|child|fetch|handshake).{0,120}(ETIMEDOUT|E2BIG|timed out)' <<<"$combined"; then
         return 0
     fi
     return 1
