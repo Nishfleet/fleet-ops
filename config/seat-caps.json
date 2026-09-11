@@ -225,10 +225,12 @@
           "daily_spend_cap_usd": 3
         },
         "minimax/minimax-m3:free": {
-          "cap": 2,
+          "cap": 0,
           "class": "free",
           "max_probe_ceiling": 3,
-          "_note": "2026-09-06 fleet-ops#3722: wired as a free-class seat on the metered openrouter provider. Verified in pi --list-models catalog + live `pi --print` probe. cap 2, max_probe_ceiling 3; shared account daily budget 50/day (fleet-ops#3723) benches all openrouter :free models until 00:00 UTC when hit. Probe: PONG, HTTP 200."
+          "_note": "2026-09-06 fleet-ops#3722: wired as a free-class seat on the metered openrouter provider. Verified in pi --list-models catalog + live `pi --print` probe. cap 2, max_probe_ceiling 3; shared account daily budget 50/day (fleet-ops#3723) benches all openrouter :free models until 00:00 UTC when hit. Probe: PONG, HTTP 200.",
+          "intentional_cap_zero": "corpse",
+          "reason": "2026-09-11 OpenRouter retired the free tier: pi-issue@0509-2724 died in 1s on this slug with HTTP 404 {\"message\":\"This model is unavailable for free. The paid version is available now - use this slug instead: minimax/minimax-m3\"}. Public /api/v1/models no longer lists it (checked 2026-09-11T03:40Z). Do NOT wire the paid sibling minimax/minimax-m3 (fleet-ops#545). fleet-ops#5274."
         },
         "nvidia/nemotron-3-ultra-550b-a55b:free": {
           "cap": 2,
@@ -237,10 +239,12 @@
           "_note": "2026-09-06 fleet-ops#3722: wired as a free-class seat on the metered openrouter provider. Verified in pi --list-models catalog + live `pi --print` probe. cap 2, max_probe_ceiling 3; shared account daily budget 50/day (fleet-ops#3723) benches all openrouter :free models until 00:00 UTC when hit. Probe: PONG, HTTP 200."
         },
         "z-ai/glm-5.2:free": {
-          "cap": 2,
+          "cap": 0,
           "class": "free",
           "max_probe_ceiling": 3,
-          "_note": "2026-09-06 fleet-ops#3722: wired as a free-class seat on the metered openrouter provider. Verified in pi --list-models catalog; live `pi --print` probe at 2026-09-06T02:03Z returned upstream_429 'temporarily rate-limited upstream' (shared Decart free pool, Retry-After 5s) — rate_limited bench handles the transient. cap 2, max_probe_ceiling 3; shared account daily budget 50/day (fleet-ops#3723)."
+          "_note": "2026-09-06 fleet-ops#3722: wired as a free-class seat on the metered openrouter provider. Verified in pi --list-models catalog; live `pi --print` probe at 2026-09-06T02:03Z returned upstream_429 'temporarily rate-limited upstream' (shared Decart free pool, Retry-After 5s) — rate_limited bench handles the transient. cap 2, max_probe_ceiling 3; shared account daily budget 50/day (fleet-ops#3723).",
+          "intentional_cap_zero": "corpse",
+          "reason": "2026-09-11 OpenRouter retired the free tier: pi-issue@0509-2724 died in 1s on this slug with HTTP 404 {\"message\":\"This model is unavailable for free. The paid version is available now - use this slug instead: z-ai/glm-5.2\"}. Public /api/v1/models no longer lists it (checked 2026-09-11T03:40Z). Do NOT wire the paid sibling z-ai/glm-5.2 (fleet-ops#545). fleet-ops#5274."
         },
         "google/gemma-4-31b-it:free": {
           "cap": 2,
