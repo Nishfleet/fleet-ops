@@ -218,6 +218,13 @@ bash "$here/issue-file.test.sh"
 # .github/workflows/**).
 bash "$here/same-repo-closes-gate.test.sh"
 
+# fleet-ops#5471: bench-truth path-unit storm drill. Landed in #5567 but was
+# not hosted by a listed test (workers cannot push .github/workflows/**),
+# so the p14-test-listing-gate red'd the P14 check. Hosted here so P14
+# runs it without a workflow-file edit; its live systemd layer self-skips
+# on hosted CI (no user units there).
+bash "$here/fleet-seat-bench-truth-path-storm-drill.test.sh"
+
 # fleet-ops#4468 dead-conflicting-PR detector
 bash "$here/fleet-dead-pr-detector.test.sh"
 
