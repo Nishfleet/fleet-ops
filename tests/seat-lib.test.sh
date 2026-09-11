@@ -1380,8 +1380,13 @@ fleet_prepaid_window_reset_seconds{provider="stale-og",window="5h"} 3000
 fleet_prepaid_usage_observed_timestamp{provider="stale-og"} $((prepaid_now - 7200))
 PROM
 live=$(SEAT_LIVE_PREPAID_PROM="$prepaid_prom" bash -c 'source "$0"; provider_live_reset_s opencode-go' "$lib")
-[[ "$live" == "3000" ]] \
-  || fail "9f-prepaid: opencode-go (5h at 97% used) expected the 5h reset 3000, got '${live:-<none>}'"
+# Wall-clock granularity: the fixture's observed timestamp and the function's
+# internal `date -u +%s` can straddle a second boundary, making age=1 and the
+# live value 2999. That is the function working as designed, not a regression
+# (red main 2026-09-11T04:05Z, run 34560880788: "expected the 5h reset 3000,
+# got '2999'"). Accept both; the exact path is pinned by the mechanism repro.
+[[ "$live" == "3000" || "$live" == "2999" ]] \
+  || fail "9f-prepaid: opencode-go (5h at 97% used) expected the 5h reset 3000 (2999 at a second boundary), got '${live:-<none>}'"
 live=$(SEAT_LIVE_PREPAID_PROM="$prepaid_prom" bash -c 'source "$0"; provider_live_reset_s below-wall' "$lib")
 [[ "$live" == "0" ]] \
   || fail "9f-prepaid: 94% used is below the 95% wall and must not bench, got '$live'"
