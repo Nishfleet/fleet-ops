@@ -16,9 +16,11 @@
 #      the old surface lists non-supersets.
 #
 # Live rendered targets (~/AGENTS.md, ~/.claude/CLAUDE.md) are verified by
-# `bin/render-standing-rules.py --check` and
-# `bin/render-pi-agents-md.py --check` at deploy time (mechanism may be
-# absent on a bare CI host, so only their absence skips, never a hard fail).
+# `bin/render-standing-rules.py --check --canonical <repo canonical>` and
+# `bin/render-pi-agents-md.py --check` when those targets exist on this
+# host: drift there is a hard FAIL (a silent no-op render once shipped as
+# green against the deploy-clone default canonical). On a bare CI host the
+# targets are absent and those checks SKIP.
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -74,18 +76,34 @@ else
 fi
 
 # 4. Renders, when the machinery exists on this host, must be in sync.
+#
+# The standing-rules renderer's DEFAULT canonical is the vault symlink into
+# the deploy clone — checking against it proves nothing about THIS repo's
+# canonical (a silent no-op render once shipped as green that way, the
+# exact fleet-ops#5586 follow-up failure). Always pass the repo canonical
+# explicitly, and treat live-target drift as a FAIL; only absent targets
+# (bare CI host) skip.
 if [[ -x "$repo_root/bin/render-standing-rules.py" ]]; then
-  if python3 "$repo_root/bin/render-standing-rules.py" --check >/dev/null 2>&1; then
-    echo "OK: standing-rules render check green"
+  sr_targets_missing=0
+  for t in /home/nish/.claude/CLAUDE.md /home/nish/.codex/AGENTS.md; do
+    [[ -f "$t" ]] || sr_targets_missing=1
+  done
+  if [[ "$sr_targets_missing" == 1 ]]; then
+    echo "SKIP: standing-rules render targets absent on this host"
+  elif python3 "$repo_root/bin/render-standing-rules.py" --check \
+        --canonical "$sr_canonical" >/dev/null 2>&1; then
+    echo "OK: standing-rules render check green against the repo canonical"
   else
-    echo "SKIP: standing-rules render check failed (targets likely absent on this host)"
+    fail "live CLAUDE.md/.codex AGENTS.md drift from $sr_canonical — run: bin/render-standing-rules.py --render --canonical lib/standing-rules/canonical.md"
   fi
 fi
 if [[ -x "$repo_root/bin/render-pi-agents-md.py" ]]; then
-  if python3 "$repo_root/bin/render-pi-agents-md.py" --check >/dev/null 2>&1; then
+  if [[ ! -f /home/nish/AGENTS.md ]]; then
+    echo "SKIP: pi-agents-md render targets absent on this host"
+  elif python3 "$repo_root/bin/render-pi-agents-md.py" --check >/dev/null 2>&1; then
     echo "OK: pi-agents-md render check green"
   else
-    echo "SKIP: pi-agents-md render check failed (targets likely absent on this host)"
+    fail "live AGENTS.md surfaces drift from $pi_canonical — run: bin/render-pi-agents-md.py --render"
   fi
 fi
 
