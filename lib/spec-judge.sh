@@ -47,7 +47,8 @@ GH="${GH:-gh}"
 # --- state helpers ---------------------------------------------------------
 
 spec_judge_state_dir() {
-    mkdir -p "$SPEC_JUDGE_STATE_DIR" 2>/dev/null || true
+    mkdir -p "$SPEC_JUDGE_STATE_DIR" 2>/dev/null \
+        || echo "ALERT spec-judge: mkdir state dir failed path=$SPEC_JUDGE_STATE_DIR — no spec-judge durable record can persist this tick (fleet-ops silent-drop)" >&2
     printf '%s\n' "$SPEC_JUDGE_STATE_DIR"
 }
 
@@ -412,7 +413,8 @@ spec_judge_apply() {
         case "${b_verdict[$i]}" in
             READY)
                 "$GH" issue comment "${b_num[$i]}" -R "$full_repo" \
-                    --body "spec-judged: $sha" >/dev/null 2>&1 || true
+                    --body "spec-judged: $sha" >/dev/null 2>&1 \
+                    || echo "ALERT spec-judge: gh issue comment rc=$? work=ready-marker issue=${b_num[$i]} repo=$full_repo — marker dropped; ticket re-judged next tick (fleet-ops silent-drop)" >&2
                 ;;
             EDIT)
                 spec_judge_apply_edit_issue \
@@ -445,7 +447,7 @@ spec_judge_apply_edit_issue() {
     local body
     body=$("$GH" issue view "$n" -R "$full_repo" --json body 2>/dev/null \
         | jq -r '.body // ""' 2>/dev/null) || body=""
-    [[ -n "$body" ]] || { "$GH" issue comment "$n" -R "$full_repo" --body "spec-judged: $sha" >/dev/null 2>&1 || true; return 0; }
+    [[ -n "$body" ]] || { "$GH" issue comment "$n" -R "$full_repo" --body "spec-judged: $sha" >/dev/null 2>&1 || echo "ALERT spec-judge: gh issue comment rc=$? work=judged-marker issue=$n repo=$full_repo — marker dropped; ticket re-judged next tick (fleet-ops silent-drop)" >&2; return 0; }
 
     local binding="" applied=0
     local bullet
@@ -556,7 +558,8 @@ spec_judge_apply_edit_issue() {
         "$GH" issue edit "$n" -R "$full_repo" \
             --remove-label agent-ready \
             --add-label agent-blocked --add-label needs-orchestrator \
-            >/dev/null 2>&1 || true
+            >/dev/null 2>&1 \
+            || echo "ALERT spec-judge: gh issue edit rc=$? work=needs-orchestrator-labels issue=$n repo=$full_repo — ticket stays agent-ready and may be claimed despite the judge's depends-on verdict (fleet-ops silent-drop)" >&2
     fi
 
     # Push the body back if anything changed.
@@ -564,11 +567,13 @@ spec_judge_apply_edit_issue() {
         local tmp
         tmp=$(mktemp)
         printf '%s' "$body" > "$tmp"
-        "$GH" issue edit "$n" -R "$full_repo" --body-file "$tmp" >/dev/null 2>&1 || true
+        "$GH" issue edit "$n" -R "$full_repo" --body-file "$tmp" >/dev/null 2>&1 \
+            || echo "ALERT spec-judge: gh issue edit rc=$? work=apply-edit-body issue=$n repo=$full_repo — judged body edit dropped; ticket keeps pre-edit text (fleet-ops silent-drop)" >&2
         rm -f "$tmp" 2>/dev/null || true
     fi
 
-    "$GH" issue comment "$n" -R "$full_repo" --body "spec-judged: $sha" >/dev/null 2>&1 || true
+    "$GH" issue comment "$n" -R "$full_repo" --body "spec-judged: $sha" >/dev/null 2>&1 \
+        || echo "ALERT spec-judge: gh issue comment rc=$? work=judged-marker issue=$n repo=$full_repo — marker dropped; ticket re-judged next tick (fleet-ops silent-drop)" >&2
 }
 
 # Apply one BLOCK issue: remove agent-ready, comment the reason (the
@@ -580,12 +585,14 @@ spec_judge_apply_edit_issue() {
 spec_judge_apply_block_issue() {
     local full_repo="$1" n="$2" sha="$3" bullets="$4"
     "$GH" issue edit "$n" -R "$full_repo" \
-        --remove-label agent-ready --add-label agent-blocked >/dev/null 2>&1 || true
+        --remove-label agent-ready --add-label agent-blocked >/dev/null 2>&1 \
+        || echo "ALERT spec-judge: gh issue edit rc=$? work=block-labels issue=$n repo=$full_repo — ticket stays agent-ready and may be claimed despite judge BLOCK (fleet-ops silent-drop)" >&2
     local body="spec-judged: $sha"$'\n\n'"spec-judge BLOCK reason:"$'\n\n'"$bullets"
     if printf '%s' "$bullets" | grep -qiE '\b(money|pay|price|pricing|billing|legal|brand|deletion|credentials?|secret|token|account[\s/-]*login|product[\s/-]*direction|customer[\s/-]*data|reserved)\b'; then
         body+=$'\n\nblocked-on: nish-decision'
     fi
-    "$GH" issue comment "$n" -R "$full_repo" --body "$body" >/dev/null 2>&1 || true
+    "$GH" issue comment "$n" -R "$full_repo" --body "$body" >/dev/null 2>&1 \
+        || echo "ALERT spec-judge: gh issue comment rc=$? work=block-reason issue=$n repo=$full_repo — BLOCK reason notice dropped (fleet-ops silent-drop)" >&2
 }
 
 # --- failure fallback ------------------------------------------------------
@@ -628,15 +635,29 @@ spec_judge_failure_fallback() {
         if [[ -f "$prompt_file" ]]; then
             "$PI_SYSTEMD_RUN" --unit "$unit" --stdin "$prompt_file" \
                 --deadline "$SPEC_JUDGE_DEADLINE" --deliverable "$verdict" \
-                -- pi --print --provider "$SPEC_JUDGE_PROVIDER" --model "$SPEC_JUDGE_MODEL" >/dev/null 2>&1 || true
+                -- pi --print --provider "$SPEC_JUDGE_PROVIDER" --model "$SPEC_JUDGE_MODEL" >/dev/null 2>&1 \
+                || echo "ALERT spec-judge: pi-systemd-run relaunch rc=$? unit=$unit repo=$repo — retry never started; the relaunched flag is already set so next tick goes straight to failure-fallback (fleet-ops silent-drop)" >&2
         fi
         return 0
     fi
-    # Second failure: comment on the newest batch member and clear the marker.
-    local newest
+    # Second failure: durable record FIRST so the release survives a dropped
+    # comment (fleet-ops#5438 — bin/fleet-decisions-ledger is a lint, not a
+    # writer, and the vault decisions-ledger.md is a guarded shared file; the
+    # spec-judge state dir is the durable sink this organ owns). Then the
+    # comment, then clear the marker so intake can claim the batch unjudged
+    # after SPEC_JUDGE_UNJUDGED_S.
+    local newest record
     newest=$(printf '%s\n' "$batch" | jq -r 'max // empty' 2>/dev/null || echo "")
+    record="$(spec_judge_state_dir)/unavailable-$repo-$sha.json"
+    jq -nc --arg repo "$repo" --arg sha "$sha" --arg unit "$unit" \
+        --argjson batch "$batch" --arg newest "$newest" \
+        --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        '{repo:$repo, sha:$sha, unit:$unit, batch:$batch, newest_issue:($newest | tonumber? // null), at:$at, reason:"judge unit died twice with no verdict; batch claimable unjudged"}' \
+        > "$record" 2>/dev/null \
+        || echo "ALERT spec-judge: durable-record write failed path=$record — no trace of the unjudged release survives (fleet-ops silent-drop)" >&2
     if [[ -n "$newest" ]]; then
-        "$GH" issue comment "$newest" -R "$full_repo" --body "spec-judge unavailable: judge unit $unit died twice with no verdict; the batch may be claimed unjudged after the 2h window." >/dev/null 2>&1 || true
+        "$GH" issue comment "$newest" -R "$full_repo" --body "spec-judge unavailable: judge unit $unit died twice with no verdict; the batch may be claimed unjudged after the 2h window." >/dev/null 2>&1 \
+            || echo "ALERT spec-judge: gh issue comment rc=$? work=failure-fallback issue=$newest repo=$full_repo — 'spec-judge unavailable' notice dropped; durable record at $record; batch claims unjudged after ${SPEC_JUDGE_UNJUDGED_S}s (fleet-ops silent-drop)" >&2
     fi
     rm -f "$inflight" 2>/dev/null || true
     return 0
@@ -719,7 +740,8 @@ spec_judge_absorbed_record() {
     local repo="$1" n="$2" by="$3"
     spec_judge_absorbed_prune "$repo" || true
     printf '%s\t%s\t%s\n' "$n" "$by" "$(date +%s)" \
-        >>"$(spec_judge_absorbed_file "$repo")" 2>/dev/null || true
+        >>"$(spec_judge_absorbed_file "$repo")" 2>/dev/null \
+        || echo "ALERT spec-judge: absorbed-ledger append failed issue=$n repo=$repo — same-tick claim skip for the parked ticket is lost (fleet-ops silent-drop)" >&2
 }
 
 # Exit 0 if issue N is parked as absorbed for this repo.
@@ -737,14 +759,15 @@ spec_judge_park_absorbed() {
     local full_repo="$1" repo="$2" absorbed="$3" absorbing="$4" state
     [[ "$absorbed" =~ ^[0-9]+$ ]] || return 1
     state=$("$GH" issue view "$absorbed" -R "$full_repo" --json state,labels 2>/dev/null || true)
-    [[ -n "$state" ]] || return 1
+    [[ -n "$state" ]] || { echo "ALERT spec-judge: gh issue view failed/empty absorbed=$absorbed repo=$full_repo — judge-declared park skipped, no retry (fleet-ops silent-drop)" >&2; return 1; }
     [[ "$(printf '%s' "$state" | jq -r '.state // ""' 2>/dev/null || echo "")" == "OPEN" ]] || return 1
     printf '%s' "$state" \
         | jq -e '[.labels[]? | if type == "object" then (.name // empty) else . end] | index("agent-ready") != null' >/dev/null 2>&1 \
         || return 1
     "$GH" issue edit "$absorbed" -R "$full_repo" \
         --remove-label agent-ready --add-label agent-blocked \
-        --add-label needs-orchestrator >/dev/null 2>&1 || true
+        --add-label needs-orchestrator >/dev/null 2>&1 \
+        || echo "ALERT spec-judge: gh issue edit rc=$? work=absorbed-park-labels issue=$absorbed repo=$full_repo — absorbed ticket stays agent-ready and may be claimed (fleet-ops silent-drop)" >&2
     # The `blocked-on: orchestrator` line is what makes the park hold: an
     # orchestrator block forces blocked-reconcile's all_cleared to 0 on every
     # pass, so a ref to the absorbing issue (already on the ticket, or added
@@ -757,7 +780,8 @@ spec_judge_park_absorbed() {
     body+=$'\n\nParked: agent-ready removed, agent-blocked + needs-orchestrator added. Do not claim it; that work is already in the absorbing issue.'
     body+=$'\n\nNo ref to the absorbing issue on purpose: when that issue closes, a ref would requeue this ticket and a worker would burn a slot proving work that already landed (fleet-ops#1083/#5131). The judge does not close it.'
     body+=$'\n\nblocked-on: orchestrator'
-    "$GH" issue comment "$absorbed" -R "$full_repo" --body "$body" >/dev/null 2>&1 || true
+    "$GH" issue comment "$absorbed" -R "$full_repo" --body "$body" >/dev/null 2>&1 \
+        || echo "ALERT spec-judge: gh issue comment rc=$? work=absorbed-park-notice issue=$absorbed repo=$full_repo — park notice dropped; park still holds via labels + blocked-on line (fleet-ops silent-drop)" >&2
     spec_judge_absorbed_record "$repo" "$absorbed" "$absorbing"
     return 0
 }
