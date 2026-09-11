@@ -222,7 +222,13 @@ comment_release() {
         log "DRY comment $repo#$issue_n: $body"
         return 0
     fi
-    gh issue comment "$issue_n" -R "$repo" --body "$body" >/dev/null 2>&1 || true
+    # Silent-drop sweep 2026-09-11: a failed comment used to vanish into
+    # `|| true`. Now it fails LOUD so the release note is never dropped
+    # silently.
+    if ! gh issue comment "$issue_n" -R "$repo" --body "$body" >/dev/null 2>&1; then
+        log "  ALERT $repo#$issue_n: release comment FAILED to post (release note not recorded; Nish 2026-09-11: no silent drops)"
+        return 1
+    fi
 }
 
 log "sweep starting now=$NOW_ISO"
