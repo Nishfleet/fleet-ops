@@ -469,6 +469,30 @@ BF
         exit 0
     fi
 
+    # Outage fail-fast (fleet-ops#5497): if the open-issue fetch came back
+    # empty while an earlier backfill snapshot was non-empty, that is the
+    # gh-outage signature — dedupe goes blind and every remaining filing
+    # dies inside the outage. Carry everything; say so once, LOUDly.
+    local bf_outage=0 bf_prev_snap="" bf_file_err_count=0 bf_file_err_first=""
+    # fleet-ops#5497: previous snapshot = newest open-*.json that is not
+    # this run's. Plain glob loop — no | head -N truncation pipe
+    # (fleet-ops#838). Glob order is ASCII = chronological for these
+    # timestamp names, so the last non-current assignment is the newest
+    # previous snapshot.
+    local _bf_snap
+    bf_prev_snap=""
+    for _bf_snap in "$bf_dir"/open-*.json; do
+        [ -e "$_bf_snap" ] || continue
+        if [ "$_bf_snap" = "$bf_dir/open-$NOW_DIR.json" ]; then continue; fi
+        bf_prev_snap="$_bf_snap"
+    done
+    if [ -n "$bf_prev_snap" ] && [ -s "$bf_prev_snap" ] \
+        && [ "$(jq 'length' "$bf_dir/open-$NOW_DIR.json" 2>/dev/null || echo 0)" -eq 0 ] \
+        && [ "$(jq 'length' "$bf_prev_snap" 2>/dev/null || echo 0)" -gt 0 ]; then
+        bf_outage=1
+        log "LOUD [AUDIT-BACKFILL-OUTAGE] open-issue list empty but previous snapshot non-empty ($bf_prev_snap); aborting filing loop, remaining items -> carry-over"
+    fi
+
     # Filing loop: re-panel each survivor, file via the #1212 gate, no cap.
     # (Backfill runs before the reviewer branch, so the panel context is
     # bounded here instead of reusing the reviewer's build.)
@@ -489,8 +513,19 @@ BF
     filed=0
     bf_unfiled=0
     issue_nums=""
+    # Initialise so the post-loop rm -f stays set -u-safe even when the
+    # outage fail-fast skips every iteration (fleet-ops#5497).
+    panel_input=""
+    bf_body=""
     while IFS= read -r bf_finding; do
         [ -n "$bf_finding" ] || continue
+        if [ "$bf_outage" = "1" ]; then
+            # Outage: skip panel + filing, straight to carry-over.
+            bf_unfiled=$((bf_unfiled+1))
+            bf_sig=$(finding_signature "$bf_finding")
+            carryover_append "$bf_finding" "$bf_sig" || true
+            continue
+        fi
         panel_input=$(mktemp)
         bf_body=$(mktemp)
         b_title=$(printf '%s' "$bf_finding" | jq -r '.title // ""')
@@ -551,6 +586,14 @@ BF
                 log "backfill: FILED $b_url ($b_title)"
             fi
         else
+            # fleet-ops#5497: 828 identical "file failed" lines during the
+            # 2026-09-11 gh outage gave zero diagnostics. Surface the FIRST
+            # failure's stderr in the log; count + it again in the summary.
+            bf_file_err_count=$((bf_file_err_count+1))
+            if [ "$bf_file_err_count" -eq 1 ]; then
+                bf_file_err_first="$(tail -5 "$bf_dir/filegate-err-$NOW_DIR.log" 2>/dev/null || true)"
+                log "backfill: file-fail-stderr(1st of N): $(head -n 1 "$bf_dir/filegate-err-$NOW_DIR.log" 2>/dev/null || true)"
+            fi
             log "backfill: file failed for ($b_title) -> carry-over"
             bf_unfiled=$((bf_unfiled+1))
             bf_sig=$(finding_signature "$bf_finding")
@@ -577,6 +620,15 @@ BF
         # persisted): PASS verdicts whose title is absent from findings.json,
         # and report dirs with no verdicts.jsonl at all.
         printf 'Unreconstructed detail: %s\n' "$bf_stats"
+        # fleet-ops#5497: outage abort + file-gate diagnostics. The 2026-09-11
+        # outage produced 828 silent failures; these lines are the difference.
+        if [ "$bf_outage" = "1" ]; then
+            printf '\nOutage fail-fast: open-issue list empty (previous snapshot %s non-empty); filing loop aborted, %d item(s) carried over.\n' "$bf_prev_snap" "$bf_unfiled"
+        fi
+        if [ "${bf_file_err_count:-0}" -gt 0 ]; then
+            printf '\nFile-gate failures: %d. First failure stderr:\n\n```\n%s\n```\n' \
+                "$bf_file_err_count" "${bf_file_err_first:-<none captured>}"
+        fi
     } | tee "$summary"
     if [ "${bf_unfiled:-0}" -gt 0 ] || [ "${panel_fail:-0}" -gt 0 ]; then
         loud_backlog "${bf_unfiled:-0}" "$(grep -c . "$CARRYOVER_FILE" 2>/dev/null || echo 0)" "backfill=$since"
@@ -605,6 +657,16 @@ else
     NOW_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     NOW_DIR="$(date -u +%Y%m%dT%H%M%SZ)"
 fi
+# --- one audit at a time (fleet-ops#5497) ----------------------------------
+# Taken BEFORE the backfill dispatch too: the flock used to sit after it, so
+# concurrent --backfill runs shared one state dir, double-deduped, and
+# double-filed the same findings. A second invocation now exits fast.
+exec 9>"$STATE_DIR/audit.lock"
+if ! flock -n 9; then
+    log "audit already running (no-op)"
+    exit 0
+fi
+
 if [ "$BACKFILL_MODE" = "1" ]; then
     run_backfill "${BACKFILL_SINCE:-}"
     # run_backfill normally exits itself; never fall through to a normal run.
@@ -737,13 +799,6 @@ with open(path, 'w', encoding='utf-8') as f:
 PY
     fi
 }
-
-# --- one audit at a time ---------------------------------------------------
-exec 9>"$STATE_DIR/audit.lock"
-if ! flock -n 9; then
-    log "audit already running (no-op)"
-    exit 0
-fi
 
 # Read the previous run stamp BEFORE overwriting it — the seam window
 # starts there (or 24h back if this is the first run). fleet-ops#377.
