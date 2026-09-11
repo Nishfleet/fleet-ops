@@ -29,6 +29,16 @@
 #      further dispatches on that hash (exit 0) so a 3rd seat is not burned.
 #
 # Layer: never-say-next SENIOR-AUDITOR (visual-quality-waves.md escalation scope).
+#
+# fleet-ops#5456 ("nothing dies silently"): unit-failure trips no longer
+# summon an auditor — they terminate in an ACTION through the resume-or-
+# dispatch path below. A pi-systemd-run packet with hop<2 is RELAUNCHED
+# (same packet, next healthy seat, --hop+1); a packet at hop>=2 or any
+# non-packet unit is DISPATCHED (agent-ready issue + findings-ledger row
+# + LOUD triage line). Nish is messaged only when the dispatcher itself
+# cannot act (issue create AND hermes both fail). The SENIOR-AUDITOR path
+# below remains for circuit-breaker trips (stop-judge cooldowns), which
+# is what fleet-ops#34 built it for.
 set -euo pipefail
 
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
@@ -186,6 +196,245 @@ finish_kill_retry() {
   exit 0
 }
 
+
+# ---------------------------------------------------------------------------
+# fleet-ops#5456 resume-or-dispatch (the chain's terminal ACTION)
+#
+# STOP-REASON (reason=unit-failure / unit-stopped-without-deliverable /
+# packet-exhausted) -> this dispatcher either:
+#   (i)   RELAUNCHES a dead pi-systemd-run packet: hop<2 -> same packet,
+#         next healthy seat, --chain-id carried, --hop+1. The ledger row
+#         (workdir/deliverable/cmdline recorded at launch by pi-systemd-run)
+#         is the replay contract — not a rebuilt one.
+#   (ii)  DISPATCHES hop>=2 packets and non-packet units: agent-ready
+#         Nishfleet/fleet-ops issue titled after the unit with the last 20
+#         journal lines, a findings-ledger row (disposition carried_over,
+#         ref=issue), and the LOUD line in the heartbeat triage file the
+#         hourly judges read.
+#   (iii) Pages Nish ONLY when the dispatcher itself cannot act: issue
+#         create fails AND hermes send fails. Watchdogs dispatch, they do
+#         not page.
+#
+# Drill seam (fleet-ops#5456 E/H): units named resume-drill-* are the
+# kill-three-ways drill's throwaway dummies (created and removed by the
+# drill, never a real dispatch). Their "issue" is appended to
+# $AS/resume-drill/issues.jsonl instead of GitHub — unmistakably synthetic,
+# same carve-out argument as live-dummy* in unit-escalation-write — so the
+# hourly drill proves the full chain without filing repo junk.
+# ---------------------------------------------------------------------------
+RESUME_AS=${STOP_ESCALATION_RESUME_AS:-$AS}
+RESUME_LEDGER=${STOP_ESCALATION_RESUME_LEDGER:-$RESUME_AS/dispatch-ledger.jsonl}
+RESUME_SYSTEMCTL=${STOP_ESCALATION_RESUME_SYSTEMCTL:-systemctl}
+RESUME_PI_RUN=${STOP_ESCALATION_RESUME_PI_RUN:-$(dirname "$(readlink -f "$0")")/pi-systemd-run}
+RESUME_GH=${STOP_ESCALATION_RESUME_GH:-gh}
+RESUME_HERMES=${STOP_ESCALATION_RESUME_HERMES:-$HOME/.local/bin/hermes}
+RESUME_REPO=${STOP_ESCALATION_RESUME_REPO:-Nishfleet/fleet-ops}
+RESUME_TRIAGE=${STOP_ESCALATION_RESUME_TRIAGE:-$RESUME_AS/FLEET-HEARTBEAT-TRIAGE.md}
+RESUME_FINDINGS_BIN=${STOP_ESCALATION_RESUME_FINDINGS:-$(dirname "$(readlink -f "$0")")/../lib/findings-ledger.py}
+RESUME_SEAT_LIB=${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}
+RESUME_DRYRUN=${STOP_ESCALATION_RESUME_DRYRUN:-0}
+RESUME_HOP_CAP=2   # hop 0 -> relaunch 1 -> relaunch 2 -> dispatch (E: second death dispatches)
+
+resume_log() { printf '[%s] [stop-escalation-dispatch/resume] %s\n' "$(ts)" "$*" >&2; }
+
+# last_launch_row <unit-without-suffix> — last ledger row for this unit that
+# carries a packet_path (a real pi-systemd-run launch). Verdict rows written
+# by pi-detached-deadman have no packet_path and are skipped.
+resume_last_launch_row() {
+  local unit_no_sf="$1"
+  [ -f "$RESUME_LEDGER" ] || return 1
+  python3 - "$RESUME_LEDGER" "$unit_no_sf" <<'PY'
+import json, sys
+path, unit = sys.argv[1], sys.argv[2]
+row = None
+try:
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                d = json.loads(line)
+            except ValueError:
+                continue
+            if d.get("unit") == unit and d.get("packet_path"):
+                row = d
+except OSError:
+    sys.exit(1)
+if row:
+    sys.stdout.write(json.dumps(row, separators=(",", ":")))
+else:
+    sys.exit(1)
+PY
+}
+
+resume_dispatch_unit() {
+  local unit_sf="$1" unit_no_sf="$2" hop_note="$3" journal_lines=""
+  local ts_now; ts_now=$(ts)
+
+  # Last 20 journal lines (the agent-ready issue body evidence; A(ii)).
+  journal_lines=$(journalctl --user -u "$unit_sf" -n 20 --no-pager -o short-iso 2>/dev/null || true)
+  [ -n "$journal_lines" ] || journal_lines="(no journal lines available for $unit_sf)"
+
+  local title="[unit-death] ${unit_sf} — died, resume exhausted (hop=${hop_note})"
+  local body
+  body=$(printf 'Agent-ready unit-death dispatch (fleet-ops#5456 A(ii)).\n\n- unit: `%s`\n- reason: resume exhausted (hop=%s) or non-packet unit\n- STOP-REASON: `%s`\n- detected: %s\n\n<details><summary>last 20 journal lines</summary>\n\n```\n%s\n```\n</details>\n\nTake the unit''s job over: diagnose from the journal, redo the work, and land it. Close this issue when the underlying failure is fixed (observe-to-close greps the triage line).\n' "$unit_sf" "$hop_note" "$SR" "$ts_now" "$journal_lines")
+
+  if [[ "$unit_no_sf" == resume-drill-* || "$unit_sf" == resume-drill-* ]]; then
+    # Drill sink: no GitHub, no hermes — the payload IS the assertion (E).
+    local sink="$RESUME_AS/resume-drill/issues.jsonl"
+    mkdir -p "$(dirname "$sink")"
+    python3 -c 'import json,sys;print(json.dumps({"ts":sys.argv[1],"unit":sys.argv[2],"title":sys.argv[3],"body":sys.argv[4]},separators=(",",":")))' \
+      "$ts_now" "$unit_sf" "$title" "$body" >> "$sink"
+    resume_log "drill unit $unit_sf dispatched to sink $sink"
+    return 0
+  fi
+
+  if [ "$RESUME_DRYRUN" = "1" ]; then
+    resume_log "DRYRUN dispatch unit=$unit_sf title=$title"
+    return 0
+  fi
+
+  # files/UPDATES: one open issue per unit (dedupe by exact title search).
+  local issue_rc=1 issue_url=""
+  local existing
+  existing=$($RESUME_GH issue list -R "$RESUME_REPO" --state open --limit 100 \
+      --search "[unit-death] ${unit_sf}" --json number,url \
+      --jq '.[0].url' 2>/dev/null || true)
+  if [ -n "$existing" ]; then
+    if $RESUME_GH issue comment "$existing" -R "$RESUME_REPO" \
+        --body "recurrence ${ts_now}: unit died again (hop=${hop_note}); latest STOP-REASON in \`$SR\`" >/dev/null 2>&1; then
+      issue_rc=0; issue_url="$existing"
+    fi
+  else
+    issue_url=$($RESUME_GH issue create -R "$RESUME_REPO" --title "$title" --body "$body" 2>/dev/null | tail -n1 || true)
+    if [ -n "$issue_url" ]; then issue_rc=0; fi
+  fi
+
+  # findings-ledger row (A(ii): disposition carried_over, ref=issue).
+  if [ -x "$RESUME_FINDINGS_BIN" ]; then
+    "$RESUME_FINDINGS_BIN" append \
+      --source-organ stop-escalation-dispatch \
+      --run-id "${unit_no_sf}-${ts_now}" \
+      --severity error \
+      --title "unit death dispatched: $unit_sf (hop=$hop_note)" \
+      --evidence-ref "${issue_url:-$SR}" \
+      --disposition carried_over \
+      --ref "${issue_url:-issue-create-failed}" \
+      --reason "resume exhausted; agent-ready dispatch per fleet-ops#5456 A(ii)" \
+      >/dev/null 2>&1 || resume_log "WARN: findings-ledger append failed (non-fatal)"
+  fi
+
+  # LOUD line in the triage file the hourly judges read (A(ii)).
+  if [ -n "$issue_url" ]; then
+    printf '%s UNIT-DEATH-DISPATCH %s — %s (hop=%s, resume exhausted) — take over + close\n' \
+      "$ts_now" "$unit_sf" "$issue_url" "$hop_note" >> "$RESUME_TRIAGE" 2>/dev/null \
+      || resume_log "WARN: triage write failed (non-fatal)"
+  fi
+
+  # (iii) Nish ONLY when the dispatcher itself cannot act.
+  if [ "$issue_rc" -ne 0 ]; then
+    resume_log "issue create AND update failed — trying hermes (last rail)"
+    if ! "$RESUME_HERMES" send "UNIT-DEATH-PAGE dispatcher cannot act: unit $unit_sf died, issue create failed, resume exhausted (hop=$hop_note)" >/dev/null 2>&1; then
+      # Both rails down: the LOUD archive line is the last resort, and exit 1
+      # lands this unit in --state=failed so the heartbeat sees it.
+      mkdir -p "$RESUME_AS/nish-escalations-archive" 2>/dev/null || true
+      printf '%s UNIT-DEATH-PAGE dispatcher cannot act for unit %s; reason=%s. Issue create failed AND hermes send failed.\n' \
+        "$(ts)" "$unit_sf" "$reason" >> "$RESUME_AS/nish-escalations-archive/$(date -u +%Y-%m-%d).md" 2>/dev/null || true
+      resume_log "FATAL: all dispatch rails failed for $unit_sf — unit left failed"
+      return 1
+    fi
+    resume_log "hermes page sent for $unit_sf (issue rail down)"
+  fi
+  return 0
+}
+
+resume_or_dispatch() {
+  local unit_sf="$1" reason_in="$2"
+  [ -n "$unit_sf" ] || { resume_log "no unit in STOP-REASON detail — nothing to resume"; return 0; }
+  local unit_no_sf="${unit_sf%.service}"
+
+  resume_log "resume-or-dispatch unit=$unit_sf reason=$reason_in"
+
+  local row
+  if ! row=$(resume_last_launch_row "$unit_no_sf"); then
+    resume_log "no dispatch-ledger launch row for $unit_no_sf — non-packet unit"
+    resume_dispatch_unit "$unit_sf" "$unit_no_sf" "non-packet" || return $?
+    return 0
+  fi
+
+  local row_json
+  row_json=$(python3 -c 'import json,sys;d=json.loads(sys.argv[1]);print(d.get("chain_id",""),d.get("hop",0),d.get("packet_path",""),d.get("cmdline",""),d.get("workdir",""),d.get("deliverable",""),d.get("deadline_min",90),sep="\x1f")' "$row" 2>/dev/null || true)
+  if [ -z "$row_json" ]; then
+    resume_log "unparseable ledger row for $unit_no_sf — dispatching"
+    resume_dispatch_unit "$unit_sf" "$unit_no_sf" "ledger-corrupt" || return $?
+    return 0
+  fi
+  IFS=$'\x1f' read -r chain_id hop packet_path cmdline workdir deliverable deadline_min <<< "$row_json"
+
+  if [ "${hop:-0}" -ge "$RESUME_HOP_CAP" ] 2>/dev/null; then
+    resume_log "hop=$hop >= cap $RESUME_HOP_CAP — dispatching agent-ready issue"
+    resume_dispatch_unit "$unit_sf" "$unit_no_sf" "$hop" || return $?
+    return 0
+  fi
+
+  # RELAUNCH on the next healthy seat. A walled ladder is not a Nish page
+  # here — the dispatch path still works without a seat (issues are
+  # agent-actionable when a seat frees).
+  if [ ! -f "$RESUME_SEAT_LIB" ]; then
+    resume_log "seat-lib missing at $RESUME_SEAT_LIB — cannot pick relaunch seat; dispatching"
+    resume_dispatch_unit "$unit_sf" "$unit_no_sf" "$hop" || return $?
+    return 0
+  fi
+  # shellcheck source=../lib/seat-lib.sh source-path=SCRIPTDIR
+  source "$RESUME_SEAT_LIB"
+  local seat PROVIDER MODEL
+  seat=$(pick_seat "" "" "" "" "light" 2>/dev/null || true)
+  if [ -z "$seat" ]; then
+    resume_log "no healthy seat for relaunch (walled/benched) — dispatching"
+    resume_dispatch_unit "$unit_sf" "$unit_no_sf" "$hop" || return $?
+    return 0
+  fi
+  PROVIDER=$(printf '%s' "$seat" | cut -f1)
+  MODEL=$(printf '%s' "$seat" | cut -f2)
+
+  # Replay the SAME dispatch contract with the new seat: swap --provider/--model
+  # in the recorded cmdline (pi-systemd-run recorded the launch line verbatim).
+  # Rotation is best-effort: a cmdline without --provider/--model (a non-pi
+  # command) still relaunches verbatim — the resume contract is the packet +
+  # workdir + deliverable, not the seat fields (fleet-ops#5456 E drill units
+  # are exactly this shape).
+  local new_cmdline
+  new_cmdline=$(printf '%s' "$cmdline" | sed -E "s/--provider[[:space:]]+[^ ]+/--provider $PROVIDER/; s/--model[[:space:]]+[^ ]+/--model $MODEL/")
+  if [ "$new_cmdline" = "$cmdline" ]; then
+    resume_log "cmdline carries no --provider/--model — relaunching verbatim on $PROVIDER/$MODEL record"
+    new_cmdline="$cmdline"
+  fi
+
+  if [ "$RESUME_DRYRUN" = "1" ]; then
+    resume_log "DRYRUN relaunch unit=$unit_sf hop=$((hop+1)) provider=$PROVIDER model=$MODEL cmdline=$new_cmdline"
+    return 0
+  fi
+
+  # The dead unit is in failed state; reset so systemd-run can reuse the name.
+  "$RESUME_SYSTEMCTL" --user reset-failed "${unit_sf}" >/dev/null 2>&1 || true
+
+  local relaunch_args=(--unit "$unit_no_sf" --chain-id "$chain_id" --hop "$((hop+1))")
+  [ -n "$packet_path" ] && [ -f "$packet_path" ] && relaunch_args+=(--stdin "$packet_path")
+  [ -n "$workdir" ] && [ -d "$workdir" ] && relaunch_args+=(--working-directory "$workdir")
+  [ -n "$deliverable" ] && relaunch_args+=(--deliverable "$deliverable")
+  [ -n "$deadline_min" ] && [[ "$deadline_min" =~ ^[0-9]+$ ]] && relaunch_args+=(--deadline "$deadline_min")
+
+  resume_log "relaunching $unit_sf hop=$((hop+1)) provider=$PROVIDER model=$MODEL"
+  if ! "$RESUME_PI_RUN" "${relaunch_args[@]}" -- $new_cmdline >>"$RESUME_AS/resume-relaunch.log" 2>&1; then
+    resume_log "relaunch failed — dispatching"
+    resume_dispatch_unit "$unit_sf" "$unit_no_sf" "$hop" || return $?
+    return 0
+  fi
+  resume_log "relaunched $unit_sf at hop=$((hop+1)) — chain continues"
+  return 0
+}
+
 [ -f "$SR" ] || exit 0
 
 reason=$(python3 -c 'import sys,json;print(json.load(sys.stdin).get("reason",""))' < "$SR" 2>/dev/null || echo "")
@@ -200,7 +449,16 @@ reason=$(python3 -c 'import sys,json;print(json.load(sys.stdin).get("reason","")
 # unknown reasons escalate.
 case "$reason" in
   boundary:*|cooldown_active|auditor-resolved) exit 0 ;;
+  unit-failure|unit-stopped-without-deliverable|packet-exhausted)
+    # fleet-ops#5456: unit deaths take the resume-or-dispatch path, not the
+    # auditor summon. The auditor path stays for circuit-breaker trips.
+    resume_unit=$(python3 -c 'import sys,json;d=json.load(sys.stdin).get("detail") or {};print(d.get("unit",""))' < "$SR" 2>/dev/null || true)
+    rc=0
+    resume_or_dispatch "$resume_unit" "$reason" || rc=$?
+    exit "$rc"
+    ;;
 esac
+
 
 hash=$(sha256sum "$SR" | awk '{print $1}')
 now=$(date +%s)
