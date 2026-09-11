@@ -486,6 +486,44 @@ tests:
       - eval_time: 16m
         alertname: ProductDeployStalled
         exp_alerts: []
+  - interval: 1m
+    name: ProductDeployUnmeasurable fires when a product repo emits up=0 for 30m+ (fleet-ops#5250)
+    input_series:
+      - series: 'fleet_deployment_quality_up{repo="0509"}'
+        values: '0x40'
+    alert_rule_test:
+      - eval_time: 29m
+        alertname: ProductDeployUnmeasurable
+        exp_alerts: []
+      - eval_time: 31m
+        alertname: ProductDeployUnmeasurable
+        exp_alerts:
+          - exp_labels:
+              alertname: ProductDeployUnmeasurable
+              repo: "0509"
+              severity: warning
+              service: fleet
+            exp_annotations:
+              summary: "0509 deployment-quality unmeasurable: fleet_deployment_quality_up 0 for 30m+"
+              description: "fleet_deployment_quality_up{repo=\"0509\"} has been 0 for 30+ minutes — lib/fleet-deploy-quality.py could not measure 0509 (missing PRODUCT_DEPLOY_WORKFLOWS entry, unreadable runs source, or gh outage) and its deploy-quality gauges are NaN, so ProductDeployStalled is blind for it. The exporter logs 'deploy-quality: ...' to stderr; check journalctl --user -u fleet-metrics-export.service and /home/nish/.local/lib/pi-packet/fleet-deploy-quality.py. fleet-ops#5250."
+  - interval: 1m
+    name: ProductDeployUnmeasurable silent while the product repo measures fine (up=1)
+    input_series:
+      - series: 'fleet_deployment_quality_up{repo="0509"}'
+        values: '1x40'
+    alert_rule_test:
+      - eval_time: 31m
+        alertname: ProductDeployUnmeasurable
+        exp_alerts: []
+  - interval: 1m
+    name: ProductDeployUnmeasurable never fires for the fleet-ops repo itself (DeploymentQualityStale owns that)
+    input_series:
+      - series: 'fleet_deployment_quality_up{repo="fleet-ops"}'
+        values: '0x40'
+    alert_rule_test:
+      - eval_time: 31m
+        alertname: ProductDeployUnmeasurable
+        exp_alerts: []
 YOAML
   if ! out="$(promtool test rules "$scratch/fdq.test.yml" 2>&1)"; then
     fail "promtool test rules exited non-zero: $out"

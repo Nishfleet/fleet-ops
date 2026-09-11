@@ -1467,6 +1467,24 @@ groups:
         annotations:
           summary: "deployment-quality metrics computation failed or vanished"
           description: "fleet_deployment_quality_up is absent or 0 for 15+ minutes — lib/fleet-deploy-quality.py failed (the gauges are NaN so threshold rules are silent; THIS alert is the only loud signal). The exporter logs 'deploy-quality: ...' to stderr; check journalctl --user -u fleet-metrics-export.service and /home/nish/.local/lib/pi-packet/fleet-deploy-quality.py. fleet-ops#2758."
+      # fleet-ops#5250: a product repo whose deploy-quality computation failed
+      # emits fleet_deployment_quality_up{repo="<r>"} 0 (missing
+      # PRODUCT_DEPLOY_WORKFLOWS entry, unreadable runs source, gh outage) and
+      # its gauges go NaN — ProductDeployStalled is blind for it.
+      # DeploymentQualityStale above is repo="fleet-ops" scoped, so without
+      # this rule an unmeasurable product repo emits up=0 forever unnoticed —
+      # the same silent-absence shape #5140 fixed for the happy path. The 30m
+      # fuse is longer than ProductDeployStalled's: a single bad scrape must
+      # not fire.
+      - alert: ProductDeployUnmeasurable
+        expr: fleet_deployment_quality_up{repo!="fleet-ops"} == 0
+        for: 30m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "{{ $labels.repo }} deployment-quality unmeasurable: fleet_deployment_quality_up 0 for 30m+"
+          description: "fleet_deployment_quality_up{repo=\"{{ $labels.repo }}\"} has been 0 for 30+ minutes — lib/fleet-deploy-quality.py could not measure {{ $labels.repo }} (missing PRODUCT_DEPLOY_WORKFLOWS entry, unreadable runs source, or gh outage) and its deploy-quality gauges are NaN, so ProductDeployStalled is blind for it. The exporter logs 'deploy-quality: ...' to stderr; check journalctl --user -u fleet-metrics-export.service and /home/nish/.local/lib/pi-packet/fleet-deploy-quality.py. fleet-ops#5250."
       - alert: FleetCloseDuplicatesWrongClose
         expr: fleet_close_duplicates_closes_total{cross_repo="true"} > 0 or fleet_close_duplicates_closes_total{protected="true"} > 0
         for: 1m
