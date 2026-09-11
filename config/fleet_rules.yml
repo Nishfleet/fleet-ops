@@ -661,8 +661,23 @@ groups:
       # (tests/packet-layout.test.sh) and the provider's cache TTL window
       # (config/seat-caps.json _comment_4643_cache_ttl) — same-type packets
       # must land inside the TTL window.
+      # fleet-ops#4643 follow-up (2026-09-11): the expr MUST scope to real
+      # packet lanes, i.e. exclude packet_type=~"interactive|probe". Both are
+      # structurally incapable of a prefix cache hit regardless of packet
+      # layout: an interactive `pi` session has a human typing a different
+      # prompt each turn, and a probe's whole prompt is a one-word sentinel
+      # ('Reply OK' / 'PONG') with nothing to reuse. Measuring them against a
+      # packet-layout target is a category error. Before this scoping the
+      # selector matched them: on 2026-09-11 litellm/other (0.27) and
+      # paretoinference/other (0.81) fired for 6h+ while every session
+      # driving both lanes had cwd=/home/nish and the litellm prompts were
+      # literally 'Reply OK' (17 seat probes in one rebase worktree) — and the
+      # real packet lanes were above target (paretoinference/worker 0.906).
+      # The alert asks whether the PACKET layout keeps a stable prefix; only
+      # packet lanes can answer it. packet_type="other" stays IN scope: it is
+      # the bucket for genuine packets matching no named lane.
       - alert: FleetPromptCacheHitLow
-        expr: fleet_prompt_cache_hit_ratio{class="metered"} < 0.85
+        expr: fleet_prompt_cache_hit_ratio{class="metered",packet_type!~"interactive|probe"} < 0.85
         for: 6h
         labels:
           severity: warning

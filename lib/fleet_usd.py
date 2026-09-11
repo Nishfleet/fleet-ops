@@ -201,7 +201,27 @@ def compute_usd_24h(sessions_dir, rate_card, now_epoch=None, day_seconds=86400.0
 
 
 def packet_type_from_path(path):
-    """Classify a session jsonl path into a packet_type label (fleet-ops#4643)."""
+    """Classify a session jsonl path into a packet_type label (fleet-ops#4643).
+
+    The metric is a PACKET metric: it asks whether same-type packets keep a
+    byte-identical stable prefix and land inside the provider's cache TTL
+    window. Two kinds of session are not packets and must never be measured
+    against that target, because their ratio is structurally near-zero no
+    matter what the packet layout does:
+
+      * interactive — a human typing a different prompt each turn;
+      * probe — a seat liveness check whose whole prompt is a one-word
+        sentinel ('Reply OK', 'PONG', 'Reply with exactly: OK'), which has no
+        prefix to reuse by construction.
+
+    Before 2026-09-11 both kinds fell through to "other" and were blended with
+    real packets, so FleetPromptCacheHitLow fired for 6h+ on lanes whose every
+    driving session was a probe or interactive typing (litellm/other 0.27,
+    paretoinference/other 0.81 — all cwd=/home/nish, every litellm prompt
+    literally 'Reply OK') while the real packet lanes were above target
+    (paretoinference/worker 0.906). "other" stays for genuine packets that
+    match no named lane.
+    """
     name = str(path).replace("\\", "/").lower()
     base = name.rsplit("/", 1)[-1]
     parent = name.rsplit("/", 2)[-2] if "/" in name else ""
@@ -216,6 +236,14 @@ def packet_type_from_path(path):
         return "heartbeat"
     if "conference" in blob or "gap-closure" in blob:
         return "conference"
+    if "probe" in blob:
+        return "probe"
+    # Interactive / ad-hoc `pi` sessions: Pi encodes the cwd as a `--a-b-c--`
+    # directory name. A bare home or /tmp cwd is interactive typing, not a
+    # dispatched packet.
+    if parent.startswith("--") and parent.endswith("--"):
+        if parent.startswith("--home-nish--") or parent == "--tmp--":
+            return "interactive"
     return "other"
 
 
@@ -235,15 +263,47 @@ def _provider_metric_class(rate_card, provider):
     return raw or "unknown"
 
 
+_PROBE_PROMPTS = (
+    "reply ok",
+    "pong",
+    "reply with exactly: ok",
+)
+
+
+def _is_probe_prompt(text):
+    """True when a first user prompt is a seat liveness sentinel.
+
+    A probe prompt is a one-word/two-word sentinel with no prefix to reuse, so
+    its cache-hit ratio is structurally 0 regardless of packet layout. Reading
+    the prompt is the only reliable test: probes are launched from ordinary
+    checkouts (e.g. a rebase worktree), so the PATH alone cannot tell a probe
+    from a real packet (fleet-ops#4643, 2026-09-11).
+    """
+    norm = " ".join(str(text or "").split()).strip().lower()
+    if not norm:
+        return False
+    if norm in _PROBE_PROMPTS:
+        return True
+    # 'Reply OK' / 'Reply with exactly OK'-style one-liners under ~40 chars
+    # that contain no packet structure (packets always start with a header
+    # like '# Pi fleet ...' or 'difficulty: ...').
+    return len(norm) <= 40 and norm.startswith("reply")
+
+
 def session_cache_tokens(path, today_epoch=None, day_seconds=86400.0):
     """Return {provider: {"input": n, "cacheRead": n}} for one session jsonl.
 
     Same windowing as session_marginal_usd: trailing day_seconds when
     today_epoch is set. input is uncached prompt tokens; cacheRead is the
     prefix-cache hit (Pi session jsonl, fleet-ops#3283 / #4643).
+
+    A session whose FIRST user prompt is a liveness sentinel returns {} — it is
+    a seat probe, not a packet, and must not be counted against the packet
+    cache-hit target (fleet-ops#4643, 2026-09-11).
     """
     counts = {}
     provider = None
+    first_user_text = None
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             for raw in f:
@@ -265,6 +325,15 @@ def session_cache_tokens(path, today_epoch=None, day_seconds=86400.0):
                 msg = data.get("message") or {}
                 if not isinstance(msg, dict):
                     continue
+                if first_user_text is None and msg.get("role") == "user":
+                    content = msg.get("content")
+                    if isinstance(content, list):
+                        content = " ".join(
+                            str(p.get("text", ""))
+                            for p in content
+                            if isinstance(p, dict)
+                        )
+                    first_user_text = str(content or "")
                 if provider is None:
                     provider = msg.get("provider")
                 if provider is None:
@@ -286,6 +355,8 @@ def session_cache_tokens(path, today_epoch=None, day_seconds=86400.0):
                 slot["cacheRead"] += cache_tok
     except OSError:
         return None
+    if _is_probe_prompt(first_user_text):
+        return {}
     return counts
 
 
