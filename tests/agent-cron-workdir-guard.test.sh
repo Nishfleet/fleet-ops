@@ -41,6 +41,7 @@ is_quota_cap_error() { return 1; }
 mark_seat_spawn_fail() { return 0; }
 mark_seat_quota_bench() { return 0; }
 pick_seat() { printf 'cursor\tcomposer-2.5\n'; return 0; }
+litellm_pick_seat() { pick_seat; }
 EOF
 
 # Fake pi that records invocation — the guard must stop pi from ever running.

@@ -178,31 +178,11 @@ grep -qE "mid-session" "$scratch/mark_calls" \
   || fail "mark_seat_spawn_fail reason must mention mid-session; calls: $(cat "$scratch/mark_calls")"
 ok "mid-session death -> mark_seat_spawn_fail called for $np/$nm"
 
-# (b) per-seat ledger has usable_at in the future so pick_seat excludes it.
-ledger_file="$LEDGER/${np//[^A-Za-z0-9._-]/_}__${nm//[^A-Za-z0-9._-]/_}.json"
-[[ -f "$ledger_file" ]] || fail "per-seat ledger missing at $ledger_file"
-usable=$(jq -r '.usable_at // empty' "$ledger_file")
-[[ -n "$usable" ]] || fail "ledger has no usable_at: $(cat "$ledger_file")"
-usable_epoch=$(date -u -d "$usable" +%s)
-now_epoch=$(date -u +%s)
-(( usable_epoch > now_epoch )) \
-  || fail "usable_at $usable is not in the future (now epoch=$now_epoch usable epoch=$usable_epoch)"
-ok "ledger usable_at=$usable is in the future"
+# P3b: mark_* is a log stub. Proxy cooldown owns skip, not a local ledger.
+shopt -s nullglob
+_mid_ledgers=("$LEDGER"/*.json)
+(( ${#_mid_ledgers[@]} == 0 )) \
+  || fail "P3b must not write local routing ledgers, got: ${_mid_ledgers[*]}"
+ok "P3b: no local per-seat ledger after mid-session death (proxy cooldown owns routing)"
 
-# (c) Simulate the intake re-spawn: empty tried-seats, same ledger. pick_seat
-#     must skip the benched seat and return another one.
-: >"$tried"
-# shellcheck disable=SC1091
-source "$repo_root/lib/seat-lib.sh"
-if seat_usable "$np" "$nm"; then
-    fail "seat_usable $np/$nm returned usable after mid-session bench — pick_seat would re-select it"
-fi
-next=$(pick_seat "" "" 0 "" || true)
-[[ -n "$next" ]] || fail "pick_seat returned empty after benching $np/$nm (another seat should still be free)"
-next_np=$(printf '%s' "$next" | cut -f1)
-next_nm=$(printf '%s' "$next" | cut -f2)
-[[ "$next_np/$next_nm" != "$np/$nm" ]] \
-  || fail "pick_seat re-selected the mid-session-death seat $np/$nm — the stuck loop is not fixed"
-ok "intake re-spawn pick_seat skips $np/$nm and picks $next_np/$next_nm"
-
-ok "pi-issue-run benches a mid-session provider death so re-seat picks a different seat"
+ok "pi-issue-run logs a mid-session provider death; systemd re-seats the LiteLLM group"

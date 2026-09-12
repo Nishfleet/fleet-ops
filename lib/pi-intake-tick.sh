@@ -130,7 +130,7 @@ if [[ -f "$_debounce_stamp" ]]; then
 fi
 trap 'touch "$_debounce_stamp" 2>/dev/null || true' EXIT
 # ISSUE_STATE_DIR is used for the worker packet written for pi-issue-run.
-# It must NOT be named STATE_DIR: seat-lib.sh redefines that for its own
+# It must NOT be named STATE_DIR: litellm-seat.sh redefines that for its own
 # pi-packet state (watch.log, active-seats, attempts) when it is sourced below.
 # Overridable for tests (like SEAT_LIB / PRECEDENCE_BAND_LIB / the other
 # PI_INTAKE_* knobs): a test drives the tick down its low=0 claim path, and
@@ -209,12 +209,12 @@ PARK_MAX_CLAIMS="${PI_INTAKE_PARK_MAX_CLAIMS:-3}"
 PARK_DUP_LOOKBACK="${PI_INTAKE_PARK_DUP_LOOKBACK:-30}"
 # The reclaim-cooldown reader below reads $ATTEMPTS_DIR/pi-issue-*.cooldown
 # — the same dir pi-issue-failed-reap writes (both use
-# ${PI_PACKET_STATE:-$HOME/.local/state/pi-packet}/attempts). seat-lib.sh
+# ${PI_PACKET_STATE:-$HOME/.local/state/pi-packet}/attempts). litellm-seat.sh
 # binds ATTEMPTS_DIR when it is sourced, but the test stub path (SEAT_LIB
 # override) does not, so under `set -u` the cooldown read killed the tick
 # mid-claim with an unbound variable and P14 CI went red on main
 # (fleet-ops#2281/#2326). Bind it here with the same default so every path
-# reaches that read with a defined value; seat-lib.sh re-sets the identical
+# reaches that read with a defined value; litellm-seat.sh re-sets the identical
 # path when it is sourced live, so behavior is unchanged.
 ATTEMPTS_DIR="${ATTEMPTS_DIR:-${PI_PACKET_STATE:-$HOME/.local/state/pi-packet}/attempts}"
 # Overridable for tests. A hardcoded /home/nish path crashes `set -e` on a
@@ -240,7 +240,7 @@ D1_GATE_BODY_NEEDLES="${PI_INTAKE_D1_GATE_BODY_NEEDLES:-migrations/
 .github/}"
 # SEAT_LIB may be overridden by tests via env var (like pi-issue-run).
 # Default is the live install path; tests inject a stub via SEAT_LIB.
-SEAT_LIB="${SEAT_LIB:-/home/nish/.local/lib/pi-packet/seat-lib.sh}"
+SEAT_LIB="${SEAT_LIB:-/home/nish/.local/lib/pi-packet/litellm-seat.sh}"
 # fleet-ops#1250: claim-step prior-art gate. Tests override the path.
 PRIOR_ART_BIN="${PRIOR_ART_CLAIM_CHECK:-$HOME/.local/bin/prior-art-claim-check}"
 # fleet-ops#3254: self-maintenance claim budget. In a fleet-ops tick every
@@ -294,7 +294,7 @@ fi
     exit 1
 }
 
-# shellcheck source=/home/nish/.local/lib/pi-packet/seat-lib.sh
+# shellcheck source=/home/nish/.local/lib/pi-packet/litellm-seat.sh
 # shellcheck disable=SC1091  # external lib, absent in hosted CI
 . "$SEAT_LIB"
 # fleet-ops#4450: shared work-supply drain math (claims/hour fallback,
@@ -981,7 +981,7 @@ d1_gate_integrity_needed() {
 
 # fleet-ops#3120/#3238 (2026-09-05): difficulty comes from the ISSUE, never from
 # the packet size. The packet is worker.md (~32 KB) + a TARGET line, so
-# seat-lib's task_weight fallback (HEAVY_PKT_BYTES=8192) classified EVERY issue
+# litellm-seat's task_weight fallback (HEAVY_PKT_BYTES=8192) classified EVERY issue
 # heavy and routed all work to the small capable pool while ollama and the free
 # seats sat idle. Rules: keystone label/title -> keystone; label heavy, or body
 # > DIFFICULTY_HEAVY_BODY_BYTES, or more than DIFFICULTY_HEAVY_REQUIRED
@@ -1004,8 +1004,8 @@ issue_difficulty() {
     # spending the Cursor senior pool is "put `difficulty: senior-review` at the
     # top of the issue body so pick_seat routes it to the senior ladder", but
     # intake recomputed the header from title/labels/body-size and wrote its own
-    # value as the packet's difficulty line; packet_difficulty() (lib/seat-lib.sh)
-    # takes the first standalone match, so the marker was silently dropped and
+    # value as the packet's FIRST line; packet_difficulty() (lib/litellm-seat.sh)
+    # takes the first match, so the marker was silently dropped and
     # senior-review work ran as weight=light on a worker seat. Deliberately
     # placed AFTER the label checks: the marker can only decide an unlabelled
     # packet, never downgrade a curated keystone/heavy label. Vocabulary is kept
@@ -1467,7 +1467,7 @@ audition_inject_and_retire() {
     # Commit the updated LIVE caps atomically (only if changed).
     if ! cmp -s "$tmp_caps" "$SEAT_CAPS_JSON"; then
         mv -f "$tmp_caps" "$SEAT_CAPS_JSON"
-        # Force seat-lib to reload caps on the next pick_seat call.
+        # Force litellm-seat to reload caps on the next pick_seat call.
         _seat_caps_loaded=0
     else
         rm -f "$tmp_caps"
@@ -1772,52 +1772,47 @@ repair_rung_concurrent() {
 # pi-issue@ unit that dies instantly on pick_seat(heavy) -> NO USABLE SEAT
 # and auto-restarts until StartLimitBurst, then OnFailure reaps the claim
 # back to agent-ready, then the NEXT tick re-claims it — a spawn churn that
-# burned 37 units activating and summoned the auditor.
-#
-# fleet-ops#4639: the old gate exited the WHOLE tick when the heavy probe
-# failed, freezing light claims behind a heavy-only shortage. The
-# anti-churn guarantee (fleet-ops-378) only requires that HEAVY issues are
-# not claimed without a heavy seat. So: heavy probe fails -> claim LIGHT
-# issues only this tick. When usable slots < 2 for >= 2 consecutive ticks
-# the REPAIR-RUNG opens (critical-path fleet-ops only) instead of holding
-# forever — the deadlock that kept the seat-repair issues skipped-capacity.
+# burned 37 units activating and summoned the auditor. The intake must probe
+# a usable heavy-capable seat BEFORE claiming; if none exists, hold all
+# claims this tick (workers pick their own seat at run time, and the queue
+# is heavy product work — a light-only fleet cannot run it). The recheck
+# timer re-fires the tick when seats recover.
+# fleet-ops#4263 P3b: proxy health is the usable-seat gate. A dead proxy
+# means workers cannot run, so hold claims this tick. Fail-open when
+# litellm_ready is unavailable (tests stub the helper).
+if declare -F litellm_ready >/dev/null 2>&1; then
+    if ! litellm_ready; then
+        echo "no usable LiteLLM proxy (slots=$slots); holding claims this tick — gate: litellm_ready"
+        exit 0
+    fi
+else
+    echo "litellm_ready unavailable; seat-slot gate fails open, keeping slots=$slots (fleet-ops#4263)"
+fi
+
+# P3b: proxy health is the only usable-seat gate. A healthy proxy means all
+# LiteLLM groups are reachable (fallbacks, cooldown, budgets). Keep the
+# _light_only_claims latch for the per-issue filter below; a dead proxy already
+# exited above, so claims are not light-only when we reach here.
 _light_only_claims=0
 _repair_rung_armed=0
 _repair_rung_product_reserve=0
 _product_skip_reason=""
-heavy_seat=$(pick_seat "" "" 1 2>/dev/null) || heavy_seat=""
-if [[ -z "$heavy_seat" ]]; then
-    echo "no usable heavy-capable seat (slots=$slots); light-only claims this tick — gate: pick_seat need_capable=1 (fleet-ops#4639)"
-    _light_only_claims=1
-fi
-# fleet-ops#4820: disarm signal is a real pick_seat returning a seat, not
-# the remaining-slot COUNT (live latch: healthy seats, COUNT stayed 0).
-# A count-mode stub echoing a bare integer is not a seat.
-_rung_clear_seat="$heavy_seat"
-if [[ -z "$_rung_clear_seat" ]]; then
-    _rung_clear_seat=$(pick_seat "" "" 0 2>/dev/null || true)
-fi
-if [[ "$_rung_clear_seat" =~ ^[0-9]+$ ]]; then
-    _rung_clear_seat=""
-fi
 _repo_is_product=0
 if declare -F repo_is_product >/dev/null 2>&1 && repo_is_product "$REPO"; then
     _repo_is_product=1
 fi
+heavy_seat=$(litellm_pick_seat "worker-capable" 2>/dev/null || true)
+_rung_clear_seat=$(litellm_pick_seat "worker-cheap" 2>/dev/null || true)
 
-# Usable seat-slot gate (fleet-ops#3732): capacity slots (RAM/config) are not
-# seat slots. 2026-09-05 21:30-21:33Z this tick claimed 12 issues into a pool
-# whose only usable seat was at its learned cap; every unit died at pick_seat,
-# the claims bounced, and the reclaim counters walked the issues into
-# nish-decision blocks. Count the slots pick_seat would actually fill (same
-# filter chain, no probe, no pick) and never claim more than that.
-# Fails OPEN when the count seam is unavailable (seat-lib without count
-# mode, a stubbed pick_seat, a non-numeric reply): a broken counter must
-# never freeze intake — same rule as the product-first gate below. Only a
-# definite 0 holds claims — unless the repair rung is armed.
-usable_light_slots=$(PICK_SEAT_COUNT_SLOTS=1 pick_seat "" "" 0 "" light 2>/dev/null || echo "")
+# Usable seat-slot gate (fleet-ops#3732 / #4263): capacity slots (RAM) are
+# not proxy slots. Headroom comes from the proxy; a non-numeric reply
+# fails OPEN so a broken counter never freezes intake.
+usable_light_slots=""
+if declare -F litellm_headroom >/dev/null 2>&1; then
+    usable_light_slots=$(litellm_headroom 2>/dev/null || echo "")
+fi
 if [[ ! "$usable_light_slots" =~ ^[0-9]+$ ]]; then
-    echo "usable seat-slot count unavailable (pick_seat count mode returned '${usable_light_slots:0:60}'); seat-slot gate fails open, keeping slots=$slots (fleet-ops#3732)"
+    echo "usable seat-slot count unavailable (litellm_headroom returned '${usable_light_slots:0:60}'); seat-slot gate fails open, keeping slots=$slots (fleet-ops#3732)"
     usable_light_slots=$slots
 fi
 # fleet-ops#4820: pick_seat returning a seat (or COUNT >= 2) is recovery.

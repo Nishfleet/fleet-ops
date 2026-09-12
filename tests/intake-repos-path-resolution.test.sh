@@ -27,6 +27,10 @@ set -euo pipefail
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 seat_lib="${SEAT_LIB_UNDER_TEST:-$repo_root/lib/seat-lib.sh}"
 [[ -f "$seat_lib" ]] || { echo "FAIL: seat-lib not found: $seat_lib"; exit 1; }
+# P3b (fleet-ops#4263): seat-lib.sh is now a forwarder that sources
+# litellm-seat.sh from its own directory. Copy both so the forwarder resolves.
+litellm_seat_lib="$(dirname "$seat_lib")/litellm-seat.sh"
+[[ -f "$litellm_seat_lib" ]] || { echo "FAIL: litellm-seat.sh not found: $litellm_seat_lib"; exit 1; }
 
 fails=0
 ok()   { printf 'ok: %s\n' "$1"; }
@@ -71,6 +75,7 @@ probe() {
 # checkout, not the stale sibling mirror. This is the live topology:
 # ~/.local/lib/pi-packet/seat-lib.sh has no ../config.
 cp "$seat_lib" "$home/.local/lib/pi-packet/seat-lib.sh"
+cp "$litellm_seat_lib" "$home/.local/lib/pi-packet/litellm-seat.sh"
 out=$(probe "$home/.local/lib/pi-packet/seat-lib.sh" \
         HOME="$home" FLEET_OPS_CHECKOUT="$home/deploy-clone" FLEET_INTAKE_REPOS_JSON=)
 case "$out" in
@@ -85,6 +90,7 @@ esac
 # --- case 2: a lib inside a checkout must read that checkout's own config,
 # even when a stale sibling mirror exists and no FLEET_OPS_CHECKOUT is set.
 cp "$seat_lib" "$tmp/checkout/lib/seat-lib.sh"
+cp "$litellm_seat_lib" "$tmp/checkout/lib/litellm-seat.sh"
 printf '%s' "$fresh" > "$tmp/checkout/config/intake-repos.json"
 out=$(probe "$tmp/checkout/lib/seat-lib.sh" HOME="$home" FLEET_INTAKE_REPOS_JSON=)
 case "$out" in

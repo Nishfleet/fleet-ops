@@ -25,7 +25,7 @@ mkdir -p "$prompts_dir" "$log_dir" "$state_dir" "$scratch/home" "$scratch/ledger
 printf '# 0509 daily market signal prompt\nwrite the signal.\n' >"$prompts_dir/0509-daily-market-signal.md"
 
 # Stub seat-lib that uses the real seat_log (so it writes to stderr), but
-# forces pick_seat to return empty so we exercise the no-seat failure path.
+# forces litellm_pick_seat to return empty so we exercise the no-seat path.
 stub_lib="$scratch/seat-lib.sh"
 cat >"$stub_lib" <<EOF
 # shellcheck shell=bash
@@ -37,6 +37,7 @@ mkdir -p "\$PI_PACKET_STATE" "\$XDG_RUNTIME_DIR"
 # shellcheck source=../lib/seat-lib.sh source-path=SCRIPTDIR
 source "$repo_root/lib/seat-lib.sh"
 task_weight() { echo "light"; }
+litellm_pick_seat() { :; return 1; }
 pick_seat() { :; return 1; }
 register_active_seat() { :; }
 clear_active_seat() { :; }

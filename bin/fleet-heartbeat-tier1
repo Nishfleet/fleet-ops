@@ -146,7 +146,7 @@ fi
 #      Loud + tier-1 fail when stale, so the silent-fail-open regression
 #      can never burn 48h of alert cycles again.
 #  37. AIMD leftover-meter canary (fleet-ops#424). Every tick, prove the
-#      AIMD reader still lives in seat-lib.sh. If the code vanishes and
+#      AIMD reader still lives in litellm-seat.sh. If the code vanishes and
 #      learned-caps-audit.log remains, go LOUD and auto-file so a leftover
 #      meter cannot look like a live control plane. No new unit.
 #
@@ -1415,7 +1415,7 @@ fi
 #
 # This is a best-effort supply nudge, NOT a fail-loud alarm (that is block
 # 8). The helper exits 2 only on a CONFIG error (missing intake-repos.json
-# / jq / seat-lib); we log its rc and let the helper write its own LOUD
+# / jq / litellm-seat); we log its rc and let the helper write its own LOUD
 # triage line, but we do NOT propagate — a broken refill nudge must not
 # stop PR queuing, orphan reclaim, or the wedge alarm. undersaturation's
 # fail-loud still wins the unit's exit code.
@@ -2522,7 +2522,7 @@ fi
 # ============================================================================
 # 37. AIMD LEFTOVER-METER CANARY (fleet-ops#424)
 # ============================================================================
-# Every tick, prove the AIMD reader still lives in seat-lib.sh. If the code
+# Every tick, prove the AIMD reader still lives in litellm-seat.sh. If the code
 # vanishes and learned-caps-audit.log remains, go LOUD and auto-file so a
 # leftover meter cannot look like a live control plane. No new unit.
 AIMD_CANARY_BIN="${FLEET_AIMD_METER_CANARY:-/home/nish/.local/bin/fleet-aimd-meter-canary}"

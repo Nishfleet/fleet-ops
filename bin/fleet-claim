@@ -7,7 +7,7 @@
 # writes a line.
 #
 # Usage:
-#   fleet-claim start <repo> <scope>           # e.g. fleet-ops lib/seat-lib.sh
+#   fleet-claim start <repo> <scope>           # e.g. fleet-ops lib/litellm-seat.sh
 #   fleet-claim check <repo> <scope>           # exit 0 if free, 1 if claimed
 #   fleet-claim release <repo> <scope>         # delete the claim branch
 #   fleet-claim conflicts <repo> <file> [file...]  # pre-flight: anyone on these files?
@@ -52,8 +52,8 @@ usage: fleet-claim start <repo> <scope>
        fleet-claim conflicts <repo> <file> [file...]
 
 <repo>  short name (fleet-ops) or Nishfleet/fleet-ops
-<scope> file path, topic, or any short token (e.g. lib/seat-lib.sh)
-<file>  path to check for an existing claim or open PR (e.g. lib/seat-lib.sh)
+<scope> file path, topic, or any short token (e.g. lib/litellm-seat.sh)
+<file>  path to check for an existing claim or open PR (e.g. lib/litellm-seat.sh)
 EOF
     exit 2
 }
@@ -221,7 +221,7 @@ cmd_release() {
 # if its scope token or file set overlaps the input file's PATH token or BASENAME
 # token. Basename matching is deliberate — two agents rarely use identical scope
 # strings, but the shared control-plane files have distinctive basenames
-# (seat-lib.sh, seat-caps.json). Exit 1 if any conflict, 0 if clear.
+# (litellm-seat.sh, seat-caps.json). Exit 1 if any conflict, 0 if clear.
 cmd_conflicts() {
     # Files to check: the first file is already in scope_raw; the rest in $@.
     local -a files=("$scope_raw")

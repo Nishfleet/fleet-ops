@@ -40,7 +40,7 @@ git -c init.defaultBranch=main init -q "$repo"
 git -C "$repo" remote add origin "https://github.com/Nishfleet/fleet-ops.git"
 
 # Files that look like the real shared files.
-touch "$repo/lib/seat-lib.sh"
+touch "$repo/lib/litellm-seat.sh"
 touch "$repo/config/seat-caps.json"
 touch "$repo/systemd/fleet-heartbeat.service"
 touch "$repo/bin/guard_shared_file_collision_hook.py"
@@ -49,7 +49,7 @@ touch "$repo/bin/guard_shared_file_collision_hook.py"
 mkdir -p "$scratch/home/.claude/hooks"
 ln -s "$repo/bin/guard_shared_file_collision_hook.py" "$scratch/home/.claude/hooks/guard_shared_file_collision.py"
 
-# Fixture: one open PR touching lib/seat-lib.sh, another touching bin/guard_*.py.
+# Fixture: one open PR touching lib/litellm-seat.sh, another touching bin/guard_*.py.
 cat >"$GUARD_SHARED_FILE_PR_CACHE" <<'JSON'
 [
   {
@@ -57,7 +57,7 @@ cat >"$GUARD_SHARED_FILE_PR_CACHE" <<'JSON'
     "title": "fix(seat): cap-map allowlist",
     "author": {"login": "app/nishfleet-worker"},
     "files": [
-      {"path": "lib/seat-lib.sh", "additions": 4, "deletions": 1, "changeType": "MODIFIED"}
+      {"path": "lib/litellm-seat.sh", "additions": 4, "deletions": 1, "changeType": "MODIFIED"}
     ]
   },
   {
@@ -65,7 +65,7 @@ cat >"$GUARD_SHARED_FILE_PR_CACHE" <<'JSON'
     "title": "fix(seat): another cap-map patch",
     "author": {"login": "nish3451"},
     "files": [
-      {"path": "lib/seat-lib.sh", "additions": 2, "deletions": 0, "changeType": "MODIFIED"}
+      {"path": "lib/litellm-seat.sh", "additions": 2, "deletions": 0, "changeType": "MODIFIED"}
     ]
   },
   {
@@ -100,7 +100,7 @@ run_guard "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$repo/README
 ok "non-shared file is ignored"
 
 # --- 3. a shared file with open PR collisions warns --------------------------
-run_guard "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$repo/lib/seat-lib.sh\"}}"
+run_guard "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$repo/lib/litellm-seat.sh\"}}"
 [[ "$rc" == 0 ]] || fail "collision must exit 0 (warn only), got rc=$rc"
 printf '%s\n' "$out" | grep -q 'shared-file collision guard' || fail "expected warning, got: $out"
 printf '%s\n' "$out" | grep -q '#44' || fail "expected PR #44 in warning, got: $out"
@@ -119,9 +119,9 @@ run_guard "{\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"$repo/systemd
 ok "shared file with no open-PR hits is silent"
 
 # --- 6. MultiEdit with one matching file warns --------------------------------
-run_guard "{\"tool_name\":\"MultiEdit\",\"tool_input\":{\"edits\":[{\"file_path\":\"$repo/README.md\"},{\"file_path\":\"$repo/lib/seat-lib.sh\"}]}}"
+run_guard "{\"tool_name\":\"MultiEdit\",\"tool_input\":{\"edits\":[{\"file_path\":\"$repo/README.md\"},{\"file_path\":\"$repo/lib/litellm-seat.sh\"}]}}"
 [[ "$rc" == 0 ]] || fail "MultiEdit with a match must exit 0, got rc=$rc"
-printf '%s\n' "$out" | grep -q 'lib/seat-lib.sh' || fail "MultiEdit warning must name the hit file, got: $out"
+printf '%s\n' "$out" | grep -q 'lib/litellm-seat.sh' || fail "MultiEdit warning must name the hit file, got: $out"
 ok "MultiEdit with one shared collision warns"
 
 # --- 7. ~/.claude/hooks shim resolves to canonical source --------------------
@@ -133,7 +133,7 @@ printf '%s\n' "$out" | grep -q 'guard' || fail "installed hook edit must warn ab
 ok ".claude/hooks installed file resolves to fleet-ops canonical source"
 
 # --- 8. hook shim runs the same canonical logic ------------------------------
-out2=$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s/lib/seat-lib.sh"}}\n' "$repo" | python3 "$hook" 2>&1)
+out2=$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s/lib/litellm-seat.sh"}}\n' "$repo" | python3 "$hook" 2>&1)
 [[ $? == 0 ]] || fail "hook shim must exit 0"
 printf '%s\n' "$out2" | grep -q '#44' || fail "hook shim must warn about #44, got: $out2"
 ok "hook shim invokes canonical lib and warns"

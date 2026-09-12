@@ -112,6 +112,8 @@ class_of() {
 
 model_cap() { printf '1\n'; }
 
+litellm_pick_seat() { printf 'litellm\t%s\n' "${1:-worker-cheap}"; }
+
 seat_usable() {
   # fleet-ops#3121: within the senior ladder (seat-caps senior_seats_in_order)
   # the FIRST usable seat wins. Make cursor (first entry) unusable so the
@@ -166,9 +168,9 @@ export AUDIT_STATE_DIR="$state_dir"
 export PI_CALLS="$calls"
 
 # -----------------------------------------------------------------------------
-# Scenario 1: the senior role (replaces dead straitly) resolves to the first
-# usable seat in senior_seats_in_order. cursor (first entry) is walled, so the
-# resolver falls through to the second ladder entry xai-oauth/grok-4.6.
+# Scenario 1: the senior role routes to LiteLLM group `senior`
+# (tab-separated provider/model). The old per-seat cursor -> xai-oauth
+# ladder is gone (fleet-ops#4263 P3b).
 # -----------------------------------------------------------------------------
 reset_state() { rm -rf "$state_dir"; mkdir -p "$state_dir"; rm -f "$calls"; }
 
@@ -186,11 +188,11 @@ PI_RESPONSE=$'FAIL\nThe candidate is not a duplicate and advances the north star
 call_line=$(head -n1 "$calls")
 call_prov=$(printf '%s\n' "$call_line" | cut -f1)
 call_mod=$(printf '%s\n' "$call_line" | cut -f2)
-[[ "$call_prov" == "xai-oauth" ]] \
-  || fail "scenario1: provider was '$call_prov' (expected 'xai-oauth'); call_line='$call_line'"
-[[ "$call_mod" == "grok-4.6" ]] \
-  || fail "scenario1: model was '$call_mod' (expected 'grok-4.6'); call_line='$call_line'"
-ok "scenario1: senior falls through walled cursor to xai-oauth/grok-4.6, emits real tab-separated provider/model"
+[[ "$call_prov" == "litellm" ]] \
+  || fail "scenario1: provider was '$call_prov' (expected 'litellm'); call_line='$call_line'"
+[[ "$call_mod" == "senior" ]] \
+  || fail "scenario1: model was '$call_mod' (expected 'senior'); call_line='$call_line'"
+ok "scenario1: senior role uses litellm/senior with a real tab"
 
 # -----------------------------------------------------------------------------
 # Scenario 2: free-glm-5-3 auditor returns FAIL with an incomplete reason;
@@ -275,8 +277,8 @@ ok "scenario4b: empty reason exits 1 and logs a distinguishing line"
 reset_state
 seat_health_dir="$scratch/seat-health"
 mkdir -p "$seat_health_dir"
-# devin/swe-2-max (the default devin seat since 2026-09-10) is in transient_fault.
-cat >"$seat_health_dir/devin__swe-2-max.json" <<'LEDGER'
+# litellm/worker-capable is in transient_fault.
+cat >"$seat_health_dir/litellm__worker-capable.json" <<'LEDGER'
 {
   "health_class":"transient_fault",
   "seat_dead":false,
