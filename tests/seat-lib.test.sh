@@ -63,6 +63,33 @@ bash "$here/siterep-deploy-rollback-rc-propagation.test.sh" || fail "siterep-dep
 bash "$here/role-quality-gates.test.sh" || fail "role-quality-gates tests failed"
 bash "$here/reusable-surface-audit.test.sh" || fail "reusable-surface-audit tests failed"
 bash "$here/pi-seat-source-litellm.test.sh" || fail "pi-seat-source-litellm tests failed"
+# fleet-ops#449 lock: fleet-blindspot-count had no CI host (its lock grepped a
+# mangled path that never existed); hosted here per its own contract.
+bash "$here/fleet-blindspot-count.test.sh" || fail "fleet-blindspot-count tests failed"
+# fleet-ops#4263 fallout: #5993 dropped these host lines (113 -> 71), so the
+# tests silently left CI; restored verbatim from the pre-#5993 host.
+bash "$here/opencode-m3-catalog-canary.test.sh" || fail "opencode-m3-catalog-canary tests failed"
+bash "$here/quality-routing.test.sh" || fail "quality-routing tests failed"
+bash "$here/fleet-failed-command-http-status-quoted-content.test.sh" || fail "fleet-failed-command-http-status-quoted-content tests failed"
+bash "$here/fleet-failed-command-output-token-limit-never-ran.test.sh" || fail "fleet-failed-command-output-token-limit-never-ran tests failed"
+bash "$here/fleet-failed-command-git-C-rev-parse-probe.test.sh" || fail "fleet-failed-command-git-C-rev-parse-probe tests failed"
+bash "$here/fleet-failed-command-todo-schema-validation.test.sh" || fail "fleet-failed-command-todo-schema-validation tests failed"
+bash "$here/fleet-failed-command-gh-pr-json-piped-python-load.test.sh" || fail "fleet-failed-command-gh-pr-json-piped-python-load tests failed"
+bash "$here/fleet-failed-command-ps-empty-selection.test.sh" || fail "fleet-failed-command-ps-empty-selection tests failed"
+bash "$here/gate-integrity.test.sh" || fail "gate-integrity tests failed"
+bash "$here/gate-integrity-config.test.sh" || fail "gate-integrity config tests failed"
+bash "$here/seat-caps-citation.test.sh" || fail "seat-caps-citation tests failed"
+bash "$here/seat-caps-citation-rule6-replay.test.sh" \
+bash "$here/keystone-routing.test.sh" || fail "keystone-routing tests failed"
+bash "$here/senior-review-routing.test.sh" || fail "senior-review-routing tests failed"
+bash "$here/agent-cron-writes-refused.test.sh" || fail "agent-cron-writes-refused tests failed"
+bash "$here/agent-cron-empty-stdout.test.sh" || fail "agent-cron-empty-stdout tests failed"
+bash "$here/pi-issue-run-noop-bench.test.sh" || fail "pi-issue-run-noop-bench tests failed"
+bash "$here/pi-issue-run-empty-success.test.sh" || fail "pi-issue-run-empty-success tests failed"
+bash "$here/pi-issue-run-cwd-anchor.test.sh" || fail "pi-issue-run-cwd-anchor tests failed"
+bash "$here/seat-caps-zero-yield.test.sh" || fail "seat-caps-zero-yield tests failed"
+bash "$here/devin-config-trust.test.sh" || fail "devin-config-trust tests failed"
+bash "$here/devin-writes-rejected.test.sh" || fail "devin-writes-rejected tests failed"
 bash "$here/fleet-worker-prompt-gh-pr-view-unknown-field.test.sh" || fail "fleet-worker-prompt-gh-pr-view-unknown-field tests failed"
 bash "$here/ram-metric-compare.test.sh" || fail "ram-metric-compare tests failed"
 bash "$here/ram-measure.test.sh" || fail "ram-measure tests failed"

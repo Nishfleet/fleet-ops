@@ -27,6 +27,7 @@ stubs="$scratch/seatlib-stub.sh"
 cat >"$stubs" <<'SH'
 #!/usr/bin/env bash
 total_seat_cap() { echo 8; }
+seat_max_concurrent() { echo 8; }
 issue_seat_cap() { echo 5; }
 litellm_seat() { echo "commandcode	deepseek/deepseek-v4-flash		0"; return 0; }
 precedence_band_phase() { echo "band"; }

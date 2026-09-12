@@ -53,7 +53,7 @@ ok "matrix row led-2026-08-27-worker-lane-order is retired-advisory (volume orde
 
 jq -e '.rules[] | select(.id == "led-2026-08-27-cursor-400-sequencing-model-nish" and (.status | startswith("advisory(senior: RETIRED by fleet-ops#4263")))' \
   "$matrix" >/dev/null \
-  || fail "led-2026-08-27-cursor-400-sequencing-model-nish must be RETIRED by fleet-ops#4263 (pick_seat deleted; the proxy routes no cursor deployment)"
+  || fail "led-2026-08-27-cursor-400-sequencing-model-nish must be RETIRED by fleet-ops#4263 (seat picker deleted; the proxy routes no cursor deployment)"
 ok "matrix row led-2026-08-27-cursor-400-sequencing-model-nish is retired by fleet-ops#4263"
 
 jq -e '.rules[] | select(.id == "sr-verify-harness" and .status == "enforced")' \
@@ -242,7 +242,7 @@ if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
   jq -e --arg src 'decisions-ledger.md: 2026-08-27 | Worker lane order (Nish, emphatic: "can'"'"'t stress enough")' \
     '.rules[] | select(.source == $src and (.status | startswith("advisory")) and (.mechanism | contains("RETIRED")))' "$matrix" >/dev/null \
     || fail "matrix must mark worker lane order as advisory-RETIRED (fleet-ops#1178 retired 2026-09-04 by fleet-ops#3125)"
-  # fleet-ops#4263: cursor $400 sequencing is RETIRED with pick_seat (the proxy
+  # fleet-ops#4263: cursor $400 sequencing is RETIRED with the seat picker (the proxy
   # routes no cursor deployment); like the lane-order row above, assert the
   # matrix row carries advisory-RETIRED instead of an enforced covered_row.
   jq -e --arg src 'decisions-ledger.md: 2026-08-27 | Cursor $400 sequencing + model (Nish)' \

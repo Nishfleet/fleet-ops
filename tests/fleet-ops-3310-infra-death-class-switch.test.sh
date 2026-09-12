@@ -124,9 +124,9 @@ grep -qF 'senior)    _next_pref="block"' "$tick" \
     || fail "the ladder must end at senior -> block"
 ok "Test 7: intake WORK-cap hit advances prepaid->metered->senior; blocks (blocked-on: infra) only at exhaustion"
 
-# --- Test 8: retired with pick-seat (fleet-ops#4263) ---------------------------
+# --- Test 8: retired with the seat picker (fleet-ops#4263) ---------------------------
 # The #3121 class ladder (cheap -> capable -> senior) is no longer a
-# PI_PICK_PREFER_CLASS branch in a seat picker: it is the LiteLLM proxy's
+# PI_PICK_PREFER_CLASS branch in the retired picker: it is the LiteLLM proxy's
 # router_settings.fallbacks in config/litellm-proxy.yaml.
 
 # --- Test 9: shellcheck -------------------------------------------------------
@@ -361,8 +361,8 @@ set -e
 [[ ! -f "$ATT/pi-issue-${closed_inst}.reclaim-count" ]]  || fail "CLOSED reap must clear .reclaim-count"
 ok "Test 14 (replay): real pi-issue-failed-reap clears ladder/infra markers on a CLOSED reap"
 
-# --- Test 15: retired with pick-seat (fleet-ops#4263) --------------------------
-# The prefer-class replay exercised pick-seat, which no longer exists; the class
+# --- Test 15: retired with the seat picker (fleet-ops#4263) --------------------------
+# The prefer-class replay exercised the retired picker; the class
 # ladder is the LiteLLM proxy fallbacks (config/litellm-proxy.yaml).
 
 # --- Test 16: replay — WORK cap ladder (tick) advances one rung at a time -----

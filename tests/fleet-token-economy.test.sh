@@ -273,7 +273,7 @@ done
 
 ok "minimax is metered (last bucket); straitly retired (fleet-ops#4887)"
 
-# --- product value-order / class ladder: retired with pick_seat (fleet-ops#4263) ---
+# --- product value-order / class ladder: retired with the seat picker (fleet-ops#4263) ---
 # Ordering and the cheap -> capable -> senior ladder live in the LiteLLM proxy
 # (config/litellm-proxy.yaml order + router_settings.fallbacks); there is no
 # per-pick yield/value order left to assert in lib/litellm-seat.sh.

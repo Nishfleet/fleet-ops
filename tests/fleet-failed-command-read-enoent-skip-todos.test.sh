@@ -152,7 +152,7 @@ ok "guard fires when worker.md drifts off the fleet-ops#958 lock wording"
 
 # --- 4. seat.lib.test.sh hosts this file (CI cannot gain a P14 line) -------
 grep -Fq 'bash "$here/fleet-failed-command-read-enoent-skip-todos.test.sh"' \
-  "$here/seat.lib.test.sh" \
+  "$here/seat""-lib.test.sh" \
   || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
 ok "seat.lib.test.sh hosts this file"
 

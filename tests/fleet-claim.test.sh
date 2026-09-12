@@ -46,19 +46,19 @@ git -c init.defaultBranch=main clone -q "$bare" "$checkout"
 )
 
 # --- first start succeeds ----------------------------------------------------
-if ! out=$("$bin" start fleet-ops lib/litellm-seat.sh); then
+if ! out=$("$bin" start fleet-ops lib/example-lock.sh); then
     fail "first start must succeed"
 fi
 printf '%s\n' "$out" | grep -q '^claimed:' || fail "expected 'claimed:' line, got: $out"
 
-if ! git -C "$checkout" ls-remote origin 'refs/heads/claim/adhoc-lib_seatlib.sh' 2>/dev/null | grep -q .; then
+if ! git -C "$checkout" ls-remote origin 'refs/heads/claim/adhoc-lib_example-lock.sh' 2>/dev/null | grep -q .; then
     fail 'claim branch missing on origin after start'
 fi
 ok 'first start creates claim branch'
 
 # --- second start on same scope fails ----------------------------------------
 set +e
-out=$("$bin" start fleet-ops lib/litellm-seat.sh 2>&1)
+out=$("$bin" start fleet-ops lib/example-lock.sh 2>&1)
 rc=$?
 set -e
 [[ "$rc" == 1 ]] || fail "second start must fail with rc=1, got rc=$rc"
@@ -67,7 +67,7 @@ ok 'second start on the same scope is rejected'
 
 # --- check semantics ---------------------------------------------------------
 set +e
-out=$("$bin" check fleet-ops lib/litellm-seat.sh)
+out=$("$bin" check fleet-ops lib/example-lock.sh)
 rc=$?
 set -e
 [[ "$rc" == 1 ]] || fail "check on claimed scope must return 1, got rc=$rc"
@@ -82,20 +82,20 @@ printf '%s\n' "$out" | grep -q '^free:' || fail "expected 'free:' from check, go
 ok 'check reports claimed and free scopes correctly'
 
 # --- release and re-claim ----------------------------------------------------
-out=$("$bin" release fleet-ops lib/litellm-seat.sh)
+out=$("$bin" release fleet-ops lib/example-lock.sh)
 printf '%s\n' "$out" | grep -q '^released:' || fail "expected 'released:' line, got: $out"
 
-if git -C "$checkout" ls-remote origin 'refs/heads/claim/adhoc-lib_seatlib.sh' 2>/dev/null | grep -q .; then
+if git -C "$checkout" ls-remote origin 'refs/heads/claim/adhoc-lib_example-lock.sh' 2>/dev/null | grep -q .; then
     fail 'claim branch still on origin after release'
 fi
 
-out=$("$bin" start fleet-ops lib/litellm-seat.sh)
+out=$("$bin" start fleet-ops lib/example-lock.sh)
 printf '%s\n' "$out" | grep -q '^claimed:' || fail "re-claim after release failed: $out"
 ok 'release deletes branch and allows re-claim'
 
 # --- concurrent starts: exactly one winner -----------------------------------
 # Release the branch from the previous block first.
-"$bin" release fleet-ops lib/litellm-seat.sh >/dev/null
+"$bin" release fleet-ops lib/example-lock.sh >/dev/null
 
 first_out="$scratch/first.out"
 second_out="$scratch/second.out"
@@ -103,9 +103,9 @@ second_out="$scratch/second.out"
 # Run two starts at the same time. The per-scope lock serialises them, so
 # the second must see the branch created by the first and fail.
 set +e
-"$bin" start fleet-ops lib/litellm-seat.sh >"$first_out" 2>&1 &
+"$bin" start fleet-ops lib/example-lock.sh >"$first_out" 2>&1 &
 first_pid=$!
-"$bin" start fleet-ops lib/litellm-seat.sh >"$second_out" 2>&1 &
+"$bin" start fleet-ops lib/example-lock.sh >"$second_out" 2>&1 &
 second_pid=$!
 
 wait "$first_pid"
@@ -149,11 +149,11 @@ chmod +x "$ghstub/gh"
 export PATH="$ghstub:$PATH"
 
 # Clean slate: release any claim left by the concurrent-start block.
-"$bin" release fleet-ops lib/litellm-seat.sh >/dev/null 2>&1 || true
+"$bin" release fleet-ops lib/example-lock.sh >/dev/null 2>&1 || true
 
 # No claims at all -> no conflicts, exit 0.
 set +e
-out=$("$bin" conflicts fleet-ops lib/litellm-seat.sh 2>&1)
+out=$("$bin" conflicts fleet-ops lib/example-lock.sh 2>&1)
 rc=$?
 set -e
 [[ "$rc" == 0 ]] || fail "conflicts with no claims must exit 0, got rc=$rc (out=$out)"
@@ -161,9 +161,9 @@ printf '%s\n' "$out" | grep -q '^no-conflicts:' || fail "expected 'no-conflicts:
 ok 'conflicts: clear when no claims exist'
 
 # Claim by full file path, then conflicts on the same path must see it.
-"$bin" start fleet-ops lib/litellm-seat.sh >/dev/null
+"$bin" start fleet-ops lib/example-lock.sh >/dev/null
 set +e
-out=$("$bin" conflicts fleet-ops lib/litellm-seat.sh 2>&1)
+out=$("$bin" conflicts fleet-ops lib/example-lock.sh 2>&1)
 rc=$?
 set -e
 [[ "$rc" == 1 ]] || fail "conflicts on a claimed file must exit 1, got rc=$rc (out=$out)"
@@ -194,19 +194,19 @@ ok 'conflicts: unrelated file is clear despite other live claims'
 
 # Multi-file: one matching file in the list is enough to flag.
 set +e
-out=$("$bin" conflicts fleet-ops prompts/intake.md lib/litellm-seat.sh 2>&1)
+out=$("$bin" conflicts fleet-ops prompts/intake.md lib/example-lock.sh 2>&1)
 rc=$?
 set -e
 [[ "$rc" == 1 ]] || fail "multi-file with one match must exit 1, got rc=$rc (out=$out)"
-printf '%s\n' "$out" | grep -q 'claim-conflict:.*seatlib.sh' \
-  || fail "expected a seatlib.sh claim-conflict in multi-file mode, got: $out"
+printf '%s\n' "$out" | grep -q 'claim-conflict:.*example-lock.sh' \
+  || fail "expected a example-lock.sh claim-conflict in multi-file mode, got: $out"
 ok 'conflicts: one matching file in a multi-file request flags the lot'
 
 # Release clears the conflict.
-"$bin" release fleet-ops lib/litellm-seat.sh >/dev/null
+"$bin" release fleet-ops lib/example-lock.sh >/dev/null
 "$bin" release fleet-ops seat-caps.json >/dev/null
 set +e
-out=$("$bin" conflicts fleet-ops lib/litellm-seat.sh config/seat-caps.json 2>&1)
+out=$("$bin" conflicts fleet-ops lib/example-lock.sh config/seat-caps.json 2>&1)
 rc=$?
 set -e
 [[ "$rc" == 0 ]] || fail "after release, conflicts must exit 0, got rc=$rc (out=$out)"

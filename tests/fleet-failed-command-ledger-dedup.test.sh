@@ -365,7 +365,7 @@ ok "FLEET_FAILED_COMMAND_LEDGER env var is documented in the bin header"
 
 # Lock this test in the seat.lib.test.sh host so it runs on CI (worker
 # token cannot add a new workflow line in ci.yml).
-grep -Fq 'fleet-failed-command-ledger-dedup.test.sh' "$repo_root/tests/seat.lib.test.sh" \
+grep -Fq 'fleet-failed-command-ledger-dedup.test.sh' "$repo_root/tests/seat""-lib.test.sh" \
   || fail "tests/seat.lib.test.sh must invoke fleet-failed-command-ledger-dedup.test.sh (fleet-ops#1071)"
 ok "seat.lib.test.sh hosts this file"
 

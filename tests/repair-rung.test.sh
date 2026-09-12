@@ -43,8 +43,7 @@ grep -qF 'allow-repair-rung' "$tick" || fail "yield-cap exemption missing"
 ok "intake pins: knobs, arm/release/claim logs, critical-path filter, packet marker"
 
 # --- 2. pick-seat + pi-issue-run pins ---
-grep -qF '_pick_repair_rung_seat' "$lib" || fail "pick-seat repair-rung ladder missing"
-grep -qF 'Never a money-walled seat' "$lib" || fail "money-wall refusal comment missing"
+# fleet-ops#4263: the picker-side repair-rung ladder is retired; pi-issue-run routes PI_REPAIR_RUNG=1 to the judge group.
 grep -qF 'PI_REPAIR_RUNG' "$run" || fail "pi-issue-run PI_REPAIR_RUNG missing"
 grep -qF 'seat-rung:[[:space:]]*repair' "$run" \
     || fail "pi-issue-run does not read seat-rung: repair"
@@ -58,6 +57,9 @@ stubs="$scratch/seatlib-stub.sh"
 cat >"$stubs" <<'SH'
 #!/usr/bin/env bash
 total_seat_cap() { echo 8; }
+seat_max_concurrent() { echo 8; }
+# fleet-ops#4263: the tick's seat-slot seam is litellm_headroom now.
+litellm_headroom() { echo "${STUB_LIGHT_SLOTS:-0}"; }
 issue_seat_cap() { echo 5; }
 load_seat_caps() { return 0; }
 worker_memory_for_difficulty() { return 1; }
@@ -186,111 +188,7 @@ echo "$out5" | grep -qF 'ordinary-work' \
     || true
 ok "tick 5: non-critical-path is not skipped-repair-rung after disarm"
 
-# --- 4. pick-seat ladder: cursor when workers are walled; refuse money wall ---
-export PI_SEAT_LIB_CHECK_SYSTEMD=0
-export PI_SEAT_NOUSABLE_COOLDOWN_S=0
-export SEAT_LIVE_QUOTA_PROM="$scratch/no-live-quota.prom"
-export PI_PACKET_STATE="$scratch/state"
-export PI_SEAT_HEALTH_LEDGER_DIR="$scratch/ledger"
-export FLEET_SEAT_RECOVERY_NOW="2026-09-09T12:00:00Z"
-mkdir -p "$PI_PACKET_STATE/active-seats" "$PI_SEAT_HEALTH_LEDGER_DIR"
+# --- 4. retired (fleet-ops#4263) ---
+# The cursor/money-wall repair ladder was a branch of the retired picker; a
+# repair-rung packet now routes to the LiteLLM judge group in pi-issue-run.
 
-cat >"$scratch/models.json" <<'JSON'
-{
-  "providers": {
-    "ollama": { "models": [ { "id": "deepseek-v4-flash:0731" } ] },
-    "mergegateway": {
-      "models": [
-        { "id": "anthropic/claude-sonnet-5" },
-        { "id": "deepseek/deepseek-v4-flash" }
-      ]
-    },
-    "cursor": { "models": [ { "id": "cursor-grok-4.6-high" } ] },
-    "litellm": { "models": [ { "id": "judge" } ] }
-  }
-}
-JSON
-cat >"$scratch/caps.json" <<'JSON'
-{
-  "ram_gb_per_worker": 1.5,
-  "free_providers_in_order": ["ollama"],
-  "providers": {
-    "ollama": { "cap": 2, "class": "free", "models": { "deepseek-v4-flash:0731": 2 } },
-    "mergegateway": {
-      "cap": 2,
-      "class": "metered",
-      "models": {
-        "anthropic/claude-sonnet-5": { "cap": 1, "audition": true },
-        "deepseek/deepseek-v4-flash": 2
-      }
-    },
-    "cursor": { "cap": 1, "class": "subscription", "models": { "cursor-grok-4.6-high": 1 } },
-    "litellm": { "cap": 0, "class": "prepaid-quota", "models": { "judge": 0 } }
-  }
-}
-JSON
-export PI_MODELS_JSON="$scratch/models.json"
-export SEAT_CAPS_JSON="$scratch/caps.json"
-
-wall_ledger() {
-    local p="$1" m="$2"
-    local ps ms
-    ps="${p//[^A-Za-z0-9._-]/_}"
-    ms="${m//[^A-Za-z0-9._-]/_}"
-    cat >"$PI_SEAT_HEALTH_LEDGER_DIR/${ps}__${ms}.json" <<JSON
-{"health_class":"quota_exhausted","seat_dead":false,"observed_at":"2026-09-09T11:00:00Z","bench_until":"2026-09-10T12:00:00Z","consecutive_failure_count":4,"failure_mode":"quota_cap"}
-JSON
-}
-wall_ledger ollama "deepseek-v4-flash:0731"
-wall_ledger mergegateway "deepseek/deepseek-v4-flash"
-wall_ledger mergegateway "anthropic/claude-sonnet-5"
-
-# Without the rung, cursor is keystone-only and audition is light-only:
-# a heavy pick must stall when workers are money-walled.
-unset PI_REPAIR_RUNG
-set +e
-out=$(bash -c 'source "$0"; load_seat_caps; pick-seat "" "" 1 "" heavy' "$lib" 2>/dev/null)
-rc=$?
-set -e
-[[ "$rc" != "0" ]] || fail "heavy pick without rung must stall (no worker seats), got: $out"
-ok "pick-seat without PI_REPAIR_RUNG refuses keystone/audition on a heavy packet"
-
-# With the rung, cursor (healthy, not money-walled) is offered.
-export PI_REPAIR_RUNG=1
-set +e
-out=$(bash -c 'source "$0"; load_seat_caps; pick-seat "" "" 0 "" light' "$lib" 2>/dev/null)
-rc=$?
-set -e
-[[ "$rc" == "0" ]] || fail "repair rung must pick cursor, rc=$rc out=$out"
-[[ "$out" == $'cursor\tcursor-grok-4.6-high' ]] \
-    || fail "repair rung must pick cursor/cursor-grok-4.6-high, got: $out"
-ok "repair rung picks cursor keystone when worker seats are walled"
-
-# Money-wall cursor: unwall the audition seat so the ladder can fall through.
-rm -f "$PI_SEAT_HEALTH_LEDGER_DIR/mergegateway__anthropic_claude-sonnet-5.json"
-wall_ledger cursor "cursor-grok-4.6-high"
-set +e
-out=$(bash -c 'source "$0"; load_seat_caps; pick-seat "" "" 0 "" light' "$lib" 2>/dev/null)
-rc=$?
-set -e
-[[ "$rc" == "0" ]] || fail "repair rung must fall through to audition, rc=$rc out=$out"
-[[ "$out" == $'mergegateway\tanthropic/claude-sonnet-5' ]] \
-    || fail "repair rung must pick mergegateway audition, got: $out"
-ok "repair rung refuses money-walled cursor and picks mergegateway audition"
-
-# Wall the audition seat too: nothing left.
-wall_ledger mergegateway "anthropic/claude-sonnet-5"
-set +e
-out=$(bash -c 'source "$0"; load_seat_caps; pick-seat "" "" 0 "" light' "$lib" 2>/dev/null)
-rc=$?
-set -e
-[[ "$rc" != "0" ]] || fail "all-walled rung must stall, got: $out"
-ok "repair rung stalls when every reserved seat is money-walled"
-
-# Filter pin: non-critical-path is skipped while armed.
-grep -qF 'skipped-repair-rung (rung claims critical-path fleet-ops only' "$tick" \
-    || fail "non-critical-path skip missing"
-ok "armed rung claims critical-path only (filter pin)"
-
-echo ""
-echo "ALL OK: repair rung (fleet-ops#4639)"

@@ -61,7 +61,6 @@ tests/fleet-seat-recovery-units.test.sh:4
 tests/fleet-vibes-canary.test.sh:14
 tests/fleet-work-slice-tasksmax.test.sh:7
 tests/keystone-routing.test.sh:1
-tests/openrouter-free-retired-corpse.test.sh:1
 tests/pick-seat-freeze.test.sh:28
 tests/pi-issue-park-resurrection.test.sh:1
 tests/pi-issue-run-app-identity.test.sh:1
@@ -83,32 +82,13 @@ tests/quality-routing.test.sh:1
 tests/ram-metric-compare.test.sh:18
 tests/repair-rung.test.sh:1
 tests/repo-privacy-guard.test.sh:1
-tests/seat-empty-run-bench-sticks.test.sh:1
-tests/seat-empty-run-ceiling-3727.test.sh:1
 tests/seat-empty-run-ceiling-default.test.sh:1
 tests/seat-empty-run-clobber-park.test.sh:1
 tests/seat-empty-run-count-persists-new-issue.test.sh:1
 tests/seat-empty-run-intermittent-count.test.sh:1
 tests/seat-empty-run-park-persists.test.sh:1
-tests/seat-failure-ceiling.test.sh:1
-tests/seat-floor-failopen.test.sh:1
-tests/seat-lib-aimd.test.sh:13
-tests/seat-lib-dispatch.test.sh:2
-tests/seat-lib-free-daily-budget.test.sh:2
-tests/seat-lib-prefer-class-empty.test.sh:1
 tests/seat-lib-product-only-spend-cap.test.sh:1
-tests/seat-lib-provider-daily-budget.test.sh:1
-tests/seat-lib-retire.test.sh:1
-tests/seat-lib-yield-order.test.sh:4
-tests/seat-noop-escalation.test.sh:1
-tests/seat-quota-corpse.test.sh:1
-tests/seat-registry-liveness.test.sh:1
-tests/seat-spawn-bench-ceiling-false-healthy.test.sh:1
-tests/seat-spawn-bench-clobber.test.sh:1
-tests/seat-spawn-corpse.test.sh:1
-tests/seat-wall-cap.test.sh:1
 tests/senior-review-routing.test.sh:1
-tests/token-economy-routing.test.sh:1
 tests/worker-memory-dropin.test.sh:15
 MANIFEST
 
@@ -143,7 +123,9 @@ fi
 grown=0
 for f in "${!frozen[@]}"; do
     [[ -f "$f" ]] || continue
-    n=$(grep -oE "$PAT" "$f" 2>/dev/null | wc -l)
+    # `|| true`: under pipefail a file shrunk to ZERO matches (allowed — the
+    # deletion shrinks this manifest) made grep exit 1 and killed the test silently.
+    n=$({ grep -oE "$PAT" "$f" 2>/dev/null || true; } | wc -l)
     n=${n//[^0-9]/}
     if (( n > ${frozen[$f]:-0} )); then
         echo "FAIL: $f grew retired-routing matches ${frozen[$f]} -> $n — no new pick_seat callers while fleet-ops#4263 deletion is open" >&2
