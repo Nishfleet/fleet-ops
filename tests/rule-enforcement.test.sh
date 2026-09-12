@@ -51,10 +51,19 @@ jq -e '.rules[] | select(.id == "led-2026-08-27-worker-lane-order-nish-emphatic-
   || fail "led-2026-08-27-worker-lane-order must be status=advisory(RETIRED by fleet-ops#3125) not enforced (fleet-ops#1178 retired 2026-09-04)"
 ok "matrix row led-2026-08-27-worker-lane-order is retired-advisory (volume order replaced by yield)"
 
-jq -e '.rules[] | select(.id == "led-2026-08-27-cursor-400-sequencing-model-nish" and (.status | startswith("advisory(senior: RETIRED by fleet-ops#4263")))' \
+# fleet-ops#6114: #6037 wrongly retired the two Cursor-$400 rows — the
+# $400 machinery (Prometheus pacing group, seat-caps, the direct callers)
+# never depended on the deleted pick_seat alone. Both rows are enforced
+# again, and the mechanism must name the LIVE pacing + caller machinery.
+jq -e '.rules[] | select(.id == "led-2026-08-27-cursor-400-correction-nish" and .status == "enforced" and (.mechanism | test("fleet_cursor_prepaid_pacing")) and (.mechanism | test("bin/fleet-prepaid-util-canary")) and (.mechanism | test("bin/pi-audit-run")) and (.mechanism | test("bin/fleet-gap-closure-conference")) and (.mechanism | test("config/role-quality-gates.json")))' \
   "$matrix" >/dev/null \
-  || fail "led-2026-08-27-cursor-400-sequencing-model-nish must be RETIRED by fleet-ops#4263 (seat picker deleted; the proxy routes no cursor deployment)"
-ok "matrix row led-2026-08-27-cursor-400-sequencing-model-nish is retired by fleet-ops#4263"
+  || fail "led-2026-08-27-cursor-400-correction-nish must be enforced with the live mechanism named: fleet_rules.yml fleet_cursor_prepaid_pacing, the restored prepaid-util-canary reader, and the direct callers (fleet-gap-closure-conference, pi-audit-run, role-quality-gates.json) (fleet-ops#6114)"
+ok "matrix row led-2026-08-27-cursor-400-correction-nish is enforced (fleet-ops#6114)"
+
+jq -e '.rules[] | select(.id == "led-2026-08-27-cursor-400-sequencing-model-nish" and .status == "enforced" and (.mechanism | test("NO LIVE MECHANISM")) and (.mechanism | test("cursor_overage.overage_model")) and (.mechanism | test("FleetCursorPrepaidBurnPacingLow")))' \
+  "$matrix" >/dev/null \
+  || fail "led-2026-08-27-cursor-400-sequencing-model-nish must be enforced, say which part of the #1167 sequencing lost its mechanism with #5993 (NO LIVE MECHANISM: opens_after_included_exhausted), and name the restored config read + the pacing rule (fleet-ops#6114)"
+ok "matrix row led-2026-08-27-cursor-400-sequencing-model-nish is enforced (fleet-ops#6114)"
 
 jq -e '.rules[] | select(.id == "sr-verify-harness" and .status == "enforced")' \
   "$matrix" >/dev/null \
@@ -242,12 +251,12 @@ if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
   jq -e --arg src 'decisions-ledger.md: 2026-08-27 | Worker lane order (Nish, emphatic: "can'"'"'t stress enough")' \
     '.rules[] | select(.source == $src and (.status | startswith("advisory")) and (.mechanism | contains("RETIRED")))' "$matrix" >/dev/null \
     || fail "matrix must mark worker lane order as advisory-RETIRED (fleet-ops#1178 retired 2026-09-04 by fleet-ops#3125)"
-  # fleet-ops#4263: cursor $400 sequencing is RETIRED with the seat picker (the proxy
-  # routes no cursor deployment); like the lane-order row above, assert the
-  # matrix row carries advisory-RETIRED instead of an enforced covered_row.
+  # fleet-ops#6114: #6037 wrongly retired the Cursor-$400 sequencing row; it
+  # is enforced again, so the live join must now enumerate it as an ENFORCED
+  # covered_row (the #4263 advisory-RETIRED expectation is gone).
   jq -e --arg src 'decisions-ledger.md: 2026-08-27 | Cursor $400 sequencing + model (Nish)' \
-    '.rules[] | select(.source == $src and (.status | startswith("advisory")) and (.mechanism | contains("RETIRED")))' "$matrix" >/dev/null \
-    || fail "matrix must mark cursor \$400 sequencing as advisory-RETIRED (fleet-ops#4263)"
+    '.covered_rows[] | select(.source == $src and .status == "enforced")' <<<"$live" >/dev/null \
+    || fail "live join must report cursor \$400 sequencing as an enforced covered_row (fleet-ops#6114): $(jq -c '.covered_rows' <<<"$live")"
   jq -e --arg src 'decisions-ledger.md: 2026-08-27 | GEO/AEO: fleet executes measurement + owned-content tactics; community/PR parked for Nish' \
     '.covered_rows[] | select(.source == $src and .status == "enforced")' <<<"$live" >/dev/null \
     || fail "live join must report GEO/AEO parked tactics as enforced covered_rows (fleet-ops#1245): $(jq -c '.covered_rows' <<<"$live")"
@@ -278,7 +287,7 @@ if [[ -f "$vault_rules" && -f "$vault_ledger" ]]; then
   ok "live join: work supply 24h source is enforced (observe-to-close for #540)"
   ok "live join: worker-lane refresh source is enforced (observe-to-close for #545)"
   ok "live join: worker lane order source is enforced (observe-to-close for #1178)"
-  ok "live join: cursor \$400 sequencing row is advisory-RETIRED (fleet-ops#4263)"
+  ok "live join: cursor \$400 sequencing row is enforced (fleet-ops#6114)"
   ok "live join: GEO/AEO parked tactics source is enforced (observe-to-close for #1245)"
   ok "live join: Quality ratchet source is enforced (observe-to-close for #1222)"
   ok "live join: continuous research source is enforced (observe-to-close for #541)"

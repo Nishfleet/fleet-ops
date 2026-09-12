@@ -119,11 +119,19 @@ seat_usable() {
   # the FIRST usable seat wins. Make cursor (first entry) unusable so the
   # resolver falls through to the second ladder entry xai-oauth/grok-4.6 —
   # proving "walled role resolves to its fallback" inside the ladder.
+  # #6114: when $PI_STUB_WALL_ALL exists, EVERY ladder seat is walled, so the
+  # resolver falls through to the proxy (scenario 1b).
+  if [[ -n "${PI_STUB_WALL_ALL:-}" && -f "$PI_STUB_WALL_ALL" ]]; then
+    return 1
+  fi
   if [[ "$1" == "cursor" ]]; then
     return 1
   fi
   return 0
 }
+
+# #6114: the #5993 proxy `senior` group is the ladder-exhausted fallback.
+find_senior_seat() { printf 'litellm\tsenior\n'; }
 
 seat_ledger_path() { printf '%s/%s__%s.json\n' "${PI_SEAT_HEALTH_LEDGER_DIR:-/dev/null}" "$1" "$2"; }
 LIB
@@ -168,9 +176,12 @@ export AUDIT_STATE_DIR="$state_dir"
 export PI_CALLS="$calls"
 
 # -----------------------------------------------------------------------------
-# Scenario 1: the senior role routes to LiteLLM group `senior`
-# (tab-separated provider/model). The old per-seat cursor -> xai-oauth
-# ladder is gone (fleet-ops#4263 P3b).
+# Scenario 1: the senior role resolves through its OWN ladder (#6114: back in
+# command — #5993 had routed it to the LiteLLM proxy). The stub walls cursor
+# (the ladder head, read from seat-caps.json .cursor_overage.overage_model),
+# so the ladder falls through to the second seat, xai-oauth/grok-4.6 — real
+# tab-separated provider/model. The #776 tab-split regression now lives in
+# scenario 1b (proxy fallback after a fully-walled ladder).
 # -----------------------------------------------------------------------------
 reset_state() { rm -rf "$state_dir"; mkdir -p "$state_dir"; rm -f "$calls"; }
 
@@ -188,11 +199,32 @@ PI_RESPONSE=$'FAIL\nThe candidate is not a duplicate and advances the north star
 call_line=$(head -n1 "$calls")
 call_prov=$(printf '%s\n' "$call_line" | cut -f1)
 call_mod=$(printf '%s\n' "$call_line" | cut -f2)
+[[ "$call_prov" == "xai-oauth" ]] \
+  || fail "scenario1: provider was '$call_prov' (expected the LADDER fallback xai-oauth; cursor is walled in the stub, #6114)"
+[[ "$call_mod" == "grok-4.6" ]] \
+  || fail "scenario1: model was '$call_mod' (expected 'grok-4.6'); call_line='$call_line'"
+ok "scenario1: senior role walks the AUDIT_SENIOR_ORDER ladder (cursor walled -> xai-oauth/grok-4.6, #6114)"
+
+# -----------------------------------------------------------------------------
+# Scenario 1b: the #6114 proxy FALLBACK. With EVERY ladder seat walled, the
+# resolver reaches the #5993 LiteLLM `senior` group (GLM/DeepSeek) — and the
+# seat must still arrive tab-separated (the #776 literal-\t regression).
+# -----------------------------------------------------------------------------
+reset_state
+: >"$scratch/wall-all"
+PI_STUB_WALL_ALL="$scratch/wall-all" \
+PI_RESPONSE=$'PASS\nNo duplicate; advances the north star.' \
+  bash "$bin" 'demo--421--senior' >"$scratch/scenario1b.out" 2>"$scratch/scenario1b.err" || true
+[[ -f "$state_dir/demo/421/senior.vote" ]] \
+  || fail "scenario1b: no senior vote written ($(cat "$scratch/scenario1b.err"))"
+call_line=$(head -n1 "$calls")
+call_prov=$(printf '%s\n' "$call_line" | cut -f1)
+call_mod=$(printf '%s\n' "$call_line" | cut -f2)
 [[ "$call_prov" == "litellm" ]] \
-  || fail "scenario1: provider was '$call_prov' (expected 'litellm'); call_line='$call_line'"
+  || fail "scenario1b: with the ladder fully walled, provider must be the proxy 'litellm', got '$call_prov'"
 [[ "$call_mod" == "senior" ]] \
-  || fail "scenario1: model was '$call_mod' (expected 'senior'); call_line='$call_line'"
-ok "scenario1: senior role uses litellm/senior with a real tab"
+  || fail "scenario1b: with the ladder fully walled, model must be the proxy group 'senior', got '$call_mod'; call_line='$call_line'"
+ok "scenario1b: fully-walled ladder falls back to litellm/senior with a real tab (the #776 regression, #6114 order)"
 
 # -----------------------------------------------------------------------------
 # Scenario 2: free-glm-5-3 auditor returns FAIL with an incomplete reason;
