@@ -2543,11 +2543,22 @@ blocked-on: orchestrator" 2>/dev/null || true
                             _park_ref_full="Nishfleet/${_park_ref_repo}"
                         fi
                         _park_ref_num="${_park_ref##*#}"
-                        _park_pr_info=$(_gh_read pr view "$_park_ref_num" -R "$_park_ref_full" --json state,headRefName 2>/dev/null || true)
+                        # fleet-ops#5991: a MERGED non-claim reference counts
+                        # as delivery ONLY if the PR actually CLOSES this
+                        # issue — `closingIssuesReferences` must include issue
+                        # $N in $FULL. Any comment that merely mentions an
+                        # unrelated merged PR (e.g. `Relates to`, a
+                        # `blocked-on:` target, or discussion of another
+                        # issue) used to park the issue; mentions never equal
+                        # delivery (fleet-ops#3231).
+                        _park_pr_info=$(_gh_read pr view "$_park_ref_num" -R "$_park_ref_full" --json state,headRefName,closingIssuesReferences 2>/dev/null || true)
                         if [[ -n "$_park_pr_info" ]] && printf '%s' "$_park_pr_info" | jq -e '.state == "MERGED" and .headRefName != "claim/issue-'"$N"'"' >/dev/null 2>&1; then
-                            _park_nonclaim_merged=1
-                            _park_delivered_pr="$_park_ref_num"
-                            break
+                            _park_closes_it=$(printf '%s' "$_park_pr_info" | jq -e --arg full "$FULL" --argjson n "$N" 'any(.closingIssuesReferences[]?; .number == $n and ((.repository.owner.login // "") + "/" + (.repository.name // "") | ascii_downcase) == ($full | ascii_downcase))' 2>/dev/null || true)
+                            if [[ "$_park_closes_it" == "true" ]]; then
+                                _park_nonclaim_merged=1
+                                _park_delivered_pr="$_park_ref_num"
+                                break
+                            fi
                         fi
                     done <<<"$_park_refs"
                 fi
