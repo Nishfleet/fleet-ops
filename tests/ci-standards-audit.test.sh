@@ -1005,3 +1005,15 @@ bash "$here/one-fleet-rule-pointer.test.sh"
 # is the class-prevention so a future drop of this host line fails by name.
 # Hermetic (repo-relative lib/ paths only, no gh/systemd/live surfaces).
 bash "$here/live-state-doctrine-precedence.test.sh"
+
+# fleet-ops#5870: the judge-header detector `attest-waiting: <n> [#a #b]`
+# (lib/attest-waiting.sh, wired into measure.sh) lists agent-ready /
+# agent-blocked issues whose latest blocked-status comment mentions an
+# attestation and that have had no orchestrator comment for >2h; zero is
+# the normal value; a gh failure is UNAVAILABLE, never a fabricated 0.
+# Hosted here so P14 runs it without a workflow-file edit (the worker App
+# cannot push .github/workflows/**). The named pin in
+# tests/p14-test-listing-gate.test.sh is the class-prevention so a future
+# drop of this host line fails by name. Hermetic (scratch dir + stubbed gh,
+# no live network).
+bash "$here/measure-attest-waiting.test.sh"
