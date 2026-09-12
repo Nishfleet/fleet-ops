@@ -46,6 +46,10 @@ bin/fleet-close-and-archive-repo /home/nish/.local/bin/fleet-close-and-archive-r
 # fleet-ops#1157: ConsoleLying + ConsoleTileVerifyAbsent. System scope —
 # install.sh --system deploys to /etc/prometheus/fleet_rules.yml.
 config/fleet_rules.yml /etc/prometheus/fleet_rules.yml
+# fleet-ops#5839: inotify watch-budget headroom. The sudo sysctl --system
+# apply step is Nish-reserved (documented in the file itself); this row only
+# ships the drop-in so the NEXT --system install carries it.
+etc/sysctl.d/90-fleet-inotify.conf /etc/sysctl.d/90-fleet-inotify.conf
 # fleet-ops#1136: live self-maintenance ratio + upgrade/repair/churn quality
 # + queue composition + verified-merges numerator. The exporter is the
 # canonical source for fleet_self_maintenance_*, fleet_pr_quality_*,
