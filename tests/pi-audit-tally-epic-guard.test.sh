@@ -119,6 +119,44 @@ grep -q 'add-label discarded' "$log3" || fail "narrowness: a non-epic 2-of-3 FAI
 ok "non-epic candidate with 2-of-3 FAIL still discarded (guard does not leak)"
 
 # =============================================================================
+# 2b. epic guard, #6151 shapes: the bare "EPIC:" title (colon, no #number) and
+#     the `epic` label. 0509#3171 sailed through all four #4451 patterns and
+#     was discarded 2026-09-12 despite a senior PASS vote.
+# =============================================================================
+# case A: the 0509#3171 replay - title starts "EPIC: ", plain body, no epic
+# label. The title shape alone must save it.
+log8="$scratch/gh8.log"; : >"$log8"
+cat >"$scratch/issue8.json" <<'J'
+{"title":"EPIC: track self and competitors across the internet - media mentions + blogging/social platforms (Nish direction 2026-09-12)","body":"plain body, no epic markers, no docs/epics/ path","labels":[{"name":"scout-candidate"}]}
+J
+mk_gh "$log8" "$scratch/issue8.json"
+d4="$AUDIT_STATE_DIR/0509/3171"; rm -rf "$d4"
+write_vote "$d4" devin FAIL "no direct user-facing product impact, not a duplicate"
+write_vote "$d4" free-glm FAIL "not the smallest durable fix, no duplicate"
+write_vote "$d4" senior PASS "see #3171 and app/lib/x.ts, no duplicate, customer edge"
+run_tally 0509 3171
+grep -q 'add-label discarded' "$log8" && fail "epic guard #6151: discarded a bare 'EPIC:'-title candidate (0509#3171 replay)"
+grep -q 'remove-label scout-candidate' "$log8" && fail "epic guard #6151: dropped scout-candidate on a bare 'EPIC:'-title candidate"
+grep -q 'add-label spec-needed' "$log8" || fail "epic guard #6151: did not mark spec-needed on a bare 'EPIC:'-title candidate"
+ok "0509#3171 replay: bare 'EPIC:'-title candidate never discarded, marked spec-needed"
+
+# case B: the `epic` label alone (plain title, plain body) must also save it.
+log9="$scratch/gh9.log"; : >"$log9"
+cat >"$scratch/issue9.json" <<'J'
+{"title":"competitor watch tactics","body":"plain body, no epic markers, no docs/epics/ path","labels":[{"name":"scout-candidate"},{"name":"epic"}]}
+J
+mk_gh "$log9" "$scratch/issue9.json"
+d5="$AUDIT_STATE_DIR/0509/3172"; rm -rf "$d5"
+write_vote "$d5" devin FAIL "no direct user-facing product impact, not a duplicate"
+write_vote "$d5" free-glm FAIL "not the smallest durable fix, no duplicate"
+write_vote "$d5" senior PASS "see #3172 and app/lib/x.ts, no duplicate, customer edge"
+run_tally 0509 3172
+grep -q 'add-label discarded' "$log9" && fail "epic guard #6151: discarded an epic-labelled candidate"
+grep -q 'remove-label scout-candidate' "$log9" && fail "epic guard #6151: dropped scout-candidate on an epic-labelled candidate"
+grep -q 'add-label spec-needed' "$log9" || fail "epic guard #6151: did not mark spec-needed on an epic-labelled candidate"
+ok "epic-labelled candidate (plain title, plain body) never discarded, marked spec-needed"
+
+# =============================================================================
 # 3. SKIP arithmetic: 2 FAIL + 1 SKIP is PENDING, never a 2-of-2 discard
 # =============================================================================
 log4="$scratch/gh4.log"; : >"$log4"
