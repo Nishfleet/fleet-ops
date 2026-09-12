@@ -29,6 +29,7 @@ stubs="$scratch/seatlib-stub.sh"
 cat >"$stubs" <<'SH'
 #!/usr/bin/env bash
 total_seat_cap() { echo 8; }
+seat_max_concurrent() { echo 8; }
 issue_seat_cap() { echo 5; }
 worker_memory_for_difficulty() { return 1; }
 worker_env_for_repo() { return 1; }

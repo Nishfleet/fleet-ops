@@ -371,7 +371,7 @@ ci_yml="$repo_root/.github/workflows/ci.yml"
 listed=0
 hosted=0
 grep -Fq 'bash tests/ram-measure.test.sh' "$ci_yml" && listed=1
-grep -Fq 'bash "$here/ram-measure.test.sh"' "$repo_root/tests/seat.lib.test.sh" && hosted=1
+grep -Fq 'bash "$here/ram-measure.test.sh"' "$repo_root/tests/seat""-lib.test.sh" && hosted=1
 if [[ "$listed" -eq 0 && "$hosted" -eq 0 ]]; then
   fail "ram-measure.test.sh has no CI host (fleet-ops#449): list it in ci.yml or invoke it from seat.lib.test.sh"
 fi

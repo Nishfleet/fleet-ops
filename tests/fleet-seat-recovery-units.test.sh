@@ -232,10 +232,17 @@ ok "negative control: seat_sentinel plane wedges a burst=5 stub on the same stor
   printf '#!/usr/bin/env bash\nif [[ "$*" == *"--jq"* ]]; then printf "open\\n"; fi\nprintf "[]\\n"\nexit 0\n' > "$stub_bin/gh"
   printf '#!/usr/bin/env bash\nprintf "export GH_TOKEN=fake-test-token-cccccccccccccccc\\n"\nexit 0\n' > "$stub_bin/worker-token"
   printf '#!/usr/bin/env bash\nexit 0\n' > "$stub_bin/systemctl"
+  # fleet-ops#4263: the walled/recovered edge is the proxy readiness probe now.
+  cat > "$stub_bin/curl" <<CURL
+#!/usr/bin/env bash
+[[ -f "$scratch/proxy-up" ]] && { printf '{"status":"healthy"}'; exit 0; }
+exit 7
+CURL
   chmod +x "$stub_bin"/*
   export PATH="$stub_bin:/usr/local/bin:/usr/bin:/bin"
   export PI_BIN="$stub_bin/pi"
   export WORKER_TOKEN_BIN="$stub_bin/worker-token"
+  export LITELLM_REQUIRE_LIVE=1 LITELLM_HEALTH_URL="http://127.0.0.1:9/health/readiness"
   cat > "$PI_MODELS_JSON" <<'JSON'
 { "providers": { "devin": { "models": [ { "id": "glm-5-2", "cost": { "input": 0 } } ] } } }
 JSON
@@ -257,6 +264,7 @@ JSON
   cat > "$SEAT_CAPS_JSON" <<'JSON'
 { "ram_gb_per_worker": 1.5, "free_providers_in_order": [], "providers": {} }
 JSON
+  rm -f "$scratch/proxy-up"
   run_issue_run
   got=$(cat "$sentinel" 2>/dev/null || true)
   [[ "$got" == "no-usable" ]] \
@@ -269,6 +277,7 @@ JSON
   reset_tried
   mtime_before=$(stat -c '%Y.%i' "$sentinel")
   sleep 1.1
+  touch "$scratch/proxy-up"
   run_issue_run
   got=$(cat "$sentinel" 2>/dev/null || true)
   [[ "$got" == "usable" ]] \
@@ -286,6 +295,7 @@ JSON
 { "ram_gb_per_worker": 1.5, "free_providers_in_order": [], "providers": {} }
 JSON
   reset_tried
+  rm -f "$scratch/proxy-up"
   run_issue_run
   got=$(cat "$sentinel" 2>/dev/null || true)
   [[ "$got" == "no-usable" ]] \

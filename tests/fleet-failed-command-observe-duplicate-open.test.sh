@@ -343,7 +343,7 @@ ok "lib/failed-command-flagged.py docstring cites #980"
 # nested seatlib host so removing the test file (or moving the
 # citation check out) is caught by the seatlib listing test.
 grep -F -q 'fleet-failed-command-observe-duplicate-open.test.sh' \
-  "$here/seat.lib.test.sh" \
+  "$here/seat""-lib.test.sh" \
   || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
 ok "seat.lib.test.sh hosts this file"
 

@@ -329,7 +329,7 @@ grep -q 'fleet-failed-command-observe-duplicate-1003.test.sh' "$lib" \
   || fail "lib/failed-command-flagged.py docstring must name the leftover-duplicate test file for the 01a041a5 pile"
 ok "lib/failed-command-flagged.py docstring cites #1003 / #1019 and names the leftover-duplicate test file"
 grep -F -q 'fleet-failed-command-observe-duplicate-1003.test.sh' \
-  "$here/seat.lib.test.sh" \
+  "$here/seat""-lib.test.sh" \
   || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
 ok "seat.lib.test.sh hosts this file"
 

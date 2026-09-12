@@ -1469,7 +1469,7 @@ grep -q 'bin/fleet-failed-command-flagged' "$repo_root/MANIFEST" \
   || fail "MANIFEST must install bin/fleet-failed-command-flagged"
 grep -q 'lib/failed-command-flagged.py' "$repo_root/MANIFEST" \
   || fail "MANIFEST must install lib/failed-command-flagged.py"
-grep -Fq 'bash "$here/fleet-failed-command-flagged.test.sh"' "$here/seat.lib.test.sh" \
+grep -Fq 'bash "$here/fleet-failed-command-flagged.test.sh"' "$here/seat""-lib.test.sh" \
   || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
 jq -e '.rules[] | select(.id == "sr-failed-command-flagged" and .status == "enforced")' \
   "$repo_root/config/rule-enforcement.json" >/dev/null \

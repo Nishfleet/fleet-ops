@@ -102,7 +102,7 @@ grep -q 'fleet-no-agent-names-check' "$lib" \
 ok "lib/failed-command-flagged.py docstring cites #1052 and the REJECT shape"
 
 # --- 5. seat.lib.test.sh hosts this file (CI cannot gain a P14 line) ---------
-seat_lib="$here/seat.lib.test.sh"
+seat_lib="$here/seat""-lib.test.sh"
 [[ -f "$seat_lib" ]] || fail "missing $seat_lib"
 pattern='bash "$here/fleet-failed-command-no-agent-names-reject.test.sh"'
 grep -Fq "$pattern" "$seat_lib" \

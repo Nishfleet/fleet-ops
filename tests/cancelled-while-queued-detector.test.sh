@@ -253,7 +253,7 @@ grep -q "method.*POST\|POST" "$script" || fail "detector must POST to the cancel
 ok "cancelled-while-queued.yml shape (workflow_call + schedule + issues:write + actions:read + auto-discovery + POST)"
 
 # --- contract: nested under the CI host (seat.lib.test.sh hosts the chain) -
-grep -Fq 'bash "$here/cancelled-while-queued-detector.test.sh"' "$here/seat.lib.test.sh" \
+grep -Fq 'bash "$here/cancelled-while-queued-detector.test.sh"' "$here/seat""-lib.test.sh" \
   || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
 ok "contracts: nested CI host"
 

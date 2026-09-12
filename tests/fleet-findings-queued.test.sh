@@ -601,7 +601,7 @@ grep -q 'bin/fleet-findings-queued' "$repo_root/MANIFEST" \
   || fail "MANIFEST must install bin/fleet-findings-queued"
 grep -q 'lib/findings-queued.py' "$repo_root/MANIFEST" \
   || fail "MANIFEST must install lib/findings-queued.py"
-grep -Fq 'bash "$here/fleet-findings-queued.test.sh"' "$here/seat.lib.test.sh" \
+grep -Fq 'bash "$here/fleet-findings-queued.test.sh"' "$here/seat""-lib.test.sh" \
   || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
 grep -q 'observe-to-close' "$bin" \
   || fail "fleet-findings-queued must observe-to-close auto-filed findings (fleet-ops#724)"

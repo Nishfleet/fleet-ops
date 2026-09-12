@@ -203,68 +203,10 @@ set -e
 ok "is_workspace_trust_error: does not match empty input"
 
 # ============================================================================
-# 4. mark_seat_config_fault_bench: config_fault ledger, NEVER retired
-# ============================================================================
-rm -f "$LEDGER"/*.json 2>/dev/null || true
-trust_text="Refusing to run in an untrusted workspace"
-set +e
-bash -c 'source "$0"; load_seat_caps; mark_seat_config_fault_bench "$1" "$2" "$3"' \
-    "$lib" "devin" "glm-5-2" "$trust_text" >/dev/null 2>&1
-rc=$?
-set -e
-[[ "$rc" == "0" ]] || fail "mark_seat_config_fault_bench must return 0 on success (rc=$rc)"
+# 4. retired (fleet-ops#4263): the config_fault bench ledger lived in the
+# deleted routing library; the LiteLLM proxy owns cooldown and
+# mark_seat_config_fault_bench is a logging stub. The matcher (3) stays.
 
-ledger_file="$LEDGER/devin__glm-5-2.json"
-[[ -f "$ledger_file" ]] || fail "mark_seat_config_fault_bench did not create ledger at $ledger_file"
-
-hc=$(jq -r '.health_class' "$ledger_file")
-[[ "$hc" == "config_fault" ]] \
-    || fail "mark_seat_config_fault_bench must write health_class=config_fault, got '$hc'"
-
-fm=$(jq -r '.failure_mode' "$ledger_file")
-[[ "$fm" == "config_fault_trust" ]] \
-    || fail "mark_seat_config_fault_bench must write failure_mode=config_fault_trust, got '$fm'"
-
-# CRITICAL (fleet-ops#4825): a config/trust fault is INFRASTRUCTURE, never
-# seat yield. The seat must NOT be retired — seat_dead stays false.
-seat_dead=$(jq -r '.seat_dead' "$ledger_file")
-[[ "$seat_dead" == "false" ]] \
-    || fail "mark_seat_config_fault_bench must write seat_dead=false (config fault is infrastructure, NOT yield/corpse), got '$seat_dead'"
-
-# The bench must have a usable_at in the future (short bench so pick-seat dodges it).
-usable_at=$(jq -r '.usable_at // "MISSING"' "$ledger_file")
-[[ "$usable_at" != "MISSING" ]] || fail "mark_seat_config_fault_bench must write usable_at, missing"
-bench_until=$(jq -r '.bench_until // "MISSING"' "$ledger_file")
-[[ "$bench_until" != "MISSING" ]] || fail "mark_seat_config_fault_bench must write bench_until, missing"
-
-lec=$(jq -r '.last_error_class // "MISSING"' "$ledger_file")
-[[ "$lec" == "config_fault_trust" ]] \
-    || fail "mark_seat_config_fault_bench must write last_error_class=config_fault_trust, got '$lec'"
-
-ok "mark_seat_config_fault_bench: health_class=config_fault, failure_mode=config_fault_trust, seat_dead=false (NOT retired), usable_at set"
-
-# ============================================================================
-# 4b. mark_seat_config_fault_bench: repeated calls do NOT escalate to corpse
-# ============================================================================
-# A config fault that fires 100 times must STILL not be seat_dead. This is the
-# core of the issue: config/trust faults are infrastructure, never yield.
-set +e
-for _ in $(seq 1 100); do
-    bash -c 'source "$0"; load_seat_caps; mark_seat_config_fault_bench "$1" "$2" "$3"' \
-        "$lib" "devin" "swe-1-7" "$trust_text" >/dev/null 2>&1
-done
-set -e
-ledger_file2="$LEDGER/devin__swe-1-7.json"
-[[ -f "$ledger_file2" ]] || fail "repeated calls: ledger not created at $ledger_file2"
-seat_dead2=$(jq -r '.seat_dead' "$ledger_file2")
-[[ "$seat_dead2" == "false" ]] \
-    || fail "mark_seat_config_fault_bench must NEVER set seat_dead=true even after 100 calls (config fault is infrastructure, NOT yield); got seat_dead=$seat_dead2 after 100 calls"
-count2=$(jq -r '.consecutive_failure_count' "$ledger_file2")
-[[ "$count2" == "100" ]] \
-    || fail "repeated calls: consecutive_failure_count must be 100, got '$count2'"
-ok "mark_seat_config_fault_bench: 100 repeated calls NEVER retire the seat (seat_dead=false, count=100) — config fault is infrastructure, not yield"
-
-# ============================================================================
 # 5. classify_death_error classifies the trust literal as config_fault_trust
 # ============================================================================
 out_file="$scratch/death-out.txt"

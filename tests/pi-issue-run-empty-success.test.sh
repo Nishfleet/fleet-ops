@@ -166,19 +166,14 @@ set -e
 out=$(cat "$PI_ISSUES_DIR/${inst}.out" 2>/dev/null || true)
 echo "$out" | grep -qF 'PACKET-VERDICT class=empty-success' \
   || fail "output must carry a PACKET-VERDICT class=empty-success line, got: $out"
-echo "$out" | grep -qF 'class=empty-success seat=devin/' \
+echo "$out" | grep -qF 'class=empty-success seat=litellm/' \
   || fail "empty-success line must name the seat, got: $out"
-echo "$out" | grep -qE 'class=empty-success seat=devin/[0-9A-Za-z.-]+ output_bytes=[0-9]+' \
+echo "$out" | grep -qE 'class=empty-success seat=litellm/[0-9A-Za-z.-]+ output_bytes=[0-9]+' \
   || fail "empty-success line must carry output_bytes, got: $out"
 ok "empty-success: PACKET-VERDICT class=empty-success seat=<np>/<nm> output_bytes=<n> appended to .out"
 
-# (2) the per-seat empty-success counter is written to the seat ledger.
-es_ledger=$(ls "$LEDGER"/*.empty-success.json 2>/dev/null | head -n1 || true)
-[[ -n "$es_ledger" ]] || fail "per-seat empty-success ledger missing: $(ls "$LEDGER")"
-count=$(jq -r '.empty_success_count // 0' "$es_ledger" 2>/dev/null)
-[[ "$count" == "1" ]] \
-  || fail "empty-success counter must be 1 after one empty-success, got '$count': $(cat "$es_ledger")"
-ok "per-seat empty-success counter written to seat ledger (*.empty-success.json, count=1)"
+# (2) retired (fleet-ops#4263): the per-seat empty-success counter lived in the
+# deleted routing library's seat ledger; the verdict line above is the record.
 
 # The run must NOT be benched (no empty_run ledger, no spawn-fail ledger).
 no_bench_ledger() {
@@ -212,24 +207,10 @@ echo "$out_ship" | grep -qF 'Real output' \
 if echo "$out_ship" | grep -qF 'class=empty-success'; then
     fail "a run that shipped a PR must NOT be classed empty-success, got: $out_ship"
 fi
-# Counter stays 1 (only the first empty-success was counted).
-es_ledger2=$(ls "$LEDGER"/*.empty-success.json 2>/dev/null | head -n1 || true)
-[[ -n "$es_ledger2" ]] || fail "empty-success ledger should still exist"
-count2=$(jq -r '.empty_success_count // 0' "$es_ledger2" 2>/dev/null)
-[[ "$count2" == "1" ]] \
-  || fail "shipped success must not increment the empty-success counter, got '$count2'"
-ok "shipped success (control): NOT classed empty-success, counter unchanged"
+ok "shipped success (control): NOT classed empty-success"
 
 # =============================================================================
-# (c) accumulation: a second empty-success on the SAME seat bumps the counter.
-# =============================================================================
-: >"$STATE_DIR/attempts/pi-issue-fleet-ops-4457.tried-seats" 2>/dev/null || true
-bash "$bin" "fleet-ops-4457" >"$scratch/run2.out" 2>"$scratch/run2.err" || fail "second empty-success must exit 0"
-es_ledger3=$(ls "$LEDGER"/*.empty-success.json 2>/dev/null | head -n1 || true)
-count3=$(jq -r '.empty_success_count // 0' "$es_ledger3" 2>/dev/null)
-[[ "$count3" == "2" ]] \
-  || fail "second empty-success on the same seat must bump count to 2, got '$count3': $(cat "$es_ledger3")"
-ok "empty-success counter accumulates on the seat (count=2 after two runs)"
+# (c) retired with the seat ledger (fleet-ops#4263).
 
 # =============================================================================
 # (d) fleet-ops#4690: "error connecting to localhost" is the sandbox-
@@ -260,4 +241,4 @@ if ls "$LEDGER"/*.spawn-bench.json >/dev/null 2>&1; then
 fi
 ok "sandbox-localhost signature is class=sandbox-localhost-unresolvable, not empty-success, not 900s empty-run"
 
-ok "fleet-ops#4457: SUCCESS-no-PR is classed empty-success (verdict + seat ledger), not benched, shipped control stays clean"
+ok "fleet-ops#4457: SUCCESS-no-PR is classed empty-success (verdict line), not benched, shipped control stays clean"

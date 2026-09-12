@@ -4104,15 +4104,15 @@ grep -q "severity: critical" <<<"$oomd_block" \
   || fail "FleetOomdKillsHigh must be severity=critical (repair-dispatch route, not phone page)"
 grep -q "service: fleet" <<<"$oomd_block" \
   || fail "FleetOomdKillsHigh must carry service=fleet"
-grep -q "ram_gb_per_worker" <<<"$oomd_block" \
-  || fail "FleetOomdKillsHigh description must name ram_gb_per_worker (the live charge to raise)"
-grep -q "2.0" <<<"$oomd_block" \
-  || fail "FleetOomdKillsHigh description must name the 2.0 raise target"
+grep -q "fleet-ops#4891" <<<"$oomd_block" \
+  || fail "FleetOomdKillsHigh description must name the per-worker memory follow-through (fleet-ops#4891)"
+grep -q "MemoryMax" <<<"$oomd_block" \
+  || fail "FleetOomdKillsHigh description must name the per-unit MemoryMax lever"
 # Must NOT be severity=page (only RepairDispatchDown pages).
 if grep -q "severity: page" <<<"$oomd_block"; then
   fail "FleetOomdKillsHigh must NOT be severity=page (only RepairDispatchDown pages)"
 fi
-ok "fleet-ops#4164: FleetOomdKillsHigh rule shape (expr, severity=critical, names ram_gb_per_worker 2.0 raise)"
+ok "fleet-ops#4164: FleetOomdKillsHigh rule shape (expr, severity=critical, names MemoryMax + the #4891 per-worker memory follow-through, fleet-ops#4263)"
 
 # =========================================================================
 # fleet-ops#4118: worktree reaper gauge family. The reaper

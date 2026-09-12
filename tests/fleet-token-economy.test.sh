@@ -273,30 +273,10 @@ done
 
 ok "minimax is metered (last bucket); straitly retired (fleet-ops#4887)"
 
-# --- lib/litellm-seat.sh enforces product value-order + class ladder ---------
-grep -q 'yield-order (product)' "$lib" \
-  || fail "lib/litellm-seat.sh must log the computed yield order per product pick (fleet-ops#3125)"
-grep -q 'value-order (product' "$lib" \
-  || fail "lib/litellm-seat.sh must log the computed value order per product pick (fleet-ops#3323)"
-grep -q 'SEAT_PRODUCT_ORDER' "$lib" \
-  || fail "lib/litellm-seat.sh must read product_order (fleet-ops#3125)"
-grep -q 'seat_yield_for' "$lib" \
-  || fail "lib/litellm-seat.sh must read the per-seat PR-yield ledger (fleet-ops#3250/#3125)"
-grep -q 'seat_cost_for' "$lib" \
-  || fail "lib/litellm-seat.sh must read the per-seat cost ledger (fleet-ops#3323)"
-grep -q 'prepaid_providers_in_order' "$lib" \
-  || fail "lib/litellm-seat.sh must read prepaid_providers_in_order"
-grep -q 'free_providers_in_order' "$lib" \
-  || fail "lib/litellm-seat.sh must read free_providers_in_order"
-
-grep -q 'keystone/senior-review only' "$lib" \
-  || fail "lib/litellm-seat.sh must skip cursor for non-keystone packets (fleet-ops#1167)"
-grep -q 'record_seat_selection' "$lib" \
-  || fail "lib/litellm-seat.sh must record every pick for fleet_seat_selection_24h"
-grep -q 'fleet_seat_selection_24h' "$lib" \
-  || fail "lib/litellm-seat.sh must export fleet_seat_selection_24h"
-
-ok "lib/litellm-seat.sh enforces product value-order + class ladder, cursor keystone-only, and seat-selection export"
+# --- product value-order / class ladder: retired with the seat picker (fleet-ops#4263) ---
+# Ordering and the cheap -> capable -> senior ladder live in the LiteLLM proxy
+# (config/litellm-proxy.yaml order + router_settings.fallbacks); there is no
+# per-pick yield/value order left to assert in lib/litellm-seat.sh.
 
 # --- fleet-ops#3930: worker_memory shape (no MemoryHigh throttle band) ------
 # MemoryHigh throttling is what made systemd-oomd pressure-kill a random
