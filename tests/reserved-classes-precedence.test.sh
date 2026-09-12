@@ -48,6 +48,16 @@ grep -q "global-standing-rules.md" "$pi_canonical" \
 grep -q "in only for money, privacy, security, legal, product direction, or destructive" "$pi_canonical" \
   && fail "pi canonical still carries the old divergent inline escalation list"
 
+# 1b. fleet-ops#5715: the 'Hard lines' deploy line must NOT contradict the
+# enforced 'Agent-authored PRs land themselves' rule — the bare 'Never merge'
+# wording is the regression; the precedence carve-out pattern is required.
+sed -n '/^## Hard lines/,/^## Where/p' "$pi_canonical" | grep -q "Never merge, never deploy without Nish" \
+  && fail "pi canonical hard line still carries the bare 'Never merge' wording that contradicts the self-land rule (fleet-ops#5715)"
+sed -n '/^## Hard lines/,/^## Where/p' "$pi_canonical" | grep -q "Never deploy without Nish" \
+  || fail "pi canonical hard line lost the 'Never deploy without Nish' clause"
+sed -n '/^## Hard lines/,/^## Where/p' "$pi_canonical" | grep -q "self-land" \
+  || fail "pi canonical hard line lost the self-land precedence carve-out"
+
 # 2. Claude standing-rules canonical points at the vault list.
 grep -q 'Reaches Nish and nothing else' "$sr_canonical" \
   || fail "standing-rules canonical lost the reaches-Nish line"
