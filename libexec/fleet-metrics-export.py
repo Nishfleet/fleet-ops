@@ -5834,6 +5834,138 @@ def _week_later_revert_check():
     return f"week-later: filed={filed} skipped={skipped}"
 
 
+# --- Inotify budget (fleet-ops#5839) ----------------------------------------
+
+# fleet-ops#5839: 2026-09-12 11:19-11:40 IST a transient uid-1000 tree-watcher
+# consumed the whole fs.inotify.max_user_watches budget (124083) and every
+# systemd --user unit start logged 2x "Failed to add control|memory inotify
+# watch descriptor for control group ...: No space left on device" (~50
+# lines/2h) while the steady state sat at ~273 watches / 10 instances. fd
+# accounting is not journaled anywhere on the box, so a journal-only
+# investigation could name the limiter (max_user_watches — ENOSPC is raised by
+# inotify_add_watch when the per-uid watch budget is full) but never the
+# holder. This family samples /proc at scrape time — the exporter timer fires
+# every 5 min (systemd/fleet-metrics-export.timer), so a 21-min burst spans
+# 4+ scrapes — and carries the top holder pid+cmd so the NEXT burst is caught
+# mid-flight. The usage/limit ratio drives FleetInotifyWatchExhausted in
+# config/fleet_rules.yml. Pure /proc reads; never raises, never touches gh;
+# any read failure degrades to -1 (UNKNOWN) rather than dropping the family
+# so absent() stays meaningful.
+
+INOTIFY_WATCHES_PATH = "/proc/sys/fs/inotify/max_user_watches"
+INOTIFY_INSTANCES_PATH = "/proc/sys/fs/inotify/max_user_instances"
+
+HELP_IUSE = "# HELP fleet_inotify_watch_usage Total inotify watch descriptors held by processes of this uid (fleet-ops#5839)."
+TYPE_IUSE = "# TYPE fleet_inotify_watch_usage gauge"
+HELP_ILIM = "# HELP fleet_inotify_watch_limit fs.inotify.max_user_watches — the per-uid watch budget the usage burns against (fleet-ops#5839)."
+TYPE_ILIM = "# TYPE fleet_inotify_watch_limit gauge"
+HELP_IINS = "# HELP fleet_inotify_instance_usage Inotify instances (fds) held by processes of this uid (fleet-ops#5839)."
+TYPE_IINS = "# TYPE fleet_inotify_instance_usage gauge"
+HELP_IILM = "# HELP fleet_inotify_instance_limit fs.inotify.max_user_instances — the per-uid instance budget (fleet-ops#5839)."
+TYPE_IILM = "# TYPE fleet_inotify_instance_limit gauge"
+HELP_IRAT = "# HELP fleet_inotify_watch_usage_ratio fleet_inotify_watch_usage / fleet_inotify_watch_limit (-1 when the limit is unreadable) (fleet-ops#5839)."
+TYPE_IRAT = "# TYPE fleet_inotify_watch_usage_ratio gauge"
+HELP_ITOP = "# HELP fleet_inotify_watch_top Watches held by the top 3 processes of this uid, by pid+cmd — sampled DURING a burst this names the consumer (fleet-ops#5839)."
+TYPE_ITOP = "# TYPE fleet_inotify_watch_top gauge"
+
+
+def _proc_sys_int(path):
+    """Read an int from /proc/sys; -1 (UNKNOWN) on any failure (fleet-ops#5839)."""
+    try:
+        return int(Path(path).read_text().strip())
+    except (OSError, ValueError):
+        return -1
+
+
+def _inotify_usage():
+    """Sample the per-uid inotify watch/instance budget from /proc.
+
+    fleet-ops#5839: emits the usage, limits, usage/limit ratio and the top 3
+    watch holders (pid+cmd labels). fd counts are not journaled anywhere, so
+    this scrape-time sample is the only way to name a burst consumer after
+    the fact. Defensive: every read failure degrades, never raises.
+    """
+    uid = os.getuid()
+    usage = 0
+    instances = 0
+    holders = []  # (watches, pid, cmd)
+    try:
+        pid_dirs = list(Path("/proc").glob("[0-9]*"))
+    except OSError:
+        pid_dirs = []
+    for pid_dir in pid_dirs:
+        fd_dir = pid_dir / "fd"
+        try:
+            if pid_dir.stat().st_uid != uid:
+                continue
+            fds = os.listdir(fd_dir)
+            raw = (pid_dir / "cmdline").read_bytes()
+        except OSError:
+            continue
+        cmd = raw.replace(b"\0", b" ").decode("utf-8", "replace").strip()[:60]
+        pid = pid_dir.name
+        pid_watches = 0
+        for fd in fds:
+            try:
+                if "inotify" not in os.readlink(fd_dir / fd):
+                    continue
+            except OSError:
+                continue
+            instances += 1
+            try:
+                with open(pid_dir / "fdinfo" / fd) as fh:
+                    pid_watches += sum(
+                        1 for line in fh if line.startswith("inotify wd:")
+                    )
+            except OSError:
+                pass
+        usage += pid_watches
+        if pid_watches > 0:
+            holders.append((pid_watches, pid, cmd or "unknown"))
+    holders.sort(reverse=True)
+    limit = _proc_sys_int(INOTIFY_WATCHES_PATH)
+    ratio = round(usage / limit, 6) if limit > 0 else -1.0
+
+    def _esc(s):
+        return s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
+
+    out = [
+        "",
+        HELP_IUSE,
+        TYPE_IUSE,
+        f"fleet_inotify_watch_usage {usage}",
+        "",
+        HELP_ILIM,
+        TYPE_ILIM,
+        f"fleet_inotify_watch_limit {limit}",
+        "",
+        HELP_IINS,
+        TYPE_IINS,
+        f"fleet_inotify_instance_usage {instances}",
+        "",
+        HELP_IILM,
+        TYPE_IILM,
+        f"fleet_inotify_instance_limit {_proc_sys_int(INOTIFY_INSTANCES_PATH)}",
+        "",
+        HELP_IRAT,
+        TYPE_IRAT,
+        f"fleet_inotify_watch_usage_ratio {ratio}",
+        "",
+        HELP_ITOP,
+        TYPE_ITOP,
+    ]
+    for pid_watches, pid, cmd in holders[:3]:
+        out.append(
+            f'fleet_inotify_watch_top{{pid="{pid}",cmd="{_esc(cmd)}"}} {pid_watches}'
+        )
+    if not holders:
+        # Emit the series even when no pid holds watches, so absent() and the
+        # rule rows stay predictable (fleet-ops#1844 class: the family must
+        # never silently vanish).
+        out.append('fleet_inotify_watch_top{pid="-1",cmd="none"} 0')
+    return out
+
+
 # --- Main ------------------------------------------------------------------
 
 def _ensure_worker_token() -> None:
@@ -5945,6 +6077,11 @@ def main():
     lines.append(HELP_AGE)
     lines.append(TYPE_AGE)
     lines.append(f"fleet_pi_seat_health_age_seconds {age}")
+    # fleet-ops#5839: per-uid inotify budget — /proc sample of watches,
+    # instances, limits, ratio and the top holders, so a tree-watcher burst
+    # is caught mid-flight with its pid instead of only surfacing as journal
+    # ENOSPC lines after the fact. Drives FleetInotifyWatchExhausted.
+    lines.extend(_inotify_usage())
     # fleet-ops#1445: surface dead-credential seats once per tick as a distinct
     # signal. These seats are seat_dead=true + credentials_bad (HTTP 401/403);
     # the total gauge drives the alert rule and the per-seat series names each

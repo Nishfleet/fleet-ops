@@ -4624,3 +4624,87 @@ ok "fleet-ops#4643: packet-layout determinism green on P14 path"
 # fleet-ops#4643: FleetPromptCacheHitLow alert + seat-caps TTL comment.
 bash "$here/fleet-prompt-cache-hit-alert.test.sh" || fail "fleet-prompt-cache-hit-alert tests failed"
 ok "fleet-ops#4643: fleet-prompt-cache-hit-alert green on P14 path"
+
+# =========================================================================
+# fleet-ops#5839: inotify budget family — LIVE /proc sample (no gh, no
+# prometheus, no systemd — pure /proc, always available even on CI), the
+# FleetInotifyWatchExhausted rule row, the sysctl drop-in and its MANIFEST
+# row. One scanning pass over /proc, so it stays cheap.
+# =========================================================================
+
+# (a) The exporter module exposes _inotify_usage and the family emits
+#     well-formed textfile lines with exactly ONE HELP/TYPE per name
+#     (fleet-ops#1844 class invariant), ints parse, the ratio matches
+#     usage/limit, and every top line carries pid + cmd labels.
+python3 - "$exporter" <<'PY' || fail "fleet-ops#5839 inotify family checks failed"
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location("fme_inotify_5839", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+lines = [str(ln) for ln in mod._inotify_usage()]
+body = "\n".join(lines)
+names = [
+    "fleet_inotify_watch_usage",
+    "fleet_inotify_watch_limit",
+    "fleet_inotify_instance_usage",
+    "fleet_inotify_instance_limit",
+    "fleet_inotify_watch_usage_ratio",
+    "fleet_inotify_watch_top",
+]
+for n in names:
+    # fleet-ops#1844 class: exactly ONE # HELP and ONE # TYPE per metric name.
+    assert len([l for l in lines if l.startswith(f"# HELP {n} ")]) == 1, f"HELP {n}"
+    assert len([l for l in lines if l.startswith(f"# TYPE {n} ")]) == 1, f"TYPE {n}"
+
+
+def _row(name):
+    for l in lines:
+        if l.startswith(n + " "):
+            return float(l.split()
+                        [-1])
+    raise AssertionError(f"missing row {n}:\n{body}")
+
+
+usage = float(next(l for l in lines if l.startswith("fleet_inotify_watch_usage ")).split()[1])
+limit = float(next(l for l in lines if l.startswith("fleet_inotify_watch_limit ")).split()[1])
+instances = float(next(l for l in lines if l.startswith("fleet_inotify_instance_usage ")).split()[1])
+instance_limit = float(next(l for l in lines if l.startswith("fleet_inotify_instance_limit ")).split()[1])
+ratio = float(next(l for l in lines if l.startswith("fleet_inotify_watch_usage_ratio ")).split()[1])
+assert usage >= 0 and instances >= 0, body
+assert limit == float(open("/proc/sys/fs/inotify/max_user_watches").read().strip()), limit
+assert instance_limit == float(open("/proc/sys/fs/inotify/max_user_instances").read().strip()), instance_limit
+expected_ratio = round(usage / limit, 6) if limit > 0 else -1.0
+assert ratio == expected_ratio, (ratio, expected_ratio)
+
+top = [l for l in lines if l.startswith("fleet_inotify_watch_top{")]
+assert top, f"watch_top series must exist even with no holders:\n{body}"
+for t in top:
+    labels, val = t.rsplit(" ", 1)
+    assert 'pid="' in labels and 'cmd="' in labels, t
+    assert int(float(val)) >= 0, t
+assert sum(int(float(t.rsplit(" ", 1)[1])) for t in top) <= usage, "top watchers must not exceed the total"
+print("OK: inotify family lines well-formed; usage/limit/ratio/top all parse")
+PY
+ok "fleet-ops#5839: exporter emits the inotify budget family from a live /proc sample"
+
+# The warn-level threshold and the family names must line up between the
+# exporter and the rule row.
+grep -q 'FleetInotifyWatchExhausted' "$rules" \
+    || fail "fleet_rules.yml missing FleetInotifyWatchExhausted (fleet-ops#5839)"
+grep -q 'fleet_inotify_watch_usage_ratio > 0.9' "$rules" \
+    || fail "FleetInotifyWatchExhausted expr must key on fleet_inotify_watch_usage_ratio"
+[[ -f "$repo_root/etc/sysctl.d/90-fleet-inotify.conf" ]] \
+    || fail "sysctl drop-in missing: etc/sysctl.d/90-fleet-inotify.conf"
+grep -q 'fs.inotify.max_user_watches = 524288' "$repo_root/etc/sysctl.d/90-fleet-inotify.conf" \
+    || fail "sysctl drop-in must raise max_user_watches to 524288 (fleet-ops#5839)"
+grep -q 'fs.inotify.max_user_instances = 512' "$repo_root/etc/sysctl.d/90-fleet-inotify.conf" \
+    || fail "sysctl drop-in missing max_user_instances 512"
+grep -q 'etc/sysctl.d/90-fleet-inotify.conf /etc/sysctl.d/90-fleet-inotify.conf' "$manifest" \
+    || fail "MANIFEST missing etc/sysctl.d/90-fleet-inotify.conf row (fleet-ops#5839)"
+if command -v promtool >/dev/null 2>&1; then
+    promtool check rules "$rules" || fail "fleet_rules.yml does not parse with promtool"
+fi
+ok "fleet-ops#5839: FleetInotifyWatchExhausted rule row + sysctl drop-in + MANIFEST row green"

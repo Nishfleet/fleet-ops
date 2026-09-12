@@ -1782,3 +1782,24 @@ groups:
           summary: "opencode-go cap above pace — the remaining weekly pool will not last to its reset"
           description: "fleet-ops#5022: fleet_prepaid_declared_cap{provider=\"opencode-go\"} is above fleet_prepaid_paced_cap for 2h. The paced cap is floor(remaining_weekly_pct / hours_to_reset * K), floor 1, ceiling the declared cap, with K measured 2026-09-10 (80% of the weekly pool over ~4 days at cap 10 => 0.8%/h per 10 cap units => K=12.5); it is how much concurrency spends exactly the remaining pool by the reset. Repair worker — set config/seat-caps.json .providers.\"opencode-go\".cap to the current fleet_prepaid_paced_cap and lower the deepseek-flash model cap with it (keep 1 as the floor), carrying a dated reason that quotes fleet_prepaid_usage_pct{provider=\"opencode-go\",window=\"weekly\"} and the reset; then PR it. Do NOT edit the live ~/.local/state/pi-packet/seat-caps.json — deploy install.sh overwrites it and it shows as MANIFEST drift. Do NOT touch other providers."
 
+      # FleetInotifyWatchExhausted (fleet-ops#5839): the per-uid inotify watch
+      # budget is >90% consumed for 10+ minutes. At 100% EVERY systemd --user
+      # unit start fails its cgroup watch adds (2x "Failed to add
+      # control|memory inotify watch descriptor ...: No space left on device")
+      # and any new watcher fails silently. The 2026-09-12 11:19-11:40 IST
+      # burst did exactly this for 21 minutes; steady state is ~2%
+      # (273/124083), so 90% sustained is a real holder, not burst noise.
+      # The holder itself is in fleet_inotify_watch_top{pid,cmd}, sampled
+      # DURING the burst by fleet-metrics-export (every 5 min) — the only fd
+      # accounting on the box, because fd counts are not journaled.
+      - alert: FleetInotifyWatchExhausted
+        expr: fleet_inotify_watch_usage_ratio > 0.9
+        for: 10m
+        labels:
+          severity: critical
+          service: fleet
+          repo: Nishfleet/fleet-ops
+        annotations:
+          summary: "inotify watch budget >90% consumed — unit starts log ENOSPC (Failed to add inotify watch descriptor)"
+          description: "fleet-ops#5839: fleet_inotify_watch_usage_ratio > 0.9 for 10m against fs.inotify.max_user_watches. Every systemd --user unit start fails its control+memory cgroup watch adds ('No space left on device'), burying real failures in journalctl --user -p err. Repair worker — (1) read fleet_inotify_watch_top{pid,cmd} from the latest /var/lib/prometheus/node-exporter/fleet.prom: that IS the consumer, sampled mid-burst (fd accounting is not journaled anywhere, so this metric is the only holder evidence on the box); (2) if the holder is a one-off/burst, raise the budget via /etc/sysctl.d — the drop-in is tracked at etc/sysctl.d/90-fleet-inotify.conf (max_user_watches 524288, max_user_instances 512) and applying it needs sudo (Nish-reserved): sudo install -m 644 <repo>/etc/sysctl.d/90-fleet-inotify.conf /etc/sysctl.d/ && sudo sysctl --system; (3) if the holder persists, fix the watcher itself; (4) never silence journald or filter the journal — that hides the symptom, not the cause. Termination: journalctl --user --since '2 hours ago' -p err | grep -c 'inotify watch descriptor' is 0.
+
