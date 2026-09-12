@@ -11,6 +11,11 @@
 #      explicit `refused: checks non-green on <sha>` step summary. NOT
 #      conclusion=failure — a red Auto revert run is a false red signal in
 #      exactly the window humans and detectors read.
+#   3. a non-CI (Deploy production) trigger may not range-revert a
+#      checks-green main (fleet-ops#5625 review): scenario D pins the
+#      refusal on a green tip — including self-exclusion of the deploy job's
+#      own check-run — and scenario D2 pins the repair still running when a
+#      real check is red.
 #
 # Fully mocked: fake gh + fake git (push is a no-op) so the drill runs
 # offline in CI, exactly like its cousin tests/auto-revert-required-check-gate.test.sh.
@@ -403,5 +408,121 @@ fi
 grep -q "AUTO-REVERT SKIP: only non-required checks failed" "$calls_n2" \
   || fail "scenario N2: expected the loud SKIP halt filing, got calls: $(cat "$calls_n2")"
 ok "scenario N2: only non-required (P14) failure -> refused: exit 0, refused: summary, SKIP filing, no revert PR"
+
+# ---------------------------------------------------------------------------
+# Scenario D: Deploy production red streak but every OTHER check on the tip
+# is green -> refusal. A deploy self-failure (build, secrets, runner) is not
+# code-red evidence; the Deploy trigger cannot range-revert a checks-green
+# main (fleet-ops#5625 review). The fixture carries a FAILING
+# deploy / deploy-on-green check-run: if the gate forgot the same
+# self-exclusion token the deploy green gate uses, it would see red and
+# wrongly revert.
+# ---------------------------------------------------------------------------
+check_runs_green_tip="$scratch/check-runs-green-tip.json"
+cat >"$check_runs_green_tip" <<'EOF'
+{
+  "check_runs": [
+    {"name": "Gitleaks", "conclusion": "success", "status": "completed"},
+    {"name": "Semgrep", "conclusion": "success", "status": "completed"},
+    {"name": "Shellcheck", "conclusion": "success", "status": "completed"},
+    {"name": "systemd-analyze", "conclusion": "success", "status": "completed"},
+    {"name": "P14 tests / PR checks", "conclusion": "success", "status": "completed"},
+    {"name": "deploy / deploy-on-green", "conclusion": "failure", "status": "completed"}
+  ]
+}
+EOF
+summary_d="$scratch/summary-d.txt"
+: > "$summary_d"
+calls_d="$scratch/calls-d"
+: > "$calls_d"
+
+git -C "$repo" checkout -q main 2>/dev/null || true
+
+set +e
+(
+  cd "$repo"
+  env PATH="$fake_bin:$PATH" \
+    HOME="$scratch" \
+    GH_TOKEN="fake-token" \
+    REPO="Nishfleet/fleet-ops" \
+    HEAD_SHA="$red2_sha" \
+    RUN_NAME="Deploy production" \
+    RUN_URL="https://github.com/Nishfleet/fleet-ops/actions/runs/34639736550" \
+    WORKFLOW_ID="999999" \
+    WORKFLOW_RUNS_JSON="$runs_fixture" \
+    CHECK_RUNS_JSON="$check_runs_green_tip" \
+    GH_CALLS_FILE="$calls_d" \
+    GITHUB_STEP_SUMMARY="$summary_d" \
+    bash "$script"
+) >"$scratch/scenario-d.out" 2>"$scratch/scenario-d.err"
+rc=$?
+set -e
+
+[[ "$rc" == "0" ]] || fail "scenario D: expected exit 0 (deploy self-failure refusal is not a failure), got $rc (stderr: $(cat "$scratch/scenario-d.err"))"
+grep -q "refused: checks green on $red2_sha" "$summary_d" \
+  || fail "scenario D: expected the refused: checks green step summary, got: $(cat "$summary_d")"
+if grep -q "PR_CREATE\|PR_MERGE" "$calls_d"; then
+  fail "scenario D: a checks-green main must never be range-reverted by a deploy trigger, got calls: $(cat "$calls_d")"
+fi
+grep -q "ISSUE_CREATE title=AUTO-REVERT SKIP: Deploy production red but checks green" "$calls_d" \
+  || fail "scenario D: expected the loud SKIP filing, got calls: $(cat "$calls_d")"
+ok "scenario D: Deploy production red streak + checks-green tip -> refused: exit 0, no revert PR, loud filing"
+
+# ---------------------------------------------------------------------------
+# Scenario D2: Deploy production red streak AND a real check red on the tip
+# (the 2026-09-11 incident shape — the deploy REFUSED on non-green checks)
+# -> the range repair still runs: the gate only stops deploy self-failures.
+# ---------------------------------------------------------------------------
+check_runs_red_tip="$scratch/check-runs-red-tip.json"
+cat >"$check_runs_red_tip" <<'EOF'
+{
+  "check_runs": [
+    {"name": "Gitleaks", "conclusion": "success", "status": "completed"},
+    {"name": "Semgrep", "conclusion": "success", "status": "completed"},
+    {"name": "Shellcheck", "conclusion": "success", "status": "completed"},
+    {"name": "systemd-analyze", "conclusion": "success", "status": "completed"},
+    {"name": "P14 tests / PR checks", "conclusion": "failure", "status": "completed"},
+    {"name": "deploy / deploy-on-green", "conclusion": "failure", "status": "completed"}
+  ]
+}
+EOF
+summary_d2="$scratch/summary-d2.txt"
+: > "$summary_d2"
+calls_d2="$scratch/calls-d2"
+: > "$calls_d2"
+
+git -C "$repo" checkout -q main 2>/dev/null || true
+git -C "$repo" branch -D "repair/red-main-$head_short" >/dev/null 2>&1 || true
+
+set +e
+(
+  cd "$repo"
+  env PATH="$fake_bin:$PATH" \
+    HOME="$scratch" \
+    GH_TOKEN="fake-token" \
+    REPO="Nishfleet/fleet-ops" \
+    HEAD_SHA="$red2_sha" \
+    RUN_NAME="Deploy production" \
+    RUN_URL="https://github.com/Nishfleet/fleet-ops/actions/runs/34639736550" \
+    WORKFLOW_ID="999999" \
+    WORKFLOW_RUNS_JSON="$runs_fixture" \
+    CHECK_RUNS_JSON="$check_runs_red_tip" \
+    GH_CALLS_FILE="$calls_d2" \
+    GITHUB_STEP_SUMMARY="$summary_d2" \
+    bash "$script"
+) >"$scratch/scenario-d2.out" 2>"$scratch/scenario-d2.err"
+rc=$?
+set -e
+
+[[ "$rc" == "0" ]] || fail "scenario D2: expected exit 0, got $rc (stderr: $(cat "$scratch/scenario-d2.err"))"
+grep -q "ALERT: consecutive-red main" "$scratch/scenario-d2.out" \
+  || fail "scenario D2: expected an ALERT: line, got: $(cat "$scratch/scenario-d2.out")"
+grep -q "head=repair/red-main-$head_short " "$calls_d2" \
+  || fail "scenario D2: expected a repair/red-main-* revert PR, got calls: $(cat "$calls_d2")"
+grep -q "PR_MERGE" "$calls_d2" \
+  || fail "scenario D2: expected the recovery PR to be auto-merge armed, got calls: $(cat "$calls_d2")"
+grep -q "ISSUE_CREATE title=AUTO-REVERT RECOVERY" "$calls_d2" \
+  || fail "scenario D2: expected a loud recovery issue, got calls: $(cat "$calls_d2")"
+ok "scenario D2: Deploy production red streak + red check on tip -> range repair still runs"
 
 echo "auto-revert-recovery: consecutive-red repairs, refusals stay green"

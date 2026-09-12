@@ -36,7 +36,10 @@ on:
   workflow_run:
     # "Deploy production" joins "CI" (fleet-ops#5597): a refused deploy on a
     # red main must feed the same recovery so the stop-the-line freeze can
-    # clear itself. Same shape 0509 already runs (Nish, 2026-08-25).
+    # clear itself. Same shape 0509 already runs (Nish, 2026-08-25). A
+    # non-CI trigger is only a symptom: the script proves >=1 other check on
+    # the main tip is non-green before reverting, so a deploy self-failure
+    # can never range-revert a checks-green main (fleet-ops#5625 review).
     workflows: ["CI", "Deploy production"]
     types: [completed]
     branches: [main]
