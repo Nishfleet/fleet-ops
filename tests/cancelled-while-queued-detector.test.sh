@@ -234,14 +234,13 @@ console.log("OK: observe-to-close closes the labelled issue when the run is no l
 ' || fail "observe-to-close replay failed"
 
 # --- workflow shape: reusable + schedule + issues:write + auto-discovery -----
-# The workflow file is parked under docs/pending-cancelled-while-queued/
-# because the nishfleet-worker App has no workflows permission
-# (nishfleet-worker CONTENTS / PULL_REQUESTS / ISSUES only). The PR
-# delivers the workflow content; Nish's own scope lands it under
-# .github/workflows/. Tests verify the parked copy has the right
-# shape so a future refactor cannot regress the workflow content.
-wf="$repo_root/docs/pending-cancelled-while-queued/cancelled-while-queued.yml"
-[[ -f "$wf" ]] || fail "cancelled-while-queued.yml not found in docs/pending-cancelled-while-queued/"
+# The workflow file lives at .github/workflows/cancelled-while-queued.yml
+# (landed by fleet-ops#5732 — worker-pushed branches already carry
+# .github/workflows/** edits, e.g. #5337). Tests verify the landed copy
+# has the right shape so a future refactor cannot regress the workflow
+# content.
+wf="$repo_root/.github/workflows/cancelled-while-queued.yml"
+[[ -f "$wf" ]] || fail "cancelled-while-queued.yml not found in .github/workflows/"
 grep -q 'workflow_call:' "$wf" || fail "cancelled-while-queued.yml must declare workflow_call"
 grep -q 'schedule:' "$wf" || fail "cancelled-while-queued.yml must run on schedule (central sweep per #185)"
 grep -q 'timeout-minutes:' "$wf" || fail "cancelled-while-queued.yml job must set timeout-minutes"
