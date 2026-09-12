@@ -312,9 +312,9 @@ for name, lprov in live.items():
         if not isinstance(lm, int) or lm <= 0:
             continue
         rm = rmodels.get(model)
-        if not isinstance(rm, int):
+        if rm is None:
             hits.append(f"{name}/{model}:{lm}->missing")
-        elif rm < lm:
+        elif isinstance(rm, int) and rm < lm:
             hits.append(f"{name}/{model}:{lm}->{rm}")
 if hits:
     print(" ".join(hits))
@@ -1041,12 +1041,20 @@ process_entry() {
     # Refuse a cap drop unless this file is origin/main's blob (merged
     # reduction via fleet-ops-deploy) or the operator override is set.
     if [[ "$src" == config/seat-caps.json ]]; then
-        if seat_caps_is_origin_main_blob "$repo"; then
-            :
-        elif why=$(seat_caps_would_downgrade "$dest" "$repo"); then
+        # The origin/main blob escape hatch only excuses an INTENTIONAL merged
+        # reduction. If the repo copy would DOWNGRADE live caps, a stale clone
+        # whose origin/main still matches the stale blob (never fetched) must
+        # not sneak through the hatch — check the downgrade first (fleet-ops#5493).
+        # Stale-clone first (fleet-ops#5493): a stale clone whose unfetched
+        # origin/main blob is byte-identical to the stale repo copy would sail
+        # through the hatch — check the downgrade BEFORE trusting the blob.
+        if seat_caps_would_downgrade "$dest" "$repo"; then
+            why=$(seat_caps_would_downgrade "$dest" "$repo")
             echo "NONFATAL REFUSE: $dest would lower live seat caps ($why) from $repo (fleet-ops#371)"
             rc=1
             return 0
+        elif seat_caps_is_origin_main_blob "$repo"; then
+            :
         elif live_newer_than_repo "$dest" "$repo"; then
             echo "NONFATAL REFUSE: $dest is newer than repo copy $repo and the content differs (will not overwrite live config)"
             file_install_refuse "$dest" "$repo"

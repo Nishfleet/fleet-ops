@@ -1145,6 +1145,13 @@ ok "rule-enforcement: install prometheus rules-reload drill"
 bash "$here/install-refuse-continues.test.sh" || fail "install refuse-continues drill failed"
 ok "rule-enforcement: install refuse-continues drill (fleet-ops#4223)"
 
+# fleet-ops#5493 / #371: stale pre-#331 seat-caps snapshot must not overwrite
+# live caps (downgrade refuses), the origin/main blob hatch installs only an
+# INTENTIONAL merged reduction, and a stale git CLONE (unfetched origin/main
+# still byte-identical to the stale blob) does not bypass the guard.
+bash "$here/install-seat-caps-stale-snapshot-refuse.test.sh" || fail "install seat-caps stale-snapshot refuse drill failed"
+ok "rule-enforcement: install seat-caps stale-snapshot refuse drill (fleet-ops#5493)"
+
 # fleet-ops#516: sr-max-speed hunter. CI lists this file, not
 # fleet-max-speed.test.sh (workers cannot edit .github/workflows).
 bash "$here/fleet-max-speed.test.sh" || fail "fleet-max-speed tests failed"
