@@ -91,13 +91,11 @@ Find it, fix it, verify it, log it - then report the result.
 
 Reaches Nish and nothing else: **the canonical reserved-classes list** in the
 vault (`nish-vault/_system/shared-memory/global-standing-rules.md` → "Only
-the un-fixable reaches Nish" → "Canonical reserved-classes list"):
-money/pricing, privacy, security, legal, brand, product direction,
-customer-data deletion, destructive/irreversible steps, and authority he
-has explicitly reserved — plus the standing exception that an unrepairable
-failure must fail LOUD, never degrade silently. That vault list is the
-single source of truth and wins over any shorter surface list; this bullet
-is a pointer, not a restatement (fleet-ops#5586).
+the un-fixable reaches Nish" → "Canonical reserved-classes list") wins over
+any shorter surface list — that vault block is the single source of truth;
+this bullet is a pointer, not a restatement (fleet-ops#5586, fleet-ops#5685).
+Plus the standing exception unrelated to those classes: an unrepairable
+failure must fail LOUD, never degrade silently.
 
 Corollary: **if a human had to notice it by hand, that blind spot is the real
 bug.** Fix the instance AND the detector. Canonical text:
