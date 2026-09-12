@@ -86,7 +86,9 @@
 #   FLEET_LITELLM_DUMP_DIR     dump target (default agent-state/backups)
 #   FLEET_LITELLM_DUMP_KEEP    dumps retained (default 14; one per 6h tick)
 #   FLEET_LITELLM_SCRATCH_PORT scratch port (default 5433)
-#   FLEET_LITELLM_ISREADY/PG_DUMP/PG_CTL       per-step binary seams (tests)
+#   FLEET_LITELLM_PG_SOCKET    litellm cluster socket dir (default: <pgdata>/run)
+#   FLEET_LITELLM_DB_USER/DB_NAME  dump source (default litellm/litellm)
+#   FLEET_LITELLM_ISREADY/PSQL/PG_DUMP/INITDB/PG_CTL  per-step binary seams (tests)
 #   FLEET_LITELLM_RESTORE_TIMEOUT_S           scratch-restore bound (default 180)
 #
 # Env overrides (test-only; production reads live paths):
@@ -138,6 +140,10 @@ if ! [[ "$MARKER_MAX_AGE_S" =~ ^[0-9]+$ ]]; then
   MARKER_MAX_AGE_S="$MARKER_MAX_AGE_S_DEFAULT"
 fi
 readonly MARKER_MAX_AGE_S
+
+# Plane E ran and passed this invocation (0 = skipped/failed). write_marker
+# cites it in the artifact body so the marker tells the full rebuild story.
+PLANE_E_RAN=0
 
 # The restic backup sources (from /usr/local/sbin/restic-r2-backup). The drill
 # asserts the critical fleet paths live under one of these — the logical proof
@@ -374,6 +380,142 @@ plane_c_backup_coverage() {
 }
 
 # ----------------------------------------------------------------------------
+# plane E: LiteLLM control-plane Postgres — recurring pg_dump + scratch-restore
+# proof (fleet-ops#4264). The dump is "the backup job's pg_dump" that the P4
+# restore contract names (docs/litellm-postgres-setup.md §5); the scratch
+# cluster restore proves the dump actually loads. Organ LIVENESS (proxy/pg/
+# redis up) stays the 60s health canary's job — this plane proves the
+# REBUILD story: without a fresh, loadable dump the Postgres half of the
+# control plane is unrecoverable and the P4 restore contract is a lie.
+# ----------------------------------------------------------------------------
+plane_e_litellm_pg() {
+  log "E. LiteLLM control-plane Postgres: recurring pg_dump + scratch-restore proof"
+  local pgdata="${FLEET_LITELLM_PGDATA:-$HOME/.local/share/fleet-litellm-postgres}"
+  if [[ ! -f "$pgdata/PG_VERSION" ]]; then
+    log "E.  - SKIP: no litellm cluster at $pgdata (organ not installed; the health canary owns absent-organ liveness, not this drill)"
+    return 0
+  fi
+
+  local bindir
+  if [[ -n "${FLEET_LITELLM_PG_BINDIR:-}" ]]; then
+    bindir="$FLEET_LITELLM_PG_BINDIR"
+  else
+    bindir="$(pg_config --bindir 2>/dev/null || true)"
+    [[ -n "$bindir" ]] || bindir="/usr/lib/postgresql/16/bin"
+  fi
+  local isreadybin="${FLEET_LITELLM_ISREADY:-$bindir/pg_isready}"
+  local psqlbin="${FLEET_LITELLM_PSQL:-$bindir/psql}"
+  local pgdumpbin="${FLEET_LITELLM_PG_DUMP:-$bindir/pg_dump}"
+  local initdbbin="${FLEET_LITELLM_INITDB:-$bindir/initdb}"
+  local pgctlbin="${FLEET_LITELLM_PG_CTL:-$bindir/pg_ctl}"
+  local socket="${FLEET_LITELLM_PG_SOCKET:-$pgdata/run}"
+  local dbuser="${FLEET_LITELLM_DB_USER:-litellm}"
+  local dbname="${FLEET_LITELLM_DB_NAME:-litellm}"
+  local dump_dir="${FLEET_LITELLM_DUMP_DIR:-$AGENT_STATE/backups}"
+  local keep="${FLEET_LITELLM_DUMP_KEEP:-14}"
+  local port="${FLEET_LITELLM_SCRATCH_PORT:-5433}"
+  local restore_timeout="${FLEET_LITELLM_RESTORE_TIMEOUT_S:-180}"
+
+  # E.0 prune scratch leftovers from an aborted run (set -e aborts leave the
+  # dir). Only entries older than 1h: a concurrent manual run's scratch is
+  # never beneath the timer's feet.
+  find "$dump_dir" -maxdepth 1 -name '.scratch-restore.*' -type d -mmin +60 \
+    -exec rm -rf {} + 2>/dev/null || true
+
+  # E.1 the live cluster answers (a dump of a dead cluster is not a backup).
+  if ! "$isreadybin" -h "$socket" -q; then
+    loud "RESTORE-DRILL-FAIL" "litellm cluster not accepting connections on $socket — cannot take the control-plane pg_dump (plane E)"
+    return 1
+  fi
+  log "E.1  - cluster ready on $socket"
+
+  # E.2 the dump: the restore input the P4 drill contract names.
+  if ! mkdir -p "$dump_dir"; then
+    loud "RESTORE-DRILL-FAIL" "cannot create dump dir $dump_dir"
+    return 1
+  fi
+  local stamp dump
+  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  dump="$dump_dir/litellm-$stamp.sql.gz"
+  log "E.2  - dumping $dbname via $socket -> $dump"
+  if ! "$pgdumpbin" -h "$socket" -U "$dbuser" "$dbname" | gzip >"$dump"; then
+    loud "RESTORE-DRILL-FAIL" "litellm pg_dump failed — the Postgres rebuild story is unproven (plane E)"
+    rm -f "$dump"
+    return 1
+  fi
+  if [[ ! -s "$dump" ]]; then
+    loud "RESTORE-DRILL-FAIL" "litellm pg_dump produced an EMPTY dump ($dump) — unproven backup is decorative"
+    rm -f "$dump"
+    return 1
+  fi
+
+  # Rotation: the newest KEEP dumps survive; older ones go. Count only this
+  # organ's dumps so a shared backups dir is never mistaken for rotation
+  # residue.
+  if [[ "$keep" =~ ^[0-9]+$ ]] && (( keep > 0 )); then
+    while IFS= read -r old; do
+      [[ -n "$old" ]] || continue
+      rm -f "$old"
+      log "E.2  - rotated out $(basename "$old") (keep $keep)"
+    # shellcheck disable=SC2012 — the drill owns the dump filenames
+    # (litellm-<stamp>.sql.gz); mtime order is the rotation order.
+    done < <(ls -1t "$dump_dir"/litellm-*.sql.gz 2>/dev/null | tail -n +$((keep + 1)))
+  fi
+
+  # E.3 scratch-restore: initdb a throwaway cluster on the scratch port, load
+  # the dump, count the LiteLLM control-plane tables. The scratch dir lives
+  # under dump_dir so an aborted run leaves only that dir behind.
+  local scratch
+  scratch="$(mktemp -d "$dump_dir/.scratch-restore.XXXXXX")" || {
+    loud "RESTORE-DRILL-FAIL" "cannot create scratch-restore dir under $dump_dir"
+    return 1
+  }
+  if ! "$initdbbin" -U "$dbuser" -A trust -E UTF8 -D "$scratch/data" >/dev/null 2>&1; then
+    loud "RESTORE-DRILL-FAIL" "scratch initdb failed under $scratch — plane E restore proof skipped, control-plane rebuild unproven"
+    rm -rf "$scratch"
+    return 1
+  fi
+  if ! "$pgctlbin" -D "$scratch/data" -o "-p $port -k $scratch/sock -c listen_addresses=''" \
+      -l "$scratch/pglog" -w start >/dev/null 2>&1; then
+    loud "RESTORE-DRILL-FAIL" "scratch cluster failed to start on port $port — plane E cannot prove the dump loads"
+    rm -rf "$scratch"
+    return 1
+  fi
+  local tries=0
+  until "$isreadybin" -h "$scratch/sock" -p "$port" -q; do
+    tries=$((tries + 1))
+    if (( tries > 30 )); then
+      loud "RESTORE-DRILL-FAIL" "scratch cluster on port $port never became ready — plane E cannot prove the dump loads"
+      "$pgctlbin" -D "$scratch/data" stop -m fast -w >/dev/null 2>&1 || true
+      rm -rf "$scratch"
+      return 1
+    fi
+    sleep 1
+  done
+  if ! gunzip -c "$dump" | timeout "$restore_timeout" "$psqlbin" -h "$scratch/sock" -p "$port" \
+      -U "$dbuser" -d postgres -v ON_ERROR_STOP=1 -q; then
+    loud "RESTORE-DRILL-FAIL" "scratch-restore of $(basename "$dump") failed or exceeded the ${restore_timeout}s bound — the dump does not prove a restore (plane E)"
+    "$pgctlbin" -D "$scratch/data" stop -m fast -w >/dev/null 2>&1 || true
+    rm -rf "$scratch"
+    return 1
+  fi
+  local tables
+  tables="$("$psqlbin" -h "$scratch/sock" -p "$port" -U "$dbuser" -d postgres -Atc \
+    "select count(*) from pg_tables where schemaname='public' and tablename like 'LiteLLM\_%'" 2>/dev/null || echo 0)"
+  if ! [[ "$tables" =~ ^[0-9]+$ ]] || (( tables < 1 )); then
+    loud "RESTORE-DRILL-FAIL" "scratch-restore loaded 0 LiteLLM_* control-plane tables — the dump restored nothing usable (plane E)"
+    "$pgctlbin" -D "$scratch/data" stop -m fast -w >/dev/null 2>&1 || true
+    rm -rf "$scratch"
+    return 1
+  fi
+  "$pgctlbin" -D "$scratch/data" stop -m fast -w >/dev/null 2>&1 || true
+  rm -rf "$scratch"
+  PLANE_E_RAN=1
+  log "E.  - OK: dumped $dbname -> $(basename "$dump") + scratch-restore proven ($tables LiteLLM_* tables, bound ${restore_timeout}s)"
+  return 0
+}
+
+# ----------------------------------------------------------------------------
 # plane D: dated artifact marker exists + fresh (fleet-ops#2471)
 # ----------------------------------------------------------------------------
 plane_d_artifact_freshness() {
@@ -406,9 +548,13 @@ plane_d_artifact_freshness() {
 write_marker() {
   mkdir -p "$(dirname "$MARKER")" 2>/dev/null || true
   local tmp="$MARKER.tmp.$$"
+  local e_note=""
+  if (( PLANE_E_RAN == 1 )); then
+    e_note=" litellm-pg dump+scratch-restore proven"
+  fi
   {
-    printf '%s OK control plane rebuildable (backup fresh + success, restore + verify proven, fleet files parseable, paths covered)\n' \
-      "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf '%s OK control plane rebuildable (backup fresh + success, restore + verify proven, fleet files parseable, paths covered%s)\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$e_note"
   } >"$tmp"
   chmod 644 "$tmp" 2>/dev/null || true
   mv -f "$tmp" "$MARKER"
@@ -443,19 +589,20 @@ check_env() {
 # ----------------------------------------------------------------------------
 run_drill() {
   log "fleet restore drill starting (repo=$FLEET_OPS_REPO staleness=${STALENESS_HOURS}h)"
-  local rc=0 abc_ok=1
+  local rc=0 rebuild_ok=1
   plane_a_backup_mechanism || rc=1
   plane_b_fleet_files || rc=1
   plane_c_backup_coverage || rc=1
-  (( rc == 0 )) || abc_ok=0
+  plane_e_litellm_pg || rc=1
+  (( rc == 0 )) || rebuild_ok=0
   plane_d_artifact_freshness || rc=1
-  # The marker is refreshed whenever A/B/C passed — including a run whose
-  # plane D failed for a missing/stale marker. That is the self-heal: a
-  # transiently absent/old marker trips one LOUD failure and is rewritten,
-  # so the next 6h cycle goes green; a marker write that keeps failing is an
-  # aborting script error (set -e) that stays escalated. A run where a
-  # rebuild plane (A/B/C) failed must NOT refresh the marker.
-  if (( abc_ok == 1 )); then
+  # The marker is refreshed whenever the rebuild planes (A/B/C/E) passed —
+  # including a run whose plane D failed for a missing/stale marker. That is
+  # the self-heal: a transiently absent/old marker trips one LOUD failure and
+  # is rewritten, so the next 6h cycle goes green; a marker write that keeps
+  # failing is an aborting script error (set -e) that stays escalated. A run
+  # where a rebuild plane failed must NOT refresh the marker.
+  if (( rebuild_ok == 1 )); then
     write_marker
   fi
   if (( rc == 0 )); then
