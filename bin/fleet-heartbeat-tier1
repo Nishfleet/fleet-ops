@@ -903,7 +903,7 @@ while IFS= read -r repo; do
         verification_only=$(printf '%s' "$issue_row" | jq -e '[.labels[]?.name] | any(. == "verification-only")' >/dev/null 2>&1 && echo yes || echo no)
         if [[ "$verification_only" == "yes" ]]; then
             verdict_pass=no
-            if issue_comments=$(gh issue view "$issue_n" -R "$repo" --json comments --jq '.[]?.body // empty' 2>/dev/null); then
+            if issue_comments=$(gh issue view "$issue_n" -R "$repo" --json comments --jq '.comments[]?.body // empty' 2>/dev/null); then
                 if printf '%s' "$issue_comments" | grep -Eiq '^VERDICT:[[:space:]]+PASS([[:space:]]|$)'; then
                     verdict_pass=yes
                 fi

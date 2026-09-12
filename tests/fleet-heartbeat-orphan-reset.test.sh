@@ -100,4 +100,34 @@ else
     ok "live: reset-failed cleared a dead oneshot's failed state to $after (no accidental start)"
 fi
 
+# --- Phase E: verification-only VERDICT check reads gh's result object -------
+# fleet-ops#5571 (loop) / fleet-ops#4599 (same bug class in fleet-merged-pr-
+# close): `gh issue view --json comments` returns a result OBJECT
+# {"comments":[{"body":...}]}, not a bare array. A `--jq '.[]?.body'`
+# expression indexes `.body` on that array and jq exits 5 — inside
+# `if issue_comments=$(...)` the failure silently leaves verdict_pass=no, so a
+# verification-only issue with a posted VERDICT: PASS falls through to the
+# normal re-queue and gets re-claimed forever (#5571 burned 5 claims this way).
+# Pin it behaviorally: extract the script's OWN --jq expression and run it
+# against the real result-object shape — a bare-array feed would re-mask the
+# exact bug this phase exists to catch.
+vo_line=$(grep -nF 'gh issue view "$issue_n" -R "$repo" --json comments' "$bin" | head -1) \
+    || fail "orphan-pass must fetch issue comments via gh issue view --json comments"
+vo_expr=$(printf '%s' "$vo_line" | sed -n "s/.*--jq '\([^']*\)'.*/\\1/p")
+[[ -n "$vo_expr" ]] || fail "could not extract the --jq expression from: $vo_line"
+
+# PASS verdict present -> the expression must emit the comment bodies.
+vo_out=$(printf '%s' '{"comments":[{"body":"claimed by worker"},{"body":"VERDICT: PASS\nproof line"}]}' \
+    | jq -r "$vo_expr") \
+    || fail "verdict --jq expression failed on gh's {\"comments\":[...]} result object: $vo_expr"
+printf '%s' "$vo_out" | grep -Eq '^VERDICT:[[:space:]]+PASS([[:space:]]|$)' \
+    || fail "verdict --jq expression did not emit the VERDICT: PASS body (got: $vo_out)"
+ok "verification-only verdict --jq emits comment bodies from the result object (VERDICT: PASS found)"
+
+# Empty comments -> empty output, exit 0 (the // empty tail), not a jq error.
+vo_empty=$(printf '%s' '{"comments":[]}' | jq -r "$vo_expr") \
+    || fail "verdict --jq expression failed on an empty comments array: $vo_expr"
+[[ -z "$vo_empty" ]] || fail "empty comments array must yield empty output, got: $vo_empty"
+ok "verification-only verdict --jq tolerates an empty comments array"
+
 echo "ALL PASS: fleet-heartbeat-orphan-reset"
