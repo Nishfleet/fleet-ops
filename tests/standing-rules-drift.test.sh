@@ -43,6 +43,33 @@ blocks = {t["sol_identity_block"] for t in m.DEFAULT_TARGETS}
 assert len(blocks) == 1, f"DEFAULT_TARGETS carry {len(blocks)} distinct sol_identity_block values"
 PY
 
+# Stage 0b: fleet-ops#5718 — no DEFAULT_TARGETS templating block may route
+# live work to retired seats. The claude failure_response_block named the
+# superseded DeepSeek/Grok/Sol repair ladder while the same file's routing
+# block retired Sol and the ladder; the render was "clean" against its own
+# stale source, so only a gate on the defaults catches it. The drift
+# fixtures pass sentinel text (FAILCLAUDE) on purpose and cannot catch it.
+# Retired-ladder clauses, not bare seat names: "DeepSeek" alone is legal
+# inside the codex old_launcher_block's SUPERSEDED note.
+RSR_PATH="$repo_root/bin/render-standing-rules.py" python3 - <<'PY' || fail "DEFAULT_TARGETS carry retired repair-ladder seat names (fleet-ops#5718)"
+import importlib.util, os
+spec = importlib.util.spec_from_file_location(
+    "rsr", os.environ["RSR_PATH"]
+)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+stale = ("DeepSeek for deeply-scoped", "Grok/Sol/Opus")
+for t in m.DEFAULT_TARGETS:
+    for key, val in t.items():
+        if not isinstance(val, str):
+            continue
+        for clause in stale:
+            assert clause not in val, (
+                f"{t['path'].name} {key} routes work to the retired "
+                f"ladder ({clause!r}) - pick seats via pi-seat-health.json"
+            )
+PY
+
 work="$(mktemp -d -t standing-rules-drift-XXXXXX)"
 trap 'rm -rf "$work"' EXIT
 
