@@ -414,16 +414,20 @@ dumpfile="$(ls -1t "$state"/backups/"litellm-"*.sql.gz 2>/dev/null | head -n 1)"
 grep -q 'scratch-restore proven' <<<"$drill_out" || fail "scenarioL: drill must prove the scratch restore"
 grep -q 'litellm-pg dump+scratch-restore proven' "$state/alert-repair/fleet-restore-drill-marker" \
   || fail "scenarioL: marker must cite the litellm-pg proof"
-# Rotation: seed 2 extra older dumps -> 15 > keep 14; the 2 oldest must go.
-touch -d '2 days ago' "$state/backups/litellm-20260101T000001Z.sql.gz"
-touch -d '3 days ago' "$state/backups/litellm-20260101T000002Z.sql.gz"
+# Rotation: seed 16 older dumps (16 + the fresh dump = 17) -> keep-14 must
+# rotate out the 3 oldest of the seeded set.
+for i in $(seq 14 29); do
+  printf '%02d' "$i" >"$state/backups/litellm-20260101T0000${i}Z.sql.gz"
+  touch -d "$((4 - i / 5)) days ago" "$state/backups/litellm-20260101T0000${i}Z.sql.gz" 2>/dev/null \
+    || touch -d '4 days ago' "$state/backups/litellm-20260101T0000${i}Z.sql.gz"
+done
 run_drill
 count=$(find "$state/backups" -maxdepth 1 -name 'litellm-*.sql.gz' | wc -l)
 [[ "$count" -le 14 ]] || fail "scenarioL: rotation must keep <= 14 dumps, got $count"
-[[ -f "$state/backups/litellm-20260101T000001Z.sql.gz" ]] \
+[[ -f "$state/backups/litellm-20260101T000014Z.sql.gz" ]] \
   || fail "scenarioL: the newest of the seeded old dumps must survive rotation"
-[[ ! -f "$state/backups/litellm-20260101T000002Z.sql.gz" ]] \
-  || fail "scenarioL: the oldest seeded dump must be rotated out"
+[[ ! -f "$state/backups/litellm-20260101T000029Z.sql.gz" ]] \
+  || fail "scenarioL: the oldest seeded dumps must be rotated out"
 ok "scenarioL: plane E green — dump + scratch-restore proof + marker cite + rotation"
 
 # ============================================================================
