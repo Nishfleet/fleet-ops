@@ -145,10 +145,20 @@ drill_out=$(run_drill 2>&1)
 drill_rc=$?
 set -e
 [[ "$drill_rc" == "0" ]] || fail "drill should exit 0, got $drill_rc ($drill_out)"
-[[ -f "$scratch/rules/standing.md.bak-rulebook-redteam-20260827" ]] \
+[[ -f "$scratch/rules/standing.md.pre-rulebook-redteam-20260827T041500Z" ]] \
   || fail "missing sibling backup of standing.md"
-[[ -f "$scratch/rules/AGENTS.md.bak-rulebook-redteam-20260827" ]] \
+[[ -f "$scratch/rules/AGENTS.md.pre-rulebook-redteam-20260827T041500Z" ]] \
   || fail "missing sibling backup of AGENTS.md"
+
+    # fleet-ops#5682: the backup suffix must stay disjoint from the
+    # fleet-ops#3273/#5602 sprawl glob (.bak* next to MANIFEST-managed dests).
+    if compgen -G "$scratch/rules/*.bak*" >/dev/null; then
+      fail "rulebook backups must never carry .bak* — sprawl canary flags them (fleet-ops#5682)"
+    fi
+    for b in "$scratch"/rules/*.pre-rulebook-redteam-*; do
+      [[ "$b" == *".pre-rulebook-redteam-"*T*Z ]] \
+        || fail "backup suffix must be <file>.pre-rulebook-redteam-<UTCts>: $b"
+    done
 grep -q create "$GH_CREATED" || fail "drill must file: $(cat "$GH_LOG")"
 grep -E 'CREATE .*--label gap-audit' "$GH_CREATE_LOG" >/dev/null \
   || fail "filed issue must carry gap-audit: $(cat "$GH_CREATE_LOG")"

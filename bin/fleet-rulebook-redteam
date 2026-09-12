@@ -5,8 +5,12 @@
 # ExecStart of fleet-rulebook-redteam.service. This is the mechanical
 # rung for "Gap rules from the 2026-08-20 rulebook audit":
 #   1. Timestamped sibling backups of every rule file in scope
-#      (`<name>.bak-rulebook-redteam-<YYYYMMDD>`) BEFORE any other work.
-#      Filing without those backups is a hard failure — rollback is no
+#      (`<name>.pre-rulebook-redteam-<UTCts>`) BEFORE any other work.
+#      The .pre-<why>-<UTCts> suffix is the MANIFEST-approved pattern
+#      (fleet-ops#5682): the old .bak-* glob is banned next to
+#      MANIFEST-managed dests (fleet-ops#3273/#5602 sprawl), so it must not
+#      carry mandatory audit backups either. Filing without those backups is
+#      a hard failure — rollback is no
 #      longer a convention.
 #   2. Dispatch a pi reviewer (prompts/rulebook-redteam.md) for the
 #      semantic half (duplication, contradictions, dead rules,
@@ -71,7 +75,7 @@ else
     NOW_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 fi
 NOW_DIR="${NOW_ISO//[^A-Za-z0-9]/_}"
-DATE_STAMP="$(printf '%s' "$NOW_ISO" | cut -c1-10 | tr -d '-')"
+UTC_STAMP="$(printf '%s' "$NOW_ISO" | tr -d ':-')"
 REPORT_DIR="$STATE_DIR/reports/$NOW_DIR"
 mkdir -p "$REPORT_DIR"
 FINDINGS_JSON="$REPORT_DIR/findings.json"
@@ -128,7 +132,10 @@ list_rule_files() {
     default_rule_files
 }
 
-# --- backups: sibling .bak-rulebook-redteam-YYYYMMDD, then refuse to
+# --- backups: sibling .pre-rulebook-redteam-<UTCts> — the MANIFEST-approved
+# rollback suffix (fleet-ops#5682); .bak* trips the fleet-ops#3273/#5602
+# sprawl glob in install.sh check_bak_sprawl next to MANIFEST-managed dests.
+# Then refuse to
 # continue if none were written. RULEBOOK_SKIP_BACKUP=1 is the drill
 # that proves the gate fires (fleet-ops#366).
 backup_rule_files() {
@@ -142,7 +149,7 @@ backup_rule_files() {
         [ -n "$src" ] || continue
         [ -f "$src" ] || { log "skip missing rule file: $src"; continue; }
         base="$(basename "$src")"
-        dest="$(dirname "$src")/${base}.bak-rulebook-redteam-${DATE_STAMP}"
+        dest="$(dirname "$src")/${base}.pre-rulebook-redteam-${UTC_STAMP}"
         cp -a "$src" "$dest"
         printf '%s\t%s\tundo: cp %s %s\n' "$src" "$dest" "$dest" "$src" \
             >>"$BACKUP_MANIFEST"
