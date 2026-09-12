@@ -43,6 +43,18 @@ trap 'rm -rf "$scratch"' EXIT INT TERM
 AS="$scratch/agent-state"
 mkdir -p "$AS/alert-repair" "$AS/lanes"
 
+# fleet-ops#5622 rebase: success stub for the stuck-packet escalation
+# filing — prints a fixture issue URL (the drain parses issue #999 from
+# it), never touches the network. Fail-open (filing unavailable) is
+# exercised by tests/alert-repair-stuck-packet.test.sh and scenario 5's
+# override run below.
+ISSUE_FILE_STUB="$scratch/fleet-issue-file-stub"
+cat > "$ISSUE_FILE_STUB" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "https://github.com/Nishfleet/fleet-ops/issues/999"
+STUB
+chmod +x "$ISSUE_FILE_STUB"
+
 # Build a seen-keys fixture: 3 delivered entries (MONEY, LEGAL,
 # CREDENTIAL) and 1 active (CREDENTIAL-BOUNDARY remains ACTIVE because
 # its hash is NOT in the seen set).
@@ -74,6 +86,11 @@ key_of() {
 } > "$AS/NISH-ESCALATIONS.md"
 
 run_drain() {
+    # fleet-ops#5622 rebase: the drain files a stuck-packet escalation when
+    # it detects one; the stub makes the filing succeed hermetically so
+    # scenarios 3/5 exercise the converge path (archive + DISPOSITION with
+    # the filed issue number + silent LOUD).
+    FLEET_ESCALATION_DRAIN_ISSUE_FILE="$ISSUE_FILE_STUB" \
     FLEET_ESCALATION_DRAIN_AGENT_STATE="$AS" \
     FLEET_ESCALATION_DRAIN_NISH="$AS/NISH-ESCALATIONS.md" \
     FLEET_ESCALATION_DRAIN_SEEN="$AS/lanes/nish-boundary-notify.seen" \
@@ -243,12 +260,17 @@ run_drain
     || fail "scenario 3: FleetC (no terminal, stale) must be ARCHIVED under archived/stuck"
 [[ -f "$AS/alert-repair/archived/stuck/packet-FleetB-20260901T130000Z.md" ]] \
     || fail "scenario 3: FleetB 13:00Z (re-fired, stale) must be ARCHIVED under archived/stuck"
-grep -q "STUCK-PACKET.*packet-FleetStuck-20260820T000000Z.md" "$scratch/run.stderr" \
-    || fail "scenario 3: drain must flag old no-terminal packets LOUD; stderr: $(cat "$scratch/run.stderr")"
+# fleet-ops#5622: a settled burst CONVERGES — the LOUD line goes silent
+# once every stuck packet reached its terminal disposition.
+if grep -q "STUCK-PACKET" "$scratch/run.stderr"; then
+    fail "scenario 3: settled burst must NOT re-LOUD (converged); stderr: $(cat "$scratch/run.stderr")"
+fi
+grep -qF "stuck-packet escalation: 3 packet(s) disposed -> issue #999" "$scratch/run.stderr" \
+    || fail "scenario 3: converged burst must log the aggregate filing line; stderr: $(cat "$scratch/run.stderr")"
 grep -q "archived packet-FleetStuck-20260820T000000Z.md terminal=escalated-filed" "$scratch/run.stderr" \
     || fail "scenario 3: drain must log fleet-ops#5647 same-run archive; stderr: $(cat "$scratch/run.stderr")"
-grep -q "DISPOSITION stuck-packet packet=packet-FleetStuck-20260820T000000Z.md terminal=escalated-filed" "$AS/alert-repair/actions.log" \
-    || fail "scenario 3: actions.log must carry the DISPOSITION decision line; log: $(cat "$AS/alert-repair/actions.log")"
+grep -q "DISPOSITION stuck-packet packet=packet-FleetStuck-20260820T000000Z.md terminal=escalated-filed issue=999" "$AS/alert-repair/actions.log" \
+    || fail "scenario 3: actions.log must carry the DISPOSITION decision line with the filed issue; log: $(cat "$AS/alert-repair/actions.log")"
 grep -q "packet_archived=3" "$scratch/run.stderr" \
     || fail "scenario 3: summary must report packet_archived=3; stderr: $(cat "$scratch/run.stderr")"
 [[ -f "$AS/alert-repair/packet-11-canary-scaffold.md" ]] \
@@ -335,8 +357,9 @@ touch "$AS/alert-repair/packet-11-canary-scaffold.md"
 
 run_drain
 
-# fleet-ops#5647: the 7h-old packet was LOUD-flagged then archived same-run.
-# Never silently deleted: it lands under archived/stuck with a DISPOSITION line.
+# fleet-ops#5647 + #5622: the 7h-old packet was escalated (one aggregate
+# filing) then archived same-run. Never silently deleted: it lands under
+# archived/stuck with a DISPOSITION line naming the filed issue.
 [[ -f "$AS/alert-repair/archived/stuck/packet-FleetStaleA-${ts_7h_ago}.md" ]] \
     || fail "scenario 5: 7h-old packet (no terminal) must be ARCHIVED under archived/stuck, never silently deleted"
 [[ -f "$AS/alert-repair/actions.log" ]] \
@@ -347,21 +370,25 @@ run_drain
 [[ -f "$AS/alert-repair/packet-11-canary-scaffold.md" ]] \
     || fail "scenario 5: canary scaffolding must be KEPT (no ts suffix)"
 
-# 7h-old packet must be flagged LOUD.
-grep -q "STUCK-PACKET.*packet-FleetStaleA-${ts_7h_ago}.md" "$scratch/run.stderr" \
-    || fail "scenario 5: 7h-old no-terminal packet MUST trip LOUD STUCK-PACKET; stderr: $(cat "$scratch/run.stderr")"
-grep -qF "DISPOSITION stuck-packet packet=packet-FleetStaleA-${ts_7h_ago}.md terminal=escalated-filed" "$AS/alert-repair/actions.log" \
+# fleet-ops#5622: the settled burst converges — no LOUD line at all; the
+# aggregate filing line names the filed issue instead.
+if grep -q "STUCK-PACKET" "$scratch/run.stderr"; then
+    fail "scenario 5: settled burst must NOT re-LOUD (converged); stderr: $(cat "$scratch/run.stderr")"
+fi
+grep -qF "stuck-packet escalation: 1 packet(s) disposed -> issue #999" "$scratch/run.stderr" \
+    || fail "scenario 5: converged burst must log the aggregate filing line; stderr: $(cat "$scratch/run.stderr")"
+grep -qF "DISPOSITION stuck-packet packet=packet-FleetStaleA-${ts_7h_ago}.md terminal=escalated-filed issue=999" "$AS/alert-repair/actions.log" \
     || fail "scenario 5: archived StaleA must have a DISPOSITION line in actions.log; log: $(cat "$AS/alert-repair/actions.log")"
-# 1h-old packet must NOT be in the LOUD line (the LOUD line only names
-# packets older than the threshold).
+# Negative guards: no packet outside the stuck burst may ever be named by
+# a STUCK-PACKET line (guards a regressed LOUD path naming fresh packets).
 if grep -q "STUCK-PACKET.*packet-FleetStaleB-${ts_1h_ago}.md" "$scratch/run.stderr"; then
-    fail "scenario 5: 1h-old packet must NOT trip LOUD STUCK-PACKET; stderr: $(cat "$scratch/run.stderr")"
+    fail "scenario 5: 1h-old packet must NOT be named by STUCK-PACKET; stderr: $(cat "$scratch/run.stderr")"
 fi
-# Canary scaffolding must never appear in the LOUD line.
+# Canary scaffolding must never appear in a STUCK-PACKET line.
 if grep -q "STUCK-PACKET.*packet-11-canary-scaffold.md" "$scratch/run.stderr"; then
-    fail "scenario 5: canary scaffolding must NEVER appear in LOUD line; stderr: $(cat "$scratch/run.stderr")"
+    fail "scenario 5: canary scaffolding must NEVER appear in a STUCK-PACKET line; stderr: $(cat "$scratch/run.stderr")"
 fi
-ok "scenario 5: 6h threshold - 7h packet LOUD + archived (fleet-ops#5647), 1h packet live, scaffolding ignored"
+ok "scenario 5: 6h threshold - 7h packet disposed + archived (fleet-ops#5647/#5622), 1h packet live, scaffolding ignored"
 
 # Override the threshold: with STUCK_AGE_S=2h (7200s), a 3h-old packet
 # must now LOUD (it was silent under the 6h default), and the line must
@@ -370,6 +397,7 @@ ts_3h_ago="$(date -u -d '3 hours ago' +%Y%m%dT%H%M%SZ)"
 rm -f "$scratch/run.stderr"
 touch "$AS/alert-repair/packet-FleetStaleC-${ts_3h_ago}.md"
 FLEET_ESCALATION_DRAIN_STUCK_AGE_S=7200 \
+FLEET_ESCALATION_DRAIN_ISSUE_FILE=/bin/false \
 FLEET_ESCALATION_DRAIN_AGENT_STATE="$AS" \
 FLEET_ESCALATION_DRAIN_NISH="$AS/NISH-ESCALATIONS.md" \
 FLEET_ESCALATION_DRAIN_SEEN="$AS/lanes/nish-boundary-notify.seen" \
@@ -404,8 +432,10 @@ FLEET_ESCALATION_DRAIN_SEEN="$AS/lanes/nish-boundary-notify.seen" \
 FLEET_ESCALATION_DRAIN_PACKET_DIR="$AS/alert-repair" \
 FLEET_ESCALATION_DRAIN_MAX_LINES=50 \
     bash "$bin" --dry-run 2>"$scratch/run.stderr"
-grep -q "DRY: would archive 1 stuck packet(s) to $AS/alert-repair/archived/stuck" "$scratch/run.stderr" \
-    || fail "scenario 5c: --dry-run must announce the would-be archive path; stderr: $(cat "$scratch/run.stderr")"
+grep -q "DRY: 1 stuck packet(s) would be escalated + archived" "$scratch/run.stderr" \
+    || fail "scenario 5c: --dry-run must announce the would-be escalation; stderr: $(cat "$scratch/run.stderr")"
+grep -q "DRY: would archive stuck packet packet-FleetStaleD-${ts_7h_ago_dry}.md" "$scratch/run.stderr" \
+    || fail "scenario 5c: --dry-run must name the would-be archived packet; stderr: $(cat "$scratch/run.stderr")"
 [[ -f "$AS/alert-repair/packet-FleetStaleD-${ts_7h_ago_dry}.md" ]] \
     || fail "scenario 5c: --dry-run must NOT move the stuck packet out of the packet dir"
 [[ ! -f "$AS/alert-repair/archived/stuck/packet-FleetStaleD-${ts_7h_ago_dry}.md" ]] \

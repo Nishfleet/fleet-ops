@@ -555,6 +555,20 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-issue-file-close-duplicate
   || fail "fleet-issue-file-close-duplicates-idempotent.test.sh must not be a known orphan (fleet-ops#3728)"
 ok "fleet-issue-file-close-duplicates-idempotent.test.sh is pinned in the P14 reachable set (fleet-ops#3728)"
 
+# fleet-ops#5622: hard-pin the host line for the stuck-packet test.
+# Same shape as the #5620 pin — the test is hosted from
+# ci-standards-audit.test.sh (already listed in ci.yml) because the worker
+# App cannot push .github/workflows/**. Parking it on known_orphans to
+# silence the generic message must also fail by name below.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/alert-repair-stuck-packet\.test\.sh"?' \
+  "$here/ci-standards-audit.test.sh" \
+  || fail "ci-standards-audit.test.sh must bash-invoke alert-repair-stuck-packet.test.sh (fleet-ops#5622)"
+[[ -n "${reachable[alert-repair-stuck-packet.test.sh]:-}" ]] \
+  || fail "alert-repair-stuck-packet.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#5622)"
+[[ -z "${known_orphan_set[alert-repair-stuck-packet.test.sh]:-}" ]] \
+  || fail "alert-repair-stuck-packet.test.sh must not be a known orphan (fleet-ops#5622)"
+ok "alert-repair-stuck-packet.test.sh is pinned in the P14 reachable set (fleet-ops#5622)"
+
 # fleet-ops#5620: hard-pin the host line for the repo-scope dedupe test.
 # Same shape as the #3728 pin above — the test is hosted from
 # ci-standards-audit.test.sh (already listed in ci.yml) because the worker
