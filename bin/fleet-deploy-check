@@ -45,6 +45,18 @@
 #   FLEET_OPS_EXPECTED_ORIGIN_URL  expected origin fetch URL (default: fleet-ops;
 #                                  tests point it at a local bare remote)
 #   FLEET_OPS_DEPLOY_AUDIT_LOG / FLEET_OPS_TRIAGE passed through to deploy
+#   FLEET_DEPLOY_CHECK_DIRTY_AUTOFILE  1 = the DIRTY-CLONE gate auto-files a
+#                                  dedupe-gated issue on the 3rd consecutive
+#                                  dirty tick (fleet-ops#5687). Default OFF:
+#                                  without it the check behaves exactly as
+#                                  before (LOUD only). The live unit sets it
+#                                  in its Environment, so revert is a
+#                                  one-line re-deploy.
+#   FLEET_DEPLOY_CHECK_DIRTY_STATE_DIR  streak/episode state (default:
+#                                  $AGENT_STATE/deploy-check)
+#   FLEET_DEPLOY_CHECK_DIRTY_ISSUE_REPO filing repo (default Nishfleet/fleet-ops)
+#   FLEET_DEPLOY_CHECK_DIRTY_STREAK    consecutive-tick threshold (default 3)
+#   FLEET_ISSUE_FILE                   issue-file binary override (tests stub it)
 #
 # Exit: 0 always (a check that found nothing to do is not a failure).
 #       Non-zero only on a hard internal error (fetch failure is logged,
@@ -76,6 +88,18 @@ EXPECTED_ORIGIN_URL="${FLEET_OPS_EXPECTED_ORIGIN_URL:-https://github.com/Nishfle
 export FLEET_OPS_TRIAGE="${FLEET_OPS_TRIAGE:-$TRIAGE}"
 _wipe_here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 WIPE_LIB="${FLEET_WIPE_LESSONS_LIB:-$_wipe_here/../lib/fleet-wipe-lessons.py}"
+# fleet-ops#5687: DIRTY-CLONE auto-file. The visibility LOUD alone shouts on
+# every 2-min tick and files nothing (live 2026-09-12: 55 LOUD lines in 14h,
+# zero filed issues — a treadmill, not a control). When
+# FLEET_DEPLOY_CHECK_DIRTY_AUTOFILE=1 the 3rd consecutive dirty tick
+# auto-files one dedupe-gated issue per episode through the alarm issue-file
+# path (bin/fleet-issue-file, fleet-ops#1212); a clean tick clears the
+# episode. Default OFF per the issue's rollback note.
+DIRTY_AUTOFILE="${FLEET_DEPLOY_CHECK_DIRTY_AUTOFILE:-0}"
+DIRTY_STATE_DIR="${FLEET_DEPLOY_CHECK_DIRTY_STATE_DIR:-$AS/deploy-check}"
+DIRTY_ISSUE_REPO="${FLEET_DEPLOY_CHECK_DIRTY_ISSUE_REPO:-Nishfleet/fleet-ops}"
+DIRTY_STREAK_THRESHOLD="${FLEET_DEPLOY_CHECK_DIRTY_STREAK:-3}"
+ISSUE_FILE_BIN="${FLEET_ISSUE_FILE:-$_wipe_here/fleet-issue-file}"
 if [[ ! -f "$WIPE_LIB" ]]; then
     WIPE_LIB="${_wipe_here}/../lib/pi-packet/fleet-wipe-lessons.py"
 fi
@@ -112,6 +136,56 @@ deploy_in_flight() {
 # stray untracked file in the deploy clone trips the gate.
 deploy_clone_dirty() {
     git -C "$CHECKOUT" status --porcelain 2>/dev/null | cut -c4-
+}
+
+# fleet-ops#5687: consecutive-recurrence state for the DIRTY-CLONE gate.
+#   <DIRTY_STATE_DIR>/dirty-clone-streak : consecutive dirty ticks this episode
+#   <DIRTY_STATE_DIR>/dirty-clone-filed  : present once this episode's issue
+#                                          has been filed (one filing/episode)
+dirty_streak_file() { printf '%s/dirty-clone-streak' "$DIRTY_STATE_DIR"; }
+dirty_filed_file() { printf '%s/dirty-clone-filed' "$DIRTY_STATE_DIR"; }
+
+# Clean tick: the episode is over — clear streak and filed marker so the next
+# dirty episode starts counting from scratch and can file again.
+dirty_episode_reset() {
+    rm -f "$(dirty_streak_file)" "$(dirty_filed_file)" 2>/dev/null || true
+}
+
+# Dirty tick: bump the consecutive streak; on the 3rd (threshold) consecutive
+# tick, auto-file one dedupe-gated issue via the alarm issue-file path
+# (fleet-issue-file scores the candidate against open issues, so repeat
+# episodes dedupe instead of piling up). A failed filing is logged and
+# retried on the next tick — never fatal, this check still exits 0.
+dirty_episode_bump() {
+    local paths="$1" streak=0 title body out_file rc
+    if [[ -f "$(dirty_streak_file)" ]]; then
+        streak=$(cat "$(dirty_streak_file)" 2>/dev/null || true)
+    fi
+    [[ "$streak" =~ ^[0-9]+$ ]] || streak=0
+    streak=$((streak + 1))
+    mkdir -p "$DIRTY_STATE_DIR" 2>/dev/null || true
+    printf '%s\n' "$streak" >"$(dirty_streak_file)" 2>/dev/null || true
+    (( streak >= DIRTY_STREAK_THRESHOLD )) || return 0
+    [[ ! -f "$(dirty_filed_file)" ]] || return 0
+    title="DEPLOY-CHECK-DIRTY-CLONE ${streak} consecutive ticks: deploy clone dirty — salvage-or-reconcile, restore clean"
+    body="signal: deploy-check/dirty-clone
+
+fleet-deploy-check observed the deploy clone ($CHECKOUT) dirty on ${streak} consecutive 2-min ticks (fleet-ops#5687; standing rule fleet-ops#3758: workers edit in worktrees, never the deploy clone).
+
+paths: ${paths}
+observed: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+evidence: journalctl --user -u fleet-deploy-check.service | grep DIRTY-CLONE
+
+accept: name the writer before touching anything (active pi-issue@* units, open PRs touching the named paths). Salvage-or-reconcile: discard an in-clone edit when an open PR already carries the identical change, else salvage it into the writer's claim worktree and PR it. Never commit on the clone. Done means git -C $CHECKOUT status --porcelain is empty."
+    out_file="${DIRTY_STATE_DIR}/dirty-clone-filed.out"
+    rc=0
+    "$ISSUE_FILE_BIN" file -R "$DIRTY_ISSUE_REPO" --title "$title" --body "$body" >"$out_file" 2>&1 || rc=$?
+    if (( rc == 0 )); then
+        : >"$(dirty_filed_file)"
+        log "DIRTY-CLONE auto-filed issue (${streak} consecutive ticks): $(head -1 "$out_file" 2>/dev/null || echo filed)"
+    else
+        log "WARN: DIRTY-CLONE auto-file failed (rc=$rc) — retried on the next tick"
+    fi
 }
 
 # Per-tick gate (fleet-ops#4166): a worker running install.sh from a
@@ -383,6 +457,10 @@ main() {
     # first - the offending paths go in the LOUD line. Do NOT return early:
     # fleet-ops-deploy still needs to run when origin/main moved so it can
     # reject-dirty / auto-file / self-rescue the abandoned clone.
+    # fleet-ops#5687: with FLEET_DEPLOY_CHECK_DIRTY_AUTOFILE=1 the 3rd
+    # consecutive dirty tick also auto-files a dedupe-gated issue (one per
+    # episode; a clean tick resets the episode). Flag default-off keeps the
+    # pre-#5687 behavior byte-identical.
     local dirty_list dirty_disp out
     dirty_list=$(deploy_clone_dirty)
     if [[ -n "$dirty_list" ]]; then
@@ -390,6 +468,11 @@ main() {
         dirty_disp="$out"
         loud "DEPLOY-CHECK-DIRTY-CLONE" \
             "deploy clone $CHECKOUT is dirty (must stay clean origin/main; workers edit in worktrees, not the deploy clone - fleet-ops#3758): $dirty_disp"
+        if [[ "$DIRTY_AUTOFILE" == "1" ]]; then
+            dirty_episode_bump "$dirty_disp"
+        fi
+    elif [[ "$DIRTY_AUTOFILE" == "1" ]]; then
+        dirty_episode_reset
     fi
 
     local before after rc=0

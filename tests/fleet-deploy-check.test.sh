@@ -271,6 +271,109 @@ if grep -q "DEPLOY-CHECK-DIRTY-CLONE" "$scratch/err.log"; then
 fi
 ok "clean clone produces no DIRTY-CLONE loud"
 
+# --- 11b. DIRTY-CLONE auto-file default OFF (fleet-ops#5687) ----------------
+# Without FLEET_DEPLOY_CHECK_DIRTY_AUTOFILE=1 the check must behave exactly
+# as before: LOUD only, no episode state, no issue-file invocation.
+issue_file_spy="$scratch/issue-file-spy.sh"
+cat >"$issue_file_spy" <<'FAKE'
+#!/usr/bin/env bash
+echo "ISSUE-FILE-INVOKED args=$*" >> "$ISSUE_FILE_SPY_LOG"
+exit "${ISSUE_FILE_SPY_RC:-0}"
+FAKE
+chmod +x "$issue_file_spy"
+ISSUE_FILE_SPY_LOG="$scratch/issue-file-spy.log"
+: > "$ISSUE_FILE_SPY_LOG"
+
+dirty_autofile_run() {
+  set +e
+  FLEET_OPS_CHECKOUT="$checkout" \
+  FLEET_OPS_DEPLOY_BIN="$deploy_spy" \
+  FLEET_DEPLOY_CHECK_LOCK="$lock" \
+  FLEET_DEPLOY_CHECK_NO_DEPLOY=1 \
+  FLEET_HEARTBEAT_TRIAGE="$triage" \
+  AGENT_STATE="$scratch/as" \
+  FLEET_DEPLOY_CHECK_DIRTY_STATE_DIR="$scratch/as-dirty" \
+  FLEET_DEPLOY_CHECK_DIRTY_AUTOFILE="${DIRTY_AUTOFILE_VAL:-0}" \
+  FLEET_ISSUE_FILE="$issue_file_spy" \
+  ISSUE_FILE_SPY_LOG="$ISSUE_FILE_SPY_LOG" \
+  ISSUE_FILE_SPY_RC="${ISSUE_FILE_SPY_RC_VAL:-0}" \
+    "$bin" >/dev/null 2>"$scratch/err-dirty.log"
+  local rc=$?
+  set -e
+  echo "$rc"
+}
+
+printf 'autofile-wip\n' >> "$checkout/f"   # dirty the clone
+: > "$ISSUE_FILE_SPY_LOG"
+rc=$(dirty_autofile_run)                    # flag defaults OFF
+[[ "$rc" == "0" ]] || fail "default-off dirty tick should exit 0 (got $rc)"
+grep -q "DEPLOY-CHECK-DIRTY-CLONE" "$scratch/err-dirty.log" \
+  || fail "default-off must still loud DIRTY-CLONE"
+[[ ! -s "$ISSUE_FILE_SPY_LOG" ]] || fail "default-off must never invoke issue-file"
+[[ ! -d "$scratch/as-dirty" ]] || fail "default-off must not write episode state"
+ok "DIRTY-CLONE auto-file default OFF: LOUD only, no state, no filing"
+
+# --- 11c. auto-file ON: 3rd consecutive dirty tick files exactly once -------
+: > "$ISSUE_FILE_SPY_LOG"
+DIRTY_AUTOFILE_VAL=1
+rc=$(dirty_autofile_run); [[ "$rc" == "0" ]] || fail "dirty tick 1 should exit 0 (got $rc)"
+rc=$(dirty_autofile_run); [[ "$rc" == "0" ]] || fail "dirty tick 2 should exit 0 (got $rc)"
+[[ ! -s "$ISSUE_FILE_SPY_LOG" ]] \
+  || fail "must not file before the 3rd consecutive dirty tick"
+rc=$(dirty_autofile_run); [[ "$rc" == "0" ]] || fail "dirty tick 3 should exit 0 (got $rc)"
+[[ -s "$ISSUE_FILE_SPY_LOG" ]] || fail "3rd consecutive dirty tick must auto-file"
+grep -q "ISSUE-FILE-INVOKED args=file -R Nishfleet/fleet-ops --title DEPLOY-CHECK-DIRTY-CLONE" "$ISSUE_FILE_SPY_LOG" \
+  || fail "must file via fleet-issue-file against Nishfleet/fleet-ops with a DIRTY-CLONE title"
+grep -q "signal: deploy-check/dirty-clone" "$ISSUE_FILE_SPY_LOG" \
+  || fail "filed body must carry the signal: deploy-check/dirty-clone marker"
+: > "$ISSUE_FILE_SPY_LOG"
+rc=$(dirty_autofile_run)                    # 4th consecutive tick
+[[ "$rc" == "0" ]] || fail "dirty tick 4 should exit 0 (got $rc)"
+[[ ! -s "$ISSUE_FILE_SPY_LOG" ]] || fail "one filing per dirty episode, not one per tick"
+ok "auto-file ON: 3rd consecutive dirty tick files once per episode"
+
+# --- 11d. clean tick resets the episode -------------------------------------
+git -C "$checkout" checkout -q -- f         # clean the clone
+: > "$ISSUE_FILE_SPY_LOG"
+rc=$(dirty_autofile_run)
+[[ "$rc" == "0" ]] || fail "clean tick should exit 0 (got $rc)"
+[[ ! -f "$scratch/as-dirty/dirty-clone-streak" ]] \
+  || fail "clean tick must reset the episode streak"
+[[ ! -f "$scratch/as-dirty/dirty-clone-filed" ]] \
+  || fail "clean tick must clear the filed marker"
+printf 'autofile-wip-2\n' >> "$checkout/f"  # new dirty episode
+dirty_autofile_run >/dev/null
+dirty_autofile_run >/dev/null
+[[ ! -s "$ISSUE_FILE_SPY_LOG" ]] \
+  || fail "a fresh episode must restart counting (no filing on ticks 1-2)"
+rc=$(dirty_autofile_run)
+[[ "$rc" == "0" ]] || fail "new episode tick 3 should exit 0 (got $rc)"
+[[ -s "$ISSUE_FILE_SPY_LOG" ]] || fail "a fresh episode must file again on its 3rd tick"
+git -C "$checkout" checkout -q -- f
+ok "clean tick resets the episode; a new episode files again on its 3rd tick"
+
+# --- 11e. failed filing is non-fatal and retried next tick ------------------
+rm -rf "$scratch/as-dirty"
+printf 'autofile-retry\n' >> "$checkout/f"   # dirty the clone again
+: > "$ISSUE_FILE_SPY_LOG"
+ISSUE_FILE_SPY_RC_VAL=1                     # issue-file spy fails
+dirty_autofile_run >/dev/null
+dirty_autofile_run >/dev/null
+[[ ! -s "$ISSUE_FILE_SPY_LOG" ]] || fail "failing spy ticks 1-2 must not invoke (below threshold)"
+rc=$(dirty_autofile_run)                    # tick 3: filing attempted + fails
+[[ "$rc" == "0" ]] || fail "a failed filing must not fail the check (got $rc)"
+grep -q "WARN: DIRTY-CLONE auto-file failed" "$scratch/err-dirty.log" \
+  || fail "a failed filing must log a WARN retry line"
+[[ ! -f "$scratch/as-dirty/dirty-clone-filed" ]] \
+  || fail "a failed filing must not write the filed marker"
+: > "$ISSUE_FILE_SPY_LOG"
+ISSUE_FILE_SPY_RC_VAL=0
+rc=$(dirty_autofile_run)                    # tick 4: retry succeeds
+[[ "$rc" == "0" ]] || fail "retry tick should exit 0 (got $rc)"
+[[ -s "$ISSUE_FILE_SPY_LOG" ]] || fail "a failed filing must be retried on the next tick"
+git -C "$checkout" checkout -q -- f
+ok "failed filing logs WARN, stays non-fatal, retries next tick"
+
 # --- 12. non-canonical unit symlink -> LOUD + repair (fleet-ops#4166) --------
 # A worker's non-canonical install.sh retargets every live fleet unit symlink
 # at a GC-able worktree; removing it blinds the fleet (Unit to trigger
