@@ -86,7 +86,7 @@ list_candidates() {
     IDLE_HOURS="$IDLE_HOURS" NOW="$NOW" PROC_ROOT="$PROC_ROOT" \
     CLAUDE_PROJECTS="$CLAUDE_PROJECTS" STATE_FILE="$STATE_FILE" \
     python3 - <<'PY'
-import json, os, re, sys
+import calendar, json, os, re, sys, time
 
 proc_root = os.environ["PROC_ROOT"]
 projects = os.environ["CLAUDE_PROJECTS"]
@@ -149,6 +149,7 @@ def io_total(pid_dir):
         return None
 
 jsonl_mtime = {}
+jsonl_path = {}
 if os.path.isdir(projects):
     try:
         for root, dirs, files in os.walk(projects):
@@ -165,8 +166,75 @@ if os.path.isdir(projects):
                 prev = jsonl_mtime.get(uuid)
                 if prev is None or m > prev:
                     jsonl_mtime[uuid] = m
+                    jsonl_path[uuid] = p
     except OSError:
         pass
+
+# fleet-ops#5901: Claude desktop (ccd-cli) sessions carry no --resume uuid and
+# their socket heartbeat keeps rchar/wchar moving while idle, so the IO
+# fallback never saw them idle (2026-09-12: 12 sessions 5h-52h old, ~3.5 GB,
+# reaper logging "no idle interactive sessions past 8h"). A fresh ccd-cli
+# session creates its transcript within seconds of the process start
+# (measured 3 s), so the process start time resolves the uuid: a unique
+# transcript whose first record is within CCD_MATCH_WINDOW_S of the start.
+# Ambiguous or absent -> "" (fail-closed: the old IO path, unchanged).
+CCD_MATCH_WINDOW_S = 180
+try:
+    _clk_tck = os.sysconf("SC_CLK_TCK")
+except (AttributeError, ValueError, OSError):
+    _clk_tck = 100
+
+def boot_epoch():
+    for p in (os.path.join(proc_root, "stat"), "/proc/stat"):
+        try:
+            with open(p) as f:
+                for line in f:
+                    if line.startswith("btime "):
+                        return int(line.split()[1])
+        except (OSError, ValueError):
+            continue
+    return None
+
+_boot = boot_epoch()
+
+def start_epoch_of(pid_dir):
+    if _boot is None:
+        return None
+    try:
+        return _boot + int(starttime_of(pid_dir)) // _clk_tck
+    except ValueError:
+        return None
+
+_ts_re = re.compile(r'"timestamp":"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)')
+
+def jsonl_first_ts(uuid):
+    p = jsonl_path.get(uuid)
+    if not p:
+        return None
+    try:
+        with open(p, "rb") as f:
+            head = f.read(4096).decode("utf-8", "replace")
+    except OSError:
+        return None
+    m = _ts_re.search(head)
+    if not m:
+        return None
+    try:
+        return calendar.timegm(time.strptime(m.group(1), "%Y-%m-%dT%H:%M:%S"))
+    except ValueError:
+        return None
+
+def resolve_ccd_uuid(start):
+    if start is None:
+        return ""
+    cands = []
+    for uuid, m in jsonl_mtime.items():
+        if m < start - CCD_MATCH_WINDOW_S:
+            continue
+        ts = jsonl_first_ts(uuid)
+        if ts is not None and abs(ts - start) <= CCD_MATCH_WINDOW_S:
+            cands.append(uuid)
+    return cands[0] if len(cands) == 1 else ""
 
 def transcript_mtime(uuid):
     if not uuid:
@@ -221,6 +289,9 @@ for name in names:
     key = f"{name}:{st}"
     rm = resume_re.search(cmd)
     uuid = rm.group(1) if rm else ""
+    ccd = "ccd-cli" in cmd
+    if not uuid and ccd:
+        uuid = resolve_ccd_uuid(start_epoch_of(pid_dir))
     tx = transcript_mtime(uuid) if uuid else None
     io = io_total(pid_dir)
     prev = state.get(key) if isinstance(state.get(key), dict) else None
@@ -254,6 +325,10 @@ for name in names:
         # Fail-closed: no transcript and no IO history.
         continue
 
+    if ccd and tx is not None:
+        # fleet-ops#5901: for ccd-cli the IO counter is heartbeat noise; the
+        # transcript is the only activity signal.
+        parts = [("transcript", tx)]
     signal, last_activity = max(parts, key=lambda x: x[1])
     idle = now - int(last_activity)
     if idle < idle_sec:

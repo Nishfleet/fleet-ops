@@ -15,6 +15,7 @@
 #   8. Clean no-claim stale session is SIGTERM'd.
 #   9. SIGTERM-ignored fixture is SIGKILL'd after the grace window.
 #  10. No-resume PID is fail-closed on first sight and reaped after N hours
+#  11. No-resume ccd-cli resolved to its transcript by process start time (#5901)
 #      of zero IO delta.
 #
 set -euo pipefail
@@ -293,4 +294,49 @@ ok "invariant 10: no-resume fail-closed then IO-idle reap"
 kill -KILL "$io_pid" 2>/dev/null || true
 io_pid=""
 
-echo "OK: interactive-session-reap invariants 1-10 locked (fleet-ops#85)"
+# --- invariant 11: ccd-cli without --resume resolved by start time ---------
+# fleet-ops#5901. Desktop sessions never carry --resume and their heartbeat
+# keeps IO moving; the transcript found via process start time decides.
+write_ts_jsonl() {
+    local uuid="$1" first_ts="$2" mtime="$3"
+    local f="$projects/${uuid}.jsonl"
+    printf '{"type":"user","timestamp":"%s"}\n' "$(date -u -d "@$first_ts" +%FT%TZ)" >"$f"
+    touch -d "@$mtime" "$f"
+}
+BOOT=$((NOW - 9 * 3600))
+STALE_UUID="22222222-2222-2222-2222-222222222222"
+FRESH_UUID="33333333-3333-3333-3333-333333333333"
+# 11a: transcript idle 9h -> reaped on the FIRST tick, signal=transcript.
+: >"$triage"
+rm -rf "$proc"; mkdir -p "$proc"; rm -f "$projects"/*.jsonl
+printf '{}' >"$state_dir/io-state.json"
+printf 'btime %s\n' "$BOOT" >"$proc/stat"
+sleep 120 &
+io_pid=$!
+make_agent_proc "$io_pid" "$SESSION_CG" ccd-cli "$clean_git" \
+    /home/nish/.claude/remote/ccd-cli/2.1.266 --output-format stream-json
+write_ts_jsonl "$STALE_UUID" $((BOOT + 3)) $((NOW - 9 * 3600))
+out="$(run_bin --dry-run 2>&1)"
+grep -q "would reap pid=$io_pid" <<<"$out" || fail "no-resume ccd-cli with a 9h-old transcript must reap on first tick: $out"
+grep -q "signal=transcript" <<<"$out" || fail "decision must come from the transcript: $out"
+ok "invariant 11a: no-resume ccd-cli resolved by start time, transcript-idle reaped"
+kill -KILL "$io_pid" 2>/dev/null || true
+# 11b: fresh transcript, flat IO, 9h later -> survives (IO is not a signal for ccd-cli).
+: >"$triage"
+rm -rf "$proc"; mkdir -p "$proc"; rm -f "$projects"/*.jsonl
+printf '{}' >"$state_dir/io-state.json"
+printf 'btime %s\n' "$BOOT" >"$proc/stat"
+sleep 120 &
+io_pid=$!
+make_agent_proc "$io_pid" "$SESSION_CG" ccd-cli "$clean_git" \
+    /home/nish/.claude/remote/ccd-cli/2.1.266 --output-format stream-json
+write_ts_jsonl "$FRESH_UUID" $((BOOT + 3)) $((NOW + 9 * 3600 - 60))
+run_bin --dry-run >/dev/null 2>&1 || true
+NOW=$((NOW + 9 * 3600))
+out="$(run_bin --dry-run 2>&1)"
+NOW=$((NOW - 9 * 3600))
+grep -q "would reap pid=$io_pid" <<<"$out" && fail "fresh transcript must keep a no-resume ccd-cli alive despite flat IO: $out"
+ok "invariant 11b: fresh transcript keeps a no-resume ccd-cli alive despite flat IO"
+kill -KILL "$io_pid" 2>/dev/null || true
+io_pid=""
+echo "OK: interactive-session-reap invariants 1-11 locked (fleet-ops#85, #5901)"
