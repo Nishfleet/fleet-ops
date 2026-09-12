@@ -70,6 +70,48 @@ for t in m.DEFAULT_TARGETS:
             )
 PY
 
+# Stage 0c: fleet-ops#5747 — the failure-response bullet names the vault
+# memory `failure-response-standing-order` as its canonical text, and that
+# memory is compiled OUTSIDE this repo, so Stage 0b's gate on the generator
+# defaults cannot see it drift again (exactly what happened: #5729 fixed the
+# rendered surfaces while the compiled memory still route-repaired to the
+# retired DeepSeek/Grok/Sol ladder). When the vault is present on the host
+# (worker/self-host runs), gate it live; on bare CI, skip — absent() rule.
+REPAIR_LADDER_MEMORY=${REPAIR_LADDER_MEMORY:-/home/nish/workspaces/tooling/nish-vault/03 Knowledge/compiled/shared-memory/global/failure-response-standing-order.md}
+if [[ -f "$REPAIR_LADDER_MEMORY" ]]; then
+  python3 - "$REPAIR_LADDER_MEMORY" <<'PY' || fail "vault canonical repair ladder routes to retired seats (fleet-ops#5747)"
+import re, sys
+path = sys.argv[1]
+text = open(path).read()
+# Live-routing clauses of the retired ladder: the DeepSeek lane assignment
+# and the Grok/Sol/Opus flagship roster. A SUPERSEDED/retired annotation is
+# legal (the fixed memory names the old ladder only to retire it), so the
+# gate fails on the bare live-assignment phrasings, not on any mention.
+retired = (
+    r"DeepSeek lane for deeply-scoped",
+    r"\(Grok 4\.5 High / Sol / Opus\)",
+    r"Grok/Sol/Opus flagships[^\n]*?for anything broad|flagship lanes[^\n]*?Sol[^\n]*?Opus",
+)
+for clause in retired:
+    # A line that explicitly invalidates the routing is not live routing.
+    hit = next(
+        (
+            m.group(0)
+            for c in clause.split("|")
+            if (m := re.search(r"[^\n]*" + c + r"[^\n]*", text))
+        ),
+        None,
+    )
+    if hit and not re.search(r"RETIRED ROUTING|superseded|do not launch", hit, re.I):
+        raise SystemExit(
+            f"{path} still routes the failure-repair ladder to retired seats: {hit.strip()!r}"
+        )
+PY
+  echo "OK: vault canonical repair ladder carries the post-#5561 routing (fleet-ops#5747)"
+else
+  echo "SKIP: vault canonical repair ladder not present on this host (fleet-ops#5747)"
+fi
+
 work="$(mktemp -d -t standing-rules-drift-XXXXXX)"
 trap 'rm -rf "$work"' EXIT
 
