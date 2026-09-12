@@ -271,6 +271,12 @@ ok "detached ping failure is best-effort (exit 0)"
 # ============================================================================
 # Drill behavioural tests
 # ============================================================================
+# fleet-ops#5782: the live representative-drill section at the bottom of this
+# file runs the REAL plane against the REAL user manager, so it needs the
+# manager's own HOME — the unit dir systemd --user actually searches. The
+# intervening sections stay redirected into the scratch HOME; the live block
+# restores $real_home.
+real_home="$HOME"
 export HOME="$scratch/home"
 mkdir -p "$HOME"
 
@@ -798,7 +804,7 @@ ok "machinery-allowlist registers the seat_sentinel proof units (register-while-
 # for real on the daily 05:47 timer). NOT the mocked-OFFLINE harness above:
 # this runs the REAL drill so the teardown proof exercises real systemd.
 if [[ -n "${XDG_RUNTIME_DIR:-}" ]] && [[ -S "${XDG_RUNTIME_DIR}/systemd/private" ]] \
-   && [[ -d "$HOME/.config/systemd/user" ]]; then
+   && [[ -d "$real_home/.config/systemd/user" ]]; then
   live_scratch="$(mktemp -d)"
   # AGENT_STATE + TRIAGE redirected: the live run never touches the daily
   # drill's results.jsonl / the heartbeat triage. PROM untouched (--plane
@@ -808,7 +814,11 @@ if [[ -n "${XDG_RUNTIME_DIR:-}" ]] && [[ -S "${XDG_RUNTIME_DIR}/systemd/private"
   # above doesn't ship systemd/fleet-seat-recovery.{service,path}, which the
   # plane's sed-copies need.
   set +e
-  live_out=$(SYSTEMCTL=systemctl AGENT_STATE="$live_scratch" \
+  # HOME restored to the manager's home: the plane writes its throwaway unit
+  # files to $HOME/.config/systemd/user, and only the manager's own unit dir
+  # is in the manager's search path — a scratch HOME would make every
+  # daemon-reload/start fail with "not found" (fleet-ops#5782 live proof).
+  live_out=$(SYSTEMCTL=systemctl HOME="$real_home" AGENT_STATE="$live_scratch" \
     FLEET_OPS_REPO="$repo_root" \
     FLEET_HEARTBEAT_TRIAGE="$live_scratch/triage.md" \
     FLEET_RESILIENCE_DRILL_OFFLINE=0 \
@@ -831,7 +841,7 @@ if [[ -n "${XDG_RUNTIME_DIR:-}" ]] && [[ -S "${XDG_RUNTIME_DIR}/systemd/private"
   fi
   for stub_u in resilience-drill-stub-seat-sentinel{.service,.path} \
                 resilience-drill-stub-seat-sentinel-tiny{.service,.path}; do
-    if [[ -e "$HOME/.config/systemd/user/$stub_u" ]]; then
+    if [[ -e "$real_home/.config/systemd/user/$stub_u" ]]; then
       fail "leftover unit file $stub_u survived teardown"
     fi
     if ! [[ "$(systemctl --user show -p LoadState "$stub_u" 2>/dev/null)" == "LoadState=not-found" ]]; then
