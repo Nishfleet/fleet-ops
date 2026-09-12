@@ -36,7 +36,10 @@ LIST_LIMIT = 200
 # a canonical whose close is backed by a closing-PR reference counts as
 # delivered (a bare COMPLETED close is the closed-but-undelivered class,
 # fleet-ops#5479). Default window covers several scout/audit re-fire cycles;
-# 0 disables the closed corpus.
+# 0 disables the closed corpus. fleet-ops#5687 (reopened): a closed-canonical
+# match re-files as a NEW claimable issue linking the canonical — commenting
+# on a closed ticket is a silent drop (nobody claims it, intake never sees
+# it).
 CLOSED_DEDUPE_HOURS_ENV = "FLEET_ISSUE_FILE_CLOSED_HOURS"
 CLOSED_DEDUPE_HOURS_DEFAULT = 72
 
@@ -657,24 +660,28 @@ def best_match(title: str, body: str, issues: list[dict]) -> dict | None:
     return best
 
 
-def comment_body(
-    title: str, body: str, score: float, repo: str, canonical_closed: bool = False
-) -> str:
+def comment_body(title: str, body: str, score: float, repo: str) -> str:
     excerpt = (body or "").strip()
     if len(excerpt) > 1200:
         excerpt = excerpt[:1200].rstrip() + "\n…"
-    closed_note = (
-        " This canonical is CLOSED with a delivering PR — the detector finding "
-        "is already resolved; suppressed instead of re-filing (fleet-ops#5666).\n"
-        if canonical_closed
-        else "\n"
-    )
     return (
         f"Same-problem duplicate suppressed by the fleet-ops#1212 filing gate "
-        f"(score={score:.2f}).{closed_note}\n"
+        f"(score={score:.2f}).\n\n"
         f"Would have filed in `{repo}`:\n\n"
         f"**{title}**\n\n"
         f"{excerpt}\n"
+    )
+
+
+def recurrence_marker(ref: str, score: float) -> str:
+    """Body prefix for a filing whose only dedupe hit is a CLOSED delivered
+    canonical (fleet-ops#5687): the match is evidence of recurrence, not a
+    reason to suppress — a comment on a closed issue is never claimed."""
+    return (
+        f"<!-- recurrence-of: {ref} score={score:.2f} -->\n"
+        f"Recurrence of {ref} — that canonical is CLOSED with a delivering PR; "
+        f"a matching signal re-fired, so this is filed as a NEW claimable "
+        f"issue rather than a comment on a closed ticket (fleet-ops#5687).\n\n"
     )
 
 
@@ -865,22 +872,21 @@ def cmd_file(args: argparse.Namespace) -> int:
     # whose canonical already closed-as-delivered (land-or-close #5652 closed
     # at 00:16Z when PR #5544 merged; the re-file landed as #5666 at 00:41Z
     # because the corpus is open-only). Dedupe-check the filing against
-    # recently-closed delivered canonicals too, so a fired detector whose
-    # issue already landed-and-closed cannot spin a fresh claim cycle. Runs
-    # only when the open corpus produced no duplicate, and skipped for
-    # --from-json corpora (an explicit corpus is the whole corpus).
-    canonical_closed = False
+    # recently-closed delivered canonicals too. fleet-ops#5687 (reopened):
+    # the closed match must NOT collapse the filing into a comment on the
+    # closed ticket — nobody claims a closed issue, so the recurrence is
+    # dropped silently. It re-files as a NEW issue that links the canonical
+    # (a recurrence marker, not a duplicate marker). Runs only when the open
+    # corpus produced no duplicate, and skipped for --from-json corpora (an
+    # explicit corpus is the whole corpus).
+    closed_match = None
     if kind != "duplicate" and not args.from_json:
         closed_hours = _closed_dedupe_hours()
         if closed_hours > 0:
             closed = gh_list_recently_closed(args.repo, closed_hours)
             cmatch = best_match(title, body, closed) if closed else None
             if cmatch and classify(cmatch["score"]) == "duplicate":
-                match = cmatch
-                score = cmatch["score"]
-                kind = "duplicate"
-                existing = cmatch["issue"]
-                canonical_closed = True
+                closed_match = cmatch
 
     payload = {
         "action": "filed",
@@ -898,8 +904,6 @@ def cmd_file(args: argparse.Namespace) -> int:
         number = existing["number"]
         payload["number"] = number
         payload["url"] = existing.get("url") or f"https://github.com/{repo}/issues/{number}"
-        if canonical_closed:
-            payload["canonical_state"] = "closed"
         if args.dry_run:
             print(f"[issue-file] dry-run comment {payload['existing']} score={score:.2f}", file=sys.stderr)
             emit(payload, args.json, payload["url"])
@@ -913,29 +917,42 @@ def cmd_file(args: argparse.Namespace) -> int:
             emit(payload, args.json, payload["url"])
             return 0
         rc, out = gh_comment(
-            repo, number, comment_body(title, body, score, args.repo, canonical_closed)
+            repo, number, comment_body(title, body, score, args.repo)
         )
         if rc != 0:
             print(f"[issue-file] comment failed on {payload['existing']}: {out}", file=sys.stderr)
             return 1
-        state_note = " (closed delivered canonical)" if canonical_closed else ""
-        print(f"[issue-file] commented {payload['existing']} score={score:.2f}{state_note}", file=sys.stderr)
+        print(f"[issue-file] commented {payload['existing']} score={score:.2f}", file=sys.stderr)
         emit(payload, args.json, payload["url"])
         return 0
 
     file_body = body
-    if kind == "borderline" and existing:
+    if closed_match is not None:
+        canon_ref = issue_ref(closed_match["issue"])
+        payload["action"] = "filed-recurrence"
+        payload["score"] = closed_match["score"]
+        payload["existing"] = canon_ref
+        payload["canonical_state"] = "closed"
+        file_body = recurrence_marker(canon_ref, closed_match["score"]) + body
+        # A recurrence filing exists to be claimed; an unlabeled issue never
+        # reaches the intake (-l agent-ready listing), so a caller that passed
+        # no labels still produces a claimable issue. Explicit labels (e.g.
+        # observe-to-close routing) are respected as passed.
+        if not labels:
+            labels = ["agent-ready"]
+    elif kind == "borderline" and existing:
         payload["action"] = "filed-borderline"
         file_body = duplicate_marker(issue_ref(existing), score) + body
 
     if args.dry_run:
-        print(f"[issue-file] dry-run {payload['action']} score={score:.2f}", file=sys.stderr)
+        print(f"[issue-file] dry-run {payload['action']} score={payload['score']:.2f}", file=sys.stderr)
         emit(payload, args.json, "")
         return 0
 
     body_file = args.body_file
     tmp_path = None
-    if kind == "borderline" and existing:
+    file_body_arg = file_body
+    if file_body != body:
         import tempfile
 
         tmp = tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, suffix=".md")
@@ -943,9 +960,6 @@ def cmd_file(args: argparse.Namespace) -> int:
         tmp.close()
         tmp_path = tmp.name
         body_file = tmp_path
-        file_body_arg = file_body
-    else:
-        file_body_arg = file_body
 
     try:
         rc, out = gh_create(
@@ -968,7 +982,21 @@ def cmd_file(args: argparse.Namespace) -> int:
     url, number = parse_created_url(out)
     payload["url"] = url
     payload["number"] = number
-    print(f"[issue-file] {payload['action']} {url or out} score={score:.2f}", file=sys.stderr)
+    print(f"[issue-file] {payload['action']} {url or out} score={payload['score']:.2f}", file=sys.stderr)
+    if closed_match is not None:
+        crepo = closed_match["issue"].get("repository") or args.repo
+        cnum = closed_match["issue"]["number"]
+        note = (
+            f"Recurrence re-fired (score={closed_match['score']:.2f}): re-filed as "
+            f"{url or 'a new issue'} — a comment-only path on this closed ticket "
+            f"is a silent drop (fleet-ops#5687)."
+        )
+        crc, cout = gh_comment(crepo, cnum, note)
+        if crc != 0:
+            print(
+                f"[issue-file] link-back comment failed on {payload['existing']}: {cout}",
+                file=sys.stderr,
+            )
     emit(payload, args.json, url or out)
     return 0
 

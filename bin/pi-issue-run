@@ -300,6 +300,23 @@ write_death_class() {
 }
 inst="$1"
 
+# fleet-ops#5687: never hand the worker session an inherited repo cwd. The pi
+# process below runs with THIS script's cwd; a unit launched (or replayed)
+# from inside the deploy clone makes the clone the worker's cwd, and a
+# relative `git worktree add issue-<repo>-<N>` then plants a live tree INSIDE
+# the clone (live dirt 2026-09-12: deploy-clone/issue-fleet-ops-5746/). Anchor
+# the session to the issue's absolute worktree when it already exists
+# (re-entrant claims reuse it — prompts/worker.md step 3), else the absolute
+# worktree parent — never the caller's cwd. PI_ISSUE_WORKTREE_ROOT lets tests
+# redirect the parent.
+_wt_root="${PI_ISSUE_WORKTREE_ROOT:-$HOME/workspaces/agent-worktrees}"
+if [[ -d "$_wt_root/issue-${inst}" ]]; then
+    cd "$_wt_root/issue-${inst}" || cd "$HOME"
+elif ! cd "$_wt_root" 2>/dev/null; then
+    cd "$HOME"
+fi
+unset _wt_root
+
 # fleet-ops#4903: journal entry/exit instrumentation. _exit_reason is set
 # before each intentional exit so the EXIT trap can attribute the death.
 # Default "unknown" catches any path that forgets to set it.
