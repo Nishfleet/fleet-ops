@@ -709,3 +709,9 @@ fi
 
 echo
 echo "fleet-escalation-drain: all scenarios passed (fleet-ops#2677 + #2773 + #3996 + #4418)"
+
+echo
+# fleet-ops#5624 bound-breach second stage (breach stamp + LOUD alert +
+# oldest-first digest): hosted subtest — workers cannot edit
+# .github/workflows/**, so this keeps the P14 reachable-set gate green.
+bash "$here/escalation-drain-bound.test.sh"

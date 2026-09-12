@@ -97,12 +97,18 @@ the full five-layer policy tree and what each layer does.
 lines it leaves behind look like a dead seat. Use the thin systemd wrapper:
 
 ```
-pi-systemd-run --unit mypacket --stdin /path/to/packet.md -- \
+pi-systemd-run --unit mypacket --stdin /path/to/packet.md --deadline 42 \
+  --deliverable /path/to/outcome.md -- \
   pi --print --provider minimax --model MiniMax-M3
 ```
 
 That is `systemd-run --user --collect --no-block`. Not a dispatcher: no
-retry ladder, no seat rotation, no queue. Watch with
+retry ladder, no seat rotation, no queue. This invocation is the canonical
+flag signature (single source, fleet-ops#5683): `--deadline` is the grace
+budget and `--deliverable` the artifact the run MUST produce; the wrapper
+also adds the healthchecks dead-man (start/complete ping) and OnFailure
+escalation, so exit 0 with no deliverable is a FAILURE, not a success
+(fleet-ops#4266). Watch with
 `systemctl --user status mypacket.service`.
 
 If the packet clones a repo, use a reference clone against the local

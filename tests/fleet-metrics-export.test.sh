@@ -1694,6 +1694,13 @@ bash "$here/fleet-questions-line.test.sh" || fail "fleet-questions-line tests fa
 # above (no workflow-scope edit; the worker App cannot push .github/workflows/**).
 bash "$here/measure-cursor-today.test.sh" || fail "measure-cursor-today tests failed"
 
+# fleet-ops#5514 (0509#2975 item 4): the `deploy:` freshness line measure.sh
+# prints verbatim from 0509's scripts/deploy-age.mjs, plus the LOUD
+# deploy-stale line when merges_since>0 and last_success_age_h>=6. Hosted
+# here for the same P14 reason as fleet-usd-spend above (no workflow-scope
+# edit; fake detectors via FLEET_DEPLOY_AGE_SCRIPT).
+bash "$here/measure-deploy-age.test.sh" || fail "measure-deploy-age tests failed"
+
 # fleet-ops#4562: the stale-question detector (question+priority with no
 # decision-resolved after 24h fails loud and auto-files once, deduped).
 # Hosted here so P14 runs it without a workflow-file edit. Hermetic (fake gh).

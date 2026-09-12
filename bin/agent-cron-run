@@ -256,6 +256,31 @@ if (( rc != 0 )); then
     exit 1
 fi
 
+# --- fleet-ops#5515: empty stdout on rc=0 is a silent stall ------------------
+# pi can exit 0 with EMPTY stdout (late-stream / empty-message class): the
+# model produced nothing, the runner previously logged SUCCESS, reset
+# tried-seats and exited 0 — no Restart, no OnFailure, no escalation. Live
+# evidence (senior auditor, 2026-09-11): quality-research-weekly produced
+# header-only cron-output files on 2026-08-29 (two attempts, zero assistant
+# output) and 2026-09-05 (one attempt), and the visual-quality-waves rotation
+# log gained no line since 2026-08-28 — two weekly cycles silently skipped
+# while the unit reported Result=success. The shape mirrors the #5189
+# writes-refused guard: record the evidence (header + stderr tail) into the
+# dated log, log EMPTY-STDOUT, rm the temps, and exit 1 so Restart=on-failure
+# re-seats and StartLimitBurst fails the unit loud. tried-seats is RETAINED
+# (this is not a success — do NOT reset it). No bench marker: late-stream is
+# not a seat fault, tried-seats already excludes the seat on retry.
+if [[ ! -s "$out" ]] || { out_5515=$(cat "$out" 2>/dev/null || true); [[ -z "${out_5515//[[:space:]]/}" ]]; }; then
+    err_tail=$(tail -c 800 "$err" 2>/dev/null | tr -s '\n' ' ' | tail -c 400)
+    seat_log "agent-cron-run: $slug EMPTY-STDOUT on $np/$nm (rc=0, ${spawn_elapsed_s}s) — pi produced no output; recording evidence and exiting 1 so systemd re-seats (fleet-ops#5515)"
+    {
+        printf '# %s %s EMPTY-STDOUT\nseat=%s/%s workdir=%s rc=0 stdout empty\n' "$slug" "$TS" "$np" "${nm}" "${WORKDIR}"
+        if [[ -n "${err_tail:-}" ]]; then printf 'stderr tail: %s\n' "${err_tail}"; fi
+    } >>"$OUT"
+    rm -f "$out" "$err"
+    exit 1
+fi
+
 # --- success: record the run, deliver the digest ----------------------------
 # `grep` returns 1 when no DIGEST line exists; under `set -o pipefail` that
 # would abort the script BEFORE the output file is written. The `|| true`

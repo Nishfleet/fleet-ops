@@ -3797,6 +3797,15 @@ bash "$here/senior-review-routing.test.sh" || fail "senior-review-routing tests 
 # exiting 0 with a report. Hosted here (no workflow edit).
 bash "$here/agent-cron-writes-refused.test.sh" || fail "agent-cron-writes-refused tests failed"
 
+# fleet-ops#5515: pi exiting 0 with EMPTY stdout is a silent stall (the
+# success path logged SUCCESS, reset tried-seats and exited 0 —
+# quality-research-weekly silently skipped two weekly cycles). Hosted here
+# (no workflow edit): the guard test proves rc=0+empty -> exit 1 with
+# evidence in the dated OUT + tried-seats retained, and the rc=0+non-empty
+# control stays exit 0. Duplicate-delivery adjudication (fleet-ops#5688):
+# PR #5656 is the surviving lane, PR #5516 closed.
+bash "$here/agent-cron-empty-stdout.test.sh" || fail "agent-cron-empty-stdout tests failed"
+
 # fleet-ops#1167: cursor keystone-only + leftover prepaid is xai-oauth +
 # selection ledger. Hosted here (no workflow edit).
 bash "$here/token-economy-routing.test.sh" || fail "token-economy-routing tests failed"

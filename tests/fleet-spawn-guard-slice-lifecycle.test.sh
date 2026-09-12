@@ -16,8 +16,8 @@
 #     in template/extensions/spawn-guard-core.ts),
 #   - blocks conservatively on mixed targets (one non-allowlisted slice
 #     anywhere in the argument span blocks the whole command),
-# and the same flags-gap fix on systemctl_restart_fleet_unit (restart verb
-# unchanged; stop for fleet units is deliberately out of scope there).
+# and the same flags-gap fix on systemctl_restart_fleet_unit, whose verb
+# set now covers stop on fleet units too (fleet-ops#5605).
 #
 # Reads the REPO template (the source the MANIFEST deploys from), not the
 # live install, so hosted CI covers the rules the same way
@@ -76,14 +76,14 @@ const block_fleet = [
   'systemctl restart fleet-heartbeat.service',
   'systemctl --user restart fleet-heartbeat.service',
   'systemctl restart implementation-worker-pi.service',
+  // fleet-ops#5605: stop of fleet units is covered too.
+  'systemctl --user stop fleet-heartbeat.service',
+  'systemctl stop implementation-worker-pi.service',
 ];
 const allow_fleet = [
   'systemctl restart nginx.service',
   'systemctl --user status fleet-heartbeat.service',
-  // stop on fleet units is deliberately out of scope for #5589 (filed
-  // separately); pinning it allowed forces a conscious test change when
-  // that extension lands.
-  'systemctl --user stop fleet-heartbeat.service',
+  'systemctl --user stop nginx.service',
 ];
 
 let bad = 0;
@@ -92,7 +92,7 @@ for (const c of allow_slice) if (slice.test(c)) { console.error('WRONGLY BLOCKED
 for (const c of block_fleet) if (!fleet.test(c)) { console.error('NOT BLOCKED by systemctl_restart_fleet_unit: ' + JSON.stringify(c)); bad++; }
 for (const c of allow_fleet) if (fleet.test(c)) { console.error('WRONGLY BLOCKED by systemctl_restart_fleet_unit: ' + JSON.stringify(c)); bad++; }
 if (bad) process.exit(1);
-console.log('slice restart/stop blocked flags-tolerantly (drasl et al allowlist honored, mixed targets conservative); fleet-unit rule flags-tolerant');
+console.log('slice restart/stop blocked flags-tolerantly (drasl et al allowlist honored, mixed targets conservative); fleet-unit rule flags-tolerant, restart+stop');
 NODE
 out=$(SPAWN_GUARD_CORE="$ext" node -e "$SCRIPT" 2>&1) || fail "$out"
 ok "$out"

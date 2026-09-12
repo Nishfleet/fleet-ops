@@ -185,8 +185,16 @@ in_progress=$(printf '%s' "$state_json" | jq -e '[.labels[]?.name] | any(. == "a
 # re-arms the spawn churn the block was meant to stop. blocked-reconcile owns
 # the unblock; the reaper only clears the stale agent-in-progress tag here.
 agent_blocked=$(printf '%s' "$state_json" | jq -e '[.labels[]?.name] | any(. == "agent-blocked")' >/dev/null 2>&1 && echo yes || echo no)
+# fleet-ops#5092: a parked issue (awaiting-runtime-gate, the #4540 park) must
+# stay parked — the failed-unit reaper is the exact path that silently
+# un-parked 0509#2213 (restart at 20:04:41Z, four minutes after the park):
+# StartLimitBurst tripped, the reaper restored agent-ready, and the claim-spin
+# the park exists to kill restarted. Fail-closed: the reaper clears
+# stale agent-in-progress only and NEVER re-adds agent-ready on a parked
+# issue. Park un-parking belongs to blocked-reconcile / the scheduler.
+awaiting_gate=$(printf '%s' "$state_json" | jq -e '[.labels[]?.name] | any(. == "awaiting-runtime-gate")' >/dev/null 2>&1 && echo yes || echo no)
 
-log "state=$issue_state in_progress=$in_progress agent_blocked=$agent_blocked for $repo_slug#$issue"
+log "state=$issue_state in_progress=$in_progress agent_blocked=$agent_blocked parked_gate=$awaiting_gate for $repo_slug#$issue"
 
 # --- branch cleanup: only if no open PR from this branch --------------------
 # Same REST-vs-GraphQL split: `gh pr list --json` is GraphQL; use `gh api` REST
@@ -244,10 +252,14 @@ if [[ "$issue_state" == "OPEN" ]]; then
     # posts the same blocked-on:, and dies again (the #3763 loop: 4 claims
     # in 40 min, StartLimitBurst). blocked-reconcile flips agent-blocked ->
     # agent-ready once the blocker resolves.
-    if [[ "$agent_blocked" == "yes" ]]; then
+    if [[ "$agent_blocked" == "yes" || "$awaiting_gate" == "yes" ]]; then
         if gh issue edit "$issue" -R "$repo_slug" --remove-label agent-in-progress 2>/dev/null; then
             label_ok=yes
-            log "issue $repo_slug#$issue is agent-blocked; cleared agent-in-progress only (left agent-blocked for blocked-reconcile)"
+            if [[ "$awaiting_gate" == "yes" ]]; then
+                log "issue $repo_slug#$issue is parked (awaiting-runtime-gate); cleared agent-in-progress only, agent-ready NOT restored (fleet-ops#5092 fail-closed)"
+            else
+                log "issue $repo_slug#$issue is agent-blocked; cleared agent-in-progress only (left agent-blocked for blocked-reconcile)"
+            fi
         else
             log "label flip (remove in-progress only, agent-blocked held) failed on $repo_slug#$issue"
             log_to_triage "CLAIM-REAP-LABEL-FAIL" "instance=$instance step=open_labels_blocked"

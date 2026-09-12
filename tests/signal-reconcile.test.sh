@@ -1499,4 +1499,55 @@ print("scenario 18 assertions passed")
 PY
 ok "scenario 18: find_existing_signal matches the issue_body() backticked trailer, not prose mentions"
 
+# ---------------------------------------------------------------------------
+# 19. ESCALATION-PANEL-PENDING alarms are observe-to-close-only (fleet-ops#5057).
+#     The exact loud() tag asserted first in bin/pi-escalation-audit — a
+#     pending senior escalation panel is load-borne and self-heals via
+#     stale-SKIP recast (#3962) and SKIP-EXHAUSTED abstention (#4503). There
+#     is no manual worker action: every prior filing closed via
+#     observe-to-close with zero worker code; routing them agent-ready
+#     burned an admission-priced worker seat per occurrence.
+#
+#     19a. A fresh ESCALATION-PANEL-PENDING alarm files under
+#          `observe-to-close`, NOT `agent-ready`, so the intake will not
+#          claim it.
+#     19b. The detector's observe-to-close STILL closes it on the green tick
+#          (panel convenes, no ESCALATION-PANEL-PENDING line in the tick).
+# ---------------------------------------------------------------------------
+cat > "$tmp/triage19-on.md" <<'EOF'
+[2026-08-28T13:30:00Z] [ESCALATION-PANEL-PENDING] repo=Nishfleet/0509 candidate=Nishfleet/0509#5100 age_s=4200 active=1 missing=2 failed=0 - senior escalation panel has not convened
+EOF
+cat > "$tmp/open19.json" <<'EOF'
+[{"number": 5100, "body": "The heartbeat detector reported this alarm on a real tick and no open issue carried its signal key, so the detector\u2192queue reconciler filed one.\n\n- alarm tag: `ESCALATION-PANEL-PENDING`\n\nDo NOT close this issue on PR merge alone. The reconciler closes it only when the detector reports green on a real heartbeat tick (observe-to-close).\n\n`loud/escalation-panel-pending/0509`\n", "labels": [{"name": "agent-ready"}], "createdAt": "2026-08-28T10:00:00Z", "comments": []}]
+EOF
+
+# 19a. Fresh ESCALATION-PANEL-PENDING files with observe-to-close, not
+# agent-ready.
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/empty14.json" "$tmp/triage19-on.md" > "$tmp/summary19a.json"
+jq -e '.filed == 1 and .closed == 0' "$tmp/summary19a.json" >/dev/null \
+    || fail "scenario 19a: ESCALATION-PANEL-PENDING must file one issue (got: $(cat "$tmp/summary19a.json"))"
+printf '%s' "$(cat "$tmp/filed.jsonl")" | grep -q 'loud/escalation-panel-pending' \
+    || fail "scenario 19a: ESCALATION-PANEL-PENDING signal key missing (filed: $(cat "$tmp/filed.jsonl"))"
+printf '%s' "$(cat "$tmp/filed.jsonl")" | grep -q '"labels": \["observe-to-close"\]' \
+    || fail "scenario 19a: must file under observe-to-close, not agent-ready (filed: $(cat "$tmp/filed.jsonl"))"
+printf '%s' "$(cat "$tmp/filed.jsonl")" | grep -q '"agent-ready"' \
+    && fail "scenario 19a: must NOT carry agent-ready (filed: $(cat "$tmp/filed.jsonl"))"
+ok "scenario 19a: ESCALATION-PANEL-PENDING filed under observe-to-close, not agent-ready"
+
+# 19b. Panel convenes (no ESCALATION-PANEL-PENDING line in the tick) -> the
+# observe-to-close closeout fires regardless of the label.
+cat > "$tmp/triage19-off.md" <<'EOF'
+[2026-08-28T13:30:00Z] [ESCALATION-PANEL-OK] senior escalation panel convened (members=3)
+EOF
+true > "$tmp/filed.jsonl"
+true > "$tmp/gh.log"
+run "$tmp/open19.json" "$tmp/triage19-off.md" > "$tmp/summary19b.json"
+jq -e '.closed == 1 and .filed == 0' "$tmp/summary19b.json" >/dev/null \
+    || fail "scenario 19b: convened panel must observe-to-close (got: $(cat "$tmp/summary19b.json"))"
+grep -q "issue close 5100" "$tmp/gh.log" \
+    || fail "scenario 19b: expected gh issue close 5100 (got: $(cat "$tmp/gh.log"))"
+ok "scenario 19b: convened ESCALATION-PANEL observe-to-closes the filing"
+
 ok "all signal-reconcile scenarios passed"

@@ -526,7 +526,19 @@ def routing_labels(tag: str) -> list[str]:
     # gone after #4884, so the whole tag is observe-to-close-only. File under
     # observe-to-close (fleet-ops#1401) so the intake does not claim them; the
     # detector's observe-to-close still closes them on the green tick.
-    if tag in {"DEGRADED-LANES", "AUDITOR-PANEL-PENDING", "FAILED-COMMAND-SWALLOWED"}:
+    #
+    # fleet-ops#5057: same for ESCALATION-PANEL-PENDING. The exact loud() tag
+    # asserted first in bin/pi-escalation-audit — a pending senior escalation
+    # panel is load-borne (the per-tick start cap defers seat starts under
+    # backlog) and self-heals via stale-SKIP recast (fleet-ops#3962) and
+    # SKIP-EXHAUSTED abstention (fleet-ops#4503). There is no manual worker
+    # action: every prior filing closed via observe-to-close with zero
+    # worker code. Routing them to agent-ready burned an admission-priced
+    # worker seat per occurrence on workers that re-verified the alarm and
+    # exited with no PR. File under observe-to-close (fleet-ops#1401) so the
+    # intake does not claim them; the detector's observe-to-close still
+    # closes them on the green tick.
+    if tag in {"DEGRADED-LANES", "AUDITOR-PANEL-PENDING", "FAILED-COMMAND-SWALLOWED", "ESCALATION-PANEL-PENDING"}:
         return ["observe-to-close"]
     senior = (
         tag.endswith(("-VIOLATION", "-FAIL", "-BROKEN", "-ESCALATE"))

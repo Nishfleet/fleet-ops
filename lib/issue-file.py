@@ -25,12 +25,20 @@ import os
 import re
 import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 DUP_THRESHOLD = 0.65
 BORDERLINE_THRESHOLD = 0.40
 KEY_BONUS = 0.10
 LIST_LIMIT = 200
+# fleet-ops#5666: `file` dedupes against recently-CLOSED issues too — but only
+# a canonical whose close is backed by a closing-PR reference counts as
+# delivered (a bare COMPLETED close is the closed-but-undelivered class,
+# fleet-ops#5479). Default window covers several scout/audit re-fire cycles;
+# 0 disables the closed corpus.
+CLOSED_DEDUPE_HOURS_ENV = "FLEET_ISSUE_FILE_CLOSED_HOURS"
+CLOSED_DEDUPE_HOURS_DEFAULT = 72
 
 # close-duplicates: only `agent-ready` issues (unclaimed) are safe to close —
 # agent-in-progress has a live worker, agent-blocked is Nish-gated, red-on-main
@@ -480,6 +488,27 @@ def _author_login(author) -> str:
     return str(author).strip()
 
 
+def _issue_row(item: dict, repo: str) -> dict | None:
+    number = item.get("number")
+    if not isinstance(number, int):
+        return None
+    labels = []
+    for lab in item.get("labels") or []:
+        if isinstance(lab, dict) and lab.get("name"):
+            labels.append(lab["name"])
+        elif isinstance(lab, str):
+            labels.append(lab)
+    return {
+        "number": number,
+        "title": item.get("title") or "",
+        "body": item.get("body") or "",
+        "url": item.get("url") or "",
+        "repository": repo,
+        "labels": labels,
+        "author": _author_login(item.get("author")),
+    }
+
+
 def gh_list_open(repo: str) -> list[dict]:
     proc = subprocess.run(
         [
@@ -507,28 +536,84 @@ def gh_list_open(repo: str) -> list[dict]:
         return []
     out = []
     for item in rows if isinstance(rows, list) else []:
+        if isinstance(item, dict):
+            row = _issue_row(item, repo)
+            if row:
+                out.append(row)
+    return out
+
+
+def _parse_iso(ts: str) -> datetime | None:
+    try:
+        return datetime.fromisoformat((ts or "").replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _closed_dedupe_hours() -> int:
+    raw = os.environ.get(CLOSED_DEDUPE_HOURS_ENV, "")
+    if not raw:
+        return CLOSED_DEDUPE_HOURS_DEFAULT
+    try:
+        return int(raw)
+    except ValueError:
+        return CLOSED_DEDUPE_HOURS_DEFAULT
+
+
+def gh_list_recently_closed(repo: str, since_hours: int) -> list[dict]:
+    """Issues in `repo` closed within `since_hours` whose close is backed by a
+    closing-PR reference (fleet-ops#5666).
+
+    The open-only dedupe corpus cannot see a canonical that closed minutes
+    before a detector re-fires on stale state — land-or-close #5652 closed
+    at 00:16Z the moment PR #5544 merged, and a stale-observation audit
+    re-filed the same resolved blocker as #5666 at 00:41Z. Two proofs are
+    required before a closed issue may suppress a filing:
+    stateReason=COMPLETED AND a non-empty closedByPullRequestsReferences —
+    a completed close with no delivering PR is the closed-but-undelivered
+    class (fleet-ops#5479) and must never hide a re-filing.
+    """
+    proc = subprocess.run(
+        [
+            gh_bin(),
+            "issue",
+            "list",
+            "-R",
+            repo,
+            "--state",
+            "closed",
+            "--limit",
+            str(LIST_LIMIT),
+            "--json",
+            "number,title,body,url,labels,author,closedAt,stateReason,"
+            "closedByPullRequestsReferences",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0 or not (proc.stdout or "").strip():
+        return []
+    try:
+        rows = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return []
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=since_hours)
+    out = []
+    for item in rows if isinstance(rows, list) else []:
         if not isinstance(item, dict):
             continue
-        number = item.get("number")
-        if not isinstance(number, int):
+        if (item.get("stateReason") or "").upper() != "COMPLETED":
             continue
-        labels = []
-        for lab in item.get("labels") or []:
-            if isinstance(lab, dict) and lab.get("name"):
-                labels.append(lab["name"])
-            elif isinstance(lab, str):
-                labels.append(lab)
-        out.append(
-            {
-                "number": number,
-                "title": item.get("title") or "",
-                "body": item.get("body") or "",
-                "url": item.get("url") or "",
-                "repository": repo,
-                "labels": labels,
-                "author": _author_login(item.get("author")),
-            }
-        )
+        if not item.get("closedByPullRequestsReferences"):
+            continue
+        closed_at = _parse_iso(item.get("closedAt") or "")
+        if closed_at is None or closed_at < cutoff:
+            continue
+        row = _issue_row(item, repo)
+        if row:
+            row["closed"] = True
+            out.append(row)
     return out
 
 
@@ -572,13 +657,21 @@ def best_match(title: str, body: str, issues: list[dict]) -> dict | None:
     return best
 
 
-def comment_body(title: str, body: str, score: float, repo: str) -> str:
+def comment_body(
+    title: str, body: str, score: float, repo: str, canonical_closed: bool = False
+) -> str:
     excerpt = (body or "").strip()
     if len(excerpt) > 1200:
         excerpt = excerpt[:1200].rstrip() + "\n…"
+    closed_note = (
+        " This canonical is CLOSED with a delivering PR — the detector finding "
+        "is already resolved; suppressed instead of re-filing (fleet-ops#5666).\n"
+        if canonical_closed
+        else "\n"
+    )
     return (
         f"Same-problem duplicate suppressed by the fleet-ops#1212 filing gate "
-        f"(score={score:.2f}).\n\n"
+        f"(score={score:.2f}).{closed_note}\n"
         f"Would have filed in `{repo}`:\n\n"
         f"**{title}**\n\n"
         f"{excerpt}\n"
@@ -637,6 +730,45 @@ def issue_has_dup_marker(repo: str, number: int, canon_ref: str) -> bool:
     needle = f"possible-duplicate-of: {canon_ref}"
     for c in data.get("comments") or []:
         if isinstance(c, dict) and needle in (c.get("body") or ""):
+            return True
+    return False
+
+
+def issue_has_filing_comment(repo: str, number: int, src_repo: str, title: str) -> bool:
+    """True if the issue already carries an issue-file dedupe comment covering
+    this (source repo, title) filing (fleet-ops#5496).
+
+    The file-time duplicate branch posted comment_body() on EVERY dedupe hit
+    with no memory of prior comments; the blind-audit backfill piled 675+
+    identical dedupe comments on one canonical issue. Same class as
+    fleet-ops#3728 (issue_has_dup_marker) but for the filing-gate comment
+    path. Matches both new (marker-carrying) and legacy comment bodies via
+    the human-visible `Would have filed in <repo>` + title lines.
+
+    Fail-open: on gh error returns False so the comment is still posted.
+    """
+    try:
+        proc = subprocess.run(
+            [gh_bin(), "issue", "view", str(number), "--repo", repo,
+             "--json", "comments"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if proc.returncode != 0:
+        return False
+    try:
+        data = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError:
+        return False
+    filed_line = f"Would have filed in `{src_repo}`:"
+    title_line = f"**{title}**"
+    for c in data.get("comments") or []:
+        body = (c.get("body") or "") if isinstance(c, dict) else ""
+        if filed_line in body and title_line in body:
             return True
     return False
 
@@ -729,6 +861,27 @@ def cmd_file(args: argparse.Namespace) -> int:
     kind = classify(score) if match else "new"
     existing = match["issue"] if match else None
 
+    # fleet-ops#5666: a detector re-firing on stale state re-files a blocker
+    # whose canonical already closed-as-delivered (land-or-close #5652 closed
+    # at 00:16Z when PR #5544 merged; the re-file landed as #5666 at 00:41Z
+    # because the corpus is open-only). Dedupe-check the filing against
+    # recently-closed delivered canonicals too, so a fired detector whose
+    # issue already landed-and-closed cannot spin a fresh claim cycle. Runs
+    # only when the open corpus produced no duplicate, and skipped for
+    # --from-json corpora (an explicit corpus is the whole corpus).
+    canonical_closed = False
+    if kind != "duplicate" and not args.from_json:
+        closed_hours = _closed_dedupe_hours()
+        if closed_hours > 0:
+            closed = gh_list_recently_closed(args.repo, closed_hours)
+            cmatch = best_match(title, body, closed) if closed else None
+            if cmatch and classify(cmatch["score"]) == "duplicate":
+                match = cmatch
+                score = cmatch["score"]
+                kind = "duplicate"
+                existing = cmatch["issue"]
+                canonical_closed = True
+
     payload = {
         "action": "filed",
         "score": score,
@@ -745,15 +898,28 @@ def cmd_file(args: argparse.Namespace) -> int:
         number = existing["number"]
         payload["number"] = number
         payload["url"] = existing.get("url") or f"https://github.com/{repo}/issues/{number}"
+        if canonical_closed:
+            payload["canonical_state"] = "closed"
         if args.dry_run:
             print(f"[issue-file] dry-run comment {payload['existing']} score={score:.2f}", file=sys.stderr)
             emit(payload, args.json, payload["url"])
             return 0
-        rc, out = gh_comment(repo, number, comment_body(title, body, score, args.repo))
+        if issue_has_filing_comment(repo, number, args.repo, title):
+            print(
+                f"[issue-file] already commented on {payload['existing']} "
+                f"for this filing (score={score:.2f}), suppressing re-post",
+                file=sys.stderr,
+            )
+            emit(payload, args.json, payload["url"])
+            return 0
+        rc, out = gh_comment(
+            repo, number, comment_body(title, body, score, args.repo, canonical_closed)
+        )
         if rc != 0:
             print(f"[issue-file] comment failed on {payload['existing']}: {out}", file=sys.stderr)
             return 1
-        print(f"[issue-file] commented {payload['existing']} score={score:.2f}", file=sys.stderr)
+        state_note = " (closed delivered canonical)" if canonical_closed else ""
+        print(f"[issue-file] commented {payload['existing']} score={score:.2f}{state_note}", file=sys.stderr)
         emit(payload, args.json, payload["url"])
         return 0
 

@@ -72,12 +72,14 @@ const DANGEROUS_RULES: Array<{ id: string; pattern: RegExp }> = [
 			/\bsystemctl\s+(?:[^\s;|&]+\s+)*?\b(?:restart|stop)\s+(?=[^\n;|&]*(?<![\w.\/-])(?!drasl\.slice\b)[^\s;|&]*\.slice\b)/i,
 	},
 	// Same flags-gap fix: `systemctl --user restart fleet-heartbeat.service`
-	// defeated the pre-#5589 shape the same way. Verb set unchanged (restart
-	// only) — extending it to stop for fleet units is filed separately.
+	// defeated the pre-#5589 shape the same way. Verb set extended to stop
+	// for fleet units too (fleet-ops#5605): a worker stopping a fleet unit
+	// is the same class of self-harm — it kills the dead-man and the
+	// in-flight work with no escalation.
 	{
 		id: "systemctl_restart_fleet_unit",
 		pattern:
-			/\bsystemctl\s+(?:[^\s;|&]+\s+)*?\b(?:restart)\s+[^\n;|&]*(?:fleet-|implementation-worker-)/i,
+			/\bsystemctl\s+(?:[^\s;|&]+\s+)*?\b(?:restart|stop)\s+[^\n;|&]*(?:fleet-|implementation-worker-)/i,
 	},
 	{
 		id: "credential_path_write",
@@ -314,7 +316,7 @@ function blockReasonText(reason: string): string {
 		systemctl_slice_lifecycle:
 			"Restarting or stopping a systemd slice bounces every unit inside it (user-1000.slice alone carries ~54 live timers/units). Only the dated allowlist in spawn-guard-core.ts (drasl et al) is exempt. Restart or stop the individual unit instead: `systemctl --user restart <unit>.service`.",
 		systemctl_restart_fleet_unit:
-			"Restarting fleet units from inside a worker session is forbidden.",
+			"Restarting (or stopping) fleet units from inside a worker session is forbidden.",
 		sudo_write_protected_path:
 			"Writing root-owned files into the pi transport paths (~/.local/bin, ~/.local/lib/node_modules, ~/.pi, /etc/systemd) is forbidden from a worker session. The 2026-09-03 incident clobbered ~/.local/bin/pi this way and starved the fleet for 33h. If a test needs a stub binary, use a tmp PATH dir under /tmp, never the real ~/.local/bin.",
 		sudo_devnull_into_home:

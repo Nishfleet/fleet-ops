@@ -49,7 +49,7 @@ Before implementation work, automatically read and follow `/home/nish/workspaces
 <!-- END SECTION: nish-preimplementation-contract -->
 
 <!-- SECTION: shared-fleet-routing -->
-**Everything runs through Pi, directly. No launchers.** (Nish, 2026-08-23 — vault `_system/shared-memory/global-standing-rules.md`.) The fleet control plane AND the `implementation-worker-*` launcher layer are both DELETED. There is no dispatch wrapper for Pi work. `governed-run` and `~/.local/share/implementation-worker-routing/` are retired for Pi dispatch, NOT deleted (verified 2026-09-11: `test -x ~/.local/bin/governed-run && echo still-present`); `governed-run` remains sanctioned for non-Pi ad-hoc commands (sanction lives in `~/.codex/AGENTS.md`). The old `codex-model-routing.md` ladder is superseded.
+**Everything runs through Pi, directly. No launchers.** (Nish, 2026-08-23 — vault `_system/shared-memory/global-standing-rules.md`.) The fleet control plane AND the `implementation-worker-*` launcher layer are both DELETED. There is no dispatch wrapper for Pi work. `governed-run` and `~/.local/share/implementation-worker-routing/` are retired for Pi dispatch, NOT deleted (verified 2026-09-11: `test -x ~/.local/bin/governed-run && echo still-present`); `governed-run` remains sanctioned for non-Pi ad-hoc commands (sanction lives in `~/.codex/AGENTS.md`). The old `codex-model-routing.md` ladder at `~/workspaces/tooling/nish-vault/_system/shared-memory/codex-model-routing.md` is superseded.
 
 Call `pi` directly, prompt on **stdin** (Pi rejects a `--` end-of-options flag):
 
@@ -91,13 +91,11 @@ Find it, fix it, verify it, log it - then report the result.
 
 Reaches Nish and nothing else: **the canonical reserved-classes list** in the
 vault (`nish-vault/_system/shared-memory/global-standing-rules.md` → "Only
-the un-fixable reaches Nish" → "Canonical reserved-classes list"):
-money/pricing, privacy, security, legal, brand, product direction,
-customer-data deletion, destructive/irreversible steps, and authority he
-has explicitly reserved — plus the standing exception that an unrepairable
-failure must fail LOUD, never degrade silently. That vault list is the
-single source of truth and wins over any shorter surface list; this bullet
-is a pointer, not a restatement (fleet-ops#5586).
+the un-fixable reaches Nish" → "Canonical reserved-classes list") wins over
+any shorter surface list — that vault block is the single source of truth;
+this bullet is a pointer, not a restatement (fleet-ops#5586, fleet-ops#5685).
+Plus the standing exception unrelated to those classes: an unrepairable
+failure must fail LOUD, never degrade silently.
 
 Corollary: **if a human had to notice it by hand, that blind spot is the real
 bug.** Fix the instance AND the detector. Canonical text:

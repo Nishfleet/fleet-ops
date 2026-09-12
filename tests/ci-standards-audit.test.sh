@@ -411,6 +411,25 @@ bash "$here/fleet-issue-file-close-duplicates-idempotent.test.sh"
 # drop of this host line fails by name. Hermetic (fake gh, no network).
 bash "$here/fleet-issue-file-dedupe-repo-scope.test.sh"
 
+# fleet-ops#5496: the file-time dedupe comment is idempotent — a re-run of
+# a dedupe-heavy batch adds 0 new comments to the canonical (the
+# blind-audit backfill piled 848+ identical comments on #5464). Hosted
+# here so P14 runs it without a workflow edit (the worker App cannot push
+# .github/workflows/**). The named pin in tests/p14-test-listing-gate.test.sh
+# is the class-prevention so a future drop of this host line fails by
+# name. Hermetic (fake gh, no network).
+bash "$here/fleet-issue-file-dedupe-comment-idempotent.test.sh"
+
+# fleet-ops#5666: the file-time dedupe corpus is no longer open-only — a
+# detector re-firing on stale state must not re-file a blocker whose
+# canonical closed-as-delivered minutes earlier (#5652 -> #5666). Only a
+# COMPLETED close with a closing-PR reference counts as delivered. Hosted
+# here so P14 runs it without a workflow edit (the worker App cannot push
+# .github/workflows/**). The named pin in tests/p14-test-listing-gate.test.sh
+# is the class-prevention so a future drop of this host line fails by
+# name. Hermetic (fake gh, no network).
+bash "$here/fleet-issue-file-dedupe-closed-canonical.test.sh"
+
 # fleet-ops#2902 (PR #2905 follow-up): the leaky-worktree containment
 # detector landed on main without a ci.yml listing or a host — and P14 was
 # already red on the two orphans above, so this leftover slipped in
@@ -742,6 +761,16 @@ bash "$here/curator-journal-cap.test.sh"
 # tests/p14-test-listing-gate.test.sh is the class-prevention so a
 # future drop of this host line fails by name.
 bash "$here/install-manifest-bak-sprawl.test.sh"
+
+# fleet-ops#5602: the drift-canary sprawl-quarantine drill — a .bak/.orig
+# sibling next to a MANIFEST-managed path is moved to the quarantine dir
+# and the writer named, so the merge-to-live gate is red at most one tick.
+# Hosted here so P14 runs it without a workflow-file edit (the worker App
+# cannot push .github/workflows/**). The named pin in
+# tests/p14-test-listing-gate.test.sh is the class-prevention so a future
+# drop of this host line fails by name.
+# Hermetic (stub gh + systemctl, overlay workspaces root).
+bash "$here/fleet-ops-drift-sprawl-quarantine.test.sh"
 
 # fleet-ops#4948: install.sh --check must accept a JSON copy-install config
 # file that differs from the repo copy only by serialization (escaping/key
