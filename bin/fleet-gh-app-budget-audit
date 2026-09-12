@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+# fleet-gh-app-budget-audit — attribute GitHub App calls per organ (fleet-ops#5489
+# required item 2).
+#
+# The nishfleet-worker App token's 5000/hr core budget is shared by every
+# organ, and nothing attributes individual calls, so the only live,
+# non-fabricated attribution available on this VPS is the systemd user
+# journal: every gh invocation a unit prints lands in its MESSAGE stream with
+# _SYSTEMD_USER_UNIT set. This tool walks the trailing window (default 24h,
+# matching the issue's "for one day"), counts `gh <subcommand>` mentions per
+# unit, rolls units up to ORGANS (workers / intake / heartbeat / alerts /
+# everything else), and prints the table with a `-> first cut:` line naming
+# the top consumer — the consumer that gets the first cut, per the issue.
+#
+# Honest limits, stated on every run:
+#   - This counts gh COMMAND MENTIONS observed in the journal, not a
+#     token-side counter. The App token has no per-call attribution API, so
+#     unit-attributed journal mentions are the best observable signal; a
+#     mention is at least one gh process, and some call sites (worker
+#     sessions writing to their own logs) are underrepresented.
+#   - API-multiplying calls (gh api --paginate, gh pr list over pages) are
+#     counted as 1 mention, so the table is a LOWER BOUND on cost.
+#
+# Usage:
+#   bin/fleet-gh-app-budget-audit                  # trailing 24h, table
+#   GH_APP_BUDGET_HOURS=72 fleet-gh-app-budget-audit
+#   GH_APP_BUDGET_JOURNALCTL=/tmp/fake-journalctl  # tests
+#   fleet-gh-app-budget-audit --json               # machine-readable
+#
+# Exit 0 on a successful scan; 1 on usage error; the audit is read-only and
+# consumes no gh quota.
+
+set -euo pipefail
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+    sed -n '2,26p' "$(readlink -f "${BASH_SOURCE:-0}")" | sed 's/^# \{0,1\}//'
+    exit 0
+fi
+
+audit_since="-24h"
+if [[ "${1:-}" == "--hours" ]]; then
+    [[ -n "${2:-}" ]] || { echo "usage: fleet-gh-app-budget-audit [--json] [--hours N]" >&2; exit 1; }
+    audit_since="-${2}h"
+    shift 2
+fi
+
+want_json=0
+[[ "${1:-}" == "--json" ]] && want_json=1 && [[ $# -gt 1 ]] && { echo "usage: --json takes no other args" >&2; exit 1; }
+
+journal_bin="${GH_APP_BUDGET_JOURNALCTL:-journalctl}"
+
+# fleet-ops#5489: the python program rides in a variable and runs via `python3
+# -c`, NOT via `python3 - <<'PY'` — a heredoc on the python command REPLACES
+# the journalctl pipe as stdin, so the script body consumes stdin and the
+# journal lines are silently discarded (every run would report "no mentions").
+# `python3 -c` keeps the pipe as stdin and the heredoc purely as the program.
+py_code=$(cat <<'PY'
+import sys, json, re, collections, shlex
+
+want_json = sys.argv[1] == "1"
+
+def organ(unit):
+    # alert-repair is one of the issue's named organs and its unit name is
+    # fleet-alert-repair* — a SUBSTRING check, not startswith, or it would
+    # fall into the generic "sweeps" bucket below.
+    if "alert-repair" in unit:
+        return "alert-repair"
+    for prefix, name in (
+        ("pi-issue@", "workers"), ("pi-issue-", "workers"),
+        ("pi-intake@", "intake"), ("pi-scout@", "scouts"),
+        ("fleet-heartbeat", "heartbeat"), ("fleet-blind-audit", "blind-audit"),
+    ):
+        if unit.startswith(prefix):
+            return name
+    if unit.endswith("canary.service") or "canary" in unit:
+        return "canaries"
+    if "export" in unit or "staleness" in unit:
+        return "exporter"
+    if "sweep" in unit or "repair" in unit or "reaper" in unit or "lock" in unit:
+        return "sweeps"
+    return "other"
+
+cmd_re = re.compile(
+    r"\bgh (?P<c>issue list|issue view|issue comment|issue edit|issue close|"
+    r"pr list|pr view|pr checks|pr create|pr merge|pr comment|pr review|"
+    r"api \S+|label \S+|comment \S+|release \S+|run watch|run list|"
+    r"workflow run|workflow view|auth status)")
+organ_calls = collections.Counter()
+organ_units = collections.defaultdict(set)
+examples = collections.defaultdict(list)
+for line in sys.stdin:
+    try:
+        j = json.loads(line)
+    except Exception:
+        continue
+    unit = j.get("_SYSTEMD_USER_UNIT") or j.get("USER_UNIT")
+    if not unit or unit == "init.scope":
+        continue
+    msg = j.get("MESSAGE")
+    if not isinstance(msg, str) or "gh " not in msg:
+        continue
+    for m in cmd_re.finditer(msg):
+        o = organ(unit)
+        organ_calls[o] += 1
+        organ_units[o].add(unit)
+        if len(examples[o]) < 3:
+            examples[o].append(f"{unit}: {m.group(0)[:60]}")
+
+if want_json:
+    out = {o: {"calls": c, "units": sorted(organ_units[o])} for o, c in organ_calls.items()}
+    print(json.dumps(out, sort_keys=True))
+    sys.exit(0)
+
+total = sum(organ_calls.values())
+print(f"gh_app_budget_audit trailing-24h gh command mentions journal units={len(organ_calls)}")
+print("NOTE: mentions are processed-counts observable in the systemd journal;")
+print("NOTE: API-multiplying calls (paginate --pages etc.) count as one.")
+rows = sorted(organ_calls.items(), key=lambda kv: -kv[1])
+if not rows:
+    print("no gh command mentions found in the window")
+    sys.exit(0)
+width = max(len(o) for o, _ in rows)
+for o, c in rows:
+    print(f"{o:<{width}} calls~={c:<6} units={len(organ_units[o])} _units=[{','.join(sorted(organ_units[o])[:4])}] _example={examples[o][0] if examples.get(o) else ''}")
+top = rows[0][0]
+print(f"top_consumer={top} -> first cut (fleet-ops#5489 required item 2)")
+PY
+)
+"$journal_bin" --user --since "$audit_since" -o json --no-pager | python3 -c "$py_code" "$want_json"

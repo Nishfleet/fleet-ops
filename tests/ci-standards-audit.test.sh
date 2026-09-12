@@ -860,3 +860,12 @@ bash "$here/fleet-cpu-sampler-ready.test.sh"
 # drop of this host line fails by name. Hermetic (scratch MANIFEST + scratch
 # HOME + fake checkout, stubbed systemctl, no live install).
 bash "$here/helper-symlink-resolution.test.sh"
+
+# fleet-ops#5489: the GH App 5000/hr budget is shared by every organ and the
+# reserve keeps a floor for intake claims; the guard makes a fail-open
+# triage line + measure field LOUD. Hosted here (a listed test) so P14 runs
+# them without a workflow-file edit; the worker App cannot push
+# .github/workflows/**. Hermetic (scratch HOME + side-car, stubbed gh and
+# journalctl).
+bash "$here/fleet-heartbeat-budget-reserve.test.sh"
+bash "$here/fleet-gh-budget-guard.test.sh"
