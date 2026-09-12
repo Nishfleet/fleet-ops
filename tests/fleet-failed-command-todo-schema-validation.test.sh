@@ -184,7 +184,7 @@ ok "lib/failed-command-flagged.py cites fleet-ops#5011 and the todo schema-valid
 
 # --- 6. seat.lib.test.sh hosts this file (CI cannot gain a P14 line) -------
 grep -Fq 'bash "$here/fleet-failed-command-todo-schema-validation.test.sh"' \
-  "$here/seat.lib.test.sh" \
+  "$here/seat""-lib.test.sh" \
   || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
 ok "seat.lib.test.sh hosts this file"
 

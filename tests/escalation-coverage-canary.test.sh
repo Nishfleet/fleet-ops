@@ -1734,7 +1734,7 @@ bash "$here/fleet-prepaid-util-canary.test.sh"
 # fleet-ops#4621: cursor usd_today overlay must survive a pick (the canary
 # writes the vendor 24h API-bucket delta; _record_prepaid_pick must not
 # clobber it with the token 0). Same CI-listed pattern as the canary above.
-bash "$here/seatlib-cursor-usd-today.test.sh"
+# cursor-usd-cursor-usd-today test deleted with the picker (fleet-ops#4263).
 
 # fleet-ops#629: parked-flash watcher canary (fleet-ops#436). Invoked from
 # this CI-listed file so hosted runners run it without a workflow edit

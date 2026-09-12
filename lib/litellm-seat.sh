@@ -429,13 +429,24 @@ mark_seat_empty_run() { seat_log "mark_seat_empty_run: $* (proxy cooldown owns r
 mark_seat_quota_bench() { seat_log "mark_seat_quota_bench: $* (proxy cooldown owns routing)"; return 0; }
 mark_seat_overload_bench() { seat_log "mark_seat_overload_bench: $* (proxy cooldown owns routing)"; return 0; }
 mark_seat_hang_bench() { seat_log "mark_seat_hang_bench: $* (proxy cooldown owns routing)"; return 0; }
+mark_seat_credentials_bad() { seat_log "mark_seat_credentials_bad: ${1:-}/${2:-} (proxy cooldown owns routing)"; return 0; }
 mark_seat_worked_no_text() { return 1; }
 reset_seat_worked_no_text() { return 0; }
 seat_worked_no_text_path() { echo ""; }
 # Local consecutive-count bench is gone. Wrappers still call this; false
 # means "not a remote agent classified here" so the loud-fail path runs.
 provider_remote_agent() { return 1; }
-session_tool_calls() { echo 0; }
+# Real counter, not a stub: pi-issue-run's provider-death resume (#5788) and
+# hang-watchdog slow-session gate (#3883) both key on it. A stub returning 0
+# silently disabled both after #4263 deleted the routing library.
+# arg: session jsonl -> number of toolResult messages (0 when missing).
+session_tool_calls() {
+    local f="${1:-}" n
+    [[ -n "$f" && -f "$f" ]] || { printf '0'; return 0; }
+    n=$(jq -r 'select(.message.role? == "toolResult") | .message.toolCallId // empty' "$f" 2>/dev/null | grep -c . 2>/dev/null || true)
+    [[ "$n" =~ ^[0-9]+$ ]] || n=0
+    printf '%s' "$n"
+}
 # Spawn-phase timeout / E2BIG (keep-list detector; routing stays in the proxy).
 # fleet-ops#5309: spawnSync E2BIG must classify so a missed pre-flight cap
 # benches instead of crash-looping the same seat to StartLimitBurst.
@@ -455,9 +466,137 @@ is_spawn_etimeout() {
     return 1
 }
 is_mid_session_death() { return 1; }
-is_overload_error() { return 1; }
+# Restored pure matchers (fleet-ops#4263 fallout): pi-issue-run still branches
+# on these; their deletion made every call return 127 (= silently false).
+is_devin_writes_rejected() {
+    local out="$1" err="$2"
+    local combined="$out"$'\n'"$err"
+    [[ -n "$combined" ]] || return 1
+    grep -qiF 'rejected a tool call that requires confirmation' <<<"$combined"
+}
+is_sandbox_localhost_error() {
+    local out="$1" err="$2"
+    grep -qiF 'error connecting to localhost' <<<"$out"$'\n'"$err"
+}
+is_workspace_trust_error() {
+    local out="$1" err="$2"
+    local combined="$out"$'\n'"$err"
+    [[ -n "$combined" ]] || return 1
+    grep -qiF 'Refusing to run in an untrusted workspace' <<<"$combined"
+}
+# Bench/usage markers still called by keep-list wrappers; the proxy owns cooldown and /spend.
+mark_seat_writes_refused_bench() { seat_log "mark_seat_writes_refused_bench: $* (proxy owns cooldown/spend)"; return 0; }
+mark_seat_config_fault_bench() { seat_log "mark_seat_config_fault_bench: $* (proxy owns cooldown/spend)"; return 0; }
+mark_seat_devin_writes_rejected_bench() { seat_log "mark_seat_devin_writes_rejected_bench: $* (proxy owns cooldown/spend)"; return 0; }
+mark_seat_empty_success() { seat_log "mark_seat_empty_success: $* (proxy owns cooldown/spend)"; return 0; }
+# Real matcher (restored, fleet-ops#4263 fallout): agent-cron-run classifies an
+# approval-gate refusal with it behind `declare -F`, so its deletion silently
+# disabled WRITES-REFUSED detection instead of failing.
+is_writes_refused() {
+    local out="$1" err="$2"
+    local combined="$out"$'\n'"$err"
+    [[ -n "$combined" ]] || return 1
+    if grep -q 'WRITES-REFUSED' <<<"$combined"; then
+        return 0
+    fi
+    grep -qiE 'approval[[:space:]-]?cards?[[:space:]]+(were|was[[:space:]]+)?(rejected|refused|denied)|blocked[[:space:]]+by[[:space:]]+(cursor[[:space:]]+)?auto-review|auto-review[[:space:]]+blocked|rejected[[:space:]]+a[[:space:]]+tool[[:space:]]+call' <<<"$combined"
+}
+# Real matcher, not a stub: pi-issue-run and stop-escalation-dispatch classify a
+# 401/invalid-key death with it (fleet-ops#4640/#5788). #4263 deleted it with the
+# routing library while both callers kept calling it, so every credentials
+# failure fell through unclassified (a missing function returns 127 = false).
+is_credentials_error() {
+    local out="${1:-}" err="${2:-}"
+    local combined="$out"$'\n'"$err"
+    [[ -n "${out}${err}" ]] || return 1
+    grep -qiE '\b401\b|invalid[[:space:]]+token|unauthorized|authentication[[:space:]]+failed|authentication_error|invalid[[:space:]]+api[[:space:]]+key|invalid_api_key|(invalid|incorrect|missing|expired|revoked)[[:space:]]+(api|access)[[:space:]]+(key|token)|\blogin[[:space:]]+fail|carry[[:space:]]+the[[:space:]]+api[[:space:]]+secret[[:space:]]+key' <<<"$combined"
+}
+# Restored real matcher (fleet-ops#4263 fallout): classify_death_error names the class.
+is_overload_error() {
+    local out="$1" err="$2"
+    local combined="$out"$'\n'"$err"
+    [[ -n "$combined" ]] || return 1
+    # Four ACCEPT shapes, each independently sufficient (any one of):
+    #   (a) the commandcode-specific 503 "Upstream model provider is
+    #       temporarily unavailable" — the live fleet-ops#652 body.
+    #   (b) an HTTP 503 status with a Retry-After / "try again" hint.
+    #   (c) a generic "upstream ... overloaded" (e.g. OpenAI/Anthropic
+    #       502/503 wording).
+    #   (d) a generic "A server error occurred. Please try again." — the
+    #       xkiro 5xx body (fleet-ops#3738): pi surfaces it as rc=1 with no
+    #       status code, so without this shape it falls through to
+    #       no_block:rc=1 spawn-fail and accumulates a 47-count park
+    #       instead of a short overload bench.
+    # Bare "503" or bare "temporarily unavailable" WITHOUT any of the
+    # above co-occurring context is NOT a match (avoid false positives on
+    # log lines that mention 503 in passing, or a flaky network call).
+    if grep -qiE 'upstream[[:space:]]+(model[[:space:]]+)?provider[[:space:]]+is[[:space:]]+temporarily[[:space:]]+unavailable|upstream[[:space:]]+(is[[:space:]]+)?overloaded|overloaded[[:space:]]+upstream|server[[:space:]]+error[[:space:]]+occurred[[:space:]]*\.?[[:space:]]*please[[:space:]]+try[[:space:]]+again' <<<"$combined"; then
+        return 0
+    fi
+    if grep -qiE '503[[:space:]]+(service[[:space:]]+unavailable|backend|upstream|bad[[:space:]]+gateway|gateway[[:space:]]+timeout)|http[[:space:]]*503|status[[:space:]]*:[[:space:]]*503|"status":[[:space:]]*503' <<<"$combined"; then
+        # 503 status code present — also require a "please try again" /
+        # Retry-After signal, otherwise a passing 200 log mentioning 503
+        # (e.g. server access log) would false-positive.
+        if grep -qiE 'retry[[:space:]_-]?after|try[[:space:]]+again[[:space:]]+later|please[[:space:]]+try[[:space:]]+again|temporarily[[:space:]]+unavailable|upstream' <<<"$combined"; then
+            return 0
+        fi
+        return 1
+    fi
+    return 1
+}
 is_quota_error() { return 1; }
-is_quota_cap_error() { return 1; }
+# Restored real matcher (fleet-ops#4263 fallout): classify_death_error names the class.
+is_quota_cap_error() {
+    local out="$1" err="$2"
+    local combined="$out"$'\n'"$err"
+    [[ -n "$combined" ]] || return 1
+    # Quota/cap signal words (hard wall, not a transient retry).
+    # fleet-ops#4444: Alibaba token-plan 429 body is "Your token-plan 1-week
+    # quota has been exhausted. The quota will reset at ..." — `quota` has
+    # intervening words before `exhausted` ("has been"), so the adjacency
+    # `quota (exhausted|...)` misses it and the death fell to
+    # error_class=unknown, never benched, seat re-picked every cycle. Match
+    # `token-plan` and `quota has been` as the hard-wall signal the same way.
+    if ! grep -qiE 'weekly[[:space:]]+(clinepass[[:space:]]+)?limit|daily[[:space:]]+limit|quota[[:space:]]+(exhausted|exceeded|reached)|quota[[:space:]]+has[[:space:]]+been|token-plan|usage[[:space:]]+balance[[:space:]]+exhausted|budget_exceeded|credit[[:space:]]+balance[[:space:]]+depleted|free-model[[:space:]]+token[[:space:]]+quota|resource_exhausted|Connection error, send a message to continue retrying|INFERENCE_CAP_ERROR|usage[[:space:]]+limit|plan[[:space:]]+limit|out[[:space:]]+of[[:space:]]+credits|insufficient[[:space:]]+credits|credit_insufficient|budget_error|insufficient_user_quota|message[[:space:]]+rate[[:space:]]+limit|rate[[:space:]]+limit[[:space:]]+(exceeded|reached)|cap[[:space:]]+(exceeded|reached)|exceeded[[:space:]]+your' <<<"$combined"; then
+        return 1
+    fi
+    # A reset signal: an explicit window OR a "resets" keyword. The provider
+    # default (seat-caps.json) is the caller's fallback when the keyword is
+    # present but no numeric window is; this guard just confirms it is a wall.
+    if grep -qiE 'resets?[[:space:]]+(in|at|after)|retry[[:space:]_-]?after|reset[[:space:]]+window' <<<"$combined"; then
+        return 0
+    fi
+    # Hard-cap keyword alone (e.g. "weekly Clinepass limit") with no window
+    # text still qualifies: the caller falls back to the provider default.
+    # FreeUsageLimitError (opencode/mimo free-tier 429, no reset window) is a
+    # provider-side free-quota exhaustion — a hard wall, not a transient retry.
+    # "usage balance exhausted" (xai-oauth Grok Build HTTP 402, fleet-ops 2026-09-05:
+    # 15 sessions/24h died at 1s, never benched) is a prepaid-balance wall with no
+    # reset text — the weekly provider default in seat-caps.json applies.
+    # "Credit balance depleted" / budget_exceeded (mergegateway HTTP 402,
+    # fleet-ops#3973, 2026-09-06: three seats died at 1s, booked
+    # error_class=unknown) is the same prepaid-balance wall: classify it; with
+    # no provider default the writer fails open and the reactive ledger benches.
+    # "Insufficient credits for this request" / budget_error / credit_insufficient
+    # (Pareto Inference HTTP 429, fleet-ops 2026-09-09: wire probe returned this
+    # body; 91 deaths in 4h booked rc=124/rc=1, health_class=transient_fault and
+    # a generic "no_block:rc=1" bench with no error-class citation) is a prepaid
+    # credit wall wearing a 429, not a rate limit: classify it so the money wall
+    # is never counted as seat yield.
+    # "insufficient_user_quota" (b.ai HTTP 400, fleet-ops#4831, 2026-09-09:
+    # bai/deepseek-v4.1-flash returned 400 {"message":"credit insufficient
+    # balance: balance=0 required=7716","code":"insufficient_user_quota"} —
+    # pi-scout@0509, pi-scout-repair@0509 and pi-issue@0509-2085 all died on the
+    # seat inside 3 min, each booked error_class=unknown -> transient_fault ->
+    # 300s spawn bench, and the dead free seat was re-offered every ~5 min
+    # (~12 claims/hour). The body carries no reset window, so it must pass the
+    # hard-cap list like `credit balance depleted` does; the 3600s
+    # quota_bench_default_s in seat-caps.json bounds the re-probe.
+    if grep -qiE 'weekly[[:space:]]+(clinepass[[:space:]]+)?limit|daily[[:space:]]+limit|INFERENCE_CAP_ERROR|FreeUsageLimitError|usage[[:space:]]+balance[[:space:]]+exhausted|budget_exceeded|budget_error|credit[[:space:]]+balance[[:space:]]+depleted|insufficient[[:space:]]+credits|credit_insufficient|insufficient_user_quota|usage[[:space:]]+limit[[:space:]]+for[[:space:]]+the[[:space:]]+current[[:space:]]+free[[:space:]]+model|free-model[[:space:]]+token[[:space:]]+quota|resource_exhausted' <<<"$combined"; then
+        return 0
+    fi
+    return 1
+}
 _seat_is_benched() { return 1; }
 _seat_merge_error_class() { return 0; }
 
@@ -474,6 +613,12 @@ classify_death_error() {
         cls="quota_cap"
     elif is_overload_error "$out_text" "$err_text"; then
         cls="overload_503"
+    elif is_workspace_trust_error "$out_text" "$err_text"; then
+        cls="config_fault_trust"
+    elif is_devin_writes_rejected "$out_text" "$err_text"; then
+        cls="devin-writes-rejected"
+    elif is_sandbox_localhost_error "$out_text" "$err_text"; then
+        cls="sandbox-localhost-unresolvable"
     elif is_spawn_etimeout "$out_text" "$err_text"; then
         cls="spawn_etimeout"
     elif is_mid_session_death "$err"; then

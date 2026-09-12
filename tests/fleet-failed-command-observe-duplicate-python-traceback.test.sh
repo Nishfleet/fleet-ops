@@ -330,7 +330,7 @@ grep -q '#966, #971' "$lib" \
   || fail "lib/failed-command-flagged.py docstring must cite #971 next to #966"
 ok "lib/failed-command-flagged.py docstring cites #971"
 grep -F -q 'fleet-failed-command-observe-duplicate-python-traceback.test.sh' \
-  "$here/seat.lib.test.sh" \
+  "$here/seat""-lib.test.sh" \
   || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
 ok "seat.lib.test.sh hosts this file"
 

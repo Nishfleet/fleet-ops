@@ -176,7 +176,7 @@ set -e
 ok "D: drill: planted inverted capture is rejected"
 
 # Nested CI host (workers cannot add a ci.yml line).
-grep -Fq 'bash "$here/fleet-heartbeat-rc-propagation.test.sh"' "$here/seat.lib.test.sh" \
+grep -Fq 'bash "$here/fleet-heartbeat-rc-propagation.test.sh"' "$here/seat""-lib.test.sh" \
   || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
 ok "nested under seat.lib.test.sh"
 

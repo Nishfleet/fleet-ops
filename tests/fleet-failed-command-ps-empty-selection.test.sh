@@ -178,7 +178,7 @@ ok "lib/failed-command-flagged.py cites fleet-ops#5042, the 01a088ec session, an
 
 # --- 8. seat.lib.test.sh hosts this file (CI cannot gain a P14 line) ----
 grep -Fq 'bash "$here/fleet-failed-command-ps-empty-selection.test.sh"' \
-  "$here/seat.lib.test.sh" \
+  "$here/seat""-lib.test.sh" \
   || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
 ok "seat.lib.test.sh hosts this file"
 

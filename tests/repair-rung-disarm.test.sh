@@ -48,6 +48,9 @@ stubs="$scratch/seatlib-stub.sh"
 cat >"$stubs" <<'SH'
 #!/usr/bin/env bash
 total_seat_cap() { echo 8; }
+seat_max_concurrent() { echo 8; }
+# fleet-ops#4263: the tick's seat-slot seam is litellm_headroom now.
+litellm_headroom() { echo "${STUB_LIGHT_SLOTS:-0}"; }
 issue_seat_cap() { echo 5; }
 load_seat_caps() { return 0; }
 worker_memory_for_difficulty() { return 1; }
@@ -177,21 +180,21 @@ echo "$out2" | grep -qF 'skipped-repair-rung (rung claims critical-path fleet-op
 ok "latch tick 2: armed, ordinary-work skipped"
 
 # Live latch: COUNT stays 0, but pick-seat now returns a seat.
-out3="$(STUB_LIGHT_SLOTS=0 STUB_HEAVY=1 run_tick fleet-ops)" || true
+out3="$(STUB_LIGHT_SLOTS=2 STUB_HEAVY=0 run_tick fleet-ops)" || true
 echo "$out3" | grep -qF 'REPAIR-RUNG recovery 1/2' \
     || fail "latch tick 3 COUNT=0 with a seat must be recovery 1/2, got: $out3"
 echo "$out3" | grep -qF 'REPAIR-RUNG disarmed' \
     && fail "latch tick 3 must not disarm yet, got: $out3"
 ok "latch tick 3: recovery 1/2 while COUNT=0"
 
-out4="$(STUB_LIGHT_SLOTS=0 STUB_HEAVY=1 run_tick fleet-ops)" || true
+out4="$(STUB_LIGHT_SLOTS=2 STUB_HEAVY=0 run_tick fleet-ops)" || true
 echo "$out4" | grep -qF 'REPAIR-RUNG disarmed' \
     || fail "latch tick 4 second usable-seat tick must disarm, got: $out4"
-echo "$out4" | grep -qF 'cursor	cursor-grok-4.6-high' \
-    || fail "disarm log must name the clearing seat, got: $out4"
+echo "$out4" | grep -qE 'REPAIR-RUNG disarmed: route [^ ]+ usable' \
+    || fail "disarm log must name the clearing route, got: $out4"
 ok "latch tick 4: disarmed (COUNT still 0)"
 
-out5="$(STUB_LIGHT_SLOTS=0 STUB_HEAVY=1 run_tick fleet-ops)" || true
+out5="$(STUB_LIGHT_SLOTS=2 STUB_HEAVY=0 run_tick fleet-ops)" || true
 echo "$out5" | grep -qF 'skipped-repair-rung (rung claims critical-path fleet-ops only' \
     && fail "tick after disarm must not skip ordinary-work, got: $out5"
 ok "latch tick 5: non-critical-path is claimable after disarm"
@@ -212,7 +215,7 @@ echo "$out_p0" | grep -qF 'holding claims this tick' \
     && fail "armed product tick must not hold/exit, got: $out_p0"
 echo "$out_p0" | grep -qF 'REPAIR-RUNG product-reserve' \
     || fail "armed product tick must log product-reserve, got: $out_p0"
-echo "$out_p0" | grep -qF 'pick-seat returned empty' \
+echo "$out_p0" | grep -qE 'no usable capacity|no product claim this tick' \
     || fail "no-seat product tick must log why, got: $out_p0"
 ok "product tick, no seat: explicit reason, not a hold"
 
@@ -222,7 +225,7 @@ rm -f "$state3"
 export PI_INTAKE_REPAIR_RUNG_STATE="$state3"
 STUB_LIGHT_SLOTS=0 STUB_HEAVY=0 run_tick fleet-ops >/dev/null || true
 STUB_LIGHT_SLOTS=0 STUB_HEAVY=0 run_tick fleet-ops >/dev/null || true
-out_p1="$(STUB_LIGHT_SLOTS=0 STUB_HEAVY=1 run_tick 0509)" || true
+out_p1="$(STUB_LIGHT_SLOTS=2 STUB_HEAVY=0 run_tick 0509)" || true
 echo "$out_p1" | grep -qF 'holding claims this tick' \
     && fail "armed product tick with a seat must not hold, got: $out_p1"
 echo "$out_p1" | grep -qF 'REPAIR-RUNG product-reserve' \

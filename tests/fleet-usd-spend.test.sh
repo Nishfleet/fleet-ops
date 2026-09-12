@@ -144,40 +144,10 @@ echo "$expout" | grep -qE 'fleet_usd_per_merged_pr\{merged_prs=[0-9]' \
   && fail "exporter emitted an unquoted merged_prs label value — node_exporter drops the whole textfile on that line"
 ok "exporter emits fleet_usd_24h + fleet_usd_per_merged_pr with a quoted, parseable label (#4459)"
 
-# 6. UNAVAILABLE never fabricated: a provider with no rate card records UNAVAILABLE
-#    in the prepaid-usage counter.
-pystate="$scratch/state"
-ST="$pystate" bash - <<SH
-export PI_PACKET_STATE="$pystate"
-export STATE_DIR="$pystate"
-export SEAT_CAPS_JSON="$caps"
-source "$repo_root/lib/litellm-seat.sh"
-mkdir -p "\$STATE_DIR/prepaid-usage" "\$STATE_DIR"
-sess="$scratch/dev.jsonl"
-printf '%s\n' '{"type":"message","message":{"role":"assistant","usage":{"input":100,"output":100,"cacheRead":0}}}' > "\$sess"
-_record_prepaid_usd some-no-rate-seat "\$sess"
-jq -r '.usd' "\$STATE_DIR/prepaid-usage/some-no-rate-seat.json"
-rm -f "\$sess"
-SH
-unavail="$(cat "$pystate/prepaid-usage/some-no-rate-seat.json" | jq -r '.usd' 2>/dev/null || true)"
-[[ "$unavail" == UNAVAILABLE:* ]] || fail "no-rate-card seat did not record UNAVAILABLE (got: $unavail) — must not fabricate \$0"
-ok "no-rate-card seat records UNAVAILABLE (not a fabricated \$0)"
+# 6. retired (fleet-ops#4263): per-seat prepaid USD recording went with the
+# routing library; spend is the LiteLLM proxy /spend now.
 
-# 6b. Fleet-ops#4459 Do.2: a remote_agent seat (Devin) with no rate card
-#     records UNAVAILABLE:remote (flat-share-only), not the generic no-rate-card.
-remote_state="$scratch/remote-state"
-PI_PACKET_STATE="$remote_state" bash - <<SH 2>/dev/null || true
-source "$repo_root/lib/litellm-seat.sh"
-export STATE_DIR="$remote_state"
-export SEAT_CAPS_JSON="$caps"
-mkdir -p "\$STATE_DIR/prepaid-usage" "\$STATE_DIR"
-sess="$scratch/dev.jsonl"
-printf '%s\n' '{"type":"message","message":{"role":"assistant","usage":{"input":1,"output":1,"cacheRead":0}}}' > "\$sess"
-_record_prepaid_usd devin "\$sess"
-rm -f "\$sess"
-SH
-remote_usd="$(cat "$remote_state/prepaid-usage/devin.json" | jq -r '.usd' 2>/dev/null || true)"
-[[ "$remote_usd" == "UNAVAILABLE:remote" ]] || fail "devin (remote_agent) did not record UNAVAILABLE:remote (got: $remote_usd)"
-ok "remote_agent seat records UNAVAILABLE:remote (flat-share-only, not fabricated)"
+# 6b. retired with 6 (fleet-ops#4263): remote_agent prepaid USD recording
+# was the same deleted helper; the proxy /spend owns spend.
 
 echo "PASS"

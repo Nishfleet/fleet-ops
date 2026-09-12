@@ -529,7 +529,16 @@ _lit_group="worker-cheap"
 [[ "$pkt_privacy" == "private" ]] && _lit_group="worker-private"
 # fleet-ops#4639: repair-rung packets route to the reserved judge group.
 [[ "${PI_REPAIR_RUNG:-0}" == "1" ]] && _lit_group="judge"
-seat=$(litellm_seat "$_lit_group" || true)
+# fleet-ops#5093 on the proxy: a proxy that is not ready IS the walled fleet.
+# litellm_seat always answers, so without this gate the no-usable edge below
+# (and fleet-seat-recovery.path behind it) could never fire. litellm_ready is
+# fail-open in CI/no-proxy hosts, so only a live proxy that is down walls.
+if litellm_ready; then
+    seat=$(litellm_seat "$_lit_group" || true)
+else
+    seat=""
+    seat_log "pi-issue-run: $inst LiteLLM proxy not ready ($LITELLM_HEALTH_URL) — treating the fleet as walled"
+fi
 seat_log "pi-issue-run: $inst group=$_lit_group (privacy=$pkt_privacy)"
 if [[ -z "$seat" ]]; then
     # The tried file does not exist on the first attempt; the `2>/dev/null`
@@ -1077,7 +1086,7 @@ is_empty_run() {
 # the cap-8 seat left the pool. Count tool calls from the verdict line
 # (stdout or stderr) and from toolCall entries in the newest session jsonl;
 # the larger wins. 0 means no evidence of work.
-session_tool_calls() {
+run_tool_calls() {
     local out="${1:-}" err="${2:-}" sdir="${3:-}"
     local n=0 v f
     for f in "$out" "$err"; do
@@ -1132,7 +1141,7 @@ if (( out_bytes < OUT_MIN )); then
     # tool count. A remote session with a pull/<n> URL is a success.
     if provider_remote_agent "$np" && has_session_pr_url "$out_file" "$err_file" "$session_dir"; then
         seat_log "pi-issue-run: $inst remote session on $np/$nm produced a PR URL (stdout=${out_bytes}B) — treating as success"
-    elif tool_calls=$(session_tool_calls "$out_file" "$err_file" "$session_dir") && (( tool_calls > 0 )); then
+    elif tool_calls=$(run_tool_calls "$out_file" "$err_file" "$session_dir") && (( tool_calls > 0 )); then
         # fleet-ops#3714: worked-no-text. The seat functioned (tools>0); the
         # model just ended on a tool call. Not a provider no-op: no bench.
         # fleet-ops#3810: but a worked-no-text session that did NOT ship a

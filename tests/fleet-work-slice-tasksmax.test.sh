@@ -96,14 +96,8 @@ grep -Fxq "$hook_line" "$manifest" || fail "MANIFEST missing: $hook_line"
 ok "MANIFEST installs drop-in + spawn-guard-core + bash-spawn-hook"
 
 # --- 5. RAM governor unchanged ----------------------------------------------
-ram=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["ram_gb_per_worker"])' "$caps")
-# 1.5 = the interim charge (fleet-ops#4896, 2026-09-10): the 2.0 p50 was
-# measured on workers running vitest --coverage forks + tsc -b locally;
-# fleet-ops#4893 forbids both in-worker and 0509#2534 makes npm test
-# coverage-free, so the old p50 no longer describes new workers. The
-# remeasure-4891 timer (2026-09-11 14:05Z) replaces 1.5 with the measured
-# p95 either way. Moving this pin needs a new measurement in the same PR.
-[[ "$ram" == "0.65" ]] || fail "ram_gb_per_worker must be 0.65 (admission authority: Nish 2026-09-12 "do it now", fleet-ops#5955; was 1.0 per #5495); got '$ram'"
-ok "seat-caps.json ram_gb_per_worker is 0.65 (Nish 2026-09-12, fleet-ops#5955)"
+# fleet-ops#4263 termination: no hand-set per-worker RAM charge remains in config.
+jq -e 'has("ram_gb_per_worker") | not' "$caps" >/dev/null || fail "config/seat-caps.json must not carry ram_gb_per_worker after fleet-ops#4263"
+ok "seat-caps.json carries no per-worker RAM charge (fleet-ops#4263)"
 
 echo "OK: fleet-work.slice TasksMax=8000; spawn-guard 7500/8000; RAM admission unchanged"

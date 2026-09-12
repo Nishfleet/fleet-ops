@@ -116,12 +116,9 @@ extract_fn() {
 }
 
 is_credentials_error_def="$(extract_fn is_credentials_error)"
-mark_seat_credentials_bad_def="$(extract_fn mark_seat_credentials_bad)"
 [[ -n "$is_credentials_error_def" ]] || fail "could not extract is_credentials_error from seatlib.sh"
-[[ -n "$mark_seat_credentials_bad_def" ]] || fail "could not extract mark_seat_credentials_bad from seatlib.sh"
 
 eval "$is_credentials_error_def"
-eval "$mark_seat_credentials_bad_def"
 
 # --------- 1. MiniMax literal 401 wording from the issue body ----------
 excerpt='[2026-09-12T04:46:14Z] [litellm.proxy] ERROR: litellm.AuthenticationError: AnthropicException - {"type":"error","error":{"type":"authentication_error","message":"login fail: Please carry the API secret key in the X-Api-Key field of the request header"},"request_id":"06f40ea7f3f493257a9b5f42c0e261d7"}'
@@ -171,91 +168,11 @@ if is_credentials_error "" ""; then
 fi
 ok "3. is_credentials_error rejects quota walls / 503 / cli_timeout / empty input"
 
-# --------- 4. mark_seat_credentials_bad writes a credentials_bad ledger ----------
-rm -f "$LEDGER_DIR"/*
-mark_seat_credentials_bad "litellm" "anthropic/MiniMax-M3" "$excerpt" >/dev/null
-ledger="$LEDGER_DIR/litellm__anthropic_MiniMax-M3.json"
-[[ -f "$ledger" ]] || fail "4. ledger not written: $ledger"
-got_class=$(jq -r '.health_class' "$ledger")
-got_retryable=$(jq -r '.retryable' "$ledger")
-got_seat_dead=$(jq -r '.seat_dead' "$ledger")
-got_http=$(jq -r '.http_status' "$ledger")
-got_source=$(jq -r '.source' "$ledger")
-got_failure_mode=$(jq -r '.failure_mode' "$ledger")
-got_writer=$(jq -r '.writer' "$ledger")
-[[ "$got_class" == "credentials_bad" ]] || fail "4. health_class want credentials_bad got $got_class"
-[[ "$got_retryable" == "true" ]] || fail "4. retryable want true got $got_retryable"
-[[ "$got_seat_dead" == "false" ]] || fail "4. seat_dead want false on first strike, got $got_seat_dead"
-[[ "$got_http" == "401" ]] || fail "4. http_status want 401 got $got_http"
-[[ "$got_source" == "after_provider_response" ]] || fail "4. source want after_provider_response got $got_source"
-[[ "$got_failure_mode" == "credentials_bad" ]] || fail "4. failure_mode want credentials_bad got $got_failure_mode"
-[[ "$got_writer" == "mark_seat_credentials_bad" ]] || fail "4. writer want mark_seat_credentials_bad got $got_writer"
-ok "4. mark_seat_credentials_bad writes a credentials_bad ledger: retryable=true, seat_dead=false on first strike"
-
-# --------- 5. bench_until is finite and ~3600s ----------
-bench_until=$(jq -r '.bench_until' "$ledger")
-bench_epoch=$(date -u -d "$bench_until" +%s 2>/dev/null || echo 0)
-now_epoch=$(_seat_now_epoch)
-remain=$(( bench_epoch - now_epoch ))
-(( remain > 3000 && remain <= 3700 )) || fail "5. bench window expected ~3600s got ${remain}s: bench_until=$bench_until"
-ok "5. bench window ~3600s: got ${remain}s, bench_until=$bench_until"
-
-# --------- 6. usable_at is finite [not the legacy 10y corpse wall] ----------
-usable_at=$(jq -r '.usable_at' "$ledger")
-usable_epoch=$(date -u -d "$usable_at" +%s 2>/dev/null || echo 0)
-(( usable_epoch > now_epoch )) || fail "6. usable_at must be in the future; got $usable_at epoch=$usable_epoch"
-(( usable_epoch < now_epoch + 86400 * 365 * 10 )) || fail "6. usable_at must NOT be the legacy 10y corpse wall; got $usable_at"
-ok "6. usable_at is finite, not the legacy 10y corpse wall"
-
-# --------- 7. end-to-end replay: issue body excerpt -> classify -> bench marker ----------
-rm -f "$LEDGER_DIR"/*
-if ! is_credentials_error "$excerpt" ""; then
-    fail "7. replay classifier rejected the excerpt"
-fi
-if ! mark_seat_credentials_bad "litellm" "anthropic/MiniMax-M3" "$excerpt" >/dev/null; then
-    fail "7. replay mark_seat_credentials_bad failed"
-fi
-[[ -f "$ledger" ]] || fail "7. replay did not produce a ledger"
-got_retryable=$(jq -r '.retryable' "$ledger")
-got_seat_dead=$(jq -r '.seat_dead' "$ledger")
-got_failure_mode=$(jq -r '.failure_mode' "$ledger")
-[[ "$got_retryable" == "true" ]] || fail "7. replay retryable=false; worker would still exit 1"
-[[ "$got_seat_dead" == "false" ]] || fail "7. replay seat_dead=true on first strike; should be false"
-[[ "$got_failure_mode" == "credentials_bad" ]] || fail "7. replay failure_mode=$got_failure_mode"
-# The replay is the proof the issue asks for: this is the literal
-# journal excerpt, classified as a seat-fault-retryable credential
-# problem with a finite bench. The follow-up worker retry lands on a
-# different senior deployment because seat_usable excludes the bench.
-ok "7. end-to-end replay: issue body excerpt -> credentials_bad bench, retryable, finite"
-
-# --------- 8. SEAT_CREDENTIALS_BAD_BENCH_S override is honoured ----------
-rm -f "$LEDGER_DIR"/*
-export SEAT_CREDENTIALS_BAD_BENCH_S=120
-mark_seat_credentials_bad "litellm" "anthropic/MiniMax-M3" "$excerpt" >/dev/null
-bench_until=$(jq -r '.bench_until' "$ledger")
-bench_epoch=$(date -u -d "$bench_until" +%s 2>/dev/null || echo 0)
-remain=$(( bench_epoch - $(_seat_now_epoch) ))
-(( remain > 100 && remain <= 130 )) || fail "8. SEAT_CREDENTIALS_BAD_BENCH_S=120 override did not stick; got ${remain}s"
-unset SEAT_CREDENTIALS_BAD_BENCH_S
-ok "8. SEAT_CREDENTIALS_BAD_BENCH_S=120 override produces a ~120s bench: got ${remain}s"
-
-# --------- 9. SEAT_CREDENTIALS_CORPSE_STRIKES boundary ----------
-# Default 24: a fresh ledger after one mark_seat call must still be
-# seat_dead=false. After 24 consecutive marks, the ledger flips to
-# seat_dead=true. We exercise this with SEAT_CREDENTIALS_CORPSE_STRIKES=3
-# so the test is fast.
-rm -f "$LEDGER_DIR"/*
-export SEAT_CREDENTIALS_BAD_BENCH_S=10
-export SEAT_CREDENTIALS_CORPSE_STRIKES=3
-for i in 1 2 3; do
-    mark_seat_credentials_bad "litellm" "anthropic/MiniMax-M3" "$excerpt" >/dev/null
-done
-got_seat_dead=$(jq -r '.seat_dead' "$ledger")
-got_count=$(jq -r '.consecutive_failure_count' "$ledger")
-[[ "$got_seat_dead" == "true" ]] || fail "9. seat_dead expected true after $got_count consecutive 401s threshold=3; got $got_seat_dead"
-[[ "$got_count" == "3" ]] || fail "9. consecutive_failure_count expected 3; got $got_count"
-unset SEAT_CREDENTIALS_BAD_BENCH_S SEAT_CREDENTIALS_CORPSE_STRIKES
-ok "9. After $got_count consecutive 401s threshold=3, seat_dead=true: corpse; retry-then-corpse discipline intact"
+# --------- 4-9: retired (fleet-ops#4263) ----------
+# The credentials_bad bench ledger (window, usable_at, strikes -> corpse) was
+# written by the deleted routing library. The LiteLLM proxy cooldown owns a bad
+# key now; mark_seat_credentials_bad is a logging stub. Classification (1-3)
+# stays because pi-issue-run and stop-escalation-dispatch still branch on it.
 
 # --------- Sibling: fleet-ops#5792 senior-lane forced-bad-deployment replay ----------
 # Deployment-side replay (403 spending-limit / 402 insufficient-credits pins a
