@@ -66,7 +66,7 @@ Environment:
   CHAIN_E2E_DRY_RUN=1   record wiring proofs, take no live action (CI)
   CHAIN_E2E_SYSTEMCTL   systemctl path/binary
   CHAIN_E2E_TRIAGE      triage file the fixture LOUD line appends to
-Exit 0 if all six hops pass; exits 1 with a LOUD finding if any hop fails.
+Exit 0 if every hop passes; exits 1 with a LOUD finding if any hop fails.
 EOF
     exit 0
 fi
@@ -404,6 +404,305 @@ drill_slo_snapshot() {
 }
 
 # --------------------------------------------------------------------------
+# Hop 7 — kill-three-ways (fleet-ops#5456 E/H): a dummy pi-systemd-run packet
+# killed three ways must terminate in ACTION, never a log:
+#   crash (exit 1)            -> unit failed -> STOP-REASON -> hop-1 relaunch
+#   deadline (RuntimeMaxSec)  -> unit failed (timeout) -> same chain
+#   success-without-deliverable -> ExecStopPost dead-man FAILS the unit
+#                                (verdict=no-deliverable) -> chain -> dispatch:
+#                                issue payload + findings-ledger row + LOUD
+#                                triage line.
+# Units are throwaway live-dummy-resume-drill-* dummies created and removed
+# by this drill (binding constraint 1). The live-dummy* name means the
+# INSTALLED unit-escalation-write excludes them even before this branch
+# deploys — a pre-merge drill run stays hermetic; post-merge the
+# *resume-drill-* infix exclusion covers them too. A drill death never
+# summons the live auditor. The dispatcher runs from the REPO checkout with
+# seams (ledger/triage/findings/gh/hermes/seat-lib under the drill state
+# dir) — no repo junk, no real seat burned. DRY_RUN=1 asserts the wiring
+# only; DRY_RUN=0 additionally runs the live kills.
+# The result is ONE line the judges read (H): pass -> journal + results
+# file; fail -> LOUD triage line via the drill's existing fail path.
+# --------------------------------------------------------------------------
+RESUME_DRILL_TS="$(date -u +%Y%m%dT%H%M%SZ)"
+RESUME_DIR="$STATE_DIR/resume-drill.$RESUME_DRILL_TS"
+
+resume_wiring_ok() {
+    local ok="true" proof=""
+    local dispatch="$ROOT/bin/stop-escalation-dispatch"
+    local writer="$ROOT/bin/unit-escalation-write"
+    local pirun="$ROOT/bin/pi-systemd-run"
+    [ -f "$dispatch" ] || { ok="false"; proof="missing $dispatch"; }
+    if [ "$ok" = "true" ]; then
+        grep -q 'resume_or_dispatch' "$dispatch" || { ok="false"; proof="dispatcher has no resume_or_dispatch path"; }
+    fi
+    if [ "$ok" = "true" ]; then
+        grep -q 'resume-drill-' "$dispatch" || { ok="false"; proof="dispatcher has no resume-drill-* sink carve-out"; }
+    fi
+    if [ "$ok" = "true" ]; then
+        grep -q 'resume-drill-\*' "$writer" || { ok="false"; proof="unit-escalation-write does not exclude resume-drill-* (drill deaths would summon the live auditor)"; }
+    fi
+    if [ "$ok" = "true" ]; then
+        grep -q '90-no-resume.conf' "$pirun" || { ok="false"; proof="pi-systemd-run writes no per-unit no-resume drop-in"; }
+    fi
+    if [ "$ok" = "true" ]; then
+        grep -q 'OnFailure=unit-escalation@' "$pirun" || { ok="false"; proof="pi-systemd-run does not arm OnFailure explicitly"; }
+    fi
+    if [ "$ok" = "true" ]; then
+        grep -q 'ExecStopPost=' "$pirun" || { ok="false"; proof="pi-systemd-run does not arm the ExecStopPost dead-man"; }
+    fi
+    if [ "$ok" = "true" ]; then
+        [ -f "$ROOT/systemd/service.d/10-escalate.conf" ] && [ -f "$ROOT/systemd/service.d/20-resume.conf" ] \
+            || { ok="false"; proof="global drop-ins missing under systemd/service.d/"; }
+    fi
+    if [ "$ok" = "true" ]; then
+        proof="dispatcher resume/dispatch + drill sink + writer exclusion + dead-man/no-resume arming + global drop-ins all wired"
+    fi
+    record "resume-wiring" "$ok" "$proof"
+}
+
+resume_write_stop_reason() {
+    # STOP-REASON fixture in the exact schema unit-escalation-write emits.
+    python3 - "$1" "$2" > "$RESUME_DIR/STOP-REASON.json" <<'PY'
+import json, sys, datetime
+unit, result = sys.argv[1], sys.argv[2]
+json.dump({
+    "reason": "unit-failure",
+    "detail": {"unit": unit, "journal": [], "journal_errors": [],
+               "result": result, "exit_status": "1", "memory_peak": "", "oom_signal": "no"},
+    "timestamp": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "extension": "unit-escalation", "source": "unit-escalation",
+}, sys.stdout)
+PY
+}
+
+resume_wait_dead() {
+    # wait until the unit leaves active/activating (died), bounded.
+    # Second arg: wait budget in seconds (default 60). The live deadline
+    # kill needs >deadline_min*60 — RuntimeMaxSec only fires at the cap.
+    local unit="$1" budget="${2:-60}" i
+    for i in $(seq 1 "$budget"); do
+        local st
+        st="$(systemctl --user is-active "$unit" 2>/dev/null || echo inactive)"
+        case "$st" in active|activating) sleep 1 ;; *) return 0 ;; esac
+    done
+    return 1
+}
+
+assert_landed_failed() {
+    # fleet-ops#5456: pi-systemd-run launches transients with --collect, so
+    # the failed state is garbage-collected within ~1s of ExecStopPost
+    # finishing — is-failed loses that race every time (proven live
+    # 2026-09-12: unit GC'd before the first poll, and each is-failed call
+    # on a GC'd transient spams the journal with a 'Failed to open' line
+    # that floods any -n window). The DURABLE proof is the journal's
+    # 'Failed with result' line — the same line OnFailure keys on. Poll the
+    # journal (the only wait is journald flush lag) for ~10s.
+    local unit="$1" i
+    for i in $(seq 1 100); do
+        journalctl --user -u "$unit" --no-pager 2>/dev/null \
+            | grep -q 'Failed with result' && return 0
+        sleep 0.1
+    done
+    return 1
+}
+
+assert_onfailure_fired() {
+    # The landing proof above shows the unit failed; this shows the chain
+    # MOVED — 'Triggering OnFailure= dependencies' is logged only when the
+    # OnFailure rail actually fires.
+    journalctl --user -u "$1" --no-pager 2>/dev/null \
+        | grep -q 'Triggering OnFailure'
+}
+
+resume_live_kills() {
+    local ok="true" proof="" rc=0
+    mkdir -p "$RESUME_DIR"
+    local pirun="$ROOT/bin/pi-systemd-run"
+    local dispatch="$ROOT/bin/stop-escalation-dispatch"
+
+    # --- drill seams (everything synthetic stays under $RESUME_DIR) ---------
+    : >"$RESUME_DIR/ledger.jsonl"
+    : >"$RESUME_DIR/triage.md"
+    : >"$RESUME_DIR/findings.jsonl"
+    printf 'packet for resume-drill (fleet-ops#5456 kill-three-ways)\n' > "$RESUME_DIR/packet.md"
+    cat > "$RESUME_DIR/stub-seat-lib.sh" <<'EOF'
+pick_seat() { printf 'stubprov\tstubmodel'; }
+EOF
+    cat > "$RESUME_DIR/fake-gh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "gh $*" >> "${RESUME_DIR}/gh.log"
+if [ "$1" = "issue" ] && [ "$2" = "list" ]; then echo "[]"; exit 0; fi
+if [ "$1" = "issue" ] && [ "$2" = "create" ]; then echo "https://github.com/Nishfleet/fleet-ops/issues/9999"; exit 0; fi
+exit 0
+EOF
+    chmod +x "$RESUME_DIR/fake-gh"
+    cat > "$RESUME_DIR/fake-hermes" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+    chmod +x "$RESUME_DIR/fake-hermes"
+    : > "$RESUME_DIR/hc.env"
+
+    run_dispatch() {
+        RESUME_DIR="$RESUME_DIR" \
+        # fleet-ops#5456: the relaunched packet must write its hop+1 ledger
+        # row into the SAME hermetic ledger the launch rows went to — without
+        # this, the relaunched pi-systemd-run falls back to its $AGENT_STATE
+        # default and the drill's ledger assertion misses the row.
+        FLEET_DISPATCH_LEDGER="$RESUME_DIR/ledger.jsonl" \
+        FLEET_DISPATCH_PACKET_DIR="$RESUME_DIR/packets" \
+        STOP_ESCALATION_STOP_REASON="$RESUME_DIR/STOP-REASON.json" \
+        STOP_ESCALATION_RESUME_AS="$RESUME_DIR" \
+        STOP_ESCALATION_RESUME_LEDGER="$RESUME_DIR/ledger.jsonl" \
+        STOP_ESCALATION_RESUME_SYSTEMCTL=systemctl \
+        STOP_ESCALATION_RESUME_PI_RUN="$pirun" \
+        STOP_ESCALATION_RESUME_GH="$RESUME_DIR/fake-gh" \
+        STOP_ESCALATION_RESUME_HERMES="$RESUME_DIR/fake-hermes" \
+        STOP_ESCALATION_RESUME_TRIAGE="$RESUME_DIR/triage.md" \
+        STOP_ESCALATION_RESUME_FINDINGS="$ROOT/lib/findings_ledger.py" \
+        STOP_ESCALATION_RESUME_FINDINGS_LEDGER="$RESUME_DIR/findings.jsonl" \
+        PI_PACKET_SEAT_LIB="$RESUME_DIR/stub-seat-lib.sh" \
+        PI_SALVAGE_DISABLE=1 \
+        PI_DEADMAN_TEXTFILE="$RESUME_DIR/fleet-detached.prom" \
+        KEYSTONE_HC_ENV="$RESUME_DIR/hc.env" \
+        AGENT_STATE="$RESUME_DIR" \
+        "$dispatch" >> "$RESUME_DIR/dispatcher.log" 2>&1
+    }
+
+    launch_dummy() {
+        # launch_dummy <unit> <hop> <cmd...>
+        local u="$1" h="$2"; shift 2
+        FLEET_DISPATCH_LEDGER="$RESUME_DIR/ledger.jsonl" \
+        FLEET_DISPATCH_PACKET_DIR="$RESUME_DIR/packets" \
+        AGENT_STATE="$RESUME_DIR" \
+        PI_SALVAGE_DISABLE=1 \
+        PI_DEADMAN_TEXTFILE="$RESUME_DIR/fleet-detached.prom" \
+        KEYSTONE_HC_ENV="$RESUME_DIR/hc.env" \
+        "$pirun" --unit "$u" --stdin "$RESUME_DIR/packet.md" \
+            --working-directory "$RESUME_DIR" \
+            --deliverable "$RESUME_DIR/never-written-$u.md" \
+            --deadline 1 --chain-id "chain-$RESUME_DRILL_TS" --hop "$h" \
+            -- "$@" >> "$RESUME_DIR/launch.log" 2>&1
+    }
+
+    # --- kill 1: crash (exit 1) -> STOP-REASON -> hop-1 relaunch -------------
+    local crash_unit="live-dummy-resume-drill-crash-$RESUME_DRILL_TS"
+    if launch_dummy "$crash_unit" 0 false \
+        && resume_wait_dead "$crash_unit.service" \
+        && assert_landed_failed "$crash_unit.service" \
+        && assert_onfailure_fired "$crash_unit.service"; then
+        record "kill-crash-unit-failed" true "exit-1 crash landed the transient unit in failed AND fired OnFailure"
+    else
+        record "kill-crash-unit-failed" false "crash unit did not land failed"
+        ok="false"
+    fi
+    if [ "$ok" = "true" ]; then
+        resume_write_stop_reason "$crash_unit.service" "exit-code"
+        if run_dispatch \
+            && resume_wait_dead "$crash_unit.service" \
+            && grep -q '"hop":1' "$RESUME_DIR/ledger.jsonl"; then
+            record "kill-crash-hop1-relaunch" true "dispatcher relaunched the dead packet at hop=1 (same chain-id, ledger row written)"
+        else
+            record "kill-crash-hop1-relaunch" false "no hop=1 ledger row after dispatcher relaunch (see $RESUME_DIR/dispatcher.log)"
+            ok="false"
+        fi
+    fi
+
+    # --- kill 2: success-without-deliverable -> dead-man FAILS the unit ------
+    local nodeliv_unit="live-dummy-resume-drill-nodeliv-$RESUME_DRILL_TS"
+    if launch_dummy "$nodeliv_unit" 0 true \
+        && resume_wait_dead "$nodeliv_unit.service" \
+        && assert_landed_failed "$nodeliv_unit.service" \
+        && assert_onfailure_fired "$nodeliv_unit.service"; then
+        record "kill-nodeliv-deadman-fails-unit" true "exit-0 stop with missing --deliverable FAILED the unit AND fired OnFailure (ExecStopPost verdict=no-deliverable) — the advisory-deliverable gap is closed"
+    else
+        record "kill-nodeliv-deadman-fails-unit" false "no-deliverable stop did not fail the unit — deliverable contract broken"
+        ok="false"
+    fi
+    if [ "$ok" = "true" ]; then
+        grep -q '"verdict":"no-deliverable"' "$RESUME_DIR/ledger.jsonl" \
+            && record "kill-nodeliv-verdict-row" true "dead-man recorded verdict=no-deliverable in the dispatch ledger" \
+            || { record "kill-nodeliv-verdict-row" false "no no-deliverable verdict row in ledger"; ok="false"; }
+    fi
+
+    # --- kill 3: deadline (RuntimeMaxSec) ------------------------------------
+    local dl_unit="live-dummy-resume-drill-deadline-$RESUME_DRILL_TS"
+    if FLEET_DISPATCH_LEDGER="$RESUME_DIR/ledger.jsonl" FLEET_DISPATCH_PACKET_DIR="$RESUME_DIR/packets" \
+        AGENT_STATE="$RESUME_DIR" PI_SALVAGE_DISABLE=1 PI_DEADMAN_TEXTFILE="$RESUME_DIR/fleet-detached.prom" \
+        KEYSTONE_HC_ENV="$RESUME_DIR/hc.env" \
+        "$pirun" --dry-run --unit "$dl_unit" --stdin "$RESUME_DIR/packet.md" --deliverable "$RESUME_DIR/never-dl.md" \
+        --deadline 1 -- false 2>&1 | grep -q 'RuntimeMaxSec=1min'; then
+        record "kill-deadline-runtime-cap" true "deadline arms RuntimeMaxSec=<deadline>min — a hung packet self-terminates into failed"
+    else
+        record "kill-deadline-runtime-cap" false "RuntimeMaxSec not armed from --deadline"
+        ok="false"
+    fi
+    if [ "$ok" = "true" ] && [ "${CHAIN_E2E_DRILL_DEADLINE_LIVE:-0}" = "1" ]; then
+        # Live deadline kill (opt-in; the PR-transcript run sets this): a hung
+        # unit must die by the cap and land failed.
+        if launch_dummy "$dl_unit" 2 sleep 400 \
+            && resume_wait_dead "$dl_unit.service" 150 \
+            && assert_landed_failed "$dl_unit.service"; then
+            record "kill-deadline-live" true "RuntimeMaxSec killed the hung dummy at the cap; unit failed"
+        else
+            systemctl --user stop "$dl_unit.service" 2>/dev/null || true
+            record "kill-deadline-live" false "hung dummy survived its RuntimeMaxSec cap"
+            ok="false"
+        fi
+    fi
+
+    # --- second death -> DISPATCH (issue + triage + ledger row) --------------
+    if [ "$ok" = "true" ]; then
+        # The nodeliv dummy already died once (hop 0). Its SECOND death is the
+        # relaunched unit: relaunch it via the dispatcher (hop 0 -> 1), wait,
+        # then the hop>=cap branch dispatches.
+        resume_write_stop_reason "$nodeliv_unit.service" "exit-code"
+        if run_dispatch && resume_wait_dead "$nodeliv_unit.service"; then
+            resume_write_stop_reason "$nodeliv_unit.service" "exit-code"
+            run_dispatch || true
+            resume_write_stop_reason "$nodeliv_unit.service" "exit-code"
+            if run_dispatch \
+                && grep -q '\[unit-death\]' "$RESUME_DIR/resume-drill/issues.jsonl" 2>/dev/null \
+                && grep -q 'UNIT-DEATH-DISPATCH' "$RESUME_DIR/triage.md" 2>/dev/null \
+                && grep -q 'carried_over' "$RESUME_DIR/findings.jsonl" 2>/dev/null; then
+                record "second-death-dispatched" true "resume exhausted -> agent-ready issue payload + findings-ledger row (carried_over) + LOUD triage line"
+            else
+                record "second-death-dispatched" false "dispatch artifacts missing (issues.jsonl / triage / findings)"
+                ok="false"
+            fi
+        else
+            record "second-death-dispatched" false "dispatcher run failed before dispatch"
+            ok="false"
+        fi
+    fi
+
+    # --- cleanup: throwaway dummies removed (binding constraint 1) -----------
+    for u in "$crash_unit" "$nodeliv_unit" "$dl_unit"; do
+        systemctl --user stop "$u.service" 2>/dev/null || true
+        systemctl --user reset-failed "$u.service" 2>/dev/null || true
+        rm -rf "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/systemd/user/$u.service.d" 2>/dev/null || true
+    done
+    local leftover
+    leftover="$(systemctl --user list-units 'live-dummy-resume-drill-*' --no-legend 2>/dev/null | wc -l)"
+    if [ "$leftover" != "0" ]; then
+        record "drill-cleanup" false "$leftover live-dummy-resume-drill-* units left behind"
+        ok="false"
+    elif [ "$ok" = "true" ]; then
+        record "drill-cleanup" true "all throwaway dummies stopped, reset, and drop-ins removed"
+    fi
+
+    if [ "$ok" = "true" ]; then
+        printf '%s chain-e2e kill-three-ways: PASS (crash->hop1 relaunch, no-deliverable->failed unit, resume-exhausted->dispatch) artifacts=%s\n' \
+            "$(now_iso)" "$RESUME_DIR" >> "$RESUME_DIR/result-line.txt"
+        proof="live kills green; artifacts under $RESUME_DIR"
+        record "kill-three-ways" true "$proof"
+    else
+        record "kill-three-ways" false "see $RESUME_DIR (dispatcher.log, launch.log)"
+    fi
+}
+
+# --------------------------------------------------------------------------
 if [ "$DRY_RUN" = "1" ]; then
     log "DRY RUN: wiring proofs only; no live systemd/GitHub action"
 fi
@@ -413,6 +712,10 @@ drill_ticket_filed_and_routed
 drill_mechanism_gate
 drill_observe_close
 drill_slo_snapshot
+resume_wiring_ok
+if [ "$DRY_RUN" = "0" ]; then
+    resume_live_kills
+fi
 
 all_pass="$(jq -s -c 'all(.[]; .pass == true)' "$results_log")"
 jq -s -c --argjson all_pass "$all_pass" \

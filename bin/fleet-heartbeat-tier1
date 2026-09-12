@@ -1270,6 +1270,36 @@ log "5. timer-arm pass complete: verified=$verified re_enabled=$re_enabled"
 fi
 
 # ============================================================================
+# 5b. KILL-THREE-WAYS CHAIN DRILL (fleet-ops#5456 E/H)
+# ============================================================================
+# Named reason: proof the escalation chain still terminates in an ACTION
+# (relaunch or dispatch), from the EXISTING hourly verify step — no new timer
+# (addendum H). The drill uses only throwaway resume-drill-* dummy units it
+# creates and removes itself; unit-escalation-write excludes them so a drill
+# death never summons the live auditor. Result is ONE line: pass -> journal +
+# results file only; fail -> the drill appends a LOUD triage line and exits 1
+# so this unit lands in --state=failed (the page).
+DRILL_BIN="${FLEET_CHAIN_E2E_DRILL:-/home/nish/.local/bin/chain-e2e-drill}"
+drill_rc=0
+if require_manifest_helper "$DRILL_BIN"; then
+    log "5b. kill-three-ways chain drill starting"
+    if "$DRILL_BIN"; then
+        log "5b. kill-three-ways chain drill complete — chain terminates in action (relaunch/dispatch)"
+    else
+        drill_rc=$?
+        log "5b. kill-three-ways chain drill FAILED (rc=$drill_rc) — a unit death can end in a log; unit will land in --state=failed"
+    fi
+else
+    _req=$?
+    if [ "$_req" -eq 1 ]; then
+        loud "HELPER-MISSING" "kill-three-ways chain drill missing at $DRILL_BIN — the nothing-dies-silently proof is not installed (fleet-ops#485)"
+        drill_rc=1
+    else
+        log "5b. kill-three-ways chain drill missing at $DRILL_BIN — skip (not installed)"
+    fi
+fi
+
+# ============================================================================
 # 6. RECONCILE agent-blocked ISSUES
 # ============================================================================
 # Named reason for this sweep (vault: "a schedule needs a NAMED reason"):
@@ -3001,6 +3031,11 @@ if [ "${canary_rc:-0}" -ge 2 ]; then
 fi
 if [ "$entitled_canary_rc" -ne 0 ]; then
     exit "$entitled_canary_rc"
+fi
+# fleet-ops#5456: a failed kill-three-ways drill is a real chain break —
+# propagate so the unit lands in --state=failed (the page).
+if [ "${drill_rc:-0}" -ne 0 ]; then
+    exit "$drill_rc"
 fi
 if [ "${worker_app_canary_rc:-0}" -ne 0 ]; then
     exit "$worker_app_canary_rc"

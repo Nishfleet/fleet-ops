@@ -61,6 +61,16 @@ cat >"$repo/.github/workflows/red-on-main-detector.yml" <<'WF'
 on:
   workflow_call:
 WF
+# fleet-ops#5456: global escalation/resume drop-ins (block 1b asserts presence
+# + hash vs the live install).
+mkdir -p "$repo/systemd/service.d"
+printf '# OnFailure=unit-escalation@%%n.service (fixture copy)\n' > "$repo/systemd/service.d/10-escalate.conf"
+printf '# RESUME POLICY: allowlist, no global Restart= (fixture copy)\n' > "$repo/systemd/service.d/20-resume.conf"
+# Default state is install-converged (live copies byte-identical): block 1b is
+# quiet unless a scenario tampers. Scenario 3b exercises tamper/PENDING/repair.
+mkdir -p "$HOME/.config/systemd/user/service.d"
+cp "$repo/systemd/service.d/10-escalate.conf" "$HOME/.config/systemd/user/service.d/10-escalate.conf"
+cp "$repo/systemd/service.d/20-resume.conf" "$HOME/.config/systemd/user/service.d/20-resume.conf"
 
 state="$scratch/agent_state"
 mkdir -p "$state"
@@ -344,6 +354,11 @@ WF
   rm -f "$FLEET_ESCALATION_CANARY_DELIVERY" "$FLEET_ESCALATION_CANARY_REDCI" "$FLEET_ESCALATION_CANARY_BRIDGE"
   rm -f "$repo/.github/workflows/ci-failure-escalation.yml" "$repo/.github/scripts/ci-failure-escalation-detector.mjs"
   rm -rf "${repo:?}/lib" "${repo:?}/systemd"
+  # fleet-ops#5456: block 1b hash-asserts the global drop-ins against the
+  # repo copies, so every scenario's repo must carry them again after the wipe.
+  mkdir -p "$repo/systemd/service.d"
+  printf '# OnFailure=unit-escalation@%%n.service (fixture copy)\n' > "$repo/systemd/service.d/10-escalate.conf"
+  printf '# RESUME POLICY: allowlist, no global Restart= (fixture copy)\n' > "$repo/systemd/service.d/20-resume.conf"
   write_covered_vault
   # Block 10 default: green backup so existing two-plane scenarios stay green.
   write_backup_fresh
@@ -1747,6 +1762,46 @@ bash "$here/paid-flash-canary.test.sh"
 # file so hosted runners run it without a workflow edit (worker tokens cannot
 # push .github/workflows/**).
 bash "$here/fleet-seat-live-validate.test.sh"
+
+# ============================================================================
+# Scenario 3b (fleet-ops#5456 I): the two global drop-ins are hash-asserted.
+# A live drop-in that DRIFTS from the repo copy (hand-edited to re-add a
+# global Restart= — the 2026-09-11 incident — or to drop OnFailure=) is a
+# VIOLATION; a not-yet-installed drop-in is a PENDING, not a violation.
+# ============================================================================
+live_dropins="$HOME/.config/systemd/user/service.d"
+mkdir -p "$live_dropins"
+printf '# TAMPERED - global Restart=on-failure (the incident)\n' > "$live_dropins/10-escalate.conf"
+printf '# TAMPERED resume policy\n' > "$live_dropins/20-resume.conf"
+run_canary
+[[ "$env_rc" == 1 ]] || fail "scenario3b: tampered drop-ins must exit 1, got $env_rc ($env_out)"
+grep -q 'live drop-in DRIFT.*20-resume.conf' "$triage" || fail "scenario3b: tampered 20-resume.conf must be named as DRIFT ($triage)"
+grep -q 'live drop-in DRIFT.*10-escalate.conf' "$triage" || fail "scenario3b: tampered 10-escalate.conf must be named as DRIFT"
+ok "scenario3b: live drop-in drift (hand-edited global drop-in) is a VIOLATION (fleet-ops#5456 I)"
+
+# Repair: live copies byte-identical to the repo copies -> no 1b finding.
+cp "$repo/systemd/service.d/10-escalate.conf" "$live_dropins/10-escalate.conf"
+cp "$repo/systemd/service.d/20-resume.conf" "$live_dropins/20-resume.conf"
+reset_state
+cover "good-worker.service"
+exclude "unit-escalation@foo.service"
+write_intake "0509"
+write_claim_repos "Nishfleet/0509"
+run_canary
+[[ "$env_rc" == 0 ]] || fail "scenario3b-repaired: must exit 0, got $env_rc ($env_out)"
+! grep -q 'DRIFT' "$triage" || fail "scenario3b-repaired: no DRIFT expected after repair"
+! grep -q 'PENDING.*drop-in' "$triage" || fail "scenario3b-repaired: installed drop-ins must not be PENDING"
+ok "scenario3b: hash-matched drop-ins clear the finding (install-converged state)"
+
+# Missing live install -> PENDING (loud), NOT a violation (deploy lands post-merge).
+rm -f "$live_dropins/10-escalate.conf" "$live_dropins/20-resume.conf"
+run_canary
+grep -q 'ESCALATION-CANARY-PENDING.*20-resume.conf' "$triage" || fail "scenario3b: missing live 20-resume.conf must be PENDING"
+ok "scenario3b: not-yet-installed drop-in is a loud PENDING, not a violation"
+
+# Restore the install-converged default for anything that runs after.
+cp "$repo/systemd/service.d/10-escalate.conf" "$live_dropins/10-escalate.conf"
+cp "$repo/systemd/service.d/20-resume.conf" "$live_dropins/20-resume.conf"
 
 # fleet-ops#41: headless OAuth refresh of ~/.pi/agent/auth.json["xai-oauth"].
 # Invoked from this CI-listed file so hosted runners run it without a

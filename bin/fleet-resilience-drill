@@ -454,11 +454,16 @@ plane_keystone_hc() {
   }
 
   if [[ ! -f "$KEYSTONE_HC_ENV" ]]; then
-    loud "KEYSTONE-HC-UNCONFIGURED" "missing $KEYSTONE_HC_ENV — create free healthchecks.io checks for intake/scout/reconcile/restore and drop HC_URL_* there. Heartbeat already has its own check."
+    loud "KEYSTONE-HC-UNCONFIGURED" "missing $KEYSTONE_HC_ENV — create free healthchecks.io checks for intake/scout/reconcile/restore/detached and drop HC_URL_* there. Heartbeat already has its own check."
     record "$name" "skip" "env file missing"
     return 0
   fi
-  for key in HC_URL_INTAKE HC_URL_SCOUT HC_URL_RECONCILE HC_URL_RESTORE; do
+  # fleet-ops#5456 F: HC_URL_DETACHED is the dead-man for the packet chain
+  # this issue builds — pi-detached-deadman pings it start/success/fail per
+  # run id, and keystone-hc-ping SKIPS SILENTLY when it is unset, which is
+  # exactly the silent-death class. Unset stays LOUD here until provisioned
+  # (one healthchecks.io check, then HC_URL_DETACHED=<url> in the env file).
+  for key in HC_URL_INTAKE HC_URL_SCOUT HC_URL_RECONCILE HC_URL_RESTORE HC_URL_DETACHED; do
     if ! url="$(hc_env_value "$KEYSTONE_HC_ENV" "$key")"; then
       missing+=("$key")
     else
@@ -490,7 +495,7 @@ plane_keystone_hc() {
     fi
   fi
 
-  record "$name" "pass" "HC_URL_INTAKE/SCOUT/RECONCILE/RESTORE all set and distinct from heartbeat"
+  record "$name" "pass" "HC_URL_INTAKE/SCOUT/RECONCILE/RESTORE/DETACHED all set and distinct from heartbeat"
   return 0
 }
 

@@ -7,10 +7,14 @@
 #
 #   success  -> dead-man success ping (healthchecks.io), textfile series
 #               cleared (the run kept its promise)
-#   died     -> STOP-REASON (for CLEAN stops: a stop becomes a failure;
-#               failed runs already reach unit-escalation via OnFailure =
-#               unit-escalation@%n.service) + /fail ping + Prometheus
-#               textfile gauge 1 so DetachedJobDied alert -> repair packet
+#   died     -> /fail ping + Prometheus textfile gauge 1 so DetachedJobDied
+#               alert -> repair packet + a dispatch-ledger verdict row +
+#               EXIT NONZERO. The nonzero ExecStopPost exit marks the unit
+#               `failed` even when the main process exited 0 (proven live on
+#               systemd 255, fleet-ops#5456 probe-80) — so the OnFailure ->
+#               unit-escalation@%n -> STOP-REASON -> dispatcher rail now
+#               carries clean-stop deaths too, and the dispatcher resumes
+#               or dispatches the packet.
 #   nothing  -> hook was never armed (no PI_DEADMAN_DISPATCH) — legacy or
 #               non-pi-systemd-run callers pass through untouched
 #
@@ -26,7 +30,10 @@
 # captured by unit-escalation-write). No auditd = the line says so; the
 # auditd install is shipped by install.sh --system + the bare-metal manifest.
 #
-# Always exits 0: ExecStopPost must never fail the unit it is watching.
+# Exit contract (fleet-ops#5456): exits 1 when the verdict is `died` so a
+# clean-stop-without-deliverable still lands the unit in `failed` and fires
+# OnFailure — the missing deliverable is a FAILURE contract, not a log line.
+# Exits 0 on success / not-armed / cli-noop / --clear / --help.
 #
 # Env (set by pi-systemd-run; inherited seams for tests):
 #   PI_DEADMAN_DISPATCH       run id (uuid). Empty = not armed -> no-op.
@@ -34,11 +41,12 @@
 #   PI_DEADMAN_CMDLINE        recorded command line (relaunch source)
 #   PI_DEADMAN_DEADLINE       --deadline minutes (grace proxy, recorded)
 #   PI_DEADMAN_DELIVERABLE    --deliverable absolute path (optional)
+#   PI_DEADMAN_DROPIN_DIR     per-unit no-resume drop-in dir to remove at
+#                             stop (pi-systemd-run writes it at launch)
 #   SERVICE_RESULT, EXIT_CODE, EXIT_STATUS   (systemd ExecStopPost)
 #   KEYSTONE_HC_ENV, PI_DEADMAN_URL_BASE     ping seams (keystone-hc-ping)
 #   PI_DEADMAN_TEXTFILE       node_exporter textfile (default
 #                             /var/lib/prometheus/node-exporter/fleet-detached.prom)
-#   PI_DEADMAN_ESCALATION_BIN unit-escalation-write path (default: sibling)
 #   PI_DEADMAN_WHOSTOPPED_BIN fleet-who-stopped path (default: sibling)
 #   PI_DEADMAN_DRYRUN         1 = print the verdict, write nothing (tests)
 
@@ -48,7 +56,6 @@ export HOME="${HOME:-/home/nish}"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-escalation_bin="${PI_DEADMAN_ESCALATION_BIN:-$here/unit-escalation-write}"
 whostopped_bin="${PI_DEADMAN_WHOSTOPPED_BIN:-$here/fleet-who-stopped}"
 textfile="${PI_DEADMAN_TEXTFILE:-/var/lib/prometheus/node-exporter/fleet-detached.prom}"
 
@@ -209,15 +216,19 @@ fi
 service_result="${SERVICE_RESULT:-}"
 
 # Verdict: died = the unit's Result was not success, OR the promised
-# deliverable is missing at stop time (exit 0 included), OR the run claimed
-# LIVE/DEPLOYED/live-on-host without citing a merged origin/main SHA
+# deliverable is missing OR EMPTY at stop time (exit 0 included). Empty is
+# dead too: a zero-byte deliverable is a run that wrote nothing. Or the run
+# claimed LIVE/DEPLOYED/live-on-host without citing a merged origin/main SHA
 # (fleet-ops#5786 — the packet-verdict checker owns the claim grammar).
 died=0
+verdict=""
 if [[ "$service_result" != "success" ]]; then
     died=1
+    verdict="died:${service_result}"
 fi
-if [[ -n "$deliverable" && ! -f "$deliverable" ]]; then
+if [[ -n "$deliverable" && ! -s "$deliverable" ]]; then
     died=1
+    verdict="no-deliverable"
 fi
 
 # --- false LIVE-claim gate (fleet-ops#5786) ----------------------------------
@@ -269,7 +280,7 @@ fi
 
 if [[ "${PI_DEADMAN_DRYRUN:-0}" == "1" ]]; then
     if [[ "$died" == "1" ]]; then
-        echo "verdict=died unit=$unit result=$service_result deliverable=$deliverable"
+        echo "verdict=died unit=$unit result=$service_result deliverable=$deliverable verdict_kind=$verdict"
         echo "$stopper_line"
     else
         echo "verdict=success unit=$unit result=$service_result"
@@ -280,10 +291,26 @@ fi
 if [[ "$died" == "1" ]]; then
     # /fail ping: instant DOWN beats waiting out the grace period.
     "$here/keystone-hc-ping" detached fail || true
+    # fleet-ops#5456: closing ledger row for this dispatch. The unit's own
+    # ledger entry stays the launch record; this row is the verdict — the
+    # dispatcher reads it when deciding hop+1 relaunch vs terminal dispatch.
+    # status=failed (not terminal-complete) because the work is unfinished;
+    # the dispatcher's relaunch carries the chain forward.
+    LEDGER="${FLEET_DISPATCH_LEDGER:-${AGENT_STATE:-/home/nish/workspaces/agent-state}/dispatch-ledger.jsonl}"
+    python3 - "$LEDGER" "$dispatch" "$unit" "$verdict" <<'PY' || log "WARN: ledger verdict append failed"
+import json, sys
+row = {"id": sys.argv[2], "unit": sys.argv[3],
+       "ts": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+       "status": "failed", "verdict": sys.argv[4]}
+with open(sys.argv[1], "a") as f:
+    f.write(json.dumps(row, separators=(",", ":")) + "\n")
+PY
     # Clean-stop deaths are invisible to OnFailure (Result=success) — this
     # hook is their only writer. Unit failures are already written by the
     # OnFailure -> unit-escalation@%n rail; reusing the SAME writer with a
     # distinct reason keeps one STOP-REASON per trip and one auditor.
+    # (#5456: the nonzero ExecStopPost exit below also makes systemd fail
+    # the unit even on a clean stop, so OnFailure fires here too.)
     echo "$stopper_line" >&2   # lands in the unit journal -> STOP-REASON detail
     if [[ "$service_result" == "success" ]]; then
         esc_reason="unit-stopped-without-deliverable"
@@ -293,11 +320,24 @@ if [[ "$died" == "1" ]]; then
             "$escalation_bin" "$unit" >/dev/null 2>&1 || true
     fi
     _textfile_set 1
-    log "died: unit=$unit result=$service_result deliverable=${deliverable:-unset} — dead-man tripped"
+    log "died: unit=$unit result=$service_result deliverable=${deliverable:-unset} verdict=$verdict — dead-man tripped"
 else
     # The run kept its promise: success ping (same run id), and the died
     # series (if any stale one exists) is cleared.
     "$here/keystone-hc-ping" detached success || true
     _textfile_set 0
 fi
+
+# Remove the per-unit no-resume drop-in pi-systemd-run wrote at launch —
+# the unit is done; the dir is runtime state, not config to keep.
+if [[ -n "${PI_DEADMAN_DROPIN_DIR:-}" && -d "${PI_DEADMAN_DROPIN_DIR}" ]]; then
+    rm -rf "${PI_DEADMAN_DROPIN_DIR}" 2>/dev/null \
+        || log "WARN: could not remove drop-in dir $PI_DEADMAN_DROPIN_DIR"
+fi
+
+# fleet-ops#5456: died => nonzero so the unit's final state is `failed`
+# (Result records the stop-post failure) and OnFailure fires — that is the
+# rail that lands every death in the dispatcher. A clean stop that exits 0
+# here would die silently.
+[[ "$died" == "1" ]] && exit 1
 exit 0
