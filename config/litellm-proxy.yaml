@@ -9,7 +9,7 @@
 #   openai/z-ai/glm-5.3-flash @ api.cline.bot           : 500 ; openai/cline-pass/deepseek-v4.1-flash @ api.cline.bot : 429
 #   ollama.com deepseek-v4-pro:0813 / kimi-k2.7-code    : 429 weekly usage limit (nishant345)
 #   alibaba qwen3.8-max                                 : 429 until 2026-09-14 (seat ledger) ; opencode-go : 402 until 2026-09-12T14:05Z ; mergegateway : quota_bench
-# LIVE (probed 200 on 2026-09-12): paretoinference z-ai/glm-5.3 + glm-5.3-flash, synthetic hf:zai-org/GLM-5.3-Flash, llmgateway-devpass glm-5.3-flash, xkiro deepseek/deepseek-v4-pro.
+# LIVE (probed 200 on 2026-09-12): paretoinference z-ai/glm-5.3 + glm-5.3-flash, synthetic hf:zai-org/GLM-5.3-Flash, llmgateway-devpass glm-5.3-flash, xkiro deepseek/deepseek-v4-pro, nebius zai-org/GLM-5.3-Flash.
 # Router policy: a single deployment error must never reach the client while another deployment or fallback group is healthy.
 model_list:
 - model_name: worker-cheap
@@ -48,6 +48,15 @@ model_list:
     - free
     order: 2
     max_parallel_requests: 1
+- model_name: worker-cheap
+  litellm_params:
+    model: openai/zai-org/GLM-5.3-Flash
+    api_base: https://api.tokenfactory.nebius.com/v1
+    api_key: os.environ/NEBIUS_API_KEY
+    tags:
+    - metered
+    order: 3
+    max_parallel_requests: 1
 - model_name: worker-capable
   litellm_params:
     model: openai/z-ai/glm-5.3
@@ -83,6 +92,15 @@ model_list:
     tags:
     - free
     order: 2
+    max_parallel_requests: 1
+- model_name: worker-capable
+  litellm_params:
+    model: openai/zai-org/GLM-5.3-Flash
+    api_base: https://api.tokenfactory.nebius.com/v1
+    api_key: os.environ/NEBIUS_API_KEY
+    tags:
+    - metered
+    order: 3
     max_parallel_requests: 1
 - model_name: senior
   litellm_params:
