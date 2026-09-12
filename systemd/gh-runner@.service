@@ -3,13 +3,22 @@
 #
 # Ephemeral by construction: every activation ExecStartPre fetches a fresh
 # single-use JIT registration (POST /orgs/Nishfleet/actions/runners/
-# generate-jitconfig), the runner executes exactly ONE job, deregisters
-# itself, exits, and Restart=always brings it back with a new registration.
-# That loop IS the fleet — no registration tokens, no autoscaler, no ARC.
+# generate-jitconfig) and runs config.sh with it; the runner executes exactly
+# ONE job, deregisters itself, exits, and Restart=always brings it back with
+# a new registration. That loop IS the fleet — no registration tokens, no
+# autoscaler, no ARC.
 #
 # No PAT stored: registration rides the box's existing `gh` keyring auth
-# (the nish3451 keyring entry, GitHub App token 403s on org Actions —
+# (the nish3451 keyring entry; the worker App token 403s on org Actions —
 # #1253), the same precedent siterep-uptime.service already relies on.
+#
+# systemd $-expansion (learned 2026-09-12 the hard way): $(...) works inside
+# ExecStartPre (proven: the $(gh api) registration round-trip, status=0) but
+# is eaten in ExecStart (run.sh exited 0 in 1ms with an empty arg). So the
+# ExecStart is argument-free: ExecStartPre-2 runs `config.sh --jitconfig
+# <token> --unattended` (writes .runner/.credentials), ExecStart runs plain
+# `run.sh`. The registration itself is the only $() left. Note systemd ALSO
+# %-expands: `%%s` survives to bash as `%s`.
 #
 # ExecStart/ExecStartPre are `/bin/bash -c '...'` so hosted systemd-analyze
 # verify checks bash (present on CI) rather than %h paths (absent; #4148
@@ -35,8 +44,8 @@
 Description=GitHub Actions ephemeral self-hosted runner %i — one job per activation (fleet-ops#5935)
 After=network-online.target
 Wants=network-online.target
-StartLimitIntervalSec=300
-StartLimitBurst=8
+StartLimitIntervalSec=600
+StartLimitBurst=6
 
 [Service]
 Type=simple
@@ -49,14 +58,21 @@ Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
 # (computed from the release tarball 2026-09-12). Download+verify+extract
 # once per instance dir; later activations reuse the extraction.
 ExecStartPre=/bin/bash -c 'd=%h/.local/share/actions-runner/%i; mkdir -p "$d"; if [ ! -x "$d/run.sh" ]; then cd "$d" && curl -fsSL -o runner.tgz https://github.com/actions/runner/releases/download/v2.337.0/actions-runner-linux-x64-2.337.0.tar.gz && printf "%%s  runner.tgz\n" 70920811a4f8ad4328818682bca5c6469c1c942fab52448868071d0063816613 | sha256sum -c - && tar xzf runner.tgz && rm -f runner.tgz; fi'
-# Fresh single-use JIT registration per activation. The name is unique per
-# second so a crashed predecessor's still-registered ghost cannot collide;
-# its registration self-heals when the ghost eventually ages out (ephemeral
-# registrations are removed by GitHub after the runner's final drop).
-ExecStartPre=/bin/bash -c 'd=%h/.local/share/actions-runner/%i; cd "$d" && tok=$(gh api -X POST orgs/Nishfleet/actions/runners/generate-jitconfig -f name=gh-runner-%i-$(date +%s) -f "labels[]=self-hosted" -f "labels[]=linux" -f "labels[]=x64" -f "labels[]=fleet-ci" --jq .data.encoded_jit_config) && printf "%%s" "$tok" > "$d/.jitconfig" && chmod 600 "$d/.jitconfig"'
-ExecStart=/bin/bash -c 'cd %h/.local/share/actions-runner/%i && exec ./run.sh --jitconfig $(cat .jitconfig)'
+# Fresh single-use JIT registration + config, EVERY activation (ephemeral:
+# the runner deletes .runner after its one job, so the next start must
+# reconfigure). runner_group_id=1 pins the org's "Default" group
+# (visibility=all, allows_public_repositories=true — flipped 2026-09-12 so
+# the runners can serve the public Nishfleet repos; both 0509 and fleet-ops
+# are public). The group route 404s on PUT, 200 on PATCH (proven 2026-09-12,
+# #5935). The runner name is unique per activation so a crashed
+# predecessor's still-registered ghost cannot collide.
+ExecStartPre=/bin/bash -c 'd=%h/.local/share/actions-runner/%i; cd "$d" && tok=$(gh api -X POST orgs/Nishfleet/actions/runners/generate-jitconfig -f name=gh-runner-%i-$(date +%s) -F runner_group_id=1 -f "labels[]=self-hosted" -f "labels[]=linux" -f "labels[]=x64" -f "labels[]=fleet-ci" --jq .data.encoded_jit_config) && ./config.sh --unattended --jitconfig "$tok"'
+ExecStart=/bin/bash -c 'cd %h/.local/share/actions-runner/%i && exec ./run.sh'
 Restart=always
-RestartSec=15
+RestartSec=30
+# First activation on a cold instance dir downloads + verifies + extracts
+# the 226MB pinned tarball — far past the 90s default start timeout.
+TimeoutStartSec=600
 TimeoutStopSec=120
 # SIGTERM the whole control group on stop: run.sh spawns the +config/runnern
 # process tree; a lone kill would orphan the dotnet process and wedge the job.
