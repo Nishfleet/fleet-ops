@@ -402,10 +402,21 @@ admit_ceiling() {
 
 # Per-seat hang watchdog (seconds). Default 2520 (42 min).
 seat_hang_timeout_s() {
-    local p="${1:-}" val
+    # fleet-ops#6154: callers (bin/pi-issue-run) have always passed the model as
+    # $2, but this function only ever read $1, so a per-MODEL hang_timeout_s in
+    # config/seat-caps.json was dead config - it silently resolved to the
+    # provider value (or the 2520 default) and the seat kept getting rc=124
+    # killed mid-session. Model override wins, then provider, then 2520.
+    local p="${1:-}" m="${2:-}" val
     if (( ! _seat_caps_loaded )); then load_seat_caps || true; fi
     [[ -f "$SEAT_CAPS_JSON" ]] || { echo 2520; return; }
-    val=$(jq -r --arg p "$p" '.providers[$p].hang_timeout_s // empty' "$SEAT_CAPS_JSON" 2>/dev/null || true)
+    # A models entry is either a bare cap number or an object; only an object
+    # can carry hang_timeout_s, so guard the index or jq errors out and the
+    # provider-level value is lost too.
+    val=$(jq -r --arg p "$p" --arg m "$m" \
+        '((.providers[$p].models[$m] | if type == "object" then .hang_timeout_s else null end)
+          // .providers[$p].hang_timeout_s // empty)' \
+        "$SEAT_CAPS_JSON" 2>/dev/null || true)
     if [[ "$val" =~ ^[0-9]+$ ]] && (( val >= 60 )); then
         echo "$val"
         return
