@@ -2,6 +2,17 @@
 # fleet-restore-drill — periodically PROVE the fleet control plane can be
 # rebuilt, mechanically, on a cycle (fleet-ops#388).
 #
+# fleet-ops#4264 (LiteLLM programme P4) adds plane E: the LiteLLM proxy's
+# Postgres is control-plane state (virtual keys, budgets, spend, cooldown
+# persistence) that git does NOT track and a /home/nish restic snapshot only
+# captures if a dump exists. Plane E takes that dump every run (recurring
+# pg_dump is the restoration input "the backup job's pg_dump" names), keeps a
+# small rotation, and proves the dump is loadable into a throwaway scratch
+# cluster. It lives here instead of the system restic unit because that unit
+# runs as root with ProtectHome=read-only and cannot write /home/nish; this
+# user drill runs as nish against the user-owned socket and the dump lands
+# under the restic-covered agent-state tree.
+#
 # The deploy-clone is git (recoverable). The control plane also lives in
 # non-git state: agent-state/ (claims, triage, seat state, audit reports),
 # ~/.local/state/pi-packet/ (seat-caps, packet state), and the user-unit
@@ -63,6 +74,20 @@
 # Usage: fleet-restore-drill              # run the drill
 #        fleet-restore-drill --check     # report whether the drill units +
 #                                        # script are installed (no system calls)
+#
+# Plane E seams (tests + operator):
+#   FLEET_LITELLM_PGDATA       litellm cluster data dir (default the fleet-
+#                              owned cluster path; absent = plane E skips,
+#                              organ not installed — the health canary owns
+#                              absent-organ liveness, not this drill)
+#   FLEET_LITELLM_PG_BINDIR    postgres server binaries dir (default:
+#                              pg_config --bindir, else
+#                              /usr/lib/postgresql/16/bin for pg_ctl/initdb)
+#   FLEET_LITELLM_DUMP_DIR     dump target (default agent-state/backups)
+#   FLEET_LITELLM_DUMP_KEEP    dumps retained (default 14; one per 6h tick)
+#   FLEET_LITELLM_SCRATCH_PORT scratch port (default 5433)
+#   FLEET_LITELLM_ISREADY/PG_DUMP/PG_CTL       per-step binary seams (tests)
+#   FLEET_LITELLM_RESTORE_TIMEOUT_S           scratch-restore bound (default 180)
 #
 # Env overrides (test-only; production reads live paths):
 #   SYSTEMCTL, FLEET_OPS_REPO, AGENT_STATE, FLEET_HEARTBEAT_TRIAGE,
