@@ -29,7 +29,7 @@ Three parts, all gated on one label family (the issue's `required:` bullets):
 ## run-proof
 
 - run-proof: `bash tests/repair-queue-jump.test.sh` → `ALL TESTS PASSED`; `bash tests/seat-lib.test.sh` → PASS (this file is the listed CI host: the same chain runs as a required P14 check on this PR's CI run).
-CI: the P14 suite runs the P14 suite runs `tests/repair-queue-jump.test.sh` via `tests/seat-lib.test.sh` on this PR's CI run — the workflow run on this PR is the proof.
+CI: `tests/repair-queue-jump.test.sh` via `tests/seat-lib.test.sh` on this PR's CI run — the workflow run on this PR is the proof.
 
 ## Mechanism notes
 
