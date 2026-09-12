@@ -19,6 +19,11 @@ StartLimitBurst=100
 [Service]
 Type=oneshot
 ExecStart=/home/nish/.local/bin/fleet-deploy-check
+# fleet-ops#5687: the DIRTY-CLONE gate auto-files a dedupe-gated issue on the
+# 3rd consecutive dirty tick (the detector previously LOUDed 55x/14h and
+# filed nothing). Default-off in the script; this line turns it on live, so
+# revert is removing this one line and re-deploying.
+Environment=FLEET_DEPLOY_CHECK_DIRTY_AUTOFILE=1
 # A fetch/rev-compare is cheap; give a deploy plenty of room to finish.
 TimeoutStartSec=300
 
