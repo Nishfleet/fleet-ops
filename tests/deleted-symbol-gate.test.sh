@@ -202,8 +202,9 @@ mkdir -p "$tmp/tests-py"
 printf 'from dummy_py_6052 import drill_dummy_py_6052, Drill6052\n' >"$tmp/tests-py/importer.test.py"
 out="$(deleted_symbol_gate "$tmp/py-deleted.patch" "$tmp/tests-py" "$tmp/empty-scan" 2>&1)" \
     && fail "6a. expected RED for deleted python defs still imported; got: $out"
-grep -q "drill_dummy_py_6052" <<<"$out" && grep -q "Drill6052" <<<"$out" \
-    || fail "6a. RED output must name both python symbols; got: $out"
+if ! grep -q "drill_dummy_py_6052" <<<"$out" || ! grep -q "Drill6052" <<<"$out"; then
+    fail "6a. RED output must name both python symbols; got: $out"
+fi
 ok "6a. RED: deleted python def/class still referenced by tests fails the gate"
 
 mkdir -p "$tmp/scan3/lib"
