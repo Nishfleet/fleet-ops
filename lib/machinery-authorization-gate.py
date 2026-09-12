@@ -19,6 +19,7 @@ import os
 import re
 import shlex
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -69,6 +70,13 @@ TRANSIENT_DIR_MARKERS = (
     "/run/systemd/transient/",
     "/run/user/",
 )
+
+# fleet-ops#5779: surge precedence bands are time-boxed overlays. A band whose
+# cutoff_utc is long past, or whose named revert-condition issues are long
+# closed, must not keep running on its own.
+BAND_GRACE_CUTOFF = 24 * 3600      # seconds past cutoff_utc before stale
+BAND_REVERT_CLOSE_GRACE = 48 * 3600  # issues closed this long ago = revert due
+
 
 
 def _die(msg: str, code: int = 2) -> None:
@@ -464,6 +472,167 @@ def _scan_live_unit_dir(unit_dir: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def _parse_iso_utc(text: str) -> datetime | None:
+    """Parse an ISO-8601 UTC timestamp (Z or +00:00); None if unparseable."""
+    s = (text or "").strip()
+    if not s:
+        return None
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _band_issue_refs(text: str) -> list[int]:
+    """Issue numbers named as #<digits> revert conditions in a band file."""
+    return sorted({int(m) for m in re.findall(r"#(\d+)", text or "") if int(m) <= 10000})
+
+
+def _band_findings(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Stale surge precedence-band hunt findings (fleet-ops#5779).
+
+    Payload keys:
+      band_dir   — dir holding precedence-band*.json (default:
+                   $PI_AGENT_STATE_DIR or ~/workspaces/agent-state when it
+                   exists; skipped otherwise so the check stays deploy-neutral)
+      band_files — optional fixtures: [{path, data|path}] (data wins over path)
+      issues_closed — {"4130": "2026-09-07T21:15:06Z", ...} close timestamps
+                   for revert-condition issues referenced in band files
+      now        — optional ISO timestamp (fixtures); default wall clock
+    """
+    now = _parse_iso_utc(str(payload.get("now") or "")) or datetime.now(timezone.utc)
+    issues_closed_raw = payload.get("issues_closed") or {}
+    issues_closed: dict[str, datetime] = {}
+    if isinstance(issues_closed_raw, dict):
+        for k, v in issues_closed_raw.items():
+            ts = _parse_iso_utc(str(v))
+            if ts:
+                issues_closed[str(int(str(k)))] = ts
+
+    rows: list[tuple[Path, dict[str, Any]]] = []  # (source, band data)
+    band_dir = payload.get("band_dir") or payload.get("band-dir")
+    if band_dir:
+        d = Path(str(band_dir)).expanduser()
+        if d.is_dir():
+            for f in sorted(d.glob("precedence-band*.json")):
+                try:
+                    rows.append((f, json.loads(f.read_text(encoding="utf-8"))))
+                except (OSError, json.JSONDecodeError):
+                    continue
+    band_files = payload.get("band_files") or payload.get("band-files")
+    if isinstance(band_files, list):
+        for item in band_files:
+            if not isinstance(item, dict):
+                continue
+            path = str(item.get("path") or "band-fixture.json")
+            data = item.get("data")
+            if data is None and item.get("content") is not None:
+                data = item["content"]
+            if data is None and item.get("json") is not None:
+                data = item["json"]
+            if isinstance(data, str):
+                try:
+                    data = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
+            if not isinstance(data, dict):
+                continue
+            rows.append((Path(path), data))
+
+    findings: list[dict[str, Any]] = []
+    if not rows:
+        return findings
+
+    canonical = any(p.name == "precedence-band.json" for p, _ in rows)
+    surge_rows = []
+    for src, data in rows:
+        cutoff = _parse_iso_utc(str(data.get("cutoff_utc") or ""))
+        machinery = data.get("machinery_max_pct")
+        surge_note = str(data.get("surge_note") or "")
+        is_surge = bool(surge_note) or (
+            isinstance(machinery, (int, float)) and machinery > 30
+        )
+        if not is_surge:
+            continue
+        surge_rows.append(src)
+        cutoff_past_secs = (now - cutoff).total_seconds() if cutoff else 0.0
+        refs = _band_issue_refs(surge_note)
+        all_closed_48h = False
+        if refs:
+            closes = [issues_closed[str(r)] for r in refs if str(r) in issues_closed]
+            if closes and len(closes) == len(refs):
+                latest = max(closes)
+                all_closed_48h = (now - latest).total_seconds() > BAND_REVERT_CLOSE_GRACE
+        stale_by_cutoff = (
+            cutoff is not None
+            and cutoff_past_secs > BAND_GRACE_CUTOFF
+            and isinstance(machinery, (int, float))
+            and machinery > 30
+        )
+        if not (stale_by_cutoff or all_closed_48h):
+            continue
+        reasons = []
+        if stale_by_cutoff:
+            reasons.append("cutoff_utc is >24h past while machinery_max_pct>30")
+        if all_closed_48h:
+            reasons.append("revert conditions " + ",".join(f"#{r}" for r in refs) + " closed >48h ago")
+        findings.append(
+            {
+                "rank": 70,
+                "title": "stale surge precedence band still live: " + src.name,
+                "body": (
+                    "A surge precedence band ("
+                    + src.name
+                    + ") outlived its revert condition (fleet-ops#5779): "
+                    + ". ".join(reasons)
+                    + ". Delete the surge band JSON and its "
+                    "drop-ins, restore the canonical precedence-band.json, "
+                    "and systemd --user daemon-reload. Surge bands must not "
+                    "outlive the issues that created them."
+                ),
+                "severity": "high",
+                "evidence": {
+                    "band": str(src),
+                    "cutoff_utc": data.get("cutoff_utc"),
+                    "machinery_max_pct": machinery,
+                    "revert_issue_refs": refs,
+                    "reasons": reasons,
+                },
+                "kind": "precedence-band",
+                "band": str(src),
+            }
+        )
+
+    if surge_rows and not canonical:
+        findings.append(
+            {
+                "rank": 69,
+                "title": "canonical precedence-band.json missing while surge bands exist",
+                "body": (
+                    "Surge precedence band(s) exist but the canonical "
+                    "precedence-band.json is missing from the band dir. "
+                    "fleet-ops#5779: without a canonical file the 'canonical "
+                    "band missing' state recurs silently. Restore "
+                    "precedence-band.json (machinery_max_pct <= 30) so it "
+                    "is the single source."
+                ),
+                "severity": "high",
+                "evidence": {
+                    "surge_bands": [str(p) for p in surge_rows],
+                    "reasons": ["canonical band file absent"],
+                },
+                "kind": "precedence-band",
+            }
+        )
+
+    return findings
+
+
 def _unit_finding_body(unit: str, adj_index: dict[str, dict[str, Any]]) -> str:
     """Finding body for a hand-placed unit; names a prior verdict when one exists.
 
@@ -642,6 +811,8 @@ def hunt(payload: dict[str, Any]) -> dict[str, Any]:
         findings.append(finding)
         rank += 1
 
+    findings.extend(_band_findings(payload))
+
     return {"findings": findings}
 
 
@@ -707,6 +878,13 @@ def main(argv: list[str] | None = None) -> int:
         help="live user unit dir for hunt (default ~/.config/systemd/user)",
     )
     parser.add_argument(
+        "--band-dir",
+        help=(
+            "dir of precedence-band*.json files for hunt "
+            "(default $PI_AGENT_STATE_DIR or ~/workspaces/agent-state)"
+        ),
+    )
+    parser.add_argument(
         "--ledger-line",
         action="store_true",
         help="print the decisions-ledger line verbatim and exit 0",
@@ -720,6 +898,9 @@ def main(argv: list[str] | None = None) -> int:
     allowlist = args.allowlist or _default_allowlist_path()
 
     if args.command == "hunt":
+        default_band_dir = os.environ.get("PI_AGENT_STATE_DIR") or str(
+            Path.home() / "workspaces" / "agent-state"
+        )
         if args.input:
             payload = _load_json(args.input)
             payload.setdefault("allowlist_path", allowlist)
@@ -729,6 +910,10 @@ def main(argv: list[str] | None = None) -> int:
             payload = {"allowlist_path": allowlist}
             if args.unit_dir:
                 payload["unit_dir"] = args.unit_dir
+        if args.band_dir:
+            payload["band_dir"] = args.band_dir
+        if "band_dir" not in payload and Path(default_band_dir).is_dir():
+            payload["band_dir"] = default_band_dir
         result = hunt(payload)
         json.dump(result, sys.stdout)
         sys.stdout.write("\n")

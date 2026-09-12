@@ -281,3 +281,52 @@ PY
 ok "rule-enforcement.json registers deletion-first + no-new-machinery with this gate"
 
 echo "OK: machinery-authorization-gate drill: reject unallowlisted add, pass deletion, live hunt"
+
+# --- fleet-ops#5779: stale surge precedence band hunt findings -----------
+# A surge band whose cutoff_utc is >24h past while machinery_max_pct>30, or
+# whose revert-condition issues are CLOSED for >48h, must be a hunt hit.
+band_paid=$(mktemp -d)
+trap 'rm -rf "$band_paid"' EXIT
+
+write_j() { jq -cn --argjson c "$2" '{band_files:[{path:$p,data:$c}]}' --arg p "$1"; }
+
+cut="2026-08-28T02:30:00Z"
+cut_fresh="2026-09-12T04:00:00Z"
+time_now="2026-09-12T06:00:00Z"
+closes='{"4130":"2026-09-07T21:15:06Z","4140":"2026-09-07T07:05:32Z"}'
+
+surge_band=$(jq -cn --arg cut "$cut" '{cutoff_utc:$cut,machinery_max_pct:100,surge_note:"REVERT when #4130 and #4140 close."}')
+stand_band=$(jq -cn --arg cut "$cut" '{cutoff_utc:$cut,machinery_max_pct:30}')
+
+# (i) fresh surge band (cutoff recent; revert issues <48h closed) → clean hunt
+surge_fresh=$(jq -cn --arg cut "$cut_fresh" '{cutoff_utc:$cut,machinery_max_pct:100,surge_note:"REVERT when #4130 and #4140 close."}')
+payload=$(write_j "precedence-band.surge-x.json" "$surge_fresh" | jq --arg c "$closes" --arg t "$time_now" '.issues_closed=$c|.now=$t')
+out=$("$gate" hunt --unit-dir /nonexistent --band-dir /nonexistent --input <(echo "$payload"))
+[[ $(jq '[.findings[] | select(.kind=="precedence-band" and (.title|startswith("stale surge precedence band")))] | length' <<<"$out") -eq 0 ]] || fail "fresh surge band must not be a stale-band hit: $out"
+ok "fresh surge band stays clean"
+
+# (ii) stale surge band: cutoff >24h past + machinery_max_pct>30 → hit
+payload=$(write_j "precedence-band.surge-2026-09-07.json" "$surge_band" | jq --arg c "$closes" --arg t "$time_now" '.issues_closed=$c|.now=$t')
+out=$("$gate" hunt --unit-dir /nonexistent --band-dir /nonexistent --input <(echo "$payload"))
+[[ $(jq '[.findings[] | select(.kind=="precedence-band" and (.title|startswith("stale surge precedence band")))] | length' <<<"$out") -eq 1 ]] || fail "stale surge band must be a hunt hit: $out"
+jq -e '[.findings[] | select(.kind=="precedence-band")][0].evidence.revert_issue_refs | index(4130) != null' <<<"$out" >/dev/null || fail "hit must cite revert refs #4130: $out"
+ok "stale surge band (cutoff past + issues closed >48h) is a hunt hit with refs"
+
+# (iii) canonical band missing while surge bands exist → second finding
+[[ $(jq '[.findings[] | select(.kind=="precedence-band" and (.title|contains("canonical")))] | length' <<<"$out") -eq 1 ]] || fail "missing canonical band must be a hunt hit: $out"
+ok "canonical precedence-band.json missing while surge bands exist"
+
+# (iv) canonical-only repo → clean (no surge rows → no findings at all)
+payload=$(write_j "precedence-band.json" "$stand_band" | jq --arg t "$time_now" '.now=$t')
+out=$("$gate" hunt --unit-dir /nonexistent --band-dir /nonexistent --input <(echo "$payload"))
+[[ "$(echo "$out" | jq ".findings | length")" -eq 0 ]] || fail "canonical-only band dir must yield no findings: $out"
+ok "canonical band only → clean hunt"
+
+# (v) live band-dir scan (default ~/workspaces/agent-state) — current state clean
+if [[ -d "$HOME/workspaces/agent-state" ]]; then
+  out=$("$gate" hunt --unit-dir /nonexistent --band-dir "$HOME/workspaces/agent-state")
+  [[ "$(jq '.findings | length' <<<"$out")" -eq 0 ]] || fail "live agent-state band dir must be clean post-revert: $out"
+  ok "live band-dir scan clean (surge reverted, canonical present)"
+fi
+
+echo "OK: machinery-authorization-gate #5779 regression: stale surge precedence bands are hunt hits"
