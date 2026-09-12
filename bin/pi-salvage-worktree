@@ -476,19 +476,23 @@ salvage_snapshot() {
         log "worktree clean unit=$unit workdir=$wd — no-op"
         return 0
     fi
-    local ref="wip/${unit}-${NOW}-snap" listf exclf tmpd tmpidx real_idx
+    local ref="wip/${unit}-${NOW}-snap" listf exclf tmpd tmpidx
     listf="$(mktemp)"; exclf="$(mktemp)"; tmpd="$(mktemp -d)"; tmpidx="$tmpd/index"
-    real_idx="$(git -C "$wd" rev-parse --path-format=absolute --git-path index 2>/dev/null || true)"
-    [[ -n "$real_idx" && -f "$real_idx" ]] && cp "$real_idx" "$tmpidx"
     log "snapshot-salvaging unit=$unit workdir=$wd (mtime-only match; worktree untouched) ref=$ref"
     if ! stage_dirty "$wd" "$listf" "$exclf"; then
         log "LOUD: pathspec staging failed unit=$unit workdir=$wd"
         rm -rf "$listf" "$exclf" "$tmpd"; return 1
     fi
     [[ -s "$exclf" ]] && log "secrets-looking paths excluded unit=$unit workdir=$wd: $(tr '\0' ' ' <"$exclf")"
+    if [[ ! -s "$listf" ]]; then
+        log "LOUD: dirty worktree but nothing stageable (all excluded?) unit=$unit workdir=$wd"
+    fi
     local sha="" secret=0 salvage_status="local"
     if ! (
         export GIT_INDEX_FILE="$tmpidx" GIT_LITERAL_PATHSPECS=1
+        # Seed the throwaway index from HEAD (not a copy of the owner's index,
+        # whose path lookup is fragile): snapshot = HEAD + the dirty paths.
+        git -C "$wd" read-tree HEAD || exit 3
         if [[ -s "$exclf" ]]; then
             git -C "$wd" reset -q --pathspec-from-file="$exclf" --pathspec-file-nul 2>/dev/null || true
         fi

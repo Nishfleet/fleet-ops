@@ -222,7 +222,7 @@ git -C "$scratch/orphan.git" show-ref --verify -q refs/heads/fix/dead-worker-2 \
 for f in one.txt two.txt three.txt; do
     git -C "$scratch/orphan.git" ls-tree -r --name-only "$snap" \
         | grep -qx "$f" \
-        || fail "snapshot commit must carry $f"
+        || fail "snapshot commit must carry $f: tree=[$(git -C "$scratch/orphan.git" ls-tree -r --name-only "$snap" | tr '\n' ' ')] log=[$(tail -8 "$scratch/orphan.log" | tr '\n' '|')]"
 done
 git -C "$scratch/orphan.git" ls-tree -r --name-only "$snap" \
     | grep -q '^\.env$' \
