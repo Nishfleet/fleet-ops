@@ -358,7 +358,7 @@
     {
       "id": "sr-never-vibes",
       "source": "global-standing-rules.md: Never decide by vibes — always measure (Nish, 2026-08-26)",
-      "mechanism": "Heartbeat vibes canary: ram_gb_per_worker (the rule's origin constant) must carry a top-level _comment_* citation with a date AND a bin/... measurement command (GATE, fail-loud); every other behaviour-driving constant in config/seat-caps.json (per-provider cap, quota_bench_default_s, cap=0 reason) either carries a dated measurement citation or has a filed ticket (DETECTOR, observe-to-open). A bare 'feels right' or a fleet-ops# ref alone is not a marker.",
+      "mechanism": "Heartbeat vibes canary: every behaviour-driving constant in config/seat-caps.json (per-provider cap, quota_bench_default_s, cap=0 reason) either carries a dated measurement citation or has a filed ticket (DETECTOR, observe-to-open). A bare 'feels right' or a fleet-ops# ref alone is not a marker. fleet-ops#4263 retired the ram_gb_per_worker GATE — the hand-tuned key is deleted; per-worker RAM is bounded by systemd MemoryMax + oomd.",
       "proof": "bin/fleet-vibes-canary; tests/fleet-vibes-canary.test.sh; fleet-heartbeat-tier1 block 40",
       "status": "enforced"
     },

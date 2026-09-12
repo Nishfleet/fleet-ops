@@ -164,7 +164,7 @@ grep -qF 'gate: no usable seat slot' "$tick" \
 # the extracted block evals in isolation.
 _gate_block=$(awk '/Usable seat-slot gate \(fleet-ops#3732/{on=1} on{print} on && /^fi$/{n++; if(n==5) exit}' "$tick")
 [[ -n "$_gate_block" ]] || fail "Test 10: could not extract the #3732 gate block from the tick"
-_rung_setup='PI_INTAKE_REPAIR_RUNG_AFTER=2; PI_INTAKE_REPAIR_RUNG_DISARM_AFTER=2; PI_INTAKE_REPAIR_RUNG_MAX_CONCURRENT=1; REPO=fleet-ops; _rung_clear_seat=""; heavy_seat=""; _repo_is_product=0; _repair_rung_armed=0; _repair_rung_product_reserve=0; _product_skip_reason=""; repair_rung_strikes() { echo 0; }; repair_rung_note_recovery() { echo 0; }; repair_rung_reset() { :; }; repair_rung_note_outage() { echo 1; }'
+_rung_setup='PI_INTAKE_REPAIR_RUNG_AFTER=2; PI_INTAKE_REPAIR_RUNG_DISARM_AFTER=2; PI_INTAKE_REPAIR_RUNG_MAX_CONCURRENT=1; REPO=fleet-ops; _rung_clear_seat=""; heavy_seat=""; heavy_route=""; light_route=""; _repo_is_product=0; _repair_rung_armed=0; _repair_rung_product_reserve=0; _product_skip_reason=""; repair_rung_strikes() { echo 0; }; repair_rung_note_recovery() { echo 0; }; repair_rung_reset() { :; }; repair_rung_note_outage() { echo 1; }'
 _out0=$( litellm_headroom() { echo 0; }; slots=2; eval "$_rung_setup; $_gate_block"; echo "CLAIM-STEP-REACHED slots=$slots" ) || true
 grep -qF 'holding claims this tick — gate: no usable seat slot' <<<"$_out0" \
     || fail "Test 10: 0 usable slots must hold with the gate line, got: $_out0"
