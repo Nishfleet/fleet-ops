@@ -75,6 +75,27 @@ whose class-lock PR on `claim/issue-<N>` has already merged back to
 it to `agent-ready` after StartLimitBurst and intake re-claims it every tick
 until the 24h observe-to-close window expires (fleet-ops#1083). Do not redo that sweep.
 
+The same sweep owns the deploy-fault class (fleet-ops#5785). An issue is
+deploy-fault when it carries the `deploy-fault` label or its body cites a
+failed `Deploy production` run; the sweep labels the latter automatically.
+A deploy-fault issue may only close with production proof — a green
+`Deploy production` run whose head SHA contains the delivery merge (the
+merged-PR green check is CI, not a shipped release: 0509#2662 closed the
+moment PR #2949 merged while every deploy run kept failing Gate C).
+`fleet-merged-pr-close` holds a close open until that green run exists and
+puts the run URL in the closing comment; the sweep's closed-issue pass
+reopens any deploy-fault issue that closed anyway (GitHub auto-close on a
+merged trailer, a human close) and still has no proof. The count is
+exported as `fleet_deploy_fault_closed_without_green` — it must stay 0.
+
+Stale production is its own alert, not a halt pile-up:
+`FleetProductionStale` (critical) fires when a product repo's last green
+`Deploy production` run is over 2h old while `main` carries a newer merge,
+and it dispatches a repair packet to a flagship seat through the existing
+alert-repair receiver (`repair_seat=flagship` walks
+`senior_seats_in_order` before the cheapest-healthy default). AUTO-REVERT
+HALT issues stay `noise-class` — they are not the escalation path.
+
 ---
 
 ## Step 1 — verify claimed work against real state

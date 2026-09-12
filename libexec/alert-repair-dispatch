@@ -608,6 +608,54 @@ def _pick_seat():
     return FALLBACK_LADDER[0][0], FALLBACK_LADDER[0][1], "fallback"
 
 
+def _senior_seats():
+    """senior_seats_in_order from seat-caps.json -> [(provider, model)].
+
+    fleet-ops#5785: the flagship ladder a repair_seat=flagship alert walks
+    BEFORE the cheapest-healthy default. Order is the seat-caps declared
+    senior order; entries are "provider/model" strings. Unreadable/absent
+    caps -> [] (the caller falls back to _pick_seat and logs the degrade).
+    """
+    try:
+        caps = json.loads(Path(SEAT_CAPS_JSON).read_text())
+    except (OSError, json.JSONDecodeError):
+        return []
+    out = []
+    for entry in caps.get("senior_seats_in_order") or []:
+        if isinstance(entry, str) and "/" in entry:
+            p, m = entry.split("/", 1)
+            if p and m:
+                out.append((p, m))
+    return out
+
+
+def _pick_flagship_seat():
+    """Return (provider, model, reason) or None — the flagship pick.
+
+    fleet-ops#5785: a repair_seat=flagship alert names a fault the cheapest
+    healthy seat demonstrably cannot fix (ProductDeployStalled dispatched to
+    cheap seats for days while 0509 production stayed broken). The flagship
+    path walks senior_seats_in_order and takes the FIRST usable senior seat
+    under the same rules _select_seat applies: walled providers, per-seat
+    ledger walls, overload wedges and the seat-caps allowlist all still
+    exclude. When no senior seat is usable the pick degrades to _pick_seat()
+    and logs FLAGSHIP-DEGRADED — a cheap repair attempt beats no repair, and
+    the degrade is loud in actions.log instead of silent.
+    """
+    for p, m in _senior_seats():
+        if _provider_overload_wedged(p):
+            continue
+        if (p not in WALLED_PROVIDERS and _seat_key_valid(p, m)
+                and not _seat_walled(p, m)):
+            return (p, m, "flagship")
+    picked = _pick_seat()
+    if picked:
+        _loud(f"FLAGSHIP-DEGRADED no senior seat usable — fell back to "
+              f"{picked[0]}/{picked[1]} ({picked[2]})")
+        return (picked[0], picked[1], f"flagship-degraded:{picked[2]}")
+    return None
+
+
 def utcnow():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -1558,7 +1606,14 @@ def main():
     # _pick_seat returns None — NEVER park a repair/spawn on a storming provider;
     # log `skipped-wedged` and spawn NOTHING (the alert re-fires on the next
     # AMX repeat_interval(6h); a stormed lane is worse than no lane).
-    picked = _pick_seat()
+    # fleet-ops#5785: an alert carrying repair_seat=flagship (e.g.
+    # FleetProductionStale — a production outage cheap seats kept seeing but
+    # never fixed) routes to the senior_seats_in_order ladder first; the
+    # flagship pick degrades to the normal pick, loudly, when no senior seat
+    # is usable.
+    want_flagship = any(
+        a["labels"].get("repair_seat") == "flagship" for a in alerts)
+    picked = _pick_flagship_seat() if want_flagship else _pick_seat()
     if not picked:
         with LOG.open("a") as f:
             f.write(

@@ -5437,6 +5437,72 @@ def _emit_observe_to_close(lines):
         lines.append(f'fleet_observe_to_close_total{{reason="{reason}"}} {counts[reason]}')
 
 
+# fleet-ops#5785: deploy-fault close gate gauges. Two sources, both written
+# by existing sweeps:
+#   - lifecycle-label-sweep.json: deploy_fault_closed_without_green is the
+#     issue's "must be 0" metric — every unit is a deploy-fault issue the
+#     sweep found CLOSED without a green production run and reopened.
+#   - merged-pr-close.json: deploy_fault_gate_blocked counts deliveries
+#     observe-to-close refused to close this tick because production is
+#     not green yet (the gate holding, not a violation).
+LIFECYCLE_SWEEP_JSON = Path(
+    os.environ.get(
+        "FLEET_LIFECYCLE_SWEEP_JSON",
+        "/home/nish/.local/state/fleet-heartbeat/lifecycle-label-sweep.json",
+    )
+)
+HELP_DFG = (
+    "# HELP fleet_deploy_fault_closed_without_green Deploy-fault issues found "
+    "closed without a green production-deploy run proving the fix in the last "
+    "lifecycle-label-sweep tick (each was reopened; fleet-ops#5785). Must be 0."
+)
+TYPE_DFG = "# TYPE fleet_deploy_fault_closed_without_green gauge"
+HELP_DFG_BLOCKED = (
+    "# HELP fleet_deploy_fault_gate_blocked Deliveries observe-to-close refused "
+    "to close this tick because the deploy-fault issue has no green "
+    "production-deploy run containing the fix yet (fleet-ops#5785)."
+)
+TYPE_DFG_BLOCKED = "# TYPE fleet_deploy_fault_gate_blocked gauge"
+HELP_DFG_LABELED = (
+    "# HELP fleet_deploy_fault_labeled Open issues the lifecycle sweep labelled "
+    "deploy-fault this tick because the body cites a failed production-deploy "
+    "run (fleet-ops#5785)."
+)
+TYPE_DFG_LABELED = "# TYPE fleet_deploy_fault_labeled gauge"
+
+
+def _emit_deploy_fault_gate(lines):
+    """Append the fleet_deploy_fault_* gauges. Never raises: missing or
+    unparseable summaries emit 0 so the tripwire only fires on a real count."""
+    violations = 0
+    labeled = 0
+    try:
+        data = json.loads(LIFECYCLE_SWEEP_JSON.read_text(encoding="utf-8"))
+        if isinstance(data.get("deploy_fault_closed_without_green"), (int, float)):
+            violations = int(data["deploy_fault_closed_without_green"])
+        if isinstance(data.get("deploy_fault_labeled"), (int, float)):
+            labeled = int(data["deploy_fault_labeled"])
+    except (OSError, json.JSONDecodeError):
+        pass
+    blocked = 0
+    try:
+        data = json.loads(MERGED_PR_CLOSE_JSON.read_text(encoding="utf-8"))
+        if isinstance(data.get("deploy_fault_gate_blocked"), (int, float)):
+            blocked = int(data["deploy_fault_gate_blocked"])
+    except (OSError, json.JSONDecodeError):
+        pass
+    lines.append("")
+    lines.append(HELP_DFG)
+    lines.append(TYPE_DFG)
+    lines.append(f"fleet_deploy_fault_closed_without_green {violations}")
+    lines.append(HELP_DFG_BLOCKED)
+    lines.append(TYPE_DFG_BLOCKED)
+    lines.append(f"fleet_deploy_fault_gate_blocked {blocked}")
+    lines.append(HELP_DFG_LABELED)
+    lines.append(TYPE_DFG_LABELED)
+    lines.append(f"fleet_deploy_fault_labeled {labeled}")
+
+
 def _emit_deploy_quality(lines):
     """Append the fleet_deployment_* family from lib/fleet-deploy-quality.py.
 
@@ -6538,6 +6604,7 @@ def main():
     # --- observe-to-close close guard (fleet-ops#3231) ---
     # Per-tick close count by reason; bare-mention and protected must stay 0.
     _emit_observe_to_close(lines)
+    _emit_deploy_fault_gate(lines)
 
     # --- Week-later revert check (fleet-ops#3124 part 4/4) ---
     # For each fleet-ops PR merged ~7 days ago with a `moves:` metric, compare
