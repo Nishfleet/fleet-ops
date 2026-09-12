@@ -14,13 +14,19 @@ not trust any stale copy you find: `agent-state/lanes/` now holds only
 
 Check live state directly instead, in this order:
 
-1. `systemctl --user list-units --state=failed` — must be EMPTY. Anything failed
+1. If `~/workspaces/agent-state/FLEET-PAUSED` exists, the fleet is
+   deliberately down — respect it. Stop; do not scope or launch work.
+2. `XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user list-timers` is the
+   truth on whether fleet timers are armed. Enrolment is declared in
+   fleet-ops `config/intake-repos.json`, converged by the reconciler
+   (fleet-ops#32).
+3. `systemctl --user list-units --state=failed` — must be EMPTY. Anything failed
    is a fault you own repairing in this turn. (Needs
    `XDG_RUNTIME_DIR=/run/user/$(id -u)` set, or it silently returns nothing.)
-2. `cat /home/nish/workspaces/agent-state/lanes/pi-seat-health.json` — the Pi
+4. `cat /home/nish/workspaces/agent-state/lanes/pi-seat-health.json` — the Pi
    seat's last observed provider/model, HTTP status and `health_class`. Check
    `observed_at` is recent before believing it.
-3. `uptime` for load, and merged-PR counts per repo for actual throughput.
+5. `uptime` for load, and merged-PR counts per repo for actual throughput.
 
 A missing or unparseable state file is itself a finding — report it, never treat
 it as "no news is good news".
