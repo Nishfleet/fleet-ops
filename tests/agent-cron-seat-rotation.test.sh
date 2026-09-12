@@ -575,3 +575,8 @@ bash "$here/agent-cron-fable-check-litellm-routing.test.sh" || fail "agent-cron-
 # edit .github/workflows/ci.yml, so the listed
 # agent-cron-seat-rotation.test.sh hosts the sibling guard test.
 bash "$here/agent-cron-prompt-e2big-guard.test.sh" || fail "agent-cron-prompt-e2big-guard tests failed"
+
+# fleet-ops#5739: the deterministic packet-size trim fallback. Same P14
+# hosting: the listed agent-cron-seat-rotation.test.sh hosts the sibling
+# packet-size trim regression test.
+bash "$here/agent-cron-packet-size.test.sh" || fail "agent-cron-packet-size tests failed"

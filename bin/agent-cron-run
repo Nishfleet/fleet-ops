@@ -77,7 +77,80 @@ test -f "$PROMPT" || { echo "FATAL: prompt missing: $PROMPT" >&2; exit 1; }
 # block appended below is ~200 bytes; 75000 leaves headroom under 82KB.
 PROMPT_E2BIG_CAP_BYTES="${PROMPT_E2BIG_CAP_BYTES:-75000}"
 prompt_bytes=$(wc -c <"$PROMPT")
+
+# --- fleet-ops#5739: deterministic trim fallback before the loud refusal ----
+# The packet's inputs (open alarms, stuck alert-repair packets, PR lists, one-
+# off follow-through sections) are monotonically growing live state, so at some
+# hour the prompt crosses the cap with nothing the operator removed. #5309's
+# fail-loud refusal there skipped the hourly judge cycle and burned 4 OnFailure
+# restarts (75495B, +0.7% over cap, 2026-09-11T19:00Z).
+#
+# Deterministic fallback: drop whole lowest-priority trailing '## ' sections
+# (one-off follow-throughs, dated brief rows — newest last, lowest priority
+# at the tail) from the end inward until the packet fits the cap. Protected
+# sections are never dropped: the preamble before the first heading, and any
+# section whose heading is STANDING or says "never delete this section". The
+# trim is logged (sections dropped + bytes saved). If even the trimmable
+# sections cannot bring it under the cap, the #5309 no-trimmable refusal
+# below still fires — the cap and the not-benching guard are untouched.
+trim_packet_sections() {
+    # $1 = source packet, $2 = trimmed output, $3 = target bytes.
+    # Prints one log line per dropped section ("trim: dropped ...").
+    local t_src="$1" t_dest="$2" t_target="$3"
+    local -a sec_lines
+    local total_lines i end_line head_text sec_bytes dropped_bytes=0 dropped_count=0
+
+    cp "$t_src" "$t_dest"
+    total_lines=$(wc -l <"$t_src")
+    mapfile -t sec_lines < <(grep -n '^## ' "$t_src" | cut -d: -f1)
+    ((${#sec_lines[@]} > 0)) || return 0
+
+    i=$(( ${#sec_lines[@]} - 1 ))
+    while (( i >= 0 )); do
+        (( $(wc -c <"$t_dest") > t_target )) || break
+        # Line numbers stay valid as we delete ONLY later ranges first
+        # (end-inward), so earlier sections keep their original numbering.
+        head_line=${sec_lines[i]}
+        head_text=$(sed -n "${head_line}p;${head_line}q" "$t_src")
+        # Protected: STANDING orders and sections the packet pins with
+        # "never delete this section". The preamble before the first
+        # heading is never inside the drop window.
+        if printf '%s\n' "$head_text" | grep -qiE 'STANDING|never delete this section'; then
+            (( i-- )); continue
+        fi
+        if (( i == ${#sec_lines[@]} - 1 )); then end_line=$(( total_lines + 1 )); else end_line=${sec_lines[i+1]}; fi
+        sec_bytes=$(sed -n "${head_line},$(( end_line - 1 ))p" "$t_src" | wc -c)
+        sed -i "${head_line},$(( end_line - 1 ))d" "$t_dest"
+        dropped_bytes=$(( dropped_bytes + sec_bytes ))
+        dropped_count=$(( dropped_count + 1 ))
+        printf 'trim: dropped section %s (-%d bytes)\n' "$head_text" "$sec_bytes"
+        (( i-- ))
+    done
+    printf 'trim total: dropped=%d section(s) saved=%d bytes\n' "$dropped_count" "$dropped_bytes"
+}
+
+PROMPT_USE="$PROMPT"
+trimmed_tmp=""
 if (( prompt_bytes > PROMPT_E2BIG_CAP_BYTES )); then
+    # Leave the ~200B stamp block and per-line headroom under the cap.
+    trim_target=$(( PROMPT_E2BIG_CAP_BYTES - 1024 ))
+    trimmed_tmp=$(mktemp "${TMPDIR:-/tmp}/agent-cron-trim.XXXXXX")
+    trim_log="$(trim_packet_sections "$PROMPT" "$trimmed_tmp" "$trim_target" || true)"
+    trimmed_bytes=$(wc -c <"$trimmed_tmp")
+    if [[ -n "$trim_log" ]] && (( trimmed_bytes <= trim_target )); then
+        printf '%s\n' "$trim_log" | grep -q '^trim: dropped' && {
+            printf '%s\n' "$trim_log" | while IFS= read -r line; do
+                seat_log "agent-cron-run: $slug packet trim (fleet-ops#5739): $line"
+            done
+            echo "PROMPT TRIMMED ${prompt_bytes} -> ${trimmed_bytes} under cap ${PROMPT_E2BIG_CAP_BYTES} (fleet-ops#5739)" >&2
+            PROMPT_USE="$trimmed_tmp"
+        } || true
+    fi
+fi
+
+prompt_bytes=$(wc -c <"$PROMPT_USE")
+if (( prompt_bytes > PROMPT_E2BIG_CAP_BYTES )); then
+    [[ -n "$trimmed_tmp" ]] && rm -f "$trimmed_tmp"
     echo "PROMPT TOO LARGE ${prompt_bytes} for cursor spawn-arg limit (fleet-ops#5307)" >&2
     seat_log "agent-cron-run: $slug PROMPT TOO LARGE ${prompt_bytes} > cap ${PROMPT_E2BIG_CAP_BYTES} — not spawning, not benching seat (fleet-ops#5309)"
     exit 1
@@ -160,7 +233,7 @@ rc=0
 # hits survive across ticks. Volatile seat/slug/timestamp stamps live AFTER
 # the cat, not before.
 if {
-        cat "$PROMPT"
+        cat "$PROMPT_USE"
         printf '\n---\nAGENT_CRON_SLUG=%s\nWORKDIR=%s\nPROVIDER=%s\nMODEL=%s\nRUN_TS=%s\n' "$slug" "$WORKDIR" "$np" "$nm" "$TS"
     } | (cd "$WORKDIR" && timeout --kill-after=30s "${PI_HANG_TIMEOUT_S}s" "$PI_BIN" --print --provider "$np" --model "$nm") >"$out" 2>"$err"; then
     rc=0
@@ -169,6 +242,8 @@ else
 fi
 spawn_end_s=$(date -u +%s)
 spawn_elapsed_s=$((spawn_end_s - spawn_start_s))
+# fleet-ops#5739: the trimmed packet temp file was consumed by the pipe.
+[[ -z "$trimmed_tmp" ]] || rm -f "$trimmed_tmp"
 
 # rc=124 is timeout(1)'s own exit when it killed pi (the hang watchdog).
 if (( rc == 124 )); then
