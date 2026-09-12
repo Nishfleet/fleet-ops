@@ -24,7 +24,7 @@ JSON
 cat >"$SEAT_CAPS_JSON" <<'JSON'
 { "ram_gb_per_worker": 1.5, "free_providers_in_order": ["commandcode", "xkiro"], "providers": { "commandcode": { "cap": 1, "class": "free", "models": { "laguna-s-2.1-free": 1 } }, "xkiro": { "cap": 1, "class": "free", "models": { "deepseek/deepseek-v4-pro": 1 } } } }
 JSON
-export PI_PACKET_SEAT_LIB="$repo_root/lib/seat-lib.sh"
+export PI_PACKET_SEAT_LIB="$repo_root/lib/litellm-seat.sh"
 export FLEET_DEBUG_PLAYBOOK_SESSION_DIR="$scratch/sessions"; mkdir -p "$FLEET_DEBUG_PLAYBOOK_SESSION_DIR"
 CALLS="$scratch/pi.calls"; : >"$CALLS"; export CALLS
 # Stub pi: call 1 = real work (3 tool results in the session) then a mid-run model error, exit 1.

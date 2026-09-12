@@ -819,7 +819,7 @@ healthy_capable_seat_for_issue() {
     local _out _p _m
     _out=$(
         source "$REPO_ROOT/lib/litellm-seat.sh"
-        litellm_pick_seat "$group"
+        litellm_seat "$group"
     )
     [[ -n "$_out" ]] || return 1
     _p="${_out%%$'\t'*}"
@@ -869,11 +869,11 @@ run_named_smoke() {
 # usable_at=<ISO> when the ledger has one so the caller can re-park.
 # shellcheck disable=SC2030,SC2031
 # The subshell below deliberately exports PI_PACKET_STATE/HOME into a
-# throwaway scope so seat-lib writes land in a temp dir, never the live state.
+# throwaway scope so seat-ledger writes land in a temp dir, never the live state.
 run_alibaba_smoke_ok() {
     local timeout_s
     timeout_s="${BLOCKED_RECONCILE_SMOKE_TIMEOUT_S:-60}"
-    # Subshell so sourcing seat-lib cannot leak into the sweep. No `local`
+    # Subshell so sourcing litellm-seat cannot leak into the sweep. No `local`
     # inside the subshell (bash rejects it).
     (
         p="alibaba-coding"
@@ -883,7 +883,7 @@ run_alibaba_smoke_ok() {
         export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
         export PI_PACKET_STATE="$_state"
         # shellcheck source=/dev/null
-        source "$REPO_ROOT/lib/seat-lib.sh"
+        source "$REPO_ROOT/lib/litellm-seat.sh"
         ledger=$(seat_ledger_path "$p" "$m")
         usable=""
         if [ -f "$ledger" ]; then

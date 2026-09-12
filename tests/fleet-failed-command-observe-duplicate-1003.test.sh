@@ -27,7 +27,7 @@
 # This file locks the 01a041a5 leftover-duplicate drain so a future
 # observe-to-close refactor cannot resolve only issue 0 of the 01a041a5
 # pile, and so the citation chain (worker.md + detector docstring +
-# seat-lib.test.sh host) for #1019 is verified.
+# seat.lib.test.sh host) for #1019 is verified.
 #
 # Live session: 2026-08-27T05-16-15-343Z_01a041a5-ba6f-771c-9de4-d9ddaa6a54b0.jsonl
 # Live signal:  failed-command-flagged/2026-08-27t05-16-15-343z-01a041a5-ba6f-771c-9de4-d9ddaa6a54b0
@@ -329,8 +329,8 @@ grep -q 'fleet-failed-command-observe-duplicate-1003.test.sh' "$lib" \
   || fail "lib/failed-command-flagged.py docstring must name the leftover-duplicate test file for the 01a041a5 pile"
 ok "lib/failed-command-flagged.py docstring cites #1003 / #1019 and names the leftover-duplicate test file"
 grep -F -q 'fleet-failed-command-observe-duplicate-1003.test.sh' \
-  "$here/seat-lib.test.sh" \
-  || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
-ok "seat-lib.test.sh hosts this file"
+  "$here/seat.lib.test.sh" \
+  || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
+ok "seat.lib.test.sh hosts this file"
 
 echo "OK: fleet-failed-command-observe-duplicate-1003: live #1003 / #1019 leftover-duplicate drain"

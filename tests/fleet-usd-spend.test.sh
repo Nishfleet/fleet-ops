@@ -151,7 +151,7 @@ ST="$pystate" bash - <<SH
 export PI_PACKET_STATE="$pystate"
 export STATE_DIR="$pystate"
 export SEAT_CAPS_JSON="$caps"
-source "$repo_root/lib/seat-lib.sh"
+source "$repo_root/lib/litellm-seat.sh"
 mkdir -p "\$STATE_DIR/prepaid-usage" "\$STATE_DIR"
 sess="$scratch/dev.jsonl"
 printf '%s\n' '{"type":"message","message":{"role":"assistant","usage":{"input":100,"output":100,"cacheRead":0}}}' > "\$sess"
@@ -167,7 +167,7 @@ ok "no-rate-card seat records UNAVAILABLE (not a fabricated \$0)"
 #     records UNAVAILABLE:remote (flat-share-only), not the generic no-rate-card.
 remote_state="$scratch/remote-state"
 PI_PACKET_STATE="$remote_state" bash - <<SH 2>/dev/null || true
-source "$repo_root/lib/seat-lib.sh"
+source "$repo_root/lib/litellm-seat.sh"
 export STATE_DIR="$remote_state"
 export SEAT_CAPS_JSON="$caps"
 mkdir -p "\$STATE_DIR/prepaid-usage" "\$STATE_DIR"

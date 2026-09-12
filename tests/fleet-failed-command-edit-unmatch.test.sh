@@ -41,7 +41,7 @@
 # Second live session of this class: 2026-08-27T08-42-19-241Z_01a04262-
 # 62e9-7c55-8e9a-0ac4fdbc57d2, auto-filed as #1079. Same shape: the
 # auditor's minimax-m3-free worker edited
-# tests/seat-lib.test.sh with stale oldText (the insertion point line
+# tests/seat.lib.test.sh with stale oldText (the insertion point line
 # had drifted from an earlier nearby edit by the same session).
 # The edit returned "Could not find the exact text in <path>",
 # isError=true, details={}. The assistant walked past it with a
@@ -104,7 +104,7 @@
 #      (detector-side lock: case list moved to lib, fleet-ops#3246).
 #   8. lib/failed-command-flagged.py docstring cites fleet-ops#1053
 #      (detector-side lock).
-#   9. seat-lib.test.sh hosts this file (CI cannot gain a P14 line).
+#   9. seat.lib.test.sh hosts this file (CI cannot gain a P14 line).
 #  10. live #1139 shape: edit "No changes made ... The replacement
 #      produced identical content" + cause-explaining prose ("The text
 #      is already the same") + grep probes + empty turns -> finding.
@@ -305,11 +305,11 @@ grep -q 'Found N occurrences' "$lib" \
   || fail "lib/failed-command-flagged.py docstring must name the live #1053 'Found N occurrences' wording"
 ok "lib/failed-command-flagged.py docstring cites fleet-ops#1053 and Found N occurrences"
 
-# --- 9. seat-lib.test.sh hosts this file (CI cannot gain a P14 line) ------
+# --- 9. seat.lib.test.sh hosts this file (CI cannot gain a P14 line) ------
 grep -Fq 'bash "$here/fleet-failed-command-edit-unmatch.test.sh"' \
-  "$here/seat-lib.test.sh" \
-  || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
-ok "seat-lib.test.sh hosts this file"
+  "$here/seat.lib.test.sh" \
+  || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
+ok "seat.lib.test.sh hosts this file"
 
 # --- 10. live #1139 shape: no-op edit + cause prose + empty turns ---------
 # Exact replay of session 01a04319: the `edit` of prompts/worker.md in the

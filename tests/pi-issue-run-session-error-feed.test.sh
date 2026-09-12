@@ -26,7 +26,7 @@ JSON
 cat >"$SEAT_CAPS_JSON" <<'JSON'
 { "ram_gb_per_worker": 1.5, "free_providers_in_order": [], "providers": { "devin": { "cap": 4, "class": "subscription", "quota_bench_default_s": 900, "models": { "swe-1-7": 4 } } } }
 JSON
-export PI_PACKET_SEAT_LIB="$repo_root/lib/seat-lib.sh"
+export PI_PACKET_SEAT_LIB="$repo_root/lib/litellm-seat.sh"
 inst="fleet-ops-1"; printf 'Implement one GitHub issue: fleet-ops#1.\n' >"$ISSUES_DIR/${inst}.in"
 export FLEET_DEBUG_PLAYBOOK_SESSION_DIR="$scratch/sessions"
 set +e; bash "$bin" "$inst" >"$scratch/run.out" 2>"$scratch/run.err"; rc=$?; set -e
@@ -35,7 +35,7 @@ grep -q 'session-error: Devin exited with code 1' "$ISSUES_DIR/${inst}.err" || f
 ok "Test 1: session errorMessage is surfaced into the err file"
 # P3b: local quota_bench ledgers are gone. Proxy cooldown owns walls.
 # The runner still exits 1 so systemd re-seats; it must not write a
-# per-model ledger (the old pick_seat path wrote $LEDGER/devin__swe-1-7.json).
+# per-model ledger (the old pick-seat path wrote $LEDGER/devin__swe-1-7.json).
 shopt -s nullglob
 ledgers=("$LEDGER"/*.json)
 (( ${#ledgers[@]} == 0 )) \

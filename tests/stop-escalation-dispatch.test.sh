@@ -15,7 +15,7 @@
 #     (fleet-ops#1534: writer class-gate routes non-boundary escalations to
 #     the auditor path, not NISH — they fold into the daily digest)
 #
-# Runs entirely offline with stubbed seat-lib.sh and a fake `pi` binary.
+# Runs entirely offline with stubbed seatlib.sh and a fake `pi` binary.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -40,10 +40,10 @@ cat >"$AS/STOP-REASON.json" <<'JSON'
 {"reason":"unit-failure","detail":{"unit":"pi-issue@fleet-ops-34.service"}}
 JSON
 
-SEAT_LIB_STUB="$scratch/seat-lib-stub.sh"
-# The stub mirrors the real seat-lib contract the fix relies on:
-#   - pick_seat honours need_capable (arg 3) and the tried-file exclusion (arg 4)
-#   - pick_seat skips seats recorded in $STOP_ESCALATION_TEST_BENCH_FILE
+SEAT_LIB_STUB="$scratch/seatlib-stub.sh"
+# The stub mirrors the real seatlib contract the fix relies on:
+#   - pick-seat honours need_capable (arg 3) and the tried-file exclusion (arg 4)
+#   - pick-seat skips seats recorded in $STOP_ESCALATION_TEST_BENCH_FILE
 #     (stands in for seat_usable reading the per-seat ledger a real
 #     mark_seat_spawn_fail writes)
 #   - mark_seat_spawn_fail appends to the bench file so the next pick rotates
@@ -54,7 +54,7 @@ cat >"$SEAT_LIB_STUB" <<'EOF'
 #!/usr/bin/env bash
 # $'\t' gives a real tab; a double-quoted "\t" is a literal backslash-t and
 # would not split in `read` / `cut`, breaking provider/model parsing.
-pick_seat() {
+litellm_seat() {
   local fail_p="$1" fail_m="$2" need_capable="${3:-0}" tried_file="${4:-}"
   local mode="${STOP_ESCALATION_TEST_SEAT_MODE:-healthy}"
   local TAB=$'\t'
@@ -79,7 +79,7 @@ pick_seat() {
     if [ -n "$tried_file" ] && [ -f "$tried_file" ] \
        && grep -qxF "$p/$m" "$tried_file" 2>/dev/null; then continue; fi
     # fleet-ops#2661: escalate-lane provider-wedge skip (mirror of the
-    # real seat-lib pick_seat when FLEET_ESCALATION_WEDGE_CHECK=1):a
+    # real seatlib pick-seat when FLEET_ESCALATION_WEDGE_CHECK=1):a
     # provider listed in $STOP_ESCALATION_TEST_WEDGE_FILE is overload-wedged
     # and ALL its seats are excluded from this pick.
     if [ "${FLEET_ESCALATION_WEDGE_CHECK:-0}" = "1" ] && [ -n "${STOP_ESCALATION_TEST_WEDGE_FILE:-}" ] && [ -f "$STOP_ESCALATION_TEST_WEDGE_FILE" ] \
@@ -89,16 +89,16 @@ pick_seat() {
   done
   return 1
 }
-litellm_pick_seat() {
+litellm_seat() {
   local tried="${2:-}"
-  pick_seat "" "" 1 "$tried"
+  pick-seat "" "" 1 "$tried"
 }
 mark_seat_spawn_fail() {
   local p="$1" m="$2"
   [ -n "${STOP_ESCALATION_TEST_BENCH_FILE:-}" ] || return 0
   printf '%s/%s\n' "$p" "$m" >> "$STOP_ESCALATION_TEST_BENCH_FILE"
 }
-# Mirror the real seat-lib detectors (fleet-ops#623): "insufficient funds" is
+# Mirror the real seatlib detectors (fleet-ops#623): "insufficient funds" is
 # NOT a quota_cap match in production either, so a 402 falls through to
 # mark_seat_spawn_fail — that is the live tight-loop path this fix targets.
 is_credentials_error() { return 1; }
@@ -107,7 +107,7 @@ is_quota_cap_error() {
   local out="$1" err="$2"
   local combined="$out"$'\n'"$err"
   [[ -n "$combined" ]] || return 1
-  # Mirror of the real lib/seat-lib.sh matcher (fleet-ops#3816 added the
+  # Mirror of the real lib/litellm-seat.sh matcher (fleet-ops#3816 added the
   # xkiro free-model daily-token-quota patterns; the live 47-count
   # spawn_fail park on xkiro/deepseek-v4-flash was a stub that predated
   # them, so a regression here re-opens the misclassification).
@@ -692,7 +692,7 @@ ok "fleet-ops#3780: xkiro free-model daily-token-quota 429 -> quota_cap bench, n
 # provider with >=2 seats in overload_bench within the last 30 min is WEDGED:
 # the AUDITOR must NEVER be dispatched into that storm (it just killed the
 # workers). The dispatcher exports FLEET_ESCALATION_WEDGE_CHECK=1; the real
-# pick_seat (and this stub mirror of it) skip wedged providers entirely.
+# pick-seat (and this stub mirror of it) skip wedged providers entirely.
 # Prove: wedge=cursor -> rotation skips cursor and dispatches devin; wedge=both
 # -> no seat -> LADDER-WALLED (quiet auditor-log, exit 0,, NOT a dispatch.
 # ---------------------------------------------------------------------------

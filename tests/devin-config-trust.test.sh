@@ -14,7 +14,7 @@
 #   2. install.sh's ensure_devin_config_trust() merges the correct key into a
 #      live config that has the wrong key, drops the wrong key, and preserves
 #      existing account fields.
-#   3. The seat-lib detector is_workspace_trust_error matches the literal
+#   3. The seatlib detector is_workspace_trust_error matches the literal
 #      "Refusing to run in an untrusted workspace".
 #   4. mark_seat_config_fault_bench writes a config_fault ledger entry that is
 #      NEVER retired (seat_dead=false), proving config/trust faults are
@@ -111,12 +111,12 @@ idem_org=$(jq -r '."devin.org_id" // "MISSING"' "$live_cfg")
 ok "install.sh: idempotent re-run preserves skip_workspace_trust=true and account fields"
 
 # ============================================================================
-# 3. seat-lib: is_workspace_trust_error matcher
+# 3. seatlib: is_workspace_trust_error matcher
 # ============================================================================
-lib="$repo_root/lib/seat-lib.sh"
-[[ -f "$lib" ]] || fail "seat-lib.sh not found: $lib"
+lib="$repo_root/lib/litellm-seat.sh"
+[[ -f "$lib" ]] || fail "seatlib.sh not found: $lib"
 
-# Minimal seat-caps.json so seat-lib loads.
+# Minimal seat-caps.json so seatlib loads.
 cat >"$scratch/seat-caps.json" <<'JSON'
 {
   "ram_gb_per_worker": 1.5,
@@ -231,7 +231,7 @@ seat_dead=$(jq -r '.seat_dead' "$ledger_file")
 [[ "$seat_dead" == "false" ]] \
     || fail "mark_seat_config_fault_bench must write seat_dead=false (config fault is infrastructure, NOT yield/corpse), got '$seat_dead'"
 
-# The bench must have a usable_at in the future (short bench so pick_seat dodges it).
+# The bench must have a usable_at in the future (short bench so pick-seat dodges it).
 usable_at=$(jq -r '.usable_at // "MISSING"' "$ledger_file")
 [[ "$usable_at" != "MISSING" ]] || fail "mark_seat_config_fault_bench must write usable_at, missing"
 bench_until=$(jq -r '.bench_until // "MISSING"' "$ledger_file")

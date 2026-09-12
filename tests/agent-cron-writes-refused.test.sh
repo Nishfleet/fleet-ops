@@ -11,11 +11,11 @@
 #
 # The fix has three parts, all pinned here:
 #
-#   1. is_writes_refused (seat-lib) detects the WRITES-REFUSED contract
+#   1. is_writes_refused (seatlib) detects the WRITES-REFUSED contract
 #      sentinel AND the refusal phrases the gated seats already emit
 #      ("approval cards rejected", "blocked by auto-review", devin's
 #      "rejected a tool call").
-#   2. mark_seat_writes_refused_bench (seat-lib) writes a config_fault
+#   2. mark_seat_writes_refused_bench (seatlib) writes a config_fault
 #      ledger entry (seat_dead=false — infrastructure, never seat yield)
 #      whose usable_at window (default 3600s) OUTLASTS the caller unit's
 #      RestartSec=900, so the systemd retry walks the senior ladder instead
@@ -24,27 +24,27 @@
 #      the refused run's output into the dated log file, benches the seat,
 #      and exits 1 (loud: Restart= -> OnFailure escalation).
 #
-# Offline: stubbed seat-caps.json/ledger for the seat-lib sections; a stub
-# seat-lib + fake pi for the agent-cron-run end-to-end.
-# Hosted by tests/seat-lib.test.sh (workers cannot add a ci.yml line).
+# Offline: stubbed seat-caps.json/ledger for the seatlib sections; a stub
+# seatlib + fake pi for the agent-cron-run end-to-end.
+# Hosted by tests/seat.lib.test.sh (workers cannot add a ci.yml line).
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-lib="$repo_root/lib/seat-lib.sh"
+lib="$repo_root/lib/litellm-seat.sh"
 bin="$repo_root/bin/agent-cron-run"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
 command -v jq >/dev/null || fail "jq required"
-[[ -f "$lib" ]] || fail "seat-lib.sh not found: $lib"
+[[ -f "$lib" ]] || fail "seatlib.sh not found: $lib"
 [[ -x "$bin" ]] || fail "not executable: $bin"
 
 scratch="$(mktemp -d -t agent-cron-writes-refused.XXXXXX)"
 trap 'rm -rf "$scratch"' EXIT INT TERM
 
-# Minimal seat-caps.json so seat-lib loads.
+# Minimal seat-caps.json so seatlib loads.
 cat >"$scratch/seat-caps.json" <<'JSON'
 {
   "ram_gb_per_worker": 1.5,
@@ -94,7 +94,7 @@ export XDG_RUNTIME_DIR="$scratch/xdg"
 mkdir -p "$XDG_RUNTIME_DIR"
 
 # ============================================================================
-# 1. seat-lib: is_writes_refused matcher
+# 1. seatlib: is_writes_refused matcher
 # ============================================================================
 match() {
     bash -c 'source "$0"; load_seat_caps; is_writes_refused "$1" "$2"' \
@@ -181,14 +181,14 @@ bash -c 'source "$0"; load_seat_caps; seat_usable "$1" "$2"' \
 rc=$?
 set -e
 [[ "$rc" == "1" ]] || fail "seat_usable must skip the writes-refused-benched seat while the bench holds (rc=$rc)"
-ok "seat_usable: benched seat is skipped (pick_seat retry walks the ladder)"
+ok "seat_usable: benched seat is skipped (pick-seat retry walks the ladder)"
 
 # ============================================================================
 # 3. agent-cron-run end-to-end: refused output on rc=0 -> exit 1 + bench +
 #    output recorded; clean output -> exit 0 as before
 # ============================================================================
 bench_record="$scratch/bench.calls"
-stub_lib="$scratch/stub-seat-lib.sh"
+stub_lib="$scratch/stub-seatlib.sh"
 cat >"$stub_lib" <<'EOF'
 export HOME="${HOME:-/home/nish}"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/1000}"
@@ -206,7 +206,7 @@ mark_seat_quota_bench() { return 0; }
 # the contract sentinel, the marker the prompt guarantees.
 is_writes_refused() { grep -q 'WRITES-REFUSED' <<<"$1$2"; }
 mark_seat_writes_refused_bench() { printf '%s\t%s\t%s\n' "$1" "$2" "$3" >>"$BENCH_RECORD"; return 0; }
-pick_seat() { printf 'cursor\tcursor-grok-4.6-high\n'; return 0; }
+litellm_seat() { printf 'cursor\tcursor-grok-4.6-high\n'; return 0; }
 EOF
 
 fake_pi="$scratch/pi"
@@ -299,8 +299,8 @@ grep -q 'mark_seat_writes_refused_bench' "$bin" \
 ok "agent-cron-run wires is_writes_refused + mark_seat_writes_refused_bench"
 
 grep -q 'SEAT_WRITES_REFUSED_BENCH_S' "$lib" \
-    || fail "seat-lib must define SEAT_WRITES_REFUSED_BENCH_S"
-ok "seat-lib carries SEAT_WRITES_REFUSED_BENCH_S"
+    || fail "seatlib must define SEAT_WRITES_REFUSED_BENCH_S"
+ok "seatlib carries SEAT_WRITES_REFUSED_BENCH_S"
 
 echo
 echo "ALL OK: agent-cron-writes-refused.test.sh (fleet-ops#5189)"

@@ -48,7 +48,7 @@ if [[ "$sub" == "pr" ]]; then
   case "$repo" in
     *fleet-ops)
       cat <<'JSON'
-[{"number":1,"title":"fix(seat-lib): corpse retirement","mergedAt":"2026-09-05T00:00:00Z","headRefName":"seatfix"},
+[{"number":1,"title":"fix(seatlib): corpse retirement","mergedAt":"2026-09-05T00:00:00Z","headRefName":"seatfix"},
  {"number":2,"title":"fix(seat-caps): bump cap","mergedAt":"2026-09-05T01:00:00Z","headRefName":"cap"},
  {"number":3,"title":"fix(canary): empty-run burst","mergedAt":"2026-09-05T02:00:00Z","headRefName":"canary"}]
 JSON

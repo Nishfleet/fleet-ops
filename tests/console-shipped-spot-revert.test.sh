@@ -27,8 +27,8 @@ cat >"$gh_fake" <<'FAKE'
 # gh api search/issues -X GET -f q=... --paginate --jq '.items[]?.title'
 if [[ "$1" == "api" && "$2" == "search/issues" ]]; then
   cat <<'OUT'
-fix(seat-lib): corpse retirement
-Revert "fix(seat-lib): corpse retirement"
+fix(seatlib): corpse retirement
+Revert "fix(seatlib): corpse retirement"
 feat(search): plain buyer copy
 auto-revert: auto-restore green main
 revert: auto-restore green main (reverts b498b90)
@@ -62,7 +62,7 @@ assert m._is_revert_title("auto-revert: auto-restore green main") is True
 assert m._is_revert_title("revert: auto-restore green main (reverts b498b90)") is True
 assert m._is_revert_title("revert/3a1d316") is False  # head-ref form is not a title; fine, title covers the bot
 assert m._is_revert_title("feat(search): plain copy") is False
-assert m._is_revert_title("fix(seat-lib): corpse retirement") is False
+assert m._is_revert_title("fix(seatlib): corpse retirement") is False
 print("OK: _is_revert_title matches fleet-product-slo revert conventions")
 
 # gh skip still skips, never disputes (existing safety)

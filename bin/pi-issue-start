@@ -81,7 +81,7 @@ if [[ ! -f "$pkt" ]]; then
     unit_name="pi-issue-${instance}"
     # Keystone routing (fleet-ops#1133): if the issue title/body/labels carry
     # "keystone" (case-insensitive), write the marker in the volatile tail so
-    # pick_seat uses reliability-first routing. This mirrors intake step 3d
+    # pick-seat uses reliability-first routing. This mirrors intake step 3d
     # exactly (fleet-ops#4643: marker AFTER worker.md, never before). A gh
     # failure is non-fatal: the packet is still written without the marker,
     # and the worker runs with default routing rather than not at all.

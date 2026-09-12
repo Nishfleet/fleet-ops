@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# tests/seat-lib-retire.test.sh
+# tests/seatlib-retire.test.sh
 #
 # fleet-ops#3669: corpse retirement must leave the seat UNPICKABLE. The
 # corpse-retirement caller (bin/fleet-seat-comeback-release) physically MOVES
 # a terminal corpse ledger out of the live roster into a dated
 # seats-corpse-retired-<UTC-ts>/ audit dir. Before this fix the move left NO
 # ledger in the live roster, so seat_usable fell through to the
-# "NO HEALTH DATA (no ledger file) — assuming usable" fail-open and pick_seat
+# "NO HEALTH DATA (no ledger file) — assuming usable" fail-open and pick-seat
 # re-picked the deliberately-retired dead seat (hetzner burned 2 claims in
 # 6 min, 2026-09-05).
 #
@@ -20,7 +20,7 @@
 #
 # What we prove:
 #   1. ledger at count>=20 -> retire (move + write_parked_ledger) ->
-#      pick_seat refuses the seat (rc=1, NO USABLE SEAT, log names the park).
+#      pick-seat refuses the seat (rc=1, NO USABLE SEAT, log names the park).
 #   2. a parked ledger makes seat_usable UNUSABLE with a log line naming the
 #      park.
 #   3. a seat with no ledger and no corpse copy is still assumed usable
@@ -31,15 +31,15 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-lib="$repo_root/lib/seat-lib.sh"
+lib="$repo_root/lib/litellm-seat.sh"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
-[[ -f "$lib" ]] || fail "seat-lib.sh not found: $lib"
+[[ -f "$lib" ]] || fail "seatlib.sh not found: $lib"
 command -v jq >/dev/null || fail "jq required"
 
-scratch="$(mktemp -d -t seat-lib-retire.XXXXXX)"
+scratch="$(mktemp -d -t seatlib-retire.XXXXXX)"
 trap 'rm -rf "$scratch"' EXIT INT TERM
 
 # fleet-ops#3928: seat_log must never reach the live watch.log from a test.
@@ -50,7 +50,7 @@ export SEAT_LOG_FILE="$scratch/watch.log"
 export PI_SEAT_LIB_CHECK_SYSTEMD=0
 export PI_SEAT_NOUSABLE_COOLDOWN_S=0
 
-# A single free seat so pick_seat's verdict is unambiguous: either it picks
+# A single free seat so pick-seat's verdict is unambiguous: either it picks
 # hetzner/Qwen/Qwen3.6-35B-A3B-FP8 or it stalls (rc=1, NO USABLE SEAT).
 cat >"$scratch/models.json" <<'JSON'
 {
@@ -92,16 +92,16 @@ set -e
 [[ "$rc" == "0" ]] || fail "clean: seat_usable must be usable (no ledger, no corpse copy), got rc=$rc"
 grep -q "NO HEALTH DATA" <<<"$out" \
   || fail "clean: no-ledger seat must log the NO HEALTH DATA fail-open line, got: $out"
-# pick_seat end-to-end: it picks the seat.
+# pick-seat end-to-end: it picks the seat.
 set +e
-out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" 2>/dev/null)
+out=$(bash -c 'source "$0"; load_seat_caps; pick-seat "" "" 0' "$lib" 2>/dev/null)
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "clean: expected a pick (no ledger, no corpse copy), got rc=$rc"
 echo "$out" | grep -q "hetzner" || fail "clean: expected hetzner pick, got: $out"
 ok "1: no ledger + no corpse copy still assumed usable (fail-open intact)"
 
-# --- 2. ledger at count>=20 -> retire -> pick_seat refuses (log names park) --
+# --- 2. ledger at count>=20 -> retire -> pick-seat refuses (log names park) --
 ledger="$scratch/live-retired"
 mkdir -p "$ledger"
 export PI_SEAT_HEALTH_LEDGER_DIR="$ledger"
@@ -120,16 +120,16 @@ bash -c 'source "$0"; write_parked_ledger "hetzner" "Qwen/Qwen3.6-35B-A3B-FP8" "
 [[ -f "$ledger/hetzner__Qwen_Qwen3.6-35B-A3B-FP8.json" ]] \
   || fail "retired: write_parked_ledger must leave a parked ledger in the live roster"
 set +e
-out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" 2>/dev/null)
+out=$(bash -c 'source "$0"; load_seat_caps; pick-seat "" "" 0' "$lib" 2>/dev/null)
 rc=$?
 set -e
-[[ "$rc" == "1" ]] || fail "retired: pick_seat must refuse the retired seat (rc=1), got rc=$rc"
-[[ -z "$out" ]] || fail "retired: pick_seat must print nothing, got: $out"
+[[ "$rc" == "1" ]] || fail "retired: pick-seat must refuse the retired seat (rc=1), got rc=$rc"
+[[ -z "$out" ]] || fail "retired: pick-seat must print nothing, got: $out"
 grep -q "NO USABLE SEAT" "$SEAT_LOG_FILE" \
   || fail "retired: must log the loud NO USABLE SEAT line"
 grep -q "parked" "$SEAT_LOG_FILE" \
   || fail "retired: log must name the park (health_class=parked)"
-ok "2: ledger at count>=20 -> retire -> pick_seat refuses the seat (log names the park)"
+ok "2: ledger at count>=20 -> retire -> pick-seat refuses the seat (log names the park)"
 
 # --- 3. parked ledger -> seat_usable UNUSABLE, log names the park ---------
 ledger="$scratch/live-parked"

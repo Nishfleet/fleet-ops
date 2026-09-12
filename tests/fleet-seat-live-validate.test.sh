@@ -508,7 +508,7 @@ unset FLEET_MODELS_JSON
 # (quota_exhausted, usable_at in the future) from the REAL completion path,
 # but the canary's /v1/models probe returned 200 (token auth is valid) and
 # wrote health_class=healthy onto the same ledger, clobbering the wall.
-# pick_seat then re-offered the drained seat, the scout/repair unit picked
+# pick-seat then re-offered the drained seat, the scout/repair unit picked
 # it, 402'd, and failed. /v1/models 200 proves the TOKEN is valid, not that
 # the Grok Build USAGE balance has credit — a healthy downgrade must not
 # tear down an unexpired quota wall. Only the seat-health extension's own

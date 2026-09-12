@@ -60,7 +60,7 @@
 #      field id (live session also carried the unpiped sibling probe).
 #   5. worker.md cites fleet-ops#5010 and the merge-queue json.load wording.
 #   6. lib/failed-command-flagged.py docstring cites fleet-ops#5010.
-#   7. seat-lib.test.sh hosts this file (CI cannot gain a P14 line).
+#   7. seat.lib.test.sh hosts this file (CI cannot gain a P14 line).
 
 set -euo pipefail
 
@@ -175,8 +175,8 @@ grep -q 'isInMergeQueue' "$lib" \
   || fail "lib/failed-command-flagged.py docstring must name the live 'isInMergeQueue' wording"
 ok "lib/failed-command-flagged.py docstring cites fleet-ops#5010 and the gh --json | python json.load shape"
 
-# --- 7. seat-lib.test.sh hosts this file (CI cannot gain a P14 line) --------
+# --- 7. seat.lib.test.sh hosts this file (CI cannot gain a P14 line) --------
 grep -Fq 'bash "$here/fleet-failed-command-gh-pr-json-piped-python-load.test.sh"' \
-  "$here/seat-lib.test.sh" \
-  || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
-ok "seat-lib.test.sh hosts this file"
+  "$here/seat.lib.test.sh" \
+  || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
+ok "seat.lib.test.sh hosts this file"

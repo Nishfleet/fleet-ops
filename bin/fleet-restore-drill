@@ -249,17 +249,13 @@ plane_b_fleet_files() {
       loud "RESTORE-DRILL-FAIL" "seat-caps.json unparseable JSON at $SEAT_CAPS_JSON"
       violations=$((violations + 1))
     else
-      # Load-bearing keys per lib/litellm-seat.sh: ram_gb_per_worker (number),
-      # providers (object, non-empty), free_providers_in_order (array).
-      local ram providers free_order
-      ram="$(jq -r '.ram_gb_per_worker // empty' "$SEAT_CAPS_JSON" 2>/dev/null)"
+      # Load-bearing keys per lib/litellm-seat.sh: providers (object,
+      # non-empty), free_providers_in_order (array). fleet-ops#4263: the
+      # per-worker RAM key is gone — MemoryMax + oomd own that.
+      local providers free_order
       providers="$(jq -r '.providers | keys | length' "$SEAT_CAPS_JSON" 2>/dev/null || echo 0)"
       free_order="$(jq -r '.free_providers_in_order | type' "$SEAT_CAPS_JSON" 2>/dev/null || echo "")"
-      log "B.1  - seat-caps ram_gb_per_worker=$ram providers=$providers free_providers_in_order=$free_order"
-      if [[ -z "$ram" ]] || ! [[ "$ram" =~ ^[0-9.]+$ ]]; then
-        loud "RESTORE-DRILL-FAIL" "seat-caps.json missing/invalid .ram_gb_per_worker (got '$ram') — litellm-seat.sh RAM governor cannot compute"
-        violations=$((violations + 1))
-      fi
+      log "B.1  - seat-caps providers=$providers free_providers_in_order=$free_order"
       if ! [[ "$providers" =~ ^[0-9]+$ ]] || (( providers == 0 )); then
         loud "RESTORE-DRILL-FAIL" "seat-caps.json .providers empty or missing — no seats are defined"
         violations=$((violations + 1))

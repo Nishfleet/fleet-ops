@@ -13,7 +13,7 @@
 # repos.json — the same source of truth undersaturation + blocked-reconcile
 # read):
 #
-#   if ready < lane_ceiling          (the live RAM-governor lane count —
+#   if ready < lane_ceiling          (the live lane count —
 #                                     seat_max_concurrent(); fewer ready
 #                                     items than lanes means starvation is
 #                                     already scheduled)
@@ -121,11 +121,11 @@ command -v jq >/dev/null 2>&1 || {
 # --- enrolled repos (source of truth: config/intake-repos.json) -------------
 enrolled_repos=$(jq -r '.repos[].name | "Nishfleet/" + .' "$INTAKE_JSON")
 
-# --- lane ceiling: the live RAM-governor lane count (seat_max_concurrent) ---
+# --- lane ceiling: the live lane count (seat_max_concurrent) ---
 # The natural low-water mark: fewer ready items than lanes means starvation is
 # already scheduled. FLEET_LOW_WATER_LANE_CEILING overrides litellm-seat entirely
 # (test seam + production escape hatch); otherwise source litellm-seat once and
-# call seat_max_concurrent() = min(sum_of_provider_caps, ram_governor_cap).
+# call seat_max_concurrent() = sum of the declared provider caps.
 _LWM_SEAT_LIB_LOADED=0
 lane_ceiling() {
     if [ -n "${FLEET_LOW_WATER_LANE_CEILING:-}" ]; then

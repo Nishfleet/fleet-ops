@@ -44,7 +44,7 @@
 #   7. lib/failed-command-flagged.py cites fleet-ops#5042, the live
 #      01a088ec session slug, and the live monitor-chain wording
 #      (detector-side lock: case list moved to lib, fleet-ops#3246).
-#   8. seat-lib.test.sh hosts this file (CI cannot gain a P14 line).
+#   8. seat.lib.test.sh hosts this file (CI cannot gain a P14 line).
 
 set -euo pipefail
 
@@ -176,10 +176,10 @@ grep -q 'ps --ppid 1822243' "$lib" \
   || fail "lib/failed-command-flagged.py must name the live #5042 monitor-chain wording so workers flag the shape"
 ok "lib/failed-command-flagged.py cites fleet-ops#5042, the 01a088ec session, and the live wording"
 
-# --- 8. seat-lib.test.sh hosts this file (CI cannot gain a P14 line) ----
+# --- 8. seat.lib.test.sh hosts this file (CI cannot gain a P14 line) ----
 grep -Fq 'bash "$here/fleet-failed-command-ps-empty-selection.test.sh"' \
-  "$here/seat-lib.test.sh" \
-  || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
-ok "seat-lib.test.sh hosts this file"
+  "$here/seat.lib.test.sh" \
+  || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
+ok "seat.lib.test.sh hosts this file"
 
 echo "OK: fleet-failed-command-ps-empty-selection: live #5042 ps empty-selection probe + invocation-failure drills"

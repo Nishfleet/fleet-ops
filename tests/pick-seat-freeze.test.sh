@@ -304,6 +304,18 @@ while IFS= read -r f; do
 done < <(grep -rlE "$PAT" bin lib tests 2>/dev/null | sort)
 (( new_hits == 0 )) || fail "new retired-routing matches found (see above)"
 
+# fleet-ops#4263 accept: once the deletion lands, the retired routing
+# library file is gone and no caller remains. (This file is the tombstone
+# test — the only file still allowed to carry the retired names.)
+[[ ! -f "$repo_root/lib/seat-lib.sh" ]] \
+    || fail "lib/seat-lib.sh must be absent after the P3b deletion"
+if grep -rqE '\$\(pick_seat|(^|[[:space:]])pick_seat\(' bin lib 2>/dev/null; then
+    fail "a pick_seat caller remains under bin/ or lib/"
+fi
+if grep -rqE 'ram_governor_cap|active_ram_charge' bin lib 2>/dev/null; then
+    fail "a RAM-governor caller remains under bin/ or lib/"
+fi
+
 # (b) No manifest file may GROW its match count. Shrinking is allowed —
 # that is the deletion doing its job.
 grown=0
@@ -311,7 +323,7 @@ for f in "${!frozen[@]}"; do
     [[ -f "$f" ]] || continue
     n=$(grep -oE "$PAT" "$f" 2>/dev/null | wc -l)
     n=${n//[^0-9]/}
-    if (( n > frozen[$f] )); then
+    if (( n > ${frozen[$f]:-0} )); then
         echo "FAIL: $f grew retired-routing matches ${frozen[$f]} -> $n — no new pick_seat callers while fleet-ops#4263 deletion is open" >&2
         grown=1
     fi

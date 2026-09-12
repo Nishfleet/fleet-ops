@@ -26,7 +26,7 @@
 # file locks the leftover-duplicate DRAIN for the python-traceback
 # pile so a future observe-to-close refactor cannot resolve only issue
 # 0 of the 01a03e38 pile, and so the citation chain (worker.md +
-# detector docstring + seat-lib.test.sh host) for #966 and #971 is
+# detector docstring + seat.lib.test.sh host) for #966 and #971 is
 # verified.
 #
 # Live session: 2026-08-26T13-18-31-426Z_01a03e38-e602-737c-b399-576dcf48d08e.jsonl
@@ -330,8 +330,8 @@ grep -q '#966, #971' "$lib" \
   || fail "lib/failed-command-flagged.py docstring must cite #971 next to #966"
 ok "lib/failed-command-flagged.py docstring cites #971"
 grep -F -q 'fleet-failed-command-observe-duplicate-python-traceback.test.sh' \
-  "$here/seat-lib.test.sh" \
-  || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
-ok "seat-lib.test.sh hosts this file"
+  "$here/seat.lib.test.sh" \
+  || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
+ok "seat.lib.test.sh hosts this file"
 
 echo "OK: fleet-failed-command-observe-duplicate-python-traceback: live #966 / #971 leftover-duplicate drain"

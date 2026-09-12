@@ -101,12 +101,12 @@ grep -q 'fleet-no-agent-names-check' "$lib" \
   || fail "lib/failed-command-flagged.py docstring must name the tool"
 ok "lib/failed-command-flagged.py docstring cites #1052 and the REJECT shape"
 
-# --- 5. seat-lib.test.sh hosts this file (CI cannot gain a P14 line) ---------
-seat_lib="$here/seat-lib.test.sh"
+# --- 5. seat.lib.test.sh hosts this file (CI cannot gain a P14 line) ---------
+seat_lib="$here/seat.lib.test.sh"
 [[ -f "$seat_lib" ]] || fail "missing $seat_lib"
 pattern='bash "$here/fleet-failed-command-no-agent-names-reject.test.sh"'
 grep -Fq "$pattern" "$seat_lib" \
-  || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
-ok "seat-lib.test.sh hosts this file"
+  || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
+ok "seat.lib.test.sh hosts this file"
 
 echo "OK: fleet-failed-command-no-agent-names-reject: live #1052 shape + prompt/lib/CI locks"

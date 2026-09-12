@@ -60,7 +60,7 @@ fi
 #   1. GATE (fail-loud, exit 1): grok binary missing — the grok watch is
 #      broken. (xai-oauth is still validated independently.)
 #   2. DETECTOR (observe-to-open, exit 0): live-dead SuperGrok writes
-#      credentials_bad onto the seat ledger (so pick_seat skips it) and
+#      credentials_bad onto the seat ledger (so pick-seat skips it) and
 #      auto-files a `grok login --device-auth` ticket (deduped).
 
 set -Eeuo pipefail
@@ -452,7 +452,7 @@ Nish action:
 - If only grok CLI is missing, restore the grok CLI (\`grok login --device-auth\` on a headless box).
 - If xai-oauth is also dead, the pi-grok extension must be re-authenticated too (\`pi --provider xai-oauth login\`).
 
-Until then the canary writes credentials_bad on grok/* and (if dead) xai-oauth/* so pick_seat will not route to a corpse.
+Until then the canary writes credentials_bad on grok/* and (if dead) xai-oauth/* so the proxy never routes to a corpse.
 
 signal: rule-enforcement/sr-prepaid-max-util" \
         || true
@@ -614,7 +614,7 @@ Nish must sign in TODAY on netcup-rs2000:
     grok login --device-auth
 
 Until then the canary writes credentials_bad on grok/* and healthy on
-xai-oauth/* so pick_seat routes xai-oauth requests to the live token.
+xai-oauth/* so the proxy routes xai-oauth requests to the live token.
 
 signal: rule-enforcement/sr-prepaid-max-util" \
         || true
@@ -674,7 +674,7 @@ x.ai API key — SuperGrok is the subscription path, and api.x.ai credits are
 a money line (fleet-ops#41).
 
 Until then the canary writes credentials_bad on grok/* and xai-oauth/*
-so pick_seat will not route to either corpse.
+so the proxy never routes to either corpse.
 
 signal: rule-enforcement/sr-prepaid-max-util" \
         || true

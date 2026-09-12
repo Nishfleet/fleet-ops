@@ -63,7 +63,7 @@
 #      wording (detector-side lock: case list moved to lib, fleet-ops#3246).
 #   7. lib/failed-command-flagged.py docstring cites fleet-ops#1217
 #      (detector-side lock).
-#   8. seat-lib.test.sh hosts this file (CI cannot gain a P14 line).
+#   8. seat.lib.test.sh hosts this file (CI cannot gain a P14 line).
 
 set -euo pipefail
 
@@ -196,10 +196,10 @@ grep -q 'cd /tmp/fleet-ops-fresh-1165' "$lib" \
   || fail "lib/failed-command-flagged.py docstring must name the live 'cd /tmp/fleet-ops-fresh-1165' wording"
 ok "lib/failed-command-flagged.py docstring cites fleet-ops#1217 and the racing-cd shape"
 
-# --- 8. seat-lib.test.sh hosts this file (CI cannot gain a P14 line) -------
+# --- 8. seat.lib.test.sh hosts this file (CI cannot gain a P14 line) -------
 grep -Fq 'bash "$here/fleet-failed-command-clone-race-cd.test.sh"' \
-  "$here/seat-lib.test.sh" \
-  || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
-ok "seat-lib.test.sh hosts this file"
+  "$here/seat.lib.test.sh" \
+  || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
+ok "seat.lib.test.sh hosts this file"
 
 echo "OK: fleet-failed-command-clone-race-cd: live #1217 racing silenced-cd drills"

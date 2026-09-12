@@ -1002,7 +1002,7 @@ issue_difficulty() {
     # fleet-ops#4248: an explicit author marker in the issue body decides the
     # class when no keystone/heavy LABEL already did. Nish's standing lever for
     # spending the Cursor senior pool is "put `difficulty: senior-review` at the
-    # top of the issue body so pick_seat routes it to the senior ladder", but
+    # top of the issue body so it routes to the senior group", but
     # intake recomputed the header from title/labels/body-size and wrote its own
     # value as the packet's FIRST line; packet_difficulty() (lib/litellm-seat.sh)
     # takes the first match, so the marker was silently dropped and
@@ -1467,7 +1467,7 @@ audition_inject_and_retire() {
     # Commit the updated LIVE caps atomically (only if changed).
     if ! cmp -s "$tmp_caps" "$SEAT_CAPS_JSON"; then
         mv -f "$tmp_caps" "$SEAT_CAPS_JSON"
-        # Force litellm-seat to reload caps on the next pick_seat call.
+        # Force litellm-seat to reload caps on the next caps read.
         _seat_caps_loaded=0
     else
         rm -f "$tmp_caps"
@@ -1559,43 +1559,30 @@ _audition_file_verdict() {
 # Run the audition lane (fail-open: any error is logged and the tick continues).
 audition_inject_and_retire 2>&1 || echo "audition: non-fatal error (fail-open)"
 
-# fleet-ops#3690: reset per-tick per-provider spawn counters at the start of
-# each tick so pick_seat's tick_spawn_cap gate counts only this tick's spawns.
-# Best-effort: a write failure degrades the cap to unlimited (never blocks).
-reset_tick_spawn_counts 2>/dev/null || true
-
-# Step 2: capacity (P4-A — fleet-ops config/seat-caps.json, not a hardcoded cap)
-caps_sum=$(total_seat_cap 2>/dev/null || echo 0)
-ram_cap=$(ram_governor_cap 2>/dev/null || echo 9999)
-if (( caps_sum > 0 && caps_sum < ram_cap )); then
-    total_cap=$caps_sum
-else
-    total_cap=$ram_cap
-fi
-active=$(active_ram_charge 2>/dev/null || echo 0)
-issue=$(count_active_issue 2>/dev/null || echo 0)
-org=$(count_active_org 2>/dev/null || echo 0)
-org_res=$(org_reserve 2>/dev/null || echo 2)
-# active_ram_charge is fractional (per-repo MemoryHigh / fallback, fleet-ops#3679),
-# so compute slots in awk, not bash integer math. slots = remaining fallback
-# worker capacity (integer count of how many more light workers fit).
-slots=$(awk -v t="$total_cap" -v a="$active" 'BEGIN{ s=t-a; if(s<0)s=0; print int(s) }')
+# Step 2: capacity (P4-A — fleet-ops config/seat-caps.json declared caps, not a
+# hardcoded cap; fleet-ops#4263: the RAM-charge governor is gone — per-worker
+# RAM is bounded by the per-instance MemoryMax drop-in + oomd, and the LiteLLM
+# proxy owns seat routing/cooldown).
+total_cap=$(seat_max_concurrent 2>/dev/null || echo 0)
+active=$(count_active_workers 2>/dev/null || echo 0)
+# slots = remaining worker capacity (integer count of how many more workers fit).
+slots=$(( total_cap - active ))
+(( slots < 0 )) && slots=0
 
 if (( slots <= 0 )); then
-    echo "at capacity (total_cap=$total_cap, active=$active, issue=$issue, org=$org, org_reserve=$org_res)"
+    echo "at capacity (total_cap=$total_cap, active=$active)"
     exit 0
 fi
 
 # fleet-ops#3861: load_seat_caps must run in the PARENT shell so the
 # spawn_stagger_s (SEAT_SPAWN_STAGGER_S) the claim loop sleeps actually
-# carries the config/seat-caps.json value. Every other call site in this
-# tick is a command substitution ($(pick_seat ...) below), which runs in a
-# subshell where load_seat_caps sets SEAT_* vars that die when the subshell
-# exits — so SEAT_SPAWN_STAGGER_S never reached the parent and the 5s cohort
-# stagger stayed inert (fleet-ops#3784). Audition (above) may have rewritten
-# the LIVE caps, so load AFTER it reads the current file for the probes and
-# the claim loop below. Fail-open: a missing/unparseable caps file falls
-# back to SEAT_SPAWN_STAGGER_S=0 inside load_seat_caps.
+# carries the config/seat-caps.json value. Command-substitution call sites
+# run in a subshell where load_seat_caps sets SEAT_* vars that die when the
+# subshell exits — so SEAT_SPAWN_STAGGER_S never reached the parent and the
+# 5s cohort stagger stayed inert (fleet-ops#3784). Audition (above) may have
+# rewritten the LIVE caps, so load AFTER it reads the current file for the
+# probes and the claim loop below. Fail-open: a missing/unparseable caps
+# file falls back to SEAT_SPAWN_STAGGER_S=0 inside load_seat_caps.
 _seat_caps_loaded=0
 load_seat_caps || true
 
@@ -1666,19 +1653,19 @@ elif [[ "$_gh_secondary_active" == "1" && $_gh_secondary_backoff -le $_gh_second
 fi
 
 # Repair rung state helpers (fleet-ops#4639). A RESERVED escape from the
-# seat deadlock: every allowlisted seat benched/walled so the seat-repair
-# issues themselves sit skipped-capacity every tick. Trigger: pick_seat
-# returns NO USABLE SEAT, or usable slots < 2, for >= 2 consecutive ticks.
-# Then intake claims critical-path fleet-ops ONLY, exempt from yield caps
-# and the light-only/audition filter, capped at 2 concurrent rung workers,
-# every use logged REPAIR-RUNG. fleet-ops#4820: the rung stands down only
-# after pick_seat RETURNS a usable seat for DISARM_AFTER consecutive ticks
-# (mirrors the arm rule). Remaining-slot COUNT staying 0 while the ledger
-# is healthy is the latch this issue closes — COUNT is not the disarm
+# capacity deadlock: worker capacity exhausted so the repair issues
+# themselves sit skipped-capacity every tick. Trigger: usable headroom < 2
+# for >= 2 consecutive ticks. Then intake claims critical-path fleet-ops
+# ONLY, exempt from yield caps and the light-only/audition filter, capped
+# at 2 concurrent rung workers, every use logged REPAIR-RUNG.
+# fleet-ops#4820: the rung stands down only after usable headroom returns
+# for DISARM_AFTER consecutive ticks (mirrors the arm rule). Remaining-slot
+# COUNT staying 0 was the latch this issue closed — COUNT is not the disarm
 # signal. While armed, a product-repo tick must still claim at least one
-# issue, or log why it cannot. The worker-side ladder (lib/seat-lib.sh)
-# is litellm judge -> mergegateway audition -> cursor keystone at cap 1;
-# never a money-walled seat (money stays Nish's, fleet-ops#3284).
+# issue, or log why it cannot. The worker-side route is the reserved
+# litellm `judge` group (PI_REPAIR_RUNG=1 in pi-issue-run), which falls back
+# to senior inside the proxy — never a lane outside the sanctioned config
+# (money stays Nish's, fleet-ops#3284).
 PI_INTAKE_REPAIR_RUNG_AFTER="${PI_INTAKE_REPAIR_RUNG_AFTER:-2}"
 PI_INTAKE_REPAIR_RUNG_MAX_CONCURRENT="${PI_INTAKE_REPAIR_RUNG_MAX_CONCURRENT:-2}"
 # fleet-ops#4820: the rung stands down only after this many CONSECUTIVE
@@ -1691,8 +1678,8 @@ repair_rung_state_file() {
 
 # State file holds two space-separated integers: <strikes> <disarm_count>.
 # strikes = consecutive low-slot/outage ticks (arms the rung at AFTER).
-# disarm_count = consecutive ticks while armed where pick_seat returned a
-# usable seat (disarms at DISARM_AFTER). One line, two integers, so an
+# disarm_count = consecutive ticks while armed where headroom returned a
+# usable level (disarms at DISARM_AFTER). One line, two integers, so an
 # old single-number state file still reads as strikes=N disarm=0.
 repair_rung_read() {
     local f _s=0 _d=0
@@ -1768,15 +1755,11 @@ repair_rung_concurrent() {
 
 # Seat gate (auditor 2026-08-26T18:1xZ, summon fleet-ops-378 unit-failure):
 # capacity slots are NOT proof a worker can run. With every allowlisted
-# heavy-capable seat benched/quota-exhausted, a claimed issue spawns a
-# pi-issue@ unit that dies instantly on pick_seat(heavy) -> NO USABLE SEAT
-# and auto-restarts until StartLimitBurst, then OnFailure reaps the claim
-# back to agent-ready, then the NEXT tick re-claims it — a spawn churn that
-# burned 37 units activating and summoned the auditor. The intake must probe
-# a usable heavy-capable seat BEFORE claiming; if none exists, hold all
-# claims this tick (workers pick their own seat at run time, and the queue
-# is heavy product work — a light-only fleet cannot run it). The recheck
-# timer re-fires the tick when seats recover.
+# heavy-capable seat benched/quota-exhausted, a claimed issue used to spawn
+# a pi-issue@ unit that died instantly on NO USABLE SEAT and auto-restarted
+# until StartLimitBurst, then OnFailure reaped the claim back to
+# agent-ready, then the NEXT tick re-claimed it — a spawn churn that burned
+# 37 units activating and summoned the auditor.
 # fleet-ops#4263 P3b: proxy health is the usable-seat gate. A dead proxy
 # means workers cannot run, so hold claims this tick. Fail-open when
 # litellm_ready is unavailable (tests stub the helper).
@@ -1801,12 +1784,15 @@ _repo_is_product=0
 if declare -F repo_is_product >/dev/null 2>&1 && repo_is_product "$REPO"; then
     _repo_is_product=1
 fi
-heavy_seat=$(litellm_pick_seat "worker-capable" 2>/dev/null || true)
-_rung_clear_seat=$(litellm_pick_seat "worker-cheap" 2>/dev/null || true)
+# Route probes for rung messages: while the proxy is healthy every group
+# route exists; the names below identify which lane cleared the rung.
+heavy_route=$(litellm_seat "worker-capable" 2>/dev/null || true)
+light_route=$(litellm_seat "worker-cheap" 2>/dev/null || true)
 
-# Usable seat-slot gate (fleet-ops#3732 / #4263): capacity slots (RAM) are
-# not proxy slots. Headroom comes from the proxy; a non-numeric reply
-# fails OPEN so a broken counter never freezes intake.
+# Usable seat-slot gate (fleet-ops#3732 / #4263): the claim bound above is a
+# worker count. Headroom comes from litellm_headroom (proxy health gate +
+# caps minus live units); a non-numeric reply fails OPEN so a broken counter
+# never freezes intake.
 usable_light_slots=""
 if declare -F litellm_headroom >/dev/null 2>&1; then
     usable_light_slots=$(litellm_headroom 2>/dev/null || echo "")
@@ -1815,10 +1801,10 @@ if [[ ! "$usable_light_slots" =~ ^[0-9]+$ ]]; then
     echo "usable seat-slot count unavailable (litellm_headroom returned '${usable_light_slots:0:60}'); seat-slot gate fails open, keeping slots=$slots (fleet-ops#3732)"
     usable_light_slots=$slots
 fi
-# fleet-ops#4820: pick_seat returning a seat (or COUNT >= 2) is recovery.
-# COUNT staying 0 while pick_seat still returns a seat was the live latch.
+# fleet-ops#4820: usable headroom (>= 2) is recovery. COUNT staying 0 while
+# a route still existed was the live latch — the count alone disarms now.
 _rung_has_seat=0
-if [[ -n "${_rung_clear_seat:-}" ]] || (( usable_light_slots >= 2 )); then
+if (( usable_light_slots >= 2 )); then
     _rung_has_seat=1
 fi
 if (( _rung_has_seat == 1 )); then
@@ -1827,10 +1813,10 @@ if (( _rung_has_seat == 1 )); then
         _rung_disarm=$(repair_rung_note_recovery)
         if (( _rung_disarm >= PI_INTAKE_REPAIR_RUNG_DISARM_AFTER )); then
             repair_rung_reset
-            echo "REPAIR-RUNG disarmed: pick_seat returned ${_rung_clear_seat:-unknown} for ${_rung_disarm} consecutive ticks (fleet-ops#4820)"
+            echo "REPAIR-RUNG disarmed: route ${light_route:-unknown} usable for ${_rung_disarm} consecutive ticks (fleet-ops#4820)"
             _repair_rung_armed=0
         else
-            echo "REPAIR-RUNG recovery ${_rung_disarm}/${PI_INTAKE_REPAIR_RUNG_DISARM_AFTER}: pick_seat returned ${_rung_clear_seat:-slots $usable_light_slots}, standing down after ${PI_INTAKE_REPAIR_RUNG_DISARM_AFTER} consecutive ticks (fleet-ops#4820)"
+            echo "REPAIR-RUNG recovery ${_rung_disarm}/${PI_INTAKE_REPAIR_RUNG_DISARM_AFTER}: route ${light_route:-slots $usable_light_slots} usable, standing down after ${PI_INTAKE_REPAIR_RUNG_DISARM_AFTER} consecutive ticks (fleet-ops#4820)"
             if [[ "$REPO" == "fleet-ops" ]]; then
                 _repair_rung_armed=1
             elif (( ${_repo_is_product:-0} == 1 )); then
@@ -1841,15 +1827,15 @@ if (( _rung_has_seat == 1 )); then
         _rung_prev=$_rung_strikes
         repair_rung_reset
         if (( _rung_prev > 0 )); then
-            echo "REPAIR-RUNG released: pick_seat returned ${_rung_clear_seat:-slots $usable_light_slots} (was ${_rung_prev} consecutive low-slot ticks, fleet-ops#4639)"
+            echo "REPAIR-RUNG released: route ${light_route:-slots $usable_light_slots} usable (was ${_rung_prev} consecutive low-slot ticks, fleet-ops#4639)"
         fi
     fi
 else
-    # Judge spec (fleet-ops#4639): NO USABLE SEAT *or* usable slots < 2
-    # for >= 2 consecutive ticks opens the rung. A non-fleet-ops,
-    # non-product tick never arms it (rung admits critical-path fleet-ops
-    # only). A product tick while the rung is armed globally must not
-    # hold — reserve one claim, or log why none is possible (fleet-ops#4820).
+    # Judge spec (fleet-ops#4639): usable slots < 2 for >= 2 consecutive
+    # ticks opens the rung. A non-fleet-ops, non-product tick never arms it
+    # (rung admits critical-path fleet-ops only). A product tick while the
+    # rung is armed globally must not hold — reserve one claim, or log why
+    # none is possible (fleet-ops#4820).
     _rung_strikes=$(repair_rung_note_outage)
     if (( _rung_strikes >= PI_INTAKE_REPAIR_RUNG_AFTER )); then
         if [[ "$REPO" == "fleet-ops" ]]; then
@@ -1858,12 +1844,12 @@ else
         elif (( ${_repo_is_product:-0} == 1 )); then
             echo "REPAIR-RUNG armed globally (${_rung_strikes} ticks) — product-reserve on $REPO (fleet-ops#4820)"
             _repair_rung_product_reserve=1
-            _product_skip_reason="pick_seat returned empty"
+            _product_skip_reason="no usable capacity"
         else
             echo "REPAIR-RUNG strike ${_rung_strikes} but repo $REPO is not fleet-ops; holding claims this tick — gate: repair-rung is fleet-ops-only (fleet-ops#4639)"
             exit 0
         fi
-    elif (( usable_light_slots <= 0 )) && [[ -z "$heavy_seat" ]]; then
+    elif (( usable_light_slots <= 0 )) && [[ -z "$heavy_route" ]]; then
         echo "no usable seat (heavy and light pools empty); holding claims this tick — gate: no usable seat slot (repair-rung strike ${_rung_strikes}/${PI_INTAKE_REPAIR_RUNG_AFTER}, fleet-ops#4639)"
         exit 0
     fi
@@ -1871,27 +1857,19 @@ fi
 # The rung claims do NOT come out of the light-slot pool (a critical-path
 # repair issue is usually heavy), so the light-slot clamp below is bypassed
 # while the rung is armed; the rung's own 2-concurrent cap applies instead.
-# fleet-ops#4820: a product-reserve tick with a usable seat gets one slot
+# fleet-ops#4820: a product-reserve tick with usable headroom gets one slot
 # even when COUNT is 0, so product intake is never zeroed by the latch.
 if (( _repair_rung_armed == 1 )); then
     slots=$PI_INTAKE_REPAIR_RUNG_MAX_CONCURRENT
-elif (( ${_repair_rung_product_reserve:-0} == 1 )) && [[ -n "${_rung_clear_seat:-}" || -n "$heavy_seat" ]]; then
+elif (( ${_repair_rung_product_reserve:-0} == 1 )) && [[ -n "${light_route:-}" || -n "$heavy_route" ]]; then
     if (( slots < 1 )); then
         slots=1
     fi
     echo "REPAIR-RUNG product-reserve: granting 1 claim slot on $REPO (fleet-ops#4820)"
-elif (( usable_light_slots <= 0 )) && [[ -n "$heavy_seat" || -n "${_rung_clear_seat:-}" ]]; then
+elif (( usable_light_slots <= 0 )) && [[ -n "$heavy_route" || -n "${light_route:-}" ]]; then
     slots=1
 elif (( usable_light_slots < slots )); then
-    # fleet-ops#4723: same line as the #3732 clamp, plus which seats are
-    # walled and until when, so the next run does not re-derive a census.
-    # seat_walled_breakdown is fail-open (empty) when the helper is absent.
-    _walled=$(seat_walled_breakdown 2>/dev/null || true)
-    if [[ -n "$_walled" ]]; then
-        echo "usable seat slots $usable_light_slots < capacity slots $slots; claiming at most $usable_light_slots this tick (fleet-ops#3732); walled: $_walled"
-    else
-        echo "usable seat slots $usable_light_slots < capacity slots $slots; claiming at most $usable_light_slots this tick (fleet-ops#3732)"
-    fi
+    echo "usable seat slots $usable_light_slots < capacity slots $slots; claiming at most $usable_light_slots this tick (fleet-ops#3732)"
     slots=$usable_light_slots
 fi
 
@@ -2667,8 +2645,8 @@ blocked-on: orchestrator" 2>/dev/null || true
     fi
 
     # fleet-ops#4639 (orchestrator append): heavy seat missing -> LIGHT-ONLY
-    # claims this tick. Claiming a heavy issue now spawns a unit that dies at
-    # pick_seat(heavy) — exactly the churn the seat gate exists to stop. The
+    # claims this tick. Claiming a heavy issue used to spawn a unit that died
+    # on the heavy pick — exactly the churn the seat gate exists to stop. The
     # difficulty is computed once here (the light-only filter and the packet
     # header share it). While the repair rung is armed the light-only filter
     # does NOT apply — the rung is the reserved exemption.
@@ -2837,9 +2815,9 @@ blocked-on: orchestrator" 2>/dev/null || true
         # Volatile tail (fleet-ops#4643): difficulty, seat-rung and TARGET are
         # per-issue, so they come AFTER the last stable byte. fleet-ops#4639:
         # repair-rung claims carry the seat-rung marker so pi-issue-run arms
-        # PI_REPAIR_RUNG and pick_seat may fall back to the reserved rung
-        # ladder (litellm judge -> mergegateway audition -> cursor keystone
-        # cap 1) when every allowlisted seat is dead.
+        # PI_REPAIR_RUNG and routes the worker to the reserved rung lane
+        # (litellm judge group, proxy fallback to senior) when ordinary
+        # capacity is exhausted.
         echo "difficulty: $difficulty"
         if [[ "$_repair_rung_armed" == "1" ]]; then
             echo "seat-rung: repair"
@@ -2994,7 +2972,7 @@ blocked-on: orchestrator" 2>/dev/null || true
     # seconds between systemctl start --no-block calls. 0 disables. The value
     # is loaded from seat-caps.json spawn_stagger_s by load_seat_caps (called
     # in the parent shell after the capacity step above — fleet-ops#3861, so
-    # the value survives the pick_seat subshells into this read); default 0
+    # the value survives the routing subshells into this read); default 0
     # if the caps file is absent.
     SEAT_SPAWN_STAGGER_S=${SEAT_SPAWN_STAGGER_S:-0}
     if (( SEAT_SPAWN_STAGGER_S > 0 )); then

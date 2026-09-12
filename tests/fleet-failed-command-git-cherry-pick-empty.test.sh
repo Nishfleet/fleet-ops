@@ -221,10 +221,10 @@ grep -q 'git cherry-pick' "$lib" \
   || fail "lib/failed-command-flagged.py docstring must name the live 'git cherry-pick' command"
 ok "lib/failed-command-flagged.py docstring cites fleet-ops#1065 and the cherry-pick empty shape"
 
-# --- 7. seat-lib.test.sh hosts this file (CI cannot gain a P14 line) -------
+# --- 7. seat.lib.test.sh hosts this file (CI cannot gain a P14 line) -------
 grep -Fq 'bash "$here/fleet-failed-command-git-cherry-pick-empty.test.sh"' \
-  "$here/seat-lib.test.sh" \
-  || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
-ok "seat-lib.test.sh hosts this file"
+  "$here/seat.lib.test.sh" \
+  || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
+ok "seat.lib.test.sh hosts this file"
 
 echo "OK: fleet-failed-command-git-cherry-pick-empty: live #1065 git cherry-pick empty exit 1 drills"

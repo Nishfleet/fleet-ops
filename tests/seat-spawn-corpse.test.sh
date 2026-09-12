@@ -12,7 +12,7 @@
 # wrapper's spawn-bench marker count climbs forever. Every flat 24h park-wall
 # expiry re-offered the seat, which spawn-failed again — the loop.
 #
-# The fix (lib/seat-lib.sh), mirroring the quota writer's corpse
+# The fix (lib/litellm-seat.sh), mirroring the quota writer's corpse
 # reclassification (fleet-ops#2594): mark_seat_spawn_fail writes seat_dead=true
 # once merged_count >= SEAT_DEAD_CONSECUTIVE_THRESHOLD (default 25, matching
 # seat-health.ts), AND carries that seat_dead=true onto the clobber-proof
@@ -43,7 +43,7 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-seat_lib="$repo_root/lib/seat-lib.sh"
+seat_lib="$repo_root/lib/litellm-seat.sh"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }

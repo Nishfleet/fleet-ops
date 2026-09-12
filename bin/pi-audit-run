@@ -52,7 +52,7 @@ QUESTION_PROMPT="${AUDIT_QUESTION_PROMPT:-$HOME/.pi/agent/prompts/nish-question-
 AUDIT_KIND="scout"
 PLAN_FILE="${AUDIT_PLAN_FILE:-/home/nish/workspaces/agent-state/fleet-restoration-2026-08-25.md}"
 # fleet-ops#1011: vote path is intentionally VOTE_DIR, not STATE_DIR.
-# litellm-seat.sh (the shared pick_seat provider) sets STATE_DIR=$HOME/.local/state/pi-packet
+# litellm-seat.sh (the shared pick-seat provider) sets STATE_DIR=$HOME/.local/state/pi-packet
 # for its OWN attempts/active-seats/round-robin ledger, and pi-audit-run
 # sources that library a few lines below. Without the rename, the source
 # silently overwrites STATE_DIR, every vote is written to pi-packet/, the
@@ -83,7 +83,7 @@ fi
 # $p/$m in the caller's dynamic scope, so any lazy load inside
 # model_cap/provider_cap/class_of clobbers THEIR local $p/$m (bash local is
 # dynamic scoping) and the lookup reads the wrong key (fleet-ops#602). This
-# mirrors pick_seat, which also force-loads before iterating.
+# mirrors pick-seat, which also force-loads before iterating.
 if command -v load_seat_caps >/dev/null 2>&1; then
     load_seat_caps || true
 fi
@@ -99,7 +99,7 @@ log() {
 }
 
 # True when the seat ledger marks the seat poison_ladder (a poison-ladder
-# seat is never picked by pick_seat either; mirror that here so the auditor
+# seat is never picked by pick-seat either; mirror that here so the auditor
 # does not route onto a seat the fleet deliberately avoids).
 # fleet-ops#146 (storm-tolerant panel): consult the per-lane seat-health
 # marker before calling pi. The marker is the same file alert-repair-
@@ -601,8 +601,8 @@ main() {
         free-glm-5-3|free|free-glm) group=worker-cheap ;;
         *) group=worker-capable ;;
     esac
-    if declare -F litellm_pick_seat >/dev/null 2>&1; then
-        seat=$(litellm_pick_seat "$group" || true)
+    if declare -F litellm_seat >/dev/null 2>&1; then
+        seat=$(litellm_seat "$group" || true)
     elif seat=$(resolve_seat "$role"); then
         :
     else

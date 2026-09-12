@@ -22,15 +22,15 @@
 #   4. whole senior ladder walled → keystone class ladder fallback.
 #   5. stale tried-seats entry does NOT block cursor past the bench: cursor
 #      remains in the tried file after a prior ETIMEDOUT, but bench_until
-#      has passed, so pick_seat drops the line and lands on cursor.
+#      has passed, so pick-seat drops the line and lands on cursor.
 #
-# Hosted by tests/seat-lib.test.sh (workers cannot add a ci.yml line).
+# Hosted by tests/seat.lib.test.sh (workers cannot add a ci.yml line).
 # Offline. Scratch models/caps so live seat-caps cannot leak.
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-lib="$repo_root/lib/seat-lib.sh"
+lib="$repo_root/lib/litellm-seat.sh"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
@@ -94,7 +94,7 @@ state="$scratch/state"
 ledger="$scratch/ledger"
 mkdir -p "$state" "$ledger"
 # ACTIVE_SEATS_DIR is derived from PI_PACKET_STATE at source time
-# (lib/seat-lib.sh:45: ACTIVE_SEATS_DIR="$STATE_DIR/active-seats"), so the
+# (lib/litellm-seat.sh:45: ACTIVE_SEATS_DIR="$STATE_DIR/active-seats"), so the
 # active-seats dir MUST live under $state to be picked up.
 active="$state/active-seats"
 mkdir -p "$active"
@@ -105,9 +105,9 @@ pick() {
     export PI_SEAT_HEALTH_LEDGER_DIR="$ledger"
     : >"$scratch/seat.log"
     if [[ -n "$tried" ]]; then
-        bash -c 'source "$0"; load_seat_caps; pick_seat "" "" "'"$capable"'" "'"$tried"'" "'"$difficulty"'"' "$lib" 2>/dev/null
+        bash -c 'source "$0"; load_seat_caps; pick-seat "" "" "'"$capable"'" "'"$tried"'" "'"$difficulty"'"' "$lib" 2>/dev/null
     else
-        bash -c 'source "$0"; load_seat_caps; pick_seat "" "" "'"$capable"'" "" "'"$difficulty"'"' "$lib" 2>/dev/null
+        bash -c 'source "$0"; load_seat_caps; pick-seat "" "" "'"$capable"'" "" "'"$difficulty"'"' "$lib" 2>/dev/null
     fi
 }
 
@@ -183,7 +183,7 @@ sr5=$(pick 1 senior-review "$stale_tried") || fail "5: senior-review with stale 
 [[ "$sr5" == "cursor	cursor-grok-4.6-high" ]] \
   || fail "5: expired bench must not stay pinned by tried-seats, expected cursor, got: $sr5"
 grep -qxF 'cursor/cursor-grok-4.6-high' "$stale_tried" \
-  && fail "5: pick_seat must rewrite tried-seats and drop the expired cursor line, still has: $(cat "$stale_tried")"
+  && fail "5: pick-seat must rewrite tried-seats and drop the expired cursor line, still has: $(cat "$stale_tried")"
 grep -q 'dropping stale tried cursor/cursor-grok-4.6-high' "$scratch/seat.log" \
   || fail "5: seat.log must record the stale-tried drop, got: $(cat "$scratch/seat.log")"
 ok "5: stale tried-seats entry expires with the bench (cursor is pickable again, line dropped)"
@@ -206,9 +206,9 @@ sr6=$(
 ok "6: find_senior_seat standalone under set -u returns cursor (no unbound crash)"
 
 # --- contract: nested under the CI host ---------------------------------------
-grep -Fq 'bash "$here/senior-review-routing.test.sh"' "$here/seat-lib.test.sh" \
-  || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
-ok "seat-lib.test.sh hosts this file"
+grep -Fq 'bash "$here/senior-review-routing.test.sh"' "$here/seat.lib.test.sh" \
+  || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
+ok "seat.lib.test.sh hosts this file"
 
 echo "OK: senior-review-routing: senior ladder first, at-cap skips to next senior, tried-seats within-cycle, fallback, no stale pin"
 exit 0

@@ -3,7 +3,7 @@
 #
 # fleet-ops#2133: two detectors that previously existed only as a hot-patch on
 # the LIVE /home/nish/.local/bin/pi-issue-run (never landed on a PR) must fire
-# and bench the seat via mark_seat_hang_bench so pick_seat skips it on the next
+# and bench the seat via mark_seat_hang_bench so pick-seat skips it on the next
 # restart. Both gate on spawn_elapsed_s > PI_HANG_BENCH_MIN_S (default 300s).
 #
 #   (A) devin long-hang-then-ETIMEDOUT: rc=1, elapsed > 300s, stderr contains
@@ -19,7 +19,7 @@
 # fake pi, and PI_ISSUES_DIR redirected into scratch. PI_HANG_BENCH_MIN_S=1
 # and SPAWN_FAIL_MAX_S=1 collapse the 5-minute wall-clock gate to ~1s so the
 # test is fast without changing production defaults (the env vars default to
-# 300 and 120 respectively in lib/seat-lib.sh / bin/pi-issue-run).
+# 300 and 120 respectively in lib/litellm-seat.sh / bin/pi-issue-run).
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -118,9 +118,9 @@ JSON
 
 # Overlay: record mark_seat_hang_bench calls, then run the real function so
 # the per-seat ledger is actually written with health_class="hang_bench".
-cat >"$scratch/seat-lib.sh" <<EOF
+cat >"$scratch/seatlib.sh" <<EOF
 # shellcheck shell=bash
-source "$repo_root/lib/seat-lib.sh"
+source "$repo_root/lib/litellm-seat.sh"
 eval "\$(declare -f mark_seat_hang_bench | sed '1s/^mark_seat_hang_bench/orig_mark_seat_hang_bench/')"
 mark_seat_hang_bench() {
     printf '%s/%s %s\n' "\$1" "\$2" "\${3:-}" >>"$scratch/hang_calls"
@@ -132,7 +132,7 @@ mark_seat_spawn_fail() {
     orig_mark_seat_spawn_fail "\$@"
 }
 EOF
-export PI_PACKET_SEAT_LIB="$scratch/seat-lib.sh"
+export PI_PACKET_SEAT_LIB="$scratch/seatlib.sh"
 
 run_scenario() {
     local label="$1" stderr_body="$2" expected_rc="$3"
@@ -258,7 +258,7 @@ STUB
     [[ "$cls" == "infra" ]] || fail "$label: last-death-class want infra got '$cls'"
 
     # shellcheck disable=SC1091
-    source "$repo_root/lib/seat-lib.sh"
+    source "$repo_root/lib/litellm-seat.sh"
     if [[ "$expect_bench" == "no" ]]; then
         [[ ! -f "$scratch/spawnfail_calls" ]] \
           || fail "$label: mark_seat_spawn_fail was called for a session with $ntools tool calls: $(cat "$scratch/spawnfail_calls")"

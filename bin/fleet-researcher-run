@@ -89,8 +89,8 @@ pick_researcher_seat() {
         # shellcheck source=/dev/null
         source "$SEAT_LIB"
     fi
-    if declare -F litellm_pick_seat >/dev/null 2>&1; then
-        litellm_pick_seat "worker-cheap"
+    if declare -F litellm_seat >/dev/null 2>&1; then
+        litellm_seat "worker-cheap"
         return 0
     fi
     printf 'litellm\tworker-cheap\n'

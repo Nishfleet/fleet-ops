@@ -69,7 +69,7 @@
 #   5. lib/failed-command-flagged.py cites fleet-ops#937 (detector-side lock: case list moved to lib, fleet-ops#3246).
 #   6. lib/failed-command-flagged.py docstring cites fleet-ops#937
 #      (detector-side lock).
-#   7. seat-lib.test.sh hosts this file (CI cannot gain a new P14
+#   7. seat.lib.test.sh hosts this file (CI cannot gain a new P14
 #      workflow line — the worker token has no Workflows permission).
 
 set -euo pipefail
@@ -222,10 +222,10 @@ grep -q 'fleet-ops#937' "$lib" \
   || fail "lib/failed-command-flagged.py docstring must cite fleet-ops#937 (detector-side lock)"
 ok "lib/failed-command-flagged.py docstring cites fleet-ops#937"
 
-# --- 7. seat-lib.test.sh hosts this file (CI cannot gain a P14 line) ---
+# --- 7. seat.lib.test.sh hosts this file (CI cannot gain a P14 line) ---
 grep -Fq 'bash "$here/fleet-failed-command-python-module-not-found-hyphen.test.sh"' \
-  "$here/seat-lib.test.sh" \
-  || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
-ok "seat-lib.test.sh hosts this file"
+  "$here/seat.lib.test.sh" \
+  || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
+ok "seat.lib.test.sh hosts this file"
 
 echo "OK: fleet-failed-command-python-module-not-found-hyphen: live #937 python3 -c hyphenated-module ModuleNotFoundError walked-past drills"

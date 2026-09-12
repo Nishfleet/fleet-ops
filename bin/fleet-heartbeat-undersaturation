@@ -18,7 +18,7 @@
 #             worker the live set is exactly active+activating).
 #
 # Decision (fleet-ops#1558 extends the floor):
-#   admit = min(target_concurrent, ram_governor_cap) from seat-caps / litellm-seat
+#   admit = min(target_concurrent, declared cap sum) from seat-caps / litellm-seat
 #          (override: FLEET_UNDERSAT_ADMIT_CEILING for tests).
 #   ready = open agent-ready across enrolled repos (supply side).
 #   work  = ready + agent-in-progress (legacy wedge counter).
@@ -166,7 +166,7 @@ count_ready() {
     echo "$total"
 }
 
-# --- admit ceiling: min(target_concurrent, ram_governor_cap) -----------------
+# --- admit ceiling: min(target_concurrent, declared cap sum) -----------------
 admit_floor() {
     if [ -n "${FLEET_UNDERSAT_ADMIT_CEILING:-}" ]; then
         printf '%s\n' "$FLEET_UNDERSAT_ADMIT_CEILING"
@@ -302,7 +302,7 @@ _undersat_liveness_bound_s() {
 
 # Decide whether an activating unit is wedged. Echoes age_s and returns 0 if it
 # should be reaped; returns 1 if it is live or has no usable timestamp.
-# Mirrors the fleet-ops#5141 seat-lib liveness probe: age from
+# Mirrors the fleet-ops#5141 seatlib liveness probe: age from
 # ExecMainStartTimestampMonotonic when the process has started, otherwise
 # ActiveEnterTimestampMonotonic, with auto-restart and no-process cases
 # fail-closed at PI_SEAT_ACTIVATING_NO_PROCESS_MAX_S.

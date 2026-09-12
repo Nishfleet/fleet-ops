@@ -22,8 +22,8 @@ mkdir -p "$scratch/agent-state/cron-output"
 mkdir -p "$scratch/agent-state/0509-transformation"
 mkdir -p "$scratch/tooling/nish-vault"
 
-# Stub seat-lib with a deterministic pick_seat and no-op seat_log.
-stub_lib="$scratch/seat-lib.sh"
+# Stub seatlib with a deterministic pick-seat and no-op seat_log.
+stub_lib="$scratch/seatlib.sh"
 cat >"$stub_lib" <<'EOF'
 export HOME="${HOME:-/home/nish}"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/1000}"
@@ -31,16 +31,16 @@ export PI_BIN="${PI_BIN:-/home/nish/.local/bin/pi}"
 seat_log() { :; }
 task_weight() { echo "light"; }
 # fleet-ops#520: stub the privacy helpers the wrapper now calls. The stub
-# returns "public" so the test's deterministic pick_seat path is unchanged;
+# returns "public" so the test's deterministic pick-seat path is unchanged;
 # the privacy guard itself is drilled in tests/repo-privacy-guard.test.sh.
 repo_privacy() { echo "public"; }
 packet_repo() { echo ""; }
-pick_seat() {
+litellm_seat() {
     printf 'minimax\tMiniMax-M3\n'
     return 0
 }
-# fleet-ops#4263 P3b: wrappers call litellm_pick_seat, not pick_seat.
-litellm_pick_seat() { pick_seat; }
+# fleet-ops#4263 P3b: wrappers call litellm_seat, not pick-seat.
+litellm_seat() { pick-seat; }
 EOF
 
 # Fake pi records args and stdin, then prints output.

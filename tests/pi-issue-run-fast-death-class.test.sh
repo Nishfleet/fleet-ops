@@ -23,7 +23,7 @@ JSON
 cat >"$SEAT_CAPS_JSON" <<'JSON'
 { "ram_gb_per_worker": 1.5, "free_providers_in_order": ["commandcode"], "providers": { "commandcode": { "cap": 1, "class": "free", "models": { "laguna-s-2.1-free": 1 } } } }
 JSON
-export PI_PACKET_SEAT_LIB="$repo_root/lib/seat-lib.sh"
+export PI_PACKET_SEAT_LIB="$repo_root/lib/litellm-seat.sh"
 export FLEET_DEBUG_PLAYBOOK_SESSION_DIR="$scratch/sessions"
 
 # --- case 1: pi exits 1 with a provider error on stderr and 0 tool calls -----
@@ -56,7 +56,7 @@ ok "case A: synthetic PACKET-VERDICT carries error_class=unknown + literal"
 # errorMessage (#3238 surfaces it into $err_file as session-error:). The
 # verdict line + ledger must still carry error_class=unknown + the jsonl tail.
 inst="fleet-ops-3766b"
-# Clear case A's bench (ledger + clobber-proof spawn-bench marker) so pick_seat
+# Clear case A's bench (ledger + clobber-proof spawn-bench marker) so pick-seat
 # re-offers the only seat; case B is a fresh fast-death replay.
 rm -f "$LEDGER/commandcode__laguna-s-2.1-free.json" "$LEDGER/commandcode__laguna-s-2.1-free.spawn-bench.json"
 printf 'Implement one GitHub issue: fleet-ops#3766 case B.\n' >"$ISSUES_DIR/${inst}.in"

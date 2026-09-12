@@ -144,7 +144,7 @@ cat >"$SEAT_CAPS_JSON" <<'JSON'
 }
 JSON
 
-export PI_PACKET_SEAT_LIB="$repo_root/lib/seat-lib.sh"
+export PI_PACKET_SEAT_LIB="$repo_root/lib/litellm-seat.sh"
 export EMPTY_RUN_RETRY_MAX=0
 
 # =============================================================================

@@ -68,7 +68,7 @@
 #      `Tool  not found` is content, not a finding.
 #   7. lib/failed-command-flagged.py cites fleet-ops#1242 and the live empty-name wording.
 #   8. lib/failed-command-flagged.py docstring cites fleet-ops#1242.
-#   9. seat-lib.test.sh hosts this file (CI cannot gain a P14 line).
+#   9. seat.lib.test.sh hosts this file (CI cannot gain a P14 line).
 #  10. live #1252 sibling: empty-name toolCall AFTER successful bash
 #      calls (mid-session blip) + empty next turn -> finding. A
 #      mid-session placement must not exempt the empty-name class.
@@ -217,11 +217,11 @@ grep -q 'Tool  not found' "$lib" \
   || fail "lib/failed-command-flagged.py docstring must name the live two-space 'Tool  not found' wording"
 ok "lib/failed-command-flagged.py docstring cites fleet-ops#1242 and the empty-name shape"
 
-# --- 9. seat-lib.test.sh hosts this file (CI cannot gain a P14 line) ------
+# --- 9. seat.lib.test.sh hosts this file (CI cannot gain a P14 line) ------
 grep -Fq 'bash "$here/fleet-failed-command-empty-tool-name.test.sh"' \
-  "$here/seat-lib.test.sh" \
-  || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
-ok "seat-lib.test.sh hosts this file"
+  "$here/seat.lib.test.sh" \
+  || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
+ok "seat.lib.test.sh hosts this file"
 
 # --- 10. live #1252 sibling: mid-session empty-name blip after green calls -
 # Replay slug 01a043fa: the worker ran several SUCCESSFUL bash calls, THEN

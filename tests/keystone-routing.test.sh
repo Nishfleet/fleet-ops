@@ -11,13 +11,13 @@
 #   6. One strike still returns a different capable seat.
 #   7. pi-issue-run does not reset tried-seats on a keystone two-strike.
 #
-# Hosted by tests/seat-lib.test.sh (workers cannot add a ci.yml line).
+# Hosted by tests/seat.lib.test.sh (workers cannot add a ci.yml line).
 # Offline. Scratch models/caps so live seat-caps cannot leak.
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-lib="$repo_root/lib/seat-lib.sh"
+lib="$repo_root/lib/litellm-seat.sh"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
@@ -76,9 +76,9 @@ pick() {
     export PI_SEAT_HEALTH_LEDGER_DIR="$scratch/ledger"
     mkdir -p "$PI_PACKET_STATE" "$PI_SEAT_HEALTH_LEDGER_DIR"
     if [[ -n "$tried" ]]; then
-        bash -c 'source "$0"; load_seat_caps; pick_seat "" "" "'"$capable"'" "'"$tried"'" "'"$difficulty"'"' "$lib" 2>/dev/null
+        bash -c 'source "$0"; load_seat_caps; pick-seat "" "" "'"$capable"'" "'"$tried"'" "'"$difficulty"'"' "$lib" 2>/dev/null
     else
-        bash -c 'source "$0"; load_seat_caps; pick_seat "" "" "'"$capable"'" "" "'"$difficulty"'"' "$lib" 2>/dev/null
+        bash -c 'source "$0"; load_seat_caps; pick-seat "" "" "'"$capable"'" "" "'"$difficulty"'"' "$lib" 2>/dev/null
     fi
 }
 
@@ -190,9 +190,9 @@ got_lines=$(grep -c . "$tried")
 ok "7: pi-issue-run keeps tried-seats on keystone two-strike"
 
 # --- contract: nested under the CI host -----------------------------------
-grep -Fq 'bash "$here/keystone-routing.test.sh"' "$here/seat-lib.test.sh" \
-  || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
-ok "seat-lib.test.sh hosts this file"
+grep -Fq 'bash "$here/keystone-routing.test.sh"' "$here/seat.lib.test.sh" \
+  || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
+ok "seat.lib.test.sh hosts this file"
 
 grep -Fq "cat /home/nish/.pi/agent/prompts/worker.md" "$repo_root/prompts/intake.md" \
   || fail "prompts/intake.md must write worker.md first (fleet-ops#4643 stable prefix)"

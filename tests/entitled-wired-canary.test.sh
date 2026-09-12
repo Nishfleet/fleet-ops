@@ -10,7 +10,7 @@
 #   6. Production inventory + production seat-caps are currently clean.
 #   7. Heartbeat-tier1 wires the canary and propagates a non-zero exit.
 #   8. cap>0 free/prepaid with an empty models map -> exit 1, files empty-models
-#      (fleet-ops#437: hetzner was listed for routing but pick_seat skipped
+#      (fleet-ops#437: hetzner was listed for routing but pick-seat skipped
 #      every live slug).
 #   9. cap>0 metered with an empty models map stays quiet (allowlist owned
 #      by fleet-ops#384).
@@ -219,7 +219,7 @@ run_canary
 grep -q 'issue create' "$gh_log" && fail "scenario9: must not file on a metered empty map"
 ok "scenario9: metered cap>0 empty models stays quiet (fleet-ops#384)"
 
-# Production lock: the live Qwen slug is allowlisted so pick_seat can pick it.
+# Production lock: the live Qwen slug is allowlisted so pick-seat can pick it.
 jq -e '.providers.hetzner.cap > 0 and .providers.hetzner.models["Qwen/Qwen3.6-35B-A3B-FP8"] != null' \
   "$repo_root/config/seat-caps.json" >/dev/null \
   || fail "production lock: hetzner must allowlist Qwen/Qwen3.6-35B-A3B-FP8"

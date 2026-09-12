@@ -75,7 +75,7 @@ esac
 FAKE_GH
 chmod +x "$scratch/fakebin/gh"
 
-# Fake pi + fake seat-lib so run 0 can take the real reviewer path and build
+# Fake pi + fake seatlib so run 0 can take the real reviewer path and build
 # an actual packet: a drill run never writes packet.md, so (d) must NOT use
 # AUDIT_DRILL. pi is never dispatched (AUDIT_DRY_RUN=1) but preflight needs
 # it executable.
@@ -84,9 +84,9 @@ cat > "$scratch/fakebin/pi" <<'FAKE_PI'
 cat >/dev/null
 FAKE_PI
 chmod +x "$scratch/fakebin/pi"
-cat > "$scratch/seat-lib-fake.sh" <<'FAKE_SEAT_LIB'
+cat > "$scratch/seatlib-fake.sh" <<'FAKE_SEAT_LIB'
 # shellcheck shell=bash
-pick_seat() {
+litellm_seat() {
     # Args: fail_p fail_m need_capable tried_file — all ignored for the stub.
     printf 'fakeprovider\tfakemodel'
 }
@@ -150,13 +150,13 @@ common_env=(
 
 # (d) the reviewer packet no longer says "Max findings to return" —
 # proved with a REAL reviewer-path dry run (AUDIT_DRILL=0, fake pi + fake
-# seat-lib), which builds packet.md without dispatching pi.
+# seatlib), which builds packet.md without dispatching pi.
 rc=0
 env "${common_env[@]}" \
   GH_CREATE_LOG="$scratch/create-0.log" \
   AUDIT_DRILL=0 \
   AUDIT_PI_BIN="$scratch/fakebin/pi" \
-  AUDIT_SEAT_LIB="$scratch/seat-lib-fake.sh" \
+  AUDIT_SEAT_LIB="$scratch/seatlib-fake.sh" \
   AUDIT_PROMPT="$repo_root/prompts/blind-audit.md" \
   AUDIT_SEAM_EVIDENCE="$scratch/empty-seams.json" \
   AUDIT_DELIBERATE_STATES="$repo_root/docs/deliberate-states.md" \

@@ -42,13 +42,13 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
 
-# Hermetic when nested under tests/seat-lib.test.sh (fleet-ops#449), which
+# Hermetic when nested under tests/seat.lib.test.sh (fleet-ops#449), which
 # export -f systemctl and awk. Functions beat PATH; this file ships its
 # own fake systemctl.
 unset -f systemctl awk 2>/dev/null || true
 
 # Fresh-runner floor (fleet-ops#94/#98 shape, same idiom as
-# seat-lib.test.sh): the liveness cases need monotonic ages up to 3360s,
+# seat.lib.test.sh): the liveness cases need monotonic ages up to 3360s,
 # so every /proc/uptime read sees >= 3700s. The lib's clock and mono_ago
 # share this one shimmed clock.
 awk() {
@@ -175,13 +175,13 @@ export FAKE_SUB_DB="$sub_db"
 export FAKE_EXEC_DB="$exec_db"
 export FAKE_PROPS_DB="$props_db"
 
-# Put the fake systemctl on PATH so seat-lib.sh's bare `systemctl --user ...`
+# Put the fake systemctl on PATH so seatlib.sh's bare `systemctl --user ...`
 # invocations hit the stub instead of the real systemd user instance.
 mkdir -p "$scratch/bin"
 ln -sf "$fake" "$scratch/bin/systemctl"
 export PATH="$scratch/bin:$PATH"
 
-# --- seed a minimal cap map + models.json so pick_seat is not in the way ---
+# --- seed a minimal cap map + models.json so pick-seat is not in the way ---
 export HOME="$scratch/home"
 mkdir -p "$HOME/.local/state/pi-packet"
 cat >"$HOME/.local/state/pi-packet/seat-caps.json" <<'JSON'
@@ -200,14 +200,14 @@ export PI_PACKET_STATE="$HOME/.local/state/pi-packet"
 export SEAT_CAPS_JSON="$HOME/.local/state/pi-packet/seat-caps.json"
 export PI_MODELS_JSON="$repo_root/tests/fixtures/minimal-models.json"
 export PI_SEAT_LIB_CHECK_SYSTEMD=1
-# SYSTEMCTL is honoured by some callers but seat-lib.sh's bare `systemctl`
+# SYSTEMCTL is honoured by some callers but seatlib.sh's bare `systemctl`
 # invocations are intercepted via the PATH-symlinked fake above.
 export SYSTEMCTL="$fake"
 
-# Source seat-lib.sh so we exercise the real function bodies.
-SEAT_LIB="$repo_root/lib/seat-lib.sh"
-[[ -f "$SEAT_LIB" ]] || fail "seat-lib.sh not found: $SEAT_LIB"
-# shellcheck source=../lib/seat-lib.sh
+# Source seatlib.sh so we exercise the real function bodies.
+SEAT_LIB="$repo_root/lib/litellm-seat.sh"
+[[ -f "$SEAT_LIB" ]] || fail "seatlib.sh not found: $SEAT_LIB"
+# shellcheck source=../lib/litellm-seat.sh
 source "$SEAT_LIB"
 
 # --- helpers --------------------------------------------------------------
@@ -232,7 +232,7 @@ seed_prop() {
 }
 
 # Seed an active-seats registry entry. `unit` is the BARE instance name
-# (e.g. pi-issue-5141-a1); seat-lib.sh re-derives the systemd unit
+# (e.g. pi-issue-5141-a1); seatlib.sh re-derives the systemd unit
 # (pi-issue@5141-a1.service) from it at lookup time.
 seed_registry() {
     local instance="$1"
@@ -398,7 +398,7 @@ unit_timeout_s="$(_seat_duration_to_s "$unit_timeout_raw" || echo "")"
   || fail "fleet-ops#5141: cannot parse TimeoutStartSec=$unit_timeout_raw from pi-issue@.service"
 fallback_s="$(grep -oE 'PI_SEAT_ACTIVATING_MAX_S:-[0-9]+' "$SEAT_LIB" | head -n1 | sed 's/.*:-//')"
 [[ "$fallback_s" =~ ^[0-9]+$ ]] \
-  || fail "fleet-ops#5141: cannot extract the PI_SEAT_ACTIVATING_MAX_S default from seat-lib.sh"
+  || fail "fleet-ops#5141: cannot extract the PI_SEAT_ACTIVATING_MAX_S default from seatlib.sh"
 (( fallback_s >= unit_timeout_s )) \
   || fail "fleet-ops#5141: PI_SEAT_ACTIVATING_MAX_S fallback ${fallback_s}s < unit TimeoutStartSec ${unit_timeout_s}s — a healthy worker would be reaped before its own start timeout"
 ok "drift block: Type=oneshot and fallback ${fallback_s}s >= unit TimeoutStartSec ${unit_timeout_s}s"

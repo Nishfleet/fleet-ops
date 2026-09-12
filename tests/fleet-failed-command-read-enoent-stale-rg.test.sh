@@ -64,7 +64,7 @@
 #      naming ENOENT / failed, is still a finding (anti-exemption).
 #   5. lib/failed-command-flagged.py cites fleet-ops#1255 (detector-side lock: case list moved to lib, fleet-ops#3246).
 #   6. lib/failed-command-flagged.py docstring cites fleet-ops#1255.
-#   7. seat-lib.test.sh hosts this file (CI cannot gain a new workflow line).
+#   7. seat.lib.test.sh hosts this file (CI cannot gain a new workflow line).
 
 set -euo pipefail
 
@@ -200,10 +200,10 @@ grep -q 'fleet-failed-command-flagged' "$lib" \
   || fail "lib/failed-command-flagged.py docstring must name fleet-failed-command-flagged next to the #1100 citation"
 ok "lib/failed-command-flagged.py docstring cites fleet-ops#1255 and fleet-ops#1100"
 
-# --- 7. seat-lib.test.sh hosts this file (CI cannot gain a P14 line) --------
+# --- 7. seat.lib.test.sh hosts this file (CI cannot gain a P14 line) --------
 grep -Fq 'bash "$here/fleet-failed-command-read-enoent-stale-rg.test.sh"' \
-  "$here/seat-lib.test.sh" \
-  || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
-ok "seat-lib.test.sh hosts this file"
+  "$here/seat.lib.test.sh" \
+  || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
+ok "seat.lib.test.sh hosts this file"
 
 echo "OK: fleet-failed-command-read-enoent-stale-rg: live #1255 stale fleet-ops-rg salvage-scan ENOENT drill + #1100 stale fleet-ops path drill"

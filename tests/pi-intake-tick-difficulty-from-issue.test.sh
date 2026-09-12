@@ -2,7 +2,7 @@
 # fleet-ops#3238: the packet's difficulty header comes from the issue, not the packet size.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; repo_root="$(cd "$here/.." && pwd)"
-tick="$repo_root/lib/pi-intake-tick.sh"; lib="$repo_root/lib/seat-lib.sh"
+tick="$repo_root/lib/pi-intake-tick.sh"; lib="$repo_root/lib/litellm-seat.sh"
 fail() { echo "FAIL: $*" >&2; exit 1; }; ok() { echo "OK: $*"; }
 grep -qF 'issue_difficulty() {' "$tick" || fail "issue_difficulty() not defined in tick"
 # fleet-ops#3281: intake captures the difficulty once (needed for the heavy-class
@@ -49,5 +49,5 @@ scratch=$(mktemp -d); trap 'rm -rf "$scratch"' EXIT
 head -c 30000 /dev/zero | tr '\0' 'a' > "$scratch/worker.md"; { cat "$scratch/worker.md"; echo; echo "TARGET: repo Nishfleet/fleet-ops issue 1 unit pi-issue-fleet-ops-1"; } > "$scratch/p.in"
 w=$(bash -c 'source "$0"; PI_PACKET_BASE_PROMPT="$1" task_weight "$2"' "$lib" "$scratch/worker.md" "$scratch/p.in")
 [[ "$w" == "light" ]] || fail "task_weight fallback must not count the base prompt bytes (got $w)"
-ok "Test 3: seat-lib fallback subtracts the base prompt"
+ok "Test 3: seatlib fallback subtracts the base prompt"
 echo "PASS: pi-intake-tick-difficulty-from-issue"
