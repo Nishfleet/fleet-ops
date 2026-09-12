@@ -233,6 +233,18 @@
       "source": "repo"
     },
     {
+      "unit": "resilience-drill-stub-seat-sentinel",
+      "class": "b",
+      "source": "repo",
+      "endorsement": "fleet-ops#5106: throwaway name-swapped proof unit the seat_sentinel plane writes into ~/.config/systemd/user at drill time and stops+removes in its own teardown (fleet-ops#5782 leaves-zero-leftover proof). Lives only for the seconds of the daily 05:47 drill run; register-while-live so the machinery-authorization hunt stays silent for it."
+    },
+    {
+      "unit": "resilience-drill-stub-seat-sentinel-tiny",
+      "class": "b",
+      "source": "repo",
+      "endorsement": "fleet-ops#5106/#5096: negative-control twin of resilience-drill-stub-seat-sentinel (StartLimitBurst=5, deliberately wedged by the storm). Same drill-time write + teardown + register-while-live rule (fleet-ops#5782)."
+    },
+    {
       "unit": "fable-fleet-check",
       "class": "a",
       "source": "repo",
