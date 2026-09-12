@@ -390,6 +390,7 @@ ok "scenario 5: 6h threshold - 7h packet LOUD + archived (fleet-ops#5647), 1h pa
 ts_3h_ago="$(date -u -d '3 hours ago' +%Y%m%dT%H%M%SZ)"
 rm -f "$scratch/run.stderr"
 touch "$AS/alert-repair/packet-FleetStaleC-${ts_3h_ago}.md"
+FLEET_ESCALATION_DRAIN_ISSUE_FILER="$scratch/stub-filer" \
 FLEET_ESCALATION_DRAIN_STUCK_AGE_S=7200 \
 FLEET_ESCALATION_DRAIN_AGENT_STATE="$AS" \
 FLEET_ESCALATION_DRAIN_NISH="$AS/NISH-ESCALATIONS.md" \
@@ -419,6 +420,7 @@ ok "scenario 5: FLEET_ESCALATION_DRAIN_STUCK_AGE_S override is honored"
 ts_7h_ago_dry="$(date -u -d '7 hours ago' +%Y%m%dT%H%M%SZ)"
 rm -f "$scratch/run.stderr"
 touch "$AS/alert-repair/packet-FleetStaleD-${ts_7h_ago_dry}.md"
+FLEET_ESCALATION_DRAIN_ISSUE_FILER="$scratch/stub-filer" \
 FLEET_ESCALATION_DRAIN_AGENT_STATE="$AS" \
 FLEET_ESCALATION_DRAIN_NISH="$AS/NISH-ESCALATIONS.md" \
 FLEET_ESCALATION_DRAIN_SEEN="$AS/lanes/nish-boundary-notify.seen" \
@@ -497,6 +499,7 @@ JSON
 # No seen file needed for the condition pass (it does not use the seen set).
 rm -f "$AS/lanes/nish-boundary-notify.seen"
 
+FLEET_ESCALATION_DRAIN_ISSUE_FILER="$scratch/stub-filer" \
 FLEET_ESCALATION_DRAIN_AGENT_STATE="$AS" \
 FLEET_ESCALATION_DRAIN_NISH="$AS/NISH-ESCALATIONS.md" \
 FLEET_ESCALATION_DRAIN_SEEN="$AS/lanes/nish-boundary-notify.seen" \
@@ -536,6 +539,7 @@ ok "scenario 7: resolved money-wall entries archived; live + non-money kept; spl
 
 # Idempotency: re-running on the drained file is a no-op for the condition pass.
 rm -f "$scratch/run7b.stderr"
+FLEET_ESCALATION_DRAIN_ISSUE_FILER="$scratch/stub-filer" \
 FLEET_ESCALATION_DRAIN_AGENT_STATE="$AS" \
 FLEET_ESCALATION_DRAIN_NISH="$AS/NISH-ESCALATIONS.md" \
 FLEET_ESCALATION_DRAIN_SEEN="$AS/lanes/nish-boundary-notify.seen" \
@@ -563,6 +567,7 @@ ok "scenario 7: re-run is idempotent (0 resolved on second pass)"
     printf '%s\n' '- OpenRouter is out of credits. 402 quota_exhausted on every seat.'
 } > "$AS/NISH-ESCALATIONS.md"
 
+FLEET_ESCALATION_DRAIN_ISSUE_FILER="$scratch/stub-filer" \
 FLEET_ESCALATION_DRAIN_AGENT_STATE="$AS" \
 FLEET_ESCALATION_DRAIN_NISH="$AS/NISH-ESCALATIONS.md" \
 FLEET_ESCALATION_DRAIN_SEEN="$AS/lanes/nish-boundary-notify.seen" \
@@ -596,6 +601,7 @@ rm -rf "$AS/lanes/seats"
     printf '%s\n' '- OpenRouter is out of credits. 402 quota_exhausted on every seat.'
 } > "$AS/NISH-ESCALATIONS.md"
 
+FLEET_ESCALATION_DRAIN_ISSUE_FILER="$scratch/stub-filer" \
 FLEET_ESCALATION_DRAIN_AGENT_STATE="$AS" \
 FLEET_ESCALATION_DRAIN_NISH="$AS/NISH-ESCALATIONS.md" \
 FLEET_ESCALATION_DRAIN_SEEN="$AS/lanes/nish-boundary-notify.seen" \
@@ -649,6 +655,7 @@ mkdir -p "$AS/lanes/seats"
 
 rm -f "$AS/lanes/nish-boundary-notify.seen"
 
+FLEET_ESCALATION_DRAIN_ISSUE_FILER="$scratch/stub-filer" \
 FLEET_ESCALATION_DRAIN_AGENT_STATE="$AS" \
 FLEET_ESCALATION_DRAIN_NISH="$AS/NISH-ESCALATIONS.md" \
 FLEET_ESCALATION_DRAIN_SEEN="$AS/lanes/nish-boundary-notify.seen" \
@@ -679,6 +686,7 @@ grep -qF "AUTO-REVERT HALT #1687" "$archive10" \
 ok "scenario 10: body-level RESOLVED entries archived; live entry kept; split reported"
 
 # Idempotency: re-running on the drained file is a no-op.
+FLEET_ESCALATION_DRAIN_ISSUE_FILER="$scratch/stub-filer" \
 FLEET_ESCALATION_DRAIN_AGENT_STATE="$AS" \
 FLEET_ESCALATION_DRAIN_NISH="$AS/NISH-ESCALATIONS.md" \
 FLEET_ESCALATION_DRAIN_SEEN="$AS/lanes/nish-boundary-notify.seen" \
