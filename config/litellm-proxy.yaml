@@ -1,194 +1,194 @@
-# fleet-ops#4130 P1 — LiteLLM proxy router config (shape reference).
-#
-# This file is the repo-resident shape. The LIVE config lives at
-# ~/.config/fleet-ops/litellm-proxy.yaml and is operator-owned so that
-# credential resolvers never enter the repo. This file is NOT a MANIFEST
-# install target on purpose — copying placeholders over a live router would
-# cut its seats (fleet-ops#4174 reopen). The live copy is created by hand
-# per docs/litellm-postgres-setup.md section 3, and section 3a's start
-# wrapper exports the env vars named below.
-#
-# All LiteLLM feature claims below are verified against current LiteLLM
-# docs (docs.litellm.ai, retrieved 2026-09-07) — see
-# docs/design/litellm-vs-seat-lib.md for the per-feature citations and
-# the three gaps the docs expose (concurrency counting, health-check V2
-# reactive-only, prepaid expiry-week pacing approximate).
-#
-# Model groups map to the four Pi provider models in
-# docs/design/litellm-vs-seat-lib.md §2. Deployments are drawn from
-# config/entitled-seats.json + config/seat-caps.json. Caps below mirror
-# the live seat-caps provider caps (rpm/tpm/max_parallel_requests) so
-# the proxy enforces the same bounds seat-lib does today; P3 deletes
-# the seat-lib side.
-#
-# PLACEHOLDERS ONLY — no real key is in this file. The live copy resolves
-# each seat's key through LiteLLM's env-var secret form:
-#
-#   api_key: os.environ/<PROVIDER>_API_KEY
-#
-# CORRECTION (fleet-ops#4174 reopen, measured on the installed organ):
-# litellm 1.98 does NOT support a command-style api_key resolver. That was
-# this file's original assumption and it is wrong — the only supported
-# inline resolver is the os.environ form below (litellm secret_managers),
-# so something has to put the value in the environment. That is what
-# ~/.local/bin/fleet-litellm-proxy-start does (runbook §3a): it sources the
-# existing credential env files and execs litellm, so no key value ever
-# lands in this file, the unit file, or git.
-
+# fleet-ops litellm router — rewritten 2026-09-12 by claude-vps (Nish: "do the ones the fleet needs to do anything yourself on priority").
+# Source of truth: fleet-ops config/litellm-proxy.yaml (PR references fleet-ops#5792 / #5788). Backup: litellm-proxy.yaml.pre-router-401-fix-*.
+# BENCHED 2026-09-12 (live probes, /health at 10:45 IST) — restore only with a green probe cited in the PR:
+#   anthropic/MiniMax-M3 @ api.minimax.io/anthropic     : 401 "login fail" with BOTH Authorization and X-Api-Key forms -> dead key (killed 4 workers)
+#   openai/grok-4.6 @ cli-chat-proxy.grok.com           : 403 personal-team
+#   openai/deepseek/deepseek-v4.1-flash @ openrouter    : insufficient credits
+#   openai/deepseek/deepseek-v4.1-flash @ commandcode   : insufficient credits
+#   openai/Qwen3.6-35B-A3B-FP8 @ inference.hetzner.com  : 403
+#   openai/z-ai/glm-5.3-flash @ api.cline.bot           : 500 ; openai/cline-pass/deepseek-v4.1-flash @ api.cline.bot : 429
+#   ollama.com deepseek-v4-pro:0813 / kimi-k2.7-code    : 429 weekly usage limit (nishant345)
+#   alibaba qwen3.8-max                                 : 429 until 2026-09-14 (seat ledger) ; opencode-go : 402 until 2026-09-12T14:05Z ; mergegateway : quota_bench
+# LIVE (probed 200 on 2026-09-12): paretoinference z-ai/glm-5.3 + glm-5.3-flash, synthetic hf:zai-org/GLM-5.3-Flash, llmgateway-devpass glm-5.3-flash, xkiro deepseek/deepseek-v4-pro.
+# Router policy: a single deployment error must never reach the client while another deployment or fallback group is healthy.
 model_list:
-  # --- worker-cheap: free lanes first, then prepaid, metered last ---
-  # order: 1 = free, 2 = prepaid, 3 = metered (fallback order)
-  - model_name: worker-cheap
-    litellm_params:
-      model: openai/deepseek/deepseek-v4.1-flash
-      api_base: https://commandcode.example/v1
-      api_key: os.environ/COMMANDCODE_API_KEY
-      tags: ["free"]
-      order: 1
-      rpm: 3
-      max_parallel_requests: 4
-  - model_name: worker-cheap
-    litellm_params:
-      model: openai/Qwen3.6-35B-A3B-FP8
-      api_base: https://hetzner.example/v1
-      api_key: os.environ/HETZNER_API_KEY
-      tags: ["free"]
-      order: 1
-      rpm: 2
-      max_parallel_requests: 1
-  - model_name: worker-cheap
-    litellm_params:
-      model: openai/swe-2-max
-      api_base: https://devin.example/v1
-      api_key: os.environ/DEVIN_API_KEY
-      tags: ["prepaid"]
-      order: 2
-      max_parallel_requests: 4
-
-  # --- worker-capable: prepaid strong models ---
-  - model_name: worker-capable
-    litellm_params:
-      model: openai/minimax-m3
-      api_base: https://minimax.example/v1
-      api_key: os.environ/MINIMAX_API_KEY
-      tags: ["metered"]
-      order: 2
-      max_parallel_requests: 2
-
-  # --- senior: ordered fallback ladder (seat-caps senior_seats_in_order) ---
-  - model_name: senior
-    litellm_params:
-      model: openai/cursor-grok-4.6-high
-      api_base: https://cursor.example/v1
-      api_key: os.environ/CURSOR_API_KEY
-      tags: ["prepaid", "senior"]
-      order: 1
-      max_parallel_requests: 1
-  - model_name: senior
-    litellm_params:
-      model: openai/grok-4.6
-      api_base: https://xai-oauth.example/v1
-      api_key: os.environ/XAI_OAUTH_ACCESS_TOKEN
-      # fleet-ops#4629: cli-chat-proxy returns 426 when x-grok-client-version
-      # is missing ("Your Grok CLI version (none) is outdated"). Floor is
-      # 0.1.202; 0.2.101 matches stnly/pi-grok GROK_CLIENT_VERSION and
-      # bin/fleet-seat-live-validate. extra_headers is LiteLLM's documented
-      # alternative to headers (docs.litellm.ai/docs/completion/input).
-      extra_headers:
-        User-Agent: "grok-shell/0.2.101 (linux; x86_64)"
-        x-grok-client-identifier: grok-shell
-        x-grok-client-version: "0.2.101"
-        x-grok-client-mode: interactive
-        X-XAI-Token-Auth: xai-grok-cli
-        x-authenticateresponse: authenticate-response
-      tags: ["prepaid", "senior"]
-      order: 2
-      max_parallel_requests: 2
-  - model_name: senior
-    litellm_params:
-      model: openai/deepseek/deepseek-v4.1-flash
-      api_base: https://openrouter.example/v1
-      api_key: os.environ/OPENROUTER_API_KEY
-      tags: ["metered", "senior"]
-      order: 3
-      max_parallel_requests: 4
-
-  # --- judge: same ladder, separate group for spend tagging (P2 consumer) ---
-  - model_name: judge
-    litellm_params:
-      model: openai/cursor-grok-4.6-high
-      api_base: https://cursor.example/v1
-      api_key: os.environ/CURSOR_API_KEY
-      tags: ["prepaid", "judge"]
-      order: 1
-      max_parallel_requests: 1
-
+- model_name: worker-cheap
+  litellm_params:
+    model: openai/hf:zai-org/GLM-5.3-Flash
+    api_base: https://api.synthetic.new/openai/v1
+    api_key: os.environ/SYNTHETIC_API_KEY
+    tags:
+    - prepaid
+    order: 1
+    max_parallel_requests: 1
+- model_name: worker-cheap
+  litellm_params:
+    model: openai/glm-5.3-flash
+    api_base: https://api.llmgateway.io/v1
+    api_key: os.environ/LLMGATEWAY_DEVPASS_API_KEY
+    tags:
+    - prepaid
+    order: 1
+    max_parallel_requests: 1
+- model_name: worker-cheap
+  litellm_params:
+    model: openai/z-ai/glm-5.3-flash
+    api_base: https://api.paretoinference.com/v1
+    api_key: os.environ/PARETO_API_KEY
+    tags:
+    - prepaid
+    order: 1
+    max_parallel_requests: 1
+- model_name: worker-cheap
+  litellm_params:
+    model: openai/deepseek/deepseek-v4-pro
+    api_base: https://api.xkiro.com/v1
+    api_key: os.environ/XKIRO_API_KEY
+    tags:
+    - free
+    order: 2
+    max_parallel_requests: 1
+- model_name: worker-capable
+  litellm_params:
+    model: openai/z-ai/glm-5.3
+    api_base: https://api.paretoinference.com/v1
+    api_key: os.environ/PARETO_API_KEY
+    tags:
+    - prepaid
+    order: 1
+    max_parallel_requests: 2
+- model_name: worker-capable
+  litellm_params:
+    model: openai/hf:zai-org/GLM-5.3-Flash
+    api_base: https://api.synthetic.new/openai/v1
+    api_key: os.environ/SYNTHETIC_API_KEY
+    tags:
+    - prepaid
+    order: 1
+    max_parallel_requests: 1
+- model_name: worker-capable
+  litellm_params:
+    model: openai/glm-5.3-flash
+    api_base: https://api.llmgateway.io/v1
+    api_key: os.environ/LLMGATEWAY_DEVPASS_API_KEY
+    tags:
+    - prepaid
+    order: 2
+    max_parallel_requests: 1
+- model_name: worker-capable
+  litellm_params:
+    model: openai/deepseek/deepseek-v4-pro
+    api_base: https://api.xkiro.com/v1
+    api_key: os.environ/XKIRO_API_KEY
+    tags:
+    - free
+    order: 2
+    max_parallel_requests: 1
+- model_name: senior
+  litellm_params:
+    model: openai/z-ai/glm-5.3
+    api_base: https://api.paretoinference.com/v1
+    api_key: os.environ/PARETO_API_KEY
+    tags:
+    - prepaid
+    - senior
+    order: 1
+    max_parallel_requests: 2
+- model_name: senior
+  litellm_params:
+    model: openai/deepseek/deepseek-v4-pro
+    api_base: https://api.xkiro.com/v1
+    api_key: os.environ/XKIRO_API_KEY
+    tags:
+    - free
+    - senior
+    order: 1
+    max_parallel_requests: 1
+- model_name: senior
+  litellm_params:
+    model: openai/hf:zai-org/GLM-5.3-Flash
+    api_base: https://api.synthetic.new/openai/v1
+    api_key: os.environ/SYNTHETIC_API_KEY
+    tags:
+    - prepaid
+    - senior
+    order: 2
+    max_parallel_requests: 1
+- model_name: judge
+  litellm_params:
+    model: openai/z-ai/glm-5.3
+    api_base: https://api.paretoinference.com/v1
+    api_key: os.environ/PARETO_API_KEY
+    tags:
+    - prepaid
+    - judge
+    order: 1
+    max_parallel_requests: 2
+- model_name: judge
+  litellm_params:
+    model: openai/deepseek/deepseek-v4-pro
+    api_base: https://api.xkiro.com/v1
+    api_key: os.environ/XKIRO_API_KEY
+    tags:
+    - free
+    - judge
+    order: 1
+    max_parallel_requests: 1
+- model_name: worker-private
+  litellm_params:
+    model: openai/z-ai/glm-5.3
+    api_base: https://api.paretoinference.com/v1
+    api_key: os.environ/PARETO_API_KEY
+    tags:
+    - prepaid
+    - private
+    order: 1
+    max_parallel_requests: 1
+- model_name: worker-private
+  litellm_params:
+    model: openai/hf:zai-org/GLM-5.3-Flash
+    api_base: https://api.synthetic.new/openai/v1
+    api_key: os.environ/SYNTHETIC_API_KEY
+    tags:
+    - prepaid
+    - private
+    order: 2
+    max_parallel_requests: 1
 router_settings:
   routing_strategy: simple-shuffle
   fallbacks:
-    # worker-cheap falls to worker-capable, which must NOT dead-end: give it
-    # a terminal healthy route (senior). This mirrors the issue fix direction
-    # (fleet-ops#4404) and avoids a cheap<->capable ping-pong loop by keeping
-    # senior as the last-resort healthy group.
+    # every group has a terminal healthy route; worker-capable must not dead-end (fleet-ops#4404)
     - worker-cheap: [worker-capable, senior]
     - worker-capable: [senior]
     - senior: [worker-capable]
     - judge: [senior]
-  # cooldown_time + allowed_fails replace seat-lib's bench windows. Gap
-  # #2 (health-check V2 reactive-only): 429/408 no longer auto-bench in
-  # V2, so allowed_fails_policy pins quota-class to 1 fail to preserve
-  # the current "bench on first 429" behaviour. See design doc §1 gap 2.
-  cooldown_time: 60
-  allowed_fails: 2
+    - worker-private: [worker-capable]
+  cooldown_time: 300
+  allowed_fails: 1
   num_retries: 2
   timeout: 1800
-  enable_tag_filtering: true
-  # provider_budget_config replaces cursor weekly ceiling + metered
-  # spend caps. Wall-clock periods (1d, 7d), not ISO-week — gap #3 names
-  # the approximation for prepaid expiry-week pacing.
-  provider_budget_config:
-    cursor:    { budget_limit: 16, time_period: 1d }
-
+  enable_tag_filtering: false
+  retry_policy:
+    AuthenticationErrorRetries: 2
+    RateLimitErrorRetries: 2
+    TimeoutErrorRetries: 1
+    InternalServerErrorRetries: 2
+    BadRequestErrorRetries: 0
+    ContentPolicyViolationErrorRetries: 0
+  allowed_fails_policy:
+    AuthenticationErrorAllowedFails: 0
+    RateLimitErrorAllowedFails: 1
+    TimeoutErrorAllowedFails: 1
+    InternalServerErrorAllowedFails: 1
 litellm_settings:
-  # The prometheus callback mounts the /metrics ASGI endpoint that the
-  # fleet's Prometheus scrape job (config/prometheus.yml) polls. Without
-  # this the scrape returns 404 and no litellm_deployment_* gauges land
-  # in Prometheus (fleet-ops#4174 reopen).
-  callbacks: ["prometheus"]
-  # The proxy binds 127.0.0.1 only; requiring auth for /metrics blocks the
-  # Prometheus scrape job which has no bearer token.
-  require_auth_for_metrics_endpoint: false
   drop_params: true
-
+  callbacks:
+  - prometheus
+  require_auth_for_metrics_endpoint: false
 general_settings:
-  # master_key + virtual keys are operator-owned (live config, not repo).
-  # The live copy sets master_key from a credential resolver and mints
-  # sk-fleet-worker / sk-fleet-senior / sk-fleet-private virtual keys
-  # with model allowlists (private = paid deployments only, fail-closed).
   background_health_checks: true
   health_check_interval: 60
-  # Postgres for budgets/keys/spend, Redis for the router fast path
-  # (cooldown cache, provider budget spend).
-  #
-  # NOTE (fleet-ops#4174 reopen): LiteLLM's Prisma layer reads the DB from
-  # the DATABASE_URL ENVIRONMENT, not from this key — the wrapper exports
-  # postgresql://litellm@localhost:5432/litellm. A socket-less form like
-  # `postgresql:///litellm` is rejected by the query engine with P1012, so
-  # this key is documentation of intent only; the env var is what binds.
-  # The cluster itself stays loopback-only (listen_addresses = '127.0.0.1'
-  # in its postgresql.conf); there is no network listener off-box.
-  database_url: postgresql://litellm@localhost:5432/litellm
+  database_url: postgresql://litellm@127.0.0.1:5432/litellm
   redis_url: redis://127.0.0.1:6379
-  # fleet-ops#4832: keep startup `prisma migrate deploy` OFF. Migration
-  # 20250416115320_add_tag_table_to_db creates the redundant single-column
-  # unique index LiteLLM_DailyTagSpend_tag_key, which cannot build while
-  # the table holds multiple rows per tag (they differ on the composite
-  # key tag,date,api_key,model,custom_llm_provider — legitimate rows, not
-  # duplicates). The retry loop stalls every restart ~10min on P3018.
-  # Upstream already resolves it: 20250416151339_drop_tag_uniqueness_requirement
-  # drops that index (verified absent on the live DB 2026-09-12; the
-  # composite unique index is the real constraint). With the migration
-  # ledger fully applied this flag only skips a no-op — but a rebuild or
-  # ledger reset without it re-enters the P3018 loop. Re-enable only to
-  # apply migrations a future LiteLLM bump ships, then turn it back off.
+  master_key: os.environ/LITELLM_MASTER_KEY
   disable_prisma_schema_update: true
