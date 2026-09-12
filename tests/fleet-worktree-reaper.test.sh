@@ -288,6 +288,13 @@ export FLEET_WORKTREE_REAPER_MERGED_LIMIT=5000
 # summary + report files land under the scratch dir instead.
 export AGENT_STATE="$scratch/agent-state"
 mkdir -p "$AGENT_STATE"
+# Mode F isolation (fleet-ops#5837): point the stale standalone-checkout
+# pass at a scratch dir so every case below runs (and mutates) a sandbox,
+# never the live /home/nish/workspaces root.
+wsroot="$scratch/workspaces"
+mkdir -p "$wsroot"
+export FLEET_WORKTREE_REAPER_STALE_ROOT="$wsroot"
+export FLEET_WORKTREE_REAPER_CANONICAL="$wsroot/tooling/fleet-ops-deploy-clone"
 
 # --- build repos + worktrees ----------------------------------------------
 parent_a="$(make_repo fleet-ops)"
@@ -1302,7 +1309,107 @@ json_n=$(jq '.worktrees | length' "$summary_58")
 ok "case58: --report-file PATH -> TSV written + parsed into worktrees[]"
 rm -f "$summary_58" "$report_58"
 
-# --- 16. install rail intact -----------------------------------------------
+# ==========================================================================
+# MODE F (fleet-ops#5837): stale canonical-looking standalone checkouts
+# under the flat workspaces root. Rename-to-mark: STALE-do-not-read-
+# prefix in the name, never delete.
+# ==========================================================================
+#
+# helper: make a standalone git dir under the Mode F sandbox root.
+make_stale_dir() { # <name> <branch> <age: 1=old 0=young>
+    local name="$1" branch="$2" old="$3"
+    mkdir -p "$wsroot/$name"
+    if [ "${branch:-none}" != "none" ]; then
+        git -C "$wsroot" init -q -b "$branch" "$name"
+        git -C "$wsroot/$name" -c user.email=t@t -c user.name=t \
+            commit -q --allow-empty -m seed
+    fi
+    [ "$old" = "1" ] && touch -d '30 days ago' "$wsroot/$name" || true
+}
+
+# --- 59. stale fleet-ops-* dir on a named branch -> RENAMED-F -------------
+make_stale_dir fleet-ops-sync chore/repo-standards-sync 1
+out_f1=$("$bin" --root "$wroot" 2>&1) || true
+[ ! -d "$wsroot/fleet-ops-sync" ] \
+    || fail "case59: stale fleet-ops-* dir should be renamed; output: $out_f1"
+[ -d "$wsroot/STALE-do-not-read-fleet-ops-sync" ] \
+    || fail "case59: STALE-do-not-read-fleet-ops-sync target must exist"
+git -C "$wsroot/STALE-do-not-read-fleet-ops-sync" rev-parse --abbrev-ref HEAD 2>/dev/null | grep -qx 'chore/repo-standards-sync' \
+    || fail "case59: renamed dir must keep its branch (rename preserves git state)"
+echo "$out_f1" | grep -q "fleet-ops-sync: RENAMED-F" \
+    || fail "case59: expected RENAMED-F tag; output: $out_f1"
+ok "case59: stale non-main fleet-ops-* dir renamed to STALE-do-not-read- prefix"
+rmdir "$wsroot/STALE-do-not-read-fleet-ops-sync" 2>/dev/null || true
+
+# --- 60. YOUNG dir -> SKIP-F too-young (today's checkout protected) ------
+make_stale_dir fleet-ops-fresh-958 fix/live-branch 0
+out_f2=$("$bin" --root "$wroot" 2>&1) || true
+[ -d "$wsroot/fleet-ops-fresh-958" ] \
+    || fail "case60: young dir must NOT be renamed; output: $out_f2"
+echo "$out_f2" | grep -q "fleet-ops-fresh-958: SKIP-F too-young" \
+    || fail "case60: expected SKIP-F too-young; output: $out_f2"
+ok "case60: young fleet-ops-* dir SKIP-F too-young"
+rm -rf "$wsroot/fleet-ops-fresh-958"
+
+# --- 61. branch main -> SKIP-F unclassifiable-or-main --------------------
+make_stale_dir fleet-ops-canonical main 1
+out_f3=$("$bin" --root "$wroot" 2>&1) || true
+[ -d "$wsroot/fleet-ops-canonical" ] \
+    || fail "case61: dir on main must NOT be renamed; output: $out_f3"
+echo "$out_f3" | grep -q "fleet-ops-canonical: SKIP-F" \
+    || fail "case61: expected SKIP-F for main-HEAD dir; output: $out_f3"
+ok "case61: dir on main skipped (SKIP-F)"
+rm -rf "$wsroot/fleet-ops-canonical"
+
+# --- 62. already STALE-prefixed -> not scanned (idempotent) --------------
+mkdir -p "$wsroot/STALE-do-not-read-fleet-ops-already"
+out_f4=$("$bin" --root "$wroot" 2>&1) || true
+echo "$out_f4" | grep -q "STALE-do-not-read-fleet-ops-already" \
+    && fail "case62: prefixed dir must not be re-scanned; output: $out_f4" \
+    || true
+[ -d "$wsroot/STALE-do-not-read-fleet-ops-already" ] \
+    || fail "case62: prefixed dir must be left untouched"
+ok "case62: already-prefixed dir idempotently skipped"
+rm -rf "$wsroot/STALE-do-not-read-fleet-ops-already"
+
+# --- 63. name not matching the glob -> untouched; target-exists collision -> failed
+make_stale_dir not-a-fleet-ops-dir chore/other 1
+make_stale_dir fleet-ops-collision chore/other 1
+mkdir -p "$wsroot/STALE-do-not-read-fleet-ops-collision"
+out_f5=$("$bin" --root "$wroot" 2>&1) || true
+[ -d "$wsroot/not-a-fleet-ops-dir" ] \
+    || fail "case63: non-glob dir must NOT be renamed; output: $out_f5"
+[ -d "$wsroot/fleet-ops-collision" ] \
+    || fail "case63: collision dir must be left in place (fail safe); output: $out_f5"
+echo "$out_f5" | grep -q "fleet-ops-collision: RENAME-F FAILED" \
+    || fail "case63: expected RENAME-F FAILED tag; output: $out_f5"
+ok "case63: non-matching name untouched; rename collision fails safe"
+rm -rf "$wsroot/not-a-fleet-ops-dir" "$wsroot/fleet-ops-collision" "$wsroot/STALE-do-not-read-fleet-ops-collision"
+
+# --- 64. dry-run renames nothing but reports DRY-RENAME-F ----------------
+make_stale_dir fleet-ops-dryrun chore/dry 1
+dry_f=$("$bin" --dry-run --root "$wroot" 2>&1) || true
+[ -d "$wsroot/fleet-ops-dryrun" ] \
+    || fail "case64: dry-run renames nothing; output: $dry_f"
+echo "$dry_f" | grep -q "fleet-ops-dryrun: DRY-RENAME-F" \
+    || fail "case64: expected DRY-RENAME-F tag; output: $dry_f"
+"$bin" --root "$wroot" >/dev/null 2>&1 || true
+[ -d "$wsroot/STALE-do-not-read-fleet-ops-dryrun" ] \
+    || fail "case64: post-dry-run live run should rename"
+rm -rf "$wsroot/STALE-do-not-read-fleet-ops-dryrun"
+ok "case64: dry-run reports DRY-RENAME-F, renames nothing"
+
+# --- 65. summary JSON carries the Mode F fields --------------------------
+summary_f="$scratch/summary-f.json"
+make_stale_dir fleet-ops-json-flip chore/json 1
+"$bin" --root "$wroot" --summary-file "$summary_f" >/dev/null 2>&1 || true
+jq -e '.mode_f_scanned >= 1 and .reaped_f >= 1' "$summary_f" >/dev/null 2>&1 \
+    || fail "case65: summary JSON must carry Mode F counters; content: $(cat "$summary_f")"
+dbg_f=$("$bin" --root "$wroot" 2>&1); echo "$dbg_f" | grep -q 'reaped_f=' || fail "case65: summary line must report reaped_f; got: $dbg_f"
+ok "case65: summary JSON + line carry Mode F fields"
+rm -rf "$wsroot/STALE-do-not-read-fleet-ops-json-flip"
+
+# --- 16. install rail intact ----------------------------------------------
 for f in bin/fleet-worktree-reaper \
          systemd/fleet-worktree-reaper.service \
          systemd/fleet-worktree-reaper.timer; do
