@@ -900,3 +900,15 @@ bash "$here/helper-symlink-resolution.test.sh"
 # Hosted here (a listed test) so P14 runs it without a workflow-file edit
 # (the worker App cannot push .github/workflows/**).
 bash "$here/one-fleet-rule-pointer.test.sh"
+
+# fleet-ops#5748: the live-state doctrine precedence gate (2-step vs 5-step
+# divergence between the Pi canonical and the generated idle-fleet-alarm
+# block). The test landed on the claim branch without a ci.yml listing or a
+# host, so P14 ran red on "1 test file(s) are neither in ci.yml, hosted by a
+# listed test, live/destructive, nor a known orphan:
+# live-state-doctrine-precedence.test.sh" (run 34670719563). Hosted here so
+# P14 runs it without a workflow-file edit (the worker App cannot push
+# .github/workflows/**). The named pin in tests/p14-test-listing-gate.test.sh
+# is the class-prevention so a future drop of this host line fails by name.
+# Hermetic (repo-relative lib/ paths only, no gh/systemd/live surfaces).
+bash "$here/live-state-doctrine-precedence.test.sh"
