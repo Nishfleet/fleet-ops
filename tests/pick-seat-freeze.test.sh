@@ -50,6 +50,7 @@ bin/fleet-vibes-canary:1
 bin/ram-measure:1
 tests/agent-cron-writes-refused.test.sh:1
 tests/blocked-reconcile.test.sh:1
+tests/deleted-symbol-gate.test.sh:2
 tests/devin-config-trust.test.sh:1
 tests/devin-writes-rejected.test.sh:1
 tests/fleet-heartbeat-low-water-mark.test.sh:2
