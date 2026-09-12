@@ -72,6 +72,11 @@ set -uo pipefail
 TRIAGE_FILE="${TRIAGE_FILE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
 SYSTEMCTL="${SYSTEMCTL:-systemctl}"
 STATE_DIR="${PI_PACKET_STATE:-$HOME/.local/state/pi-packet}"
+# fleet-ops#2133: per-failed-claim reclaim cooldown, mirrored from the intake
+# side (lib/pi-intake-tick.sh RECLAIM_COOLDOWN_S). fleet-ops#5743: also the
+# floor the bench-aware requeue compares the overloaded seat's bench_until
+# against — the until: line is only added when the bench outlives this floor.
+RECLAIM_COOLDOWN_S="${PI_INTAKE_RECLAIM_COOLDOWN_S:-900}"
 ATTEMPTS_DIR="$STATE_DIR/attempts"
 ISSUES_DIR="${PI_ISSUES_DIR:-$HOME/.local/state/pi-issues}"
 
@@ -340,8 +345,52 @@ if [[ "$issue_state" == "OPEN" ]]; then
     # deleted (the reclaim path); the open-PR shortcut exits before here.
     if [[ "$branch_deleted" == "yes" ]]; then
         cooldown_file="$ATTEMPTS_DIR/pi-issue-${instance}.cooldown"
+        # fleet-ops#5743: bench-aware transient-overload requeue. The hand
+        # path (audit 2026-09-12, unit pi-issue@fleet-ops-2073) manually added
+        # a READY-WORK.md row with an `after:` gate on the overloaded seat's
+        # bench expiry, because the fixed cooldown below outlives nothing:
+        # a 503 overload bench is geometrically escalated (600s base up to 6h,
+        # mark_seat_overload_bench) and can outlast RECLAIM_COOLDOWN_S. The
+        # READY-WORK ledger is paper (fleet-ops#1493) with no live rail, so
+        # the requeue is minted here instead, on the existing issue-dispatch
+        # entry point: the cooldown marker learns an absolute `until:` line.
+        # Detection is NOT conflated with empty-run or real packet failures:
+        # the classification fires only when the LAST seat's ledger says
+        # health_class=overload_bench / failure_mode=overload_503 AND its
+        # bench_until is still in the future. Unit-escalation-write already
+        # excludes pi-issue@* (its own OnFailure lives here), so this is the
+        # single writer for the requeue.
+        _ov_until=""
+        _last_seat_ov=$(cat "$ATTEMPTS_DIR/pi-issue-${instance}.seat" 2>/dev/null || true)
+        if [[ -n "$_last_seat_ov" && "$_last_seat_ov" == */* ]]; then
+            _seat_lib=${SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}
+            if [[ -f "$_seat_lib" ]]; then
+                # shellcheck disable=SC1090
+                source "$_seat_lib" 2>/dev/null || true
+            fi
+            if declare -F seat_ledger_path >/dev/null 2>&1; then
+                _ov_ledger=$(seat_ledger_path "${_last_seat_ov%%/*}" "${_last_seat_ov#*/}" 2>/dev/null || true)
+                if [[ -n "$_ov_ledger" && -f "$_ov_ledger" ]]; then
+                    IFS=$'\x1f' read -r _ov_hc _ov_fm _ov_bu <<<"$(jq -r '[.health_class//"",.failure_mode//"",.bench_until//""] | join("\u001f")' "$_ov_ledger" 2>/dev/null)"
+                    if [[ "${_ov_hc:-}" == "overload_bench" && "${_ov_fm:-}" == "overload_503" && -n "${_ov_bu:-}" ]]; then
+                        _ov_bu_epoch=$(date -u -d "$_ov_bu" +%s 2>/dev/null) || _ov_bu_epoch=0
+                        _cd_bound_epoch=$(( $(date -u +%s) + RECLAIM_COOLDOWN_S ))
+                        if (( _ov_bu_epoch > _cd_bound_epoch )); then
+                            _ov_until="$_ov_bu"
+                        fi
+                    fi
+                fi
+            fi
+        fi
         if date -u +%Y-%m-%dT%H:%M:%SZ >"$cooldown_file" 2>/dev/null; then
-            log "wrote reclaim cooldown marker for $instance (branch deleted, OPEN issue re-queued with backoff)"
+            if [[ -n "$_ov_until" ]]; then
+                printf 'until: %s\n' "$_ov_until" >>"$cooldown_file" 2>/dev/null || true
+                log "TRANSIENT-OVERLOAD classified for $instance: seat $_last_seat_ov benched until $_ov_until — requeue gated past bench expiry (no hand READY-WORK row)"
+                log "wrote reclaim cooldown marker for $instance with until: $_ov_until (branch deleted, OPEN issue re-queued bench-aware)"
+                log_to_triage "TRANSIENT-OVERLOAD-REQUEUE" "instance=$instance repo=$repo_slug issue=$issue until=$_ov_until seat=$_last_seat_ov"
+            else
+                log "wrote reclaim cooldown marker for $instance (branch deleted, OPEN issue re-queued with backoff)"
+            fi
         else
             log "WARN: could not write cooldown marker $cooldown_file"
         fi

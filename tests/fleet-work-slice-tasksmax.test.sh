@@ -103,7 +103,7 @@ ram=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["ram_gb_pe
 # coverage-free, so the old p50 no longer describes new workers. The
 # remeasure-4891 timer (2026-09-11 14:05Z) replaces 1.5 with the measured
 # p95 either way. Moving this pin needs a new measurement in the same PR.
-[[ "$ram" == "1.0" ]] || fail "ram_gb_per_worker must be 1.0 (admission authority: Nish 2026-09-11 "DO IT NOW", fleet-ops#5495; was the #4896 interim 1.5); got '$ram'"
-ok "seat-caps.json ram_gb_per_worker is 1.0 (Nish 2026-09-11)"
+[[ "$ram" == "0.65" ]] || fail "ram_gb_per_worker must be 0.65 (admission authority: Nish 2026-09-12 "do it now", fleet-ops#5955; was 1.0 per #5495); got '$ram'"
+ok "seat-caps.json ram_gb_per_worker is 0.65 (Nish 2026-09-12, fleet-ops#5955)"
 
 echo "OK: fleet-work.slice TasksMax=8000; spawn-guard 7500/8000; RAM admission unchanged"

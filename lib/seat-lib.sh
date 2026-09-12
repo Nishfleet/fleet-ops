@@ -2163,7 +2163,7 @@ _systemd_quantity_gb() {
 # heavy|keystone -> 1.0 GB (fleet-ops#3495). Else the repo's MemoryHigh
 # from worker_memory.<repo> (0509/fleet-ops no longer set MemoryHigh after
 # fleet-ops#3930 dropped the throttle band, so they fall back to 1.0), converted
-# to GB. Repos without a row fall back to ram_gb_per_worker (1.0, fleet-ops#4164).
+# to GB. Repos without a row fall back to ram_gb_per_worker (0.65, fleet-ops#5955).
 # This is what admission charges each active worker, so a browser worker
 # consumes its real share of MemAvailable instead of the flat 1.0 GB.
 ram_charge_gb_for() {
