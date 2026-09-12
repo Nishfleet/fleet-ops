@@ -146,6 +146,9 @@ jobs:
         # cannot freeze a weekly-resetting seat for three cycles.
         bash tests/seat-wall-reset-horizon.test.sh
         bash tests/stop-escalation-dispatch.test.sh
+        # fleet-ops#5863: prove an auditor repair run leaves the deploy clone
+        # clean (packet rule + cwd anchor + AUDITOR-DIRTY-CLONE gate).
+        bash tests/stop-escalation-deploy-clone-clean.test.sh
         bash tests/escalation-units-shape.test.sh
         # fleet-ops#1164: persist nish-boundary-notify CLASSES in git + lint.
         bash tests/nish-boundary-notify-classes.test.sh

@@ -14,7 +14,7 @@
 #   3. a mechanical gate: an auditor run that leaves the deploy clone dirty
 #      is recorded LOUD as AUDITOR-DIRTY-CLONE in AUDITOR-LOG.md.
 #
-# Runs entirely offline with a stubbed seat-lib.sh and a fake `pi` binary.
+# Runs entirely offline with a stubbed litellm-seat.sh and a fake `pi` binary.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -54,10 +54,11 @@ EOF
 {"reason":"unit-failure","detail":{"unit":"pi-issue@fleet-ops-5863.service"}}
 JSON
 
-  # Seat stub: one healthy capable seat, matching the real contract.
-  cat >"$scratch/seat-lib-stub.sh" <<'EOF'
+  # Seat stub: one healthy capable seat, matching the real
+  # lib/litellm-seat.sh contract (group + tried-file args).
+  cat >"$scratch/seatlib-stub.sh" <<'EOF'
 #!/usr/bin/env bash
-pick_seat() {
+litellm_seat() {
   local TAB=$'\t'
   printf 'devin%sglm-5-2\n' "$TAB"
   return 0
@@ -110,7 +111,7 @@ EOF
   export STOP_ESCALATION_NISH="$scratch/agent-state/NISH-ESCALATIONS.md"
   export STOP_ESCALATION_AUDITOR_LOG="$scratch/agent-state/AUDITOR-LOG.md"
   export STOP_ESCALATION_PI_BIN="$scratch/pi"
-  export PI_PACKET_SEAT_LIB="$scratch/seat-lib-stub.sh"
+  export PI_PACKET_SEAT_LIB="$scratch/seatlib-stub.sh"
   export STOP_ESCALATION_AUDITOR_TIMEOUT=5
   export STOP_ESCALATION_COOLDOWN=0
   export STOP_ESCALATION_WALLED_CD=0
