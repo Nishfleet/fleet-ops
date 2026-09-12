@@ -24,6 +24,9 @@ Relates to fleet-ops#5588.
 - `sgscan` → `No new security findings`.
 - Salvage resume: host state had drifted back (default canonical reverted the render). Re-synced the vault canonical one-fleet section to the repo canonical, re-rendered (default canonical), re-verified: `--check` exit 0, `tests/one-fleet-rule-pointer.test.sh` exit 0 (clean run after re-run to green), `tests/standing-rules-drift.test.sh` 10/10 exit 0.
 
+- CI fix round: the new detector was a P14 orphan (CI FAIL: '1 test file(s) are neither in ci.yml, hosted by a listed test, live/destructive, nor a known orphan: one-fleet-rule-pointer.test.sh'); hosted it from tests/ci-standards-audit.test.sh (already listed) with a by-name pin in tests/p14-test-listing-gate.test.sh, since the worker App cannot push .github/workflows/**.
+- Revert mechanism root-caused: deployed `standing-rules-render.path` + MANIFEST line 987 re-install the vault canonical from the deploy clone and re-render, so host state reverts until the fix lands. Post-merge loose end: re-run `python3 bin/render-standing-rules.py --render` once after the install tick syncs the new canonical.
+
 ## run-proof
 
 units: pi-issue-fleet-ops-5588 (this run); drills: none required (test + generated-file consolidation, no unit/timer/workflow change).
