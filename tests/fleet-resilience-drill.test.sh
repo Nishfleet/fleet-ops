@@ -274,6 +274,22 @@ ok "detached ping failure is best-effort (exit 0)"
 export HOME="$scratch/home"
 mkdir -p "$HOME"
 
+# fleet-ops#5782 — inner-loop repair of a pre-existing main red: the #5800
+# salvage_orphan plane replays pi-salvage-worktree with GH_TOKEN stripped
+# (env -u GH_TOKEN), so on a bare box the hook mints via
+# ${HOME}/.local/bin/worker-token (fleet-ops#3445). The mocked home never
+# shipped one, so the mocked green run failed with
+# "worker-token: No such file or directory" and killed the whole file
+# before later sections ran. GitHub-hosted runners stayed green only
+# because GITHUB_ACTIONS=true skips the mint. Stub it like the other fakes:
+# --print must yield an env assignment the hook can eval.
+mkdir -p "$HOME/.local/bin"
+cat >"$HOME/.local/bin/worker-token" <<'WT'
+#!/usr/bin/env bash
+printf 'GITHUB_TOKEN=test-wt-token-never-used-for-writes\n'
+WT
+chmod +x "$HOME/.local/bin/worker-token"
+
 repo="$scratch/repo"
 mkdir -p "$repo/bin" "$repo/docs" "$repo/config" "$repo/.github/workflows" \
   "$repo/lib" "$repo/systemd/system/tailscaled.service.d"
@@ -756,3 +772,74 @@ echo "$check_out" | grep -q 'ready' || fail "--check must report ready, got: $ch
 ok "--check reports ready without system calls"
 
 echo "OK: fleet-ops#455 resilience drill acceptance pass"
+
+# --- fleet-ops#5782: drill throwaway units leave ZERO leftovers ----------
+# The 2026-09-12 blind audit found four drill-throwaway systemd user units
+# still alive after their issues closed (btdrill-5471, three
+# resilience-drill-stub-*-probe .path watchers) — leaked because the
+# creating session died before any teardown, and none was registered, so
+# the machinery-authorization hunt burned a finding on each. Two guards:
+# (a) the seat_sentinel proof units are REGISTERED in the machinery
+#     allowlist while they are live (register-while-live); and
+# (b) a representative drill run (--plane seat_sentinel) installs REAL
+#     throwaway .path/.service units, fires them, tears them down, and
+#     (since #5782) the plane itself asserts the teardown left zero
+#     leftovers — nothing still loaded, no unit file on disk.
+for stub_u in resilience-drill-stub-seat-sentinel resilience-drill-stub-seat-sentinel-tiny; do
+  if ! jq -e --arg u "$stub_u" '.authorized[] | select(.unit==$u)' \
+       "$repo_root/config/machinery-allowlist.json" >/dev/null; then
+    fail "machinery-allowlist.json must register $stub_u (fleet-ops#5782 register-while-live)"
+  fi
+done
+ok "machinery-allowlist registers the seat_sentinel proof units (register-while-live)"
+
+# Needs a live user-systemd session — the SAME guard the plane itself uses;
+# sessionless runners SKIP+LOUD here (repo convention, #5106: the proof runs
+# for real on the daily 05:47 timer). NOT the mocked-OFFLINE harness above:
+# this runs the REAL drill so the teardown proof exercises real systemd.
+if [[ -n "${XDG_RUNTIME_DIR:-}" ]] && [[ -S "${XDG_RUNTIME_DIR}/systemd/private" ]] \
+   && [[ -d "$HOME/.config/systemd/user" ]]; then
+  live_scratch="$(mktemp -d)"
+  # AGENT_STATE + TRIAGE redirected: the live run never touches the daily
+  # drill's results.jsonl / the heartbeat triage. PROM untouched (--plane
+  # skips write_metrics). FLEET_OPS_REPO defaults to this worktree's tree,
+  # whose systemd/fleet-seat-recovery.{service,path} the plane copies.
+  # FLEET_OPS_REPO is overridden to the real tree: the mocked scratch $repo
+  # above doesn't ship systemd/fleet-seat-recovery.{service,path}, which the
+  # plane's sed-copies need.
+  set +e
+  live_out=$(SYSTEMCTL=systemctl AGENT_STATE="$live_scratch" \
+    FLEET_OPS_REPO="$repo_root" \
+    FLEET_HEARTBEAT_TRIAGE="$live_scratch/triage.md" \
+    FLEET_RESILIENCE_DRILL_OFFLINE=0 \
+    "$repo_root/bin/fleet-resilience-drill" --plane seat_sentinel 2>&1)
+  live_rc=$?
+  set -e
+  [[ "$live_rc" -eq 0 ]] || fail "live --plane seat_sentinel must pass, rc=$live_rc out=$live_out"
+  if ! grep -q '"name":"seat_sentinel","status":"pass"' \
+       "$live_scratch/fleet-resilience-drill/results.jsonl"; then
+    fail "results.jsonl must record seat_sentinel pass, got: $(cat "$live_scratch/fleet-resilience-drill/results.jsonl" 2>/dev/null) — out: $live_out"
+  fi
+  grep -q 'fleet-ops#5782' "$live_scratch/fleet-resilience-drill/results.jsonl" \
+    || fail "pass proof must cite the #5782 zero-leftover proof"
+  # Zero leftovers, observed OUTSIDE the plane's own assert: no unit file
+  # left in the user unit dir and nothing still loaded in the manager.
+  leftovers=$(XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" systemctl --user list-unit-files --no-legend 2>/dev/null \
+    | grep -E '^resilience-drill-stub-seat-sentinel' || true)
+  if [[ -n "$leftovers" ]]; then
+    fail "teardown must leave zero leftover unit files, got: $leftovers"
+  fi
+  for stub_u in resilience-drill-stub-seat-sentinel{.service,.path} \
+                resilience-drill-stub-seat-sentinel-tiny{.service,.path}; do
+    if [[ -e "$HOME/.config/systemd/user/$stub_u" ]]; then
+      fail "leftover unit file $stub_u survived teardown"
+    fi
+    if ! [[ "$(systemctl --user show -p LoadState "$stub_u" 2>/dev/null)" == "LoadState=not-found" ]]; then
+      fail "leftover $stub_u still loaded in the manager ($(systemctl --user show -p LoadState "$stub_u" 2>/dev/null))"
+    fi
+  done
+  rm -rf "$live_scratch"
+  ok "live representative drill run: seat_sentinel pass, teardown left 0 leftover units (fleet-ops#5782)"
+else
+  echo "SKIP: live representative drill run (no user systemd session — #5106 daily timer owns the proof)"
+fi
