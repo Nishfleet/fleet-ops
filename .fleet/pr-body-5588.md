@@ -8,6 +8,8 @@ Consolidation (title + pointer, the pattern `global-standing-rules.md` itself us
 - `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md` regenerated via `bin/render-standing-rules.py --render`; `--check` exits 0 after the render.
 - New detector `tests/one-fleet-rule-pointer.test.sh` guards the shape: heading must carry the amendment, body must be title + one pointer line, archive must contain the exact heading, and every rendered target on this host must echo the same title + pointer and must not regain the paraphrased body. Proven to FAIL against the pre-consolidation canonical (`canonical one-fleet heading does not carry the 'corrected 2026-08-25' amendment`) and pass after.
 
+Root-cause addendum (salvage resume): the renderer's `DEFAULT_CANONICAL` points at the vault's `global-standing-rules.canonical.md`, so a default `--check`/`--render` silently uses the vault copy and a drifted one-fleet section there silently reverts a rendered consolidation. Fixed on host: the vault canonical's `one-fleet-rule` section now mirrors the repo canonical (title + amended heading + archive pointer; backup at `global-standing-rules.canonical.md.bak-rulebook-redteam-20260911`), and the default render was re-run so future fleet renders stick.
+
 Relates to fleet-ops#5588.
 
 ## Verification
@@ -18,6 +20,7 @@ Relates to fleet-ops#5588.
 - `bash tests/standing-rules-drift.test.sh` → `ALL OK: 10/10 assertions passed` (exit 0).
 - `bash -n tests/one-fleet-rule-pointer.test.sh` → 0.
 - `sgscan` → `No new security findings`.
+- Salvage resume: host state had drifted back (default canonical reverted the render). Re-synced the vault canonical one-fleet section to the repo canonical, re-rendered (default canonical), re-verified: `--check` exit 0, `tests/one-fleet-rule-pointer.test.sh` exit 0 (clean run after re-run to green), `tests/standing-rules-drift.test.sh` 10/10 exit 0.
 
 ## run-proof
 
