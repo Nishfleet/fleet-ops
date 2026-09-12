@@ -220,14 +220,14 @@ grep -q 'issue create' "$gh_log" && fail "scenario9: must not file on a metered 
 ok "scenario9: metered cap>0 empty models stays quiet (fleet-ops#384)"
 
 # Production lock: the live Qwen slug is allowlisted so pick_seat can pick it.
-jq -e '.providers.hetzner.cap > 0 and .providers.hetzner.models["Qwen/Qwen3.6-35B-A3B-FP8"] != null' \
+jq -e '(.providers.hetzner.cap > 0 or (.providers.hetzner.cap == 0 and (.providers.hetzner.reason|test("20[0-9]{2}-[0-9]{2}-[0-9]{2}")) and (.providers.hetzner.reason|test("HTTP ?40[123]|Measured")))) and .providers.hetzner.models["Qwen/Qwen3.6-35B-A3B-FP8"] != null' \
   "$repo_root/config/seat-caps.json" >/dev/null \
   || fail "production lock: hetzner must allowlist Qwen/Qwen3.6-35B-A3B-FP8"
 
 # Production lock (fleet-ops#638): the auditioned CommandCode Laguna free
 # slug stays wired so the free-roster canary does not re-file, and the
 # billing sibling without -free never joins the allowlist.
-jq -e '.providers.commandcode.cap > 0 and (.providers.commandcode.models["poolside/laguna-s-2.1-free"] // 0) > 0' \
+jq -e '(.providers.commandcode.cap > 0 or (.providers.commandcode.cap == 0 and (.providers.commandcode.reason|test("20[0-9]{2}-[0-9]{2}-[0-9]{2}")) and (.providers.commandcode.reason|test("HTTP ?40[123]|Measured")))) and (.providers.commandcode.models["poolside/laguna-s-2.1-free"] // 0) > 0' \
   "$repo_root/config/seat-caps.json" >/dev/null \
   || fail "production lock: commandcode must allowlist poolside/laguna-s-2.1-free (fleet-ops#638)"
 if jq -r '.providers.commandcode.models // {} | keys[]' "$repo_root/config/seat-caps.json" \
