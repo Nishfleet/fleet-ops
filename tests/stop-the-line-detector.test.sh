@@ -623,7 +623,10 @@ grep -q 'workflow_run:' "$repo_root/.github/workflows/stop-the-line-watch.yml" \
   || fail "stop-the-line-watch.yml must declare workflow_run trigger"
 grep -q 'cron:' "$repo_root/.github/workflows/stop-the-line-watch.yml" \
   || fail "stop-the-line-watch.yml must declare a schedule trigger (backstop)"
-grep -q 'Nishfleet/fleet-ops/.github/workflows/stop-the-line-detector.yml@main' "$repo_root/.github/workflows/stop-the-line-watch.yml" \
+# The call must reference the detector; the ref is @main or (preferred, #5932)
+# a pinned 40-hex SHA — the pin guard (tests/workflow-action-pin-guard.test.sh)
+# owns pin enforcement, this shape test only owns that the caller references it.
+grep -qE 'Nishfleet/fleet-ops/\.github/workflows/stop-the-line-detector\.yml@(main|[0-9a-f]{40})' "$repo_root/.github/workflows/stop-the-line-watch.yml" \
   || fail "stop-the-line-watch.yml must call the reusable detector"
 ok "stop-the-line-watch.yml shape (workflow_run + schedule + reusable call)"
 
