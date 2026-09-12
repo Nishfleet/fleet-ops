@@ -116,7 +116,8 @@ Simple language is never baby talk and never condescending.
 - Never `git stash` in Nish's repos. The checkouts hold other agents' stashes.
 - `main`/`master` are protected. Branch or use a worktree.
 - Secrets never get printed, moved, rotated, or committed.
-- Products are PR-only. Never merge, never deploy without Nish.
+- Merge/deploy: superseded by GSR "Merge and deploy gates LIFTED on the
+  canonical fleet repo" + "Agent-authored PRs land themselves" — GSR wins.
 
 ## Where the real context lives
 
