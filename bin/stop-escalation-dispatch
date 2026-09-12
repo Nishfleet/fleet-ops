@@ -238,7 +238,10 @@ RESUME_TRIAGE=${STOP_ESCALATION_RESUME_TRIAGE:-$RESUME_AS/FLEET-HEARTBEAT-TRIAGE
 # drill/tests never touch the vault file (empty = the writer's default).
 RESUME_FINDINGS_BIN=${STOP_ESCALATION_RESUME_FINDINGS:-$(dirname "$(readlink -f "$0")")/../lib/findings_ledger.py}
 RESUME_FINDINGS_LEDGER=${STOP_ESCALATION_RESUME_FINDINGS_LEDGER:-}
-RESUME_SEAT_LIB=${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}
+# #5993 deleted pi-packet/seat-lib.sh (pick_seat); both the senior path above
+# and this resume rail now source the litellm-seat contract. One knob
+# (PI_PACKET_SEAT_LIB) still seams both — the drill's stub serves both.
+RESUME_SEAT_LIB=${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/litellm-seat.sh}
 RESUME_DRYRUN=${STOP_ESCALATION_RESUME_DRYRUN:-0}
 RESUME_HOP_CAP=2   # hop 0 -> relaunch 1 -> relaunch 2 -> dispatch (E: second death dispatches)
 
@@ -453,17 +456,19 @@ resume_or_dispatch() {
     resume_dispatch_unit "$unit_sf" "$unit_no_sf" "$hop" || return $?
     return 0
   fi
-  # shellcheck source=../lib/seat-lib.sh source-path=SCRIPTDIR
+  # shellcheck source=../lib/litellm-seat.sh source-path=SCRIPTDIR
   source "$RESUME_SEAT_LIB"
   local seat PROVIDER MODEL
-  # need_capable=1: a pi-systemd-run packet drives tools, so a tools=0 /
-  # flash seat is functionally dead for the relaunch (fleet-ops#1354).
-  # privacy=private: the ledger row does not record the packet's privacy
-  # class, so the resume rail fails closed — never reseat a packet onto a
-  # free-class lane its original dispatch would have excluded (#520).
-  seat=$(pick_seat "" "" 1 "" "light" "private" 2>/dev/null || true)
+  # #5993: the proxy owns routing — capability (#1354: a pi-systemd-run
+  # packet drives tools, so a tools=0/flash lane is functionally dead) is
+  # baked into the WORKER group, and privacy (#520: the ledger row does not
+  # record the packet's privacy class) fails CLOSED on the private group,
+  # which serves both classes. A dead proxy is not a Nish page here: the
+  # relaunched packet dies again, the hop+1 resumes the chain, the cap
+  # dispatches — the chain still terminates in an ACTION, never a log.
+  seat=$(litellm_seat "worker-private" 2>/dev/null || true)
   if [ -z "$seat" ]; then
-    resume_log "no healthy seat for relaunch (walled/benched) — dispatching"
+    resume_log "no seat from the seat-lib seam — dispatching (never a Nish page)"
     resume_dispatch_unit "$unit_sf" "$unit_no_sf" "$hop" || return $?
     return 0
   fi

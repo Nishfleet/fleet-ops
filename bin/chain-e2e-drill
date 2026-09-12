@@ -527,7 +527,7 @@ resume_live_kills() {
     : >"$RESUME_DIR/findings.jsonl"
     printf 'packet for resume-drill (fleet-ops#5456 kill-three-ways)\n' > "$RESUME_DIR/packet.md"
     cat > "$RESUME_DIR/stub-seat-lib.sh" <<'EOF'
-pick_seat() { printf 'stubprov\tstubmodel'; }
+litellm_seat() { printf 'stubprov\tstubmodel'; }
 EOF
     cat > "$RESUME_DIR/fake-gh" <<'EOF'
 #!/usr/bin/env bash

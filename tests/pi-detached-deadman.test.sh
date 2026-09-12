@@ -43,7 +43,15 @@ bash -n "$deadman" || fail "syntax: $deadman"
 scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT
 tf="$scratch/fleet-detached.prom"
+esc_log="$scratch/esc.log"
 ledger="$scratch/dispatch-ledger.jsonl"
+
+# Fake STOP-REASON writer: record calls, never write a real unit-escalation.
+cat >"$scratch/unit-esc" <<EOF
+#!/usr/bin/env bash
+echo "unit=\$1 reason=\${UNIT_ESCALATION_REASON:-} source=\${UNIT_ESCALATION_SOURCE:-}" >>"$esc_log"
+EOF
+chmod +x "$scratch/unit-esc"
 
 # Fake who-stopped: canned audit line.
 cat >"$scratch/whostopped" <<'EOF'
@@ -67,6 +75,7 @@ EOF
 chmod +x "$scratch/journalctl-stub"
 
 common=(PI_DEADMAN_TEXTFILE="$tf"
+        PI_DEADMAN_ESCALATION_BIN="$scratch/unit-esc"
         FLEET_DISPATCH_LEDGER="$ledger"
         PI_DEADMAN_WHOSTOPPED_BIN="$scratch/whostopped"
         PI_DEADMAN_JOURNALCTL="$scratch/journalctl-stub"
@@ -259,7 +268,8 @@ out="$(env "${common[@]}" PI_DEADMAN_DISPATCH=77777777-7777-7777-7777-7777777777
     PI_DEADMAN_UNIT=u-falseclaim PI_DEADMAN_CMDLINE="pi --print" \
     PI_DEADMAN_WORKDIR="$claim_repo" \
     PI_DEADMAN_DELIVERABLE="$scratch/false-claim.md" SERVICE_RESULT=success \
-    "$deadman" 2>&1)" || fail "false-claim verdict must exit 0"
+    "$deadman" 2>&1)" && rc=0 || rc=$?
+[[ $rc -eq 1 ]] || fail "false-claim death must exit 1 (the #5456 #4266 contract), got rc=$rc"
 grep -q 'unit="u-falseclaim"' "$tf" \
     || fail "a false LIVE claim must write the died series: $(cat "$tf")"
 grep -q 'reason=unit-false-live-claim source=pi-detached-deadman' "$esc_log" \
@@ -275,7 +285,7 @@ env "${common[@]}" PI_DEADMAN_DISPATCH=88888888-8888-8888-8888-888888888888 \
     PI_DEADMAN_WORKDIR="$claim_repo" \
     PI_DEADMAN_DELIVERABLE="$scratch/clean.md" SERVICE_RESULT=success \
     JOURNAL_STUB_TEXT="- **Live on this host immediately**: deploy-clone is checked out on the fix branch" \
-    "$deadman" 2>/dev/null || fail "journal-claim verdict must exit 0"
+    "$deadman" 2>/dev/null && fail "journal-claim death must exit 1 (the #5456 #4266 contract)"
 grep -q 'unit="u-journalclaim"' "$tf" \
     || fail "a journal-side false LIVE claim must write the died series"
 ok "unit journal claiming live-on-host without a merged SHA -> died"
@@ -300,7 +310,7 @@ env "${common[@]}" PI_DEADMAN_DISPATCH=abababab-abab-abab-abab-abababababab \
     PI_DEADMAN_UNIT=u-branchclaim PI_DEADMAN_CMDLINE="pi --print" \
     PI_DEADMAN_WORKDIR="$claim_repo" \
     PI_DEADMAN_DELIVERABLE="$scratch/branch-claim.md" SERVICE_RESULT=success \
-    "$deadman" 2>/dev/null || fail "branch-claim verdict must exit 0"
+    "$deadman" 2>/dev/null && fail "branch-claim death must exit 1 (the #5456 #4266 contract)"
 grep -q 'unit="u-branchclaim"' "$tf" \
     || fail "a LIVE claim citing an unmerged branch SHA must die"
 ok "LIVE claim citing an unmerged branch SHA -> died (PR open, not live)"

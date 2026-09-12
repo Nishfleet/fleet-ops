@@ -47,6 +47,7 @@
 #   KEYSTONE_HC_ENV, PI_DEADMAN_URL_BASE     ping seams (keystone-hc-ping)
 #   PI_DEADMAN_TEXTFILE       node_exporter textfile (default
 #                             /var/lib/prometheus/node-exporter/fleet-detached.prom)
+#   PI_DEADMAN_ESCALATION_BIN unit-escalation-write path (default: sibling)
 #   PI_DEADMAN_WHOSTOPPED_BIN fleet-who-stopped path (default: sibling)
 #   PI_DEADMAN_DRYRUN         1 = print the verdict, write nothing (tests)
 
@@ -56,6 +57,7 @@ export HOME="${HOME:-/home/nish}"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+escalation_bin="${PI_DEADMAN_ESCALATION_BIN:-$here/unit-escalation-write}"
 whostopped_bin="${PI_DEADMAN_WHOSTOPPED_BIN:-$here/fleet-who-stopped}"
 textfile="${PI_DEADMAN_TEXTFILE:-/var/lib/prometheus/node-exporter/fleet-detached.prom}"
 
