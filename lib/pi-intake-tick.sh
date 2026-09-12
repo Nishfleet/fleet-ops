@@ -380,7 +380,13 @@ fi
 # tick, so visibility does not depend on the wider window.
 _gh_app_loud() {
     local triage="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
-    printf '[%s] LOUD [GH-APP-BUDGET] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" \
+    # Timestamp hoisted to its own local: this helper sits above a packet
+    # prompt `cat` in the file, so a volatile substitution glued into the
+    # printf line trips the token-efficiency gate even though the output
+    # heads a triage file, never a prompt.
+    local stamp
+    stamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    printf '[%s] LOUD [GH-APP-BUDGET] %s\n' "$stamp" "$*" \
         >>"$triage" 2>/dev/null || true
 }
 
