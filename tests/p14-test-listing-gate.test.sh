@@ -584,6 +584,21 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-issue-file-dedupe-comment-
   || fail "fleet-issue-file-dedupe-comment-idempotent.test.sh must not be a known orphan (fleet-ops#5496)"
 ok "fleet-issue-file-dedupe-comment-idempotent.test.sh is pinned in the P14 reachable set (fleet-ops#5496)"
 
+# fleet-ops#5666: hard-pin the host line for the closed-canonical dedupe
+# test (the #5652 -> #5666 stale-observation re-filing). Same shape as the
+# #5496 pin above — the test is hosted from ci-standards-audit.test.sh
+# (already listed in ci.yml) because the worker App cannot push
+# .github/workflows/**. This named pin is class-prevention so a future
+# drop of the host line cannot park the test on known_orphans.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/fleet-issue-file-dedupe-closed-canonical\.test\.sh"?' \
+  "$here/ci-standards-audit.test.sh" \
+  || fail "ci-standards-audit.test.sh must bash-invoke fleet-issue-file-dedupe-closed-canonical.test.sh (fleet-ops#5666)"
+[[ -n "${reachable[fleet-issue-file-dedupe-closed-canonical.test.sh]:-}" ]] \
+  || fail "fleet-issue-file-dedupe-closed-canonical.test.sh must be listed in ci.yml or hosted by a listed test (fleet-ops#5666)"
+[[ -z "${known_orphan_set[fleet-issue-file-dedupe-closed-canonical.test.sh]:-}" ]] \
+  || fail "fleet-issue-file-dedupe-closed-canonical.test.sh must not be a known orphan (fleet-ops#5666)"
+ok "fleet-issue-file-dedupe-closed-canonical.test.sh is pinned in the P14 reachable set (fleet-ops#5666)"
+
 # fleet-ops#2902 (PR #2905 follow-up): hard-pin the host line for
 # worktree-leaky-test-containment. The test landed on main in PR #2905
 # (the #2769 containment detector fix) without a ci.yml listing or a host.
