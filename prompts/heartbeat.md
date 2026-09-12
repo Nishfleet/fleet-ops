@@ -311,11 +311,17 @@ For the picked item:
 2. Spawn the worker with `pi-systemd-run` (never `nohup` or trailing `&` —
    those die with the launching session and look like a dead seat):
    - Quality/security/twice-failed:
-     `pi-systemd-run --unit <packet> --stdin /home/nish/.local/state/pi-packets/<packet>.md -- claude -p --model claude-opus-5`
+     `pi-systemd-run --unit <packet> --stdin /home/nish/.local/state/pi-packets/<packet>.md --deadline <min> --deliverable /home/nish/.local/state/pi-packets/<packet>-outcome.md -- claude -p --model claude-opus-5`
    - Devin heavy:
-     `pi-systemd-run --unit <packet> --stdin /home/nish/.local/state/pi-packets/<packet>.md -- pi --print --provider devin --model glm-5-2`
+     `pi-systemd-run --unit <packet> --stdin /home/nish/.local/state/pi-packets/<packet>.md --deadline <min> --deliverable /home/nish/.local/state/pi-packets/<packet>-outcome.md -- pi --print --provider devin --model glm-5-2`
    - Mechanical:
-     `pi-systemd-run --unit <packet> --stdin /home/nish/.local/state/pi-packets/<packet>.md -- pi --print --provider minimax --model MiniMax-M3`
+     `pi-systemd-run --unit <packet> --stdin /home/nish/.local/state/pi-packets/<packet>.md --deadline <min> --deliverable /home/nish/.local/state/pi-packets/<packet>-outcome.md -- pi --print --provider minimax --model MiniMax-M3`
+
+   Every launch carries `--deadline` and `--deliverable` (the canonical
+   copy-paste block lives in the fleet-ops README, "systemd by default"):
+   the wrapper installs the exit-0-no-deliverable FAILURE verdict only
+   when `--deliverable` is set, so a flag-less launch has no dead-man
+   teeth — exactly the silent stop fleet-ops#4266 exists to catch.
    Watch: `systemctl --user status <packet>.service`
    Logs:  `journalctl --user -u <packet>.service -f`
 3. Log to playbook under a fresh "Heartbeat HH:MM UTC" line: which item

@@ -408,6 +408,43 @@ for f in "${pi_matching[@]}"; do
 done
 
 # ---------------------------------------------------------------------------
+# 2b. every pi-systemd-run launch carries --deliverable (fleet-ops#5745)
+# ---------------------------------------------------------------------------
+# The wrapper defaults to deliverable="" (bin/pi-systemd-run) and only
+# installs the exit-0-no-deliverable FAILURE verdict when the flag is set.
+# A launch without --deliverable therefore has no dead-man teeth: it can
+# stop clean at exit 0 Having produced nothing and be reported as success,
+# exactly the silent stop fleet-ops#4266 exists to catch. Scan bin/ and
+# prompts/ (joined backslash-continuations so multi-line launches cannot
+# hide the flag on the next line); comment-only lines and prose mentions
+# without a ` -- <cmd>` tail do not match.
+log "2b. checking bin/ and prompts/ for pi-systemd-run launches without --deliverable"
+psr_offenders=$( {
+    for d in bin prompts; do
+        [[ -d "$FLEET_OPS_REPO/$d" ]] || continue
+        find "$FLEET_OPS_REPO/$d" -type f 2>/dev/null
+    done
+} | (grep -v "/$self_name$" || true) | while IFS= read -r f; do
+    perl -0777 -ne '
+        my $t = $_;
+        $t =~ s/\\\n\s*/ /g;   # join backslash-continuations so a
+        # multi-line launch cannot hide --deliverable on the next line
+        for my $line (split /\n/, $t) {
+            next if $line =~ /^\s*#/;
+            next unless $line =~ /pi-systemd-run\s/ && $line =~ /\s--\s/;
+            next if $line =~ /--deliverable\b/;
+            print "PSR-NO-DELIVERABLE $ARGV : $line\n";
+        }
+    ' "$f" 2>/dev/null
+done )
+if [[ -n "$psr_offenders" ]]; then
+    loud "ESCALATION-CANARY-VIOLATION" "detached-work lint (fleet-ops#5745): pi-systemd-run launch without --deliverable (the deliverable verdict never fires on a flag-less launch): $psr_offenders"
+    violations=$((violations + 1))
+else
+    log "2b. - every pi-systemd-run launch in bin/ and prompts/ carries --deliverable (or none exist)"
+fi
+
+# ---------------------------------------------------------------------------
 # 3. terminal delivery path (#76): dead-man ping + failed-unit pager + seat-health
 # ---------------------------------------------------------------------------
 # Observes the REAL wiring in the fleet-ops repo, not just a marker. The
