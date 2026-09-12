@@ -1,0 +1,66 @@
+# fleet-ops#5935: ONE owned ephemeral GitHub Actions runner instance (%i in
+# 1..3) as a systemd user unit. Enabled+started as gh-runner@{1..3}.
+#
+# Ephemeral by construction: every activation ExecStartPre fetches a fresh
+# single-use JIT registration (POST /orgs/Nishfleet/actions/runners/
+# generate-jitconfig), the runner executes exactly ONE job, deregisters
+# itself, exits, and Restart=always brings it back with a new registration.
+# That loop IS the fleet — no registration tokens, no autoscaler, no ARC.
+#
+# No PAT stored: registration rides the box's existing `gh` keyring auth
+# (the nish3451 keyring entry, GitHub App token 403s on org Actions —
+# #1253), the same precedent siterep-uptime.service already relies on.
+#
+# ExecStart/ExecStartPre are `/bin/bash -c '...'` so hosted systemd-analyze
+# verify checks bash (present on CI) rather than %h paths (absent; #4148
+# P14/systemd-analyze red, #154 class). All real paths resolve at runtime.
+#
+# Labels: self-hosted,linux,x64,fleet-ci — 0509/fleet-ops heavy jobs select
+# runs-on: fleet-ci on merge_group+push; pull_request jobs stay on
+# ubuntu-latest so fork PRs never execute on the box (#5935 blast radius).
+# Org-side fork-PR approval is all_external_contributors (set via
+# /orgs/Nishfleet/actions/permissions/fork-pr-contributor-approval, recorded
+# in the #5935 PR).
+#
+# Resource panel lives in fleet-ci.slice (MemoryHigh=7G MemoryMax=9G
+# CPUWeight=80); this unit adds the per-instance MemoryMax=3G.
+#
+# Restart=always is the autoscaler; StartLimit keeps a broken keyring or a
+# transient API outage from hammering the registrations endpoint.
+#
+# Install: MANIFEST symlinks this file; enable with
+#   systemctl --user enable --now gh-runner@{1..3}
+
+[Unit]
+Description=GitHub Actions ephemeral self-hosted runner %i — one job per activation (fleet-ops#5935)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=8
+
+[Service]
+Type=simple
+Slice=fleet-ci.slice
+MemoryMax=3G
+Environment=HOME=/home/nish
+Environment=PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin
+# Pin: actions/runner v2.337.0, linux-x64.
+# sha256 70920811a4f8ad4328818682bca5c6469c1c942fab52448868071d0063816613
+# (computed from the release tarball 2026-09-12). Download+verify+extract
+# once per instance dir; later activations reuse the extraction.
+ExecStartPre=/bin/bash -c 'd=%h/.local/share/actions-runner/%i; mkdir -p "$d"; if [ ! -x "$d/run.sh" ]; then cd "$d" && curl -fsSL -o runner.tgz https://github.com/actions/runner/releases/download/v2.337.0/actions-runner-linux-x64-2.337.0.tar.gz && printf "%%s  runner.tgz\n" 70920811a4f8ad4328818682bca5c6469c1c942fab52448868071d0063816613 | sha256sum -c - && tar xzf runner.tgz && rm -f runner.tgz; fi'
+# Fresh single-use JIT registration per activation. The name is unique per
+# second so a crashed predecessor's still-registered ghost cannot collide;
+# its registration self-heals when the ghost eventually ages out (ephemeral
+# registrations are removed by GitHub after the runner's final drop).
+ExecStartPre=/bin/bash -c 'd=%h/.local/share/actions-runner/%i; cd "$d" && tok=$(gh api -X POST orgs/Nishfleet/actions/runners/generate-jitconfig -f name=gh-runner-%i-$(date +%s) -f "labels[]=self-hosted" -f "labels[]=linux" -f "labels[]=x64" -f "labels[]=fleet-ci" --jq .data.encoded_jit_config) && printf "%%s" "$tok" > "$d/.jitconfig" && chmod 600 "$d/.jitconfig"'
+ExecStart=/bin/bash -c 'cd %h/.local/share/actions-runner/%i && exec ./run.sh --jitconfig $(cat .jitconfig)'
+Restart=always
+RestartSec=15
+TimeoutStopSec=120
+# SIGTERM the whole control group on stop: run.sh spawns the +config/runnern
+# process tree; a lone kill would orphan the dotnet process and wedge the job.
+KillMode=control-group
+
+[Install]
+WantedBy=default.target
