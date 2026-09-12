@@ -117,4 +117,21 @@ if [[ -x "$repo_root/bin/render-pi-agents-md.py" ]]; then
   fi
 fi
 
-echo "OK fleet-ops#5586: reserved-classes precedence consolidated"
+# 5. Hand-written trailing prose on the live surfaces must not restate a
+#    reserved-classes list either (fleet-ops#5719: the CLAUDE.md 'broken
+#    means fix it' bullet quoted a 3-class list). A surface that mentions
+#    reserved classes must either point at global-standing-rules.md or not
+#    enumerate a divergent list. Live-target check: SKIPPED when absent.
+for t in /home/nish/.claude/CLAUDE.md /home/nish/.codex/AGENTS.md; do
+  [[ -f "$t" ]] || { echo "SKIP: reserved-classes surface-prose check ($t absent)"; continue; }
+  if grep -q "Only the reserved classes" "$t"; then
+    fail "live surface $t restates the old divergent reserved-classes list — point at global-standing-rules.md instead"
+  fi
+  # Any 'reserved classes' prose that enumerates without naming the vault source is drift.
+  if grep -i "reserved classes" "$t" | grep -qv "global-standing-rules.md"; then
+    fail "live surface $t names reserved classes without pointing at global-standing-rules.md"
+  fi
+  echo "OK: $t carries no divergent reserved-classes restatement"
+done
+
+echo "OK fleet-ops#5586: reserved-classes precedence consolidated (incl. fleet-ops#5719 surface-prose gate)"
