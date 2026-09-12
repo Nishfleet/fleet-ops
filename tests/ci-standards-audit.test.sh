@@ -174,6 +174,11 @@ bash "$here/pi-transport-self-heal.test.sh"
 # .github/workflows/**, so the listing gate rides on this listed test.
 bash "$here/p14-test-listing-gate.test.sh"
 
+# fleet-ops#4263: freeze the retired seat-picker caller set while the P3b
+# deletion PR is open (PR #4422 died to new CI-pinned callers landing on
+# main). Hosted here so P14 runs it without a workflow-file edit.
+bash "$here/pick-seat-freeze.test.sh"
+
 # fleet-ops#4845: red-main-suspicion grouped by FAIL cause, not check name.
 # The detector lives in bin/fleet-red-main-suspicion; this test proves the
 # false-positive drill (4 PRs, 3 causes -> pr-checks-red) and the positive
