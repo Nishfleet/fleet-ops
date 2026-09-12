@@ -674,7 +674,7 @@ write_fake inactive 0
 set +e
 out="$(PATH="$gh_bin:$PATH" SYSTEMCTL="$fake/systemctl" TRIAGE_FILE="$triage" \
     PI_PACKET_STATE="$state_g" \
-    SEAT_LIB="$repo_root/lib/seat-lib.sh" \
+    SEAT_LIB="$repo_root/lib/litellm-seat.sh" \
     PI_SEAT_HEALTH_LEDGER_DIR="$ledger_g" \
     PI_SEAT_LIB_CHECK_SYSTEMD=0 \
     GH_WRITE_LOG="$write_log_g" \
@@ -749,7 +749,7 @@ write_fake inactive 0
 set +e
 out="$(PATH="$gh_bin:$PATH" SYSTEMCTL="$fake/systemctl" TRIAGE_FILE="$triage" \
     PI_PACKET_STATE="$state_h" \
-    SEAT_LIB="$repo_root/lib/seat-lib.sh" \
+    SEAT_LIB="$repo_root/lib/litellm-seat.sh" \
     PI_SEAT_HEALTH_LEDGER_DIR="$ledger_h" \
     PI_SEAT_LIB_CHECK_SYSTEMD=0 \
     "$bin" fleet-ops-7002 2>&1)"

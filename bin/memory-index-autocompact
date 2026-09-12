@@ -45,11 +45,12 @@ THRESHOLD="${MEMORY_INDEX_AUTOCOMPACT_THRESHOLD:-20480}"
 FAIL_AT="${MEMORY_INDEX_AUTOCOMPACT_FAIL_AT:-24576}"
 TARGET="${MEMORY_INDEX_AUTOCOMPACT_TARGET:-15360}"
 # fleet-ops#5903 (Nish 2026-09-12: everything through Pi directly): the
-# compaction runs on a Pi seat picked by seat-lib, never on `claude -p`. Pi's
-# providers.md says Claude Pro/Max through a third-party harness bills to extra
-# usage, so this job deliberately never asks for a Claude model. Override with
-# MEMORY_INDEX_AUTOCOMPACT_SEAT=<provider>/<model> (tests, pinned seats).
-SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/seat-lib.sh}"
+# compaction runs on a Pi seat routed by the LiteLLM proxy worker-cheap
+# group, never on `claude -p` (fleet-ops#4263 deleted the bash seat picker).
+# Pi's providers.md says Claude Pro/Max through a third-party harness bills to
+# extra usage, so this job deliberately never asks for a Claude model. Override
+# with MEMORY_INDEX_AUTOCOMPACT_SEAT=<provider>/<model> (tests, pinned seats).
+SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/litellm-seat.sh}"
 PI_BIN="${PI_BIN:-$HOME/.local/bin/pi}"
 PI_TIMEOUT_S="${MEMORY_INDEX_AUTOCOMPACT_TIMEOUT_S:-1500}"
 # Label only (log lines); the real seat is chosen below.
@@ -163,13 +164,11 @@ cd /home/nish || die "cannot cd to /home/nish"
 if [[ -n "${MEMORY_INDEX_AUTOCOMPACT_SEAT:-}" ]]; then
   np="${MEMORY_INDEX_AUTOCOMPACT_SEAT%%/*}"; nm="${MEMORY_INDEX_AUTOCOMPACT_SEAT#*/}"
 else
-  [[ -r "$SEAT_LIB" ]] || { cp -p "$backup" "$IDX"; die "seat-lib missing at $SEAT_LIB"; }
+  [[ -r "$SEAT_LIB" ]] || { cp -p "$backup" "$IDX"; die "litellm-seat missing at $SEAT_LIB"; }
   # shellcheck disable=SC1090
   source "$SEAT_LIB"
-  tried_file=$(mktemp)
-  seat=$(pick_seat "" "" 0 "$tried_file" light || true)
-  rm -f "$tried_file"
-  [[ -n "$seat" ]] || { cp -p "$backup" "$IDX"; die "no healthy Pi seat (pick_seat empty). Index restored from $backup."; }
+  seat=$(litellm_seat "worker-cheap" || true)
+  [[ -n "$seat" ]] || { cp -p "$backup" "$IDX"; die "no healthy Pi seat (litellm_seat empty). Index restored from $backup."; }
   np=$(printf '%s' "$seat" | cut -f1); nm=$(printf '%s' "$seat" | cut -f2)
 fi
 echo "MEMORY-AUTOCOMPACT: compacting via pi $np/$nm"
