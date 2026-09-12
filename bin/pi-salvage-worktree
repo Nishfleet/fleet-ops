@@ -33,10 +33,9 @@ fi
 #   2. `git worktree list` of every repo the unit touched, filtered to
 #      worktrees whose path or checked-out branch carries the unit name,
 #      the pi-issue instance, the issue number, or the unit's own branch,
-#   3. any worktree under the agent-worktrees root created after the unit
-#      started (directory mtime >= the unit's ActiveEnterTimestamp).
-# A worktree matched only by mtime whose name maps to a LIVE pi-issue@
-# unit is skipped — that dirt belongs to a running worker.
+# fleet-ops#5984: a tree is swept only when its path or branch proves it is
+# the unit's own. A post-start mtime match proved nothing (it swept a live
+# interactive session's tree) and is gone; unowned trees stay on disk.
 #
 # Per dirty worktree: stage the dirty paths by explicit pathspec (NEVER
 # `git add -A` on a shared checkout), skipping secrets-looking files
@@ -66,13 +65,7 @@ fi
 #      the worktree reaper on an archived repo, fleet-ops#3023)
 #   PI_SALVAGE_SCAN (optional helper; exit 0 clean, 1 quarantine)
 #   PI_SALVAGE_WORKTREE_ROOT (default ~/workspaces/agent-worktrees) —
-#      root scanned for unit worktrees; mtime matches are bounded to it
-#   PI_SALVAGE_UNIT_STARTED_EPOCH — overrides the unit-start bound used
-#      for the mtime criterion (tests); live value comes from
-#      `systemctl --user show <unit> -p ActiveEnterTimestampUSec`
-#   PI_SALVAGE_LAUNCHED_EPOCH — dispatch time recorded by pi-systemd-run,
-#      fallback when the unit record is already gone
-#   SYSTEMCTL (default systemctl; tests inject a fake)
+#      root scanned for unit-named worktrees
 #   FLEET_DISPATCH_LEDGER, AGENT_STATE, PI_SALVAGE_GC_ROOT, PI_SALVAGE_GC_MAX_AGE_S
 #
 # Exit:
@@ -114,7 +107,6 @@ LEDGER="${FLEET_DISPATCH_LEDGER:-$AS/dispatch-ledger.jsonl}"
 REMOTE="${PI_SALVAGE_REMOTE:-origin}"
 NOW="${PI_SALVAGE_NOW:-$(date -u +%Y%m%dT%H%M%SZ)}"
 ISO_NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-SYSTEMCTL="${SYSTEMCTL:-systemctl}"
 WORKTREE_ROOT="${PI_SALVAGE_WORKTREE_ROOT:-${HOME:-/home/nish}/workspaces/agent-worktrees}"
 
 sanitize_unit() {
@@ -307,43 +299,6 @@ discover_workdir() {
 
 # --- fleet-ops#5800 enumeration + helpers ----------------------------------
 
-# Unit start epoch for the "created after the unit started" mtime match.
-# Order: test seam -> systemd ActiveEnterTimestampUSec -> the dispatch
-# time pi-systemd-run recorded. Returns nothing when no bound can be
-# proved — the mtime criterion is then off, never unbounded.
-unit_start_epoch() {
-    if [[ "${PI_SALVAGE_UNIT_STARTED_EPOCH:-}" =~ ^[0-9]+$ ]]; then
-        printf '%s\n' "$PI_SALVAGE_UNIT_STARTED_EPOCH"
-        return 0
-    fi
-    local u v
-    local -a names=()
-    if [[ -n "${PI_UNIT_INSTANCE:-}" ]]; then
-        names+=("pi-issue@${PI_UNIT_INSTANCE}.service")
-    fi
-    if [[ -n "${PI_SALVAGE_UNIT:-}" ]]; then
-        names+=("${PI_SALVAGE_UNIT%.service}.service")
-        case "${PI_SALVAGE_UNIT}" in
-            pi-issue-*) names+=("pi-issue@${PI_SALVAGE_UNIT#pi-issue-}.service") ;;
-        esac
-    fi
-    if command -v "$SYSTEMCTL" >/dev/null 2>&1; then
-        for u in "${names[@]}"; do
-            [[ -n "$u" && "$u" != ".service" ]] || continue
-            v="$("$SYSTEMCTL" --user show "$u" --property=ActiveEnterTimestampUSec --value 2>/dev/null || true)"
-            if [[ "$v" =~ ^[0-9]+$ ]] && (( v > 0 )); then
-                printf '%s\n' "$(( v / 1000000 ))"
-                return 0
-            fi
-        done
-    fi
-    if [[ "${PI_SALVAGE_LAUNCHED_EPOCH:-}" =~ ^[0-9]+$ ]]; then
-        printf '%s\n' "$PI_SALVAGE_LAUNCHED_EPOCH"
-        return 0
-    fi
-    return 1
-}
-
 # "<repo> <issue>" for pi-issue-shaped units (<repo>-<N>), else nothing.
 # Non-pi-issue units (wfr-*, orch-*, alert-repair-*) get no issue ref —
 # a trailing -<N> on those names is not an issue number.
@@ -376,22 +331,6 @@ is_shared_checkout() {
     [[ "$main_wt" == "$wd_real" ]] || return 1
     n="$(git -C "$wd" worktree list --porcelain 2>/dev/null | grep -c '^worktree ' || true)"
     [[ "$n" =~ ^[0-9]+$ ]] && (( n > 1 ))
-}
-
-# A worktree dir shaped like issue-<repo>-<N> or <repo>-<N>[-suffix] maps
-# to pi-issue@<repo>-<N>.service. When that unit is LIVE the tree belongs
-# to a running worker — an mtime-only match must not sweep it.
-worktree_live_unit_active() {
-    local base="$1" inst="" st
-    local b="${base#issue-}"
-    if [[ "$b" =~ ^([A-Za-z0-9_.]+-[0-9]+) ]]; then
-        inst="${BASH_REMATCH[1]}"
-    fi
-    [[ -n "$inst" ]] || return 1
-    [[ "$inst" == "${PI_UNIT_INSTANCE:-}" ]] && return 1
-    command -v "$SYSTEMCTL" >/dev/null 2>&1 || return 1
-    st="$("$SYSTEMCTL" --user is-active "pi-issue@${inst}.service" 2>/dev/null || true)"
-    [[ "$st" == "active" || "$st" == "activating" ]]
 }
 
 # Stage the dirty paths of a worktree by explicit pathspec — never
@@ -461,91 +400,6 @@ push_branch() {
     fi
 }
 
-# fleet-ops#5984: an mtime-only match proves nothing about ownership — a live
-# interactive session's worktree created after the unit started matches too
-# (2026-09-12: a salvage committed and pushed a session's mid-edit tree onto
-# its auto-merge PR branch). Bank such a tree WITHOUT touching it: stage into a
-# throwaway copy of the index, commit-tree onto HEAD, and push only that commit
-# to a fresh wip/ ref. The checked-out branch, its real index and its files are
-# never modified, so an owner's PR branch is never pushed to.
-salvage_snapshot() {
-    local wd="$1" unit="$2" reason="$3"
-    local porcelain
-    porcelain="$(git -C "$wd" status --porcelain 2>/dev/null || true)"
-    if [[ -z "$porcelain" ]]; then
-        log "worktree clean unit=$unit workdir=$wd — no-op"
-        return 0
-    fi
-    # Skip trees that are not a worker's own branch, exactly like salvage_one.
-    local head base
-    head="$(git -C "$wd" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)"
-    case "$head" in
-        main|master|HEAD|""|"(detached"*|"("*")")
-            log "skip workdir=$wd on=${head:-detached} — not a worker's own branch (mtime-only)"
-            return 0
-            ;;
-    esac
-    # One ref PER worktree: several mtime-only trees share a unit, and a shared
-    # ref name let the first push win and the rest fail (fleet-ops#5984 CI).
-    base="$(basename "$wd")"; base="${base//[^A-Za-z0-9._-]/_}"
-    local ref="wip/${unit}-${NOW}-snap-${base}" listf exclf tmpd tmpidx
-    listf="$(mktemp)"; exclf="$(mktemp)"; tmpd="$(mktemp -d)"; tmpidx="$tmpd/index"
-    log "snapshot-salvaging unit=$unit workdir=$wd (mtime-only match; worktree untouched) ref=$ref"
-    if ! stage_dirty "$wd" "$listf" "$exclf"; then
-        log "LOUD: pathspec staging failed unit=$unit workdir=$wd"
-        rm -rf "$listf" "$exclf" "$tmpd"; return 1
-    fi
-    [[ -s "$exclf" ]] && log "secrets-looking paths excluded unit=$unit workdir=$wd: $(tr '\0' ' ' <"$exclf")"
-    if [[ ! -s "$listf" ]]; then
-        log "LOUD: dirty worktree but nothing stageable (all excluded?) unit=$unit workdir=$wd"
-    fi
-    local sha="" secret=0 salvage_status="local"
-    if ! (
-        export GIT_INDEX_FILE="$tmpidx" GIT_LITERAL_PATHSPECS=1
-        # Seed the throwaway index from HEAD (not a copy of the owner's index,
-        # whose path lookup is fragile): snapshot = HEAD + the dirty paths.
-        git -C "$wd" read-tree HEAD || exit 3
-        if [[ -s "$exclf" ]]; then
-            git -C "$wd" reset -q --pathspec-from-file="$exclf" --pathspec-file-nul 2>/dev/null || true
-        fi
-        if [[ -s "$listf" ]]; then
-            git -C "$wd" add --pathspec-from-file="$listf" --pathspec-file-nul || exit 3
-        fi
-        git -C "$wd" diff --cached --quiet && exit 4
-        if staged_has_secret "$wd" || ! run_extra_scan "$wd"; then echo SECRET >"$tmpd/secret"; fi
-        tree="$(git -C "$wd" write-tree)" || exit 3
-        git -C "$wd" -c user.email=fleet-salvage@localhost -c user.name=fleet-salvage \
-            commit-tree "$tree" -p HEAD -m "wip(salvage): ${unit} ${reason} (mtime-only snapshot; worktree untouched, fleet-ops#5984)" >"$tmpd/sha" || exit 3
-    ); then
-        local src=$?
-        rm -rf "$listf" "$exclf" "$tmpd"
-        if (( src == 4 )); then log "nothing staged after add unit=$unit workdir=$wd — no-op"; return 0; fi
-        log "LOUD: snapshot commit failed unit=$unit workdir=$wd"; return 1
-    fi
-    sha="$(cat "$tmpd/sha")"; [[ -f "$tmpd/secret" ]] && secret=1
-    rm -rf "$listf" "$exclf" "$tmpd"
-    # Keep the commit reachable locally under refs/salvage/ — NOT refs/heads/:
-    # linked worktrees share one ref store, so a local branch would surface in
-    # the owner's checkout (and in the shared checkout) as a stray wip branch.
-    git -C "$wd" update-ref "refs/salvage/${ref}" "$sha" "" 2>/dev/null || true
-    if (( secret )); then
-        salvage_status="quarantined"
-        log "secret/scan flag unit=$unit workdir=$wd — local-only snapshot ${ref}"
-    elif [[ "${PI_SALVAGE_NO_PUSH:-0}" == "1" ]]; then
-        log "push skipped unit=$unit ref=$ref — local-only bank requested"
-    elif git -C "$wd" remote get-url "$REMOTE" >/dev/null 2>&1; then
-        if GIT_TERMINAL_PROMPT=0 git -C "$wd" push --force-with-lease="refs/heads/${ref}:" "$REMOTE" "${sha}:refs/heads/${ref}" >/dev/null 2>&1; then
-            salvage_status="pushed"
-        else
-            log "push failed unit=$unit ref=$ref — snapshot banked locally"
-        fi
-    fi
-    append_ledger "$unit" "$ref" "$salvage_status" "$PACKET" "$wd"
-    log "snapshot ${salvage_status} unit=$unit workdir=$wd ref=$ref sha=${sha:0:12}"
-    SALVAGED_ROWS+=("${wd}|${ref}|${sha:0:12}|${salvage_status}")
-    return 0
-}
-
 # Candidate list built by enumerate_candidates: CAND_PATHS/CAND_WHY.
 CAND_PATHS=()
 CAND_WHY=()
@@ -553,7 +407,7 @@ SALVAGED_ROWS=()
 PACKET=""
 
 enumerate_candidates() {
-    local seed="$1" start_epoch="$2"
+    local seed="$1"
     local -A seen=() repos=()
 
     add_cand() {
@@ -613,24 +467,15 @@ enumerate_candidates() {
     # Root scan: unit-named or post-start dirs; each hit also enrols its
     # repo so sibling worktrees of the same repo are evaluated too.
     if [[ -d "$WORKTREE_ROOT" ]]; then
-        local d base mt hit
+        local d base hit
         while IFS= read -r d; do
             base="${d##*/}"
             hit=""
             if match_tokens "$base"; then
                 hit="name"
-            elif [[ -n "$start_epoch" ]]; then
-                mt="$(stat -c %Y "$d" 2>/dev/null || echo 0)"
-                if [[ "$mt" =~ ^[0-9]+$ ]] && (( mt >= start_epoch )); then
-                    hit="mtime"
-                fi
             fi
             [[ -n "$hit" ]] || continue
             git -C "$d" rev-parse --is-inside-work-tree >/dev/null 2>&1 || continue
-            if [[ "$hit" == "mtime" ]] && worktree_live_unit_active "$base"; then
-                log "skip $d — mtime-matched but maps to a live pi-issue unit"
-                continue
-            fi
             add_cand "$d" "$hit"
             add_repo "$d"
         done < <(find "$WORKTREE_ROOT" -mindepth 1 -maxdepth 1 -type d 2>/dev/null)
@@ -647,16 +492,6 @@ enumerate_candidates() {
             if match_tokens "$wbase" || match_tokens "${wbr:-}"; then
                 add_cand "$w" "name"
                 continue
-            fi
-            if [[ -n "$start_epoch" && "$w" == "$WORKTREE_ROOT"/* ]]; then
-                mt="$(stat -c %Y "$w" 2>/dev/null || echo 0)"
-                if [[ "$mt" =~ ^[0-9]+$ ]] && (( mt >= start_epoch )); then
-                    if worktree_live_unit_active "$wbase"; then
-                        log "skip $w — mtime-matched but maps to a live pi-issue unit"
-                        continue
-                    fi
-                    add_cand "$w" "mtime"
-                fi
             fi
         done < <(git -C "$repo" worktree list --porcelain 2>/dev/null | awk '
             /^worktree /{p=substr($0,10); br=""}
@@ -844,15 +679,14 @@ post_notice() {
 }
 
 cmd_salvage() {
-    local unit start_epoch seed
+    local unit seed
     unit="$(sanitize_unit "${PI_SALVAGE_UNIT:-unknown}")"
     [[ -n "$unit" ]] || unit="unknown"
     PACKET="${PI_SALVAGE_PACKET:-}"
 
     seed="$(discover_workdir || true)"
-    start_epoch="$(unit_start_epoch || true)"
 
-    enumerate_candidates "$seed" "$start_epoch"
+    enumerate_candidates "$seed"
 
     if (( ${#CAND_PATHS[@]} == 0 )); then
         log "no git worktree for unit=$unit workdir=${PI_SALVAGE_WORKDIR:-} — no-op"
@@ -864,11 +698,7 @@ cmd_salvage() {
     for i in "${!CAND_PATHS[@]}"; do
         local is_seed=0
         [[ "${CAND_WHY[$i]}" == "declared" ]] && is_seed=1
-        if [[ "${CAND_WHY[$i]}" == "mtime" ]]; then
-            salvage_snapshot "${CAND_PATHS[$i]}" "$unit" "$reason" || rc=1
-        else
-            salvage_one "${CAND_PATHS[$i]}" "$is_seed" "$unit" "$reason" || rc=1
-        fi
+        salvage_one "${CAND_PATHS[$i]}" "$is_seed" "$unit" "$reason" || rc=1
     done
 
     if (( ${#SALVAGED_ROWS[@]} > 0 )); then

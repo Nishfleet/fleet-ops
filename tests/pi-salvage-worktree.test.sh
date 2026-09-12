@@ -24,11 +24,11 @@ export AGENT_STATE="$scratch/agent-state"
 export FLEET_DISPATCH_LEDGER="$AGENT_STATE/dispatch-ledger.jsonl"
 mkdir -p "$AGENT_STATE"
 # fleet-ops#5800: the hook now also reads PI_UNIT_INSTANCE /
-# PI_SALVAGE_LAUNCHED_EPOCH / PI_DEADMAN_DELIVERABLE / PI_SALVAGE_WORKTREE_ROOT —
+# PI_DEADMAN_DELIVERABLE / PI_SALVAGE_WORKTREE_ROOT —
 # a worker running this test carries its own values; scrub them so every
 # section controls its own env.
-unset PI_UNIT_INSTANCE PI_SALVAGE_LAUNCHED_EPOCH PI_DEADMAN_DELIVERABLE \
-      PI_SALVAGE_WORKTREE_ROOT PI_SALVAGE_UNIT_STARTED_EPOCH SYSTEMCTL FAKE_SYS \
+unset PI_UNIT_INSTANCE PI_DEADMAN_DELIVERABLE \
+      PI_SALVAGE_WORKTREE_ROOT SYSTEMCTL \
       PI_SALVAGE_PACKET PI_SALVAGE_NOW PI_SALVAGE_WORKDIR PI_SALVAGE_UNIT \
       PI_SALVAGE_REMOTE PI_SALVAGE_SCAN PI_SALVAGE_NO_PUSH PI_SALVAGE_DISABLE \
       SERVICE_RESULT EXIT_CODE EXIT_STATUS
@@ -144,92 +144,57 @@ ok "PI_SALVAGE_NO_PUSH=1 banks locally, skips the push"
 # shared checkout (dirty on main — must be left in place), while the
 # worker's real work sits dirty in sibling `git worktree add` trees on the
 # worker's own branches. Salvage must enumerate them (worktree list +
-# post-start mtime + name tokens), commit `wip(salvage): <unit> <reason>`
+# name tokens), commit `wip(salvage): <unit> <reason>`
 # on the worker's branch, push it, and name the exclusions.
-# fleet-ops#5984: a sibling matched ONLY by post-start mtime is not proven to
-# be the unit's (a live session's tree matches too), so it is snapshotted to
-# wip/<unit>-<ts>-snap-<dir> via a throwaway index — its branch, index and files are
-# left exactly as they were, and its own branch is never pushed.
+# fleet-ops#5984: a sibling whose name/branch carries no unit token is never
+# swept (ownership unproven) — its branch, index and files stay untouched.
 wtroot="$scratch/wt-root"
 mkdir -p "$wtroot"
 clone="$(make_clone orphan)"
 printf 'shared dirt\n' >"$clone/shared-dirt.txt"
-# Sibling A: found via post-start mtime (name carries no unit token).
+# Sibling A: no unit token in its name — must be left completely alone.
 sib_a="$wtroot/0509-9999-notes"
 git -C "$clone" worktree add -q "$sib_a" -b fix/dead-worker
 printf 'one\n' >"$sib_a/one.txt"
 printf 'two\n' >"$sib_a/two.txt"
 printf 'three\n' >"$sib_a/three.txt"
-printf 'SECRET=1\n' >"$sib_a/.env"
 a_head_before="$(git -C "$sib_a" rev-parse HEAD)"
 # Sibling B: found via name token (dir carries the unit name).
 sib_b="$wtroot/unit-orphan-extra"
 git -C "$clone" worktree add -q "$sib_b" -b fix/dead-worker-2
 printf 'extra\n' >"$sib_b/extra.txt"
+printf 'SECRET=1\n' >"$sib_b/.env"
 # Sibling C: dirty but sitting on main — NOT the worker's own branch.
 sib_c="$wtroot/on-main"
 git -C "$clone" worktree add -q --force "$sib_c" main
 printf 'not ours\n' >"$sib_c/not-ours.txt"
-# Sibling D: mtime-matched but maps to a LIVE pi-issue unit — skipped.
-sib_d="$wtroot/issue-fake-4242"
-git -C "$clone" worktree add -q "$sib_d" -b fix/live-neighbour
-printf 'live\n' >"$sib_d/live.txt"
-mkdir -p "$scratch/fakesys"
-printf 'active\n' >"$scratch/fakesys/active.pi-issue@fake-4242.service"
-cat >"$scratch/systemctl" <<'FAKE'
-#!/usr/bin/env bash
-[[ "${1:-}" == "--user" ]] && shift
-case "${1:-}" in
-  is-active)
-    if [[ -f "${FAKE_SYS:-}/active.${2:-}" ]]; then echo active; exit 0; fi
-    echo inactive; exit 1 ;;
-  show)
-    unit="${2:-}"; prop=""
-    shift 2
-    for a in "$@"; do [[ "$a" == --property=* ]] && prop="${a#--property=}"; done
-    [[ -n "$prop" && -f "${FAKE_SYS:-}/${unit}.${prop}" ]] && cat "${FAKE_SYS}/${unit}.${prop}"
-    exit 0 ;;
-  *) exit 1 ;;
-esac
-FAKE
-chmod +x "$scratch/systemctl"
-export SYSTEMCTL="$scratch/systemctl"
-export FAKE_SYS="$scratch/fakesys"
 export PI_SALVAGE_WORKDIR="$clone"
 export PI_SALVAGE_UNIT="unit-orphan"
 export PI_SALVAGE_PACKET="$scratch/orphan-packet.md"
 printf 'orphan packet\n' >"$PI_SALVAGE_PACKET"
 export PI_SALVAGE_NOW="20260827T160400Z"
 export PI_SALVAGE_WORKTREE_ROOT="$wtroot"
-export PI_SALVAGE_UNIT_STARTED_EPOCH="$(( $(date +%s) - 60 ))"
 export SERVICE_RESULT=exit-code EXIT_CODE=exited EXIT_STATUS=1
 "$salvage" 2>"$scratch/orphan.log"
 
-# Sibling worktrees were banked on their own branches and pushed.
-snap=refs/heads/wip/unit-orphan-20260827T160400Z-snap-0509-9999-notes
-git -C "$scratch/orphan.git" show-ref --verify -q "$snap" \
-    || fail "mtime-only sibling must be snapshotted to $snap: $(git -C "$scratch/orphan.git" for-each-ref)"
+# Sibling A (no unit token): never swept — no push, no wip ref, untouched.
 git -C "$scratch/orphan.git" show-ref --verify -q refs/heads/fix/dead-worker \
-    && fail "mtime-only sibling's own branch must NOT be pushed (fleet-ops#5984)"
+    && fail "unowned sibling's branch must NOT be pushed (fleet-ops#5984)"
+git -C "$scratch/orphan.git" for-each-ref 'refs/heads/wip/' | grep -q . \
+    && fail "no wip ref may be pushed for an unowned sibling (fleet-ops#5984)"
 [[ "$(git -C "$sib_a" rev-parse HEAD)" == "$a_head_before" ]] \
-    || fail "mtime-only sibling HEAD must be untouched (fleet-ops#5984)"
+    || fail "unowned sibling HEAD must be untouched (fleet-ops#5984)"
 git -C "$sib_a" diff --cached --quiet \
-    || fail "mtime-only sibling's real index must be untouched (fleet-ops#5984)"
+    || fail "unowned sibling index must be untouched (fleet-ops#5984)"
 git -C "$sib_a" status --porcelain | grep -q 'one.txt' \
-    || fail "mtime-only sibling must be left dirty (fleet-ops#5984)"
+    || fail "unowned sibling must be left dirty (fleet-ops#5984)"
+# Sibling B (name token): banked on its own branch and pushed, .env excluded.
 git -C "$scratch/orphan.git" show-ref --verify -q refs/heads/fix/dead-worker-2 \
     || fail "name-matched sibling must push fix/dead-worker-2"
-for f in one.txt two.txt three.txt; do
-    git -C "$scratch/orphan.git" ls-tree -r --name-only "$snap" \
-        | grep -qx "$f" \
-        || fail "snapshot commit must carry $f: tree=[$(git -C "$scratch/orphan.git" ls-tree -r --name-only "$snap" | tr '\n' ' ')] log=[$(tail -8 "$scratch/orphan.log" | tr '\n' '|')]"
-done
-git -C "$scratch/orphan.git" ls-tree -r --name-only "$snap" \
-    | grep -q '^\.env$' \
-    && fail ".env must be excluded from the snapshot commit"
-git -C "$scratch/orphan.git" log -1 --format=%B "$snap" \
-    | grep -q '^wip(salvage): unit-orphan exit-code/1 (mtime-only snapshot' \
-    || fail "snapshot commit must read wip(salvage): <unit> <reason> (mtime-only snapshot...): $(git -C "$scratch/orphan.git" log -1 --format=%B "$snap")"
+git -C "$scratch/orphan.git" ls-tree -r --name-only refs/heads/fix/dead-worker-2 | grep -qx 'extra.txt' \
+    || fail "pushed commit must carry extra.txt"
+git -C "$scratch/orphan.git" ls-tree -r --name-only refs/heads/fix/dead-worker-2 | grep -q '^\.env$' \
+    && fail ".env must be excluded from the pushed commit"
 git -C "$scratch/orphan.git" log -1 --format=%B refs/heads/fix/dead-worker-2 \
     | grep -q '^wip(salvage): unit-orphan exit-code/1$' \
     || fail "name-matched sibling commit must read wip(salvage): <unit> <reason>"
@@ -242,13 +207,6 @@ git -C "$sib_c" status --porcelain | grep -q 'not-ours.txt' \
     || fail "main-branch sibling must be left dirty"
 git -C "$sib_c" rev-parse --abbrev-ref HEAD | grep -qx main \
     || fail "main-branch sibling must stay on main"
-# Live-neighbour worktree: mtime-matched but a live pi-issue unit owns it.
-git -C "$sib_d" status --porcelain | grep -q 'live.txt' \
-    || fail "live-neighbour worktree must be left dirty"
-git -C "$scratch/orphan.git" show-ref --verify -q refs/heads/fix/live-neighbour \
-    && fail "live-neighbour branch must not be pushed"
-grep -q 'live pi-issue unit' "$scratch/orphan.log" \
-    || fail "log must record the live-unit skip"
 # Shared checkout: never swept, still dirty on main.
 git -C "$clone" status --porcelain | grep -q 'shared-dirt.txt' \
     || fail "shared checkout dirt must be left in place"
@@ -263,8 +221,6 @@ grep -q 'secrets-looking paths excluded.*\.env' "$scratch/orphan.log" \
     || fail "log must name the excluded .env"
 grep -q '"salvaged_branch":"fix/dead-worker-2"' "$FLEET_DISPATCH_LEDGER" \
     || fail "ledger must name the pushed name-matched sibling branch"
-grep -q '"salvaged_branch":"wip/unit-orphan-20260827T160400Z-snap-0509-9999-notes"' "$FLEET_DISPATCH_LEDGER" \
-    || fail "ledger must name the mtime-only snapshot ref"
 grep -q 'fleet-ops#1204 salvage resume' "$PI_SALVAGE_PACKET" \
     || fail "packet must carry the resume stamp"
 grep -q 'fix/dead-worker' "$PI_SALVAGE_PACKET" \
@@ -273,9 +229,8 @@ ls "$scratch"/salvage-unit-orphan-*.md >/dev/null 2>&1 \
     || fail "no linked issue -> salvage note must land next to the packet"
 grep -q 'fix/dead-worker' "$scratch"/salvage-unit-orphan-*.md \
     || fail "salvage note must name branch + commit"
-unset PI_SALVAGE_WORKTREE_ROOT PI_SALVAGE_UNIT_STARTED_EPOCH PI_SALVAGE_PACKET
-unset SYSTEMCTL FAKE_SYS
-ok "orphan worktrees banked+pushed; mtime-only sibling snapshotted untouched (#5984); shared checkout and live neighbours untouched (#5800)"
+unset PI_SALVAGE_WORKTREE_ROOT PI_SALVAGE_PACKET
+ok "owned sibling banked+pushed; unowned sibling untouched (#5984); shared checkout untouched (#5800)"
 
 # --- 5. pi-systemd-run dry-run wires ExecStopPost --------------------------
 out="$("$wrapper" --dry-run --unit salvage-shape --working-directory "$clone" -- /bin/true)"
@@ -369,7 +324,7 @@ pkt="$scratch/live-packet.md"
 printf 'live packet\n' >"$pkt"
 unit="salvage-live-$$"
 export PI_SALVAGE_NOW="20260827T161000Z"
-# fleet-ops#5800: bound the sibling sweep's mtime scan to a scratch root —
+# fleet-ops#5800: keep the sibling sweep's root scan on a scratch root —
 # the real agent-worktrees dir must never be touched by a test unit.
 export PI_SALVAGE_WORKTREE_ROOT="$scratch/agent-worktrees"
 # wrapper sets PI_SALVAGE_* on the unit from --working-directory / --unit / --stdin

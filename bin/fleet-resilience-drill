@@ -1220,7 +1220,6 @@ plane_salvage_orphan() {
   # The dead worker's sibling worktree: own branch + three uncommitted
   # files, plus a secrets-looking file the salvage must exclude by name.
   local wtdir="$root/wt/${unit}-notes"
-  local started=$(( $(date -u +%s) - 5 ))
   git -C "$shared" worktree add -q "$wtdir" -b "$branch"
   printf 'a\n' >"$wtdir/a.txt"
   printf 'b\n' >"$wtdir/b.txt"
@@ -1235,7 +1234,6 @@ plane_salvage_orphan() {
     PI_SALVAGE_UNIT="$unit" \
     PI_SALVAGE_PACKET="$root/packet.md" \
     PI_SALVAGE_WORKTREE_ROOT="$root/wt" \
-    PI_SALVAGE_UNIT_STARTED_EPOCH="$started" \
     PI_SALVAGE_SKIP_SGSCAN=1 \
     AGENT_STATE="$root/state" \
     FLEET_DISPATCH_LEDGER="$root/state/ledger.jsonl" \
