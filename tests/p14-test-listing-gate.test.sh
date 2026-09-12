@@ -1123,4 +1123,18 @@ grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/measure-attest-waiting\.test\.sh
   || fail "measure-attest-waiting.test.sh must not be a known orphan (fleet-ops#5870)"
 ok "measure-attest-waiting.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#5870)"
 
+# fleet-ops#4263: hard-pin the host line for pick-seat-freeze in
+# ci-standards-audit.test.sh. The caller-set freeze rides on that listed
+# test (the worker App cannot push .github/workflows/**); the pin is
+# class-prevention so a dropped host line cannot park the freeze on
+# known_orphans — it fails by name first, same shape as the other pins.
+grep -Eq '^[[:space:]]*bash[[:space:]]+"?\$here/pick-seat-freeze\.test\.sh"?' \
+  "$here/ci-standards-audit.test.sh" \
+  || fail "ci-standards-audit.test.sh must bash-invoke pick-seat-freeze.test.sh (fleet-ops#4263)"
+[[ -n "${reachable[pick-seat-freeze.test.sh]:-}" ]] \
+  || fail "pick-seat-freeze.test.sh must be hosted by a listed test (fleet-ops#4263)"
+[[ -z "${known_orphan_set[pick-seat-freeze.test.sh]:-}" ]] \
+  || fail "pick-seat-freeze.test.sh must not be a known orphan (fleet-ops#4263)"
+ok "pick-seat-freeze.test.sh host line in ci-standards-audit.test.sh is pinned (fleet-ops#4263)"
+
 echo "OK: p14-test-listing-gate.test.sh: P14 test list is closed"
