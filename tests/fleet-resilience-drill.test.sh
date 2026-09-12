@@ -777,7 +777,7 @@ ok "shared keystone HC URLs are FAIL + LOUD"
 
 # Reusing the heartbeat dead-man URL is FAIL + LOUD.
 reset_all
-printf 'HC_URL_INTAKE=https://example.invalid/ping/heartbeat-uuid\nHC_URL_SCOUT=https://example.invalid/s\nHC_URL_RECONCILE=https://example.invalid/r\nHC_URL_RESTORE=https://example.invalid/b\n' \
+printf 'HC_URL_INTAKE=https://example.invalid/ping/heartbeat-uuid\nHC_URL_SCOUT=https://example.invalid/s\nHC_URL_RECONCILE=https://example.invalid/r\nHC_URL_RESTORE=https://example.invalid/b\nHC_URL_DETACHED=https://example.invalid/d\n' \
   >"$KEYSTONE_HC_ENV"
 run_drill
 [[ "$drill_rc" -eq 1 ]] || fail "heartbeat reuse should fail, rc=$drill_rc out=$drill_out"
