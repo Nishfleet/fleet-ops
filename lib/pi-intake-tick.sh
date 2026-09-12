@@ -377,7 +377,8 @@ fi
 # either: ONE LOUD line per tick goes to the heartbeat triage file.
 _gh_app_loud() {
     local triage="${FLEET_HEARTBEAT_TRIAGE:-/home/nish/workspaces/agent-state/FLEET-HEARTBEAT-TRIAGE.md}"
-    printf '[%s] LOUD [GH-APP-BUDGET] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" \
+    _loud_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf '[%s] LOUD [GH-APP-BUDGET] %s\n' "${_loud_ts}" "$*" \
         >>"$triage" 2>/dev/null || true
 }
 
