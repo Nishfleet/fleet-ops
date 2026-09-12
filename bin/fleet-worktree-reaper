@@ -246,6 +246,13 @@
 set -euo pipefail
 
 ROOT="${FLEET_WORKTREE_REAPER_ROOT:-/home/nish/workspaces/agent-worktrees}"
+# fleet-ops#5935: the gh-runner actions-runner root. Mode E also scans
+# <RUNNER_ROOT>/*/_work/* — every ephemeral job leaves a fresh repo checkout
+# under _work and they accumulate with the same no-event-signal growth as
+# orphan worktrees. Same 14-day stale + not-registered gates; a _work dir of
+# a RUNNING gh-runner@<i> is skipped (its service is active). No new
+# cleaner — this extends the existing Mode E orphan GC.
+RUNNER_ROOT="${FLEET_WORKTREE_REAPER_RUNNER_ROOT:-/home/nish/.local/share/actions-runner}"
 DRY_RUN=0
 MERGED_LIMIT="${FLEET_WORKTREE_REAPER_MERGED_LIMIT:-5000}"
 MIN_AGE_HOURS="${FLEET_WORKTREE_REAPER_MIN_AGE_HOURS:-24}"
@@ -1042,6 +1049,20 @@ while IFS= read -r d; do
             continue
         fi
     fi
+    # fleet-ops#5935: gh-runner _work checkout. LIVE gate: if the owning
+    # gh-runner@<i> service is active the runner may be mid-job — skip the
+    # whole instance. (%i is the first component under RUNNER_ROOT.)
+    case "$d" in
+        "$RUNNER_ROOT"/*)
+            ri=${d#"$RUNNER_ROOT"/}; ri=${ri%%/*}
+            if systemctl --user is-active --quiet "gh-runner@$ri.service" 2>/dev/null; then
+                skipped_e_live=$((skipped_e_live + 1))
+                log "  $d: SKIP-E live runner (unit=gh-runner@$ri)"
+                report_row "$d" "" "(unregistered)" "E" "$age_s" skipped live
+                continue
+            fi
+            ;;
+    esac
     if [ -d "$d/.git" ]; then
         # E1: standalone clone. CLEAN + PUSHED gates.
         if ! git -C "$d" diff --quiet --ignore-submodules HEAD 2>/dev/null \
@@ -1101,7 +1122,10 @@ while IFS= read -r d; do
             report_row "$d" "" "(unregistered)" "E" "$age_s" failed remove-fail
         fi
     fi
-done < <(find "$ROOT" -mindepth 1 -maxdepth 1 -type d ! -name '.*' 2>/dev/null)
+done < <(find "$ROOT" -mindepth 1 -maxdepth 1 -type d ! -name '.*' 2>/dev/null
+         # fleet-ops#5935: also visit the gh-runner _work checkout dirs
+         # (RUNNER_ROOT/<i>/_work/<checkout> = depth 3).
+         find "$RUNNER_ROOT" -mindepth 3 -maxdepth 3 -type d 2>/dev/null)
 
 log "done: scanned=$total_scanned claim=$total_claim pi_path=$total_pi_path other=$total_other \
 reaped=$reaped (A=$reaped_a [closed=$reaped_a_closed] B=$reaped_b C=$reaped_c E=$reaped_e [clone=$reaped_e_clone plain=$reaped_e_plain]) \
