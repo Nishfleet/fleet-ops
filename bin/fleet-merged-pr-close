@@ -638,6 +638,7 @@ while IFS= read -r repo; do
                 fi
                 continue
             fi
+            # shellcheck disable=SC2153  # DF_PROOF_URL is exported by lib/deploy-fault-gate.sh (sourced above)
             df_proof_url="$DF_PROOF_URL"
             log "  $repo#$num: deploy-fault gate PASSED — green run ${df_proof_url} contains the fix"
         fi
