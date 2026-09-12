@@ -98,7 +98,6 @@
 #                                          (default 86400 = 24h)
 #   FLEET_ESCALATION_DRAIN_DIGEST_DIR     digest output dir (default $ARCHIVE_DIR)
 #   FLEET_ESCALATION_DRAIN_BOUND_DIGEST   0 = alert only, never digest
-#   FLEET_ESCALATION_DRAIN_GH             gh binary (default gh; test stub seam)
 #   FLEET_ESCALATION_DRAIN_ISSUE_FILE     fleet-issue-file binary used to file
 #                                         the stuck-packet escalation (default:
 #                                         sibling bin/fleet-issue-file of this
@@ -146,7 +145,6 @@ BOUND_DIGEST="${FLEET_ESCALATION_DRAIN_BOUND_DIGEST:-1}"
 # fleet-ops#5622: stuck-packet escalation wiring — one aggregate filing per
 # stuck burst; every disposed packet is archived + decision-logged. Env
 # seams keep the whole path hermetic for tests.
-GH_BIN="${FLEET_ESCALATION_DRAIN_GH:-gh}"
 ESCALATION_REPO="${FLEET_ESCALATION_DRAIN_ESCALATION_REPO:-Nishfleet/fleet-ops}"
 ISSUE_FILE_BIN="${FLEET_ESCALATION_DRAIN_ISSUE_FILE:-}"
 if [[ -z "$ISSUE_FILE_BIN" ]]; then
