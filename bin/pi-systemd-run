@@ -82,13 +82,25 @@
 #      --property=ExecStopPost= directives; a `;`-joined value is NOT split
 #      by --property= — proven live 2026-09-07 — and would 203/EXEC) — the
 #      verdict hook.
-#      SERVICE_RESULT != success OR (--deliverable set AND file absent) =
-#      died: /fail ping + fleet_detached_job_died{unit,...} 1 textfile gauge
-#      (-> DetachedJobDied alert -> repair packet that relaunches the
-#      RECORDED command line) + STOP-REASON via unit-escalation-write for
-#      clean-stop deaths (OnFailure never fires there). Healthy stop
-#      (Result=success + deliverable present): success ping, series cleared.
-#      Always exits 0.
+#      SERVICE_RESULT != success OR (--deliverable set AND file absent OR
+#      empty) = died: /fail ping + fleet_detached_job_died{unit,...} 1
+#      textfile gauge + dispatch-ledger verdict row + exit NONZERO so the
+#      clean-stop case still lands the unit in `failed` and fires OnFailure
+#      (fleet-ops#5456: ExecStopPost failure marks the unit failed on
+#      systemd 255 — proven live by probe-80). Healthy stop
+#      (Result=success + deliverable present): success ping, series cleared,
+#      exit 0.
+#
+# fleet-ops#5456: every launch also writes a per-unit drop-in
+#   $XDG_RUNTIME_DIR/systemd/user/<unit>.service.d/90-no-resume.conf
+#   ([Service] Restart=no) BEFORE systemd-run. The global
+#   service.d/20-resume.conf resume policy must never auto-restart these
+#   units — the resume rail for packet deaths is the dispatcher's hop+1
+#   relaunch, and an in-place systemd restart would re-run the same seat
+#   instead of rotating. Proven live 2026-09-11: a unit-scoped drop-in
+#   overrides both --property and the global service.d drop-in, and
+#   $XDG_RUNTIME_DIR/systemd/user is honoured for transient units.
+#   The dead-man removes the drop-in dir at stop.
 #
 # Salvage (fleet-ops#1204): every real dispatch sets ExecStopPost to
 # pi-salvage-worktree and TimeoutStopSec=180 so a SIGTERM/SIGKILL/nonzero
@@ -115,6 +127,7 @@
 #   PI_SALVAGE_UNIT_STARTED_EPOCH (fleet-ops#5800 sibling sweep). Dead-man
 #   seams: PI_DEADMAN_BIN, PI_DEADMAN_TEXTFILE, PI_DEADMAN_DRYRUN,
 #   KEYSTONE_HC_ENV,
+#   PI_RESUME_DROPIN_DISABLE (1 = skip the no-resume drop-in, for tests),
 #
 # Exit:
 #   0  started, already-running no-op, or dry-run
@@ -284,6 +297,23 @@ fi
 
 [[ -d "$workdir" ]] || { echo "pi-systemd-run: working directory not found: $workdir" >&2; exit 2; }
 
+# fleet-ops#5456: per-unit no-resume drop-in. These transient packet units
+# carry their own resume rail (the dispatcher's hop+1 relaunch on the next
+# healthy seat); the global service.d/20-resume.conf Restart=on-failure must
+# not also restart them in place — that would re-run the SAME seat and race
+# the relaunch. A unit-scoped drop-in overrides the global type drop-in
+# (proven live on systemd 255). Runtime dir preferred (auto-GC); ~/.config
+# fallback when XDG_RUNTIME_DIR is unset. The file is written just before
+# systemd-run and removed by the dead-man at stop (PI_DEADMAN_DROPIN_DIR).
+noresume_dir=""
+if [[ "${PI_RESUME_DROPIN_DISABLE:-0}" != "1" ]]; then
+    _drop_root="${XDG_RUNTIME_DIR:-}/systemd/user"
+    if [[ -z "$_drop_root" || ! -d "$_drop_root" ]]; then
+        _drop_root="${HOME:-/home/nish}/.config/systemd/user"
+    fi
+    noresume_dir="$_drop_root/${unit}.service.d"
+fi
+
 if [[ -n "$stdin_file" ]]; then
     [[ -f "$stdin_file" ]] || { echo "pi-systemd-run: --stdin file not found: $stdin_file" >&2; exit 2; }
     stdin_file="$(readlink -f "$stdin_file")"
@@ -392,8 +422,12 @@ cmd+=(--setenv=PI_DEADMAN_DEADLINE="$deadline_min")
 if [[ -n "$deliverable" ]]; then
     cmd+=(--setenv=PI_DEADMAN_DELIVERABLE="$deliverable")
 fi
+if [[ -n "$noresume_dir" ]]; then
+    cmd+=(--setenv=PI_DEADMAN_DROPIN_DIR="$noresume_dir")
+fi
 for v in KEYSTONE_HC_ENV PI_DEADMAN_TEXTFILE PI_DEADMAN_DRYRUN \
-         PI_DEADMAN_ESCALATION_BIN PI_DEADMAN_WHOSTOPPED_BIN AGENT_STATE; do
+         PI_DEADMAN_ESCALATION_BIN PI_DEADMAN_WHOSTOPPED_BIN AGENT_STATE \
+         FLEET_DISPATCH_LEDGER; do
     if [[ -n "${!v:-}" ]]; then
         cmd+=(--setenv="$v")
     fi
@@ -430,13 +464,15 @@ cmd+=(--property="RuntimeMaxSec=${deadline_min}min")
 # PI_SALVAGE_PACKET still points at the ORIGINAL file so the ExecStopPost
 # salvage stamp is visible to the caller (and tests).
 packet_path=""
-dispatch_id=""
+# fleet-ops#5456: keep the dispatch_id generated above — it is the hc.io rid
+# AND the id the dead-man verdict row joins on. Resetting it here used to
+# give the ledger entry a different id than PI_DEADMAN_DISPATCH, which made
+# the verdict row unjoinable.
 original_stdin="$stdin_file"
 if [[ "$dry_run" != "1" && "${FLEET_DISPATCH_LEDGER_NO_WRITE:-0}" != "1" && -n "$stdin_file" ]]; then
     AS="${AGENT_STATE:-/home/nish/workspaces/agent-state}"
     PKT_DIR="${FLEET_DISPATCH_PACKET_DIR:-$AS/dispatch-packets}"
     mkdir -p "$PKT_DIR"
-    dispatch_id="$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)"
     pkt_copy="$PKT_DIR/${unit}-$(date -u +%Y%m%dT%H%M%SZ)-${dispatch_id}.md"
     cp -- "$stdin_file" "$pkt_copy"
     packet_path="$(readlink -f "$pkt_copy")"
@@ -455,6 +491,21 @@ if [[ "$dry_run" == "1" ]]; then
     printf '%q ' "${cmd[@]}"
     printf '\n'
     exit 0
+fi
+
+# Write the no-resume drop-in just before systemd-run so the manager reads
+# it at unit load (a fresh transient unit picks up drop-ins without a
+# daemon-reload — proven live 2026-09-11). Failure is non-fatal: the unit
+# still gets explicit OnFailure and the dead-man verdict; a missing
+# no-resume drop-in only means the global resume policy could also restart
+# it in place.
+if [[ -n "$noresume_dir" ]]; then
+    if mkdir -p "$noresume_dir" 2>/dev/null \
+        && printf '[Service]\nRestart=no\n' > "$noresume_dir/90-no-resume.conf" 2>/dev/null; then
+        :
+    else
+        echo "pi-systemd-run: WARN could not write $noresume_dir/90-no-resume.conf" >&2
+    fi
 fi
 
 echo "pi-systemd-run: starting ${unit}.service (survives this session)"
@@ -505,12 +556,17 @@ entry = {
     "deadline_min": int(sys.argv[9]),
     "deadline_ts": sys.argv[10],
     "cmdline": sys.argv[11],
+    # fleet-ops#5456: the hop+1 relaunch needs the workdir and deliverable
+    # to replay the SAME dispatch contract, not a rebuilt one.
+    "workdir": sys.argv[12],
+    "deliverable": sys.argv[13],
     "status": "open",
     "retries": int(sys.argv[3]),
 }
 sys.stdout.write(json.dumps(entry, separators=(",", ":")) + "\n")
 ' "$dispatch_id" "$chain_id" "$hop" "$dispatch_ts" "$unit" "$packet_path" \
-      "$provider" "$model" "$deadline_min" "$deadline_ts" "$*" >> "$LEDGER"
+      "$provider" "$model" "$deadline_min" "$deadline_ts" "$*" \
+      "$workdir" "$deliverable" >> "$LEDGER"
     echo "pi-systemd-run: ledger entry id=$dispatch_id chain=$chain_id hop=$hop unit=$unit"
 fi
 

@@ -799,6 +799,14 @@ on:
   workflow_call:
 WF
 
+# fleet-ops#5456: canary block 1b hash-asserts the two global drop-ins
+# (repo copy vs the live install under $HOME/.config/systemd/user/service.d).
+mkdir -p "$drill/repo/systemd/service.d" "$drill/home/.config/systemd/user/service.d"
+printf '# OnFailure=unit-escalation@%%n.service (fixture copy)\n' >"$drill/repo/systemd/service.d/10-escalate.conf"
+printf '# RESUME POLICY: allowlist, no global Restart= (fixture copy)\n' >"$drill/repo/systemd/service.d/20-resume.conf"
+cp "$drill/repo/systemd/service.d/10-escalate.conf" "$drill/home/.config/systemd/user/service.d/10-escalate.conf"
+cp "$drill/repo/systemd/service.d/20-resume.conf" "$drill/home/.config/systemd/user/service.d/20-resume.conf"
+
 cat >"$drill/standing.md" <<'EOF'
 # fixture
 ## Covered fixture rule (Nish, 2026-08-26)

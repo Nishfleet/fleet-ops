@@ -255,6 +255,11 @@ echo "test packet body" > "$pkt"
 
 LEDGER="$scratch2/dispatch-ledger.jsonl"
 AS="$scratch2/agent-state"
+# fleet-ops#5456: pi-systemd-run writes the per-unit 90-no-resume.conf under
+# $XDG_RUNTIME_DIR/systemd/user — redirect it to scratch so the test never
+# drops a real drop-in into the live runtime dir.
+XDG_SCRATCH="$scratch2/xdg"
+mkdir -p "$XDG_SCRATCH/systemd/user"
 
 # --- 7. dry-run with --deadline/--provider/--model/--chain-id/--hop --------
 set +e
@@ -264,6 +269,7 @@ PI_SALVAGE_DISABLE=1 \
 AGENT_STATE="$AS" \
 FLEET_DISPATCH_LEDGER="$LEDGER" \
 FLEET_DISPATCH_LEDGER_NO_WRITE=1 \
+XDG_RUNTIME_DIR="$XDG_SCRATCH" \
 SR_LOG="$scratch2/sr.log" \
   "$bin" --dry-run --unit testunit --stdin "$pkt" \
     --deadline 30 --provider devin --model glm-5-2 \
@@ -274,6 +280,8 @@ set -e
 [[ "$rc" == "0" ]] || fail "dry-run with new flags rc=$rc"
 [[ ! -s "$scratch2/sr.log" ]] || fail "dry-run must not call systemd-run"
 [[ ! -f "$LEDGER" ]] || fail "dry-run must not write ledger"
+[[ ! -e "$XDG_SCRATCH/systemd/user/testunit.service.d/90-no-resume.conf" ]] \
+  || fail "dry-run must not write the no-resume drop-in"
 ok "dry-run accepts --deadline/--provider/--model/--chain-id/--hop (fleet-ops#1009)"
 # fleet-ops#3328: --deadline must become RuntimeMaxSec so the unit dies at
 # the budget instead of holding hop=run. Re-run the same dry-run and read
@@ -284,12 +292,15 @@ PI_SALVAGE_DISABLE=1 \
 AGENT_STATE="$AS" \
 FLEET_DISPATCH_LEDGER="$LEDGER" \
 FLEET_DISPATCH_LEDGER_NO_WRITE=1 \
+XDG_RUNTIME_DIR="$XDG_SCRATCH" \
   "$bin" --dry-run --unit testunit --stdin "$pkt" \
     --deadline 30 --provider devin --model glm-5-2 \
     --chain-id chain-x --hop 0 \
     -- pi --print --provider devin --model glm-5-2)"
 printf '%s\n' "$out" | grep -q 'RuntimeMaxSec=30min' \
   || fail "--deadline 30 must set RuntimeMaxSec=30min (fleet-ops#3328): $out"
+printf '%s\n' "$out" | grep -q 'PI_DEADMAN_DROPIN_DIR=' \
+  || fail "the unit env must carry PI_DEADMAN_DROPIN_DIR so the dead-man removes the drop-in at stop (fleet-ops#5456): $out"
 ok "--deadline 30 wires RuntimeMaxSec=30min (fleet-ops#3328)"
 
 # --- 8. real dispatch: ledger append + packet copy + provider parse --------
@@ -301,6 +312,7 @@ PI_SALVAGE_DISABLE=1 \
 AGENT_STATE="$AS" \
 FLEET_DISPATCH_LEDGER="$LEDGER" \
 FLEET_DISPATCH_PACKET_DIR="$AS/dispatch-packets" \
+XDG_RUNTIME_DIR="$XDG_SCRATCH" \
 SR_LOG="$scratch2/sr.log" \
   "$bin" --unit ledger-test --stdin "$pkt" \
     --deadline 5 --chain-id chain-abc --hop 0 \
@@ -308,6 +320,13 @@ SR_LOG="$scratch2/sr.log" \
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "real dispatch rc=$rc"
+
+# fleet-ops#5456: the per-unit no-resume drop-in landed under the (redirected)
+# runtime dir and carries Restart=no — packet deaths resume through the
+# dispatcher's hop+1 relaunch, never an in-place systemd restart.
+dropin="$XDG_SCRATCH/systemd/user/ledger-test.service.d/90-no-resume.conf"
+[[ -f "$dropin" ]] || fail "dispatch must write the per-unit no-resume drop-in"
+grep -q '^Restart=no$' "$dropin" || fail "drop-in must carry Restart=no, got: $(cat "$dropin")"
 
 # Ledger must have exactly one entry.
 lines=$(wc -l < "$LEDGER")
@@ -369,6 +388,7 @@ set +e
 SYSTEMD_RUN="$scratch2/fake-systemd-run" SYSTEMCTL="$scratch2/fake-systemctl" \
 PI_SALVAGE_DISABLE=1 AGENT_STATE="$AS" \
 FLEET_DISPATCH_LEDGER="$LEDGER" FLEET_DISPATCH_LEDGER_NO_WRITE=1 \
+XDG_RUNTIME_DIR="$XDG_SCRATCH" \
 SR_LOG="$scratch2/sr.log" \
   "$bin" --unit noledger --stdin "$pkt" -- /bin/sleep 1 2>/dev/null
 rc=$?

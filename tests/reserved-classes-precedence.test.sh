@@ -128,7 +128,13 @@ for t in /home/nish/.claude/CLAUDE.md /home/nish/.codex/AGENTS.md; do
     fail "live surface $t restates the old divergent reserved-classes list — point at global-standing-rules.md instead"
   fi
   # Any 'reserved classes' prose that enumerates without naming the vault source is drift.
-  if grep -i "reserved classes" "$t" | grep -qv "global-standing-rules.md"; then
+  # Per-paragraph, not per-line: a bullet that wraps the pointer onto a
+  # continuation line is still compliant (live .codex/AGENTS.md 'Stop only
+  # for the canonical reserved classes' cites global-standing-rules.md on
+  # its next line — the old per-line grep flagged it as drift).
+  if awk 'BEGIN{RS=""; IGNORECASE=1} /reserved classes/ && !/global-standing-rules\.md/{print FILENAME; exit 1}' "$t" >/dev/null; then
+    :
+  else
     fail "live surface $t names reserved classes without pointing at global-standing-rules.md"
   fi
   echo "OK: $t carries no divergent reserved-classes restatement"
