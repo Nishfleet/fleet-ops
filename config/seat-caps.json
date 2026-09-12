@@ -159,7 +159,7 @@
     "commandcode": {
       "cap": 0,
       "class": "free",
-      "max_probe_ceiling": 6,
+      "max_probe_ceiling": 0,
       "503_bench_default_s": 600,
       "models": {
         "deepseek/deepseek-v4.1-flash": 2,
@@ -182,12 +182,13 @@
       "_laguna_20260905": "2026-09-05 fable-check: seat-yield.json n=20 sessions pr_count=0 yield=0.0; watch.log pi exited fast deaths 48 (23:36-02:36Z) + 28 (01:18-04:18Z), HTTP 503 overload_bench expiring fail-open every 600s then re-dying; fleet_seat_failure_ceiling_parked=18; its last run (pi-issue-fleet-ops-3180, 03:35Z) edited the live deploy clone in place (fleet-ops#3389). ORIGINAL cap 1->0 intentional_cap_zero=stale. CORRECTION (fleet-ops#3504 rule 4): the n=20 yield=0.0 was 100% HTTP 503 infra deaths (overload_bench), not model failures \u2014 infra deaths never count as yield (#3250/#3310, same correction as swe-1-7/#3473). Cap restored 0->1; the yield gate (#3251) re-auditions with real working sessions.",
       "_cap_before_2026-09-12": 4,
       "intentional_cap_zero": "dead-credit-or-dead-token",
-      "reason": "2026-09-12 claude-vps: 'You have insufficient credits' on every commandcode deployment (/health 2026-09-12 10:45 IST). Restore with a green real-work probe. Measured: HTTP 402 insufficient credits on n=1 deployment via litellm /health 2026-09-12 10:45 IST; seat ledger seats/commandcode__deepseek_deepseek-v4.1-flash.json."
+      "reason": "2026-09-12 claude-vps: 'You have insufficient credits' on every commandcode deployment (/health 2026-09-12 10:45 IST). Restore with a green real-work probe. Measured: HTTP 402 insufficient credits on n=1 deployment via litellm /health 2026-09-12 10:45 IST; seat ledger seats/commandcode__deepseek_deepseek-v4.1-flash.json.",
+      "_max_probe_ceiling_before_2026-09-12": 6
     },
     "hetzner": {
       "cap": 0,
       "class": "free",
-      "max_probe_ceiling": 2,
+      "max_probe_ceiling": 0,
       "models": {
         "Qwen/Qwen3.6-35B-A3B-FP8": {
           "cap": 0,
@@ -200,7 +201,8 @@
       "_comment_1350": "2026-08-29 fleet-ops#1350 concurrency-tolerance probe (load 2.95, 0 active workers): 3 simultaneous pi --print --provider hetzner --model Qwen/Qwen3.6-35B-A3B-FP8 'reply PONG' probes all timed out at 60s (rc=124); a single probe returned rc=0 but took ~120s (PACKET-VERDICT tools=0 class=no-tools). The seat responds but with ~120s latency on a 1-token probe, so concurrent probes all hit the timeout. Cap NOT raised \u2014 stays 2. The latency is a live-state observation (possibly transient); re-probe before any future raise. If it persists, file a hetzner-latency issue.",
       "_cap1_20260905": "2026-09-05: hetzner Qwen took 10 of 15 light picks and produced 2 PRs from 20 sessions (8 request timeouts, 4 EngineCore errors). Cap 1 until the yield gate (#3251) governs it by data; free, so one probe slot stays; probe ceiling lowered 4->2 to satisfy the <=2x cap rule (fleet-ops#3504).",
       "_cap_before_2026-09-12": 1,
-      "intentional_cap_zero": "dead-credit-or-dead-token"
+      "intentional_cap_zero": "dead-credit-or-dead-token",
+      "_max_probe_ceiling_before_2026-09-12": 2
     },
     "zenmux": {
       "cap": 2,
