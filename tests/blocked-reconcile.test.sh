@@ -310,8 +310,8 @@ else
     live_queue_before=""
 fi
 
-# fleet-ops#3310/#3527: provide the seat-lib data the infra auto-release path
-# needs for a dry-run pick_seat. A real run uses the fleet's live state.
+# fleet-ops#3310/#3527: provide the seatlib data the infra auto-release path
+# needs for a dry-run pick-seat. A real run uses the fleet's live state.
 mkdir -p "$scratch/pi-packet/attempts" "$scratch/pi-packet/active-seats" "$scratch/pi-packet/ledger"
 cat >"$scratch/models.json" <<'JSON'
 {
@@ -337,7 +337,7 @@ export PI_PACKET_STATE="$scratch/pi-packet"
 export PI_MODELS_JSON="$scratch/models.json"
 export SEAT_CAPS_JSON="$scratch/seat-caps.json"
 # fleet-ops#4395: isolate the seat-health ledger so the infra-block re-queue
-# drill (Case 8a) is hermetic. seat-lib reads LEDGER_DIR from
+# drill (Case 8a) is hermetic. seatlib reads LEDGER_DIR from
 # PI_SEAT_HEALTH_LEDGER_DIR at source time; without this the drill reads the
 # LIVE fleet ledger and the result depends on production seat state (e.g.
 # opencode rate_limited in prod makes the test fail). An empty ledger dir

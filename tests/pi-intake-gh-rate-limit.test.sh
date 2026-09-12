@@ -22,13 +22,13 @@ ok()   { echo "OK: $*"; }
 scratch="$(mktemp -d -t pirt-gh-rl.XXXXXX)"
 trap 'rm -rf "$scratch"' EXIT INT TERM
 
-# Stub seat-lib and precedence-band functions. These are sourced by the tick.
-stubs="$scratch/seat-lib-stub.sh"
+# Stub seatlib and precedence-band functions. These are sourced by the tick.
+stubs="$scratch/seatlib-stub.sh"
 cat >"$stubs" <<'SH'
 #!/usr/bin/env bash
 total_seat_cap() { echo 8; }
 issue_seat_cap() { echo 5; }
-pick_seat() { echo "commandcode	deepseek/deepseek-v4-flash		0"; return 0; }
+litellm_seat() { echo "commandcode	deepseek/deepseek-v4-flash		0"; return 0; }
 precedence_band_phase() { echo "band"; }
 precedence_band_pending_clear() { true; }
 precedence_band_pending_starvation_clear() { true; }

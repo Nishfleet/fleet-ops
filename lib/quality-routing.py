@@ -4,7 +4,7 @@
 Reads a #456-shaped scoreboard snapshot plus config/quality-routing.json
 and decides which lanes lose heavy/keystone work. Fail-closed on the
 numbers, fail-open on a missing snapshot (a broken scoreboard must not
-brick pick_seat).
+brick the router).
 
 Snapshot schema (written by fleet-ops#456; drills inject fixtures):
 
@@ -90,7 +90,7 @@ def evaluate_snapshot(
     """Classify the snapshot and list heavy-banned lanes.
 
     status:
-      missing  — no snapshot object (pick_seat must not cut)
+      missing  — no snapshot object (the router must not cut)
       stale    — generated_at older than stale_snapshot_secs (no cuts)
       ok       — numbers applied
     """

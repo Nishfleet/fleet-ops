@@ -957,14 +957,14 @@ else
 # fleet-ops#3121: blind audit is a senior-review judge seat — prefer the
 # senior ladder (senior_seats_in_order, first usable wins) so a walled
 # senior seat is skipped, never a failure; fall back to any capable seat via
-# pick_seat so the reviews never NO-USABLE-SEAT for want of a special seat.
+# so the reviews never stall for want of a special seat.
 seat=""
 if declare -F find_senior_seat >/dev/null 2>&1; then
     load_seat_caps >/dev/null 2>&1 || true
     seat=$(find_senior_seat || true)
 fi
-if [ -z "$seat" ] && declare -F litellm_pick_seat >/dev/null 2>&1; then
-    seat=$(litellm_pick_seat "worker-capable" || true)
+if [ -z "$seat" ] && declare -F litellm_seat >/dev/null 2>&1; then
+    seat=$(litellm_seat "worker-capable" || true)
 fi
 if [ -z "$seat" ]; then
     log "FATAL: no capable seat available"

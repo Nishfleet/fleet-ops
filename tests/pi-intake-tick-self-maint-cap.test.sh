@@ -148,14 +148,14 @@ ok "Test 9: Step 3 claims critical-path first, then the ascending tail (1691,170
 echo "ALL OK: intake-tick self-maintenance claim cap (fleet-ops#3254)"
 
 # === Test 10: usable seat-slot gate (fleet-ops#3732 / #4263) ===
-# The tick must bound claims by LiteLLM headroom, not pick_seat.
+# The tick must bound claims by LiteLLM headroom, not pick-seat.
 # Replay the tick's own gate block (extracted verbatim, not re-typed) with a
 # stubbed litellm_headroom: 0 usable slots -> holds with the gate line and never
 # reaches the claim step; 1 usable slot with capacity slots=2 -> claims at most 1.
 grep -qF 'litellm_headroom' "$tick" \
     || fail "Test 10: usable-slot count seam (litellm_headroom) missing from tick"
-grep -qF 'PICK_SEAT_COUNT_SLOTS=1 pick_seat' "$tick" \
-    && fail "Test 10: tick still counts slots via pick_seat"
+grep -qF 'PICK_SEAT_COUNT_SLOTS=1 pick-seat' "$tick" \
+    && fail "Test 10: tick still counts slots via pick-seat"
 grep -qF 'gate: no usable seat slot' "$tick" \
     || fail "Test 10: 'gate: no usable seat slot' hold line missing from tick"
 # P3b (fleet-ops#4263): the gate block now includes the repair-rung latch

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# tests/seat-lib-aimd.test.sh
+# tests/seatlib-aimd.test.sh
 #
 # fleet-ops#217 / #424: AIMD learned caps. Declared cap is the FLOOR;
-# pick_seat may admit cap+1 when zero provider errors + RAM headroom +
+# pick-seat may admit cap+1 when zero provider errors + RAM headroom +
 # room below max_probe_ceiling, and backs off to ~0.5x on a fresh 429.
 # Learned ceiling persists in learned-caps.json with evidence and decays
 # toward re-probing after the bench expires. hard_ceiling rows never probe.
@@ -22,7 +22,7 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-lib="$repo_root/lib/seat-lib.sh"
+lib="$repo_root/lib/litellm-seat.sh"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
@@ -35,10 +35,10 @@ if [[ "${1:-}" == "--scenario" ]]; then
     shift 2
 fi
 
-[[ -f "$lib" ]] || fail "seat-lib.sh not found: $lib"
+[[ -f "$lib" ]] || fail "seatlib.sh not found: $lib"
 command -v jq >/dev/null || fail "jq required"
 
-scratch="$(mktemp -d -t seat-lib-aimd.XXXXXX)"
+scratch="$(mktemp -d -t seatlib-aimd.XXXXXX)"
 trap 'rm -rf "$scratch"' EXIT INT TERM
 
 # Four providers cover the AIMD matrix:
@@ -103,11 +103,11 @@ mkdir -p "$state" "$ledger" "$state/active-seats"
 
 # === fleet-ops#3760: --scenario empty-run-convergence replay ==================
 # The issue's termination command:
-#   bash tests/seat-lib-aimd.test.sh --scenario empty-run-convergence
+#   bash tests/seatlib-aimd.test.sh --scenario empty-run-convergence
 # Proves the empty-run churn converges: ollama/deepseek-v4-flash:0731 no-op'ed
 # 12 times in 2h. With EMPTY_RUN_FAILURE_CEILING=3 (lowered from 5 by #3760),
 # the geometric bench (900s -> 1800s) holds the first two no-ops, then the 3rd
-# parks the seat behind the 24h wall. seat_usable holds it; pick_seat skips it.
+# parks the seat behind the 24h wall. seat_usable holds it; pick-seat skips it.
 # Defined here so --scenario can dispatch to it before the full suite runs.
 run_empty_run_convergence() {
     local conv_scratch conv_state conv_ledger conv_caps conv_models conv_learned
@@ -218,16 +218,16 @@ JSON
             fi
             ok "convergence (c): 3rd no-op parks behind 6h wall, seat HELD UNUSABLE (fleet-ops#3760/#4640)"
 
-            # (d) pick_seat must NOT return the parked seat (no re-selection).
+            # (d) pick-seat must NOT return the parked seat (no re-selection).
             set +e
-            pick=$(pick_seat "" "" 0 "" light 2>/dev/null)
+            pick=$(pick-seat "" "" 0 "" light 2>/dev/null)
             pick_rc=$?
             set -e
             if [[ "$pick_rc" == "0" ]]; then
                 echo "$pick" | grep -q "^ollama" \
-                    && fail "convergence (d): pick_seat returned the parked ollama seat — must be skipped while benched"
+                    && fail "convergence (d): pick-seat returned the parked ollama seat — must be skipped while benched"
             fi
-            ok "convergence (d): pick_seat does not re-select the parked seat (no churn, fleet-ops#3760)"
+            ok "convergence (d): pick-seat does not re-select the parked seat (no churn, fleet-ops#3760)"
 
             # (e) waste ratio proxy: 3 no-ops -> 1 park = 3 wasted runs, not 12.
             # The pre-#3760 ceiling (5) would have allowed 5 no-ops; the generic
@@ -281,7 +281,7 @@ write_ledger commandcode "deepseek/deepseek-v4-flash" healthy "$(date -u +%Y-%m-
 write_ledger devin "glm-5-2" credentials_bad "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "null"
 seed_active commandcode 2
 set +e
-pick_out=$(run pick_seat "" "" 0 2>/dev/null)
+pick_out=$(run pick-seat "" "" 0 2>/dev/null)
 pick_rc=$?
 set -e
 [[ "$pick_rc" == "0" ]] || fail "green-window: expected a pick (probe admitted), got rc=$pick_rc"
@@ -530,7 +530,7 @@ JSON
 count_slots_3732() {
     SEAT_CAPS_JSON="$caps3732" LEARNED_CAPS_JSON="$learned3732" PI_PACKET_STATE="$state3732" \
     PI_SEAT_HEALTH_LEDGER_DIR="$scratch/ledger-3732" PICK_SEAT_COUNT_SLOTS=1 \
-        bash -c 'source "$0" 2>/dev/null; pick_seat "" "" 0 "" light 2>/dev/null' "$lib"
+        bash -c 'source "$0" 2>/dev/null; pick-seat "" "" 0 "" light 2>/dev/null' "$lib"
 }
 seed_active_3732() {
     local n="$1" i
@@ -558,7 +558,7 @@ ok "fleet-ops#3732: provider cap bounds the model headroom sum"
 ok "fleet-ops#3732: count mode records no learned cap / probe"
 picked=$(SEAT_CAPS_JSON="$caps3732" LEARNED_CAPS_JSON="$learned3732" PI_PACKET_STATE="$state3732" \
     PI_SEAT_HEALTH_LEDGER_DIR="$scratch/ledger-3732" \
-    bash -c 'source "$0" 2>/dev/null; pick_seat "" "" 0 "" light 2>/dev/null' "$lib")
+    bash -c 'source "$0" 2>/dev/null; pick-seat "" "" 0 "" light 2>/dev/null' "$lib")
 [[ "$picked" == ollama* ]] || fail "fleet-ops#3732: normal pick must still return the free ollama seat, got '$picked'"
 ok "fleet-ops#3732: normal pick mode unchanged (picked $picked)"
 
@@ -569,7 +569,7 @@ ok "fleet-ops#3732: normal pick mode unchanged (picked $picked)"
 #   2. After a reset, the provider starts at floor/2 with ramp=true and
 #      effective_provider_cap returns that value (not declared) so the next
 #      tick ramps +1 per probe instead of bursting to declared.
-#   3. pick_seat enforces a per-tick per-provider spawn cap (devin: 2/tick).
+#   3. pick-seat enforces a per-tick per-provider spawn cap (devin: 2/tick).
 
 # --- #3690 invariant 1: per-provider reset, unrelated fields preserved ----
 # Build two cap files that differ ONLY in ram_gb_per_worker (top-level).
@@ -673,7 +673,7 @@ graduated_ramp=$(jq -r '.providers.devin.ramp | tostring // "gone"' "$learned369
 ok "#3690: ramp graduates on probe to declared (learned 3->4, ramp cleared)"
 
 # --- #3690 invariant 3: per-tick per-provider spawn cap (devin max 2/tick) ---
-# Build a cap file with tick_spawn_cap:2 on devin. Three consecutive pick_seat
+# Build a cap file with tick_spawn_cap:2 on devin. Three consecutive pick-seat
 # calls in the same tick (no reset between them) must route only 2 to devin;
 # the 3rd must skip devin and fall through to another provider.
 caps3690_spawn="$scratch/seat-caps-3690-spawn.json"
@@ -710,7 +710,7 @@ pick3690() {
     PI_SEAT_HEALTH_LEDGER_DIR="$scratch/ledger-3690-spawn" \
     PI_MODELS_JSON="$scratch/models-3690-spawn.json" \
     SEAT_TICK_SPAWN_COUNTS_JSON="$counts3690" \
-    bash -c 'source "$0" 2>/dev/null; pick_seat "" "" 0 "" light 2>/dev/null' "$lib"
+    bash -c 'source "$0" 2>/dev/null; pick-seat "" "" 0 "" light 2>/dev/null' "$lib"
 }
 p1=$(pick3690)
 p2=$(pick3690)
@@ -770,7 +770,7 @@ pick4723() {
     SEAT_TICK_SPAWN_COUNTS_JSON="$counts4723" \
     SEAT_LOG_FILE="$state4723/watch.log" \
     PI_SEAT_LIB_CHECK_SYSTEMD=0 PI_SEAT_CREDENTIAL_PRECHECK=0 SEAT_MIN_FREE_RAM_MB=0 \
-    bash -c 'source "$0" 2>/dev/null; pick_seat "" "" 0 "" light 2>/dev/null' "$lib"
+    bash -c 'source "$0" 2>/dev/null; pick-seat "" "" 0 "" light 2>/dev/null' "$lib"
 }
 p4723_1=$(pick4723)
 p4723_2=$(pick4723)

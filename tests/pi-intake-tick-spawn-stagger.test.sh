@@ -13,20 +13,20 @@
 #   2. load_seat_caps() loads it into SEAT_SPAWN_STAGGER_S (default 0).
 #   3. lib/pi-intake-tick.sh applies the stagger: a sleep of
 #      SEAT_SPAWN_STAGGER_S after a verified `claimed+spawned`.
-#   4. The tick sources seat-lib.sh so SEAT_SPAWN_STAGGER_S is in scope.
+#   4. The tick sources seatlib.sh so SEAT_SPAWN_STAGGER_S is in scope.
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
 caps="$repo_root/config/seat-caps.json"
-seat_lib="$repo_root/lib/seat-lib.sh"
+seat_lib="$repo_root/lib/litellm-seat.sh"
 tick="$repo_root/lib/pi-intake-tick.sh"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
 [[ -f "$caps" ]] || fail "seat-caps.json missing"
-[[ -f "$seat_lib" ]] || fail "seat-lib.sh missing"
+[[ -f "$seat_lib" ]] || fail "seatlib.sh missing"
 [[ -f "$tick" ]] || fail "pi-intake-tick.sh missing"
 command -v jq >/dev/null || fail "jq required"
 
@@ -66,10 +66,10 @@ sleep_line=$(grep -nF 'sleep "$SEAT_SPAWN_STAGGER_S"' "$tick" | head -1 | cut -d
 (( sleep_line > spawn_line )) || fail "stagger sleep (line $sleep_line) must come after claimed+spawned (line $spawn_line)"
 ok "3: tick sleeps SEAT_SPAWN_STAGGER_S after a verified spawn (sleep line $sleep_line > spawn line $spawn_line)"
 
-# --- 4. tick sources seat-lib.sh so the variable is in scope ----------------
-grep -qE '^\. "\$SEAT_LIB"|^\. "\$seat_lib"|source .*seat-lib' "$tick" \
-    || fail "tick must source seat-lib.sh (SEAT_SPAWN_STAGGER_S scope)"
-ok "4: tick sources seat-lib.sh (SEAT_SPAWN_STAGGER_S in scope)"
+# --- 4. tick sources seatlib.sh so the variable is in scope ----------------
+grep -qE '^\. "\$SEAT_LIB"|^\. "\$seat_lib"|source .*seatlib' "$tick" \
+    || fail "tick must source seatlib.sh (SEAT_SPAWN_STAGGER_S scope)"
+ok "4: tick sources seatlib.sh (SEAT_SPAWN_STAGGER_S in scope)"
 
 # --- 5. parent-shell load so SEAT_SPAWN_STAGGER_S reaches the claim loop ----
 # fleet-ops#3861: a load inside $() dies with the subshell. Every seat-state

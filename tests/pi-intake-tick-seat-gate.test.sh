@@ -5,12 +5,12 @@
 # claiming. If workers cannot run, the tick holds all claims and exits 0
 # — killing the spawn-churn class that burned 37 pi-issue@ units 2026-08-26.
 #
-# fleet-ops#4263 P3b: the probe is LiteLLM proxy health, not pick_seat
+# fleet-ops#4263 P3b: the probe is LiteLLM proxy health, not pick-seat
 # need_capable=1. A dead proxy means workers cannot run, so hold claims.
 #
 # Proves:
 #   1. lib/pi-intake-tick.sh exists.
-#   2. The gate block (litellm_ready) is present; pick_seat need_capable=1 is gone.
+#   2. The gate block (litellm_ready) is present; pick-seat need_capable=1 is gone.
 #   3. The gate fires when litellm_ready returns false.
 #   4. The gate does NOT fire when the proxy is ready.
 #   5. MANIFEST entry maps the tick to its install path.
@@ -30,14 +30,14 @@ ok()   { echo "OK: $*"; }
 [[ -f "$tick" ]] || fail "lib/pi-intake-tick.sh missing"
 ok "Test 1: lib/pi-intake-tick.sh exists"
 
-# === Test 2: seat-gate block present (P3b: proxy health, not pick_seat) ===
-grep -qE '\$\(pick_seat "" "" 1' "$tick" \
-    && fail "tick still calls pick_seat need_capable=1"
+# === Test 2: seat-gate block present (P3b: proxy health, not pick-seat) ===
+grep -qE '\$\(pick-seat "" "" 1' "$tick" \
+    && fail "tick still calls pick-seat need_capable=1"
 grep -qF 'litellm_ready' "$tick" \
     || fail "Seat-gate litellm_ready not found in tick"
 grep -qF 'holding claims this tick — gate: litellm_ready' "$tick" \
     || fail "Holding message not found in tick"
-ok "Test 2: seat-gate block present (litellm_ready; pick_seat gone)"
+ok "Test 2: seat-gate block present (litellm_ready; pick-seat gone)"
 
 # === Test 3: gate fires when the proxy is down ===
 litellm_ready() { return 1; }

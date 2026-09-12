@@ -28,9 +28,9 @@
 #   3. orcarouter is NOT in free_providers_in_order while cap=0
 #      (a cap=0 free-class provider in the order would still be probed
 #      and log 'skipped (provider cap=0)'; the convention is to remove
-#      it so the seat stays out of pick_seat's look-ahead).
+#      it so the seat stays out of pick-seat's look-ahead).
 #   4. The seat-caps JSON parses cleanly. A future edit that breaks
-#      JSON would break pick_seat globally, so the parse is the cheap
+#      JSON would break pick-seat globally, so the parse is the cheap
 #      local smoke before the canary's wider sweep.
 #   5. The fleet-wide cap=0 reasons ALL carry a dated measurement
 #      marker (the cross-provider invariant entitled-wired owns for
@@ -41,7 +41,7 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-# SEAT_CAPS_JSON override (the repo-wide convention, lib/seat-lib.sh:71) lets a
+# SEAT_CAPS_JSON override (the repo-wide convention, lib/litellm-seat.sh:71) lets a
 # replay drill point this test at a fixture reproducing a past bad hunk
 # (fleet-ops#3864: the #3848 ollama cap=0 corpse retirement). Default is the
 # live config.

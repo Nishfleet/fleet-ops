@@ -59,7 +59,7 @@
 #   6. lib/failed-command-flagged.py cites fleet-ops#1001 (detector-side lock for the
 #      stale-checkout read-ENOENT class).
 #   7. lib/failed-command-flagged.py docstring cites fleet-ops#1001.
-#   8. seat-lib.test.sh hosts this file (CI cannot gain a new workflow line).
+#   8. seat.lib.test.sh hosts this file (CI cannot gain a new workflow line).
 
 set -euo pipefail
 
@@ -215,10 +215,10 @@ grep -q 'fleet-ops#958, #972, #967, #977, #1001, #1059, #1100, #1170, #1243, #12
   || fail "lib/failed-command-flagged.py docstring must cite #1001, #1100, #1255 next to the read-ENOENT citation chain"
 ok "lib/failed-command-flagged.py docstring cites fleet-ops#1001, #1100, #1255"
 
-# --- 8. seat-lib.test.sh hosts this file (CI cannot gain a P14 line) -------
+# --- 8. seat.lib.test.sh hosts this file (CI cannot gain a P14 line) -------
 grep -Fq 'bash "$here/fleet-failed-command-read-enoent-thinking.test.sh"' \
-  "$here/seat-lib.test.sh" \
-  || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
-ok "seat-lib.test.sh hosts this file"
+  "$here/seat.lib.test.sh" \
+  || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
+ok "seat.lib.test.sh hosts this file"
 
 echo "OK: fleet-failed-command-read-enoent-thinking: live #953 read ENOENT + thinking-only recovery + live #1001 stale-checkout drills"

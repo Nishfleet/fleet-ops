@@ -20,7 +20,7 @@
 # (tests/fleet-failed-command-edit-unmatch.test.sh). This file locks
 # the leftover-duplicate DRAIN so a future observe-to-close refactor
 # cannot resolve only issue 0 of a same-signal pile, and so the
-# citation chain (worker.md + detector docstring + seat-lib.test.sh
+# citation chain (worker.md + detector docstring + seat.lib.test.sh
 # host) for #965, #970, #975 and #980 is verified.
 #
 # Live session: 2026-08-26T11-57-42-915Z_01a03dee-ea83-759b-8044-ba3adddcbe8b.jsonl
@@ -37,7 +37,7 @@
 #      #975 and #980 (the 01a03dee leftover-duplicate pile).
 #   5. detector-side citation lock: lib/failed-command-flagged.py
 #      docstring cites #965, #970, #975 and #980.
-#   6. CI host: seat-lib.test.sh nests this file so the drain
+#   6. CI host: seat.lib.test.sh nests this file so the drain
 #      drill cannot be skipped by a fresh CI line.
 
 set -euo pipefail
@@ -337,14 +337,14 @@ grep -q '#975, #980' "$lib" \
   || fail "lib/failed-command-flagged.py docstring must cite #980 next to #975"
 ok "lib/failed-command-flagged.py docstring cites #980"
 
-# --- 6. CI host: seat-lib.test.sh nests this file -------------------------
+# --- 6. CI host: seat.lib.test.sh nests this file -------------------------
 # A fresh PR cannot add a workflow line on this repo (worker token has
 # no Workflows permission). The drain drill has to run through the
-# nested seat-lib host so removing the test file (or moving the
-# citation check out) is caught by the seat-lib listing test.
+# nested seatlib host so removing the test file (or moving the
+# citation check out) is caught by the seatlib listing test.
 grep -F -q 'fleet-failed-command-observe-duplicate-open.test.sh' \
-  "$here/seat-lib.test.sh" \
-  || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
-ok "seat-lib.test.sh hosts this file"
+  "$here/seat.lib.test.sh" \
+  || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
+ok "seat.lib.test.sh hosts this file"
 
 echo "OK: fleet-failed-command-observe-duplicate-open: live #965 / #970 / #975 / #980 leftover-duplicate drain"

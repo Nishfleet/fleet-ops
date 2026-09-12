@@ -351,7 +351,7 @@ WF
   write_vault_conflict_fresh
   # Block 12 (fleet-ops#520): free-tier privacy guard fixtures.
   mkdir -p "$repo/lib" "$repo/config"
-  cp "$repo_root/lib/seat-lib.sh" "$repo/lib/seat-lib.sh"
+  cp "$repo_root/lib/litellm-seat.sh" "$repo/lib/litellm-seat.sh"
   cp "$repo_root/lib/litellm-seat.sh" "$repo/lib/litellm-seat.sh"
   cp "$repo_root/config/repo-privacy.json" "$repo/config/repo-privacy.json"
 }
@@ -1734,7 +1734,7 @@ bash "$here/fleet-prepaid-util-canary.test.sh"
 # fleet-ops#4621: cursor usd_today overlay must survive a pick (the canary
 # writes the vendor 24h API-bucket delta; _record_prepaid_pick must not
 # clobber it with the token 0). Same CI-listed pattern as the canary above.
-bash "$here/seat-lib-cursor-usd-today.test.sh"
+bash "$here/seatlib-cursor-usd-today.test.sh"
 
 # fleet-ops#629: parked-flash watcher canary (fleet-ops#436). Invoked from
 # this CI-listed file so hosted runners run it without a workflow edit

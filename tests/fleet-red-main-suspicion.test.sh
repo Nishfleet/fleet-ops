@@ -67,7 +67,7 @@ ok "false-positive drill: 4 PRs, 3 distinct causes -> pr-checks-red, not red-mai
 # cause-aware).
 control='[
  {"number":4828,"check":"P14 tests / PR checks","fail_line":"FAIL: shellcheck not clean on lib/pi-intake-tick.sh"},
- {"number":4831,"check":"P14 tests / PR checks","fail_line":"FAIL: shellcheck not clean on lib/seat-lib.sh"},
+ {"number":4831,"check":"P14 tests / PR checks","fail_line":"FAIL: shellcheck not clean on lib/litellm-seat.sh"},
  {"number":4832,"check":"P14 tests / PR checks","fail_line":"FAIL: shellcheck not clean on bin/fleet-claim"}
 ]'
 out="$(run "$control")" || true

@@ -2,7 +2,7 @@
 # tests/seat-phantom-out-suffix.test.sh
 # fleet-ops#4018: a probe-output filename fragment (a model id ending in
 # `-.out`, e.g. grok-4-6-.out / glm-5-2-.out) is NEVER a real seat model.
-# It must be rejected at every seat-lib write/probe/dispatch guard — even
+# It must be rejected at every seatlib write/probe/dispatch guard — even
 # when config/seat-caps.json is missing (the fleet-ops#3661 fail-open must
 # NOT re-admit a phantom under a missing caps file, or a phantom model read
 # back from pi-seat-health.json / a stray ledger is re-dispatched and the
@@ -15,7 +15,7 @@ set -u
 
 here="$(cd "$(dirname "$0")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-lib="$repo_root/lib/seat-lib.sh"
+lib="$repo_root/lib/litellm-seat.sh"
 
 scratch="$(mktemp -d -t seat-phantom-out.XXXXXX)"
 trap 'rm -rf "$scratch"' EXIT INT TERM

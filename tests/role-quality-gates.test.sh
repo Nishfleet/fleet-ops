@@ -606,8 +606,8 @@ grep -q 'bin/fleet-role-gate-audit' "$repo_root/MANIFEST" \
   || fail "MANIFEST must install bin/fleet-role-gate-audit"
 grep -F 'observe-to-close' "$bin" >/dev/null \
   || fail "auditor must observe-to-close auto-filed findings (fleet-ops#636)"
-grep -Fq 'bash "$here/role-quality-gates.test.sh"' "$here/seat-lib.test.sh" \
-  || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
+grep -Fq 'bash "$here/role-quality-gates.test.sh"' "$here/seat.lib.test.sh" \
+  || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
 # fleet-ops#708: installed-lib fallback must be gated on unset
 # FLEET_ROLE_GATES_LIB so an explicit missing-path pin still fails
 # loud. A revert of the #667 gate (or refactor of the fallback) flips

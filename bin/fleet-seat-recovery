@@ -13,7 +13,7 @@
 #   A systemd .path unit is event-driven: any write to the seats/ dir
 #   (a seat-health ledger update) wakes the service. The bin then:
 #     1. Snapshot the current "no usable seat" verdict from the ledger
-#        (litellm-seat.sh seat_usable, the same authority pick_seat uses).
+#        (litellm-seat.sh seat_usable, the same authority pick-seat uses).
 #     2. Compare with the last persisted verdict (state file).
 #     3. On the NO-USABLE-SEAT -> seat-available transition, start
 #        pi-intake@<repo>.timer / pi-intake@<repo>.service for every
@@ -21,7 +21,7 @@
 #
 # Time-based expiry (a bench_until that passes while nobody writes a new
 # ledger file) is handled by the HEARTBEAT'S OWN block: the fleet-heartbeat
-# tick already runs seat_usable pick_seat paths every 30 min, and this
+# tick already runs the usable-seat paths every 30 min, and this
 # detector also re-arms itself on every service start. The .path watcher
 # is the fast path for the common case (a seat-health write marks the
 # seat usable); the heartbeat is the slow-path floor.
@@ -66,7 +66,7 @@ DRY="${FLEET_SEAT_RECOVERY_DRY_RUN:-0}"
 SYSTEMCTL="${FLEET_SEAT_RECOVERY_SYSTEMCTL:-systemctl}"
 NOW_ISO="${FLEET_SEAT_RECOVERY_NOW:-}"
 
-# Seat-lib (the routing authority). Same pick_seat/seat_usable the workers
+# The routing helpers (litellm-seat). Same usable-seat verdict the workers
 # use, so this detector's verdict is exactly what a worker would conclude.
 SEAT_LIB="${PI_PACKET_SEAT_LIB:-$HOME/.local/lib/pi-packet/litellm-seat.sh}"
 # shellcheck source=../lib/litellm-seat.sh source-path=SCRIPTDIR
@@ -95,16 +95,16 @@ now_epoch() {
 # Does ANY cap-map-allowlisted seat currently rate as usable per the ledger?
 # Returns 0 (usable exists) / 1 (no usable seat).
 #
-# fleet-ops#837: this MUST use seat_usable (the ledger verdict), NOT pick_seat.
-# pick_seat adds an active-capacity check (count_active_on_provider /
+# fleet-ops#837: this MUST use the ledger verdict, not a capacity pick.
+# the old picker added an active-capacity check (count_active_on_provider /
 # count_active_on_seat) that reads the real host's active-seats state. A
 # healthy-but-busy seat then reads as "no usable seat", so the
 # no-usable -> usable transition never fires and seat recovery stays dead.
 # The detector's question is "is the fleet alive per the ledger", not "is
 # there free capacity right now" — a busy seat frees when its worker exits,
 # and intake firing on a healthy fleet is the intended fast path. The
-# allowlist + cap=0 + keystone-only filters mirror pick_seat's volume walk
-# (pick_seat "" "" 0, difficulty=light) so the verdict matches what a
+# allowlist + cap=0 + keystone-only filters mirror the old volume walk
+# (the retired light pick) so the verdict matches what a
 # volume worker would be offered; only the active-capacity check is dropped.
 any_seat_usable() {
     # P3b: the proxy health endpoint is the alive/dead signal. Ledger

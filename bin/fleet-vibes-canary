@@ -18,9 +18,9 @@ fi
 # any number that drives behaviour — a concurrency cap, a memory budget, a
 # timeout, a retry count, a threshold, a rate limit — must come from a
 # measurement you actually took and can show, not from a plausible-sounding
-# default. The rule was born from ram_gb_per_worker=1.5, an unmeasured
-# constant sitting on top of a unit bug that returned 6647 workers instead
-# of 6. Both the guess and the bug survived because nobody measured.
+# default. The rule was born from a hand-set per-worker RAM constant — an
+# unmeasured number sitting on top of a unit bug that returned 6647 workers
+# instead of 6. Both the guess and the bug survived because nobody measured.
 #
 # This canary is the mechanical enforcer. It scans config/seat-caps.json,
 # the file that holds the fleet's behaviour-driving numbers, and requires
@@ -32,14 +32,10 @@ fi
 #
 # Two layers, mirroring fleet-free-roster-canary (fleet-ops#518):
 #
-#   1. GATE (fail-loud, exit 1) — the rule's origin constant:
-#      `ram_gb_per_worker` must have a top-level `_comment_*` citation that
-#      carries BOTH a date AND a `bin/...` measurement-command reference
-#      (bin/ram-measure, bin/ram-metric-compare). This is the exact number
-#      that caused the 6647-worker bug; an uncited or unmeasured
-#      ram_gb_per_worker is the vibe the rule exists to kill. A missing
-#      seat-caps.json or a missing ram_gb_per_worker is also a gate
-#      violation — the RAM governor cannot be a silent default.
+#   1. GATE — RETIRED (fleet-ops#4263 P3b): the rule's origin constant
+#      (the per-worker RAM charge) and its hand-tuned config key were
+#      deleted with the seat governor. Per-worker RAM is enforced by
+#      systemd MemoryMax + oomd, so there is nothing left to gate.
 #
 #   2. DETECTOR (observe-to-open, tick stays green, exit 0) — the rest of
 #      the behaviour-driving numbers, so a human never re-checks by hand:
@@ -267,34 +263,10 @@ if ! jq -e . "$SEAT_CAPS_JSON" >/dev/null 2>&1; then
     exit 1
 fi
 
-# --- GATE: ram_gb_per_worker must be measured --------------------------------
-# The rule's origin constant. An uncited or unmeasured ram_gb_per_worker is
-# the exact vibe that returned 6647 workers instead of 6. Hard fail.
-
-ram_gb=$(jq -r '.ram_gb_per_worker // empty' "$SEAT_CAPS_JSON")
-if [[ -z "$ram_gb" ]]; then
-    loud "VIBES-GATE-VIOLATION" "ram_gb_per_worker is missing from seat-caps.json — the RAM governor cannot be a silent default (sr-never-vibes)"
-    exit 1
-fi
-
-top_blob=$(top_level_citations)
-gate_ok=0
-while IFS= read -r line; do
-    [[ -z "$line" ]] && continue
-    if has_date "$line" && has_gate_marker "$line"; then
-        gate_ok=1
-        break
-    fi
-done <<<"$top_blob"
-
-if [[ "$gate_ok" != "1" ]]; then
-    loud "VIBES-GATE-VIOLATION" "ram_gb_per_worker=$ram_gb has no top-level _comment_* citation carrying a date AND a bin/... measurement command — an unmeasured RAM budget is the vibe sr-never-vibes exists to kill (fleet-ops#538)"
-    exit 1
-fi
-
-log "GATE: ram_gb_per_worker=$ram_gb is backed by a dated bin/... measurement citation"
-
 # --- DETECTOR: per-provider caps + quota benches (observe-to-open) -----------
+# fleet-ops#4263 P3b: the ram_gb_per_worker gate is RETIRED — the RAM-charge
+# governor and its hand-tuned key were deleted; per-worker RAM is enforced by
+# systemd MemoryMax + oomd. What remains is the citation detector below.
 
 detected=0
 
@@ -371,7 +343,7 @@ if (( detected > 0 )); then
     loud "VIBES-DETECTOR-FILED" "$detected uncited behaviour-driving constant(s) in seat-caps.json filed as tickets (observe-to-open); tick stays green"
     log "DETECTOR: filed $detected finding(s) (FILED_COUNT=$FILED_COUNT); gate clean, exiting 0"
 else
-    loud "VIBES-CANARY-OK" "ram_gb_per_worker measured; every provider cap carries a dated measurement citation"
+    loud "VIBES-CANARY-OK" "every provider cap carries a dated measurement citation"
     log "DETECTOR: clean — every behaviour-driving constant in seat-caps.json is cited"
 fi
 

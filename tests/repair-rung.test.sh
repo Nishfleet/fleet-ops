@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # tests/repair-rung.test.sh
 #
-# fleet-ops#4639: reserved repair rung. When pick_seat returns NO USABLE
+# fleet-ops#4639: reserved repair rung. When pick-seat returns NO USABLE
 # SEAT or usable slots < 2 for >= 2 consecutive intake ticks, intake may
 # claim critical-path fleet-ops issues on a rung exempt from yield caps
-# and the light-only/audition filter. Worker pick_seat falls back to
+# and the light-only/audition filter. Worker pick-seat falls back to
 # litellm judge -> mergegateway audition -> cursor keystone at cap 1 and
-# never a money-walled seat. The rung disarms when pick_seat returns a
+# never a money-walled seat. The rung disarms when pick-seat returns a
 # usable seat for DISARM_AFTER (default 2) consecutive ticks (fleet-ops#4820).
 #
 # Hosted by tests/pi-intake-run.test.sh (CI already lists that file).
@@ -14,14 +14,14 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
 tick="$repo_root/lib/pi-intake-tick.sh"
-lib="$repo_root/lib/seat-lib.sh"
+lib="$repo_root/lib/litellm-seat.sh"
 run="$repo_root/bin/pi-issue-run"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
 [[ -f "$tick" ]] || fail "lib/pi-intake-tick.sh missing"
-[[ -f "$lib" ]] || fail "lib/seat-lib.sh missing"
+[[ -f "$lib" ]] || fail "lib/litellm-seat.sh missing"
 [[ -f "$run" ]] || fail "bin/pi-issue-run missing"
 
 # --- 1. intake pins ---
@@ -42,19 +42,19 @@ grep -qF 'seat-rung: repair' "$tick" || fail "packet seat-rung marker missing"
 grep -qF 'allow-repair-rung' "$tick" || fail "yield-cap exemption missing"
 ok "intake pins: knobs, arm/release/claim logs, critical-path filter, packet marker"
 
-# --- 2. pick_seat + pi-issue-run pins ---
-grep -qF '_pick_repair_rung_seat' "$lib" || fail "pick_seat repair-rung ladder missing"
+# --- 2. pick-seat + pi-issue-run pins ---
+grep -qF '_pick_repair_rung_seat' "$lib" || fail "pick-seat repair-rung ladder missing"
 grep -qF 'Never a money-walled seat' "$lib" || fail "money-wall refusal comment missing"
 grep -qF 'PI_REPAIR_RUNG' "$run" || fail "pi-issue-run PI_REPAIR_RUNG missing"
 grep -qF 'seat-rung:[[:space:]]*repair' "$run" \
     || fail "pi-issue-run does not read seat-rung: repair"
-ok "pick_seat + pi-issue-run pins"
+ok "pick-seat + pi-issue-run pins"
 
 # --- 3. two-tick drill (arm after tick 2, release when slots return) ---
 scratch="$(mktemp -d -t repair-rung.XXXXXX)"
 trap 'rm -rf "$scratch"' EXIT INT TERM
 
-stubs="$scratch/seat-lib-stub.sh"
+stubs="$scratch/seatlib-stub.sh"
 cat >"$stubs" <<'SH'
 #!/usr/bin/env bash
 total_seat_cap() { echo 8; }
@@ -62,7 +62,7 @@ issue_seat_cap() { echo 5; }
 load_seat_caps() { return 0; }
 worker_memory_for_difficulty() { return 1; }
 worker_env_for_repo() { return 1; }
-pick_seat() {
+litellm_seat() {
     if [[ "${PICK_SEAT_COUNT_SLOTS:-0}" == "1" ]]; then
         echo "${STUB_LIGHT_SLOTS:-0}"
         return 0
@@ -186,7 +186,7 @@ echo "$out5" | grep -qF 'ordinary-work' \
     || true
 ok "tick 5: non-critical-path is not skipped-repair-rung after disarm"
 
-# --- 4. pick_seat ladder: cursor when workers are walled; refuse money wall ---
+# --- 4. pick-seat ladder: cursor when workers are walled; refuse money wall ---
 export PI_SEAT_LIB_CHECK_SYSTEMD=0
 export PI_SEAT_NOUSABLE_COOLDOWN_S=0
 export SEAT_LIVE_QUOTA_PROM="$scratch/no-live-quota.prom"
@@ -249,16 +249,16 @@ wall_ledger mergegateway "anthropic/claude-sonnet-5"
 # a heavy pick must stall when workers are money-walled.
 unset PI_REPAIR_RUNG
 set +e
-out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 1 "" heavy' "$lib" 2>/dev/null)
+out=$(bash -c 'source "$0"; load_seat_caps; pick-seat "" "" 1 "" heavy' "$lib" 2>/dev/null)
 rc=$?
 set -e
 [[ "$rc" != "0" ]] || fail "heavy pick without rung must stall (no worker seats), got: $out"
-ok "pick_seat without PI_REPAIR_RUNG refuses keystone/audition on a heavy packet"
+ok "pick-seat without PI_REPAIR_RUNG refuses keystone/audition on a heavy packet"
 
 # With the rung, cursor (healthy, not money-walled) is offered.
 export PI_REPAIR_RUNG=1
 set +e
-out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0 "" light' "$lib" 2>/dev/null)
+out=$(bash -c 'source "$0"; load_seat_caps; pick-seat "" "" 0 "" light' "$lib" 2>/dev/null)
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "repair rung must pick cursor, rc=$rc out=$out"
@@ -270,7 +270,7 @@ ok "repair rung picks cursor keystone when worker seats are walled"
 rm -f "$PI_SEAT_HEALTH_LEDGER_DIR/mergegateway__anthropic_claude-sonnet-5.json"
 wall_ledger cursor "cursor-grok-4.6-high"
 set +e
-out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0 "" light' "$lib" 2>/dev/null)
+out=$(bash -c 'source "$0"; load_seat_caps; pick-seat "" "" 0 "" light' "$lib" 2>/dev/null)
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "repair rung must fall through to audition, rc=$rc out=$out"
@@ -281,7 +281,7 @@ ok "repair rung refuses money-walled cursor and picks mergegateway audition"
 # Wall the audition seat too: nothing left.
 wall_ledger mergegateway "anthropic/claude-sonnet-5"
 set +e
-out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0 "" light' "$lib" 2>/dev/null)
+out=$(bash -c 'source "$0"; load_seat_caps; pick-seat "" "" 0 "" light' "$lib" 2>/dev/null)
 rc=$?
 set -e
 [[ "$rc" != "0" ]] || fail "all-walled rung must stall, got: $out"

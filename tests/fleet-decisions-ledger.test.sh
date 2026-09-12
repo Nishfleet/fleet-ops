@@ -397,8 +397,8 @@ grep -q 'bin/fleet-decisions-ledger' "$repo_root/MANIFEST" \
   || fail "MANIFEST must install bin/fleet-decisions-ledger"
 grep -q 'lib/decisions-ledger.py' "$repo_root/MANIFEST" \
   || fail "MANIFEST must install lib/decisions-ledger.py"
-grep -Fq 'bash "$here/fleet-decisions-ledger.test.sh"' "$here/seat-lib.test.sh" \
-  || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
+grep -Fq 'bash "$here/fleet-decisions-ledger.test.sh"' "$here/seat.lib.test.sh" \
+  || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
 jq -e '.rules[] | select(.id == "sr-decisions-ledger" and .status == "enforced")' \
   "$repo_root/config/rule-enforcement.json" >/dev/null \
   || fail "sr-decisions-ledger must be status=enforced in the matrix"
@@ -589,10 +589,10 @@ grep -q 'fleet-ops#1138' "$bin" \
   || fail "bin/fleet-decisions-ledger must cite fleet-ops#1138"
 grep -q 'fleet-ops#1138' "$repo_root/prompts/worker.md" \
   || fail "prompts/worker.md must cite fleet-ops#1138"
-grep -Fq 'bash "$here/fleet-decisions-ledger.test.sh"' "$here/seat-lib.test.sh" \
-  || fail "seat-lib.test.sh must nest this file"
-grep -q '#1138' "$here/seat-lib.test.sh" \
-  || fail "seat-lib.test.sh must cite #1138 next to the nested host"
+grep -Fq 'bash "$here/fleet-decisions-ledger.test.sh"' "$here/seat.lib.test.sh" \
+  || fail "seat.lib.test.sh must nest this file"
+grep -q '#1138' "$here/seat.lib.test.sh" \
+  || fail "seat.lib.test.sh must cite #1138 next to the nested host"
 ok "citation lock: #1138 in helper, bin, worker prompt, and nested CI host"
 
 # Citation lock for #4841 (generic-word false positive on a grown ledger).

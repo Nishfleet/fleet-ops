@@ -6,7 +6,7 @@
 # must bench the seat via mark_seat_spawn_fail, exactly like the no-op path.
 # Otherwise the tried-seats exclusion is the ONLY thing keeping the next
 # restart off the killing seat, and the reaper wipes tried-seats on every
-# reap — so the intake re-claim starts from an empty list and pick_seat
+# reap — so the intake re-claim starts from an empty list and pick-seat
 # re-selects the same killing seat (0509-974: cursor 143 x3, summoned the
 # auditor 2026-08-26T20:40Z).
 #
@@ -131,16 +131,16 @@ JSON
 
 # Overlay: record mark_seat_spawn_fail calls, then run the real function
 # so the per-seat ledger is actually written.
-cat >"$scratch/seat-lib.sh" <<EOF
+cat >"$scratch/seatlib.sh" <<EOF
 # shellcheck shell=bash
-source "$repo_root/lib/seat-lib.sh"
+source "$repo_root/lib/litellm-seat.sh"
 eval "\$(declare -f mark_seat_spawn_fail | sed '1s/^mark_seat_spawn_fail/orig_mark_seat_spawn_fail/')"
 mark_seat_spawn_fail() {
     printf '%s/%s %s\n' "\$1" "\$2" "\${3:-}" >>"$scratch/mark_calls"
     orig_mark_seat_spawn_fail "\$@"
 }
 EOF
-export PI_PACKET_SEAT_LIB="$scratch/seat-lib.sh"
+export PI_PACKET_SEAT_LIB="$scratch/seatlib.sh"
 
 inst="0509-974"
 # fleet-ops#1167: cursor is keystone/senior-review only, so the packet must be

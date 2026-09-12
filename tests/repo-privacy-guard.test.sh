@@ -15,13 +15,13 @@
 #   3. repo_privacy() fails CLOSED on a missing/unparseable config too.
 #   4. packet_repo() extracts the Nishfleet repo name from every TARGET
 #      line shape the dispatch wrappers emit.
-#   5. pick_seat ... private NEVER returns a free-class seat — not even
+#   5. pick-seat ... private NEVER returns a free-class seat — not even
 #      when free is the only class with capacity (fail-closed rc=1, loud
 #      log, no stdout). This is the core guard.
-#   6. pick_seat ... private still picks a prepaid/metered seat when one
+#   6. pick-seat ... private still picks a prepaid/metered seat when one
 #      is available (private work routes off free lanes, not off the
 #      whole ladder).
-#   7. pick_seat ... public still picks a free lane (the guard does not
+#   7. pick-seat ... public still picks a free lane (the guard does not
 #      over-block public work).
 #   8. config/repo-privacy.json is valid JSON and every enrolled intake
 #      repo is classified (no enrolled repo is left to the fail-closed
@@ -44,7 +44,7 @@ trap 'rm -rf "$scratch"' EXIT INT TERM
 # Offline: never touch live systemd seat state.
 export PI_SEAT_LIB_CHECK_SYSTEMD=0
 
-# --- a scratch models.json + seat-caps.json (mirrors seat-lib.test.sh) -----
+# --- a scratch models.json + seat-caps.json (mirrors seat.lib.test.sh) -----
 cat >"$scratch/models.json" <<'JSON'
 {
   "providers": {
@@ -107,7 +107,7 @@ run_pick() {
     state="$scratch/state-$privacy-$$-$RANDOM"
     export PI_PACKET_STATE="$state"
     set +e
-    out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0 "" light "$1"' "$lib" "$privacy" 2>/dev/null)
+    out=$(bash -c 'source "$0"; load_seat_caps; pick-seat "" "" 0 "" light "$1"' "$lib" "$privacy" 2>/dev/null)
     rc=$?
     set -e
     printf '%s\t%s' "$rc" "$out"

@@ -58,7 +58,7 @@
 #        file is planted and must clear. Missing handler = the 2026-08-23 wipe.
 #    12. Free-tier privacy guard (fleet-ops#520): config/repo-privacy.json
 #        ships and is valid (default_policy=private), and a live scratch drill
-#        proves pick_seat privacy=private never returns a free-class seat and
+#        proves the private group never returns a free-class lane and
 #        fails closed when only free seats remain. LOUD the same tick a
 #        regression re-opens the leak.
 #    13. Detached-work lint (fleet-ops#4266): no raw `systemd-run` transient
@@ -1007,7 +1007,7 @@ fi
 # ---------------------------------------------------------------------------
 # Vault "Free-tier privacy line" (2026-08-18): no-card free LLM tiers train on
 # prompts, so free-class seats may only process PUBLIC-repo work. The guard
-# lives in lib/routing helper.sh pick_seat (privacy=private skips every free-class
+# lives in the litellm group map (privacy=private skips every free-class
 # seat, fail-closed rc=1 when only free seats remain). This block drills it
 # every heartbeat tick on a fully scratch config (never touches live seat
 # state) so a regression that re-opens the leak is LOUD the same tick, not at

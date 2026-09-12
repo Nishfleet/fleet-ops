@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/seat-lib-dispatch.test.sh
+# tests/seatlib-dispatch.test.sh
 #
 # fleet-ops#859: data-driven lane-fault dispatch. _dispatch_lane_faults
 # iterates the error_classes registry in seat-caps.json by trigger_order;
@@ -23,15 +23,15 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-lib="$repo_root/lib/seat-lib.sh"
+lib="$repo_root/lib/litellm-seat.sh"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
-[[ -f "$lib" ]] || fail "seat-lib.sh not found: $lib"
+[[ -f "$lib" ]] || fail "seatlib.sh not found: $lib"
 command -v jq >/dev/null || fail "jq required"
 
-scratch="$(mktemp -d -t seat-lib-dispatch.XXXXXX)"
+scratch="$(mktemp -d -t seatlib-dispatch.XXXXXX)"
 trap 'rm -rf "$scratch"' EXIT INT TERM
 # fleet-ops#4217: hermetic live-quota lookup — real fleet_seat_quota_* rows in
 # the VPS node_exporter textfile must not leak into the default-window tests.
@@ -85,7 +85,7 @@ cat >"$scratch/seat-caps.json" <<'JSON'
 JSON
 export SEAT_CAPS_JSON="$scratch/seat-caps.json"
 
-# Minimal models.json so seat-lib loads without complaint.
+# Minimal models.json so seatlib loads without complaint.
 cat >"$scratch/models.json" <<'JSON'
 {
   "providers": {
@@ -104,7 +104,7 @@ cat >"$scratch/models.json" <<'JSON'
 JSON
 export PI_MODELS_JSON="$scratch/models.json"
 
-lib="$repo_root/lib/seat-lib.sh"
+lib="$repo_root/lib/litellm-seat.sh"
 
 # --- 1. _load_error_classes: sorted by trigger_order ----------------------
 set +e
@@ -325,7 +325,7 @@ for i in 1 2 3 4 5 6 7 8; do
 done
 ok "_dispatch: quota bench from a static default stays at 900 on every repeat — no geometric escalation of a guessed window (fleet-ops#5285 caps #3531 for default-driven quota walls)"
 
-ok "seat-lib-dispatch: registry sorted, trigger-order wins, no-double-bench, backward-compat, graceful no-registry"
+ok "seatlib-dispatch: registry sorted, trigger-order wins, no-double-bench, backward-compat, graceful no-registry"
 
 # fleet-ops#5274: the free_retired_corpse class (OpenRouter 404 unavailable-
 # for-free -> permanent corpse) is pinned in its own test, hosted here so it

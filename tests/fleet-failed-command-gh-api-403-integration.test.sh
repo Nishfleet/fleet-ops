@@ -190,10 +190,10 @@ grep -q '\\b403\\b' "$lib" \
   || fail "lib/failed-command-flagged.py FLAG_RE must include \\\\b403\\\\b"
 ok "lib/failed-command-flagged.py docstring cites fleet-ops#1253 and FLAG_RE includes 403"
 
-# --- 9. seat-lib.test.sh hosts this file (CI cannot gain a P14 line) ------
+# --- 9. seat.lib.test.sh hosts this file (CI cannot gain a P14 line) ------
 grep -Fq 'bash "$here/fleet-failed-command-gh-api-403-integration.test.sh"' \
-  "$here/seat-lib.test.sh" \
-  || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
-ok "seat-lib.test.sh hosts this file"
+  "$here/seat.lib.test.sh" \
+  || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
+ok "seat.lib.test.sh hosts this file"
 
 echo "OK: fleet-failed-command-gh-api-403-integration: live #1253 gh api /user 403 drills"

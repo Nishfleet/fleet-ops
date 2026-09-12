@@ -58,7 +58,7 @@
 #      one field id (live session also carried this sibling).
 #   6. worker.md cites fleet-ops#1244 and the live wording.
 #   7. lib/failed-command-flagged.py docstring cites fleet-ops#1244.
-#   8. seat-lib.test.sh hosts this file (CI cannot gain a P14 line).
+#   8. seat.lib.test.sh hosts this file (CI cannot gain a P14 line).
 
 set -euo pipefail
 
@@ -193,11 +193,11 @@ grep -q 'gh pr view 392' "$lib" \
   || fail "lib/failed-command-flagged.py docstring must name the live 'gh pr view 392' wording"
 ok "lib/failed-command-flagged.py docstring cites fleet-ops#1244 and the gh pr view --json merged shape"
 
-# --- 8. seat-lib.test.sh hosts this file (CI cannot gain a P14 line) -------
+# --- 8. seat.lib.test.sh hosts this file (CI cannot gain a P14 line) -------
 grep -Fq 'bash "$here/fleet-failed-command-gh-pr-view-merged.test.sh"' \
-  "$here/seat-lib.test.sh" \
-  || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
-ok "seat-lib.test.sh hosts this file"
+  "$here/seat.lib.test.sh" \
+  || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
+ok "seat.lib.test.sh hosts this file"
 
 # --- 9. prompts/worker.md cites mergeQueueEntry + correct alternative -------
 # fleet-ops#4884: 35 worker sessions tried `gh pr view --json mergeQueueEntry`

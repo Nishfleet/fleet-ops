@@ -20,7 +20,7 @@
     "tests/fleet-decisions-ledger.test.sh",
     "tests/pi-salvage-worktree.test.sh",
     "tests/pi-systemd-run.test.sh",
-    "tests/seat-lib.test.sh"
+    "tests/seat.lib.test.sh"
   ],
   "merge_diff": {
     "MANIFEST": "M",
@@ -34,6 +34,6 @@
     "tests/fleet-decisions-ledger.test.sh": "M",
     "tests/pi-salvage-worktree.test.sh": "D",
     "tests/pi-systemd-run.test.sh": "M",
-    "tests/seat-lib.test.sh": "M"
+    "tests/seat.lib.test.sh": "M"
   }
 }

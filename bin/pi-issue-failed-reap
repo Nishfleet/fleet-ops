@@ -331,7 +331,7 @@ if [[ "$issue_state" == "OPEN" ]]; then
     # --- reclaim cooldown (fleet-ops#2133, auditor 2026-08-30) -----------------
     # A failed worker's claim was just released back to agent-ready. Without a
     # cooldown, the next intake tick (every ~8min) re-claims the same issue,
-    # spawns a new worker, and pick_seat routes to another free seat that dies
+    # spawns a new worker, and pick-seat routes to another free seat that dies
     # the same way — a spawn-die-respawn loop that burned #2133 6x in one day
     # (05:52, 07:01, 08:26, 09:23 IST + 2 more). The cooldown marker tells
     # intake to skip this issue for PI_INTAKE_RECLAIM_COOLDOWN_S (default 900s
@@ -476,7 +476,7 @@ fi
 # fleet-ops#516 (auditor 2026-08-27): the reap must NOT wipe the per-issue
 # tried-seats file when the last failure was a mid-session provider death on
 # a still-healthy seat. Without this, the intake re-claim starts from an
-# empty tried-seats list and pick_seat re-selects the SAME killing seat
+# empty tried-seats list and pick-seat re-selects the SAME killing seat
 # (0509-974 cursor-grok-4.6-high 143 x3). The seat-health ledger is the
 # DURABLE avoidance authority (pi-issue-run now benches mid-session deaths
 # there), but a seat that was killed ONCE should still be excluded until the

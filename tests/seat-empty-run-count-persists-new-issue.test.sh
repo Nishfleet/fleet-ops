@@ -11,22 +11,22 @@
 #      issue picking the same seat (the intake re-spawn / fresh-claim case)
 #      must NOT reset consecutive_failure_count to 1. Each fresh no-op on the
 #      seat escalates the geometric backoff from the previous count.
-#   2. The seat MUST be held until a non-empty run proves it — pick_seat must
+#   2. The seat MUST be held until a non-empty run proves it — pick-seat must
 #      not fail-open an expired bench while the bench marker is still the
 #      seat's latest evidence (probe-gated re-admission, fleet-ops#3737).
 #
-# This test pins that contract END-TO-END through pick_seat, the routing
+# This test pins that contract END-TO-END through pick-seat, the routing
 # authority workers use: two empty runs on the SAME seat from two DIFFERENT
 # simulated issue ids must yield count 1 -> 2 (backoff 900 -> 1800), and
-# pick_seat must never hand the seat to the second issue — neither while the
+# pick-seat must never hand the seat to the second issue — neither while the
 # bench is active nor after the bench expires with a still-fresh marker —
-# because both seats share one provider so pick_seat always has somewhere to
+# because both seats share one provider so pick-seat always has somewhere to
 # reroute. Runs offline: scratch ledger, no network, no systemd.
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-seat_lib="$repo_root/lib/seat-lib.sh"
+seat_lib="$repo_root/lib/litellm-seat.sh"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
@@ -48,11 +48,11 @@ export SEAT_CAPS_JSON="$scratch/seat-caps.json"
 export XDG_RUNTIME_DIR="$scratch/xdg"
 export PI_SEAT_LIB_CHECK_SYSTEMD=0
 # Credential precheck off: test fixtures have no apiKey; the reactive ledger
-# is the backstop (same as the rest of the seat-lib test suite).
+# is the backstop (same as the rest of the seatlib test suite).
 export PI_SEAT_CREDENTIAL_PRECHECK=0
 mkdir -p "$XDG_RUNTIME_DIR"
 
-# Two seats on one provider so pick_seat has somewhere to reroute after the
+# Two seats on one provider so pick-seat has somewhere to reroute after the
 # empty-run seat is benched. Both are free-class (no privacy gate), cap 4.
 cat >"$PI_MODELS_JSON" <<'JSON'
 {
@@ -111,7 +111,7 @@ seed_healthy() {
     mv "$tmp" "$lf" 2>/dev/null || { rm -f "$tmp"; return 1; }
 }
 
-# Run pick_seat for a FRESH issue id (empty tried-seats = the intake
+# Run pick-seat for a FRESH issue id (empty tried-seats = the intake
 # re-spawn / new-claim path that re-picked the no-op'ing seat). Asserts the
 # benched seat is never returned.
 assert_fresh_pick_skips_benched() {
@@ -119,17 +119,17 @@ assert_fresh_pick_skips_benched() {
     local i picked picked_p picked_m
     for i in 1 2 3 4 5; do
         : >"$STATE_DIR/attempts/pi-issue-fleet-ops-3730.tried-seats" 2>/dev/null || true
-        picked=$(pick_seat "" "" 0 "" "light" "public" || true)
-        [[ -n "$picked" ]] || fail "$label: pick_seat returned empty (iteration $i)"
+        picked=$(pick-seat "" "" 0 "" "light" "public" || true)
+        [[ -n "$picked" ]] || fail "$label: pick-seat returned empty (iteration $i)"
         picked_p=$(printf '%s' "$picked" | cut -f1)
         picked_m=$(printf '%s' "$picked" | cut -f2)
         if [[ "$picked_p/$picked_m" == "$bench_p/$bench_m" ]]; then
-            fail "$label: pick_seat re-offered the benched seat $bench_p/$bench_m to a fresh issue on iteration $i (fleet-ops#3730)"
+            fail "$label: pick-seat re-offered the benched seat $bench_p/$bench_m to a fresh issue on iteration $i (fleet-ops#3730)"
         fi
         [[ "$picked_p/$picked_m" == "$other_p/$other_m" ]] \
-          || fail "$label: pick_seat rerouted to $picked_p/$picked_m, expected $other_p/$other_m (iteration $i)"
+          || fail "$label: pick-seat rerouted to $picked_p/$picked_m, expected $other_p/$other_m (iteration $i)"
     done
-    ok "$label: pick_seat never re-offered the benched seat across 5 fresh-issue re-seats"
+    ok "$label: pick-seat never re-offered the benched seat across 5 fresh-issue re-seats"
 }
 
 bench_p="ollama"
@@ -151,13 +151,13 @@ c1=$(count_of "$bench_mf"); b1=$(backoff_of "$bench_mf")
 [[ "$b1" == "900" ]] || fail "(1) first empty-run backoff=${b1}s, want 900s (EMPTY_RUN_BACKOFF_S)"
 ok "(1) issue A empty run: marker count=$c1, backoff=${b1}s (base, geometric ladder starts at 1)"
 
-# --- (2) NEW ISSUE B re-seat while the bench is still active: pick_seat
+# --- (2) NEW ISSUE B re-seat while the bench is still active: pick-seat
 #     reroutes to the healthy seat, NEVER to the benched deepseek ----------
 assert_fresh_pick_skips_benched "(2) new issue B, bench active" "$bench_p" "$bench_m" "$bench_p" "$other_m"
 
 # --- (3) NEW ISSUE B empty-runs the SAME seat again AFTER an expiry: the
 #     bench is forced to wall_end but the marker stays fresh and is still the
-#     seat's latest evidence, so pick_seat must HOLD it (no fail-open) until
+#     seat's latest evidence, so pick-seat must HOLD it (no fail-open) until
 #     a non-empty probe proves the seat (probe-gated re-admission, #3737) ---
 past_iso=$(date -u -d '@0' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "1970-01-01T00:00:00Z")
 tmp=$(mktemp)

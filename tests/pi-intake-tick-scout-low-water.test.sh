@@ -25,11 +25,11 @@ scratch="$(mktemp -d -t pirt-scout-lowwater.XXXXXX)"
 trap 'rm -rf "$scratch"' EXIT INT TERM
 mkdir -p "$scratch/run" "$scratch/secondary" "$scratch/bin"
 
-stubs="$scratch/seat-lib-stub.sh"
+stubs="$scratch/seatlib-stub.sh"
 cat >"$stubs" <<'SH'
 total_seat_cap() { echo 8; }
 issue_seat_cap() { echo 5; }
-pick_seat() { echo "commandcode	deepseek/deepseek-v4-flash		0"; return 0; }
+litellm_seat() { echo "commandcode	deepseek/deepseek-v4-flash		0"; return 0; }
 precedence_band_phase() { echo "band"; }
 precedence_band_pending_clear() { true; }
 precedence_band_pending_starvation_clear() { true; }

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# tests/seat-lib-free-daily-budget.test.sh
+# tests/seatlib-free-daily-budget.test.sh
 #
 # fleet-ops#3723: OpenRouter's free-model request budget is per ACCOUNT, not
 # per key (openrouter.ai/docs/api-reference/limits: "Making additional accounts
 # or API keys will not affect your rate limits, as we govern capacity globally").
 # The documented daily cap (50 req/day with < $10 credits) is shared across
-# every *:free model on the provider. seat-lib counts assistant turns (each
+# every *:free model on the provider. seatlib counts assistant turns (each
 # turn = one model request) across the provider's *:free sessions today (UTC)
 # and benches every free model on the provider once the shared counter hits
 # the configured budget, until 00:00 UTC.
@@ -13,7 +13,7 @@
 # What we prove (replay drill against synthetic Pi session files):
 #   1. Below the cap: an openrouter *:free model is pickable (no bench).
 #   2. At/above the cap: the free model is benched (quota_bench ledger entry
-#      with bench_until = next 00:00 UTC) and pick_seat skips it.
+#      with bench_until = next 00:00 UTC) and pick-seat skips it.
 #   3. The bench is NOT charged to the work item: the ledger's
 #      consecutive_failure_count is 0 (an account-wide external limit, not a
 #      seat fault — no escalation, no failure ceiling).
@@ -27,15 +27,15 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
-lib="$repo_root/lib/seat-lib.sh"
+lib="$repo_root/lib/litellm-seat.sh"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
-[[ -f "$lib" ]] || fail "seat-lib.sh not found: $lib"
+[[ -f "$lib" ]] || fail "seatlib.sh not found: $lib"
 command -v jq >/dev/null || fail "jq required"
 
-scratch="$(mktemp -d -t seat-lib-fdb.XXXXXX)"
+scratch="$(mktemp -d -t seatlib-fdb.XXXXXX)"
 trap 'rm -rf "$scratch"' EXIT INT TERM
 
 # Offline: no live systemd units, no cooldown.
@@ -47,7 +47,7 @@ export QUALITY_ROUTING_JSON="$scratch/no-quality.json"
 echo '{}' >"$scratch/no-quality.json"
 
 # A models.json with an openrouter free model and a non-free sibling, plus a
-# control free lane (ollama) so pick_seat has a fallback when openrouter free
+# control free lane (ollama) so pick-seat has a fallback when openrouter free
 # is benched.
 cat >"$scratch/models.json" <<'JSON'
 {
@@ -135,7 +135,7 @@ echo "--- scenario 1: below cap (2 turns < budget 3) -> pickable ---"
 export FLEET_SESSIONS_DIR="$scratch/sessions-below"
 write_session "pi-issue-test-1" "${today}T05-11-27-532Z_test-1.jsonl" "openrouter" "minimax/minimax-m3:free" 2
 set +e
-out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" 2>/dev/null)
+out=$(bash -c 'source "$0"; load_seat_caps; pick-seat "" "" 0' "$lib" 2>/dev/null)
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "below-cap: expected a pick, got rc=$rc"
@@ -150,7 +150,7 @@ write_session "pi-issue-test-2" "${today}T06-00-00-000Z_test-2.jsonl" "openroute
 # Clear any ledger from scenario 1.
 rm -f "$ledger"/*.json
 set +e
-out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" 2>/dev/null)
+out=$(bash -c 'source "$0"; load_seat_caps; pick-seat "" "" 0' "$lib" 2>/dev/null)
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "at-cap: expected a fallback pick (ollama), got rc=$rc"
@@ -190,7 +190,7 @@ write_session "pi-issue-test-3" "${tomorrow}T06-00-00-000Z_test-3.jsonl" "openro
 # Clear the bench ledger so seat_usable does not hold the seat from scenario 2.
 rm -f "$ledger"/*.json
 set +e
-out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" 2>/dev/null)
+out=$(bash -c 'source "$0"; load_seat_caps; pick-seat "" "" 0' "$lib" 2>/dev/null)
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "tomorrow: expected a pick, got rc=$rc"
@@ -227,7 +227,7 @@ export SEAT_CAPS_JSON="$scratch/seat-caps-nonfree.json"
 write_session "pi-issue-test-4" "${today}T07-00-00-000Z_test-4.jsonl" "openrouter" "minimax/minimax-m3:free" 3
 rm -f "$ledger"/*.json
 set +e
-out=$(bash -c 'source "$0"; load_seat_caps; pick_seat "" "" 0' "$lib" 2>/dev/null)
+out=$(bash -c 'source "$0"; load_seat_caps; pick-seat "" "" 0' "$lib" 2>/dev/null)
 rc=$?
 set -e
 [[ "$rc" == "0" ]] || fail "non-free: expected a pick, got rc=$rc"

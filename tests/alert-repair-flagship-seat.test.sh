@@ -3,7 +3,7 @@
 #
 # fleet-ops#5785: an alert carrying label repair_seat=flagship (the new
 # FleetProductionStale) must route to the senior_seats_in_order ladder from
-# seat-caps.json FIRST — not the cheapest-healthy _pick_seat path. The live
+# seat-caps.json FIRST — not the cheapest-healthy _pick-seat path. The live
 # class: ProductDeployStalled dispatched cheap seats for ~2.5 days while
 # 0509 production stayed broken; none of them fixed it.
 #
@@ -48,7 +48,7 @@ cat >"$scratch/seat-caps.json" <<'JSON'
 JSON
 export SEAT_CAPS_JSON="$scratch/seat-caps.json"
 
-# The recorded seat is a CHEAP healthy seat — the normal _pick_seat path
+# The recorded seat is a CHEAP healthy seat — the normal _pick-seat path
 # would take it. The flagship path must ignore it while a senior is usable.
 cat >"$scratch/pi-seat-health.json" <<EOF
 {"provider":"bai","model":"deepseek-v4-flash","health_class":"healthy","observed_at":"$NOW"}

@@ -138,10 +138,10 @@ grep -q "gh issue view" "$lib" \
   || fail "lib/failed-command-flagged.py docstring must name the live 'gh issue view' command"
 ok "lib/failed-command-flagged.py docstring cites fleet-ops#1055 and the gh issue view --body shape"
 
-# --- 6. seat-lib.test.sh hosts this file (CI cannot gain a P14 line) ---------
+# --- 6. seat.lib.test.sh hosts this file (CI cannot gain a P14 line) ---------
 grep -Fq 'bash "$here/fleet-failed-command-gh-issue-view-body.test.sh"' \
-  "$here/seat-lib.test.sh" \
-  || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
-ok "seat-lib.test.sh hosts this file"
+  "$here/seat.lib.test.sh" \
+  || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
+ok "seat.lib.test.sh hosts this file"
 
 echo "OK: fleet-failed-command-gh-issue-view-body: live #1055 gh issue view --body drills"

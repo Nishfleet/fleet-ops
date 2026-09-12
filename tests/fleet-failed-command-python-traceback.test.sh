@@ -63,7 +63,7 @@
 #   6. lib/failed-command-flagged.py cites fleet-ops#957 (detector-side lock: case list moved to lib, fleet-ops#3246).
 #   7. lib/failed-command-flagged.py docstring cites fleet-ops#957
 #      (detector-side lock).
-#   8. seat-lib.test.sh hosts this file (CI cannot gain a new workflow line).
+#   8. seat.lib.test.sh hosts this file (CI cannot gain a new workflow line).
 
 set -euo pipefail
 
@@ -255,10 +255,10 @@ grep -q 'gh issue view' "$lib" \
   || fail "lib/failed-command-flagged.py docstring must name the live #1003 gh issue view --json shape"
 ok "lib/failed-command-flagged.py docstring cites fleet-ops#957, fleet-ops#1003 and the python traceback family"
 
-# --- 8. seat-lib.test.sh hosts this file (CI cannot gain a P14 line) ----
+# --- 8. seat.lib.test.sh hosts this file (CI cannot gain a P14 line) ----
 grep -Fq 'bash "$here/fleet-failed-command-python-traceback.test.sh"' \
-  "$here/seat-lib.test.sh" \
-  || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
-ok "seat-lib.test.sh hosts this file"
+  "$here/seat.lib.test.sh" \
+  || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
+ok "seat.lib.test.sh hosts this file"
 
 echo "OK: fleet-failed-command-python-traceback: live #957 python3 KeyError/Traceback walked-past drills"

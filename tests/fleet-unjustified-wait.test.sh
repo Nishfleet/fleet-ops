@@ -285,7 +285,7 @@ ok "corpse seat_dead=true (transient_http failure_mode) is clean"
 # After the fix, a parked seat with dead=true is clean: the dead marker IS
 # the named clock, same as a corpse.
 cat >"$scratch/seats/parked-corpse.json" <<'JSON'
-{"provider":"commandcode","model":"minimax/minimax-m3-free","health_class":"parked","seat_dead":true,"failure_mode":"corpse_retired","source":"corpse_retirement","http_status":null,"observed_at":"2026-09-06T15:15:47Z","usable_at":"2036-09-03T15:15:47Z","bench_until":"2036-09-03T15:15:47Z","bench_reason":"corpse-retired: cap=0 corpse bench, pick_seat never offers (durable, fleet-ops#2716/#3669)","consecutive_failure_count":0,"writer":"write_parked_ledger"}
+{"provider":"commandcode","model":"minimax/minimax-m3-free","health_class":"parked","seat_dead":true,"failure_mode":"corpse_retired","source":"corpse_retirement","http_status":null,"observed_at":"2026-09-06T15:15:47Z","usable_at":"2036-09-03T15:15:47Z","bench_until":"2036-09-03T15:15:47Z","bench_reason":"corpse-retired: cap=0 corpse bench, pick-seat never offers (durable, fleet-ops#2716/#3669)","consecutive_failure_count":0,"writer":"write_parked_ledger"}
 JSON
 rc=$(run_bin)
 [[ "$rc" == "0" ]] || { cat "$scratch/err.log"; fail "parked seat_dead=true should exit 0 (got $rc)"; }

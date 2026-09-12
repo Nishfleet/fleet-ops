@@ -571,7 +571,7 @@ bash "$here/seat-health-seat-dead.test.sh"
 # fleet-ops#5096: closure condition for the seat-recovery hot loop's TRIGGER
 # fix. fleet-seat-recovery.path watches the ledger DIRECTORY, so every ledger
 # write forked the fleet-seat-recovery oneshot (~2500 starts/h live 2026-09-11)
-# while seat-lib only distrusts a record older than STALE_SECS=21600. The
+# while seatlib only distrusts a record older than STALE_SECS=21600. The
 # test imports the live extension at $HOME/.pi/agent/extensions/seat-health.ts
 # (or FLEET_SEAT_HEALTH_TS) and asserts that an unchanged routing record is not
 # rewritten inside a documented refresh interval (>10x fewer writes), that no
@@ -733,7 +733,7 @@ bash "$here/fleet-ops-2462-claim-cap.test.sh"
 # to a different seat CLASS instead of parking for a senior conference. Hosts
 # the 16-test gate (infra-death classification, .last-death-class marker,
 # .prefer-class ladder, reaper infra-vs-work counter split, CLOSED clears,
-# pick_seat prefer-class, and a replay drill that RUNS the real pi-issue-run /
+# pick-seat prefer-class, and a replay drill that RUNS the real pi-issue-run /
 # pi-issue-failed-reap against scratch dirs) so P14 covers it without a
 # workflow-file edit (the worker App cannot push .github/workflows/**).
 bash "$here/fleet-ops-3310-infra-death-class-switch.test.sh"
@@ -834,7 +834,7 @@ bash "$here/seat-empty-run-park-persists.test.sh"
 # fleet-ops#3737). The 2026-09-05 snapshot reset count=4 -> count=1 so the
 # geometric bench kept re-offering ollama/deepseek-v4-flash:0731 within the
 # hour and burned issue runs. This test pins the 1 -> 2 escalation through
-# pick_seat itself. Hosted here so P14 runs it without a workflow-file edit
+# pick-seat itself. Hosted here so P14 runs it without a workflow-file edit
 # (the worker App cannot push .github/workflows/**).
 # Hermetic (scratch ledger/state, no gh/prometheus/systemd).
 bash "$here/seat-empty-run-count-persists-new-issue.test.sh"

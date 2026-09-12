@@ -27,13 +27,13 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
 caps="$repo_root/config/seat-caps.json"
-lib="$repo_root/lib/seat-lib.sh"
+lib="$repo_root/lib/litellm-seat.sh"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
 [[ -f "$caps" ]] || fail "seat-caps.json not found: $caps"
-[[ -f "$lib" ]] || fail "seat-lib.sh not found: $lib"
+[[ -f "$lib" ]] || fail "seatlib.sh not found: $lib"
 command -v jq >/dev/null || fail "jq required"
 
 jq -e . "$caps" >/dev/null || fail "seat-caps.json does not parse"
@@ -138,7 +138,7 @@ ok "prepaid order ollama devin cline cursor alibaba-coding xai-oauth runinfra cr
 
 # --- alibaba-coding: no worker use of ANY alibaba model (fleet-ops#4445 re-scope) ---
 # Nish 2026-09-08: qwen3.8-max is a judge on the roster ONLY; no worker use of
-# any alibaba model. So the provider AND every model must be cap 0 (pick_seat
+# any alibaba model. So the provider AND every model must be cap 0 (pick-seat
 # skips cap-0 seats), each with an intentional_cap_zero marker and a dated reason.
 ali_provider_cap=$(jq -r '.providers["alibaba-coding"].cap // empty' "$caps")
 [[ "$ali_provider_cap" == "0" ]] \
@@ -273,30 +273,30 @@ done
 
 ok "minimax is metered (last bucket); straitly retired (fleet-ops#4887)"
 
-# --- lib/seat-lib.sh enforces product value-order + class ladder ---------
+# --- lib/litellm-seat.sh enforces product value-order + class ladder ---------
 grep -q 'yield-order (product)' "$lib" \
-  || fail "lib/seat-lib.sh must log the computed yield order per product pick (fleet-ops#3125)"
+  || fail "lib/litellm-seat.sh must log the computed yield order per product pick (fleet-ops#3125)"
 grep -q 'value-order (product' "$lib" \
-  || fail "lib/seat-lib.sh must log the computed value order per product pick (fleet-ops#3323)"
+  || fail "lib/litellm-seat.sh must log the computed value order per product pick (fleet-ops#3323)"
 grep -q 'SEAT_PRODUCT_ORDER' "$lib" \
-  || fail "lib/seat-lib.sh must read product_order (fleet-ops#3125)"
+  || fail "lib/litellm-seat.sh must read product_order (fleet-ops#3125)"
 grep -q 'seat_yield_for' "$lib" \
-  || fail "lib/seat-lib.sh must read the per-seat PR-yield ledger (fleet-ops#3250/#3125)"
+  || fail "lib/litellm-seat.sh must read the per-seat PR-yield ledger (fleet-ops#3250/#3125)"
 grep -q 'seat_cost_for' "$lib" \
-  || fail "lib/seat-lib.sh must read the per-seat cost ledger (fleet-ops#3323)"
+  || fail "lib/litellm-seat.sh must read the per-seat cost ledger (fleet-ops#3323)"
 grep -q 'prepaid_providers_in_order' "$lib" \
-  || fail "lib/seat-lib.sh must read prepaid_providers_in_order"
+  || fail "lib/litellm-seat.sh must read prepaid_providers_in_order"
 grep -q 'free_providers_in_order' "$lib" \
-  || fail "lib/seat-lib.sh must read free_providers_in_order"
+  || fail "lib/litellm-seat.sh must read free_providers_in_order"
 
 grep -q 'keystone/senior-review only' "$lib" \
-  || fail "lib/seat-lib.sh must skip cursor for non-keystone packets (fleet-ops#1167)"
+  || fail "lib/litellm-seat.sh must skip cursor for non-keystone packets (fleet-ops#1167)"
 grep -q 'record_seat_selection' "$lib" \
-  || fail "lib/seat-lib.sh must record every pick for fleet_seat_selection_24h"
+  || fail "lib/litellm-seat.sh must record every pick for fleet_seat_selection_24h"
 grep -q 'fleet_seat_selection_24h' "$lib" \
-  || fail "lib/seat-lib.sh must export fleet_seat_selection_24h"
+  || fail "lib/litellm-seat.sh must export fleet_seat_selection_24h"
 
-ok "lib/seat-lib.sh enforces product value-order + class ladder, cursor keystone-only, and seat-selection export"
+ok "lib/litellm-seat.sh enforces product value-order + class ladder, cursor keystone-only, and seat-selection export"
 
 # --- fleet-ops#3930: worker_memory shape (no MemoryHigh throttle band) ------
 # MemoryHigh throttling is what made systemd-oomd pressure-kill a random

@@ -8,7 +8,7 @@
 #   1. MANIFEST declares the wrapper, npm-pin symlinks, and agent defs.
 #   2. Wrapper prints EXTLOAD-OK and re-exports stock (not a fork).
 #   3. Agent defs have no model: pin.
-#   4. Default pi-transport-check stays cli.js-only (self-heal / seat-lib).
+#   4. Default pi-transport-check stays cli.js-only (self-heal / seatlib).
 #   5. --subagent fails loud without the handshake; passes when present.
 #   6. install.sh npm-pin creates a symlink to the package examples dir.
 #   7. pi-issue-run calls --subagent at worker start.
@@ -105,7 +105,7 @@ set -e
 [[ "$rc" -eq 0 ]] || fail "default probe must stay green without subagent dests, rc=$rc out=$out"
 grep -q 'PI-TRANSPORT-OK' <<<"$out" || fail "default probe must print PI-TRANSPORT-OK: $out"
 if grep -q 'EXTLOAD-OK extension=subagent' <<<"$out"; then
-  fail "default probe must not assert subagent EXTLOAD (self-heal / seat-lib): $out"
+  fail "default probe must not assert subagent EXTLOAD (self-heal / seatlib): $out"
 fi
 ok "default probe is cli.js-only (missing subagent is not transport-down)"
 

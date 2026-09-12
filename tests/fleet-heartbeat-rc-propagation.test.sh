@@ -16,7 +16,7 @@
 #   D. Source gate: bin/fleet-heartbeat must not capture $? immediately
 #      after `if !`. A planted fixture of that shape MUST be rejected
 #      (fleet-ops#366: the guard has to fire, not just exist).
-# Nested under tests/seat-lib.test.sh because workers cannot add a
+# Nested under tests/seat.lib.test.sh because workers cannot add a
 # .github/workflows/ci.yml line.
 
 set -euo pipefail
@@ -176,8 +176,8 @@ set -e
 ok "D: drill: planted inverted capture is rejected"
 
 # Nested CI host (workers cannot add a ci.yml line).
-grep -Fq 'bash "$here/fleet-heartbeat-rc-propagation.test.sh"' "$here/seat-lib.test.sh" \
-  || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
-ok "nested under seat-lib.test.sh"
+grep -Fq 'bash "$here/fleet-heartbeat-rc-propagation.test.sh"' "$here/seat.lib.test.sh" \
+  || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
+ok "nested under seat.lib.test.sh"
 
 echo "ALL OK"

@@ -1186,16 +1186,16 @@ rm -f "$state/0509.state"
   || fail "scenario17p: 'no healthy seat available' must be wall-class, got consecutive_wall='$(state_field consecutive_wall 0509)'"
 ok "scenario17p: 'no healthy seat available' seat-famine is wall-class"
 
-# Scenario 17q: uppercase `NO USABLE SEAT` pick_seat diagnostic wall-classes
+# Scenario 17q: uppercase `NO USABLE SEAT` pick-seat diagnostic wall-classes
 # (auditor 2026-09-08). The real 10:51Z crash journal carried
-# `pick_seat: NO USABLE SEAT — every allowlisted seat is dead/capped/
+# `pick-seat: NO USABLE SEAT — every allowlisted seat is dead/capped/
 # rate-limited. Refusing to route outside the cap map.` — an all-caps
 # diagnostic. Without the literal it was a non-benign, non-wall line inside
 # the detect window and demoted the whole crash out of wall-class, keeping
 # consecutive_wall at 0 and re-summoning the auditor per crash.
 {
     printf 'EXTLOAD-OK extension=packet-verdict mode=print-safe\n'
-    printf 'pick_seat: NO USABLE SEAT — every allowlisted seat is dead/capped/rate-limited. Refusing to route outside the cap map.\n'
+    printf 'pick-seat: NO USABLE SEAT — every allowlisted seat is dead/capped/rate-limited. Refusing to route outside the cap map.\n'
     printf 'pi-scout-run: 0509/scout no healthy seat available\n'
     printf 'pi-scout@0509.service: Main process exited, code=exited, status=1/FAILURE\n'
 } >"$scratch/journalctl-body.txt"
@@ -1204,7 +1204,7 @@ rm -f "$state/0509.state"
 "$bin" end 0509 1 >/dev/null
 [[ "$(state_field consecutive_wall 0509)" == "1" ]] \
   || fail "scenario17q: 'NO USABLE SEAT' must be wall-class, got consecutive_wall='$(state_field consecutive_wall 0509)'"
-ok "scenario17q: 'NO USABLE SEAT' all-caps pick_seat diagnostic is wall-class"
+ok "scenario17q: 'NO USABLE SEAT' all-caps pick-seat diagnostic is wall-class"
 
 # Scenario 17r: runinfra 402 insufficient_credits wall-classes (auditor
 # 2026-09-08). The real 22:47:44Z scout crash journal on runinfra/

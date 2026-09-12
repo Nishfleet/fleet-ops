@@ -9,7 +9,7 @@ repo_root="$(cd "$here/.." && pwd)"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
-if grep -q 'pick_seat()' "$repo_root/lib/seat-lib.sh" 2>/dev/null; then
-  fail "forwarder must not define pick_seat"
+if grep -q 'litellm_seat()' "$repo_root/lib/litellm-seat.sh" 2>/dev/null; then
+  fail "forwarder must not define pick-seat"
 fi
-ok "quota_bench wall ceiling retired with pick_seat (proxy cooldown owns walls)"
+ok "quota_bench wall ceiling retired with pick-seat (proxy cooldown owns walls)"

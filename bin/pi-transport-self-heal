@@ -17,7 +17,7 @@
 #
 # On a successful heal it also sweeps per-seat benches written during the
 # transport-down window into a quarantine dir (mirroring the 2026-09-04 manual
-# repair), so pick_seat does not stay NO USABLE SEAT on seats poisoned while the
+# repair), so pick-seat does not stay NO USABLE SEAT on seats poisoned while the
 # bin was clobbered.
 set -euo pipefail
 
@@ -35,7 +35,7 @@ run_probe() { "$PROBE" >/dev/null 2>&1; }
 
 # --- poisoned-bench sweep ---------------------------------------------------
 # On transport recovery, move per-seat bench markers written during the
-# transport-down window to a quarantine dir so pick_seat re-admits the seats
+# transport-down window to a quarantine dir so pick-seat re-admits the seats
 # instead of staying NO USABLE SEAT. Mirrors the 2026-09-04 manual repair
 # (seats-bench-poisoned-pi-transport-<ts>/). Best-effort: a sweep failure
 # never fails the heal (the transport is already back). A healthy observation

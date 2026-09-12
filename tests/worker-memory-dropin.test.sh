@@ -14,21 +14,21 @@
 #      Every live worker still showed MemoryHigh=3221225472 after #3938/#3950
 #      merged. The writer must emit the key with an EMPTY value (systemd's
 #      reset syntax) when the row has no MemoryHigh, not omit the line.
-#   2. seat-lib.sh worker_memory_for_repo returns those values.
+#   2. seatlib.sh worker_memory_for_repo returns those values.
 #   3. pi-intake-tick.sh writes the memory drop-in before systemctl start.
 #   4. pi-issue-start.sh mirrors the same memory drop-in on re-dispatch.
 #   5. target_concurrent=25 and admit_ceiling = min(25, ram_governor).
 #   6. A universal 1.5G MemoryMax is NOT on the pi-issue@ template.
 #   7. seat-caps.json carries worker_env for 0509 (VITEST_MAX_WORKERS=2,
 #      PLAYWRIGHT_WORKERS=1 — fleet-ops#1587).
-#   8. seat-lib.sh worker_env_for_repo returns those values.
+#   8. seatlib.sh worker_env_for_repo returns those values.
 #   9. pi-intake-tick.sh writes the environment drop-in before systemctl start.
 
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$here/.." && pwd)"
 caps="$repo_root/config/seat-caps.json"
-seat_lib="$repo_root/lib/seat-lib.sh"
+seat_lib="$repo_root/lib/litellm-seat.sh"
 tick="$repo_root/lib/pi-intake-tick.sh"
 start_bin="$repo_root/bin/pi-issue-start"
 template="$repo_root/systemd/pi-issue@.service"
@@ -37,7 +37,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 ok()   { echo "OK: $*"; }
 
 [[ -f "$caps" ]] || fail "seat-caps.json missing"
-[[ -f "$seat_lib" ]] || fail "seat-lib.sh missing"
+[[ -f "$seat_lib" ]] || fail "seatlib.sh missing"
 [[ -f "$tick" ]] || fail "pi-intake-tick.sh missing"
 [[ -f "$start_bin" ]] || fail "pi-issue-start missing"
 [[ -f "$template" ]] || fail "pi-issue@.service missing"
@@ -168,7 +168,7 @@ grep -qE '^MemorySwapMax=0$' "$template" \
 ok "6: template keeps 6G/3G fallback; no universal 1.5G; swap disabled"
 
 # --- 7. end-to-end drop-in write via a stubbed start path ------------------
-# Drive the memory-write fragment from seat-lib + the same shell that intake
+# Drive the memory-write fragment from seatlib + the same shell that intake
 # uses, against a scratch XDG_CONFIG_HOME, without touching live systemd.
 export XDG_CONFIG_HOME="$scratch/xdg"
 unit="pi-issue@fleet-ops-9999.service"

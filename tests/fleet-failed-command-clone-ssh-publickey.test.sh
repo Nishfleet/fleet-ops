@@ -71,7 +71,7 @@
 #      (prompt-side lock).
 #   7. lib/failed-command-flagged.py docstring cites fleet-ops#1185
 #      (detector-side lock).
-#   8. seat-lib.test.sh hosts this file (CI cannot gain a P14 line).
+#   8. seat.lib.test.sh hosts this file (CI cannot gain a P14 line).
 
 set -euo pipefail
 
@@ -205,10 +205,10 @@ grep -q 'git clone git@github.com:Nishfleet/fleet-ops.git' "$lib" \
   || fail "lib/failed-command-flagged.py docstring must name the live SSH clone wording"
 ok "lib/failed-command-flagged.py docstring cites fleet-ops#1185 and the SSH-clone shape"
 
-# --- 8. seat-lib.test.sh hosts this file (CI cannot gain a P14 line) -------
+# --- 8. seat.lib.test.sh hosts this file (CI cannot gain a P14 line) -------
 grep -Fq 'bash "$here/fleet-failed-command-clone-ssh-publickey.test.sh"' \
-  "$here/seat-lib.test.sh" \
-  || fail "seat-lib.test.sh must nest this file (CI cannot gain a new workflow line)"
-ok "seat-lib.test.sh hosts this file"
+  "$here/seat.lib.test.sh" \
+  || fail "seat.lib.test.sh must nest this file (CI cannot gain a new workflow line)"
+ok "seat.lib.test.sh hosts this file"
 
 echo "OK: fleet-failed-command-clone-ssh-publickey: live #1185 SSH publickey drills"
