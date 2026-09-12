@@ -2,6 +2,7 @@
   "description": "Machine-readable enforcement matrix for every vault standing rule and ledger decision. The heartbeat escalation-coverage canary joins this file against the live vault on every tick (fleet-ops#383). status is enforced | queued(#issue) | advisory(reason). advisory requires a senior-judged reason and is never the default. queued_stale_days is the age after which a queued row goes LOUD.",
   "queued_stale_days": 7,
   "auto_file_cap_per_tick": 5,
+  "sunset_unmarked_baseline": 56,
   "issue_repo": "Nishfleet/fleet-ops",
   "rules": [
     {

@@ -419,6 +419,28 @@ Record shape (separate file:
 `instrumented=0` SLO is always `hold` — you cannot ratchet a target
 you are not measuring.
 
+### Standing-rule sunset review (fleet-ops#5749)
+
+The sunset convention in `global-standing-rules.md` binds every NEW
+rule to a `review-by:YYYY-MM-DD` date or an "absorbed into <mechanism>"
+exit condition. The heartbeat canary enforces the marker as a ratchet
+(`sunset_unmarked_baseline` in `config/rule-enforcement.json`); your
+job is the review half — rules past their date:
+
+```
+python3 lib/rule-enforcement.py join \
+  --rules /home/nish/workspaces/tooling/nish-vault/_system/shared-memory/global-standing-rules.md \
+  --ledger /home/nish/workspaces/tooling/nish-vault/_system/shared-memory/decisions-ledger.md \
+  --matrix config/rule-enforcement.json | jq '.sunset.due'
+```
+
+Each due rule gets a verdict: **keep** (push `review-by` forward, name
+why it still binds), **absorb** (its mechanism made it redundant — mark
+the section `absorbed into <mechanism>`), or **drop** (move verbatim to
+`standing-rules-archive.md`, delete the pointer — net-down). A due rule
+with no verdict this week is a hold, not a failure. Verdicts count as
+claimed work like any other Adopt action.
+
 ## Phase 3 — follow-through (file the work, log the score)
 
 In a single sweep, with no further research:

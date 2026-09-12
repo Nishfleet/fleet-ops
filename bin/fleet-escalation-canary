@@ -627,6 +627,31 @@ else
             pending=$((pending + 1))
         done < <(jq -r '.extra_matrix[].source' <<<"$rule_report")
 
+        # Sunset convention (fleet-ops#5749): every NEW standing rule
+        # carries a review-by date or an "absorbed into <mechanism>" exit.
+        # Ratchet shape: the count of unmarked `## ` sections must not
+        # exceed matrix.sunset_unmarked_baseline. A rule past its
+        # review-by date is PENDING for the Weekly Fleet Review's
+        # quality ratchet.
+        sunset_baseline=$(jq -r '.sunset.baseline // empty' <<<"$rule_report" 2>/dev/null)
+        sunset_over_n=$(jq -r '.sunset.over_baseline | length' <<<"$rule_report" 2>/dev/null)
+        if [[ -z "$sunset_baseline" ]]; then
+            log "9.  - sunset ratchet: no baseline in the matrix — new-rule marker gate is off"
+        elif [[ "${sunset_over_n:-0}" -gt 0 ]]; then
+            while IFS= read -r src; do
+                [[ -n "$src" ]] || continue
+                loud "ESCALATION-CANARY-VIOLATION" "rule-enforcement: sunset convention — standing rule has no review-by date / absorbed-into exit: $src"
+                violations=$((violations + 1))
+            done < <(jq -r '.sunset.over_baseline[].source' <<<"$rule_report")
+        else
+            log "9.  - sunset ratchet: unmarked=$(jq -r '.sunset.unmarked' <<<"$rule_report") baseline=$sunset_baseline"
+        fi
+        while IFS= read -r line; do
+            [[ -n "$line" ]] || continue
+            loud "ESCALATION-CANARY-PENDING" "rule-enforcement: sunset review-by passed — due for the Weekly Fleet Review quality ratchet: $line"
+            pending=$((pending + 1))
+        done < <(jq -r '.sunset.due[]? | "\(.source) (review-by \(.review_by))"' <<<"$rule_report" 2>/dev/null)
+
         # Auto-file uncovered/stale-queued issues, then observe-to-close
         # enforced rows (fleet-ops#479). Listing runs even when uncovered_n=0
         # so a green join can still comment on leftover mechanism tickets.
@@ -649,7 +674,7 @@ else
                 log "9.  WARN: gh missing — cannot auto-file or observe-to-close mechanism issues"
             fi
 
-            if [[ "$uncovered_n" -gt 0 ]] || [[ "$stale_n" -gt 0 ]]; then
+            if [[ "$uncovered_n" -gt 0 ]] || [[ "$stale_n" -gt 0 ]] || [[ "${sunset_over_n:-0}" -gt 0 ]]; then
 
             file_item() {
                 local item="$1"
@@ -695,6 +720,14 @@ else
                 [[ -n "$item" ]] || continue
                 file_item "$item" "stale-queued"
             done < <(jq -c '.stale_queued[]' <<<"$rule_report")
+
+            # Sunset over-baseline items file under their own `sunset-` id
+            # namespace so dedupe/observe-to-close never cross-match the
+            # uncovered/stale signal for the same rule (fleet-ops#5749).
+            while IFS= read -r item; do
+                [[ -n "$item" ]] || continue
+                file_item "$item" "sunset"
+            done < <(jq -c '.sunset.over_baseline[]?' <<<"$rule_report")
 
             if [[ "$skipped_cap" -gt 0 ]]; then
                 loud "ESCALATION-CANARY-PENDING" "rule-enforcement: auto-file cap reached (filed=$filed cap=$cap remaining=$skipped_cap) — next tick continues"

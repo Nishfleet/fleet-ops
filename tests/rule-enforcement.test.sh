@@ -486,6 +486,111 @@ jq -e '.violations == 0 and .uncovered == []' "$scratch/covered.json" >/dev/null
   || fail "complete fixture must have zero violations: $(cat "$scratch/covered.json")"
 ok "join: complete fixture is green"
 
+# --- sunset convention ratchet (fleet-ops#5749) -------------------------------
+# The convention binds only NEW rules, so the gate is a ratchet: unmarked
+# `## ` sections must not outnumber matrix.sunset_unmarked_baseline. Markers:
+# `review-by:YYYY-MM-DD` or an "absorbed into <mechanism>" exit anywhere in
+# the section. Rules past review-by land on .sunset.due for the Weekly Fleet
+# Review's quality ratchet.
+cat >"$scratch/sunset-rules.md" <<'EOF'
+## Marked by review date (Nish, 2026-08-26)
+Sunset: review-by 2030-01-01.
+## Marked absorbed (Nish, 2026-08-26)
+This rule is absorbed into the example mechanism.
+## Due for review (Nish, 2026-08-26)
+Sunset: review-by: 2026-08-01.
+## Old unmarked rule (Nish, 2026-08-26)
+body
+## New unmarked rule (Nish, 2026-08-26)
+body
+## Bogus date rule (Nish, 2026-08-26)
+Sunset: review-by: 2026-13-45.
+EOF
+cat >"$scratch/sunset-matrix.json" <<'EOF'
+{
+  "queued_stale_days": 7,
+  "auto_file_cap_per_tick": 5,
+  "sunset_unmarked_baseline": 1,
+  "rules": [
+    {"id":"sr-marked-review","source":"global-standing-rules.md: Marked by review date (Nish, 2026-08-26)","mechanism":"test gate","proof":"tests/rule-enforcement.test.sh","status":"enforced"},
+    {"id":"sr-marked-absorbed","source":"global-standing-rules.md: Marked absorbed (Nish, 2026-08-26)","mechanism":"test gate","proof":"tests/rule-enforcement.test.sh","status":"enforced"},
+    {"id":"sr-due-review","source":"global-standing-rules.md: Due for review (Nish, 2026-08-26)","mechanism":"test gate","proof":"tests/rule-enforcement.test.sh","status":"enforced"},
+    {"id":"sr-old-unmarked","source":"global-standing-rules.md: Old unmarked rule (Nish, 2026-08-26)","mechanism":"test gate","proof":"tests/rule-enforcement.test.sh","status":"enforced"},
+    {"id":"sr-new-unmarked","source":"global-standing-rules.md: New unmarked rule (Nish, 2026-08-26)","mechanism":"test gate","proof":"tests/rule-enforcement.test.sh","status":"enforced"},
+    {"id":"sr-bogus-date","source":"global-standing-rules.md: Bogus date rule (Nish, 2026-08-26)","mechanism":"test gate","proof":"tests/rule-enforcement.test.sh","status":"enforced"}
+  ]
+}
+EOF
+: >"$scratch/empty-ledger.md"
+python3 "$lib" join --rules "$scratch/sunset-rules.md" --ledger "$scratch/empty-ledger.md" \
+  --matrix "$scratch/sunset-matrix.json" --now "2026-08-26T12:00:00Z" >"$scratch/sunset.json"
+jq -e '.violations == 0' "$scratch/sunset.json" >/dev/null \
+  || fail "sunset over-baseline must not fold into violations (the canary owns the LOUD): $(cat "$scratch/sunset.json")"
+jq -e '.sunset.marked == 3 and .sunset.unmarked == 3 and .sunset.baseline == 1' \
+  "$scratch/sunset.json" >/dev/null \
+  || fail "sunset block must count marked/unmarked against the baseline (a malformed review-by is unmarked): $(jq -c '.sunset' "$scratch/sunset.json")"
+jq -e '.sunset.over_baseline | length == 2' "$scratch/sunset.json" >/dev/null \
+  || fail "baseline 1 over 3 unmarked must flag exactly two: $(jq -c '.sunset' "$scratch/sunset.json")"
+jq -e '.sunset.over_baseline[0].id == "sunset-sr-new-unmarked"
+       and (.sunset.over_baseline[0].source | contains("New unmarked rule"))
+       and (.sunset.over_baseline[0].reason | contains("sunset convention"))' \
+  "$scratch/sunset.json" >/dev/null \
+  || fail "over-baseline item must carry the sunset- id namespace + reason: $(jq -c '.sunset.over_baseline' "$scratch/sunset.json")"
+jq -e '(.sunset.due | length) == 1 and .sunset.due[0].review_by == "2026-08-01"
+       and (.sunset.due[0].source | contains("Due for review"))' \
+  "$scratch/sunset.json" >/dev/null \
+  || fail "a rule past review-by must land on sunset.due: $(jq -c '.sunset' "$scratch/sunset.json")"
+ok "join: sunset ratchet flags only unmarked rules beyond baseline; due rules listed"
+
+# Baseline at the current unmarked count -> ratchet green.
+jq '.sunset_unmarked_baseline = 3' "$scratch/sunset-matrix.json" >"$scratch/sunset-matrix-2.json"
+python3 "$lib" join --rules "$scratch/sunset-rules.md" --ledger "$scratch/empty-ledger.md" \
+  --matrix "$scratch/sunset-matrix-2.json" --now "2026-08-26T12:00:00Z" >"$scratch/sunset2.json"
+jq -e '.sunset.over_baseline == []' "$scratch/sunset2.json" >/dev/null \
+  || fail "unmarked == baseline must be green: $(jq -c '.sunset' "$scratch/sunset2.json")"
+ok "join: sunset ratchet is green at the baseline"
+
+# No baseline in the matrix -> gate off, no over_baseline items.
+jq -e '.sunset.baseline == null and .sunset.over_baseline == []' \
+  "$scratch/covered.json" >/dev/null \
+  || fail "a matrix without the baseline must report gate-off, not violations: $(jq -c '.sunset' "$scratch/covered.json")"
+ok "join: missing sunset baseline disables the gate (no violations)"
+
+# A non-integer baseline fails validate-matrix.
+cat >"$scratch/bad-baseline.json" <<'EOF'
+{
+  "queued_stale_days": 7,
+  "auto_file_cap_per_tick": 5,
+  "sunset_unmarked_baseline": "soon",
+  "rules": [
+    {"id":"sr-x","source":"global-standing-rules.md: X","mechanism":"m","proof":"p","status":"enforced"}
+  ]
+}
+EOF
+set +e
+python3 "$lib" validate-matrix --matrix "$scratch/bad-baseline.json" >/dev/null 2>"$scratch/bad-baseline.err"
+bb_rc=$?
+set -e
+[[ "$bb_rc" == "1" ]] || fail "non-integer baseline must fail validate, got rc=$bb_rc"
+grep -q 'sunset_unmarked_baseline' "$scratch/bad-baseline.err" \
+  || fail "baseline error must name the field: $(cat "$scratch/bad-baseline.err")"
+ok "validate-matrix: non-integer sunset baseline is rejected"
+
+# The committed matrix pins the live unmarked count as the baseline.
+jq -e '.sunset_unmarked_baseline == 56' "$matrix" >/dev/null \
+  || fail "committed matrix must carry sunset_unmarked_baseline=56 (live unmarked ## count at fleet-ops#5749)"
+ok "committed matrix carries the sunset ratchet baseline"
+
+# The sunset-filed issue keeps the sunset- id namespace in title + signal.
+sunset_item=$(jq -c '.sunset.over_baseline[0]' "$scratch/sunset.json")
+title_out=$(python3 "$lib" issue-title --json "$sunset_item")
+[[ "$title_out" == fix\(sunset\):* ]] \
+  || fail "sunset item must render a fix(sunset): title, got: $title_out"
+body_out=$(python3 "$lib" issue-body --json "$sunset_item")
+grep -q 'signal: rule-enforcement/sunset-sr-new-unmarked' <<<"$body_out" \
+  || fail "sunset issue body must carry the sunset- signal: $body_out"
+ok "issue-title/issue-body: sunset items file under the sunset- id namespace"
+
 # fleet-ops#548: CI-visible guard for the VPS-only miss. A ledger with the
 # two 2026-08-27 titles must be covered by the committed rows, and omitting
 # those rows must surface the fallback ids the canary auto-files.
