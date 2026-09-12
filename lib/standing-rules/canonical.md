@@ -30,6 +30,11 @@ Check live state directly instead, in this order:
 
 A missing or unparseable state file is itself a finding — report it, never treat
 it as "no news is good news".
+
+**Precedence (fleet-ops#5748):** this 5-step block is the single canonical
+fleet live-state check. Shorter summaries on other surfaces (e.g. the Pi
+`AGENTS.md` quick minimum) defer to it; edit THIS section, re-render, and any
+divergence is resolved in this block's favour.
 <!-- END SECTION: idle-fleet-alarm -->
 
 <!-- SECTION: one-fleet-rule -->
