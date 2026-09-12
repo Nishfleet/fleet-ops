@@ -743,6 +743,16 @@ bash "$here/curator-journal-cap.test.sh"
 # future drop of this host line fails by name.
 bash "$here/install-manifest-bak-sprawl.test.sh"
 
+# fleet-ops#5602: the drift-canary sprawl-quarantine drill — a .bak/.orig
+# sibling next to a MANIFEST-managed path is moved to the quarantine dir
+# and the writer named, so the merge-to-live gate is red at most one tick.
+# Hosted here so P14 runs it without a workflow-file edit (the worker App
+# cannot push .github/workflows/**). The named pin in
+# tests/p14-test-listing-gate.test.sh is the class-prevention so a future
+# drop of this host line fails by name.
+# Hermetic (stub gh + systemctl, overlay workspaces root).
+bash "$here/fleet-ops-drift-sprawl-quarantine.test.sh"
+
 # fleet-ops#4948: install.sh --check must accept a JSON copy-install config
 # file that differs from the repo copy only by serialization (escaping/key
 # order) but still refuse real structural diffs. Hosted here (listed test)
