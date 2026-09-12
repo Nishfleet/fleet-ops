@@ -1468,15 +1468,38 @@ groups:
       # info series via the query template function — a url label on the
       # duration series itself would mint a new series per run and restart
       # this rule's for: timer forever.
-      - alert: ProductDeployStalled
-        expr: fleet_deploy_blocked_duration_seconds{repo!="fleet-ops"} > 3600
+      # ProductDeployStalled (warning, cheap-seat dispatch) DELETED 2026-09-12: superseded by
+      # FleetProductionStale below (last-green age + undeployed merges, critical, flagship).
+      # One invariant, one alert, one repair path.
+      # fleet-ops#5785: STALE PRODUCTION — the replacement for the deleted (2026-09-12)
+      # ProductDeployStalled. The trigger is the age of the LAST GREEN
+      # production deploy, not the newest run's redness, so it also fires
+      # on the shape Stalled is blind to: a newest-green-but-ancient run
+      # (blocked duration reads 0 while production serves 3-day-old code),
+      # and it proves the staleness MATTERS by requiring a main merge newer
+      # than the last green — an idle repo with nothing merged does not
+      # fire. The live instance this exists for: 0509 production sat on
+      # the 2026-09-09T17:03Z build ~2.5 days while every Deploy production
+      # run failed Gate C, 0509#2662 was closed by PR #2949 with no green
+      # run proving the fix, and 100+ AUTO-REVERT HALT issues piled up —
+      # a human found it by hand. severity=critical + repair_seat=flagship
+      # routes the packet to a SENIOR seat through alert-repair-dispatch
+      # (the Stalled dispatches to the cheapest healthy seat could see the
+      # alert but never fixed the fault); the claim mutex still applies so
+      # repeats cannot pile up. The AUTO-REVERT HALT issue pile-up is NOT
+      # the escalation path — halts are noise-class, this alert is the
+      # flagship repair dispatch.
+      - alert: FleetProductionStale
+        expr: fleet_product_production_stale_hours > 2 and on(repo) (fleet_product_undeployed_merges == 1)
         for: 15m
         labels:
-          severity: warning
+          severity: critical
           service: fleet
+          repair_seat: flagship
         annotations:
-          summary: "{{ $labels.repo }} production deploy stalled: {{ $labels.workflow }} non-green for {{ $value | humanizeDuration }}"
-          description: "fleet_deploy_blocked_duration_seconds{repo=\"{{ $labels.repo }}\",workflow=\"{{ $labels.workflow }}\"} exceeded 3600s for 15+ minutes: {{ $labels.repo }}'s production deploy has been non-green for {{ $value | humanizeDuration }} (an in-flight run counts as non-green). Newest red run: {{ with query (printf \"fleet_product_deploy_last_red_run_info{repo='%s',workflow='%s'}\" $labels.repo $labels.workflow) }}{{ . | first | label \"url\" }}{{ else }}unknown — fleet_product_deploy_last_red_run_info absent{{ end }}. fleet-ops#5140: 2026-09-10, 131 merged product PRs sat undelivered for 28h while every dashboard read green. Repair: open the newest red run, read its failure, then fix or re-run the {{ $labels.workflow }} workflow on Nishfleet/{{ $labels.repo }}."
+          summary: "{{ $labels.repo }} production stale: last green {{ $labels.workflow }} deploy {{ $value }}h ago while main has undeployed merges"
+          description: "{{ $labels.repo }}'s production deploy workflow {{ $labels.workflow }} last ran GREEN {{ $value }}h ago AND main carries a merge newer than that green run — customers are running code merges superseded. Evidence: newest red run {{ with query (printf \"fleet_product_deploy_last_red_run_info{repo='%s',workflow='%s'}\" $labels.repo $labels.workflow) }}{{ . | first | label \"url\" }}{{ else }}none fetched{{ end }}; failing step {{ with query (printf \"fleet_product_deploy_last_red_step_info{repo='%s',workflow='%s'}\" $labels.repo $labels.workflow) }}{{ . | first | label \"job\" }}/{{ . | first | label \"step\" }}{{ else }}unknown{{ end }}; newest main merge {{ with query (printf \"fleet_product_main_last_merge_seconds{repo='%s'}\" $labels.repo) }}{{ . | first | value | humanizeTimestamp }}{{ else }}unknown{{ end }}. Repair (flagship seat): open the newest red run, read the failing step, land the fix, then confirm a GREEN {{ $labels.workflow }} run whose SHA contains the fix before the deploy-fault issue may close (the deploy-fault gate reopens it otherwise, fleet-ops#5785). fleet-ops#5785: 0509 production sat stale ~2.5 days on the 2026-09-09T17:03Z build while halts piled up."
+          evidence: '{"repo":"{{ $labels.repo }}","workflow":"{{ $labels.workflow }}","stale_hours":{{ $value }},"last_red_run":{{ with query (printf "fleet_product_deploy_last_red_run_info{repo=''%s'',workflow=''%s''}" $labels.repo $labels.workflow) }}"{{ . | first | label "url" }}"{{ else }}null{{ end }},"failing_job":{{ with query (printf "fleet_product_deploy_last_red_step_info{repo=''%s'',workflow=''%s''}" $labels.repo $labels.workflow) }}"{{ . | first | label "job" }}"{{ else }}null{{ end }},"failing_step":{{ with query (printf "fleet_product_deploy_last_red_step_info{repo=''%s'',workflow=''%s''}" $labels.repo $labels.workflow) }}"{{ . | first | label "step" }}"{{ else }}null{{ end }}}'
       - alert: DeploymentQualityStale
         expr: absent(fleet_deployment_quality_up{repo="fleet-ops"}) or fleet_deployment_quality_up{repo="fleet-ops"} == 0
         for: 15m
@@ -1522,6 +1545,22 @@ groups:
         annotations:
           summary: "observe-to-close closed a mentioned or protected issue (fleet-ops#3231)"
           description: "fleet_observe_to_close_total{reason=\"bare-mention\"} or {reason=\"protected\"} is > 0: observe-to-close closed an issue it must only comment on (a mere PR mention without a Closes trailer or claim branch, or a critical-path/owner-authored issue). Both series must stay 0 — only claim-branch and closes-trailer may increment. This is the PR #3205 regression class: #3140/#3146 were closed by a bare mention. Check the last merged-pr-close.json and the tick log."
+      # fleet-ops#5785: a deploy-fault issue was found CLOSED without a green
+      # `Deploy production` run proving the fix — the lifecycle sweep already
+      # reopened it (that IS the repair), so this alert is the audit
+      # tripwire only: it must stay 0 and it never spawns a worker
+      # (SKIP_SET in libexec/alert-repair-dispatch). A count >0 means some
+      # close path bypassed the gate — GitHub auto-close on a merged trailer,
+      # a human close, or a regression in the gate itself.
+      - alert: FleetDeployFaultClosedWithoutGreen
+        expr: fleet_deploy_fault_closed_without_green > 0
+        for: 1m
+        labels:
+          severity: warning
+          service: fleet
+        annotations:
+          summary: "a deploy-fault issue was closed without a green Deploy production run (fleet-ops#5785)"
+          description: "fleet_deploy_fault_closed_without_green is {{ $value }}: the lifecycle-label-sweep reopen pass found deploy-fault issue(s) closed while no green production-deploy run's SHA contains the fix, and reopened them. The repair already happened (reopen + deploy-fault-gate comment). Investigate WHO closed them — the legal close paths are a closing comment citing the green run URL, or a green run containing the delivery merge. Check /home/nish/.local/state/fleet-heartbeat/lifecycle-label-sweep.json and the sweep's tick log. Must stay 0."
       - alert: FleetObserveToCloseAbsent
         expr: absent(fleet_observe_to_close_total{reason="claim-branch"})
         for: 15m
