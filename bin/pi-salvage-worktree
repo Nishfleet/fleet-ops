@@ -484,7 +484,12 @@ enumerate_candidates() {
         local common
         common="$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
         [[ -n "$common" ]] || return 0
-        if repos["$(cd "$(dirname "$common")" 2>/dev/null; then pwd -P; else dirname "$common")"]=1; fi
+        _common_dir="$(dirname "$common")"
+        if _common_abs="$(cd "$_common_dir" 2>/dev/null && pwd -P)"; then
+            repos["$_common_abs"]=1
+        else
+            repos["$_common_dir"]=1
+        fi
     }
 
     # Tokens a worktree path or branch can carry: the unit name, the
