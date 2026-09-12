@@ -1,4 +1,18 @@
 #!/usr/bin/env bash
+
+# Use the nishfleet-worker App token for any GitHub write. Fail closed if
+# the App cannot mint and no token was inherited from a parent organ, so a
+# dead App never falls through to the human gh identity (fleet-ops#3445).
+# Human gh is read-only for organs; GH Actions (tests) has no App creds and
+# stubs gh as read-only, so skip minting there.
+if [[ -z "${GH_TOKEN:-}" && "${GITHUB_ACTIONS:-}" != "true" && "${GH:-gh}" == "gh" ]]; then
+    command -v gh >/dev/null 2>&1 || export PATH=/home/nish/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}
+    _wt="${NISHFLEET_WORKER_TOKEN_BIN:-${HOME:-/home/nish}/.local/bin/worker-token}"
+    _minted="$("$_wt" --print)" || { echo "fleet-ops#3445: $_wt --print failed - refusing human-gh writes" >&2; exit 1; }
+    eval "$_minted"
+    unset _wt _minted
+fi
+
 # pi-salvage-worktree — ExecStopPost hook for pi-systemd-run (fleet-ops#1204).
 #
 # When a worker unit stops with a dirty git worktree, bank the work on
@@ -10,8 +24,34 @@
 #   $PI_SALVAGE_UNIT     transient unit name
 #   $PI_SALVAGE_PACKET   packet file to stamp with a resume pointer
 #
+# fleet-ops#5800: the 2026-09-12 orch die-off showed the single-workdir
+# check is blind — the units' WorkingDirectory was the SHARED checkout
+# (products/<repo>) while their real work sat dirty in sibling worktrees
+# created with `git worktree add` under agent-worktrees/. Salvage now
+# enumerates EVERY worktree the unit touched:
+#   1. the declared PI_SALVAGE_WORKDIR (legacy contract, always checked),
+#   2. `git worktree list` of every repo the unit touched, filtered to
+#      worktrees whose path or checked-out branch carries the unit name,
+#      the pi-issue instance, the issue number, or the unit's own branch,
+#   3. any worktree under the agent-worktrees root created after the unit
+#      started (directory mtime >= the unit's ActiveEnterTimestamp).
+# A worktree matched only by mtime whose name maps to a LIVE pi-issue@
+# unit is skipped — that dirt belongs to a running worker.
+#
+# Per dirty worktree: stage the dirty paths by explicit pathspec (NEVER
+# `git add -A` on a shared checkout), skipping secrets-looking files
+# (.env*, *.key, *.pem, auth.json, credentials.json, id_rsa*, id_ed25519*
+# — excluded and named in the log); commit `wip(salvage): <unit> <reason>`
+# on the worker's OWN branch; push that branch. A worktree on main/master
+# or detached HEAD is not the worker's own branch: siblings are skipped,
+# the declared workdir keeps the legacy bank onto wip/<unit>-<ts> — except
+# when it is the repo's main worktree with linked siblings (the shared
+# checkout), which is left in place. The branch + commit are posted on the
+# linked issue (gh, when a worker token is present) or written as a note
+# next to the packet/deliverable.
+#
 # Modes:
-#   (default)     salvage the worktree
+#   (default)     salvage the worktree(s)
 #   --gc          delete merged/superseded/stale wip/* branches
 #   --help
 #
@@ -25,6 +65,14 @@
 #      for callers that already know the remote cannot accept it, e.g.
 #      the worktree reaper on an archived repo, fleet-ops#3023)
 #   PI_SALVAGE_SCAN (optional helper; exit 0 clean, 1 quarantine)
+#   PI_SALVAGE_WORKTREE_ROOT (default ~/workspaces/agent-worktrees) —
+#      root scanned for unit worktrees; mtime matches are bounded to it
+#   PI_SALVAGE_UNIT_STARTED_EPOCH — overrides the unit-start bound used
+#      for the mtime criterion (tests); live value comes from
+#      `systemctl --user show <unit> -p ActiveEnterTimestampUSec`
+#   PI_SALVAGE_LAUNCHED_EPOCH — dispatch time recorded by pi-systemd-run,
+#      fallback when the unit record is already gone
+#   SYSTEMCTL (default systemctl; tests inject a fake)
 #   FLEET_DISPATCH_LEDGER, AGENT_STATE, PI_SALVAGE_GC_ROOT, PI_SALVAGE_GC_MAX_AGE_S
 #
 # Exit:
@@ -66,6 +114,8 @@ LEDGER="${FLEET_DISPATCH_LEDGER:-$AS/dispatch-ledger.jsonl}"
 REMOTE="${PI_SALVAGE_REMOTE:-origin}"
 NOW="${PI_SALVAGE_NOW:-$(date -u +%Y%m%dT%H%M%SZ)}"
 ISO_NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+SYSTEMCTL="${SYSTEMCTL:-systemctl}"
+WORKTREE_ROOT="${PI_SALVAGE_WORKTREE_ROOT:-${HOME:-/home/nish}/workspaces/agent-worktrees}"
 
 sanitize_unit() {
     local u="$1"
@@ -236,16 +286,15 @@ discover_workdir() {
     local wd="${PI_SALVAGE_WORKDIR:-}"
     local unit="${PI_SALVAGE_UNIT:-}"
     local inst="${PI_UNIT_INSTANCE:-}"
-    local root="${HOME:-/home/nish}/workspaces/agent-worktrees"
     if [[ -n "$wd" ]] && git -C "$wd" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         printf '%s' "$wd"
         return 0
     fi
     local cand
     for cand in \
-        "${root}/issue-${inst}" \
-        "${root}/issue-${unit}" \
-        "${root}/${unit}"
+        "${WORKTREE_ROOT}/issue-${inst}" \
+        "${WORKTREE_ROOT}/issue-${unit}" \
+        "${WORKTREE_ROOT}/${unit}"
     do
         [[ -n "${cand##*/}" ]] || continue
         if git -C "$cand" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -256,94 +305,496 @@ discover_workdir() {
     return 1
 }
 
-cmd_salvage() {
-    local unit workdir packet branch porcelain salvage_status
-    unit="$(sanitize_unit "${PI_SALVAGE_UNIT:-unknown}")"
-    [[ -n "$unit" ]] || unit="unknown"
-    packet="${PI_SALVAGE_PACKET:-}"
+# --- fleet-ops#5800 enumeration + helpers ----------------------------------
 
-    if ! workdir="$(discover_workdir)"; then
-        log "no git worktree for unit=$unit workdir=${PI_SALVAGE_WORKDIR:-} — no-op"
+# Unit start epoch for the "created after the unit started" mtime match.
+# Order: test seam -> systemd ActiveEnterTimestampUSec -> the dispatch
+# time pi-systemd-run recorded. Returns nothing when no bound can be
+# proved — the mtime criterion is then off, never unbounded.
+unit_start_epoch() {
+    if [[ "${PI_SALVAGE_UNIT_STARTED_EPOCH:-}" =~ ^[0-9]+$ ]]; then
+        printf '%s\n' "$PI_SALVAGE_UNIT_STARTED_EPOCH"
         return 0
     fi
+    local u v
+    local -a names=()
+    if [[ -n "${PI_UNIT_INSTANCE:-}" ]]; then
+        names+=("pi-issue@${PI_UNIT_INSTANCE}.service")
+    fi
+    if [[ -n "${PI_SALVAGE_UNIT:-}" ]]; then
+        names+=("${PI_SALVAGE_UNIT%.service}.service")
+        case "${PI_SALVAGE_UNIT}" in
+            pi-issue-*) names+=("pi-issue@${PI_SALVAGE_UNIT#pi-issue-}.service") ;;
+        esac
+    fi
+    if command -v "$SYSTEMCTL" >/dev/null 2>&1; then
+        for u in "${names[@]}"; do
+            [[ -n "$u" && "$u" != ".service" ]] || continue
+            v="$("$SYSTEMCTL" --user show "$u" --property=ActiveEnterTimestampUSec --value 2>/dev/null || true)"
+            if [[ "$v" =~ ^[0-9]+$ ]] && (( v > 0 )); then
+                printf '%s\n' "$(( v / 1000000 ))"
+                return 0
+            fi
+        done
+    fi
+    if [[ "${PI_SALVAGE_LAUNCHED_EPOCH:-}" =~ ^[0-9]+$ ]]; then
+        printf '%s\n' "$PI_SALVAGE_LAUNCHED_EPOCH"
+        return 0
+    fi
+    return 1
+}
 
-    porcelain="$(git -C "$workdir" status --porcelain 2>/dev/null || true)"
+# "<repo> <issue>" for pi-issue-shaped units (<repo>-<N>), else nothing.
+# Non-pi-issue units (wfr-*, orch-*, alert-repair-*) get no issue ref —
+# a trailing -<N> on those names is not an issue number.
+issue_ref() {
+    local s=""
+    if [[ -n "${PI_UNIT_INSTANCE:-}" ]]; then
+        s="${PI_UNIT_INSTANCE}"
+    else
+        case "${PI_SALVAGE_UNIT:-}" in
+            pi-issue@*) s="${PI_SALVAGE_UNIT#pi-issue@}" ;;
+            pi-issue-*) s="${PI_SALVAGE_UNIT#pi-issue-}" ;;
+            *) return 1 ;;
+        esac
+    fi
+    s="${s%.service}"
+    if [[ "$s" =~ ^([A-Za-z0-9_.]+)-([0-9]+)$ ]]; then
+        printf '%s %s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+    fi
+}
+
+# The repo's MAIN worktree (where the real .git directory lives) that has
+# linked siblings is the shared checkout: other units write there too, so
+# a dead unit's salvage must never sweep it (fleet-ops#5800).
+is_shared_checkout() {
+    local wd="$1" common main_wt wd_real n
+    common="$(git -C "$wd" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+    [[ -n "$common" ]] || return 1
+    main_wt="$(cd "$(dirname "$common")" 2>/dev/null && pwd -P)" || return 1
+    wd_real="$(cd "$wd" 2>/dev/null && pwd -P)" || return 1
+    [[ "$main_wt" == "$wd_real" ]] || return 1
+    n="$(git -C "$wd" worktree list --porcelain 2>/dev/null | grep -c '^worktree ' || true)"
+    [[ "$n" =~ ^[0-9]+$ ]] && (( n > 1 ))
+}
+
+# A worktree dir shaped like issue-<repo>-<N> or <repo>-<N>[-suffix] maps
+# to pi-issue@<repo>-<N>.service. When that unit is LIVE the tree belongs
+# to a running worker — an mtime-only match must not sweep it.
+worktree_live_unit_active() {
+    local base="$1" inst="" st
+    local b="${base#issue-}"
+    if [[ "$b" =~ ^([A-Za-z0-9_.]+-[0-9]+) ]]; then
+        inst="${BASH_REMATCH[1]}"
+    fi
+    [[ -n "$inst" ]] || return 1
+    [[ "$inst" == "${PI_UNIT_INSTANCE:-}" ]] && return 1
+    command -v "$SYSTEMCTL" >/dev/null 2>&1 || return 1
+    st="$("$SYSTEMCTL" --user is-active "pi-issue@${inst}.service" 2>/dev/null || true)"
+    [[ "$st" == "active" || "$st" == "activating" ]]
+}
+
+# Stage the dirty paths of a worktree by explicit pathspec — never
+# `git add -A` (on a shared checkout a blanket add sweeps other agents'
+# in-flight work). Secrets-looking files are excluded and named via the
+# excludes file; the staged-diff secret scan below is the second layer.
+# Writes NUL pathspecs to $2 and NUL-separated excluded paths to $3.
+stage_dirty() {
+    local wd="$1" listf="$2" exclf="$3" porcf rc
+    porcf="$(mktemp)"
+    if ! git -C "$wd" status --porcelain -z -uall >"$porcf" 2>/dev/null; then
+        rm -f "$porcf"
+        return 1
+    fi
+    python3 - "$porcf" "$listf" "$exclf" <<'PY'
+import os, sys
+porcf, listf, exclf = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(porcf, "rb") as fh:
+    recs = [r for r in fh.read().split(b"\x00") if r]
+EXACT = {"auth.json", "credentials.json", ".netrc"}
+SUFFIX = (".key", ".pem", ".p12", ".keystore", ".kdbx")
+def secret(path):
+    for p in path.split("/"):
+        if (p in EXACT or p.startswith(".env")
+                or p.startswith(("id_rsa", "id_ed25519"))
+                or p.endswith(SUFFIX)):
+            return True
+    return False
+keep, excl = [], []
+i = 0
+while i < len(recs):
+    s = recs[i].decode("utf-8", "surrogateescape"); i += 1
+    if len(s) < 4 or s[2] != " ":
+        continue
+    xy, path = s[:2], s[3:]
+    if xy[0] in "RC" and i < len(recs):
+        i += 1  # -z rename: the old path follows as its own record
+    if secret(path):
+        excl.append(path)
+        continue
+    keep.append(path)
+with open(listf, "wb") as fh:
+    for p in keep:
+        fh.write(p.encode("utf-8", "surrogateescape") + b"\x00")
+with open(exclf, "wb") as fh:
+    for p in excl:
+        fh.write(p.encode("utf-8", "surrogateescape") + b"\x00")
+PY
+    rc=$?
+    rm -f "$porcf"
+    return "$rc"
+}
+
+push_branch() {
+    local wd="$1" ref="$2"
+    if [[ "$ref" == wip/* ]]; then
+        # Fresh salvage name: the remote ref must not exist.
+        GIT_TERMINAL_PROMPT=0 git -C "$wd" push \
+            --force-with-lease="refs/heads/${ref}:" \
+            "$REMOTE" "HEAD:refs/heads/${ref}" >/dev/null 2>&1
+    else
+        # The worker's own branch: fast-forward only. A non-ff refusal
+        # leaves the local bank + ledger row and never clobbers a remote
+        # tip the worker did not build on.
+        GIT_TERMINAL_PROMPT=0 git -C "$wd" push \
+            "$REMOTE" "HEAD:refs/heads/${ref}" >/dev/null 2>&1
+    fi
+}
+
+# Candidate list built by enumerate_candidates: CAND_PATHS/CAND_WHY.
+CAND_PATHS=()
+CAND_WHY=()
+SALVAGED_ROWS=()
+PACKET=""
+
+enumerate_candidates() {
+    local seed="$1" start_epoch="$2"
+    local -A seen=() repos=()
+
+    add_cand() {
+        local p="$1" why="$2" rp
+        rp="$(realpath -m "$p" 2>/dev/null || printf '%s' "$p")"
+        [[ -z "${seen[$rp]:-}" ]] || return 0
+        [[ -d "$rp" ]] || return 0
+        seen[$rp]=1
+        CAND_PATHS+=("$rp")
+        CAND_WHY+=("$why")
+    }
+    add_repo() {
+        local common
+        common="$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+        [[ -n "$common" ]] || return 0
+        _common_dir="$(dirname "$common")"
+        if _common_abs="$(cd "$_common_dir" 2>/dev/null && pwd -P)"; then
+            repos["$_common_abs"]=1
+        else
+            repos["$_common_dir"]=1
+        fi
+    }
+
+    # Tokens a worktree path or branch can carry: the unit name, the
+    # pi-issue instance (<repo>-<N>), the issue number as issue-<N> /
+    # claim/issue-<N>, and the declared workdir's own checked-out branch.
+    local -a tokens=()
+    [[ -n "${PI_SALVAGE_UNIT:-}" ]] && tokens+=("$(sanitize_unit "$PI_SALVAGE_UNIT")")
+    [[ -n "${PI_UNIT_INSTANCE:-}" ]] && tokens+=("${PI_UNIT_INSTANCE}")
+    local ref
+    ref="$(issue_ref || true)"
+    if [[ -n "$ref" ]]; then
+        tokens+=("issue-${ref##* }")
+    fi
+    if [[ -n "$seed" ]]; then
+        local sb
+        sb="$(git -C "$seed" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+        case "$sb" in
+            ""|main|master|HEAD) ;;
+            *) tokens+=("$sb") ;;
+        esac
+    fi
+
+    match_tokens() {
+        local h="$1" t
+        for t in "${tokens[@]}"; do
+            [[ -n "$t" && "$h" == *"$t"* ]] && return 0
+        done
+        return 1
+    }
+
+    if [[ -n "$seed" ]]; then
+        add_cand "$seed" "declared"
+        add_repo "$seed"
+    fi
+
+    # Root scan: unit-named or post-start dirs; each hit also enrols its
+    # repo so sibling worktrees of the same repo are evaluated too.
+    if [[ -d "$WORKTREE_ROOT" ]]; then
+        local d base mt hit
+        while IFS= read -r d; do
+            base="${d##*/}"
+            hit=""
+            if match_tokens "$base"; then
+                hit="name"
+            elif [[ -n "$start_epoch" ]]; then
+                mt="$(stat -c %Y "$d" 2>/dev/null || echo 0)"
+                if [[ "$mt" =~ ^[0-9]+$ ]] && (( mt >= start_epoch )); then
+                    hit="mtime"
+                fi
+            fi
+            [[ -n "$hit" ]] || continue
+            git -C "$d" rev-parse --is-inside-work-tree >/dev/null 2>&1 || continue
+            if [[ "$hit" == "mtime" ]] && worktree_live_unit_active "$base"; then
+                log "skip $d — mtime-matched but maps to a live pi-issue unit"
+                continue
+            fi
+            add_cand "$d" "$hit"
+            add_repo "$d"
+        done < <(find "$WORKTREE_ROOT" -mindepth 1 -maxdepth 1 -type d 2>/dev/null)
+    fi
+
+    # Every worktree of every repo the unit touched (worktree list carries
+    # the branch inline, so this is one git call per repo, not per tree).
+    local repo w wbr wbase
+    for repo in "${!repos[@]}"; do
+        [[ -n "$repo" && -d "$repo" ]] || continue
+        while IFS=$'\t' read -r w wbr; do
+            [[ -n "$w" && -d "$w" ]] || continue
+            wbase="${w##*/}"
+            if match_tokens "$wbase" || match_tokens "${wbr:-}"; then
+                add_cand "$w" "name"
+                continue
+            fi
+            if [[ -n "$start_epoch" && "$w" == "$WORKTREE_ROOT"/* ]]; then
+                mt="$(stat -c %Y "$w" 2>/dev/null || echo 0)"
+                if [[ "$mt" =~ ^[0-9]+$ ]] && (( mt >= start_epoch )); then
+                    if worktree_live_unit_active "$wbase"; then
+                        log "skip $w — mtime-matched but maps to a live pi-issue unit"
+                        continue
+                    fi
+                    add_cand "$w" "mtime"
+                fi
+            fi
+        done < <(git -C "$repo" worktree list --porcelain 2>/dev/null | awk '
+            /^worktree /{p=substr($0,10); br=""}
+            /^branch /{br=substr($0,8); sub(/^refs\/heads\//,"",br)}
+            /^$/{if(p!=""){printf "%s\t%s\n", p, br}; p=""; br=""}
+            END{if(p!=""){printf "%s\t%s\n", p, br}}')
+    done
+}
+
+# Bank one dirty worktree. is_seed=1 keeps the fleet-ops#1204 contract
+# (wip/<unit>-<ts> ref + ledger + packet stamp); siblings commit
+# `wip(salvage): <unit> <reason>` on the worker's own branch and push it.
+salvage_one() {
+    local wd="$1" is_seed="$2" unit="$3" reason="$4"
+    local porcelain head
+    porcelain="$(git -C "$wd" status --porcelain 2>/dev/null || true)"
     if [[ -z "$porcelain" ]]; then
-        log "worktree clean unit=$unit workdir=$workdir — no-op"
+        log "worktree clean unit=$unit workdir=$wd — no-op"
         return 0
     fi
+    head="$(git -C "$wd" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)"
 
-    branch="wip/${unit}-${NOW}"
-    case "$branch" in
-        wip/*) ;;
-        *)
-            log "refusing non-wip branch name: $branch"
+    local push_ref="" own_branch=""
+    if [[ "$is_seed" == "1" ]]; then
+        push_ref="wip/${unit}-${NOW}"
+        case "$push_ref" in
+            wip/*) ;;
+            *)
+                log "refusing non-wip branch name: $push_ref"
+                return 1
+                ;;
+        esac
+        if [[ "$head" == "main" || "$head" == "master" || "$head" == "HEAD" ]]; then
+            if is_shared_checkout "$wd"; then
+                log "shared checkout dirty unit=$unit workdir=$wd on=$head — left in place (not the worker's own branch)"
+                return 0
+            fi
+            # Never commit onto main/master. pi-issue@ Restart=on-failure must
+            # keep the worktree on claim/issue-N; only the wip/ ref is extra.
+            if ! git -C "$wd" switch -c "$push_ref" >/dev/null 2>&1; then
+                git -C "$wd" checkout -B "$push_ref" >/dev/null
+            fi
+        else
+            own_branch="$head"
+        fi
+    else
+        case "$head" in
+            main|master|HEAD|""|"(detached"*|"("*")")
+                log "skip workdir=$wd on=${head:-detached} — not the worker's own branch"
+                return 0
+                ;;
+        esac
+        push_ref="$head"
+    fi
+
+    log "salvaging unit=$unit result=${SERVICE_RESULT:-unset} status=${EXIT_STATUS:-unset} workdir=$wd branch=$push_ref"
+
+    local listf exclf
+    listf="$(mktemp)"; exclf="$(mktemp)"
+    if ! stage_dirty "$wd" "$listf" "$exclf"; then
+        log "LOUD: pathspec staging failed unit=$unit workdir=$wd"
+        rm -f "$listf" "$exclf"
+        return 1
+    fi
+    if [[ -s "$exclf" ]]; then
+        log "secrets-looking paths excluded unit=$unit workdir=$wd: $(tr '\0' ' ' <"$exclf")"
+        # A secrets-looking path that was ALREADY staged must be pulled out
+        # of the index — exclusion from `git add` alone leaves it staged.
+        GIT_LITERAL_PATHSPECS=1 git -C "$wd" reset -q \
+            --pathspec-from-file="$exclf" --pathspec-file-nul 2>/dev/null || true
+    fi
+    if [[ -s "$listf" ]]; then
+        if ! GIT_LITERAL_PATHSPECS=1 git -C "$wd" add \
+            --pathspec-from-file="$listf" --pathspec-file-nul; then
+            log "LOUD: git add by pathspec failed unit=$unit workdir=$wd"
+            rm -f "$listf" "$exclf"
             return 1
-            ;;
-    esac
-
-    log "salvaging unit=$unit result=${SERVICE_RESULT:-unset} status=${EXIT_STATUS:-unset} workdir=$workdir branch=$branch"
-
-    local head
-    head="$(git -C "$workdir" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)"
-    # Never commit onto main/master. pi-issue@ Restart=on-failure must
-    # keep the worktree on claim/issue-N; only the wip/ ref is extra.
-    if [[ "$head" == "main" || "$head" == "master" || "$head" == "HEAD" ]]; then
-        if ! git -C "$workdir" switch -c "$branch" >/dev/null 2>&1; then
-            git -C "$workdir" checkout -B "$branch" >/dev/null
         fi
     fi
+    rm -f "$listf" "$exclf"
 
-    git -C "$workdir" add -A -- .
-    if git -C "$workdir" diff --cached --quiet; then
-        log "nothing staged after add unit=$unit — no-op"
+    if git -C "$wd" diff --cached --quiet; then
+        log "nothing staged after add unit=$unit workdir=$wd — no-op"
         return 0
     fi
 
     local secret=0
-    if staged_has_secret "$workdir"; then
+    if staged_has_secret "$wd"; then
         secret=1
-        log "secret pattern in staged diff unit=$unit — local-only salvage"
-    elif ! run_extra_scan "$workdir"; then
+        log "secret pattern in staged diff unit=$unit workdir=$wd — local-only salvage"
+    elif ! run_extra_scan "$wd"; then
         secret=1
-        log "sgscan/helper flagged unit=$unit — local-only salvage"
+        log "sgscan/helper flagged unit=$unit workdir=$wd — local-only salvage"
     fi
 
-    if ! git -C "$workdir" \
+    if ! git -C "$wd" \
         -c user.email=fleet-salvage@localhost \
         -c user.name=fleet-salvage \
-        commit -m "salvage: bank uncommitted work for unit ${unit}" >/dev/null; then
-        log "LOUD: local salvage commit failed unit=$unit workdir=$workdir"
+        commit -m "wip(salvage): ${unit} ${reason}" >/dev/null; then
+        log "LOUD: local salvage commit failed unit=$unit workdir=$wd"
         return 1
     fi
+    local sha
+    sha="$(git -C "$wd" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 
-    # Extra pointer so the fleet can resume from wip/<unit>-<ts> even when
-    # the commit landed on claim/issue-N (the restart-safe path).
-    git -C "$workdir" branch -f "$branch" HEAD >/dev/null 2>&1 || true
+    # wip pointer ref so the ledger/GC/branch name stays discoverable even
+    # when the commit rode the worker's own branch (claim/issue-N).
+    if [[ "$is_seed" == "1" ]]; then
+        git -C "$wd" branch -f "wip/${unit}-${NOW}" HEAD >/dev/null 2>&1 || true
+    fi
 
-    salvage_status="local"
+    local salvage_status="local"
     if [[ "$secret" -eq 1 ]]; then
         salvage_status="quarantined"
     elif [[ "${PI_SALVAGE_NO_PUSH:-0}" == "1" ]]; then
         # Caller already knows the remote cannot take the push (e.g. the
         # reaper on an archived repo, fleet-ops#3023) — skip the doomed
         # network round-trip; the local bank is the whole preservation.
-        log "push skipped unit=$unit branch=$branch — local-only bank requested"
-    elif git -C "$workdir" remote get-url "$REMOTE" >/dev/null 2>&1; then
-        if GIT_TERMINAL_PROMPT=0 git -C "$workdir" push \
-            --force-with-lease="refs/heads/${branch}:" \
-            "$REMOTE" "HEAD:refs/heads/${branch}" >/dev/null 2>&1; then
+        log "push skipped unit=$unit branch=$push_ref — local-only bank requested"
+    elif git -C "$wd" remote get-url "$REMOTE" >/dev/null 2>&1; then
+        if push_branch "$wd" "$push_ref"; then
             salvage_status="pushed"
         else
-            log "push failed unit=$unit branch=$branch — work is banked locally"
-            salvage_status="local"
+            log "push failed unit=$unit branch=$push_ref — work is banked locally"
+        fi
+        # The worker's own branch is also banked when the commit rode it —
+        # claim/issue-N on origin is the resume target the next worker uses.
+        if [[ -n "$own_branch" && "$own_branch" != "$push_ref" ]]; then
+            if push_branch "$wd" "$own_branch"; then
+                log "own branch pushed unit=$unit branch=$own_branch"
+            else
+                log "push failed unit=$unit branch=$own_branch — banked on $push_ref"
+            fi
         fi
     fi
 
-    append_ledger "$unit" "$branch" "$salvage_status" "$packet" "$workdir"
-    stamp_packet "$packet" "$branch" "$salvage_status"
-    log "salvaged branch=$branch status=$salvage_status unit=$unit"
+    append_ledger "$unit" "$push_ref" "$salvage_status" "$PACKET" "$wd"
+    SALVAGED_ROWS+=("${wd}|${push_ref}|${sha}|${salvage_status}")
+    log "salvaged branch=$push_ref status=$salvage_status unit=$unit workdir=$wd sha=$sha"
     return 0
+}
+
+# Post the salvage summary on the linked issue when a worker GH token is
+# present; otherwise drop the note next to the packet or the --deliverable
+# (fleet-ops#5800: "posts the branch + commit on the linked issue (or the
+# packet deliverable dir when there is no issue)").
+post_notice() {
+    local unit="$1"
+    (( ${#SALVAGED_ROWS[@]} > 0 )) || return 0
+    local body row w b s st
+    body="$(printf 'salvage: unit `%s` died (%s/%s) — banked worktrees:\n\n' \
+            "$unit" "${SERVICE_RESULT:-unset}" "${EXIT_STATUS:-unset}"
+        for row in "${SALVAGED_ROWS[@]}"; do
+            IFS='|' read -r w b s st <<<"$row"
+            printf -- '- `%s` -> `%s` @ `%s` (%s)\n' "$w" "$b" "$s" "$st"
+        done
+        printf '\nResume by continuing the named branch; the packet carries a resume stamp.\n')"
+
+    local ref repo="" num=""
+    ref="$(issue_ref || true)"
+    if [[ -n "$ref" ]]; then
+        repo="${ref% *}"
+        num="${ref##* }"
+    fi
+    if [[ -n "$repo" && -n "$num" && -n "${GH_TOKEN:-}" ]] \
+        && command -v gh >/dev/null 2>&1; then
+        if gh issue comment "$num" -R "Nishfleet/${repo}" --body "$body" >/dev/null 2>&1; then
+            log "posted salvage note on Nishfleet/${repo}#${num} unit=$unit"
+            return 0
+        fi
+        log "gh issue comment failed for Nishfleet/${repo}#${num} — writing note file instead"
+    fi
+
+    local dir=""
+    if [[ -n "${PI_DEADMAN_DELIVERABLE:-}" ]]; then
+        dir="$(dirname "$PI_DEADMAN_DELIVERABLE")"
+    elif [[ -n "$PACKET" ]]; then
+        dir="$(dirname "$PACKET")"
+    fi
+    [[ -n "$dir" ]] || return 0
+    mkdir -p "$dir" 2>/dev/null || return 0
+    printf '%s\n' "$body" >"$dir/salvage-${unit}-${NOW}.md" \
+        && log "salvage note written: $dir/salvage-${unit}-${NOW}.md"
+    return 0
+}
+
+cmd_salvage() {
+    local unit start_epoch seed
+    unit="$(sanitize_unit "${PI_SALVAGE_UNIT:-unknown}")"
+    [[ -n "$unit" ]] || unit="unknown"
+    PACKET="${PI_SALVAGE_PACKET:-}"
+
+    seed="$(discover_workdir || true)"
+    start_epoch="$(unit_start_epoch || true)"
+
+    enumerate_candidates "$seed" "$start_epoch"
+
+    if (( ${#CAND_PATHS[@]} == 0 )); then
+        log "no git worktree for unit=$unit workdir=${PI_SALVAGE_WORKDIR:-} — no-op"
+        return 0
+    fi
+
+    local i rc=0 reason
+    reason="${SERVICE_RESULT:-unset}/${EXIT_STATUS:-${EXIT_CODE:-unset}}"
+    for i in "${!CAND_PATHS[@]}"; do
+        local is_seed=0
+        [[ "${CAND_WHY[$i]}" == "declared" ]] && is_seed=1
+        salvage_one "${CAND_PATHS[$i]}" "$is_seed" "$unit" "$reason" || rc=1
+    done
+
+    if (( ${#SALVAGED_ROWS[@]} > 0 )); then
+        local branches="" row st any_pushed=0 _w _s
+        for row in "${SALVAGED_ROWS[@]}"; do
+            IFS='|' read -r _w _s _ st <<<"$row" || true
+            branches+="${branches:+, }${_s}"
+            [[ "$st" == "pushed" ]] && any_pushed=1
+        done
+        local overall="local"
+        [[ "$any_pushed" == "1" ]] && overall="pushed"
+        stamp_packet "$PACKET" "$branches" "$overall"
+        post_notice "$unit"
+    fi
+    return "$rc"
 }
 
 # --- GC ---------------------------------------------------------------------
