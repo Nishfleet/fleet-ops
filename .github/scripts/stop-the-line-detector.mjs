@@ -135,6 +135,7 @@ const SKIP_WORKFLOWS = new Set([
  *   head_sha: string,
  *   created_at: string,
  *   html_url: string,
+ *   jobs_started?: boolean | null,
  * }} WorkflowRun
  *
  * @typedef {{
@@ -142,7 +143,8 @@ const SKIP_WORKFLOWS = new Set([
  *   repository: string,
  *   workflow: string,
  *   reason: string,
- *   red_runs: Array<{run_id: number, run_url: string, head_sha: string, created_at: string}>,
+ *   red_runs: Array<{run_id: number, run_url: string, head_sha: string, created_at: string, disposition?: string}>,
+ *   discounted_runs: Array<{run_id: number, run_url: string, head_sha: string, created_at: string, disposition?: string}>,
  *   unfreeze_run: {run_id: number, run_url: string, head_sha: string, created_at: string} | null,
  *   open_issue_number: number | null,
  * }} Decision
@@ -176,6 +178,105 @@ export function isMainBranchRun(runs, branch = DEFAULT_BRANCH) {
   if (!Array.isArray(runs)) return false;
   return runs.some((r) => r && r.head_branch === branch);
 }
+
+/**
+ * Did this run actually start at least one job? The run-list endpoint does
+ * not carry jobs; `run_started_at` equals `created_at` even for runs that
+ * were cancelled while still queued, so it cannot answer this (verified on
+ * fleet-ops run 34666533981: run_started_at == created_at, jobs total_count
+ * 0). Ground truth is the run's jobs endpoint; the live fetch annotates
+ * `jobs_started`, and fixtures may carry `jobs_started` or a `jobs` array.
+ *
+ * @param {WorkflowRun | null | undefined} run
+ * @returns {boolean}
+ */
+export function runStartedJobs(run) {
+  if (!run || typeof run !== "object") return false;
+  if (run.jobs_started === true) return true;
+  if (Array.isArray(run.jobs) && run.jobs.length > 0) return true;
+  if (typeof run.jobs_total === "number" && run.jobs_total > 0) return true;
+  return false;
+}
+
+/**
+ * Newest sampled run per workflow name over branch-matching runs
+ * (created_at, id as tiebreak). "Newest" is relative to the sampled set —
+ * the live fetch only sees completed runs, and fixtures may additionally
+ * carry queued/in_progress runs. Used to decide whether a cancelled run
+ * was superseded by a newer run in the same workflow+branch.
+ *
+ * @param {WorkflowRun[]} runs
+ * @param {string} [branch]
+ * @returns {Map<string, WorkflowRun>}
+ */
+export function newestRunByWorkflow(runs, branch = DEFAULT_BRANCH) {
+  /** @type {Map<string, WorkflowRun>} */
+  const map = new Map();
+  if (!Array.isArray(runs)) return map;
+  for (const r of runs) {
+    if (!r || typeof r !== "object") continue;
+    if (r.head_branch && r.head_branch !== branch) continue;
+    const cur = map.get(r.name);
+    if (
+      !cur ||
+      r.created_at > cur.created_at ||
+      (r.created_at === cur.created_at && r.id > cur.id)
+    ) {
+      map.set(r.name, r);
+    }
+  }
+  return map;
+}
+
+/**
+ * Does a cancelled run carry a halt verdict? (fleet-ops#5731 narrowing of
+ * the #2911 fail-closed rule.)
+ *
+ * A cancelled run counts as red ONLY when:
+ *   - it actually started jobs (a human/API killed in-flight work — the
+ *     SHA's pipeline status is genuinely unknown), OR
+ *   - it is the newest sampled run for its workflow+branch (nothing newer
+ *     exists to judge the tip — status unknown -> fail-closed red).
+ *
+ * A cancelled run superseded while still queued — replaced by a newer run
+ * in the same concurrency group before any job started — contributes NO
+ * verdict; its SHA is skipped in the consecutive-red chain. This is NOT a
+ * blanket ignore of cancelled: the tip cancel still lands red, so the
+ * #2911 masking hole stays closed.
+ *
+ * @param {WorkflowRun} run
+ * @param {Map<string, WorkflowRun>} newestByWorkflow
+ * @returns {boolean}
+ */
+export function cancelledRunIsVerdict(run, newestByWorkflow) {
+  if (!run || run.conclusion !== "cancelled") return false;
+  if (runStartedJobs(run)) return true;
+  const newest = newestByWorkflow instanceof Map ? newestByWorkflow.get(run.name) : null;
+  return Boolean(newest) && newest.id === run.id;
+}
+
+/**
+ * One-line disposition for a run named in a freeze body, so triage reads
+ * the failed / cancelled-in-flight / superseded-while-queued distinction
+ * without replaying run history (fleet-ops#5731 accept #3).
+ *
+ * @param {WorkflowRun | null | undefined} run
+ * @returns {string}
+ */
+export function runHaltDisposition(run) {
+  if (!run || typeof run !== "object") return "unknown";
+  if (run.conclusion === "failure") return "failed";
+  if (run.conclusion === "cancelled") {
+    return runStartedJobs(run)
+      ? "cancelled in-flight (jobs had started)"
+      : "cancelled while queued — newest sampled run, SHA status unknown (fail-closed)";
+  }
+  return typeof run.conclusion === "string" && run.conclusion ? run.conclusion : "unknown";
+}
+
+/** Disposition label for a run that was superseded while queued. */
+export const SUPERSEDED_QUEUED_DISPOSITION =
+  "superseded while queued — replaced by a newer run before any job started (no verdict)";
 
 /**
  * Extract the halted workflow name from an issue body marker
@@ -238,14 +339,21 @@ export function greenRunForWorkflow(runs, workflow, branch = DEFAULT_BRANCH) {
     .slice()
     .sort((a, b) => (a.created_at < b.created_at ? -1 : 1));
   if (list.length === 0) return null;
+  const newestByWorkflow = newestRunByWorkflow(list, branch);
   let lastGreen = null;
   let redAfterLastGreen = false;
   for (const r of list) {
     if (r.conclusion === "success") {
       lastGreen = r;
       redAfterLastGreen = false;
-    } else if ((r.conclusion === "failure" || r.conclusion === "cancelled") && lastGreen) {
-      redAfterLastGreen = true;
+    } else if (lastGreen) {
+      // Same verdict rule as classifyHalt (fleet-ops#5731): a cancelled run
+      // superseded while queued contributes no verdict and cannot block the
+      // unfreeze; a cancelled run that started jobs or is the newest sampled
+      // run still means "status unknown" -> blocks.
+      if (r.conclusion === "failure" || cancelledRunIsVerdict(r, newestByWorkflow)) {
+        redAfterLastGreen = true;
+      }
     }
   }
   if (lastGreen && !redAfterLastGreen) return lastGreen;
@@ -285,6 +393,7 @@ export function greenRunForWorkflow(runs, workflow, branch = DEFAULT_BRANCH) {
  *   halt: boolean,
  *   halted_workflow: string | null,
  *   halted_runs: WorkflowRun[],
+ *   discounted_runs: WorkflowRun[],
  *   last_run_for_halted: WorkflowRun | null,
  *   unfreeze_candidate: WorkflowRun | null,
  * }}
@@ -297,6 +406,7 @@ export function classifyHalt(runs, opts = {}) {
       halt: false,
       halted_workflow: null,
       halted_runs: [],
+      discounted_runs: [],
       last_run_for_halted: null,
       unfreeze_candidate: null,
     };
@@ -316,6 +426,10 @@ export function classifyHalt(runs, opts = {}) {
   const haltedRunsByWorkflow = new Map();
   /** @type {Map<string, WorkflowRun>} */
   const unfreezeByWorkflow = new Map();
+  /** @type {Map<string, WorkflowRun>} newest sampled run per workflow */
+  const newestByWorkflow = newestRunByWorkflow(list, branch);
+  /** @type {Map<string, WorkflowRun[]>} superseded-while-queued cancels (no verdict) */
+  const discountedByWorkflow = new Map();
 
   let i = 0;
   while (i < list.length) {
@@ -332,13 +446,29 @@ export function classifyHalt(runs, opts = {}) {
         i += 1;
         continue;
       }
-      const bucket = byWorkflow.get(run.name) ?? { red: false, green: false, last: run };
       // A cancelled CI run on main means the pipeline status is UNKNOWN —
       // trunk-based CD says trunk stays green, so unknown is fail-closed
       // red. Without this, a sequence of cancelled runs (each superseded by
       // a newer push) masks a sustained red: the detector never sees two
       // consecutive FAILURE verdicts and the merge queue never freezes,
       // so PRs keep landing on a red pipeline (fleet-ops#2911).
+      //
+      // Narrowed by fleet-ops#5731: that mask only matters while the tip
+      // run is unresolved. A run cancelled WHILE STILL QUEUED — replaced by
+      // a newer run in the same workflow+branch before any job started —
+      // was never evaluated, so it contributes NO verdict and its SHA is
+      // skipped in the consecutive-red chain (it must not even become
+      // bucket.last). A cancelled run still counts red when it actually
+      // started jobs, or when it is the newest sampled run for the
+      // workflow+branch — the tip's status is genuinely unknown.
+      if (run.conclusion === "cancelled" && !cancelledRunIsVerdict(run, newestByWorkflow)) {
+        const d = discountedByWorkflow.get(run.name) ?? [];
+        if (!d.some((x) => x.id === run.id)) d.push(run);
+        discountedByWorkflow.set(run.name, d);
+        i += 1;
+        continue;
+      }
+      const bucket = byWorkflow.get(run.name) ?? { red: false, green: false, last: run };
       if (run.conclusion === "failure" || run.conclusion === "cancelled") bucket.red = true;
       if (run.conclusion === "success") bucket.green = true;
       if (run.created_at > bucket.last.created_at) bucket.last = run;
@@ -393,6 +523,7 @@ export function classifyHalt(runs, opts = {}) {
       halt: false,
       halted_workflow: null,
       halted_runs: [],
+      discounted_runs: [],
       last_run_for_halted: null,
       unfreeze_candidate: null,
     };
@@ -426,6 +557,7 @@ export function classifyHalt(runs, opts = {}) {
       halt: true,
       halted_workflow: chosenName,
       halted_runs: haltedRunsByWorkflow.get(chosenName) ?? [],
+      discounted_runs: discountedByWorkflow.get(chosenName) ?? [],
       last_run_for_halted: chosenTail,
       unfreeze_candidate: null,
     };
@@ -443,6 +575,7 @@ export function classifyHalt(runs, opts = {}) {
     halt: false,
     halted_workflow: chosenUnfreeze ? chosenUnfreeze.name : null,
     halted_runs: [],
+    discounted_runs: [],
     last_run_for_halted: null,
     unfreeze_candidate: chosenUnfreeze,
   };
@@ -461,7 +594,7 @@ export function renderHaltReason(verdict) {
     .filter((r, idx, arr) => arr.findIndex((x) => x.id === r.id) === idx)
     .map((r) => {
       const shortSha = typeof r.head_sha === "string" ? r.head_sha.slice(0, 7) : "";
-      return `  - \`${shortSha}\` ${r.conclusion} — ${r.html_url}`;
+      return `  - \`${shortSha}\` ${runHaltDisposition(r)} — ${r.html_url}`;
     });
   return `${wf}\n${lines.join("\n")}`;
 }
@@ -487,17 +620,29 @@ export function issueTitle(decision) {
 export function issueBody(decision) {
   const lines = [`${COMMENT_MARKER_PREFIX}workflow=${decision.workflow} -->`];
   lines.push("");
-  if (decision.action === "open") {
+  if (decision.action === "open" || decision.action === "comment") {
     lines.push(
-      `Repository is **frozen**. Auto-merge arming is paused until the next green run of the halted workflow.`,
+      decision.action === "open"
+        ? `Repository is **frozen**. Auto-merge arming is paused until the next green run of the halted workflow.`
+        : `Repository remains **frozen** — the halted workflow is still red on consecutive commits.`,
     );
     lines.push("");
     lines.push(`- Halted workflow: \`${decision.workflow}\``);
     if (decision.red_runs.length > 0) {
+      // fleet-ops#5731 accept #3: every named run is labelled failed /
+      // cancelled in-flight / cancelled while queued so triage reads the
+      // distinction without replaying run history.
       lines.push("- Consecutive red runs on main:");
       for (const r of decision.red_runs) {
         const shortSha = typeof r.head_sha === "string" ? r.head_sha.slice(0, 7) : "";
-        lines.push(`  - \`${shortSha}\` — ${r.run_url}`);
+        lines.push(`  - \`${shortSha}\` — ${r.run_url}${r.disposition ? ` — ${r.disposition}` : ""}`);
+      }
+    }
+    if (Array.isArray(decision.discounted_runs) && decision.discounted_runs.length > 0) {
+      lines.push("- Discounted runs — cancelled while queued and superseded by a newer run before any job started (no verdict for that SHA):");
+      for (const r of decision.discounted_runs) {
+        const shortSha = typeof r.head_sha === "string" ? r.head_sha.slice(0, 7) : "";
+        lines.push(`  - \`${shortSha}\` — ${r.run_url} — ${r.disposition ?? SUPERSEDED_QUEUED_DISPOSITION}`);
       }
     }
     lines.push("- Freeze automatically clears on the next green run of this workflow (no human step).");
@@ -622,7 +767,7 @@ function fetchRecentMainRuns(repository, lookbackMinutes) {
     },
   );
   const runs = Array.isArray(raw) ? raw : [];
-  return runs.filter(
+  const filtered = runs.filter(
     (r) =>
       r &&
       typeof r.id === "number" &&
@@ -630,6 +775,50 @@ function fetchRecentMainRuns(repository, lookbackMinutes) {
       r.head_branch === DEFAULT_BRANCH &&
       !isSkippedWorkflow(r.name),
   );
+  // fleet-ops#5731: a cancelled run superseded while still queued carries no
+  // verdict — but only if it never started a job. The run-list endpoint does
+  // not say, and run_started_at is unusable (it equals created_at even for
+  // never-started runs), so probe the jobs endpoint for cancelled runs that
+  // are NOT the newest for their workflow (the newest is red regardless —
+  // fail-closed tip status, fleet-ops#2911 — no probe needed there).
+  const newest = newestRunByWorkflow(filtered, DEFAULT_BRANCH);
+  for (const r of filtered) {
+    if (r.conclusion !== "cancelled") continue;
+    const tip = newest.get(r.name);
+    if (tip && tip.id === r.id) continue;
+    r.jobs_started = fetchRunStartedJobs(repository, r.id);
+  }
+  return filtered;
+}
+
+/**
+ * Whether a run started at least one job, from its jobs endpoint
+ * (`total_count` of the latest attempt). Returns null when the probe fails —
+ * the classifier then treats the run as never-started; the newest-run fail-
+ * closed path still covers the tip. One call per non-newest cancelled run;
+ * cancelled main runs are rare so the added API cost is a handful of calls.
+ *
+ * @param {string} repository
+ * @param {number} runId
+ * @returns {boolean | null}
+ */
+function fetchRunStartedJobs(repository, runId) {
+  try {
+    const raw = ghApiJson(
+      `repos/${repository}/actions/runs/${runId}/jobs`,
+      ".total_count // 0",
+      { query: { per_page: 1, filter: "latest" }, timeoutMs: 60_000 },
+    );
+    const n = Number(raw);
+    return Number.isFinite(n) ? n > 0 : null;
+  } catch (error) {
+    console.error(
+      `jobs_probe_failed for ${repository} run ${runId}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+    return null;
+  }
 }
 
 /**
@@ -864,6 +1053,7 @@ export function buildDecision(ctx) {
         workflow: verdict.halted_workflow ?? "(unknown)",
         reason: "halt cleared",
         red_runs: [],
+        discounted_runs: [],
         unfreeze_run: {
           run_id: ur.id,
           run_url: ur.html_url,
@@ -890,6 +1080,7 @@ export function buildDecision(ctx) {
           workflow: knownWorkflow ?? "(unknown)",
           reason: "halt cleared (open-issue memory; red runs aged out of lookback)",
           red_runs: [],
+          discounted_runs: [],
           unfreeze_run: {
             run_id: green.id,
             run_url: green.html_url,
@@ -906,6 +1097,7 @@ export function buildDecision(ctx) {
       workflow: "",
       reason: "no consecutive-failure halt detected",
       red_runs: [],
+      discounted_runs: [],
       unfreeze_run: null,
       open_issue_number: null,
     };
@@ -915,6 +1107,14 @@ export function buildDecision(ctx) {
     run_url: r.html_url,
     head_sha: r.head_sha,
     created_at: r.created_at,
+    disposition: runHaltDisposition(r),
+  }));
+  const discounted_runs = (verdict.discounted_runs || []).map((r) => ({
+    run_id: r.id,
+    run_url: r.html_url,
+    head_sha: r.head_sha,
+    created_at: r.created_at,
+    disposition: SUPERSEDED_QUEUED_DISPOSITION,
   }));
   return {
     action: existingIssueNumber ? "comment" : "open",
@@ -922,6 +1122,7 @@ export function buildDecision(ctx) {
     workflow: verdict.halted_workflow ?? "(unknown)",
     reason: "consecutive-commit HALT",
     red_runs,
+    discounted_runs,
     unfreeze_run: null,
     open_issue_number: existingIssueNumber,
   };
@@ -1046,6 +1247,13 @@ export function renderReport(report) {
     if (d.red_runs.length > 0) {
       lines.push("  - red runs:");
       for (const r of d.red_runs) {
+        const short = typeof r.head_sha === "string" ? r.head_sha.slice(0, 7) : "";
+        lines.push(`      - \`${short}\` ${r.run_url}${r.disposition ? ` — ${r.disposition}` : ""}`);
+      }
+    }
+    if (Array.isArray(d.discounted_runs) && d.discounted_runs.length > 0) {
+      lines.push("  - discounted (superseded while queued, no verdict):");
+      for (const r of d.discounted_runs) {
         const short = typeof r.head_sha === "string" ? r.head_sha.slice(0, 7) : "";
         lines.push(`      - \`${short}\` ${r.run_url}`);
       }
