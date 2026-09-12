@@ -378,6 +378,46 @@ for unit in "${loaded_units[@]}"; do
 done
 
 # ---------------------------------------------------------------------------
+# 1b. global escalation + resume drop-ins present and UNMODIFIED (fleet-ops#5456)
+# ---------------------------------------------------------------------------
+# The two global drop-ins are the escalation chain's foundation:
+#   service.d/10-escalate.conf  — OnFailure=unit-escalation@%n.service for every
+#                                 user service (the tripwire).
+#   service.d/20-resume.conf    — the RESUME POLICY declaration (allowlist, no
+#                                 global Restart= — the 2026-09-11 incident).
+# Assert both exist in the repo AND that the live installed copies are byte-
+# identical (sha256) to the repo copies, every tick. A quietly removed or
+# hand-edited drop-in is exactly the silent-death class this issue closes.
+log "1b. checking global escalation/resume drop-ins (present + hash-unmodified)"
+# Live install target is ~/.config/systemd/user/service.d (MANIFEST dest),
+# overridable for tests.
+DROPIN_LIVE_DIR=${FLEET_ESCALATION_CANARY_LIVE_DROPIN_DIR:-$HOME/.config/systemd/user/service.d}
+for _dropin in 10-escalate.conf 20-resume.conf; do
+    repo_copy="$FLEET_OPS_REPO/systemd/service.d/$_dropin"
+    live_copy="$DROPIN_LIVE_DIR/$_dropin"
+    if [[ ! -f "$repo_copy" ]]; then
+        loud "ESCALATION-CANARY-VIOLATION" "repo drop-in missing: systemd/service.d/$_dropin — the policy file was deleted from the repo"
+        violations=$((violations + 1))
+        continue
+    fi
+    if [[ ! -f "$live_copy" ]]; then
+        # Not yet installed = PENDING (deploy lands after merge), not a live
+        # tamper — but it stays LOUD until the install converges.
+        loud "ESCALATION-CANARY-PENDING" "live drop-in not installed yet: $live_copy (repo copy present; install via fleet-ops-deploy)"
+        pending=$((pending + 1))
+        continue
+    fi
+    repo_hash=$(sha256sum "$repo_copy" | awk '{print $1}')
+    live_hash=$(sha256sum "$live_copy" | awk '{print $1}')
+    if [[ "$repo_hash" != "$live_hash" ]]; then
+        loud "ESCALATION-CANARY-VIOLATION" "live drop-in DRIFT: $live_copy sha256=$live_hash != repo systemd/service.d/$_dropin sha256=$repo_hash — hand-edited or stale install"
+        violations=$((violations + 1))
+    else
+        log "1b.  - $_dropin: present, hash-matched ($repo_hash)"
+    fi
+done
+
+# ---------------------------------------------------------------------------
 # 2. no unwrapped pi invocations in bin/
 # ---------------------------------------------------------------------------
 log "2. checking bin/ for unwrapped pi invocations"

@@ -475,6 +475,11 @@ plane_keystone_hc() {
     record "$name" "skip" "env file missing"
     return 0
   fi
+  # fleet-ops#5456 F: HC_URL_DETACHED is the dead-man for the packet chain
+  # this issue builds — pi-detached-deadman pings it start/success/fail per
+  # run id, and keystone-hc-ping SKIPS SILENTLY when it is unset, which is
+  # exactly the silent-death class. Unset stays LOUD here until provisioned
+  # (one healthchecks.io check, then HC_URL_DETACHED=<url> in the env file).
   for key in HC_URL_INTAKE HC_URL_SCOUT HC_URL_RECONCILE HC_URL_RESTORE HC_URL_DETACHED; do
     if ! url="$(hc_env_value "$KEYSTONE_HC_ENV" "$key")"; then
       missing+=("$key")

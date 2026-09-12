@@ -1732,7 +1732,7 @@ if [ -x "$here/chain-e2e-drill" ] && [ "${AUDIT_RUN_CHAIN_E2E_DRILL:-1}" = "1" ]
     # wiring only, a live audit runs the isolated fixture fault for real.
     if CHAIN_E2E_DRY_RUN="${AUDIT_DRY_RUN:-1}" "$here/chain-e2e-drill" \
         > "$REPORT_DIR/chain-e2e-drill.log" 2>&1; then
-        log "chain-e2e drill: PASS (all six hops)"
+        log "chain-e2e drill: PASS (all hops)"
     else
         # The drill already appended a LOUD finding in live mode; here we
         # surface the failure in the report without killing the audit.
