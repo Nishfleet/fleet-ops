@@ -641,6 +641,45 @@ def issue_has_dup_marker(repo: str, number: int, canon_ref: str) -> bool:
     return False
 
 
+def issue_has_filing_comment(repo: str, number: int, src_repo: str, title: str) -> bool:
+    """True if the issue already carries an issue-file dedupe comment covering
+    this (source repo, title) filing (fleet-ops#5496).
+
+    The file-time duplicate branch posted comment_body() on EVERY dedupe hit
+    with no memory of prior comments; the blind-audit backfill piled 675+
+    identical dedupe comments on one canonical issue. Same class as
+    fleet-ops#3728 (issue_has_dup_marker) but for the filing-gate comment
+    path. Matches both new (marker-carrying) and legacy comment bodies via
+    the human-visible `Would have filed in <repo>` + title lines.
+
+    Fail-open: on gh error returns False so the comment is still posted.
+    """
+    try:
+        proc = subprocess.run(
+            [gh_bin(), "issue", "view", str(number), "--repo", repo,
+             "--json", "comments"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if proc.returncode != 0:
+        return False
+    try:
+        data = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError:
+        return False
+    filed_line = f"Would have filed in `{src_repo}`:"
+    title_line = f"**{title}**"
+    for c in data.get("comments") or []:
+        body = (c.get("body") or "") if isinstance(c, dict) else ""
+        if filed_line in body and title_line in body:
+            return True
+    return False
+
+
 def gh_close(repo: str, number: int, comment: str) -> tuple[int, str]:
     proc = subprocess.run(
         [gh_bin(), "issue", "close", str(number), "--repo", repo, "--comment", comment],
@@ -747,6 +786,14 @@ def cmd_file(args: argparse.Namespace) -> int:
         payload["url"] = existing.get("url") or f"https://github.com/{repo}/issues/{number}"
         if args.dry_run:
             print(f"[issue-file] dry-run comment {payload['existing']} score={score:.2f}", file=sys.stderr)
+            emit(payload, args.json, payload["url"])
+            return 0
+        if issue_has_filing_comment(repo, number, args.repo, title):
+            print(
+                f"[issue-file] already commented on {payload['existing']} "
+                f"for this filing (score={score:.2f}), suppressing re-post",
+                file=sys.stderr,
+            )
             emit(payload, args.json, payload["url"])
             return 0
         rc, out = gh_comment(repo, number, comment_body(title, body, score, args.repo))
