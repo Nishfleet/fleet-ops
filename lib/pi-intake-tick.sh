@@ -1248,6 +1248,11 @@ AUDITION_DROPPED_JSON="${PI_AUDITION_DROPPED_JSON:-$HOME/.local/state/pi-packet/
 # tick does not re-file the same verdict issue every tick while the seat waits
 # on its config/seat-caps.json PR.
 AUDITION_VERDICTED_JSON="${PI_AUDITION_VERDICTED_JSON:-$HOME/.local/state/pi-packet/audition-verdicted.json}"
+# HOTFIX 2026-09-12: deployed lineage sources lib/litellm-seat.sh (pre-split),
+# which never defines SEAT_YIELD_JSON — the audition retire phase read an
+# unbound variable under set -u and killed every intake tick (pi-intake@
+# fleet-ops failed loop). Default mirrors lib/seat-lib.sh (canonical, ad65020a):
+SEAT_YIELD_JSON="${SEAT_YIELD_JSON:-$HOME/.local/state/pi-packet/seat-yield.json}"
 AUDITION_MAX_SESSIONS="${PI_AUDITION_MAX_SESSIONS:-10}"
 AUDITION_MAX_AGE_S="${PI_AUDITION_MAX_AGE_S:-604800}"   # 7 days
 AUDITION_MAX_COST_USD="${PI_AUDITION_MAX_COST_USD:-1}"
