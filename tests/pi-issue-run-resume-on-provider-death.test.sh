@@ -56,8 +56,13 @@ set +e; bash "$bin" "$inst" >"$scratch/run.out" 2>"$scratch/run.err"; rc=$?; set
 [[ "$(wc -l < "$CALLS")" == "2" ]] || fail "pi must be invoked exactly twice (die, then resume): $(cat "$CALLS")"
 grep -qE '^call=2 .*session=.*first\.jsonl' "$CALLS" || fail "second invocation must pass --session <first session file>: $(cat "$CALLS")"
 grep -qE '^call=2 .*stdin=RESUME' "$CALLS" || fail "second invocation must receive the RESUME prompt on stdin, not the packet: $(cat "$CALLS")"
+# litellm era (fleet-ops#5993): the seat is a proxy group; excluding the dying
+# endpoint is the proxy cooldown's job (mark_seat_* are local stubs), so both
+# calls legitimately show the same group. What the runner must guarantee — and
+# what this pins — is session continuity via the group router: same session
+# file, RESUME prompt, exit 0, and no resurrection of the deleted picker.
 p1=$(sed -n '1p' "$CALLS" | grep -oE 'provider=[^ ]+'); p2=$(sed -n '2p' "$CALLS" | grep -oE 'provider=[^ ]+')
-[[ "$p1" != "$p2" ]] || fail "resume must land on a DIFFERENT seat (tried-seats exclusion): $p1 == $p2"
+[[ "$p1" == "provider=litellm" && "$p2" == "provider=litellm" ]] || fail "litellm-era resume must stay on the proxy group router (endpoint exclusion is the proxy cooldown's job): $p1 -> $p2"
 grep -q 'RESUMING session' "$scratch/run.err" || fail "runner must log the in-process resume: $(tail -5 "$scratch/run.err")"
 ok "provider/model mid-run death: session resumed in-process on a different seat, exit 0 (fleet-ops#5788 part 2)"
 # --- exhaustion: every seat dies the same way -> bounded, then exit 1 (never an unbounded loop)

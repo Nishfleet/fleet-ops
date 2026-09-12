@@ -964,8 +964,23 @@ if (( rc != 0 )); then
     # tail, never healthy. If no detector above benched (error_class=unknown),
     # bench via mark_seat_spawn_fail so the seat stops flapping.
     _sess_last=$(find "$session_dir" -maxdepth 1 -name '*.jsonl' -type f -printf '%T@ %p\n' 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2-)
+    # fleet-ops#5993 regression: the litellm-era PI_PACKET_SEAT_LIB stubs
+    # session_tool_calls to `echo 0` (lib/litellm-seat.sh) and this script's own
+    # 3-arg definition below is not in scope at this point, so the count came
+    # back 0 and the #5788 in-process resume gate further down never fired —
+    # every mid-run provider death became a fast-death bench + exit 1.
+    # Count the pinned session file directly, both conventions in the tree
+    # (toolResult messages, toolCall entries) plus the verdict pi printed on
+    # stderr; the largest wins.
     _tool_calls=0
-    [[ -n "$_sess_last" && -f "$_sess_last" ]] && _tool_calls=$(session_tool_calls "$_sess_last")
+    if [[ -n "$_sess_last" && -f "$_sess_last" ]]; then
+        _tc_result=$(grep -ac '"role":"toolResult"' "$_sess_last" 2>/dev/null || echo 0)
+        _tc_call=$(grep -ac '"type":"toolCall"' "$_sess_last" 2>/dev/null || echo 0)
+        _tc_verdict=$(grep -aoE 'PACKET-VERDICT[[:space:]]+tools=[0-9]+' "$err_file" 2>/dev/null | tail -n1 | grep -oE '[0-9]+$' || echo 0)
+        for _tc in "$_tc_result" "$_tc_call" "$_tc_verdict"; do
+            [[ "$_tc" =~ ^[0-9]+$ ]] && (( _tc > _tool_calls )) && _tool_calls=$_tc
+        done
+    fi
     if (( _tool_calls == 0 )); then
         _dec_out=$(classify_death_error "$out_file" "$err_file" "$_sess_last" 2>/dev/null || true)
         _dec_cls=$(printf '%s\n' "$_dec_out" | sed -n '1p')
