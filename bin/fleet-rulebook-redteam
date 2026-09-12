@@ -30,7 +30,7 @@
 #   RULEBOOK_PI_BIN RULEBOOK_MAX_FINDINGS RULEBOOK_DRY_RUN
 #   RULEBOOK_DRILL RULEBOOK_DRILL_FINDINGS RULEBOOK_FAKE_NOW
 #   RULEBOOK_SKIP_BACKUP (test-only: force the backup gate to fire)
-#   GH SYSTEMCTL
+#   GH SYSTEMCTL RULEBOOK_PI_TIMEOUT_S
 
 set -euo pipefail
 
@@ -276,11 +276,26 @@ PY
         update_plan_stamp "last-rulebook-redteam-run" "$NOW_ISO (dry-run)"
         exit 0
     fi
+    # fleet-ops#6173: a drained LiteLLM route (every deployment 429-cooled,
+    # "No deployment available ... try again in 300 seconds") makes the pi
+    # client retry indefinitely — the 2026-09-12T22:58Z senior-route drain
+    # wedged the run for the full 45min TimeoutStartSec until systemd
+    # SIGTERMed it (unit-failure trip, 1393 completion attempts, zero
+    # output). Bound the reviewer call here: a timed-out pi takes the
+    # ordinary failed-pi path (filed=0, unit completes 0) and the
+    # heading-growth bonus re-dispatches. 30min default sits under the
+    # unit's 45min TimeoutStartSec so the script, not systemd, owns the
+    # timeout and can still file/stamp/exit cleanly.
+    RULEBOOK_PI_TIMEOUT_S="${RULEBOOK_PI_TIMEOUT_S:-1800}"
     set +e
-    "$PI_BIN" --print --provider "$provider" --model "$model" \
+    timeout -k 30 "$RULEBOOK_PI_TIMEOUT_S" \
+        "$PI_BIN" --print --provider "$provider" --model "$model" \
         <"$pkt" >"$PI_STDOUT" 2>"$PI_STDERR"
     rc=$?
     set -e
+    if [ "$rc" -eq 124 ]; then
+        log "pi red-team TIMED OUT after ${RULEBOOK_PI_TIMEOUT_S}s — bounded; filing proceeds on whatever stdout captured"
+    fi
     log "pi red-team exited rc=$rc"
     if [ ! -f "$FINDINGS_JSON" ] || [ ! -s "$FINDINGS_JSON" ]; then
         python3 - "$PI_STDOUT" "$FINDINGS_JSON" <<'PY'
