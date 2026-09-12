@@ -1340,6 +1340,22 @@ process_one_finding() {
         return 0
     fi
 
+    # fleet-ops#5741: the reviewer emits "manual seam:" findings whose titles
+    # are raw automated AUDITOR-LOG lines (DISPATCH/TIMEOUT-KILL/
+    # LADDER-WALLED/dispatched auditor, auditor report bullets). The lens
+    # filters that class at collect time (ESCALATION_LOG_RE) but
+    # reviewer-emitted findings never pass through it — one run panelled
+    # ~100 of them and the #1212 gate deduped the flood onto one canonical
+    # issue. Re-apply the live filter before the panel; a carry-over row of
+    # this class resolves instead of re-panelling every run.
+    if python3 "$SEAM_LIB" filter --title "$title"; then
+        log "finding $rank: SKIP (automated escalation line — ESCALATION_LOG_RE)"
+        if [ "$is_carryover" = "1" ] && [ -n "$sig" ]; then
+            carryover_resolve "$sig" "automated escalation line (ESCALATION_LOG_RE)"
+        fi
+        return 0
+    fi
+
     # Build panel input.
     jq -n \
         --arg repo "$REPO" \

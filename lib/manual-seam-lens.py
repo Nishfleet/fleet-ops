@@ -46,7 +46,7 @@ ESCALATION_LOG_RE = re.compile(
     # The lines can contain embedded ISO timestamps because the auditor cites
     # prior events. Without these alternatives the lens would mis-classify
     # the auditor's own report as a "manual seam".
-    r"|\*\*Summoning trip:\*\*"
+    r"|\*\*Summoning trip(?:\s+#\d+)?:\*\*"
     r"|\*\*Root cause(?:\s*\(same class|\s*\(worked-example)?"
     r"|\*\*For you \(Nish\):\*\*"
     # stop-judge cooldown verdict (fleet-ops#2925): every closeout's numbered
@@ -121,6 +121,24 @@ SCHEDULED_RUN_TITLE_RE = re.compile(
 )
 ISO_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
 HEADING_RE = re.compile(r"^## Manual-seam lens\b", re.M)
+
+# fleet-ops#5741: reviewer-emitted "manual seam:" findings bypass the
+# collect-time filter above. A finding titled `manual seam: <text>` where
+# <text> is an automated escalation/machinery line (DISPATCH, TIMEOUT-KILL,
+# LADDER-WALLED, dispatched auditor, auditor report bullets) is the same
+# false-positive class the lens already drops — re-apply the live pattern
+# so the harness can skip it before panelling.
+SEAM_TITLE_RE = re.compile(r"(?i)^\s*manual seam:\s*")
+
+
+def is_automated_seam_title(title):
+    t = (title or "").strip()
+    if not SEAM_TITLE_RE.search(t):
+        return False
+    seam_text = SEAM_TITLE_RE.sub("", t)
+    return bool(
+        ESCALATION_LOG_RE.search(seam_text) or ESCALATION_LOG_RE.search(t)
+    )
 
 def parse_iso(value):
     if not value:
@@ -705,6 +723,13 @@ def build_parser():
     k.add_argument("--seams-out", default="")
     k.add_argument("--since", default="")
     k.add_argument("--now", default="")
+
+    f = sub.add_parser(
+        "filter",
+        help="exit 0 when --title is an automated escalation/machinery line "
+        "emitted as a 'manual seam:' finding (ESCALATION_LOG_RE), else 1",
+    )
+    f.add_argument("--title", required=True)
     return p
 
 
@@ -718,6 +743,8 @@ def main(argv=None):
         json.dump(close(args), sys.stdout)
         sys.stdout.write("\n")
         return 0
+    if args.cmd == "filter":
+        return 0 if is_automated_seam_title(args.title) else 1
     return 2
 
 

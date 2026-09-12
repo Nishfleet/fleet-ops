@@ -92,7 +92,8 @@ cat > "$findings_json" <<'JSON'
   "findings": [
     {"rank": 1, "title": "orphan systemd unit pi-issue@fleet-ops-99 is failed", "body": "A worker unit is failed with no live process.", "severity": "high", "evidence": "systemctl --user list-units --state=failed"},
     {"rank": 2, "title": "stale agent-state file", "body": "Duplicate of the open gap-audit issue.", "severity": "high", "evidence": "find /home/nish/workspaces/agent-state -mtime +1"},
-    {"rank": 3, "title": "expired-pause deliberate state expired", "body": "The expired-pause entry in deliberate-states.md has expired and was not cleared.", "severity": "critical", "evidence": "docs/deliberate-states.md"}
+    {"rank": 3, "title": "expired-pause deliberate state expired", "body": "The expired-pause entry in deliberate-states.md has expired and was not cleared.", "severity": "critical", "evidence": "docs/deliberate-states.md"},
+    {"rank": 4, "title": "manual seam: DISPATCH hash=03bcc7908b23b30e4b73e150c64704e1e25873ed5d7f703fa4e94", "body": "Automated auditor-log line mis-flagged as a hand operation.", "severity": "high", "evidence": "/home/nish/workspaces/agent-state/AUDITOR-LOG.md"}
   ]
 }
 JSON
@@ -269,6 +270,14 @@ fail_count=$(jq -R -c 'fromjson | select(.verdict=="FAIL")' "$verdicts" | wc -l)
 # The two accepted findings should have been filed.
 filed=$(grep -c 'FILED' "$scratch/run.log")
 [[ "$filed" == "2" ]] || fail "expected 2 filed issues, saw $filed"
+
+# fleet-ops#5741: the rank-4 "manual seam:" finding is an automated
+# AUDITOR-LOG line — the pre-panel filter must SKIP it before the panel
+# sees it (no verdict row, no filed issue).
+grep -q 'finding 4: SKIP (automated escalation line' "$scratch/run.log" \
+  || fail "automated-line seam finding was not skipped before the panel"
+[[ -z $(jq -R -c 'fromjson | select(.rank=="4")' "$verdicts") ]] \
+  || fail "automated-line seam finding reached the panel"
 
 # Plan file should show the run stamp.
 grep -qE '^last-blind-audit-run:' "$plan" || fail "plan file missing last-blind-audit-run stamp"

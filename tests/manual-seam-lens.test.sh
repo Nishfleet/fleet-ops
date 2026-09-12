@@ -380,4 +380,53 @@ filed=$(grep -c 'FILED' "$scratch/run.log" || true)
 [[ "$filed" == "1" ]] || { cat "$scratch/run.log"; fail "expected unmatched seam to be filed, saw $filed"; }
 ok "harness writes the seam table and files unmatched seams"
 
+# fleet-ops#5741: reviewer-emitted "manual seam:" findings whose titles are
+# raw automated AUDITOR-LOG lines (DISPATCH/TIMEOUT-KILL/LADDER-WALLED/
+# dispatched auditor/auditor report bullets) must be recognised by the
+# lens's `filter` subcommand so the harness can skip them before the panel.
+auto_seam() {
+    python3 "$lens" filter --title "$1" >/dev/null 2>&1 \
+        || fail "filter should flag automated line: $1"
+}
+keep_seam() {
+    if python3 "$lens" filter --title "$1" >/dev/null 2>&1; then
+        fail "filter must keep non-automated title: $1"
+    fi
+}
+auto_seam 'manual seam: DISPATCH hash=03bcc7908b23b30e4b73e150c64704e1e25873ed5d7f703fa4e94'
+auto_seam 'manual seam: DISPATCH-NO-BLOCK hash=db457bd2559e7d5dac18d64d3243e705527f3181f05d'
+auto_seam 'manual seam: DISPATCH-OUTPUT hash=db457bd2559e7d5dac18d64d3243e705527f3181f05dbb'
+auto_seam 'manual seam: TIMEOUT-KILL hash=fb8953072c4a9339a09bf0be42a8d8d5d145df93414ffc25d'
+auto_seam 'manual seam: TIMEOUT-KILL-OUTPUT hash=85573a49fed525bb480e447a730f371d48a675faca'
+auto_seam 'manual seam: LADDER-WALLED hash=b2082ce04d77c09e488847e339591fc0472faa58982e751b'
+auto_seam 'manual seam: dispatched auditor hash=95fa71c69aaaf2b1f91bbc7ce77f88ce9c7ceb7077c'
+auto_seam 'manual seam: **Root cause:** LANE FAULT. `pi-issue-run` reported `503: {"message"'
+auto_seam 'manual seam: **Summoning trip:** `unit-failure` for `pi-issue@fleet-ops-1560.ser'
+auto_seam 'manual seam: **Summoning trip #1:** pi-issue@fleet-ops-809.service — exit 1 at ,'
+auto_seam 'manual seam: ##  — SENIOR AUDITOR'
+auto_seam 'manual seam: 4. **STOP-REASON.json re-read:** **FRESH TRIP LANDED DURING THIS AU'
+keep_seam 'manual seam: 2. Added `fleet-ops-2073-requeue` to `agent-state/READY-WORK.md` wi'
+keep_seam 'manual seam: hand-refined the intake prompt after three dead runs'
+keep_seam 'manual seam: orchestrator decision sweep of agent-blocked/needs-orchestrator on '
+keep_seam 'FleetMainRed alert still firing after repair dispatch'
+ok "filter flags automated-line seam findings, keeps real seams (fleet-ops#5741)"
+
+# The numbered '**Summoning trip #N:**' variant must also be filtered at
+# collect time — it escaped the un-numbered pattern in the 20260912T020712Z
+# run and filed a flood of same-problem findings.
+mkdir -p "$scratch/tripnum"
+cat >"$scratch/tripnum/actions.log" <<'LOG'
+2026-09-12T01:00:00Z **Summoning trip #1:** pi-issue@fleet-ops-809.service — exit 1 at , written by unit-escalation
+2026-09-12T01:01:00Z hand-repaired a /tmp symlink
+LOG
+python3 "$lens" collect \
+  --since "2026-09-12T00:00:00Z" \
+  --now "2026-09-12T02:00:00Z" \
+  --actions-log "$scratch/tripnum/actions.log" >"$scratch/tripnum/collected.json"
+jq -e '.candidates | length == 1' "$scratch/tripnum/collected.json" >/dev/null \
+  || fail "numbered summoning-trip line must be filtered at collect: $(cat "$scratch/tripnum/collected.json")"
+jq -e '[.candidates[].seam] | index("hand-repaired a /tmp symlink")' "$scratch/tripnum/collected.json" >/dev/null \
+  || fail "hand seam dropped while filtering numbered summoning trip"
+ok "numbered summoning-trip variant filtered at collect (fleet-ops#5741)"
+
 echo "OK: manual-seam lens (fleet-ops#377)"
