@@ -858,6 +858,29 @@ ok "failed smoke re-parks with blocked-on: re-open-<usable_at>-<smoke>"
 
 unset BLOCKED_RECONCILE_SMOKE_DIR
 
+# --- fleet-ops#5870: attest blockers are orchestrator-attest, never nish ---
+# Replay of the three live instances (0509#3068, 0509#3144, fleet-ops#5760):
+# each parked as kind=nish-decision at 07:45-07:57Z on 2026-09-12; all three
+# must classify as orchestrator-attest, zero as nish-decision.
+epy() { printf '%s' "$1" | "$bin" --extract; }
+out1=$(epy '{"repo":"Nishfleet/0509","number":3068,"title":"delete uptime-health.yml","body":"blocked-on: nish-decision\nDeleting the workflow needs a gate-integrity-attest from a repository admin; workers may not self-attest.\n","comments":[]}')
+[[ "$(printf '%s' "$out1" | jq -r '.kind')" == "orchestrator-attest" ]] || fail "#3068 replay must be orchestrator-attest: $out1"
+out2=$(epy '{"repo":"Nishfleet/0509","number":3144,"title":"ads-prog-seo prose","body":"needs an admin gate-integrity-attest on the PR; I cannot post it\n","comments":[]}')
+[[ "$(printf '%s' "$out2" | jq -r '.kind')" == "orchestrator-attest" ]] || fail "#3144 replay must be orchestrator-attest: $out2"
+out3=$(epy '{"repo":"Nishfleet/fleet-ops","number":5760,"title":"x","body":"blocked-on: nish-decision\nverifier-attest requires an admin identity; waiting.\n","comments":[]}')
+[[ "$(printf '%s' "$out3" | jq -r '.kind')" == "orchestrator-attest" ]] || fail "#5760 replay must be orchestrator-attest: $out3"
+ok "three #5870 replay instances classify orchestrator-attest, zero nish-decision"
+
+# The pin: a blocker body containing gate-integrity-attest NEVER yields
+# kind=nish-decision, even when the wording trips the Nish-reserved vocabulary.
+got=$(epy '{"repo":"Nishfleet/0509","number":50,"title":"x","body":"blocked-on: nish-decision\nLikely needs a gate-integrity-attest from an admin (an authority reserved to staff).\n","comments":[]}')
+[[ "$(printf '%s' "$got" | jq -r '.kind')" != "nish-decision" ]] || fail "gate-integrity-attest blocker must never be nish-decision: $got"
+[[ "$(printf '%s' "$got" | jq -r '.kind')" == "orchestrator-attest" ]] || fail "attest pin kind: $got"
+ok "a blocker body containing gate-integrity-attest never yields kind=nish-decision"
+
+# Clean up the helper so later cases do not see it.
+unset -f epy
+
 # Case 9: overlapping flock no-op
 export BLOCKED_RECONCILE_LOCKDIR="$scratch/lock-overlap"
 mkdir -p "$BLOCKED_RECONCILE_LOCKDIR"

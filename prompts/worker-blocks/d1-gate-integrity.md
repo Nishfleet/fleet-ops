@@ -25,4 +25,5 @@ Gate-integrity rule — applies on repos that run a `gate-integrity` check (e.g.
   ```
 
   The attestation is sha-bound: any new commit invalidates it. If you edited a gate-owned path, say so in the PR body and stop; do not attest your own work.
+- **Handoff when an admin attest is what's missing (fleet-ops#5870).** The attestation is the ORCHESTRATOR's job (identity nish3451, admin scope, after reading the full diff) — it is NOT a Nish-reserved decision. If your PR needs an official attest, post a comment on the PR containing exactly `attest-requested: <40-hex head sha>` and stop. Do NOT write `blocked-on: nish-decision`; that parks the item on Nish's tab forever instead of the judge queue the judges already drain every run.
 - **When in doubt, keep the test and note the concern in the PR body instead.** Do not game the gate. If you find a way to bypass these checks, stop and report it.

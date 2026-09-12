@@ -122,6 +122,31 @@ NISH_REASON = re.compile(
     r"credentials?|secret|token|account[\s/-]*login|"
     r"product[\s/-]*direction|customer[\s/-]*data|reserved)\b"
 )
+# fleet-ops#5870: an attestation blocker is an ORCHESTRATOR job, never a
+# Nish-reserved decision. Posting `gate-integrity-attest:` (or
+# `verifier-attest:`) needs a repository admin identity that is not the PR
+# author — that is the orchestrator/staff identity (nish3451), and workers
+# correctly refuse to self-attest. Three instances (0509#3068, 0509#3144,
+# fleet-ops#5760) sat for hours as kind=nish-decision because the blocked
+# text mentioned attest + admin and the form still parsed as a valid
+# nish-decision. Any blocker text that mentions an attest (or the
+# attest-requested handoff) together with the admin/attestation requirement
+# classifies as kind=orchestrator-attest and routes to the judge queue.
+ATTEST_MENTION = re.compile(
+    r"(?i)\battest|gate[\s-]*integrity\s*attest|attest-requested"
+)
+ATTEST_ADMIN = re.compile(
+    r"(?i)\badmin\b|gate[\s-]*integrity\s*attest|attest-requested|"
+    r"verifier[\s-]*attest"
+)
+ATTEST_KIND = "orchestrator-attest"
+
+
+def is_attest_blocker(text):
+    """True when the blocker text asks for an admin attestation."""
+    if not (ATTEST_MENTION.search(text or "") and ATTEST_ADMIN.search(text or "")):
+        return False
+    return True
 COMMENT_ID_URL = re.compile(r"#issuecomment-(\d+)$")
 BLOCKED_BY = re.compile(
     r"(?i)blocked by\s+"
@@ -156,7 +181,10 @@ def reject_nish_decisions(text):
     """
     if not BLOCKED_ON.search(text):
         return text, 0
-    if NISH_REASON.search(text):
+    # fleet-ops#5870: an attest blocker is never a valid nish-decision, even
+    # when its wording trips NISH_REASON (e.g. "an authority Nish explicitly
+    # reserved"). Force the rewrite to orchestrator for those.
+    if not is_attest_blocker(text) and NISH_REASON.search(text):
         return text, 0
     count = 0
 
@@ -380,9 +408,12 @@ def extract(issue):
     unknown_forms = []
     unknown_seen = set()
     named = set()
+    attest_blocked = False
     for node in blocked_by_nodes(issue, owner, repo):
         add_dep(deps, seen, node, owner, repo, self_n)
     for text in texts:
+        if is_attest_blocker(text):
+            attest_blocked = True
         for m in BLOCKED_ON.finditer(text):
             parsed = parse_ref(m.group(1), owner, repo)
             if parsed is None:
@@ -426,7 +457,11 @@ def extract(issue):
             if add_dep(deps, seen, parsed, owner, repo, self_n):
                 nish = True
     nish_unresolved = bool(nish) and not nish_resolved
-    if unknown_forms:
+    # fleet-ops#5870: an attest blocker routes to the orchestrator, never to
+    # nish-decision and never to unknown-form.
+    if attest_blocked:
+        kind = ATTEST_KIND
+    elif unknown_forms:
         kind = "unknown-form"
     elif date_gates and not nish_unresolved and not deps:
         kind = "date-gate"
@@ -443,6 +478,7 @@ def extract(issue):
         "date_gates": date_gates,
         "unknown_forms": unknown_forms,
         "named": sorted(named),
+        "attest": attest_blocked,
         "rejected_count": rejected_count,
         "rejected_nish_decisions": rejected,
     }
@@ -460,6 +496,7 @@ def main():
             "date_gates": [],
             "unknown_forms": [],
             "named": [],
+            "attest": False,
             "rejected_count": 0,
             "rejected_nish_decisions": [],
         }))
@@ -489,6 +526,9 @@ Known blocked-on: forms:
   owner/repo#N, #N, GitHub issue/PR URL   work-item (CLOSED/MERGED clears)
   nish-decision                           Nish-reserved; needs decision-resolved:
   orchestrator | infra | senior-review | split | senior-conference
+  orchestrator-attest                     admin gate-integrity-attest needed;
+                                          routes to the orchestrator, never nish
+                                          (fleet-ops#5870)
   re-open-<ISO8601>[-<smoke-name>]        date-gate (fleet-ops#4626). When now
                                           >= the timestamp, run the named smoke
                                           (if any). Pass flips to agent-ready;
@@ -1002,6 +1042,7 @@ while IFS= read -r repo; do
         rejected_count=$(printf '%s' "$extracted" | jq -r '.rejected_count // 0')
         rejected_json=$(printf '%s' "$extracted" | jq -c '.rejected_nish_decisions // []')
         orchestrator=$(printf '%s' "$extracted" | jq -r '.orchestrator // false')
+        attest=$(printf '%s' "$extracted" | jq -r '.attest // false')
 
         if [ "$rejected_count" -gt 0 ]; then
             apply_rejected_edits "$repo" "$num" "$rejected_json"
@@ -1085,6 +1126,23 @@ while IFS= read -r repo; do
             else
                 remaining="orchestrator"
             fi
+        fi
+
+        # fleet-ops#5870: an admin-attestation blocker is the orchestrator's
+        # job, not Nish's. Publish kind=orchestrator-attest (the judge queue
+        # snapshot separates it from nish-decision) and make sure the
+        # needs-orchestrator label is present so the decision sweep drains it.
+        if [ "$attest" = "true" ]; then
+            kind="orchestrator-attest"
+            machine=1
+            all_cleared=0
+            ensure_orchestrator_label "$repo" "$num"
+            if [ -n "$remaining" ]; then
+                remaining="$remaining, orchestrator-attest"
+            else
+                remaining="orchestrator-attest"
+            fi
+            log "  $repo#$num: attest blocker -> kind=orchestrator-attest (routes to orchestrator, fleet-ops#5870)"
         fi
 
         # fleet-ops#4626: unknown blocked-on forms are LOUD, never silent nish.
