@@ -10,6 +10,8 @@ Consolidation (title + pointer, the pattern `global-standing-rules.md` itself us
 
 Root-cause addendum (salvage resume): the renderer's `DEFAULT_CANONICAL` points at the vault's `global-standing-rules.canonical.md`, so a default `--check`/`--render` silently uses the vault copy and a drifted one-fleet section there silently reverts a rendered consolidation. Fixed on host: the vault canonical's `one-fleet-rule` section now mirrors the repo canonical (title + amended heading + archive pointer; backup at `global-standing-rules.canonical.md.bak-rulebook-redteam-20260911`), and the default render was re-run so future fleet renders stick.
 
+PRE-EXISTING gate finding: `fleet-token-efficiency-check` REJECTs this diff — 'lib/standing-rules/canonical.md:38: prompt template placeholder before the static body'. PRE-EXISTING, not introduced here: on main the same unchanged text sits at line 48/116 (~41%); this diff's line 38/95 (~40%) is the identical placeholder shifted up only by the one-fleet deletions above it. The checker has no baseline/pre-existing exemption; follow-up filed as Nishfleet/fleet-ops#5686.
+
 Relates to fleet-ops#5588.
 
 ## Verification
